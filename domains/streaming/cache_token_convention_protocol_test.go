@@ -125,7 +125,7 @@ func TestConventionsDifferOnlyWhenCacheIsSubsetOfPrompt(t *testing.T) {
 	}
 	if *oB <= 0 {
 		t.Fatalf("形态 B 的成本 = %f, want > 0 —— 负数只可能来自**负的缓存价**，"+
-			"而不是口径（那正是 831 那四个非负 CHECK 要拦的东西）", *oB)
+			"而不是口径（那正是 833 那四个非负 CHECK 要拦的东西）", *oB)
 	}
 }
 

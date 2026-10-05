@@ -168,6 +168,33 @@ func TestCronFileKeepsTheSyncContractWarning(t *testing.T) {
 	}
 }
 
+// TestAvailabilityHeartbeatRunsEveryMinute —— R48-C1（2026-10-06）。
+//
+// 心跳行曾被写成 `59 * * * *`：标准 5 字段 cron 里那是「每小时 HH:59 一跳」，
+// 而全文件头部、runbook §10.31.2、提交信息都按「每分钟」设计——三方一致地错。
+// 3~4 分钟的停机（那正是这条心跳存在的理由）有 ~95% 概率一跳都赶不上。
+// cron 调度频率语义此前不在任何防线上（见 monitor_script_exec_gate 的盲区注记），
+// 这道门把「心跳行分钟字段必须是 *」钉死。
+func TestAvailabilityHeartbeatRunsEveryMinute(t *testing.T) {
+	lines := readCron(t)
+	var heartbeat []string
+	for _, l := range lines {
+		if !cronTaskLine.MatchString(l) || !strings.Contains(l, "/opt/scripts/pg17-pg-availability-check.sh") {
+			continue
+		}
+		heartbeat = append(heartbeat, l)
+	}
+	if len(heartbeat) != 1 {
+		t.Fatalf("expected exactly 1 cron line for pg17-pg-availability-check.sh, got %d:\n%v",
+			len(heartbeat), heartbeat)
+	}
+	fields := strings.Fields(heartbeat[0])
+	if fields[0] != "*" {
+		t.Errorf("availability heartbeat minute field is %q, want \"*\".\n"+
+			"★ `59 * * * *` 一类写法是「每小时一跳」——心跳失去意义（R48-C1 事故原型）。", fields[0])
+	}
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a

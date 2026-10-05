@@ -49,14 +49,16 @@ import (
 //
 // 实测两个总体的关系（2026-10-06）：
 //
-//	本表（字面量）        107 文件 / 254 调用点
-//	间接读方（§9.258 桶）  21 文件（含 3 处手验的 src.TurnsTable）
+//	本表（字面量）        108 文件 / 256 调用点
+//	间接读方（§9.258 桶）  22 文件（含 3 处手验的 src.TurnsTable）
 //	交集                   14 文件
-//	★ 并集               **114 文件**
+//	★ 并集               **116 文件**
 //
-// ⇒ **7 个读 v1 的文件不在这张表里**：`maas/usage.go`、`maas/consumption_detail.go`、
-// `maas/credit_buckets.go`、`admin/usage_credits.go`、`admin/session_compare.go`、
-// `admin/session_export.go`、`bg/auto_route_settle_sql.go`。
+// ⇒ **8 个只在间接总体、不在本表的读 v1 文件**：`maas/usage.go`、
+// `maas/consumption_detail.go`、`maas/credit_buckets.go`、`admin/usage_credits.go`、
+// `admin/session_compare.go`、`admin/session_export.go`、`bg/auto_route_settle_sql.go`、
+// `admin/dashboard_board_queries.go`（§9.260 起，读 composer 建的 v1 臂视图）。
+// （R48-A10 订正：上文 107/254/21/114/7 是 §9.264 加 v1_write_liveness 行时漏同步的旧数。）
 // 它们登记在 `cmd/tools/sql_source_indirection_audit` 的 `indirectSiteAssessments`
 // （那是拼接点清单），**两张表各有各的口径，不是一张表的两半**。
 // ⇒ 退役排期要用**并集**，详见审计 §9.259。

@@ -842,7 +842,7 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 818 | `818_ursm_snapshot_typed_columns.sql` | `bb2493af5a160a8fd6df860c4117c8aeeb68212843394d74b1923ff8a30988b3` | applied+verified |
-| 819 | `819_request_abandoned.sql` | `bb271e8c1876e24c09b44795eb01145a25839b9a8ea0b369923a539bd7fc9bae` | applied+verified（R43 恢复注记 §R43/L8：Go 写路径已随 820/821 线删除、生产零引用，文件仅为 checksum 完整性档案保留。**R44 补记：R43 写这一行时漏了 sha 的反引号**，而 `verify-migration-checksums.sh:53` 与 `internal/sqlguard/migration_registry_continuity_test.go:90` 的判据正则都要求 sha 被反引号包住 ⇒ 该行对两处判据**同时隐形**，`make guards` 在 main tip 上一直红。判据没坏，是行的形状坏了） |
+| 819 | `819_request_abandoned.sql` | `bb271e8c1876e24c09b44795eb01145a25839b9a8ea0b369923a539bd7fc9bae` | applied+verified（R43 恢复注记 §R43/L8：Go 写路径已随 820/821 线删除、生产零引用，文件仅为 checksum 完整性档案保留。**R44 补记：R43 写这一行时漏了 sha 的反引号**，而 `verify-migration-checksums.sh:53` 与 `internal/sqlguard/migration_registry_continuity_test.go:90` 的判据正则都要求 sha 被反引号包住 ⇒ 该行对两处判据**同时隐形**，`make guards` 在 main tip 上一直红。判据没坏，是行的形状坏了。**R48-E2 补记（2026-10-06）**：819 已作废（被 821 取代），禁止在任何应用路径接线；⚠ 已知态——`scripts/init-local-db.sh:88` 的全量 glob 仍会应用它，新建本地库会带孤儿表 request_abandoned（安装器侧无此问题：tsv 与 embeddata 均不含 819）） |
 
 ## 2026-10-03T22:50:46Z — deploy 245 build_seq 2442 (25a86439)
 
@@ -1053,7 +1053,7 @@ corroboration skipped: fetch observation source: Get "https://models.dev/api.jso
 
 **编号说明**：本迁移最初写成 828，但 `828_supplier_errors_unified_tracked.sql` 已被并发会话占用，故改为 **832**。注册时插在 `StartupFiles` **末尾**（829 之后）而不是 828 之后 —— 插进别人的迁移中间等于替别人改应用顺序。
 
-**改号遗漏订正（同一轮）**：改号只改了文件名与注册，**散文里 17 处仍写 828**，其中两处是真失败路径上的 log 文案（`bg/pricing_baseline_reconcile.go` 的 `"(migration 828 applied?)"`）。那不是笔误级问题：运维在「表不存在」时按提示去查 828，会落到**另一个迁移**（`828_supplier_errors_unified_tracked.sql`）上。四份 SQL 的 `-- File:` 头也仍自称 828（仓库惯例是该行自称文件名；实测**无任何 Go/shell 工具消费该行**，所以它不导致行为错误，但它是唯一能把人导向错文件的线索）。已全部改为 832，字节随之变化 ⇒ SHA 由 `69bf57e3…` 改为 `80812deb…`（上表已同步）。判定依据：仓内所有其它迁移（826/827/829）该行均自称自身；`grep -rn --include='*.go' --include='*.sh' -- 'File:'` 无人解析该头。
+**改号遗漏订正（同一轮）**：改号只改了文件名与注册，**散文里 17 处仍写 828**，其中两处是真失败路径上的 log 文案（`bg/pricing_baseline_reconcile.go` 的 `"(migration 828 applied?)"`）。那不是笔误级问题：运维在「表不存在」时按提示去查 828，会落到**另一个迁移**（`828_supplier_errors_unified_tracked.sql`）上。四份 SQL 的 `-- File:` 头也仍自称 828（仓库惯例是该行自称文件名；实测**无任何 Go/shell 工具消费该行**，所以它不导致行为错误，但它是唯一能把人导向错文件的线索）。已全部改为 832，字节随之变化 ⇒ SHA 最终为 `068dc768…`（R48-B3 订正：此处曾写中间态 `80812deb…`，与上表及盘上 shasum 均不符）。判定依据：仓内所有其它迁移（826/827/829）该行均自称自身；`grep -rn --include='*.go' --include='*.sh' -- 'File:'` 无人解析该头。
 
 配套 Go：`bg/pricing_baseline_reconcile.go`、`bg/routing_health_checks.go`。
 

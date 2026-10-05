@@ -57,7 +57,8 @@ exit 0
 // gtimeout 未必装了），所以被测脚本在开发机上会走到「command not found」→
 // rc=127 → 被误读成「PG 拒连」。
 // ★ 那不是被测脚本的缺陷，是**量具缺件**。这里补上它，
-//   才能让「超时被正确处理」这条断言在开发机上真的成立，而不是被跳过。
+//
+//	才能让「超时被正确处理」这条断言在开发机上真的成立，而不是被跳过。
 const fakeTimeoutBody = `#!/bin/sh
 # 只实现 timeout <秒> <cmd...>，语义取自 GNU coreutils：
 #   到点 SIGTERM，被调用方以「被信号杀死」结束 ⇒ 本进程转成 124。
@@ -121,8 +122,8 @@ func newAvailEnv(t *testing.T) *availEnv {
 		t.Fatal(err)
 	}
 	for name, body := range map[string]string{
-		"podman": fakeRuntimeBody,
-		"docker": fakeRuntimeBody,
+		"podman":  fakeRuntimeBody,
+		"docker":  fakeRuntimeBody,
 		"timeout": fakeTimeoutBody,
 	} {
 		if err := os.WriteFile(filepath.Join(e.bin, name), []byte(body), 0o755); err != nil {

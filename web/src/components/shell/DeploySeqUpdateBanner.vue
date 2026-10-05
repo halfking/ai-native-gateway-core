@@ -45,7 +45,7 @@ const { bannerVisible, dismissBanner, applyUpdate } = useDeploySeqUpdate()
   left: 50%;
   transform: translateX(-50%);
   bottom: 24px;
-  z-index: 2100; /* 悬浮于内容之上、弹窗(2000+)档之下 */
+  z-index: 1990; /* 悬浮于内容之上、让位于弹窗(element-plus 自 2000 起递增) */
   display: flex;
   align-items: center;
   gap: 16px;
@@ -76,7 +76,7 @@ const { bannerVisible, dismissBanner, applyUpdate } = useDeploySeqUpdate()
 .deploy-seq-banner__hint {
   margin: 0;
   font-size: 12px;
-  color: var(--kx-text-muted, inherit);
+  color: var(--muted); /* --kx-text-muted 全仓无定义（R48-D2），改用已定义令牌 */
 }
 
 .deploy-seq-banner__actions {

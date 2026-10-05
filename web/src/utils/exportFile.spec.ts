@@ -117,6 +117,51 @@ describe('exportFile 降级链', () => {
     }
   })
 
+  // R48-D1：canShare 的「桌面为 false」前提在 Windows Chrome/Edge 与 macOS
+  // Safari 的 HTTPS 部署下不成立——桌面指针宿主必须跳过 ①，直接 ③ 落下载。
+  const matchMediaOriginal = window.matchMedia
+  function stubDesktopPointer(matches: boolean): void {
+    window.matchMedia = ((query: string) => ({
+      matches: matches && query === '(hover: hover) and (pointer: fine)',
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })) as typeof window.matchMedia
+  }
+
+  afterEach(() => {
+    window.matchMedia = matchMediaOriginal
+  })
+
+  it('① 桌面指针宿主(hover+fine)即使 canShare 为真 ⇒ 跳过分享直接 ③（R48-D1）', async () => {
+    stubDesktopPointer(true)
+    stubNavigator({
+      canShare: () => true,
+      share: vi.fn().mockResolvedValue(undefined),
+    })
+    const anchor = clickSpy()
+    try {
+      const out = await exportFile({ filename: 'a.csv', blob: new Blob(['x'], { type: 'text/csv' }) })
+      expect(out).toBe('downloaded')
+      expect(anchor.clicks.length).toBe(1)
+    } finally {
+      anchor.restore()
+    }
+  })
+
+  it('① 触屏宿主(hover:none) canShare 为真 ⇒ 仍走系统分享面（R48-D1 不误伤移动）', async () => {
+    stubDesktopPointer(false)
+    const share = vi.fn().mockResolvedValue(undefined)
+    stubNavigator({ canShare: () => true, share })
+    const out = await exportFile({ filename: 'a.csv', blob: new Blob(['x'], { type: 'text/csv' }) })
+    expect(out).toBe('shared')
+    expect(share).toHaveBeenCalledTimes(1)
+  })
+
   it('② 壳桥已注册且返回 true ⇒ 由桥消费，不建下载锚', async () => {
     stubNavigator({})
     const anchor = clickSpy()

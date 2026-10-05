@@ -113,7 +113,7 @@ func TestRegisterBatchEquivalentToRepeatedRegister(t *testing.T) {
 	batchAssets := mk(50)
 	batchStore := newMemStore()
 	batchSvc := New(batchStore)
-	if err := batchSvc.RegisterBatch(context.Background(), batchAssets); err != nil {
+	if _, err := batchSvc.RegisterBatch(context.Background(), batchAssets); err != nil {
 		t.Fatalf("RegisterBatch: %v", err)
 	}
 
@@ -163,7 +163,7 @@ func TestBatchGroupsAcrossTenants(t *testing.T) {
 		{Kind: KindLLMEndpoint, RefID: 3, TenantID: "t1", Name: "c"},
 		{Kind: KindLLMEndpoint, RefID: 4, TenantID: "t3", Name: "d"},
 	}
-	if err := svc.RegisterBatch(context.Background(), assets); err != nil {
+	if _, err := svc.RegisterBatch(context.Background(), assets); err != nil {
 		t.Fatalf("RegisterBatch: %v", err)
 	}
 	if len(m.assets) != 4 {
@@ -191,7 +191,7 @@ func TestBatchIsolatesBadRows(t *testing.T) {
 		{Kind: KindLLMEndpoint, RefID: 3, TenantID: "", Name: "no-tenant"},
 		{Kind: KindLLMEndpoint, RefID: 4, TenantID: "t1", Name: "good2"},
 	}
-	if err := svc.RegisterBatch(context.Background(), assets); err != nil {
+	if _, err := svc.RegisterBatch(context.Background(), assets); err != nil {
 		t.Fatalf("RegisterBatch 不该因为坏行整体返回错误: %v", err)
 	}
 	if len(m.assets) != 2 {
@@ -203,7 +203,7 @@ func TestBatchIsolatesBadRows(t *testing.T) {
 func TestBatchEmptyIsNoop(t *testing.T) {
 	m := newMemStore()
 	svc := New(m)
-	if err := svc.RegisterBatch(context.Background(), nil); err != nil {
+	if _, err := svc.RegisterBatch(context.Background(), nil); err != nil {
 		t.Fatalf("空批次不该报错: %v", err)
 	}
 	if m.batchCalls != 0 {

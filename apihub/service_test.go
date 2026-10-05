@@ -51,7 +51,7 @@ func (m *memStore) Upsert(ctx context.Context, a Asset) error {
 // ★ 若这里图省事写成「只写最后一行」，绝大多数行为测试仍会绿
 //
 //	—— 因为它们只断言最终状态，不断言写入路径。calls 字段就是防这个的。
-func (m *memStore) UpsertBatch(ctx context.Context, assets []Asset) error {
+func (m *memStore) UpsertBatch(ctx context.Context, assets []Asset) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.batchCalls++
@@ -59,7 +59,7 @@ func (m *memStore) UpsertBatch(ctx context.Context, assets []Asset) error {
 		a.RegisteredAt = time.Now().UTC()
 		m.assets[assetKey{a.Kind, a.RefID}] = a
 	}
-	return nil
+	return len(assets), nil
 }
 
 func (m *memStore) Get(ctx context.Context, tenantID string, k Kind, refID int64) (Asset, error) {

@@ -54,7 +54,7 @@ func AllHealthChecks() []HealthCheckDef {
 		// same 'unknown' sentinel already used for display_name so the Go
 		// side stays text-only and the error detail stays meaningful.
 		{CheckID: "credential_active_not_routable", Severity: "warning", Query: `SELECT c.id, c.label || ':' || COALESCE(p.display_name, 'unknown'), COALESCE(c.availability_state, 'unknown'), COALESCE(c.circuit_state, 'unknown') FROM credentials c JOIN providers p ON p.id = c.provider_id WHERE c.status = 'active' AND c.lifecycle_status = 'active' AND EXISTS (SELECT 1 FROM credential_model_bindings cmb WHERE cmb.credential_id = c.id) AND NOT EXISTS (SELECT 1 FROM v_routable_credential_models v WHERE v.credential_id = c.id AND v.is_routable = TRUE) ORDER BY c.id LIMIT 50`},
-		// baseline_observation_stale（迁移 830）：漂移对账 worker 在抓不到外部
+		// baseline_observation_stale（迁移 832）：漂移对账 worker 在抓不到外部
 		// 机读源时**不写任何判词**——这是对的（没有观察就没有结论）。但如果不
 		// 留痕，「每 12h 抓一次、每次都失败、每次都不写东西」可以连续几周不被
 		// 任何人发现，而报表照常出数（用的是几个月前的基准价）。
@@ -65,7 +65,7 @@ func AllHealthChecks() []HealthCheckDef {
 		// 抖动——2026-10-04 实测过一次性 EOF，同一时刻 curl 与三种 UA 的 Go
 		// 客户端全部 200。
 		//
-		// Optional：830 未应用的环境上这张表不存在，此时跳过而不是让整轮健康
+		// Optional：832 未应用的环境上这张表不存在，此时跳过而不是让整轮健康
 		// 检查报错。
 		//
 		// 刻意的**不**覆盖：表为空（worker 从没跑过）。那既可能是 kill switch
@@ -962,7 +962,7 @@ func runChecks(ctx context.Context, db *pgxpool.Pool, checks []HealthCheckDef) (
 				entityName = credName
 				detail = fmt.Sprintf("credential active but has zero routable bindings (availability=%s circuit=%s)", availState, circuitState)
 				fixSQL = fmt.Sprintf("-- 调用 admin API: POST /api/admin/diagnostics/routing-blocked/fix\n-- Body: {\"provider_id\": <该 credential 的 provider_id>}")
-			// ↓↓↓ 两条基线价检查的扫描分支（迁移 826 / 830）。
+			// ↓↓↓ 两条基线价检查的扫描分支（迁移 826 / 832）。
 			//
 			// ★ 它们的查询**本来就返回 4 列**，形状与上面几条一致；但没有 case 时
 			// switch 走空，entityID/entityName/detail/fixSQL 全保持零值，而循环

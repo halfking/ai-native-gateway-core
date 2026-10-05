@@ -30,7 +30,7 @@ import (
 // `documentedSnapshot`（由 `TestDocumentedSnapshotMatchesMeasurement` 钉住，
 // 2026-10-06 / §9.257 更新）：
 //
-//	全仓拼接点 72 处（v1 6 文件/12 处、canonical 12/18、unresolved 9/16）
+//	全仓拼接点 72 处（v1 6 文件/12 处、canonical 12/18、unresolved 9/16、v1arm 15/26）
 //	（2026-10-05 832/833 收口轮：+2 全部来自 modalityVerifyAddressableSource
 //	共用常量的两个引用点，见清单 bg/modality_verification.go 条目；v1 桶不动）
 //
@@ -948,7 +948,7 @@ var documentedSnapshot = bucketSnapshot{
 	// ★ §9.258：第四桶是**退役工作量的主体**，而前两桶都不是。
 	// ⚠ 这里的 25 处**不含** 3 处 `src.TurnsTable` —— 那个操作数是 struct 字段，
 	// 静态推不出，留在 unresolved 桶；但手验确认它读 v1 基表。
-	// ⇒ **真实退役读方清单 = 12 + 25 + 3 = 40 处**，不是 37。
+	// ⇒ **真实退役读方清单 = 12 + 26 + 3 = 41 处**，不是 37（25→26 随 §9.260 同步，R48-A4）.
 	// §9.260：v1 臂视图 25 → 26 处（14 → 15 文件）。
 	// 真因不是「多了一个读方」，而是**推导器补全了**：§9.258 只读
 	// sql/objects/views/，而 `request_logs_with_current_month_without_customer_id`

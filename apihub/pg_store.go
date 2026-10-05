@@ -296,9 +296,11 @@ type upsertRow struct {
 // 分组规则：先按 tenant_id 分组（RLS 要求），组内按 maxUpsertBatchRows 切片。
 // 返回的 error 只在**整批都失败**时非 nil；单行坏数据会被隔离并记日志，
 // 与逐行 Upsert 时代的「log+continue」语义一致（见本节约束③）。
-func (s *pgStore) UpsertBatch(ctx context.Context, assets []Asset) error {
+// 返回确认落库的行数：分片成功计整片；退回逐行时计逐行成功的行数
+// （err 与计数并存，见 Store 接口契约③）。
+func (s *pgStore) UpsertBatch(ctx context.Context, assets []Asset) (int, error) {
 	if len(assets) == 0 {
-		return nil
+		return 0, nil
 	}
 
 	// ── 1. 先全部拍平 + 校验。序列化失败在这里就被拦下，
@@ -337,6 +339,7 @@ func (s *pgStore) UpsertBatch(ctx context.Context, assets []Asset) error {
 		})
 	}
 
+	written := 0
 	var firstErr error
 	for tenant, rows := range byTenant {
 		for start := 0; start < len(rows); start += maxUpsertBatchRows {
@@ -350,11 +353,13 @@ func (s *pgStore) UpsertBatch(ctx context.Context, assets []Asset) error {
 				if firstErr == nil {
 					firstErr = err
 				}
-				s.upsertRowsIndividually(ctx, tenant, chunk, err)
+				written += s.upsertRowsIndividually(ctx, tenant, chunk, err)
+				continue
 			}
+			written += len(chunk)
 		}
 	}
-	return firstErr
+	return written, firstErr
 }
 
 // execUpsertChunk 用一条多值 INSERT 写入整个分片。
@@ -380,7 +385,7 @@ func (s *pgStore) execUpsertChunk(ctx context.Context, tenant string, rows []ups
 // ★ 必须真的隔离出坏行 —— 否则一个坏资产会让同租户其余 499 个
 //
 //	在这一轮里全部同步失败，而这是**静默**的（watcher 只看总成功数）。
-func (s *pgStore) upsertRowsIndividually(ctx context.Context, tenant string, rows []upsertRow, chunkErr error) {
+func (s *pgStore) upsertRowsIndividually(ctx context.Context, tenant string, rows []upsertRow, chunkErr error) int {
 	okN := 0
 	for _, r := range rows {
 		if err := s.Upsert(ctx, r.asset); err != nil {
@@ -392,6 +397,7 @@ func (s *pgStore) upsertRowsIndividually(ctx context.Context, tenant string, row
 	}
 	slog.Warn("apihub: 批量分片失败，已退回逐行",
 		"tenant", tenant, "rows", len(rows), "ok", okN, "chunk_error", chunkErr)
+	return okN
 }
 
 // --- Get ---

@@ -128,7 +128,7 @@ func TestManualStartReportsSuccessOnlyWhenSelfChecksPass(t *testing.T) {
 func TestManualStartReportsDegradedWhenVectorCannotBeRestored(t *testing.T) {
 	rc, out := newStartEnv(t).run(t,
 		"FAKE_VECTOR_SO=missing", // 触发下载/恢复分支
-		"FAKE_LOAD_RC=1",          // 功能自检失败
+		"FAKE_LOAD_RC=1",         // 功能自检失败
 	)
 	if rc == 0 {
 		t.Fatalf("pgvector 明确不可用却退出 0 —— 这正是事故当天的形态。\n输出:\n%s",
