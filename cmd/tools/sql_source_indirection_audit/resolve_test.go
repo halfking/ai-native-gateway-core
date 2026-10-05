@@ -610,3 +610,112 @@ var packageSQL = "SELECT * FROM " + tableFor
 			"夹具失效，不能证明任何事", bSites, sites)
 	}
 }
+
+// auditWithSubdirs 与 auditOne 相同，但允许 "db/x.go" 这种带目录的文件名
+// （§9.257 的跨包夹具必须真的摆在 db/ 下，因为 crossProviderFuncs 按目录找包）。
+func auditWithSubdirs(t *testing.T, files map[string]string) []Site {
+	t.Helper()
+	dir := t.TempDir()
+	for name, body := range files {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", name, err)
+		}
+		if err := os.WriteFile(path, []byte(render(body)), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	sites, err := AuditRepo(dir)
+	if err != nil {
+		t.Fatalf("AuditRepo: %v", err)
+	}
+	return sites
+}
+
+func findSite(t *testing.T, sites []Site, file string) Site {
+	t.Helper()
+	for _, s := range sites {
+		if strings.HasSuffix(filepath.ToSlash(s.File), file) {
+			return s
+		}
+	}
+	t.Fatalf("没找到 %s 的拼接点（全部 %d 处）", file, len(sites))
+	return Site{}
+}
+
+// 门 14（§9.257）：**跨包切换层必须能被解析**，且解析出的是**两个分支的并集**。
+//
+// # 这道门对应本轮修掉的两个真缺陷
+//
+// 缺陷 A：`calleeName` 对 `dbpkg.X()` 返回 `""`，于是 19 处 bodies 读方 + 7 处
+// logs 读方全部落「不可判定」（unresolved 53 处）。
+//
+// 缺陷 B（更隐蔽，**我自己在这一轮里写的**）：`env.crossAlias` 只在扫描阶段设置，
+// funcs/globals 收集阶段没设。于是
+//
+//	func logsSourceFromSQL() string {
+//	    if native { return db.SessionFamilyTurnsSourceSQL() + " rl" }   // ← 这一支解析不出
+//	    return "request_logs_with_current_month rl"                     // ← 这一支解析得出
+//	}
+//
+// 收集到的并集**只剩 v1 那一支**。★ 危险在于它的表现：不是「不可判定」，
+// 而是**一个看起来完全正常的成功解析结果**（少一半，但格式规整、数量合理）。
+// 实测症状：`admin/logs.go:632` 只解析出 `rl | request_logs_with_current_month rl`，
+// 会话族那一支整个不见了。
+//
+// ⇒ 夹具刻意复刻这个形状：跨包函数的**一臂是另一跨包函数调用**。
+// 只测「跨包能解析」会漏掉缺陷 B —— 那道断言在缺陷 B 下**照样绿**。
+func TestCrossPackageSwitchLayerResolvesToBothArms(t *testing.T) {
+	sites := auditWithSubdirs(t, map[string]string{
+		"db/source.go": `package db
+
+func SessionTurnsSourceSQL() string {
+	return "(SELECT 1 FROM public.session_turns_hot t)"
+}
+`,
+		// ★ 切换层**住在消费包**（admin），跨包调用是**带包前缀**的。
+		// 这是缺陷 B 的真实形状：若把它放进 db 包内部，调用就成了同包
+		// `SessionTurnsSourceSQL()`，`calleeName` 直接拿到名字、根本不需要
+		// crossAlias ⇒ 夹具测不到任何东西（第一版夹具就犯了这个错，
+		// 于是 MUT-B 变异下这道门**照样绿**）。
+		"admin/logs_turns_source.go": `package admin
+
+import (
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
+)
+
+var nativeTurnsRead bool
+
+func logsSourceFromSQL() string {
+	if nativeTurnsRead {
+		return dbpkg.SessionTurnsSourceSQL() + " rl"
+	}
+	return "request_logs_with_current_month rl"
+}
+`,
+		"admin/logs.go": `package admin
+
+func q() string {
+	logsFrom := logsSourceFromSQL()
+	return "SELECT COUNT(*) FROM " + logsFrom + " WHERE 1=1"
+}
+`,
+	})
+
+	s := findSite(t, sites, "admin/logs.go")
+	if len(s.Resolved) == 0 {
+		t.Fatalf("跨包切换层解析不出（不可判定）：%s", s)
+	}
+	joined := strings.Join(s.Resolved, " | ")
+	// 缺陷 A 的判据：v1 那一臂
+	if !strings.Contains(joined, "request_logs_with_current_month") {
+		t.Errorf("并集里没有 v1 那一臂 —— 跨包函数调用没解析上。实际：%q", joined)
+	}
+	// ★ 缺陷 B 的判据：会话族那一臂**必须也在**。
+	// 少了它，解析结果是「成功但只有一半」，而缺陷 A 测不出来。
+	if !strings.Contains(joined, "public.session_turns_hot") {
+		t.Errorf("★ 并集里**丢了会话族那一臂**（`return 另一跨包函数() + \" rl\"` 那一支）——\n"+
+			"这正是 §9.257 修掉的缺陷 B：它的表现不是「不可判定」，而是**一个少了分支的\n"+
+			"成功结果**，看起来完全正常。实际：%q", joined)
+	}
+}
