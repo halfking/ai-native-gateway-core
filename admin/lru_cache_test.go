@@ -34,7 +34,7 @@ func TestLRUCache_Eviction(t *testing.T) {
 
 	cache.Set("a", "1")
 	cache.Set("b", "2")
-	
+
 	// This should evict "a" (least recently used)
 	cache.Set("c", "3")
 

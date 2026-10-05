@@ -25,8 +25,10 @@ import (
 //
 // 判据怎么做到能证伪：让 SQL 真的花掉时间（pgxmock 的 WillDelayFor），
 // 然后要求报出来的毫秒数**至少**接近这个延迟。
-//   · 修好后：`time.Since(queryStart)` ≈ 200ms → 通过
-//   · 修前（两个起点相减）：≈ 0ms → 红
+//
+//	· 修好后：`time.Since(queryStart)` ≈ 200ms → 通过
+//	· 修前（两个起点相减）：≈ 0ms → 红
+//
 // 只断言「非负」是恒真判据，对这个缺陷完全无感。
 func TestHandleMonitorSummary_ServerDurationMeasuresTheQuery(t *testing.T) {
 	const delay = 200 * time.Millisecond
@@ -45,7 +47,7 @@ func TestHandleMonitorSummary_ServerDurationMeasuresTheQuery(t *testing.T) {
 		WillDelayFor(delay)
 
 	m := &CredentialMonitorHandlers{
-		h:        &Handler{},
+		h:         &Handler{},
 		summaryDB: mock, // ← 注入点；没有它整条 handler 不可测
 	}
 
@@ -66,7 +68,7 @@ func TestHandleMonitorSummary_ServerDurationMeasuresTheQuery(t *testing.T) {
 
 	var resp struct {
 		Meta struct {
-			CacheHit         bool `json:"cache_hit"`
+			CacheHit         bool  `json:"cache_hit"`
 			ServerDurationMS int64 `json:"server_duration_ms"`
 		} `json:"meta"`
 	}
@@ -75,7 +77,7 @@ func TestHandleMonitorSummary_ServerDurationMeasuresTheQuery(t *testing.T) {
 	}
 
 	if resp.Meta.CacheHit {
-		t.Fatalf("这条判据必须测冷查询，却拿到 cache_hit=true —— 缓存没清干净，"+
+		t.Fatalf("这条判据必须测冷查询，却拿到 cache_hit=true —— 缓存没清干净，" +
 			"断言会对一个根本没跑 SQL 的请求生效")
 	}
 

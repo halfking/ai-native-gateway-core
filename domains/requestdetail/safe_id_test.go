@@ -23,6 +23,7 @@ import (
 // The regex matches exactly two shapes:
 //   - 32 hex chars (server-generated request_id)
 //   - 8-4-4-4-12 hex chars with dashes (legacy UUID)
+//
 // Bench / routing-test prefixed IDs are NOT request_ids — they are
 // bench-only identifiers that the test suite uses directly. They must
 // never appear in the request_id column of request_logs and so the
@@ -298,13 +299,13 @@ func TestSafeRequestIDCompatibleIDsEndToEnd(t *testing.T) {
 	}
 
 	ids := []string{
-		"3875431e9ba64e908b430d234f90d85d",                          // hex-only
-		"3875431e-9ba6-4e90-8b43-0d234f90d85d",                     // dashed UUID
-		"00000000-0000-0000-0000-000000000000",                     // nil UUID
-		"3875431E9BA64E908B430D234F90D85D",                         // uppercase hex
-		"req-unified-01",                                           // common prefix format
-		"req-same-tenant",                                          // tenant test format
-		"bench-1a2b3c4d",                                           // bench prefix
+		"3875431e9ba64e908b430d234f90d85d",     // hex-only
+		"3875431e-9ba6-4e90-8b43-0d234f90d85d", // dashed UUID
+		"00000000-0000-0000-0000-000000000000", // nil UUID
+		"3875431E9BA64E908B430D234F90D85D",     // uppercase hex
+		"req-unified-01",                       // common prefix format
+		"req-same-tenant",                      // tenant test format
+		"bench-1a2b3c4d",                       // bench prefix
 	}
 
 	for _, id := range ids {

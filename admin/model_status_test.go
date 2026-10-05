@@ -7,9 +7,9 @@ import (
 
 func TestBucketStateFromRates(t *testing.T) {
 	cases := []struct {
-		name    string
-		ok, n   int
-		want    string
+		name  string
+		ok, n int
+		want  string
 	}{
 		{"empty", 0, 0, "empty"},
 		{"all_ok", 100, 100, "ok"},
@@ -31,10 +31,10 @@ func TestBucketStateFromRates(t *testing.T) {
 
 func TestClassifyModelStatus(t *testing.T) {
 	cases := []struct {
-		name   string
-		reqs   int
-		avail  float64
-		want   string
+		name  string
+		reqs  int
+		avail float64
+		want  string
 	}{
 		{"no_data", 0, 0, "no_data"},
 		{"interrupted_zero", 12, 0, "interrupted"},

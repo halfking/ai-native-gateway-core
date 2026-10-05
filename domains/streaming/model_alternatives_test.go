@@ -340,7 +340,7 @@ func TestAlternativesSQL_PopularityReadsHotNotCanonicalView(t *testing.T) {
 	}
 	if strings.Contains(alternativesSQL, "FROM request_logs_with_current_month") {
 		t.Error("popularity CTE reads request_logs_with_current_month; that view costs " +
-			 ">80s on 252 and the client cancels long before completion")
+			">80s on 252 and the client cancels long before completion")
 	}
 }
 

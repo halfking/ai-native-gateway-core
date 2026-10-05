@@ -48,7 +48,7 @@ func TestCanonicalIDByVariantPriority_ExactFormBeatsLowerID(t *testing.T) {
 	}
 	// 两条拼写都在目录里，且「精确形」的 id 更大 —— 旧实现会选错
 	matches := []canonicalNameID{
-		{id: 50, name: "glm-5-3-flash"}, // 桥形，id 小
+		{id: 50, name: "glm-5-3-flash"},  // 桥形，id 小
 		{id: 100, name: "glm-5.3-flash"}, // 精确形，id 大
 	}
 	got, ok := canonicalIDByVariantPriority(variants, matches)

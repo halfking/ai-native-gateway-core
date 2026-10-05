@@ -35,10 +35,10 @@ type SessionSample struct {
 
 // Message 消息结构
 type Message struct {
-	Role      string      `json:"role"`
-	Content   interface{} `json:"content"`
-	ToolCalls interface{} `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Role       string      `json:"role"`
+	Content    interface{} `json:"content"`
+	ToolCalls  interface{} `json:"tool_calls,omitempty"`
+	ToolCallID string      `json:"tool_call_id,omitempty"`
 }
 
 // SessionFeatures 会话特征
@@ -55,16 +55,16 @@ type SessionFeatures struct {
 
 // StrategyResult 单个策略的结果
 type StrategyResult struct {
-	AvgCompressionRatio float64            `json:"avg_compression_ratio"`
-	AvgSavingsPercent   float64            `json:"avg_savings_percent"`
-	AvgInformationLoss  float64            `json:"avg_information_loss"`
-	AvgFidelityScore    float64            `json:"avg_fidelity_score"`
-	P50LatencyMs        int64              `json:"p50_latency_ms"`
-	P95LatencyMs        int64              `json:"p95_latency_ms"`
-	P99LatencyMs        int64              `json:"p99_latency_ms"`
-	SuccessCount        int                `json:"success_count"`
-	FailureCount        int                `json:"failure_count"`
-	Distribution        map[string]int     `json:"distribution"`
+	AvgCompressionRatio float64             `json:"avg_compression_ratio"`
+	AvgSavingsPercent   float64             `json:"avg_savings_percent"`
+	AvgInformationLoss  float64             `json:"avg_information_loss"`
+	AvgFidelityScore    float64             `json:"avg_fidelity_score"`
+	P50LatencyMs        int64               `json:"p50_latency_ms"`
+	P95LatencyMs        int64               `json:"p95_latency_ms"`
+	P99LatencyMs        int64               `json:"p99_latency_ms"`
+	SuccessCount        int                 `json:"success_count"`
+	FailureCount        int                 `json:"failure_count"`
+	Distribution        map[string]int      `json:"distribution"`
 	ByType              map[string]*Metrics `json:"by_type"`
 }
 
@@ -81,9 +81,9 @@ type Metrics struct {
 
 // BenchmarkOutput 输出结果
 type BenchmarkOutput struct {
-	Timestamp   string                    `json:"timestamp"`
-	SampleSize  int                       `json:"sample_size"`
-	Strategies  []string                  `json:"strategies"`
+	Timestamp   string                     `json:"timestamp"`
+	SampleSize  int                        `json:"sample_size"`
+	Strategies  []string                   `json:"strategies"`
 	Results     map[string]*StrategyResult `json:"results"`
 	SampleStats *SampleStats               `json:"sample_stats"`
 }
@@ -99,31 +99,31 @@ type SampleStats struct {
 
 func main() {
 	config := parseFlags()
-	
+
 	if config.Verbose {
 		log.SetFlags(log.Ltime | log.Lmicroseconds)
 	} else {
 		log.SetFlags(0)
 	}
-	
+
 	log.Printf("INFO 开始压缩算法 benchmark...")
-	
+
 	// 1. 加载数据
 	samples, err := loadSamples(config)
 	if err != nil {
 		log.Fatalf("ERROR 加载数据失败: %v", err)
 	}
 	log.Printf("INFO 成功加载 %d 个会话样本", len(samples))
-	
+
 	// 2. 计算采样统计
 	stats := calculateSampleStats(samples)
 	printSampleStats(stats)
-	
+
 	if config.DryRun {
 		log.Printf("INFO Dry-run 模式，跳过压缩执行")
 		return
 	}
-	
+
 	// 3. 执行 benchmark
 	results := make(map[string]*StrategyResult)
 	for _, strategy := range config.Strategies {
@@ -136,7 +136,7 @@ func main() {
 		results[strategy] = result
 		printStrategyResult(strategy, result)
 	}
-	
+
 	// 4. 保存结果
 	output := &BenchmarkOutput{
 		Timestamp:   time.Now().Format(time.RFC3339),
@@ -145,19 +145,19 @@ func main() {
 		Results:     results,
 		SampleStats: stats,
 	}
-	
+
 	if err := saveOutput(output, config.Output); err != nil {
 		log.Fatalf("ERROR 保存结果失败: %v", err)
 	}
-	
+
 	log.Printf("SUCCESS Benchmark 完成")
 }
 
 func parseFlags() *BenchmarkConfig {
 	config := &BenchmarkConfig{}
-	
+
 	var strategiesStr string
-	
+
 	flag.StringVar(&config.DataSource, "data-source", "", "245 日志数据路径 (必需)")
 	flag.IntVar(&config.SampleSize, "sample-size", 1000, "采样大小")
 	flag.StringVar(&strategiesStr, "strategies", "intelligent", "逗号分隔的策略列表")
@@ -165,37 +165,37 @@ func parseFlags() *BenchmarkConfig {
 	flag.StringVar(&config.Output, "output", "compression-results.json", "输出文件路径")
 	flag.BoolVar(&config.DryRun, "dry-run", false, "仅显示采样分布")
 	flag.BoolVar(&config.Verbose, "verbose", false, "详细输出")
-	
+
 	flag.Parse()
-	
+
 	if config.DataSource == "" {
 		fmt.Fprintf(os.Stderr, "错误: --data-source 是必需参数\n\n")
 		flag.Usage()
 		os.Exit(1)
 	}
-	
+
 	config.Strategies = strings.Split(strategiesStr, ",")
 	for i := range config.Strategies {
 		config.Strategies[i] = strings.TrimSpace(config.Strategies[i])
 	}
-	
+
 	return config
 }
 
 func loadSamples(config *BenchmarkConfig) ([]*SessionSample, error) {
 	// TODO: 实现真实的日志解析逻辑
 	// 当前返回模拟数据用于演示
-	
+
 	log.Printf("INFO 从 %s 加载数据...", config.DataSource)
-	
+
 	// 检查数据源是否存在
 	if _, err := os.Stat(config.DataSource); os.IsNotExist(err) {
 		return nil, fmt.Errorf("数据源不存在: %s", config.DataSource)
 	}
-	
+
 	// 模拟数据（实际应从文件读取 JSONL）
 	samples := make([]*SessionSample, 0, config.SampleSize)
-	
+
 	// 生成分层采样
 	// 短文本会话 (30%)
 	for i := 0; i < config.SampleSize*3/10 && i < config.SampleSize; i++ {
@@ -206,7 +206,7 @@ func loadSamples(config *BenchmarkConfig) ([]*SessionSample, error) {
 			ToolCallCount:   0,
 		})
 	}
-	
+
 	// 工具密集型会话 (40%)
 	for i := 0; i < config.SampleSize*4/10 && len(samples) < config.SampleSize; i++ {
 		samples = append(samples, &SessionSample{
@@ -216,7 +216,7 @@ func loadSamples(config *BenchmarkConfig) ([]*SessionSample, error) {
 			ToolCallCount:   15,
 		})
 	}
-	
+
 	// 长上下文会话 (30%)
 	for i := 0; len(samples) < config.SampleSize; i++ {
 		samples = append(samples, &SessionSample{
@@ -226,24 +226,24 @@ func loadSamples(config *BenchmarkConfig) ([]*SessionSample, error) {
 			ToolCallCount:   5,
 		})
 	}
-	
+
 	// 提取特征
 	for _, sample := range samples {
 		sample.Features = extractFeatures(sample)
 	}
-	
+
 	return samples, nil
 }
 
 func generateMockMessages(count, toolCalls int) []Message {
 	messages := make([]Message, 0, count)
-	
+
 	// system message
 	messages = append(messages, Message{
 		Role:    "system",
 		Content: "You are a helpful assistant.",
 	})
-	
+
 	// 交替的 user/assistant 消息
 	toolCallsAdded := 0
 	for i := 1; i < count; i++ {
@@ -257,7 +257,7 @@ func generateMockMessages(count, toolCalls int) []Message {
 				Role:    "assistant",
 				Content: fmt.Sprintf("Assistant response %d", i),
 			}
-			
+
 			// 添加工具调用
 			if toolCallsAdded < toolCalls && i > 5 {
 				msg.ToolCalls = []map[string]interface{}{
@@ -272,11 +272,11 @@ func generateMockMessages(count, toolCalls int) []Message {
 				}
 				toolCallsAdded++
 			}
-			
+
 			messages = append(messages, msg)
 		}
 	}
-	
+
 	return messages
 }
 
@@ -286,11 +286,11 @@ func extractFeatures(sample *SessionSample) SessionFeatures {
 		EstimatedTokens: sample.EstimatedTokens,
 		ToolCallCount:   sample.ToolCallCount,
 	}
-	
+
 	if features.MessageCount > 0 {
 		features.ToolCallRatio = float64(features.ToolCallCount) / float64(features.MessageCount)
 		features.HasToolCalls = features.ToolCallCount > 0
-		
+
 		totalLen := 0
 		codeBlocks := 0
 		for _, msg := range sample.Messages {
@@ -305,7 +305,7 @@ func extractFeatures(sample *SessionSample) SessionFeatures {
 		features.HasCodeBlocks = codeBlocks > 0
 		features.CodeBlockRatio = float64(codeBlocks) / float64(features.MessageCount)
 	}
-	
+
 	return features
 }
 
@@ -314,14 +314,14 @@ func calculateSampleStats(samples []*SessionSample) *SampleStats {
 		TotalSessions:  len(samples),
 		Stratification: make(map[string]int),
 	}
-	
+
 	var totalTokens, totalMessages, totalToolCalls int
-	
+
 	for _, sample := range samples {
 		totalTokens += sample.EstimatedTokens
 		totalMessages += len(sample.Messages)
 		totalToolCalls += sample.ToolCallCount
-		
+
 		// 分类
 		if sample.ToolCallCount == 0 && sample.EstimatedTokens < 20000 {
 			stats.Stratification["short-text"]++
@@ -333,13 +333,13 @@ func calculateSampleStats(samples []*SessionSample) *SampleStats {
 			stats.Stratification["mixed"]++
 		}
 	}
-	
+
 	if len(samples) > 0 {
 		stats.AvgTokens = float64(totalTokens) / float64(len(samples))
 		stats.AvgMessageCount = float64(totalMessages) / float64(len(samples))
 		stats.ToolCallRatio = float64(totalToolCalls) / float64(totalMessages)
 	}
-	
+
 	return stats
 }
 
@@ -365,19 +365,19 @@ func benchmarkStrategy(ctx context.Context, strategy string, samples []*SessionS
 		Distribution: make(map[string]int),
 		ByType:       make(map[string]*Metrics),
 	}
-	
+
 	latencies := make([]int64, 0, len(samples))
 	var totalRatio, totalSavings, totalLoss, totalFidelity float64
-	
+
 	for i, sample := range samples {
 		if config.Verbose && i%100 == 0 {
 			log.Printf("INFO   进度: %d/%d", i, len(samples))
 		}
-		
+
 		// TODO: 实际调用压缩策略
 		// 当前返回模拟结果
 		metrics := simulateCompression(strategy, sample)
-		
+
 		if metrics != nil {
 			result.SuccessCount++
 			totalRatio += metrics.CompressionRatio
@@ -385,17 +385,17 @@ func benchmarkStrategy(ctx context.Context, strategy string, samples []*SessionS
 			totalLoss += metrics.InformationLossRate
 			totalFidelity += metrics.FidelityScore
 			latencies = append(latencies, metrics.DurationMs)
-			
+
 			// 分布统计
-			ratioKey := fmt.Sprintf("%.1f-%.1f", 
-				float64(int(metrics.CompressionRatio)), 
+			ratioKey := fmt.Sprintf("%.1f-%.1f",
+				float64(int(metrics.CompressionRatio)),
 				float64(int(metrics.CompressionRatio)+1))
 			result.Distribution[ratioKey]++
 		} else {
 			result.FailureCount++
 		}
 	}
-	
+
 	// 计算平均值
 	if result.SuccessCount > 0 {
 		result.AvgCompressionRatio = totalRatio / float64(result.SuccessCount)
@@ -403,7 +403,7 @@ func benchmarkStrategy(ctx context.Context, strategy string, samples []*SessionS
 		result.AvgInformationLoss = totalLoss / float64(result.SuccessCount)
 		result.AvgFidelityScore = totalFidelity / float64(result.SuccessCount)
 	}
-	
+
 	// 计算分位数
 	if len(latencies) > 0 {
 		sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
@@ -411,15 +411,15 @@ func benchmarkStrategy(ctx context.Context, strategy string, samples []*SessionS
 		result.P95LatencyMs = latencies[len(latencies)*95/100]
 		result.P99LatencyMs = latencies[len(latencies)*99/100]
 	}
-	
+
 	return result, nil
 }
 
 func simulateCompression(strategy string, sample *SessionSample) *Metrics {
 	// 模拟压缩（实际应调用真实的压缩策略）
-	
+
 	var compressionRatio, durationMs float64
-	
+
 	switch strategy {
 	case "intelligent":
 		compressionRatio = 2.5 + float64(sample.ToolCallCount)*0.05
@@ -436,10 +436,10 @@ func simulateCompression(strategy string, sample *SessionSample) *Metrics {
 	default:
 		return nil
 	}
-	
+
 	compressedTokens := int(float64(sample.EstimatedTokens) / compressionRatio)
 	savingsPercent := (1 - 1/compressionRatio) * 100
-	
+
 	// 模拟信息丢失率（基于压缩比）
 	lossRate := 0.05 + (compressionRatio-2.0)*0.03
 	if lossRate < 0 {
@@ -448,9 +448,9 @@ func simulateCompression(strategy string, sample *SessionSample) *Metrics {
 	if lossRate > 0.3 {
 		lossRate = 0.3
 	}
-	
+
 	fidelityScore := 1.0 - lossRate
-	
+
 	return &Metrics{
 		OriginalTokens:      sample.EstimatedTokens,
 		CompressedTokens:    compressedTokens,
@@ -481,16 +481,16 @@ func saveOutput(output *BenchmarkOutput, path string) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("创建目录失败: %w", err)
 	}
-	
+
 	// 写入 JSON
 	data, err := json.MarshalIndent(output, "", "  ")
 	if err != nil {
 		return fmt.Errorf("序列化 JSON 失败: %w", err)
 	}
-	
+
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		return fmt.Errorf("写入文件失败: %w", err)
 	}
-	
+
 	return nil
 }

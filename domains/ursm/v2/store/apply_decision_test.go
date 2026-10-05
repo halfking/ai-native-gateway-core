@@ -34,8 +34,8 @@ func TestApplyDecisionManualHoldLiveRead(t *testing.T) {
 	s, _ := newTestStore(t)
 	ctx := context.Background()
 	if err := s.HSetFields(ctx, "ursm:v2:node:9:m", map[string]any{
-		"manual_hold":   "1",
-		"generation":    1,
+		"manual_hold":     "1",
+		"generation":      1,
 		"source_priority": 10,
 	}); err != nil {
 		t.Fatalf("seed: %v", err)

@@ -215,7 +215,7 @@ func (t *HotZoneTrimmer) TrimOnce(ctx context.Context) error {
 		// 毫秒级，mtime 早于 cutoff 的 .tmp 必然是崩溃孤儿（FileCache 与
 		// AsyncFileWriter 均不回收自己的临时文件，2026-10-01 审计 F1：此前
 		// 全量豁免使孤儿临时文件在热区无界累积）。
-		temps []entry
+		temps       []entry
 		onDiskBytes int64
 		deleted     int
 		freed       int64

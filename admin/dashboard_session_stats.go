@@ -12,13 +12,13 @@ import (
 
 // SessionOverviewResponse 会话统计概览响应
 type SessionOverviewResponse struct {
-	TotalSessions      int                      `json:"total_sessions"`
-	ActiveSessions     int                      `json:"active_sessions"`
-	HealthDistribution HealthDistribution       `json:"health_distribution"`
-	CostTrend          []CostTrendPoint         `json:"cost_trend"`
-	TopClients         []ClientRankItem         `json:"top_clients"`
-	TopTasks           []TaskRankItem           `json:"top_tasks"`
-	LastUpdated        time.Time                `json:"last_updated"`
+	TotalSessions      int                `json:"total_sessions"`
+	ActiveSessions     int                `json:"active_sessions"`
+	HealthDistribution HealthDistribution `json:"health_distribution"`
+	CostTrend          []CostTrendPoint   `json:"cost_trend"`
+	TopClients         []ClientRankItem   `json:"top_clients"`
+	TopTasks           []TaskRankItem     `json:"top_tasks"`
+	LastUpdated        time.Time          `json:"last_updated"`
 }
 
 // HealthDistribution 健康度分布
@@ -32,9 +32,9 @@ type HealthDistribution struct {
 
 // CostTrendPoint 成本趋势点
 type CostTrendPoint struct {
-	Date     string  `json:"date"`      // YYYY-MM-DD
-	Cost     float64 `json:"cost"`      // 当日总成本
-	Sessions int     `json:"sessions"`  // 当日会话数
+	Date     string  `json:"date"`     // YYYY-MM-DD
+	Cost     float64 `json:"cost"`     // 当日总成本
+	Sessions int     `json:"sessions"` // 当日会话数
 }
 
 // ClientRankItem 客户端排行项
@@ -58,9 +58,10 @@ type TaskRankItem struct {
 // GET /api/admin/dashboard/session-overview?days=7
 //
 // 三层隔离：
-//   super_admin/admin_key → 跨租户全部（或指定 tenant_id 参数）
-//   tenant_admin          → 本租户全部
-//   普通用户              → 本租户 + 仅自己名下 owner
+//
+//	super_admin/admin_key → 跨租户全部（或指定 tenant_id 参数）
+//	tenant_admin          → 本租户全部
+//	普通用户              → 本租户 + 仅自己名下 owner
 func (h *Handler) handleDashboardSessionOverview(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")

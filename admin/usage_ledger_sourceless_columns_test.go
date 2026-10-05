@@ -100,9 +100,9 @@ func TestPlanCostTrend_DimensionProvenance(t *testing.T) {
 		baseAlias   string
 		requestSide bool
 	}{
-		"model":     {"usage_ledger_with_current_month ul", "ul", false},
-		"provider":  {"usage_ledger_with_current_month ul", "ul", false},
-		"api_key":   {"usage_ledger_with_current_month ul", "ul", false},
+		"model":    {"usage_ledger_with_current_month ul", "ul", false},
+		"provider": {"usage_ledger_with_current_month ul", "ul", false},
+		"api_key":  {"usage_ledger_with_current_month ul", "ul", false},
 		// 39 轮（2026-10-03）：request 侧基表从裸 request_logs 换成双腿视图
 		// —— 裸母表读不到 hot 腿未 promote 的最近 ≤8h（204/206 号同族盲区）。
 		"work_type": {"request_logs_with_current_month rl", "rl", true},

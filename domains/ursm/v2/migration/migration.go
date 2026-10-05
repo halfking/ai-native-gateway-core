@@ -18,14 +18,14 @@ import (
 // and the MetadataStore so the CLI / a future G4 operator tool can call
 // them through a single seam.
 type Migrator struct {
-	Prefix string
-	Owner   string
-	LedgerID string
-	Mode    Mode
+	Prefix           string
+	Owner            string
+	LedgerID         string
+	Mode             Mode
 	RollbackDeadline time.Time
-	Now      func() time.Time
-	RDB      *redis.Client
-	Ledger   *Ledger
+	Now              func() time.Time
+	RDB              *redis.Client
+	Ledger           *Ledger
 }
 
 // Defaults fills the unset fields with the values 14 §0 requires. It does

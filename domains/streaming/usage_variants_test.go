@@ -29,7 +29,7 @@ func TestExtractUsageFromChunk_VendorVariants(t *testing.T) {
 		{
 			name:    "Anthropic cache creation/read names",
 			payload: `{"usage":{"input_tokens":10,"cache_read_input_tokens":30,"cache_creation_input_tokens":5}}`,
-			want: UsageData{PromptTokens: usageVariantIntPtr(10), CacheReadTokens: usageVariantIntPtr(30), CacheWriteTokens: usageVariantIntPtr(5)},
+			want:    UsageData{PromptTokens: usageVariantIntPtr(10), CacheReadTokens: usageVariantIntPtr(30), CacheWriteTokens: usageVariantIntPtr(5)},
 		},
 		{
 			name:    "OpenAI prompt_tokens_details.cached_tokens",

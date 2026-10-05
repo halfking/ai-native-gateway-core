@@ -76,7 +76,7 @@ func TestMergeSummaries_StaleSubsetDoesNotRegressTurn(t *testing.T) {
 	t0 := time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)
 	existing := map[string]LogSummary{
 		"turn_3": {TurnNo: 3, BuiltAt: t0, Stages: []StageLog{
-			stageAt("retrieve", t0), stageAt("generate", t0.Add(time.Second)), stageAt("grade", t0.Add(2 * time.Second)),
+			stageAt("retrieve", t0), stageAt("generate", t0.Add(time.Second)), stageAt("grade", t0.Add(2*time.Second)),
 		}},
 	}
 	raw, _ := json.Marshal(existing)
@@ -109,7 +109,7 @@ func TestMergeSummaries_PreservesOtherTurns(t *testing.T) {
 		"turn_1": {TurnNo: 1, BuiltAt: t0, Stages: []StageLog{stageAt("retrieve", t0)}},
 	}
 	raw, _ := json.Marshal(existing)
-	merged := mergeSummaries(raw, map[int][]StageLog{2: {stageAt("generate", t0.Add(time.Minute))}}, t0.Add(2 * time.Minute))
+	merged := mergeSummaries(raw, map[int][]StageLog{2: {stageAt("generate", t0.Add(time.Minute))}}, t0.Add(2*time.Minute))
 
 	if got := merged["turn_1"]; len(got.Stages) != 1 {
 		t.Fatalf("turn_1 stages = %d, want 1 — turn keys absent from the payload must be carried over", len(got.Stages))

@@ -358,7 +358,7 @@ func journalEntryToJourneyEvent(instance, tenantID, requestID string, baseSeq in
 	if occurredAt.IsZero() {
 		occurredAt = entry.At // recordDecision always fills; defensive against future zero-valued entries
 	}
-	
+
 	// Build base event
 	event := requestjourney.JourneyEvent{
 		TenantID:          tenantID,
@@ -378,12 +378,12 @@ func journalEntryToJourneyEvent(instance, tenantID, requestID string, baseSeq in
 		ObservationStatus: requestjourney.ObservationComplete,
 		OccurredAt:        occurredAt,
 	}
-	
+
 	// When degraded due to missing switch fields, mark observation as degraded
 	if eventType == requestjourney.EventObservationDegraded {
 		event.ObservationStatus = requestjourney.ObservationDegraded
 	}
-	
+
 	// P0 fix: populate from/to fields for switch events
 	if entry.Action == dispatch.NextActionSwitchCred && eventType == requestjourney.EventNodeSwitched {
 		event.FromCredentialID = int64(entry.FromCredentialID)
@@ -394,7 +394,7 @@ func journalEntryToJourneyEvent(instance, tenantID, requestID string, baseSeq in
 		// Note: FromProviderID/ToProviderID are tracked in journal for forensics
 		// but not required by journey contract, so we don't populate them here.
 	}
-	
+
 	if entry.Action == dispatch.NextActionSwitchModel && eventType == requestjourney.EventModelSwitched {
 		event.FromModel = entry.FromModel
 		event.ToModel = entry.ToModel
@@ -402,13 +402,13 @@ func journalEntryToJourneyEvent(instance, tenantID, requestID string, baseSeq in
 			event.ToModel = entry.Model
 		}
 	}
-	
+
 	// When degraded due to missing switch fields, add context to RetryReason
-	if eventType == requestjourney.EventObservationDegraded && 
-	   (entry.Action == dispatch.NextActionSwitchCred || entry.Action == dispatch.NextActionSwitchModel) {
+	if eventType == requestjourney.EventObservationDegraded &&
+		(entry.Action == dispatch.NextActionSwitchCred || entry.Action == dispatch.NextActionSwitchModel) {
 		event.RetryReason = string(entry.Action) + "_missing_endpoints"
 	}
-	
+
 	return event, true
 }
 

@@ -89,7 +89,7 @@ func readGeoIPCSV(path string) ([]geoSegment, error) {
 	defer f.Close()
 	r := csv.NewReader(f)
 	r.TrimLeadingSpace = true
-	r.Comment = '#' // `# cidr,country,...` header comments are not data
+	r.Comment = '#'        // `# cidr,country,...` header comments are not data
 	r.FieldsPerRecord = -1 // real exports have ragged trailing columns
 	records, err := r.ReadAll()
 	if err != nil {

@@ -16,11 +16,11 @@ import (
 const modelStatusWindowHours = 24
 
 type modelStatusSummary struct {
-	TotalModels         int     `json:"total_models"`
-	Healthy             int     `json:"healthy"`
-	Interrupted         int     `json:"interrupted"`
-	NoData              int     `json:"no_data"`
-	AvgAvailabilityPct  float64 `json:"avg_availability_pct"`
+	TotalModels        int     `json:"total_models"`
+	Healthy            int     `json:"healthy"`
+	Interrupted        int     `json:"interrupted"`
+	NoData             int     `json:"no_data"`
+	AvgAvailabilityPct float64 `json:"avg_availability_pct"`
 }
 
 type modelStatusBucket struct {
