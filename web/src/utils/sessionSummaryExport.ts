@@ -1,4 +1,5 @@
 import type { SessionSummaryResponse } from '../api/logs'
+import { exportFile } from './exportFile'
 
 export function buildSessionSummaryExport(
   data: SessionSummaryResponse,
@@ -23,20 +24,18 @@ export function buildSessionSummaryExport(
   return lines.join('\n')
 }
 
+// 2026-10-05（UI规范 19 §3.1）：走 exportFile 降级链（分享面→壳桥→blob）。
+// 桌面 canShare 为 false，天然回落 blob 四步，行为与旧实现逐字节等价。
 export function downloadSessionSummaryExport(
   data: SessionSummaryResponse,
   headings: { docTitle: string; summaryHeading: string; keyPointsHeading: string },
   format: 'md' | 'txt' = 'md',
-): void {
+): Promise<'shared' | 'downloaded' | 'cancelled'> {
   const content = buildSessionSummaryExport(data, headings)
   const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
   const day = new Date().toISOString().slice(0, 10)
-  a.href = url
-  a.download = `session-summary-${data.meta.session_id}-${day}.${format}`
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
+  return exportFile({
+    filename: `session-summary-${data.meta.session_id}-${day}.${format}`,
+    blob,
+  })
 }

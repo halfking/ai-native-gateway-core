@@ -1,6 +1,43 @@
-import { defineConfig } from 'vite'
+import { execSync } from 'child_process'
+import { defineConfig, type Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import path from 'path'
+
+// ── 部署序号构建期注入（UI规范 18 §3 / §10.3 步骤 4）──────────────────
+// 取值优先级：LLMGW_DEPLOY_SEQ（deploy-local.sh 在 build_frontend 时从
+// version.json 透传的 build_seq，接既有 bump-version 管线，不新造序号源）
+// → BUILD_SEQ → git 短 SHA → 'unknown'（运行期界面按「不可判定」展示）。
+// web-mobile/vite.config.ts 有同形实现（两项目独立 npm 包，无共享包目标）。
+function resolveDeploySeq(): { seq: string; src: 'build-seq' | 'git-sha' | 'unknown' } {
+  const explicit = process.env.LLMGW_DEPLOY_SEQ
+  if (explicit) return { seq: explicit, src: 'build-seq' }
+  const buildSeq = process.env.BUILD_SEQ
+  if (buildSeq) return { seq: buildSeq, src: 'build-seq' }
+  try {
+    const sha = execSync('git rev-parse --short=8 HEAD', {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .toString()
+      .trim()
+    if (sha) return { seq: sha, src: 'git-sha' }
+  } catch {
+    /* 无 git 可用 —— 落 unknown */
+  }
+  return { seq: 'unknown', src: 'unknown' }
+}
+
+function llmgwDeploySeq(): Plugin {
+  const apply = (html: string): string => {
+    const { seq, src } = resolveDeploySeq()
+    return html.replace('__LLMGW_DEPLOY_SEQ__', seq).replace('__LLMGW_DEPLOY_SEQ_SRC__', src)
+  }
+  return {
+    name: 'llmgw-deploy-seq',
+    transformIndexHtml(html) {
+      return apply(html)
+    },
+  }
+}
 
 // vite.config.ts — extended with vitest `test` field (v6.0 audit T11, 2026-06-22)
 // Vitest 1.x auto-detects a `test` field in vite.config.ts, so we keep
@@ -8,7 +45,7 @@ import path from 'path'
 // and vitest.config.ts. This also means `vite build` and `vitest run`
 // share the same plugin list (vue), avoiding drift.
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [vue(), llmgwDeploySeq()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

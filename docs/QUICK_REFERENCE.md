@@ -39,15 +39,15 @@ git remote add origin https://codeup.aliyun.com/kaixuan/official-deploy/llm-gate
 git remote add github git@github.com:halfking/ai-native-gateway-core.git
 ```
 
-### 代码统计（基于真实扫描，2026-09-06）
+### 代码统计（基于真实扫描，2026-10-05）
 ```
-Go源文件:      22,921 个    (find . -name "*.go" -type f | wc -l)
-Admin API:       453 个    (find ./admin -name "*.go" -type f | wc -l)
-后台Worker:      217 个    (find ./bg -name "*.go" -type f | wc -l)
-领域模块:        64 个    (ls ./domains/ | wc -l)
-数据库迁移:     757 个    (find ./sql/migrations -name "*.sql" | wc -l)
-单元测试:     5,000+ 个    (*_test.go 文件)
-可执行程序:      30 个    (ls ./cmd/ | wc -l)
+Go源文件:       9,967 个    (find . -name "*.go" -type f | wc -l)
+Admin API:       625 个    (find ./admin -name "*.go" -type f | wc -l)
+后台Worker:      348 个    (find ./bg -name "*.go" -type f | wc -l)
+领域模块:        67 个    (ls ./domains/ | wc -l)
+数据库迁移:     989 个    (find ./sql/migrations -name "*.sql" | wc -l)
+单元测试:     2,689 个    (*_test.go 文件)
+可执行程序:      34 个    (ls ./cmd/ | wc -l)
 ```
 
 ---

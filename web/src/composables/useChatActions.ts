@@ -6,6 +6,7 @@ import {
 } from './useChatCompletions'
 import { localeRef } from '../i18n'
 import { formatDateTime } from '../utils/datetime'
+import { exportFile } from '../utils/exportFile'
 
 export type ExportableMessage = ChatCompletionMessage & {
   requestedModel?: string
@@ -72,17 +73,10 @@ export function formatSessionExport(opts: {
   return lines.join('\n')
 }
 
+// 2026-10-05（UI规范 19 §3.1）：走 exportFile 降级链（分享面→壳桥→blob）。
 export function downloadTextFile(filename: string, content: string) {
   const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.style.display = 'none'
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
+  return exportFile({ filename, blob })
 }
 
 export async function copyToClipboard(text: string): Promise<boolean> {
