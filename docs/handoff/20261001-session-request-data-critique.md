@@ -13102,3 +13102,325 @@ fire#2 正常、**用例 A 的 title 断言未报**）· M-R2 ✅红(245) · M-R
 
 **仍未覆盖（§9.250.5 盲区 ②）**：`runShadowWrite` 的信号量分支、`replay.go`、
 telemetry 的 fire 次数。
+
+## §70.89 ★ 当前门基线**本轮实测**（终于不用再写「旧读数」了）+ 补上 replay 的缺失断言
+
+> 审计正文见 §9.252。**只改一个测试文件**，未改生产代码。**生产零写入。**
+
+### 1. ★ 门基线（全部带 `-v` 落**完整日志文件**，逐条列名核对）
+
+| 门 | PASS | SKIP | **FAIL** | 失败测试名 |
+|---|---:|---:|---:|---|
+| `./db/` | 91 | 8 | **2** | `TestRepointValueFidelity` · `TestRetirementBlockedByUnrunBackfills` |
+| `./admin/` | 1582 | 41 | **6** | `TestColumnarParentTwoSurfaceSetopShape_RealDB` · `TestReportRollup_HTTPContract` · `TestV1BodiesReadersAreAssessed` · `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable` · `TestSessionFinalSuccessBacklogIsClosed` · `TestProjectTasksSkipsNullTaskID` |
+| `./cmd/gateway/` | 327 | 0 | **0** | ok 60.596s |
+| `sql_source_indirection_audit` | — | — | **0** | exit 0 |
+| `./internal/sessionv2mirror/`（本轮改动包） | — | — | **0** | ok 0.324s |
+| `./domains/session/v2/`（上轮改动包） | — | — | **0** | ok 6.597s（带 DSN） |
+
+⇒ **基线无漂移**，8 个失败名与记录**逐条相同**，本轮与上轮的改动**未引入任何新失败**。
+
+⚠ **这 8 个「红」不等于「可接受的旧常态」**：
+`TestRetirementBlockedByUnrunBackfills` 恰恰是**目标未达成的证据** ——
+`is_final_success` 与 `client_protocol` 在本地 `session_turns` 上都是
+**0.0000%（0 / 1,693,242 行）**，两个回填脚本**一次都没跑过**。
+
+### 2. ★ 测基线时三次犯同一个错：把**截断的输出**当成全量
+
+1. 第一次跑 db 门用了 `| tail -15` ⇒ 差点宣称「基线变了，`TestRepointValueFidelity`
+   不红了」。改用 `-v > 文件` 后 grep 才看到它**仍在 FAIL**。
+2. 随后读**后台任务输出流**又被截断，看到 `exit=1` 而 grep「零个 `--- FAIL`」，
+   一度以为探针失灵、准备去查环境。**直接读日志文件**后立刻看到那两个名字。
+3. ⇒ ★ **规则：读门结果一律落文件、只从文件 grep，绝不从任何可能被截断的流里读。**
+   「grep 零命中」在截断的输出里与「真的零命中」**不可区分**。
+
+### 3. replay 侧：盲区 ② **大部分本来就关着**，只补了**一条缺失的断言**
+
+- 写失败已被检查（`replay.go:457`）· `deleteRow` 的 3 个调用点全是**刻意的门排除分支**
+  （non-terminal / 探针合成 / 内部 loopback，带 `skipped` 指标）· `replayOne` 已有 7 个测试。
+  ⇒ **没有新写 replay 判据**（那属于重复造门）。
+- ★ **但逐个读断言时发现缺口**：`TestReplayOne_FinalSuccessMarkFailKeepsCompensationRow`
+  断言得很完整（含反向对照），而 `TestReplayOne_WriteFailRequeuesThenDead`
+  **只查了 requeue / dead，没断言「写失败时没有删行」**。
+  ⇒ 「把 DELETE 提到写检查之前」或「requeue 顺手删行」都能照样通过。
+  而 `session_mirror_outbox` 是 GAP-2 **唯一的耐久重放载体**，删掉它 =
+  这次请求永久没有 turn、没有任何痕迹 —— **与 §9.249.2 生产那 1 行同形**。
+  已补两处（写失败不得删行 / 转 dead 也不得删行，死信留作人工取证）。
+  复核过 `requeue` 与 `markDead` **都只做 UPDATE，都不删行**，所以断言不是空的。
+
+### 4. 变异台账
+
+| # | 变异 | 实测 |
+|---|---|---|
+| M-P1 | 写失败分支里加 `r.deleteRow(...)` | ✅ 红，**只报第 377 行**（新增断言），SQL 合法（无 42601） |
+| — | 还原后复跑 7 个 `TestReplayOne_*` | ✅ 全 PASS，`git diff --stat` 为空 |
+
+反向对照**不需要新写**：`TestReplayOne_SuccessDeletesRow` 已断言成功时 DELETE
+**必须**出现且当前为绿，两边合起来证明新断言不是恒真。
+⚠ **M-P2 注入失败不作数**：想拿「删掉成功路径 DELETE」做第二变异，写成
+`nilDelete(...)` ⇒ **包编译不过** ⇒ 测试没跑。**没有拿它冒充阴性对照。**
+
+
+## §70.90 `runShadowWrite` 信号量 `default` 分支：此前**无人看守**，已补行为门
+
+> 审计正文见 §9.253。新增 `internal/sessionv2mirror/semaphore_full_degrades_to_backlog_test.go`。
+> **只新增测试**，未改生产代码。**生产零写入。**
+
+**★ 调查结论：这条路径此前完全没有判据。**
+`TestSilentMirrorDropPathsAreAllDocumented` 扫的是**纯丢弃 return**，
+而 `default` 分支不是纯丢弃（记指标 + 登记），**不进那张清单**；
+`TestEnqueueMirrorFailure_NilPoolReturnsFalse` 只验那个**函数**返回 false，
+不验调用方**用上了**它。全仓 grep `semaphore_full` / `shadowWriteSema`
+**只有 `hook.go` 自己命中，零个 `_test.go`**。
+⇒ **删掉 `default` 分支里的 `appendBacklog`，没有任何测试会红。**
+后果：8 槽全满时请求既不写 turn、也不落 outbox、也不在 backlog 里，
+**连 `V2 shadow write failed` 日志都不会有**（那条日志在 `runShadowWrite` 内，
+`default` 根本进不去）—— **比 §9.249.2 生产那 1 行更安静。**
+
+**新门**：手动填满 8 槽 ⇒ **用例 A** writer 0 次 / backlog 恰好 1 / `RequestID` 对得上；
+排空信号量 ⇒ **★ 用例 B** writer 被调用 / backlog 保持 0。
+三道**前提自证**（任一不成立就 `t.Fatal`，防恒绿）：开关真的为真
+（单测里 `settings.Global` 是 nil、默认读 false，hook 会提前 return）·
+`EnqueueMirrorFailure(nil pool)` 真的返回 false · 信号量真的填满/排空。
+
+**变异台账**：
+M-S1 删掉 `default` 分支的 `appendBacklog` ⇒ ✅红（第 143 行，用例 A）；
+M-S2 让**正常**路径也 `appendBacklog` ⇒ ✅红（第 176 行，★ 用例 B）；
+还原 ⇒ ✅PASS，`git diff --stat` 为空。
+★ **M-S2 证明反向对照不是装饰**：只写用例 A 的话，
+「backlog 任何时候都恰好 1 条」这种完全错误的实现也能过。
+
+**门结果**：`gofmt -l` 空 · `go vet ./internal/sessionv2mirror/` 空 ·
+`go test ./internal/sessionv2mirror/`（无 DSN）ok 0.326s。
+**未重跑三组全量门**（只新增测试文件）；**门基线沿用 §9.252.4 的本轮实测**
+（db FAIL 2 · admin FAIL 6 · cmd/gateway FAIL 0）。
+
+⚠ **本门动了 4 个包级 seam**（`shadowWriteDispatchAsync` / `InitMirrorOutbox` /
+`setShadowWriteEnabledForTest` / `shadowWriteSema`），全部在 `t.Cleanup` 里还原。
+**已确认本包没有 `t.Parallel()`**；将来有人加并行测试时**必须把本门改造成注入式**。
+
+**本节不主张**：① 生产上发生过信号量耗尽——生产 27 小时的
+`llm_gateway_shadow_write_failed_total{kind="session_v2"}`=2，
+且 §9.249.4 已证明那 2 次都不是信号量分支；本门是防线不是 bug 报告。
+② 本门验的是**退化契约**（最后一道兜底不能凭空消失）；
+真实生产里 pool 非 nil，走的是 outbox 而非 backlog。
+
+## §70.91 ★ 回到目标本体：`maas`（对外计费）**可以**改指会话族 —— D32 最具体的一条输入
+
+> 审计正文见 §9.254、决策表 **D35**。全部本地真库**只读**测量，未改代码，**生产零写入**。
+
+**当前 v1 读方清单**（`sql_source_indirection_audit` 实跑）：
+退役安全 **5** / v1 宽族 **12** / **不可静态解析 53**（共 70 点位）。
+12 处集中在 `admin/tenants.go`(4)、`admin/usage_credits.go`(1)、
+`cmd/tools/backfill_session_bodies`(1)、**`maas/`(6)**。
+
+**★ `maas` 那 6 处是对外计费面**（`credit_buckets` 小时聚合进
+`maas_credit_consumption_buckets`，`usage` 出 `TotalRequests`/`TotalCredits`/`TotalCostUSD`）。
+
+**结构前提**：`maas` 要 10 列，会话面**只有 8 列** —— 缺 `client_model` / `outbound_model`
+（会话侧叫 `model` / `canonical_model` / `raw_model_name`）
+⇒ **不是改表名，是要修实现**（目标里「无法更新的，修正 api 内部实现」那一类）。
+
+**★ 可行性已实测**（1,492,586 对孪生，30 天）：
+`session.model` == v1 `client_model` **≈100% 等价**（1,492,562）；
+`model` OR `raw_model_name` 还原 `outbound_model` **91.3%**（806,967 / 884,451）。
+
+**⚠ 副作用（必须拍板）**：会话面计费列完整度**远高于** v1
+（`cost_usd` 100% vs **0.69%**、`cache_read` 100% vs **4.16%**、
+`cache_write` 100% vs **0.05%**、`completion` 100% vs **70.98%**）
+⇒ **改指后计费数字会变**；另 `outbound_model` 口径有 **8.7%** 落到 `'unknown'`。
+⇒ **用户可见的计费变更，不单方决定。**
+
+**⚠ 顺带查出的失效项**：`credits_charged` **两面都是 0%** ⇒
+`maas` 的 `SUM(credits_charged)` **恒为 0**，「按 credit 计费」目前实际走
+token 兜底口径。**需要单独查它的写方**（不在 §9.254 范围）。
+
+**三条读方分档**：① `maas/` 6 处 = 对外计费，副作用最大；
+② `admin/tenants.go` 4 + `usage_credits.go` 1 = 内部后台，同类但风险低一档；
+③ `cmd/tools/backfill_session_bodies` 1 处 = 一次性工具，**应随 v1 一起退役**。
+
+**仍未处理**：**53 处「不可静态解析」**是退役前必须逐条手验的清单。
+
+### ★ 本节差点发出一个无用的数字（已记录，避免重蹈）
+
+我先量到「v1 2,104,073 vs 会话 1,659,712 = **21% 缺口**」，像镜像丢了一半。
+**但那是两个不同总体**：v1 里 **63.3%（1,332,665 行）无会话头**
+（按设计合成系统会话），而会话面的 1.66M **含合成会话**。
+口径对齐后：v1 **有会话头**的 **771,391** 行里，32,234 无 turn，
+其中 **30,579 是 `internal_loopback`（R51 按设计排除）**、
+**1,645 `non_terminal`（按设计）**、**真丢失 10** ⇒ **按设计的占 99.3%**。
+
+⚠ **这是 §9.160.7 那个坑的第三种形态**：前两次是「子查询只读一面」，
+**这次是「两个查询各读一个总体，然后相减」**。
+⇒ ★ **跨表比较行数前必须先证明两边是同一个总体**。
+我的「无 turn」口径用的是 `EXISTS` 去重而非行数相减，所以这条数字**没有进文档**。
+
+## §70.92 本轮两次自我更正：`credits_charged` **不是坏列**，桶的稀疏**不是坏作业**
+
+对应审计 §9.255。生产 252 与本地真库**全部只读，零写入**。
+本轮**只改文档**，未触碰任何被覆盖代码 ⇒ 门基线沿用 §70.89 实测值
+（db FAIL 2 / admin FAIL **7** / cmd/gateway FAIL 0 / indirection 0）。
+> 🛑 §9.252.4 记的「admin FAIL 6」是**漏记**，真实 7 —— 漏
+> `TestRequestLogsReadInventoryIsComplete`。详见审计 §9.256.7。
+
+### 更正 ①：「结构性管道缺口」是**我自己编的**
+
+我先看到 `entryToProcessedRequest` 的 25 个 `entry.*` 字段里
+**没有** `CreditsCharged`，差点断言「会话侧采了没搬，结构上永远 NULL」。
+**读到第二段就推翻了**：`applyStorageS1AFields`
+（`internal/sessionv2mirror/s1a_fields.go:62-64`）由它在 legacy 字段**之后**调用，
+里面明确搬 `CreditsCharged`（nil 守卫）。
+⇒ 管道 `entry → 桥接 → S1a → ProcessedRequest → turnRec → session_turns` **是通的**。
+
+★ **错因：只读了桥接函数的 legacy 段就下结论** ——
+与 §9.247.1 的「假证人」同族，**探针只看到一半就下了全量结论**。
+
+### 更正 ②：「桶滞后 1.5 天」**不是作业卡住**
+
+看到「最新桶 `2026-10-04 00:00`」时我准备记「桶作业停了」。
+按天展开后发现 **10-02 / 10-03 完全没有桶**，而 `credit_buckets.go` 的 WHERE 含
+**`AND tenant_id NOT IN ('', 'default')`** ⇒ **桶按设计就不收 `default`**，
+生产 99.99% 是 `default` ⇒ **日期空档是输入总体稀疏，不是作业不健康**。
+
+★ **这是 §9.254.7 陷阱的第四种形态**（前三种：少读一面 / 两总体相减 / 只看分类不看缺失，
+**这次是「把稀疏的输出当成停摆的作业」**）
+⇒ ★ **输出密度是输入总体的属性；判断作业健康度前必须先确认它本来该产出多少。**
+
+### 落定的事实（供 D35 / D32 引用）
+
+| 事实 | 值 |
+|---|---|
+| `maas/service.go:144` 对 `tenant_id IN ('','default')` | `return 0, nil`（不报错） |
+| 生产 7 天 v1 行数 | **`default` 91,877 / `chenb` 8** ⇒ 99.99% 是 `default` |
+| 有 `credits_charged` 的行 | **0**（该部署的正常状态，非「计费失效」） |
+| `maas_credit_consumption_buckets` | 266 行 / 4 租户，2026-07-09 → **2026-10-04 00:00** |
+| 桶里 credits 的来源 | `RequestLogCreditsSQL`（**token × 费率公式**）⇒ **与 `credits_charged` 是两个量** |
+| 对 D32 的意义 | `maas` 改指**不会威胁 `credits_charged`（两面都 0）**；数字变化只来自 `cost_usd` / `cache_*` / `completion_tokens` |
+
+### 文档动作
+
+- 审计 §9.255（新增，含两条自我更正）✅
+- 决策表 **D35 就地更正**（`credits_charged` 那条加 🛑 + 更正说明，**原数字保留不改**）✅
+- 本节 §70.92 ✅
+
+### 下一轮接力（口径提示）
+
+1. **D35 仍是最大的一条待拍板项**：`maas` 6 处改指的**用户可见计费数字变化**，
+   可行性已实测完毕（`client_model` ≈100%、`outbound_model` 91.3%），只差属主点头。
+2. **53 处「不可静态解析」一条未手验** —— 退役前的硬清单。
+3. **两个回填仍未跑过**（本地 `is_final_success` / `client_protocol` 各 **0.0000%**，
+   0 / 1,693,242 行）⇒ D32 的退役门仍然不会开。
+4. 沿用本会话硬约束：生产只读零写入；门结果**落文件再 grep**；跨表比行数**先证总体一致**。
+
+## §70.93 ★ 53 处「不可静态解析」清点完毕：**29 处现在就在读 v1，而退役清单按 12 处算**
+
+对应审计 §9.256。本轮清掉了 §9.254 留下的「53 处一条未手验」。
+生产 252 与本地真库**全部只读，零写入**；**本轮只改审计工具的一个测试文件，
+没碰任何读方或写方** ⇒ 门基线沿用 §9.252.4 实测值
+（db FAIL 2 / admin FAIL **7** / cmd/gateway FAIL 0 / indirection 0）。
+> 🛑 §9.252.4 记的「admin FAIL 6」是**漏记**，真实 7 —— 漏
+> `TestRequestLogsReadInventoryIsComplete`。详见审计 §9.256.7。
+
+### 手验结果：29 / 53 处在当前默认配置下确实读 v1
+
+| 归类 | 处数 | 解析到 |
+|---|---:|---|
+| **A v1 bodies 视图** | **19** | `request_logs_bodies_with_current_month`（`SessionBodiesSourceSQL()` **默认支**） |
+| **B v1 turns 兼容视图** | **7** | `request_logs_with_current_month`（`logsSourceFromSQL()` 默认支 6 + `planCostTrend()` 1） |
+| **C v1 基表** | **3** | `request_logs_hot`（`settleSourceFor()` 写门开时） |
+| D 会话族原生 | 12 | `SessionFamilyTurns*SQL()` |
+| E 与 v1 无关 | 12 | `credentials` / 分区表 / `request_stats_*` / `GuardStateTable` 等 |
+
+⇒ ★ **退役工作量清单要按 41 处算，不是 12 处**（12 + 29）。
+§9.254 拿「12 处」当 D32/D35 的输入，**少算了 29 处 / 约 20 个文件**。
+
+⚠ **但「12 处」这个数字本身没错** —— 它数的是**可静态解析的 v1 基表读点**。
+错的是**把它当「v1 读方清单」用**。根因是 `calleeName` 对任何带包前缀的
+调用返回 `""`（`resolve.go:641-644`）⇒ 19 处 bodies 读方全部落「不可判定」。
+方向上是**安全侧漏报**（多报未知，不漏报安全），但代价是把「已知有风险」
+记成了「未知」，而 §9.254 正是拿它估工作量。
+
+### ★ 收回我中途下的一个判断
+
+我一度判定清单里 `admin/logs.go` / `admin/usage_enhanced.go` 两条是
+「**自信的错**」（`Verdict: canonical-only` 而实际读 v1 臂）。
+**读完词表注释后撤回**：第 84-87 行明写「『读 canonical 视图』不等于
+『退役后照常工作』：视图的 v1 臂在 DROP 时会消失」，而 `logs.go` 的
+`Consequence` 原文就写着「默认支是 canonical 视图的 v1 臂」。
+**标签与散文都对，改它是多余的。**
+
+★ **下「某处写错了」的判决前，先读清那处的判据定义。**
+与 §70.85（探针用错）、§70.92（只读 legacy 段）同族。
+
+### ★ 顺带查实两件事（都不是本轮的目标，但都比目标更硬）
+
+**① 默认的 bodies 视图是**纯 v1**，没有会话臂**
+`pg_get_viewdef('request_logs_bodies_with_current_month')` ⇒
+`has_session_arm = 0`（只有 `bodies_hot ∪ bodies` 两臂）。
+与 turns 视图不同（后者部署形态是三臂，含会话投影）。
+
+| 口径 | 值 |
+|---|---:|
+| `session_turns` 行 | 1,693,480 |
+| 其中**在默认 bodies 视图里查不到 body** | **114,695（6.77%）** |
+| 同口径在 `session_bodies` 里查不到的 | **0（100%）** |
+
+⇒ ★ **`storage.session_bodies_native_read` 的方向被普遍搞反了**：
+打开是**修复**（补上那 114,695 条，缺 0），关闭（默认）才是在丢。
+⇒ **S4 停写前，这 19 处必须先切到 `session_bodies`** ——停写后该视图
+停止增长且无回退通道，**新请求的 body 会立刻全丢**。
+
+**② §9.238 的「5 天 v1 静默停写」定位到微秒 —— 且不是一个事件**
+`request_logs` 空洞 **2026-09-06 21:00:27.656782+08 → 2026-09-11 21:21:10.742851+08**
+= **5 天 0 时 20 分 43 秒**；`request_logs_bodies` 首行
+**2026-09-07 05:43:40.233746+08**（主腿死后 8h43m）。
+⇒ **两条腿由不同代码路径写，在此刻对调**：主腿哑时 bodies 还没写，
+bodies 活过来后主腿还哑 4 天。
+**进程没停**（同期 `session_turns` 每天 25,795–70,757 行）⇒ 是 v1 主写腿
+单独失效（`request_logs_hot` → 分区父表的**提升作业**中断，
+指标 `llm_gateway_hot_table_promote_*`）。
+
+★ **v1 已永久丢掉**：09-07→09-10 **155,082 条 turn 在 `request_logs` 里
+完全没有对应行**；09-03→09-06 **58,198 条 turn 没有 v1 body**。
+⇒ **这四天的唯一记录是 `session_turns`** —— **支持退役的最强单条证据。**
+
+⚠ **机制仍未定位**：`settings_audit` 全表只有 4 行、最早 2026-09-28，
+**覆盖面到不了这个窗口** ⇒ 不能据此归因到设置变更。**只钉窗口，不主张成因。**
+
+### 本轮唯一的代码改动：给审计工具补一道钉住快照的门
+
+**先查已有门是不是真在守** ⇒ 结论：这一类漂移**两道已有门都拦不住**。
+- 头部三桶表是**纯注释**，已漂两次（67 处/35 文件·unresolved 25 → 实测
+  **70 处·unresolved 26 文件/53 处**），连「已过期」标注自己也过期了。
+- `TestRepoAuditIsNotSilentlyVacuous` **只挡 `total == 0`**。
+  ★ 实测 MUT-2：Walk 跳过 `domains/`（漏扫 7 处）时它**仍然 PASS**（63≠0）。
+
+新增 `TestDocumentedSnapshotMatchesMeasurement`：三桶的文件数/处数/总数
+与 `documentedSnapshot` 逐项比对，不符即红，**逐项报差值 + 按方向给处置指引**。
+
+**变异台账（两条都核对了红在哪条断言，同批次其余 13 道门全绿）**：
+
+| 变异 | 实测 |
+|---|---|
+| MUT-1 `UnresSites: 53→52` | ✅ 红**且仅**红在新门，逐项报 `文档 52 → 实测 53 (+1)` |
+| MUT-2 Walk 跳过 `domains/` | ✅ 新门报 **3 项负向漂移**（-7/-5/-7）；`TestRepoAuditIsNotSilentlyVacuous` **仍 PASS** |
+| 还原 | ✅ 全 14 道 PASS，`gofmt -l` 空输出 |
+
+★ **MUT-2 是这道门存在的理由**：它同时证明了「已有门看不见部分漏扫」
+与「新门看得见」，而且**是在 `domains/` 真被漏掉时红的**，不是改数字造出来的。
+
+### 下一轮接力（口径提示）
+
+1. ★ **D32/D35 的读方分档要按 41 处重做**（§9.256.2）。这是本轮最该先做的一件事，
+   因为 §9.254 的输入就是错的。
+2. ★ **19 处 bodies 读方是停写硬前置**（§9.256.3）：bodies 视图无会话臂，
+   停写后新请求 body 全丢。**开关方向要纠正**（开=修复）。
+3. **resolver 跨包解析**（§9.256.2 根因）：让 `calleeName` 能跟随
+   `db.SessionBodiesSourceSQL()` / `logsSourceFromSQL()` 这类切换层，
+   26 处会从「不可判定」自动落进正确的桶，**并且让 `checkVerdictAgreement`
+   的规则 ① 开始对它们生效**（现在这批是门盲区）。⚠ 这会**主动把门弄红**，
+   需要同批把清单改成真判定——**那是应该红的**。
+4. **§9.238 的机制仍未定位**，但窗口已钉死；`settings_audit` 覆盖面不够，
+   别再指望它。
+5. 沿用硬约束：生产只读零写入；门结果**落文件再 grep**；报「少算了 N 处」
+   之前**先确认那个 N 的桶语义是什么**（本轮全部结论都栽在这类问题上）。

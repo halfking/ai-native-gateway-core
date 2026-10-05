@@ -240,23 +240,20 @@ func validateBatch(
 	// §R44/移交.1 — measure the end boundary before trusting the window.
 	// -end-date is applied as that day's 00:00:00Z and the load is half-open
 	// (ts < end), so the rows inside the day the operator named are invisible
-	// to the report. Probe the source for family rows in [end, end-of-day) and
-	// fail closed when the window silently drops them. The probe runs after the
-	// candidate load and reuses the loader's connection and family filters.
-	endDayHasRows := false
-	if !endDate.IsZero() {
-		var probeErr error
-		endDayHasRows, probeErr = loader.HasV1RowsInRange(ctx, tenantID, endDate, endDayCutoff(endDate))
-		if probeErr != nil {
-			log.Printf("FATAL: cannot probe the end boundary of the validation window: %v", probeErr)
-			return 1
-		}
-	}
+	// to the report.
+	//
+	// §R45/M2 superseded: this block used to probe for family rows in
+	// [end, end-of-day) and fail closed when the window dropped them. That
+	// detector was sound but addressed the symptom: the half-open bound itself
+	// was the defect. The bound is now corrected in buildSessionRangeQuery, so
+	// the named day is actually loaded and there is nothing left to probe for.
+	// A probe retained alongside the fix would fire on every run whose named
+	// day holds data, i.e. refuse every legitimate run.
 	requested := startDate
 	if requested.IsZero() {
 		requested = v1range.MinTS
 	}
-	truncated, why := WindowExceedsV1Data(startDate, endDate, v1range, endDayHasRows)
+	truncated, why := WindowExceedsV1Data(startDate, endDate, v1range)
 	log.Printf("v1 data actually present for this tenant: %d rows spanning %s .. %s",
 		v1range.Rows, v1range.MinTS.Format(time.RFC3339), v1range.MaxTS.Format(time.RFC3339))
 	log.Printf("validation window requested:               %s .. %s",
