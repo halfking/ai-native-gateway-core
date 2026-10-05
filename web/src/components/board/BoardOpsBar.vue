@@ -2,10 +2,21 @@
 // BoardOpsBar.vue — 看板顶部运维状态 chips（2026-09-30 重构轮）。
 // 取代原 BoardStatusCards 两张大卡：后台任务 + 系统自检压缩为横条 chip，
 // 系统自检 chip 点击跳转 selfcheck tab（保留原交互）。
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { BoardOperationalPayload } from '../../api/board'
 
-defineProps<{
+const { t } = useI18n()
+
+/**
+ * 运维 chip 的降级态（2026-10-03）。
+ *
+ * 服务端查询失败时恒发 degraded。修复前这里是 `?? 0` + 恒亮绿点：
+ * 「10 分钟内检查 0 次」「自检成功率 0.0%」——把「没查出来」讲成
+ * 「一切正常」或「全都不健康」，取决于用户怎么读那个 0。
+ * 这个 chip 的职责恰恰是陈述健康状况，所以它**尤其不能**在未知时说谎。
+ */
+const props = defineProps<{
   operational: BoardOperationalPayload | null | undefined
 }>()
 
@@ -13,7 +24,8 @@ const emit = defineEmits<{
   openSelfcheck: []
 }>()
 
-const { t } = useI18n()
+const bgDegraded = computed(() => props.operational?.background_tasks?.degraded === true)
+const selfDegraded = computed(() => props.operational?.selfcheck?.degraded === true)
 
 function fmtPct(v: number | undefined) {
   if (v === undefined || v === null) return '—'
@@ -23,8 +35,9 @@ function fmtPct(v: number | undefined) {
 
 <template>
   <div v-if="operational" class="ops-bar">
-    <div class="ops-chip" :class="{ 'ops-chip--warn': operational.background_tasks?.discovery?.running }">
-      <span class="ops-dot" :class="operational.background_tasks?.discovery?.running ? 'ops-dot--warn' : 'ops-dot--ok'" aria-hidden="true"></span>
+    <div class="ops-chip" :class="{ 'ops-chip--warn': operational.background_tasks?.discovery?.running || bgDegraded }">
+      <!-- 降级时状态点用中性灰：既不是「ok」也不是「warn」——我们不知道。 -->
+      <span class="ops-dot" :class="bgDegraded ? 'ops-dot--unknown' : (operational.background_tasks?.discovery?.running ? 'ops-dot--warn' : 'ops-dot--ok')" aria-hidden="true"></span>
       <span class="ops-chip__title">{{ t('dashboard.board.bgTasks') }}</span>
       <span class="ops-chip__line">
         {{ t('dashboard.board.discoveryStatus') }}
@@ -32,13 +45,21 @@ function fmtPct(v: number | undefined) {
       </span>
       <span class="ops-chip__sep" aria-hidden="true">·</span>
       <span class="ops-chip__line">
-        {{ t('dashboard.board.opsChecks', { n: operational.background_tasks?.probe_loop?.checks_last_10m ?? 0 }) }}
+        <template v-if="operational.background_tasks?.probe_degraded">
+          {{ t('dashboard.board.opsChecksUnknown') }}
+        </template>
+        <template v-else>
+          {{ t('dashboard.board.opsChecks', { n: operational.background_tasks?.probe_loop?.checks_last_10m ?? 0 }) }}
+        </template>
       </span>
     </div>
     <button type="button" class="ops-chip ops-chip--btn" @click="emit('openSelfcheck')">
-      <span class="ops-dot ops-dot--ok" aria-hidden="true"></span>
+      <span class="ops-dot" :class="selfDegraded ? 'ops-dot--unknown' : 'ops-dot--ok'" aria-hidden="true"></span>
       <span class="ops-chip__title">{{ t('dashboard.board.selfcheckTitle') }}</span>
-      <span class="ops-chip__line">{{ t('dashboard.board.opsRate24h', { n: fmtPct(operational.selfcheck?.success_rate) }) }}</span>
+      <span class="ops-chip__line">
+        <template v-if="selfDegraded">{{ t('dashboard.board.opsRateUnknown') }}</template>
+        <template v-else>{{ t('dashboard.board.opsRate24h', { n: fmtPct(operational.selfcheck?.success_rate) }) }}</template>
+      </span>
       <span class="ops-chip__go" aria-hidden="true">↗</span>
     </button>
   </div>
@@ -98,6 +119,11 @@ function fmtPct(v: number | undefined) {
 .ops-dot--ok {
   background: var(--success);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 22%, transparent);
+}
+/* 「没查出来」用中性色 —— 既不是 ok 也不是 warn，我们确实不知道。 */
+.ops-dot--unknown {
+  background: var(--text-muted);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--text-muted) 22%, transparent);
 }
 .ops-dot--warn {
   background: var(--warning);

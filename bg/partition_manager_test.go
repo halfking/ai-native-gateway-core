@@ -52,6 +52,13 @@ func TestEnsureSpecsCoversAllPartitionedTables(t *testing.T) {
 		// ensureNextMonthPartitions 走 AddDate(0, 0, offset) 派生当日/次日，
 		// 与月分区同源 Asia/Shanghai 日历钉扎。
 		"ensure_usage_facts_daily_partition": false, // Migration 750
+		// 2026-10-04 migration 830: ursm_node_snapshot_min 改为按日 RANGE
+		// 分区，**无 DEFAULT 分区** ⇒ 今天的分区不存在时不是降级而是全量
+		// 写入失败，所以这条接线是可用性硬依赖（473 同族）。
+		// 830 是手工迁移、刻意不进 installer 启动序列 ⇒ 该函数可能长期不存在；
+		// ensureNextMonthPartitions 对它是 log-and-continue，不打断进程。
+		// 详见 bg/partition_825_contract_test.go。
+		"ensure_ursm_node_snapshot_min_daily_partition": false, // Migration 830
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {

@@ -55,9 +55,9 @@ var (
 )
 
 const (
-	enqueueResultEnqueued     = "enqueued"
-	enqueueResultSampledOut   = "sampled_out"
-	enqueueResultQueueFull    = "queue_full"
+	enqueueResultEnqueued      = "enqueued"
+	enqueueResultSampledOut    = "sampled_out"
+	enqueueResultQueueFull     = "queue_full"
 	enqueueResultWorkerStopped = "worker_stopped"
 )
 

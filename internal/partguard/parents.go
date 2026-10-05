@@ -55,4 +55,16 @@ var partitionParents = []string{
 	// 注意它属 `platform` schema（与 workflow / integration 同属 local 迁移那套
 	// 本地 schema），与 public 下的同名语义无关；清单按**不带 schema** 的表名登记。
 	"platform_outbox",
+	// 2026-10-05 R44 由 TestPartitionParentsAreExhaustive 反向抓出：
+	// `sql/migrations/startup/830_ursm_node_snapshot_min_partitioned.sql`
+	// 声明了 ursm_node_snapshot_min 的 `PARTITION BY RANGE (snapshot_ts)`，
+	// 此前不在本清单里 ⇒ 守卫看不见它上面的写操作。
+	//
+	// 定 P3 而非缺陷：`ursm_node_snapshot_min` 的写面只有两条，且都不是
+	// 父表直写 —— ① 迁移/留存路径按 `ursm_node_snapshot_min_YYYYMMDD` 分区名
+	// 逐分区 DROP（`bg/` 留存器，见该迁移 M32 变异门）；② 生产写入由
+	// `ensure_ursm_node_snapshot_min_daily_partition` 预建当日分区后写入分区
+	// 本身。`bg/partition_825_contract_test.go` 用 9 条变异钉住这个契约。
+	// 补进来是为了让清单与 DDL 一致，并让将来任何一处新增父表写都被本门接住。
+	"ursm_node_snapshot_min",
 }

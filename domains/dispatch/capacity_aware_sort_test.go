@@ -222,9 +222,9 @@ func TestPipelineForEachCredSnapshotPopulatesCache(t *testing.T) {
 	// (cf.limit=2) → State = GovernorSaturated.
 	q7 := make(chan *QueuedRequest, 2)
 	cf := &credForwarder{
-		cred:  CredentialRef{CredentialID: 7, ProviderID: 1, ConcurrencyMode: ModeConcurrency, ConcurrencyLimit: 2},
-		gov:   newConcurrencyGovernor(2),
-		pipe:  p,
+		cred:   CredentialRef{CredentialID: 7, ProviderID: 1, ConcurrencyMode: ModeConcurrency, ConcurrencyLimit: 2},
+		gov:    newConcurrencyGovernor(2),
+		pipe:   p,
 		wakeCh: make(chan struct{}),
 	}
 	cf.queue.Store(&q7)

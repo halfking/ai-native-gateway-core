@@ -82,15 +82,15 @@ func TestSessionSnapshotV2JSONMarshaling(t *testing.T) {
 				Status:       "active",
 			},
 			want: map[string]interface{}{
-				"session_id":    "sess_789",
-				"tenant_id":     "tenant_012",
-				"title":         "",
-				"summary":       "",
-				"total_turns":   float64(0),
-				"total_tokens":  float64(0),
+				"session_id":     "sess_789",
+				"tenant_id":      "tenant_012",
+				"title":          "",
+				"summary":        "",
+				"total_turns":    float64(0),
+				"total_tokens":   float64(0),
 				"total_cost_usd": float64(0),
-				"last_turn_no":  float64(0),
-				"status":        "active",
+				"last_turn_no":   float64(0),
+				"status":         "active",
 			},
 		},
 	}
@@ -165,12 +165,12 @@ func TestSessionSnapshotV2FieldCount(t *testing.T) {
 
 	var m map[string]interface{}
 	json.Unmarshal(data, &m)
-	
+
 	// At minimum, we should have the required fields even when empty
-	minFields := []string{"session_id", "tenant_id", "title", "summary", 
+	minFields := []string{"session_id", "tenant_id", "title", "summary",
 		"total_turns", "total_tokens", "total_cost_usd", "last_turn_no",
 		"created_at", "updated_at", "status"}
-	
+
 	for _, field := range minFields {
 		if _, exists := m[field]; !exists {
 			t.Errorf("required field %q is missing from empty snapshot JSON", field)
@@ -183,7 +183,7 @@ func TestSessionSnapshotV2FieldCount(t *testing.T) {
 func TestSessionSnapshotV2NewFieldsPresent(t *testing.T) {
 	now := time.Now()
 	model := "gpt-4"
-	
+
 	snapshot := sessionSnapshotV2{
 		// New fields added in this enhancement
 		TotalTokens:         100,
@@ -198,25 +198,25 @@ func TestSessionSnapshotV2NewFieldsPresent(t *testing.T) {
 		Topic:               "test topic",
 		Intent:              "test intent",
 		UserTags:            []string{"tag1", "tag2"},
-		
+
 		// Existing fields
-		SessionID:   "test",
-		TenantID:    "test",
-		TotalTurns:  5,
+		SessionID:    "test",
+		TenantID:     "test",
+		TotalTurns:   5,
 		TotalCostUSD: 0.01,
-		LastModel:   &model,
+		LastModel:    &model,
 	}
-	
+
 	data, err := json.Marshal(snapshot)
 	if err != nil {
 		t.Fatalf("failed to marshal snapshot with new fields: %v", err)
 	}
-	
+
 	var result map[string]interface{}
 	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatalf("failed to unmarshal: %v", err)
 	}
-	
+
 	// Verify all new fields are in the JSON
 	newFields := map[string]interface{}{
 		"total_tokens":          float64(100),
@@ -229,7 +229,7 @@ func TestSessionSnapshotV2NewFieldsPresent(t *testing.T) {
 		"topic":                 "test topic",
 		"intent":                "test intent",
 	}
-	
+
 	for field, expected := range newFields {
 		actual, exists := result[field]
 		if !exists {
@@ -240,7 +240,7 @@ func TestSessionSnapshotV2NewFieldsPresent(t *testing.T) {
 			t.Errorf("field %q: got %v, want %v", field, actual, expected)
 		}
 	}
-	
+
 	// Verify user_tags array
 	if tags, ok := result["user_tags"].([]interface{}); ok {
 		if len(tags) != 2 {
@@ -249,7 +249,7 @@ func TestSessionSnapshotV2NewFieldsPresent(t *testing.T) {
 	} else {
 		t.Error("user_tags is not present or not an array")
 	}
-	
+
 	// Verify timestamps are present
 	for _, field := range []string{"created_at", "updated_at"} {
 		if _, exists := result[field]; !exists {

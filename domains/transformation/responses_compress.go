@@ -34,9 +34,9 @@ type ResponsesInputTrimMeta struct {
 	DroppedIndexes []int `json:"dropped_indexes,omitempty"`
 	// InputString 形态标记：string input 走 rune 级前缀截断，无 item
 	// 粒度，此时 OriginalRunes/KeptRunes 留证。
-	InputString  bool `json:"input_string,omitempty"`
-	OriginalRunes int `json:"original_runes,omitempty"`
-	KeptRunes     int `json:"kept_runes,omitempty"`
+	InputString   bool `json:"input_string,omitempty"`
+	OriginalRunes int  `json:"original_runes,omitempty"`
+	KeptRunes     int  `json:"kept_runes,omitempty"`
 }
 
 // CompressResponsesInputIfNeededWithMeta 同 CompressResponsesInputIfNeeded，

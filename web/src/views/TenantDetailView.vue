@@ -1176,7 +1176,7 @@ watch(() => route.params.tenantId, loadTenant)
   gap: 14px;
   margin: 14px 0 4px;
 }
-@media (max-width: 1080px) {
+@media (max-width: 1024px) {
   .stats-trend-grid { grid-template-columns: 1fr; }
 }
 .stats-trend-card {

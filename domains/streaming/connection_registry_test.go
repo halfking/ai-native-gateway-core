@@ -235,16 +235,16 @@ func TestConnectionRegistrySerializedStreamWriterAdapter(t *testing.T) {
 // already returned.
 //
 // This test:
-//   1. Builds a registry with maxWriteGoroutines=4 (small for fast tests).
-//   2. Registers 4 distinct entries with blockedWriter sinks so each
-//      WriteFrame goroutine is held indefinitely.
-//   3. Fires 4 WriteFrame calls — each must acquire a slot and the
-//      goroutine stays parked on the writer's <-release.
-//   4. Fires a 5th WriteFrame — must fail with ErrWriteSlotsExhausted.
-//   5. Closes one writer's release channel, observes the goroutine
-//      returns and the slot frees. A subsequent WriteFrame succeeds.
-//   6. Releases the remaining three and asserts the slot count returns
-//      to its full cap so the registry isn't permanently leaky.
+//  1. Builds a registry with maxWriteGoroutines=4 (small for fast tests).
+//  2. Registers 4 distinct entries with blockedWriter sinks so each
+//     WriteFrame goroutine is held indefinitely.
+//  3. Fires 4 WriteFrame calls — each must acquire a slot and the
+//     goroutine stays parked on the writer's <-release.
+//  4. Fires a 5th WriteFrame — must fail with ErrWriteSlotsExhausted.
+//  5. Closes one writer's release channel, observes the goroutine
+//     returns and the slot frees. A subsequent WriteFrame succeeds.
+//  6. Releases the remaining three and asserts the slot count returns
+//     to its full cap so the registry isn't permanently leaky.
 func TestConnectionRegistryWriteGoroutineCapBoundsResourceUse(t *testing.T) {
 	const slotCount = 4
 	reg := NewConnectionRegistry(0, time.Hour, slotCount) // long timeout; we control release explicitly

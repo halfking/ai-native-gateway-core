@@ -416,4 +416,3 @@ func TestSpawnLoopWGJoinsWGAtExit(t *testing.T) {
 		t.Fatal("wg.Wait deadlocked after parent cancel: wg.Done not delivered")
 	}
 }
-

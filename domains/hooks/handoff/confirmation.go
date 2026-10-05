@@ -41,7 +41,7 @@ var (
 	// recovery rather than an automatic retry. isManualGoalRestoreError
 	// classifies via errors.Is instead of substring matching so callers that
 	// wrap these errors (with %w) are still detected.
-	ErrGoalRestoreConflict       = errors.New("target goal session conflicts with handoff state")
+	ErrGoalRestoreConflict        = errors.New("target goal session conflicts with handoff state")
 	ErrGoalRestoreVersionMismatch = errors.New("unsupported goal state version")
 )
 

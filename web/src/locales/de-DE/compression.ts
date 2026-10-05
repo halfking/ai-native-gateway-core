@@ -3,6 +3,11 @@ export default {
   title: '压缩概览',
   refresh: 'Aktualisieren',
   loading: 'Wird geladen…',
+  load: {
+    statsFailed: 'Kompressionsstatistik konnte nicht geladen werden',
+    sessionsFailed: 'Kompressionssitzungen konnten nicht geladen werden',
+    configFailed: 'Kompressionskonfiguration nicht geladen — die Werte unten sind Werksstandards, nicht die aktuelle Konfiguration',
+  },
   tabs: {
     h24: '24 Stunden',
     d7: '7 Tage',

@@ -513,7 +513,29 @@ type RequestLogEntry struct {
 	//
 	// json:"-": it is process-local control flow, never part of a payload.
 	// The durable form of the fact is the is_abandoned column (migration 821).
-	T0Missing         bool       `json:"-"`
+	T0Missing bool `json:"-"`
+
+	// FinalSuccessClaimed is set by claimSessionFinalSuccessExec when the
+	// final-success claim was actually **granted** (the v1 UPDATE matched a
+	// row), so the session family can carry the same mark (audit §9.203).
+	//
+	// Why this must ride on the entry: the v1 claim is a SQL UPDATE inside the
+	// telemetry transaction, while the session turn is written by the mirror
+	// hook afterwards and asynchronously (hook.go dispatches to a bounded
+	// goroutine pool; shadowWriteDispatchAsync defaults to true). A marker
+	// issued from the telemetry side therefore races the turn insert and
+	// loses — it would match 0 rows on essentially every attempt. Same shape
+	// as T0Missing/is_abandoned, same placement: flag here, apply after
+	// w.Write has returned.
+	//
+	// ⚠ Unlike T0Missing this one IS serialised. claimSessionFinalSuccessExec
+	// registers a session_mirror_outbox compensation row in the same
+	// transaction when the claim is granted, and the outbox is exactly the
+	// repair path for a mirror write that never landed — so the replay must
+	// be able to see that the replayed turn is supposed to be the final
+	// success. The durable form of the fact is the session_turns column.
+	FinalSuccessClaimed bool `json:"final_success_claimed,omitempty"`
+
 	T1TotalEnqueuedAt *time.Time `json:"t1_total_enqueued_at,omitempty"`
 	T2TotalDequeuedAt *time.Time `json:"t2_total_dequeued_at,omitempty"`
 	T3ModelEnqueuedAt *time.Time `json:"t3_model_enqueued_at,omitempty"`
@@ -2545,7 +2567,15 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 			entry.T0Missing = true
 			fallback := *entry
 			fallback.Op = RequestLogInsert
-			return c.insertRequestLog(&fallback)
+			if ferr := c.insertRequestLog(&fallback); ferr != nil {
+				return ferr
+			}
+			// 2026-10-05 审计 §9.203: 这条分支上认领是记在副本上的
+			// (insertRequestLog 收到的是 &fallback), 而消费者
+			// firePersistedHooks(entry) 读的是调用方那个 entry。不同步回去
+			// 的话, 走了这条分支的请求在 session 族仍然拿不到标记。
+			entry.FinalSuccessClaimed = fallback.FinalSuccessClaimed
+			return nil
 		}
 
 		if err = c.upsertRequestLogBodies(ctx, tx, entry.RequestID, stringValue(entry.ApplicationCode),
@@ -2682,6 +2712,7 @@ var systemFingerprintLastObserved atomic.Value // time.Time
 func markSystemFingerprintObserved() {
 	systemFingerprintLastObserved.Store(time.Now())
 }
+
 // SystemFingerprintObservedSince reports how long ago the last
 // fingerprint-carrying entry was persisted in this process, and whether any
 // was ever observed after startup. Zero ok means "never seen since boot" —
@@ -2920,11 +2951,23 @@ func claimSessionFinalSuccessExec(ctx context.Context, tx pgx.Tx, entry *Request
 	}
 	if tag.RowsAffected() > 0 {
 		slog.Debug("final-success claim granted", "request_id", requestID)
+		// 2026-10-05 审计 §9.203: 让 session 族跟着认领同一枚标记。v1 的
+		// 认领是本次事务里的 SQL UPDATE, session 族的 turn 却在镜像 hook
+		// 之后异步写 —— 所以这里只把「认领成功」这个**事实**挂到 entry 上,
+		// 由 sessionv2mirror 在 w.Write 返回之后给那一行打标 (同一形态、
+		// 同一理由, 见 abandoned_turn.go)。
+		//
+		// ⚠ 必须设在 entry (调用方持有的那个指针) 上。updateRequestLog 的
+		// upsert-race 分支会 `fallback := *entry` 再走 insertRequestLog,
+		// 只改副本的话标志到此为止 —— 那是 T0Missing 已经踩过一次的坑。
+		entry.FinalSuccessClaimed = true
 	}
 	// Release is cosmetic (released at COMMIT anyway) and must not fail the tx.
 	//nolint:errcheck // best-effort
 	_, _ = tx.Exec(ctx, `RELEASE SAVEPOINT gw_final_success_claim`)
 	if tag.RowsAffected() > 0 {
+		// 载荷里带 final_success_claimed=true, 回放器据此给补写的 turn 补标
+		// (见 replay.go)。顺序重要: 必须在置位之后序列化。
 		registerFinalSuccessClaimOutbox(ctx, tx, entry)
 	}
 }

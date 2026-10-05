@@ -11,11 +11,11 @@ import (
 // not cause the digest builder or the scan path to panic.
 func TestExtractMetrics_NullErrorKind(t *testing.T) {
 	meta := map[string]any{
-		"cost_usd":     0.0123,
-		"latency_ms":   1500,
-		"status_code":  200,
-		"success":      true,
-		"error_kind":   nil, // mirrors a SQL NULL row
+		"cost_usd":    0.0123,
+		"latency_ms":  1500,
+		"status_code": 200,
+		"success":     true,
+		"error_kind":  nil, // mirrors a SQL NULL row
 	}
 	events := extractEvents(meta, nil)
 	for _, e := range events {
@@ -33,11 +33,11 @@ func TestExtractMetrics_NullErrorKind(t *testing.T) {
 // completion when both tokens_used and prompt_tokens are present (list view).
 func TestExtractMetrics_TokensUsedNotDoubleCounted(t *testing.T) {
 	meta := map[string]any{
-		"tokens_used":      100,
-		"prompt_tokens":    40,
+		"tokens_used":       100,
+		"prompt_tokens":     40,
 		"completion_tokens": 60,
-		"cost_usd":         0.01,
-		"latency_ms":       500,
+		"cost_usd":          0.01,
+		"latency_ms":        500,
 	}
 	got := extractMetrics(meta, nil)
 	if got.TokensUsed != 100 {

@@ -673,9 +673,9 @@ func applyKeywordAddInTx(ctx context.Context, tx pgx.Tx, proposal map[string]any
 	mergedJSON, _ := json.Marshal(existing)
 	_, err = tx.Exec(ctx, `
 		UPDATE tuning_params
-		SET value = $2, source = 'feedback', updated_at = NOW(), applied_at = NOW()
+		SET value = $2::jsonb, source = 'feedback', updated_at = NOW(), applied_at = NOW()
 		WHERE key = $1
-	`, key, mergedJSON)
+	`, key, string(mergedJSON))
 	if err != nil {
 		return fmt.Errorf("update keywords: %w", err)
 	}
@@ -727,9 +727,9 @@ func applyWeightAdjustInTx(ctx context.Context, tx pgx.Tx, proposal map[string]a
 	mergedJSON, _ := json.Marshal(weights)
 	_, err = tx.Exec(ctx, `
 		UPDATE tuning_params
-		SET value = $2, source = 'feedback', updated_at = NOW(), applied_at = NOW()
+		SET value = $2::jsonb, source = 'feedback', updated_at = NOW(), applied_at = NOW()
 		WHERE key = $1
-	`, key, mergedJSON)
+	`, key, string(mergedJSON))
 	if err != nil {
 		return fmt.Errorf("update weights: %w", err)
 	}

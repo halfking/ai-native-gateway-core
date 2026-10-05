@@ -108,13 +108,25 @@ CREATE UNIQUE INDEX uq_route_incidents_active_route
 
 const fixtureCleanup715 = `DROP TABLE IF EXISTS route_incidents CASCADE;`
 
-func setup715Fixture(t *testing.T, scriptConn *pgx.Conn) {
+// setup715Fixture 建夹具并注册清理。dsn 仅供清理用：t.Cleanup 晚于调用方的
+// defer scriptConn.Close 执行（R42 修正），清理必须走独立连接并失败变红
+// （e83fb6211 同形态），否则打在已关连接上静默漏 route_incidents。
+func setup715Fixture(t *testing.T, scriptConn *pgx.Conn, dsn string) {
 	t.Helper()
 	execScript715(t, scriptConn, fixtureCleanup715)
 	execScript715(t, scriptConn, fixtureDDL715)
 	t.Cleanup(func() {
-		//nolint:errcheck // best-effort cleanup
-		_, _ = scriptConn.Exec(context.Background(), fixtureCleanup715)
+		cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer ccancel()
+		conn, cerr := pgx.Connect(cctx, dsn)
+		if cerr != nil {
+			t.Errorf("cleanup: connect to run fixtureCleanup715: %v", cerr)
+			return
+		}
+		defer conn.Close(cctx)
+		if _, derr := conn.Exec(cctx, fixtureCleanup715); derr != nil {
+			t.Errorf("cleanup: fixtureCleanup715: %v", derr)
+		}
 	})
 
 	// 既有现网形态行：一条 active（升级时已过阈值的历史事件）、一条 recovered。
@@ -350,7 +362,7 @@ func TestMigration715PendingStateLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	setup715Fixture(t, scriptConn)
+	setup715Fixture(t, scriptConn, dsn)
 
 	// UP-1 + UP-3：应用并重复应用（幂等）。
 	execScript715(t, scriptConn, string(up))

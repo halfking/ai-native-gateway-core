@@ -26,14 +26,14 @@ type TaskFlowResponse struct {
 
 // TaskSummary 任务汇总统计
 type TaskSummary struct {
-	SessionCount    int       `json:"session_count"`
-	TotalCostUSD    float64   `json:"total_cost_usd"`
-	TotalTokens     int64     `json:"total_tokens"`
-	TotalRequests   int       `json:"total_requests"`
-	TotalSuccess    int       `json:"total_success"`
-	TotalErrors     int       `json:"total_errors"`
-	StartedAt       time.Time `json:"started_at"`
-	LastActivityAt  time.Time `json:"last_activity_at"`
+	SessionCount   int       `json:"session_count"`
+	TotalCostUSD   float64   `json:"total_cost_usd"`
+	TotalTokens    int64     `json:"total_tokens"`
+	TotalRequests  int       `json:"total_requests"`
+	TotalSuccess   int       `json:"total_success"`
+	TotalErrors    int       `json:"total_errors"`
+	StartedAt      time.Time `json:"started_at"`
+	LastActivityAt time.Time `json:"last_activity_at"`
 	// DurationSeconds 是任务 wall-clock 跨度：首会话 first_request_at →
 	// 末会话 last_request_at（R33 P-5 前为 MAX(单会话时长)，语义错位）。
 	DurationSeconds int      `json:"duration_seconds"`
@@ -78,13 +78,13 @@ type ProjectCostResponse struct {
 
 // ProjectSummary 项目汇总统计
 type ProjectSummary struct {
-	TaskCount       int       `json:"task_count"`
-	SessionCount    int       `json:"session_count"`
-	TotalCostUSD    float64   `json:"total_cost_usd"`
-	TotalTokens     int64     `json:"total_tokens"`
-	TotalRequests   int       `json:"total_requests"`
-	StartedAt       time.Time `json:"started_at"`
-	LastActivityAt  time.Time `json:"last_activity_at"`
+	TaskCount      int       `json:"task_count"`
+	SessionCount   int       `json:"session_count"`
+	TotalCostUSD   float64   `json:"total_cost_usd"`
+	TotalTokens    int64     `json:"total_tokens"`
+	TotalRequests  int       `json:"total_requests"`
+	StartedAt      time.Time `json:"started_at"`
+	LastActivityAt time.Time `json:"last_activity_at"`
 	// DurationSeconds 是项目 wall-clock 跨度（首会话开始→末会话活动），
 	// 语义对齐 TaskSummary.DurationSeconds（R33 P-5）。
 	DurationSeconds int    `json:"duration_seconds"`

@@ -64,6 +64,9 @@ export default {
       providerAll: 'كل المزوّدين',
       credentialTitle: 'بيانات الاعتماد',
       credentialAll: 'كل بيانات الاعتماد',
+      loadFailed: 'فشل تحميل خيارات المزوّد/بيانات الاعتماد — القائمة الفارغة لا تعني عدم وجودها',
+      partialLoadFailed: 'فشل تحميل بيانات الاعتماد لـ {count} من المزوّدين ({names})؛ التصفية بها تعطي نتائج ناقصة',
+      keysLoadFailed: 'فشل تحميل قائمة مفاتيح API — التصفية بمفتاح ستعيد صفر نتائج',
       timeTitle: 'النطاق الزمني',
       timeOptions: {
         h1: 'ساعة واحدة',

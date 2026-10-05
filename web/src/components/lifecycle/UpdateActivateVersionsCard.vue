@@ -27,6 +27,16 @@ const props = defineProps<{
   upgradeStatus: UpgradeStatus | null
   currentVersion: string
   activated: boolean
+  /**
+   * 2026-10-03 新增：升级检查/版本目录**取不到**时的原因。
+   *
+   * 没有它时，父组件的 `catch { upgrade = null }` 会让这个卡片
+   * 肯定地告诉用户「已是最新」——绿色标签 + 「当前已是最新版本」+
+   * 「最新版本」位置回退成当前版本，三句都是假的。
+   * 「没查到」与「查到了，确实最新」必须能被区分。
+   */
+  checkError?: string
+  catalogError?: string
 }>()
 
 const emit = defineEmits<{
@@ -39,7 +49,11 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
-const latestVersion = computed(() => props.upgradeStatus?.latest_version || props.currentVersion)
+// ⚠️ 原来无条件回退到 currentVersion：检查失败（upgradeStatus 为 null）时，
+// 「最新版本」那一栏会显示**当前版本** —— 于是三个数字一模一样，
+// 看起来就像「确认过是最新的」。
+const latestVersion = computed(() =>
+  props.upgradeStatus?.latest_version || (props.checkError ? '' : props.currentVersion))
 const installedSet = computed(() => new Set([props.currentVersion, props.upgradeStatus?.current_version].filter(Boolean) as string[]))
 
 const topVersions = computed(() => {
@@ -171,6 +185,10 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
     </template>
 
     <el-skeleton v-if="loading && !catalog" :rows="5" animated />
+    <!-- 目录取不到时说明原因；空白会被读成「没有可安装的版本」 -->
+    <div v-else-if="catalogError" class="ua-empty-hint">
+      版本目录加载失败：{{ catalogError }}
+    </div>
 
     <template v-else-if="catalog && topVersions.length">
       <!-- 当前版本 + 最新版本条幅 -->
@@ -189,6 +207,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
           <span class="banner-label">最新版本</span>
           <strong class="banner-value">{{ latestVersion || '—' }}</strong>
           <el-tag v-if="canUpgrade" size="small" type="warning" class="ml">未安装</el-tag>
+          <el-tag v-else-if="checkError" size="small" type="info" class="ml">状态未知</el-tag>
           <el-tag v-else size="small" type="success" class="ml">已是最新</el-tag>
         </div>
       </div>
@@ -271,6 +290,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
           </el-button>
           <span class="muted">
             <template v-if="!props.activated">需先完成激活才能升级</template>
+            <template v-else-if="checkError">升级状态未知：{{ checkError }}</template>
             <template v-else-if="!canUpgrade">当前已是最新版本</template>
             <template v-else>升级过程会短暂中断服务，请提前做好准备</template>
           </span>

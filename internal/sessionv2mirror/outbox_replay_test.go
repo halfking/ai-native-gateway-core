@@ -301,6 +301,48 @@ func TestReplayOne_CorruptPayloadMarksDead(t *testing.T) {
 
 // TestReplayOne_WriteFailRequeuesThenDead pins the retry state machine:
 // first failure re-queues with backoff; a row already at max attempts dies.
+// TestReplayOne_FinalSuccessMarkFailKeepsCompensationRow pins the §R43/L3
+// contract: when the entry carries a v1 final-success claim but the landing-pad
+// mark cannot be applied (nil pool here stands for every mark infrastructure
+// failure — see markTurnFinalSuccess's bool contract), the compensation row
+// must NOT be deleted. The turn write already committed and is idempotent, so
+// the retry costs one no-op write and retries exactly the failed part. The
+// pre-L3 code deleted the row unconditionally and a transient DB blip on the
+// mark permanently lost the flag.
+func TestReplayOne_FinalSuccessMarkFailKeepsCompensationRow(t *testing.T) {
+	db := &recordingDB{}
+	r := newTestReaper(db, &capturingWriter{})
+
+	entry := terminalEntry("req_mark_fail")
+	entry.FinalSuccessClaimed = true
+	payload := mustPayload(t, entry)
+
+	r.replayOne(context.Background(), claimRow{
+		id: 9, requestID: entry.RequestID, sessionID: *entry.GwSessionID,
+		payload: payload, attempts: 0,
+	})
+	joined := strings.Join(db.statements(), "\n")
+	if strings.Contains(joined, "DELETE FROM public.session_mirror_outbox") {
+		t.Fatalf("mark failure must keep the compensation row, got delete: %v", db.statements())
+	}
+	if !strings.Contains(joined, "status = 'pending'") || !strings.Contains(joined, "next_retry_at") {
+		t.Fatalf("mark failure must requeue the row for retry, got %v", db.statements())
+	}
+
+	// 反向对照：同一个 claim 行，标记可落地（无 FinalSuccessClaimed 的载荷）
+	// 走正常的删除路径 —— 证明上面的保留不是「删除整个坏了」。
+	db2 := &recordingDB{}
+	r2 := newTestReaper(db2, &capturingWriter{})
+	entry2 := terminalEntry("req_mark_ok")
+	r2.replayOne(context.Background(), claimRow{
+		id: 10, requestID: entry2.RequestID, sessionID: *entry2.GwSessionID,
+		payload: mustPayload(t, entry2), attempts: 0,
+	})
+	if !strings.Contains(strings.Join(db2.statements(), "\n"), "DELETE FROM public.session_mirror_outbox") {
+		t.Fatalf("unclaimed entry must still delete after replay, got %v", db2.statements())
+	}
+}
+
 func TestReplayOne_WriteFailRequeuesThenDead(t *testing.T) {
 	db := &recordingDB{}
 	writer := &capturingWriter{err: errors.New("simulated db down")}
@@ -320,6 +362,20 @@ func TestReplayOne_WriteFailRequeuesThenDead(t *testing.T) {
 	if strings.Contains(joined, "status = 'dead'") {
 		t.Fatalf("row below max attempts must not die, got %v", db.statements())
 	}
+	// §9.252：写失败**不得删掉补偿行**。这条断言此前缺失——本用例只查了
+	// requeue / dead 两个语句，因此「先把 DELETE 挪到写检查之前」或
+	// 「requeue 路径顺手删行」都能照样通过。
+	//
+	// 为什么重要：session_mirror_outbox 是 GAP-2 唯一的耐久重放载体
+	// （replay.go 的自述「this row is the replay path's only one」）。
+	// 删掉它 = 这次请求永久没有 turn、没有任何可重放的痕迹 ——
+	// 与 §9.249.2 生产上那 1 行「既没成功也没报错」同形。
+	//
+	// 反向对照在同文件的 TestReplayOne_SuccessDeletesRow：
+	// 写成功时**必须**删。两边合起来才能证明本断言不是恒真。
+	if strings.Contains(joined, "DELETE FROM public.session_mirror_outbox") {
+		t.Fatalf("write failure must keep the compensation row, got delete: %v", db.statements())
+	}
 
 	db2 := &recordingDB{}
 	r2 := newTestReaper(db2, &capturingWriter{err: errors.New("simulated db down")})
@@ -329,5 +385,9 @@ func TestReplayOne_WriteFailRequeuesThenDead(t *testing.T) {
 	})
 	if !strings.Contains(strings.Join(db2.statements(), "\n"), "status = 'dead'") {
 		t.Fatalf("row at max attempts must die, got %v", db2.statements())
+	}
+	// dead 行仍然**保留**在表里（供人工取证），不是删除。
+	if strings.Contains(strings.Join(db2.statements(), "\n"), "DELETE FROM public.session_mirror_outbox") {
+		t.Fatalf("dead-lettering must not delete the row, got %v", db2.statements())
 	}
 }

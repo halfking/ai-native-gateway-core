@@ -61,6 +61,9 @@ export default {
       providerAll: 'Todos los proveedores',
       credentialTitle: 'Credencial',
       credentialAll: 'Todas las credenciales',
+      loadFailed: 'No se pudieron cargar las opciones de proveedor/credenciales: una lista vacía no significa que no haya ninguna',
+      partialLoadFailed: 'No se pudieron cargar las credenciales de {count} proveedor(es) ({names}); filtrar por ellos da resultados incompletos',
+      keysLoadFailed: 'No se pudo cargar la lista de claves API: filtrar por clave devolverá cero resultados',
       timeTitle: 'Rango de tiempo',
       timeOptions: {
         h1: '1 hora',

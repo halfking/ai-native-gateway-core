@@ -21,6 +21,7 @@ export default {
     summarizeFailed: 'Échec de la synthèse',
     sessionForbidden: 'La clé API actuelle ne peut pas accéder à cette session — veuillez sélectionner la bonne clé',
     autoRoute: 'Routage automatique (auto)',
+    modelListFailed: 'Échec du chargement de la liste des modèles — « routage auto » comme seule option ne signifie pas que la passerelle ne route qu’automatiquement',
     auto: 'Auto',
     needsKeyTitle: 'Demandez d\'abord une clé API',
     needsKeyDesc: 'Le chat nécessite une clé API active qui vous appartient. Vous n\'en avez actuellement aucune — veuillez en demander ou en créer une.',

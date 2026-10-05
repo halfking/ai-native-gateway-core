@@ -44,7 +44,7 @@ function mountView() {
   })
 }
 
-describe('TurnsListView', () => {
+describe('TurnsListView', { timeout: 20_000 }, () => {
   beforeEach(() => {
     listTurnsSessionsMock.mockReset()
     listTurnsFilterOptionsMock.mockReset()

@@ -406,9 +406,9 @@ type RoutingOptMetricsRow struct {
 	TaskType   *string   `json:"task_type"`
 	Provider   *string   `json:"predicted_provider"`
 
-	TotalRequests      int64 `json:"total_requests"`
-	SuccessfulRequests int64 `json:"successful_requests"`
-	FailedRequests     int64 `json:"failed_requests"`
+	TotalRequests      int64    `json:"total_requests"`
+	SuccessfulRequests int64    `json:"successful_requests"`
+	FailedRequests     int64    `json:"failed_requests"`
 	AccuracyRate       *float64 `json:"accuracy_rate"`
 
 	AvgConfidence *float64 `json:"avg_confidence"`

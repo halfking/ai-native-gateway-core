@@ -97,6 +97,13 @@ func (h *Handler) usageSummary(w http.ResponseWriter, r *http.Request) {
 		TotalCreditsCharged int64   `json:"total_credits_charged"`
 		AvgLatencyMs        float64 `json:"avg_latency_ms"`
 		SuccessRate         float64 `json:"success_rate"`
+		// 恒发（无 omitempty）：积分与主指标可能来自**不同**的数据源，
+		// 主查询成功不代表 credits 没降级。少了这两个字段，
+		// 「总积分消耗 0」就与「真的没消耗积分」在 API 层同形。
+		Degraded       bool   `json:"degraded"`
+		DegradedReason string `json:"degraded_reason,omitempty"`
+		MissingView    string `json:"missing_view,omitempty"`
+		Hint           string `json:"hint,omitempty"`
 	}
 	tid := statsTenantScope(r)
 	whereClause := "ts >= now() - ($1 * INTERVAL '1 day')"
@@ -147,7 +154,18 @@ func (h *Handler) usageSummary(w http.ResponseWriter, r *http.Request) {
 		writeInternalErr(w, "summary query failed", err)
 		return
 	}
-	summary.TotalCreditsCharged = h.queryTotalCreditsCharged(ctx, tid, days)
+	// 2026-10-03：credits 与主查询是**两个独立数据源**。主查询成功而 credits
+	// 降级时，载荷会带着真实的请求/费用数字、只有 total_credits_charged 是 0。
+	// 那种载荷若不带标记，看板上就是「这个月花了 X 钱、消耗 0 积分」——
+	// 而真相是「积分没算出来」。两者在页面上完全同形。
+	credits, creditsDegradedView := h.queryTotalCreditsCharged(ctx, tid, days)
+	summary.TotalCreditsCharged = credits
+	if creditsDegradedView != "" {
+		summary.Degraded = true
+		summary.DegradedReason = creditsDegradedView
+		summary.MissingView = creditsDegradedView
+		summary.Hint = fmt.Sprintf("积分聚合视图 %s 尚未初始化，total_credits_charged 不可信", creditsDegradedView)
+	}
 	shadowEnd := time.Now().UTC()
 	h.enqueueStatsShadow(
 		"usage_summary",
@@ -373,11 +391,9 @@ func (h *Handler) usageHotKeys(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if IsMissingRelationError(err) {
 			view := ReportMissingRelation(slog.Default(), "usageHotKeys", err)
-			writeJSON(w, http.StatusOK, []any{})
-			slog.Warn("dashboard hot-keys query degraded: missing optional view",
-				"relation", view,
-				"hint", missingRelationHint(view),
-			)
+			// 2026-10-03: 原为 `[]` —— 数组载荷无处放降级标记，抽屉会把
+			// 「聚合视图没迁移」渲染成「没有热点 key」。
+			writeJSON(w, http.StatusOK, degradedList(view))
 			return
 		}
 		writeInternalErr(w, "hot-keys query failed", err)
@@ -486,11 +502,7 @@ func (h *Handler) usageByProvider(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if IsMissingRelationError(err) {
 			view := ReportMissingRelation(slog.Default(), "usageByProvider", err)
-			writeJSON(w, http.StatusOK, []any{})
-			slog.Warn("dashboard by-provider query degraded: missing optional view",
-				"relation", view,
-				"hint", missingRelationHint(view),
-			)
+			writeJSON(w, http.StatusOK, degradedList(view))
 			return
 		}
 		writeInternalErr(w, "by-provider query failed", err)
@@ -592,11 +604,7 @@ func (h *Handler) usageByModel(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if IsMissingRelationError(err) {
 			view := ReportMissingRelation(slog.Default(), "usageByModel", err)
-			writeJSON(w, http.StatusOK, []any{})
-			slog.Warn("dashboard by-model query degraded: missing optional view",
-				"relation", view,
-				"hint", missingRelationHint(view),
-			)
+			writeJSON(w, http.StatusOK, degradedList(view))
 			return
 		}
 		writeInternalErr(w, "by-model query failed", err)

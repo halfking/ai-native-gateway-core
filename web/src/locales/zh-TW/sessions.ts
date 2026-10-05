@@ -26,6 +26,7 @@ export default {
     },
   },
   userProfile: {
+    loadFailed: '使用者輪廓載入失敗',
     title: "使用者畫像",
     detailTitle: "使用者畫像詳情",
     ownerUser: "使用者識別",

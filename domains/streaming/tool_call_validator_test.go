@@ -48,7 +48,7 @@ func TestToolCallValidator_MissingResultWhenResultExpected(t *testing.T) {
 
 	// Register a tool_use
 	v.OnToolUse("toolu_123", "get_weather", 0)
-	
+
 	// Register another tool_use
 	v.OnToolUse("toolu_456", "calculate", 1)
 
@@ -235,21 +235,21 @@ func TestToolCallValidator_PartialCompletion(t *testing.T) {
 
 func TestClassifyIncompleteToolCall(t *testing.T) {
 	tests := []struct {
-		name             string
-		streamGotDone    bool
-		expectedReason   string
+		name              string
+		streamGotDone     bool
+		expectedReason    string
 		expectedResumable bool
 	}{
 		{
-			name:             "interrupted before done",
-			streamGotDone:    false,
-			expectedReason:   "incomplete_tool_call_interrupted",
+			name:              "interrupted before done",
+			streamGotDone:     false,
+			expectedReason:    "incomplete_tool_call_interrupted",
 			expectedResumable: true,
 		},
 		{
-			name:             "completed with done but missing result",
-			streamGotDone:    true,
-			expectedReason:   "incomplete_tool_call_after_done",
+			name:              "completed with done but missing result",
+			streamGotDone:     true,
+			expectedReason:    "incomplete_tool_call_after_done",
 			expectedResumable: true,
 		},
 	}

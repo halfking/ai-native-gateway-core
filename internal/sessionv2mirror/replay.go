@@ -155,8 +155,15 @@ func execBypass(ctx context.Context, db replayDB, sql string, args ...any) (pgco
 
 // MirrorOutboxReaper drains session_mirror_outbox rows.
 type MirrorOutboxReaper struct {
-	db        replayDB
-	writer    V2Writer
+	db     replayDB
+	writer V2Writer
+	// pool is kept alongside db because the final-success landing pad
+	// (final_success_turn.go) takes a *pgxpool.Pool, not the minimal replayDB
+	// surface: its nil check is load-bearing (a nil *pgxpool.Pool boxed into
+	// an interface is NOT == nil, so the degraded-config path would panic
+	// instead of reporting mark_no_pool). It is nil in unit tests that build
+	// the reaper with a fake db, and those have no claim to apply anyway.
+	pool      *pgxpool.Pool
 	interval  time.Duration
 	batchSize int
 	maxAtts   int
@@ -176,6 +183,7 @@ func StartMirrorOutboxReaper(ctx context.Context, pool *pgxpool.Pool, writer V2W
 	}
 	r := &MirrorOutboxReaper{
 		db:        pool,
+		pool:      pool,
 		writer:    writer,
 		interval:  mirrorReplayDefaultInterval,
 		batchSize: mirrorReplayDefaultBatch,
@@ -449,6 +457,27 @@ func (r *MirrorOutboxReaper) replayOne(ctx context.Context, row claimRow) {
 	if err := r.writer.Write(writeCtx, req); err != nil {
 		r.requeue(ctx, row, err)
 		return
+	}
+	// 2026-10-05 审计 §9.203: 回放补写的 turn 同样要带上 final_success 标记。
+	// outbox 是在认领成功的**同一事务**里登记的 (registerFinalSuccessClaimOutbox),
+	// 所以「载荷里带 final_success_claimed」精确等价于「这行本该是最终成功」——
+	// 正是这个回放器要修的那种「认领了但镜像行从未落地」的洞。
+	//
+	// 放在 Write 之后、与 live hook 同一位置: 行已存在且已提交, 不与插入竞态。
+	if entry.FinalSuccessClaimed {
+		markCtx, markCancel := context.WithTimeout(ctx, mirrorReplayWriteBudgetMs*time.Millisecond)
+		marked := markTurnFinalSuccess(markCtx, r.pool, row.requestID, req.TenantID, sessionID)
+		markCancel()
+		if !marked {
+			// §R43/L3: an infrastructure failure on the mark must not burn
+			// the compensation row. The turn write above already committed and
+			// is idempotent (ON CONFLICT DO NOTHING), so the retry costs one
+			// no-op write and retries exactly the part that failed. The live
+			// path has the v1 claim row as its own retry carrier; this row is
+			// the replay path's only one.
+			r.requeue(ctx, row, fmt.Errorf("final_success mark failed (turn intact, compensation row kept)"))
+			return
+		}
 	}
 	if _, err := execBypass(ctx, r.db, `DELETE FROM public.session_mirror_outbox WHERE id = $1`, row.id); err != nil {
 		// The turn is written (idempotent on request_id); a leftover row

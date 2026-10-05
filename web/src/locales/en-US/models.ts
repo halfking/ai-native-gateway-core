@@ -185,6 +185,11 @@ export default {
   },
   error: {
     loadFailed: 'Failed to load',
+    filterMetaLoadFailed: 'Failed to load filter options',
+    providersLoadFailed: 'Failed to load providers',
+    tagsLoadFailed: 'Failed to load tags',
+    familiesLoadFailed: 'Failed to load model families',
+    discoveryStatusLoadFailed: 'Failed to load discovery job status',
     saveFailed: 'Save failed',
     resetFailed: 'Reset failed',
     loadDetailFailed: 'Failed to load detail',

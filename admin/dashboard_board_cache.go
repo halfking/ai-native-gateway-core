@@ -22,22 +22,37 @@ func (h *Handler) buildBoardPayload(ctx context.Context, tenantFilter string, da
 	tr := daysToBoardTimeRange(days)
 	summary, fromMinute := h.queryBoardSummary(ctx, tenantFilter, tr)
 	if !fromMinute {
-		summary = h.fallbackBoardSummary(ctx, tenantFilter, tr)
+		// 2026-10-03：回退失败不再被吞掉。非 42P01 上抛（超时就是超时，
+		// 把它说成「0 请求」是更坏的谎）；42P01 已在载荷里带好 degraded。
+		fb, fbErr := h.fallbackBoardSummary(ctx, tenantFilter, tr)
+		if fbErr != nil {
+			return nil, fbErr
+		}
+		summary = fb
 	}
-	pies, err := h.resolveBoardPies(ctx, tenantFilter, tr)
+	pies, piesDegraded, err := h.resolveBoardPies(ctx, tenantFilter, tr)
 	if err != nil {
-		return nil, err
+		pies = emptyBoardPies()
+		piesDegraded = boardPieDegradation{
+			Keys:        []string{"clients", "client_ips", "identity_hashes", "models", "errors", "tenants", "providers"},
+			MissingView: boardMissingViewName(err),
+		}
 	}
 	trends, err := h.resolveBoardTrends(ctx, tenantFilter, tr, providerID)
 	if err != nil {
-		return nil, err
+		trends = []boardTrendPoint{}
 	}
-	return map[string]any{
+	payload := map[string]any{
 		"summary": summary,
 		"pies":    pies,
 		"trends":  trends,
 		"days":    days,
-	}, nil
+	}
+	// 缓存路径与直查路径必须写同一套降级字段：这份 payload 会被塞进 Redis
+	// 再读回来（handleDashboardBoard 的 boardCache 分支直接原样返回），
+	// 只在一侧打标记 = 换个入口标记就消失。
+	applyBoardDegradation(payload, piesDegraded, err)
+	return payload, nil
 }
 
 // BuildBoardBaseline is the PostgreSQL baseline builder for boardcache.Service.

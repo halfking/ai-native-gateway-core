@@ -199,12 +199,12 @@ func TestNilIfEmpty(t *testing.T) {
 
 func TestQueryEscape(t *testing.T) {
 	cases := map[string]string{
-		"":          "",
-		"plain":     "plain",
-		"a b":       "a%20b",
-		"a&b":       "a%26b",
-		"a?b":       "a%3Fb",
-		"a#b":       "a%23b",
+		"":      "",
+		"plain": "plain",
+		"a b":   "a%20b",
+		"a&b":   "a%26b",
+		"a?b":   "a%3Fb",
+		"a#b":   "a%23b",
 	}
 	for in, want := range cases {
 		if got := queryEscape(in); got != want {

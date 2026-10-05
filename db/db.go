@@ -315,6 +315,17 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureUsageFactsDailyPartition(migCtx); err != nil {
 		return err
 	}
+	// 2026-10-04 migration 830 (ursm snapshot partitioning): once 830 is
+	// applied, ursm_node_snapshot_min becomes a daily RANGE partitioned
+	// table with NO default partition — so a missing current-day partition
+	// means every snapshot write fails outright rather than degrading. The
+	// 24h tick in bg/partition_manager.go pre-builds the steady state; this
+	// boot ensure covers the start-between-ticks window. 830 is manual and
+	// intentionally unregistered, so this tolerates the function not
+	// existing yet instead of failing db.Open (see the func's doc comment).
+	if err := db.ensureURSMNodeSnapshotMinDailyPartition(migCtx); err != nil {
+		return err
+	}
 	// 2026-09-05 migration 656 (audit D-2#4/H-2): auto_route_selections_hot
 	// 网关侧幂等 ensure。只升二进制未重跑 656 的存量库上，AUTO 路由 selection
 	// 写入（telemetry selection_writer 批量 INSERT）整批静默丢弃、settle/affinity
@@ -371,6 +382,13 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	// 有路由的类全量候选池,无路由类必走 48h 兜底池(auto-matching 审计 O1′-c,
 	// 人工已确认)。幂等 seed,管理员已配置的路由集不被回改。
 	if err := db.ensureWorkTypeRouteCoverage(migCtx); err != nil {
+		return err
+	}
+	// 2026-10-05 migration 831: work_type 路由行增加 source 列，区分
+	// 「ACC 同步写的」与「运维在 admin UI 写的」。必须排在
+	// ensureWorkTypeRouteCoverage 之后：前者在该表上建索引，后者依赖
+	// source 列已存在才能建。
+	if err := db.ensureWorkTypeRouteSource(migCtx); err != nil {
 		return err
 	}
 	if err := db.EnsureTenantsTable(migCtx); err != nil {
@@ -621,10 +639,141 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	// 先于流量：audio 请求的候选过滤只放行 modality IN ('audio','multimodal')，
 	// mimo-v2.5-asr/-tts 等后缀形态被旧 InferModality 标成 text，不回填则
 	// /v1/audio/* 端点与 chat+input_audio 双双 no_candidate。
+	// 2026-10-04 顺序修复：d724c072d 给本 ensure 的 WHERE 加了 modality_source
+	// 豁免（825 列），但 825 只由迁移文件创建，而本链在 db-open 期先于迁移
+	// 执行——账本 < 825 的库（本地实测 824、245/154 同险）在 ensure 期直接
+	// 42703，migrate 永远到不了应用 825 那步，形成启动自锁。先跑 825 的幂等
+	// DDL 镜像解锁（列/表/视图全量 IF NOT EXISTS，热迁移后重放为 no-op）。
+	if err := db.ensureModalityGradedVerification(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureAudioModalityBackfill(migCtx); err != nil {
 		return err
 	}
 	db.ensureProbeHealthDashboardViews(migCtx)
+	return nil
+}
+
+// ensureModalityGradedVerification mirrors sql/migrations/startup/
+// 825_modality_graded_verification.sql（models_canonical 三列 + 存量
+// 'inferred' 回填 + CHECK 约束 + model_modality_verification 证据表 +
+// 两索引 + v_model_modality_verdict 判词视图）。
+//
+// 为什么必须在启动 ensure 链里而不只靠迁移文件（2026-10-04 自锁修复）：
+// d724c072d 的 825 守卫闭环让 ensureAudioModalityBackfill 与 discovery 的
+// 升级守卫都引用 modality_source，但该列只由 825 创建；本链在 db-open 期
+// 运行、先于 migrate 应用迁移——账本 < 825 的库在 Open 期 42703，迁移永远
+// 应用不上（deploy-local 与 deploy-seamless 的 migrate 门双双必炸）。825 的
+// 全部 DDL 均幂等（IF NOT EXISTS / CREATE OR REPLACE / 幂等 UPDATE），先在
+// 此重放解锁；之后账本真正应用 825 时为 no-op。
+//
+// 账本 stamp（693/701 先例）：自愈补齐后把 825 记入 schema_migrations，
+// 防止「列在而账本缺行」的口径漂移；已 stamp 时为 no-op。
+func (db *DB) ensureModalityGradedVerification(ctx context.Context) error {
+	if db == nil || db.pool == nil {
+		return nil
+	}
+	// 前置自愈（与 825 文件内同名 DO 块一致）：SSOT 01-schema 从未给
+	// models_canonical.id 声明主键，FK canonical_id→id 在 SSOT 全新安装的
+	// 库上 42830；id 无空无重（bigint + 序列默认），补主键安全。
+	if _, err := db.pool.Exec(ctx, `
+		DO $mk$
+		BEGIN
+		    IF NOT EXISTS (
+		        SELECT 1 FROM pg_constraint
+		         WHERE conrelid = 'public.models_canonical'::regclass
+		           AND conname = 'models_canonical_pkey'
+		    ) THEN
+		        ALTER TABLE public.models_canonical
+		            ADD CONSTRAINT models_canonical_pkey PRIMARY KEY (id);
+		    END IF;
+		END $mk$;
+	`); err != nil {
+		return fmt.Errorf("ensure models_canonical pkey (825 前置): %w", err)
+	}
+	if _, err := db.pool.Exec(ctx, `
+		ALTER TABLE public.models_canonical
+		    ADD COLUMN IF NOT EXISTS modality_source text,
+		    ADD COLUMN IF NOT EXISTS modality_verified_at timestamptz,
+		    ADD COLUMN IF NOT EXISTS modality_evidence jsonb NOT NULL DEFAULT '{}'::jsonb;
+
+		UPDATE public.models_canonical
+		   SET modality_source = 'inferred'
+		 WHERE modality_source IS NULL;
+
+		ALTER TABLE public.models_canonical
+		    DROP CONSTRAINT IF EXISTS models_canonical_modality_source_check;
+		ALTER TABLE public.models_canonical
+		    ADD CONSTRAINT models_canonical_modality_source_check
+		    CHECK (modality_source IS NULL
+		           OR modality_source IN ('inferred', 'structural', 'semantic', 'manual'));
+
+		CREATE TABLE IF NOT EXISTS public.model_modality_verification (
+		    id              bigserial PRIMARY KEY,
+		    canonical_id    bigint REFERENCES public.models_canonical(id) ON DELETE CASCADE,
+		    canonical_name  text NOT NULL,
+		    credential_id   integer NOT NULL,
+		    raw_model_name  text NOT NULL,
+		    modality        text NOT NULL,
+		    carry_level     text NOT NULL DEFAULT 'unknown',
+		    read_level      text NOT NULL DEFAULT 'unknown',
+		    read_pos_streak smallint NOT NULL DEFAULT 0,
+		    read_neg_streak smallint NOT NULL DEFAULT 0,
+		    carry_evidence  jsonb NOT NULL DEFAULT '{}'::jsonb,
+		    read_evidence   jsonb NOT NULL DEFAULT '{}'::jsonb,
+		    checked_at      timestamptz NOT NULL DEFAULT now(),
+		    created_at      timestamptz NOT NULL DEFAULT now(),
+		    updated_at      timestamptz NOT NULL DEFAULT now(),
+		    CONSTRAINT model_modality_verification_modality_check
+		        CHECK (modality IN ('vision', 'audio', 'video')),
+		    CONSTRAINT model_modality_verification_carry_check
+		        CHECK (carry_level IN ('unknown', 'accepted', 'rejected')),
+		    CONSTRAINT model_modality_verification_read_check
+		        CHECK (read_level IN ('unknown', 'confirmed', 'negative')),
+		    CONSTRAINT model_modality_verification_key
+		        UNIQUE (credential_id, raw_model_name, modality)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_model_modality_verification_due
+		    ON public.model_modality_verification (modality, checked_at);
+		CREATE INDEX IF NOT EXISTS idx_model_modality_verification_canonical
+		    ON public.model_modality_verification (canonical_id, modality, read_level);
+	`); err != nil {
+		return fmt.Errorf("ensure modality graded verification (825): %w", err)
+	}
+	// 视图依赖上面的表，单独一段执行（CREATE OR REPLACE 幂等）。
+	if _, err := db.pool.Exec(ctx, `
+		CREATE OR REPLACE VIEW public.v_model_modality_verdict AS
+		SELECT
+		    v.canonical_id,
+		    v.canonical_name,
+		    v.modality,
+		    COUNT(*)::int                                                      AS bindings_probed,
+		    COUNT(*) FILTER (WHERE v.read_level = 'confirmed')::int            AS bindings_confirmed,
+		    COUNT(*) FILTER (WHERE v.read_level = 'negative')::int             AS bindings_negative,
+		    COUNT(*) FILTER (WHERE v.read_level = 'unknown')::int              AS bindings_unknown,
+		    COUNT(*) FILTER (WHERE v.carry_level = 'accepted')::int            AS carry_accepted,
+		    COUNT(*) FILTER (WHERE v.carry_level = 'rejected')::int            AS carry_rejected,
+		    MAX(v.checked_at)                                                  AS last_checked_at,
+		    CASE
+		        WHEN COUNT(*) FILTER (WHERE v.read_level = 'confirmed') > 0 THEN 'confirmed'
+		        WHEN COUNT(*) FILTER (WHERE v.read_level = 'unknown') = 0
+		         AND COUNT(*) FILTER (WHERE v.read_level = 'negative') > 0 THEN 'negative'
+		        ELSE 'unknown'
+		    END                                                               AS verdict
+		FROM public.model_modality_verification v
+		GROUP BY v.canonical_id, v.canonical_name, v.modality;
+	`); err != nil {
+		return fmt.Errorf("ensure v_model_modality_verdict (825): %w", err)
+	}
+	if _, err := db.pool.Exec(ctx, `
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('825', 'modality graded verification: canonical source columns + evidence table + verdict view')
+		ON CONFLICT (version) DO NOTHING;
+	`); err != nil {
+		return err
+	}
+	slog.Info("modality graded verification schema ensured (migration 825)")
 	return nil
 }
 
@@ -638,6 +787,12 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 // vision→audio（39 轮 2026-10-03 补）是白名单定向纠正
 // （^(gpt-4o(-mini)?|gpt)-transcribe），不触碰 audio/multimodal/真 vision
 // 行（含管理员手工覆盖）。
+//
+// 825 守卫闭环（R42）：本函数每次网关启动都跑（applyMigrationsOnce），
+// 是规则侧的第五个 modality 写点。语义核实（bg/modality_verification）
+// 把 whisper/-asr 族判负降级为 text 时会盖 'semantic' 章——没有
+// modality_source 豁免的话，下一次重启就把降级翻回 audio，语义负证据
+// 活不过一次重启（迁移 825 分层定义里的互斥写问题）。
 func (db *DB) ensureAudioModalityBackfill(ctx context.Context) error {
 	if db == nil || db.pool == nil {
 		return nil
@@ -647,6 +802,7 @@ func (db *DB) ensureAudioModalityBackfill(ctx context.Context) error {
 		   SET modality = 'audio', updated_at = now()
 		 WHERE modality = 'text'
 		   AND status = 'active'
+		   AND COALESCE(modality_source, '') NOT IN ('semantic', 'manual')
 		   AND (canonical_name ~ '-asr$' OR canonical_name ~ '-tts$'
 		        OR canonical_name ~ '-asr-' OR canonical_name ~ '-tts-'
 		        OR canonical_name ~ '-stt-' OR canonical_name ~ 'whisper'
@@ -655,6 +811,7 @@ func (db *DB) ensureAudioModalityBackfill(ctx context.Context) error {
 		   SET modality = 'audio', updated_at = now()
 		 WHERE modality = 'vision'
 		   AND status = 'active'
+		   AND COALESCE(modality_source, '') NOT IN ('semantic', 'manual')
 		   AND canonical_name ~ '^(gpt-4o(-mini)?|gpt)-transcribe'`
 	if _, err := db.pool.Exec(ctx, stmt); err != nil {
 		return fmt.Errorf("ensure audio modality backfill: %w", err)
@@ -1474,6 +1631,110 @@ func (d *DB) ensureUsageFactsDailyPartition(ctx context.Context) error {
 		return fmt.Errorf("stamp 751: %w", err)
 	}
 	slog.Info("usage_facts daily partition ensured (750+751)")
+	return nil
+}
+
+// ensureURSMNodeSnapshotMinDailyPartition mirrors the executable body of
+// sql/migrations/startup/830_ursm_node_snapshot_min_partitioned.sql — the
+// post-migration half only. The RENAME + CREATE PARENT TABLE half is manual
+// and stays manual (see the migration header).
+//
+// ★ Deliberately unlike ensureUsageFactsDailyPartition: this one TOLERATES
+//
+//	the ensure function being absent and returns nil. 830 is a manual
+//	migration that is intentionally not in the installer startup sequence, so
+//	for an unbounded time after this binary ships the function may simply not
+//	exist yet. Mirroring 750 (which returns the error) would mean the error
+//	propagates out of db.Open, the process falls into no-DB mode and the
+//	deployment auto-rollbacks — i.e. deploying the binary *before* running
+//	830 would take the gateway down. Probing instead of erroring makes the
+//	two steps order-independent. bg/partition_manager.go's 24h tick already
+//	logs-and-continues on a missing function; this makes boot agree with it.
+//
+// Nothing else is swallowed: a timeout or a constraint failure must
+// propagate, because its consequence is "today's partition missing ⇒ every
+// snapshot write fails" — there is no DEFAULT partition to absorb the rows
+// (see the 830 header, hard constraint 2).
+func (d *DB) ensureURSMNodeSnapshotMinDailyPartition(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	// 0) Probe the parent table's shape FIRST, and only then the function.
+	//
+	//    Order matters and the reason was found while writing 830's down
+	//    script: probing only "does the function exist" leaves a hole in the
+	//    rollback direction. After 830.down the parent is a plain table again
+	//    but the ensure function may still be there — and calling it would
+	//    attempt CREATE TABLE ... PARTITION OF against a non-partitioned
+	//    parent, which errors, bubbles out of db.Open and drops the process
+	//    into no-DB mode. Tolerant-of-absence is not the same as
+	//    tolerant-of-rollback.
+	//
+	//    to_regclass (not '...'::regclass) because the table itself may be
+	//    absent on a partially-provisioned database, and a bare regclass cast
+	//    would raise rather than return NULL.
+	var partitioned, hasFn bool
+	if err := d.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+		           SELECT 1 FROM pg_class c
+		            WHERE c.oid = to_regclass('public.ursm_node_snapshot_min')
+		              AND c.relkind = 'p'),
+		       to_regprocedure('public.ensure_ursm_node_snapshot_min_daily_partition(date)') IS NOT NULL
+	`).Scan(&partitioned, &hasFn); err != nil {
+		return fmt.Errorf("probe ursm_node_snapshot_min partition state (830): %w", err)
+	}
+	if !partitioned {
+		// Covers both normal states: 830 not applied yet, and 830 rolled back.
+		slog.Info("ursm_node_snapshot_min is not a partitioned table — 830 not applied (or rolled back); " +
+			"skipping daily-partition ensure")
+		return nil
+	}
+	if !hasFn {
+		// A half-applied 830. 830's own DDL is one transaction so it cannot
+		// produce this, but if something else did, staying quiet means every
+		// snapshot write starts failing with no partition of relation found.
+		return fmt.Errorf("ursm_node_snapshot_min is partitioned but %s is missing — "+
+			"half-applied 830; today's partition may be missing and every snapshot write will fail",
+			"ensure_ursm_node_snapshot_min_daily_partition")
+	}
+	// 1) Pin the timezone (830's 751-style pin, idempotent ALTER).
+	if _, err := d.pool.Exec(ctx, `
+		ALTER FUNCTION public.ensure_ursm_node_snapshot_min_daily_partition(DATE)
+		    SET timezone = 'Asia/Shanghai';
+	`); err != nil {
+		return fmt.Errorf("pin ensure_ursm_node_snapshot_min_daily_partition timezone (830): %w", err)
+	}
+	// 2) Create today's + tomorrow's partitions (830 pre-builds 3 days; the
+	//    24h tick owns the steady state). Dates derived from the explicit
+	//    Shanghai calendar, same source as partition_manager's partitionTZ —
+	//    deriving them from current_date would follow the session timezone.
+	if _, err := d.pool.Exec(ctx,
+		`SELECT public.ensure_ursm_node_snapshot_min_daily_partition((now() AT TIME ZONE 'Asia/Shanghai')::date)`,
+	); err != nil {
+		return fmt.Errorf("ensure_ursm_node_snapshot_min_daily_partition(shanghai today): %w", err)
+	}
+	if _, err := d.pool.Exec(ctx,
+		`SELECT public.ensure_ursm_node_snapshot_min_daily_partition(((now() AT TIME ZONE 'Asia/Shanghai')::date) + 1)`,
+	); err != nil {
+		return fmt.Errorf("ensure_ursm_node_snapshot_min_daily_partition(shanghai tomorrow): %w", err)
+	}
+	// 3) Stamp 830 — only after the function really existed and ensure
+	//    succeeded, so the stamp stays an honest record rather than being
+	//    written by a binary whose target migration was never applied.
+	//
+	// ★ R44 改号 830→830：原写法与 :764 的 ensureModalityGradedVerification
+	//   **抢同一个主键**（schema_migrations.version），两处都是
+	//   `ON CONFLICT (version) DO NOTHING` ⇒ 先跑的那条赢，另一条静默丢弃，
+	//   830 的描述取决于哪条 ensure 先跑。这是真实的数据完整性缺陷，
+	//   不是标签冲突。详见 docs/12小时内修订审计-20261005-0034.md §五。
+	if _, err := d.pool.Exec(ctx, `
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('830', 'ursm_node_snapshot_min converted to daily RANGE partitions + DROP-based retention; MANUAL migration, not in the installer startup sequence')
+		ON CONFLICT (version) DO NOTHING;
+	`); err != nil {
+		return fmt.Errorf("stamp 830: %w", err)
+	}
+	slog.Info("ursm_node_snapshot_min daily partitions ensured (830)")
 	return nil
 }
 
@@ -3569,6 +3830,60 @@ func (d *DB) ensureWorkTypeRouteCoverage(ctx context.Context) error {
 		return err
 	}
 	slog.Info("work_type route coverage ensured (migration 709)")
+	return nil
+}
+
+// ensureWorkTypeRouteSource mirrors sql/migrations/startup/
+// 831_work_type_route_source.sql.
+//
+// Why this exists: two writers replace a work type's full route set —
+// admin/acc_work_types.go syncWorkTypesFromACC and admin/work_types.go
+// putRoutes — and neither recorded ownership. The ACC seed carries
+// `model_routes: []` on all 22 entries, so a successful sync deleted
+// every route for a key and reinserted none, silently wiping routes an
+// operator had configured through the admin UI. The sync now deletes only
+// rows it owns (source='acc') and inserts with ON CONFLICT DO NOTHING, so
+// an operator's route for a model always wins.
+//
+// Ordering constraint: this must run after ensureWorkTypeRouteCoverage,
+// which seeds routes and is unaffected, and before any sync runs.
+//
+// The DEFAULT 'operator' backfill is deliberate, not a convenience: no ACC
+// sync has ever completed (the gateway requests /api/llm/work-types while
+// acc-go serves /api/v2/llm/work-types, so it 404s), which means every
+// existing row was written by the admin UI. Backfilling to 'acc' would
+// hand the next sync permission to delete them.
+//
+// Idempotent: ADD COLUMN IF NOT EXISTS, guarded UPDATE, drop/add CHECK.
+// Stamps schema_migrations version 831 (dual-ledger convention).
+func (d *DB) ensureWorkTypeRouteSource(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		ALTER TABLE work_type_model_route
+		    ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'operator';
+
+		UPDATE work_type_model_route SET source = 'operator' WHERE source IS NULL OR source = '';
+
+		ALTER TABLE work_type_model_route DROP CONSTRAINT IF EXISTS wtmr_source_check;
+		ALTER TABLE work_type_model_route
+		    ADD CONSTRAINT wtmr_source_check CHECK (source IN ('operator', 'acc'));
+
+		CREATE INDEX IF NOT EXISTS idx_wtmr_key_source
+		    ON work_type_model_route (work_type_key, source);
+
+		COMMENT ON COLUMN work_type_model_route.source IS
+		    'Which writer last wrote this row. The ACC sync only deletes its own (acc) rows; operator rows are never removed by a sync.';
+
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('831', 'work_type_model_route.source: separate ACC-owned routes from operator-owned so sync stops wiping operator config')
+		ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("work_type_model_route.source ensured (migration 831)")
 	return nil
 }
 

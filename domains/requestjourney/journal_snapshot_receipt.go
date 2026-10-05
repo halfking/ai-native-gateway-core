@@ -167,7 +167,7 @@ func (s *JournalSnapshotReceiptStore) ClaimWithProjectionBase(ctx context.Contex
 	if until.Valid && until.Time.After(now) {
 		return claim, nil
 	}
-// Reclaim guards (P1-4 contract): callers must pass the same base the
+	// Reclaim guards (P1-4 contract): callers must pass the same base the
 	// existing row stores, unless this is the historical first-claim sentinel
 	// where both stored and supplied are zero. The both-zero sentinel is the
 	// documented exception that lets adapters with no projection history yet

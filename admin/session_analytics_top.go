@@ -1,8 +1,8 @@
 // Package admin — Session Analytics Top Sessions & Filter Options API
 //
 // 补全前端 Dashboard 调用但后端缺失的两个端点（审计发现）：
-//   1. GET /api/admin/session-analytics/top-sessions   - 热门会话排名
-//   2. GET /api/admin/session-analytics/filter-options - 过滤器可选值
+//  1. GET /api/admin/session-analytics/top-sessions   - 热门会话排名
+//  2. GET /api/admin/session-analytics/filter-options - 过滤器可选值
 //
 // 这两个端点被 SessionAnalyticsDashboardView.vue 直接调用，但前序并行代理
 // 未实现后端 handler，导致前端 404。本文件补全。
@@ -26,22 +26,22 @@ import (
 
 // TopSessionsResponse 热门会话排名响应
 type TopSessionsResponse struct {
-	Metric   string             `json:"metric"`
-	Sessions []TopSessionItem   `json:"sessions"`
+	Metric   string           `json:"metric"`
+	Sessions []TopSessionItem `json:"sessions"`
 }
 
 // TopSessionItem 单个热门会话
 type TopSessionItem struct {
-	GwSessionID     string   `json:"gw_session_id"`
-	Title           *string  `json:"title"`
-	TenantID        string   `json:"tenant_id"`
-	RequestCount    int      `json:"request_count"`
-	TotalCostUSD    float64  `json:"total_cost_usd"`
-	TotalTokens     int64    `json:"total_tokens"`
-	DurationSeconds int      `json:"duration_seconds"`
-	AvgLatencyMs    int      `json:"avg_latency_ms"`
-	HealthGrade     *string  `json:"health_grade"`
-	PrimaryModel    *string  `json:"primary_model"`
+	GwSessionID     string  `json:"gw_session_id"`
+	Title           *string `json:"title"`
+	TenantID        string  `json:"tenant_id"`
+	RequestCount    int     `json:"request_count"`
+	TotalCostUSD    float64 `json:"total_cost_usd"`
+	TotalTokens     int64   `json:"total_tokens"`
+	DurationSeconds int     `json:"duration_seconds"`
+	AvgLatencyMs    int     `json:"avg_latency_ms"`
+	HealthGrade     *string `json:"health_grade"`
+	PrimaryModel    *string `json:"primary_model"`
 }
 
 // FilterOptionsResponse 过滤器可选值响应（模型/提供商列表，用于前端下拉填充）

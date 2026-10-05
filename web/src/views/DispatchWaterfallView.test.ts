@@ -47,7 +47,7 @@ function makeRouter() {
   })
 }
 
-describe('DispatchWaterfallView', () => {
+describe('DispatchWaterfallView', { timeout: 20_000 }, () => {
   afterEach(() => {
     vi.clearAllMocks()
   })

@@ -69,12 +69,37 @@ var sessionFamilyBareParentReaders = map[string]string{
 	"domains/session/v2/session_aggregator.go": "UPDATE 只写 session_turns_hot（:198，写方形状正确）；" +
 		":452 另有 `for _, table := range []string{\"public.session_turns_hot\", \"public.session_turns\"}` " +
 		"——两面由表名切片遍历表达，字面量里只出现一次父表名，逐串判必然误报。",
+	"domains/session/v2/session_request_status_backfill.go": "退役回填作业，**父表-only 是刻意的**，不是漏了 _hot。" +
+		"理由三条，逐条可核：(1) 仍留在 session_turns_hot 的行是经 823 写路径落的" +
+		"（internal/sessionv2mirror → TurnRecord.RequestStatus），标签本就带着，回填对它无增量；" +
+		"(2) 少数确实缺标签的 hot 行不会丢——promote 把它转进父表后本作业就会扫到，" +
+		"hot 保留窗自己会关；" +
+		"(3) 要覆盖 _hot，批量的 UPDATE 就得知道每个 keyset 行落在哪个面上，" +
+		"把单表 keyset 变成双表，只为覆盖一个会自行关闭的窗口。" +
+		"**注意与同文件的 gauge 区分**：sessionRequestStatusRemainingSQL 刻意**两个面都查**，" +
+		"因为它是 D9 第四条退役放行判据，问的是「退役后还会存在的每一行」而不是" +
+		"「本作业还能修哪些」。两者范围不同不是不一致，是两个不同的问题；" +
+		"把 gauge 也缩到父表才是缺陷（那会让 _hot 满是 NULL 时仍报 0，审计 §9.160）。",
+	// 下面是本文件**登记后仍会命中**的逐个形状，三条各不相同，不是「整个文件
+	// 可以单面」：
+	//  1. DELETE FROM public.session_turns（父表腿）——紧邻其上一条独立语句就是
+	//     DELETE FROM public.session_turns_hot，且 DeletedRows 是两面相加。
+	//     判据单位是「一条 SQL」，跨语句的两面它看不见（同门头盲区）。
+	//  2. INSERT INTO public.session_turns。
+	//  3. INSERT INTO public.session_bodies。
+	//     2/3 是**写**方选择只落父表，不是「漏读 _hot」：本工具按 v1 源全量重建，
+	//     产出一份完整快照直接进分区父表，promote 只搬 hot→父表、不搬父表→hot，
+	//     所以不构成漏数据。**bodies 的 DELETE 曾是真正的漏面并已修**（§9.183
+	//     补了 session_bodies_hot 腿）；此处登记不得被当成那道修复的守卫 ——
+	//     守卫是 repair_two_surface_test.go，它逐条断两条 DELETE 各自的面覆盖。
+	"cmd/tools/validate_sessions_v2/repair.go": "修复工具：DELETE turns 父表腿的 hot 对偶在紧邻的上一条语句" +
+		"（跨语句配对，逐串判看不见）；两处 INSERT 是重建快照直落分区父表的写方选择，非漏读。",
 }
 
 var sessionFamilyParents = []string{"session_turns", "session_bodies", "session_turn_details"}
 
 // sessionFamilySQLiteDirs / Files：与 PG 不是同一个存储面，有意排除。
-var sessionFamilySQLiteDirs = []string{"storage/sqlite", "tests", "installer", "cmd/tools"}
+var sessionFamilySQLiteDirs = []string{"storage/sqlite", "tests", "installer"}
 var sessionFamilySQLiteFiles = []string{"bg/lite_retention_worker.go"}
 
 func TestNoBareParentSessionFamilyRead(t *testing.T) {

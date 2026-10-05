@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/internal/internaltraffic"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // ensureRequestLogsCurrentMonthView mirrors
@@ -360,6 +361,33 @@ func (d *DB) baseWrapperShape(ctx context.Context) (fp, raw, credits, cip bool, 
 // canonicalColumnOrderV2 into `+"`"+`expr AS name`+"`"+` pairs — bare NULL casts would
 // otherwise name view columns after their type ("int8"/"text"), colliding
 // into 42701 duplicate column names.
+// sessionIsInternalSessionIDExpr is the **read layer's** definition of "this
+// row is not a user session": any session id starting with `sys:` is internal
+// (health probes, auto workers) and its projected gw_session_id is NULLed out
+// so it can never join to a user-facing session.
+//
+// ⚠ It is a named constant, not a literal repeated at each use site, because
+// the population measurement in session_dim_population_test.go has to classify
+// rows with **the same** predicate the read layer uses. A second copy of
+// `LIKE 'sys:%'` would be free to drift, and the direction it drifts in is
+// the misleading one: a gate that counts `sys:` traffic as user traffic
+// reports a dim-coverage number that is wrong in exactly the way nobody
+// re-checks. See that file for the measured consequence (0.00% vs 97.78%).
+//
+// ⚠ This is NOT the same thing as the `is_auto_request` column, which looks
+// interchangeable and is not. Measured 2026-10-05 on the local real database
+// over the full session family (parent ∪ hot, 1,693,480 rows):
+//
+//	sys:%    + is_auto_request=true  : 753,425
+//	sys:%    + is_auto_request=other :       0   ← the implication is exact
+//	non-sys: + is_auto_request=true  :   1,439
+//	non-sys: + is_auto_request=other : 938,616
+//
+// So `sys:%` implies auto, but auto does not imply `sys:%`. The read layer keys
+// off the id, and the gate must too — a measurement keyed off the column would
+// report a different population than the one production serves.
+const sessionIsInternalSessionIDExpr = "(CASE WHEN t.session_id LIKE 'sys:%' THEN NULL ELSE t.session_id END)"
+
 var projectionExprsV2 = []string{
 	"NULL::bigint",
 	"t.request_id",
@@ -407,9 +435,9 @@ var projectionExprsV2 = []string{
 	"t.cost_display::numeric(14,8)",
 	"t.cost_currency",
 	"t.usage_source",
-	"(CASE WHEN t.session_id LIKE 'sys:%' THEN NULL ELSE t.session_id END)",
+	sessionIsInternalSessionIDExpr,
 	"NULL::text",
-	"(CASE WHEN t.success IS NULL THEN NULL WHEN t.success THEN 'success' WHEN t.status_code = 429 THEN 'rate_limited' ELSE 'failure' END)",
+	sessionRequestStatusExpr,
 	"NULL::text",
 	"NULL::text",
 	"NULL::text",
@@ -608,6 +636,72 @@ func (d *DB) middleWrapperCols(ctx context.Context) (string, error) {
 	return cols, nil
 }
 
+// sessionRequestStatusExpr is the session-leg expression for the frozen v1
+// `request_status` column. It is a package-level const (not a function) so that
+// the view-ensure chain, both native readers, and migration 824 all render the
+// identical text — the viewdef-equivalence contract in
+// db/view_schema_v2_contract_test.go compares the composed DDL verbatim.
+//
+// ── Why the error_kind branch exists (audit §9.160) ────────────────────────
+//
+// The previous expression classified a turn as `rate_limited` only via
+// `t.status_code = 429`. Measured on the local real database
+// (1,688,629 rows in session_turns, 2026-09/10):
+//
+//   - `status_code = 429` matches **0** rows. Not one, in the whole table.
+//   - 437,402 rows are genuine rate-limited turns, and every one of them
+//     carries `status_code = 500` on the session side.
+//   - So the `rate_limited` arm was **dead code on the session leg**: it could
+//     never fire. All 437,402 turns were reported as plain `failure`.
+//   - The only signal that survives the mirror is `error_kind`:
+//     `error_kind = 'rate_limit_exceeded'` ⟺ v1 `request_status =
+//     'rate_limited'` with **0 counterexamples in either direction**
+//     (394,614 twin rows) and 0 rows with `success = true`.
+//
+// Effect of the old expression on session_turns:
+//
+//	failure 1,358,245 / success 330,384 / rate_limited 0
+//	after:   failure   920,843 / success 330,384 / rate_limited 437,402
+//
+// i.e. the canonical view — and the eight native readers that share this
+// projection — overstated `failure` by 32% and under-reported `rate_limited`
+// as 0. This is not a retirement-only concern: it is wrong **today**, and once
+// request_logs is dropped the view would report zero rate-limited requests
+// system-wide.
+//
+// ── Why the status_code = 429 arm is kept ──────────────────────────────────
+//
+// It is dead on today's data but it is the shape a future upstream 429 would
+// take, and dropping it would make the expression silently narrower than the
+// one it replaces. Keeping it costs nothing and can only add correct rows.
+//
+// ── Why the NULL-success guard stays first ────────────────────────────────
+//
+// Unchanged contract, deliberately: `success IS NULL` still yields NULL rather
+// than a guessed label. Local data has 0 such rows, so this is latent, and
+// preserving it keeps the change provably scoped to the rate_limited arm.
+// (The admin session-detail reader had the matching latent hole — it scanned
+// `success` into a bare bool and dropped the whole row on NULL; fixed there.)
+//
+// ── Why the IN-set, not just 'rate_limit_exceeded' (R41 audit F1) ──────────
+//
+// The historical cross-tab above proved the single-value form only on
+// pre-823 data, where mirrors never recorded request_status at all. The
+// write side emits RequestStatusRateLimited with exactly two error_kind
+// literals: 'rate_limit_exceeded' (gateway RPM/concurrent rejections,
+// handler.go:3244 / messages.go:433 / responses.go) and 'key_throttled'
+// (handler.go:2376, api-key anomalous-usage throttle). Post-823 mirrors
+// carry the rate_limited label while keeping error_kind='key_throttled';
+// a single-value arm would file every such row under 'failure' forever —
+// and the view's session leg wins over the v1 leg, so nothing downstream
+// could correct it.
+const sessionRequestStatusExpr = `(CASE ` +
+	`WHEN t.success IS NULL THEN NULL ` +
+	`WHEN t.success THEN 'success' ` +
+	`WHEN t.error_kind IN ('rate_limit_exceeded', 'key_throttled') THEN 'rate_limited' ` +
+	`WHEN t.status_code = 429 THEN 'rate_limited' ` +
+	`ELSE 'failure' END)`
+
 // sessionFamilyProjectionFor renders the named projection (details-aware) for
 // an explicit canonical name list.
 func sessionFamilyProjectionFor(names []string, withDetails bool) string {
@@ -631,8 +725,10 @@ func sessionFamilyProjection(withDetails bool) string {
 }
 
 // canonicalV2Comment 与迁移 734 的 COMMENT ON VIEW 同文（COMMENT 的 IS 只收
-// 单个字面量，不能像 SQL 赋值那样 || 拼接）。
-const canonicalV2Comment = `'会话存储解耦 v3（813）: 710 拼装体 + 734 details 特征层 LEFT JOIN（733，键 tenant_id+request_id+partition_date）——30 个 NULL 占位列换真实特征列（client_model/quality_*/stream_chunk_errors/request_class 等）。813 再追加 3 列（origin_stage/token_band/client_forwarded_for，session 侧直映 t.<col>、v1 侧 lateral），修掉 compression_stats 的 token_band 静默空。LEFT 语义：details 缺行时 NULL，与 710 逐位兼容。仍 NULL：id（v1 请求行 id ≠ session turn id）/test_col/test_tab_indent/provider_model。trace_events 刻意未投影（镜像从不写，近窗非空率 0，投影即净数据损失）。'`
+// 单个字面量，不能像 SQL 赋值那样 || 拼接）。824 起补记 request_status 的分类
+// 口径（816/817 的两次 client_ip 改写当时未同步本常量，视图注释一度落后两代；
+// 这里补的是最新状态，不是逐版流水）。
+const canonicalV2Comment = `'会话存储解耦 v3（824）: 710 拼装体 + 734 details 特征层 LEFT JOIN（733，键 tenant_id+request_id+partition_date）——30 个 NULL 占位列换真实特征列（client_model/quality_*/stream_chunk_errors/request_class 等）。813 再追加 3 列（origin_stage/token_band/client_forwarded_for，session 侧直映 t.<col>、v1 侧 lateral）。816/817 把 client_ip 从 NULL 补位改为有源投影并换成语义守卫。824 把 request_status 的会话腿改走 error_kind=''rate_limit_exceeded''（旧口径只看 status_code=429，而 session_turns 里 429 是 0 行，等于从未生效，审计 §9.160）。仍 NULL：id（v1 请求行 id ≠ session turn id）/test_col/test_tab_indent/provider_model/credits_rate_multiplier，以及 client_ip 本身（字面量非法时落 NULL，不抛错）。trace_events 刻意未投影（镜像从不写，近窗非空率 0，投影即净数据损失）。'`
 
 // canonicalColumnOrderV2 是 115 列的契约顺序（= 现网 canonical 视图列序：
 // 710 冻结 113 列 + 738 credits_rate_multiplier + 740 client_ip）。
@@ -896,6 +992,115 @@ func SessionFamilyTurnsForSessionSQL() string {
 		" LEFT JOIN public.session_turn_details d" +
 		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date" +
 		" WHERE t.session_id = $1)"
+}
+
+// SessionFamilyBodiesSourceSQL returns a FROM source over the session-family
+// bodies tables that exposes the **v1 column names** (`request_body` /
+// `response_body`), so a caller can swap the relation name without touching
+// its projection list.
+//
+// # 为什么必须有它（而不是「直接 JOIN session_bodies」）
+//
+// 两侧的**列名不同**（实测 information_schema，2026-10-05）：
+//
+//	v1   request_logs_bodies : request_id text NOT NULL, request_body jsonb, response_body jsonb
+//	会话  session_bodies      : request_id text NOT NULL, request_delta jsonb, response_delta jsonb
+//
+// 语义相同（都是 JSONB），**名字不同**。所以「把 LEFT JOIN
+// request_logs_bodies_with_current_month 换成 session_bodies」这种机械替换
+// 会让调用点的 `COALESCE(rb.request_body, '{}'::jsonb)` 直接 42703。
+// ⇒ 映射必须落在**这一层**，而不是散在每个调用点的 SELECT 里。
+//
+// 类型逐列核对过：两侧 bodies 列**都是 jsonb**，`request_id` **都是 text NOT NULL**
+// ⇒ 纯改名，**不需要 cast**。（若将来一侧变成 text，这里必须加 `::jsonb`。
+// 由 admin 侧的列名/类型对等门守着，见 admin/session_bodies_source_test.go。）
+//
+// # hot ∪ parent 两条腿，理由与 SessionFamilyTurnsSourceSQL 相同
+//
+// `session_bodies_hot`（近期热窗）与 `session_bodies`（月度分区父表）是两张表，
+// 只读其一会漏掉另一侧的行。实测本地：hot 2,651 / parent 1,779,621，
+// **两侧 request_id 交集为 0**（promote 会排空 hot），所以 UNION ALL 不会重复。
+// ⚠ 但 `session_bodies` 父表内部有 57 行重复 request_id（37 个 id）——
+// 实测**这 37 个都不在 session_turns 里**，所以今天不会让导出多出重复消息。
+// 那个「今天不会」不是保证，由 admin 侧「bodies 源不得让 turn 重复」的门钉住。
+//
+// The returned source carries no alias — callers append one (e.g. `rb`).
+func SessionFamilyBodiesSourceSQL() string {
+	return "(SELECT " + sessionBodiesSourceProjection +
+		" FROM public.session_bodies_hot sb" +
+		" UNION ALL SELECT " + sessionBodiesSourceProjection +
+		" FROM public.session_bodies sb)"
+}
+
+// sessionBodiesSourceProjection 与 SessionFamilyBodiesSourceSQL 共用同一份字面量，
+// 拆出来是为了让**列集合成为可被引用的合同**（§9.231）。
+//
+// # 为什么要把列集合变成合同，而不是只写在注释里
+//
+// 这个源**不投影 `ts`**。于是「按 request_id 单键 JOIN」的读方可以直接换，
+// 而 `ON rb.request_id = rl.request_id AND rb.ts = rl.ts` 的读方换过去会
+// **解析期就报错**（42703）—— 那是好的，属响亮失败。
+// 但「响亮」不等于「已登记」：审计 §9.231 实测 25 个 v1 bodies 读方里有
+// 3 个是 ts 等值 JOIN（`admin/body_resolver.go`、`admin/compression_sessions.go`、
+// `cmd/compression-bench/main.go`），它们**不能**用这个 helper。
+// ⇒ 列集合必须能被别的包读到，才能让那道门按列名核对而不是按印象核对。
+//
+// ⚠ 别在这里加 `ts` 来「让大家都能用」：ts 在两侧的**相等率极低**
+// （`admin/session_bodies_batch.go` 的文件头实测 99.85% 不等），
+// 加上它会把一个解析期错误换成一个**静默的行数变化**。响亮失败优于静默改行。
+var sessionBodiesSourceProjection = "sb.request_id, sb.request_delta AS request_body, " +
+	"sb.response_delta AS response_body, sb.outbound_body"
+
+// SessionBodiesSourceSQL returns the aliased bodies FROM-source for **any
+// package**, gated by the shared read-side switch.
+//
+// # 为什么它必须在 db 而不是 admin（§9.233）
+//
+// §9.232 把 7 个 bodies 读方改走 `admin.sessionBodiesFromSQL()`，但另外 4 个
+// A 类读方在 `domains/sessionsummary`、`domains/sessionforensics`、`bg` ——
+// 它们**看不见** admin 包里的未导出函数，于是「能换但换不了」。
+//
+// 而 db 才是同族 helper 的所在地：`SessionFamilyTurnsSourceSQL`、
+// `SessionFamilyTurnsForSessionSQL`、`SessionFamilyBodiesSourceSQL` 都在这里。
+// ⇒ 切换层与被切换的源放在一起，是唯一说得通的位置。
+//
+// # 无 import 环（已核实 2026-10-05）
+//
+// db 此前**不** import settings，settings 也**不** import db ⇒ 本次引入
+// `settings` 依赖不成环。若将来 settings 反向依赖 db，这里会立刻编译失败——
+// 那正是应该失败的时候（不要为了让它编过而在这里复制一份配置读取）。
+//
+// # 与 admin 那份的关系：那份**已被删掉**（§9.233）
+//
+// 第一版让它留在 admin 并**委托**给本函数。实测那层薄包装是**有害**的：
+// 门与 v1 关系名字面量之间又隔了一层，而 `indirectSourceConsumers`
+// 是按「谁调用了切换层」识别的 —— 一个只做 `+ " rb"` 的包装函数会让
+// **9 个 admin 消费点在一次全仓解析里全部消失**（实测 5 个 vs 应有的 14 个）。
+// ⇒ 删除包装，全部调用点直接调 `dbpkg.SessionBodiesSourceSQL()`。
+// 代价是 5 个文件要新增 db import，收益是**单一切换层、单一探测路径**。
+func SessionBodiesSourceSQL() string {
+	if settings.GetPlatformBool(SessionBodiesNativeReadSetting, false) {
+		return SessionFamilyBodiesSourceSQL()
+	}
+	return "request_logs_bodies_with_current_month"
+}
+
+// SessionBodiesNativeReadSetting 是 bodies 读端灰度开关的 key。
+//
+// 名字**以源命名、不以界面命名**：§9.230 它只服务会话导出/对比，
+// §9.232 起服务 9 个消费点，§9.233 起还有跨包的。
+// 若继续叫 `admin_session_bodies_native_read`，下一个读方会以为
+// 「非 admin 的读方就不受这个开关管」——而事实正相反。
+const SessionBodiesNativeReadSetting = "storage.session_bodies_native_read"
+
+// SessionFamilyBodiesSourceColumns 是 SessionFamilyBodiesSourceSQL 对外暴露的
+// **全部**列名（已去掉 `sb.` 前缀与 `AS` 别名）。
+//
+// 它是 §9.231 那道门的判据来源。调用方（admin 包）用它在**源码文本**里核对
+// 「这个读方用到的 bodies 列是否都在合同内」—— 不能靠数投影个数，
+// 也不能靠「helper 里有这个字符串」。
+var SessionFamilyBodiesSourceColumns = []string{
+	"request_id", "request_body", "response_body", "outbound_body",
 }
 
 // MirrorDriftClassSQL classifies a V1 request_logs row into the three buckets

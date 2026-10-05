@@ -364,7 +364,7 @@ func TestExtractRequestDelta_IdenticalHistoryFallsBackToFullBody(t *testing.T) {
 		{Role: "user", Content: "second question"},
 	}
 	req := &ProcessedRequest{
-		RequestBody:     history,
+		RequestBody:      history,
 		LastOutboundBody: history, // identical → zero new messages
 	}
 	delta := extractRequestDelta(req, "full")

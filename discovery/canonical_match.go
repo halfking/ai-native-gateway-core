@@ -191,8 +191,15 @@ func maintainMatchedCanonical(ctx context.Context, db modelcatalog.Querier, cano
 				)
 				ELSE tags
 			END,
+			-- 2026-10-04 (migration 825): semantic/manual annotations are
+			-- immune to rule re-inference. Without this gate a semantic
+			-- downgrade (vision -> text) is undone by the very next
+			-- provider tick, because the CASE above only fires while the
+			-- stored value is still 'text'. Rationale in discovery.go's
+			-- ON CONFLICT clause.
 			modality = CASE
 				WHEN modality = 'text' AND $4 <> 'text'
+				 AND COALESCE(modality_source, '') NOT IN ('semantic', 'manual')
 				THEN $4
 				ELSE modality
 			END
@@ -200,7 +207,8 @@ func maintainMatchedCanonical(ctx context.Context, db modelcatalog.Querier, cano
 		  AND (
 			(family = $2 AND NOT tags @> ARRAY['family:' || $2])
 			OR family = ANY($3::text[])
-			OR (modality = 'text' AND $4 <> 'text')
+			OR (modality = 'text' AND $4 <> 'text'
+			    AND COALESCE(modality_source, '') NOT IN ('semantic', 'manual'))
 		  )
 	`, canonicalID, family, splitFamilyIDs, inferredModality)
 	return err

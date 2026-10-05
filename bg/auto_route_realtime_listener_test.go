@@ -11,21 +11,29 @@ import (
 )
 
 // fakeRefresher implements the indexRefresher seam for listener tests.
+//
+// 2026-10-05 P2：seam 升级为 RefreshOnceStatus（skipped 语义）。skip 决定
+// 第 n 次调用是否返回「被跳过」—— 跳过必须返回 (true, nil)：没执行，但
+// 不是错误。
 type fakeRefresher struct {
 	mu    sync.Mutex
 	calls int
 	fail  func(call int) error
+	skip  func(call int) bool
 }
 
-func (f *fakeRefresher) RefreshOnce(context.Context) error {
+func (f *fakeRefresher) RefreshOnceStatus(context.Context) (bool, error) {
 	f.mu.Lock()
 	f.calls++
 	n := f.calls
 	f.mu.Unlock()
-	if f.fail != nil {
-		return f.fail(n)
+	if f.skip != nil && f.skip(n) {
+		return true, nil
 	}
-	return nil
+	if f.fail != nil {
+		return false, f.fail(n)
+	}
+	return false, nil
 }
 
 func (f *fakeRefresher) count() int {
@@ -229,4 +237,59 @@ func TestAutoRouteRealtimeListener_HandleNotificationNeverBlocks(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("handleNotification blocked on a full notify channel")
 	}
+}
+
+// 缺陷 1（R44 移交 §R44/移交.2）：skipped ≠ 已处理。
+//
+// refresher「跳过」本次触发（singleflight 忙 / 同 bucket 合并）时返回
+// (skipped=true, nil) —— 旧逻辑只看 error，把跳过当成功清掉 pending，
+// 该 NOTIFY 永不再重试，而跑着那次 rollup 的 SELECT 早于本次提交，
+// 内存索引丢一次路由配置直到下个 ticker。本门守：跳过必须保持 pending
+// 并在下一轮窗口重试，重试执行后才允许清 pending。
+func TestAutoRouteRealtimeListener_SkippedRefreshKeepsPendingAndRetries(t *testing.T) {
+	fake := &fakeRefresher{skip: func(call int) bool { return call == 1 }}
+	l := NewAutoRouteRealtimeListener(nil, fake)
+	l.debounceWindow = 40 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); l.debounceLoop(ctx) }()
+
+	l.handleNotification("credentials:UPDATE:1")
+	if !waitFor(t, 2*time.Second, func() bool { return fake.count() >= 2 }) {
+		t.Fatalf("被跳过的刷新没有重试（calls=%d）—— skipped 被当成已处理，pending 被清了", fake.count())
+	}
+	if !waitFor(t, 2*time.Second, func() bool { return l.PendingRefreshes() == 0 }) {
+		t.Fatalf("重试执行成功后 pending 未清")
+	}
+	time.Sleep(3 * l.debounceWindow)
+	if got := fake.count(); got != 2 {
+		t.Fatalf("skip + 重试产生 %d 次调用，want 2（跳过 1 次 + 执行 1 次）", got)
+	}
+}
+
+// 缺陷 1 的另一面：连续被跳过时 pending 必须始终为 1（欠账不丢），
+// 且重试按窗口节流（不能变成忙等风暴）。
+func TestAutoRouteRealtimeListener_RepeatedlySkippedRefreshStaysPending(t *testing.T) {
+	fake := &fakeRefresher{skip: func(int) bool { return true }}
+	l := NewAutoRouteRealtimeListener(nil, fake)
+	l.debounceWindow = 40 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); l.debounceLoop(ctx) }()
+
+	l.handleNotification("credentials:UPDATE:1")
+	// 5 个窗口内每次都跳过：pending 必须一直在，调用按窗口节流。
+	if !waitFor(t, 2*time.Second, func() bool { return fake.count() >= 3 }) {
+		t.Fatalf("持续跳过时未按窗口重试（calls=%d）", fake.count())
+	}
+	if got := l.PendingRefreshes(); got != 1 {
+		t.Fatalf("持续跳过时 pending = %d, want 1（NOTIFY 的欠账不能丢）", got)
+	}
+	// 窗口节流：40ms 窗口跑了 ≥3 次 ≈ 每窗 1 次，不是每 tick 一次的忙等。
 }

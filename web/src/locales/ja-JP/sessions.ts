@@ -26,6 +26,7 @@ export default {
     },
   },
   userProfile: {
+    loadFailed: 'ユーザープロファイルの読み込みに失敗しました',
     title: "ユーザープロファイル",
     detailTitle: "ユーザープロファイル詳細",
     ownerUser: "ユーザー ID",

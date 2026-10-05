@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/maas"
 )
@@ -44,10 +45,32 @@ func TestCreditLedgerService_GrantAndAdjust(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
+	// R42 修正：t.Cleanup 晚于 defer pool.Close() 执行，原写法打在已关池上
+	// 静默漏租户三行——独立连接 + 失败变红（e83fb6211 同形态）。
+	// 变红后暴露第二处既有断裂：credit_ledger_with_current_month 是视图
+	// （credit_ledger_hot UNION ALL credit_ledger）不可 DELETE——清理须删两张底表。
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DELETE FROM credit_ledger_with_current_month WHERE tenant_id = $1`, tenantID)
-		_, _ = pool.Exec(context.Background(), `DELETE FROM tenant_credit_wallets WHERE tenant_id = $1`, tenantID)
-		_, _ = pool.Exec(context.Background(), `DELETE FROM tenants WHERE code = $1`, tenantID)
+		cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer ccancel()
+		conn, cerr := pgx.Connect(cctx, pgURL)
+		if cerr != nil {
+			t.Errorf("cleanup: connect to drop tenant %s: %v", tenantID, cerr)
+			return
+		}
+		defer conn.Close(cctx)
+		for _, stmt := range []struct {
+			sql  string
+			note string
+		}{
+			{`DELETE FROM credit_ledger_hot WHERE tenant_id = $1`, "credit_ledger_hot"},
+			{`DELETE FROM credit_ledger WHERE tenant_id = $1`, "credit_ledger"},
+			{`DELETE FROM tenant_credit_wallets WHERE tenant_id = $1`, "wallet"},
+			{`DELETE FROM tenants WHERE code = $1`, "tenant"},
+		} {
+			if _, derr := conn.Exec(cctx, stmt.sql, tenantID); derr != nil {
+				t.Errorf("cleanup: delete %s: %v", stmt.note, derr)
+			}
+		}
 	})
 
 	wBefore, err := svc.GetWallet(ctx, tenantID)

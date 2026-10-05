@@ -72,12 +72,97 @@ type SessionRequestBrief struct {
 	Tokens         int       `json:"tokens"`
 	CostUSD        float64   `json:"cost_usd"`
 	LatencyMs      *int      `json:"latency_ms,omitempty"`
+	// RequestStatus 是视图给出的四态标签（success|failure|rate_limited|
+	// in_progress）。**它是 Success 不可替代的上位分类**：`success=false`
+	// 同时覆盖「上游真失败」和「被限流拒绝」两种完全不同的事件，而后者占
+	// session_turns 的 25.9%（本地真库 437,402/1,688,629，审计 §9.160）。
+	// 只透出 Success 的接口无法把这两者分开。
+	//
+	// 用指针而不是 string：in_progress 行的标签就是 "in_progress"，
+	// 而 success IS NULL 行的标签是 NULL（视图保留该契约），指针能把
+	// 「没有标签」与「标签是空串」分开。omitempty 保持旧客户端兼容
+	// ——这是纯加法字段，老前端忽略即可。
+	RequestStatus *string `json:"request_status,omitempty"`
 }
 
 // RelatedSessions 相关会话（同任务下的前后会话）
 type RelatedSessions struct {
 	Prev *SessionManagementItem `json:"prev,omitempty"`
 	Next *SessionManagementItem `json:"next,omitempty"`
+}
+
+// sessionRequestBriefScanner is the slice of pgx.Rows that scanSessionRequestBrief
+// needs. Narrowing it to one method is what lets the scan be tested without a
+// database — a test that re-typed the Scan call would be testing a copy, and a
+// copy is exactly what drifts.
+type sessionRequestBriefScanner interface {
+	Scan(dest ...any) error
+}
+
+// sessionDetailRequestsBaseSQL is the tenant/session-scoped request list for the
+// session-detail panel. It is a package constant rather than an inline literal
+// so the column set and its order have exactly one definition shared by the
+// handler and by TestSessionDetailQuerySelectsRequestStatus; an inline literal
+// means the test can only re-describe it, and a re-description is a second
+// thing to drift.
+//
+// The tenant predicate, the regular-user scope probe and the ordering/limit are
+// appended by the caller — only the projection and the base predicate live here.
+const sessionDetailRequestsBaseSQL = `
+		SELECT rl.request_id, rl.ts, rl.client_model, rl.request_preview, rl.success,
+		       rl.total_tokens, rl.cost_usd, rl.latency_ms, rl.request_status
+		FROM request_logs_with_current_month rl
+		WHERE rl.gw_session_id = $1
+	`
+
+// scanSessionRequestBrief materialises one row of the session-detail request
+// list.
+//
+// success MUST be scanned through sql.NullBool. `session_turns.success` is a
+// **nullable** column, and the view preserves that nullability (it projects
+// `t.success` straight through, and its request_status CASE yields NULL when
+// success is NULL). A bare bool destination makes rows.Scan fail on NULL, the
+// caller then treats it as an unparseable row and skips it — so the request
+// vanishes from the response with no error, no 5xx, and a perfectly normal 200.
+// A missing row in a paginated request list is not something anyone notices.
+//
+// The same reasoning applies to every other nullable column here; only success
+// had a bare destination, which is why only success needed changing.
+func scanSessionRequestBrief(rows sessionRequestBriefScanner) (SessionRequestBrief, error) {
+	var req SessionRequestBrief
+	var clientModel, requestPreview, requestStatus sql.NullString
+	var latencyMs sql.NullInt32
+	var success sql.NullBool
+
+	if err := rows.Scan(
+		&req.RequestID,
+		&req.Timestamp,
+		&clientModel,
+		&requestPreview,
+		&success,
+		&req.Tokens,
+		&req.CostUSD,
+		&latencyMs,
+		&requestStatus,
+	); err != nil {
+		return SessionRequestBrief{}, err
+	}
+	req.Success = success.Valid && success.Bool
+	if clientModel.Valid {
+		req.ClientModel = &clientModel.String
+	}
+	if requestPreview.Valid {
+		req.RequestPreview = &requestPreview.String
+	}
+	if latencyMs.Valid {
+		latency := int(latencyMs.Int32)
+		req.LatencyMs = &latency
+	}
+	if requestStatus.Valid {
+		status := requestStatus.String
+		req.RequestStatus = &status
+	}
+	return req, nil
 }
 
 // SessionUpdateRequest 会话更新请求
@@ -294,12 +379,10 @@ func (h *Handler) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	// 后新会话一行都查不到，而下面 err 分支只把 Requests 置空、不上报，接口仍返
 	// 200 —— 表现为「会话详情 Requests 列表静默空白」。改读 734 视图：视图体已
 	// 拼装 session 族（hot ∪ 月分区）∪ v1 冻结分支，两种状态都供数。
-	requestsQuery := `
-			SELECT rl.request_id, rl.ts, rl.client_model, rl.request_preview, rl.success,
-			       rl.total_tokens, rl.cost_usd, rl.latency_ms
-			FROM request_logs_with_current_month rl
-			WHERE rl.gw_session_id = $1
-		`
+	// 请求列表读 canonical 视图。**必须显式列出 request_status**（118 列里本来
+	// 就有，不取是白丢）：它是 Success 的上位分类，见 SessionRequestBrief 注释。
+	// 列序与 scanSessionRequestBrief 的 Scan 目标一一对应（request_status 在末位）。
+	requestsQuery := sessionDetailRequestsBaseSQL
 	requestArgs := []interface{}{sessionKey}
 	if tenantID := effectiveScopeTenant(r); tenantID != "" {
 		requestsQuery += " AND rl.tenant_id = $2"
@@ -319,31 +402,8 @@ func (h *Handler) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		defer rows.Close()
 		requests := make([]SessionRequestBrief, 0)
 		for rows.Next() {
-			var req SessionRequestBrief
-			var clientModel, requestPreview sql.NullString
-			var latencyMs sql.NullInt32
-
-			err := rows.Scan(
-				&req.RequestID,
-				&req.Timestamp,
-				&clientModel,
-				&requestPreview,
-				&req.Success,
-				&req.Tokens,
-				&req.CostUSD,
-				&latencyMs,
-			)
+			req, err := scanSessionRequestBrief(rows)
 			if err == nil {
-				if clientModel.Valid {
-					req.ClientModel = &clientModel.String
-				}
-				if requestPreview.Valid {
-					req.RequestPreview = &requestPreview.String
-				}
-				if latencyMs.Valid {
-					latency := int(latencyMs.Int32)
-					req.LatencyMs = &latency
-				}
 				requests = append(requests, req)
 			} else {
 				warnRowSkip("sessionDetail.requests", err)

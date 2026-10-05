@@ -38,6 +38,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	dbpkg "github.com/kaixuan/llm-gateway-go/db"
@@ -305,7 +306,7 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	"domains/sessionsummary/system_prompt_prefix.go": {
 		Effect:   effectSilentlyEmpty,
-		Evidence: "JOIN request_logs_bodies_with_current_month rb",
+		Evidence: "dbpkg.SessionBodiesSourceSQL()",
 		Note:     "pgRequestLogsSource 是**默认** MessageSource（summarizer.go:127 NewSummarizer 直接 &pgRequestLogsSource{}），bodies 无 session 兜底 ⇒ 停写后 JOIN 恒 0 行 ⇒ err 被 systemPromptPrefix(:52) 吞掉返回 \"\" ⇒ 会话总结照常生成、200、summary 字段齐全，只是永远缺系统提示词前缀。仅当 SetMessageSource 换成 v2SessionBodiesSource（读 session_bodies_unified）时才免疫。",
 	},
 	// ── batch5：2026-10-02 §9.35 新增（1 条）────────────────────────────────
@@ -356,8 +357,13 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	"admin/no_topic_session.go": {
 		Effect:   effectSilentlyDegradedContent,
-		Evidence: "LEFT JOIN request_logs_bodies_with_current_month rb",
-		Note:     "四个读点：:145-147 与 :320-322（710 + LEFT JOIN bodies）、:535（710 only，api_key_id/tenant_id）、:558（710 only，preview/work_type/request_mode）。**降级的是正文两列，不是行数**：:140-141 的 `COALESCE(rb.request_body::text,'')` / response_body 在 bodies 无 session 臂时对**新会话**恒为空串，而 message_count/request_count 仍非零、接口 200、消息列表结构齐全 ⇒ 消费方（前端消息列表 / 标题生成 / LLM）拿到「**有轮次、无正文**」的会话。:209-228 对 messages==nil 只降级为 `[]` 不报错；:339-341 Scan 失败 continue 也吞掉。判 degraded 而非 empty 的依据：710 的 session 臂继续供行，本文件的主谓词 `gw_task_id IS NULL AND api_key_prefix = $1` 在 session 臂上**今天仍能匹配**（实测近期 gw_task_id 填充 98.51%、api_key_prefix 100%，见 §9.36.2 的按天口径），所以不是恒 0 行。",
+		Evidence: "dbpkg.SessionBodiesSourceSQL()",
+		// ⚠ 2026-10-05（§9.232）：两处 bodies 腿改走切换层，Evidence 随之改写
+		// （原锚点 `LEFT JOIN request_logs_bodies_with_current_month rb` 已不存在）。
+		// 分级**不变，性质变了**：停写后果现在**取决于开关**——默认臂读 v1 ⇒
+		// 与原来完全一致；开关打开后 bodies 腿对停写免疫。
+		// 而 bodies 退役门仍红 ⇒ 开关开不了 ⇒ 现状后果不变。
+		Note: "四个读点：:145-147 与 :320-322（710 + LEFT JOIN bodies）、:535（710 only，api_key_id/tenant_id）、:558（710 only，preview/work_type/request_mode）。**降级的是正文两列，不是行数**：:140-141 的 `COALESCE(rb.request_body::text,'')` / response_body 在 bodies 无 session 臂时对**新会话**恒为空串，而 message_count/request_count 仍非零、接口 200、消息列表结构齐全 ⇒ 消费方（前端消息列表 / 标题生成 / LLM）拿到「**有轮次、无正文**」的会话。:209-228 对 messages==nil 只降级为 `[]` 不报错；:339-341 Scan 失败 continue 也吞掉。判 degraded 而非 empty 的依据：710 的 session 臂继续供行，本文件的主谓词 `gw_task_id IS NULL AND api_key_prefix = $1` 在 session 臂上**今天仍能匹配**（实测近期 gw_task_id 填充 98.51%、api_key_prefix 100%，见 §9.36.2 的按天口径），所以不是恒 0 行。",
 	},
 	"cmd/tools/backfill_session_bodies/main.go": {
 		Effect:   effectSilentlyEmpty,
@@ -667,8 +673,14 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	"admin/compression_stats.go": {
 		Effect:   effectSilentlyDegradedContent,
-		Evidence: "LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id",
-		Note:     "4 个读点里 3 个把 bodies 腿挂在 LEFT JOIN request_logs_bodies_with_current_month 上（bodies 无 session 兜底）⇒ 停写后 710 的 rl 行照常增长，但 with_outbound / compressed / estimated_original_tokens / summary_mode_rows 全部静默归 0，压缩率与省 token 数变成 0%、而 total 与 strategy 分布仍有数，接口 200。只有纯 token_band 那个读点（无 bodies）不退化。",
+		Evidence: "dbpkg.SessionBodiesSourceSQL()",
+		// ⚠ 2026-10-05（§9.232）：3 处 bodies 腿改走切换层，Evidence 随之改写。
+		// 分级**不变但性质变了**：停写后果现在**取决于开关**——
+		// 默认臂（开）读 v1 ⇒ 后果与原来完全一致；
+		// 开关打开后读 session_bodies ⇒ bodies 腿**对停写免疫**。
+		// ⇒ 这不再是「一定会退化」，而是「未灰度时才会退化」。
+		// 而那道 bodies 退役门（TestV1BodiesReadersAreAssessed）仍红 ⇒ 开关开不了。
+		Note: "4 个读点里 3 个把 bodies 腿挂在 LEFT JOIN request_logs_bodies_with_current_month 上（bodies 无 session 兜底）⇒ 停写后 710 的 rl 行照常增长，但 with_outbound / compressed / estimated_original_tokens / summary_mode_rows 全部静默归 0，压缩率与省 token 数变成 0%、而 total 与 strategy 分布仍有数，接口 200。只有纯 token_band 那个读点（无 bodies）不退化。",
 	},
 	"admin/memora_handlers.go": {
 		Effect:   effectSilentlyDegradedContent,
@@ -834,7 +846,7 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	"domains/sessionsummary/summarizer.go": {
 		Effect:   effectSilentlyDegradedContent,
-		Evidence: "LEFT JOIN request_logs_bodies_with_current_month rb",
+		Evidence: "dbpkg.SessionBodiesSourceSQL()",
 		Note:     "pgRequestLogsSource.getSessionMessagesQuery / GetMessagesSince 的轮次腿读 710 视图（session 臂继续供数、停写后仍返回行），但 bodies 腿无 session 兜底 ⇒ 停写后新会话每行 COALESCE(rb.request_body->>'role','user') 退化成 role='user'、content='' ，**消息数非零故不触发 no messages found 报错** ⇒ GenerateSummary 拿着 20 条空正文去调 LLM 生成空摘要并落库。（控制面轴判 live：它 UPDATE session_summaries。）",
 	},
 	"admin/session_bodies_batch.go": {
@@ -908,6 +920,59 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 			"API 层有「数据不足」横幅，但那只在真为空时出现，此处不出现。" +
 			"残余风险：横幅文案无法提示「数字已停止更新」。",
 	},
+	// ── §9.191：2026-10-04 补完最后一个未评估读点 ────────────────────────
+	"admin/usage_enhanced.go": {
+		Effect:   effectSilentlyDegradedAggregate,
+		Evidence: "GroupBy: groupBy, BaseTable: \"request_logs_with_current_month rl\",",
+		// 本条是 107 个读点里最后一个 unclassified（§9.190 实测进度 106/107）。
+		// 下面是**逐条读码 + 真库测量**的结论，不是推断。四个读点的判定各不相同：
+		//
+		// ① cost-trend group_by=work_type（:120 的 requestSide 分支）—— **退化**。
+		//    视图 GROUP BY COALESCE(rl.work_type,'unknown')。真库 7 天实测：
+		//      视图 77,600 行里 work_type 非空只有 4,357 行，**全部落在 v1 臂**；
+		//      session 臂 31,223 行 work_type **100% 为 NULL**。
+		//    独立复核到源头表：session_turns 29,620 + session_turns_hot 1,603 行，
+		//    work_type 同样全 NULL ⇒ 710 把 work_type 登记为「直映 t.work_type」
+		//    是**忠实实现**，是写方从不填 session_turns.work_type。
+		//    为什么本地全 NULL：work_type 来自 X-Gw-Work-Type 请求头
+		//    （domains/analysis/projectattr/attributor.go:65），本地无客户端发送。
+		//    这 4,357 行是谁：origin_actor ∈ {auto-title-generator,
+		//    auto-summary-generator}、is_auto_request=TRUE、task_type 为空 ⇒ 命中
+		//    internaltraffic.ClassifyInternalLoopback 的 **actor 臂**
+		//    （internal/internaltraffic/internal_traffic.go:170-184 是三臂**或**关系，
+		//    不是与；本轮第一版读成「与」差点误报成镜像漏写），它们**按设计**不进
+		//    session_turns。⇒ 停写后 work_type 维度塌成只剩 'unknown' 一组，
+		//    接口 200、字段齐全、无任何错误信号。
+		//
+		// ② cost-trend group_by=intent（:109）—— **不受影响**。它 JOIN
+		//    session_summaries ss ON ss.session_key = rl.gw_session_id，而 session 臂
+		//    的 gw_session_id 实测 0 NULL（710 登记为派生映射
+		//    `CASE WHEN session_id LIKE 'sys:%' THEN NULL ELSE session_id END`），
+		//    session_summaries 本身 7 天内更新 3,852 行、持续增长。
+		//
+		// ③ cache-economics 压缩请求数（:666 compressedQuery）—— **不受影响**，
+		//    且方向与直觉相反：真库 7 天实测 compression_strategy 非空的
+		//    v1 臂 **0 / 46,398 行**，session 臂 **4,796 / 31,223 行**。
+		//    这个计数今天就**只由 session 臂供数**，停写不掉反得。
+		//
+		// ④ 退化幅度：停写后视图少掉的 4,359 行内部回环占 7 天 **5.6% 行 /
+		//    4.20% token**（business 95.80%）。本地 cost_usd ≈ 0，**美元占比无法在
+		//    本机测**，这是本条读数的一个明确缺口。
+		//
+		// ⚠ 本档被 silentFormsOutsideGreyList **显式排除**在「灰度前必须处理的静默档」
+		//   清单之外，但那条排除的登记理由写的是「退化发生在 reward 的分项
+		//   （基线 cohort 取 miss ⇒ 延迟/成本项同时塌成 0.5）」——针对的是
+		//   baseline-metric 那一类形状。**这里的形状不同**（维度取值集合塌缩成
+		//   单值），排除决定是否覆盖它属主决定，已登记为 D27-a，本轮不自行改档也不
+		//   自行把 70 这个对外数字改掉。
+		Note: "唯一真退化点是 cost-trend 的 work_type 维度：视图里 work_type 非空的" +
+			"4,357 行**全在 v1 臂**（session 臂 7 天 31,223 行 100% NULL，已到源头表" +
+			"session_turns/_hot 复核），且这批行是 origin_actor 命中的内部回环" +
+			"（标题/摘要生成器），按设计不镜像 ⇒ 停写后 work_type 只剩 'unknown' 一组，" +
+			"200/字段齐全/无错误。intent 维度与压缩计数不受影响（压缩计数今天就只由" +
+			"session 臂供数：v1 臂 0/46,398 vs session 臂 4,796/31,223）。" +
+			"幅度：内部回环占 7 天 5.6% 行 / 4.20% token；美元占比本地测不了。",
+	},
 }
 
 // measurementCaveat 适用于本文件里所有**幅度**数字，必须与结构性事实分开读。
@@ -965,7 +1030,7 @@ func TestRequestLogsStopWriteClassificationProgress(t *testing.T) {
 	// 间接读点（本条自己所在的 bg/auto_route_settle_sql.go）会被判成
 	// 「已不在读点清单中」——而它明明在读。
 	known := map[string]bool{}
-	for _, f := range allKnownRequestLogsReaderFiles() {
+	for _, f := range allKnownRequestLogsReaderFiles(t) {
 		known[f] = true
 	}
 	for file := range requestLogsStopWriteClassification {
@@ -976,7 +1041,7 @@ func TestRequestLogsStopWriteClassificationProgress(t *testing.T) {
 	}
 
 	var todo []string
-	for _, file := range allKnownRequestLogsReaderFiles() {
+	for _, file := range allKnownRequestLogsReaderFiles(t) {
 		c, ok := requestLogsStopWriteClassification[file]
 		switch {
 		case !ok, c.Effect == effectUnclassified:
@@ -984,7 +1049,7 @@ func TestRequestLogsStopWriteClassificationProgress(t *testing.T) {
 		}
 	}
 	sort.Strings(todo)
-	total := len(allKnownRequestLogsReaderFiles())
+	total := len(allKnownRequestLogsReaderFiles(t))
 	t.Logf("S4 停写逐点评估进度：%d/%d 已评估，未评估 %d 个 —— %s",
 		total-len(todo), total, len(todo), progressVerdict(len(todo)))
 	if len(todo) > 0 {
@@ -1052,8 +1117,126 @@ func TestRequestLogsStopWriteClassificationEvidenceIsReal(t *testing.T) {
 			t.Errorf("%s: Evidence 在该文件中不存在：\n  %q\n"+
 				"分级必须锚在真实存在的代码上，否则「已评估」无法与「凭印象」区分",
 				file, c.Evidence)
+			continue
+		}
+		// ★ 两跳校验（§9.232）：Evidence 锚在**切换层调用**上时，
+		// 「逐字存在」只证明了「这个文件提到了那个函数」，
+		// **不**证明「这个文件读 v1」—— v1 关系名在**切换层那个文件**里。
+		//
+		// ⚠⚠ **第一版写反了检查方向，等于恒真。** 它遍历的是**已登记的**切换层，
+		// 于是只能报「某个已登记切换层的 ResolvesTo 不是 v1 表」——
+		// 而那件事 `TestIndirectRequestLogsReadersAreDeclaredWell` 已经禁掉了。
+		// ⇒ 两版都是绿的。
+		// 而**真正要拦的**是反方向：Evidence 里出现一个 `join`/`from` + `fn()` 的
+		// 拼接点，而那个 `fn` **没有**被登记为切换层。
+		// 那种情况下「停写后会退化」的分级**没有任何事实基础**，
+		// 而第一版会安静放行。变异 M34 的配套阴性对照实测确认了这一点。
+		// ★ 两跳的第二跳按**文件**判，不按 Evidence 判（§9.233）。
+		//
+		// 第一版从 Evidence 里抽 `join/from` + `fn()`，而 Evidence 锚在
+		// `` `+fn()+` `` 这种**拼接形态**上 —— gofmt 会在
+		// `` `+fn()+` `` 与 `` ` + fn() + ` `` 之间**随机**切换
+		// （实测同一批文件里两种拼写同时存在），于是这个抽取必然在某些文件上失配。
+		//
+		// 第二版按「所有 `*SourceSQL(` 都是切换层」来判，**过宽**：
+		// `admin/session_timeline_query.go` 调 `SessionFamilyTurnsSourceSQL()` ——
+		// 那是**会话族 raw helper**，永远返回会话族，根本不是切换层、不需要登记。
+		// 实测它被判红。⇒ 一个必然误报的判据，比没有判据更糟（会被绕过或被禁用）。
+		//
+		// ⇒ 第三版：**只有既不在 db 包里定义、又没登记的** `*SourceSQL(` 才算悬挂。
+		// 「在 db 里定义」是机械判定（扫 db/*.go 有没有 `func <name>(`），
+		// 不需要任何手维护名单，因而不会漂移。
+		for _, fn := range danglingSourceSQLCalls(t, string(raw)) {
+			t.Errorf("%s: 调用了 %q，但它既**不在 db 包里定义**"+
+				"（那是会话族 raw helper 的位置），也**不在 indirectRequestLogsReaders 里登记**"+
+				"（那是切换层的位置）。\n"+
+				"  ⇒ 本文件的停写分级（%s）缺一个可核的来源：v1 关系名在哪、"+
+				"默认臂读什么，都无从核对。\n"+
+				"  要么把它挪到 db 包（成为 raw helper），要么在 indirectRequestLogsReaders 登记它。",
+				file, fn, c.Effect)
 		}
 	}
+}
+
+// danglingSourceSQLCalls 报告一段源码里调用了哪些**悬挂**的 `*SourceSQL(`：
+// 既不在 db 包里定义，也没在 indirectRequestLogsReaders 登记。
+//
+// `*SourceSQL(` 是本仓「返回关系名的拼接层」的命名签名。合法的两类：
+//
+//	db 包里的 raw helper（SessionFamilyTurnsSourceSQL / SessionFamilyBodiesSourceSQL …）
+//	  —— 它们**永远**返回会话族，与开关无关，不需要登记；
+//	登记过的切换层（SwitchFunc）—— 它按开关在 v1 与会话族之间二选一。
+//
+// 第三类（两个都不是）就是悬挂：读法不可核。判据用「db 包里有没有 `func <name>(`」
+// 这种**机械**判定，而不是手维护名单 —— 手名单会漂，且漂移方向是漏报。
+func danglingSourceSQLCalls(t *testing.T, src string) []string {
+	t.Helper()
+	re := regexp.MustCompile(`\b(\w*SourceSQL)\s*\(`)
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range re.FindAllStringSubmatch(src, -1) {
+		fn := m[1]
+		if seen[fn] || isRegisteredSwitchFunc(fn) {
+			continue
+		}
+		seen[fn] = true
+		if !definedInDBPackage(t, fn) {
+			out = append(out, fn)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// dbDefinedFuncs 是 db 包里定义的全部函数名，**每个测试进程只算一次**。
+//
+// ⚠ 第一版没有这个缓存：每问一个 `fn` 就重做一次**全仓 WalkDir** + 重读
+// db 下全部文件。而判据是对**每个已分类文件**、**每个调用到的 `*SourceSQL(`**
+// 各问一次 —— 实测全量 admin 门从 509s 涨到 25 分钟以上。
+//
+// ⇒ 成本从 O(分类文件数 × 函数名数 × 全仓大小) 降到 O(全仓大小) 一次。
+// 判据的**结论不变**（同一批函数名），只是不再重复算。
+var (
+	dbDefinedOnce sync.Once
+	dbDefinedSet  map[string]bool
+)
+
+func dbDefinedFuncs(t *testing.T) map[string]bool {
+	t.Helper()
+	dbDefinedOnce.Do(func() {
+		dbDefinedSet = map[string]bool{}
+		root := repoRootFromCaller(t)
+		funcDefRE := regexp.MustCompile(`(?m)^func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)\s*\(`)
+		for _, rel := range productionGoFiles(t, root) {
+			if !strings.HasPrefix(rel, "db/") {
+				continue
+			}
+			raw, err := os.ReadFile(filepath.Join(root, rel))
+			if err != nil {
+				t.Fatalf("read %s: %v", rel, err)
+			}
+			for _, m := range funcDefRE.FindAllStringSubmatch(string(raw), -1) {
+				dbDefinedSet[m[1]] = true
+			}
+		}
+	})
+	return dbDefinedSet
+}
+
+// definedInDBPackage 报告 db 包里是否定义了名为 fn 的函数。
+func definedInDBPackage(t *testing.T, fn string) bool {
+	t.Helper()
+	return dbDefinedFuncs(t)[fn]
+}
+
+// isRegisteredSwitchFunc 报告 fn 是否是某个已登记切换层返回关系名的函数。
+func isRegisteredSwitchFunc(fn string) bool {
+	for _, e := range indirectRequestLogsReaders {
+		if e.SwitchFunc == fn {
+			return true
+		}
+	}
+	return false
 }
 
 // stopWriteSourceFamily 是**机械可判定**的那一维：直接看文件读的是哪一族表。
@@ -1501,7 +1684,18 @@ func nullPaddedPredicateHit(raw string) (hit bool, via string) {
 }
 
 // sourceFamilyOf 从文件源码机械判定它读哪一族。
-func sourceFamilyOf(code string) string {
+// sourceFamilyOf 按源码文本判定 v1 读法族。
+//
+// readsVBodies 用于**切换层消费点**（§9.232）：消费点的 bodies 腿走
+// `db.SessionBodiesSourceSQL()`，源码里**没有 bodies 关系名字面量**，
+// 而它的默认臂读的是 v1 ⇒ `familyBodiesRE` 匹配不到 ⇒ 它会被判成
+// 「只读视图 / 只读基表」，**而这不属实**（它的 bodies 腿仍是 v1）。
+//
+// ⚠ 症状是「归族不报错、只是低估」：`admin/session_compare.go` 与
+// `admin/session_export.go` 迁移后直接变成 `undetermined`（它们只剩会话族
+// 腿），而那 7 个还读视图的读方从 `reads_bodies_plus_other` 掉到 `reads_710_view_only`
+// —— 两个方向都少算 bodies 依赖。
+func sourceFamilyOf(code string, readsVBodies bool) string {
 	// raw 保留未剥离的原文，供 nullPaddedPredicateHit 做 AST 解析。顺序很重要：
 	// 剥注释会吃掉字符串字面量里的 "//"（URL、SQL `--` 注释），把 Go 源码弄成
 	// 无法解析，于是 nullPaddedPredicateHit 会静默退回整文件口径。
@@ -1510,7 +1704,7 @@ func sourceFamilyOf(code string) string {
 	raw := code
 	code = gateStopWriteLineCommentRE.ReplaceAllString(code, " ")
 	code = gateStopWriteBlockCommentRE.ReplaceAllString(code, " ")
-	bo := familyBodiesRE.MatchString(code)
+	bo := familyBodiesRE.MatchString(code) || readsVBodies
 	vi, v1OnlyView := false, false
 	for _, m := range familyAnyViewRE.FindAllString(code, -1) {
 		if _, ok := requestLogsViewsWithSessionArm[strings.ToLower(m)]; ok {
@@ -1565,12 +1759,12 @@ func TestRequestLogsStopWriteSourceFamilyCoversInventory(t *testing.T) {
 	// §9.49：遍历「直接表 ∪ 间接表」。只遍历直接表时，间接读点（表名是
 	// Go 表达式，见 indirectRequestLogsReaders）**从未进入过这个分类器**，
 	// 于是它报「未归入任何一族」——而它其实一直在读 v1。
-	for _, file := range allKnownRequestLogsReaderFiles() {
+	for _, file := range allKnownRequestLogsReaderFiles(t) {
 		raw, err := os.ReadFile(filepath.Join(root, file))
 		if err != nil {
 			t.Fatalf("read %s: %v", file, err)
 		}
-		fam := sourceFamilyOf(string(raw))
+		fam := sourceFamilyOf(string(raw), isSwitchConsumerFile(t, root, file))
 		if ind, isIndirect := indirectRequestLogsReaders[file]; isIndirect {
 			// 器眼看不见它，族由登记给定；登记里没有合法族时才算 undetermined。
 			if ind.Family == "" {
@@ -1597,9 +1791,9 @@ func TestRequestLogsStopWriteSourceFamilyCoversInventory(t *testing.T) {
 	}
 	// §9.49：分母用「直接表 ∪ 间接表」。用 len(requestLogsReadInventory) 会让
 	// 每一个间接读点都算成一次「漏计」——而它既没漏也没重，是分母本身少算了一个。
-	if total != len(allKnownRequestLogsReaderFiles()) {
+	if total != len(allKnownRequestLogsReaderFiles(t)) {
 		t.Errorf("六族合计 %d ≠ 读点清单 %d（直接表 %d + 间接表 %d）—— 有文件被重复计数或漏计",
-			total, len(allKnownRequestLogsReaderFiles()),
+			total, len(allKnownRequestLogsReaderFiles(t)),
 			len(requestLogsReadInventory), len(indirectRequestLogsReaders))
 	}
 	t.Logf("S4 停写影响面（按读表族，机械判定）：\n"+
@@ -1650,7 +1844,7 @@ func TestStopWriteEffectAgreesWithSourceFamily(t *testing.T) {
 			t.Errorf("%s: 读取失败 %v", file, err)
 			continue
 		}
-		fam := sourceFamilyOf(string(raw))
+		fam := sourceFamilyOf(string(raw), isSwitchConsumerFile(t, root, file))
 		if fam == familyViewNullPadded && c.Effect == effectUnaffected {
 			if reason, ok := nullPaddedUnaffectedJustification[file]; !ok || strings.TrimSpace(reason) == "" {
 				t.Errorf("%s（族=%s）判为「停写不受影响」，但它在 session 臂 NULL 补位的列上出现。\n"+

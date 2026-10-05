@@ -162,14 +162,30 @@ watch(range, () => {
 // ── 系统特色模型（从系统设置读取，不可编辑） ─────────────
 const systemFeaturedModels = ref<FeaturedModel[]>([])
 const systemFeaturedLoading = ref(false)
+const systemFeaturedError = ref<string | null>(null)
 
 async function loadSystemFeaturedModels() {
   systemFeaturedLoading.value = true
+  systemFeaturedError.value = null
   try {
     const res = await getFeaturedModelsDynamic()
     systemFeaturedModels.value = res.models ?? []
-  } catch {
+  } catch (err) {
+    // 2026-10-03：原来这里 `catch { systemFeaturedModels.value = [] }`。
+    // 模板第 619 行是 `v-else-if="systemFeaturedModels.length === 0"`，
+    // 于是失败时设置面板里写着「暂无系统特色模型」——
+    // 用户以为自己在「模型管理 → 特色模型」里没配过任何模型，
+    // 真相是「这次没加载出来」。这会把排查引向完全错误的方向：
+    // 去配置页反复添加，而配置其实是好的。
+    //
+    // 判据与 T1/§15.1 同款：这一处静默失败，页面会不会把它渲染成一条事实。
+    // 会，就修。
+    //
+    // 本文件全文件不用 i18n（0 处 t()），故此处保持本地化风格，
+    // 不为这一处单独引入 i18n key —— 那会把该文件变成半 i18n 半硬编码。
     systemFeaturedModels.value = []
+    const e = err as { detail?: string; message?: string } | null
+    systemFeaturedError.value = e?.detail || e?.message || '加载失败'
   }
   systemFeaturedLoading.value = false
 }
@@ -616,6 +632,7 @@ const probeSummaryCards = computed(() => {
         <div class="form-group">
           <label>系统特色模型（只读，在 模型管理 → 特色模型 中配置）</label>
           <div v-if="systemFeaturedLoading" class="muted">加载中…</div>
+          <div v-else-if="systemFeaturedError" class="muted" role="alert">系统特色模型加载失败：{{ systemFeaturedError }}（下方列表为空不代表未配置）</div>
           <div v-else-if="systemFeaturedModels.length === 0" class="muted">暂无系统特色模型</div>
           <div v-else class="featured-tags">
             <span v-for="m in systemFeaturedModels" :key="m.name" class="featured-tag">{{ m.name }}</span>

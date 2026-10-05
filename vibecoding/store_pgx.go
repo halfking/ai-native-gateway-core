@@ -25,12 +25,12 @@ func (s *PgxStore) CreateProject(ctx context.Context, project *Project) error {
 	settingsJSON, _ := json.Marshal(project.Settings)
 	query := `
 		INSERT INTO vibe_coding_projects (tenant_id, name, description, language, framework, status, settings, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
 		RETURNING id, created_at, updated_at
 	`
 	return s.db.QueryRow(ctx, query,
 		project.TenantID, project.Name, project.Description, project.Language,
-		project.Framework, project.Status, settingsJSON, project.CreatedBy,
+		project.Framework, project.Status, string(settingsJSON), project.CreatedBy,
 	).Scan(&project.ID, &project.CreatedAt, &project.UpdatedAt)
 }
 
@@ -110,13 +110,13 @@ func (s *PgxStore) UpdateProject(ctx context.Context, project *Project) error {
 	settingsJSON, _ := json.Marshal(project.Settings)
 	query := `
 		UPDATE vibe_coding_projects
-		SET name = $2, description = $3, language = $4, framework = $5, status = $6, settings = $7, updated_at = now()
+		SET name = $2, description = $3, language = $4, framework = $5, status = $6, settings = $7::jsonb, updated_at = now()
 		WHERE id = $1
 		RETURNING updated_at
 	`
 	return s.db.QueryRow(ctx, query,
 		project.ID, project.Name, project.Description, project.Language,
-		project.Framework, project.Status, settingsJSON,
+		project.Framework, project.Status, string(settingsJSON),
 	).Scan(&project.UpdatedAt)
 }
 
@@ -133,12 +133,12 @@ func (s *PgxStore) CreateSession(ctx context.Context, session *Session) error {
 	metadataJSON, _ := json.Marshal(session.Metadata)
 	query := `
 		INSERT INTO vibe_coding_sessions (project_id, tenant_id, session_id, task_type, status, messages, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)
 		RETURNING id, created_at
 	`
 	return s.db.QueryRow(ctx, query,
 		session.ProjectID, session.TenantID, session.SessionID, session.TaskType,
-		session.Status, messagesJSON, metadataJSON,
+		session.Status, string(messagesJSON), string(metadataJSON),
 	).Scan(&session.ID, &session.CreatedAt)
 }
 
@@ -247,11 +247,11 @@ func (s *PgxStore) UpdateSession(ctx context.Context, session *Session) error {
 	metadataJSON, _ := json.Marshal(session.Metadata)
 	query := `
 		UPDATE vibe_coding_sessions
-		SET task_type = $2, status = $3, messages = $4, metadata = $5, completed_at = $6
+		SET task_type = $2, status = $3, messages = $4::jsonb, metadata = $5::jsonb, completed_at = $6
 		WHERE id = $1
 	`
 	_, err := s.db.Exec(ctx, query,
-		session.ID, session.TaskType, session.Status, messagesJSON, metadataJSON, session.CompletedAt,
+		session.ID, session.TaskType, session.Status, string(messagesJSON), string(metadataJSON), session.CompletedAt,
 	)
 	return err
 }
@@ -268,12 +268,12 @@ func (s *PgxStore) CreateReview(ctx context.Context, review *Review) error {
 	reviewResultJSON, _ := json.Marshal(review.ReviewResult)
 	query := `
 		INSERT INTO vibe_code_reviews (session_id, tenant_id, file_path, language, original_code, review_result, score)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
 		RETURNING id, created_at
 	`
 	return s.db.QueryRow(ctx, query,
 		review.SessionID, review.TenantID, review.FilePath, review.Language,
-		review.OriginalCode, reviewResultJSON, review.Score,
+		review.OriginalCode, string(reviewResultJSON), review.Score,
 	).Scan(&review.ID, &review.CreatedAt)
 }
 

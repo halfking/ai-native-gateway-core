@@ -4,7 +4,7 @@
 // 按当前指标排序取 Top 6，附占比条（相对 Top1）；保留「请求数 / Token 数」指标切换。
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { BoardPayload, BoardPieItem } from '../../api/board'
+import { isBoardPieDegraded, type BoardPayload, type BoardPieItem } from '../../api/board'
 
 const props = defineProps<{
   board: BoardPayload | null | undefined
@@ -13,6 +13,9 @@ const props = defineProps<{
 
 const { t } = useI18n()
 const metric = ref<'requests' | 'tokens'>('requests')
+
+/** 模型维度降级 ⇒ 这张表不是「没有模型」，而是「没算出来」。 */
+const modelsDegraded = computed(() => isBoardPieDegraded(props.board, 'models'))
 
 const rows = computed(() => {
   const items: BoardPieItem[] = [...(props.board?.pies?.models ?? [])]
@@ -56,6 +59,9 @@ function fmtCompact(n: number | undefined) {
     </div>
 
     <div v-if="loading && !rows.length" class="mdist__skeleton" />
+    <div v-else-if="modelsDegraded" class="mdist__degraded">
+      {{ t('dashboard.board.pieDegraded', { reason: props.board?.degraded_pies?.reason || t('dashboard.board.pieDegradedGeneric') }) }}
+    </div>
     <div v-else-if="!rows.length" class="mdist__empty">{{ t('dashboard.board.empty') }}</div>
     <div v-else class="mdist__rows">
       <div class="mdist__row mdist__row--th" aria-hidden="true">
@@ -185,6 +191,14 @@ function fmtCompact(n: number | undefined) {
   color: var(--text-muted);
   text-align: center;
   padding: 16px 0;
+}
+/* 降级态与空态必须视觉可分：前者是「不知道」，后者是「确实没有」。 */
+.mdist__degraded {
+  font-size: 12px;
+  color: var(--warning);
+  text-align: center;
+  padding: 16px 0;
+  line-height: 1.5;
 }
 .mdist__skeleton {
   min-height: 140px;

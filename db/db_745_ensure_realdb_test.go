@@ -14,17 +14,17 @@ import (
 // （2026-09-24 对账报表设计切片）。745 原文件死放 migrations/ 顶层、无任何
 // 投递通道（审计确认的死文件 + 五点同步全缺），本测试把 boot 收敛路径钉住：
 //
-//	1. DROP 掉表（模拟尚未应用/回滚残留），ensure 必须重建，且 UNIQUE 约束
-//	   report_snapshots_scope_key_date_raw_model_key 四列在位（粒度契约：
-//	   scope×scope_key×report_date×raw_model_name —— 无模型维度的旧三键
-//	   形状装不下 provider×model×day，见 745 迁移头注记②）、raw_model_name
-//	   为 NOT NULL DEFAULT '' 哨兵列；
-//	2. 第二次 ensure 必须幂等快返回（information_schema 存在性短路的
-//	   boot 常态路径），不重复执行任何 DDL。
+//  1. DROP 掉表（模拟尚未应用/回滚残留），ensure 必须重建，且 UNIQUE 约束
+//     report_snapshots_scope_key_date_raw_model_key 四列在位（粒度契约：
+//     scope×scope_key×report_date×raw_model_name —— 无模型维度的旧三键
+//     形状装不下 provider×model×day，见 745 迁移头注记②）、raw_model_name
+//     为 NOT NULL DEFAULT ” 哨兵列；
+//  2. 第二次 ensure 必须幂等快返回（information_schema 存在性短路的
+//     boot 常态路径），不重复执行任何 DDL。
 //
 // 无 TEST_DATABASE_URL / TEST_DB_URL 时跳过（与 744 真库回归同门控）。
 // 纪律：修复子代理禁连库——本测试只随协调者的 scratch 容器单点执行
-//（db/db_744_ensure_realdb_test.go 同款结构，只写不跑）。
+// （db/db_744_ensure_realdb_test.go 同款结构，只写不跑）。
 func TestEnsureReportSnapshots_RealDB(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
@@ -95,13 +95,13 @@ func TestEnsureReportSnapshots_RealDB(t *testing.T) {
 }
 
 // TestEnsureReportSnapshots746Upgrade_RealDB — 746 存量库升级路径回归
-//（2026-09-25 对账报表落地轮）：手工建出 745 旧形状（tenant_id BIGINT、
+// （2026-09-25 对账报表落地轮）：手工建出 745 旧形状（tenant_id BIGINT、
 // 无 credits/latency 三列），ensure 必须原位升级到 746 最终形状：
 //
-//	1. tenant_id 数据类型 = text（对齐 usage_facts 文本租户键）；
-//	2. credits_charged / latency_p50_ms / latency_p95_ms 三列在位且
-//	   NOT NULL DEFAULT 0；
-//	3. 二次 ensure 幂等（columnsAllPresent 短路，不再跑 ALTER）。
+//  1. tenant_id 数据类型 = text（对齐 usage_facts 文本租户键）；
+//  2. credits_charged / latency_p50_ms / latency_p95_ms 三列在位且
+//     NOT NULL DEFAULT 0；
+//  3. 二次 ensure 幂等（columnsAllPresent 短路，不再跑 ALTER）。
 //
 // 门控与 TestEnsureReportSnapshots_RealDB 相同（TEST_DATABASE_URL /
 // TEST_DB_URL，scratch 库单点执行）。

@@ -290,9 +290,9 @@ func TestCaptureForwarder_DropsOversizeAtEmit(t *testing.T) {
 	}
 
 	entry := &telemetry.RequestLogEntry{
-		RequestID:   "oversize-001",
-		TenantID:    "default",
-		RequestBody: strPtr(string(bigBody)),
+		RequestID:    "oversize-001",
+		TenantID:     "default",
+		RequestBody:  strPtr(string(bigBody)),
 		OutboundBody: json.RawMessage(bigBody),
 	}
 

@@ -27,7 +27,7 @@ const providerErrorAggregatorDefaultInterval = 10 * time.Minute
 
 // providerErrorAggregatorStallWarnAfter bounds the silent-loss exposure of
 // hot-only staging. Promote (688-aligned live default) moves hot rows older
-// than 8h into the columnar month partitions; those rows' aggregation_ids are
+// than 8h into the month partitions (heap since 813); those rows' aggregation_ids are
 // necessarily ≤ the watermark (healthy ticks advance every 10min), so a
 // watermark stalled longer than the retention can strand promoted rows
 // outside this staging's reach. The stall guard below converts that edge
@@ -75,7 +75,11 @@ ON COMMIT DROP AS
   c.request_id,
   c.context,
   c.ts,
-  -- Same citus-columnar shape guard as provider_error_agg_src above.
+  -- Shape guard: NULL placeholder keeps the two staging temp tables on the
+  -- same verbatim select list. It replaced projecting the unified view's
+  -- source column, which aborted on the Citus columnar month partitions
+  -- ("cache lookup failed" — see the note above the staging Exec calls);
+  -- heap since 813, the placeholder stays for shape stability.
   NULL::text AS source
  FROM candidate_failure_logs_hot c
  WHERE c.aggregation_id > $1`
@@ -112,7 +116,11 @@ ON COMMIT DROP AS
   c.request_id,
   c.context,
   c.ts,
-  -- Same citus-columnar shape guard as provider_error_agg_src above.
+  -- Shape guard: NULL placeholder keeps the two staging temp tables on the
+  -- same verbatim select list. It replaced projecting the unified view's
+  -- source column, which aborted on the Citus columnar month partitions
+  -- ("cache lookup failed" — see the note above the staging Exec calls);
+  -- heap since 813, the placeholder stays for shape stability.
   NULL::text AS source
  FROM candidate_failure_logs_unified c
  JOIN (

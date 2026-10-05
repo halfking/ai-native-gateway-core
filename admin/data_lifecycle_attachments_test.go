@@ -133,7 +133,7 @@ func TestAttachmentCleanup_TenantScope_Helper(t *testing.T) {
 // drift.
 func TestAttachmentCleanup_RetryableClassification(t *testing.T) {
 	cases := []struct {
-		code     string
+		code      string
 		retryable bool
 	}{
 		{"40001", true},  // serialization_failure

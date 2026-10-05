@@ -83,10 +83,10 @@ func TestStripMinimaxFieldsBody_SensitiveContentFlagged(t *testing.T) {
 
 func TestStripMinimaxFieldsBody_MultipleClassificationLevels(t *testing.T) {
 	cases := []struct {
-		name               string
-		inputType          int
-		outputType         int
-		wantInputPreserved bool
+		name                string
+		inputType           int
+		outputType          int
+		wantInputPreserved  bool
 		wantOutputPreserved bool
 	}{
 		{

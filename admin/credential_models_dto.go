@@ -255,7 +255,10 @@ func scanModelOfferDTO(scan func(dest ...any) error) (modelOfferDTO, error) {
 func (h *Handler) patchCanonicalCaps(ctx context.Context, canonicalID int, req createCredentialModelReq) error {
 	if req.Modality != nil {
 		mod := stringsTrimDefault(*req.Modality, "text")
-		if _, err := h.db.Exec(ctx, `UPDATE models_canonical SET modality = $1, updated_at = NOW() WHERE id = $2`, mod, canonicalID); err != nil {
+		// R42（825 Layer 3 盖章）：与 /api/models/{id}/modality 同一口径，
+		// 手工覆盖必须写 modality_source='manual'，否则守卫的 manual 臂
+		// 空转、覆盖可被规则推断翻回（详见 admin/model_modality.go 注释）。
+		if _, err := h.db.Exec(ctx, `UPDATE models_canonical SET modality = $1, modality_source = 'manual', modality_verified_at = NULL, updated_at = NOW() WHERE id = $2`, mod, canonicalID); err != nil {
 			return err
 		}
 	}

@@ -14,7 +14,7 @@ import (
 // create / bulk-import SQL (2026-09-12).
 //
 // Both statements used to arbitrate ON CONFLICT on the expression
-// (raw_name, COALESCE(quantization,''), COALESCE(surface,'')), but
+// (raw_name, COALESCE(quantization,”), COALESCE(surface,”)), but
 // model_aliases has no such unique index — only
 // uq_model_aliases_canonical_raw (canonical_id, raw_name) — so every admin
 // alias create failed with 42P10. The rewrite arbitrates on the real pair
