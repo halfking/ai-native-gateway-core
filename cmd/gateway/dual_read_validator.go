@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/db"
 )
@@ -94,12 +95,78 @@ type DualDriftSample struct {
 // It is safe to construct without a DB pool (Compare returns a "nil pool"
 // error); this lets the admin handler wire it up unconditionally.
 type DualReadValidator struct {
-	db *pgxpool.Pool
+	db dualReadQuerier
+}
+
+// dualReadQuerier is the slice of pgx a DualReadValidator needs.
+//
+// It is an interface rather than *pgxpool.Pool so a caller can hand in a
+// transaction instead of a pool. That is not hypothetical tidiness: the S4
+// gate's own regression test needs to take two measurements — one with v1
+// writes on, one with them off — and assert the *measurements* are identical
+// while the *verdicts* differ. Run against the pool those two land on
+// different snapshots, and on a database with a live writer the numbers move
+// between them: the test failed roughly 1 run in 8 on the local real database
+// before this existed, which is a flaky gate rather than a gate, and flaky
+// gates get disabled.
+//
+// A REPEATABLE READ transaction pins both reads to one snapshot, so the
+// assertion keeps its full strength instead of being loosened into a
+// tolerance. *pgxpool.Pool satisfies it unchanged, so no caller had to move.
+type dualReadQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 // NewDualReadValidator returns a validator backed by the given pool.
+//
+// ⚠ The nil check here is load-bearing, not defensive boilerplate. Storing a
+// nil *pgxpool.Pool directly into the `db` interface would produce a
+// **non-nil interface holding a nil pointer**, so `v.db == nil` inside
+// Summarize would be false and the guard would let a nil pool through to a
+// method call. That is not hypothetical: widening `db` from a concrete pool to
+// an interface introduced exactly that panic in
+// TestDualReadValidator_NilPoolCompare, and the offline constructor test
+// caught it immediately. A nil pool must become a nil interface, which means
+// testing it here, before the box.
 func NewDualReadValidator(db *pgxpool.Pool) *DualReadValidator {
-	return &DualReadValidator{db: db}
+	return &DualReadValidator{db: unboxNilQuerier(db)}
+}
+
+// unboxNilQuerier turns an interface holding a **typed nil** into a genuinely
+// nil interface, so that `v.db == nil` keeps meaning "not configured".
+//
+// It has to be done here, at every entry point, rather than in one
+// constructor: NewDualReadValidatorOn takes the interface directly, so a caller
+// can box a nil *pgxpool.Pool just as easily as NewDualReadValidator can. A
+// check in only one of the two constructors is the kind of gate that passes
+// review and still lets the bug through.
+//
+// A type switch rather than reflect: the set of concrete types this interface
+// is ever satisfied by is closed and tiny, and reflection here would be a
+// per-call cost on a code path that is already the slow one.
+func unboxNilQuerier(q dualReadQuerier) dualReadQuerier {
+	switch t := q.(type) {
+	case nil:
+		return nil
+	case *pgxpool.Pool:
+		if t == nil {
+			return nil
+		}
+	case pgx.Tx:
+		// pgx.Tx is itself an interface, so a nil one arrives here boxed.
+		if t == nil {
+			return nil
+		}
+	}
+	return q
+}
+
+// NewDualReadValidatorOn returns a validator reading through q, which may be a
+// pool or a transaction. Callers that need two measurements of the same instant
+// must pass one transaction, not two pool reads.
+func NewDualReadValidatorOn(q dualReadQuerier) *DualReadValidator {
+	return &DualReadValidator{db: unboxNilQuerier(q)}
 }
 
 // RegisterRoutes wires the reconciliation endpoints:
@@ -176,6 +243,18 @@ type MirrorDriftSummary struct {
 	V1WritesEnabled  bool   `json:"v1_writes_enabled"`
 	S4GateVoid       bool   `json:"s4_gate_void"`
 	S4GateVoidReason string `json:"s4_gate_void_reason,omitempty"`
+
+	// V1CoveragePP is the share of traffic-bearing hours in the window that
+	// had v1 data (§9.235). It is the **sample size** behind s4_ready, and it
+	// is the field whose absence made the older binary rule look safe: a window
+	// with v1 traffic in 1% of its hours satisfied "the window contained v1
+	// traffic" and then answered "ready" on that basis.
+	//
+	// Reported whether or not the gate voided, so a healthy-looking run can be
+	// compared against its own sample size without a second query. `-1` means
+	// "not measured because the window had no traffic-bearing hours at all",
+	// which is distinct from a measured 0.
+	V1CoveragePP float64 `json:"v1_coverage_pp"`
 }
 
 // mirrorDriftClassSQL classifies a drifting V1 row into the three buckets.
@@ -237,6 +316,28 @@ WHERE ($1 = '' OR rl.tenant_id = $1)
 // default 7-day window but grows linearly; the endpoint is a diagnostic and
 // an S4 pre-gate, not a hot-path metric.
 func (v *DualReadValidator) Summarize(ctx context.Context, tenant string, windowHours int) (*MirrorDriftSummary, error) {
+	return v.SummarizeFrom(ctx, tenant, time.Now(), windowHours)
+}
+
+// SummarizeFrom is Summarize with the observation instant supplied by the
+// caller. It exists for callers that must take **two** measurements of the
+// same thing and compare them — see the note on dualReadQuerier and
+// TestS4GateStopsClaimingReadyAfterStopWrite.
+//
+// Both halves of the comparison have to be pinned, and finding that out took
+// two wrong turns worth recording:
+//
+//   - REPEATABLE READ alone is not enough. The window start is derived from
+//     the Go clock, so two calls milliseconds apart have slightly different
+//     24h windows and a row falls off the boundary between them. The snapshot
+//     is identical and the answer is still wrong.
+//   - Pinning the window alone is not enough either, for the ordinary reason:
+//     the database has a live writer (measured, §9.235), so the contents move.
+//
+// So: same snapshot (a transaction) AND same window (this function). With only
+// the transaction, the S4 gate test failed roughly 1 run in 3 on the local real
+// database; before that, on two pool reads, roughly 1 in 8.
+func (v *DualReadValidator) SummarizeFrom(ctx context.Context, tenant string, now time.Time, windowHours int) (*MirrorDriftSummary, error) {
 	if v == nil || v.db == nil {
 		return nil, errors.New("dual-read validator not configured")
 	}
@@ -246,13 +347,16 @@ func (v *DualReadValidator) Summarize(ctx context.Context, tenant string, window
 	if windowHours > 720 {
 		windowHours = 720
 	}
-	now := time.Now()
 	start := now.Add(-time.Duration(windowHours) * time.Hour)
 
 	sum := &MirrorDriftSummary{
 		WindowHours: windowHours,
 		WindowStart: start,
 		SampledAt:   now,
+		// -1 until measured; a zero here would be indistinguishable from a
+		// measured "v1 covered none of the window's hours", which is a real
+		// and much worse state.
+		V1CoveragePP: -1,
 	}
 
 	// V1Rows in window (denominator, before the anti-join). Mirrors the scope
@@ -269,6 +373,64 @@ func (v *DualReadValidator) Summarize(ctx context.Context, tenant string, window
 		tenant, start,
 	).Scan(&sum.V1Rows); err != nil {
 		return nil, fmt.Errorf("v1 rows: %w", err)
+	}
+
+	// v1 coverage of the window, over hours that saw traffic on EITHER side
+	// (§9.235). Rule 3 of the S4 pre-gate needs this: a window where v1 wrote
+	// for one hour out of a hundred has v1Rows > 0 and would pass the older
+	// binary "any v1 traffic" rule, then report s4_ready=true on a 1% sample.
+	//
+	// ⚠ The series must span `generate_series(start, now, …)` — the window
+	// START and its END. Passing `start` as both arguments yields a one-hour
+	// series, and then coverage is 100% whenever that single hour happened to
+	// contain v1 data: rule 3 becomes dead code that reports "fully covered"
+	// forever. The offline control pair never saw it, because it feeds the
+	// verdict function a number instead of computing one; what caught it was
+	// the real-database assertion that V1CoveragePP must actually be measured.
+	//
+	// ⚠ $1 (tenant) must be **referenced** by the query, not merely passed.
+	// A parameter that appears in no expression leaves PostgreSQL with nothing
+	// to infer its type from: `could not determine data type of parameter $1
+	// (42P18)`. The first version of this query filtered nothing and had this
+	// bug, and it only surfaced because a real-database test called Summarize —
+	// the offline control pair was perfectly happy.
+	//
+	// The tenant filter is not decoration either: V1Rows above is tenant-scoped
+	// (`$1 = '' OR tenant_id::text = $1`), so an unfiltered coverage number
+	// would be measuring a different population than the row count it is
+	// supposed to qualify.
+	//
+	// One statement, so the numerator and the denominator come from the same
+	// snapshot — the same rule that §9.234 had to add to its own gate after a
+	// full-suite run went red while an isolated run stayed green. v1 rows and
+	// v1 traffic-hours are two different measurements; taking them at different
+	// instants can push the ratio across the floor.
+	var covered, trafficBearing int64
+	if err := v.db.QueryRow(ctx, `
+		WITH h AS (
+			SELECT generate_series($2::timestamptz, $3::timestamptz, interval '1 hour') AS b
+		), per_hour AS (
+			SELECT
+			  EXISTS (SELECT 1 FROM (
+			        SELECT tenant_id FROM request_logs_hot WHERE ts >= h.b AND ts < h.b + interval '1 hour'
+			        UNION ALL
+			        SELECT tenant_id FROM request_logs      WHERE ts >= h.b AND ts < h.b + interval '1 hour'
+			      ) rv WHERE $1 = '' OR rv.tenant_id::text = $1) AS has_v1,
+			  EXISTS (SELECT 1 FROM (
+			        SELECT tenant_id FROM session_turns_hot WHERE ts >= h.b AND ts < h.b + interval '1 hour'
+			        UNION ALL
+			        SELECT tenant_id FROM session_turns      WHERE ts >= h.b AND ts < h.b + interval '1 hour'
+			      ) sv WHERE $1 = '' OR sv.tenant_id::text = $1) AS has_session
+			FROM h
+		)
+		SELECT
+		  count(*) FILTER (WHERE has_v1),
+		  count(*) FILTER (WHERE has_v1 OR has_session)
+		FROM per_hour`, tenant, start, now).Scan(&covered, &trafficBearing); err != nil {
+		return nil, fmt.Errorf("v1 coverage: %w", err)
+	}
+	if trafficBearing > 0 {
+		sum.V1CoveragePP = 100 * float64(covered) / float64(trafficBearing)
 	}
 
 	// Class breakdown + row total, computed in one pass.
@@ -325,9 +487,10 @@ func (v *DualReadValidator) Summarize(ctx context.Context, tenant string, window
 	v1WritesOn := currentV1WritesEnabled()
 	sum.V1WritesEnabled = v1WritesOn
 	verdict := s4GateVerdictOf(s4GateInput{
-		v1Rows:      sum.V1Rows,
-		genuineLoss: sum.GenuineLossRows,
-		v1WritesOn:  v1WritesOn,
+		v1Rows:       sum.V1Rows,
+		genuineLoss:  sum.GenuineLossRows,
+		v1WritesOn:   v1WritesOn,
+		v1CoveragePP: sum.V1CoveragePP,
 	})
 	sum.S4Ready = verdict.Ready
 	sum.S4GateVoid = verdict.Void
