@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MAX_ENTRIES, NavigationStore, sanitizeFullPath } from './context'
+import { MAX_ENTRIES, NavigationStore, SNAPSHOT_LRU, sanitizeFullPath } from './context'
 
 describe('NavigationStore（06 §3）', () => {
   function seed(): NavigationStore {
@@ -37,6 +37,24 @@ describe('NavigationStore（06 §3）', () => {
     expect(s.current()?.view.scroll.main?.y).toBe(120)
     s.saveView(entry!.id, rightEpoch + 999, { main: { x: 0, y: 999 } })
     expect(s.current()?.view.scroll.main?.y).toBe(120) // 旧纪元不回写
+  })
+
+  // ↓ 移植自 feat/web-mobile-hyper 的 navigationContext.spec.ts（R5 用例）
+  it(`快照 LRU(${SNAPSHOT_LRU})：只清 view，entry 记录保留`, () => {
+    const s = new NavigationStore()
+    const total = SNAPSHOT_LRU + 2
+    for (let i = 0; i < total; i++) {
+      s.commitPush({ fullPath: `/p${i}`, presentation: 'page', openedBy: 'push', title: `p${i}`, titleSource: 'route', scope: { accountId: 'u1' } })
+      const e = s.current()!
+      s.saveView(e.id, e.renderEpoch, { main: { x: 0, y: (i + 1) * 100 } })
+    }
+    const entries = s.getEntries()
+    expect(entries.length).toBe(total) // 记录全在：路径/标题仍可查、可回退
+    expect(entries[0]!.view.scroll.main).toBeUndefined() // 最老两个快照被驱逐
+    expect(entries[1]!.view.scroll.main).toBeUndefined()
+    // 最近 SNAPSHOT_LRU 个保留。
+    expect(entries[total - 1]!.view.scroll.main?.y).toBe(total * 100)
+    expect(entries[2]!.view.scroll.main?.y).toBe(300)
   })
 
   it('持久化去敏：敏感 query 剥离；恢复校验坏数据拒绝', () => {
