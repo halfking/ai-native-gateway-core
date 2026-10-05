@@ -256,6 +256,7 @@ WHERE tenant_id = $1
   AND ($3 = '' OR health_state = $3)
 ORDER BY kind, ref_id
 LIMIT $4
+OFFSET $5
 `
 
 // List returns assets matching the filter, always scoped by tenantID.
@@ -269,8 +270,18 @@ func (s *pgStore) List(ctx context.Context, f Filter) ([]Asset, error) {
 	if limit == 0 {
 		limit = 100
 	}
+	// 2026-10-05（runbook §10.27）：这个 500 上限**保留**。它是
+	// apihub.Filter.Limit 的文档化契约（types.go「default 100, max 500」），
+	// 作用是**页大小**；过去出错是因为没有 OFFSET，使它同时成了**总量上限**。
+	// 现在两件事分开了：要取全量就翻页，而不是把页放大。
+	// ★ 静默截断在这里本身就是 bug 源：AssetHealthProbe 要 1000 行、拿到 500，
+	//   既不报错也不留痕（admin/agents.go 要 1000 也一样）。
 	if limit > 500 {
 		limit = 500
+	}
+	offset := f.Offset
+	if offset < 0 {
+		offset = 0
 	}
 	kindFilter := string(f.Kind)
 	healthFilter := string(f.Health)
@@ -278,7 +289,7 @@ func (s *pgStore) List(ctx context.Context, f Filter) ([]Asset, error) {
 	var assets []Asset
 	err := s.withTenantReadOnlyTx(ctx, f.TenantID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, listAssetsSQL,
-			f.TenantID, kindFilter, healthFilter, limit,
+			f.TenantID, kindFilter, healthFilter, limit, offset,
 		)
 		if err != nil {
 			return err

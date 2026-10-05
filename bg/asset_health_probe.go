@@ -143,11 +143,29 @@ func (p *AssetHealthProbe) probeOneTenant(ctx context.Context, tenant string) (d
 		liveLookup[string(a.Kind)+"|"+a.TenantID+"|"+itoa64(a.RefID)] = true
 	}
 
-	// Fetch all assets with pagination (1000 per batch)
-	const batchSize = 1000
+	// Fetch all assets with pagination.
+	//
+	// 2026-10-05（runbook §10.27）：这里原来写的是 `batchSize = 1000` +
+	// 一个 `offset` 变量，但 `apihub.Filter` **当时根本没有 Offset 字段**、
+	// `listAssetsSQL` 也**没有 OFFSET 子句** —— offset 是死变量，
+	// 而 `List` 会把 limit 硬截到 500，于是 `len(batch)=500 < 1000` 永远
+	// 命中 break：**每轮只检查了前 500 行**。生产实测 2141 行里有 1521 行
+	// 从未被检查，其中 439 行其实早已不在源表里却一直显示为 degraded。
+	//
+	// ★ 为什么页长用 500 而不是 1000：500 是 apihub.Filter.Limit 的
+	//   文档化契约（页大小）。要取全量就翻页，把页放大只是换个数字继续错。
+	//
+	// ★ 排序键 (kind, ref_id) 是复合主键 ⇒ 租户内全序，OFFSET 分页稳定。
+	//   但探针运行期间可能有新资产插入，导致 offset 漂移漏读/重读；
+	//   对「每小时扫一遍健康度」这个用途可以接受，不引入事务快照
+	//   （那会把整轮扫描压在一个长事务里，与 §10.19 的 analyze 是同类代价）。
+	const pageSize = 500
+	// 上界防死循环：若每页都恰好返回 pageSize 行（并发持续插入），
+	// 没有上界会一直转。20 页 × 500 = 10,000 行/租户，远超当前 2141。
+	const maxPages = 20
 	offset := 0
-	for {
-		batch, err := p.hub.List(ctx, apihub.Filter{Limit: batchSize})
+	for page := 0; page < maxPages; page++ {
+		batch, err := p.hub.List(ctx, apihub.Filter{Limit: pageSize, Offset: offset})
 		if err != nil {
 			slog.Warn("asset health: list all failed", "tenant", tenant, "offset", offset, "error", err)
 			break
@@ -171,10 +189,18 @@ func (p *AssetHealthProbe) probeOneTenant(ctx context.Context, tenant string) (d
 				removed++
 			}
 		}
-		if len(batch) < batchSize {
+		if len(batch) < pageSize {
 			break
 		}
-		offset += batchSize
+		offset += pageSize
+	}
+	// 撞到页数上界就必须喊出来。§10.27 修的正是「静默截断」这个病，
+	// 若这里再静默截断一次，等于把同一个 bug 换了个位置复刻。
+	// 「扫了 10000 行还不止」是异常信号，不是正常结束。
+	if offset+pageSize <= maxPages*pageSize {
+		slog.Warn("asset health: 分页到达上界，资产表可能超过 10000 行",
+			"tenant", tenant, "rows_scanned", offset, "max_pages", maxPages,
+			"hint", "调大 maxPages 或 pageSize，否则本轮之后的行不会被检查")
 	}
 	return
 }

@@ -21,7 +21,11 @@ type probeStore struct {
 
 	// markCalls 记录每次 MarkHealth 的 (kind|ref_id, 旧值, 新值)。
 	markCalls []markCall
+	// listed 记录每次 List 的 (limit, offset) 游标序列。
+	listed []listCall
 }
+
+type listCall struct{ limit, offset int }
 
 type markCall struct {
 	refID int64
@@ -36,11 +40,27 @@ func (s *probeStore) Get(context.Context, string, apihub.Kind, int64) (apihub.As
 }
 
 func (s *probeStore) List(_ context.Context, f apihub.Filter) ([]apihub.Asset, error) {
-	// 复制一份再按 limit 截断，模拟真实的分页上限行为。
+	// 忠实还原 PG 的 LIMIT/OFFSET 语义，并记录每次的游标。
+	// ★ 必须真的实现 Offset：忽略它的话，探针就算不翻页这个假 store 也照样
+	//   返回全量，「翻页失效」这个回归就永远测不出来。
+	// ★ 必须照抄 pgStore.List 的 limit>500 截断：不照抄的话，探针请求
+	//   1000 行时会拿到全量，把「静默截断」这个真正的病灶藏起来。
+	s.listed = append(s.listed, listCall{limit: f.Limit, offset: f.Offset})
 	out := make([]apihub.Asset, len(s.all))
 	copy(out, s.all)
-	if f.Limit > 0 && len(out) > f.Limit {
-		out = out[:f.Limit]
+	limit := f.Limit
+	if limit == 0 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	if f.Offset >= len(out) {
+		return nil, nil
+	}
+	out = out[f.Offset:]
+	if len(out) > limit {
+		out = out[:limit]
 	}
 	return out, nil
 }
@@ -247,5 +267,90 @@ func TestProbeFirstRunStillMarksUnseenAssets(t *testing.T) {
 	}
 	if r != 1 {
 		t.Errorf("removed = %d，期望 1（ref_id 12 非活且不是 Down）", r)
+	}
+}
+
+// ── 门 5：Step 2 必须真的翻页（§10.27 的本体）────────────────────────
+//
+// §10.27：apihub.Filter 当时没有 Offset、listAssetsSQL 没有 OFFSET 子句，
+// 于是 `offset` 是死变量，探针每轮只检查了前 500 行。
+// 生产实测 2141 行里 1521 行从未受检，其中 439 行早已不在源表。
+//
+// 这条门把夹具做成 1200 行（> 一页），且**全部不在 liveLookup**，
+// 于是「是否每一行都被 MarkHealth 覆盖」直接等于「是否翻页了」。
+// 不翻页 ⇒ 只有 500 次调用 ⇒ 立刻红。
+
+func TestProbePagesThroughAllAssets(t *testing.T) {
+	const n = 1200
+	all := make([]apihub.Asset, 0, n)
+	for i := 0; i < n; i++ {
+		all = append(all, asset(int64(i+1), "t1", apihub.HealthUnknown))
+	}
+	st := &probeStore{tenants: []string{"t1"}, all: all}
+
+	// syncer 返回空 ⇒ 全部 1200 行都「不在 liveLookup」。
+	_, removed := runProbe(t, st, nil)
+
+	if int(removed) != n {
+		t.Fatalf("removed = %d，期望 %d。\n"+
+			"  差额 = 探针没翻到的行数。§10.27 的 bug 正是每轮只看前 500 行\n"+
+			"  （旧代码要 batchSize=1000，但 List 会静默截到 500，且没有 OFFSET）。\n"+
+			"  实测游标序列: %+v", removed, n, st.listed)
+	}
+	if len(st.markCalls) != n {
+		t.Errorf("MarkHealth 调用 %d 次，期望 %d", len(st.markCalls), n)
+	}
+}
+
+// ── 门 6：游标必须单调递增且步长等于页长 ─────────────────────────────
+//
+// 门 5 钉住「结果正确」，这条钉住「机制正确」：万一将来有人用别的方式
+// 绕过（比如把 limit 调大到 10000），门 5 仍会绿，但页大小契约被破坏了。
+// 两条门各管一半，缺一条都留缺口。
+
+func TestProbePaginationUsesIncreasingOffsets(t *testing.T) {
+	const n = 1200
+	all := make([]apihub.Asset, 0, n)
+	for i := 0; i < n; i++ {
+		all = append(all, asset(int64(i+1), "t1", apihub.HealthDown)) // 已 Down ⇒ 不产生写
+	}
+	st := &probeStore{tenants: []string{"t1"}, all: all}
+	runProbe(t, st, nil)
+
+	if len(st.listed) != 3 {
+		t.Fatalf("List 被调用 %d 次，期望 3（1200 行 / 每页 500 = 3 页）。游标: %+v",
+			len(st.listed), st.listed)
+	}
+	want := []listCall{{limit: 500, offset: 0}, {limit: 500, offset: 500}, {limit: 500, offset: 1000}}
+	for i, w := range want {
+		if st.listed[i] != w {
+			t.Errorf("第 %d 页游标 = %+v，期望 %+v", i+1, st.listed[i], w)
+		}
+	}
+}
+
+// ── 门 7：空结果必须终止循环，不得再多发一次请求 ─────────────────────
+//
+// 防「最后一页刚好等于整页时多打一次空查询」。这条看着琐碎，但它是
+// 分页循环最常见的 off-by-one，代价是每小时 × 2 台的无谓往返。
+// 用 500 的整数倍构造：正好 500 行 = 1 页，不应产生第 2 次查询。
+
+func TestProbeStopsWhenTableExactlyFillsOnePage(t *testing.T) {
+	all := make([]apihub.Asset, 0, 500)
+	for i := 0; i < 500; i++ {
+		all = append(all, asset(int64(i+1), "t1", apihub.HealthDown))
+	}
+	st := &probeStore{tenants: []string{"t1"}, all: all}
+	runProbe(t, st, nil)
+
+	// 500 行 = 整一页 ⇒ `len(batch) < pageSize` 不成立，必须再发第 2 次
+	// 才能知道结束了。这是**正确**的代价（不是 off-by-one），
+	// 所以这里断言的是 2 次，且第二次 offset=500 必然返回空。
+	if len(st.listed) != 2 {
+		t.Fatalf("List 被调用 %d 次，期望 2（500 整页需要多打一次确认结尾）。游标: %+v",
+			len(st.listed), st.listed)
+	}
+	if st.listed[1] != (listCall{limit: 500, offset: 500}) {
+		t.Errorf("第 2 次游标 = %+v，期望 {500 500}", st.listed[1])
 	}
 }
