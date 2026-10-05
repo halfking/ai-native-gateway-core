@@ -3593,3 +3593,43 @@ idx_assets_tags        GIN (tags jsonb_path_ops)
   —— 迁移脚本**刻意不进 installer 自动序列**，是为了不让 DROP 变成
   「装一次顺手把历史删了」。这个克制是对的，代价就是**必须有人负责执行**。
   **回收 10 GB 的收益已经完全确认，缺的只是「谁在什么时候删」这一个决定。**
+
+#### 7. ✅ 交叉验证：常设巡检 `pg-table-bloat-check.sh` 的查询**独立复现**了 §10.28.1
+
+我上面那些是临时查询写的，**第一次还写错了两次**（漏了 `pg_am` 那一行 ⇒
+`only heap AM is supported`；把 `approx_tuple_len` 当平均行长 ⇒ 算出 1.6e9%）。
+用脚本自己的查询重跑，得到：
+
+```
+session_summaries               888 MB |  190 MB | 41.0%
+analysis_events                 236 MB |  142 MB | 86.7%
+request_state_transitions       385 MB |  105 MB | 39.3%
+node_probe_runs                 618 MB |  103 MB | 21.8%
+request_stage_events            196 MB |   72 MB | 40.7%
+assets                           74 MB |   65 MB | 98.8%   ← §10.28.1 的发现
+session_mirror_outbox            70 MB |   57 MB | 98.4%
+request_context_attrs            99 MB |   27 MB | 40.7%
+request_stats_dim_minute        211 MB |   26 MB | 25.4%
+request_stats_error_drill_minute 165 MB |   21 MB | 26.3%
+session_aggregate_outbox         81 MB |   14 MB | 21.4%
+journal_snapshot_receipts        44 MB |   13 MB | 56.6%
+stats_event_inbox_default        71 MB |   13 MB | 26.3%
+stats_usage_daily                68 MB |  9149 kB | 21.6%
+```
+
+⇒ **`assets` 98.8% 空闲这条是**常设巡检本来就能查出来的**，
+  不是我的一次性观测。§10.13 写这个脚本时选了
+  `approx_free_percent` 而不是 `n_dead_tup` —— **这次证明那个选择是对的**：
+  今天我自己在临时查询里踩了 `n_dead_tup` 的坑（高报 33×），
+  而脚��从头到尾没踩。
+
+**三张近空表**（free% > 85%）值得单列：
+`assets` 98.8%（65 MB）、`session_mirror_outbox` 98.4%（57 MB）、
+`analysis_events` 86.7%（142 MB）。
+⇒ **合计约 264 MB 空间已经可复用但没还给文件系统。**
+  这三张**都不该做 VACUUM FULL**（空间已可复用，见 §10.28.1），
+  真要还盘只能用 `pg_repack`（不拿 ACCESS EXCLUSIVE）—— 收益与成本都要单独算。
+
+★ 排名第二的存储项仍是 `ursm_node_snapshot_min_legacy` 的 **10 GB**，
+  比这张表里**全部**可回收空间加起来还多一个数量级。
+  §10.28.4/§10.28.6 的那个决定是**唯一**量级够大的动作。
