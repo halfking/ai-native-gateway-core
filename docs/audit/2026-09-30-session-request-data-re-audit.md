@@ -29310,3 +29310,83 @@ session 侧两列当前**均为 0**（回填一次都没跑过）。
 4. 45.67% 这个数**会继续被压低**：`request_logs` 在月 DROP 名单上、`session_turns` 不在，
    覆盖面每天都在缩小（§9.223 当时是 1.225% / 2.890%）。
    ⇒ **每拖一天，可回填的量就少一天。**
+
+
+### §9.241 回填的**可行性**与**执行策略**：写工具时量出来的四件事
+
+§9.240 确认回填脚本不存在。本轮动手写了一个（`cmd/tools/backfill_session_turn_columns`，
+dry-run 默认、只填空位、写前验唯一约束、源与目标都按 `(月份, request_id 区间)` 分批），
+**它没有跑完过一轮，因此不随本节交付**。本节交付的是写它时量到的东西。
+
+#### §9.241.1 好消息：语义与 schema 都允许
+
+| 检查 | 读数 |
+|---|---|
+| v2 目标是否可 UPDATE | **全部 heap**。`session_turns` 的 6 个分区 + `_hot` 全是 `heap`，不是 Citus Columnar（Columnar 分区拒绝 UPDATE，0A000） |
+| `request_id` 有没有索引 | 有。`idx_session_turns_request`，`indisvalid=t`，已挂到 **6 个**分区 |
+| 唯一索引会不会撞 | **0 冲突**。工具的写前预检查（每个 `(tenant_id, session_id, partition_date)` 键上会不会有 >1 条待写）返回 0 |
+| 工具算出的可回填量 vs §9.240 独立测量 | `client_protocol` 774,045 vs 773,878；`is_final_success` 112,020 vs 112,014。差异属总体活跃漂移，两条路径口径一致 |
+
+⇒ **回填在语义与 schema 层面是可行的**，卡住的不是"能不能写"，是"怎么写快"。
+
+#### §9.241.2 ★ 坏消息：集合式 UPDATE 在这个量级上不可用
+
+`EXPLAIN`（本地，未加界）给出的计划是 **Nested Loop，估算 184 亿行**。
+加了 `(partition_date, request_id 区间)` 双侧限界后，取其中一个批次
+（键空间 1/16、`count` 不写）实测：
+
+```
+Finalize Aggregate (actual time=20270.762..20272.044 rows=1)
+  -> Nested Loop  (actual rows=44767, cost rows=4722270)
+     Buffers: shared hit=195145 read=88801
+```
+
+**单批 20.3 秒。** 16 批 × 2 列 + 计划阶段 ⇒ 数分钟起，
+与「dry run 280s 超时」「batch=400 跑 13 分钟未完成」两次观察吻合。
+
+★ 关键细节：**源侧限界是生效的**（`Bitmap Index Scan on
+idx_request_logs_hot_request_id` 只取 131 行），**慢在目标侧仍是 Nested Loop**
+⇒ 继续按 `request_id` 加细分批**不会变快**，分批轴选错了。
+要让目标侧走索引，得换执行形态（按源集合驱动 `= ANY($n)`、
+或先建辅助索引、或走 promote/重建路径），这是**下一轮的设计题，不是本轮能收口的事**。
+
+#### §9.241.3 ★ 第三个 schema 门面：`gateway` schema 的 session 族副本
+
+查 `client_protocol` 是否存在时撞上「column does not exist」。查证结果：
+
+| 表 | 有 `client_protocol` / `is_final_success` |
+|---|---|
+| `public.session_turns`（+6 分区）、`public.session_turns_hot` | **有** |
+| `gateway.session_turns`（分区仅 2026_07 / 2026_08） | **没有** |
+
+`gateway.session_turns` 只有 **23 行**，是测试残留而非活门面；
+`SHOW search_path` = `public, llm_gateway`，而那张表在 `gateway`（**不是** `llm_gateway`），
+因此**未被限定名引用不到它**，本轮所有读数都落在 `public` 上。
+
+⚠ 仍然值得记一笔：**同名的 `session_turns` 在本库存在两份且列集合不同**。
+任何不带 schema 限定的统计/SQL，只要哪天 `search_path` 变了，
+就可能悄悄改测那张 23 行的表 —— **而它没有那两列**，读数会从"0%"变成"列不存在"。
+本轮的多处查询用 `FROM pg_class c JOIN pg_namespace n` 同时列出两个 schema 才看见它。
+
+#### §9.241.4 写这个工具时被自己的实现抓到四次（都不是想出来的，是跑出来的）
+
+| # | 症状 | 真因 |
+|---|---|---|
+| 1 | `conn busy` | 在 `rows` 游标未关时又发 `QueryRow`。pgx 单连接多路复用 ⇒ 报的是**连接错误**，不像逻辑错误 |
+| 2 | 计划阶段跑不完 | 用 `ORDER BY request_id LIMIT 1 OFFSET n` 找切分点，**二次复杂度**；改成单趟 `ntile()` 后 42s 出计划 |
+| 3 | 批量阶段跑不完 | 区间**只加在目标侧**，源侧每批全扫 218 万行 v1（96 句 × 全表） |
+| 4 | `mismatched param and argument count` | `$1..$4` 四个占位符传了五个参数 |
+| 5 | `column client_protocol does not exist` | **红鲱鱼**：不是 schema 缺列，是我的 `countFilled` 把已聚合的子查询又聚合一次，列名是 `count(...)` |
+
+★ 第 5 条最值得记：报错文本把我引向了"数据库 schema 缺列"这个**完全错误**的方向，
+真正原因在 Go 字符串拼接里。**报错信息指向的对象未必是出问题的地方** ——
+在追一条 SQL 错误前，先确认这条 SQL 是不是你真的发出去的那条。
+
+#### §9.241.5 结论与不交付的理由
+
+- 回填**可以做**（语义干净、不撞约束、目标可写、索引齐备）。
+- 回填**现在还做不动**：目标侧执行形态要重新设计，重新设计前跑一次生产就是**长时间锁与全表扫描**。
+- 因此**本工具不随本节交付**。交付一个没跑完过的回填脚本，比不交付更危险 ——
+  它长得像可用的东西，而它的使用场景恰好是不可回滚的那一种。
+- 待办第 1 条（先跑回填再 DROP）**仍需属主拍板**，且现在多了一个前置条件：
+  **执行策略定下来并在本地跑通一轮**。
