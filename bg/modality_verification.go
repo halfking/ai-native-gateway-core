@@ -152,12 +152,39 @@ func modalityVerifyAdmit(t modalityVerifyTarget) (bool, string) {
 	if !probeableCredentialStatuses[strings.ToLower(strings.TrimSpace(t.CredentialStatus))] {
 		return false, "credential_status_" + strings.ToLower(strings.TrimSpace(t.CredentialStatus))
 	}
-	// 模态必须已算出。算出失败的行是数据问题，不该拿一次出网去试。
+	// 模态必须已算出，且**必须是我们真的会探的那个**。
+	//
+	// ⚠ 2026-10-05 修的缺陷：本闸初版对 vision/audio/video 一律放行。而唯一的
+	// 探针实现 ProbeVisionSemantics **不接受 modality 参数**，它在函数体里把
+	// 探针模态写死成 "vision"（ProbeModality(..., "vision", ...) +
+	// NewVisionChallenge + visionChallengePayload），而生产接线
+	// （NewModalityVerification 的 probe 闭包）**没有把 t.Modality 传进去**。
+	// ⇒ 一条 audio 目标会被发**图像**挑战，而落库用的是 t.Modality，
+	// 于是 ASR/TTS 模型会被记成「audio 被拒」。
+	//
+	// 那不是噪声，是**方向反了的假证据**：真库实测有 12 绑定 / 8 个模型会走到
+	// 这条路（gpt-audio、gpt-audio-mini、gpt-4o-realtime-preview、
+	// mimo-v2-tts、mimo-v2.5-asr、mimo-v2.5-tts、mimo-v2.5-tts-voiceclone、
+	// mimo-v2.5-tts-voicedesign）—— 其中 mimo-v2.5-asr / mimo-v2.5-tts 正是
+	// 迁移 820 刚把它们从 text 纠正成 audio 的那两个例子。worker 去证伪的，
+	// 恰恰是那次纠正的结果。
+	//
+	// 为什么不反过来去实现一个音频探针：写它需要先定义「支持 audio」在
+	// 能力层面意味着什么（能收 input_audio？能 TTS 输出？两者对不同供应商
+	// 根本不是一回事），而那是个需要人拍板的产品定义。**在有定义之前，
+	// 唯一诚实的动作是不写证据** —— 宁可这 8 个模型永远停在 inferred，
+	// 也不要往证据表里灌一条「测过了，不支持」。
+	//
+	// 判据刻意按**探针实现**写死，而不是按「模态是否合法」：合法模态有三种，
+	// 可探的只有一种。加一种探针实现时，这里要同步放开。
 	switch t.Modality {
-	case "vision", "audio", "video":
+	case modalityVerifyProbeModality:
 		return true, ""
 	case "":
 		return false, "modality_unresolved"
+	// 合法但**没有探针**的模态。vision 已被上面的常量分支收走，不重复列举。
+	case "audio", "video":
+		return false, "modality_no_probe_" + t.Modality
 	default:
 		return false, "modality_" + t.Modality
 	}
@@ -311,7 +338,7 @@ func (m *ModalityVerification) VerifyOnce(ctx context.Context) (int, error) {
 	written, probed, backedOff := 0, 0, 0
 	budgetExhausted := false
 	for _, t := range targets {
-		if probed >= m.batchLimit {
+		if probed >= m.effectiveBatchLimit() {
 			break
 		}
 		if m.attemptedRecently(t) {
@@ -333,7 +360,13 @@ func (m *ModalityVerification) VerifyOnce(ctx context.Context) (int, error) {
 		if ok {
 			written++
 		}
-		if rem := m.budgetRemaining(time.Now()); rem == 0 {
+		// 只在**确实配了预算**且用完时才提前收尾。
+		//
+		// 真正的修复在 budgetRemaining（未设预算时它返回 -1 而不是 0），所以
+		// `m.dailyBudget > 0` 这一半**不承担承重**，留着是为了让这个判据自己把
+		// 前提写出来：读代码的人不必先跳进 budgetRemaining 才知道 0 是「用完」
+		// 而不是「没配」。若哪天有人把 budgetRemaining 改回返回 0，这里仍是对的。
+		if m.dailyBudget > 0 && m.budgetRemaining(time.Now()) == 0 {
 			budgetExhausted = true
 			break
 		}
@@ -504,32 +537,19 @@ func applyStreak(prevLevel string, pos, neg int, newLevel string) (level string,
 // resolveModalityToProbe 是同一份规则的第二实现。两份实现必须一致，
 // 否则一行会在两轮之间来回换模态、永不停歇。TestModalitySQLMatchesGoRule
 // 把这个约定钉住。
-func (m *ModalityVerification) dueTargets(ctx context.Context) ([]modalityVerifyTarget, error) {
-	qCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	rows, err := m.db.Query(qCtx, `
-		SELECT pp.credential_id,
-		       pp.canonical_id,
-		       pp.canonical_name,
-		       pp.secret_ciphertext,
-		       pp.outbound_model,
-		       pp.raw_model_name,
-		       pp.probe_modality,
-		       pp.base_url,
-		       pp.protocol,
-		       pp.catalog_code,
-		       pp.stored_modality,
-		       pp.credential_status,
-		       pp.lifecycle_status,
-		       pp.credential_disabled,
-		       pp.provider_enabled,
-		       pp.provider_disabled,
-		       pp.binding_available,
-		       COALESCE(v.carry_level, 'unknown'),
-		       COALESCE(v.read_level, 'unknown'),
-		       COALESCE(v.read_pos_streak, 0),
-		       COALESCE(v.read_neg_streak, 0)
-		FROM (
+// modalityVerifyAddressableSource 是**核实 worker 能触达的绑定集合**。
+//
+// ★ 抽成常量只有一个理由：新加的健康检查 `modality_gate_readiness_floor` 要回答
+// 「严格门挡住的模型里，有多少是 worker 永远够不着的」。它必须用**这一份**
+// 谓词 —— 抄第二份的话，两边一漂移，那条检查报出来的地板数就是**另一个集合**
+// 的数，而它的全部价值就在于「这个数字永远降不下去」这个事实。
+// （我第一版就是用自己手写的谓词量的，漏了 c.status IN ('cooling','degraded')、
+// manual_disabled 与 p.enabled，量出 709/1576；换成这一份之后是 584/1080。）
+//
+// ⚠ 改这里等于改「谁会被核实」。`dueTargets` 与那条健康检查都引用它，
+// 所以改动对两者同时生效 —— 这正是想要的。
+const modalityVerifyAddressableSource = `
+		(
 		    SELECT cmb.credential_id,
 		           cmb.provider_model_id,
 		           COALESCE(pm.canonical_id, 0) AS canonical_id,
@@ -570,7 +590,34 @@ func (m *ModalityVerification) dueTargets(ctx context.Context) ([]modalityVerify
 		      AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		      AND COALESCE(p.enabled, TRUE) = TRUE
 		      AND COALESCE(p.manual_disabled, FALSE) = FALSE
-		) pp
+		)`
+
+func (m *ModalityVerification) dueTargets(ctx context.Context) ([]modalityVerifyTarget, error) {
+	qCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	rows, err := m.db.Query(qCtx, `
+		SELECT pp.credential_id,
+		       pp.canonical_id,
+		       pp.canonical_name,
+		       pp.secret_ciphertext,
+		       pp.outbound_model,
+		       pp.raw_model_name,
+		       pp.probe_modality,
+		       pp.base_url,
+		       pp.protocol,
+		       pp.catalog_code,
+		       pp.stored_modality,
+		       pp.credential_status,
+		       pp.lifecycle_status,
+		       pp.credential_disabled,
+		       pp.provider_enabled,
+		       pp.provider_disabled,
+		       pp.binding_available,
+		       COALESCE(v.carry_level, 'unknown'),
+		       COALESCE(v.read_level, 'unknown'),
+		       COALESCE(v.read_pos_streak, 0),
+		       COALESCE(v.read_neg_streak, 0)
+FROM `+modalityVerifyAddressableSource+` pp
 		LEFT JOIN model_modality_verification v
 		       ON v.credential_id = pp.credential_id
 		      AND v.raw_model_name = pp.raw_model_name
@@ -581,7 +628,7 @@ func (m *ModalityVerification) dueTargets(ctx context.Context) ([]modalityVerify
 		LIMIT $2
 	`,
 		fmt.Sprintf("%d seconds", int(m.staleAfter.Seconds())),
-		m.batchLimit*modalityVerifyScanFactor)
+		m.scanLimit())
 	if err != nil {
 		return nil, fmt.Errorf("modality_verification scan: %w", err)
 	}
@@ -701,20 +748,49 @@ func (m *ModalityVerification) rollupVerdict(ctx context.Context, t modalityVeri
 		if stored == t.Modality {
 			newModality = "text"
 		} else if stored == "multimodal" {
-			// 只有在没有任何模态拿到语义正证据时才降级。混一个模态判负
-			// 就把整个模型打成 text，会砍掉它仍然可用的那条腿。
-			var anyConfirmed bool
+			// 降级的前提是「**它没有任何多模态的腿了**」，不是「有一条腿坏了」。
+			//
+			// ⚠ 2026-10-05 修的第二个潜伏缺陷（实测复现，日志原文见
+			// TestRollupDoesNotDowngradeMultimodalOnVisionOnlyNegative）：
+			// 本分支初版只查 anyConfirmed。而 worker **只会探 vision** ——
+			// SQL 的 probe_modality 对非 audio/video 一律给 vision，audio
+			// 目标又被准入闸挡掉（modalityVerifyAdmit）⇒ confirmed 只可能
+			// 来自 vision ⇒ 任何 multimodal 模型只要 vision 判负，anyConfirmed
+			// 必然为 false ⇒ **一律降级成 text**。
+			// 实测：`modality=vision verdict=negative from=multimodal to=text
+			// bindings_probed=1` —— 凭**一条腿的坏**断言「另一条腿也没有」。
+			//
+			// 为什么方向不能反过来：留在 multimodal 的代价是**可能多一次
+			// 失败路由**（图片请求打到一个不收图的模型）；降到 text 的代价是
+			// **把仍然可用的 audio 腿砍掉**，而 modality='multimodal' 在路由
+			// 侧恰恰意味着「收 audio 或图片」（820 文件头引的候选过滤
+			// COALESCE(mc.modality,'text') IN ('audio','multimodal')）⇒
+			// 降级会让一个能用的 ASR 模型从候选里消失。两个方向不对称，
+			// 所以证据不足时**不动**。
+			//
+			// 门槛写成「≥2 个不同模态判负」而不是「全部模态」：后者需要一个
+			// 「这个模型声明了哪些模态」的清单，而 modality 列只存 multimodal
+			// 这一个值，没有可枚举的声明集。≥2 是**可判定的下界**——它保证
+			// 结论不再只建立在一次探测上。
+			//
+			// ★ 现状：worker 只有 vision 一种探针，所以这个降级**当前不会发生**。
+			//   这是刻意的保守空转，不是死代码：实现第二种探针后它自动开始工作，
+			//   且 TestRollupDoesNotDowngradeMultimodalOnVisionOnlyNegative
+			//   钉住「单一模态负证据不得降级」，任何人加探针时都会撞上它。
+			var probedModalities, negativeModalities int
 			if err := m.db.QueryRow(ctx, `
-				SELECT EXISTS (
-				    SELECT 1 FROM v_model_modality_verdict
-				     WHERE canonical_name = $1 AND verdict = 'confirmed'
-				)
-			`, t.CanonicalName).Scan(&anyConfirmed); err != nil {
+				SELECT count(DISTINCT modality),
+				       count(DISTINCT modality) FILTER (WHERE verdict = 'negative')
+				  FROM v_model_modality_verdict
+				 WHERE canonical_name = $1
+			`, t.CanonicalName).Scan(&probedModalities, &negativeModalities); err != nil {
 				return err
 			}
-			if !anyConfirmed {
-				newModality = "text"
+			if probedModalities < 2 || negativeModalities < probedModalities {
+				// 证据只覆盖一条腿（或还没覆盖全）⇒ 不做结论。
+				return nil
 			}
+			newModality = "text"
 		}
 	}
 	if newModality == "" || newModality == stored {
@@ -732,7 +808,7 @@ func (m *ModalityVerification) rollupVerdict(ctx context.Context, t modalityVeri
 
 	// 守卫：modality_source='manual' 绝不覆盖（Layer 3 手工覆盖是运维的
 	// 显式决定，探测结论无权推翻）。
-	_, err = m.db.Exec(ctx, `
+	tag, err := m.db.Exec(ctx, `
 		UPDATE models_canonical
 		   SET modality            = $1,
 		       modality_source     = 'semantic',
@@ -745,6 +821,28 @@ func (m *ModalityVerification) rollupVerdict(ctx context.Context, t modalityVeri
 	`, newModality, capabilityEvidenceParam(evidence), t.CanonicalName)
 	if err != nil {
 		return fmt.Errorf("rollup modality: %w", err)
+	}
+	// ★ 只在**真的改了行**时才说改了。
+	//
+	// 上面那条 UPDATE 有三个可以否决它的 WHERE 条件：手工覆盖守卫
+	// (`modality_source <> 'manual'`)、以及 `modality IS DISTINCT FROM $1`
+	// （本来就等于目标值）。而这个 Info 原先是无条件打印的 ⇒ 一行都没改动也会
+	// 喊「canonical modality changed … from=text to=vision」。
+	//
+	// 危害不是难看：**日志是运维判读「标注到底生效没有」的主要证据**，一条说改
+	// 了而库里没改的记录会让人以为手工覆盖被探测推翻了（或者反过来，以为标注
+	// 成功了而其实没生效），并据此做出错误处置。
+	// 真库实测撞出来的：m-manual 的 source='manual' ⇒ 0 行受影响，日志照喊。
+	if tag.RowsAffected() == 0 {
+		slog.Info("modality_verification: verdict reached but the canonical row was not updated "+
+			"(manual override, or the value already matches) — no label change",
+			"canonical_name", t.CanonicalName,
+			"modality", t.Modality,
+			"verdict", verdict,
+			"stored_modality", stored,
+			"would_be", newModality,
+			"modality_source", "unchanged (manual override or already equal)")
+		return nil
 	}
 	slog.Info("modality_verification: canonical modality changed by semantic verdict",
 		"canonical_name", t.CanonicalName,
@@ -829,11 +927,52 @@ func (m *ModalityVerification) pruneProbesLocked(now time.Time) {
 	m.probes = keep
 }
 
-// budgetRemaining 返回滚动窗口内的剩余额度。<=0 或未设预算时返回 0，
-// 与 chargeProbe 的语义对齐（调用方只把它当提前收尾的信号）。
+// scanLimit 是单轮 SQL 扫描窗口：每轮上限 × modalityVerifyScanFactor。
+//
+// ⚠ 必须走 effectiveBatchLimit()，不能直接用 m.batchLimit：`batchLimit<=0` 时
+// `0 * 4 == 0`，而这个值直接进 `LIMIT $2` ⇒ `LIMIT 0` ⇒ **扫不出任何行**。
+// 于是「未设置」在扫描侧退化成「什么都不做」，而循环侧（已修）却在正常跑 ——
+// 两个地方对同一个零值的解释不一致，整轮依然静默停摆。
+// 与 CapabilityBackfill.scanLimit 同一函数、同一理由。
+func (m *ModalityVerification) scanLimit() int {
+	limit := m.effectiveBatchLimit()
+	n := limit * modalityVerifyScanFactor
+	if n <= limit || n < 0 {
+		return limit
+	}
+	return n
+}
+
+// effectiveBatchLimit 是本轮真正生效的每轮探测上限。
+//
+// batchLimit<=0 读作「未设置」⇒ 回落到包常量。与 CapabilityBackfill 同一条规则。
+// ⚠ 为什么不是「不限」：核实带挑战图，是这批周期任务里单次最贵的一种，
+// 把上限配成 0 不该变成「无上限出网」；回落到有界默认值既修掉了
+// 「静默什么都不做」，又不会把一个配置失误变成开销失控。
+func (m *ModalityVerification) effectiveBatchLimit() int {
+	if m == nil || m.batchLimit <= 0 {
+		return modalityVerifyBatchLimit
+	}
+	return m.batchLimit
+}
+
+// budgetRemaining 返回滚动窗口内的剩余额度。
+//
+// **未设预算（dailyBudget<=0）时返回 -1，不返回 0。** 0 的含义是「额度用完了」。
+//
+// ⚠ 这里曾返回 0，而它的注释还写着「与 chargeProbe 的语义对齐」—— 并不对齐：
+// `chargeProbe` 在 dailyBudget<=0 时**放行**（返回 true），而返回 0 的
+// `budgetRemaining` 会让 `rem == 0` 那个提前收尾判据在「压根没设预算」时恒真。
+// 实测后果：把日预算配成 0（`LLM_GATEWAY_MODALITY_VERIFY_BUDGET=0`，意图多半是
+// 「不限制」）会让整个核实任务**每轮只探一条**，还外加一条声称预算耗尽的假日志。
+//
+// 现在与同族的 `CapabilityBackfill.budgetRemaining` 一致：那边本来就返回 -1，
+// 注释也写明「<=0 表示不设预算，调用方按无限制处理」—— 同一个人写的两个函数，
+// 一个守住了这个约定，另一个没守住。**同类函数的返回值约定要逐个核，不能靠「对齐」
+// 这种说法推断。**
 func (m *ModalityVerification) budgetRemaining(now time.Time) int {
 	if m == nil || m.dailyBudget <= 0 {
-		return 0
+		return -1
 	}
 	m.budgetMu.Lock()
 	defer m.budgetMu.Unlock()

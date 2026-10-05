@@ -392,7 +392,8 @@ func (b *CapabilityBackfill) BackfillOnce(ctx context.Context) (int, error) {
 	// 两个概念搅在一起。本轮上限取 min(每轮预算, 今日剩余)。
 	budgetExhausted := false
 	for _, row := range rows {
-		if probed >= b.batchLimit {
+		limit := b.effectiveBatchLimit()
+		if probed >= limit {
 			break
 		}
 		if b.attemptedRecently(row.BindingID) {
@@ -564,10 +565,26 @@ func (b *CapabilityBackfill) recordAttempt(id int64) {
 // scanLimit 是单轮 SQL 扫描窗口：探测预算 × capabilityBackfillScanFactor。
 // 预算在 BackfillOnce 的探测循环里花，窗口放大是为了让 attempt 退避跳过的
 // 行后面还有行可取（反饥饿）。溢出防御：batchLimit 异常大时退回原值。
+func (b *CapabilityBackfill) effectiveBatchLimit() int {
+	// batchLimit<=0 读作「未设置」⇒ 回落到包常量。
+	//
+	// ⚠ 为什么不是「不限」：这是个**花钱**的探针 worker，把上限配成 0
+	// （或字面量构造忘了填）不该变成「无上限出网」。回落到有界默认值既修掉了
+	// 「静默什么都不做」，又不会把一个配置失误变成开销失控。
+	//
+	// 也不能是 0 —— `scanLimit()` 的结果直接进 `LIMIT $3`，LIMIT 0 会让 SQL
+	// 扫不出任何行，于是「未设置」在扫描侧照样退化成「什么都不做」。
+	if b == nil || b.batchLimit <= 0 {
+		return capabilityBackfillBatchLimit
+	}
+	return b.batchLimit
+}
+
 func (b *CapabilityBackfill) scanLimit() int {
-	n := b.batchLimit * capabilityBackfillScanFactor
-	if n <= b.batchLimit || n < 0 {
-		return b.batchLimit
+	limit := b.effectiveBatchLimit()
+	n := limit * capabilityBackfillScanFactor
+	if n <= limit || n < 0 {
+		return limit
 	}
 	return n
 }

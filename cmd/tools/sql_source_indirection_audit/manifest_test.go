@@ -30,7 +30,9 @@ import (
 // `documentedSnapshot`（由 `TestDocumentedSnapshotMatchesMeasurement` 钉住，
 // 2026-10-06 / §9.257 更新）：
 //
-//	全仓拼接点 70 处（v1 6 文件/12 处、canonical 24/44、unresolved 7/14）
+//	全仓拼接点 72 处（v1 6 文件/12 处、canonical 12/18、unresolved 9/16）
+//	（2026-10-05 832/833 收口轮：+2 全部来自 modalityVerifyAddressableSource
+//	共用常量的两个引用点，见清单 bg/modality_verification.go 条目；v1 桶不动）
 //
 // ★ **§9.257 的实测结论，是本工具最要紧的一条**：
 // 修完跨包解析后，unresolved 从 53 处降到 14 处（**多解析出 39 处**），
@@ -483,6 +485,28 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"不报错——与 §9.221 记的「视图被带外操作删除后没有机制重建」同族。",
 	},
 
+	// ── 2026-10-05（832/833 收口轮）：modality 核实闸带来的 2 个新 unresolved 读点 ──
+	// modalityVerifyAddressableSource（bg/modality_verification.go:551 定义）是
+	// credential_model_bindings ⨝ credentials ⨝ providers ⨝ provider_models
+	// ⨝ models_canonical（LEFT JOIN 825 的 model_modality_verification）的
+	// **纯 canonical 侧**子查询。核实 worker 的 dueTargets 与健康检查
+	// modality_gate_readiness_floor 刻意共用**同一份**常量（抄第二份谓词会让
+	// 「地板数」变成另一个集合的数），于是工具在两个文件各报 1 处同一操作数。
+	"bg/modality_verification.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via: "1 处（598）`FROM ` + modalityVerifyAddressableSource + ` pp`。" +
+			"常量本体（551）读位全是现行表：credential_model_bindings / credentials / " +
+			"providers / provider_models / models_canonical + model_modality_verification。",
+		Consequence: "与 v1 无关——退役 v1 时本读点无需动作。" +
+			"⚠ 常量同时被 bg/routing_health_checks.go:481 引用（同一读点的第二处），两条目同源。",
+	},
+	"bg/routing_health_checks.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via: "1 处（481）`FROM ` + modalityVerifyAddressableSource + ` pp`——" +
+			"modality_gate_readiness_floor 检查的 reachable 集合，与 dueTargets 同一份常量。",
+		Consequence: "与 v1 无关。",
+	},
+
 	// ── §9.233：切换层下沉到 db 之后**新进** unresolved 桶的跨包读方 ────────
 	// 这三个文件在 §9.232 结束时是「看得见但换不了」：它们在 admin 之外，
 	// 看不见 admin 包里未导出的 sessionBodiesFromSQL()。§9.233 把切换层
@@ -918,7 +942,7 @@ type bucketSnapshot struct {
 // 「扫描范围被改小/解析失败被吞」。`TestRepoAuditIsNotSilentlyVacuous`
 // 只挡总体为 0，挡不住**部分**文件解析失败后被 `continue` 静默跳过。
 var documentedSnapshot = bucketSnapshot{
-	TotalSites: 70,
+	TotalSites: 72,
 	V1Files:    6,
 	V1Sites:    12,
 	// ★ §9.258：第四桶是**退役工作量的主体**，而前两桶都不是。
@@ -935,8 +959,8 @@ var documentedSnapshot = bucketSnapshot{
 	V1ArmSites: 26,
 	CanonFiles: 12,
 	CanonSites: 18,
-	UnresFiles: 7,
-	UnresSites: 14,
+	UnresFiles: 9,
+	UnresSites: 16,
 }
 
 func TestDocumentedSnapshotMatchesMeasurement(t *testing.T) {

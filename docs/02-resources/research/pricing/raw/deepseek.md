@@ -2,7 +2,7 @@ Title: Models & Pricing | DeepSeek API Docs
 
 URL Source: https://api-docs.deepseek.com/quick_start/pricing
 
-Published Time: Tue, 02 Jun 2026 05:31:59 GMT
+Published Time: Thu, 24 Sep 2026 09:35:27 GMT
 
 Markdown Content:
 The prices listed below are in units of per 1M tokens. A token, the smallest unit of text that the model recognizes, can be a word, a number, or even a punctuation mark. We will bill based on the total number of input and output tokens by the model.
@@ -11,27 +11,36 @@ The prices listed below are in units of per 1M tokens. A token, the smallest uni
 
 ## Model Details[​](https://api-docs.deepseek.com/quick_start/pricing#model-details "Direct link to Model Details")
 
-**MODEL deepseek-v4-flash(1)deepseek-v4-pro
+**MODEL deepseek-flash(1)deepseek-v4-pro
 BASE URL (OpenAI Format)[https://api.deepseek.com](https://api.deepseek.com/)
 BASE URL (Anthropic Format)[https://api.deepseek.com/anthropic](https://api.deepseek.com/anthropic)
-MODEL VERSION DeepSeek-V4-Flash DeepSeek-V4-Pro
-THINKING MODE Supports both non-thinking and thinking (default) modes
-
+MODEL VERSION DeepSeek-V4.1-Flash DeepSeek-V4-Pro-0813
+THINKING MODE Supports both non-thinking and thinking (default) modes  
 See [Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode) for how to switch
 CONTEXT LENGTH 1M
 MAX OUTPUT MAXIMUM: 384K
 FEATURES[Json Output](https://api-docs.deepseek.com/guides/json_mode)✓✓
 [Tool Calls](https://api-docs.deepseek.com/guides/tool_calls)✓✓
+[Responses API](https://api-docs.deepseek.com/guides/responses_api)✓✓
+[Anthropic API](https://api-docs.deepseek.com/guides/anthropic_api)✓✓
 [Chat Prefix Completion（Beta）](https://api-docs.deepseek.com/guides/chat_prefix_completion)✓✓
 [FIM Completion（Beta）](https://api-docs.deepseek.com/guides/fim_completion)Non-thinking mode only Non-thinking mode only
-PRICING 1M INPUT TOKENS (CACHE HIT)$0.0028$0.003625
-1M INPUT TOKENS (CACHE MISS)$0.14$0.435
-1M OUTPUT TOKENS$0.28$0.87
-Concurrency Limit(2)2500 500**
+[Vision](https://api-docs.deepseek.com/guides/vision)✓Not supported
+PRICING(2)1M INPUT TOKENS  
+(CACHE HIT)OFF-PEAK$0.003$0.022
+PEAK$0.006$0.044
+1M INPUT TOKENS  
+(CACHE MISS)OFF-PEAK$0.15$0.66
+PEAK$0.3$1.32
+1M OUTPUT TOKENS OFF-PEAK$0.6$1.98
+PEAK$1.2$3.96
+Concurrency Limit(3)2500 500**
 
-(1) The model names `deepseek-chat` and `deepseek-reasoner` will be deprecated on 2026/07/24 15:59 UTC. For compatibility, they correspond to the non-thinking mode and thinking mode of `deepseek-v4-flash`, respectively.
+(1) Use `deepseek-flash` as the model name. The legacy names `deepseek-v4-flash` and `deepseek-v4-flash-vision-exp` are still accepted, but the corresponding models have been retired, their requests are served by the DeepSeek-V4.1-Flash model and billed at the Flash price.
 
- (2) For more details on concurrency limits, please refer to [Rate Limit & Isolation](https://api-docs.deepseek.com/quick_start/rate_limit)
+(2) Off-peak rates are half of the peak rates. Peak hours are 01:00 - 04:00 and 06:00 - 10:00 UTC, Monday through Friday, excluding Chinese public holidays. All other hours are off-peak, including weekends and Chinese public holidays in full.
+
+(3) For more details on concurrency limits, please refer to [Rate Limit & Isolation](https://api-docs.deepseek.com/quick_start/rate_limit).
 
 * * *
 

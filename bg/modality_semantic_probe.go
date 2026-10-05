@@ -92,6 +92,21 @@ type SemanticProbeResult struct {
 //
 // 顺序是刻意的：先跑结构探针，载不下的绑定**不再发挑战**——那一次
 // 请求是纯浪费，而且载都载不下的上游不可能读出图里的编码。
+// modalityVerifyProbeModality 是**唯一实现了探针的那个模态**，也是
+// modalityVerifyAdmit 唯一放行的那个。
+//
+// 为什么要有这个常量：ProbeVisionSemantics 的签名里**没有 modality 参数**，
+// 探针模态在函数体里写死成 "vision"（下面 ProbeModality 的第三个实参）。
+// 于是"合法模态"（vision/audio/video）与"可探模态"（只有 vision）是两件事，
+// 而准入闸初版把它们当成一件——那会给 ASR/TTS 记上假否定证据
+// （见 modality_verify_admit 的注释与 2026-10-05 的实测清单）。
+//
+// ★ 这个常量必须与 ProbeVisionSemantics 里那个写死的 "vision" 一起改。
+//
+//	加一种探针实现时：在这里换/扩展，同时放开 modalityVerifyAdmit 的 switch，
+//	并给它配判据（否则那个分支没人跑过）。
+const modalityVerifyProbeModality = "vision"
+
 func ProbeVisionSemantics(ctx context.Context, baseURL, apiKey, model, protocol string) SemanticProbeResult {
 	start := time.Now()
 	desc := probeDescriptorFor(protocol)

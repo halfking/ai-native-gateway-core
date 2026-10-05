@@ -467,13 +467,26 @@ func (h *Handler) pricingImport(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
+	// ★ 三类丢弃都要能被看见（2026-10-06）。这个端点是
+	//   cmd/tools/propose-supplier-prices 产出 CSV 的唯一落地口，而它原来
+	//   只回一个 updated 计数：被丢弃的行与「本来就不需要改的行」在响应里
+	//   **长得一模一样**。真库实测过的那批提案是 630 offer / 14 接受 /
+	//   616 拒收 —— 如果落地时再静默丢掉一部分，运营看到 `updated: 14`
+	//   无从判断是「只该改 14 行」还是「丢了 616 行」。
 	updated := 0
+	badOfferID, dbErrors := 0, 0
+	badCells := make([]string, 0, 4)
+	rowNo := 0
+
 	for _, row := range records[1:] {
-		if offerIDIdx >= len(row) || row[offerIDIdx] == "" {
+		rowNo++
+		if offerIDIdx >= len(row) || strings.TrimSpace(row[offerIDIdx]) == "" {
+			badOfferID++
 			continue
 		}
 		offerID, err := strconv.Atoi(strings.TrimSpace(row[offerIDIdx]))
 		if err != nil {
+			badOfferID++
 			continue
 		}
 
@@ -496,30 +509,74 @@ func (h *Handler) pricingImport(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			val := strings.TrimSpace(row[idx])
-			setClauses = append(setClauses, fmt.Sprintf("%s = $%d", col, argIdx))
+			// ★ 先把值解析成实参，**再**追加 SET 子句（2026-10-06 修正）。
+			//
+			// 原来的顺序是「先 append 子句（占掉 $N）、再 ParseFloat，失败就
+			// continue」，于是：
+			//   - setClauses 里留着 `%s = $N`，args 里**没有**对应实参；
+			//   - argIdx 也没 ++，所以后面几列**复用同一个 $N**；
+			//   - 拼出来的 SQL 占位符数与实参数对不上 ⇒ bind 报
+			//     "expected N arguments, got M"；
+			//   - 而下面的 `if err != nil { continue }` 把它**整行静默丢弃**。
+			//
+			// 后果：CSV 里只要**一个**价格格是脏值（人手工编辑 CSV 时最常见的
+			// 形态），该行**其它正确的价格列也一起丢掉**，而 HTTP 200 + updated
+			// 计数里看不出任何异常。这条路径正是 cmd/tools/propose-supplier-prices
+			// 产出的 CSV 的落地口。
+			//
+			// 正确形状：**脏值只该让那一列不参与更新**，不影响同一行的其它列。
+			// 这一列被丢弃的事实要记进 skipped_by_column（返回给调用方）。
+			var arg any
 			if typ == "float" {
-				if f, err := strconv.ParseFloat(val, 64); err == nil {
-					args = append(args, f)
-				} else {
+				f, err := strconv.ParseFloat(val, 64)
+				if err != nil {
+					badCells = append(badCells, col+"="+val)
 					continue
 				}
+				arg = f
 			} else {
-				args = append(args, val)
+				arg = val
 			}
+			setClauses = append(setClauses, fmt.Sprintf("%s = $%d", col, argIdx))
+			args = append(args, arg)
 			argIdx++
 		}
 
 		query := fmt.Sprintf("UPDATE model_offers SET %s WHERE id = $1", strings.Join(setClauses, ", "))
 		tag, err := h.db.Exec(ctx, query, append([]any{offerID}, args...)...)
 		if err != nil {
+			// 原来这里只有一个 continue：DB 侧任何拒绝（约束、类型、权限）
+			// 都变成一次**无声无息的行级丢弃**。
+			dbErrors++
+			slog.Warn("pricing import: row rejected by the database",
+				"csv_row", rowNo, "offer_id", offerID, "error", err)
 			continue
 		}
+		if len(badCells) > 0 {
+			// 这一行**部分**成功：脏值那一列没写，其余列写了。
+			// 必须说出来，否则「updated=630」会被读成「全部按预期落库」。
+			slog.Warn("pricing import: some price cells in this row were not importable; "+
+				"the remaining columns WERE applied",
+				"csv_row", rowNo, "offer_id", offerID, "rejected_cells", badCells)
+		}
+		badCells = badCells[:0]
 		if tag.RowsAffected() > 0 {
 			updated++
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"updated": updated})
+	// ★ 响应必须能区分「改了 N 行」与「丢了 M 行」。原来只有 updated，
+	//   运营无法判断导入是否完整。
+	resp := map[string]any{"updated": updated}
+	if badOfferID+dbErrors > 0 {
+		resp["rejected_rows"] = map[string]any{
+			"bad_or_missing_offer_id": badOfferID,
+			"database_rejected":       dbErrors,
+		}
+		resp["message"] = "some rows were NOT imported — see rejected_rows; " +
+			"import is incomplete, do not treat `updated` as the whole file"
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) pricingStatsWindow(w http.ResponseWriter, r *http.Request) {
