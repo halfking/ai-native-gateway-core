@@ -88,17 +88,47 @@ func TestSessionProjectBackfillWorker_Start_ContextCancel(t *testing.T) {
 // through sync_session_project_attr (single 口径 with the 762 trigger chain),
 // restrict to gw_project_id IS NULL, and join session_dim on both key and
 // tenant so a same-key cross-tenant session is never mis-attributed.
+//
+// 2026-10-06: added the resolvability marker. The "joinable" filter alone is
+// not enough — rows whose project_id AND application_code are both NULL enter
+// the window, sync returns 0, they stay NULL, and ORDER BY session_key picks
+// them again next batch, so the window saturates and the worker stalls at
+// backfilled=0 forever. Measured on production: the first 5,745 rows of the
+// ordered set were all unresolvable while LIMIT is 2,000. See §10.38.
 func TestSessionProjectBackfillSQLContract(t *testing.T) {
 	for _, marker := range []string{
 		"public.sync_session_project_attr(",
 		"ss.gw_project_id IS NULL",
 		"sd.gw_session_id = ss.session_key",
 		"sd.tenant_id IS NOT DISTINCT FROM ss.tenant_id",
+		"public.gw_resolve_project_ref(sd.project_id, sd.application_code) IS NOT NULL",
 		"ORDER BY ss.session_key",
 		"LIMIT $1",
 	} {
 		if !strings.Contains(sessionProjectBackfillSQL, marker) {
 			t.Errorf("batch SQL missing contract marker %q", marker)
 		}
+	}
+}
+
+// TestSessionProjectBackfillSQLWindowExcludesUnresolvable is a structural
+// companion to the contract test: it asserts the resolvability guard sits
+// INSIDE the targets CTE (before LIMIT), not somewhere that cannot narrow the
+// window. A guard placed after the LIMIT would leave the SQL textually
+// compliant while the stall came straight back.
+func TestSessionProjectBackfillSQLWindowExcludesUnresolvable(t *testing.T) {
+	lower := strings.ToLower(sessionProjectBackfillSQL)
+	guard := strings.Index(lower, "gw_resolve_project_ref")
+	limit := strings.Index(lower, "limit $1")
+	if guard < 0 {
+		t.Fatal("batch SQL has no resolvability guard at all")
+	}
+	if limit < 0 {
+		t.Fatal("batch SQL has no LIMIT")
+	}
+	if guard > limit {
+		t.Errorf("resolvability guard at offset %d lands after LIMIT at %d; "+
+			"it must narrow the window, not post-filter the batch",
+			guard, limit)
 	}
 }
