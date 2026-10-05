@@ -30,23 +30,33 @@ import (
 //
 // ⚠ **这三行是 §9.226.3 的快照，已过期**。当前实测见
 // `documentedSnapshot`（由 `TestDocumentedSnapshotMatchesMeasurement` 钉住，
-// 2026-10-06 / §9.256 更新）：
+// 2026-10-06 / §9.257 更新）：
 //
-//	全仓拼接点 70 处（v1 6 文件/12 处、canonical 5/5、unresolved 26/53）
+//	全仓拼接点 70 处（v1 6 文件/12 处、canonical 24/44、unresolved 7/14）
 //
-// unresolved 那一桶从 20 个文件涨到 26 个，**涨的不是新读方，是老读方换了写法**：
+// ★ **§9.257 的实测结论，是本工具最要紧的一条**：
+// 修完跨包解析后，unresolved 从 53 处降到 14 处（**多解析出 39 处**），
+// 而 **v1 仍然是 12 处，一处没多**。
+//
+// 原因是分类的**语义**：`reads-v1` 回答「这个关系名在 DROP 时会不会消失」，
+// `canonical` 回答「不会消失」。而 §9.256 手验出的那 26 处读的是
+// `request_logs_with_current_month` / `request_logs_bodies_with_current_month`
+// ——**两个都不在 `v1Tables`（那里只有 4 张基表）**，所以它们解析成功后
+// 必然落进 `canonical`。
+//
+// ⇒ ★ **「12 处」永远不可能是 v1 读方清单**，再多解析也改变不了这一点。
+// 退役要回答的是**行来源**（我读到的行里有多少来自 v1），
+// 那需要第四个类（v1 臂视图），**本工具目前没有这一类**。
+// ⇒ 别再拿「12 处」排期，也别指望把解析率提到 100% 就能修好这件事。
+//
+// ⚠ unresolved 那一桶从 20 个文件涨到 26 再降到 7 个，
+// 中途那次上涨**不是新读方，是老读方换了写法**：
 // §9.232 把 7 个 admin 内的 bodies 读方从**字面量**改成拼接调用、§9.233 又迁了 3 个
 // 跨包读方 ⇒ 它们从「字面量（不进本工具）」变成「拼接点不可判定（进 unresolved）」。
+// §9.257 修的正是这个：`calleeName` 对带包前缀的调用返回 `""`（`resolve.go`），
+// 于是 `db.SessionBodiesSourceSQL()` 这类跨包切换层**根本查不到**。
 // ⇒ **本工具只管关系名不是字面量的拼接点**；把字面量改成拼接会让桶看起来在恶化，
 // 但那是把「看不见」变成「看得见且已定级」，方向上是变好。
-//
-// ★ **§9.256 的结论：这一桶不能当「v1 读方清单」用。**
-// 53 处手验后有 **29 处在当前默认配置下确实读 v1**（19 处 bodies 视图 + 7 处
-// turns 视图 + 3 处 `request_logs_hot` 基表），但它们**一处都不进「v1 宽族 12 处」桶**
-// ——那个桶只数**可静态解析的基表读点**。
-// ⇒ 拿「12 处」当退役工作量会**少算 29 处 / 约 20 个文件**。
-// 这不是清单写错了（散文的 Consequence 基本都对），是**桶的语义**只回答
-// 「关系名会不会在 DROP 时消失」，不回答「现在读到的行集里有多少来自 v1」。
 //
 // 其中 6 个 v1 文件里有 **4 个在四张登记表里一处都没有**：
 //
@@ -808,7 +818,12 @@ type bucketSnapshot struct {
 	UnresSites int
 }
 
-// documentedSnapshot 是 §9.256 手验后写入的实测值。
+// documentedSnapshot 是 §9.257 修完跨包解析后写入的实测值。
+//
+// §9.257 的变化：unresolved **53 处/26 文件 → 14 处/7 文件**，
+// canonical 5 → 44 处（24 文件），**v1 仍然是 12 处**。
+// ⇒ ★ **解析率提高 39 处，而 v1 读点数一动不动** —— 见下面那条注释，
+// 这是本轮最要紧的一条实测结论。
 //
 // ⚠ 改这三个数字之前先读上面的注释：确认是「桶真的变了」而不是
 // 「扫描范围被改小/解析失败被吞」。`TestRepoAuditIsNotSilentlyVacuous`
@@ -817,10 +832,10 @@ var documentedSnapshot = bucketSnapshot{
 	TotalSites: 70,
 	V1Files:    6,
 	V1Sites:    12,
-	CanonFiles: 5,
-	CanonSites: 5,
-	UnresFiles: 26,
-	UnresSites: 53,
+	CanonFiles: 24,
+	CanonSites: 44,
+	UnresFiles: 7,
+	UnresSites: 14,
 }
 
 func TestDocumentedSnapshotMatchesMeasurement(t *testing.T) {

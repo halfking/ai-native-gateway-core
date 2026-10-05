@@ -294,9 +294,10 @@ func AuditRepo(root string) ([]Site, error) {
 	}
 	sort.Strings(order)
 
+	cross := crossProviderFuncs(root)
 	var out []Site
 	for _, d := range order {
-		sites, err := auditPackage(d, byDir[d])
+		sites, err := auditPackage(d, byDir[d], cross)
 		if err != nil {
 			continue // 解析失败不是本工具的事（构建会报）
 		}
@@ -337,16 +338,26 @@ type pkgEnv struct {
 	globals map[string][]string
 	locals  map[string][]string
 	funcs   map[string][]string
+	// cross 是**跨包**（crossProviderPath）的函数返回值表，crossAlias 是
+	// 当前文件给那个包起的本地别名。别名逐文件变（`db` / `dbpkg`），
+	// 所以它**不能**是包级常量 —— 见 resolve 的 SelectorExpr 分支。
+	cross      map[string][]string
+	crossAlias string
 }
 
 func newPkgEnv() *pkgEnv {
-	return &pkgEnv{globals: map[string][]string{}, locals: map[string][]string{}, funcs: map[string][]string{}}
+	return &pkgEnv{
+		globals: map[string][]string{},
+		locals:  map[string][]string{},
+		funcs:   map[string][]string{},
+		cross:   map[string][]string{},
+	}
 }
 
 // enterFunc 清空局部绑定（每个函数体开始时调用）。
 func (env *pkgEnv) enterFunc() { env.locals = map[string][]string{} }
 
-func auditPackage(dir string, files []string) ([]Site, error) {
+func auditPackage(dir string, files []string, cross map[string][]string) ([]Site, error) {
 	parsed := map[string]*ast.File{}
 	fset := token.NewFileSet()
 	for _, p := range files {
@@ -357,11 +368,56 @@ func auditPackage(dir string, files []string) ([]Site, error) {
 		parsed[p] = f
 	}
 
-	// 三遍，顺序不能换：
-	//  1. 函数返回值（不依赖绑定）
-	//  2. 包级绑定（不依赖局部）
-	//  3. 逐函数：进函数 → 收集该函数体内的局部绑定 → 只在该函数体内找拼接点
-	return scanParsed(fset, parsed)
+	return scanParsedWithCross(fset, parsed, cross)
+}
+
+// crossProviderFuncs 解析 crossProviderPath 那个包的**函数返回值表**，
+// 供其它包按包限定调用查。
+//
+// ⚠ 它解析的是 db 包**自己的目录**（root 下的 `db`），不是按 import 路径
+// 在磁盘上找 —— 因为那 21 处调用点分布在 6 个包里，逐一解析它们的 import
+// 再去定位包目录，等于把「一次解析」变成 N 次。
+// 代价：db 包若被重命名/移出 `db/`，这里会静默返回空表，
+// **表现是退回「不可判定」而不是报出错误的关系名** —— 这是可承受的失败方向
+// （工具宁可查不到，也不猜）。
+func crossProviderFuncs(root string) map[string][]string {
+	dir := filepath.Join(root, "db")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	fset := token.NewFileSet()
+	parsed := map[string]*ast.File{}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, 0)
+		if err != nil {
+			continue
+		}
+		parsed[name] = f
+	}
+	if len(parsed) == 0 {
+		return nil
+	}
+	env := newPkgEnv()
+	// 与 scanParsedWithCross 同一套「迭代到不动点」的收集次序，
+	// 否则 db 包里那些引用包级投影常量的返回语句解析不出来。
+	for pass := 0; pass < funcGlobalPasses; pass++ {
+		for _, f := range parsed {
+			collectFuncReturns(f, env)
+		}
+		for _, f := range parsed {
+			for _, d := range f.Decls {
+				if gd, ok := d.(*ast.GenDecl); ok && gd.Tok == token.VAR {
+					collectStringBindings(gd, env, env.globals)
+				}
+			}
+		}
+	}
+	return env.funcs
 }
 
 // scanParsed enumerates every concat site in an already-parsed set of files.
@@ -371,24 +427,58 @@ func auditPackage(dir string, files []string) ([]Site, error) {
 // cheap on-disk instance to point a test at, and a regression test that needs
 // the whole repository to run is a regression test that does not get run.
 func scanParsed(fset *token.FileSet, parsed map[string]*ast.File) ([]Site, error) {
-	env := newPkgEnv()
-	for _, f := range parsed {
-		collectFuncReturns(f, env)
-	}
-	for _, f := range parsed {
-		for _, d := range f.Decls {
-			if gd, ok := d.(*ast.GenDecl); ok && gd.Tok == token.VAR {
-				collectStringBindings(gd, env, env.globals)
-			}
-		}
-	}
+	return scanParsedWithCross(fset, parsed, nil)
+}
 
-	var out []Site
+// scanParsedWithCross 是带跨包解析表的版本。cross 为 nil 时行为与旧版一致
+// （单元测试的内存夹具走这条路，不必构造 db 包）。
+//
+// # 为什么 funcs 与 globals 要**迭代**而不是各走一遍
+//
+// 它们互相依赖：包级 `var forensicsExportMessagesSQL = "…" + dbpkg.SessionBodiesSourceSQL() + "…"`
+// 要靠 funcs 才能解析，而 `SessionFamilyBodiesSourceSQL` 的返回值里又引用了
+// 包级 `var sessionBodiesSourceProjection`（要靠 globals）。
+// 单遍的先后顺序必然有一边拿到空表 ⇒ 整条链又落回「不可判定」。
+//
+// ⇒ 迭代到不动点。**上界是 3 轮而不是「直到不变」**：万一将来出现
+// `A 依赖 B 依赖 A` 的循环，「直到不变」会挂死，而 3 轮之后剩下的都是
+// 解析不出的表达式 —— 那种情况的表现与今天完全一样（不可判定），不会更糟。
+const funcGlobalPasses = 3
+
+func scanParsedWithCross(fset *token.FileSet, parsed map[string]*ast.File, cross map[string][]string) ([]Site, error) {
+	env := newPkgEnv()
+	env.cross = cross
+	if env.cross == nil {
+		env.cross = map[string][]string{}
+	}
 	paths := make([]string, 0, len(parsed))
 	for p := range parsed {
 		paths = append(paths, p)
 	}
 	sort.Strings(paths)
+
+	for pass := 0; pass < funcGlobalPasses; pass++ {
+		for _, p := range paths {
+			// ★ crossAlias 必须在这里也逐文件设。
+			// 第一版只在下面的扫描阶段设，于是 funcs 收集阶段的
+			// `db.SessionFamilyTurnsSourceSQL() + " rl"` 查不到跨包表，
+			// `logsSourceFromSQL()` 的一半分支**静默丢失** ——
+			// 而丢的那一半正是会话族，剩下的一半是 v1 视图。
+			// 表现不是「不可判定」而是**解析出一个不完整的并集**，
+			// 那比解析不出更危险：它看起来是个正常的成功结果。
+			env.crossAlias = importAlias(parsed[p], crossProviderPath)
+			collectFuncReturns(parsed[p], env)
+		}
+		for _, p := range paths {
+			for _, d := range parsed[p].Decls {
+				if gd, ok := d.(*ast.GenDecl); ok && gd.Tok == token.VAR {
+					collectStringBindings(gd, env, env.globals)
+				}
+			}
+		}
+	}
+
+	var out []Site
 	// scanConcat enumerates every `<string literal ending in a relation name>
 	// <operand>` pair inside n and records a Site for each.
 	//
@@ -428,6 +518,9 @@ func scanParsed(fset *token.FileSet, parsed map[string]*ast.File) ([]Site, error
 
 	for _, p := range paths {
 		f := parsed[p]
+		// 逐文件重置：别名是**这个文件**的 import 声明，不是包级属性。
+		// `admin/` 里两种别名都出现过（`db` 1 处、`dbpkg` 20 处）。
+		env.crossAlias = importAlias(f, crossProviderPath)
 		for _, decl := range f.Decls {
 			switch d := decl.(type) {
 			case *ast.FuncDecl:
@@ -562,21 +655,27 @@ func collectFuncReturns(f *ast.File, env *pkgEnv) {
 			continue
 		}
 		var rets []string
-		allLit := true
+		// §9.257：不再要求「所有 return 的第一个结果都是字面量」。
+		//
+		// 原口径（allLit）会因为一个 `return 另一个函数()` 的分支而**整函数作废** ——
+		// `SessionBodiesSourceSQL` 正是这样：两支分别是
+		// `return "request_logs_bodies_with_current_month"` 与
+		// `return SessionFamilyBodiesSourceSQL()`，一见到后者整函数被丢进「不可判定」。
+		//
+		// ⚠ 改用 resolve 后**门槛降低**：以前「解析不出」⇒ 不登记；
+		// 现在「解析不出」⇒ 该支贡献空、其余支仍登记。方向是**更敢下结论**，
+		// 所以必须盯住它不会把非 SQL 的函数也登记进来 —— 这由
+		// `TestCompleteRelationLiteralIsNotAConcatSite` 与 §9.257 的变异台账守着。
+		// 仍然只取**第一个结果位**：多返回值函数的第二个及以后不是关系名。
 		ast.Inspect(fd.Body, func(n ast.Node) bool {
 			ret, ok := n.(*ast.ReturnStmt)
 			if !ok || len(ret.Results) == 0 {
 				return true
 			}
-			v, ok := stringLit(ret.Results[0])
-			if !ok {
-				allLit = false
-				return true
-			}
-			rets = append(rets, v)
+			rets = append(rets, env.resolve(ret.Results[0], 0)...)
 			return true
 		})
-		if allLit && len(rets) > 0 {
+		if len(rets) > 0 {
 			env.funcs[fd.Name.Name] = dedupeStrings(rets)
 		}
 	}
@@ -619,18 +718,78 @@ func (env *pkgEnv) resolve(n ast.Node, depth int) []string {
 		}
 		return nil
 	case *ast.SelectorExpr:
-		// struct 字段 / 跨包常量：不猜。
+		// struct 字段：**不猜**。
+		// 唯一例外是「包限定」形态且该包就是 crossProviderPath 的 import 别名：
+		// `db.SessionBodiesSourceSQL()` 是**函数调用**，它的返回值能从 db 包
+		// 源码里读出来（§9.257）。`src.TurnsTable` 这种 struct 字段
+		// 即使包前缀恰好是 db 也不在其列 —— 后者的取值来自两支 struct 字面量，
+		// 跟函数返回值不是一回事，混进来就是把「猜」包装成「查」。
+		if id, ok := e.X.(*ast.Ident); ok && env.crossAlias != "" && id.Name == env.crossAlias {
+			if vals, ok := env.cross[e.Sel.Name]; ok {
+				return vals
+			}
+		}
 		return nil
 	case *ast.CallExpr:
 		name := calleeName(e.Fun)
 		if name == "" {
-			return nil // 跨包函数：单包内无法解析
+			// 跨包：calleeName 对带包前缀的调用返回 ""，
+			// 这里改为按 SelectExpr 直接查跨包表（同一处逻辑）。
+			if sel, ok := e.Fun.(*ast.SelectorExpr); ok {
+				if id, ok := sel.X.(*ast.Ident); ok && env.crossAlias != "" && id.Name == env.crossAlias {
+					return env.cross[sel.Sel.Name]
+				}
+			}
+			return nil
 		}
 		return env.funcs[name]
 	case *ast.ParenExpr:
 		return env.resolve(e.X, depth+1)
+	case *ast.BinaryExpr:
+		// §9.257：字符串拼接的返回值。两个分支的候选取**并集** ——
+		// `SessionFamilyBodiesSourceSQL` 返回
+		// `"… FROM public.session_bodies_hot sb" + " UNION ALL SELECT " + 投影 + " FROM public.session_bodies sb)"`，
+		// 不接这一支则整条拼接只解析出空 ⇒ 又一次「把查得到的事报成查不到」。
+		//
+		// ⚠ 方向是**多报**：并集里可能多出只出现在某一片段里的关系名。
+		// 本工具的退役清单宁可多报也不漏报（见 isRelationFragmentTail 的注释）。
+		return append(env.resolve(e.X, depth+1), env.resolve(e.Y, depth+1)...)
 	}
 	return nil
+}
+
+// crossProviderPath 是本工具**唯一**愿意跨包跟随的依赖。
+//
+// 为什么是它、为什么只能是「导航」而不是「结论」：
+//
+//   - 这些切换层函数全部集中在 db 包，它们决定「读哪一族」。
+//   - 本工具**不硬编码它们的返回值** —— 返回值是从 db 包源码里解析出来的。
+//     所以这里存的只是一个**导入路径**，改错了最多变成「跟丢了、退回不可判定」，
+//     不会变成「跟错了、报出假的关系名」。那种失败方向工具承受不起。
+//
+// ⚠ 反面：早先这里曾按**包名前缀**猜（「凡是带 db. 的就算」），
+// 那会让 `dbpkg.` 与 `db.` 两种别名、以及任何恰好叫 db 的本地包混为一谈。
+// 现在按**该文件里 db 包的实际 import 别名**解析，见 importAlias。
+const crossProviderPath = "github.com/kaixuan/llm-gateway-go/db"
+
+// importAlias 返回该文件给 crossProviderPath 起的**本地别名**。
+// 没有这个 import 时返回空串（调用方的 resolve 因此不会去查跨包表）。
+func importAlias(f *ast.File, path string) string {
+	for _, imp := range f.Imports {
+		p, err := strconv.Unquote(imp.Path.Value)
+		if err != nil || p != path {
+			continue
+		}
+		if imp.Name != nil {
+			return imp.Name.Name // 显式 dbpkg "…/db"
+		}
+		// 无显式名：本地名取路径最后一段（Go 语言规则）。
+		if i := strings.LastIndex(p, "/"); i >= 0 {
+			return p[i+1:]
+		}
+		return p
+	}
+	return ""
 }
 
 func calleeName(fun ast.Expr) string {
