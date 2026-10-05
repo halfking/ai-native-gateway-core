@@ -300,6 +300,85 @@ func TestDebtRatchetDoesNotGrow(t *testing.T) {
 	t.Logf("DEBT(R47) 现状：%d 条（基线 %d），新增 %d 条", len(debt), len(debtBaseline), len(added))
 }
 
+// debtReasonPrefixRe —— DEBT 档的轮号前缀形态。
+var debtReasonPrefixRe = regexp.MustCompile(`^DEBT\(R\d+\):`)
+
+// allowlistReasonViolation 返回白名单理由的格式违规描述；空串=合规。
+// 三档合法前缀：LEGIT: / DEBT(R##): / TOOLING:，冒号后必须跟非空理由。
+func allowlistReasonViolation(reason string) string {
+	r := strings.TrimSpace(reason)
+	if r == "" {
+		return "理由为空"
+	}
+	var head string
+	switch {
+	case strings.HasPrefix(r, "LEGIT:"), strings.HasPrefix(r, "TOOLING:"):
+		head = r[:strings.Index(r, ":")+1]
+	case debtReasonPrefixRe.MatchString(r):
+		head = debtReasonPrefixRe.FindString(r)
+	default:
+		return "前缀必须是 LEGIT: / DEBT(R##): / TOOLING: 三档之一" +
+			"（R48 §五-4/E5：无档前缀的条目既不进 debtEntries 的 DEBT 桶、也不带 LEGIT 依据，" +
+			"棘轮与豁免两头都看不见——新债以此形态绕过棘轮零阻力）"
+	}
+	if strings.TrimSpace(strings.TrimPrefix(r, head)) == "" {
+		return "前缀 " + head + " 后没有非空理由（R48 §五-4/E5：豁免必须带依据）"
+	}
+	return ""
+}
+
+// TestAllowlistReasonsHaveJustifiedShape —— R48 §五-4（E5 软肋）的最小格式断言。
+//
+// debtEntries() 按 reason 含 "DEBT" 识别债务、进棘轮；其余条目落进 LEGIT 桶，
+// 而那个桶此前没有任何门——新债随手写个 "LEGIT"/"todo"/空串即可不进基线。
+// 本门给两个桶立最小格式（见 allowlistReasonViolation），把疏忽性绕过
+// （随手写个词）变成必须显式伪造依据的行为。
+//
+// 这是防绕过，不是内容审查："LEGIT: 裸母表" 在格式上仍合规——实质审查
+// 靠 review 与 TestNoBareRequestLogsMotherReads 本体。
+func TestAllowlistReasonsHaveJustifiedShape(t *testing.T) {
+	for name, m := range map[string]map[string]string{
+		"Go":  sqlReadGuardAllowFiles,
+		"SQL": sqlReadGuardAllowSQLFiles,
+	} {
+		for path, reason := range m {
+			if v := allowlistReasonViolation(reason); v != "" {
+				t.Errorf("%s 白名单 %s 的理由格式违规：%s", name, path, v)
+			}
+		}
+	}
+
+	// 负控制：违规形态必须被识别——空的探针列表会让上面那圈恒绿
+	// （201 号 §102 的教训：检查器失效与「全部合规」不可区分）。
+	for _, bad := range []string{
+		"",
+		"   ",
+		"LEGIT",
+		"LEGIT:",
+		"LEGIT:   ",
+		"TOOLING:",
+		"DEBT(R47):",
+		"todo",
+		"裸母表",
+		"DEBT(某轮): 轮号不是数字",
+	} {
+		if v := allowlistReasonViolation(bad); v == "" {
+			t.Errorf("违规理由 %q 未被识别（检查器失效）", bad)
+		}
+	}
+	// 正控制：三档合法形态必须通过。
+	for _, ok := range []string{
+		"LEGIT: 双腿之母表腿（hot 腿同查询内联）",
+		"DEBT(R47): 裸母表",
+		"TOOLING: 离线校验工具",
+		"DEBT(R7): 某轮登记的旧债",
+	} {
+		if v := allowlistReasonViolation(ok); v != "" {
+			t.Errorf("合法理由 %q 被误判：%s", ok, v)
+		}
+	}
+}
+
 func keysSorted(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

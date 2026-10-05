@@ -78,6 +78,7 @@ import requestDetail from './requestDetail'
 import reports from './reports'
 import usageTrend from './usageTrend'
 import hyper from './hyper'
+import routeIncidentDrawer from './routeIncidentDrawer'
 
 export default {
   hyper,
@@ -158,4 +159,5 @@ export default {
   proxy,
   requestDetail,
   reports,
+  routeIncidentDrawer,
 }
