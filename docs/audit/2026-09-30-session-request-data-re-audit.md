@@ -30996,3 +30996,127 @@ bodies 腿活过来后主腿还哑了 4 天。**它们由不同的代码路径�
 | `cmd/tools/sql_source_indirection_audit` | **PASS 14 / FAIL 0** | （本轮新增 1 道门） |
 
 ⇒ 后续任何轮次引用基线时**必须用这一份**，并**逐条列名**。
+
+### §9.257 修完 `calleeName` 的跨包盲区 —— ★ 并**推翻我自己在 §9.256 里的一个下一步判断**
+
+> 本轮第一次**真改生产工具的解析逻辑**（不是加门）。
+> 改动只限 `cmd/tools/sql_source_indirection_audit/`，**没碰任何读方/写方** ⇒
+> db/admin 门仍需实跑复核，见 §9.257.5。生产 252 零写入。
+
+#### §9.257.0 ★ 先说最重要的：修好解析，**v1 读点数一处没多**
+
+§9.256 的「下一步」我写的是「修 `calleeName` 的跨包解析，让 26 处从不可判定
+落进正确的桶」。**实测结果推翻了「正确的桶 = v1 桶」这个前提**：
+
+| 桶 | §9.256 | §9.257 | 变化 |
+|---|---:|---:|---|
+| 解析到 v1 宽族 | 12 处 | **12 处** | **0** |
+| canonical（退役安全） | 5 处 | 44 处 | +39 |
+| 不可静态解析 | 53 处 | **14 处** | **−39** |
+
+⇒ **多解析出 39 处，而 v1 一个都没多。**
+
+根因是**分类的语义**，不是解析率：`v1Tables` 只有 4 张**基表**
+（`request_logs` / `_hot` / `_bodies` / `_bodies_hot`），
+§9.256 手验出的那 26 处读的是
+`request_logs_with_current_month` 与 `request_logs_bodies_with_current_month`
+—— **两个都不在这个集合里**（`resolve.go:41-44`）⇒ 解析成功后必然落进 `canonical`。
+
+★ **`reads-v1` 回答的是「这个关系名在 DROP 时会不会消失」，
+`canonical` 回答的是「不会消失」。而退役要回答的是第三个问题：
+「我读到的行里有多少来自 v1」。本工具目前**没有这一类**。**
+
+⇒ **「12 处」永远不可能是 v1 读方清单，再把解析率提到 100% 也改变不了。**
+（这一点写在 `manifest_test.go` 头部，免得下一个人重做我这个实验。）
+
+#### §9.257.1 改了什么（三处，都在 resolver）
+
+1. **`resolve` 新增 `*ast.BinaryExpr` 分支**：字符串拼接的返回值取两支**并集**。
+   `SessionFamilyBodiesSourceSQL` 返回
+   `"…FROM public.session_bodies_hot sb" + " UNION ALL SELECT " + 投影 + " …session_bodies sb)"`，
+   不接这一支则整条只解析出空。
+2. **跨包跟随**（`crossProviderPath`，且按**该文件实际的 import 别名**解析 ——
+   仓库里 `db` 1 处、`dbpkg` 20 处）。硬编码的是**导入路径**不是返回值；
+   路径错了的表现是「退回不可判定」，不是「报出假的关系名」。
+3. **`collectFuncReturns` 不再要求「所有 return 都是字面量」**：
+   原 `allLit` 口径会因为一个 `return 另一个函数()` 的分支而**整函数作废**。
+   ⚠ 这条**降低门槛**（以前「解析不出」就不登记，现在「该支贡献空、其余支仍登记」），
+   方向是更敢下结论，所以必须盯住它别把非 SQL 函数也登记进来。
+
+`funcs` 与 `globals` 互相依赖（包级 `var` 引用函数、函数返回引用包级投影常量），
+所以两遍收集**迭代 3 轮**到不动点。**上界写死 3 而不是「直到不变」**：
+将来若出现循环依赖，「直到不变」会挂死，而 3 轮后剩下的都是解析不出的表达式，
+表现与今天完全一致。
+
+#### §9.257.2 ★ 我在这一轮自己写出的一个缺陷，14 道门一道都没抓住
+
+第一版只把 `env.crossAlias` 设在**扫描阶段**，忘了 funcs/globals 收集阶段也要设。
+于是 `logsSourceFromSQL()` 里 `db.SessionFamilyTurnsSourceSQL() + " rl"` 那一支
+查不到跨包表，**并集只剩 v1 那一支**。
+
+实测症状：`admin/logs.go:632` 只解析出
+`rl | request_logs_with_current_month rl` —— 会话族那一支整个不见了。
+
+★ **危险在于它的表现形态**：不是「不可判定」，而是**一个少了分支的成功结果**，
+格式规整、数量合理，输出里没有任何异常信号。
+而 §9.256 的 29 处里有 7 处正好属于这一类（`logs.go` 6 处 + `usage_enhanced` 1 处）——
+**丢掉的恰恰是会话族那一半，读法看上去仍然「正确」。**
+
+#### §9.257.3 新门，及其夹具也犯了同一个错（第二次）
+
+新门 `TestCrossPackageSwitchLayerResolvesToBothArms` 断言并集**两臂都在**。
+第一版夹具把两臂切换层**放进 db 包内部**（`func LogsSourceFromSQL` 在 db 里），
+调用就成了同包 `SessionTurnsSourceSQL()`，`calleeName` 直接拿到名字、
+**根本不需要 crossAlias** ⇒ 夹具测不到任何东西。
+
+⇒ ★ **MUT-B 变异下这道门照样绿**（实测 rc=0）。把夹具改成真实形状
+（切换层住在**消费包** `admin`、跨包调用带 `dbpkg.` 前缀）后，它才转红。
+
+★ **两次都是同一个错**：我按「我以为的形状」写判据，而没有按**真实代码的形状**写。
+第一次在 resolver 里，第二次在夹具里。
+⇒ **判据的夹具必须先照着真代码抄一遍，包括调用点住在哪个包。**
+
+#### §9.257.4 变异台账（两条都核对了红在哪条断言）
+
+| 变异 | 实测 |
+|---|---|
+| **MUT-A** 完全不做跨包解析 | ✅ 红 **2 道**：`TestDocumentedSnapshotMatchesMeasurement`（逐项报 `unresolved 处数: 文档 14 → 实测 46 (+32)`，方向正确）+ 新门；其余 **14 道 PASS** |
+| **MUT-B** 撤掉 funcs/globals 阶段的 `crossAlias` 设置（§9.257.2 那个缺陷） | ✅ 红 **1 道且仅**新门（`★ 并集里**丢了会话族那一臂**`），**15 道 PASS** |
+| 还原 | ✅ 全 **16 道 PASS**（新增 1 道），`gofmt -l` 空输出，`go build ./...` rc=0 |
+
+★ **MUT-B 只有新门能抓**：快照门在它下面**照样绿**（分桶数不变）。
+这正是必须为「并集完整性」单独立一道门的理由 ——
+**分桶计数对「解析少一半」是完全盲的。**
+
+#### §9.257.5 门基线（本轮实跑，逐条列名）
+
+本轮**动了生产工具的解析逻辑**（不是只加门），所以 db/admin 两道门**必须实跑**，
+不能靠「我没碰读方写方」推理。三包结果：
+
+| 包 | 结果 | 失败名 |
+|---|---|---|
+| `db` | **FAIL 2** | `TestRepointValueFidelity` · `TestRetirementBlockedByUnrunBackfills` |
+| `admin` | **FAIL 7** | `TestColumnarParentTwoSurfaceSetopShape_RealDB` · `TestReportRollup_HTTPContract` · `TestV1BodiesReadersAreAssessed` · `TestRequestLogsReadInventoryIsComplete` · `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable` · `TestSessionFinalSuccessBacklogIsClosed` · `TestProjectTasksSkipsNullTaskID` |
+| `cmd/tools/sql_source_indirection_audit` | **PASS 16 / FAIL 0** | （本轮新增 1 道） |
+
+⇒ 与 §9.256.7 更正后的基线**逐条相同，无漂移**（db 2 + admin 7）。
+另：`go build ./...` rc=0；`gofmt -l` 空输出。
+
+⚠ **本轮踩到一个「静默跳过」**：起门的命令写成
+`… && rm -f /tmp/*.rc && (go test ./db/ …)`，而 `rm` 被 mavis-trash 接管、
+**在「无文件可删」时返回非零** ⇒ `&&` 链短路 ⇒ **db 门根本没跑**，
+而任务末尾仍然 `cat` 出了 admin 的结果，看着像「两门都跑了」。
+⇒ ★ **`rm` 之后不要接 `&&`**；要么用 `;`，要么别删（覆盖写即可）。
+**这条与「截断输出 vs 零命中」同族：一个失败的清理动作让后面的工作静默没发生。**
+
+
+#### §9.257.6 对退役决策的净影响
+
+1. ★ **§9.256 的结论不变但更硬**：退役工作量按 **41 处**算，且**不能靠修工具得到**。
+   本轮把工具的解析率从 73% 提到 90%（14/70 未解析），v1 桶纹丝不动。
+2. **下一步该做的不是继续修解析器**，而是给工具加**第四个类**
+   （v1 臂视图：从 `sql/objects/views/*.sql` 里**推导**哪些视图的 body 含 v1 臂，
+   而不是手写名单 —— 手写就是第二份真相源，`resolve.go:38-40` 已经记过那个教训）。
+3. ⚠ 剩 14 处确实推不出（`baseTable` / `src.TurnsTable` 是 struct 字段，
+   `table` 是 range 循环变量，`pgxIdent` / `s.fnName` 不是关系名来源）。
+   其中 `src.TurnsTable` 三处**确实读 v1 基表**，靠手验登记（清单里已是 `reads-v1`）。
