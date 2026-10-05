@@ -487,6 +487,8 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { store, isReadOnlyMode, authBearer } from '../store'
 import ModelPicker from '../components/ModelPicker.vue'
 import { exportFile } from '../utils/exportFile'
+import { readExportBlob, ExportTooLargeError } from '../utils/exportResponse'
+import { formatBytes } from '../utils/format'
 
 const { t } = useI18n()
 
@@ -1042,10 +1044,17 @@ async function exportCsv() {
   try {
     const res = await fetch(`${API}/export`, { headers: authHeaders() })
     if (!res.ok) throw new Error(`export failed: ${res.status}`)
-    const blob = await res.blob()
+    // 2026-10-06（UI规范 10 §4.6.18）：经受控取流。该端点是流式 CSV、无 Content-Length。
+    const blob = await readExportBlob(res)
     await exportFile({ filename: 'pricing_export.csv', blob })
   } catch (e: unknown) {
-    saveMsg.value = e instanceof Error ? `${t('common.exportFailed')}: ${e.message}` : t('common.exportFailed')
+    // 2026-10-06（UI规范 10 §4.6.18 + 19 §4.3b C5）：超限要给**用户看得见的**那个数字，
+    // 且该数字来自运行时上限（DEFAULT_MAX_FILE_BYTES），不是文案里写死的第二份。
+    if (e instanceof ExportTooLargeError) {
+      saveMsg.value = t('common.exportTooLarge', { max: formatBytes(e.limit) })
+    } else {
+      saveMsg.value = e instanceof Error ? `${t('common.exportFailed')}: ${e.message}` : t('common.exportFailed')
+    }
     saveOk.value = false
   }
 }

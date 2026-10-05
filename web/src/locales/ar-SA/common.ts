@@ -136,6 +136,7 @@ export default {
   enabled: 'مفعّل',
   endDate: 'تاريخ الانتهاء',
   exportFailed: 'فشل التصدير',
+  exportTooLarge: 'الملف كبير جدًا للتصدير (الحد {max}). يرجى التصدير من سطح المكتب.',
   lastOccurred: 'آخر حدوث',
   loading: 'جارٍ التحميل…',
   never: 'مطلقًا',

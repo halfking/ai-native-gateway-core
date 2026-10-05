@@ -25,6 +25,17 @@ export interface ExportFileInput {
   blob: Blob
 }
 
+/**
+ * 导出体体积上限的**唯一权威源**（docs/UI规范 19 §4.3b C5）。
+ *
+ * ⚠️ 业务代码与 i18n 文案**都不得**再写死这个数字：
+ * 壳内若上报了真实上限（`appInfo().fileTransfer.maxUploadBytes`）则以其为准，
+ * 取不到才回落到这里。**回落不抛错**——拿不到上限不该让下载失败。
+ * 文案用 `formatBytes()` + `{max}` 插值，数字从运行时上限渲染。
+ * C5 门禁只扫生产代码，允许本文件的这一个常量。
+ */
+export const DEFAULT_MAX_FILE_BYTES = 50 * 1024 * 1024 // 50 MiB
+
 export type ExportOutcome = 'shared' | 'downloaded' | 'cancelled'
 
 /** 链条走到头仍失败（④）。message 为技术性英文，展示层走 i18n 文案。 */
