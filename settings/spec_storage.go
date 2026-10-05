@@ -147,7 +147,7 @@ func StorageSpecs() []*Spec {
 			//
 			// 开启后**全部** bodies 读方改读会话族：会话导出/对比、压缩统计、
 			// 日志摘要、无主题会话、标题、清洗匹配、自动标题、会话取证导出、
-			// 会话摘要/系统提示词前缀、探针监听器 —— 共 14 个消费点。
+			// 会话摘要/系统提示词前缀、探针监听器 —— 共 13 个消费点文件（R46 复测；计数以 indirectSourceConsumers 门输出为准）。
 			// 列名经 db.SessionFamilyBodiesSourceSQL 映射为 v1 同名，调用点投影不变。
 			//
 			// ⚠⚠ **key 由 `storage.admin_session_bodies_native_read` 改名而来**（§9.233）。
@@ -170,8 +170,8 @@ func StorageSpecs() []*Spec {
 			Scope:           ScopePlatform,
 			Category:        CategoryStorage,
 			Default:         false,
-			Description:     "bodies 读方读 session_bodies（§9.233，14 个消费点）",
-			DescriptionLong: "开启后全部 v1 bodies 读方（会话导出/对比、压缩统计、日志摘要、标题、取证导出、会话摘要、探针监听器等 14 个消费点）改读 session_bodies（hot∪parent），列名经 db.SessionFamilyBodiesSourceSQL 映射为 v1 同名，调用点投影不变。默认关闭：生产 252 实测 2026-09-30 一天仍有 1,113 条 turn 有 v1 正文而无 session_bodies 行，打开会让当天导出的正文变成 `{}` 且接口不报错。补齐该日缺口后方可灰度开启。",
+			Description:     "bodies 读方读 session_bodies（§9.233，13 个消费点文件）",
+			DescriptionLong: "开启后全部 v1 bodies 读方（会话导出/对比、压缩统计、日志摘要、标题、取证导出、会话摘要、探针监听器等 13 个消费点文件）改读 session_bodies（hot∪parent），列名经 db.SessionFamilyBodiesSourceSQL 映射为 v1 同名，调用点投影不变。默认关闭：生产 252 实测 2026-09-30 一天仍有 1,113 条 turn 有 v1 正文而无 session_bodies 行，打开会让当天导出的正文变成 `{}` 且接口不报错。补齐该日缺口后方可灰度开启。",
 			DangerLevel:     Warning,
 			HotReload:       true,
 		},

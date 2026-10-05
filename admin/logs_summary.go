@@ -199,7 +199,7 @@ func (h *Handler) loadSessionLogsForSummary(ctx context.Context, r *http.Request
 		       `+requestLogStatusExpr+` AS request_status,
 		       rl.error_kind, rl.client_model
 		FROM request_logs_with_current_month rl
-		LEFT JOIN `+dbpkg.SessionBodiesSourceSQL()+`
+		LEFT JOIN `+dbpkg.SessionBodiesSourceSQL()+` rb
 		  ON rb.request_id = rl.request_id
 		`+where+`
 		ORDER BY rl.ts ASC
@@ -261,7 +261,7 @@ func (h *Handler) loadSessionLogsBySessionID(ctx context.Context, sessionID, ten
 		       `+requestLogStatusExpr+` AS request_status,
 		       rl.error_kind, rl.client_model
 		FROM request_logs_with_current_month rl
-		LEFT JOIN `+dbpkg.SessionBodiesSourceSQL()+` ON rb.request_id = rl.request_id
+		LEFT JOIN `+dbpkg.SessionBodiesSourceSQL()+` rb ON rb.request_id = rl.request_id
 		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
 		ORDER BY rl.ts ASC
 		LIMIT $3
