@@ -12763,3 +12763,41 @@ psql 报错被 grep 漏掉，读数变成 **0.612 ms**（比第一条快 34,000 
 **不受影响的**：§9.238（v1 停写 5 天）、§9.240.2/§9.240.3（回填上限 99.97% / 45.67%
 及其成因）、§9.239（探针标记是 s4_ready 唯一杠杆）、§9.242（97% 是 I/O）
 —— 它们都是**实测**，不依赖脚本是否存在。
+
+#### §70.83 ★ 生产 252 同口径复量：**本地的「单一杠杆」结论在生产不成立**
+
+D34 里「探针标记是 `s4_ready` 唯一杠杆」是**本地**读数。本节在**生产 252** 用**逐字**
+的出货分类器（7d 窗口、v1 两面齐全、`session_turns` 双向 `NOT EXISTS` 反连接）复量，
+**只读 SELECT、零写入**：
+
+- 分类/反事实：7d `genuine_loss` **10**（`is_auto_request` **10 行全 NULL**）
+  · `non_terminal` **71**（71 行 NULL）· `internal_loopback` **8,102**（全 TRUE）。
+- ★★ **那 10 行的形状与本地完全不同**：
+
+  | origin_actor | request_status | error_kind | 行数 |
+  |---|---|---|---:|
+  | `(null)` | **success** | `(null)` | **4** |
+  | `(null)` | failure | `provider_error` | 3 |
+  | `(null)` | failure | `routing_database_error` | 1 |
+  | `(null)` | rate_limited | `rate_limit_exceeded` | 1 |
+  | `node-probe-worker` | failure | `transient` | **1** |
+
+  ⇒ **生产只有 1 行是探针**；本地那 9 行 `probe-service` 在生产**不存在**。
+  ⇒ **生产有 4 行是「成功但没有 session 对应行」**，本地一行都没有。
+  ⇒ **探针那条杠杆在生产只能挪走 1 行。**
+- 归属切分：生产 **6 个会话从未被镜像（零 turn）**、**4 个在健康会话里丢了单个 turn**
+  （本地是 9 vs 1）⇒ 「让 turn 写更快更稳」在生产只覆盖 **4/10**。
+- ⇒ ★ **本地那套「修 turn 写」/「标探针」的结论不能照搬到生产**。
+  **口径一致不代表读数一致，只有生产读数能支撑生产的决定。**
+- 两次自己踩的坑（都是「手内联而不是引用」）：
+  ① 把**合取**写成两个独立否定 —— arm 1 是 `is_auto AND (generator 条件)`，
+     取反应是 `NOT (A AND B)`，我写成 `(NOT A) AND (NOT B)`，
+     多滤掉「`is_auto_request` 为 NULL 但 generator 条件成立」的行
+     （实测 8,183 行里 `NOT generator` 为 **0**），查询返回 **0 行**，
+     看起来像「生产上一条丢失都没有」；
+  ② `session_turns` 的会话列是 **`session_id`**，v1 侧才是 `gw_session_id`。
+  ★ 共同形状：**能被复用的定义（出货常量、列名）就应该引用，不该重打一遍**。
+- **局限**：只跑 7d；**6 个「零 turn 会话」为什么没被镜像本节没查**
+  （hook 未达 / 后续门挡住 / 恢复路径没恢复 —— 生产侧
+  `session_dim` 与 `request_context_attrs` 的存在性可以分离这三者，本轮没做）；
+  **只读，未在生产执行任何回填或修复。**
