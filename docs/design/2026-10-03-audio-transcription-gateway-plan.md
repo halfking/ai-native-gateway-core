@@ -388,3 +388,51 @@ HTTP 200**（200 表示「往返成功，错误在信封里」）。MCP 客户�
   内置切分列为后续候选（需考虑音频解码依赖，倾向不做）。
 - 音频端点暂不写 request_logs 审计（与 embeddings 同款现状）；
   计量口径可先用上游 usage.seconds（响应头已透出）。
+
+## 9. 真实音频完整验证（2026-10-05 补充，build 2464）
+
+用两段**真实人声**公开样本（非合成语音）做 ASR/TTS 全链路验证：
+
+### 9.1 测试音频
+
+| 样本 | 来源 | 时长 | Ground truth |
+|---|---|---|---|
+| 英文 | Whisper 仓库经典 `tests/jfk.flac`（JFK 就职演说） | 11s | 逐词明确 |
+| 中文 | 阿里云官方 ASR 示例 `asr_example_zh.wav` | 5.5s | 语义明确（"达摩院"句） |
+
+### 9.2 ASR 结果（经网关 /v1/audio/transcriptions）
+
+| 用例 | 结果 |
+|---|---|
+| EN wav | 与 ground truth **逐词一致**（仅标点归一差异） |
+| EN mp3 | 同上逐词一致 |
+| ZH wav | "欢迎大家来体验打磨院推出的语音识别模型。"——15 字仅 1 个同音字（达→打），同音歧义非故障 |
+| ZH mp3 + stream | SSE 正常（delta/done/[DONE] + transcript.transport 事件） |
+
+### 9.3 TTS 结果（经网关 /v1/audio/speech）与回环验证
+
+回环 = 合成音频再喂 ASR 对照原文，是「发音正常」的客观硬证据：
+
+| 用例 | 合成 | 回环 ASR | 判定 |
+|---|---|---|---|
+| ZH 茉莉 37 字 | 6.56s/24kHz，RMS 3361、语音帧 57.5%（非静音） | **逐字一致** | ✅ 发音清晰 |
+| ZH 默认音色 13 字 | 2.24s | 仅多一个逗号 | ✅ |
+| EN Mia 10 词 | 4.0s | 9 词一致，仅 "LLM" 缩写被听成 "One Thousand"（缩写词固有歧义） | ✅ |
+| EN Chloe 14 词 | 3.84s | 13 词一致（river bank→riverbank 拼写合并） | ✅ |
+| 小写变体 `mia` 输入 | 200，有效音频 | —（规范映射命中 Mia） | ✅ |
+
+人耳抽听（afplay）：茉莉中文、Chloe 英文两段发音正常。
+
+### 9.4 过程中抓到并修复的缺陷
+
+**TTS 音色小写化回归**（b24938b18 + 19621163d）：`normalizeTTSVoiceForCandidate`
+把合法音色小写化（Mia→mia）传上游，小米 400 "Unknown voice: mia"，英文
+音色全族（Mia/Chloe/Milo/Dean）不可用；早先的
+TestNormalizeTTSVoiceCanonicalCase 断言方向也反了（要求归一成小写键）。
+修法：音色表改为「匹配键→上游规范形式」映射，任何大小写变体输入都稳定
+命中合法形式；测试断言同步校正，全量 streaming 套件 149s 绿。
+
+### 9.5 结论
+
+ASR（真实人声双语、双格式、流式）与 TTS（双语、三音色、变体输入）全部
+验证通过；回环逐字/逐词一致证明合成发音清晰可辨。音频链路可用。
