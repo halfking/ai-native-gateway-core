@@ -88,11 +88,13 @@ func main() {
 		os.Exit(2)
 	}
 
-	var v1s, other, unresolved []Site
+	var v1s, v1Arms, other, unresolved []Site
 	for _, s := range sites {
 		switch s.Classification() {
 		case ClassReadsV1:
 			v1s = append(v1s, s)
+		case ClassReadsV1Arm:
+			v1Arms = append(v1Arms, s)
 		case ClassUnresolved:
 			unresolved = append(unresolved, s)
 		default:
@@ -101,7 +103,7 @@ func main() {
 	}
 
 	if !*v1Only {
-		fmt.Printf("== 解析到 canonical 视图 / 会话族（退役安全）: %d 处 ==\n", len(other))
+		fmt.Printf("== 解析到 canonical 视图 / 会话族（关系名退役后仍在）: %d 处 ==\n", len(other))
 		for _, s := range other {
 			fmt.Printf("  %s\n", s)
 		}
@@ -113,6 +115,12 @@ func main() {
 		fmt.Printf("  %s\n", s)
 	}
 
+	// §9.258：第四桶。**它才是退役工作量的主体**，而前两桶都不是。
+	fmt.Printf("\n== 解析到含 v1 臂的视图（关系名还在，但行集会变小）: %d 处 ==\n", len(v1Arms))
+	for _, s := range v1Arms {
+		fmt.Printf("  %s\n", s)
+	}
+
 	fmt.Printf("\n== 不可静态解析（需手验）: %d 处 ==\n", len(unresolved))
 	for _, s := range unresolved {
 		fmt.Printf("  %s\n", s)
@@ -120,11 +128,14 @@ func main() {
 
 	fmt.Printf("\n合计 %d 处拼接点 / %d 个文件；其中解析到 v1 的 %d 处分布在 %d 个文件。\n",
 		len(sites), uniqueFiles(sites), len(v1s), uniqueFiles(v1s))
+	fmt.Printf("★ 退役读方清单 = v1 基表 %d 处 + v1 臂视图 %d 处 = **%d 处 / %d 个文件**\n",
+		len(v1s), len(v1Arms), len(v1s)+len(v1Arms), uniqueFiles(append(append([]Site{}, v1s...), v1Arms...)))
+	fmt.Println("  （§9.257 实测：只提高解析率不会让这个数变大——它需要的是这一类，而不是更好的解析。）")
 	fmt.Println("本工具的输出是证据；判定在 manifest_test.go（§9.227 起它**是**门）。")
-	fmt.Println("若上面出现 reads-v1 却不在 indirectSiteAssessments 里，那道门会红。")
+	fmt.Println("若上面出现 reads-v1 / v1-arm 却不在 indirectSiteAssessments 里，那道门会红。")
 
-	if len(v1s) > 0 && !*v1Only {
-		fmt.Fprintln(os.Stderr, "\n注意：存在解析到 v1 宽族的间接读点，请读 §9.45 的处置口径。")
+	if (len(v1s) > 0 || len(v1Arms) > 0) && !*v1Only {
+		fmt.Fprintln(os.Stderr, "\n注意：存在 v1 族的间接读点，请读 §9.45 的处置口径。")
 	}
 }
 

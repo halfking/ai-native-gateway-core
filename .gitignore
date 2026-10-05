@@ -427,3 +427,8 @@ tests/stress/handoff_b_s8s13_test.go
 docs/audit/**/pg_*pg17_logs.txt
 docs/audit/**/ctr_snapshot_*.log
 .trae/
+
+# §9.258：`go build ./cmd/tools/sql_source_indirection_audit/` 会在**仓库根**
+# 产出一个 3.5MB 同名二进制，`git add -A` 会把它捡进去（§9.257 真的发生了）。
+# 构建用 `go build -o /tmp/xxx` 或 `go vet` / `go test`，不要裸 `go build <pkg>`。
+/sql_source_indirection_audit
