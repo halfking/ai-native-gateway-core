@@ -41,7 +41,6 @@ func sqlConst(t *testing.T, src, name string) string {
 //
 // 风格对齐 apihub/upsert_heartbeat_contract_test.go（源码文本门 + 取值钉门）。
 
-
 func TestListAssetsSQLHasRealOffsetClause(t *testing.T) {
 	sql := sqlConst(t, mustReadSource(t, "pg_store.go"), "listAssetsSQL")
 
@@ -106,8 +105,8 @@ func TestListClampsOffsetToZero(t *testing.T) {
 	src := mustReadSource(t, "pg_store.go")
 	if !strings.Contains(src, "offset := f.Offset") ||
 		!strings.Contains(src, "if offset < 0 {") {
-		t.Errorf("pgStore.List 必须把负 Offset 归零。\n"+
-			"  PG 对负 OFFSET 报语法错误，而 Filter.Offset 可能来自 HTTP query 参数。\n"+
+		t.Errorf("pgStore.List 必须把负 Offset 归零。\n" +
+			"  PG 对负 OFFSET 报语法错误，而 Filter.Offset 可能来自 HTTP query 参数。\n" +
 			"  期望看到:\n\t\toffset := f.Offset\n\t\tif offset < 0 {\n\t\t\toffset = 0\n\t\t}")
 	}
 }

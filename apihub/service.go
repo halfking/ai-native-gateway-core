@@ -107,13 +107,15 @@ func (s *Service) Register(ctx context.Context, a Asset) error {
 // RegisteredAt/LastSeenAt、同样逐条失效缓存。差别只在发往 DB 的**语句条数**。
 //
 // ★ 与 Register 的**唯一语义差异**：Register 对非法 kind/空 tenant **返回错误**；
-//   RegisterBatch **跳过并记日志**，因为一批里有一行坏的不该让另外 N-1 行失败
-//   —— 这正是改动前 watcher「log+continue」的语义，批量化不能把它丢掉。
-//   校验放在这一层（而不是只放在 pgStore）是为了让**所有** Store 实现
-//   都拿到同一个契约，也让这条契约不需要真库就能测。
+//
+//	RegisterBatch **跳过并记日志**，因为一批里有一行坏的不该让另外 N-1 行失败
+//	—— 这正是改动前 watcher「log+continue」的语义，批量化不能把它丢掉。
+//	校验放在这一层（而不是只放在 pgStore）是为了让**所有** Store 实现
+//	都拿到同一个契约，也让这条契约不需要真库就能测。
 //
 // ★ 缓存失效必须逐条：assetCache 按 (tenant, kind, ref_id) 存，
-//   批量写完只清一次会留下 N-1 条陈旧读。
+//
+//	批量写完只清一次会留下 N-1 条陈旧读。
 func (s *Service) RegisterBatch(ctx context.Context, assets []Asset) error {
 	if s.store == nil {
 		return errors.New("apihub: store is not configured")
@@ -144,13 +146,25 @@ func (s *Service) RegisterBatch(ctx context.Context, assets []Asset) error {
 	if len(prepared) == 0 {
 		return nil
 	}
-	if err := s.store.UpsertBatch(ctx, prepared); err != nil {
-		return err
-	}
+	// ★ 缓存失效必须**无条件**逐条执行，不能放在「store 成功之后」。
+	//
+	// 2026-10-05 审计发现的缺陷：pgStore.UpsertBatch 在分片失败时会
+	// **退回逐行**并隔离坏行 —— 于是它返回 error 时，库里其实已经写进去
+	// 绝大多数行了。若在这里提前 return，prepared 里所有行的缓存
+	// 都不失效 ⇒ 读方命中 TTL 内的陈旧缓存（症状：改了名字但列表不变，
+	// 默认 60s 后自愈，因而完全静默）。
+	//
+	// 为什么改动前不存在：逐行 Register 时代每个 Register 成功后
+	// **自己**失效那一条；批量化把「写」与「失效」拆到两个循环，
+	// 中间夹了一个 return err ⇒ 失败时两者不再配对。
+	//
+	// 失效放在 err 检查**之前**：宁可多清几条不该清的缓存
+	// （代价是一次 cache miss + 一次回表），也不要留下读得到的陈旧值。
+	err := s.store.UpsertBatch(ctx, prepared)
 	for _, a := range prepared {
 		s.cache.invalidate(a.Kind, a.RefID, a.TenantID)
 	}
-	return nil
+	return err
 }
 
 // Get returns a single asset, honoring tenant isolation.

@@ -47,8 +47,9 @@ func connectBatch(t *testing.T) *pgxpool.Pool {
 
 // batchTestRefBase 是本测试占用的 ref_id 段。
 // ★ 必须是**别人不会用的段**且必须在 cleanup 里删干净 —— 这个测试
-//   打的是**真实的 public.assets 表**，不是临时表（因为 SQL 里表名是硬编码的，
-//   换成临时表就等于改了被测物）。
+//
+//	打的是**真实的 public.assets 表**，不是临时表（因为 SQL 里表名是硬编码的，
+//	换成临时表就等于改了被测物）。
 const batchTestRefBase = 99000000
 
 func cleanupBatchRows(t *testing.T, pool *pgxpool.Pool) {
@@ -138,9 +139,10 @@ func TestBatchRealDBWritesAllRows(t *testing.T) {
 // ── 门 B（本文件最要紧的一条）：重复跑同一批，门控必须让 last_seen_at 不动 ──
 //
 // ★ 这是 §10.29 整件事的**存在理由**：门控（§10.24 的 A 方案）让 93.7% 的
-//   upsert 什么都不做。它在**单行**形态下被验证过（A 方案上线时看过
-//   n_tup_upd 降幅），但**多行**形态下 ON CONFLICT 的 WHERE 是否同样生效，
-//   只有真库能回答。
+//
+//	upsert 什么都不做。它在**单行**形态下被验证过（A 方案上线时看过
+//	n_tup_upd 降幅），但**多行**形态下 ON CONFLICT 的 WHERE 是否同样生效，
+//	只有真库能回答。
 //
 // 假如多行下 WHERE 失效，现象是：每 tick 把 1306 行全刷一遍 last_seen_at
 // ⇒ 写放大回到改动前，而 n_tup_upd 只会显示「比预期高一点」，

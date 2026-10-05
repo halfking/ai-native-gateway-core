@@ -4,9 +4,7 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -561,25 +559,9 @@ var indirectSiteAssessments = map[string]siteAssessment{
 	},
 }
 
-// repoRoot 走 go.mod 向上找仓根。
-func repoRoot(t *testing.T) string {
-	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller failed")
-	}
-	dir := filepath.Dir(thisFile)
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatalf("no go.mod above %s", filepath.Dir(thisFile))
-		}
-		dir = parent
-	}
-}
+// repoRoot 已移到同目录 tmproot_test.go（无 build tag）。
+// 原因见那里的注释：原先它住在这个带 `//go:build !integration` 的文件里，
+// 而 resolve_test.go（无标签）调用它 ⇒ `go vet -tags=integration` 编译失败。
 
 // measureBuckets 跑一次全仓审计，返回「文件 → 三桶各自出现次数」。
 func measureBuckets(t *testing.T, root string) (v1, v1arm, canonical, unresolved map[string]int, total int) {
