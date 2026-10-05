@@ -12460,4 +12460,28 @@ N1「门槛 90→89.99」、N2「初值 -1→-1.0001」被我标成阴性对照�
 7. `storage.request_logs_write_enabled` 本身**无独立证人**（覆盖率规则只覆盖一部分）。
 8. B 类 4 个先定口径；C 类 2 个重做延迟分层并带前后读数。
 9. 清理 `admin` 两份 `stripGoComments`；`admin/zz_tmp_crosstab_test.go` 去留。
-10. 是否修 `sql_source_indirection_audit` 的**包级 var 盲点**。
+10. ~~是否修 `sql_source_indirection_audit` 的**包级 var 盲点**~~ —— **§9.237 已修并推送**（见 §70.74）：点位 67/35 → 70/36，清单 35 → 36 条。
+
+#### §70.74 审计工具自身的枚举范围也是不变量（§9.237）
+
+`sql_source_indirection_audit` 报出的拼接点位从 **67 处 / 35 文件** 修正为
+**70 处 / 36 文件**（unresolved 25 → 26 文件）。
+
+- **根因**：点位枚举只走 `case *ast.FuncDecl`。包级 `var` 的绑定被收进 `env.globals`
+  供**解析**，但**从不取点位**。而 §9.233 为了让切换层能被调用，
+  把一批 SQL 从 `const` 改成 `var`（函数调用不能出现在 const 里）⇒
+  **正是那次正确的改造，顺手缩小了这个工具的枚举范围**。
+- **多出来的 3 处**：`admin/compression_stats.go` 2 → 3
+  （`compressionStatsEstimatedOrigSQL`）；`domains/sessionforensics/export.go` 0 → 2。
+- **为什么必须报**：停写后 `compression_stats` 的压缩率静默归 0；
+  `sessionforensics/export.go` **产出一份结构自洽、逐轮齐全、正文全空的证据包**
+  （710 回填保证 turn 连续 ⇒ 跳过与报错都不触发）。
+  这与 admin 侧停写分类表**独立得出同一结论**。
+  ⇒ 结论未变（两处读方早已被 admin 侧清单单独覆盖，**没有漏掉任何一次读**），
+  但「工具说不读」与「工具没看见」在退役审计里就是一次假阴性。
+- **修法**：`scanConcat` 闭包让 `FuncDecl` 与 `GenDecl`(VAR) 走**同一份**扫描实现；
+  新增 `scanParsed` 供夹具测试。清单 35 → 36 条（`export.go` 由「不在清单里」的注释
+  变成正式条目）。
+- **变异**：5 正全红 + 2 阴仍绿。**Q4 修了两次夹具才咬住**（危害只对裸标识符成立，
+  `CallExpr` 走 `env.funcs` 对 stale locals 免疫），**Q1 的第一版靠编译失败「转红」不算证据**。
+- 改动文件：`cmd/tools/sql_source_indirection_audit/{resolve.go,manifest_test.go,resolve_test.go}`。

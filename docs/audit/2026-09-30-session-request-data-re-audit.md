@@ -28888,3 +28888,157 @@ N 小时窗口**一个都没抓到**的概率 = (1 − 0.04167)^N：
 ⇒ 任何「比例/覆盖率」类判据都要问一句：
 **分母能不能被做得小到让判据恒真？**
 如果是，那它缺的不是一个阈值，而是一条关于**绝对规模**的规则。
+
+
+### §9.237 `sql_source_indirection_audit` 的**包级 `var` 盲点**：点位枚举只扫函数体
+
+承接 §9.233（切换层下沉到 `db`）与 §9.233.8d（`domains/sessionforensics/export.go` 的两份 SQL
+从 `const` 改成 `var`）。本节是那批改造**自己造出来**的一个审计盲区，靠变异验证发现。
+
+#### §9.237.1 症状：工具报出 67 处 / 35 文件，清单里却有一条「本工具看不见它」
+
+`cmd/tools/sql_source_indirection_audit` 的作用是回答一个问题：
+**哪些文件通过拼接间接读 v1（`request_logs*`）**。
+§9.232/§9.233 把一批读方从字面量 v1 bodies 改成
+`LEFT JOIN ` + `dbpkg.SessionBodiesSourceSQL()` + ` rb`，
+而 `SessionBodiesSourceSQL()` **是个函数调用** ⇒ 那些声明**必须从 `const` 改成 `var`**
+（编译器报 “is not constant”）。
+
+而 `resolve.go` 的点位枚举只走 `case *ast.FuncDecl` ⇒
+**包级 `var` 里的拼接点从来不进点位表**。
+包级 `var` 的绑定确实被 `collectStringBindings` 收进了 `env.globals`（供**解析**用），
+但**没人去那里取点位**。
+
+两处症状同时存在，正好互相印证：
+
+1. `admin/compression_stats.go` 的 `compressionStatsEstimatedOrigSQL` 有 **3 处**拼接，
+   清单里长期写着「3 处」，但工具只数得出 **2 处** ⇒ 差的第 3 处**只能靠人工注释维持**。
+2. `domains/sessionforensics/export.go` 的两份 SQL（`forensicsExportMessagesSQL` /
+   `forensicsExportMessagesSQLAlt`）**整份文件不在清单里**，注释写着「本工具看不见它」。
+
+#### §9.237.2 为什么这是**假阴性**，而不是「无害的漏报」
+
+这两处不是「读了什么不重要的地方」：
+
+- `compression_stats.go`：**停写后压缩率与省 token 数静默归 0**，而 total 与 strategy
+  分布仍有数、接口 200（停写分类表把它记为 `silently_degraded_content`）。
+- `sessionforensics/export.go`：停写/DROP 后 bodies 没有 session 臂 ⇒
+  `COALESCE(rb.request_body,'{}')` 恒为字面量 `{}`，而
+  `respBody != nil && *respBody != ""` **仍然成立** ⇒
+  **产出一份结构自洽、逐轮齐全、正文全空的证据包**。
+  不是导出失败、不是报错：§9.233.8d 落地的 710 回填保证 turn 编号连续，
+  所以**跳过与报错都不触发**。
+
+⇒ 结论没变（两处读方都已在 admin 侧清单里被单独覆盖，**没有漏掉任何一次读**），
+但**一个被当作「哪些文件条件性读 v1」之权威的工具，会说它们不读**。
+在退役审计里，「工具说不读」与「工具没看见」的区别就是一次假阴性。
+
+#### §9.237.3 修法：两条容器路径合流到一个 `scanConcat` 闭包
+
+- 把拼接扫描抽成闭包 `scanConcat(p string, n ast.Node)`，
+  `case *ast.FuncDecl`（扫 `d.Body`）与新增的 `case *ast.GenDecl`+`token.VAR`
+  （扫每个 `ValueSpec` 的 `vs.Values`）**共用同一份实现**。
+  **两份循环就是两份会漂移的实现，而漂移是静默的**：一份继续找得到、另一份找不到。
+- 新增 `scanParsed(fset, parsed)`，让夹具测试能直接驱动扫描而不用落盘。
+- `GenDecl` 分支里调 `env.enterFunc()`（理由见 §9.237.5）。
+
+实测：**67 处 / 35 文件 → 70 处 / 36 文件**；unresolved 25 → **26 文件**；
+`compression_stats.go` 2 → **3 处**；`sessionforensics/export.go` 0 → **2 处**。
+清单 35 → **36 条**，其中 `export.go` 是**新增条目**（此前它是「不在清单里」的注释），
+`compression_stats.go` 的 Via 改成「3 与 2 都是工具自己数的」。
+
+#### §9.237.4 门
+
+| 门 | 钉住什么 |
+|---|---|
+| `TestPackageLevelVarSitesAreEnumerated` | 单文件夹具：包级 `var` 与函数体两种容器**只差容器种类**，若找得到函数体那份而找不到 `var` 那份 ⇒ 回退 |
+| `TestPackageLevelVarResolvesAgainstGlobalsNotStaleLocals` | 两文件夹具：b.go 的包级 `var` 不能被 a.go 留下的局部绑定解析（§9.237.5） |
+| `TestIndirectSiteManifestCoversEveryReportedFile` | 既有完整性门：工具报出的文件必须都在清单里有判定条目（这条门直接咬住 Q5） |
+
+行号**从夹具文本算出**而非硬编码——第一版硬编码，加一行注释就过期，
+测试会以一个与它要钉的行为无关的理由变红。
+
+#### §9.237.5 ★ 变异 Q4 连续两次**没咬住**，第三次才成 —— 两次都是夹具写错，不是门对
+
+`GenDecl` 分支里那句 `env.enterFunc()`（清 `locals`）被变异删掉后，门**全绿**。
+手工查下来是 `resolve()` 的分支决定的：
+
+```go
+case *ast.Ident:   // 先 locals，再 globals   ← 泄漏发生在这里
+case *ast.CallExpr: return env.funcs[name]    // 根本不查 locals ⇒ 对 stale locals 免疫
+```
+
+⇒ **危害只对裸标识符成立**。我的两文件夹具两版都栽在这里：
+
+| 版本 | b.go 形状 | 为什么无效 |
+|---|---|---|
+| 第 1 版 | `var packageSQL = "…" + tableFor()` | 操作数是 `CallExpr` ⇒ 走 `env.funcs`，**查都不查 locals** |
+| 第 2 版 | 遮蔽局部写成 `tableFor := func() string {...}` | `collectStringBindings` **只收字符串绑定**，不收函子 ⇒ 从未制造出 stale local |
+| 第 3 版（成） | `var tableFor = "session_turns_hot"` + 拼接**裸** `tableFor`；a.go 留**字符串**局部 `tableFor := "credential_model_bindings"` | 两项前提同时满足 |
+
+第三版跑出来的失败信息就是它该报的：
+`b.go 的包级 var 被 a.go 留下的局部绑定解析成了 "credential_model_bindings"（b.go:3 操作数=tableFor）`。
+
+同时给它加了**上行证人**：不只断言「没解析到脏值」，
+还断言「**确实解析到了自己的包级 `session_turns_hot`**」。
+只写否定断言的话，夹具哪天不再产出 b.go 点位也会照样绿——那正是这个夹具已经栽过一次的形状。
+
+> 这次之所以连续栽两次，是因为我**先写夹具、后想机制**。
+> 正确顺序是：先读 `resolve()` 的分支，确认危害在哪条路径上，再照那条路径的形状造夹具。
+
+#### §9.237.6 变异结果（5 正 + 2 阴，全过）
+
+| 编号 | 变异 | 期望 | 实测 |
+|---|---|---|---|
+| Q1 | `case *ast.GenDecl:` 短路成 `continue`（整条枚举被摘掉） | 红 | ✅ 红 |
+| Q2 | `d.Tok != token.VAR` → `!= token.CONST` | 红 | ✅ 红 |
+| Q3 | 不扫 `vs.Values` | 红 | ✅ 红 |
+| Q4 | 删掉 `GenDecl` 分支的 `env.enterFunc()` | 红 | ✅ 红（修好夹具后） |
+| Q5 | 清单里删掉 `export.go` 条目 | 红 | ✅ 红 |
+| N1 | 只改注释 | 绿 | ✅ 绿 |
+| N2 | 多一行无关语句 | 绿 | ✅ 绿 |
+
+★ **Q1 的第一版不算证据**：它插入的 `case *ast.TypeSpec:` 不是 `ast.Decl`，
+**编译就炸了**——而脚本把「编译失败」也算作转红。
+一个靠编译失败转红的变异，什么都没证明。改成 `case *ast.GenDecl: continue`（合法、可编译、
+走的正是同一条分支）后才算数。
+
+★ **Q4 在脚本里第二次仍绿，原因是 `RUN` 过滤器漏了新测试名**——
+`-run` 表达式里只有 `TestPackageLevelVarSitesAreEnumerated`，
+`...ResolvesAgainstGlobalsNotStaleLocals` 根本没被跑到。
+**「门没咬住」和「门没被跑到」在读数上完全一样**，两者必须分开确认。
+
+#### §9.237.7 这一节暴露的一般形状
+
+**审计工具的枚举范围本身是一项要被测的不变量。**
+§9.233 把 `const` 改成 `var` 是**为了别的目的**（让切换层能被调用），
+顺带把这个工具的枚举范围缩小了——而这个副作用**没有任何门会响**：
+清单里那条「本工具看不见它」的注释是**人写的**，机器不检查它是否还成立。
+⇒ 只要工具的输入形态（容器种类、绑定种类、操作数种类）会随正常改造而变化，
+**枚举范围就必须由测试钉住，而不是由注释记录**。
+本节的 `TestPackageLevelVarSitesAreEnumerated` 就是这条不变量的守卫。
+
+#### §9.237.8 ★ 顺带更正：**上一轮的「admin 基线 6 个 FAIL」本身就是错的**
+
+跑全量门时 admin 出现 7 个 FAIL，比记录的基线多一个：
+`TestRequestLogsReadInventoryIsComplete`
+（`cmd/gateway/dual_read_validator.go: table says 4, code has 6`）。
+
+- **不是本轮改动造成的**。在 `origin/main`（`02e71ee66`）的干净 worktree 上跑同一个门，
+  **同样红**，读数逐字相同 ⇒ 该失败**在 main 上就已存在**。
+- **根因是 §9.235（我自己上一轮的改动）**：为 v1 覆盖率规则加的
+  `EXISTS(… FROM request_logs_hot / request_logs WHERE ts >= h.b AND h.b + interval '1 hour')`
+  多了 2 个调用点，而 admin 侧的读方清单表没跟着改。
+- ★ **真正的问题在于我把这条红当成了基线的一部分。** 上一轮记的是
+  「admin FAIL 6，与基线逐条相同」—— 那 6 个里其实**混进了这一条新的红**，
+  于是「门没响」被读成了「本来就红」和「与基线一致」两种意思。
+  ⇒ **基线是一个断言，不是一个观测结果**：只要它是从上一次的门输出抄下来的，
+  它就会把新失败吸收成旧常态，直到某天有人去核对每一条的名字。
+  本节起，**基线核对必须逐条列名字，不能只比数量**。
+
+修法：`requestLogsReadInventory` 里该文件 4 → 6，用**同行尾注释**写清新增 2 处的性质与生命周期
+（随 v1 停写一起退役），并注明它们是 §9.235 漏登记的。
+⚠ 注释写成**跨行**会让 gofmt 把整张表的对齐组打断，产生 30 行纯空白噪声 diff ⇒ 用同行尾注释。
+
+改完 admin 回到基线那 6 个 FAIL（逐条名字相同），db 仍 2 个，
+`cmd/gateway` ok，本工具包 ok。

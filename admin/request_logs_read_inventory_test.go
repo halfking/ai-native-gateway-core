@@ -148,7 +148,7 @@ var requestLogsReadInventory = map[string]int{
 	"bg/stats_minute_rollup_retire.go":          3,
 	"bg/today_success_probe.go":                 1,
 	"cmd/compression-bench/main.go":             2,
-	"cmd/gateway/dual_read_validator.go":        4,
+	"cmd/gateway/dual_read_validator.go":        6, // 4 + §9.235 的 2 处存在性探测（L428/L430 `EXISTS(… FROM request_logs_hot/request_logs WHERE ts >= h.b AND ts < h.b + interval '1 hour')`，只数「该小时有没有 v1」）；§9.235 漏登记，门当场转红但被当成基线混过去了
 	"cmd/gateway/main_v3_wiring.go":             1,
 	"cmd/gateway/output_compliance_control.go":  1,
 	"cmd/gateway/waterfall_by_request.go":       1,
