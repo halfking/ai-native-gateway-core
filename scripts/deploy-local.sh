@@ -734,6 +734,16 @@ build_backend() {
 build_frontend() {
   (( SKIP_FRONTEND )) && return 0
   need_cmd node
+  # 2026-10-05（UI规范 18 §10.3 步骤 1）：把 bump-version 烧出的 build_seq
+  # 透传给两个前端构建，落进各自 index.html 的 deploy-seq meta——取值接既有
+  # build_seq 管线，不新造序号源。bump_local_version 在 build_frontend 之前
+  # 完成，version.json 已是本次构建的序号。读不到时留空：vite 侧退 git 短
+  # SHA，再退 unknown（运行期界面按「不可判定」展示）。
+  local deploy_seq version_json="${VERSION_JSON:-$PROJECT_ROOT/version.json}"
+  deploy_seq=$(python3 -c "import json;print(json.load(open('$version_json'))['build_seq'])" 2>/dev/null || true)
+  if [[ -n "$deploy_seq" ]]; then
+    export LLMGW_DEPLOY_SEQ="$deploy_seq"
+  fi
   if [[ -f "$PROJECT_ROOT/web/package.json" ]]; then
     if [[ -x "$PROJECT_ROOT/web/node_modules/.bin/vite" ]]; then
       # 2026-09-28 R79：前端构建失败曾以 `(cd … && npm run build) >/dev/null`
