@@ -263,9 +263,11 @@ var indirectSiteAssessments = map[string]siteAssessment{
 	},
 	"admin/compression_stats.go": {
 		Verdict: verdictUnresolvedTool,
-		Via: "`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` `（2 处，§9.232；第 3 处在 " +
-			"compressionStatsEstimatedOrigSQL 里，该常量**因此由 const 改成 var**——" +
+		Via: "`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` `（3 处，§9.232/§9.237；" +
+			"第 3 处在**包级 var** compressionStatsEstimatedOrigSQL 里，该常量**因此由 const 改成 var**——" +
 			"函数调用不能出现在 const 声明中）。" +
+			"⚠ §9.237 起这一处**被工具看见了**：此前包级 var 的点位不在枚举范围内，" +
+			"清单只能靠人工注明；现在 3 与 2 都是工具自己数的。" +
 			"**默认支读 v1** ⇒ 条件性读 v1。消费点机器识别；切换层见 admin 侧登记。",
 		Consequence: "停写后 with_outbound / compressed / estimated_original_tokens / " +
 			"summary_mode_rows 静默归 0（压缩率与省 token 数变 0%，而 total 与 strategy " +
@@ -458,6 +460,23 @@ var indirectSiteAssessments = map[string]siteAssessment{
 		Consequence: "⚠ **这是本批里唯一的 INNER JOIN** ⇒ 停写/DROP 后不是「字段变空」，" +
 			"而是**整个系统提示词前缀查不到任何一行**（rl 有行但 rb 无行 ⇒ 被 JOIN 滤掉）。" +
 			"降级形态与其它 LEFT JOIN 的读方**不同类**：不会退化成空串，而是直接没有前缀。",
+	},
+	"domains/sessionforensics/export.go": {
+		Verdict: verdictUnresolvedTool,
+		Via: "**两处都在包级 `var` 里**（forensicsExportMessagesSQL 与 ...SQLAlt，各 1 处 bodies 腿，" +
+			"`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb ON rb.request_id = rl.request_id`）。" +
+			"§9.232 前它们是 `const`；§9.233 因函数调用不能出现在 const 里改成 `var`，" +
+			"**就是这个形状让它们掉出了本工具的枚举范围**（点位只扫 FuncDecl）⇒ §9.237 才被重新看见。" +
+			"跨包调用 ⇒ 工具判 unresolved。**默认支读 v1** ⇒ 条件性读 v1。" +
+			"⚠ 文件刻意保留两份字面量并由 TestForensicsExportSQLVariantsStayInSync 强制同步，**该设计保留**。",
+		Consequence: "★ **本清单里后果描述最尖锐的一条**，且与 admin 侧停写分类" +
+			"（request_logs_stop_write_classification_test.go 里本文件的 Note）**独立得出同一结论**：" +
+			"停写/DROP 后 bodies 无 session 臂 ⇒ `COALESCE(rb.request_body,'{}')` 恒为字面量 `{}`，" +
+			"而 `respBody != nil && *respBody != \"\"` 仍然成立 ⇒ " +
+			"**产出一份结构自洽、逐轮齐全、正文全空的证据包**。" +
+			"不是导出失败、不是报错：710 的 session 臂保证 turn 编号连续，" +
+			"所以**跳过与报错都不触发**——这正是该文件注释自己判定「比导出失败危险得多」的那种形态。" +
+			"开关默认关 ⇒ 与迁移前逐字一致。",
 	},
 }
 
