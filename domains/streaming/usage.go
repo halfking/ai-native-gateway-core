@@ -355,7 +355,7 @@ func calcCostWithConvention(input CostInput, conv CacheTokenConvention) *float64
 	//   `> 0` 把「负的缓存价」当成「没配缓存价」⇒ 整段 cache 成本**不计**。
 	//   在 OpenAI 口径下那无害（cache ⊆ prompt，已按输入价计过），但在
 	//   Anthropic 口径下 cache 与 prompt 并列 ⇒ 跳过就等于**白送**。
-	//   负价本身是数据错误（831 的 CHECK 未上生产时可能存在），正确出口是
+	//   负价本身是数据错误（833 的 CHECK 未上生产时可能存在），正确出口是
 	//   下面那道 `total < 0` 守卫把它变成 nil（算不出来），而不是静默免费。
 	// discountable = 「cache 是 prompt 的子集」⇒ 那一部分已经按输入原价计过，
 	// 需要先减原价再按缓存价重算。

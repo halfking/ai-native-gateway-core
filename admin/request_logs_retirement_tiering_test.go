@@ -15,7 +15,7 @@ import (
 //
 // # 它和已有那张表不是一回事
 //
-// `requestLogsReadInventory`（107 文件 / 254 调用点）答的是「谁在文本上写了
+// `requestLogsReadInventory`（108 文件 / 256 调用点，R48-A10 订正）答的是「谁在文本上写了
 // `from request_logs…`」；`cmd/tools/sql_source_indirection_audit` 答的是
 // 「哪些读点的关系名是 Go 标识符拼进去的」。**两张表是两个总体，不是一张表的两半**
 // —— 这正是 §9.259 那句「114」踩的坑，下面 TestV1ReaderTieringDomainIsBothPopulations

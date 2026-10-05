@@ -147,7 +147,7 @@ func TestCalcCost_neverReturnsNegative(t *testing.T) {
 		t.Errorf("cost=%v want %v (41×15.24 + 41550×1.10 + 390×75)", *got, wantPositive)
 	}
 
-	// 守卫仍然承重：单价为负（831 的 CHECK 尚未上生产时可能存在）时必须 nil，
+	// 守卫仍然承重：单价为负（833 的 CHECK 尚未上生产时可能存在）时必须 nil，
 	// 不能把一个负成本写进台账。
 	negPrice := calcCostWithConvention(CostInput{
 		PromptTokens: f64(1000), CompletionTokens: f64(0),

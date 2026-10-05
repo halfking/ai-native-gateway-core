@@ -79,9 +79,11 @@ func (w *AssetWatcher) Stop() {
 }
 
 // SyncOnce triggers an immediate sync (admin use). Returns per-source-type
-// counts of how many assets were registered, and any error encountered.
+// counts of how many assets were registered (confirmed by the store, not
+// the source-table row count), and any error encountered.
 // Errors from one source do not block the other.
 func (w *AssetWatcher) SyncOnce(ctx context.Context) (llmAdded, mcpAdded int64, err error) {
+	var llmSkipped int64
 	if w.hub == nil || w.src == nil {
 		return 0, 0, nil
 	}
@@ -103,13 +105,18 @@ func (w *AssetWatcher) SyncOnce(ctx context.Context) (llmAdded, mcpAdded int64, 
 		for i := range llms {
 			llms[i].Kind = apihub.KindLLMEndpoint
 		}
-		if regErr := w.hub.RegisterBatch(ctx, llms); regErr != nil {
+		// llmAdded = RegisterBatch 确认落库的行数，**不是**源表条数（R48-E1）：
+		// 旧写法 `int64(len(llms))` 把被跳过的非法行/空 tenant 行和 store
+		// 部分失败的隔离行也计成「已注册」，运维看到的注册规模会偏大。
+		n, regErr := w.hub.RegisterBatch(ctx, llms)
+		if regErr != nil {
 			slog.Warn("apihub watcher: batch register LLM assets failed", "error", regErr)
 			if err == nil {
 				err = regErr
 			}
 		}
-		llmAdded = int64(len(llms))
+		llmAdded = n
+		llmSkipped = int64(len(llms)) - n
 	}
 
 	// MCP servers
@@ -131,7 +138,7 @@ func (w *AssetWatcher) SyncOnce(ctx context.Context) (llmAdded, mcpAdded int64, 
 	}
 
 	slog.Info("apihub watcher: sync complete",
-		"llm_added", llmAdded, "mcp_added", mcpAdded,
+		"llm_added", llmAdded, "llm_skipped", llmSkipped, "mcp_added", mcpAdded,
 		"duration_ms", time.Since(start).Milliseconds())
 	return
 }

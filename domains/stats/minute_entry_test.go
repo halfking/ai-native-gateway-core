@@ -19,6 +19,31 @@ func TestFromTelemetryEntry_skipsInProgress(t *testing.T) {
 	}
 }
 
+// TestFromTelemetryEntry_totalTokensExcludesCacheSubset —— R48-F1 回归门。
+// total_tokens 口径与 request_logs / usage_facts 对齐（prompt+completion），
+// cache 读写是 prompt 的子集，另加即双重计（同族根修见 domains/stats/event.go）。
+func TestFromTelemetryEntry_totalTokensExcludesCacheSubset(t *testing.T) {
+	status := telemetry.RequestStatusSuccess
+	prompt, completion := 100, 50
+	cacheRead, cacheWrite := 80, 20
+	main, _, _, ok := FromTelemetryEntry(&telemetry.RequestLogEntry{
+		Op:               telemetry.RequestLogUpdate,
+		RequestStatus:    &status,
+		TenantID:         "default",
+		PromptTokens:     &prompt,
+		CompletionTokens: &completion,
+		CacheReadTokens:  &cacheRead,
+		CacheWriteTokens: &cacheWrite,
+	}, testNow())
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if want := int64(prompt + completion); main.TotalTokens != want {
+		t.Fatalf("TotalTokens = %d, want %d (prompt+completion, cache subsets excluded)",
+			main.TotalTokens, want)
+	}
+}
+
 func TestFromTelemetryEntry_completedSuccess(t *testing.T) {
 	status := telemetry.RequestStatusSuccess
 	prompt := 100

@@ -2,6 +2,7 @@ package bg
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -36,7 +37,9 @@ func (f *fakeSyncer) MCPServers(ctx context.Context) ([]apihub.Asset, error) {
 type okStore struct{}
 
 func (okStore) Upsert(_ context.Context, _ apihub.Asset) error { return nil }
-func (okStore) UpsertBatch(_ context.Context, _ []apihub.Asset) error { return nil }
+func (okStore) UpsertBatch(_ context.Context, assets []apihub.Asset) (int, error) {
+	return len(assets), nil
+}
 func (okStore) Get(_ context.Context, _ string, _ apihub.Kind, _ int64) (apihub.Asset, error) {
 	return apihub.Asset{}, nil
 }
@@ -91,32 +94,93 @@ func TestAssetWatcher_SyncOnce(t *testing.T) {
 	}
 }
 
-func TestAssetWatcher_SyncOnce_PartialFailure(t *testing.T) {
-	// Syncer that fails on LLM but succeeds on MCP
-	syncer := &fakeSyncer{
-		llms: nil,
-		mcps: []apihub.Asset{
-			{RefID: 100, TenantID: "tenant1", Name: "mcp-ok"},
-		},
-		err: nil,
-	}
+// countingStore 可注入 UpsertBatch 的返回值（确认落库行数 + 错误），
+// 用于钉住 R48-E1 的计数契约：SyncOnce 的 llmAdded 必须是 store 确认的
+// 行数，而不是源表条数；部分失败时计数与错误**并存**。
+type countingStore struct {
+	okStore
+	batchN   int
+	batchErr error
+}
 
+func (s countingStore) UpsertBatch(_ context.Context, assets []apihub.Asset) (int, error) {
+	if s.batchN == 0 && s.batchErr == nil {
+		return len(assets), nil
+	}
+	return s.batchN, s.batchErr
+}
+
+// TestAssetWatcher_SyncOnce_CountsStoreConfirmedRows —— 门A（计数语义）。
+// 源表 3 条，其中 1 条空 tenant 会被 RegisterBatch 跳过 ⇒ llmAdded 必须
+// 是 2（store 确认数），而不是源表条数 3。旧代码在这里返回 3（天然负控红）。
+func TestAssetWatcher_SyncOnce_CountsStoreConfirmedRows(t *testing.T) {
+	syncer := &fakeSyncer{
+		llms: []apihub.Asset{
+			{RefID: 1, TenantID: "tenant1", Name: "ok-1"},
+			{RefID: 2, TenantID: "tenant1", Name: "ok-2"},
+			{RefID: 3, TenantID: "", Name: "skipped-empty-tenant"},
+		},
+	}
 	hub := apihub.New(okStore{})
 	watcher := NewAssetWatcher(hub, syncer)
 
-	ctx := context.Background()
-	llmAdded, mcpAdded, err := watcher.SyncOnce(ctx)
-
-	// Should not return error (partial failure is tolerated)
+	llmAdded, _, err := watcher.SyncOnce(context.Background())
 	if err != nil {
-		t.Logf("Got expected error: %v", err)
+		t.Fatalf("SyncOnce failed: %v", err)
 	}
+	if llmAdded != 2 {
+		t.Errorf("llmAdded = %d, want 2 (store-confirmed rows; the empty-tenant row "+
+			"must be reported as skipped, not registered — R48-E1)", llmAdded)
+	}
+}
 
-	// MCP should still succeed
-	if mcpAdded != 1 {
-		t.Errorf("expected 1 MCP asset, got %d", mcpAdded)
+// TestAssetWatcher_SyncOnce_PartialFailure —— 门B（partial 计数与错误并存）。
+// store 报告「写入 1 行 + 返回错误」⇒ SyncOnce 必须 llmAdded==1 且 err 非 nil；
+// 不得在 err 非 nil 时回退成源表条数，也不得把计数吞成 0。
+// （旧版此测试名为 PartialFailure 实际测的是空源——名实不符，本轮修正。）
+func TestAssetWatcher_SyncOnce_PartialFailure(t *testing.T) {
+	syncer := &fakeSyncer{
+		llms: []apihub.Asset{
+			{RefID: 1, TenantID: "tenant1", Name: "a"},
+			{RefID: 2, TenantID: "tenant1", Name: "b"},
+		},
+		mcps: []apihub.Asset{
+			{RefID: 100, TenantID: "tenant1", Name: "mcp-ok"},
+		},
 	}
-	if llmAdded != 0 {
-		t.Errorf("expected 0 LLM assets, got %d", llmAdded)
+	store := countingStore{batchN: 1, batchErr: errors.New("apihub: simulated chunk failure")}
+	hub := apihub.New(store)
+	watcher := NewAssetWatcher(hub, syncer)
+
+	llmAdded, mcpAdded, err := watcher.SyncOnce(context.Background())
+	if err == nil {
+		t.Fatal("expected store error to propagate, got nil")
+	}
+	if llmAdded != 1 {
+		t.Errorf("llmAdded = %d, want 1 (store-confirmed partial count, R48-E1)", llmAdded)
+	}
+	if mcpAdded != 1 {
+		t.Errorf("mcpAdded = %d, want 1 (LLM failure must not block MCP)", mcpAdded)
+	}
+}
+
+// TestAssetWatcher_SyncOnce_FullSuccessCountsAll —— 门C（防二值化回归）。
+// 全部成功时 llmAdded 必须等于源表条数——防止后人把「成功数」改成 0/全量二值。
+func TestAssetWatcher_SyncOnce_FullSuccessCountsAll(t *testing.T) {
+	syncer := &fakeSyncer{
+		llms: []apihub.Asset{
+			{RefID: 1, TenantID: "tenant1", Name: "a"},
+			{RefID: 2, TenantID: "tenant1", Name: "b"},
+		},
+	}
+	hub := apihub.New(okStore{})
+	watcher := NewAssetWatcher(hub, syncer)
+
+	llmAdded, _, err := watcher.SyncOnce(context.Background())
+	if err != nil {
+		t.Fatalf("SyncOnce failed: %v", err)
+	}
+	if llmAdded != 2 {
+		t.Errorf("llmAdded = %d, want 2 (full success must report every row)", llmAdded)
 	}
 }

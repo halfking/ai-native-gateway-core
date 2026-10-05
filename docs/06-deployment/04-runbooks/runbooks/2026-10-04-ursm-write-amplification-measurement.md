@@ -3923,7 +3923,7 @@ ROLLBACK;
 `pg-table-bloat-check.sh` 那条最能说明问题：它**确实**会为这次停机报一次告警，
 只是报在第二天早上 05:07。**一道正确的门，装在错误的频率上，等于没有门。**
 
-#### 10.31.2 `pg17-pg-availability-check.sh`（每分钟 :59，只读）
+#### 10.31.2 `pg17-pg-availability-check.sh`（每分钟，只读）
 
 `scripts/252-monitor/pg17-pg-availability-check.sh`，退出码沿用本目录契约
 **0 / 1 / 3**。四个设计决定，每一个都有具体来由：
