@@ -105,10 +105,49 @@ func TestCronFileActuallyHasTaskLines(t *testing.T) {
 			len(tasks), tasks)
 	}
 	// 分级退出的巡检不能被 >/dev/null 2>&1 吞掉：那等于没巡检。
+	//
+	// ★ 为什么是显式清单而不是像上面那样用命名前缀约定：
+	//   前缀约定（"所有 pg17-*/ursm-*"）在这里会**误报**。
+	//   pg17-disk-watch.sh 与 pg17-emergency-cleanup.sh 确实被 >/dev/null 静默，
+	//   但它们是**正确的** —— 告警走脚本内部的 notify.sh 推送，退出码本来就没
+	//   承载信息。一条会误报的规则比没有规则更糟：它会训练人无视这道门，
+	//   等它真的抓到问题的那天也没人看了。
+	//   ⇒ 分界线是「这个巡检的结论是否**只**靠退出码 + stdout 传递」。
+	//
+	// ★ 事故背景：2026-10-05 PG 停机 3~4 分钟零告警。告警通道退化成
+	//   「什么都收得到但什么都不说」和「完全没有通道」在事后无法区分 ——
+	//   所以每一道新巡检上线时，都要顺手确认它自己的通道没被静默。
 	for _, task := range tasks {
-		if strings.Contains(task, "ursm-snapshot-") && strings.Contains(task, "/dev/null 2>&1") {
-			t.Errorf("graded-exit monitor is silenced by /dev/null:\n%s\n"+
-				"退出码 0/1/3 分级全被丢弃，等于没巡检", task)
+		for _, name := range gradedExitMonitors {
+			if strings.Contains(task, "/opt/scripts/"+name) && strings.Contains(task, "/dev/null 2>&1") {
+				t.Errorf("graded-exit monitor %s is silenced by /dev/null:\n%s\n"+
+					"退出码 0/1/3 分级全被丢弃，等于没巡检", name, task)
+			}
+		}
+	}
+}
+
+// gradedExitMonitors = 结论只经由「退出码 + stdout」传递的巡检。
+// 这几个脚本被 >/dev/null 2>&1 静默即等于从生产上把它摘掉。
+var gradedExitMonitors = []string{
+	"ursm-snapshot-health.sh",
+	"ursm-snapshot-payload-bloat.sh",
+	"pg-table-bloat-check.sh",
+	"pg17-pg-availability-check.sh",
+}
+
+// TestGradedExitMonitorListStillMatchesDisk —— 上面那份清单本身会腐。
+// 判据的门也可能是判据红的理由：清单空了、或某个成员已经改名不存在，
+// 断言会安静地变成「什么都没有要查」。所以自证它非空且成员都还在。
+func TestGradedExitMonitorListStillMatchesDisk(t *testing.T) {
+	if len(gradedExitMonitors) < 4 {
+		t.Fatalf("gradedExitMonitors only has %d entries (%v) — the silencing check above "+
+			"has quietly stopped guarding anything", len(gradedExitMonitors), gradedExitMonitors)
+	}
+	for _, name := range gradedExitMonitors {
+		if _, err := os.Stat(filepath.Join("..", "252-monitor", name)); err != nil {
+			t.Errorf("gradedExitMonitors lists %q but it is not in scripts/252-monitor/: %v\n"+
+				"★ 删名字会放过静默，删脚本会放过没接线。两个方向都要有人发现。", name, err)
 		}
 	}
 }

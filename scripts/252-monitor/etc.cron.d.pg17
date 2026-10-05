@@ -18,6 +18,7 @@
 #     巡检脚本都有对应 cron 行（473 同族：建了却忘了接线）。
 #
 # 触发频率（运行成本可控）：
+#   - pg17-pg-availability-check.sh 每分钟 :59  可用性心跳（唯一分钟级任务）
 #   - pg17-disk-watch.sh    每 10 分钟  采样 + 告警推送
 #   - pg17-emergency.sh     每 15 分钟  disk>=90% 自动 L2
 #   - pg17-vacuum-bloat.sh  周日 03:15  VACUUM FULL 防患于未然
@@ -33,6 +34,24 @@
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 MAILTO=""
+
+# === 每分钟 PG 可用性心跳（2026-10-05 新增）===
+# 起因：2026-10-05 15:46 生产容器 pg-252-pg17 被误删，15:49:41 恢复，
+# 停机约 3~4 分钟，**全程无任何告警**。本文件里其余 8 个巡检全是「体检」
+# （10 分钟~每天一次），体检再密也答不了「PG 现在能不能用」。
+# ⇒ 补的不是第七个体检，是**心跳**：一分钟问一次。
+#
+# ★ 用 `59 * * * *` 而不是 `* * * * *`：本文件已有 */10、*/15 两族都压在
+#   :00，cron 同一分钟并发会互相对齐。再加一条 `*` 等于把 :00 的并发翻倍。
+#   心跳错开 1 分钟，观察上没有任何损失。
+#
+# ★ 退出码 0/1/3 分级，且**不能** >/dev/null 2>&1：
+#   0 健康（静默）/ 1 PG 不可用 / 3 巡检自己坏了。丢掉退出码等于没巡检。
+#   常态健康时脚本刻意不输出，所以这份 log 只在真事件时增长 ——
+#   「巡检还在跑吗」问 /var/lib/pg17-check/pg-availability.lastrun 的 mtime。
+# ★ 告警推送只发生在**首次不可用**与**恢复**两个转换点（脚本内去重），
+#   否则挂 30 分钟会推 30 条，告警就退化成噪音。
+59 * * * * root llmgw-source /opt/scripts/pg17-pg-availability-check.sh 2>&1 | tee -a /var/log/pg17-pg-availability.log; find /var/log -maxdepth 1 -name "pg17-pg-availability.log.*" -mtime +7 -delete
 
 # === 高频监控 ===
 */10 * * * * root llmgw-source /opt/scripts/pg17-disk-watch.sh >/dev/null 2>&1
