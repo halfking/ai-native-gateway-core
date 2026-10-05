@@ -4427,3 +4427,86 @@ M23 变异（把游标钉死为 0）跑出来是：**真库门没红，而是卡
   对着 93 GB 空闲量，**做 VACUUM FULL / REINDEX 的收益为负**：
   代价是独占锁重写、线上延迟尖峰、以及一次事故风险。
   ⇒ 存储这条腿在**合规决定改变**之前已经到底了。
+
+### 10.36 效率侧普查：**当前**最贵的语句，以及一个「把 max() 写在宽视图上」的典型
+
+存储侧（§10.35）已判定无需动手。本节转向效率，且只报**实测的当前值**。
+
+#### 10.36.1 累计排名可以定位「历史上最贵」，但**不能**当现状
+
+`pg_stat_statements` 按 `total_exec_time` 排（累计，自 9-23）：
+
+| 语句 | 累计次数 | 累计均值 | 累计总耗时 |
+|---|---|---|---|
+| `pg_advisory_xact_lock(session_turns_…)` | 3,027,459 | 99.7 ms | 301,854 s |
+| `WITH latest_bucket …` | 187,344 | 718 ms | 134,517 s |
+| `REFRESH … routing_analytics_7d` | 6,276 | **19.58 s** | 122,884 s |
+| `SELECT analyze_llm_gateway_table_stats(1)` | 951 | **95.70 s** | 91,015 s |
+
+★ 逐条核当前值之后，两个「惊人数字」当场缩水：
+
+| 累计均值 | **实测当前** | 怎么测的 |
+|---|---|---|
+| REFRESH 19.58 s | **中位 2.44 s / 均值 3.08 s / max 11.49 s**（245 近 24h 59 次） | leader 的 `refreshed routing_analytics_7d` 日志里 `elapsed`（**单位是纳秒**） |
+| `analyze…` 95.70 s | **未验证**（每小时一次，5 分钟窗口看不到） | 需 ≥1 小时窗口或补埋点 |
+
+⇒ `REFRESH` 当前占用率 = 每小时 **5.05%**，是 10 分钟一次 × ~3s。
+  **不值得改**：调它会牵动 `mvRefreshDistLockTTL = 6min`（按 10 分钟节奏设的）
+  与新鲜度语义，而收益只有 2 个百分点。**结论：不动。**
+  `analyze` 的当前单次成本**还没测到**，不据此下结论（它就是此前登记的
+  「analyze 收敛三案」的量化依据，值得补一次 ≥1h 的窗口）。
+
+#### 10.36.2 5 分钟窗口对「贵但稀有的」语句是**盲的**
+
+按纪律用 5 分钟窗口量当前速率，得到 top14 的 Δ 总执行时间只有 **~3.7 秒**。
+但这**不能**读成「都健康」—— 窗口 311s 比 matview 的 10 分钟周期还短，
+比 analyze 的 1 小时短两个数量级 ⇒ 两者**根本没进窗口**。
+⇒ 同一纪律的两面：**窗口太短看不见稀有的；窗口太长看不见高频的。**
+  高频语句用分钟级窗口，周期任务必须用**周期整数倍**的窗口。
+
+#### 10.36.3 真正现在最贵的：`candidate_failure_monitor` 的新鲜度探测
+
+5 分钟窗口里的第一名（`queryid 5048681426055546431`，10 次 / 2.0s）
+就是 `bg/candidate_failure_monitor.go:201 checkStaleness`：
+
+```sql
+SELECT (SELECT max(ts) FROM candidate_failure_logs_with_current_month),
+       (SELECT max(ts) FROM request_logs_with_current_month
+         WHERE ts >= now() - interval '5 minutes')
+```
+
+- 频率：52,950 次 / 18,420 分钟 = **每分钟 2.87 次（约每 21 秒）**
+- 累计均值 520.4 ms；近 5 分钟实测 200 ms/次 ⇒ 占用率 **0.6%~2.5%**
+
+★ 我第一眼猜错了方向：两个子查询里，**没有时间界**的那个反而**便宜**
+  （47.9 ms，index-only scan），**有时间界**的那个才是元凶
+  （**428 ms 执行 + 65 ms 计划 = 493 ms**）。
+  ⇒ 「看起来更危险的那个」不等于「更慢的那个」，逐个 EXPLAIN 才有答案。
+
+**根因（看计划才看清）**：`request_logs_with_current_month` 不是「分区 ∪ hot」的
+朴素并集，而是一个把 `request_logs`（t）与 **`session_turn_details`（d）LEFT JOIN**、
+并投影出 `d.client_model / d.provider_id / d.client_profile / …` 的**宽视图**：
+
+```
+Append
+  → Nested Loop Left Join
+      → Index Scan using idx_session_turns_hot_ts on session_turns_hot t   (6 rows)
+      → Index Scan using idx_session_turn_details_hot_request on session_turn_details_hot d
+            Index Cond: (request_id = t.request_id AND partition_date = t.partition_date)
+```
+
+外层只要一个 `max(ts)`，视图却为了**调用方一个字节都用不到**的 6 个 details 列，
+把每一行都拿 `request_id` 去 `session_turn_details_hot` 反查一遍（外加 6 个分区）。
+
+**这就是「把聚合写在宽视图上」的典型形态**：视图越宽，聚合越贵，
+而调用方的需求越窄。收益预估：428 ms → 个位数毫秒（第一个子查询在窄视图上
+只要 48 ms；直接读基表 + `ts` 索引应是 ~1 ms）。
+
+★ 修的时候**必须**保留 hot 表与当月分区（09-11 / 09-12 两次事故正是
+  「只读裸 parent → 新鲜度陈旧 → 陈旧告警该响不响 / 该不响乱响」）。
+  安全的改法是**绕开 details join**（直接对
+  `request_logs_hot ∪ request_logs` 的当月分区取 max，或
+  `ORDER BY ts DESC LIMIT 1`），**不是**删 hot 表。
+
+评估：**值得做但不紧急**（占用率 0.6%~2.5%）。它是本轮唯一一个
+「单点、低风险、收益明确」的查询路径优化项。
