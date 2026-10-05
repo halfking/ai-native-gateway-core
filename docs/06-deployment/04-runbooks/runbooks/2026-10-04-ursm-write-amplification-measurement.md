@@ -5044,3 +5044,83 @@ M33 若把整行删掉会 BUILD-BROKEN（`fmt` 成孤儿导入），按纪律不
   当前风险已被实测化解——回填已排空、`n==0` 会立即 break，所以稳态下
   根本没有批次可跑；但**下次出现新积压时**就会重新贴着 30s 走。
   待与后续批次合并部署。
+
+---
+
+## 10.42 ★ 把 analyze 拆到可决策的粒度（§10.39 的续）
+
+§10.39 只给了两个数：累计 4.239%、当前单次 87.35s。这两个数**不足以决定动不动**。
+本节把它拆到「它到底在扫什么、有多少是白扫的」。
+
+#### 10.42.1 函数结构（`sql/schema/01-schema.sql:179`，`p_recent_months=2` 写死在调用方）
+
+```sql
+FOR r IN SELECT c.relname FROM pg_class … WHERE relkind='r' AND relname LIKE '%\_hot' … amname='heap'
+LOOP EXECUTE format('ANALYZE %I', r.relname); …            -- 循环①：全部 %_hot 堆表
+
+FOR m IN 0..(p_recent_months - 1) LOOP                       -- 循环②：m = 当月、**上月**
+    suffix := to_char(month_trunc - (m || ' months'), 'YYYY_MM')
+    … relname ~ ('^(credential_model_index|model_probe_runs|request_logs|routing_decision_log|
+                   request_wal|usage_ledger|credit_ledger|tool_usage_stats|
+                   candidate_failure_logs|handoff_logs|request_logs_bodies)_' || suffix || '$')
+LOOP EXECUTE format('ANALYZE %I', r.relname); … END LOOP; END LOOP;
+```
+
+日志实测 `tables: 44`（22 + 13 + 13 中的一部分），**每小时一轮**（promote 周期驱动，
+见 §10.39.1）。
+
+#### 10.42.2 每轮扫多少（实测 2026-10-06 05:15）
+
+| 循环 | 对象 | 数量 | 总体积 |
+|---|---|---|---|
+| ① | 全部 `%_hot` 堆表 | 22 | 608 MB |
+| ② m=0 | **当月**分区（`*_2026_10`） | 13 | 456 MB |
+| ② m=1 | **上月**分区（`*_2026_09`） | 13 | **1,246 MB** |
+| | 合计 | | **≈ 2,310 MB/轮** |
+
+★ **上月分区占每轮扫描量的 54%，却是当月的 2.7 倍。** 这是结构事实，与「是否冻结」无关。
+
+#### 10.42.3 ★ 我用错过一次判据：`n_mod_since_analyze` 不能判冻结
+
+第一次量完我写的是「上月分区 `n_mod_since_analyze` **13/13 全为 0** ⇒ 冻结」。
+
+**这是错的。** 紧接着取明细，发现**当月分区也是 0** —— 因为两次查询之间
+（05:15:0x）函数刚跑完一轮 ANALYZE，而 `n_mod_since_analyze` 的定义就是
+「上次 ANALYZE（或 autovacuum）之后的修改行数」。**ANALYZE 一跑它必然归零**，
+测它的时刻恰好是它最没信息量的时刻。
+
+⇒ 判据与被测过程**同步归零** ⇒ 恒真而无用。已废弃。
+
+正确判据是**速率**：隔一段时间采两次 `n_tup_ins + n_tup_upd + n_tup_del`，
+看哪些表真在动。样点 A（2026-10-06 05:15:50，24 个分区）已取，样点 B 待取。
+
+#### 10.42.4 与审计 D7' 的关系
+
+历史审计 D7' 的原话是「月-1 分区在 promote 后理论上冻结，每 13min 重 ANALYZE
+疑似纯浪费」，并开过两档处方（查透冻结语义后跳过冻结分区 / 拉长 cooldown）。
+
+本节的进展与差异：
+- **「上周期的数据量比当期大 2.7 倍」是新的**，D7' 没量化过；
+- 但 D7' 的「冻结」**至今没有被证明**——§10.42.3 说明我原来那条证据不成立；
+- ⇒ 在样点 B 出来之前，**不能**把「跳过上月分区」写成结论。
+
+#### 10.42.5 若速率证实冻结，处方比 D7' 的两档都干净
+
+不需要「判断哪个分区已冻结」（那要引入 promote 状态，跨模块耦合），
+改成**一条自证式谓词**：
+
+```sql
+-- 只 ANALYZE 自上次统计以来确有变动的表
+AND COALESCE(st.n_mod_since_analyze, 0) > 0
+```
+
+它的正确性不依赖任何外部状态：**零修改 ⇒ 重采样得到的分布与上次相同 ⇒ 统计量不变**。
+且它同时惠及循环①（22 张 hot 表，合计 `n_mod_since_analyze=170`，多半是动的，不受影响）。
+
+预估收益：省掉每轮 54% 的扫描量 ⇒ 87.35s × 0.54 ≈ **47s/小时 ≈ 全库 1.3%**。
+
+#### 10.42.6 现状
+
+- 结构性结论（10.42.2）**已成立**。
+- 冻结判定（10.42.3）**待样点 B**。已排 22 分钟后取。
+- **未改任何代码，未动生产。** 10.42.5 是提案不是结论。
