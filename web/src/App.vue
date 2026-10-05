@@ -267,7 +267,17 @@ async function handleChangePasswordSuccess() {
         <div class="alert alert-success header-alert">{{ passwordSuccessMessage }}</div>
       </div>
       <section class="main-body" :class="{ 'main-body--fill': route.meta.fillViewport }">
-        <RouterView />
+        <!--
+          路由转场（docs/UI规范/12 §7）：compact 顶级目的地切换 fade 160ms；
+          medium+ 用 page-none —— 该名字刻意没有任何 CSS 规则，Transition 无匹配
+          样式时瞬时完成 ⇒ 桌面 DOM 与行为零变化。:key 同理只在 compact 绑定
+          route.path（桌面 key=undefined 维持既有「同组件不重挂」行为）。
+        -->
+        <RouterView v-slot="{ Component }">
+          <Transition :name="isCompact ? 'page-fade' : 'page-none'" mode="out-in">
+            <component :is="Component" :key="isCompact ? route.path : undefined" />
+          </Transition>
+        </RouterView>
       </section>
     </main>
     <!-- 移动导航抽屉挂载点（Teleport 到 body；遮罩 z-index 对齐既有弹层约定） -->
@@ -344,6 +354,28 @@ async function handleChangePasswordSuccess() {
 </template>
 
 <style scoped>
+/*
+ * compact 路由转场（docs/UI规范/12 §7，2026-10-05）。
+ * 只动 opacity（GPU 合成，禁 layout 属性）；160ms 与 web-mobile 的 page-fade 对齐。
+ * scoped 样式能命中子组件根节点（Vue 给子根挂父 scope 属性），Transition 类
+ * 恰好作用在子组件根上，所以这里匹配。page-none 刻意不定义 —— 见模板注释。
+ * prefers-reduced-motion 下转场取消（12 §4 契约）。
+ */
+.page-fade-enter-active,
+.page-fade-leave-active {
+  transition: opacity 160ms ease;
+}
+.page-fade-enter-from,
+.page-fade-leave-to {
+  opacity: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .page-fade-enter-active,
+  .page-fade-leave-active {
+    transition: none;
+  }
+}
+
 /* 2026-07-09: 首次进入时的 auth 探测加载中状态 */
 .auth-loading {
   display: flex;
