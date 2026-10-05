@@ -4610,3 +4610,124 @@ re := regexp.MustCompile(`(?i)FROM\s+request_logs(\w*)`)
    `TestMigration762ProjectBackfillChain_RealDB` 在真库上失败
    （`expected ≥1 backfilled row, got 0`）。它**只在设了 DSN 时才跑**，
    所以此前所有「无 DSN 全绿」的记录都看不到它。
+
+---
+
+## 10.38 ★★★ 上一节那条「既有失败」不是测试坏了，是**生产回填 worker 停摆**
+
+§10.37 末尾登记的那条「既有失败」——`TestMigration762ProjectBackfillChain_RealDB`
+报 `expected ≥1 backfilled row, got 0`——**当时被我判成与本轮无关**。判错了。
+它不是测试的问题，是被测的那个 worker 在生产上**已经停摆**，而测试只是
+唯一看见了这件事的东西。
+
+#### 10.38.1 三条互相独立的证据
+
+| # | 证据 | 读数 |
+|---|---|---|
+| 1 | SQL 形状 | `ORDER BY ss.session_key LIMIT 2000`，选择条件只有「能 join 上 `session_dim`」 |
+| 2 | 真库量测 | 排序集**前 5,745 行全部不可解析**，而 `LIMIT` 是 2,000 ⇒ `first_resolvable_rank(5746) > LIMIT(2000)` |
+| 3 | 运行日志（154） | `backfilled: 0`，**连续 10 次**（00:56 / 01:07 / 01:17 / 01:27 / 01:37 / 01:46 / 01:57 / 02:07 / 02:16 / 02:26），每次 `duration_ms` 720~28,325 |
+
+一条「测试失败」+ 一条 SELECT + 一份日志，三处互不依赖。
+
+#### 10.38.2 机理：「能 join 上」不等于「能回填」
+
+`sync_session_project_attr()` 的入参是 `session_dim` 的 `project_id` 与
+`application_code`。两者**双 NULL** 时 `gw_resolve_project_ref()` 返回 NULL，
+函数 `RETURN 0`，**行保持 NULL**。
+
+关键在于这种行**不会被消费掉**：下一批 `ORDER BY session_key` 又把它们选回来。
+只要不可解析行数 ≥ `LIMIT`，窗口就被**永久占死**——
+worker 每轮取 2000 行、逐行调一次函数、全部返回 0、`n == 0` 触发 `break`，
+日志记「pass complete, backfilled=0」，看起来一切正常。
+
+现网实测（2026-10-06 02:2x）：
+
+| 项 | 读数 |
+|---|---|
+| `gw_project_id IS NULL` | **234,638** |
+| ├ 可 join 但双 NULL（注定回填不了） | 9,163 |
+| ├ 可 join 且可解析（**应该被回填**） | **141,797** |
+| └ join 不上（无 `session_dim`） | 83,677 |
+| 已回填 `app:*` | 366,149 |
+| 权威值回填 | 0 |
+
+⇒ **141,797 行永远排在窗口外**。这正是迁移 762 想修的那个读面
+（`/api/sessions/project-costs/*`、`TaskAnalyticsView`）继续部分为空的原因。
+同时每 10 分钟空烧 6~28 秒 CPU。
+
+#### 10.38.3 修复
+
+选择谓词加一条，把「注定改变不了自己的行」挡在窗口外：
+
+```sql
+    WHERE ss.gw_project_id IS NULL
+      AND public.gw_resolve_project_ref(sd.project_id, sd.application_code) IS NOT NULL
+    ORDER BY ss.session_key
+    LIMIT $1
+```
+
+这样 `n == 0` 才**重新**等价于「已排空」，`break` 也才重新是正确的。
+
+#### 10.38.4 ★ 这个 bug 为什么原来的测试抓不到
+
+原测试只有 4 行夹具，窗口永远装得下，**陷阱不成立**。
+⇒ 光修好代码不算修好，得让门能看见这个病。
+新门 `TestBackfillBatchSurvivesUnresolvableWindowSaturation_RealDB` 自己把陷阱造出来：
+塞 `projectBackfillBatchSize+500 = 2,500` 行**不可解析**行，且让它们**排在目标行之前**
+（`0000trap_*` vs `9999zzz_*`，C.UTF-8 字节序）。
+
+两个前置断言缺一不可：
+
+1. **陷阱成立性**：`SELECT count(*) ... WHERE session_key LIKE '0000trap_%' AND session_key < target`
+   必须 ≥ 2,500。少了它，一旦有人改了前缀排序，本测试会**静默退化成普通用例**、对停摆零检出。
+2. **worker 路径隔离**：seed `session_dim` 时 762 的 AFTER INSERT 触发器**已经把目标填好了**
+   （它与 worker 是同一函数的两个入口，迁移自称「口径单一」）。
+   必须 `UPDATE ... SET gw_project_id = NULL` 清掉，并**断言清完确实为 NULL**。
+   ★ 我第一版漏了这步，测试红了——查下去才发现是**测试写错**而不是修复无效：
+   门报错把两种可能分开，是有价值的。
+
+#### 10.38.5 变异验证
+
+| 变异 | 仍编译 | 真库陷阱门 | 契约门 | 结构门 |
+|---|---|---|---|---|
+| M30 摘掉谓词 | ✓ | **红**（`got 0 — the 2500 unresolvable rows … saturated the 2000-row window`） | **红** | **红** |
+| M31 谓词挪到 `LIMIT` 之后 | ✓ | **不计**（我的变异有 SQL 语法错 ⇒ BUILD-BROKEN） | **红** | **红**（`guard at offset 375 lands after LIMIT at 315`） |
+| M32 谓词方向写反 `IS NULL` | ✓ | **红** | **红** | 绿 |
+
+M32 那格「绿」是对的：谓词**仍在 `LIMIT` 之前**，只是方向反了，
+那是契约门的职责。**三层门各管一段，没有哪一层越权**——这正是分层的意义。
+
+#### 10.38.6 顺带堵掉一个更危险的洞
+
+`TestMigration762ProjectBackfillChain_RealDB` 会执行 762 的 **up 和 down**，
+而 `762_..._down.sql` 会 `DROP TRIGGER / FUNCTION / INDEX`。
+**指向共享库或生产库时，「测试跑通」等于当场拆掉那条回填链。**
+
+文件头一直写着「只应指向一次性/scratch 库」，但那是**注释**。
+现补 `requireScratchSessionDB()`：`session_summaries` 里有非本测试创建的存量行就 `t.Skip`。
+代价要说清楚——该文件在「有数据的库」上从此只 SKIP 不 FAIL，这是刻意的
+取舍：**不拿生产的触发器换一条测试信号**。
+
+#### 10.38.7 修复对真实数据的效果（同快照、只读、未写任何数据）
+
+在生产库用 `BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY` 跑两个窗口定义，末尾 `ROLLBACK`：
+
+| 谓词 | 窗口行数 | 其中真能回填 |
+|---|---|---|
+| 旧（现网 SQL） | 2,000 | **0** |
+| 新（加可解析性） | 2,000 | **2,000** |
+
+同一个 MVCC 快照内比对（§10.37 那条教训：跨时刻的两次查询比的是时钟不是写法）。
+
+#### 10.38.8 验证与状态
+
+- scratch 库（本地 `llm-gateway-pg` / `scratch762`，非生产）跑通
+  `TestMigration762ProjectBackfillChain_RealDB` + 新陷阱门，两条 PASS。
+- 无 DSN 全量 `bg/`：**PASS=981 FAIL=0 SKIP=65**。
+- 有 DSN 全量 `bg/`：**PASS=1024 FAIL=7 SKIP=15**。
+  ⇒ 7 条失败**与本轮无关**，全部是 `SQLSTATE 42P01`（`request_logs_hot` 等表在我的
+  scratch 库里不存在——我只铺了 4 张表 + `tenants`）或「无 `*_default` 分区」。
+  照实登记，不含糊成「全绿」。
+- ★ **未部署**。修复在仓库里，生产跑的还是旧 SQL，**worker 仍在停摆**。
+  待授权项与 §10.34 部署合并。

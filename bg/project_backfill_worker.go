@@ -52,6 +52,16 @@ const (
 // sessionProjectBackfillSQL — one batch: pick NULL-project rows joinable to
 // session_dim, run the shared sync function per row inside a single
 // statement. ORDER BY session_key keeps batch boundaries deterministic.
+//
+// ★ 2026-10-06 增补可解析性谓词（实测停摆，见 runbook §10.38）：
+// 「能 join 上 session_dim」不等于「能回填」。project_id 与 application_code
+// 双 NULL 的行照样进窗口，而 sync_session_project_attr 对它们返回 0（ref 解不出
+// 来，行保持 NULL）。这类行不会被消费掉，下一批又会被 ORDER BY session_key
+// 选回来 —— 窗口被永久占死。
+// 生产实测：排序集前 5,745 行全部双 NULL，而 LIMIT 是 2,000，即
+// first_resolvable_rank(5746) > LIMIT(2000)；154 日志连续 10 次
+// backfilled=0（每次空烧 6~28s CPU），而窗口外还压着 141,797 行可回填。
+// 谓词把「注定改变不了自己的行」挡在窗口外，n==0 才重新等价于「已排空」。
 const sessionProjectBackfillSQL = `
 WITH targets AS (
     SELECT ss.session_key, ss.tenant_id, sd.project_id, sd.application_code
@@ -60,6 +70,7 @@ WITH targets AS (
       ON sd.gw_session_id = ss.session_key
      AND sd.tenant_id IS NOT DISTINCT FROM ss.tenant_id
     WHERE ss.gw_project_id IS NULL
+      AND public.gw_resolve_project_ref(sd.project_id, sd.application_code) IS NOT NULL
     ORDER BY ss.session_key
     LIMIT $1
 )
