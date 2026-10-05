@@ -3844,3 +3844,56 @@ ROLLBACK;
   并在 `.so` 恢复后加一条**功能自检**（建临时 vector 表）而不是只判断文件存在。
 · 给 252 加一条**「PG 不可用」告警**（本次 3~4 分钟的停机没有任何告警被我看到，
   是我在例行检查里撞见的 —— 正常运维应该在停机第一分钟就知道）。
+
+#### 7. 真库门：把「我手工跑过一次」固化成可重复的 7+3 条
+
+`apihub/batch_upsert_test.go` 那 7 条门**全是结构门**（占位符编号、参数上限、
+批量与单行的 WHERE 逐字一致、memStore 上的行为）——
+**它们没有一条真的让 PostgreSQL 执行过那条多值 SQL。**
+
+而这条 SQL 的风险恰恰集中在「PG 会不会接受」：多行 INSERT 里每行的 `$N`
+编号会不会错位、末尾那个共用窗口参数的位置对不对、`ON CONFLICT` 的 WHERE
+在「一次冲突多行」时的语义 —— **任何解析器层面的错误都不可能从源码门看出来**。
+
+`apihub/batch_upsert_realdb_test.go`（3 条，门控同
+`bg/ursm_825_realdb_test.go`：`TEST_DATABASE_URL` / `TEST_DB_URL` 未设则跳过）：
+
+| 门 | 断言 |
+|---|---|
+| `TestBatchRealDBWritesAllRows` | 25 行全部落库，且**逐行核对** name / `tags->>'i'` / `metadata->>'idx'` —— 参数错位的典型表现就是这些字段串行 |
+| `TestBatchRealDBGateBlocksSecondIdenticalRun` | 重复跑**完全相同**的一批，20 行的 `last_seen_at` **一行都不许变** |
+| `TestBatchRealDBWritesWhenBusinessFieldChanges` | 只改 `name`，必须**立刻**落库（不能被心跳窗口挡住） |
+
+★ **门 2 是本文件最要紧的一条**。它是 §10.29 整件事的存在理由：
+  门控让 93.7% 的 upsert 什么都不做，它在**单行**形态下被验证过
+  （A 方案上线时看过 `n_tup_upd` 降幅），但**多行**形态下是否同样生效，
+  只有真库能回答。**假如多行下 WHERE 失效**，现象是每 tick 刷一遍
+  1306 行的 `last_seen_at` ⇒ 写放大回到 546 万次/天，
+  而 `n_tup_upd` 只会显示「比预期高一点」，**没有任何告警会响**。
+
+★ 门 3 守的是**相反**方向：若批量版只有心跳那一半、漏了
+  `IS DISTINCT FROM` 那一半，则「改了名字要等最多 5 分钟才可见」。
+
+**真库实跑结果（生产库，经 SSH 隧道）：3 条全过。**
+清理已核：测试行 0 残留、`assets` 回到 2,141 行、`batchtest` 租户 0 行。
+（这个测试打的是**真实的 `public.assets`** —— SQL 里表名是硬编码的，
+换成临时表就等于改了被测物；所以用保留 ref_id 段 `99000000+` 隔离并在
+`t.Cleanup` 里删净。）
+
+**M10 变异（删掉批量版的整段 WHERE）验证它有牙**：
+
+| 门类型 | 结果 |
+|---|---|
+| 源码门（7 条） | **2 红**（`...PlaceholdersAreContiguous`、`...WriteConditionIsIdenticalToSingleRow`） |
+| **真库门（3 条）** | **3 条全红**，含 `GateBlocksSecondIdenticalRun` |
+
+变异后逐字节还原（`md5 7f3b67d7…`），再次跑变异确认生产表 0 残留。
+
+★ 顺带记一条**本机连不上 PG** 的现象，以免下次误判成数据库故障：
+  我的机器到 `172.16.2.210:5432` **TCP 握手能通（`nc -z` 成功）**，
+  但 PG 协议层被对端关闭（psql 报 `server closed the connection
+  unexpectedly`，Go 报 `unexpected EOF`）。154/245 在同网段内完全正常
+  ⇒ **是本机出网路径的问题，不是 PG**。
+  绕过办法：`ssh -f -N -L 15433:172.16.2.210:5432 252` 后走 `127.0.0.1:15433`。
+  ★ 我第一次看到 `unexpected EOF` 时的默认猜测是「PG 刚重启不稳定」——
+    **错误**。`nc` 通 + 协议不通的组合应该先怀疑中间链路。
