@@ -15,11 +15,20 @@ function loadStoredUser(): UserInfo | null {
   try {
     const raw = localStorage.getItem(USER_KEY)
     if (!raw) return null
-    const parsed = JSON.parse(raw) as UserInfo
-    if (!parsed || typeof parsed.username !== 'string') return null
-    // 兼容旧包裹形态 {user: {...}}
-    const wrapped = parsed as UserInfo & { user?: UserInfo }
-    return wrapped.role ? parsed : (wrapped.user ?? null)
+    const parsed = JSON.parse(raw) as UserInfo & { user?: UserInfo }
+    if (!parsed || typeof parsed !== 'object') return null
+    // ⚠️ 2026-10-06 修正：原先在这里判 `typeof parsed.username !== 'string'` 就 return null。
+    // 但落盘的可能是**包裹态**（{access_token, expires_at, user:{...}}）——
+    // 那时 username 在 `parsed.user.username`，顶层没有 username，
+    // 于是守卫**误杀**包裹态，刷新后 userInfo 变 null，
+    // 账户面板退化成「—」+「普通用户」（super_admin 被显示成普通用户）。
+    //
+    // 正确顺序：先按 api/auth.ts 的 unwrapMe 取出真正的 UserInfo，再校验它。
+    // 顺带修掉第 22 行的逻辑洞：`wrapped.role ? parsed : wrapped.user` 在
+    // 包裹态下 role 也在内层，恒走 else 分支；裸态下才看得到 role。
+    const user = parsed.user && typeof parsed.user === 'object' ? parsed.user : parsed
+    if (typeof user.username !== 'string') return null
+    return user
   } catch {
     return null
   }

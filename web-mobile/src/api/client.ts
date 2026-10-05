@@ -14,6 +14,11 @@ export interface UserInfo {
   role: string
   enabled: boolean
   must_change_password?: boolean
+  // 后端 /api/auth/me 与 /api/auth/token 的 user 都带这两个字段
+  // （admin/users.go:641 SELECT last_login_at, created_at），但移动端当前未消费，
+  // 故标可选以免任何构造点被强制填值。
+  last_login_at?: string
+  created_at?: string
 }
 
 export interface AuthContext {
