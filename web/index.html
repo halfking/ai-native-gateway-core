@@ -4,6 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="AI-Native 超级智能大模型网关 — 让企业安全、合规、低成本地使用全球各类大模型与 AI 工具，一套网关，统一管控、智能整合。" />
+    <!--
+      部署序号（UI规范 18 §3 / §10.3 步骤 4）：构建期由 vite.config.ts 的
+      llmgwDeploySeq 插件替换占位符。取值优先 LLMGW_DEPLOY_SEQ（deploy-local
+      在 build_frontend 时从 version.json 透传的 build_seq）/ BUILD_SEQ →
+      git 短 SHA → 'unknown'（运行期按「不可判定」展示）。桌面侧只接检查，
+      不接 SW（18 §10.3 步骤 4：桌面刷新即得新版，SW 收益与蓝绿部署缓存击穿
+      风险不成比例）。src meta 记录序号来源。
+    -->
+    <meta name="llmgw:deploy-seq" content="__LLMGW_DEPLOY_SEQ__" />
+    <meta name="llmgw:deploy-seq-src" content="__LLMGW_DEPLOY_SEQ_SRC__" />
     <title>AI Native 组织核心网关</title>
     <link rel="icon" type="image/png" href="/favicon.png" />
     <!-- 2026-08-25: 拆出 inline script，避免被 CSP script-src 'self' 'unsafe-eval' 拦截 -->
