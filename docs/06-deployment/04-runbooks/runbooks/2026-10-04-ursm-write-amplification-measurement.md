@@ -5212,3 +5212,55 @@ RETURNS bigint … SELECT hashtextextended(p_tenant_id || ':' || p_session_id, 0
 2. 按 session 维度统计近 N 分钟的 turn 写入次数，看同会话并发度；
 3. 与 §10.42 样点 B **同一个时刻**再采一次 pss，顺带把本项的**当前速率**一起算出来
    （累计排名已反复吃过亏，本节不再拿它当现状）。
+
+---
+
+## 10.44 候选二：index 快照端点为了「取最新桶」扫了 34.4 万行，其中 30 万是历史月分区
+
+pss 累计第 2 名：`WITH latest_bucket AS …`（`admin/auto_route.go:301`）
+**134,577.6 s / 187,433 次 / 均值 718.0 ms** ⇒ 约 5 次/分钟被调。
+
+#### 10.44.1 体量对比（实测）
+
+| | 行数 | 大小 |
+|---|---|---|
+| `credential_model_index_hot`（活跃堆表） | **2,325** | 5.7 MB |
+| `credential_model_index`（月分区合计） | **342,093** | 其中 `…_2026_09` 独占 **301,255** |
+
+视图 `credential_model_index_with_current_month` = hot **UNION ALL** parent。
+
+CTE 计划（EXPLAIN，不执行）：
+
+```
+Hash Join
+  ├─ Parallel Append  →  ColumnarScan …_2026_09 (301,255) / …_2026_10 (40,838) / Seq Scan hot (2,325)
+  └─ HashAggregate (344,419 行)  ← MAX(bucket) GROUP BY credential_id, raw_model
+```
+
+⇒ **为了「每个 (credential, model) 的最新桶」扫 34.4 万行，而活跃的 hot 表只有 2,325 行。**
+计划本身不算差（分区是列存的，ColumnarScan 只投影 3 列），贵在行数与 HashAggregate。
+
+#### 10.44.2 ★ 但这不是随手写坏：per-pair CTE 是**刻意**的
+
+代码注释（`handleIndexSnapshot`）：
+
+> 「用 per-pair latest-bucket CTE（与 `refreshIndexSQL` 一致）而不是单个全局
+> `MAX(bucket)`：**rollup dedup 让单个桶很稀疏**，全局 MAX 会落在「最后一次指标
+> 变化」的那个桶上——通常只有 1~2 行——**把索引的其余部分全藏起来**。」
+
+⇒ 全局 MAX 的坑是真的，per-pair 是对的修法。**这里没有「明显该改」的东西。**
+
+#### 10.44.3 真要省，只能动语义——所以**不动**
+
+有一个看起来很省的方向：只扫 `credential_model_index_hot`（2,325 行，快 100 倍）。
+但那**改的是语义**，不是实现：
+
+- 端点是 admin UI 的**活索引可视化** + curl 调试；
+- 只扫 hot ⇒ **已停止产生流量的 (credential, model) 会从视图里消失**
+  （它们的最新桶在月分区里）。
+
+这是「admin 该看活的还是该看全量历史」的**产品判断**，不是性能问题。
+**我不替用户做这个决定。** 何况它是 admin 路径，不在用户数据面上。
+
+⇒ 登记为**候选**，等 §10.43.3b 的当前速率确认它现在是否仍值得占 5% 的库时间；
+若当前速率远低于累计，则连候选都算不上。
