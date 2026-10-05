@@ -61,10 +61,12 @@
     }
     var isLarge = window.matchMedia('(min-width: 1280px)').matches
     if (!isLarge) return
-    var qs = search.replace(/[?&]mobile(?:=[^&]*)?/g, '').replace(/[?&]desktop(?:=[^&]*)?/g, '')
-    if (qs && qs !== '?') qs = qs.replace(/^\?/, '?').replace(/^&&/, '?')
+    // 走到这里 search 必然不含 mobile / desktop 参数（两个判定上方均已
+    // early-return），原样透传即可。不要在这里做二次剔除：剔除正则一旦比
+    // 判定正则宽（如 ?desktopx=1 会命中 [?&]desktop 但不满足判定正则的
+    // (=|&|$)），就会把参数名误剔并丢掉前导 ?，跳出一个坏 URL。
     // replace() 不留历史：移动端返回键不会弹回 /m 形成环。
-    window.location.replace('/' + qs)
+    window.location.replace('/' + search)
   } catch (e) {
     // 首帧脚本永不阻塞应用渲染。任何探测失败都留在移动端。
   }

@@ -11,8 +11,11 @@
 # （脚本自身也会 fail-closed 重注入检查 SSOT KEY）。
 #
 # 前端契约：桌面 web/ 与移动 web-mobile/（挂 /m，Hyper 类型）由同一进程同一
-# 端口服务；本入口把两者一并构建并上传。统一入口自动切换由两侧 entry-switch.js
-# 承担（compact<600px → /m；large≥1280px 根入口 → /），网关不做 UA 嗅探。
+# 端口服务；本入口只构建并上传 web-mobile dist（桌面 web/ dist 不在本脚本
+# 范围，远端沿用既有部署）。统一入口自动切换共三条腿：正向 = 网关服务端
+# UA 302（cmd/gateway/mobile_static.go isMobileEntryRedirect）+ 桌面侧
+# entry-switch.js 的 coarse-pointer 补腿（iPadOS 桌面级 UA，服务端看不见
+# 触屏）；反向 = 移动侧 entry-switch.js（large≥1280px 访问 /m 根入口回 /）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
