@@ -203,7 +203,18 @@ func syncWorkTypesFromACC(ctx context.Context, db *pgxpool.Pool) (workTypeSyncRe
 		upserted++
 		syncedKeys = append(syncedKeys, key)
 
-		if _, err := tx.Exec(ctx, `DELETE FROM work_type_model_route WHERE work_type_key = $1`, key); err != nil {
+		// Delete only the rows a previous ACC sync wrote, never the
+		// operator's.
+		//
+		// This used to be an unqualified DELETE for the whole key, which
+		// made the sync a silent data-loss path: the ACC seed carries
+		// `model_routes: []` on every one of its 22 entries, so a
+		// successful sync removed every route for the key and reinserted
+		// nothing, wiping whatever an operator had configured through the
+		// admin UI. The result payload reported "0 routes" and nothing
+		// warned. Ownership is now tracked per row (migration 831), so a
+		// sync manages its own rows and leaves operator rows alone.
+		if _, err := tx.Exec(ctx, `DELETE FROM work_type_model_route WHERE work_type_key = $1 AND source = 'acc'`, key); err != nil {
 			return workTypeSyncResult{}, err
 		}
 		for _, rt := range item.ModelRoutes {
@@ -223,11 +234,18 @@ func syncWorkTypesFromACC(ctx context.Context, db *pgxpool.Pool) (workTypeSyncRe
 			if tier != "primary" && tier != "secondary" && tier != "fallback" {
 				return workTypeSyncResult{}, fmt.Errorf("sync %s: invalid tier %q for route %s", key, tier, name)
 			}
-			_, err := tx.Exec(ctx, `
-				INSERT INTO work_type_model_route (work_type_key, canonical_name, weight, min_score, enabled, tier)
-				VALUES ($1, $2, $3, $4, $5, $6)
-			`, key, name, wt, rt.MinScore, rt.Enabled, tier)
-			if err != nil {
+			// ON CONFLICT DO NOTHING, not DO UPDATE: when an operator has
+			// already routed this specific model, their row is the
+			// authoritative one and the sync must not overwrite it. The
+			// old INSERT would have aborted the whole transaction on the
+			// UNIQUE (work_type_key, canonical_name) violation, so this is
+			// also what keeps a sync from failing outright once operator
+			// and ACC route sets overlap.
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO work_type_model_route (work_type_key, canonical_name, weight, min_score, enabled, tier, source)
+				VALUES ($1, $2, $3, $4, $5, $6, 'acc')
+				ON CONFLICT (work_type_key, canonical_name) DO NOTHING
+			`, key, name, wt, rt.MinScore, rt.Enabled, tier); err != nil {
 				return workTypeSyncResult{}, err
 			}
 			routes++
