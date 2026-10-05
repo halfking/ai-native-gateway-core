@@ -1001,12 +1001,12 @@ func (h *PromptInjectionHandler) handleSeverityMatrix(w http.ResponseWriter, r *
 			_, err := h.pool.Exec(r.Context(),
 				`UPDATE severity_action_matrix SET
 					observe_action=$1, enforce_action=$2, require_approval=$3,
-					approval_timeout_minutes=$4, notify_on_detect=$5, notify_channels=$6,
+					approval_timeout_minutes=$4, notify_on_detect=$5, notify_channels=$6::jsonb,
 					affect_session_health=$7, session_health_penalty=$8,
 					terminate_session_on_repeat=$9, repeat_threshold=$10
 				WHERE tenant_id=$11 AND severity_level=$12`,
 				s.ObserveAction, s.EnforceAction, s.RequireApproval,
-				s.ApprovalTimeoutMinutes, s.NotifyOnDetect, channelsJSON,
+				s.ApprovalTimeoutMinutes, s.NotifyOnDetect, string(channelsJSON),
 				s.AffectSessionHealth, s.SessionHealthPenalty,
 				s.TerminateOnRepeat, s.RepeatThreshold,
 				tenantID, s.SeverityLevel)
