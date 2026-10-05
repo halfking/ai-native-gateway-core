@@ -731,7 +731,10 @@ watch(() => props.timeQuery, () => {
 
 .pue-export-error {
   margin: 4px 0 0;
-  color: var(--danger-h, #c0392b);
+  /* 2026-10-06：原为 var(--danger-h, #c0392b)。`--danger-h` 全仓无定义
+     （真实令牌名是 --danger），故每次都回落到字面量，被 color:check --strict
+     记为基线外新增硬编码。改用真令牌后暗色模式也随之正确。 */
+  color: var(--danger);
   font-size: 12px;
 }
 </style>

@@ -55,7 +55,10 @@ const { bannerVisible, dismissBanner, applyUpdate } = useDeploySeqUpdate()
   border: 1px solid var(--info-bd);
   background: var(--info-bg);
   color: var(--kx-text);
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
+  /* 2026-10-06：原为 rgba(15, 23, 42, 0.16) 字面量，被 color:check --strict
+     记为基线外新增硬编码。改用既有阴影令牌（--shadow-color-light 同族的
+     kx-shadow-sm 形态），亮/暗两套主题各自生效，桌面臂零变化。 */
+  box-shadow: var(--kx-shadow-sm);
   backdrop-filter: blur(6px);
 }
 
