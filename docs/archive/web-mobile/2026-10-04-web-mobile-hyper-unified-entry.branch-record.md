@@ -1,4 +1,4 @@
-> **归档说明（2026-10-06 整合轮）**：本文是 eat/web-mobile-hyper 分支的设计/实测记录，描述的是该分支自己的 src/runtime/ 平行架构。该架构**未进入 main** —— main 侧同期独立实现了更完整的 src/hyper/ 架构（97 文件 vs 66 文件，含审计脚本与 deploySeq 升级体系），本次整合以 main 架构为准，branch 的 src/runtime/ 平行实现已删除。
+> **归档说明（2026-10-06 整合轮）**：本文是 feat/web-mobile-hyper 分支的设计/实测记录，描述的是该分支自己的 src/runtime/ 平行架构。该架构**未进入 main** —— main 侧同期独立实现了更完整的 src/hyper/ 架构（97 文件 vs 66 文件，含审计脚本与 deploySeq 升级体系），本次整合以 main 架构为准，branch 的 src/runtime/ 平行实现已删除。
 >
 > 本文保留的价值有三：① 移动端统一入口的原始契约；② §2.6 记录的两个**首部署实测缺陷** —— 其中 ServeSPA 前缀剥离缺陷在 main 上真实存在，本轮已修并补了回归门；③ §2.6 的验收记录格式。
 >
