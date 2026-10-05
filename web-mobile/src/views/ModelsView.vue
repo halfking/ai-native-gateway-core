@@ -95,10 +95,17 @@ onMounted(() => {
           <span class="vendor">{{ family.vendor }}</span>
         </p>
         <div class="m-card">
-          <button
+          <!--
+            模型版本行是**静态行**：本应用没有模型详情页，此前却渲染成
+            <button> + chevron，宣称「点这行会跳走」而实际点了没反应——
+            是 UI 规范 03 §3.1 禁止的最强形态可点性说谎。
+            2026-10-06 按「退静态行」处置：去掉 button 语义与 chevron，
+            行内信息（模型名 / 供应商数 / 上下文窗口）保持可读。
+            将来若补上模型详情页，再连同 chevron 一起加回。
+          -->
+          <div
             v-for="v in family.versions"
             :key="v.canonical_name"
-            type="button"
             class="ver-row"
             :data-row-id="`model-${v.canonical_name}`"
           >
@@ -109,8 +116,7 @@ onMounted(() => {
                 <template v-if="v.context_window"> · {{ t('models.contextWindow').replace('{n}', String(Math.round(v.context_window / 1024))) }}</template>
               </span>
             </div>
-            <Icon name="chevron" :size="16" />
-          </button>
+          </div>
         </div>
       </section>
     </template>
@@ -133,7 +139,7 @@ onMounted(() => {
 .ver-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   width: 100%;
   min-height: 52px;
   padding: var(--app-space-2) 0;
