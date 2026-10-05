@@ -863,7 +863,11 @@ func normalizeTTSVoiceForCandidate(cand provider.Candidate, voice string) string
 		if v == "" || !xiaomiVoices[lv] {
 			return "mimo_default"
 		}
-		return lv
+		// 2026-10-05 实测回归修复：小米音色大小写敏感（Mia/Chloe/Milo/
+		// Dean 首字母大写），此前 return lv 把合法音色小写化成 "mia"，
+		// 上游 400 "Unknown voice: mia"。map 匹配保持大小写不敏感（lv），
+		// 但必须原样回传客户端大小写。
+		return v
 	}
 	return v
 }
