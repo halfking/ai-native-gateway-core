@@ -6,6 +6,11 @@ import type { NavigationEntry, NavigationKind, NavigationOperation, OperationTyp
 
 export const MAX_ENTRIES = 80
 export const MAX_OPERATIONS = 100
+/**
+ * 滚动快照保留条数（UI规范 06 §6 / R5）。移植自 feat/web-mobile-hyper。
+ * 只约束快照，不约束 entry 记录数（那个由 MAX_ENTRIES 管）。
+ */
+export const SNAPSHOT_LRU = 5
 export const STORAGE_VERSION = 2
 
 /** 17 §4-R2 校验关系：响应回写前检查代次；标题/快照回写前检查 renderEpoch。 */
@@ -143,6 +148,27 @@ export class NavigationStore {
     const entry = this.findEntry(entryId)
     if (!entry || entry.renderEpoch !== renderEpoch) return
     entry.view.scroll = scroll
+    this.evictStaleSnapshots()
+  }
+
+  /**
+   * 快照 LRU：只保留最近 SNAPSHOT_LRU 个条目的滚动快照，更早的**只清 view，
+   * entry 记录保留**（路径与标题仍可查、仍可回退）。
+   *
+   * 移植自 feat/web-mobile-hyper（其 navigationContext.spec.ts 有 R5 对应用例）。
+   * 为什么只清快照不清记录：MAX_ENTRIES 已经给记录数封了顶，内存上不构成泄漏；
+   * 真正的问题是**拿几十次导航之前的滚动位置去恢复一个数据早已变化的页面** ——
+   * 那是一个静默的错误位置，比不恢复更糟（用户看到列表停在半截且无法解释）。
+   * 被驱逐后调用方 restoreView 拿不到快照，按约定重走 initialLoading。
+   * 恢复侧另有 2s 预算 + 用户滚动即取消（hyper/scroll/scrollHost.ts）作第二道保险。
+   */
+  private evictStaleSnapshots(): void {
+    const withSnapshot = this.entries.filter((e) => Object.keys(e.view.scroll).length > 0)
+    const excess = withSnapshot.length - SNAPSHOT_LRU
+    if (excess <= 0) return
+    for (const stale of withSnapshot.slice(0, excess)) {
+      stale.view.scroll = {}
+    }
   }
 
   persist(storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>, scopeKey: string): void {
