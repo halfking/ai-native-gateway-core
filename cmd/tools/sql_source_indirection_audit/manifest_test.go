@@ -28,15 +28,25 @@ import (
 //	解析到 v1 宽族                        : 12 处 / 6 个文件
 //	不可静态解析（需手验）                : 35 处 / 20 个文件
 //
-// ⚠ **这三行是 §9.226.3 的快照，已过期**（2026-10-05 / §9.233 实测）：
+// ⚠ **这三行是 §9.226.3 的快照，已过期**。当前实测见
+// `documentedSnapshot`（由 `TestDocumentedSnapshotMatchesMeasurement` 钉住，
+// 2026-10-06 / §9.256 更新）：
 //
-//	全仓拼接点 67 处 / 35 文件（v1 6、canonical 5、unresolved 25）
+//	全仓拼接点 70 处（v1 6 文件/12 处、canonical 5/5、unresolved 26/53）
 //
-// unresolved 那一桶从 20 个文件涨到 25 个，**涨的不是新读方，是老读方换了写法**：
+// unresolved 那一桶从 20 个文件涨到 26 个，**涨的不是新读方，是老读方换了写法**：
 // §9.232 把 7 个 admin 内的 bodies 读方从**字面量**改成拼接调用、§9.233 又迁了 3 个
 // 跨包读方 ⇒ 它们从「字面量（不进本工具）」变成「拼接点不可判定（进 unresolved）」。
 // ⇒ **本工具只管关系名不是字面量的拼接点**；把字面量改成拼接会让桶看起来在恶化，
 // 但那是把「看不见」变成「看得见且已定级」，方向上是变好。
+//
+// ★ **§9.256 的结论：这一桶不能当「v1 读方清单」用。**
+// 53 处手验后有 **29 处在当前默认配置下确实读 v1**（19 处 bodies 视图 + 7 处
+// turns 视图 + 3 处 `request_logs_hot` 基表），但它们**一处都不进「v1 宽族 12 处」桶**
+// ——那个桶只数**可静态解析的基表读点**。
+// ⇒ 拿「12 处」当退役工作量会**少算 29 处 / 约 20 个文件**。
+// 这不是清单写错了（散文的 Consequence 基本都对），是**桶的语义**只回答
+// 「关系名会不会在 DROP 时消失」，不回答「现在读到的行集里有多少来自 v1」。
 //
 // 其中 6 个 v1 文件里有 **4 个在四张登记表里一处都没有**：
 //
@@ -769,6 +779,88 @@ func TestManifestHasNoStillUnknownEntries(t *testing.T) {
 // ① 会因为「清单里有 27 条而实测 0」而红——**但那是 27 条噪音**，
 // 真正的失败原因（扫描器坏了）被埋在末尾。
 // ⇒ 单列一道：总体为 0 必须立刻指名扫描器。
+// bucketSnapshot 是三桶的实测快照，用来**钉住本文件头部那张表**。
+//
+// # 为什么需要它（2026-10-06 实测触发）
+//
+// 头部注释里的数字已经漂了两次：
+//
+//	§9.226.3 快照 : 全仓 67 处 / 35 文件（v1 6、canonical 5、unresolved 25）
+//	2026-10-06 实测: 全仓 70 处 / 37 文件（v1 6/12、canonical 5/5、unresolved 26/53）
+//
+// 而「§9.226.3 快照已过期」那句**自己**也已经过期了 —— 它当时把 67/25
+// 标成「当前值」，此后再没人回来核过。
+//
+// ⚠ 漂移的**方向**在这里不是缺陷：§9.232/§9.233 把一批读方从**字面量**
+// 改成拼接调用，于是它们从「不进本工具」变成「进 unresolved」⇒ unresolved
+// 桶单调变大是**把看不见变成看得见**，变好不变坏。
+// 真正的问题是**没人要求它被核过**：那张表是纯注释，注释不会红。
+//
+// ⇒ 这道门只做一件事：**注释里的数字与实测不一致时立刻红**。
+// 它不判断漂移是好是坏（那要人判断），只保证「人至少被叫过来看一眼」。
+type bucketSnapshot struct {
+	TotalSites int
+	V1Files    int
+	V1Sites    int
+	CanonFiles int
+	CanonSites int
+	UnresFiles int
+	UnresSites int
+}
+
+// documentedSnapshot 是 §9.256 手验后写入的实测值。
+//
+// ⚠ 改这三个数字之前先读上面的注释：确认是「桶真的变了」而不是
+// 「扫描范围被改小/解析失败被吞」。`TestRepoAuditIsNotSilentlyVacuous`
+// 只挡总体为 0，挡不住**部分**文件解析失败后被 `continue` 静默跳过。
+var documentedSnapshot = bucketSnapshot{
+	TotalSites: 70,
+	V1Files:    6,
+	V1Sites:    12,
+	CanonFiles: 5,
+	CanonSites: 5,
+	UnresFiles: 26,
+	UnresSites: 53,
+}
+
+func TestDocumentedSnapshotMatchesMeasurement(t *testing.T) {
+	root := repoRoot(t)
+	v1, canonical, unresolved, total := measureBuckets(t, root)
+	got := bucketSnapshot{
+		TotalSites: total,
+		V1Files:    len(v1), V1Sites: sumMap(v1),
+		CanonFiles: len(canonical), CanonSites: sumMap(canonical),
+		UnresFiles: len(unresolved), UnresSites: sumMap(unresolved),
+	}
+	if got == documentedSnapshot {
+		return
+	}
+	// 逐项报，而不是只报一个总数：总数不变而某一桶变过，是「文件在桶之间
+	// 搬家」（例如某读方从 unresolved 变成可解析的 v1），那与「新增了读方」
+	// 要做的事完全不同。
+	var diff []string
+	cmp := func(name string, want, have int) {
+		if want != have {
+			diff = append(diff, fmt.Sprintf("%s: 文档 %d → 实测 %d (%+d)",
+				name, want, have, have-want))
+		}
+	}
+	cmp("拼接点总数", documentedSnapshot.TotalSites, got.TotalSites)
+	cmp("v1 文件数", documentedSnapshot.V1Files, got.V1Files)
+	cmp("v1 处数", documentedSnapshot.V1Sites, got.V1Sites)
+	cmp("canonical 文件数", documentedSnapshot.CanonFiles, got.CanonFiles)
+	cmp("canonical 处数", documentedSnapshot.CanonSites, got.CanonSites)
+	cmp("unresolved 文件数", documentedSnapshot.UnresFiles, got.UnresFiles)
+	cmp("unresolved 处数", documentedSnapshot.UnresSites, got.UnresSites)
+	t.Errorf("本文件头部的三桶快照与实测不一致（%d 项漂移）：\n  %s\n"+
+		"请先判断漂移的方向再改数字：\n"+
+		"  · 读方从**字面量**改成拼接调用 ⇒ unresolved 变大，是「把看不见变成看得见」，改数字即可；\n"+
+		"  · 某一桶**变小** ⇒ 先怀疑扫描范围或解析失败被吞（AuditRepo 里的 `continue`），\n"+
+		"    那不是「变干净了」，是「又看不见了」；\n"+
+		"  · 真的新增/删除读方 ⇒ 同步更新头部注释与下面的 documentedSnapshot 两处。",
+		len(diff), strings.Join(diff, "\n  "))
+}
+
 func TestRepoAuditIsNotSilentlyVacuous(t *testing.T) {
 	root := repoRoot(t)
 	v1, canonical, unresolved, total := measureBuckets(t, root)
