@@ -11,7 +11,7 @@ import (
 // TestAdminHandlersAreWired 锁住一类反复出现的部署缺陷：
 // handler 实现了、RegisterRoutes 也写了，唯独没接到 main mux 上，
 // 于是对应页面的 API 全部 404、页面永远空，而单测还是绿的
-//（测试自己 new handler 直接打，覆盖不到「路由注册没有」这一层）。
+// （测试自己 new handler 直接打，覆盖不到「路由注册没有」这一层）。
 //
 // 本仓已中过两次：
 //   - prompt-injection：main.go:3104 注释里写明「修复前端调用 404 的 bug」

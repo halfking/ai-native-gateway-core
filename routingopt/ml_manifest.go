@@ -49,9 +49,9 @@ type MLManifest struct {
 
 	// MissingSentinels documents the training-side missing-value contract.
 	MissingSentinels struct {
-		Categorical     string `json:"categorical"`
-		BooleanMissing  int64  `json:"boolean_missing"`
-		Numeric         string `json:"numeric"`
+		Categorical    string `json:"categorical"`
+		BooleanMissing int64  `json:"boolean_missing"`
+		Numeric        string `json:"numeric"`
 	} `json:"missing_sentinels"`
 }
 

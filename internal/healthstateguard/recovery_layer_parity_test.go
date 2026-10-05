@@ -159,24 +159,21 @@ var registry = []entry{
 		},
 	},
 	{
-		// 🔴 待裁决 85 的本体。
+		// 待裁决 85 已由 R46 轮（2026-10-05）收口：批量入口接上了与
+		// handleForceRecoverSingle 同形的进程内恢复链（步骤 0 先枚举与
+		// UPDATE 同 WHERE 的目标凭据，步骤 5 逐凭据清 key 缓存 / key
+		// rotator / resetInMemoryNodeState）。URSM v2 维持与单凭据入口
+		// 一致的不代拍立场。
 		File: "../../admin/diagnostics_routing.go", Func: "handleRoutingBlockedFix",
 		Route: "POST /api/admin/diagnostics/routing-blocked/fix",
 		Done: map[string]bool{
 			"dbCredentials": true, "dbBindings": true, "dbModelProbe": true, "dbNodeProbe": true,
-			"routingCache": true, "keyCache": false, "keyRotator": false,
-			"inProcessNodeState": false, "ursmV2": false,
+			"routingCache": true, "keyCache": true, "keyRotator": true,
+			"inProcessNodeState": true, "ursmV2": false,
 		},
 		Gaps: map[string]string{
-			"inProcessNodeState": "🔴 待裁决 85：未调用 resetInMemoryNodeState。" +
-				"该 helper 自己的注释（admin/routing.go:1962-1969）写明不调它会 " +
-				"\"return HTTP 200 while the router still filters the node out\"；" +
-				"而本入口的 WHERE（:288-291）恰恰专门 targeting " +
-				"circuit_state IN ('open','half_open') 与 consecutive_failures > 0，" +
-				"即**最需要清进程内熔断器的那批凭据**。同族另两个恢复入口都已做对。",
-			"keyCache":   "同上游缺口：单凭据入口清 key 缓存，批量入口不清",
-			"keyRotator": "同上游缺口：key rotator 未重置",
-			"ursmV2":     "同上游缺口：URSM v2 Redis 未清（applyForceEnable 会清）",
+			"ursmV2": "与 handleForceRecoverSingle 同立场：URSM v2 是否应随批量恢复一并清" +
+				"仍无 Owner 裁决，不代拍",
 		},
 	},
 	{

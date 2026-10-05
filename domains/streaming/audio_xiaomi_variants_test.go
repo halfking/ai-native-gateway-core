@@ -614,7 +614,7 @@ func TestTTSBridgeAcceptsOfficialFormatsAndPCM16Alias(t *testing.T) {
 func TestNonBridgeCandidateStillAcceptsOpus(t *testing.T) {
 	// 反向守卫：opus/aac/flac 在 OpenAI 兼容上游上是合法的，收窄只能作用
 	// 在桥接形态。若这条转红，说明有人把 audioTTSEffectiveFormat 的
-	 // 全量口径改窄了，会打断所有非小米 TTS 供应商。
+	// 全量口径改窄了，会打断所有非小米 TTS 供应商。
 	var sent string
 	svc := newTestAudioService(t, "zhipu", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)

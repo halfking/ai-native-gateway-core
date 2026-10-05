@@ -402,12 +402,12 @@ func scanTemplate(row interface {
 	Scan(dest ...any) error
 }) (*ProviderTemplate, error) {
 	var (
-		t                       ProviderTemplate
-		apiType                 string
-		createdAt               sql.NullTime
-		updatedAt               sql.NullTime
-		lastScanFailureAt       sql.NullTime
-		autoDisabledAt          sql.NullTime
+		t                 ProviderTemplate
+		apiType           string
+		createdAt         sql.NullTime
+		updatedAt         sql.NullTime
+		lastScanFailureAt sql.NullTime
+		autoDisabledAt    sql.NullTime
 	)
 	if err := row.Scan(
 		&t.ID, &t.TenantID, &t.ProviderCode, &t.DisplayName, &t.BaseURL, &apiType,

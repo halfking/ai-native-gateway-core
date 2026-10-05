@@ -151,10 +151,12 @@ func TestKeyRotator_ResetKey(t *testing.T) {
 //   - 3 keys registered for credential 71
 //   - keys 0 and 2 marked terminal (terminal kind: immediate, no threshold)
 //   - advance the cursor past key 0 so it sits at index 1
+//
 // Then:
 //   - ResetKey(71, 1) — note key 1 was never marked, it's already Active
 //     (this also exercises the "no-op when already Active" path; the more
 //     important property is that keys 0 and 2 stay terminal afterwards)
+//
 // Verify:
 //   - keys 0 and 2 are STILL terminal (sibling isolation)
 //   - ResolveKey(71, -1) returns 1 (the only eligible key, cursor advanced
@@ -368,4 +370,3 @@ func TestKeyRotator_StartSweeper_StopIdempotent(t *testing.T) {
 	kr.StopSweeper() // must not panic
 	kr.StopSweeper()
 }
-

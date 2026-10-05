@@ -15,6 +15,7 @@
 //	    --dsn="$DB" --tenant=tenant_xxx --session=gw_abc... --dry-run=true
 //
 // Exit codes:
+//
 //	0 — completed (rows written or dry-run reported)
 //	1 — argument / DB / write error
 package main
@@ -89,7 +90,7 @@ func main() {
 	if *useHot {
 		bodiesTable = "request_logs_bodies_hot"
 	}
-	
+
 	var fullMsgs, respMsgs [][]Msg
 	for i := range turnRows {
 		var reqBody, respBody []byte

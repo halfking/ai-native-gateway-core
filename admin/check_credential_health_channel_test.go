@@ -14,7 +14,9 @@ import (
 // 登记遗留 doHealthCheck 复合 err 的收口）。
 // ①真库 + 不存在的凭据 → 404 "credential not found"（ErrNoRows 原语义保留）；
 // ②DB 故障（已关闭连接池）→ 500，而不是旧实现的一律 404（把 DB 故障伪装成
-//   "凭据不存在"会把运维引向错误方向）。
+//
+//	"凭据不存在"会把运维引向错误方向）。
+//
 // 同步 GET 路由（GET /api/providers/{id}/credentials/{cid}/check-health）在
 // R65 才接线（此前 handler 是 //nolint:unused 死代码）。
 func TestCheckCredentialHealth_NotFoundIs404(t *testing.T) {

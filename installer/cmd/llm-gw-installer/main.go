@@ -774,6 +774,9 @@ var modalityVerificationProgress827 []byte
 //go:embed embeddata/startup/828_supplier_errors_unified_tracked.sql
 var supplierErrorsUnifiedTracked828 []byte
 
+//go:embed embeddata/startup/831_work_type_route_source.sql
+var workTypeRouteSource831 []byte
+
 //go:embed embeddata/startup/829_bodies_columnar_rollback.sql
 var bodiesColumnarRollback829 []byte
 
@@ -1009,6 +1012,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/826_model_baseline_price.sql":                                           modelBaselinePrice826,
 	"startup/827_modality_verification_progress_view.sql":                            modalityVerificationProgress827,
 	"startup/828_supplier_errors_unified_tracked.sql":                                supplierErrorsUnifiedTracked828,
+	"startup/831_work_type_route_source.sql":                                         workTypeRouteSource831,
 	"startup/829_bodies_columnar_rollback.sql":                                       bodiesColumnarRollback829,
 }
 

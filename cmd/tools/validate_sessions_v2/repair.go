@@ -354,11 +354,11 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 				request_attachments, response_attachments, partition_date
 			) VALUES (
 				$1, $2, $3, $4, $5,
-				$6, $7,
+				$6::jsonb, $7::jsonb,
 				'[]'::jsonb, '[]'::jsonb, $8
 			)
 		`, tenantID, sessionID, turnNo, turn.RequestID, turn.Ts,
-			requestDeltaJSON, responseDeltaJSON, calendarDateUTC(turn.Ts))
+			string(requestDeltaJSON), string(responseDeltaJSON), calendarDateUTC(turn.Ts))
 
 		if err != nil {
 			result.Error = fmt.Errorf("insert body %d: %w", turnNo, err)

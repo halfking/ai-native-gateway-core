@@ -72,9 +72,9 @@ func TestApplyPolicyHotReloadsQueueDepth(t *testing.T) {
 	defer p.Stop()
 
 	ref := CredentialRef{
-		CredentialID:    7,
-		ProviderID:      1,
-		ConcurrencyMode: ModeConcurrency,
+		CredentialID:     7,
+		ProviderID:       1,
+		ConcurrencyMode:  ModeConcurrency,
 		ConcurrencyLimit: 2,
 		MaxQueueDepth:    5,
 	}
@@ -137,11 +137,11 @@ func TestCredForwarderLoopReclaimsPendingOldEveryIteration(t *testing.T) {
 	defer p.Stop()
 
 	ref := CredentialRef{
-		CredentialID:    11,
-		ProviderID:      1,
-		ConcurrencyMode: ModeConcurrency,
+		CredentialID:     11,
+		ProviderID:       1,
+		ConcurrencyMode:  ModeConcurrency,
 		ConcurrencyLimit: 1,
-		MaxQueueDepth:   2,
+		MaxQueueDepth:    2,
 	}
 	cf := p.getOrCreateForwarder(ref)
 	if cf == nil {

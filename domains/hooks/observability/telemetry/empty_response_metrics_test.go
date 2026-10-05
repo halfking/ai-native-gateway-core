@@ -46,9 +46,9 @@ func TestRecordEmptyResponseBody_SuccessAndEmptyIncrementsCounter(t *testing.T) 
 	beforeCount := readCounterVec(t, successResponseBodyMissingTotal, "chat", "non_stream")
 
 	entry := &RequestLogEntry{
-		RequestID:  "req-empty-1",
-		TenantID:   "tenant-empty",
-		Success:    true,
+		RequestID:   "req-empty-1",
+		TenantID:    "tenant-empty",
+		Success:     true,
 		RequestMode: strPtr("chat"),
 	}
 	recordEmptyResponseBody(entry)
@@ -95,9 +95,9 @@ func TestRecordEmptyResponseBody_NonEmptyBodyDoesNotIncrement(t *testing.T) {
 
 	body := `{"choices":[{"message":{"role":"assistant","content":"hi"}}]}`
 	entry := &RequestLogEntry{
-		RequestID:   "req-nonempty-1",
-		Success:     true,
-		RequestMode: strPtr("chat"),
+		RequestID:    "req-nonempty-1",
+		Success:      true,
+		RequestMode:  strPtr("chat"),
 		ResponseBody: &body,
 	}
 	recordEmptyResponseBody(entry)
@@ -141,9 +141,9 @@ func TestRecordEmptyResponseBody_StreamingBucketSeparation(t *testing.T) {
 
 	chunk := 5
 	entry := &RequestLogEntry{
-		RequestID:       "req-stream-1",
-		Success:         true,
-		RequestMode:     strPtr("chat"),
+		RequestID:        "req-stream-1",
+		Success:          true,
+		RequestMode:      strPtr("chat"),
 		StreamChunkCount: &chunk,
 	}
 	recordEmptyResponseBody(entry)

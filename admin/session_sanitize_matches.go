@@ -225,7 +225,7 @@ func (h *Handler) loadOutboundBodySnippet(ctx context.Context, requestID string)
 	_ = h.db.QueryRow(ctx, `
 		SELECT COALESCE(rb.outbound_body, rb.request_body)
 		  FROM request_logs_with_current_month rl
-		  LEFT JOIN `+dbpkg.SessionBodiesSourceSQL()+` ON rb.request_id = rl.request_id
+		  LEFT JOIN `+dbpkg.SessionBodiesSourceSQL()+` rb ON rb.request_id = rl.request_id
 		  WHERE rl.request_id = $1 LIMIT 1`, requestID).Scan(&body)
 	if body == nil {
 		return ""

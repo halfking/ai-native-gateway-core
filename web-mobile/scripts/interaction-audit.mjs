@@ -44,7 +44,7 @@ const MUTATING = new RegExp([
   'save', 'submit', 'confirm', 'apply', 'import', 'export', 'disable', 'enable', 'unbind',
   'edit', 'modify', 'update', 'bind', 'invite', 'test-conn', 'sync',
   '删除', '吊销', '移除', '解绑', '重置', '重生成', '轮换', '创建', '新建', '新增', '添加',
-  '保存', '提交', '确认', '确定', '应用', '导入', '导出', '禁用', '启用', '启用停用',
+  '保存', '提交', '确认', '确定', '应用', '导入', '导出', '禁用', '停用', '启用', '启用停用',
   '编辑', '修改', '更新', '绑定', '邀请', '测试连接', '同步',
 ].join('|'), 'i')
 
@@ -186,7 +186,16 @@ async function main() {
       if (attempt === 'close-btn') {
         const c = await evalJs(`(() => {
           const d = document.querySelector('[role="dialog"], dialog, .modal, .sheet'); if (!d) return null
-          const b = d.querySelector('button[aria-label*="lose"], .close, [data-close], .modal__close, .sheet__close, button')
+          // 不做裸 button 直选：弹层里第一个按钮可能是 [确认]/[删除]。
+          // 兜底遍历，跳过带危险语义的按钮；找不到安全的就走 backdrop/escape。
+          const danger = /confirm|delete|submit|save|apply|确定|确认|删除|保存|提交|应用/i
+          let b = d.querySelector('button[aria-label*="lose"], .close, [data-close], .modal__close, .sheet__close')
+          if (!b) {
+            for (const cand of d.querySelectorAll('button')) {
+              const t = (cand.getAttribute('aria-label') || '') + ' ' + (cand.textContent || '')
+              if (!danger.test(t)) { b = cand; break }
+            }
+          }
           if (!b) return null
           const r = b.getBoundingClientRect()
           return JSON.stringify({ x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) })

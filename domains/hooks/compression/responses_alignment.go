@@ -4,7 +4,7 @@
 // messages 车道的压缩结果本就带 AlignmentMap（PrepareResult.AlignmentMap，
 // 进 result memo）；native Responses 车道不接 session compressor 是显式
 // 设计（防污染 session-cache），其专属压缩链
-//（transformation.CompressResponsesInput*，candidate-window 前置 +
+// （transformation.CompressResponsesInput*，candidate-window 前置 +
 // 4xx recovery 聚合中转）此前只输出裁剪后的 body，无任何"哪些 input
 // item 去了哪里"的审计证据。本文件给 responses input 形态补齐同一套
 // original→compressed 位置映射，供 executor 写入

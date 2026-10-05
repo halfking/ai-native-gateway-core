@@ -19,12 +19,12 @@ import (
 // structure constraints are strict:
 //
 //   - hex-only:    [0-9a-f]{32}                       (server-generated,
-//                                                       case-insensitive)
+//     case-insensitive)
 //   - uuid-dashed: [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 //   - prefixed:    starts with a letter, total 8-128 chars,
-//                  no runs of dots or dashes. Examples: "req-unified-01",
-//                  "req_1", "req-same-tenant", "bench-1a2b3c4d",
-//                  "routing-test-<uuid>-00".
+//     no runs of dots or dashes. Examples: "req-unified-01",
+//     "req_1", "req-same-tenant", "bench-1a2b3c4d",
+//     "routing-test-<uuid>-00".
 //
 // 2026-08-28 (audit follow-up): the original regex
 // `^[A-Za-z0-9._-]{8,128}$` was too permissive — any 8-char "abc..def"

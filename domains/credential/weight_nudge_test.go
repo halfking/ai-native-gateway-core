@@ -24,7 +24,7 @@ func TestLoadWeightNudgeFactors_Override(t *testing.T) {
 }
 
 func TestLoadWeightNudgeFactors_RejectsOutOfRange(t *testing.T) {
-	t.Setenv("LLM_GATEWAY_CREDENTIAL_NUDGE_429", "1.5")   // > 1.0
+	t.Setenv("LLM_GATEWAY_CREDENTIAL_NUDGE_429", "1.5")    // > 1.0
 	t.Setenv("LLM_GATEWAY_CREDENTIAL_NUDGE_EMPTY", "0.05") // < 0.1
 	t.Setenv("LLM_GATEWAY_CREDENTIAL_NUDGE_TIMEOUT", "abc")
 	t.Setenv("LLM_GATEWAY_CREDENTIAL_NUDGE_AUTH", "-0.2")
