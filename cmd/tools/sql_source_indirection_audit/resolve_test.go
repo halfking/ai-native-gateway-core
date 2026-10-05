@@ -778,3 +778,31 @@ func TestV1ArmViewsAreDerivedFromDDL(t *testing.T) {
 			v1ArmViewNames(got))
 	}
 }
+
+// 门 16（§9.260）：推导器必须认得**运行时由 composer 创建、没有仓库 DDL 文件**的视图。
+//
+// 真库 `pg_class` 里有 4 个 `request_logs*_with_current_month*` 视图，
+// 4 个**全部含 v1 臂**；而 `sql/objects/views/` 的 54 个 DDL 文件只覆盖其中 2 个。
+// 缺的两个由 composer 在运行时建（`db/request_logs_view_schema.go:128` / `:140`）。
+//
+// ⇒ 第一版只看 DDL 目录，于是读那两个视图的文件被判成 **canonical**
+// —— 方向是**「把有风险的报成安全」**，也就是本工具最坏的失效方向。
+func TestV1ArmViewsIncludeComposerDefinedOnes(t *testing.T) {
+	set := viewsWithV1Arm(repoRoot(t))
+	want := []string{
+		"request_logs_with_current_month",
+		"request_logs_with_current_month_without_customer_id",          // 无 DDL 文件
+		"request_logs_with_current_month_without_request_class_due_at", // 无 DDL 文件
+		"request_logs_bodies_with_current_month",
+	}
+	for _, w := range want {
+		if !set[w] {
+			t.Errorf("视图 %q 没被推出含 v1 臂。\n"+
+				"★ 最可能的原因：它由 composer 在**运行时**创建、仓库里没有 DDL 文件 ⇒ "+
+				"推导器只读 sql/objects/views/ 就会漏。\n"+
+				"真库 pg_class 里有 4 个 request_logs*_with_current_month* 视图，**全部含 v1 臂**；"+
+				"漏掉任何一个都会把它下面的读方判成 canonical（把有风险的报成安全）。\n"+
+				"当前推出集合：%v", w, v1ArmViewNames(set))
+		}
+	}
+}

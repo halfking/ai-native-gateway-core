@@ -48,38 +48,107 @@ import (
 //	bodies 视图 has_session_arm=0（纯 v1），turns 视图是三臂。
 var createViewRE = regexp.MustCompile(`(?i)CREATE\s+(?:OR\s+REPLACE\s+)?(?:MATERIALIZED\s+)?VIEW\s+(?:public\.)?([a-z_][a-z0-9_]*)`)
 
-// viewsWithV1Arm 扫 sql/objects/views/ 下的 DDL，返回「体里含 v1 臂」的视图名集合。
+// viewSourceFiles 是推导 v1 臂视图的**两个**来源。
 //
-// 找不到目录 / 目录为空时返回空集合：调用方因此**退回旧行为**（只按基表判 v1），
-// 那与今天完全一致，不是错误答案。宁可少报也不猜。
+// ⚠ §9.260：**只看 `sql/objects/views/` 是不完整的。**
+// 那 54 个 DDL 文件里只有 `request_logs_with_current_month` 与
+// `request_logs_bodies_with_current_month`；而真库里 `pg_class` 有 **4 个**
+// `request_logs*_with_current_month*` 视图，**全部含 v1 臂**。
+// 缺的两个 —— `…_without_customer_id` 与 `…_without_request_class_due_at` ——
+// **没有仓库 DDL 文件**：它们由 composer 在**运行时**建
+// （`db/request_logs_view_schema.go:128` / `:140`），
+// 仓库里只在测试里 dump 过。
+//
+// ⇒ 后果不是「少报两个视图」，而是**读那两个视图的文件被判成 canonical**：
+//
+//	`admin/attempt_quality_api.go` · `admin/usage_trend_series.go` ·
+//	`admin/auto_route_correlations.go` —— **三个文件，方向是「把有风险的报成安全」**。
+//
+// ★ 教训：推导源要挑「**谁在运行时真正定义它**」，不是「仓库里恰好有文件的那个」。
+var viewSourceFiles = []string{
+	"sql/objects/views",              // 目录：逐个 .sql
+	"db/request_logs_view_schema.go", // 单文件：composer 里的 CREATE VIEW
+}
+
+// viewsWithV1Arm 返回「体里含 v1 臂（直接或传递）」的视图名集合。
+//
+// 找不到任何来源时返回空集合：调用方因此**退回旧行为**（只按基表判 v1），
+// 那与 §9.257 之前完全一致，不是错误答案。宁可少报也不猜。
 func viewsWithV1Arm(root string) map[string]bool {
-	dir := filepath.Join(root, "sql", "objects", "views")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
+	edges := map[string]map[string]bool{} // 视图 → 它引用的关系
+	addView := func(name, body string) {
+		body = sqlLineCommentRE.ReplaceAllString(body, " ")
+		refs := map[string]bool{}
+		for _, m := range fromRelationRE.FindAllStringSubmatch(body, -1) {
+			refs[firstRelationToken(m[1])] = true
+		}
+		if len(refs) > 0 {
+			if edges[name] == nil {
+				edges[name] = map[string]bool{}
+			}
+			for r := range refs {
+				edges[name][r] = true
+			}
+		}
 	}
+
+	// ① sql/objects/views/*.sql
+	if entries, err := os.ReadDir(filepath.Join(root, "sql", "objects", "views")); err == nil {
+		for _, e := range entries {
+			name := e.Name()
+			if e.IsDir() || !strings.HasSuffix(name, ".sql") {
+				continue
+			}
+			b, err := os.ReadFile(filepath.Join(root, "sql", "objects", "views", name))
+			if err != nil {
+				continue
+			}
+			m := createViewRE.FindSubmatch(b)
+			if m == nil {
+				continue
+			}
+			addView(string(m[1]), string(b))
+		}
+	}
+
+	// ② composer：Go 源码里的 CREATE VIEW 字符串
+	if b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(viewSourceFiles[1]))); err == nil {
+		src := string(b)
+		locs := createViewRE.FindAllStringSubmatchIndex(src, -1)
+		for i, loc := range locs {
+			end := len(src)
+			if i+1 < len(locs) {
+				end = locs[i+1][0]
+			}
+			addView(string(src[loc[2]:loc[3]]), src[loc[0]:end])
+		}
+	}
+
+	// ★ 传递闭包：一个视图可能只引用**另一个** v1 臂视图
+	// （`…_without_request_class_due_at` 就是从 `…_without_customer_id` 转包的），
+	// 只看「直接 FROM 了基表」会漏掉整条包装链。
 	out := map[string]bool{}
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".sql") {
-			continue
-		}
-		b, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			continue
-		}
-		m := createViewRE.FindSubmatch(b)
-		if m == nil {
-			continue
-		}
-		view := string(m[1])
-		// 先剥 SQL 行注释：注释里出现 FROM request_logs 不构成 v1 臂。
-		body := sqlLineCommentRE.ReplaceAllString(string(b), " ")
-		for _, fm := range fromRelationRE.FindAllStringSubmatch(body, -1) {
-			if v1Tables[firstRelationToken(fm[1])] {
-				out[view] = true
+	for v := range edges {
+		seen := map[string]bool{}
+		stack := []string{v}
+		hit := false
+		for len(stack) > 0 {
+			cur := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if seen[cur] {
+				continue
+			}
+			seen[cur] = true
+			if v1Tables[cur] {
+				hit = true
 				break
 			}
+			for r := range edges[cur] {
+				stack = append(stack, r)
+			}
+		}
+		if hit {
+			out[v] = true
 		}
 	}
 	return out
