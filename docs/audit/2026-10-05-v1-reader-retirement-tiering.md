@@ -1,7 +1,11 @@
-# v1 读方消费面分档（115 个文件）—— 待你拍板
+# v1 读方消费面分档（116 个文件）—— 待你拍板
 
 > 生成时间：2026-10-06　起点提交：`f654124c1`（= `origin/main`）
 > 门：`admin/request_logs_retirement_tiering_test.go`（5 道，常驻）
+> ⚠ **2026-10-06 更新（§9.265）**：总体已从 **115 变 116**、③ 档从 **27 变 28** ——
+> §9.264 新增的 `cmd/gateway/v1_write_liveness.go` 是**生产文件**且含两处
+> `FROM request_logs…`，`TestRequestLogsReadInventoryIsComplete` 正确地把它抓了出来
+> （字面量总体 107 → **108**）。本文所有数已同步；两处算式现在写的是 **108 + 22 − 14 = 116**。
 > 背景：`docs/audit/2026-10-04-session-migration-decision-sheet.md`（D32 段 §9.259 / §9.260）
 
 **本表只出表，不改指任何读方。** ② 档的迁移动作是属主的决定，不是本文档的。
@@ -10,8 +14,8 @@
 
 ## 零、一句话版
 
-退役读方的总体是 **115 个文件，不是 114**；按消费面分档为
-**① 随 v1 退役 4 · ② 必须迁 76 · ③ 按设计继续读 v1 27 · ④ 待拍板 8**。
+退役读方的总体是 **116 个文件，不是 114**（§9.265 又加了 1 个）；按消费面分档为
+**① 随 v1 退役 4 · ② 必须迁 76 · ③ 按设计继续读 v1 28 · ④ 待拍板 8**。
 其中 **39 个读 v1 臂视图的文件对拼接点工具完全不可见**（§9.260 登记的是 3 个）。
 
 ---
@@ -32,23 +36,23 @@
 `request_logs_with_current_month_without_customer_id AS r`），
 而 §9.260 只更新了「处数 37→38 / 文件 20→21」，**没回头重算 §9.259 的并集**。
 
-**实测（`f654124c1`）：**
+**实测（`f654124c1`；§9.265 后字面量那一行为 108）：**
 
 | 总体 | 规模 | 来源 |
 |---|---:|---|
-| 字面量读方 | **107 文件 / 254 调用点** | `requestLogsReadInventory`（门输出实测） |
+| 字面量读方 | **108 文件 / 256 调用点** | `requestLogsReadInventory`（门输出实测） |
 | 间接读方 | **22 文件** | 拼接点工具 21 + §9.258 表里 3 处手验所在的 `bg/auto_route_settle_sql.go` |
 | 交集 | **14** | — |
-| ★ **并集** | **115** | 107 + 22 − 14 |
+| ★ **并集** | **116** | 108 + 22 − 14 |
 
 只在间接总体、不在字面量总体的 **8 个**（§9.259 手写的是 7 个）：
 `admin/dashboard_board_queries.go` · `admin/session_compare.go` · `admin/session_export.go` ·
 `admin/usage_credits.go` · `bg/auto_route_settle_sql.go` · `maas/consumption_detail.go` ·
 `maas/credit_buckets.go` · `maas/usage.go`
 
-⇒ **退役排期按 115 个文件。** 门 `TestV1ReaderTieringDomainIsBothPopulations` 把
+⇒ **退役排期按 116 个文件。** 门 `TestV1ReaderTieringDomainIsBothPopulations` 把
 两个总体各自的成员钉住，并对 107 / 22 / 14 / 115 四个数逐个断言 ——
-**并集算式与域实测不相等时，它会明确打印「★ 并集算式 115 ≠ 域实测 114」**。
+**并集算式与域实测不相等时，它会明确打印「★ 并集算式 116 ≠ 域实测 115」**。
 
 ---
 
@@ -152,7 +156,7 @@
 | `storage/sqlite/request_log_store.go` | 字面量 | ★ 对 v1 有写 + 读：lite 模式 SQLite 存储（WriteRequest/GetRequest） |
 | `tests/session_audit/cmd/audit-test/main.go` | 字面量 | 测试工具（build tag tools）：会话审计 |
 | `tests/test_popularity_tracker.go` | 字面量 | 测试：热度统计 |
-### ③ 按设计继续读 v1（27）
+### ③ 按设计继续读 v1（28）
 
 这一档是本表**最需要属主确认**的一档：它的判据是「这个读的消费者是不是观测本身」。
 若属主认为这些观测面在 v1 退役后**没有存在意义**，整档 27 个都要按 ① 处理。
@@ -236,12 +240,12 @@
 
 | | 文件数 |
 |---|---:|
-| 115 个读 v1 的文件里，读到 v1 臂视图的 | **55** |
+| 116 个读 v1 的文件里，读到 v1 臂视图的 | **55** |
 | 其中在拼接点工具输出里**完全不出现**的 | **39** |
 | 拼接点工具输出覆盖的文件 | 21 |
 
 ⇒ 工具收尾那行「★ 退役读方清单 = v1 基表 12 处 + v1 臂视图 26 处 = 38 处 / 21 个文件」
-**不是退役读方清单** —— 115 个里它只覆盖 21 个。
+**不是退役读方清单** —— 116 个里它只覆盖 21 个。
 §9.260 点名的 3 个（`attempt_quality_api` · `usage_trend_series` · `auto_route_correlations`）
 只是这 39 个里的三个。
 
