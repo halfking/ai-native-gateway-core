@@ -35,9 +35,14 @@ export interface CredentialMonitorSummary {
   state_reason_detail: string | null
   health_checked_at: string | null
   total_requests: number
-  model_total: number
-  model_available: number
-  broken_model_count: number
+  // ⚠️ 2026-10-06 实测：这三个字段对一部分凭据是**整个键不存在**（不是 null）。
+  // 245 上 mode=core 的 65 条里：58 条是 int，7 条缺失（如 canary-cred-A/B，
+  // 状态 auth_failed、14h 未检查）。原先声明为必填 number，于是模板
+  // `{{c.model_available}}` 对那 7 条直接渲染出字面量 "undefined"。
+  // 改可选，让真门（vue-tsc -b）把所有使用点逼出来处理缺失。
+  model_total?: number
+  model_available?: number
+  broken_model_count?: number
   models?: CredentialModelStatus[]
   aggregated_success_rate?: number | null
 }

@@ -70,8 +70,25 @@ const detailOpenProxy = computed({
 function healthTone(c: CredentialMonitorSummary): 'success' | 'warning' | 'danger' | 'muted' {
   if (c.manual_disabled) return 'muted'
   if (c.availability_state === 'down' || c.health_status === 'down') return 'danger'
-  if (c.availability_state === 'degraded' || c.consecutive_failures > 0 || c.broken_model_count > 0) return 'warning'
+  if (c.availability_state === 'degraded' || c.consecutive_failures > 0 || (c.broken_model_count ?? 0) > 0)
+    return 'warning'
   return 'success'
+}
+
+// 2026-10-06：model_available / model_total 对一部分凭据是**整个键不存在**
+// （245 实测 65 条里 7 条缺失，如 canary-cred-A/B，auth_failed 且 14h 未检查）。
+// 原先无守卫插值，那几条直接渲染出字面量 "Models undefined/undefined"。
+//
+// 缺数据时**整段不渲染**，而不是回落成 "0/0" —— 对一个没被测量过的凭据断言
+// 「0 个可用 / 共 0 个」是句我们没有依据的话。桌面端 CredentialMonitorView.vue:105
+// 用的是 `?? 0`，两边口径不同；如需与桌面对齐请改这里。
+//
+// 这里返回整段文案而不是让模板插值：Vue 的类型检查器**不会**因为 v-if 上的
+// 另一个表达式去收窄 `c`，把收窄放进函数里才能让 vue-tsc 真正看到（实测：
+// 写成 v-if="hasModelCounts(c)" + 模板插值，vue-tsc -b 报 TS2322 2 处）。
+function modelsLabel(c: CredentialMonitorSummary): string | null {
+  if (typeof c.model_available !== 'number' || typeof c.model_total !== 'number') return null
+  return t('nodes.modelsAvailable', { available: c.model_available, total: c.model_total })
 }
 
 function stateBadge(c: CredentialMonitorSummary): { cls: string; label: string } {
@@ -129,9 +146,7 @@ const detailTitle = computed(() => detail.value ? `${detail.value.provider_name}
           <span class="badge" :class="stateBadge(c).cls">{{ stateBadge(c).label }}</span>
         </div>
         <div class="node-card__fields">
-          <span class="node-card__field">
-            {{ t('nodes.modelsAvailable', { available: c.model_available, total: c.model_total }) }}
-          </span>
+          <span v-if="modelsLabel(c)" class="node-card__field">{{ modelsLabel(c) }}</span>
           <span class="node-card__field">{{ t('nodes.concurrency') }} {{ c.effective_concurrency }}</span>
           <span class="node-card__field">{{ t('nodes.lastChecked') }} {{ relativeTime(c.health_checked_at) }}</span>
         </div>
