@@ -30780,3 +30780,219 @@ if !s.Enabled() || tenantID == "" || tenantID == "default" {
    要不要改是**属主的商业决定**，不是缺陷。
 4. 全部为**只读**测量；**生产零写入**。
 
+
+### §9.256 手验 53 处「不可静态解析」：**其中 29 处现在就在读 v1，而「12 处」桶一处都不算**
+
+> 本节把 §9.254 留下的「53 处一条未手验」清掉。生产 252 与本地真库**全部只读，零写入**。
+> 本轮唯一的代码改动是**给审计工具补一道钉住快照的门**（见 §9.256.6），
+> **没有碰任何读方或写方** ⇒ 门基线沿用 §9.252.4 实测值。
+
+#### §9.256.0 先收回我自己在本节中途下的一个判断
+
+我一度判定清单里 `admin/logs.go` 与 `admin/usage_enhanced.go` 两条是
+「**自信的错**」（`Verdict: canonical-only` 而实际读 v1 臂）。
+**读完词表注释后撤回**：第 84-87 行明写
+
+> `verdictCanonicalOnly`：读 canonical 视图或会话族。
+> ⚠ **「读 canonical 视图」不等于「退役后照常工作」**：视图的 v1 臂在 DROP 时会消失。
+
+⇒ **标签与散文都对**，`logs.go` 那条的 Consequence 原文就写着
+「默认支是 canonical 视图的 v1 臂……DROP 后……不是缺列，是少行」。
+**改它是多余的，而且会把一条正确的判定改成更弱的措辞。**
+
+★ 这与 §9.247.1「假证人」、§9.255.1「只读了 legacy 段」同族：
+**判决「某处写错了」之前必须先读清那处的判据定义是什么。**
+
+#### §9.256.1 手验方法与逐条结论
+
+工具报出的 53 处，操作数分三类：`(...)`（跨包调用，36 处）、
+具名局部变量（`logsFrom` / `baseTable` / `src.TurnsTable` 等，10 处）、
+表名循环变量（7 处）。逐个打开所在 SQL 看 `FROM`/`JOIN`，再顺着
+切换层函数读它的两支。**结果：**
+
+| 归类 | 处数 | 解析到（**当前默认配置下**） |
+|---|---:|---|
+| **A 读 v1 bodies 视图** | **19** | `request_logs_bodies_with_current_month`（`SessionBodiesSourceSQL()` 默认支） |
+| **B 读 v1 turns 兼容视图** | **7** | `request_logs_with_current_month`（`logsSourceFromSQL()` 默认支 6 处 + `planCostTrend().BaseTable` 1 处） |
+| **C 读 v1 基表** | **3** | `request_logs_hot`（`settleSourceFor()` 在写门开启时） |
+| D 会话族原生 | 12 | `SessionFamilyTurns*SQL()` |
+| E 与 v1 无关 | 12 | `credentials` / 分区表 / `request_stats_*` / `passive_probe_state` / `GuardStateTable` 等 |
+
+**A 类 19 处**：`admin/auto_title_generator.go:838`、`compression_stats.go:53/144/269`、
+`logs_summary.go:199/261`、`memora_handlers.go:792`、`no_topic_session.go:137/319`、
+`session_compare.go:898/902`、`session_export.go:226`、`session_sanitize_matches.go:225`、
+`session_title.go:189`、`domains/sessionforensics/export.go:47/67`、
+`domains/sessionsummary/summarizer.go:644/689`、`system_prompt_prefix.go:175`。
+**B 类 7 处**：`admin/logs.go:632/633/675/677/726/730`、`admin/usage_enhanced.go:168`。
+**C 类 3 处**：`bg/auto_route_settle_sql.go:73/99/120`。
+
+#### §9.256.2 ★ 真正的问题不是「清单写错」，是**「12 处」这个桶的语义**
+
+- 「解析到 v1 宽族：**12 处 / 6 个文件**」这个数字**本身没错** ——
+  它数的是**可静态解析的 v1 基表读点**，12 是对的。
+- ★ **但它不能当「v1 读方清单」用**：A/B 两类共 26 处读的兼容视图
+  **今天仍然含活的 v1 UNION 臂**，C 类 3 处直接读 `request_logs_hot` 基表
+  ——**它们一处都不进那个桶**。
+- ⇒ **§9.254 拿「12 处」当 D32/D35 的输入，少算了 29 处 / 约 20 个文件。**
+  真实读方面是 **12 + 29 = 41 处**。
+- 根因是**分类器的分辨率**：`calleeName` 对任何带包前缀的调用返回 `""`
+  （`resolve.go:641-644`），于是 19 处 bodies 读方全部落到「不可判定」；
+  而 `logsSourceFromSQL()` / `planCostTrend()` 的两支返回**都**是字面量，
+  本可解析，但因为它们是**跨包/间接**的，本工具按「宁可不可判定也不猜」放弃。
+- **这是安全方向的漏报**（多报为「未知」，不是漏报为「安全」），但**代价是把
+  「已知有风险」记成「未知」**，而 §9.254 正是拿这个桶估工作量的。
+
+#### §9.256.3 ★ 顺带查实：默认的 bodies 视图是**纯 v1**，没有会话臂
+
+`request_logs_bodies_with_current_month` 的真库定义（`pg_get_viewdef`）：
+
+```
+has_session_arm | deflen
+                0 | 456
+```
+
+它只有 `request_logs_bodies_hot ∪ request_logs_bodies` **两臂**，
+**与 turns 视图不同**（后者部署形态是 `session_turns(_hot) ∪ v1 臂` 三臂，
+`db/request_logs_view_schema.go:207`）。⇒ **bodies 侧没有回退到会话族的通道。**
+
+**覆盖面实测（本地真库，只读）**：
+
+| 口径 | 值 |
+|---|---:|
+| `session_turns` 行 / request_id | 1,693,480 |
+| 其中**在默认 bodies 视图里查不到 body** 的 | **114,695（6.77%）** |
+| 同口径在 `session_bodies` 里查不到的 | **0（100% 覆盖）** |
+| `request_logs_bodies_with_current_month` 行 | 2,261,719 |
+
+⇒ ★ **`storage.session_bodies_native_read` 这个开关的方向被普遍搞反了**：
+打开（`session_bodies`）不是风险，是**修复**——它把那 114,695 条当前读不到的
+body 全部补上，且**一条不多、一条不少**（缺 0）。关闭（默认，v1 视图）才是在丢。
+
+#### §9.256.4 ★ 顺带定位了 §9.238 那个「5 天 v1 静默停写」——**不是一个事件，是两条腿错时**
+
+本地真库逐日实测：
+
+| 日 | `session_turns` | `request_logs` | `request_logs_bodies` |
+|---|---:|---:|---:|
+| 2026-09-06 | 15,991 | **33,394** | **0** |
+| 2026-09-07 | 70,757 | **0** | 32,636 |
+| 2026-09-08 | 25,795 | **0** | 47,003 |
+| 2026-09-09 | 28,945 | **0** | 64,405 |
+| 2026-09-10 | 29,585 | **0** | 45,745 |
+| 2026-09-11 | 10,478 | 2,353 | 22,858 |
+| 2026-09-12 | 8,532 | 24,818 | 24,818 |
+
+**精确边界（微秒级）**：
+
+- `request_logs` 空洞前最后一行：**2026-09-06 21:00:27.656782+08**
+- `request_logs` 空洞后第一行：**2026-09-11 21:21:10.742851+08**
+  ⇒ 空洞 = **5 天 0 时 20 分 43 秒**（§9.238 记的「5 天」得到确证）
+- `request_logs_bodies` **首行**：**2026-09-07 05:43:40.233746+08**
+  ⇒ bodies 腿在主腿死后 **8 小时 43 分**才活过来
+
+★ **两条腿在 2026-09-06 21:00 / 09-07 05:43 之间对调**：主腿哑掉时 bodies 腿还没写，
+bodies 腿活过来后主腿还哑了 4 天。**它们由不同的代码路径写**，
+所以「一条腿停了」不会带着另一条一起停。
+
+**⇒ 进程没有停**：空洞期间 `session_turns` 每天都有 25,795–70,757 行。
+**这不是服务中断，是 v1 主写腿单独失效**（`request_logs_hot` → 分区父表
+的**提升作业**中断，父表是提升目标，见 `bg/metrics.go:150-178` 的
+`llm_gateway_hot_table_promote_*` 三个指标）。
+
+**★ v1 已永久丢掉的量**：
+
+- 09-07→09-10：**155,082 条 turn 在 `request_logs` 里完全没有对应行**
+  （70,757+25,795+28,945+29,585）—— 这四天的 v1 主表是空的，
+  **`session_turns` 是这些请求的唯一记录**。
+- 09-03→09-06：**58,198 条 turn 在 v1 bodies 里没有 body**
+  （16,498+13,938+11,771+15,991）。
+
+⚠ **机制仍未定位**：`settings_audit` 全表只有 **4 行、最早 2026-09-28**，
+**其覆盖面本身就到不了这个窗口** ⇒ **不能**据此归因到某次设置变更。
+且该表只记走管理 API 的改动，文件编辑/重启不会留痕。
+本节只把窗口钉死，**不主张成因**。
+
+#### §9.256.5 对退役决策的净影响（三条，都需属主拍板）
+
+1. ★ **退役工作量清单要按 41 处算，不是 12 处**（§9.256.2）。
+   D32/D35 的读方分档要重做，否则按 12 处排期会漏掉 29 处。
+2. ★ **`request_logs_bodies_with_current_month` 无会话臂**（§9.256.3）⇒
+   S4 停写后，**19 处默认 bodies 读方会立刻失去全部新请求的 body**
+   （不是「少一点」，是新行为 0，因为该视图停止增长且没有回退通道）。
+   ⇒ **这 19 处是停写前必须先切 `session_bodies_native_read` 的硬前置。**
+3. ★ **v1 已有 155,082 条主表行永久缺失、58,198 条 body 缺失**（§9.256.4）⇒
+   继续依赖 v1 的**任何**读方在 09-07→09-10 这段都是残缺的；
+   反过来，`session_turns` 在这段是完整的 ⇒ **这是支持退役的最强单条证据**。
+
+#### §9.256.6 本轮唯一的代码改动：给审计工具补一道**钉住快照**的门
+
+**先查已有门是不是真在守**（本会话纪律）：已有两道相关门 ——
+`TestIndirectSiteManifestCoversEveryReportedFile`（清单 ⇄ 工具双向核对）与
+`TestRepoAuditIsNotSilentlyVacuous`。**查完结论是：这一类漂移它们都拦不住。**
+
+- 头部那张三桶表是**纯注释**，注释不会红。它已经漂了两次：
+  §9.226.3 快照写 67 处/35 文件（unresolved 25），连那句「已过期」标注
+  自己也过期了 —— 实测 **70 处、unresolved 26 文件/53 处**。
+- `TestRepoAuditIsNotSilentlyVacuous` **只挡 `total == 0`**。
+  ⚠ 实测（MUT-2）：把 `AuditRepo` 的 Walk 改成跳过 `domains/`（漏扫 7 处），
+  这道门**仍然 PASS**（63 ≠ 0）⇒ **部分漏扫它完全看不见。**
+
+**新增** `TestDocumentedSnapshotMatchesMeasurement`：把三桶的
+文件数/处数/总数与 `documentedSnapshot` 常量逐项比对，**任一项不符即红**，
+错误信息**逐项报差值并按方向给处置指引**（变大 vs 变小分别怎么办）。
+只做一件事：保证「人至少被叫过来看一眼」，不替人判断漂移是好是坏。
+
+**变异台账（两条都核对了红在哪条断言，且同批次其余 13 道门全绿）**：
+
+| 变异 | 预期 | 实测 |
+|---|---|---|
+| **MUT-1** `UnresSites: 53 → 52` | 红 | ✅ 红**且仅**红在 `TestDocumentedSnapshotMatchesMeasurement`，逐项报 `unresolved 处数: 文档 52 → 实测 53 (+1)`；其余 13 道 PASS |
+| **MUT-2** `AuditRepo` Walk 跳过 `domains/` | 红 | ✅ 红在 2 道（清单门 + 新门）；新门逐项报 **3 项负向漂移**（总数 -7、unresolved 文件 -5、处数 -7），正是错误信息里写「变小要先怀疑扫描范围」的那种形态；`TestRepoAuditIsNotSilentlyVacuous` **仍 PASS** |
+| 还原 | 绿 | ✅ 全 14 道 PASS，`gofmt -l` 空输出 |
+
+⚠ **MUT-2 是这道门存在的理由**：它同时证明了「已有门看不见部分漏扫」
+与「新门看得见」，而且**新门是在 `domains/` 真的被漏掉的情况下红的**，
+不是靠改一个数字造出来的。
+
+#### §9.256.7 🛑 更正本会话自己记的基线：**admin 是 FAIL 7，不是 6**
+
+本轮为了不靠推理声称「基线没漂」，**实跑了** `db` 与 `admin` 两道门。
+结果 `admin` 报 **FAIL 7**，比 §9.252.4 记录的 6 多一条：
+
+```
+--- FAIL: TestRequestLogsReadInventoryIsComplete (0.53s)
+    request_logs_read_inventory_test.go:239: requestLogsReadInventory is stale — every count derived from it is stale too:
+          cmd/tools/validate_sessions_v2/loader.go: table says 6, code has 5
+```
+
+**先排除是不是本轮造成的**（而不是先辩解）：
+
+| 检查 | 结果 |
+|---|---|
+| 本轮改动落在哪个包 | `cmd/tools/sql_source_indirection_audit`，**且只改 `manifest_test.go` 一个测试文件** ⇒ 不可能影响 `admin` |
+| `loader.go` 的最近改动 `7e9263123` / `e387213b3` / `99d625f33` | 三者**都已是基线 `263ee5d00` 的祖先** |
+| `263ee5d00 → HEAD` 之间改动的文件 | 只有 2 个（`scripts/apply-db-revision-sequence_test.sh` + 一份审计），**都不涉及它** |
+| ★ 在 `263ee5d00` 上单独实跑 | **同样红，消息逐字相同**（`table says 6, code has 5`） |
+
+⇒ **结论：它在基线上就是红的，§9.252.4 的「6」是漏记。**
+**真实基线 = db FAIL 2 + admin FAIL 7 = 9 个失败名。**
+
+⚠ **这正是本会话已经写进记忆的那条纪律，而我自己在被记下来之前就犯了一次**：
+§9.252.4 的基线是**从可能被截断的输出里读出来的**，
+`--- FAIL` 行被吞掉，于是「6」被当成全量。
+**记忆里那条规则的来源，恰恰就是这次漏记本身。**
+
+★ **代价的量级**：一个漏记的失败名，被后续四轮（§9.253 / §9.254 / §9.255 / §9.256）
+当作「与基线逐条相同，无漂移」引用了四次。
+**「只比数量」在这里恰好也会暴露**（6≠7），但**只看数量不看名字**的习惯
+会让下一次真正的「新失败」被吸收成「旧常态」。
+
+**修正后的门基线（2026-10-06 实测，逐条列名）**：
+
+| 包 | 结果 | 失败名 |
+|---|---|---|
+| `db` | **FAIL 2** | `TestRepointValueFidelity` · `TestRetirementBlockedByUnrunBackfills` |
+| `admin` | **FAIL 7** | `TestColumnarParentTwoSurfaceSetopShape_RealDB` · `TestReportRollup_HTTPContract` · `TestV1BodiesReadersAreAssessed` · **`TestRequestLogsReadInventoryIsComplete`** · `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable` · `TestSessionFinalSuccessBacklogIsClosed` · `TestProjectTasksSkipsNullTaskID` |
+| `cmd/tools/sql_source_indirection_audit` | **PASS 14 / FAIL 0** | （本轮新增 1 道门） |
+
+⇒ 后续任何轮次引用基线时**必须用这一份**，并**逐条列名**。
