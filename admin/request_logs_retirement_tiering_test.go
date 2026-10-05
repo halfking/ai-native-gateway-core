@@ -387,7 +387,7 @@ func TestV1ReaderTieringDomainIsBothPopulations(t *testing.T) {
 
 // TestV1ReaderTieringEveryFileProvenToReadV1 让分档表**自证**总体。
 //
-// 一张 115 行的手写表，最典型的腐烂形态是某个文件早就改指会话源了，
+// 一张 116 行的手写表，最典型的腐烂形态是某个文件早就改指会话源了，
 // 而它还留在表里被当成退役工作量。这里对每个文件独立取证：剥掉 Go 与 SQL 注释后，
 // 它必须仍然含 v1 关系的 `FROM/JOIN` 字面量，或含一个 v1 关系名字面量。
 //
