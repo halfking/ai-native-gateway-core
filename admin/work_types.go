@@ -840,6 +840,12 @@ func (h *WorkTypeHandlers) putRoutes(w http.ResponseWriter, r *http.Request, key
 	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
+	// Full replace for this key, deliberately unqualified by source: an
+	// operator editing a key in the UI is claiming it. Restricting this
+	// delete to acc-owned rows would leave synced rows the operator can
+	// neither see as theirs nor remove. Rows written below are stamped
+	// source='operator' so a later ACC sync leaves them alone (migration
+	// 831) — the asymmetry is intentional.
 	if _, err := tx.Exec(ctx, `DELETE FROM work_type_model_route WHERE work_type_key = $1`, key); err != nil {
 		writeAutoRouteInternalErr(w, err)
 		return
@@ -855,8 +861,8 @@ func (h *WorkTypeHandlers) putRoutes(w http.ResponseWriter, r *http.Request, key
 			tier = "secondary"
 		}
 		_, err := tx.Exec(ctx, `
-				INSERT INTO work_type_model_route (work_type_key, canonical_name, weight, min_score, enabled, tier, task_quality_score)
-				VALUES ($1, $2, $3, $4, $5, $6, $7)
+				INSERT INTO work_type_model_route (work_type_key, canonical_name, weight, min_score, enabled, tier, task_quality_score, source)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, 'operator')
 			`, key, rt.CanonicalName, wt, rt.MinScore, rt.Enabled, tier, rt.TaskQualityScore)
 		if err != nil {
 			writeAutoRouteInternalErr(w, err)
