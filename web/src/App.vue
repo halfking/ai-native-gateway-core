@@ -16,6 +16,10 @@ import AppTopbar from './components/shell/AppTopbar.vue'
 // 且取不到时也要显示（见 composable 的三态说明）。
 import V1DataFrozenBanner from './components/shell/V1DataFrozenBanner.vue'
 import { refreshV1DataHorizon } from './composables/useV1DataHorizon'
+// 2026-10-05 部署序号更新提示（docs/UI规范/18 §4 / §10.3 步骤 4）：
+// 桌面侧只接 deploy-seq 检查 + 非阻塞提示条，不接 SW。
+import DeploySeqUpdateBanner from './components/shell/DeploySeqUpdateBanner.vue'
+import { useDeploySeqUpdate } from './composables/useDeploySeqUpdate'
 // 2026-09-13 方案 §4.4：移动端抽屉导航，与 AppTopbar 汉堡按钮共享开关状态
 import AppNavDrawer from './components/ui/AppNavDrawer.vue'
 import { useBreakpoint } from './composables/useBreakpoint'
@@ -38,6 +42,7 @@ const { isCompact } = useWindowClass()
 const accountSheetOpen = ref(false)
 const shellHealth = ref<'ok' | 'down' | 'unknown'>('unknown')
 const { showLoginModal, openLogin, closeLogin } = useLoginModal()
+const deploySeqUpdate = useDeploySeqUpdate()
 const showChangePassword = ref(false)
 const showUserInfo = ref(false)
 const passwordSuccessMessage = ref('')
@@ -88,6 +93,9 @@ onMounted(async () => {
   // 拉一次「v1 数据地平线」告示。失败**不**阻塞挂载：横幅自己会显示
   // 「无法确认状态」而不是消失 —— 未确认不等于正常。
   void refreshV1DataHorizon()
+  // 部署序号检查（UI规范 18 §4）：首查延迟晚于首屏落地，检查失败不打断页面。
+  // 三态（登录/游客/hydrating）都检查——停在登录页的设备也该收到更新提示。
+  deploySeqUpdate.start()
   brandLogo.value = logoSrc(detectTheme())
   logoObserver?.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
   // 2026-07-10: Auth hydration — probe /api/auth/me if JWT not already in localStorage.
@@ -351,6 +359,8 @@ async function handleChangePasswordSuccess() {
   </div>
   <ChangePasswordDialog v-model="showChangePassword" :forced="mustChangePassword" @success="handleChangePasswordSuccess" />
   <UserInfoDialog v-model="showUserInfo" />
+  <!-- 部署序号更新提示条（fixed 悬浮，不参与布局流；三态布局共用一个实例） -->
+  <DeploySeqUpdateBanner />
 </template>
 
 <style scoped>
