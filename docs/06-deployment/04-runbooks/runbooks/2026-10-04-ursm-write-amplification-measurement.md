@@ -5402,3 +5402,44 @@ SELECT session_turns.* FROM session_turns …
 
 ⇒ 建议加一道门禁止跨这两张表的 `SELECT *`（或要求显式列名）。
 **本轮未加**——它会扫到若干既有写法，需要先确认没有现存调用点。
+
+### 10.46.3 ✅ 覆盖漏洞已补：把反连接分支**造出来**再比（只读，零写入）
+
+§10.46.1 的证明只覆盖了「反连接为空操作」。缺口是：反连接真正起作用的形态
+（turn 刚被归档、hot 与月分区短暂并存）在生产数据里**不存在**。
+
+**不必去 scratch 库，也不必写生产**——用一个 CTE 把归档行**模拟成同时在 hot 里**：
+
+```sql
+WITH sim_hot AS (SELECT tenant_id, session_id, request_id, turn_no FROM session_turns),
+     view_max AS (SELECT tenant_id, session_id, MAX(turn_no) AS mx
+                    FROM session_turns_with_current_month GROUP BY 1,2),
+     raw_max  AS (SELECT tenant_id, session_id, MAX(turn_no) AS mx
+                    FROM (SELECT … FROM session_turns_hot
+                          UNION ALL SELECT … FROM session_turns
+                          UNION ALL SELECT … FROM sim_hot) u   -- ← 制造最大重复
+                    GROUP BY 1,2)
+SELECT … FROM view_max v FULL JOIN raw_max r USING (tenant_id, session_id);
+```
+
+`REPEATABLE READ READ ONLY` 事务内（CTE 从不落表，生产零写入）：
+
+| | 值 |
+|---|---|
+| 模拟的 hot 行 | **825,026**（把全部归档行都复制一份进 hot） |
+| 比对组数 | **193,258** |
+| **mismatched** | **0** |
+| only_in_raw / only_in_view | 0 / 0 |
+
+⇒ **即使每一行归档数据都同时存在于 hot（最大可能的重复形态），
+`MAX(turn_no)` 仍然逐 (tenant, session) 相同。**
+
+★ 这个结果**不是论证出来的，是量出来的**。它把 §10.46.1 的覆盖漏洞补上了：
+反连接只决定「返回哪一份副本」，而 `MAX` 对重复副本不敏感——
+现在有全量重复态下的逐值比对作为依据。
+
+⚠ 仍然**不构成「可以改了」**：
+- 收益要按**当前速率**判（样点 B）；
+- 门钉住了 SQL 片段（§10.45.4）；
+- 而真要改，应当改**查询**（只取 `tenant_id/session_id/turn_no` 三列直接读
+  hot + 当月分区），而不是改**视图**——视图有多处消费者。
