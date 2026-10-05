@@ -5346,3 +5346,59 @@ SELECT session_turns.* FROM session_turns …
 - 收益判据用**当前速率**（样点 B），不用累计值。
 
 ⇒ 本节**只做定位与论证**，未改任何代码，未动生产。
+
+---
+
+## 10.46 §10.45 的等价性证明（全量，只读）+ 顺带发现一个 latent 陷阱
+
+### 10.46.1 等价性结果
+
+`BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY` 内，全量逐 `(tenant_id, session_id)`
+比对「走视图」与「只读 `session_turns_hot` ∪ `session_turns`」的 `MAX(turn_no)`：
+
+| | 组数 | 不一致 | 只在 raw | 只在 view |
+|---|---|---|---|---|
+| 193,029 组 | 193,029 | **0** | 0 | 0 |
+
+★ 但**这个证明有覆盖漏洞，必须说清楚**——覆盖面自检显示：
+
+| 自检项 | 读数 |
+|---|---|
+| `session_turns_hot` 行数 | 3,949 |
+| `session_turns`（归档）行数 | 825,026 |
+| **同时存在于两侧的 hot 行** | **0** |
+| 因反连接而从视图里消失的 hot 会话 | 0 |
+
+⇒ **反连接当前一次都没触发**，所以上表只证明了「反连接为空操作时两者一致」——
+这是**预期内的**结果，不构成「反连接可安全去掉」的证据。
+反连接真正起作用的场景（turn 刚被归档、hot 与月分区短暂并存）
+**在当前生产数据里不存在，无法从这里证明**。
+
+⇒ 要证那个分支，只能在 **scratch 库造出「同一行同时在 hot 与归档」的形态**再比。
+这是下一步，也是**唯一**能把这个优化从「看起来对」变成「证明过」的动作。
+
+### 10.46.2 ★ 顺带发现：`hot` 与父表**列序不同**，`SELECT *` UNION 会按位置配错
+
+查等价性时 `SELECT * FROM session_turns_hot UNION ALL SELECT * FROM session_turns`
+直接报错：`UNION types text and timestamp with time zone cannot be matched`。
+
+不是列集不同（查过：**零列缺失、零类型不同**），而是**列序不同**：
+
+| 位置 | `session_turns_hot` | 同位置的 `session_turns` |
+|---|---|---|
+| 6 | `project_id` | `ts` |
+| 7 | `namespace` | `submit_mode` |
+| 8 | `parent_request_id` | `compression_applied` |
+| … | … | … |
+
+★ `SELECT *` 的 UNION ALL 是**按位置**配列，不是按名字。
+
+- 本次它**报了错**（因为第 6 位 text vs timestamptz 不兼容）——运气好；
+- 若两侧同位置的类型碰巧兼容，它就会**静默返回错列的联合**，
+  而这种结果不会报错、不会崩，只会让下游读到错数据。
+
+视图本身是**显式列名**写的（`pg_get_viewdef` 里逐列列出），所以视图是安全的。
+风险在于**将来任何人**写 `SELECT *` 跨这两张表。
+
+⇒ 建议加一道门禁止跨这两张表的 `SELECT *`（或要求显式列名）。
+**本轮未加**——它会扫到若干既有写法，需要先确认没有现存调用点。
