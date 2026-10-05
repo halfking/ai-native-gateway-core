@@ -5124,3 +5124,63 @@ AND COALESCE(st.n_mod_since_analyze, 0) > 0
 - 结构性结论（10.42.2）**已成立**。
 - 冻结判定（10.42.3）**待样点 B**。已排 22 分钟后取。
 - **未改任何代码，未动生产。** 10.42.5 是提案不是结论。
+
+---
+
+## 10.43 ★★ 效率侧真正的第一项不是 analyze，是会话写路径的 advisory 锁
+
+按 pss 累计排名定位（**只用于定位，不当现状**），第 1 名不是 analyze：
+
+| 累计时间 | 调用数 | 均值 | 语句 |
+|---|---|---|---|
+| **301,853.7 s** | **3,027,459** | **99.7 ms** | `SELECT pg_advisory_xact_lock(public.session_turns_advisory_lock_key($1,$2))` |
+| 134,577.6 s | 187,433 | 718.0 ms | `WITH latest_bucket AS …`（816 族） |
+| 122,976.1 s | 6,301 | 19,516.9 ms | `REFRESH MATERIALIZED VIEW CONCURRENTLY routing_analytics_7d` |
+| 91,610.4 s | 960 | 95,427.5 ms | `SELECT analyze_llm_gateway_table_stats($1)` |
+
+锁那一行占 25 天窗口全库时间约 **14%**，是 analyze（4.24%）的 **3.3 倍**。
+
+#### 10.43.1 先排除最像的那个缺陷：**锁粒度假共享**
+
+```sql
+CREATE FUNCTION public.session_turns_advisory_lock_key(p_tenant_id text, p_session_id text)
+RETURNS bigint … SELECT hashtextextended(p_tenant_id || ':' || p_session_id, 0);
+```
+
+64 位哈希的 `bigint` 键。10⁶ 会话下的生日碰撞概率约 **2.7×10⁻⁸**。
+
+⇒ **不存在「不同会话互相阻塞」**。竞争只发生在**同一 (tenant, session)** 上。
+这条值得先排掉：它是最容易被误判成「锁写错了」的方向。
+
+#### 10.43.2 锁为什么持有那么久（读码结论，非推测）
+
+`domains/session/v2/turn_writer.go:286` `AppendTurnInTx`：
+
+1. `LockSessionInTx` —— **在调用方事务的开头**取 `pg_advisory_xact_lock`；
+2. `appendTurnInLockedTx` —— `MAX(turn_no)` + `INSERT … ON CONFLICT DO NOTHING`；
+3. **提交点不在本函数内**：调用方还要把 bodies 写进同一事务
+   （spec §6.2「turn 与 bodies 必须同事务，失败时整体可重试，无孤儿 turn」）。
+
+⇒ `pg_advisory_xact_lock` 是**事务级**的，锁一直持有到 commit/rollback。
+**锁持有时长 = 整个 turn+bodies 事务的时长**，而不是「取 turn 号」那一小段。
+
+#### 10.43.3 未证的部分（如实登记，不要当结论）
+
+- 均值 99.7 ms 里**有多少是锁等待**、多少是别的开销：未分离。
+  `pg_stat_statements.total_exec_time` 把等待算进去，但没有单独的「等待」列。
+- 同会话并发到底有多高：**未量**。3,027,459 次 / 25 天 ≈ 3.5 次/秒，
+  若平均每会话串行则不该有等待。
+- **当前值**：未测（同样是 25 天累计，不能当现状）。
+- 事务里除 bodies 外还做了什么、能否把取锁挪到更后面：未逐行读完。
+
+⇒ **不动它。** 在「等待占比 / 同会话并发度 / 当前速率」三个数出来之前，
+任何优化都是猜。而且这是**正确性设计**（原子写 turn+bodies），
+不是缺陷——为省 14% 去削弱原子性，方向就反了（§10.35 的同款教训：
+把「代价大」误读成「有问题」）。
+
+#### 10.43.4 下一步该量的三个数（都是只读）
+
+1. `pg_stat_activity` 采样 `wait_event_type='Lock'` 的占比与持续时间；
+2. 按 session 维度统计近 N 分钟的 turn 写入次数，看同会话并发度；
+3. 与 §10.42 样点 B **同一个时刻**再采一次 pss，顺带把本项的**当前速率**一起算出来
+   （累计排名已反复吃过亏，本节不再拿它当现状）。
