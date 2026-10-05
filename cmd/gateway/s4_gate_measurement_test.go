@@ -13,6 +13,20 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// v1DeadFrom / v1DeadTo bound the window measured in §9.238: the last v1 row
+// before the outage and the first one after it, to the microsecond.
+//
+// They are constants rather than derived-from-now() on purpose. Deriving them
+// would make the cross-tab below measure a different window every run, and a
+// "the no-v1-row turns concentrate in the dead window" claim that drifts with
+// the clock is not a claim. If a future v1 outage is found, add it as its own
+// pair — two windows are two windows, and merging them hides which one is
+// doing the work.
+const (
+	v1DeadFrom = "2026-09-06 21:00:27.656782+08"
+	v1DeadTo   = "2026-09-11 21:21:10.742851+08"
+)
+
 // S4 gate measurement (audit §9.163).
 //
 // "Can S4 be opened?" is the first gate before request_logs can be retired, and
@@ -630,6 +644,151 @@ func TestS4GateMeasurement(t *testing.T) {
 		t.Logf("RETIREMENT PREREQUISITE met: both backfilled columns are populated on the session side.")
 	}
 	t.Logf("  ⇒ s4_ready is necessary but NOT sufficient. Read it together with the line above.")
+
+	// ---- §9.240: HOW MUCH can the backfill ever reach? ------------------------
+	//
+	// The line above says the columns are empty and fillable only from v1. It
+	// does not say **how much** v1 still has, and that number is the one an
+	// owner needs in order to weigh "run the backfill, then drop v1" against
+	// "just drop v1". It is not derivable from the fill rates either: v1 being
+	// 100% populated for is_final_success says nothing about whether each claim
+	// still has a session twin to land on.
+	//
+	// ⚠ Two things this block must not do. It must not read the PARENT table
+	// only — request_logs_hot and session_turns_hot are separate, disjoint
+	// tables (§9.160.7), and the claims being counted mostly live in the hot
+	// side. And it must not join on v1's `id`: that is a bigint sequence, while
+	// the business key on both families is `request_id` (§9.238).
+	var v1Claims, claimsWithTwin, claimsNoTwin, v2AlreadyMarked int64
+	if err := tx.QueryRow(ctx, `
+		WITH v1claim AS (
+		  SELECT request_id FROM request_logs_hot
+		    WHERE is_final_success IS TRUE AND COALESCE(gw_session_id,'') <> ''
+		  UNION ALL
+		  SELECT request_id FROM request_logs
+		    WHERE is_final_success IS TRUE AND COALESCE(gw_session_id,'') <> ''
+		), v2turn AS (
+		  SELECT request_id FROM session_turns_hot
+		  UNION ALL
+		  SELECT request_id FROM session_turns
+		)
+		SELECT
+		  (SELECT count(*) FROM v1claim),
+		  (SELECT count(*) FROM v1claim c JOIN v2turn t ON t.request_id = c.request_id),
+		  (SELECT count(*) FROM v1claim c WHERE NOT EXISTS
+		     (SELECT 1 FROM v2turn t WHERE t.request_id = c.request_id)),
+		  (SELECT count(*) FROM session_turns_hot WHERE is_final_success IS TRUE)
+		    + (SELECT count(*) FROM session_turns WHERE is_final_success IS TRUE)`).
+		Scan(&v1Claims, &claimsWithTwin, &claimsNoTwin, &v2AlreadyMarked); err != nil {
+		t.Logf("  (could not size the is_final_success backfill: %v)", err)
+	} else {
+		t.Logf("BACKFILL CEILING is_final_success: %d v1 claim(s), %d have a session twin, "+
+			"%d do not; session side already marked %d.",
+			v1Claims, claimsWithTwin, claimsNoTwin, v2AlreadyMarked)
+		if v1Claims > 0 {
+			t.Logf("  ⇒ a backfill can reach %.2f%% of the claims; the %d claim(s) with no twin "+
+				"are **permanently** unfillable once v1 is dropped.",
+				100*float64(claimsWithTwin)/float64(v1Claims), claimsNoTwin)
+		}
+	}
+
+	var v2Turns, protoFillable, protoNoV1Row int64
+	if err := tx.QueryRow(ctx, `
+		WITH v1 AS (
+		  SELECT request_id, client_protocol FROM request_logs_hot
+		  UNION ALL
+		  SELECT request_id, client_protocol FROM request_logs
+		), v2 AS (
+		  SELECT request_id FROM session_turns_hot
+		  UNION ALL
+		  SELECT request_id FROM session_turns
+		)
+		SELECT
+		  (SELECT count(*) FROM v2),
+		  (SELECT count(*) FROM v2 t JOIN v1 r ON r.request_id = t.request_id
+		     WHERE COALESCE(r.client_protocol,'') <> ''),
+		  (SELECT count(*) FROM v2 t WHERE NOT EXISTS
+		     (SELECT 1 FROM v1 r WHERE r.request_id = t.request_id))`).
+		Scan(&v2Turns, &protoFillable, &protoNoV1Row); err != nil {
+		t.Logf("  (could not size the client_protocol backfill: %v)", err)
+	} else if v2Turns > 0 {
+		t.Logf("BACKFILL CEILING client_protocol: %d of %d turn(s) = %.2f%%; %d turn(s) have no v1 "+
+			"row at all and can never be filled.",
+			protoFillable, v2Turns, 100*float64(protoFillable)/float64(v2Turns), protoNoV1Row)
+	}
+	// ★ Those %d turns are not a random gap. §9.238 measured a 5-day window in
+	// which v1 wrote **zero** rows while session_turns kept writing, and the
+	// cross-tab below is the confirmation: the no-v1-row turns concentrate
+	// almost entirely inside that window. So the ceiling is set by v1 having
+	// been dead, not by v1 never having collected the value — which is the
+	// difference between "run the backfill" and "run the backfill and accept a
+	// known hole".
+	//
+	// The window bounds are the two measured edges, not rounded dates:
+	// 2026-09-06 21:00:27.656782+08 (last v1 row) → 2026-09-11 21:21:10.742851+08
+	// (first v1 row after). Rounding them to whole days would put ~46 hours of
+	// healthy-v1 time inside the "dead" window and quietly deflate the effect
+	// being measured.
+	type deadCell struct {
+		noV1Row, inWindow bool
+		turns             int64
+	}
+	deadRows, err := tx.Query(ctx, `
+		WITH v1 AS (
+		  SELECT request_id FROM request_logs_hot
+		  UNION ALL
+		  SELECT request_id FROM request_logs
+		), v2 AS (
+		  SELECT request_id, ts FROM session_turns_hot
+		  UNION ALL
+		  SELECT request_id, ts FROM session_turns
+		)
+		SELECT NOT EXISTS (SELECT 1 FROM v1 r WHERE r.request_id = t.request_id),
+		       (t.ts >= $1::timestamptz AND t.ts < $2::timestamptz),
+		       count(*)
+		FROM v2 t
+		GROUP BY 1, 2`, v1DeadFrom, v1DeadTo)
+	if err != nil {
+		t.Logf("  (could not cross-tab the v1 death window: %v)", err)
+		return
+	}
+	var cells []deadCell
+	for deadRows.Next() {
+		var c deadCell
+		if err := deadRows.Scan(&c.noV1Row, &c.inWindow, &c.turns); err != nil {
+			deadRows.Close()
+			t.Logf("  (cross-tab scan: %v)", err)
+			return
+		}
+		cells = append(cells, c)
+	}
+	deadRows.Close()
+	if err := deadRows.Err(); err != nil {
+		t.Logf("  (cross-tab iterate: %v)", err)
+		return
+	}
+	for _, c := range cells {
+		t.Logf("  §9.238 交叉表  no_v1_row=%-5v in_v1_dead_window=%-5v  turns=%d",
+			c.noV1Row, c.inWindow, c.turns)
+	}
+	var noV1InWin, noV1OutWin, v1InWin int64
+	for _, c := range cells {
+		switch {
+		case c.noV1Row && c.inWindow:
+			noV1InWin = c.turns
+		case c.noV1Row:
+			noV1OutWin = c.turns
+		case c.inWindow:
+			v1InWin = c.turns
+		}
+	}
+	if noV1InWin+noV1OutWin > 0 {
+		t.Logf("  ⇒ 无 v1 对应行的 turn 里 %.2f%% 落在 v1 死亡窗口内（窗口内 %d / 窗口外 %d）；"+
+			"窗口内**有** v1 对应行的 turn 只有 %d 条。",
+			100*float64(noV1InWin)/float64(noV1InWin+noV1OutWin), noV1InWin, noV1OutWin, v1InWin)
+		t.Logf("  ⇒ 回填上限是被 **v1 静默停写** 压住的，不是「v1 从没采到这个值」。" +
+			"这 5 天的缺口任何脚本都补不回来。")
+	}
 }
 
 // blockerSkippedByFirstGate restates, in SQL terms, the one question the shape
