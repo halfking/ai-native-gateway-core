@@ -719,3 +719,66 @@ catch + `createError` 提示位 ⇒ **同页两套标准，是漏写不是有意
 `web-mobile/` 实测：`vue-tsc -b` 通过；`vitest run` **213 用例 / 29 文件全绿**
 （新增 KeysView 5 条）；`npm run css:check` 通过（32 文件）；`npm run build` 通过；
 **连跑 15 次全绿**。
+
+
+### 11.27 触控热区 R1：`web-mobile/` 此前**无门**，而本专题自己就违反了 5 处
+
+R1 原文（§4-R1 × 06 §7）：「**新增**触控控件一律 ≥48 CSS px；44px 是存量控件下限，
+不是新标准。」桌面 `web/` 侧有门（10 §4.6.5 记「已加门禁」），**`web-mobile/` 没有**。
+
+实测后果：本专题 2026-10-06 新增的 4 个视图里，**5 处 chip 全部低于 48px**：
+
+| 位置 | 原值 | 所属 |
+| --- | --- | --- |
+| `.logs__chip`（窗口筛选） | 36px | §11.15 |
+| `.logs__chip--sm`（状态筛选） | 32px | §11.15 |
+| `.providers__chip` | 36px | §11.6 |
+| `.usage__dim` | 36px | §11.20 |
+| `.routing__go` | 40px | §11.2 |
+
+根因与 §11.25 的 dispose 缺口同族：**规范写了、没人验 ⇒ 等于没有**。而且这些 chip
+是**自定义选择器**，绕开了 `shared.css` 的 `.btn`（44px 存量基线），
+所以连「复用 .btn 就自动合规」这条兜底也没有。
+
+已修 5 处 + 新增两道门：
+
+#### ① `scripts/verify-touch-targets.mjs`（接进 `npm run build` 前置）
+
+扫 `src/views` + `src/components` 下 `.vue` 的 `<style scoped>`，报出
+`文件:行号  选择器  min-height: Npx`。
+
+**不扫 `shared.css` 的 `.btn` / `.btn--sm`**：它们是 44px 的**存量**基线，R1 明确
+「44px 是存量下限，不是新标准」。把存量也扫进来，这道门第一天就红 ⇒ 大家学会忽略它
+——**门一旦变成背景噪音就等于没有**。存量豁免用显式 `/* R1-legacy */` 标注，
+留下可审计痕迹而不是悄悄放过（当前 `UsageView.usage__tab` 即此例）。
+
+#### ② `scripts/verify-touch-targets.selftest.mjs` —— 给门自己搭前提
+
+照 `settle-selftest.mjs` 的先例：「只测该过的」是判据自证的陷阱。一道**只会放行**的
+门和一个坏掉的门，在绿灯时完全无法区分。样本覆盖 5 组正反两侧。
+
+★ **这道自测立刻抓出了门自己的三个 bug**，且三个都产出过**漂亮的绿灯**：
+
+| # | 门里的错法 | 表现 | 抓到它的自测组 |
+| --- | --- | --- | --- |
+| 1 | `new URL('..').pathname` | macOS 带 `/private` 前缀，扫 0 个文件 | 组 1 |
+| 2 | 改 `fileURLToPath(new URL('..'))` | 仍指脚本**父**目录 ≠ web-mobile/ | 组 1 |
+| 3 | `dirname(脚本)` | 少退一层，ROOT 指到 `scripts/` | 组 1 / 组 5 |
+| 4 | 选择器正则用字符类白名单 | 样本 4 漏匹配，报成 `(file scope)` 定位不到人 | 组 4 |
+
+第 1/2/3 条尤其值得记：**它们当时都报 OK**。是「扫到 0 个文件必须红」这条自查
+（组 5）把它们全照出来的 —— 没有那条，一个扫不到任何文件的门会一直绿下去，
+而所有人都会以为 R1 有门禁。
+
+★ 门跑通了还只是「能跑」。**变异证明它有牙**：把 `.providers__chip` 改回 36px，
+门立刻转红并精确报出 `src/views/ProvidersView.vue:234 .providers__chip min-height: 36px`。
+
+### 11.28 本轮门禁（第十轮，触控热区 R1）
+
+`web-mobile/` 实测**六道**：
+1. 触控门自测 **11/11**
+2. `vue-tsc -b` 通过
+3. 触控热区门 通过（29 个 .vue）
+4. `vitest run` **213 用例 / 29 文件全绿**，**连跑 10 次全绿**
+5. `css:check` 通过（32 文件）
+6. `npm run build` 通过（**已含触控门 + css 门前置** —— 门不进 build 就会被绕开）
