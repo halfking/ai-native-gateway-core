@@ -130,6 +130,16 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.maasRates',
     requiresRole: 'super_admin',
   },
+  // 租户名录。**superAdmin 档**（admin/handler.go:926-927）⇒ 须设。
+  // ★ 这族 handler 内部还额外放行 `admin_key` 角色，中间件那道 requiresRole
+  //   没有建模 ⇒ 移动端无法只用角色字符串判权限，只能靠后端的 403。
+  {
+    key: 'tenants',
+    to: '/tenants',
+    icon: 'user',
+    titleKey: 'nav.tenants',
+    requiresRole: 'super_admin',
+  },
   // MaaS 租户运维面。**superAdmin 档**（/api/admin/maas/tenants/** 全 superAdmin）⇒ 须设。
   {
     key: 'maas-tenant-ops',

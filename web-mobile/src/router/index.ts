@@ -394,6 +394,24 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/MaasAdminCatalogView.vue'),
     meta: { titleKey: 'mac.title', requiresAuth: true },
   },
+  // 租户名录（**superAdmin 档**，2026-10-08：admin/handler.go:926-927 两条注册
+  // 都是 h.superAdmin）。★ 响应是**裸数组**，不是 {items}。
+  // ★ 列表里的 7 天用量**可能不可信**：后端 attachTenantUsage7d 有独立 1.5s 预算，
+  //   失败只 slog.Warn 然后把四个字段留在 0。
+  {
+    path: '/tenants',
+    name: 'tenants',
+    component: () => import('@/views/TenantsView.vue'),
+    meta: { titleKey: 'tn.title', requiresAuth: true },
+  },
+  // 租户详情：基本信息 + 用户 + 密钥 + 用量统计。详情页不占抽屉席。
+  // ★★ stats 失败会返回 **504**（调小 days 重试），不是「查不到」。
+  {
+    path: '/tenant-detail/:code',
+    name: 'tenant-detail',
+    component: () => import('@/views/TenantDetailView.vue'),
+    meta: { titleKey: 'tnd.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
