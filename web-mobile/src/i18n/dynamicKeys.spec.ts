@@ -5,6 +5,7 @@ import { MATRIX_ROWS, MATRIX_METRICS } from '@/api/autoRouteMatrix'
 import { ANALYTICS_WINDOWS, TUNING_STATUSES, TUNING_CATEGORIES } from '@/api/autoRouteInsights'
 import { ROUTING_OPT_METRICS_DIMS } from '@/api/routingOpt'
 import { PENDING_AGE_BANDS } from '@/api/pendingResponses'
+import { ANOMALY_TRIGGERS } from '@/api/requestAnomalies'
 
 /**
  * 动态 i18n 键的落地校验（2026-10-07）。
@@ -53,11 +54,13 @@ const DYNAMIC_KEYS: Array<[prefix: string, suffixes: readonly string[]]> = [
   ['routingOpt.dim_', ROUTING_OPT_METRICS_DIMS],
   // ★ 待处理响应的四个年龄段（边界写死在 api/pendingResponses.ts）
   ['pending.band_', PENDING_AGE_BANDS],
+  // ★ 请求侧异常的三种类型（取值来自 ANOMALY_TRIGGERS 常量）
+  ['anomalies.trigger_', ANOMALY_TRIGGERS],
 ]
 
 describe('动态 i18n 键在两侧词典里都存在', () => {
-  it('★ 至少覆盖 7 处动态前缀（少于这个数说明下面的清单没跟上代码）', () => {
-    expect(DYNAMIC_KEYS.length).toBeGreaterThanOrEqual(7)
+  it('★ 至少覆盖 8 处动态前缀（少于这个数说明下面的清单没跟上代码）', () => {
+    expect(DYNAMIC_KEYS.length).toBeGreaterThanOrEqual(8)
   })
 
   for (const [prefix, suffixes] of DYNAMIC_KEYS) {

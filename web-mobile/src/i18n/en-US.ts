@@ -39,6 +39,7 @@ export const enUS = {
     lifecycle: 'Data lifecycle',
     routingOpt: 'Route optimizer',
     pending: 'Pending responses',
+    anomalies: 'Request anomalies',
     nodeHealth: 'Health timeline',
     account: 'Me',
   },
@@ -960,6 +961,54 @@ export const enUS = {
     bytes: 'Buffered bytes',
     createdLine: 'created {t}',
     completedLine: 'completed {t}',
+  },
+  anomalies: {
+    title: 'Request anomalies',
+    counts: 'Unresolved counts',
+    unresolved: 'Unresolved',
+    newToday: 'New today',
+    // ★★ counts covers unresolved only while the list returns everything, so they never match
+    countsUnresolvedOnly: 'These two numbers count only unresolved records. The list below returns everything including resolved ones, so the numbers and the row count are not expected to match.',
+    // ★★ "today" uses the gateway process timezone, not the phone's
+    dayIsServerLocal: '"Today" is computed in the gateway\'s timezone, not your phone\'s; across timezones this day may not be the day you think it is.',
+    filter: 'Filters',
+    // ★★★★ case sensitivity differs between the four fields on this panel
+    caseSensitivityNote: 'Provider and model are case-insensitive, but the date and the anomaly type are not - pick the type with the lowercase buttons below; typing it in upper case matches nothing.',
+    triggerLabel: 'Anomaly type',
+    // ↓ dynamic keys trigger_* (values come from the ANOMALY_TRIGGERS constant)
+    trigger_param_rejected: 'Parameter rejected',
+    trigger_mode_mismatch: 'Request shape mismatch',
+    trigger_upstream_error: 'Other upstream 4xx',
+    day: 'Day',
+    dayHint: 'YYYY-MM-DD (gateway local date)',
+    provider: 'Provider code',
+    exactHint: 'Case-insensitive',
+    // ★★ model matches client_model **or** outbound_model
+    modelHint: 'Client or outbound model, either one matches',
+    model: 'Model',
+    unresolvedOnly: 'Unresolved only',
+    limitLabel: 'Rows per page',
+    limitN: 'Top {n}',
+    query: 'Query',
+    list: 'Anomaly list',
+    // ★★★ the fingerprint contains day, so one row per problem per day
+    oneRowPerDayNote: 'The same problem is recorded once per day (the dedup fingerprint contains the date), so the occurrence count below is the count for today only, not the lifetime total for that problem.',
+    noAnomalies: 'No request anomalies returned',
+    providerCode: 'Provider',
+    clientModel: 'Requested model',
+    outboundModel: 'Outbound model',
+    // ★★ they differ when the gateway rewrote the model
+    modelRewrittenNote: 'The requested model and the model actually sent differ here (the gateway rewrote it), which is why filtering by the requested model still matches this row.',
+    rejectedParams: 'Rejected params',
+    suggestMode: 'Suggested request shape: {mode}',
+    // ★ occurrences is today only; recovered_count is retries that succeeded after the change
+    occLine: '{n} occurrence(s) today · {rec} succeeded after retrying with the change',
+    seenLine: 'last seen {t} (first seen {f})',
+    errorKind: 'error class {k}',
+    resolved: 'handled',
+    prev: 'Prev',
+    next: 'Next',
+    pageInfo: 'rows {from}-{to} of {total}',
   },
   sysmon: {
     title: 'System monitor',

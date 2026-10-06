@@ -279,6 +279,15 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/PendingResponsesView.vue'),
     meta: { titleKey: 'pending.title', requiresAuth: true },
   },
+  // 请求侧异常（list + count，2026-10-07）。**superAdmin 档**（h.superAdmin）
+  // ⇒ tenant_admin 直接 403，抽屉席**必须**设 requiresRole。
+  // ★ 写操作 POST /{id}/resolve 与 POST /batch-resolve 本页不碰。
+  {
+    path: '/request-anomalies',
+    name: 'request-anomalies',
+    component: () => import('@/views/RequestAnomaliesView.vue'),
+    meta: { titleKey: 'anomalies.title', requiresAuth: true, requiresRole: 'super_admin' },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',

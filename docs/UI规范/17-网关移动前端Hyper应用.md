@@ -3505,3 +3505,121 @@ superAdmin 兄弟端点 `hot/cron/stats` 也不碰。
   源码字面量键 816 个）；`vue-tsc -b` 无 TS6133。
 - `dynamicKeys.spec.ts` 动态前缀清单增至 **7 处**（新增 `pending.band_`，
   取值从 `PENDING_AGE_BANDS` 常量取，不手抄）。
+
+---
+
+### 11.66 请求侧异常上移：上游在拒绝我们的什么请求（第三十轮，superAdmin 档）
+
+新增 `src/api/requestAnomalies.ts` + `src/views/RequestAnomaliesView.vue`
++ 路由 `/request-anomalies` + 抽屉席「请求侧异常」。
+它答的是「某个供应商开始拒绝我们的某个请求参数」这类问题，
+与 `/node-audit`（节点健康）、`/pending-responses`（卡住的请求）、
+`response_format_anomalies`（另一族，PG 表）互不重叠。
+
+| 端点 | 移动端 | 档位 | 抽屉席 |
+|---|---|---|---|
+| `GET /api/admin/request-anomalies` | `/request-anomalies` | **`super_admin`** | 请求侧异常 |
+| `GET /api/admin/request-anomalies/count` | 同上（徽标计数） | **`super_admin`** | 同上 |
+
+★ 本批是**第一条 superAdmin 档的抽屉席**（前面几批都是 admin 档）
+⇒ 路由与 `appNav` 都带 `requiresRole`，且 **`AppDrawer.spec.ts` 的白名单
+必须同步**（白名单式断言会在漏改时主动变红）。
+
+累计（**当场实测**）：**38 视图 / 37 API 模块 / 34 抽屉席（9 席 superAdmin）**。
+
+#### 九个坑（逐条实读源码）
+
+1. ★★★★ **同一个筛选面板里，四个字段的大小写敏感度不一致。**
+   `internal/reqprobe/types.go:117-134` 的 `Filter.matches`：
+
+   | 字段 | 判定 | 敏感度 |
+   |---|---|---|
+   | `day` | `r.Day != f.Day` | **敏感**精确 |
+   | `provider` | `!strings.EqualFold(...)` | 不敏感 |
+   | `model` | `!EqualFold(ClientModel) && !EqualFold(OutboundModel)` | 不敏感 |
+   | `trigger` | `string(r.Trigger) != f.Trigger` | **敏感**精确 |
+
+   ⇒ `?trigger=PARAM_REJECTED` **静默返回空数组且不报错**，
+     而 `?provider=OpenAI` 却能命中 `openai`。
+   ⇒ 前端**不对 trigger 做大小写归一**：`toLowerCase()` 会把「用户填了大写」
+     悄悄改成「按小写筛」，界面上看起来像后端认了大写。
+   ⇒ 页面只给三个**后端常量**的小写按钮，不给 trigger 文本框。
+
+2. ★★★★ **`model` 筛的是「客户端模型 **或** 出站模型」的 OR。**
+   用户按「我请求的模型」筛，出来的行 `outbound_model` 可能完全不同
+   （网关做了模型重写）⇒ 两个模型**必须都显示**，且不同时要明说，
+   否则用户会以为筛错了。
+
+3. ★★★★ **同一类错误每天一行。** `Fingerprint`（`types.go:160-176`）把 `Day`
+   算进 sha1 ⇒ 同一问题**每天**产生一条新记录。
+   ⇒ `occurrences` 只是**今天**这一行的次数（注释自陈），
+     「这个错误总共出现过几次」必须自己跨天累加。页面照实说明。
+
+4. ★★★ `day` 是 `FirstSeen` 所在**本地日期**（`YYYY-MM-DD`），
+   而 `Today()` 用 `t.Local()` ⇒ **网关进程的时区**，不是浏览器时区。
+   ⇒ 跨时区时「今日新增」可能与用户以为的今天不是同一天。
+
+5. ★★★ **`Counts` 只统计未解决的**（`redis.go:167-170`：`if rec.Resolved { continue }`）
+   ⇒ `unresolved` 不含已解决，`new_today` 是「今天首次出现**且未解决**」。
+   ★ 而列表**默认返回全部**（含已解决），除非带 `unresolved_only=true`
+   ⇒ 徽标数字与列表条数**天然对不上**。这不是 bug，但**必须说明**，
+     否则用户会以为「计数错了」。
+
+6. ★★★ `trigger` **只有三个**取值（`types.go:48-61`）：
+   `param_rejected` / `mode_mismatch` / `upstream_error`。
+   其中 `mode_mismatch` 不参与参数学习（协议切换是每请求的廉价回退）。
+
+7. ★★ `limit` clamp [1,500]、非数字回落 50（`queryInt(r,"limit",50)`），
+   `offset<0` → 0，**永不报错**。
+   ★ 数字与 `pending-responses` 的 `pageBounds` **完全一样**（50/500），
+     但那是**两个不同实现**（分别在 `admin/request_anomalies.go:41-51`
+     与 `admin/pending_handlers.go:124-141`）⇒ **不可当成同一份契约**。
+   ★ `loadAll` 是 `HGETALL` 全量读回内存过滤（`redis.go:119`），
+     **没有条数上限**（retention 30 天）⇒ 列表**不会被静默截断**。
+
+8. ★★ 多数可选字段**键可能整个不存在**（`omitempty`）：
+   `client_model` / `outbound_model` / `param` / `suggest_mode` /
+   `error_kind` / `error_sample` / `last_request_id` / `resolution_notes`，
+   以及 `resolved_at`（`*time.Time` + omitempty）。
+   ★ `param` 是**逗号连接的多个**参数名（一个请求可能被拒多个参数），
+     不是单值 ⇒ 页面按逗号拆成逐个 tag。
+
+9. ★ 错误信封走 `writeError`（`admin/handler.go:1494-1498`）⇒
+   `{"error":{"detail":…}}`，键是 **`detail`** 不是 `message`。
+   ★ 至此本仓库已见**三个信封族**：
+
+   | 端点族 | 信封 |
+   |---|---|
+   | `pending-responses` | `{"error":{"message":…,"code":…}}`（`writeErrorJSON`） |
+   | `routing-opt` | **text/plain**（`http.Error`） |
+   | `request-anomalies` | `{"error":{"detail":…}}`（`writeError`） |
+
+   `api/client.ts` 的 `errorMessage`（`:100-117`）三种都兜得住 ——
+   **错误文案是唯一允许共用解包器的例外**，响应本体仍各端点独立解包。
+
+★ **范围外**：写操作 `POST /{id}/resolve` 与 `POST /batch-resolve` 不碰。
+
+#### 本轮门禁
+
+- **变异验证 8/8 有牙**：trigger 被 `toLowerCase` 归一 / `unresolved_only=false`
+  也发 / `param` 不按逗号拆 / 模型重写提示恒显 / 抽屉席丢掉 `requiresRole` /
+  形状不符静默返空 / limit 上界不拦 / 删掉「只统计未解决」说明。
+  **全部红在具名断言上**，还原后逐字节一致、复跑全绿。
+- ★ 其中 A5（抽屉席丢掉 `requiresRole`）红在 `AppDrawer.spec.ts` 的
+  「tenant_admin 少掉的**只有** superAdmin 档那些」——
+  白名单式断言**真的在守**，不是装饰。
+- 全量 **10 连跑全绿，1219 用例**（连跑器落盘，**0 份失败快照**）。
+- `npm run build` **rc=0**（`BUILD_RC` 直接从命令取）；三门全过
+  （css-media 59 文件 / touch-target 56 个 `.vue`）；`vue-tsc -b` 无 TS6133。
+- i18n parity **1056 键**、源码字面量键 851 个；`dynamicKeys.spec.ts`
+  动态前缀增至 **8 处**（新增 `anomalies.trigger_`，取值取自 `ANOMALY_TRIGGERS`）。
+
+★ **本轮又踩了 i18n 的两个老坑，都当场修掉**：
+1. 值里出现 markdown `**`（本会话已第 5 次复发）—— 固定提交前检查：
+   `grep -n '\*\*' src/i18n/zh-CN.ts src/i18n/en-US.ts | grep -vE ':\s*(//|/\*)'`。
+2. 值 === 键名：`en-US anomalies.resolved = 'resolved'` 被门判红 ⇒ 换成 `handled`。
+★ 还有一个**新坑**：用 Python 批量改 en-US 时，字符串里的 `\'`
+   在 Python 侧被当成转义写成了裸 `'`，**提前闭合了字符串**，
+   结果那一行之后的整个对象语法坏掉、键 `oneRowPerDayNote` 从 en 侧消失。
+   ⇒ i18n 门立刻报「仅 zh-CN 有」——**这道门又一次起了作用**。
+   ⇒ 教训：批量改 i18n 优先用 `edit` 工具逐条改，Python 只用于**不含引号**的批量插入。
