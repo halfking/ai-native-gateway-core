@@ -10371,3 +10371,100 @@ indcollation / indisunique / relam` 全部相等。改对之后查到 **11 对**
   有 LRU 淘汰 ⇒ **覆盖不完整**，可能漏掉低频语句）。
 - 「列在仓库里被引用」只说明**代码路径存在**，不代表生产数据会出现值。
 - 本节全部只读，未对生产做任何写操作。
+
+## §10.97 启动期 no-op DDL 的真实代价：`request_logs` 上最长堵了 109 秒
+
+§10.79 记过「`ADD COLUMN IF NOT EXISTS` 并不省锁」，§10.84 给 `work_type`
+加了目录短路守卫。本节把**代价量化到语句级**，并发现**还有一条没被守卫的同款语句**。
+
+### §10.97.1 先分清是谁的 ALTER TABLE
+
+`pg_stat_statements` 是**全实例 26 库**聚合（§10.80.4 已记过）。按库拆开：
+
+| 库 | 头部语句调用量 | 折算 |
+|---|---|---|
+| **`smm`**（邻居应用，非本网关） | `ALTER TABLE recommendations …` 33,775 次 | **54.3 次/小时** |
+| **`llm_gateway`**（本网关） | `ALTER TABLE request_journey_observation_outbox …` 525 次 | 20 次/25.9 天 |
+
+⇒ 那个 54 次/小时的 ALTER 风暴**不是网关的**，不要按它去立项。
+
+网关库自身的 DDL 总量（`pg_stat_statements` 窗口 25.90 天）：
+
+| 类别 | 变体数 | 总调用 | 日均 |
+|---|---|---|---|
+| `ADD COLUMN IF NOT EXISTS` | 101 | 33,973 | **1,311.7/天** |
+| 其他 ALTER | 33 | 8,102 | 312.8/天 |
+| `SET NOT NULL` | 23 | 7,819 | 301.9/天 |
+| `SET DEFAULT` | 10 | 2,615 | 101.0/天 |
+| 合计 | **167** | **52,509** | **2,027/天** |
+
+⇒ 与 §10.80.4 记的「2,100 次/天（167 变体）」**吻合**（本次实测 2,027/天）。
+
+### §10.97.2 ★ 代价不在 DDL 自身，在它拿的锁
+
+101 个 `ADD COLUMN IF NOT EXISTS` 的累计执行时间：**5,087 秒 ≈ 1.41 小时 / 25.9 天**，
+均值 149.7 ms。但**均值会掩盖问题**——按语句拆开：
+
+| 语句 | 调用 | 均值 | **最长单次** | 累计堵锁 |
+|---|---|---|---|---|
+| `ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS work_type TEXT` | 425 | 3,240 ms | **109,456 ms** | 23.0 分钟 |
+| `ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS credits_charged BIGINT` | 420 | 2,289 ms | **104,322 ms** | 16.0 分钟 |
+| `ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS gw_session_id TEXT, …` | 317 | 1,488 ms | 27,584 ms | 7.9 分钟 |
+| `ALTER TABLE providers ADD COLUMN IF NOT EXISTS quality_fix_mode TEXT …` | 522 | 895 ms | 61,672 ms | 7.8 分钟 |
+| `ALTER TABLE request_logs_hot ADD COLUMN IF NOT EXISTS task_type TEXT, …` | 254 | 1,633 ms | 99,082 ms | 6.9 分钟 |
+
+★ 列早就存在、语句什么都不改，但**最长单次 109 秒**。
+这条 DDL 拿的是 **ACCESS EXCLUSIVE**（父表 + 5 个月分区 = 6 个关系），
+所以那 109 秒里 **`request_logs` 上所有读写全部排队**——
+耗时几乎全是**等锁**，不是干活。
+
+### §10.97.3 交叉验证：`work_type` 那条已有守卫，只是**还没上线**
+
+`db/db.go:4051` 的 `workTypeRequestLogsDDL` 已经有目录短路
+（`workTypeRequestLogsCurrent`，§10.84 本轮加的，门在
+`db/work_type_request_logs_guard_test.go`）。
+生产仍在付 23 分钟的代价 ⇒ **因为那个守卫还没部署**。
+⇒ 这是「已写好、只差上线」的直接证据，不是新缺陷。
+
+### §10.97.4 ★ 新发现：`credits_charged` 那条**代码里确实没有守卫**
+
+`db/maas_schema.go:13` 的 `EnsureMaasSchema` 把
+`ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS credits_charged BIGINT`
+放在批次**第一条**，每次启动无条件执行——**16.0 分钟累计堵锁、最长 104 秒**。
+
+已按 §10.84 的同型修掉（本轮改动，未上线）：
+
+- 拆出 `const maasRequestLogsDDL`（只含 request_logs 那两条）
+- 新增 `maasRequestLogsCurrent`：查 `information_schema.columns` +
+  `pg_indexes`，两者齐备才短路
+- `maas_settings` / `model_credit_rates` 那批留在**未守卫**的批次里
+  （守卫一命中就整批跳过会把 pricing 表也跳过——这是必须防的副作用）
+- 探测失败**返回 false**（fall through 去执行 DDL），
+  绝不把「探测失败」读成「已经是最新的」
+
+**门**：`db/maas_request_logs_guard_test.go`，7 个子测试，含反向断言
+（守卫不得挪进 pricing 批次、探测函数里不得出现 DDL、pricing 批次不得被吞掉）。
+**变异 M86~M91 共 6 条全部按预期把目标子测试打红。**
+
+⚠️ 变异验证里又抓到一个「门以错误原因变红」：M86 第一版把 Go 改成了
+`if … \&\& false`，**整个包编译失败**，门是「编译错误」红的而不是断言抓的。
+已改成合法写法，并给变异脚本加了「构建失败 ⇒ 判变异无效」的独立分支。
+⇒ **文本门同样会以编译失败变红**，脚本必须能区分这两者。
+
+### §10.97.5 剩下的：同表上还有 `gw_session_id` 那条没查
+
+`ADD COLUMN IF NOT EXISTS gw_session_id TEXT, …`（317 次 / 1,488 ms / 27,584 ms / 7.9 分钟）
+与 `request_logs_hot` 的 `task_type`、`t0_arrived_at`、`is_final_success`
+同型。本轮只修了产量最高且已有同型守卫可抄的 `credits_charged`；
+其余应在同一批里照 §10.84/本节的形态逐条处理，**不建议一次改 101 条**
+（共享工作区并行会话多，大范围改 `db/` 冲突风险高）。
+
+### §10.97.6 本节读数汇总（全部只读 + 一次本地代码改动）
+
+| 对象 | 读数 |
+|---|---|
+| 网关库 DDL 总量 | 167 变体 / 2,027 次每天（与 §10.80.4 的 2,100/天吻合） |
+| `ADD COLUMN IF NOT EXISTS` 占比 | 101 变体 / **1,312 次每天（65%）** |
+| 这些 no-op 的累计执行时间 | 1.41 小时 / 25.9 天（均值 149.7 ms） |
+| 代价最高的单条 | `request_logs … work_type`：**最长 109,456 ms** |
+| 本轮修掉的第二条 | `request_logs … credits_charged`：16.0 分钟 / 最长 104,322 ms |
