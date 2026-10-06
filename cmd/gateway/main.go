@@ -5034,11 +5034,19 @@ func main() {
 		// Partition manager: auto-creates monthly request_logs partitions
 		// and archives 2+ months old data to columnar storage.
 		// 2026-06-26: Added per storage-optimization plan.
-		slog.Info("CHECKPOINT: before NewPartitionManager")
-		partitionManager = bg.NewPartitionManager(dbConn.Pool(), 24*time.Hour)
-		slog.Info("CHECKPOINT: before partitionManager.Start")
-		partitionManager.Start(context.Background())
-		slog.Info("CHECKPOINT: after partitionManager.Start")
+		// 2026-10-06: LLM_GATEWAY_PARTITION_MANAGER_ENABLED=false 可关闭本节点
+		// 的 promote/analyze（审计 §10.51/§10.52：154 与 245 连同一个库时
+		// 两个实例对同一批 hot 表各跑一遍全量 44 表 ANALYZE）。默认不变。
+		if partitionManagerEnabledFromEnv() {
+			slog.Info("CHECKPOINT: before NewPartitionManager")
+			partitionManager = bg.NewPartitionManager(dbConn.Pool(), 24*time.Hour)
+			slog.Info("CHECKPOINT: before partitionManager.Start")
+			partitionManager.Start(context.Background())
+			slog.Info("CHECKPOINT: after partitionManager.Start")
+		} else {
+			slog.Info("partition_manager disabled on this node by env; " +
+				"promote/analyze 由其他节点负责")
+		}
 
 		// Wave 3 B8 (2026-09-22): internal ledger reconciliation —
 		// balance_after chain integrity plus request-log credit charges vs
