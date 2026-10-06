@@ -116,6 +116,7 @@ describe('navItemsFor', () => {
       'flow',
       'funnel',
       'integrity',
+      'maas-rates',
       'matrix',
       'overrides',
       'proposals',

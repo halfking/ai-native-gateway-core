@@ -337,6 +337,14 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/RequestDetailView.vue'),
     meta: { titleKey: 'rd.title', requiresAuth: true },
   },
+  // MaaS 模型积分价（**superAdmin 档**，2026-10-08：maas_handlers.go 全部 11 条注册都是 h.superAdmin）。
+  // ★ 页面必须逐维标注生效价来源：响应里的 credits_per_1m_* 是算出来的，不是库里存的值。
+  {
+    path: '/maas-rates',
+    name: 'maas-rates',
+    component: () => import('@/views/MaasRatesView.vue'),
+    meta: { titleKey: 'maas.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',

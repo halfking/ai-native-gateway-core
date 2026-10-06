@@ -122,6 +122,14 @@ export const DRAWER_NAV: readonly NavItem[] = [
   { key: 'injection', to: '/injection', icon: 'alert', titleKey: 'nav.injection' },
   // 提示词注入配置面。admin 档 ⇒ 不设 requiresRole。
   { key: 'injection-config', to: '/injection-config', icon: 'key', titleKey: 'nav.injectionConfig' },
+  // MaaS 积分价。**superAdmin 档**（admin/maas_handlers.go:14-24 全部 h.superAdmin）⇒ 须设 requiresRole。
+  {
+    key: 'maas-rates',
+    to: '/maas-rates',
+    icon: 'key',
+    titleKey: 'nav.maasRates',
+    requiresRole: 'super_admin',
+  },
   // 会话分析面。admin 档（admin/handler.go:1091-1094 全是 admin(...)）⇒ 不设 requiresRole。
   { key: 'session-analytics', to: '/session-analytics', icon: 'chart', titleKey: 'nav.sessionAnalytics' },
   {
