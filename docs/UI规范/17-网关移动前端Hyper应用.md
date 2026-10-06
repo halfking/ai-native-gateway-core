@@ -5131,3 +5131,176 @@ settings PUT、model-rates 的 POST/PUT/DELETE）按前几批同口径**一律�
    `admin/tenants`(25, 多为 superAdmin)。
 2. ★ `admin/tenants` 那 25 条里多�� superAdmin，且很可能带**租户筛选语义**
    ⇒ 与本批的「跨租户 vs 本租户」那组对照值得单独一节。
+
+### 11.77 租户名录上移：一条「**看着有数据、其实可能没算完**」的列表（第四十一轮，superAdmin 档）
+
+新增 `src/api/tenants.ts`（**新模块**）+ `src/views/TenantsView.vue`
++ `src/views/TenantDetailView.vue`
++ 路由 `/tenants`、`/tenant-detail/:code`（详情页**不占**抽屉席）
++ **第 14 条 superAdmin 抽屉席**。
+
+5 条只读端点：`/tenants`（列表，可带 `?status=`）、`/{code}`、`/{code}/users`、
+`/{code}/keys`、`/{code}/stats?days=`。
+
+#### ★★★★★★ 头号问题：五条端点**全部返回裸结构**
+
+1. ★★★★★★ `admin/handler.go:926-927` 两条注册都是 `h.superAdmin(...)`
+    ⇒ **superAdmin 档**。
+    ★★ 而且 handler **内部还有第二道**校验：
+
+    ```go
+    if auth := GetAuthContext(r); auth != nil &&
+       auth.Role != "super_admin" && auth.Role != "admin_key" { 403 }
+    ```
+
+    ⇒ **`admin_key` 这个角色也放行**，它是中间件那道 `requiresRole`
+    **没有建模**的角色 ⇒ 移动端**无法**只用角色字符串判权限，只能靠后端 403。
+2. ★★★★★★ 响应形状与本仓多数 admin 端点**都不同**：
+
+    | 端点 | 形状 |
+    |---|---|
+    | `GET /tenants` | **裸数组** |
+    | `GET /tenants/{code}` | **裸对象** |
+    | `GET /tenants/{code}/users` | **裸数组** |
+    | `GET /tenants/{code}/keys` | **裸数组** |
+    | `GET /tenants/{code}/stats` | **裸对象** |
+
+    ⇒ 误按 `{items: […]}` 解包，这四条端点对真后端 **100% 抛错**。
+3. ★★ `keys` 是 **按 id DESC**（最新在前），`users` 是 **按 id 正序** ——
+    两个列表**排序方向相反**，不要照抄同一个 sort 逻辑。
+
+#### ★★★★★★ 「近 7 天用量」这一列**可能不可信**
+
+4. ★★★★★★ `attachTenantUsage7d`（`admin/tenants.go`）给富化单独留了
+    **1.5 秒**预算（`usageCtx` 派生自 `r.Context()`，好让列表主查询的
+    `cancel()` 不会连带掐掉它），查询失败/超时时：
+
+    ```go
+    slog.Warn("tenants 7d usage enrichment failed; fields left at zero", …)
+    return          // ← 四个字段留在 0，客户端拿不到任何信号
+    ```
+
+    ⇒ ★★★ 客户端**分辨不出**「这个租户真没用量」与「富化没在 1.5s 内跑完」。
+    源码注释记录了根因：这条聚合在真实数据量下要 **20s+**
+    （`request_logs_with_current_month` 7 天 32 万行），而原先与主查询共用 5s，
+    于是每次打开列表先白等满 5 秒、用量列永远为空（实测 `duration_ms=5001`，HTTP 仍 200）。
+    ⇒ 页面文案必须是「**读数不可信**」，**不能**是「这段时间没有用量」——
+      后者是一个**看起来很确定、其实可能错**的结论。
+5. ★★★★ `tenantInfo` 的 **7 个聚合字段全是 `omitempty`**：
+
+    ```go
+    UserCount     int     `json:"user_count,omitempty"`
+    APIKeyCount   int     `json:"api_key_count,omitempty"`
+    Requests7d    int64   `json:"requests_7d,omitempty"`
+    Tokens7d      int64   `json:"tokens_7d,omitempty"`
+    Credits7d     int64   `json:"credits_7d,omitempty"`
+    Cost7d        float64 `json:"cost_7d_usd,omitempty"`
+    TotalRequests int64   `json:"total_requests,omitempty"`
+    ```
+
+    ⇒ 「键不存在」至少有三种成因：真的为 0 / 被 omitempty 省掉 / 富化降级留下的 0。
+6. ★★★ **详情页的聚合比列表页更不可信**：`getTenant` 的五个计数全是
+    `_ = h.db.QueryRow(...)` ⇒ **连一行日志都不留**地吞掉错误。
+    ⇒ 列表与详情的「0」**可靠性不同**，页面不能一视同仁（两处文案因此不同）。
+
+#### ★★★★ `stats` 会返回 **504** —— 本仓第一次
+
+7. ★★★★ `writeTenantStatsError`：`context.DeadlineExceeded` ⇒
+    **504 Gateway Timeout**，报文
+    `tenant stats query timed out; retry with a smaller days window`
+    ⇒ ★★ 这是「查询**超时**、调小窗口重试」，**不是**「查不到」，
+    也不是「这个租户没用量」。页面必须**单列**这一档。
+8. ★★★ `days`：`< 1 ⇒ 7`、`> 365 ⇒ 365`；且 `strconv.Atoi` 失败时 `days=0`
+    ⇒ 落进 `< 1` ⇒ 仍是 7 ⇒ **又一套限幅**（本仓第八种，语义是「回落 7」）。
+9. ★★ `UsageSummary` 同族那个「回显 clamp 后 days」的好习惯在这条上**没有** ——
+    `stats` 的 `days` 是**直接赋值**的（`s.Days = days`，在 clamp 之后），
+    所以客户端能核对（页面把「前端选 N / 后端回显 M」并排打出来）。
+
+#### ★★★★ 成本与积分**来自两张不同的表**
+
+10. ★★★★ 同一个响应里：
+
+    | 字段 | 来源 |
+    |---|---|
+    | `total_requests` / `total_tokens` / `total_cost_usd` / `unique_keys` / `unique_models` / `unique_apps` | `usage_ledger_with_current_month` |
+    | `total_credits` / `input_tokens` / `output_tokens` / `cache_read_tokens` / `cache_write_tokens` / `avg_latency_ms` | `logsTable`（`request_logs_hot` ∪ `request_logs` 的 UNION ALL 子查询） |
+
+    ⇒ 「收入侧」与「上游成本侧」口径不同，**两者对不上是可能的，不是 bug**。
+11. ★★★ R36-B4 记着这条的来历：原先两个 totals 查询都是 `_ =`，
+    于是「上下文已死 / statement_timeout」会**静默发布 0**，
+    与后续查询的结果**自相矛盾**，读起来就是「这个租户什么都没烧」。
+    现在改成 `writeTenantStatsError` **响亮失败**。
+    ⇒ ★ 这是本仓「`_ =` 吞错 ⇒ 内部自相矛盾的 200」的又一例，
+      与 §11.70 的**静默丢行**同族、方向相反（那个是少行，这个是假 0）。
+
+#### ★★★★ 同一个产品里**两套日切**，且是有意分叉
+
+12. ★★★★ `stats.daily` 的日切是
+    `date_trunc('day', ts AT TIME ZONE 'Asia/Shanghai')`（R36-A3 **显式钉死**），
+    而对账 / 结算页保持**显式 UTC 日**。
+    源码自陈「对账页保持显式 UTC 日（结算口径，**有意分叉**）」。
+    ⇒ 跨零点的差异**不是数据错**，页面必须写出来，否则运营会去查「假 bug」。
+13. ★★★ `daily` 用 `generate_series` **补零** ⇒ 恒有 `days` 条连续日期。
+    ⇒ 页面据此判「完整，可直接画」；条数少于 `days` ⇒ 服务端降级过，
+      **不能画**（画了会骗人）。
+
+#### ★★★ 其余三条
+
+14. ★★★ 三种「键缺失」语义并存：
+    `userInfo.last_login_at` 是 `*time.Time` 但**无** omitempty ⇒ 键在值为 `null`
+    = **从未登录**；而 `tenantKeyInfo` 的 `key_alias` / `owner_user` /
+    `application_code` / `expires_at` 都**带** omitempty ⇒ 键可整个不存在，
+    其中 `expires_at` 缺失 = **永不过期**（不是「没查到到期时间」）。
+15. ★★ 子资源路由有历史坑：`sub` 是 `SplitN(path,"/",2)` 的**尾部**，
+    所以 `/model-policies/audit` 的 `sub` 是 `"model-policies/audit"`；
+    2026-06-23 曾因此让 `/check` 与 `/audit` 都报
+    `unknown sub-resource`，现已由 `isModelPoliciesSubResource` 按前缀匹配修掉。
+    未知子资源 ⇒ **404 `unknown sub-resource: <sub>`**；`h.db == nil` ⇒ **503**。
+16. ★ 六处聚合都用 `warnRowSkip` + `continue` ⇒ **静默丢行**
+    （`tenants.list` / `listUsers` / `listKeys` / `stats.byModel` / `byApplication` / `daily`）
+    ⇒ 返回条数**可能**少于库里真实行数，页面不能把条数当「全量」。
+
+#### 本轮门禁（当场实测）
+
+- **变异验证 22/22 有牙**：D1/D2 裸数组解包改成只认 `{items}` /
+  D3 「读数不可信」判据恒 false / D4 缺失键清单恒空 / **D5 「从未登录」改查键存在**
+  （Go 那边 key 一定在 ⇒ 永远 false）/ **D6 「永不过期」判据反向** /
+  D7 daily 完整性恒 true / D8 stats 下界改成 clamp 1 / D9 租户码不 encode /
+  D10 stats 不校验 daily / **D11 抽屉席误改成 admin 档** / D12 行级降级标记不渲染 /
+  D13 「1.5 秒预算」说明不渲染 / **D14 状态筛选退回本地过滤（控件变死）** /
+  **D15 504 被归成「其他」** / D16 双源说明不渲染 / D17 时区分叉说明不渲染 /
+  D18 daily 不完整不警告 / D19 详情聚合警告不渲染 / D20 从未登录提示退化 /
+  D21 永不过期文案退化 / **D22 catch 里不清空旧数据**。
+- 本批三个 spec：**60 用例全绿**（API 28 + 名录视图 13 + 详情视图 19）；
+  `AppDrawer.spec.ts` 11 条（白名单加 `tenants`）、`dynamicKeys.spec.ts` 181 条仍全绿。
+- `npm run build` **rc=0**（含 `vue-tsc -b`）；三门全过
+  （css-media **74 文件** / touch-target **71 个 `.vue`** / i18n parity **各 1669 键**）。
+- ★★ **本轮修出一个真产品缺陷**（不是测试问题）：
+  名录页的状态筛选分段控件**是死的** —— 状态是 `?status=` 的**服务端**筛选，
+  而我只改了 ref、没重新取数 ⇒ 点了按钮不发请求、列表也不变。
+  是「切状态筛选会重新请求」那条判据把它抓出来的（D14 变异又钉了一遍）。
+- ★ 途中修了四个我自己的问题：
+  1. i18n parity 门禁抓到 `tnd.credits7d` / `tnd.requests7d` 两个键**只加在了 `tn` 下**，
+     详情视图引用的是 `tnd.*` ⇒ **门禁当场报出**（这条门禁确实在干活）；
+  2. 一条 `not.toContain('没用量')` 又一次被**自己的降级说明文案**喂到
+     （文案里就写着「真没用量」）⇒ 改成按**那一行**取 warn 节点；
+  3. 测试 helper 无条件 `mockResolvedValue`，把「先设 reject / 先设降级数据」**吃掉**了
+     ⇒ helper 改成接受覆盖参数，且按 `instanceof Error` 分派
+     reject / resolve（`mockResolvedValue(new Error())` 会真的 resolve，判据会变恒真）；
+  4. 变异脚本里 D11 的 `file` 又写成了视图（实际在 `appNav.ts`），
+     D21 直接删 `v-if` 那行让后面的 `v-else` **悬空** ⇒ 模板解析失败。
+- 累计（**当场实测**）：**53 视图 / 43 API 模块 / 46 导航席（14 席 superAdmin）**。
+- 全量 **10 连跑全绿，2036 用例，0 份失败快照**（`STAB_RC=0`，10/10 `passed (2036)`）。
+  ★ 累计未定位的 flaky 仍**未捕获**（无污染跑 ≥146 次、失败 1 次，≈0.7%），
+  本批十连跑未复现 —— 这**不等于「已修复」**。
+
+#### 仍未上移（`admin/tenants` 剩下的）
+
+写操作一律不碰：`POST /tenants`（创建，含 community 模式租户数上限 403）、
+`PATCH /tenants/{code}`、`model-policies` 的 POST/PATCH/DELETE/`{id}/undelete`、
+`approval-config` / `approvers` / `approval-rules` 的增删。
+
+`model-policies` 子树（`/tenants/{code}/model-policies`、`/check`、`/audit`、`/{id}`）
+是**另一个 handler**（`admin/model_policies.go`），带**软删除**（`undelete`），
+值得单独一节；`approval-config` 那一族（config/approvers/rules/stats）
+在 `admin/approval_config_handler.go`，是另一族配置面。

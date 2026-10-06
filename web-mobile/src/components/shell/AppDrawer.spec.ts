@@ -126,6 +126,7 @@ describe('navItemsFor', () => {
       'request-anomalies',
       'routing-audit',
       'task-index',
+      'tenants',
     ])
   })
 
