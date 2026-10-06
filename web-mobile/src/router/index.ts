@@ -322,6 +322,14 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/InjectionConfigView.vue'),
     meta: { titleKey: 'injectionConfig.title', requiresAuth: true },
   },
+  // 会话分析面：客户端维度 / 任务维度（admin 档，2026-10-08）。
+  // ★ 数据源是**没有周期刷新路径**的物化视图，页面顶部必须显示 refreshed_at。
+  {
+    path: '/session-analytics',
+    name: 'session-analytics',
+    component: () => import('@/views/SessionAnalyticsView.vue'),
+    meta: { titleKey: 'sa.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',

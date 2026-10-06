@@ -4256,3 +4256,134 @@ if err != nil {
   ★ **踩坑**：`comm` 要求字典序，我第一次喂的是按端点数降序的列表，
   于是把 `prompt-injection` / `output-compliance` **误报成未覆盖**。
   ⇒ **先排序再 `comm`**，否则差集结论整体不可信。
+
+### 11.71 会话分析上移：客户端维度 + 任务维度（第三十五轮，admin 档）
+
+新增 `src/api/sessionAnalytics.ts`（**2 个只读端点**）+ `src/views/SessionAnalyticsView.vue`
+（一页两维度：客户端 / 任务）+ 抽屉席「会话分析」。
+
+| 端点 | 移动端 | 档位 |
+|---|---|---|
+| `GET /api/admin/session-analytics/clients` | `/session-analytics`（默认维度） | `admin` |
+| `GET /api/admin/session-analytics/tasks` | `/session-analytics`（切维度） | `admin` |
+
+★ 鉴权：`admin/handler.go:1091-1094` 四条注册全是 `admin(...)` ⇒ **admin 档**，
+抽屉席不设 `requiresRole`，`AppDrawer.spec.ts` 白名单不变。
+★ 但**两个列表都显式挡普通用户**（`IsRegularUser` → 403），比注册档位更严。
+
+§11.70 已把 §11.70 里那条头号发现查实；本节把它**落成页面契约**。
+
+#### ★★★★★★ 本页唯一不可省的东西：「数据截至」
+
+1. ★★★★★★ 响应里的 **`refreshed_at` 必须显眼地显示**。
+   这是读者判断「这份花费数字有多旧」的**唯一**线索
+   （§11.70 已证：物化视图无周期刷新路径）。
+   ⇒ 页面顶部第一块就是「数据新鲜度」面板，含：
+   - 一句来源说明（物化视图 + 刷新只在建表时跑过一次 + 仓里没有定时调度器）；
+   - 「数据截至」的相对时间；
+   - **原始时间戳原样透出**（只给相对时间不够，读者要能核对）。
+2. ★★★★★ **空列表时 `refreshed_at` 是 Go 零值** `0001-01-01T00:00:00Z`
+   ⇒ 那一块换成专门文案「这一页是空的，拿不到真实的刷新时刻」，
+   **并且完全不渲染「数据截至」那一格**。
+   ⇒ ★ 把零值当成「1970 年之前刷新过」显示出来是最容易犯、也最难发现的错。
+
+#### ★★★★★ 坏行被静默丢弃 ⇒ 「共 N 条」与显示条数可以不一致
+
+3. ★★★★★ 后端扫描失败是 `continue`（**丢行但照常 200**），
+   而 `total` 来自**独立的** `COUNT(*)`
+   ⇒ **`total=10` 但页面只显示 1 行是后端行为，不是分页 bug。**
+   ⇒ `analyticsRowsWereDropped(shown, total)` + 页面显式说明
+   「有行的字段为空时被跳过了，不代表数据对不上」。
+4. ★★★★ 追到 schema 后把丢行来源**收窄到一列对**：
+   物化视图里 `first_seen_at`/`last_seen_at` ← `MIN/MAX(first_request_at)`，
+   而 `session_summaries.first_request_at` 是 `timestamptz` 且**无 NOT NULL**
+   （`655_session_summaries_schema_reconcile.sql:48-49`）
+   ⇒ 全空 ⇒ `MIN()` 为 NULL ⇒ 裸扫进 `time.Time` 失败 ⇒ 整行被丢。
+   ★★ **我原本怀疑的 `request_count`/`total_cost_usd` 等被 schema 否掉了**：
+   它们全是 `NOT NULL DEFAULT 0`（655:52-55、677:40-43）⇒ `SUM`/`AVG` 不可能为 NULL。
+   ⇒ **页面说明只写真正的那一对列**，把已排除的写进去会误导排查。
+
+#### 分页：第五种越界语义
+
+5. ★★★★ `if limit < 1 || limit > 200 { limit = 50 }` ⇒ 越界是**回落 50**。
+   至此本仓五种：pending 50/500 **clamp**、request-anomalies 50/500 **clamp**、
+   output-compliance 20→200 **clamp**、prompt-injection 20 **回落**、本族 50 **回落**。
+   ⇒ 客户端侧也照此回落（不发会被后端改写的值）。
+6. ★★★ **这一族有 `total`** ⇒ 分页是**精确**的
+   （与 `review-queue`/`feedback`/`attack-vectors` 的近似分页相反）。
+   页面文案是「第 1-50 条，共 N」而不是「后面可能还有」。
+
+#### ★★★ 两个维度的默认值不同，客户端不许替后端决定
+
+7. ★★★ `clients` 默认 `order_by=cost`、`tasks` 默认 `order_by=sessions`，
+   且 `switch` **无 default 分支** ⇒ 非法值静默落回、不报错。
+   ⇒ **不传 `order_by` 时客户端不发这个参数**（让后端用它自己的默认）；
+   只发 `cost`/`sessions`/`health` 三个合法值。
+   （变异 SV7：若客户端图省事替后端填 `'cost'`，两个维度就都被改成按花费排。）
+
+#### ★★★ `health_distribution` 有两个**同名不同包**的类型
+
+8. ★★★ `admin` 包（`dashboard_session_stats.go:25`）只有 **5 个计数键** `a/b/c/d/f`；
+   `admin/dashboardapi` 包（`session_overview.go:63`）**同名**但还有
+   `total` 与五个 `*_percent`（在 `session_overview.go:369` 计算）。
+   **本族用的是前一个。**
+   ⇒ 页面只渲染五档计数，并明说「不返回占比，也不返回总数」；
+   判据锁死 `.sa__grade` **恰好 5 个**（两行 ⇒ 10 个，证明不是恒有）。
+
+#### ★★ omitempty 指针与成功率分母
+
+9. ★★ `avg_health_score` / `avg_latency_ms` 是 `*int` + `omitempty`
+   ⇒ **键可能整个不存在**，缺失显示 `—` 而不是 0
+   （与 output-compliance 的「键一定存在、值为 null」正好相反）。
+10. ★★ 成功率分母用 `total_requests`（`SUM(request_count)`，NOT NULL），
+    **不用** `success + errors` —— 那两个是独立计数器，不保证相等。
+    分母为 0 ⇒ 显示 `—` 而不是 `0.0%`。
+
+#### ★★★★ 变异验证逼出的一条**恒真判据**（本轮最值钱的教训）
+
+11. ★★★★ 我先写的两条判据是**恒真**的，变异后仍绿：
+    - `expect(w.text()).toContain('数据截至')`
+    - `expect(w.text()).toContain('—')`
+
+    逐条实测才看清原因：
+    - 「数据截至」**本来就出现在说明文案里**（「下面显示的『数据截至』就是这份数据真正的年龄」）
+      ⇒ 把标签清空（SV1）后断言照样绿。
+    - **本页散文里有 4 个破折号**，其中 `orderImplicit` 的
+      「两个默认值**——**不一样」就贡献了两个
+      ⇒ `toContain('—')` 被**中文标点**喂饱，**永远不会红**。
+
+    ⇒ 修法：断言**取到那个格子自己**再判它的文本
+    （`cells.find(c => c.text().includes('平均健康分'))!.text().endsWith('—')`
+    且 `.not.toMatch(/\d/)`）。
+    ⇒ 这与前几次踩的「说明文案必然含该词」是**同一族的第三种形态**：
+      ①负向断言被好文案判红 ②跨面板全页断言被另一面板判红
+      **③正向 `toContain` 被散文标点喂饱 ⇒ 恒真，永不失败。**
+      前两种是「红着时判据写错了」，**第三种是「绿着时判据根本没在工作」**。
+
+#### 本轮门禁（当场实测）
+
+- **变异验证 19/19 有牙**：
+  - API 层 9/9（SA1 键串成 `items` / SA2 键串成 `clients` / SA3 clamp 改回落 /
+    SA4 去掉 order_by allowlist / SA5 形状校验放宽 / SA6 宽容解包 /
+    SA7 零值判断恒 false / SA8 丢行检测恒 false / SA9 成功率分母改错）。
+    ★ 另有 **SA10 判为等价变异**：给 TS interface 加可选字段，
+      **运行期被擦除、vitest 观测不到** ⇒ 那处的守门是 `vue-tsc`/build，不是 vitest。
+  - 视图层 10/10（SV1 不显示数据截至 / SV2 零值当时间 /
+    SV3 删差额说明 / SV4 500 退化空态 / SV5 omitempty 显示 0 /
+    SV6 成功率显示 0.0% / SV7 替后端填默认排序 / SV8 分页忽略 total /
+    SV9 渲染六档 / SV10 抹掉 tasks 独有的 clients_used）。
+- 本批两个 spec：**69 用例全绿**（API 35 + 视图 34）。
+- `npm run build` **rc=0**；三门全过
+  （css-media **64 文件** / touch-target **61 个 `.vue`** / i18n parity **各 1336 键**，
+  源码字面量键 1069，扫了 132 个 `.vue/.ts`）；`vue-tsc -b` **rc=0**。
+- `dynamicKeys.spec.ts` 动态前缀增至 **14 处**（新增 `sa.order_`）。
+- ★ 途中还修了两个**测试自己**的错误：
+  1. `vi.stubGlobal('fetch', …)` 放在模块顶层 + `afterEach` 里的
+     `unstubAllGlobals` ⇒ **只有第一条用例能跑到假 fetch**，后面 19 条全走真 fetch
+     （报 `Failed to parse URL`）。⇒ stub 必须在 `beforeEach` 里。
+  2. `noUncheckedIndexedAccess` 开着 ⇒ `r.clients[0]` 一律补显式非空 helper。
+- 累计（**当场实测**）：**43 视图 / 40 API 模块 / 39 导航席（底栏 4 + 抽屉 35，其中 9 席 superAdmin）**。
+- 全量 **10 连跑全绿，1605 用例，0 份失败快照**（`STAB_RC=0`）。
+  ★ 1605 里含并发会话同期新增的用例，不是「我加了 N 个」。
+- 抽屉席 35 是**重数**的（底栏 4 + `DRAWER_NAV` 35），
+  与 §11.67 的「36 抽屉席」同一口径（当时底栏 4 + 抽屉 32）。
