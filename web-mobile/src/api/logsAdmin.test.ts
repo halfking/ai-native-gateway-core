@@ -67,7 +67,7 @@ function lastUrl(): string {
   return String(fetchMock.mock.calls.at(-1)![0])
 }
 
-/** 抄自 `admin/logs_body_cache.go:142-149` 的 map 字面量。 */
+/** 抄自 `admin/logs_body_cache.go:139-146` 的 map 字面量。 */
 function cacheStatsOf(over: Record<string, unknown> = {}): BodyCacheStats {
   return {
     size: 142,
