@@ -1,174 +1,162 @@
-Title: ZHIPU AI OPEN PLATFORM
+Title: 智谱丨BigModel 平台
 
 URL Source: https://open.bigmodel.cn/pricing
 
-Published Time: Thu, 11 Jun 2026 13:59:15 GMT
+Published Time: Thu, 24 Sep 2026 11:08:05 GMT
 
 Markdown Content:
-### 旗舰模型
+## 模型 API 价格
 
-汇集最新一代旗舰模型，涵盖高性能文本与多模态模型，全面升级推理、创作与理解能力，在多种复杂任务与应用场景中提供稳定、高效、精准的支持。
+按量计费，简单灵活，提供满足不同业务规模的产品方案
 
-*    文本模型
-*    视觉理解
+## 旗舰模型
 
-GLM-5.1 是一个面向长程任务（Long Horizon Task）设计的模型。能够在一次任务中独立、持续地工作长达 8 小时，期间自主规划、执行、自我进化，最终交付完整的工程级成果。
+汇集最新一代旗舰模型，涵盖高性能文本与多模态模型，全面升级推理、创作与理解能力
 
-GLM-5.1
+GLM-5.3
 
-新品 输入长度 [0, 32)6元 24元 限时免费 1.3元
-输入长度 [32+)8元 28元 限时免费 2元
-GLM-5-Turbo 输入长度 [0, 32)5元 22元 限时免费 1.2元
-输入长度 [32+)7元 26元 限时免费 1.8元
-GLM-5 输入长度 [0, 32)4元 18元 限时免费 1元
-输入长度 [32+)6元 22元 限时免费 1.5元
-GLM-4.7 输入长度 [0, 32)
+最新旗舰
 
-输出长度 [0, 0.2)2元 8元 限时免费 0.4元
-输入长度 [0, 32)
+最新旗舰模型，编程体验提升 50%，部分网络安全能力持平 Mythos 5
 
-输出长度 [0.2+)3元 14元 限时免费 0.6元
-输入长度 [32, 200)4元 16元 限时免费 0.8元
-GLM-4.5-Air 输入长度 [0, 32)
+上下文 1M
+输入单价 8元 / M
+输出单价 28元 / M
+缓存命中 2元 / M
+缓存存储 限时免费
+输入模态 文本
 
-输出长度 [0, 0.2)0.8元 2元 限时免费 0.16元
-输入长度 [0, 32)
+GLM-5.3-Flash
 
-输出长度 [0.2+)0.8元 6元 限时免费 0.16元
-输入长度 [32, 128)1.2元 8元 限时免费 0.24元
-GLM-4.7-FlashX 200K 0.5元 3元 限时免费 0.1元
-GLM-4.7-Flash 200K 免费 免费 免费 免费
+原生多模态模型，部分能力对齐 Claude Opus 4.8，价格仅 1/40，让前沿智能真正普惠
 
-### 模型推理
+上下文 1M
+输入单价 0.8元 / M
+输出单价 2.8元 / M
+缓存命中 0.23元 / M
+缓存存储 限时免费
+输入模态 图片、视频、文件、文本
 
-提供多种型号，不同功能、不同价位的模型API产品。文生图模型按请求次数计费，其它模型均按照每千 tokens 为单位计费。Token 是指模型推理过程中文本的最小意义单位，通常指一个单词、汉语词语/短句、标点符号或数字等。通常，GLM系列模型词表 token 和汉字换算比例约为 1:1.6 。
+## 其它模型和服务
 
-*    Language Models
-*    Reasoning models
-*    Multimodal Models
-*    Real-time
-*    Embedding Models
-*    More
+GLM-5.2
 
-The fully self-developed fourth generation base model GLM-4 has improved performance by 60% compared to GLM-3, with an IFEval instruction following ability evaluation of up to 90%, and 100% accurate recall in 128k context needle in haystack testing，with visual and agent capabilities.
+文本模型
 
-GLM-4-Plus Flagship 128K¥5 / M Tokens¥2.5 / M Tokens
-GLM-4-Air High-performance 128K¥0.5 / M Tokens¥0.25 / M Tokens
-GLM-4-AirX Fastest 8K¥10 / M Tokens Not Supported
-GLM-4-FlashX-250414 Fast and Cheap 128K¥0.1 / M Tokens¥0.05 / M Tokens
-GLM-4-Long Long input 1M¥1 / M Tokens¥0.5 / M Tokens
-GLM-4-Assistant Agent 128K¥5 / M Tokens Not Supported
+上下文
 
-Batch API：高效完成大规模数据处理任务，只需五折费用 [了解更多信息](https://docs.bigmodel.cn/cn/guide/tools/batch)
+1M
 
-查看历史模型
+输入单价
 
-### 搜索工具服务
+8元
 
-我们提供多种型号、不同价位的搜索工具服务，帮助客户实现更智能、精准的信息检索需求。
+输出单价
 
-Search-Std Zhipu self-developed search basic version: Fast, high cost-performance¥0.01 / time
-Search-Pro Zhipu self-developed search Pro version: higher recall rate of search results¥0.03 / time
-Search-Pro-Sogou Sogou Search: Short processing time, supports Sogou Encyclopedia and Sogou Ask search¥0.05 / time
-Search-Pro-Quark Quark Search: Strong search timeliness and coverage of multiple industry fields¥0.05 / time
+28元
 
-### 知识库扩容服务
+缓存存储
 
-我们提供知识库空间按量后付费服务，满足客户在不同业务场景下对知识存储容量的动态需求，确保系统稳定高效运行。
+限时免费
 
-knowledge_capacity Knowledge Base Expansion Service: Pay-as-you-go, flexible capacity scaling¥0.04 / GB / hour
+缓存命中
 
-### 模型微调
+2元
 
-开放GLM系列模型训练工具，支持一键微调定制私有的个性化模型，帮助企业针对业务场景打造独特极致的AI体验。
+GLM-OCR
 
-*    Model Training
-*    Model Inference
+轻量级的专业 OCR 模型
 
-GLM-4.5 32k¥0.1 / 1k tokens Not Supported
-GLM-4.5 16k Not Supported¥0.125 / 1k tokens
-GLM-4.5-Air 32k¥0.035 / 1k tokens¥0.05 / 1k tokens
-GLM-4-Air 8k¥0.03 / 1k tokens¥0.05 / 1k tokens
-GLM-4-AirX 8k¥0.03 / 1k tokens¥0.05 / 1k tokens
-GLM-4-Flash 8k¥0.025 / 1k tokens¥0.04 / 1k tokens
-GLM-4-9B 8k¥0.025 / 1k tokens¥0.04 / 1k tokens
-ChatGLM3-6B 8k¥0.025 / 1k tokens Not Supported
-Cogview-3 1k Not Supported¥0.02 / 1k tokens
-GLM-4V 2k¥0.03 / 1k tokens Not Supported
+上下文
 
-### 模型私有实例
+32K
 
-针对客户对 “ 稳定性、推理性能、推理效果、低成本 ” 等方面诉求，提供云端私有化部署方案。用户可按日根据使用量进行付费。 [咨询方案详情](https://open.bigmodel.cn/online-book)
+输入模态
 
-*    Language Models
-*    Vision Models
-*    Image Models
-*    Video Models
-*    Embedding Models
-*    More
+PDF、图片
 
-GLM-4.6 200k-fp8¥175 / GPU Unit / Day
-GLM-4.5 128k-fp8¥175 / GPU Unit / Day
-GLM-4.5-Air 128k-fp8¥100 / GPU Unit / Day
-GLM-4-Plus 8k-int4¥100 / GPU Unit / Day
-GLM-4-Air-250414 128k-int8¥100 / GPU Unit / Day
-GLM-4-Air 8k-int4¥100 / GPU Unit / Day
-GLM-4-Air 128k-int8¥100 / GPU Unit / Day
-GLM-4-AirX 8k-int4¥100 / GPU Unit / Day
-GLM-4-Flash-250414 128k-int8¥100 / GPU Unit / Day
-GLM-4-Flash 8k-int8¥100 / GPU Unit / Day
-GLM-4-Flash 128k-int8¥100 / GPU Unit / Day
-GLM-4-9B 8k-int8¥100 / GPU Unit / Day
-GLM-4-9B 128k-int8¥100 / GPU Unit / Day
+输入价格
 
-算力单元：模型私有实例推理服务的最小计费单位。单个模型实例使用1天需要占用对应算力单元数量。根据模型规格不同，每个模型部署单实例需占用算力单元数量不同。
+0.2元/百万Tokens
 
-### 云端私有化套餐
+输出价格
 
-针对有长期稳定云端私有化部署使用的客户。在满足 “ 稳定性、推理性能、推理效果的同时，提供更加高性价比的云端私有化年套餐服务。提供区别于公共池标准 API 服务的专业级私有实例解决方案。 [咨询方案详情](https://open.bigmodel.cn/online-book)
+0.2元/百万Tokens
 
-模型 套餐包含 单价 GLM-4.5 算力单元数量
+Batch API定价
 
-5840个
+不支持
 
-训练语料额度
+GLM-TTS
 
-10亿 tokens
+语音生成模型
 
-用户权益升级
+特点
 
-[V3](https://open.bigmodel.cn/usercenter/equity-mgmt/user-rights)110 万元 / 年
-GLM-4.5-Air 算力单元数量
+超拟人情感化表达
 
-5840个
+输入模态
 
-训练语料额度
+文本
 
-10亿 tokens
+输出模态
 
-用户权益升级
+音频
 
-[V2](https://open.bigmodel.cn/usercenter/equity-mgmt/user-rights)50 万元 / 年
+单价
 
-*    10亿tokens训练语料额度包括：LoRA微调 5亿 tokens、全参微调 5亿 tokens。
-*    购买glm-4-0520、glm-4-air云端私有化年套餐的用户会额外分别赠送20亿tokens，10亿tokens用于flash模型微调训练。
-*    算力单元：模型私有实例推理服务的最小计费单位。单个模型实例使用1天需要占用对应算力单元数量。根据模型规格不同，每个模型部署单实例需占用算力单元数量不同。
+2元/万字符
 
-增购报价
+*   智谱大模型的API怎么计费？![Image 1](https://static.bigmodel.cn/wd-paas-front/img/icon-add.0c9b0810.svg)
 
-### 本地私有化解决方案
+智谱开放平台API采用按量计费模式。以下所有价格均为API调用价格：文本与视觉模型均按“元/百万tokens”计费，区分输入（Input）单价和输出（Output）单价；当输入或输出长度超过一定阈值（如32K tokens）时会进入更高档单价。此外提供上下文缓存能力：缓存存储按“元/百万tokens/小时”计费（多数模型目前限时免费），缓存命中读取按“元/百万tokens”计费，通常为输入单价的较低比例。价格表中长度档位（如[0,32)、[32,+)）单位为千tokens，即32代表32K tokens。 
+*   智谱有哪些视觉理解（多模态）模型？API价格分别是多少？![Image 2](https://static.bigmodel.cn/wd-paas-front/img/icon-add.0c9b0810.svg)
 
-为满足企业对数据的完全掌控和模型的安全运行的诉求，我们提供从模型到应用的本地私有化解决方案，帮助客户实现数据的完全掌控和模型的绝对安全运行。
+智谱视觉理解模型支持图片、视频、文件、文本多模态输入，API调用价格（元/百万tokens，输入/输出）如下：
 
-*    模型及一体机
-*    知识库应用
+    *   GLM-5.3-Flash：输入0.8元 / M，输出2.8元/M
+    *   GLM-5V-Turbo：输入[0,32K)5元/M·[32K+)7元/M，输出[0,32K)22元/M·[32K+)26元/M
+    *   GLM-4.6V：输入[0,32K)1元/M·[32K,128K)2元/M，输出[0,32K)3元/M·[32K,128K)6元/M
+    *   GLM-4.6V-FlashX：输入[0,32K)0.15元/M·[32K,128K)0.3元/M，输出[0,32K)1.5元/M·[32K,128K)3元/M
+    *   GLM-4.6V-Flash：免费
+    *   GLM-4.5V：输入[0,32K)2元/M·[32K,64K)4元/M，输出[0,32K)6元/M·[32K,64K)12元/M
 
-提供最新的 GLM-4、GLM-4V 等最新模型的本地私有化解决方案。
+以上均为API按量计费价格，缓存存储限时免费。
 
-模型 简介 刊例价 GLM-4-0520 语言模型 数 千万 [获取解决方案](https://open.bigmodel.cn/online-book/deviceLocalDeployment?channel_track_key=deviceLocalDeployment)
-GLM-4-Air 语言模型 数 百万 [获取解决方案](https://open.bigmodel.cn/online-book/deviceLocalDeployment?channel_track_key=deviceLocalDeployment)
-GLM-4-Flash 语言模型 数 十万 [获取解决方案](https://open.bigmodel.cn/online-book/deviceLocalDeployment?channel_track_key=deviceLocalDeployment)
-GLM-4V 视觉理解 数 百万 [获取解决方案](https://open.bigmodel.cn/online-book/deviceLocalDeployment?channel_track_key=deviceLocalDeployment)
-CogView-3 文生图 数 十万 [获取解决方案](https://open.bigmodel.cn/online-book/deviceLocalDeployment?channel_track_key=deviceLocalDeployment)
+*   智谱API的缓存存储和缓存命中是什么意思？价格多少？![Image 3](https://static.bigmodel.cn/wd-paas-front/img/icon-add.0c9b0810.svg)
 
-注：ChatGLM3-6B、GLM-4-9B等模型现已开发免费商用授权，申请授权证书即可使用。 [免费申请授权](https://open.bigmodel.cn/mla/form)
+智谱API提供上下文缓存（Context Cache）能力，可降低重复上下文的费用：
+
+    *   缓存存储：将上下文缓存起来，按“元/百万tokens/小时”计费，目前多数模型为限时免费。
+    *   缓存命中：命中已缓存上下文的读取，按“元/百万tokens”计费，价格通常为该模型输入单价的较低比例（如GLM-5.2为2元）。
+
+免费模型（GLM-4.7-Flash、GLM-4.6V-Flash）的缓存也全部免费。以上为API调用价格。
+
+*   智谱云端私有化套餐价格是多少？![Image 4](https://static.bigmodel.cn/wd-paas-front/img/icon-add.0c9b0810.svg)
+
+智谱云端私有化年套餐面向长期稳定使用的客户，提供专属私有实例（区别于公共池标准API按量计费）：
+
+    *   GLM-4.5套餐：5840个算力单元 + 10亿tokens训练语料额度（LoRA微调5亿 + 全参微调5亿）+ 用户权益升级V3，单价110万元/年
+    *   GLM-4.5-Air套餐：5840个算力单元 + 10亿tokens训练语料额度 + 用户权益升级V2，单价50万元/年
+
+该价格为云端私有化部署方案报价，非API按量计费价格。
+
+*   智谱有免费的API模型吗？![Image 5](https://static.bigmodel.cn/wd-paas-front/img/icon-add.0c9b0810.svg)
+
+有的。智谱开放平台提供以下免费API模型：
+
+    *   文本模型 GLM-4.7-Flash（200K上下文）：输入免费、输出免费、缓存免费
+    *   视觉模型 GLM-4.6V-Flash：输入免费、输出免费、缓存免费
+
+此外，多数付费模型的“缓存存储”目前为限时免费。以上均为API调用价格政策。
+
+*   智谱最新的旗舰模型价格是多少？最新旗舰系列价格（元/百万tokens）如下：![Image 6](https://static.bigmodel.cn/wd-paas-front/img/icon-add.0c9b0810.svg)
+
+    *   GLM-5.3（最新旗舰，1M 上下文）：输入 8 元、缓存命中 2 元、输出 28 元
+    *   GLM-5.3-Flash（原生多模态、1M 上下文）：限时五折输入 0.4 元、缓存命中 0.115 元、输出 1.4 元；标准价输入 0.8 元、缓存命中 0.23 元、输出 2.8 元
+    *   GLM-5.2：输入 8 元、缓存命中 2 元、输出 28 元
+    *   GLM-5.1：输入 [0,32K) 6 元 / [32K+) 8 元，输出 [0,32K) 24 元 / [32K+) 28 元，缓存命中 1.3 元 / 2 元
+
+*   批量调用有价格优惠吗？![Image 7](https://static.bigmodel.cn/wd-paas-front/img/icon-add.0c9b0810.svg)
+
+有。Batch API 面向大规模离线数据处理任务，按标准 API 价格的五折计费，适合批量分析、数据清洗等非实时场景。

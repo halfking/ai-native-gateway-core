@@ -53,8 +53,14 @@ func seedStale(t *testing.T, n int) {
 			Version:     "0.0.0",
 		})
 	}
-	if err := NewPGStore(pool).UpsertBatch(context.Background(), assets); err != nil {
+	// UpsertBatch 的第一个返回值是「确认落库的行数」（见 pgStore 上方的接口契约③
+	// 「err 与计数并存」）。这里把它用起来而不是丢掉：下面紧接着就要断言这 n 行
+	// 真的在库里，若批量写入静默少写了行，应当在这里就报，而不是等回拨语句
+	// 报一个更难定位的 RowsAffected 不符。
+	if written, err := NewPGStore(pool).UpsertBatch(context.Background(), assets); err != nil {
 		t.Fatalf("seed UpsertBatch: %v", err)
+	} else if written != n {
+		t.Fatalf("seed UpsertBatch 只确认落库 %d 行，期望 %d", written, n)
 	}
 	// 回拨到 48 小时前，远超 6h 阈值。
 	tag, err := pool.Exec(context.Background(),
