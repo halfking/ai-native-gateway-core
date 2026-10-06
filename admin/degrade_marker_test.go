@@ -144,6 +144,17 @@ var degradeMarkerOutOfScope = map[string]string{
 	// bg/health_check_optional_skip_realdb_test.go（真库 42P01 分支）与
 	// bg/health_check_scan_guard_test.go 把守。
 	"bg/routing_health_checks.go": "runChecks 的 Optional+42P01 跳过是 bg worker 降级：跳过+日志留痕，无 200+空载荷；经 health_check_optional_skip_realdb / health_check_scan_guard 两测试把守",
+
+	// 2026-10-07（收口轮）：recordProbeLedger 的 42P01 分支是又一种 bg worker 降级，
+	// 与上一条同源（bg/modality_verification.go 里「为什么只认 42P01」注释自证）。
+	// 835 未应用时 INSERT system_probe_runs 报 42P01 ⇒ probeLedgerMissingTableOnce
+	// 每进程 Warn 一次后 return：台账缺一行，核实结论照常写
+	// model_modality_verification、核实循环不停——没有 HTTP 载荷可标。无专门测试
+	// 把守：触发该分支要求表真的不存在，真库夹具无法非破坏性地制造这个前提
+	// （健康库上必然 skip）；降级形状由文件内 once-guard 与那段注释钉住。
+	"bg/modality_verification.go": "recordProbeLedger 的 42P01 是 bg worker 台账写入降级：" +
+		"once-Warn 留痕+跳过写入，核实循环继续，无 200+空载荷；" +
+		"与 routing_health_checks 的 Optional 纪律同源（本文件注释自证）",
 }
 
 // markerPatterns 是「这个载荷带降级标记」的判定。
