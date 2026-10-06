@@ -1,4 +1,5 @@
 import { acceptLanguageHeader } from '@/i18n'
+import { getTransport, gatewayBaseUrl, type TransportResponse } from './transport'
 
 // client.ts — web-mobile 请求管线（复刻网关 web/src/api/_core.ts 语义，
 // UI规范 17 §5）：cookie 优先（credentials same-origin），无 userInfo 才补
@@ -134,10 +135,21 @@ export async function req<T>(method: string, path: string, body?: unknown, optio
   // 不存在 —— HyperList.vue:56 的 `status === 0` 分支永远命中不了，用户在
   // 断网时看到的是「加载失败，点击重试」而不是「请检查网络」，恰好与那段
   // 注释的立意相反（别让用户朝错误方向排查）。
-  let r: Response
+  // ★ 传输层接缝（10 §4.6.31 / 04 §7.2 ④）：`getTransport()` 默认就是
+  //   `fetch(path, { … })` —— 与引入接缝之前**逐字相同**，网页形态零回归。
+  //   壳内原生传输（CapacitorHttp）由壳侧**显式** `setTransport()` 安装，
+  //   不自动生效 ⇒ 探测失败/未安装时自动落回网页形态，不会把用户卡死。
+  //
+  //   ⚠️ 接缝只换**传输**，不换**归一化**：下面这段 try/catch 是 main 上
+  //   另一轮加的（AbortError 原样抛出 + network_error）。cherry-pick 时两侧
+  //   都必须保留 —— 只取接缝那一侧会把断网提示退回成裸 TypeError，
+  //   HyperList.vue 的 `status === 0` 分支又永远命中不了。
+  let r: TransportResponse
   try {
-    r = await fetch(path, {
+    r = await getTransport()({
       method,
+      path,
+      baseUrl: gatewayBaseUrl(),
       headers,
       credentials: 'same-origin',
       body: hasBody ? JSON.stringify(body) : undefined,
