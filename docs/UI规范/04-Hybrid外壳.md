@@ -265,6 +265,25 @@ WebViewCompat.addDocumentStartJavaScript(webView, script, singleton(allowedOrigi
 4. **仍未做**：本节是裁决登记。④ 的实现（壳侧反代 + 接线 + 门禁）**尚未开始**，
    不得据本节宣称「原生侧已解决」。
 
+#### 订正（2026-10-06，追加，原文保留）：第 4 条已部分过期
+
+④ 的**前端侧**已落地（10 §4.6.39）：`web-mobile/src/api/nativeTransport.ts`
+安装器 + 30 例门禁 + 变异台账 12/12。**「壳侧反代」与「接线」两件仍未做**：
+
+| 件 | 状态 |
+|---|---|
+| 前端侧安装器（`CapacitorHttp` → `transport.ts` 的 `setTransport`） | ✅ 已落地（10 §4.6.39） |
+| 壳侧反代 | ❌ 未做 |
+| `main.ts` 接线（先 await 装传输再 `auth.hydrate()`） | ❌ 未做，**须显式裁决**：一旦接线，首屏时序与 ④ 的失败降级路径都要重新裁决 |
+
+⇒ **仍不得据本节宣称「原生侧已解决」**；上面那句原文保留不改。
+
+10 §4.6.39 同时查出两条改变本节既有推论的事实：
+① 原生传输**不带 cookie**（`CookieManager` 在 `HttpRequestHandler.java` /
+`CapacitorHttpUrlConnection.java` 中 0 命中）⇒ `client.ts` 的「cookie 优先」
+在 ④ 下退化为 **Bearer 优先**，`llmgw_session` 发不出去；
+② `Origin` 同样 0 命中 ⇒ 本节结论 1「CORS 白名单不再是接入前置」**经源码核实成立**。
+
 
 ### A-1 已修复（2026-10-04 实测），**原先那条修复路径是多余的**
 
