@@ -7923,6 +7923,34 @@ old_minus_new | 0      new_minus_old | 0      行数 old 2355 = new 2355
 这一条把 §10.71.6 第 3 项的前置条件从「先收口 830」扩大为
 「先收口 830 **且** 把保留从 DELETE 改为 DROP」。
 
+#### ★ 同日订正（写完立刻发现：**这条行动结论是错的**）
+
+去核实「保留怎么改」时发现，**DROP 路径早就在仓里了**：
+`domains/ursm/v2/persist/retention_partition.go`（2026-10-04）已实现
+`isSnapshotPartitioned`（按 `pg_class.relkind` 探测）→ `cleanupPartitioned`
+（逐分区 `DROP TABLE`，`SET LOCAL lock_timeout='5min'`），
+分派在 `retention.go:220` 的 `CleanupWithStats` 里，且 DROP 失败会
+`Degraded: true` 退回批 DELETE 而不是静默停摆。
+配套齐全：`retention_test.go:531` 断言 `RetentionModePartitionDrop`、
+`scripts/.mutate-retention-partition.py` 变异脚本、
+`docs/12小时内修订审计-20261005-0034.md` 已把它登记为「兜底腿」。
+
+⇒ **不是「要改成 DROP」，而是「DROP 早就写好了，只是在生产上从未跑过」** ——
+因为 `ursm_node_snapshot_min` 现在 `relkind = 'r'`（普通 heap，830 未生效），
+`isSnapshotPartitioned` 恒返回 false ⇒ 一直走 `retention.go:308` 的批 DELETE。
+这与本 session 实测到的 `n_tup_del = 5,000`（整 5,000 的批）完全吻合。
+
+**订正后的结论（比原结论更窄、也更可执行）**：
+§10.71.6 第 3 项的前置条件**回到「先收口 830」这一条**，
+不需要再额外改造保留逻辑 —— 它会随表形态变成分区父表而**自动**切到 DROP。
+830 一收口，「DROP 留存 + 日分区」是**一起到手**的。
+
+★ **教训**：我在 §10.73.3 提出一个改造建议时，**只查了现有代码「是不是那样」，
+没查「是不是已经按我说的改过了」**。
+§10.70 的 M68 已经吃过一次同族亏（探针存在 ≠ 被使用），
+这次是它的镜像：**改造建议存在 ≠ 改造不存在**。
+提出「应该改成 X」之前，必须先确认现状不是 X。
+
 ### §10.73.4 顺带量到：136 个「13 天零扫描」索引 = 1,480 MB（**不是删除清单**）
 
 | 类别 | 数量 | 字节 |
