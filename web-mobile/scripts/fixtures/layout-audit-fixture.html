@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>layoutAudit 自检夹具</title>
+<style>
+  /* 这是「判据自己的正控」：每个元素都带 data-plant（种下的缺陷，判据**必须**报出）
+     或 data-decoy（看着像缺陷其实安全，判据**不许**报）。
+     改完 scripts/_layout-audit.mjs 跑 scripts/layout-audit-selftest.mjs —— 绿了才说明尺子还有牙。
+
+     用 ?plants= 切换三套场景：
+       （默认 / 全量）  大溢出 + 小溢出 + 诱饵 + 小热区
+       ?plants=small    只有**小溢出**（约 40px）—— 用来卡住「容差被放宽」那种变异
+       ?plants=none     干净页（无缺陷、无诱饵）—— 用来卡住「判据对什么都乱报」 */
+  body { margin: 0; font: 14px/1.5 system-ui, sans-serif; background: #fff; color: #111; }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 16px; }
+
+  /* ── 种下的缺陷 ①：超长不可断内容，所有视口都撑破 ──────────────── */
+  #plant-halways { width: 1600px; height: 24px; background: #fdd; }
+
+  /* ── 种下的缺陷 ②：固定 480px 宽 ──────────────────────────────────
+     320px 视口下必然撑破（约 160px）；1024px 下 wrap 上限 720，装得下
+     ⇒ 自检据此断言「1024 时 offenders 里不该再出现它」。 */
+  #plant-hfixed { width: 480px; height: 24px; background: #fee; }
+
+  /* ── 种下的缺陷 ③：小溢出（约 40px）──────────────────────────────
+     ★ 这条专门用来卡「容差被放宽」：把 `sw > innerWidth + 1` 改成 `+ 200`
+       时，大溢出那两条照样触发，**只有这条会露馅**。 */
+  #plant-hsmall { width: calc(100% + 60px); height: 24px; background: #ffd; }
+
+  /* ── 诱饵 ①/②：省略号截断 + flex/百分比宽度（实测**安全**）─────────
+     依据：flex/grid 的自动最小尺寸（min-width:auto）只在 overflow:visible 时
+     才等于 min-content。截断元素**自己**带 overflow:hidden ⇒ 最小尺寸为 0 ⇒
+     能收缩、能省略号、不会撑破。
+     这两条曾被「grep 形状」误判成缺陷（缺 min-width:0），真机实测否掉了。 */
+  .decoy-row { display: flex; align-items: center; gap: 8px; }
+  #decoy-flex { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #decoy-pct  { width: 38%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .decoy-fixed { width: 76px; flex-shrink: 0; background: #eee; }
+
+  /* ── 种下的缺陷 ④ / 诱饵 ③：触控热区 24px vs 48px（MIN_TAP=44）── */
+  #plant-tap-small { width: 24px; height: 24px; padding: 0; border: 0; background: #e33; color: #fff; }
+  #decoy-tap-ok    { width: 48px; height: 48px; padding: 0; border: 0; background: #3a3; color: #fff; }
+
+  /* ?plants=none 时把所有 plant/decoy 藏掉，模拟一张干净页 */
+  body.clean .plant, body.clean .decoy { display: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>layoutAudit 自检夹具</h1>
+
+  <div id="plant-halways" class="plant" data-plant="h-overflow-always"></div>
+  <div id="plant-hfixed" class="plant" data-plant="h-overflow-narrow"></div>
+  <div id="plant-hsmall" class="plant" data-plant="h-overflow-small"></div>
+
+  <div class="decoy-row decoy" data-decoy="ellipsis-safe">
+    <div id="decoy-flex">AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA</div>
+    <div class="decoy-fixed"></div>
+  </div>
+  <div class="decoy-row decoy" data-decoy="ellipsis-safe">
+    <div id="decoy-pct">BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB</div>
+    <div class="decoy-fixed"></div>
+  </div>
+
+  <p>
+    <button id="plant-tap-small" class="plant" data-plant="tap-target">×</button>
+    <button id="decoy-tap-ok" class="decoy">✓</button>
+  </p>
+</div>
+<script>
+  const mode = new URLSearchParams(location.search).get('plants') || 'all'
+  if (mode === 'none') document.body.classList.add('clean')
+  if (mode === 'small') {
+    for (const id of ['plant-halways', 'plant-hfixed', 'plant-tap-small']) {
+      const el = document.getElementById(id); if (el) el.style.display = 'none'
+    }
+  }
+</script>
+</body>
+</html>
