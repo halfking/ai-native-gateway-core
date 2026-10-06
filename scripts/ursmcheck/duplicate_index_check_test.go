@@ -91,7 +91,7 @@ func TestDupIndexPsqlFailureIsNoConclusionNotHealthy(t *testing.T) {
 }
 
 func TestDupIndexFindsPairExitsOne(t *testing.T) {
-	stub := "echo 'session_summaries|summaries_pkey|summaries_session_key_uidx|61105920|59807360|120913280'"
+	stub := "echo 'session_summaries|summaries_pkey|summaries_session_key_uidx|59801600|56184448|116162560|162491|1671095|1|0'"
 	code, out := runDupIndex(t, 0, stub)
 	if code != 1 {
 		t.Fatalf("检出重复索引应 exit 1，实得 %d\n%s", code, out)
@@ -111,15 +111,15 @@ func TestDupIndexWrongFieldCountAborts(t *testing.T) {
 	if code != 3 {
 		t.Fatalf("字段数不合契约应 exit 3，实得 %d\n%s", code, out)
 	}
-	if !strings.Contains(out, "6 个字段") {
-		t.Errorf("应明说期望 6 个字段：\n%s", out)
+	if !strings.Contains(out, "10 个字段") {
+		t.Errorf("应明说期望 10 个字段：\n%s", out)
 	}
 }
 
 // 阈值必须真的进到 SQL 里：把 MIN_PAIR_BYTES 调到极大值，0 对才成立。
 // 若阈值没有生效（写死或没传参），下面这条会拿到 exit 1。
 func TestDupIndexThresholdIsActuallyApplied(t *testing.T) {
-	stub := "echo 'session_summaries|a|b|61105920|59807360|120913280'"
+	stub := "echo 'session_summaries|a|b|59801600|56184448|116162560|162491|1671095|1|0'"
 	if code, _ := runDupIndex(t, 0, stub); code != 1 {
 		t.Fatalf("基线：应检出并 exit 1，实得 %d", code)
 	}
@@ -137,10 +137,23 @@ func TestDupIndexScriptNeverDrops(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read script: %v", err)
 	}
-	s := string(b)
+	// 只看**可执行行**：整行注释（shell 的 -- / #，以及 heredoc 里的 SQL --）
+	// 不参与判定。注释里解释「为什么不能删」是必要的文档，
+	// 把它也算成「脚本会删索引」会让这道门变成必须删掉注释的钝门。
+	// 注意这是**失败方向偏保守**的近似：行中注释（`SELECT 1; -- DROP INDEX`）
+	// 仍会被扫到 ⇒ 宁可误报，不会漏报。
+	var code []string
+	for _, ln := range strings.Split(string(b), "\n") {
+		t := strings.TrimSpace(ln)
+		if strings.HasPrefix(t, "--") || strings.HasPrefix(t, "#") {
+			continue
+		}
+		code = append(code, ln)
+	}
+	s := strings.Join(code, "\n")
 	for _, bad := range []string{"DROP INDEX", "drop index", "REINDEX"} {
 		if strings.Contains(s, bad) {
-			t.Errorf("巡检脚本里出现 %q —— 本脚本只报告，删索引必须人工确认无查询依赖", bad)
+			t.Errorf("巡检脚本的可执行行里出现 %q —— 本脚本只报告，删索引必须人工确认无查询依赖", bad)
 		}
 	}
 	if !strings.Contains(s, "只报告") {
@@ -179,5 +192,74 @@ func TestDupIndexSQLHasNoPsqlPositionalParams(t *testing.T) {
 	// 阈值必须经过非负整数校验后才允许进 SQL。
 	if !strings.Contains(s, "MIN_PAIR_BYTES 必须是非负整数") {
 		t.Error("缺少 MIN_PAIR_BYTES 的非负整数校验 —— 内联进 SQL 前必须挡住注入与非数字")
+	}
+}
+
+// TestDupIndexReportCarriesDropDecisionEvidence 钉住报告里**必须有**的两项。
+//
+// 为什么必须：只报「有两个一样的索引」不足以让人决定删哪个。
+// 实测踩过（§10.56）：session_summaries 那一对里，
+//
+//	session_summaries_pkey            —— 是 PRIMARY KEY，被约束背着，DROP INDEX 会被拒
+//	session_summaries_session_key_uidx —— 裸唯一索引，可删，且 idx_scan 高达 167 万
+//
+// 没有「受约束」列就会去删错的那个（正好是我第一次报的方向）；
+// 没有「idx_scan」列就无法区分「无人用的重复」与「正在被高频使用的重复」。
+func TestDupIndexReportCarriesDropDecisionEvidence(t *testing.T) {
+	b, err := os.ReadFile(dupIndexPath(t))
+	if err != nil {
+		t.Fatalf("read script: %v", err)
+	}
+	s := string(b)
+	for _, need := range []string{"idx_scan", "constrained", "pg_constraint", "pg_stat_user_indexes"} {
+		if !strings.Contains(s, need) {
+			t.Errorf("报告缺少 %q —— 没有它就无法判断哪个索引可裸删、哪个正被使用", need)
+		}
+	}
+	// 受约束计数必须是按 indexrelid 关联的（conindid），不是按表名或按名字。
+	if !strings.Contains(s, "c.conindid = i.indexrelid") {
+		t.Error("受约束判定必须用 pg_constraint.conindid 关联 indexrelid —— " +
+			"按名字/表名关联会判错")
+	}
+
+	// ★ 上一版判据只查「全文出现过 idx_scan」，于是删掉 SELECT 列表里的那两列
+	//   而 JOIN 与日志文本里还留着词根 ⇒ 门照样绿（M49 实测）。
+	//   所以这里必须钉在**SQL 的 SELECT 列表**上，而不是全文。
+	sqlStart := strings.Index(s, "SQL=$(cat <<'SQL'")
+	sqlEnd := strings.Index(s, "SQL\n)")
+	if sqlStart < 0 || sqlEnd < 0 || sqlEnd < sqlStart {
+		t.Fatal("找不到 SQL heredoc 段，脚本形态变了，请同步本判据")
+	}
+	body := s[sqlStart:sqlEnd]
+	// 取最后一个顶层 SELECT（输出列在 CTE 之后）。
+	sel := body[strings.LastIndex(body, "SELECT c.relname,"):]
+	for _, col := range []string{"a.idx_scan", "b.idx_scan", "a.constrained", "b.constrained"} {
+		if !strings.Contains(sel, col) {
+			t.Errorf("输出列清单缺少 %s —— 它必须真的被 SELECT 出来，"+
+				"只出现在 JOIN 或日志文字里不算（这正是 M49 漏掉的那一层）", col)
+		}
+	}
+}
+
+// TestDupIndexReportShowsScanAndConstraintValues 行为级判据：
+// 桩里给的 idx_scan 与受约束值必须**真的出现在 stdout**。
+//
+// 为什么不用「数格式串里的 %s 个数」：那数的是格式串，
+// 把参数删掉它也不变 ⇒ 门照样绿（第一版 M50 就这么被骗过去的）。
+// 判「值有没有被呈现」只能看值本身。
+func TestDupIndexReportShowsScanAndConstraintValues(t *testing.T) {
+	stub := "echo 'session_summaries|a_idx|b_idx|59801600|56184448|116162560|162491|1671095|1|0'"
+	_, out := runDupIndex(t, 0, stub)
+	// 这两个是决策依据：a_idx 受约束=1（不能裸删）、b_idx 扫描 1671095（在被用）。
+	for _, want := range []string{"162491", "1671095", "a_idx", "b_idx"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("报告输出里看不到 %q —— 决策依据没有真正呈现给操作者：\n%s", want, out)
+		}
+	}
+	// 表头也要有这两项的名字，否则操作者看不懂列的含义。
+	for _, want := range []string{"扫描", "受约束"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("表头缺少 %q：\n%s", want, out)
+		}
 	}
 }

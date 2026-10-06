@@ -71,6 +71,11 @@ WITH idx AS (
   SELECT i.indrelid,
          i.indexrelid,
          ic.relname AS index_name,
+         COALESCE(s.idx_scan, 0) AS idx_scan,
+         -- 「被约束引用」= 该索引是否被 pg_constraint 背着（PK/UNIQUE 约束）。
+         -- ★ 这是能不能直接 DROP INDEX 的决定项：约束背着的那个，
+         --   DROP INDEX 会被 PG 拒绝，必须先 ALTER TABLE ... DROP CONSTRAINT。
+         (SELECT count(*) FROM pg_constraint c WHERE c.conindid = i.indexrelid) AS constrained,
          -- 只保留定义本体：剥掉 'CREATE [UNIQUE] INDEX <名字> ON ' 前缀。
          -- 名字必然不同（重复索引通常来自两条不同迁移路径），比名字等于漏掉全部。
          regexp_replace(pg_get_indexdef(i.indexrelid),
@@ -80,6 +85,7 @@ WITH idx AS (
   JOIN pg_class c  ON c.oid = i.indrelid
   JOIN pg_class ic ON ic.oid = i.indexrelid
   JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'public'
+  LEFT JOIN pg_stat_user_indexes s ON s.indexrelid = i.indexrelid
   WHERE c.relkind IN ('r','m') AND ic.relkind = 'i'
 )
 SELECT c.relname,
@@ -87,7 +93,11 @@ SELECT c.relname,
        b.index_name,
        a.bytes,
        b.bytes,
-       (a.bytes + b.bytes)::text
+       (a.bytes + b.bytes)::text,
+       a.idx_scan::text,
+       b.idx_scan::text,
+       a.constrained::text,
+       b.constrained::text
 FROM idx a
 JOIN idx b
   ON a.indrelid = b.indrelid
@@ -114,8 +124,8 @@ while IFS= read -r line; do
   [ -z "$line" ] && continue
   n=$((n + 1))
   nfield=$(printf '%s' "$line" | awk -F'|' '{print NF}')
-  [ "$nfield" = "6" ] || {
-    log "ABORT: 期望 6 个字段，实得 ${nfield}（行：${line}）"
+  [ "$nfield" = "10" ] || {
+    log "ABORT: 期望 10 个字段，实得 ${nfield}（行：${line}）"
     exit 3
   }
 done <<< "$out"
@@ -126,7 +136,11 @@ if [ "$n" -eq 0 ]; then
   exit 0
 fi
 
-log "检出 $n 对重复索引（删一个可回收 ≥ ${MIN_PAIR_BYTES} 字节的组合）。"
+printf '表\t索引A\t索引B\tA字节\tA+B字节\tA扫描\tB扫描\tA受约束\tB受约束\n'
+log "检出 ${n} 对重复索引（删一个可回收 ≥ ${MIN_PAIR_BYTES} 字节的组合）。"
+log "读法：受约束=1 的那个被 PK/UNIQUE 约束背着，不能直接删索引，"
+log "      要先 ALTER TABLE … DROP CONSTRAINT；另一侧才是可裸删的那个。"
+log "      扫描=idx_scan，窗口见 pg_stat_database.stats_reset；两者皆 0 才谈得上『无人用』。"
 i=0
 while IFS= read -r line; do
   [ -z "$line" ] && continue
@@ -136,7 +150,13 @@ while IFS= read -r line; do
   a=$(printf '%s' "$line" | cut -d'|' -f2)
   b=$(printf '%s' "$line" | cut -d'|' -f3)
   ba=$(printf '%s' "$line" | cut -d'|' -f4)
-  printf '%s\t%s\t%s\t%s\t%s\n' "$t" "$a" "$b" "$ba" "$(printf '%s' "$line" | cut -d'|' -f6)"
+  sum_b=$(printf '%s' "$line" | cut -d'|' -f6)
+  sa=$(printf '%s' "$line" | cut -d'|' -f7)
+  sb=$(printf '%s' "$line" | cut -d'|' -f8)
+  ca=$(printf '%s' "$line" | cut -d'|' -f9)
+  cb=$(printf '%s' "$line" | cut -d'|' -f10)
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$t" "$a" "$b" "$ba" "$sum_b" "$sa" "$sb" "$ca" "$cb"
 done <<< "$out"
 
 log "本脚本只报告，不 DROP。删索引前须自行确认无查询依赖（见 §10.55.3）。"
