@@ -11,7 +11,14 @@ export interface PullToRefreshGestureOptions {
   onRefresh: () => Promise<void>
   getScroller: () => HTMLElement | null
   enabled?: () => boolean
+  /**
+   * 列表是否正在追加加载。传入后下拉与 loadNext 双向互斥（移植自
+   * feat/web-mobile-hyper）：不传则退回旧行为——只在 loadNext 侧单向拒绝。
+   */
+  isLoadingMore?: () => boolean
 }
+
+const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)'
 
 export function usePullToRefreshGesture(opts: PullToRefreshGestureOptions) {
   const visualOffset = ref(0)
@@ -20,6 +27,13 @@ export function usePullToRefreshGesture(opts: PullToRefreshGestureOptions) {
     onSettled: () => {
       visualOffset.value = 0
     },
+    isLoadingMore: opts.isLoadingMore,
+    // 「减少动态效果」由本层直接读 matchMedia：判据是用户偏好而非调用方状态，
+    // 机器层保留钩子只是为了可测（见 pullToRefresh.spec.ts）。
+    reducedMotion: () =>
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia(REDUCED_MOTION_QUERY).matches,
   })
 
   let startX = 0

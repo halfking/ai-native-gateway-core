@@ -42,6 +42,7 @@ var mustNotCrash = []string{
 	"pg-table-bloat-check.sh",
 	"ursm-snapshot-payload-bloat.sh",
 	"pg17-pg-availability-check.sh",
+	"pg17-onconflict-constraint-check.sh",
 }
 
 func monitorPath(name string) string {

@@ -56,7 +56,7 @@ var partitionParents = []string{
 	// 本地 schema），与 public 下的同名语义无关；清单按**不带 schema** 的表名登记。
 	"platform_outbox",
 	// 2026-10-05 R44 由 TestPartitionParentsAreExhaustive 反向抓出：
-	// `sql/migrations/manual/830_ursm_node_snapshot_min_partitioned.sql`
+	// `sql/migrations/startup/830_ursm_node_snapshot_min_partitioned.sql.skip`
 	// 声明了 ursm_node_snapshot_min 的 `PARTITION BY RANGE (snapshot_ts)`，
 	// 此前不在本清单里 ⇒ 守卫看不见它上面的写操作。
 	//

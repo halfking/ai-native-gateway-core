@@ -35,9 +35,11 @@
 //     The instance that fails to acquire either lock simply skips that
 //     cycle — never blocks, never queues.
 //   - Freshness contract with admin/analytics_materialized.go: consumers
-//     only trust the views when refreshed_at is within 15 minutes, so one
-//     missed cycle is invisible while a dead refresher degrades callers
-//     back to the base-view queries.
+//     only trust the views when their routing_mv_refresh_state row is within
+//     15 minutes, so one missed cycle is invisible while a dead refresher
+//     degrades callers back to the base-view queries. The timestamp is a
+//     side-table row written by execRefresh, not a column of the view —
+//     see execRefresh for why it cannot live in the target list (837).
 package bg
 
 import (
@@ -51,6 +53,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kaixuan/llm-gateway-go/admin/distlock"
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
 
 const (
@@ -477,8 +480,7 @@ func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName st
 	}()
 
 	if !useAdvisoryLock {
-		_, err = conn.Exec(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY "+viewName)
-		return false, err
+		return false, r.execRefresh(ctx, conn, viewName)
 	}
 
 	var locked bool
@@ -499,8 +501,35 @@ func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName st
 			`SELECT pg_advisory_unlock($1)`, mvRefreshLockKey)
 	}()
 
-	_, err = conn.Exec(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY "+viewName)
-	return false, err
+	return false, r.execRefresh(ctx, conn, viewName)
+}
+
+// execRefresh runs one REFRESH ... CONCURRENTLY and, only on success, records
+// the refresh time in routing_mv_refresh_state.
+//
+// Migration 837 moved that timestamp out of the materialized view's target
+// list. The column used to be NOW() inside the view, which meant REFRESH had
+// no way to tell which rows actually changed and rewrote 100% of them
+// (measured 252 prod: 100.7% of rows per cycle, only 0.339% really different).
+// The stamp now has to be written by whoever ran the refresh — that is the
+// whole reason it lives in a table instead of the view.
+//
+// A failed stamp is returned as an error rather than swallowed: the view
+// itself is fine, but every consumer's freshness gate (15-minute budget in
+// admin/analytics_materialized.go) would silently read "stale" forever and
+// fall back to the base-view queries that this refresh exists to avoid.
+// That degradation is worth paging on.
+//
+// The statement runs on the caller's already-pinned connection, so the
+// lifted statement_timeout still applies (see mvRefreshStatementTimeout).
+func (r *MaterializedViewRefresher) execRefresh(ctx context.Context, conn *pgxpool.Conn, viewName string) error {
+	if _, err := conn.Exec(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY "+viewName); err != nil {
+		return err
+	}
+	if _, err := conn.Exec(ctx, dbpkg.StampRoutingMVRefreshSQL, viewName); err != nil {
+		return fmt.Errorf("refreshed %s but failed to record refresh time: %w", viewName, err)
+	}
+	return nil
 }
 
 // TriggerRefresh manually triggers an immediate refresh cycle (admin tools,

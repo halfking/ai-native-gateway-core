@@ -2,6 +2,7 @@ package startup
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -57,7 +58,17 @@ func TestMigration632_RoutingAnalyticsMaterializedView(t *testing.T) {
 			"CREATE MATERIALIZED VIEW public.routing_audit_summary_7d AS",
 			"should create routing_audit_summary_7d materialized view")
 
-		requiredColumns := []string{
+		// Scope the column check to the view's own SELECT statement.
+		//
+		// This used to be a whole-file `require.Contains(upSQL, "refreshed_at")`,
+		// which was correct only while the column belonged to the view. Migration
+		// 837 moved that name into a separate routing_mv_refresh_state table, so
+		// the whole-file form started passing for the wrong reason — the string
+		// now comes from a different object entirely. A whole-file containment
+		// check cannot tell "this view has this column" from "this file mentions
+		// this word"; only the statement block can.
+		body := matviewSelectBody(t, upSQL, "public.routing_analytics_7d")
+		for _, col := range []string{
 			"time_bucket",
 			"effective_task_type",
 			"effective_model",
@@ -69,10 +80,8 @@ func TestMigration632_RoutingAnalyticsMaterializedView(t *testing.T) {
 			"success_count",
 			"p95_latency_ms",
 			"total_cost_usd",
-			"refreshed_at",
-		}
-		for _, col := range requiredColumns {
-			require.Contains(t, upSQL, col,
+		} {
+			require.Contains(t, body, col,
 				"routing_analytics_7d should include column %s", col)
 		}
 	})
@@ -211,6 +220,19 @@ func TestMigration632_RoutingAnalyticsMaterializedView(t *testing.T) {
 			"runtime prerequisite must cover request_logs")
 	})
 
+	t.Run("view_definitions_do_not_carry_refreshed_at", func(t *testing.T) {
+		// Migration 837: a volatile NOW() column in the target list made every
+		// recomputed tuple differ, so REFRESH ... CONCURRENTLY rewrote 100% of
+		// both views every cycle. The refresh time now lives in
+		// routing_mv_refresh_state. See migration_837_test.go for the
+		// behavioural gates; this one only pins the mirror.
+		upSQL := readUp(t)
+		for _, view := range []string{"public.routing_analytics_7d", "public.routing_audit_summary_7d"} {
+			require.NotContains(t, matviewSelectBody(t, upSQL, view), "refreshed_at",
+				"%s must not carry refreshed_at after migration 837", view)
+		}
+	})
+
 	t.Run("down_migration_drops_views", func(t *testing.T) {
 		down, err := os.ReadFile("down/632_routing_analytics_materialized_view.down.sql")
 		require.NoError(t, err)
@@ -223,4 +245,40 @@ func TestMigration632_RoutingAnalyticsMaterializedView(t *testing.T) {
 		require.True(t, strings.Contains(downSQL, "CASCADE"),
 			"should CASCADE to drop dependent indexes")
 	})
+}
+
+// matviewSelectBody returns the text of one CREATE MATERIALIZED VIEW statement,
+// from the CREATE keyword up to (not including) its terminating semicolon.
+//
+// Needed because every 837-era gate has to distinguish "this view has this
+// column" from "this file mentions this word". The refresh timestamp in
+// particular now lives on a different object (routing_mv_refresh_state), and
+// whole-file containment passes for the wrong reason.
+func matviewSelectBody(t *testing.T, sql, viewName string) string {
+	t.Helper()
+	re := regexp.MustCompile(`CREATE MATERIALIZED VIEW (IF NOT EXISTS )?(public\.)?` +
+		regexp.QuoteMeta(viewName) + `\b`)
+	loc := re.FindStringIndex(sql)
+	require.NotNil(t, loc, "should contain CREATE MATERIALIZED VIEW %s", viewName)
+	rest := sql[loc[0]:]
+	j := strings.Index(rest, ";")
+	require.Greater(t, j, 0, "%s statement should be terminated by a semicolon", viewName)
+	return rest[:j]
+}
+
+// matviewTargetList returns only the SELECT list of a materialized view — the
+// part that decides whether a REFRESH has to rewrite a row.
+//
+// Scope matters: the row-diff that REFRESH ... CONCURRENTLY performs compares
+// the recomputed tuple against the stored one. Only the target list feeds that
+// tuple. `WHERE ts >= NOW() - INTERVAL '7 days'` also contains NOW(), and it is
+// completely harmless — it selects which rows are in the result, it does not
+// change the value of any column. Asserting "no NOW() in the statement" is
+// therefore wrong; it turns a real fix into a gate nobody can satisfy.
+func matviewTargetList(t *testing.T, sql, viewName string) string {
+	t.Helper()
+	body := matviewSelectBody(t, sql, viewName)
+	m := regexp.MustCompile(`(?ms)^\s*SELECT\b(.*?)^\s*FROM\b`).FindStringSubmatch(body)
+	require.NotNil(t, m, "%s should have a SELECT list terminated by FROM", viewName)
+	return m[1]
 }

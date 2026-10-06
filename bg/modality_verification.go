@@ -30,6 +30,7 @@ package bg
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -39,6 +40,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/admin/distlock"
 	"github.com/kaixuan/llm-gateway-go/modelname"
@@ -345,7 +347,17 @@ func (m *ModalityVerification) VerifyOnce(ctx context.Context) (int, error) {
 			backedOff++
 			continue
 		}
+		// 准入闸门是**纯函数**（逐条闸门可测，见 modality_zero_egress_realdb_test.go），
+		// 这里再算一次只为拿到「为什么被跳过」这个原因。零出网、零副作用，
+		// 代价只是几十纳秒的字段比较。
+		//
+		// 为什么不改 probeAndPersist 的返回值把原因带出来：它有 5 处既有判据
+		// 直接调用（零出网/预算/解密失败三条路径），改签名会连带它们一起动。
+		// 而这里重算一次是**读同一个纯函数**，两份判据不可能漂移。
+		admit, admitWhy := modalityVerifyAdmit(t)
+		startedAt := time.Now()
 		ok, didProbe, err := m.probeAndPersist(ctx, t)
+		m.recordProbeLedger(ctx, t, admit, admitWhy, didProbe, err, startedAt)
 		if err != nil {
 			slog.Warn("modality_verification: target skipped",
 				"credential_id", t.CredentialID,
@@ -384,6 +396,125 @@ func (m *ModalityVerification) VerifyOnce(ctx context.Context) (int, error) {
 		slog.Info("modality_verification: cycle done", attrs...)
 	}
 	return written, nil
+}
+
+// probeLedgerMissingTableOnce 让「台账表还不存在」每进程只喊一次。
+//
+// 为什么是 Warn 而不是 Debug：835 未应用的环境上，这个写入会**每轮**失败。
+// 静默（Debug）等于把「你的核实循环在盲飞」又藏回日志里，而 832 迁移的注释
+// 已经为同一族问题写过判词 ——「没有这张表，一次持续数周的中断与一个健康系统
+// 无法区分」。喊一次既不会刷屏，又足以让运维看见该应用 835。
+//
+// 为什么只认 42P01：与 bg/routing_health_checks.go 的 Optional 纪律同源。
+// 其它错误码（权限、连接、约束）都是**真故障**，必须每次都喊。
+var probeLedgerMissingTableOnce sync.Once
+
+// recordProbeLedger 把一次核实尝试写进统一自检台账 system_probe_runs。
+//
+// # 为什么需要它（2026-10-06 实测）
+//
+// 目标里的「这个需要加入到自检任务中」此前**没有兑现**：核实循环是独立 ticker、
+// 进不了 credential_probe_queue、语义探针经 internal/upstreamurl 直连上游
+// （所以不产生 request_logs）、尝试记录只在进程内 m.attempts。⇒ 运维唯一能
+// 问出「核实跑过什么」的通道是 slog，而这些日志活不过一次重启。
+//
+// 本方法是**只加出口、不改行为**的：核实结论仍然只写
+// model_modality_verification / models_canonical。台账写失败绝不影响核实
+// （见下面的错误处理），因为反过来才是危险的——为了记账把核实循环弄停。
+//
+// # 行的形状与两个刻意选择
+//
+//	task_id = 0
+//	    多模态核实**不是**队列任务，没有 credential_probe_queue 的任务号。
+//	    合成一个哈希任务号会在按 task_id 分组的看板上伪装成别的任务的执行。
+//	    0 是「本行不属于任何队列任务」的显式标记。
+//
+//	逐目标一行，而不是一轮一行
+//	    决策原文是「每轮写一行」，但这张表按 (credential_id, raw_model) 造：
+//	    两列 NOT NULL，各带一个 btree 索引。一轮一行只能给它们塞哨兵值，
+//	    那样每行既无归属也不可行动。逐目标写则每行都指向一个具体的
+//	    (凭据, 模型) 与一个具体的跳过原因。差异在 835 的文件头里也记了一份。
+//
+// # 不写台账的情况（别把台账当整轮的完整账）
+//
+//	· attemptedRecently 命中的退避：同进程内的重复目标，写进去等于重复计数。
+//	· 循环因 batchLimit / 日预算提前 break 后**未被扫描到**的目标：压根没尝试。
+//
+// 这两类只体现在 VerifyOnce 结尾那行 slog 的 scanned/probed/backed_off 上。
+func (m *ModalityVerification) recordProbeLedger(
+	ctx context.Context,
+	t modalityVerifyTarget,
+	admit bool,
+	admitWhy string,
+	didProbe bool,
+	probeErr error,
+	startedAt time.Time,
+) {
+	if m == nil || m.db == nil {
+		return
+	}
+
+	status, skipReason, errDetail := "success", "", ""
+	switch {
+	case probeErr != nil:
+		status = "failed"
+		errDetail = truncateForLedger(probeErr.Error(), 500)
+	case !admit:
+		// 准入闸门拒绝。**不是**错误：一条被有意排除的绑定探它才是问题。
+		status = "skipped"
+		skipReason = "admission gate: " + admitWhy
+	case !didProbe:
+		// 过了闸门却没出网 ⇒ 日预算/批次内记账把它挡下了。
+		status = "skipped"
+		skipReason = "daily probe budget exhausted"
+	}
+
+	// 台账写入用独立超时：它绝不能继承一个已经超时的 ctx 而被静默丢弃，
+	// 也不能拖住核实循环。
+	lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+
+	_, err := m.db.Exec(lctx, `
+		INSERT INTO public.system_probe_runs
+			(task_id, task_type, automaticity, credential_id, raw_model,
+			 source, worker_id, status, attempt, max_attempts,
+			 skip_reason, err_detail, started_at, finished_at)
+		VALUES (0, 'modality_verify', 'automatic', $1, $2,
+		        'modality_verification', 'modality-verification-worker', $3, 1, 1,
+		        NULLIF($4, ''), NULLIF($5, ''), $6, $7)`,
+		t.CredentialID, t.RawModel, status, skipReason, errDetail,
+		startedAt, time.Now())
+	if err == nil {
+		return
+	}
+
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+		probeLedgerMissingTableOnce.Do(func() {
+			slog.Warn("modality_verification: cannot write the self-check ledger because "+
+				"system_probe_runs does not exist — apply migration 835. Verification itself "+
+				"keeps running and keeps writing its verdicts; what is missing is the durable "+
+				"record that it ran (this message is logged once per process).",
+				"error", err)
+		})
+		return
+	}
+	slog.Warn("modality_verification: failed to write the self-check ledger row",
+		"credential_id", t.CredentialID,
+		"raw_model", t.RawModel,
+		"status", status,
+		"error", err)
+}
+
+// truncateForLedger 截断进台账的长文本。
+//
+// err_detail / skip_reason 都会进运营看板上按维度筛选的表格，一个把上游
+// 整个响应体带回来的错误会让单行膨胀到不可读，也把看板的列宽撑坏。
+func truncateForLedger(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "...[truncated]"
 }
 
 // probeAndPersist 探测单条绑定并写回结论。

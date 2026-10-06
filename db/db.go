@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -324,6 +325,13 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	// intentionally unregistered, so this tolerates the function not
 	// existing yet instead of failing db.Open (see the func's doc comment).
 	if err := db.ensureURSMNodeSnapshotMinDailyPartition(migCtx); err != nil {
+		return err
+	}
+	// 2026-10-06 审计 §10.71（P0 复盘）：把该表主键收敛到 writer 的 ON CONFLICT
+	// 列集合。463 不在 installer 的 StartupFiles 里，而 schema_migrations 是
+	// **只写不读**的账本 ⇒ 没有别的自动通道会修它。先于分区 ensure 生效：
+	// 分区形态下本函数直接不动（830 自带 4 列主键）。
+	if err := db.ensureURSMNodeSnapshotMinIdentityPK(migCtx); err != nil {
 		return err
 	}
 	// 2026-09-05 migration 656 (audit D-2#4/H-2): auto_route_selections_hot
@@ -650,6 +658,15 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureAudioModalityBackfill(migCtx); err != nil {
 		return err
 	}
+	// 2026-10-06 ASR 多模型轮：glm-asr（zhipu）/ minimax-asr-1.0（minimax）
+	// 目录种子。两家上游的 ASR 模型不在 discovery 的 /models 列表里（凭证
+	// 是订阅套餐、列表只吐 chat 模型），纯靠 discovery 永远缺席；不种子则
+	// /v1/audio/* 对这两家恒 no_candidate（直连实测 glm-asr 端点/模型名
+	// 均被上游接受，asr-1.0 走 /v1/speech_to_text，见
+	// domains/streaming/audio_minimax_stt.go）。
+	if err := db.ensureAsrCatalogSeed(migCtx); err != nil {
+		return err
+	}
 	db.ensureProbeHealthDashboardViews(migCtx)
 	return nil
 }
@@ -815,6 +832,81 @@ func (db *DB) ensureAudioModalityBackfill(ctx context.Context) error {
 		   AND canonical_name ~ '^(gpt-4o(-mini)?|gpt)-transcribe'`
 	if _, err := db.pool.Exec(ctx, stmt); err != nil {
 		return fmt.Errorf("ensure audio modality backfill: %w", err)
+	}
+	return nil
+}
+
+// asrCatalogSeeds 是本轮接入的两家 ASR 上游种子：canonical 是客户端
+// 面向的网关模型名，raw 是发往上游的 outbound 名。zhipu 的 canonical
+// 与 raw 同名（OpenAI 兼容 multipart 透传）；minimax 的上游模型叫
+// asr-1.0，网关名带厂商前缀避免裸名歧义（candidate 匹配走 canonical
+// 名 clause (5)，outbound 原样上行）。
+var asrCatalogSeeds = []struct {
+	providerCode string
+	canonical    string
+	raw          string
+}{
+	{"zhipu", "glm-asr", "glm-asr"},
+	{"minimax", "minimax-asr-1.0", "asr-1.0"},
+}
+
+// ensureAsrCatalogSeed 幂等种子 glm-asr / minimax-asr-1.0 的三层数据面：
+// models_canonical（modality='audio'+manual 豁免，820 不会翻回）→
+// provider_models（available）→ credential_model_bindings（该 provider
+// 全部 active 凭据）。任何一层已存在则跳过对应层；从不降级已有
+// modality（audio/multimodal 保留）。启动链每跑一次零行幂等。
+func (db *DB) ensureAsrCatalogSeed(ctx context.Context) error {
+	if db == nil || db.pool == nil {
+		return nil
+	}
+	for _, seed := range asrCatalogSeeds {
+		// 层 1：canonical。存在但被标成 text（例如管理员手工建过）时
+		// 升级到 audio——只升不降，与 820 的方向一致。
+		if _, err := db.pool.Exec(ctx, `
+			INSERT INTO models_canonical (canonical_name, modality, modality_source, status, source, notes)
+			VALUES ($1, 'audio', 'manual', 'active', 'db', 'ensure-seed: ASR multi-provider round 2026-10-06')
+			ON CONFLICT (canonical_name) DO NOTHING`, seed.canonical); err != nil {
+			return fmt.Errorf("ensure asr catalog seed (canonical %s): %w", seed.canonical, err)
+		}
+		if _, err := db.pool.Exec(ctx, `
+			UPDATE models_canonical
+			   SET modality = 'audio', modality_source = 'manual', updated_at = now()
+			 WHERE canonical_name = $1
+			   AND modality NOT IN ('audio', 'multimodal')`, seed.canonical); err != nil {
+			return fmt.Errorf("ensure asr catalog seed (canonical escalate %s): %w", seed.canonical, err)
+		}
+		// 层 2：provider_models（该 code 的每个 provider 各一行）。
+		if _, err := db.pool.Exec(ctx, `
+			INSERT INTO provider_models
+				(provider_id, raw_model_name, canonical_id, standardized_name, outbound_model_name, modality, source, canonical_raw_name)
+			SELECT p.id, $2, mc.id, $2, $2, 'audio', 'ensure-seed', $2
+			FROM providers p
+			JOIN models_canonical mc ON mc.canonical_name = $1
+			WHERE p.code = $3
+			  AND NOT EXISTS (
+			    SELECT 1 FROM provider_models x
+			     WHERE x.provider_id = p.id AND x.raw_model_name = $2)`,
+			seed.canonical, seed.raw, seed.providerCode); err != nil {
+			return fmt.Errorf("ensure asr catalog seed (provider_models %s): %w", seed.raw, err)
+		}
+		// 层 3：该 provider 全部 active 凭据的绑定（缺才有意义——已绑
+		// 的凭据不动 tier/weight 等运营参数）。
+		if _, err := db.pool.Exec(ctx, `
+			INSERT INTO credential_model_bindings (credential_id, provider_model_id)
+			SELECT c.id, x.id
+			FROM credentials c
+			JOIN providers p ON p.id = c.provider_id
+			JOIN provider_models x ON x.provider_id = p.id AND x.raw_model_name = $1
+			WHERE p.code = $2
+			  AND c.status = 'active'
+			  AND NOT EXISTS (
+			    SELECT 1 FROM credential_model_bindings b
+			     WHERE b.credential_id = c.id AND b.provider_model_id = x.id)`,
+			// $1=raw、$2=provider code；每个参数都必须被语句引用——
+			// pgx 对未引用参数做零 OID 推断会 42P18（2026-09-14 external PG 轮）。
+			seed.raw, seed.providerCode); err != nil {
+			return fmt.Errorf("ensure asr catalog seed (bindings %s): %w", seed.raw, err)
+		}
 	}
 	return nil
 }
@@ -1635,7 +1727,7 @@ func (d *DB) ensureUsageFactsDailyPartition(ctx context.Context) error {
 }
 
 // ensureURSMNodeSnapshotMinDailyPartition mirrors the executable body of
-// sql/migrations/manual/830_ursm_node_snapshot_min_partitioned.sql — the
+// sql/migrations/startup/830_ursm_node_snapshot_min_partitioned.sql.skip — the
 // post-migration half only. The RENAME + CREATE PARENT TABLE half is manual
 // and stays manual (see the migration header).
 //
@@ -1655,6 +1747,115 @@ func (d *DB) ensureUsageFactsDailyPartition(ctx context.Context) error {
 // propagate, because its consequence is "today's partition missing ⇒ every
 // snapshot write fails" — there is no DEFAULT partition to absorb the rows
 // (see the 830 header, hard constraint 2).
+// ursmSnapshotIdentityPKCols = writer 的 INSERT ... ON CONFLICT
+// (domains/ursm/v2/persist/writer.go) 所依赖的唯一约束列集合。
+//
+// ★ 这里的字面量是**故意重复**而不是从 writer 导入的：
+//
+//	同一组列在两处各写一份，正是「基线 ↔ writer」那道门存在的理由。
+//	若改成共享常量，那道门会永远为真（自己和自己比），
+//	而这道自愈如果跟着漂，就会把生产往**错的方向**修。
+//	同步性由 db/ursm_snapshot_identity_pk_test.go 钉住。
+const ursmSnapshotIdentityPKCols = "snapshot_ts, tenant_id, credential_id, raw_model_name"
+
+// ensureURSMNodeSnapshotMinIdentityPK 在启动期把 ursm_node_snapshot_min 的
+// 主键收敛到 writer 的 ON CONFLICT 所需��列集合（2026-10-06，审计 §10.71）。
+//
+// ── 为什么需要它（不是「多一道保险」）──────────────────────────────
+// 2026-10-06 的 P0：表的主键停在 3 列（缺 tenant_id），writer 的
+// 4 列 ON CONFLICT 每次抛 SQLSTATE 42P10，写入停摆 12.4 小时 + 间歇失败 51 小时。
+//
+// 而**没有任何自动通道会修它**，实测：
+//
+//	· installer 的 StartupFiles 里没有 453 / 463 / 830（只有 818）；
+//	· `schema_migrations` 在全仓 Go 代码里**只有 INSERT、没有任何读取**，
+//	  它是「只写不读的账本」——同族注释见 admin/telemetry.go:525：
+//	  「live hosts can report schema_migrations=455 while still serving the
+//	  old unique index」；
+//	· §10.65/§10.67 已证 down 迁移（463.down 改主键 / 830.down 换名）
+//	  与 up 迁移（453.sql 内联建表）**都能造出这个状态**。
+//
+// ⇒ 本函数把「巡检发现」升级为「**每次启动自愈**」。
+//
+//	先例：admin/telemetry.go 对同一类问题的处置是「让代码容忍两种形态」；
+//	但 writer 只能容忍一种（单条 ON CONFLICT 子句），
+//	所以对它只能**修库**，不能修代码。
+//
+// ── 安全边界（每条都有代价，取舍写在这里）────────────────────────
+//  1. 表不存在 → 直接返回 nil。to_regclass 而非 '...'::regclass，
+//     否则裸 cast 会 raise 而不是返回 NULL。
+//  2. 表已分区（relkind='p'）→ **不动**。830 的形态自带 4 列主键，
+//     且由 ensureURSMNodeSnapshotMinDailyPartition 负责；在这里
+//     DROP/ADD 一个分区父表的主键会牵连全部分区。
+//  3. 拿不到锁就**放弃并记 WARN**，绝不用长锁把线上写入堵在队列里
+//     （同 830 的 lock_timeout 论证）。
+//  4. 只在列集合**真的不同**时才 DDL；一致则完全不产生写。
+func (d *DB) ensureURSMNodeSnapshotMinIdentityPK(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	const table = "ursm_node_snapshot_min"
+
+	// 0) 形态探测：表在不在、是不是分区表。
+	var exists, partitioned bool
+	if err := d.pool.QueryRow(ctx, `
+		SELECT to_regclass('public.`+table+`') IS NOT NULL,
+		       COALESCE((SELECT c.relkind = 'p' FROM pg_class c
+		                  WHERE c.oid = to_regclass('public.`+table+`')), false)
+	`).Scan(&exists, &partitioned); err != nil {
+		return fmt.Errorf("probe %s identity state: %w", table, err)
+	}
+	if !exists || partitioned {
+		return nil
+	}
+
+	// 1) 读实际主键的列集合（按列名排序，顺序无关）。
+	var actual string
+	err := d.pool.QueryRow(ctx, `
+		SELECT COALESCE((
+		         SELECT string_agg(a.attname, ',' ORDER BY a.attname)
+		           FROM pg_constraint con
+		           JOIN unnest(con.conkey) AS k(attnum) ON true
+		           JOIN pg_attribute a
+		             ON a.attrelid = con.conrelid AND a.attnum = k.attnum
+		          WHERE con.conrelid = to_regclass('public.`+table+`')
+		            AND con.contype = 'p'), '')
+	`).Scan(&actual)
+	if err != nil {
+		return fmt.Errorf("read %s primary key: %w", table, err)
+	}
+
+	var want []string
+	for _, c := range strings.Split(ursmSnapshotIdentityPKCols, ",") {
+		want = append(want, strings.TrimSpace(c))
+	}
+	sort.Strings(want)
+	if actual == strings.Join(want, ",") {
+		return nil
+	}
+
+	// 2) 拿不到锁就放弃：宁可下一轮 boot 再试，也不在启动路径上排队等写入。
+	conctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if _, err := d.pool.Exec(conctx, `SET LOCAL lock_timeout = '3s'`); err != nil {
+		return fmt.Errorf("set lock_timeout for %s identity reconcile: %w", table, err)
+	}
+	if _, err := d.pool.Exec(conctx, `
+		ALTER TABLE public.`+table+` DROP CONSTRAINT IF EXISTS `+table+`_pkey;
+		ALTER TABLE public.`+table+` ADD CONSTRAINT `+table+`_pkey
+			PRIMARY KEY (`+ursmSnapshotIdentityPKCols+`);
+	`); err != nil {
+		// ★ 记 WARN 后**返回 nil**：这条自愈失败不应把网关打成 no-DB 模式。
+		//   §10.60 的真库巡检仍会每小时报 exit 1，两条防线是互补的。
+		slog.Warn("ursm.v2: snapshot identity PK reconcile skipped; writer writes may fail",
+			"table", table, "actual_cols", actual, "want_cols", strings.Join(want, ","), "error", err)
+		return nil
+	}
+	slog.Warn("ursm.v2: snapshot identity PK reconciled at boot",
+		"table", table, "from", actual, "to", strings.Join(want, ","))
+	return nil
+}
+
 func (d *DB) ensureURSMNodeSnapshotMinDailyPartition(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
@@ -3504,8 +3705,7 @@ const routingAnalyticsMVSQL = `
 	  percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) AS p50_latency_ms,
 	  percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95_latency_ms,
 	  percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms) AS p99_latency_ms,
-	  COALESCE(SUM(cost_usd), 0) AS total_cost_usd,
-	  NOW() AS refreshed_at
+	  COALESCE(SUM(cost_usd), 0) AS total_cost_usd
 	FROM routing_analytics_source
 	WHERE ts >= NOW() - INTERVAL '7 days'
 	  AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual')
@@ -3560,8 +3760,7 @@ const routingAnalyticsMVSQL = `
 	  COUNT(*) AS total_requests,
 	  COUNT(*) FILTER (WHERE success) AS success_count,
 	  COUNT(*) FILTER (WHERE is_auto_request = TRUE) AS auto_request_count,
-	  COUNT(*) FILTER (WHERE is_auto_request IS NOT TRUE) AS specified_request_count,
-	  NOW() AS refreshed_at
+	  COUNT(*) FILTER (WHERE is_auto_request IS NOT TRUE) AS specified_request_count
 	FROM routing_analytics_source
 	WHERE ts >= NOW() - INTERVAL '7 days'
 	  AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual')
@@ -3576,7 +3775,65 @@ const routingAnalyticsMVSQL = `
 	DROP INDEX IF EXISTS routing_audit_summary_7d_pkey;
 	CREATE UNIQUE INDEX IF NOT EXISTS routing_audit_summary_7d_ukey
 	  ON routing_audit_summary_7d (tenant_id);
+
+	-- Migration 837: the refresh timestamp moved OUT of the matview target
+	-- lists into this one-row-per-view table.
+	--
+	-- REFRESH ... CONCURRENTLY compares each recomputed tuple against the
+	-- stored one and only rewrites rows that actually differ. A volatile
+	-- NOW() column in the target list makes every row differ on every cycle,
+	-- so the "concurrent" refresh degenerates into a full-table rewrite.
+	-- Measured on 252 prod (runbook §10.75.6/§10.75.7): 100.7% of rows
+	-- rewritten per refresh, of which only 0.339% had any real difference.
+	-- That single column was the 3rd largest WAL producer in the gateway
+	-- database (8.98%); removing it cuts that to ~0.03%.
+	--
+	-- NOTE: this DDL creates the table but does NOT stamp it. The row means
+	-- "content was regenerated at T", and only the party that actually
+	-- rebuilt or refreshed the view may write it — see
+	-- stampRoutingMVRefreshes below. Seeding here would let a plain restart
+	-- reset the freshness clock of a dead refresher, silently breaking the
+	-- 15-minute staleness contract admin/analytics_materialized.go relies on.
+	CREATE TABLE IF NOT EXISTS routing_mv_refresh_state (
+	  view_name TEXT PRIMARY KEY,
+	  refreshed_at TIMESTAMPTZ NOT NULL
+	);
 `
+
+// RoutingMVViewNames are the materialized views whose freshness contract is
+// tracked in routing_mv_refresh_state (migration 837). Keep in sync with the
+// refresher's refreshAll call sites and with the mvFreshWithin callers in
+// admin/analytics_materialized.go.
+var RoutingMVViewNames = []string{"routing_analytics_7d", "routing_audit_summary_7d"}
+
+// StampRoutingMVRefreshSQL records "the content of $1 was regenerated now".
+// Exported (not inlined) because two independent packages write it: the db
+// ensure path after a DROP+CREATE rebuild, and bg.MaterializedViewRefresher
+// after each REFRESH. A second copy of a write statement is how the two
+// writers silently drift.
+//
+// It deliberately takes the view name as a parameter rather than stamping
+// every row: refreshAll refreshes the two views independently, and stamping
+// both after only one succeeded would report a failed view as fresh.
+const StampRoutingMVRefreshSQL = `
+	INSERT INTO routing_mv_refresh_state (view_name, refreshed_at)
+	VALUES ($1, NOW())
+	ON CONFLICT (view_name) DO UPDATE SET refreshed_at = EXCLUDED.refreshed_at`
+
+// mvRefreshExecer is the slice of pgx that both stamping call sites need.
+type mvRefreshExecer interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
+// stampRoutingMVRefresh writes the current time for each named view.
+func stampRoutingMVRefresh(ctx context.Context, q mvRefreshExecer, views ...string) error {
+	for _, v := range views {
+		if _, err := q.Exec(ctx, StampRoutingMVRefreshSQL, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // ensureRoutingAnalyticsMaterializedViews mirrors
 // sql/migrations/startup/up/632_routing_analytics_materialized_view.sql.
@@ -3610,6 +3867,14 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 			   AND POSITION('auto_profile' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0
 			   AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_7d'), true), '')) > 0
 		   AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_audit_summary_7d'), true), '')) > 0
+		   -- Migration 837: a definition still carrying refreshed_at is the
+		   -- pre-837 shape, whose NOW() column forces a full-table rewrite on
+		   -- every CONCURRENTLY refresh. Presence-of-origin_stage cannot see
+		   -- that difference, so this negative check is what actually forces
+		   -- 252's existing views to be rebuilt.
+		   AND POSITION('refreshed_at' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_7d'), true), '')) = 0
+		   AND POSITION('refreshed_at' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_audit_summary_7d'), true), '')) = 0
+		   AND to_regclass('public.routing_mv_refresh_state') IS NOT NULL
 	`).Scan(&upToDate); err == nil && upToDate {
 		return nil
 	}
@@ -3629,9 +3894,13 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 		_, _ = conn.Exec(context.WithoutCancel(ctx), `SET statement_timeout = DEFAULT`)
 	}()
 
-	var staleDefinition bool
+	var staleDefinition, viewsExistedBefore bool
 	if err := conn.QueryRow(ctx, `
-		SELECT CASE
+		SELECT
+			(to_regclass('public.routing_analytics_7d') IS NOT NULL
+			 OR to_regclass('public.routing_audit_summary_7d') IS NOT NULL
+			 OR to_regclass('public.routing_analytics_source') IS NOT NULL),
+			CASE
 				WHEN to_regclass('public.routing_analytics_7d') IS NOT NULL
 				 AND to_regclass('public.routing_audit_summary_7d') IS NOT NULL
 				 AND to_regclass('public.routing_analytics_source') IS NOT NULL
@@ -3639,6 +3908,10 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 					POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0
 					AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_7d'), true), '')) > 0
 					AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_audit_summary_7d'), true), '')) > 0
+					-- 837: drop the pre-837 NOW() refreshed_at shape (see the
+					-- matching negative checks in the fast-path gate above).
+					AND POSITION('refreshed_at' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_7d'), true), '')) = 0
+					AND POSITION('refreshed_at' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_audit_summary_7d'), true), '')) = 0
 				)
 				WHEN to_regclass('public.routing_analytics_7d') IS NOT NULL
 				  OR to_regclass('public.routing_audit_summary_7d') IS NOT NULL
@@ -3646,7 +3919,7 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 				THEN TRUE
 				ELSE FALSE
 			END
-	`).Scan(&staleDefinition); err != nil {
+	`).Scan(&viewsExistedBefore, &staleDefinition); err != nil {
 		return err
 	}
 	if staleDefinition {
@@ -3663,7 +3936,18 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 	if _, err := conn.Exec(ctx, routingAnalyticsMVSQL); err != nil {
 		return err
 	}
-	slog.Info("routing analytics materialized views ensured (migration 632)")
+	// Stamp only when the content was genuinely regenerated: either we just
+	// dropped the old views, or none existed and CREATE populated them. On
+	// the index-repair path (views kept, only a missing ukey recreated) the
+	// content is exactly as stale as it was, so claiming freshness there
+	// would hide a dead refresher behind the 15-minute contract.
+	if !viewsExistedBefore || staleDefinition {
+		if err := stampRoutingMVRefresh(ctx, conn, RoutingMVViewNames...); err != nil {
+			return err
+		}
+	}
+	slog.Info("routing analytics materialized views ensured (migration 632)",
+		"rebuilt", !viewsExistedBefore || staleDefinition)
 	return nil
 }
 
@@ -3741,12 +4025,73 @@ func (d *DB) ensureOrchestrationRuntimeInstancesSchema(ctx context.Context) erro
 	return nil
 }
 
+// workTypeRequestLogsDDL is the slice of the 002_work_types schema that
+// touches request_logs. It is kept out of workTypeSchemaSQL and applied under
+// its own catalog guard because it is the one statement here that costs an
+// exclusive lock on the hottest table in the database.
+//
+// 2026-10-06: `ALTER TABLE … ADD COLUMN IF NOT EXISTS` does NOT spare the
+// lock. PG must acquire ACCESS EXCLUSIVE on the parent and on every partition
+// before it can check whether the column exists, so a column that has been in
+// place for months still costs a full exclusive pass on every boot — measured
+// at up to 109,456 ms on production (runbook §10.79). request_logs carries 5
+// monthly partitions there, so that is 6 relations locked for a no-op, on
+// every gateway start, blocking concurrent writers of the busiest table.
+//
+// ensureRequestLogSchema already solves this for its own 31 columns with a
+// catalog short-circuit (see its comment); this applies the same shape to the
+// last unguarded request_logs DDL in the startup path.
+const workTypeRequestLogsDDL = `
+ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS work_type TEXT;
+CREATE INDEX IF NOT EXISTS idx_request_logs_work_type
+    ON request_logs (work_type, ts DESC)
+    WHERE work_type IS NOT NULL AND work_type <> '';`
+
+// workTypeRequestLogsCurrent reports whether request_logs already carries the
+// work_type column and its index, i.e. whether workTypeRequestLogsDDL would be
+// a pure no-op. Both are checked because the DDL is applied as one unit: the
+// index cannot be created before the column exists.
+func (d *DB) workTypeRequestLogsCurrent(ctx context.Context) bool {
+	var missing int
+	err := d.pool.QueryRow(ctx, `
+		SELECT
+		  (SELECT count(*) FROM (VALUES ('work_type')) AS want(name)
+		   WHERE to_regclass('public.request_logs') IS NOT NULL
+		     AND NOT EXISTS (
+		       SELECT 1 FROM information_schema.columns
+		        WHERE table_schema='public' AND table_name='request_logs'
+		          AND column_name = want.name))
+		  +
+		  (SELECT count(*) FROM (VALUES ('idx_request_logs_work_type')) AS want(name)
+		   WHERE NOT EXISTS (
+		       SELECT 1 FROM pg_indexes
+		        WHERE schemaname='public' AND indexname = want.name))
+	`).Scan(&missing)
+	if err != nil {
+		// A failed probe must not be read as "current": that would skip DDL on
+		// a database that genuinely needs it. Fall through to applying it.
+		slog.Warn("work_type request_logs probe failed; applying DDL", "error", err)
+		return false
+	}
+	return missing == 0
+}
+
 func (d *DB) ensureWorkTypeSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
-	_, err := d.pool.Exec(ctx, workTypeSchemaSQL)
-	if err != nil {
+	if _, err := d.pool.Exec(ctx, workTypeSchemaSQL); err != nil {
+		return err
+	}
+	// Guarded separately: this is the only statement above that takes an
+	// exclusive lock on request_logs. Everything in workTypeSchemaSQL touches
+	// small config tables and is cheap to re-check.
+	if d.workTypeRequestLogsCurrent(ctx) {
+		slog.Info("work_type_config schema ensured (22 seed rows idempotent); " +
+			"request_logs work_type column and index already present, DDL skipped")
+		return nil
+	}
+	if _, err := d.pool.Exec(ctx, workTypeRequestLogsDDL); err != nil {
 		return err
 	}
 	slog.Info("work_type_config schema ensured (22 seed rows idempotent)")
@@ -4004,11 +4349,6 @@ BEGIN
             ON DELETE CASCADE NOT VALID;
     END IF;
 END $$;
-
-ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS work_type TEXT;
-CREATE INDEX IF NOT EXISTS idx_request_logs_work_type
-    ON request_logs (work_type, ts DESC)
-    WHERE work_type IS NOT NULL AND work_type <> '';
 
 INSERT INTO work_type_config (key, label, category, l1_task_type, default_profile, tags, prompt_keywords, sort_order)
 VALUES

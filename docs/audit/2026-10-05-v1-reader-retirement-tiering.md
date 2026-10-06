@@ -364,27 +364,44 @@
 ⚠ **报基线必须带 HEAD sha。** 本轮同一个 admin 全量门在一天内出现过三个不同的数，
 **每一次在当时那棵树上都准确**，不可比的是它们之间：
 
-| HEAD | admin FAIL | 多出/变化的那条 |
-|---|---:|---|
-| `62e866ccc` | **6** | — |
-| `496a27314` | **7** | `TestDegradePayloadsCarryMarker`（zcode `d58a3c504` 改 `bg/routing_health_checks.go` 1078 行，带进 2 个未登记的降级站点） |
-| `b0bd6616c` | **6** | 上一条被 `b56f454cf` 登记豁免理由后转绿 |
+| HEAD | admin FAIL | db FAIL | 变化 |
+|---|---:|---:|---|
+| `62e866ccc` | **6** | 3 | — |
+| `496a27314` | **7** | 3 | `TestDegradePayloadsCarryMarker`：zcode `d58a3c504` 改 `bg/routing_health_checks.go` 1078 行，带进 2 个未登记的降级站点 |
+| `b0bd6616c` | **6** | 3 | 上一条被 `b56f454cf` 登记豁免理由后转绿 |
+| `3e9893045` | **7** | **2** | admin 那条**换个文件又红了**（见下）；db 的 `TestRetirementBlockedByUnrunBackfills` 转绿 |
+
+⚠ **22 小时内 admin 走过 6 → 7 → 6 → 7，而 db 是 3 → 2。**
+`TestDegradePayloadsCarryMarker` 这一条尤其能说明问题：它红的**不是同一个原因两次**。
+`b56f454cf` 登记的豁免**至今仍在文件里**（`grep -c routing_health_checks.go admin/degrade_marker_test.go` = 1），
+而 `3e9893045` 上它报的是**另一个文件**：
+
+```
+1 个降级站点返回 200 + 空载荷却没有 degraded 标记：bg/modality_verification.go:492
+```
+
+即 zcode `d58a3c504`（modality 探针闸）+ `c6c78773e`（给 `bg/modality_verification.go`
+**加了 131 行**新功能）带进来的新站点。⇒ **那不是「豁免失效」，是又来一个新的。**
+本审计的 8 个提交**一次都没碰过** `admin/degrade_marker_test.go` 或 `bg/modality_verification.go`
+（逐个 `git show --name-only` 核过）⇒ 7 条**全部非本轮引入**。
 
 ★ 我曾把 `62e866ccc` 上的 6 当成最终基线报出「零新增」，那在最终 HEAD 上不成立 ——
 `git merge-base --is-ancestor d58a3c504 62e866ccc` ⇒ **否**，那个提交当时还没进树。
 **base 之间不可比，且远端一天能往返两轮。**
 
-**`b0bd6616c` 上的权威基线（逐条列名）**
+**`3e9893045` 上的权威基线（逐条列名）**
 
-- **admin FAIL 6**：`TestColumnarParentTwoSurfaceSetopShape_RealDB` ·
-  `TestReportRollup_HTTPContract`（含子测试 `credential_/_key_视角…`）·
-  `TestV1BodiesReadersAreAssessed`（**故意红**的基线门：27 个 bodies 读方未逐点评估）·
+- **admin FAIL 7**：`TestColumnarParentTwoSurfaceSetopShape_RealDB` ·
+  `TestDegradePayloadsCarryMarker` · `TestReportRollup_HTTPContract`（含子测试
+  `credential_/_key_视角…`）· `TestV1BodiesReadersAreAssessed`（**故意红**的基线门）·
   `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable` ·
   `TestSessionFinalSuccessBacklogIsClosed` · `TestProjectTasksSkipsNullTaskID`
-- **db FAIL 3**：`TestRepointValueFidelity` · `TestRetirementBlockedByUnrunBackfills` ·
-  `TestSessionFamilyColumnAvailability_FillRates`
-  ⇒ db 门**两次独立运行逐条相同**（交叉确认，非单次读数）
-- 本轮新增/改动的 5 道 §9.262 门 + 4 道 §9.265 门：**逐条 `-v` 复跑全绿**
+- **db FAIL 2**：`TestRepointValueFidelity` · `TestSessionFamilyColumnAvailability_FillRates`
+  （`TestRetirementBlockedByUnrunBackfills` 已转绿）
+- 本审计的 5 道 §9.262 门 + 4 道 §9.265 门：`go vet ./admin/ rc=0`，
+  分档表在远端树上仍为 **116 条 / ①4 ②76 ③28 ④8**、③ 名单 **28 项字面量 28 个唯一（无重复）**、
+  两个相关文件都归 ③ 且 **Reason 非空**、门断言仍是 `108 / 22 / 14 / 116` ⇒
+  **上一轮修的三处没有被后来的 115 个提交改回去。**
 
 ### ★ db 第 3 条的真正触发点（我上一轮定位不准，此处更正）
 
@@ -392,22 +409,35 @@
 触发点是 `db/retirement_column_exposure.go` 的 `RetirementUnservableColumns`
 （该清单注释明写「Measured 2026-10-04 on the local real database」）。
 
-`client_protocol` 登记 `0.00% session vs 37.02% v1`，本次实测
-**lifetime 0.01% / recent 47.9%**（该列在共享本地库被回填），于是门逐字报出两条互为镜像的错位：
+⚠ **22 小时后（`3e9893045`）它已经变成**两列错位，且成因**不是漂移而是 schema 修复**。
+`3e9893045` 就是 `fix(db): ensureWorkTypeSchema 消掉启动期 request_logs 上的 109 秒独占锁`，
+它把两列的填充率真的顶上去了：
+
+| 列 | 登记（2026-10-04 测） | `b0bd6616c` 实测 | **`3e9893045` 实测** | 分类变化 |
+|---|---|---:|---:|---|
+| `work_type` | 0.00% | 0.0011% | **0.0011%** | 仍 `goEmpty`（低于 0.005% 阈值）✅ 仍在登记里 |
+| `client_protocol` | 0.00% | 0.01% | **0.26%** | 越过阈值 ⇒ 掉出 `goEmpty` |
+| `is_final_success` | 0.00% | 0.0018% | **0.07%** | 越过阈值 ⇒ 掉出 `goEmpty` |
+
+于是 `GO EMPTY ON THE SESSION SIDE` 从 **(2)** 变成 **(1): work_type**，
+错位也从一列变两列，且仍是互为镜像：
 
 ```
-unservable: registered but not measured: [client_protocol]
-degraded:   measured but not registered: [client_protocol]
+unservable: registered but not measured: [client_protocol is_final_success]
+degraded:   measured but not registered: [client_protocol is_final_success]
 ```
 
-而我上一轮引的 `GO EMPTY ON THE SESSION SIDE (2): work_type, is_final_success`
-是**同一测试的分类输出**，不是触发点。找「这个 FAIL 是什么引起的」要落到
-**真正被断言的那一处**，不是同一份日志里最扎眼的那一行。
+而 `GO EMPTY …` 那行是**同一测试的分类输出**，不是触发点。找「这个 FAIL 是什么引起的」
+要落到**真正被断言的那一处**，不是同一份日志里最扎眼的那一行。
 
 ⚠ **这个红是陷阱，不要按它的提示去改登记**（门自身注释已警告）：
-0.01% 虽高于 `effectivelyEmptyPP = 0.005%` 阈值而不再进 `goEmpty`，
-但它意味着 **99.99% 的历史行仍为空**，「退役后完全失去数据」这个实质声明依然成立。
-照错误信息「按本次实测重算登记名单」去做，会把 `client_protocol` 从
-`unservable` 悄悄降级成 `degraded`。**本轮不动这个文件**（不是我建的，
-`d58a3c504` 也没动它），处置留给属主，可选项：保留登记并给该测试加
-「共享库漂移」豁免 / 重测后重登记 / 调整阈值 —— 三者取舍属主定。
+0.26% 虽高于 `effectivelyEmptyPP = 0.005%` 阈值而不再进 `goEmpty`，
+但它意味着 **99.7% 的历史行仍为空**；`is_final_success` 的 0.07% 更是 **99.93% 为空**。
+「退役后完全失去数据」这个实质声明**对这两列依然成立**。
+照错误信息「按本次实测重算登记名单」去做，会把 `client_protocol` **和** `is_final_success`
+从 `unservable` 悄悄降级成 `degraded`。**本轮不动这个文件**（不是我建的，
+`d58a3c504` 与 `ensureWorkTypeSchema` 都没动它），处置留给属主。
+⚠ 而且**不能只在「漂移」框架下决策** —— 这轮的变化**不是漂移，是 `ensureWorkTypeSchema`
+把 schema 真的修好了**，且**回填若仍在继续，填充率还会继续涨**。
+可选项：保留登记并给该测试加「schema 修复后重测」豁免 / 重测后重登记（**但要保住
+「实质上 99%+ 为空」这个声明，不能因为越过 0.005% 就当它可服务**）/ 调整阈值 —— 三者取舍属主定。

@@ -129,11 +129,16 @@ func TestCronFileActuallyHasTaskLines(t *testing.T) {
 
 // gradedExitMonitors = 结论只经由「退出码 + stdout」传递的巡检。
 // 这几个脚本被 >/dev/null 2>&1 静默即等于从生产上把它摘掉。
+//
+// ★ 注意与上面「不能被静默」是**两件事**：被 tee 管道接走不等于被静默。
+//   C7-P3-2 登记的口径缺口是另一个问题 —— `| tee -a` 让 cron 层拿到的是
+//   tee 的 0，脚本的 0/1/3 到不了 cron 的 job 状态。两边都要分开看。
 var gradedExitMonitors = []string{
 	"ursm-snapshot-health.sh",
 	"ursm-snapshot-payload-bloat.sh",
 	"pg-table-bloat-check.sh",
 	"pg17-pg-availability-check.sh",
+	"pg17-onconflict-constraint-check.sh",
 }
 
 // TestGradedExitMonitorListStillMatchesDisk —— 上面那份清单本身会腐。
@@ -149,6 +154,47 @@ func TestGradedExitMonitorListStillMatchesDisk(t *testing.T) {
 			t.Errorf("gradedExitMonitors lists %q but it is not in scripts/252-monitor/: %v\n"+
 				"★ 删名字会放过静默，删脚本会放过没接线。两个方向都要有人发现。", name, err)
 		}
+	}
+}
+
+// TestHeartbeatCronRunsEveryMinute —— 这道门是被一次**部署后才暴露**的错误逼出来的。
+//
+// 我把心跳写成 `59 * * * *`，本意是「每分钟但错开整点」。
+// ★ `59 * * * *` 的真实语义是「**每小时**的第 59 分钟跑一次」——
+//   cron 的分钟字段无法既表达「每分钟」又表达「错开 :00」；
+//   想要错开就只能牺牲频率，于是它从每分钟退化成了每小时。
+//   而它**看起来完全正常**：上线后确实在 00:59 跑过一次，
+//   log 建好了、心跳文件更新了，我据此写下「cron 已验证触发」。
+//   ⇒ 「跑过一次」不等于「按预期频率在跑」。第 11 分钟才发现它没再跑。
+//
+// 所以这道门钉的不是「这一行存在」（那由上面的注册门负责），
+// 而是**它的分钟字段**——频率是这道巡检的全部意义所在，
+// 而频率恰恰是「跑一次」看不出来的那部分。
+func TestHeartbeatCronRunsEveryMinute(t *testing.T) {
+	const script = "pg17-pg-availability-check.sh"
+	var found int
+	for _, line := range readCron(t) {
+		if !cronTaskLine.MatchString(line) || !strings.Contains(line, script) {
+			continue
+		}
+		found++
+		fields := strings.Fields(line)
+		if len(fields) < 6 {
+			t.Errorf("调度 %s 的那行字段不足 6 个，解析不了频率：\n%s", script, line)
+			continue
+		}
+		if minute := fields[0]; minute != "*" {
+			t.Errorf("%s 的 cron 分钟字段是 %q，期望 `*`（每分钟）。\n"+
+				"★ `59 * * * *` 的真实语义是**每小时**跑一次，不是「每分钟但错开整点」——"+
+				"cron 的分钟字段无法同时表达这两件事。而这种错误上线后仍然"+
+				"「看起来正常」：它会真的跑一次，只是再也不会跑第二次。\n"+
+				"频率是这道巡检的全部意义，且恰恰是只看「跑过没有」看不出来的那部分。\n%s",
+				script, minute, line)
+		}
+	}
+	// 正向自证：候选行必须存在，否则上面全部断言空转。
+	if found != 1 {
+		t.Fatalf("在 %s 里找到 %d 行调度 %s，期望恰好 1 行", cronFile, found, script)
 	}
 }
 

@@ -67,4 +67,50 @@ describe('PullToRefreshMachine 状态机（07 §2）', () => {
     expect(isVerticalPull(3, 30)).toBe(true)
     expect(isVerticalPull(5, 4)).toBe(true) // 未过 12px 锁定窗不抢
   })
+
+  // ↓ 移植自 feat/web-mobile-hyper 的 pullToRefresh.spec.ts（对应用例原文见各 it 标题）
+
+  it('追加加载中互斥（isLoadingMore）：不进入 pulling，位移恒 0', () => {
+    const m = new PullToRefreshMachine({
+      onRefresh: vi.fn().mockResolvedValue(undefined),
+      isLoadingMore: () => true,
+    })
+    expect(m.begin()).toBe(false)
+    expect(m.state).toBe('idle')
+    expect(m.move(100)).toBe(0)
+  })
+
+  it('追加加载结束后下拉恢复可认领', () => {
+    let loading = true
+    const m = new PullToRefreshMachine({
+      onRefresh: vi.fn().mockResolvedValue(undefined),
+      isLoadingMore: () => loading,
+    })
+    expect(m.begin()).toBe(false)
+    loading = false
+    expect(m.begin()).toBe(true)
+    expect(m.state).toBe('pulling')
+  })
+
+  it('reduced-motion：位移恒 0、状态机照常推进到 armed', () => {
+    const m = new PullToRefreshMachine({
+      onRefresh: vi.fn().mockResolvedValue(undefined),
+      reducedMotion: () => true,
+    })
+    m.begin()
+    const visual = m.move(PTR_CONFIG.thresholdPx + 10)
+    expect(m.state).toBe('armed') // 触发判定不受影响
+    expect(visual).toBe(0) // 但不做位移动画
+  })
+
+  it('reduced-motion 关闭时位移照常计算（对照组：门不是恒零）', () => {
+    const m = new PullToRefreshMachine({
+      onRefresh: vi.fn().mockResolvedValue(undefined),
+      reducedMotion: () => false,
+    })
+    m.begin()
+    expect(m.move(PTR_CONFIG.thresholdPx + 10)).toBe(
+      PTR_CONFIG.thresholdPx + 10 * PTR_CONFIG.resistance,
+    )
+  })
 })

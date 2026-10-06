@@ -1,6 +1,19 @@
 package bg
 
-// 825 的真库回归（2026-10-04）
+// 830 的真库回归（2026-10-04 建；2026-10-06 订正名字与夹具）
+//
+// ★ 为什么要记这一句：2026-10-06 之前本文件叫 `ursm_825_realdb_test.go`、
+//   函数叫 `Test825*`、常量叫 `migration825SQL`，而它从建起来那天起读的、
+//   建的、回滚的**全是 830**（`830_ursm_node_snapshot_min_partitioned`）。
+//   之所以没人发现，是因为**本仓真的有一个 825**：
+//   `825_modality_graded_verification.sql`（多模态分级核实），主题完全不同。
+//   ⇒ 「825」在这仓里指两个东西，于是测试名对不上内容这件事被完全掩护了。
+//
+//   同批改掉的还有 `partition_825_contract_test.go`（5 个 `Test825*` 同样读
+//   830 的 SQL，25 处提及）。两个文件里唯一**不能**跟着改的是表名
+//   `_post825`：那是 830 down 自己留下的对象名。
+//
+// ⚠ 别改回去：真库门红了时报的是 `apply 830 down` 而不是 825 —— 按 830 查。
 //
 // 无 TEST_DATABASE_URL / TEST_DB_URL 时跳过（与 db/db_750_ensure_realdb_test.go
 // 同门控、同纪律：真实 boot 顺序里 canonical SQL 先于 Go ensure，所以本测试
@@ -27,12 +40,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const migration825SQL = "../sql/migrations/manual/830_ursm_node_snapshot_min_partitioned.sql"
-
 // dsnDatabaseName 从 DSN 里取出库名。pgx 两种写法都要吃：
 // URL 形态（postgres://user:pw@host:5432/dbname?sslmode=disable）与
 // 关键字形态（host=… dbname=…）。取不到时返回 "" —— 宁可让下面的门
 // 拒绝，也不猜。
+//
+// ⚠️ 2026-10-06 合并轮自 feat 侧 ursm_825_realdb_test.go 移植（含同日事故记录）。
 func dsnDatabaseName(dsn string) string {
 	if u, err := url.Parse(dsn); err == nil && u.Scheme != "" && u.Path != "" {
 		return strings.TrimPrefix(u.Path, "/")
@@ -50,8 +63,8 @@ func dsnDatabaseName(dsn string) string {
 
 // destructiveGate 是本文件唯一的准入门。返回 nil 表示放行。
 //
-// ⚠️ 2026-10-06 加固：此前本文件**只**按 env 变量是否存在放行，
-// 于是有人拿 TEST_DATABASE_URL 指向 245 跑它时，dropAll825Objects 把 245 上的
+// ⚠️ 2026-10-06 加固（feat 侧原文）：此前本文件**只**按 env 变量是否存在放行，
+// 于是有人拿 TEST_DATABASE_URL 指向 245 跑它时，dropAll830Objects 把 245 上的
 // public.ursm_node_snapshot_min 连 CASCADE 删掉，而 schema_migrations 里
 // 453/818 的 applied 记录原封不动 —— 账本从此声称「表结构已建立」而真实表不存在。
 // 后果有两处，都不是显示问题：
@@ -63,21 +76,21 @@ func dsnDatabaseName(dsn string) string {
 // 与同仓其它真库测试（db/db_750_ensure_realdb_test.go 等只判 env 变量）的区别：
 // **只有本文件会 DROP 生产表**，所以只有它需要这道库名门。其它测试不改 schema。
 func destructiveGate(dsn string) error {
-	if os.Getenv("URSM_825_ALLOW_ANY_DB") == "1" {
+	if os.Getenv("URSM_830_ALLOW_ANY_DB") == "1" {
 		return nil
 	}
 	name := dsnDatabaseName(dsn)
 	if name == "" {
 		return fmt.Errorf("无法从 DSN 解析出库名（dsn=%s）。\n"+
 			"本测试会 DROP TABLE ... CASCADE，只允许对可丢弃的测试库运行。\n"+
-			"若你的 DSN 确实指向测试库，请显式设置 URSM_825_ALLOW_ANY_DB=1。", redactDSN(dsn))
+			"若你的 DSN 确实指向测试库，请显式设置 URSM_830_ALLOW_ANY_DB=1。", redactDSN(dsn))
 	}
 	if !strings.Contains(strings.ToLower(name), "test") {
 		return fmt.Errorf("库名 %q 不含 \"test\"。\n"+
 			"本测试会 DROP TABLE public.ursm_node_snapshot_min CASCADE 且不恢复。\n"+
 			"2026-10-06 实测事故：仅凭 TEST_DATABASE_URL 就放行，导致 245 上的该表被删、\n"+
 			"而 453/818 的台账未收口，随后每次部署与运行期留存清理都报错。\n"+
-			"确需对非 _test 库运行时，显式设置 URSM_825_ALLOW_ANY_DB=1。", name)
+			"确需对非 _test 库运行时，显式设置 URSM_830_ALLOW_ANY_DB=1。", name)
 	}
 	return nil
 }
@@ -94,14 +107,30 @@ func redactDSN(dsn string) string {
 	return regexp.MustCompile(`password\s*=\s*\S+`).ReplaceAllString(dsn, "password=***")
 }
 
-func connect825(t *testing.T) *pgxpool.Pool {
+// ★ 2026-10-06：本文件读 830 up 迁移**复用**同包的 readMigration830
+//
+//	（定义在 partition_830_contract_test.go），不再自己写第二个。
+//
+//	背景：830 已被改标成 `…partitioned.sql.skip`（manual-by-design 迁移，
+//	部署通道 _deploy_pending_startup_migrations 只认 .down.sql/.skip/
+//	.bak.skip/头部 SUPERSEDED）。改标那天只有 partition 那个门加了回退，
+//	本文件没有 ⇒ 集成门实测三条真库门全红：
+//
+//	  ursm_830_realdb_test.go: read …/830_….sql: no such file or directory
+//
+//	「一个改标动两个消费者、只给其中一个加回退」是这个病的第一形态；
+//	**再加一个同功能的助手**就是它的第二形态（两份回退逻辑各自漂移），
+//	所以这里复用而不是重写。
+const migration830SQL = "../sql/migrations/startup/830_ursm_node_snapshot_min_partitioned.sql"
+
+func connect830(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
 		dsn = os.Getenv("TEST_DB_URL")
 	}
 	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL / TEST_DB_URL 未设置，跳过 825 真库回归")
+		t.Skip("TEST_DATABASE_URL / TEST_DB_URL 未设置，跳过 830 真库回归")
 	}
 	if err := destructiveGate(dsn); err != nil {
 		t.Skipf("拒绝执行：%v", err)
@@ -116,11 +145,11 @@ func connect825(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// dropAll825Objects 清掉 825 可能留下的全部对象，让每个用例都从干净前置态开始。
+// dropAll830Objects 清掉 830 可能留下的全部对象，让每个用例都从干净前置态开始。
 // ★ 必须连 _post825 / _legacy 一起清：它们各自占着 PK 约束名，只清主表的话
 //
 //	下一次 CREATE ... PRIMARY KEY (同名) 会撞名 —— 这是本轮实跑踩过的坑。
-func dropAll825Objects(t *testing.T, pool *pgxpool.Pool) {
+func dropAll830Objects(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
 	_, _ = pool.Exec(ctx, `DROP TABLE IF EXISTS public.ursm_node_snapshot_min CASCADE`)
@@ -131,10 +160,10 @@ func dropAll825Objects(t *testing.T, pool *pgxpool.Pool) {
 }
 
 // makePreMigrationTable 建出迁移前的形态：一个普通的非分区表，且 PK 约束名是
-// canonical 的 `ursm_node_snapshot_min_pkey`（825 的 RENAME CONSTRAINT 那一步
+// canonical 的 `ursm_node_snapshot_min_pkey`（830 的 RENAME CONSTRAINT 那一步
 // 就是为它准备的）。
 //
-// 列不需要与生产一致：825 不读旧表结构，只 RENAME。但 PK 四列必须与 825
+// 列不需要与生产一致：830 不读旧表结构，只 RENAME。但 PK 四列必须与 830
 // 新建的 PK 同名，才能覆盖"约束名被旧表占着"这条路径。
 func makePreMigrationTable(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
@@ -155,12 +184,53 @@ func makePreMigrationTable(t *testing.T, pool *pgxpool.Pool) {
 	}
 }
 
-func run825(t *testing.T, pool *pgxpool.Pool) error {
+// ensureSchemaMigrations 保证迁移台账表存在，好让 830 的 down 能跑完最后一步。
+//
+// ★ 为什么必须由**测试**提供，而不是去改 down 脚本：
+// 830 down 的第 2c 步是 `DELETE FROM public.schema_migrations WHERE version = '830'`，
+// 而 `DELETE FROM schema_migrations` 是**本仓 343 个 down 脚本里 31 个的惯例**
+// （含 817 / 819 / 830 / 831）—— 生产里这张表一直在，所以 down 的写法是对的。
+// 裸测试库里没有它，于是 down **在已经收敛之后**栽在最后一步：
+//
+//	apply 830 down: ERROR: relation "public.schema_migrations" does not exist
+//
+// ⇒ 两条路里只有一条合理：让 bare DB 具备台账表（测试侧）。去改 31 个惯例脚本不可行。
+//
+// 形状**照抄生产**（127.0.0.1:5432 实测 \d）：
+//
+//	version text NOT NULL / description text / applied_at timestamptz DEFAULT now()
+//	+ CONSTRAINT schema_migrations_pkey PRIMARY KEY (version)
+//
+// 只在**本测试自己建了**它的时候才清理 —— 共享测试库里若本来就有台账，
+// 删掉它会毁掉别的测试的账本。
+func ensureSchemaMigrations(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	b, err := os.ReadFile(migration825SQL)
-	if err != nil {
-		t.Fatalf("read %s: %v", migration825SQL, err)
+	ctx := context.Background()
+	var existing *string
+	if err := pool.QueryRow(ctx,
+		`SELECT to_regclass('public.schema_migrations')::text`).Scan(&existing); err != nil {
+		t.Fatalf("probe schema_migrations: %v", err)
 	}
+	if existing != nil && *existing != "" {
+		return
+	}
+	if _, err := pool.Exec(ctx, `
+		CREATE TABLE public.schema_migrations (
+		    version     text NOT NULL,
+		    description text,
+		    applied_at  timestamptz NOT NULL DEFAULT now(),
+		    CONSTRAINT schema_migrations_pkey PRIMARY KEY (version)
+		)`); err != nil {
+		t.Fatalf("create schema_migrations: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DROP TABLE IF EXISTS public.schema_migrations`)
+	})
+}
+
+func run830(t *testing.T, pool *pgxpool.Pool) error {
+	t.Helper()
+	b, _ := readMigration830(t)
 	conn, err := pool.Acquire(context.Background())
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
@@ -170,15 +240,15 @@ func run825(t *testing.T, pool *pgxpool.Pool) error {
 	return err
 }
 
-// Test825MigrationRealDB — 主路径：跑通 + 验收关键形态。
-func Test825MigrationRealDB(t *testing.T) {
-	pool := connect825(t)
-	dropAll825Objects(t, pool)
-	t.Cleanup(func() { dropAll825Objects(t, pool) })
+// Test830MigrationRealDB — 主路径：跑通 + 验收关键形态。
+func Test830MigrationRealDB(t *testing.T) {
+	pool := connect830(t)
+	dropAll830Objects(t, pool)
+	t.Cleanup(func() { dropAll830Objects(t, pool) })
 	makePreMigrationTable(t, pool)
 
-	if err := run825(t, pool); err != nil {
-		t.Fatalf("apply 825: %v", err)
+	if err := run830(t, pool); err != nil {
+		t.Fatalf("apply 830: %v", err)
 	}
 	ctx := context.Background()
 
@@ -322,27 +392,27 @@ func Test825MigrationRealDB(t *testing.T) {
 	})
 
 	t.Run("重放被守卫挡住", func(t *testing.T) {
-		if err := run825(t, pool); err == nil {
-			t.Fatal("replaying 825 succeeded — the fail-closed guard is not working")
+		if err := run830(t, pool); err == nil {
+			t.Fatal("replaying 830 succeeded — the fail-closed guard is not working")
 		}
 	})
 }
 
-// Test825EnsureRejectsForeignPartitionSquatting — ★ 本文件的核心用例。
+// Test830EnsureRejectsForeignPartitionSquatting — ★ 本文件的核心用例。
 //
 // 构造 up→down→up 的前置形态：同名分区已存在，但挂在**别的**父表下
 // （真实来源是 830.down 保留的 _post825）。要求 ensure **明确报错**，
 // 而不是静默返回 —— 静默返回的后果是新父表零分区、所有写入失败，
 // 而迁移报成功。
-func Test825EnsureRejectsForeignPartitionSquatting(t *testing.T) {
-	pool := connect825(t)
-	dropAll825Objects(t, pool)
-	t.Cleanup(func() { dropAll825Objects(t, pool) })
+func Test830EnsureRejectsForeignPartitionSquatting(t *testing.T) {
+	pool := connect830(t)
+	dropAll830Objects(t, pool)
+	t.Cleanup(func() { dropAll830Objects(t, pool) })
 	makePreMigrationTable(t, pool)
 
-	// 跑通一次 825 拿到真函数。
-	if err := run825(t, pool); err != nil {
-		t.Fatalf("apply 825: %v", err)
+	// 跑通一次 830 拿到真函数。
+	if err := run830(t, pool); err != nil {
+		t.Fatalf("apply 830: %v", err)
 	}
 	ctx := context.Background()
 
@@ -418,7 +488,7 @@ func Test825EnsureRejectsForeignPartitionSquatting(t *testing.T) {
 	}
 }
 
-// Test825UpDownRoundTripRealDB — ★ 往返回归。
+// Test830UpDownRoundTripRealDB — ★ 往返回归。
 //
 // 本轮本地 PG 17.11 实跑在**往返**路径上抓到三个缺陷，每一个都只在
 // 「up 过一次、down 过一次、再上」时才现形，单跑一次 up 永远看不见：
@@ -430,10 +500,10 @@ func Test825EnsureRejectsForeignPartitionSquatting(t *testing.T) {
 //  3. down 保留的 `_post825` 仍占着 canonical PK 名 ⇒ 同上。
 //
 // 「只能退不能进的回滚是假回滚」。本测试把整条往返钉死。
-func Test825UpDownRoundTripRealDB(t *testing.T) {
-	pool := connect825(t)
-	dropAll825Objects(t, pool)
-	t.Cleanup(func() { dropAll825Objects(t, pool) })
+func Test830UpDownRoundTripRealDB(t *testing.T) {
+	pool := connect830(t)
+	dropAll830Objects(t, pool)
+	t.Cleanup(func() { dropAll830Objects(t, pool) })
 	ctx := context.Background()
 	downPath := filepath.Join("..", "sql", "migrations", "startup",
 		"830_ursm_node_snapshot_min_partitioned.down.sql")
@@ -450,7 +520,7 @@ func Test825UpDownRoundTripRealDB(t *testing.T) {
 		}
 		defer conn.Release()
 		if _, err := conn.Conn().PgConn().Exec(ctx, string(b)).ReadAll(); err != nil {
-			t.Fatalf("apply 825 down: %v", err)
+			t.Fatalf("apply 830 down: %v", err)
 		}
 	}
 	pkName := func(table string) string {
@@ -465,7 +535,9 @@ func Test825UpDownRoundTripRealDB(t *testing.T) {
 	}
 
 	makePreMigrationTable(t, pool)
-	if err := run825(t, pool); err != nil {
+	// 830 down 最后一步要删自己的台账行；裸测试库没有这张表，见函数注释。
+	ensureSchemaMigrations(t, pool)
+	if err := run830(t, pool); err != nil {
 		t.Fatalf("up #1: %v", err)
 	}
 
@@ -487,13 +559,13 @@ func Test825UpDownRoundTripRealDB(t *testing.T) {
 		}
 		if got := pkName("public.ursm_node_snapshot_min"); got != "ursm_node_snapshot_min_pkey" {
 			t.Fatalf("pk constraint name after down = %q, want the canonical name — "+
-				"otherwise re-applying 825 fails on the RENAME CONSTRAINT step", got)
+				"otherwise re-applying 830 fails on the RENAME CONSTRAINT step", got)
 		}
 	})
 
 	t.Run("_post825 仍在时重新 up 必须大声报错", func(t *testing.T) {
-		if err := run825(t, pool); err == nil {
-			t.Fatal("re-applying 825 with _post825 present succeeded — it should refuse, " +
+		if err := run830(t, pool); err == nil {
+			t.Fatal("re-applying 830 with _post825 present succeeded — it should refuse, " +
 				"because the same-named partitions under _post825 would be silently skipped " +
 				"and the new parent would end up with zero partitions")
 		}
@@ -504,7 +576,7 @@ func Test825UpDownRoundTripRealDB(t *testing.T) {
 		if _, err := pool.Exec(ctx, `DROP TABLE public.ursm_node_snapshot_min_post825 CASCADE`); err != nil {
 			t.Fatalf("drop _post825: %v", err)
 		}
-		if err := run825(t, pool); err != nil {
+		if err := run830(t, pool); err != nil {
 			t.Fatalf("up #2 after clearing _post825: %v", err)
 		}
 		var parts int

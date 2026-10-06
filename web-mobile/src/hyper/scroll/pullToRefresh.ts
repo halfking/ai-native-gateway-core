@@ -26,6 +26,21 @@ export function isVerticalPull(dx: number, dy: number): boolean {
 export interface PullToRefreshHooks {
   onRefresh: () => Promise<void>
   onSettled?: (failed: boolean) => void
+  /**
+   * 追加加载存活判据（移植自 feat/web-mobile-hyper）。
+   *
+   * 连续加载的 loadNext 与下拉刷新此前只有单向互斥：
+   * ContinuousListController.loadNext() 会拒绝 refreshing 期间的请求，但反向
+   * 没有保护——列表正在追加加载时用户下拉，两条链路会同时争 sentinel 与滚动
+   * 位置，表现为列表尾部重复请求或回弹跳位。判据交给调用方注入是因为「是否
+   * 正在追加加载」只有列表组件知道。
+   */
+  isLoadingMore?: () => boolean
+  /**
+   * 「减少动态效果」判据。开启时视觉位移恒 0，但状态机照常推进到 armed ——
+   * 触发逻辑与文案不受影响，只是不做位移动画。
+   */
+  reducedMotion?: () => boolean
 }
 
 export class PullToRefreshMachine {
@@ -41,6 +56,8 @@ export class PullToRefreshMachine {
   /** 只有 idle（含 settling 完成后）可开始新一次下拉；刷新中拒绝。 */
   begin(): boolean {
     if (this._state !== 'idle' || this.singleFlight) return false
+    // 追加加载中不认领下拉：与 loadNext 双向互斥。
+    if (this.hooks.isLoadingMore?.()) return false
     this._state = 'pulling'
     return true
   }
@@ -53,8 +70,11 @@ export class PullToRefreshMachine {
       return 0
     }
     const { thresholdPx, maxVisualPx, resistance } = PTR_CONFIG
-    const visual = dy <= thresholdPx ? dy : thresholdPx + (dy - thresholdPx) * resistance
+    // 状态先推进，reduced-motion 的零位移早退放在其后 —— 否则「减少动态效果」
+    // 会顺带把 armed 判定也吃掉，指示器文案停在 pulling。
     this._state = dy >= thresholdPx ? 'armed' : 'pulling'
+    if (this.hooks.reducedMotion?.()) return 0
+    const visual = dy <= thresholdPx ? dy : thresholdPx + (dy - thresholdPx) * resistance
     return Math.min(visual, maxVisualPx)
   }
 

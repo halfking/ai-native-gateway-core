@@ -25,6 +25,14 @@
 -- gate rebuilds automatically whenever `origin_stage` is missing from any of
 -- the three view definitions).
 --
+-- ⚠ 2026-10-06 (migration 837): this file no longer carries
+-- `NOW() AS refreshed_at`. That column made REFRESH ... CONCURRENTLY rewrite
+-- 100% of both views on every cycle; the refresh time now lives in
+-- routing_mv_refresh_state. 649 still contains the old shape — it is an
+-- already-applied migration and is left untouched, and 837 (which runs after
+-- it) converges any database that replays it. Do not copy refreshed_at back
+-- into any of the three definitions.
+--
 -- Historical design notes carried over from the original 632:
 --   - NULL-safety: is_auto_request is COALESCEd to FALSE in the view. GROUP BY
 --     keeps NULL and FALSE in separate buckets while the unique index maps both
@@ -133,8 +141,7 @@ SELECT
   percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) AS p50_latency_ms,
   percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95_latency_ms,
   percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms) AS p99_latency_ms,
-  COALESCE(SUM(cost_usd), 0) AS total_cost_usd,
-  NOW() AS refreshed_at
+  COALESCE(SUM(cost_usd), 0) AS total_cost_usd
 FROM public.routing_analytics_source
 WHERE ts >= NOW() - INTERVAL '7 days'
   AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual')
@@ -164,8 +171,7 @@ SELECT
   COUNT(*) AS total_requests,
   COUNT(*) FILTER (WHERE success) AS success_count,
   COUNT(*) FILTER (WHERE is_auto_request = TRUE) AS auto_request_count,
-  COUNT(*) FILTER (WHERE is_auto_request IS NOT TRUE) AS specified_request_count,
-  NOW() AS refreshed_at
+  COUNT(*) FILTER (WHERE is_auto_request IS NOT TRUE) AS specified_request_count
 FROM public.routing_analytics_source
 WHERE ts >= NOW() - INTERVAL '7 days'
   AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual')
@@ -176,6 +182,20 @@ GROUP BY tenant_id;
 
 CREATE UNIQUE INDEX routing_audit_summary_7d_ukey
   ON public.routing_audit_summary_7d (tenant_id);
+
+-- Migration 837: the refresh timestamp moved OUT of both target lists into
+-- this one-row-per-view table. A volatile NOW() column made every recomputed
+-- tuple differ, so REFRESH ... CONCURRENTLY rewrote 100% of the view on
+-- every cycle (252 prod: 100.7% rewritten, only 0.339% genuinely changed).
+CREATE TABLE IF NOT EXISTS public.routing_mv_refresh_state (
+  view_name TEXT PRIMARY KEY,
+  refreshed_at TIMESTAMPTZ NOT NULL
+);
+
+-- Both views were just rebuilt by this replay, so they are fresh now.
+INSERT INTO public.routing_mv_refresh_state (view_name, refreshed_at)
+VALUES ('routing_analytics_7d', NOW()), ('routing_audit_summary_7d', NOW())
+ON CONFLICT (view_name) DO UPDATE SET refreshed_at = EXCLUDED.refreshed_at;
 
 COMMENT ON MATERIALIZED VIEW public.routing_analytics_7d IS
   'Pre-aggregated 7-day routing analytics for /api/admin/auto-route/analytics/* endpoints. '

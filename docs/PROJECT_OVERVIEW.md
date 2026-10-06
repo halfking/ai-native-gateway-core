@@ -1,7 +1,7 @@
 # LLM Gateway Go — 项目总览与架构设计
 
 > **版本**: v3.0（全码审计重生成）  
-> **更新日期**: 2026-10-01  
+> **更新日期**: 2026-10-06  
 > **状态**: 生产运行中 · 本版基于全码审计刷新（四域子代理 + 主代理实证），新增/重生文档见 §8  
 
 ---
@@ -35,16 +35,16 @@ LLM Gateway Go 是一个**企业级大语言模型网关系统**，为企业提�
 
 ---
 
-### 1.4 代码统计（基于真实代码扫描，2026-10-01，均不含 vendor/ 与 installer/；旧版数字含 vendor 依赖不可比）
+### 1.4 代码统计（基于真实代码扫描，2026-10-06，均不含 vendor/ 与 installer/；旧版数字含 vendor 依赖不可比）
 
 | 指标 | 数值 | 说明 |
 |------|------|------|
-| Go源文件总数 | 4,886 个 | `find . -name "*.go" -not -path "./vendor/*" \| wc -l` |
-| Admin API文件 | 625 个 | `find ./admin -name "*.go" -type f \| wc -l` |
-| 后台Worker文件 | 348 个 | `find ./bg -name "*.go" -type f \| wc -l` |
+| Go源文件总数 | 4,967 个 | `find . -name "*.go" -not -path "./vendor/*" \| wc -l` |
+| Admin API文件 | 629 个 | `find ./admin -name "*.go" -type f \| wc -l` |
+| 后台Worker文件 | 382 个 | `find ./bg -name "*.go" -type f \| wc -l` |
 | 领域模块数量 | 67 个 | `ls ./domains/ \| wc -l` (一级目录) |
-| 数据库迁移 | 989 个 SQL | `sql/migrations/` 全量；startup 数字序列活跃至 **831**（work_type 路由来源；7xx 段止于 765），下一枚 832 |
-| 单元测试文件 | 2,655 个 | `*_test.go`（不含 vendor/installer） |
+| 数据库迁移 | 1000 个 SQL | `sql/migrations/` 全量；startup 数字序列活跃至 **837**（work_type 路由来源；7xx 段止于 765），下一枚 838 |
+| 单元测试文件 | 2,728 个 | `*_test.go`（不含 vendor/installer） |
 | 可执行程序 | 34 个 | `ls ./cmd/ \| wc -l` |
 
 ---
@@ -406,12 +406,12 @@ Client Request
 ## 5. 代码统计
 
 ```
-Go源文件总数:     4,886 个 (不含 vendor/installer)
-Admin API文件:      625 个
-后台Worker文件:     348 个
+Go源文件总数:     4,967 个 (不含 vendor/installer)
+Admin API文件:      629 个
+后台Worker文件:     382 个
 领域模块:            67 个 (domains/ 一级目录)
-数据库迁移:         989 个 SQL (sql/migrations/; startup 活跃序列最新 831, 下一枚 832)
-测试文件:         2,655 个 (*_test.go, 不含 vendor/installer)
+数据库迁移:         1000 个 SQL (sql/migrations/; startup 活跃序列最新 837, 下一枚 838)
+测试文件:         2,728 个 (*_test.go, 不含 vendor/installer)
 可执行程序:           34 个 (cmd/)
 ```
 

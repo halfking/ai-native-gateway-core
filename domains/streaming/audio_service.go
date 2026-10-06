@@ -300,10 +300,16 @@ func (s *AudioService) Transcribe(ctx context.Context, req TranscribeRequest, em
 
 	var lastErr error
 	for candIdx, cand := range usable {
-		// 桥接优先（小米）或透传优先（其余），另一形态按 404/405/415 回落。
+		// 桥接优先（小米 chat-audio / MiniMax speech-to-text）或透传优先
+		// （其余），另一形态按 404/405/415 回落。
 		order := []string{AudioTransportTranscriptions, AudioTransportChatAudio}
-		if preferChatAudioBridge(cand) {
+		switch {
+		case preferChatAudioBridge(cand):
 			order = []string{AudioTransportChatAudio}
+		case preferSpeechToText(cand):
+			// MiniMax 标准路径 /audio/transcriptions 实测 404（go mux 裸
+			// "404 page not found"），直接钉 speech_to_text 不做空往返。
+			order = []string{AudioTransportSpeechToText}
 		}
 		candStart := time.Now()
 		var candErr error
@@ -313,6 +319,8 @@ func (s *AudioService) Transcribe(ctx context.Context, req TranscribeRequest, em
 			var err error
 			if transport == AudioTransportChatAudio {
 				res, err = s.transcribeViaChatAudio(ctx, cand, req, format, emit)
+			} else if transport == AudioTransportSpeechToText {
+				res, err = s.transcribeViaSpeechToText(ctx, cand, req, format, emit)
 			} else {
 				res, err = s.transcribeViaMultipart(ctx, cand, req, emit)
 			}

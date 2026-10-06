@@ -4522,7 +4522,7 @@ if err != nil {
 
 1. ★★★★★★ 响应里 7 个 `credits_per_1m_*` **不是「库里存的值」**，
     而是 `globalEffective` + `effectiveModelRates` **算出来的生效价**
-    （`maas/model_rates.go:143-149`）。不��刻那两个函数，
+    （`maas/model_rates.go:143-149`）。不复刻那两个函数，
     就没有任何办法回答「这个数字从哪来」。
 
 2. ★★★★★ **七维各判各的**，`pick()` 是三条件与运算（`maas/rates.go:96-102`）：
@@ -5129,7 +5129,7 @@ settings PUT、model-rates 的 POST/PUT/DELETE）按前几批同口径**一律�
    就是 `admin/attachments`(8, admin)、`admin/modules`(7)、
    `admin/logs`(7, 混合读写)、`system/session-context`(6)、
    `admin/tenants`(25, 多为 superAdmin)。
-2. ★ `admin/tenants` 那 25 条里多�� superAdmin，且很可能带**租户筛选语义**
+2. ★ `admin/tenants` 那 25 条里多为 superAdmin，且很可能带**租户筛选语义**
    ⇒ 与本批的「跨租户 vs 本租户」那组对照值得单独一节。
 
 ### 11.77 租户名录上移：一条「**看着有数据、其实可能没算完**」的列表（第四十一轮，superAdmin 档）
@@ -5594,7 +5594,7 @@ if dbConn != nil && dbConn.Enabled() && redisClientForCache != nil { …注册�
 拿到的是**裸文本** 404（`default: http.NotFound(w, r)`），**不是** `{"error":{"detail":…}}` 信封。
 
 ⇒ 页面必须把「这个租户没有审批配置」与「这一族压根没开」分成两种文案
-（判据：`isnotregistered` 分支要求出现「没注册」四个���，且**不许**出现合成默认面板）。
+（判据：`isnotregistered` 分支要求出现「没注册」四个字，且**不许**出现合成默认面板）。
 
 ★ 派发是 `strings.Contains` **逐条 case**（`main.go:7369-7396`），不是路径解析：
 

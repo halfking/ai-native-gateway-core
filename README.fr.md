@@ -113,7 +113,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `installer/` | Module autonome d’installation / mise à niveau multiplateforme |
 | `scripts/`, `deploy/` | Outillage de build, déploiement, miroir et vérification |
 
-Instantané d’échelle (scan du code au 2026-10-01) : **~4,500 fichiers Go · 2,278 fichiers de test · 927 SQL de migration · 67 packages de domaine · 34 binaires** sous `cmd/`.
+Instantané d’échelle (scan du code au 2026-10-06) : **~4,967 fichiers Go · 2,728 fichiers de test · 1,016 SQL de migration · 67 packages de domaine · 44 binaires** sous `cmd/`.
 
 **Pour aller plus loin**
 

@@ -872,6 +872,9 @@ func main() {
 	var audioTranscriptionsHandler *streaming.AudioTranscriptionsHandler
 	var audioSpeechHandler *streaming.AudioSpeechHandler
 	var audioMCPHandler *streaming.AudioMCPHandler
+	// 2026-10-06 ASR 多模型轮：refine/analyze 转写后处理二件套，与
+	// /v1/audio/* 共享 AudioService 鉴权；LLM 步骤走环回 chat 面。
+	var audioTransformHandler *streaming.AudioTransformHandler
 
 	// ── Tenant model policy (Round 48, 2026-06-21) ─────────────────
 	// Single Checkerr singleton shared by streaming.ChatHandler (hot
@@ -1299,6 +1302,12 @@ func main() {
 				ticker := time.NewTicker(persistInterval)
 				defer ticker.Stop()
 
+				// 2026-10-06（§10.61）：连续失败计数。
+				// 之前 flush 失败只记 Warn，于是 62 小时里 701 次写入全丢
+				// 却没有一次告警；而单次抖动与永久停摆在同一条 Warn 里
+				// 也根本分不出来。成功一次即清零。
+				flushFailStreak := 0
+
 				for {
 					select {
 					case <-ticker.C:
@@ -1310,8 +1319,15 @@ func main() {
 							continue
 						}
 						if err := persistWriter.Flush(ctx, rows); err != nil {
-							slog.Warn("ursm.v2: persist flush failed", "error", err)
+							flushFailStreak++
+							lvl, msg, args := ursmPersistFlushFailure(flushFailStreak, err)
+							slog.Log(ctx, lvl, msg, args...)
 						} else {
+							if flushFailStreak > 0 {
+								slog.Info("ursm.v2: persist flush recovered",
+									"after_streak", flushFailStreak, "rows", len(rows))
+							}
+							flushFailStreak = 0
 							slog.Debug("ursm.v2: persist flushed", "rows", len(rows))
 						}
 						timeoutCancel()
@@ -2410,6 +2426,12 @@ func main() {
 		audioTranscriptionsHandler = streaming.NewAudioTranscriptionsHandler(audioService)
 		audioSpeechHandler = streaming.NewAudioSpeechHandler(audioService)
 		audioMCPHandler = streaming.NewAudioMCPHandler(audioService)
+		// 2026-10-06 ASR 多模型轮：refine（精细化转写）+ analyze（实时
+		// 总结分析）共享鉴权；MCP 面同步暴露 refine_transcription /
+		// analyze_transcription 两个工具。
+		transformSvc := streaming.NewAudioTransformService(audioService)
+		audioTransformHandler = streaming.NewAudioTransformHandler(transformSvc)
+		audioMCPHandler.SetTransformService(transformSvc)
 		slog.Info("API key authentication + RPM rate limiting enabled")
 	} else if cfg.SecretKey != "" {
 		// 2026-09-14 audit H-P0-1: DB verifier unavailable (lite mode /
@@ -3798,6 +3820,9 @@ func main() {
 	var todaySuccessProbe *bg.TodaySuccessProbe
 	// 2026-07-14: 30s system-health monitor (GDRT H badge).
 	var systemHealthWorker *bg.SystemHealthWorker
+	// R48 §五-1（§9.264 接线落地）：v1 写入腿存活信号 worker，
+	// 见 v1_write_liveness_worker.go。
+	var v1WriteLivenessWorker *V1WriteLivenessWorker
 	// 2026-08-31: Materialized view refresher for routing analytics performance
 	var materializedViewRefresher *bg.MaterializedViewRefresher
 
@@ -3948,6 +3973,20 @@ func main() {
 	// canaries are the only instances. The quota-probe family nested inside
 	// has its own gate + opt-out further down (LLM_GATEWAY_QUOTA_PROBE_DISABLED);
 	// see docs/audit/2026-09-10-selfcheck-recovery-gate-audit.md for the full
+	// R48 §五-1 / R48-A5（§9.264）接线落地：v1 写入腿存活信号——
+	// 分类器从「全仓零调用点」（R48-A5 的原始发现）接成常驻 worker +
+	// admin 拉取面（GET /internal/v1-write-liveness，dead→503）。
+	// 刻意独立成块（只看 dbConn）：不挂 cred-recovery / probe-worker /
+	// data-plane 任何一个配置门——§9.238 的失效形态（5 天中断零信号）
+	// 恰恰发生在「没人主动去看」的组合态。日志信号策略见
+	// v1_write_liveness_worker.go 文件头（dead 每 tick 一条 ERROR）。
+	// 只读、每 5m 一次计数查询，不加 kill switch。
+	if dbConn != nil && dbConn.Enabled() {
+		v1WriteLivenessWorker = NewV1WriteLivenessWorker(dbConn.Pool(),
+			v1WriteLivenessDefaultWindow, v1WriteLivenessDefaultInterval)
+		v1WriteLivenessWorker.Start(context.Background())
+	}
+
 	// worker/gate matrix and residual-risk notes.
 	if dbConn != nil && dbConn.Enabled() && !config.IsCredRecoveryDisabled() {
 		slog.Info("CHECKPOINT: inside bg services enabled block",
@@ -5017,11 +5056,19 @@ func main() {
 		// Partition manager: auto-creates monthly request_logs partitions
 		// and archives 2+ months old data to columnar storage.
 		// 2026-06-26: Added per storage-optimization plan.
-		slog.Info("CHECKPOINT: before NewPartitionManager")
-		partitionManager = bg.NewPartitionManager(dbConn.Pool(), 24*time.Hour)
-		slog.Info("CHECKPOINT: before partitionManager.Start")
-		partitionManager.Start(context.Background())
-		slog.Info("CHECKPOINT: after partitionManager.Start")
+		// 2026-10-06: LLM_GATEWAY_PARTITION_MANAGER_ENABLED=false 可关闭本节点
+		// 的 promote/analyze（审计 §10.51/§10.52：154 与 245 连同一个库时
+		// 两个实例对同一批 hot 表各跑一遍全量 44 表 ANALYZE）。默认不变。
+		if partitionManagerEnabledFromEnv() {
+			slog.Info("CHECKPOINT: before NewPartitionManager")
+			partitionManager = bg.NewPartitionManager(dbConn.Pool(), 24*time.Hour)
+			slog.Info("CHECKPOINT: before partitionManager.Start")
+			partitionManager.Start(context.Background())
+			slog.Info("CHECKPOINT: after partitionManager.Start")
+		} else {
+			slog.Info("partition_manager disabled on this node by env; " +
+				"promote/analyze 由其他节点负责")
+		}
 
 		// Wave 3 B8 (2026-09-22): internal ledger reconciliation —
 		// balance_after chain integrity plus request-log credit charges vs
@@ -6245,6 +6292,16 @@ func main() {
 			middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(fbHandler))
 	}
 
+	// R48 §五-1 接线：v1 写入腿存活读数拉取面。鉴权与上方 fallback-buffer
+	// 一致（LLM_GATEWAY_ADMIN_API_KEY）；verdict=dead → 503，供 curl -f 族
+	// 零解析告警。worker 未启动（db 关闭模式）时不挂路由，fail-closed
+	// 惯例与上方 ringBuffer 相同。
+	if v1WriteLivenessWorker != nil {
+		mux.Handle("/internal/v1-write-liveness",
+			middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(
+				NewV1WriteLivenessHandler(v1WriteLivenessWorker)))
+	}
+
 	slog.Info("CHECKPOINT: healthz and metrics registered")
 
 	// plugin-runtime: scan installed plugins and serve /api/v1/plugin-nav.
@@ -6509,6 +6566,11 @@ func main() {
 	}
 	if audioMCPHandler != nil {
 		mux.Handle("/v1/mcp", audioMCPHandler)
+	}
+	// 2026-10-06 ASR 多模型轮：转写后处理二件套（LLM 步骤经环回 chat 面）。
+	if audioTransformHandler != nil {
+		mux.Handle("/v1/audio/refine", audioTransformHandler)
+		mux.Handle("/v1/audio/analyze", audioTransformHandler)
 	}
 	mux.Handle("/v1/models", modelsHandler)
 
@@ -7814,6 +7876,9 @@ func main() {
 		}
 		if systemHealthWorker != nil {
 			systemHealthWorker.Stop()
+		}
+		if v1WriteLivenessWorker != nil {
+			v1WriteLivenessWorker.Stop()
 		}
 		if materializedViewRefresher != nil {
 			materializedViewRefresher.Stop()

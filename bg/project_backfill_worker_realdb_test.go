@@ -10,12 +10,14 @@ package bg
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func r33TestDSN(t *testing.T) string {
@@ -28,6 +30,29 @@ func r33TestDSN(t *testing.T) string {
 		t.Skip("TEST_DATABASE_URL / TEST_DB_URL 未设置，跳过真库纵切")
 	}
 	return dsn
+}
+
+// requireScratchSessionDB guards the DDL-bearing tests in this file.
+//
+// ★ 2026-10-06: 762 的 down 脚本会 DROP TRIGGER / FUNCTION / INDEX
+// （见 762_session_project_backfill_chain.down.sql）。指向共享库或生产库时，
+// 「测试跑通」等于当场拆掉那条回填链。文件头注释一直写着「只应指向一次性/scratch
+// 库」，但那是注释——没有代码拦着，TEST_DATABASE_URL 指错一次就出事。
+// 这里把要求变成判据：库里有本测试未创建的存量行就跳过。
+//
+// 代价要说清楚：本文件在「有数据的库」上从此只会 SKIP 而不再 FAIL。这是
+// 刻意的——SKIP 与 FAIL 的取舍在这里是「不拿生产的触发器换一条测试信号」。
+func requireScratchSessionDB(t *testing.T, ctx context.Context, conn *pgx.Conn) {
+	t.Helper()
+	var preexisting int
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM session_summaries`).Scan(&preexisting); err != nil {
+		t.Fatalf("count pre-existing session_summaries: %v", err)
+	}
+	if preexisting > 0 {
+		t.Skipf("session_summaries already holds %d rows: this test runs 762 up AND down "+
+			"(down drops triggers/functions) and would dismantle a shared database's backfill "+
+			"chain. Point TEST_DATABASE_URL at a disposable/scratch database", preexisting)
+	}
 }
 
 // TestMigration762ProjectBackfillChain_RealDB 端到端验证：
@@ -68,6 +93,9 @@ func TestMigration762ProjectBackfillChain_RealDB(t *testing.T) {
 			t.Skipf("table %s missing; scratch db not provisioned with 547/655 shape", tbl)
 		}
 	}
+
+	// 2026-10-06: 护栏必须在任何 DDL 之前。见 requireScratchSessionDB。
+	requireScratchSessionDB(t, ctx, conn)
 
 	// 1. 迁移两遍（幂等）。
 	for i := 1; i <= 2; i++ {
@@ -259,5 +287,347 @@ ON CONFLICT (gw_session_id) DO UPDATE SET last_active_at = NOW()`,
 	}
 	if remain == nil || *remain != "r33-acc-project" {
 		t.Errorf("down must keep backfilled data, got %v", remain)
+	}
+}
+
+// TestBackfillBatchSurvivesUnresolvableWindowSaturation_RealDB 复现并钉住
+// 2026-10-06 实测到的 worker 停摆（runbook §10.38）。
+//
+// 停摆机理：「能 join 上 session_dim」不等于「能回填」。project_id 与
+// application_code 双 NULL 的行照样进窗口，sync_session_project_attr 对它们
+// 返回 0，行保持 NULL；下一批 ORDER BY session_key 又把它们选回来。只要这类行
+// 的条数 ≥ LIMIT，窗口就被永久占死，worker 每轮 backfilled=0，而窗口外压着
+// 全部可回填行。生产实测 first_resolvable_rank(5746) > LIMIT(2000)。
+//
+// ★ 为什么这个 bug 原本测不出来：原测试只有 4 行夹具，窗口永远装得下，陷阱不
+// 成立。所以本测试必须自己把陷阱造出来——塞 projectBackfillBatchSize+500 行
+// 不可解析行，并且让它们排在目标行之前。缺了任何一半，本测试都会假绿。
+//
+// 与 TestMigration762ProjectBackfillChain_RealDB 不同，本测试只跑 762 up
+// （幂等），不跑 down。
+func TestBackfillBatchSurvivesUnresolvableWindowSaturation_RealDB(t *testing.T) {
+	dsn := r33TestDSN(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Skipf("connect real db: %v", err)
+	}
+	defer conn.Close(ctx)
+
+	for _, tbl := range []string{"session_summaries", "session_dim", "project_dim", "session_project_attribution"} {
+		var exists bool
+		if err := conn.QueryRow(ctx,
+			`SELECT to_regclass('public.`+tbl+`') IS NOT NULL`).Scan(&exists); err != nil {
+			t.Fatalf("probe table %s: %v", tbl, err)
+		}
+		if !exists {
+			t.Skipf("table %s missing; scratch db not provisioned with 547/655 shape", tbl)
+		}
+	}
+	requireScratchSessionDB(t, ctx, conn)
+
+	upBytes, err := os.ReadFile(filepath.Join("..", "sql", "migrations", "startup", "762_session_project_backfill_chain.sql"))
+	if err != nil {
+		t.Fatalf("read 762 up: %v", err)
+	}
+	if _, err := conn.Exec(ctx, string(upBytes)); err != nil {
+		t.Fatalf("apply 762 up: %v", err)
+	}
+
+	const (
+		trapTenant = "trap33-tenant"
+		trapPrefix = "0000trap_"
+		targetKey  = "9999zzz_backfill_target"
+		targetApp  = "trap33app"
+		trapRows   = projectBackfillBatchSize + 500 // 必须 > LIMIT，否则窗口装不下陷阱
+	)
+	cleanup := func() {
+		//nolint:errcheck // best-effort fixture cleanup
+		conn.Exec(ctx, `DELETE FROM session_summaries WHERE session_key LIKE '0000trap_%' OR session_key = $1`, targetKey)
+		//nolint:errcheck
+		conn.Exec(ctx, `DELETE FROM session_dim WHERE gw_session_id LIKE '0000trap_%' OR gw_session_id = $1`, targetKey)
+		//nolint:errcheck
+		conn.Exec(ctx, `DELETE FROM session_project_attribution WHERE gw_session_id LIKE '0000trap_%' OR gw_session_id = $1`, targetKey)
+		//nolint:errcheck
+		conn.Exec(ctx, `DELETE FROM project_dim WHERE project_ref LIKE 'app:trap33%'`)
+		//nolint:errcheck
+		conn.Exec(ctx, `DELETE FROM public.tenants WHERE code = $1`, trapTenant)
+	}
+	cleanup()
+	defer cleanup()
+
+	if _, err := conn.Exec(ctx,
+		`INSERT INTO public.tenants (code, name) VALUES ($1, $2) ON CONFLICT (code) DO NOTHING`,
+		trapTenant, "fixture-"+trapTenant); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+
+	// 陷阱行：session_dim 有行（能 join 上），但 project_id 与 application_code
+	// 双 NULL ⇒ gw_resolve_project_ref 返回 NULL ⇒ sync 返回 0、行不变 NULL。
+	if _, err := conn.Exec(ctx, `
+INSERT INTO session_summaries (session_key, tenant_id, first_request_at, last_request_at, request_count)
+SELECT '0000trap_' || lpad(i::text, 6, '0'), $1, NOW(), NOW(), 1
+FROM generate_series(1, $2) i`, trapTenant, trapRows); err != nil {
+		t.Fatalf("seed trap session_summaries: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `
+INSERT INTO session_dim (gw_session_id, session_key, tenant_id, status, created_at, first_request_at, last_active_at, application_code)
+SELECT '0000trap_' || lpad(i::text, 6, '0'), '0000trap_' || lpad(i::text, 6, '0'),
+       $1, 'active', NOW(), NOW(), NOW(), NULL
+FROM generate_series(1, $2) i`, trapTenant, trapRows); err != nil {
+		t.Fatalf("seed trap session_dim: %v", err)
+	}
+	// 目标行：可解析，排在全部陷阱之后（'9' > '0'，C.UTF-8 字节序）。
+	if _, err := conn.Exec(ctx, `
+INSERT INTO session_summaries (session_key, tenant_id, first_request_at, last_request_at, request_count)
+VALUES ($1, $2, NOW(), NOW(), 1)`, targetKey, trapTenant); err != nil {
+		t.Fatalf("seed target session_summaries: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `
+INSERT INTO session_dim (gw_session_id, session_key, tenant_id, status, created_at, first_request_at, last_active_at, application_code)
+VALUES ($1, $1, $2, 'active', NOW(), NOW(), NOW(), $3)`, targetKey, trapTenant, targetApp); err != nil {
+		t.Fatalf("seed target session_dim: %v", err)
+	}
+
+	// 隔离 worker 路径：上面 seed session_dim 时，762 的 AFTER INSERT 触发器
+	// （trg_session_dim_project_attr_ins）已经把目标行填好了——它与 worker 是同一
+	// 函数的两个入口（迁移自称「口径单一」）。不清掉的话目标行根本不在 NULL 集合里，
+	// 窗口里一条可回填行都没有，本测试会因错误的原因通过或失败。
+	// （与 TestMigration762ProjectBackfillChain_RealDB 同一手法。）
+	if _, err := conn.Exec(ctx,
+		`UPDATE session_summaries SET gw_project_id = NULL WHERE session_key = $1`, targetKey); err != nil {
+		t.Fatalf("reset target gw_project_id: %v", err)
+	}
+	// 该重置本身也可能被别的触发器回填，先确认目标确实处于 NULL 状态。
+	var targetPrefill *string
+	if err := conn.QueryRow(ctx,
+		`SELECT gw_project_id FROM session_summaries WHERE session_key = $1`, targetKey).Scan(&targetPrefill); err != nil {
+		t.Fatalf("read target pre-state: %v", err)
+	}
+	if targetPrefill != nil {
+		t.Fatalf("target gw_project_id = %v before the batch; the write-chain trigger refilled it, "+
+			"so the worker path is not isolated", *targetPrefill)
+	}
+
+	// 陷阱成立性前置断言：目标行必须排在全部陷阱行之后，否则窗口装得下陷阱，
+	// 本测试就退化成「窗口没满」的普通用例，对停摆零检出。
+	var trapsBefore int
+	if err := conn.QueryRow(ctx,
+		`SELECT count(*) FROM session_summaries WHERE session_key LIKE $1 AND session_key < $2`,
+		trapPrefix+"%", targetKey).Scan(&trapsBefore); err != nil {
+		t.Fatalf("verify trap ordering: %v", err)
+	}
+	if trapsBefore < trapRows {
+		t.Fatalf("trap not established: only %d of %d unresolvable rows sort before the target; "+
+			"this test would not exercise window saturation", trapsBefore, trapRows)
+	}
+
+	// 跑生产语句本体，一个批次。
+	rows, err := conn.Query(ctx, sessionProjectBackfillSQL, projectBackfillBatchSize)
+	if err != nil {
+		t.Fatalf("backfill batch query: %v", err)
+	}
+	var total int64
+	for rows.Next() {
+		var affected int
+		if err := rows.Scan(&affected); err != nil {
+			rows.Close()
+			t.Fatalf("scan backfill result: %v", err)
+		}
+		total += int64(affected)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("backfill rows: %v", err)
+	}
+	if total < 1 {
+		t.Fatalf("expected ≥1 backfilled row, got %d — the %d unresolvable rows ahead of the "+
+			"target saturated the %d-row window and stalled the batch", total, trapsBefore, projectBackfillBatchSize)
+	}
+
+	var got *string
+	if err := conn.QueryRow(ctx,
+		`SELECT gw_project_id FROM session_summaries WHERE session_key = $1`, targetKey).Scan(&got); err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if want := "app:" + targetApp; got == nil || *got != want {
+		t.Errorf("target gw_project_id = %v, want %s", got, want)
+	}
+
+	// 陷阱行必须仍为 NULL：它们确实无从回填，不该被"顺手填上"假装成功。
+	var filledTraps int
+	if err := conn.QueryRow(ctx,
+		`SELECT count(*) FROM session_summaries WHERE session_key LIKE $1 AND gw_project_id IS NOT NULL`,
+		trapPrefix+"%").Scan(&filledTraps); err != nil {
+		t.Fatalf("count filled traps: %v", err)
+	}
+	if filledTraps != 0 {
+		t.Errorf("%d unresolvable trap rows got a project ref; they have neither "+
+			"project_id nor application_code, so any value is a bug", filledTraps)
+	}
+}
+
+// TestBackfillBatchCommitsThroughExplicitTransaction_RealDB 验 2026-10-06 引入
+// 的**显式事务**没有把回填结果吞掉（runbook §10.41）。
+//
+// 背景：每批改成 `pool.Begin` → `set_config('statement_timeout',…,true)` →
+// 批语句 → `Commit`。改动本身带来三个新风险，全部是静默的：
+//
+//	① 漏 Commit ⇒ 结果全丢，日志照样打 "pass complete, backfilled=N"；
+//	② Rollback 位置错 ⇒ 失败路径反而把已成功的批丢掉；
+//	③ set_config 的第三参不是 true ⇒ 抬高的超时会漏到 pooled 连接上。
+//
+// 这道门用**换一条真连接重读**来验 ①（同一连接上看不到未提交的数据）。
+//
+// ★ 关于超时本身为什么不在这道门里用墙钟压出来：
+//
+//	我试过把角色 statement_timeout 压到 10ms，实测**加夹具反而让查询更快**
+//	——2500 行陷阱下 10ms 通过，而空表时反而被杀（PG 换了计划）。
+//	⇒ 墙钟压力在这个小库上不可靠，不拿它当证据。超时机制另有两条无歧义证据：
+//	结构门 TestBackfillBatchBudgetIsTransactionLocal，以及 runbook §10.41
+//	记录的生产实测（04:28 吃到 SQLSTATE 57014 / set_config(…,true) 后同句成功）。
+func TestBackfillBatchCommitsThroughExplicitTransaction_RealDB(t *testing.T) {
+	dsn := r33TestDSN(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Skipf("connect real db: %v", err)
+	}
+	defer conn.Close(ctx)
+
+	for _, tbl := range []string{"session_summaries", "session_dim", "project_dim", "session_project_attribution", "tenants"} {
+		var exists bool
+		if err := conn.QueryRow(ctx,
+			`SELECT to_regclass('public.`+tbl+`') IS NOT NULL`).Scan(&exists); err != nil {
+			t.Fatalf("probe table %s: %v", tbl, err)
+		}
+		if !exists {
+			t.Skipf("table %s missing; scratch db not provisioned", tbl)
+		}
+	}
+	requireScratchSessionDB(t, ctx, conn)
+
+	upBytes, err := os.ReadFile(filepath.Join("..", "sql", "migrations", "startup", "762_session_project_backfill_chain.sql"))
+	if err != nil {
+		t.Fatalf("read 762 up: %v", err)
+	}
+	if _, err := conn.Exec(ctx, string(upBytes)); err != nil {
+		t.Fatalf("apply 762 up: %v", err)
+	}
+
+	const (
+		ctTenant = "ct33-tenant"
+		ctKey    = "4444zzz_commit_target"
+		ctApp    = "ct33app"
+	)
+	cleanup := func() {
+		//nolint:errcheck // best-effort fixture cleanup
+		conn.Exec(ctx, `DELETE FROM session_summaries WHERE session_key = $1`, ctKey)
+		//nolint:errcheck
+		conn.Exec(ctx, `DELETE FROM session_dim WHERE gw_session_id = $1`, ctKey)
+		//nolint:errcheck
+		conn.Exec(ctx, `DELETE FROM session_project_attribution WHERE gw_session_id = $1`, ctKey)
+		//nolint:errcheck
+		conn.Exec(ctx, `DELETE FROM project_dim WHERE project_ref LIKE 'app:ct33%'`)
+		//nolint:errcheck
+		conn.Exec(ctx, `DELETE FROM public.tenants WHERE code = $1`, ctTenant)
+	}
+	cleanup()
+	defer cleanup()
+
+	if _, err := conn.Exec(ctx,
+		`INSERT INTO public.tenants (code, name) VALUES ($1,$2) ON CONFLICT (code) DO NOTHING`,
+		ctTenant, "fixture-"+ctTenant); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `
+INSERT INTO session_summaries (session_key, tenant_id, first_request_at, last_request_at, request_count)
+VALUES ($1, $2, NOW(), NOW(), 1)`, ctKey, ctTenant); err != nil {
+		t.Fatalf("seed target ss: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `
+INSERT INTO session_dim (gw_session_id, session_key, tenant_id, status, created_at, first_request_at, last_active_at, application_code)
+VALUES ($1,$1,$2,'active',NOW(),NOW(),NOW(),$3)`, ctKey, ctTenant, ctApp); err != nil {
+		t.Fatalf("seed target dim: %v", err)
+	}
+	// 隔离 worker 路径（762 触发器已在 seed 时填好目标行）。
+	if _, err := conn.Exec(ctx,
+		`UPDATE session_summaries SET gw_project_id = NULL WHERE session_key = $1`, ctKey); err != nil {
+		t.Fatalf("reset target: %v", err)
+	}
+
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("pgxpool.New: %v", err)
+	}
+	defer pool.Close()
+
+	n, err := NewSessionProjectBackfillWorker(pool).BackfillOnce(ctx)
+	if err != nil {
+		t.Fatalf("BackfillOnce: %v", err)
+	}
+	if n < 1 {
+		t.Fatalf("backfilled = %d, want ≥1", n)
+	}
+
+	// ① 换一条**真连接**重读：未提交的数据在这条连接上必须看不见。
+	// 若有人漏了 Commit，这里就会读到 NULL，而 BackfillOnce 仍会报 n≥1。
+	verifier, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect verifier: %v", err)
+	}
+	defer verifier.Close(ctx)
+	var got *string
+	if err := verifier.QueryRow(ctx,
+		`SELECT gw_project_id FROM session_summaries WHERE session_key = $1`, ctKey).Scan(&got); err != nil {
+		t.Fatalf("read target from a fresh connection: %v", err)
+	}
+	if want := "app:" + ctApp; got == nil || *got != want {
+		t.Errorf("target gw_project_id = %v on a FRESH connection, want %s — "+
+			"the batch transaction did not commit (or committed on another connection's view)",
+			got, want)
+	}
+
+	// ③ 超时机制本身的确定性断言：set_config(...,true) 生效、且**只在本事务内**。
+	// ★ 不能拿 set_config 的返回值去和 "120s" 比：PG 会把 120s **规范化**成 "2min"，
+	//   字符串相等必然对不上（我第一版就这么写，当场红）。
+	//   改成「事务内 ≠ 事务外」+「回滚后复原」——与格式无关，且这才是 LOCAL 的含义。
+	var before string
+	if err := verifier.QueryRow(ctx, `SHOW statement_timeout`).Scan(&before); err != nil {
+		t.Fatalf("SHOW before: %v", err)
+	}
+	vt, err := verifier.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	var inside string
+	if err := vt.QueryRow(ctx,
+		`SELECT set_config('statement_timeout', $1, true)`,
+		fmt.Sprintf("%ds", batchTimeoutSec)).Scan(&inside); err != nil {
+		vt.Rollback(ctx) //nolint:errcheck
+		t.Fatalf("set_config: %v", err)
+	}
+	var shownInside string
+	if err := vt.QueryRow(ctx, `SHOW statement_timeout`).Scan(&shownInside); err != nil {
+		vt.Rollback(ctx) //nolint:errcheck
+		t.Fatalf("SHOW inside tx: %v", err)
+	}
+	vt.Rollback(ctx) //nolint:errcheck
+	if shownInside == before {
+		t.Errorf("statement_timeout inside the transaction is still %q — the raise had no "+
+			"effect (before=%q, set_config returned %q)", shownInside, before, inside)
+	}
+	var after string
+	if err := verifier.QueryRow(ctx, `SHOW statement_timeout`).Scan(&after); err != nil {
+		t.Fatalf("SHOW after rollback: %v", err)
+	}
+	if after != before {
+		t.Errorf("statement_timeout leaked onto the connection after rollback: %q (was %q) — "+
+			"set_config's third argument must be true, or the raised budget outlives the batch",
+			after, before)
 	}
 }

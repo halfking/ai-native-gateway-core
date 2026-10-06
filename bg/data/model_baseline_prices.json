@@ -79,20 +79,39 @@
     "  input_per_1m / output_per_1m  必填，USD/百万 token（与实盘成本同量纲）",
     "  cache_read_per_1m / cache_write_per_1m  可选",
     "  vendor                     原厂 id（openai / anthropic / google / deepseek / zhipu ...）",
-    "  source                     vendor_pricing_page | vendor_docs | machine_readable_catalog | operator_override",
+    "  source                     vendor_pricing_page | vendor_docs | machine_readable_catalog |",
+    "                           operator_override。提案工具会在这后面接上**来源行原文**",
+    "                           （如 vendor pricing page row 34 那一行表格）—— 那是让人不必",
+    "                           重读整页就能复核的指针，不要为了套枚举把它删掉。",
     "  source_url                 出处 URL。**没有 URL 的价格不可审计**",
     "  fetched_at                 出处被读取的时刻（RFC3339）。新鲜度先于正确性：",
     "                              一个过期来源比一个错来源更危险，因为它看起来权威",
     "",
-    "⚠ 两个已知缺口（是明确取舍，不是遗漏）：",
-    "  a) 提案给出的模型名是原厂展示名（Claude Opus 4.8），本文件的键必须是",
-    "     models_canonical.canonical_name（claude-opus-4-8）。这层归一由",
-    "     -canonical + 匹配器完成，解析不出来的会单列在 unresolved_names。",
-    "     SyncBaselinePricesToDB 按 canonical_name 精确匹配，名字对不上会",
-    "     写 0 行并打 INFO —— 不会静默错配。",
-    "  b) 本文件刻意不含任何价格。往计费系统里放未经原厂页面核实的数字",
-    "     比没有价格更糟：没有价格时成本是显式未知的，错价格会一路流进",
-    "     成本核算。形状见 _example。"
+    "⚠ 当前状态与仍然缺席的东西：",
+    "",
+    "  已写入 15 条（2026-10-06，全部 USD）：7 个 claude、gpt-5.3-codex、",
+    "  minimax-m2 / m2.1 / m2.5 / m2.7 及其 highspeed 变体、minimax-m3。",
+    "  14 条由提案工具产出并经 models.dev 独立互证，minimax-m3 是**人工**写入",
+    "  （理由见 _manual_notes）。全部经 loadBaselineCatalog 真加载器逐条校验。",
+    "",
+    "  仍然缺席（是明确取舍，不是遗漏）：",
+    "    · 上下文分档（>512k）、Batch / Flex / Fast 等产品档位 —— 按 2026-10-04",
+    "      决策不进本文件，理由见上。minimax-m3 的 Priority 档同理：它与",
+    "      Standard **同名**，页面明写 Set service_tier to priority … 1.5x",
+    "      standard，所以它是服务档位不是不同模型，拆档等于凭空造一个模型。",
+    "    · claude-opus-4-8 —— 原厂页上同一个 canonical 出现两行且价格向量不同",
+    "      （5/25 与 10/50）。按本仓「撞名时正确答案是缺一条基准价」的规则，",
+    "      它**不进本文件**，等人工裁决；提案工具已把它列进 price-conflict。",
+    "    · 6 份快照（MiniMax-paygo / anthropic / doubao / mistral 等）没有",
+    "      Published Time 头 ⇒ 新鲜度**无法证明**、只能假定。提案工具已把它们",
+    "      记进 [no-evidence]。这是本文件当前最大的软肋：fetched_at 记的是",
+    "      我们的抓取时刻，不是原厂的发布时刻。",
+    "    · 聚合站（openrouter / moonshot）被提案工具 SKIP：它们公布的是转售价，",
+    "      属供应商价面，不进基准价面。这是有意的。",
+    "",
+    "  ⚠ 往计费系统里放未经原厂页面核实的数字比没有价格更糟：没有价格时成本",
+    "    是显式未知的，错价格会一路流进成本核算。所以每条都必须带 source_url",
+    "    与 fetched_at，且先过 loadBaselineCatalog 的逐条校验。"
   ],
   "_example": {
     "gpt-4o": {
@@ -105,5 +124,190 @@
       "_note": "上面的 0 是占位示意，不是真实价格。真实值必须从 source_url 核对后填入。"
     }
   },
-  "models": {}
+  "models": {
+    "minimax-m3": {
+      "input_per_1m": 0.3,
+      "output_per_1m": 1.2,
+      "cache_read_per_1m": 0.06,
+      "currency": "USD",
+      "vendor": "minimax",
+      "source": "operator_override (vendor page shows struck-through original + current price on every row, so the proposer refused it as unusable; written by hand after reading the page. Standard tier, <=512k context. See _manual_notes.minimax-m3)",
+      "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
+      "fetched_at": "2026-10-06T12:39:00+08:00"
+    },
+    "claude-fable-5": {
+      "input_per_1m": 10,
+      "output_per_1m": 50,
+      "cache_read_per_1m": 1,
+      "cache_write_per_1m": 12.5,
+      "currency": "USD",
+      "vendor": "anthropic",
+      "source": "vendor pricing page row 159: | Claude Fable 5 | $10 / MTok | $12.50 / MTok | $20 / MTok | $1 / MTok | $50 / MTok |",
+      "source_url": "https://docs.anthropic.com/en/docs/about-claude/pricing",
+      "fetched_at": "2026-10-06T12:39:00+08:00"
+    },
+    "claude-haiku-4-5": {
+      "input_per_1m": 1,
+      "output_per_1m": 5,
+      "cache_read_per_1m": 0.1,
+      "cache_write_per_1m": 1.25,
+      "currency": "USD",
+      "vendor": "anthropic",
+      "source": "vendor pricing page row 170: | Claude Haiku 4.5 | $1 / MTok | $1.25 / MTok | $2 / MTok | $0.10 / MTok | $5 / MTok |",
+      "source_url": "https://docs.anthropic.com/en/docs/about-claude/pricing",
+      "fetched_at": "2026-10-06T12:39:00+08:00"
+    },
+    "claude-opus-4-5": {
+      "input_per_1m": 5,
+      "output_per_1m": 25,
+      "cache_read_per_1m": 0.5,
+      "cache_write_per_1m": 6.25,
+      "currency": "USD",
+      "vendor": "anthropic",
+      "source": "vendor pricing page row 164: | Claude Opus 4.5 | $5 / MTok | $6.25 / MTok | $10 / MTok | $0.50 / MTok | $25 / MTok |",
+      "source_url": "https://docs.anthropic.com/en/docs/about-claude/pricing",
+      "fetched_at": "2026-10-06T12:39:00+08:00"
+    },
+    "claude-opus-4-6": {
+      "input_per_1m": 5,
+      "output_per_1m": 25,
+      "cache_read_per_1m": 0.5,
+      "cache_write_per_1m": 6.25,
+      "currency": "USD",
+      "vendor": "anthropic",
+      "source": "vendor pricing page row 163: | Claude Opus 4.6 | $5 / MTok | $6.25 / MTok | $10 / MTok | $0.50 / MTok | $25 / MTok |",
+      "source_url": "https://docs.anthropic.com/en/docs/about-claude/pricing",
+      "fetched_at": "2026-10-06T12:39:00+08:00"
+    },
+    "claude-opus-4-7": {
+      "input_per_1m": 5,
+      "output_per_1m": 25,
+      "cache_read_per_1m": 0.5,
+      "cache_write_per_1m": 6.25,
+      "currency": "USD",
+      "vendor": "anthropic",
+      "source": "vendor pricing page row 162: | Claude Opus 4.7 | $5 / MTok | $6.25 / MTok | $10 / MTok | $0.50 / MTok | $25 / MTok |",
+      "source_url": "https://docs.anthropic.com/en/docs/about-claude/pricing",
+      "fetched_at": "2026-10-06T12:39:00+08:00"
+    },
+    "claude-sonnet-4-5": {
+      "input_per_1m": 3,
+      "output_per_1m": 15,
+      "cache_read_per_1m": 0.3,
+      "cache_write_per_1m": 3.75,
+      "currency": "USD",
+      "vendor": "anthropic",
+      "source": "vendor pricing page row 168: | Claude Sonnet 4.5 | $3 / MTok | $3.75 / MTok | $6 / MTok | $0.30 / MTok | $15 / MTok |",
+      "source_url": "https://docs.anthropic.com/en/docs/about-claude/pricing",
+      "fetched_at": "2026-10-06T12:39:00+08:00"
+    },
+    "claude-sonnet-4-6": {
+      "input_per_1m": 3,
+      "output_per_1m": 15,
+      "cache_read_per_1m": 0.3,
+      "cache_write_per_1m": 3.75,
+      "currency": "USD",
+      "vendor": "anthropic",
+      "source": "vendor pricing page row 167: | Claude Sonnet 4.6 | $3 / MTok | $3.75 / MTok | $6 / MTok | $0.30 / MTok | $15 / MTok |",
+      "source_url": "https://docs.anthropic.com/en/docs/about-claude/pricing",
+      "fetched_at": "2026-10-06T12:39:00+08:00"
+    },
+    "gpt-5.3-codex": {
+      "input_per_1m": 1.75,
+      "output_per_1m": 14,
+      "cache_read_per_1m": 0.175,
+      "cache_write_per_1m": null,
+      "currency": "USD",
+      "vendor": "openai",
+      "source": "vendor pricing page row 1194: | Codex | gpt-5.3-codex | $1.75 | $0.175 | $14.00 |",
+      "source_url": "https://platform.openai.com/docs/pricing",
+      "fetched_at": "2026-10-06T12:39:00+08:00"
+    },
+    "minimax-m2": {
+      "input_per_1m": 0.3,
+      "output_per_1m": 1.2,
+      "cache_read_per_1m": 0.03,
+      "cache_write_per_1m": 0.375,
+      "currency": "USD",
+      "vendor": "minimax",
+      "source": "vendor pricing page row 45: | **MiniMax-M2** | $0.3 / M tokens | $1.2 / M tokens | $0.03 / M tokens | $0.375 / M tokens |",
+      "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
+      "fetched_at": "2026-10-06T12:39:00+08:00"
+    },
+    "minimax-m2.1": {
+      "input_per_1m": 0.3,
+      "output_per_1m": 1.2,
+      "cache_read_per_1m": 0.03,
+      "cache_write_per_1m": 0.375,
+      "currency": "USD",
+      "vendor": "minimax",
+      "source": "vendor pricing page row 43: | **MiniMax-M2.1** | $0.3 / M tokens | $1.2 / M tokens | $0.03 / M tokens | $0.375 / M tokens |",
+      "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
+      "fetched_at": "2026-10-06T12:39:00+08:00"
+    },
+    "minimax-m2.5": {
+      "input_per_1m": 0.3,
+      "output_per_1m": 1.2,
+      "cache_read_per_1m": 0.03,
+      "cache_write_per_1m": 0.375,
+      "currency": "USD",
+      "vendor": "minimax",
+      "source": "vendor pricing page row 41: | **MiniMax-M2.5** | $0.3 / M tokens | $1.2 / M tokens | $0.03 / M tokens | $0.375 / M tokens |",
+      "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
+      "fetched_at": "2026-10-06T12:39:00+08:00"
+    },
+    "minimax-m2.5-highspeed": {
+      "input_per_1m": 0.6,
+      "output_per_1m": 2.4,
+      "cache_read_per_1m": 0.03,
+      "cache_write_per_1m": 0.375,
+      "currency": "USD",
+      "vendor": "minimax",
+      "source": "vendor pricing page row 42: | **MiniMax-M2.5-highspeed** | $0.6 / M tokens | $2.4 / M tokens | $0.03 / M tokens | $0.375 / M tokens |",
+      "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
+      "fetched_at": "2026-10-06T12:39:00+08:00"
+    },
+    "minimax-m2.7": {
+      "input_per_1m": 0.3,
+      "output_per_1m": 1.2,
+      "cache_read_per_1m": 0.06,
+      "cache_write_per_1m": 0.375,
+      "currency": "USD",
+      "vendor": "minimax",
+      "source": "vendor pricing page row 34: | **MiniMax-M2.7** | $0.3 / M tokens | $1.2 / M tokens | $0.06 / M tokens | $0.375 / M tokens |",
+      "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
+      "fetched_at": "2026-10-06T12:39:00+08:00"
+    },
+    "minimax-m2.7-highspeed": {
+      "input_per_1m": 0.6,
+      "output_per_1m": 2.4,
+      "cache_read_per_1m": 0.06,
+      "cache_write_per_1m": 0.375,
+      "currency": "USD",
+      "vendor": "minimax",
+      "source": "vendor pricing page row 35: | **MiniMax-M2.7-highspeed** | $0.6 / M tokens | $2.4 / M tokens | $0.06 / M tokens | $0.375 / M tokens |",
+      "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
+      "fetched_at": "2026-10-06T12:39:00+08:00"
+    },
+    "claude-opus-4-8": {
+      "input_per_1m": 5,
+      "output_per_1m": 25,
+      "cache_read_per_1m": 0.5,
+      "cache_write_per_1m": 6.25,
+      "currency": "USD",
+      "vendor": "anthropic",
+      "source": "vendor pricing page row 161: | Claude Opus 4.8 | $5 / MTok | $6.25 / MTok | $10 / MTok | $0.50 / MTok | $25 / MTok |",
+      "source_url": "https://docs.anthropic.com/en/docs/about-claude/pricing",
+      "fetched_at": "2026-10-06T12:41:48+08:00"
+    }
+  },
+  "_manual_notes": {
+    "minimax-m3": {
+      "why_not_from_the_proposer": "原厂页上 MiniMax-M3 的每一行都是「~~划线原价~~ 现价」同行，且模型名后缀 Permanent 50% off。提案工具按「划线价不得当基准价」的纪律把 4 行全部判 unusable —— 那个姿态是对的：它无法在不看图的情况下分辨哪一侧才是要记的价。",
+      "how_the_number_was_derived": "逐行核对后取 Standard 档、≤512k 上下文那一行：划线 $0.60 → 现价 $0.30 in、划线 $2.40 → 现价 $1.20 out、划线 $0.12 → 现价 $0.06 cache-read，单位 USD / 1M tokens。",
+      "corroboration": "三个独立旁证：(1) models.dev 的 minimax 与 minimax-cn 两个 provider 各自独立都报 0.3/1.2（全库无 0.45）；(2) 种子库 pricing_plans id=163 的 plan_json 早已是 0.30/1.20/0.06；(3) 原厂页 Standard 档本身。",
+      "two_tiers_not_split": "页面上 Priority 档同名的 M3 是 0.45/1.80/0.09，0.45÷0.30=1.5，脚注原文 “Priority provides priority admission … Set `service_tier` to `priority` … Pricing is 1.5x standard”。⇒ 它是 service_tier 而**不是**另一个模型，按本文件「一个模型一个价、不设档位维度」的建模不拆。",
+      "permanent_50_percent_off": "「Permanent 50% off」写在**模型名里** ⇒ 划线价是折前原价，0.30 / 1.20 / 0.06 是**已含永久折扣**的现价。所以基准价直接记现价，不做二次折扣。同名字段在供应商层（pricing_plans.plan_json 与 credential_model_bindings.plan_meta）另有 permanent_50_percent_off: true，它**全仓无人消费**（grep 0 命中），语义已在 docs/db-changelog.md 记为「已生效的永久折扣、不是纯标记」—— 补孤儿指针时不得按 2 倍记账。"
+    }
+  }
 }

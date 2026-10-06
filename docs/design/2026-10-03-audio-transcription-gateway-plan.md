@@ -436,3 +436,72 @@ TestNormalizeTTSVoiceCanonicalCase 断言方向也反了（要求归一成小写
 
 ASR（真实人声双语、双格式、流式）与 TTS（双语、三音色、变体输入）全部
 验证通过；回环逐字/逐词一致证明合成发音清晰可辨。音频链路可用。
+
+## 10. 2026-10-06 轮：模型盘点复证 + openpocket 本地引擎落地 + ASR 选型定稿
+
+### 10.1 模型盘点（本地库实测，2026-10-06）
+
+目录里 `modality=audio` 共 9 个，但**实际可路由的只有小米 5 个**：
+
+| 模型 | 凭据 | 状态 |
+|---|---|---|
+| mimo-v2.5-asr / -tts / -tts-voiceclone / -tts-voicedesign / mimo-v2-tts | xiaomi-token-plan(cred 9) + xiaomi-mimo(cred 24) | 均 healthy / ready |
+| whisper-1 / gpt-audio / gpt-audio-mini | 无任何凭据绑定 | 目录占位 |
+| gpt-4o-realtime-preview | apigpt(cred 2) | auth_failed / unreachable |
+
+结论：ASR 通道**单一上游**（小米）是当前最大的可用性风险。凭据健康的
+zhipu（4/4 healthy）与 minimax（4 healthy）都在 provider 表里，`glm-asr`
+与 `asr-1.0` 接入只差目录/凭据数据面（透传形态的代码路径已就绪），
+列为下一批候选。
+
+### 10.2 端到端复证（本地 8782，build 2467，2026-10-06）
+
+| 用例 | 结果 |
+|---|---|
+| TTS 茉莉合成 48.5s 会议样本（造数据 + 验证 TTS） | 200，24kHz WAV |
+| ASR 回环（该样本→transcriptions，language=zh） | 逐字全对，`X-Gw-Audio-Seconds=10`，transport=chat-audio |
+| 流式 stream=true | SSE 逐词 delta 正常 |
+| 整段 48.5s 高精转写 | 6.4s 出全文，逐字正确（仅标点归一差异），计费 49s |
+| mp3 输入 | 逐字正确 |
+| MCP tools/call transcribe_audio | `audio_base64`+`format`+`language` → 逐字正确，isError=false |
+| MCP 参数名防呆 | 传错键名（audio）→ JSON-RPC `-32602 audio_base64 and model are required`（信封正确） |
+
+### 10.3 勘误：§6 的「openpocket 现状」
+
+§6 写「openpocket 现状：本地 sherpa-onnx Paraformer + 云端兜底 + …」，
+**与事实不符**——当时 `SherpaPlugin.java` 是 Sprint 3 骨架（全部方法
+reject("AAR not integrated")），工程里没有 AAR 与模型，「实时出字」实际
+全靠云端 3s 定长切片逐片 POST（按秒计费、断网不可用）。§6 把设计目标
+写成了既有现状，本轮修正。
+
+本地引擎已于本轮在 openpocket 真正落地（Phase 4）：
+sherpa-onnx v1.13.8 AAR + 双引擎（zipformer 流式实时 / SenseVoice int8
+本地高精档）+ 模型运行时下载。落地细节、选型对比与同源精度实测见
+openpocket 仓 `docs/2026-10-06-local-asr-sherpa-integration.md`。
+
+### 10.4 ASR 选型定稿（2026-10 联网调研）
+
+- **端侧**：sherpa-onnx（Apache-2.0，k2-fsa 14k+ stars）——流式
+  zipformer + SenseVoice + VAD + 声纹一体、AAR/iOS/Node/WASM 官方多端，
+  是「本地粗翻」唯一同时满足中文效果/端侧体量/工程成本的选项。
+- **云端精翻**：小米 mimo-v2.5-asr 保持默认 final 通道（¥0.5/小时，
+  实测逐字全对）；**明确不承诺实时**——小米没有 WebSocket 实时流，
+  stream=true 只是文本 chunk 的 SSE。
+- **范式**（RealtimeSTT / ufal whisper_streaming / Deepgram 等的一致
+  结论）：端点/VAD 切句 → 本地小模型出 interim 灰字 → 原始音频送云端
+  出 final 黑字覆盖；云端故障退化为纯本地。
+- **后续候选**：Qwen3-ASR 0.6B/1.7B（2026-01 开源，Apache-2.0，中文
+  开源新标杆，sherpa-onnx 已有配置类）；speaches（OpenAI 兼容
+  /v1/audio 上游，透传零代码）；网关 MCP tool 增加 audio_url 引用形态
+  （大音频不走 base64，业界 MCP ASR server 一致形态）。
+
+### 10.5 本地 vs 云同源精度（48s 中文样本，同一 ground truth）
+
+| 通道 | 字准 | 标点 | 速度 |
+|---|---|---|---|
+| 云端 mimo-v2.5-asr（经网关） | ≈100%（逐字全对） | 有 | 6.4s 含网络 |
+| 本地 SenseVoice int8 | ≈97%（4 处同音字） | 有 | RTF 0.03（M 系 CPU） |
+| 本地 zipformer 流式 int8 | ≈85%（同音字较多） | 无 | RTF 0.03 |
+
+三档数据把「端=快、本地高精=隐私档、云=准」的分层从设计断言变成了
+实测结论：zipformer 只配当实时灰字，SenseVoice/云端配当 final。
