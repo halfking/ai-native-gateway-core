@@ -150,6 +150,27 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/RoutingOverridesView.vue'),
     meta: { titleKey: 'overrides.title', requiresAuth: true },
   },
+  // ── 自动调优面（2026-10-07）────────────────────────────────────────────
+  // 三页凑成一个闭环：/overrides 答「现在生效的规则是什么」，
+  // /funnel 答「请求进来后被筛掉了多少、这数可不可信」，
+  // /proposals 答「系统认为规则该怎么调、哪些已经落地」。
+  // 只看规则不知道规则对不对；只看漏斗不知道该怎么改；只看建议不知道哪些已生效。
+  // ★ funnel 走 analytics.go:58 的 adminWrap（handler.go:1430 用 h.superAdmin
+  //   调 RegisterAnalyticsRoutes）；proposals 走 auto_route.go:116 的 adminWrap，
+  //   而 RegisterAutoRouteRoutes 本身在 handler.go:1381 就是 h.superAdmin
+  //   ⇒ 两条都必挡。
+  {
+    path: '/funnel',
+    name: 'funnel',
+    component: () => import('@/views/RouteFunnelView.vue'),
+    meta: { titleKey: 'funnel.title', requiresAuth: true },
+  },
+  {
+    path: '/proposals',
+    name: 'proposals',
+    component: () => import('@/views/TuningProposalsView.vue'),
+    meta: { titleKey: 'proposals.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
