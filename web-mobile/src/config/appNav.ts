@@ -240,6 +240,16 @@ export const DRAWER_NAV: readonly NavItem[] = [
     icon: 'clock',
     titleKey: 'nav.logAdmin',
   },
+  // 会话上下文读面。两条只读**全是 h.admin(...)**（handler.go:1296）
+  // ⇒ **故意不设** requiresRole；设成 super_admin 必须让判据红。
+  // ★ API 前缀是 `/api/system/…`（不是 `/api/admin/`）—— 命名空间与抽屉路径不一致。
+  // ★ `titles/batch` 只读语义却只能 POST；四个写端点本页一律不碰。
+  {
+    key: 'session-context',
+    to: '/session-context',
+    icon: 'grid',
+    titleKey: 'nav.sessionContext',
+  },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))

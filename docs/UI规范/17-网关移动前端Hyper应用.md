@@ -6352,3 +6352,207 @@ if !resp.Exists { writeJSON(w, 200, resp); return }      // ② 只有 log_dir �
 `POST /api/admin/logs/cleanup`（三条都是 **superAdmin**，且后两条是删日志）。
 
 **下一批候选**：`system/session-context`（6）。
+
+### 11.83 会话上下文读面上移（第四十七轮，`system/session-context`）
+
+本批把会话上下文的**两条只读端点**上移。四个写端点一律不碰。
+
+- 新 API 模块 `web-mobile/src/api/sessionContext.ts`
+- 新视图 `SessionContextView.vue`（抽取状态 + 批量标题，两面板）
+- 新路由 `/session-context`
+- 新增**一条 admin 档抽屉席** `session-context`（**故意不设** `requiresRole`）
+- i18n 新命名空间 **`sctx`**
+- 门禁：变异 **32/32 有牙**，用例 **64 条**（37 API + 27 视图）
+
+#### ★★★★ 变异验证：首轮 23/32，分诊出 3 条真缺口 + 1 条**等价变异**
+
+**真判据缺口（补判据后二次跑满）**：
+
+1. `extractionStatusLacksDetailFields` 只断言过 B 形返回 `false`，
+   **A 形返回 `true` 那一侧从没喂过** ⇒ 把它恒置 `false` 全绿。
+2. 「出错时必须清空旧结果」只在**首屏就失败**时验证 ⇒ 而视图**首屏不自动加载**，
+   首屏失败根本没有「旧结果」可留 ⇒ 必须造「先成功 → 再失败」序列。
+3. id 列表的**分隔**只喂过换行 ⇒ 把 `.split(/[\n,;\s]+/)` 换成 `.split(/\n/)` 全绿
+   ⇒ 补「逗号/分号/空格分隔」那条。
+4. 同上，批量侧也缺「先成功 → 再失败」序列。
+
+**★ 等价变异（已证实，不是判据无牙）**：
+
+删掉 `loadStatus` 里 **catch 分支**的 `status.value = null` ⇒ 读数仍全绿。
+实测确认：`loadStatus` 在 **`try` 之前**就已经 `status.value = null`
+⇒ catch 里那一行是**死代码** ⇒ 行为不变 ⇒ **等价变异**。
+⇒ 变异改成「**两处都删**」后才真的有牙（失败后旧结果真的留在屏幕上）。
+★ 这就是「变异后仍绿先证明该变异可观测」的又一例：先查可观测性，
+再判是等价变异还是判据无牙 —— 本例是**产品里的冗余代码**，不是判据的问题。
+
+**注入自身的畸形（4 条）**：
+
+- V8 把 `:disabled="…"` 换成 `:disabled="false" /* MUT-V8 */` ⇒
+  **Vue 模板属性位不允许 JS 注释** ⇒ 编译错、`rc≠0` 却抓不到具名用例
+  ⇒ 改用 `data-mut="MUT-V8"` 带标记
+- V10 删 `v-if` 首行让 `v-else` 变孤儿 ⇒ 同上 ⇒ 改置 `v-if="false"`
+- V1 / V12 的替换串忘带 `MUT-<id>` 标记
+- V8 那条 rc≠0 却被我的 `collectionFailed` 正则**漏判**成「转红但未命中」
+  ⇒ 正则里补了 `Error compiling template` / `Extraneous (closing|opening) tag` 等形态
+
+
+#### ⚠️★ 前缀是 `/api/system/…`，不是 `/api/admin/…`
+
+`admin/handler.go:1296`：
+
+```go
+mux.HandleFunc("/api/system/session-context/", h.admin(h.handleSessionContextRoutes))
+```
+
+★ handler 文件在 `admin/` 包里、路径也走 `h.admin`，但**对外前缀挂在 `/api/system` 下**
+⇒ 照抄 `/api/admin/` 会 404。抽屉路径 `/session-context` 与 API 前缀不一致，别混淆。
+
+档位 `h.admin(...)` ⇒ tenant_admin 可用 ⇒ 抽屉席**不设** `requiresRole`。
+
+#### ★★★★★★★★ 头号陷阱一：`extraction-status` 是**异形端点**
+
+`admin/session_extract.go:231-277` 只有两种响应形状：
+
+```go
+// A 形（未抽取）—— 只有 2 个键
+writeJSON(w, 200, map[string]any{"task_id": taskID, "extracted": false})
+// B 形（已抽取）—— 8 个键
+writeJSON(w, 200, map[string]any{
+    "task_id": taskID, "extracted": true, "extracted_at": ..., "written": written,
+    "skipped_noise": ..., "skipped_duplicate": ..., "status": status, "detail": detailObj})
+```
+
+⇒ A 形**没有** `extracted_at` / `written` / `status` / `detail` 这些键，
+客户端**不许**把它们当空值渲染（变异 V1 专打「A 形也渲染 B 形字段」）。
+⇒ 解包判据只能钉「`task_id` 是字符串且 `extracted` 是布尔」（变异 T5）。
+
+#### ★★★★★★★★ 头号陷阱二：`extracted:false` 有**三种**成因，且**数据库故障也长这样**
+
+三条路径返回**逐字节相同**的响应：
+
+| 成因 | 代码位置 |
+|---|---|
+| 任务不属于你的租户（`assertTaskInTenant` 为假） | `:240-246` |
+| 表里压根没这行（`sql.ErrNoRows`） | `:258` |
+| ★★ **数据库查询出错**（任何 `err`） | `:258-263` |
+
+```go
+err := h.db.QueryRow(ctx, `SELECT … WHERE task_id = $1`, taskID).Scan(…)
+if err != nil {
+    writeJSON(w, http.StatusOK, map[string]any{"task_id": taskID, "extracted": false})
+    return
+}
+```
+
+⇒ ★★★ **数据库故障被报告成「没抽取过」，而且从不返回 500**。
+⇒ ★★ **任务不存在也不是 404**，是 200 + `extracted:false`。
+⇒ 页面只能说「**未能确定**」，不许说「没抽过」。
+
+★ 租户隔离**只在** `IsTenantAdmin(r) && GetTenantID(r) != "" && GetTenantID(r) != "default"`
+时才生效（`:239`）⇒ super_admin、或租户 id 为 `default` 的请求**完全不做归属检查**。
+★ `titles/batch` **根本不做**租户隔离。
+
+#### ★★★★★★★ 头号陷阱三：批量标题的 map **键里含一个字面 NUL**
+
+`admin/session_title.go:381-383`：
+
+```go
+func sessionTitleMapKey(taskID, scopedSessionID string) string {
+	return taskID + "\x00" + scopedSessionIDKey(scopedSessionID)   // ← 字面 NUL
+}
+```
+
+★ `scopedSessionIDKey` 只是 `strings.TrimSpace`（`:274-276`）
+⇒ 键形如 `"task-123\u0000scoped-456"`，`scoped_session_id` 为空时是 `"task-123\u0000"`（**带尾随 NUL**）
+⇒ ★★ 客户端按 `titles[taskId]` 查**永远 miss** ⇒ 只能靠 `splitSessionTitleMapKey` 拆开显示
+⇒ ★★★ **源码里必须写转义序列 `\u0000`，不能写字面 NUL 字节**：
+本批第一版写了字面量，结果 `grep` 直接报 `Binary file matches`，
+整份 .ts 变成「二进制」，任何按文本检索的工具都看不见内容
+⇒ 这是第四十五轮修掉 4 处 U+FFFD 时那条教训的**同族变种**：
+**不可见/控制字符会让工具静默降级，而编译期完全合法。**
+
+#### ★★★★ `titles/batch` 是「只包成 POST 的只读查询」，且有四种分不开的「空」
+
+- **GET ⇒ 405**：源码注释明说是为了给 request-logs 列表**一次往返**批量富化标题（`:611-613`）
+- **限幅 `len(keys) > 500` ⇒ 400**（`:627-630`）★ 是 `>` 不是 `>=`
+  ⇒ **正好 500 个合法**。这是本仓**第 10 种**限幅语义。
+- 四种「空」全部是 `{"titles": {}}` + **200**：
+  1. `keys: []`（早返回分支 `:623-626`）
+  2. 每个键的 `task_id` 都是空串 ⇒ 静默 `continue`（`:640-642`）
+  3. ★★ **数据库查询出错** ⇒ 直接返回空 map（`:362-364`）
+  4. 真的没存过任何标题
+- ★★★ **没有存过标题的键，整个键从 map 里消失** ⇒ **键缺失 ≠ 标题是空串**
+- 重复的 `(task_id, scoped_session_id)` **静默去重**（`:643-647`）
+- ★ `titles` 是 `make(map[string]string, …)` ⇒ 永不为 null
+- ★ `rows.Err()` 在迭代中断时只 `slog.Warn`，仍按已取到的映射返回 **200**（部分结果）
+
+#### ★★ 分派器的两条「同名不同码」错误
+
+```go
+rest = strings.Trim(rest, "/")
+if rest == "" { writeError(w, 404, "task_id required"); return }        // :34-37
+…
+taskID := strings.TrimSpace(parts[0])
+if taskID == "" { writeError(w, 400, "task_id required"); return }      // :54-57
+```
+
+⇒ ★ 同一句话 `task_id required`，**一个是 404、一个是 400** ⇒ 只能看状态码才能分。
+⇒ `len(parts) == 1`（只有 taskId）与未知子动作 ⇒ 404 `unknown session-context route`。
+⇒ 方法不匹配 ⇒ 405 `method not allowed`。
+
+#### ★★ `titles/batch` 在 `{taskId}` 分派**之前**被特判
+
+`:44-52`，注释明说是为了不让字面量 `"titles"` 被当成 task_id
+⇒ ★★ **task_id 恰好叫 `titles` 的会话永远走不到自己的分支**。
+
+#### ★★ `detail` 列的 nullability
+
+```sql
+COALESCE(detail, '{}'::jsonb)
+```
+
+★ `COALESCE` 只挡 **SQL NULL**，**挡不住 JSON 标量 null**
+⇒ 列里存的是 JSON `null` 时，`detail` 就是 **`null`**。
+
+#### ★★★ 本批顺带修掉一个**别人的类型缺陷**
+
+`vue-tsc` 报 `src/api/authMeShape.test.ts` 的夹具比 `UserInfo` 多了
+`last_login_at` / `created_at`。查后端 `admin/users.go:20-32`：
+`userInfo` 是 **10 字段**的完整结构体，**这两个字段一直在发**
+⇒ 是 **`src/api/client.ts` 的 TS 接口漏了两个字段**，夹具是对的。
+
+★★ 但我第一次把它们设成**必填**，结果**打破另外 9 个 spec 文件**
+（它们只构造前 8 个字段）⇒ 改回**可选**。
+⇒ 教训：**改共享类型的必填性，影响面远大于触发它的那一处** ——
+必须跑真的类型门（而不是只跑自己那批用例）才能发现。
+
+★ `LastLoginAt *time.Time` **没有 omitempty** ⇒ 键恒存在，
+从没登录过时是 **`null`**（本仓第三次见到这个形态）。
+
+#### ★★★★ 本批的自造错误（六条）
+
+1. **跨面板/跨作用域断言**：面板标题「记忆抽取状态」本身就含子串「抽取状态」，
+   面板级 `not.toContain('抽取状态')` **恒不可满足**
+2. **否定断言被自己写的免责文案判红**（记忆里那条老坑，本批又踩）：
+   `not.toContain('没抽过')` 被免责里的「压根没抽过」命中；
+   `not.toContain('未能确定')` 被免责末句「所以下面只能说「未能确定」」命中
+   ⇒ 修法：断言一律落到 `.sc__cell-l` / `.sc__cell-v` 这个**数据格作用域**
+3. **expect 串凭印象写**（累计第 7、8 次）：i18n 实际是「不会有空字符串这种值」，
+   我连写两次「不会出现空字符串」「不存在空字符串」
+   ⇒ 修法：**从 i18n 源文件里正则提取实际文案片段**，不再手打
+4. **真产品缺陷**：`noStatusFieldNote`（「响应里没有状态/计数这些字段」）被我
+   **无条件渲染**了 —— 已抽取时那些字段明明在，页面却在说「不存在」
+5. **判别联合的对象字面量**：`ExtractionStatus` 是 `extracted: false | true`
+   的判别联合，普通字面量会把 `extracted` 拓宽成 `boolean` ⇒ 需 `as const`
+6. **i18n 门禁抓到我**：`en-US` 的 `undetermined: 'undetermined'`
+   **值与键名相同** ⇒ 运行时显示裸键 ⇒ 改成 `'not determinable'`
+
+#### 仍未上移
+
+`POST /{taskId}/extract-to-memora`（抽取写入 + 调 memora）、
+`POST /{taskId}/summarize-title`（**调模型**生成标题，有外部副作用）、
+`PUT /{taskId}/title`（人工改标题）、`DELETE /{taskId}/title`。
+
+**下一批候选**：MaaS settings（PUT）/ model-rates 写、routing-opt proposals 决策、
+pending-responses DELETE、request-anomalies resolve、tenants 创建/更新
+（以上按既有口径都属于写操作，本仓继续不碰；需要另找只读面）。
