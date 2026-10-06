@@ -369,7 +369,7 @@ const routes: RouteRecordRaw[] = [
     path: '/maas-catalog',
     name: 'maas-catalog',
     component: () => import('@/views/MaasCatalogView.vue'),
-    meta: { titleKey: 'mp.title', requiresAuth: true },
+    meta: { titleKey: 'mpol.title', requiresAuth: true },
   },
   // MaaS 本租户钱包。★ 这条 GET 端点**会写库**（ensureWalletDirect 建行）。
   {
@@ -411,6 +411,24 @@ const routes: RouteRecordRaw[] = [
     name: 'tenant-detail',
     component: () => import('@/views/TenantDetailView.vue'),
     meta: { titleKey: 'tnd.title', requiresAuth: true },
+  },
+  // 租户模型策略（**superAdmin 档**，2026-10-08：admin/handler.go:926-927 两条注册
+  // 都是 h.superAdmin，而 handleTenantModelPolicies 只有这一个调用点 ⇒ 整棵子树
+  // 都是 superAdmin 硬门槛。后端文件头把 check 标成 `(admin)` 是**过时的**。
+  // ★★ check 端点**不做租户隔离**：SQL 里只有 canonical_name，tenantCode 没参与。
+  {
+    path: '/model-policies',
+    name: 'model-policies',
+    component: () => import('@/views/ModelPoliciesView.vue'),
+    meta: { titleKey: 'mpol.title', requiresAuth: true },
+  },
+  // 租户模型策略审计。★ ORDER BY ts DESC LIMIT n，**无 OFFSET 无游标** ⇒ 没有「更早」。
+  // ★★ 空审计不能当成「没变更过」：租户码拼错也是 200 + 空（withTenantTx 不验租户）。
+  {
+    path: '/model-policy-audit',
+    name: 'model-policy-audit',
+    component: () => import('@/views/ModelPolicyAuditView.vue'),
+    meta: { titleKey: 'mpolAudit.title', requiresAuth: true },
   },
   {
     path: '/:pathMatch(.*)*',
