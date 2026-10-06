@@ -496,6 +496,19 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/LogAdminView.vue'),
     meta: { titleKey: 'logsAdmin.title', requiresAuth: true },
   },
+  // 会话上下文读面（**admin 档**，2026-10-07：handler.go:1296 两条只读）。
+  // ⚠️★ 前缀是 **`/api/system/session-context/`**，**不是** `/api/admin/`。
+  // ★★★★★★ extraction-status 是**异形端点**：未抽取只有 2 个键、已抽取 8 个键。
+  // ★★★★★★ `extracted:false` 三种成因（不属于你的租户 / 没抽过 / **DB 查询出错**）
+  //   **完全分不开**，且数据库故障也返回 200（从不 404）。
+  // ★★★★★★★ titles/batch 的 map 键含**字面 NUL**（`taskId + "\0" + scoped.trim()`）
+  //   ⇒ 按 taskId 直查永远 miss；且它是**只读语义但只收 POST**。
+  {
+    path: '/session-context',
+    name: 'session-context',
+    component: () => import('@/views/SessionContextView.vue'),
+    meta: { titleKey: 'sctx.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',

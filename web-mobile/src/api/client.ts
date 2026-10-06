@@ -15,6 +15,16 @@ export interface UserInfo {
   role: string
   enabled: boolean
   must_change_password?: boolean
+  /**
+   * ★★ 这两个字段后端**一直都在发**（`admin/users.go:20-32` 的 `userInfo`
+   *   是 10 字段的完整结构体），先前这个 TS 接口漏了它们。
+   * ★ `LastLoginAt *time.Time` **没有 omitempty** ⇒ 键**恒存在**，
+   *   从没登录过时是 **`null`**（不是缺键、不是空串）。
+   * ★ 声明成**可选**而不是必填：仓库里有 9 处 spec 只构造前 8 个字段，
+   *   设成必填会把它们全打破（改共享类型的必填性，影响面远大于触发它的那一处）。
+   */
+  last_login_at?: string | null
+  created_at?: string
 }
 
 export interface AuthContext {
