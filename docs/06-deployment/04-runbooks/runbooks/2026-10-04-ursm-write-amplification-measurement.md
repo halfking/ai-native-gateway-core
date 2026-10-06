@@ -9568,3 +9568,84 @@ CREATE INDEX ... ON credential_model_index (credential_id, raw_model, bucket DES
   累计量只能用来发现「历史上值得看的地方」。
 
 同族：`[[读数先确认口径]]` · `[[一次同向观察不构成因果]]` · `[[不要只是声明完成]]`。
+
+---
+
+## §10.89 第 4 名查询：删 5 行花 455 毫秒
+
+§10.87 的表里第 4 位是 `DELETE FROM session_aggregate_outbox`
+（71,052 s / 155,900 次 / 均值 456 ms）。本节把它拆开。
+
+### §10.89.1 读数
+
+| 项 | 值 |
+|---|---|
+| 累计调用 | 155,988 |
+| 累计删除行数 | 783,216 ⇒ **每次仅 5.02 行** |
+| 均值耗时 | **455.5 ms** |
+| **每次触碰 buffer** | **11,888**（全部命中，`read_per_call = 2`） |
+| WAL | 1,834.9 MB |
+
+★ **删 5 行、455 毫秒、读 11,888 个 buffer（≈ 93 MB，正好是整表大小）**——
+三个读数彼此印证：**不是慢，是把整表读了一遍**。
+
+### §10.89.2 定位：贵的不是查找，是 DELETE 本身
+
+| 对照 | 耗时 | buffer |
+|---|---|---|
+| 子查询单独跑（`status='done' AND completed_at < now()-1day ORDER BY completed_at LIMIT 500`） | **2.9 ms** | **458** |
+| 整条 DELETE | **455.5 ms** | **11,888** |
+
+⇒ 子查询走的是 `idx_session_aggregate_outbox_done_completed_at`（部分索引，命中），
+**本身很快**。整条语句却多读了约 **26 倍**。
+
+`EXPLAIN`（不带 `ANALYZE`，**不会真的删**）显示计划本身是好的：
+
+```
+Delete on session_aggregate_outbox
+  -> Nested Loop
+       -> HashAggregate  (ANY_subquery)
+            -> Subquery Scan -> Limit -> Index Scan using idx_..._done_completed_at
+       -> Index Scan using session_aggregate_outbox_pkey
+```
+
+**无 Seq Scan。** 应用侧实际参数（`domains/session/v2/session_aggregate_outbox_reaper.go:275`）
+是 `status='done'`、`'7 days'`、`LIMIT 5000`，且事务里
+`set_config('app.current_role','super_admin',true)` 喂给 RLS 策略。
+
+### §10.89.3 已排除的候选
+
+| 候选 | 实测 | 判定 |
+|---|---|---|
+| 外键级联 | 引用该表的 FK **0 条** | 否掉 |
+| 触发器 | 非内部触发器 **0 个** | 否掉 |
+| 系统级提交延迟地板 | 全体语句中 **765 条 mean < 200 ms**，无地板 | 否掉 |
+| 缺索引 / 全表扫 | `EXPLAIN` 显示走部分索引 + pkey | 否掉 |
+
+### §10.89.4 未定论的剩余（明确不猜）
+
+RLS 是开的（`relrowsecurity = t`、`relforcerowsecurity = t`、1 条策略），
+而 `app.current_role` 是**事务级 GUC**。一个合理的假设是：
+带 RLS 的 DELETE 会把策略下推为逐行判定，且因 GUC 参数化而走了非特化计划，
+从而读进远超 `LIMIT` 需要的页面。
+
+⚠️ **但我没有证实它。** 确认需要在**同一个事务内**（带上那个
+`set_config`）跑 `EXPLAIN (ANALYZE, BUFFERS)` 的 DELETE——
+而那会**真的删数据**，属生产写操作，**我没有也不该擅自做**。
+
+⇒ 现有证据能支撑的结论只有一句：
+**这条语句的执行时间与它实际删除的行数严重不成比例（5 行 / 455 ms），
+根因尚未定位，确认需要一次带 RLS GUC 的实测 DELETE。**
+在拿到那个读数之前，不给修法。
+
+### §10.89.5 一个附带发现
+
+该表现有 **55,727 行，且 `status` 全部是 `done`**（单一取值）。
+而 reaper 的注释写着「done rows accumulate forever（observed 365k+）」。
+⇒ 这条清理路径在生产上是**长期运行的**（155,988 次 / 25 天 ≈ 6,239 次/天），
+即便它每次只删 5 行。
+
+★ 这也解释了为什么它是「累计第四」而不是「当前第四」：
+6,239 次/天 × 455 ms ≈ **47 分钟/天**的数据库时间，持续在花。
+与 §10.88 那条不同，**这一条没有发现「修复后已回到设计节奏」的证据**，
+因此它更可能是**当前仍在付的成本**——但这仍需 §10.89.6 的速率采样确认。
