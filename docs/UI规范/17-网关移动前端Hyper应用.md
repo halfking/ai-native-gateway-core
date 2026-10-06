@@ -9059,3 +9059,173 @@ Postgres 的 `NOW()` 在一个语句内是同一个事务时间，两侧都含�
 - 全量 **3481 条（131 文件）** rc=0；十连跑 10/10
 
 文档 §11.103 纯追加。
+
+---
+
+### 11.104 差集基线刷新 + compression 只读两条接 API 层（第六十八批）
+
+#### 11.104.1 ★ 差集基线（第二次经量具校准）
+
+| 指标 | 上一基线（第六十一批） | 本次 | 变化 |
+|---|---|---|---|
+| 桌面 web 实际调用 | 394 | **394** | — |
+| 移动端实际调用 | 160 | **175** | **+15** |
+| 桌面有 / 移动端无 | 237 | **225** | −12 |
+| 其中 GET 只读 | 124 | **112** | −12 |
+
+已排除（属 `cmd/gateway/maintain_proxy.go:34` 的 `maintainCompatPrefixes`，
+由独立 maintain 服务代管且已 deprecated）：`center/*`、`faults/*`、`licenses*`、
+`releases*`、`downloads/*`。
+
+#### 11.104.2 本批范围
+
+| 端点 | 注册 | handler |
+|---|---|---|
+| `GET /api/admin/compression/stats` | `admin(...)` | `handler.go:954` |
+| `GET /api/admin/compression/sessions` | `admin(...)` | `handler.go:955` |
+
+桌面调用方：`web/src/api/compression.ts:40,77`。移动端此前**无**本族模块
+（`dataLifecycleStats` 里的 `compression_rate` 是另一个字段，无关）。
+
+#### 11.104.3 ★★★★★ 本族最要紧的五件事
+
+**(1) ★★★★★ `count` 查询失败返的是 200 + `{items:[], count:0}`，不是 500**
+
+```go
+// compression_sessions.go:108-112
+if err := h.db.QueryRow(ctx, countSQL, args...).Scan(&totalCount); err != nil {
+    slog.Warn("compression_sessions count query failed", "error", err)
+    writeJSON(w, http.StatusOK, compressionSessionsResponse{Items: make([]compressionSessionItem, 0), Count: 0})
+    return   // ← 主查询根本没跑
+}
+```
+
+⇒ `count: 0` **无法区分**「真的没有会话」与「count 查询失败」，且后者连主查询都没跑。
+⇒ 同时注意主查询失败走的是 **500**（:155-160）——**两条失败路径不一致**。
+
+**(2) ★★★★ `hours` 只在 `from` 与 `to` 都缺省时才参与时间窗计算**
+
+```go
+// :89-109（stats）与 :64-85（sessions）逐字相同
+if fromStr != "" { from = parse(fromStr) } else { to = now; from = to - hours }
+if toStr   != "" { to   = parse(toStr)   } else if fromStr != "" { to = now }
+```
+
+⇒ **只要传了 `from` 或 `to` 任一，`hours` 就被完全忽略。**
+前端「顺手」带上 `hours` + `from` 会出现「界面上显示 hours，实际没生效」。
+⇒ 导出 `timeWindowMode()` / `timeWindowQuery()`，后者**只在 hours 口径下才发 `hours`**。
+
+另：`hours` 是 **clamp 到 [1,720]**（:75-80），而 sessions 的 `page_size`
+是**静默回落 50**（:56-58）—— 同一族里两种越界口径。
+`from`/`to` 格式错 ⇒ **400**（不是静默忽略）。
+
+**(3) ★★★★ `compressed_total` 是组级口径，不是行级口径**
+
+```go
+// compression_stats.go:173-176
+result.TotalRequests += cnt
+if withOutbound > 0 { result.CompressedTotal += cnt }   // ← 整组都算
+```
+
+按 `strategy` 分组，`with_outbound = COUNT(rb.outbound_body)` 是**组内**计数
+⇒ 只要组内有任意一行有 outbound_body，**整组 cnt 都进 `CompressedTotal`**。
+
+⇒ `compression_rate = CompressedTotal / TotalRequests`（:187，**0-1 比例**）
+的分子**不是**「被压缩的行数」，而是「至少有一行被压缩的策略组的行数之和」。
+
+★ 与 `data-lifecycle` 的 `percent_of_total`（0-100）**单位相反**，两族不可直接比较。
+
+**(4) ★★★★ 本族两个端点的 nil 指针编码相反**
+
+| 位置 | 字段 | 编码 |
+|---|---|---|
+| `compressionStats` | 七个 token 字段 | `*int64` + **omitempty** ⇒ 值不大于阈值时**键不存在** |
+| `compressionSessionItem` | 四个 `*int` | **无 omitempty** ⇒ 键**恒存在**，值为 **`null`** |
+
+⇒ 「键缺失」与「值为 null」在本族是**两种不同的失败语义**，不能互相套用。
+`sessions` 的解包器因此**逐个校类型但不校非空**。
+
+**`estimated_tokens_saved` 尤其危险**：只在
+`estimated_original_tokens > total_outbound_tokens` 时才设指针（:204-206）
+⇒ 「节省为 0」「节省为负」「估算查询静默失败」**三种情况都是键缺失**
+⇒ 客户端**不能**把缺失说成「没节省」。
+
+`estimated_original_tokens` 的缺失同理：估算查询失败只有 `slog.Warn`
+（:196-200，**静默**），与「值为 0」（:202）**分不出来**。
+后端注释自己记了这个历史坑：pre-P2-C1 的 `::text` 缺失导致该字段
+**一辈子没被填过**，被 `err==nil` 静默吞掉。
+
+**(5) ★★★ 租户隔离之外还有第二重口径差异：`($3 OR rl.success)`**
+
+`$3 = !tenantFilter`（:135 / :90）⇒ **只有非 tenant_admin 才忽略 `success`**
+⇒ **tenant_admin 只看成功请求**，super_admin 的数字含失败请求。
+
+另：租户过滤走 `tenantLogsClause`（`admin/session_tenant.go:16-26`），
+它**只对非 default 租户的 tenant_admin 注入** `AND tenant_id = $N`
+⇒ **default 租户的 tenant_admin 不被隔离**（看得到全部租户的行）。
+这与 `data-lifecycle` 的 `IsTenantAdmin` + 字符串拼 `tenant_id`
+（`data_lifecycle.go:57-63`）**口径不同** —— 那条连 default 租户也过滤。
+⇒ **两族的租户隔离不可类推。**
+
+#### 11.104.4 ★ 与 approvals 的关键对比：`count` 是真实总数
+
+| | `approvals.total` | `compression.sessions.count` |
+|---|---|---|
+| 来源 | `total := len(records)`（records 已带 Limit/Offset） | `COUNT(DISTINCT gw_session_id)`（全量） |
+| 含义 | **本页条数** | **真实总数** |
+| 可否据此翻页 | ❌ 只能「本页取满」 | ✅ 可以 |
+
+★ 但 `count` 与 `items` 仍有**两处**对不上，且都是**可预期**的：
+
+1. 空 `gw_session_id` 的行被 `if item.GwSessionID != ""`（:190）**静默丢弃**，
+   而 `COUNT(DISTINCT)` **把空串也算进去**
+   （where 里只有 `gw_session_id IS NOT NULL`，**空串**仍会通过）。
+2. 逐行 `Scan` 失败走 `continue`（:177-180），count 不受扫描失败影响。
+
+#### 11.104.5 ★ 其余已确认的契约
+
+- `hourly_series` 的粒度**随时间窗变化**（:257-266），字段名骗人：
+  `≤48h` ⇒ 每小时；`≤168h` ⇒ **每 6 小时**（`date_trunc('day') + 6h*(hour/6)`）；
+  更长 ⇒ 每天。导出 `seriesGranularityOf()`。
+- 桶查询失败是**静默**的（:279-280）⇒ `hourly_series` 空数组**不能**断言「没有流量」。
+- `strategy_distribution` 与 `hourly_series` 都预置为空（:131-132）
+  ⇒ 空值恒为 `{}` / `[]`，**不是 null**。
+- `strategy` 过滤是精确 `=` 且**不校验合法性** ⇒ 非法值返回空列表而非 400。
+- sessions 的 where 含 `rb.outbound_body IS NOT NULL AND rl.gw_session_id IS NOT NULL`
+  ⇒ **列表天然只含「确实有 outbound_body 的会话」**。
+- `compression_strategy` 用 `MAX(rl.compression_strategy)`（:129）
+  ⇒ **字典序最大**的那一条，不是首个也不是最新（会话中途换策略时读到的是巧合值）。
+- `sample_request_id` 是 `MAX(rl.request_id)` ⇒ **字典序最大**，不是最新那次。
+- `first_ts`/`last_ts` 是 Go `time.Time` 直编 ⇒ RFC3339 **纳秒**级。
+- `estimated_original_msgs` 由 SQL 侧 `COALESCE(latest.orig_msg_count, 0)` 兜底（:125）
+  ⇒ **恒非 null**；而 `outbound_msg_count` 直接 `MAX()` 扫进指针 ⇒ **可为 null**。
+  ⇒ 同名字段族里一个恒有值一个可能为空。
+- `msg_reduction` 只在两个指针都非 nil 时才计算（:183），
+  且 **`red = orig - outbound`，负值被夹到 0**（:185-187）⇒ **永不出现负数**。
+  ⚠️ 判「被夹住」的条件是 **`outbound > orig`**（本批写反过一次，被变异 #29 抓到）。
+- `compression_sessions.go:199-201` 的 `if items == nil` 是**死代码**：
+  `:163` 已经 `make([]compressionSessionItem, 0)`，永不为 nil。
+
+#### 11.104.6 验证
+
+- 用例 **58 条**（`compression.test.ts`）
+- 变异 `/tmp/mut-co68.mjs` **30 条，30/30 有牙、零可疑**，
+  `RESTORED=OK`（逐字节一致）。#29 直接抓出「夹值判断方向写反」这个真缺陷。
+- 三门 rc=0；`vue-tsc` rc=0；`npm run build` rc=0
+- 全量 **3539 条（132 文件）** rc=0；十连跑 10/10
+
+#### 11.104.7 留给第六十九批（UI）的硬约束
+
+1. `count` 可以当总数用，但 `count ≠ items.length` 时**不要报成 bug**。
+2. `count: 0` 的空态措辞只能说「没有可展示的记录」。
+3. `compression_rate` 是 **0-1 比例**，UI 要乘 100 再显示，且**不能**与
+   data-flow 的 `percent_of_total`（0-100）并列。
+4. 传了 `from`/`to` 时**不要**再显示 `hours` 控件。
+5. `hourly_series` 要按 `seriesGranularityOf` 标注真实粒度，不能写「按小时」。
+6. 三个 token 估算字段缺键时统一措辞「未给出估算」，**不能**说「为 0」/「没节省」。
+7. `msg_reduction` 为 null 显示「未知」；`= 0` 且 outbound > orig 时
+   要提示「压缩后消息数未减少（已按 0 记）」。
+8. `compression_strategy` / `sample_request_id` 都要标「取字典序最大值」，不是最新。
+9. tenant_admin 看到的是**仅成功请求**的数字，要标明。
+
+文档 §11.104 纯追加。
