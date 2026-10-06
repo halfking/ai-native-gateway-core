@@ -19,6 +19,12 @@ vi.mock('@/hyper', async (importOriginal) => {
   return { ...actual, useHyperPage: () => {} }
 })
 
+// NodeAuditSheet 会调 fetchNodeAudit；不 mock 就让测试去打真 fetch。
+vi.mock('@/api/nodeAudit', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/nodeAudit')>()
+  return { ...actual, fetchNodeAudit: vi.fn(async () => ({ entries: [], count: 0, limit: 30 })) }
+})
+
 vi.mock('@/api/providers', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/providers')>()
   return { ...actual, getProviders: vi.fn(async () => []) }
@@ -112,5 +118,38 @@ describe('ProvidersView 供应商列表', () => {
     ;(getProviders as ReturnType<typeof vi.fn>).mockResolvedValueOnce([{ ...P_OFF, credential_count: undefined, model_count: undefined }])
     const w = await mountView()
     expect(w.text()).not.toContain('undefined')
+  })
+})
+
+/**
+ * 供应商卡 → 节点操作审计入口（2026-10-06）。
+ *
+ * 钉的是**作用域**：审计按 provider_id 拉（api/nodeAudit.ts 头注说明这个审计面
+ * 只覆盖供应商级操作），所以入口挂在供应商卡上；点开必须带对 provider_id。
+ * 这条断言同时防住「有人把它挂到凭据卡上」这个错位 —— 那样用户会去凭据页
+ * 找一个永远不会出现的记录。
+ */
+describe('ProvidersView 审计入口', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    vi.clearAllMocks()
+  })
+
+  it('点供应商卡打开审计 Sheet，且按该 provider 拉取', async () => {
+    const { fetchNodeAudit } = await import('@/api/nodeAudit')
+    ;(getProviders as ReturnType<typeof vi.fn>).mockResolvedValueOnce([P_DOWN])
+    const w = await mountView()
+    expect(fetchNodeAudit).not.toHaveBeenCalled()
+
+    await w.find('.provider-card').trigger('click')
+    await flushPromises()
+    await flushPromises()
+
+    // ★ provider_id 必须是这张卡自己的（P_DOWN.id = 5），不是别家
+    expect(fetchNodeAudit).toHaveBeenCalledWith({ provider_id: 5, limit: 30 })
+    const text = document.body.textContent ?? ''
+    expect(text).toContain('Node operation audit')
+    // 覆盖面说明必须露出，避免用户误以为凭据级操作也在此留痕
+    expect(text).toContain('provider-level operations only')
   })
 })
