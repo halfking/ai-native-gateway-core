@@ -27,6 +27,7 @@ export const zhCN = {
     logOps: '日志运维面',
     annotations: '标注工作台',
     approvalQueue: '审批队列',
+    compression: '压缩可观测',
     dataFlow: '数据流',
     home: '总览',
     nodes: '节点',
@@ -1382,6 +1383,101 @@ export const zhCN = {
       noTenant: '无租户',
       modelUnknown: '模型未知',
       bodyNone: '没有关联的请求/响应体',
+    },
+  },
+  compressionView: {
+    title: '压缩可观测',
+    load: '加载',
+    reload: '重新加载',
+    prev: '上一页',
+    next: '下一页',
+    requestsUnit: '次请求',
+    errForbidden: '没有权限查看压缩数据',
+    // ★ 后端对 from/to 格式错返 400（不是静默忽略）
+    errBadTime: '时间格式不对，后端要求 RFC3339',
+    window: {
+      title: '时间窗',
+      byHours: '近 N 小时',
+      byRange: '自定义区间',
+      hours: '跨度',
+      hoursN: '近 {n} 小时',
+      from: '起',
+      to: '止',
+      clampNote: '后端把跨度钳在 {min} 到 {max} 小时之间。',
+      // ★★ 传了起止时间，后端就完全忽略跨度（:89-109）
+      ignoreHoursNote: '选了自定义区间，后端就不再用「近 N 小时」这个跨度 —— 两个都传时以起止时间为准。',
+    },
+    // ★★ tenant_admin 只看成功请求（$3 OR rl.success）
+    successOnlyNote: '租户管理员看到的是**只有成功请求**的数字：后端只对非租户管理员放宽这个条件，两种角色的口径不同，不能直接对比。',
+    rateMeaningless: '总量为 0，没有意义',
+    rateMeaninglessNote: '总量为 0 时后端把压缩率留成 0，与「真的是 0%」分不出来。',
+    // ★ 本页 compression_rate 是 0-1 比例，不是百分数字段
+    ratioNote: '压缩率后端给的是 0 到 1 的比例，这里乘 100 显示。注意它和「数据流」页的压缩率不是同一个单位，两者不能直接比。',
+    strategy: {
+      none: '未标注策略',
+    },
+    band: {
+      below: '低于基线',
+      preliminary: '初步',
+      forced: '强制',
+    },
+    // ★ 缺键 ≠ 0 条
+    bandMissing: '这一档没有出现',
+    granularity: {
+      hour: '每小时',
+      '6h': '每 6 小时',
+      day: '每天',
+    },
+    stats: {
+      title: '压缩统计',
+      totalRequests: '请求总数',
+      compressedTotal: '计入已压缩',
+      // ★★★ 组级口径：组内有一行有 outbound_body 就整组算进来
+      groupLevel: '组级口径',
+      rate: '压缩率（比例）',
+      strategies: '策略分布',
+      distDisagree: '各策略的行数加起来对不上总数 —— 策略名可能撞了键（空值与空串都被归到「未标注策略」）。',
+      noStrategy: '这个窗口里没有可归类的请求。',
+      bands: 'Token 分档',
+      tokens: 'Token 估算',
+      outboundTokens: '出站 token 合计',
+      estimatedOrig: '估算原始 token',
+      // ★★ 缺键绝不能写成「没节省」：负值与查询失败都落到这里
+      saved: '估算节省',
+      summaryMode: '摘要模式行数',
+      estimateNote: '这几个数是估算出来的：估算查询失败时后端只记一条日志就继续（不报错），所以「没给出」既可能是算不出来，也可能是算出来是 0。',
+      series: '时间序列（{g}）',
+      seriesRate: '压缩率 {rate}',
+      bucketDisagree: '某个桶里「计入已压缩」比总数还大，计数矛盾。',
+    },
+    // ★ 空序列不能断言「没有流量」：桶查询失败也是空数组
+    seriesMayBeFailed: '没有取到序列 —— 也可能是这一段的查询被跳过了（后端把它当非致命错误，客户端分不出来）。',
+    seriesEmpty: '这个窗口里没有可展示的桶。',
+    notEstimated: '未给出估算',
+    savedNotGiven: '未给出节省估算',
+    sessions: {
+      title: '压缩会话',
+      total: '会话总数',
+      page: '当前页',
+      pageSizeN: '每页 {n} 条',
+      pageSize: '每页条数',
+      // ★ 后端对越界值是静默回落 50
+      pageSizeNote: '后端只接受 1 到 200，超过会静默回落成 50，所以这里只给认可的值。',
+      // ★★ count 是 COUNT(DISTINCT) 的真实总数，可以据此翻页
+      // ★ 但空会话 id 的行被静默丢弃而 count 仍算它 ⇒ 对不上是可预期的
+      countGapNote: '会话总数与本页条数对不上是可预期的：会话 id 为空的行会被后端丢掉，但总数里仍然算它。',
+      // ★★ count=0 是二义的：count 查询失败时后端返的也是 200 + 空列表
+      emptyAmbiguous: '没有可展示的记录 —— 也可能是总数查询被跳过了（后端在这种情况下返回 200 和空列表，和「真的没有」分不出来）。',
+      emptyNone: '没有可展示的记录。',
+      // ★★ MAX(compression_strategy) 是字典序最大，不是「这个会话的策略」
+      strategyMax: '策略（取字典序最大值）：{v}',
+      reduction: '消息数减少 {n}',
+      reductionUnknown: '消息数减少：未知',
+      // ★★ 差值为负被后端夹到 0
+      reductionClamped: '压缩后消息数没减少，后端按 0 记',
+      msgOutbound: '出站消息数 {n}',
+      // ★★ MAX(request_id) 是字典序最大，不是「最近一次请求」
+      sampleMax: '样本请求（取字典序最大值）：{v}',
     },
   },
   lifecycle: {
