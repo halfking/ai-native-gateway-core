@@ -11226,3 +11226,171 @@ B/C/D/E 全绿，F 里当月分区从 `20:26:31` 前进到 `20:26:34`
 
 ⇒ **待决清单里「136 个零扫描索引复核」这一项至此收口**：不是「等你确认口径」，
 而是「原口径不可考 + 那个数本身是截断产物 + 正确决策输入是体量不是个数」。
+
+---
+
+## §10.103 收口「恒 NULL 列对应功能是否还需要」：15 列是真死列，但删它们几乎不省任何东西
+
+### §10.103.1 先推翻本会话早先的一个推论：「55 列全部被生产代码引用」
+
+早先一轮做过一次单次全仓扫描，结论写成「`request_logs_2026_10` 的 55 个
+`null_frac >= 1.0` 列**全部被生产 Go 代码引用**，0 个仅测试引用、0 个全仓零引用」。
+**这个推论是错的**，错在把「出现在某个 `.go` 文件里」当成了「有功能」。
+
+`request_logs` 上有 5 个 Go 文件是**纯管道**——它们唯一的作用是决定某一列
+出现在或不出现在视图契约里，**本身既不产生也不消费数据**：
+
+| 文件 | 作用 |
+|---|---|
+| `admin/view_source_columns_contract.go` | `physicalOnlyRequestLogColumns` **排除清单**（物理表有、视图契约故意不给） |
+| `db/request_logs_view_schema.go` | 视图列定义 |
+| `db/request_logs_view_padded_columns.go` | 会话臂「补列」 |
+| `db/retirement_column_exposure.go` | 退休列分类 |
+
+⇒ 被 `view_source_columns_contract.go` 提到，恰恰意味着**这个列被刻意藏起来**，
+不等于「有功能在用它」。
+
+### §10.103.2 重做分类：按引用形态，而不是按「有没有被提到」
+
+重新从生产只读取出 55 列（`null_frac >= 1.0`），再按引用形态分类：
+
+| 桶 | 列数 | 判定 |
+|---|---|---|
+| A 生产引用**不含任何管道文件** | 39 | 有真逻辑 |
+| B 生产引用**全部**落在排除清单 | 14 | **死列** |
+| C 只在测试/迁移里 | 0 | — |
+| D 全仓零引用 | 0 | — |
+| **B 之外再切一刀**：生产引用全是管道文件 | +2 | **死列** |
+
+第二刀捞出的 2 列：
+
+- `rate_limit_status` ← `view_source_columns_contract.go` + `request_logs_view_padded_columns.go`
+- `test_tab_indent` ← `request_logs_view_padded_columns.go` + `request_logs_view_schema.go` + `retirement_column_exposure.go`
+
+其中 `test_tab_indent` 是**已有结论的独立印证**：`admin/request_logs_retirement_column_reader_gate_test.go:63`
+早就写着「与 `test_col` 同批的测试占位列，**同样只有投影、没有读方**」。
+⇒ 全仓零引用的判定方法与仓库既有的门禁一致，不是新造的尺子。
+
+**⇒ 合计 16 列没有任何活的读写方**（14 + 2）。
+
+### §10.103.3 写入链逐层验证：确认「有 promote 函数在搬」不等于「有值」
+
+行级 grep 报「0 个 INSERT/UPDATE 命中」，**这个零是假的**：INSERT 的列清单经常跨多行。
+换成多行感知的括号配对解析后，14 列在 `promote_*` 函数的
+`INSERT INTO public.request_logs (...) SELECT ... FROM moved_rows` 里**全部命中**。
+
+但顺着链往下走，值的源头是空的：
+
+| 环节 | 结论 |
+|---|---|
+| Go `INSERT INTO request_logs_hot`（`telemetry/client.go:1392`，110 列） | **16 列一个都不在** |
+| Go `INSERT INTO request_logs_hot`（`admin/telemetry.go:463`，37 列） | **一个都不在** |
+| 7 处 `UPDATE request_logs_hot`（含 `client.go:2190` 的 99 列回填） | **0 处命中** |
+| schema 正本里这 16 列的 `DEFAULT` | **全部没有**（`sql/schema/01-schema.sql` 逐列核过） |
+| promote 函数 | 只从 `request_logs_hot` 搬，hot 恒 NULL ⇒ NULL 原样传播 |
+
+⇒ **没有任何一环写入过值**。这比 §10.96 记的「代码接了但生产从未触发」更彻底：
+不是「接了没触发」，是**接线的那一头根本没有电源**。
+
+生产侧复核（只读）：`request_logs_2026_10` 117,580 行，
+`test_tab_indent` 非空 **0** 行。
+
+### §10.103.4 一次量错装置：194.85 字节/行是幻数
+
+第一次容器实验想量「恒 NULL 列上的索引有多贵」。**装置与生产不同形**：
+
+```
+生产： CREATE INDEX ... ON request_logs_2026_10_cached_response_id_idx
+       USING btree (cached_response_id) WHERE (cached_response_id IS NOT NULL)
+                                                  ^^^^^^^^^^^^^^^^^^^^^^^^
+```
+
+三个索引（`cached_response_id` / `rate_limit_status` / `effective_timeout_seconds`）
+**全是 partial**，谓词在恒 NULL 列上**恒假** ⇒ 索引条目恒为 0。
+而我建的是**普通索引**，条目恒为 N。量出来：
+
+| 装置 | 5 万行 WAL 增量 | 相对无索引 |
+|---|---|---|
+| 普通索引（**错误装置**） | **+9,734,752** | **+258.3%** |
+| partial 索引（生产语义） | **+8,016** | **+0.2%**（噪声内） |
+
+⇒ **生产不承担任何索引维护成本**。那个 194.85 字节/行是装置错误造出来的。
+
+⚠ 装置本身也不完全同形：失败的那条 `p_ets`（引用了不存在的 `latency_ms_dummy`）
+导致 partial 臂只有 2 个索引、full 臂有 3 个。但这**只会让 partial 臂更吃亏**，
+而它仍然测出 ≈ 0 ⇒ 结论方向更稳，不是更弱。
+生产第 3 个索引 `idx_request_logs_timeout_analysis` 的谓词
+`effective_timeout_seconds IS NOT NULL` 同样恒假。
+
+★ **教训**：「负控必须与真源码同形」在**装置**上同样成立。
+我在**读到 `pg_get_indexdef` 之前**就动手测了，量完才发现语义不同。
+**先抄下生产的真实 DDL，再动手搭装置**——次序反了就会量出漂亮但虚假的数。
+
+### §10.103.5 顺带纠正自己一个误判：hot 的 8.85 小时不是 stall
+
+查索引时看到 `request_logs_2026_10` 的 `max(ts)` 停在 **8.9 小时前**，而
+`request_logs_hot` 一直在写到此刻，一度判成「promote 停摆」。
+
+**这是误判**：`promote_request_logs_hot_to_partition` 的保留期**设计就是 8h**
+（`admin/memora_handlers.go:615`：「hot 保留期 8h」，
+`bg/partition_manager.go:27`：`DefaultPromoteInterval = 1 * time.Hour`）。
+实测边界干净：
+
+```
+hot  min ts = 2026-10-06 20:06:06   cold max ts = 2026-10-06 20:04:40   （相差 1.4 秒）
+```
+
+⇒ 上一次 promote 在 **04:04** 跑过（cutoff = 跑批时刻 − 8h），与
+`last_analyze = 04:05:47` 同批。下一个 tick 还没到。**promote 健康。**
+
+★ **把「设计出来的窗口」读成「故障积压」是本轮第二次踩**：
+第一次是行级 grep 的假零，第二次是这个 8h 窗口。
+**看到一个滞后量，先问它是不是某个常量（保留期/TTL/超时）的设计值。**
+
+### §10.103.6 删掉它们到底能省什么：逐项实测，三项都接近零
+
+**（a）ANALYZE**：同形两臂 A/B（138 个**有值** filler 列 ± 16 个恒 NULL 列，各 60,000 行），
+交错跑 6 轮、每组 3 次取最小：
+
+```
+各轮降幅：3.53% / 5.74% / 5.82% / 6.04% / 8.53% / 9.52%
+最小 3.53% · 中位 5.93% · 最大 9.52%   极差 5.99 个百分点（装置仍不稳，只报中位）
+按纯列数比例应为 10.39%   ⇒ 恒 NULL 列比有值列便宜，但不为零
+```
+
+折算到生产（`request_logs_2026_10` ANALYZE 实测 5.8 s、`request_logs_hot` 1,633 ms）：
+
+```
+每趟 pass 省 ≈ 5.8×5.93% + 1.63×5.93% ≈ 0.44 s
+× 24 趟/天 = 约 10.6 秒/天
+对照 §10.93 的 56 分钟/天 = 3360 秒/天 ⇒ 占 0.3%
+```
+
+**（b）索引**：§10.103.4 已证 ⇒ **0**。
+**（c）存储**：`DROP COLUMN` 是 metadata-only——容器实测 drop 前后
+`pg_relation_filenode` 与 `pg_relation_size` **逐字节相同**（16390 / 8,478,720），
+16 次 DROP 只产生 **10,344 字节** WAL。**不重写表就不回收磁盘。**
+**（d）代价**：`ALTER TABLE ... DROP COLUMN` 要对 `request_logs` **及其全部分区**
+持 **ACCESS EXCLUSIVE**。
+
+### §10.103.7 结论
+
+1. **15 列是真死列**（16 减去已文档化「探针列注明保留」的 `test_tab_indent`；
+   同批的 `test_col` 因生产恒为 `'{}'` 而不在 55 列内）：
+   `cache_tokens_saved` `cached_response_id` `compression_start_index`
+   `compression_end_index` `context_size_tokens` `continuation_keywords`
+   `dlp_violations` `effective_timeout_seconds` `ir_extensions`
+   `sanitizer_mutations` `sensitive_keywords` `task_title` `timeout_mode`
+   `vendor_metadata` `rate_limit_status`
+2. ★ **性能角度：不删。** 收益是「约 10.6 秒/天的 ANALYZE（0.3%）」+
+   「0 索引成本」+「0 存储回收」，代价是 `request_logs` 全分区族的
+   ACCESS EXCLUSIVE 窗口。**这笔买卖不成立。**
+3. **卫生角度**：这 15 列确实属于「schema 有、排除清单挡着视图、所以没人发现没人写」
+   的那一类，删掉能减少未来误读。但**这不是性能优化**，
+   不要拿它去换「存储与效率综合最优」的额度。
+4. ⇒ **给决策的输入是一句话**：这 15 列对应的功能
+   （DLP 违规标记、敏感词、sanitizer 改写、IR 扩展、vendor 元数据、
+   超时策略、续写关键词、缓存复用）**在生产从未实现过一次**。
+   **如果这些功能已经放弃 ⇒ 删列是纯粹的卫生动作，可以做，但要按 DDL 排期单独评估锁窗口；
+   如果其中任何一项还在规划中 ⇒ 保留列，改的是「谁负责往里写」。**
+   **这是一个产品判断，本会话不代裁。**
