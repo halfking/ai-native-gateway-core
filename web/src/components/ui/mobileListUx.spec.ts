@@ -137,12 +137,6 @@ const KNOWN_GAP: Array<[string, number, string]> = [
     '详情目的地 /admin/approvals/:request_id 存在，但 viewDetail 两个调用点都写在 #table 插槽里；'
       + '该视图只传 #table ⇒ compact 卡片无任何入口。修法涉及桌面行是否整行可点（行内有 ✕ 拒绝等写操作），属产品裁决。',
   ],
-  [
-    'src/views/provider-detail/LogsTab.vue',
-    289,
-    'goCanonical（跳 /models?q=）写在 #table 内，compact 丢失该跨实体跳转。'
-      + '按 03 §3.3 条款 2 跨实体跳转属于「另一个意图」，本就该放 actions 区 —— 是位置放错，不是契约破损。',
-  ],
 ]
 
 const key = (f: string, l: number) => `${f}:${l}`
@@ -174,6 +168,16 @@ describe('03 §3.3 移动端行点击契约', () => {
     }
   })
 
+  /**
+   * ⚠️ 这条判据是**粗判据**：它只验「该文件里还有 `router.push`」，
+   * 验不出「还是不是同一个目的地」——
+   * `ApprovalListView` 有两处 `router.push`（`/admin/approvals/:id` 与
+   * `/admin/approval-config`），只摘掉前者这条判据仍绿。
+   * 变异台账 M6 因此必须摘掉**全部** `router.push` 才能转红（已实测）。
+   * 真正把住「同一个目的地」的是登记条目里写下的目标路径与理由文本（人工核对项）。
+   * 不把它写成更严的形式，是因为要让判据识破「目标换了一个 push」，
+   * 就得把目标路径做成结构化字段并做跨行匹配 —— 收益不抵漂移成本。
+   */
   it('KNOWN_GAP 的每一项，其文件必须真的有详情目的地（缺口已修则本门转红）', () => {
     for (const [f, l] of KNOWN_GAP) {
       const site = sites.find((s) => s.file === f && s.line === l)
