@@ -9798,3 +9798,140 @@ expect(recMock.mock.calls[1]![0]).toMatchObject({ offset: 50 })
    `status >= 500`（对夹具里的 200/404 仍为假）⇒ 变异本身无效，不是判据问题。
    ⇒ 与第六十九批「注入标记 ≠ 变异」同族：**注入必须真的改变被观察行为**，
      且要拿夹具里的**实际取值**去验「变了吗」。
+
+
+## §11.109 节点恢复时间线接 API 层（第七十三批）
+
+**产物**：`web-mobile/src/api/nodeHealthTimeline.ts`（新建）+ `.test.ts`（新建，84 用例）
+
+### 三路取证
+
+| 问 | 答 | 证据 |
+|---|---|---|
+| 后端注册存在吗 | 是 | `admin/handler.go:1028`，`admin(...)` |
+| 谁在提供 | **本进程** | 不在 `maintainCompatPrefixes` 里 |
+| 前端有调用方吗 | 桌面有、移动端无 | `web/src/api/node-health.ts:38`、`NodeHealthTimelineView.vue` |
+
+**权限档位**：后端 `admin(...)` ⇒ tenant_admin 可用 ⇒ 抽屉席**不设** `requiresRole`。
+⚠️ 桌面 `web/src/router.ts:285` 又标了 `requiresSuper: true` ——
+**连续第二批**遇到「前端比后端严」。
+
+### ★★★ 本族最大的问题：这条端点没有租户过滤
+
+`admin/node_health.go:183-184`：
+```sql
+WHERE credential_id = $1 AND started_at >= $2
+```
+**只有两个条件，没有 `tenant_id`** ⇒ 而注册是 `admin(...)` 档
+⇒ ★★ **tenant_admin 能查任意 credential_id 的完整探测时间线**，
+包括 `reason_code`（错误码）与 `note`（模型名 · 触发来源）。
+⇒ 与第六十六批 data-lifecycle 的 `metrics` 同型（「不隔离 + admin 档」），
+   本仓已出现**两次**。
+⇒ 移动端接入时不要把它放在 tenant_admin 可见的位置而不加说明。
+
+### 其它挖到的契约
+
+1. **★★★★★ `observation_status` 是硬编码 `"complete"`，没有任何分支能产生别的值。**
+   `admin/node_health.go:173`，而查询失败走的是 **503**（`:165-167`），
+   不是「status: partial + 空 events」⇒ **「部分观测」在本端点上不可表达**。
+   ⇒ 解包器**只校验它是字符串，不校验取值** —— 校验 `"complete"` 是**恒真判据**。
+
+2. **★★★★★ `event_type` 是三态，且「恢复」有两个值。**
+   `admin/node_health.go:82-90`：
+   ```go
+   eventType := "failed"
+   if row.Success {
+       eventType = "recovered"
+       if row.TriggerKind == "credential_recovery" {
+           eventType = "reconnected"      // ← 强制恢复触发的探测
+       }
+   }
+   ```
+   ★★ 把「恢复」当单一状态会**漏掉 `reconnected`**
+   —— 而 `credential_recovery` 正是**强制恢复**那条路径的触发来源。
+
+3. **★★★★ 三个条件键全是「指针 + omitempty」，填充条件各不相同。**
+   | 键 | 什么时候**有**键 |
+   |---|---|
+   | `duration_ms` | **仅 `> 0`**（`:100-102`）⇒ 0 毫秒 ⇒ **键缺失**，不是 `0` |
+   | `reason_code` | 非 nil **且** trim 后非空 **且 ≠ `"none"`**（`:105-107`） |
+   | `note` | 模型名 / 触发来源至少一个非空（`:108-109` + `formatProbeNote :126-140`） |
+   ★★ `"none"` 是**哨兵**：`firstNonEmptyPtr` 选中它、紧接着的过滤又丢掉它
+     ⇒ **客户端永远看不到 `"none"`**，键缺失就是「无原因码」。
+   ★ 这是本仓**第六种**缺键编码（已见：恒数组 / 键缺失 / 裸 null /
+     omitempty 条件键 / 恒发布尔 / **指针+omitempty**）。
+
+4. **★★★★ 查询失败是 503 不是 500**（`:165-167`），
+   且与「数据库没配」（`:158`）**同为 503**，只能靠 message 区分。
+
+5. **★★★★ `since` 按后缀分派两套语法，超上限静默 clamp 到 7 天。**
+   `parseTimelineSince`（`:52-79`）：`Nd` 走 `Atoi`，其余走 `time.ParseDuration`
+   （Go 的 ParseDuration **不认 `d`** ⇒ 两套语法不打架）；
+   两者**都** clamp 到 7 天、**都**不报错；缺省是 **24h**。
+   ⇒ 客户端只对 `^[+-]?\d+d$` 做 clamp，**不重新实现** `ParseDuration`
+     （那套语法可小数可多段，复刻容易把合法值变成 400）。
+
+6. **★★★ 排序键与展示键不是同一个字段。**
+   SQL `ORDER BY started_at DESC LIMIT 200`（`:186-187`），
+   展示用的 `occurred_at` 优先取 `CompletedAt`、回落 `StartedAt`（`:91-94`）
+   ⇒ **跨完成的探测会与「开始时间」的排序不一致**；
+   并且过滤也按 `started_at >= $2` ⇒ **`since` 过滤的是开始时间**。
+
+7. **★★★ 上限 200 不回显，被丢的是最早的**（`:21` + `:187` + `:211-213` 的反转）。
+
+8. **★★ 响应里的 `credential_id` 是字符串**（`strconv.FormatInt`，`:172`），
+   且 `credential_id <= 0` 判 400（`:146-151`）；
+   `events` 恒为数组（`make(...,0,32)` + `:169-171` 兜底）；
+   `occurred_at` 是 RFC3339**Nano**。
+
+### 验证
+
+- 用例 **84 条全绿**
+- 变异 `/tmp/mut-co73.mjs` **46 条，46/46 有牙、零可疑**，`RESTORED=OK`
+- 三门 rc=0；`vue-tsc` rc=0；`npm run build` rc=0
+- 全量 **3961 条（137 文件）** rc=0；十连跑 10/10
+- U+FFFD 自查：源、用例、两侧 i18n 均 0
+
+### U+FFFD 扫描当场抓到一处写坏的字
+
+写完 `nodeHealthTimeline.ts` 第一次扫描就抓到 **2 个 U+FFFD**，在第 100 行：
+```
+ * 而展示用的 `occurred_at` 优先取 `CompletedAt`、回<U+FFFD><U+FFFD> `StartedAt`
+                                                     ↑ 「落」字被写坏
+```
+⇒ 由「回落」修复为「回落」后归零。
+★★ 这正是 §11.105 立的那条规则的直接收益：
+**扫描范围必须覆盖本批新写的每个文件**（i18n 门**不检查替换字符**，
+文档扫描也不会扫到 `.ts`）。中文字符在批量写入时可能被截断成 U+FFFD，
+而**肉眼看代码是发现不了的** —— 第 100 行在注释里，不影响任何行为。
+
+### 变异验证暴露的判据缺陷（真缺陷，已修）
+
+1. **★★ 判据正则要区分「同一条端点的不同失败分支」。**
+   「缺 `observation_status` 时抛错」原来写 `.toThrow(/observation_status/)`
+   ⇒ 变异把 `requireKeys` 删掉后，改由下面的**类型校验**抛
+   `observation_status 不是字符串`，**同一个词照样匹配** ⇒ 判据被自己的另一条分支兜住。
+   ⇒ 收紧成 `.toThrow(/缺 1 个键/)`。
+   ★ 这是第七十二批「正则太宽」那条教训的**同族第二形态**：
+     上次是被**下游 TypeError** 兜住，这次是被**自己的另一条错误分支**兜住。
+
+2. **★★ 锚点指错 3 条**（#22 / #39 / #45）：实际转红的是**相邻**用例。
+   连续第七批踩这个坑。其中两条是我**新加了夹具却没同步锚点** ——
+   加完用例必须回头核对「这条判据对应哪个标题」。
+
+3. **★★ 夹具缺键数与变异的敏感度要匹配。**
+   变异 #22 把 `filter(缺键).slice(0, 1)` 注入后**全部用例仍绿**，
+   手工实测才确认：**每条「缺某个键」的用例都只缺 1 个键**，
+   `slice(0, 1)` 对单元素数组**无影响** ⇒ 对现有夹具是**等价变异**。
+   ⇒ 补了一条「**两个**恒在键一起缺失」的夹具才有区分力；
+   且特意选了**不做取值校验**的两个键（`event_type` 有取值校验会兜住）。
+
+4. **两条我选错了等价变异**：
+   - #11 `days < 1` 守卫删掉后，后续 `days > 7` 判断对 0/负数仍为假 ⇒ 仍返回原值。
+   - #44 `credential_id` 是 `number` ⇒ `String(id)` 只有数字
+     ⇒ `encodeURIComponent` **恒等于恒等** ⇒ 改成「路径写错」才是真变异。
+   ⇒ 与第六十九/七十二批同族：**注入必须真的改变被观察行为**。
+
+5. **一处防御被记为可证等价变异（保留）**：`reason_code` 取值里的 `!== ''` 判断。
+   后端 `:105-107` 已经过滤掉空串 ⇒ 客户端这条分支**不可达**
+   ⇒ 它是**防御性守卫**（防后端异常下发），按纪律**保留**并记为可证等价。
