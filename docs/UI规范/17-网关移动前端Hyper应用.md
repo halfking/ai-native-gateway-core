@@ -48,6 +48,8 @@
 | 告警 | `/alerts` | `/api/candidate-failures/alerts` | 时间线卡片 |
 | 路由检查 | `/routing` | `GET /api/routing/resolve?model=` | 抽屉席位；输入模型名 → 可路由/被阻塞候选分组（2026-10-06，见 §11） |
 | 供应商 | `/providers` | `GET /api/providers` | 抽屉席位；卡片 + 搜索（客户端）+ 可用性筛选（**服务端** routability）（2026-10-06，见 §11.6）；卡片可点开该供应商的**节点操作审计** Sheet |
+| 模型完整性 | `/integrity` | `GET /api/admin/model-integrity/{events,summary}` + `POST …/events/{id}/resolve` | 抽屉席位，**superAdmin 档**；**唯一的服务端分页列表** + 异常处置闭环（2026-10-06，见 §11.12） |
+| 模型完整性 | `/integrity` | `GET /api/admin/model-integrity/{events,summary}` + `POST …/events/{id}/resolve` | 抽屉席位，**superAdmin 档**；**唯一的服务端分页列表** + 异常处置闭环（2026-10-06，见 §11.12） |
 | 用量 | `/usage` | `/api/usage/summary` + `/api/usage/by-model` | 汇总卡 + 模型分布，Tab 停靠 |
 | 我的 | AccountSheet | `/api/auth/me` | 全屏 Sheet（用户/外观/语言/登出），02 §5 结构 |
 
@@ -395,3 +397,62 @@ NodesView 决策区 3 条）；`npm run css:check` 通过（29 文件）；`npm 
 因为 `Number.isFinite(Infinity)` 为 false，根本进不了夹取分支。
 是我把 `Math.trunc(Infinity) === Infinity` 想成了「能过 isFinite」。
 已改成断言「不发」，并把这段推理写进测试注释。
+
+
+### 11.12 模型完整性异常（第四轮补齐，2026-10-06）
+
+`/integrity` 抽屉席位。**整段 superAdmin 档**（`admin/handler.go:924-925` 两处注册都包
+`h.superAdmin`），tenant_admin 一律 403 ⇒ 视图按 role 分档，非 super_admin 只显示权限说明、
+不挂列表。
+
+选它的理由：这类问题（模型名对不上 / 参数漂移 / 指纹变化）表现为「请求失败或结果诡异」，
+但**不落在节点健康上**（凭据探测是好的）。移动端此前完全没这个面，排查只能开电脑。
+
+**★ 本页是移动端唯一的服务端分页列表**，与节点/模型/供应商/密钥页（「一次拉全量 +
+客户端切片」）根本不同，别照抄它们：
+
+| 差异点 | 本页 | 其余列表页 |
+| --- | --- | --- |
+| 数据源 | `limit`+`offset` 取一页 | 单端点返回全量 |
+| `total` | `resp.count` = **COUNT(\*) 命中总数**（`model_integrity.go:140`/`:202`） | `items.length` |
+| `fetchPage` | `(page-1) * PAGE_SIZE` | `if (page > 1) return []` |
+
+`total` 若误用 `resp.events.length`，「已加载 X / 总计 Y」会两数永远相同、看起来像「已全部加载」。
+
+**处置端点** `POST /api/admin/model-integrity/events/{id}/resolve`（:271-310）有个与同批
+`set-manual-disabled` **不同**的宽松点：body 解析用 `readJSON` 且**显式忽略返回错误**
+（`_ = readJSON(r, &body)`，:284）⇒ `resolution_notes` **不是必填、解析失败也不 400**。
+移动端因此不强制填备注，但**仍**给输入框——「为什么处置」是复盘时唯一有用的信息。
+id 非法 → 400 `invalid integrity id`（:276-279）。
+
+**字段易混**：JSON tag 是 `detected_at`（:19），SQL 那一列叫 `ts`（:149）。同一字段，勿混。
+
+### 11.13 ★★ 本轮抓到一个 flaky 判据（判据自身有 bug，不是产品缺陷）
+
+`IntegrityView` 的「page→offset 映射」用例**同一份代码 6 次里 3 次失败**。两处叠加：
+
+1. **`loadNext()` 不是无条件的**：`continuousList.ts:111-119` 在 `_state` 为
+   `initialLoading / refreshing / loadingNext / exhausted / loadFailed` 时**静默 return**。
+   测试 `await flushPromises()` 不等状态机就调它 ⇒ 请求被随机丢弃。
+   ⇒ 必须轮询等 `controller.state` 离开 loading 再调。
+2. **`vi.clearAllMocks()` / `m.mockClear()` 不清 once 队列**（只清调用记录）：
+   - 前一用例若设了 `mockResolvedValueOnce` 而因 `v-if` 分支没被消费，该实现**串到下一用例**；
+   - 首屏 `autoFill`（07 §3，首屏补页 ≤3 页）排的第 2、3 页请求可能在 `mockClear`
+     **之后**才落地 ⇒ `mock.calls.at(-1)` 取到的是补页的 `offset=20` 而非首屏的 `0`。
+   ⇒ 需要重置**实现队列**时用 `vi.resetAllMocks()` / `m.mockReset()`。
+
+★ **教训分三层，别只记结论**：
+- 「单跑绿、整跑红」先怀疑**跨用例污染**，而不是「随机」；
+- 定位手段是 `-t` 二分（哪个前序用例组合会污染），不是加 `sleep`；
+- 症状「收到的数据是**另一个用例造的**」是污染的强信号 —— 本次收到 `id=1` 而本用例造的是
+  `id=5`，而 `id=1` 正是前一个用例的数据。**看到这种症状要直接去查前序用例的 mock 队列**。
+- 加了 `mockReset` 后仍偶发，才暴露出**第二层**原因（autoFill 补页竞态）。一次修复不绿
+  不等于根因找全了。
+
+**验证标准改为「连跑 N 次」**：修完连跑 8 次全绿才算稳。本页判据已按此验收。
+
+### 11.14 本轮门禁（第四轮，含模型完整性）
+
+`web-mobile/` 实测：`vue-tsc -b` 通过；`vitest run` **168 用例 / 22 文件全绿**
+（新增 IntegrityView 5 条 + modelIntegrity API 13 条）；`npm run css:check` 通过（31 文件）；
+`npm run build` 通过。**并按 §11.13 的标准连跑 8 次全绿**（flaky 已消除）。

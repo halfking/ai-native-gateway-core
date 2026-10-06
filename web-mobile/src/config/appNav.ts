@@ -26,6 +26,9 @@ export const DRAWER_NAV: readonly NavItem[] = [
   { key: 'routing', to: '/routing', icon: 'search', titleKey: 'nav.routing' },
   // 2026-10-06：供应商维度可见性（谁挂了/谁没绑模型/谁被手动停用）。
   { key: 'providers', to: '/providers', icon: 'globe', titleKey: 'nav.providers' },
+  // 2026-10-06：模型完整性异常（superAdmin 档）。表现为「请求失败/结果诡异」
+  // 但不落在节点健康上——移动端此前完全没这个面，排查只能开电脑。
+  { key: 'integrity', to: '/integrity', icon: 'alert', titleKey: 'nav.integrity' },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))
