@@ -7412,3 +7412,91 @@ P0 修好后回看存储侧。**本节最重要的内容是两次「自己提出
 - ❌ 没有删任何索引（上文已证不能删）
 - ❌ 没有改 `URSM_V2_SHADOW_PERSIST`、没有部署二进制
 - ❌ 没有实现 §10.63 的去重方案（它需要用户先在方案 1 与方案 2 之间拍板）
+
+---
+
+## §10.69 把 §10.67 的自我拷问用在自己的防线上：up 方向也有同样的洞
+
+§10.67 的结论是「只验证了一条路径就宣布定案/防复发」。这一节把同一句话
+**用在我自己刚写的门上**。
+
+### §10.69.1 问出第二个洞：我的门只扫 `.down.sql`
+
+§10.66 已经证明线上那次重建**不是**跑 down，是**手工重放 up**。
+那么「能造出坏形态的上一份文件」就不是回滚脚本，而是
+**`453_ursm_v2_node_snapshot_min.sql` 本身** ——
+它 `CREATE TABLE … PRIMARY KEY (snapshot_ts, credential_id, raw_model_name)`。
+
+⇒ **我的门对 up 方向完全失明。** 而这正是「同一条危害、只防了一条」。
+
+全仓扫描该表主键声明的结果（7 处）：
+
+| 文件 | 主键 | 角色 |
+|---|---|---|
+| `sql/schema/01-schema.sql:22653` | 4 列 | ✅ |
+| `deploy/sql/schemas/baseline/01-schema.sql:22653` | 4 列 | ✅ |
+| `installer/…/embeddata/01-schema.sql:22653` | 4 列 | ✅ |
+| `sql/objects/constraints/…_pkey.sql:6` | 4 列 | ✅ |
+| `463_…_sql` | 4 列 | ✅ |
+| `830_….sql.skip:200` | 4 列 | ✅ |
+| **`453_…_sql:43`** | **3 列** | ★ 本次事故的元凶 |
+
+### §10.69.2 ★ 一个被自己否掉的假设（记录下来，别再犯）
+
+我一度以为「`01-schema.sql` 有三份副本（canonical / installer embeddata /
+deploy baseline）却**没有同步门**」—— 若属实，任何一次只改一份的编辑都会让
+**新建环境拿到不同 schema**，正是能造出下一个 P0 的形状。
+
+**查证后：门已经存在。**
+`sql/schema/baseline_drift_test.go` 的 `TestBaselineFilesAreNotDivergent`
+与 `baseline_ordering_test.go` 已覆盖三副本；且当前三份**逐字节相同**
+（md5 `40742fd6…`，各 30,409 行）。
+
+⇒ **假设作废，没有写那道冗余门。**
+（`baseline_drift_test.go` 头部还记着一段「A FALSE INVARIANT, RECORDED SO IT IS
+NOT RE-INVENTED」—— 正是同类教训的前人记录。）
+
+### §10.69.3 补门：`up_migration_replay_test.go`
+
+1. **`TestUpMigrationsDoNotRecreateTheBrokenShape`**
+   扫 `*.sql` + `*.sql.skip`（排除 `.down.sql`），凡声明的主键列集合与
+   writer 的 `ON CONFLICT` 不同的 ⇒ 必须登记。
+   ★ 正则用 `PRIMARY\s+KEY\s*\(([^)]*)\)`（**不带 `ADD` 前缀**）——
+     `453` 用的是 **CREATE TABLE 内联写法**，沿用 down 门的
+     `reAddPrimaryKey`（要求 `ADD`）会**直接漏掉本次事故的元凶**。
+   ★ 反向自证：涉及该表的正向迁移少于 2 个即红（防「一个都没扫到 ⇒ 绿」）。
+2. **`knownUpReplayLandmines` 登记表 + 防腐门**
+   `453` 登记在册并写明**它的代价**：任何手工重放都会重建出断掉的写路径；
+   同时记录**为什么不能删**（账本记着它 2026-07-22 已应用，删文件会让
+   「账本已记录」失去对应定义）。
+
+### §10.69.4 变异
+
+| 变异 | 目标门 | 结果 |
+|---|---|---|
+| **M63** 把 `453` 从登记表拿掉 | `TestUpMigrationsDoNotRecreateTheBrokenShape` | 🔴 精确指出 `453` 的 3 列 |
+| **M64** 新增一颗**内联 PK** 的 up 地雷 | 同上 | 🔴 精确命中 |
+
+★ **M63 是关键**：门「绿」有两种可能 —— 抓到了并已登记，或**压根没扫到**。
+  把登记拿掉让它红，才能证明**前者**。否则我就是在用 §10.67 自己批评过的
+  「没检出违规所以安全」。
+
+### §10.69.5 顺手修掉的越界缺陷（不是我引入的，但挡住了我自己的验证）
+
+跑基线时 `sql/schema/` 红：
+
+    TestIntegrationTaggedTreeCompiles
+    vet: apihub/list_stale_realdb_test.go:56:12: assignment mismatch:
+         1 variable but NewPGStore(pool).UpsertBatch returns 2 values
+
+**先归因再动手**：干净 worktree 在 `aa7a9a5e8`（我开工前）**同样复现**
+⇒ 既有红。来源是 `95721459b`（§10.34 listStale 那次改动）：
+`UpsertBatch` 签名改成 `(int, error)` 后，**integration tag 下的测试没跟着改**。
+
+修法一行（seed 不需要行数，按同包 `batch_upsert_realdb_test.go` 的惯例）：
+
+    - if err := NewPGStore(pool).UpsertBatch(ctx, assets); err != nil {
+    + if _, err := NewPGStore(pool).UpsertBatch(ctx, assets); err != nil {
+
+⇒ 这道门红着会**掩盖**其他 schema 门的结论（红与红无法区分），
+  属于「让既有信号可读」的必要修复，不是范围外的手伸。
