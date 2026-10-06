@@ -1198,3 +1198,82 @@ ProvidersView 答「哪个供应商挂了」，两者都答不了这一问，而
 10. `npm run build` 通过，2 个新视图各自产出独立 chunk
 
 ★ 变异证据：往真实词典注入重复键 ⇒ i18n 门转红并报出行号。
+
+### 11.37 探测面上移：探测队列 + 供应商探测延时（第十五轮）
+
+探测面共 11 个端点（`/api/admin/probe/*`）。本轮**只取其中 2 个**，理由：
+`system-health` 返回的是 `unified` / `legacy` **双轨混合结构**（`legacy_health`
+marshal 成 map 后再塞 `unified`），`queue-snapshot` 同样是
+`{unified, queues, total, legacy:{…}}` —— 这类双轨结构一旦在移动端只实现一半，
+就会稳定地产出一批「取不到值但不报错」的字段。先把形状规整的取走。
+
+| 页面 | 端点 | 形状 |
+|---|---|---|
+| 探测 `/probe` | `GET /api/admin/probe/queue-tasks` | `{tasks, total}` |
+| 探测 `/probe` | `GET /api/admin/probe/provider-latency` | `{entries, total}` |
+
+两条都 `adminWrap` = AdminMiddleware ⇒ tenant_admin 可用，不设 `requiresRole`。
+
+它补的是 NodesView 的**结论**页缺的那一半：NodesView 展示 `node_probe_state`
+的判定（健康/故障/可疑），本页展示**得出该判定的过程**——排到第几次、
+下次何时重试、上次结果、供应商直连一次要多久。
+「这一条为什么被判成可疑」经常只能从这里看出来：结论页不告诉你它是第 3 次
+重试还是第 1 次就成功了。
+
+#### ★ 越界语义：本仓库已经攒到**第四种**了
+
+`queue-tasks` 的 `limit` 越界是**静默保持默认 100**（`if n > 0 && n <= 200` 不成立
+时就不赋值）—— 不是 400、也不是 clamp 到边界。加上前几轮的：
+
+| 语义 | 端点 |
+|---|---|
+| **400** | `routing/overrides/audit`、`credentials/heatmap` |
+| **静默 clamp 到边界** | `audit_operations`、`credentials/routing-log` |
+| **静默回落默认值** | `turns/sessions`（20）、`probe/queue-tasks`（100） |
+| **静默 clamp 到上限** | `admin/node-health/.../timeline`（7d） |
+
+⇒ **每接一个新端点都要重读那三行条件，不能沿用上一个的记忆。**
+这一条在 api 模块头注释里逐个记了「越界行为」行。
+
+#### 两个「没出现 ≠ 不存在」
+
+1. **`provider-latency` 不接受任何参数**，且写死三个口径：
+   `direct_ok = TRUE AND direct_latency_ms > 0`、`now() - 1 hour`、`LIMIT 500`。
+   ⇒ 某供应商不在列表里 = **最近一小时没有成功的直连探测**，不是供应商没了。
+   UI 必须在空态旁说明这一句（判据：口径说明**无条件**渲染，
+   不是「出错才提示」——它防的是「看空列表的人以为供应商没了」）。
+
+   ★ 客户端把它写成**无参函数**：`fetchProviderLatency()` 不接受任何参数，
+   让「想传参」的冲动在类型层面就被挡掉，而不是发一个被后端忽略、
+   让用户以为过滤生效了的查询串。
+
+2. **`taskStatusTone` 对词表外的状态一律 muted，不给 success**。
+   这个结构体后端**没有**定义状态词表（对比 heatmap 的 `node_status` 是有的），
+   所以值可能是没见过的。
+   ★ 且刻意**不用** `Record<string, tone>` 查表 —— 查表天然是
+   `TONE[status] ?? 'success'`（缺省成功），而这里要的缺省是 muted。
+   写成 switch 后「缺省是什么」是显式的一行，不靠默认值隐含。
+
+#### 两个端点**分别**记错误
+
+桌面端这里是 `Promise.all` + `.catch(() => null)` **静默吞掉**（与
+`fetchDispatchWaterfall` 旁的写法同款）。移动端不照抄：合并成一个 error 会把
+「队列段挂了」显示成「整页都挂了」，而 `provider-latency` 失败并不影响队列。
+判据两条：`仅 queue-tasks 失败 ⇒ 延时段照常渲染`、`两个都失败 ⇒ 显示整页错误`。
+
+### 11.38 本轮门禁（第十五轮，探测面）
+
+`web-mobile/` 实测**十道**：
+1. css 门自测 **11/11**
+2. 触控门自测 **11/11**
+3. i18n 门自测 **14/14**
+4. `gate:selftest` **36 条断言全绿**
+5. `vue-tsc -b` 通过
+6. i18n 键集门 通过（各 **542 键**，含无重复键）
+7. css 媒体查询门 通过（41 文件）
+8. 触控热区门 通过（**38 个 .vue**）
+9. `vitest run` **332 用例 / 37 文件全绿**，**连跑 10 次全绿**（新增 18 条）
+10. `npm run build` 通过，`/probe` 产出独立 chunk
+
+★ 变异证据：把两个端点合并成一个 error + 把口径说明改成「出错才渲染」
+⇒ 4 条视图用例转红（合并错误那条正好命中「仅一段失败」的反向锁定）。

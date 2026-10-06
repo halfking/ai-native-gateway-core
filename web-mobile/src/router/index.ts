@@ -135,6 +135,13 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/NodeHealthView.vue'),
     meta: { titleKey: 'nodeHealth.title', requiresAuth: true },
   },
+  // 探测面（2026-10-07）：探测队列 + 供应商探测延时。adminWrap 档。
+  {
+    path: '/probe',
+    name: 'probe',
+    component: () => import('@/views/ProbeView.vue'),
+    meta: { titleKey: 'probe.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',

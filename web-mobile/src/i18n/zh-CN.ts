@@ -22,6 +22,7 @@ export const zhCN = {
     turns: '会话',
     routingAudit: '路由覆盖审计',
     heatmap: '凭据热力图',
+    probe: '探测',
     nodeHealth: '健康时间线',
     account: '我的',
   },
@@ -487,6 +488,23 @@ export const zhCN = {
     reason: '原因码 {c}',
     noEvents: '该凭据在这段时间内没有探测记录',
     back: '返回',
+  },
+  // 探测面：探测队列 + 供应商探测延时（2026-10-07）
+  probe: {
+    title: '探测',
+    queueSection: '探测队列',
+    latencySection: '供应商探测延时',
+    taskCount: '{n} 个任务',
+    emptyQueue: '探测队列现在是空的',
+    emptyLatency: '最近 1 小时内没有成功的直连探测记录',
+    // ★ 「没出现在列表里」不等于「不存在」—— 后端只统计 1h 内 direct_ok 且延时>0 的记录
+    latencyWindowHint: '仅统计最近 1 小时内**直连成功**的探测；没出现在这里不代表该供应商不存在。',
+    attempt: '第 {n} 次',
+    priority: '优先级 {n}',
+    nextRun: '下次 {t}',
+    lastResult: '上次 {code} · {ms}ms',
+    reason: '原因 {c}',
+    unknownStatus: '未知状态',
   },
   models: {
     title: '模型目录',
