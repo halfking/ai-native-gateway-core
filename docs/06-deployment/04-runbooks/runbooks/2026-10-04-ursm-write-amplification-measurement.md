@@ -9070,3 +9070,62 @@ session_bodies         p        6
 
 ★ 三次里有两次的读数**长得极像成功**（一个 16.4 MiB 的惊人数字，
 一个 0/0 bytes 的惊人对比）。⇒ **越反常的读数越要先问「这个量具量的是什么」。**
+
+---
+
+## §10.83 补上 §10.82 的留白：WAL 的实例级配置，以及一条尚未使用的杠杆
+
+§10.82 明确留白了「97.4 KB/行 里 payload / 索引 / **FPI** 各占多少」。
+本节能补的是**结构与配置**，**比例仍然测不出来**——原因也一并记下。
+
+### §10.83.1 实例级 WAL 配置（252 / llm_gateway 实例，只读）
+
+| 参数 | 值 | 含义 |
+|---|---|---|
+| `full_page_writes` | **on** | checkpoint 后**首次修改某页要写整页 8 KB 镜像（FPI）** |
+| `wal_compression` | **off** | WAL **不做压缩** ★ |
+| `max_wal_size` | 4096 MB (4 GB) | checkpoint 的 WAL 体积触发线 |
+| `checkpoint_timeout` | 900 s (15 min) | 时间触发线 |
+| `shared_buffers` | 458752 × 8 kB = **3.5 GB** | |
+| `synchronous_commit` | on | |
+
+按 §10.80.1 的网关库 WAL 速率 ≈ 35.3 GiB/天 ≈ **1.47 GB/小时**：
+4 GB 的 `max_wal_size` ⇒ checkpoint 大致每 **2.7 小时**一次
+（15 分钟的时间线在此速率下**永远轮不到**，实际由 WAL 体积触发）。
+
+⇒ **结构性事实**：每 ~2.7 小时就有一次「FPI 窗口」，
+窗口内任何被改动的页，第一次写入要付 8 KB。
+promote 每次调用写 16.0 MB ≈ **2,000 个 8 KB 块**，
+其中落在 FPI 窗口内的比例**无法从现有视图读出**。
+
+### §10.83.2 为什么比例测不出来（量具侧的限制，不是没测）
+
+252 上跑的是 **kx-citus 定制构建**，其 `pg_stat_bgwriter` 仍是 **PG17 之前**的列布局
+（只有 `buffers_clean` / `maxwritten_clean` / `buffers_alloc`），
+**没有 `checkpoints_timed` / `checkpoints_req`**，且**不存在 `pg_stat_checkpoints` 视图**。
+
+⇒ checkpoint 次数与节奏**无法直接测量**。
+★ 上面的「每 2.7 小时」是由 `max_wal_size` ÷ 估算 WAL 速率**推算**的，
+**不是实测**，把它当实测引用会重蹈本次 runbook 已犯过 11 次的那类错。
+
+### §10.83.3 一条独立且尚未使用的杠杆：`wal_compression`
+
+`wal_compression = off` ⇒ 上述 FPI 镜像与 body payload 都以**未压缩**形态进 WAL。
+PG 17 支持 `pglz` 与 **`lz4`**（`ALTER SYSTEM SET wal_compression = lz4`）。
+本库承载的正是 JSON body 与全页镜像——**压缩率有物质基础**。
+
+⚠️ **这是生产配置变更，需你授权，我未执行。**
+风险面相对可控：该参数是 `sighup` 上下文，`ALTER SYSTEM` + `pg_reload_conf()` 即可生效，
+**不需要重启**；但会改变 WAL 写入的 CPU/延迟权衡，**必须先在 245 灰度**。
+
+### §10.83.4 三条独立杠杆的现状对照
+
+| 杠杆 | 状态 | 需要什么 |
+|---|---|---|
+| `routing_analytics_7d` 去 `NOW()` 列 | **已实现未上线**（§10.81 / 迁移 837） | 部署授权 |
+| body TOAST 压缩 | **早已是 lz4**，无可用空间 | — |
+| `wal_compression = lz4` | **未启用**，本节新发现 | 生产配置授权 + 245 灰度 |
+| 停掉 bodies 的 hot→冷 promote | 可省本网关库 **13.2%** WAL | **产品决策**（冷侧是否需要） |
+
+⇒ 四条里，**唯一不需要任何人的决定、纯技术就能拿的，已经拿完了。**
+剩下三条全部要你拍板。
