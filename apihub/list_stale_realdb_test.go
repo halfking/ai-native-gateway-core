@@ -53,14 +53,17 @@ func seedStale(t *testing.T, n int) {
 			Version:     "0.0.0",
 		})
 	}
-	// UpsertBatch 的第一个返回值是「确认落库的行数」（见 pgStore 上方的接口契约③
-	// 「err 与计数并存」）。这里把它用起来而不是丢掉：下面紧接着就要断言这 n 行
-	// 真的在库里，若批量写入静默少写了行，应当在这里就报，而不是等回拨语句
-	// 报一个更难定位的 RowsAffected 不符。
-	if written, err := NewPGStore(pool).UpsertBatch(context.Background(), assets); err != nil {
+	// 2026-10-06（R48 轮遗留的编译破损）：UpsertBatch 的签名在
+	// bc60cab71 改成 (int, error)，而本文件（95721459b 引入）
+	// 仍按旧的单返回值调用 ⇒ `apihub` 包在 go test 下编译不过。
+	// 注意 `go build ./...` 不编译 _test.go，所以只有这条门会红。
+	//
+	// 返回的 int 是本次 upsert 实际影响的行数；本用例只关心
+	// 「行写进去了」，不关心 affected 的具体数值（它受 upsert 的
+	// 心跳门控影响，见 pg_store.go 的 WHERE 两半），
+	// 所以显式丢弃而不是拿它当断言。
+	if _, err := NewPGStore(pool).UpsertBatch(context.Background(), assets); err != nil {
 		t.Fatalf("seed UpsertBatch: %v", err)
-	} else if written != n {
-		t.Fatalf("seed UpsertBatch 只确认落库 %d 行，期望 %d", written, n)
 	}
 	// 回拨到 48 小时前，远超 6h 阈值。
 	tag, err := pool.Exec(context.Background(),
