@@ -33,6 +33,20 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/streaming"
 )
 
+// Mount paths (mount contract above). They are constants rather than inline
+// literals because they are a **cross-artifact contract** with the frontend
+// build: web-mobile/vite.config.ts sets the production `base` to this same
+// prefix, and every asset URL in the built index.html is derived from it.
+// Changing one side without the other does not fail any Go test — it makes
+// every asset 404 in production, i.e. a blank mobile page.
+// mobile_mount_contract_test.go cross-checks the two, and (when a build is
+// present) asserts every /m-assets/* reference in the built index.html really
+// resolves through this handler.
+const (
+	mobileSPAMountPath    = "/m"
+	mobileAssetsMountPath = "/m-assets/"
+)
+
 // MobileStaticHandler serves the web-mobile build.
 type MobileStaticHandler struct {
 	distDir   string
@@ -81,7 +95,7 @@ func defaultMobileDistProbe() string {
 
 // ServeAssets serves /m-assets/* from <dist>/assets/*.
 func (h *MobileStaticHandler) ServeAssets(w http.ResponseWriter, r *http.Request) {
-	rel := strings.TrimPrefix(r.URL.Path, "/m-assets/")
+	rel := strings.TrimPrefix(r.URL.Path, mobileAssetsMountPath)
 	rel = strings.TrimPrefix(rel, "assets/")
 	fpath := filepath.Join(h.assetsDir, filepath.Clean("/"+rel))
 	if !streaming.IsAllowedStaticExt(filepath.Ext(fpath)) {
@@ -104,7 +118,7 @@ func (h *MobileStaticHandler) ServeSPA(w http.ResponseWriter, r *http.Request) {
 
 	// /m/api/* and /m/v1/* are not SPA routes and must not be masked by
 	// index.html (same rule as the maintain SPA).
-	stripped := strings.TrimPrefix(upath, "/m")
+	stripped := strings.TrimPrefix(upath, mobileSPAMountPath)
 	if strings.HasPrefix(stripped, "/api/") || strings.HasPrefix(stripped, "/v1/") {
 		http.NotFound(w, r)
 		return
@@ -139,12 +153,12 @@ func newMobileGatewayHandler(next http.Handler, static *MobileStaticHandler) htt
 			return
 		}
 		switch {
-		case strings.HasPrefix(r.URL.Path, "/m-assets/"):
+		case strings.HasPrefix(r.URL.Path, mobileAssetsMountPath):
 			static.ServeAssets(w, r)
-		case r.URL.Path == "/m" || strings.HasPrefix(r.URL.Path, "/m/"):
+		case r.URL.Path == mobileSPAMountPath || strings.HasPrefix(r.URL.Path, mobileSPAMountPath+"/"):
 			static.ServeSPA(w, r)
 		case isMobileEntryRedirect(r):
-			target := "/m/"
+			target := mobileSPAMountPath + "/"
 			if r.URL.RawQuery != "" {
 				target += "?" + r.URL.RawQuery
 			}
