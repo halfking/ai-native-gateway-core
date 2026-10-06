@@ -60,6 +60,9 @@ export const DRAWER_NAV: readonly NavItem[] = [
   // 补 NodesView 答不了的那一问：「哪个模型 × 哪个凭据的组合在坏」。
   // /node-health/:id 是热力图的下钻，不占导航席（从热力图卡片进入）。
   { key: 'heatmap', to: '/heatmap', icon: 'cube', titleKey: 'nav.heatmap' },
+  // 探测面：展示 node_probe_state 判定的**过程**（排到第几次、下次何时重试、
+  // 供应商直连延时）。adminWrap 档 ⇒ tenant_admin 可用，不设 requiresRole。
+  { key: 'probe', to: '/probe', icon: 'refresh', titleKey: 'nav.probe' },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))
