@@ -25,6 +25,8 @@ export const zhCN = {
     probe: '探测',
     probeHealth: '探测健康',
     probeModel: '模型健康',
+    timeline: '可用性时间线',
+    cache: '可用性缓存',
     overrides: '路由覆盖',
     funnel: '请求漏斗',
     proposals: '调优建议',
@@ -38,6 +40,8 @@ export const zhCN = {
     loadingCancelable: '正在加载，可返回',
     retry: '重试',
     cancel: '取消',
+    // ★ 「清空筛选条件」不是「取消」—— 用取消当按钮标签会让人以为关掉了页面
+    clearFilters: '清空筛选',
     confirm: '确认',
     close: '关闭',
     back: '返回',
@@ -688,6 +692,62 @@ export const zhCN = {
     // 末层节点没有出边 —— 是正常的（供应商是终点），不是缺数据。
     leaf: '终点层，无下游',
     errForbidden: '仅超管可查看流量分布',
+  },
+  timeline: {
+    title: '可用性时间线',
+    searchLabel: '按模型名筛选',
+    // ★ 与 /probe-model 的 ILIKE 子串匹配**不同** —— 本页是精确匹配
+    searchPlaceholder: '如 gpt-4o（精确匹配）',
+    exactMatchNote: '本页按「精确匹配」筛选模型名（与「模型健康」那页的子串匹配不同）。搜 gpt-4 不会命中 gpt-4o。',
+    search: '筛选',
+    count: '共 {n} 个小时桶',
+    // ★★ 撞上写死的 LIMIT 500 ⇒ 只能说「可能被截断」
+    truncated: '已达后端 {cap} 行上限（当前 {n} 行），「结果可能被截断」，不代表全部数据。',
+    empty: '近 24 小时内没有探测记录',
+    // ★ 那一小时没有成功探测 ⇒ 不是 0ms
+    noSuccessProbe: '该小时无成功探测',
+    avgLatency: '{ms}ms',
+    errForbidden: '当前账号没有查看可用性时间线的权限',
+  },
+  cache: {
+    title: '可用性缓存',
+    credId: '凭据 ID',
+    credIdPlaceholder: '留空表示不筛选',
+    model: '模型名',
+    modelPlaceholder: '留空表示不筛选',
+    search: '查询',
+    count: '共 {n} 条',
+    // ★★ 撞 4096 ⇒ 只能说「可能被截断」
+    truncated: '已达后端 {cap} 条上限（当前 {n} 条），「结果可能被截断」，不代表全部数据。',
+    empty: '缓存里没有匹配的条目',
+    // ★ 非法凭据 ID 会被后端静默忽略并返回**全量** ⇒ 本地拦下
+    badCredId: '凭据 ID 必须是正整数 —— 后端对非法值会静默忽略并返回全部缓存。',
+    // ★★ 503 的两种来源：都表示「读不到」，不是「空」
+    notWired: '该部署未接入可用性缓存读取器',
+    notWiredHint: '这是部署配置问题（availability reader 未接线），不是「缓存里什么都没有」。缓存的读取端点在这个部署上不可用。',
+    redisUnavailable: 'Redis 客户端不可用',
+    redisUnavailableHint: '读取器已接线但拿不到可用的 Redis 客户端，不是「缓存里什么都没有」。',
+    errForbidden: '当前账号没有查看可用性缓存的权限',
+    routable: '参与路由',
+    yesLabel: '是',
+    noLabel: '否',
+    // ★ state=healthy 但 available=false —— 「模型明明健康却没被选中」的根因
+    contradiction: '探测判定为健康，但这一条「不参与路由」—— 路由不选它就是这里的原因。',
+    okStreak: '连续成功',
+    failStreak: '连续失败',
+    updatedAt: '缓存更新于 {t}',
+    nextRetry: '下次重试 {t}',
+    state: {
+      healthy: '健康',
+      healthy_confirmed: '已确认健康',
+      available: '可用',
+      suspicious: '可疑',
+      probing: '探测中',
+      failing: '故障',
+      broken_confirmed: '已确认故障',
+      unavailable: '不可用',
+      unknown: '未知状态',
+    },
   },
   probeModel: {
     title: '模型健康',

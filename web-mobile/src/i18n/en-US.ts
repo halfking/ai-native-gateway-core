@@ -25,6 +25,8 @@ export const enUS = {
     probe: 'Probing',
     probeHealth: 'Probe health',
     probeModel: 'Model health',
+    timeline: 'Availability timeline',
+    cache: 'Availability cache',
     overrides: 'Overrides',
     funnel: 'Request funnel',
     proposals: 'Tuning proposals',
@@ -38,6 +40,8 @@ export const enUS = {
     loadingCancelable: 'Loading — you can go back',
     retry: 'Retry',
     cancel: 'Cancel',
+    // ★ "Clear the filters" is not "Cancel" — a Cancel label reads like dismissing the page
+    clearFilters: 'Clear filters',
     confirm: 'Confirm',
     close: 'Close',
     back: 'Back',
@@ -665,6 +669,62 @@ export const enUS = {
     // Terminal nodes have no outgoing links - that is normal, not missing data.
     leaf: 'terminal layer, no downstream',
     errForbidden: 'Only super admins can view traffic flow',
+  },
+  timeline: {
+    title: 'Availability timeline',
+    searchLabel: 'Filter by model name',
+    // ★ Exact match here, unlike /probe-model's ILIKE substring match
+    searchPlaceholder: 'e.g. gpt-4o (exact match)',
+    exactMatchNote: 'This page filters by exact model name (unlike Model health, which matches substrings). Searching gpt-4 will not match gpt-4o.',
+    search: 'Filter',
+    count: '{n} hourly buckets',
+    // ★★ Hit the hard-coded LIMIT 500 => we can only say "possibly truncated"
+    truncated: 'Reached the backend limit of {cap} rows ({n} shown); results may be TRUNCATED and do not represent all data.',
+    empty: 'No probe records in the last 24 hours',
+    // ★ No successful probe that hour != 0ms
+    noSuccessProbe: 'no successful probe',
+    avgLatency: '{ms}ms',
+    errForbidden: 'This account cannot view the availability timeline',
+  },
+  cache: {
+    title: 'Availability cache',
+    credId: 'Credential ID',
+    credIdPlaceholder: 'empty = no filter',
+    model: 'Model name',
+    modelPlaceholder: 'empty = no filter',
+    search: 'Query',
+    count: '{n} entries',
+    // ★★ Hit the 4096 cap => we can only say "possibly truncated"
+    truncated: 'Reached the backend limit of {cap} entries ({n} shown); results may be TRUNCATED and do not represent all data.',
+    empty: 'No matching entries in the cache',
+    // ★ An invalid credential ID is silently ignored and returns EVERYTHING
+    badCredId: 'Credential ID must be a positive integer - the backend silently ignores invalid values and returns the whole cache.',
+    // ★★ Two 503 sources: both mean "cannot read", NOT "empty"
+    notWired: 'This deployment has no availability cache reader',
+    notWiredHint: 'This is a deployment configuration problem (reader not wired), NOT "the cache is empty". The cache read path is unavailable here.',
+    redisUnavailable: 'Redis client unavailable',
+    redisUnavailableHint: 'The reader is wired but no usable Redis client is available - NOT "the cache is empty".',
+    errForbidden: 'This account cannot view the availability cache',
+    routable: 'Used for routing',
+    yesLabel: 'yes',
+    noLabel: 'no',
+    // ★ state=healthy but available=false -> why a healthy model is not selected
+    contradiction: 'The probe says this is healthy, yet it does NOT take part in routing - that is why routing skips it.',
+    okStreak: 'Consecutive OK',
+    failStreak: 'Consecutive fail',
+    updatedAt: 'Cache updated {t}',
+    nextRetry: 'Next retry {t}',
+    state: {
+      healthy: 'Healthy',
+      healthy_confirmed: 'Confirmed healthy',
+      available: 'Available',
+      suspicious: 'Suspicious',
+      probing: 'Probing',
+      failing: 'Failing',
+      broken_confirmed: 'Confirmed broken',
+      unavailable: 'Unavailable',
+      unknown: 'Unknown state',
+    },
   },
   probeModel: {
     title: 'Model health',

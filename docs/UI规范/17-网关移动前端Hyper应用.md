@@ -2200,3 +2200,179 @@ func nullInt(v sql.NullInt64) int { if !v.Valid { return 0 }; return int(v.Int64
   ⇒ 模板编译失败，那个 spec 根本没加载（vitest 只报了另一个文件的 21 条）。
   ★ 现象是「变异后用例数变少」，不是「变异后红」——
     **先看用例数对不对**，再判断判据有没有牙。
+
+---
+
+### 11.51 探测缓存面上移：可用性时间线 + 可用性缓存快照（第二十二轮，admin 档）
+
+| 端点 | 移动端 | 档位 | 抽屉席 |
+|---|---|---|---|
+| `GET /api/admin/probe/availability-timeline` | `/timeline` | `admin` | 可用性时间线 |
+| `GET /api/admin/probe/cache-state` | `/cache-state` | `admin` | 可用性缓存 |
+
+累计：**30 视图 / 28 API 模块 / 26 抽屉席**（7 席 superAdmin 档）。
+（口径同前轮：`views/*.vue` 去 spec、`api/*.ts` 去 `*.spec.ts` / `*.test.ts`。）
+
+缓存页回答的是一个**具体且高频**的运维问题：
+「探测说这个凭据是健康的，路由为什么没选它？」
+
+#### ★★★ 陷阱一：**两个静默截断，响应里都没有标记**
+
+| 端点 | 上限 | 位置 | 后果 |
+|---|---|---|---|
+| `availability-timeline` | `LIMIT 500` | `admin/probe_dashboard.go:1154` | ≈20 模型 × 24 小时；再多就丢，且**无任何标记** |
+| `cache-state` | `ScanKeys` 4096 | `bg/model_availability_reader.go:148-153`（注释：`Cap admin enumeration to keep the endpoint cheap`） | key 枚举被截断，**无标记** |
+
+⇒ 两页撞上限时只能说「**可能被截断**」，**不能说**「共 N 条，全部如下」。
+⇒ 判据必须成对写：撞上限说截断 / 上限−1 说正常计数（否则边界那条是恒真的）。
+
+#### ★★★ 陷阱二：**量纲陷阱第 3 处**，同一个仓库里三种量纲并存
+
+`v_model_availability_timeline`（`deploy/sql/schemas/baseline/01-schema.sql:18765-18780`）：
+
+```sql
+round(((count(*) FILTER (WHERE status='ok')::numeric * 100.0) / count(*)::numeric), 2) AS success_rate
+```
+
+**视图里已经乘过 100** ⇒ 客户端再乘一次就是 **9000%**。
+
+累计三处，必须各走各的显式函数（不自己写 `.toFixed(1) + '%'`）：
+
+| 字段 | 原始量纲 | 处理 |
+|---|---|---|
+| `v_model_availability_timeline.success_rate` | 0..100（已乘） | 直接用 |
+| `v_model_health_dashboard.avg_success_rate_7d` | 0..1 | **要 ×100** |
+| `healthy_percentage` | 已是百分数 | 直接用 |
+
+★ 判据写成对拍两条：`success_rate=90` ⇒ 显示 `90.0%` 且**不含** `9000`；
+`success_rate=0.9` ⇒ 显示 `0.9%` 且**不含** `90.0%`（后者证明没有多乘）。
+
+#### ★★ 陷阱三：同族端点的 `model` 语义**相反**
+
+- dashboard 侧：`WHERE raw_model_name ILIKE '%'||$1||'%'`（`:675-679`）——**子串**
+- timeline 侧：`WHERE raw_model_name = $1`（`:1149-1152`）——**精确**
+
+⇒ 搜 `gpt-4` 在「模型健康」页能命中 `gpt-4o`，在时间线页**不能**。
+⇒ 时间线页**无条件**显示「精确匹配」提示（不限有没有输入筛选词）。
+
+#### ★ 陷阱四：两端点的空态形状**不同**
+
+| 端点 | 空时 | 依据 |
+|---|---|---|
+| `availability-timeline` | `timeline: null`（nil slice） | `var timeline []TimelinePoint`，**无** `make`、**无**初始化 |
+| `cache-state` | `entries: []`（显式空数组） | `entries = []CacheStateEntry{}`（`:2040`） |
+
+⇒ 两个 spec 各测一条 null 与 `[]` 都走空态。
+
+★ 顺带一条：`avg_latency_ms` 的 Go 类型是 `*float64` + `json:",omitempty"`
+⇒ SQL NULL 时**键整个不存在**（客户端读到 `undefined`，不是 `0`）。
+⇒ 「该小时无成功探测」与「真的 0ms」必须分开显示，两者判据成对。
+
+★ 视图里 `outbound_model_name` 恒等于 `raw_model_name`
+（视图定义第二列就是 `raw_model_name AS outbound_model_name`）⇒ **零信息量**，不渲染。
+
+#### ★★ 陷阱五：`format=prom` 会把 `cache-state` 变成 `text/plain`
+
+`writeCacheStateProm` 走的是纯文本输出 ⇒ **同一个 URL 换一种 format，JSON 解包就炸**。
+⇒ 客户端**永远不发** `format`（写进文件头注释，防止下一个人「顺手加个导出按钮」）。
+
+#### ★★★ 陷阱六：**503 ≠ 空**，两个来源都表示「读不到」
+
+| 503 message | 位置 | 真实含义 |
+|---|---|---|
+| `availability reader not wired` | `:1971-1973` | 这个部署**没接** Redis 读取器 |
+| `redis client unavailable` | `:2008-2011` | 接了，但 `h.redisClient` 不是 `*redis.Client` |
+
+⇒ 两者都**绝不能**显示成「缓存里没有匹配的条目」——
+那会让运维去查「凭据是不是没被探测」，而问题在**部署配置**。
+⇒ 两套独立文案，且都明说「不是『缓存里什么都没有』」。
+
+★ 姊妹端点的越界语义继续不一致（累计第 6 种）：本端点**没有**任何
+`format`/`limit` 校验，也没有 400 分支 —— 与 `/api/credentials/heatmap`（400）
+和 `/api/admin/node-health/{id}/timeline`（静默 clamp）都不同。
+
+#### ★★ 陷阱七：`state` 与 `available` 是**两个独立字段**
+
+`toCacheStateEntry`（`:2126-2140`）分别取 `snap.State` 与 `snap.Available`
+—— 后端**不做**任何一致性推导。
+
+⇒ `state ∈ {healthy, healthy_confirmed, available}` 且 `available === false`
+就是「**模型明明健康却没被选中**」的根因信号，必须单独标出
+（左侧描边 + 独立提示条），否则这页就只是个列表。
+
+⇒ 判据覆盖：`healthy` 标 / `healthy+available` 不标（防恒真）/
+`failing+available=false` **不**标（本来就是故障，不是矛盾）/
+`healthy_confirmed` 标 / 大写 `HEALTHY` 标（大小写不该决定结论）/
+多条混排时**逐条**判断（只标该标的那一条）。
+
+#### ★★★ 陷阱八：非法 `credential_id` 被后端**静默忽略** = 不过滤返全量
+
+⇒ 客户端本地拦。但**守卫必须是 `^[1-9]\d*$`，不能是 `^\d+$`**：
+
+- `^\d+$` 放行 `"0"`；
+- `fetchCacheState` 的运行时守卫是 `credentialId > 0` ⇒ **`0` 被丢掉不发**；
+- ⇒ 用户输入 0，看到的是**全量**，却以为「筛了凭据 0」。
+
+★ 这是**本轮真犯的错**，且是「静默忽略」那一类缺陷的**同构复发**：
+修掉 `abc` 却漏了 `0`。文案写的是「必须是正整数」，代码却接受 0 —— **文案与判据不一致**。
+
+#### ★ Go 字段名与 JSON 键不同名
+
+`CacheStateEntry` 的 Go 字段是 **`RawModel`**（`:1937`），JSON 键是 `raw_model_name`。
+按 Go 名访问得到 `undefined` 且**不报错** ⇒ 类型里加注释标注
+（同类的 `TurnGroupItem.latency_ms` vs `SessionTurnTreeItem.latency` 已在
+`web` 侧出现过一次）。
+
+#### ★ 本轮修的两处既存缺陷
+
+1. **新写的 i18n 值里带了 markdown `**`**（5 处：`timeline.truncated`、
+   `cache.truncated`、`notWiredHint`、`redisUnavailableHint`、`contradiction`）。
+   本仓**没有** markdown 渲染器 ⇒ 星号原样显示。
+   ★ 上一轮刚修过 `probe.latencyWindowHint` 的**同款**问题，
+     **修完一轮又自己犯** ⇒ 教训：新增字典段时，值里不许出现 `**`。
+     （`grep '\*\*'` 现在 zh 里剩 7 处，逐条确认**全是注释**。）
+2. **`common.cancel` 被当成「清空筛选」按钮标签**（3 个视图：
+   `AvailabilityTimelineView` / `CacheStateView` / `ProbeModelHealthView`）。
+   「取消」读起来像关掉页面 ⇒ 新增 `common.clearFilters`（「清空筛选」/ Clear filters）。
+   ★ 判据锁死「标签是**清空筛选**且**不是取消**」，并锁「无筛选时按钮不出现」。
+
+### 11.52 本轮门禁（第二十二轮，探测缓存面）
+
+| # | 门 | 结果 |
+|---|---|---|
+| 1 | css 门自测 | **11/11** |
+| 2 | 触控门自测 | **11/11** |
+| 3 | i18n 门自测 | **23/23** |
+| 4 | `gate:selftest` | **45 条断言全绿** |
+| 5 | `vue-tsc -b` | 通过 |
+| 6 | i18n 键集门 | 通过（各 **797 键**，+46；**609 个源码字面量键全部存在**，扫 107 个 `.vue`/`.ts`） |
+| 7 | css 媒体查询门 | 通过（**51 文件**，+2） |
+| 8 | 触控热区门 | 通过（**48 个 .vue**，+2） |
+| 9 | `vitest run` | **733 用例 / 56 文件全绿**，**连跑 10 次全绿**（+86：32 API + 18 时间线 + 36 缓存） |
+| 10 | `npm run build` | 通过 |
+
+★ 缓存页变异证据（**6 处，全部转红**）：
+
+| 变异 | 结果 |
+|---|---|
+| 503 不再走「读不到」分支（退化成空态） | 3 failed |
+| 撞 4096 不再说「可能被截断」 | 1 failed |
+| 非法 `credential_id` 不本地拦（`if (false)`） | 3 failed |
+| 矛盾项永远描边（恒真） | 3 failed |
+| 矛盾提示条永远不显示 | 1 failed |
+| 503 两类合并成同一句 | 1 failed |
+
+★ **变异脚本第一次 6 处全部「没施上」**（第 ① 类成因：锚点不存在）。
+  原因是 `perl -0pi -e` 的多层 `bash`/正则转义把字面量改写了
+  ⇒ 改成 **Node 字面量串替换**（不做正则）后 6 处全中。
+  ★ 归因纪律的价值：没有直接归「判据无牙」，而是先打印锚点真实字节。
+
+★ 一次**断言写错**（第 ③ 类：期望值算错）：
+  断言「不把后端英文抛给用户」写成 `not.toContain('availability reader')`，
+  结果红了 —— 但那串是我**故意**留在文案里的组件名（运维要看）。
+  ⇒ 改成精确断言**原始 message 整句**（`'availability reader not wired'`），
+  并补了一条 redis 分支。★ 「不许泄漏原文」要断言的是**原文本身**，
+  不是原文里出现的**词**。
+
+★ 还原纪律：变异后用 `cp` 备份**无条件还原**（脚本里写 `restore()` 不带 `||` 兜底），
+  结束核对 `md5` 与残留标记 —— 本轮 md5 一致、残留 0。
