@@ -1074,6 +1074,22 @@ export const enUS = {
     qstatus_pending: 'Pending',
     qstatus_approved: 'Approved',
     qstatus_rejected: 'Rejected',
+    // ↓ review outcomes (feedback) — the other half of the same review loop
+    feedback: 'Review outcomes',
+    feedbackEmpty: 'No review outcome has been submitted yet.',
+    // ★ 值必须**单行**写：i18n 门禁的解析器按 `key: 'value'` 逐行匹配
+    //   （scripts/verify-i18n-parity.mjs:68），换行会被判成「该侧缺这个键」。
+    feedbackNoTotalNote: 'Like the review queue above, this response carries **no total**, so "there may be more" is only inferred from the page coming back full at 20 items.',
+    feedbackKeyNote: 'Note this panel reads the "feedback" key while the queue above reads "items" — the two list endpoints in the same backend file use different key names.',
+    feedbackTypeLabel: 'Filter by outcome type',
+    fb_all: 'All',
+    auditRef: 'Audit record #{id}',
+    noComment: 'no note left',
+    feedbackAt: 'submitted {t}',
+    // ↓ dynamic keys: ftype_* (values from COMPLIANCE_FEEDBACK_TYPES)
+    ftype_false_positive: 'False positive',
+    ftype_false_negative: 'False negative',
+    ftype_correct: 'Correct',
   },
   compliancePolicy: {
     title: 'Compliance policy',

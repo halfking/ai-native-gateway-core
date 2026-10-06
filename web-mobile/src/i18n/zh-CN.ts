@@ -1095,6 +1095,20 @@ export const zhCN = {
     qstatus_pending: '待复核',
     qstatus_approved: '已通过',
     qstatus_rejected: '已驳回',
+    // ↓ 复核结论（feedback）—— 与复核队列是同一闭环的两半
+    feedback: '复核结论',
+    feedbackEmpty: '还没有人提交过复核结论。',
+    feedbackNoTotalNote: '这一块和上面的复核队列一样：后端响应里**没有总数**，所以只能按「这页刚好满 20 条」推测后面还有。',
+    feedbackKeyNote: '注意这块读的字段名是「反馈」，上面队列读的是「条目」——同一个后端文件里两个列表端点用的键名不一样。',
+    feedbackTypeLabel: '按结论类型筛选',
+    fb_all: '全部',
+    auditRef: '关联审计记录 #{id}',
+    noComment: '未留说明',
+    feedbackAt: '提交于 {t}',
+    // ↓ 动态键：ftype_*（取值来自 COMPLIANCE_FEEDBACK_TYPES）
+    ftype_false_positive: '误报',
+    ftype_false_negative: '漏报',
+    ftype_correct: '判断正确',
   },
   compliancePolicy: {
     title: '合规策略',

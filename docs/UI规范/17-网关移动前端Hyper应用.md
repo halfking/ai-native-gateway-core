@@ -3950,3 +3950,158 @@ superAdmin 兄弟端点 `hot/cron/stats` 也不碰。
   `computed` / `fmtInt`；`InjectionView` 的 `riskOf(d) as number` cast。
 - `dynamicKeys.spec.ts` 动态前缀增至 **12 处**
   （新增 `injection.cat_`，取值取自 `INJECTION_CATEGORIES`），阈值 7→12。
+
+### 11.69 输出合规的复核结论面：接上最后一个只读端点，并修掉一个**已上生产的真 bug**（第三十三轮，admin 档）
+
+本轮补齐 `output-compliance` 族最后一个未接视图的只读端点
+`GET /api/admin/output-compliance/feedback`，作为 `/compliance-hits` 的**第 4 个面板**
+（与「复核队列」相邻——两者是同一复核闭环的两半：待复核 / 复核结论）。
+
+★ **不单开一页**：底栏 5 席已满、抽屉席已 34 个，为一个「三个筛选项、无总数」的
+列表再占一个抽屉席不划算；且它与队列同源同族，放一起语义更连贯。
+
+#### ★★★★★★ 本轮头号发现：**已推到 origin 的真 bug**
+
+1. ★★★★★★ `unwrapComplianceFeedback` 把响应键写成 **`items`**，
+    而后端 `listFeedback`（`admin/output_compliance_handler.go:711`）写的是：
+
+    ```go
+    writeJSON(w, http.StatusOK, map[string]interface{}{
+        "feedback": items, "limit": limit, "offset": offset})
+    ```
+
+    ⇒ 该函数对**每一个真实响应**都抛 `形状不符`。
+    ★★ 而**夹具也是照着 `items` 写的**（当时的 `outputCompliance.test.ts:143`）：
+    `jsonResponse({ items: [], limit: 20, offset: 0 })`
+    ⇒ 三条用例全绿，其中一条就叫「六个只读端点各自独立」。
+
+    **传播路径已核实**：`git log -- web-mobile/src/api/outputCompliance.ts` 只有一条
+    （`b0d90bb8f`），且 `git show b0d90bb8f:…` 里键**当时就是 `items`**
+    ⇒ 该 bug **随创建它的那个提交一起推到了 origin**，
+    并一路存活穿过整个注入批次（`a67e05c45`）才被抓到。
+
+##### ⇒ 由此定一条硬规矩（本轮最值钱的产出）
+
+**夹具证明的是「代码符合我对契约的理解」，不是「代码符合真实契约」。**
+夹具和被测代码出自同一个人/同一次理解 ⇒ 两者**同时错**时，用例必然全绿。
+
+所以：**每个端点至少要有一条判据，其夹具里的响应体是从后端 `writeJSON`
+的 map 字面量逐字抄下来的，并在用例名里带上该字面量的行号。**
+这样后端改键名/改行号时，那条判据会先响，而不是跟着夹具一起错。
+
+新增的 `outputCompliance.test.ts` 分组「★★★★★★ 响应键逐字对得上 writeJSON（后端行号钉死）」
+就是这道门，六个端点逐条列出后端行号与键名，并**互喂对方的形状**验证必抛错。
+
+#### 同一 handler 六个 200 响应的键名（实测，逐字）
+
+| 端点 | 行 | 响应键 | 有 `total` |
+|---|---|---|---|
+| `stats` | `:799` | **扁平对象**，无包装键 | 无 |
+| `records` | `:924` | `records` | **有** |
+| `review-queue` | `:602` | `items` | 无 |
+| `feedback` | `:711` | **`feedback`** | 无 |
+| `keywords` | `:445` | `keywords` | 无 |
+| `policy` | `:208` | **裸对象** `policy` | — |
+
+⇒ ★ **同一族里 `review-queue` 用 `items`、`feedback` 用 `feedback`**，
+键名不同；而 `stats` / `policy` 干脆没有包装层。
+**「同族就是同一个形状」这个假设在本族三次都是错的。**
+
+#### feedback 端点其余契约
+
+2. ★★★★ 响应**没有 `total`**（只有 `feedback`/`limit`/`offset`）
+   ⇒ 与队列一样只能用 `feedback.length >= 生效 limit` 近似说「后面可能还有」。
+3. ★★★ 默认条数 **20**（`parsePagination(r, 20, 0)`，:675），上限 200
+   —— 与 `records` 的 50 不同，是本族第三种默认条数。
+4. ★★★ `reporter` / `comment` 的 JSON tag 带 **`omitempty`**（:159-160）
+   ⇒ **键可能整个不存在**（不是「值为空」）。
+   同表 `reporter VARCHAR(255)` / `comment text` 在 schema 里**可空**
+   （`01-schema.sql:10811-10812`），而 handler 又是裸扫进 `string`
+   ⇒ 与坑 7 同族的 NULL 扫描 500 风险。
+   ★ **但这一条只能算「潜在」不能算「必然」**：`authEmail`（:1251-1258）永不返空
+   （兜底字面量 `"system"`），且 `createFeedback` 的 `req.Comment` 是 Go `string`
+   零值 ⇒ **本 handler 自己的写入路径造不出 NULL**，只有仓外写入才会触发。
+   与 `keywords`/`review-queue` 的确定性不同，此处不下「必然 500」的结论。
+5. ★★★ `created_at` 由 pgx 把 `TIMESTAMPTZ` **直接扫进字符串、没有 `.UTC()`**
+   ⇒ 与 queue/keywords 同族；**格式本轮仍无真库可验，不下结论**，
+   客户端一律走自己的格式化、解析不了就原样回显。
+6. ★★★ `type` 查询参数**没有 allowlist**（DB CHECK 只约束写入）⇒ 只发三个字面值
+   `false_positive` / `false_negative` / `correct`（migration 365 / `01-schema.sql:10814`）。
+7. ★★ `createFeedback`（:723）只校验 `feedback_type != ""`、**不**校验是否在 CHECK 内
+   ⇒ 传非法值会撞 DB CHECK 而返回 **500 而不是 400**。
+   本页不碰写操作，仅记录。
+
+#### ★★ 本轮**第四次**踩到「文本负向断言」，而且是**我自己新写的判据**
+
+新加的一条断言本想写「feedback 面板不许出现『共 N 条』」：
+`expect(w.text()).not.toContain('共 ')` —— **红了**。
+原因是 `records` 面板**有** `total`、**合法地**渲染了「第 1-1 条，共 1 条」
+⇒ 一条**跨面板**的全页文本否定断言，被另一个面板的**正确文案**判死。
+
+修法：**断言必须按面板作用域**——
+`w.findAll('.ch__panel').find(p => p.text().includes('复核结论'))!.text()`，
+并配一条**正向锚点**（`toContain('推测后面还有')`）防止「因为面板没渲染所以没匹配」。
+
+⇒ 这是本会话第 4 次（pending 的「已完成/已失败」、injection 的「没有统计记录」、
+compliance 的 `**`、本轮的「共 」）。**规律不变：凡是否定断言，先问
+「这句文案在本页是不是本来就该出现」，还要问「我断言的是不是整个页面」。**
+
+#### ★★ i18n 门禁的解析器只认**单行** `key: 'value'`
+
+本轮 en-US 侧把两个长文案写成换行形式：
+
+```js
+feedbackNoTotalNote:
+  'Like the review queue above, …',
+```
+
+⇒ `verify-i18n-parity.mjs:68` 的解析器是
+`/^(\s*)([A-Za-z_$][\w$]*):\s*'((?:[^'\\]|\\.)*)'\s*,?\s*$/`（**逐行匹配**）
+⇒ 换行条目**不被识别**，门禁报「仅 zh-CN 有」。
+追到解析器确认后改为单行（未改门禁脚本——门禁是对的，是写法不合规）。
+★ 全文件**只有我这两条**是换行形式，说明单行就是本仓惯例。
+
+#### 差集测绘（本轮新做）
+
+`grep` 全仓路由字面量得 **657 条路由 / 267 个域**；
+与移动端 `src/api` + `src/views` 引用的路径归一化（去 `/api/`、把 `${…}` 折成 `{x}`）后
+⇒ **移动端已覆 37 个域**。
+
+★ 差集计算本身踩过一次坑：`comm` 要求**字典序**输入，
+而我喂的是按端点数降序的列表 ⇒ 一开始把 `prompt-injection`/`output-compliance`
+误报成「未覆盖」。**先排好序再 `comm`。**
+
+未覆盖域（端点数降序，前列）：
+
+| 域 | 端点 | 档位 | 备注 |
+|---|---|---|---|
+| `admin/tenants` | 25 | 多为 superAdmin | 租户管理 |
+| `admin/session-analytics` | 6 注册 | **admin** | ★ 下一批候选 |
+| `admin/maas` | 11 | `h.superAdmin` | MaaS 平台 |
+| `admin/request-detail` | 12 | **admin** | 统一请求详情 |
+| `admin/attachments` | 8 | admin | 数据生命周期·文件 |
+| `admin/approvals` | 8 | 混合 | 审批 |
+| `admin/tenant-approval-config` | 7 | 混合 | |
+| `admin/modules` | 7 | | |
+| `admin/logs` | 7 | 混合（`admin` + `h.superAdmin`） | 日志配置 |
+| `system/session-context` | 6 | | |
+
+#### 本轮门禁（当场实测）
+
+- **变异验证 7/7 有牙**：FB1 反馈解包键改回 `items` / FB2 面板读 `items` /
+  FB3 500 退化成空态 / FB4 排满判断改成「有条就 true」/ FB5 删掉「键不同名」说明 /
+  FB6 空串也发 `type` / FB7 缺值渲染空白。
+  **全部红在具名断言上**；还原后**逐字节一致**，基线复跑全绿。
+- 本批三个 spec：**212 用例全绿**
+  （`outputCompliance.test.ts` 49 + `ComplianceHitsView.spec.ts` 46 + `dynamicKeys.spec.ts` 118）。
+  ★ `ComplianceHitsView.spec.ts` 31 → 46。
+- ★★ 既有 spec 里**原本没有** `fetchComplianceFeedback` 的 mock
+  ⇒ 新面板第一版在打**真实 fetch**，异常被 catch 吞成错误态，
+  而「31 全绿」照样成立。补 mock 后才暴露出那条真红的断言。
+  ⇒ **新增一个端点时，视图 spec 的 mock 清单必须同步**，
+    否则「全绿」只证明「异常被吞得干净」。
+- `npm run build` **rc=0**（`BUILD_RC` 直接从命令取）。
+- 三门：css-media **63 文件** / touch-target **60 个 `.vue`** /
+  i18n parity **各 1295 键**（源码字面量键 **1035**，扫了 **130** 个 `.vue/.ts`）。
+- `dynamicKeys.spec.ts` 动态前缀增至 **13 处**
+  （新增 `compliance.ftype_`，取值来自 `COMPLIANCE_FEEDBACK_TYPES`）。

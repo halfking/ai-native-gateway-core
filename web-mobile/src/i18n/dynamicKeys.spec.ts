@@ -11,6 +11,7 @@ import {
   COMPLIANCE_ISSUE_TYPES,
   COMPLIANCE_QUEUE_STATUSES,
   COMPLIANCE_THRESHOLD_FIELDS,
+  COMPLIANCE_FEEDBACK_TYPES,
 } from '@/api/outputCompliance'
 
 /**
@@ -65,6 +66,8 @@ const DYNAMIC_KEYS: Array<[prefix: string, suffixes: readonly string[]]> = [
   // ★ 输出合规的命中类别、复核状态、阈值字段
   ['compliance.issue_', COMPLIANCE_ISSUE_TYPES],
   ['compliance.qstatus_', COMPLIANCE_QUEUE_STATUSES],
+  // ★ 复核结论的三个类型（取值来自 COMPLIANCE_FEEDBACK_TYPES 常量）
+  ['compliance.ftype_', COMPLIANCE_FEEDBACK_TYPES],
   // 阈值键是 field.replace('_threshold','') ⇒ 后缀要现算，不手抄
   ['compliancePolicy.th_', COMPLIANCE_THRESHOLD_FIELDS.map((f) => f.replace('_threshold', ''))],
   // ★ 注入的 15 个攻击类别（取值来自 INJECTION_CATEGORIES 常量）
@@ -72,8 +75,8 @@ const DYNAMIC_KEYS: Array<[prefix: string, suffixes: readonly string[]]> = [
 ]
 
 describe('动态 i18n 键在两侧词典里都存在', () => {
-  it('★ 至少覆盖 12 处动态前缀（少于这个数说明下面的清单没跟上代码）', () => {
-    expect(DYNAMIC_KEYS.length).toBeGreaterThanOrEqual(12)
+  it('★ 至少覆盖 13 处动态前缀（少于这个数说明下面的清单没跟上代码）', () => {
+    expect(DYNAMIC_KEYS.length).toBeGreaterThanOrEqual(13)
   })
 
   for (const [prefix, suffixes] of DYNAMIC_KEYS) {
