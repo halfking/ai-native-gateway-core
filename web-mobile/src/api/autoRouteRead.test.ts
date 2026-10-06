@@ -34,6 +34,7 @@ import {
   fetchAutoRouteDecision,
   unwrapAutoRouteDecision,
   autoRouteDecisionHasL2,
+  autoRouteDecisionCanHaveL2,
   autoRouteDecisionModelsBothEmpty,
   autoRouteDecisionL1SplatKeys,
   AUTO_ROUTE_L1_DB_KEYS,
@@ -755,6 +756,47 @@ describe('autoRoute / analytics/decision', () => {
     const { url, init } = lastCall()
     expect(init.method).toBe('GET')
     expect(url).toContain('/api/admin/auto-route/analytics/decision/a1b2%2Fc3%20d4')
+  })
+})
+
+describe('autoRoute / l2 形态预判', () => {
+  it('★ 32 位 hex（bare）⇒ 形态上可能有 l2', () => {
+    expect(autoRouteDecisionCanHaveL2('a1b2c3d4e5f60718293a4b5c6d7e8f90')).toBe(true)
+  })
+
+  it('★ dashed uuid ⇒ 形态上可能有 l2', () => {
+    expect(autoRouteDecisionCanHaveL2('a1b2c3d4-e5f6-0718-293a-4b5c6d7e8f90')).toBe(true)
+  })
+
+  it('★ 大写 / 前后空白 / 混合连字符都算（后端先 ToLower + ReplaceAll）', () => {
+    expect(autoRouteDecisionCanHaveL2('A1B2C3D4E5F60718293A4B5C6D7E8F90')).toBe(true)
+    expect(autoRouteDecisionCanHaveL2('  a1b2c3d4e5f60718293a4b5c6d7e8f90  ')).toBe(true)
+    expect(autoRouteDecisionCanHaveL2('a1b2-c3d4-e5f6-0718-293a-4b5c6d7e8f90')).toBe(true)
+  })
+
+  it('★ 探测 id / 带前缀 id ⇒ **永远不会有 l2**（后端连查询都不发）', () => {
+    expect(autoRouteDecisionCanHaveL2('probe-20261008-001')).toBe(false)
+    expect(autoRouteDecisionCanHaveL2('self-check-abc123')).toBe(false)
+  })
+
+  it('★ 长度不对 / 含非 hex ⇒ false', () => {
+    expect(autoRouteDecisionCanHaveL2('a1b2c3d4')).toBe(false)
+    expect(autoRouteDecisionCanHaveL2('z'.repeat(32))).toBe(false)
+    expect(autoRouteDecisionCanHaveL2('a1b2c3d4e5f60718293a4b5c6d7e8f9z')).toBe(false)
+    // ★ 32 位但带一个非 hex 字符
+    expect(autoRouteDecisionCanHaveL2('g1b2c3d4e5f60718293a4b5c6d7e8f90')).toBe(false)
+  })
+
+  it('非字符串 / 空 ⇒ false', () => {
+    expect(autoRouteDecisionCanHaveL2(null)).toBe(false)
+    expect(autoRouteDecisionCanHaveL2(undefined)).toBe(false)
+    expect(autoRouteDecisionCanHaveL2('')).toBe(false)
+  })
+
+  it('★ 形态预判只是**必要条件**：形态对但没 l2 也要如实显示「没有 L2 记录」', () => {
+    const noL2 = unwrapAutoRouteDecision(decisionNoL2())
+    expect(autoRouteDecisionCanHaveL2(noL2.request_id)).toBe(true)
+    expect(autoRouteDecisionHasL2(noL2)).toBe(false)
   })
 })
 

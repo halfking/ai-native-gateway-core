@@ -28,6 +28,7 @@ import AppIcon from '@/components/common/AppIcon.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import { t } from '@/i18n'
 import { fmtInt, relativeTime } from '@/utils/format'
+import { useAuthStore } from '@/stores/auth'
 import {
   fetchRequestDetail,
   isValidRequestId,
@@ -42,6 +43,9 @@ import {
 useHyperPage({ title: () => t('rd.title') })
 
 const route = useRoute()
+const auth = useAuthStore()
+/** ★ 决策回放是 superAdmin 档 ⇒ 入口按角色隐藏（口径同 /integrity）。 */
+const isSuperAdmin = computed(() => auth.role === 'super_admin')
 const idInput = ref(typeof route.params.id === 'string' ? route.params.id : '')
 const omitBody = ref(false)
 const detail = ref<RequestDetail | null>(null)
@@ -220,6 +224,17 @@ onBeforeUnmount(() => {
       <section class="rd__panel">
         <span class="rd__panel-title">{{ t('rd.meta') }}</span>
 
+        <!-- ★ 决策回放入口。整段 auto-route 线是 superAdmin 档
+             （handler.go:1381 / :1430 的 h.superAdmin；形参名 adminWrap 是假名），
+             而本页是 admin 档 ⇒ 必须**按角色隐藏**，否则 tenant_admin
+             点进去只会撞一个 403。缺 request_id 时也不给入口。 -->
+        <p v-if="isSuperAdmin" class="rd__note">
+          <AppIcon name="search" :size="13" />
+          <router-link class="rd__decision-link" :to="`/auto-route-decision/${detail.meta.request_id}`">
+            {{ t('rd.decisionReplay') }}
+          </router-link>
+        </p>
+
         <div class="rd__grid">
           <span class="rd__cell">
             <span class="rd__cell-l">{{ t('rd.requestId') }}</span>
@@ -340,4 +355,11 @@ onBeforeUnmount(() => {
 .rd__body-l { font-size: 12px; color: var(--text-3, #999); }
 .rd__pre { margin: 4px 0 0; padding: 8px; font-size: 11px; line-height: 1.5; overflow-x: auto;
   background: var(--bg-2, #f6f7f9); border-radius: 8px; }
+.rd__decision-link {
+  color: var(--app-primary);
+  text-decoration: underline;
+  min-height: 48px; /* R1：新增触控控件 ≥48 CSS px */
+  display: inline-flex;
+  align-items: center;
+}
 </style>

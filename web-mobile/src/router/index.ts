@@ -183,6 +183,16 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/AutoRouteView.vue'),
     meta: { titleKey: 'autoRoute.title', requiresAuth: true },
   },
+  // 决策回放是**详情页，不占抽屉席**（口径同 /maas-orders/:id）。
+  // id 可选：从 /request-detail 带进来，或用户直接粘一个 id。
+  // ★ 端点是 superAdmin 档（同整条 auto-route 线）⇒ 抽屉层挡的是列表入口，
+  //   详情页靠页面内 403 文案 + /request-detail 入口按角色隐藏。
+  {
+    path: '/auto-route-decision/:id?',
+    name: 'auto-route-decision',
+    component: () => import('@/views/AutoRouteDecisionView.vue'),
+    meta: { titleKey: 'autoRouteDecision.title', requiresAuth: true },
+  },
   // ── 全局横向对比面（2026-10-07）──────────────────────────────────────
   // 与 /funnel 配对：漏斗是单模型纵深，矩阵/流量是全体模型横向对比。
   // ★ 两条都是 superAdmin：matrix/flow 在 RegisterAnalyticsRoutes 里
