@@ -15,6 +15,11 @@
 // 由 ModelPicker 自取 available-models，本页不再单独拉 raw 列表。
 import { ref, computed, onMounted } from 'vue'
 import { formatDateTime } from '../utils/datetime'
+import { formatBytes } from '../utils/format'
+import { acceptImportFile, importRejectionMessage, CORRECTIONS_CSV_MAX_BYTES } from '../utils/fileImport'
+
+/** corrections CSV 导入规则：上限对齐服务端，只收 csv。 */
+const CORRECTIONS_CSV_RULE = { maxBytes: CORRECTIONS_CSV_MAX_BYTES, extensions: ['.csv'] } as const
 import { useI18n } from 'vue-i18n'
 import { store } from '../store'
 import { localeRef } from '../i18n'
@@ -264,9 +269,17 @@ async function handleExportCSV() {
 
 async function handleImportCSV(ev: Event) {
   const input = ev.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = '' // reset so the same file can be re-selected
+  // C2（19 §4.2）：accept 只是提示。体积上限 32 MiB 对齐服务端
+  // taskprofile/handler.go:350 的 MaxBytesReader(32<<20)——
+  // 用户超限时当场提示，而不是白等一次上传再收 4xx。
+  // ⚠️ 残余风险：下面 file.text() 会把整个文件读进 WebView 内存（UTF-16 约 2×），
+  //    服务端允许 ≠ WebView 扛得住；收口要改分块流式解析，本轮不越界。
+  const { file, verdict } = acceptImportFile(input, CORRECTIONS_CSV_RULE)
   if (!file) return
+  if (!verdict.ok) {
+    exportImportMessage.value = importRejectionMessage(verdict, t, formatBytes)
+    return
+  }
   exportImportBusy.value = true
   exportImportMessage.value = ''
   try {

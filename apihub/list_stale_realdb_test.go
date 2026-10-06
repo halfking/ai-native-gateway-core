@@ -53,9 +53,15 @@ func seedStale(t *testing.T, n int) {
 			Version:     "0.0.0",
 		})
 	}
-	// UpsertBatch 自 §10.34（95721459b）起返回 (int, error)；此处只做 seed，
-	// 不需要行数，但仍必须接住两个返回值，否则 integration tag 下整棵树编译不过
-	// （TestIntegrationTaggedTreeCompiles 会红）。
+	// 2026-10-06（R48 轮遗留的编译破损）：UpsertBatch 的签名在
+	// bc60cab71 改成 (int, error)，而本文件（95721459b 引入）
+	// 仍按旧的单返回值调用 ⇒ `apihub` 包在 go test 下编译不过。
+	// 注意 `go build ./...` 不编译 _test.go，所以只有这条门会红。
+	//
+	// 返回的 int 是本次 upsert 实际影响的行数；本用例只关心
+	// 「行写进去了」，不关心 affected 的具体数值（它受 upsert 的
+	// 心跳门控影响，见 pg_store.go 的 WHERE 两半），
+	// 所以显式丢弃而不是拿它当断言。
 	if _, err := NewPGStore(pool).UpsertBatch(context.Background(), assets); err != nil {
 		t.Fatalf("seed UpsertBatch: %v", err)
 	}

@@ -161,59 +161,67 @@ onMounted(load)
 
     <div v-if="loading" class="loading">加载中…</div>
 
-    <table v-else class="table" style="width:100%">
-      <thead>
-        <tr>
-          <th>canonical_name</th>
-          <th>reason</th>
-          <th>created_by</th>
-          <th>created_at</th>
-          <th>deleted_at</th>
-          <th>操作</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="p in policies" :key="p.id" :class="{ 'is-deleted': p.deleted_at }">
-          <td><code>{{ p.canonical_name }}</code></td>
-          <td>{{ p.reason || '-' }}</td>
-          <td>{{ p.created_by || '-' }}</td>
-          <td class="mono">{{ fmtTime(p.created_at) }}</td>
-          <td class="mono">{{ fmtTime(p.deleted_at) }}</td>
-          <td>
-            <button v-if="!p.deleted_at" class="btn btn-sm btn-danger" @click="softDelete(p)">软删除</button>
-            <button v-else class="btn btn-sm" @click="restore(p)">恢复</button>
-          </td>
-        </tr>
-        <tr v-if="policies.length === 0">
-          <td colspan="6" style="text-align:center; color: var(--muted); padding: 24px">
-            无策略（默认所有模型允许）
-          </td>
-        </tr>
-      </tbody>
-    </table>
+    <div v-else style="overflow-x:auto">
+      <table class="table" style="width:100%">
 
-    <details class="audit-section" v-if="audit.length > 0">
-      <summary>审计日志 (最近 {{ audit.length }} 条)</summary>
-      <table class="table" style="width:100%; margin-top: 8px">
         <thead>
           <tr>
-            <th>ts</th>
-            <th>action</th>
             <th>canonical_name</th>
-            <th>actor</th>
             <th>reason</th>
+            <th>created_by</th>
+            <th>created_at</th>
+            <th>deleted_at</th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="a in audit" :key="a.id">
-            <td class="mono">{{ fmtTime(a.ts) }}</td>
-            <td>{{ actionLabel(a.action) }}</td>
-            <td><code>{{ a.canonical_name }}</code></td>
-            <td>{{ a.actor }}</td>
-            <td>{{ a.reason || '-' }}</td>
+          <tr v-for="p in policies" :key="p.id" :class="{ 'is-deleted': p.deleted_at }">
+            <td><code>{{ p.canonical_name }}</code></td>
+            <td>{{ p.reason || '-' }}</td>
+            <td>{{ p.created_by || '-' }}</td>
+            <td class="mono">{{ fmtTime(p.created_at) }}</td>
+            <td class="mono">{{ fmtTime(p.deleted_at) }}</td>
+            <td>
+              <button v-if="!p.deleted_at" class="btn btn-sm btn-danger" @click="softDelete(p)">软删除</button>
+              <button v-else class="btn btn-sm" @click="restore(p)">恢复</button>
+            </td>
+          </tr>
+          <tr v-if="policies.length === 0">
+            <td colspan="6" style="text-align:center; color: var(--muted); padding: 24px">
+              无策略（默认所有模型允许）
+            </td>
           </tr>
         </tbody>
+    
       </table>
+    </div>
+
+    <details class="audit-section" v-if="audit.length > 0">
+      <summary>审计日志 (最近 {{ audit.length }} 条)</summary>
+      <div style="overflow-x:auto">
+        <table class="table" style="width:100%; margin-top: 8px">
+
+          <thead>
+            <tr>
+              <th>ts</th>
+              <th>action</th>
+              <th>canonical_name</th>
+              <th>actor</th>
+              <th>reason</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="a in audit" :key="a.id">
+              <td class="mono">{{ fmtTime(a.ts) }}</td>
+              <td>{{ actionLabel(a.action) }}</td>
+              <td><code>{{ a.canonical_name }}</code></td>
+              <td>{{ a.actor }}</td>
+              <td>{{ a.reason || '-' }}</td>
+            </tr>
+          </tbody>
+      
+        </table>
+      </div>
     </details>
 
     <!-- Add dialog -->

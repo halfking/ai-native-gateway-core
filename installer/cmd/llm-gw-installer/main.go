@@ -789,6 +789,15 @@ var routingMVRefreshState837 []byte
 //go:embed embeddata/startup/829_bodies_columnar_rollback.sql
 var bodiesColumnarRollback829 []byte
 
+//go:embed embeddata/startup/835_modality_verify_probe_ledger.sql
+var modalityVerifyProbeLedger835 []byte
+
+//go:embed embeddata/startup/834_supplier_errors_base_tables.sql
+var supplierErrorsBaseTables834 []byte
+
+//go:embed embeddata/startup/836_supplier_errors_heap_reassert.sql
+var supplierErrorsHeapReassert836 []byte
+
 // embeddedSQLFiles 是 installer 内嵌 SQL 的唯一清单：copySQLBackup 与 setupSQLDir
 // 共用，避免两份 map 漂移（曾发生 632 拷入 embeddata 却没接线的静默丢失）。
 // 新增迁移时：embeddata/startup/ 放文件 → 此处加条目 → runner.go StartupFiles
@@ -1026,6 +1035,9 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/833_supplier_price_nonneg_check.sql":                                    supplierPriceNonnegCheck833,
 	"startup/837_routing_mv_refresh_state.sql":                                       routingMVRefreshState837,
 	"startup/829_bodies_columnar_rollback.sql":                                       bodiesColumnarRollback829,
+	"startup/835_modality_verify_probe_ledger.sql":                                   modalityVerifyProbeLedger835,
+	"startup/834_supplier_errors_base_tables.sql":                                    supplierErrorsBaseTables834,
+	"startup/836_supplier_errors_heap_reassert.sql":                                  supplierErrorsHeapReassert836,
 }
 
 // 临时存放 embed SQL 的目录（运行时写入）

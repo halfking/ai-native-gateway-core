@@ -489,6 +489,10 @@ import ModelPicker from '../components/ModelPicker.vue'
 import { exportFile } from '../utils/exportFile'
 import { readExportBlob, ExportTooLargeError } from '../utils/exportResponse'
 import { formatBytes } from '../utils/format'
+import { acceptImportFile, importRejectionMessage, PRICING_CSV_MAX_BYTES } from '../utils/fileImport'
+
+/** 定价 CSV 导入规则：上限对齐服务端，后缀只收 csv。 */
+const PRICING_CSV_RULE = { maxBytes: PRICING_CSV_MAX_BYTES, extensions: ['.csv'] } as const
 
 const { t } = useI18n()
 
@@ -1061,7 +1065,16 @@ async function exportCsv() {
 
 function onFileChange(e: Event) {
   const input = e.target as HTMLInputElement
-  importFile.value = input.files?.[0] || null
+  // C2（19 §4.2）：accept 只是提示，必须真做「先体积后后缀」双校验。
+  // 上限 10 MiB 对齐服务端 admin/pricing.go:429 的 ParseMultipartForm(10<<20)。
+  const { file, verdict } = acceptImportFile(input, PRICING_CSV_RULE)
+  if (!verdict.ok) {
+    importFile.value = null
+    importMsg.value = importRejectionMessage(verdict, t, formatBytes)
+    return
+  }
+  importFile.value = file
+  importMsg.value = ''
 }
 
 async function importCsv() {

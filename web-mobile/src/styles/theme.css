@@ -86,10 +86,33 @@
   --app-bp-medium: 600px;
   --app-bp-expanded: 960px;
   --app-bp-large: 1280px;
-  --app-safe-top: env(safe-area-inset-top, 0px);
-  --app-safe-bottom: env(safe-area-inset-bottom, 0px);
-  --app-safe-left: env(safe-area-inset-left, 0px);
-  --app-safe-right: env(safe-area-inset-right, 0px);
+  /* ---- safe-area 通道（10 §4.6.32；严重度订正见 §4.6.33）----------------
+     **先读壳注入值，再回落 env()** —— 两条通道的可用性是**版本相关**的，
+     不该假设其中一条一定活着。
+
+     Capacitor 8.5.2 `SystemBars.initWindowInsetsListener()` 的两个分支：
+
+     · A 分支 `shouldPassthroughInsets` =
+       `getWebViewMajorVersion() >= WEBVIEW_VERSION_WITH_SAFE_AREA_FIX(140)`
+       `&& hasViewportCover`（页面 meta 含 viewport-fit=cover）。
+       此时**两条通道都有真值**：insets 被透传给 WebView（env() 生效），
+       同时 `injectSafeAreaCSS()` 写 `--safe-area-inset-*`。
+     · B 分支（WebView < 140，或页面缺 viewport-fit=cover）：
+       装饰 View 原生 padding，透传给 WebView 的 insets 被**显式置 0**，
+       注入的 CSS 变量**也是 0** ⇒ 两条通道同时为 0。
+
+     ⚠️ 订正：§4.6.32 写的「Android 上 env() 恒为 0」**说重了**。
+     实测模拟器 WebView 153 ≥ 140 且本页有 viewport-fit=cover ⇒ 走 A 分支，
+     env() 本来就能拿到真值。真正**无版本依赖**成立的两条是：
+       ① `--app-safe-left/right` 此前**零消费者**（横屏/手势侧边撞内容）；
+       ② 本 cascade 让「读哪条通道」不依赖 WebView 版本。
+
+     浏览器/桌面未注入 `--safe-area-inset-*` ⇒ 回落 env() ⇒ 仍为 0
+     ⇒ 桌面端零回归。 */
+  --app-safe-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+  --app-safe-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+  --app-safe-left: var(--safe-area-inset-left, env(safe-area-inset-left, 0px));
+  --app-safe-right: var(--safe-area-inset-right, env(safe-area-inset-right, 0px));
 
   /* 字号 */
   --app-font-body: 0.875rem;

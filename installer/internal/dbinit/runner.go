@@ -844,11 +844,36 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"825_modality_graded_verification.sql",
 			"826_model_baseline_price.sql",
 			"827_modality_verification_progress_view.sql",
+			// ⚠ 834 的编号在 828 之后，但**位置必须在它之前**，而这一点的
+			//   依据是本列表的**执行顺序**（applyStartup 按列表顺序跑，不排序）。
+			//   823..833 那批是按编号递增排的，所以 835 也在 828 后面 —— 但
+			//   835 不依赖这两张表，而 828 的 CREATE VIEW **依赖**它们，
+			//   而 CREATE VIEW 是真校验（不像 plpgsql 函数体被
+			//   check_function_bodies=off 放过），所以顺序错了就是硬失败。
+			//
+			//   实测（2026-10-06 集成门）：缺本条时 828 报
+			//   `relation "public.supplier_errors_hot" does not exist`，
+			//   applied=228 failed=1。
+			//
+			//   为什么补迁移而不登记 startup_known_gaps.tsv：那份文件的头
+			//   记录了上一轮 19 条缺口的修法正是「把缺失的迁移加进
+			//   StartupFiles」，登记豁免只是记欠条，不是修。
+			"834_supplier_errors_base_tables.sql",
 			"828_supplier_errors_unified_tracked.sql",
 			"829_bodies_columnar_rollback.sql",
 			"831_work_type_route_source.sql",
 			"832_model_baseline_observation_health.sql",
 			"833_supplier_price_nonneg_check.sql",
+			// 835：把多模态定时核实的每一次尝试写进自检台账
+			// system_probe_runs（task_type='modality_verify'）。在它之前，核实
+			// 循环是唯一一条「在跑但运维查不到」的链路：语义探针经
+			// internal/upstreamurl 直连上游、不产生 request_logs，进程内的
+			// 尝试台账又随重启清零。落点与理由见该迁移的文件头。
+			"835_modality_verify_probe_ledger.sql",
+			// 836：重新断言 supplier_errors 族的最终形态。813 的台账 sha 与文件一致
+			// ⇒ 幂等通道每次都跳过它，活库的列存漂移因此永远没人修（详见迁移头）。
+			// 本条无台账行 ⇒ 每次部署都跑；自身幂等。
+			"836_supplier_errors_heap_reassert.sql",
 			// 837: 摘掉两个 routing analytics 物化视图里的 NOW() AS refreshed_at，
 			// 改由 routing_mv_refresh_state 单行记录刷新时刻。带 NOW() 的列让
 			// REFRESH ... CONCURRENTLY 每轮重写 100% 的行（252 实测 100.7%，
