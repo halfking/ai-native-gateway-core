@@ -23,6 +23,7 @@
 #   - pg17-emergency.sh     每 15 分钟  disk>=90% 自动 L2
 #   - pg17-vacuum-bloat.sh  周日 03:15  VACUUM FULL 防患于未然
 #   - pg17-index-bloat.sh   周日 04:40  只读巡检 + 超阈值告警（--report）
+#   - pg17-duplicate-index-check.sh  周日 05:10  重复索引巡检（只报告不 DROP）
 #   - pg17-drop-columnar.sh 每月 1 号 02:30  DROP 老分区 + VACUUM FULL 元数据
 #   - ursm-snapshot-health.sh   每小时 :17  快照写入健康三态判据
 #   - ursm-snapshot-payload-bloat.sh 每小时 :23  payload 膨胀（818 收益的回归防护）
@@ -78,6 +79,17 @@ MAILTO=""
 # 升级为自动重建：把 --report 换成 --fix（REINDEX CONCURRENTLY，不阻塞读写；
 # 抢不到锁就跳过留待下次运行）。先确认首次 --fix 表现再切换。
 40 4 * * 0 root llmgw-source /opt/scripts/pg17-index-bloat.sh --report >/dev/null 2>&1
+
+# === 重复索引巡检（只读） ===
+# 排在 index-bloat 之后 30 分钟：bloat 巡检的候选里若有重复索引，两条结论
+# 指向同一个对象，挨着跑便于对照。
+# 判据是「去掉索引名之后的定义本体逐字相同」。实测（2026-10-06，审计 §10.55）
+# 全库 19 张表有重复索引，最贵一对 session_summaries.pkey /
+# session_summaries.session_key_uidx 同为 btree(session_key)，单个 57 MB，
+# 而该表 914 MB 且持续写入 ⇒ 每次写都多维护一个 57 MB 索引。
+# 本脚本**只报告不 DROP**：删索引没有「是否被查询依赖」的权威答案，
+# 须人工确认后再单独执行。
+10 5 * * 0 root llmgw-source /opt/scripts/pg17-duplicate-index-check.sh >/dev/null 2>&1
 
 # === 月度列存分区清理 ===
 30 2 1 * * root llmgw-source /opt/scripts/pg17-drop-old-columnar-partitions.sh >/dev/null 2>&1
