@@ -140,28 +140,199 @@ export function forceRecoverCredential(credentialId: number, options?: RequestOp
  * 聚焦式状态复位，handler admin/routing_reset.go:52。`reason` 必填（:69-72）。
  *
  * 与 force-recover 的分工：那个是「凭据级 5 步全清」，这个是「带 reason 的记账式
- * 复位」，可顺带 trigger_probe。⚠️ trigger_probe 仅在 probeSubmitter 已接线时
- * 才生效，未接线时**静默忽略**（admin/handler.go:810-813）—— UI 不可承诺「已触发探测」。
+ * 复位」，可顺带 trigger_probe。
+ *
+ * ★★★★★★ 2026-10-07 第四十九轮补：本接口此前**零引用、零测试**，而 TS 接口是
+ *   **凭空造的**——对照 `routing_reset.go:146-153` 的真实响应：
+ *       writeJSON(w, 200, map[string]any{
+ *           "message":         "credential state reset",
+ *           "credential_id":   credID,
+ *           "raw_model":       req.RawModel,        // ← 空串 = 整凭据复位
+ *           "actor":           actor,
+ *           "probe_triggered": req.TriggerProbe && h.probeSubmitter != nil,
+ *           "details":         beforeAfter,
+ *       })
+ *   原接口写的 `success` / `reset_fields` **后端一个都不发**；
+ *   而 `raw_model` / `actor` / `probe_triggered` / `details` **四个全漏了**。
+ *   ⇒ 本次按后端逐字段重写，并补上独立解包（原先是 `req<ResetStateResult>` **零校验**直传）。
  */
+
+/** ★ `details` 里恒存在的 5 个键（`routing_reset.go:96-102` 构造的 beforeAfter）。 */
+export const RESET_STATE_DETAIL_REQUIRED_KEYS = [
+  'credential_id',
+  'raw_model',
+  'reason',
+  'endpoint',
+  'actor',
+] as const
+
+/** ★ `details` 里**条件存在**的键：按 `applyForceEnable` 的执行路径才出现（且只在 200 响应里）。 */
+export const RESET_STATE_DETAIL_OPTIONAL_KEYS = ['db_committed', 'auto_heal_pairs_submitted', 'audit_outcome'] as const
+
+/** ★ 按后端 `routing_reset.go:146-153` 逐字段重写（旧接口是凭空造的）。 */
 export interface ResetStateResult {
-  success?: boolean
-  message?: string
-  credential_id?: number
-  reset_fields?: string[]
+  /** 后端写死是字面量 `"credential state reset"`。 */
+  message: string
+  credential_id: number
+  /** ★ 空串 = **整凭据**复位（覆盖该凭据的所有绑定模型）。 */
+  raw_model: string
+  /**
+   * ★★ 审计里的操作者。**回退值是 `r.RemoteAddr`（`routing_reset.go:91-94`）**
+   * ⇒ 没有登录态时这里会是**裸 IP**。
+   * ★ 对照 free-discovery 的 `fdActor`：那条回退成 `"legacy-admin-key"` ⇒ **同一个仓里两套回退**。
+   */
+  actor: string
+  /**
+   * ★★★ 三种含义**分不开**：
+   *   ① 请求了 `trigger_probe` 且 submitter 已接线 ⇒ true
+   *   ② 请求了但 submitter 为 nil ⇒ **false**（静默忽略，`:124` 的守卫同样判 nil）
+   *   ③ 压根没请求 ⇒ false
+   * ⇒ ★★ `false` 分不出「没请求」与「请求了但没生效」⇒ **UI 不可承诺「已触发探测」**。
+   *   且提交是 fire-and-forget ⇒ **true 也只代表「已提交」，不代表探测成功**。
+   */
+  probe_triggered: boolean
+  /** ★ 异形：`endpoint` 恒为 `"reset-state"`，消费方可按它过滤审计流。 */
+  details: ResetStateDetails
+}
+
+export interface ResetStateDetails {
+  credential_id: number
+  raw_model: string
+  reason: string
+  /** ★ 恒为 `"reset-state"`（`:101`）。 */
+  endpoint: string
+  actor: string
+  /** ★ 条件存在；它为 `true` 只说明 DB 效果已落地（**响应里只有成功那一支带它**）。 */
+  db_committed?: boolean
+  auto_heal_pairs_submitted?: number
+  /**
+   * ★★ 只在**部分失败**那一支记进**审计日志**：`"partial_failed"`。
+   *   ⚠️ 但那一支以 5xx 结束（`writeInternalErr`），**响应体里没有 details**
+   *   ⇒ HTTP 客户端**永远读不到**这个键，它只对审计消费方可见。
+   *   客户端判「状态是否可能已改」请用 `resetStateOutcomeAmbiguous(status)`。
+   */
+  audit_outcome?: string
+}
+
+/** ★★ 只有这三个键恒存在（`routing_reset.go:146-153` 的 map 字面量）。 */
+export const RESET_STATE_REQUIRED_KEYS = [
+  'message',
+  'credential_id',
+  'raw_model',
+  'actor',
+  'probe_triggered',
+  'details',
+] as const
+
+/**
+ * ★★★★★★ 客户端复算不出这个恒等式：后端写的是 `req.TriggerProbe && submitter != nil`，
+ *   而**客户端不知道 submitter 接没接**。所以 `probe_triggered` 为 false 时无法判断原因。
+ */
+export function resetStateProbeIndeterminate(r: ResetStateResult, requested: boolean): boolean {
+  return requested && r.probe_triggered === false
+}
+
+/** ★★ `probe_triggered: true` 只代表「已提交」（fire-and-forget），不代表探测成功。 */
+export function resetStateProbeOnlySubmitted(r: ResetStateResult): boolean {
+  return r.probe_triggered === true
+}
+
+/**
+ * ★★★★★★★ 出错时**能不能**说「状态没变」——不能一概而论，按 status 分档。
+ *
+ * 后端 `routing_reset.go:106-119`：
+ * ```go
+ * if err := h.applyForceEnable(...); err != nil {
+ *     if committed { beforeAfter["audit_outcome"] = "partial_failed"; h.logAudit(...) }
+ *     writeInternalErr(w, "internal error (see server logs)", err)   // ← 5xx
+ * }
+ * ```
+ * ★★★ **决定性的一步**：那一支走 `writeInternalErr` → `writeError` →
+ *   `{"error":{"detail":"internal error (see server logs)"}}`
+ *   ⇒ **`details` / `db_committed` / `audit_outcome` 一个都不在响应里**。
+ *   客户端拿到的 5xx 与「DB 完全没动」在报文上**逐字节相同**。
+ *   ⇒ 视图在 5xx 时**不得**显示「操作失败，状态未改变」。
+ *
+ * 两条恰好对称的推论：
+ *  · 4xx（400 reason/id、404 not found、405、403、401）**全部**在
+ *    `applyForceEnable` 之前就 return 了（:56-89）⇒ 能证明「什么都没发生」。
+ *  · ★ `status === 0`（client.ts:172 把传输层失败归一成 `network_error`）
+ *    与 `status === undefined`（`EpochError` / 非 ApiError）**同样二义**：
+ *    请求可能已经到达服务端并落库，只是回程断了。
+ *    ⇒ 「失败 = 没生效」这个直觉在**两个方向**都错。
+ */
+export function resetStateOutcomeAmbiguous(status: number | undefined): boolean {
+  if (status == null) return true
+  return status >= 500 || status === 0
+}
+
+/** ★ `actor` 是裸 IP 而不是用户名 ⇒ 这条审计是「无登录态」记的。 */
+export function resetStateActorLooksLikeIp(actor: string): boolean {
+  return /^\d{1,3}(\.\d{1,3}){3}(:\d+)?$/.test(actor) || actor.startsWith('[')
+}
+
+/** ★ `raw_model` 为空串 = 整凭据复位（`routing_reset.go:37-39` 注释）。 */
+export function resetStateIsWholeCredential(r: ResetStateResult): boolean {
+  return r.raw_model === ''
+}
+
+/** ★★ 没有请求体时 `readJSON` 返回 nil（`handler.go:1518-1520`）⇒ req 全零值 ⇒ reason 为空 ⇒ 400。 */
+export function resetStateReasonMissing(reason: string): boolean {
+  return reason === ''
 }
 
 export function resetCredentialState(
   credentialId: number,
   reason: string,
+  rawModel = '',
   triggerProbe = false,
   options?: RequestOptions,
 ): Promise<ResetStateResult> {
-  return req<ResetStateResult>(
+  // ★ 后端 `strconv.Atoi` 失败或 <= 0 ⇒ 400 `id path param must be a positive integer`。
+  // ★ `reason` 空 ⇒ 400 `reason is required for audit trail`（`:69-72`）⇒ 前端先挡一道。
+  if (!Number.isInteger(credentialId) || credentialId <= 0) {
+    return Promise.reject(new Error(`id path param must be a positive integer: ${credentialId}`))
+  }
+  if (resetStateReasonMissing(reason)) {
+    return Promise.reject(new Error('reason is required for audit trail'))
+  }
+  return req<unknown>(
     'POST',
     `/api/routing/credentials/${credentialId}/reset-state`,
-    { reason, trigger_probe: triggerProbe },
+    { reason, raw_model: rawModel, trigger_probe: triggerProbe },
     options,
-  )
+  ).then(unwrapResetState)
+}
+
+/** ★ 按后端逐字段校验；**不**接受 `success` / `reset_fields`（后端不发）。 */
+export function unwrapResetState(resp: unknown): ResetStateResult {
+  if (resp && typeof resp === 'object' && !Array.isArray(resp)) {
+    const m = resp as Record<string, unknown>
+    const missing = RESET_STATE_REQUIRED_KEYS.filter((k) => !(k in m))
+    if (missing.length > 0) {
+      throw new Error(`凭据状态复位 响应形状不符：缺 ${missing.length} 个键（${missing.join(', ')}）`)
+    }
+    if (
+      typeof m.message !== 'string' ||
+      typeof m.credential_id !== 'number' ||
+      typeof m.raw_model !== 'string' ||
+      typeof m.actor !== 'string' ||
+      typeof m.probe_triggered !== 'boolean' ||
+      !m.details ||
+      typeof m.details !== 'object' ||
+      Array.isArray(m.details)
+    ) {
+      throw new Error('凭据状态复位 响应形状不符：键类型不对')
+    }
+    const d = m.details as Record<string, unknown>
+    const dMissing = RESET_STATE_DETAIL_REQUIRED_KEYS.filter((k) => !(k in d))
+    if (dMissing.length > 0) {
+      throw new Error(`凭据状态复位 details 形状不符：缺 ${dMissing.length} 个键（${dMissing.join(', ')}）`)
+    }
+    return m as unknown as ResetStateResult
+  }
+  const actual = resp === null ? 'null' : Array.isArray(resp) ? 'array' : typeof resp
+  throw new Error(`凭据状态复位 响应形状不符：期望 6 键对象，实得 ${actual}`)
 }
 
 // ── D. 路由检查（只读）—— admin 档，tenant_admin 也可用 ───────────────────

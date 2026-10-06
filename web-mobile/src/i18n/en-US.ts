@@ -195,10 +195,28 @@ export const enUS = {
     opEnabled: 'Enabled — the credential is back in the routing pool',
     opProbeSubmitted: 'Probe submitted — running in the background',
     opRecovered: 'Force recovery complete — state reset',
+    // ── reset-state (focused state reset, admin/routing_reset.go) ───────────
+    // ★ Whole-credential reset; no per-model variant is exposed.
+    resetState: 'Reset state',
+    confirmResetStateTitle: 'Reset this credential’s state?',
+    confirmResetStateBody: 'This performs a focused state reset on {name} and writes an audit record with your reason. It cannot be undone. If the server errors after writing, the state may already have changed — check the credential detail before retrying.',
+    opResetStateDone: 'State reset submitted',
+    // ★ These two must stay distinct: submitted ≠ probe passed; false after
+    //   requesting ≠ never requested.
+    resetProbeSubmitted: 'Probe submitted — running in the background (this does not mean the probe passed)',
+    resetProbeIndeterminate: 'A probe was requested but the server did not confirm it — outcome unknown, refresh later to check',
+    // ★ Ambiguous failure: DB may already be committed while the request ended 5xx.
+    resetStateMaybeApplied: 'Request failed, but the state may have been changed — refresh the credential detail before retrying',
+    reasonDefaultResetState: 'State reset from mobile',
+    resetTriggerProbe: 'Also request an immediate probe',
+    resetTriggerProbeHint: 'Only effective when the server has a probe submitter wired up; a success response still does not mean the probe passed.',
     reasonDefaultDisable: 'Disabled from mobile',
     reasonDefaultEnable: 'Re-enabled from mobile',
+    // ★ Keeps the default-reason map total; probe never reaches it but a
+    //   missing key would silently fall through to another operation’s reason.
+    reasonDefaultProbe: 'Probe submitted from mobile',
     reasonDefaultRecover: 'Force recovered from mobile',
-    opsAdminOnlyHint: 'Probing and force recovery require super admin; this account can only disable/enable.',
+    opsAdminOnlyHint: 'Probing, force recovery and state reset require super admin; this account can only disable/enable.',
     manualDisabledWarn: 'This credential is manually disabled and does not take part in routing.',
     errForbidden: 'Your account lacks permission for this operation',
     errUnauthorized: 'Session expired — please sign in again',

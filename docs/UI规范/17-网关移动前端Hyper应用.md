@@ -6920,3 +6920,158 @@ V11 把视图里的 `stripHttpErrorNewline(errMsg)` 换成 `errMsg` ⇒ **仍全
 **至此，全仓路由差集里「只读且未上移」的部分已经扫空** ——
 剩下的全部是写操作或有外部副作用的端点。若要继续上移，需要先定「哪些写操作允许在移动端暴露」的策略，
 这属于范围决策，不在「只读面复制」的既定口径内。
+
+---
+
+## 11.86 第五十批：凭据写操作面补测 + `reset-state` 端点首次接入（2026-10-08）
+
+### 起因：一次自查推翻了上一条结论
+
+上一条回复把「强制恢复」列成待决策项，**这是错的**。
+`forceRecoverCredential` 早已实现，`NodesView.vue:244` 有入口、有二次确认、测试里有 mock。
+⇒ **在把某项能力写进「待办/待决策」之前，先 grep 一遍确认它是否真的缺。**
+  凭印象记账会凭空造出一个不存在的缺口，并让用户以为要替他做决定。
+
+本批真正的缺口是另一件事：**`credentialsOps.test.ts` 整个文件只测了一个只读解包函数，
+七个写操作函数一个都没测**，`resetCredentialState` 与 `submitBatchProbe` 更是**零引用**。
+
+### 后端实读：`routing_reset.go` 逐字段
+
+`POST /api/routing/credentials/{id}/reset-state`，注册 `admin/handler.go:946` = **`h.superAdmin`**。
+
+| 位置 | 事实 |
+|---|---|
+| `:56-60` | 405 `method not allowed` |
+| `:62-65` | 400 `id path param must be a positive integer` |
+| `:69-72` | 400 `reason is required for audit trail`（reason 是**审计留痕**，不是备注） |
+| `:37-39` | `raw_model` 空串 = **整凭据**复位 |
+| `:93-96` | ★ `actor` 回退是 `r.RemoteAddr`（**裸 IP**）；对比 `fdActor` 回退 `"legacy-admin-key"` ⇒ **同仓两套回退** |
+| `:98-104` | `beforeAfter` 恒含 5 键：`credential_id` / `raw_model` / `reason` / `endpoint`(恒 `"reset-state"`) / `actor` |
+| `:106-119` | ★★★ 部分失败支 |
+| `:125` | `trigger_probe` 守卫 `req.TriggerProbe && h.probeSubmitter != nil` |
+| `:136-140` | `autoHealOneShot` **独立于** `trigger_probe`，命中才加 `auto_heal_pairs_submitted` |
+| `:146-153` | 真实响应**只有 6 个键**：`message` / `credential_id` / `raw_model` / `actor` / `probe_triggered` / `details` |
+
+★ 移动端原先的 TS 接口是**凭空造的**：写了 `success` / `reset_fields`（后端一个都不发），
+又漏了 `raw_model` / `actor` / `probe_triggered` / `details` 四个。本批按后端逐字段重写，
+并把原先的 `req<ResetStateResult>` **零校验**直传改成逐键校验的 `unwrapResetState`。
+
+### ★★★★★★★★ 缺陷一：`partial_failed` 分支的错误响应里**没有** `details`
+
+```go
+if err := h.applyForceEnable(...); err != nil {
+    if committed { beforeAfter["audit_outcome"] = "partial_failed"; h.logAudit(...) }
+    writeInternalErr(w, "internal error (see server logs)", err)   // ← 5xx
+}
+```
+
+`writeInternalErr` → `writeError` → `{"error":{"detail":"internal error (see server logs)"}}`。
+⇒ **`db_committed` / `audit_outcome` / `details` 一个都不在响应里**，
+客户端拿到的 5xx 与「DB 完全没动」在报文上**逐字节相同**。
+
+推论一：`audit_outcome` 只对**审计消费方**可见，HTTP 客户端永远读不到。
+推论二：**失败必须按 status 分档**，`resetStateOutcomeAmbiguous(status)`：
+- 4xx（400/401/403/404/405）**全部**在 `applyForceEnable` 之前 return ⇒ 能证明「什么都没发生」；
+- 5xx ⇒ 假定「可能已改」；
+- ★ `status === 0`（`client.ts:172` 把传输层失败归一成 `network_error`）与
+  `status === undefined`（`EpochError` / 非 `ApiError`）**同样二义** ——
+  请求可能已到达服务端并落库，只是回程断了。
+  ⇒ **「失败 = 没生效」这个直觉在两个方向都错。**
+
+⚠️ 本批第一版写的判据是 `resetStatePartiallyFailed(msg, details?)`，
+读的是 `details.audit_outcome` —— **那个值在 HTTP 路径上永远拿不到**，是条不可达的判据。
+它「看起来对」是因为读的是后端源码里的字段名，但没追问**该字段是否会出现在响应体里**。
+⇒ 写完判据要追问一句：**这个值在这个调用点上真的可得吗？**
+
+### ★★★★★★ 缺陷二：`probe_triggered` 的 `false` 分不开「没请求」与「请求了但没生效」
+
+后端写的是 `req.TriggerProbe && h.probeSubmitter != nil`。提交器没接线时**静默**降级成 `false`，
+而客户端无从知道后端接没接 ⇒ `resetStateProbeIndeterminate(r, requested)` 必须把
+「请求了却拿到 false」单列为**未能确定**，UI 不能承诺「已触发探测」。
+反向也要守：`probe_triggered: true` 只代表 fire-and-forget 的**已提交**，不代表探测通过
+（提交是 `h.probeSubmitter(credID, m, ...)`，错误不传播）。
+
+三档文案因此必须互斥：`resetProbeSubmitted`（已提交 + 免责句）/
+`resetProbeIndeterminate`（未能确定）/ 空（压根没请求探测）。
+
+### ★★★★★★★ 本轮实抓的**前端**缺陷：await 期间 ref 被清空
+
+现象：`reset-state` 的「未能确定」提示**永远不出现**，尽管请求体里明明带了 `trigger_probe=true`。
+
+链条：
+1. `runConfirmedOp()` 开头 `confirmOpen.value = false`；
+2. `AppConfirm` 随之 emit `update:model-value(false)`；
+3. 视图绑的是 `@update:model-value="(v) => { if (!v) resetOpState() }"`，
+   而 `resetOpState()` 会把 `resetTriggerProbe` 清成 `false`；
+4. ★ **Vue 的响应式 flush 发生在 `await` 期间** ⇒
+   `const r = await resetCredentialState(..., resetTriggerProbe.value)` 的**实参**求值在前（拿到 `true`），
+   回调里 `resetStateProbeIndeterminate(r, resetTriggerProbe.value)` 的**读值**在后（拿到 `false`）。
+
+修法：**在 `await` 之前把值快照成局部变量**，`await` 之后只用快照。
+
+⇒ ★★★ 通则：**`await` 之后再读任何会被「关闭对话框 / 重置表单」清空的 ref，拿到的都是过期值。**
+  同一次 `runConfirmedOp` 里 `reasonText` 有同样的暴露，只是它作为**实参**在 `await` 前求值才幸免。
+  这类缺陷**不会让任何用例变红**（功能看起来「正常地什么都不显示」），
+  只有当判据明确要求那条提示存在时才会暴露 —— 这也是把它写成独立用例的价值。
+
+### 变异验证：37 条，36 有牙 + 1 真等价
+
+| 组 | 条数 | 覆盖 |
+|---|---|---|
+| A 解包与守卫 | 9 | 6 个必填键、details 5 键、类型校验、两个可选键清单 |
+| B 失败分档 | 4 | 5xx / `status===0` / `undefined` / `>=500` vs `===500` |
+| C `probe_triggered` 三义 | 3 | 丢掉 `requested`、恒 false、`!==false` |
+| D 小判据 | 3 | 裸 IP（含 IPv6）、整凭据、空 reason |
+| E 批量上限 | 2 | 不截断、上限挪到 101 |
+| F 其余写操作 URL/body | 4 | `manual_disabled` 键名、clear 专用端点、两处 id 守卫、`raw_model` 缺省 |
+| G 视图 | 9 | **快照回退**、失败分档、reason 必填、角色分档、默认理由、`probe_triggered=true` 分支、`raw_model` 传值、danger 档 |
+| H 文案 | 3 | 二义失败提示、未能确定提示、免责句 |
+
+**分诊（三处真缺口 + 一类变异自身问题）：**
+
+1. **A8 判据缺口（已补）**：`RESET_STATE_DETAIL_REQUIRED_KEYS` 的内容**从未被逐字断言**。
+   而「缺任一个都抛错」那条用例遍历的**就是这个常量本身** ⇒
+   把清单缩短一个键，循环永远不会去试那个键，校验随之变弱而**全绿**。
+   ⇒ 已补 `toEqual([...])`。★ **遍历一个常量的循环，必须另有一条断言钉住那个常量的内容。**
+2. **G9 判据缺口（已补）**：没有任何断言钉住确认框的 `danger` 标志
+   （`AppConfirm.vue:50` 用 `danger ? 'btn--danger' : 'btn--primary'`）
+   ⇒ 不可撤销的审计写入可以静默降级成普通档。已补。
+3. **G8 / A6 / A7 是 expect 串指错**（变异确实转红，只是命中了相邻用例名）⇒ 已改指。
+4. **H1/H2/H3 打在没人读的语种上**：第一版变异改的是 `zh-CN.ts`，而用例断言的是**英文**渲染文本
+   ⇒ 三条全绿，但这既不是等价变异也不是判据无牙，是**变异本体选错了文件**。
+   已切到 `en-US.ts`，三条立刻有牙。
+   ⇒ 判读「仍全绿」时，**先问这个变异改的东西有没有人读**。
+5. **C3 是真等价变异**：`probe_triggered === true` → `!== false`。
+   实跑对照表证明两版只在值不是布尔量时不等价，而 `unwrapResetState` 的
+   `typeof ... !== 'boolean'` 把这批值全部拒掉（该守卫由 **A5 证明有牙**）
+   ⇒ 在 API 层可达域内**恒等**。
+
+### 顺带修掉的自身问题：i18n 门 rc=1
+
+门报 `nodes.confirmResetStateBody`「两侧一致地缺」。真因不是漏写，是我把长文案写成了
+**跨行值**（`key:` 换行再写字符串），而门按单行 `key: 'value'` 解析 ⇒ 判成缺失。
+邻居那些长文案（如 `confirmRecoverBody`）全是单行。⇒ 已改回单行，门 rc=0。
+⇒ ★ i18n 门的 rc=1 要先分清是**「键真的缺」**还是**「值的写法没被解析到」**，
+  两者的修法完全不同；本次是后者。
+
+### 产物
+
+- API：`src/api/credentialsOps.ts` —— `ResetStateResult` 按后端逐字段重写；
+  新增 `RESET_STATE_REQUIRED_KEYS`(6) / `RESET_STATE_DETAIL_REQUIRED_KEYS`(5) /
+  `RESET_STATE_DETAIL_OPTIONAL_KEYS`(3) / `unwrapResetState` /
+  `resetStateOutcomeAmbiguous` / `resetStateProbeIndeterminate` /
+  `resetStateProbeOnlySubmitted` / `resetStateActorLooksLikeIp` /
+  `resetStateIsWholeCredential` / `resetStateReasonMissing`
+- 视图：`src/views/NodesView.vue` —— 新增 `resetState` 动作（superAdmin 档、危险档）、
+  reason 审计输入、`trigger_probe` 勾选位（R1 ≥48px 命中区）、三档探测提示、二义失败提示；
+  `effectiveReason` 的默认理由由三元链改成**全函数映射**
+  （三元链在新增动作时会静默落到别的动作的理由上，审计因此记错）
+- 用例：API 34 条 + 视图 19 条；全量 2820 条（114 文件）
+- 门禁：build / 三门 / `vue-tsc` 全 rc=0；十连跑 10/10
+
+### 仍未上移
+
+`POST /api/credentials/{id}/test`、`POST /api/credentials/test-batch`、
+`POST /api/credentials/{id}/models/{model}/test` 三条快速探测
+—— superAdmin 档且**真的会触发一次探测**（有外部副作用）⇒ 本仓继续不碰。
+`submitBatchProbe` 的**契约层与上限截断**已补测，但**不接 UI 入口**。

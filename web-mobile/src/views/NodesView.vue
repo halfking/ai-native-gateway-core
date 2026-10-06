@@ -9,6 +9,9 @@ import {
   clearManualDisabled,
   fetchCredentialDecisions,
   forceRecoverCredential,
+  resetCredentialState,
+  resetStateOutcomeAmbiguous,
+  resetStateProbeIndeterminate,
   setManualDisabled,
   submitCredentialProbe,
   type CredentialRoutingDecision,
@@ -166,23 +169,49 @@ const detailTitle = computed(() => detail.value ? `${detail.value.provider_name}
 //   而移动端没有桌面端那种「打开抽屉才发现没权限」的过程。所以按 role 分档渲染。
 const isSuperAdmin = computed(() => auth.role === 'super_admin')
 
-type PendingOp = 'disable' | 'enable' | 'probe' | 'recover' | null
+type PendingOp = 'disable' | 'enable' | 'probe' | 'recover' | 'resetState' | null
 const pendingOp = ref<PendingOp>(null)
 const opError = ref<string | null>(null)
 const opOk = ref<string | null>(null)
 const confirmOpen = ref(false)
 const confirmOp = ref<PendingOp>(null)
 
-/** reason 必填：后端 admin/credential_monitor.go:1785-1792 对空串直接 400。 */
+/**
+ * reason 必填：后端 admin/credential_monitor.go:1785-1792 对空串直接 400。
+ *
+ * ★ `resetState` 也在内 —— 它的 reason 是**审计留痕**（routing_reset.go:69-72
+ * `reason is required for audit trail`），不填就 400。
+ */
 const reasonText = ref('')
 const reasonForOp = ref<PendingOp>(null)
-const needReason = computed(() => reasonForOp.value === 'disable' || reasonForOp.value === 'enable')
+const needReason = computed(
+  () =>
+    reasonForOp.value === 'disable' ||
+    reasonForOp.value === 'enable' ||
+    reasonForOp.value === 'resetState',
+)
+
+/**
+ * ★ `trigger_probe` 勾选位（后端 `req.TriggerProbe`）。
+ *
+ * ★★ 为什么 UI 不能对它的结果打包票：后端回的是
+ *   `probe_triggered = req.TriggerProbe && h.probeSubmitter != nil`
+ * （routing_reset.go:151）—— 提交器没接线时**静默**降级成 false，
+ * 而客户端不知道后端接没接 ⇒ 请求了却拿到 false 时**无法区分**「没生效」
+ * 与「压根没请求」。这个二义在下面 `resetProbeNote` 里如实呈现，不吞掉。
+ */
+const resetTriggerProbe = ref(false)
+
+/** ★ reset-state 的「探测到底有没有被触发」提示；非该操作时为空串。 */
+const resetProbeNote = ref('')
 
 function resetOpState(): void {
   opError.value = null
   opOk.value = null
   reasonText.value = ''
   reasonForOp.value = null
+  resetTriggerProbe.value = false
+  resetProbeNote.value = ''
 }
 
 /** 动作 → 后端 reason。留空时给一个带凭据 id 的默认理由，不让用户空手提交。 */
@@ -191,8 +220,17 @@ function effectiveReason(op: PendingOp): string {
   if (typed) return typed
   const id = detail.value?.id
   const who = auth.userInfo?.display_name || auth.userInfo?.username || 'mobile'
-  const base =
-    op === 'disable' ? t('nodes.reasonDefaultDisable') : op === 'enable' ? t('nodes.reasonDefaultEnable') : t('nodes.reasonDefaultRecover')
+  // ★ 用映射而不是三元链：新增 resetState 时三元链会静默落到 reasonDefaultRecover，
+  //   而那是个**语义错误**的默认理由（审计会记成「强制恢复」）。默认理由要能对得上动作。
+  const defaults: Record<Exclude<PendingOp, null>, string> = {
+    disable: t('nodes.reasonDefaultDisable'),
+    enable: t('nodes.reasonDefaultEnable'),
+    probe: t('nodes.reasonDefaultProbe'),
+    recover: t('nodes.reasonDefaultRecover'),
+    resetState: t('nodes.reasonDefaultResetState'),
+  }
+  if (!op) return ''
+  const base = defaults[op]
   return id != null ? `${base} (#${id}, ${who})` : base
 }
 
@@ -213,6 +251,10 @@ const confirmMeta = computed(() => {
       return { title: t('nodes.confirmProbeTitle'), body: t('nodes.confirmProbeBody', { name: detailName.value }), label: t('nodes.probe'), danger: false }
     case 'recover':
       return { title: t('nodes.confirmRecoverTitle'), body: t('nodes.confirmRecoverBody', { name: detailName.value }), label: t('nodes.forceRecover'), danger: true }
+    case 'resetState':
+      // ★ 后端 routing_reset.go:69-72 要求 reason 是**审计留痕**，不是备注；
+      //   且 :110-119 存在「DB 已改但请求以 5xx 结束」这一支 ⇒ 危险档。
+      return { title: t('nodes.confirmResetStateTitle'), body: t('nodes.confirmResetStateBody', { name: detailName.value }), label: t('nodes.resetState'), danger: true }
     default:
       return { title: '', body: '', label: t('common.confirm'), danger: false }
   }
@@ -243,6 +285,31 @@ async function runConfirmedOp(): Promise<void> {
     } else if (op === 'recover') {
       await forceRecoverCredential(cred.id)
       opOk.value = t('nodes.opRecovered')
+    } else if (op === 'resetState') {
+      // ★ rawModel 留空 = **整凭据**复位（routing_reset.go:37-39）：
+      //   覆盖该凭据的所有绑定模型。移动端不暴露「只复位某个模型」这个口子 ——
+      //   单模型复位会让「这个节点还是不通」的原因更难查。
+      //
+      // ★★★★★★ 必须把 trigger_probe **快照**下来，不能在 await 之后再读 ref。
+      //   实测（2026-10-08）：`confirmOpen.value = false` 会让 AppConfirm emit
+      //   `update:model-value(false)` → 视图的 `resetOpState()` 把
+      //   `resetTriggerProbe` 清成 false；而 Vue 的响应式 flush 发生在
+      //   **await 期间** ⇒ 请求体里明明带了 trigger_probe=true，
+      //   回调里读到的却是 false ⇒ 「未能确定」那句提示**永远不出现**。
+      //   同理 `reasonText` 也在 await 期间被清空 —— 只是 reason 是**作为实参**
+      //   在 await 之前求值的，才没出事。
+      const wantedProbe = resetTriggerProbe.value
+      const r = await resetCredentialState(cred.id, effectiveReason(op), '', wantedProbe)
+      opOk.value = t('nodes.opResetStateDone')
+      // ★★ probe_triggered 有三义，false 那一支尤其不能吞：
+      //   后端写的是 `req.TriggerProbe && probeSubmitter != nil`，客户端无从知道
+      //   提交器接没接 ⇒ 请求了却拿到 false = **未能确定**，不是「没触发」。
+      if (resetStateProbeIndeterminate(r, wantedProbe)) {
+        resetProbeNote.value = t('nodes.resetProbeIndeterminate')
+      } else if (r.probe_triggered) {
+        // 只代表「已提交」（fire-and-forget），不代表探测通过。
+        resetProbeNote.value = t('nodes.resetProbeSubmitted')
+      }
     }
     // 写操作后重新拉全量：后端有 15s 缓存（monitor-summary TTL），
     // 立即重查可能拿到旧值 —— 但仍要重查，因为缓存过期后自然刷新。
@@ -254,11 +321,21 @@ async function runConfirmedOp(): Promise<void> {
       if (fresh) detail.value = fresh
     }
   } catch (err) {
-    opError.value = describeError(err)
+    // ★★★★★★ reset-state 失败**不能**一律说「操作失败」：
+    //   routing_reset.go:110-119 存在「DB 效果已落地但请求以 5xx 结束」这一支，
+    //   而那一支走 writeInternalErr ⇒ 响应里**没有** db_committed/audit_outcome，
+    //   客户端拿到的报文与「完全没动」逐字节相同 ⇒ 只能对二义档说「去核实」。
+    //   4xx 则都发生在 applyForceEnable 之前（:56-89），可以确定地报「未执行」。
+    if (op === 'resetState' && resetStateOutcomeAmbiguous((err as { status?: number })?.status)) {
+      opError.value = t('nodes.resetStateMaybeApplied')
+    } else {
+      opError.value = describeError(err)
+    }
   } finally {
     pendingOp.value = null
     reasonForOp.value = null
     reasonText.value = ''
+    resetTriggerProbe.value = false
   }
 }
 
@@ -350,6 +427,9 @@ function describeError(err: unknown): string {
         <h3 class="page__section-title" style="margin-inline: 0">{{ t('nodes.operations') }}</h3>
 
         <p v-if="opOk" class="nodes__op-msg nodes__op-msg--ok" role="status">{{ opOk }}</p>
+        <!-- ★ 只在 reset-state 且探测状态有话可说时出现；成功文案下方，
+             不替换成功文案本身 —— 两件事都要让用户看到。 -->
+        <p v-if="resetProbeNote" class="nodes__op-msg nodes__op-msg--warn" role="status">{{ resetProbeNote }}</p>
         <p v-if="opError" class="nodes__op-msg nodes__op-msg--err" role="alert">{{ opError }}</p>
 
         <div class="nodes__ops-row">
@@ -393,6 +473,19 @@ function describeError(err: unknown): string {
             @click="requestOp('recover')"
           >
             {{ t('nodes.forceRecover') }}
+          </button>
+
+          <!-- ★ reset-state 与 force-recover 的分工：那个是「凭据级 5 步全清」，
+               这个是「带审计 reason 的聚焦复位」，可顺带请求一次探测。
+               注册处 admin/handler.go:946 是 h.superAdmin ⇒ 与探测/强恢同档。 -->
+          <button
+            v-if="isSuperAdmin"
+            type="button"
+            class="btn btn--danger"
+            :disabled="pendingOp !== null"
+            @click="requestOp('resetState')"
+          >
+            {{ t('nodes.resetState') }}
           </button>
         </div>
 
@@ -489,6 +582,15 @@ function describeError(err: unknown): string {
       />
       <span class="nodes__reason-hint">{{ t('nodes.reasonHint') }}</span>
     </label>
+
+    <!-- ★ trigger_probe：后端 req.TriggerProbe。勾了只是「请求一次探测」，
+         不是保证触发 —— 提交器没接线时后端静默降级成 false（routing_reset.go:125）。
+         所以这里**不写**任何承诺性文案，只描述请求本身。 -->
+    <label v-if="confirmOp === 'resetState'" class="nodes__probe-toggle">
+      <input v-model="resetTriggerProbe" type="checkbox" class="nodes__probe-checkbox" />
+      <span class="nodes__probe-label">{{ t('nodes.resetTriggerProbe') }}</span>
+    </label>
+    <p v-if="confirmOp === 'resetState'" class="nodes__reason-hint">{{ t('nodes.resetTriggerProbeHint') }}</p>
   </AppConfirm>
   </div>
 </template>
@@ -610,6 +712,36 @@ function describeError(err: unknown): string {
 .nodes__op-msg--err {
   color: var(--app-danger);
   background: color-mix(in srgb, var(--app-danger) 12%, transparent);
+}
+
+/* ★ 「探测是否被触发」是二义结论，不是成功也不是失败 ⇒ 单独一档，
+   复用 --app-warning，不复用 ok/err（那两档都会给出错误的安全感）。 */
+.nodes__op-msg--warn {
+  color: var(--app-warning);
+  background: color-mix(in srgb, var(--app-warning) 12%, transparent);
+}
+
+/* R1：新增触控控件 ≥48 CSS px。整行 label 是命中区，勾选框本身放大到 24px
+   视觉尺寸但由 label 承担点击面 —— 移动端直接点 16px 勾选框会点不中。 */
+.nodes__probe-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--app-space-2);
+  min-height: 48px;
+  margin-top: var(--app-space-2);
+  cursor: pointer;
+}
+
+.nodes__probe-checkbox {
+  width: 24px;
+  height: 24px;
+  accent-color: var(--app-primary);
+  flex: none;
+}
+
+.nodes__probe-label {
+  font-size: 0.8125rem;
+  color: var(--app-text-primary);
 }
 
 .nodes__ops-hint,

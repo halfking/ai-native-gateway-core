@@ -80,18 +80,48 @@ vi.mock('@/hyper', async (importOriginal) => {
   return { ...actual, useHyperPage: () => {} }
 })
 
-vi.mock('@/api/credentialsOps', () => ({
-  setManualDisabled: vi.fn(async () => ({ success: true, message: 'ok' })),
-  clearManualDisabled: vi.fn(async () => ({ success: true, message: 'ok' })),
-  submitCredentialProbe: vi.fn(async () => ({ message: 'queued', credential_id: 9, status: 'pending' })),
-  forceRecoverCredential: vi.fn(async () => ({
-    triggered: true, credential_id: 9, timestamp: 't', message: 'm',
-    key_cache_invalidated: true, key_rotator_reset: true,
-  })),
-  // 2026-10-06：详情 Sheet 打开时会拉「近期路由决策」。不 mock 它的话
-  // 模块整个是 undefined ⇒ 这一区静默不渲染，测试全绿却零覆盖。
-  fetchCredentialDecisions: vi.fn(async () => []),
-}))
+/**
+ * ★ 用 importOriginal 透传真实导出，只替换**发网络**的函数。
+ *
+ * 原因（2026-10-08 实测的既有陷阱）：本文件对 '@/api/credentialsOps' 做了整模块
+ * mock。第一版若照抄旧写法（纯对象字面量），`resetStateProbeIndeterminate` /
+ * `resetStateOutcomeAmbiguous` 这两个**纯函数**会是 undefined ⇒ 视图调用即抛
+ * ⇒ reset-state 分支永远走错误态，**而其余测试照样全绿**。
+ * ⇒ 纯函数必须走 actual，别手抄一份实现（手抄的那份会与源码漂移）。
+ */
+vi.mock('@/api/credentialsOps', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/credentialsOps')>()
+  return {
+    ...actual,
+    setManualDisabled: vi.fn(async () => ({ success: true, message: 'ok' })),
+    clearManualDisabled: vi.fn(async () => ({ success: true, message: 'ok' })),
+    submitCredentialProbe: vi.fn(async () => ({ message: 'queued', credential_id: 9, status: 'pending' })),
+    forceRecoverCredential: vi.fn(async () => ({
+      triggered: true, credential_id: 9, timestamp: 't', message: 'm',
+      key_cache_invalidated: true, key_rotator_reset: true,
+    })),
+    // ★★★ 逐字段照抄 admin/routing_reset.go:146-153 的 map 字面量。
+    //   注意：**没有** success / reset_fields（旧 TS 接口凭空写的两个键）。
+    resetCredentialState: vi.fn(async () => ({
+      message: 'credential state reset',
+      credential_id: 9,
+      raw_model: '',
+      actor: 'ops',
+      probe_triggered: false,
+      details: {
+        credential_id: 9,
+        raw_model: '',
+        reason: 'mobile',
+        endpoint: 'reset-state',
+        actor: 'ops',
+        db_committed: true,
+      },
+    })),
+    // 2026-10-06：详情 Sheet 打开时会拉「近期路由决策」。不 mock 它的话
+    // 模块整个是 undefined ⇒ 这一区静默不渲染，测试全绿却零覆盖。
+    fetchCredentialDecisions: vi.fn(async () => []),
+  }
+})
 
 /**
  * 设置当前登录角色 —— 操作区按 role 分档渲染（后端 superAdmin 对 tenant_admin 直接 403）。
@@ -180,9 +210,12 @@ describe('NodesView 运维操作区', () => {
     expect(ops.textContent).toContain('Disable')
     expect(ops.textContent).not.toContain('Probe now')
     expect(ops.textContent).not.toContain('Force recover')
+    // ★ reset-state 注册处 admin/handler.go:946 是 h.superAdmin ⇒ 同属受限档。
+    //   只钉探测/强恢的话，把 reset-state 误挪到 admin 档不会被任何测试发现。
+    expect(ops.textContent).not.toContain('Reset state')
   })
 
-  it('super_admin 能看到全部四个动作入口', async () => {
+  it('super_admin 能看到全部五个动作入口', async () => {
     activatePiniaAs('super_admin')
     const w = await mountView()
     await w.findAll('.node-card')[0]?.trigger('click')
@@ -193,6 +226,7 @@ describe('NodesView 运维操作区', () => {
     expect(ops.textContent).toContain('Disable')
     expect(ops.textContent).toContain('Probe now')
     expect(ops.textContent).toContain('Force recover')
+    expect(ops.textContent).toContain('Reset state')
   })
 
   it('停用走 set-manual-disabled 且带非空 reason（空 reason 后端必 400）', async () => {
@@ -266,6 +300,193 @@ describe('NodesView 运维操作区', () => {
     await flushPromises()
 
     expect(document.body.querySelector('.nodes__op-msg--err')?.textContent).toContain('permission')
+  })
+})
+
+/**
+ * reset-state 入口（2026-10-08，admin/routing_reset.go）。
+ *
+ * 这组判据守的是三件**语义**的事，都不是渲染细节：
+ *   ① reason 是**审计留痕**（:69-72 空串直接 400），且默认理由必须对得上动作 ——
+ *      用三元链实现时新增动作会静默落到别的动作的理由上，审计因此记错。
+ *   ② `probe_triggered` 有三义（:151 `req.TriggerProbe && probeSubmitter != nil`）：
+ *      请求了却拿到 false = **未能确定**，不是「没触发」。吞掉它就是撒谎。
+ *   ③ ★★ 失败分档：5xx 那一支可能「DB 已改但请求报错」，而响应里**没有**
+ *      db_committed / audit_outcome ⇒ 不得说「操作失败」。4xx 则可以确定地报未执行。
+ */
+describe('NodesView reset-state 入口', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    vi.clearAllMocks()
+  })
+
+  async function openResetConfirm() {
+    activatePiniaAs('super_admin')
+    const w = await mountView()
+    await w.findAll('.node-card')[0]?.trigger('click')
+    await flushPromises()
+    const btn = Array.from(document.body.querySelectorAll('.nodes__ops .btn')).find((b) =>
+      (b.textContent ?? '').includes('Reset state'),
+    )
+    if (!btn) throw new Error('reset-state 按钮不存在')
+    btn.dispatchEvent(new Event('click'))
+    await flushPromises()
+    return w
+  }
+
+  async function confirmReset() {
+    const confirmBtn = Array.from(document.body.querySelectorAll('.confirm__actions .btn')).find((b) =>
+      (b.textContent ?? '').includes('Reset state'),
+    )
+    if (!confirmBtn) throw new Error('确认按钮不存在')
+    confirmBtn.dispatchEvent(new Event('click'))
+    await flushPromises()
+    await flushPromises()
+  }
+
+  it('★ reason 输入框与 trigger_probe 勾选位都出现，且默认理由对得上本动作', async () => {
+    await openResetConfirm()
+    // reason 是审计必填 ⇒ 必须有输入位
+    expect(document.body.querySelector('.nodes__reason-input')).not.toBeNull()
+    // trigger_probe 勾选位
+    const cb = document.body.querySelector('.nodes__probe-checkbox') as HTMLInputElement | null
+    if (!cb) throw new Error('trigger_probe 勾选位未渲染')
+    expect(cb.checked).toBe(false)
+
+    await confirmReset()
+    const { resetCredentialState } = await import('@/api/credentialsOps')
+    expect(resetCredentialState).toHaveBeenCalledTimes(1)
+    const [credId, reason, rawModel, triggerProbe] = (resetCredentialState as ReturnType<typeof vi.fn>).mock
+      .calls[0] as [number, string, string, boolean]
+    expect(credId).toBe(9)
+    // ★ reason 非空（空串后端 400），且默认理由必须是「状态复位」而不是别的动作
+    expect(reason.length).toBeGreaterThan(0)
+    expect(reason).toContain('State reset from mobile')
+    expect(reason).not.toContain('Force recovered')
+    // ★ rawModel 留空 = 整凭据复位（routing_reset.go:37-39）
+    expect(rawModel).toBe('')
+    expect(triggerProbe).toBe(false)
+  })
+
+  it('★ reset-state 的确认按钮必须是危险档（不可撤销的审计写入）', async () => {
+    await openResetConfirm()
+    // AppConfirm.vue:50 —— danger 决定 btn--danger / btn--primary
+    const confirmBtn = Array.from(document.body.querySelectorAll('.confirm__actions .btn')).find((b) =>
+      (b.textContent ?? '').includes('Reset state'),
+    )
+    if (!confirmBtn) throw new Error('确认按钮不存在')
+    // ★ 降级成普通档会让一个不可撤销的写操作看起来像「保存」
+    expect(confirmBtn.className).toContain('btn--danger')
+    expect(confirmBtn.className).not.toContain('btn--primary')
+  })
+
+  it('★ 勾了 trigger_probe 才把它透传成 true', async () => {
+    await openResetConfirm()
+    const cb = document.body.querySelector('.nodes__probe-checkbox') as HTMLInputElement
+    cb.checked = true
+    cb.dispatchEvent(new Event('change'))
+    await flushPromises()
+    await confirmReset()
+
+    const { resetCredentialState } = await import('@/api/credentialsOps')
+    const call = (resetCredentialState as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[]
+    expect(call[3]).toBe(true)
+  })
+
+  it('★★★ 请求了探测但回 probe_triggered=false ⇒ 说「未能确定」，不能说「没触发」', async () => {
+    const { resetCredentialState } = await import('@/api/credentialsOps')
+    // 默认 mock 就返回 probe_triggered: false；这次勾了 trigger_probe
+    ;(resetCredentialState as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      message: 'credential state reset', credential_id: 9, raw_model: '', actor: 'ops',
+      probe_triggered: false,
+      details: { credential_id: 9, raw_model: '', reason: 'x', endpoint: 'reset-state', actor: 'ops' },
+    })
+    await openResetConfirm()
+    const cb = document.body.querySelector('.nodes__probe-checkbox') as HTMLInputElement
+    cb.checked = true
+    cb.dispatchEvent(new Event('change'))
+    await flushPromises()
+    await confirmReset()
+
+    const note = document.body.querySelector('.nodes__op-msg--warn')
+    expect(note?.textContent).toContain('did not confirm')
+    // ★ 两档必须互斥：不能同时说「已提交」
+    expect(note?.textContent).not.toContain('Probe submitted')
+    // 成功文案仍在 —— 复位本身确实成功了
+    expect(document.body.textContent).toContain('State reset submitted')
+  })
+
+  it('★ probe_triggered=true ⇒ 只说「已提交」并带上免责句，不裸奔', async () => {
+    const { resetCredentialState } = await import('@/api/credentialsOps')
+    ;(resetCredentialState as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      message: 'credential state reset', credential_id: 9, raw_model: '', actor: 'ops',
+      probe_triggered: true,
+      details: { credential_id: 9, raw_model: '', reason: 'x', endpoint: 'reset-state', actor: 'ops' },
+    })
+    await openResetConfirm()
+    await confirmReset()
+
+    const note = document.body.querySelector('.nodes__op-msg--warn')
+    expect(note?.textContent).toContain('Probe submitted')
+    // ★ 「提交」不等于「通过」⇒ 免责句本身要被钉住
+    expect(note?.textContent).toContain('does not mean the probe passed')
+    expect(note?.textContent).not.toContain('did not confirm')
+  })
+
+  it('★★★★★ 5xx 失败 ⇒ 必须提示「状态可能已改」，不得说成操作失败', async () => {
+    const { resetCredentialState } = await import('@/api/credentialsOps')
+    const { ApiError } = await import('@/api/client')
+    ;(resetCredentialState as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(500, 'internal error (see server logs)'),
+    )
+    await openResetConfirm()
+    await confirmReset()
+
+    const err = document.body.querySelector('.nodes__op-msg--err')?.textContent ?? ''
+    expect(err).toContain('may have been changed')
+    // ★ 不得退化成泛化错误：那会让运维以为「什么都没发生」而直接重试
+    expect(err).not.toContain('internal error (see server logs)')
+  })
+
+  it('★★★★ 4xx 失败 ⇒ 可以确定地报「未执行」，不该吓人说可能已改', async () => {
+    const { resetCredentialState } = await import('@/api/credentialsOps')
+    const { ApiError } = await import('@/api/client')
+    ;(resetCredentialState as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(400, 'reason is required for audit trail'),
+    )
+    await openResetConfirm()
+    await confirmReset()
+
+    const err = document.body.querySelector('.nodes__op-msg--err')?.textContent ?? ''
+    expect(err).toContain('reason is required for audit trail')
+    // ★ 400 全部发生在 applyForceEnable 之前（routing_reset.go:56-89）⇒ 无二义
+    expect(err).not.toContain('may have been changed')
+  })
+
+  it('★★★ 传输层失败（status=0）同样算二义', async () => {
+    const { resetCredentialState } = await import('@/api/credentialsOps')
+    const { ApiError } = await import('@/api/client')
+    // client.ts:172 把断网归一成 ApiError(0, 'network_error')：
+    // 请求可能已经落库，只是回程断了 ⇒ 不能说「未执行」
+    ;(resetCredentialState as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new ApiError(0, 'network_error'))
+    await openResetConfirm()
+    await confirmReset()
+
+    const err = document.body.querySelector('.nodes__op-msg--err')?.textContent ?? ''
+    expect(err).toContain('may have been changed')
+  })
+
+  it('★ 探测/强恢的确认框里**不出现** trigger_probe 勾选位', async () => {
+    activatePiniaAs('super_admin')
+    const w = await mountView()
+    await w.findAll('.node-card')[0]?.trigger('click')
+    await flushPromises()
+    const btn = Array.from(document.body.querySelectorAll('.nodes__ops .btn')).find((b) =>
+      (b.textContent ?? '').includes('Probe now'),
+    )
+    btn?.dispatchEvent(new Event('click'))
+    await flushPromises()
+    expect(document.body.querySelector('.nodes__probe-checkbox')).toBeNull()
   })
 })
 
