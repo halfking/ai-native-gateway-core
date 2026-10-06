@@ -339,6 +339,10 @@ export function maasGlobalRate(s: MaasSettings, dim: MaasRateDim): { value: numb
  *
  * ⇒ 页面据此说明「这个 10000 是硬编码兜底还是你们配的」。
  */
+/** ★★ `maasEffectiveSource` 的三个返回值（视图用 `maas.src_` + 它拼键）。 */
+export const MAAS_EFFECTIVE_SOURCES = ['custom', 'global_configured', 'global_hardcoded'] as const
+export type MaasEffectiveSource = (typeof MAAS_EFFECTIVE_SOURCES)[number]
+
 export function maasEffectiveSource(
   row: MaasModelRateRow,
   settings: MaasSettings,
@@ -516,4 +520,310 @@ export function maasNameOrphaned(id: number | undefined, name: string | undefine
 /** ★ 列表响应没有 total ⇒ 只能按「这页排满」近似判断还有没有下一页。 */
 export function maasOrdersMaybeMore(items: MaasOrder[], limit: number): boolean {
   return items.length >= limit
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// 第三段：MaaS **租户/客户面**（admin 档，**不是** superAdmin）
+// ════════════════════════════════════════════════════════════════════════
+//
+// ★★★ 这些端点**不在** `/api/admin/maas/` 下，鉴权是 `h.admin(...)`
+//   （maas_handlers.go:26-30）⇒ **admin 档**，抽屉席**不设** requiresRole。
+//   ★ 与上面两段（全部 superAdmin）是**同一族但不同档** —— 档位必须分清，
+//     混起来就会出现「tenant_admin 403」的接线事故。
+//
+// (19) ★★★★★★ `/api/maas/settings` **只有 3 个键**：
+//     {cents_per_credit, base_credits_per_1m, currency_display}
+//     后端自陈「Tenants see conversion knobs only, not internal cost data」
+//     ⇒ 租户**看不到** base_credits_per_1m_in/out、global_discount 等成本数据。
+//     ★★ 这与 admin 档 `/api/admin/maas/settings`（裸 `Settings`，**全量**）
+//       **键名有重叠但形状不同** ⇒ 两条解包必须独立，且互喂必须抛错。
+//     ★★★ 而且 `base_credits_per_1m` 是**旧字段**：
+//       §11.73 的 `maasGlobalBaseIn` 会先看 `base_credits_per_1m_in`，
+//       这里租户面**只有** legacy 那一个 ⇒ 它显示的值**可能不是生效基价**。
+//
+// (20) ★★★★★ `/api/maas/models` 的行结构是 **`ModelRateRow`（service.go:536）**，
+//     与 admin 档的 **`AdminModelRateRow`（model_rates.go:11-36）是两个不同结构**：
+//     - 只有 **12 个键**（4 个指针字段带 omitempty ⇒ 可能缺键）；
+//     - **只有 4 维**（in / out / cache_in / cache_out），
+//       **没有** credits_per_1m_image / audio / video；
+//     - **没有** manual_* / custom_* / is_custom / updated_at。
+//     ⇒ ★★★ 拿 admin 档那套七维判读去读它，五个维度会**读到 undefined**
+//       然后被渲染成 0，看起来像「这几维免费」。
+//
+// (21) ★★★★ 模态是**盖章 / 猜的**两态，但**盖章这件事被抹掉了**：
+//     后端 `catalog.EffectiveModality(name, stored, modality_source)`（display.go:220）
+//     —— `modality_source` 是 semantic/manual 时**原样返回 stored**（按名字猜的
+//     没资格推翻它）；否则先放行 {multimodal,vision,audio,embedding,video}，
+//     **再**按名字猜，最后才回 stored / 'text'。
+//     ★★ 后果：一个 `modality='text'` 且**未盖章**的 gemini-* 模型会被报成 **multimodal**
+//       （stored='text' 不在放行名单里 ⇒ 掉进按名推断分支）。这正是该函数注释
+//       警告的「把『核实判负降级成 text』与『运维手工设成 text』双双翻回 multimodal」。
+//     ★★★ 而 `ModelRateRow` **没有** modality_source 字段
+//       ⇒ 租户**无从分辨**这个模态是盖过章的库值还是猜出来的。
+//       ⇒ 页面**不许**说「这就是配置的模态」。
+//
+// (22) ★★★★ `vendor` 也与 admin 档**不同源**：public 走 `catalog.ResolveVendor`
+//     （display.go:118）：dbVendor → familyVendor 映射 → **按名字推断** →
+//     HumanizeFamilyID → 字面量「其他」。★ 比 admin 档**多一层「按名字推断」**。
+//
+// (23) ★★★★★★ `/api/maas/wallet` 是**裸对象**（无包装键），且：
+//     - `tenantID = GetTenantID(r)` ⇒ **只看本租户**（与 superAdmin 侧
+//       `ListOrders(ctx, "", ...)` 的跨租户语义**正好相反**）；
+//     - ★★★ **GET 会写库**：`GetWallet` 第一行就是 `ensureWalletDirect`
+//       （`INSERT INTO tenant_credit_wallets … ON CONFLICT DO NOTHING`）
+//       ⇒ 这是一个「看着只读、实际会建行」的端点。
+//     - ★★★ `balance_credits` **不是原始列**：`if w.BalanceCredits == 0 { w.BalanceCredits = Granted + Purchased }`
+//       ⇒ 列值是 0 时会被两个余额之和**顶替**，客户端**不得**把它当原始列读。
+//     - ★★★ `total_available = quota_remaining + granted + purchased` ——
+//       它把**订阅额度**（quota）和**积分余额**（两种不同单位）**相加**。
+//     - ★ `subscription` 是 `*SubscriptionView` + omitempty ⇒ 没有生效订阅时**键不存在**。
+//
+// (24) ★★★ `/api/maas/plans` 与 `/api/maas/topup-packages` 走的是
+//     `ListPlans(ctx, enabledOnly=true)` / `ListTopupPackages(ctx, enabledOnly=true)`
+//     ⇒ **只列 enabled = TRUE**（admin 档那两个是 `false` ⇒ 含停用行）。
+//     ★★ 两者返回 `jsonSlice(out)`（maas/json_slice.go:4-9），
+//       nil 切片被换成 `[]T{}` ⇒ **`items` 永远是数组，永不为 null**。
+//     ★ `Plan` / `TopupPackage` 是**无 omitempty** 的普通结构
+//       ⇒ 8 个键**一定都在**（连 `enabled: false` 都有键）。
+
+/** ★★ 租户面 `/api/maas/settings` 的响应（maas_handlers.go:275-283）。 */
+export interface MaasPublicSettings {
+  cents_per_credit: number
+  /** ★★ 这是**旧字段**；租户面拿不到 `base_credits_per_1m_in`。 */
+  base_credits_per_1m: number
+  currency_display: string
+}
+
+export function fetchMaasPublicSettings(options?: RequestOptions): Promise<MaasPublicSettings> {
+  return req<unknown>('GET', '/api/maas/settings', undefined, options).then(unwrapMaasPublicSettings)
+}
+
+/**
+ * ★★ 只有 3 个键。**必须**与 admin 档的裸 `Settings`（全量）区分开。
+ *
+ * ★★ 顺带说明为什么**不能**靠「喂全量 Settings 应当抛错」来守这条：
+ *   admin 的 `Settings`（12 键）是租户面这 3 键的**超集**
+ *   ⇒ 任何子集形状检查都**必然**接受它，抛错在这条边上不可能成立。
+ *   真正要守的是另一头：即便服务端多给了字段，返回值也**只投影这 3 个键**，
+ *   于是页面读不到 `global_discount` / `base_credits_per_1m_in` 等成本数据。
+ */
+export function unwrapMaasPublicSettings(resp: unknown): MaasPublicSettings {
+  if (resp && typeof resp === 'object' && !Array.isArray(resp)) {
+    const s = resp as Record<string, unknown>
+    if (
+      typeof s.cents_per_credit === 'number' &&
+      typeof s.base_credits_per_1m === 'number' &&
+      typeof s.currency_display === 'string'
+    ) {
+      // ★ 显式投影：多出来的键一律**不带出去**（租户面看不到内部成本数据）
+      return {
+        cents_per_credit: s.cents_per_credit,
+        base_credits_per_1m: s.base_credits_per_1m,
+        currency_display: s.currency_display,
+      }
+    }
+  }
+  const actual = resp === null ? 'null' : Array.isArray(resp) ? 'array' : typeof resp
+  throw new Error(`maas/public settings 响应形状不符：期望 {cents_per_credit, base_credits_per_1m, currency_display}，实得 ${actual}`)
+}
+
+/** ★ 租户面模型行：`ModelRateRow`（maas/service.go:536），**只有 4 维**。 */
+export interface MaasPublicModel {
+  canonical_name: string
+  display_name: string
+  vendor: string
+  /** ★ 以下 4 个是 `*T` + omitempty ⇒ 键可能整个不存在。 */
+  family?: string
+  family_display_name?: string
+  context_window?: number
+  modality: string
+  /** ★ 后端硬编码字面量 `"token"`，**永远不会**是别的值。 */
+  billing_mode: string
+  credits_per_1m_in: number
+  credits_per_1m_out: number
+  credits_per_1m_cache_in: number
+  credits_per_1m_cache_out: number
+}
+
+export interface MaasPublicModelsResponse {
+  items: MaasPublicModel[]
+}
+
+export function fetchMaasPublicModels(options?: RequestOptions): Promise<MaasPublicModelsResponse> {
+  return req<unknown>('GET', '/api/maas/models', undefined, options).then(unwrapMaasPublicModels)
+}
+
+export function unwrapMaasPublicModels(resp: unknown): MaasPublicModelsResponse {
+  if (resp && typeof resp === 'object' && Array.isArray((resp as MaasPublicModelsResponse).items)) {
+    return resp as MaasPublicModelsResponse
+  }
+  const actual = resp === null ? 'null' : Array.isArray(resp) ? 'array' : typeof resp
+  throw new Error(`maas/public models 响应形状不符：期望 {items:[…]}，实得 ${actual}`)
+}
+
+/** ★ `Plan`（maas/service.go）—— 8 个键**一定都在**（无 omitempty）。 */
+export interface MaasPlan {
+  id: number
+  code: string
+  tier: string
+  name: string
+  /** ★ 单位是**分**。 */
+  price_cents: number
+  monthly_credits: number
+  enabled: boolean
+  sort_order: number
+}
+
+/** ★ `TopupPackage`（maas/service.go）—— 同样 8 键、无 omitempty。 */
+export interface MaasTopupPackage {
+  id: number
+  code: string
+  tier: string
+  name: string
+  price_cents: number
+  credits_amount: number
+  enabled: boolean
+  sort_order: number
+}
+
+export interface MaasItemsResponse<T> {
+  items: T[]
+}
+
+export function fetchMaasPublicPlans(options?: RequestOptions): Promise<MaasItemsResponse<MaasPlan>> {
+  return req<unknown>('GET', '/api/maas/plans', undefined, options).then(
+    unwrapMaasPlans as (r: unknown) => MaasItemsResponse<MaasPlan>,
+  )
+}
+
+/** ★ `writeJSON(w, 200, map[string]any{"items": items})`（maas_handlers.go:236）。 */
+export function unwrapMaasPlans(resp: unknown): MaasItemsResponse<MaasPlan> {
+  if (resp && typeof resp === 'object' && Array.isArray((resp as MaasItemsResponse<MaasPlan>).items)) {
+    return resp as MaasItemsResponse<MaasPlan>
+  }
+  const actual = resp === null ? 'null' : Array.isArray(resp) ? 'array' : typeof resp
+  throw new Error(`maas/public plans 响应形状不符：期望 {items:[…]}，实得 ${actual}`)
+}
+
+export function fetchMaasPublicTopupPackages(
+  options?: RequestOptions,
+): Promise<MaasItemsResponse<MaasTopupPackage>> {
+  return req<unknown>('GET', '/api/maas/topup-packages', undefined, options).then(
+    unwrapMaasTopupPackages as (r: unknown) => MaasItemsResponse<MaasTopupPackage>,
+  )
+}
+
+export function unwrapMaasTopupPackages(resp: unknown): MaasItemsResponse<MaasTopupPackage> {
+  if (
+    resp &&
+    typeof resp === 'object' &&
+    Array.isArray((resp as MaasItemsResponse<MaasTopupPackage>).items)
+  ) {
+    return resp as MaasItemsResponse<MaasTopupPackage>
+  }
+  const actual = resp === null ? 'null' : Array.isArray(resp) ? 'array' : typeof resp
+  throw new Error(`maas/public topup-packages 响应形状不符：期望 {items:[…]}，实得 ${actual}`)
+}
+
+/** ★ `SubscriptionView`（maas/service.go）—— 5 键，键一定都在。 */
+export interface MaasSubscription {
+  plan_id: number
+  plan_name: string
+  status: string
+  period_start: string
+  period_end: string
+}
+
+/** ★ `WalletView`（maas/service.go）—— **裸对象**，`subscription` 可能缺键。 */
+export interface MaasWallet {
+  tenant_id: string
+  quota_remaining: number
+  granted_balance: number
+  purchased_balance: number
+  /** ★★ 不是原始列：列值为 0 时被 granted+purchased 顶替。 */
+  balance_credits: number
+  /** ★★ = quota + granted + purchased（**两种单位相加**）。 */
+  total_available: number
+  subscription?: MaasSubscription
+}
+
+export function fetchMaasWallet(options?: RequestOptions): Promise<MaasWallet> {
+  return req<unknown>('GET', '/api/maas/wallet', undefined, options).then(unwrapMaasWallet)
+}
+
+export function unwrapMaasWallet(resp: unknown): MaasWallet {
+  // ★ 裸对象：**不能**去读 `resp.items`（那是 plans/topup 的形状）
+  if (resp && typeof resp === 'object' && !Array.isArray(resp)) {
+    const w = resp as Record<string, unknown>
+    if (typeof w.tenant_id === 'string' && typeof w.total_available === 'number') {
+      return w as unknown as MaasWallet
+    }
+  }
+  const actual = resp === null ? 'null' : Array.isArray(resp) ? 'array' : typeof resp
+  throw new Error(`maas/public wallet 响应形状不符：期望裸钱包对象 {tenant_id, total_available, …}，实得 ${actual}`)
+}
+
+// ── 页面侧判读 ─────────────────────────────────────────────────────────
+
+/**
+ * ★★★ 租户面 `/api/maas/models` 的**全部 4 个维度**。
+ * 响应里**没有** image / audio / video 的键 —— 那不是 0，是**根本不存在**。
+ * 导出到 API 模块是为了让 i18n 动态键判据 import **真常量**而不是手抄后缀。
+ */
+export const MAAS_PUBLIC_DIMS = ['in', 'out', 'cache_in', 'cache_out'] as const
+export type MaasPublicDim = (typeof MAAS_PUBLIC_DIMS)[number]
+
+/** ★ 维 → 响应字段的映射（`noUncheckedIndexedAccess` 下索引要显式兜底）。 */
+export const MAAS_PUBLIC_DIM_FIELDS = {
+  in: 'credits_per_1m_in',
+  out: 'credits_per_1m_out',
+  cache_in: 'credits_per_1m_cache_in',
+  cache_out: 'credits_per_1m_cache_out',
+} as const satisfies Record<MaasPublicDim, keyof MaasPublicModel>
+
+export function maasPublicDimValue(m: MaasPublicModel, dim: MaasPublicDim): number {
+  const v = m[MAAS_PUBLIC_DIM_FIELDS[dim]]
+  return typeof v === 'number' ? v : 0
+}
+
+/** ★ 金额单位是**分**（套餐/充值包通用）。 */
+export function maasCatalogPriceYuan(priceCents: number): number {
+  return (priceCents ?? 0) / 100
+}
+
+/** ★★ 单价 = 金额 / 积分。**分**与积分相除得到「分/积分」，页面要么 /100 要么明说单位。 */
+export function maasUnitPriceFenPerCredit(priceCents: number, credits: number): number | null {
+  if (!Number.isFinite(priceCents) || !Number.isFinite(credits) || credits <= 0) return null
+  return priceCents / credits
+}
+
+/**
+ * ★★★ 租户面模型行**没有** image/audio/video 三维的键。
+ * 客户端若沿用 admin 档那套七维判读，会读到 undefined 并渲染成 0
+ * ⇒ 「这一维免费」是**假的**。本函数明确告诉页面：这三维**不在这条端点上**。
+ */
+export function maasPublicModelLacksMultiDims(m: MaasPublicModel): boolean {
+  return !('credits_per_1m_image_tokens' in m)
+}
+
+/**
+ * ★★ 没有生效订阅 ⇒ `subscription` 键**不存在**（指针 + omitempty）。
+ * 与「有订阅但 status 不是 active」是两回事，后者键存在但要按 status 读。
+ */
+export function maasWalletHasSubscription(w: MaasWallet): boolean {
+  return w.subscription !== undefined
+}
+
+/** ★★ `total_available` 把订阅额度与积分余额**相加**（两种单位），页面必须标注。 */
+export function maasWalletTotalIsMixedUnit(w: MaasWallet): boolean {
+  return w.quota_remaining !== 0
+}
+
+/**
+ * ★★★ 复算 `balance_credits` 的兜底规则（GetWallet 尾部）：
+ * `if w.BalanceCredits == 0 { w.BalanceCredits = Granted + Purchased }`
+ * 返回 true 表示「这一栏不是列里的原始值，是被兜底顶替过的」。
+ */
+export function maasWalletBalanceIsSubstituted(w: MaasWallet): boolean {
+  return w.balance_credits === w.granted_balance + w.purchased_balance && w.balance_credits !== 0
 }

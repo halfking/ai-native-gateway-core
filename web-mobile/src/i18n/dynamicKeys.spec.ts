@@ -9,6 +9,14 @@ import { ANOMALY_TRIGGERS } from '@/api/requestAnomalies'
 import { INJECTION_CATEGORIES } from '@/api/promptInjection'
 import { ANALYTICS_CLIENT_ORDER_BYS } from '@/api/sessionAnalytics'
 import {
+  MAAS_RATE_DIMS,
+  MAAS_EFFECTIVE_SOURCES,
+  MAAS_PUBLIC_DIMS,
+  MAAS_ORDER_TYPES,
+  MAAS_ORDER_STATUSES,
+  MAAS_PAYMENT_CHANNELS,
+} from '@/api/maas'
+import {
   COMPLIANCE_ISSUE_TYPES,
   COMPLIANCE_QUEUE_STATUSES,
   COMPLIANCE_THRESHOLD_FIELDS,
@@ -75,11 +83,21 @@ const DYNAMIC_KEYS: Array<[prefix: string, suffixes: readonly string[]]> = [
   ['injection.cat_', INJECTION_CATEGORIES],
   // ★ 会话分析的三个排序值（取值来自 ANALYTICS_CLIENT_ORDER_BYS 常量）
   ['sa.order_', ANALYTICS_CLIENT_ORDER_BYS],
+  // ★ MaaS 积分价（superAdmin 档）的七维与三个生效来源
+  ['maas.dim_', MAAS_RATE_DIMS.map((d) => d.key)],
+  ['maas.src_', MAAS_EFFECTIVE_SOURCES],
+  // ★★ MaaS 订单（superAdmin 档）的三个枚举 —— 后端 Go 侧各是一份枚举
+  ['mo.type_', MAAS_ORDER_TYPES],
+  ['mo.status_', MAAS_ORDER_STATUSES],
+  ['mo.channel_', MAAS_PAYMENT_CHANNELS],
+  // ★★★ MaaS 租户面（**admin 档**）**只有 4 维** ——
+  //   登记它才能让「多画一维」这条判据在 i18n 侧也有一道网。
+  ['mp.dim_', MAAS_PUBLIC_DIMS],
 ]
 
 describe('动态 i18n 键在两侧词典里都存在', () => {
-  it('★ 至少覆盖 14 处动态前缀（少于这个数说明下面的清单没跟上代码）', () => {
-    expect(DYNAMIC_KEYS.length).toBeGreaterThanOrEqual(14)
+  it('★ 至少覆盖 20 处动态前缀（少于这个数说明下面的清单没跟上代码）', () => {
+    expect(DYNAMIC_KEYS.length).toBeGreaterThanOrEqual(20)
   })
 
   for (const [prefix, suffixes] of DYNAMIC_KEYS) {
