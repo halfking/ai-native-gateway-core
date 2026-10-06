@@ -4787,3 +4787,185 @@ settings PUT、model-rates 的 POST/PUT/DELETE）按前几批同口径**一律�
 `settings` / `plans` / `topup-packages` / `tenants/{id}` / `model-rates/{id}`。
 写操作（`settings PUT`、`model-rates` 的 POST/PUT/DELETE、batch 系列、
 `POST /orders/{id}/confirm`）按前几批同口径**一律不碰**。
+
+### 11.75 MaaS **租户/客户面**上移：同域**不同档**，且有一条 GET **会写库**（第三十九轮，admin 档）
+
+新增 `src/api/maas.ts` 的**第三段**（坑 19~24，**不改动**前两段）
++ `src/views/MaasCatalogView.vue` + `src/views/MaasWalletView.vue`
++ 路由 `/maas-catalog`、`/maas-wallet`
++ **两条 admin 档抽屉席**（「MaaS 目录」「MaaS 钱包」，**不设** `requiresRole`）。
+
+#### ★★★★★★ 先纠正两节自己的错：这里本来是**另一档**的端点
+
+1. ★★★★★★ §11.73 / §11.74 的「本族未实现的端点」把
+    `model-rates/{id}` 列成 **superAdmin 只读面** —— **这是错的**：
+    `handleMaasModelRateByID`（`maas_handlers.go`）只有
+    `PUT` / `PATCH` / `DELETE` **三个 case，没有 GET**
+    ⇒ 它是**纯写端点**，按前几批同口径**根本不该上移**。
+    ★ **教训**：留档里的端点清单必须**逐条核过 method**，不能按 URL 形状猜。
+2. ★★★★★ 清单漏掉了**整整一族**：`maas_handlers.go:26-30` 还注册了
+    **5 条 `h.admin(...)` 的端点**，它们**不在** `/api/admin/maas/` 下：
+
+    ```go
+    mux.HandleFunc("/api/maas/settings",         h.admin(h.handleMaasPublicSettings))
+    mux.HandleFunc("/api/maas/models",           h.admin(h.handleMaasPublicModels))
+    mux.HandleFunc("/api/maas/plans",            h.admin(h.handleMaasPublicPlans))
+    mux.HandleFunc("/api/maas/topup-packages",   h.admin(h.handleMaasPublicTopup))
+    mux.HandleFunc("/api/maas/wallet",           h.admin(h.handleMaasWallet))
+    ```
+
+    ⇒ 同一个 `maas_handlers.go` 里**两档并存**：`/api/admin/maas/**` 全 superAdmin，
+      `/api/maas/**` 全 admin。
+    ★★ 接线后果直接相反：superAdmin 席必须设 `requiresRole: 'super_admin'`，
+      这两条**设了就会把 tenant_admin 挡在门外**（点进来 403）。
+      判据 B15 就是把这条席误设成 super_admin ⇒ 必须红。
+
+#### ★★★★★★ public settings 只有 3 个键，且**互喂抛错这条判据不成立**
+
+3. ★★★★★★ `/api/maas/settings` 只吐三个键
+    （后端自陈 `// Tenants see conversion knobs only, not internal cost data`）：
+
+    ```go
+    writeJSON(w, 200, map[string]any{
+        "cents_per_credit":    st.CentsPerCredit,
+        "base_credits_per_1m": st.BaseCreditsPer1M,
+        "currency_display":    st.CurrencyDisplay,
+    })
+    ```
+
+    ⇒ 租户**看不到** `global_discount`、也看不到 `base_credits_per_1m_in`。
+    ★★ 而 `base_credits_per_1m` 是**旧字段**（§11.73 的 `maasGlobalBaseIn`
+    是先看 `_in` 再回落它）⇒ **租户面显示的基价可能不是生效基价**。
+4. ★★★★★ **「把 admin 全量 Settings 喂给租户解包器应当抛错」这条判据写不出来**：
+    admin 的 `Settings`（12 键）是租户面这 3 键的**超集**
+    ⇒ 任何「这 3 键都在？」的检查都**必然**接受它。
+    ⇒ 真正该守的是**另一头**：`unwrapMaasPublicSettings` 改成
+    **显式投影**这 3 个键，多出来的**一个都不带出去**，
+    于是页面读不到 `global_discount`（B1 变异取消投影 ⇒ 必须红）。
+    ★ 这是本轮又一条「自造纪律」：**「互喂必须抛错」不是万能的**，
+      它要求两个形状**互不包含**；一旦是子集关系，就得换成投影式判据。
+
+#### ★★★★★ `/api/maas/models` 是**另一个结构**，只有 4 维
+
+5. ★★★★★★ 行类型是 **`ModelRateRow`（maas/service.go:536，12 键）**，
+    与 admin 档的 **`AdminModelRateRow`（model_rates.go:11-36，30 键）**
+    是**两个不同的 Go struct**：
+
+    | | admin 档 | 租户面 |
+    |---|---|---|
+    | 维度 | **7**（含 image/audio/video） | **4**（in/out/cache_in/cache_out） |
+    | manual_* / custom_* / is_custom | 有 | **无** |
+    | updated_at | 有 | **无** |
+    | canonical_id | 有 | **无** |
+    | 排序 | `mc.canonical_name` | **vendor 再 canonical_name** |
+
+    ⇒ ★★★ 拿 admin 那套七维判读去读它，五个维度**读到 undefined**，
+      再被 `?? 0` 渲染成 0 ⇒ 看起来像「这几维免费」。
+    页面只画 4 维，并有判据钉住「表格恰好 4 行、且不出现图像/音频/视频」
+    （B9 把维表扩回 7 个 ⇒ 必须红）。
+6. ★★★ `billing_mode` 是后端**硬编码字面量** `"token"`，永远不会变。
+7. ★★ `family` / `family_display_name` / `context_window` 是**指针 + omitempty**
+    ⇒ 键可能整个不存在（与 admin 档「无 omitempty、值可能 null」**正好相反**）。
+
+#### ★★★★ 模态：**盖章 vs 猜**这件事在响应里被抹掉了
+
+8. ★★★★ 租户面走 `catalog.EffectiveModality(name, stored, modality_source)`
+    （catalog/display.go:220）—— 与 admin 档那条 `COALESCE(…,'text')`
+    **完全是两套逻辑**：
+    - `modality_source` 是 semantic / manual ⇒ **原样返回 stored**
+      （按名字猜的结果**没资格推翻**盖章值）；
+    - 否则先放行 `{multimodal, vision, audio, embedding, video}`，
+      **再**按名字猜，最后才回 stored / `'text'`。
+    ★★ 后果：**`modality='text'` 且未盖章的 `gemini-*` 会被报成 `multimodal`**
+      （`text` 不在放行名单里 ⇒ 掉进按名推断分支）。
+      这正是该函数注释警告的「把『核实判负降级成 text』与
+      『运维手工设成 text』双双翻回 multimodal」。
+9. ★★★★ `vendor` 也**不同源**：`catalog.ResolveVendor`（display.go:118）是
+    `dbVendor → familyVendor 映射 → **按名字推断** → HumanizeFamilyID → '其他'`
+    ⇒ **比 admin 档多一层「按名字推断」**。
+10. ★★★★ 而 `ModelRateRow` **没有** `modality_source` 字段
+    ⇒ **租户无从分辨**这个模态是盖过章的库值还是猜出来的。
+    ⇒ 页面明说「这一栏不要当成配置好的模态来解读」（B11 把这句换成声称配置值 ⇒ 必须红）。
+
+#### ★★★★★★ 钱包：一条 **GET 会写库** 的端点
+
+11. ★★★★★★ `GetWallet`（maas/service.go:516）**第一行就是写**：
+
+    ```go
+    _ = s.ensureWalletDirect(ctx, tenantID)   // INSERT … ON CONFLICT DO NOTHING
+    ```
+
+    ⇒ 这是一个「**看着只读、实际会建行**」的端点；
+      第一次打开钱包页就会给该租户插一行 `tenant_credit_wallets`。
+    ⇒ 页面明说「它不是『刷新绝不改数据』的接口」（B16 删掉这句 ⇒ 必须红）。
+12. ★★★★ `tenantID = GetTenantID(r)` ⇒ **只看本租户**，
+    与 superAdmin 侧 `ListOrders(ctx, "", …)` 的**跨租户语义正好相反**。
+13. ★★★★ `balance_credits` **不是原始列**：
+    `if w.BalanceCredits == 0 { w.BalanceCredits = Granted + Purchased }`
+    ⇒ 列值是 0 时会被两个余额之和**顶替**。
+14. ★★★★ `total_available = quota_remaining + granted + purchased`
+    ⇒ 把**订阅额度**（请求次数）与**积分余额**（两种不同单位）**加在一起**。
+15. ★★★ `subscription` 是 `*SubscriptionView` + omitempty
+    ⇒ 没有生效订阅时**键整个不存在**，
+    与「有订阅但 `status` 不是 `active`」是**两回事**，页面分开说
+    （B18 把两句文案换成同一句 ⇒ 必须红）。
+
+#### ★★★ plans / topup-packages
+
+16. ★★★ 走 `ListPlans(ctx, enabledOnly=true)` / `ListTopupPackages(ctx, true)`
+    ⇒ **只列 `enabled = TRUE`**（admin 档那两个传 `false` ⇒ 含停用行）。
+17. ★★ 返回 `jsonSlice(out)`（maas/json_slice.go:4-9），nil 切片换成 `[]T{}`
+    ⇒ **`items` 永远是数组，永不为 `null`**；客户端可以直接用 `.length`。
+18. ★ `Plan` / `TopupPackage` 是**无 omitempty** 的普通 struct
+    ⇒ 8 个键**一定都在**（连 `enabled: false` 都有键）。
+
+#### 本轮门禁（当场实测）
+
+- **变异验证 19/19 有牙**：B1 取消 settings 投影 / B2 少一键也放过 /
+  B3 「三维不存在」判据反向 / B4 wallet 解包不看 `tenant_id` /
+  B5 兜底顶替判据恒 false / B6 总额混合判据恒 false / B7 单价 0 积分不判 null /
+  B8 「无订阅」判据恒 true / **B9 把维表扩回 7 维** / B10 删「只有 4 维」提示 /
+  B11 把模态说成配置值 / B12 删「只返回 3 个键」 / B13 积分为 0 仍显单价 /
+  B14 503 不收敛 / **B15 抽屉席误设 super_admin** / B16 删「GET 会写库」/
+  B17 删「总额混合两种单位」/ B18 两句文案混用 / B19 抛错退化成余额 0。
+  全部红在**具名**断言上，还原后逐字节一致。
+- 本批三个 spec：**126 用例全绿**（API 96 + 目录视图 17 + 钱包视图 16），
+  另有 `AppDrawer.spec.ts` 11 条（两条 admin 席**不该**动白名单，验过确实没红）。
+- ★ **顺带补上一处前几轮留下的真缺口**：`verify-i18n-parity` 报告
+  **29 处**动态前缀「本门未覆盖」，而 `dynamicKeys.spec.ts` 只登记了 **14** 条
+  ⇒ §11.73 的 `maas.dim_` / `maas.src_` 一直没被动态键判据覆盖。
+  本轮把 MaaS 一族 6 条全部登记（`maas.dim_` / `maas.src_` / `mo.type_` /
+  `mo.status_` / `mo.channel_` / `mp.dim_`），
+  阈值 14 → 20，用例 **124 → 170**。
+  ★ 维表与后缀**从 API 模块的常量 import**，不手抄（手抄的那份会漂）。
+- `npm run build` **rc=0**（含 `vue-tsc -b`）；三门全过
+  （css-media **70 文件** / touch-target **67 个 `.vue`** / i18n parity **各 1526 键**）。
+- ★ 途中修了五个我自己的问题：
+  1. `MaasWalletView.vue` 漏写 `</script>`，把 `</style>` 接在了 `<template>` 前面
+     ⇒ 445 条解析错误；`vue-tsc -b` 是绿的，**只有真跑 vitest 才炸出来**；
+  2. 视图里混用了 Vue 2 Options API 的第二个 `<script>` 块 ⇒ 改回 setup 内 const；
+  3. `m[d]` 直接按维度名索引（响应键其实是 `credits_per_1m_in`）
+     ⇒ 改成字段映射表 + 显式兜底；
+  4. 一条判据用全页 `.mp__unit` 取值，被**充值包那一块的合法行**喂饱
+     ⇒ 改成按面板作用域取值（这已是本轮第三次应用「按节点作用域断言」）；
+  5. 变异脚本里 B15 的 `file` 写成了钱包视图，实际目标在 `appNav.ts`
+     ⇒ 注入没施上却只显示「没施上」；同时修掉一个 python 批改脚本
+     **中途抛错导致整份不落盘**（B13/B4 的改动一起丢）的坑。
+- 累计（**当场实测**）：**49 视图 / 42 API 模块 / 43 导航席（11 席 superAdmin）**。
+- 全量 **10 连跑全绿，1905 用例，0 份失败快照**（`STAB_RC=0`，10/10 `passed (1905)`）。
+  ★ 累计未定位的 flaky 仍**未捕获**（无污染跑 ≥126 次、失败 1 次，≈0.8%），
+  本批十连跑未复现 —— 这**不等于「已修复」**。
+
+#### 仍未上移的 MaaS 端点（留档，**已逐条核过 method**）
+
+- **admin 档**（5 条读面，已全部上移）：settings / models / plans /
+  topup-packages / wallet。
+- **superAdmin 档只读面（剩 5 条）**：
+  `GET /api/admin/maas/settings`（裸全量 `Settings`）、
+  `GET /api/admin/maas/plans`（**含停用**行）、
+  `GET /api/admin/maas/topup-packages`（同上）、
+  `GET /api/admin/maas/tenants/{code}/wallet|account|usage/summary|usage/detail|ledger`
+  （**5 条读动作**，注意 `/tenants/{code}/…` 至少要两段路径，否则 404）。
+- ★ **`/api/admin/maas/model-rates/{id}` 不是只读面**：只有 PUT / PATCH / DELETE。
+- 写操作一律不碰：settings PUT、model-rates 的 POST/PUT/DELETE/PATCH、batch 三条、
+  `POST /orders/{id}/confirm`、`tenants/{code}/adjust|grant`。

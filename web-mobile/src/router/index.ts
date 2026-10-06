@@ -362,6 +362,22 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/MaasOrderDetailView.vue'),
     meta: { titleKey: 'mo.detailTitle', requiresAuth: true },
   },
+  // MaaS 租户/客户面（**admin 档**，2026-10-08：/api/maas/** 是 h.admin，不是 superAdmin）。
+  // ★ 与 /api/admin/maas/** 那一族同域不同档 —— 抽屉席**不能**设 requiresRole。
+  // ★ 模型价目这条端点**只有 4 维**，没有 image/audio/video ⇒ 页面不许画七维。
+  {
+    path: '/maas-catalog',
+    name: 'maas-catalog',
+    component: () => import('@/views/MaasCatalogView.vue'),
+    meta: { titleKey: 'mp.title', requiresAuth: true },
+  },
+  // MaaS 本租户钱包。★ 这条 GET 端点**会写库**（ensureWalletDirect 建行）。
+  {
+    path: '/maas-wallet',
+    name: 'maas-wallet',
+    component: () => import('@/views/MaasWalletView.vue'),
+    meta: { titleKey: 'mw.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',

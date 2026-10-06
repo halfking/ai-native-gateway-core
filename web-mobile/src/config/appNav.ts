@@ -139,6 +139,10 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.maasOrders',
     requiresRole: 'super_admin',
   },
+  // MaaS 租户目录与价目。**admin 档**（/api/maas/** 是 h.admin(...)）⇒ 不设 requiresRole。
+  { key: 'maas-catalog', to: '/maas-catalog', icon: 'cube', titleKey: 'nav.maasCatalog' },
+  // MaaS 本租户钱包。admin 档 ⇒ 不设 requiresRole。
+  { key: 'maas-wallet', to: '/maas-wallet', icon: 'user', titleKey: 'nav.maasWallet' },
   // 会话分析面。admin 档（admin/handler.go:1091-1094 全是 admin(...)）⇒ 不设 requiresRole。
   { key: 'session-analytics', to: '/session-analytics', icon: 'chart', titleKey: 'nav.sessionAnalytics' },
   {

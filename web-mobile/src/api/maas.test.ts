@@ -602,3 +602,351 @@ describe('★★ 枚举字面量', () => {
     expect(MAAS_ORDERS_LIMIT_MAX).toBe(100)
   })
 })
+
+// ════════════════════════════════════════════════════════════════════════
+// 第三段：MaaS 租户/客户面（**admin 档**，第三十九轮）
+// ════════════════════════════════════════════════════════════════════════
+
+import {
+  fetchMaasPublicSettings,
+  unwrapMaasPublicSettings,
+  fetchMaasPublicModels,
+  unwrapMaasPublicModels,
+  fetchMaasPublicPlans,
+  unwrapMaasPlans,
+  fetchMaasPublicTopupPackages,
+  unwrapMaasTopupPackages,
+  fetchMaasWallet,
+  unwrapMaasWallet,
+  maasCatalogPriceYuan,
+  maasUnitPriceFenPerCredit,
+  maasPublicModelLacksMultiDims,
+  maasWalletHasSubscription,
+  maasWalletTotalIsMixedUnit,
+  maasWalletBalanceIsSubstituted,
+  type MaasPublicModel,
+  type MaasWallet,
+} from './maas'
+
+/** ★★ 抄自 `handleMaasPublicSettings` 的 map 字面量（maas_handlers.go:275-283）。 */
+function publicSettings(over: Record<string, unknown> = {}) {
+  return { cents_per_credit: 0.1, base_credits_per_1m: 10000, currency_display: 'CNY', ...over }
+}
+
+/** ★ 抄自 `ModelRateRow`（maas/service.go:536）—— **只有 12 键、4 维**。 */
+function publicModel(over: Record<string, unknown> = {}): MaasPublicModel {
+  return {
+    canonical_name: 'gpt-4o',
+    display_name: 'GPT-4o',
+    vendor: 'OpenAI',
+    family: null,
+    family_display_name: null,
+    context_window: 128000,
+    modality: 'multimodal',
+    billing_mode: 'token',
+    credits_per_1m_in: 10000,
+    credits_per_1m_out: 30000,
+    credits_per_1m_cache_in: 1000,
+    credits_per_1m_cache_out: 1250,
+    ...over,
+  } as unknown as MaasPublicModel
+}
+
+/** ★ 抄自 `Plan`（maas/service.go）—— 无 omitempty，8 键一定都在。 */
+function plan(over: Record<string, unknown> = {}) {
+  return {
+    id: 1,
+    code: 'pro-monthly',
+    tier: 'pro',
+    name: 'Pro 月付',
+    price_cents: 9900,
+    monthly_credits: 500000,
+    enabled: true,
+    sort_order: 10,
+    ...over,
+  }
+}
+
+/** ★ 抄自 `TopupPackage`（maas/service.go）—— 同样 8 键。 */
+function topup(over: Record<string, unknown> = {}) {
+  return {
+    id: 2,
+    code: 'pack-1k',
+    tier: 'basic',
+    name: '1000 积分包',
+    price_cents: 1000,
+    credits_amount: 1000,
+    enabled: true,
+    sort_order: 20,
+    ...over,
+  }
+}
+
+/** ★ 抄自 `WalletView`（maas/service.go）—— **裸对象**。 */
+function wallet(over: Record<string, unknown> = {}): MaasWallet {
+  return {
+    tenant_id: 'acme',
+    quota_remaining: 0,
+    granted_balance: 1000,
+    purchased_balance: 500,
+    balance_credits: 1500,
+    total_available: 1500,
+    subscription: {
+      plan_id: 1,
+      plan_name: 'Pro 月付',
+      status: 'active',
+      period_start: '2026-10-01T00:00:00Z',
+      period_end: '2026-11-01T00:00:00Z',
+    },
+    ...over,
+  } as unknown as MaasWallet
+}
+
+describe('★★★★★★ 租户面档位：不是 superAdmin', () => {
+  it('★★★★★★ 五条端点都在 `/api/maas/`（**不是** `/api/admin/maas/`）', async () => {
+    const urls: string[] = []
+    const cases: Array<[() => Promise<unknown>, unknown]> = [
+      [() => fetchMaasPublicSettings(), publicSettings()],
+      [() => fetchMaasPublicModels(), { items: [publicModel()] }],
+      [() => fetchMaasPublicPlans(), { items: [plan()] }],
+      [() => fetchMaasPublicTopupPackages(), { items: [topup()] }],
+      [() => fetchMaasWallet(), wallet()],
+    ]
+    for (const [run, body] of cases) {
+      fetchMock.mockResolvedValueOnce(jsonResponse(body))
+      await run()
+      urls.push(lastUrl())
+    }
+    expect(urls).toEqual([
+      '/api/maas/settings',
+      '/api/maas/models',
+      '/api/maas/plans',
+      '/api/maas/topup-packages',
+      '/api/maas/wallet',
+    ])
+    // ★ 五条都**不许**落到 superAdmin 前缀下
+    for (const u of urls) expect(u).not.toContain('/api/admin/')
+  })
+})
+
+describe('★★★★★★ public settings 只有 3 个键', () => {
+  beforeEach(() => {
+    fetchMock.mockResolvedValue(jsonResponse(publicSettings()))
+  })
+
+  it('★★★★★★ 打 `/api/maas/settings`，响应是 3 键裸对象', async () => {
+    const s = await fetchMaasPublicSettings()
+    expect(lastUrl()).toBe('/api/maas/settings')
+    expect(s.cents_per_credit).toBe(0.1)
+    expect(s.base_credits_per_1m).toBe(10000)
+    expect(s.currency_display).toBe('CNY')
+  })
+
+  it('★★★★★ 少任一键 ⇒ 抛错（不许「宽松通过然后渲染成没配」）', () => {
+    // ★ 后端自陈「Tenants see conversion knobs only, not internal cost data」
+    //   ⇒ 这 3 个键**必须都在**。缺一个说明端点变了，不能静默当默认值。
+    expect(() => unwrapMaasPublicSettings({ base_credits_per_1m: 1, currency_display: 'CNY' })).toThrow(
+      /形状不符/,
+    )
+    expect(() => unwrapMaasPublicSettings({ cents_per_credit: 1, currency_display: 'CNY' })).toThrow(/形状不符/)
+    expect(() => unwrapMaasPublicSettings({ cents_per_credit: 1, base_credits_per_1m: 1 })).toThrow(/形状不符/)
+  })
+
+  it('★★★★★ ★ admin 全量 `Settings` 是这 3 键的**超集** ⇒ 子集检查挡不住，改由**投影**守', () => {
+    // ★★ admin 档 `writeJSON(w, 200, st)` 是**全量** Settings（含 12 个键），
+    //   它**包含**租户面的 3 个键 ⇒ 任何「这 3 键都在？」的检查都必然接受它。
+    //   ⇒ 「喂全量应当抛错」在这条边上**不可能成立**，别把它当判据。
+    //   真正要守的是另一头：即便服务端多给，返回值也**只暴露这 3 个键**，
+    //   页面就读不到 global_discount / base_credits_per_1m_in 等成本数据。
+    const r = unwrapMaasPublicSettings(settings()) as unknown as Record<string, unknown>
+    expect(Object.keys(r).sort()).toEqual(['base_credits_per_1m', 'cents_per_credit', 'currency_display'])
+    expect('global_discount' in r).toBe(false)
+    expect('base_credits_per_1m_in' in r).toBe(false)
+  })
+
+  it('★★★★★ ★ `base_credits_per_1m` 是**旧字段**，租户面拿不到 `_in`', () => {
+    // §11.73 的 maasGlobalBaseIn 先看 base_credits_per_1m_in，这里**没有这个键**
+    // ⇒ 租户面显示的值**可能不是生效基价**。
+    const s = publicSettings() as Record<string, unknown>
+    expect('base_credits_per_1m_in' in s).toBe(false)
+    expect('global_discount' in s).toBe(false)
+  })
+})
+
+describe('★★★★★★ public models：另一个结构，**只有 4 维**', () => {
+  beforeEach(() => {
+    fetchMock.mockResolvedValue(jsonResponse({ items: [publicModel()] }))
+  })
+
+  it('★★★★★★ 打 `/api/maas/models`，响应键是 `items`', async () => {
+    const r = await fetchMaasPublicModels()
+    expect(lastUrl()).toBe('/api/maas/models')
+    expect(r.items).toHaveLength(1)
+  })
+
+  it('★★★★★★ ★★★ 行里**没有** image/audio/video 三维 ⇒ 不能渲染成 0', () => {
+    const m = publicModel()
+    // ★ 用 admin 档那套七维判读去读它，这五维会读到 undefined，
+    //   再被 `?? 0` 渲染成 0 ⇒ 看起来像「这几维免费」。
+    expect('credits_per_1m_image_tokens' in m).toBe(false)
+    expect('credits_per_1m_audio_tokens' in m).toBe(false)
+    expect('credits_per_1m_video_tokens' in m).toBe(false)
+    expect(maasPublicModelLacksMultiDims(m)).toBe(true)
+  })
+
+  it('★★★★★★ ★ 行里**没有** manual_* / custom_* / is_custom / updated_at', () => {
+    const m = publicModel() as unknown as Record<string, unknown>
+    for (const k of [
+      'manual_in',
+      'manual_out',
+      'is_custom',
+      'custom_credits_per_1m_in',
+      'updated_at',
+      'canonical_id',
+    ]) {
+      expect(k in m, `不该有 ${k}`).toBe(false)
+    }
+  })
+
+  it('★★★★★ ★ `modality_source` 字段**不存在** ⇒ 租户无从分辨模态是盖章还是猜的', () => {
+    const m = publicModel() as unknown as Record<string, unknown>
+    expect('modality_source' in m).toBe(false)
+  })
+
+  it('★★★★★ `billing_mode` 后端硬编码 `"token"`，键一定存在', () => {
+    const m = publicModel()
+    expect(m.billing_mode).toBe('token')
+    expect('billing_mode' in m).toBe(true)
+  })
+
+  it('★★★★★ 4 个指针字段是 omitempty ⇒ 键可能整个不存在', () => {
+    const bare = publicModel() as unknown as Record<string, unknown>
+    for (const k of ['family', 'family_display_name', 'context_window']) delete bare[k]
+    const m = bare as unknown as MaasPublicModel
+    expect('family' in m).toBe(false)
+    expect('context_window' in m).toBe(false)
+  })
+
+  it('★★ `items` 缺失 ⇒ 抛错（不接受裸数组）', () => {
+    expect(() => unwrapMaasPublicModels([publicModel()])).toThrow(/形状不符/)
+    expect(() => unwrapMaasPublicModels({ data: { items: [] } })).toThrow(/形状不符/)
+  })
+})
+
+describe('★★★★★ plans / topup-packages：只列 enabled，且 items 永不为 null', () => {
+  it('★★★★★ 打对 URL 并解包', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ items: [plan()] }))
+    const r = await fetchMaasPublicPlans()
+    expect(lastUrl()).toBe('/api/maas/plans')
+    expect(r.items[0]?.code).toBe('pro-monthly')
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ items: [topup()] }))
+    const t = await fetchMaasPublicTopupPackages()
+    expect(lastUrl()).toBe('/api/maas/topup-packages')
+    expect(t.items[0]?.credits_amount).toBe(1000)
+  })
+
+  it('★★★★★★ ★★ `jsonSlice`（maas/json_slice.go:4-9）⇒ 空结果是 `[]` 不是 null', async () => {
+    // ★ 后端 `var out []Plan` 起始为 nil，靠 jsonSlice 换成 []T{}
+    //   ⇒ 客户端可以**直接**用 `items.length`，不必判 null。
+    fetchMock.mockResolvedValueOnce(jsonResponse({ items: [] }))
+    const r = await fetchMaasPublicPlans()
+    expect(Array.isArray(r.items)).toBe(true)
+    expect(r.items).toHaveLength(0)
+  })
+
+  it('★★★★★ `items: null` ⇒ 抛错（后端不会这么返回，出了就是形状变了）', () => {
+    expect(() => unwrapMaasPlans({ items: null })).toThrow(/形状不符/)
+    expect(() => unwrapMaasTopupPackages({ items: null })).toThrow(/形状不符/)
+  })
+
+  it('★★★★★ ★ 8 个键**一定都在**（无 omitempty），连 enabled:false 都有键', () => {
+    const p = plan({ enabled: false }) as Record<string, unknown>
+    for (const k of [
+      'id',
+      'code',
+      'tier',
+      'name',
+      'price_cents',
+      'monthly_credits',
+      'enabled',
+      'sort_order',
+    ]) {
+      expect(k in p, `Plan 该有 ${k}`).toBe(true)
+    }
+  })
+
+  it('★★★★ 金额单位是**分**；积分为 0 时单价判 null 而不是 Infinity', () => {
+    expect(maasCatalogPriceYuan(9900)).toBe(99)
+    expect(maasUnitPriceFenPerCredit(9900, 500000)).toBeCloseTo(0.0198, 6)
+    expect(maasUnitPriceFenPerCredit(9900, 0)).toBeNull()
+    expect(maasUnitPriceFenPerCredit(9900, -1)).toBeNull()
+  })
+})
+
+describe('★★★★★★ wallet：裸对象 + 三处非显然语义', () => {
+  beforeEach(() => {
+    fetchMock.mockResolvedValue(jsonResponse(wallet()))
+  })
+
+  it('★★★★★★ 打 `/api/maas/wallet`，响应是**裸对象**', async () => {
+    const w = await fetchMaasWallet()
+    expect(lastUrl()).toBe('/api/maas/wallet')
+    expect(w.tenant_id).toBe('acme')
+  })
+
+  it('★★★★★★ ★ 钱包形状是裸对象，**不能**读 `items`（那是 plans 的形状）', () => {
+    expect(() => unwrapMaasWallet({ items: [plan()] })).toThrow(/形状不符/)
+    expect(() => unwrapMaasWallet([wallet()])).toThrow(/形状不符/)
+    expect(() => unwrapMaasWallet({ id: 1 })).toThrow(/形状不符/)
+  })
+
+  it('★★★★★ ★ 缺 `tenant_id` ⇒ 必须抛错（它是**空字段无 omitempty**，键一定在）', () => {
+    // ★ `WalletView{TenantID: tenantID}` 且 `tenant_id` **没有** omitempty
+    //   ⇒ 键一定存在（租户码为空时值是空串，但键在）。
+    //   ⇒ 只校验 total_available 的宽容解包会让「没有身份的钱包」混进来。
+    expect(() => unwrapMaasWallet({ total_available: 1, granted_balance: 0, purchased_balance: 0 })).toThrow(
+      /形状不符/,
+    )
+  })
+
+  it('★★★ `tenant_id` 是空串时**仍**被接受（键在，值为空 ≠ 缺键）', () => {
+    // ★ 与上一条互为对照：空串是「这个租户码解析成空」，不是「没这个字段」。
+    expect(() => unwrapMaasWallet({ tenant_id: '', total_available: 0 })).not.toThrow()
+  })
+
+  it('★★★★★★ ★★★ `balance_credits` 是被兜底顶替的值，不是原始列', () => {
+    // GetWallet 尾部：`if w.BalanceCredits == 0 { w.BalanceCredits = Granted + Purchased }`
+    // ★★★ 夹具必须写成**后端发出来的样子**（= 1500），不能写 `balance_credits: 0`
+    //   —— 后端**不会**发 0 那一行（列值 0 时它已经被顶替成 1500 了）。
+    //   写 0 等于在验「我编的夹具符合我的理解」，不是验产品行为。
+    const substituted = wallet({ balance_credits: 1500, granted_balance: 1000, purchased_balance: 500 })
+    expect(substituted.balance_credits).toBe(1500)
+    expect(maasWalletBalanceIsSubstituted(substituted)).toBe(true)
+  })
+
+  it('★★★★★ 非兜底情形（列值非 0 且不等于两数和）⇒ 不误报', () => {
+    const raw = wallet({ balance_credits: 9999, granted_balance: 1000, purchased_balance: 500 })
+    expect(maasWalletBalanceIsSubstituted(raw)).toBe(false)
+  })
+
+  it('★★★★★★ ★★★ `total_available` 把订阅额度与积分余额**相加**（两种单位）', () => {
+    const w = wallet({ quota_remaining: 1000, granted_balance: 1000, purchased_balance: 500, total_available: 2500 })
+    expect(w.total_available).toBe(1000 + 1000 + 500)
+    expect(maasWalletTotalIsMixedUnit(w)).toBe(true)
+  })
+
+  it('★★★★★ 没有生效订阅 ⇒ `subscription` 键**不存在**（指针 + omitempty）', () => {
+    const w = wallet() as unknown as Record<string, unknown>
+    delete w.subscription
+    const m = w as unknown as MaasWallet
+    expect('subscription' in m).toBe(false)
+    expect(maasWalletHasSubscription(m)).toBe(false)
+  })
+
+  it('★★★★★ 「键存在但 status 不是 active」是**两回事**', () => {
+    // ★ 与上一条互为对照：这里键在，只是 status 变了。
+    const m = wallet({ subscription: { plan_id: 1, plan_name: 'x', status: 'cancelled', period_start: '', period_end: '' } })
+    expect(maasWalletHasSubscription(m)).toBe(true)
+  })
+})
