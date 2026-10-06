@@ -290,26 +290,30 @@ onBeforeUnmount(() => {
         <span>{{ t('tnd.dailyComplete', { n: stats.daily.length }) }}</span>
       </p>
 
-      <table class="tnd__table">
-        <thead>
-          <tr>
-            <th>{{ t('tnd.date') }}</th>
-            <th>{{ t('tnd.requests') }}</th>
-            <th>{{ t('tnd.success') }}</th>
-            <th>{{ t('tnd.errors') }}</th>
-            <th>{{ t('tnd.credits') }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="d in stats.daily" :key="d.date">
-            <td class="tnd__td-l">{{ d.date }}</td>
-            <td class="tnd__td-v">{{ fmtInt(d.requests) }}</td>
-            <td class="tnd__td-v">{{ fmtInt(d.success) }}</td>
-            <td class="tnd__td-v" :class="{ 'tnd__td-err': d.errors > 0 }">{{ fmtInt(d.errors) }}</td>
-            <td class="tnd__td-v">{{ fmtInt(d.credits) }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <!-- R49-E2：横向滚动包裹（UI规范 10 §4.6.26）——五列表在 375px 视口
+           必然溢出撑破容器；沿 web 侧收敛先例（TenantModelPolicyPanel）的包裹样式。 -->
+      <div style="overflow-x:auto">
+        <table class="tnd__table">
+          <thead>
+            <tr>
+              <th>{{ t('tnd.date') }}</th>
+              <th>{{ t('tnd.requests') }}</th>
+              <th>{{ t('tnd.success') }}</th>
+              <th>{{ t('tnd.errors') }}</th>
+              <th>{{ t('tnd.credits') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="d in stats.daily" :key="d.date">
+              <td class="tnd__td-l">{{ d.date }}</td>
+              <td class="tnd__td-v">{{ fmtInt(d.requests) }}</td>
+              <td class="tnd__td-v">{{ fmtInt(d.success) }}</td>
+              <td class="tnd__td-v" :class="{ 'tnd__td-err': d.errors > 0 }">{{ fmtInt(d.errors) }}</td>
+              <td class="tnd__td-v">{{ fmtInt(d.credits) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
       <p v-if="!stats.by_model.length" class="tnd__msg">{{ t('tnd.emptyModels') }}</p>
     </section>
 

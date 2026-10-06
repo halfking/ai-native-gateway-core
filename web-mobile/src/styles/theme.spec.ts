@@ -27,7 +27,7 @@ function tokensIn(selector: string): Map<string, string> {
   if (at < 0) throw new Error(`theme.css 里找不到块 ${selector}`)
   const body = css.slice(at, css.indexOf('\n}', at))
   const m = new Map<string, string>()
-  for (const t of body.matchAll(/--([a-z0-9-]+)\s*:\s*([^;]+);/g)) {
+  for (const t of body.matchAll(/--([A-Za-z0-9-]+)\s*:\s*([^;]+);/g)) {
     const name = t.at(1), val = t.at(2)
     if (name !== undefined && val !== undefined) m.set(name, val.trim())
   }
@@ -166,10 +166,10 @@ function definedTokens(): Set<string> {
     try {
       const s = readFileSync(resolve(process.cwd(), 'src/styles', f), 'utf8')
       // ⚠️ 正则必须要求 `--x:` 处于**声明位置**（行首/空白/`{`/`;` 之后）。
-      //   松一点写成 /--([a-z0-9-]+)\s*:/ 的话，**类选择器**里的
+      //   松一点写成 /--([A-Za-z0-9-]+)\s*:/ 的话，**类选择器**里的
       //   `.btn--primary:active` / `.chip--warning:hover` 会被当成 token 定义
       //   ⇒ 门以为 `--primary` 已定义，放过它 30 处未定义引用（实测踩到）。
-      for (const m of s.matchAll(/(?:^|[\s;{])--([a-z0-9-]+)\s*:/gm)) out.add(m[1] as string)
+      for (const m of s.matchAll(/(?:^|[\s;{])--([A-Za-z0-9-]+)\s*:/gm)) out.add(m[1] as string)
     } catch { /* 文件不存在就当没定义，交给下面的断言去报 */ }
   }
   return out
@@ -190,7 +190,7 @@ function referencedTokens(): Map<string, number> {
         else if (s[j] === ')') { d--; if (d === 0) break }
       }
       const inner = s.slice(i + 4, j)
-      const m = inner.match(/^\s*--([a-z0-9-]+)/)
+      const m = inner.match(/^\s*--([A-Za-z0-9-]+)/)
       if (m) counts.set(m[1] as string, (counts.get(m[1] as string) ?? 0) + 1)
       i = j + 1
     }

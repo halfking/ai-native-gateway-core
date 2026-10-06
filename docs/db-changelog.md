@@ -7397,6 +7397,7 @@ seed offer (0/0): ERROR: null value in column "provider_id" of relation
 | 837 | `837_routing_mv_refresh_state.sql` | `5c185037fb89d925fa0a1341d93a3c582dde7bf32b2f70a93c508ce3652fb34f` | pending deploy（**补登**：迁移本体已随 4df816006 落地，台账漏登记，sqlguard 近邻窗口门红） |
 | 838 | `838_analyze_skip_frozen_month.sql` | `c9b93871f66a30f93c4934f4aa5551eac211da3733f1125f6efd128c04526219` | pending deploy（`analyze_llm_gateway_table_stats` 往月分区只在从未被分析过时补；252 实测省掉整趟 pass 的 25.7%） |
 | 838 (down) | `838_analyze_skip_frozen_month.down.sql` | `f06e42a4fbad60d98d9742ecef94b8c0b85bcaf438f380e6f9e51bb50d03a499` | — |
+| 837 (down) | `837_routing_mv_refresh_state.down.sql` | `ed429b370c30b8d3321cffe5a88c662a6fce461ba5b95bbec5941868b775bb75` | —（R49-B1 补登：828-836/838 的 down 均双侧镜像＋台账行，837 独漏两处；embeddata 镜像已同步补齐，循 808/809/730/612 先例） |
 
 837 的实质变更见 `4df816006`（摘掉两个 routing analytics 物化视图里的
 `NOW() AS refreshed_at`，改由单行状态表盖章，每轮 100% 重写降到真实差异量）。

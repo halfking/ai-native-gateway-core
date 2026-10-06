@@ -6,6 +6,12 @@ package admin
 //   参数：hours（1/24/168，默认24）、granularity（minute/hour/day，默认按
 //   hours 自动选择）、supplier、credential_id、error_type（可叠加过滤）。
 //
+// 租户范围（R49-C1，2026-10-07）：三条 SQL 全部按 EffectiveTenantIDAll 收口
+// —— super_admin/admin_key 为空串查全租户；tenant_admin 只见本租户
+// （stats 腿借 credential_id→credentials.tenant_id 子查询落实，明细腿
+// 直接用 supplier_errors_unified.tenant_id）。此前 TenantID 解析后未进
+// SQL，叠加读事务的 RLS 旁路 ⇒ tenant_admin 可读全租户聚合。
+//
 // 读源（唯一事实源，V371）：
 //   1. supplier_error_stats —— 预聚合表（分钟桶由 bg 聚合器每 5 分钟
 //      UPSERT），趋势图默认走这里；
@@ -210,8 +216,12 @@ func (h *errorsTrendHandlers) loadFromStats(ctx context.Context, q statsQuery) (
 		  AND ($4 = '' OR $4 = 'all' OR supplier = $4)
 		  AND ($5 = 0 OR credential_id = $5)
 		  AND ($6 = '' OR $6 = 'all' OR error_type = $6)
+		  -- R49-C1: supplier_error_stats 无 tenant_id 列（聚合键不含租户），
+		  -- 租户范围借 credential_id → credentials.tenant_id 落实。
+		  -- $7 为空 = super_admin/admin_key 查全租户。
+		  AND ($7 = '' OR credential_id IN (SELECT id FROM credentials WHERE tenant_id = $7))
 		GROUP BY stat_time ORDER BY stat_time
-	`, []any{q.Granularity, q.Since, q.Until, q.Supplier, q.CredentialID, q.ErrorType}, func(rows pgx.Rows) error {
+	`, []any{q.Granularity, q.Since, q.Until, q.Supplier, q.CredentialID, q.ErrorType, q.TenantID}, func(rows pgx.Rows) error {
 		for rows.Next() {
 			p, err := scanTrendPoint(rows)
 			if err != nil {
@@ -251,9 +261,11 @@ func (h *errorsTrendHandlers) loadFromDetail(ctx context.Context, q statsQuery) 
 		      AND ($3 = '' OR $3 = 'all' OR supplier = $3)
 		      AND ($4 = 0 OR credential_id = $4)
 		      AND ($5 = '' OR $5 = 'all' OR error_type = $5)
+		      -- R49-C1: supplier_errors_unified 含 tenant_id（828）。
+		      AND ($6 = '' OR tenant_id = $6)
 		) d
 		GROUP BY bucket ORDER BY bucket
-	`, bucketInterval(q.Granularity)), []any{q.Since, q.Until, q.Supplier, q.CredentialID, q.ErrorType}, func(rows pgx.Rows) error {
+	`, bucketInterval(q.Granularity)), []any{q.Since, q.Until, q.Supplier, q.CredentialID, q.ErrorType, q.TenantID}, func(rows pgx.Rows) error {
 		for rows.Next() {
 			p, err := scanTrendPoint(rows)
 			if err != nil {
@@ -287,6 +299,7 @@ func (h *errorsTrendHandlers) loadBreakdowns(ctx context.Context, q statsQuery, 
 		  AND ($3 = '' OR $3 = 'all' OR supplier = $3)
 		  AND ($4 = 0 OR credential_id = $4)
 		  AND ($5 = '' OR $5 = 'all' OR error_type = $5)
+		  AND ($6 = '' OR tenant_id = $6)
 		GROUP BY key
 		UNION ALL
 		SELECT 'supplier', COALESCE(NULLIF(supplier, ''), 'unknown'), COUNT(*)::int
@@ -295,6 +308,7 @@ func (h *errorsTrendHandlers) loadBreakdowns(ctx context.Context, q statsQuery, 
 		  AND ($3 = '' OR $3 = 'all' OR supplier = $3)
 		  AND ($4 = 0 OR credential_id = $4)
 		  AND ($5 = '' OR $5 = 'all' OR error_type = $5)
+		  AND ($6 = '' OR tenant_id = $6)
 		GROUP BY supplier
 		UNION ALL
 		SELECT 'creds', '', COUNT(DISTINCT credential_id)::int
@@ -303,8 +317,9 @@ func (h *errorsTrendHandlers) loadBreakdowns(ctx context.Context, q statsQuery, 
 		  AND ($3 = '' OR $3 = 'all' OR supplier = $3)
 		  AND ($4 = 0 OR credential_id = $4)
 		  AND ($5 = '' OR $5 = 'all' OR error_type = $5)
+		  AND ($6 = '' OR tenant_id = $6)
 		ORDER BY kind, n DESC
-	`, []any{q.Since, q.Until, q.Supplier, q.CredentialID, q.ErrorType}, func(rows pgx.Rows) error {
+	`, []any{q.Since, q.Until, q.Supplier, q.CredentialID, q.ErrorType, q.TenantID}, func(rows pgx.Rows) error {
 		resp.Summary.TopErrorTypes = []errorsTrendBreakdownRow{}
 		resp.Summary.TopSuppliers = []errorsTrendBreakdownRow{}
 		for rows.Next() {
