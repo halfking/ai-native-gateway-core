@@ -849,6 +849,11 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"831_work_type_route_source.sql",
 			"832_model_baseline_observation_health.sql",
 			"833_supplier_price_nonneg_check.sql",
+			// 837: 摘掉两个 routing analytics 物化视图里的 NOW() AS refreshed_at，
+			// 改由 routing_mv_refresh_state 单行记录刷新时刻。带 NOW() 的列让
+			// REFRESH ... CONCURRENTLY 每轮重写 100% 的行（252 实测 100.7%，
+			// 真实差异仅 0.339%），是本网关库第 3 大 WAL 生产者（8.98%）。
+			"837_routing_mv_refresh_state.sql",
 		},
 	}
 }

@@ -3618,8 +3618,7 @@ const routingAnalyticsMVSQL = `
 	  percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) AS p50_latency_ms,
 	  percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95_latency_ms,
 	  percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms) AS p99_latency_ms,
-	  COALESCE(SUM(cost_usd), 0) AS total_cost_usd,
-	  NOW() AS refreshed_at
+	  COALESCE(SUM(cost_usd), 0) AS total_cost_usd
 	FROM routing_analytics_source
 	WHERE ts >= NOW() - INTERVAL '7 days'
 	  AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual')
@@ -3674,8 +3673,7 @@ const routingAnalyticsMVSQL = `
 	  COUNT(*) AS total_requests,
 	  COUNT(*) FILTER (WHERE success) AS success_count,
 	  COUNT(*) FILTER (WHERE is_auto_request = TRUE) AS auto_request_count,
-	  COUNT(*) FILTER (WHERE is_auto_request IS NOT TRUE) AS specified_request_count,
-	  NOW() AS refreshed_at
+	  COUNT(*) FILTER (WHERE is_auto_request IS NOT TRUE) AS specified_request_count
 	FROM routing_analytics_source
 	WHERE ts >= NOW() - INTERVAL '7 days'
 	  AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual')
@@ -3690,7 +3688,65 @@ const routingAnalyticsMVSQL = `
 	DROP INDEX IF EXISTS routing_audit_summary_7d_pkey;
 	CREATE UNIQUE INDEX IF NOT EXISTS routing_audit_summary_7d_ukey
 	  ON routing_audit_summary_7d (tenant_id);
+
+	-- Migration 837: the refresh timestamp moved OUT of the matview target
+	-- lists into this one-row-per-view table.
+	--
+	-- REFRESH ... CONCURRENTLY compares each recomputed tuple against the
+	-- stored one and only rewrites rows that actually differ. A volatile
+	-- NOW() column in the target list makes every row differ on every cycle,
+	-- so the "concurrent" refresh degenerates into a full-table rewrite.
+	-- Measured on 252 prod (runbook §10.75.6/§10.75.7): 100.7% of rows
+	-- rewritten per refresh, of which only 0.339% had any real difference.
+	-- That single column was the 3rd largest WAL producer in the gateway
+	-- database (8.98%); removing it cuts that to ~0.03%.
+	--
+	-- NOTE: this DDL creates the table but does NOT stamp it. The row means
+	-- "content was regenerated at T", and only the party that actually
+	-- rebuilt or refreshed the view may write it — see
+	-- stampRoutingMVRefreshes below. Seeding here would let a plain restart
+	-- reset the freshness clock of a dead refresher, silently breaking the
+	-- 15-minute staleness contract admin/analytics_materialized.go relies on.
+	CREATE TABLE IF NOT EXISTS routing_mv_refresh_state (
+	  view_name TEXT PRIMARY KEY,
+	  refreshed_at TIMESTAMPTZ NOT NULL
+	);
 `
+
+// RoutingMVViewNames are the materialized views whose freshness contract is
+// tracked in routing_mv_refresh_state (migration 837). Keep in sync with the
+// refresher's refreshAll call sites and with the mvFreshWithin callers in
+// admin/analytics_materialized.go.
+var RoutingMVViewNames = []string{"routing_analytics_7d", "routing_audit_summary_7d"}
+
+// StampRoutingMVRefreshSQL records "the content of $1 was regenerated now".
+// Exported (not inlined) because two independent packages write it: the db
+// ensure path after a DROP+CREATE rebuild, and bg.MaterializedViewRefresher
+// after each REFRESH. A second copy of a write statement is how the two
+// writers silently drift.
+//
+// It deliberately takes the view name as a parameter rather than stamping
+// every row: refreshAll refreshes the two views independently, and stamping
+// both after only one succeeded would report a failed view as fresh.
+const StampRoutingMVRefreshSQL = `
+	INSERT INTO routing_mv_refresh_state (view_name, refreshed_at)
+	VALUES ($1, NOW())
+	ON CONFLICT (view_name) DO UPDATE SET refreshed_at = EXCLUDED.refreshed_at`
+
+// mvRefreshExecer is the slice of pgx that both stamping call sites need.
+type mvRefreshExecer interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
+// stampRoutingMVRefresh writes the current time for each named view.
+func stampRoutingMVRefresh(ctx context.Context, q mvRefreshExecer, views ...string) error {
+	for _, v := range views {
+		if _, err := q.Exec(ctx, StampRoutingMVRefreshSQL, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // ensureRoutingAnalyticsMaterializedViews mirrors
 // sql/migrations/startup/up/632_routing_analytics_materialized_view.sql.
@@ -3724,6 +3780,14 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 			   AND POSITION('auto_profile' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0
 			   AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_7d'), true), '')) > 0
 		   AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_audit_summary_7d'), true), '')) > 0
+		   -- Migration 837: a definition still carrying refreshed_at is the
+		   -- pre-837 shape, whose NOW() column forces a full-table rewrite on
+		   -- every CONCURRENTLY refresh. Presence-of-origin_stage cannot see
+		   -- that difference, so this negative check is what actually forces
+		   -- 252's existing views to be rebuilt.
+		   AND POSITION('refreshed_at' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_7d'), true), '')) = 0
+		   AND POSITION('refreshed_at' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_audit_summary_7d'), true), '')) = 0
+		   AND to_regclass('public.routing_mv_refresh_state') IS NOT NULL
 	`).Scan(&upToDate); err == nil && upToDate {
 		return nil
 	}
@@ -3743,9 +3807,13 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 		_, _ = conn.Exec(context.WithoutCancel(ctx), `SET statement_timeout = DEFAULT`)
 	}()
 
-	var staleDefinition bool
+	var staleDefinition, viewsExistedBefore bool
 	if err := conn.QueryRow(ctx, `
-		SELECT CASE
+		SELECT
+			(to_regclass('public.routing_analytics_7d') IS NOT NULL
+			 OR to_regclass('public.routing_audit_summary_7d') IS NOT NULL
+			 OR to_regclass('public.routing_analytics_source') IS NOT NULL),
+			CASE
 				WHEN to_regclass('public.routing_analytics_7d') IS NOT NULL
 				 AND to_regclass('public.routing_audit_summary_7d') IS NOT NULL
 				 AND to_regclass('public.routing_analytics_source') IS NOT NULL
@@ -3753,6 +3821,10 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 					POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0
 					AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_7d'), true), '')) > 0
 					AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_audit_summary_7d'), true), '')) > 0
+					-- 837: drop the pre-837 NOW() refreshed_at shape (see the
+					-- matching negative checks in the fast-path gate above).
+					AND POSITION('refreshed_at' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_7d'), true), '')) = 0
+					AND POSITION('refreshed_at' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_audit_summary_7d'), true), '')) = 0
 				)
 				WHEN to_regclass('public.routing_analytics_7d') IS NOT NULL
 				  OR to_regclass('public.routing_audit_summary_7d') IS NOT NULL
@@ -3760,7 +3832,7 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 				THEN TRUE
 				ELSE FALSE
 			END
-	`).Scan(&staleDefinition); err != nil {
+	`).Scan(&viewsExistedBefore, &staleDefinition); err != nil {
 		return err
 	}
 	if staleDefinition {
@@ -3777,7 +3849,18 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 	if _, err := conn.Exec(ctx, routingAnalyticsMVSQL); err != nil {
 		return err
 	}
-	slog.Info("routing analytics materialized views ensured (migration 632)")
+	// Stamp only when the content was genuinely regenerated: either we just
+	// dropped the old views, or none existed and CREATE populated them. On
+	// the index-repair path (views kept, only a missing ukey recreated) the
+	// content is exactly as stale as it was, so claiming freshness there
+	// would hide a dead refresher behind the 15-minute contract.
+	if !viewsExistedBefore || staleDefinition {
+		if err := stampRoutingMVRefresh(ctx, conn, RoutingMVViewNames...); err != nil {
+			return err
+		}
+	}
+	slog.Info("routing analytics materialized views ensured (migration 632)",
+		"rebuilt", !viewsExistedBefore || staleDefinition)
 	return nil
 }
 

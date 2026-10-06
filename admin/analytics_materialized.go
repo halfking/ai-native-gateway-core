@@ -32,19 +32,49 @@ import (
 const mvFreshnessBudget = 15 * time.Minute
 
 // mvFreshWithin reports whether the named materialized view exists and was
-// refreshed within mvFreshnessBudget. A missing view, a query error, or an
-// empty view (MAX(refreshed_at) = NULL) all report false so callers take
-// the base-view fallback.
+// refreshed within mvFreshnessBudget. A missing view, a query error, or a
+// missing/unknown refresh stamp all report false so callers take the
+// base-view fallback.
+//
+// Migration 837 moved the stamp out of the view and into
+// routing_mv_refresh_state. It used to be MAX(refreshed_at) over the view
+// itself, where every row carried a NOW() value — which is precisely what
+// made each REFRESH rewrite the entire view (a volatile column makes every
+// recomputed tuple differ). The refresher now records the time in a
+// one-row-per-view table, so the freshness check costs one indexed lookup
+// instead of a full aggregate over ~4.4K rows.
+//
+// Two properties are load-bearing and must not be collapsed into one query:
+//   - The view must still EXIST. The stamp survives a DROP (a rebuild drops
+//     and recreates the view but leaves the side table alone), so a stamp
+//     alone would happily report "fresh" for a view that is gone.
+//   - A missing stamp must not be read as fresh. Pre-837 databases, or one
+//     where the refresher has never run, have no row yet; that is stale
+//     (callers fall back), not fresh.
+//
+// The view name is bound as a parameter even though every caller passes a
+// package-internal constant: an identifier can never be interpolated into
+// SQL text by accident this way.
 func mvFreshWithin(ctx context.Context, db *pgxpool.Pool, view string) bool {
 	if db == nil {
 		return false
 	}
 	var refreshedAt *time.Time
-	// view is a package-internal constant, never user input.
-	if err := db.QueryRow(ctx, fmt.Sprintf(`SELECT MAX(refreshed_at) FROM %s`, view)).Scan(&refreshedAt); err != nil {
+	var viewExists bool
+	if err := db.QueryRow(ctx, `
+		SELECT
+			(SELECT refreshed_at FROM routing_mv_refresh_state WHERE view_name = $1),
+			EXISTS (SELECT 1 FROM pg_matviews WHERE schemaname = 'public' AND matviewname = $1)
+	`, view).Scan(&refreshedAt, &viewExists); err != nil {
+		// Includes "routing_mv_refresh_state does not exist yet" — a
+		// pre-837 database. Falling back is the safe direction: the base
+		// queries are slower but correct.
 		return false
 	}
-	return refreshedAt != nil && time.Since(*refreshedAt) < mvFreshnessBudget
+	if !viewExists || refreshedAt == nil {
+		return false
+	}
+	return time.Since(*refreshedAt) < mvFreshnessBudget
 }
 
 // useMaterializedView decides whether analytics endpoints (matrix / flow)
