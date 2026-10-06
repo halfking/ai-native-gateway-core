@@ -29,7 +29,8 @@
     "color:baseline:stale": "node scripts/color-baseline-stale.mjs",
     "ui:sweep:selftest": "node scripts/ui-sweep.mjs --selftest",
     "ui:sweep:pages": "node scripts/ui-sweep.mjs --strict",
-    "ui:sweep:overlays": "node scripts/ui-sweep.mjs --overlays --strict"
+    "ui:sweep:overlays": "node scripts/ui-sweep.mjs --overlays --strict",
+    "census:table:mobile": "node scripts/compact-table-census.mjs --root ../web-mobile/src"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
