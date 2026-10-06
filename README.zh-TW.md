@@ -113,7 +113,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `installer/` | 獨立跨平台安裝器 / 升級器模組 |
 | `scripts/`、`deploy/` | 建置、部署、鏡像與驗證工具 |
 
-規模快照（2026-10-01 程式碼掃描）：`cmd/` 下共 **~4,500 個 Go 檔案 · 2,278 個測試檔案 · 927 個遷移 SQL · 67 個領域套件 · 34 個二進位**。
+規模快照（2026-10-06 程式碼掃描）：`cmd/` 下共 **~4,967 個 Go 檔案 · 2,728 個測試檔案 · 1,016 個遷移 SQL · 67 個領域套件 · 44 個二進位**。
 
 **深入閱讀**
 
