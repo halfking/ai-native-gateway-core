@@ -7979,3 +7979,112 @@ old_minus_new | 0      new_minus_old | 0      行数 old 2355 = new 2355
    当前 0 temp 与「历史 28 GB」**同时为真**。下结论前先看当前分母。
 3. **门会漏掉它没被设计去抓的那一类**。DEFAULT 门抓「堆积」，
    抓不到「清空后的膨胀」—— 判据的覆盖面要随现实变化补，**不是写一次就一劳永逸**。
+
+---
+
+## §10.74 ★ P0 级地雷：252 的每日清理脚本会 DROP 掉父表的 DEFAULT 分区
+
+§10.73.2 记下「11 个零堆分区挂 114 MB 索引」之后，去查**有没有现成工具会处理它们**，
+撞见 `scripts/252-monitor/pg17-proactive-empty-table-cleanup.sh`。
+
+### §10.74.1 这不是死代码
+
+- 已装 252：`/opt/scripts/pg17-proactive-empty-table-cleanup.sh`（9-06，9208 B）
+- 已注册 cron：`/etc/cron.d/pg17:80` → `0 2 * * *`
+- `/var/log/pg17-proactive-cleanup.log` 显示 **10-05 与 10-06 两天都跑了**，
+  但两次都停在 `SKIP: VACUUM FULL is running`，cooldown 文件压根没生成
+  ⇒ **从未走到过 DROP 循环**
+
+★ 它现在活着，靠的是「02:00 恰好有 VACUUM FULL 在跑」这个**偶然**，
+不是设计上的保护。哪天不巧，它就会走进 DROP 分支。
+
+### §10.74.2 缺陷本身
+
+脚本有**两段**清理：
+
+| 段 | 候选来源 | 命中后动作 |
+|---|---|---|
+| 第 1 段 `EMPTY_TABLES_SQL` | `pg_stat_user_tables`，条件 `n_live_tup=0 AND n_dead_tup=0 AND 总大小 >= 100MB` | **裸 `DROP TABLE IF EXISTS`**（不 DETACH、不问父表） |
+| 第 2 段 `DEFAULT_PARTS_SQL` | `pg_inherits` 里名字 `%_default` 且**父表在 10 表白名单内** | `DETACH` + `DROP` |
+
+第 1 段的候选 SQL **既没有 `relispartition` 过滤，也没有排除 `_default`**。
+而白名单（`request_logs`/`usage_ledger`/… 共 10 张）**里没有 `usage_facts`**。
+
+⇒ **`usage_facts_default` 会被第 1 段捞出来裸 DROP。**
+
+生产实测（154 直连，只读 SELECT 复现脚本的两段候选 SQL）：
+
+```
+                    child                     parent                 size      branch
+ usage_facts_default                  usage_facts                79.6 MB   ★不在白名单 → 被第1循环裸 DROP
+ request_logs_default                 request_logs               352 kB     在白名单 → DETACH+DROP
+ session_turns_default                session_turns              160 kB   ★不在白名单
+ sessions_default / session_bodies_default / … 共 13 个空 DEFAULT 分区，其中 11 个不在白名单
+
+距 100MB 阈值：usage_facts_default 只差 20.4 MB
+```
+
+**后果**：DEFAULT 分区是父表写入路径的组成部分。丢掉它，
+`usage_facts` 就再也接不住「落在所有显式日分区之外」的行 ⇒ **后续 INSERT 直接报错**。
+这不是省下 80 MB 的收益，是写路径事故。
+
+★ **而它膨胀的弹药正是 §10.73.2 那个索引滞留**：空分区不回收索引，单向增长。
+
+### §10.74.3 修复（两道独立的闸）
+
+1. **SQL 层**：`EMPTY_TABLES_SQL` 加 `NOT c.relispartition` 与 `NOT LIKE '%_default'`，
+   并把 `c.relispartition::int AS is_partition` 带出到 shell。
+2. **行为层**：候选循环读 `is_partition`，为 1 则 SKIP 并记日志；
+   名字命中 `*_default` 再兜一道（防 relispartition 被误编目）。
+
+两道不是冗余：只做 SQL 过滤的话，将来有人改了那条 `WHERE`，
+脚本就会重新开始裸 DROP 分区 —— 实测它**真的会**（§10.74.4 的 M71）。
+
+顺带把 `DOCKER_BIN`/`LOG`/`COOLDOWN_FILE` 做成可注入，否则这道门
+只能退化成子串断言（量的是「源码里写过这句话」，不是「运行时真的不 DROP」）。
+
+### §10.74.4 行为门与变异验证
+
+`scripts/ursmcheck/proactive_cleanup_partition_guard_test.go`：
+注入一个假 `docker`，让脚本**真的跑到候选循环**，再断言它没对 `_default` 发出 DROP。
+门里同时断言**普通空表确实被 DROP** —— 否则「什么都没删」也能让门绿（恒真判据）。
+
+| 变异 | 门 |
+|---|---|
+| M69 拆掉 `_default` 名字兜底（`is_partition` 谎报 0） | 🔴 `...EvenIfFlagSaysPlain` |
+| M70 结构闸改永假条件 | 🔴 `...NeverDropsPartition` |
+| M71 拆掉 SQL 层 `NOT c.relispartition` | 🔴 `...CandidateSQLExcludesPartitions` |
+
+三条全红，脚本还原经 md5 + `bash -n` 自证。
+
+### §10.74.5 ★ 顺带暴露：本 session 的基线漏了一个包
+
+跑回归时 `internal/partguard` **红**：
+
+```
+--- FAIL: TestParentsAreDeclaredInDDL
+    父表清单里的 "ursm_node_snapshot_min" 在仓内 DDL 中找不到 PARTITION BY 声明
+```
+
+用**干净 worktree 在 HEAD 上对拍**，同样失败 ⇒ **既有红，与本次改动无关**。
+
+★ 而它红的**原因正是 830 半状态**：`internal/partguard/parents.go:69`
+把 `ursm_node_snapshot_min` 登记为分区父表（注释明写「声明了
+`PARTITION BY RANGE (snapshot_ts)`」），而 830 迁移已被改标 `.sql.skip`
+⇒ DDL 里不再有 `PARTITION BY` ⇒ 门正确报「该表已改名/已下线」。
+
+⇒ **830 半状态本来就有一道红着的门**。本 session 开头我定的基线是
+`db`/`startup`/`persist`/`cmd/gateway`/`ursmcheck`，**独独漏了 `internal/partguard`**
+——恰好是守这一块的那个包。
+教训：**基线要覆盖「会因业务变更而红」的守卫包，不能只跑自己改过的目录。**
+
+### §10.74.6 待决（两条路，必须二选一）
+
+| | 动作 | 后果 |
+|---|---|---|
+| **A 补完 830** | 执行分区迁移 | `ursm_node_snapshot_min` 成为分区父表 ⇒ **DROP 型留存 + 日分区一起到手**（§10.73.3 已证代码就绪）；`partguard` 转绿 |
+| **B 摘掉接线** | 移除 `bg/partition_manager.go:1436` / `db/db.go` 的 ensure 接线与 `parents.go:69` 登记 | 生产每日 `42883` ERROR 停止，`partguard` 转绿；但**放弃时行拆分** |
+
+★ 这也解释了为何它一直没人动：两条路都要先有人拍板，而**红着的门不会自己好**。
+用户的目标明确是「将不同的数据与字段**时行拆分**」⇒ 倾向 A，
+但 A 含生产 DDL，须明确授权。
