@@ -124,6 +124,46 @@
 <main id="plant-main-scroll-ok" style="height:700px;overflow-y:auto;padding:0 0 80px"><div class="tall"></div></main>
 <div id="plant-bar-scroll-ok" style="position:fixed;left:0;right:0;bottom:0;height:56px;background:#234;color:#fff">底栏</div></template>
 
+<!-- ═══ 三条「假阳性形状」诱饵（2026-10-07）═══
+     这三套场景种的都是**看起来像缺陷、实际不是**的形状，全部是 decoy
+     ⇒ 判据**必须不报**。它们锁住本轮修的三处口径：
+       ① label-hit       量的是 label（命中区），不是里面的 20×20 input
+       ② sticky-content  内容里的 sticky 行头不是「底部固定栏」
+       ③ scroll-under    overflow:hidden 且真实溢出的容器里，滚得出来的内容不算被盖
+     缺任何一条，对应修复回退时自检会**红**（而不是再次静默放过）。 -->
+
+<!-- ① 复刻 /m/request-anomalies 的 label.ra__check > input[20×20]：
+     label min-height 48 ⇒ 有效热区 270×48，零违规。 -->
+<template id="s-label-hit"><!--filler--><div><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span></div>
+<div class="wrap"><label id="decoy-label-hit" class="decoy" style="display:flex;align-items:center;gap:8px;min-height:48px">
+  <input type="checkbox" style="width:20px;height:20px"><span>只看未处理</span>
+</label></div></template>
+
+<!-- ② 复刻 /m/matrix：滚动容器里 40 个 position:sticky 的行头，
+     位置落在视口下 40% ⇒ 旧口径会挑中一个当「底部固定栏」。
+     本页**没有**真正的吸底栏 ⇒ 判据必须不报 covered-by-fixed。 -->
+<template id="s-sticky-content"><!--filler--><div><span>a</span><span>b</span><span>c</span><span>d</span><span>e</span></div>
+<main id="decoy-sticky-main" style="height:600px;overflow-y:auto;padding:0"><div style="height:4000px">
+  <!-- ⚠️ 必须用 top:520px 而不是 bottom:0：第一版写 bottom:0，scrollTop=0 时
+     sticky 停在**自然位置**（内容顶部，实测 stickyTop=21），远在阈值 480 之上
+     ⇒ 根本不会被当栏，诱饵无牙、M-B 变异照样绿（实测）。 -->
+  <div id="decoy-sticky-rowhead" class="decoy" style="position:sticky;top:520px;height:40px;background:#dde">行头</div>
+  <div style="height:3600px"></div>
+</div></main></template>
+
+<!-- ③ 复刻 /m/maas-orders：滚动宿主是 overflow:hidden 且真实溢出（sh>ch），
+     页面按钮正好停在固定吸底栏上方 ⇒ 滚得出来，不是遮挡。
+     ⚠️ main 必须**留了** padding-bottom（56px，与壳的 hyper-app__main--padded 同款）：
+         第一版我写成 padding:0，判据报了 covered-by-fixed —— 那是**对的**（没留白就是真遮挡），
+         是诱饵本身造错了。此处断言 tap-overlap 与 covered-by-fixed **都不报**。 -->
+<template id="s-scroll-under"><div class="fillerbar" style="height:120px;background:#eee">筛选区</div>
+<main id="decoy-under-main" style="position:relative;height:700px;overflow:hidden;padding:0 0 56px">
+  <div style="height:1400px"></div>
+  <button id="decoy-under-btn" class="decoy" style="position:absolute;top:640px;left:16px;width:200px;height:48px">按钮</button>
+</main>
+<div id="decoy-under-nav" class="decoy" style="position:fixed;left:0;right:0;bottom:0;height:56px;background:#234;color:#fff">
+  <a id="decoy-under-a" href="#" style="display:inline-block;width:200px;height:48px">总览</a></div></template>
+
 <!-- ── none：干净页。节点数必须 ≥ 20，否则 near-blank 会正确地报出来 ── -->
 <template id="s-none"><div class="wrap"><h2>干净页</h2>
   <p>这一页没有任何种下的缺陷，也没有诱饵；它的作用是证明判据对什么都**不**报。</p>
