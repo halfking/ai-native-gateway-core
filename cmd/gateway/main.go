@@ -1299,6 +1299,12 @@ func main() {
 				ticker := time.NewTicker(persistInterval)
 				defer ticker.Stop()
 
+				// 2026-10-06（§10.61）：连续失败计数。
+				// 之前 flush 失败只记 Warn，于是 62 小时里 701 次写入全丢
+				// 却没有一次告警；而单次抖动与永久停摆在同一条 Warn 里
+				// 也根本分不出来。成功一次即清零。
+				flushFailStreak := 0
+
 				for {
 					select {
 					case <-ticker.C:
@@ -1310,8 +1316,15 @@ func main() {
 							continue
 						}
 						if err := persistWriter.Flush(ctx, rows); err != nil {
-							slog.Warn("ursm.v2: persist flush failed", "error", err)
+							flushFailStreak++
+							lvl, msg, args := ursmPersistFlushFailure(flushFailStreak, err)
+							slog.Log(ctx, lvl, msg, args...)
 						} else {
+							if flushFailStreak > 0 {
+								slog.Info("ursm.v2: persist flush recovered",
+									"after_streak", flushFailStreak, "rows", len(rows))
+							}
+							flushFailStreak = 0
 							slog.Debug("ursm.v2: persist flushed", "rows", len(rows))
 						}
 						timeoutCancel()
