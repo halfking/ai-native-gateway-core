@@ -3,7 +3,17 @@
 // 按模型宽表（专注模式）。Tab 独立数据、共享一次拉取。
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useHyperPage } from '@/hyper'
-import { fetchUsageByModel, fetchUsageSummary, unwrapModelUsage, type ModelUsage, type UsageSummary } from '@/api/usage'
+import {
+  fetchCostTrend,
+  fetchUsageByModel,
+  fetchUsageSummary,
+  readCostTrend,
+  unwrapModelUsage,
+  type CostTrendDimension,
+  type CostTrendReading,
+  type ModelUsage,
+  type UsageSummary,
+} from '@/api/usage'
 import { t } from '@/i18n'
 import AppStateView from '@/components/common/AppStateView.vue'
 import StatCard from '@/components/common/StatCard.vue'
@@ -13,7 +23,7 @@ import { fmtInt, fmtNum, fmtUsd } from '@/utils/format'
 
 useHyperPage({ title: () => t('usage.title') })
 
-const tab = ref<'summary' | 'byModel'>('summary')
+const tab = ref<'summary' | 'byModel' | 'costTrend'>('summary')
 const summary = ref<UsageSummary | null>(null)
 const modelItems = ref<ModelUsage[]>([])
 const degraded = ref(false)
@@ -50,6 +60,37 @@ onBeforeUnmount(() => {
 })
 
 const sortedModels = computed(() => [...modelItems.value].sort((a, b) => b.total_requests - a.total_requests))
+
+// ── 成本趋势（cost-trend）─────────────────────────────────────────────
+// ★ 降级与「真的零花费」必须分开：后端可选视图未迁移时返回 200 +
+//   空 entries + total_cost 0（usage_enhanced.go:211-229）。若不判 degraded，
+//   一次系统降级会被显示成「这周没花钱」。
+const costGroupBy = ref<CostTrendDimension>('model')
+const costTrend = ref<CostTrendReading | null>(null)
+const costLoading = ref(false)
+const costError = ref<string | null>(null)
+
+const COST_DIMS: CostTrendDimension[] = ['model', 'provider', 'key', 'application', 'tenant']
+
+async function loadCostTrend(): Promise<void> {
+  costLoading.value = true
+  costError.value = null
+  try {
+    costTrend.value = readCostTrend(await fetchCostTrend(costGroupBy.value, 7))
+  } catch (err) {
+    if ((err as { name?: string })?.name === 'AbortError') return
+    costError.value = err instanceof Error ? err.message : String(err)
+    costTrend.value = null
+  } finally {
+    costLoading.value = false
+  }
+}
+
+async function onCostDimChange(d: CostTrendDimension): Promise<void> {
+  if (costGroupBy.value === d) return
+  costGroupBy.value = d
+  await loadCostTrend()
+}
 </script>
 
 <template>
@@ -76,11 +117,29 @@ const sortedModels = computed(() => [...modelItems.value].sort((a, b) => b.total
       >
         {{ t('usage.byModel') }}
       </button>
+      <button
+        type="button"
+        role="tab"
+        class="usage__tab"
+        :class="{ 'usage__tab--active': tab === 'costTrend' }"
+        :aria-selected="tab === 'costTrend'"
+        @click="tab = 'costTrend'; void loadCostTrend()"
+      >
+        {{ t('usage.costTrend') }}
+      </button>
     </div>
 
     <AppStateView :loading="loading" :error="error" @retry="load">
       <template v-if="tab === 'summary' && summary">
-        <div class="usage__grid">
+        <!-- ★ 2026-10-06：原先降级只在「请求数」一张卡的 hint 上提示，其余 5 张卡
+             照常显示 0（tokens / cost / credits / 成功率 / 延迟）。
+             ⇒ 一次后端视图缺失会被读成「这段时间真的一分钱没花、零调用」。
+             现在降级是**整块**声明：降级时不再展示那些无依据的 0。 -->
+        <p v-if="summary.degraded" class="usage__degraded" role="status">
+          <span class="badge badge--warning">{{ t('home.degraded') }}</span>
+          {{ t('usage.summaryDegraded') }}
+        </p>
+        <div v-else class="usage__grid">
           <StatCard :label="t('home.totalRequests')" :value="fmtInt(summary.total_requests)" :hint="summary.degraded ? t('home.summaryMissing') : undefined" />
           <StatCard :label="t('home.totalTokens')" :value="fmtInt(summary.total_prompt_tokens + summary.total_completion_tokens)" />
           <StatCard :label="t('home.totalCost')" :value="fmtUsd(summary.total_cost_usd)" />
@@ -126,11 +185,131 @@ const sortedModels = computed(() => [...modelItems.value].sort((a, b) => b.total
           </div>
         </FocusLayer>
       </template>
+
+      <!-- 成本趋势：降级 / 真空 / 有数据 三态严格分开 -->
+      <template v-else-if="tab === 'costTrend'">
+        <div class="usage__dims">
+          <button
+            v-for="d in COST_DIMS"
+            :key="d"
+            type="button"
+            class="usage__dim"
+            :class="{ 'usage__dim--on': costGroupBy === d }"
+            @click="onCostDimChange(d)"
+          >
+            {{ t(`usage.dim.${d}`) }}
+          </button>
+        </div>
+
+        <p v-if="costLoading" class="usage__hint-line">{{ t('common.loading') }}</p>
+        <p v-else-if="costError" class="usage__hint-line usage__hint-line--err">{{ costError }}</p>
+
+        <template v-else-if="costTrend">
+          <!-- 三态各自的文案，绝不混用 -->
+          <p v-if="costTrend.kind === 'degraded'" class="usage__degraded" role="status">
+            <span class="badge badge--warning">{{ t('home.degraded') }}</span>
+            {{ t('usage.costTrendDegraded') }}
+            <span v-if="costTrend.reason" class="usage__degraded-reason">{{ costTrend.reason }}</span>
+          </p>
+          <p v-else-if="costTrend.kind === 'empty'" class="usage__hint-line">
+            {{ t('usage.costTrendEmpty') }}
+          </p>
+          <template v-else>
+            <p class="usage__cost-total">
+              {{ t('usage.totalCostLabel') }} {{ fmtUsd(costTrend.totalCost) }}
+            </p>
+            <div class="table-scroll">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>{{ t('usage.dimensionLabel') }}</th>
+                    <th class="num">{{ t('usage.requests') }}</th>
+                    <th class="num">{{ t('usage.cost') }}</th>
+                    <th class="num">{{ t('usage.percent') }}</th>
+                    <th class="num">{{ t('usage.errorRate') }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="e in costTrend.entries" :key="e.dimension_value">
+                    <td>{{ e.dimension_value }}</td>
+                    <td class="num">{{ fmtInt(e.request_count) }}</td>
+                    <td class="num">{{ fmtUsd(e.total_cost_usd) }}</td>
+                    <td class="num">{{ fmtNum(e.percentage, 1) }}%</td>
+                    <td class="num">{{ fmtNum(e.error_rate * 100, 1) }}%</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </template>
+        </template>
+      </template>
     </AppStateView>
   </div>
 </template>
 
 <style scoped>
+.usage__degraded {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--app-space-2);
+  padding: var(--app-space-3);
+  margin-bottom: var(--app-space-3);
+  border-radius: var(--app-radius);
+  background: color-mix(in srgb, var(--app-warning) 10%, transparent);
+  font-size: 0.8125rem;
+  color: var(--app-text-secondary);
+}
+
+.usage__degraded-reason {
+  display: block;
+  width: 100%;
+  font-size: 0.6875rem;
+  color: var(--app-text-muted);
+}
+
+.usage__hint-line {
+  margin: var(--app-space-2) 0;
+  font-size: 0.8125rem;
+  color: var(--app-text-secondary);
+}
+
+.usage__hint-line--err {
+  color: var(--app-danger);
+}
+
+.usage__dims {
+  display: flex;
+  gap: var(--app-space-2);
+  overflow-x: auto;
+  padding-bottom: var(--app-space-2);
+}
+
+.usage__dim {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 0 var(--app-space-3);
+  border: 1px solid var(--app-border);
+  border-radius: 999px;
+  background: var(--app-surface);
+  color: var(--app-text-secondary);
+  font: inherit;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.usage__dim--on {
+  background: var(--app-primary);
+  border-color: var(--app-primary);
+  color: #fff;
+}
+
+.usage__cost-total {
+  margin: var(--app-space-2) 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
 .usage__tabs {
   position: sticky;
   top: 0;
