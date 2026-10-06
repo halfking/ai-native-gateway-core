@@ -231,8 +231,11 @@ const summary = computed(() => {
 
 .providers__chip {
   flex: 0 0 auto;
-  min-height: 36px;
+  min-height: 48px;
   padding: 0 var(--app-space-3);
+  /* R1（17 §4-R1 / 06 §7）：新增触控控件一律 ≥48 CSS px。
+     44px 是存量 .btn 的下限、不是新标准；这些 chip 是 2026-10-06 新增的，
+     走的是自定义选择器而非 .btn，故此前落在 32-40px —— 违反 R1。 */
   border: 1px solid var(--app-border);
   border-radius: 999px;
   background: var(--app-surface);

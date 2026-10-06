@@ -287,8 +287,11 @@ async function onCostDimChange(d: CostTrendDimension): Promise<void> {
 
 .usage__dim {
   flex: 0 0 auto;
-  min-height: 36px;
+  min-height: 48px;
   padding: 0 var(--app-space-3);
+  /* R1（17 §4-R1 / 06 §7）：新增触控控件一律 ≥48 CSS px。
+     44px 是存量 .btn 的下限、不是新标准；这些 chip 是 2026-10-06 新增的，
+     走的是自定义选择器而非 .btn，故此前落在 32-40px —— 违反 R1。 */
   border: 1px solid var(--app-border);
   border-radius: 999px;
   background: var(--app-surface);
@@ -323,6 +326,8 @@ async function onCostDimChange(d: CostTrendDimension): Promise<void> {
 
 .usage__tab {
   flex: 1;
+  /* R1-legacy：存量 44px（首个落地轮既有，R1 明确 44 是存量下限而非新标准）。
+     保留原值以免改变存量控件的手感；新增控件一律走 48px（见 §11.27）。 */
   min-height: 44px;
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
