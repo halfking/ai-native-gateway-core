@@ -221,6 +221,16 @@ export const DRAWER_NAV: readonly NavItem[] = [
     icon: 'copy',
     titleKey: 'nav.attachments',
   },
+  // 功能模块面。**admin 档**（`admin/modules.go:1129-1134` 的两条 `h.admin(...)`
+  //   —— 注册在 modules.go 自己里，**不在** handler.go）
+  // ⇒ **故意不设** requiresRole；设成 super_admin 必须让判据红。
+  // ★ 详情页 `/modules/:key` **不占抽屉席**（不设 ROOT_PATHS，返回钮行为与列表页不同）。
+  {
+    key: 'modules',
+    to: '/modules',
+    icon: 'cube',
+    titleKey: 'nav.modules',
+  },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))

@@ -462,6 +462,27 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/AttachmentsView.vue'),
     meta: { titleKey: 'att.title', requiresAuth: true },
   },
+  // 功能模块面（**admin 档**，2026-10-08：注册在 `admin/modules.go:1129-1134`
+  //   的 `registerModuleRoutes` 里，**不在** handler.go —— grep 路由必须限全仓）。
+  // ★★★★★★ `enabled:true` 可能是 `resolveModuleEnabled` 五条失败路径的兜底，
+  //   而且 `EffectiveValue` 回落 spec 默认值时**也**返回 `source:"default"`
+  //   ⇒ `source` 只有 {db, env, default} 三个值，只有 db/env 算「真读到」。
+  // ★★ `POST /{key}/test` **真给飞书机器人发消息**（有外部副作用）⇒ 移动端绝不调用；
+  //   `PUT /{key}/toggle` 是写操作 ⇒ 也不碰。
+  {
+    path: '/modules',
+    name: 'modules',
+    component: () => import('@/views/ModulesView.vue'),
+    meta: { titleKey: 'mods.title', requiresAuth: true },
+  },
+  // 详情页**不占抽屉席**。`/config` 子端点只有 feishu_bot 实现，其余一律 501
+  //   ⇒ 本仓首次出现的状态码，页面单列渲染。
+  {
+    path: '/modules/:key',
+    name: 'module-detail',
+    component: () => import('@/views/ModuleDetailView.vue'),
+    meta: { titleKey: 'modsDetail.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
