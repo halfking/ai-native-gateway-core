@@ -125,7 +125,7 @@ function submitOnEnter(ev: KeyboardEvent): void {
           <div class="routing__fields">
             <span class="routing__field">{{ t('routing.tier') }} {{ c.tier }}</span>
             <span class="routing__field">{{ t('routing.weight') }} {{ c.weight }}</span>
-            <span class="routing__field">{{ t('usage.successRate') }} {{ (c.success_rate * 100).toFixed(1) }}%</span>
+            <span class="routing__field">{{ t('routing.successRate') }} {{ (c.success_rate * 100).toFixed(1) }}%</span>
             <span class="routing__field">{{ t('nodes.latency') }} {{ Math.round(c.p95_latency_ms) }}ms</span>
           </div>
         </div>

@@ -31,10 +31,30 @@ const GATE = join(HERE, 'verify-i18n-parity.mjs')
 let pass = 0
 let fail = 0
 
-function makeRepo({ zh, en, omitZh = false, omitEn = false } = {}) {
+/**
+ * @param views 视图文件内容数组；`omitViews` 用来造「目录缺失」的反例。
+ *
+ * ★ 2026-10-07：新增 `src/views/` 是**必需**的。第 4 条判据要抽视图里的
+ *   `t('...')` 键，而「目录扫不到」必须是失败而不是放行 ——
+ *   扫不到却报 OK 的门比没有门更坏（与词典文件缺失同一判据）。
+ *   ⇒ 自测样本若不建这个目录，第 6 组会**因为一个与被测行为无关的原因**
+ *     失败（第一次加这条判据时就是这样：14 条里 8 条红了），
+ *     报出来的问题还指向「重复键」而不是「目录缺失」。
+ */
+function makeRepo({ zh, en, omitZh = false, omitEn = false, views, omitViews = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'i18n-selftest-'))
   mkdirSync(join(root, 'src/i18n'), { recursive: true })
   mkdirSync(join(root, 'scripts'), { recursive: true })
+  if (!omitViews) {
+    mkdirSync(join(root, 'src/views'), { recursive: true })
+    // ★ 默认给一个**不引用任何键**的视图。
+    //   早先默认写 t('a.b')，而 [6]/[6b] 的样本词典里没有 a.b
+    //   ⇒ 第 4 条判据在测「重复键」的用例里报「视图引用了不存在的键」，
+    //   **报的 cause 与被测行为无关**（同一个坑：失败原因要指向真正的成因）。
+    //   要测第 4 条的用例自己传 `views`。
+    const files = views ?? ['<template><p>no i18n here</p></template>' + NL]
+    files.forEach((src, i) => writeFileSync(join(root, 'src/views', `V${i}.vue`), src))
+  }
   if (!omitZh) writeFileSync(join(root, 'src/i18n/zh-CN.ts'), zh ?? "export const zhCN = {\n  a: {\n    b: '值',\n  },\n} as const\n")
   if (!omitEn) writeFileSync(join(root, 'src/i18n/en-US.ts'), en ?? "export const enUS = {\n  a: {\n    b: 'value',\n  },\n} as const\n")
   writeFileSync(join(root, 'scripts/verify-i18n-parity.mjs'), execFileSync('cat', [GATE]))
@@ -58,6 +78,7 @@ function check(name, cond, detail = '') {
 //   解析器是按行工作的（刻意不 import，避免依赖编译链），
 //   写成 `{ a: { b: 'x' } }` 这种单行紧凑形会解析出 0 键 ——
 //   那不是门的 bug，是样本与被测格式不一致（见 §11.29 的教训）。
+const NL = String.fromCharCode(10)
 const doc = (body) => `export const D = {\n${body}\n} as const\n`
 
 // ── 1. 正例 ─────────────────────────────────────────────────────────────
@@ -159,5 +180,42 @@ const doc = (body) => `export const D = {\n${body}\n} as const\n`
   rmSync(root, { recursive: true, force: true })
 }
 
-console.log(`\ni18n-parity selftest: ${pass} passed, ${fail} failed`)
+
+// --- 7. 第 4 条判据：视图引用的键必须存在（2026-10-07）-----------------
+// 这一条挡的是**两侧一致地缺同一个键** —— 前三条判据全都看不出来。
+// 实况：RouteMatrixView 写了 matrix.specified，两侧词典都没这个键，
+// 门全程绿（键集一致 / 无未翻译），运行时显示裸键。
+{
+ console.log('' + NL + '[7] 正例：视图引用的键都存在 → 放行')
+ const root = makeRepo({ views: ['<template><p>{{ t(\'a.b\') }}</p></template>' + NL] })
+ const r = runGate(root)
+ check('放行', r.code === 0, r.out)
+ check('报出扫了几个文件', /扫了 1 个 [.][v]ue/.test(r.out), r.out)
+}
+{
+ console.log('' + NL + '[8] 反例：视图引用了词典里不存在的键 → 拦下')
+ const root = makeRepo({ views: ['<template><p>{{ t(\'a.b\') }}{{ t(\'nope.gone\') }}</p></template>' + NL] })
+ const r = runGate(root)
+ check('拦下', r.code !== 0, r.out)
+ check('★ 报出缺的是哪个键 nope.gone', r.out.includes('nope.gone'), r.out)
+ check('★ 报出这个缺陷是前三条看不出来的', /前三条判据看不出来/.test(r.out), r.out)
+}
+{
+ console.log('' + NL + '[9] 反例：源码目录扫不到文件必须失败（扫不到却报 OK 的门比没有门更坏）')
+ const root = makeRepo({ omitViews: true })
+ const r = runGate(root)
+ check('拦下', r.code !== 0, r.out)
+ check('★ 报出是扫不到候选源文件', /没有任何可能引用/.test(r.out), r.out)
+}
+{
+ console.log('' + NL + '[10] 反例：动态键前缀单列，不能静默跳过')
+ const root = makeRepo({ views: ['<template><p>{{ t(\'a.\' + k) }}</p></template>' + NL] })
+ const r = runGate(root)
+ // a. 抽不出完整键 ⇒ 不算失败，但必须出现在输出里
+ //（否则「已确认合格」这个说法会覆盖到根本没量过的地方）
+ check('放行（动态键本身不是失败）', r.code === 0, r.out)
+ check('★ 单列出动态键前缀', /动态键前缀/.test(r.out) && /a[.]/.test(r.out), r.out)
+}
+
+console.log('' + NL + 'i18n-parity selftest: ' + pass + ' passed, ' + fail + ' failed')
 process.exit(fail === 0 ? 0 : 1)

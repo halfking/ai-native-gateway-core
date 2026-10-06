@@ -32,11 +32,16 @@ export type IconName =
   | 'cpu'
   | 'pause'
   | 'play'
+  | 'grid'
+  | 'share'
 
 const PATHS: Record<IconName, string> = {
   home: 'M3 10.5 12 3l9 7.5M5 9.5V21h5v-6h4v6h5V9.5',
   server: 'M4 4h16v6H4zM4 14h16v6H4zM7.5 7h.01M7.5 17h.01',
   cube: 'M12 2.5 21 7v10l-9 4.5L3 17V7l9-4.5zM3 7l9 4.5L21 7M12 11.5V21.5',
+  // 2026-10-07 路由矩阵（模型×任务 网格）与流量分布（节点分叉）
+  grid: 'M3.5 3.5h7v7h-7zM13.5 3.5h7v7h-7zM3.5 13.5h7v7h-7zM13.5 13.5h7v7h-7z',
+  share: 'M6 21v-6M6 9V3M18 21v-9M18 6V3M3 15l3 3 3-3M15 6l3-3 3 3',
   key: 'M14.5 3a6.5 6.5 0 1 0-4.9 10.8L3 20.4V22h3.5l1-1v-2h2v-2h2l1.6-1.6A6.5 6.5 0 0 0 14.5 3zM17 7h.01',
   menu: 'M4 6h16M4 12h16M4 18h16',
   alert: 'M12 3 2.5 20h19L12 3zM12 9.5v5M12 17.5h.01',

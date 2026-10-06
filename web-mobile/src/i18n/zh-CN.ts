@@ -26,6 +26,8 @@ export const zhCN = {
     overrides: '路由覆盖',
     funnel: '请求漏斗',
     proposals: '调优建议',
+    matrix: '路由矩阵',
+    flow: '流量分布',
     nodeHealth: '健康时间线',
     account: '我的',
   },
@@ -287,6 +289,7 @@ export const zhCN = {
     recoverAt: '恢复于',
     errBadRequest: '查询参数不合法，请检查模型名',
     errForbidden: '当前账号没有查看路由明细的权限',
+    successRate: '成功率',
   },
   // 运维排障线：请求链路（2026-10-07）
   journey: {
@@ -632,6 +635,56 @@ export const zhCN = {
     empty: '当前筛选下没有建议',
     echo: '后端实际过滤：状态「{status}」/ 类别「{category}」',
     errForbidden: '仅超管可查看调优建议',
+  },
+  matrix: {
+    title: '路由矩阵',
+    window: '时间窗口',
+    rowDim: '行维度',
+    // ★ 「matrix」这个词会让人默认行是任务；2026-06-22 换过轴。
+    //   行 = 模型，列 = 任务/工作类型。文案必须把这个方向说出来。
+    rowAxis: '行 = 模型',
+    colAxis: '列 = 任务',
+    row: {
+      task_type: '按任务类型',
+      work_type: '按工作类型',
+    },
+    metric: '指标',
+    metricName: {
+      count: '请求数',
+      success_rate: '成功率',
+      p95_ms: 'P95 延时',
+      cost_usd: '花费',
+    },
+    // ★ count 下 0 可确定是「无记录」（COUNT(*) 对任何产出组 ≥1），
+    //   别的指标下 0 既可能是无记录也可能是真 0。措辞刻意留余地。
+    zeroNote: '此指标下 0 可能是「该模型 × 该任务没有记录」，也可能是真实值 0（如全部失败）。切到「请求数」可确认该组合是否真的有流量。',
+    p95Note: 'P95 口径：24 小时窗口是对原始行的精确 P95；7 天窗口走物化视图，算的是「各小时 P95 按请求数加权的平均」，天然偏小。响应里没有字段说明本次走哪条路，所以两种口径不可直接比较。',
+    noCell: '无数据（该组合在所选窗口内没有记录）',
+    zeroAmbiguous: '0 —— 可能是没有记录，也可能是真实值 0，需切到「请求数」确认',
+    aliasNote: '该模型归并了多个原始名（模型改过名字）',
+    count: '{r} 个模型 × {c} 个任务',
+    empty: '所选窗口内没有可聚合的路由记录',
+    errForbidden: '仅超管可查看路由矩阵',
+    // ★ analytics.go:36 的合成键：显式指定模型、网关没做任务分类的请求。
+    //   直接渲染 __specified__ 会让人以为有个叫这名字的真实任务类型。
+    specified: '指定模型',
+    unknownTask: '未分类',
+  },
+  flow: {
+    title: '流量分布',
+    window: '时间窗口',
+    total: '全图链路总量 {n}',
+    empty: '所选窗口内没有流量记录',
+    layerEmpty: '这一层没有节点',
+    // 末层节点没有出边 —— 是正常的（供应商是终点），不是缺数据。
+    leaf: '终点层，无下游',
+    errForbidden: '仅超管可查看流量分布',
+  },
+  layer: {
+    task: '任务类型',
+    model: '模型',
+    provider: '供应商',
+    other: '其他',
   },
   models: {
     title: '模型目录',

@@ -113,8 +113,10 @@ describe('navItemsFor', () => {
     //   避免依赖 DRAWER_NAV 的书写顺序（顺序不是契约）。
     //   加新 superAdmin 档页面时这条会红 —— 那正是它该做的。
     expect(dropped.map((d) => d.key).sort()).toEqual([
+      'flow',
       'funnel',
       'integrity',
+      'matrix',
       'overrides',
       'proposals',
       'routing-audit',

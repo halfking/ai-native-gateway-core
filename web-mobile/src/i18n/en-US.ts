@@ -26,6 +26,8 @@ export const enUS = {
     overrides: 'Overrides',
     funnel: 'Request funnel',
     proposals: 'Tuning proposals',
+    matrix: 'Routing matrix',
+    flow: 'Traffic flow',
     nodeHealth: 'Health timeline',
     account: 'Me',
   },
@@ -284,6 +286,7 @@ export const enUS = {
     recoverAt: 'Recovers at',
     errBadRequest: 'Invalid query parameter — check the model name',
     errForbidden: 'Your account cannot view routing details',
+    successRate: 'Success rate',
   },
   // 运维排障线：请求链路（2026-10-07）
   journey: {
@@ -609,6 +612,56 @@ export const enUS = {
     empty: 'No proposals match the current filters',
     echo: 'Server-side filters: status "{status}" / category "{category}"',
     errForbidden: 'Only super admins can view tuning proposals',
+  },
+  matrix: {
+    title: 'Routing matrix',
+    window: 'Time window',
+    rowDim: 'Row dimension',
+    // ★ "matrix" suggests rows = tasks; the axes were swapped on 2026-06-22.
+    //   rows = models, columns = task/work type. The copy must state the direction.
+    rowAxis: 'rows = models',
+    colAxis: 'columns = tasks',
+    row: {
+      task_type: 'By task type',
+      work_type: 'By work type',
+    },
+    metric: 'Metric',
+    metricName: {
+      count: 'Requests',
+      success_rate: 'Success rate',
+      p95_ms: 'P95 latency',
+      cost_usd: 'Cost',
+    },
+    // ★ Under count, 0 provably means "no records" (COUNT(*) >= 1 per emitted
+    //   group). Under other metrics 0 may be either. The wording stays hedged.
+    zeroNote: 'Under this metric a 0 may mean the model/task pair has no records, or a real 0 (e.g. every request failed). Switch to Requests to confirm whether traffic exists.',
+    p95Note: 'P95 basis: the 24h window is a true percentile over raw rows; the 7d window reads the materialized view, where it is a request-count-weighted average of hourly P95s (always lower). The response carries no field saying which path ran, so the two are not directly comparable.',
+    noCell: 'no data (no records for this pair in the window)',
+    zeroAmbiguous: '0 - may be no records, or a real 0; switch to Requests to confirm',
+    aliasNote: 'this canonical model merges several raw names (the model was renamed)',
+    count: '{r} models x {c} tasks',
+    empty: 'No aggregatable routing records in the selected window',
+    errForbidden: 'Only super admins can view the routing matrix',
+    // analytics.go:36 synthetic key: requests that named a model explicitly
+    //   and the gateway did not classify a task for them.
+    specified: 'Specified model',
+    unknownTask: 'Unclassified',
+  },
+  flow: {
+    title: 'Traffic flow',
+    window: 'Time window',
+    total: 'Total across all links: {n}',
+    empty: 'No traffic in the selected window',
+    layerEmpty: 'No nodes in this layer',
+    // Terminal nodes have no outgoing links - that is normal, not missing data.
+    leaf: 'terminal layer, no downstream',
+    errForbidden: 'Only super admins can view traffic flow',
+  },
+  layer: {
+    task: 'Task type',
+    model: 'Model',
+    provider: 'Provider',
+    other: 'Other',
   },
   models: {
     title: 'Model catalog',
