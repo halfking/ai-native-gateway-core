@@ -250,6 +250,16 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/SystemMonitorView.vue'),
     meta: { titleKey: 'sysmon.title', requiresAuth: true },
   },
+  // 数据生命周期（partitions + storage/tables，2026-10-06）。**admin 档**（admin()）
+  // ⇒ tenant_admin 可用，导航不设 requiresRole。
+  // ★ 同族其余全是 superAdmin 且多数是写操作（archive/drop/vacuum/reindex/
+  //   promote/blobs-cleanup-execute/degradation-control），本页一条都不碰。
+  {
+    path: '/data-lifecycle',
+    name: 'data-lifecycle',
+    component: () => import('@/views/DataLifecycleView.vue'),
+    meta: { titleKey: 'lifecycle.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',

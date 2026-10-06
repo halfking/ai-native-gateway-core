@@ -36,6 +36,7 @@ export const enUS = {
     sessionAudit: 'Session audit',
     onlineSessions: 'Online sessions',
     sysmon: 'System monitor',
+    lifecycle: 'Data lifecycle',
     nodeHealth: 'Health timeline',
     account: 'Me',
   },
@@ -812,6 +813,41 @@ export const enUS = {
     lastActive: 'Last active {t}',
     loadMore: 'Load more',
     errForbidden: 'This account cannot view online sessions',
+  },
+  lifecycle: {
+    title: 'Data lifecycle',
+    partitions: 'Partitions',
+    noPartitions: 'No partition table status returned',
+    // ★★ a table that fails to load disappears entirely, so only report the count
+    returnedTables: 'Status for {n} partitioned table(s) came back. When one table fails to load the backend skips it silently, so a missing table cannot be told apart from one that does not exist.',
+    // ★★ archived_count also counts columnar partitions
+    archivedCountNote: 'The "archived" column also counts columnar partitions, so it is not the number of partitions actually living in the archive table.',
+    pSize: 'Total size',
+    archived: 'Archived',
+    archivable: 'Archivable',
+    columnar: 'Columnar',
+    canArchive: 'Can archive',
+    pRows: 'Rows',
+    // ★★ row_count = -1 is the backend\'s explicit "unknown" sentinel
+// ★ 不能写 'unknown'：值与键名同名会被 i18n 门判为「未翻译」
+    unknown: 'not measured',
+    storage: 'Size leaderboard',
+    // ★★★★ total_bytes is the sum of returned rows, not the database size
+    totalIsTopN: 'The total below is NOT the database size - the backend only sums the tables returned on this page; other tables did not make the list.',
+    // ★★★★ percent_of_db is relative to the listed subset
+    percentIsTopN: 'The "within list" percentage uses the sum of the tables above as its denominator, not the whole database; the column adds up to about 100% and says nothing about share of the DB.',
+    limitLabel: 'Rows to return',
+    limitN: 'Top {n}',
+    noTables: 'No table size data returned',
+    truncated: 'Reached this request\'s limit of {limit} rows ({n} returned); smaller tables further down may be missing from the list.',
+    listedSum: '{n} listed table(s) total {size}',
+    collectedAt: 'Collected {t}',
+    // ★ rows is the planner estimate (n_live_tup), not COUNT(*)
+    estRows: 'est. rows {n}',
+    indexBytes: 'index {n} B',
+    topPercent: '{n}% of list',
+    // ★ a partitioned parent already includes its partitions; do not add the two rows together
+    parentTable: 'Partitioned parent',
   },
   sysmon: {
     title: 'System monitor',
