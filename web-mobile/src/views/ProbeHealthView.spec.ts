@@ -318,6 +318,23 @@ describe('★ 判据 5：两个端点分别记错误', () => {
     // 队列的 unified 仍然渲染
     expect(text).toContain('活动积压')
   })
+
+  // ★★ 慢 ≠ 挂：本组两条只覆盖了「快速 reject」，**没覆盖「慢而不 settle」**。
+  //   而这两者对「另一段的数据要不要等」的影响是**一样的**：
+  //   `Promise.allSettled` 要**两个都 settle** 才返回，于是第 83-87 行的
+  //   逐段赋值被整体推迟 ⇒ 慢的那个会把快的那个一起拖住。
+  //   生产实测 `/api/admin/probe/system-health` 要 15~35 秒（doc 10 §4.6.57），
+  //   那段时间里 queue-snapshot 早就 200 了，页面却只有一句「正在加载…」。
+  //   这条断言就是钉住「各自的段各自的赋值」，与上面两条的 reject 形态互补。
+  it('★★ system-health 慢（一直不 settle）⇒ 队列数据仍立即渲染，不被拖住', async () => {
+    // 永不 resolve 也永不 reject：模拟「请求挂在那儿」
+    healthMock.mockReturnValue(new Promise(() => {}) as never)
+    const w = await mountView()
+    const text = w.text()
+    expect(text).toContain('活动积压')
+    // ★ 并且没有把「整页看起来空了」当常态：加载文案仍可存在，但队列段必须在
+    expect(text).not.toContain('可能未加载')
+  })
 })
 
 describe('租约异常三项', () => {

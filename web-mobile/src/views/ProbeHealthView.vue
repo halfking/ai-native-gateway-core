@@ -79,15 +79,37 @@ async function load(): Promise<void> {
   error.value = null
   // ★ 两个端点**分别记错误**：system-health 挂了不代表 queue-snapshot 挂了。
   //   合并成一个 error 会把「一段挂了」显示成「整页都挂了」（§11.30 同款纪律）。
-  const [h, q] = await Promise.allSettled([fetchProbeSystemHealth(), fetchProbeQueueSnapshot()])
-  health.value = h.status === 'fulfilled' ? (h.value.unified ?? null) : null
-  healthLegacy.value = h.status === 'fulfilled' ? (h.value.legacy ?? null) : null
-  legacyModeSafe.value = h.status === 'fulfilled' ? (h.value.legacy_mode_safe ?? null) : null
-  queue.value = q.status === 'fulfilled' ? (q.value.unified ?? null) : null
-  legacyRows.value = q.status === 'fulfilled' ? (q.value.legacy?.queues ?? []) : []
-  const errs: string[] = []
-  if (h.status === 'rejected') errs.push(sectionName('health') + '：' + describeError(h.reason))
-  if (q.status === 'rejected') errs.push(sectionName('queue') + '：' + describeError(q.reason))
+  //
+  // ★★ 2026-10-07 修（doc 10 §4.6.57）：**慢也必须和挂分开处理**。
+  //   原写法是 `await Promise.allSettled([a(), b()])` 之后再**统一**赋第 83-87 行，
+  //   而 `allSettled` 要**两个都 settle** 才返回 ⇒ 任一端点慢，
+  //   **连已经 200 的那一段的数据也要一起等**。
+  //   生产实测 `/api/admin/probe/system-health` 要 15~35 秒
+  //   （同类管理端点只要 0.25~0.9 秒），那段时间里 queue-snapshot 早已返回，
+  //   页面却只有一句「正在加载…」，queue 的活动积压一个数都不显示。
+  //   ⇒ 改成**各自的段各自的赋值**：谁先回来谁先渲染。
+  //   注释里原来那句「system-health 挂了不代表 queue-snapshot 挂了」只覆盖了
+  //   **快速 reject**，没覆盖**慢而不 settle** —— 两种形态对「另一段要不要等」
+  //   的影响是一样的，所以都归到这一处修。
+  const healthTask = fetchProbeSystemHealth().then(
+    (v) => {
+      health.value = v.unified ?? null
+      healthLegacy.value = v.legacy ?? null
+      legacyModeSafe.value = v.legacy_mode_safe ?? null
+      return null
+    },
+    (e: unknown) => sectionName('health') + '：' + describeError(e),
+  )
+  const queueTask = fetchProbeQueueSnapshot().then(
+    (v) => {
+      queue.value = v.unified ?? null
+      legacyRows.value = v.legacy?.queues ?? []
+      return null
+    },
+    (e: unknown) => sectionName('queue') + '：' + describeError(e),
+  )
+  const settled = await Promise.all([healthTask, queueTask])
+  const errs = settled.filter((e): e is string => e !== null)
   error.value = errs.length ? errs.join('　') : null
   loading.value = false
   loaded.value = true
