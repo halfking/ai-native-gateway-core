@@ -24,6 +24,7 @@ export const zhCN = {
     heatmap: '凭据热力图',
     probe: '探测',
     probeHealth: '探测健康',
+    probeModel: '模型健康',
     overrides: '路由覆盖',
     funnel: '请求漏斗',
     proposals: '调优建议',
@@ -505,7 +506,14 @@ export const zhCN = {
     emptyQueue: '探测队列现在是空的',
     emptyLatency: '最近 1 小时内没有成功的直连探测记录',
     // ★ 「没出现在列表里」不等于「不存在」—— 后端只统计 1h 内 direct_ok 且延时>0 的记录
-    latencyWindowHint: '仅统计最近 1 小时内**直连成功**的探测；没出现在这里不代表该供应商不存在。',
+    latencyWindowHint: '仅统计最近 1 小时内「直连成功」的探测；没出现在这里不代表该供应商不存在。',
+    // ── node-tasks 段（2026-10-07）：节点探测队列，与上面的完整性队列不是同一个 ──
+    nodeSection: '节点探测队列',
+    emptyNode: '节点探测队列为空',
+    noLatency: '无延时记录',
+    latencyMs: '{ms}ms',
+    // ★ paused = 已达重试上限，不会自愈；pending/running 会自己往前走
+    needsManual: '已暂停：达到重试上限，不会自动恢复，需要人工介入',
     attempt: '第 {n} 次',
     priority: '优先级 {n}',
     nextRun: '下次 {t}',
@@ -680,6 +688,40 @@ export const zhCN = {
     // 末层节点没有出边 —— 是正常的（供应商是终点），不是缺数据。
     leaf: '终点层，无下游',
     errForbidden: '仅超管可查看流量分布',
+  },
+  probeModel: {
+    title: '模型健康',
+    searchLabel: '按模型名筛选',
+    // ★ 后端是 ILIKE '%q%' 子串匹配，不是精确
+    searchPlaceholder: '如 gpt-4（子串匹配）',
+    substringNote: '后端按「子串」匹配：搜「{q}」会同时命中所有含这段的模型名（如 gpt-4o / gpt-4o-mini）。',
+    search: '筛选',
+    count: '{n} 个模型',
+    empty: '没有匹配的模型',
+    errForbidden: '当前账号没有查看探测健康面板的权限',
+    health: {
+      critical: '危急',
+      warning: '告警',
+      degraded: '降级',
+      healthy: '健康',
+      unknown: '未知',
+    },
+    healthy: '健康',
+    suspicious: '可疑',
+    failing: '故障',
+    probing: '探测中',
+    healthyPct: '健康率',
+    avgSuccess7d: '7d 成功率',
+    realRate24h: '24h 真实成功率',
+    realCount24h: '24h 真实请求',
+    // ★ 分母为 0 时所有派生统计是「无数据」而不是 0
+    noData: '无数据',
+    // ★ real_success_rate_24h 是 omitempty 指针：缺失 = 24h 没有真实请求
+    noRequests24h: '24h 内没有真实请求',
+    criticalNodes: '有 {n} 个危急节点',
+    lastVerified: '最近校验 {t}',
+    // ★ 明细之和与分母对不上 ⇒ 后端数据自相矛盾
+    distMismatch: '状态明细合计 {sum} 超过凭据总数 {total}，这行的数据自相矛盾',
   },
   probeHealth: {
     title: '探测健康',

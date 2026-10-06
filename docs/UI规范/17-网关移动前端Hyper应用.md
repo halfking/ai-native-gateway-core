@@ -2034,3 +2034,169 @@ nil ⇒ **JSON 里根本没有这个键**。
     修正后 41/41 全过。
   ★ 规律：一次性核验脚本报错时，先问「**报错面是不是符合缺陷的形状**」。
     真实缺陷通常只命中一部分；命中 100% 几乎总是量具本身坏了。
+
+---
+
+### 11.49 探测模型级端点上移：模型健康 + 节点探测队列（第二十一轮，admin 档）
+
+本轮把 probe 线的粒度补齐。四个页面构成**从粗到细**的完整链路：
+
+| 页面 | 粒度 | 端点 |
+|---|---|---|
+| 本页 `/probe-model` | **模型**级 | `probe/dashboard` |
+| `/heatmap` | 模型 × 凭据 | `credentials/heatmap` |
+| `/probe`（本轮扩容） | **任务**级 + **节点队列** | `probe/queue-tasks` + `probe/node-tasks` + `probe/provider-latency` |
+| `/probe-health`（上轮） | **系统**级 | `probe/system-health` + `probe/queue-snapshot` |
+
+**鉴权**：都在 `RegisterProbeDashboardRoutes(mux, wrapAdmin)` ⇒ **admin 档**，
+不设 `requiresRole`。
+
+#### ★★★ 后端把 SQL NULL 压成了 0，客户端**拿不到区分依据**
+
+`admin/probe_dashboard.go:2336-2348`：
+
+```go
+func nullFloat64(v sql.NullFloat64) float64 {
+	if !v.Valid { return 0 }   // ★ NULL → 0
+	return v.Float64
+}
+func nullInt(v sql.NullInt64) int { if !v.Valid { return 0 }; return int(v.Int64) }
+```
+
+而 `ModelHealthSummary` 的这些字段是**普通 `float64` / `int`**
+（无指针、无 `omitempty`）：`healthy_percentage`、`failing_percentage`、
+`avg_success_rate_7d`、`avg_verification_hours`、`total_real_success_24h`、
+`total_real_failure_24h`。
+
+⇒ `healthy_percentage: 0` 有两种完全不同的含义：
+  「0% 的凭据健康」（真值）/「SQL 算出来是 NULL」（没数据）。
+**信息在后端就丢了，客户端无法恢复。**
+
+★ **唯一可推导的判据**：`total_credentials === 0`。
+  「0 个里的 0%」在数学上不成立 ⇒ 该 0 必然是 NULL 被压平的产物。
+  这不是猜测，是可证的，所以 `derivedStatsAbsent()` 只在这一点上判 true。
+  ⚠️ 它**不是**完备判据：`total_credentials > 0` 时若 SQL 仍返回 NULL，
+     客户端**仍然识别不了** —— 那只能靠后端把字段改成指针。
+     ⇒ 文案措辞是「无数据」而不是「0%」，方向刻意偏向保守。
+
+★ 另加一条**自相矛盾检测**：状态明细之和（healthy+suspicious+failing+probing）
+  大于 `total_credentials` 时报「这行的数据自相矛盾」——
+  后端数据自己打架时，把它当正常行展示等于替它背书。
+
+#### ★ `real_success_rate_24h` 三态（与 §11.47 的 `success_rate_last_1h` 同款）
+
+`ModelHealthSummary:64` 是 `*float64` + `omitempty`
+⇒ **字段缺失 = 近 24h 没有真实请求**，不是 0% 成功率。
+而 `total_real_success_24h` / `total_real_failure_24h` 是普通 `int`（NULL→0）
+⇒ 两者之和为 0 时**分不清**「没有请求」与「NULL 被压平」
+⇒ `realRequests24hOf()` 返回 `null`，UI 显示「无数据」而不是 0。
+
+★ ★★ **本轮我自己写错并被测试当场抓住的一个 bug**：
+  `real_success_rate_24h` 是 0..1 的**比例**，我在模板里写成
+  `value.toFixed(1) + '%'`（漏了 `* 100`）
+  ⇒ **98.4% 会被显示成「1.0%」**。
+  被 `ProbeModelHealthView.spec` 的 `有值 ⇒ 显示百分比` 抓住。
+  ★ 同页的 `healthy_percentage` 后端**已经**是百分数（83.3），
+    `avg_success_rate_7d` 才是 0..1 —— 同一个卡片里两种量纲，
+    漏乘一次就是一个差 100 倍的显示错误。
+
+#### ★ 第六种越界语义：静默回落，且姊妹端点默认值不同
+
+`node-tasks`（`:1444-1453`）与 `queue-tasks`（`:1313-1323`）的 `limit`
+都是 `if n > 0 && n <= 200` 才采纳，否则**保持默认、不报错**：
+
+| 端点 | 默认 | 上限 |
+|---|---|---|
+| `queue-tasks` | **100**（`:1318`） | 200 |
+| `node-tasks` | **120**（`:1445`） | 200 |
+
+⇒ 抄错默认值会让人以为「后端只返回 100 条」而实际是 120 条。
+⇒ 判据专门锁住「两个常量**不相等**」。
+⇒ 前端**必须自己夹**，且夹到 200；不发 `limit` 时才用后端各自的默认。
+
+#### ★ `queue-tasks` 与 `node-tasks` 是**两个不同的队列**
+
+- `queue-tasks` ← `credential_probe_queue`（完整性探测规划器），`source="integrity"`
+- `node-tasks` ← `node_probe_state`（错误触发的 `NodeProbeWorker`），`source="node_probe"`
+
+后端 `NodeProbeTaskRow.Source` 的注释明说是为了让「前端能一致地 badge/合并两队列的行」。
+⇒ 页面上分成**两段**独立渲染，各带自己的空态与错误。
+★ 渲染成一团就分不清「这是哪条队列在积压」。
+
+#### ★ 「等一等就好」与「等再久也不会好」必须分得开
+
+`node_probe_state` 的状态机（与 `bg/node_probe.go` 一致）：
+`running`（被租约持有）/ `paused`（达重试上限）/ `pending`（等下一个 backoff tick）。
+
+**`paused` 不会自愈** —— 它已达重试上限，等下去也不会自己好；
+`pending` / `running` 会自己往前走。
+⇒ `paused` 行加左边框 + 「需要人工介入」提示。
+判据覆盖三种状态各自的前置（避免「只看 `status==='paused'`」在
+`paused` 字段为 false 时误判 —— 那条也被显式锁住）。
+
+★ `last_latency_ms` 是 `*int` + omitempty ⇒ 缺失 = 没有延时记录，
+  `0` 是**真实值**（探到了但 0ms）。两者必须分开。
+
+#### ★ `model` 过滤是 **ILIKE 子串匹配**
+
+`probe_dashboard.go:675-679`：`WHERE raw_model_name ILIKE $1 OR outbound_model_name ILIKE $1`
+且 `$1 = "%" + modelFilter + "%"`。
+⇒ 搜 `gpt-4` 会同时命中 `gpt-4o` / `gpt-4o-mini` / `gpt-4-turbo`。
+⇒ 搜索框旁必须挂「按子串匹配」说明，否则用户以为筛的是精确名。
+
+#### ★ 「整页错误」的判据从「两个都失败」改成「**一个都没成功**」
+
+`/probe` 加入第三个端点后，`error`（整页横幅）只在**三个全挂**时显示。
+挂 2/3 时只逐段报错 —— 用户能看出哪一段挂了、哪一段还活着，
+这比一条全局横幅**信息量更大**；而「整页都挂了」这个横幅
+只在真的全挂时才有意义。
+
+★ 这条**改的是语义不是数字**，所以同步改了既存判据并补了三条：
+  挂 2/3 不显示整页错误 / 三个全挂显示 / 只挂一个也不显示（反向锁定）。
+  ⇒ 判据变红时先问「**是产品错了还是语义本来就该变**」，
+    不要为了让旧判据变绿就改回去。
+
+### 11.50 本轮门禁（第二十一轮，探测模型级）
+
+| # | 门 | 结果 |
+|---|---|---|
+| 1 | css 门自测 | **11/11** |
+| 2 | 触控门自测 | **11/11** |
+| 3 | i18n 门自测 | **23/23** |
+| 4 | `gate:selftest` | **45 条断言全绿** |
+| 5 | `vue-tsc -b` | 通过 |
+| 6 | i18n 键集门 | 通过（各 **751 键**，+32；**574 个源码字面量键全部存在**） |
+| 7 | css 媒体查询门 | 通过（**49 文件**，+1） |
+| 8 | 触控热区门 | 通过（**46 个 .vue**，+1） |
+| 9 | `vitest run` | **647 用例 / 53 文件全绿**，**连跑 10 次全绿** |
+| 10 | `npm run build` | 通过 |
+
+★ 变异证据（**6 处，全部转红**）：
+
+| 变异 | 结果 |
+|---|---|
+| 分母 0 不判「无数据」 | 1 failed |
+| ★ 真实成功率漏乘 100（本轮真犯的错） | 2 failed |
+| 不查明细/分母自相矛盾 | 2 failed |
+| `node-tasks` 错误被静默吞掉 | 1 failed |
+| 缺失延时当 0ms | 1 failed |
+| 不再标记「需要人工」 | 1 failed |
+
+★ 触控门抓到 `.pm__kv-row min-height: 20px`。门唯一豁免是
+  `/* R1-legacy */`（**已知存量**），拿它盖新代码就是撒谎
+  ⇒ 抬到 48px 并把该容器改成**两列网格**补偿高度
+  （4 行 48px 会把卡片撑得过长）。
+
+★ 顺手修一个**既存缺陷**：`zh-CN.ts` 的 `probe.latencyWindowHint` 值里
+  写了 markdown 粗体 `**直连成功**` —— 纯文本 UI 会**原样显示**。
+  ⇒ 已改成「」。
+  ★ `grep '\*\*'` 在两个词典里共 10 处，逐条看过：**9 处在注释里**
+  （开发备注，正常），**只有 1 处是真 UI 值**。
+  ⇒ 规律：批量替换前**先看清命中的是注释还是值**，
+    否则会把 9 条正常注释一起改坏。
+
+★ 一次**变异脚本自身写错**：`(x).value * 100` 换成
+  `(x).value /* 注释 */` 时，**行内 `//` 注释吞掉了模板的闭合 `)` 与 `}}`**
+  ⇒ 模板编译失败，那个 spec 根本没加载（vitest 只报了另一个文件的 21 条）。
+  ★ 现象是「变异后用例数变少」，不是「变异后红」——
+    **先看用例数对不对**，再判断判据有没有牙。

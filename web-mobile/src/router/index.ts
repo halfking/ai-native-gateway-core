@@ -197,6 +197,13 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/ProbeHealthView.vue'),
     meta: { titleKey: 'probeHealth.title', requiresAuth: true },
   },
+  // 模型级健康总览（2026-10-07）。admin 档，同 RegisterProbeDashboardRoutes。
+  {
+    path: '/probe-model',
+    name: 'probe-model',
+    component: () => import('@/views/ProbeModelHealthView.vue'),
+    meta: { titleKey: 'probeModel.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',

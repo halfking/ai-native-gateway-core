@@ -84,6 +84,9 @@ export const DRAWER_NAV: readonly NavItem[] = [
   // 与 /probe（「具体哪个任务/供应商在跑」）配对。
   // ★ admin 档（wrapAdmin）⇒ 不设 requiresRole，对比上面四条超管线。
   { key: 'probe-health', to: '/probe-health', icon: 'refresh', titleKey: 'nav.probeHealth' },
+  // 模型级健康：答「哪个模型整体在坏」。与 /heatmap（模型×凭据）、
+  // /probe（任务级 + 节点队列）构成从粗到细的完整粒度。admin 档。
+  { key: 'probe-model', to: '/probe-model', icon: 'cube', titleKey: 'nav.probeModel' },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))
