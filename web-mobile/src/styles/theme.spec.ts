@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 
 // theme.spec.ts —— 状态色「文字压在 soft 填充上」的对比度棘轮。
 //
@@ -128,5 +128,120 @@ describe('状态色徽标对比度（AA 正文 4.5:1）', () => {
     // 反向：表里列了但 theme.css 没有的，同样是漂移。
     const vanished = (STATUSES as readonly string[]).filter((s) => !light.has(`app-${s}`))
     expect(vanished, `STATUSES 列了 ${vanished.join(', ')} 但 theme.css 里没有该 token`).toEqual([])
+  })
+})
+
+/* ═══════════════ 未定义 token 引用棘轮 ═══════════════
+ *
+ * 2026-10-07 新增。起因是一次真实审计（§4.6.48）：
+ *   20 个视图用 `var(--text-3, #999)` / `var(--text-2, #666)` / `var(--warn, #b26a00)`
+ *   这些 **token 在 web-mobile 里从未定义** ⇒ 125+31+2 处全部静默回落到硬编码色，
+ *   绕开了本仓已调过对比度的 `--app-text-muted` / `--app-warning`。
+ *   `--text-3` 的 `#999` 在白底只有 **2.85:1**、app-bg **2.63:1**（AA 正文需 4.5）
+ *   ⇒ 这不是「少了个 token」，是**一片读不清的次要文字**。
+ *
+ * ⚠️ 为什么 `var(--x, 回落)` 是最危险的写法：
+ *    它**永远不会报错** —— 浏览器安静地用回落值，CSS 门和类型门都看不见，
+ *    只有运行时量对比度才抓得到。本门就是为了让这类退化在**提交前**就红。
+ */
+
+/** 由壳在运行时注入的 token（不来自 theme.css），带原因，避免误判成漏定义。 */
+const EXTERNAL = new Set([
+  'app-safe-bottom', 'app-safe-top', 'app-safe-left', 'app-safe-right',
+  'safe-area-inset-top', 'safe-area-inset-bottom', 'safe-area-inset-left', 'safe-area-inset-right',
+])
+
+/**
+ * 已知遗留：还在引用但未定义的 token 名。**只允许变少，不许变多、也不许新增名字**。
+ * 判据按「引用处数 ≤ 上限」判定 ⇒ 把存量改掉只会让门更容易过，不会误红。
+ */
+const LEGACY: Record<string, number> = {
+  '--border': 49, '--surface': 20, '--success': 4, '--bg-2': 4, '--app-font-mono': 2,
+}
+
+/** 全部样式文件里定义过的 token。 */
+function definedTokens(): Set<string> {
+  const out = new Set<string>()
+  for (const f of ['theme.css', 'shared.css']) {
+    try {
+      const s = readFileSync(resolve(process.cwd(), 'src/styles', f), 'utf8')
+      // ⚠️ 正则必须要求 `--x:` 处于**声明位置**（行首/空白/`{`/`;` 之后）。
+      //   松一点写成 /--([a-z0-9-]+)\s*:/ 的话，**类选择器**里的
+      //   `.btn--primary:active` / `.chip--warning:hover` 会被当成 token 定义
+      //   ⇒ 门以为 `--primary` 已定义，放过它 30 处未定义引用（实测踩到）。
+      for (const m of s.matchAll(/(?:^|[\s;{])--([a-z0-9-]+)\s*:/gm)) out.add(m[1] as string)
+    } catch { /* 文件不存在就当没定义，交给下面的断言去报 */ }
+  }
+  return out
+}
+
+/** 源码里所有 `var(--x, …)` 引用（含嵌套括号，如 `env(safe-area-inset-top, 0px)`）。 */
+function referencedTokens(): Map<string, number> {
+  const counts = new Map<string, number>()
+  const files = collectSourceFiles(resolve(process.cwd(), 'src'))
+  for (const f of files) {
+    const s = readFileSync(f, 'utf8')
+    // 手工配平括号：var( 的第一个同名 ')' 才是结尾，不能用 [^)]* （env() 里有括号）
+    let i = 0
+    while ((i = s.indexOf('var(', i)) >= 0) {
+      let d = 0, j = i + 3
+      for (; j < s.length; j++) {
+        if (s[j] === '(') d++
+        else if (s[j] === ')') { d--; if (d === 0) break }
+      }
+      const inner = s.slice(i + 4, j)
+      const m = inner.match(/^\s*--([a-z0-9-]+)/)
+      if (m) counts.set(m[1] as string, (counts.get(m[1] as string) ?? 0) + 1)
+      i = j + 1
+    }
+  }
+  return counts
+}
+
+function collectSourceFiles(dir: string): string[] {
+  const out: string[] = []
+  const walk = (d: string) => {
+    let entries: string[]
+    try { entries = readdirSync(d) } catch { return }
+    for (const name of entries) {
+      const p = join(d, name)
+      let st
+      try { st = statSync(p) } catch { continue }
+      if (st.isDirectory()) walk(p)
+      // ⚠️ 只扫 .vue / .css —— CSS 自定义属性只在样式里被引用。
+      // 扫 .ts 会把本文件自己那句 `var(--x, 回落)` 提示语当成一个未定义 token（实测踩到）。
+      else if (/\.(vue|css)$/.test(name)) out.push(p)
+    }
+  }
+  walk(dir)
+  return out
+}
+
+describe('未定义 token 引用棘轮', () => {
+  const defined = definedTokens()
+  const refs = referencedTokens()
+  const undefinedNames = [...refs.keys()]
+    .filter((n) => !defined.has(n) && !EXTERNAL.has(n))
+    .sort()
+
+  it('没有「本门未登记」的未定义 token', () => {
+    const rogue = undefinedNames.filter((n) => !(`--${n}` in LEGACY))
+    expect(
+      rogue,
+      `源码引用了未定义的 token：${rogue.map((n) => `--${n}`).join(', ')}\n` +
+      '  ① 要么在 src/styles/*.css 里定义它，\n' +
+      '  ② 要么改用本仓已有的 `--app-*` token，\n' +
+      '  ③ 确实由运行时注入（壳/JS）⇒ 加进本文件 EXTERNAL 并写明原因。\n' +
+      '  ⚠️ `var(--x, 回落)` 永远不会报错，浏览器会安静用回落值 —— 这类退化只有门拦。',
+    ).toEqual([])
+  })
+
+  it('已知遗留的引用处数只许变少', () => {
+    const over: string[] = []
+    for (const [name, cap] of Object.entries(LEGACY)) {
+      const n = (refs.get(name.replace(/^--/, '')) ?? 0)
+      if (n > cap) over.push(`--${name} 现 ${n} 处 > 登记上限 ${cap} 处`)
+    }
+    expect(over, `遗留引用在增长：\n  ${over.join('\n  ')}\n  改用 \`--app-*\` token 后请同步下调本表上限。`).toEqual([])
   })
 })

@@ -241,21 +241,21 @@ onBeforeUnmount(() => {
 .mods__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .mods__head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 
-.mods__msg { font-size: 13px; color: var(--text-2, #666); padding: 8px 0; }
-.mods__msg--err { color: var(--danger, #c0392b); }
+.mods__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
+.mods__msg--err { color: var(--app-danger); }
 .mods__note { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; line-height: 1.5;
-  color: var(--text-2, #666); margin: 6px 0; }
-.mods__note--warn { color: var(--warn, #b26a00); }
-.mods__meta { font-size: 12px; color: var(--text-2, #666); margin: 4px 0 0; word-break: break-all; }
+  color: var(--app-text-secondary); margin: 6px 0; }
+.mods__note--warn { color: var(--app-warning); }
+.mods__meta { font-size: 12px; color: var(--app-text-secondary); margin: 4px 0 0; word-break: break-all; }
 .mods__title { font-size: 14px; font-weight: 600; word-break: break-all; }
 .mods__badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; flex-shrink: 0; }
-.mods__badge-t { color: var(--text-2, #666); }
+.mods__badge-t { color: var(--app-text-secondary); }
 .mods__tail { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 8px 0 0; }
-.mods__tail-l { font-size: 11px; color: var(--text-3, #999); }
+.mods__tail-l { font-size: 11px; color: var(--app-text-muted); }
 .mods__chip { font-size: 11px; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--border, #ddd); }
-.mods__chip--danger { color: var(--danger, #c0392b); border-color: var(--danger, #c0392b); }
-.mods__chip--warning { color: var(--warn, #b26a00); border-color: var(--warn, #b26a00); }
-.mods__chip--muted { color: var(--text-3, #999); }
+.mods__chip--danger { color: var(--app-danger); border-color: var(--app-danger); }
+.mods__chip--warning { color: var(--app-warning); border-color: var(--app-warning); }
+.mods__chip--muted { color: var(--app-text-muted); }
 .mods__list { list-style: none; margin: 0; padding: 0; }
 .mods__item { border-top: 1px solid var(--border, #eee); }
 
@@ -263,5 +263,5 @@ onBeforeUnmount(() => {
 .mods__row { display: block; width: 100%; min-height: 48px; padding: 10px 0; text-align: left;
   background: transparent; border: none; color: inherit; font: inherit; }
 .mods__btn { width: 100%; min-height: 48px; margin-top: 8px; font-size: 14px; border-radius: 8px;
-  border: 1px solid var(--primary, #1976d2); background: transparent; color: var(--primary, #1976d2); }
+  border: 1px solid var(--app-primary); background: transparent; color: var(--app-primary); }
 </style>
