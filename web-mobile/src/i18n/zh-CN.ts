@@ -355,6 +355,19 @@ export const zhCN = {
     weight: '权重',
     recoverAt: '恢复于',
     errBadRequest: '查询参数不合法，请检查模型名',
+    // ── 全量可路由性总览（admin/routing.go handleRoutingOverview）──────────
+    overviewTitle: '全量可路由性',
+    overviewLoad: '加载总览',
+    overviewNoFeatured: '未配置精选模型，「只看精选」过滤不会生效（将展示全部）。',
+    overviewRoutable: '可路由',
+    overviewBlocked: '被阻塞',
+    overviewTotal: '组合总数',
+    overviewBlockedList: '被阻塞的组合',
+    overviewNoReason: '未提供原因',
+    // ★ 这两个数可能是 SQL COALESCE 的兜底值，不是实测
+    overviewMetricsPlaceholder: '成功率/延迟可能是默认值（未探测过）',
+    // ★ routable 与 runtime_routable 本应恒等，不等说明后端改了键
+    overviewKeysDisagree: '可路由标记不一致（契约漂移）',
     errForbidden: '当前账号没有查看路由明细的权限',
     successRate: '成功率',
   },

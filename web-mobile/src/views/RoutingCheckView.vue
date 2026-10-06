@@ -11,6 +11,14 @@
 import { computed, ref } from 'vue'
 import { useHyperPage } from '@/hyper'
 import { resolveRouting, type RoutingCandidate, type RoutingResolveResponse } from '@/api/credentialsOps'
+import {
+  fetchRoutingOverview,
+  overviewBlockReason,
+  overviewFeaturedFilterInert,
+  overviewMetricsMayBePlaceholder,
+  overviewRoutableKeysDisagree,
+  type RoutingOverviewResponse,
+} from '@/api/routingRead'
 import { ApiError } from '@/api/client'
 import { t } from '@/i18n'
 import AppIcon from '@/components/common/AppIcon.vue'
@@ -49,6 +57,36 @@ function describeError(err: unknown): string {
 /** 「无变体」时后端返回空 candidates 的合法对象（admin/routing.go:288-296）——不是错误。 */
 const noCandidates = computed(() => result.value !== null && result.value.candidates.length === 0)
 
+// ── 全量可路由性总览（GET /api/routing/overview，admin 档）─────────────────
+//
+// 与 explain 的分工：explain 回答「**这一个模型**会去哪」，overview 回答
+//「**全网**哪些 (模型,供应商,凭据) 组合不可路由、为什么」。
+// 后者是排障时的第一眼：一眼看到「全红」还是「只有几个红」。
+//
+// ★ **按需加载**：它返回全网 model_offers × credentials 的笛卡尔积，量级不小，
+// 而 explain 的输入框是随手可用的 ⇒ 自动拉会让每次进页面都付这个代价。
+const overview = ref<RoutingOverviewResponse | null>(null)
+const overviewLoading = ref(false)
+const overviewError = ref<string | null>(null)
+
+async function loadOverview(): Promise<void> {
+  if (overviewLoading.value) return
+  overviewLoading.value = true
+  overviewError.value = null
+  try {
+    overview.value = await fetchRoutingOverview()
+  } catch (err) {
+    overviewError.value = describeError(err)
+  } finally {
+    overviewLoading.value = false
+  }
+}
+
+/** ★ 可路由 / 被阻塞 两栏，互斥且穷尽（后端每行必属其一）。 */
+const overviewRows = computed(() => overview.value?.rows ?? [])
+const overviewRoutableRows = computed(() => overviewRows.value.filter((r) => r.runtime_routable))
+const overviewBlockedRows = computed(() => overviewRows.value.filter((r) => !r.runtime_routable))
+
 const available = computed(() => (result.value?.candidates ?? []).filter((c) => c.available))
 const blocked = computed(() => (result.value?.candidates ?? []).filter((c) => !c.available))
 
@@ -85,6 +123,67 @@ function submitOnEnter(ev: KeyboardEvent): void {
     </div>
 
     <p class="routing__hint">{{ t('routing.hint') }}</p>
+
+    <!-- 全量可路由性总览。与上面的 explain 按需共存，不自动拉。 -->
+    <div class="routing__overview">
+      <div class="routing__overview-head">
+        <h3 class="page__section-title routing__section">{{ t('routing.overviewTitle') }}</h3>
+        <button
+          v-if="!overview"
+          type="button"
+          class="btn btn--sm"
+          :disabled="overviewLoading"
+          @click="loadOverview"
+        >
+          {{ t('routing.overviewLoad') }}
+        </button>
+      </div>
+
+      <p v-if="overviewLoading" class="routing__hint">{{ t('common.loading') }}</p>
+      <p v-else-if="overviewError" class="routing__error" role="alert">{{ overviewError }}</p>
+
+      <template v-else-if="overview">
+        <!-- ★★ featured 查询的 error 被后端丢弃（`_ = QueryRow`）⇒ 空数组无信号。
+             而 featured_only 且 featured 为空时过滤条件整个不下发 → 退化成全量。 -->
+        <p v-if="overviewFeaturedFilterInert(overview)" class="routing__hint routing__warn">
+          {{ t('routing.overviewNoFeatured') }}
+        </p>
+
+        <div class="data-card routing__summary">
+          <div class="card-field">
+            <span>{{ t('routing.overviewRoutable') }}</span>
+            <span class="card-field__value num">{{ overviewRoutableRows.length }}</span>
+          </div>
+          <div class="card-field">
+            <span>{{ t('routing.overviewBlocked') }}</span>
+            <span class="card-field__value num">{{ overviewBlockedRows.length }}</span>
+          </div>
+          <div class="card-field">
+            <span>{{ t('routing.overviewTotal') }}</span>
+            <span class="card-field__value num">{{ overviewRows.length }}</span>
+          </div>
+        </div>
+
+        <template v-if="overviewBlockedRows.length > 0">
+          <h3 class="page__section-title routing__section">{{ t('routing.overviewBlockedList') }}</h3>
+          <ul class="routing__ov-list">
+            <li v-for="r in overviewBlockedRows" :key="`${r.credential_id}-${r.model_name}`" class="routing__ov-item">
+              <span class="routing__ov-model">{{ r.model_name }}</span>
+              <span class="routing__ov-cred">{{ r.credential_label }}</span>
+              <!-- ★ 阻塞原因：可路由的行根本没有这个键，所以不能拿它当可路由判据 -->
+              <span class="routing__ov-reason">{{ overviewBlockReason(r) || t('routing.overviewNoReason') }}</span>
+              <!-- ★★ 编造默认值（COALESCE 0.9 / 9999）⇒ 这两个数可能是兜的，不是实测 -->
+              <span v-if="overviewMetricsMayBePlaceholder(r)" class="routing__ov-warn">
+                {{ t('routing.overviewMetricsPlaceholder') }}
+              </span>
+              <span v-if="overviewRoutableKeysDisagree(r)" class="routing__ov-warn">
+                {{ t('routing.overviewKeysDisagree') }}
+              </span>
+            </li>
+          </ul>
+        </template>
+      </template>
+    </div>
 
     <p v-if="error" class="routing__error" role="alert">{{ error }}</p>
 
@@ -259,5 +358,56 @@ function submitOnEnter(ev: KeyboardEvent): void {
   color: var(--app-text-secondary);
   font-size: 0.875rem;
   padding: var(--app-space-4) 0;
+}
+
+/* ── 全量可路由性总览 ────────────────────────────────────────────── */
+.routing__overview {
+  margin-top: var(--app-space-3);
+}
+
+.routing__overview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--app-space-2);
+}
+
+.routing__warn {
+  color: var(--app-warning);
+}
+
+.routing__ov-list {
+  list-style: none;
+  margin: var(--app-space-2) 0 0;
+  padding: 0;
+}
+
+.routing__ov-item {
+  display: flex;
+  align-items: center;
+  gap: var(--app-space-2);
+  flex-wrap: wrap;
+  padding: var(--app-space-2) 0;
+  border-top: 1px solid var(--app-border);
+  font-size: 0.8125rem;
+}
+
+.routing__ov-model {
+  color: var(--app-text-primary);
+  font-weight: 600;
+}
+
+.routing__ov-cred,
+.routing__ov-reason {
+  color: var(--app-text-secondary);
+}
+
+.routing__ov-reason {
+  color: var(--app-danger);
+}
+
+.routing__ov-warn {
+  color: var(--app-warning);
+  font-size: 0.75rem;
 }
 </style>
