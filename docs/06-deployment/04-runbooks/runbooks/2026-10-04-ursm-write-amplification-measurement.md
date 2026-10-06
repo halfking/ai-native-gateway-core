@@ -5840,3 +5840,77 @@ pss 全量（977 次调用）：
 3. **缩小月度范围**（`p_recent_months` 2 → 1）：与 #2 等价，且是**改调用参数**而非改函数。
 
 ⚠ 三者都改的是生产行为，**未执行**，等授权。
+
+---
+
+## §10.51 重复的 PartitionManager：§10.50 的「第 1 杠杆」是空操作
+
+### §10.51.1 先证伪自己：cooldown 调大不会少跑一次
+
+§10.50 把「降频（cooldown 5min → 30min）」排成收益第 1 的杠杆。
+**落地前先验证它是否真的起作用 —— 结论：不作用。**
+
+- `analyzePartitionStats` 只有一个调用点（`bg/partition_manager.go:1688`），
+  挂在 `promoteDefaultToPartitions` 末尾；
+- promote 调度器周期是 `DefaultPromoteInterval = 1h`
+  （`bg/partition_manager.go:27`，`main.go:5038` 只传 24h 给主循环，
+  未调 `SetPromoteInterval`，全仓该方法只有测试在用）；
+- 5min cooldown **永远不触发**，因为主循环本身 1h 才来一次。
+
+⚠ 已部署版本核对（`git show 404050630:bg/partition_manager.go`）：
+`DefaultPromoteInterval = 1h`、单一调用点、5min cooldown —— **与当前源码一致**，
+不是「拿未部署的源码推理」。
+
+### §10.51.2 那 2 倍的节奏从哪来：两台网关跑同一个库
+
+实测 6.83h 内 analyze **+14 次 = 29.3 分/次**，而单实例 1h ⇒ **正好 2 倍**。
+
+| 证据 | 读数 |
+|---|---|
+| 154 进程 | `slots/8781/llm-gateway-go` pid 3081，etimes 30,513s（8.5h），**仅 1 个** |
+| 245 进程 | `slots/8781/gateway` pid 2210608，etimes 26,478s（7.35h），**仅 1 个** |
+| 两台 DSN | 都指向 `172.16.2.210:5432/llm_gateway`（**同一个库**） |
+| `pg_stat_activity` | `client_addr=172.16.2.209`（154）**25 条** + `172.16.2.241`（245）**25 条** |
+| 出口 IP 对照 | 154 `hostname -I` = 172.16.2.209；245 = 172.16.2.241 ✔ |
+
+⇒ **两个 PartitionManager 对同一批 hot 表做 promote + analyze。**
+
+### §10.51.3 后果分级（已部署函数体为准）
+
+查 `pg_proc.prosrc`（**已部署**的函数体，不是仓库文件 —— 两者并不一致）：
+
+| 形态 | 函数 |
+|---|---|
+| `pg_try_advisory`（抢不到就跳过） | `promote_session_bodies` / `session_censors` / `session_memora` / `session_tools` |
+| `pg_advisory_xact_lock`（**阻塞**等） | `promote_session_turns` / `session_turn_details` / `session_module_executions` / `dashboard_access_events` / `handoff_logs` |
+| 函数体内**无任何 advisory 调用** | 13 个，含体长最大的 `promote_request_logs_hot_to_partition`（12,417 字符） |
+
+1. **analyze：纯浪费，无锁 ⇒ 两台各跑一遍全量 44 表。** 这就是「2 倍」的来源。
+2. **promote_session_turns：阻塞锁 ⇒ 不会损坏数据，但第二台会空等**，
+   最长等到 `promoteCycleTimeout = 5 * time.Minute`，期间**占着一条连接和事务**。
+3. ⚠ **「13 个函数无锁」是未验证项，不下结论。** 锁可能在**调用方**
+   （外层函数或同一事务内）取得；`*_default_batch` 这类 helper 本就由
+   已加锁的外层函数调用。**本节只登记事实，不报「存在并发损坏风险」。**
+
+### §10.51.4 修正后的杠杆排序
+
+| # | 动作 | 预期收益 | 状态 |
+|---|---|---|---|
+| 1 | **PartitionManager 单实例化**（只在 154 跑，或加 leader 选主） | analyze **直接减半**（3.54% → ~1.8%），promote 去掉阻塞等待 | **建议先做**，改配置/装配 |
+| 2 | 跳过冻结上月分区 | 0.53% 窗口占用 | 小，且须配「DML 未增长 + 长窗口兜底」判据 |
+| 3 | `p_recent_months` 2 → 1 | 与 #2 等价 | 只是改调用参数 |
+| ~~4~~ | ~~cooldown 5min → 30min~~ | **0** | **已证伪：cooldown 从不触发** |
+
+⇒ #1 是唯一「大收益 + 低风险」的方向，且**不碰任何 SQL**。
+但它改的是生产装配（245 的启动参数或网关内的选主逻辑），
+**属于生产行为变更，未执行，等授权**。
+
+### §10.51.5 本轮的一处凭据卫生事故（自报）
+
+查 245 的 `.env` 时，脱敏用的 `sed` 规则写成 `s|(postgresql://[^:]+:)[^@]+@|…|`
+—— 实际 DSN 是 **`postgres://`**（无 `ql`），规则**未匹配**，
+245 的数据库口令**明文出现在了本次会话输出中**。
+
+⇒ 该凭据应视为**已泄露到会话记录**，建议评估轮换。
+本节不记录口令本身。教训：脱敏 `sed` 必须**先验证格式**再用来保护输出，
+「写了脱敏」不等于「脱敏生效」。
