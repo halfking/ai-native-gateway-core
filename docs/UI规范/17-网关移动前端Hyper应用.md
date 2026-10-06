@@ -7075,3 +7075,172 @@ if err := h.applyForceEnable(...); err != nil {
 `POST /api/credentials/{id}/models/{model}/test` 三条快速探测
 —— superAdmin 档且**真的会触发一次探测**（有外部副作用）⇒ 本仓继续不碰。
 `submitBatchProbe` 的**契约层与上限截断**已补测，但**不接 UI 入口**。
+
+---
+
+## 11.87 第五十一批：★ 重建路由差集基线（推翻前几轮结论）+ 路由阻塞诊断
+
+### ★★★★★★★ 本批第一件事：发现前几轮的「只读面已扫空」建立在**坏的量具**上
+
+上一轮结尾写下的基线是「后端注册 472 条 / 移动端已覆盖 449 条 / 未覆盖 23 条」，
+并据此宣布「全仓路由差集里只读且未上移的部分已经扫空」。
+
+本轮按惯例重建清单时，**读数与该基线矛盾了一个数量级**（已覆盖 113 vs 449）。
+按纪律先怀疑量具、不急着采信「又缺了 300 个」，逐层查下去，**是量具坏了**：
+
+| 层 | 缺陷 | 后果 |
+|---|---|---|
+| 1 | 归一函数没剥 Go 1.22 的**方法前缀** | `"POST /api/x"` 永远匹配不上前端路径 |
+| 2 | 后端正则只认 `mux.HandleFunc` | 漏掉 `h.mux.` / `adminMux.` / `r.` 等全部接收者；且只扫了 3 个顶层目录，漏掉 `api/`、`taskprofile/` |
+| 3 | 前端路径正则被 **`${`** 截断 | 模板字面量产出 `/api/admin/maas/orders${s` 这类垃圾条目 |
+| 4 | 分母用错 | 拿「后端注册数」当分母 —— 很多端点**桌面 web 也没用**，根本不是「功能」 |
+
+修好后用**地面实况**校准（6 条逐条 grep 验证）：`audit-logs` / `cache-metrics` /
+`backups` / `auto-route/index` 在移动端**零引用**，而 `monitor-summary` 有 2 处 ——
+读数与事实吻合。
+
+**修正后的对照：**
+
+| 口径 | 数量 |
+|---|---|
+| 后端注册端点 | 450 |
+| **桌面 web 实际调用**（真正的「功能面」） | 394 |
+| 移动端实际调用 | 136 |
+| **桌面有、移动端没有** | **258**（其中 GET 只读 **145**） |
+
+⇒ **「只读面已扫空」是错的。** 只读缺口还有 145 条，工作远未收口。
+
+★★★ 可迁移的教训：
+1. **读数与已知基线矛盾时，先查量具。**「又缺了 300 个」和「基线错了」，
+   前者会让人重新扫一遍，后者才是真相。
+2. **分母要用「谁真的在用」**，不是「注册了多少」。注册了没人调用的端点不是功能面。
+3. **提取器要对样例逐条人工验证**再采信它的汇总数。
+4. ★ **别把上一轮自己的结论当既成事实**。本批第一件事就是重测基线，
+   而它确实是错的。
+
+### 后端实读：`admin/diagnostics_routing.go`（`h.superAdmin`，handler.go:1464）
+
+`GET /api/admin/diagnostics/routing-blocked?provider_id=X`
+后端注释原话：*"credentials look healthy but routing can't find them"*
+—— 判据来自视图 `v_routable_credential_models`，**不是**从 `credentials` 表反推。
+这正是「凭据节点检查」与「路由检查」两条诉求的交汇点。
+
+| 位置 | 事实 |
+|---|---|
+| `:61-64` | 405 `method not allowed` |
+| `:65-70` | 400 `missing or invalid provider_id query parameter` —— 缺失 / Atoi 失败 / ≤0 **三种同一个文案** |
+| `:72` | 10s 超时 |
+| `:90` | `maxBindings = 500`，但 SQL 取 **501** 行用于判定截断 |
+| `:144-147` | ★★★ `truncated = total > 500` ⇒ **`total` 被钳到 500** |
+| `:140-142` | ★ `rows.Err()` 有查（否则静默返回截断列表，方向完全错） |
+| `:119-122` | ★★ `warnRowSkip`：**Scan 失败就跳行**，只写服务端日志 ⇒ 客户端**完全看不到**少了几条 |
+| `:130-133` | ★★ 原因取 `UnavailableReason`，**只在非 nil 时**才换成 `"unknown"` ⇒ 空串会原样落进 breakdown |
+| `:27` | `UnavailableReason *string` + `omitempty` ⇒ NULL 时**整个键消失** |
+| `:168` | ★ `credential_label` 是**拼接值** `name \|\| ':' \|\| COALESCE(provider_name,'unknown')` |
+| `:173-196` | ★★★★★ 凭据状态查询**失败也不报错**，五个字段全落回零值 |
+| `:238-247` | ★★★ `BindingsBlocked = total - routable`，用的是**钳后**的 total |
+
+#### ★★★★★★★ 缺陷：钳位只钳了一半，计数可以自相矛盾到 `blocked` 为负
+
+`total` 被钳到 500，但 `routable` 是**遍历 LIMIT 501 命中的全部行**累加的、**没钳**，
+而 `blocked = 钳后total - routable`。当 501 行里几乎全可路由时：
+
+```
+bindings_total=500  bindings_routable=501  bindings_blocked=-1
+```
+
+★ **子集大于全集，且「被阻塞数」为负。** 截断时逐凭据 `bindings_total` 之和
+（未钳，=501）也必然与顶层（500）对不上。
+
+⚠️ 踩过的坑：我第一版把判据写成 `total !== routable + blocked`。
+**这个等式恒成立**（`blocked` 就是用钳后的 `total` 减出来的），检测不出任何异常 ——
+第一版 22 条里它一条红都没报。真正的判据是**子集 > 全集** `routable > total`，
+或直接看 `blocked < 0`。
+⇒ ★ **写「三个数对不上」的判据前，先问这个等式是不是被构造出来恒真的。**
+
+#### ★★★★★★ 缺陷：凭据状态整段缺失时 `manual_disabled: false` 是**危险错值**
+
+`:173-196` 的 best-effort 设计：状态查询失败只 `slog.Warn`，响应照发。
+后果是 `status` / `availability_state` / `health_status` / `lifecycle_status`
+全为 `""`，且 ★★ `manual_disabled` 变成 **`false`** ——
+**一个真被手动停用的凭据会显示成「未停用」**。
+`credential_label` 至少有回退路径（`:214-217` 用 binding 侧标签），
+但**五个状态字段没有任何回退，也没有任何「未知」标记**。
+
+代码注释自己写明了「否则『凭据状态全空』会被误读成『所有凭据都没有状态』」——
+**但它并没有做任何标记让客户端能识别这件事**。
+⇒ 移动端因此加了两道判据：`routingBlockedStateUnavailable()`（整段）与
+`routingBlockedManualDisabledUnreliable(c)`（逐条），
+UI 显示「状态未知」而不是「正常 / 未停用」。
+
+#### ★★ `unavailable_reason` 的两种「拿不到原因」语义不同
+
+| 形态 | 含义 | 后端行为 |
+|---|---|---|
+| **键不存在** | SQL 里是 NULL | breakdown 记为 `"unknown"` |
+| `"unavailable_reason": ""` | 后端确实存了空串 | breakdown 记为 **`""`（空字符串键）** |
+
+`:130-133` 判的是 `!= nil` 而不是 `!= ""` ⇒ **breakdown 里可能存在一个空字符串键**。
+UI 必须把两者画成不同的文案，合并就丢掉了「原因字段本身是空的」这条线索。
+
+### 移动端实现
+
+- API：`src/api/routingBlocked.ts` —— 三层结构**各自**校验必填键（7 / 11 / 4），
+  **不抽通用解包器**（这个端点的层级各有清单，混进通用函数会丢层）；
+  `unavailable_reason` 与 `truncated` 因 `omitempty` 不进必填清单
+- 视图：`src/views/NodesView.vue` 详情内新增诊断区。★ **按需加载**，
+  不随详情自动拉 —— 最坏 500 条绑定，而详情是随手点开的
+- 权限：`h.superAdmin` ⇒ 入口按角色分档，tenant_admin 看不到
+
+### 变异：36 条 —— 32 有牙 + 3 真等价 + 1 变异本体写错（已修）
+
+| 组 | 条数 | 覆盖 |
+|---|---|---|
+| A 三层解包 | 9 | 顶层 7 键 / 凭据 11 键 / 绑定 4 键、类型校验、三份必填清单 |
+| B 钳位判据 | 6 | 子集>全集、恒真等式、blocked<0、truncated、求和不一致、逐凭据矛盾 |
+| C 状态与原因 | 8 | 整段状态缺失、逐条不可信、空 credentials、原因两义、breakdown 空键 |
+| D 守卫与路径 | 2 | provider_id 守卫、URL 缺 query |
+| E 视图 | 9 | 角色分档、按需加载、截断/矛盾/状态/求和提示、原因两渲染、provider_id 取值 |
+| F 文案 | 2 | 状态不可信提示、空串原因文案 |
+
+**首轮 29/36，分诊后收口到 32 有牙。三类问题分开归因：**
+
+1. **判据缺口 2 处（已补）**
+   - **A5**：此前只钉了「缺键」，**整段顶层类型校验可以被整段删掉而全绿**
+     （`block_reason_breakdown` 传数组、`bindings_total` 传字符串都不报）。
+     ⇒ 已补「键在但类型错」七条断言。★ **缺键与类型错是两种不同的漂移，两条都要钉。**
+   - **C7**：`routingBlockedReasonEmpty` 原有样本用
+     `is_routable: true, unavailable_reason: undefined` ⇒ `=== ''` 本来就是 false，
+     于是「判据不看 `is_routable`」这种变异照样全绿。
+     ⇒ 已补「可路由 **且** 原因为空串」的样本。
+     ★ **样本选得「恰好不触发」时，判据等于没测。**
+
+2. **夹具巧合 1 处（已补负控）**
+   - **E8**：视图把 `loadRoutingBlocked(pid)` 硬编码成 `loadRoutingBlocked(3)`
+     时**全绿** —— 因为夹具的 `provider_id` 恰好也是 3（`WITH_COUNTS`）。
+     ⇒ 已加负控：换成 `provider_id: 7` 的卡片，并显式断言**没有**用 3
+     （3 是全仓最常见的默认供应商 id，硬编码它会让绝大多数用例照常通过）。
+     ★ **变异选的值必须与夹具无关，否则测的是巧合。**
+
+3. **变异本体写错 1 处（已修）**
+   - **E1**：把 `v-if="isSuperAdmin && !routingBlockedOpen"` 改成
+     `v-if="!routingBlockedOpen" /* MUT-E1 */` —— 标记放在**标签属性区**，
+     Vue 编译报 `SyntaxError: Illegal '/' in tags` ⇒ **收集失败**，
+     不是判据问题。⇒ 改放进属性值的 JS 表达式注释里（Vue 3 表达式支持注释）。
+     ★ rc≠0 且抓不到具名用例名时，**先查是不是收集失败**，别急着判判据无牙。
+
+4. **真等价变异 3 条（用穷举证明，不是推理）**
+   | 变异 | 等价性证明 |
+   |---|---|
+   | **B3** 只保留 `routable > total` | 穷举 56 组真实可达输入（`blocked` 由后端算成 `total - routable`）**零不一致**：`blocked < 0 ⇔ routable > total`。构造的反例组合后端算不出来 ⇒ 等价**仅限可达域**。 |
+   | **C4** 去掉 `manual_disabled === false` | 差异只出现在「状态全空 **且** `manual_disabled: true`」，而状态查询失败时五个字段**全部取零值**（`:173-196`）⇒ 该组合后端不可达。（且 C4 的更宽松版本其实更稳健。） |
+   | **E2** `await load...` 改 `void load...` | 该函数 `await` 之后无语句、不返回值、不被别处 await ⇒ 改 fire-and-forget 不改变任何可观测行为。 |
+
+★ 这三条的共性：**等价性只在「后端真实可达域」内成立**，域外两者确有差异。
+  所以「等价」这个结论必须附上域，否则就等于没验证。
+
+### B2：一条用来证明「恒真等式检测不出异常」的变异
+
+把判据改回 `total !== routable + blocked` 那个**恒成立**的等式 —— 它有牙，
+因为新增的那条判据直接断言「这个等式在矛盾数据上**依然成立**，而矛盾判据为真」。
+⇒ 这条变异的作用不是证明原判据对，而是**把「我第一版写错了」这件事钉成可执行事实**。

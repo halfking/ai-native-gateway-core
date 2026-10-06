@@ -124,6 +124,59 @@ vi.mock('@/api/credentialsOps', async (importOriginal) => {
 })
 
 /**
+ * ★★ 路由阻塞诊断模块同样要登记（2026-10-08）。
+ *
+ * 走 importOriginal 透传真 helper：视图要调用 `routingBlockedTotalsDisagree` /
+ * `routingBlockedStateUnavailable` / `routingBlockedReasonAbsent` 等**纯函数**，
+ * 整模块 mock 会把它们变成 undefined ⇒ 诊断区永远走错误态而测试全绿。
+ * 纯函数绝不手抄一份实现进 mock —— 那份会与源码漂移。
+ */
+vi.mock('@/api/routingBlocked', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/routingBlocked')>()
+  return {
+    ...actual,
+    // 逐字照抄 admin/diagnostics_routing.go:44-53
+    fetchRoutingBlockedDiagnostic: vi.fn(async () => ({
+      provider_id: 3,
+      provider_name: '小米大模型',
+      bindings_total: 2,
+      bindings_routable: 1,
+      bindings_blocked: 1,
+      block_reason_breakdown: { quota_exhausted: 1 },
+      credentials: [
+        {
+          credential_id: 9,
+          credential_label: 'tok-a:小米大模型',
+          status: 'ok',
+          availability_state: 'ready',
+          health_status: 'healthy',
+          manual_disabled: false,
+          lifecycle_status: 'active',
+          bindings_total: 2,
+          bindings_routable: 1,
+          bindings_blocked: 1,
+          bindings: [
+            {
+              credential_id: 9,
+              credential_label: 'tok-a',
+              raw_model_name: 'gpt-4o',
+              is_routable: false,
+              unavailable_reason: 'quota_exhausted',
+            },
+            {
+              credential_id: 9,
+              credential_label: 'tok-a',
+              raw_model_name: 'gpt-4o-mini',
+              is_routable: true,
+            },
+          ],
+        },
+      ],
+    })),
+  }
+})
+
+/**
  * 设置当前登录角色 —— 操作区按 role 分档渲染（后端 superAdmin 对 tenant_admin 直接 403）。
  * 返回值即被 setActivePinia 选中的那个实例，mountView 会复用它。
  */
@@ -568,5 +621,194 @@ describe('NodesView 近期路由决策区', () => {
     // 两个 request_id 都要在 ⇒ 列表没被截断成一条
     const list = document.body.querySelectorAll('.nodes__decision')
     expect(list.length).toBe(2)
+  })
+})
+
+/**
+ * 路由阻塞诊断区（2026-10-08，admin/diagnostics_routing.go）。
+ *
+ * 守三件事：
+ *   ① ★ 权限分档：注册处 admin/handler.go:1464 是 `h.superAdmin` ⇒ tenant_admin
+ *      不该看到入口（后端会直接 403），不能靠后端报错兜底。
+ *   ② ★ 按需加载：最坏返回 500 条绑定，**不能**随详情自动拉 ⇒ 打开详情
+ *      不应发出这个请求（否则每次点开卡片都付这个代价）。
+ *   ③ ★★ 后端那几个「数字对不上 / 状态整段缺失」的情况必须**显示出来**，
+ *      而不是把矛盾的数字原样呈现让用户自己发现。
+ */
+describe('NodesView 路由阻塞诊断区', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    vi.clearAllMocks()
+  })
+
+  async function openDetailAs(role: string) {
+    activatePiniaAs(role)
+    const w = await mountView()
+    await w.findAll('.node-card')[0]?.trigger('click')
+    await flushPromises()
+    return w
+  }
+
+  async function clickOpen() {
+    const btn = Array.from(document.body.querySelectorAll('.nodes__rblocked .btn')).find((b) =>
+      (b.textContent ?? '').includes('Why routing'),
+    )
+    if (!btn) throw new Error('诊断入口按钮不存在')
+    btn.dispatchEvent(new Event('click'))
+    await flushPromises()
+    await flushPromises()
+  }
+
+  it('★★ 按需加载：打开详情**不**发诊断请求', async () => {
+    await openDetailAs('super_admin')
+    const { fetchRoutingBlockedDiagnostic } = await import('@/api/routingBlocked')
+    expect(fetchRoutingBlockedDiagnostic).not.toHaveBeenCalled()
+    // 诊断区存在但还没数据
+    expect(document.body.querySelector('.nodes__rblocked')).not.toBeNull()
+  })
+
+  it('★★★★ tenant_admin 看不到诊断入口（h.superAdmin 档）', async () => {
+    await openDetailAs('tenant_admin')
+    const text = document.body.textContent ?? ''
+    expect(text).not.toContain('Why routing cannot find it')
+  })
+
+  it('★★★★ super_admin 点入口后带 provider_id 拉取并渲染绑定原因', async () => {
+    await openDetailAs('super_admin')
+    await clickOpen()
+    const { fetchRoutingBlockedDiagnostic } = await import('@/api/routingBlocked')
+    expect(fetchRoutingBlockedDiagnostic).toHaveBeenCalledWith(3)
+
+    const text = document.body.textContent ?? ''
+    expect(text).toContain('tok-a:小米大模型')
+    expect(text).toContain('gpt-4o')
+    expect(text).toContain('quota_exhausted')
+    // 可路由那条显示的是「可路由」而不是原因
+    expect(text).toContain('gpt-4o-mini')
+    expect(text).toContain('routable')
+  })
+
+  /**
+   * ★★★★★ 负控：provider_id **必须来自详情对象**，不能是硬编码常量。
+   *
+   * 上一版判据是 `toHaveBeenCalledWith(3)`，而夹具的 provider_id 恰好也是 3
+   * ⇒ 变异 E8 把 `loadRoutingBlocked(pid)` 改成 `loadRoutingBlocked(3)` 时
+   * **照样全绿**。那测的是巧合，不是「取自详情」。
+   * ⇒ 这里换成 provider_id=7 的卡片：任何硬编码常量都会立刻暴露。
+   */
+  it('★★★★★ provider_id 取自详情卡片，不是硬编码常量（负控）', async () => {
+    const { fetchMonitorSummary } = await import('@/api/nodes')
+    ;(fetchMonitorSummary as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      { ...WITH_COUNTS, provider_id: 7 },
+    ])
+    const w = await mountView()
+    await w.findAll('.node-card')[0]?.trigger('click')
+    await flushPromises()
+    await clickOpen()
+
+    const { fetchRoutingBlockedDiagnostic } = await import('@/api/routingBlocked')
+    expect(fetchRoutingBlockedDiagnostic).toHaveBeenCalledWith(7)
+    // ★ 3 是全仓最常见的默认供应商 id，硬编码它会让绝大多数用例照常通过
+    expect(fetchRoutingBlockedDiagnostic).not.toHaveBeenCalledWith(3)
+  })
+
+  it('★★★★★ 计数矛盾 / 截断 会被显式提示，而不是把矛盾数字原样显示', async () => {
+    const { fetchRoutingBlockedDiagnostic } = await import('@/api/routingBlocked')
+    ;(fetchRoutingBlockedDiagnostic as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      provider_id: 3,
+      provider_name: '小米大模型',
+      // 逐字复刻后端钳位 bug：total 钳 500、routable 未钳 ⇒ blocked 为负
+      bindings_total: 500,
+      bindings_routable: 501,
+      bindings_blocked: -1,
+      block_reason_breakdown: {},
+      credentials: [],
+      truncated: true,
+    })
+    await openDetailAs('super_admin')
+    await clickOpen()
+
+    const text = document.body.textContent ?? ''
+    expect(text).toContain('truncated')
+    expect(text).toContain('self-contradictory counts')
+    expect(text).toContain('do not add up')
+  })
+
+  it('★★★★★ 状态整段缺失时不得显示「已手动停用」，而要显示状态未知', async () => {
+    const { fetchRoutingBlockedDiagnostic } = await import('@/api/routingBlocked')
+    ;(fetchRoutingBlockedDiagnostic as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      provider_id: 3,
+      provider_name: '小米大模型',
+      bindings_total: 1,
+      bindings_routable: 0,
+      bindings_blocked: 1,
+      block_reason_breakdown: { unknown: 1 },
+      credentials: [
+        {
+          credential_id: 9,
+          credential_label: 'tok-a',
+          // ★★ 后端凭据状态查询失败时的真实形态：五个字段全零值
+          status: '',
+          availability_state: '',
+          health_status: '',
+          lifecycle_status: '',
+          manual_disabled: false,
+          bindings_total: 1,
+          bindings_routable: 0,
+          bindings_blocked: 1,
+          bindings: [
+            { credential_id: 9, credential_label: 'tok-a', raw_model_name: 'gpt-4o', is_routable: false },
+          ],
+        },
+      ],
+    })
+    await openDetailAs('super_admin')
+    await clickOpen()
+
+    const text = document.body.textContent ?? ''
+    expect(text).toContain('Credential state could not be fetched')
+    expect(text).toContain('state unknown')
+    // ★ manual_disabled=false 是错值，绝不能渲染成「未停用」这种结论
+    expect(text).not.toContain('manually disabled')
+    // 键不存在 ⇒ 原因未知，而不是空串
+    expect(text).toContain('reason not provided by the server')
+  })
+
+  it('★★★ 空串原因与「原因未知」渲染成两种不同的文案', async () => {
+    const { fetchRoutingBlockedDiagnostic } = await import('@/api/routingBlocked')
+    ;(fetchRoutingBlockedDiagnostic as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      provider_id: 3,
+      provider_name: '小米大模型',
+      bindings_total: 2,
+      bindings_routable: 0,
+      bindings_blocked: 2,
+      block_reason_breakdown: { '': 1, quota_exhausted: 1 },
+      credentials: [
+        {
+          credential_id: 9,
+          credential_label: 'tok-a',
+          status: 'ok',
+          availability_state: 'ready',
+          health_status: 'healthy',
+          lifecycle_status: 'active',
+          manual_disabled: false,
+          bindings_total: 2,
+          bindings_routable: 0,
+          bindings_blocked: 2,
+          bindings: [
+            { credential_id: 9, credential_label: 'tok-a', raw_model_name: 'm-empty', is_routable: false, unavailable_reason: '' },
+            { credential_id: 9, credential_label: 'tok-a', raw_model_name: 'm-quota', is_routable: false, unavailable_reason: 'quota_exhausted' },
+          ],
+        },
+      ],
+    })
+    await openDetailAs('super_admin')
+    await clickOpen()
+
+    const text = document.body.textContent ?? ''
+    // ★ breakdown 里的空字符串键也要提示 —— 它表示「原因是空串」
+    expect(text).toContain('contain an empty entry')
+    expect(text).toContain('reason is an empty string')
+    expect(text).not.toContain('reason not provided by the server')
   })
 })
