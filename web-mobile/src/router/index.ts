@@ -81,6 +81,35 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/RoutingCheckView.vue'),
     meta: { titleKey: 'routing.title', requiresAuth: true },
   },
+  // 运维排障线（2026-10-07）。三条都走 AdminMiddleware ⇒ tenant_admin 可用，
+  // 所以 nav 的 requiresRole 一律不设（只有 super_admin 档才设，见 /integrity）。
+  {
+    path: '/journey',
+    name: 'journey',
+    component: () => import('@/views/RequestJourneyView.vue'),
+    meta: { titleKey: 'journey.title', requiresAuth: true },
+  },
+  {
+    // ★ 详情必须排在 /journey 之前？—— 不需要：vue-router 5 的静态段优先于
+    //   动态段，且此处用的是命名子路径而非通配，不存在 /journey/:id 吃掉
+    //   /journey 本身的问题。request_id 已在 fetchJourneyDetail 里 encodeURIComponent。
+    path: '/journey/:id',
+    name: 'journey-detail',
+    component: () => import('@/views/RequestJourneyDetailView.vue'),
+    meta: { titleKey: 'journey.detailTitle', requiresAuth: true },
+  },
+  {
+    path: '/routing-log',
+    name: 'routing-log',
+    component: () => import('@/views/RoutingLogView.vue'),
+    meta: { titleKey: 'routingLog.title', requiresAuth: true },
+  },
+  {
+    path: '/waterfall',
+    name: 'waterfall',
+    component: () => import('@/views/DispatchWaterfallView.vue'),
+    meta: { titleKey: 'waterfall.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',

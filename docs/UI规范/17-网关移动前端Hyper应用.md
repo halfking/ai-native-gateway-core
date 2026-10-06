@@ -887,3 +887,114 @@ en 词典按 §11.29(1) 补正后，它们当场变红 —— 变红的是**用�
 9. `npm run build` 通过（**已含 css 门 + 触控门 + i18n 门前置**）
 
 新增 npm 脚本：`i18n:check`、`gate:selftest`。
+
+### 11.31 运维排障线上移：链路 / 详情 / 路由流水 / 调度瀑布（第十二轮）
+
+前面几轮加的是「谁不健康」（节点/供应商/完整性），这轮加的是「**这一条请求到底
+怎么了**」——排障真正卡住的地方。四个页面构成闭环：
+
+```
+请求链路 /journey            → 详情 /journey/:id        → 路由流水 /routing-log
+  在途请求 + 降级横幅            逐跳事件时间线                凭据侧事件佐证
+                                                      → 调度瀑布 /waterfall
+                                                        时间侧分段佐证
+```
+
+与已有的 `/logs` 分工：logs 是**已结束请求的结果面**（谁/什么模型/多少 token），
+本线是**过程面**（走了几跳、为什么改道、时间花在哪）。两者都不回答「为什么失败」。
+
+#### 端点与角色档（均已**实读源码**复核，非照抄桌面）
+
+| 页面 | 端点 | 门禁 | tenant_admin |
+|---|---|---|---|
+| 请求链路 | `GET /api/admin/request-journeys/queues` | `AdminMiddleware` | ✅ |
+| 链路详情 | `GET /api/admin/request-journeys/{id}` | `AdminMiddleware` | ✅ |
+| 路由流水 | `GET /api/credentials/routing-log` | `h.admin` | ✅ |
+| 调度瀑布 | `GET /api/admin/dispatch/waterfall` + `/queues` | `wrapAdmin` | ✅ |
+
+★ **四条全是 admin 档**，所以 `DRAWER_NAV` 里新三项的 `requiresRole` **一律不设**
+（按 appNav.ts 末尾口径：只有 super_admin 档才需要在导航层挡，对比 `/integrity`）。
+抽屉 6 → 9 席，**底栏仍 4 席 + 固定「更多」= 5**，未破 02 §4 的 ≤5 约束。
+
+#### ★ 本轮真正要记的：三个「写错了不报错、只是骗人」的坑
+
+**(1) 降级字段叫 `observation_status`，字面值是 `observation_degraded`——不是 `degraded`**
+
+本仓库其它面（usage / board / 降级成本）一律用裸 `degraded`。照抄过来，
+`if (r.degraded)` **恒为 false**，降级被显示成「真的没有请求」。
+这条已用反例锁死：`裸 degraded 标记不触发横幅`（RequestJourneyView.spec）。
+
+**(2) 详情端点不是靠 404 表示「没有」**
+
+`request_journey.go:265-268` 的条件是
+`journey == nil && observation_status != observation_degraded` 才 404
+⇒ **降级且无数据时返回 200 + 没有 `journey` 字段**。
+所以必须三态：`ok` / `observation_degraded`（看不到）/ `not_found`（真没有）。
+合成两态就是在对用户断言一个没有依据的结论。
+判据：`classifyJourneyDetail` 三态用例 + 视图级「降级时不得出现『查不到』」。
+
+**(3) 调度瀑布这一面根本没有 `degraded` 字段**
+
+不可观测只由 `wired === false`（投影未接上）或 `source === 'none'`（无数据源）
+表达。照抄 `degraded` 会让**整个观测面不可用被渲染成「当前没有请求」**——
+恰恰把排障最需要的信号抹掉。
+反向锁定两条：`wired:false ⇒ 有警告`、`wired:true 且空 ⇒ 不得有警告`
+（后者方向相反，是真结论，不能被误标）。
+
+同类的一条同族教训：桌面端拉队列深度时用 `.catch(() => null)` **静默吞掉失败**，
+于是「队列指标挂了」与「队列是空的」在界面上完全一样。移动端不照抄——
+`queuesError` 单独渲染（判据：队列端点 500 ⇒ 必须显示错误）。
+
+#### 其它后端约束（都在**发出请求前**处理，而不是让用户吃 400）
+
+- 路由流水时间窗 **> 7d 直接 400**（`credential_routing_log.go:235-237`），
+  不是 clamp ⇒ 时间选项按 7 天封顶 + 界面说明原因。
+- 路由流水是 **`limit`/`offset`** 分页，不是 cursor，也不是 `page/page_size`
+  ⇒ `offset = (page-1)*PAGE_SIZE`。照抄 cursor 端点会永远停在第 1 页。
+- 调度瀑布后端注释宣称 `max 200`，**实现根本没有 clamp**（`main_dispatch.go:124-134`）
+  ⇒ 前端自己封顶到 200，不依赖后端兜底。
+- 请求链路 queues **无分页**（有界 FIFO ring）⇒ `fetchPage` 恒返回第 1 页并把
+  `total` 设成 `items.length`，让 controller 直接 `exhausted`；否则会反复请求同一全量响应。
+- 瀑布时间戳是 **RFC3339 字符串**，`b - a` 对字符串是 NaN；且缺一端时
+  `spanMs` 返回 **null 而不是 0** ——「没测到」与「耗时 0ms」在排障里是**相反**的指示。
+
+#### 本轮我自己犯的两个错（都靠门与断言逮住，值得留档）
+
+1. **12 个 CSS 变量全部是我编的**（`--line` / `--accent` / `--text-1` …）。
+   真实设计系统一律 `--app-*` 前缀。`var(--未定义)` 不报错，
+   整页会**静默无样式**。已加一条全量扫描核对（扫所有 .vue 的 `var()` 引用
+   对照 theme.css 已定义集），并顺手确认 `AppAccountSheet.vue` 的
+   `--app-font-mono` 带 fallback（`var(--app-font-mono, monospace)`），不是缺陷。
+2. **详情页标题写成 `t('journey.degraded').split('——')[0]`** —— 那个分隔符只存在于
+   中文，英文下整句会原样变成标题。已拆成独立键 `journey.degradedTitle`。
+
+另：写视图测试时又踩了 §11.29(3) 的同一个 locale 坑（jsdom 的 `navigator.language`
+是 en-US，断言按中文写会全跑英文）。本轮两个 spec 都**显式 `setLocale('zh-CN')`**
+并在 `afterEach` 复位模块级 locale——这已是第三次，因此该约定写进测试文件头。
+
+#### 触控门拦下我一处 `.wf-stage` 32px —— 选择抬值而不是放松门
+
+R1 门扫的是**所有** `min-height < 48px` 的选择器，不区分是否可点，`.wf-stage`
+（只读进度行）严格说是误报。但那是 7 行用户真要读的标签/条/数值，
+32px 在手机上确实挤 ⇒ 抬到 48px。**不为过门而放松门禁，也不谎标 `R1-legacy`**
+（那是新代码，不是存量）。
+
+### 11.32 本轮门禁（第十二轮，运维排障线）
+
+`web-mobile/` 实测**十道**：
+1. css 门自测 **11/11**
+2. 触控门自测 **11/11**
+3. i18n 门自测 **9/9**
+4. `gate:selftest` 三道串联 **31 条断言全绿**
+5. `vue-tsc -b` 通过
+6. i18n 键集门 通过（zh-CN / en-US 各 **451 键**）
+7. css 媒体查询门 通过（36 文件）
+8. 触控热区门 通过（**33 个 .vue**，本轮新增 4 个）
+9. `vitest run` **261 用例 / 33 文件全绿**，**连跑 10 次全绿**
+   （新增 48 条：api 契约 32 + 视图 16）
+10. `npm run build` 通过（已含三道门前置），4 个新视图各自产出独立 chunk
+
+★ **变异证据**（两处，均实测转红）：
+- 视图层：把 queues 的降级判据换成裸 `'degraded'`、把瀑布的
+  `isWaterfallUnavailable` 换成 `false` ⇒ 4 条用例转红。
+- 门本身（§11.29）：旧正则塞回 css 门 ⇒ 自测 11/11 变 6 passed / 5 failed。
