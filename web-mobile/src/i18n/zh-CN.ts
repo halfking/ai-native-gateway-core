@@ -198,10 +198,26 @@ export const zhCN = {
     opEnabled: '已启用，该凭据已回到路由池',
     opProbeSubmitted: '探测已提交，后台执行中',
     opRecovered: '强制恢复完成，状态已重置',
+    // ── reset-state（聚焦式状态复位，admin/routing_reset.go）────────────────
+    // ★ 全凭据复位，不暴露单模型口径。
+    resetState: '复位状态',
+    confirmResetStateTitle: '复位该凭据的状态？',
+    confirmResetStateBody: '将对 {name} 执行聚焦式状态复位，并写入一条带理由的审计记录。此操作不可撤销；若服务端在写入后报错，状态可能已经改变，请到节点详情核实。',
+    opResetStateDone: '状态复位已提交',
+    // ★ 这两档必须分开：提交成功 ≠ 探测通过；请求了但回 false ≠ 没请求。
+    resetProbeSubmitted: '探测已提交，后台执行中（不代表探测已通过）',
+    resetProbeIndeterminate: '已请求探测，但服务端未确认触发，结果未知，请稍后刷新查看',
+    // ★ 二义失败：DB 可能已改但请求以 5xx 结束，客户端读不到任何提示字段。
+    resetStateMaybeApplied: '请求失败，但状态可能已被修改 —— 请刷新节点详情核实后再重试',
+    reasonDefaultResetState: '移动端状态复位',
+    resetTriggerProbe: '同时请求一次即时探测',
+    resetTriggerProbeHint: '仅在服务端已接入探测提交器时生效；即使返回成功，也不代表探测已通过。',
     reasonDefaultDisable: '移动端手动停用',
     reasonDefaultEnable: '移动端手动恢复',
+    // ★ 让默认理由映射成为全函数，probe 永不走到这里但缺键会静默落到别的理由。
+    reasonDefaultProbe: '移动端提交探测',
     reasonDefaultRecover: '移动端强制恢复',
-    opsAdminOnlyHint: '探测与强制恢复需要超级管理员权限，当前账号仅可执行停用/启用。',
+    opsAdminOnlyHint: '探测、强制恢复与状态复位需要超级管理员权限，当前账号仅可执行停用/启用。',
     manualDisabledWarn: '该凭据已被手动停用，当前不参与路由。',
     errForbidden: '当前账号没有执行该操作的权限',
     errUnauthorized: '登录已失效，请重新登录',
