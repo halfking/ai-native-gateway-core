@@ -6750,3 +6750,173 @@ A31 让 `scanSchedulerMissingMessage` 也认 `free-discovery is not available (.
 **差集里剩下的「候选」已几乎全是写操作。** 真正还没上移的只读面，
 全仓扫描下来只剩 `GET /api/credentials/{id}/models/{model}/state` 一条（档位待查）。
 ⇒ **下一批候选**：那一条单端点，或按需扩到 credentials 族的其余只读面。
+
+### 11.85 凭据×模型状态读面上移（第四十九轮，`credentials/.../state`，**superAdmin 档**）
+
+全仓路由差集扫描（472 注册 / 449 已覆盖 / 23 未覆盖）里**最后一条还没上移的只读面**：
+`GET /api/credentials/{id}/models/{model}/state`。同族另外三条是 **superAdmin 档且真的会触发一次探测**
+（有外部副作用）⇒ 一律不碰。
+
+- 新 API 模块 `web-mobile/src/api/credentialState.ts`
+- 新视图 `CredentialStateView.vue`（单面板：查询 + 十格 + 分层说明）
+- 新路由 `/credential-model-state`
+- 新增**一条 superAdmin 档抽屉席** `credential-model-state`（**要**设 `requiresRole`，并同步
+  `AppDrawer.spec.ts` 的白名单）
+- i18n 新命名空间 **`cs`**（47 个 `cs.*` + 1 个 `nav.credModelState`）
+- 门禁：变异 **33/33 有牙**，用例 **79 条**（38 API + 41 视图）
+
+#### ★★ 方向与前几批相反：这一条**要**设 `requiresRole`
+
+`admin/credential_state_handlers.go:174-180`：
+
+```go
+func (h *Handler) registerStateRoutes(mux *http.ServeMux) {
+	wrap := h.superAdmin                                                     // ← ★ 不是 h.admin
+	mux.HandleFunc("POST /api/credentials/{id}/test", wrap(h.handleTestCredential))
+	mux.HandleFunc("POST /api/credentials/test-batch", wrap(h.handleBatchTestCredentials))
+	mux.HandleFunc("POST /api/credentials/{id}/models/{model}/test", wrap(h.handleTestCredentialModel))
+	mux.HandleFunc("GET  /api/credentials/{id}/models/{model}/state", wrap(h.handleCredentialStateQuery))
+}
+```
+
+⇒ 前几批（`free-discovery` / `logs` / `modules` / `session-context`）的抽屉席都**故意不设** `requiresRole`，
+**照抄那条会把这页暴露给租户管理员**。视图用例专门加了一条反向判据：
+前三批的 key 仍**不设** `requiresRole`，本批的 key **必须**设。
+
+#### ★★★★★★★★★★ 头号陷阱一：这一族系列的错误是 **text/plain**，而且**带尾换行**
+
+四个 handler 全部用 `http.Error(w, msg, code)`（`:143 / :158 / :185 / :198`），
+而本仓其它端点用 `writeError(w, code, msg)` ⇒ `{"error":{"detail":msg}}`。
+
+⇒ ★★★★ 响应体是纯文本，**`error.detail` 根本不存在**。
+  移动端 `client.ts` 的 `errorMessage()` 走 `JSON.parse` 失败分支 ⇒ **原样返回整段文本**。
+⇒ ★★★★★★ 而且 `http.Error` 走 Go 的 `fmt.Fprintln(w, error)` ⇒ **追加一个换行符**
+  ⇒ 移动端拿到的是 `"state service not available\n"`
+  ⇒ **任何带 `$` 锚点的正则都匹配不上**，任何 `toBe(原文)` 都失败。
+⇒ ★★★ `admin` 包里 `http.Error` 共 **165 处**、横跨 20+ 文件 ⇒ **不是孤例**，
+  已上移的页面里凡是用 `http.Error` 的端点，其报错文案都带这个不可见字符。
+⇒ 本批所有错误判据一律**不做 `$` 锚点**，并另给 `stripHttpErrorNewline` / `HTTP_ERROR_TRAILING_NEWLINE`。
+
+★ **变异 A17 的分诊（真等价变异 + 「双重保护」）**：
+第一版给 `stateServiceMissingMessage` 加 `$` 锚点 ⇒ **仍全绿**。
+实测发现判据里已经「**先 `stripHttpErrorNewline` 再 `.trim()`**」⇒ 尾换行根本到不了正则面前
+⇒ **等价变异**。改成**两处都拆**（strip 变恒等 + 判据不再 `trim`）后才有牙。
+⇒ ★★ 与第四十八轮的「两处都删」同一形态：**单侧改动被另一侧的防御抵消，就是等价变异**。
+
+#### ★★★★★★★★★★ 头号陷阱二：`state` **可以是 `null`** —— 三层缓存全 miss
+
+`domains/credentialstate/manager.go:738-765`：
+
+```go
+func (m *Manager) GetState(ctx context.Context, credID int, model string) (*State, error) {
+	if state, ok := m.getFromMemCache(key); ok { return state, nil }        // L1 内存
+	if state, err := m.getFromRedis(ctx, key); err == nil && state != nil { … }  // L2 Redis（★err 被吞）
+	state, err := m.getFromDB(ctx, credID, model)                            // L3 DB
+	if err != nil { return nil, err }
+	if state != nil { … }
+	return state, nil          // ★★ state 可能是 nil，且**不报错**
+}
+```
+
+handler（`:152-167`）只判 `err != nil` ⇒ `state == nil` 时照样序列化：
+
+```go
+_ = json.NewEncoder(w).Encode(map[string]any{
+	"credential_id": credID, "model": model, "state": state,   // ← state 是 nil ⇒ JSON null
+})
+```
+
+⇒ ★★★★ 「从没探测过」返回 **200 + `{"credential_id":N,"model":"M","state":null}`**，**不是** 404。
+⇒ 按 `state.available === boolean` 之类校验会**拒掉合法形状**。
+⇒ 视图单列 `data-cs="state-null"` 节点，并且**null 态下不渲染任何数据格**
+  （「没量过」绝不能显示成「可用」）。
+
+#### ★★★★★★★★★★ 头号陷阱三：五条指标在**两条 DB 分支里根本没被赋值**
+
+`cache.go:118-134`（`node_probe_state` 支）只填 7 个字段：
+`CredentialID / Model / Available / ConsecutiveFails / LastUpdatedAt / RecoverAt / Source`。
+`cache.go:144-202`（`model_probe_state` 旧支）只填 5 个。
+
+⇒ ★★★★ `success_rate` / `avg_latency_ms` / `p95_latency_ms` / `active_sessions` / `concurrency_limit`
+  在**两条 DB 分支里都是 Go 零值** ⇒ 序列化成 `0`。
+⇒ ★★★ 而缓存命中时（探测写入的完整 State）它们**有真值**
+  ⇒ **同一个 (凭据, 模型) 第一次查是 0、缓存后再查可能是 0.87**，两次都是 200，
+  **没有任何字段说明差异来自哪一层**。
+⇒ `success_rate === 0` 有**三种**成因（DB 没实现 / 真的是 0% / 从没成功过），分不开。
+
+★ 顺带：`getFromDB` **先查新表 `node_probe_state`，miss 才回退旧表 `model_probe_state`**
+⇒ 同一端点在**新探测模式**与**老部署**下返回的形状可能不同。
+
+#### ★★★★★★★★ 头号陷阱四：两处枚举的**注释是不全的**
+
+| 字段 | 注释（`state.go:15,27`） | 实际还会出现 |
+|---|---|---|
+| `source` | `request, probe_v2, model_probe, passive, manual` | `node_probe_db`（`cache.go:133`）、`db`（`cache.go:199`） |
+| `health_status` | `healthy, warning, degraded, unreachable` | `healthy_confirmed` / `probing` / `available`（`cache.go:184-187`）、**空串**（`cache.go:131-133` 未赋值时） |
+
+⇒ ★★ 按注释建枚举会把**真实取值判成异常**。
+⇒ ★★ `health_status === ''` **不等于「健康」** —— 它表示「没被判为不可达」。
+⇒ ★★ `source` 记的是「**谁写的**」，**不是**「从哪一层读的」⇒ 命中层**不可判**。
+
+#### ★★★★ 静默降级两处
+
+- `manager.go:748` `if state, err := m.getFromRedis(...); err == nil && state != nil`
+  ⇒ ★★★ **Redis 挂掉 / 超时 / 反序列化失败全部被吞掉**，直接落到 DB，无任何信号
+  ⇒ ★★ 因此「500 `failed to get state`」**不会**由 Redis 挂掉引起 —— 客户端看到的只是一次成功的 DB 查询
+- `cache.go:138` `isUndefinedTable(nodeErr)`（PG 错误码 42P01，表不存在）
+  ⇒ ★★★ **表不存在被当作「这一支没数据」**，静默落到旧表
+
+#### ★★★ 时间字段的两处陷阱
+
+- `cache.go:128` `LastUpdatedAt: time.Now()` ⇒ `node_probe` 支的「最后更新」是**查询时刻**，不是探测时刻
+- `cache.go:190-192` `lastAttemptAt` 为 `*time.Time`，为 NULL 时**保持 Go 零值**
+  ⇒ ★★★ `last_updated_at` 可能是 `"0001-01-01T00:00:00Z"`
+  （本仓**第 2 处** Go 零值时间；第 1 处是第四十八轮 free-discovery `ListTasks` 的 `updated_at`）
+- `cache.go:197` `state.RecoverAt = nextRetryAt` 是**值类型** `time.Time`
+  ⇒ 即使是零值也会赋 ⇒ 该 `omitempty` 键在这两条分支里**恒存在**，且可能是 Go 零值
+
+#### ★★ 其余已查实的契约
+
+1. `parseCredentialID`（`:182-189`）：`Atoi` 失败**或** `<= 0` ⇒ 同一句 **400** `invalid credential ID`
+2. `model == ""` ⇒ 400 `model is required`（`:142-145`）——★ **实际不可达**：Go 1.22 的 `{model}` 不匹配空段，
+   而 ServeMux 会先把 `//` 清理掉 ⇒ `/models//state` 被重定向成 `/models/state`
+3. 503 `state service not available`（`:197-199`）；`Enabled() = m != nil && m.db != nil`（`manager.go:899`）
+4. 500 `failed to get state`（`:158`）
+5. 成功响应用 `json.NewEncoder(w).Encode(...)` ⇒ **末尾带换行符**
+6. `State` 是 12 个恒存在键 + **4 个 `omitempty` 键**（`last_success_at` / `last_failure_at` / `recover_at` / `last_error`）
+7. 两条自相矛盾的组合**后端不可能产生**，页面单列成异常上报：
+   `health_status === 'unreachable'` 却 `available === true`（`cache.go:131-133` 两者同时设）；
+   `available === false` 配 `healthy_confirmed/probing/available/healthy`（旧支从不把 `available` 置否）
+
+#### ★★★ 变异验证：首轮 23/33，分诊出 8 条 expect 指错 + 2 条**变异自身写错**
+
+**★ 变异自身写错（2 条，都不是判据问题）**
+
+1. **V1 第一版是个空变异**：只往抽屉席插了一行注释、**没有真删** `requiresRole` ⇒ 行为没变 ⇒ 必然全绿。
+   ⇒ 改成**真删**那一行后转红。★ 这正是「变异注入失败被读成判据无牙」的形态，
+   而 `--dry` 只能验「匹配上了」，**验不出「改了行为」** ⇒ 仍全绿时必须先查变异本体。
+2. **A17 第一版被双重保护**（见上文「头号陷阱一」）。
+
+**★ 8 条 expect 串指错**：转红了，但命中的不是我写的那条用例名 —— 逐条读具名红后改正。
+⇒ ★★ **「转红但未命中预期用例名」≠ 缺陷**，这条纪律本轮又用上 8 次。
+
+**★★ 本批最有价值的一条：`vue-test-utils` 的 `.text()` 会 `trim()`**
+
+V11 把视图里的 `stripHttpErrorNewline(errMsg)` 换成 `errMsg` ⇒ **仍全绿**。
+原因不是等价变异，而是 **DOM 断言根本看不见尾换行**：
+`wrapper.text()` 返回的是 `element.textContent?.trim()`。
+⇒ 修法：断言改读 **`element.textContent`** 原始值（本批已改成 `w.find(...).element.textContent`），
+  并同时保留 `.text()` 断言给可读部分。
+⇒ ★★★ **凡是断言「不可见字符」是否存在，必须绕过工具的规范化，直接读原始 DOM 文本。**
+  同族：不可见字符、零宽字符、大小写折叠、全角半角 —— 都会被工具悄悄规范化掉。
+
+#### 仍未上移
+
+`POST /api/credentials/{id}/test`（单凭据快速探测）、
+`POST /api/credentials/test-batch`（批量快速探测，上限 100）、
+`POST /api/credentials/{id}/models/{model}/test`（按模型手动探测）。
+三条都是 **superAdmin 档且真的会触发一次探测**（有外部副作用）⇒ 本仓继续不碰。
+
+**至此，全仓路由差集里「只读且未上移」的部分已经扫空** ——
+剩下的全部是写操作或有外部副作用的端点。若要继续上移，需要先定「哪些写操作允许在移动端暴露」的策略，
+这属于范围决策，不在「只读面复制」的既定口径内。

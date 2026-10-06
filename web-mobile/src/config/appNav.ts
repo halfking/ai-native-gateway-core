@@ -265,6 +265,18 @@ export const DRAWER_NAV: readonly NavItem[] = [
     icon: 'search',
     titleKey: 'nav.freeDiscovery',
   },
+  // 凭据 × 模型实时状态。**这一条是 superAdmin 档**
+  // （`registerStateRoutes` 里 `wrap := h.superAdmin`，credential_state_handlers.go:175）
+  // ⇒ 抽屉席**必须**设 requiresRole: 'super_admin'（与前几批 admin 档页面相反）。
+  // ★ 加这一席时必须同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
+  // ★★ 同族三个 POST（单测/批测/按模型测）都**真的触发一次探测** ⇒ 本页一律不碰。
+  {
+    key: 'credential-model-state',
+    to: '/credential-model-state',
+    icon: 'cpu',
+    titleKey: 'nav.credModelState',
+    requiresRole: 'super_admin',
+  },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))
