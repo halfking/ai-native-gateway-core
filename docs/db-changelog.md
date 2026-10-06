@@ -5751,3 +5751,10 @@ go run ./cmd/tools/propose-baseline-prices \
   **需要单独决策**；
 - `models_canonical` 基准价仍 **0 行**，`bg/data/model_baseline_prices.json` 的
   `models` 仍为 `[]`。以上全部是**提案层**的修复，一行都没进 SSOT。
+## 2026-10-05T20:26:54Z — deploy 154 build_seq 2470 (40405063)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 832 | `832_model_baseline_observation_health.sql` | `068dc768940b8c84c2ae75d45f57f48b91d66f39c435761d83cef2500af80aca` | applied+verified |
+| 833 | `833_supplier_price_nonneg_check.sql` | `5e4e4c1e11ffc11754bd90306157c4e0343e2660377425235dd151585061d40a` | applied+verified |
+

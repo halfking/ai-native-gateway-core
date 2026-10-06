@@ -783,6 +783,9 @@ var modelBaselineObservationHealth832 []byte
 //go:embed embeddata/startup/833_supplier_price_nonneg_check.sql
 var supplierPriceNonnegCheck833 []byte
 
+//go:embed embeddata/startup/837_routing_mv_refresh_state.sql
+var routingMVRefreshState837 []byte
+
 //go:embed embeddata/startup/829_bodies_columnar_rollback.sql
 var bodiesColumnarRollback829 []byte
 
@@ -1021,6 +1024,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/831_work_type_route_source.sql":                                         workTypeRouteSource831,
 	"startup/832_model_baseline_observation_health.sql":                              modelBaselineObservationHealth832,
 	"startup/833_supplier_price_nonneg_check.sql":                                    supplierPriceNonnegCheck833,
+	"startup/837_routing_mv_refresh_state.sql":                                       routingMVRefreshState837,
 	"startup/829_bodies_columnar_rollback.sql":                                       bodiesColumnarRollback829,
 }
 

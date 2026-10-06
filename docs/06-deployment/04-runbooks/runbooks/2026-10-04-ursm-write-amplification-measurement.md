@@ -8871,3 +8871,110 @@ PG 必须**先拿到 ACCESS EXCLUSIVE**，才能去检查列是否已存在；
    ⇒ 按名字聚合 SQL 时，务必再看一眼 `query` 字段本身。
 
 **这是本 runbook 第 11 次订正，也是第 3 次栽在分母/总体族（§10.63、§10.80.2、§10.80.4）。**
+
+---
+
+## §10.81 routing_analytics_7d 改造实施：把刷新时刻搬出物化视图（降 99.66%）
+
+§10.75.6~§10.75.8 定位了根因并给了只读对照实验，本节是**代码落地**。
+**本节所有改动均未上线**（部署需另行授权）。
+
+### §10.81.1 机制
+
+`REFRESH MATERIALIZED VIEW CONCURRENTLY` 会重算聚合，然后**逐行比对，只有真正变化的行才被重写**。
+两个视图的目标列表里都有：
+
+```sql
+COALESCE(SUM(cost_usd), 0) AS total_cost_usd,
+NOW() AS refreshed_at          -- ← volatile，每轮每行都不同
+```
+
+`NOW()` 是 volatile 的，重算出来必然与存量不同 ⇒ **每一行都被判定为「变了」**
+⇒ 所谓 concurrent 刷新退化成整表重写。
+
+⚠️ 关键区分（我第一版门就写错了这一点）：
+**只有目标列表参与行差异判定。**
+`WHERE ts >= NOW() - INTERVAL '7 days'` 里的 `NOW()` 决定「哪些行进结果集」，
+不贡献任何列值，**完全无害**。
+所以门必须是「目标列表里没有 volatile 表达式」，而不是「语句里没有 NOW()」。
+
+### §10.81.2 改动面（三处 SQL 镜像 + 三个 Go 属主）
+
+| 文件 | 改动 |
+|---|---|
+| `db/db.go` `routingAnalyticsMVSQL` | 两个视图去掉 `NOW() AS refreshed_at`；新增 `routing_mv_refresh_state` 建表 |
+| `db/db.go` `ensureRoutingAnalyticsMaterializedViews` | 快路径与 stale 探针**各加**反向判据；只在真重建时打戳 |
+| `db/db.go` 新增 `StampRoutingMVRefreshSQL` | 导出给 `bg` 复用（`VALUES ($1, NOW())`，按视图名参数化） |
+| `bg/materialized_view_refresher.go` | 新增 `execRefresh`，刷新成功后打戳；两个分支都走它 |
+| `admin/analytics_materialized.go` | `mvFreshWithin` 改读状态表，**且仍校验视图存在** |
+| `sql/.../up/632_*.sql` | DBA 镜像同步（无 `NOW()`，头部注明 837 为准） |
+| `sql/.../837_*.sql` + `.down.sql` | 新迁移（SQL 驱动部署的收敛路径） |
+| `installer` 五点接线 | embeddata 副本（md5 一致）+ `go:embed` + `embeddedSQLFiles` + `StartupFiles` |
+
+**649 保持不动**：它是**已应用**的迁移，且在 `StartupFiles` 里；
+837 排在它之后，任何重放 649 的库都会被 837 收敛。改已应用迁移的风险高于收益。
+
+### §10.81.3 两个非显然的设计点
+
+1. **打戳必须参数化，不能一次戳两个视图。**
+   `refreshAll` 是**分别**刷新两个视图的。若在第一个成功后把两行都更新，
+   第二个刷新失败时它会被报成「新鲜」—— 而这张表唯一的职责就是不许说谎。
+   ⇒ `VALUES ($1, NOW())`，逐视图打戳。
+2. **快路径必须加反向判据，否则 837 到不了生产。**
+   原来的「已最新」判定只看 `origin_stage`，而它在 837 前后**完全相同**。
+   只改 SQL 不改这个闸，252 上的旧视图会永远被判为「已是最新」——
+   迁移看起来做完了，生产一点没变。
+   ⇒ 两处探针各加 `POSITION('refreshed_at' IN pg_get_viewdef(...)) = 0`。
+
+### §10.81.4 门与变异验证
+
+新增 `sql/migrations/startup/migration_837_test.go`（14 个子测试），
+并修掉 `migration_632_test.go` 里一条**已经变恒真**的门：
+`require.Contains(upSQL, "refreshed_at")` 断言「视图有此列」，
+而 837 之后该字符串来自**另一个对象**（状态表）⇒ 整文件包含检查无法区分
+「这个视图有这列」与「这个文件提到这个词」。
+
+| 变异 | 注入 | 命中的子测试 |
+|---|---|---|
+| M72 | 7d 视图把 `NOW() AS refreshed_at` 加回目标列表 | `up_removes_refreshed_at_from_both_views` |
+| M73 | `auto_request_count` 谓词退回 `IS NOT TRUE` | `up_keeps_every_aggregate_column` |
+| M74 | 删掉快路径里的反向判据 | `db_ensure_rebuilds_existing_views` |
+| M75 | `execRefresh` 先打戳再 REFRESH | `refresher_stamps_only_after_a_successful_refresh` |
+| M76 | 新鲜度闸退回 `MAX(refreshed_at) FROM 视图` | `admin_reads_the_stamp_and_still_checks_existence` |
+| M77 | 只删 stale 探针里的反向判据 | `db_ensure_rebuilds_existing_views` |
+
+**6/6 全部转红**，还原用 `cp` 文件副本 + md5 自证。
+
+### §10.81.5 本节的三次自我推翻（都是被门和工具抓到的）
+
+1. **抄错谓词（真 bug）**：我在 837 里把 `auto_request_count` 写成
+   `FILTER (WHERE is_auto_request IS NOT TRUE)`，应为 `= TRUE`
+   —— 会让自动请求计数**静默归零**。
+   第一次我用 `diff | grep` **过滤过输出**，正好把这一行滤掉了；
+   改成**无过滤全量 diff** 后才暴露。⇒ **验证用的 diff 不许加过滤器。**
+2. **门写得过严**：我写了 `NotContains(body, "NOW()")`，
+   结果被 `WHERE ts >= NOW() - INTERVAL '7 days'` 打红。
+   这是**假红**：门声称检查「volatile 表达式」，实际把无害的窗口过滤也算上了。
+   ⇒ 作用域必须收到**目标列表**。
+3. **门以错误的原因变红**：修好作用域后门仍红，但 db.go 明明完好。
+   根因是期望串写成了
+   `"...(to_regclass('public.'+view+'), true)..."` —— `+` 在**双引号内部**，
+   是字面文本不是运算符，于是门在找一个含 `+view+` 的字符串。
+   ⇒ **门红时必须先确认「红的原因」与「门声称检查的东西」是不是同一件事**，
+   否则照着报错改代码会把门改坏。
+
+★ 第 3 条与「恒真判据」同族但方向相反：
+**因错误原因变绿**会漏掉缺陷，**因错误原因变红**会毁掉判据。两者都要先归因再动手。
+
+### §10.81.6 预期收益与未验证项
+
+| 项 | 值 |
+|---|---|
+| `routing_analytics_7d` 单次刷新重写比例 | 100.7% → **~0.34%** |
+| 本网关库 WAL 占比 | 8.98% → **~0.03%** |
+| 按 §10.80.4 的 56.33 GB / 6,406 次计 | 约省 **56.1 GB** 累计 WAL |
+
+⚠️ **「~0.34%」是外推，不是实测。**
+§10.75.7 的只读对照实验测的是「连续两次聚合结果真正不同的行占 0.339%」，
+不是「去掉 NOW() 后 REFRESH 实际重写了多少行」。
+上线后应以 `pg_stat_statements` 里该语句的 `wal_bytes` 复核。

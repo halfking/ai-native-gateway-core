@@ -78,18 +78,30 @@ func TestMaterializedViewRefresher(t *testing.T) {
 		err := refresher.TriggerRefresh(ctx)
 		require.NoError(t, err, "manual refresh should succeed")
 
-		// Verify views were refreshed by checking refreshed_at timestamp
-		var refreshedAt time.Time
+		// Migration 837: the refresh timestamp no longer lives in the view.
+		// Reading MAX(refreshed_at) FROM routing_analytics_7d now fails with
+		// SQLSTATE 42703 (column does not exist), so this check has to read
+		// routing_mv_refresh_state instead.
+		//
+		// Both conditions are asserted together on purpose: a stamp row alone
+		// proves the refresher ran, but not that it ran for THIS view.
+		var stampedAt time.Time
 		err = pool.QueryRow(ctx, `
-			SELECT MAX(refreshed_at) FROM routing_analytics_7d
-		`).Scan(&refreshedAt)
+			SELECT refreshed_at FROM routing_mv_refresh_state WHERE view_name = $1
+		`, "routing_analytics_7d").Scan(&stampedAt)
+		require.NoError(t, err, "refresher should record a refresh stamp for the view")
 
-		if err == nil {
-			// View exists and has data
-			age := time.Since(refreshedAt)
-			require.Less(t, age, 2*time.Minute,
-				"routing_analytics_7d should have been refreshed recently")
-		}
+		var viewExists bool
+		require.NoError(t, pool.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM pg_matviews
+			               WHERE schemaname = 'public' AND matviewname = $1)
+		`, "routing_analytics_7d").Scan(&viewExists),
+			"view existence should be queryable")
+		require.True(t, viewExists, "routing_analytics_7d should exist after a refresh")
+
+		age := time.Since(stampedAt)
+		require.Less(t, age, 2*time.Minute,
+			"routing_analytics_7d should have been refreshed recently")
 	})
 
 	t.Run("start_stop", func(t *testing.T) {
