@@ -7879,6 +7879,17 @@ func (d *DB) ensurePartitionAutovacuumSchema(ctx context.Context) error {
 		        WHERE n.nspname = 'public' AND c.relkind = 'r'
 		          AND (c.relname LIKE '%\_hot' ESCAPE '\'
 		            OR c.relname = 'credential_probe_model_log')
+		          -- Skip tables whose reloptions already match. ALTER TABLE SET
+		          -- takes ACCESS EXCLUSIVE even when it changes nothing, so an
+		          -- unguarded loop locks every hot table on every boot.
+		          -- Measured on 252 production: 23 hot tables + 40 partitions =
+		          -- 63 exclusive locks per start, all already correct.
+		          AND NOT (COALESCE(c.reloptions, ARRAY[]::text[]) @> ARRAY[
+		              'autovacuum_enabled=true',
+		              'autovacuum_vacuum_scale_factor=0.05',
+		              'autovacuum_vacuum_threshold=10',
+		              'autovacuum_analyze_scale_factor=0.02',
+		              'autovacuum_analyze_threshold=50'])
 		    LOOP
 		        BEGIN
 		            EXECUTE format('ALTER TABLE %I SET (%s)', r.relname, opts_sql);
@@ -7898,6 +7909,14 @@ func (d *DB) ensurePartitionAutovacuumSchema(ctx context.Context) error {
 		              'routing_decision_log','request_wal','usage_ledger',
 		              'credit_ledger','tool_usage_stats','candidate_failure_logs',
 		              'handoff_logs','request_logs_bodies'])
+		          -- Same guard as the hot-table loop above: 40 partitions on
+		          -- 252 production, all already carrying these reloptions.
+		          AND NOT (COALESCE(c.reloptions, ARRAY[]::text[]) @> ARRAY[
+		              'autovacuum_enabled=true',
+		              'autovacuum_vacuum_scale_factor=0.05',
+		              'autovacuum_vacuum_threshold=10',
+		              'autovacuum_analyze_scale_factor=0.02',
+		              'autovacuum_analyze_threshold=50'])
 		    LOOP
 		        BEGIN
 		            EXECUTE format('ALTER TABLE %I SET (%s)', r.relname, opts_sql);
