@@ -14,6 +14,7 @@ import { t } from '@/i18n'
 import HyperList from '@/components/common/HyperList.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import AppIcon from '@/components/common/AppIcon.vue'
+import NodeAuditSheet from '@/components/shell/NodeAuditSheet.vue'
 
 useHyperPage({ title: () => t('providers.title') })
 
@@ -94,6 +95,15 @@ function badge(p: Provider): { cls: string; label: string } {
   return { cls: 'badge--muted', label: p.health_status || t('common.unknown') }
 }
 
+// 节点操作审计：按 provider 维度（覆盖面依据见 api/nodeAudit.ts 头注）。
+const auditProvider = ref<Provider | null>(null)
+const auditOpen = computed({
+  get: () => auditProvider.value != null,
+  set: (v: boolean) => {
+    if (!v) auditProvider.value = null
+  },
+})
+
 const summary = computed(() => {
   const total = cache.length
   const down = cache.filter((p) => p.routability === 'unavailable').length
@@ -141,7 +151,12 @@ const summary = computed(() => {
     </template>
 
     <template #item="{ item: p }">
-      <div class="data-card provider-card">
+      <button
+        type="button"
+        class="data-card provider-card"
+        :aria-label="t('audit.openFor', { name: providerName(p) })"
+        @click="auditProvider = p"
+      >
         <div class="card-row">
           <span class="provider-card__name">
             <StatusDot :tone="tone(p)" />
@@ -160,10 +175,19 @@ const summary = computed(() => {
           <span v-if="typeof p.model_count === 'number'" class="provider-card__field">
             {{ t('providers.models', { n: p.model_count }) }}
           </span>
+          <span class="provider-card__field provider-card__audit">{{ t('audit.open') }}</span>
         </div>
-      </div>
+      </button>
     </template>
   </HyperList>
+
+  <NodeAuditSheet
+    v-if="auditProvider"
+    :model-value="auditOpen"
+    :provider-id="auditProvider.id"
+    :provider-name="providerName(auditProvider)"
+    @close="auditProvider = null"
+  />
   </div>
 </template>
 
@@ -234,6 +258,20 @@ const summary = computed(() => {
   display: flex;
   flex-direction: column;
   gap: var(--app-space-2);
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.provider-card:active {
+  background: var(--app-primary-softer);
+}
+
+.provider-card__audit {
+  margin-inline-start: auto;
+  color: var(--app-primary);
 }
 
 .provider-card__name {

@@ -158,6 +158,19 @@ export const zhCN = {
     noDecisions: '最近没有该凭据的路由记录',
     stickyHit: '粘性命中',
   },
+  audit: {
+    title: '节点操作审计',
+    open: '查看操作审计',
+    openFor: '查看 {name} 的操作审计',
+    scopeProvider: '供应商：{name}',
+    /** 覆盖面说明必须露出来：这个审计面**不含**凭据级写操作（停用/检查/强恢）。 */
+    coverageHint: '此处仅记录供应商级操作（探测 / 启停）。凭据级的停用、探测、强制恢复不在此留痕。',
+    empty: '该供应商没有操作记录',
+    operator: '操作者 {id}',
+    source: '来源 {v}',
+    opTestNow: '触发探测',
+    opEnableToggle: '启停切换',
+  },
   providers: {
     title: '供应商',
     searchPlaceholder: '搜索名称 / code / 目录码',

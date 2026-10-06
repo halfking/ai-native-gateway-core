@@ -47,7 +47,7 @@
 | 密钥 | `/keys` | `/api/keys` 全套 | 卡片列表 + 创建 Sheet + 禁用/揭示（揭示走确认框，不缓存） |
 | 告警 | `/alerts` | `/api/candidate-failures/alerts` | 时间线卡片 |
 | 路由检查 | `/routing` | `GET /api/routing/resolve?model=` | 抽屉席位；输入模型名 → 可路由/被阻塞候选分组（2026-10-06，见 §11） |
-| 供应商 | `/providers` | `GET /api/providers` | 抽屉席位；卡片 + 搜索（客户端）+ 可用性筛选（**服务端** routability）（2026-10-06，见 §11.6） |
+| 供应商 | `/providers` | `GET /api/providers` | 抽屉席位；卡片 + 搜索（客户端）+ 可用性筛选（**服务端** routability）（2026-10-06，见 §11.6）；卡片可点开该供应商的**节点操作审计** Sheet |
 | 用量 | `/usage` | `/api/usage/summary` + `/api/usage/by-model` | 汇总卡 + 模型分布，Tab 停靠 |
 | 我的 | AccountSheet | `/api/auth/me` | 全屏 Sheet（用户/外观/语言/登出），02 §5 结构 |
 
@@ -352,3 +352,46 @@ R3 已补齐六字段；R2/R6/R7/R8/R9 登记「未实现/不适用」）。R11 
 `web-mobile/` 实测：`vue-tsc -b` 通过；`vitest run` **125 用例 / 18 文件全绿**
 （新增 ProvidersView 4 条 + providers 解包 8 条 + credentialsOps 解包 6 条 +
 NodesView 决策区 3 条）；`npm run css:check` 通过（29 文件）；`npm run build` 通过。
+
+### 11.10 节点操作审计（第三轮补齐，2026-10-06）
+
+`GET /api/admin/audit/node-operations`（admin 档，**tenant_admin 可用**；租户隔离靠 RLS，
+`admin/audit_operations.go:219-223`）→ 供应商卡点开 `NodeAuditSheet`。
+
+**★ 覆盖面实测结论（这条很容易想当然，务必先读）**：该审计面**只记供应商级**
+两类操作，**不记凭据级**：
+
+| 落库值 | 含义 | 写入处 |
+| --- | --- | --- |
+| `test-now` | 供应商级触发探测 | `admin/node_operations_audit.go:35` |
+| `enable_toggle` | 供应商级启停 | `admin/node_operations_audit.go:63` |
+
+两处都是 `go func()` 异步落库、不阻塞主流程（:30、:59）。
+⇒ 后果：**§11 上移的四个凭据级写操作（停用/恢复/检查/强制恢复）不会出现在这里。**
+所以本视图**只**回答「谁动过这个供应商」，**不得**当凭据操作审计用，
+也**不**挂到凭据详情页 —— 那会让用户以为「我刚才那次停用有记录」而实际查不到，
+误判成系统故障。UI 上用 `audit.coverageHint` 显式说明这个缺口。
+
+**另一处注释与实现不一致**：`audit_operations.go:14` 注释写 operation 取值是
+`test_now / enable_toggle`，但真正落库的是 **"test-now"（连字符）**，:35。
+过滤器若照抄注释会**永远查不到行**。`operationLabel` 按连字符版匹配并保留下划线版兼容。
+
+**limit 硬校验**（:95-103）：`<1` 或非数字 → 400 `invalid limit`；`>200` → 静默 clamp
+到 `maxAuditOperationLimit`（:57）。移动端前端先夹：`Math.trunc` → `Number.isFinite`
+→ `min(·, 200)`，且 `<1` **不发** limit（让后端用默认 50，而不是收一个非法值）。
+判据是**观察实际 URL**，不是「函数被调用过」。
+
+**第四种响应形态**（延续 §11.7）：本端点返回 `{entries, count, limit}`
+（:229-233）。至此四形态并存，仍不抽通用解包器，形状不符一律抛错。
+
+### 11.11 本轮门禁（第三轮，含节点操作审计）
+
+`web-mobile/` 实测：`vue-tsc -b` 通过；`vitest run` **150 用例 / 20 文件全绿**
+（新增 NodeAuditSheet 9 条 + nodeAudit API 15 条 + ProvidersView 审计入口 1 条）；
+`npm run css:check` 通过（30 文件）；`npm run build` 通过。
+
+**一处测试预期写错、实现是对的**（留作判据样例）：我第一版断言
+「`limit: Infinity` 应被夹到 200」，实测实现是**不发 limit** ——
+因为 `Number.isFinite(Infinity)` 为 false，根本进不了夹取分支。
+是我把 `Math.trunc(Infinity) === Infinity` 想成了「能过 isFinite」。
+已改成断言「不发」，并把这段推理写进测试注释。

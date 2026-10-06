@@ -155,6 +155,19 @@ export const enUS = {
     noDecisions: 'No routing records for this credential recently',
     stickyHit: 'sticky hit',
   },
+  audit: {
+    title: 'Node operation audit',
+    open: 'View operation audit',
+    openFor: 'View operation audit for {name}',
+    scopeProvider: 'Provider: {name}',
+    /** Coverage must be stated: this audit surface does **not** include credential-level writes. */
+    coverageHint: 'Records provider-level operations only (probe / enable-toggle). Credential-level disable, probe and force recovery are not traced here.',
+    empty: 'No operations recorded for this provider',
+    operator: 'by operator {id}',
+    source: 'source {v}',
+    opTestNow: 'Trigger probe',
+    opEnableToggle: 'Enable toggle',
+  },
   providers: {
     title: 'Providers',
     searchPlaceholder: 'Search name / code / catalog',
