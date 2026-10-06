@@ -197,6 +197,21 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.modelPolicyAudit',
     requiresRole: 'super_admin',
   },
+  // 租户审批配置。★ **admin 档**（wrapAdmin = admin.AdminMiddleware）⇒ tenant_admin 可用
+  // ⇒ **故意不设** requiresRole；设成 super_admin 必须让判据红。
+  {
+    key: 'approval-config',
+    to: '/approval-config',
+    icon: 'check',
+    titleKey: 'nav.approvalConfig',
+  },
+  // 审批人与规则。同样 admin 档，同样**故意不设** requiresRole。
+  {
+    key: 'approval-rules',
+    to: '/approval-rules',
+    icon: 'grid',
+    titleKey: 'nav.approvalRules',
+  },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))
