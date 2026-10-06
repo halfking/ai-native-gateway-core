@@ -7395,3 +7395,111 @@ if err != nil { writeJSON(w, http.StatusOK, []any{}); return }   // routing.go:3
 ⇒ 与「投测试前先扫一眼别的重测试进程」同族：**变异脚本会改源文件，
   跑全量/十连跑之前必须确认它已结束**，否则会把环境干扰读成回归。
 （确认变异收口后重跑：2883 条全绿 rc=0。）
+
+---
+
+## 11.89 第五十三批：模型路由树 / 可用模型原始名单 / 熔断健康
+
+三条 admin 档只读端点：`model-tree`（handler.go:1199）、`available-models/raw`（:1203）、`health`（:1205）。
+
+### ★★★★★★★★ 同一端点，按调用者角色返回**两种形状**
+
+`admin/routing.go:2261`：`hideCredentialDetails := IsTenantAdmin(r)`
+
+| | super_admin | tenant_admin |
+|---|---|---|
+| 顶层键 | `featured, series, unmapped` | `featured, series, unmapped, **`readonly: true`**` |
+| variant 级 | 只有 `credentials[]`（逐凭据详情） | `available` + `credential_count`，**无 credentials** |
+| `available` 含义 | `credentials[].available` = **该单个凭据** | `variants[].available` = **全部**凭据都可用（`:2482` 遇任一 false 即 break） |
+
+★★ `readonly: true` 是**两侧唯一的区分标记**。
+★★★ `available` 这个名字在两侧**层级不同、语义也不同** ——
+一个是单凭据的可用性，一个是全称判断。把它当同一个指标读会得到**相反**的结论。
+
+移动端因此把两种形状建成**两套类型**、给一个显式分流判据
+（`modelTreeIsRedacted` / `isSimpleVariant`），并让
+`modelTreeVariantAvailable()` 在完整形状下**返回 `null` 而不是猜一个**。
+⇒ 「拿不到答案」就明说拿不到，别返回一个看着像答案的值。
+
+### ★★★★★★ `availability_state` 的 NULL 被写成 **`"ready"`**
+
+SQL（`:2276`）：`COALESCE(c.availability_state, 'ready')`
+相邻的 `credential_status` 兜的是 `'unknown'`（`:2275`）——
+**两个兜底值不一致，恰恰说明 `'ready'` 是失误而非设计**。
+
+后果比 §11.87 那两个编造默认值（`0.9` / `9999`）更严重：
+那两个编造的是**展示指标**，这个直接改变「这条能不能路由」的判断
+⇒ 一个状态未知的凭据在树里显示为「就绪」。
+已加 `modelTreeAvailabilityFabricated()`（判据要求 `status === 'unknown'` 才算命中，
+因为单独看 `availability_state === 'ready'` 不足以判定）。
+
+### ★★★ `available-models/raw` 零行返回 **`null`** 而不是 `[]`
+
+```go
+var names []string          // routing.go:3203 —— nil 切片
+for rows.Next() { names = append(names, name) }
+writeJSON(w, http.StatusOK, names)
+```
+
+`json.Marshal` 把 **nil slice** 编码成 `null`；只有 `make([]string, 0)` 才是 `[]`。
+⇒ 「一个可用模型都没有」与「契约漂移」在客户端必须分开处理。
+
+★ 同族对照：§11.88 的 `audit` 走的是 `make([]map[string]any, 0)` ⇒ 返 `[]`。
+**同一族两种表示**，不能跨端点类推。
+⇒ 已让 `unwrapAvailableModelsRaw` 显式接受 `null` 并归一成 `[]`，
+  但**非数组且非 null 仍然抛错**（不静默返回空）。
+
+### ★★ `featured_only` 在 model-tree 里同样会**整个失效**
+
+过滤写在 Go 里（`:2387` `if featuredOnly && len(featuredModels) > 0`），
+按 `rawName` 或 `canonicalName` 匹配 ⇒ featured 为空时过滤条件整个不下发，
+返回全量且无提示。与 §11.88 的 `overview` 是同一个坑的两个实例。
+
+### ★★ `routing/health` 的 summary 三个数是**客户端可复算**的
+
+`total = len(credentials)`、`open = circuit_state=='open'` 的条数、`closed = total - open`
+（`:3415-3440`）⇒ `routingHealthSummaryDisagrees()` 现场复算一遍，
+对不上即契约漂移或中间层加工过。
+
+另外加了 `routingHealthCoolingDesynced()`：`cooling_until` 非空但
+`circuit_state` 不是 `open` ⇒ 冷却窗口与熔断状态不同步。
+
+### 类型上的一个坑
+
+`modelTreeVariants()` 要在**两种结构不同的 series 联合类型**上做 `flatMap`，
+TS 推不出共同元素类型（两个重载都不匹配）⇒ 那里有一处**显式 cast**，
+并在注释里写明「安全的前提是调用方按 `isSimpleVariant` 分流」。
+⇒ **类型门不只是「能不能编译」，也是联合类型设计的探测器**：
+它逼着人把「两种形状」这件事在类型层面说清楚，而不是用 `any` 混过去。
+
+### 变异：26 条 —— **26 有牙，零可疑**
+
+| 组 | 条数 | 覆盖 |
+|---|---|---|
+| A model-tree 形状 | 9 | 信封 3 键、三处数组类型、`readonly` 分流（恒 false / 只看真值 / 看 credentials 在不在）、全称 fold（漏 single / 空列表）、变体跨层展开、两个伪造判据、featured 失效 |
+| B available-models-raw | 4 | null 放行、非数组抛错、重复检出、非字符串元素滤除 |
+| C routing/health | 8 | 信封、summary 类型、凭据 9 键、summary 可复算（恒 false / 恒 true / 只看 total）、冷却不同步两支 |
+
+**首轮 21/26，分诊出的 5 条里 3 条是同一个病根：「样本恰好不触发」。**
+
+| 变异 | 为什么测不出来 | 补法 |
+|---|---|---|
+| **A4** 判据只看真值（`!!`） | 后端只发 `readonly: true` 或**键不存在** —— 这两种输入下 `=== true` 与 `!!` **恒等** | 加一条真值非布尔（字符串 `"true"`）的契约漂移样本 |
+| **A9** 只取第一层 generation | 夹具里每个 series **只有一个** generation | 夹具加第二个 generation，并断言变体总数与 `gpt-35-turbo` 在列 |
+| **B4** 原样返回不过滤 | 夹具里**全是字符串** | 加一条混入 `[1, null, {}]` 的样本 |
+
+★★★ 这已经是**连续第三批**同一病根（§11.87 的「样本只命中一半」「两键同值」「可路由行本就没原因键」，
+§11.88 的三条同源缺口，本批又三条）。
+⇒ **规律**：变异比断言更容易发现「样本选歪」。断言断言的是**一个具体样本**的行为，
+变异扰动的是**规则**；样本恰好没落在规则的敏感区，规则改了也测不出来。
+⇒ 已定做法：**写判据时主动构造「两个实现只在边缘输入上分叉」的样本**，
+   而不是只写一个「正常样本 + 一个明显错的样本」。
+
+另 2 条（A5/A6）是 expect 串指错 —— 变异确实转红，只是命中了相邻用例名。
+
+### 类型门也是「联合类型设计」的探测器
+
+`modelTreeVariants()` 要在两种**结构不同**的 series 上做 `flatMap`，
+TS 推不出共同元素类型（两个重载都不匹配），逼出一处显式 cast。
+那处 cast 不是偷懒 —— 它迫使「两种形状」这件事在类型层面被说清楚，
+而不是用 `any` 糊过去。
