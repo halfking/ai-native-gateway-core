@@ -872,6 +872,9 @@ func main() {
 	var audioTranscriptionsHandler *streaming.AudioTranscriptionsHandler
 	var audioSpeechHandler *streaming.AudioSpeechHandler
 	var audioMCPHandler *streaming.AudioMCPHandler
+	// 2026-10-06 ASR 多模型轮：refine/analyze 转写后处理二件套，与
+	// /v1/audio/* 共享 AudioService 鉴权；LLM 步骤走环回 chat 面。
+	var audioTransformHandler *streaming.AudioTransformHandler
 
 	// ── Tenant model policy (Round 48, 2026-06-21) ─────────────────
 	// Single Checkerr singleton shared by streaming.ChatHandler (hot
@@ -2423,6 +2426,12 @@ func main() {
 		audioTranscriptionsHandler = streaming.NewAudioTranscriptionsHandler(audioService)
 		audioSpeechHandler = streaming.NewAudioSpeechHandler(audioService)
 		audioMCPHandler = streaming.NewAudioMCPHandler(audioService)
+		// 2026-10-06 ASR 多模型轮：refine（精细化转写）+ analyze（实时
+		// 总结分析）共享鉴权；MCP 面同步暴露 refine_transcription /
+		// analyze_transcription 两个工具。
+		transformSvc := streaming.NewAudioTransformService(audioService)
+		audioTransformHandler = streaming.NewAudioTransformHandler(transformSvc)
+		audioMCPHandler.SetTransformService(transformSvc)
 		slog.Info("API key authentication + RPM rate limiting enabled")
 	} else if cfg.SecretKey != "" {
 		// 2026-09-14 audit H-P0-1: DB verifier unavailable (lite mode /
@@ -6557,6 +6566,11 @@ func main() {
 	}
 	if audioMCPHandler != nil {
 		mux.Handle("/v1/mcp", audioMCPHandler)
+	}
+	// 2026-10-06 ASR 多模型轮：转写后处理二件套（LLM 步骤经环回 chat 面）。
+	if audioTransformHandler != nil {
+		mux.Handle("/v1/audio/refine", audioTransformHandler)
+		mux.Handle("/v1/audio/analyze", audioTransformHandler)
 	}
 	mux.Handle("/v1/models", modelsHandler)
 
