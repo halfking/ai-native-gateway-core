@@ -4648,3 +4648,142 @@ if err != nil {
 `settings` / `plans` / `topup-packages` / `tenants/{id}` / `orders` / `orders/{id}` /
 `model-rates/{id}`。写操作（batch、batch-reset、batch-fill-global、
 settings PUT、model-rates 的 POST/PUT/DELETE）按前几批同口径**一律不碰**。
+
+### 11.74 MaaS 订单上移：这条端点**没有分页**，且列表恒缺支付信息（第三十八轮，superAdmin 档）
+
+新增 `src/api/maas.ts` 的 **orders 段**（追加，不改 rates 段）
++ `src/views/MaasOrdersView.vue`（列表）+ `src/views/MaasOrderDetailView.vue`（详情）
++ 路由 `/maas-orders` 与 `/maas-orders/:id`
++ 抽屉席「MaaS 订单」（**本仓第 11 条 superAdmin 抽屉席**；详情页**不占席**）。
+
+★ 鉴权同上：`admin/maas_handlers.go:14-24` 全部 11 条都是 `h.superAdmin(...)`
+⇒ 抽屉席设 `requiresRole: 'super_admin'`，并同步 `AppDrawer.spec.ts` 白名单
+（那条白名单式断言**再次正确地抓到了**本轮新增的席）。
+
+#### ★★★★★★ 头号问题：这条端点**根本没有分页**
+
+1. ★★★★★★ `ListOrders(ctx, tenantID, limit)`（`maas/orders.go:221-252`）
+    只有**三个参数**，SQL 是 `ORDER BY bo.created_at DESC LIMIT $1`
+    —— **没有 OFFSET、没有游标、没有页码**。
+    ⇒ 想看更老的订单，唯一办法是**把 limit 调大**。
+    ⇒ **页面上放「下一页 / 加载更多」是造一个不存在的功能**：
+      列表页据此**刻意不放**任何翻页控件，并有判据钉住这一点
+      （V1 注入一个「下一页」按钮 ⇒ 必须红）。
+
+2. ★★★★ 还有**第二层限流**：`maas/orders.go:222-224`
+
+    ```go
+    if limit <= 0 || limit > 100 { limit = 20 }
+    ```
+
+    ⇒ 有效区间 **1..100**，越界**回落 20**（本仓第六种分页语义）。
+    ★ 注意 handler 那一层的 `strconv.Atoi` 是**裸解析不校验**的
+      （`maas_handlers.go:617-639`），所以真正把关的是上面这两行。
+    ⇒ 客户端**主动**按同规则回落 20，而不是 clamp 到 100 ——
+      因为 clamp 出去的值会被后端**悄悄改写**，页面显示的 limit 与实际取数就会对不上。
+    ⇒ 列表页的 limit 选择器只给 **20 / 50 / 100** 三个值，全部落在有效区间内。
+
+3. ★★★★★ 响应**只有 `items`**（`writeJSON(w, 200, map[string]any{"items": items})`，
+    `maas_handlers.go:638`）：**没有 `total`、没有 `limit` 回显**。
+    ⇒ 「还有没有更多」只能靠「**这页排满了**」近似
+      （`maasOrdersMaybeMore(items, limit)` = `length >= limit`）。
+    ★ `>=` 与 `>` 在 `length === limit` 那一格上给出相反答案 ——
+      A9 变异把 `>=` 改成 `>` 最初**仍全绿**，补了「条数正好等于 limit」那条判据才红。
+
+4. ★★★ 列表**跨全部租户**：handler 传 `svc.ListOrders(ctx, "", limit)`
+    ⇒ SQL 走 else 分支，**没有 `WHERE bo.tenant_id = …`**。
+    ⇒ 看到别的租户的单子**不是越权，是这个端点的设计**，页面明说。
+
+#### ★★★★★ 列表恒缺 `payment_hint` / `stub_mode` —— 端点差异，不是数据缺失
+
+5. ★★★★★ `enrichOrderPaymentHint(ctx, &o)`（`orders.go:216`）**只在 `GetOrder` 里调**；
+    `ListOrders` 那一圈**没有**这一行。
+    ⇒ 列表里的每一行**恒定**没有 `payment_hint`；
+      `stub_mode` 因为是 `bool` + `omitempty`（`orders.go:33-55`），
+      **值为 false 时连键都没有**。
+    ⇒ 页面若写「这单没有支付信息」就是**在说谎**：
+      它必须说「**列表接口不返回这个字段**，去详情页看」。
+    ★ 这也是拆成两页的直接理由：**详情页才是唯一的真值来源**。
+
+6. ★★★★ 详情页由此多出两条说明：
+    - `stub_mode` 键**缺失**时要说破：「显示『关闭』是按『非 true』推断的，
+      **不是**读到了显式的 false」（因为 omitempty 让两者不可区分）；
+    - `payment_hint` 缺失显示 `—`（复用 `maas.noValue`），不编。
+
+#### ★★★★ 详情端点：形状不同 + 404 身兼两职 + 一个真契约错配
+
+7. ★★★★ 详情响应是**裸对象**（`writeJSON(w, 200, order)`，`maas_handlers.go:683`），
+    **没有** `items`、没有任何包装键 ⇒ **与列表形状不同**。
+    ⇒ 两条 `unwrap` 各自独立，并互相加「互喂必须抛错」判据
+      （V/A5 两条变异分别钉住两个方向）。
+
+8. ★★★★ 404 **身继两职**：`GetOrder` 出错一律
+    `writeError(w, 404, "order not found")`（`maas_handlers.go:679-682`），
+    **不区分「订单不存在」与「查询失败」**
+    ⇒ 页面 404 时不许只说「订单不存在」，必须并列「也可能是查询本身失败了」。
+
+9. ★★★★★ **本轮查实并修掉的真契约错配**（客户端自己的 bug）：
+    后端是 `id, err := strconv.ParseInt(parts[0], 10, 64)`（`maas_handlers.go:653`）
+    ⇒ **只吃纯十进制数字**。而详情页原本用 `Number(trimmed)` 解析，
+    `Number()` 会把 `'1e3'` / `'7.0'` / `'0x10'` / `'+7'` **解析成整数**
+    ⇒ 这四种串**本地守卫放行、发出去后端必回 400 `invalid order id`**。
+    ⇒ 守卫改成先卡 `/^\d+$/` 再谈数值，并补四种形态的判据
+      （V11 变异把正则退回 `Number()` ⇒ 必须红）。
+    ★ 这类错配**只有把前端的解析规则和后端的解析规则并排读**才会暴露 ——
+      两边都「看起来对」。
+
+10. ★★ `svc == nil || !Enabled()` ⇒ **503 `database not configured`**
+    ⇒ 是「MaaS 没开 / 没接库」，**不是**「没有订单」。页面不许退化成空清单。
+
+#### ★★★ 其余三条
+
+11. ★★★ `amount_cents` 单位是**分** ⇒ 显示换算成元。
+    ★ **不是**乘 `cents_per_credit`——那是**积分**的单价（settings 里另有的字段）。
+12. ★★★ `plan_name` / `package_name` 是 `COALESCE(sp.name,'')` 出来的
+    （`orders.go:233` / `:247`）⇒ **空字符串表示 LEFT JOIN 未命中**，
+    即关联的套餐/包**已被删**。判据「有 id 但名字是空串 = 孤儿」；
+    且 `plan_id`/`package_id`/`paid_at` 都是**指针 + omitempty**，键可能整个不存在
+    ⇒ 没 id 的不算孤儿。
+13. ★★ 枚举全部实读后端：`OrderType` = `subscribe`/`topup`（orders.go:18-20）、
+    `OrderStatus` = `pending`/`paid`/`cancelled`/`expired`（:26-30）、
+    `PaymentChannel` = `alipay`/`wechat`/`manual`（payment.go:12-14）。
+    页面遇到**枚举外**的值原样显示并打 info 色调，**不猜也不吞**。
+
+#### 本轮门禁（当场实测）
+
+- **变异验证 23/23 有牙**：API 10 条（A1 limit clamp / A2 limit≤0 不回落 /
+  A3 列表解包不看 `items` 键 / A4 详情解包只看一个键 / A5 列表形状喂详情 /
+  A6 金额不换算 / A7 缺 `payment_hint` 判据反向 / A8 孤儿判定丢掉 id 那一半 /
+  A9 排满判定 `>=` 改 `>` / A10 id 守卫放宽）；
+  视图 13 条（V1 **注入一个假「下一页」按钮** / V2 排满提示恒不出现 /
+  V3 删「没有分页」说明 / V4 把端点差异说成数据缺失 / V5 金额不换算 /
+  V6 孤儿标签不出现 / V7 删跨租户说明 / V8 503 退化 /
+  V9 删 404 的「查询失败」那半句 / V10 删 stub 键缺失说明 /
+  V11 **id 守卫退回 `Number()`** / V12 删「只有详情返回支付信息」/
+  V13 未支付时留空）。
+- 本批三个 spec：**99 用例全绿**（API 70 + 列表视图 23 + 详情视图 16）。
+  ★ `AppDrawer.spec.ts` 11 条仍全绿（白名单已加 `maas-orders`）。
+- `npm run build` **rc=0**（含 `vue-tsc -b`）；三门全过
+  （css-media **68 文件** / touch-target **65 个 `.vue`** / i18n parity **各 1476 键**）。
+- ★ 途中修了四个我自己的问题：
+  1. orders 段测试忘了 `import { fetchMaasOrders }` ⇒ 4 条 ReferenceError；
+     补 import 时又误加了已存在的 `maasOrdersMaybeMore` ⇒
+     **整个文件 `ParseError: already been declared`、具名失败列表为空** ——
+     典型「rc≠0 却抓不到用例名」，先查收集失败再谈判据；
+  2. 详情模板把 `<div class="mo__grid">` 闭合成了 `</p>` ⇒ `Invalid end tag`；
+     ★ 而 `vue-tsc -b` 那次**是绿的**（增量缓存）—— 只有真跑 vitest 才炸出来；
+  3. 「不显示空名」那条判据写成全页 `not.toContain('订阅套餐: ')`
+     ⇒ 被**标签前缀**喂饱 ⇒ 改成按节点取值 `.mo__name-v`
+     （这正是「按节点作用域断言」那条纪律的第三次应用）；
+  4. `order() as Record<string, unknown>` 报 TS2352 ⇒ 需经 `unknown` 中转。
+- 累计（**当场实测**）：**47 视图 / 42 API 模块 / 41 导航席（11 席 superAdmin）**。
+- 全量 **10 连跑全绿，1803 用例，0 份失败快照**（`STAB_RC=0`，10/10 `passed (1803)`）。
+  ★ 累计未定位的 flaky 仍**未捕获**：全量无污染跑 ≥116 次、失败 1 次（≈0.9%），
+  本批十连跑未复现 —— 这**不等于「已修复」**；`test:stability` 会在下次失败时落盘留证。
+
+#### 本族仍未上移的端点（留档）
+
+`maas_handlers.go` 里还有 7 条 superAdmin 只读面未上移：
+`settings` / `plans` / `topup-packages` / `tenants/{id}` / `model-rates/{id}`。
+写操作（`settings PUT`、`model-rates` 的 POST/PUT/DELETE、batch 系列、
+`POST /orders/{id}/confirm`）按前几批同口径**一律不碰**。

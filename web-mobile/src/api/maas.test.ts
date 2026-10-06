@@ -13,6 +13,19 @@ import {
   MAAS_VENDOR_FALLBACK,
   MAAS_MODALITY_FALLBACK,
   MAAS_HARDCODED_BASE_IN,
+  unwrapMaasOrders,
+  unwrapMaasOrder,
+  fetchMaasOrders,
+  fetchMaasOrder,
+  maasAmountYuan,
+  maasListLacksPaymentHint,
+  maasNameOrphaned,
+  maasOrdersMaybeMore,
+  MAAS_ORDER_TYPES,
+  MAAS_ORDER_STATUSES,
+  MAAS_PAYMENT_CHANNELS,
+  MAAS_ORDERS_LIMIT_DEFAULT,
+  MAAS_ORDERS_LIMIT_MAX,
   MAAS_RATE_DIMS,
   MAAS_EFFECTIVE_KEYS,
   type MaasSettings,
@@ -373,5 +386,219 @@ describe('★★★ is_custom 是「有没有任一维开过手动」', () => {
     const r = row({ manual_image: true, is_custom: true, custom_credits_per_1m_image_tokens: 900 })
     expect(maasDimUsesCustom(r, 'image')).toBe(true)
     expect(maasDimUsesCustom(r, 'in')).toBe(false)
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════
+// orders
+// ══════════════════════════════════════════════════════════════════════
+
+function order(over: Record<string, unknown> = {}) {
+  return {
+    id: 1,
+    order_no: 'ORD-1',
+    tenant_id: 't-1',
+    order_type: 'topup',
+    status: 'pending',
+    amount_cents: 9900,
+    credits: 5000,
+    payment_channel: 'alipay',
+    qr_payload: 'weixin://x',
+    qr_url: 'https://stub/qr',
+    expires_at: '2026-10-08T00:00:00Z',
+    note: '',
+    created_at: '2026-10-07T00:00:00Z',
+    updated_at: '2026-10-07T00:00:00Z',
+    ...over,
+  }
+}
+
+describe('★★★★★★ orders 列表：两层限流 + 只有 items', () => {
+  beforeEach(() => {
+    fetchMock.mockResolvedValue(jsonResponse({ items: [order()] }))
+  })
+
+  it('★★★★★★ 打 `/api/admin/maas/orders`，响应键是 `items`（:638）', async () => {
+    const r = await fetchMaasOrders()
+    expect(lastUrl()).toBe('/api/admin/maas/orders')
+    expect(r.items).toHaveLength(1)
+  })
+
+  it('★★★★★★ 响应**没有** total / limit 回显（分页只能近似）', () => {
+    const r = unwrapMaasOrders({ items: [] })
+    expect(Object.prototype.hasOwnProperty.call(r, 'total')).toBe(false)
+    expect(Object.prototype.hasOwnProperty.call(r, 'limit')).toBe(false)
+  })
+
+  it('★★★★★★ limit > 100 ⇒ 客户端就回落 **20**（不是 clamp 到 100）', async () => {
+    // ★ ListOrders: `if limit <= 0 || limit > 100 { limit = 20 }`
+    await fetchMaasOrders({ limit: 200 })
+    expect(lastUrl()).toContain('limit=20')
+    expect(lastUrl()).not.toContain('200')
+  })
+
+  it('★★★★★★ limit <= 0（0 / 负数）⇒ 同样回落 20', async () => {
+    for (const bad of [0, -1, -50]) {
+      await fetchMaasOrders({ limit: bad })
+      expect(lastUrl()).toContain('limit=20')
+    }
+  })
+
+  it('★★★★★ limit=100 是闭区间上界，发得出去', async () => {
+    await fetchMaasOrders({ limit: 100 })
+    expect(lastUrl()).toContain('limit=100')
+  })
+
+  it('★ 合法空清单必须被接受（真的没订单，不是错）', () => {
+    expect(unwrapMaasOrders({ items: [] }).items).toEqual([])
+  })
+
+  it('★ items 缺失 ⇒ 抛错（不接受裸数组）', () => {
+    expect(() => unwrapMaasOrders({})).toThrow(/形状不符/)
+    expect(() => unwrapMaasOrders([])).toThrow(/形状不符/)
+    expect(() => unwrapMaasOrders(null)).toThrow(/形状不符/)
+  })
+
+  it('★ 宽容解包拒绝 `{data:{…}}`', () => {
+    expect(() => unwrapMaasOrders({ data: { items: [] } })).toThrow(/形状不符/)
+  })
+})
+
+describe('★★★★★ 金额单位是**分**', () => {
+  it('★★★★★ `amount_cents = 9900` ⇒ 99 元（不是 9900 元）', () => {
+    expect(maasAmountYuan(order())).toBe(99)
+  })
+
+  it('★ 缺值兜底为 0', () => {
+    expect(maasAmountYuan(order({ amount_cents: undefined as never }))).toBe(0)
+  })
+})
+
+describe('★★★★★ 列表里恒无支付提示（端点差异，不是「没支付信息」）', () => {
+  it('★★★★★ 列表行没有 `payment_hint` ⇒ maasListLacksPaymentHint=true', () => {
+    expect(maasListLacksPaymentHint(order())).toBe(true)
+  })
+
+  it('★★★ 详情行有 `payment_hint` ⇒ false', () => {
+    expect(maasListLacksPaymentHint(order({ payment_hint: '扫码支付' }))).toBe(false)
+  })
+
+  it('★ `stub_mode` 是 bool+omitempty ⇒ false 时**键整个不存在**', () => {
+    const o = order()
+    expect(Object.prototype.hasOwnProperty.call(o, 'stub_mode')).toBe(false)
+  })
+})
+
+describe('★★★ plan/package 孤儿：有 id 但名字是空串', () => {
+  it('★★★ 有 package_id 而 package_name 空 ⇒ 判为「关联已被删」', () => {
+    expect(maasNameOrphaned(7, '')).toBe(true)
+    expect(maasNameOrphaned(7, undefined)).toBe(true)
+  })
+
+  it('★★ 两者齐备 ⇒ 不是孤儿', () => {
+    expect(maasNameOrphaned(7, '包名')).toBe(false)
+  })
+
+  it('★ 没有 id ⇒ 不是孤儿（本来就没关联）', () => {
+    expect(maasNameOrphaned(undefined, '')).toBe(false)
+  })
+
+  it('★ `plan_id`/`package_id`/`paid_at` 是 omitempty 指针 ⇒ 键可能不存在', () => {
+    const o = order()
+    for (const k of ['plan_id', 'package_id', 'paid_at', 'payment_hint', 'plan_name']) {
+      expect(Object.prototype.hasOwnProperty.call(o, k), `${k} 不该默认存在`).toBe(false)
+    }
+    // ★ 而 expires_at / created_at / updated_at 是非指针 ⇒ 键一定在
+    for (const k of ['expires_at', 'created_at', 'updated_at']) {
+      expect(Object.prototype.hasOwnProperty.call(o, k)).toBe(true)
+    }
+  })
+})
+
+describe('★★★ 详情端点：裸对象，与列表形状**不同**', () => {
+  beforeEach(() => {
+    fetchMock.mockResolvedValue(jsonResponse(order({ payment_hint: '扫码支付', stub_mode: true })))
+  })
+
+  it('★★★ 打 `/api/admin/maas/orders/{id}`，响应是**裸订单**（:683）', async () => {
+    const o = await fetchMaasOrder(1)
+    expect(lastUrl()).toBe('/api/admin/maas/orders/1')
+    expect(o.order_no).toBe('ORD-1')
+    expect(o.payment_hint).toBe('扫码支付')
+  })
+
+  it('★★★ 把**列表**形状 `{items:[…]}` 喂给详情 ⇒ 必须抛错', () => {
+    // ★ 详情是裸对象；误读 `resp.items` 会让「orders 端点两种形状」这条判据完全失效
+    expect(() => unwrapMaasOrder({ items: [order()] })).toThrow(/形状不符/)
+  })
+
+  it('★★ 非法 id（0 / 负数 / 非整数）⇒ 本地拒，不发请求', async () => {
+    for (const bad of [0, -1, 1.5]) {
+      await expect(fetchMaasOrder(bad)).rejects.toThrow(/正整数/)
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('★ 详情拿到 `payment_hint` ⇒ 列表缺它那条判据有了对照', async () => {
+    const o = await fetchMaasOrder(1)
+    expect(maasListLacksPaymentHint(o)).toBe(false)
+  })
+})
+
+describe('★★★ 详情解包不许「只看一个键就放行」', () => {
+  // ★ 后端 `writeJSON(w, 200, order)` 序列化的是**整个 BillingOrder**，
+  //   `id`（int64）与 `order_no` 键**一定都在**。
+  //   ⇒ 只校验 `order_no` 的宽容解包会让任何「恰好有个 order_no」的形状混进来，
+  //   这正是本条判据要钉住的地方。
+  it('★★★ 缺 `id`（只有 order_no）⇒ 必须抛错', () => {
+    expect(() => unwrapMaasOrder({ order_no: 'ORD-1' })).toThrow(/形状不符/)
+  })
+
+  it('★★ 缺 `order_no`（只有 id）⇒ 必须抛错', () => {
+    expect(() => unwrapMaasOrder({ id: 1 })).toThrow(/形状不符/)
+  })
+
+  it('★★ `id` 是字符串而非数字 ⇒ 必须抛错（后端是 int64，不会是字符串）', () => {
+    expect(() => unwrapMaasOrder({ id: '1', order_no: 'ORD-1' })).toThrow(/形状不符/)
+  })
+})
+
+describe('★★★ 「可能还有更多」的边界判定', () => {
+  // ★ 响应**没有 total** ⇒ 只能靠「这页排满了」近似。
+  //   `>=` 与 `>` 在 length === limit 这一格上给出相反答案 ⇒ 必须钉死。
+  it('★★★ 条数**正好等于** limit ⇒ 判定为「可能还有更多」', () => {
+    const items = Array.from({ length: 20 }, () => order())
+    expect(maasOrdersMaybeMore(items, 20)).toBe(true)
+  })
+
+  it('★★★ 条数**少于** limit ⇒ 判定为「没有更多」', () => {
+    expect(maasOrdersMaybeMore(Array.from({ length: 19 }, () => order()), 20)).toBe(false)
+  })
+
+  it('★★ 条数**超过** limit（后端给了更多）⇒ 判定为「可能还有更多」', () => {
+    expect(maasOrdersMaybeMore(Array.from({ length: 25 }, () => order()), 20)).toBe(true)
+  })
+
+  it('★ 空清单 ⇒ 没有更多', () => {
+    expect(maasOrdersMaybeMore([], 20)).toBe(false)
+  })
+})
+
+describe('★★ 枚举字面量', () => {
+  it('★★ order_type 只有 subscribe / topup', () => {
+    expect([...MAAS_ORDER_TYPES]).toEqual(['subscribe', 'topup'])
+  })
+
+  it('★★ status 只有 pending / paid / cancelled / expired', () => {
+    expect([...MAAS_ORDER_STATUSES]).toEqual(['pending', 'paid', 'cancelled', 'expired'])
+  })
+
+  it('★★ payment_channel 只有 alipay / wechat / manual', () => {
+    expect([...MAAS_PAYMENT_CHANNELS]).toEqual(['alipay', 'wechat', 'manual'])
+  })
+
+  it('★ orders 的 limit 常量：默认 20 / 上界 100', () => {
+    expect(MAAS_ORDERS_LIMIT_DEFAULT).toBe(20)
+    expect(MAAS_ORDERS_LIMIT_MAX).toBe(100)
   })
 })

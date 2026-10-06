@@ -130,6 +130,15 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.maasRates',
     requiresRole: 'super_admin',
   },
+  // MaaS 订单。**superAdmin 档**（admin/maas_handlers.go:14-24）⇒ 须设 requiresRole。
+  // ★ 订单详情页 /maas-orders/:id 不占席，只有列表页进 DRAWER_NAV。
+  {
+    key: 'maas-orders',
+    to: '/maas-orders',
+    icon: 'grid',
+    titleKey: 'nav.maasOrders',
+    requiresRole: 'super_admin',
+  },
   // 会话分析面。admin 档（admin/handler.go:1091-1094 全是 admin(...)）⇒ 不设 requiresRole。
   { key: 'session-analytics', to: '/session-analytics', icon: 'chart', titleKey: 'nav.sessionAnalytics' },
   {
