@@ -30,7 +30,9 @@
     "ui:sweep:selftest": "node scripts/ui-sweep.mjs --selftest",
     "ui:sweep:pages": "node scripts/ui-sweep.mjs --strict",
     "ui:sweep:overlays": "node scripts/ui-sweep.mjs --overlays --strict",
-    "census:table:mobile": "node scripts/compact-table-census.mjs --root ../web-mobile/src"
+    "census:table:mobile": "node scripts/compact-table-census.mjs --root ../web-mobile/src",
+    "file-inputs:check": "node scripts/file-input-census.mjs",
+    "file-inputs:self-test": "node scripts/file-input-census.mjs --self-test"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

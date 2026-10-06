@@ -137,6 +137,8 @@ export default {
   endDate: 'تاريخ الانتهاء',
   exportFailed: 'فشل التصدير',
   exportTooLarge: 'الملف كبير جدًا للتصدير (الحد {max}). يرجى التصدير من سطح المكتب.',
+  importTooLarge: 'الملف كبير جدًا للاستيراد (الحد {max})',
+  importBadType: 'نوع الملف غير مدعوم. يرجى اختيار {types}',
   lastOccurred: 'آخر حدوث',
   loading: 'جارٍ التحميل…',
   never: 'مطلقًا',
