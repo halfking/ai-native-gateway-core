@@ -483,6 +483,19 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/ModuleDetailView.vue'),
     meta: { titleKey: 'modsDetail.title', requiresAuth: true },
   },
+  // 日志管理读面（**admin 档**，2026-10-08：handler.go:959,1115,1116,1119 四条只读
+  //   全是 `admin(...)`）。★ 但**同一前缀下混着三条 superAdmin**
+  //   （config/archive/cleanup）⇒ 移动端不能按前缀判权限。
+  // ★★ 同一个「文件日志没启用」在三个端点上是三个判据：
+  //   files `dir === ''` / stats `log_dir === ''` / archive-list **`dir` 键不存在**。
+  // ★★ `archive/list` 是异形端点：`dir`/`exists` 条件存在。
+  // ★★ `files` 的 `is_archived` 恒 false（后端硬编码），且列表不含归档。
+  {
+    path: '/log-admin',
+    name: 'log-admin',
+    component: () => import('@/views/LogAdminView.vue'),
+    meta: { titleKey: 'logsAdmin.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',

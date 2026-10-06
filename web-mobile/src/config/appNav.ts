@@ -231,6 +231,15 @@ export const DRAWER_NAV: readonly NavItem[] = [
     icon: 'cube',
     titleKey: 'nav.modules',
   },
+  // 日志管理读面。四条只读**全是 admin 档**（handler.go:959,1115,1116,1119）
+  // ⇒ **故意不设** requiresRole；设成 super_admin 必须让判据红。
+  // ★ 同一前缀下混着三条 superAdmin（config/archive/cleanup）⇒ 不能按前缀判权限。
+  {
+    key: 'log-admin',
+    to: '/log-admin',
+    icon: 'clock',
+    titleKey: 'nav.logAdmin',
+  },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))
