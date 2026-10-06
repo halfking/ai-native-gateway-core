@@ -13,6 +13,8 @@
     "css:check": "node scripts/verify-css-media-syntax.mjs",
     "touch:check": "node scripts/verify-touch-targets.mjs",
     "i18n:check": "node scripts/verify-i18n-parity.mjs",
+    "audit:selftest": "node scripts/layout-audit-selftest.mjs",
+    "audit:settle": "node scripts/settle-selftest.mjs",
     "gate:selftest": "node scripts/verify-css-media-syntax.selftest.mjs && node scripts/verify-touch-targets.selftest.mjs && node scripts/verify-i18n-parity.selftest.mjs"
   },
   "dependencies": {
