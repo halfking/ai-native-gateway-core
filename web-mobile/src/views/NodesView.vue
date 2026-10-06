@@ -16,6 +16,19 @@ import {
   submitCredentialProbe,
   type CredentialRoutingDecision,
 } from '@/api/credentialsOps'
+import {
+  fetchRoutingBlockedDiagnostic,
+  routingBlockedBreakdownEmptyKey,
+  routingBlockedCredInternalMismatch,
+  routingBlockedManualDisabledUnreliable,
+  routingBlockedReasonAbsent,
+  routingBlockedReasonEmpty,
+  routingBlockedStateUnavailable,
+  routingBlockedSumMismatch,
+  routingBlockedTotalsDisagree,
+  routingBlockedTruncated,
+  type RoutingBlockedDiagnostic,
+} from '@/api/routingBlocked'
 import { useAuthStore } from '@/stores/auth'
 import { t } from '@/i18n'
 import HyperList from '@/components/common/HyperList.vue'
@@ -93,6 +106,44 @@ async function loadDecisions(credId: number): Promise<void> {
   }
 }
 
+// ── 供应商级路由阻塞诊断（GET /api/admin/diagnostics/routing-blocked）──────
+//
+// 存在的理由是后端注释原话：*"credentials look healthy but routing can't find
+// them"* —— monitor-summary 说这个凭据状态正常，而这个端点说它的每条
+// (credential, model) 绑定到底 is_routable 与为什么不是。**这正是用户要的
+// 「凭据检查」与「路由检查」的交汇点。**
+//
+// ★ 注册处 admin/handler.go:1464 是 `h.superAdmin` ⇒ tenant_admin 点下去必 403，
+//   所以入口按角色分档渲染，不靠后端报错兜底。
+//
+// ★★ **按需加载，不随详情自动拉**：它最坏返回 500 条绑定（后端 maxBindings），
+//   而详情是随手点开的；自动拉会让 90% 的打开动作付这个代价。
+const routingBlocked = ref<RoutingBlockedDiagnostic | null>(null)
+const routingBlockedLoading = ref(false)
+const routingBlockedError = ref<string | null>(null)
+const routingBlockedOpen = ref(false)
+
+async function loadRoutingBlocked(providerId: number): Promise<void> {
+  routingBlockedLoading.value = true
+  routingBlockedError.value = null
+  routingBlocked.value = null
+  try {
+    routingBlocked.value = await fetchRoutingBlockedDiagnostic(providerId)
+  } catch (err) {
+    routingBlockedError.value = describeError(err)
+  } finally {
+    routingBlockedLoading.value = false
+  }
+}
+
+/** 从详情进诊断：先记住 provider，再触发加载（避免 await 期间读 ref，见 §11.86）。 */
+async function openRoutingBlocked(): Promise<void> {
+  const pid = detail.value?.provider_id
+  if (pid == null) return
+  routingBlockedOpen.value = true
+  await loadRoutingBlocked(pid)
+}
+
 const detailOpenProxy = computed({
   get: () => detail.value != null,
   set: (v: boolean) => {
@@ -101,6 +152,9 @@ const detailOpenProxy = computed({
       focusActive.value = false
       decisions.value = null
       decisionsError.value = null
+      routingBlocked.value = null
+      routingBlockedError.value = null
+      routingBlockedOpen.value = false
     }
   },
 })
@@ -518,6 +572,90 @@ function describeError(err: unknown): string {
         </ul>
       </div>
 
+      <!-- 供应商级路由阻塞诊断。按需加载（最坏 500 条绑定），失败不牵连上面几区。
+           ★ 这一区的每个「计数」都必须先过语义判据再显示 —— 后端的钳位
+           会让 total / routable / blocked 三个数互相矛盾（见 routingBlocked.ts）。 -->
+      <div class="nodes__rblocked">
+        <div class="nodes__per-model-head">
+          <h3 class="page__section-title" style="margin-inline: 0">{{ t('nodes.routingBlocked') }}</h3>
+          <button
+            v-if="isSuperAdmin && !routingBlockedOpen"
+            type="button"
+            class="btn btn--sm"
+            :disabled="routingBlockedLoading"
+            @click="openRoutingBlocked"
+          >
+            {{ t('nodes.routingBlockedOpen') }}
+          </button>
+        </div>
+
+        <p v-if="routingBlockedLoading" class="nodes__decisions-state">{{ t('common.loading') }}</p>
+        <p v-else-if="routingBlockedError" class="nodes__decisions-state nodes__decisions-state--err">
+          {{ routingBlockedError }}
+        </p>
+
+        <template v-else-if="routingBlocked">
+          <!-- ★ 截断：后端只把 total 钳到 500，routable 没钳 ⇒ 三个数可能互相矛盾。
+               这里如实说明「以下数字不可直接相加」，而不是把矛盾的数字原样显示。 -->
+          <p v-if="routingBlockedTruncated(routingBlocked)" class="nodes__decisions-state nodes__decisions-state--err">
+            {{ t('nodes.routingTruncated') }}
+          </p>
+          <p v-if="routingBlockedTotalsDisagree(routingBlocked)" class="nodes__decisions-state nodes__decisions-state--err">
+            {{ t('nodes.routingCountsInconsistent') }}
+          </p>
+          <p v-if="routingBlockedSumMismatch(routingBlocked)" class="nodes__decisions-state nodes__decisions-state--err">
+            {{ t('nodes.routingSumMismatch') }}
+          </p>
+          <!-- ★★ 状态整段缺失时 manual_disabled=false 是**错值**，不能当结论显示 -->
+          <p v-if="routingBlockedStateUnavailable(routingBlocked)" class="nodes__decisions-state nodes__decisions-state--err">
+            {{ t('nodes.routingStateUnavailable') }}
+          </p>
+          <p v-if="routingBlockedBreakdownEmptyKey(routingBlocked)" class="nodes__decisions-state nodes__decisions-state--err">
+            {{ t('nodes.routingEmptyReasonKey') }}
+          </p>
+
+          <p v-if="routingBlocked.credentials.length === 0" class="nodes__decisions-state">
+            {{ t('nodes.routingNoBindings') }}
+          </p>
+
+          <ul v-else class="nodes__rblocked-list">
+            <li v-for="c in routingBlocked.credentials" :key="c.credential_id" class="nodes__rblocked-cred">
+              <div class="nodes__rblocked-head">
+                <span class="nodes__rblocked-label">{{ c.credential_label }}</span>
+                <span v-if="routingBlockedManualDisabledUnreliable(c)" class="nodes__rblocked-unknown">
+                  {{ t('nodes.routingStateUnknownShort') }}
+                </span>
+                <span v-else-if="c.manual_disabled" class="nodes__rblocked-disabled">
+                  {{ t('nodes.routingManuallyDisabled') }}
+                </span>
+              </div>
+              <!-- ★ 状态缺失时不要把空串渲染成「状态：」这种看不出异常的形态 -->
+              <p v-if="routingBlockedManualDisabledUnreliable(c)" class="nodes__rblocked-meta">
+                {{ t('nodes.routingStateUnknownShort') }}
+              </p>
+              <p v-else class="nodes__rblocked-meta">
+                {{ c.status || '—' }} · {{ c.availability_state || '—' }} · {{ c.health_status || '—' }}
+              </p>
+              <p v-if="routingBlockedCredInternalMismatch(c)" class="nodes__rblocked-meta nodes__decisions-state--err">
+                {{ t('nodes.routingCredCountsBad') }}
+              </p>
+              <ul class="nodes__rblocked-bindings">
+                <li v-for="b in c.bindings" :key="`${c.credential_id}-${b.raw_model_name}`" class="nodes__rblocked-binding">
+                  <span class="nodes__decision-dot" :class="b.is_routable ? 'ok' : 'bad'" aria-hidden="true" />
+                  <span class="nodes__rblocked-model">{{ b.raw_model_name }}</span>
+                  <!-- ★★ 两种「拿不到原因」必须画得不一样：键不存在（NULL，后端会
+                       归成 unknown）vs 空串（后端确实存了空串）。 -->
+                  <span v-if="b.is_routable" class="nodes__rblocked-meta">{{ t('nodes.routingRoutable') }}</span>
+                  <span v-else-if="routingBlockedReasonAbsent(b)" class="nodes__rblocked-reason">{{ t('nodes.routingReasonNull') }}</span>
+                  <span v-else-if="routingBlockedReasonEmpty(b)" class="nodes__rblocked-reason">{{ t('nodes.routingReasonEmpty') }}</span>
+                  <span v-else class="nodes__rblocked-reason">{{ b.unavailable_reason }}</span>
+                </li>
+              </ul>
+            </li>
+          </ul>
+        </template>
+      </div>
+
       <div class="nodes__per-model-head">
         <h3 class="page__section-title" style="margin-inline: 0">{{ t('nodes.perModel') }}</h3>
         <button type="button" class="btn btn--sm" @click="focusActive = true">
@@ -741,6 +879,64 @@ function describeError(err: unknown): string {
 
 .nodes__probe-label {
   font-size: 0.8125rem;
+  color: var(--app-text-primary);
+}
+
+/* ── 路由阻塞诊断区 ────────────────────────────────────────────────── */
+.nodes__rblocked {
+  margin-top: var(--app-space-3);
+}
+
+.nodes__rblocked-list,
+.nodes__rblocked-bindings {
+  list-style: none;
+  margin: var(--app-space-2) 0 0;
+  padding: 0;
+}
+
+.nodes__rblocked-cred {
+  padding: var(--app-space-2) 0;
+  border-top: 1px solid var(--app-border);
+}
+
+.nodes__rblocked-head {
+  display: flex;
+  align-items: center;
+  gap: var(--app-space-2);
+  flex-wrap: wrap;
+}
+
+.nodes__rblocked-label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--app-text-primary);
+}
+
+.nodes__rblocked-meta,
+.nodes__rblocked-reason,
+.nodes__rblocked-unknown,
+.nodes__rblocked-disabled {
+  font-size: 0.75rem;
+  color: var(--app-text-secondary);
+}
+
+.nodes__rblocked-unknown {
+  color: var(--app-warning);
+}
+
+.nodes__rblocked-disabled {
+  color: var(--app-danger);
+}
+
+.nodes__rblocked-binding {
+  display: flex;
+  align-items: center;
+  gap: var(--app-space-2);
+  padding: 2px 0;
+}
+
+.nodes__rblocked-model {
+  font-size: 0.75rem;
   color: var(--app-text-primary);
 }
 
