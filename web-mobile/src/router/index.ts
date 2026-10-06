@@ -260,6 +260,16 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/DataLifecycleView.vue'),
     meta: { titleKey: 'lifecycle.title', requiresAuth: true },
   },
+  // 路由优化器（stats/accuracy/parameters/metrics，2026-10-07）。**admin 档**（admin(...)）
+  // ⇒ tenant_admin 可用，导航不设 requiresRole。
+  // ★ 同族的 proposals/{approve,reject}、probe/cache-rebuild、
+  //   hot/cron/stats 是 superAdmin 或写操作，本页一条都不碰。
+  {
+    path: '/routing-opt',
+    name: 'routing-opt',
+    component: () => import('@/views/RoutingOptView.vue'),
+    meta: { titleKey: 'routingOpt.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',

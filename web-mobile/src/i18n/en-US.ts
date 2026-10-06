@@ -37,6 +37,7 @@ export const enUS = {
     onlineSessions: 'Online sessions',
     sysmon: 'System monitor',
     lifecycle: 'Data lifecycle',
+    routingOpt: 'Route optimizer',
     nodeHealth: 'Health timeline',
     account: 'Me',
   },
@@ -848,6 +849,70 @@ export const enUS = {
     topPercent: '{n}% of list',
     // ★ a partitioned parent already includes its partitions; do not add the two rows together
     parentTable: 'Partitioned parent',
+  },
+  routingOpt: {
+    title: 'Route optimizer',
+    // ★★★★ one human annotation counts as two: a weighted mean, not correct-over-total
+    weightedNote: 'This accuracy is a weighted mean: one human annotation counts as two, so it is NOT correct / samples.',
+    // ★★★ auto and human disagree on what "correct" means
+    twoDefinitionsNote: 'The two halves disagree on what "correct" means: the automatic half scores whether the request succeeded, the human half scores whether the prediction hit the human label.',
+    // ★★★ the response carries sample counts but no hit counts
+    notVerifiableNote: 'The API returns sample counts but no hit counts, so this percentage cannot be verified client-side; it only mirrors the backend definition.',
+    // ★★★ three sources with three different meanings
+    sourceStale: 'This window has no fresh feedback samples; the value shown is the stale one persisted in state, not a freshly computed figure.',
+    sourceNone: 'Neither feedback samples nor persisted state exist, so this accuracy has no data source.',
+    sourceUnknown: 'Unrecognised accuracy source: {source}',
+    overall: 'Overall accuracy',
+    window: 'Window',
+    // ★ the stats window is a backend constant of 24; the API takes no parameter
+    windowFixed: 'Window {n}h (fixed by the backend, not adjustable)',
+    // ★ response disagrees with the measured constant, so the backend moved it
+    windowMismatch: 'Note: the backend returned a {got}h window, which disagrees with the known fixed value of {expect}h - the backend has changed that constant.',
+    paramVersion: 'Parameter version',
+    autoSamples: 'Automatic samples',
+    humanSamples: 'Human samples',
+    stateUpdatedAt: 'State updated {t}',
+    params: 'Active parameters',
+    // ★ 404 means no active version yet, which is normal rather than an error
+    noActiveParams: 'No optimizer parameter version has been activated yet.',
+    version: 'Version',
+    exploration: 'Exploration rate',
+    learningRate: 'Learning rate',
+    adaptation: 'Adaptation window',
+    activatedAt: 'Activated {t}',
+    createdBy: 'Created by {who}',
+    byHour: 'By hour and task type',
+    // ★★ the SQL groups without a series generator, so every bucket holds samples
+    bucketHasSamplesNote: 'Every time bucket holds samples (the backend groups by hour and task type without padding empty buckets), so a 0% in this list is a real 0%, not "no data".',
+    hoursLabel: 'Time range',
+    noBuckets: 'No feedback samples in this window',
+    bucketAt: 'at {t}',
+    bucketSamples: '{n} sample(s) ({h} human)',
+    metrics: '5-minute aggregates',
+    taskType: 'Task type',
+    provider: 'Provider',
+    // ★ task_type and provider are exact matches, not substring searches; blank means no filter
+    exactMatchHint: 'Exact match, blank for all',
+    query: 'Query',
+    // ★★ the backend caps at 2000 rows and drops the oldest when it hits
+    metricsTruncated: 'Hit the backend cap of {cap} rows: only the newest {cap} are here, the oldest rows were dropped.',
+    metricsLikelyTruncated: 'This window can produce about {hours} x 12 five-minute buckets, which may hit the backend cap of {cap} rows; if truncated, the oldest rows are dropped.',
+    noMetrics: 'No aggregate rows returned',
+    // ★ only the first 50 rows are rendered, and the page says so
+    displayCap: '{hidden} more row(s) are not shown; only the newest {shown} are listed.',
+    // ★★★★ these four come from the backend GROUPING SETS ((), (task_type), (predicted_provider))
+    dim_task_provider: 'Task x provider',
+    dim_task: 'Task rollup',
+    dim_provider: 'Provider rollup',
+    dim_global: 'Global rollup',
+    aggregateRow: 'rollup',
+    // ★★★★ metrics is the only endpoint of the four reading a **materialised aggregate**
+    metricsMaterializedNote: 'This block reads an aggregate table written by a background job, while the panels above are computed live; when the rollup job is late or has not run, this block will disagree with the accuracy above.',
+    groupingSetsNote: 'The same data yields four row kinds at once: task x provider, task rollup, provider rollup and global rollup. The three rollup kinds are tagged "rollup" so they are not mistaken for another prediction.',
+    requests: 'Requests',
+    accuracyRate: 'Accuracy',
+    p95: 'P95 latency',
+    humanCorrections: 'Human corrections',
   },
   sysmon: {
     title: 'System monitor',
