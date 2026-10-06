@@ -6045,3 +6045,62 @@ M44 的价值在于：抽掉取锁后**接线门红而键稳定性判据 `ok`** 
 
 ⇒ **先上 try-lock**（更窄、无漂移风险）；
 单实例化保留为可选的拓扑开关（`42f0fda8a` 已在仓里，默认不变）。
+
+---
+
+## §10.54 当前第 2 名是什么：告警探针本身，登记为「有意不优化」
+
+### §10.54.1 认领语句
+
+`SELECT -- 2026-09-12: both surfaces must read the current-month view — …`
+当前 **820 次 / 6.83h、307.7ms/次、占窗口 1.03%**。
+全文是两个子查询：
+
+    (SELECT max(ts) FROM candidate_failure_logs_with_current_month),
+    (SELECT max(ts) FROM request_logs_with_current_month
+      WHERE ts >= now() - interval $1)
+
+⇒ 这是**陈旧性告警的探针**（问「网关最近有没有活动」），不是业务负载。
+pss 里按 interval 参数分成 5 个条目，top 那个累计 54,302 次 / 均值 515.5ms。
+
+语句自带的注释就是它的设计说明（两处日期各自记录了一次误报）：
+
+- 2026-09-12：promote 失败导致父表 `max(ts)` 停了 8h+，而 hot 表 minutes 前
+  还在写 ⇒ 告警误报/迟报。**所以必须读当月面，不能只读裸父表。**
+- 2026-09-11：裸 `request_logs` 父表只存冷行，`max(ts)` 差一天+ ⇒
+  「网关有近期活动」判成 false，告警从不触发。
+
+### §10.54.2 一次差点误报：视图名与实际读取面不符
+
+计划里 `request_logs_with_current_month` 出现的是
+**`session_turns_hot` / `session_turn_details_hot` / `session_turns_2026_07/08/09/10/11/default`**
+——不是 request_logs。差点按「视图张冠李戴」报缺陷。
+
+查 `pg_get_viewdef` 后确认：该视图是**三臂 UNION ALL**，
+第 1、2 臂来自 session_turns ⨝ session_turn_details，第 3 臂才是
+`request_logs_hot` + request_logs 各分区（计划里 `*SELECT* 3`）。
+
+⇒ **「both surfaces」是字面意思**：V1（request_logs）与 V2（session_turns）
+共用一个当月可见面。语句注释里的 "both surfaces" 说的就是它。
+**设计如此，不是缺陷。撤回该告警。**
+
+⚠ 方法论：视图名里的 `_request_logs_` **不能**当作「只读 request_logs」的证据；
+判据要看 `pg_get_viewdef` 的 UNION 臂，不要从名字推。
+
+### §10.54.3 登记为「有意不优化」
+
+| 项 | 读数 |
+|---|---|
+| 当前速率 | 820 次 / 6.83h |
+| 单次耗时 | 307.7ms（其中 `mean_plan_time=0.00`，按 §10.47 归规划期未拆） |
+| 占窗口 | 1.03%（analyze 修复后即为新的第 1 名） |
+| 累计（top 条目） | 54,302 次 / 均值 515.5ms |
+
+**不优化的理由**：它是**发现「写侧停摆」的那条探针**。
+§10.54.1 的两条注释都记录了「只读裸父表 ⇒ 告警失灵」的真实事故。
+为省 1% 窗口去改一个安全网，收益与风险不成比例。
+计划里 Hash/Nested Loop Join 到 `session_turn_details` 看着浪费
+（只为取 `max(ts)`），但那是通用面的代价，不是探针的错。
+
+⇒ 登记在案，**不进优化队列**。若将来 analyze 落地后它成为第 1，
+再单独立项评估「探针专用轻量读法」，且必须保留「两个面都读」这一不变量。
