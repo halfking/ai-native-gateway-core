@@ -122,6 +122,19 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/RoutingAuditView.vue'),
     meta: { titleKey: 'routingAudit.title', requiresAuth: true },
   },
+  // 凭据监控线（2026-10-07）：热力图 + 单凭据健康时间线。两条都 admin 档。
+  {
+    path: '/heatmap',
+    name: 'heatmap',
+    component: () => import('@/views/CredentialHeatmapView.vue'),
+    meta: { titleKey: 'heatmap.title', requiresAuth: true },
+  },
+  {
+    path: '/node-health/:id',
+    name: 'node-health',
+    component: () => import('@/views/NodeHealthView.vue'),
+    meta: { titleKey: 'nodeHealth.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',

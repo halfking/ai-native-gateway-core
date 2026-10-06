@@ -127,5 +127,37 @@ const doc = (body) => `export const D = {\n${body}\n} as const\n`
   rmSync(root, { recursive: true, force: true })
 }
 
+// ── 6. ★ 重复键（2026-10-07 新增判据）──────────────────────────────────
+//   实况：本专题把 `nav.heatmap` 插了两次。键集一致、值也正常，
+//   旧门**全程绿**（parseDict 用 Map.set，后者被静默覆盖）；
+//   只有 vue-tsc 的 TS1117 抓到。build 前置里 i18n 门跑在 vue-tsc 之前，
+//   所以它必须自己抓。
+{
+  console.log('\n[6] 反例：同一段内重复键必须拦下')
+  const root = makeRepo({
+    zh: doc("  nav: {\n    home: '首页',\n    heatmap: '热力图',\n    heatmap: '热力图',\n  },"),
+    en: doc("  nav: {\n    home: 'Home',\n    heatmap: 'Heatmap',\n    heatmap: 'Heatmap',\n  },"),
+  })
+  const r = runGate(root)
+  check('重复键 → 拦下', r.code === 1, r.out)
+  check('报出重复键', r.out.includes('重复键'), r.out)
+  check('报出了键名 nav.heatmap', r.out.includes('nav.heatmap'), r.out)
+  check('报出了行号（否则定位不到人）', /第 \d+ 行与第 \d+ 行/.test(r.out), r.out)
+  rmSync(root, { recursive: true, force: true })
+}
+
+{
+  // ★ 反向锁定：**不同段**里同名不算重复。
+  //   词典里几乎每个词典段都有 `title` / `empty`，按完整路径区分才不会误报。
+  console.log('\n[6b] 反例：不同词典段里的同名键不算重复')
+  const root = makeRepo({
+    zh: doc("  nav: {\n    title: '导航',\n  },\n  logs: {\n    title: '日志',\n  },"),
+    en: doc("  nav: {\n    title: 'Nav',\n  },\n  logs: {\n    title: 'Logs',\n  },"),
+  })
+  const r = runGate(root)
+  check('nav.title 与 logs.title 不算重复', r.code === 0, r.out)
+  rmSync(root, { recursive: true, force: true })
+}
+
 console.log(`\ni18n-parity selftest: ${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)
