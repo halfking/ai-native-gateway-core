@@ -225,6 +225,21 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/ModelTaskIndexView.vue'),
     meta: { titleKey: 'taskIndex.title', requiresAuth: true },
   },
+  // 会话运维面（2026-10-06）。三条都挂 wrapAdmin / admin(...) ⇒ **admin 档**，
+  // tenant_admin 可用 ⇒ 导航不设 requiresRole。
+  // ★ 注意同族 `/sessions/summary` 是 **POST-only**，本页不碰它。
+  {
+    path: '/session-audit',
+    name: 'session-audit',
+    component: () => import('@/views/SessionAuditView.vue'),
+    meta: { titleKey: 'sessions.title', requiresAuth: true },
+  },
+  {
+    path: '/sessions-online',
+    name: 'sessions-online',
+    component: () => import('@/views/OnlineSessionsView.vue'),
+    meta: { titleKey: 'online.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
