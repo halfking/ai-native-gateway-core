@@ -197,3 +197,124 @@ describe('03 §3.3 移动端行点击契约', () => {
     }
   })
 })
+// ─────────────────────────────────────────────────────────────────────────
+// 块级「同一意图」判据（10 §4.6.38）
+//
+// ★ 作用域必须是 **ResponsiveDataView 块**，不能是文件。
+//   `TenantDashboardView` 同一文件里有两个列表：模型行（裸表格，`showModelDetail`
+//   就地展开）与详情卡里的请求行（`@row-click` → /request-logs）。
+//   按文件比对会把这两个不同实体当成一对 ⇒ 报假阳性。
+//
+// ★ 比对的是**目的地**，不是**函数名**。
+//   `onCardClick` 与 `viewSession` 名字不同但转调同一函数，是合法的包装；
+//   名字相同也未必同意图。所以判据接受两种形态：
+//     ① 卡片处理函数就是表格那个；
+//     ② 卡片处理函数的函数体里调用了表格那个（1 级转调）。
+// ─────────────────────────────────────────────────────────────────────────
+
+interface Block {
+  file: string
+  line: number
+  cardHandler: string | null
+  tableHandlers: string[]
+}
+
+/** 函数基名：`foo(a.b(c))` → `foo` */
+function baseName(h: string): string {
+  return h.trim().split('(')[0].replace(/^.*\./, '').trim()
+}
+
+/** 卡片处理函数的函数体（1 级转调用）。取不到返回 null。 */
+function fnBody(src: string, name: string): string | null {
+  const m = new RegExp(`function\\s+${name}\\s*\\([^)]*\\)\\s*\\{([\\s\\S]*?)\\n\\}`).exec(src)
+  return m ? m[1] : null
+}
+
+function scanBlocks(): Block[] {
+  const out: Block[] = []
+  for (const file of walk(ROOT)) {
+    if (file.endsWith('ResponsiveDataView.vue')) continue
+    const rel = relative(resolve(process.cwd()), file).replace(/\\/g, '/')
+    const src = stripComments(readFileSync(file, 'utf8'))
+    if (!src.includes('<ResponsiveDataView')) continue
+    for (const m of src.matchAll(/<ResponsiveDataView\b/g)) {
+      const { tag, end } = readTag(src, m.index! + m[0].length - 1)
+      const close = src.indexOf('</ResponsiveDataView>', end)
+      const body = src.slice(end, close === -1 ? src.length : close)
+      const rc = /@row-click="([^"]+)"/.exec(tag)
+      const trs = [...body.matchAll(/<tr\b[^>]*?@click="([^"]+)"/gs)].map((x) => x[1])
+      if (!rc && trs.length === 0) continue
+      out.push({
+        file: rel,
+        line: src.slice(0, m.index!).split('\n').length,
+        cardHandler: rc ? rc[1] : null,
+        tableHandlers: trs,
+      })
+    }
+  }
+  return out
+}
+
+const blocks = scanBlocks()
+
+/**
+ * 「卡片可点、桌面表格行不可点」的不对称 —— 需逐条登记。
+ *
+ * `TenantDashboardView` 是**当前唯一**一条，且它其实是可辩护的：
+ * compact 的行点击跳 `/request-logs`，而桌面页脚 `detailFooterLogs`
+ * 本来就是同一个目标的 `RouterLink`。条款 1 要求「桌面行不可点则 compact
+ * 也不得凭空造出第二条导航」—— 这里是同一目的地，只是入口位置不同。
+ * **不擅自改桌面行为**，登记待裁决。
+ */
+const ASYMMETRY: Array<[string, number, string]> = [
+  [
+    'src/views/TenantDashboardView.vue',
+    716,
+    '详情块：卡片 clickable 跳 /request-logs，桌面 detail-table 的 <tr> 无 @click。'
+      + '桌面页脚 detailFooterLogs 本就是同一目标的 RouterLink ⇒ 同目的地、不同入口位置。'
+      + '是否让桌面行也整行可点属产品裁决，未擅自改。',
+  ],
+]
+
+describe('块级「同一意图」（03 §3.3 条款 1）', () => {
+  it('两种形态都在时：卡片处理函数必须就是表格那个，或 1 级转调它', () => {
+    const bad: string[] = []
+    for (const b of blocks) {
+      if (!b.cardHandler || b.tableHandlers.length === 0) continue
+      const card = baseName(b.cardHandler)
+      const tables = b.tableHandlers.map(baseName)
+      if (tables.includes(card)) continue
+      const raw = readFileSync(resolve(process.cwd(), b.file), 'utf8')
+      const body = fnBody(stripComments(raw), card)
+      const delegates = body !== null && tables.some((t) => new RegExp(`\\b${t}\\s*\\(`).test(body))
+      if (!delegates) {
+        bad.push(`${key(b.file, b.line)}：卡片=${card}，表格=${tables.join('/')}（既非同函数也未转调）`)
+      }
+    }
+    expect(bad, `卡片与表格指向不同意图：\n  ${bad.join('\n  ')}`).toEqual([])
+  })
+
+  it('★ 桌面表格行可点、卡片却不可点 ⇒ 必须登记（compact 会丢掉这个入口）', () => {
+    const offenders: string[] = []
+    for (const b of blocks) {
+      if (!b.cardHandler && b.tableHandlers.length > 0) offenders.push(key(b.file, b.line))
+    }
+    const registered = new Set(ASYMMETRY.map(([f, l]) => key(f, l)))
+    const unknown = offenders.filter((k) => !registered.has(k))
+    expect(
+      unknown,
+      `这些块桌面行可点但卡片不可点，compact 会丢掉该入口（LogsTab 同款）：\n  ${unknown.join('\n  ')}`,
+    ).toEqual([])
+  })
+
+  it('ASYMMETRY 登记与实测双向相等，且理由不得空洞', () => {
+    const cardOnly = blocks.filter((b) => b.cardHandler && b.tableHandlers.length === 0)
+    const measured = new Set(cardOnly.map((b) => key(b.file, b.line)))
+    const registered = new Set(ASYMMETRY.map(([f, l]) => key(f, l)))
+    expect([...measured].filter((k) => !registered.has(k)), '未登记的不对称').toEqual([])
+    expect([...registered].filter((k) => !measured.has(k)), '已不成立的登记（桌面已补 @click？）').toEqual([])
+    for (const [f, l, why] of ASYMMETRY) {
+      expect(why.trim().length, `${key(f, l)} 的理由是空的`).toBeGreaterThan(20)
+    }
+  })
+})
