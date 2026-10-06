@@ -23,6 +23,7 @@ export const enUS = {
     routingAudit: 'Routing audit',
     heatmap: 'Heatmap',
     probe: 'Probing',
+    probeHealth: 'Probe health',
     overrides: 'Overrides',
     funnel: 'Request funnel',
     proposals: 'Tuning proposals',
@@ -656,6 +657,55 @@ export const enUS = {
     // Terminal nodes have no outgoing links - that is normal, not missing data.
     leaf: 'terminal layer, no downstream',
     errForbidden: 'Only super admins can view traffic flow',
+  },
+  probeHealth: {
+    title: 'Probe health',
+    sectionHealth: 'System health',
+    sectionQueue: 'Queue',
+    empty: 'Could not read probe system state',
+    errForbidden: 'This account cannot view the probe system',
+    // ★ Active backlog comes from unified (ready+running+node_pending+node_due)
+    //   only. Never the legacy total (that is the 572-row historical backlog).
+    activeBacklog: 'Active backlog',
+    activeOnlyNote: 'Counts the active queue only (unified source). The historical backlog lives in the "legacy" section below; the two must not be mixed.',
+    // Lease anomalies: three separate numbers because the fix differs for each
+    anomalyTitle: 'Queue anomalies',
+    nodeUnclaimable: 'Unclaimable leases',
+    staleLeases: 'Stale heartbeats',
+    queueExpired: 'Expired 2h',
+    queueReady: 'Ready',
+    queueRunning: 'Running',
+    queueClaims: 'Leased',
+    nodePending: 'Node pending',
+    nodeDue: 'Node due',
+    nodePaused: 'Paused',
+    lastRunAt: 'Last run {t}',
+    ursmCoverage: 'URSM routable coverage',
+    totalCredentials: 'Credentials',
+    noUrsm: 'Missing URSM key',
+    nodeTotal: 'Nodes',
+    nodeFailing: 'Failing nodes',
+    runsLast1h: 'Runs 1h',
+    runsFailed1h: 'Failed 1h',
+    successRate1h: 'Success rate 1h',
+    // ★ Missing field = no runs in that hour, NOT a 0% success rate
+    noRuns1h: 'no runs in that hour',
+    pseudoSuccess: '{n} credentials report probe success but their URSM key is gone (pseudo-success)',
+    window2hNote: 'completed / failed / expired cover the last 2 hours, not all time.',
+    legacyTitle: 'Legacy view',
+    legacyNotAuthoritative: 'not authoritative',
+    legacyFlagUnknown: 'unflagged',
+    // ★ legacy_mode_safe=false is an explicit backend warning
+    legacyWarn: 'The backend flags this view as not authoritative (legacy_mode_safe=false). It is historical and does not reflect the current state; use the numbers above.',
+    // ★ All-zero cannot be distinguished from "not loaded" - the handler
+    //   comment claims it surfaces the error, but the code does not.
+    legacyMayBeUnloaded: 'Every number here is 0, and it is impossible to tell whether the view is genuinely empty or the legacy query failed (the backend silently returns all zeros on failure).',
+    legacyTotalNodes: 'Nodes',
+    legacyHealthy: 'Healthy',
+    legacyFailing: 'Failing',
+    legacyUrgentQueue: 'Urgent queue',
+    legacySource: 'Source: {s}',
+    legacyBacklogNote: 'Per-priority/state rows below come from the legacy view; their backlog is unrelated to the active queue:',
   },
   layer: {
     task: 'Task type',

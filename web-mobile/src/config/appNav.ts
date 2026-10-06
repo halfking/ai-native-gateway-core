@@ -80,6 +80,10 @@ export const DRAWER_NAV: readonly NavItem[] = [
   //   而 RegisterAnalyticsRoutes 由 handler.go:1430 用 h.superAdmin 挂载。
   { key: 'matrix', to: '/matrix', icon: 'grid', titleKey: 'nav.matrix', requiresRole: 'super_admin' },
   { key: 'flow', to: '/flow', icon: 'share', titleKey: 'nav.flow', requiresRole: 'super_admin' },
+  // 探测系统健康 + 队列快照：答「整个探测系统健康吗、有没有卡住」，
+  // 与 /probe（「具体哪个任务/供应商在跑」）配对。
+  // ★ admin 档（wrapAdmin）⇒ 不设 requiresRole，对比上面四条超管线。
+  { key: 'probe-health', to: '/probe-health', icon: 'refresh', titleKey: 'nav.probeHealth' },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))
