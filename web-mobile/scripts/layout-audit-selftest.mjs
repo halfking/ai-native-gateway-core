@@ -6,12 +6,12 @@
  *   而「判据返回 issues: []」与「页面真的没问题」**长得一模一样**。
  *   没有夹具，这把尺子永远无法被证伪 —— 尺子坏了也没人知道。
  *
- * ⚠️ 断言范围（刻意收窄）：只断言**我逐行读过、能从源码推出结论**的判据：
- *   ① h-overflow（`scrollWidth > innerWidth + 1` 触发 + offender 过滤）
- *   ② tap-target（`MIN_TAP = 44`，`w<44 || h<44`）
- *   其余 kind（low-contrast / covered-by-fixed / invisible-text / near-blank …）
- *   阈值与启发式没逐行读完，**不写断言** —— 夹具没踩中它们阈值时，
- *   失败的是我的夹具不是尺子，那种红是噪声。
+ * ✅ 已正控的 kind（8 / 9）：h-overflow、tap-target、invisible-text、
+ *   low-contrast、broken-image、tap-overlap、covered-by-fixed、near-blank。
+ *   每条都同时有「plant（必须报）」与「decoy（不许报）」两侧。
+ * ⛔ 仍未正控：safe-area —— 它要先有 `--app-safe-bottom` 变量才有意义，
+ *   那是**壳注入**的量（模拟器那一轮才测得到），在浏览器夹具里自造一个
+ *   等于自己造契约。故意不写断言，不用假阳性换「覆盖率」。
  *
  * ★★ 视口怎么定（踩了三个坑才定下来，勿改）：
  *   ① `Emulation.setDeviceMetricsOverride` 在本机 headless 下**经常不生效**
@@ -22,13 +22,7 @@
  *   ⇒ 正解：外层页面固定 1400px（永不被内容撑开），把夹具放进**同源 iframe**，
  *     用 iframe 的宽度当视口，并 CDP `createIsolatedWorld` 把判据注入 iframe
  *     自己的 realm（`contentWindow.eval` 跨 realm 不可用）。
- *     实测请求 320/360/1024 ⇒ 实得 320/360/1024，分毫不差。
  *   每次都回读 `innerWidth` 比对，不等就 exit 2 —— 绝不在错的视口上判「尺子」。
- *
- * ★ 三套场景缺一不可（第一版只有「全量」，结果被变异 M1 穿了）：
- *   全量     —— 大溢出 + 小溢出 + 诱饵 + 小热区
- *   小溢出   —— 只有 ~40px 的溢出 ⇒ 卡「容差被从 +1 放宽到 +200」那种变异
- *   干净页   —— 无缺陷无诱饵     ⇒ 卡「判据对什么都乱报」
  *
  * 用法：node scripts/layout-audit-selftest.mjs
  * 退出码：0 = 尺子有牙；1 = 断言没过（逐条打印为什么）；2 = 环境没生效。
@@ -47,19 +41,26 @@ const CHROME = process.env.CHROME_BIN ?? '/Applications/Google Chrome.app/Conten
 const AUDIT_SRC = layoutAudit.toString()
 const HOST_W = 1400
 
+/** label / 夹具场景 / 视口宽。场景名对应 fixtures 页里的 ?plants=。 */
 const CASES = [
   { label: '@320 全量', q: '/fixture', w: 320 },
   { label: '@1024 全量', q: '/fixture', w: 1024 },
   { label: '@320 仅小溢出', q: '/fixture?plants=small', w: 320 },
   { label: '@320 干净页', q: '/fixture?plants=none', w: 320 },
+  { label: '@320 对比度', q: '/fixture?plants=contrast', w: 320 },
+  { label: '@320 坏图', q: '/fixture?plants=broken', w: 320 },
+  { label: '@320 重叠', q: '/fixture?plants=overlap', w: 320 },
+  { label: '@320 底栏遮挡', q: '/fixture?plants=covered', w: 320 },
+  { label: '@320 底栏已避让', q: '/fixture?plants=covered-ok', w: 320 },
+  { label: '@320 近白屏', q: '/fixture?plants=blank', w: 320 },
+  { label: '@320 底栏遮挡(滚动)', q: '/fixture?plants=covered-scroll', w: 320 },
+  { label: '@320 底栏已避让(滚动)', q: '/fixture?plants=covered-scroll-ok', w: 320 },
 ]
 
 const HOST_PAGE = `<!doctype html><meta charset="utf-8">
 <body style="margin:0">
 <iframe id="f" src="/fixture" style="width:${HOST_W}px;height:820px;border:0"></iframe>
 <script>
-  // 换 src 而不是 location.reload() —— 换 src 会重建执行上下文，
-  // 外层正好按新 frameId 重新 createIsolatedWorld。
   window.setFixture = (w, q) => { const f = document.getElementById('f'); f.style.width = w + 'px'; f.src = q }
 </script>`
 
@@ -141,7 +142,7 @@ async function runInFrame() {
 const results = []
 for (const c of CASES) {
   await cdp.send('Runtime.evaluate', { expression: `setFixture(${c.w}, ${JSON.stringify(c.q)})` })
-  await sleep(900)
+  await sleep(800)
   let got
   try { got = await runInFrame() } catch (e) {
     console.error(`✗ 环境没生效（不是判据的问题）：${c.label} ${e.message}`); stop(); process.exit(2)
@@ -157,15 +158,15 @@ stop()
 // ---- 断言 ----
 const fails = []
 const has = (arr, id) => (arr ?? []).some((o) => (o.sel || '').includes(id))
+const kind = (r, k) => r.report.issues.find((i) => i.kind === k)
 const kinds = (r) => r.report.issues.map((i) => i.kind).sort().join(',') || '（无）'
+const R = Object.fromEntries(results.map((r) => [r.label, r]))
 
-const full320 = results[0], full1024 = results[1], small = results[2], clean = results[3]
-
-// ① 全量 @320：两条溢出 + 小热区都抓到；诱饵一个都不许误报
+// ① h-overflow / tap-target（@320 全量）
 {
-  const t = full320.label, hOv = full320.report.issues.find((i) => i.kind === 'h-overflow')
-  const tap = full320.report.issues.find((i) => i.kind === 'tap-target')
-  if (!hOv) fails.push(`${t} 漏报 h-overflow：夹具种了三块溢出块，不可能不溢出`)
+  const r = R['@320 全量'], t = r.label
+  const hOv = kind(r, 'h-overflow'), tap = kind(r, 'tap-target')
+  if (!hOv) fails.push(`${t} 漏报 h-overflow：夹具种了三块溢出块`)
   else {
     const ids = hOv.offenders.map((o) => o.sel).join(' , ')
     if (!has(hOv.offenders, '#plant-halways')) fails.push(`${t} offenders 缺 #plant-halways（1600px）。实际：${ids}`)
@@ -183,9 +184,9 @@ const full320 = results[0], full1024 = results[1], small = results[2], clean = r
   }
 }
 
-// ② 全量 @1024：480px 那块装得下 ⇒ 不该再出现在 offenders（offender 过滤的精度）
+// ② h-overflow 的 offender 精度（@1024：480px 那块装得下，不该再出现）
 {
-  const t = full1024.label, hOv = full1024.report.issues.find((i) => i.kind === 'h-overflow')
+  const r = R['@1024 全量'], t = r.label, hOv = kind(r, 'h-overflow')
   if (!hOv) fails.push(`${t} 漏报 h-overflow：1600px 那块任何视口都溢出`)
   else {
     const ids = hOv.offenders.map((o) => o.sel).join(' , ')
@@ -196,28 +197,99 @@ const full320 = results[0], full1024 = results[1], small = results[2], clean = r
   }
 }
 
-// ③ 仅小溢出：卡「容差被放宽」那种变异（大溢出那两条会掩盖它）
+// ③ 仅小溢出：卡「容差被放宽」那种变异（大溢出会掩盖它）
 {
-  const t = small.label, hOv = small.report.issues.find((i) => i.kind === 'h-overflow')
-  if (!hOv) {
-    fails.push(`${t} 漏报 h-overflow：页面上唯一的缺陷是 ~40px 的小幅溢出，容差稍一放宽就会漏`)
-  } else if (!has(hOv.offenders, '#plant-hsmall')) {
+  const r = R['@320 仅小溢出'], t = r.label, hOv = kind(r, 'h-overflow')
+  if (!hOv) fails.push(`${t} 漏报 h-overflow：页面上唯一的缺陷是 ~40px 的小幅溢出，容差稍一放宽就会漏`)
+  else if (!has(hOv.offenders, '#plant-hsmall')) {
     fails.push(`${t} offenders 缺 #plant-hsmall。实际：${hOv.offenders.map((o) => o.sel).join(' , ')}`)
   }
 }
 
-// ④ 干净页：一张什么都没有的页面，判据不许报 h-overflow
+// ④ 干净页：一张什么都没有的页面，判据不许报任何一条
 {
-  const t = clean.label, hOv = clean.report.issues.find((i) => i.kind === 'h-overflow')
-  if (hOv) {
-    fails.push(`${t} 干净页被判出 h-overflow（尺子对什么都乱报）：${hOv.offenders.map((o) => o.sel).join(' , ')}`)
+  const r = R['@320 干净页'], t = r.label
+  for (const k of ['h-overflow', 'tap-target', 'invisible-text', 'low-contrast', 'near-blank', 'broken-image', 'tap-overlap', 'covered-by-fixed']) {
+    if (kind(r, k)) fails.push(`${t} 干净页被判出 ${k}（尺子对什么都乱报）`)
   }
 }
 
-for (const r of results) console.log(`判据在 ${r.label.padEnd(14)} 返回：${kinds(r)}`)
+// ⑤ 对比度：同色字 → invisible-text；低对比 → low-contrast；高对比诱饵不许进
+{
+  const r = R['@320 对比度'], t = r.label
+  const inv = kind(r, 'invisible-text'), low = kind(r, 'low-contrast')
+  if (!inv) fails.push(`${t} 漏报 invisible-text：白底白字 ratio≈1.00 < 1.25`)
+  else if (!has(inv.items, '#plant-invisible')) {
+    fails.push(`${t} invisible-text items 缺 #plant-invisible。实际：${inv.items.map((o) => o.sel).join(' , ')}`)
+  }
+  if (!low) fails.push(`${t} 漏报 low-contrast：#999 on #fff ratio≈2.85 < 4.5`)
+  else {
+    if (!has(low.items, '#plant-lowc')) fails.push(`${t} low-contrast items 缺 #plant-lowc。实际：${low.items.map((o) => o.sel).join(' , ')}`)
+    if (has(low.items, '#decoy-contrast')) fails.push(`${t} low-contrast 误报 #decoy-contrast（#333 on #fff ratio≈12.6 是安全的）`)
+  }
+}
+
+// ⑥ 坏图
+{
+  const r = R['@320 坏图'], t = r.label, bk = kind(r, 'broken-image')
+  if (!bk) fails.push(`${t} 漏报 broken-image：src 指向不存在的文件`)
+  else {
+    const ids = bk.items.map((o) => o.sel).join(' , ')
+    // ⚠️ 判据的 path() 只拼 tag#id.class，不含属性 ⇒ 断言必须按 id 匹配，不能写 [alt=…]
+    if (!has(bk.items, '#plant-broken-img')) fails.push(`${t} broken-image items 里没有那张坏图。实际：${ids}`)
+    if (has(bk.items, '#decoy-good-img')) fails.push(`${t} broken-image 误报了 data URI 的好图。实际：${ids}`)
+  }
+}
+
+// ⑦ 触控重叠
+{
+  const r = R['@320 重叠'], t = r.label, ov = kind(r, 'tap-overlap')
+  if (!ov) fails.push(`${t} 漏报 tap-overlap：两个 120×120 按钮重叠 > 30%`)
+  else {
+    const ids = ov.items.map((o) => `${o.a}~${o.b}`).join(' , ')
+    if (!ids.includes('#plant-ov-a') || !ids.includes('#plant-ov-b')) {
+      fails.push(`${t} tap-overlap 没指向那两个重叠按钮。实际：${ids}`)
+    }
+    if (ids.includes('#decoy-ov-a') || ids.includes('#decoy-ov-b')) {
+      fails.push(`${t} tap-overlap 误报了两个分开的诱饵按钮。实际：${ids}`)
+    }
+  }
+}
+
+// ⑧ 固定底栏遮挡：压住时报，padding 够时不报
+{
+  const r1 = R['@320 底栏遮挡'], r2 = R['@320 底栏已避让']
+  if (!kind(r1, 'covered-by-fixed')) {
+    fails.push(`${r1.label} 漏报 covered-by-fixed：main 末尾被 56px 固定底栏压住`)
+  }
+  if (kind(r2, 'covered-by-fixed')) {
+    fails.push(`${r2.label} 误报 covered-by-fixed：main 已有 80px padding-bottom，末行点得到`)
+  }
+  // 同一条判据的**另一条分支**：main 是可滚动容器 → 走 slack 判定。
+  // ★ 这两条必须成对：covered-by-fixed 的条件在两条分支里各出现一次
+  //   （`padB < bottomBar.r.height - 2`），只覆盖一条的话改坏另一条不会被发现（M6 实测）。
+  const r3 = R['@320 底栏遮挡(滚动)'], r4 = R['@320 底栏已避让(滚动)']
+  if (!kind(r3, 'covered-by-fixed')) {
+    fails.push(`${r3.label} 漏报 covered-by-fixed：main 是可滚动容器且末尾 slack < 底栏高`)
+  }
+  if (kind(r4, 'covered-by-fixed')) {
+    fails.push(`${r4.label} 误报 covered-by-fixed：可滚动容器已有 80px padding-bottom`)
+  }
+}
+
+// ⑨ 近白屏
+{
+  const r = R['@320 近白屏'], t = r.label
+  if (!kind(r, 'near-blank')) {
+    fails.push(`${t} 漏报 near-blank：整页仅 ${r.report.stats.domNodes} 个节点 < 门槛 20`)
+  }
+}
+
+for (const r of results) console.log(`判据在 ${r.label.padEnd(16)} 返回：${kinds(r)}`)
 if (fails.length) {
   console.error(`\n✗ 自检失败 ${fails.length} 条：`)
   for (const f of fails) console.error('  · ' + f)
   process.exit(1)
 }
-console.log('\n✓ 自检通过：种下的缺陷全部被抓到（含小幅溢出）、诱饵与干净页都没被误报 —— 尺子有牙')
+console.log('\n✓ 自检通过：8/9 条判据的 plant 全部被抓到、decoy 与干净页都没被误报 —— 尺子有牙')
+console.log('  （safe-area 故意未正控：它依赖壳注入的 --app-safe-bottom，自造等于自造契约）')

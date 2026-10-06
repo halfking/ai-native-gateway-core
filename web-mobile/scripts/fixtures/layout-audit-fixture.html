@@ -5,56 +5,69 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>layoutAudit 自检夹具</title>
 <style>
-  /* 这是「判据自己的正控」：每个元素都带 data-plant（种下的缺陷，判据**必须**报出）
-     或 data-decoy（看着像缺陷其实安全，判据**不许**报）。
-     改完 scripts/_layout-audit.mjs 跑 scripts/layout-audit-selftest.mjs —— 绿了才说明尺子还有牙。
+  /* 「判据自己的正控」：每个缺陷块带 data-plant（种下的缺陷，判据**必须**报），
+     每个安全块带 data-decoy（看着像缺陷其实安全，判据**不许**报）。
+     改完 scripts/_layout-audit.mjs 跑 scripts/layout-audit-selftest.mjs。
 
-     用 ?plants= 切换三套场景：
-       （默认 / 全量）  大溢出 + 小溢出 + 诱饵 + 小热区
-       ?plants=small    只有**小溢出**（约 40px）—— 用来卡住「容差被放宽」那种变异
-       ?plants=none     干净页（无缺陷、无诱饵）—— 用来卡住「判据对什么都乱报」 */
+     ★ 各场景用 ?plants= 选（内容在 <template> 里，只把选中的那套搬进 body ——
+       <template> 的内容不在 document 树里，不会污染 domNodes / 节点门槛）：
+       （默认 all）     大溢出 + 小溢出 + 省略号诱饵 + 小热区
+       small            只有 ~40px 的小幅溢出 ⇒ 卡「容差被放宽」
+       contrast         同色字（invisible-text）+ 低对比（low-contrast）+ 高对比诱饵
+       broken           坏图 + 好图（data URI）
+       overlap          两个互相压住的可点元素 + 两个分开的诱饵
+       covered          <main> 末尾被固定底栏压住
+       covered-ok       同上，但 main 有足够 padding-bottom（安全诱饵）
+       blank            近白屏（节点数低于门槛 20）
+       none             干净页（用来卡「判据对什么都乱报」）
+  */
   body { margin: 0; font: 14px/1.5 system-ui, sans-serif; background: #fff; color: #111; }
   .wrap { max-width: 720px; margin: 0 auto; padding: 16px; }
 
-  /* ── 种下的缺陷 ①：超长不可断内容，所有视口都撑破 ──────────────── */
+  /* ── 溢出类 ────────────────────────────────────────────────── */
   #plant-halways { width: 1600px; height: 24px; background: #fdd; }
+  #plant-hfixed  { width: 480px; height: 24px; background: #fee; }
+  /* ★ 这条专门卡「容差被从 +1 放宽到 +200」：大溢出那两条照样触发，只有它会露馅 */
+  #plant-hsmall  { width: calc(100% + 60px); height: 24px; background: #ffd; }
 
-  /* ── 种下的缺陷 ②：固定 480px 宽 ──────────────────────────────────
-     320px 视口下必然撑破（约 160px）；1024px 下 wrap 上限 720，装得下
-     ⇒ 自检据此断言「1024 时 offenders 里不该再出现它」。 */
-  #plant-hfixed { width: 480px; height: 24px; background: #fee; }
-
-  /* ── 种下的缺陷 ③：小溢出（约 40px）──────────────────────────────
-     ★ 这条专门用来卡「容差被放宽」：把 `sw > innerWidth + 1` 改成 `+ 200`
-       时，大溢出那两条照样触发，**只有这条会露馅**。 */
-  #plant-hsmall { width: calc(100% + 60px); height: 24px; background: #ffd; }
-
-  /* ── 诱饵 ①/②：省略号截断 + flex/百分比宽度（实测**安全**）─────────
-     依据：flex/grid 的自动最小尺寸（min-width:auto）只在 overflow:visible 时
-     才等于 min-content。截断元素**自己**带 overflow:hidden ⇒ 最小尺寸为 0 ⇒
-     能收缩、能省略号、不会撑破。
-     这两条曾被「grep 形状」误判成缺陷（缺 min-width:0），真机实测否掉了。 */
+  /* ── 省略号诱饵（实测安全）────────────────────────────────────
+     flex/grid 的自动最小尺寸只在 overflow:visible 时才等于 min-content；
+     截断元素自己带 overflow:hidden ⇒ 最小尺寸 0 ⇒ 能收缩、能省略号、不撑破。
+     这两条曾被 grep 形状误判成缺陷，真机对照实验否掉了。 */
   .decoy-row { display: flex; align-items: center; gap: 8px; }
   #decoy-flex { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #decoy-pct  { width: 38%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .decoy-fixed { width: 76px; flex-shrink: 0; background: #eee; }
 
-  /* ── 种下的缺陷 ④ / 诱饵 ③：触控热区 24px vs 48px（MIN_TAP=44）── */
+  /* ── 触控热区 ──────────────────────────────────────────────── */
   #plant-tap-small { width: 24px; height: 24px; padding: 0; border: 0; background: #e33; color: #fff; }
   #decoy-tap-ok    { width: 48px; height: 48px; padding: 0; border: 0; background: #3a3; color: #fff; }
 
-  /* ?plants=none 时把所有 plant/decoy 藏掉，模拟一张干净页 */
-  body.clean .plant, body.clean .decoy { display: none; }
+  /* ── 对比度类 ──────────────────────────────────────────────── */
+  #plant-invisible { color: #fff; background: #fff; }   /* ratio ≈ 1.00 < 1.25 */
+  #plant-lowc      { color: #999; background: #fff; }   /* ratio ≈ 2.85 < 4.5 */
+  #decoy-contrast  { color: #333; background: #fff; }   /* ratio ≈ 12.6，安全 */
+
+  /* ── 重叠类：两个绝对定位的按钮压在一起 ────────────────────── */
+  #plant-ov-a, #plant-ov-b { position: absolute; left: 20px; top: 40px; width: 120px; height: 120px; margin: 0; }
+  #plant-ov-b { left: 60px; background: #36c; color: #fff; }
+  #plant-ov-a { background: #c33; color: #fff; }
+  #decoy-ov-a, #decoy-ov-b { width: 60px; height: 48px; margin: 0; }
+
+  /* ── 固定栏遮挡类 ──────────────────────────────────────────── */
+  #plant-bar { position: fixed; left: 0; right: 0; bottom: 0; height: 56px; background: #234; color: #fff; }
+  #plant-main { margin: 0; padding: 0; }
+  .tall { height: 2000px; background: linear-gradient(#eef, #ccd); }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <h1>layoutAudit 自检夹具</h1>
 
+<!-- ── all ── -->
+<template id="s-all"><div class="wrap">
+  <h1>layoutAudit 自检夹具</h1>
   <div id="plant-halways" class="plant" data-plant="h-overflow-always"></div>
   <div id="plant-hfixed" class="plant" data-plant="h-overflow-narrow"></div>
   <div id="plant-hsmall" class="plant" data-plant="h-overflow-small"></div>
-
   <div class="decoy-row decoy" data-decoy="ellipsis-safe">
     <div id="decoy-flex">AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA</div>
     <div class="decoy-fixed"></div>
@@ -63,18 +76,77 @@
     <div id="decoy-pct">BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB</div>
     <div class="decoy-fixed"></div>
   </div>
-
   <p>
     <button id="plant-tap-small" class="plant" data-plant="tap-target">×</button>
     <button id="decoy-tap-ok" class="decoy">✓</button>
   </p>
-</div>
+</div></template>
+
+<!-- ── contrast ── -->
+<template id="s-contrast"><!--filler--><div><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span></div><div class="wrap">
+  <p id="plant-invisible" class="plant" data-plant="invisible-text">看不见的字</p>
+  <p id="plant-lowc" class="plant" data-plant="low-contrast">对比不足的字</p>
+  <p id="decoy-contrast" class="decoy">对比足够的字</p>
+</div></template>
+
+<!-- ── broken ── -->
+<template id="s-broken"><!--filler--><div><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span></div><div class="wrap">
+  <img id="plant-broken-img" class="plant" data-plant="broken-image" src="/definitely-missing.png" alt="坏图" width="60" height="60">
+  <img id="decoy-good-img" class="decoy" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="好图" width="60" height="60">
+</div></template>
+
+<!-- ── overlap ── -->
+<template id="s-overlap"><div style="position:relative;height:300px">
+  <button id="plant-ov-a" class="plant" data-plant="tap-overlap">A</button>
+  <button id="plant-ov-b" class="plant" data-plant="tap-overlap">B</button>
+</div><div class="wrap">
+  <button id="decoy-ov-a" class="decoy">左</button>
+  <button id="decoy-ov-b" class="decoy">右</button>
+</div></template>
+
+<!-- ── covered / covered-ok ── -->
+<template id="s-covered"><!--filler--><div><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span></div><main id="plant-main"><div class="tall"></div></main>
+<div id="plant-bar" data-plant="covered-by-fixed">底栏</div></template>
+
+<template id="s-covered-ok"><!--filler--><div><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span></div><main id="plant-main" style="padding-bottom:80px"><div class="tall"></div></main>
+<div id="plant-bar" class="decoy">底栏</div></template>
+
+<!-- ── covered-scroll：滚动容器分支 ────────────────────────────────
+     ★ covered-by-fixed 有**两条分支**，条件里都出现 `padB < barH-2`：
+       (a) main 是可滚动容器 → 走 slack 判定；
+       (b) main 不可滚 → 走 `mr.bottom > bar.top` 判定。
+     只做 (b) 的话，把 (a) 里的条件改坏，自检**照样全绿**（实测变异 M6 就是这样穿过去的）。 -->
+<template id="s-covered-scroll"><!--filler--><div><span>a</span><span>b</span><span>c</span><span>d</span><span>e</span><span>f</span><span>g</span></div>
+<main id="plant-main-scroll" style="height:700px;overflow-y:auto;padding:0"><div class="tall"></div></main>
+<div id="plant-bar-scroll" style="position:fixed;left:0;right:0;bottom:0;height:56px;background:#234;color:#fff">底栏</div></template>
+
+<template id="s-covered-scroll-ok"><!--filler--><div><span>a</span><span>b</span><span>c</span><span>d</span><span>e</span><span>f</span><span>g</span></div>
+<main id="plant-main-scroll-ok" style="height:700px;overflow-y:auto;padding:0 0 80px"><div class="tall"></div></main>
+<div id="plant-bar-scroll-ok" style="position:fixed;left:0;right:0;bottom:0;height:56px;background:#234;color:#fff">底栏</div></template>
+
+<!-- ── none：干净页。节点数必须 ≥ 20，否则 near-blank 会正确地报出来 ── -->
+<template id="s-none"><div class="wrap"><h2>干净页</h2>
+  <p>这一页没有任何种下的缺陷，也没有诱饵；它的作用是证明判据对什么都**不**报。</p>
+  <ul><li>一</li><li>二</li><li>三</li><li>四</li><li>五</li></ul>
+  <div><span>a</span><span>b</span><span>c</span></div>
+  <div><span>d</span><span>e</span><span>f</span></div>
+</div></template>
+
 <script>
   const mode = new URLSearchParams(location.search).get('plants') || 'all'
-  if (mode === 'none') document.body.classList.add('clean')
-  if (mode === 'small') {
-    for (const id of ['plant-halways', 'plant-hfixed', 'plant-tap-small']) {
-      const el = document.getElementById(id); if (el) el.style.display = 'none'
+  if (mode === 'blank') {
+    // near-blank 判的是 **document 里真实存在的节点数**（display:none 不算数），
+    // 所以这里必须真的清空 body，而不是隐藏。
+    document.body.innerHTML = '<p>x</p><p>y</p>'
+  } else if (mode === 'none') {
+    document.body.appendChild(document.getElementById('s-none').content.cloneNode(true))
+  } else {
+    const t = document.getElementById('s-' + (mode === 'small' ? 'all' : mode))
+    if (t) document.body.appendChild(t.content.cloneNode(true))
+    if (mode === 'small') {
+      for (const id of ['plant-halways', 'plant-hfixed', 'plant-tap-small']) {
+        const el = document.getElementById(id); if (el) el.remove()
+      }
     }
   }
 </script>
