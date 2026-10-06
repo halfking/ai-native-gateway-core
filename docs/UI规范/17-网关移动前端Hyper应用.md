@@ -8296,3 +8296,162 @@ byReason, err := querier.GetReasonDistribution(ctx);  if err != nil { …500; re
   键存在 vs 键缺失），而不是只写「正常」那一种。
 
 文档 §11.97 纯追加。
+
+### 11.98 第六十二批：日志运维面（API 层 + UI）
+
+#### 11.98.1 ★★ 同一前缀下混着两种权限档
+
+`/api/admin/logs/*` 的七条注册（`admin/handler.go:959` / `:1114-1119`）：
+
+| 端点 | 档位 | 本批 |
+|---|---|---|
+| `body-cache-stats` | `admin(...)` | ✔ |
+| `files` | `admin(...)` | ✔ |
+| `stats` | `admin(...)` | ✔ |
+| `archive/list` | `admin(...)` | — |
+| `config` | **`h.superAdmin(...)`** | ✘ 另有 `PUT` 写操作 |
+| `archive` | **`h.superAdmin(...)`** | ✘ 归档（动文件） |
+| `cleanup` | **`h.superAdmin(...)`** | ✘ 删除（动文件） |
+
+⇒ 本页三条都是 admin 档，**抽屉席不设 `requiresRole`**。
+但这是**前缀级的巧合**，不是整族的档位 ——
+★ **按前缀判权限会判错**。往后往本页加 `config`/`archive`/`cleanup`
+任何一条，**整页档位必须跟着升**，不能只加端点不改抽屉席。
+
+不碰写操作的三条理由各不相同：`config` 的 `PUT` 改的是日志级别（改行为），
+`archive` 移动文件，`cleanup` **删文件**。
+
+#### 11.98.2 ★★★★★ 五处「不能都渲染成同一个东西」
+
+**(1) 三种「什么都没有」长得不一样**（`handleLogStats` 的三条早退路径）：
+
+```go
+resp := LogStatsResponse{}
+if cur.File == "" { writeJSON(w, 200, resp); return }   // :326-329 文件日志未启用
+resp.LogDir = dir
+resp.Exists = dirExists(dir)
+if !resp.Exists { writeJSON(w, 200, resp); return }     // :332-335 目录不存在
+```
+
+| 信号 | 语义 | UI 文案 |
+|---|---|---|
+| `log_dir === ''` | **文件日志根本没启用** | 「文件日志未启用」 |
+| `log_dir !== '' && exists === false` | 配了路径但**目录不存在** | 「日志目录不存在：{dir}」 |
+| `exists === true && total_files === 0` | 目录在，**真的没文件** | 「目录存在但一个文件都没有」 |
+
+三者都写「没有数据」的话，运维会去查一个**根本不存在的目录问题**。
+
+**(2) `disk_usage_pct` 的 0 是 Go 零值**：
+
+```go
+if pct, _, _, _, err := diskUsageAt(dir); err == nil { resp.DiskUsagePct = pct }   // :367-369
+```
+
+查失败时只是**不赋值** ⇒ 下发 0，与「真的 0%」不可分。
+⇒ 页面**不**把 0% 讲成「磁盘没被日志占」，而是照回显并附口径说明
+（「这个 0 可能是查询失败，不是真的没占」）。
+
+**(3) `hit_rate` 同构**：`hits/(hits+misses)`，分母为 0 时后端留 `0.0`
+（`logs_body_cache.go:139-142`）⇒ 「无样本」与「0% 命中率」必须分开。
+
+**(4) `files` 的空列表也有两种成因**：
+`logging.ListFiles()` 在文件日志未启用时返回**空切片 + nil 错误**
+（`internal/logging/logging.go:408-410` 注释原文），
+而 handler 对此**没有早退**（`log_management.go:305-315` 一路构造到底）
+⇒ 唯一区分信号是 `dir` 是否为空串。
+
+**(5) 时间指针可为 null**：`OldestMtime`/`NewestMtime` 是 `*time.Time`
+（`:363-364` 直接赋可能为 nil 的指针），目录里没文件时序列化成 `null`
+⇒ 时间跨度**算不出来**，不能拿「现在」或默认值顶上去。
+
+#### 11.98.3 ★ Go 内嵌结构体会被 JSON 扁平化
+
+`LogFileInfoExt`（`log_management.go:85-88`）内嵌 `logging.LogFileInfo`：
+
+```go
+type LogFileInfoExt struct {
+    logging.LogFileInfo          // 内嵌 ⇒ json 编码**扁平化**
+    SizeHuman string `json:"size_human"`
+}
+```
+
+⇒ 响应里**没有** `log_file_info` 这样的嵌套层，
+内层六个字段（`name`/`size_bytes`/`mod_time`/`is_current`/`is_compressed`/`is_archived`，
+`internal/logging/logging.go:399-406`）与 `size_human` **平级**。
+按「外层只有一个内嵌字段」的直觉写前端类型 ⇒ 七个键一个都读不到。
+变异 #8（把必填键改成 `['log_file_info', 'size_human']`）专钉这条。
+
+#### 11.98.4 变异验证：18 + 15 条，全部有牙
+
+- API 层 `/tmp/mut-co62.mjs`：**18/18**（首轮 17/18，#6 是 `expect` 锚点错）
+- 视图 + 抽屉席 `/tmp/mut-co62b.mjs`：**15/15**（其中 1 条可证等价变异）
+- 两轮 `RESTORED=OK`（逐字节一致，md5 与备份相符）
+
+**★ 一条可证等价变异（#2）**，值得单记 —— 它不是判据无牙：
+
+```ts
+const statsState = computed(() => {
+  if (!stats.value) return 'ok'
+  if (logStatsNotEnabled(stats.value)) return 'notEnabled'   // log_dir === ''
+  if (logStatsDirMissing(stats.value)) return 'dirMissing'   // !notEnabled && exists === false
+  if (logStatsEmpty(stats.value)) return 'empty'             // exists === true && total_files === 0
+  return 'ok'
+})
+```
+
+把 `logStatsEmpty` 里的 `exists === true` 去掉，**全绿**。
+但这不是判据无牙，而是**守卫顺序使其可证冗余**：
+到达 `empty` 分支时，上一行 `logStatsDirMissing` 刚返回 false，
+即 `!notEnabled && exists === false` 为假 ⇒ `exists !== false`；
+`exists` 是 boolean ⇒ 必为 true ⇒ 被删的检查是**恒真项**。
+
+⇒ 这与「恒真判据」的处置相反：**恒真判据要删，恒真**守卫**要留**，
+因为前者是无用的复杂度，后者是可读的显式条件。
+本仓 API 层那条同名检查的判据由 `mut-co62.mjs` #3 覆盖（已验证转红）。
+
+**★ 变异 #1/#9 首轮是「rc=1 但零具名红」—— 又是收集失败而非判据失效。**
+原因是我的变异把 `/*MUTCO62B_01*/` 注释放进了**标签属性区**
+（`v-else-if="false"` 后面跟注释），Vue 模板编译直接失败：
+
+```
+Error: Codegen node is missing for element/if/for node.
+  Plugin: vite:vue
+```
+
+⇒ **`rc≠0` 且具名红为 0 ⇒ 先看是不是编译失败**，
+模板里的变异标记必须放进属性「值」的 JS 表达式里
+（`v-if="cond /*MUT*/"`），不能放在标签属性区。
+
+#### 11.98.5 ★★ 一条被十连跑本身抓出来的流程问题
+
+第一次十连跑报「10/10 全绿」，但日志里：
+
+```
+run#1 … run#8   Tests  3214 passed (3214)
+run#9 … run#10  Tests  3238 passed (3238)
+```
+
+⇒ **中途测试条数变了**：我在这轮十连跑运行期间新增了 `LogOpsView.spec.ts`
+的 24 条用例。也就是说**那轮十连跑覆盖的不是最终代码**，
+前 8 轮跑的是旧代码、后 2 轮跑的是新代码。
+
+⇒ 纪律补充：**十连跑必须在代码完全静止后启动**。
+「10/10」这个数字若不附条数，是不足以证明它跑的是哪份代码的。
+本批已按最终代码重跑一遍（3239 × 10）。
+
+#### 11.98.6 交付物
+
+| 文件 | 性质 | 说明 |
+|---|---|---|
+| `web-mobile/src/api/logOps.ts` | 新建 | 三条只读端点 |
+| `web-mobile/src/api/logOps.test.ts` | 新建 | 31 条 |
+| `web-mobile/src/views/LogOpsView.vue` | 新建 | 三段，全部按需加载 |
+| `web-mobile/src/views/LogOpsView.spec.ts` | 新建 | 25 条 |
+| `web-mobile/src/router/index.ts` | 改 | `/log-ops` |
+| `web-mobile/src/config/appNav.ts` | 改 | 抽屉席 `log-ops`（admin 档） |
+| `web-mobile/src/i18n/zh-CN.ts` / `en-US.ts` | 改 | `nav.logOps` + `logOps.*` 段 |
+
+验证：全量 3239 条（126 文件）rc=0；三门 / `vue-tsc` / `build` 全 rc=0；
+十连跑 10/10（3239 × 10）。
+
+文档 §11.98 纯追加。

@@ -181,6 +181,12 @@ export const DRAWER_NAV: readonly NavItem[] = [
   // ★ 与上面 /auto-route 的 super_admin 档相反 —— 这是本仓最容易照抄错的一处：
   //   两条都叫「路由/看板面」，权限档却完全相反。
   { key: 'dashboard-ops', to: '/dashboard-ops', icon: 'grid', titleKey: 'nav.dashboardOps' },
+  // 日志运维面。★ admin 档（handler.go:959/1115/1116 三条都是 admin(...)）
+  // ⇒ **不设** requiresRole。
+  // ⚠️ 同前缀下 config / archive / cleanup 是 h.superAdmin ——
+  //   那是**前缀级的巧合**，不是整族的档位；按前缀判权限会判错。
+  // 图标用 clock（时间轴语义）：IconName 里没有 file，类型门会红。
+  { key: 'log-ops', to: '/log-ops', icon: 'clock', titleKey: 'nav.logOps' },
   {
     key: 'request-anomalies',
     to: '/request-anomalies',

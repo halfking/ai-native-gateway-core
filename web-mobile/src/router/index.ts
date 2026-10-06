@@ -203,6 +203,17 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/DashboardOpsView.vue'),
     meta: { titleKey: 'dashboardOps.title', requiresAuth: true },
   },
+  // 日志运维面（logOps 三条只读端点）。
+  // ★ admin 档：`/api/admin/logs/{stats,files,body-cache-stats}` 都是 admin(...)
+  //   ⇒ tenant_admin 可用 ⇒ 抽屉席**不设** requiresRole。
+  // ⚠️ 同前缀下 config / archive / cleanup 是 h.superAdmin ——
+  //   往后往本页加任何一条，整页档位必须跟着升。
+  {
+    path: '/log-ops',
+    name: 'log-ops',
+    component: () => import('@/views/LogOpsView.vue'),
+    meta: { titleKey: 'logOps.title', requiresAuth: true },
+  },
   // ── 全局横向对比面（2026-10-07）──────────────────────────────────────
   // 与 /funnel 配对：漏斗是单模型纵深，矩阵/流量是全体模型横向对比。
   // ★ 两条都是 superAdmin：matrix/flow 在 RegisterAnalyticsRoutes 里
