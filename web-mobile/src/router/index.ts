@@ -58,6 +58,12 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'usage.title', requiresAuth: true },
   },
   {
+    path: '/integrity',
+    name: 'integrity',
+    component: () => import('@/views/IntegrityView.vue'),
+    meta: { titleKey: 'integrity.title', requiresAuth: true },
+  },
+  {
     path: '/providers',
     name: 'providers',
     component: () => import('@/views/ProvidersView.vue'),
