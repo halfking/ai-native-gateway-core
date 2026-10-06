@@ -6193,3 +6193,162 @@ default:
 
 **下一批候选**：`admin/logs` 的四条只读（`body-cache-stats` / `files` / `stats` / `archive/list`；
 **混合档** —— `config`/`archive`/`cleanup` 三条是 superAdmin）、`system/session-context`（6）。
+
+### 11.82 日志管理读面上移（第四十六轮，`admin/logs`）
+
+本批把日志管理的**四条只读端点**上移，三条 superAdmin 写操作一律不碰。
+
+- 新 API 模块 `web-mobile/src/api/logsAdmin.ts`（四端点各自独立解包）
+- 新视图 `LogAdminView.vue`（缓存命中 / 目录统计 / 文件清单 / 归档列表，四面板合一页）
+- 新路由 `/log-admin`
+- 新增**一条 admin 档抽屉席** `log-admin`（**故意不设** `requiresRole`）
+- i18n 新命名空间 **`logsAdmin`**
+- 门禁：变异 **34/34 有牙**，用例 **76 条**（48 API + 28 视图）
+
+#### ★★ 档位：四条只读全是 admin，但**同一前缀下混着三条 superAdmin**
+
+`admin/handler.go`：
+
+```go
+mux.HandleFunc("/api/admin/logs/body-cache-stats", admin(h.handleBodyFetchCacheStats))   // :959
+mux.HandleFunc("/api/admin/logs/config",  h.superAdmin(h.handleLogConfig))              // :1114 写 + 热加载
+mux.HandleFunc("/api/admin/logs/files",   admin(h.handleLogFiles))                      // :1115
+mux.HandleFunc("/api/admin/logs/stats",   admin(h.handleLogStats))                      // :1116
+mux.HandleFunc("/api/admin/logs/archive", h.superAdmin(h.handleLogArchive))             // :1117 归档
+mux.HandleFunc("/api/admin/logs/cleanup", h.superAdmin(h.handleLogCleanup))             // :1118 删除
+mux.HandleFunc("/api/admin/logs/archive/list", admin(h.handleLogArchiveList))            // :1119
+```
+
+⇒ 上移的四条**全是 `admin(...)`** ⇒ tenant_admin 可用 ⇒ 抽屉席**不设** `requiresRole`。
+★ 与第四十四轮 attachments 同样的坑：同前缀混档 ⇒ 移动端**不能按前缀判权限**。
+
+#### ★★★★★★ 同一个「文件日志没启用」在三个端点上是**三个不同判据**
+
+后端只有一个开关（`logging.ActiveConfig().File == ""`），但三处各自表达：
+
+| 端点 | 判据 | 代码依据 |
+|---|---|---|
+| `files` | `dir === ''` | 结构体字段 `Dir string`，恒存在、可能为空串 |
+| `stats` | `log_dir === ''` | 同上（字段名不同） |
+| `archive/list` | **`'dir' in resp === false`** | map 字面量在那一支**根本没写**这个键 |
+
+⇒ ★★★ 「看起来都是目录字段」，但**判据形态不一样**（空串 vs 键不存在）
+⇒ 抽一个通用 helper 就会把其中一处说错 ⇒ 页面三处**各按各的**措辞，
+并有一条判据专门断言**三段文案两两不同**。
+
+#### ★★★★★★ `archive/list` 是异形端点：`dir` / `exists` 条件存在
+
+`admin/log_management.go`：
+
+```go
+if cur.File == "" {
+    writeJSON(w, 200, map[string]any{"archives": []any{}, "total": 0})                                  // ① :574
+    return
+}
+entries, err := os.ReadDir(archiveDir)
+if err != nil {
+    writeJSON(w, 200, map[string]any{"archives": []any{}, "total": 0, "dir": archiveDir, "exists": false}) // ② :580
+    return
+}
+writeJSON(w, 200, map[string]any{"archives": items, "total": len(items), "dir": archiveDir, "exists": true}) // ③ :609
+```
+
+⇒ ★★ TS 接口里 `dir` / `exists` 必须是**可选**字段；写成必填就是错的。
+⇒ ★★ ① 与 ② 的 `archives` / `total` **完全一样**，只有「键在不在」能分开。
+⇒ ★ 解包判据只能钉「`archives` 是数组且 `total` 是数字」——**不能**要求 `dir` 在场
+   （要求了就永远收不到状态①，变异 T17 专门打这一条）。
+⇒ `archives` 三态都非 nil ⇒ 永不为 null。
+
+#### ★★★★★★ `files` 的 `is_archived` **永远是 false**
+
+`internal/logging/logging.go:449`：
+
+```go
+out = append(out, LogFileInfo{
+    Name: name, SizeBytes: info.Size(), ModTime: info.ModTime(),
+    IsCurrent:    name == currentName,
+    IsCompressed: strings.HasSuffix(name, ".gz"),
+    IsArchived:   false,          // ★ 硬编码字面量，从来没算过
+})
+```
+
+★ 而 `ListFiles` 的 doc 注释说「含轮转备份和**归档**」—— **注释是错的**：
+`scanLogDir` 收的是**顶层目录**且 `if e.IsDir() { continue }`（不递归）
+⇒ ★★ `files` **永远不包含** `archive/` 里的东西，归档只有 `/archive/list` 能看。
+⇒ 客户端**不许**用 `is_archived === false` 推出「没有归档」。
+
+★ 对照：`is_compressed` 是**真算的**（`.gz` 后缀）⇒ 同一个结构体里
+**一个字段真算、一个字段写死**，页面必须分别对待。
+
+★ 顺带：过滤条件 `!HasSuffix(".log") && !HasSuffix(".log.gz") && !HasSuffix(".gz")`
+里的 `.log.gz` 分支是**冗余**的（`.gz` 已经覆盖）⇒ 实际过滤是 `.log` 或 `.gz`。
+
+#### ★★★★ 三个「0 是二义的」
+
+| 字段 | 二义的两种成因 | 代码依据 |
+|---|---|---|
+| `hit_rate` | 0% 命中率 **或** 一次流量都没有 | `logs_body_cache.go:138-141` `if total > 0 {…}`，否则留 0 |
+| `disk_usage_pct` | 真的 0% **或** `diskUsageAt` 探测失败 | `log_management.go:364-366` `if err == nil {…}`，失败静默留 0 |
+| `exists:false` | 未启用 **或** 目录不存在 | 见下面的三态 |
+
+⇒ 三处都**不报错、不留标记** ⇒ 客户端分辨不出 ⇒ 页面必须并排展示原始计数。
+
+★ `body-cache-stats` 的 doc 注释还写着「前端仅在 super admin 视图展示」，
+与实际的 `admin(...)` **矛盾**（注释过时；与第四十二轮 model-policies 头注释同类）。
+
+#### ★★★ `stats` 的三种状态共用同一个形状
+
+```go
+if cur.File == "" { writeJSON(w, 200, resp); return }   // ① 整个零值对象
+resp.LogDir = dir; resp.Exists = dirExists(dir)
+if !resp.Exists { writeJSON(w, 200, resp); return }      // ② 只有 log_dir 与 exists 非零值
+```
+
+① 与 ② 的**十个字段完全一样**（`exists:false`、全部数字 0、mtime 为 null），
+**只有 `log_dir` 空不空能分开** ⇒ 判「未启用」**必须**看 `log_dir`，看 `exists` 没用。
+
+★ `oldest_mtime` / `newest_mtime` 是 `*time.Time` **且没有 omitempty**
+⇒ 这两个键**永远在**，无文件时是 **`null`**（不是缺键、也不是零值时间串）。
+
+★ `total_files` 与 `archive_files` 是**分开的两栏**（命中 archive 路径就 `return`），
+且判定是 `strings.Contains(p, sep+"archive"+sep)` **或**
+`filepath.Base(filepath.Dir(p)) == "archive"` ⇒ **任意层级**里名叫 `archive`
+的目录都算，不只是顶层那个。页面自己加的合计数要说明「后端并没有这个字段」。
+
+#### ★★ 同族两种错误风格
+
+- `files` 走 `os.ReadDir`，失败会 **500**（`writeInternalErr`）
+- `stats` 的 `filepath.Walk` 错误**静默跳过**（`if err != nil || fi.IsDir() { return nil }`）
+  ⇒ 读不了的条目在统计里**直接消失**，不报错、不留日志
+- `archive/list` 的 `e.Info()` 失败 ⇒ `continue`，同样静默
+
+#### ★★ 四条都有方法门 ⇒ 非 GET 一律 405 `method not allowed`
+
+`body-cache-stats` 是唯一有 503 的（`body cache not initialized`）；
+⚠️ 它的 doc 注释把文案写成 "not initialised"，**代码里是 "not initialized"** ⇒
+客户端两种拼写都认。
+
+#### 变异验证：34 条，一次跑满
+
+- 变异 **34/34 有牙**，`RESTORED=OK`（逐字节比对）
+- 重点几条：把三个「未启用」判据**统一成同一个**（T2）、把 archive 的解包
+  **反过来要求** `dir` 在场（T17）、把 `Promise.allSettled` 改回 `Promise.all`（V4）、
+  把 `statsDisabled` 接到错误的端点上（V1）—— 这四条正是本批想防的退化
+
+#### ★★★ 本批的自造错误（四条，全是我的判据错，不是产品错）
+
+1. **跨面板全页选择器**：`.la__item` 同时存在于 files 与 archives 两个面板，
+   全页计数被默认夹具里那个日志文件算进去 ⇒ 补 `panelItems(w, 标题)` 按面板取。
+2. **判据与夹具自相矛盾**：夹具写了 `is_current: false`，我却断言文案含「当前活动」。
+3. **expect 串凭印象写**（第 7 次同类）：i18n 文案是「没有一个非归档日志文件」，
+   我写的是「一个非归档日志文件都没有」—— 不是子串 ⇒ 改用实际文案片段。
+4. **否定断言被自己写的免责文案判红**（记忆里记过的老坑，第 N 次）：全页
+   `not.toContain('删除')` 被 `readOnlyNote` 里的「归档、删除都是 superAdmin
+   档的写操作」命中 ⇒ 判据只能落在**可点元素**上（按钮数 + 按钮文案）。
+
+#### 仍未上移
+
+`PUT /api/admin/logs/config`（改轮转配置 + 热加载）、`POST /api/admin/logs/archive`、
+`POST /api/admin/logs/cleanup`（三条都是 **superAdmin**，且后两条是删日志）。
+
+**下一批候选**：`system/session-context`（6）。
