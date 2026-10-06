@@ -193,6 +193,16 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/AutoRouteDecisionView.vue'),
     meta: { titleKey: 'autoRouteDecision.title', requiresAuth: true },
   },
+  // 看板读面（第九条 dashboard 端点线的 UI 入口）。
+  // ★ admin 档：handler.go:1052-1069 九条注册全部是 `admin(...)`
+  //   ⇒ tenant_admin 可用 ⇒ 抽屉席**不设** requiresRole。
+  // ★ 与 /auto-route 相反（那条整族是 h.superAdmin）—— 别照抄它。
+  {
+    path: '/dashboard-ops',
+    name: 'dashboard-ops',
+    component: () => import('@/views/DashboardOpsView.vue'),
+    meta: { titleKey: 'dashboardOps.title', requiresAuth: true },
+  },
   // ── 全局横向对比面（2026-10-07）──────────────────────────────────────
   // 与 /funnel 配对：漏斗是单模型纵深，矩阵/流量是全体模型横向对比。
   // ★ 两条都是 superAdmin：matrix/flow 在 RegisterAnalyticsRoutes 里

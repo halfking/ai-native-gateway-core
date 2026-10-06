@@ -8028,3 +8028,126 @@ build / 三门 / vue-tsc 全 rc=0；`dashboardBoard.test.ts` 27 条；
 全量 3100 条（122 文件）；十连跑 10/10。
 
 文档 §11.95 纯追加。
+
+### 11.96 第六十批：dashboard 九条接 UI（`DashboardOpsView`，admin 档）
+
+**背景**：第五十八批做了 dashboardapi 七条的 API 层，第五十九批做了
+`operational` + `board/error-drill` 两条裸 JSON 端点。两条 API 模块
+（`api/dashboard.ts` 60 个导出、`api/dashboardBoard.ts` 28 个导出）
+在第五十九批收口时**全无 UI 消费方**（`grep "from '@/api/dashboard'"` 与
+`from '@/api/dashboardBoard'` 均只命中各自的 `.test.ts`）
+—— 「写完 API 层就算接完了」是最常见的一种自我交付：
+声明了不等于消费了。本批把九条端点接进一个页面。
+
+#### 11.96.1 交付物
+
+| 文件 | 性质 | 说明 |
+|---|---|---|
+| `web-mobile/src/views/DashboardOpsView.vue` | 新建 | 九段，全部按需加载 |
+| `web-mobile/src/views/DashboardOpsView.spec.ts` | 新建 | 40 条 |
+| `web-mobile/src/router/index.ts` | 改 | `/dashboard-ops` |
+| `web-mobile/src/config/appNav.ts` | 改 | 抽屉席 `dashboard-ops` |
+| `web-mobile/src/i18n/zh-CN.ts` / `en-US.ts` | 改 | `nav.dashboardOps` + `dashboardOps.*` 段 |
+
+**权限档位**：`admin/handler.go:1052-1069` 九条注册**全部**是 `admin(...)`
+⇒ tenant_admin 可用 ⇒ **抽屉席不设 `requiresRole`**。
+
+★ 这与 `/auto-route` **相反**（那条整族是 `h.superAdmin`，`handler.go:1381/:1430`）。
+两条都叫「路由/看板面」，权限档却完全相反，是本仓最容易照抄错的一处。
+变异 #23 专门钉这条：把抽屉席改成 `requiresRole: 'super_admin'`
+⇒ `AppDrawer.spec.ts` 转红。
+
+**与既有页面的边界**：
+- `/session-analytics` 走 `/api/admin/session-analytics/*`（另一族前缀），
+  字段与降级语义与本页**完全不同**，不可互相顶替；
+- `HomeView` 已消费 `/dashboard/board`（饼图那套，含 `include_operational=1`），
+  本页**不重复**它，聚焦另外九条。
+
+#### 11.96.2 六处「不能都渲染成同一个东西」
+
+| # | 语义 | 后端依据 | UI 处置 |
+|---|---|---|---|
+| 1 | **降级 = HTTP 200 + `success:true` + data 全零** | `dashboardapi/errors.go:319-334` | 数字渲染成 `—` + `do__nodata` class，并挂免责句 |
+| 2 | **「从未运行过」被算成 `degraded`** | `dashboard_board_aux.go:66` | 措辞降级成「状态未知 / 从未运行过」 |
+| 3 | **tenant_admin 的 `tenant_id` 被静默改写** | `dashboardapi/auth.go:39-45` | 该角色**不给**筛选框 |
+| 4 | **drill 的 `source` 是条件键** | `dashboard_board.go:187` vs `:198-202` | 键缺失 = 现算，不是「来源未知」 |
+| 5 | **`days` 两种口径** | `types.go:119-148` vs `dashboard_board.go:204-213` | 顶部回显「静默回落 7」，drill 回显「钳位 [1,90]」 |
+| 6 | **分页双份** | `session_active.go:44-45` + `:62-63` | 不一致单独报警 |
+
+**★ 关于 (1) 的 `degraded` 键**：`Metadata.Degraded` 带 `omitempty`
+⇒ **正常时是键缺失而非 `false`**。判据必须写 `=== true`；
+写 `'degraded' in metadata` 会把全部正常响应误判成降级。
+
+**★ 关于 (2)**：`queryBoardBackgroundTasks` 第 66 行
+`out["degraded"] = discErr != nil || checksErr != nil` 用的是**原始 err**，
+而那条查询是 `ORDER BY started_at DESC LIMIT 1` ⇒ 一张都没跑过时
+返回 `pgx.ErrNoRows` ⇒ degraded=true；`strPtrVal(nil)` = `null`
+⇒ 真错误与「没记录」在 status 上一样是 `null`，客户端**分不开**。
+⇒ UI 只能说「状态未知 / 从未运行过」，说「降级」等于告诉运维「你这里有故障」，
+而它其实什么都没跑过。
+
+**★ 关于 (5)**：本仓 `days` 到本批为止共**四种口径**：
+
+| 端点 | 越界行为 | 默认 |
+|---|---|---|
+| dashboardapi 七条 | 静默回落 **7** | 7 |
+| auto-route `tuning/accuracy` | **400 报错** | — |
+| `board/error-drill` | **clamp 到 [1,90]** | **1** |
+| auto-route `audit`（参数名 `limit`） | clamp | — |
+
+⇒ 顶部的窗口选择器**不能**同时驱动信封族与 drill（口径不同、默认值不同），
+本批给 drill 单独一个输入框与单独的回显。
+
+#### 11.96.3 类型门当场抓出的两个「凭印象写字段」
+
+写视图时我凭 `api/board.ts` 里 `BoardBackgroundTasks` 的形状写了
+`probe_loop.running` 与 `probe_loop.checks_last_10m === null`，
+`vue-tsc` 立刻报 `TS2339: Property 'running' does not exist`。回查后端：
+
+- `probe_loop` **恒是单键 map**（`aux.go:61`
+  `map[string]any{"checks_last_10m": checksLast10m}`）⇒ 没有 `running`；
+  `running` 只存在于 `discovery`（`aux.go:41-44`）。
+  照着 `board.ts` 写会**凭空造出一个后端从没说过的状态**。
+- `checks_last_10m` / `total_runs_24h` / `success_rate` 分别是
+  `int` / `int` / `float64` 的 Go 零值，查询失败时 `Scan` 不写
+  （`aux.go:53-58` / `:86-89` 只 `slog.Warn`）⇒ **恒非 null**。
+  判 `=== null` 是**恒真判据**。真正可用的信号是兄弟键
+  `probe_degraded`（仅 `checksErr != nil` 时出现）与 `selfcheck.degraded`。
+
+★ 也就是说：这三条不是「类型不匹配」这么轻——照原样上线会让
+「查不出来」被渲染成「真的 0 次检查」。
+
+#### 11.96.4 变异验证：23 条，**23/23 有牙**
+
+脚本 `/tmp/mut-co60.mjs`（含 `--dry` / `--only=N`），被测面三个文件
+（`DashboardOpsView.vue` / `appNav.ts` / `dashboard.ts` / `dashboardBoard.ts`），
+还原用 `writeFileSync` 原始内容 + 逐字节比对（`RESTORED=OK`，
+md5 与备份一致）。
+
+**首轮 20/23，三条异常分诊后补了两条判别样本 + 改了两个 expect 锚点，
+终轮 23/23、零可疑。**
+
+★ **三条异常的形态各不相同，值得单记**：
+
+| # | 症状 | 真实原因 | 修法 |
+|---|---|---|---|
+| 4 | `rc=1` 但没抓到期望用例名 | **锚点错了**，不是判据无牙 | `expect` 改指判别样本 B |
+| 9 | **仍全绿** | 真无牙：`tenant_admin` 看不到输入框 ⇒ `tenantId` 恒为 `''`，去掉 `tenantFilterVisible.value &&` 也照样不发 | 构造「残留值 + 角色降级」样本 |
+| 19 | **仍全绿** | 真无牙：只喂了 `running=true`，把模板改成恒「运行中」看不出差别 | 补 `running=false` 反例 |
+
+**★ #4 是本批最容易误判的一条**：`rc≠0` 说明判据**有牙**，
+但红在另一条用例上。若按「没抓到期望名 = 变异没施上」去分诊，
+就会白白去查脚本、查源码改动 —— 实际只需改 `expect` 指向。
+判读顺序：**先读脚本打印的实际具名红列表**，再决定动不动手。
+
+**★ #9 的判别样本是真实的可达路径**，不是硬凑的：
+先以 `super_admin` 登录填了租户号，token 过期后服务端把角色降级，
+页面上的 `tenantId` ref 仍留着旧值 —— 这时若还照发，
+后端会静默改写成调用者自己的租户（`auth.go:39-45`），
+用户看到的是**别的租户**的数据却以为自己在筛选。
+
+**★ #19 是「只测一种取值等于没测这个分支」的教科书形态**：
+`OPERATIONAL_NORMAL` 的 `running` 就是 `true`，
+所以「把三元改成恒运行中」这条变异打上去是全绿的。
+一个 `v-if` 写成恒真、恒假、或只喂一种取值，都属同一类。
+
