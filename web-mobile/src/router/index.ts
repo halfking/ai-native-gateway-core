@@ -217,6 +217,14 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/CacheStateView.vue'),
     meta: { titleKey: 'cache.title', requiresAuth: true },
   },
+  // 自动路由的「模型 × 任务」表现索引（2026-10-07）。**superAdmin 档**
+  // （admin/handler.go:1430 RegisterAnalyticsRoutes 用 h.superAdmin）。
+  {
+    path: '/task-index',
+    name: 'task-index',
+    component: () => import('@/views/ModelTaskIndexView.vue'),
+    meta: { titleKey: 'taskIndex.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',

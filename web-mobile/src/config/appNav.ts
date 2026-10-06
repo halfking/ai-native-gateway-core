@@ -91,6 +91,15 @@ export const DRAWER_NAV: readonly NavItem[] = [
   { key: 'timeline', to: '/timeline', icon: 'clock', titleKey: 'nav.timeline' },
   // Redis 缓存快照回答「探测说它健康，路由为什么没选它」。admin 档。
   { key: 'cache-state', to: '/cache-state', icon: 'globe', titleKey: 'nav.cache' },
+  // ★ superAdmin 档：auto-route 整线由 h.superAdmin 挂载（handler.go:1430），
+  //   tenant_admin 进去必然 403 ⇒ 抽屉层就要挡住。
+  {
+    key: 'task-index',
+    to: '/task-index',
+    icon: 'chart',
+    titleKey: 'nav.taskIndex',
+    requiresRole: 'super_admin',
+  },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))

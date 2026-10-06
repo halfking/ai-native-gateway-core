@@ -120,6 +120,7 @@ describe('navItemsFor', () => {
       'overrides',
       'proposals',
       'routing-audit',
+      'task-index',
     ])
   })
 

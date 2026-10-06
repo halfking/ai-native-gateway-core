@@ -1659,7 +1659,7 @@ UI 做法（`zeroIsUncertain`）：
 - `count` 下 0 → `mx__cell--empty`（弱化 + 铺底色，「确定没量到」）
 - 其它指标下 0 → `mx__cell--faint`（更弱、**不铺底色**）
   —— 不铺底色是刻意的：铺了就像「这一格确确实实量到了 0」
-- 两��下都挂常驻说明，且说明**给可执行指引**（「切到请求数可确认」）
+- 两种 class 下都挂常驻说明，且说明**给可执行指引**（「切到请求数可确认」）
 - 鼠标 `title` 用**同样的保留措辞** —— 悬停时看到的不能比移动端更笃定
 
 判据：同一份 `cells`，两种指标下 0 的 class **必须不同**（反向锁定，
@@ -2210,8 +2210,11 @@ func nullInt(v sql.NullInt64) int { if !v.Valid { return 0 }; return int(v.Int64
 | `GET /api/admin/probe/availability-timeline` | `/timeline` | `admin` | 可用性时间线 |
 | `GET /api/admin/probe/cache-state` | `/cache-state` | `admin` | 可用性缓存 |
 
-累计：**30 视图 / 28 API 模块 / 26 抽屉席**（7 席 superAdmin 档）。
-（口径同前轮：`views/*.vue` 去 spec、`api/*.ts` 去 `*.spec.ts` / `*.test.ts`。）
+累计（`git ls-tree ea1b1a1a1` 实测）：**30 视图 / 29 API 模块 / 26 抽屉席**（7 席 superAdmin 档）。
+（口径：`views/*.vue` 去 spec、`api/*.ts` 去 `*.spec.ts` / `*.test.ts`。
+★ 这里曾写成「28 API 模块」，比 `git ls-tree` 实测少 1 —— 已按实测更正。
+★ 「API 模块」是**目录现状**，会被同一分支上的并发会话改动（例如此后
+  并发会话新增了 `transport.ts`），引用这个数时必须**当场实测**，不要沿用上轮。）
 
 缓存页回答的是一个**具体且高频**的运维问题：
 「探测说这个凭据是健康的，路由为什么没选它？」
@@ -2376,3 +2379,205 @@ round(((count(*) FILTER (WHERE status='ok')::numeric * 100.0) / count(*)::numeri
 
 ★ 还原纪律：变异后用 `cp` 备份**无条件还原**（脚本里写 `restore()` 不带 `||` 兜底），
   结束核对 `md5` 与残留标记 —— 本轮 md5 一致、残留 0。
+
+---
+
+### 11.53 自动路由索引上移：模型 × 任务表现（第二十三轮，superAdmin 档）
+
+| 端点 | 移动端 | 档位 | 抽屉席 |
+|---|---|---|---|
+| `GET /api/admin/auto-route/analytics/model-task-index` | `/task-index` | **`super_admin`** | 模型任务索引 |
+
+累计（当场实测）：**31 视图 / 31 API 模块 / 27 抽屉席**（**8 席 superAdmin** 档）。
+（口径同 §11.52。★ 31 个 API 模块里有 `transport.ts` 是并发会话新增的，
+不属于本专题 —— 这个数是**目录现状**，不是「本专题搬了几个」。）
+
+同族三份的分工：`/funnel` 答「**单个模型**在 7d/24h 窗口里的漏斗与可信度」，
+`/matrix` 答「模型 × 任务的热力矩阵」，本页答「**按 5 分钟桶滚动**的表现排行，
+带主用凭据」。
+
+#### ★★★ 陷阱一：**只看自动路由的请求**
+
+生产者 `bg/auto_index_refresher.go` 的 rollup SQL 里：
+
+```sql
+WHERE rl.ts >= NOW() - INTERVAL '5 minutes' AND rl.ts < $1
+  AND rl.is_auto_request = TRUE
+  AND rl.canonical_id IS NOT NULL
+```
+
+⇒ 人工/直连流量**完全不进这张表**，排行榜天然偏小众模型。
+⇒ 页首必须常驻口径，否则「这个模型请求量这么低」会被读成全站事实。
+
+#### ★★ 陷阱二：**只返回最新一个 5 分钟桶**
+
+handler 先 `SELECT MAX(bucket) FROM model_task_index`，
+再 `WHERE mti.bucket = $1`（`admin/analytics.go:621-660`）。
+
+⇒ 这**不是**窗口聚合，也不是趋势图。桶窗口是滚动的 5 分钟，
+而刷新器每 5 分钟跑一次 ⇒ 数据可能**滞后约 5~10 分钟**。
+⇒ 页首常驻「数据截至 <bucket>」+ 滞后提示。
+★ 有 bucket 与没 bucket 是两个不同状态（见陷阱五）。
+
+#### ★★★ 陷阱三：**量纲第 4 处，而且这个 `0.9` 是陷阱中的陷阱**
+
+列类型 `success_rate numeric(5,4)`，生产者是
+`COALESCE(AVG(CASE WHEN rl.success THEN 1.0 ELSE 0.0 END), 0.9)`
+⇒ **0..1 比率**，显示成百分比要 ×100。
+
+⚠️ 同一份刷新器里**另一个表**用 `0.9::numeric(5,4)` 作冷启动默认
+（`auto_index_refresher.go:625`，注释写 `success_rate=0.9` 是默认分）
+⇒ **同一个家族里 `0.9` 既是「90% 成功率」又是「默认值」**。
+⇒ 下一个人很容易在这里加一条「0.9 视为无数据」特判 —— 那是错的。
+
+★ 因此函数**刻意不同名**：`formatModelTaskRatePct`（0..1）
+vs `probeTimelineCache` 的 `formatSuccessRatePct`（0..100）。
+两个**同名**函数处理**相反量纲**，是最容易埋「9000%」的地方。
+
+累计四处量纲：
+
+| 字段 | 原始量纲 | 处理 |
+|---|---|---|
+| `v_model_availability_timeline.success_rate` | 0..100（视图已乘） | 直接用 |
+| `v_model_health_dashboard.avg_success_rate_7d` | 0..1 | ×100 |
+| `model_task_index.success_rate` | **0..1** | **×100** |
+| `healthy_percentage` | 已是百分数 | 直接用 |
+
+#### ★★★ 陷阱四：三个数值列的「0」/「1000」是**生产者兜底值**
+
+```sql
+COALESCE(AVG(rl.latency_ms), 0)::int                                  -- 0 = 没量到延时
+COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY rl.latency_ms), 1000)::int  -- 1000 = 没量到
+CASE WHEN SUM(rl.total_tokens) > 0 THEN (...) ELSE 0 END              -- 0 = 没有成本数据
+```
+
+⇒ 三者含义**完全不同**：`avg=0` 是「没量到」，`p95=1000` 是「没量到」，
+`cost=0` 是「没有 token/成本数据」——**都不是**「0ms」「免费」。
+
+★ 后端**给不出判据**（列可空，但被 `COALESCE` 吃掉了）
+⇒ 真实测量也可能是 `0ms` / `1000ms` / `$0`（免费模型），
+  客户端**无法区分**，只能弱化：
+
+- **数值照显**（不改数 —— 没有判据就不该改数）；
+- 加 `.ti__kv-item--maybe` 弱化样式（灰 + 斜体）；
+- 页脚常驻图例，逐条说明三个兜底值。
+
+★ 这与 §11.44「helper 有测试 ≠ 消费它的分支有测试」同源：
+判据表达的是「**可能**是兜底」，不是「一定是」。
+
+#### ★★★ 陷阱五：`items` 是**稀疏对象**，`bucket === null` 是独立状态
+
+handler 用 `map[string]interface{}` **条件写入**每个字段
+（`admin/analytics.go:684-722`）。对照表定义：
+
+| 字段 | 表列 | 响应里 |
+|---|---|---|
+| `canonical_id` | `integer NOT NULL` | **恒存在** |
+| `sample_count` | `integer NOT NULL`（`COUNT(*)` ⇒ ≥1） | **恒存在** |
+| `canonical_name` | 来自 `LEFT JOIN models_canonical` | **未命中时整个键不存在** |
+| `success_rate` / `avg_latency_ms` / `p95_latency_ms` / `avg_cost_per_1k_usd` / `primary_credential_id` | 列可空 | **键可能整个不存在** |
+
+⇒ 类型里这些字段一律可选；`undefined` 渲染成 `—`，**不是 0**。
+⇒ `canonical_name` 缺失回落成 `#<id>`（`||` 兜底），不渲染成空白。
+
+空表是**第四种**状态（`admin/analytics.go:643-649`）：
+
+```json
+{ "bucket": null, "items": [], "warning": "model_task_index is empty; awaiting first bg worker refresh" }
+```
+
+⇒ 这是「**后台刷新器还没首刷**」，不是「这段时间没有自动路由流量」
+⇒ 独立渲染，且必须明说后者**不成立**。
+
+#### ★ 陷阱六：`top` 越界**静默回落 20**（第 7 种越界语义）
+
+```go
+top := 20
+if v, err := strconv.Atoi(r.URL.Query().Get("top")); err == nil && v > 0 && v <= 500 { top = v }
+```
+
+⇒ 不传 / 非法 / `0` / `501` 四种情况都得到 20，**不 400**。
+★ 与同族 `window` / `metric`（**400**）语义相反，**别照抄**。
+
+⇒ 但这一条和前两轮的「写死上限」有本质区别：
+`top` 是**客户端自己发的**，所以 `items.length === top` 是**精确**的截断信号
+（时间线的 `LIMIT 500` / 缓存的 `ScanKeys` 4096 是后端写死且无标记，
+只能说「可能被截断」）。
+⇒ 判据必须随 chip 变化：切到 50 后 20 行**不**算截断。
+
+#### ★ 其它已核实的口径
+
+- `task_type` 过滤：`strings.TrimSpace` 但**不** `ToLower`，
+  SQL 是 `mti.task_type = $1`（**大小写敏感**）
+  ⇒ 客户端只 trim，**擅自改小写反而查不到**。
+  （与 `parseAnalyticsWindow` 的 ToLower+TrimSpace 形成对照，
+  又是同族内两种行为。）
+- `primary_credential_id` = `MODE() WITHIN GROUP (ORDER BY rl.credential_id)`
+  ⇒ 是「这一组最常用的那个凭据」，不是「唯一/必需的凭据」。
+- `__specified__` 是合成键（`analytics.go:36` `SpecifiedModelTaskKey`），
+  表示「请求显式指定了模型，任务类型未知」
+  ⇒ **复用** `autoRouteMatrix` 的 `taskLabel`（同族收口，不重写），
+    并在该行单独挂提示条。
+
+#### ★ 本轮修的两处（含一个**我自己刚犯完又犯**的）
+
+1. **又一次在新写的 zh 值里带了 markdown `**`**（3 处：`scopeNote`、
+   `awaitingFirstHint`、`truncated`）。
+   ★ 这是**同一个坑在同一个会话里修完 40 分钟后再犯一次**：
+     §11.50 刚把 `probe.latencyWindowHint` 的 `**` 修掉，
+     §11.52 又在自己新增的 `timeline`/`cache` 段里带进 5 处并当场修掉，
+     §11.53 的 `taskIndex` 段再带进 3 处。
+   ⇒ **规律**：新增/编辑字典值后，提交前固定跑一次
+     `grep -n '\*\*' src/i18n/zh-CN.ts`，
+     **逐条**确认命中的是注释还是值（注释里的 `**` 是正常开发备注）。
+2. **`formatMs` 加了千分位，与全站延时口径不一致。**
+   时间线页渲染 `avgLatency: '{ms}ms'` ⇒ `1200ms`；
+   本轮初版写成 `1,200ms`（还顺手复制了一个 `fmtIntSafe`，等于造第二份格式化）。
+   ⇒ 改为不加千分位，并加判据锁死 `formatMs(1000) === '1000ms'`。
+   ★ **判据自己先红了一次**（`toContain('1000ms')` 实得 `1,000ms`），
+     才暴露出这个不一致 —— 断言写错有时正是缺陷的信号，
+     不总是「我的测试有问题」。
+
+### 11.54 本轮门禁（第二十三轮，自动路由索引）
+
+| # | 门 | 结果 |
+|---|---|---|
+| 1 | css 门自测 | **11/11** |
+| 2 | 触控门自测 | **11/11** |
+| 3 | i18n 门自测 | **23/23** |
+| 4 | `gate:selftest` | **45 条断言全绿** |
+| 5 | `vue-tsc -b` | 通过 |
+| 6 | i18n 键集门 | 通过（各 **825 键**，+28；**636 个源码字面量键全部存在**，扫 110 个 `.vue`/`.ts`） |
+| 7 | css 媒体查询门 | 通过（**52 文件**，+1） |
+| 8 | 触控热区门 | 通过（**49 个 .vue**，+1） |
+| 9 | `vitest run` | **810 用例 / 58 文件全绿**，**连跑 10 次全绿**（+77：40 API + 36 视图 + 1 抽屉白名单） |
+| 10 | `npm run build` | 通过 |
+
+★ 抽屉白名单是**白名单式**断言（`AppDrawer.spec.ts:115-124`）：
+把被 tenant_admin 挡掉的 superAdmin 席 key 逐个列出，加新 superAdmin 席**必须**同步，
+不得放宽。
+
+★ 变异证据（**9 处，全部转红**）：
+
+| 变异 | 结果 |
+|---|---|
+| `formatModelTaskRatePct` 漏乘 100（0..1 当百分数） | 5 failed |
+| 「尚未首刷」永不触发 | 2 failed |
+| 撞 top 不说截断 | 2 failed |
+| 兜底值弱化标记恒假 | 1 failed |
+| 删掉页首口径说明 | 3 failed |
+| `canonical_name` 缺失不回落（渲染空白） | 1 failed |
+| ★ **截断判据不跟 `top` 走**（写死后端默认 20） | 1 failed |
+| `top` 上界守卫去掉（501 也发） | 1 failed |
+| `isAwaitingFirstRefresh` 改判 `items.length === 0` | 3 failed |
+
+★ 第 7 条是本轮**最值得记的一条**：它只在一个用例上转红
+（「切到 50 后 items=20 不该判截断」），其它全绿 ——
+即「截断提示」这个功能**看起来是好的**，只在 top≠20 时才出错。
+⇒ 判据若只测默认 top，**整条截断逻辑可以带着 bug 长期存活**。
+
+★ 变异脚本自身又出一次错：9 处里有 2 处「写入后没找到标记」——
+  替换文本**没有把标记 ID 带进去**（`v-if="false"` 和一个模板插值无处插标记）。
+  ★ 这不是判据无牙，是**脚手架自检**在报警；
+    补上 `data-mut="MUT5"` / `<!--MUT6-->` 后两条都转红。
+    ⇒ 变异脚本的「施上确认」必须覆盖**每一条**，否则会误报成「判据无牙」。
