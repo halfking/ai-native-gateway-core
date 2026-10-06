@@ -519,3 +519,45 @@ id 非法 → 400 `invalid integrity id`（:276-279）。
 `web-mobile/` 实测：`vue-tsc -b` 通过；`vitest run` **182 用例 / 24 文件全绿**
 （新增 RequestLogsView 5 条 + requestLogs API 9 条）；`npm run css:check` 通过（32 文件）；
 `npm run build` 通过。**并按 §11.16 的标准连跑 10 次全绿**。
+
+
+### 11.18 自查发现：导航层缺权限门控（2026-10-06，与 §11.16 同批）
+
+完成度审计时自查发现的 —— **不是用户报的**。`AppDrawer` 的
+`v-for="item in DRAWER_NAV"` **无条件渲染全量**，而 `/integrity` 整段是
+`h.superAdmin`（`admin/handler.go:924-925`）⇒ tenant_admin 抽屉里躺着一个
+点进去必然 403 的入口。
+
+这与 §11.1 对凭据操作区定的规矩是**同一个问题的上下游两端**：
+「按 role 分档渲染，不是一律显示再吃后端 403」。导航是最上游那一端，
+在抽屉层就该挡住，而不是等用户点进去看报错再回头。
+
+修法（`config/appNav.ts`）：
+- `NavItem.requiresRole` 字段（当前只有 `super_admin` 一档在用）；
+- `navItemsFor(items, role)` 过滤器，`AppDrawer` 改用它。
+
+★ **一处刻意的「不过滤」**：admin 档页面（`/logs`、`/providers`、`/routing`）
+对 tenant_admin **照常显示**。它们走的都是 `h.admin`，后端允许 tenant_admin
+（只是限定在自己 tenant 内）⇒ 在这一层挡掉反而是误伤，会让本该能看的功能消失。
+**「按权限分档」不等于「把非超管能看的都藏了」。**
+
+判据（`AppDrawer.spec.ts`，10 条）除了三条门控行为，还钉了
+「role 为空（未 hydrate 完成）时也不要把 admin 档页面全藏起来」——
+登录前 `role` 是 `''`，若过滤逻辑写成「读不到角色就保守隐藏」，
+用户会在登录前看到一个空抽屉。AppDrawer 测试必须挂**真 router**
+（`createMemoryHistory`）而不是 mock `useRoute` —— 否则
+`isNavItemActive` 与真实路由表脱节，测出来的东西不成立。
+
+### 11.19 本轮门禁（第六轮，导航权限门控）
+
+`web-mobile/` 实测：`vue-tsc -b` 通过；`vitest run` **192 用例 / 25 文件全绿**；
+`npm run css:check` 通过（32 文件）；`npm run build` 通过，且 **4 个新页面各自
+产出独立 chunk**（`IntegrityView-*.js`、`RequestLogsView-*.js`、
+`ProvidersView-*.js`、`RoutingCheckView-*.js`）⇒ 证明它们真被路由表 lazy 引用、
+不是「文件写了但没接上」。
+
+**flaky 观测记录（如实）**：本轮 10 连跑中出现过 1 次失败，但**连续 15 次单跑
+与 8 路并发压测均未复现**。捕获失败的那次是**我同时起了两个 vitest 进程**
+（争 stdout）。按 §11.16 的纪律不放过，但也不虚报：目前证据指向
+「并发跑测试工具本身」而非判据或产品缺陷；AppDrawer 这 10 条判据**不含**
+§11.16 那类时序断言（无 autoFill 参与），与已定位并收敛的两处 flaky 形态不同。

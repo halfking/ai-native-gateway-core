@@ -1,10 +1,11 @@
 <script setup lang="ts">
 // AppDrawer — 全局导航抽屉（UI规范 02 §3：compact 左滑入 + scrim + Esc；
 // 路由变化自动收起由宿主 HyperApp 处理）。
-import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useHyperOverlay } from '@/hyper'
-import { DRAWER_NAV, isNavItemActive } from '@/config/appNav'
+import { DRAWER_NAV, isNavItemActive, navItemsFor } from '@/config/appNav'
+import { useAuthStore } from '@/stores/auth'
 import { t } from '@/i18n'
 import AppIcon from '@/components/common/AppIcon.vue'
 
@@ -12,7 +13,15 @@ const props = defineProps<{ modelValue: boolean }>()
 const emit = defineEmits<{ 'update:modelValue': [value: boolean]; account: [] }>()
 
 const route = useRoute()
+const auth = useAuthStore()
 const panelRef = ref<HTMLElement | null>(null)
+
+/**
+ * ★ 2026-10-06：按角色过滤。此前 v-for 直接铺 DRAWER_NAV 全量，
+ *   于是 tenant_admin 会看到 /integrity（后端 h.superAdmin，必然 403）。
+ *   导航是权限问题的上游 —— 在这一层挡住，而不是让用户点进去吃报错。
+ */
+const drawerItems = computed(() => navItemsFor(DRAWER_NAV, auth.role))
 
 const overlay = useHyperOverlay({
   presentation: 'modal',
@@ -58,7 +67,7 @@ onBeforeUnmount(() => overlay.release())
 
           <nav class="drawer__nav">
             <RouterLink
-              v-for="item in DRAWER_NAV"
+              v-for="item in drawerItems"
               :key="item.key"
               :to="item.to"
               class="drawer__link"

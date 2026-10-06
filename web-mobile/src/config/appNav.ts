@@ -7,6 +7,17 @@ export interface NavItem {
   icon: IconName
   titleKey: string
   exact?: boolean
+  /**
+   * 可见所需的最低角色。缺省 = 登录即可见（对应后端 h.admin 或纯 GET）。
+   *
+   * ★ 2026-10-06 新增。原因：`/integrity` 整段是 h.superAdmin
+   *   （admin/handler.go:924-925），tenant_admin 进去必然 403。
+   *   而 AppDrawer 此前**无条件渲染** DRAWER_NAV ⇒ 等于给 tenant_admin 一个
+   *   必然失败的入口 —— 这正是 17 §11.1 对凭据操作区定的规矩（「按 role 分档
+   *   渲染，不是一律显示再吃后端 403」）。导航是同一个问题的上游，
+   *   在抽屉层就该挡住，而不是等用户点进去看报错。
+   */
+  requiresRole?: 'admin' | 'super_admin'
 }
 
 /** 底栏 4 席直达 + 「更多」固定席（≤5 席约束）。 */
@@ -22,15 +33,15 @@ export const DRAWER_NAV: readonly NavItem[] = [
   { key: 'alerts', to: '/alerts', icon: 'alert', titleKey: 'nav.alerts' },
   { key: 'usage', to: '/usage', icon: 'chart', titleKey: 'nav.usage' },
   // 2026-10-06：路由检查（只读 explain）从 desktopOnly 收进移动端，抽屉席位。
-  // 不占底栏（02 §4 底栏 ≤5 席已满），与「告警/用量」同级。
+  // 不占底栏（02 §4 底栏 ≤5 席已满），与「告警/用量」同级。admin 档。
   { key: 'routing', to: '/routing', icon: 'search', titleKey: 'nav.routing' },
-  // 2026-10-06：供应商维度可见性（谁挂了/谁没绑模型/谁被手动停用）。
+  // 2026-10-06：供应商维度可见性（谁挂了/谁没绑模型/谁被手动停用）。admin 档。
   { key: 'providers', to: '/providers', icon: 'globe', titleKey: 'nav.providers' },
-  // 2026-10-06：模型完整性异常（superAdmin 档）。表现为「请求失败/结果诡异」
-  // 但不落在节点健康上——移动端此前完全没这个面，排查只能开电脑。
-  { key: 'integrity', to: '/integrity', icon: 'alert', titleKey: 'nav.integrity' },
-  // 2026-10-06：请求日志（admin 档）。回答「刚才那次到底发生了什么」——
-  // 节点/供应商页回答「现在谁不健康」，这页回答「上次那单」，是排障起点。
+  // 2026-10-06：模型完整性异常。表现为「请求失败/结果诡异」但不落在节点健康上
+  // ——移动端此前完全没这个面，排查只能开电脑。
+  // ★ requiresRole: 后端整段 h.superAdmin（handler.go:924-925），tenant_admin 403。
+  { key: 'integrity', to: '/integrity', icon: 'alert', titleKey: 'nav.integrity', requiresRole: 'super_admin' },
+  // 2026-10-06：请求日志。回答「刚才那次到底发生了什么」——排障起点。admin 档。
   { key: 'logs', to: '/logs', icon: 'clock', titleKey: 'nav.logs' },
 ] as const
 
@@ -44,4 +55,19 @@ export function isRootRoute(path: string): boolean {
 export function isNavItemActive(item: NavItem, path: string): boolean {
   if (item.exact) return path === item.to
   return path === item.to || path.startsWith(item.to + '/')
+}
+
+/**
+ * 按当前角色过滤导航项。
+ *
+ * 角色判定口径与 UI规范 17 §11.1 一致：`authStore.role` 为 'super_admin' 才算
+ * 超管。⚠️ 注意 `admin` 是**独立角色**、不等于超管 —— 后端 `h.admin` 允许
+ * tenant_admin，`h.superAdmin` 不允许（admin/handler.go:880-888）。所以
+ * `requiresRole: 'admin'` 在这里**不额外过滤**：移动端所有非 superAdmin 端点
+ * 走的都是 h.admin，登录用户都能进，挡在这里反而会误伤。
+ * 需要真过滤的只有 super_admin 档。
+ */
+export function navItemsFor(items: readonly NavItem[], role: string | null | undefined): NavItem[] {
+  const isSuper = role === 'super_admin'
+  return items.filter((item) => item.requiresRole !== 'super_admin' || isSuper)
 }
