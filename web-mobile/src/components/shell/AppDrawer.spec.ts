@@ -112,7 +112,7 @@ describe('navItemsFor', () => {
     // ★ 白名单式断言：把 superAdmin 档的 key 逐个列出来。排序后再比，
     //   避免依赖 DRAWER_NAV 的书写顺序（顺序不是契约）。
     //   加新 superAdmin 档页面时这条会红 —— 那正是它该做的。
-    expect(dropped.map((d) => d.key).sort()).toEqual(['integrity', 'routing-audit'])
+    expect(dropped.map((d) => d.key).sort()).toEqual(['integrity', 'overrides', 'routing-audit'])
   })
 
   // ★ 不变量本身：被挡掉的项**必须**都是 requiresRole:'super_admin'。
