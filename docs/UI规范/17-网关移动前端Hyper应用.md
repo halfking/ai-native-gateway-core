@@ -8778,3 +8778,192 @@ expect(row.find('dd').classes()).not.toContain('aq__nodata')
   直接崩在脚本加载阶段）⇒ 变异串里的 `${}` 必须写成 `\${}`。
 
 文档 §11.101 纯追加。
+
+---
+
+### 11.102 data-lifecycle 只读四条接 API 层（第六十六批）
+
+**范围**：`web-mobile/src/api/dataLifecycleStats.ts`（新建）+ `.test.ts`（新建）
+**四条的注册（全部 `admin` 档，tenant_admin 可用）**
+
+| 端点 | 注册 | handler |
+|---|---|---|
+| `GET /api/admin/data-lifecycle/stats` | `admin(...)` | `handler.go:960` |
+| `GET /api/admin/data-lifecycle/metrics` | `admin(...)` | `handler.go:962` |
+| `GET /api/admin/data-lifecycle/jobs` | `admin(...)` | `handler.go:979` |
+| `GET /api/admin/data-lifecycle/blobs/top` | `admin(...)` | `handler.go:994` |
+
+**与既有 `api/dataLifecycle.ts` 不重叠**：那个模块只覆盖 `storage/tables` 与 `partitions` 两条。
+
+**排除的写操作**：`POST /data-lifecycle/cleanup/preview`（虽名为 preview，body 带
+`action ∈ {trim, archive, delete}` 且走 POST）、`POST /blobs/cleanup/*`、`/partitions/*`、`/hot/promote`。
+
+**同前缀混两档**：`partitions/archive` 起、`hot/*`、`storage/tables/vacuum*|reindex` 是
+`h.superAdmin`（`handler.go:963-978`），本批这四条是 `admin` ⇒ **不能按前缀判权限**。
+
+#### 11.102.1 ★★★★★ `metrics` 恒不提供清理/归档时间——是死字段，不是「从未清理过」
+
+`data_lifecycle_metrics.go:33-34` 声明了
+
+```go
+LastCleanupAt *string `json:"last_cleanup_at,omitempty"`
+LastArchiveAt *string `json:"last_archive_at,omitempty"`
+```
+
+而 `handleDataLifecycleMetrics`（`:39-86`）**从头到尾没有给它们赋值**——
+一次 `QueryRow(...).Scan(10 个目标)` 只覆盖十个数字字段。
+全仓 grep 证据：这两个标识符**只出现在那两行声明里，零个赋值点**。
+
+⇒ 这两个键**永远不存在**，无论清理/归档是否真的发生过。
+⇒ 键缺失**不能**说成「从未清理过」。清理可能早就跑过了，只是这个端点不报。
+⇒ 客户端只能保留可选字段以求前向兼容，措辞必须是「本端点不提供这个时间」。
+
+> ★ 第一版我把这里写成了「从没清理/归档过时键不存在」，并配了
+> `metricsNeverCleaned()` / `metricsNeverArchived()`。
+> 写用例时才发现**这两个函数是恒真的**（真实响应恒无键），
+> 而恒真会让 UI 永远显示「从未清理」——一句**假话**。
+> 这是本批唯一一个「注释写错 ⇒ 判据恒真 ⇒ UI 撒谎」的完整链条。
+
+#### 11.102.2 ★★★★ `jobs.running` 空时是 `null`，`history` 空时是 `[]`
+
+```go
+// data_lifecycle_jobs.go:237  listJobs
+var running []*JobRun            // ← nil 切片
+// :247
+hs := make([]*JobRun, 0, ...)    // ← 非 nil
+```
+
+无任务时 `running` 的 `append` 一次都不执行 ⇒ `json.Encode(nil 切片)` ⇒ **`null`**；
+而 `history` 由 `make(..., 0, ...)` 起步 ⇒ 恒为 `[]`。
+**「刚重启、一个任务都没起过」是常态** ⇒ `running: null` 是高频合法响应。
+
+第一版 `unwrapLifecycleJobs` 对两个键一律 `requireArray` ⇒ **一上线就抛错**。
+改为 `nullableArray`：`null` 归一为 `[]`，非 null 非数组仍抛错。
+
+> ★ 对照：`blobs/top` 的 `rows` 是 `make([]blobRow, 0, limit)`（`:120`）⇒ **恒 `[]`**。
+> **同一个 Go 家族里两个切片的空态编码不同**，只能逐个读源码，不能类推。
+
+#### 11.102.3 ★★★★ `metrics` 不做租户隔离，但注册是 `admin` 档
+
+`data_lifecycle_metrics.go:3-11` 的文件头注释写着：
+
+> Currently the endpoint is super-admin only and the SQL is left unscoped.
+
+而注册处是 `admin(...)` ⇒ **tenant_admin 实际能调**，
+而 SQL 是 `FROM request_logs`（`:63`）**无 WHERE** ⇒ 它讲的是**整表**。
+同时 `stats`（`:57-63`）与 `blobs/top`（`:91-97`）都做了 `IsTenantAdmin(r)` 判别
+⇒ **同族三条端点的隔离口径不一致**。
+
+> **注释与注册矛盾时以注册为准。** 这条与 `/auto-route` 的 `h.superAdmin` 正好相反，
+> 照抄任一边都会错。
+
+#### 11.102.4 ★★★★ `stats` 里混了两种口径，且一个端点有三种「查不出来」编码
+
+**混口径**：`total_rows` 走 `COUNT(*) … WHERE 1=1` + `tenantFilter`（`:75-79`），
+而 `total_size_bytes` 是 `pg_total_relation_size('request_logs')`（`:76`）——
+**整张表的物理大小，不带任何过滤**。同一个对象里既有租户口径又有全表口径
+⇒ 不能并排写成「本租户 X 行 / Y 字节」。
+
+同理每段 / 每租户的 `size_bytes` 是
+`pg_total_relation_size('request_logs') * rows / total_count`（`:105-106`）——
+**按行数摊派出来的估算值（含索引），不是实测大小**。
+
+**三种失败编码并存**：
+
+| 环节 | 后端行为 | 客户端看到 |
+|---|---|---|
+| 总量查询失败 | `:81-85` **500** | 整条挂 |
+| 分段查询失败 | `:137-141` **500** | 整条挂 |
+| 分段行 `Scan` 失败 | `:146-149` `warnRowSkip` + `continue` | **该段 `null`** |
+| `by_tenant` 查询失败 | `:197-201` 非致命（注释 "non-fatal, continue"） | **`[]`** |
+| `growth_trend` 查询失败 | `:262-266` 非致命 | **`[]`** |
+
+⇒ `[]` 与「真的没有数据」**不可分** ⇒ UI 不能说「无数据」，
+只能说「没有可展示的记录」。导出 `listEmptyIsAmbiguous()` 钉住这一点。
+
+#### 11.102.5 ★★★ 30 天边界是双侧闭区间 ⇒ 段行数之和可能超过 `total_rows`
+
+```sql
+-- warm (:116)  ts BETWEEN NOW() - INTERVAL '30 days' AND NOW() - INTERVAL '7 days'
+-- cold (:124)  ts BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '30 days'
+```
+
+Postgres 的 `NOW()` 在一个语句内是同一个事务时间，两侧都含端点
+⇒ 落在 `NOW()-30d` 那一瞬间的行**会被数两次**。
+
+⇒ 「四段之和 > `total_rows`」不是数据错了，而是**边界重复计数**。
+解读时不能报成缺陷。`metrics` 侧（`:57-60`）同一成因。
+
+#### 11.102.6 ★★★ 其余已确认的契约
+
+- `days` 是**后端写死的标注值** `:165/168/171/174` = `7 / 23 / 60 / 999`
+  （不是区间上界；`warm` 是 23 不是 30，`expired` 是 999 不是 91）。
+- `percent_of_total` 是 **0-100**（`:153` `rows/total*100`），不是 0-1；
+  `total_rows === 0` 时四个都留 `0.0`，与「真的是 0%」不可分。
+- `compression_rate` **被后端夹到 100**（`:280-282`），且 `requests === 0` 时留 `0.0`。
+- `by_tenant` `LIMIT 10`、`growth_trend` `LIMIT 7` 且 **`ORDER BY day DESC`（新的一天在前）**
+  ⇒ 折线图若按返回序直接连线会**倒着走**。
+- `jobs` 的 `limit` **硬编码 50**（`:322` `h.listJobs(50)`），
+  而 `listJobs` 内部又钳到 `registry.maxKeep`（`:244-246`）⇒ 前端传什么都没用。
+- `JobRun` 除 `run_id`/`op`/`status`/`duration_ms` 外**十个字段都带 omitempty**。
+  `finalizeJob`（`:200-219`）入历史前必设 `finished_at` ⇒
+  `running` 列表无 `finished_at`、`history` 列表必有。
+- `blobs/top` 的 `total_bytes` 是**这 N 行的合计**（`:135` 逐行累加），**不是全表总量**。
+- `blobs/top` 的 `limit` 口径：`Atoi` 成功 **且** `0 < n <= 200` 才生效，
+  否则**静默回落 20**（`:82-86`）——注意**不是** approvals 的「回落 50」。
+- `blobs/top` 的逐行 `total_bytes` 是后端在 Go 里现算的（`:133`）⇒
+  客户端的一致性校验**结构上恒真**，抓的是形状不符/传输损坏，不是后端逻辑错。
+- ★ 同一响应里两种时间精度：`occurred_at` 是 `ts.UTC().Format(time.RFC3339)`（`:132`）⇒ **秒级 + Z**；
+  `collected_at` 是 Go `time.Time` 直编 ⇒ **纳秒级**。
+- `blobs/top` 的 `session_key`/`tenant_id` 是 `COALESCE(..., '')` ⇒ 无会话/无租户时是**空串**不是 null；
+  `model` 是 `COALESCE(outbound_model, '')` + omitempty ⇒ 无模型时**键不存在**。
+
+#### 11.102.7 ★ 变异暴露的判据缺陷：夹具用常量造 = 自指恒真
+
+`/tmp/mut-co66.mjs` 第一轮 **35/43**，8 条异常。判读结果：
+
+- **5 条是锚点指错**（变异确实转红了，只是红在别的判别样本上）——
+  与 §11.101 的老问题同源：`namedFails` 只报首个红名，
+  锚点必须指向「该变异第一个破坏的取值」。
+  例：把 `>= GROWTH_TREND_DAYS` 放宽成 `> 0` 后，
+  「满 7 条」那条仍为 true，**分叉点是「只有 3 天却判成截断」**。
+- **3 条是真缺陷**（判据无牙 / 测试自指）：
+  1. `by_tenant 满 10 条` 用 `Array.from({length: BY_TENANT_LIMIT})` 造夹具
+     ⇒ **改常量两边一起变**（变异 #22 把 10 改成 20 仍全绿）。
+  2. `growth_trend 满 7 条` 同样自指（变异 #23）。
+  3. 缺「未取满 ⇒ 未截断」的**负控**（变异 #17 放宽后仍全绿）。
+
+修法：夹具条数**硬写后端 SQL 的字面量**（10 / 7），并补负控；
+再把常量值本身也断言（`BY_TENANT_LIMIT === 10`）。
+
+> ★ **同族**：「`--dry` 只验匹配验不出行为」——这里更隐蔽：
+> **自指夹具能让「匹配上 + 改了常量 + 用例照过」三者同时成立。**
+> 判据的输入里若出现被测常量本身，那条判据对它就是恒真。
+> 判据的输入必须来自**外部真相**（后端源码的字面量），不能来自被测代码。
+
+#### 11.102.8 验证
+
+- 用例 **99 条**（`dataLifecycleStats.test.ts`）
+- 变异 `/tmp/mut-co66.mjs` **43 条，43/43 有牙、零可疑**，`RESTORED=OK`（逐字节一致）
+- 三门 rc=0（css-media 91 文件 / touch-target 88 个 .vue / i18n 2457 键一致）
+- `vue-tsc --noEmit -p tsconfig.app.json` rc=0；`npm run build` rc=0
+- 全量 **3434 条（130 文件）** rc=0
+
+> ★ 类型门又抓出两处：`noUncheckedIndexedAccess` 下
+> `s.growth_trend[i].date` 报 TS2532（要显式收窄）；
+> 以及给夹具加了返回类型标注后，`as Record<string, unknown>` 全部撞 TS2352
+> （接口无索引签名）⇒ 改用 `raw()` 辅助走 `unknown` 中转。
+
+#### 11.102.9 留给第六十七批（UI）的硬约束
+
+1. `metrics` 必须标「**全表口径**」，不能与 `stats`（做了租户过滤）并排成同口径的两个数。
+2. `stats.total_rows` 是租户口径、`total_size_bytes` 是全表口径 ⇒ 不能并排写「本租户 X 行 / Y 字节」。
+3. 四段 `null` 要显示「**查不出来**」，不是「0 行」。
+4. `by_tenant` / `growth_trend` 空数组措辞只能是「没有可展示的记录」。
+5. `growth_trend` 折线要**反转**成时间正序再画。
+6. `jobs` 的 `limit` 是 50 的后端硬编码，UI 不该给「条数」选择器。
+7. `blobs/top` 的 `total_bytes` 要标「本次 N 行合计」。
+8. `last_cleanup_at` / `last_archive_at` 标「本端点不提供」，**绝不能**说「从未清理」。
+9. 抽屉席：admin 档，**不设** `requiresRole`。
+
+文档 §11.102 纯追加。
