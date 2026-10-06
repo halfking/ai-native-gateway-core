@@ -3292,21 +3292,85 @@ func (d *DB) ensureApiKeyAutoProfileIdentity(ctx context.Context) error {
 // SQLSTATE 42703，直到手工补列。本 ensure 让网关启动即自愈，与
 // ensureProviderSoftDelete（631）同一"二进制启动即生效"的兜底模式。
 // 幂等：ADD COLUMN IF NOT EXISTS，已应用库上为 no-op。
-func (d *DB) ensureProviderModelsCanonicalClearedAt(ctx context.Context) error {
-	if d == nil || d.pool == nil {
-		return nil
-	}
-	_, err := d.pool.Exec(ctx, `
+// providerModelsCanonicalClearedAtDDL is the slice of migration 693 that
+// touches provider_models.
+//
+// 2026-10-07: provider_models is the most heavily read table in the shared
+// production database — ~12.48M reads/day (1.95M sequential + 10.53M index)
+// on only 1,330 rows. Both statements here take ACCESS EXCLUSIVE before they
+// can conclude there is nothing to do: ALTER TABLE needs it to decide whether
+// the column exists, and COMMENT ON COLUMN needs it to rewrite the catalog
+// entry. Production already carries both the column and the comment, so every
+// boot was locking the busiest table in the database twice for a no-op.
+//
+// The schema_migrations INSERT stays outside this constant: it is an idempotent
+// stamp, not a lock-taking DDL, and the repo keeps those running on every boot.
+const providerModelsCanonicalClearedAtDDL = `
 		ALTER TABLE public.provider_models
 		    ADD COLUMN IF NOT EXISTS canonical_cleared_at TIMESTAMPTZ;
 
 		COMMENT ON COLUMN public.provider_models.canonical_cleared_at IS
-		    '管理员解绑标记。非空表示运营者已显式解绑 canonical_id，discovery 等自动路径不得写回 canonical_id；显式重新关联时置回 NULL。';
+		    '管理员解绑标记。非空表示运营者已显式解绑 canonical_id，discovery 等自动路径不得写回 canonical_id；显式重新关联时置回 NULL。';`
 
+// providerModelsCanonicalClearedAtStamp records the migration. It is
+// idempotent, does not lock provider_models, and therefore runs on every boot
+// regardless of whether the DDL above was skipped.
+const providerModelsCanonicalClearedAtStamp = `
 		INSERT INTO public.schema_migrations (version, description)
 		VALUES ('693', 'provider_models canonical_cleared_at admin-unbind marker')
-		ON CONFLICT (version) DO NOTHING;
-	`)
+		ON CONFLICT (version) DO NOTHING;`
+
+// providerModelsCanonicalClearedAtCurrent reports whether
+// providerModelsCanonicalClearedAtDDL would change nothing: the column exists
+// *and* it already carries a column comment.
+//
+// The comment is checked as well as the column. Skipping only the ALTER would
+// leave COMMENT ON COLUMN — which takes the very same ACCESS EXCLUSIVE — to run
+// unconditionally, so the guard would buy nothing on the hottest table.
+//
+// A failed probe returns false so the DDL still runs.
+func (d *DB) providerModelsCanonicalClearedAtCurrent(ctx context.Context) bool {
+	if d == nil || d.pool == nil {
+		return false
+	}
+	var missing int
+	err := d.pool.QueryRow(ctx, `
+		SELECT
+		  (SELECT count(*) FROM (VALUES ('canonical_cleared_at')) AS want(name)
+		   WHERE to_regclass('public.provider_models') IS NOT NULL
+		     AND NOT EXISTS (
+		       SELECT 1 FROM information_schema.columns
+		        WHERE table_schema='public' AND table_name='provider_models'
+		          AND column_name = want.name))
+		  +
+		  (SELECT count(*) FROM (VALUES ('canonical_cleared_at')) AS want(name)
+		   WHERE EXISTS (
+		       SELECT 1
+		        FROM pg_attribute a
+		        WHERE a.attrelid = 'public.provider_models'::regclass
+		          AND a.attname = want.name
+		          AND col_description(a.attrelid, a.attnum) IS NOT NULL))
+	`).Scan(&missing)
+	if err != nil {
+		slog.Warn("provider_models canonical_cleared_at probe failed; applying DDL", "error", err)
+		return false
+	}
+	return missing == 0
+}
+
+func (d *DB) ensureProviderModelsCanonicalClearedAt(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	if d.providerModelsCanonicalClearedAtCurrent(ctx) {
+		// Still record the migration stamp: it is idempotent and does not lock
+		// provider_models.
+		if _, err := d.pool.Exec(ctx, providerModelsCanonicalClearedAtStamp); err != nil {
+			return fmt.Errorf("ensure provider_models canonical_cleared_at: %w", err)
+		}
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, providerModelsCanonicalClearedAtDDL+providerModelsCanonicalClearedAtStamp)
 	if err != nil {
 		return fmt.Errorf("ensure provider_models canonical_cleared_at: %w", err)
 	}
