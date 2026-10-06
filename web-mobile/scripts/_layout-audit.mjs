@@ -262,7 +262,7 @@ export function layoutAudit() {
   I.stats.fontStatus = document.fonts ? document.fonts.status : 'unknown'
 
   // ── ⑨ 近白屏 ───────────────────────────────────────────────
-  I.stats.textChars = (document.body.innerText || '').trim().length
+  I.stats.textChars = (document.body?.innerText || '').trim().length
   I.stats.domNodes = document.querySelectorAll('*').length
   // 「页面几乎是空的」有两种完全不同的成因，只有一种是缺陷：
   //   · 终态视图（空态 / 错误态）本来就只有一句话 —— /alerts 的「暂无数据 | 近期无告警」实测 35 字符；
@@ -382,11 +382,18 @@ export async function waitForSettle(timeoutMs) {
   const busy = () =>
     isSkeleton() || !!document.querySelector('.state-view[aria-busy="true"]')
   // 「不再变化」的指纹：文字长度 + 节点数 + 开头 40 字（只比长度会被等长替换骗过）。
+  // ⚠️ `document.body` 必须可选链：导航切换的瞬间它可能是 null，
+  //   无保护地读 `.innerText` 会抛 `TypeError: Cannot read properties of null`。
+  //   实测 495 组里有 **181 组（36.6%）** 因此在 settle 采样阶段抛错，
+  //   靠 `rescuedByRetry` 兜住 —— 兜住的是**流程**，不是那 36.6% 的噪声。
+  //   body 为 null 本就等于「此刻什么都没渲染」，而「有没有内容」另有结构判据
+  //   `nonBlank()`（节点数门槛 20，与语言无关），两者互不替代。
+  const bodyText = () => (document.body?.innerText || '').replace(/\s+/g, ' ')
   const sig = () => {
-    const t = (document.body.innerText || '').replace(/\s+/g, ' ').trim()
+    const t = bodyText().trim()
     return `${t.length}:${document.querySelectorAll('*').length}:${t.slice(0, 40)}`
   }
-  const chars = () => (document.body.innerText || '').replace(/\s+/g, ' ').trim().length
+  const chars = () => bodyText().trim().length
   // ⚠️ 「这页有东西吗」**不能用文字字符数**判 —— 它随语言变：
   //   同一个 /m/login，zh-CN 是 28 字符（登录网关 使用网关管理员账号登录 用户名 密码 登录），
   //   en-US 是 77 字符（同一个 DOM、同样 34 个节点）。按字符数判 ⇒ 中文页被判白屏、
