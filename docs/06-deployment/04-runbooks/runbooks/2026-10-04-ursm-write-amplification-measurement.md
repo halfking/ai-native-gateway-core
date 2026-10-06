@@ -10185,3 +10185,100 @@ call1 = 4, call2 = 3（函数确实跳过了上月）
 `verify.sh` 只显式收录两个脚本，且 CI 环境**未必有 docker**。
 把一个依赖容器的脚本塞进统一门，会让没有 docker 的流水线无故变红。
 ⇒ 保留为可按需执行的深度验证，在 `migration_838_test.go` 与本节留指针。
+
+## §10.95 索引侧盘点：零扫描索引有多少，值不值得动（结论：不值得）
+
+待决清单里挂着一个「136 个零扫描索引复核」。本节把它量完，
+**结论是这个方向不值得投入**——但不是因为读数难看，而是因为量完之后收益太小。
+
+### §10.95.1 两次量具失明（这一节我错了两次）
+
+**① 用 `pg_get_indexdef` 文本找重复索引 ⇒ 必然假阴性。**
+`pg_get_indexdef` 的输出**含索引名**，两个列完全相同、名字不同的索引
+文本不相等，第一版查询因此返回「零重复」。
+`wiki_pages_legacy_v1` 上并列的 `idx_wiki_pages_kb` / `idx_wp_kb_id`
+（同为 `kb_id`）就是这么漏掉的。
+⇒ 找重复必须比**结构签名**：`indkey / indpred / indoption / indclass /
+indcollation / indisunique / relam` 全部相等。改对之后查到 **11 对**。
+
+**② 报错的查询返回空输出，和「零结果」长得一模一样。**
+第二版引用了不存在的列（`ac.indisunique`），psql 打了 ERROR，
+我的 `tail` 只截到空白 ⇒ 我一度把「查询失败」读成「零重复」。
+⇒ 判「查到几行」时要看 psql 的退出状态，不能只看屏幕上有没有行。
+
+### §10.95.2 真重复索引：11 对，约 4.1 MB
+
+| 表 | 索引 A | 索引 B | A 大小 |
+|---|---|---|---|
+| `runtime_metrics` | `idx_rt_instance_time` | `idx_runtime_metrics_instance` | 1,296 kB |
+| `runtime_metrics` | `idx_rt_time` | `idx_runtime_metrics_timestamp` | 440 kB |
+| `routing_audit_log` | `idx_routing_audit_log_idempotency` | `uq_routing_audit_log_idem` | 216 kB |
+| `provider_models` | `idx_provider_models_lower_raw_model_name` | `..._lower_standardized_name` | 112 kB |
+| 其余 7 对 | 各 8 kB | — | 8 kB |
+
+⇒ 删掉任意一侧**行为零变化**（列、谓词、排序、唯一性全同，且都不带约束）。
+**但总共只有约 4.1 MB**，不值得单独走一次迁移。
+
+### §10.95.3 前缀冗余：24 对，约 0.4 MB —— 也太小
+
+短索引是真前缀（键序列、排序方向逐列一致、谓词覆盖关系成立、非唯一非主键无约束）
+的长索引 ⇒ 可删。但除 `self_check_runs` 200 kB 外全是 8 kB 级。
+
+⚠ 顺带证伪了 38 对里的大多数：`idx_request_logs_hot_ts (ts DESC)` 看似被
+`idx_request_logs_hot_success_false_ts (ts DESC, error_kind) WHERE success=false`
+覆盖，**其实不能删**——长的是部分索引，看不到 `success=true` 的行。
+⇒ 「短的是长的前缀」**不等于**「长的能替代短的」。
+
+### §10.95.4 零扫描索引总量：799 个 / 804 MB
+
+口径：非主键、非唯一、非部分、无约束、`indisvalid`，且
+`pg_stat_all_indexes.idx_scan = 0`（窗口 13.75 天）。
+
+| 桶 | 个数 | 体量 |
+|---|---|---|
+| 活表（含 hot 表与普通表） | 661 | **598 MB** |
+| 冻结的月分区 | 138 | 206 MB |
+
+活表上体量最大的几张：
+
+| 表 | 索引 | 大小 |
+|---|---|---|
+| `route_incident_events` | `..._type_created` + `..._incident_created` | 71 + 61 MB |
+| `session_summaries` | `idx_..._search`(GIN) + `idx_..._topics`(GIN) | 49 + 30 MB |
+| `session_dim` | `idx_session_dim_tenant` | 46 MB |
+| `node_probe_runs` | `..._api_model` + `..._provider` | 40 + 27 MB |
+| `instance_heartbeats` | `idx_ih_instance` | 28 MB |
+
+### §10.95.5 ★ 与预期相反的一条：它不是写放大问题
+
+我原本假设「活表上的零扫描索引 = 热写入路径上的纯开销」。**数据否掉了这个假设**：
+
+```
+落在 *_hot 热表上的零扫描索引：30 个 / 20.6 MB
+其余（汇总、指标、事件类表）：769 个 / 783.6 MB
+```
+
+体量大的那些（`route_incident_events`、`provider_metrics_minute`、
+`request_stats_error_drill_minute`…）都是**低写入的汇总/指标表**，
+索引维护成本本来就低。
+
+⇒ **零扫描索引是存储问题，不是写放大问题。**
+804 MB 相对本网关库 627.49 GB 只有 **0.13%**，
+而批量删索引的风险是计划质量（13.75 天没被选中，不等于永远不会被选中）。
+⇒ **不建议批量删。**
+
+### §10.95.6 如果仍要回收这 804 MB，唯一站得住的做法
+
+1. **把观测窗口拉长**：13.75 天是 `pg_stat_*` 的 reset 时刻决定的，不是可选项。
+   至少覆盖一个完整月结与全部周期任务周期后再量一次。
+2. **分小批逐个验证**：每批删完观察若干天，`EXPLAIN` 抽查相关查询，
+   出现计划回退立刻回滚（`CREATE INDEX` 可原地重建）。
+3. **优先冻积分区那 138 个 / 206 MB**：它们挂在已停止写入的月分区上，
+   是四类里最接近「必然无用」的。
+
+### §10.95.7 与待决清单里那个「136」的口径差
+
+清单里记的是 **136** 个，本节量到冻结桶 **138** 个、总量 **799** 个。
+数量接近但**不构成对应关系**——`136` 的原始口径（哪些库、是否含约束索引、
+窗口多长）本会话没有留存。
+⇒ **不把 138 当成 136 的修正版**，需要你确认原口径后再谈。
