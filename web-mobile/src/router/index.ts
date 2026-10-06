@@ -214,6 +214,18 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/LogOpsView.vue'),
     meta: { titleKey: 'logOps.title', requiresAuth: true },
   },
+  // 人工标注工作台（三条**只读**端点；写操作三条一律不碰）。
+  // ★ admin 档：handler.go:1386/1389/1390 三条注册全是 admin(...)
+  //   ⇒ tenant_admin 可用 ⇒ 抽屉席**不设** requiresRole。
+  // ⚠️ 同前缀的 batch / annotations/{id}(DELETE) / annotations(POST)
+  //   也都是 admin 档，但它们**改标注事实**（删一条会改变 accuracy 口径），
+  //   本页刻意不接。
+  {
+    path: '/annotations',
+    name: 'annotations',
+    component: () => import('@/views/AnnotationsView.vue'),
+    meta: { titleKey: 'annotations.title', requiresAuth: true },
+  },
   // ── 全局横向对比面（2026-10-07）──────────────────────────────────────
   // 与 /funnel 配对：漏斗是单模型纵深，矩阵/流量是全体模型横向对比。
   // ★ 两条都是 superAdmin：matrix/flow 在 RegisterAnalyticsRoutes 里

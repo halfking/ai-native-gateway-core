@@ -8455,3 +8455,124 @@ run#9 … run#10  Tests  3238 passed (3238)
 十连跑 10/10（3239 × 10）。
 
 文档 §11.98 纯追加。
+
+### 11.99 第六十三批：标注工作台接 UI（`AnnotationsView`）
+
+第六十一批做好的 `api/annotations.ts`（43 条用例）**全无 UI 消费方**——
+写完 API 层不等于接完了。本批补上这一段。
+
+#### 11.99.1 交付物与权限
+
+| 文件 | 性质 |
+|---|---|
+| `web-mobile/src/views/AnnotationsView.vue` | 新建 |
+| `web-mobile/src/views/AnnotationsView.spec.ts` | 新建（27 条） |
+| `web-mobile/src/router/index.ts` | 改（`/annotations`） |
+| `web-mobile/src/config/appNav.ts` | 改（抽屉席 `annotations`） |
+| `web-mobile/src/i18n/zh-CN.ts` / `en-US.ts` | 改 |
+
+权限：`handler.go:1386/1389/1390` 三条注册全是 `admin(...)`
+⇒ tenant_admin 可用 ⇒ **抽屉席不设 `requiresRole`**。
+
+**本页只有只读面**。同前缀的三条写操作全部不接：
+`POST /annotations`、`POST /annotations/batch`、`DELETE /annotations/{id}`。
+后两者互不可逆 —— 删一条标注会改变该样本 accuracy 的统计口径，
+而 stats 端是历史累计值，删完就对不上了。
+
+#### 11.99.2 ★★★★★ 稀疏键是本族最刺眼的一处
+
+`FirstTurnSample`（`admin/annotation_handler.go:100-121`）有 **9 个指针字段**，
+其中 **5 个标注字段带 `omitempty`**：
+
+```go
+Title       *string    `json:"title"`                             // 无 omitempty ⇒ 可能是 null
+Confidence  *float64   `json:"confidence"`
+StatusCode  *int       `json:"status_code"`
+Success     *bool      `json:"success"`
+LatencyMs   *int       `json:"latency_ms"`
+TotalTurns  *int       `json:"total_turns"`
+HumanTaskType *string  `json:"human_task_type,omitempty"`           // ★ 有 omitempty
+HumanModel    *string  `json:"human_model,omitempty"`
+HumanProvider *string  `json:"human_provider,omitempty"`
+IsCorrect     *bool    `json:"is_correct,omitempty"`
+Reason        *string  `json:"reason,omitempty"`
+Annotator     *string  `json:"annotator,omitempty"`
+AnnotatedAt   *time.Time `json:"annotated_at,omitempty"`
+```
+
+⇒ **未标注的行，那些键根本不存在**（不是 `null`）。
+⇒ 缺键必须渲染成「未标注」，**绝不能**渲染成 0、空串或「正确」——
+「没标过」与「标了但判错」是两件完全不同的事，混起来会让工作台的产出不可信。
+
+同理 `AnnotationStats.FirstAnnotationAt` 是 `*time.Time` ⇒ 可能 `null`，
+而 `AnnotatorStats.FirstAnnotationAt` 是 `time.Time` ⇒ **恒有值**。
+
+#### 11.99.3 ★★ 零标注时 stats 整条 500 —— 页面不许把它讲成「没人标注」
+
+第六十一批已挖到：`GetOverallStats` 查的是无聚合子句的单行汇总表
+（`FROM annotation_stats`），空表返 `pgx.ErrNoRows` ⇒ handler 500；
+且四个块串联早退、任一失败整条挂。
+
+本批在 UI 侧的处置：
+
+- **不写任何 try/catch 降级**（与 dashboard 的 `writeDegraded` 相反）；
+- 500 时显示的文案**明说这是查询失败**，
+  并直接写出「一条标注都没有时这个端点也会返回 500，两者无法区分」；
+- 失败时**不渲染任何 KPI** —— 画一个「0 条标注」的 KPI 等于把 500 讲成业务事实。
+
+#### 11.99.4 三个分布块都要渲染
+
+stats 的响应是 `overall` + `by_provider` + `by_annotator` + `by_reason` 四块。
+我在第一版**只渲染了 `by_provider` 与 `by_reason`，漏了 `by_annotator`** ——
+是 `vue-tsc` 报 `TS6133: 'annotatorRows' is declared but its value is never read`
+把它顶出来的。
+
+★ 漏一块比不渲染更糟：三个分布块里少一个，
+看的人会以为「没有人标注」，而实际上是「这一块的代码没写」。
+变异 #10 专钉这条（把 `v-if="annotatorRows.length"` 改成恒 false）。
+
+#### 11.99.5 两种「日期缺省」语义相反
+
+| 端点 | 日期留空时 |
+|---|---|
+| `/annotations/samples` | **不限窗口** |
+| `/annotations/first-turn-samples` | **只看今天（UTC）** |
+
+（`resolveFirstTurnDateRange`，`handler.go:628-633`：`startStr == ""` ⇒ 取今天）
+
+⇒ 本页给 first-turn 段一个**常驻提示**说明这一点，
+并配一条判据：日期留空时请求里**不得**带 `start_date`
+（否则等于把窗口锁死在 2000-01-01，变异 #17 覆盖）。
+
+#### 11.99.6 ★ 用例里的一次样本选歪（子串匹配）
+
+写「人工判定」那两行的断言时用了
+`r.text().includes('人工判定')` 找行 —— 而页面上还有一行标签叫
+**「人工判定模型」**，它是「人工判定」的前缀，`find` 先撞上前者，
+于是取到了 `human_model` 的值（`claude`），断言失败。
+
+修法是加一个 `rowByLabel(w, i, label)` 工具，按 `<dt>` **精确**文本找行。
+
+★ 这是 [[变异比断言更容易发现样本选歪]] 的又一次同族表现：
+**互为前缀的标签 + 子串匹配 = 断言打在错误的行上**，
+症状还很像「实现写错了」，容易去改实现。
+
+#### 11.99.7 变异验证：20 条，20/20 有牙
+
+脚本 `/tmp/mut-co63.mjs`（含 `--dry` / `--only=N`），
+被测面 `AnnotationsView.vue` + `appNav.ts`，
+`RESTORED=OK`（逐字节一致，md5 与备份相符）。
+
+**★ 本轮踩了一次自己的坑**：前六条模板类变异我写成
+`v-if="cond"` → `v-if="cond /*MUT*/"` —— **条件根本没变**，只是多了个注释，
+六条全部「仍全绿」。按 [[量具先自证]] 的判读顺序，
+第一步「变异本体是否真改到行为」就已经否定了它们；
+改成 `v-if="false /*MUT*/"` 后六条全部转红。
+
+⇒ **注入标记不等于变异**。带标记是为了事后 grep 与还原，
+但**判据有没有牙取决于行为是否真的改变** —— 这两件事要分开确认。
+
+验证：全量 3266 条（127 文件）rc=0；
+三门 / `vue-tsc` / `build` 全 rc=0；十连跑 10/10（3266 × 10）。
+
+文档 §11.99 纯追加。
