@@ -6604,3 +6604,114 @@ ALTER TABLE public.ursm_node_snapshot_min
 ★ 补一条流程教训：`schema_migrations` 记了「已应用」**不能**当作「效果在位」的证据。
 判断 schema 现状必须直接查 `pg_constraint`/`pg_get_indexdef`，
 这与本 runbook 反复出现的「累计值不等于当前值」是同一族问题。
+
+---
+
+## §10.60 真库巡检落地：`pg17-onconflict-constraint-check.sh`（P0 的长期防线）
+
+§10.59 定位到的 P0 只有**事后**证据。三条证据链彼此独立但都不是巡检：
+245 的 journal（写入失败）、writer.go ↔ 基线（应该是 4 列）、§10.59.8 的推断（重建）。
+**没有任何一条会在它再次发生时主动喊。** 本节补上这一条。
+
+### §10.60.1 为什么现有门管不到
+
+已有的 `writer_on_conflict_contract_test.go` 钉的是「**基线 schema ↔ writer**」。
+本次线上出的恰恰是「**生产已部署 ↔ 基线**」—— 那一段**完全在门的能力之外**，
+因为门跑在开发机上，看不见 252 的 `pg_constraint`。
+
+⇒ 必须有一道**在真库上跑的**巡检，而且它要比的是「已部署」而非「仓库里写的」。
+
+### §10.60.2 契约与方向（★ 与 bloat 类脚本相反）
+
+| 脚本 | 「查到 0 行」意味着 | 本脚本 |
+|---|---|---|
+| `pg-table-bloat-check.sh`（bloat 族） | **没有结论**，exit 3 | |
+| `pg17-onconflict-constraint-check.sh`（本脚本） | **健康**，exit 0 | ← |
+
+★ 方向搞反的后果不是「多报一次」，而是「查不到却报健康」——
+  这正是本项目已踩过的形态，且**恰好会掩盖它本该发现的那类事故**。
+
+退出码：`0` 约束齐（健康）/ `1` 写入会 100% 失败 / `3` 本次没有结论
+（psql 不可用、表不存在、输出不合契约）。
+
+### §10.60.3 ★ 真机验证时踩到的「exit 0 = 健康」假绿（本次自曝）
+
+第一次上 252 验证：
+
+    $ ssh 252 'bash -s' < scripts/252-monitor/pg17-onconflict-constraint-check.sh
+    === exit=0 ===
+
+**0 字节输出。** 按契约 exit 0 读作「健康」—— 我差点就把它记成「252 没问题」。
+
+真因不是数据库，是量具自己：
+
+- `PSQL_CMD` 当时带 `docker exec -i`；
+- 用 `bash -s` 时，**bash 的 stdin 就是脚本文件本身**；
+- `psql_17` 执行的那一刻，`docker exec -i` 把继承来的 stdin 一并读走，
+  于是 bash 还没读到的**脚本剩余部分**被当成输入吃掉 → 脚本静默截断。
+
+生产 cron 以「文件」方式执行（stdin 是 `/dev/null`），**线上不受影响**；
+但这恰恰说明「本地能跑通」不能替代「验证方法本身没坏」。
+
+修法两条，都已落：
+
+1. `PSQL_CMD` **去掉 `-i`** —— SQL 是用 `-c` 传的，这个量具从头到尾不需要 stdin。
+2. 补判据：**exit 0 必须带输出**（`TestOnconflictMatchExitsZero` 的反向自证）。
+   与同目录已有的「报 3 但一个字都没输出」是同一条纪律的两面 ——
+   **退出码必须配上可核对的输出**，「跑完了」不等于「跑出结论了」。
+
+⇒ 去掉 `-i` 后同一条命令立刻给出真结论：
+
+    $ ssh 252 'bash -s' < scripts/252-monitor/pg17-onconflict-constraint-check.sh
+    2026-10-06T14:00:48+0800 🔴 表 ursm_node_snapshot_min 上**没有**任何唯一索引的列集合等于
+        (credential_id,raw_model_name,snapshot_ts,tenant_id)。
+    2026-10-06T14:00:48+0800    ⇒ writer 的 INSERT ... ON CONFLICT
+        (snapshot_ts,tenant_id,credential_id,raw_model_name) 在本库会每次抛
+    2026-10-06T14:00:48+0800      SQLSTATE 42P10，**写入成功率 0**。
+    2026-10-06T14:00:48+0800    已部署的唯一索引清单（索引名 | 列集合 | 是否唯一 | 被约束引用）：
+    ursm_node_snapshot_min_pkey|credential_id,raw_model_name,snapshot_ts|true|1
+    === rc=1 ===
+
+★ 这是 §10.59 的**第三方独立确认**：此前 PK 是 3 列这点是从
+「表是空的 + writer 在报 42P10 + 迁移史」推出来的；现在是**直接读目录表读出来的**，
+且读到的列集合与 writer 需要的 4 列逐列可比。
+（顺带：真库 `indisunique::text` 返回 `true` 而非 `t`，夹具已照抄真实形态。）
+
+### §10.60.4 接线（三处，缺一不可）
+
+- `scripts/252-monitor/pg17-onconflict-constraint-check.sh` — 脚本本体
+- `scripts/252-monitor/etc.cron.d.pg17` — 每小时 `:29`（避开 `:00/:10/:15` 与 `:17/:23`）
+  ★ 走 `2>&1 | tee -a`，**不得** `>/dev/null 2>&1`：结论只靠退出码 + stderr 传递
+- `scripts/ursmcheck/cron_registration_test.go` 的 `gradedExitMonitors`
+  + `monitor_script_exec_gate_test.go` 的 `mustNotCrash` — 两个注册表
+
+**频率为何是每小时而不是更密**：schema 漂移只在部署时发生，不会自发出现。
+频率低不是因为它不重要，而是因为这次事故的真问题是**发现延迟**（62 小时无人知晓），
+不是发生频率。
+
+### §10.60.5 门与变异验证
+
+| 门 | 钉的是 | 变异 | 结果 |
+|---|---|---|---|
+| `TestOnconflictExpectColsMatchesWriter` | 脚本写死的期望列 ↔ writer 的 ON CONFLICT（跨文件同步） | M52 抽掉 `tenant_id` | 🔴 且**只红该红的** |
+| `TestOnconflictMatchExitsZero` | 健康库必须 exit 0 **且带输出** | M53 `paste -sd,`→`tr '\n' ','` | 🔴 |
+| `TestCronFileActuallyHasTaskLines` | cron 行不得被静默 | M55 改成 `>/dev/null 2>&1` | 🔴 |
+
+★ **M53 抓的是我自己写的一个真缺陷**：`sort` 会给输出补**尾换行**，
+`tr '\n' ','` 把它换成逗号就留下尾逗号 ⇒ 期望列变成 `a,b,c,d,`，
+于是这个脚本**对完全健康的库报 exit 1**。改用 `paste -sd,`
+（N 行产 N-1 个分隔符，天然无尾逗号）修掉。
+即「量具自己坏了，报的是假违规」—— 与「夹具在、没接线 ⇒ 门绿」同族。
+
+★ M52 的一处预期落空（记下来，别当结论）：我原本预期对照组
+`TestOnconflictMatchExitsZero` 在 M52 下**仍绿**（两者应正交）。
+实测它也红了，而且**这是正确的** —— 该门的 stub 写死 4 列，
+期望列一改就自然不匹配。两门不是正交的，而是从两侧夹同一个契约。
+
+### §10.60.6 本节**没有**做的事
+
+- ❌ 没改生产 PK（DDL，需授权）
+- ❌ 没装到 252 `/opt/scripts`、没启用 cron（需授权）
+  ⚠ cron 文件是**整文件覆盖**部署的，本次仓库侧已登记，
+    上线前仍须人工 `diff <(ssh 252 cat /etc/cron.d/pg17) scripts/252-monitor/etc.cron.d.pg17`
+- ❌ 没动 `persist flush failed` 的 WARN 级别
