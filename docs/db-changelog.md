@@ -877,7 +877,7 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 825 | `825_modality_graded_verification.sql` | `3af1b1801c36e015a5849bde261125c378129c46f5bdad703c186b85cc0b0eab` | pending deploy（245/154/252 未应用；本地 8782 已由启动自愈 ensureModalityGradedVerification 等价应用并 stamp） |
-| 830 | `830_ursm_node_snapshot_min_partitioned.sql` | `58cff55138dd90466b7079dcabc9bc7163eb3dbb93f3d7069b27b78beb2b0d69` | pending deploy（**手工执行**；`.down.sql` sha `593464eec6397c5659e53f2e8ae3a5059d9f2911726c45870e3f08103b8014a8`）。R44 补登记并**改号 825→830**：原与 `825_modality_graded_verification.sql` 撞号，而这不是标签冲突——`db/db.go` 有**两处** `INSERT ... VALUES ('825', <不同描述>) ON CONFLICT (version) DO NOTHING` 写 `schema_migrations`，抢同一个主键 ⇒ 先跑者赢、另一条静默丢弃，825 的描述取决于哪条 ensure 先跑。`TestNumericUpMigrationVersionsAreUnique` 也实测红。按 R22「后提交方让号」（`825_modality` b992c01b3 14:05 在先、本迁移 32d592f97 14:25 在后）改号为 830。⚠️ 物理表后缀 `_post825` **刻意不改**（负向后顾替换），它是 down 交换出来的表名，改了会与已落库的表脱节。（本行只登记新文件名：旧文件名已随改号消失，留旧行会让「台账有、磁盘无」那条门报红）。**R45 sha 回写**：R45/D2 清扫把头部 psql 示例改指实名（825_→830_）、down 按 §R44/移交.5 补 817 同款台账条件删除+对称门 ⇒ 双文件字节变更，本行双 sha 为 R45 实测回写 |
+| 830 | `830_ursm_node_snapshot_min_partitioned.sql.skip` | `58cff55138dd90466b7079dcabc9bc7163eb3dbb93f3d7069b27b78beb2b0d69` | pending deploy（**手工执行**；`.down.sql` sha `593464eec6397c5659e53f2e8ae3a5059d9f2911726c45870e3f08103b8014a8`）。**R47 更正扩展名**：`404050630` 把磁盘文件改标为 `.sql.skip`（部署通道 `_deploy_pending_startup_migrations` 不认 `channel_gap_allowlist` 的 manual-by-design 豁免 ⇒ 不改标会挡住一切部署），但**文件内容一字未改**——实测 `.sql.skip` 的 sha 仍为 `58cff55…`，与本行原登记完全一致 ⇒ 这是一次纯改名，不是字节变更。台账登记必须写**磁盘上的真实文件名**（819 等作废项亦如此，无 `.sql.skip` 先例）⇒ 本行随扩展名同步，否则 `TestRegistryShaIsActuallyTheFile` 报「台账有、磁盘无」。R44 补登记并**改号 825→830**：原与 `825_modality_graded_verification.sql` 撞号，而这不是标签冲突——`db/db.go` 有**两处** `INSERT ... VALUES ('825', <不同描述>) ON CONFLICT (version) DO NOTHING` 写 `schema_migrations`，抢同一个主键 ⇒ 先跑者赢、另一条静默丢弃，825 的描述取决于哪条 ensure 先跑。`TestNumericUpMigrationVersionsAreUnique` 也实测红。按 R22「后提交方让号」（`825_modality` b992c01b3 14:05 在先、本迁移 32d592f97 14:25 在后）改号为 830。⚠️ 物理表后缀 `_post825` **刻意不改**（负向后顾替换），它是 down 交换出来的表名，改了会与已落库的表脱节。（本行只登记新文件名：旧文件名已随改号消失，留旧行会让「台账有、磁盘无」那条门报红）。**R45 sha 回写**：R45/D2 清扫把头部 psql 示例改指实名（825_→830_）、down 按 §R44/移交.5 补 817 同款台账条件删除+对称门 ⇒ 双文件字节变更，本行双 sha 为 R45 实测回写 |
 
 > **R44 复核：为什么 `825_ursm` 不改号（登记了撞号，但保留双 825）**
 >
@@ -1013,7 +1013,8 @@ teeth（一次性 PG17 逐项实测）：去 `LIMIT 1` → 判据红（4 绑定 
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 830 | `830_ursm_node_snapshot_min_partitioned.sql` | `2fcbec928f71407423d1ba800c787163e59040f02e6a12ea2c427c6ea25cb0a9` | applied+verified |
+| 830 | `830_ursm_node_snapshot_min_partitioned.sql.skip` | `2fcbec928f71407423d1ba800c787163e59040f02e6a12ea2c427c6ea25cb0a9` | applied+verified。**R47 更正**：sha 是 `de7656806` 时的**旧字节**（已应用库按旧字节核对要保留），且文件名随 `404050630` 的改标同步为 `.sql.skip`（台账必须写磁盘真实名，见 880 行） |
+| 830 | `830_ursm_node_snapshot_min_partitioned.sql.skip` | `58cff55138dd90466b7079dcabc9bc7163eb3dbb93f3d7069b27b78beb2b0d69` | applied+verified（**R47 补当前字节**，按 730/810/811/812 的既有多行登记惯例：同一文件按不同字节各占一行）。`e5eab853c`（R45）清扫头部 psql 示例后字节已变，`404050630` 改标 `.sql.skip` 时**未动内容**（实测该 sha 自 `404050630` 起从未变过） |
 | 831 | `831_work_type_route_source.sql` | `bdb52ad1c68cdcda6b979c82b1c64cff90af8ef1c917062de5c224009a5f79a7` | **pending deploy**（`.down.sql` sha `fedddfd5d369e50b4e421c97e3dc848ceebf6515dad8fa78370edcf0951d7e0f`）（R46 补登记台账行——并行会话 fe703382b 落地迁移本体但未写台账，sqlguard 连续性门红）。`work_type_model_route.source ∈ {operator, acc}` 默认 'operator'：双写方（ACC sync / admin UI）DELETE+re-INSERT 互踩且无来源标记，ACC 种子 model_routes 全空 ⇒ 成功 sync 即静默清空运维配置的路由；与网关路径修复（/api/v2）成对落地。台账登记 ≠ 通道下发（通道门仍红 829+831，Owner 决策） |
 
 
@@ -7143,6 +7144,11 @@ the honest starting point, not a permanent state`），还原 ⇒ 🟢 绿。
 
 ### 二、834：把 supplier_errors 族三张基表纳入受追踪链（建议②）
 
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 834 | `834_supplier_errors_base_tables.sql` | `089e61941562405457c5f0bf28fd3c9761862328d5fe98f666cd7fa1a2144acf` | pending deploy（未应用于任何库；字节已冻结） |
+| 834 (down) | `834_supplier_errors_base_tables.down.sql` | `dab6ce3e38bde6da8e97838a9d41f6a7013d372b038faad3c97ef3ddd0122928` | — |
+
 集成门实测（`scripts/audit/run-integration-gate.sh ./bg`）**当时是红的**：
 
 ```
@@ -7200,6 +7206,11 @@ startup: applied=228 failed=1 missing=0
 **门读数：`startup: applied=228 failed=1` → `applied=230 failed=0 missing=0`。**
 
 ### 三、836：重铺被幂等通道锁死的 813（建议③）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 836 | `836_supplier_errors_heap_reassert.sql` | `bf6010ba25bc3aa50b0445e89e2f1142483b52eb6ac16c903e3cca06cd964b82` | pending deploy（未应用于任何库；字节已冻结） |
+| 836 (down) | `836_supplier_errors_heap_reassert.down.sql` | `80cf621a3142b8b19c6b96415872af6f414a049e0193481bf7c4cf44e19619c6` | — |
 
 **根因与上一轮的结论不同**，本轮查清了：
 
@@ -7318,24 +7329,53 @@ seed offer (0/0): ERROR: null value in column "provider_id" of relation
   「字节拷贝一致 ≠ 被 embed 引用」的对称面是「**被 embed 引用 ≠ 字节拷贝是当前
   的**」—— 重新生成任何载荷后必须重新 `cp`。
 
-### 五、本轮门读数
+### 五、本轮门读数（终读数，含合并 origin/main 之后重跑）
+
+★ 上一版这张表记的是**提交前**的读数，且当时有两条红被归因为「上游遗留、不在
+  本轮范围」。**那两条在我写下这段之后被 origin/main 独立修掉了**（见下），
+  所以这张表整体作废重写——留着旧读数就是让文档记一件已经不是真的事。
 
 | 门 | 结果 |
 |---|---|
-| 集成门 startup 段 | `applied=228 failed=1` → **`applied=230 failed=0 missing=0`** |
+| 集成门 startup 段 | `applied=228 failed=1` → **`applied=231 failed=0 missing=0`** |
+| 集成门 startup rerun 段 | `applied=220 failed=11 missing=0`（11 条全在 `startup_rerun_known_gaps.tsv`） |
+| 集成门包测试段 | `PASS=1336 SKIP=62 FAIL=9`（逐条归因见下） |
 | `apply-db-revision-sequence` 契约 | **passed**（836 的函数链登记被接受） |
-| `installer` 独立 module | 全绿（`TestStatsStartupMigrationsMatchCanonicalSources` 曾因 embeddata 陈旧红，已修） |
+| `installer` 独立 module | **全绿**（`TestStatsStartupMigrationsMatchCanonicalSources` 曾因 embeddata 陈旧红，已修） |
 | `go build ./...` | 干净 |
-| `go vet ./bg/ ./cmd/...` | 干净 |
-| `bg` 全量 | 6 FAIL，**逐名与基线一致**（`diff` 验证，无新增） |
-| `pre-commit-check` | PASS=4 **FAIL=1**（`go vet`）· SKIP=2 |
-| `verify-migration-checksums` | STALE-IN-REGISTRY 830 · 0 mismatch |
+| `go vet ./...` | 干净 |
+| `go test ./bg/`（无 DB） | `ok 25.696s`，**0 FAIL** |
+| `pre-commit-check` | **PASS=5 FAIL=0 WARN=0 SKIP=2** |
+| `verify-migration-checksums` | **OK: 177 registered migrations verified**, 0 mismatch |
+| 834/835/836 embeddata | `cmp` 6/6 与源文件逐字节一致 |
 
-★ **最后两条红是上游遗留，不是本轮引入**，且我**在干净树上验过**
-  （`git stash` → 跑同一道门 → 还原，两条读数完全相同）：
+**上一版记为「上游遗留」的那两条红，origin/main 已独立修掉**（`e318d4cb4` 修
+`apihub`，`7c3ae37fd` 修 830 台账）。我因此在合并时做的取舍：
 
-- `go vet` 失败在 `apihub/list_stale_realdb_test.go:56`
-  （`UpsertBatch` 返回 2 值、测试接 1 值）—— 本轮从未触及 `apihub/`。
-- `STALE-IN-REGISTRY: 830_ursm_node_snapshot_min_partitioned.sql`：上游
-  `404050630` 把该文件改标成 `.sql.skip` 时**没同步台账**。
-  ⇒ 两条都**不在本次提交范围内**修复（改台账条目会牵动别的东西，应单独立项）。
+- `apihub/list_stale_realdb_test.go` 与上游**正面冲突**，取**上游那版**。我原本
+  改成了断言返回值 `written != n`；读 `pg_store.go:359` 后确认成功路径是
+  `written += len(chunk)`，而 `execUpsertChunk` 把 `RowsAffected()` 丢掉了
+  （`_, err := tx.Exec(...)`），所以计数并不受那条 heartbeat WHERE 门控 ——
+  上游注释里「受 WHERE 两半门控」这个理由不成立。但紧随其后的
+  `tag.RowsAffected() != n` 已用真库事实覆盖同一意图，故我那条断言是冗余的，
+  不值得在一个维护者刚碰过的文件上留永久分叉。**结论无害，理由不准确。**
+- 830 台账那条我原本判定为「刻意不修」，理由是：把 changelog 行改成 `.sql.skip`
+  会让它不再被 `verify-migration-checksums.sh` 的正则解析（正则要求 `.sql` 后紧跟
+  反引号），那是让门看不见这一行。上游仍然这么改了，并补了关键事实：该文件
+  **字节一字未改**（sha 仍为 `58cff55…`），是纯改名；且台账本来就该写磁盘真实
+  文件名。同时他们给 `internal/partguard` 补了 `.sql.skip` 的 DDL 扫描。合并后该门
+  实测 rc=0，我的顾虑被他们的补充事实消解。
+
+**集成门那 9 条 FAIL 的终归因**（按错误签名，不是符号级推断）：9 条所在 4 个文件
+都不在本分支 diff 内，且对我新增/修改的 9 个符号引用数全为 0。
+
+- 6×`TestAutoRouteSettle*` → `column rl.quality_flags does not exist (42703)`。
+  该列是远古迁移 `573_drop_request_logs_body_columns` 从 `request_logs` 删掉的，
+  测试仍在引用它。
+- `TestNonfeaturedWatchdogIntegration` / `TestStrictCanaryProbeQueueIntegration` →
+  testcontainers 起 `postgres:16-alpine` 后 `connection reset by peer`（基础设施）。
+- `TestRequestFailureThrottlePredicateSQL` → 夹具拆卸
+  `drop node_probe_state: 2BP01 other objects depend on it`（测试隔离缺陷）。
+
+★ 门**自带**的诊断把这 9 条统称「形态不匹配（42P07）、不是产品缺陷」。按上面
+  的错误签名，**这 9 条没有一条是 42P07**，该诊断不解释它们，因此不采信为结论。
