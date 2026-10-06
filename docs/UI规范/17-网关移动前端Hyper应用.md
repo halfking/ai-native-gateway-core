@@ -2780,3 +2780,166 @@ if !IsSuperAdminOrLegacy(r) { query += ` AND rl.tenant_id = $1`; ... }
 ★ 第 11 条值得记：不带 cursor 时**接口不报错、不空**，只是把第一页又返回了一遍 ——
   界面上表现为「加载更多之后列表没变」，很容易被当成后端没数据。
   ⇒ 判据必须断言**实际带上的 cursor 值**，不是只断言「有没有再请求」。
+
+---
+
+### 11.57 系统监控上移：队列状态 + 最近结束的探针运行（第二十五轮，admin 档）
+
+| 端点 | 移动端 | 档位 | 抽屉席 |
+|---|---|---|---|
+| `GET /api/admin/system-monitor/stats` | `/system-monitor`（面板） | `admin` | 系统监控 |
+| `GET /api/admin/system-monitor/recent-runs` | 同上（明细） | `admin` | （不单独占席） |
+
+★ **同族端点档位是混的**（`admin/systemmonitor_handlers.go:629-645`）：
+
+| 端点 | 档位 / 方法 |
+|---|---|
+| `stats` / `recent-runs` / `migration-metrics` / `recovery` / `stream` | **admin**，GET |
+| `by-credential/{id}` / `by-provider/{id}` / `by-model/{model}` / `concurrency` | **superAdmin** |
+| `submit` / `start-all` / `stop-all` | superAdmin，写操作 |
+
+⇒ `concurrency` 还是 **PATCH**（改 `self_check_settings.monitor_concurrency`）
+⇒ 本轮**不做**（写操作，与 §11.45 起的同纪律一致）。
+
+本页面答的是「**监控器这层**自己在不在干活」，
+与 `/probe`（任务级队列）、`/probe-model`（模型健康）、`/probe-health`（凭据探针）
+分处不同层，不重复。
+
+#### ★★★ 陷阱一：`stats` 里**每个 0 都可能是「不知道」**
+
+三条独立来源，全都不会报错：
+
+1. **监控器未接线**：`if h.systemMonitor != nil` 整块被跳过 ⇒
+   `queue_size` / `running_size` 留 **0**、`in_fallback` 留 **false**
+   ⇒ 「队列 0 条、没在降级」是**没接线**时的假象。
+2. **读不到配置**：`monitor_concurrency` 用
+   `if err == nil && monitorConcurrency > 0 { … }` ⇒ **恒回落 5**。
+3. ★★ **最严重的一处**：近 1 小时四个计数用的是
+
+   ```go
+   _ = h.db.QueryRow(r.Context(), `SELECT … FROM system_probe_runs
+        WHERE created_at >= NOW() - INTERVAL '1 hour'`).Scan(&completed, &failed, &skipped, &tokens)
+   ```
+
+   —— **错误被 `_ =` 显式丢弃**。查询失败时四项全是 0，
+   响应里与「一小时零次运行」**完全无法区分**。
+
+⇒ 前端方向统一为「宁可说可能没取到」：四项同时为 0 时挂显式说明；
+队列与运行同时为 0 时挂「可能未接线」；并发恰等于 5 时挂「可能读配置失败」。
+
+#### ★★★ 陷阱二：**三项之和不是总运行数**（本轮最有价值的一条）
+
+`status` 的 CHECK 约束（`deploy/sql/schemas/baseline/01-schema.sql:16969`）允许 **6 个**值：
+
+```sql
+CHECK ((status = ANY (ARRAY['success','failed','expired','skipped','timeout','network_error'])))
+```
+
+而 `stats` 的三个计数口径逐字是：
+
+| 字段 | 口径 |
+|---|---|
+| `completed_total_1h` | `status = 'success'` |
+| `failed_total_1h` | `status IN ('failed','timeout','network_error')` |
+| `skipped_total_1h` | `status = 'skipped'` |
+
+★ **`expired` 既不在成功、也不在失败、更不在跳过** ⇒ 三者相加**漏掉它**。
+
+⇒ 页面**不显示**「一小时共 N 次」，只显示三个分项 + 一条常驻说明。
+⇒ 每一条 `status = expired` 的运行行单独挂标注。
+⇒ 判据：`statusCountsAsFailed('expired') === false`
+且 `statusIsUnaccounted` 只对 `expired` 为真（六个枚举逐个验过）。
+
+#### ★★ 陷阱三：`total` 是**本页返回行数**，不是数据库计数
+
+扫描出错走 `warnRowSkip(...)` + `continue`（**不是**上抛）。
+handler 自己的注释就写着：
+
+> 探针运行记录少一截 = 失败/跳过的探针被静默抹掉，"系统监控全绿"是假象。
+> total 取自 len(out)，静默截断不会体现为数字异常。
+
+⇒ UI 里这个数只能叫「记录数」，图例里必须写明它不是数据库总数。
+
+#### ★★ 陷阱四：清单**只含已结束的运行**
+
+两处写入方（`bg/credential_selfcheck.go:908`、`bg/systemmonitor/audit.go:122`）
+都在**运行结束后**才 INSERT，`finished_at` 列是 `NOT NULL`，
+两处都传 `time.Now()`。
+
+★ 这里我**先做了个推断又自己推翻了**：看到 `FinishedAt time.Time`（非指针）
+且无 `omitempty`，第一反应是「未完成的运行会序列化成 `0001-01-01`」，
+差点把这条当陷阱写进文档。追到两处写入方才发现**根本不存在这种行**。
+⇒ **推出来的陷阱必须追到写入方才能写进契约文档**，
+否则文档里会多一条并不存在的坑，而后来的人会照着它加无用的防御代码。
+
+⇒ 真正的语义是：**进行中的探测不会出现在这张清单里** ⇒ 页面说「最近**已结束**的运行」。
+
+#### ★ 陷阱五：`limit` 默认 50 / 上限 200，与同族都不同
+
+| 端点 | 默认 | 上限 | 越界行为 |
+|---|---|---|---|
+| `system-monitor/recent-runs` | 50 | 200 | 静默回落 50 |
+| `sessions/list` | 50 | 500 | 静默回落 50 |
+| `sessions/online` | 20 | **静默 clamp 100** | clamp |
+| `analytics/model-task-index` | 20 | 500 | 静默回落 20 |
+
+★ 四个端点四套数字 ⇒ **不能照抄任何一处**。
+★ 但 `limit` 同样被回显 ⇒ `total >= limit` 是**精确**信号。
+
+#### ★ 陷阱六：同一 URL 前缀下**错误信封不同**
+
+`stats` / `recent-runs` 走 `writeError`（嵌套 `{"error":{"detail":…}}`），
+而同文件的 `migration-metrics` 走 `http.Error`（**text/plain**）。
+⇒ 各端点独立解包；页面**两个端点独立取**（`Promise.allSettled`），
+一个失败不清空另一个。
+
+#### ★ 本轮修的两处
+
+1. **把「陷阱常量」写成注释却没接进判据** ——
+   `STATS_MAY_NOT_BE_WIRED` / `STATS_1H_COUNTS_MAY_BE_UNAVAILABLE` /
+   `PROBE_RUNS_ONLY_SETTLED` 三个常量 import 进来却没用，
+   `vue-tsc` 的 TS6133 直接报出来。
+   ⇒ **接进判据**（`&& STATS_MAY_NOT_BE_WIRED && …`、
+   `v-if="PROBE_RUNS_ONLY_SETTLED"`），而不是删掉 import：
+   后端哪天改了语义，常量为假时界面提示会**自动消失**。
+2. i18n 门抓到 `zh-CN sysmon.tokens = 'tokens'`（值 === 键名，判为未翻译）
+   ⇒ 改「消耗 token」。
+   ★ 这是**同一类问题第二次出现**（上次是 `en-US online.stale = 'stale'`）：
+   标签词恰好等于键名时，中英文两侧都要换词。
+
+### 11.58 本轮门禁（第二十五轮，系统监控）
+
+| # | 门 | 结果 |
+|---|---|---|
+| 1 | css 门自测 | **11/11** |
+| 2 | 触控门自测 | **11/11** |
+| 3 | i18n 门自测 | **23/23** |
+| 4 | `gate:selftest` | **45 条断言全绿** |
+| 5 | `vue-tsc -b` | 通过（先抓到 3 处 TS6133 未用 import） |
+| 6 | i18n 键集门 | 通过（各 **902 键**，+35；**710 个源码字面量键全部存在**，扫 115 个 `.vue`/`.ts`） |
+| 7 | css 媒体查询门 | 通过（**55 文件**，+1） |
+| 8 | 触控热区门 | 通过（**52 个 .vue**，+1） |
+| 9 | `vitest run` | **962 用例 / 64 文件全绿**，**连跑 10 次全绿**（+52：25 API + 27 视图） |
+| 10 | `npm run build` | 通过 |
+
+★ 变异证据（**12 处，全部转红**）：
+
+| 变异 | 结果 |
+|---|---|
+| failed 口径改成「非 success 即失败」（把 expired 算进去） | 4 failed |
+| `statusIsUnaccounted` 改成永不命中 | 2 failed |
+| `expired` 不再单独一档色 | 1 failed |
+| 截断判定 `>=` 改 `>` | 2 failed |
+| `limit` 上界守卫去掉（201 会发出去） | 1 failed |
+| `runDurationMs` 不再挡负时长 | 1 failed |
+| ★ 三项合计数写死成 999 | 1 failed |
+| 「可能未接线」提示恒假 | 1 failed |
+| expired 行标注恒假 | 1 failed |
+| 「只含已结束运行」说明恒假 | 1 failed |
+| 图例恒假 | 1 failed |
+| 「四项全 0」提示恒假 | 1 failed |
+
+★ 这次 12 处**每处只红 1~2 条**（除口径那条红 4 条），说明判据是**贴着各自那条
+不变量**写的，而不是靠一个大而全的断言兜着。
+★ 「四项全 0」与「队列与运行全 0」是**两条独立判据**：
+它们都是「全 0」，若合并成一条判断，变异时无法定位是哪条语义被破坏。

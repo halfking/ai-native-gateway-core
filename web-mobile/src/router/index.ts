@@ -240,6 +240,16 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/OnlineSessionsView.vue'),
     meta: { titleKey: 'online.title', requiresAuth: true },
   },
+  // 系统监控（stats + recent-runs，2026-10-06）。**admin 档**（adminWrap）
+  // ⇒ tenant_admin 可用，导航不设 requiresRole。
+  // ★ 同族的 by-credential / by-provider / by-model / concurrency 是 superAdmin，
+  //   且 concurrency 是 PATCH 写操作 ⇒ 本页都不碰。
+  {
+    path: '/system-monitor',
+    name: 'system-monitor',
+    component: () => import('@/views/SystemMonitorView.vue'),
+    meta: { titleKey: 'sysmon.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
