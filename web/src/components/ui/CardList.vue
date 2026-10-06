@@ -202,6 +202,14 @@ function fieldTone(row: T, f: CardField): CardTone | undefined {
           <span v-if="metaKeys.length" class="card__meta">
             <span v-for="k in metaKeys" :key="k" class="card__badge">{{ text(row, k) }}</span>
           </span>
+          <!--
+            03 §3.3「可点必须看得见」：指示器与可点性是**同一个开关**的两个表现
+            （Vant Cell 把箭头与可点绑在同一个 `is-link` 上）。
+            ⇒ 这里只能是 `v-if="clickable"`，绝不能是独立 prop ——
+              一旦分成两个开关，就会出现「有箭头但不可点」（说谎的指示器）。
+            纯 CSS 画的 ⇒ 无需 i18n 键，也不引入图标依赖。
+          -->
+          <span v-if="clickable" class="card__chevron" aria-hidden="true" data-testid="card-chevron" />
         </component>
 
         <p v-if="primaryField" class="card__primary" :data-align="primaryField.align ?? 'end'">
@@ -256,11 +264,54 @@ function fieldTone(row: T, f: CardField): CardTone | undefined {
   color: inherit;
   font: inherit;
   text-align: start;
+  /* chevron 绝对定位的参照。相对定位本身不改变任何布局（桌面零回归）。 */
+  position: relative;
 }
 
+/*
+ * 可点行的第二个表现：按压反馈 + 给指示器让位。
+ * ⚠️ `padding-inline-end` 只挂在 `.card--clickable` 上 ——
+ *    不可点行逐字不变，否则会给「静态行」凭空多 20px 缩进。
+ */
 .card--clickable .card__head {
   min-height: 48px;
   cursor: pointer;
+  padding-inline-end: 20px;
+}
+
+/*
+ * 按压反馈：**只用 transform / opacity**，不碰 width/height/margin ——
+ * 12 号手势篇同款纪律：按压反馈不得引发布局位移，否则长列表滚动会抖。
+ * 视觉变化放在 opacity 上，够轻、够稳、GPU 友好。
+ */
+.card--clickable .card__head:active {
+  opacity: 0.72;
+}
+
+/*
+ * 右侧指示器（03 §3.3）。用两条 border 画，不用字体字形 ——
+ * 字形会随系统字体缺字，且会与 16 号的编码门（U+FFFD）撞上。
+ * `pointer-events: none`：它是纯装饰，点不到，也不该抢走卡头的点击。
+ */
+.card__chevron {
+  position: absolute;
+  inset-inline-end: 4px;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  border-top: 2px solid var(--kx-muted);
+  border-right: 2px solid var(--kx-muted);
+  transform: translateY(-50%) rotate(45deg);
+  pointer-events: none;
+}
+
+/*
+ * RTL：`inset-inline-end` 已经把位置自动换到左侧，
+ * 但**箭头指向**不会跟着换 —— 位置与指向是两件事。
+ * `dir` 由 i18n.ts 写在 <html> 上（applyDocumentLocale），故这里能用属性选择器。
+ */
+[dir='rtl'] .card__chevron {
+  transform: translateY(-50%) rotate(-135deg);
 }
 
 .card__title {
