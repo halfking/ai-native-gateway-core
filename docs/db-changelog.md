@@ -877,7 +877,7 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 825 | `825_modality_graded_verification.sql` | `3af1b1801c36e015a5849bde261125c378129c46f5bdad703c186b85cc0b0eab` | pending deploy（245/154/252 未应用；本地 8782 已由启动自愈 ensureModalityGradedVerification 等价应用并 stamp） |
-| 830 | `830_ursm_node_snapshot_min_partitioned.sql` | `58cff55138dd90466b7079dcabc9bc7163eb3dbb93f3d7069b27b78beb2b0d69` | pending deploy（**手工执行**；`.down.sql` sha `593464eec6397c5659e53f2e8ae3a5059d9f2911726c45870e3f08103b8014a8`）。R44 补登记并**改号 825→830**：原与 `825_modality_graded_verification.sql` 撞号，而这不是标签冲突——`db/db.go` 有**两处** `INSERT ... VALUES ('825', <不同描述>) ON CONFLICT (version) DO NOTHING` 写 `schema_migrations`，抢同一个主键 ⇒ 先跑者赢、另一条静默丢弃，825 的描述取决于哪条 ensure 先跑。`TestNumericUpMigrationVersionsAreUnique` 也实测红。按 R22「后提交方让号」（`825_modality` b992c01b3 14:05 在先、本迁移 32d592f97 14:25 在后）改号为 830。⚠️ 物理表后缀 `_post825` **刻意不改**（负向后顾替换），它是 down 交换出来的表名，改了会与已落库的表脱节。（本行只登记新文件名：旧文件名已随改号消失，留旧行会让「台账有、磁盘无」那条门报红）。**R45 sha 回写**：R45/D2 清扫把头部 psql 示例改指实名（825_→830_）、down 按 §R44/移交.5 补 817 同款台账条件删除+对称门 ⇒ 双文件字节变更，本行双 sha 为 R45 实测回写 |
+| 830 | `830_ursm_node_snapshot_min_partitioned.sql.skip` | `58cff55138dd90466b7079dcabc9bc7163eb3dbb93f3d7069b27b78beb2b0d69` | pending deploy（**手工执行**；`.down.sql` sha `593464eec6397c5659e53f2e8ae3a5059d9f2911726c45870e3f08103b8014a8`）。**R47 更正扩展名**：`404050630` 把磁盘文件改标为 `.sql.skip`（部署通道 `_deploy_pending_startup_migrations` 不认 `channel_gap_allowlist` 的 manual-by-design 豁免 ⇒ 不改标会挡住一切部署），但**文件内容一字未改**——实测 `.sql.skip` 的 sha 仍为 `58cff55…`，与本行原登记完全一致 ⇒ 这是一次纯改名，不是字节变更。台账登记必须写**磁盘上的真实文件名**（819 等作废项亦如此，无 `.sql.skip` 先例）⇒ 本行随扩展名同步，否则 `TestRegistryShaIsActuallyTheFile` 报「台账有、磁盘无」。R44 补登记并**改号 825→830**：原与 `825_modality_graded_verification.sql` 撞号，而这不是标签冲突——`db/db.go` 有**两处** `INSERT ... VALUES ('825', <不同描述>) ON CONFLICT (version) DO NOTHING` 写 `schema_migrations`，抢同一个主键 ⇒ 先跑者赢、另一条静默丢弃，825 的描述取决于哪条 ensure 先跑。`TestNumericUpMigrationVersionsAreUnique` 也实测红。按 R22「后提交方让号」（`825_modality` b992c01b3 14:05 在先、本迁移 32d592f97 14:25 在后）改号为 830。⚠️ 物理表后缀 `_post825` **刻意不改**（负向后顾替换），它是 down 交换出来的表名，改了会与已落库的表脱节。（本行只登记新文件名：旧文件名已随改号消失，留旧行会让「台账有、磁盘无」那条门报红）。**R45 sha 回写**：R45/D2 清扫把头部 psql 示例改指实名（825_→830_）、down 按 §R44/移交.5 补 817 同款台账条件删除+对称门 ⇒ 双文件字节变更，本行双 sha 为 R45 实测回写 |
 
 > **R44 复核：为什么 `825_ursm` 不改号（登记了撞号，但保留双 825）**
 >
@@ -1013,7 +1013,8 @@ teeth（一次性 PG17 逐项实测）：去 `LIMIT 1` → 判据红（4 绑定 
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 830 | `830_ursm_node_snapshot_min_partitioned.sql` | `2fcbec928f71407423d1ba800c787163e59040f02e6a12ea2c427c6ea25cb0a9` | applied+verified |
+| 830 | `830_ursm_node_snapshot_min_partitioned.sql.skip` | `2fcbec928f71407423d1ba800c787163e59040f02e6a12ea2c427c6ea25cb0a9` | applied+verified。**R47 更正**：sha 是 `de7656806` 时的**旧字节**（已应用库按旧字节核对要保留），且文件名随 `404050630` 的改标同步为 `.sql.skip`（台账必须写磁盘真实名，见 880 行） |
+| 830 | `830_ursm_node_snapshot_min_partitioned.sql.skip` | `58cff55138dd90466b7079dcabc9bc7163eb3dbb93f3d7069b27b78beb2b0d69` | applied+verified（**R47 补当前字节**，按 730/810/811/812 的既有多行登记惯例：同一文件按不同字节各占一行）。`e5eab853c`（R45）清扫头部 psql 示例后字节已变，`404050630` 改标 `.sql.skip` 时**未动内容**（实测该 sha 自 `404050630` 起从未变过） |
 | 831 | `831_work_type_route_source.sql` | `bdb52ad1c68cdcda6b979c82b1c64cff90af8ef1c917062de5c224009a5f79a7` | **pending deploy**（`.down.sql` sha `fedddfd5d369e50b4e421c97e3dc848ceebf6515dad8fa78370edcf0951d7e0f`）（R46 补登记台账行——并行会话 fe703382b 落地迁移本体但未写台账，sqlguard 连续性门红）。`work_type_model_route.source ∈ {operator, acc}` 默认 'operator'：双写方（ACC sync / admin UI）DELETE+re-INSERT 互踩且无来源标记，ACC 种子 model_routes 全空 ⇒ 成功 sync 即静默清空运维配置的路由；与网关路径修复（/api/v2）成对落地。台账登记 ≠ 通道下发（通道门仍红 829+831，Owner 决策） |
 
 
