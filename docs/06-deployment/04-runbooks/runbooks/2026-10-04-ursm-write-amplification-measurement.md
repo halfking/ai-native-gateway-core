@@ -10723,3 +10723,79 @@ M113 第一次写成了「整块删掉索引检查」，结果是 `log/slog` 变
 （第三条教训同时解释了为什么 §10.98.8 的门第一版报「
 `guarded column … is not created by the DDL`」—— 手写字符串手术去解析
 Go 复合字面量，把明明在 DDL 里的列判成不存在。改用 regexp 抽取后才正常。）
+
+### §10.98.9 ★ 全量静态复扫：真正的头号是 `provider_models`，不在原 6 人名单里
+
+§10.98.2 的名单已被证伪过一次（§10.98.6），所以不直接采信，
+而是按「配对大括号切函数体」重新做了一遍全量复扫。
+
+复扫本身又抓到一个**解析器缺陷**：按「下一个 `func` 关键字」切片时，
+会把**下一个声明的文档注释**算进上一个函数。
+`ensureOrchestrationRuntimeInstancesSchema` 右括号之后紧跟的
+`workTypeRequestLogsDDL` 文档注释里 4 次提到 `request_logs` ——
+**§10.98.2 把 `request_logs` 归给它，根因就在这里**。
+
+复扫结果（修正切片后）新冒出一个名单外的高价值目标：
+
+| 函数 | 表 | 状态 |
+|---|---|---|
+| `ensureProviderModelsCanonicalClearedAt` | **`provider_models`** | **无守卫** |
+
+#### `provider_models` 是全库最热的表（比 providers 还热）
+
+| relname | size | live_rows | 写（自 09-23） | **seq_scan/天** | **idx_scan/天** | **读合计/天** |
+|---|---|---|---|---|---|---|
+| **`provider_models`** | 1,560 kB | 1,330 | 487,809 | **1,949,103** | **10,533,709** | **~12.48M** |
+| `providers` | 136 kB | 2 | 14 | 478,892 | 10,178,191 | ~10.66M |
+| `credentials` | 352 kB | 73 | 153,254 | 287,926 | 10,822,394 | ~11.11M |
+
+只有 1,330 行、1.5 MB，却承载 **~12.48M 次读/天** ——
+它是每次模型可用性判定都要碰的表。
+
+#### 它每次启动对这张表取**两次** ACCESS EXCLUSIVE
+
+```sql
+ALTER TABLE public.provider_models ADD COLUMN IF NOT EXISTS canonical_cleared_at …;
+COMMENT ON COLUMN public.provider_models.canonical_cleared_at IS '…';
+```
+
+`ALTER` 要先取锁才能判断列在不在；**`COMMENT ON COLUMN` 同样要取
+ACCESS EXCLUSIVE** 才能改写 catalog 条目。
+生产实测：`canonical_cleared_at` 列**存在**、`col_description` 注释**存在**
+⇒ 两次锁都是纯 no-op。
+
+⇒ **只守 `ALTER` 是没用的** —— `COMMENT` 会把同样的锁照原样取一遍。
+守卫必须同时检查「列在」和「注释在」。
+
+改动（未上线）：
+
+- `const providerModelsCanonicalClearedAtDDL`：只装 `ALTER` + `COMMENT`
+- `const providerModelsCanonicalClearedAtStamp`：`schema_migrations` 幂等 stamp
+  **单独成常量** —— 它必须每次启动都跑，不能跟着 DDL 一起被跳过
+- `providerModelsCanonicalClearedAtCurrent(ctx)`：列 + `col_description IS NOT NULL`
+  两项齐备才短路；探测出错 ⇒ `return false`
+- 守卫命中分支**仍然执行 stamp**
+
+**门**：`db/provider_models_canonical_guard_test.go`，6 个子测试。
+**变异 M118~M127 共 10 条全部按预期转红。**
+
+★ 其中 **M125 当场抓到门自己的漏洞**：把 stamp 从「守卫命中分支」里删掉，
+门**仍然全绿**。原因是那条断言的切片一直延伸到函数末尾，
+被**未守卫路径**里同样出现的 `providerModelsCanonicalClearedAtStamp` 顶住了。
+⇒ 已改为切到守卫分支自己的右括号（`"\n\t}\n"`）。
+**教训同 [[位置不是控制流]]：断言的「作用域」必须和被断言的作用域一致**，
+否则它测的是「文件里某处出现过」，不是「这一条路径上有」。
+
+### §10.98.10 到此为止的收益排序（读压口径）
+
+本轮五处守卫，按目标表读压排序，全部**未上线**：
+
+| # | 函数 | 目标表 | 每次启动白锁的关系数 | 读压/天 |
+|---|---|---|---|---|
+| 1 | `ensureProviderModelsCanonicalClearedAt`（§10.98.9） | `provider_models` | 表 + 索引 | **~12.48M** |
+| 2 | `ensureProviderSoftDelete`（§10.98.7） | `providers` | 表 + 索引 | ~10.66M |
+| 3 | `ensureGoalClientSignalSchema`（§10.98.8） | `session_summaries` | **22 个**（1 表 + 21 索引） | ~198.7k |
+| 4 | `ensureQualityFixModeSchema`（§10.98.3） | `providers` | 表 + 索引 | ~10.66M |
+| 5 | `credits_charged`（§10.97） | `request_logs` | 父表 + 5 分区 | ~1.14 亿 |
+| — | `ensureWorkTypeRouteSource` | `work_type_model_route` | 61 行的表 | ~8.7k（**收益小，不做**） |
+| — | `ensureOrchestrationRuntimeInstancesSchema` | `orchestration_runtime_instances` | — | **0（不做）** |
