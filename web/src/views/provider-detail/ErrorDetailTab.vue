@@ -142,70 +142,82 @@ onBeforeUnmount(() => {
 
         <section class="section-block">
           <h3>{{ pd('summary') }}</h3>
-          <table v-if="data.error_summary.length" class="data-table">
-            <thead><tr><th>{{ pd('errorKind') }}</th><th>{{ pd('count') }}</th><th>{{ pd('retryableCount') }}</th><th>{{ pd('stageDist') }}</th><th>{{ pd('statusCodes') }}</th><th>{{ pd('lastSeen') }}</th></tr></thead>
-            <tbody><tr v-for="item in data.error_summary" :key="item.error_kind">
-              <td><span class="badge" :class="errorKindBadgeClass(item.error_kind)">{{ formatErrorKind(item.error_kind) }}</span></td>
-              <td>{{ item.count }}</td>
-              <td>{{ item.retryable_count ?? 0 }}/{{ item.count }}</td>
-              <td>
-                <template v-if="item.stage_counts && Object.keys(item.stage_counts).length">
-                  <span
-                    v-for="(n, stage) in item.stage_counts"
-                    :key="stage"
-                    class="badge stage-badge"
-                    :class="errorStageBadgeClass(stage)"
-                  >{{ formatStage(stage) }}×{{ n }}</span>
-                </template>
-                <template v-else>—</template>
-              </td>
-              <td>{{ item.distinct_status_codes }}</td><td>{{ formatDateTime(item.last_seen) }}</td>
-            </tr></tbody>
-          </table>
+          <div v-if="data.error_summary.length" style="overflow-x:auto">
+            <table class="data-table">
+
+              <thead><tr><th>{{ pd('errorKind') }}</th><th>{{ pd('count') }}</th><th>{{ pd('retryableCount') }}</th><th>{{ pd('stageDist') }}</th><th>{{ pd('statusCodes') }}</th><th>{{ pd('lastSeen') }}</th></tr></thead>
+              <tbody><tr v-for="item in data.error_summary" :key="item.error_kind">
+                <td><span class="badge" :class="errorKindBadgeClass(item.error_kind)">{{ formatErrorKind(item.error_kind) }}</span></td>
+                <td>{{ item.count }}</td>
+                <td>{{ item.retryable_count ?? 0 }}/{{ item.count }}</td>
+                <td>
+                  <template v-if="item.stage_counts && Object.keys(item.stage_counts).length">
+                    <span
+                      v-for="(n, stage) in item.stage_counts"
+                      :key="stage"
+                      class="badge stage-badge"
+                      :class="errorStageBadgeClass(stage)"
+                    >{{ formatStage(stage) }}×{{ n }}</span>
+                  </template>
+                  <template v-else>—</template>
+                </td>
+                <td>{{ item.distinct_status_codes }}</td><td>{{ formatDateTime(item.last_seen) }}</td>
+              </tr></tbody>
+          
+            </table>
+          </div>
           <div v-else class="empty-hint">{{ pd('noErrors') }}</div>
         </section>
 
         <section class="section-block">
           <h3>{{ pd('recentFailures') }}</h3>
-          <table v-if="data.recent_failures.length" class="data-table failures-table">
-            <thead><tr><th>{{ pd('time') }}</th><th>{{ pd('requestId') }}</th><th>{{ pd('model') }}</th><th>{{ pd('supplier') }}</th><th>{{ pd('kind') }}</th><th>{{ pd('errorCode') }}</th><th>{{ pd('httpStatus') }}</th><th>{{ pd('stage') }}</th><th>{{ pd('retry') }}</th><th>{{ pd('latency') }}</th><th>{{ pd('message') }}</th><th>{{ pd('upstreamPreview') }}</th></tr></thead>
-            <tbody><tr v-for="item in data.recent_failures" :key="`${item.request_id}-${item.attempt_index}-${item.ts}`">
-              <td>{{ formatDateTime(item.ts) }}</td>
-              <td>
-                <button
-                  v-if="item.request_id"
-                  type="button"
-                  class="request-link"
-                  :title="pd('openRequestTitle')"
-                  @click="openFailureRequest(item)"
-                >{{ item.request_id }}</button>
-                <span v-else>—</span>
-              </td>
-              <td>{{ item.raw_model_name }}</td>
-              <td>{{ item.supplier || '—' }}</td>
-              <td>
-                <span class="badge" :class="errorKindBadgeClass(item.error_kind)">{{ formatErrorKind(item.error_kind) }}</span>
-              </td>
-              <td>{{ item.error_code || '—' }}</td>
-              <td>{{ item.upstream_status_code ?? '—' }}</td>
-              <td>{{ formatStage(item.stage) }}</td>
-              <td>
-                <span v-if="formatRetryable(item.retryable)" class="badge" :class="retryableBadgeClass(item.retryable)">{{ formatRetryable(item.retryable) }}</span>
-                <span v-else>—</span>
-              </td>
-              <td>{{ item.latency_ms != null ? `${item.latency_ms}ms` : '—' }}</td>
-              <td class="message-cell">{{ item.error_message ?? '—' }}</td><td class="preview-cell">{{ item.upstream_response_preview ?? '—' }}</td>
-            </tr></tbody>
-          </table>
+          <div v-if="data.recent_failures.length" style="overflow-x:auto">
+            <table class="data-table failures-table">
+
+              <thead><tr><th>{{ pd('time') }}</th><th>{{ pd('requestId') }}</th><th>{{ pd('model') }}</th><th>{{ pd('supplier') }}</th><th>{{ pd('kind') }}</th><th>{{ pd('errorCode') }}</th><th>{{ pd('httpStatus') }}</th><th>{{ pd('stage') }}</th><th>{{ pd('retry') }}</th><th>{{ pd('latency') }}</th><th>{{ pd('message') }}</th><th>{{ pd('upstreamPreview') }}</th></tr></thead>
+              <tbody><tr v-for="item in data.recent_failures" :key="`${item.request_id}-${item.attempt_index}-${item.ts}`">
+                <td>{{ formatDateTime(item.ts) }}</td>
+                <td>
+                  <button
+                    v-if="item.request_id"
+                    type="button"
+                    class="request-link"
+                    :title="pd('openRequestTitle')"
+                    @click="openFailureRequest(item)"
+                  >{{ item.request_id }}</button>
+                  <span v-else>—</span>
+                </td>
+                <td>{{ item.raw_model_name }}</td>
+                <td>{{ item.supplier || '—' }}</td>
+                <td>
+                  <span class="badge" :class="errorKindBadgeClass(item.error_kind)">{{ formatErrorKind(item.error_kind) }}</span>
+                </td>
+                <td>{{ item.error_code || '—' }}</td>
+                <td>{{ item.upstream_status_code ?? '—' }}</td>
+                <td>{{ formatStage(item.stage) }}</td>
+                <td>
+                  <span v-if="formatRetryable(item.retryable)" class="badge" :class="retryableBadgeClass(item.retryable)">{{ formatRetryable(item.retryable) }}</span>
+                  <span v-else>—</span>
+                </td>
+                <td>{{ item.latency_ms != null ? `${item.latency_ms}ms` : '—' }}</td>
+                <td class="message-cell">{{ item.error_message ?? '—' }}</td><td class="preview-cell">{{ item.upstream_response_preview ?? '—' }}</td>
+              </tr></tbody>
+          
+            </table>
+          </div>
           <div v-else class="empty-hint">{{ pd('noRecentFailures') }}</div>
         </section>
 
         <section class="section-block">
           <h3>{{ pd('qualityScores') }}</h3>
-          <table v-if="data.quality_scores_7d.length" class="data-table">
-            <thead><tr><th>{{ pd('date') }}</th><th>{{ pd('totalScore') }}</th><th>{{ pd('availabilityScore') }}</th><th>{{ pd('stabilityScore') }}</th></tr></thead>
-            <tbody><tr v-for="item in data.quality_scores_7d" :key="item.profile_date"><td>{{ item.profile_date }}</td><td>{{ formatScore(item.total_score) }}</td><td>{{ formatScore(item.availability_score) }}</td><td>{{ formatScore(item.stability_score) }}</td></tr></tbody>
-          </table>
+          <div v-if="data.quality_scores_7d.length" style="overflow-x:auto">
+            <table class="data-table">
+
+              <thead><tr><th>{{ pd('date') }}</th><th>{{ pd('totalScore') }}</th><th>{{ pd('availabilityScore') }}</th><th>{{ pd('stabilityScore') }}</th></tr></thead>
+              <tbody><tr v-for="item in data.quality_scores_7d" :key="item.profile_date"><td>{{ item.profile_date }}</td><td>{{ formatScore(item.total_score) }}</td><td>{{ formatScore(item.availability_score) }}</td><td>{{ formatScore(item.stability_score) }}</td></tr></tbody>
+          
+            </table>
+          </div>
           <div v-else class="empty-hint">{{ pd('noQualityScores') }}</div>
         </section>
       </template>

@@ -323,45 +323,49 @@ onMounted(loadOverrides)
         {{ t('routingOverride.table.empty') }}
       </p>
 
-      <table v-else class="overrides-table">
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>Mode</th>
-            <th>Task type</th>
-            <th>Profile</th>
-            <th>Model</th>
-            <th>Reason</th>
-            <th>Expires</th>
-            <th>Created by</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="o in overrides" :key="o.id" :class="{ 'row-expired': isExpired(o), 'row-expiring': isExpiring(o) }">
-            <td>{{ o.id }}</td>
-            <td><span :class="['mode-badge', modeClass(o.mode)]">{{ o.mode }}</span></td>
-            <td><span class="tag tag-task">{{ o.task_type }}</span></td>
-            <td>{{ o.profile }}</td>
-            <td>
-              <span v-if="o.model_chosen" class="tag tag-model">{{ o.model_chosen }}</span>
-              <span v-else class="text-muted">any</span>
-            </td>
-            <td class="reason">{{ o.reason }}</td>
-            <td>
-              <span v-if="o.expires_at" :class="{ 'text-warn': isExpiring(o) }">
-                {{ formatDateTime(o.expires_at) }}
-              </span>
-              <span v-else class="text-muted">permanent</span>
-            </td>
-            <td>{{ o.created_by ?? '—' }}</td>
-            <td class="actions">
-              <button @click="openExtend(o)" class="btn-extend">Extend</button>
-              <button @click="deleteOverride(o)" class="btn-delete">Delete</button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <div v-else style="overflow-x:auto">
+        <table class="overrides-table">
+
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Mode</th>
+              <th>Task type</th>
+              <th>Profile</th>
+              <th>Model</th>
+              <th>Reason</th>
+              <th>Expires</th>
+              <th>Created by</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="o in overrides" :key="o.id" :class="{ 'row-expired': isExpired(o), 'row-expiring': isExpiring(o) }">
+              <td>{{ o.id }}</td>
+              <td><span :class="['mode-badge', modeClass(o.mode)]">{{ o.mode }}</span></td>
+              <td><span class="tag tag-task">{{ o.task_type }}</span></td>
+              <td>{{ o.profile }}</td>
+              <td>
+                <span v-if="o.model_chosen" class="tag tag-model">{{ o.model_chosen }}</span>
+                <span v-else class="text-muted">any</span>
+              </td>
+              <td class="reason">{{ o.reason }}</td>
+              <td>
+                <span v-if="o.expires_at" :class="{ 'text-warn': isExpiring(o) }">
+                  {{ formatDateTime(o.expires_at) }}
+                </span>
+                <span v-else class="text-muted">permanent</span>
+              </td>
+              <td>{{ o.created_by ?? '—' }}</td>
+              <td class="actions">
+                <button @click="openExtend(o)" class="btn-extend">Extend</button>
+                <button @click="deleteOverride(o)" class="btn-delete">Delete</button>
+              </td>
+            </tr>
+          </tbody>
+      
+        </table>
+      </div>
     </section>
   </div>
 </template>
