@@ -294,6 +294,19 @@ export const DRAWER_NAV: readonly NavItem[] = [
     icon: 'search',
     titleKey: 'nav.freeDiscovery',
   },
+  // 数据生命周期**记录级**（stats/metrics/jobs/blobs/top，2026-10-08）。
+  // 与 /data-lifecycle 按「答什么」划界：那页答「表级存储与保留」（分区 + 体积榜），
+  // 本页答「记录怎么分布 / 有没有在清理 / 大字段占多少」。粒度不同，不合并。
+  // ★ 四条注册（handler.go:960/962/979/994）全部是 `admin(...)`
+  //   ⇒ tenant_admin 可用 ⇒ **不设** requiresRole。
+  // ⚠️ 但本页的 `metrics` 是**全表口径**（SQL 无 WHERE，data_lifecycle_metrics.go:63），
+  //   而文件头注释写着「super-admin only」—— **与注册矛盾，以注册为准**。
+  {
+    key: 'data-flow',
+    to: '/data-flow',
+    icon: 'chart',
+    titleKey: 'nav.dataFlow',
+  },
   // 凭据 × 模型实时状态。**这一条是 superAdmin 档**
   // （`registerStateRoutes` 里 `wrap := h.superAdmin`，credential_state_handlers.go:175）
   // ⇒ 抽屉席**必须**设 requiresRole: 'super_admin'（与前几批 admin 档页面相反）。

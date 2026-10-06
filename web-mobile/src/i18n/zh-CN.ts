@@ -27,6 +27,7 @@ export const zhCN = {
     logOps: '日志运维面',
     annotations: '标注工作台',
     approvalQueue: '审批队列',
+    dataFlow: '数据流',
     home: '总览',
     nodes: '节点',
     models: '模型',
@@ -1289,6 +1290,99 @@ export const zhCN = {
     lastActive: '最后活跃 {t}',
     loadMore: '加载更多',
     errForbidden: '当前账号没有查看在线会话的权限',
+  },
+  dataFlow: {
+    title: '数据流与大字段',
+    load: '加载',
+    reload: '重新加载',
+    errForbidden: '没有权限查看数据生命周期信息',
+    // ★ 空数组可能是查询失败（后端非致命），措辞不能说「无数据」
+    emptyAmbiguous: '没有可展示的记录 —— 也可能是这一段查询被跳过了（后端把它当非致命错误处理，客户端分不出来）。',
+    emptyNoRecords: '没有可展示的记录。',
+    rowsUnit: '行',
+    requestsUnit: '次请求',
+    bytesUnit: '字节',
+    msUnit: '毫秒',
+    // ★★ size_bytes 是按行数摊派的估算（含索引），不是实测占用
+    apportioned: '摊派估算 {size}',
+    // ★★★★ 这条端点 SQL 无 WHERE ⇒ 任何角色拿到的都是整表
+    scope: {
+      tenant: '租户口径',
+      platform: '全表口径',
+    },
+    segment: {
+      hot_data: '热数据',
+      warm_data: '温数据',
+      cold_data: '冷数据',
+      expired_data: '过期数据',
+    },
+    // ★ days 是后端写死的标注值（7/23/60/999），不是区间上界
+    segmentDays: '口径 {days} 天',
+    // ★★★★ 某段为 null 是「这一段查不出来」，不是「0 行」
+    segmentUnavailable: '这一段查不出来',
+    percentMeaningless: '总量为 0，下面几个占比没有意义（后端留的是 0，与真的是 0% 分不出来）。',
+    stats: {
+      title: '分段统计',
+      totalRows: '记录总数（租户口径）',
+      totalSize: '表物理大小（全表口径）',
+      // ★★★★ 同一个对象里混了两种口径，不能并排成「本租户 X 行 / Y 字节」
+      mixedScope: '上面两行口径不同：行数按租户过滤过，而物理大小是整张表的（后端没有对它做租户过滤）。',
+      segments: '冷热分段',
+      segmentMissing: '有分段查不出来（后端逐行扫读失败时会跳过整段）。下面的合计因此不代表总量。',
+      percentTotalUnknown: '有分段缺失，占比合计算不出来。',
+      percentTotal: '四段占比合计 {pct}%。',
+      rowsDisagree: '四段行数加起来超过了总量 —— 后端的 30 天边界是双侧闭区间，落在边界那一瞬间的行会被数两次，这是重复计数不是数据出错。',
+      byTenant: '租户分布',
+      tenantTruncated: '租户分布有 10 条上限（后端写死），榜上可能漏掉后面的租户。',
+      growth: '近七天增长',
+      growthTruncated: '趋势最多 7 天（后端写死）。',
+      growthOrderNote: '后端按日期倒序返回，这里已改成时间正序。',
+      rateSaturated: '压缩率已顶到 100%（当日 bodies 与主表口径错位，后端已夹住）。',
+      rateNoSamples: '当日无请求，压缩率没有意义。',
+    },
+    metrics: {
+      title: '轻量指标',
+      // ★★★★ 与上面的租户口径数字不能并排成同口径对比
+      platformScope: '这一块的数字是「整张表」的：后端的 SQL 没有做任何租户过滤，即使你是租户管理员，看到的也不是本租户的数据。',
+      totalRows: '记录总数',
+      segments: '冷热行数',
+      rowsDisagree: '四段行数之和超过总量 —— 与分段统计同一成因（30 天边界双侧闭区间重复计数）。',
+      maintenance: '清理与归档',
+      lastCleanup: '上次清理',
+      lastArchive: '上次归档',
+      // ★★★★ 键恒不存在（后端从不对这两个字段赋值），不能说「从未清理过」
+      notReported: '本端点不提供',
+      notReportedNote: '这两个时间后端声明了字段但从来没有赋值，所以无论清理或归档是否真的跑过，它们都不会出现在响应里 —— 这里不能说「从未清理」。',
+    },
+    jobs: {
+      title: '异步任务',
+      // ★★ limit 是后端硬编码 50，刻意不给条数选择器
+      limitNote: '历史最多保留 {limit} 条 —— 这个上限写死在后端，页面上没有条数选择器，因为传了也不会生效。',
+      running: '进行中',
+      noneRunning: '当前没有进行中的任务。',
+      history: '历史记录',
+      noneHistory: '没有历史记录。',
+      failedCount: '其中 {n} 条失败',
+      jobRunning: '进行中',
+      jobFailed: '失败',
+      jobDone: '已完成',
+      // ★ progress.total<=0 时 percent 是 0 零值，不是「完成 0%」
+      progressUnknown: '进度未知',
+      progressText: '已处理 {done} / {total}',
+    },
+    blobs: {
+      title: '大字段 Top-N',
+      // ★★★ total_bytes 是本次 N 行之和，不是全表总量
+      blobTotalPartial: '本次返回的 {n} 行合计 {size}（不是全表总量 —— 没上榜的行不计入）。',
+      truncated: '本次已取满 {n} 条，可能还有更大的没进榜。',
+      limitLabel: '返回条数',
+      limitNote: '后端只接受 1 到 {max} 之间，超过或非整数会静默回落成 20；当前生效 {n}。',
+      none: '没有查到带大字段的记录。',
+      noSession: '无会话',
+      noTenant: '无租户',
+      modelUnknown: '模型未知',
+      bodyNone: '没有关联的请求/响应体',
+    },
   },
   lifecycle: {
     title: '数据生命周期',

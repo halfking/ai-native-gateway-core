@@ -27,6 +27,7 @@ export const enUS = {
     logOps: 'Log ops',
     annotations: 'Annotation workbench',
     approvalQueue: 'Approval queue',
+    dataFlow: 'Data flow',
     home: 'Overview',
     nodes: 'Nodes',
     models: 'Models',
@@ -1242,6 +1243,99 @@ export const enUS = {
     lastActive: 'Last active {t}',
     loadMore: 'Load more',
     errForbidden: 'This account cannot view online sessions',
+  },
+  dataFlow: {
+    title: 'Data flow & blobs',
+    load: 'Load',
+    reload: 'Reload',
+    errForbidden: 'Not allowed to view data lifecycle information',
+    // ★ an empty array may mean the query was skipped (backend treats it as non-fatal)
+    emptyAmbiguous: 'Nothing to show - this section may also have been skipped, because the backend treats that query failure as non-fatal and the client cannot tell the two apart.',
+    emptyNoRecords: 'Nothing to show.',
+    rowsUnit: 'rows',
+    requestsUnit: 'requests',
+    bytesUnit: 'bytes',
+    msUnit: 'ms',
+    // ★★ size_bytes is a row-count apportionment (indexes included), not a measurement
+    apportioned: 'apportioned {size}',
+    // ★★★★ this endpoint's SQL has no WHERE clause, so every role sees the whole table
+    scope: {
+      tenant: 'tenant scope',
+      platform: 'whole-table scope',
+    },
+    segment: {
+      hot_data: 'Hot',
+      warm_data: 'Warm',
+      cold_data: 'Cold',
+      expired_data: 'Expired',
+    },
+    // ★ days is a label the backend hard-codes (7/23/60/999), not the interval upper bound
+    segmentDays: 'labelled {days} days',
+    // ★★★★ a null segment means "this band could not be read", not "0 rows"
+    segmentUnavailable: 'band unavailable',
+    percentMeaningless: 'Total is 0, so the percentages below are meaningless (the backend leaves 0, which is indistinguishable from a real 0%).',
+    stats: {
+      title: 'Segment stats',
+      totalRows: 'Total records (tenant scope)',
+      totalSize: 'Table size on disk (whole-table scope)',
+      // ★★★★ one object mixes two scopes; they must not be shown as "tenant has X rows / Y bytes"
+      mixedScope: 'The two lines above use different scopes: the row count is tenant-filtered, but the physical size is the entire table (the backend does not tenant-filter it).',
+      segments: 'Hot / warm / cold',
+      segmentMissing: 'Some bands are unavailable (the backend skips a whole band when its row scan fails). The totals below therefore do not represent the full picture.',
+      percentTotalUnknown: 'Some bands are missing, so the percentage total cannot be computed.',
+      percentTotal: 'The four bands add up to {pct}%.',
+      rowsDisagree: 'The four bands add up to more than the total - the backend\'s 30-day boundary is closed on both sides, so rows landing exactly on it are counted twice. That is double counting, not corrupt data.',
+      byTenant: 'By tenant',
+      tenantTruncated: 'The tenant list is capped at 10 by the backend; tenants further down may be missing.',
+      growth: 'Growth, last 7 days',
+      growthTruncated: 'The trend is capped at 7 days by the backend.',
+      growthOrderNote: 'The backend returns days newest-first; this list is reversed into chronological order.',
+      rateSaturated: 'Compression rate is capped at 100% (the day\'s body and main-table row sets disagree; the backend clamps it).',
+      rateNoSamples: 'No requests that day, so the compression rate is meaningless.',
+    },
+    metrics: {
+      title: 'Lightweight metrics',
+      // ★★★★ never put these next to the tenant-scoped numbers as if they shared a scope
+      platformScope: 'These numbers describe the WHOLE table: the backend SQL applies no tenant filter, so even a tenant admin is not looking at their own tenant here.',
+      totalRows: 'Total records',
+      segments: 'Rows by band',
+      rowsDisagree: 'The four bands add up to more than the total - same cause as in the segment stats (the 30-day boundary is closed on both sides).',
+      maintenance: 'Cleanup & archive',
+      lastCleanup: 'Last cleanup',
+      lastArchive: 'Last archive',
+      // ★★★★ the keys never exist (the backend never assigns them); never say "never cleaned"
+      notReported: 'not reported by this endpoint',
+      notReportedNote: 'The backend declares these two timestamps but never assigns them, so they are absent whether or not cleanup and archive ever ran - this page must not say "never cleaned".',
+    },
+    jobs: {
+      title: 'Async jobs',
+      // ★★ limit is hard-coded to 50 server-side, so there is deliberately no size selector
+      limitNote: 'History keeps at most {limit} entries - that cap is hard-coded in the backend, and this page has no size selector because sending one would have no effect.',
+      running: 'Running',
+      noneRunning: 'No job is running right now.',
+      history: 'History',
+      noneHistory: 'No history entries.',
+      failedCount: '{n} failed',
+      jobRunning: 'running',
+      jobFailed: 'failed',
+      jobDone: 'done',
+      // ★ when progress.total <= 0 the percent is a Go zero value, not "0% complete"
+      progressUnknown: 'progress unknown',
+      progressText: '{done} / {total} processed',
+    },
+    blobs: {
+      title: 'Large blobs, top N',
+      // ★★★ total_bytes is the sum of the N returned rows, not the table total
+      blobTotalPartial: 'The {n} row(s) returned add up to {size} - this is NOT the table total, rows that did not make the list are not counted.',
+      truncated: 'This request filled its {n}-row limit; larger rows may not have made the list.',
+      limitLabel: 'Rows to return',
+      limitNote: 'The backend only accepts 1 to {max}; anything else, or a non-integer, silently falls back to 20. Effective now: {n}.',
+      none: 'No records with large bodies came back.',
+      noSession: 'no session',
+      noTenant: 'no tenant',
+      modelUnknown: 'model unknown',
+      bodyNone: 'no linked request/response body',
+    },
   },
   lifecycle: {
     title: 'Data lifecycle',
