@@ -75,6 +75,11 @@ export const DRAWER_NAV: readonly NavItem[] = [
   //   adminWrap 是它传进去的）。tenant_admin 必 403 ⇒ 这里必须挡。
   { key: 'funnel', to: '/funnel', icon: 'chart', titleKey: 'nav.funnel', requiresRole: 'super_admin' },
   { key: 'proposals', to: '/proposals', icon: 'check', titleKey: 'nav.proposals', requiresRole: 'super_admin' },
+  // 自动路由读面：/proposals 答「系统认为该怎么调」，本页答「现在跑得怎么样、
+  // 花了多少钱」—— 建议与效果之间缺的就是这一页。
+  // ★ superAdmin 档：整条 auto-route 线由 handler.go:1381 / :1430 的
+  //   h.superAdmin 挂载（形参名 adminWrap 是假名，值在调用处才定）⇒ 必挡。
+  { key: 'auto-route', to: '/auto-route', icon: 'chart', titleKey: 'nav.autoRoute', requiresRole: 'super_admin' },
   // 全局横向对比面：/funnel 是单模型纵深，这两条是全体模型的横向对比。
   // ★ superAdmin 档：analytics.go:55-58 的 matrix/flow，
   //   而 RegisterAnalyticsRoutes 由 handler.go:1430 用 h.superAdmin 挂载。

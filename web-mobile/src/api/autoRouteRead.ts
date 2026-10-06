@@ -1,7 +1,7 @@
 import { req, type RequestOptions } from './client'
 
 /**
- * autoRoute.ts — 自动路由读面（2026-10-08，第五十五批）。
+ * autoRouteRead.ts — 自动路由读面（2026-10-08，第五十五批）。
  *
  * 六条只读端点，分属三个 Go 文件：
  *   - admin/auto_route.go        index / audit / cost/customer / cost/model
