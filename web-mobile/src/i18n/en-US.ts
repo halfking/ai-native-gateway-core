@@ -354,6 +354,19 @@ export const enUS = {
     weight: 'Weight',
     recoverAt: 'Recovers at',
     errBadRequest: 'Invalid query parameter — check the model name',
+    // ── Full routability overview (admin/routing.go handleRoutingOverview) ──
+    overviewTitle: 'Full routability',
+    overviewLoad: 'Load overview',
+    overviewNoFeatured: 'No featured models configured — the "featured only" filter will not apply (everything is shown).',
+    overviewRoutable: 'Routable',
+    overviewBlocked: 'Blocked',
+    overviewTotal: 'Total combinations',
+    overviewBlockedList: 'Blocked combinations',
+    overviewNoReason: 'no reason provided',
+    // ★ These two may be SQL COALESCE defaults rather than measurements
+    overviewMetricsPlaceholder: 'success rate / latency may be defaults (never probed)',
+    // ★ routable and runtime_routable should always agree; a mismatch means the backend changed a key
+    overviewKeysDisagree: 'routable flags disagree (contract drift)',
     errForbidden: 'Your account cannot view routing details',
     successRate: 'Success rate',
   },
