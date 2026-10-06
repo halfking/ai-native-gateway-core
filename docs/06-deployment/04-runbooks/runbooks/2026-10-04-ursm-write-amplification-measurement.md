@@ -7089,3 +7089,94 @@ P0 修好后回看存储侧。**本节最重要的内容是两次「自己提出
 三次的共同形态都是**先用一个汇总数字下结论，再没回头验证那个数字的构成**。
 ⇒ 汇总数字（701 / 62h / 42%）在使用前必须**按构成拆开**，
 因为「620 次 A + 140 次 B」和「760 次 A」是完全不同的两件事。
+
+---
+
+## §10.65 ★ P0 根因定案：`463.down` 被人工执行
+
+§10.64 把「重建者」定位到 Go 代码之外。这轮把它**彻底定案**。
+
+### §10.65.1 决定性对照：一份与故障态**逐字相同**的回滚脚本
+
+`sql/migrations/startup/463_ursm_v2_snapshot_tenant_identity.down.sql`：
+
+    ALTER TABLE ursm_node_snapshot_min
+      DROP CONSTRAINT IF EXISTS ursm_node_snapshot_min_pkey;
+    ALTER TABLE ursm_node_snapshot_min
+      ALTER COLUMN tenant_id DROP DEFAULT,
+      ALTER COLUMN tenant_id DROP NOT NULL;
+    ALTER TABLE ursm_node_snapshot_min
+      ADD PRIMARY KEY (snapshot_ts, credential_id, raw_model_name);   -- ★ 3 列
+
+我在 15:45 读到的生产状态，与 15:50 执行的修复，与这份 down 脚本
+**三者逐字互为逆运算**：
+
+| | 主键 | `tenant_id` |
+|---|---|---|
+| `463.down` 执行后 | 3 列 | 可空 |
+| **15:45 生产实测** | **3 列** | **可空** |
+| 我的修复 = `463.up` | 4 列 | `NOT NULL` |
+
+⇒ **P0 不是「有人用陈旧 schema 源重建」，而是有人执行了 463 的回滚脚本。**
+我此前 §10.59.9「用 463 之前的 schema 源手工重建」的推断**方向错了**
+（结果对、动作错），在此更正。
+
+而该 down 文件**自己就写了警告**：
+
+    -- Note: historical tenant identity cannot be safely collapsed. This rollback
+    -- restores the old key shape only after confirming no same-minute tenant rows
+    -- would collide.
+
+⇒ 「跑之前必须先确认」这个前置条件，在赶时间时被跳过了。
+
+### §10.65.2 为什么没有任何门拦住它
+
+- `installer/internal/dbinit/runner.go` 里 **`.down.sql` 计数 = 0**
+  ⇒ 部署通道**从不**自动执行 down，CI/部署门对它们**完全失明**；
+- `scripts/pre-commit-check.sh:185`（`check_migration_has_down`）
+  **强制要求**每个迁移都有 `.down.sql` ⇒ 不能删文件；
+- 已有的 `writer_on_conflict_contract_test.go` 钉的是「基线 schema ↔ writer」，
+  **从不看 `.down.sql`** ⇒ 故障态文件在仓里躺了多久都没人知道。
+
+⇒ 危险只来自**人工 psql**。**CI 拦不住有数据库权限的人**，
+能做的是让「新增一颗这样的地雷」变成红的，并让「已存在的那颗」后果显式化。
+
+### §10.65.3 新增门：`sql/migrations/startup/down_migration_write_path_test.go`
+
+两道判据 + 一张登记表：
+
+1. **`TestDownMigrationsDoNotBreakTheWritePath`**
+   扫全部 343 个 `.down.sql`，凡是把 `ursm_node_snapshot_min` 主键改写成
+   **与 writer 的 `ON CONFLICT` 列集合不同**的 ⇒ 红（除非在登记表里）。
+   ★ 判据量的不是「文件写得对不对」，而是**「跑完它写入还能不能成功」** ——
+   消费者的可用性，不是函数的返回值。
+   ★ 反向自证：若涉及该表的 down 少于 3 个则直接红 ——
+   避免「一个都没扫到 ⇒ 0 违规 ⇒ 绿」的恒真。
+2. **`TestSnapshotDownMigrationsCarrySafetyWarning`**
+   强制 `463.down` **文件头**含 `cannot be safely` / `only after confirming`。
+   ★ 这条不是多此一举：警告**本来就写了**，写在注释里，
+   所以「跑之前先确认」在赶时间时最容易跳过。固化成测试后，
+   「有没有写警告」不再靠自觉。
+3. **`knownWritePathLandmines` 登记表 + `TestLandmineRegistryHasNoStaleEntries`**
+   463.down 登记在册并写明后果（间歇 51h + 全丢 12.4h、`42P10`），
+   理由被清空或文件被删都会红。
+   ★ **登记 ≠ 免责**：它的作用是让后果显式化，不是让门闭嘴。
+   明确记录「463 **没有安全回滚**」——writer 是该表唯一写方且硬依赖 4 列主键。
+
+### §10.65.4 变异验证
+
+| 变异 | 目标门 | 结果 |
+|---|---|---|
+| **M59** 新增一个未登记的 `999_*.down.sql`，把 PK 改成 2 列 | `TestDownMigrationsDoNotBreakTheWritePath` | 🔴 精确指出该文件与两边的列集合 |
+| **M60** 清空 `463.down` 的登记理由 | 同上 | 🔴 两条（理由为空 / 未提 42P10） |
+
+★ M59 才是这道门的**真正价值**：它拦的是**将来**新增的地雷，
+而不是把已知的那条永远豁免掉。
+
+### §10.65.5 仍未解决 / 本节未做
+
+- ❌ **谁执行的**：仍需查 154/245/252 的 shell 历史或发布流水线记录。
+  本节定案的是「执行了什么」，不是「谁执行的」。
+- ❌ 残余的 `42P01`（表不存在，140 次）**不由 463.down 解释** ——
+  它不改表存在性，那 140 次仍指向另一条独立路径（§10.62.4 尚未排除干净）。
+- ❌ 没有改任何生产配置、没有部署任何二进制。
