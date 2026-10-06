@@ -43,6 +43,14 @@ export const DRAWER_NAV: readonly NavItem[] = [
   { key: 'integrity', to: '/integrity', icon: 'alert', titleKey: 'nav.integrity', requiresRole: 'super_admin' },
   // 2026-10-06：请求日志。回答「刚才那次到底发生了什么」——排障起点。admin 档。
   { key: 'logs', to: '/logs', icon: 'clock', titleKey: 'nav.logs' },
+  // ── 运维排障线（2026-10-07）────────────────────────────────────────────
+  // 这三条构成排障闭环：链路（发生了什么）→ 详情（为什么）→ 流水 / 瀑布（凭据侧与时间侧佐证）。
+  // 全部走 AdminMiddleware（只认证不判角色）⇒ tenant_admin 可用，
+  // 所以 requiresRole **一律不设** —— 按 appNav.ts 末尾的口径，
+  // 只有 super_admin 档端点才需要在这里挡（对比 /integrity）。
+  { key: 'journey', to: '/journey', icon: 'search', titleKey: 'nav.journey' },
+  { key: 'routing-log', to: '/routing-log', icon: 'expand', titleKey: 'nav.routingLog' },
+  { key: 'waterfall', to: '/waterfall', icon: 'play', titleKey: 'nav.waterfall' },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))
