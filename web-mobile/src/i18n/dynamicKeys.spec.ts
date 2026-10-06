@@ -6,6 +6,7 @@ import { ANALYTICS_WINDOWS, TUNING_STATUSES, TUNING_CATEGORIES } from '@/api/aut
 import { ROUTING_OPT_METRICS_DIMS } from '@/api/routingOpt'
 import { PENDING_AGE_BANDS } from '@/api/pendingResponses'
 import { ANOMALY_TRIGGERS } from '@/api/requestAnomalies'
+import { INJECTION_CATEGORIES } from '@/api/promptInjection'
 import {
   COMPLIANCE_ISSUE_TYPES,
   COMPLIANCE_QUEUE_STATUSES,
@@ -66,11 +67,13 @@ const DYNAMIC_KEYS: Array<[prefix: string, suffixes: readonly string[]]> = [
   ['compliance.qstatus_', COMPLIANCE_QUEUE_STATUSES],
   // 阈值键是 field.replace('_threshold','') ⇒ 后缀要现算，不手抄
   ['compliancePolicy.th_', COMPLIANCE_THRESHOLD_FIELDS.map((f) => f.replace('_threshold', ''))],
+  // ★ 注入的 15 个攻击类别（取值来自 INJECTION_CATEGORIES 常量）
+  ['injection.cat_', INJECTION_CATEGORIES],
 ]
 
 describe('动态 i18n 键在两侧词典里都存在', () => {
-  it('★ 至少覆盖 11 处动态前缀（少于这个数说明下面的清单没跟上代码）', () => {
-    expect(DYNAMIC_KEYS.length).toBeGreaterThanOrEqual(11)
+  it('★ 至少覆盖 12 处动态前缀（少于这个数说明下面的清单没跟上代码）', () => {
+    expect(DYNAMIC_KEYS.length).toBeGreaterThanOrEqual(12)
   })
 
   for (const [prefix, suffixes] of DYNAMIC_KEYS) {
