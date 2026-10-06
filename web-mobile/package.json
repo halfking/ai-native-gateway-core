@@ -5,12 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "node scripts/verify-css-media-syntax.mjs && node scripts/verify-touch-targets.mjs && vue-tsc -b && vite build",
+    "build": "node scripts/verify-css-media-syntax.mjs && node scripts/verify-touch-targets.mjs && node scripts/verify-i18n-parity.mjs && vue-tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "vue-tsc -b",
     "test": "vitest run",
     "css:check": "node scripts/verify-css-media-syntax.mjs",
-    "touch:check": "node scripts/verify-touch-targets.mjs"
+    "touch:check": "node scripts/verify-touch-targets.mjs",
+    "i18n:check": "node scripts/verify-i18n-parity.mjs",
+    "gate:selftest": "node scripts/verify-css-media-syntax.selftest.mjs && node scripts/verify-touch-targets.selftest.mjs && node scripts/verify-i18n-parity.selftest.mjs"
   },
   "dependencies": {
     "pinia": "4.0.2",
