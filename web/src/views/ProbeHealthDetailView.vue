@@ -526,76 +526,84 @@ onMounted(() => {
           </div>
           <h3 style="margin-top:16px">候选凭据</h3>
           <EmptyState v-if="!routingResult.candidates || routingResult.candidates.length === 0" text="无可用候选" />
-          <table v-else class="data-table">
-            <thead>
-              <tr>
-                <th>层级</th>
-                <th>Provider</th>
-                <th>凭据</th>
-                <th>成功率</th>
-                <th>延迟P95</th>
-                <th>输入价</th>
-                <th>输出价</th>
-                <th>状态</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="c in routingResult.candidates" :key="c.credential_id">
-                <td>T{{ c.tier }}</td>
-                <td>{{ c.provider_name }}</td>
-                <td>
-                  {{ c.credential_label || credentialDisplayName(c.credential_id) }}
-                  <div v-if="c.runtime_block_reason" class="muted-text small">{{ c.runtime_block_reason }}</div>
-                </td>
-                <td>{{ formatNumber(c.success_rate * 100, 1) }}%</td>
-                <td>{{ c.p95_latency_ms }}ms</td>
-                <td>{{ formatPrice(c.unit_price_in_per_1m, c.currency) }}</td>
-                <td>{{ formatPrice(c.unit_price_out_per_1m, c.currency) }}</td>
-                <td>
-                  <span :class="['badge', c.routable ? 'badge-green' : 'badge-red']">
-                    {{ c.routable ? '可路由' : '不可用' }}
-                  </span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          <div v-else style="overflow-x:auto">
+            <table class="data-table">
+
+              <thead>
+                <tr>
+                  <th>层级</th>
+                  <th>Provider</th>
+                  <th>凭据</th>
+                  <th>成功率</th>
+                  <th>延迟P95</th>
+                  <th>输入价</th>
+                  <th>输出价</th>
+                  <th>状态</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="c in routingResult.candidates" :key="c.credential_id">
+                  <td>T{{ c.tier }}</td>
+                  <td>{{ c.provider_name }}</td>
+                  <td>
+                    {{ c.credential_label || credentialDisplayName(c.credential_id) }}
+                    <div v-if="c.runtime_block_reason" class="muted-text small">{{ c.runtime_block_reason }}</div>
+                  </td>
+                  <td>{{ formatNumber(c.success_rate * 100, 1) }}%</td>
+                  <td>{{ c.p95_latency_ms }}ms</td>
+                  <td>{{ formatPrice(c.unit_price_in_per_1m, c.currency) }}</td>
+                  <td>{{ formatPrice(c.unit_price_out_per_1m, c.currency) }}</td>
+                  <td>
+                    <span :class="['badge', c.routable ? 'badge-green' : 'badge-red']">
+                      {{ c.routable ? '可路由' : '不可用' }}
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+          
+            </table>
+          </div>
         </div>
       </div>
 
       <div v-else-if="activeTab === 'decisions'">
         <EmptyState v-if="decisions.length === 0" text="近 7 天无决策记录" />
-        <table v-else class="data-table">
-          <thead>
-            <tr>
-              <th>时间</th>
-              <th>请求ID</th>
-              <th>凭据</th>
-              <th>层级</th>
-              <th>结果</th>
-              <th>延迟</th>
-              <th>Tokens</th>
-              <th>成本</th>
-              <th>错误</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="d in decisions" :key="d.request_id">
-              <td>{{ formatTime(d.ts) }}</td>
-              <td class="mono">{{ d.request_id.slice(0, 12) }}…</td>
-              <td>{{ d.chosen_credential_id ? credentialDisplayName(d.chosen_credential_id) : '—' }}</td>
-              <td>{{ d.tier != null ? 'T' + d.tier : '—' }}</td>
-              <td>
-                <span :class="['badge', d.success ? 'badge-green' : 'badge-red']">
-                  {{ d.success ? '成功' : '失败' }}
-                </span>
-              </td>
-              <td>{{ d.latency_ms ?? '—' }}ms</td>
-              <td>{{ ((d.prompt_tokens || 0) + (d.completion_tokens || 0)) || '—' }}</td>
-              <td>{{ d.cost_usd != null ? '$' + formatNumber(Number(d.cost_usd), 4) : '—' }}</td>
-              <td>{{ d.error_class || '—' }}</td>
-            </tr>
-          </tbody>
-        </table>
+        <div v-else style="overflow-x:auto">
+          <table class="data-table">
+
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>请求ID</th>
+                <th>凭据</th>
+                <th>层级</th>
+                <th>结果</th>
+                <th>延迟</th>
+                <th>Tokens</th>
+                <th>成本</th>
+                <th>错误</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="d in decisions" :key="d.request_id">
+                <td>{{ formatTime(d.ts) }}</td>
+                <td class="mono">{{ d.request_id.slice(0, 12) }}…</td>
+                <td>{{ d.chosen_credential_id ? credentialDisplayName(d.chosen_credential_id) : '—' }}</td>
+                <td>{{ d.tier != null ? 'T' + d.tier : '—' }}</td>
+                <td>
+                  <span :class="['badge', d.success ? 'badge-green' : 'badge-red']">
+                    {{ d.success ? '成功' : '失败' }}
+                  </span>
+                </td>
+                <td>{{ d.latency_ms ?? '—' }}ms</td>
+                <td>{{ ((d.prompt_tokens || 0) + (d.completion_tokens || 0)) || '—' }}</td>
+                <td>{{ d.cost_usd != null ? '$' + formatNumber(Number(d.cost_usd), 4) : '—' }}</td>
+                <td>{{ d.error_class || '—' }}</td>
+              </tr>
+            </tbody>
+        
+          </table>
+        </div>
       </div>
 
       <div v-else-if="activeTab === 'monitor'">
@@ -623,75 +631,83 @@ onMounted(() => {
           <span v-for="(count, kind) in monitorStats.error_kinds" :key="kind" class="badge badge-red">{{ kind }}: {{ count }}</span>
         </div>
         <EmptyState v-if="monitorEntries.length === 0" text="暂无监控数据" />
-        <table v-else class="data-table">
-          <thead>
-            <tr>
-              <th>时间</th>
-              <th>结果</th>
-              <th>延迟</th>
-              <th>错误</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="e in monitorEntries.slice(0, 200)" :key="e.rid">
-              <td>{{ formatTimestamp(e.ts) }}</td>
-              <td>
-                <span :class="['badge', e.ok ? 'badge-green' : 'badge-red']">
-                  {{ e.ok ? '成功' : '失败' }}
-                </span>
-              </td>
-              <td>{{ e.lat }}ms</td>
-              <td>{{ e.err || '—' }}</td>
-            </tr>
-          </tbody>
-        </table>
+        <div v-else style="overflow-x:auto">
+          <table class="data-table">
+
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>结果</th>
+                <th>延迟</th>
+                <th>错误</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="e in monitorEntries.slice(0, 200)" :key="e.rid">
+                <td>{{ formatTimestamp(e.ts) }}</td>
+                <td>
+                  <span :class="['badge', e.ok ? 'badge-green' : 'badge-red']">
+                    {{ e.ok ? '成功' : '失败' }}
+                  </span>
+                </td>
+                <td>{{ e.lat }}ms</td>
+                <td>{{ e.err || '—' }}</td>
+              </tr>
+            </tbody>
+        
+          </table>
+        </div>
       </div>
 
       <div v-else-if="activeTab === 'logs'">
         <EmptyState v-if="requestLogs.length === 0" text="暂无请求记录" />
-        <table v-else class="data-table">
-          <thead>
-            <tr>
-              <th>时间</th>
-              <th>请求ID</th>
-              <th>凭据</th>
-              <th>结果</th>
-              <th>延迟</th>
-              <th>Prompt</th>
-              <th>Completion</th>
-              <th>成本</th>
-              <th>错误</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="log in requestLogs" :key="log.request_id">
-              <td>{{ formatTime(log.ts) }}</td>
-              <td class="mono">{{ log.request_id.slice(0, 12) }}…</td>
-              <td>
-                <span v-if="log.credential_label">{{ log.credential_label }}</span>
-                <span v-else-if="log.credential_id">{{ credentialDisplayName(log.credential_id) }}</span>
-                <span v-else>—</span>
-                <div v-if="log.provider_name" class="muted-text small">{{ log.provider_name }}</div>
-              </td>
-              <td>
-                <span :class="['badge', log.request_status === 'rate_limited' ? 'badge-amber' : log.success ? 'badge-green' : 'badge-red']">
-                  {{ log.request_status === 'rate_limited' ? '限流' : (log.success ? '成功' : '失败') }}
-                </span>
-              </td>
-              <td>{{ log.latency_ms ?? '—' }}ms</td>
-              <td>{{ log.prompt_tokens ?? '—' }}</td>
-              <td>{{ log.completion_tokens ?? '—' }}</td>
-              <td>
-                <span v-if="log.cost_usd != null">
-                  {{ log.cost_display != null ? Number(log.cost_display).toFixed(4) : Number(log.cost_usd).toFixed(4) }}
-                </span>
-                <span v-else>—</span>
-                <span v-if="log.cost_currency" class="muted-text small">{{ log.cost_currency }}</span>
-              </td>
-              <td>{{ log.error_kind || '—' }}</td>
-            </tr>
-          </tbody>
-        </table>
+        <div v-else style="overflow-x:auto">
+          <table class="data-table">
+
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>请求ID</th>
+                <th>凭据</th>
+                <th>结果</th>
+                <th>延迟</th>
+                <th>Prompt</th>
+                <th>Completion</th>
+                <th>成本</th>
+                <th>错误</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="log in requestLogs" :key="log.request_id">
+                <td>{{ formatTime(log.ts) }}</td>
+                <td class="mono">{{ log.request_id.slice(0, 12) }}…</td>
+                <td>
+                  <span v-if="log.credential_label">{{ log.credential_label }}</span>
+                  <span v-else-if="log.credential_id">{{ credentialDisplayName(log.credential_id) }}</span>
+                  <span v-else>—</span>
+                  <div v-if="log.provider_name" class="muted-text small">{{ log.provider_name }}</div>
+                </td>
+                <td>
+                  <span :class="['badge', log.request_status === 'rate_limited' ? 'badge-amber' : log.success ? 'badge-green' : 'badge-red']">
+                    {{ log.request_status === 'rate_limited' ? '限流' : (log.success ? '成功' : '失败') }}
+                  </span>
+                </td>
+                <td>{{ log.latency_ms ?? '—' }}ms</td>
+                <td>{{ log.prompt_tokens ?? '—' }}</td>
+                <td>{{ log.completion_tokens ?? '—' }}</td>
+                <td>
+                  <span v-if="log.cost_usd != null">
+                    {{ log.cost_display != null ? Number(log.cost_display).toFixed(4) : Number(log.cost_usd).toFixed(4) }}
+                  </span>
+                  <span v-else>—</span>
+                  <span v-if="log.cost_currency" class="muted-text small">{{ log.cost_currency }}</span>
+                </td>
+                <td>{{ log.error_kind || '—' }}</td>
+              </tr>
+            </tbody>
+        
+          </table>
+        </div>
       </div>
 
       <div v-else-if="activeTab === 'probe'">
@@ -734,45 +750,49 @@ onMounted(() => {
         -->
         <EmptyState v-else-if="tabErrors.pricing" :text="tabErrors.pricing" />
         <EmptyState v-else-if="pricingData.length === 0" text="暂无价格数据" />
-        <table v-else class="data-table">
-          <thead>
-            <tr>
-              <th>规范化名</th>
-              <th>原始模型</th>
-              <th>Provider</th>
-              <th>凭据</th>
-              <th>输入价(/1M)</th>
-              <th>输出价(/1M)</th>
-              <th>缓存读</th>
-              <th>缓存写</th>
-              <th>币种</th>
-              <th>计费</th>
-              <th>可用</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="p in pricingData" :key="p.offer_id">
-              <td>{{ p.canonical_name }}</td>
-              <td class="mono">{{ p.raw_model_name }}</td>
-              <td>{{ p.provider_name }}</td>
-              <td>
-                {{ p.credential_label }}
-                <div class="muted-text small">{{ credentialDisplayName(p.credential_id) }}</div>
-              </td>
-              <td>{{ formatPrice(p.unit_price_in_per_1m, p.currency) }}</td>
-              <td>{{ formatPrice(p.unit_price_out_per_1m, p.currency) }}</td>
-              <td>{{ formatPrice(p.cache_read_price_per_1m, p.currency) }}</td>
-              <td>{{ formatPrice(p.cache_write_price_per_1m, p.currency) }}</td>
-              <td>{{ p.currency || '—' }}</td>
-              <td>{{ p.billing_mode || '—' }}</td>
-              <td>
-                <span :class="['badge', p.available ? 'badge-green' : 'badge-gray']">
-                  {{ p.available ? '是' : '否' }}
-                </span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <div v-else style="overflow-x:auto">
+          <table class="data-table">
+
+            <thead>
+              <tr>
+                <th>规范化名</th>
+                <th>原始模型</th>
+                <th>Provider</th>
+                <th>凭据</th>
+                <th>输入价(/1M)</th>
+                <th>输出价(/1M)</th>
+                <th>缓存读</th>
+                <th>缓存写</th>
+                <th>币种</th>
+                <th>计费</th>
+                <th>可用</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="p in pricingData" :key="p.offer_id">
+                <td>{{ p.canonical_name }}</td>
+                <td class="mono">{{ p.raw_model_name }}</td>
+                <td>{{ p.provider_name }}</td>
+                <td>
+                  {{ p.credential_label }}
+                  <div class="muted-text small">{{ credentialDisplayName(p.credential_id) }}</div>
+                </td>
+                <td>{{ formatPrice(p.unit_price_in_per_1m, p.currency) }}</td>
+                <td>{{ formatPrice(p.unit_price_out_per_1m, p.currency) }}</td>
+                <td>{{ formatPrice(p.cache_read_price_per_1m, p.currency) }}</td>
+                <td>{{ formatPrice(p.cache_write_price_per_1m, p.currency) }}</td>
+                <td>{{ p.currency || '—' }}</td>
+                <td>{{ p.billing_mode || '—' }}</td>
+                <td>
+                  <span :class="['badge', p.available ? 'badge-green' : 'badge-gray']">
+                    {{ p.available ? '是' : '否' }}
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+        
+          </table>
+        </div>
       </div>
     </div>
   </div>
