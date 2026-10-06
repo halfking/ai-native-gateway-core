@@ -11125,3 +11125,50 @@ B/C/D/E 全绿，F 里当月分区从 `20:26:31` 前进到 `20:26:34`
 4. **夹具里 `INSERT … SELECT now()` 往上月分区里插会违反分区约束**
    （`new row … violates partition constraint`），得用 `${LAST}-15` 这种落在范围内的值。
    ⇒ `psql -f` 的 stderr **必须透出**，否则夹具失败会伪装成「被测代码有问题」。
+
+### §10.101.5 ★ 只读复现 839 的选择判据（对真实 catalog 分类，非文本断言）
+
+§10.101.3 标注了「列存分支未行为验证」。本节补上**能在不写生产的前提下**做到的部分：
+把 839 的判据原样贴到生产上跑（**纯 SELECT**），看它对 24 个真实关系的分类。
+
+| relname | AM | est_rows | pg_statistic 行 | 留在手工 pass | 交回 autovacuum |
+|---|---|---|---|---|---|
+| `credential_model_index_2026_09/10` | **columnar** | 301,255 / 47,844 | 17 | **是** | 否 |
+| `handoff_logs_2026_09/10` | **columnar** | 0 | 0 | **是** | 否 |
+| `request_logs_bodies_2026_09/10` | **columnar** | 4,408 / 115,013 | 5 | **是** | 否 |
+| `routing_decision_log_2026_09/10` | **columnar** | 440,138 / 36,668 | 36 | **是** | 否 |
+| `credit_ledger_2026_09/10` | heap | 0 | 0 | **是**（首次覆盖） | 否 |
+| `model_probe_runs_2026_09/10` | heap | 0 | 0 | **是**（首次覆盖） | 否 |
+| `routing_decision_log_archive_2026_09/10` | heap | 0 | 0 | **是**（首次覆盖） | 否 |
+| `tool_usage_stats_2026_09/10` | heap | 0 | 0 | **是**（首次覆盖） | 否 |
+| **`request_logs_2026_10`** | heap | 117,580 | 154 | 否 | **是** |
+| **`usage_ledger_2026_10`** | heap | 117,662 | 20 | 否 | **是** |
+| **`request_wal_2026_10`** | heap | 51,928 | 17 | 否 | **是** |
+| **`candidate_failure_logs_2026_10`** | heap | 27,499 | 21 | 否 | **是** |
+| `request_logs_2026_09` / `usage_ledger_2026_09` / `request_wal_2026_09` / `candidate_failure_logs_2026_09` | heap | 4,307 / 1,416,769 / 446,777 / 119,214 | 有 | 否（838 已跳过） | — |
+
+⇒ **列存分支在真实 catalog 上按预期工作**：8 个列存分区全部留在手工 pass。
+本节验证的是**判据的分类正确性**（真数据），不是 plpgsql 的执行行为（那个由
+§10.101.2 在一次性容器里验）。两者是不同的东西，不能互相顶替。
+
+★ **交出的正好是 4 张非空当月堆分区**，与 §10.93.5 表里的「当月堆分区（4 张非空）
+6,282,804 work_units / 40.2%」**完全吻合** ⇒ 839 的收益口径与当初测算一致。
+
+#### ★★ 安全前提：被交出的表 autovacuum 真的开着吗
+
+「交回 autovacuum」的前提是 autovacuum **确实在跑**。生产只读核对：
+
+| relname | reloptions |
+|---|---|
+| `request_logs_2026_10` | `autovacuum_enabled=true, …_analyze_scale_factor=0.02, _threshold=50` |
+| `usage_ledger_2026_10` | 同上 |
+| `request_wal_2026_10` | 同上 |
+| `candidate_failure_logs_2026_10` | 同上 |
+
+四张**全部 `autovacuum_enabled=true`** ⇒ 交出后确实有人接手。
+839 再把它们的 `autovacuum_analyze_scale_factor` 从 0.02 降到 0.005。
+
+⚠ **这条前提值得单列**：若某张分区是 `autovacuum_enabled=false`（或有运维
+刻意关掉），那么「交回」= **永远没人分析它**，统计量会无声陈旧到不可用。
+⇒ 部署前应把「被交出关系的 `autovacuum_enabled` 必须为 true」列入上线前检查项，
+而不是只验函数行为。**交接类改动的前提往往不在被改的那个文件里。**
