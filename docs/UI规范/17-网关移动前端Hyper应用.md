@@ -9641,3 +9641,160 @@ expect(recMock.mock.calls[1]![0]).toMatchObject({ offset: 50 })
 我连续两次把变量选错（选 resolve 时机、选防抖），两次都被「全绿」证伪；
 真正该选的变量（**发起时刻**）当时没找到可注入点。
 **「全绿」在复现实验里同样是结果，要读，不要当成实验没跑。**
+
+
+## §11.108 流式连接注册台两条接 API 层（第七十二批）
+
+**产物**：`web-mobile/src/api/connectionRegistry.ts`（新建）+ `.test.ts`（新建，76 用例）
+
+### 三路取证（写代码前）
+
+| 问 | 答 | 证据 |
+|---|---|---|
+| 后端注册存在吗 | 是 | `admin/handler.go:1024-1025`，两个都是 `admin(...)` |
+| 谁在提供 | **本进程** | 不在 `cmd/gateway/maintain_proxy.go:37` 的 `maintainCompatPrefixes` 里 |
+| 前端有调用方吗 | 桌面有、移动端无 | `web/src/api/connection-registry.ts:30/36` |
+
+**权限档位**：后端 `admin(...)` ⇒ **tenant_admin 可用** ⇒ 将来接抽屉席**不设** `requiresRole`。
+⚠️ 但桌面 `web/src/router.ts:284` 与 `web/src/config/appNav.ts:195` 把这条路由
+标成了 `requiresSuper: true` / `super: true` ⇒ **前端比后端严**。
+按纪律以可执行的注册为准，**不按前端标记判权限**。
+
+### ★ 同批排除掉的两个候选
+
+- **`ops/overview` 不做**：后端 `handler.go:1070` 确实注册了，但桌面
+  `web/src/router.ts:309` 是 `externalMaintainRedirect('/ops', '/maintain/ops/overview')`，
+  `web/src/config/edition.ts:112` 也标了 `external: true`
+  ⇒ **桌面的真实入口在 maintain 服务**，本进程这个注册是死路径。
+  这正是「要确认**是谁在提供**」那条纪律拦下来的。
+- **`storage/migration-state` 暂不做**：`getStorageMigrationState`
+  （`admin/storage_migration.go:403-421`）只有 18 行，载荷恒为
+  `{running: nil, latest: nil}` 二选一 ⇒ 信息量太薄，不值当单独一批。
+  （它本身有个可测契约：两个键**恒在**、值恒为 `null` 或同一个 run 对象、**互斥**。）
+
+### 本族挖到的后端缺陷 / 契约（★ 越高越要紧）
+
+1. **★★★★★ `live` 恒数组，`closed` 恒「`null` 或非空数组」，绝不会是 `[]`。**
+   ```go
+   // List()：domains/streaming/connection_registry.go:473
+   out := make([]ConnectionSnapshot, 0, len(entries))   // ⇒ 恒非 nil ⇒ JSON 恒 []
+
+   // ClosedHistory()：:483-493
+   if n <= 0 || len(r.closed) == 0 {
+       return nil                                       // ⇒ JSON 是 null，不是 []
+   }
+   if n > len(r.closed) { n = len(r.closed) }
+   out := make([]ConnectionSnapshot, n)                 // n ≥ 1 ⇒ 恒非空数组
+   ```
+   ⇒ **同一份载荷里两个数组键的 nil 编码相反**，且 `closed: []` **后端永不产生**
+   ⇒ 客户端收到空数组就说明契约漂了。
+   这是本仓**第五种** nil 编码（已见：恒数组 / 键缺失 / 裸 null / omitempty 条件键 /
+   恒发布尔），且**同载荷内两个数组键编码相反**是首次。
+
+2. **★★★★★ 4 个 omitempty 条件键 + 1 个恒发布尔 —— 与前两批恰好相反。**
+   `domains/streaming/connection_registry.go:151-163`：
+   ```go
+   RequestID     string    `json:"request_id"`              // 恒在
+   Protocol      string    `json:"protocol,omitempty"`      // ★ 条件键
+   ClientType    string    `json:"client_type,omitempty"`   // ★ 条件键
+   TenantID      string    `json:"tenant_id,omitempty"`     // ★ 条件键
+   RegisteredAt  time.Time `json:"registered_at"`           // 恒在
+   LastFrameAt   time.Time `json:"last_frame_at"`           // 恒在
+   FramesWritten uint64    `json:"frames_written"`          // 恒在
+   BytesWritten  uint64    `json:"bytes_written"`           // 恒在
+   CloseReason   string    `json:"close_reason,omitempty"`  // ★ 条件键
+   Closed        bool      `json:"closed"`                  // ★ 恒发（无 omitempty）
+   ```
+   ⇒ 第七十/七十一批那两条端点的 `degraded` 是**恒发**，本族这 4 个是**条件键**
+   ⇒ **判据不能跨族照抄**：前者缺键才异常，本族缺键才正常。
+   ⇒ `closed` 恒发布尔 ⇒ 「是否已注销」这一条**不是恒真判据**（真能区分 live/closed）。
+
+3. **★★★★★ 注释与实现矛盾：`SetConnectionRegistry(nil)` 不能解绑。**
+   `admin/connection_registry.go:32-37`：
+   ```go
+   // SetConnectionRegistry wires ... Pass nil to disable (endpoints return 503).
+   func SetConnectionRegistry(reg *streaming.ConnectionRegistry) {
+       if reg == nil {
+           return          // ← 注释说「传 nil 可禁用」，代码是「传 nil 什么也不做」
+       }
+       connectionRegistry.Store(reg)
+   }
+   ```
+   ⇒ 装配后**没有任何 API 能把端点退回 503** ⇒ 注释是错的，以实现为准。
+   （同族参照：第六十六批 `data_lifecycle_metrics.go` 的 `LastCleanupAt` 也是注释有、实现无。）
+
+4. **★★★★ `Lookup` 只查活跃表，已注销的取不到。**
+   `domains/streaming/connection_registry.go:454-465` 只看 `r.entries`，不看 `r.closed`
+   ⇒ **`closed` 列表里的条目用详情端点必然 404**
+   ⇒ 「列表里看得到、点进去 404」是**契约行为**，不是 bug。
+
+5. **★★★★ Go 零值时间会真的出现。**
+   `LastFrameAt` 是 `time.Time` 且无 omitempty ⇒ 从未写过帧的连接
+   `last_frame_at` 是 **`"0001-01-01T00:00:00Z"`**（`time.Time{}.Format(RFC3339)`）
+   ⇒ 不能把「键存在」当「有值」，也不能渲染成「1970 年」或异常。
+   ⇒ 自查判据 `snapshotFrameFieldsAgree()`：`frames_written === 0` **应当**配零值时间。
+
+6. **★★★ `live` 的顺序没有保证。**
+   `List()` 的注释自陈「map walk is unordered, so callers sort as needed」（:467-471）
+   ⇒ 不能靠顺序判稳定，也不能靠它做 diff ⇒ 客户端要自己按 `registered_at` 排。
+
+7. **★★★ 上限 50 不回显。** `connection_registry.go:58` 写死 `reg.ClosedHistory(50)`
+   ⇒ 注销历史最多 50 条，响应里**没有任何字段**说明被截断了。
+
+8. **★★ 503 与「没数据」是两种不同的失败**：未装配返 **503 `connection registry not wired`**，
+   不是空列表 ⇒ 「空列表」永远只表示「装配了但当前没有连接」。
+
+9. **★ `live_count` 是可自查的冗余字段**：`:56` 的 `len(live)` 与 `live.length` 恒等
+   ⇒ 不等就说明载荷被换过/被代理改过，不是「后端口径变了」。
+
+### 桌面对照：三处**不要抄**
+
+- `web/src/api/connection-registry.ts:12-23` 把 `registered_at` / `last_frame_at` /
+  `frames_written` / `bytes_written` / `closed` 五个**恒在**键标成了可选（`?:`）
+- 同文件 `:28` 把 `closed: ConnectionSnapshot[]` 标成**必定是数组**
+  ⇒ 而后端无历史时给的是 **`null`** ⇒ 按那个类型直接 `.map()`/`.length`
+  会在「从无注销记录」时抛 `Cannot read properties of null`
+- `web/src/router.ts:284` 的 `requiresSuper: true` 比后端 `admin(...)` 严
+
+### 验证
+
+- 用例 **76 条全绿**
+- 变异 `/tmp/mut-co72.mjs` **42 条，42/42 有牙、零可疑**，`RESTORED=OK`（逐字节一致）
+- 三门 rc=0；`vue-tsc --noEmit -p tsconfig.app.json` rc=0；`npm run build` rc=0
+- 全量 **3877 条（136 文件）** rc=0；十连跑 10/10
+- U+FFFD 自查：源、用例、两侧 i18n 均 0
+
+### 变异验证暴露的判据缺陷（真缺陷，已修）
+
+1. **★★ `.toThrow(/live/)` 这类过宽正则会匹配上 TypeError。**
+   第一轮 42 条里 8 条 STILL_GREEN，其中 2 条的根因是**判据本身无牙**：
+   ```ts
+   expect(() => unwrap(listWith({ live: {} }))).toThrow(/live/)   // ✗
+   ```
+   变异把 `!Array.isArray(d.live)` 换成 `d.live === null` 后，解包器不再拦 `live: {}`，
+   于是执行到 `d.live.forEach(...)` 抛 **`d.live.forEach is not a function`** ——
+   **这条 TypeError 消息里含 "live" ⇒ 宽松正则照样匹配 ⇒ 用例绿。**
+   ⇒ 判据无牙的形态不是「断言太弱」，而是「**断言太宽，恰好被下游的意外异常兜住了**」。
+   ⇒ 修法：收紧到**自己写的错误文案**（`/live 不是数组/`、`/live\[0\] 不是对象/`），
+     而不是「载荷里那个字段名」。
+   ★ 同族教训：`toThrow(/字段名/)` 这类写法在本仓已被证伪两次
+     （本批 2 次 + `d.closed.forEach` 1 次）。
+
+2. **★★ 自己写出了**被蕴含的冗余判据**：解包器里
+   `if (d.live === null || !Array.isArray(d.live))` 里的 `=== null` 分支是**恒被蕴含**的
+   —— `Array.isArray(null)` 本身就是 `false` ⇒ 删掉它用例照样全绿。
+   ⇒ 已删（并把理由写进代码注释），记为**可证等价变异**。
+
+3. **锚点指错 2 条**（#12 / #20）：变异实际打红的是**相邻**用例
+   （「closed 为 null 时通过」/「六个恒在键一起缺失时报缺六」），而 `expect` 写在了
+   「看起来最相关」的那条标题上。连续第六批踩这个坑。
+
+4. **`from` 片段不唯一 1 条**（#22）：`registryRowIsNotFetchableById` 的函数体与
+   `snapshotIsClosed` **逐字相同**（都是 `return s.closed === true`）
+   ⇒ `String.replace` 只替换第一处 ⇒ 变异打在了**错误的函数**上。
+   ⇒ 变异脚本里凡是函数体只有一两行的，`from` 必须带**函数签名**做唯一锚点。
+
+5. **两条我选错了等价变异**（#16 / #35）：`length === 0` 改成 `length < 1`（对非负整数等价）、
+   `status >= 500`（对夹具里的 200/404 仍为假）⇒ 变异本身无效，不是判据问题。
+   ⇒ 与第六十九批「注入标记 ≠ 变异」同族：**注入必须真的改变被观察行为**，
+     且要拿夹具里的**实际取值**去验「变了吗」。
