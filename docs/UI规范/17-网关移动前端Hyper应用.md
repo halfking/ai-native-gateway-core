@@ -4508,3 +4508,143 @@ if err != nil {
   3. `noUncheckedIndexedAccess` ⇒ `findAll(...)[0]` 补显式非空判断。
 - 累计（**当场实测**）：**44 视图 / 41 API 模块 / 39 导航席（9 席 superAdmin）**。
 - 全量 **10 连跑全绿，1670 用例，0 份失败快照**（`STAB_RC=0`）。
+
+### 11.73 MaaS 积分价上移：响应里 7 个价都是**算出来的**（第三十七轮，superAdmin 档）
+
+新增 `src/api/maas.ts` + `src/views/MaasRatesView.vue` + 路由 `/maas-rates`
++ 抽屉席「MaaS 积分价」（**本仓第 10 条 superAdmin 抽屉席**）。
+
+★ 鉴权：`admin/maas_handlers.go:14-24` **全部 11 条**注册都是 `h.superAdmin(...)`
+⇒ **superAdmin 档**，抽屉席设 `requiresRole: 'super_admin'`，
+并同步 `AppDrawer.spec.ts` 的白名单（那条测试**正确地抓到了**本轮新增的席）。
+
+#### ★★★★★★ 本族头号问题：字段名会骗人
+
+1. ★★★★★★ 响应里 7 个 `credits_per_1m_*` **不是「库里存的值」**，
+    而是 `globalEffective` + `effectiveModelRates` **算出来的生效价**
+    （`maas/model_rates.go:143-149`）。不��刻那两个函数，
+    就没有任何办法回答「这个数字从哪来」。
+
+2. ★★★★★ **七维各判各的**，`pick()` 是三条件与运算（`maas/rates.go:96-102`）：
+
+    ```go
+    pick := func(manual bool, val *int64, fallback int64) int64 {
+        if manual && val != nil && *val > 0 { return *val }
+        return fallback        // ← global
+    }
+    ```
+
+    ⇒ ★★★ **`manual_X = true` 不保证用自定义值**：
+    没存值（`nil`）或存的是 0 / 负数 ⇒ **照样回落到全局**。
+    ⇒ 同一行完全可能是「输入走自定义、输出走全局」。
+
+3. ★★★★★ 折扣**只作用于全局价**，自定义价是**原值不打折**：
+    `globalEffective` 里七维全部 `applyDiscount(base, disc)`，
+    而 `pick()` 命中手动分支时直接 `return *val`。
+    ⇒ 同一个 300 的自定义价在打八折时生效价仍是 300；
+      而全局 400 打八折后是 **320**。
+4. ★★★★ `applyDiscount` 是 **`math.Ceil`（向上取整）**：
+    `401 × 0.8 = 320.8 ⇒ 321`，不是 320。
+5. ★★★★★ `normalizeDiscount`（rates.go:28-33）是 `d <= 0 || d > 1 ⇒ 1`
+    ⇒ ★★ **`global_discount = 0` 的含义是「不打折」，不是「全免」**。
+    配 0 的人以为免费，实际按原价计费；配 `1.5` 也等价于不打折，
+    而**响应里不会告诉你**。
+
+#### ★★★★ 七维回落链各不相同（且末位是硬编码字面量）
+
+6. ★★★★ `globalEffective`（rates.go:42-70）：
+
+    | 维 | 回落链 | 来源标记 |
+    |---|---|---|
+    | `in` | `base_credits_per_1m_in` ?? `base_credits_per_1m` ?? **10000** | configured / configured_legacy / **hardcoded** |
+    | `out` | `base_credits_per_1m_out` ?? baseIn | 两级 |
+    | `cache_in` | `base_credits_per_1m_cache_in` ?? baseIn | 两级 |
+    | `cache_out` | `base_credits_per_1m_cache_out` ?? baseIn | 两级 |
+    | ★ `image`/`audio`/`video` | **恒等于 baseIn** | `Settings` 里**根本没有**这三个字段 |
+
+    ★ `BaseRateSet` 的注释自陈多模态是「model-wide 默认值，取输入价，
+    简单文本模型不受影响」。
+    ⇒ 客户端 `maasGlobalBaseIn` / `maasGlobalRate` **逐维复算**，
+      页面据此说清「这个 10000 是**硬编码兜底**还是你们配的」。
+
+#### ★★★★ 「改了但没启用」——最容易被当成 bug 的那一种
+
+7. ★★★★ `custom_credits_per_1m_*` **不是**「自定义值 vs 生效值」的对，
+    它是 **stored 的原样拷贝**（`model_rates.go:130-136`：`r.CustomIn = stored.In` …）。
+    ⇒ 完全可能出现「**生效价 = 全局 10000**、**自定义值 = 300**」：
+    因为 `manual_in = false` 时生效走 global，而 stored 里的 300 照样被吐出来。
+    ⇒ `maasDimHasDormantCustom` + 页面显式说明，否则看起来像数据自相矛盾。
+8. ★★★ `is_custom` 是七个 `manual_*` 的**或**（`storedIsManual`，rates.go:119-122）
+    ⇒ 含义是「**有没有任何一维**开过手动」，**不是**「整行被定制」。
+    页面明说「要逐维看上面那张表」。
+
+#### 其余五条
+
+9. ★★ `vendor` 是**三级回落**
+    （`COALESCE(NULLIF(TRIM(mf.vendor),''), NULLIF(TRIM(mc.family),''), '其他')`）
+    ⇒ 字面量 **`'其他'` 是兜底值**，不表示真有个叫「其他」的厂商；
+    页面打标签说明。
+    ★ 而 `mf` 的 LEFT JOIN 条件里带 `AND COALESCE(mf.status,'active')='active'`
+    ⇒ **family 停用时这层回落整层失效**。
+    `display_name` 回落 `canonical_name`；`modality` 回落字面量 `'text'`。
+10. ★★ **只列 active 模型**：`WHERE COALESCE(mc.status,'active')='active'`
+    ⇒ inactive / 已下架的模型**完全不可见**，清单看着不完整不代表库里没有。
+11. ★★ **没有分页**（SQL 无 `LIMIT`，只有 `ORDER BY mc.canonical_name`）
+    ⇒ 「共 N 个」只能数本次返回条数，**没有后端总数**可比对。
+12. ★★ 指针字段**没有** `omitempty`（`family`/`updated_at`）⇒ **键一定存在、值可能 null**
+    ⇒ 与 request-detail 那一族的 omitempty **正好相反**。
+    ★ `updated_at` 为 `null` = `model_credit_rates` 里**没有这一行**（LEFT JOIN 未命中），
+    该模型全部价来自全局基价 —— 页面明说。
+13. ★ `svc == nil || !svc.Enabled()` ⇒ **503 `database not configured`**
+    ⇒ 是「MaaS 没开 / 没接库」，**不是**「没配过价」。
+
+#### ★★★★ 一条**差点写成假结论**的推断（追到代码才改回来）
+
+我看到 SQL 里 `LEFT JOIN model_credit_rates` 时立刻怀疑：
+「价格列会被 NULL 扫描打爆，和 output-compliance 同族」。
+**追到 `maas/rates.go:86-94` 才发现 `storedModelRates` 的数值字段是 `*int64`**
+⇒ NULL 被正确兜住，**这一族没有那个缺陷**。
+⇒ 与 §11.70 的 `session_task_stats` 相反（那边**确实**是裸扫）。
+★ **同一条 SQL 形态（LEFT JOIN）在两族里的结论完全相反** ——
+这正是「推断必须追到扫描类型」又一条实证。
+
+#### ★★★★ 变异逼出两处判据问题
+
+14. ★★★★ **断言自引用**：M3 把硬编码常量 10000 改成 0，**仍然全绿** ——
+    因为我写的是 `expect(b.value).toBe(MAAS_HARDCODED_BASE_IN)`，
+    拿**被测常量**比自己。
+    ⇒ 改成断言**后端源码里的字面量 10000**，并额外反向钉住常量本身。
+    ★ 这是「自引用判据」的又一例：夹具/期望值不能来自被测对象。
+15. ★★ **真覆盖缺口**：M6 去掉 `pick()` 里的 `manual` 条件后仍全绿 ——
+    因为 `maasDimHasDormantCustom` 并不经过 `maasDimUsesCustom`，
+    而 `maasEffectiveSource` 在 `manual=false` 那一侧**一条判据都没有**。
+    ⇒ 补了「生效来源三态」那组判据后才红。
+
+#### 本轮门禁（当场实测）
+
+- **变异验证 20/20 有牙**：API 10 条（M1 折扣 0 不归一 / M2 ceil 改 floor /
+  M3 硬编码 10000 / M4 image 改回落 out / M5 pick 去掉「值 > 0」/
+  M6 pick 去掉 manual / M7 休眠检测恒 false / M8 null 判定恒 false /
+  M9 解包不看 settings / M10 自定义价也打折）；
+  视图 10 条（V1 不渲染来源 / V2 「没生效」退化成「在用自定义」/
+  V3 删休眠提示 / V4 删折扣陷阱 / V5 删硬编码提示 / V6 503 退化 /
+  V7 503 退化成空清单 / V8 删无 rate 行提示 / V9 删「只含 active」/
+  V10 删兜底标签）。
+- 本批两个 spec：**62 用例全绿**（API 38 + 视图 24）。
+  ★ `AppDrawer.spec.ts` 11 条仍全绿（白名单已加 `maas-rates`）。
+- `npm run build` **rc=0**（含 `vue-tsc -b`）；三门全过
+  （css-media **66 文件** / touch-target **63 个 `.vue`** / i18n parity **各 1426 键**）。
+- ★ 途中修了三个我自己的问题：
+  1. 测试名里嵌套单引号（`是 'text'`）把字符串截断 ⇒ 整个文件解析失败；
+  2. 跨 describe 引用了别的块里的局部常量（`allZero`）⇒ ReferenceError；
+  3. `noUncheckedIndexedAccess` 打在 `as const` 键表上 ⇒ 补 `?? 0` / `=== true`；
+     并删掉一个模板里已改用 CSS 类、因而没被引用的 `sourceTone`。
+- 累计（**当场实测**）：**45 视图 / 42 API 模块 / 40 导航席（10 席 superAdmin）**。
+- 全量 **10 连跑全绿，1732 用例，0 份失败快照**（`STAB_RC=0`）。
+
+#### 本族未实现的端点（留档）
+
+`maas_handlers.go` 里还有 10 条 superAdmin 只读面未上移：
+`settings` / `plans` / `topup-packages` / `tenants/{id}` / `orders` / `orders/{id}` /
+`model-rates/{id}`。写操作（batch、batch-reset、batch-fill-global、
+settings PUT、model-rates 的 POST/PUT/DELETE）按前几批同口径**一律不碰**。
