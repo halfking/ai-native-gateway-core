@@ -5727,3 +5727,116 @@ DML 速率 A=05:15:50 → B=06:01:25（45.6min）。
 窗口 = 2398s  A=05:20:55  B=06:00:53  DML 45.6min
 python3 /tmp/pss_delta.py /tmp/pssA.txt /tmp/pssB.txt
 ```
+
+---
+
+## §10.50 样点 C：修正 §10.49 的成本模型（本节推翻本会话自己的估算）
+
+样点 B 读数到 12:51 已过期 **6.8h**，按「真机读数必须带时间戳、下结论前复核」
+的纪律重取。窗口 B→C = **24,611s（410.2min）**；DML 窗口 24,588s（6.83h）。
+
+### §10.50.1 6.83h 窗口的当前速率（对比 §10.49 的 40min 窗口）
+
+| Δcalls | Δtotal_s | 当前ms/次 | 占窗口% | 语句 | §10.49（40min）说的 |
+|---|---|---|---|---|---|
+| 14 | 871.1 | **62,223.0** | **3.54** | `analyze_llm_gateway_table_stats($1)` | 90,075ms / 11.27% |
+| 820 | 252.3 | 307.7 | 1.03 | `SELECT -- 2026-09-12: both surfaces…` | 345ms / 1.17% |
+| 41 | 196.6 | 4,794.8 | 0.80 | `REFRESH … routing_analytics_7d` | 5,762ms / 1.20% |
+| 164 | 120.6 | 735.3 | 0.49 | `latest_bucket` CTE | 986ms / 0.74% |
+| 162 | 46.6 | 287.7 | 0.19 | `SELECT MAX(date) FROM daily_kline` | 476ms / 0.36% |
+| 164 | 35.3 | 215.3 | 0.14 | `INSERT credential_model_index_hot` | 350ms / 0.26% |
+| 3,891 | 21.2 | 5.44 | 0.086 | `MAX(turn_no)` | 4.56ms / 0.167% |
+| 41 | 16.6 | 404.0 | 0.067 | `REFRESH … routing_audit_summary_7d` | 623ms / 0.13% |
+| 6,920 | 12.0 | 1.73 | 0.049 | `INSERT request_logs_bodies_hot` | 1.86ms / 0.089% |
+
+6.83h 内 **Δcalls=0**：`UPDATE credential_model_bindings`（40min 窗口里还是
+481 次/0.63%，**排名又降一档**）、`DELETE credential_model_index_hot`、
+advisory 锁老写法（累计 3,027,459 次 / 301,853,671.4ms，**逐位未变，冻结已 7.5h+**）。
+
+⇒ **排序在两个窗口间又变了。** 40min 与 6.83h 都只是「某个窗口的」现状，
+**不存在一个可以写进文档的稳定名次**。能稳定的只有量级关系：
+analyze ≫ 其余（当前 3.4 倍于第 2 名，40min 窗口下是 9.4 倍）。
+
+### §10.50.2 analyze 没有「一个成本」
+
+pss 全量（977 次调用）：
+
+    mean = 94,935.2ms   min = 13,244.4ms
+    max  = 596,559.9ms  stddev = 108,372.0ms   ← stddev > mean
+
+⇒ 分布长尾极重。40min 窗口给 90.07s、6.83h 窗口给 62.2s、单次实测 29.06s
+（见 §10.50.4），**三个数都不该被当成「成本」**。引用时必须带窗口与来源。
+
+### §10.50.3 🔴 撤回 §10.49 的收益估算：字节量 ≠ ANALYZE 成本
+
+§10.49 写「上月分区占体积 54%，跳过可省约 5.2% 窗口占用」。**该估算作废。**
+它用**字节量**当成本代理，而 ANALYZE 的采样量上限是
+`300 × default_statistics_target`（默认 100 ⇒ 约 30,000 行/表），
+**成本与表大小不成正比**。
+
+用 12:42 那次真实调用的逐表 `last_analyze` 时间戳分摊：
+
+| 阶段 | 张数 | 体积 | **实测耗时** |
+|---|---|---|---|
+| 22 张 hot heap | 22 | 623.2 MB | **2.87s**（12:42:15.887→18.760） |
+| 当月 11 族分区 | 11 | 421.2 MB | **16.86s**（12:42:19.912→36.775） |
+| 上月 11 族分区 | 11 | **1,237.9 MB** | **9.33s**（12:42:39.943→49.267） |
+| 合计 | 44 | 2,282.3 MB | **29.06s** |
+
+**1,237.9MB 只花 9.33s，421.2MB 却花 16.86s** —— 体积最大的那一段最便宜。
+（口径自洽：1,237.9 / 2,282.3 = **54.2%**，与 §10.42 的 54% 对上。）
+
+**修正后的收益**：跳过 11 个冻结的上月分区 = 省 9.33s/次；
+14 次 × 9.33s = 130.6s / 24,588s = **占窗口 0.53%**，
+**不是 §10.49 说的 5.2%**（差约 10 倍）。
+
+⇒ 「跳过零修改分区」这个方向**仍然成立但收益很小**；
+真正的大头是**当月分区（16.86s，占实测 58%）**，而它们**有写入、不能跳**。
+
+### §10.50.4 「8 个大分区不在 analyze 范围内」——虚警，是设计决定
+
+函数 `analyze_llm_gateway_table_stats` 的月度段是**硬编码 11 族正则**：
+
+    ^(credential_model_index|model_probe_runs|request_logs|routing_decision_log|
+      request_wal|usage_ledger|credit_ledger|tool_usage_stats|
+      candidate_failure_logs|handoff_logs|request_logs_bodies)_YYYY_MM$
+
+⇒ `session_turns` / `session_bodies` / `sessions` / `supplier_errors` /
+`session_turn_details` / `session_memora` / `session_censors` /
+`auto_route_selections` **从不进这个函数**。上月末它们合计 **3,528MB**
+（`session_turns_2026_09` 单表 2,634MB）。
+
+**逐表查 autovacuum 是否兜住（避免把设计决定报成数据缺陷）**：
+
+| 分区 | 体积 | last_autoanalyze | 从未 analyze |
+|---|---|---|---|
+| session_turns_2026_09 | 2634 MB | 2026-10-01 07:14 | 否 |
+| session_turn_details_2026_09 | 603 MB | （人工 10-01 07:16） | 否 |
+| supplier_errors_2026_09 | 93 MB | 2026-10-02 11:31 | 否 |
+| sessions_2026_09 | 88 MB | 2026-10-01 04:09 | 否 |
+| session_memora_2026_09 | 53 MB | 2026-09-30 13:19 | 否 |
+| session_censors_2026_09 | 28 MB | 2026-10-01 04:51 | 否 |
+| session_bodies_2026_09 | 17 MB | 2026-09-26 06:18 | 否 |
+| auto_route_selections_2026_09 | 12 MB | — | **是，但只有 6 行** |
+
+⇒ 7 个实质表全部在 4~6 天内被 autovacuum analyze 过，**兜住了**；
+唯一「从未 analyze」的那张只有 **6 行**，无统计意义。
+**结论：不是缺陷，是设计决定。撤回「8 个分区无统计」这一潜在告警。**
+
+### §10.50.5 调用方与节奏（决定可动的杠杆在哪）
+
+`bg/partition_manager.go:1688` → `analyzePartitionStats`（:1756），
+`p_recent_months=2`，5 分钟 cooldown，Go 侧 10min 预算 + 事务内
+`SET LOCAL statement_timeout='10min'`。
+
+⚠ 注释写「2026-07-20: 5 min cooldown. analyze 一次 **3.3s**」——
+那是表还小的时候。现在单次 29~90s（长尾到 597s），
+**5 分钟 cooldown 相对单次耗时已经失去意义**（跑一轮还没跑完）。
+实测节奏 6.83h 内 14 次 ≈ **每 29 分钟一次**。
+
+⇒ 三个杠杆按当前实测收益排序：
+1. **降频**（cooldown 5min → 30min+）：直接按比例砍掉总量，唯一无副作用的方向；
+2. **跳过冻结上月分区**：0.53% 窗口占用，收益小但安全（须配「DML 未增长 + 长窗口兜底」判据）；
+3. **缩小月度范围**（`p_recent_months` 2 → 1）：与 #2 等价，且是**改调用参数**而非改函数。
+
+⚠ 三者都改的是生产行为，**未执行**，等授权。
