@@ -8665,3 +8665,70 @@ n_live_tup 11,264 | n_tup_ins 835,200 | n_tup_upd 602,988 | n_tup_del 920,223
 ★ 九次的共同点仍是同一条：**拿到一个数就往下推，没回源看它怎么构成的。**
 其中 3、6、7 三次是**「我以为缺的东西其实已经有」**，
 另 4、5 两次是**「把历史当现价」**，8、9 两次是**「看错了构成」**。
+
+---
+
+## §10.79 附带查完 `ALTER TABLE`：真正危险的不是次数，是**109 秒的锁**
+
+§10.78.2 ① 只给了总数（607,911 次 / 24,316 次每天），没说是谁。本节查实。
+
+### §10.79.1 按表拆开：**高频的便宜，稀疏的要命**
+
+| 表 | 调用 | 次/天 | 均耗时 | **最大耗时** |
+|---|---|---|---|---|
+| `recommendations` | 290,201 | 11,608 | 0.29 ms | — |
+| `news_events` | 70,509 | 2,820 | 0.56 ms | — |
+| `announcements` | 70,507 | 2,820 | 0.42 ms | — |
+| `policies` | 64,490 | 2,580 | 2.20 ms | — |
+| `events` | 32,244 | 1,290 | 0.24 ms | — |
+| **`request_logs`** | 2,503 | 100 | **1,123 ms** | — |
+| └ `ADD COLUMN IF NOT EXISTS work_type TEXT` | 425 | 17 | **3,240 ms** | **109,456 ms** |
+| └ `ADD COLUMN IF NOT EXISTS credits_charged BIGINT` | 420 | 17 | 2,289 ms | **104,322 ms** |
+| `request_logs_hot` | 254 | 10 | 1,633 ms | **99,082 ms** |
+| `providers` | 522 | 21 | 895 ms | **61,672 ms** |
+
+★ **`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 并不省锁。**
+PG 必须**先拿到 ACCESS EXCLUSIVE**，才能去检查列是否已存在；
+`IF NOT EXISTS` 只省掉「真的加列」这一步，**不省拿锁这一步**。
+⇒ 上表意味着 `request_logs` 上存在**最长 109 秒的全表独占锁**，
+期间该表的**读和写全部阻塞**。
+
+### §10.79.2 两条来源要分开看
+
+**① 贵的那批 —— 是本仓自己的启动期 `ensure`**：
+- `db/db.go:4122` `ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS work_type TEXT;`
+- `db/db.go:1326` `ALTER TABLE report_snapshots ADD COLUMN IF NOT EXISTS credits_charged BIGINT NOT NULL DEFAULT 0;`
+- `db/maas_schema.go:15`、`db/session_summaries_schema.go:93` 同款
+
+`db` 包里共有 **79 个 `func (d *DB) ensureXxx(...)`**，
+从 `db/db.go:289 / 295 / 309` 一带在**启动期**串行调用。
+本 session 新加的 `ensureURSMNodeSnapshotMinIdentityPK`（§10.70）**也在这一族里** ——
+它与上面那些不是两回事，是**同一个模式**。
+⇒ 值得单独立项：**启动期 DDL 收敛**（跑一次就够的东西，不该每次启动都抢锁）。
+
+⚠️ 注意别读成「启动只跑一次 ⇒ 无所谓」：**3 台实例 × 频繁 canary 部署
+⇒ 25 天里 `request_logs` 被 ALTER 2,503 次**，量不小。
+
+**② 高频便宜的那批 —— 不是本仓写的**：
+`recommendations` / `news_events` / `announcements` / `policies` / `events`
+这五张表，本仓 `grep`（含 `installer/embeddata` 全部 SQL）**零命中**。
+⇒ **有另一个写入方在共用这个库**，它对这五张表发 DDL，合计约 **21,000 次/天**。
+⇒ **这条不是本仓能单方面修的**，需要先找出那个写入方是谁
+（线索：`pg_stat_statements.userid` / 连接的 `application_name`）。
+
+补充：369 条语句变体中 **0 条包在 `DO` 块里**（全是裸 ALTER）
+⇒ 不存在「每次调用重新解析整段 DO」这一类额外开销。
+
+### §10.79.3 建议的先后（与 §10.78.3 同一张表里排）
+
+| 优先级 | 动作 | 依据 | 风险 |
+|---|---|---|---|
+| 1 | **确认冷 bodies 用途**（是否合规归档） | §10.78.1，挡住 11.7% 的 WAL | 只读 |
+| 2 | **查清那五张表是哪个写入方**（`userid`/`application_name`） | §10.79.2 ②，21,000 次/天 DDL 不属本仓 | 只读 |
+| 3 | **启动期 ensure 收敛**：把「跑一次即可」的 DDL 移出启动路径，或加版本标记只在缺失时执行 | §10.79.2 ①，最长 109 秒独占锁 | 中：改 `db` 包启动流程 |
+| 4 | 对 `request_logs` 这类大表，ensure 期间避开业务高峰 | §10.79.1 | 小：排期 |
+
+★ 第 3 条与本 session 自己的工作**有交集但不冲突**：
+`ensureURSMNodeSnapshotMinIdentityPK` 是**幂等的 reconcile**（只在主键不对时才 ALTER），
+形态是对的；问题在于它与另外 78 个 `ensure` 共享同一条启动路径与锁竞争。
+⇒ **不是要回退我加的东西，是要把这一族整体收敛。**
