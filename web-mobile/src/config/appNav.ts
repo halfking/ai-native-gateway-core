@@ -122,6 +122,8 @@ export const DRAWER_NAV: readonly NavItem[] = [
   { key: 'injection', to: '/injection', icon: 'alert', titleKey: 'nav.injection' },
   // 提示词注入配置面。admin 档 ⇒ 不设 requiresRole。
   { key: 'injection-config', to: '/injection-config', icon: 'key', titleKey: 'nav.injectionConfig' },
+  // 会话分析面。admin 档（admin/handler.go:1091-1094 全是 admin(...)）⇒ 不设 requiresRole。
+  { key: 'session-analytics', to: '/session-analytics', icon: 'chart', titleKey: 'nav.sessionAnalytics' },
   {
     key: 'request-anomalies',
     to: '/request-anomalies',

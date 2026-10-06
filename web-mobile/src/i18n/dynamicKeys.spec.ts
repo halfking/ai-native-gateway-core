@@ -7,6 +7,7 @@ import { ROUTING_OPT_METRICS_DIMS } from '@/api/routingOpt'
 import { PENDING_AGE_BANDS } from '@/api/pendingResponses'
 import { ANOMALY_TRIGGERS } from '@/api/requestAnomalies'
 import { INJECTION_CATEGORIES } from '@/api/promptInjection'
+import { ANALYTICS_CLIENT_ORDER_BYS } from '@/api/sessionAnalytics'
 import {
   COMPLIANCE_ISSUE_TYPES,
   COMPLIANCE_QUEUE_STATUSES,
@@ -72,11 +73,13 @@ const DYNAMIC_KEYS: Array<[prefix: string, suffixes: readonly string[]]> = [
   ['compliancePolicy.th_', COMPLIANCE_THRESHOLD_FIELDS.map((f) => f.replace('_threshold', ''))],
   // ★ 注入的 15 个攻击类别（取值来自 INJECTION_CATEGORIES 常量）
   ['injection.cat_', INJECTION_CATEGORIES],
+  // ★ 会话分析的三个排序值（取值来自 ANALYTICS_CLIENT_ORDER_BYS 常量）
+  ['sa.order_', ANALYTICS_CLIENT_ORDER_BYS],
 ]
 
 describe('动态 i18n 键在两侧词典里都存在', () => {
-  it('★ 至少覆盖 13 处动态前缀（少于这个数说明下面的清单没跟上代码）', () => {
-    expect(DYNAMIC_KEYS.length).toBeGreaterThanOrEqual(13)
+  it('★ 至少覆盖 14 处动态前缀（少于这个数说明下面的清单没跟上代码）', () => {
+    expect(DYNAMIC_KEYS.length).toBeGreaterThanOrEqual(14)
   })
 
   for (const [prefix, suffixes] of DYNAMIC_KEYS) {
