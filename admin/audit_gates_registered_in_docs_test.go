@@ -25,10 +25,14 @@ import (
 //	手写清单会自己有「加了一道新门忘了加进清单」的同一种病。
 var testFuncRe = regexp.MustCompile(`(?m)^func (Test[A-Za-z0-9_]*)\(t \*testing\.T\)`)
 
-// auditGateDocs 把每个门文件映射到「负责登记它的审计文档」。
-// 一个文件只登记一份，但下面会额外校验「门名确实出现在**某一轮**文档里」，
-// 所以映射写错的后果是报错信息指错文件，不会让真正漏登的门变绿。
+// auditGateDocs 把每个门文件映射到「负责登记它的文档」：归属轮次的文档，
+// 跨轮次的那道对账门指向 docs/audit/audit-gates-index.md（那份索引是 SSOT）。
+//
+// ⚠ 下面还会断言**门总数**与「每个门名都在文档里」。所以映射写错的后果有两层：
+// 报错信息指错文件，以及总数对不上 —— 真正漏登的门不会因此变绿。
 var auditGateDocs = map[string]string{
+	// 这道门自己也在清单里 —— 否则「对账门自己不登记」会成为同类缺陷的盲区。
+	"admin/audit_gates_registered_in_docs_test.go":  "docs/audit/audit-gates-index.md",
 	"admin/request_logs_retirement_tiering_test.go": "docs/audit/2026-10-05-v1-reader-retirement-tiering.md",
 	"admin/v1_bodies_read_path_test.go":             "docs/audit/2026-10-06-v1-bodies-read-path.md",
 	"admin/v1_bodies_read_path_realdb_test.go":      "docs/audit/2026-10-06-v1-bodies-read-path.md",
@@ -83,8 +87,8 @@ func TestAuditGatesAreRegisteredInTheirDocs(t *testing.T) {
 	}
 
 	// 逐文件计数也钉住：改名不算破坏，但「少了一道门且没登记」会先在上面报出来。
-	if total != 16 {
-		t.Errorf("本审计门总数 = %d，期望 16 —— 若刚删/加过门，请连同 %d 道一起核对审计文档的「门（N 道）」",
-			total, total)
+	if total != 17 {
+		t.Errorf("本审计门总数 = %d，期望 17 —— 若刚删/加过门，请连同 %d 道一起更新 "+
+			"docs/audit/audit-gates-index.md 的清单与各归属文档的「门（N 道）」小节", total, total)
 	}
 }
