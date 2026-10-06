@@ -176,6 +176,11 @@ export const DRAWER_NAV: readonly NavItem[] = [
   { key: 'maas-wallet', to: '/maas-wallet', icon: 'user', titleKey: 'nav.maasWallet' },
   // 会话分析面。admin 档（admin/handler.go:1091-1094 全是 admin(...)）⇒ 不设 requiresRole。
   { key: 'session-analytics', to: '/session-analytics', icon: 'chart', titleKey: 'nav.sessionAnalytics' },
+  // 看板读面（dashboard 九条）。★ admin 档（handler.go:1052-1069 全部 `admin(...)`）
+  // ⇒ **不设** requiresRole。
+  // ★ 与上面 /auto-route 的 super_admin 档相反 —— 这是本仓最容易照抄错的一处：
+  //   两条都叫「路由/看板面」，权限档却完全相反。
+  { key: 'dashboard-ops', to: '/dashboard-ops', icon: 'grid', titleKey: 'nav.dashboardOps' },
   {
     key: 'request-anomalies',
     to: '/request-anomalies',
