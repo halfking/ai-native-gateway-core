@@ -187,6 +187,16 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/RouteFlowView.vue'),
     meta: { titleKey: 'flow.title', requiresAuth: true },
   },
+  // 探测系统健康 + 队列快照（2026-10-07）。admin 档：两条都在
+  // RegisterProbeDashboardRoutes(mux, wrapAdmin)（probe_dashboard.go:1900-1909，
+  // 注册点 cmd/gateway/main.go:7298）⇒ tenant_admin 可用，不设 requiresRole。
+  // ★ 这两个端点是双轨形状（顶层字段全是 legacy 的），实现见 probeHealth.ts。
+  {
+    path: '/probe-health',
+    name: 'probe-health',
+    component: () => import('@/views/ProbeHealthView.vue'),
+    meta: { titleKey: 'probeHealth.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',

@@ -1849,3 +1849,188 @@ UI 做法（`zeroIsUncertain`）：
   再用 `src/i18n/dynamicKeys.spec.ts`（32 用例）把前缀与代码里的
   **allowlist 常量**拼起来跑遍两侧词典 ⇒ 「测不到」变成「测得到」。
   后缀从代码常量取而不是手抄 —— 手抄的那份会漂。
+
+---
+
+### 11.47 探测双轨端点上移：系统健康 + 队列快照（第二十轮，admin 档）
+
+这一轮解掉的是**从第十七轮起就主动搁置**的那个缺口：
+`system-health` 与 `queue-snapshot` 的 `unified`/`legacy` **双轨混合结构**。
+搁置的理由是「移动端只实现一半会稳定产出『取不到值但不报错』的字段」——
+现在把两个轨道都实现，并且**只把 unified 当权威**。
+
+**鉴权**：两条都在 `RegisterProbeDashboardRoutes(mux, wrapAdmin)`
+（`admin/probe_dashboard.go:1900-1909`，注册点 `cmd/gateway/main.go:7298`）
+⇒ **admin 档**，tenant_admin 可用，导航**不设** `requiresRole`
+（与 `/probe` 同级，区别于那五条 superAdmin 管线）。
+
+#### ★★★ 陷阱一：`system-health` 的顶层字段**全是 legacy 的**
+
+handler 把 `ProbeSystemHealth` marshal 之后**摊平到顶层**
+（`probe_dashboard.go:958-972` 的 `legacyPayload`），再挂
+`unified` / `legacy` / `legacy_mode_safe`。于是：
+
+| 顶层（legacy） | `unified`（新） | 是一个东西吗 |
+|---|---|---|
+| `total_nodes` | `total_credentials` | **不是** |
+| `ready_probes` | `queue_ready` | **不是** |
+| `current_probing` | `queue_in_flight` | **不是** |
+
+写 `resp.total_nodes` 读出来的是 `model_probe_state` 的遗留数字。
+⇒ **本模块的类型里刻意不声明任何顶层具名字段**，只暴露
+  `unified` / `legacy` / `legacy_mode_safe` 三个显式键
+  （保留 `[k: string]: unknown` 索引签名只用于判别形状）。
+  「读错源」这件事在**类型层面**就做不到。
+
+#### ★★★ 陷阱二：`queue-snapshot` 顶层 `queues` / `total` **也是 legacy 的**
+
+handler 先查 `v_probe_queue_snapshot`（= `model_probe_state`）得到 `queues`，
+再把它**同时**放进顶层和 `legacy` 键下（`:775-830`）。
+
+★ 而 handler 自己的注释写着（`:764-767`）：
+
+> the 572-row historical backlog (AGENT C handoff 2026-08-18)
+> lives in the legacy view and is unaffected by the active queue
+
+⇒ 拿 `resp.total` 当「当前探测队列积压」会显示 **572**，
+而实际活动队列可能只有 **25**（12+3+6+4）。**差 23 倍。**
+这是本轮存在的最大理由。
+
+⇒ 页面的「活动积压」只由 `activeBacklogOf(unified)` 算；
+  legacy 明细单独放在**默认收起、明确标注**的区块里。
+
+#### ★★ 陷阱三：两个端点的 legacy 查询**软/硬失败不对称**
+
+| 端点 | legacy 查询失败时 | 代码位置 |
+|---|---|---|
+| `queue-snapshot` | **直接 500** | `:780-786` |
+| `system-health` | 只 `slog.Warn`，`legacyHealth` 保持**零值**，响应仍 200 | `:888-895` |
+
+★ 而且 `handleProbeSystemHealth` 的注释写着
+  「Surface the error in the response so the dashboard can warn the operator」
+  —— **代码没有这么做**（`grep legacyErr` 只有 `slog.Warn` 一处使用）。
+
+⇒ 所以 `legacy.total_nodes === 0` 有两种含义：
+  「真的一个节点都没有」/「这份历史视图没加载上来」。
+  **客户端无法区分，也不能替它编。**
+  ⇒ `legacySectionMayBeUnloaded()` 判 true 时页面显示
+  「可能未加载，无法判断」，**不显示那四个 0**。
+  这不是精确判据（全 0 且加载成功也会命中），
+  方向刻意偏向「宁可说可能没加载，也不要把未知说成零」。
+
+#### ★ `legacy_mode_safe: false` 是后端给的显式警告
+
+两处都有（`TotalLegacySystemHealth.LegacyModeSafe` / `LegacyQueueBlock.legacy_mode_safe`），
+后端注释写明「Toggle to true only after the legacy table is fully drained
+(planned for migration 536+)」。
+⇒ 必须透出，并据此给 legacy 区块打「已不权威」badge +
+  一条说明「它是历史遗留统计，不代表当前状况」。
+**绝不**把 legacy 数字和 unified 数字并排放进同一个统计条。
+
+#### ★★ 两个 `unified` 同名，但**字段集不同**
+
+这是本轮第二个大坑，**不是我看出来的，是 `vue-tsc` 抓的**（TS2339）：
+
+| 字段 | 在哪个 unified 上 |
+|---|---|
+| `node_unclaimable` / `stale_leases` | **只**在 `queue-snapshot` 的 `UnifiedProbeQueueStats`（`:202-231`） |
+| `queue_expired` | **只**在 `system-health` 的 `UnifiedProbeSystemHealth`（`:250-257`） |
+
+我第一次写 `leaseAnomaliesOf(unified.queue_expired)` 时编译器报
+「Property 'queue_expired' does not exist」—— 它逼我回去读 Go 结构体，
+才发现两个都叫 `unified` 的对象根本不是一套字段。
+
+⇒ `leaseAnomaliesOf()` 收**两个**源，并返回 `sourcesAvailable`
+（读到几个源），让视图能区分「确实全是 0」与「一个源都没读到」。
+
+#### ★ `success_rate_last_1h` 三态不可二元化
+
+Go 侧是 `SuccessRateLast1h *float64 \`json:"success_rate_last_1h,omitempty"\``：
+nil ⇒ **JSON 里根本没有这个键**。
+⇒ 缺失 = 近 1h **没有运行记录**，不是 0% 成功率；
+真正的 `0` = 跑了且**全部失败**。写成 `?? 0` 就会说「这一小时全挂了」。
+
+#### 租约异常三项分开返回
+
+`node_unclaimable`（租约过期没 worker 认领 ⇒ 队列会卡）、
+`stale_leases`（心跳超时 ⇒ worker 可能死了）、
+`queue_expired`（近 2h 过期）——
+三者的**处置动作完全不同**，求和会丢掉处置信息。
+
+#### 其它已核实的口径
+
+- `queue_completed` / `queue_failed` / `queue_expired` 是**近 2 小时**窗口，
+  不是全量（Go 结构体注释写明）⇒ 页面挂常驻说明。
+- `pseudo_success_count`：探测记录 `direct_ok=true` 但凭据的 URSM tenant key
+  已消失（handoff §6 P0）⇒ 非 0 时单独告警。
+- **两个端点分别记错误**（`Promise.allSettled` + 逐段拼错误）：
+  合并成一个 error 会把「一段挂了」显示成「整页都挂了」（同 §11.30 纪律）。
+
+### 11.48 本轮门禁（第二十轮，探测双轨）
+
+| # | 门 | 结果 |
+|---|---|---|
+| 1 | css 门自测 | **11/11** |
+| 2 | 触控门自测 | **11/11** |
+| 3 | i18n 门自测 | **23/23** |
+| 4 | `gate:selftest` | **45 条断言全绿** |
+| 5 | `vue-tsc -b` | 通过 |
+| 6 | i18n 键集门 | 通过（各 **719 键**，+41；**548 个源码字面量键全部存在**） |
+| 7 | css 媒体查询门 | 通过（**48 文件**，+1） |
+| 8 | 触控热区门 | 通过（**45 个 .vue**，+1） |
+| 9 | `vitest run` | **583 用例 / 51 文件全绿**，**连跑 10 次全绿**（见下） |
+| 10 | `npm run build` | 通过 |
+
+★ 变异证据（**6 处，全部转红**）：
+
+| 变异 | 结果 |
+|---|---|
+| 活动积压改用 legacy `total` | 2 failed |
+| `success_rate_last_1h` 缺失当 0% | 3 failed |
+| legacy 全 0 判为已加载（API 层） | 1 failed |
+| 租约异常判定只看第一项 | 3 failed（补样本后） |
+| `queue_expired` 误从 queue 源取 | 1 failed |
+| `sourcesAvailable` 恒为 2 | 2 failed |
+| 活动积压写死 572 | 2 failed |
+| 无运行记录当 0%（视图） | 1 failed |
+| legacy 默认展开 | 4 failed |
+| 两段错误合并成一个 | 3 failed |
+| legacy 全 0 判为已加载（视图） | 1 failed（补判据后） |
+
+★ **两处「变异没转红」，都不是判据无牙**：
+
+1. `hasLeaseAnomaly` 只判第一项仍全绿 —— 样本里 `node_unclaimable=2`
+   **恒非 0**，「任一 > 0」在它身上永远成立 ⇒ **第 ② 类前提失效**：
+   后两项从没被单独量到。⇒ 补「每项各自当主角」的样本后转红（3 failed）。
+2. 视图层的 `legacyMayBeUnloaded` 改成恒假仍全绿 —— **视图根本没测
+   「legacy 全 0」这条路径**。API 层测了 `legacySectionMayBeUnloaded` 本身，
+   但**没人量过视图消费它时显示什么**。
+   ★ 规律：**helper 有测试 ≠ 消费它的分支有测试**。
+     「值算对了」和「拿这个值渲染出了什么」是两个独立的东西。
+
+★ 第三次**「用 `expect` 断言一个我没实现的字符串」**：
+  403 的文案实际是「当前账号没有查看探测系统的权限」，
+  我断言 `toContain('没有权限')`；覆盖率 115/120 渲染成 `95.8%`，
+  我断言 `toContain('115')`。两条都是我断言里的字符串写错，不是产品问题。
+  ★ 规律：断言文案前先 `grep` 一次实际字符串，别凭印象写。
+
+★ zh 文案里写了 `**近 2 小时**`（markdown 粗体）——
+  这是纯文本 UI，`**` 会**原样显示**。已改成「」。
+  ⇒ 规律：i18n 值不是 markdown，写强调要么用 UI 组件，要么不用。
+
+★ **十连跑要重新跑一遍才算数**：
+  第一次连跑的第 10 轮报了 `1 failed | 583 passed (584)` ——
+  **不是产品 flaky**，是我自己为了核键而在 `src/views/` 临时放了一个
+  `__probe_keys.spec.ts`，它被这一轮的 glob 收了进去。
+  ⇒ 判据本身出问题的时候，先看**这一轮的用例数对不对**：
+    584 ≠ 583 说明集合被污染了，而不是代码变了。
+  重跑（清掉临时文件后）10 轮全为 583/583。
+
+★ 顺带记一次**自己写的核验脚本出错**：
+  我写了个一次性脚本想确认 `ProbeHealthView` 的 41 个键都能解析，
+  报「41 个全部未解析」（含确定存在的 `probeHealth.title`）。
+  真因是脚本的正则只捕获了**后缀**（`title`）却按**全路径**去查。
+  ⇒ **41/41 全挂**本身就是「脚本错了」的信号：真缺键不会一个都不中。
+    修正后 41/41 全过。
+  ★ 规律：一次性核验脚本报错时，先问「**报错面是不是符合缺陷的形状**」。
+    真实缺陷通常只命中一部分；命中 100% 几乎总是量具本身坏了。
