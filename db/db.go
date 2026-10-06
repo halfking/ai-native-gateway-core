@@ -658,6 +658,15 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureAudioModalityBackfill(migCtx); err != nil {
 		return err
 	}
+	// 2026-10-06 ASR 多模型轮：glm-asr（zhipu）/ minimax-asr-1.0（minimax）
+	// 目录种子。两家上游的 ASR 模型不在 discovery 的 /models 列表里（凭证
+	// 是订阅套餐、列表只吐 chat 模型），纯靠 discovery 永远缺席；不种子则
+	// /v1/audio/* 对这两家恒 no_candidate（直连实测 glm-asr 端点/模型名
+	// 均被上游接受，asr-1.0 走 /v1/speech_to_text，见
+	// domains/streaming/audio_minimax_stt.go）。
+	if err := db.ensureAsrCatalogSeed(migCtx); err != nil {
+		return err
+	}
 	db.ensureProbeHealthDashboardViews(migCtx)
 	return nil
 }
@@ -823,6 +832,81 @@ func (db *DB) ensureAudioModalityBackfill(ctx context.Context) error {
 		   AND canonical_name ~ '^(gpt-4o(-mini)?|gpt)-transcribe'`
 	if _, err := db.pool.Exec(ctx, stmt); err != nil {
 		return fmt.Errorf("ensure audio modality backfill: %w", err)
+	}
+	return nil
+}
+
+// asrCatalogSeeds 是本轮接入的两家 ASR 上游种子：canonical 是客户端
+// 面向的网关模型名，raw 是发往上游的 outbound 名。zhipu 的 canonical
+// 与 raw 同名（OpenAI 兼容 multipart 透传）；minimax 的上游模型叫
+// asr-1.0，网关名带厂商前缀避免裸名歧义（candidate 匹配走 canonical
+// 名 clause (5)，outbound 原样上行）。
+var asrCatalogSeeds = []struct {
+	providerCode string
+	canonical    string
+	raw          string
+}{
+	{"zhipu", "glm-asr", "glm-asr"},
+	{"minimax", "minimax-asr-1.0", "asr-1.0"},
+}
+
+// ensureAsrCatalogSeed 幂等种子 glm-asr / minimax-asr-1.0 的三层数据面：
+// models_canonical（modality='audio'+manual 豁免，820 不会翻回）→
+// provider_models（available）→ credential_model_bindings（该 provider
+// 全部 active 凭据）。任何一层已存在则跳过对应层；从不降级已有
+// modality（audio/multimodal 保留）。启动链每跑一次零行幂等。
+func (db *DB) ensureAsrCatalogSeed(ctx context.Context) error {
+	if db == nil || db.pool == nil {
+		return nil
+	}
+	for _, seed := range asrCatalogSeeds {
+		// 层 1：canonical。存在但被标成 text（例如管理员手工建过）时
+		// 升级到 audio——只升不降，与 820 的方向一致。
+		if _, err := db.pool.Exec(ctx, `
+			INSERT INTO models_canonical (canonical_name, modality, modality_source, status, source, notes)
+			VALUES ($1, 'audio', 'manual', 'active', 'db', 'ensure-seed: ASR multi-provider round 2026-10-06')
+			ON CONFLICT (canonical_name) DO NOTHING`, seed.canonical); err != nil {
+			return fmt.Errorf("ensure asr catalog seed (canonical %s): %w", seed.canonical, err)
+		}
+		if _, err := db.pool.Exec(ctx, `
+			UPDATE models_canonical
+			   SET modality = 'audio', modality_source = 'manual', updated_at = now()
+			 WHERE canonical_name = $1
+			   AND modality NOT IN ('audio', 'multimodal')`, seed.canonical); err != nil {
+			return fmt.Errorf("ensure asr catalog seed (canonical escalate %s): %w", seed.canonical, err)
+		}
+		// 层 2：provider_models（该 code 的每个 provider 各一行）。
+		if _, err := db.pool.Exec(ctx, `
+			INSERT INTO provider_models
+				(provider_id, raw_model_name, canonical_id, standardized_name, outbound_model_name, modality, source, canonical_raw_name)
+			SELECT p.id, $2, mc.id, $2, $2, 'audio', 'ensure-seed', $2
+			FROM providers p
+			JOIN models_canonical mc ON mc.canonical_name = $1
+			WHERE p.code = $3
+			  AND NOT EXISTS (
+			    SELECT 1 FROM provider_models x
+			     WHERE x.provider_id = p.id AND x.raw_model_name = $2)`,
+			seed.canonical, seed.raw, seed.providerCode); err != nil {
+			return fmt.Errorf("ensure asr catalog seed (provider_models %s): %w", seed.raw, err)
+		}
+		// 层 3：该 provider 全部 active 凭据的绑定（缺才有意义——已绑
+		// 的凭据不动 tier/weight 等运营参数）。
+		if _, err := db.pool.Exec(ctx, `
+			INSERT INTO credential_model_bindings (credential_id, provider_model_id)
+			SELECT c.id, x.id
+			FROM credentials c
+			JOIN providers p ON p.id = c.provider_id
+			JOIN provider_models x ON x.provider_id = p.id AND x.raw_model_name = $1
+			WHERE p.code = $2
+			  AND c.status = 'active'
+			  AND NOT EXISTS (
+			    SELECT 1 FROM credential_model_bindings b
+			     WHERE b.credential_id = c.id AND b.provider_model_id = x.id)`,
+			// $1=raw、$2=provider code；每个参数都必须被语句引用——
+			// pgx 对未引用参数做零 OID 推断会 42P18（2026-09-14 external PG 轮）。
+			seed.raw, seed.providerCode); err != nil {
+			return fmt.Errorf("ensure asr catalog seed (bindings %s): %w", seed.raw, err)
+		}
 	}
 	return nil
 }
@@ -1667,10 +1751,11 @@ func (d *DB) ensureUsageFactsDailyPartition(ctx context.Context) error {
 // (domains/ursm/v2/persist/writer.go) 所依赖的唯一约束列集合。
 //
 // ★ 这里的字面量是**故意重复**而不是从 writer 导入的：
-//   同一组列在两处各写一份，正是「基线 ↔ writer」那道门存在的理由。
-//   若改成共享常量，那道门会永远为真（自己和自己比），
-//   而这道自愈如果跟着漂，就会把生产往**错的方向**修。
-//   同步性由 db/ursm_snapshot_identity_pk_test.go 钉住。
+//
+//	同一组列在两处各写一份，正是「基线 ↔ writer」那道门存在的理由。
+//	若改成共享常量，那道门会永远为真（自己和自己比），
+//	而这道自愈如果跟着漂，就会把生产往**错的方向**修。
+//	同步性由 db/ursm_snapshot_identity_pk_test.go 钉住。
 const ursmSnapshotIdentityPKCols = "snapshot_ts, tenant_id, credential_id, raw_model_name"
 
 // ensureURSMNodeSnapshotMinIdentityPK 在启动期把 ursm_node_snapshot_min 的
@@ -1681,28 +1766,30 @@ const ursmSnapshotIdentityPKCols = "snapshot_ts, tenant_id, credential_id, raw_m
 // 4 列 ON CONFLICT 每次抛 SQLSTATE 42P10，写入停摆 12.4 小时 + 间歇失败 51 小时。
 //
 // 而**没有任何自动通道会修它**，实测：
-//   · installer 的 StartupFiles 里没有 453 / 463 / 830（只有 818）；
-//   · `schema_migrations` 在全仓 Go 代码里**只有 INSERT、没有任何读取**，
-//     它是「只写不读的账本」——同族注释见 admin/telemetry.go:525：
-//     「live hosts can report schema_migrations=455 while still serving the
-//     old unique index」；
-//   · §10.65/§10.67 已证 down 迁移（463.down 改主键 / 830.down 换名）
-//     与 up 迁移（453.sql 内联建表）**都能造出这个状态**。
+//
+//	· installer 的 StartupFiles 里没有 453 / 463 / 830（只有 818）；
+//	· `schema_migrations` 在全仓 Go 代码里**只有 INSERT、没有任何读取**，
+//	  它是「只写不读的账本」——同族注释见 admin/telemetry.go:525：
+//	  「live hosts can report schema_migrations=455 while still serving the
+//	  old unique index」；
+//	· §10.65/§10.67 已证 down 迁移（463.down 改主键 / 830.down 换名）
+//	  与 up 迁移（453.sql 内联建表）**都能造出这个状态**。
 //
 // ⇒ 本函数把「巡检发现」升级为「**每次启动自愈**」。
-//   先例：admin/telemetry.go 对同一类问题的处置是「让代码容忍两种形态」；
-//   但 writer 只能容忍一种（单条 ON CONFLICT 子句），
-//   所以对它只能**修库**，不能修代码。
+//
+//	先例：admin/telemetry.go 对同一类问题的处置是「让代码容忍两种形态」；
+//	但 writer 只能容忍一种（单条 ON CONFLICT 子句），
+//	所以对它只能**修库**，不能修代码。
 //
 // ── 安全边界（每条都有代价，取舍写在这里）────────────────────────
-//  1) 表不存在 → 直接返回 nil。to_regclass 而非 '...'::regclass，
+//  1. 表不存在 → 直接返回 nil。to_regclass 而非 '...'::regclass，
 //     否则裸 cast 会 raise 而不是返回 NULL。
-//  2) 表已分区（relkind='p'）→ **不动**。830 的形态自带 4 列主键，
+//  2. 表已分区（relkind='p'）→ **不动**。830 的形态自带 4 列主键，
 //     且由 ensureURSMNodeSnapshotMinDailyPartition 负责；在这里
 //     DROP/ADD 一个分区父表的主键会牵连全部分区。
-//  3) 拿不到锁就**放弃并记 WARN**，绝不用长锁把线上写入堵在队列里
+//  3. 拿不到锁就**放弃并记 WARN**，绝不用长锁把线上写入堵在队列里
 //     （同 830 的 lock_timeout 论证）。
-//  4) 只在列集合**真的不同**时才 DDL；一致则完全不产生写。
+//  4. 只在列集合**真的不同**时才 DDL；一致则完全不产生写。
 func (d *DB) ensureURSMNodeSnapshotMinIdentityPK(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
