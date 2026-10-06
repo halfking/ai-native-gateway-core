@@ -16,6 +16,13 @@ export interface BoardSummary {
   providers?: number
   /** 汇总整体降级：首屏所有汇总数字不可作为结论（web/board.ts 同源语义）。 */
   degraded_summary?: boolean
+  /**
+   * 缺失的数据源名。★ 2026-10-06 补：后端 dashboard_board_queries.go:160
+   * 一直会写这个键（`payload["summary_missing_view"] = view`），但本仓类型
+   * 漏了它 —— 类型比实现少一个字段，正是「声明了不等于消费了」的反面：
+   * 真实载荷有、类型没有，于是 TS 判为不合法而逼着人用 any 绕开。
+   */
+  summary_missing_view?: string
   summary_hint?: string
   credits_missing_view?: string
   credits_hint?: string

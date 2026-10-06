@@ -98,6 +98,7 @@ export const enUS = {
     stopped: 'Stopped',
     degraded: 'Degraded',
     summaryMissing: 'Summary unavailable',
+    summaryDegradedAll: 'The data source is not ready; the summary figures below are incomplete and must not be treated as conclusions.',
     creditsMissing: 'Credits degraded',
   },
   nodes: {
