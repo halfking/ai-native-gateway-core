@@ -5547,3 +5547,225 @@ list 5s / audit 5s / **check 3s** —— check 更容易踩超时。
 打 `/api/admin/tenants/{code}/approval-config` 会落进 `handleTenants` 的
 `unknown sub-resource` 404 分支。另：`admin/attachments`(8)、`admin/modules`(7)、
 `admin/logs`(7)、`system/session-context`(6)。
+
+
+### 11.79 租户审批配置面上移（第四十三轮，`approval-config`）
+
+本批把审批配置一族的**四条只读端点**上移。写操作一律不碰。
+
+- 新 API 模块 `web-mobile/src/api/approvalConfig.ts`（四端点各自独立解包）
+- 新视图 `ApprovalConfigView.vue`（config + stats + 通知渠道）、`ApprovalRulesView.vue`（审批人 + 规则）
+- 新路由 `/approval-config`、`/approval-rules`
+- 新增**两条 admin 档抽屉席** `approval-config`、`approval-rules`（**故意不设** `requiresRole`）
+- i18n 新命名空间 **`acfg` / `acfgRules`**
+- 门禁：变异 **25/25 有牙**，用例 **68 条**（36 API + 20 配置面 + 12 规则面）
+
+#### ★★★★★★ 路径是 `tenant-approval-config`（**单数** tenant），档位是 **admin**
+
+handler 文件头的注释写的是 `/api/admin/tenants/{tenant_id}/…`（`approval_config_handler.go:41`
+起，每条都这么标），**那是 2026-07-03 之前的旧前缀**。现在注册的是（`cmd/gateway/main.go:7367`）：
+
+```go
+mux.HandleFunc("/api/admin/tenant-approval-config/", func(w http.ResponseWriter, r *http.Request) { … })
+```
+
+`main.go:7364-7366` 的注释记录了原因：两条前缀曾同时注册，`net/http.ServeMux` 直接在启动时 panic。
+
+★ 而 `/api/admin/tenants/` 归 `admin/handler.go:926-927` 的 `h.superAdmin(h.handleTenants)` 所有
+⇒ ★★ 打**复数** `/api/admin/tenants/{code}/approval-config` 会落进
+`handleTenants` 的 `unknown sub-resource: approval-config` **404** 分支。
+
+★ 档位与上一批**相反**：这一族走 `wrapAdmin`，而
+`cmd/gateway/main_admin_wrappers.go:26-30` 里 `newWrapAdmin = admin.AdminMiddleware`
+⇒ `h.admin` 语义，**tenant_admin 可用** ⇒ 抽屉席**不设** `requiresRole`，
+并配了判据：设成 `super_admin` 必须让测试红（变异 N1）。
+
+★ 但 handler 内部**还有一道** `canAccessTenant` / `canModifyTenant`
+（`approval_config_handler.go:452-490`），两者都额外放行 `admin_key` 角色，
+中间件那道 `requiresRole` 没有建模。
+
+#### ★★★★★★ 整族挂载**有条件**（`cmd/gateway/main.go:7358`）
+
+```go
+if dbConn != nil && dbConn.Enabled() && redisClientForCache != nil { …注册… }
+```
+
+★★ **Redis 没起 ⇒ 这整个前缀根本没有注册** ⇒ 请求走 Go mux 的默认行为，
+拿到的是**裸文本** 404（`default: http.NotFound(w, r)`），**不是** `{"error":{"detail":…}}` 信封。
+
+⇒ 页面必须把「这个租户没有审批配置」与「这一族压根没开」分成两种文案
+（判据：`isnotregistered` 分支要求出现「没注册」四个���，且**不许**出现合成默认面板）。
+
+★ 派发是 `strings.Contains` **逐条 case**（`main.go:7369-7396`），不是路径解析：
+
+| case | 条件 |
+|---|---|
+| 1 | `Contains(path, "/approval-config/stats")` |
+| 2 | `Contains(path, "/approval-config")` && GET |
+| 3 | `Contains(path, "/approval-config")` && PUT |
+| 4 | `Contains(path, "/approvers/")` && PUT |
+| 5 | `Contains(path, "/approvers/")` && DELETE |
+| 6 | `Contains(path, "/approvers")` && GET |
+| 7 | `Contains(path, "/approvers")` && POST |
+| 8 | `Contains(path, "/approval-rules/")` && DELETE |
+| 9 | `Contains(path, "/approval-rules")` && GET |
+| 10 | `Contains(path, "/approval-rules")` && POST |
+| default | `http.NotFound(w, r)` ← **裸文本** |
+
+★★★ **后端缺陷（只记录不修）**：`Contains` 不看段边界 ⇒ 若租户码让路径里出现
+`/approval-config` / `/approvers` / `/approval-rules` 子串（例如租户码就叫 `approval-config`），
+GET 会被**派发到错误的 handler**。
+`extractTenantID`（`:413-424`）反而是对的，它按**段**匹配 `tenant-approval-config` 或 `tenants`。
+
+#### ★★★★★★ 「没有配置」**不是错误**：后端返回**合成默认配置**
+
+`domains/approval/store.go:401-414`：
+
+```go
+if errors.Is(err, pgx.ErrNoRows) {
+    return &ApprovalConfig{
+        TenantID: tenantID, Enabled: false, Mode: ModeDisabled,
+        TimeoutSeconds: 3600, AutoRejectOnTimeout: true,
+        Approvers: []Approver{}, Channels: []NotificationChannel{}, Rules: []ApprovalRule{},
+    }, nil
+}
+```
+
+⇒ ★★★ **没有「租户不存在」的 404**：任何过了鉴权的租户码都拿到 200。
+⇒ ★★★ 而且 `timeout_seconds: 3600` 与 `auto_reject_on_timeout: true` **是凭空造的**，
+库里根本没有这行 ⇒ 页面把它们显示成真实配置就是**假读数**。
+⇒ ★ 唯一能分辨「从未配置过」的标志是 `created_at` / `updated_at` 为**零值时间**
+（Go 把零值 `time.Time` 序列化成 `"0001-01-01T00:00:00Z"`，且这两个键**无** `omitempty`）。
+
+#### ★★★★★ `/approvers` 与 `/approval-rules` 只回**启用中**的行，而且是**另一张表**
+
+`store.go:389` / `store.go:431`：
+
+```sql
+SELECT … FROM approval_approvers WHERE tenant_id = $1 AND enabled = true ORDER BY priority ASC
+SELECT … FROM approval_rules     WHERE tenant_id = $1 AND enabled = true ORDER BY priority DESC
+```
+
+⇒ ★★★ **被停用的审批人 / 规则根本不在这两个列表里。**
+⇒ ★★ 它们读的是 **`approval_approvers` / `approval_rules` 表**；
+`config.approvers` / `stats.*_count` 读的是 **`approval_configs.config` 那个 JSONB 列**（含停用的）
+⇒ **两个数据源**，条数可以不一致，**这不是数据错**。页面并排显示时必须标口径。
+
+★ 排序方向**相反**，各按自己结构体注释的语义（`types.go:133` 与 `types.go:159`）：
+approvers `priority ASC` ← 「Lower number = higher priority」；
+rules `priority DESC` ← 「Higher number = higher priority」。
+
+#### ★★★★ 空列表序列化成 **`null`**，不是 `[]`
+
+`store.go:390` 是 `var approvers []Approver`（**nil 切片**，不是 `make([]T,0)`），
+`GetRules` 同理 ⇒ 无行时 `writeJSON` 把 nil 切片写成 **`null`**，
+而 `count` 是 `len(nil)` = **0**。
+
+⇒ `{"approvers": null, "count": 0}` 是**合法成功响应**，
+解包器**不许**因为 `approvers === null` 就抛错。
+★ 与上一批 model-policies 那族**正好相反**（那边是 `make([]T,0)` ⇒ 永不为 null）。
+
+#### ★★★★★ `ConfigStats` 的键是 `ApprovalConfig` 的**真子集** ⇒ 判别键必须多于三个
+
+`ConfigStats`（`config_manager.go:475-487`）与 `ApprovalConfig`（`types.go:104-115`）
+**共享四个键**：`tenant_id` / `enabled` / `mode` / `timeout_seconds`（两个都在！）。
+只有 `auto_reject_on_timeout`（config 独有）与 `approver_count`（stats 独有）能区分。
+
+★★ 我最初只按 `tenant_id`+`enabled`+`mode` 三个键判，**结果 stats 会被当 config 放行**，
+而 stats 缺 `approvers` / `channels` / `rules` ⇒ 页面会拿着 stats 渲染出三个 `undefined`。
+⇒ 补上 `auto_reject_on_timeout`（Go 侧**无** `omitempty` ⇒ 真实响应里必然在）。
+⇒ ★ 这正是既有纪律「『互喂必须抛错』要求两形状互不包含；是子集关系就得换成投影式判据」
+   的一次现场复现 —— **由我自己写的互喂用例抓出来的**。
+
+#### ★★★★★ stats 是 config 的**纯函数**，客户端独立复算
+
+`config_manager.go:435-472`：`approver_count` / `rule_count` / `channel_count` 来自
+`len(config.X)`，`enabled_*` 来自「数 config.X 里 enabled 的个数」，
+`last_updated` 就是 `config.updated_at`，`mode` / `enabled` / `timeout_seconds` 直接搬。
+
+⇒ 11 个字段**全部可由 config 独立复算** ⇒ 页面并排显示并**自己算一遍**核对
+（这是本族最强的判据：11 个字段逐个改一个都必须判不一致）。
+⇒ 「不一致」按**异常**上报，不是「口径差异」。
+
+#### ★★ `omitempty` 与 nil map 造成的键缺失
+
+- `COALESCE(email,'')` / `COALESCE(phone,'')` + `omitempty`
+  ⇒ 空邮箱/手机**整个键不存在**（不是空串、不是 null）
+- `NotificationChannel.Config` 是 `map[string]string` 且**无** `omitempty`
+  ⇒ nil map 序列化成 **`null`**（不是 `{}`）
+- `RuleCondition` 三字段、`RuleAction` 三字段全部无 `omitempty`
+
+#### ★ 枚举都来自**注释**，不是数据库 CHECK
+
+`Mode` = disabled/automatic/manual；`ChannelType` = feishu/wechat/dingtalk/email/webhook；
+`RiskLevel` = LOW/MEDIUM/HIGH/CRITICAL（`types.go:65-68`）；
+`RuleAction.Type` = require_approval/auto_approve/auto_reject；
+`RuleCondition.Operator` = contains/gt/lt/eq/regex。
+⇒ 库里出现别的值是可能的，页面按未知渲染、不猜。
+
+#### 子树分派（写操作那侧，本批只记录）
+
+`AddRule` 成功是 **201**，其余写端点是 200。
+`canModifyTenant` 与 `canAccessTenant` 当前**逻辑完全相同**（都放行 super_admin /
+admin_key / 本租户的 tenant_admin）⇒ 读写权限没有区别。
+`GetConfigStats` 失败 ⇒ **500** `failed to get stats`；
+`GetApprovers` / `GetRules` 失败 ⇒ **500**；`GetConfig` 失败 ⇒ **500** `failed to get config`。
+`extractTenantID` 返回空 ⇒ **400** `missing tenant_id`；
+`extractRuleName` 返回空 ⇒ **400** `missing rule_name`；
+鉴权不过 ⇒ **403**（读是 `access denied`，写各有各的文案）。
+
+#### 我在这一批犯的错
+
+1. ★★★ **`ApprovalRulesView` 里留了一个从未被赋值的 `channels` ref** ⇒ 那个渠道面板是
+   **死代码**，`v-if="channels"` 恒假。是 `vue-tsc -b` 顺带把同文件里另一个未用导入
+   `approvalModeTone` 报出来，我才顺藤摸到它。⇒ 渠道挪到配置页（那边已经取了 config），
+   并补了 5 条判据钉住它现在是活的。
+2. ★★★ **python 批改的锚点假设错了**：我以为 `refreshArmed` 那块在 locale 文件末尾，
+   其实上一批的 `mpol`/`mpolAudit` 已经追加在它后面 ⇒ `assert count==1` 直接失败，
+   没写坏文件。**这次锚点失配救了场** —— 上一批同样的操作把两个 locale 文件写坏了。
+   ⇒ 教训不变：**锚点必须验证唯一**，别凭结构印象。
+3. ★★★ **变异 V2/V8 两条注入各自坏了**：
+   · V2 把标记写成 `v-if="…" /* MUT-V2 */` —— 注释插在**属性值**里，模板解析失败 ⇒ 收集失败、具名红为空。
+     **这与上一批 V10 是同一个错，我记了却再犯**。⇒ 给变异脚本加了 `after` 钩子，
+     标记改放**标签内容区**。
+   · V8 用了 `s.replace(...)` 而该串在文件里**出现两次**（审批人/规则各一处）
+     ⇒ 只改了第一个，第二个还在 ⇒ 仍全绿。⇒ 改用 `split().join()` 全替。
+4. ★★★ **变异 A10 是等价变异**：`'email' in a` 改成 `a.email !== undefined`，
+   而夹具里压根没有 `email` 键 ⇒ 两种写法同解。⇒ 换成 `return true` 才是有牙的变异。
+   ⇒ 归因纪律：**仍全绿先证明该变异可观测**，证不出才叫「判据无牙」。
+5. ★★★ **两条真判据缺口**（都是变异抓出来的）：
+   · **V4 = 「首屏就失败」恒真**：我只测了首屏取数失败，就把 catch 里的
+     `config.value = null` 删掉 —— 首屏本来就没有上一轮结果，**照样全绿**。
+     ⇒ 必须造「先成功 → 再失败」序列。已补（6 个断言）。
+   · **V6 = 被说明文案喂饱**：判据写 `w.text()).toContain('通知渠道')`，
+     而那条 `channelsNote` 说明里就带着「通知渠道」四个字 ⇒ 面板标题删了也不红。
+     ⇒ 改按**节点**判（`.acfg__panel-title` 的文本）。这与上一批
+     「正向 `toContain` 被同一页说明文案喂饱」是同一条。
+6. ★★ **expect 串又抄错 2 处**（A4、V11）：A4 实际红在「四个形状两两互不包含」那条
+   （因为新加的「子集」测试当时只比键集、护不住行为 ⇒ 已补上
+   `expect(() => unwrapApprovalConfig(stats())).toThrow()` 的行为断言）；
+   V11 的标题是 `且**不**显示`，我写成了「不许显示」。
+7. ★★ **那条「子集」测试本身是半自造的**：它只比我自写夹具的键集，
+   任何正确实现都不会让它红。⇒ 加了行为断言之后它才真的护住东西。
+   ⇒ 判别信号：**一条断言如果只比较我自己构造的两个字面量，它护不住产品**。
+8. ★★ **`channels` 被我先放在错误的那一页**：渠道只存在于 config 响应的 `channels` 里，
+   规则页那两个端点根本不返回渠道。第一版我把面板放进规则页并留了个永不赋值的 ref。
+9. ★ `ConfigStats` 也带 `timeout_seconds`（`config_manager.go:485`）——
+   我第一版写「共享三个键」，被自己的测试打回。⇒ 实测**共享四个**。
+
+#### 门禁与实测
+
+- 变异 **25/25 有牙**（A1–A13 API 段、V1–V11 视图段、N1 导航段），还原逐字节一致
+- 全量 **2212 用例 / 100 文件全绿**
+- `npm run build` rc=0（含 `vue-tsc -b`）
+- 三门 rc=0：css-media / touch-target（**75** 个 `.vue`）/ i18n parity
+  （零重复键；本批**零新增**动态前缀）
+- 全量 **10 连跑**：见下
+
+#### 仍未上移
+
+写操作一律不碰：`PUT /approval-config`、`POST` / `PUT` / `DELETE /approvers[/{user_id}]`、
+`POST` / `DELETE /approval-rules[/{rule_name}]`。
+
+**下一批候选**：`admin/attachments`（8，admin 档）、`admin/modules`（7）、
+`admin/logs`（7，混合读写）、`system/session-context`（6）。

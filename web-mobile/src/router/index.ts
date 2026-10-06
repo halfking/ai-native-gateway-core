@@ -430,6 +430,26 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/ModelPolicyAuditView.vue'),
     meta: { titleKey: 'mpolAudit.title', requiresAuth: true },
   },
+  // 租户审批配置（**admin 档**，2026-10-08：走 wrapAdmin = admin.AdminMiddleware，
+  // 档位与 model-policies 相反 ⇒ tenant_admin 可用，抽屉席**不设** requiresRole）。
+  // ★★ 路径是 `tenant-approval-config`（**单数** tenant）：打复数会落进
+  //   handleTenants 的 `unknown sub-resource` 404。
+  // ★★★★★★ 无配置行时 GetConfig 返回**合成默认配置**（不是 404），
+  //   其中 timeout_seconds=3600 与 auto_reject=true 是**凭空造的**。
+  {
+    path: '/approval-config',
+    name: 'approval-config',
+    component: () => import('@/views/ApprovalConfigView.vue'),
+    meta: { titleKey: 'acfg.title', requiresAuth: true },
+  },
+  // 审批人与规则。★ 这两个端点的 SQL **都带 AND enabled = true** ⇒ 停用的不在这儿。
+  // ★ 空列表序列化成 **null**（nil 切片），不是 []。
+  {
+    path: '/approval-rules',
+    name: 'approval-rules',
+    component: () => import('@/views/ApprovalRulesView.vue'),
+    meta: { titleKey: 'acfgRules.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
