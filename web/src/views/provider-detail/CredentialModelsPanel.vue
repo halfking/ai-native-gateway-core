@@ -191,54 +191,58 @@ function thinkingLabel(o: ModelOffer) {
       <p class="hint">若上游拉取失败，请检查 API Key、discovery 策略或 catalog manifest。</p>
     </div>
 
-    <table v-else class="data-table">
-      <thead>
-        <tr>
-          <th>模型身份</th>
-          <th>可用</th>
-          <th>来源</th>
-          <th>模态</th>
-          <th>思考</th>
-          <th>Context</th>
-          <th>Pricing / 1M</th>
-          <th>P95</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-if="loading"><td colspan="8">加载中…</td></tr>
-        <tr
-          v-for="o in sortedOffers"
-          :key="o.id"
-          class="row-click"
-          tabindex="0"
-          @click="selected = o"
-          @keydown.enter="selected = o"
-        >
-          <td>
-            <ModelIdentityChip
-              compact
-              :canonical-name="o.canonical_name || o.standardized_name"
-              :outbound-model="o.outbound_model_name"
-              :raw-model="o.raw_model_name"
-            />
-            <span v-if="o.admin_protected" class="tag">保护</span>
-          </td>
-          <td>{{ o.available ? '是' : '否' }}</td>
-          <td>{{ o.source || o.availability_source || '—' }}</td>
-          <td>{{ o.modality || '—' }}</td>
-          <td>{{ thinkingLabel(o) }}</td>
-          <td>
-            <code v-if="o.context_window != null">{{ o.context_window }}</code>
-            <span v-else>—</span>
-            <span v-if="o.context_window_override != null" class="tag">覆盖</span>
-          </td>
-          <td>
-            <span class="pricing-summary">{{ offerPricing(o) }}</span>
-          </td>
-          <td>{{ o.p95_latency_ms != null ? o.p95_latency_ms + 'ms' : '—' }}</td>
-        </tr>
-      </tbody>
-    </table>
+    <div v-else style="overflow-x:auto">
+      <table class="data-table">
+
+        <thead>
+          <tr>
+            <th>模型身份</th>
+            <th>可用</th>
+            <th>来源</th>
+            <th>模态</th>
+            <th>思考</th>
+            <th>Context</th>
+            <th>Pricing / 1M</th>
+            <th>P95</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-if="loading"><td colspan="8">加载中…</td></tr>
+          <tr
+            v-for="o in sortedOffers"
+            :key="o.id"
+            class="row-click"
+            tabindex="0"
+            @click="selected = o"
+            @keydown.enter="selected = o"
+          >
+            <td>
+              <ModelIdentityChip
+                compact
+                :canonical-name="o.canonical_name || o.standardized_name"
+                :outbound-model="o.outbound_model_name"
+                :raw-model="o.raw_model_name"
+              />
+              <span v-if="o.admin_protected" class="tag">保护</span>
+            </td>
+            <td>{{ o.available ? '是' : '否' }}</td>
+            <td>{{ o.source || o.availability_source || '—' }}</td>
+            <td>{{ o.modality || '—' }}</td>
+            <td>{{ thinkingLabel(o) }}</td>
+            <td>
+              <code v-if="o.context_window != null">{{ o.context_window }}</code>
+              <span v-else>—</span>
+              <span v-if="o.context_window_override != null" class="tag">覆盖</span>
+            </td>
+            <td>
+              <span class="pricing-summary">{{ offerPricing(o) }}</span>
+            </td>
+            <td>{{ o.p95_latency_ms != null ? o.p95_latency_ms + 'ms' : '—' }}</td>
+          </tr>
+        </tbody>
+    
+      </table>
+    </div>
 
     <ModelOfferDetailDrawer
       v-if="selected"

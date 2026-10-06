@@ -137,26 +137,30 @@ const displayMatches = computed(() => {
       <div v-if="matchLoading" class="text-muted">{{ t('requestDetail.compress.loading') }}</div>
       <div v-else-if="matchError" class="err">{{ matchError }}</div>
       <div v-else-if="!displayMatches.length" class="text-muted">{{ t('requestDetail.compress.empty') }}</div>
-      <table v-else class="match-table">
-        <thead>
-          <tr>
-            <th>{{ t('requestDetail.compress.headers.placeholder') }}</th>
-            <th>{{ t('requestDetail.compress.headers.kind') }}</th>
-            <th>{{ t('requestDetail.compress.headers.index') }}</th>
-            <th>{{ t('requestDetail.compress.headers.maskedValue') }}</th>
-            <th>{{ t('requestDetail.compress.headers.inRequest') }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="row in displayMatches" :key="row.placeholder">
-            <td><code class="ph">{{ row.placeholder }}</code></td>
-            <td>{{ row.type }}</td>
-            <td>{{ row.index }}</td>
-            <td><code>{{ row.value_masked }}</code></td>
-            <td>{{ row.in_request ? t('requestDetail.compress.yes') : t('requestDetail.compress.dash') }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <div v-else style="overflow-x:auto">
+        <table class="match-table">
+
+          <thead>
+            <tr>
+              <th>{{ t('requestDetail.compress.headers.placeholder') }}</th>
+              <th>{{ t('requestDetail.compress.headers.kind') }}</th>
+              <th>{{ t('requestDetail.compress.headers.index') }}</th>
+              <th>{{ t('requestDetail.compress.headers.maskedValue') }}</th>
+              <th>{{ t('requestDetail.compress.headers.inRequest') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in displayMatches" :key="row.placeholder">
+              <td><code class="ph">{{ row.placeholder }}</code></td>
+              <td>{{ row.type }}</td>
+              <td>{{ row.index }}</td>
+              <td><code>{{ row.value_masked }}</code></td>
+              <td>{{ row.in_request ? t('requestDetail.compress.yes') : t('requestDetail.compress.dash') }}</td>
+            </tr>
+          </tbody>
+      
+        </table>
+      </div>
     </section>
 
     <div v-if="loading" class="text-muted">{{ t('requestDetail.compress.diffLoading') }}</div>

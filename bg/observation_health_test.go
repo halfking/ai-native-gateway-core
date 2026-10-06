@@ -59,14 +59,30 @@ func TestReconcileWorkerRecordsEveryFetchOutcome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read pricing_baseline_reconcile.go: %v", err)
 	}
-	i := strings.Index(string(src), "func RunBaselineReconciliation")
-	if i < 0 {
-		t.Fatal("RunBaselineReconciliation not found — the code this guard pins moved or was renamed")
+
+	// ★ 2026-10-06 跟随后端重构：抓取与健康记录已从 RunBaselineReconciliation
+	// 移进 runBaselineReconcileOnce（为了让「空 catalog」这条路径可测 ——
+	// 见该函数自己的注释）。判据跟着换了目标函数。
+	//
+	// 为什么这样跟是**收紧**而不是放松：换掉的不是「在哪个函数里」这一条
+	// 无关紧要的定位，而是必须去读重构后的源码才能知道内核叫什么。若有人
+	// 再次把内核改名或搬走，本判据会**红**并指名道姓地说这两个函数名不再
+	// 存在（下面第一道检查），而不会安静地扫一个空 body 全绿。
+	// —— 那正是原先形态的风险：函数体被清空时 Contains 式判据照样绿。
+	//
+	// 检查顺序刻意是「先确认函数在，再看它的 body」：顺序反过来时，
+	// Index 返回 -1 会被当成「没找到调用」，报出的却是「调用被删了」。
+	const entry = "func RunBaselineReconciliation"
+	const kernel = "func runBaselineReconcileOnce"
+	if !strings.Contains(string(src), entry) {
+		t.Fatalf("%s not found — the reconciler entry point was renamed or removed; update this "+
+			"judgement to point at the function that now owns the fetch-and-record path", entry)
 	}
-	body := string(src)[i:]
-	if j := strings.Index(body[1:], "\nfunc "); j >= 0 {
-		body = body[:j+1]
+	if !strings.Contains(string(src), kernel) {
+		t.Fatalf("%s not found — the reconciler kernel was renamed or removed; this judgement "+
+			"pins the fetch-outcome bookkeeping and must follow the code to wherever it lives", kernel)
 	}
+	body := funcOf(t, string(src), kernel)
 
 	// ★ 不能用 strings.Contains 判这两次调用在不在。
 	//
@@ -98,6 +114,29 @@ func TestReconcileWorkerRecordsEveryFetchOutcome(t *testing.T) {
 		t.Error("recordObservationSuccess is called AFTER RecordReconciliation — a failing " +
 			"ReconcileCatalog would then also erase the fact that this cycle fetched the source OK")
 	}
+}
+
+// funcOf 截出从 `func <sig...>` 那一行起到下一个顶层 `func ` 之前的源码。
+//
+// 为什么不留在调用点内联：这道门要钉的**恰恰是**「函数体被改名/搬走后它还
+// 盯得到吗」，而内联版在目标找不到时会把 -1 传给下一段，让报错说成
+// 「调用被删了」—— 一个关于**定位**的失败被报成关于**行为**的失败。
+// 抽成具名函数后，找不到目标由 funcOf 自己 fatal，理由直指定位。
+func funcOf(t *testing.T, src, header string) string {
+	t.Helper()
+	i := strings.Index(src, header)
+	if i < 0 {
+		t.Fatalf("%s not found in the source", header)
+	}
+	body := src[i:]
+	// 从第 2 个字符起找下一个顶层 func，跳过当前这一个的声明行。
+	if j := strings.Index(body[1:], "\nfunc "); j >= 0 {
+		body = body[:j+1]
+	}
+	if len(body) < len(header) {
+		t.Fatalf("%s: the extracted body is shorter than its own header — the source is truncated", header)
+	}
+	return body
 }
 
 // hasLiveCall 判断 needle 是否作为一个**真正被调用**的语句出现。

@@ -139,6 +139,8 @@ export default {
   endDate: '结束日期',
   exportFailed: '导出失败',
   exportTooLarge: '文件过大，导出上限为 {max}，请到桌面端导出',
+  importTooLarge: '文件过大，导入上限为 {max}',
+  importBadType: '文件类型不支持，请选择 {types} 文件',
   lastOccurred: '最后发生',
   loading: '加载中…',
   never: '从未',
