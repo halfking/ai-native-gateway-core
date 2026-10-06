@@ -2759,15 +2759,27 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 // ensureQualityFixModeSchema mirrors db/migrations/017_quality_fix_mode.sql
 // for the providers table. Idempotent.  quality_fix_mode defaults to 'off'
 // so existing providers keep their current passthrough behavior.
+// qualityFixModeDDL —— 与下面那个批次分开声明，因为它里面唯一会取
+// ACCESS EXCLUSIVE 的就是这条 ALTER。2026-10-07 审计（§10.98）：列在位时它
+// 仍是纯 no-op，却要在 providers 上等锁——生产实测 522 次、均值 895 ms、
+// 最长单次 61,672 ms，累计堵锁 7.8 分钟（25.9 天窗口）。同 columnsAllPresent 注。
+const qualityFixModeDDL = `
+		ALTER TABLE providers
+		    ADD COLUMN IF NOT EXISTS quality_fix_mode TEXT NOT NULL DEFAULT 'off'
+		        CHECK (quality_fix_mode IN ('off', 'detect_only', 'fix'));`
+
 func (d *DB) ensureQualityFixModeSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
+	// 列在位则跳过那条 ALTER；provider_quality_rollup 的建表/建索引留在下方
+	// 未守卫批次里（两者一起跳过会让「有列但缺 rollup 表」的库永远补不上）。
+	if !d.columnsAllPresent(ctx, "providers", []string{"quality_fix_mode"}) {
+		if _, err := d.pool.Exec(ctx, qualityFixModeDDL); err != nil {
+			return err
+		}
+	}
 	_, err := d.pool.Exec(ctx, `
-		ALTER TABLE providers
-		    ADD COLUMN IF NOT EXISTS quality_fix_mode TEXT NOT NULL DEFAULT 'off'
-		        CHECK (quality_fix_mode IN ('off', 'detect_only', 'fix'));
-
 		CREATE TABLE IF NOT EXISTS provider_quality_rollup (
 		    provider_id       INT  NOT NULL,
 		    bucket_start      TIMESTAMPTZ NOT NULL,
@@ -2798,18 +2810,73 @@ func (d *DB) ensureQualityFixModeSchema(ctx context.Context) error {
 // 编号 SQL 文件供 DBA 同步流程使用；本函数保证二进制启动即生效，
 // 否则 admin 的 listProviders（WHERE p.deleted_at IS NULL）会在未同步的
 // 库上直接 500。
-func (d *DB) ensureProviderSoftDelete(ctx context.Context) error {
-	if d == nil || d.pool == nil {
-		return nil
-	}
-	_, err := d.pool.Exec(ctx, `
+// providerSoftDeleteDDL is the slice of the 631 provider/credential soft-delete
+// schema that touches providers. It is applied under its own catalog guard
+// because providers is one of the most heavily read tables in the shared
+// database and an unconditional no-op DDL there stalls live routing reads.
+//
+// 2026-10-07: keep this as a standalone const so the guard probe and the DDL
+// cannot drift apart, and so the guard test can assert on the exact statements
+// that are allowed to be skipped.
+const providerSoftDeleteDDL = `
 		ALTER TABLE providers
 		    ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 
 		CREATE INDEX IF NOT EXISTS idx_providers_live
 		    ON providers (id)
-		    WHERE deleted_at IS NULL;
+		    WHERE deleted_at IS NULL;`
 
+// providerSoftDeleteCurrent reports whether providers already carries the
+// deleted_at column and idx_providers_live, i.e. whether providerSoftDeleteDDL
+// would be a pure no-op. Both are checked because the DDL is applied as one
+// unit: the partial index cannot exist before the column it filters on.
+//
+// A failed probe returns false so the DDL still runs: reading a probe error as
+// "already current" would permanently skip the schema on a database that
+// genuinely needs it.
+func (d *DB) providerSoftDeleteCurrent(ctx context.Context) bool {
+	if d == nil || d.pool == nil {
+		return false
+	}
+	var missing int
+	err := d.pool.QueryRow(ctx, `
+		SELECT
+		  (SELECT count(*) FROM (VALUES ('deleted_at')) AS want(name)
+		   WHERE to_regclass('public.providers') IS NOT NULL
+		     AND NOT EXISTS (
+		       SELECT 1 FROM information_schema.columns
+		        WHERE table_schema='public' AND table_name='providers'
+		          AND column_name = want.name))
+		  +
+		  (SELECT count(*) FROM (VALUES ('idx_providers_live')) AS want(name)
+		   WHERE NOT EXISTS (
+		       SELECT 1 FROM pg_indexes
+		        WHERE schemaname='public' AND indexname = want.name))
+	`).Scan(&missing)
+	if err != nil {
+		slog.Warn("provider soft-delete probe failed; applying DDL", "error", err)
+		return false
+	}
+	return missing == 0
+}
+
+func (d *DB) ensureProviderSoftDelete(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	// providers 是共享库里读压最狠的表之一（实测 ~10.66M 次读取/天，其中
+	// ~479k 次顺序扫描）。`ALTER TABLE … ADD COLUMN IF NOT EXISTS` 并不因为
+	// 列早已存在就免锁：PG 必须先取 ACCESS EXCLUSIVE 才能判断列在不在，而
+	// ACCESS EXCLUSIVE 与每次路由查询持有的 ACCESS SHARE 直接冲突。
+	// §10.97 已按同一形状修过 credits_charged 与 quality_fix_mode；这里补第三个。
+	if !d.providerSoftDeleteCurrent(ctx) {
+		if _, err := d.pool.Exec(ctx, providerSoftDeleteDDL); err != nil {
+			return err
+		}
+	}
+	// credentials 的 CHECK 约束块自带 pg_constraint 定义守卫（2026-09-05），
+	// 目录命中时连验证扫描都不做，保持原样。
+	_, err := d.pool.Exec(ctx, `
 		-- 2026-09-05: credentials 是共享库最热表，此前这里的无条件 DROP+ADD 每次
 		-- 启动都对全表做验证扫描并持 ACCESS EXCLUSIVE。守卫：约束存在且定义一致
 		-- 则跳过；状态列表变更时同步更新期望的 pg_get_constraintdef 串即可自愈。
