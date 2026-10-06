@@ -75,6 +75,11 @@ export const DRAWER_NAV: readonly NavItem[] = [
   //   adminWrap 是它传进去的）。tenant_admin 必 403 ⇒ 这里必须挡。
   { key: 'funnel', to: '/funnel', icon: 'chart', titleKey: 'nav.funnel', requiresRole: 'super_admin' },
   { key: 'proposals', to: '/proposals', icon: 'check', titleKey: 'nav.proposals', requiresRole: 'super_admin' },
+  // 全局横向对比面：/funnel 是单模型纵深，这两条是全体模型的横向对比。
+  // ★ superAdmin 档：analytics.go:55-58 的 matrix/flow，
+  //   而 RegisterAnalyticsRoutes 由 handler.go:1430 用 h.superAdmin 挂载。
+  { key: 'matrix', to: '/matrix', icon: 'grid', titleKey: 'nav.matrix', requiresRole: 'super_admin' },
+  { key: 'flow', to: '/flow', icon: 'share', titleKey: 'nav.flow', requiresRole: 'super_admin' },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))

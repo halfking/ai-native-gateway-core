@@ -25,7 +25,7 @@
 // 用法：node scripts/verify-i18n-parity.mjs
 
 import { readFileSync, existsSync } from 'node:fs'
-import { join, dirname, resolve } from 'node:path'
+import { join, dirname, resolve, sep as SEP } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -117,6 +117,100 @@ for (const [key, value] of en) {
   if (value === leaf || value === key) untranslated.push(`en-US ${key} = ${value}`)
 }
 
+// 4. ★ 2026-10-07 新增 **视图引用的键必须存在**。
+//    判据 1/2/3 全部只看两侧词典**互相**对齐，于是漏掉整整一类：
+//    **两侧一致地缺同一个键**。i18n 缺键回退成键名本身（见 i18n/index.ts），
+//    运行时用户看到的是字面量 `matrix.specified`。
+//    实况：写 RouteMatrixView 时把两个键只加了注释没加值，两侧都没这个键，
+//    i18n 门全程绿（677 键 / 键集一致 / 无未翻译），
+//    是视图测试顺带撞出来的。
+//    ⇒ 门必须从**调用侧**抽键。只抽 `t('a.b.c')` 的字面量形式；
+//      `t(prefix + x)` 抽不出完整键，**单列出来**而不是静默跳过 ——
+//      「测不到」混进「已确认合格」会让报表主动隐藏真缺口。
+import { readdirSync } from 'node:fs'
+
+// ★ 2026-10-07：扫描范围是**整个 src/**，不是只有 views/*.vue。
+//   初版只扫 views，漏掉了 API 层里的字面量键 —— `taskLabel()` 在
+//   `src/api/autoRouteMatrix.ts` 里写死了 `t('matrix.specified')` 的键名，
+//   那个键被误删时门全程绿（因为 views 里没有任何地方**字面量**引用它）。
+//   ⇒ 「判据的绿只覆盖它量到的那件事」：扫描范围也是判据的一部分。
+//   排除 `*.spec.ts` / `*.test.ts` —— 那些文件里的 t() 键是**被测样本**，
+//   不是产品引用，拿它们当契约会把「故意写错的样本」报成缺陷。
+const SRC_DIR = join(ROOT, 'src')
+const SKIP = /\.(spec|test)\.ts$/
+// ★ 末尾的 `.?` 不是可有可无：真实代码写的是 `t('matrix.row.' + r)`，
+//   那个尾点会让「要求 `'` 紧跟标识符」的老正则**整条失配**
+//   —— 于是既没进字面量桶、也没进动态桶，**两桶都漏**。
+//   实况：加了这条判据后自测 [10] 就是这么红的。
+const T_LITERAL = /\bt\(\s*'([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\.?)'/g
+
+function walk(dir) {
+  const out = []
+  let entries = []
+  try {
+    entries = readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return out
+  }
+  for (const e of entries) {
+    const full = join(dir, e.name)
+    if (e.isDirectory()) {
+      if (e.name === 'node_modules' || e.name === 'dist') continue
+      out.push(...walk(full))
+    } else if (/\.(vue|ts)$/.test(e.name) && !SKIP.test(e.name)) {
+      out.push(full)
+    }
+  }
+  return out
+}
+
+function collectVueKeys() {
+  /** @type {Set<string>} */
+  const literal = new Set()
+  /** @type {Set<string>} */
+  const dynamicPrefixes = new Set()
+  let files = []
+  try {
+    files = walk(SRC_DIR)
+  } catch {
+    files = []
+  }
+  // ★ 守卫判的是「扫到过**可能引用 t() 键的**源文件」，不是「扫到过文件」。
+  //   词典本身也是 src/ 下的 .ts，早先只数总文件数时，[9] 那组自测
+  //   （只建词典、不建视图）会因两个词典文件而被判成「扫到了」⇒ 门放行。
+  const candidates = files.filter((f) => !f.includes(`${SEP}i18n${SEP}`))
+  if (candidates.length === 0) {
+    // 扫不到候选源文件必须当失败：扫不到却报 OK 的门比没有门更坏
+    console.error(
+      `源码目录里没有任何可能引用 t() 键的源文件（只找到 ${files.length} 个词典文件）—— ` +
+        `视为失败（扫不到文件却报 OK 的门比没有门更坏）`,
+    )
+    process.exit(1)
+  }
+  for (const full of files) {
+    const f = full.slice(ROOT.length + 1)
+    const src = readFileSync(full, 'utf8')
+    for (const m of src.matchAll(T_LITERAL)) {
+      const after = src.slice(m.index + m[0].length)
+      if (/^\s*\+/.test(after)) {
+        // `t('a.b' + x)`：抽不出完整键，单列出来而不是当成已确认的键
+        dynamicPrefixes.add(`${f}: '${m[1]}'`)
+        continue
+      }
+      // 尾点是动态形态的残留，不该作为完整键（`a.b.` 永远不是真键）
+      if (m[1].endsWith('.')) {
+        dynamicPrefixes.add(`${f}: '${m[1]}'`)
+        continue
+      }
+      literal.add(m[1])
+    }
+  }
+  return { literal, dynamicPrefixes, scanned: candidates.length }
+}
+
+const { literal: usedKeys, dynamicPrefixes, scanned: candidatesScanned } = collectVueKeys()
+const missingInViews = [...usedKeys].filter((k) => !zh.has(k) && !en.has(k)).sort()
+
 let bad = false
 if (onlyZh.length || onlyEn.length) {
   bad = true
@@ -132,10 +226,27 @@ if (untranslated.length) {
   bad = true
   console.error(`\ni18n 未翻译（值 === 键名，运行时显示裸键）：\n  ${untranslated.join('\n  ')}`)
 }
+if (missingInViews.length) {
+  bad = true
+  console.error(
+    `\n视图引用了词典里不存在的键（两侧一致地缺 ⇒ 前三条判据看不出来；\n` +
+      `运行时 i18n 回退成键名本身，用户看到裸键）：\n  ${missingInViews.join('\n  ')}`,
+  )
+}
+if (dynamicPrefixes.size) {
+  // ★ 不算失败，但**必须列出来**：这些键门抽不出完整路径，等于「测不到」。
+  //   静默跳过会让「已确认合格」这个说法覆盖到没量过的地方。
+  console.log(
+    `i18n 动态键前缀（本门未覆盖，由 src/i18n/dynamicKeys.spec.ts 覆盖，需人工确认，${dynamicPrefixes.size} 处）：\n  ${[...dynamicPrefixes].sort().join('\n  ')}`,
+  )
+}
 
 if (bad) {
   console.error('\n修法：两侧键集必须完全一致；每个键都要有真实文案。\n')
   process.exit(1)
 }
 
-console.log(`i18n parity OK: zh-CN / en-US 各 ${zh.size} 键，键集一致，无未翻译项`)
+console.log(
+  `i18n parity OK: zh-CN / en-US 各 ${zh.size} 键，键集一致，无未翻译项；` +
+    `源码字面量键 ${usedKeys.size} 个全部存在（扫了 ${candidatesScanned} 个 .vue/.ts）`,
+)

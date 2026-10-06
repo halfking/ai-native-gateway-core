@@ -171,6 +171,22 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/TuningProposalsView.vue'),
     meta: { titleKey: 'proposals.title', requiresAuth: true },
   },
+  // ── 全局横向对比面（2026-10-07）──────────────────────────────────────
+  // 与 /funnel 配对：漏斗是单模型纵深，矩阵/流量是全体模型横向对比。
+  // ★ 两条都是 superAdmin：matrix/flow 在 RegisterAnalyticsRoutes 里
+  //   （analytics.go:55-58），而该注册由 handler.go:1430 用 h.superAdmin 调。
+  {
+    path: '/matrix',
+    name: 'matrix',
+    component: () => import('@/views/RouteMatrixView.vue'),
+    meta: { titleKey: 'matrix.title', requiresAuth: true },
+  },
+  {
+    path: '/flow',
+    name: 'flow',
+    component: () => import('@/views/RouteFlowView.vue'),
+    meta: { titleKey: 'flow.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
