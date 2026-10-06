@@ -2,9 +2,16 @@
 // ProbeView — 探测面（/probe）：现在有什么在探测、谁探测得慢。
 //
 // 数据源：
-//   GET /api/admin/probe/queue-tasks       探测队列当前任务
+//   GET /api/admin/probe/queue-tasks       探测队列当前任务（integrity 源）
 //   GET /api/admin/probe/provider-latency  供应商最近一次成功直连探测延时
-// 两者都 adminWrap = AdminMiddleware ⇒ tenant_admin 可用。
+//   GET /api/admin/probe/node-tasks        节点探测队列（node_probe 源，2026-10-07 加入）
+// 三者都 adminWrap = AdminMiddleware ⇒ tenant_admin 可用。
+//
+// ★ queue-tasks 与 node-tasks 是**两个不同的队列**，不是同一个的两种视图：
+//   · queue-tasks 来源 credential_probe_queue（完整性探测规划器），source="integrity"
+//   · node-tasks 来源 node_probe_state（错误触发的 NodeProbeWorker），source="node_probe"
+//   后端 NodeProbeTaskRow.Source 的注释明说是为了「让前端能一致地 badge/合并两队列的行」。
+//   ⇒ 两段分开渲染，各自带自己的空态与错误。
 //
 // 它补的是 NodesView 的**结论**页缺的那一半：NodesView 展示 node_probe_state
 // 的判定（健康/故障/可疑），本页展示**得出该判定的过程**——
@@ -34,6 +41,14 @@ import {
   type ProbeQueueTask,
   type ProviderLatencyEntry,
 } from '@/api/probeOps'
+import {
+  fetchProbeNodeTasks,
+  nodeStatusTone,
+  nodeStatusKeyOf,
+  latencyOf,
+  needsManualAction,
+  type NodeProbeTaskRow,
+} from '@/api/probeModelHealth'
 
 useHyperPage({ title: () => t('probe.title') })
 
@@ -51,13 +66,20 @@ const error = ref<string | null>(null)
  */
 const taskError = ref<string | null>(null)
 const latencyError = ref<string | null>(null)
+/** ★ 第三个端点同样**独立**记错误（同上纪律）。 */
+const nodeError = ref<string | null>(null)
+const nodeTasks = ref<NodeProbeTaskRow[]>([])
+const nodeTotal = ref(0)
 
 async function load(): Promise<void> {
   loading.value = true
   error.value = null
-  const [a, b] = await Promise.allSettled([
+  const [a, b, c] = await Promise.allSettled([
     fetchProbeQueueTasks({ limit: PROBE_TASKS_DEFAULT_LIMIT }),
     fetchProviderLatency(),
+    // ★ 不发 limit ⇒ 用后端自己的默认 120（node-tasks 的默认与 queue-tasks
+    //   的 100 **不同**，见 probeModelHealth.ts 文件头 (3)）。
+    fetchProbeNodeTasks(),
   ])
   if (a.status === 'fulfilled') {
     tasks.value = a.value.tasks ?? []
@@ -77,8 +99,17 @@ async function load(): Promise<void> {
     latencyTotal.value = 0
     latencyError.value = (b.reason as Error)?.message ?? null
   }
-  if (a.status === 'rejected' && b.status === 'rejected') {
-    error.value = taskError.value ?? latencyError.value
+  if (c.status === 'fulfilled') {
+    nodeTasks.value = c.value.tasks ?? []
+    nodeTotal.value = c.value.total ?? nodeTasks.value.length
+    nodeError.value = null
+  } else {
+    nodeTasks.value = []
+    nodeTotal.value = 0
+    nodeError.value = (c.reason as Error)?.message ?? null
+  }
+  if (a.status === 'rejected' && b.status === 'rejected' && c.status === 'rejected') {
+    error.value = taskError.value ?? latencyError.value ?? nodeError.value
   }
   loading.value = false
 }
@@ -88,7 +119,18 @@ onBeforeUnmount(() => {
   // 没有定时器/监听器要清；置空避免闭包持有已卸载组件引用
   tasks.value = []
   entries.value = []
+  nodeTasks.value = []
 })
+
+/**
+ * ★ 延时文案。`last_latency_ms` 是 `*int` + omitempty ⇒ 缺失 ≠ 0ms。
+ * 写成模板里两个 `latencyOf(tk)` 调用收不窄类型（两次调用互不关联），
+ * 所以提取成函数一次取值。
+ */
+function nodeLatencyText(tk: NodeProbeTaskRow): string {
+  const ms = latencyOf(tk)
+  return ms === null ? t('probe.noLatency') : t('probe.latencyMs', { ms })
+}
 
 function resultText(tk: ProbeQueueTask): string | null {
   const code = tk.result_http_status
@@ -159,12 +201,62 @@ function resultText(tk: ProbeQueueTask): string | null {
         </li>
       </ul>
     </section>
+
+    <!-- ★ 节点探测队列（node_probe 源）。与上面的完整性队列是两个队列。 -->
+    <section class="pb__section">
+      <h2 class="pb__title">
+        {{ t('probe.nodeSection') }}
+        <span class="pb__count">{{ t('probe.taskCount', { n: nodeTotal }) }}</span>
+      </h2>
+      <p v-if="nodeError" class="pb__sec-err">{{ nodeError }}</p>
+      <p v-else-if="nodeTasks.length === 0" class="pb__sec-empty">{{ t('probe.emptyNode') }}</p>
+      <ul v-else class="pb__list">
+        <li
+          v-for="tk in nodeTasks"
+          :key="tk.credential_id + '|' + tk.standardized_name"
+          class="pb__item"
+          :class="{ 'pb__item--manual': needsManualAction(tk) }"
+        >
+          <div class="pb__item-head">
+            <span class="pb__item-name">
+              <StatusDot :tone="nodeStatusTone(tk.status)" />
+              {{ tk.standardized_name || tk.raw_model }}
+            </span>
+            <span class="badge" :class="`badge--${nodeStatusTone(tk.status)}`">
+              {{ t(nodeStatusKeyOf(tk.status)) }}
+            </span>
+          </div>
+          <div class="pb__fields">
+            <span v-if="tk.provider_name" class="pb__field">{{ tk.provider_name }}</span>
+            <span class="pb__field">{{ t('probe.attempt', { n: tk.attempt }) }}</span>
+            <!-- ★ 延时缺失 ⇒ 「—」。0ms 是真实值，两者不能混（见 latencyOf）。 -->
+            <span class="pb__field">{{ nodeLatencyText(tk) }}</span>
+          </div>
+          <p v-if="tk.last_err_code" class="pb__item-reason">
+            {{ t('probe.reason', { c: tk.last_err_code }) }}
+          </p>
+          <!-- ★ 「等一等就好」与「等再久也不会好」必须分得开。 -->
+          <p v-if="needsManualAction(tk)" class="pb__item-manual">{{ t('probe.needsManual') }}</p>
+          <p v-if="tk.next_retry_at" class="pb__item-next">
+            {{ t('probe.nextRun', { t: relativeTime(tk.next_retry_at) }) }}
+          </p>
+        </li>
+      </ul>
+    </section>
   </div>
 </template>
 
 <style scoped>
 .pb {
   padding: var(--app-space-3);
+}
+.pb__item--manual {
+  border-left: 3px solid var(--app-danger);
+}
+.pb__item-manual {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--app-danger);
 }
 .pb__msg {
   padding: var(--app-space-4) 0;

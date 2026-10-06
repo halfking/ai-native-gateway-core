@@ -24,6 +24,7 @@ export const enUS = {
     heatmap: 'Heatmap',
     probe: 'Probing',
     probeHealth: 'Probe health',
+    probeModel: 'Model health',
     overrides: 'Overrides',
     funnel: 'Request funnel',
     proposals: 'Tuning proposals',
@@ -491,6 +492,13 @@ export const enUS = {
     emptyQueue: 'The probe queue is empty',
     emptyLatency: 'No successful direct probe in the last hour',
     latencyWindowHint: 'Only successful direct probes from the last hour are counted; absence here does not mean the provider is gone.',
+    // -- node-tasks section (2026-10-07): a different queue from the integrity one above --
+    nodeSection: 'Node probe queue',
+    emptyNode: 'Node probe queue is empty',
+    noLatency: 'no latency record',
+    latencyMs: '{ms}ms',
+    // ★ paused = retry cap reached, will not self-heal; pending/running move on their own
+    needsManual: 'Paused: retry cap reached, will not recover on its own - needs manual action',
     attempt: 'Attempt {n}',
     priority: 'Priority {n}',
     nextRun: 'Next {t}',
@@ -657,6 +665,40 @@ export const enUS = {
     // Terminal nodes have no outgoing links - that is normal, not missing data.
     leaf: 'terminal layer, no downstream',
     errForbidden: 'Only super admins can view traffic flow',
+  },
+  probeModel: {
+    title: 'Model health',
+    searchLabel: 'Filter by model name',
+    // ★ Backend uses ILIKE '%q%' - substring, not exact
+    searchPlaceholder: 'e.g. gpt-4 (substring)',
+    substringNote: 'The backend matches by substring: searching "{q}" also matches every model name containing it (e.g. gpt-4o / gpt-4o-mini).',
+    search: 'Filter',
+    count: '{n} models',
+    empty: 'No matching models',
+    errForbidden: 'This account cannot view the probe health dashboard',
+    health: {
+      critical: 'Critical',
+      warning: 'Warning',
+      degraded: 'Degraded',
+      healthy: 'Healthy',
+      unknown: 'Unknown',
+    },
+    healthy: 'Healthy',
+    suspicious: 'Suspicious',
+    failing: 'Failing',
+    probing: 'Probing',
+    healthyPct: 'Healthy rate',
+    avgSuccess7d: 'Success 7d',
+    realRate24h: 'Real success 24h',
+    realCount24h: 'Real requests 24h',
+    // ★ With a zero denominator every derived stat is "no data", not 0
+    noData: 'no data',
+    // ★ real_success_rate_24h is an omitempty pointer: missing = no real requests in 24h
+    noRequests24h: 'no real requests in 24h',
+    criticalNodes: '{n} critical nodes',
+    lastVerified: 'Last verified {t}',
+    // ★ State counts exceeding the credential total means the backend data contradicts itself
+    distMismatch: 'State counts sum to {sum} but there are only {total} credentials; this row contradicts itself',
   },
   probeHealth: {
     title: 'Probe health',

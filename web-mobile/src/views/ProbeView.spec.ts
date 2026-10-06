@@ -3,6 +3,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import ProbeView from './ProbeView.vue'
 import { fetchProbeQueueTasks, fetchProviderLatency } from '@/api/probeOps'
+import { fetchProbeNodeTasks } from '@/api/probeModelHealth'
 import { setLocale, locale } from '@/i18n'
 
 /**
@@ -29,8 +30,17 @@ vi.mock('@/api/probeOps', async (importOriginal) => {
   return { ...actual, fetchProbeQueueTasks: vi.fn(), fetchProviderLatency: vi.fn() };
 })
 
+// ★ node-tasks 来自另一个 API 模块，mock 要分开声明（probeModelHealth 的
+//   其它导出——latencyOf / needsManualAction 等——必须保持真实现，
+//   否则下面的判据量的是 mock 而不是被测行为）。
+vi.mock('@/api/probeModelHealth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/probeModelHealth')>()
+  return { ...actual, fetchProbeNodeTasks: vi.fn() };
+});
+
 const qt = fetchProbeQueueTasks as unknown as ReturnType<typeof vi.fn>
 const pl = fetchProviderLatency as unknown as ReturnType<typeof vi.fn>
+const nt = fetchProbeNodeTasks as unknown as ReturnType<typeof vi.fn>
 
 const ORIGIN_LOCALE = locale.value
 let mountedList: Array<{ unmount(): void }> = []
@@ -51,6 +61,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   qt.mockResolvedValue({ tasks: [], total: 0 })
   pl.mockResolvedValue({ entries: [], total: 0 })
+  nt.mockResolvedValue({ tasks: [], total: 0 })
   for (const w of mountedList) {
     try {
       w.unmount()
@@ -109,11 +120,36 @@ describe('ProbeView 两个端点分别记错误', () => {
     expect(w.text()).toContain('claude-sonnet-4-6')
   })
 
-  it('两个都失败 ⇒ 显示整页错误', async () => {
+  // ★ 2026-10-07：加入 node-tasks 之后，「整页错误」的判据从
+  //   「两个都失败」改成「**一个都没成功**」。
+  //   这不是为了让旧判据变绿而改它 —— 三个端点里挂两个时，
+  //   逐段报错比一条全局横幅**信息量更大**（用户能看出是哪一段挂了、
+  //   哪一段还活着），而「整页都挂了」这个横幅只在真的全挂时才有意义。
+  it('★ 三个里挂两个 ⇒ 不显示整页错误（逐段报错信息量更大）', async () => {
     qt.mockRejectedValueOnce(new Error('queue boom'))
     pl.mockRejectedValueOnce(new Error('latency boom'))
     const w = await mountView()
+    expect(w.find('.pb__msg--err').exists()).toBe(false)
+    // 挂掉的两段各自报错
+    expect(w.text()).toContain('queue boom')
+    expect(w.text()).toContain('latency boom')
+    // 没挂的那段照常渲染
+    expect(w.text()).toContain('节点探测队列')
+  })
+
+  it('★ 三个全挂 ⇒ 显示整页错误', async () => {
+    qt.mockRejectedValueOnce(new Error('queue boom'))
+    pl.mockRejectedValueOnce(new Error('latency boom'))
+    nt.mockRejectedValueOnce(new Error('node boom'))
+    const w = await mountView()
     expect(w.find('.pb__msg--err').exists()).toBe(true)
+  })
+
+  // ★ 反向锁定：只有一个挂 ⇒ 也**不是**整页错误
+  it('★ 只挂一个 ⇒ 不是整页错误', async () => {
+    nt.mockRejectedValueOnce(new Error('node boom'))
+    const w = await mountView()
+    expect(w.find('.pb__msg--err').exists()).toBe(false)
   })
 })
 
@@ -154,5 +190,125 @@ describe('ProbeView 队列任务渲染', () => {
     qt.mockResolvedValueOnce({ tasks: [{ ...TASK, standardized_name: '  ', raw_model: 'gpt-4o' }], total: 1 })
     const w = await mountView()
     expect(w.text()).toContain('gpt-4o')
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════
+// node-tasks 段（2026-10-07 加入）
+//
+// ★ 这一段的核心不变量：**它和上面的完整性队列是两个不同的队列**。
+//   · queue-tasks ← credential_probe_queue（完整性探测规划器），source="integrity"
+//   · node-tasks  ← node_probe_state（错误触发的 NodeProbeWorker），source="node_probe"
+//   渲染成一团就分不清「这是哪条队列在积压」。
+// ══════════════════════════════════════════════════════════════════════════
+
+const NODE_TASK = {
+  credential_id: 7,
+  provider_id: 1,
+  provider_name: 'OpenAI',
+  provider_code: 'openai',
+  raw_model: 'gpt-4o',
+  standardized_name: 'gpt-4o',
+  status: 'paused',
+  attempt: 5,
+  consecutive_failures: 5,
+  next_retry_at: '2026-10-07T11:00:00Z',
+  last_direct_ok: false,
+  last_gateway_ok: null,
+  last_err_code: 'timeout',
+  last_latency_ms: 1200,
+  paused: true,
+  updated_at: '2026-10-07T10:00:00Z',
+  source: 'node_probe',
+}
+
+describe('node-tasks 段：第三个端点独立记错误', () => {
+  it('挂载后三个端点各调一次', async () => {
+    await mountView()
+    expect(qt).toHaveBeenCalledTimes(1)
+    expect(pl).toHaveBeenCalledTimes(1)
+    expect(nt).toHaveBeenCalledTimes(1)
+  })
+
+  // ★ 不发 limit ⇒ 用后端自己的默认 120（与 queue-tasks 的 100 不同）
+  it('★ 不发 limit（后端 node-tasks 默认 120，queue-tasks 默认 100）', async () => {
+    await mountView()
+    expect(nt).toHaveBeenCalledWith()
+  })
+
+  it('★ node-tasks 挂了但另两个正常 ⇒ 只报节点队列这一段', async () => {
+    nt.mockRejectedValue(new Error('node boom'))
+    const w = await mountView()
+    const text = w.text()
+    expect(text).toContain('node boom')
+    // ★ 另两段仍在
+    expect(text).toContain('探测队列')
+    expect(text).toContain('供应商探测延时')
+    // ★ 不是整页错误
+    expect(w.find('.pb__msg--err').exists()).toBe(false)
+  })
+
+  it('三个都挂 ⇒ 整页错误', async () => {
+    qt.mockRejectedValue(new Error('q'))
+    pl.mockRejectedValue(new Error('p'))
+    nt.mockRejectedValue(new Error('n'))
+    const w = await mountView()
+    expect(w.find('.pb__msg--err').exists()).toBe(true)
+  })
+
+  it('空队列 ⇒ 自己的空态文案（不是队列一号的）', async () => {
+    const w = await mountView()
+    expect(w.text()).toContain('节点探测队列为空')
+  })
+})
+
+describe('★ node-tasks：paused 与 pending 必须在视觉上分得开', () => {
+  // ★「等一等就好」和「等再久也不会好」是两件事。
+  //   paused = 已达重试上限，不会自愈 ⇒ 需要人工。
+  it('★ paused 行标记为「需要人工介入」', async () => {
+    nt.mockResolvedValue({ tasks: [NODE_TASK], total: 1 })
+    const w = await mountView()
+    expect(w.find('.pb__item--manual').exists()).toBe(true)
+    expect(w.text()).toContain('需要人工介入')
+  })
+
+  it('★ pending 行不标记（会自己往前走）', async () => {
+    nt.mockResolvedValue({ tasks: [{ ...NODE_TASK, status: 'pending', paused: false }], total: 1 })
+    const w = await mountView()
+    expect(w.find('.pb__item--manual').exists()).toBe(false)
+    expect(w.text()).not.toContain('需要人工介入')
+  })
+
+  it('running 行不标记', async () => {
+    nt.mockResolvedValue({ tasks: [{ ...NODE_TASK, status: 'running', paused: false }], total: 1 })
+    const w = await mountView()
+    expect(w.find('.pb__item--manual').exists()).toBe(false)
+  })
+
+  // ★ `last_latency_ms` 是 `*int` + omitempty ⇒ 缺失 ≠ 0ms
+  it('★ 延时缺失 ⇒ 「无延时记录」，不是 0ms', async () => {
+    nt.mockResolvedValue({ tasks: [{ ...NODE_TASK, last_latency_ms: undefined }], total: 1 })
+    const w = await mountView()
+    expect(w.text()).toContain('无延时记录')
+    expect(w.text()).not.toContain('0ms')
+  })
+
+  it('★ 延时真的是 0 ⇒ 显示 0ms（与缺失区分开）', async () => {
+    nt.mockResolvedValue({ tasks: [{ ...NODE_TASK, last_latency_ms: 0 }], total: 1 })
+    const w = await mountView()
+    expect(w.text()).toContain('0ms')
+    expect(w.text()).not.toContain('无延时记录')
+  })
+
+  it('standardized_name 优先于 raw_model（后端是三级 COALESCE）', async () => {
+    nt.mockResolvedValue({ tasks: [{ ...NODE_TASK, standardized_name: 'gpt-4o-canon' }], total: 1 })
+    const w = await mountView()
+    expect(w.text()).toContain('gpt-4o-canon')
+  })
+
+  it('standardized_name 为空 ⇒ 回落 raw_model', async () => {
+    nt.mockResolvedValue({ tasks: [{ ...NODE_TASK, standardized_name: '', raw_model: 'gpt-4o-raw' }], total: 1 })
+    const w = await mountView()
+    expect(w.text()).toContain('gpt-4o-raw')
   })
 })
