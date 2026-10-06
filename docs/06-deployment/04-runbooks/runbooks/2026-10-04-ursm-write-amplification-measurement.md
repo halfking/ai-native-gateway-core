@@ -10667,3 +10667,59 @@ providers 的写几乎为零，但它的**读**是全库最狠的之一：
 （这正是本轮 `M104` 第一次跑时输出「变异没施上（字节没变）—— 量具问题」的同一个根因：
 脚本里的锚点抄的是同一个错字符串。）
 
+
+### §10.98.8 本轮修：`ensureGoalClientSignalSchema`（按修正后的读压排名，这是真正的一号）
+
+§10.98.6 重排后的第 2 名。生产实测形态：
+
+| relname | 分区数 | **索引数** | heap | 写/天 | 读/天 | 目标列/索引是否已就位 |
+|---|---|---|---|---|---|---|
+| `session_summaries` | 0 | **21** | **465 MB**（含索引 917 MB） | 58,250 | ~198.7k | 2/2 列 + `idx_session_summaries_parent` **全部已存在** |
+| `goal_sessions` | 0 | 4 | 0 bytes（0 行） | 0 | ~7.7k seq（空表） | 6/6 列已存在 |
+
+`ALTER TABLE … ADD COLUMN IF NOT EXISTS` 在判断列是否存在之前，
+必须先对**该表及其每一个索引**取 ACCESS EXCLUSIVE ⇒ 每次启动锁住
+**22 个关系**（1 张表 + 21 个索引，外加 goal_sessions 的 4 个），
+而生产上这些列和索引**早已全部就位** ⇒ 纯 no-op。
+
+改动（未上线）：
+
+- 抽出 `const goalClientSignalDDL`
+- 新增 `goalClientSignalCurrent(ctx)`：`columnsAllPresent` 查两组列
+  （`goal_sessions` 6 列 / `session_summaries` 2 列）+ `pg_indexes` 查索引
+- **整体判定，不按表分判**：DDL 是作为一个整体施加的，
+  只有「全部就位」才跳过，否则宁可整体重放 —— 分表判定会留下半迁移的库
+- 任一探测出错 ⇒ `return false` ⇒ 走 DDL（失败方向安全）
+
+**门**：`db/goal_client_signal_guard_test.go`，6 个子测试。
+其中 `column_lists_match_the_ddl_exactly` 做**双向**校验：
+守卫清单里的列必须被 DDL 创建，DDL 创建的列必须被守卫清单提到 ——
+否则清单与 DDL 漂移时无人察觉。
+
+**变异 M108~M117 共 10 条全部按预期转红，且每条只红在预定的子测试上。**
+
+M113 第一次写成了「整块删掉索引检查」，结果是 `log/slog` 变成未使用导入、
+**包编译失败** —— 门红了但不是判据有牙。改成「查错索引名」的合法 Go 变异，
+并顺手把门里那条索引断言从 `Contains("idx_session_summaries_parent")`
+收紧成 `Contains("indexname='idx_session_summaries_parent'")`：
+裸 Contains 会被 `_v2` 后缀绕过，正是 §10.98.4 的老陷阱。
+
+#### ★「锚点多加一个引号」——本项目第三次同形错误
+
+| 次数 | 锚点写成 | 真实文本 | 后果 |
+|---|---|---|---|
+| §10.98.7 M104 | `"applying DDL"` | `…; applying DDL", "error", err)` | 门**恒红** |
+| §10.98.8 M114 | `"applying DDL"` | 同上 | 变异**没施上**（脚本报「字节没变」） |
+| §10.98.8 门断言 | `` `"error", err)\n\t…` ``（反引号原始字符串） | 解释型字符串 | `\n` 是字面反斜杠+n ⇒ 门**恒红** |
+
+三次都是**我凭空给标识符加了一个不存在的定界符**。
+⇒ 固化两条规矩：
+
+1. **锚点必须从真实文件里抄**，不许凭记忆写 —— `grep` 出来的字节才是锚点。
+   抄完先在 shell/python 里跑一次 `anchor in text`，确认非 0 再进脚本。
+2. **门写完先跑基线，必须绿**。基线红 ⇒ 先怀疑锚点的字面量，不要先怀疑被测代码。
+   ★ **恒红的门和恒绿的门同样没用**，只是方向相反：恒绿放行缺陷，恒红淹没真信号。
+
+（第三条教训同时解释了为什么 §10.98.8 的门第一版报「
+`guarded column … is not created by the DDL`」—— 手写字符串手术去解析
+Go 复合字面量，把明明在 DDL 里的列判成不存在。改用 regexp 抽取后才正常。）
