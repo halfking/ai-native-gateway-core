@@ -74,28 +74,51 @@ func TestExtract_AnthropicTableShape(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// xai：同类形态，但表头是 Input / Cached input / Output，且多一个 Context 列
-// ---------------------------------------------------------------------------
+// xai：表头是 Input / Cached input / Output，且有一个 Context 列
+//
+// ★ 2026-10-06 改判（重抓 raw/xai.md 之后）。原判据要求 grok-4.3
+// 落成 table_row，取 Short context 那一档（$1.25 / $2.50）。新快照里
+// **整页只剩 Long context 一档**（表头 `| Model | Context | Short context | Long context |`
+// 的 Short 列下已无数据），而每一行的 Context 列都写着 `Long context ≥ 200k tokens`。
+//
+// 那**不是**提取器坏了，是页面形态变了，而提取器的拒绝是对的。2026-10-06 用
+// xAI 官方机读数据独立核实（docs.x.ai 页面内嵌的 __XAI_PUBLIC_MODELS__）：
+//
+//	"name":"grok-4.3",
+//	"promptTextTokenPrice":"12500",            → $1.25 / 1M
+//	"promptTextTokenPriceLongContext":"25000", → $2.50 / 1M
+//	"completionTextTokenPrice":"25000",        → $2.50 / 1M
+//	"longContextThreshold":"200000"
+//
+// ⇒ 原厂**确实**仍有两档，且阈值在。页面表格只显示 Long context，是因为
+// 短上下文档的展示被收起了。所以「行内写着 Long context」就是**分档价**，
+// 按 SSOT 的口径（分档价一律不进权威面）判 unusable 是正确处置。
+//
+// ⇒ 本判据因此从「取到 table_row」翻转成「分档行必须仍被拒绍」，并额外
+// 钉住拒绝的**理由**：不能退化成「因为解析失败所以 unusable」。
 func TestExtract_XaiTableShape(t *testing.T) {
 	cands := Extract("xai", "https://docs.x.ai/docs/pricing", readRaw(t, "xai.md"))
 
 	grok := findCandidate(t, cands, "grok-4.3")
-	if grok.Confidence != ConfidenceTableRow {
-		t.Fatalf("grok-4.3 confidence = %q want %q (warnings=%v)", grok.Confidence, ConfidenceTableRow, grok.Warnings)
+
+	// ★ 核心：这一行是分档价（原厂 200k tokens 阈值的 long context 档），
+	// 必须判不可用。放它进账本 = 用长上下文档的价当全模型挂牌价。
+	if grok.Confidence != ConfidenceUnusable {
+		t.Fatalf("grok-4.3 confidence = %q want %q (warnings=%v) — the row says "+
+			"\"Long context ≥ 200k tokens\" and xAI's own machine-readable config has "+
+			"longContextThreshold=200000, so this is a tiered price; taking it as a flat "+
+			"list price overstates the model by 2x for every request under 200k",
+			grok.Confidence, ConfidenceUnusable, grok.Warnings)
 	}
-	if grok.Input == nil || *grok.Input != 1.25 {
-		t.Errorf("input = %v want 1.25", grok.Input)
+	// 拒绝必须**有理由**，而不是「解析不出来」—— 后者会被误当成页面坏了。
+	if len(grok.Warnings) == 0 {
+		t.Error("the row was refused with no warning at all — \"unusable\" and \"we could not " +
+			"parse this\" are different facts, and only the first one is a decision")
 	}
-	if grok.Output == nil || *grok.Output != 2.50 {
-		t.Errorf("output = %v want 2.50", grok.Output)
-	}
-	// "Cached input" 必须判成 cache_read 而不是 input —— 判错就是
-	// 把缓存读价当输入价，比提取失败更糟。
-	if grok.CacheRead == nil || *grok.CacheRead != 0.20 {
-		t.Errorf("cache read = %v want 0.20", grok.CacheRead)
-	}
-	if grok.Input != nil && *grok.Input == 0.20 {
-		t.Error("cached-input column was taken as the input price")
+	joined := strings.Join(grok.Warnings, " | ")
+	if !strings.Contains(strings.ToLower(joined), "context") {
+		t.Errorf("warnings = %v — none of them mention a context/billing dimension, so the "+
+			"refusal is not demonstrably the tiering rule", grok.Warnings)
 	}
 }
 

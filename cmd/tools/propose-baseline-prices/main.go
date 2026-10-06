@@ -487,8 +487,21 @@ type baselineSide struct {
 
 // draftCatalog 故意**复制** bg.baselineCatalogFile 的形状，而不是 import bg：
 // 那个包是运行时库，本工具是一次性 CLI，import 它会把整个网关拖进构建。
-// 代价是形状有两份 —— 所以由 bg/draft_ssot_test.go 把本工具的**真实输出**
-// 喂给 bg 的**真实**加载器与 validate()，把「两份形状一致」变成被测出来的事实。
+// 代价是形状有两份 —— 所以由**本包**的 draft_ssot_test.go
+// （TestDraftIsAcceptedByTheAuthoritativeGate）把本工具的输出喂给 bg 的
+// BaselinePrice 与 bg 自己的 Validate，把「两份形状一致」变成被测出来的事实。
+//
+// ⚠ 位置订正（2026-10-06）：这段注释此前写的是 `bg/draft_ssot_test.go`，
+// 而**那个文件不存在**（全仓只有这一行提到它）。它之所以在**本包**而不在 bg
+// 包里，有个很直接的理由：判据 import 了 bg，所以它属于「能 import bg 的
+// 那一侧」。指错位置的真实代价是它把找它的下一个人引向一个空目录 ——
+// 我自己为此白找了三轮。
+//
+// ⚠ 而「形状一致」与「这一份草案可入库」不是同一件事：上面那条判据用的是
+//
+//	`proposalWith(2)` 构造出来的提案，验的是接缝；真跑 raw/ 的那份产物要走
+//	`bg` 的**真加载器**（loadBaselineCatalog，内部逐条 validate）。后者由
+//	`bg/ssot_draft_ingest_test.go` 按需验（设 LLM_GATEWAY_SSOT_DRAFT 才跑）。
 type draftCatalog struct {
 	GeneratedAt string `json:"generated_at"`
 	// Draft 恒为 true：这份文件是**草稿**，不是权威面。权威面是
