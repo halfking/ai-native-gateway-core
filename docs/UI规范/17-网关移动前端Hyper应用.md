@@ -7870,3 +7870,83 @@ build / 三门 / vue-tsc 全 rc=0；`AutoRouteDecisionView.spec.ts` 21 条；
 `autoRouteRead.test.ts` 67 条；全量 3038 条（120 文件）；十连跑 10/10。
 
 文档 §11.93 纯追加。
+
+## 11.94 Dashboard API v2 七条只读端点（第五十八批，API 层）
+
+### ★ 缺口清单先取证，再开写
+
+第五十五批的教训（`tuning/strategies` 两端都死）在这一族没有重演：
+正面枚举全仓 dashboard 注册（`grep -rn 'HandleFunc("[^"]*dashboard'`），
+清单里的九条**全部真的注册**。
+
+⚠️ 但**权限档位与 auto-route 族相反**：这九条是 `admin(...)`（`handler.go:1053-1069`）
+⇒ **tenant_admin 可用**，抽屉席**不设** `requiresRole`。
+
+### ★★★★★★ 降级响应的 data 与「真的全是零」**逐字段相同**
+
+`admin/dashboardapi/types.go:186-192` 的 `writeSuccessJSON` 产出：
+
+```json
+{ "success": true, "data": {…}, "metadata": {…}, "timestamp": "…" }
+```
+
+而 `writeDegraded`（`errors.go:319-334` 等）**也是 HTTP 200 + `success:true`**，
+只是把 `data` 填成**零值/空数组**，并在 metadata 上打三个键：
+
+```json
+"metadata": { "degraded": true, "missing_view": "request_logs_7d",
+              "hint": "数据视图尚未初始化，请先执行数据聚合迁移" }
+```
+
+⇒ 客户端若只看 data，会在聚合迁移没跑时给出一张**全部正常的看板**。
+这是本族最危险的一处，也是本批所有判据的重心。
+
+★ `degraded` 带 omitempty ⇒ **正常时是键缺失，不是 `false`**。
+   判据必须用 `=== true`；写成 `!== false` 会把「键缺失」判成降级
+   （D3 变异专测这一条）。
+
+### ★★★ tenant_admin 填 `tenant_id` 会被**静默改写**
+
+`normalizeDashboardScope`（`auth.go:39-45`）：非 `super_admin`/`admin_key`
+一律 `params.TenantID = auth.TenantID` ⇒ 用户填别的租户也会拿到自己租户的数据，
+而**响应里没有任何标记告诉他「你填的被忽略了」**。
+⇒ UI **不得**给 tenant_admin 提供这个筛选框。
+
+### ★ 三处容易踩的参数口径（与同批其它端点又不一样）
+
+| 参数 | 口径 |
+|---|---|
+| `days` | 越界或非整数 ⇒ **静默回落 7**（不是 400） |
+| `size` | 越界 ⇒ 静默回落 20，上限 100 |
+| `refresh` | 后端判 `== "true"`，**严格相等** ⇒ 必须发字面量 `true` |
+
+⚠️ auto-route 的 `tuning/accuracy` 里 `days` 越界是 **400 报错**，
+`index`/`cost` 的 `top` 是**静默回落**，audit 的 `limit>500` 是 **clamp** ——
+**同一个参数名在这一个仓里至少有四种口径，不能跨端点类推。**
+
+### ★ 一处字段名与 JSON 键不一致
+
+`ErrorStatsResponse.Trend` 的 JSON tag 是 **`recent_errors`**（`errors.go:31`）。
+按 Go 字段名去读 JSON 会读到 `undefined`。
+
+### 变异 27 条 → 27 有牙，零可疑
+
+首轮 25/27，两条可疑：
+
+- **D4 仍全绿** ⇒ **判据无牙（样本没触发）**：`missingView` 去掉 `isDegraded`
+  守卫后看不出来，因为**正常夹具里本来就没有 `missing_view`**。
+  补「判别样本」：metadata 里有 `missing_view` 但**没有** `degraded`
+  ⇒ 降级标记缺失时就不许声称「缺表」。
+  （后端两个键总是一起写，这个组合理论上不会发生；判据的价值正在这里。）
+- **F2 转红未命中** ⇒ expect 串指错，变异实际打红的是
+  「session-overview 打 GET 且带查询参数」。
+
+★ 又一次印证：**去掉某个守卫的变异，要先构造一个「该守卫唯一在生效」的样本**，
+否则两条实现输出相同，判据测不出。
+
+### 门禁
+
+build / 三门 / vue-tsc 全 rc=0；`dashboard.test.ts` 35 条；
+全量 3073 条（121 文件）；十连跑 10/10。
+
+文档 §11.94 纯追加。
