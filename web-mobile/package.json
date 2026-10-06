@@ -10,7 +10,8 @@
     "typecheck": "vue-tsc -b",
     "test": "vitest run",
     "css:check": "node scripts/verify-css-media-syntax.mjs",
-    "audit:selftest": "node scripts/layout-audit-selftest.mjs"
+    "audit:selftest": "node scripts/layout-audit-selftest.mjs",
+    "audit:settle": "node scripts/settle-selftest.mjs"
   },
   "dependencies": {
     "pinia": "4.0.2",
