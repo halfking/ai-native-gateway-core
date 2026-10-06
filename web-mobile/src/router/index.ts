@@ -326,6 +326,22 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/DataLifecycleView.vue'),
     meta: { titleKey: 'lifecycle.title', requiresAuth: true },
   },
+  // 数据流与大字段（stats/metrics/jobs/blobs-top，2026-10-08）。**admin 档**（admin(...)）
+  // ⇒ tenant_admin 可用，导航不设 requiresRole。
+  // ★★★ 与上面的 /data-lifecycle 按「答什么」划界，不合并：
+  //   /data-lifecycle 答「数据库这一层什么状态」（分区清单 + 表体积榜，**表级**），
+  //   本页答「记录怎么分布 / 有没有在清理 / 大字段占多少」（**记录级**）。
+  //   合并会把两种粒度混在一起，且本页的 `metrics` 是**全表口径**
+  //   （data_lifecycle_metrics.go:63 的 FROM request_logs 无 WHERE），
+  //   与 /data-lifecycle 的租户/榜内口径并排会给出错误对比。
+  // ★ 同族的 cleanup/preview（POST 且 action 含 delete）、blobs/cleanup/*、
+  //   partitions/*、hot/promote 是写操作或 superAdmin，本页一条都不碰。
+  {
+    path: '/data-flow',
+    name: 'data-flow',
+    component: () => import('@/views/DataFlowView.vue'),
+    meta: { titleKey: 'dataFlow.title', requiresAuth: true },
+  },
   // 路由优化器（stats/accuracy/parameters/metrics，2026-10-07）。**admin 档**（admin(...)）
   // ⇒ tenant_admin 可用，导航不设 requiresRole。
   // ★ 同族的 proposals/{approve,reject}、probe/cache-rebuild、
