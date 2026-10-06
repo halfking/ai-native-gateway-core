@@ -2,7 +2,7 @@
 // HomeView — 总览：状态条（/healthz 公开端点）+ board 汇总卡 + 趋势
 // sparkline + 模型分布 + 后台任务 chips。下拉刷新 = 整页重查（保旧刷新，
 // 13 §3：后台刷新不整页换骨架）。
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
 import { useHyperPage } from '@/hyper'
 import { fetchHealthz, type HealthzInfo } from '@/api/system'
@@ -29,8 +29,27 @@ const loadError = ref<string | null>(null)
 const lastRefreshFailed = ref(false)
 const healthzFailed = ref(false)
 
+/**
+ * 2026-10-06：补 AbortSignal。
+ *
+ * 缺陷：原实现 `Promise.allSettled([fetchHealthz(), fetchBoard(7)])` 不传 signal，
+ * 且卸载后仍无条件 `board.value = ...`。用户在首屏加载途中切走（HomeView 是底栏
+ * 高频入口，切换很常见）⇒ 组件已卸载，异步续体照样 setState。
+ * 单看代码「功能是好的」，单测也测不出来 —— 卸载后 setState 在 Vue 3 里只产生
+ * 一次警告，不影响别的页面，所以这个洞能一直躺着。
+ *
+ * ⇒ ① 每次 loadAll 取消上一次（防旧响应覆盖新响应，13 §2 queryRevision 语义）；
+ * ② 卸载时 abort（17 §7 单飞 + 卸载清理，与 UsageView / RequestLogsView 同一套）。
+ */
+let aborter: AbortController | null = null
+let disposed = false
+
 async function loadAll(): Promise<void> {
-  const [hz, bd] = await Promise.allSettled([fetchHealthz(), fetchBoard(7)])
+  aborter?.abort()
+  aborter = new AbortController()
+  const signal = aborter.signal
+  const [hz, bd] = await Promise.allSettled([fetchHealthz({ signal }), fetchBoard(7, { signal })])
+  if (signal.aborted || disposed) return
   healthzFailed.value = hz.status === 'rejected'
   if (hz.status === 'fulfilled') healthz.value = hz.value
   if (bd.status === 'fulfilled') {
@@ -51,7 +70,12 @@ async function refresh(): Promise<void> {
 
 onMounted(async () => {
   await loadAll()
-  initialLoading.value = false
+  if (!disposed) initialLoading.value = false
+})
+
+onBeforeUnmount(() => {
+  disposed = true
+  aborter?.abort()
 })
 
 const summary = computed(() => board.value?.summary)

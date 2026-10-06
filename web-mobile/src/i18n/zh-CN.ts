@@ -299,6 +299,8 @@ export const zhCN = {
     budget: '预算 (USD)',
     used: '已用 (USD)',
     requests: '请求数',
+    errForbidden: '当前账号没有执行该操作的权限',
+    errConflict: '密钥状态已变化（可能已被停用或删除），请刷新后重试',
     tokens: 'Token 数',
     reveal: '揭示明文',
     revealConfirm: '揭示密钥明文？仅在你需要配置客户端时使用。',

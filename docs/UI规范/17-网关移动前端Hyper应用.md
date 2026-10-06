@@ -654,3 +654,68 @@ CacheEconomics 先后加了 `degraded` 标记，CostTrend 自己漏了** ⇒
 `web-mobile/` 实测：`vue-tsc -b` 通过；`vitest run` **208 用例 / 28 文件全绿**
 （新增 HomeView 3 条）；`npm run css:check` 通过（32 文件）；`npm run build` 通过；
 **连跑 10 次全绿**。
+
+
+### 11.25 生命周期与写操作反馈：两处「功能看着有、边界没处理」
+
+本轮把降级面扫完（`alerts` / `keys` / `models` 三端点核对下来**不返回**降级形状，
+降级面到此扫完），转向另一族：**看着能跑、边界不成立**。
+
+#### ① 在途请求不随卸载取消（六页共用路径）
+
+`HyperList` 的 `onBeforeUnmount` 此前只 `observer?.disconnect()`，**没管在途请求**：
+用户在列表加载途中切走（compact 档底栏/抽屉跳转非常常见）⇒ `fetchPage` 的 await
+续体照样回来改 `_items` / `emit()`，而组件已经不在了。
+
+Vue 3 对「卸载后 setState」只产生一次警告、不影响别的页面 ⇒ **这个洞能一直躺着，
+单测也测不出来**（测试里卸载组件照样全绿）。
+
+修在 **controller 层**而非各视图：`ContinuousListController.dispose()`（递增
+revision + abort + 清 listeners），`HyperList.onBeforeUnmount` 调用它。
+理由与 §11.24 同款：六页走同一条路径，逐个视图补 abort 是「给每个用例加隔离助手」
+式的错解 —— 落盘/卸载路径会随实现增长，测试作者未必知道（**包括我自己**）。
+
+`HomeView` 另有一处同样的问题（不走 HyperList，自己 `Promise.allSettled` 且不传
+signal），单独补了 `AbortController` + `disposed` 双保险。
+
+#### ② ★★ `doDisable` 既无 catch 也无错误位 —— 停用失败**完全静默**
+
+`KeysView.doDisable` 原实现：
+
+```ts
+try { … await disableKey(id) … }
+finally { disableTarget.value = null }
+```
+
+**没有 catch**。停用/启用失败时（409 已被别处停用 / 403 权限 / 500），用户点完
+确认框，界面毫无反馈，**误以为成功了**。而同文件的 `submitCreate` 有完整
+catch + `createError` 提示位 ⇒ **同页两套标准，是漏写不是有意设计**。
+
+已修：加 catch + 页面级错误位，403/409 单独说人话。错误位放在**页面级**而不是
+确认框内 —— `AppConfirm.onConfirm` 立即把 `modelValue` 置 false，框一关，框内的
+提示没人看得到。
+
+#### ③ 判据又踩了「依赖被测系统的浮动行为」
+
+修完跑 15 连跑，run 11 抓到 IntegrityView 的 flaky：
+`expected [40] to include 20` —— 判据假定 `loadNext()` 落在第 2 页，但首屏
+`autoFill` 会补到**第 3 页**（offset=40），所以「多等一会儿」也救不回来。
+
+⇒ 这是 §11.16 那条教训的**第三次复发**，形态又变了一点：
+前两次是「断言调用**顺序**」（`at(-1)`），这次是「断言**具体页号**」。
+共同点仍是「断言依赖了被测系统一个会浮动的量」。改法一致：验**关系**
+（offset 恒为 `PAGE_SIZE` 的正整数倍、且存在非 0）而不是验**取值**。
+
+★ 三次复发的判据清单，直接可复用：
+- ✗ `at(-1)`（依赖调用顺序）
+- ✗ `mockClear()`（不清 once 队列 / 在途）
+- ✗ 轮询 `state`（autoFill 轮间会回 idle）
+- ✗ 轮询 `mock.calls.length`（非响应式，同有竞态）
+- ✗ 断言「第 N 页」（补页停在哪页会浮动）
+- ✓ 验**关系/集合**，不验**顺序与具体取值**
+
+### 11.26 本轮门禁（第九轮，生命周期 + 写操作反馈）
+
+`web-mobile/` 实测：`vue-tsc -b` 通过；`vitest run` **213 用例 / 29 文件全绿**
+（新增 KeysView 5 条）；`npm run css:check` 通过（32 文件）；`npm run build` 通过；
+**连跑 15 次全绿**。

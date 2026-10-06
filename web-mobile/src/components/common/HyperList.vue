@@ -133,6 +133,9 @@ onBeforeUnmount(() => {
   observer = null
   cleanup?.()
   cleanup = null
+  // ★ 2026-10-06：卸载时 dispose controller —— 取消在途请求 + 递增 revision，
+  //   否则 fetchPage 的 await 续体会回来改已卸载组件的状态。详见 continuousList.dispose。
+  props.controller.dispose()
 })
 
 const showEmpty = computed(() => state.value === 'exhausted' && loadedCount.value === 0)
