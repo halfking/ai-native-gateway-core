@@ -6715,3 +6715,108 @@ ALTER TABLE public.ursm_node_snapshot_min
   ⚠ cron 文件是**整文件覆盖**部署的，本次仓库侧已登记，
     上线前仍须人工 `diff <(ssh 252 cat /etc/cron.d/pg17) scripts/252-monitor/etc.cron.d.pg17`
 - ❌ 没动 `persist flush failed` 的 WARN 级别
+
+---
+
+## §10.61 P0 止血与「WARN 不是告警」（2026-10-06 已执行）
+
+§10.59 定位、§10.60 补防线之后，本节是**实际动手**的部分。
+
+### §10.61.1 止血：主键恢复 4 列
+
+**授权后执行**，两条 ALTER（`ALTER TABLE ... DROP CONSTRAINT` + `ADD CONSTRAINT ... PRIMARY KEY`），
+事务内完成。执行前的只读前置检查：
+
+| 检查 | 结果 | 为什么必须先查 |
+|---|---|---|
+| 当前 PK | `PRIMARY KEY (snapshot_ts, credential_id, raw_model_name)` —— 3 列，缺 `tenant_id` | 确认根因 |
+| 外键引用该表 | 0 条 | 有的话 DROP CONSTRAINT 会被依赖挡住 |
+| `tenant_id` 是否存在 | 存在，**`attnotnull = f`（可空）** | ★ 见下 |
+| 活行数 | 0（24 kB） | 改 PK 零重写成本 |
+| 活动语句 | 0（首查的 1 条是 psql 会话自匹配） | 无长事务 |
+
+★ **`tenant_id` 可空这件事必须在动手前查**，因为 4 列主键会**隐式**把它置为 NOT NULL。
+若 writer 存在写 SQL NULL 的路径，那么 PK 修好之后失败模式会从
+`42P10` 变成 not-null 违规 —— 故障只是换了个样子，数据照样不落。
+查证：`writer.go:241` 的 `TenantID` 是 Go `string`（最坏是 `""`），
+pgx 发送空串为 `''` 而非 NULL ⇒ 安全。
+**事后实证**：修复后写入的 4,458 行里 `tenant_id = ''` 的行数 = **0**。
+
+修复后：
+
+```
+PRIMARY KEY (snapshot_ts, tenant_id, credential_id, raw_model_name)
+四列 attnotnull 全部 = t（主键隐式置齐）
+唯一索引列集合 = credential_id,raw_model_name,snapshot_ts,tenant_id
+```
+
+### §10.61.2 验证：before/after 对照（同一台机、同一指标）
+
+| | 245 journal |
+|---|---|
+| 最后一次 `42P10` | **15:49:19** WARN |
+| 第一次 `persist committed` | **15:50:24** `rows=1116` `snapshot_ts=15:50:09` |
+| 15:51:22 | `persist committed` `rows=1113` |
+| 修复后 42P10 计数 | **0** |
+| 修复前 24h 42P10 计数（对照） | **628** |
+
+表侧：15:50:09 起落数，100 秒内 4,458 行。
+巡检脚本：修复前 `rc=1` + 完整诊断 → 修复后 `rc=0` + 「索引恰好覆盖」。
+⇒ **P0 已闭环**，写入恢复。
+
+### §10.61.3 巡检上线（252）
+
+- `/opt/scripts/pg17-onconflict-constraint-check.sh` 已装，755 root:root，md5 与仓库一致
+- `/etc/cron.d/pg17` **只做叠加**（`cat 现网 + 新段`），未整文件覆盖
+  ★ 理由：仓库版比现网多一条 `pg17-duplicate-index-check.sh`（周日 05:10），
+    而该脚本**尚未装到 `/opt/scripts`**。整文件覆盖会顺手启用一条
+    每周必失败的任务 —— 授权范围只有 onconflict 这一条。
+    实测 diff 全部是「仓库为超集」，无任何 `d`（删除）行，覆盖本身不会丢任务，
+    但仍按最小改动执行。
+- 现网备份：`/etc/cron.d/pg17.bak.20261006-155307`
+- 任务行数 10 → 11；`duplicate-index` 出现次数 = **0**（未越权启用）
+- 按 cron 原样实跑（含 `llmgw-source` 包装 + `tee` + 轮转）验证通过，`crond` active
+
+⚠ 一次工具层面的翻车留档：我第一次同时用了管道和 heredoc，
+heredoc 抢占了 stdin，新段没传过去，远端脚本在第 2 步静默结束。
+**幸好先查了实际状态而不是接着往下走** —— cron 文件当时完好（107 行 / 10 任务），
+只有备份生成了。改用「先传文件、再改文件」两步法重做才成功。
+
+### §10.61.4 代码改动：把「WARN 不是告警」这件事修掉
+
+`cmd/gateway/main.go` 的 persist flush 失败原本是 `slog.Warn`。
+★ 本次事故的核心不是「失败了没人查」，而是**级别停在 WARN，告警规则就不匹配**
+—— 701 次失败在告警侧等于零次。这与本 runbook 反复出现的
+「累计值不等于当前值」同族：**一条被记录下来的错误，不等于它被听见了。**
+
+改动：
+
+1. flush 失败一律 `slog.Error`（经可测的 `ursmPersistFlushFailure` 定级）
+2. 新增**连续失败计数** `flushFailStreak`；成功一次即清零，并打一条 `persist flush recovered`
+3. streak ≥ 3 时改用 `persist flush FAILED CONTINUOUSLY (sustained outage…)` 措辞
+   —— 单次抖动与永久停摆在告警规则里必须能分开
+
+⚠ **collect 失败保持 WARN 不动**（这是有意的取舍，不是漏改）：
+runbook §5.2 记录 `collect failed` 在正常负载下就出现过 263 次，
+把它升到 ERROR 会制造噪音；而**噪音的代价与本次静音是对称的** ——
+都会训练人无视告警。只升 flush 的理由是：flush 失败意味着
+**数据库写入侧 100% 不可用**（约束不匹配这类），collect 失败多为 SCAN 超时抖动。
+
+### §10.61.5 门与变异验证
+
+| 门 | 钉的是 | 变异 | 结果 |
+|---|---|---|---|
+| `TestPersistFlushFailureIsNeverWarn` | 任何 streak 都不许 Warn | M57 函数退回 Warn | 🔴 |
+| `TestPersistFlushContinuedIsDistinguishable` | 持续停摆措辞须与单次不同 | — | — |
+| `TestFlushFailureCallSiteIsWired` | ★ 调用点真的用了该判定 | M56 调用点退回 `slog.Warn` | 🔴 |
+| 同上 | 成功路径必须清零 streak | M58 删掉 `flushFailStreak = 0` | 🔴 |
+
+★ **M56 的对照是本节最重要的证据**：把调用点改回 `slog.Warn`、
+函数保持 `Error` 时，**纯函数门依然全绿**。
+⇒ 只测函数不测接线，这道改动等于没改（变异 M43 的教训）。
+接线门是这里唯一能拦住它的东西。
+
+★ 另记一次我自己的判据错误：`TestPersistFlushContinuedIsDistinguishable`
+初版断言 `cont <= once` 失败，而两者都是 Error ⇒ 该断言恒真。
+要求本应是「不得低于」（`cont < once`），已订正。
+**判据红不一定是产品红，判据绿也不一定是判据对。**
