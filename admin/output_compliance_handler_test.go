@@ -99,9 +99,10 @@ func outputComplianceSetupSchema(t *testing.T, pool *pgxpool.Pool) {
 			updated_by TEXT,
 			created_at TIMESTAMP DEFAULT NOW(),
 			updated_at TIMESTAMP DEFAULT NOW(),
-			total_detections INT DEFAULT 0,
-			total_blocks INT DEFAULT 0,
-			last_detection_at TIMESTAMP
+			total_checks INT DEFAULT 0,
+			total_issues INT DEFAULT 0,
+			total_redactions INT DEFAULT 0,
+			last_check_at TIMESTAMP
 		)`,
 		`CREATE TABLE IF NOT EXISTS output_compliance_custom_keywords (
 			id SERIAL PRIMARY KEY,

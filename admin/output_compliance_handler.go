@@ -112,9 +112,10 @@ type OutputCompliancePolicy struct {
 	SkillGenerationEnabled               bool            `json:"skill_generation_enabled"`
 	AutoThresholdTuningEnabled           bool            `json:"auto_threshold_tuning_enabled"`
 	RetentionDays                        int             `json:"retention_days"`
-	TotalDetections                      int             `json:"total_detections"`
-	TotalBlocks                          int             `json:"total_blocks"`
-	LastDetectionAt                      *string         `json:"last_detection_at"`
+	TotalChecks                          int             `json:"total_checks"`
+	TotalIssues                          int             `json:"total_issues"`
+	TotalRedactions                      int             `json:"total_redactions"`
+	LastCheckAt                          *string         `json:"last_check_at"`
 	CreatedAt                            string          `json:"created_at"`
 	UpdatedAt                            string          `json:"updated_at"`
 }
@@ -176,7 +177,7 @@ const outputCompliancePolicyColumns = `
 	COALESCE(whitelist_keywords, '{}'), COALESCE(exception_rules, '[]'), COALESCE(notification_channels, '[]'),
 	realtime_alert_enabled, alert_threshold_severity, alert_aggregation_window_minutes,
 	sampling_rate, auto_review_queue_enabled, feedback_loop_enabled, skill_generation_enabled, auto_threshold_tuning_enabled,
-	retention_days, total_detections, total_blocks, last_detection_at, created_at, updated_at
+	retention_days, total_checks, total_issues, total_redactions, last_check_at, created_at, updated_at
 `
 
 // ==================== 策略配置 ====================
@@ -220,7 +221,7 @@ func (h *OutputComplianceHandler) fetchPolicy(ctx context.Context, tenantID stri
 
 func scanOutputCompliancePolicy(row pgx.Row) (*OutputCompliancePolicy, error) {
 	p := &OutputCompliancePolicy{}
-	var lastDetection sql.NullString
+	var lastCheck sql.NullString
 	err := row.Scan(
 		&p.ID, &p.TenantID, &p.PolicyName, &p.Enabled, &p.EnforcementMode,
 		&p.PIIEngine, &p.ToxicityEngine, &p.LLMEngineID,
@@ -236,16 +237,16 @@ func scanOutputCompliancePolicy(row pgx.Row) (*OutputCompliancePolicy, error) {
 		&p.WhitelistKeywords, &p.ExceptionRules, &p.NotificationChannels,
 		&p.RealtimeAlertEnabled, &p.AlertThresholdSeverity, &p.AlertAggregationWindowMinutes,
 		&p.SamplingRate, &p.AutoReviewQueueEnabled, &p.FeedbackLoopEnabled, &p.SkillGenerationEnabled, &p.AutoThresholdTuningEnabled,
-		&p.RetentionDays, &p.TotalDetections, &p.TotalBlocks, &lastDetection,
+		&p.RetentionDays, &p.TotalChecks, &p.TotalIssues, &p.TotalRedactions, &lastCheck,
 		&p.CreatedAt, &p.UpdatedAt,
 	)
 	if err == pgx.ErrNoRows {
 		p = defaultOutputCompliancePolicy(tenantFromRow(row))
 		return p, nil
 	}
-	if lastDetection.Valid {
-		s := lastDetection.String
-		p.LastDetectionAt = &s
+	if lastCheck.Valid {
+		s := lastCheck.String
+		p.LastCheckAt = &s
 	}
 	return p, err
 }
