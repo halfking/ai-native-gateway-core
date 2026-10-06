@@ -6188,3 +6188,90 @@ M48（去掉阈值校验并把 `$1` 写回 SQL）→ 静态门红。均 `changed
 1. 先删 `session_summaries_session_key_uidx`（110 MB，表在写，收益最大）；
 2. 用 `pg_stat_statements` / 慢日志确认无查询依赖该索引；
 3. `DROP INDEX CONCURRENTLY`（不阻塞读写），而不是 `DROP INDEX`。
+
+---
+
+## §10.56 撤回 §10.55 的处置建议（方向与数字都错），并把决策证据做进报告
+
+§10.55.5 建议「删 `session_summaries_session_key_uidx`（110 MB）」。
+本节用 `idx_scan` + `pg_constraint` 核实后，**这条建议在方向和数字上都不对**。
+
+### §10.56.1 统计窗口
+
+`pg_stat_database.stats_reset = 2026-09-23 06:56:38+08` ⇒
+下面所有 `idx_scan` 覆盖约 **13 天**，不是全生命周期。
+
+### §10.56.2 🔴 两处更正
+
+**① 数字错：110 MB 是「一对的合计」，不是单个索引。**
+
+    session_summaries_pkey             59,801,600 B = 57 MB
+    session_summaries_session_key_uidx 56,184,448 B = 54 MB
+    合计                               116,162,560 B = 110 MB
+
+我上一条消息把合计当成了待删索引的体积。**实际可回收 54 MB。**
+
+**② 方向错：两个都不能按我说的方式直接删，而「可裸删的那个」恰好是被用最多的。**
+
+| 索引 | idx_scan(13d) | 是否被约束背着 | 可否直接删索引 |
+|---|---|---|---|
+| `session_summaries_pkey` | 162,490 | **是**：`conname=session_summaries_pkey, contype=p, PRIMARY KEY (session_key)` | **否** —— 约束索引 |
+| `session_summaries_session_key_uidx` | **1,671,093** | 否（`pg_constraint` 无引用） | 是 |
+
+⇒ 我最初报的「删 uidx」在**机械上**是唯一可行解（pkey 是 PK，删不掉），
+但我没查 `idx_scan`，不知道它是全表最被用的索引。
+
+**但删除依然安全，理由比原来更强**：两个索引定义**逐字相同**
+（都是 `CREATE UNIQUE INDEX … USING btree (session_key)`），
+PK 已经强制了**同样的唯一性** ⇒ uidx 的唯一约束在构造上就是冗余的；
+任何用过 uidx 的查找都可以改走 PK 索引（同定义、同列序、同选择性）。
+⇒ 删 uidx 不改变任何查询结果，只去掉 54 MB 与它每次写入的维护成本。
+
+⚠ 这条推理**依赖「定义逐字相同」这个已实测的前提**。
+若两者定义有任何差异（列序、`WHERE`、排序方向），结论就不成立 ——
+所以 §10.55 的判据（比定义本体）同时也是这条建议的安全前提。
+
+### §10.56.3 四对的完整判决
+
+| 表 | 可删的那个 | 体积 | idx_scan | 结论 |
+|---|---|---|---|---|
+| `session_summaries` | `session_summaries_session_key_uidx` | **54 MB** | 1,671,093 | 可删（无约束 + 与 PK 同定义），**收益最大** |
+| `runtime_metrics` | `idx_rt_instance_time` | 1.3 MB | 0 | 可删（对方 `idx_runtime_metrics_instance` 亦 0，两边都没人用） |
+| `runtime_metrics` | `idx_rt_time` | 440 KB | 0 | 可删（对方 `idx_runtime_metrics_timestamp` 146 次） |
+| `routing_audit_log` | 任选其一 | 160~216 KB | 0 / 0 | 可删（两者皆 UNIQUE 但**都不受约束引用**，idx_scan 全 0） |
+
+**合计可回收约 56 MB**（不是 110 MB）。
+⚠ 上表仍是**建议**，不是已执行动作；DDL 未动。
+
+### §10.56.4 报告升级：把决策证据做进巡检输出
+
+原版只报「有两个一样的索引」，**不足以让人决定删哪个** ——
+§10.55.5 的错误正是因为缺这两项。已在 `pg17-duplicate-index-check.sh` 里补上：
+
+- `A扫描 / B扫描` = `pg_stat_user_indexes.idx_scan`（13 天窗口）
+- `A受约束 / B受约束` = 该索引是否被 `pg_constraint.conindid` 引用
+  （**这是能不能裸删索引的决定项**：约束背着的那个必须先 `DROP CONSTRAINT`）
+- 表头 + 三行读法说明（窗口、判读方式）
+
+252 真机复跑输出（节选）：
+
+    表                 索引A                              索引B                              A字节    A+B字节  A扫描  B扫描  A受约束 B受约束
+    session_summaries  session_summaries_pkey            session_summaries_session_key_uidx  59801600 116162560 162491 1671095  1      0
+
+### §10.56.5 本节又两次「变异报绿」，都指向同一类门缺陷
+
+| 编号 | 变异 | 现象 | 结论 |
+|---|---|---|---|
+| M49 | 删掉 SQL SELECT 里的 `a/b.idx_scan` 两列 | 门**绿** | 判据只查「全文出现过 idx_scan」，而 JOIN 与日志文字里还有词根 |
+| M50 | 删掉 printf 的两个参数 | 门**绿** | 判据数的是**格式串**里的 `%s\t` 个数，参数删掉它也不变 |
+
+⇒ 两次都是**「检查了名字，没检查值/没检查真的用上了」**。
+加固方式：
+- M49 → 钉在 **SQL 的 SELECT 列表**上（取最后一个顶层 `SELECT c.relname,` 之后的内容）；
+- M50 → 改成**行为级**：桩里给的 `162491` / `1671095` 必须出现在 stdout，
+  且表头必须有「扫描」「受约束」。重做后两条变异均正确转红。
+
+★ 附带修了一处误伤：`TestDupIndexScriptNeverDrops` 原先对全文件做字符串匹配，
+被**SQL 注释**里解释「为什么不能删索引」的字样触发。改成**只扫可执行行**
+（跳过整行 `--` / `#` 注释），而不是删注释或放宽门 ——
+行中注释仍会被扫到，所以这个近似是**偏保守**的（宁可误报，不会漏报）。
