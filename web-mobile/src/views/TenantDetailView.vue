@@ -408,26 +408,26 @@ onBeforeUnmount(() => {
 <style scoped>
 .tnd__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .tnd__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
-.tnd__label { display: block; font-size: 12px; color: var(--text-3, #999); margin: 8px 0 4px; }
+.tnd__label { display: block; font-size: 12px; color: var(--app-text-muted); margin: 8px 0 4px; }
 
 /* ★ R1：新增交互控件 ≥48 CSS px */
 .tnd__seg { display: flex; gap: 6px; margin-bottom: 8px; }
 .tnd__seg-btn { flex: 1; min-height: 48px; font-size: 13px; border-radius: 8px;
   border: 1px solid var(--border, #ddd); background: transparent; color: inherit; }
-.tnd__seg-btn--on { border-color: var(--primary, #1976d2); color: var(--primary, #1976d2); font-weight: 600; }
+.tnd__seg-btn--on { border-color: var(--app-primary); color: var(--app-primary); font-weight: 600; }
 .tnd__actions { display: flex; gap: 8px; margin-bottom: 12px; }
 .tnd__btn { flex: 1; min-height: 48px; font-size: 14px; border-radius: 8px;
   border: 1px solid var(--border, #ddd); background: transparent; color: inherit; }
-.tnd__btn--primary { border-color: var(--primary, #1976d2); color: var(--primary, #1976d2); font-weight: 600; }
+.tnd__btn--primary { border-color: var(--app-primary); color: var(--app-primary); font-weight: 600; }
 
-.tnd__msg { font-size: 13px; color: var(--text-2, #666); padding: 8px 0; }
-.tnd__msg--err { color: var(--danger, #c0392b); }
+.tnd__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
+.tnd__msg--err { color: var(--app-danger); }
 .tnd__note { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; line-height: 1.5;
-  color: var(--text-2, #666); margin: 6px 0; }
-.tnd__note--warn { color: var(--warn, #b26a00); }
+  color: var(--app-text-secondary); margin: 6px 0; }
+.tnd__note--warn { color: var(--app-warning); }
 .tnd__grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-top: 6px; }
 .tnd__cell { display: flex; flex-direction: column; }
-.tnd__cell-l { font-size: 11px; color: var(--text-3, #999); }
+.tnd__cell-l { font-size: 11px; color: var(--app-text-muted); }
 .tnd__cell-v { font-size: 14px; font-weight: 600; }
 
 .tnd__list { list-style: none; margin: 0; padding: 0; }
@@ -435,15 +435,15 @@ onBeforeUnmount(() => {
 .tnd__item-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .tnd__title { font-size: 14px; font-weight: 600; }
 .tnd__badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
-.tnd__badge-t { color: var(--text-2, #666); }
-.tnd__meta { font-size: 12px; color: var(--text-2, #666); margin: 4px 0 0; }
+.tnd__badge-t { color: var(--app-text-secondary); }
+.tnd__meta { font-size: 12px; color: var(--app-text-secondary); margin: 4px 0 0; }
 .tnd__sep { margin: 0 4px; opacity: 0.5; }
 
 .tnd__table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
-.tnd__table th { text-align: left; font-weight: 500; color: var(--text-3, #999); font-size: 11px;
+.tnd__table th { text-align: left; font-weight: 500; color: var(--app-text-muted); font-size: 11px;
   border-bottom: 1px solid var(--border, #eee); padding: 4px 2px; }
 .tnd__table td { padding: 4px 2px; vertical-align: middle; }
-.tnd__td-l { color: var(--text-2, #666); white-space: nowrap; }
+.tnd__td-l { color: var(--app-text-secondary); white-space: nowrap; }
 .tnd__td-v { font-weight: 600; text-align: right; }
-.tnd__td-err { color: var(--danger, #c0392b); }
+.tnd__td-err { color: var(--app-danger); }
 </style>

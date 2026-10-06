@@ -135,13 +135,28 @@ await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, devi
 await send('Page.navigate', { url: ORIGIN + BASE + '/' })
 await sleep(4000)
 
-// 页面内容有效性：**长度不够** 或 **命中错误特征** ⇒ 这组不作数。
+// 页面内容有效性：**长度不够** 或 **DOM 上确实是错误态** ⇒ 这组不作数。
+//
+// ⚠️⚠️ 这里换过一次判据，理由必须留着（一次真实的假阴性 36 组）：
+//   原实现是「抓正文前 400 字，匹配 `加载失败|Internal Server Error|\b500\b`」。
+//   结果 **165 组里 36 组被误判成错误页**，而它们其实渲染得好好的：
+//     · `/m/` 命中「加载失败」—— 页面**说明文字里提到**了这个词（在讲错误态怎么显示）；
+//     · 6 条路由命中 `\b500\b` —— 那是**普通数字**（「前 500」「显示 500 条」）。
+//   ⇒ **全文搜关键词 = 把「页面里出现了这个词」当成「页面就是这个状态」**。
+//   正确判据是**结构**：`AppStateView` 的 error 分支渲染 `<AppIcon name="alert">`
+//   （一个 `<svg>`）与重试按钮，而 empty 分支**不渲染图标**（AppStateView.vue:33-44）。
+//   结构判据不看文案 ⇒ i18n 也顺带不再是干扰。
 const PROBE = `(() => {
-  const m = document.querySelector('#main-content') || document.body;
-  const t = (m?.innerText || '').replace(/\\s+/g,' ').trim();
-  const errHit = /Failed to load|Server temporarily unavailable|加载失败|服务暂时不可用|内部错误|Internal Server Error|请求超时|\\b500\\b/i.test(t.slice(0, 400));
-  return { len: t.length, nodes: m ? m.querySelectorAll('*').length : 0,
-           errHit, head: t.slice(0, 160), vw: innerWidth, vh: innerHeight };
+  const main = document.querySelector('#main-content') || document.body;
+  const t = (main?.innerText || '').replace(/\\s+/g,' ').trim();
+  const sv = main.querySelector('.state-view');
+  const isStateCenter = !!(sv && sv.classList.contains('state-view--center'));
+  const hasAlertIcon = isStateCenter && !!sv.querySelector('svg');
+  const roleAlert = !!main.querySelector('[role="alert"]');
+  return { len: t.length, nodes: main.querySelectorAll('*').length,
+           errHit: hasAlertIcon || roleAlert,
+           stateView: isStateCenter, hasAlertIcon, roleAlert,
+           head: t.slice(0, 160), vw: innerWidth, vh: innerHeight };
 })()`
 
 const rows = []

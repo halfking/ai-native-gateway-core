@@ -306,7 +306,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .mp__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .mp__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
-.mp__label { display: block; font-size: 12px; color: var(--text-3, #999); margin: 8px 0 4px; }
+.mp__label { display: block; font-size: 12px; color: var(--app-text-muted); margin: 8px 0 4px; }
 
 /* ★ R1：新增交互控件 ≥48 CSS px */
 .mp__input { width: 100%; min-height: 48px; padding: 0 12px; font-size: 14px;
@@ -314,19 +314,19 @@ onBeforeUnmount(() => {
 .mp__seg { display: flex; gap: 6px; margin-bottom: 8px; }
 .mp__seg-btn { flex: 1; min-height: 48px; font-size: 13px; border-radius: 8px;
   border: 1px solid var(--border, #ddd); background: transparent; color: inherit; }
-.mp__seg-btn--on { border-color: var(--primary, #1976d2); color: var(--primary, #1976d2); font-weight: 600; }
+.mp__seg-btn--on { border-color: var(--app-primary); color: var(--app-primary); font-weight: 600; }
 .mp__btn { width: 100%; min-height: 48px; margin-top: 8px; font-size: 14px; border-radius: 8px;
-  border: 1px solid var(--primary, #1976d2); background: transparent; color: var(--primary, #1976d2); }
+  border: 1px solid var(--app-primary); background: transparent; color: var(--app-primary); }
 .mp__btn:disabled { opacity: 0.5; }
 
-.mp__msg { font-size: 13px; color: var(--text-2, #666); padding: 8px 0; }
-.mp__msg--err { color: var(--danger, #c0392b); }
+.mp__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
+.mp__msg--err { color: var(--app-danger); }
 .mp__note { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; line-height: 1.5;
-  color: var(--text-2, #666); margin: 6px 0; }
-.mp__note--warn { color: var(--warn, #b26a00); }
+  color: var(--app-text-secondary); margin: 6px 0; }
+.mp__note--warn { color: var(--app-warning); }
 .mp__grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-top: 8px; }
 .mp__cell { display: flex; flex-direction: column; }
-.mp__cell-l { font-size: 11px; color: var(--text-3, #999); }
+.mp__cell-l { font-size: 11px; color: var(--app-text-muted); }
 .mp__cell-v { font-size: 14px; font-weight: 600; }
 
 .mp__list { list-style: none; margin: 0; padding: 0; }
@@ -334,7 +334,7 @@ onBeforeUnmount(() => {
 .mp__item-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .mp__title { font-size: 14px; font-weight: 600; word-break: break-all; }
 .mp__badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
-.mp__badge-t { color: var(--text-2, #666); }
-.mp__badge-t--warn { color: var(--warn, #b26a00); }
-.mp__meta { font-size: 12px; color: var(--text-2, #666); margin: 4px 0 0; word-break: break-all; }
+.mp__badge-t { color: var(--app-text-secondary); }
+.mp__badge-t--warn { color: var(--app-warning); }
+.mp__meta { font-size: 12px; color: var(--app-text-secondary); margin: 4px 0 0; word-break: break-all; }
 </style>

@@ -312,32 +312,32 @@ onBeforeUnmount(() => {
 <style scoped>
 .rd__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .rd__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
-.rd__label { display: block; font-size: 12px; color: var(--text-3, #999); margin-bottom: 4px; }
+.rd__label { display: block; font-size: 12px; color: var(--app-text-muted); margin-bottom: 4px; }
 .rd__mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; word-break: break-all; }
 
 /* ★ R1：新增交互控件 ≥48 CSS px */
 .rd__input { width: 100%; min-height: 48px; padding: 0 12px; font-size: 14px;
   border: 1px solid var(--border, #ddd); border-radius: 8px; background: transparent; color: inherit; }
 .rd__btn { min-height: 48px; min-width: 96px; margin-top: 8px; margin-right: 8px; padding: 0 16px;
-  border-radius: 8px; border: 1px solid var(--border, #ddd); background: var(--accent, #2f6feb); color: #fff; font-size: 13px; }
+  border-radius: 8px; border: 1px solid var(--border, #ddd); background: var(--app-primary); color: #fff; font-size: 13px; }
 .rd__btn--ghost { background: transparent; color: inherit; }
 .rd__btn:disabled { opacity: 0.4; }
 
-.rd__msg { font-size: 13px; color: var(--text-2, #666); padding: 8px 0; }
-.rd__msg--err { color: var(--danger, #c0392b); }
+.rd__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
+.rd__msg--err { color: var(--app-danger); }
 .rd__note { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; line-height: 1.5;
-  color: var(--text-2, #666); margin: 6px 0; }
-.rd__note--warn { color: var(--warn, #b26a00); }
+  color: var(--app-text-secondary); margin: 6px 0; }
+.rd__note--warn { color: var(--app-warning); }
 
 .rd__grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
 .rd__row2 { display: flex; gap: 16px; }
 .rd__cell { display: flex; flex-direction: column; min-width: 0; }
-.rd__cell-l { font-size: 11px; color: var(--text-3, #999); }
+.rd__cell-l { font-size: 11px; color: var(--app-text-muted); }
 .rd__cell-v { font-size: 14px; font-weight: 600; word-break: break-all; }
 .rd__status { display: flex; align-items: center; gap: 6px; }
 
 .rd__body { margin-top: 10px; }
-.rd__body-l { font-size: 12px; color: var(--text-3, #999); }
+.rd__body-l { font-size: 12px; color: var(--app-text-muted); }
 .rd__pre { margin: 4px 0 0; padding: 8px; font-size: 11px; line-height: 1.5; overflow-x: auto;
   background: var(--bg-2, #f6f7f9); border-radius: 8px; }
 </style>

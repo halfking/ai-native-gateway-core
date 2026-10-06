@@ -196,21 +196,21 @@ onBeforeUnmount(() => {
 .mw__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .mw__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 
-.mw__msg { font-size: 13px; color: var(--text-2, #666); padding: 8px 0; }
-.mw__msg--err { color: var(--danger, #c0392b); }
+.mw__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
+.mw__msg--err { color: var(--app-danger); }
 .mw__note { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; line-height: 1.5;
-  color: var(--text-2, #666); margin: 6px 0; }
-.mw__note--warn { color: var(--warn, #b26a00); }
+  color: var(--app-text-secondary); margin: 6px 0; }
+.mw__note--warn { color: var(--app-warning); }
 
 .mw__total { font-size: 30px; font-weight: 700; margin: 4px 0 0; }
-.mw__total-l { font-size: 12px; color: var(--text-3, #999); margin: 2px 0 0; }
+.mw__total-l { font-size: 12px; color: var(--app-text-muted); margin: 2px 0 0; }
 .mw__grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-top: 8px; }
 .mw__cell { display: flex; flex-direction: column; }
-.mw__cell-l { font-size: 11px; color: var(--text-3, #999); }
+.mw__cell-l { font-size: 11px; color: var(--app-text-muted); }
 .mw__cell-v { font-size: 14px; font-weight: 600; }
 
 .mw__item-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .mw__title { font-size: 15px; font-weight: 700; }
 .mw__badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
-.mw__badge-t { color: var(--text-2, #666); }
+.mw__badge-t { color: var(--app-text-secondary); }
 </style>
