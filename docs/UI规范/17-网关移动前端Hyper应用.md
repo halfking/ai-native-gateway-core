@@ -561,3 +561,46 @@ id 非法 → 400 `invalid integrity id`（:276-279）。
 （争 stdout）。按 §11.16 的纪律不放过，但也不虚报：目前证据指向
 「并发跑测试工具本身」而非判据或产品缺陷；AppDrawer 这 10 条判据**不含**
 §11.16 那类时序断言（无 autoFill 参与），与已定位并收敛的两处 flaky 形态不同。
+
+
+### 11.20 ★★ 修正一个**已存在**的误报缺陷：降级被显示成「真的一分钱没花」
+
+这一轮不是加页面，是**修**。查 `cost-trend` 时读到后端原注释
+（`admin/usage_enhanced.go:48-52`）：
+
+> 「这里的降级形状是『可选视图未迁移』⇒ 200 + 空 entries + total_cost 0，
+> 页面上表现为一张空饼图。**若不标记，它与『这段时间真的一分钱没花』同形。**」
+
+**移动端此前正落在这个坑里**：`UsageView` 的 summary 降级只在
+「请求数」一张卡的 `hint` 上提示，其余 5 张卡（tokens / cost / credits /
+成功率 / 延迟）**照常显示 0**。⇒ 一次后端可选视图缺失，被用户读成
+「这段时间零调用、一分钱没花」。
+
+修法分两层：
+1. **summary 降级 → 整块声明**，降级时**不再渲染那 6 张含 0 的卡**。
+   判据反向锁定：若改回「照常显示 0 + 一句小提示」，`UsageView.spec.ts` 会红。
+2. 新增 `/api/usage/cost-trend` 维度切换（model / provider / key / application /
+   tenant，后端 `planCostTrend` 的维度集），并把三态显式抬成
+   `readCostTrend() → 'ok' | 'degraded' | 'empty'`：
+   - `degraded` 时 `costIsMeaningful: false` —— 数字照样透传（UI 可能要显示），
+     但调用方无法把它当零花费读；
+   - `degraded` 与 `empty` **强制互斥**，判据里有专门一条反向用例守住。
+
+★ 后端那行注释还记了一个真实教训，可直接迁移：**同文件的 PeriodCompare /
+CacheEconomics 先后加了 `degraded` 标记，CostTrend 自己漏了** ⇒
+「本轮已修降级载荷」这句话对自己文件都不成立。移动端读同一族降级载荷时
+要**逐端点核对它带不带标记**，不能因为「这个端点我加了降级处理」就假定
+同族其它端点也有。
+
+### 11.21 本轮门禁（第七轮，成本趋势 + 降级修正）
+
+`web-mobile/` 实测：`vue-tsc -b` 通过；`vitest run` **205 用例 / 27 文件全绿**
+（新增 usageCostTrend 9 条 + UsageView 4 条）；`npm run css:check` 通过（32 文件）；
+`npm run build` 通过；**连跑 10 次全绿**。
+另附 i18n 键集核对：`zh-CN` / `en-US` 各 **345 键，零差异**（新增的
+`usage.dim.*` 五个维度键也在其中）。
+
+**一处自己踩的坑（已修）**：新增的 `usage.costTrend` 等 9 个键最初被插到
+`models:` 词典里（脚本按「第一个 `keys: {`」定位，而 `models` 在 `keys` 之前），
+运行时表现为**页面直接显示字面量 `usage.costTrend`**（i18n 缺键回退键名）。
+是那 4 条视图测试先红才暴露的 —— 若只跑 API 层测试就漏过去了。
