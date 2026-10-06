@@ -9306,3 +9306,143 @@ if withOutbound > 0 { result.CompressedTotal += cnt }   // ← 整组都算
 - 全量 **3584 条（133 文件）** rc=0；十连跑 10/10
 
 文档 §11.105 纯追加。
+
+---
+
+### 11.106 usage 增强三条接 API 层（第七十批）
+
+**范围**：`web-mobile/src/api/usageEnhanced.ts` + `.test.ts`（新建）
+**三条端点都挂在 `h.admin(h.HandleUsageAdmin)`（`admin/handler.go:1267`）这个前缀子路由上**
+（分派见 `admin/usage.go:49-68`）⇒ tenant_admin 可用。
+
+| 端点 | handler | 缺省时间窗 |
+|---|---|---|
+| `GET /api/admin/usage/cost-trend` | `usage_enhanced.go:128` | **7 天** |
+| `GET /api/admin/usage/period-compare` | `usage_enhanced.go:347` | **不接受时间窗** |
+| `GET /api/admin/usage/cache-economics` | `usage_enhanced.go:616` | **30 天** |
+
+同族 `trend-series` / `trend-models` 也是 admin 档（`admin/usage_trend_series.go`），
+**留下一批**（该文件 615 行，另起一批更划算）。
+
+**权限档位取证**：`format-anomaly*`（`handler.go:913-915`）、`report-rollup/`（`:1067`）、
+`storage/config`（`:1108`）都是 **`h.superAdmin`** ⇒ 将来接时抽屉席必须设
+`requiresRole: 'super_admin'`；`storage/migration-state`（`:1111`）、
+`ops/overview`（`:1070`）、`connection-registry`（`:1024-1025`）是 `admin(...)`。
+
+#### 11.106.1 ★★★★★ 本族最要紧的五件事
+
+**(1) ★★★★★ `degraded` 是恒发字段（不带 omitempty），`degraded_reason` 才是条件键**
+
+```go
+// usage_enhanced.go:51-52 / :334-336 / :612-613（三处逐字相同）
+Degraded       bool   `json:"degraded"`                 // 恒发
+DegradedReason string `json:"degraded_reason,omitempty"` // 仅降级时下发
+```
+
+注释写明理由：字段缺失与 `false` 在 API 语义上无法区分，
+**那正是这个字段要消灭的歧义** ⇒ 客户端可以断言「服务端确认过它是好的」。
+
+> ★ **本仓少见的「故意不省略」写法**，与 compression / data-lifecycle 族的
+> omitempty 条件键**正好相反** ⇒ **不能照抄别族的「键缺失即异常」判据**。
+
+降级时返回的是 **200 + 全 0**（`:215-228` / `:387-393` / `:703-709`）。
+注释记了实测：2026-09 实际花费 1139.62 美元，period-compare 却显示 0 ——
+**用户看到的是「本月没花钱」**。⇒ UI 必须先读 `degraded`。
+
+**(2) ★★★★★ `cache-economics` 的四个「节省」数字全是按硬编码假设推算的**
+
+```go
+avgPricePerToken = dollarsSpent / (cacheReadTokens + promptTokens) // :729 把「已花的钱」当单价
+dollarsSaved     = cacheReadTokens * avgPricePerToken * 0.9         // :733 ← 假设缓存价是 10%
+compressionSaved = compressedRequests * 8000 * avgPricePerToken     // :739 ← 假设每次省 8000 token
+totalSaved       = dollarsSaved + compressionSaved                  // :743
+```
+
+⇒ `dollars_saved` / `compression_saved` / `total_saved` / `savings_rate`
+**不是实测账单**，是「三条写死的假设」的推论 ⇒ UI 必须标「估算」。
+
+**(3) ★★★★ `compressed_requests === 0` 分不清「没压缩」与「查询静默失败」**
+
+压缩计数是**附加信息**，主聚合成功后才取，失败只记日志（`:694-697`）
+⇒ 它是 0 时**分不清**两种情况 ⇒ 连锁着 `compression_saved` / `total_saved` /
+`savings_rate` 一起不可信。导出 `compressedCountMayBeFailed()` /
+`compressionSavedUnreliable()` 把这条连锁显式化。
+
+**(4) ★★★★ `group_by` 决定读哪张表**（`planCostTrend`，`:91-126`）
+
+| 维度 | 基表 |
+|---|---|
+| `model` / `provider` / `api_key` | `usage_ledger_with_current_month ul` |
+| `work_type` / `intent` | `request_logs_with_current_month rl` |
+
+⇒ 换 `group_by` 就**换基表**。两表 cost 口径经注释核对一致（`:660`），
+但那是某一天的一次实测，**不是契约保证** ⇒ 导出 `REQUEST_SIDE_GROUP_BYS` /
+`costTrendSwitchesBaseTable()` 供 UI 标注。
+另：`group_by` 非法 ⇒ **400**（`:142`），**不是**静默回落；而缺省是 `model`。
+
+**(5) ★★★ 三条端点的时间窗缺省各不相同，参数名也与别族不同**
+
+- 参数是 **`start` / `end`**（不是 `from`/`to`），**必须同时给**，
+  只给一个 ⇒ **400**（`usage.go:1448-1450`）；格式 `YYYY-MM-DD`，错 ⇒ 400；
+  `end < start` ⇒ 400。
+- `days` 是 **clamp [1,366]**（`:1439-1444`），且走 days 口径时起点被
+  `.Truncate(24*time.Hour)` **对齐到 UTC 零点**（`:1445`）⇒ 不是「此刻往前 N 天」。
+- `period-compare` **不接受时间窗**，只收 `current` / `previous` 两个
+  `YYYY-MM`（`time.Parse("2006-01", …)`），**两个都必填**、缺任一 ⇒ 400（`:357-360`）。
+
+#### 11.106.2 ★ 其余已确认的契约
+
+- `entries` **不是全集**：占比 <2% 且已有 10 条的条目被合并进 `other`（`:262-267`）
+  ⇒ `other_cost` / `other_count` 给出被合并的量。
+- `total_cost` 是**合并前**所有分组之和（`:259`）⇒ 应等于 `Σ entries + other_cost`。
+- `dimension_value` 来自 `COALESCE(…, 'unknown')`（`:165`）⇒ 分组值缺失归到 `'unknown'`。
+- **`percentage` 是 0-100**（`:205`），而 **`error_rate` 是 0-1**（`:187`）⇒ 同一响应两种单位。
+- `trend` 阈值 **±5%**（`:426-430`），`significant` 阈值 **±20%**（`:433-435`）
+  ⇒ **可能「up 但不 significant」** ⇒ 导出 `trendWithoutSignificance()`。
+- 上期成本为 0 ⇒ `change_pct` 留 **0**（`:421-423`），不是无穷大也不是 null。
+- `by_dimension` 只在 `len(modelChanges) > 0` 时才放 `"model"` 键（`:447-449`）
+  ⇒ 查询失败时是 `{}`，与「查了但无变化」**同形**（R68 注释自陈，只留 `slog.Warn`）。
+- 维度明细 SQL 硬编码 **`LIMIT 10`**（`:563`）。
+- `effective_cost_ratio` 分母为 0 时留 **1.0**（`:746` 初始化），不是 0
+  ⇒ 「成本占比 100%」是假的 ⇒ 导出 `effectiveCostRatioIsFakeFull()`。
+- `cache_hit_ratio` 分母为 0 时留 0（`:719-722`）。
+- `PeriodStats.unique_sessions` 已于 2026-10-03 **删除**，注释记了三条理由，
+  核心是：「一个无消费者的指标算不出来时，返回 0 与『真的是 0』在报告上无法区分」
+  ⇒ 客户端**不要**去读这个键。
+- 租户口径用的是 `EffectiveTenantIDAll`（`context.go:69-74`）——
+  本仓**第三种**租户过滤（见 §11.108 的三口径对照）。
+
+#### 11.106.3 ★ 本批最大的一处：自己写出了**冗余判据**
+
+第一轮变异 **28/32**，4 条 `STILL_GREEN` 里最要紧的一条是：
+
+```ts
+// 两条检查同时存在：
+requireKeys(d, [..., 'degraded'], '成本趋势')     // 存在性
+if (typeof d.degraded !== 'boolean') throw ...   // 类型
+```
+
+**后一条完全覆盖前一条**（`typeof undefined !== 'boolean'` 也会抛）
+⇒ 把 `'degraded'` 从必检键里删掉，用例照样全绿
+⇒ 这是我自己写的**恒真判据**（无用复杂度）。
+
+修法：把 `degraded` 从三个必检键数组里**移出**，只由类型校验单独把关，
+并把这条冗余写进代码注释（免得下一个维护的人又把它加回去）。
+
+> ★ **判据**：两条检查若**一条蕴含另一条**，那条被蕴含的就是恒真。
+> 与 §11.103 的「判据两条路径在夹具上等价」同源 ——
+> 都在问「**两个版本在所有输入上等价吗**」。
+
+另有 3 条真缺用例（补上）：
+`by_dimension` 不是对象、period-compare 缺参不静默填默认值、
+period-compare 的 `degraded` 键缺失/类型错。
+
+#### 11.106.4 验证
+
+- 用例 **59 条**（`usageEnhanced.test.ts`）
+- 变异 `/tmp/mut-co70.mjs` **32 条，32/32 有牙、零可疑**，`RESTORED=OK`（逐字节一致）
+- 三门 rc=0；`vue-tsc` rc=0；`npm run build` rc=0
+- 全量 **3643 条（134 文件）** rc=0；十连跑 10/10
+- U+FFFD 自查：源与用例均 0（按 §11.105 新增的规则，扫描范围含本批新写文件）
+
+文档 §11.106 纯追加。
