@@ -101,8 +101,20 @@ export function layoutAudit() {
     const s = getComputedStyle(el)
     if (s.pointerEvents === 'none') return
     const r = el.getBoundingClientRect()
-    if (r.width < MIN_TAP || r.height < MIN_TAP) {
-      small.push({ sel: path(el), w: Math.round(r.width), h: Math.round(r.height),
+    // ⚠️ 量的是**有效命中区**，不是元素自身矩形（实测 /m/request-anomalies）：
+    //   `label.ra__check > input[type=checkbox]`，input 自身只有 **20×20**，
+    //   但它被整个 label 包着，点 label 任意位置都会切换 checkbox
+    //   ⇒ 实测 label = **270×48**，零违规（WCAG 2.5.8 AA 要 24×24，
+    //   本仓 R1 要 min-height 48，都达标）。只量 input 会报出一条**不存在的缺陷**。
+    //   「命中区」= 最近的可点祖先（label 会把点击转发给内部控件）。
+    const hit = el.closest('label,button,a,[role="button"]')
+    const target = hit && hit !== el ? hit : el
+    const hr = target.getBoundingClientRect()
+    if (hr.width < MIN_TAP || hr.height < MIN_TAP) {
+      small.push({ sel: path(el), w: Math.round(hr.width), h: Math.round(hr.height),
+        via: hit && hit !== el ? path(target) : undefined,
+        own: r.width < MIN_TAP || r.height < MIN_TAP
+          ? `${Math.round(r.width)}×${Math.round(r.height)}` : undefined,
         text: (el.innerText || el.textContent || '').trim().slice(0, 20) })
     }
   })
@@ -164,8 +176,16 @@ export function layoutAudit() {
   })
   I.stats.fixedBars = fixed.map((f) => ({ sel: path(f.el), pos: f.pos,
     top: Math.round(f.r.top), h: Math.round(f.r.height) }))
-  const bottomBar = fixed.find((f) => f.r.top > innerHeight * 0.6)
-  const topBar = fixed.find((f) => f.r.bottom < innerHeight * 0.4)
+  // ⚠️ 「固定栏」必须是**外壳 chrome**，不能是内容里的 sticky（实测 /m/matrix）：
+  //   该页有 **581 个** `position:sticky` 的 `.mx__rowhead`（表格行头），
+  //   只要有一个的 top 落在视口下 40% 就被 `find()` 选中当「底部固定栏」，
+  //   于是判出一句「内容底部伸入底部固定栏 122px」——而那一页**根本没有吸底栏**
+  //   （实测 `navs: []`），滚到底后被视口裁掉的单元格 = 0。
+  //   判别式：栏在滚动宿主**之外**（`nav.bottomnav` 的祖先里没有滚动容器），
+  //   内容里的 sticky 行头在 `.mx__scroll` **里面**。⇒ 用 inScroller 分。
+  const bars = fixed.filter((f) => !inScroller(f.el))
+  const bottomBar = bars.find((f) => f.r.top > innerHeight * 0.6)
+  const topBar = bars.find((f) => f.r.bottom < innerHeight * 0.4)
 
   // 内容容器底部是否伸进了底部固定栏
   if (bottomBar) {
@@ -270,11 +290,21 @@ export function layoutAudit() {
   // 而滚到顶部时列表内容从半透明底栏下方经过，矩形相交 33–49%。
   // ⇒ 「滚动内容 × 固定底栏」一律不算重叠：**能不能点到底**由下面的
   //   covered-by-fixed（按 scrollHeight/clientHeight 判）单独回答，不在这里重复报。
-  const inScroller = (el) => {
+  // ⚠️ 判「滚动容器」**不能只看 overflow 的取值**（一次真实假阳性的根因）：
+  //   原实现要求 `overflowY === 'auto' | 'scroll'`。但本仓的滚动宿主是
+  //   `main#main-content.hyper-app__main`，它的 overflow 是 **hidden**
+  //   （HyperApp.vue 的 `.hyper-app__main { overflow: hidden }` —— 注释写明
+  //   「main 只做布局容器不滚动」），而实测它 **sh=1208 / ch=752 真实溢出**。
+  //   ⇒ 谓词返回 false ⇒ 下一行的「滚动内容 × 固定栏」排除**从不触发**，
+  //   `bottomnav__item` 与页面按钮的每一次「从下方经过」都被报成 tap-overlap
+  //   （实测 /m/maas-orders 滚到底后被盖 0 个 ⇒ 全部是假阳性）。
+  //
+  //   真正决定「内容能不能移开」的**不是 overflow 取值，而是这个元素有没有溢出**。
+  //   `scrollTop` 对 `overflow:hidden` 的容器照样可编程设置，滚动宿主也照样用它。
+  function inScroller(el) {   // 函数声明：会提升。fixedBars（165 行）先用到它，
     let n = el.parentElement
     while (n && n !== document.body) {
-      const s = getComputedStyle(n)
-      if ((s.overflowY === 'auto' || s.overflowY === 'scroll') && n.scrollHeight > n.clientHeight + 4) return true
+      if (n.scrollHeight > n.clientHeight + 4) return true
       n = n.parentElement
     }
     return false
@@ -282,7 +312,7 @@ export function layoutAudit() {
   // ⚠️ 必须**向上看祖先**：实测底栏里 `nav.bottomnav > a.bottomnav__item` 自身是
   // position:static，fixed 挂在父级 nav.bottomnav 上。
   // 只看元素自身 ⇒ 这类（最常见的）固定栏永远判不出来，假阳性就一直报。
-  const isFixedBar = (el) => {
+  function isFixedBar(el) {
     let n = el, d = 0
     while (n && n.nodeType === 1 && d < 6) {
       const s = getComputedStyle(n)
