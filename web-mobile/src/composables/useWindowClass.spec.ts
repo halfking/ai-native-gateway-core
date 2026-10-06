@@ -3,7 +3,10 @@ import { BREAKPOINT_EXPANDED_PX, BREAKPOINT_LARGE_PX, BREAKPOINT_MEDIUM_PX, curr
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-// 双镜像防漂移（01 §2）：TS 断点常量必须与 theme.css 的 --app-bp-* 一致。
+// 双镜像防漂移（17 §4-R11）：TS 断点常量必须与 theme.css 的 --app-bp-* 一致。
+// ⚠️ 这条断言只保证**两侧互不漂移**，不保证它们等于 01 §2.1 的 768/1024/1440 ——
+// 那是 web/ 桌面侧的 SSOT，web-mobile/ 用的是 600/960/1280 自有断点（17 §4-R11）。
+// 哪天真要改数值，改完这三条断言会自己提醒你 theme.css 还没跟上。
 describe('useWindowClass 断点双镜像', () => {
   it('theme.css token 与 TS 常量一致', () => {
     // vitest root = web-mobile/（jsdom 下 import.meta.url 非 file 协议，走 cwd 解析）
