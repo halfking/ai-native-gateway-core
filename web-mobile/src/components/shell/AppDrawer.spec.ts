@@ -106,10 +106,23 @@ describe('navItemsFor', () => {
     expect(navItemsFor(DRAWER_NAV, 'super_admin').length).toBe(DRAWER_NAV.length)
   })
 
-  it('tenant_admin 少一个（仅 superAdmin 档那些）', () => {
+  it('tenant_admin 少掉的**只有** superAdmin 档那些', () => {
     const filtered = navItemsFor(DRAWER_NAV, 'tenant_admin')
     const dropped = DRAWER_NAV.filter((i) => !filtered.some((f) => f.key === i.key))
-    expect(dropped.map((d) => d.key)).toEqual(['integrity'])
+    // ★ 白名单式断言：把 superAdmin 档的 key 逐个列出来。排序后再比，
+    //   避免依赖 DRAWER_NAV 的书写顺序（顺序不是契约）。
+    //   加新 superAdmin 档页面时这条会红 —— 那正是它该做的。
+    expect(dropped.map((d) => d.key).sort()).toEqual(['integrity', 'routing-audit'])
+  })
+
+  // ★ 不变量本身：被挡掉的项**必须**都是 requiresRole:'super_admin'。
+  //   只断言「挡了哪几个」会漏掉反向错误——比如某项被 requiresRole 误标成
+  //   super_admin 从而对所有 admin 档用户消失，而白名单里还有它。
+  it('被挡掉的项全部确实是 superAdmin 档（不得误伤 admin 档）', () => {
+    const filtered = navItemsFor(DRAWER_NAV, 'tenant_admin')
+    for (const i of filtered) {
+      expect(i.requiresRole ?? 'admin').not.toBe('super_admin')
+    }
   })
 
   it('role 为空（未 hydrate 完成）也照样只挡 superAdmin 档', () => {
