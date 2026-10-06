@@ -8680,3 +8680,101 @@ UI 必须显示「已逾期」，不能显示成「待审批中」。
   **「仍全绿」先问判据够不够严（这里是不够），「rc≠0 没抓到名」先问锚点对不对。**
 
 文档 §11.100 纯追加。
+
+### 11.101 第六十五批：审批队列接 UI（`ApprovalQueueView`）
+
+第六十四批的 `api/approvals.ts`（39 条用例）**全无 UI 消费方**。本批补上。
+
+#### 11.101.1 与既有审批页的边界（三页不重叠）
+
+| 页面 | 答什么 | API 模块 |
+|---|---|---|
+| `/approval-config` | 租户审批**配置** | `api/approvalConfig.ts` |
+| `/approval-rules` | 审批人与**规则** | 同上 |
+| `/approval-queue`（本批） | 运行中的**审批实例** | `api/approvals.ts` |
+
+配置说「该问谁」，规则说「什么条件下拦」，本页说「现在有几条在等」。
+
+权限：`main.go:7384-7385` 两条都是 `wrapAdmin(...)` ⇒ tenant_admin 可用
+⇒ 抽屉席**不设** `requiresRole`（与同族的 `approval-config`/`approval-rules` 一致）。
+
+不碰 `/api/v1/approvals/*` 的 **approve / reject / resume**（:7375-7381）——
+它们真的改变审批状态，会导致超时、影响会话是否放行。
+
+#### 11.101.2 ★★★★★ 五处「不能都渲染成同一个东西」
+
+**(1) `total` 是本页条数。** UI 因此显示「**本页返回 N 条**（后端只给本页数，
+不给库里总数）」，并且**明确排除「共 N 条」这种措辞**。
+配套钉一条 `approvalsTotalIsPageSize`：`total !== items.length` ⇒ 报契约异常。
+
+**(2) 翻页判据只能靠「本页取满」。**
+`total_pages` 恒为 1（`total ≤ page_size`），
+用它会让「下一页」按钮**永远禁用**。变异 #3 专门把判据换成
+`page < total_pages`，实测转红。
+
+**(3) `risk_level`/`trigger_type` 空串 = 未检测。**
+`buildListItem` 只在 `DetectResult != nil` 时才填（:546-549）。
+⇒ 变异 #4 把空串渲染成「低」，实测转红 ——
+「低风险」会让运维以为系统判定过，而实际上**根本没检测**。
+
+**(4) 三态互斥：倒计时 / 已逾期 / 已决定。**
+
+| 条件 | 显示 |
+|---|---|
+| `status == pending` 且有 `time_left` | 倒计时 |
+| `status == pending` 且**无** `time_left` | **已逾期**（带 `aq__overdue` class） |
+| 已审批（`approved_at` 键存在） | 处理时间 |
+| 其它 | 无数据占位 |
+
+★ 「已逾期」是本族**唯一会挡住会话**的状态，所以给了独立底色，
+并且页面顶部额外提醒「本页有 N 条已逾期的待审批 —— 它们还在挡着会话」。
+
+**(5) 统计端混两套口径。**
+`today_total`/`today_pending` 按「今天」算，与 `start_time`/`end_time`
+控制的其余八个字段**无关** ⇒ 页面上分区呈现，并明写
+「今天」那两个不受时间范围影响。
+
+另：`avg_approval_time_seconds` 分母为 0 时是 Go 零值，
+⇒ 显示「无样本（还没有已通过/已拒绝的记录）」而不是「0 秒」。
+
+#### 11.101.3 ★ 一条判别样本**自己漏了**的真实案例
+
+本批变异 #8（把 `approvalCountingDown` 的首个分支改成恒 false）
+报「rc≠0 但没抓到期望名」。追下去发现两件事：
+
+**一、锚点命名误导了我。** 我把 `expect` 指向「已审批但仍带 `time_left`」
+那条判别样本，但它红在「pending + 有 `time_left` ⇒ 显示倒计时」——
+因为 `LIST_NORMAL` 里有三条 item，`rowByLabel` 返回**第一条**，
+它的 `58m` 先消失。两条都是真缺陷，`namedFails` 只报首个。
+
+**二、更值得记的是那条判别样本自己太弱。**
+它原本只断言：
+
+```ts
+expect(row.find('dd').classes()).not.toContain('aq__overdue')
+```
+
+而变异让 `itemState` 落到 `'other'`（渲染成「—」）时**照样通过** ——
+**判别样本自己也漏**。已改成正面断言：
+
+```ts
+expect(row.find('dd').element.textContent).toBe('2026-10-08T01:30:00Z')
+expect(row.find('dd').element.textContent).not.toContain('58m')
+expect(row.find('dd').classes()).not.toContain('aq__overdue')
+expect(row.find('dd').classes()).not.toContain('aq__nodata')
+```
+
+★ **「判别样本」也需要被变异检验。** 它的作用是让两种实现在该取值上分叉，
+但**断言强度不够时，它会「通过」而什么也没证明** ——
+与 [[量具先自证]] 同源，只是这次漏在**用例**而不是**工具**上。
+
+#### 11.101.4 验证
+
+- 用例 **30 条**（`ApprovalQueueView.spec.ts`）
+- 变异 `/tmp/mut-co65.mjs` **20 条，20/20 有牙、零可疑**，`RESTORED=OK`（逐字节一致）
+- 三门 / `vue-tsc` / `build` 全 rc=0；全量 3335 条（129 文件）rc=0；十连跑 10/10
+- ★ 本轮写脚本时又踩了一次嵌套模板字符串：变异串里写
+  `` t(\`approvalQueue.status.${statusEcho}\`) `` 会被 **JS 求值**（`statusEcho is not defined`
+  直接崩在脚本加载阶段）⇒ 变异串里的 `${}` 必须写成 `\${}`。
+
+文档 §11.101 纯追加。

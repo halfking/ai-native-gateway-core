@@ -26,6 +26,7 @@ export const zhCN = {
     dashboardOps: '看板读面',
     logOps: '日志运维面',
     annotations: '标注工作台',
+    approvalQueue: '审批队列',
     home: '总览',
     nodes: '节点',
     models: '模型',
@@ -805,6 +806,55 @@ export const zhCN = {
       granularityNote: '后端按窗口换聚合粒度：当前为 {gran} 桶，跨窗口的均值不可直接比较。',
       granularity: { '5m': '5 分钟', daily: '天' },
       zeroPlaceholder: '这一行的平均值全部为 0，可能是后端 COALESCE 编造的默认值 —— 不代表真实测量值。',
+    },
+  },
+  approvalQueue: {
+    title: '审批队列',
+    load: '加载',
+    reload: '重新加载',
+    prev: '上一页',
+    next: '下一页',
+    page: '第 {page} 页',
+    errForbidden: '无权查看审批队列',
+    statusFilter: '状态',
+    pageSize: '每页条数',
+    // ★ 回显后端实际生效的取值：page_size >200 会被静默回落 50
+    effective: '后端实际生效：状态 {status} · 第 {page} 页 · 每页 {pageSize} 条',
+    risk: '风险等级',
+    trigger: '触发原因',
+    state: '当前状态',
+    reason: '备注',
+    // ★ risk_level / trigger_type 为空串 = **未检测**，不是「低风险」
+    notDetected: '未检测',
+    // ★★★ pending + 无 time_left = 已过期却还标着待审批
+    overdue: '已逾期',
+    decided: '已处理',
+    // ★ status 是自由字符串（后端不校验），未知值要说明而不是原样透传
+    statusUnknown: '未知状态（{raw}）',
+    status: { pending: '待审批', approved: '已通过', rejected: '已拒绝', timeout: '已超时' },
+    stats: {
+      title: '审批统计',
+      total: '总数',
+      pending: '待审批',
+      approved: '已通过',
+      rejected: '已拒绝',
+      timeout: '已超时',
+      avgTime: '平均审批耗时',
+      avgNoSamples: '无样本（还没有已通过/已拒绝的记录）',
+      secondsUnit: ' 秒',
+      countsDisagree: '计数器对不上：待审批+已通过+已拒绝+已超时 大于总数。',
+      // ★★ 今天口径与区间口径混在同一份响应里，必须分区
+      scopeNote: '上面八个数字是按所选时间范围统计的；下面两个「今天」是后端单独按当天算的，不受时间范围影响。',
+      todayTotal: '今天总数',
+      todayPending: '今天待审批',
+    },
+    list: {
+      title: '审批实例',
+      // ★★★ total 是**本页条数**，不是库里总数
+      pageCount: '本页返回 {n} 条（后端只给本页数，不给库里总数）',
+      totalMismatch: '契约异常：后端说共 {total} 条，实际返回 {shown} 条。',
+      overdueWarn: '本页有 {n} 条已逾期的待审批 —— 它们还在挡着会话。',
+      emptyForStatus: '「{status}」这一档当前没有记录（不是「一条都没有」）。',
     },
   },
   annotations: {
