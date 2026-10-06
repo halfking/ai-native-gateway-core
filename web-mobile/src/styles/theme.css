@@ -86,10 +86,28 @@
   --app-bp-medium: 600px;
   --app-bp-expanded: 960px;
   --app-bp-large: 1280px;
-  --app-safe-top: env(safe-area-inset-top, 0px);
-  --app-safe-bottom: env(safe-area-inset-bottom, 0px);
-  --app-safe-left: env(safe-area-inset-left, 0px);
-  --app-safe-right: env(safe-area-inset-right, 0px);
+  /* ---- safe-area 通道（10 §4.6.32）----------------------------------
+     **先读壳注入值，再回落 env()**，两条通道不是一回事：
+
+     · 壳注入：Capacitor 8.5.2 `SystemBars.injectSafeAreaCSS()` 在
+       `insetsHandling:'css'` 下用 evaluateJavascript 往 documentElement
+       写 `--safe-area-inset-{top,right,bottom,left}` 四个**自定义属性**
+       （px 值 = 原生 inset / density）。这是上游唯一保证写到的通道。
+     · env()：浏览器原生 `env(safe-area-inset-*)`。要它非零，WebView 必须
+       被摆进刘海区，而上游 `@capacitor/android` **全包没有**
+       `LAYOUT_IN_DISPLAY_CUTOUT_MODE` / `windowLayoutInDisplayCutoutMode`。
+
+     只读 env() ⇒ Android 上这四个 token 恒 0 ⇒ 11 处消费点全部形同虚设。
+     本壳 targetSdk 36：Android 15+ 强制 edge-to-edge，且
+     `windowOptOutEdgeToEdgeEnforcement` 退路在 targetSdk 36 已被移除，
+     所以内容**一定**画到状态栏/导航栏底下 —— 这不是「万一」，是必然。
+
+     浏览器/桌面未注入 `--safe-area-inset-*` ⇒ 回落 env() ⇒ 仍为 0
+     ⇒ 桌面端零回归。 */
+  --app-safe-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+  --app-safe-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+  --app-safe-left: var(--safe-area-inset-left, env(safe-area-inset-left, 0px));
+  --app-safe-right: var(--safe-area-inset-right, env(safe-area-inset-right, 0px));
 
   /* 字号 */
   --app-font-body: 0.875rem;

@@ -179,7 +179,13 @@ function onKeydownTab(ev: KeyboardEvent): void {
   justify-content: space-between;
   gap: var(--app-space-2);
   padding: var(--app-space-3) var(--app-space-4);
-  padding-top: calc(var(--app-space-3) + var(--app-safe-top) * 0);
+  /* 曾经这里有一行 `padding-top: calc(var(--app-space-3) + var(--app-safe-top) * 0)`
+     —— 与上一行**逐字冗余**（`* 0` 使 safe-area 项恒为 0），却长得像在处理
+     刘海。已删除并在此说明为什么**不需要** safe-top（10 §4.6.32）：
+     ≥600px 时本面板是右侧抽屉（left:auto; right:0），<600px 时是贴底 sheet，
+     两种形态的面板上沿都不在屏幕顶端，横屏刘海区也只在**左右**——那一侧由
+     `.hyper-app` 的 padding-inline 单点消费。所以此处不消费 top 是正确取舍，
+     而不是「忘了」。 */
   border-bottom: 1px solid var(--app-border-subtle);
   flex-shrink: 0;
 }
