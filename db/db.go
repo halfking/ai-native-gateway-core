@@ -3923,9 +3923,16 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 		return err
 	}
 	if staleDefinition {
+		// 837 形状迁移（2026-10-06 本地实证的启动自锁修复）：新定义相对
+		// 旧 source 视图是**减列**（origin_actor 摘除），而 CREATE OR REPLACE
+		// VIEW 只允许在末尾加列（SQLSTATE 42P16 cannot drop columns from
+		// view）——减列必须整只重建。前两条 CASCADE 先摘掉 MV 对 source
+		// 的依赖，source 才 drop 得动；随后 routingAnalyticsMVSQL 按新形状
+		// 重建 source + 两只 MV。
 		if _, err := conn.Exec(ctx, `
 			DROP MATERIALIZED VIEW IF EXISTS routing_analytics_7d CASCADE;
 			DROP MATERIALIZED VIEW IF EXISTS routing_audit_summary_7d CASCADE;
+			DROP VIEW IF EXISTS routing_analytics_source;
 		`); err != nil {
 			return err
 		}
