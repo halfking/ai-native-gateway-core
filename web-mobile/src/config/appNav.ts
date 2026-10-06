@@ -187,6 +187,9 @@ export const DRAWER_NAV: readonly NavItem[] = [
   //   那是**前缀级的巧合**，不是整族的档位；按前缀判权限会判错。
   // 图标用 clock（时间轴语义）：IconName 里没有 file，类型门会红。
   { key: 'log-ops', to: '/log-ops', icon: 'clock', titleKey: 'nav.logOps' },
+  // 人工标注工作台。★ admin 档（handler.go:1386/1389/1390 全是 admin(...)）
+  // ⇒ **不设** requiresRole。
+  { key: 'annotations', to: '/annotations', icon: 'check', titleKey: 'nav.annotations' },
   {
     key: 'request-anomalies',
     to: '/request-anomalies',
