@@ -8151,3 +8151,148 @@ md5 与备份一致）。
 所以「把三元改成恒运行中」这条变异打上去是全绿的。
 一个 `v-if` 写成恒真、恒假、或只喂一种取值，都属同一类。
 
+
+### 11.97 第六十一批：人工标注工作台 API 层 + 差集基线刷新
+
+#### 11.97.1 功能面基线刷新（第六十批前一直是陈旧的）
+
+差集扫描重算（`/tmp/gapscan.py`，显式传绝对路径，工作区根是另一个仓）：
+
+| | 第五十五批基线 | 本批刷新 |
+|---|---|---|
+| 桌面 web 实际调用 | 394 | **394**（不变） |
+| 移动端实际调用 | 144 | **160** |
+| 缺口 | 252 | **237** |
+| 其中 GET 只读 | 139 | **124** |
+
+移动端 +16 正是第五十六~六十批新增的调用点（`/auto-route` 1、
+`/auto-route-decision` 1、`/dashboard-ops` 9、加上既有页面的连带调用）。
+
+★ **差集清单是易腐产物**：连续五批都拿 144/252 当分母，
+实际分母早就不是那个数了。分母变了，「还剩多少」这个判断本身就会错。
+
+#### 11.97.2 ★★★ 差集清单里**有一整族是不该做的**
+
+`GET /api/admin/center/*`（4 条）与 `GET /api/admin/faults/*`（2 条）
+在差集里排在最前面，看起来是「最该补的缺口」。全仓一搜才发现：
+
+```
+cmd/gateway/maintain_proxy.go:34  maintainCompatPrefixes = []string{
+    "/api/admin/licenses", "/api/admin/downloads", "/api/admin/faults",
+    "/api/admin/releases", "/api/admin/autoupdate", "/api/admin/center", ...
+```
+
+这两个前缀**在网关进程里根本没有 handler**——它们被
+`maintainReverseProxy` 反向代理到**独立的 maintain 服务**
+（`/maintain-api`），并打上 `deprecated` 标签。
+
+⇒ 照差集清单做，等于给一个**由另一个进程提供、且已被标记弃用**的端点做移动端 UI。
+同族还有 `licenses` / `releases` / `downloads` / `autoupdate` / `vibecoding` /
+`donations` / `offline-activation` 等 —— **占差集清单相当大一块**。
+
+★ 这是第五十五批教训（`auto-route/tuning/strategies` 两端都死）的**更大规模版本**：
+那次是单条，这次是**一整族**。差集清单必须先过「谁在提供这个端点」，
+再谈移动端要不要做。
+
+#### 11.97.3 交付物：annotations 三条（`api/annotations.ts`）
+
+| 端点 | 权限 | 形状 |
+|---|---|---|
+| `GET /api/admin/annotations/stats` | `admin(...)` | 裸 JSON |
+| `GET /api/admin/annotations/samples` | `admin(...)` | 裸 JSON |
+| `GET /api/admin/annotations/first-turn-samples` | `admin(...)` | 裸 JSON |
+
+后端注册 `admin/handler.go:1386-1393`。三条走 `json.NewEncoder(w).Encode(resp)`
+⇒ **无信封**，与 `api/dashboard.ts` 不是一个家族
+（解包器里加了反向检测：拿到 `success`+`timestamp` 就报错）。
+
+**不碰写操作**：`POST /annotations`、`POST /annotations/batch`、
+`DELETE /annotations/{request_id}` 会改标注事实，且互不可逆
+（删一条标注会改变该样本 accuracy 的统计口径）。
+
+#### 11.97.4 ★★★★ 本族最刺眼的一处：零标注时 stats 整条 500
+
+`GetOverallStats`（`annotation/stats.go:31-59`）是一条**没有聚合子句**的
+
+```sql
+SELECT total_annotations, correct_count, incorrect_count,
+       accuracy_percent, num_annotators, first_annotation_at, last_annotation_at
+FROM annotation_stats
+```
+
+`annotation_stats` 是**单行汇总表**，不是明细表。
+⇒ **表里没有行时返回 `pgx.ErrNoRows`**
+⇒ `handler.go:1136-1139` 直接 `writeInternalTextErr` ⇒ **HTTP 500**。
+
+更糟的是四个块是**串联早退**：
+
+```go
+overall, err := querier.GetOverallStats(ctx);      if err != nil { …500; return }
+byProvider, err := querier.GetProviderAccuracy(ctx);  if err != nil { …500; return }
+byAnnotator, err := querier.GetAnnotatorStats(ctx);   if err != nil { …500; return }
+byReason, err := querier.GetReasonDistribution(ctx);  if err != nil { …500; return }
+```
+
+任一块出错**整条端点**就 500，客户端拿不到「部分可用」。
+
+⇒ **客户端故意不写 try/catch 降级**：500 与「统计为零」在响应上不可分，
+降级等于把一次数据库故障讲成「大家一条标注都没打」。
+让错误以错误形态冒出来，是本批唯一诚实的选择。
+（对照 `writeDegraded` 那种「200 + 全零 + `metadata.degraded`」的设计，
+本族**连那个标志都没有**。）
+
+**★ `overall` 是指针字段**（`handler.go:131` `*annotation.AnnotationStats`），
+是本族唯一可能为 `null` 的块 ⇒ 解包时 `null` **不得**要求它的 7 个子键，
+而「缺键」必须抛错。两者在响应上长得一样（都是读不到子键），语义完全相反。
+
+#### 11.97.5 本族第 5、6 种 `days` 类参数口径
+
+到本批为止，本仓**同名/同类参数**的越界行为已确认六种：
+
+| 端点 | 参数 | 越界行为 | 默认 |
+|---|---|---|---|
+| dashboardapi 七条 | `days` | 静默回落 **7** | 7 |
+| auto-route `tuning/accuracy` | `days` | **400 报错** | — |
+| `board/error-drill` | `days` | **clamp [1,90]** | **1** |
+| auto-route `audit` | `limit` | clamp | — |
+| `annotations/samples` | `page` | 静默回落 **1** | 1 |
+| `annotations/samples` | `size` | **双向钳位 [1,200]** | 50 |
+| `annotations/samples` | `per_strata` | 钳位 [1,20] | 5 |
+| `annotations/samples` | `strategy` | **400**（唯一会报错的） | recent |
+| `first-turn-samples` | `start_date` | **格式错 400**（`YYYY-MM-DD`） | **今天(UTC)** |
+
+★ **`first-turn` 的缺省日期是「今天」而不是「不限」**
+（`resolveFirstTurnDateRange`，`handler.go:628-633`），
+而 `samples` 的缺省是**不限窗口** —— 同一个族里两个端点的缺省语义**相反**。
+
+★ **`strategy` 非法值会 400**，是本族唯一会报错的参数 ⇒ 前端在
+`fetchSamples` 里**前置拦截**（`Promise.reject`），不发那个必失败的往返。
+同理 `first-turn` 的日期格式也在前端拦。
+
+#### 11.97.6 ★ 条件键与字段名陷阱
+
+- **`strategy` 是条件键**：`resp.Strategy` 带 omitempty，且只在
+  `strategy != "recent"` 时赋值（`handler.go:225-227`）
+  ⇒ **键缺失 = recent**，不是「策略未知」。
+  `unwrapFirstTurnSamples` 里有**反向检测**：本端点没有 `strategy` 键，
+  拿到就报「串了端点」—— 形状对但语义错的情形。
+- **`ReasonDistribution.Percent` 的 JSON 键是 `percentage`**（`types.go:97`），
+  不是 `percent` ⇒ 按 Go 字段名去写前端类型会读到 undefined。
+  变异 #6 专钉这条。
+- `AnnotatorStats.FirstAnnotationAt` 是 `time.Time`（**非指针**）⇒ 恒有值；
+  而 `AnnotationStats.FirstAnnotationAt` 是 `*time.Time` ⇒ 可能 `null`。
+  **同名字段在同一族里一个指针一个值**。
+
+#### 11.97.7 验证
+
+- 用例 **43 条**（`api/annotations.test.ts`）
+- 变异 `/tmp/mut-co61.mjs` **22 条，22/22 有牙、零可疑**，
+  `RESTORED=OK`（逐字节一致）
+- 三门全 rc=0；`vue-tsc --noEmit` rc=0；`npm run build` rc=0
+- 全量 3183 条（124 文件）rc=0；十连跑 10/10（3183 × 10）
+- ★ 本批 22 条变异**首轮即 22/22**，未出现第六十批那种「判别样本缺失」——
+  差别在于**先写夹具时就把每个分支的两侧取值都准备了**
+  （零标注 vs 有标注、自相矛盾 vs 正常、键缺失 vs null、
+  键存在 vs 键缺失），而不是只写「正常」那一种。
+
+文档 §11.97 纯追加。
