@@ -1,8 +1,14 @@
+-- 839_autovac_current_month_heap_handoff.down.sql
+-- 回滚：恢复 838 的函数体，并把当月堆分区的 autovacuum_analyze_scale_factor
+-- 交还给 404 统一的 0.02。
 --
--- Name: analyze_llm_gateway_table_stats(integer); Type: FUNCTION; Schema: public; Owner: -
---
+-- 回滚后手工 pass 会重新每小时分析当月堆分区（§10.99.5 的方案随之作废），
+-- autovacuum 再次被清零计数器挡在门外。
 
-CREATE FUNCTION public.analyze_llm_gateway_table_stats(p_recent_months integer DEFAULT 2) RETURNS integer
+BEGIN;
+
+-- 838 的函数体：当月无条件分析，往月仅补从未分析过。
+CREATE OR REPLACE FUNCTION public.analyze_llm_gateway_table_stats(p_recent_months integer DEFAULT 2) RETURNS integer
     LANGUAGE plpgsql
     AS $_$
 		DECLARE r record; suffix text; m integer; analyzed integer := 0;
@@ -25,17 +31,7 @@ CREATE FUNCTION public.analyze_llm_gateway_table_stats(p_recent_months integer D
 		            JOIN pg_namespace n ON n.oid = c.relnamespace
 		            WHERE n.nspname = 'public' AND c.relkind = 'r'
 		              AND c.relname ~ ('^(credential_model_index|model_probe_runs|request_logs|routing_decision_log|request_wal|usage_ledger|credit_ledger|tool_usage_stats|candidate_failure_logs|handoff_logs|request_logs_bodies)_' || suffix || '$')
-		              AND (
-                       -- 839: ① 从未被分析过（838 起的首次覆盖保证，往月与当月都适用）
-                       NOT EXISTS (SELECT 1 FROM pg_statistic s WHERE s.starelid = c.oid)
-                    OR (
-                       -- ② 当月的非堆（列存）分区仍手工分析：
-                       --    生产实测列存分区 autoanalyze_count = 0，autovacuum 不采集，
-                       --    交回 autovacuum 就永远没人管（runbook §10.93.6 / §10.99）
-                       m = 0
-                       AND c.relam <> (SELECT oid FROM pg_am WHERE amname = 'heap')
-                      )
-                   )
+		              AND (m = 0 OR NOT EXISTS (SELECT 1 FROM pg_statistic s WHERE s.starelid = c.oid))
 		        LOOP
 		            EXECUTE format('ANALYZE %I', r.relname); analyzed := analyzed + 1;
 		        END LOOP;
@@ -44,3 +40,14 @@ CREATE FUNCTION public.analyze_llm_gateway_table_stats(p_recent_months integer D
 		END;
 		$_$;
 
+-- 交还 scale_factor：复用 839 建的那个函数，传 0.02
+DO $$
+BEGIN
+    IF to_regclass('public.apply_llm_gateway_current_month_analyze_scale_factor') IS NOT NULL THEN
+        PERFORM apply_llm_gateway_current_month_analyze_scale_factor(0.02);
+    END IF;
+END $$;
+
+DROP FUNCTION IF EXISTS public.apply_llm_gateway_current_month_analyze_scale_factor(numeric);
+
+COMMIT;
