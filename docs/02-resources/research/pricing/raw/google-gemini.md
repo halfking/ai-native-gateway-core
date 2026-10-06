@@ -2,6 +2,8 @@ Title: Gemini Developer API pricing
 
 URL Source: https://ai.google.dev/gemini-api/docs/pricing
 
+Published Time: Thu, 01 Oct 2026 00:13:51 GMT
+
 Markdown Content:
 [Skip to main content](https://ai.google.dev/gemini-api/docs/pricing#main-content)
 

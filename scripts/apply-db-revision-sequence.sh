@@ -910,6 +910,14 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/825_modality_graded_verification.sql"
   "$ROOT_DIR/sql/migrations/startup/826_model_baseline_price.sql"
   "$ROOT_DIR/sql/migrations/startup/827_modality_verification_progress_view.sql"
+  # 2026-10-06（834）：把 supplier_errors 族三张基表纳入受追踪链。
+  # 编号在 828 之后但**位置在它之前**——这个数组按书写顺序执行，而 828 的
+  # CREATE VIEW 是真校验（plpgsql 函数体才被 check_function_bodies=off 放过），
+  # 缺表即硬失败。实测：缺本条时 828 报
+  # `relation "public.supplier_errors_hot" does not exist`。
+  # 补迁移而不是登记 startup_known_gaps.tsv 豁免：那份文件的头记录了上一轮
+  # 19 条缺口的修法正是「把缺失的迁移加进受追踪链」，豁免只是记欠条。
+  "$ROOT_DIR/sql/migrations/startup/834_supplier_errors_base_tables.sql"
   "$ROOT_DIR/sql/migrations/startup/828_supplier_errors_unified_tracked.sql"
 
   # 2026-10-05：831 补登通道腿（本轮合并期间由并行线落地，第 N 次同型）
@@ -942,6 +950,21 @@ files=(
   # 编号注：原占 831，与并行线的 831_work_type_route_source 撞号，同批重排
   # 为 833。幂等 DROP + ADD。
   "$ROOT_DIR/sql/migrations/startup/833_supplier_price_nonneg_check.sql"
+
+  # 2026-10-06（835）：把 system_probe_runs 的 task_type 词表放宽一个值
+  # （modality_verify），让多模态定时核实的每一次尝试进自检台账。在它之前，
+  # 核实循环是唯一一条「在跑但运维查不到」的链路：语义探针经
+  # internal/upstreamurl 直连上游、不产生 request_logs，进程内尝试台账又随
+  # 重启清零。编号注：834 悬空 —— 828（supplier_errors_unified 视图）的底表
+  # 只在未受追踪的 deploy/sql/migrations/V371 里定义，受追踪链与基线都不建，
+  # 而 828 排在 834 之前 ⇒ 一条编号在后的迁移救不了它。修法待裁决，故 835
+  # 取下一个可用号。幂等：DROP CONSTRAINT IF EXISTS + ADD。
+  "$ROOT_DIR/sql/migrations/startup/835_modality_verify_probe_ledger.sql"
+  # 2026-10-06（836）：重新断言 supplier_errors 族的最终形态（813 的 re-assert）。
+  # 根因：813 的文件 sha 与台账存的完全一致 ⇒ 幂等通道每次都跳过它，活库的
+  # 列存漂移（3 个分区 + ensure 函数 + 盲掉的 columnar_healthcheck）永远没人修。
+  # 本条无台账行 ⇒ 每次部署都跑；自身幂等。必须排在 813 之后。
+  "$ROOT_DIR/sql/migrations/startup/836_supplier_errors_heap_reassert.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的
@@ -1012,7 +1035,10 @@ intentional_function_chains=(
   # columnar has no read benefit); 813 must stay the later entry — landed
   # without this registration and failed the canonical delivery gate on the
   # merge with 第三十轮 (2026-10-02).
-  'ensure_supplier_errors_partition|V371__supplier_errors_hot_and_stats.sql|699_supplier_errors_ensure_timezone_pin.sql|813_supplier_errors_partitions_heap.sql|'
+    # 836 (R26 re-assert round) 再次断言同一函数的 heap 体。**必须排在最后**：
+  # 813 自身的台账 sha 与文件一致，幂等通道永远跳过它，所以链里名义上的
+  # 「最后一项」在活库上从未执行过 —— 而那个守卫只校验登记、不校验执行。
+  'ensure_supplier_errors_partition|V371__supplier_errors_hot_and_stats.sql|699_supplier_errors_ensure_timezone_pin.sql|813_supplier_errors_partitions_heap.sql|836_supplier_errors_heap_reassert.sql|'
   # 703 re-pins promote_supplier_errors_hot_to_partition month grouping to
   # Asia/Shanghai on top of V371's original body; the pin must stay the later
   # entry (same V371-track pattern as 699; 703 landed without this
