@@ -217,14 +217,20 @@ type SynthesizeResult struct {
 }
 
 // audioCandidateSelection 是候选过滤后的可用列表：与 embeddings 同款
-// 门槛（Anthropic 协议无音频面、无 key / 不可用的候选跳过）。
-func audioCandidateSelection(candidates []provider.Candidate) []provider.Candidate {
+// 门槛（无 key / 不可用的候选跳过）。
+//
+// 2026-10-06 ASR 多供应商轮：Anthropic 协议候选不再一刀切剪掉——转写的
+// multipart 透传形态（/audio/transcriptions + Bearer）与 chat 协议无关，
+// 智谱（anthropic-messages 供应商）的 glm-asr 就只有这条路。协议约束改在
+// Transcribe 的形态序里表达：anthropic 候选只给 transcriptions，不给
+// chat-audio（那需要 OpenAI chat 形态）。TTS 侧无透传形态，保持剪除。
+func audioCandidateSelection(candidates []provider.Candidate, keepAnthropicForTranscriptions bool) []provider.Candidate {
 	usable := make([]provider.Candidate, 0, len(candidates))
 	for _, c := range candidates {
 		if !c.IsAvailable() || c.APIKey == "" {
 			continue
 		}
-		if c.Protocol == providercatalog.ProtocolAnthropicMessages {
+		if c.Protocol == providercatalog.ProtocolAnthropicMessages && !keepAnthropicForTranscriptions {
 			continue
 		}
 		usable = append(usable, c)
@@ -280,7 +286,7 @@ func (s *AudioService) Transcribe(ctx context.Context, req TranscribeRequest, em
 	if err != nil {
 		return nil, newAudioNoProviderError("resolve candidates: %s", err)
 	}
-	usable := audioCandidateSelection(candidates)
+	usable := audioCandidateSelection(candidates, true)
 	if len(usable) == 0 {
 		return nil, newAudioNoProviderError("no audio provider available for model %q", req.Model)
 	}
@@ -310,6 +316,10 @@ func (s *AudioService) Transcribe(ctx context.Context, req TranscribeRequest, em
 			// MiniMax 标准路径 /audio/transcriptions 实测 404（go mux 裸
 			// "404 page not found"），直接钉 speech_to_text 不做空往返。
 			order = []string{AudioTransportSpeechToText}
+		case strings.EqualFold(cand.Protocol, providercatalog.ProtocolAnthropicMessages):
+			// Anthropic 协议候选没有 chat-audio 形态（那要 OpenAI chat
+			// 结构）；multipart 透传与 chat 协议无关，只给这一种。
+			order = []string{AudioTransportTranscriptions}
 		}
 		candStart := time.Now()
 		var candErr error
@@ -756,7 +766,7 @@ func (s *AudioService) Synthesize(ctx context.Context, req SynthesizeRequest) (*
 	if err != nil {
 		return nil, newAudioNoProviderError("resolve candidates: %s", err)
 	}
-	usable := audioCandidateSelection(candidates)
+	usable := audioCandidateSelection(candidates, false)
 	if len(usable) == 0 {
 		return nil, newAudioNoProviderError("no audio provider available for model %q", req.Model)
 	}
