@@ -7570,3 +7570,179 @@ TS 推不出共同元素类型（两个重载都不匹配），逼出一处显�
    连续四批的共同形态：**夹具里缺一个「反向」或「漂移」的样本**。
    ⇒ 已把它写成固定检查项：每写一个判据，问「有没有一个样本能让**两种实现分叉**，
      而不只是「看起来正常」或「明显错误」」。
+
+## 11.91 自动路由读面六条端点（第五十五批，API 层）
+
+### 基线刷新
+
+差集清单是易腐产物，每轮必须重算（第五十二批复用旧清单，导致已完成的
+`routing-blocked` 还挂在待办里）。本批重算：
+
+| | 第五十二批 | 本批 |
+|---|---|---|
+| 移动端实际调用 | 137 | **144** |
+| 桌面有、移动端无 | 257 | **252** |
+| 其中只读 GET | 144 | **139** |
+
+第五十三批新增的三条（`model-tree` / `available-models/raw` / `health`）已计入。
+量具自检：那三条已不在缺口清单里，地面实况 `api/routingTree.ts:122/217/263` 对得上。
+
+### ★★★★★★★ 权限档位是 superAdmin，**形参名 `adminWrap` 是假名**
+
+三个注册函数的形参都叫 `adminWrap`，看起来像 admin 档：
+
+```go
+// admin/auto_route.go:99
+func (h *AutoRouteHandlers) RegisterAutoRouteRoutes(mux *http.ServeMux, adminWrap func(http.HandlerFunc) http.HandlerFunc)
+```
+
+但实际绑定的值是：
+
+- `admin/handler.go:1381` `autoH.RegisterAutoRouteRoutes(mux, h.superAdmin)`
+- `admin/handler.go:1430` `analyticsH.RegisterAnalyticsRoutes(mux, h.superAdmin)`
+- `admin/auto_route.go:116` `tuning.RegisterTuningRoutes(mux, adminWrap)` —— 转手，
+  而 `adminWrap` 就是上一行那个形参，**值仍是 `h.superAdmin`**
+
+`h.superAdmin` = `SuperAdminMiddleware`（`handler.go:886`）⇒ **tenant_admin 直接 403**。
+
+⚠️ 本族六条端点全部是 superAdmin 档。挂抽屉席时必须 `requiresRole: 'super_admin'`，
+否则 tenant_admin 用户点进去只看到 403。这是「不能按名字判权限」的一个实例：
+**名字骗人，要读到实际绑定的那个值。**
+
+### ★★★★★★ 一条**完全死掉的垂直切片**——照抄清单就会给 404 做 UI
+
+差集清单里列着 `/api/admin/auto-route/tuning/strategies`。按「清单即待办」的惯例
+直接搬到移动端，就会给一个 404 做出一整套 UI。正面枚举全仓 21 条 auto-route 注册：
+
+```
+admin/auto_route.go:100-125   decisions / index / profile / audit / refresh /
+                             cost/customer / cost/model / quality-correlations /
+                             defaults / defaults/ / affinity / affinity/selections
+admin/auto_route_tuning.go:83-89  tuning/proposals / proposals/generate /
+                             proposals/ / tuning/accuracy / POST tuning/analyze
+admin/analytics.go:55-59     analytics/matrix / flow / model-task-index / funnel /
+                             analytics/decision/
+admin/auto_route_correlations.go:332  correlations
+```
+
+**`tuning/strategies` 不在其中。** 全仓唯一的字面量出现在 handler 自己的注释上
+（`auto_route_tuning.go:826`），而函数本体带 `//nolint:unused`（`:838`）
+—— golangci-lint 的 `unused` 检查器只对**无引用**的函数标这个，
+所以它是货真价实的死代码。
+
+前端侧同样死：`web/src/api/tuning.ts:42` 的 `getTuningStrategies` 全仓**只有定义处**，
+没有任何调用方（`web/src/api.ts:33` 的 `export *` 只是把名字再导出一次）。
+
+⇒ 后端 handler 没注册、前端封装没人调，**两端都是死的**。当前没有线上影响
+（没有 UI 会触发它），但这是差集扫描给出的一个**假缺口**。
+**教训：清单里的每一项，在写代码之前都要先确认它真的注册了。**
+
+### ★★★★★ 三条数组端点全是稀疏键
+
+`index` / `cost/customer` / `cost/model` 逐行用 `*float64` / `*int` 指针扫，
+再按 `if xxx != nil` 决定写不写这个键：
+
+| 端点 | 无条件键 | 条件键 |
+|---|---|---|
+| `index` | **4 个**：`bucket` `credential_id` `raw_model` `updated_at` | 13 个 |
+| `cost/customer` | **1 个**：`api_key_id` | 13 个 |
+| `cost/model` | **1 个**：`raw_model` | 7 个 |
+
+⇒ **「键缺失」= 该指标无数据，不是 0。** UI 把两者都渲染成 0% 会让运维
+以为「这个模型成功率 0%」，实际是「这一列没数据」。
+
+### ★★★★★ 空索引返回的是**异构哨兵**，不是 `[]`
+
+`auto_route.go:294-297`：索引表为空时后端返回
+
+```go
+writeJSONOk(w, []map[string]interface{}{
+    {"warning": "credential_model_index is empty; awaiting first bg worker refresh (…)"},
+})
+```
+
+一个**只有 `warning`、没有 `credential_id`** 的元素，与正常行结构不同。
+照「数组里每行都有 `credential_id`」去解包，网关启动 5 分钟内每次进这一页都会抛错。
+⇒ 解包器必须放行它，并且单独提供 `autoRouteIndexAwaitingFirstRefresh()` 把它
+与「真·空索引」区分开。
+
+### ★★★★ `audit` 的三个块**查询失败时键直接缺失，HTTP 仍 200**
+
+`task_distribution` / `profile_distribution` / `top_chosen_models`
+三处赋值**全部包在 `if err == nil` 里**（`auto_route.go:627 / :665 / :724 / :758`）。
+
+⇒ 「这一块没有数据」与「这一块的查询挂了」在响应里**长得一模一样**。
+UI 若把「键缺失」渲染成空分布，等于把一次数据库故障报成「没有流量」。
+`autoRouteAuditMissingBlocks()` 专门返回缺哪几块，供 UI 渲染成「查询失败」而非 0。
+
+同一端点的 `outcome_source`（`auto_route_outcome_freshness.go:70-76`）是刻意加的
+证据源：这一屏的成功率/奖励/路由数字由后台 settle worker 回填，不由被统计的请求测出来。
+`stale === true` ⇒ **数字不再产生**，与「数字低」必须分开显示。
+
+**可复算不变量**：`total_requests === total_auto_requests + specified_model_requests`
+在基表与物化视图**两条路径上都成立**——两者的 WHERE 准入条件逐字相同
+（`auto_route.go:559-563` vs migration `649:112`），且对布尔列 `= TRUE` 与
+`IS NOT TRUE` 是互斥且穷尽的划分（NULL 归后者）。⇒ 可做客户端交叉校验。
+
+### ★★★★ `analytics/decision` 的 `l1` 会被 blob **逐键覆盖**，且**不可判定**
+
+`analytics.go:830-840` 的赋值顺序是：
+
+1. `l1 := {task_type, profile}`（DB 列，经 `nullStringOrEmpty`）
+2. `if confidence != nil { l1["confidence"] = … }`
+3. `json.Unmarshal(auto_decision)` 后 **`for k, v := range parsed { l1[k] = v }`**
+
+第 3 步在最后 ⇒ blob 里的同名键**覆盖**前两步。客户端不能假设 `l1.task_type`
+来自数据库。
+
+⚠️ 更麻烦的是**不可判定**：合并之后响应里已经分不清「这个键来自 DB 列」还是
+「来自 blob」。所以**空结果也不能当免责**——blob 完全可能只带一个同名的
+`task_type` 而不带任何新键，此时一切看起来都正常，值已经被顶掉了。
+本批只提供可判定的那一半（`autoRouteDecisionL1SplatKeys` = l1 里出现三个
+DB 键之外的任何键 ⇒ splat 跑过），并在注释里写明它**不构成免责**。
+
+`l2` 是条件键，缺失有三种原因而响应里区分不了：后端根本没查
+（`l2Lookup` 只在 id 能生成 dashed 变体时为真，`:854-859`）／查了但无决策日志／
+L2 查询真出错（那条是 500，走错误分支）。⇒ UI 只能说「没有 L2 记录」。
+
+### ★★★ `tuning/accuracy` 的五个 `avg_*` 全是 **COALESCE 编造的 0**
+
+`auto_route_tuning.go:774-778` 五列全部 `COALESCE(…, 0)`。一行 `total > 0`
+但源列全 NULL 时，`avg_success = 0` 与「真的 0% 成功率」**逐字节相同**。
+
+同端点还有一处口径切换：后端**按窗口长度换物化视图**（`:757-763`），
+`days <= 7` 走 5 分钟桶、8..90 走天桶 ⇒ 同一组 task_type 的 `avg_*`
+在两个窗口下**不可直接比大小**。
+
+★ 与同族的 `top` 处理**完全相反**：`days` 越界是 400 报错，
+而 `index`/`cost` 的 `top` 越界是**静默回落**（且三端默认值/上限各不相同：
+index 100/1000，cost 50/500）⇒ **不能跨端点类推**。
+
+### 变异 44 条 → 44 有牙，零可疑
+
+首轮 40/44。四条可疑，**分诊后是四种不同的原因**：
+
+| id | 现象 | 真实归因 | 处置 |
+|---|---|---|---|
+| A9 | 仍全绿 | **判据无牙（样本缺失）**：index 的 top 用例只有 `0/-1/1001`，全是整数，去掉 `Number.isInteger` 测不到 | 补非整数样本 `0.5` / `10.5` / `NaN`（并顺手给同族的 cost top 也补上） |
+| B2 | 转红未命中 | **expect 串指错**：真正被它打红的是「三个条件键全缺失」那条 | 改 expect |
+| E8 | 疑似收集失败 | **变异写错**：只替换了括号里的表达式，留下 `return ( return false )` ⇒ 语法错误 | 连 `return (` 一起替换 |
+| F9 | 转红未命中 | **expect 串指错**：真正被它打红的是「blob 带来新键」那条 | 改 expect |
+
+★★★ A9 又是那个病根：**同族的两个判据，只有一个带了边缘样本**
+（`accuracyDaysAccepted` 有 `7.5`，`indexTopAccepted` 没有）。
+连续五批同一形态（§11.87/§11.88/§11.89/§11.90/本批）。
+
+★ 另有一条**自造缺陷**在写测试时暴露：本批第一版把遮蔽判据写成
+「`l1` 里有没有 `task_type`/`profile`」，而这两个是**恒在的必填键** ⇒
+**恒真判据**，永远返回它俩、完全不区分。是类型门 + 用例自己把它顶出来的
+（首轮 60 条里 2 条红）。改成可判定的 `autoRouteDecisionL1SplatKeys`，
+并补了一条「真正的盲区样本」：blob 只带同名键、不带新键时谓词返回空
+——**空结果不构成免责**，这一点写进了注释。
+
+### 门禁
+
+build / 三门 / vue-tsc 全 rc=0；`autoRoute.test.ts` 60 条；全量 2976 条（118 文件）；
+十连跑 10/10。
+
+文档 §11.91 纯追加。
