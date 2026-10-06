@@ -1360,3 +1360,80 @@ marshal 成 map 后再塞 `unified`），`queue-snapshot` 同样是
 ★ 还纠正了一个**我凭推断写下的错误注释**：曾写「model-toggle 找不到绑定会
 返回 200 当无操作」，回源码核对是 **404 `binding not found`**（`pgx.ErrNoRows`
 分支）。⇒ 注释里凡是「我以为后端会怎样」的断言，都要回源码核。
+
+### 11.41 路由覆盖规则上移：规则本体（superAdmin 档，第十七轮）
+
+与 §11.33 的 `/routing-audit` 配成一对：
+**本页答「现在生效的规则是什么」，审计页答「这些规则是谁在什么时候改的」。**
+只看审计不知道当前状态；只看规则不知道是不是刚被人动过。
+
+四个端点全在 `RegisterAutoRouteRoutes(mux, **h.superAdmin**)` 下
+（handler.go:1381）⇒ tenant_admin 必 403，导航已按 `requiresRole` 挡住。
+**这是第三条超管线**（`/integrity`、`/routing-audit`、`/overrides`）。
+
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| GET | `/api/admin/routing/overrides` | 列出规则（`active` / `task_type` / `profile` 过滤） |
+| POST | 同上 | 新建 → **201** |
+| DELETE | `/{id}` | 停用（**软删**） |
+| PATCH | `/{id}/extend` | 延长有效期 |
+
+#### ★★ 三个后端语义直接决定了 UI 怎么做
+
+**(1) DELETE 是软删** —— SQL 是 `SET expires_at = NOW() - INTERVAL '1 second'`，
+行**仍留在表里**。⇒ 停用后必须切到 `active=true` 刷新，否则刚删的规则还在列表里，
+用户会以为删除失败而重复操作。
+
+**(2) 创建后约 1 分钟才生效** —— 后端 201 的 message 明说 OverrideStore
+在下一个 1-min reload 生效。⇒ 成功文案必须带这个延迟，否则用户会立刻去查
+路由解析、看不到新规则 ⇒ 重复提交 ⇒ 而重复提交必然撞 **409**（同一
+`(task_type, profile, model_chosen, mode)` 已存在），**越急越错**。
+
+**(3) `profile` / `mode` 后端无枚举校验** —— `control/routing/create.go:167-185`
+只校验 `task_type` 与 `reason`，`profile`/`mode`/`model_chosen` 是自由文本，
+也没有「合法值列表」端点 ⇒ **候选值只能从现有规则里取**（`knownProfiles` /
+`knownModes`）。自由输入仍允许（后端接受），但 UI 优先给候选。
+
+#### 两处「回显类型」坑
+
+- `filter` 回显的三个值**全是字符串**（`map[string]string`），
+  包括 `active` —— 后端是 `strconv.FormatBool`。当 boolean 用会得到 `undefined`。
+- `active` 参数必须发字符串 `"true"`（后端判 `== "true"`）。
+  发 `active=false` **不是「只看过期的」，而是根本不过滤** ——
+  与 `active=1` / `active=yes` 等价。客户端索性**不发**这个参数。
+
+#### `model_chosen` 留空必须发 `null` 而不是空串
+
+`""` 会解成「指向空串的非 nil 指针」，即**指定了一个名字为空的模型**，
+规则永远不会匹配。`JSON.stringify` 会把 `undefined` 键直接丢掉
+（Go 解出来同样是 nil），所以真正要锁的是「**绝不能是空串**」——
+判据用「显式传空串会原样发出去」作反向锁定，证明前一条不是碰巧。
+
+### 11.42 本轮门禁（第十七轮，路由覆盖规则）
+
+`web-mobile/` 实测**十道**：
+1. css 门自测 **11/11**
+2. 触控门自测 **11/11**
+3. i18n 门自测 **14/14**
+4. `gate:selftest` **36 条断言全绿**
+5. `vue-tsc -b` 通过
+6. i18n 键集门 通过（各 **596 键**）
+7. css 媒体查询门 通过（43 文件）
+8. 触控热区门 通过（**40 个 .vue**）
+9. `vitest run` **380 用例 / 40 文件全绿**，**连跑 10 次全绿**（新增 27 条）
+10. `npm run build` 通过
+
+★ 变异证据（4 处，**其中 1 处第一版没抓到，判据本身是恒真的**）：
+- 停用后不切 `active=true` ⇒ 转红（**需先让判据的前置是「筛选关着」**）
+- 成功文案去掉「1 分钟生效」⇒ 转红
+- `model_chosen` 空串照发 ⇒ 转红
+
+★ 又一次**判据恒真**，形态与 §11.33 相同：
+   我写「停用后下一次拉取带 active=true」，而 `activeOnly` 初值本来就是 true
+   ⇒ 删掉那行重置，变异**照样全绿**。真实场景是用户先**关掉**筛选看全部，
+   此时停用才必须切回。⇒ 判据前置改成「筛选处于关闭态」后才转红。
+   ★ 规律：**判据的前置状态必须显式构造**，否则它量的是默认值而不是被测行为。
+
+★ 另有一个与真实原因无关的失败：顶栏的「新建规则」按钮与面板提交钮**同名**，
+  按文案点击会点到顶栏那个（只是把面板又打开一次），现象是
+  「表单填了但请求没发出去」。⇒ 改按 `.ov__submit` 类选择，并写进注释。

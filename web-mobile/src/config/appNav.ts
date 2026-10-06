@@ -63,6 +63,10 @@ export const DRAWER_NAV: readonly NavItem[] = [
   // 探测面：展示 node_probe_state 判定的**过程**（排到第几次、下次何时重试、
   // 供应商直连延时）。adminWrap 档 ⇒ tenant_admin 可用，不设 requiresRole。
   { key: 'probe', to: '/probe', icon: 'refresh', titleKey: 'nav.probe' },
+  // 路由覆盖规则：与 /routing-audit 配对（那一页答「谁改的」，这一页答
+  // 「现在生效的是什么」）。★ 整条 auto-route 线是 superAdmin
+  //（handler.go:1381 RegisterAutoRouteRoutes(mux, h.superAdmin)），必挡。
+  { key: 'overrides', to: '/overrides', icon: 'expand', titleKey: 'nav.overrides', requiresRole: 'super_admin' },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))

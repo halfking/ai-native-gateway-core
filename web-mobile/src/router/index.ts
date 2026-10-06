@@ -142,6 +142,14 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/ProbeView.vue'),
     meta: { titleKey: 'probe.title', requiresAuth: true },
   },
+  // 路由覆盖规则（2026-10-07）。★ superAdmin 档：handler.go:1381 把
+  // RegisterAutoRouteRoutes 挂在 h.superAdmin 下 ⇒ tenant_admin 必 403。
+  {
+    path: '/overrides',
+    name: 'overrides',
+    component: () => import('@/views/RoutingOverridesView.vue'),
+    meta: { titleKey: 'overrides.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
