@@ -190,13 +190,99 @@ func SessionBodiesSourceSQL() string {
 
 ## 六、限度与未验项
 
-- **只读了本地真库的 `settings_kv`**。生产 252 上那个键是什么值**未查**
-  —— 若生产已设为 true，A 档 13 个在生产上**已经在读会话侧**，
-  那 §九 的 P1 在生产侧可能已满足而在本地不满足（反之亦然）。
-  ⇒ **这条必须上生产核对，它决定 P1 是「要改配置」还是「已经改好了」。**
-- **只核了开关「没被设过」，没核「曾经被设过又删掉」**：
-  `settings_kv` 的 `updated_by` / `prev_value` 审计字段是**空的**
+- ~~**只读了本地真库的 `settings_kv`**，生产未查~~ ⇒ **已于 2026-10-06 23:55–23:58
+  补上生产 252 只读实测，见第七节。** 结论：该键在生产上**整行不存在** ⇒ A 档 13 个
+  在生产上**确实读 v1**，P1 在生产侧**未满足**。原句担心的「若生产已设为 true」分支已排除。
+  ⚠ 但**补出了更重的一条**：写端 `storage.session_turns_bodies_enabled` 在生产上
+  **同样不存在** ⇒ **P1 是「读端 + 写端成对翻」**，不是单键 —— 详见第七节的新发现。
+- **「曾经被设过又删掉」仍然查不出，但机制说错了**：原句归因于「`updated_by` /
+  `prev_value` 审计字段是空的」，那只是**本地**实况；生产上这些列**存在且在用**
+  （14 键有 `prev_value`）。**真正的原因是 `prev_value` 只记「已存在键的改值」，
+  删除不留痕** ⇒ 「从未创建过」与「被删过」在两个库上**都没有任何痕迹**。
   （§9.238.3 已记过这张表审计能力名义上存在但字段全空）⇒ 查不出历史。
 - **没有改任何读方、没有翻任何开关。**
 - `admin/session_title.go` 归为 `switch_only` 依赖「剥掉 SQL 块注释」这一步；
   若有人把那段标注从注释改成活代码，这条会红。
+
+---
+
+## 七、★ 生产 252 实况（2026-10-06 23:55–23:58，**只读 SELECT**）
+
+⚠ 此前本文写「**生产 252 上那个键是什么值未查**」。**目标约束原文是「生产 252 只读，
+任何生产变更未经属主批准不执行」——只读查询是允许的**，是我把约束读窄了。现已查过。
+
+查询对象：生产 `pg-252-pg17` 容器（`kx-citus-pg17`）里的 `llm_gateway` 库 `settings_kv`。
+`value` 是 **jsonb**（用 `value::text` 取值，`coalesce(value,'<NULL>')` 会因 `<` 非法 json 报错）。
+`settings_kv` 共 **42 个键**，其中 `storage.` 前缀**只有 2 个**：
+
+| 键 | 生产值 | `updated_at` |
+|---|---|---|
+| `storage.request_logs_write_enabled` | **true** | 2026-10-06 04:29 |
+| `storage.session_final_full_enabled` | false | 2026-10-02 14:27 |
+| ★ **`storage.session_bodies_native_read`** | **整行不存在** | — |
+| `sessions_v2.enabled` | true | 2026-07-21 16:50 |
+| `sessions_v2.shadow_write` | true | 2026-07-21 16:50 |
+
+### ⇒ P1 的关键前置**已核实**（不是待核实）
+
+`storage.session_bodies_native_read` 在生产上**确定不存在** ⇒
+`GetPlatformBool(SessionBodiesNativeReadSetting, false)`（`db/request_logs_view_schema.go:1082`）
+恒取 **false** ⇒ **13 个只经切换层的 bodies 读方在生产上此刻读的就是 v1。**
+我此前提的「若生产已设为 true 则 P1 在生产侧可能已满足」这个分支**已被排除**。
+
+★ 另两条生产事实，对停写前置直接相关：
+- `storage.request_logs_write_enabled = **true**`（今天 04:29 刚更新过）⇒ **v1 仍在生产上写入**。
+- `sessions_v2.enabled = true` 且 `shadow_write = true` ⇒ v2 处于**影子写**模式，不是切换。
+
+### ⚠ 更正一：「bodies 是唯一漏掉的那一个」**只在本地库成立**
+
+第二节那张表（同类的 `storage.session_turns_bodies_enabled` / `storage.admin_logs_native_turns_read`
+「✅ 在 = true」）是**本地 `llm-gateway-pg`** 的实况。**生产上这两个键也都不存在。**
+⇒ 不能拿本地那两行论证「bodies 是被刻意漏掉的唯一一项」。
+
+⚠ 但**不等于生产有第二个缺陷**：`storage.admin_logs_native_turns_read` 默认 false 是
+**有意设计**，`admin/logs_turns_source.go:40–55` 写着「订正后的结论」——
+原生源不是全量日志视图的等价替代（真库实测 2,321,464 个 request_id 里 641,452 个、
+**27.6%** 在原生源查不到：无会话头流量、in_progress 占位、摘要生成器回环），
+按 `request_id` 反查或全量时间窗聚合的读**禁止**迁，判据是**谓词形态**，
+守卫在 `admin/session_view_dependency_risk_test.go`。**它读 v1 是对的。**
+
+### ★ 新发现：P1 是**一对**开关，不是**一个** —— 只翻读端会读到空正文
+
+`storage.session_turns_bodies_enabled` 控制的是 **writer 侧**（`domains/session/v2/session_writer_v2.go:674`
+「S1b 灰度开关①：每轮正文同步进 session_turns」）：
+
+```go
+if settings.GetPlatformBool("storage.session_turns_bodies_enabled", false) {
+    turnRec.RequestDeltaJSON  = ...   // req.RequestDelta
+    turnRec.ResponseDeltaJSON = ...   // req.ResponseBody
+}
+```
+
+该键在生产上**也不存在** ⇒ 恒取 false ⇒ **`RequestDeltaJSON` / `ResponseDeltaJSON`
+在生产上根本没在写进 `session_turns` 行。**
+
+⇒ ★ **只把 `storage.session_bodies_native_read` 翻成 true，读端会切到会话侧，
+而会话侧本身没有正文** —— 读到的就是空。
+这正是 §9.229.2 记录的「生产 2026-09-30 的会话导出正文全变 `{}`（1,113 条 turn）而接口仍 200」
+那个失败形态。⇒ **P1 必须修正为「读端 + 写端成对翻」**，属主拍板时按这一对来定，
+不要按单键定。
+
+### ⚠ 更正二：「审计字段是空的、查不出历史」——机制说错了
+
+原文说查不出「是否曾被设过又删掉」，因为 `updated_by` / `prev_value` 字段全空。
+**那是本地库的实况**。生产上这些列**存在且在用**：14 个键有非空 `prev_value`，
+3 个有 `updated_by`（`session-compression-default-on-245`、`handoff-hot-split-20260818` 等）。
+
+**但结论不变，机制不同**：`prev_value` 只记录**已存在键被改值**时的旧值，
+**删除不留痕**。⇒ 无论本地还是生产，「某个键**从未创建过**」与「**被删过**」
+在这张表里**都查不出任何痕迹**。要回答这个问题需要 `settings_kv` 的删除审计（当前没有）。
+
+### ⚠ 更正三：一处**未标环境**的注释
+
+`admin/logs_turns_source.go:53` 写着「S4 停写（`storage.request_logs_write_enabled=false`）的
+活跃漏写阻断**已解除**」。而 §9.263 在**本地库**实测 S4 退出条件**实质不满足**
+（168h 漏写 463/25,367 = 1.82%），且**生产上那个开关此刻是 `true`（还没停写）**。
+⇒ 三者**不必然矛盾**（阻断已解除 = 允许停写 ≠ 已停写；本地与生产是两个环境），
+但**那句注释没有标明它说的是哪个环境**，后来者极易把它当成本地既定事实。
+本轮**不改它**（不在本轮范围，且改动需要知道作者的原始依据），**留给属主**。
