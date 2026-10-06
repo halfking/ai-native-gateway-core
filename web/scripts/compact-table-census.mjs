@@ -44,7 +44,7 @@ const SRC = resolve(__dirname, '..')
  * ⚠️ 这里曾经剥掉 `^src/`，而 `SRC` 本身就是 web 根 ⇒ 剥完再 `join(SRC, rel)`
  * 会指错一层（`web/components/...`，真实路径是 `web/src/components/...`）。
  * 当时之所以没炸，是主循环读文件用的是未归一的 `relRaw`、只有记桶用 `rel`，
- * 于��**同一个 rel 在同一段代码里被两套口径消费**，读和记指向不同文件。
+ * 于是**同一个 rel 在同一段代码里被两套口径消费**，读和记指向不同文件。
  * 保留前缀后三处口径统一，报表里打出的 `src/views/X.vue` 也是能直接打开的路径。
  */
 const norm = (p) => p.split('\\').join('/')
@@ -96,7 +96,7 @@ function* walk(dir) {
 }
 
 /**
- * 本文件是否**按语义**提供了横向滚动容器。
+ * 本文件是否**由作者声明**了横向滚动容器。
  *
  * ⚠️ **四种**写法都要认。漏一种就产生假阳性 —— 本轮实测前三次修判据，
  *    每次都翻出一批「其实已经合规」的页面：
@@ -108,6 +108,10 @@ function* walk(dir) {
  *      ⇒ 必须去解析**被引用的组件**，不能只扫页面自身。
  *   ④ `min-width` 声明：只作**弱证据**（作者声明「它要滚」但容器未必存在），
  *      归独立桶，不与 ①②③ 混算。
+ *
+ * ★ **本函数只认「作者声明过」的容器**。组件库**原生自带**的横滚不在这里判，
+ *   归 `hasNativeTableScroll()` 单独一桶 —— 把两者混算，
+ *   「作者做了适配」和「框架白送的」就分不开了。
  */
 function hasScrollContainer(text) {
   // ② 内联 style
@@ -127,6 +131,26 @@ function hasScrollContainer(text) {
     if (componentHasHorizontalScroll(comp)) return true
   }
   return false
+}
+
+/**
+ * 组件库**原生自带**的横向滚动（本仓目前只认 Element Plus 的 `el-table`）。
+ *
+ * ★ 上一轮把这层漏掉，报出 4 个「10 列 / 9 列无横滚容器」的**假阳性**。
+ *   查 element-plus 2.14.3 实现，证据链三环（源码，非记忆、非文档转述）：
+ *   ① `table.vue_..._lang.mjs` 把 `bodyWrapper` 用 `ElScrollbar` 包住：
+ *      `createVNode(ElScrollbar, { ref: scrollBarRef, "wrap-style": scrollbarStyle, ... })`
+ *   ② `theme-chalk/el-scrollbar.css`：`.el-scrollbar__wrap{height:100%;overflow:auto}`
+ *   ③ `style-helper.mjs`：`tableBodyStyles = { width: layout.bodyWidth + 'px' }`
+ *      —— 内层 `<table>` 宽度 = 列宽总和，列宽超过容器即触发 wrap 横向滚动。
+ *   ⇒ `el-table` 天然能横滚，**页面不必自己声明滚动容器**。
+ *
+ * ⚠️ 这只证明「表格体可横滚」。作者若额外写了 `max-height` + 固定列，
+ *   或用 `flexible` 关掉了自适应，行为可能不同 —— 属运行时细节，
+ *   要证伪仍需 device-fit 在登录态实测。
+ */
+function hasNativeTableScroll(text) {
+  return /<el-table\b/.test(text)
 }
 
 /** 页面里引用了哪些表格类组件（PascalCase 标签 + 已知表组件名）。 */
@@ -176,6 +200,12 @@ function isCardified(text) {
     || (/\bcompact\b/.test(text) && /class="[^"]*card/i.test(text) && /v-if="[^"]*compact/.test(text))
 }
 
+/** `<el-table>` 的实测列数：一个 `<el-table-column>` 就是一列。 */
+function elTableColumnCount(text) {
+  const el = text.match(/<el-table\b[\s\S]*?<\/el-table>/)
+  return el ? (el[0].match(/<el-table-column\b/g) || []).length : 0
+}
+
 /**
  * 表格列数能否静态判定，返回三态。
  *
@@ -187,14 +217,18 @@ function isCardified(text) {
  *
  * 两类**可静态测**的写法（实测本仓 90 个含表格页里，`<el-table>` 占相当比例）：
  *  ① 字面 `<table>` + `<thead>`：列数 = `<thead>` 里的 `<th>` 个数。
- *  ② Element Plus `<el-table>`：**一个 `<el-table-column>` 就是一列**，
- *     同样能从源码数出来 —— 早先把它当「测不到」是白扔证据。
+ *  ② Element Plus `<el-table>`：**一个 `<el-table-column>` 就是一列**。
  *  ③ 其它封装组件（`<DataTable :columns=…>` / slots 传列）：列数在 props 与运行时，
  *     源码测不到 ⇒ `unknown`，不并入窄表。
  *
  *   · `narrow`  —— 静态测到 1..4 列。
  *   · `unknown` —— 测不到。
  *   · `wide`    —— 静态测到 ≥5 列。
+ *
+ * ⚠️ 注意 ② 在**主分桶路径上已不可达**：`<el-table>` 页会被
+ *   `hasNativeTableScroll()` 先截进「组件原生横滚」桶。它在这里仍有用，
+ *   是因为 `--debug` 与下面的「组件原生横滚实测列数」清单共用它 ——
+ *   别把列数信息丢掉，否则那 7 个页面的宽度风险就成了没量过的东西。
  */
 function narrowTableVerdict(text) {
   const tbl = text.match(/<table\b[\s\S]*?<\/table>/)
@@ -205,11 +239,8 @@ function narrowTableVerdict(text) {
       if (thCount > 0) return thCount <= 4 ? 'narrow' : 'wide'
     }
   }
-  const el = text.match(/<el-table\b[\s\S]*?<\/el-table>/)
-  if (el) {
-    const colCount = (el[0].match(/<el-table-column\b/g) || []).length
-    if (colCount > 0) return colCount <= 4 ? 'narrow' : 'wide'
-  }
+  const colCount = elTableColumnCount(text)
+  if (colCount > 0) return colCount <= 4 ? 'narrow' : 'wide'
   return 'unknown'
 }
 
@@ -219,7 +250,8 @@ const OUT = jsonIdx >= 0 ? args[jsonIdx + 1] : null
 
 const buckets = {
   'cards（compact 出卡片）': [],
-  'degradation（有横向滚动容器）': [],
+  'degradation（作者声明的横滚容器）': [],
+  '组件原生横滚（el-table）': [],
   'min-width 声明（待核容器）': [],
   'narrow（实测 ≤4 列窄表）': [],
   '列数不可静态测（组件式表格）': [],
@@ -234,7 +266,8 @@ for (const relRaw of files) {
 
   const verdict = narrowTableVerdict(text)
   if (isCardified(text)) buckets['cards（compact 出卡片）'].push(rel)
-  else if (hasScrollContainer(text)) buckets['degradation（有横向滚动容器）'].push(rel)
+  else if (hasScrollContainer(text)) buckets['degradation（作者声明的横滚容器）'].push(rel)
+  else if (hasNativeTableScroll(text)) buckets['组件原生横滚（el-table）'].push(rel)
   else if (declaresMinWidth(text)) buckets['min-width 声明（待核容器）'].push(rel)
   else if (verdict === 'narrow') buckets['narrow（实测 ≤4 列窄表）'].push(rel)
   else if (verdict === 'unknown') buckets['列数不可静态测（组件式表格）'].push(rel)
@@ -245,7 +278,7 @@ const total = Object.values(buckets).reduce((a, b) => a + b.length, 0)
 console.log('=== compact 数据表覆盖普查（不判红，只出报表）===')
 console.log(`扫描 .vue ${files.length} 个；含表格 ${total} 个\n`)
 for (const [k, v] of Object.entries(buckets)) {
-  const full = k.startsWith('unwrapped') || k.startsWith('min-width') || k.startsWith('列数不可静态测')
+  const full = k.startsWith('unwrapped') || k.startsWith('min-width') || k.startsWith('列数不可静态测') || k.startsWith('组件原生横滚')
   console.log(`【${k}】${v.length}`)
   if (full) for (const r of v) console.log(`    ⚠️  ${r}`)
   else for (const r of v.slice(0, 8)) console.log(`    ${r}`)
@@ -260,6 +293,16 @@ console.log('★ 即便实测 ≤4 列也仍是启发式：4 列的宽表格（�
 console.log('  真结论要靠 device-fit 在登录态下跑一次实际渲染。')
 if (componentNameCollisions().length) {
   console.log(`⚠️  同名组件（索引取「任一份能横滚」）：${componentNameCollisions().join(', ')}`)
+}
+
+// 组件原生横滚的那几页**能滚**不等于**窄**：它们照样是宽度风险最高的一批
+// （10 列 / 9 列在小屏上照样挤成一团），所以把实测列数打出来。
+const nativeList = buckets['组件原生横滚（el-table）']
+if (nativeList.length) {
+  console.log('\n—— 组件原生横滚页的实测列数（能滚 ≠ 不挤）——')
+  const rows = nativeList.map((r) => ({ r, n: elTableColumnCount(readFileSync(join(SRC, r), 'utf8')) }))
+  rows.sort((a, b) => b.n - a.n)
+  for (const { r, n } of rows) console.log(`    ${String(n).padStart(2)} 列  ${r}`)
 }
 
 if (OUT) {
