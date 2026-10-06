@@ -178,6 +178,25 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.anomalies',
     requiresRole: 'super_admin',
   },
+  // 租户模型策略（superAdmin 档）：admin/handler.go:926-927 两条注册都是
+  // h.superAdmin，而 handleTenantModelPolicies 只有这一个调用点
+  // ⇒ 整棵子树（含 check 与 audit）都是 superAdmin 硬门槛。
+  // ★ 后端文件头把 check 标成 `(admin)`，那是过时的。
+  {
+    key: 'model-policies',
+    to: '/model-policies',
+    icon: 'cube',
+    titleKey: 'nav.modelPolicies',
+    requiresRole: 'super_admin',
+  },
+  // 租户模型策略审计。★ 无 OFFSET 无游标 ⇒ 页面刻意不放翻页控件。
+  {
+    key: 'model-policy-audit',
+    to: '/model-policy-audit',
+    icon: 'clock',
+    titleKey: 'nav.modelPolicyAudit',
+    requiresRole: 'super_admin',
+  },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))

@@ -121,6 +121,8 @@ describe('navItemsFor', () => {
       'maas-rates',
       'maas-tenant-ops',
       'matrix',
+      'model-policies',
+      'model-policy-audit',
       'overrides',
       'proposals',
       'request-anomalies',

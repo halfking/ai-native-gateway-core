@@ -5304,3 +5304,246 @@ settings PUT、model-rates 的 POST/PUT/DELETE）按前几批同口径**一律�
 是**另一个 handler**（`admin/model_policies.go`），带**软删除**（`undelete`），
 值得单独一节；`approval-config` 那一族（config/approvers/rules/stats）
 在 `admin/approval_config_handler.go`，是另一族配置面。
+
+### 11.78 租户模型策略子树上移（第四十二轮，`model-policies`）
+
+本批把 `/api/admin/tenants/{code}/model-policies` 子树的**三条只读端点**上移：
+列表、模型名校验（check）、审计（audit）。写操作（创建 / 改理由 / 软删 / 恢复）**一律不碰**。
+
+- 新 API 模块 `web-mobile/src/api/modelPolicies.ts`（三条端点**各自独立解包**，形状不符抛错）
+- 新视图 `ModelPoliciesView.vue`（列表 + check 面板）、`ModelPolicyAuditView.vue`（审计）
+- 新路由 `/model-policies`、`/model-policy-audit`
+- 新增**两条 superAdmin 抽屉席** `model-policies`、`model-policy-audit`
+- i18n 新命名空间 **`mpol` / `mpolAudit`**（**不是** `mp` / `mpa` —— 见下「我犯的错」）
+- 门禁：变异 **27/27 有牙**，用例 **102 条**（58 API + 24 策略面 + 20 审计面）
+
+#### ★★★★★★ 头号发现：档位注释是过时的，**租户管理员管不了自己租户的策略**
+
+`admin/model_policies.go:10-11` 的文件头注释写着
+
+```go
+//   POST   /api/admin/tenants/{code}/model-policies/check          autocomplete (admin)
+//   GET    /api/admin/tenants/{code}/model-policies/audit          audit log (admin)
+```
+
+**这是错的。** 真相是 `admin/handler.go:926-927`：
+
+```go
+mux.HandleFunc("/api/admin/tenants",  h.superAdmin(h.handleTenants))
+mux.HandleFunc("/api/admin/tenants/", h.superAdmin(h.handleTenants))
+```
+
+而 `handleTenantModelPolicies` **只有这一个调用点**（`admin/tenants.go:188-190`）
+⇒ **整棵子树（含 check 与 audit）都是 superAdmin 硬门槛**。
+
+★ 顺带查出 `SuperAdminMiddleware` **只认 JWT**：`claims.Role != "super_admin"` 即 403，
+`sk-...` 那类 legacy Bearer 走不到 handler 直接 401。
+⇒ `canAdministerTenant`（`model_policies.go:659-672`）里的
+`case "tenant_admin"` 与 `case "admin_key"` 两个分支
+**在这棵子树上都是死代码** —— tenant_admin 在中间件就被挡掉了。
+
+★★★ 也就是说：**租户自己的 model-policy，租户管理员也管不了**，必须 super_admin。
+页面文案不许按「本租户管理员可自助」写。两条抽屉席因此必须设 `requiresRole: 'super_admin'`。
+
+#### ★★★★★★ 第二头号发现：check 端点**完全不做租户隔离**
+
+`checkTenantModelPolicy(w, r, tenantCode)` 收了 `tenantCode string`，
+但它的 SQL（`model_policies.go:564-570`）里是：
+
+```sql
+SELECT mc.family, COALESCE(NULLIF(TRIM(mc.modality), ''), 'text')
+FROM models_canonical mc
+WHERE lower(mc.canonical_name) = lower($1)
+  AND COALESCE(mc.status, 'active') = 'active'
+LIMIT 1
+```
+
+**tenantCode 一个字都没用上。** 查的是**全局** `models_canonical`。
+
+⇒ 在 A 租户下校验和在 B 租户下校验，结果**完全相同**。
+⇒ 页面**不能**把这个面板描述成「本租户可用的模型」，文案里明写「查的是全局名录、与租户无关」。
+
+★ check 的匹配条件还有两条都不是「存在即真」：
+`lower(...) = lower($1)` 是**大小写不敏感**的；`COALESCE(status,'active')='active'`
+意味着**已下线的规范模型报 `exists:false`**。
+⇒ `exists:false` 至少有三种成因（真没登记 / 已下线 / 大小写写法不同），
+页面不许把它渲染成「拼错了」。
+
+#### ★★★★ `vendor` 字段后端**从不赋值**
+
+`TenantModelPolicyCheckResp.Vendor`（`model_policies.go:79`）全文件**只有声明**，
+`omitempty` + 从不写 ⇒ **响应里永远没有这个键**。源码注释自陈：
+
+> Returning empty string is acceptable for the UI which falls back to "Unknown vendor"
+
+⇒ 本 TS 接口**故意不声明 `vendor`**（声明了会诱导视图去读它）。
+页面厂商格必须显式显示「后端不提供（字段从不赋值）」，不能留空白格。
+
+★ `modality` 相反 —— 它**恒有值**：`resp := {CanonicalName: canonical, Modality: "text"}`
+是初值，命中才被 `COALESCE(NULLIF(TRIM(mc.modality),''),'text')` 覆盖。
+⇒ `exists:false` 时 `modality` 是字面量 `"text"`，**不是「没有模态」**。
+
+#### ★★★★★ 三条只读端点对「租户不存在」**三样响应**
+
+| 端点 | 租户码拼错时 | 依据 |
+|---|---|---|
+| `GET .../model-policies` | **404 `tenant not found`** | `model_policies.go:173-178` 先 `SELECT EXISTS(SELECT 1 FROM tenants WHERE code=$1)` |
+| `GET .../model-policies/audit` | **200 + 空数组** | `withTenantTx`（`admin/tenant_ctx.go`）只 `SET LOCAL app.current_tenant` 就查，**不校验租户存在** |
+| `POST .../model-policies/check` | **200 + `exists:false`** | 见上，tenantCode 压根没进 SQL |
+
+★★★ 第一个的 404 **还不能当成「租户不存在」的证据** ——
+条件写的是 `if err != nil || !exists`，**数据库查询出错也被报成同一个 404**
+⇒ 客户端分辨不出「拼错了」与「tenants 表这一行查失败」。
+页面文案必须说「不一定是不存在」。
+
+⇒ 审计页拿到空列表时，**必须**出警告说「空 ≠ 没有变更过」。
+
+#### ★★★★ `count` 是**派生值**，证明不了扫描没丢行
+
+`model_policies.go:218-222`：
+
+```go
+writeJSON(w, http.StatusOK, map[string]any{
+    "policies": out,
+    "count":    len(out),      // ← 就是同一个切片的长度
+    "tenant":   tenantCode,
+})
+```
+
+⇒ ★★★ `count` **恒等于** `policies.length`，**既不是**全库条数，**也证明不了**没丢行
+（`for rows.Next() { if serr := rows.Scan(...); serr != nil { continue } }`
+在 `model_policies.go:202-211`，audit 侧 `631-641` 同）。
+页面不许把 `count` 当「全库策略数」显示。
+
+`policies` / `audit` 都是 `make([]T, 0)` ⇒ **永不为 null**，空就是 `[]`。
+
+#### ★★★★ audit：`limit` 越界是**回落默认值 100**，不是 clamp
+
+`model_policies.go:596-601`：
+
+```go
+limit := 100
+if s := r.URL.Query().Get("limit"); s != "" {
+    if n, err := strconv.Atoi(s); err == nil && n > 0 && n <= 500 {
+        limit = n
+    }
+}
+```
+
+⇒ `limit=0` ⇒ 100、`limit=-1` ⇒ 100、`limit=501` ⇒ **100**（不是 500！）、
+`limit=abc` ⇒ 100。★ **本仓第九种限幅语义**，与 MaaS 的 `ClampUsageLimit`（>50⇒50）**方向相反**。
+
+★ 两个层次的整数处理要分清：客户端 `fetchTenantModelPolicyAudit` 先 `Math.trunc`
+再进 URL，所以后端 `Atoi` 拿到的一定是合法整数字符串。
+若哪天把 URL 里的 `Math.trunc` 去掉，后端 `Atoi("500.9")` 会**失败** ⇒ 静默回落 100
+⇒ 页面显示的条数与实际不符。判据钉住了「URL 里的小数确实被截断成整数」。
+
+★ audit 是 `ORDER BY ts DESC LIMIT $2`，**没有 OFFSET、没有游标**
+⇒ **没有「更早一页」**，页面刻意**不放任何翻页控件**（有判据钉住）。
+
+#### ★★★ audit 表由**数据库触发器**写，不是 `h.writeAuditLog`
+
+函数体 `sql/objects/functions/tenant_model_policies_audit_fn.sql`，四条由此而来的事实：
+
+- **(a)** `actor` 的兜底是
+  `COALESCE(NULLIF(current_setting('app.current_admin', true), ''), 'system')`
+  ⇒ **`actor === 'system'` 表示当时没设 `app.current_admin` GUC**，
+  **不是「某个叫 system 的账号」**。页面单列成「无署名」。
+- **(b)** `delete` 那行写的是 **`OLD.reason`**（删除**前**的理由），
+  而 `insert`/`update`/`undelete` 写 `NEW.reason`
+  ⇒ 同一条策略的「理由」在审计里会**前后不一致**，**这是设计不是数据错**。
+- **(c)** `UPDATE` 只在 `deleted_at` 变了、**或** `reason`/`canonical_name` 变了时才落审计行
+  ⇒ 一次「改成同样的值」的 PATCH **不留任何审计痕迹**。
+- **(d)** 动作集合是**闭合的**：表上有
+  `CHECK (action = ANY (ARRAY['insert','update','delete','undelete']))`
+  ⇒ 库里不可能出现别的动作。★ 注意第一个是 **`insert`**，不是 `create`（我一开始猜错了，
+  追到 `sql/objects/tables/tenant_model_policies_audit.sql` 才改对）。
+
+`auditRow.policy_id` 是**指针 + omitempty** ⇒ 键不存在 = 这行没挂到具体策略。
+触发器写它时**总**填 `NEW.id`/`OLD.id`，所以走触发器产生的行该键恒在。
+
+#### ★★★ `include_deleted` 只认**字面** `"true"`
+
+`model_policies.go:180`：`r.URL.Query().Get("include_deleted") == "true"`
+⇒ `1` / `TRUE` / `yes` / 空 一律当 **false**，**静默少返回软删行，不报错**。
+
+`deleted_at` / `deleted_by` 都是**指针 + omitempty** ⇒ 未软删时键**整个不存在**（不是 `null`），
+两者**各自独立** omitempty，理论上可只缺一个。
+
+#### ★★ 三个 handler 的 ctx 预算各不相同
+
+list 5s / audit 5s / **check 3s** —— check 更容易踩超时。
+
+#### ★★ 租户码含 `/` 时**到不了**这些端点
+
+`admin/tenants.go:145` 用 `strings.SplitN(r.URL.Path, "/", 2)`，而 `r.URL.Path` 是
+**已解码**路径 ⇒ `%2F` 会被解回真斜杠再切坏。前端按既有约定 encode，
+但那只防 URL 层面歧义，**防不住 Go 的解码**；含 `/` 的租户码是后端限制。
+
+#### 子树分派（写操作那侧，本批只记录）
+
+`handleTenantModelPolicies`（`model_policies.go:87-163`）：
+`rest == ""` ⇒ GET list / POST create / 其他 405；
+`head == "check"` **必须 POST**，否则 405 `check requires POST`；
+`head == "audit"` **必须 GET**，否则 405 `audit requires GET`；
+`head` 走 `strconv.ParseInt` 失败 ⇒ **400 `expected numeric policy id`**；
+`tail == "undelete"` **必须 POST**，否则 405 `undelete requires POST`；
+其他 tail ⇒ **404 `unknown sub-path: <tail>`**。
+`h.db == nil` ⇒ **503 `database not configured`**。
+
+#### 我在这一批犯的错
+
+1. ★★★ **i18n 前缀撞车**：先用了 `mp` / `mpa`，被 `verify-i18n-parity` 抓到
+   「`zh-CN mp.title`（第 1408 行与第 1978 行）」重复键 ——
+   **`mp` 早被 MaaS 目录与价目占用**（`MaasCatalogView.vue` 的 `mp.dim_`）。
+   门禁在这里是真有牙的。改用 `mpol` / `mpolAudit`。
+2. ★★★ **抄 TenantsView 时把 MaaS 文案一起抄了过来**：错误分支用了
+   `t('maas.unconfigured')`，那句文案写着「服务端没有启用 **MaaS**」——
+   出现在模型策略页是错的。补了本页自己的 `mpol.unconfigured` / `mpolAudit.unconfigured`。
+3. ★★ **python 批改脚本锚点只匹配到键名没匹配整行**，把 `unconfigured:` 插进了
+   `includeDeletedNote:` 的**键与值之间**，两个 locale 文件同时语法破坏。
+   自造锚点必须含值或换行。
+4. ★★ **断言里 `expect.anything()` 不匹配 `undefined`**：视图调用 `fetch(code, params)`
+   只传两个参数，`options` 是 `undefined` ⇒ 5 条断言全红。是我断言写错，不是实现错。
+5. ★★ **把「小数先截断」的期望写反**：我以为 `500.9` 会被服务端回落 100，
+   实际客户端 `Math.trunc(500.9)=500` **先截断再发** ⇒ 后端看到 `"500"` ⇒ 500。
+   实现是对的，断言是错的。改成反映真实的两层行为。
+6. ★★★ **全页 `not.toContain` 被自己写的免责文案判红**：断言
+   `expect(w.text()).not.toContain('没有变更过')`，而那条免责警告本身就是
+   `空列表**不能**当成「这个租户没有变更过」` ⇒ **引述了那几个字**。
+   这是既有纪律（否定断言要按节点作用域）的一个**新变体**：
+   被判红的是**同一面板、同一目的、我自己刚写的免责说明**。
+   改成「凡提到该措辞的节点必须全部是 `.mpa__note--warn`，且 `.mpa__msg` 里一个都不许有」。
+7. ★★★★ **补出一条真判据缺口**（变异 V3 抓出来的）：我原来只写
+   `expect(w.findAll('.mp__item')).toHaveLength(0)` 来守「抛错不许退化成空名单」——
+   把 catch 改成 `list.value = {policies: [], count: 0, tenant}` 时它**照样是 0** ⇒ **无牙**。
+   ★ 「列表项为 0」**证明不了**「列表面板没渲染」：后者才是错误态与空态的区别。
+   补 `expect(w.findAll('.mp__badge')).toHaveLength(0)`（计数徽标只存在于
+   `v-if="list"` 之内）后，V3 与 V11 都有牙了。审计面同理补 `.mpa__badge`。
+8. ★★ **变异注入把注释插在模板属性值里**（`v-for="..." /* MUT-V10 */`）破坏了模板解析
+   ⇒ 收集失败、具名红为空。标记要放在标签内容区，不能插进属性值中间。
+9. ★★ **变异脚本删掉 `requiresRole` 那一行后产物里没有可 grep 标记** ⇒ 脚本正确拦下（N1 缺标记）。
+   注入必须自带标记，哪怕改的是「删一行」。
+10. ★★ **测试标题与断言不符**：`503 ⇒ 明说「没启用」` 在断言改成「没有配置数据库」
+    之后没跟着改。标题是给人读的契约，也得跟。
+
+#### 门禁与实测
+
+- 变异 **27/27 有牙**（M1–M15 API 段、V1–V11 视图段、N1 导航段），还原逐字节一致
+- 全量 **2138 用例全绿**（97 个测试文件）
+- `npm run build` rc=0（含 `vue-tsc -b`）
+- 三门 rc=0：css-media / touch-target（**73** 个 `.vue`）/ i18n parity
+  （零重复键；本批**零新增**动态前缀，仍 29 处，与改动前一致）
+- 全量 **10 连跑**：见下
+
+#### 仍未上移
+
+写操作一律不碰：`POST /model-policies`、`PATCH /{id}`、`DELETE /{id}`、
+`POST /{id}/undelete`。
+
+**下一批候选**：`approval-config` 一族（config / approvers / rules / stats）——
+★ 注意它实际注册在 **`/api/admin/tenant-approval-config/`（单数 tenant）**
+且走 `wrapAdmin`（admin 档），且**只在 `dbConn.Enabled() && redisClientForCache != nil` 时注册**；
+打 `/api/admin/tenants/{code}/approval-config` 会落进 `handleTenants` 的
+`unknown sub-resource` 404 分支。另：`admin/attachments`(8)、`admin/modules`(7)、
+`admin/logs`(7)、`system/session-context`(6)。
