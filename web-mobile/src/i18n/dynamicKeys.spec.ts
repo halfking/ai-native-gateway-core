@@ -6,6 +6,11 @@ import { ANALYTICS_WINDOWS, TUNING_STATUSES, TUNING_CATEGORIES } from '@/api/aut
 import { ROUTING_OPT_METRICS_DIMS } from '@/api/routingOpt'
 import { PENDING_AGE_BANDS } from '@/api/pendingResponses'
 import { ANOMALY_TRIGGERS } from '@/api/requestAnomalies'
+import {
+  COMPLIANCE_ISSUE_TYPES,
+  COMPLIANCE_QUEUE_STATUSES,
+  COMPLIANCE_THRESHOLD_FIELDS,
+} from '@/api/outputCompliance'
 
 /**
  * 动态 i18n 键的落地校验（2026-10-07）。
@@ -56,11 +61,16 @@ const DYNAMIC_KEYS: Array<[prefix: string, suffixes: readonly string[]]> = [
   ['pending.band_', PENDING_AGE_BANDS],
   // ★ 请求侧异常的三种类型（取值来自 ANOMALY_TRIGGERS 常量）
   ['anomalies.trigger_', ANOMALY_TRIGGERS],
+  // ★ 输出合规的命中类别、复核状态、阈值字段
+  ['compliance.issue_', COMPLIANCE_ISSUE_TYPES],
+  ['compliance.qstatus_', COMPLIANCE_QUEUE_STATUSES],
+  // 阈值键是 field.replace('_threshold','') ⇒ 后缀要现算，不手抄
+  ['compliancePolicy.th_', COMPLIANCE_THRESHOLD_FIELDS.map((f) => f.replace('_threshold', ''))],
 ]
 
 describe('动态 i18n 键在两侧词典里都存在', () => {
-  it('★ 至少覆盖 8 处动态前缀（少于这个数说明下面的清单没跟上代码）', () => {
-    expect(DYNAMIC_KEYS.length).toBeGreaterThanOrEqual(8)
+  it('★ 至少覆盖 11 处动态前缀（少于这个数说明下面的清单没跟上代码）', () => {
+    expect(DYNAMIC_KEYS.length).toBeGreaterThanOrEqual(11)
   })
 
   for (const [prefix, suffixes] of DYNAMIC_KEYS) {
