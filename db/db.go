@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -324,6 +325,13 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	// intentionally unregistered, so this tolerates the function not
 	// existing yet instead of failing db.Open (see the func's doc comment).
 	if err := db.ensureURSMNodeSnapshotMinDailyPartition(migCtx); err != nil {
+		return err
+	}
+	// 2026-10-06 审计 §10.71（P0 复盘）：把该表主键收敛到 writer 的 ON CONFLICT
+	// 列集合。463 不在 installer 的 StartupFiles 里，而 schema_migrations 是
+	// **只写不读**的账本 ⇒ 没有别的自动通道会修它。先于分区 ensure 生效：
+	// 分区形态下本函数直接不动（830 自带 4 列主键）。
+	if err := db.ensureURSMNodeSnapshotMinIdentityPK(migCtx); err != nil {
 		return err
 	}
 	// 2026-09-05 migration 656 (audit D-2#4/H-2): auto_route_selections_hot
@@ -1655,6 +1663,112 @@ func (d *DB) ensureUsageFactsDailyPartition(ctx context.Context) error {
 // propagate, because its consequence is "today's partition missing ⇒ every
 // snapshot write fails" — there is no DEFAULT partition to absorb the rows
 // (see the 830 header, hard constraint 2).
+// ursmSnapshotIdentityPKCols = writer 的 INSERT ... ON CONFLICT
+// (domains/ursm/v2/persist/writer.go) 所依赖的唯一约束列集合。
+//
+// ★ 这里的字面量是**故意重复**而不是从 writer 导入的：
+//   同一组列在两处各写一份，正是「基线 ↔ writer」那道门存在的理由。
+//   若改成共享常量，那道门会永远为真（自己和自己比），
+//   而这道自愈如果跟着漂，就会把生产往**错的方向**修。
+//   同步性由 db/ursm_snapshot_identity_pk_test.go 钉住。
+const ursmSnapshotIdentityPKCols = "snapshot_ts, tenant_id, credential_id, raw_model_name"
+
+// ensureURSMNodeSnapshotMinIdentityPK 在启动期把 ursm_node_snapshot_min 的
+// 主键收敛到 writer 的 ON CONFLICT 所需��列集合（2026-10-06，审计 §10.71）。
+//
+// ── 为什么需要它（不是「多一道保险」）──────────────────────────────
+// 2026-10-06 的 P0：表的主键停在 3 列（缺 tenant_id），writer 的
+// 4 列 ON CONFLICT 每次抛 SQLSTATE 42P10，写入停摆 12.4 小时 + 间歇失败 51 小时。
+//
+// 而**没有任何自动通道会修它**，实测：
+//   · installer 的 StartupFiles 里没有 453 / 463 / 830（只有 818）；
+//   · `schema_migrations` 在全仓 Go 代码里**只有 INSERT、没有任何读取**，
+//     它是「只写不读的账本」——同族注释见 admin/telemetry.go:525：
+//     「live hosts can report schema_migrations=455 while still serving the
+//     old unique index」；
+//   · §10.65/§10.67 已证 down 迁移（463.down 改主键 / 830.down 换名）
+//     与 up 迁移（453.sql 内联建表）**都能造出这个状态**。
+//
+// ⇒ 本函数把「巡检发现」升级为「**每次启动自愈**」。
+//   先例：admin/telemetry.go 对同一类问题的处置是「让代码容忍两种形态」；
+//   但 writer 只能容忍一种（单条 ON CONFLICT 子句），
+//   所以对它只能**修库**，不能修代码。
+//
+// ── 安全边界（每条都有代价，取舍写在这里）────────────────────────
+//  1) 表不存在 → 直接返回 nil。to_regclass 而非 '...'::regclass，
+//     否则裸 cast 会 raise 而不是返回 NULL。
+//  2) 表已分区（relkind='p'）→ **不动**。830 的形态自带 4 列主键，
+//     且由 ensureURSMNodeSnapshotMinDailyPartition 负责；在这里
+//     DROP/ADD 一个分区父表的主键会牵连全部分区。
+//  3) 拿不到锁就**放弃并记 WARN**，绝不用长锁把线上写入堵在队列里
+//     （同 830 的 lock_timeout 论证）。
+//  4) 只在列集合**真的不同**时才 DDL；一致则完全不产生写。
+func (d *DB) ensureURSMNodeSnapshotMinIdentityPK(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	const table = "ursm_node_snapshot_min"
+
+	// 0) 形态探测：表在不在、是不是分区表。
+	var exists, partitioned bool
+	if err := d.pool.QueryRow(ctx, `
+		SELECT to_regclass('public.`+table+`') IS NOT NULL,
+		       COALESCE((SELECT c.relkind = 'p' FROM pg_class c
+		                  WHERE c.oid = to_regclass('public.`+table+`')), false)
+	`).Scan(&exists, &partitioned); err != nil {
+		return fmt.Errorf("probe %s identity state: %w", table, err)
+	}
+	if !exists || partitioned {
+		return nil
+	}
+
+	// 1) 读实际主键的列集合（按列名排序，顺序无关）。
+	var actual string
+	err := d.pool.QueryRow(ctx, `
+		SELECT COALESCE((
+		         SELECT string_agg(a.attname, ',' ORDER BY a.attname)
+		           FROM pg_constraint con
+		           JOIN unnest(con.conkey) AS k(attnum) ON true
+		           JOIN pg_attribute a
+		             ON a.attrelid = con.conrelid AND a.attnum = k.attnum
+		          WHERE con.conrelid = to_regclass('public.`+table+`')
+		            AND con.contype = 'p'), '')
+	`).Scan(&actual)
+	if err != nil {
+		return fmt.Errorf("read %s primary key: %w", table, err)
+	}
+
+	var want []string
+	for _, c := range strings.Split(ursmSnapshotIdentityPKCols, ",") {
+		want = append(want, strings.TrimSpace(c))
+	}
+	sort.Strings(want)
+	if actual == strings.Join(want, ",") {
+		return nil
+	}
+
+	// 2) 拿不到锁就放弃：宁可下一轮 boot 再试，也不在启动路径上排队等写入。
+	conctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if _, err := d.pool.Exec(conctx, `SET LOCAL lock_timeout = '3s'`); err != nil {
+		return fmt.Errorf("set lock_timeout for %s identity reconcile: %w", table, err)
+	}
+	if _, err := d.pool.Exec(conctx, `
+		ALTER TABLE public.`+table+` DROP CONSTRAINT IF EXISTS `+table+`_pkey;
+		ALTER TABLE public.`+table+` ADD CONSTRAINT `+table+`_pkey
+			PRIMARY KEY (`+ursmSnapshotIdentityPKCols+`);
+	`); err != nil {
+		// ★ 记 WARN 后**返回 nil**：这条自愈失败不应把网关打成 no-DB 模式。
+		//   §10.60 的真库巡检仍会每小时报 exit 1，两条防线是互补的。
+		slog.Warn("ursm.v2: snapshot identity PK reconcile skipped; writer writes may fail",
+			"table", table, "actual_cols", actual, "want_cols", strings.Join(want, ","), "error", err)
+		return nil
+	}
+	slog.Warn("ursm.v2: snapshot identity PK reconciled at boot",
+		"table", table, "from", actual, "to", strings.Join(want, ","))
+	return nil
+}
+
 func (d *DB) ensureURSMNodeSnapshotMinDailyPartition(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
