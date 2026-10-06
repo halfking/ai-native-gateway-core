@@ -6104,3 +6104,87 @@ pss 里按 interval 参数分成 5 个条目，top 那个累计 54,302 次 / 均
 
 ⇒ 登记在案，**不进优化队列**。若将来 analyze 落地后它成为第 1，
 再单独立项评估「探针专用轻量读法」，且必须保留「两个面都读」这一不变量。
+
+---
+
+## §10.55 存储侧：重复索引（同时吃存储与写放大），并落成巡检
+
+§10.35 判定「存储侧无压力」（93G 空闲 / 库 24G）。本节换一个判据重新看：
+不是「空间够不够」，而是「**有没有纯浪费**」。
+
+### §10.55.1 实测：全库 19 张表存在定义完全相同的重复索引
+
+判据：**去掉索引名之后的定义本体逐字相同**。
+不能比索引名（重复索引通常来自两条不同迁移路径，名字必然不同，比名字等于漏掉全部）；
+也不能只比列清单（`WHERE`、唯一性、排序方向不同就不是重复维护）。
+
+252 真机实跑（`/tmp/dupidx-probe.sh`，只读，默认 PSQL 路径）：
+
+| 表 | 索引 A | 索引 B | A 体积 |
+|---|---|---|---|
+| `session_summaries` | `session_summaries_pkey` | `session_summaries_session_key_uidx` | **57 MB** |
+| `runtime_metrics` | `idx_rt_instance_time` | `idx_runtime_metrics_instance` | 1.3 MB |
+| `runtime_metrics` | `idx_rt_time` | `idx_runtime_metrics_timestamp` | 440 KB |
+| `routing_audit_log` | `idx_routing_audit_log_idempotency` | `uq_routing_audit_log_idem` | 221 KB |
+
+`session_summaries` 本体 **914 MB** 且**持续写入** ⇒
+删掉 `session_summaries_session_key_uidx`（**110 MB**）可同时回收存储与
+每次写操作的索引维护成本。**这是本节唯一有量级收益的一条。**
+
+（阈值以下的还有 15 对，多为刚建好的空索引，单个 8 KB。
+`session_turns` 族的 `(ts, id) WHERE digest IS NULL` 在 2026_09 / 2026_11 /
+default 三个分区上各重复一次，当前分区空所以只有 8 KB，填上就会真涨。）
+
+### §10.55.2 排除「膨胀」这个更省事的解释
+
+`session_turns_2026_09` 是全库最大表（2,634MB / 798,893 行，heap 1,109MB +
+indexes 807MB + toast 718MB），一度像是膨胀。实测**不是**：
+`n_dead_tup` 4,359、占比 **0.5%**，`autovacuum` 2026-10-01 07:13 跑过。
+全库 top10 大表的死元组占比都在 0.0%~8.9%。
+⇒ 这 2.6 GB 是**真实数据**，不打折。
+
+### §10.55.3 巡检脚本 `pg17-duplicate-index-check.sh`
+
+- **只报告不 DROP。** 删索引没有「是否被查询依赖」的权威答案
+  （PG 不记录索引使用情况），必须人工确认后单独执行。
+  脚本里连 `DROP INDEX` / `REINDEX` 字符串都不允许出现，有门钉住。
+- 阈值 `MIN_PAIR_BYTES` 默认 65536（删一个能回收的字节数下限），
+  空索引地板 8 KB 逐条告警只会埋掉信号；`=0` 可看全量。
+- **退出码语义与同目录的 bloat 脚本相反，这是刻意的**：
+  bloat 脚本里「0 行 ⇒ exit 3」（它需要参照系，0 行=量具坏了）；
+  本脚本「0 行 ⇒ exit 0」，因为 0 对重复索引**就是**结论。
+  混起来就会出现本项目已踩过的「查不到 ⇒ 报健康」。
+- 判据在 `scripts/ursmcheck/duplicate_index_check_test.go`（7 条），
+  cron 接线补进 `etc.cron.d.pg17`（周日 05:10，排在 index-bloat 04:40 之后半小时）。
+
+### §10.55.4 ★ 两个自己写的 bug，以及为什么仓库的门没抓住
+
+**① `psql -c` 不绑定 `$1`。** 第一版把阈值写成 SQL 里的 `$1`。
+在 252 真机第一次跑就报 `ERROR: there is no parameter $1`。
+**在此之前：假 psql 桩对 SQL 内容照单全收、`bash -n` 通过、
+cron 接线门只断言「脚本存在且有 cron 行」—— 全绿。**
+与 `ursm-snapshot-payload-bloat.sh` 注释里记的「默认值从没被执行过」同一族，
+只是这次发生在我自己新写的脚本上。
+⇒ 修法：先校验 `MIN_PAIR_BYTES` 为非负整数，再内联进 SQL；
+并补一条静态门禁止 SQL 段出现 `$1/$2/$3`。
+
+**② `$变量` 紧跟全角括号 = macOS bash 3.2 的未绑定变量。**
+`"实得 $nfield（行）"` 在 bash 3.2 下把全角括号算进变量名 ⇒
+`nfield: 未绑定的变量`。252 实测 **bash 4.4.20 无此问题**（输出正常）。
+⇒ 扫描 `scripts/252-monitor/*.sh` 另发现 6 处同型
+（`pg17-index-bloat.sh` 2 处、`pg17-pg-availability-check.sh` 4 处），
+但 **252 跑 bash 4.4 ⇒ 不是生产缺陷**，登记备查；
+新脚本一律用 `${var}` 定界。
+★ 附带结论：仓库的 shell 门在 CI 是 Linux/bash5 跑的，
+**这类 portability 问题 CI 看不见**，只有 macOS 本地跑门才会撞出来 ——
+本地环境反而比 CI 更严。
+
+变异台账：M47（0 行改成 exit 3）→ 语义门红；
+M48（去掉阈值校验并把 `$1` 写回 SQL）→ 静态门红。均 `changed=True` 自证落盘。
+
+### §10.55.5 本节不做的事
+
+**不删任何索引。** 建议的处置顺序（需授权）：
+1. 先删 `session_summaries_session_key_uidx`（110 MB，表在写，收益最大）；
+2. 用 `pg_stat_statements` / 慢日志确认无查询依赖该索引；
+3. `DROP INDEX CONCURRENTLY`（不阻塞读写），而不是 `DROP INDEX`。
