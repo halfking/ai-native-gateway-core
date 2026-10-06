@@ -43,7 +43,7 @@ import {
   type AutoRouteIndexRow,
   type AutoRouteAuditResponse,
   type AutoRouteDecisionResponse,
-} from './autoRoute'
+} from './autoRouteRead'
 
 /**
  * 自动路由读面（2026-10-08，第五十五批）。

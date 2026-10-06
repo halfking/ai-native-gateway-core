@@ -171,6 +171,18 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/TuningProposalsView.vue'),
     meta: { titleKey: 'proposals.title', requiresAuth: true },
   },
+  // 自动路由读面：答「现在跑得怎么样、花了多少钱」——
+  // /proposals 答建议，本页答建议落地后的效果。两者之间缺的就是这一页。
+  // 五段：audit 聚合 / 凭据×模型索引 / 客户成本 / 模型成本 / 调优准确率。
+  // ★ 整条 auto-route 线是 superAdmin（handler.go:1381 与 :1430 都是
+  //   h.superAdmin；注意形参名 adminWrap 是假名，值在调用处才定）
+  //   ⇒ 抽屉席必须挡，tenant_admin 进去必然 403。
+  {
+    path: '/auto-route',
+    name: 'auto-route',
+    component: () => import('@/views/AutoRouteView.vue'),
+    meta: { titleKey: 'autoRoute.title', requiresAuth: true },
+  },
   // ── 全局横向对比面（2026-10-07）──────────────────────────────────────
   // 与 /funnel 配对：漏斗是单模型纵深，矩阵/流量是全体模型横向对比。
   // ★ 两条都是 superAdmin：matrix/flow 在 RegisterAnalyticsRoutes 里
