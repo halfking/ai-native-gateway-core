@@ -113,10 +113,12 @@ scripts/verify-gateway-audio-multi.mjs`（openpocket 仓）。
 
 - **glm-asr live 绿卡在凭据充值**（4 把编码套餐 key 均无音频资源包）；
   数据面已就绪，充值后零改动。
-- refine/analyze 的 LLM 选型要避开被 chat 面 task_type 路由排除的模型：
-  本地实测 glm-4.7/glm-4.7-flash/deepseek-chat 被按 creative 类排除
-  （503 + alternatives），minimax-text-01 稳定。给 refine/analyze 调用
-  方显式 pin 任务类的后续候选（网关 chat 面范畴）。
+- ~~refine/analyze 的 LLM 选型要避开被 chat 面 task_type 路由排除的
+  模型~~ **2026-10-07 勘误**：上轮「glm-4.7 系被 creative 类排除」的
+  归因经 curl 对照证伪——code 类提示同样 503，glm-4.7/glm-5 在本地环境
+  是**整体不可路由**（zhipu 文本凭据未接），与任务分类无关。调用方只需
+  选可路由模型；网关现已把 503 no_candidate 的 alternatives 建议清单
+  透出到 MCP 面与错误语义（见 §6），选型成本进一步降低。
 - 环回形态下 refine/analyze 一次调用计两次 key RPM（音频面 + chat 面）；
   客户端已按 12/min 口径节流（verify 脚本 `GW_RPM_GAP_MS`）。
 - openpocket 会议流（server_meeting）接入周期 analyze：该文件当轮有并行
@@ -125,6 +127,25 @@ scripts/verify-gateway-audio-multi.mjs`（openpocket 仓）。
   端上可行性结论（docs/2026-10-06-ondevice-realtime-feasibility.md，
   结论：端上实时档可行且为实时字幕首选，短板由 refine 兜底），会议流
   接线留下一轮。
+## 6. 完善轮（2026-10-07，限流单计 + 选型辅助）
+
+- **authenticateTransform**：refine/analyze 的鉴权走 key 校验/键状态/
+  预算同一口径但**不消耗 RPM**——LLM 步骤环回 chat 面带同一把调用方
+  key 已计一次；双计会把 12/min 的 key 的周期 analyze（产品化轮询节奏
+  分钟级）打成 429。跳过无绕过：直连打爆 /v1/audio/refine 最终仍被
+  环回 chat 步的同一把 key 限流拦住（一次逻辑调用恰计一次）。MCP
+  tools/call 的外层 authenticate 无法按工具名选择性跳过，维持双计，
+  是次要路径。
+- **503 no_candidate 透出 alternatives**：环回 chat 拿到 503 时解析
+  错误体 alternatives[].model，转成 audioNoProviderError——HTTP 面映射
+  503 no_provider（与音频面同一语义、同一错误码），MCP 面错误信息带
+  完整建议清单（如 kimi-k3、deepseek-v4-pro），调用方换模型即可。
+- 会议流产品化（openpocket main e39d63c6）：POST /api/meetings/{id}/
+  analyze 实时分析 action——滚动摘要 + hints，录制中只读视图（不写
+  会议状态/不覆盖正式纪要），滚动游标进程内存持有，无新增快返零
+  LLM 花费；model 空按 preferred → auto 兜底。配套验证脚本补
+  「ASR 原始输出 → refine → analyze」真实噪声链路段（[7]）。
+
 - 837 自锁修复影响所有存量库的下次部署；252/245/154 部署前无需额外
   操作（ensure 已自愈），但**首个吃到该修复的构建**应留意启动日志里的
   `routing analytics materialized views ensured (rebuilt=true)`。
