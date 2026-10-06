@@ -30,10 +30,25 @@ import (
 //	    return "request_logs_bodies_with_current_month"  // ★ v1（默认）
 //	}
 //
-// 而 `storage.session_bodies_native_read` 在本地真库的 `settings_kv` 里**整行不存在**
+// 而 `storage.session_bodies_native_read` 在**本地**真库的 `settings_kv` 里**整行不存在**
 // （同表的 `storage.session_turns_bodies_enabled` / `storage.admin_logs_native_turns_read` /
 // `storage.session_final_full_enabled` **都在**）⇒ `GetPlatformBool(…, false)` 恒取 false。
 //
+// ⚠⚠ **「同表那两个也在」只在本地库成立**（审计 §9.265 七节，生产 252 只读实测）：
+// 生产 `settings_kv` 里 `storage.` 前缀**只有 2 个键**
+// （request_logs_write_enabled=true / session_final_full_enabled=false），
+// 上列那两个在生产上**也不存在**。
+// ⇒ **生产上 bodies 读端恒取 false 这条结论不变**（键不存在 ⇒ 取默认 false），
+//   但**「bodies 是唯一漏掉的那一项」这个论证在生产上不成立** —— 别拿本地那两行当生产证据。
+//   （`storage.admin_logs_native_turns_read` 默认 false 是**有意设计**，见
+//    admin/logs_turns_source.go:40–55：原生源比视图少 27.6% 的行，按谓词形态禁止迁。）
+//
+// ⚠★ **只翻读端不够**：写端 `storage.session_turns_bodies_enabled`
+// （domains/session/v2/session_writer_v2.go:674「S1b 灰度开关①」）在生产上**同样不存在**
+// ⇒ 恒取 false ⇒ `RequestDeltaJSON`/`ResponseDeltaJSON` **根本没在写进 session_turns**。
+// ⇒ 读端一旦切到会话侧，读到的就是**空正文** —— 即 §9.229.2 那个
+// 「会话导出正文全变 `{}` 而接口仍 200」的形态。**两个开关必须成对翻。**
+
 // ⇒ 那 13 个读方**此刻读的就是 v1**。停写之后它们会读到一份**冻结**的 v1 bodies，
 // 而且**不报错**（多数调用点写 `COALESCE(rb.request_body, '{}')`）。
 // §9.263 的「共用一条前置」漏了这一项。
@@ -329,3 +344,122 @@ func assertBodiesPath(t *testing.T, got map[bodiesReadPath]map[string]bool, p bo
 }
 
 var _ = os.Getenv
+
+// ★ bodiesSwitchPair —— P1 的两个开关（审计 §9.265 七节，生产 252 只读实测补出）
+//
+// 为什么不把 P1 写成「把 `storage.session_bodies_native_read` 翻成 true」这一句：
+// 读端切换层（db/request_logs_view_schema.go:1082）翻过去之后，读到的是**会话侧**；
+// 而**会话侧的正文由 writer 侧另一个开关决定**（domains/session/v2/session_writer_v2.go:674
+// 「S1b 灰度开关①」，控制 RequestDeltaJSON / ResponseDeltaJSON 是否写进 session_turns）。
+// 生产 252 上**两个键都不存在** ⇒ 都取 false ⇒ 读端若单翻，会读到**空正文**。
+// 这就是 §9.229.2 那个「会话导出正文全变 `{}` 而接口仍 200」的形态。
+//
+// 所以 P1 必须是**一对**，而这一对要在这里逐个点名 —— 少写一个，
+// 「只翻读端」这个方向就会重新变成一个看起来成立的选项。
+// 两个键单列出来，P1 清单与下面的源码断言共用同一份定义，避免两处各写一遍字符串。
+const (
+	bodiesReadKey  = "storage.session_bodies_native_read"
+	bodiesWriteKey = "storage.session_turns_bodies_enabled"
+)
+
+var bodiesSwitchPair = []struct {
+	Side string // 读端 / 写端
+	Key  string
+	Why  string
+}{
+	{
+		Side: "读端",
+		Key:  bodiesReadKey,
+		Why:  "SessionBodiesSourceSQL 的默认支；false ⇒ 13 个只经切换层的 bodies 读方此刻读 v1",
+	},
+	{
+		Side: "写端",
+		Key:  bodiesWriteKey,
+		Why:  "S1b 灰度开关①；false ⇒ RequestDeltaJSON/ResponseDeltaJSON 不写进 session_turns，" +
+			"读端切过去读到的是空正文",
+	},
+}
+
+// TestBodiesSwitchPairIsPinnedAndPaired 把 P1 的两个开关钉在同一个清单里。
+//
+// 三个方向各要红一次：删掉一个成员、把两边的 Side 写成同一个、
+// 把某个 Key 换成表里真实存在的另一个键（那种改动读起来「很有道理」——
+// 例如误以为 `storage.admin_logs_native_turns_read` 就是 bodies 写端开关）。
+func TestBodiesSwitchPairIsPinnedAndPaired(t *testing.T) {
+	if len(bodiesSwitchPair) != 2 {
+		t.Fatalf("P1 必须是一对开关，实为 %d 个：%+v", len(bodiesSwitchPair), bodiesSwitchPair)
+	}
+	want := map[string]string{
+		"读端": "storage.session_bodies_native_read",
+		"写端": "storage.session_turns_bodies_enabled",
+	}
+	seen := map[string]bool{}
+	for _, p := range bodiesSwitchPair {
+		if seen[p.Side] {
+			t.Errorf("P1 里 %q 这一侧出现了两次 —— 清单必须是「读端 + 写端」各一个", p.Side)
+		}
+		seen[p.Side] = true
+		if got, ok := want[p.Side]; !ok {
+			t.Errorf("P1 出现未知的一侧 %q（只允许 读端 / 写端）", p.Side)
+		} else if p.Key != got {
+			t.Errorf("P1 的%s键是 %q，期望 %q", p.Side, p.Key, got)
+		}
+		if strings.TrimSpace(p.Why) == "" {
+			t.Errorf("P1 的%s（%s）没有写为什么 —— 空理由的条目会被后来人当 filler 删掉", p.Side, p.Key)
+		}
+	}
+	for side := range want {
+		if !seen[side] {
+			t.Errorf("P1 缺了%s —— **只翻一半就是这个门要拦的形态**", side)
+		}
+	}
+
+	// 两个键必须**真的**在各自那一侧的源码里被读到，且都带 false 兜底。
+	// 兜底从 false 改成 true 是危险方向：会让「键不存在」等价于「已切会话侧」。
+	//
+	// ⚠ 这里刻意**允许两种调用形态**（字面量 / 常量名），因为两侧本来就不一样：
+	// 读端用常量 `SessionBodiesNativeReadSetting`（db/request_logs_view_schema.go:1094），
+	// 写端直接写字面量。我第一版只写了「键名字面量」，两侧同时判红 ——
+	// 那是**我的正则错了**，不是产品代码错了。
+	// 现在改成「键必须以字面量或该侧指定的常量名出现」+「兜底必须是 false」两段独立断言。
+	for _, chk := range []struct{ rel, key, constName, anchor string }{
+		{
+			rel: "db/request_logs_view_schema.go", key: bodiesReadKey,
+			constName: "SessionBodiesNativeReadSetting", anchor: "SessionBodiesSourceSQL",
+		},
+		{
+			rel: "domains/session/v2/session_writer_v2.go", key: bodiesWriteKey,
+			anchor: "RequestDeltaJSON",
+		},
+	} {
+		body, err := os.ReadFile(filepath.Join(repoRootFromCaller(t), chk.rel))
+		if err != nil {
+			t.Fatalf("读 %s: %v", chk.rel, err)
+		}
+		src := string(body)
+		if !strings.Contains(src, chk.anchor) {
+			t.Errorf("%s 里找不到 %q —— 该开关的落点变了，P1 清单需要重新取证", chk.rel, chk.anchor)
+		}
+		// ① 键必须以字面量出现，或（读端）以本侧常量名出现，且该常量绑定到这个键。
+		byLiteral := strings.Contains(src, `"`+chk.key+`"`)
+		byConst := chk.constName != "" &&
+			strings.Contains(src, chk.constName) &&
+			strings.Contains(src, `const `+chk.constName+` = "`+chk.key+`"`)
+		if !byLiteral && !byConst {
+			t.Errorf("%s 里既没有 %q 这个键的字面量%s —— P1 清单与源码对不上了",
+				chk.rel, chk.key,
+				map[bool]string{true: "，也没有本侧常量 "+chk.constName+" 绑定到它", false: ""}[byConst || chk.constName != ""])
+		}
+		// ② 兜底必须是 false。键名/常量名都用 `[^)]*` 放过，
+		//    这样形态可变而「兜底被改成 true」这个危险变异仍会被抓住。
+		call := regexp.MustCompile(`GetPlatformBool\([^)]*,\s*false\)`)
+		if !call.MatchString(src) {
+			t.Errorf("%s 里找不到任何 `GetPlatformBool(…, false)` 形式的读取 —— "+
+				"若兜底被改成 true，「键不存在⇒取 false」这条前提就失效了，P1 必须重新取证", chk.rel)
+		}
+		if re := regexp.MustCompile(`GetPlatformBool\([^)]*,\s*true\)`); re.MatchString(src) {
+			t.Logf("%s 里存在 `GetPlatformBool(…, true)` 形式的调用（可能是别的开关，"+
+				"人工确认它不是本清单这一侧）", chk.rel)
+		}
+	}
+}
