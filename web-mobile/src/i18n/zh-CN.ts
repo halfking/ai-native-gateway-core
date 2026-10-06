@@ -24,6 +24,7 @@ export const zhCN = {
     credModelState: '凭据×模型状态',
     sessionAnalytics: '会话分析',
     dashboardOps: '看板读面',
+    logOps: '日志运维面',
     home: '总览',
     nodes: '节点',
     models: '模型',
@@ -803,6 +804,58 @@ export const zhCN = {
       granularityNote: '后端按窗口换聚合粒度：当前为 {gran} 桶，跨窗口的均值不可直接比较。',
       granularity: { '5m': '5 分钟', daily: '天' },
       zeroPlaceholder: '这一行的平均值全部为 0，可能是后端 COALESCE 编造的默认值 —— 不代表真实测量值。',
+    },
+  },
+  logOps: {
+    title: '日志运维面',
+    load: '加载',
+    reload: '重新加载',
+    errForbidden: '无权查看日志运维面',
+    stats: {
+      title: '日志目录统计',
+      // ★ 三种「什么都没有」三段文案，绝不合并成一句
+      notEnabled: '文件日志未启用 —— 网关没有配置日志落盘路径，这一整段没有意义。',
+      dirMissing: '配置的日志目录不存在：{dir}。这不是「没有日志」，是路径本身没了。',
+      empty: '目录存在，但里面一个日志文件都没有。',
+      totalFiles: '文件数',
+      totalSize: '总体积',
+      dir: '目录',
+      timeRange: '时间跨度',
+      // ★ 时间指针为 null 时用这句，而不是显示 0 或「现在」
+      noTimeRange: '算不出（目录里还没有文件）',
+      archive: '归档',
+      archiveRatio: '归档占比',
+      ratioUnknown: '算不出（总体积为 0）',
+      diskUsage: '磁盘占比',
+      // ★ disk_usage_pct 的 0 可能是「查不到」，口径随值一起说明
+      diskUsageZero: '这个 0 可能是查询失败，不是真的没占',
+    },
+    files: {
+      title: '日志文件清单',
+      // ★ 空列表有两种成因：未启用 / 启用了但没文件
+      notEnabled: '文件日志未启用 —— 清单为空是因为没有日志可列。',
+      empty: '目录已启用，但当前没有可列出的日志文件。',
+      totalDisagrees: '契约异常：后端说共 {total} 个，实际只返回 {shown} 个。',
+      size: '大小',
+      modTime: '最后修改',
+      current: '当前活动',
+      archived: '在归档目录',
+      compressed: '已压缩',
+    },
+    bodyCache: {
+      title: '详情 body 缓存',
+      // ★ 503 在本族有确定语义：缓存未初始化
+      notInitialized: '缓存未初始化 —— 后端进程还没建起这个缓存。',
+      rate: '命中率',
+      // ★ 分母为 0 时不能说「0% 命中率」
+      noSample: '无样本（还没有任何一次查询）',
+      usage: '占用',
+      hits: '命中',
+      misses: '未命中',
+      evictions: '淘汰',
+      saturated: '缓存已满。',
+      // ★ 满 + 有淘汰才是真在淘汰；满但零淘汰只说明「刚好占满」
+      evicting: '缓存已满且正在淘汰 —— 详情 body 的冷路径缓存没能完全缓解。',
     },
   },
   dashboardOps: {
