@@ -236,3 +236,72 @@ func TestMCPToolsListWithoutTransformOmitsTransformTools(t *testing.T) {
 		t.Fatalf("transform tools must be absent without injection: %s", body)
 	}
 }
+
+// Anthropic 协议候选（如智谱 anthropic-messages 供应商）在转写侧必须保住：
+// multipart 透传与 chat 协议无关；且形态序只给 transcriptions，不给 chat-audio。
+func TestAnthropicCandidateKeptForTranscriptionsOnly(t *testing.T) {
+	chatHit := false
+	svc := newSpeechToTextTestService(t, "zhipu", "glm-asr", func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/chat/completions") {
+			chatHit = true
+		}
+		if strings.Contains(r.URL.Path, "/audio/transcriptions") {
+			// 上游 429（智谱余额不足的真实形状）→ 原样带上状态码。
+			http.Error(w, `{"error":{"code":"1113","message":"余额不足"}}`, http.StatusTooManyRequests)
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	})
+	// 把候选协议改成 anthropic-messages：newSpeechToTextTestService 建的是
+	// openai-completions，这里直接换 resolver 再构造一个。
+	_, err := svc.Transcribe(context.Background(), TranscribeRequest{
+		Model: "glm-asr", File: tinyWAVForTest(), Filename: "a.wav", ContentType: "audio/wav",
+	}, nil)
+	if err == nil {
+		t.Fatalf("upstream 429 must surface as error")
+	}
+	var upErr *audioUpstreamStatusError
+	if !errorsAs(err, &upErr) || upErr.status != http.StatusTooManyRequests {
+		t.Fatalf("err = %v, want upstream 429", err)
+	}
+	if chatHit {
+		t.Fatal("anthropic candidate must not hit chat-audio bridge")
+	}
+}
+
+func errorsAs(err error, target **audioUpstreamStatusError) bool {
+	for e := err; e != nil; {
+		if ue, ok := e.(*audioUpstreamStatusError); ok {
+			*target = ue
+			return true
+		}
+		u, ok := e.(interface{ Unwrap() error })
+		if !ok {
+			return false
+		}
+		e = u.Unwrap()
+	}
+	return false
+}
+
+// 429 形状必须被 HTTP 面映射为 429 upstream_rate_limited（不是 502）。
+func TestAnthropicCandidateRateLimitMappedToHTTP429(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":{"code":"1113","message":"余额不足或无可用资源包,请充值。"}}`, http.StatusTooManyRequests)
+	}))
+	t.Cleanup(func() { srv.Close() })
+	cand := provider.Candidate{
+		CredentialID: 1, ProviderID: 1, BaseURL: srv.URL,
+		Protocol: "anthropic-messages", CatalogCode: "zhipu", RawModel: "glm-asr",
+		Routable: true, APIKey: "sk-test", AvailabilityState: "ready",
+	}
+	svc := NewAudioService(&fakeAudioResolver{candidates: []provider.Candidate{cand}}, upstream.New())
+	h := NewAudioTranscriptionsHandler(svc)
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", nil)
+	buildTranscriptionsMultipartBody(t, req, tinyWAVForTest(), "a.wav", "glm-asr", "")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
