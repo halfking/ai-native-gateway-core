@@ -6435,3 +6435,115 @@ promote 做的正是**移除行**，而我拿 `n_tup_ins` 去对 promote 日志�
 
 `session_turns` 现状：**hot 4,772 行稳态、当月分区逐日 5,000~7,400 行、
 promote 每小时一轮 8 个 spec 全覆盖、无积压、无停摆。**
+
+---
+
+## §10.59 🔴🔴 P0：`ursm_node_snapshot_min` 写入全量失败 ≥62 小时，只记 WARN 不告警
+
+**这一节的优先级高于本 runbook 前面所有效率/存储议题。**
+它是追查「时间分区设计稿的证据是否还成立」时撞见的，**与存储优化无关，是数据丢失**。
+
+### §10.59.1 怎么发现的
+
+复查设计稿 `2026-10-04-ursm-snapshot-partitioning-design.md`（§1.1 记着
+「行数 1,871.9 万 / heap 9,129 MB / 合计约 10 GB」，2026-10-03 实测），
+今天量到的是：
+
+| 项 | 设计稿 10-03 | 今天 10-06 |
+|---|---|---|
+| 行数 | 18,719,000 | **0** |
+| 堆 | 9,129 MB | **0 bytes** |
+| 合计 | ~10 GB | **24 kB** |
+| 形态 | 普通表 | 普通表（`relkind='r'`，830 未应用） |
+| `n_tup_ins`（窗口自 09-23） | — | **0** |
+
+⇒ 设计稿的核心动机「这张表为什么会一直涨」已不成立：表被清空/重建过，
+**且 writer 现在一行都写不进去**。
+
+### §10.59.2 现象
+
+245（`llmgo-245-canary@8781`，pid 2210608）journal：
+
+    {"level":"WARN","msg":"ursm.v2: persist flush failed",
+     "error":"insert row cid=2 model=gpt-5.3-codex: ERROR: there is no unique or
+      exclusion constraint matching the ON CONFLICT specification (SQLSTATE 42P10)"}
+
+| 项 | 值 |
+|---|---|
+| 首次 | **2026-10-03 23:32:17** |
+| 最近 | 2026-10-06 13:45:20 |
+| 频次 | **每分钟一次**（13:33→13:44 连续 12 条） |
+| 总条数 | **701** |
+| 跨越 | **两个进程代次**（首条 pid 2104524，现 pid 2210608）⇒ 不是某一次部署引入 |
+| 日志级别 | **WARN** ⇒ 不告警、不 paging |
+
+**跨两个进程代次这一条最关键**：它排除了「最近一次换版引入」的解释。
+
+### §10.59.3 根因（列数不匹配，已钉死）
+
+| 来源 | 唯一约束列 |
+|---|---|
+| **已部署生产** | `PRIMARY KEY (snapshot_ts, credential_id, raw_model_name)` — **3 列** |
+| 权威基线 `01-schema.sql:22653` | `PRIMARY KEY (snapshot_ts, tenant_id, credential_id, raw_model_name)` — **4 列** |
+| `writer.go:402` 的 `ON CONFLICT` | `(snapshot_ts, tenant_id, credential_id, raw_model_name)` — **4 列** |
+| 迁移 `453`（建表） | `(snapshot_ts, credential_id, raw_model_name)` — **3 列** |
+| 迁移 `463`（改 PK） | `DROP CONSTRAINT` + `ADD PRIMARY KEY (snapshot_ts, tenant_id, credential_id, raw_model_name)` |
+| 迁移 `830`（改标 skip，未应用） | 4 列（**是对的**） |
+
+⇒ **全仓只有 453 是 3 列形态**。生产这张表停在 **453 时代的 schema**，
+`463` 从未生效；而 writer 用的是 4 列 ON CONFLICT。
+PG 的 ON CONFLICT 推断要求唯一索引的列集合**完全相等**（少一列、多一列、换顺序都不成立），
+于是每次插入必抛 42P10，**成功率 0**。
+
+补充事实：`453` 与 `463` **都不在** `installed_startup_migrations.tsv` 登记名单里
+（grep 命中 0）—— 全新安装只由基线建表（基线是对的，4 列）。
+⇒ **基线对、writer 对，中间那个生产漂移没人管。**
+
+### §10.59.4 两台配置不对称（附带发现）
+
+| 实例 | `URSM_V2_*` | 说明 |
+|---|---|---|
+| 154（authoritative） | **一个都没有** | 按设计稿「shadow 未开 double-write 时 persist 不落盘」，即 154 从不写 |
+| 245（shadow） | `URSM_V2_MODE=shadow`、`URSM_V2_CANARY_PERCENT=100`、`URSM_V2_SHADOW_DOUBLE_WRITE=1` | 写，但 100% 失败 |
+
+两台都设了 `URSM_SNAPSHOT_RETENTION_DAYS=7`（清理 worker 照常跑，
+所以表被清空且此后一直是空的）。
+
+### §10.59.5 落门：把缺失的那条连接补上
+
+`domains/ursm/v2/persist/writer_on_conflict_contract_test.go`
+
+**要钉的不变量**：writer 的 `ON CONFLICT` 推断列，必须被**权威基线**里
+`ursm_node_snapshot_min` 的某个唯一约束**完全覆盖**（集合相等，不是包含）。
+
+为什么之前没门：453 / 463 / 818 / 830 **各自都有测试**，
+但**没有任何一条判据核对「writer 的 ON CONFLICT 列」与「基线的唯一约束」是否一致**。
+两边各自都对，中间的漂移没有主人。
+
+变异 M51（用 `session_summaries` 的 PK `[session_key]` 去对 writer 的 4 列）
+⇒ 正确转红并打印基线实际有的全部唯一约束，证明判据有鉴别力。
+
+⚠ **这道门的边界要说清楚**：它管的是「**基线 ↔ writer**」，
+**管不到「基线 ↔ 生产」**。本次生产出的正是后者。
+要抓住后者需要一个跑在真库上的巡检（比对已部署唯一约束 vs writer 的 ON CONFLICT），
+尚未落。**不要把「门绿」读成「生产没问题」。**
+
+### §10.59.6 建议处置（均未执行，DDL 需授权）
+
+**表是空的 ⇒ 改 PK 零成本**（不需要重写 1,871.9 万行）：
+
+```sql
+ALTER TABLE public.ursm_node_snapshot_min
+  DROP CONSTRAINT IF EXISTS ursm_node_snapshot_min_pkey;
+ALTER TABLE public.ursm_node_snapshot_min
+  ADD PRIMARY KEY (snapshot_ts, tenant_id, credential_id, raw_model_name);
+```
+
+★ **不要改 writer 去迁就 schema** —— 基线和 463 都是 4 列，writer 是对的；
+是生产漂移在 453 形态。改 writer 会把 463 的意图永久废掉。
+
+配套三件事：
+1. 查清生产为何停在 453 形态（哪一步重建了表、为何漏掉 463）；
+2. 把 WARN 升级为可告警 —— 连续 N 分钟 `persist flush failed` 就该 paging，
+   这次 701 次 WARN 静默了 62 小时；
+3. 落真库巡检（§10.59.5 的边界）。
