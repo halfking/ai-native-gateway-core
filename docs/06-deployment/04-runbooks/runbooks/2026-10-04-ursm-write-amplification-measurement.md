@@ -8809,3 +8809,65 @@ PG 必须**先拿到 ACCESS EXCLUSIVE**，才能去检查列是否已存在；
 ★ 而这次能抓到自己，是因为我在**追一个不该存在的现象**
 （`pg_stat_user_tables` 查不到 `recommendations`）时被迫去查了它落在哪个库。
 ⇒ **「查不到」比「查到了」更能揭穿口径错误。**
+
+---
+
+## §10.80.4 直接按 `dbid` 过滤重算（第 11 次订正：分母口径要落到语句级）
+
+§10.80.2 是**拿总量倒推**分母（分母 626.74 GB 是「所有库语句 WAL 之和」再扣掉已知的几个库）。
+本节改用**直接过滤** `dbid = (SELECT oid FROM pg_database WHERE datname='llm_gateway')`，
+让分子分母都落在同一总体内 —— 这是 §10.80.3 那张表要求的做法。
+
+### §10.80.4.1 总量口径
+
+| 口径 | 值 |
+|---|---|
+| 实例全部库 WAL（`pg_stat_statements` 全量） | 709.76 GB |
+| **`llm_gateway` 库 WAL（`dbid` 过滤）** | **627.49 GB** |
+| `smm` 库 | 81.06 GB（占实例 11.4%） |
+| **网关库占实例比例** | **88.4%** |
+
+⇒ §10.80.1 的「`smm` 是寄居库、与网关库无关」这一判断成立：
+它确实在**吞吐同一套 WAL**，只是不写我们的表。
+
+### §10.80.4.2 本网关库内语句排名（`pct_of_gw` 已修正）
+
+| WAL | 占本网关库 | 次数 | 语句 |
+|---|---|---|---|
+| 82.80 GB | **13.20%** | 5,180 | `promote_request_logs_bodies_hot_to_partition` |
+| 77.37 GB | 12.33% | 1,693,065 | `INSERT INTO request_logs_bodies_hot` |
+| 56.33 GB | 8.98% | 6,406 | `REFRESH MATERIALIZED VIEW CONCURRENTLY routing_analytics_7d` |
+| 34.74 GB | 5.54% | 4,458 | `promote_session_bodies_hot_to_partition` |
+| 30.96 GB | 4.93% | 46,801,709 | `INSERT INTO ursm_node_snapshot_min` |
+| 25.06 GB | 3.99% | 107,712,993 | `INSERT INTO public.assets` |
+| 20.21 GB | 3.22% | 4,799 | `promote_request_logs_hot_to_partition` |
+| 15.82 GB | 2.52% | 748,489 | `INSERT INTO public.session_bodies_hot` |
+| 13.91 GB | 2.22% | 4,492 | `promote_session_turns_hot_to_partition` |
+| 12.42 GB | 1.98% | 1,900 | `DELETE FROM stats_usage_daily …` |
+| 11.84 GB | 1.89% | 1,111 | `WITH latest AS (SELECT f.* FROM usage_facts …` |
+| 10.84 GB | 1.73% | 5,597,427 | `INSERT INTO request_state_transitions …` |
+
+⚠️ 与 §10.76 / §10.78 的差异**全部来自口径**，不是数据变了：
+
+| 项 | §10.76 / §10.78 报的 | **本节（`dbid` 过滤）** | 差在哪 |
+|---|---|---|---|
+| `promote_*` 家族 | 25 变体 | **21 变体（运行时 SELECT）** | §10.76 的 25 含 3 条 `CREATE OR REPLACE FUNCTION` + 1 个 `DO $do$` 块；正则原始匹配 27 条里还有 1 条**无关的 `credentials` 查询**（仅因注释里含 `promote_` 字样被误匹配） |
+| `promote_*` 家族调用次数 | 66,120 | **66,120** ✅ | 一致 |
+| `promote_*` 家族 WAL | 173.30 GB / 24.4% | **173.46 GB / 27.64%** | 分母 708.0 → 627.49 |
+| `ALTER TABLE` 每日次数 | 24,316 | **2,100** | §10.78.2 ① 的 24,316 是**跨 26 库**聚合（607,911 次 ÷ 25 天），未按 `dbid` 过滤 |
+| `ALTER TABLE` 变体 | 369 | **167** | 同上 |
+| 其中真正产生 WAL 的 | — | **89 变体 / 26,306 次 / 1,052 每天** | 加 `wal_bytes > 0` 后的子集；另 78 条变体调用频繁但 WAL 为 0（如仅 `SET`/`LOCK` 语义的无重写语句） |
+
+⇒ **§10.78 的「24,316 次/天」作废**，改为 **2,100 次/天（167 变体）/ 1,052 次/天（89 变体、真正重写）**。
+§10.79 的结论不受影响：**危险的不是次数，是那 109 秒的独占锁**，而独占锁由变体驱动、与调用次数无关。
+
+### §10.80.4.3 这一轮又暴露的两个读数纪律
+
+1. **「变体数」必须说明它数的是什么。** 25 / 21 / 27 三个数都对，
+   分别对应「含 DDL 的家族」「运行时调用」「正则原始匹配」——
+   同一个概念三个口径，不写清楚就等于三个矛盾的数字。
+2. **正则匹配到函数名 ≠ 匹配到这个函数。** `credentials` 那条查询里
+   只有注释含 `promote_…_to_partition`，却被算进了 WAL 家族。
+   ⇒ 按名字聚合 SQL 时，务必再看一眼 `query` 字段本身。
+
+**这是本 runbook 第 11 次订正，也是第 3 次栽在分母/总体族（§10.63、§10.80.2、§10.80.4）。**
