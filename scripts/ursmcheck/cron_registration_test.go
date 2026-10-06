@@ -129,11 +129,16 @@ func TestCronFileActuallyHasTaskLines(t *testing.T) {
 
 // gradedExitMonitors = 结论只经由「退出码 + stdout」传递的巡检。
 // 这几个脚本被 >/dev/null 2>&1 静默即等于从生产上把它摘掉。
+//
+// ★ 注意与上面「不能被静默」是**两件事**：被 tee 管道接走不等于被静默。
+//   C7-P3-2 登记的口径缺口是另一个问题 —— `| tee -a` 让 cron 层拿到的是
+//   tee 的 0，脚本的 0/1/3 到不了 cron 的 job 状态。两边都要分开看。
 var gradedExitMonitors = []string{
 	"ursm-snapshot-health.sh",
 	"ursm-snapshot-payload-bloat.sh",
 	"pg-table-bloat-check.sh",
 	"pg17-pg-availability-check.sh",
+	"pg17-onconflict-constraint-check.sh",
 }
 
 // TestGradedExitMonitorListStillMatchesDisk —— 上面那份清单本身会腐。

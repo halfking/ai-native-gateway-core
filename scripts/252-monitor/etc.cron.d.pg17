@@ -28,6 +28,7 @@
 #   - ursm-snapshot-health.sh   每小时 :17  快照写入健康三态判据
 #   - ursm-snapshot-payload-bloat.sh 每小时 :23  payload 膨胀（818 收益的回归防护）
 #   - pg-table-bloat-check.sh    每天 05:07  全库表空洞普查（只读）
+#   - pg17-onconflict-constraint-check.sh 每小时 :29  写入列 vs 已部署唯一约束（只读）
 #
 #   2026-10-04 新增 pg-table-bloat-check.sh 时同步登记。理由见文件末尾注释：
 #   契约是整文件覆盖，漏一条 = 部署时删掉一条生产任务（本文件头部已记过两次
@@ -123,3 +124,20 @@ MAILTO=""
 #   05:07 避开 :00/:10/:15 的高频点，也避开周级 03:15 / 04:40 那两个重任务。
 # ★ 退出码分级（0 无异常 / 1 检出空洞 / 3 量具不可用），同样不能 >/dev/null。
 07 5 * * * root llmgw-source /opt/scripts/pg-table-bloat-check.sh 2>&1 | tee -a /var/log/pg-table-bloat-check.log; find /var/log -maxdepth 1 -name "pg-table-bloat-check.log.*" -mtime +14 -delete
+
+# === 每小时 ON CONFLICT 推断列 vs 已部署唯一约束巡检（只读，2026-10-06 新增）===
+# 起因：2026-10-03 23:32 起，ursm_node_snapshot_min 的写入**每分钟失败一次**、
+# 连续 701 条、共 62 小时，日志只记 WARN 不告警，表最终 0 行 ——
+# 一次 100% 写入失败的静默数据丢失（审计 §10.59，P0）。
+# 根因是已部署的 PK 只有 3 列，而 writer 的
+#   INSERT ... ON CONFLICT (snapshot_ts,tenant_id,credential_id,raw_model_name)
+# 需要恰好 4 列的唯一索引 ⇒ 每次抛 SQLSTATE 42P10。
+# ★ 仓库里已有的门是「基线 ↔ writer」，管不到**生产漂移**——本次出的正是后者。
+#   本脚本补的正是这一段：直接读已部署的唯一索引列集合来比。
+# ★ 每小时一次足够：schema 漂移只在部署时发生，不会自发出现。
+#   频率低不是因为它不重要，而是因为「出事频率」低，而**发现延迟**才是这次的真问题。
+# 错开 :29：避开 :00/:10/:15 那几个高频点，也与 :17 / :23 两条 URSM 巡检分开。
+# ★ 退出码分级（0 约束齐 / 1 写入会 100% 失败 / 3 量具不可用），同样不能 >/dev/null。
+#   ★ 方向与 bloat 脚本相反：本脚本「找不到违规」是**健康**（exit 0），
+#     而 bloat 类脚本「0 行」是**没有结论**。混用就会出现「查不到却报健康」。
+29 * * * * root llmgw-source /opt/scripts/pg17-onconflict-constraint-check.sh 2>&1 | tee -a /var/log/pg17-onconflict-constraint.log; find /var/log -maxdepth 1 -name "pg17-onconflict-constraint.log.*" -mtime +14 -delete
