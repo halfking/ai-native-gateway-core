@@ -26,11 +26,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
+	"github.com/kaixuan/llm-gateway-go/ratelimit"
 )
 
 // maxTransformBodyBytes 限制 refine/analyze 的请求体（纯文本，不需要
@@ -74,6 +78,48 @@ func NewAudioTransformService(svc *AudioService) *AudioTransformService {
 	return ts
 }
 
+// authenticateTransform 与 AudioService.authenticate 同一鉴权/键状态/预算
+// 口径，但**不消耗 RPM**：refine/analyze 的 LLM 步骤会环回 chat 面（携带
+// 同一把调用方 key），那一跳已计一次限流——这里再计一次会把一次逻辑调用
+// 算成两次 RPM（默认 12/min 的 key 周期 analyze 每 15s 一次就会 429）。
+// 跳过这一步不产生绕过：直连打爆 /v1/audio/refine 最终仍被环回 chat 步的
+// 同一把 key 限流拦住。MCP tools/call 路径的外层 authenticate 无法按工具
+// 名选择性跳过，维持双计（MCP 是次要路径，见设计文档）。
+func (s *AudioService) authenticateTransform(w http.ResponseWriter, r *http.Request, requestID string) (*authentication.KeyInfo, bool) {
+	if s.keyVerifier == nil || !s.keyVerifier.Enabled() {
+		return nil, true
+	}
+	rawKey := extractBearerToken(r)
+	if rawKey == "" {
+		writeErrorJSON(w, http.StatusUnauthorized, requestID, "Missing API key", "authentication_error", "missing_key")
+		return nil, false
+	}
+	keyInfo, err := s.keyVerifier.Verify(r.Context(), rawKey)
+	if err != nil {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		writeErrorJSON(w, http.StatusUnauthorized, requestID, "Invalid or expired API key", "authentication_error", "invalid_key")
+		return nil, false
+	}
+	if keyInfo.Status == "throttled" {
+		ratelimit.MarkGatewaySharedKeyRateLimit(w)
+		writeErrorJSON(w, http.StatusTooManyRequests, requestID, "API key throttled", "rate_limit_error", "key_throttled")
+		return nil, false
+	}
+	if err := s.keyVerifier.CheckBudget(r.Context(), keyInfo.ID); err != nil {
+		if _, exceeded := err.(*authentication.BudgetExceededError); exceeded {
+			writeErrorJSON(w, http.StatusPaymentRequired, requestID, "Budget exhausted", "insufficient_quota", "budget_exhausted")
+			return nil, false
+		}
+		slog.Error("audio transform budget check failed, failing closed",
+			"request_id", requestID,
+			"key_id", keyInfo.ID,
+			"error", err)
+		writeErrorJSON(w, http.StatusServiceUnavailable, requestID, "Budget check temporarily unavailable", "server_error", "budget_unavailable")
+		return nil, false
+	}
+	return keyInfo, true
+}
+
 // AudioTransformHandler 服务 /v1/audio/refine 与 /v1/audio/analyze 两条
 // 路径（同一 mux 挂载点，按路径分发）。
 type AudioTransformHandler struct {
@@ -99,7 +145,7 @@ func (h *AudioTransformHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		writeErrorJSON(w, http.StatusServiceUnavailable, requestID, "Audio transform service unavailable", "server_error", "service_unavailable")
 		return
 	}
-	if _, ok := h.ts.svc.authenticate(w, r, requestID); !ok {
+	if _, ok := h.ts.svc.authenticateTransform(w, r, requestID); !ok {
 		return
 	}
 	switch r.URL.Path {
@@ -353,6 +399,19 @@ func (ts *AudioTransformService) callLoopbackChat(ctx context.Context, r *http.R
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := readLimitedResponse(resp.Body, 8<<10)
+		// 网关 chat 面的 503 no_candidate 会带 alternatives 建议列表（
+		// 按任务类可路由的模型）。转成 audioNoProviderError：HTTP 面映射
+		// 503 no_provider（与音频面同一语义），MCP 面透出完整建议清单，
+		// 调用方换一个可路由模型即可，不用去翻截断的上游原始错误体。
+		if resp.StatusCode == http.StatusServiceUnavailable {
+			if alts := extractAlternativeModels(body); len(alts) > 0 {
+				return "", "", newAudioNoProviderError(
+					"loopback chat model %q has no routable candidate; gateway alternatives: %s",
+					model, strings.Join(alts, ", "))
+			}
+			return "", "", newAudioNoProviderError(
+				"loopback chat model %q has no routable candidate", model)
+		}
 		return "", "", newAudioUpstreamError(resp.StatusCode, body)
 	}
 	var parsed struct {
@@ -389,6 +448,30 @@ func extractLLMJSON(content string, v any) error {
 		return fmt.Errorf("no JSON object in LLM output (%d chars)", len(s))
 	}
 	return json.Unmarshal([]byte(s[start:end+1]), v)
+}
+
+// extractAlternativeModels 从 chat 面 503 no_candidate 错误体里抠出
+// alternatives[].model 建议清单。解析失败返回 nil（调用方回落原始错误体）。
+func extractAlternativeModels(body []byte) []string {
+	var parsed struct {
+		Error struct {
+			Alternatives struct {
+				Alternatives []struct {
+					Model string `json:"model"`
+				} `json:"alternatives"`
+			} `json:"alternatives"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil
+	}
+	var out []string
+	for _, a := range parsed.Error.Alternatives.Alternatives {
+		if a.Model != "" {
+			out = append(out, a.Model)
+		}
+	}
+	return out
 }
 
 // hotwordsMissingFrom 返回没在精修结果字面出现的热词（大小写不敏感）。
