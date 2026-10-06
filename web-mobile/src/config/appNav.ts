@@ -29,6 +29,9 @@ export const DRAWER_NAV: readonly NavItem[] = [
   // 2026-10-06：模型完整性异常（superAdmin 档）。表现为「请求失败/结果诡异」
   // 但不落在节点健康上——移动端此前完全没这个面，排查只能开电脑。
   { key: 'integrity', to: '/integrity', icon: 'alert', titleKey: 'nav.integrity' },
+  // 2026-10-06：请求日志（admin 档）。回答「刚才那次到底发生了什么」——
+  // 节点/供应商页回答「现在谁不健康」，这页回答「上次那单」，是排障起点。
+  { key: 'logs', to: '/logs', icon: 'clock', titleKey: 'nav.logs' },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))

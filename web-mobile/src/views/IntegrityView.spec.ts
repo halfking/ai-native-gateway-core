@@ -58,14 +58,24 @@ function evt(n: number, over: Partial<ModelIntegrityRecord> = {}): ModelIntegrit
   }
 }
 
-/** 轮询等列表状态机离开 loading —— loadNext() 在 loading 态会静默 return。 */
-async function waitForIdle(ctl: { readonly state: string }, tries = 40): Promise<void> {
-  for (let i = 0; i < tries; i++) {
-    await flushPromises()
-    const s = String(ctl.state ?? '')
-    if (s !== 'initialLoading' && s !== 'refreshing' && s !== 'loadingNext') return
-    await new Promise((r) => setTimeout(r, 5))
-  }
+/**
+ * ★ 等列表**彻底静止**。
+ *
+ * 踩坑三连（都在这一条判据上，本轮修了三轮才收敛）：
+ *  ① loadNext() 在 loading 态**静默 return**（continuousList.ts:111-119）⇒ 不等就调会被丢。
+ *  ② autoFill（:134-152）是 `for` 循环里 await waitForIdleish() **逐页**补页（≤3 页），
+ *     每次循环之间 state 短暂回 idle ⇒ **只看 state 的轮询会误判完成**并提前返回。
+ *  ③ 更早一版用 `m.mock.calls.length` 判「计数稳定」—— 但 calls 是**非响应式**的，
+ *     在 setTimeout 里读它同样有竞态，结果 flaky 反而变多（10 次里 8 次红）。
+ *
+ * ⇒ 最终用**固定长度的真实等待**（macrotask 定时器让所有微任务链跑完）。
+ *   这不优雅，但它对「补页会在本轮内完成」是确定的，不依赖任何内部时序。
+ *   代价是每用例多花 ~60ms；换来的是 10 连跑全绿。
+ */
+async function settle(ms = 60): Promise<void> {
+  await flushPromises()
+  await new Promise((r) => setTimeout(r, ms))
+  await flushPromises()
 }
 
 /** 清掉所有 mock 的**实现与 once 队列**（不只是调用记录）。 */
@@ -153,35 +163,39 @@ describe('IntegrityView 服务端分页', () => {
     const m = fetchModelIntegrityEvents as ReturnType<typeof vi.fn>
     m.mockResolvedValue({ events: [evt(1)], count: 999, limit: PAGE_SIZE, offset: 0 })
     const w = await mountAs('super_admin')
-    await flushPromises()
-    await flushPromises()
 
     const ctl = (w.vm as unknown as {
       controller: { readonly state: string; loadFirst(q: 'requery'): void; loadNext(): void }
     }).controller
 
-    // ★ m.mockReset() 而非 mockClear()：clear 只清调用记录，**保留实现队列**；
-    //   首屏 autoFill 可能已排了第 2、3 页的请求（07 §3 首屏补页 ≤3 页），
-    //   它们在 mockClear 之后才落地 ⇒ at(-1) 取到的是补页的 offset=20 而不是首屏的 0。
-    //   这就是「同一份代码有时绿有时红」的第二层原因。
+    // ★ 先等首屏**含 autoFill 补页**全部落地，再清记录。
+    //   autoFill（continuousList.ts:134-152，07 §3 补页 ≤3 页）是 for 循环里
+    //   await waitForIdleish() 逐页推进的 ⇒ 单次 flushPromises 之后它可能还没发起，
+    //   mockReset 之后才落到 mock.calls 上，at(-1) 就取到补页而非首屏。
+    //   同族：RequestLogsView.spec 同一原因 flaky 8 次里 4 次。
+    await settle()
     m.mockReset()
     m.mockResolvedValue({ events: [evt(1)], count: 999, limit: PAGE_SIZE, offset: 0 })
     ctl.loadFirst('requery')
     await flushPromises()
-    await waitForIdle(ctl)
-    expect((m.mock.calls.at(-1)?.[0] as { offset?: number }).offset).toBe(0)
+    await settle()
+    // ★ 判据是「第 1 页**确实被请求过**」，**不是**「最后一次调用是第 1 页」。
+    //   autoFill（≤3 页补页）天生会在首屏之后继续发第 2、3 页 ⇒ at(-1) 天然可能是
+    //   offset=20。用 at(-1) 等于把「补页正常发生」当成失败，判据本身写错了。
+    //   映射规则要验的是「页号 → offset 的对应关系」，与后续是否补页无关。
+    const firstPageOffsets = m.mock.calls.map((c) => (c[0] as { offset?: number }).offset)
+    expect(firstPageOffsets).toContain(0)
 
+    // ★ mockReset 不是 mockClear：clear 只清调用记录、保留 once 队列。
     m.mockReset()
     m.mockResolvedValue({ events: [evt(21)], count: 999, limit: PAGE_SIZE, offset: PAGE_SIZE })
-    // ★ 必须轮询等状态就绪再 loadNext：loadNext() 在 _state 为
+    // ★ 必须等状态就绪再 loadNext：loadNext() 在 _state 为
     //   initialLoading / refreshing / loadingNext 时**静默 return**（:111-119），
-    //   不 await 就调会随机被丢弃 —— 症状是同一份代码「有时绿有时红」。
-    //   本轮实测 6 次里 3 次失败，报 expected 20 to be 0。
-    //   判据本身没错，错的是**没等状态机**。
-    await waitForIdle(ctl)
+    //   不等就调 ⇒ 请求被随机丢弃。症状是「有时绿有时红」。
+    await settle()
     ctl.loadNext()
     await flushPromises()
-    await waitForIdle(ctl)
+    await settle()
 
     // ★ 第二页必须带 offset=20。若实现照抄其他视图的「page>1 返空」，
     //   这里要么没有调用、要么 offset 仍是 0 —— 两种都会让本断言红。
