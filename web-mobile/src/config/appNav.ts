@@ -56,6 +56,10 @@ export const DRAWER_NAV: readonly NavItem[] = [
   //   `RegisterAutoRouteRoutes(mux, h.superAdmin)`，auth.go:353-357 对非超管 403。
   //   ⇒ 这里必须挡。理由与 /integrity 同：「按 role 分档渲染，不是一律显示再吃后端 403」。
   { key: 'routing-audit', to: '/routing-audit', icon: 'check', titleKey: 'nav.routingAudit', requiresRole: 'super_admin' },
+  // ── 凭据监控线（2026-10-07）────────────────────────────────────────────
+  // 补 NodesView 答不了的那一问：「哪个模型 × 哪个凭据的组合在坏」。
+  // /node-health/:id 是热力图的下钻，不占导航席（从热力图卡片进入）。
+  { key: 'heatmap', to: '/heatmap', icon: 'cube', titleKey: 'nav.heatmap' },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))

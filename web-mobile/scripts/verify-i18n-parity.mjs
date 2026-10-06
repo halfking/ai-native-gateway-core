@@ -16,6 +16,11 @@
 // 1. **键集一致**：zh-CN 与 en-US 必须有完全相同的键路径集合（两侧各自多一个都算红）。
 // 2. **无回退到键名**：i18n 缺键会回退成键名本身（见 i18n/index.ts 的说明）。
 //    所以词典里任何值 === 它的键路径，就是「没翻译」——运行时会显示裸键名。
+// 3. ★ 2026-10-07 新增 **无重复键**。此前 parseDict 用 `Map.set`，
+//    同一段里写了两次 `heatmap:` 会被**静默覆盖** —— 键集一致、值也没问题，
+//    门全程绿。实况是 2026-10-07 我把 `nav.heatmap` 插了两次，
+//    只有 `vue-tsc` 的 TS1117 抓到。build 前置里 i18n 门跑在 vue-tsc **之前**，
+//    既然它跑得更早，就应该由它先报出来并指出是哪个文件第几行。
 //
 // 用法：node scripts/verify-i18n-parity.mjs
 
@@ -44,6 +49,10 @@ function parseDict(path) {
   const src = readFileSync(path, 'utf8')
   /** @type {Map<string, string>} */
   const out = new Map()
+  /** @type {Map<string, number>} */  // 键路径 → 首次出现的行号（1-based）
+  const firstSeen = new Map()
+  /** @type {string[]} */
+  const duplicates = []
   const stack = []
   const lines = src.split('\n')
 
@@ -59,7 +68,15 @@ function parseDict(path) {
     const leaf = line.match(/^(\s*)([A-Za-z_$][\w$]*):\s*'((?:[^'\\]|\\.)*)'\s*,?\s*$/)
     if (leaf && stack.length > 0) {
       const keyPath = [...stack, leaf[2]].join('.')
-      out.set(keyPath, leaf[3])
+      // ★ 重复键检测：Map.set 会静默覆盖，必须在覆盖前记下来。
+      //   同一段内重复（两行之间没有开/闭对象）才是真重复；
+      //   不同段里同名（如两个词典各自都有 `title`）是正常的，按完整路径区分。
+      if (firstSeen.has(keyPath)) {
+        duplicates.push(`${keyPath}（第 ${firstSeen.get(keyPath)} 行与第 ${i + 1} 行）`)
+      } else {
+        firstSeen.set(keyPath, i + 1)
+        out.set(keyPath, leaf[3])
+      }
       continue
     }
     // 闭对象： `  },` / `  }` / **`} as const`**（本仓真实文件末尾就是后者，
@@ -69,11 +86,17 @@ function parseDict(path) {
     //   这正是「门对真实样本恰好成立、对稍变样本就静默失效」的典型。
     if (/^\s*\},?\s*(as const)?\s*$/.test(line) && stack.length > 0) stack.pop()
   }
-  return out
+  return { out, duplicates }
 }
 
-const zh = parseDict(ZH)
-const en = parseDict(EN)
+const zhRes = parseDict(ZH)
+const enRes = parseDict(EN)
+const zh = zhRes.out
+const en = enRes.out
+const duplicates = [
+  ...zhRes.duplicates.map((d) => `zh-CN ${d}`),
+  ...enRes.duplicates.map((d) => `en-US ${d}`),
+]
 
 if (zh.size === 0 || en.size === 0) {
   console.error(`i18n 解析异常：zh=${zh.size} 键 / en=${en.size} 键（任一为 0 视为失败）`)
@@ -100,6 +123,10 @@ if (onlyZh.length || onlyEn.length) {
   console.error('\ni18n 键集不一致：')
   if (onlyZh.length) console.error(`  仅 zh-CN 有（${onlyZh.length}）：\n    ${onlyZh.join('\n    ')}`)
   if (onlyEn.length) console.error(`  仅 en-US 有（${onlyEn.length}）：\n    ${onlyEn.join('\n    ')}`)
+}
+if (duplicates.length) {
+  bad = true
+  console.error(`\ni18n 重复键（后者被静默覆盖，运行时会取到最后一个）：\n  ${duplicates.join('\n  ')}`)
 }
 if (untranslated.length) {
   bad = true
