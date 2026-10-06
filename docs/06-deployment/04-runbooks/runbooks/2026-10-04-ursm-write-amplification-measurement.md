@@ -8362,3 +8362,113 @@ WAL 不会严格按行数线性缩放（还有页级、hint 位、索引项的�
 ⚠️ 第 5 条是**会真红的门**，不是可选的文档更新 ——
 按本 runbook 一贯的做法，写迁移的同时就得改这两处测试与判据，
 否则就是「提交了一个红的门」。
+
+---
+
+## §10.76 ★ 本 session 最大的系统性发现：`promote_*_to_partition` 家族吃掉全库 24.4% 的 WAL
+
+§10.75 把 `ursm_node_snapshot_min` 与 `routing_analytics_7d` 查完后，
+剩下的 WAL 榜首一直没碰过。这次去查，撞出一个**贯穿 20 张表、同一病因**的家族。
+
+### §10.76.1 账单
+
+```
+family_wal_gb | functions | pct_of_all_wal | total_calls
+          173.30 |       25 |           24.4 |       66044
+```
+
+| 函数 | WAL | 单次 WAL | 平均耗时 |
+|---|---|---|---|
+| `promote_request_logs_bodies_hot_to_partition` | **82.80 GB** | **16.39 MB** | 1,953 ms |
+| `promote_session_bodies_hot_to_partition` | **34.70 GB** | 7.98 MB | 3,347 ms |
+| `promote_request_logs_hot_to_partition` | 20.17 GB | 4.31 MB | 3,261 ms |
+| `promote_session_turns_hot_to_partition` | 13.88 GB | 3.17 MB | 1,653 ms |
+| `promote_usage_ledger_hot_to_partition` | 9.62 GB | 2.04 MB | 1,327 ms |
+| 其余 20 个 | 12.13 GB | — | — |
+
+**前 5 个就是 161.17 GB = 全库 WAL 的 22.7%。**
+
+### §10.76.2 病因：把 `_hot` 行**逐行**搬进冷分区，每行在 WAL 里写两遍
+
+`admin/data_lifecycle_hot_partition.go:32-53` 的 `hotPromoteTableMap` 登记了 **20 张 hot 表**，
+每一张配一个 SQL 函数。它们的 Phase 2（以 bodies 为例，`prosrc` 原文）：
+
+```sql
+WITH batch AS (
+  SELECT request_id FROM request_logs_bodies_hot
+   WHERE ts < now() - p_retention ORDER BY ts, request_id
+   LIMIT p_batch_size FOR UPDATE SKIP LOCKED
+), moved_rows AS (
+  DELETE FROM request_logs_bodies_hot h USING batch b
+   WHERE h.request_id = b.request_id
+   RETURNING h.request_id, h.ts, h.request_body, h.outbound_body, h.response_body
+), inserted AS (
+  INSERT INTO request_logs_bodies (...) SELECT ... FROM moved_rows RETURNING request_id
+) SELECT count(*) INTO v_processed FROM inserted;
+```
+
+⇒ **一次搬一行，payload 在 WAL 里出现两次**（DELETE 一次、INSERT 一次），
+外加两个方向的索引维护。`request_logs_bodies_hot` 的 payload 是 HTTP body
+（实测 heap 13.9 MB / 24,544 行 ≈ **580 B/行**，且它是**全库单次 WAL 最高的语句**），
+所以这个代价落在最宽的 payload 上。
+
+### §10.76.3 一条被实测**证伪**的假设（照记）
+
+我一度怀疑 Phase 1 的 TTL DELETE 会**永远短路** Phase 2（函数里
+`IF v_processed > 0 THEN RETURN`），于是它其实只删不搬。
+**实测否掉了**：hot 表最老 23 小时，**没有一行超过 7 天 TTL**
+（`lifecycle.request_logs_bodies_ttl_days = 7`，而 retention 是 8 小时）
+⇒ `v_processed = 0`，Phase 2 正常执行。
+⇒ **不是短路，是真的在逐行搬。** 这个假设若不查会直接导出错误的优化方向。
+
+### §10.76.4 ★ 关键：**仓里已经有更好的做法，只是这族没采用**
+
+`domains/ursm/v2/persist/retention_partition.go` 已经实现并测试完备
+（4 个用例全 PASS，见 §10.73.3）**分区级 `DROP TABLE` 型留存**：
+不留行、不搬行，直接把整块空间还给文件系统。
+
+⇒ **目标里说的「将不同的数据与字段时行拆分」，这个仓里已经做出来了，
+只是 `ursm_node_snapshot_min` 用了，20 张 hot 表一个都没用。**
+
+### §10.76.5 建议的形态（与 §10.75 的做法同构，尚未实施）
+
+```
+现状：平表 _hot  ──逐行 DELETE+INSERT──▶  按月冷分区 _YYYY_MM  ──逐行 DELETE──▶  无
+建议：_hot 按「日」分区
+        日过 retention(8h) ⇒ DETACH 该日分区 + ATTACH 到冷父表   （纯目录操作，近零 WAL）
+        月过 TTL(7d)       ⇒ DROP 该月分区                       （retention_partition.go 已有）
+```
+
+★ 这一步同时解决两件事：
+1. **搬移的 WAL 归零**（DETACH/ATTACH 是目录操作，不搬数据）；
+2. §10.73.2 那类「清空后索引不回收」也一并消失 —— 因为不再有「逐行删空」。
+
+⚠️ 三条前置（**缺一条就不能做**）：
+1. `_hot` 表改成日分区 = **改分区键与预建逻辑**，涉及 `ensure_*` 一族；
+2. 现有 8 小时 retention **与日分区的边界要对齐**
+   （日分区过粗，8 小时 retention 表达不出来 ⇒ 需要小时分区，或把 retention 提到日粒度）；
+3. `admin/data_lifecycle_hot_partition.go` 的 20 项注册表要逐个改判定，
+   且 `scripts/verify_partition_architecture.sh:180` 与
+   `scripts/verify-bodies-hot-schema*.sh` 都会跟着红。
+
+⇒ **这是一次架构改造，不是开关。** 建议按 §10.76.6 的顺序做，而不是一次全推。
+
+### §10.76.6 分批顺序（按「收益 ÷ 风险」）
+
+| 批次 | 对象 | 家族 WAL | 理由 |
+|---|---|---|---|
+| 1 | `request_logs_bodies_hot` | 82.8 GB | 单笔最大，且 payload 最宽，收益最直接 |
+| 2 | `session_bodies_hot` | 34.7 GB | 同族，schema 相似，可复用第 1 批的改造 |
+| 3 | `request_logs_hot` / `session_turns_hot` / `usage_ledger_hot` | 43.7 GB | 行更窄，同样改造、收益递减 |
+| 4 | 其余 15 个 | 12.1 GB | 边际收益低，**先不动** |
+
+★ 只做第 1 批就能拿回 **82.8 GB / 25 天 ≈ 3.3 GB/天** 的 WAL 写入。
+
+### §10.76.7 三处更正
+
+1. **不是「Phase 1 短路」**（§10.76.3，实测证伪）。
+2. **不是「hot 表积压」**：hot 表只有 24,544 行 / 13.9 MB，**很干净** ——
+   它的问题是**搬移方式**，不是**搬移量**。看体积会以为没事，看 WAL 才知道是全库第一。
+3. **「单次 19.3 秒」那类历史均值在本条同样不适用**：
+   `promote_*` 的 `mean_ms` 是 25 天累计均值（1,953 ms / 3,347 ms），
+   近期实际值需另行按实例日志核实后再用于容量规划。
