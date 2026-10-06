@@ -3623,3 +3623,162 @@ superAdmin 兄弟端点 `hot/cron/stats` 也不碰。
    结果那一行之后的整个对象语法坏掉、键 `oneRowPerDayNote` 从 en 侧消失。
    ⇒ i18n 门立刻报「仅 zh-CN 有」——**这道门又一次起了作用**。
    ⇒ 教训：批量改 i18n 优先用 `edit` 工具逐条改，Python 只用于**不含引号**的批量插入。
+
+---
+
+### 11.67 输出合规上移：命中复核面 + 策略词库面（第三十一轮，admin 档）
+
+新增 `src/api/outputCompliance.ts`（**6 个只读端点**）+ 两个视图
+（`/compliance-hits` 现象面、`/compliance-policy` 配置面）
++ 两个抽屉席「输出合规」「合规策略」。
+
+| 端点 | 移动端 | 档位 |
+|---|---|---|
+| `GET /api/admin/output-compliance/stats` | `/compliance-hits` | `admin` |
+| `GET /api/admin/output-compliance/records` | `/compliance-hits` | `admin` |
+| `GET /api/admin/output-compliance/review-queue` | `/compliance-hits` | `admin` |
+| `GET /api/admin/output-compliance/feedback` | （下一批） | `admin` |
+| `GET /api/admin/output-compliance/policy` | `/compliance-policy` | `admin` |
+| `GET /api/admin/output-compliance/keywords` | `/compliance-policy` | `admin` |
+
+★ 鉴权是 `RegisterRoutes`（`admin/output_compliance_handler.go:38-56`）统一套
+`AdminMiddleware` ⇒ **admin 档**，两个抽屉席都不设 `requiresRole`，
+`AppDrawer.spec.ts` 白名单不变。
+★ 该文件注释记了一笔 2026-10-03 的**安全根修**：此前 8 个端点**裸挂 mux**，
+而全局 auth 中间件对 `/api/` 前缀显式旁路（`middleware/auth_mw.go` 自证的不变式）
+⇒ 等于未认证即可读 default 租户的合规记录、甚至未认证写 policy。现在全部套上了。
+
+累计（**当场实测**）：**40 视图 / 38 API 模块 / 36 抽屉席（9 席 superAdmin）**。
+
+#### ★★★★★★ 三个「不是真值」的字段（本批的头号理由）
+
+1. ★★★★★ `jailbreak_hits` **恒为 0，且永远会**是 0：handler 写死，
+   注释自陈「本仓无 jailbreak检测器，诚实报 0，而不是编一个数出来」
+   ⇒ 0 的含义是「**没有这个检测器**」，**不是**「没有越狱问题」。
+2. ★★★★★ `avg_latency_ms` **恒为 0**（审计表无此列），同理由。
+3. ★★★★★ `total_checks` **不是检查次数**，它**镜像 `total_issues`**：
+   注释写「暂无真实计数源（检查通过不落审计行，`policies.total_checks` 列存在
+   但全仓无递增点），先镜像 `total_issues` 保持字段可用」。
+   ⇒ 把它说成「检查次数」会让人以为「查了 100 次只命中 3 次」，实际是同一个数写两遍。
+
+配套两条：
+4. ★★★★ **`stats` 的单路失败会静默回 0**（不是 500）：
+   `pendingReviews` 查询失败 ⇒ `slog.Warn` 后置 0；分类查询失败 ⇒ 四个变量保持零值。
+   注释自陈「stats 是聚合展示，单路失败不应 500 整个面板，但也不能静默吞掉——
+   **面板上该字段回 0 可见异常**」。
+   ⇒ ★★ 于是页面上的 `0` **可能是查询失败**。所以这些 0 **不能**无条件渲染成「没有」。
+5. ★★★★ `stats` 只统计 `issue_type` 的**三个**（`pii`/`secret`/`toxic`），
+   而写库处 `domains/outputcompliance/checker.go` 的 Type 字面量有**五个**
+   （多出 `internal_ip`/`bias`）⇒ 那两类的命中**在 stats 里没有字段**。
+   ⇒ `total_issues ≥ 三类之和`，差额就是它们。页面照实说明，不假装五类齐全。
+
+#### ★★★★★★ `records` 的 `content_preview` 是安全约束
+
+6. ★★★★★ SQL 是
+   `CASE WHEN COALESCE(redacted,false) THEN left(COALESCE(redacted_output,''),120)
+    ELSE '' END`
+   ⇒ **只有引擎已经脱敏过的行才有预览**，未脱敏一律返回**空字符串**
+   （不是 NULL、不是原文）。handler 注释写明：回显原文等于把这个列表变成
+   「把 PII/密钥原文摊平给人看」的通道，与合规模块存在的目的相反。
+
+   ★★ 由此定下一条**客户端判据写法**：这条不变量**不能**只依赖
+   「后端保证未脱敏时 preview 必为空串」这个前提。
+   变异验证抓到这一点：把 `hasPreview` 改成「有内容就显示」时**仍然全绿**，
+   因为我的夹具里未脱敏行的 `content_preview` 本来就是 `''`（**等价变异**）。
+   补了一条判据：故意喂「`redacted=false` 但带内容」的行，页面必须照样不显示。
+   ⇒ 修改后才转红。**安全判据要独立于被依赖方的善意。**
+
+#### ★★★★★ `keywords` 与 `review-queue` 可能**整个端点 500**
+
+7. ★★★★★ 这两个列表把**可空列直接扫进裸 Go `string`**，且扫失败就
+   `writeInternalErrStr` + `return`（**放弃整份列表**）：
+
+   | 端点 | 扫描函数 | 可空列 |
+   |---|---|---|
+   | `/keywords` | `scanKeyword`（:448-452） | `description`（另有 `action`/`enabled`/`severity` 也可空） |
+   | `/review-queue` | `scanReviewQueueItem`（:604-611） | `session_key` / `issue_subtype` / `reviewer` / `review_comment`（四列全可空） |
+
+   ⇒ pgx 扫 NULL 进 `*string` 报 `cannot scan NULL into *string`。
+   ★★ 本仓**已有三处先例**记录同一失败模式：
+   `domains/reportrollup/grainreport.go:305`（「真库 E2E 实测整个端点 500」）、
+   `domains/providerprofile/pg_profile_store.go:104/184/264`、
+   `cmd/gateway/turn_logs_aggregator_crossmonth_realdb_test.go:67`。
+   ★★ **同族内不一致**：`records` 那一侧全部用 `COALESCE(...)` 规避了（5 处），
+     `policy` 也用 `sql.NullString` 兜了 `last_detection_at`（:223）
+     —— **只有 `keywords` 与 `review-queue` 没兜**。
+   ⇒ 客户端义务：**500 时不许渲染成「清单为空」**，必须显示「后端扫描失败」
+     并说明最可能的成因。
+   ★ 这条**只记录不修后端**（不属本专题范围），但它已经是移动端的硬约束。
+
+#### 其余四条
+
+8. ★★★ `review-queue` 的响应**没有 `total`**（只有 `items/status/limit/offset`）
+   ⇒ 无法做「共 N 条」分页，只能按 `items.length === limit` 近似说「可能还有更多」。
+   而 `records` **有** `total`。⇒ 两个分页控件的行为不同，是设计如此。
+9. ★★★ **同族默认条数不同**：`review-queue`/`feedback` 默认 **20**，
+   `records` 默认 **50**；上限统一 200（`complianceMaxLimit`，:935）。
+   ★ `parsePagination`（:937-955）是本仓**第四个**同族分页实现
+     （pending `pageBounds` 50/500、request-anomalies `queryInt` 50/500、更早的 sessions/list）
+     —— **数字可能一样，实现各不相同，不可互相引用**。
+     非数字/≤0 ⇒ 回落默认；>200 ⇒ 静默 clamp；`offset<0` ⇒ 0。**永不报错。**
+10. ★★★ `review-queue` 的 `status` 查询参数**没有 allowlist**：
+    空 ⇒ 默认 `pending`；传什么按什么查 ⇒ 传 `status=xxx` **静默返回空**。
+    ★ DB 侧 `status` 列有 `CHECK IN ('pending','approved','rejected')`（migration 365）
+      —— 但那只约束**写入**，不约束**查询**。⇒ 前端只发这三个字面值。
+11. ★★ 时间格式**不统一**：`records.created_at` 是**显式
+    `.UTC().Format(time.RFC3339)`**（:917），时区确定；
+    而 `review-queue`/`keywords` 的 `CreatedAt` 是 `string`，由 pgx 从 `TIMESTAMPTZ`
+    **直接扫进字符串、未经 `.UTC()`**，具体字面格式取决于编解码路径与库的 session timezone。
+    ★★ **本轮没有真库可验，因此不下结论**（§11.63 的「推断必须追到代码确认」
+    在这里只能追到「没有 `.UTC()`」这一步）。
+    ⇒ 客户端义务：一律走自己的格式化，**解析不了就原样回显**，
+      绝不假定这一族全是 UTC RFC3339。
+12. ★★★ **没配策略时，后端返回的是一份「合成的默认策略」，不是 404。**
+    `fetchPolicy`（:210-219）在 `pgx.ErrNoRows` 时
+    `return defaultOutputCompliancePolicy(tenantID), nil`
+    ⇒ 「库里没配」与「配了但看着像默认值」在响应里**长得一模一样**：
+    `defaultOutputCompliancePolicy` 的 `id` 是 **0**、`created_at`/`updated_at` 是**空串**、
+    `policy_name` 是字面量 `"default"`。
+    ⇒ 判据：`id === 0 || created_at === ''` ⇒ 标「这是内置默认策略，不是你们的配置」。
+    ★ 我为此把 `unwrapCompliancePolicy` **收紧到只接受对象**：handler 的
+      `writeJSON(w, 200, policy)` 传的是 `*OutputCompliancePolicy`，源码实测**永不返回数组**，
+      「宽容接受单元素数组」会掩盖真实的后端形状变更。
+13. ★★ `exception_rules` / `notification_channels` 是 `json.RawMessage`
+    ⇒ **形状不定**（数组/对象/null），原样透传不解析。
+14. ★ `llm_engine_id` / `last_detection_at` 是**指针但 JSON tag 没有 `omitempty`**
+    ⇒ **键一定存在**，值可能为 `null`（不是「键缺失」）。
+
+#### 一处**我自己推断错、追到列类型才发现**的修正
+
+我第一版写「`COALESCE(whitelist_keywords,'{}')` 可能把数组兜成**对象**」。
+追到 `deploy/sql/schemas/baseline/01-schema.sql:10894` 才发现列是
+`whitelist_keywords text[] DEFAULT '{}'`，而 Postgres 会把无类型字面量 `'{}'`
+**推断成 `text[]`** ⇒ **永远是数组**，不会变成对象。已按实测更正。
+（这是本会话第 3 次「推断必须追到 schema/写入方才成立」。）
+
+#### 本轮门禁
+
+- **变异验证 9/9 有牙**：阈值不再 ×100 / 合成默认策略识别被去掉 /
+  形状不符静默返空 / preview 规则改成「有内容就显示」/ 队列 500 退化成空态 /
+  删「只统计三类」差额说明 / 词库 500 退化成空态 / 关闭开关不再灰化 /
+  queue status 不再拦非法值。**全部红在具名断言上**，还原后逐字节一致、复跑全绿。
+- ★★ 变异脚本本身也暴露两处**读数问题**，都当场修正：
+  1. **C4 首次没转红 = 等价变异**（见坑 6 的判据改写），不是判据无牙。
+  2. **C8 的读数误报**：合并跑三个 spec 时我的正则 `Tests\s+(.*)` 匹配到了
+     **另一个文件的汇总行**，打印出「67 passed (67)」却报了 rc=1。
+     单独跑该文件复核 ⇒ `rc=1`、红在
+     `★★★ 关闭的检查项也要出现（灰的），不是只列开着的`。
+     ⇒ **合并跑的失败输出里，正则很容易抓到别人的汇总行**；
+       判「红在哪」要能报出**具名用例**。
+- 全量 **10 连跑全绿，1339 用例**（连跑器落盘，**0 份失败快照**）。
+- `npm run build` **rc=0**（`BUILD_RC` 直接从命令取）；三门全过
+  （css-media 61 文件 / touch-target 58 个 `.vue` / i18n parity **1154 键**）；
+  `vue-tsc -b` 无 TS6133。
+- i18n parity **1154 键**、源码字面量键 918 个；`dynamicKeys.spec.ts` 动态前缀增至
+  **11 处**（新增 `compliance.issue_` / `compliance.qstatus_` / `compliancePolicy.th_`，
+  阈值后缀用 `f.replace('_threshold','')` **现算**，不手抄）。
+- ★ 本轮又踩到两个既有门，各被拦下一次：
+  1. 值 === 键名：`en-US compliance.none='none'`、`compliancePolicy.disabled='disabled'`
+     ⇒ 换成 `not recorded` / `switched off`。
+  2. `@ts-expect-error` 放在**调用行**上方是无效的（错误落在**实参那一行**）
+     ⇒ 报 TS2578「未使用的指令」。改用 `as never`。

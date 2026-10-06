@@ -114,6 +114,10 @@ export const DRAWER_NAV: readonly NavItem[] = [
   { key: 'pending-responses', to: '/pending-responses', icon: 'play', titleKey: 'nav.pending' },
   // 请求侧异常：上游在拒绝我们的什么请求。**superAdmin 档**（h.superAdmin）
   // ⇒ tenant_admin 403，必须设 requiresRole 并同步 AppDrawer.spec.ts 白名单。
+  // 输出合规命中与复核。admin 档（AdminMiddleware）⇒ 不设 requiresRole。
+  { key: 'compliance-hits', to: '/compliance-hits', icon: 'alert', titleKey: 'nav.compliance' },
+  // 输出合规策略与词库。admin 档 ⇒ 不设 requiresRole。
+  { key: 'compliance-policy', to: '/compliance-policy', icon: 'key', titleKey: 'nav.compliancePolicy' },
   {
     key: 'request-anomalies',
     to: '/request-anomalies',

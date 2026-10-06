@@ -288,6 +288,23 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/RequestAnomaliesView.vue'),
     meta: { titleKey: 'anomalies.title', requiresAuth: true, requiresRole: 'super_admin' },
   },
+  // 输出合规「命中与复核」面（stats/records/review-queue，2026-10-07）。**admin 档**
+  // （AdminMiddleware）⇒ tenant_admin 可用，导航不设 requiresRole。
+  // ★ 写操作 approve/reject 本页不碰。
+  {
+    path: '/compliance-hits',
+    name: 'compliance-hits',
+    component: () => import('@/views/ComplianceHitsView.vue'),
+    meta: { titleKey: 'compliance.title', requiresAuth: true },
+  },
+  // 输出合规「策略与词库」面（policy/keywords，2026-10-07）。**admin 档**。
+  // ★ 没配策略时后端返回**合成的默认策略**而不是 404（fetchPolicy 的 ErrNoRows 分支）。
+  {
+    path: '/compliance-policy',
+    name: 'compliance-policy',
+    component: () => import('@/views/CompliancePolicyView.vue'),
+    meta: { titleKey: 'compliancePolicy.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
