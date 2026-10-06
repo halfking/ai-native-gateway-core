@@ -7500,3 +7500,103 @@ NOT RE-INVENTED」—— 正是同类教训的前人记录。）
 
 ⇒ 这道门红着会**掩盖**其他 schema 门的结论（红与红无法区分），
   属于「让既有信号可读」的必要修复，不是范围外的手伸。
+
+---
+
+## §10.70 ★ 更正：「部署通道结构性看不见」**说对了现象，说错了机制**
+
+§10.66 我写：「迁移 runner 会**永远跳过 463**，因为账本说它已应用」。
+**这个因果链是错的**，本节更正 —— 而错误的来源值得记。
+
+### §10.70.1 实测：runner **不读** `schema_migrations`
+
+    installer/internal/dbinit/runner.go:886
+        for _, name := range r.StartupFiles {
+            r.applySQL(filepath.Join("startup", name))     // 每个文件、每次都应用
+        }
+
+全文只有 **1 处**提到 `schema_migrations`，而且是**注释**。
+它靠 **SQL 自身幂等**，不看账本。
+
+⇒ **「账本说已应用所以跳过」这个机制根本不存在。**
+
+### §10.70.2 真正的原因（更简单、也更硬）
+
+| 迁移 | 在 `StartupFiles` 里？ |
+|---|---|
+| 453 | **否** |
+| 463 | **否** |
+| 818 | 是 |
+| 830 | **否** |
+
+⇒ P0 之所以不自愈，不是因为账本骗人，而是因为
+**`463` 根本不在自动应用序列里**，而 `db.go` 的 boot ensure 也没有覆盖这张表的主键。
+两条自动通道（installer 启动序列、网关启动 ensure）**都在它面前是空的**。
+
+### §10.70.3 ★ `schema_migrations` 是**只写不读**的账本
+
+全仓 Go 代码里对它的引用**全部是 `INSERT`（盖章）**，**没有任何一处读它做决策**。
+而且这个失败模式**本项目早就踩过并留了注释** —— `admin/telemetry.go:525`：
+
+    // live hosts can report schema_migrations=455 while still serving the
+    // old unique index.
+
+⇒ 团队当时的对策是「**让代码容忍两种索引形态**」。
+而 writer **只能容忍一种**（单条 4 列 `ON CONFLICT` 子句），对它只能**修库**。
+
+### §10.70.4 修法：把「巡检发现」升级为「每次启动自愈」
+
+`db/db.go` 新增 `ensureURSMNodeSnapshotMinIdentityPK`，与既有的
+`ensureURSMNodeSnapshotMinDailyPartition` 同一位置接线。
+
+四条安全边界（每条都对应一次真实失败形态）：
+
+1. **表不存在 → 直接返回 nil**：用 `to_regclass` 而非 `'...'::regclass`。
+2. **表已分区（`relkind='p'`）→ 不动**：830 形态自带 4 列主键，
+   在分区父表上 DROP/ADD 主键会牵连全部分区。
+3. **拿不到锁就放弃**（`lock_timeout=3s`）：绝不在启动路径上排队等写入。
+4. **失败记 WARN 并返回 nil**：错误冒到 `db.Open` 会让网关进 no-DB 模式
+   并触发部署自动回滚（750/partition_825 记过这个形态）。
+
+列集合**一致时零写**（否则每次启动都重建主键 = 写放大）。
+
+★ `db.go` 里的列字面量是**故意重复**而非从 writer 导入的：
+  共享常量会让「基线 ↔ writer」那道门恒真（自己和自己比），
+  而这条自愈若跟着漂，会**成功地把生产修向错方向且不报错**。
+  同步性由 `db/ursm_snapshot_identity_pk_test.go` 钉住。
+
+### §10.70.5 门与变异
+
+| 门 | 钉的是 |
+|---|---|
+| `TestIdentityPKLiteralMatchesWriterOnConflict` | 自愈列集合 ↔ writer 的 ON CONFLICT |
+| `TestIdentityPKEnsureIsWiredIntoBoot` | 启动序列真的调了它 |
+| `TestIdentityPKEnsureKeepsItsSafetyBoundaries` | 四条边界 + 「一致就短路」 |
+
+| 变异 | 结果 |
+|---|---|
+| **M65** 自愈常量漂成 3 列 | 🔴（★ 最危险：不会报错，会把生产修向错方向） |
+| **M66** 去掉启动序列接线 | 🔴（M43「只测函数不测接线」同族） |
+| **M67** 去掉「一致就短路」 | 🔴 |
+| **M68** 去掉 `partitioned` 守卫 | 🟢 **首轮没红 —— 门有洞，见下** |
+
+### §10.70.6 ★ M68 抓出来的门洞：探针存在 ≠ 探针被使用
+
+我把守卫从 `if !exists || partitioned {` 改成 `if !exists {`，
+而门**全绿**。原因：第一版判据只断言函数体里**出现过** `relkind = 'p'`，
+可查询仍在探、**结果被丢弃** —— 代码已经在分区父表上 DROP/ADD 主键了。
+
+⇒ **子串断言量的是「写过这句话」，不是「这句话改变了行为」。**
+  与本 runbook 的「恒真判据」同族。
+修法：追加断言 **`partitioned` 必须真的进了条件判断**（`|| partitioned` / `if partitioned`），
+重跑 M68 → 🔴。
+
+### §10.70.7 两个操作层面的教训
+
+1. **判据红不一定是代码红**：`to_regclass('public.ursm_node_snapshot_min')` 那次
+   是**门的锚太死**（我的 SQL 由 `const table` 拼接，源文件里没有完整字面量）。
+   按「判据红了先怀疑判据」改门，而不是去改本来正确的代码。
+2. ★ **变异脚本的还原不能用 `git checkout -- <file>`**：
+   它恢复的是**已提交**版本，会**静默丢弃该文件上的未提交工作**。
+   本次差点因此丢掉刚写的自愈函数（幸而 mutation 脚本的 `.bak` 里还有）。
+   ⇒ 还原必须是 `cp` 文件副本；`git checkout` 只用于「确定要放弃改动」的场合。
