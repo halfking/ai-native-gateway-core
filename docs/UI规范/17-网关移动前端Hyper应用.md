@@ -42,14 +42,18 @@
 | --- | --- | --- | --- |
 | 登录 | `/login` | `POST /api/auth/token` | 全屏表单，16px 输入 |
 | 总览 | `/` | `/healthz` + `/api/system/version` + `/api/admin/dashboard/board?days=7&include_operational=1` | 状态条 + 汇总卡 + 趋势 sparkline + 后台任务 chips，下拉刷新 |
-| 节点（凭据健康） | `/nodes` | `/api/credentials/monitor-summary` | 卡片列表（状态点、effective_state、并发、模型可用数），点开 Sheet 看每模型探测明细（宽表 → 专注模式入口） |
+| 节点（凭据健康） | `/nodes` | `GET /api/credentials/monitor-summary?mode=core` | 卡片列表（状态点、effective_state、并发、模型可用数），点开 Sheet 看每模型探测明细（宽表 → 专注模式入口）+ **运维操作区**（2026-10-06，见 §11） |
 | 模型目录 | `/models` | `/api/routing/available-models` | 家族分组连续加载 + 搜索（250ms debounce） |
 | 密钥 | `/keys` | `/api/keys` 全套 | 卡片列表 + 创建 Sheet + 禁用/揭示（揭示走确认框，不缓存） |
 | 告警 | `/alerts` | `/api/candidate-failures/alerts` | 时间线卡片 |
+| 路由检查 | `/routing` | `GET /api/routing/resolve?model=` | 抽屉席位；输入模型名 → 可路由/被阻塞候选分组（2026-10-06，见 §11） |
+| 供应商 | `/providers` | `GET /api/providers` | 抽屉席位；卡片 + 搜索（客户端）+ 可用性筛选（**服务端** routability）（2026-10-06，见 §11.6） |
 | 用量 | `/usage` | `/api/usage/summary` + `/api/usage/by-model` | 汇总卡 + 模型分布，Tab 停靠 |
 | 我的 | AccountSheet | `/api/auth/me` | 全屏 Sheet（用户/外观/语言/登出），02 §5 结构 |
 
-`desktopOnly` 页面：无（移动端只收快查面）；桌面专属功能（路由调试、对账、审计）不进移动端导航，也不做"建议桌面端"横幅——它们本来就不在移动端信息架构里。
+`desktopOnly` 页面：**对账、审计、候选重排/策略编辑**（后两者是 superAdmin + 乐观并发
+`expected_revision` 的写操作，见 §11.4）。它们不进移动端导航，也不做"建议桌面端"横幅。
+其余原列为桌面专属的**节点运维**与**路由 explain**已于 2026-10-06 收进移动端，见 §11。
 
 ## 3. Hyper 子集实现矩阵
 
@@ -244,3 +248,107 @@ R3 已补齐六字段；R2/R6/R7/R8/R9 登记「未实现/不适用」）。R11 
 > [部分落地] 判定维持；④行点击契约（上表末行）已按选项①销案——ModelsView 在落地线为
 > 家族卡片行 → 版本明细 Sheet，全视图静态复核通过，门禁（typecheck/vitest 44 用例/build）
 > 在 origin/main 临时检出实测全绿。
+
+## 11. 运维能力上移轮（2026-10-06，`feat/hyper-mobile-ui-2026-10-04`）
+
+把 §2 原列 `desktopOnly` 的**凭据节点运维**与**路由 explain**收进移动端。契约层
+`web-mobile/src/api/credentialsOps.ts`，视图 `NodesView.vue`（详情 Sheet 内操作区）
++ `RoutingCheckView.vue`（抽屉席位 `/routing`）。
+
+### 11.1 权限矩阵 —— 按后端中间件实测，不是 UI 偏好
+
+| 能力 | 端点 | 中间件 | tenant_admin | 证据（后端注册处） |
+| --- | --- | --- | --- | --- |
+| 停用 | `POST /api/credentials/set-manual-disabled` | `h.admin` | ✅（限本 tenant） | `admin/credential_monitor.go:167` |
+| 恢复 | `POST /api/credentials/clear-manual-disabled` | `h.admin` | ✅ | `admin/credential_monitor.go:166` |
+| 凭据检查 | `POST /api/credentials/{id}/test` | `h.superAdmin` | ❌ 403 | `admin/credential_state_handlers.go:176` |
+| 批量检查 | `POST /api/credentials/test-batch` | `h.superAdmin` | ❌ 403 | `admin/credential_state_handlers.go:177` |
+| 强制恢复 | `POST /api/admin/diagnostics/credential/force-recover?id=` | `h.superAdmin` | ❌ 403 | `admin/handler.go:1461` |
+| 记账式复位 | `POST /api/routing/credentials/{id}/reset-state` | `h.superAdmin` | ❌ 403 | `admin/handler.go:946` |
+| 路由 explain | `GET /api/routing/resolve?model=` | `h.admin` | ✅ | `admin/handler.go:929` |
+
+`admin/handler.go:880-888` 注释明写 tenant_admin 对 `/api/admin/**` 直接 403。
+⇒ **操作区按 `authStore.role` 分档渲染**，非 super_admin 不显示检查/强制恢复按钮。
+统一显示再吃后端 403 会给 tenant_admin 一堆必然失败的入口，而移动端没有桌面端
+「打开抽屉才发现没权限」的过程。
+
+### 11.2 三个必须在前端兜住、后端不兜的契约
+
+1. **`reason` 必填**：`set/clear-manual-disabled` 对空串直接 400
+   （`admin/credential_monitor.go:1785-1792`、`:1689-1691`）⇒ 确认框内嵌 reason
+   输入框（`AppConfirm` 为此新增默认 slot）；留空时补带凭据 id 与操作人的默认理由。
+2. **force-recover 无二次确认门禁**：该端点**无请求体、只有 query `id`**，且后端
+   **没有** `X-Confirm` 头校验（对比 `PATCH /api/admin/providers/{id}/enable` 有该门禁，
+   `admin/node_operations.go:398`）⇒ 误触即执行 5 步状态重置，二次确认是唯一防线。
+   移动端**走 `req()` 而非裸 fetch**：桌面 `EmergencyDiagnosticModal.vue:122` 绕开
+   `req()` 且只发 Bearer 不发 cookie，移动端不照抄（要 cookie 鉴权 + 401 bounce +
+   `sessionEpoch` 代次保护）。
+3. **检查是 202 异步、不是探测结果**：`POST /api/credentials/{id}/test` 提交队列后
+   立即 202（`admin/credential_state_handlers.go:30-51`）⇒ 反馈文案是「探测已提交，
+   后台执行中」，**不得**显示成「探测通过」。回归判据见
+   `NodesView.spec.ts`「立即探测的反馈文案」。
+
+### 11.3 路由检查的语义
+
+- 后端**始终返回全部候选**并带不可用原因（`admin/routing.go:273-275` 注释）⇒ 视图分
+  「可路由 / 被阻塞（含 `block_reason`、`availability_recover_at`）」两组，被阻塞那组才是
+  explain 的价值所在。
+- **无变体时返回空 `candidates` 的合法对象**（`admin/routing.go:288-296`），**不是错误**
+  ⇒ 显示「无候选凭据」而非错误态。否则「模型名打错」会被说成「加载失败」。
+
+### 11.4 仍留桌面的部分
+
+候选重排（`POST /api/routing/candidate-bindings/reorder`，superAdmin + 乐观并发
+`expected_revision`，陈旧返回 409）、路由策略/精选/人工优先级/打分权重编辑、对账与审计。
+这些是 superAdmin 写操作且带并发版本语义，移动端先不收。
+
+### 11.5 本轮门禁
+
+`web-mobile/` 实测：`vue-tsc -b` 通过；`vitest run` **99 用例 / 15 文件全绿**
+（新增 NodesView 运维操作区 5 条 + RoutingCheckView 4 条）；`npm run build` 通过
+（`RoutingCheckView` 4.91 kB / gzip 1.84 kB，`NodesView` 10.99 kB / gzip 3.89 kB）。
+
+### 11.6 供应商视图（2026-10-06 同轮补齐）
+
+`/providers` 进移动端抽屉席位。选它是因为桌面菜单里 `/providers` 是运维高频入口，
+而移动端此前**只能从节点卡反推供应商** —— 供应商维度的「谁挂了 / 谁没绑模型 /
+谁被手动停用」在移动端完全不可见。纯只读（`h.providerConsole`，`admin/handler.go:1224`），
+改供应商属重操作，留桌面。
+
+**筛选分工（易写反，已用测试钉住）**：
+- 可用性筛选（`routability`）走**服务端** query ⇒ 换筛选必须**清缓存重取**。
+  若只做本地过滤，用户点「不可用」看到的仍是全量筛出来的结果，与后端口径不一致，
+  看着像「过滤没生效」。
+- 搜索走**客户端**（250ms debounce，13 §5）⇒ 不触发重取。
+
+### 11.7 三个端点三种响应形态（移植时最容易踩的一类）
+
+同一批移植里，三个看起来都是「列表」的端点，返回形态**互相相反**：
+
+| 端点 | 形态 | 证据 |
+| --- | --- | --- |
+| `GET /api/providers` | **裸数组** | 桌面 `web/src/api/providers.ts:130` `req<Provider[]>` |
+| `GET /api/candidate-failures/alerts` | `{data, count}` 信封 | `web-mobile/src/api/alerts.ts:18` |
+| `GET /api/credentials/monitor-summary` | `{credentials, count, meta}` 信封 | `admin/credential_monitor.go:686-694` |
+| `GET /api/credentials/decisions` | `{credential_id, decisions, total}` 信封 | `admin/credential_monitor.go:1658-1662` |
+
+⇒ **不要抽一个「通用解包器」**。那会掩盖真正的契约差异，让下一个维护者以为全站同形。
+每个端点各自显式解包，且形状不符一律**抛错而非返 []** —— 返 [] 会让「后端改了返回
+结构」显示成「数据被清空」，是一起静默故障。
+
+### 11.8 节点详情的「近期路由决策」
+
+`GET /api/credentials/decisions?credential_id=&limit=`，回答「这个凭据最近在承载什么
+流量」。**独立于详情主数据**加载：拉不到只让决策区报错，不牵连状态字段与操作区。
+
+★ 一条具体的**假绿**成因（已写入 `NodesView.spec.ts` 注释）：该 spec 对整个
+`@/api/credentialsOps` 做 `vi.mock`。第一版 mock 漏了新导出的
+`fetchCredentialDecisions` ⇒ 它是 `undefined` ⇒ 调用即抛 ⇒ 决策区永远走错误态、
+从不渲染内容，而**所有旧测试照样全绿**。⇒ 模块被整体 mock 时，新增导出必须显式
+登记，否则新增区域零覆盖。
+
+### 11.9 本轮门禁（第二轮，含供应商视图）
+
+`web-mobile/` 实测：`vue-tsc -b` 通过；`vitest run` **125 用例 / 18 文件全绿**
+（新增 ProvidersView 4 条 + providers 解包 8 条 + credentialsOps 解包 6 条 +
+NodesView 决策区 3 条）；`npm run css:check` 通过（29 文件）；`npm run build` 通过。

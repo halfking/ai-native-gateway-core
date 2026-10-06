@@ -21,6 +21,11 @@ export const BOTTOM_NAV: readonly NavItem[] = [
 export const DRAWER_NAV: readonly NavItem[] = [
   { key: 'alerts', to: '/alerts', icon: 'alert', titleKey: 'nav.alerts' },
   { key: 'usage', to: '/usage', icon: 'chart', titleKey: 'nav.usage' },
+  // 2026-10-06：路由检查（只读 explain）从 desktopOnly 收进移动端，抽屉席位。
+  // 不占底栏（02 §4 底栏 ≤5 席已满），与「告警/用量」同级。
+  { key: 'routing', to: '/routing', icon: 'search', titleKey: 'nav.routing' },
+  // 2026-10-06：供应商维度可见性（谁挂了/谁没绑模型/谁被手动停用）。
+  { key: 'providers', to: '/providers', icon: 'globe', titleKey: 'nav.providers' },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))
