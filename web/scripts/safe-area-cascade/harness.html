@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>safe-area cascade 取证</title>
+    <!-- 真实构建产物（web-mobile/dist/assets/index-O49HEGmC.css 的逐字拷贝） -->
+    <link rel="stylesheet" href="./prod.css" />
+    <style>
+      body { font: 13px/1.5 ui-monospace, Menlo, monospace; padding: 10px; }
+      pre { margin: 6px 0; white-space: pre-wrap; }
+      .ok { color: #0a7; } .bad { color: #d33; } .dim { color: #888; }
+      #shell { border: 1px dashed #999; min-height: 40px; }
+      #page { background: #eef; min-height: 20px; }
+    </style>
+  </head>
+  <body>
+    <div id="out">计算中…</div>
+    <!-- scoped 选择器需要 data-v 属性，这里照抄产物里的 scope id -->
+    <div class="hyper-app" id="shell" data-v-6ff24b80>
+      <div class="page" id="page">内容</div>
+    </div>
+
+    <script>
+      const SIDES = ['top', 'bottom', 'left', 'right']
+      const lines = []
+      const say = (s, cls) => lines.push(cls ? `<span class="${cls}">${s}</span>` : s)
+
+      // Capacitor SystemBars.injectSafeAreaCSS 写的是 %dpx（对 px/density 做 (int) 截断）
+      // 模拟器实测：statusBars 84px / navigationBars 84px / systemGestures left 78px，DPR=2.625
+      const CAPACITOR = { top: '32px', right: '0px', bottom: '32px', left: '29px' }
+
+      function tokens() {
+        const cs = getComputedStyle(document.documentElement)
+        const o = {}
+        for (const s of SIDES) o[s] = cs.getPropertyValue(`--app-safe-${s}`).trim()
+        return o
+      }
+      function shellPad() {
+        const cs = getComputedStyle(document.getElementById('shell'))
+        return { left: cs.paddingLeft, right: cs.paddingRight }
+      }
+
+      // ---- A. 注入前（桌面/未注入浏览器形态）----
+      const before = tokens()
+      const padBefore = shellPad()
+      say('A. 注入前（浏览器形态）')
+      for (const s of SIDES) {
+        const v = before[s]
+        say(`   --app-safe-${s.padEnd(6)} = ${v || '(空)'}   ${v === '0px' ? '✅ 桌面零回归' : '⚠️'}`)
+      }
+      say(`   .hyper-app padding-inline = ${padBefore.left} / ${padBefore.right}`)
+
+      // ---- B. 模拟 Capacitor 注入 ----
+      for (const [k, v] of Object.entries(CAPACITOR)) {
+        document.documentElement.style.setProperty(`--safe-area-inset-${k}`, v)
+      }
+      say('')
+      say('B. 模拟 Capacitor injectSafeAreaCSS() 注入后：' + JSON.stringify(CAPACITOR))
+
+      // ---- C. 注入后：cascade 是否真的把值送到 token ----
+      const after = tokens()
+      let cascadeOk = true
+      for (const s of SIDES) {
+        const got = after[s]
+        const want = CAPACITOR[s]
+        const ok = got === want
+        if (!ok) cascadeOk = false
+        say(`   --app-safe-${s.padEnd(6)} = ${got || '(空)'}  (期望 ${want})  ${ok ? '✅' : '❌'}`)
+      }
+
+      // ---- D. 真实消费点：.hyper-app 的 padding-inline（来自产物 CSS，含 scope）----
+      const pad = shellPad()
+      const padOk = pad.left === CAPACITOR.left && pad.right === CAPACITOR.right
+      say('')
+      say('D. 消费点（产物 CSS 的 .hyper-app[data-v-6ff24b80] 规则）')
+      say(`   padding-left  = ${pad.left}  (期望 ${CAPACITOR.left})  ${pad.left === CAPACITOR.left ? '✅' : '❌'}`)
+      say(`   padding-right = ${pad.right} (期望 ${CAPACITOR.right}) ${pad.right === CAPACITOR.right ? '✅' : '❌'}`)
+      say(`   ⇒ 横向 inset 单点消费 ${padOk ? '✅ 生效' : '❌ 未生效'}`)
+
+      // ---- E. 去掉注入（回到桌面）应回到 0，证明回落链没把值钉死 ----
+      for (const k of Object.keys(CAPACITOR)) {
+        document.documentElement.style.removeProperty(`--safe-area-inset-${k}`)
+      }
+      const cleared = tokens()
+      const clearOk = SIDES.every((s) => cleared[s] === '0px')
+      say('')
+      say('E. 移除注入后（回落 env() → 桌面）')
+      say(`   ${SIDES.map((s) => `--app-safe-${s}=${cleared[s]}`).join('  ')}  ${clearOk ? '✅ 全部回到 0px' : '❌ 有残留'}`)
+
+      document.getElementById('out').innerHTML = lines.join('\n')
+      window.__RESULT__ = {
+        cascadeOk, padOk, clearOk,
+        before, after, cleared, pad, padBefore,
+      }
+    </script>
+  </body>
+</html>
