@@ -619,6 +619,25 @@ export function autoRouteDecisionHasL2(r: AutoRouteDecisionResponse): boolean {
 }
 
 /**
+ * ★★★ 这个 id **形态上有没有可能**带出 l2。
+ *
+ * 逐字照抄后端 `uuidVariants`（analytics.go:1147-1166）的判定：
+ * 去掉连字符后**长度必须恰为 32** 且**全为 hex**，才产出 `{id, dashed}` 两个变体
+ * ⇒ `l2Lookup = true`。任何别的形态（探测 id `probe-xxx`、带前缀 id）
+ * 都只返 1 个变体 ⇒ 后端**连查询都不发** ⇒ l2 必然缺失。
+ *
+ * ⇒ UI 在用户输完 id 就能告诉他「这个形态不会有 L2 段」，
+ *   而不是等他加载完再看到一个空白的 L2 区块。
+ *
+ * ⚠️ 这是**必要条件**不是充分条件：形态对了也可能没有决策日志（第 2 种原因）。
+ */
+export function autoRouteDecisionCanHaveL2(requestId: string | null | undefined): boolean {
+  if (typeof requestId !== 'string') return false
+  const stripped = requestId.trim().toLowerCase().replace(/-/g, '')
+  return /^[0-9a-f]{32}$/.test(stripped)
+}
+
+/**
  * ★ `client_model` / `outbound_model` 的 `""` 可能是 **NULL 也可能是真空串**
  * （`nullStringOrEmpty`，analytics.go:823-824）。⇒ 「没填模型」不能只靠空串判断，
  * 必须结合 `outbound_model === ""` 一起看（两者都空才是真的没模型信息）。
