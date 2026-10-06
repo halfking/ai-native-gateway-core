@@ -11038,3 +11038,90 @@ ensure，它**必须被重新建出来**。这是 §10.98.3 把它留在未守�
 ⇒ **写 A/B 时不要只跑一次就下结论**。一次可能是运气，两次一致才叫结论；
 若两次不一致，先怀疑装置的抖动余量，而不是急着接受任一方向的读数。
 生产侧的对应余量是 1h vs 3.0h（3 倍），实验里应当**放宽**到 4 倍以上再采信。
+
+---
+
+## §10.101 迁移 839：当月堆分区交回 autovacuum（§10.99.5 的实现，未上线）
+
+按 §10.99.5 的修订版候选实现。**只落代码，不上线。**
+
+### §10.101.1 改了什么
+
+`sql/migrations/startup/839_autovac_current_month_heap_handoff.sql`（+ `.down.sql`）
+
+**A. `analyze_llm_gateway_table_stats` 的判据**（取代 838 的 `m = 0 OR NOT EXISTS(...)`）：
+
+```sql
+AND (
+       -- ① 从未被分析过（838 起的首次覆盖保证，往月与当月都适用）
+       NOT EXISTS (SELECT 1 FROM pg_statistic s WHERE s.starelid = c.oid)
+    OR (
+       -- ② 当月的非堆（列存）分区仍手工分析
+       m = 0
+       AND c.relam <> (SELECT oid FROM pg_am WHERE amname = 'heap')
+      )
+   )
+```
+
+| 生产实况 | 是否被手工分析 | 理由 |
+|---|---|---|
+| 当月**堆**分区、已分析过 | **否** | 交回 autovacuum（本次改动的全部意义） |
+| 当月**列存**分区 | **是** | 生产实测列存 `autoanalyze_count = 0`，autovacuum 不采集，交回就永远没人管 |
+| 当月**从未分析过** | **是** | 首次覆盖不能丢，否则 `pg_statistic` 永远无行 |
+| 往月任意分区、已分析过 | 否 | 838 语义不变 |
+
+**B. `apply_llm_gateway_current_month_analyze_scale_factor(0.005)`**：
+只对「当前月 + `pg_am = heap` + 是那 11 张父表的子分区」设 reloption，
+往月分区维持 404 的 0.02。`down` 调同一函数传 `0.02` 交还。
+
+**接线**：embeddata 副本、`main.go` 的 `go:embed` + map、
+`runner.go` 的 `StartupFiles`、`installed_startup_migrations.tsv`。
+
+**四处函数正本同步**：`sql/objects/functions/…integer.sql`、`sql/schema/01-schema.sql`、
+`installer/…/embeddata/01-schema.sql`、`deploy/sql/schemas/baseline/01-schema.sql`
+—— 全新安装是从这些文件建库的，只改迁移文件会让新部署保持旧行为。
+
+### §10.101.2 行为验证（真库，非文本断言）
+
+`scripts/.verify-839-handoff-behavior.sh`，一次性容器：
+
+| 读数 | 断言 |
+|---|---|
+| 夹具自检 | 三个对象必须齐备，否则拒绝下结论 |
+| A | 迁移 up / down 都能装进真库 |
+| **B** | 当月已分析过的堆分区 `last_analyze` **逐位不变**（交回成功） |
+| **C** | 上月分区**不变**（838 语义未被破坏） |
+| **D** | 当月从未分析过的分区**被分析**（`pg_statistic` 出现行） |
+| **E** | 当月 `scale_factor = 0.005` / 上月 `= 0.02` |
+| **F** | **负控**：换回 down 的函数体后，B 必须重新被分析 |
+
+实测：`analyze_llm_gateway_table_stats(2)` 从 **3 降到 1**（只剩那个从未分析过的），
+B/C/D/E 全绿，F 里当月分区从 `20:26:31` 前进到 `20:26:34`
+⇒ B 的差异确由 839 造成，不是夹具或环境。
+
+**文本门** `migration_839_test.go`，6 个子测试；
+**变异 M129~M138 共 10 条**全部按预期转红。
+
+### §10.101.3 三处诚实标注
+
+1. **列存分支未行为验证**：`USING columnar` 是 Citus 扩展，stock `postgres:16`
+   装不出 columnar 分区，本机也无 `kx-citus` 镜像。该分支目前**只有文本门**。
+   生产侧的行为证据是 §10.93.6 的 `autoanalyze_count = 0` 实测，不是本地实验。
+2. **`m = 0` 那一支被 838 门断言过**，839 合法取代它 ⇒ 必须把 838 的门改成断言
+   它真正保护的不变量（首次覆盖子句仍在，且若旧形态消失则必须有 839 的列存子句顶上），
+   而不是直接把断言删掉。**放宽门只有在它保护的不变量仍被断言时才成立。**
+3. **回滚判据仍是部署后**：`autoanalyze_count` 24 小时内未上升 ⇒ 立即回滚。
+   §10.99.1 的机制 A/B 只是把「前提成立」提前验掉了，不是免掉线上判据。
+
+### §10.101.4 本轮踩的坑（与写守卫时同源）
+
+1. **`$VAR` 紧跟全角标点**在 `set -u` 下必崩（`$target，` / `$LAST）`）。
+   bash 会把多字节字符吸进变量名 ⇒ 报「未绑定的变量」。**一律写 `${VAR}`。**
+2. **变异脚本的备份集必须覆盖所有会被改到的文件**。第一版只备份 up/down，
+   M136~M138 改的 schema / embeddata / runner.go 变异后无人还原 ⇒ 污染工作区。
+3. **变异锚点不要凭「我以为我写了什么」写**。M129~M131 连着三次「没施上」，
+   因为我按迁移文件的缩进去锚，而实际文件与 schema 副本缩进不同。
+   ⇒ 用 `\s+` 容错的 regex，或从真实文件 `grep` 出来抄。
+4. **夹具里 `INSERT … SELECT now()` 往上月分区里插会违反分区约束**
+   （`new row … violates partition constraint`），得用 `${LAST}-15` 这种落在范围内的值。
+   ⇒ `psql -f` 的 stderr **必须透出**，否则夹具失败会伪装成「被测代码有问题」。

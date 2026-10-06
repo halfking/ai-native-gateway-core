@@ -789,6 +789,9 @@ var routingMVRefreshState837 []byte
 //go:embed embeddata/startup/838_analyze_skip_frozen_month.sql
 var analyzeSkipFrozenMonth838 []byte
 
+//go:embed embeddata/startup/839_autovac_current_month_heap_handoff.sql
+var autovacCurrentMonthHeapHandoff839 []byte
+
 //go:embed embeddata/startup/829_bodies_columnar_rollback.sql
 var bodiesColumnarRollback829 []byte
 
@@ -1038,6 +1041,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/833_supplier_price_nonneg_check.sql":                                    supplierPriceNonnegCheck833,
 	"startup/837_routing_mv_refresh_state.sql":                                       routingMVRefreshState837,
 	"startup/838_analyze_skip_frozen_month.sql":                                      analyzeSkipFrozenMonth838,
+	"startup/839_autovac_current_month_heap_handoff.sql":                             autovacCurrentMonthHeapHandoff839,
 	"startup/829_bodies_columnar_rollback.sql":                                       bodiesColumnarRollback829,
 	"startup/835_modality_verify_probe_ledger.sql":                                   modalityVerifyProbeLedger835,
 	"startup/834_supplier_errors_base_tables.sql":                                    supplierErrorsBaseTables834,

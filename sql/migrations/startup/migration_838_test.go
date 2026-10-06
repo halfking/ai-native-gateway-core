@@ -214,10 +214,32 @@ func TestMigration838_AnalyzeSkipFrozenMonth(t *testing.T) {
 			"../../../sql/schema/01-schema.sql",
 			"../../../installer/cmd/llm-gw-installer/embeddata/01-schema.sql",
 		}
+		// 2026-10-07 (migration 839): the exact `m = 0 OR NOT EXISTS(...)` form
+		// was superseded — 839 hands the current month's HEAP partitions back to
+		// autovacuum, so "analyze every current-month partition" is no longer the
+		// intent. What 838 actually protects is the FIRST-COVERAGE invariant:
+		// a rolled-over partition is only analysed when it has no pg_statistic
+		// rows. That clause survives verbatim in 839's predicate, so assert the
+		// invariant rather than the superseded spelling.
+		//
+		// Weakening a gate to make it green is only legitimate when the invariant
+		// it protected is still asserted — hence checking both halves here:
+		// the first-coverage clause must be present, AND if the old `m = 0`
+		// form is gone then 839's columnar clause must be there to replace it.
+		const firstCoverage = "NOT EXISTS (SELECT 1 FROM pg_statistic s WHERE s.starelid = c.oid)"
+		const columnarClause = "AND c.relam <> (SELECT oid FROM pg_am WHERE amname = 'heap')"
 		for _, path := range mirrors {
 			sql := readFile(t, path)
-			require.Contains(t, funcBody(t, sql), guard,
-				"%s must carry the same guard as migration 838", path)
+			body := funcBody(t, sql)
+			require.Contains(t, body, firstCoverage,
+				"%s must keep 838's first-coverage clause (never-analyzed partitions "+
+					"must still be analysed)", path)
+			if !strings.Contains(body, guard) {
+				require.Contains(t, body, columnarClause,
+					"%s dropped 838's `m = 0` form without gaining 839's columnar clause — "+
+						"the current month would lose both the handoff and the columnar guard",
+					path)
+			}
 		}
 	})
 

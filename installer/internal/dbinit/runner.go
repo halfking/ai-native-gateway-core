@@ -885,6 +885,16 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 第一名（81.0%，约 56 分钟/天）。改为：往月分区仅在
 			// pg_statistic 无行（从未被分析过）时才补，当月仍无条件分析。
 			"838_analyze_skip_frozen_month.sql",
+			// 839: 当月**堆**分区交回 autovacuum，并把它们
+			// autovacuum_analyze_scale_factor 降到 0.005。
+			// 838 之后手工 pass 仍每小时分析当月分区，占整趟 40.2%（§10.93.5）；
+			// 而手工 ANALYZE 会清零 n_mod_since_analyze ⇒ autovacuum 永不就手
+			// （生产实测 22/22 个关系该计数全为 0，§10.93.6）。
+			// 交回后触发线 = 50 + scale_factor×行数，实测写入 834 行/小时，
+			// 最坏间隔从 6h/11h 压到 3h/4h（§10.99）。
+			// ★ 列存分区与「从未被分析过」的分区仍必须留在手工 pass：
+			//   生产实测列存 autoanalyze_count = 0，autovacuum 不采集。
+			"839_autovac_current_month_heap_handoff.sql",
 		},
 	}
 }
