@@ -270,6 +270,15 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/RoutingOptView.vue'),
     meta: { titleKey: 'routingOpt.title', requiresAuth: true },
   },
+  // 待处理响应（list + stats + detail，2026-10-07）。**admin 档**（admin(...)）
+  // ⇒ tenant_admin 可用，导航不设 requiresRole。
+  // ★ 写操作 DELETE /{sessionID}（手动清理挂起条目）本页不碰。
+  {
+    path: '/pending-responses',
+    name: 'pending-responses',
+    component: () => import('@/views/PendingResponsesView.vue'),
+    meta: { titleKey: 'pending.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',

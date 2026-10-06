@@ -3401,3 +3401,107 @@ superAdmin 兄弟端点 `hot/cron/stats` 也不碰。
 改完代码后（GROUPING SETS 那处缺陷修完后）重跑 10 次全量：**10/10 全绿，1087 用例**。
 ★ 这**不是**「已修复」，只是**没抓到**（连跑器全绿时的结尾语就是这个意思）。
 累计无污染全量跑 ≥76 次、失败仍为 1 次（≈1.3%），失败用例名**仍未捕获**。
+
+---
+
+### 11.65 待处理响应上移：有没有卡住的请求（第二十九轮，admin 档）
+
+新增 `src/api/pendingResponses.ts` + `src/views/PendingResponsesView.vue`
++ 路由 `/pending-responses` + 抽屉席「待处理响应」。
+答的是一个很具体的运维问题：**网关现在有没有卡住的请求**。
+与已上移的 `/sessions-online`、`/routing-opt`、`/data-lifecycle` 互不重叠。
+
+| 端点 | 移动端 | 档位 | 抽屉席 |
+|---|---|---|---|
+| `GET /api/admin/pending-responses` | `/pending-responses` | `admin` | 待处理响应 |
+| `GET /api/admin/pending-responses/stats` | 同上 | `admin` | 同上 |
+| `GET /api/admin/pending-responses/{sessionID}` | 同上（详情） | `admin` | 同上 |
+
+★ `/stats` 注册在 `.../pending-responses/` 子路由**之前**
+（`admin/handler.go:1364` vs `:1366`）——顺序错的话 `/stats` 会被子路由
+当成 sessionID 吞掉。**这个顺序是有意为之，不是巧合。**
+
+累计（**当场实测**）：**37 视图 / 36 API 模块 / 33 抽屉席**（**8 席 superAdmin** 档）。
+
+#### 九个坑（逐条实读源码）
+
+1. ★★★★ **`status` 过滤是假的。** 底层 `pending.Store.ListStaleInProgress`
+   在 `pending/pending.go:355` 有一句
+   `if r == nil || r.Status != StatusInProgress { continue }`
+   ⇒ 它**只**返回 `in_progress`；而 adapter 里 `Status: "in_progress"`
+   （`admin/pending_handlers.go:95`）是**写死的字面量**，不是从条目读的。
+   ⇒ `?status=completed` / `failed` / **任意垃圾值** 都**永远返回空数组且不报错**。
+   ⇒ 页面因此**不提供**这些筛选项 —— 提供了用户就会得出
+     「没有已完成的挂起响应」这种完全错误的结论。
+   ★ 判据特意**不**写成「文本里不能出现『已完成』」：说明文案**必须**引用这两个词
+     才能解释为什么不给筛选项，那样写会把好文案判红。
+     判据落在**控件**上：无 `select`/`radio`/`checkbox`，且 chip 只有 limit 三档。
+
+2. ★★★★ **列表的 `provider_id` / `is_stream` / `bytes_buffered` 恒为 `0`/`false`/`0`。**
+   `StaleEntry`（`pending/pending.go:283-288`）**只有四个字段**
+   （`SessionID/RequestID/CreatedAt/TenantID`）—— 根本没有这三个可填；
+   而 `listEntry`（`:52-63`）给它们的 JSON tag **没有 `omitempty`**
+   ⇒ 响应里**一定会出现** `"provider_id":0, "is_stream":false, "bytes_buffered":0`。
+   ★★ **`provider_id: 0` 不是「供应商 0」，是「列表端点不返回这个」。**
+   只有 `GET /{sessionID}` 详情（`:236-248`）才真的填。
+   ⇒ 页面**不显示**这三列，改为一句说明 + 进详情看真值。
+   ★ 顺带一个容易跟着写错的区别：`completed_at` 有 `omitempty`
+     ⇒ 它是「**键缺失**」；那三个是「**恒 0**」。两种都叫「没值」，但成因不同，
+     所以判据里把 `completed_at` 排除在恒假清单之外。
+
+3. ★★★ **时间是 Unix 秒（int64），不是 ISO。**
+   `created_at` / `completed_at` / `oldest_created_at` 全是秒。
+   ★ 与本仓库其它端点（ISO 字符串）不同；直接丢给 `relativeTime()` 会
+     `Date.parse("1791…")` 失败后**原样回显那个数字**。
+   ⇒ 一律先过 `pendingUnixToIso`。
+
+4. ★★★ **`stats.by_status` 永远只有一个键** `in_progress`，且恒等于 `total`
+   （`:331-336` 写死 `byStatus["in_progress"]++`）⇒ 没有信息量，页面不展示它。
+
+5. ★★★ **`stats.oldest_created_at` 在没有条目时是 `0`**（循环不进，初值原样输出）
+   ⇒ 0 是「没有条目」，**不是 1970 年**。且口径是「in_progress 里最老的那条」。
+
+6. ★★ `limit` clamp [1,500]、**非数字/≤0 回落 50、永不报错**（`pageBounds:124-141`）；
+   `offset` 越界**静默返空**（`offset>len ⇒ offset=len`，`end` 也被 clamp 到 len
+   ⇒ 切出空片，不会 panic）。
+
+   ★★ **顺带订正一个「很容易推断错」的点**：`ListStaleInProgress(…, 1000)` 里的
+   `1000` **不是条数上限**，它是 Redis `SCAN` 的 `COUNT` **提示**；
+   该函数循环到 `cursor==0` 为止（`pending/pending.go:325-369`），
+   函数自己的注释也写着「COUNT is a hint, not a guarantee」。
+   ⇒ 我第一版把它写成「列表只含 1000 条」——**追到循环体才发现是错的**，
+     幸好没写进文档。
+     ⇒ 这条是 §11.63「推断必须追到代码确认」的又一次实例。
+
+7. ★★ `TenantID` 是 `json:"-"` ⇒ **响应不返回租户**，但过滤确实做了
+   （`:184`：superAdmin 全量、tenant_admin 只看本租户）
+   ⇒ 对 tenant_admin「列表变少」是**正常的**，页面照实说明。
+
+8. ★★ 详情 404 与「跨租户不可见」**共用** `PENDING_NOT_FOUND`
+   （`:228-232`：`!found || 租户不符` 一起返 404）
+   ⇒ 这是**刻意不泄漏存在性**，页面渲染成「查不到」，**不是**红色错误。
+
+9. ★ 错误信封走 `writeErrorJSON`（`:391-399`）⇒ **嵌套 JSON**
+   `{"error":{"message":…,"code":…}}`，与 routing-opt 那一族的
+   `http.Error`（text/plain）**不同族**。
+   503 `PENDING_STORE_UNAVAILABLE` / 503 `PENDING_STORE_ERROR` /
+   404 `PENDING_NOT_FOUND` / 405 `METHOD_NOT_ALLOWED`。
+
+★ **范围外**：写操作 `DELETE /api/admin/pending-responses/{sessionID}`
+  （手动清理挂起条目）本页一条不碰。
+★ **注释与实现矛盾一处（只记录，不改后端）**：`handlePendingDelete` 的注释写
+  「Idempotent — deleting a missing entry is not an error」，
+  但代码里 `!found` 直接 **404** ⇒ **并非幂等**。
+  不写这一页是因为本页不碰 DELETE，写了会变成无出处的断言。
+
+#### 本轮门禁
+
+- **变异验证 8/8 有牙**：status 不再拦 / 恒假字段清单清空 / Unix 秒漏乘 1000 /
+  0 哨兵不再当「没有」/ 年龄阈值抬高 / 详情 404 当普通错误 / limit 上界不拦 /
+  形状不符静默返空。**全部红在具名断言上**（非收集失败），还原后逐字节一致、复跑全绿。
+- 全量 **10 连跑全绿，1157 用例**（连跑器落盘，**0 份失败快照**）。
+- `npm run build` **rc=0**（`BUILD_RC` 直接从命令取）；三门全过
+  （css-media 58 文件 / touch-target 55 个 `.vue` / i18n parity **1017 键**、
+  源码字面量键 816 个）；`vue-tsc -b` 无 TS6133。
+- `dynamicKeys.spec.ts` 动态前缀清单增至 **7 处**（新增 `pending.band_`，
+  取值从 `PENDING_AGE_BANDS` 常量取，不手抄）。
