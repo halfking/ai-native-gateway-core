@@ -139,6 +139,8 @@ export default {
   endDate: 'End date',
   exportFailed: 'Export failed',
   exportTooLarge: 'File is too large to export (limit {max}). Please export from the desktop client.',
+  importTooLarge: 'File is too large to import (limit {max})',
+  importBadType: 'Unsupported file type. Please choose {types}',
   lastOccurred: 'Last Occurred',
   loading: 'Loading…',
   never: 'Never',
