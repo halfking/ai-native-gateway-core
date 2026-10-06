@@ -10567,3 +10567,103 @@ require.Contains(t, fn, "CREATE TABLE IF NOT EXISTS provider_quality_rollup")
 ⚠️ 其中 `ensureOrchestrationRuntimeInstancesSchema` 打在 **`request_logs`** 上，
 是余下里最可能值得先做的一个，但它没出现在 §10.97.2 的实测榜头部
 ⇒ **做之前先量它的实际调用量与耗时**，不要凭「它在热表上」就排进第一批。
+
+### §10.98.6 ★ 排序前提被证伪：剩 5 个里真正值得做的是另一个
+
+§10.98.5 给出的行动指引是「`ensureOrchestrationRuntimeInstancesSchema` 打在
+`request_logs` 上，是余下里最可能值得先做的一个」。**这条是错的。**
+
+#### 证据一：它根本不碰 `request_logs`
+
+`db/db.go` 该函数全文（`:3978`–`:4045`）的 DDL 只有：
+
+```
+CREATE TABLE IF NOT EXISTS orchestration_runtime_instances
+CREATE INDEX IF NOT EXISTS idx_orchestration_runtime_instances_tenant / _runtime / _status / _heartbeat
+CREATE OR REPLACE FUNCTION update_orchestration_runtime_instances_updated_at()
+```
+
+`grep request_logs` 在该函数区间内**零命中**。§10.98.2 那张「目标热表 = request_logs」
+的归属是审计工具的错误。
+
+#### 证据二：生产实测该表是死的
+
+| relname | total_size | live_rows | 自 09-23 起写入 | seq_scan | idx_scan |
+|---|---|---|---|---|---|
+| `orchestration_runtime_instances` | 56 kB | 0 | **0** | **0** | **0** |
+| `goal_sessions` | 40 kB | 0 | **0** | 106,935 | 0 |
+| `work_type_config` | 96 kB | 0 | **0** | 145,394 | 62,841 |
+
+**零读零写 ⇒ 没有任何并发事务可被它阻塞 ⇒ 影响恒为 0。**
+⇒ `ensureOrchestrationRuntimeInstancesSchema` 应当**移出**候选清单，不做。
+
+#### ★ 证据三：排序量具本身选错了 —— 该看读，不是看写
+
+第一版重排时我用的是 `n_tup_ins+n_tup_upd+n_tup_del`（写入量），得出
+「providers 只有 1.0 次写/天，几乎不热」。**这是错的量具。**
+
+`ALTER TABLE … ADD COLUMN IF NOT EXISTS` 取的是 **ACCESS EXCLUSIVE**，而它与
+**ACCESS SHARE** 冲突 —— 也就是**每一次普通 SELECT** 持有的锁。
+providers 的写几乎为零，但它的**读**是全库最狠的之一：
+
+| relname | size | **idx_scan/天** | **seq_scan/天** | 读合计/天 |
+|---|---|---|---|---|
+| `credentials` | 352 kB | 10,822,394 | 287,926 | **~11.11M** |
+| `providers` | 136 kB | 10,178,191 | 478,892 | **~10.66M** |
+| `session_summaries` | 917 MB | 198,453 | 218 | ~198.7k |
+| `work_type_config` | 96 kB | 4,537 | 10,498 | ~15.0k |
+| `work_type_model_route` | 128 kB | 205 | 8,489 | ~8.7k |
+| `users` | 112 kB | 28 | 396 | ~423 |
+| `orchestration_runtime_instances` | 56 kB | **0** | **0** | **0** |
+
+（`request_logs` 父表自身的统计恒为 0 bytes / 0 扫描 —— **分区父表陷阱**，
+必须按 `pg_inherits` 对分区求和才是 **301 MB / 11.44 亿次扫描**。）
+
+⇒ 修正后的优先级，与 §10.98.5 的建议**首尾两端都反了**：
+
+| 排名 | 函数 | 目标表 | 结论 |
+|---|---|---|---|
+| **1** | `ensureProviderSoftDelete` | `providers`（10.66M 读/天） | **本轮已修** |
+| 2 | `ensureGoalClientSignalSchema` | `session_summaries`（917 MB，58k 写/天，198k 读/天） | 值得做，且它还带一条 `CREATE INDEX IF NOT EXISTS` |
+| 3 | `EnsureUsersTable` | `users`(423 读/天) + `work_type_model_route`(8.7k) | 低；`users` 的 RLS 半边已有 `rlsPoliciesCurrent` 守卫 |
+| 4 | `ensureWorkTypeRouteSource` | `work_type_model_route`（8.7k 读/天，仅 61 行） | 低 |
+| — | `ensureOrchestrationRuntimeInstancesSchema` | `orchestration_runtime_instances`（0 读 0 写） | **不做** |
+
+### §10.98.7 本轮修：`ensureProviderSoftDelete` 的 providers 半边（真正的一号）
+
+`db/db.go:2810` 的 `ALTER TABLE providers ADD COLUMN IF NOT EXISTS deleted_at`
+与 `CREATE INDEX IF NOT EXISTS idx_providers_live` **完全无守卫**，
+每次启动都对读压 ~10.66M 次/天的 providers 取一次 ACCESS EXCLUSIVE。
+
+改动（未上线）：
+
+- 抽出 `const providerSoftDeleteDDL`，与 `quality_fixModeDDL`（§10.98.3）同形
+- 新增 `providerSoftDeleteCurrent(ctx)`：同时查
+  `information_schema.columns`（`deleted_at`）与 `pg_indexes`（`idx_providers_live`）
+  —— 两者都要，因为部分索引不可能先于它过滤的列存在
+- 探测出错 ⇒ `return false` ⇒ 走 DDL（**失败方向安全**）
+- **credentials 的 CHECK 约束批次留在守卫之外**：它自带 `pg_constraint` 定义守卫，
+  合并会让两个守卫无法独立推理
+
+**门**：`db/provider_soft_delete_guard_test.go`，5 个子测试。
+**变异 M98~M107 共 10 条全部按预期转红，且每条只红在预定的那个子测试上。**
+
+#### ★ 写门时被自己的门纠正了一次
+
+收紧「探测出错必须 `return false`」这条断言时，我把锚点写成 `"applying DDL"`。
+门立刻变红。归因后是**我写错了**，不是门坏了：
+
+```
+实际: slog.Warn("provider soft-delete probe failed; applying DDL", "error", err)
+      → `applying` 之前没有引号，只有 `applying DDL` 之后那一个
+我写: \"applying DDL\"  → 凭空多了一个前导引号，字符串永远匹配不上
+```
+
+十六进制对拍坐实（region 首字节 `61`='a' vs target 首字节 `22`='"'）。
+⇒ **一个"永远匹配不上"的锚点不会让门变弱，它会让门恒红** ——
+恒红的门和恒绿的门一样没用，只是方向相反。断言写完必须先跑一次基线确认绿，
+再谈变异；**基线红 ⇒ 先怀疑断言的前提，不要先怀疑被测代码**。
+
+（这正是本轮 `M104` 第一次跑时输出「变异没施上（字节没变）—— 量具问题」的同一个根因：
+脚本里的锚点抄的是同一个错字符串。）
+
