@@ -7328,3 +7328,87 @@ P0 修好后回看存储侧。**本节最重要的内容是两次「自己提出
   §10.65 的两个错误都出在同一处 —— 我验证了「463.down 能造成这个状态」，
   却没问「**还有没有别的路径能造成同一个状态**」。
   ⇒ 下结论前固定两问：**还有别的写法吗？证据能区分它们吗？**
+
+---
+
+## §10.68 两个假设被自己推翻，一个坏指标在报出前被抓住
+
+本节全是「我以为 → 实测 → 结论」，三条里有两条结论与我的预期相反。
+
+### §10.68.1 假设一：「`ursm_node_snapshot_min_ts_idx` 已死，可以删」——**错**
+
+依据：§10.62 已证「全表无读方」，而保留任务的 CTE 是
+`WHERE snapshot_ts < cutoff ORDER BY snapshot_ts, tenant_id, credential_id, raw_model_name`
+⇒ 我推断它走**全主键**，那个单列 `snapshot_ts` 索引应当无人使用。
+
+实测（只读 EXPLAIN）：
+
+    Limit
+      ->  Incremental Sort
+            Sort Key: snapshot_ts, tenant_id, credential_id, raw_model_name
+            Presorted Key: snapshot_ts
+            ->  Index Scan using ursm_node_snapshot_min_ts_idx
+                  Index Cond: ((snapshot_ts < now()-'7 days') AND (snapshot_ts >= '-infinity'))
+
+⇒ **它被保留任务实际使用**（作为 `ORDER BY` 的预排序来源）。
+`idx_scan = 98 / idx_tup_read = 337,161`（≈ 3,440 行/次）也与这个计划吻合。
+**不能删。**
+
+★ 「没有读方」与「索引可删」是**两个不同的结论**。前者成立时后者仍需单独验证
+—— 写路径与清理路径也可能用索引。本项目已记过同族条目
+（[[退役切换类的门按被影响 SQL 的 FROM 选]]：**总体要按实际读它的 SQL 来选**）。
+
+### §10.68.2 ★ 我自己新写了一个坏指标，并在报出前抓住
+
+同一次查询里我加了：
+
+    duplicate_rows = count(*) - count(DISTINCT (tenant_id, credential_id, raw_model_name))
+    duplicate_pct  = 98.4%
+
+**这个指标是误导性的**：一个小时内同一批 1,123 个节点各被快照 ~63 次
+（时序重复，**设计如此**），把它们全算成「重复」等于把
+**时序重复**与**跨机重复**混为一谈。
+
+正确的跨机重复度量是**按分钟比**，而不是按全表比：
+
+    16:22  total=2246  distinct=1123  cross_writer_ratio=2.000
+    16:21  total=2246  distinct=1123  cross_writer_ratio=2.000
+    16:20  total=2246  distinct=1123  cross_writer_ratio=2.000
+
+⇒ **每个节点每分钟恰好出现 2 次**（154 :26 + 245 :09）
+⇒ 跨机重复 = **50% 的行**，不是 98.4%。
+
+★ 与本 runbook 的「口径不统一」同族：**两个同名指标分母不同**。
+`distinct_nodes` 在「全表」口径下度量的是时间跨度，在「单分钟」口径下
+度量的才是写者数量。**指标的名字必须带上它的分组维度。**
+
+### §10.68.3 假设二：「开启去重会让 ON CONFLICT 探测扫 1,123 行」——**错**
+
+担心：`§10.63` 推荐的「`snapshot_ts` 对齐分钟」方案会把第二个写者的每一行
+都变成一次 `ON CONFLICT` 探测；而 §10.68.1 的计划形态显示探测可能走
+`ts_idx + Filter`，而**一个 `snapshot_ts` 上有 1,123 行** ⇒ 每次探测扫 1,123 行。
+
+实测（4 列等值 + EXPLAIN ANALYZE）：
+
+    Index Only Scan using ursm_node_snapshot_min_pkey
+      Index Cond: ((snapshot_ts = ...) AND (tenant_id = 'x')
+                   AND (credential_id = 1) AND (raw_model_name = 'y'))
+      Heap Fetches: 0     Buffers: shared hit=7     Execution Time: 0.276 ms
+
+⇒ **精确 4 列等值确实走主键**，7 buffer、0 次堆取。
+**pkey 恰好就是那 4 列**（`indisprimary = t`，
+`cols = snapshot_ts,tenant_id,credential_id,raw_model_name`），结构上完全服务该探测。
+⇒ **§10.63 的去重方案在探测成本上没有我担心的问题，推荐维持。**
+
+⚠ 但**不夸大**：我前后两次 EXPLAIN 的**计划形态并不相同**
+（前者是 `ts_idx + Filter`，后者是 pkey `Index Only Scan`），
+差异来自**我给的字面量 vs 子查询**，不是来自线上负载。
+⇒ 「去重探测很便宜」这个结论的强度是「pkey 能高效服务 4 列等值」，
+**不是**「任何形态下都走 pkey」。若将来真上这个方案，
+应在灰度期用 `pg_stat_statements` 复核实际计划，而不是沿用本次快照。
+
+### §10.68.4 本节**没有**做的事
+
+- ❌ 没有删任何索引（上文已证不能删）
+- ❌ 没有改 `URSM_V2_SHADOW_PERSIST`、没有部署二进制
+- ❌ 没有实现 §10.63 的去重方案（它需要用户先在方案 1 与方案 2 之间拍板）
