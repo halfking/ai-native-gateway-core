@@ -22,6 +22,7 @@
     "responsive:check": "node scripts/responsive-audit.mjs --strict",
     "device-fit": "node scripts/device-fit-audit.mjs",
     "gesture:host": "node scripts/gesture-host-audit.mjs",
+    "census:table": "node scripts/compact-table-census.mjs",
     "element:check": "node scripts/element-import-audit.mjs",
     "color:check": "node scripts/color-token-audit.mjs --strict --baseline scripts/color-audit-baseline.json",
     "color:baseline:update": "node scripts/color-token-audit.mjs --update-baseline --baseline scripts/color-audit-baseline.json",
