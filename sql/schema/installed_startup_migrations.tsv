@@ -247,3 +247,4 @@
 229	835_modality_verify_probe_ledger.sql
 230	836_supplier_errors_heap_reassert.sql
 231	837_routing_mv_refresh_state.sql
+232	838_analyze_skip_frozen_month.sql

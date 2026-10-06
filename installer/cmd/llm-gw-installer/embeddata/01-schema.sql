@@ -199,6 +199,7 @@ CREATE FUNCTION public.analyze_llm_gateway_table_stats(p_recent_months integer D
 		            JOIN pg_namespace n ON n.oid = c.relnamespace
 		            WHERE n.nspname = 'public' AND c.relkind = 'r'
 		              AND c.relname ~ ('^(credential_model_index|model_probe_runs|request_logs|routing_decision_log|request_wal|usage_ledger|credit_ledger|tool_usage_stats|candidate_failure_logs|handoff_logs|request_logs_bodies)_' || suffix || '$')
+		              AND (m = 0 OR NOT EXISTS (SELECT 1 FROM pg_statistic s WHERE s.starelid = c.oid))
 		        LOOP
 		            EXECUTE format('ANALYZE %I', r.relname); analyzed := analyzed + 1;
 		        END LOOP;

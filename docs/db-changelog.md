@@ -7386,3 +7386,18 @@ seed offer (0/0): ERROR: null value in column "provider_id" of relation
 
 ★ 门**自带**的诊断把这 9 条统称「形态不匹配（42P07）、不是产品缺陷」。按上面
   的错误签名，**这 9 条没有一条是 42P07**，该诊断不解释它们，因此不采信为结论。
+
+---
+
+## 2026-10-07 — 迁移 837 / 838 登记（§10.92 那一趟每小时 ANALYZE）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 834 | `834_supplier_errors_base_tables.sql` | `f77d31359b157a8869bf080aa7ed0ab1d6ac57764690e1ec23c153e7a3497f2a` | **sha 补登**（与上一行 `089e6194…` 为同一文件的另一份字节；保留旧行供已应用库按旧字节核对，sqlguard 惯例） |
+| 837 | `837_routing_mv_refresh_state.sql` | `5c185037fb89d925fa0a1341d93a3c582dde7bf32b2f70a93c508ce3652fb34f` | pending deploy（**补登**：迁移本体已随 4df816006 落地，台账漏登记，sqlguard 近邻窗口门红） |
+| 838 | `838_analyze_skip_frozen_month.sql` | `c9b93871f66a30f93c4934f4aa5551eac211da3733f1125f6efd128c04526219` | pending deploy（`analyze_llm_gateway_table_stats` 往月分区只在从未被分析过时补；252 实测省掉整趟 pass 的 25.7%） |
+| 838 (down) | `838_analyze_skip_frozen_month.down.sql` | `f06e42a4fbad60d98d9742ecef94b8c0b85bcaf438f380e6f9e51bb50d03a499` | — |
+
+837 的实质变更见 `4df816006`（摘掉两个 routing analytics 物化视图里的
+`NOW() AS refreshed_at`，改由单行状态表盖章，每轮 100% 重写降到真实差异量）。
+838 的推导、读数与证据边界见 runbook §10.92 / §10.92.8。
