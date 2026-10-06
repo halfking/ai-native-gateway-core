@@ -2756,15 +2756,27 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 // ensureQualityFixModeSchema mirrors db/migrations/017_quality_fix_mode.sql
 // for the providers table. Idempotent.  quality_fix_mode defaults to 'off'
 // so existing providers keep their current passthrough behavior.
+// qualityFixModeDDL —— 与下面那个批次分开声明，因为它里面唯一会取
+// ACCESS EXCLUSIVE 的就是这条 ALTER。2026-10-07 审计（§10.98）：列在位时它
+// 仍是纯 no-op，却要在 providers 上等锁——生产实测 522 次、均值 895 ms、
+// 最长单次 61,672 ms，累计堵锁 7.8 分钟（25.9 天窗口）。同 columnsAllPresent 注。
+const qualityFixModeDDL = `
+		ALTER TABLE providers
+		    ADD COLUMN IF NOT EXISTS quality_fix_mode TEXT NOT NULL DEFAULT 'off'
+		        CHECK (quality_fix_mode IN ('off', 'detect_only', 'fix'));`
+
 func (d *DB) ensureQualityFixModeSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
+	// 列在位则跳过那条 ALTER；provider_quality_rollup 的建表/建索引留在下方
+	// 未守卫批次里（两者一起跳过会让「有列但缺 rollup 表」的库永远补不上）。
+	if !d.columnsAllPresent(ctx, "providers", []string{"quality_fix_mode"}) {
+		if _, err := d.pool.Exec(ctx, qualityFixModeDDL); err != nil {
+			return err
+		}
+	}
 	_, err := d.pool.Exec(ctx, `
-		ALTER TABLE providers
-		    ADD COLUMN IF NOT EXISTS quality_fix_mode TEXT NOT NULL DEFAULT 'off'
-		        CHECK (quality_fix_mode IN ('off', 'detect_only', 'fix'));
-
 		CREATE TABLE IF NOT EXISTS provider_quality_rollup (
 		    provider_id       INT  NOT NULL,
 		    bucket_start      TIMESTAMPTZ NOT NULL,

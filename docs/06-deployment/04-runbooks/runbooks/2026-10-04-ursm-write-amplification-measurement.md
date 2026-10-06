@@ -10468,3 +10468,102 @@ indcollation / indisunique / relam` 全部相等。改对之后查到 **11 对**
 | 这些 no-op 的累计执行时间 | 1.41 小时 / 25.9 天（均值 149.7 ms） |
 | 代价最高的单条 | `request_logs … work_type`：**最长 109,456 ms** |
 | 本轮修掉的第二条 | `request_logs … credits_charged`：16.0 分钟 / 最长 104,322 ms |
+
+## §10.98 订正 §10.97.5，并按**现状**（而不是累计量）重算未守卫清单
+
+§10.97.5 列了一份「同型未守卫语句」，本节先订正它——**那份清单是按 25.9 天累计量
+排的，其中两条其实早就有守卫**。
+
+### §10.98.1 ★ 第三次踩同一条坑：累计量不是现状
+
+把 §10.97.5 点名的两条拿去看源码：
+
+| §10.97.5 的说法 | 源码事实 |
+|---|---|
+| `request_logs … gw_session_id …` 未守卫 | `ensureRequestLogSchema` **有**目录短路（`db.go:2511`，2026-09-23） |
+| `request_logs_hot … task_type …` 未守卫 | `ensureRoutingAnalyticsColumns` **有**短路（`db.go:3600`，用 `columnsAllPresent`） |
+
+再把探测原样跑一遍生产：**request_logs 缺列 0、request_logs_hot 缺列 0、缺索引 0**
+⇒ 短路今天一定会命中。
+
+最后在 154 的网关日志里找到决定性证据：
+
+```
+{"time":"2026-10-06T00:47:28…","msg":"request_logs schema ensured (catalog short-circuit: all columns and indexes present, zero DDL)"}
+{"time":"2026-10-06T00:56:19…","msg":"request_logs schema ensured (catalog short-circuit: all columns and indexes present, zero DDL)"}
+```
+
+⇒ **短路已上线且正在生效**；那 317 次 / 254 次是**修复前的历史累计**。
+★ 这是本 runbook 里「累计量只能发现历史上值得看的地方」的**第三次**翻车
+（前两次：§10.87 的 37.5 小时、§10.89 的 455 毫秒）。
+
+### §10.98.2 按现状重算：6 个函数确认无守卫（不是 10 个）
+
+改成**从代码审计**（`db/*.go` 里对热表发 `ADD COLUMN IF NOT EXISTS` 的 ensure 函数），
+而不是从累计语句量倒推：
+
+| | 个数 |
+|---|---|
+| 对热表发 ADD COLUMN 的 ensure 函数 | 20 |
+| 已有目录短路（含 `columnsAllPresent` helper） | **14** |
+| ★ 确认无守卫 | **6** |
+
+确认无守卫的 6 个：
+
+| 函数 | 目标热表 |
+|---|---|
+| `ensureQualityFixModeSchema` | `providers`（**本轮已修**） |
+| `ensureProviderSoftDelete` | `providers`、`credentials` |
+| `ensureOrchestrationRuntimeInstancesSchema` | **`request_logs`** |
+| `ensureWorkTypeRouteSource` | `work_type_model_route` |
+| `EnsureUsersTable` | `work_type_model_route` |
+| `ensureGoalClientSignalSchema` | `session_summaries` |
+
+⚠️ **审计工具自己也假阳性过一次**：第一版只认
+`information_schema.columns` / `pg_indexes` / `to_regclass`，**没认本仓现成的
+通用守卫 helper `columnsAllPresent`**（`db.go:189`），
+于是把 `ensureCredentialBalanceFloor`、`ensureCredentialPlanQuotaProbeBackoff`
+这类**已经加了守卫**的函数误判成「无守卫」。
+⇒ 写这类静态审计时，**先枚举本仓已有的守卫 helper**，否则清单会凭空多出一批假阳性。
+
+### §10.98.3 本轮修：`ensureQualityFixModeSchema`（providers）
+
+生产实测：**522 次 · 均值 895 ms · 最长单次 61,672 ms · 累计堵锁 7.8 分钟**。
+
+改动（未上线）：
+
+- 把 `ALTER TABLE providers ADD COLUMN IF NOT EXISTS quality_fix_mode …` 拆成
+  `const qualityFixModeDDL`
+- 守卫直接用仓库现有的 `d.columnsAllPresent(ctx, "providers", []string{"quality_fix_mode"})`
+  （表不存在 / 列缺失 / 探测出错 ⇒ 返回 false ⇒ 走 DDL，**失败方向安全**）
+- `provider_quality_rollup` 的建表/建索引**留在未守卫批次**——
+  一起跳过会让「有列但缺 rollup 表」的库永远补不上
+
+**门**：`db/quality_fix_mode_guard_test.go`，5 个子测试。
+**变异 M92~M97 共 6 条全部按预期转红。**
+
+### §10.98.4 ★ M97 抓到门自己的一个漏洞
+
+把 `provider_quality_rollup` 改名成 `provider_quality_rollup_disabled`，
+**门全绿**。原因：
+
+```go
+require.Contains(t, fn, "CREATE TABLE IF NOT EXISTS provider_quality_rollup")
+```
+
+`provider_quality_rollup_disabled` **包含** `provider_quality_rollup` ⇒ 断言照过。
+⇒ **标识符的 `Contains` 断言必须带边界**：改用
+`"… provider_quality_rollup ("`（带括号）与 `"ALTER TABLE providers\n"`（带换行），
+名字一改就必然不匹配。已修，两条相关变异随即正常转红。
+
+★ 推论：**任何 `Contains("<对象名>")` 的源码门，都要问「改名能不能绕过」**。
+表名、列名、索引名在后加后缀/前缀的变体下，`Contains` 一律挡不住。
+
+### §10.98.5 剩下 5 个，建议逐条做
+
+`ensureProviderSoftDelete` / `ensureOrchestrationRuntimeInstancesSchema` /
+`ensureWorkTypeRouteSource` / `EnsureUsersTable` / `ensureGoalClientSignalSchema`。
+
+⚠️ 其中 `ensureOrchestrationRuntimeInstancesSchema` 打在 **`request_logs`** 上，
+是余下里最可能值得先做的一个，但它没出现在 §10.97.2 的实测榜头部
+⇒ **做之前先量它的实际调用量与耗时**，不要凭「它在热表上」就排进第一批。
