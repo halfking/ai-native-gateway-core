@@ -326,6 +326,19 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/DataLifecycleView.vue'),
     meta: { titleKey: 'lifecycle.title', requiresAuth: true },
   },
+  // 压缩可观测（stats/sessions，2026-10-08）。**admin 档**（admin(...)）
+  // ⇒ tenant_admin 可用，导航不设 requiresRole。
+  // ★ 与 /data-flow 按「答什么」划界：那页答「记录怎么分布」，本页答
+  //   「压缩策略实际压了多少、被压成什么样」。
+  //   ⚠️ 两处的压缩率**单位相反**（本页 0-1 比例 / data-flow 0-100 百分数）
+  //     ⇒ 不可并列成同一组对比。
+  // ★ 同族没有写操作，本页两条都是纯 GET。
+  {
+    path: '/compression',
+    name: 'compression',
+    component: () => import('@/views/CompressionView.vue'),
+    meta: { titleKey: 'compressionView.title', requiresAuth: true },
+  },
   // 数据流与大字段（stats/metrics/jobs/blobs-top，2026-10-08）。**admin 档**（admin(...)）
   // ⇒ tenant_admin 可用，导航不设 requiresRole。
   // ★★★ 与上面的 /data-lifecycle 按「答什么」划界，不合并：

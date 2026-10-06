@@ -27,6 +27,7 @@ export const enUS = {
     logOps: 'Log ops',
     annotations: 'Annotation workbench',
     approvalQueue: 'Approval queue',
+    compression: 'Compression',
     dataFlow: 'Data flow',
     home: 'Overview',
     nodes: 'Nodes',
@@ -1335,6 +1336,101 @@ export const enUS = {
       noTenant: 'no tenant',
       modelUnknown: 'model unknown',
       bodyNone: 'no linked request/response body',
+    },
+  },
+  compressionView: {
+    title: 'Compression',
+    load: 'Load',
+    reload: 'Reload',
+    prev: 'Previous',
+    next: 'Next',
+    requestsUnit: 'requests',
+    errForbidden: 'Not allowed to view compression data',
+    // ★ the backend returns 400 on a malformed from/to (it does not silently ignore)
+    errBadTime: 'Bad time format; the backend expects RFC3339',
+    window: {
+      title: 'Time window',
+      byHours: 'Last N hours',
+      byRange: 'Custom range',
+      hours: 'Span',
+      hoursN: 'Last {n}h',
+      from: 'From',
+      to: 'To',
+      clampNote: 'The backend clamps the span to {min}..{max} hours.',
+      // ★★ once from/to are sent the span is ignored entirely (:89-109)
+      ignoreHoursNote: 'With a custom range the backend stops using the "last N hours" span - when both are sent, from/to wins.',
+    },
+    // ★★ a tenant admin sees success-only numbers ($3 OR rl.success)
+    successOnlyNote: 'As a tenant admin you are looking at SUCCESS-ONLY numbers: the backend relaxes that condition for non-tenant-admins only, so the two roles are not directly comparable.',
+    rateMeaningless: 'meaningless (total is 0)',
+    rateMeaninglessNote: 'When the total is 0 the backend leaves the rate at 0, which cannot be told apart from a real 0%.',
+    // ★ this rate is a 0..1 ratio, not a percentage field
+    ratioNote: 'The backend sends a 0..1 ratio; this page multiplies by 100 for display. It is NOT the same unit as the compression rate on the data flow page - the two must not be compared.',
+    strategy: {
+      none: 'no strategy recorded',
+    },
+    band: {
+      below: 'below baseline',
+      preliminary: 'preliminary band',
+      forced: 'forced band',
+    },
+    // ★ a missing key is not "0 rows"
+    bandMissing: 'this band did not appear',
+    granularity: {
+      hour: 'hourly',
+      '6h': 'every 6 hours',
+      day: 'daily',
+    },
+    stats: {
+      title: 'Compression stats',
+      totalRequests: 'Total requests',
+      compressedTotal: 'Counted as compressed',
+      // ★★★ group-level: one row with an outbound body puts the whole group in
+      groupLevel: 'group-level',
+      rate: 'Compression rate (ratio)',
+      strategies: 'Strategy distribution',
+      distDisagree: 'The per-strategy row counts do not add up to the total - strategy names may have collided, since blank and empty are both folded into "no strategy recorded".',
+      noStrategy: 'No classifiable request in this window.',
+      bands: 'Token bands',
+      tokens: 'Token estimates',
+      outboundTokens: 'Outbound tokens',
+      estimatedOrig: 'Estimated original tokens',
+      // ★★ a missing key must never be rendered as "nothing saved": a negative saving and a failed query both land here
+      saved: 'Estimated saved',
+      summaryMode: 'Summary-mode rows',
+      estimateNote: 'These are estimates: when the estimation query fails the backend only logs and continues, so "not given" can mean either "could not be computed" or "computed as zero".',
+      series: 'Series ({g})',
+      seriesRate: 'rate {rate}',
+      bucketDisagree: 'In one bucket the "counted as compressed" exceeds the total - the counters disagree.',
+    },
+    // ★ an empty series does NOT prove there was no traffic: a failed bucket query is also an empty array
+    seriesMayBeFailed: 'No series came back - this section may also have been skipped, because the backend treats that failure as non-fatal and the client cannot tell the two apart.',
+    seriesEmpty: 'No bucket to show for this window.',
+    notEstimated: 'not estimated',
+    savedNotGiven: 'no saving estimate given',
+    sessions: {
+      title: 'Compressed sessions',
+      total: 'Sessions',
+      page: 'Page',
+      pageSizeN: '{n} per page',
+      pageSize: 'Rows per page',
+      // ★ the backend silently falls back to 50 when out of range
+      pageSizeNote: 'The backend only accepts 1..200 and silently falls back to 50, so only accepted values are offered here.',
+      // ★★ count is a real COUNT(DISTINCT) total, so paging can rely on it
+      // ★ but rows with a blank session id are dropped while count still includes them
+      countGapNote: 'A gap between the session total and the rows on this page is expected: rows with a blank session id are dropped by the backend but still counted in the total.',
+      // ★★ count=0 is ambiguous: on a count-query failure the backend returns 200 with an empty list
+      emptyAmbiguous: 'Nothing to show - the total query may have been skipped, because the backend answers 200 with an empty list in that case, which is indistinguishable from a genuine empty result.',
+      emptyNone: 'Nothing to show.',
+      // ★★ MAX(compression_strategy) is the lexicographic maximum, not "this session\'s strategy"
+      strategyMax: 'strategy (lexicographic max): {v}',
+      reduction: 'messages reduced {n}',
+      reductionUnknown: 'message reduction: unknown',
+      // ★★ a negative delta is clamped to 0 server-side
+      reductionClamped: 'the outbound message count did not drop; the backend recorded 0',
+      msgOutbound: 'outbound messages {n}',
+      // ★★ MAX(request_id) is the lexicographic maximum, not "the most recent request"
+      sampleMax: 'sample request (lexicographic max): {v}',
     },
   },
   lifecycle: {

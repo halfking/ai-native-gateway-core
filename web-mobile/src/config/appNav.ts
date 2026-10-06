@@ -294,7 +294,16 @@ export const DRAWER_NAV: readonly NavItem[] = [
     icon: 'search',
     titleKey: 'nav.freeDiscovery',
   },
-  // 数据生命周期**记录级**（stats/metrics/jobs/blobs/top，2026-10-08）。
+  // 压缩可观测（stats/sessions，2026-10-08）。admin 档 ⇒ **不设** requiresRole。
+  // 与 /data-flow 配对：那页答「记录怎么分布」，本页答「压缩实际压了多少」。
+  // ⚠️ 本页压缩率是 **0-1 比例**，data-flow 的是 **0-100 百分数**，两者不可并列。
+  {
+    key: 'compression',
+    to: '/compression',
+    icon: 'cube',
+    titleKey: 'nav.compression',
+  },
+// 数据生命周期**记录级**（stats/metrics/jobs/blobs/top，2026-10-08）。
   // 与 /data-lifecycle 按「答什么」划界：那页答「表级存储与保留」（分区 + 体积榜），
   // 本页答「记录怎么分布 / 有没有在清理 / 大字段占多少」。粒度不同，不合并。
   // ★ 四条注册（handler.go:960/962/979/994）全部是 `admin(...)`
