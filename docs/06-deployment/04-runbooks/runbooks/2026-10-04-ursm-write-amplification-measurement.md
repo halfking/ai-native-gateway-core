@@ -8150,3 +8150,107 @@ if !strings.HasSuffix(p, ".sql") { return nil }   // 扫描全部 .sql 找 PARTI
 
 ★ 用户的目标明确是「将不同的数据与字段**时行拆分**」⇒ 指向 A；
 但 A 含生产 DDL，须明确授权。
+
+---
+
+## §10.75 全库视角：`routing_analytics_7d` 是第 3 大 WAL 生产者，且刷新在退化成整表重写
+
+前面 §10.71~§10.74 都围着 `ursm_node_snapshot_min`。目标写的是「对**整个数据**
+及更新、查询进行重构优化」，所以回到逐语句 WAL 榜重看一遍。
+
+### §10.75.1 量级对比
+
+| 语句 | WAL | 占比 | 次数 | 单次 WAL |
+|---|---|---|---|---|
+| `promote_request_logs_bodies_hot_to_partition()` | 82.8 GB | 11.7% | 5,170 | — |
+| `INSERT INTO request_logs_bodies_hot` | 77.3 GB | 10.9% | 1,687,766 | — |
+| **`REFRESH MATERIALIZED VIEW CONCURRENTLY routing_analytics_7d`** | **56.2 GB** | **7.9%** | 6,381 | **9.03 MB** |
+| `INSERT INTO daily_kline` | 50.8 GB | 7.2% | 29,208,728 | — |
+| `promote_session_bodies_hot_to_partition()` | 34.7 GB | 4.9% | 4,445 | — |
+| `INSERT INTO ursm_node_snapshot_min`（本次主线） | 31.0 GB | 4.4% | 46,801,709 | — |
+
+**`routing_analytics_7d` 的 WAL 是 `ursm_node_snapshot_min` 的 1.8 倍**，
+而它的产出只有 **9,608 kB / 4,383 行**。
+
+### §10.75.2 ★ 根因：`now() AS refreshed_at` 让 `CONCURRENTLY` 退化成整表重写
+
+MV 定义里有一列 **`now() AS refreshed_at`**（`db/db.go:3622`）。
+
+`REFRESH MATERIALIZED VIEW CONCURRENTLY` 的机制是**逐行比对新旧、只写差异行**。
+`now()` 每次刷新都变 ⇒ **每一行都被判定为「变了」** ⇒
+逐行比对的全套开销照付，然后仍然整表删 + 整表插。
+
+对账（`pg_stat_user_tables`，13 天窗口）：
+
+```
+routing_analytics_7d   seq_scan 9189   seq_tup_read 132,061,018
+                       n_tup_ins 47,265,423   n_tup_del 47,293,355
+```
+
+⇒ **平均每次刷新插 7,407 行、删 7,407 行**，为一个只有 **4,383 行**的视图。
+⇒ 也解释了 14.97 GB temp（2.35 MB/次）：`GroupAggregate` 下三个
+`percentile_cont ... WITHIN GROUP (ORDER BY ...)` 各需一次排序，
+外加 CONCURRENTLY 的差异比对。
+
+计划形态本身**没问题**（`EXPLAIN` 不带 ANALYZE 实测）：
+三张分区都走 `(tenant_id, ts)` **索引扫描**（`idx_request_logs_hot_tenant_ts` /
+`request_logs_2026_09_tenant_id_ts_idx2` / `request_logs_2026_10_tenant_id_ts_idx2`），
+`Merge Append` + `Incremental Sort`（按 tenant_id 预排序），
+**没有全表扫描**。⇒ 浪费不在取数，在**写回**。
+
+### §10.75.3 ⚠️ `refreshed_at` 不能直接删——它是承重的
+
+`admin/analytics_materialized.go:34-46` 的 `mvFreshWithin`：
+
+```go
+db.QueryRow(ctx, fmt.Sprintf(`SELECT MAX(refreshed_at) FROM %s`, view)).Scan(&refreshedAt)
+```
+
+配合 `mvFreshnessBudget`（`materialized_view_refresher.go:38` 记为 **15 分钟**），
+它是**新鲜度契约**：视图不够新，消费者就回退去查基表。
+⇒ 直接删列会让新鲜度判定永远失败，**所有读方退化成查基表** —— 比慢更糟。
+
+可行修法（**尚未实施，需你拍板**）：
+把 `refreshed_at` 从 MV 里**挪进一张独立的单行状态表**，
+每轮刷新写 **1 行**而不是 4,383 行；`mvFreshWithin` 改读那张表。
+⇒ MV 行只在对应小时桶的聚合值**真的变了**时才变，
+`CONCURRENTLY` 这才回到它本来的行为：只写差异行。
+预期把每轮 7,407 写降到**几十行量级**，即该视图 WAL 的 **~99%**。
+
+### §10.75.4 ★ 两处自我更正：别拿 25 天均值当现况
+
+**更正一：刷新频率没有失控。**
+`pg_stat_statements` 的 6,381 次 ÷ 25 天 = **255 次/天**，
+而 `materialized_view_refresher.go:60` 配的是 `RefreshInterval = 10 * time.Minute`（144 次/天），
+看上去「密了 1.74 倍」。但按实例数日志实测：
+
+| 实例 | 24h 刷新次数 |
+|---|---|
+| 154 | **46** |
+| 245 | **95** |
+| 合计 | **≈141/天** ≈ 配置的 144 |
+
+⇒ **leader election 是有效的**，合计正好一个周期。
+255/天 是**早期三实例相位放大**时期的均值 ——
+`materialized_view_refresher.go:204-213` 的注释自陈过这个问题，
+并已用 `nextAlignedWait` 对齐修掉。⇒ **「节奏失控」是我的误判。**
+
+**更正二：单次 19.3 秒也是历史均值。**
+`mean_exec_time = 19,333 ms`，但 `min = 72 ms`、**`max = 179,862 ms`** ⇒ 方差极大。
+日志里 `elapsed` 的**近期实测**：154 为 5.9 / 6.4 / 7.7 秒，245 为 4.5 / 5.2 / 5.5 秒。
+⇒ **当前单次约 5–8 秒，不是 19.3 秒。**
+
+### §10.75.5 降频这条路走不通（已被现有告警封死）
+
+看似显然的优化是「按小时分桶的视图没必要每 10 分钟刷」。
+但 `deploy/prometheus/rules/routing-analytics-mv-consistency.yml:127`：
+
+```
+expr: time() - gateway_mv_refresh_last_success_unix{view="routing_analytics_7d"} > 1200
+for: 5m
+```
+
+⇒ **超过 20 分钟没有成功刷新就告警**。
+降到 hourly 会**立刻打红**，且与 §10.75.3 的 15 分钟新鲜度契约直接冲突。
+
+⇒ **能动的只有「让每次刷新更便宜」，不能动「刷多勤」。**
