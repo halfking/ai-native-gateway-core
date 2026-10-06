@@ -250,6 +250,21 @@ export const DRAWER_NAV: readonly NavItem[] = [
     icon: 'grid',
     titleKey: 'nav.sessionContext',
   },
+  // 免费资源自动发现读面。六条只读**全是 h.admin(...)**（handler.go:1302-1313）
+  // ⇒ **故意不设** requiresRole；设成 super_admin 必须让判据红。
+  // ★★ 第七条 scan-scheduler/status 是 **h.superAdmin(...)**（handler.go:1316）
+  //   —— 它**不占**抽屉席（否则 admin 档页面被 superAdmin 门挡住），
+  //   由本页面内单独探测并单列 403 态。
+  // ★★★★★★ 同一个 handler、同一条路径**按方法分档**：GET=admin、
+  //   POST/PUT/PATCH/DELETE=superAdmin（RequireSuperAdminForWrite）。
+  //   ⇒ 又一条「不能按路径或前缀判权限」的证据。
+  // ★ 五个写端点（建模板/改模板/删模板/scan/import/import-orbi）本页一律不碰。
+  {
+    key: 'free-discovery',
+    to: '/free-discovery',
+    icon: 'search',
+    titleKey: 'nav.freeDiscovery',
+  },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))

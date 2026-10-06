@@ -6556,3 +6556,197 @@ COALESCE(detail, '{}'::jsonb)
 **下一批候选**：MaaS settings（PUT）/ model-rates 写、routing-opt proposals 决策、
 pending-responses DELETE、request-anomalies resolve、tenants 创建/更新
 （以上按既有口径都属于写操作，本仓继续不碰；需要另找只读面）。
+
+### 11.84 免费资源自动发现读面上移（第四十八轮，`admin/free-discovery`）
+
+本批把 `free-discovery` **整族 7 条只读 GET** 上移 —— 这是全仓路由差集扫描（472 注册 / 449 已覆盖 / 23 未覆盖）
+定位到的**唯一一整族未上移的只读面**。六个写端点（建模板 / PUT / PATCH / 删模板 / scan / import /
+import-orbi）一律不碰。
+
+- 新 API 模块 `web-mobile/src/api/freeDiscovery.ts`（七条**各自独立**解包，不抽通用解包器）
+- 新视图 `FreeDiscoveryView.vue`（五个面板：模板 / 预设 / 任务列表 / 任务详情与结果 / 调度器）
+- 新路由 `/free-discovery`
+- 新增**一条 admin 档抽屉席** `free-discovery`（**故意不设** `requiresRole`）
+- i18n 新命名空间 **`fd`**（101 个 `fd.*` + 1 个 `nav.freeDiscovery`）
+- 门禁：变异 **52/52 有牙**，用例 **160 条**（96 API + 64 视图）
+
+#### ★★★★★★ 头号缺陷一：任务列表的 `updated_at` **恒为 Go 零值**
+
+`domains/freediscovery/discovery_engine.go:460-464`（`ListTasks`）：
+
+```go
+SELECT id, tenant_id, template_id, provider_code, status, trigger_type,
+       COALESCE(triggered_by,''), started_at, completed_at,
+       COALESCE(error_message,''), models_found, models_imported, created_at   ← ★ 没有 updated_at
+FROM discovery_tasks ORDER BY created_at DESC LIMIT $1
+```
+
+而同一个结构体、同一个表的 `GetTask`（`:408-412`）**有**这一列：
+
+```go
+       COALESCE(error_message,''), models_found, models_imported, created_at, updated_at
+```
+
+⇒ ★★★★★★★★★★ **`GET /tasks` 里每个任务的 `updated_at` 恒为 `"0001-01-01T00:00:00Z"`**，
+而 **`GET /tasks/{id}` 给的是真值**。
+⇒ **同字段、同名、同结构体、两个端点、两个值、都 200。**
+
+`scanTemplate` 走的是**同一份列清单**（`template_manager.go:401-438`，`Get` 与 `List` 共用），
+所以**模板面没有这个病** —— 只有任务面有。这正是「不能从一个端点外推到另一个端点」的一例。
+
+处置：页面在列表里**不显示** `updated_at`，改为常驻一条免责说明 + 每行一个
+`data-fd="updated-at-unreadable"` 标记节点；详情端点才显示真值。
+判据同时钉住两侧（列表里出现零值时间 ⇒ 红；详情里被说成「读不出来」⇒ 红）。
+
+#### ★★★★★★ 头号缺陷二：「空列表」在本族有**两种表示**
+
+| 端点 | 代码 | 空的时候 |
+|---|---|---|
+| `templates` | `free_discovery.go:121-123` `if tpls == nil { … }` | `[]` |
+| `tasks` | `:383-385` `if tasks == nil { … }` | `[]` |
+| `results` | `:439-441` `if results == nil { … }` | `[]` |
+| **`presets`** | **`:218` `var out []presetView`** | **`null`** |
+
+⇒ ★★★ 同一个 handler 文件里四条列表端点，**三条做了 nil-guard、一条没做**。
+⇒ 客户端**不能统一按数组处理**：`presets` 为 `null` 是合法响应，必须**原样保留那个 null**
+（降级成 `[]` 就丢掉了「后端没兜底」这条信息）。页面分别渲染 `data-fd="presets-null"` 与
+`data-fd="presets-empty"` 两个**不同节点、不同文案**。
+
+#### ★★★★★★ 头号缺陷三：**按方法分档**（又一条「不能按路径判权限」）
+
+`admin/handler.go:1302-1309`：
+
+```go
+mux.HandleFunc("GET  /api/free-discovery/templates",      h.admin(h.handleFreeDiscoveryTemplates))
+mux.HandleFunc("POST /api/free-discovery/templates",      h.admin(h.handleFreeDiscoveryTemplates))
+mux.HandleFunc("GET  /api/free-discovery/templates/{id}", h.admin(h.handleFreeDiscoveryTemplateByID))
+mux.HandleFunc("PUT  /api/free-discovery/templates/{id}", h.admin(h.handleFreeDiscoveryTemplateByID))
+…
+```
+
+★ 同一个 handler、同一条路径，GET 注册为 `h.admin`，写方法也注册为 `h.admin` ——
+但 handler 内每个写分支开头都有 `RequireSuperAdminForWrite(w, r)`（`free_discovery.go:127 / 170 / 186`）
+⇒ **GET 是 admin 档，POST/PUT/PATCH/DELETE 是 superAdmin 档。**
+⇒ 抽屉席（读面 admin）**不设** `requiresRole`；但同路径的写操作 tenant_admin 拿到 **403**
+`tenant_admin has read-only access; write operations require super_admin`。
+
+#### ★★★★★★★ 头号缺陷四：super_admin 看到的**不是全部租户**
+
+`free_discovery.go:100-103` → `admin/context.go:60-65`：
+
+```go
+func EffectiveTenantID(r *http.Request) string {
+    if IsTenantAdmin(r) { return GetTenantID(r) }
+    return "default"
+}
+```
+
+⇒ ★★★★★★★ **super_admin / legacy admin_key ⇒ `"default"`，只有这一个租户。**
+本仓存在 `EffectiveTenantIDAll`（`admin/context.go:69-74`，返回 `""` = 查全部），
+但**这条线没有用它** ⇒ 又一条「按角色判可见范围会判反」的陷阱。
+
+#### ★★★★★★ 头号缺陷五：两种「scheduler 不存在」是**两种表示**
+
+- `h.scanSchedulerStatus == nil` ⇒ **503** `scan-scheduler is not available`（`free_discovery.go:84-87`）
+- 接口里装着 typed-nil `*ScanScheduler` ⇒ `Status()` 走 `bg/scan_scheduler.go:509-511`
+  返回 `ScanSchedulerStatus{Enabled: false}` ⇒ **200** + `interval:""` + 全 0 计数 + **无 `last_error`**
+
+⇒ ★★ `interval === ""` 是 typed-nil 分支的**唯一指纹**（真 scheduler 至少有 `"0s"`）。
+⇒ ★★★ 而且它是全族**唯一不查 `fdDeps`** 的端点 ⇒ **六条都在 503 的同时它可以 200**。
+
+#### ★★★★ 方法检查与依赖检查的顺序不一致
+
+`presets` 是**唯一 405 在 503 之前**的（`:202-208`），其余五条都是先 `fdDeps(w)` 再判 method。
+
+#### ★★★★ `limit` 是**回落 50 而不是 clamp 到 200**（本仓第 11 种限幅语义）
+
+`discovery_engine.go:445-449`：
+
+```go
+// ListTasks lists the tenant's tasks (newest first; limit capped at 200).   ← ★ 注释说 capped
+func (e *DiscoveryEngine) ListTasks(ctx context.Context, tenantID string, limit int) ([]*DiscoveryTask, error) {
+    if limit <= 0 || limit > 200 { limit = 50 }                             ← ★ 实现是回落 50
+```
+
+- `200` **合法**（就是 200）；**`201` ⇒ 50**（不是 200）
+- `limit, _ := strconv.Atoi(...)`（`free_discovery.go:375`）**丢弃 error** ⇒ `?limit=abc` ⇒ 0 ⇒ 50
+
+⇒ **注释与实现不符**。页面在用户填的值被静默改写时显式提示，并复刻生效值。
+
+#### ★★★★ `?status=` 未知取值**不被拒**
+
+`:429-432` 空 ⇒ 默认 `"pending"`；`discovery_engine.go:519` `status != "" && status != "all"` ⇒ 加 `AND import_status=$2`
+⇒ `?status=bogus` ⇒ **200 + 空数组**，与「没有 pending 结果」**分不开**。
+
+#### ★★★ 其余六条已查实的契约
+
+1. **`enabled` 只认字面 `"true"`**（`:115` `== "true"`）⇒ `"1"`/`"TRUE"`/`"yes"` ⇒ **过滤关闭，返回全部**
+2. **`DiscoveryTask.template_id` 是 `*int64` 且没有 `omitempty`**（`types.go:152`）⇒ 键**恒存在**，
+   模板被删后（`ON DELETE SET NULL`）是 **JSON `null`** ⇒ 按 `typeof === 'number'` 校验会**拒掉合法形状**
+3. **`DiscoveryResult.tenant_id` 不来自 DB**：`ListResults` 的 SELECT（`:512-517`）**没有这一列**，
+   Go 侧 `r.TenantID = tenantID`（`:544`）用**请求者的租户**回填
+4. **四个 0 全是二义**（`COALESCE(…,0)`）：`context_window` / `max_tokens` / `monthly_tokens` / `daily_tokens`
+   ⇒ **对照**：`free_type` 的 `''` **不是**二义 —— `CHECK (free_type IN (…7 值…))`（084 迁移 `:107-110`）
+   **不允许 `''`** ⇒ `''` **唯一**对应 SQL NULL ⇒ 反而是确定的「推断不出」
+5. **`ProviderTemplate.APIKeyEncrypted` 是 `json:"-"`**（`types.go:93`）⇒ 密文**从不下发**；
+   而 `HasCredential()`（`:111-113`）还看 `len(APIKeyEncrypted) > 0`
+   ⇒ ★★★ **客户端算不出这个谓词**：`api_key_env === ''` 同时意味着「无认证」和「有密文但没 env 引用」
+6. **两条 404 的 detail 形状不同**：模板 = sentinel 原文（**不带 id**，`template_manager.go:148`）；
+   任务 = `fmt.Errorf("%w (id %d)")`（`discovery_engine.go:424`）⇒ **带 `(id 42)`**
+7. `presetView`（`:209-217`）**丢了 `tos_url`** ⇒ `ProviderPreset` 有 `TosURL`，但**客户端永远拿不到预设的条款链接**
+8. **两个 `omitempty` 键**：`last_scan_failure_at` / `auto_disabled_at` ⇒ **条件存在，缺失 ≠ null**
+9. **同族两个 500 文案**：`templates` GET 直接 `writeInternalErr`（`:118`）⇒ `internal error (see server logs)`；
+   另外五条走 `writeFDErr` ⇒ `free discovery request failed`
+
+#### ★★★★ 变异验证：首轮 44/52，分诊出 **6 条真等价变异 + 1 条 expect 指错 + 1 条判据缺口**
+
+**★ 真等价变异（6 条，全部是产品里的死代码）**
+
+V14–V19 都是「抛错时不清空」。第一版只删 `catch` 分支那一行 ⇒ **仍全绿**。
+实测确认：六个 loader 的 `ref.value = null` 都写在 **`try` 之前**，
+所以 `catch` 分支里那行是**死代码** ⇒ 行为不变 ⇒ **等价变异，不是判据无牙**。
+⇒ 改成「**两处都删**」后 6 条全部有牙（失败后旧数据真的留在屏幕上）。
+
+★ 这是第四十七轮 §82.10 那条结论的**独立复现**（不同文件、不同视图）。
+⇒ 「变异后仍绿先证明该变异可观测」这条纪律，第二次拦下了一个会被误判成「判据无牙」的结论。
+
+**★ 判据缺口（1 条，已补）**
+
+A9 把「任务详情解包」换成「先套列表信封再取第一项」⇒ **仍全绿**。
+因为抛错时机一样、只是**错误文案里的端点名**从 `tasks/{id}` 变成了 `tasks`。
+⇒ 补一条钉住端点名的断言后转红。
+⇒ ★ 这类「把 A 端点实现换成 B 端点实现」的变异，只有**断言错误文案的来源**才抓得到。
+
+**★ expect 串指错（1 条，已改）**
+
+A31 让 `scanSchedulerMissingMessage` 也认 `free-discovery is not available (...)`
+⇒ 确实转红了，但命中的是「六条 deps 端点的 503 文案」那条（它断言 scheduler 判据对 deps 文案为 false），
+而我写的 expect 指向了另一条只断言反方向的用例。
+⇒ ★★ **转红但未命中预期用例名 ≠ 缺陷**，要读具名红再判归属，不能直接当「判据缺口」处理。
+
+**注入自身**
+
+- Vue 模板里一律用 `data-mut="MUT-<id>"` 带标记（属性位不允许 JS 注释，见第四十七轮 §11.83）
+- `--dry` 模式先验 52 条注入全部匹配上（`注入匹配 52/52`）**才**跑用例 —— 纪律要求「当场验证匹配数」
+
+#### ★★ 视图用例的三个断言纪律（本轮新踩）
+
+1. **★ 含 `{占位符}` 的 i18n 值不能整串匹配渲染文本** ——
+   渲染后占位符已被替换成实参，字面量对不上。首轮 **10 条失败里 8 条**栽在这。
+   ⇒ 修法：取第一个 `{` 之前的**字面量部分**做前缀断言（`head()` helper），仍然不手打文案。
+2. **★ 自造免责文案会把否定断言喂饱** —— 只读说明那句话里就列了「触发扫描 / 批量导入 / 删模板」，
+   于是「页面不该出现写操作词」的全页 `not.toContain` **恒被自己的文案判红**；
+   同理免责文案里写了「（0001-01-01）」，于是「零值时间不该出现」的**全面板**否定断言也恒红。
+   ⇒ 修法：分别落到**按钮文本集合**与 **`.fd__cell-v` 数据格作用域**上。
+3. **★ 面板标题/说明会喂饱面板级 `not.toContain`**（第四十七轮已记，本轮在「零值时间」那条再次确认）
+
+#### 仍未上移
+
+`POST /api/free-discovery/templates`（建模板）、`PUT|PATCH|DELETE /templates/{id}`（改/删模板）、
+`POST /api/free-discovery/scan`（触发扫描）、`POST /api/free-discovery/import`（批量导入）、
+`POST /api/free-discovery/templates/import-orbi`（导入 Orbi 模板，1 MiB 上限）。
+以上按既有口径都属于**写操作**，本仓继续不碰。
+
+**差集里剩下的「候选」已几乎全是写操作。** 真正还没上移的只读面，
+全仓扫描下来只剩 `GET /api/credentials/{id}/models/{model}/state` 一条（档位待查）。
+⇒ **下一批候选**：那一条单端点，或按需扩到 credentials 族的其余只读面。

@@ -509,6 +509,25 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/SessionContextView.vue'),
     meta: { titleKey: 'sctx.title', requiresAuth: true },
   },
+  // 免费资源自动发现读面（**admin 档**，2026-10-07：handler.go:1302-1313 六条只读）。
+  // ⚠️★ 抽屉席是 **admin 档**（不设 requiresRole），但同族第七条
+  //   `scan-scheduler/status` 是 **h.superAdmin(...)**（handler.go:1316）
+  //   ⇒ 由页面内单独探测、单列 403 态，不占抽屉席。
+  // ★★★★★★★★★★ `ListTasks` 的 SELECT **漏了 `updated_at`**（discovery_engine.go:460-464）
+  //   ⇒ `GET /tasks` 里每个任务的 `updated_at` 恒为 `"0001-01-01T00:00:00Z"`，
+  //   而 `GET /tasks/{id}` 给真值 ⇒ 同字段两端点两个值都 200。
+  // ★★★★★★★★ `templates` 有 nil-guard（永不为 null）、`presets` **没有**
+  //   （`var out []presetView`）⇒ 「空」在本族有两种表示。
+  // ★★★★★★★ `fdTenant` = `EffectiveTenantID` ⇒ **super_admin 看到的也只是
+  //   `default` 一个租户**，不是全部租户。
+  // ★ `limit` 超上界是**回落 50 而不是 clamp 到 200**（注释写的是 capped at 200）。
+  // ★ 五个写端点（templates POST / {id} PUT|PATCH|DELETE / scan / import / import-orbi）本页不碰。
+  {
+    path: '/free-discovery',
+    name: 'free-discovery',
+    component: () => import('@/views/FreeDiscoveryView.vue'),
+    meta: { titleKey: 'fd.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
