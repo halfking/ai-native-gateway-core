@@ -113,6 +113,9 @@ describe('navItemsFor', () => {
     //   避免依赖 DRAWER_NAV 的书写顺序（顺序不是契约）。
     //   加新 superAdmin 档页面时这条会红 —— 那正是它该做的。
     expect(dropped.map((d) => d.key).sort()).toEqual([
+      // ★ 2026-10-07 第四十九轮：凭据×模型实时状态（credential_state_handlers.go:175
+      //   `wrap := h.superAdmin`）—— 这一条**要** super_admin，与前几批 admin 档页面相反。
+      'credential-model-state',
       'flow',
       'funnel',
       'integrity',

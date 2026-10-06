@@ -528,6 +528,21 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/FreeDiscoveryView.vue'),
     meta: { titleKey: 'fd.title', requiresAuth: true },
   },
+  // 凭据 × 模型实时状态（**superAdmin 档**，2026-10-07：
+  // credential_state_handlers.go:175 `wrap := h.superAdmin`）。
+  // ⚠️★ 与前几批相反：这一条**要**设 requiresRole，抽屉席也**要**设 super_admin。
+  // ★★★★★★★★★★ `state` **可以是 `null`** —— 三层缓存（内存→Redis→DB）全 miss，
+  //   manager.go:763 返回 `(nil, nil)`，handler 只判 `err != nil`
+  //   ⇒ **200 + state:null**，**不是** 404。
+  // ★★★★★★ 五条指标在**两条 DB 分支里根本没被赋值** ⇒ 恒 0；
+  //   缓存命中时才有真值 ⇒ 同一个 (凭据,模型) 两次查询可能给不同数字，都是 200。
+  // ★★★★ 错误响应是 **text/plain**（`http.Error`）且**带尾换行**，不是 JSON 信封。
+  {
+    path: '/credential-model-state',
+    name: 'credential-model-state',
+    component: () => import('@/views/CredentialStateView.vue'),
+    meta: { titleKey: 'cs.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
