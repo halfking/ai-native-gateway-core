@@ -112,6 +112,15 @@ export const DRAWER_NAV: readonly NavItem[] = [
   { key: 'routing-opt', to: '/routing-opt', icon: 'cpu', titleKey: 'nav.routingOpt' },
   // 待处理响应：有没有卡住的请求。admin 档（admin(...)）⇒ 不设 requiresRole。
   { key: 'pending-responses', to: '/pending-responses', icon: 'play', titleKey: 'nav.pending' },
+  // 请求侧异常：上游在拒绝我们的什么请求。**superAdmin 档**（h.superAdmin）
+  // ⇒ tenant_admin 403，必须设 requiresRole 并同步 AppDrawer.spec.ts 白名单。
+  {
+    key: 'request-anomalies',
+    to: '/request-anomalies',
+    icon: 'alert',
+    titleKey: 'nav.anomalies',
+    requiresRole: 'super_admin',
+  },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))

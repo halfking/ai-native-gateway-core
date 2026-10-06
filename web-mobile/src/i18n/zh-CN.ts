@@ -39,6 +39,7 @@ export const zhCN = {
     lifecycle: '数据生命周期',
     routingOpt: '路由优化器',
     pending: '待处理响应',
+    anomalies: '请求侧异常',
     nodeHealth: '健康时间线',
     account: '我的',
   },
@@ -981,6 +982,54 @@ export const zhCN = {
     bytes: '已缓冲字节',
     createdLine: '创建于 {t}',
     completedLine: '完成于 {t}',
+  },
+  anomalies: {
+    title: '请求侧异常',
+    counts: '未解决计数',
+    unresolved: '未解决',
+    newToday: '今日新增',
+    // ★★ counts 只含未解决，列表默认返回全部 ⇒ 两者天然对不上
+    countsUnresolvedOnly: '这两个数字只统计「未解决」的记录；下面的列表默认返回全部（含已解决），所以数字和列表条数本来就不会相等。',
+    // ★★ 「今天」是网关进程的本地日期
+    dayIsServerLocal: '「今天」按网关所在时区算，不是你手机的时区；跨时区时这里的一天可能和你以为的不是同一天。',
+    filter: '筛选',
+    // ★★★★ 同一面板四个字段的大小写敏感度不一致
+    caseSensitivityNote: '供应商和模型不区分大小写，但日期和异常类型区分 —— 类型请按下面按钮给的小写字面值选，手填大写会查不到。',
+    triggerLabel: '异常类型',
+    // ↓ 动态键 trigger_*（取值来自 ANOMALY_TRIGGERS 常量）
+    trigger_param_rejected: '参数被拒',
+    trigger_mode_mismatch: '请求形态不符',
+    trigger_upstream_error: '上游其它 4xx',
+    day: '日期',
+    dayHint: 'YYYY-MM-DD（网关本地日期）',
+    provider: '供应商代码',
+    exactHint: '不区分大小写',
+    // ★★ model 命中 client_model **或** outbound_model
+    modelHint: '客户端或出站模型，命中任一即可',
+    model: '模型',
+    unresolvedOnly: '只看未解决',
+    limitLabel: '每页条数',
+    limitN: '前 {n}',
+    query: '查询',
+    list: '异常清单',
+    // ★★★ 指纹含 day ⇒ 同一问题每天一行
+    oneRowPerDayNote: '同一个问题「每天」会各记一行（去重指纹里含日期），所以下面的「出现次数」是今天这一行的次数，不是这个问题的累计次数。',
+    noAnomalies: '没有查到请求侧异常',
+    providerCode: '供应商',
+    clientModel: '请求的模型',
+    outboundModel: '实际发出去的模型',
+    // ★★ 网关做过模型重写时两者不同
+    modelRewrittenNote: '这一行的请求模型和实际发出去的模型不一样（网关做了模型重写），所以按请求模型筛也会命中它。',
+    rejectedParams: '被拒参数',
+    suggestMode: '建议改用请求形态：{mode}',
+    // ★ occurrences 只是今天，recovered_count 是「改参数后重试成功」的次数
+    occLine: '今日出现 {n} 次 · 改参数后重试成功 {rec} 次',
+    seenLine: '最近一次 {t}（首现日期 {f}）',
+    errorKind: '错误分类 {k}',
+    resolved: '已处理',
+    prev: '上一页',
+    next: '下一页',
+    pageInfo: '第 {from}-{to} 条，共 {total} 条',
   },
   sysmon: {
     title: '系统监控',

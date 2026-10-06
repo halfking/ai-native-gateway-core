@@ -119,6 +119,7 @@ describe('navItemsFor', () => {
       'matrix',
       'overrides',
       'proposals',
+      'request-anomalies',
       'routing-audit',
       'task-index',
     ])
