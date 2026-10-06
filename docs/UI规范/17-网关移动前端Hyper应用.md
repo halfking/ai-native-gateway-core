@@ -7950,3 +7950,81 @@ build / 三门 / vue-tsc 全 rc=0；`dashboard.test.ts` 35 条；
 全量 3073 条（121 文件）；十连跑 10/10。
 
 文档 §11.94 纯追加。
+
+## 11.95 看板的两条裸 JSON 端点（第五十九批，API 层）
+
+`operational`（handler.go:1068）+ `board/error-drill`（:1069），同为 `admin(...)` 档。
+
+⚠️ 这两条**不在** `admin/dashboardapi` 包里，走 `writeJSON` ⇒ **无信封**。
+与第五十八批那七条（`{success,data,metadata}` 信封 + `metadata.degraded` 降级三联）
+**不是同一种形状** ⇒ **同一个 `/api/admin/dashboard/*` 前缀下有两种响应契约，
+不能跨端点类推。** 解包器里专门加了一道反向检测：拿到
+`{success,timestamp}` 信封形状就报错，避免把 `success`/`timestamp` 当业务数据。
+
+### ★★★★★ 后端缺陷：「从未运行过」被算成 `degraded`
+
+`queryBoardBackgroundTasks`（`dashboard_board_aux.go:29-37`）只对**非**
+`pgx.ErrNoRows` 记 slog，但第 66 行算 degraded 用的是**原始 err**：
+
+```go
+out["degraded"] = discErr != nil || checksErr != nil
+if discErr != nil { out["degraded_reason"] = "discovery status unavailable" }
+```
+
+而那条查询是 `... ORDER BY started_at DESC LIMIT 1`
+⇒ **一行都没跑过时返回 ErrNoRows ⇒ degraded=true**。
+且 `strPtrVal(nil)` = `null`（不是空串），所以真错误与「没记录」在 `status` 上
+**完全一样** ⇒ 客户端分不开。
+
+**后果**：一套**从未跑过 discovery** 的新网关会一直挂着一个红的降级提示，
+直到第一次真正跑起来 —— 而它什么故障都没有。
+
+★ 那句注释（aux.go:65「恒发：前端要区分『真的 0 次』与『没查出来』」）说明
+**意图是对的**，只是把第三种情况（没有记录）也塞进了 degraded。
+`selfcheck` 那条查询是聚合、恒返一行，不会有 ErrNoRows ⇒ 该缺陷只在
+`background_tasks.discovery` 上。
+
+⇒ 客户端只能把它说成「**状态未知 / 从未运行过**」，**不能直接说「降级」**。
+
+### ★ `source` 是条件键，真正的取数来源**根本没下发**
+
+- 命中看板缓存 → 多写一个 `"source": "redis"`（dashboard_board.go:187）
+- 未命中 → 那个 map 里**只有 `error_kind`/`dimension`/`items`**（:198-202）
+
+而 `queryErrorDrill`（aux.go:115-136）在分钟视图失败/为空时会**回落到 hot-log 兜底**；
+能说清来源的 `boardSource()`（`request_stats_minute` vs
+`request_logs_with_current_month`）**只在 `/dashboard/board` 用**（:121），
+本端点根本调不到它。
+
+⇒ **「兜底来的」与「权威视图来的」在响应里无法区分。**
+同理「零行」既可能是真没有，也可能是兜底查完仍然空。
+
+### ★ `days` 在本仓已是第四种口径
+
+`boardDays`（dashboard_board.go:204-213）是 **clamp 到 [1,90]，默认 1**。
+
+| 端点 | `days` 口径 |
+|---|---|
+| dashboardapi 七条 | 越界/非整数 ⇒ **静默回落 7** |
+| auto-route `tuning/accuracy` | 越界 ⇒ **400 报错** |
+| `board/error-drill` | **clamp 到 [1,90]**，默认 1 |
+| auto-route `audit` `limit>500` | clamp（另一个参数名） |
+
+### 变异 24 条 → 24 有牙，零可疑
+
+首轮 22/24，两条**都是 expect 串指错**（变异确实转红，只是命中我没想到的用例）：
+
+- **B3**（去掉 `b.degraded` 守卫）实际打红的是「degraded=false 时即便 status=null
+  也不算」—— 那正是「去掉守卫后多认的那一类」。
+- **C5**（drill 信封检测恒真）打红 10 条，其中包含被判为「按预期通过」的那条
+  （因为它本来就期待抛错）。
+
+★ 这两处的教训是同一条：**「打红了几条」不等于「我指的那条红了」**，
+分诊时必须看**实际具名列表**里有没有自己的 expect 串。
+
+### 门禁
+
+build / 三门 / vue-tsc 全 rc=0；`dashboardBoard.test.ts` 27 条；
+全量 3100 条（122 文件）；十连跑 10/10。
+
+文档 §11.95 纯追加。
