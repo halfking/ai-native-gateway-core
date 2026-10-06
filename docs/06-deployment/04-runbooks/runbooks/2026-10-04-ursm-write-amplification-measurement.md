@@ -9737,3 +9737,94 @@ analyze 此前**没有任何互斥**，而两台网关共享同一个 PG，
 ★ 本节同时把 §10.89 的定性从「疑似仍在付的成本」改成
 **「当前已不慢；历史上有过，根因未定位」**——
 §10.89.4 那句「根因尚未定位」依然成立，但它现在是一个**历史问题**而非现症。
+
+---
+
+## §10.91 那个每小时两次的 ANALYZE 到底在做什么：一半冗余，一半不可替代
+
+§10.90 把当前 #1 定在 `analyze_llm_gateway_table_stats`。本节问：
+**它做的事，是不是本来就没必要做？**
+
+### §10.91.1 hot 表那一半：autovacuum 早已覆盖，且频繁得多
+
+| 表 | `autoanalyze_count` | 距上次 `last_autoanalyze` |
+|---|---|---|
+| `credential_model_index_hot` | **12,014** | 约 2 分钟 |
+| `request_wal_hot` | 2,185 | 约 8 分钟 |
+| `request_logs_hot` | 2,738 | 约 4 分钟 |
+| `usage_ledger_hot` | 1,524 | 约 2 分钟 |
+| `session_turns_hot` | 1,769 | 约 1 分钟 |
+| `session_censors_hot` | 536 | 约 1 分钟 |
+
+而同一批表的 `last_analyze`（手工）**全部停在同一个时刻**（00:00:36），
+也就是每小时那一趟。
+
+⇒ **对 hot 表而言，这趟手工 ANALYZE 是纯冗余**：
+autovacuum 在它之后的几分钟到几分钟内已经重做过多次，
+它一小时内提供的统计新鲜度，autovacuum 在**分钟级**就更新了。
+
+### §10.91.2 分区那一半：autovacuum 基本没覆盖，不可替代
+
+| 父表 | 分区数 | 被 autovacuum 分析过 | 分区总大小 |
+|---|---|---|---|
+| routing_decision_log | 3 | **0** | **150 MB** |
+| request_logs_bodies | 3 | **0** | 67 MB |
+| credential_model_index | 3 | **0** | 27 MB |
+| handoff_logs / model_probe_runs / tool_usage_stats / credit_ledger | 15 | **0** | 微量 |
+| usage_ledger | 4 | 2 | **773 MB** |
+| request_logs | 5 | 2 | 288 MB |
+| request_wal | 4 | 2 | 212 MB |
+| candidate_failure_logs | 3 | 2 | 176 MB |
+
+**11 张父表里有 7 张的分区从未被 autovacuum 分析过。**
+原因在 §10.85 的 reloptions 里：`autovacuum_analyze_scale_factor=0.02` +
+`autovacuum_analyze_threshold=50`。对一个 773 MB、十万行量级的月分区，
+门槛是 `50 + 0.02 × N`——**而月分区除了月初写入基本不再变**，
+永远跨不过门槛。
+
+⇒ **分区这一半是真有职责的，不能删。**
+
+### §10.91.3 那这些「没有统计信息」的分区要紧吗？——不要紧
+
+查「`last_analyze` 与 `last_autoanalyze` 均为空」的**表**分区，结果是：
+
+```
+auto_route_selections_2026_09   6 行    12 MB
+request_logs_2026_11            0 行   384 kB
+request_logs_default            0 行   352 kB
+session_turns_2026_11           0 行   160 kB
+sessions_2026_08                0 行    72 kB
+session_bodies_2026_08          0 行    64 kB
+```
+
+⇒ **全是空分区或个位数的分区。** 没有行就没有计划问题。
+**没有发现「该有统计却没有」的隐患。**
+
+⚠️ 这里我自己写错过一次：第一版查询忘了限定 `relkind`，
+`pg_inherits` 里**索引分区**也是子项，结果返回的全是
+`..._key` / `..._idx` 这样的**索引名**——**看着像「15 个大分区没有统计」的重大发现**。
+是输出里的名字（清一色索引）暴露了它。⇒ **聚合类查询先确认 `relkind`，否则会拿索引冒充表。**
+
+### §10.91.4 结论与建议（按「稳」排序）
+
+| 措施 | 收益 | 风险 | 状态 |
+|---|---|---|---|
+| **部署 advisory 互斥锁**（`partition_manager.go:1801`，已在代码） | **减半**：56 → 28 分钟/天 | 极低：抢不到就跳过，另一台照做 | **只差上线** |
+| 砍掉手工 pass 的 hot 表那一半 | 未知，可能很小（hot 表只有几千行，**分区才是大头**） | 中：需先量两半的耗时占比 | **暂不建议** |
+| 降低分区的 `autovacuum_analyze_scale_factor` | 可能让 autovacuum 接手分区 | 中：分区多时反而放大 autovacuum 负担 | 待评估 |
+
+★ 关键判断：**hot 表那半虽然"冗余"，但很可能不是耗时的大头**
+（hot 表几千行 vs `usage_ledger` 分区 773 MB）。
+⇒ **在没有量出两半耗时占比之前，不提「砍掉一半」的改法**——
+那正是本 runbook 反复记下的「结构上看着冗余 ≠ 值得动」。
+
+### §10.91.5 本节读数汇总（全部只读）
+
+| 对象 | 读数 |
+|---|---|
+| `analyze_llm_gateway_table_stats` 当前占比 | 81.0%（15 分钟窗口实测） |
+| 调用频率 | 每小时 2 次（两实例），单次 28~130 秒 |
+| 每天成本 | 约 **56 分钟** |
+| hot 表 autovacuum 覆盖 | 每 1~8 分钟一次，最高 12,014 次 |
+| 分区 autovacuum 覆盖 | 11 张父表中 **7 张为 0** |
+| 无统计的分区 | 全为空/极小，无隐患 |
