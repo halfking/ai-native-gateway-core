@@ -118,6 +118,10 @@ export const DRAWER_NAV: readonly NavItem[] = [
   { key: 'compliance-hits', to: '/compliance-hits', icon: 'alert', titleKey: 'nav.compliance' },
   // 输出合规策略与词库。admin 档 ⇒ 不设 requiresRole。
   { key: 'compliance-policy', to: '/compliance-policy', icon: 'key', titleKey: 'nav.compliancePolicy' },
+  // 提示词注入现象面。admin 档（AdminMiddleware）⇒ 不设 requiresRole。
+  { key: 'injection', to: '/injection', icon: 'alert', titleKey: 'nav.injection' },
+  // 提示词注入配置面。admin 档 ⇒ 不设 requiresRole。
+  { key: 'injection-config', to: '/injection-config', icon: 'key', titleKey: 'nav.injectionConfig' },
   {
     key: 'request-anomalies',
     to: '/request-anomalies',

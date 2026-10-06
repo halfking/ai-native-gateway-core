@@ -3782,3 +3782,171 @@ superAdmin 兄弟端点 `hot/cron/stats` 也不碰。
      ⇒ 换成 `not recorded` / `switched off`。
   2. `@ts-expect-error` 放在**调用行**上方是无效的（错误落在**实参那一行**）
      ⇒ 报 TS2578「未使用的指令」。改用 `as never`。
+
+### 11.68 提示词注入上移：检测现象面 + 规则配置面（第三十二轮，admin 档）
+
+新增 `src/api/promptInjection.ts`（**8 个只读端点**）+ 两个视图
+（`/injection` 现象面、`/injection-config` 配置面）
++ 两个抽屉席「提示词注入」「注入规则」。
+
+| 端点 | 移动端 | 档位 |
+|---|---|---|
+| `GET /api/admin/prompt-injection/stats` | `/injection` | `admin` |
+| `GET /api/admin/prompt-injection/detections` | `/injection` | `admin` |
+| `GET /api/admin/prompt-injection/attack-vectors` | `/injection` | `admin` |
+| `GET /api/admin/prompt-injection/rules` | `/injection-config` | `admin` |
+| `GET /api/admin/prompt-injection/engines` | `/injection-config` | `admin` |
+| `GET /api/admin/prompt-injection/severity-matrix` | `/injection-config` | `admin` |
+| `GET /api/admin/prompt-injection/canary-tokens` | `/injection-config` | `admin` |
+
+★ 鉴权：`admin/prompt_injection_handler.go:33-72` **8 条路由全部挂 `AdminMiddleware`**
+⇒ **admin 档**，两个抽屉席都不设 `requiresRole`，`AppDrawer.spec.ts` 白名单不变。
+
+累计（**当场实测**）：**42 视图 / 39 API 模块 / 38 导航席（底栏 4 + 抽屉 34，其中 9 席 superAdmin）**。
+★★ 「导航席」= `BOTTOM_NAV`(4) + `DRAWER_NAV`(34)，不是抽屉单独计数；
+`client.spec.ts` 与并发会话新增的 `nativeTransport.ts` 均**不计入** API 模块数
+（39 = 41 个 `src/api/*.ts` 减去 `client.spec.ts` 再减去 `nativeTransport.ts`）。
+
+#### 坑位编号**以 `promptInjection.ts` 模块头为准**
+
+★★★ 本节编号**不另起炉灶**：`promptInjection.ts` 顶部注释里有 **(1)..(14) 的完整清单**，
+而代码里散落着 **20+ 处 `见坑 N`** 引用它（行内注释 + 两个视图）。
+⇒ **那份清单是 SSOT**，本文只做**补充说明**并沿用同一编号；
+文档自造编号会让所有 `见坑 N` 指空（本轮第一版就是这么写错的，当场返工）。
+
+1. ★★★★ `rules` / `engines` / `canary-tokens` **完全没有分页参数**——
+   SQL 里没有 `LIMIT`/`OFFSET`，响应是 `{rules:[…], count: len(rules)}`。
+   ⇒ `count` 是**本次返回的条数**，不是「总共有多少」。
+   ⇒ 页面上**不提供**翻页控件，也不把 `count` 说成总数。
+2. ★★★★ `detections` 用 `page` + `page_size`，**不是** `limit`/`offset`：
+   `page<1 → 1`；`pageSize<1 || >100 → 20`。
+   ★★ `page_size` 越界是**回落默认 20**，**不是** clamp 到 100
+   —— 与 output-compliance / pending / request-anomalies 的 clamp 语义**相反**。
+   ⇒ ★ **同一个仓里四个同族分页实现，越界行为一半 clamp 一半回落，不可互相引用。**
+   响应 `{detections, page, page_size, total}`，`total` 是 `COUNT(*)` 的真总数。
+3. ★★★★ `attack-vectors` 的 `page`/`page_size` 规则与 detections 相同，
+   但响应 `{vectors, page, page_size}` —— **没有 `total`**。
+   ⇒ 同一个页面里两种分页控件行为不同，只能按「这页排满」近似。
+4. ★★★★ `listRules`（:322-325）与 `handleDetections`（:551-554）都是
+   `if enabled != "" { … enabled == "true" }`
+   ⇒ `?enabled=1` / `?enabled=yes` / 带空格的值都判为 **false**，
+     筛出**恰好相反**的结果，而且**不报错**。
+   ⇒ 客户端**只发字面量 `true` / `false`**（变异 P3 打的就是这条）。
+5. ★★★★ `handleStats`（:637-670）读**预聚合表** `prompt_injection_stats_enhanced`，
+   且 `if err == pgx.ErrNoRows { stats = &DetectionStats{} }` ⇒ **返回 200 与全 0**。
+   ⇒ 「表里没有本租户的行」与「统计值全是 0」在响应里**长得一模一样**。
+   ★ 与 output-compliance 的「合成默认策略」是**同一形态**的问题。
+   ★ 而且它是**后台刷新**的 ⇒ 与 detections 的实时读法**存在延迟**，两个面板天然对不上。
+   ⇒ 形状校验只能认 `total_detections` 是 `number`，**不能**把「全是 0」当没数据抛错（P4）。
+6. ★★★ `rules` 的 `category` 过滤是**两列 OR**
+   （`AND (category = $n OR category_new::text = $n)`），
+   而 `detections` 的 `category` 是 `$n = ANY(categories)` 的**数组包含**
+   ⇒ ★★ **同名不同义**：同一个参数名打到两族端点上语义完全不同，
+     所以规则列表必须**同时显示新旧两套分类**。
+7. ★★★ `rules` 的 `search` 是 `ILIKE '%q%'` ⇒ **子串 + 不分大小写**
+   （匹配 `rule_name` 或 `description`），客户端**不**自己加 `%`；
+   `rules.type` 则是**精确匹配且大小写敏感**（与 `search` 又是一种口径）。
+   `detections` **没有** search。
+8. ★★★ `severity-matrix` 的 `notify_channels` 由 `jsoncol.Decode` 解析而
+   **返回值被丢弃**（:985）⇒ 非法 JSON 时**静默变空数组**。
+   ⇒ 「没有通知渠道」有两种可能，**接口分不出来**，页面照实说，不替后端编原因。
+9. ★★ `severity-matrix` 的排序是
+   `CASE severity_level WHEN 'low' THEN 1 … WHEN 'critical' THEN 4`
+   ⇒ **只认这四个字面值**；其它值排序键为 NULL，会被排到**最后**。
+10. ★★ `detections` 的 `total` 是用
+    `strings.Replace(query, "<SELECT 段原文>", "SELECT COUNT(*)", 1)` **拼**出来的
+    —— 极脆（依赖 SELECT 子句逐字匹配），改 SQL 就会错。
+    ★ 对客户端不可见，只作为记录；**不**据此怀疑 `total` 是错的。
+11. ★ `avg_score` / `avg_llm_confidence` 是 `COALESCE(…,0)`
+    ⇒ 无数据是 **0 而不是 null**，页脚必须说明，否则「平均分 0」会被读成「平均分极低」。
+12. ★ 指针字段**键一定存在、值可能为 `null`**（不是「键缺失」）：
+    `detections.llm_confidence`、`engines.model_canonical_id`/`credential_id`/`last_called_at`、
+    `attack-vectors.detected_at`、`canary-tokens.expires_at`/`last_leaked_at`。
+    ★★ 例外：`engines.model_name` 来自 `LEFT JOIN models_canonical`
+    ⇒ `model_canonical_id` 为 null 时是**空串**（不是 null），显示成「未关联模型」。
+13. ★ 错误信封是 `{"error":"…"}`（**字符串**，与 output-compliance 同族），
+    或 `writeInternalErrStr` 的 `{"error": op}` ⇒ 两种都由 `client.ts` 的
+    `errorMessage` 统一兜住（本仓第 **5** 个错误信封族）。
+14. ★★★★★ `detections.risk_level` 在库里是 **`integer`（CHECK 1..10）**
+    （`deploy/sql/schemas/baseline/01-schema.sql:11379`），
+    而 Go 结构体声明成 `string` ⇒ 响应里是 **`"7"` 这种数字字符串，不是等级名**。
+    ★★ 而 `severity_action_matrix.severity_level`（同文件 `:16673-16688`）
+    **才是** `VARCHAR` + CHECK 四个值（`low`/`medium`/`high`/`critical`）
+    ⇒ **同一个概念在两张表里一个是数字、一个是单词**。
+    页面上若不分开讲，看的人会把「风险 8」拿去和矩阵里的 `high` 比，
+    比完对不上还以为数据坏了。
+    ★ 这正是「推断差一格就会错」：字段名叫 `risk_level`、同模块另一张表就是档位名
+    ⇒ **不查 schema 几乎必然写成 `low/medium/high`**。
+    客户端因此有 `parseInjectionRiskLevel`：非字符串 / 非整数 / 越界一律返 `null`，
+    页面显示「无法识别」，**绝不**硬套一个档位（变异 P1/P7 各打一次）。
+    ★ 同表里 `detection_score` 也是整数，是**另一把刻度**（检测分 vs 风险级别）。
+
+#### 视图层另外查到的四条（**不在**上表 1..14 内，故不占编号）
+
+- ★★★ `rules.is_system` 是 `COALESCE(is_system, true)`
+  ⇒ 库里为空按「**是**」算。缺值**不是**「未知」，页面要说清。
+- ★★★ `action_override` **空串 = 沿用处置矩阵**，不是「无动作」
+  ⇒ 空串渲染成「无动作」等于谎报处置策略（变异 P9）。
+- ★★ 蜜罐 token 的值是**诱饵凭据**（故意放进内容里看会不会被回显/外传），
+  **不是**用户凭据。页面必须警告「不要拿去当密钥用」。
+- ★★ `rules`/`engines`/`canary-tokens` 的 500 **绝不能**渲染成「没有配置」
+  —— 安全规则的缺失等于**检测被静默关闭**，与「清单为空」语义完全相反
+#### schema 照抄（不靠推断）
+
+- `public.injection_category` **15 个值**（`01-schema.sql:66-81`）
+- `public.injection_action` **11 个值**（`:40-52`）
+- `severity_level` CHECK **4 个值**（`:16673-16688`）
+⇒ 三个常量数组 + 三条判据（数量与顺序都对）。
+
+
+
+#### 本轮**没有**发生「推断订正」，但有两个**差一格就会错**的点
+
+本批 14 条坑全部是**先追到 schema / handler 再落笔**，没有出现「先断言、后订正」。
+但有两处按直觉写就会错，且都属于**同一个类别——量纲与形状**：
+
+- ★ `risk_level`（上表第 14 条）：直觉会写成 `low/medium/high` 档位名。
+- ★★★ 「说明文案里必然含某个词」**不能**写成文本负向断言。
+  本会话已踩 **3 次**：pending 的「已完成/已失败」、injection 的「没有统计记录」、
+  compliance 的 `**`。第三次在 `InjectionView.spec.ts:211` 又撞上，
+  判据最终写成「全 0 的 stats 照样渲染、不出现空态节点」—— **结构断言**，
+  而**不是** `expect(wrapper.text()).not.toContain('没有统计记录')`
+  （后者会把一段**正确的说明文案**判红）。
+  ⇒ 定死一条规矩：**这类判据落在控件/结构上**（无 select / radio / checkbox、
+    面板内无空态节点、请求确实发出），**不落在文案字面上**。
+
+#### ★ 门禁数字必须**当场实测**，不能靠上一批的增量推算
+
+本批第一版写的「API 模块 40 个」是**错的**：直接按上一批的 38 + 1 加出来，
+而工作区里同时有**并发会话**新增的 `web-mobile/src/api/nativeTransport.ts`
+（`git status` 里的 `??`），被裸扫一起数了进去。
+当场重数才是 **39**（41 个 `src/api/*.ts` 减 `client.spec.ts` 再减 `nativeTransport.ts`）。
+同理「抽屉席 38」实为 **底栏 4 + `DRAWER_NAV` 34**。
+⇒ ★★ 同一工作区有并发会话时，**任何「累计 X 个」都必须重数**，不能在上批数字上加。
+
+#### 本轮门禁（第五批接入后当场实测）
+
+- **变异验证 9/9 有牙**：P1 risk 解析改成「有值就当数字」/
+  P2 `page_size` 越界改成 clamp 100 / P3 布尔筛选不再只发字面量 /
+  P4 stats 形状校验改成「有对象就接受」/ P5 「这页排满」改成「有条就 true」/
+  P6 detections 500 退化成空态 / P7 risk 解析失败硬套成 0 /
+  P8 rules 500 退化成空态 / P9 `action_override` 空串渲染成「无动作」。
+  全部红在**具名断言**上；还原后逐字节一致、复跑全绿。
+- ★★ 变异脚本**又一次**暴露读数问题：**P9 在合并跑时正则报「抓不到具名用例」**，
+  单独跑 `InjectionConfigView.spec.ts` 复核 ⇒ `rc=1`、红在
+  `★★★ action_override 空串 ⇒ 说「沿用处置矩阵」，不是「无动作」`。
+  ⇒ 与 §11.67 的 C8 **同根因、本会话第 2 次**：**合并跑**时抓到了**别的文件的汇总行**。
+    **合并跑的失败输出不可信**；判「红在哪」必须能报出**具名用例名**，
+    只有 `rc≠0` 而抓不到名字 ⇒ 降级为「可疑」，单独跑该文件复核。
+- 本批三个 spec：**98 用例全绿**（API 37 + 现象面 31 + 配置面 30，`RC=0`）。
+- 全量 **10 连跑全绿，1467 用例，0 份失败快照**（连跑器落盘，`STAB_RC=0`）。
+  ★ 1467 里含并发会话同期新增的用例，**不是**「我加了 128 个」。
+- `npm run build` **rc=0**（`BUILD_RC` 直接从被测命令取，未经管道）。
+- 三门全过：css-media **63 文件** / touch-target **60 个 `.vue`** /
+  i18n parity **各 1283 键**（源码字面量键 **1026** 个，扫了 **130** 个 `.vue/.ts`）；
+  `vue-tsc -b` 无 TS6133。
+- `vue-tsc` 本轮修三处：`unwrapInjectionDetections` 的未用 import
+  **接进一条断言**而不是删（顺带把它单测了）；`InjectionConfigView` 删未用的
+  `computed` / `fmtInt`；`InjectionView` 的 `riskOf(d) as number` cast。
+- `dynamicKeys.spec.ts` 动态前缀增至 **12 处**
+  （新增 `injection.cat_`，取值取自 `INJECTION_CATEGORIES`），阈值 7→12。

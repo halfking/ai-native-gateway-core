@@ -305,6 +305,23 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/CompliancePolicyView.vue'),
     meta: { titleKey: 'compliancePolicy.title', requiresAuth: true },
   },
+  // 提示词注入「现象面」（stats/detections/attack-vectors，2026-10-07）。**admin 档**
+  // （AdminMiddleware）⇒ 不设 requiresRole。
+  // ★ risk_level 是库里的 integer(1..10)，不是等级名。
+  {
+    path: '/injection',
+    name: 'injection',
+    component: () => import('@/views/InjectionView.vue'),
+    meta: { titleKey: 'injection.title', requiresAuth: true },
+  },
+  // 提示词注入「配置面」（rules/engines/severity-matrix/canary-tokens，2026-10-07）。
+  // ★ rules/engines/canary-tokens **没有分页**（后端 SQL 无 LIMIT）。
+  {
+    path: '/injection-config',
+    name: 'injection-config',
+    component: () => import('@/views/InjectionConfigView.vue'),
+    meta: { titleKey: 'injectionConfig.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
