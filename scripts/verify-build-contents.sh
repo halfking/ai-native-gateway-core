@@ -40,7 +40,8 @@ CHECKS="canonical_id_null billing_mismatch probe_missing family_unknown circuit_
         pricing_plan_stale
         baseline_price_missing supplier_price_drift supplier_price_currency_mismatch
         modality_gate_readiness_floor supplier_price_missing_from_cost
-        recorded_cost_is_negative stats_ground_truth_gap"
+        recorded_cost_is_negative stats_ground_truth_gap
+        offer_price_looks_like_placeholder canonical_row_discovered_but_never_referenced"
 
 echo "── 健康检查 check_id ──"
 n_checks=0

@@ -20,9 +20,12 @@
 set -euo pipefail
 
 CONTAINER=pg-252-pg17
+# 可注入：让本脚本的行为门能用一个假 `docker` 跑到真实判定分支，
+# 而不是只能对源码做子串断言（那量的是「写过这句话」，不是「行为变了」）。
+DOCKER_BIN=${DOCKER_BIN:-docker}
 PG_USER=llm_gateway
 PG_DB=llm_gateway
-LOG=/var/log/pg17-proactive-cleanup.log
+LOG=${LOG:-/var/log/pg17-proactive-cleanup.log}
 NOTIFY=/opt/scripts/notify.sh
 
 # 配置（可被环境变量或 /etc/llmgw/pg17.conf 覆盖）
@@ -32,7 +35,7 @@ CONF=${LLMGW_PG17_CONF:-/etc/llmgw/pg17.conf}
 DISK_THRESHOLD_PCT=${PROACTIVE_DISK_THRESHOLD_PCT:-85}  # 磁盘 >= 85% 时跳过
 MIN_TABLE_SIZE_MB=${PROACTIVE_MIN_TABLE_SIZE_MB:-100}   # 只清理 >= 100MB 的表
 COOLDOWN_HOURS=${PROACTIVE_COOLDOWN_HOURS:-24}          # 24 小时内只执行一次
-COOLDOWN_FILE=/var/tmp/pg17-proactive-cleanup.cooldown
+COOLDOWN_FILE=${COOLDOWN_FILE:-/var/tmp/pg17-proactive-cleanup.cooldown}
 
 DRY_RUN=false
 FORCE=false
@@ -50,7 +53,7 @@ mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
 echo "[$(date -Iseconds)] ========== proactive empty table cleanup start ==========" >> "$LOG"
 echo "[$(date -Iseconds)] DRY_RUN=$DRY_RUN FORCE=$FORCE" >> "$LOG"
 
-docker_exec() { docker exec "$CONTAINER" "$@" 2>/dev/null; }
+docker_exec() { "$DOCKER_BIN" exec "$CONTAINER" "$@" 2>/dev/null; }
 
 # === 预检查 1: cooldown ===
 if [ "$FORCE" = "false" ] && [ -f "$COOLDOWN_FILE" ]; then
@@ -87,15 +90,39 @@ db_before_gb=$(docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc \
 echo "[$(date -Iseconds)] pre-cleanup: disk=${disk_before_gb}GB used, db=${db_before_gb}GB" >> "$LOG"
 
 # === 查找空表（n_live_tup=0 AND n_dead_tup=0 AND size >= 100MB）===
+#
+# ★ 2026-10-06 修订（审计 §10.74）：**必须排除分区**，理由两条，各自独立成立。
+#
+# ① DEFAULT 分区是父表写入路径的组成部分。丢掉它，父表就再也接不住
+#    「落在所有显式边界之外」的行 —— 后续 INSERT 直接报错。
+#    实测（154 直连生产）：现存 **13 个空的 DEFAULT 分区**，其中
+#    `usage_facts_default` 已达 **79.6 MB**，距本脚本 100 MB 阈值只差 20.4 MB。
+#    它膨胀的来源正是 §10.73.2 那类「清空后索引不回收」。
+#    ★ 而该父表 `usage_facts` **不在**下方 DEFAULT_PARTS_SQL 的 10 表白名单里，
+#    所以它不会被第 2 段（DETACH+DROP）处理，而是被**本段**捞出来裸 DROP。
+#
+# ② 任何分区都不该由本脚本 DROP。分区的生命周期归 `bg/partition_manager.go`
+#    与 `domains/ursm/v2/persist/retention_partition.go`（DROP 型留存）所有；
+#    旁路 DROP 会让那两处的分区账本失同步。本脚本的职责是「清空**表**」。
+#
+# 两道独立的闸：`NOT c.relispartition`（主，治结构）与 `NOT LIKE '%_default'`
+# （兜，治 DEFAULT 被错误编目）。不是冗余，是各自覆盖不同的失效方式。
 EMPTY_TABLES_SQL="
 SELECT 
   format('%I.%I', s.schemaname, s.relname) AS tname,
   pg_total_relation_size(s.relid)/1024/1024 AS size_mb,
   s.n_live_tup,
-  s.n_dead_tup
+  s.n_dead_tup,
+  -- ★ 把「是不是分区」带出到 shell：让下面的循环能做**行为层**的独立判断。
+  --   SQL 过滤与循环判断是两道不同的闸，各自覆盖不同失效方式；
+  --   只做 SQL 过滤的话，将来有人改了那条 WHERE，本脚本就会重新开始裸 DROP 分区。
+  c.relispartition::int AS is_partition
 FROM pg_stat_user_tables s
+JOIN pg_class c ON c.oid = s.relid
 WHERE s.schemaname NOT IN ('columnar_internal', 'pg_catalog', 'information_schema')
   AND s.relname NOT LIKE '%_hot'
+  AND NOT c.relispartition
+  AND s.relname NOT LIKE '%_default'
   AND s.n_live_tup = 0
   AND s.n_dead_tup = 0
   AND pg_total_relation_size(s.relid) >= ${MIN_TABLE_SIZE_MB}*1024*1024
@@ -133,12 +160,25 @@ DEFAULT_PARTS=$(docker_exec psql -U "$PG_USER" -d "$PG_DB" -tA -F'|' -c "$DEFAUL
 
 dropped_count=0
 skipped_nonempty_count=0
+skipped_partition_count=0
 skipped_nonempty_list=""
 
 # === 处理空表 ===
-while IFS='|' read -r tname size_mb n_live n_dead; do
+while IFS='|' read -r tname size_mb n_live n_dead is_part; do
   [ -z "$tname" ] && continue
-  
+
+  # === 结构闸：分区一律不由本脚本 DROP（第二道闸，见 EMPTY_TABLES_SQL 上方注释）===
+  # DEFAULT 分区额外用名字兜一道：万一 relispartition 被误编目，
+  # 掉 DEFAULT 分区会让父表写不进越界行，代价远高于多留一张空表。
+  case "$tname" in
+    *_default) is_part=1 ;;
+  esac
+  if [ "$is_part" = "1" ]; then
+    echo "[$(date -Iseconds)] SKIP ${tname}: 是分区，分区生命周期归 partition_manager / DROP 型留存所有，本脚本只清空表" >> "$LOG"
+    skipped_partition_count=$((skipped_partition_count + 1))
+    continue
+  fi
+
   # 额外验证：执行 COUNT(*) 确认真的为 0 行
   actual_count=$(docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc "SELECT COUNT(*) FROM ${tname}" 2>/dev/null || echo "-1")
   
@@ -200,7 +240,7 @@ db_saved_gb=$(awk -v before="$db_before_gb" -v after="$db_after_gb" 'BEGIN {prin
 
 echo "[$(date -Iseconds)] post-cleanup: disk=${disk_after_gb}GB used, db=${db_after_gb}GB" >> "$LOG"
 echo "[$(date -Iseconds)] saved: disk=${disk_saved_gb}GB, db=${db_saved_gb}GB" >> "$LOG"
-echo "[$(date -Iseconds)] dropped=${dropped_count} tables, skipped=${skipped_nonempty_count} non-empty" >> "$LOG"
+echo "[$(date -Iseconds)] dropped=${dropped_count} tables, skipped=${skipped_nonempty_count} non-empty, skipped=${skipped_partition_count} partitions" >> "$LOG"
 echo "[$(date -Iseconds)] ========== done ==========" >> "$LOG"
 
 # === 更新 cooldown ===

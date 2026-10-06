@@ -970,6 +970,22 @@ func (s *pgStore) MarkHealth(ctx context.Context, tenantID string, k Kind, refID
 	return nil
 }
 
+// 2026-10-06（runbook §10.34）：LIMIT 与 OFFSET 现在是**页大小 + 游标**，
+// 与 listAssetsSQL 的语义对齐（§10.27 做过同一件事）。
+//
+// ★ 为什么这个 1000 以前是 bug：它不是页大小，是**总量上限**，
+//
+//	而调用方（bg.AssetHealthProbe.probeOneTenant）完全不知道有上限这回事。
+//	超出的部分既不报错也不留痕 ⇒ 资产永远停在 Healthy，不会被降级。
+//
+// ★ 而且截断的方向很恶劣：`ORDER BY last_seen_at ASC` 让额度被
+//
+//	**最老、早已被标记过**的行吃光。新近停止上报的资产在 stale 集里是
+//	**最新**的，于是它们排在 1000 名之外 ⇒ **截断优先隐藏新问题**。
+//	实测（2026-10-06 现查）：default 租户 2021 个资产里 759 个 stale，
+//	已用掉额度的 75.9%，余量仅 241 行；且这 759 个在 1h~7h 各阈值下
+//	计数**完全相同**（都是长期废弃的），所以余量不会自己释放 ——
+//	只有「新资产也被废弃」才会吃掉它，而那正是最需要被看见的时刻。
 const listStaleSQL = `
 SELECT kind, ref_id, tenant_id, name,
        COALESCE(owner, ''), COALESCE(team, ''), COALESCE(cost_center, ''),
@@ -979,9 +995,47 @@ FROM public.assets
 WHERE tenant_id = $1
   AND COALESCE(last_seen_at, registered_at) < now() - make_interval(secs => $2)
 ORDER BY COALESCE(last_seen_at, registered_at) ASC
-LIMIT 1000
+LIMIT $3 OFFSET $4
 `
 
+// listStalePageSize 是**页大小**，不是总量上限（见上）。
+// 单租户 stale 集合的上界是它的资产总数，不会无界增长。
+const listStalePageSize = 1000
+
+// listStaleMaxPages 是翻页的**保险丝**，正常情况下永远碰不到：
+// 1000 页 × 1000 行 = 100 万行，远超任何单租户的资产总数。
+//
+// ★ 它存在是因为 M23 变异暴露的形态：游标一旦不推进（传 0、排序键写错、
+//
+//	将来有人把 offset 写成常量），`got == listStalePageSize` 就永远成立
+//	⇒ 循环**永不退出** ⇒ 这个探针每 60 秒跑一次，每次都在死循环里狂查库。
+//	静默的无限循环比截断更糟：截断只是少看几条，无限循环是把库打满。
+//
+// ★ 触顶时**返回错误**而不是返回已取到的那部分 ——
+//
+//	宁可让探针这一轮失败并留下日志，也不要把「只看了 100 万行」读成
+//	「全看过了」。这与本页的主题一致：宁可报错，不要静默少数据。
+//
+// ★ 声明为 var 而非 const，只有一个原因：这条防御分支需要被**真实测到**。
+//
+//	把阈值调小就能在测试里稳定触发它；写成 const 就只能靠源码文本断言，
+//	而文本断言证明不了「触顶时真的返回了错误，而不是静默返回已取到的部分」。
+var listStaleMaxPages = 1000
+
+// ListStale 返回该租户所有超过 threshold 未上报的资产。
+//
+// ★ 翻页在**这一层内部**完成，调用方拿到的永远是全集：
+//
+//	调用方没有「页」的概念，截断对它完全不可见；
+//	若把 Offset 提到 Filter 那层（§10.27 对 List 的做法），
+//	就等于把一个**实现细节**变成接口的一部分，让每个调用方各写一遍循环 ——
+//	而 §10.27 的教训正是「分页写错一处就是静默少数据」。
+//
+// ★ 已知取舍：用 OFFSET 而非 keyset 游标。翻页期间若有行被改写
+//
+//	（watcher 每 60s 写一次），同一轮里可能漏掉或重复个别行。
+//	这个探针是幂等的且 60s 后重跑，下一轮就会补上 ⇒ 可接受。
+//	若将来 stale 集合大到翻页本身成为瓶颈，再换 keyset。
 func (s *pgStore) ListStale(ctx context.Context, tenantID string, threshold time.Duration) ([]Asset, error) {
 	if s.pool == nil && s.q == nil {
 		return []Asset{}, nil
@@ -999,31 +1053,56 @@ func (s *pgStore) ListStale(ctx context.Context, tenantID string, threshold time
 
 	var stale []Asset
 	err := s.withTenantReadOnlyTx(ctx, tenantID, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, listStaleSQL, tenantID, seconds)
-		if err != nil {
-			return err
+		for page := 0; ; page++ {
+			if page >= listStaleMaxPages {
+				return fmt.Errorf(
+					"apihub: list stale 翻了 %d 页仍未取完（租户 %s）；"+
+						"这通常意味着游标没有推进，已中止本轮而不是继续空转",
+					listStaleMaxPages, tenantID)
+			}
+			offset := page * listStalePageSize
+			rows, err := tx.Query(ctx, listStaleSQL, tenantID, seconds, listStalePageSize, offset)
+			if err != nil {
+				return err
+			}
+			got := 0
+			for rows.Next() {
+				var a Asset
+				var tagsRaw, metadataRaw []byte
+				if err := rows.Scan(
+					&a.Kind, &a.RefID, &a.TenantID, &a.Name,
+					&a.Owner, &a.Team, &a.CostCenter,
+					&tagsRaw, &a.HealthState, &a.Version,
+					&a.RegisteredAt, &a.LastSeenAt, &metadataRaw,
+				); err != nil {
+					rows.Close()
+					return err
+				}
+				if err := unmarshalStringMap(tagsRaw, &a.Tags); err != nil {
+					rows.Close()
+					return err
+				}
+				if err := unmarshalAny(metadataRaw, &a.Metadata); err != nil {
+					rows.Close()
+					return err
+				}
+				stale = append(stale, a)
+				got++
+			}
+			rowsErr := rows.Err()
+			rows.Close()
+			if rowsErr != nil {
+				return rowsErr
+			}
+			// ★ 终止条件是「不满一页」，**不是**「零行」。
+			//   若写成 got == 0，当 stale 数恰好是 1000 的整数倍时
+			//   会多查一轮空页；更糟的是写成 got == 0 时，
+			//   任何一页都满就永远查不到「结束」⇒ 只能靠 got==0 收尾，
+			//   于是「最后一页不满」与「刚好整页」走出两条不同路径。
+			if got < listStalePageSize {
+				return nil
+			}
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var a Asset
-			var tagsRaw, metadataRaw []byte
-			if err := rows.Scan(
-				&a.Kind, &a.RefID, &a.TenantID, &a.Name,
-				&a.Owner, &a.Team, &a.CostCenter,
-				&tagsRaw, &a.HealthState, &a.Version,
-				&a.RegisteredAt, &a.LastSeenAt, &metadataRaw,
-			); err != nil {
-				return err
-			}
-			if err := unmarshalStringMap(tagsRaw, &a.Tags); err != nil {
-				return err
-			}
-			if err := unmarshalAny(metadataRaw, &a.Metadata); err != nil {
-				return err
-			}
-			stale = append(stale, a)
-		}
-		return rows.Err()
 	})
 	if err != nil {
 		return nil, err

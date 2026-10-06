@@ -18,24 +18,17 @@
     <meta name="llmgw:deploy-seq" content="__LLMGW_DEPLOY_SEQ__" />
     <meta name="llmgw:deploy-seq-src" content="__LLMGW_DEPLOY_SEQ_SRC__" />
     <title>LLM Gateway</title>
-    <script>
-      // 首帧防 FOUC（UI规范 14 §3）：读用户偏好 + 系统偏好，先于渲染落 class。
-      ;(function () {
-        try {
-          var stored = localStorage.getItem('llmgw_mobile_theme')
-          var dark =
-            stored === 'dark' ||
-            (!stored && window.matchMedia('(prefers-color-scheme: dark)').matches)
-          if (dark) {
-            document.documentElement.classList.add('dark')
-            var meta = document.querySelector('meta[name="theme-color"]')
-            if (meta) meta.setAttribute('content', '#0f141c')
-          }
-        } catch (e) {
-          /* localStorage 不可用 — 按亮色渲染 */
-        }
-      })()
-    </script>
+    <!--
+      首帧脚本（主题防 FOUC + large→/m 反向入口切换）走外部文件，不用内联
+      <script>：网关 CSP 为 script-src 'self' 'unsafe-eval'，不含
+      'unsafe-inline'（middleware/security_headers_mw.go），而 /m 挂载在安全头
+      中间件之内，内联脚本会被直接拦掉。桌面端 web/index.html 为同一理由已把
+      theme-init.js 外链化。
+      src 用相对路径（不带前导 /）：生产下 index.html 由 /m/ 提供，相对引用
+      解析为 /m/entry-switch.js（ServeSPA）；dev serve 下应用在根路径，解析为
+      /entry-switch.js（vite public 目录）。根绝对路径在两侧必有一侧错。
+    -->
+    <script src="entry-switch.js"></script>
   </head>
   <body>
     <div id="app"></div>
