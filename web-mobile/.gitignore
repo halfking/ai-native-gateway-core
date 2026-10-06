@@ -3,3 +3,6 @@ dist
 *.local
 .DS_Store
 coverage
+# 连跑器（scripts/run-vitest-stability.mjs）的失败快照目录：
+# 只在本地排查 flaky 时生成，不该进版本库（每次失败的内容都不一样）。
+test-stability-snapshots
