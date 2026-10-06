@@ -450,6 +450,18 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/ApprovalRulesView.vue'),
     meta: { titleKey: 'acfgRules.title', requiresAuth: true },
   },
+  // 附件留存清单（**admin 档**，2026-10-08：handler.go:998-1008 六条全是 admin(...)）。
+  // ★ 但**同一前缀下混着两条 superAdmin**（cleanup/execute、filesystem/cleanup）
+  //   ⇒ 移动端不能按前缀判权限。
+  // ★★ 同一个 `attachments` 字段，list 侧无 COALESCE（可为 JSON 标量 null，18k+ 行），
+  //   item 侧 COALESCE 成 [] ⇒ 两处 nullability 不同。
+  // ★ 时间参数解析失败被**静默丢弃**（后端 if err == nil 才赋值）⇒ 返回全时间范围且不报错。
+  {
+    path: '/attachments',
+    name: 'attachments',
+    component: () => import('@/views/AttachmentsView.vue'),
+    meta: { titleKey: 'att.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',

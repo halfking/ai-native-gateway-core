@@ -5769,3 +5769,220 @@ admin_key / 本租户的 tenant_admin）⇒ 读写权限没有区别。
 
 **下一批候选**：`admin/attachments`（8，admin 档）、`admin/modules`（7）、
 `admin/logs`（7，混合读写）、`system/session-context`（6）。
+
+
+### 11.80 附件留存读面上移（第四十四轮，`admin/attachments`）
+
+本批把附件留存一族的**六条只读端点**上移。写操作（`cleanup/execute`、`filesystem/cleanup`）一律不碰。
+
+- 新 API 模块 `web-mobile/src/api/attachments.ts`（六端点各自独立解包）
+- 新视图 `AttachmentsView.vue`（清单 + 统计 + 策略 + 文件系统 + 清理预览，五块合一页）
+- 新路由 `/attachments`
+- 新增**一条 admin 档抽屉席** `attachments`（**故意不设** `requiresRole`）
+- i18n 新命名空间 **`att`**
+- 门禁：变异 **27/27 有牙**，用例 **71 条**（42 API + 29 视图）
+
+#### ★★★★★★ 档位：六条全是 admin 档，但**同一前缀下混着 superAdmin**
+
+`admin/handler.go:998-1008`：
+
+```go
+mux.HandleFunc("/api/admin/attachments/filesystem/stats",    admin(h.handleAttachmentFilesystemStats))
+mux.HandleFunc("/api/admin/attachments/filesystem/cleanup", h.superAdmin(h.handleAttachmentFilesystemCleanup))
+mux.HandleFunc("/api/admin/attachments",                    admin(h.handleDataLifecycleAttachments))
+mux.HandleFunc("/api/admin/attachments/stats",              admin(h.handleDataLifecycleAttachmentStats))
+mux.HandleFunc("/api/admin/attachments/policy",             admin(h.handleDataLifecycleAttachmentPolicy))
+mux.HandleFunc("/api/admin/attachments/cleanup/preview",    admin(h.handleDataLifecycleAttachmentCleanupPreview))
+mux.HandleFunc("/api/admin/attachments/cleanup/execute",    h.superAdmin(h.handleDataLifecycleAttachmentCleanupExecute))
+mux.HandleFunc("/api/admin/attachments/",                   admin(h.handleDataLifecycleAttachmentItem))
+```
+
+★ 上移的六条**全是 `admin(...)`** ⇒ tenant_admin 可用 ⇒ 抽屉席**不设** `requiresRole`，
+并配判据：设成 `super_admin` 必须红（变异 N1）。
+★★ 但 `filesystem/cleanup` 与 `cleanup/execute` 是 **superAdmin** ⇒
+**前缀相同、档位不同，移动端不能按前缀判权限**。
+
+#### ★★★★★★ 头号陷阱：同一个 `attachments` 字段，**两条端点的 nullability 不同**
+
+- **list**（`data_lifecycle_attachments.go:182`）：
+  `COALESCE(client_model,''), success, attachments::text`
+  ⇒ `attachments` 是 `json.RawMessage` **原样透传**，**可以是 JSON 标量 `null`**。
+  源码注释（`:238-241`）：2026-09-14 起 `request_logs.attachments` 里
+  **18k+ 行**存的是 JSON `null` 标量而不是数组。
+- **item**（`:629`）：`COALESCE(attachments::text, '[]')`
+  ⇒ ★ 这里**保证是数组**。
+
+⇒ ★★ 「列表里那条没附件」与「详情里 attachments 是空数组」是**同一件事的两种表现**。
+客户端**不许**把 list 侧的 `null` 当 `[]` 渲染成「无附件」，**也不许**因此抛错
+（`attachments` 是 `unknown`，后端还可能写进对象或字符串）。
+
+#### ★★★★ `stats` 的行集合是 `list` 的**真子集**
+
+- list  ：`WHERE attachments IS NOT NULL`（`:170`）
+- stats ：`WHERE attachments IS NOT NULL AND jsonb_typeof(attachments) = 'array'`（`:242`）
+
+后者是因为 18k+ 行的 `null` 标量会让 `jsonb_array_elements` 报
+`cannot extract elements from a scalar`。
+
+⇒ ★★★ 「列表 N 条」与「统计 M」**对不上是预期的**，页面必须标口径，不许报成数据不一致。
+
+★ `cleanup/preview`（`:363-364`）用的是 **stats 那套**条件（多 `jsonb_typeof`），
+所以 preview 的 `affected_records` 也**只数数组行**。
+
+#### ★★★★ 时间参数**解析失败被静默丢弃**
+
+```go
+if s := r.URL.Query().Get("since"); s != "" {
+    if t, err := time.Parse(time.RFC3339, s); err == nil { since = t }
+}
+```
+
+⇒ ★★★ `?since=garbage` / `?since=2026-13-45T00:00:00Z` 一律**当作没传**，
+**不报错、不告警**，返回**全时间范围**的数据。
+⇒ ★ 区间是**半开**的：`ts >= since` 且 `ts < until`（含下不含上）。
+
+★ 我为此写的客户端自查 helper 第一版有个**真缺陷**：
+只用 `/^\d{4}-\d{2}-\d{2}T...$/` 这种**形状正则**会把 `2026-13-45T00:00:00Z` 判成有效
+（`\d{2}` 照单全收），而 Go 的 `time.Parse` 会因月份 13 越界而**失败** ⇒
+页面被告知「窗口会生效」，后端却静默丢弃 ⇒ **提示反过来误导人**。
+⇒ 改成带**取值范围**校验（月 1–12、日 1–31、时 ≤23、分 ≤59、秒 ≤60 闰秒合法）。
+
+#### ★★★ `limit` / `offset` 是**两端 clamp**（不是回落）
+
+```go
+limit  := clampInt(r.URL.Query().Get("limit"), 50, 1, 200)
+offset := clampInt(r.URL.Query().Get("offset"), 0, 0, 100000)
+```
+
+`clampInt`（`:650-662`）：空 ⇒ def；`Atoi` 失败 ⇒ def；`< min` ⇒ **min**；`> max` ⇒ **max**。
+
+⇒ ★★ `?limit=99999` ⇒ **200**（不是回落 50）、`?limit=0` ⇒ **1**、`?offset=-5` ⇒ **0**。
+★ 与 approval-config 那个 audit limit（「越界**回落** 100」）**方向相反**。
+★ 而 `preview` 的 `older_than_days` 走 `parseOlderThanDays`：**没有上界**，
+`≤0` 或非法 ⇒ **回落 30** ⇒ **同一族里两套限幅语义**。
+
+#### ★★★ `tenant_id` 对 tenant_admin 被**静默忽略**
+
+```go
+func attachmentTenantScope(r, explicitTenantID string, alreadyAppended int) (string, []any) {
+    if IsTenantAdmin(r) { return fmt.Sprintf(" AND tenant_id = $%d", …), []any{GetTenantID(r)} }
+    if explicitTenantID != "" { return …, []any{explicitTenantID} }
+    return "", nil
+}
+```
+
+⇒ tenant_admin 传了 `?tenant_id=别的租户` 也**不报错**，只是不生效，仍只看自己租户。
+super_admin + 显式 `tenant_id` ⇒ 收窄；super_admin 不传 ⇒ **看全部**。
+
+#### ★★ 两种行丢失的失败方式**处理相反**
+
+- 每行 `rows.Scan` 失败 ⇒ `warnRowSkip` + `continue` ⇒ **静默丢行**
+- `rows.Err()`（传输层截断）⇒ `writeAggRowsErr` ⇒ **整个 500**
+  （缺关系时是 **503 `analytics_view_missing`**，是本仓第 N 次见到这个码）
+
+源码注释：「截断的清单会被当成"就这么多附件"，静默 200 比失败更有害。」
+
+⇒ 200 **不保证**条数完整，但也不是「悄悄少了就当全量」。页面文案要说清这两层。
+
+#### ★★★ `policy` 是**硬编码常量**，且是本族唯一**不需要数据库**的
+
+```go
+writeJSON(w, http.StatusOK, map[string]any{
+    "policy": map[string]any{
+        "retention_days": 30, "max_size_bytes": 20 * 1024 * 1024,
+        "auto_cleanup": false, "delete_filesystem": false, "description": "…",
+    },
+    "note": "策略为内置默认值，暂不支持动态配置。可通过环境变量 LLM_GATEWAY_ATTACHMENT_DISABLED=1 完全关闭附件捕获。",
+})
+```
+
+★ 它**没有** `h.db == nil` 检查（其余五条没库都 503）
+⇒ 数据库挂了，这一页**还能出数**。这一点页面要单独说，否则「别的面板空了这块有数」
+会被当成数据不一致。
+
+`max_size_bytes` 就是 **20971520**（20 MiB），客户端**不许**另算一套。
+
+#### ★★ `cleanup/preview` **没有方法门**
+
+注册是 `admin(...)` 且 handler 里**没有** `if r.Method != …` ⇒ **GET 也能调**
+（用 `?older_than_days=`）。源码注释写的是 POST —— **文档与实现不一致**。
+`dry_run` 恒为 `true`（这个端点里没有执行分支）。
+
+#### ★★ `{request_id}` 详情端点
+
+`ORDER BY ts DESC LIMIT 1` ⇒ 同一 request_id 有多行时取**最新**那行。
+跨租户返 **404 而不是 403** —— 源码注释明说是**故意**的：
+`// (not 403, to avoid leaking the existence of cross-tenant rows)`。
+
+`request_id == ""` ⇒ **400 `missing request_id`**。
+
+#### ★ `filesystem/stats`（裸对象，10 键）
+
+`oldest_file_time` 是 `*string` 且**无** `omitempty` ⇒ **键一定在**，值为 `null` =
+目录里**一个文件都没有**（不是「没查到」）。
+`disk_warning_level` 由 `disk_usage_percent` 分档：**>=90 danger、>=75 warning、否则 safe**
+（客户端独立复算，不信任后端给的值）。
+它**有**方法门（`GET` only）⇒ 与 preview 形成对照。
+
+★ `filepath.WalkDir` 里 `if err != nil { return nil }` ⇒ **静默忽略**无权访问的目录
+⇒ `total_files` / `total_size_bytes` 可能偏小。
+
+#### 后端缺陷（只记录不修）
+
+1. ★ `handleDataLifecycleAttachmentStats`（`:243-258`）把 `since`/`until`
+   **追加了两遍**：`:243-250` 加一次，`:251-258` 又原样加一次
+   ⇒ WHERE 里出现 `ts >= $N AND ts < $N+1 AND ts >= $N+2 AND ts < $N+3`，
+   args 也多两个占位符。**结果正确**（重复的谓词相同），但纯属冗余、易误导。
+2. ★ `handleDataLifecycleAttachmentItem`（`:618-621`）里
+   `tenantIdx := 2` 紧接着 `_ = tenantIdx` ⇒ 死变量，租户下标实际由
+   `attachmentTenantScope(r, "", 1)` 的 `alreadyAppended=1` 决定。
+3. ★ 六条 handler 全部带 `//nolint:unused` 注释，但都真实注册在 mux 上
+   ⇒ 说明它们曾经真的没被调用过（路由是 2026-07-02 补的，见 `handler.go:1001` 注释）。
+
+#### 我在这一批犯的错
+
+1. ★★★★ **我自己的 helper 有真缺陷**：RFC3339 自查只用形状正则，
+   把 `2026-13-45T00:00:00Z` 判成有效 ⇒ 页面会提示「窗口生效」而后端静默丢弃
+   ⇒ **提示反过来误导人**。补了取值范围校验，并加了 8 条越界断言
+   （含「秒 60 闰秒 Go 允许 ⇒ 判有效」）。
+2. ★★★ **测试标题里写了撇号**：`it('…（`COALESCE(…,\'[]\')`）…')`
+   ⇒ 单引号字符串被截断 ⇒ 整个文件 `ParseError` ⇒ **0 个用例收集**。
+3. ★★★★ **变异 T1 抓出一条真判据缺口**：我只靠「五种形状互喂」把关，
+   而别的形状**都没有 `items`** ⇒ 把 `offset` / `count` / `limit`
+   从 list 的解包条件里删掉，测试**照样全绿**。
+   ⇒ 补「缺 `offset` / 缺 `count` / 缺 `limit` 各自必须抛错」。
+4. ★★ **变异 T12 的注入把语法写坏了**：我把多行 `return ( … )` 的条件整体换成
+   `return true`，留下悬空的 `)` ⇒ 收集失败。⇒ 改成只替换第一个条件项。
+5. ★★★ **expect 串第 5 次被 markdown 星号切断**（累计）：这次是
+   `不许显示` vs 实际标题 `且**不**显示`；还有 `既不等于` vs `**不等于**`。
+   ⇒ 已把「取标题里那段没有 markdown 强调的纯文字」写进纪律，但仍会犯。
+6. ★★ **视图里留了 3 个未用导入**（`attachmentCountIsDerived`、
+   `attachmentPreviewDaysEffective`、`route`）⇒ `vue-tsc` 报出来才删。
+   `route` 未用是因为本页没有 query 预填（与 model-policies 那两页不同）。
+7. ★★ **`--noproxy` 那条只对单条命令有效**：`git push` 第一次因
+   `HTTP(S)_PROXY=127.0.0.1:7897` 指向已关掉的代理而 rc=128。
+   ⇒ 判 rc 之后用 `env -u HTTP_PROXY -u HTTPS_PROXY git push …` 重推才 rc=0。
+
+#### 门禁与实测
+
+- 变异 **27/27 有牙**（T1–T14 API 段、W1–W12 视图段、N1 导航段），还原逐字节一致
+- 全量 **2291 用例 / 103 文件全绿**
+- `npm run build` rc=0（含 `vue-tsc -b`）
+- 三门 rc=0：css-media / touch-target（**76** 个 `.vue`）/ i18n parity
+  （零重复键；本批**零新增**动态前缀）
+- 全量 **10 连跑**：见下
+
+#### 并发会话提醒
+
+本批中途全量一度出现「1 failed | 102 passed（103）」而**2283 个用例全绿**、
+`Sparkline.spec.ts` 报 `Cannot find name 'fileURLToPath'` + 未用的 `resolve`：
+那是**并发会话**刚建的未跟踪文件（`git status` 里 `?? Sparkline.spec.ts`
+与 `M Sparkline.vue`），随后被对方自己修好。按既定口径**不碰并发会话的文件**。
+
+#### 仍未上移
+
+写操作一律不碰：`POST /api/admin/attachments/cleanup/execute`、
+`POST /api/admin/attachments/filesystem/cleanup`（两条都是 **superAdmin** 档）。
+
+**下一批候选**：`admin/modules`（7）、`admin/logs`（7，混合读写）、
+`system/session-context`（6）。
