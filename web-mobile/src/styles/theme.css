@@ -24,9 +24,14 @@
   --app-border: #dce3ee;
   --app-border-subtle: #e8edf4;
   /* 徽标是「文字压在 soft 填充上」，门槛按 AA 正文 4.5:1 算，不是按大字 3:1：
-     原 #16845b on #e6f7ef = 4.22、#4a6ee0 on #eaf0ff = 4.00，都差一点。 */
+     原 #16845b on #e6f7ef = 4.22、#4a6ee0 on #eaf0ff = 4.00，都差一点。
+     —— 2026-10-07 补：上一轮只压深了 success 与 info，**warning 被漏掉**，
+     #b7791f on #fff7e8 只有 3.42:1（12px 徽标文字不合格）。danger #c2413b = 4.64 恰好过。
+     → #8c5c18（同色相 H35.5°/S71% 只压明度到 L32%）：soft 上 5.39 / 白底 5.74 /
+     surface-muted 4.78，三处全过且与 info 的 5.68 同一量级。
+     四个状态色现由 src/styles/theme.spec.ts 逐个钉死，改色会被门拦下。 */
   --app-success: #116149;
-  --app-warning: #b7791f;
+  --app-warning: #8c5c18;
   --app-danger: #c2413b;
   --app-info: #3455c4;
   --app-focus: var(--app-primary);
