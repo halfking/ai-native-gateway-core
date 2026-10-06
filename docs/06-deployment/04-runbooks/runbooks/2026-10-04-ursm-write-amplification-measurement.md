@@ -6547,3 +6547,60 @@ ALTER TABLE public.ursm_node_snapshot_min
 2. 把 WARN 升级为可告警 —— 连续 N 分钟 `persist flush failed` 就该 paging，
    这次 701 次 WARN 静默了 62 小时；
 3. 落真库巡检（§10.59.5 的边界）。
+
+### §10.59.7 🔴 更正 §10.59.3：「463 从未生效」是错的
+
+我最初写「463 从未生效」。查 `schema_migrations` 账本后**该结论作废**：
+
+| version | description | applied_at |
+|---|---|---|
+| 453 | ursm_v2_node_snapshot_min | 2026-07-22 00:18:13 |
+| **463** | **ursm_v2_snapshot_tenant_identity** | **2026-08-04 11:25:03** |
+| 818 | ursm_snapshot_typed_columns | 2026-10-03 05:23:44 |
+
+（830 **无记录**。）
+
+⇒ **463 确实被记账为已应用**，但线上 PK 是 453 的逐字原文。
+两件事必须分开说：**「账本记了已应用」不等于「效果还在」**。
+
+### §10.59.8 已排除的三个嫌疑人
+
+| 嫌疑人 | 排除依据 |
+|---|---|
+| **818** | 全文只有 `ADD COLUMN IF NOT EXISTS`，**从不碰 PK** |
+| **830** | `schema_migrations` 无记录；表是 `relkind='r'` 非分区；其 down 脚本要求 `_legacy` 存在而生产没有（会直接 `RAISE`） |
+| **463 本身** | 账本显示已应用，且它 `DROP CONSTRAINT` + `ADD PRIMARY KEY (4 列)` 是明确动作 |
+
+### §10.59.9 现表的实际形态与最可能的成因
+
+| 项 | 值 |
+|---|---|
+| 现表列数 | **56**（453 建表 32 列 + 818 追加的 typed 列） |
+| 现表 PK | `(snapshot_ts, credential_id, raw_model_name)` — **与 453 逐字相同** |
+| 818 的 typed 列 | 抽查 6 列**全部存在** |
+
+⇒ 现表 =「**453 的建表 + 818 的加列**」，PK 停在 453。
+最符合证据的成因：**有人用一份「463 之前」的 schema 源（453 的迁移文件、
+或据此生成的历史 baseline / dump）重建了这张表**，把 463 的 PK 覆盖掉；
+随后 818 的纯加列 ALTER 又能正常作用（`IF NOT EXISTS` 幂等），所以看起来「一切正常」。
+
+⚠ **执行者无法从库内证据确定**：`schema_migration_audit` 全表只有 4 行，
+且全部是 `018_upstream_finish_reason` 那次回填，与本表无关 ——
+**这张库对 DDL 没有审计轨迹**，手工重建不会留任何记录。
+
+### §10.59.10 对修复建议的影响：不变，且更强
+
+原建议（把 PK 恢复成 4 列）**完全不变**，理由反而更硬：
+
+- 权威基线 `01-schema.sql:22653` = 4 列
+- 迁移 `463`（已记账应用）= 4 列
+- `writer.go:402` 的 `ON CONFLICT` = 4 列
+- 迁移 `830` = 4 列
+- **只有 453 是 3 列**，而 453 是**更早**的建表迁移
+
+⇒ 五处证据里四处一致指向 4 列，唯一的 3 列来自最早的建表语句。
+**是生产漂移，不是设计意图。不要改 writer 去迁就 schema。**
+
+★ 补一条流程教训：`schema_migrations` 记了「已应用」**不能**当作「效果在位」的证据。
+判断 schema 现状必须直接查 `pg_constraint`/`pg_get_indexdef`，
+这与本 runbook 反复出现的「累计值不等于当前值」是同一族问题。
