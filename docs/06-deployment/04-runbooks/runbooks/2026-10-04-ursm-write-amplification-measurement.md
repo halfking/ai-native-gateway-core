@@ -8732,3 +8732,80 @@ PG 必须**先拿到 ACCESS EXCLUSIVE**，才能去检查列是否已存在；
 `ensureURSMNodeSnapshotMinIdentityPK` 是**幂等的 reconcile**（只在主键不对时才 ALTER），
 形态是对的；问题在于它与另外 78 个 `ensure` 共享同一条启动路径与锁竞争。
 ⇒ **不是要回退我加的东西，是要把这一族整体收敛。**
+
+---
+
+## §10.80 ★ 第 10 次自我推翻：**分母用错了**——`pg_stat_statements` 跨全部 26 个库聚合
+
+§10.79 说「高频的那批 ALTER 不属本仓，是另一个写入方在共用这个库」。
+去查那个写入方是谁（`pg_stat_statements.userid`）⇒ 角色是 **`smm`**，
+再查它写在哪 ⇒ **不在本网关库**。
+
+### §10.80.1 真相：`smm` 是同一实例上的**另一个数据库**
+
+```
+本实例的库（26 个）：acc_db / casdoor / crm / llm_gateway / memora / pocket /
+                    redclaw / smm / stock_trading / trendaradar / kaixuan / …
+
+按库 × 角色的 WAL：
+   datname     |   rolname     | wal_gb |      calls
+ llm_gateway  | llm_gateway    | 626.74 | 1,131,153,437   ← 88.5%
+ smm          | smm            |  81.06 |    37,438,438
+ casdoor      | llm_gateway    |   0.62 |       191,087
+ pocket       | llm_gateway    |   0.35 |       909,397
+```
+
+⇒ **`smm` 是一个独立的股票行情库**（`daily_kline` / `stock_basic` /
+`data_source_health_log`，377 MB），与 `llm_gateway` **同实例、不同库**。
+
+★ **§10.79 的「另一个写入方在共用本网关库」是错的**：
+本仓对 `daily_kline`/`stock_basic`/`data_source_health_log`/`data_source_config`
+的引用数为 **0**，它们在本网关库里**根本不存在**（`pg_stat_user_tables` 零行）。
+
+⇒ §10.79 的 22,142 次/天 ALTER **与网关无关**，可以从结论里划掉。
+§10.79 剩下的有效部分只有一条：**本网关库自己的 ALTER 是 2,178 次/天，
+且 `request_logs` 上存在最长 109 秒的 ACCESS EXCLUSIVE 独占锁。**
+
+### §10.80.2 真正的错误：**所有 WAL 百分比分母用错**
+
+`pg_stat_statements` 的 `wal_bytes` 是**全实例 26 个库聚合**的（708.0 GB），
+而 §10.75.1 / §10.76 / §10.77 算百分比时都拿它当分母。
+**网关库自己只有 626.74 GB。** ⇒ 百分比被无关流量稀释了：
+
+| 对象 | 我原报的（分母 708.0 GB） | **正确值（分母 626.74 GB）** |
+|---|---|---|
+| `promote_*` 家族（25 变体） | 24.4% | **27.6%** |
+| └ `promote_request_logs_bodies_hot` | 11.7% | **13.2%** |
+| `promote_session_bodies_hot` | 4.9% | **5.5%** |
+| `promote_request_logs_hot` | 2.8% | **3.2%** |
+| `routing_analytics_7d`（25 天累计） | 7.9% | **9.0%** |
+| `ursm_node_snapshot_min` | 4.4% | **4.9%** |
+
+⇒ **结论方向不变，量级比我报的更大。**
+
+⚠️ 同理，`pg_stat_wal` 也是**实例级**（WAL 按集群生成）：
+§10.71.1 的「全库 WAL 22.92 GB/天、§10.73 的 38.54 GiB/天」**含 `smm` 的份额**。
+`smm` 日均 81.06/25 ≈ **3.24 GB/天** ⇒ **网关库自身的 WAL 约 35.3 GiB/天**。
+
+### §10.80.3 这一类错误的通用形状
+
+**统计视图的分母 ≠ 你关心的那个总体。**
+
+| 视图 | 聚合范围 | 我误以为 |
+|---|---|---|
+| `pg_stat_statements` | **全实例 26 个库** | 只有 `llm_gateway` |
+| `pg_stat_user_tables` | **当前库** | 全实例 |
+| `pg_stat_wal` | **全实例** | 只有 `llm_gateway` |
+| `pg_stat_activity` | 全实例 | — |
+
+⇒ **同一节里混用两个统计视图，分母就必然对不上。**
+本节是本 runbook 第 10 次「拿到数就往下推」，
+也是第 2 次栽在**分母/总体**上（§10.63 的除数 3.5GB→7GB 是同一族）。
+
+**怎么用**：报任何「占全库 X%」之前，先跑一句
+`SELECT datname, sum(wal_bytes) FROM pg_stat_statements GROUP BY 1`，
+**确认聚合范围与你要讲的那个总体是不是同一个**。
+
+★ 而这次能抓到自己，是因为我在**追一个不该存在的现象**
+（`pg_stat_user_tables` 查不到 `recommendations`）时被迫去查了它落在哪个库。
+⇒ **「查不到」比「查到了」更能揭穿口径错误。**
