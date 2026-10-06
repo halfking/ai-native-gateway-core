@@ -24,6 +24,8 @@ export const zhCN = {
     heatmap: '凭据热力图',
     probe: '探测',
     overrides: '路由覆盖',
+    funnel: '请求漏斗',
+    proposals: '调优建议',
     nodeHealth: '健康时间线',
     account: '我的',
   },
@@ -569,6 +571,67 @@ export const zhCN = {
     errForbidden: '仅超管可管理路由覆盖规则',
     // ★ DELETE 是软删：行还在，只是不带 active 的列表里还会出现
     softDeleteHint: '停用是软删除：规则行仍保留，只是不再生效。',
+  },
+  funnel: {
+    title: '请求漏斗',
+    model: '模型名',
+    modelPlaceholder: '如 gpt-4o（必填）',
+    modelRequired: '必须填模型名 —— 后端要求 model 参数非空',
+    search: '查询',
+    window: '时间窗口',
+    // ★ 键名不带 '-'/'数字'：i18n 门按 `[A-Za-z_$][\w$]*` 抽叶子键，
+    //   `window.24h` 里的 `24h` 抽不出来 ⇒ 键集门会静默少认一个键。
+    window24h: '24 小时',
+    window7d: '7 天',
+    requests: '请求数',
+    chosen: '已选凭据',
+    blocked: '被阻断候选',
+    traceRatio: 'trace 覆盖率',
+    confidence: '数据置信度',
+    sourceExact: '精确统计',
+    sourceApproximate: '估算值',
+    sourceMixed: '混合估算',
+    sourceUnknown: '未知口径',
+    // ★ 近似模式下 blocked 字段根本没被聚合过 —— 0 是「没算」不是「没拦」。
+    unknown: '未统计',
+    // ★ 服务端 2 分钟缓存。不自曝的话，用户改完规则立刻回来刷新会认定
+    //   「规则没生效」并重复提交，重复提交必然撞 409，越急越错。
+    cacheHint: '服务端缓存 2 分钟 —— 刚改完覆盖规则立刻刷新，看到的可能还是改动前的数。',
+    rateFrom: '（上一阶段：{prev}）',
+    empty: '这个模型在所选窗口内没有请求记录',
+    // ★ 有请求但一个阶段都没有 = 形状不符，不能复用 empty ——
+    //   「没查到」与「统计结果就是零」必须看起来不一样。
+    shapeMismatch: '响应形状不符：有请求数但没有任何阶段 —— 请检查后端 analytics/funnel',
+    errForbidden: '仅超管可查看自动路由分析',
+  },
+  proposals: {
+    title: '调优建议',
+    statusFilter: '按状态筛选',
+    categoryFilter: '按类别筛选',
+    filterAll: '全部',
+    limit: '条数上限 {n}',
+    // ★ 这四个是后端 allowlist 的字面值（auto_route_tuning.go:50-51），
+    //   词表外一律落到 statusUnknown —— 绝不给陌生状态上「已生效」的绿色。
+    status: {
+      pending: '待审',
+      approved: '已批准',
+      rejected: '已驳回',
+      applied: '已生效',
+    },
+    statusUnknown: '未知状态',
+    category: {
+      keyword_add: '加关键词',
+      weight_adjust: '调权重',
+      threshold_change: '调阈值',
+    },
+    categoryUnknown: '未知类别',
+    reviewedBy: '审核人',
+    reviewedAt: '审核于',
+    appliedAt: '生效于',
+    reviewNote: '审核意见',
+    empty: '当前筛选下没有建议',
+    echo: '后端实际过滤：状态「{status}」/ 类别「{category}」',
+    errForbidden: '仅超管可查看调优建议',
   },
   models: {
     title: '模型目录',

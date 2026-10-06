@@ -67,6 +67,14 @@ export const DRAWER_NAV: readonly NavItem[] = [
   // 「现在生效的是什么」）。★ 整条 auto-route 线是 superAdmin
   //（handler.go:1381 RegisterAutoRouteRoutes(mux, h.superAdmin)），必挡。
   { key: 'overrides', to: '/overrides', icon: 'expand', titleKey: 'nav.overrides', requiresRole: 'super_admin' },
+  // ── 自动调优面（2026-10-07）────────────────────────────────────────────
+  // 与 /overrides 配对闭环：那页答「现在生效的规则是什么」，这两页答
+  // 「规则对不对、该怎么调」。
+  // ★ 两条都是 superAdmin 档：funnel 走 handler.go:1430 的 h.superAdmin，
+  //   proposals 走 handler.go:1381 的 h.superAdmin（auto_route.go:116 的
+  //   adminWrap 是它传进去的）。tenant_admin 必 403 ⇒ 这里必须挡。
+  { key: 'funnel', to: '/funnel', icon: 'chart', titleKey: 'nav.funnel', requiresRole: 'super_admin' },
+  { key: 'proposals', to: '/proposals', icon: 'check', titleKey: 'nav.proposals', requiresRole: 'super_admin' },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))

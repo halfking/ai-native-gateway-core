@@ -1437,3 +1437,189 @@ marshal 成 map 后再塞 `unified`），`queue-snapshot` 同样是
 ★ 另有一个与真实原因无关的失败：顶栏的「新建规则」按钮与面板提交钮**同名**，
   按文案点击会点到顶栏那个（只是把面板又打开一次），现象是
   「表单填了但请求没发出去」。⇒ 改按 `.ov__submit` 类选择，并写进注释。
+
+---
+
+### 11.43 自动调优面上移：请求漏斗 + 调优建议（第十八轮，superAdmin 档）
+
+本轮上移两个页面，补齐 auto-route 线的第三段。三页凑成一个闭环：
+
+| 页面 | 端点 | 回答什么 |
+|---|---|---|
+| `/overrides`（上轮） | `GET/POST/DELETE/PATCH /api/admin/routing/overrides` | 现在生效的**规则**是什么 |
+| `/funnel`（本轮） | `GET /api/admin/auto-route/analytics/funnel` | 请求进来后**被筛掉多少**、这数**可不可信** |
+| `/proposals`（本轮） | `GET /api/admin/auto-route/tuning/proposals` | 系统认为**规则该怎么调**、哪些已落地 |
+
+只看规则不知道规则对不对；只看漏斗不知道该怎么改；只看建议不知道哪些已生效。
+
+**鉴权**：两条都是 superAdmin。
+- funnel 走 `analytics.go:58` 的 `adminWrap`，而 `RegisterAnalyticsRoutes`
+  在 `admin/handler.go:1430` 是用 `h.superAdmin` 调的；
+- proposals 走 `admin/auto_route.go:116` 的 `adminWrap`，而
+  `RegisterAutoRouteRoutes` 本身在 `handler.go:1381` 就是 `h.superAdmin`。
+
+⇒ 抽屉导航两条都 `requiresRole: 'super_admin'`。这是**第四条超管线**
+（前三条：`/integrity`、`/routing-audit`、`/overrides`）。
+
+#### ★★ `meta.blocked` 的 0 有两种完全不同的含义
+
+`analytics.go` 的三档口径：
+
+| `data_source` | 触发条件 | blocked 可靠吗 |
+|---|---|---|
+| `exact` | `routing_decision_log` 的 `decision_trace` 聚合 | ✅ 真聚合过 `SUM(blocked_candidates)` |
+| `approximate` | RDL 一行都没有 | ❌ **没算** |
+| `mixed` | RDL 有行但 trace 全空 | ❌ **没算** |
+
+原因在 `analytics.go` 的分支里：`approximate` / `mixed` 走的是
+`routing_analytics_source` 补数，那条 SQL 的 SELECT 列表里
+**根本没有 blocked 这一列** ⇒ `fr.totalBlocked` 保持零值。
+
+⇒ 所以「近似 + blocked=0」= **没算过**，不是「一个都没被拦」。
+渲染成 `0` 就是在编造一个我们并不知道的结论。
+判据用 `blockedIsInconclusive(meta)`，返回 `true` 时 UI 显示「未统计」。
+
+★ 这与 §11.20 修的「降级被显示成真的一分钱没花」、§11.22 的
+   `observation_degraded` 是**同一族错误**的第三个面。
+
+#### ★ `approximate` 是权威位，不能自己猜
+
+判据依据是后端给的 `approximate` 位（= `dataSource != "exact"`），
+**不是**拿 `sample_n` 自行判断。因为后端的 `confidence` 规则是：
+
+```
+exact && requests >= 30 && trace_ratio >= 0.8  ⇒ high
+exact && requests >= 10                        ⇒ medium
+mixed                                          ⇒ medium
+其余                                           ⇒ low
+```
+
+样本量小会被降级；而 `data_source != exact` 一律 `approximate=true`，
+即使 `sample_n` 很大。只看样本量会判反。
+
+#### ★ funnel 有 2 分钟服务端缓存，必须自曝
+
+`admin/funnel_cache.go:21-24`：`ttl: 2 * time.Minute`，key = `scope|model|window`。
+
+用户刚在 `/overrides` 改完规则就过来刷新，会看到**没变化的旧数**。
+⇒ 页首必须挂「服务端缓存 2 分钟」提示，否则用户会认定「我刚写的规则没生效」
+并去重复提交 —— 而重复提交必然撞 409，**越急越错**。
+（与 §11.41 的「创建后约 1 分钟生效」是同一个坑的两个面。）
+
+#### ★ 「查不到」与「没流量」在响应里完全同形
+
+模型名拼错时后端**不 404**，返回 `200 + requests=0`。
+所以空态必须挂在 `requests === 0` 上，**不能**挂在 `data === null` 上：
+
+```vue
+<!-- ✗ 第一版就是这么写的，被自己的判据当场抓出来 -->
+<p v-if="!loading && searched && !data && !error">{{ t('funnel.empty') }}</p>
+```
+
+挂 `data === null` 时，拼错模型名会得到一张
+「请求数 0 / 已选凭据 0 / trace 覆盖率 0%」的置信度面板 ——
+**把「没查到」显示成「统计结果就是零」**。
+
+★ 同时拆出**第三个**互斥态：`requests > 0` 但 `stages` 为空 = **形状不符**
+（该去查后端），不能复用「没流量」文案。三者文案必须都不同：
+
+| 判据 | 文案 |
+|---|---|
+| `requests === 0` | 这个模型在所选窗口内没有请求记录 |
+| `requests > 0 && stages.length === 0` | 响应形状不符：有请求数但没有任何阶段 |
+| `data === null`（出错） | 报错 |
+
+且 `requests === 0` 时**不渲染阶段表** —— 后端此时仍会吐 3 个 `value=0` 的阶段，
+渲染出来是三行 0，看着像「量过了，结果是零」。
+
+#### 第五种越界语义：400 for unknown enum
+
+`auto_route_tuning.go:188/193` 对 `status` / `category` 做 allowlist 校验
+（`:50-51` 定义词表），非法值 **400**。空串 = 不过滤，是合法值。
+
+★ **后端对这两个参数既不 TrimSpace 也不 ToLower** —— 对比
+  `analytics.go:62` 的 `parseAnalyticsWindow` 用了
+  `strings.ToLower(strings.TrimSpace(raw))`。
+  ⇒ 用户手输 `Pending ` 或 `PENDING` 必然 400。
+
+⇒ 筛选器只能是**固定 chip**，绝不能是自由输入框。
+判据里有一条专门量「页面上没有自由文本输入」。
+
+`limit` 越界 400（`limit must be 1-500`，`:200`），**后端默认 50**（`:197`）。
+
+#### ★ `proposal` / `evidence` 是 `json.RawMessage`，没有任何 schema
+
+三种类别（`keyword_add` / `weight_adjust` / `threshold_change`）各有自己的结构。
+写死 `p.model` 访问在 `keyword_add` 上就是 `undefined`，
+渲染出去是「该建议没有模型」—— 一个我们并不知道的结论
+（真相是「这类建议本来就不带模型」）。
+
+⇒ `pickFields(obj, keys)`：只在键存在且非空串/null 时取出，取不到**整段不出现**。
+判据用两份结构完全不同的样本互证，并加一条「`proposal` 为空对象 ⇒ 不渲染任何 kv 行」。
+
+#### 状态词配色必须封闭
+
+词表外一律 muted —— 给一个看不懂的状态打 `success`，
+等于把「不知道」显示成「已生效」。同 `probeTasks` 的纪律。
+
+★ 判据里有一条**反向锁定**：`StatusDot` 上不许出现 `status-dot--success`。
+同时另有一条「已生效确实是绿的」证明它不是恒真。
+
+#### 本轮不做的部分（明确划在范围外）
+
+- **审批动作**（`POST proposals/:id/{approve,reject}`）未上移。
+  它写 `tuning_proposals` 状态并落审核人，属于**有副作用的人工决策**，
+  移动端上审批会绕过桌面端的复核环节。这不是「做不了」，是明确不做。
+- `analytics/matrix` / `analytics/flow` / `analytics/model-task-index` 未上移。
+- `system-health` 与 `queue-snapshot` 仍是 `unified`/`legacy` **双轨混合结构**，
+  移动端只实现一半会稳定产出「取不到值但不报错」的字段 ⇒ 9 个 probe 端点未动。
+
+### 11.44 本轮门禁（第十八轮，自动调优面）
+
+`web-mobile/` 实测**十道**：
+
+| # | 门 | 结果 |
+|---|---|---|
+| 1 | css 门自测 | **11/11** |
+| 2 | 触控门自测 | **11/11** |
+| 3 | i18n 门自测 | **14/14** |
+| 4 | `gate:selftest` | **36 条断言全绿** |
+| 5 | `vue-tsc -b` | 通过 |
+| 6 | i18n 键集门 | 通过（各 **641 键**，+45） |
+| 7 | css 媒体查询门 | 通过（**45 文件**，+2） |
+| 8 | 触控热区门 | 通过（**42 个 .vue**，+2） |
+| 9 | `vitest run` | **442 用例 / 45 文件全绿**，**连跑 10 次全绿**（新增 62 条） |
+| 10 | `npm run build` | 通过 |
+
+★ 新增 i18n 键里 `window24h` / `window7d` **故意不用点路径** `window.24h`：
+  i18n 门按 `/^(\s*)([A-Za-z_$][\w$]*):\s*'(...)'/` 抽叶子键，
+  `24h` 抽不出来 ⇒ 键集门会**静默少认一个键**，两侧同时漏、门照样全绿。
+  ⇒ 与 §11.20 的「键被插错词典段」是同一族：**键集门的判据只认它能解析的形状**。
+
+★ 变异证据（**5 处，全部转红**）：
+
+| 变异 | 结果 |
+|---|---|
+| `blockedIsInconclusive` 漏判 `data_source` | 1 failed |
+| `blockedUnknown` 恒假（永远显示数字） | 2 failed |
+| 空态挂回 `data === null`（第一版的错法） | 2 failed |
+| `statusKeyOf` 词表外不设防 | 1 failed |
+| `proposalFieldsOf` 无条件渲染键 | 2 failed |
+
+★ **本轮被抓到的一个真缺陷**（不是判据的问题，是代码的问题）：
+  空态原写作 `v-if="... && !data"`，而 `requests=0` 时后端**返回 200 + 合法 body**
+  ⇒ `data` 非 null ⇒ 空态永远不命中 ⇒ 用户看到一张
+  「请求数 0 / 已选凭据 0 / trace 覆盖率 0%」的置信度面板。
+  把「**没查到**」显示成「**统计结果就是零**」。
+  ⇒ 已改为挂在 `requests === 0` 上，并拆出第三态「形状不符」。
+
+★ 又一次**判据量的不是它声称要量的那件事**：
+  「词表外状态不得显示成已生效」原写作 `expect(w.text()).not.toContain('已生效')`，
+  而整页文本里必然含**筛选 chip**「已生效」（它是筛选项，不是这一条的状态）
+  ⇒ 判据恒红，与被测行为无关。已收窄到 `w.find('.tp__item-status').text()`
+  并补一条「`status-dot--success` 不存在」的反向锁定 +
+  一条「已生效确实是绿的」证明它不是恒真。
+  ★ 规律：**断言页面全文前先问「页面上还有哪些别的东西也会命中这段文字」**。
+
+★ 清理死变量：判据从 `data === null` 换成 `requests === 0` 后，
+  `searched` ref 不再参与任何渲染 ⇒ 删掉，不留「看起来在用」的残骸。
