@@ -9446,3 +9446,198 @@ period-compare 的 `degraded` 键缺失/类型错。
 - U+FFFD 自查：源与用例均 0（按 §11.105 新增的规则，扫描范围含本批新写文件）
 
 文档 §11.106 纯追加。
+
+
+## §11.107 usage 趋势线两条接 API 层（第七十一批）
+
+**产物**：`web-mobile/src/api/usageTrendSeries.ts`（新建）+ `.test.ts`（新建，158 用例）
+
+### 三路取证（写代码前）
+
+| 问 | 答 | 证据 |
+|---|---|---|
+| 后端注册存在吗 | 是 | `admin/handler.go:1267` `h.admin(h.HandleUsageAdmin)`；分派 `admin/usage.go:60-64` 两个 case |
+| 谁在提供 | **本进程**，不经 maintain 反代 | 不在 `cmd/gateway/maintain_proxy.go:37` 的 `maintainCompatPrefixes` 里 |
+| 前端有调用方吗 | 桌面有、移动端无 | `web/src/api/usage.ts:508/512`；`BoardUsageTrendSection.vue`、`UsageTrendExplorer.vue`；移动端只有 `usageEnhanced.ts:12` 一句「留待下一批」 |
+
+**权限档位**：`h.admin(...)` ⇒ **tenant_admin 可用** ⇒ 将来接抽屉席**不设** `requiresRole`。
+
+### 本族挖到的后端缺陷 / 契约（★ 越高越要紧）
+
+1. **★★★★★ `degraded` 又是恒发字段（不带 `omitempty`）——第二次遇到。**
+   `usage_trend_series.go:75-80` / `:96-101` 两个响应都是：
+   ```go
+   // 恒发（无 omitempty）：空序列与「真的没有用量」在图上同形。
+   Degraded       bool   `json:"degraded"`                 // 恒发
+   DegradedReason string `json:"degraded_reason,omitempty"` // 仅降级
+   ```
+   `dashboard_degrade.go:105` 的注释写明「与 `PeriodCompareResponse.Degraded` 同理」
+   ⇒ **这是本仓既定风格，不是偶然**（第七十批 usageEnhanced 同款）。
+   压缩统计（第六十八批）的 `*int64`+omitempty 条件键恰好相反
+   ⇒ **不能照抄别族的「键缺失即异常」判据**。
+
+2. **★★★★★ 降级时 `top` 与 `bucket_minutes` 仍是解析后的值，不是零值**（`:204-205`）
+   ⇒ 「降级 + 空序列」与「成功 + 零用量」的区分**只能靠 `degraded` 那一个键**。
+   判据 `trendSeriesIsGenuinelyEmpty()` 两个分支都写了。
+
+3. **★★★★★ `days` 的 clamp 是 90，不是 366。**
+   本族走 `boardTimeRangeFromRequest`（`board_time_range.go:17-38`）→ `boardDays`
+   （`dashboard_board.go:204-213`，clamp **[1,90]**），**不是** `resolveUsageTimeRange` 的 366。
+   起点 `boardPresetTimeRange`（`board_time_range.go:120`）是
+   `todayStart.Add(-(days-1)*24h)` ⇒ **减 days-1 天**，days=7 起点是**六天前**零点。
+   ⚠️ `resolveUsageTimeRange` 的 days 分支减 `days` 天（`usage.go:1447`）——**两套语义差一天**，
+   但那条分支在本族**不可达**（只在 `start`/`end` 至少给一个时被调用，而它内部 days 分支
+   的前提正是两者都缺省）⇒ 死代码，仅作对照。
+
+4. **★★★★★ 自定义区间左闭右开，响应 `end` 是「次日零点」。**
+   `usage.go:1467-1469`：`return startDay.UTC(), endDay.Add(24*time.Hour).UTC()`
+   ⇒ 用户选 2026-01-01 ~ 2026-01-07，响应 `end` 是 `2026-01-08T00:00:00Z`。
+   对照 days 预设路径的 `End = now`（带时分秒）⇒ **两条路径 `end` 形态不同**，
+   `trendEndIsNextMidnight()` 可用来判断后端走了哪条。
+
+5. **★★★★ 分桶两套规则，同一个实际跨度可能是两个档位。**
+   `trendBucketMinutes`（`board_time_range.go:47-67`）：
+   - 预设档按 `Days`：`<=1` → 5；`<=7` → 15；否则 60
+   - 自定义档按实际 `span`：`<=48h` → 5；`<=14d` → 15；否则 60
+   ⇒ `start`/`end` 恰好 24 小时跨度 ⇒ **5 分钟**；days=2 预设 ⇒ **15 分钟**。
+
+6. **★★★★ 非法 / 负数 ID 静默换数据档，不报 400。**
+   `queryInt`（`handler.go:1539-1542`）解析失败**回落默认值**；`usageTrendSource`
+   （`:155-164`）判的是 `f.providerID > 0` / `f.apiKeyID > 0`
+   ⇒ `provider_id=abc` 与 `provider_id=-5` 都变成 0 ⇒ 落到 **default 档（dim）**。
+   用户以为加了过滤，实际拿到的是**另一张表**的数据。
+   ⇒ 客户端只发正整数 ID（`trendQuery` 里 `Math.trunc(x) > 0` 才发），
+   并提供 `trendFilterIdInvalid()` 在发请求前拦住。
+
+7. **★★★★ `source` 少 `_without_customer_id` 后缀。**
+   `:158` 对外返回 `"request_logs_with_current_month"`，真实读的是
+   `request_logs_with_current_month_without_customer_id`（`:407`/`:588`）
+   ⇒ **不能把 `source` 当真实表名用**，`trendSourceRealTable()` 做映射。
+
+8. **★★★ 三个不同的上限，后两个都不回显。**
+   - `top`：默认 8、clamp **[1,20]**（`:129`/`:144-149`）⇒ **响应回显 clamp 后的值**，
+     降级时也回显 ⇒ UI 可以照着显示「已按 N 展示」
+   - `model` 多选：空值/重复剔除，超过 **20** 截断（`:133-143`）
+   - `trend-models` 的 SQL **硬编码 `LIMIT 100`**（`:524`/`:554`/`:592`）
+     ⇒ 超 100 个模型**静默截断，响应里没有任何字段说明被截断了**
+
+9. **★★★ 折叠只在「没指定 model」且「模型数 > top」时发生。**
+   `foldUsageTrendRows:439` 的 `modelFiltered || len(rows)==0` 直接透传 ⇒ **指定 model 一律不折叠**；
+   `:455-457` 的 `len(ranked) <= top` 也透传 ⇒ **恰好 top 条不折叠**
+   ⇒ 判据必须用 **`>`** 而不是 `>=`。
+
+10. **★★★ `__others__` 固定排最后**（`:221-229`），其余按 `TotalRequests` 降序。
+    ★★ **`sort.SliceStable` 的「同请求数保持原序」客户端验证不了** ——
+    后端原序来自 SQL `ORDER BY 2, 1`（`:334`），响应里没有可比对的参照物。
+    ⇒ 我第一版写了 `trendTiesKeepOriginalOrder()` 去验这件事，**变异 #47 实测它恒真**
+    （在已排好序的序列上「相邻不递减」本来就是排序的定义）
+    ⇒ 重做成可验证的那一半：`trendSeriesNonIncreasing()`，并配了乱序负控。
+
+11. **★★ `degraded_reason` 与 `missing_view` 是同一个值**（`:209-210`、`:283-284`）⇒ 两键恒等。
+12. **★★ `hint` 可本地推导**（`dashboard_degrade.go:83-88`）⇒ 客户端自己拼（可本地化），
+    后端那份只当契约校验对象（`trendHintDisagrees()`）。
+13. **★★ detail 档的 `request_status` 是三态白名单**
+    `IN ('success','failure','rate_limited')`（`:383`/`:565`）⇒ 不是只看成功。
+    对照压缩统计的 `($3 OR rl.success)` 又是另一种口径。
+14. **★ 租户：`statsTenantScope`（`stats.go:87-97`）** —— 角色不是 `super_admin`/`admin_key`
+    就用 `auth.TenantID` 并**忽略 `tenant_id` 参数** ⇒ tenant_admin 天然隔离。
+    ★ 与 data-lifecycle 的 `metrics` 端点（**不隔离但注册是 admin 档**）**恰好相反**
+    ⇒ 本族是本仓**第四种**租户口径。
+15. **★ 超时 45 秒**（`:182`/`:260`），detail 档长窗可能超时
+    （文件头注释：前端对超时给出「缩短时间范围」提示）。
+
+### 桌面对照：两处**不要抄**
+
+- `web/src/api/usage.ts:456`/`:474` 把 `degraded` 声明成 `degraded?: boolean`
+  ⇒ 可选，暗示可能缺键，但后端恒发 ⇒ 桌面「缺键即降级」恒假
+- `BoardUsageTrendSection.vue:71` `resp.bucket_minutes || …` /
+  `UsageTrendExplorer.vue:167` `resp.bucket_minutes || 60`
+  ⇒ 后端恒发 int ⇒ **兜底恒不生效**，且 60 不是唯一合法档位（还有 5/15）
+
+### 顺带记录：后端文件头注释的格式损坏
+
+`usage_trend_series.go:21-23`：
+```
+// 唯一含 api_key_id 的读面；无 api_key 索引的旧分区上长窗会慢，前端对超时
+//
+//	给出「缩短时间范围」提示。
+```
+中间断了一行、`给出` 那行被 tab 缩进 ⇒ Go doc 把它当代码块渲染。不影响行为，但会误导读者。
+
+### 验证
+
+- 用例 **158 条全绿**
+- 变异 `/tmp/mut-co71.mjs` **54 条，54/54 有牙、零可疑**，`RESTORED=OK`（逐字节一致）
+- 三门 rc=0；`vue-tsc --noEmit -p tsconfig.app.json` rc=0；`npm run build` rc=0
+- 全量 **3801 条（135 文件）** rc=0；十连跑 10/10
+- U+FFFD 自查：源、用例、两侧 i18n 均 0
+
+### 变异验证暴露的判据缺陷（真缺陷，已修）
+
+1. **锚点指错 2 条**（#43 / #54）：变异实际打红的是**相邻**用例，
+   而 `expect` 写在了「看起来最相关」的那条标题上 ⇒ 报成 STILL_GREEN。
+   连续第五批踩这个坑（第六十六~六十八、六十九、七十、本批）。
+2. **自己写出了恒真守卫 1 条**（#47 `trendTiesKeepOriginalOrder`）：
+   它承诺了一件客户端**无法验证**的事（后端 SliceStable 的原序），
+   在任何已排好序的载荷上都返回 true ⇒ 重做成可验证的 `trendSeriesNonIncreasing` + 乱序负控。
+3. **反向检测顺序写反**（首次跑就红 2 条）：`requireKeys` 先于「拿到对方载荷形状」检查，
+   报的是「缺 3 个键」而掩盖了真正的原因 ⇒ 改成**反向检测先于缺键检查**。
+4. **夹具数错 1 条**：写「25 个位置 21 个不同值」实际写了 23 个位置 13 个不同值。
+
+### 本批新增的类型门教训
+
+`noUncheckedIndexedAccess` 下 **`arr[i]` 一律是 `T | undefined`**：
+- 源文件里 `r.series[i].model` 直接编译不过 ⇒ 改用 `findIndex` / `slice(1).every` 这类
+  **不产生索引访问**的写法，而不是靠 `!` 糊过去
+- 测试文件里 4 处 `reqMock.mock.calls[0][1]` 与 6 处 `(d.series as …)[0]` 必须显式 `!`
+- 一轮 `vue-tsc` 只清掉当轮暴露的那批 ⇒ **要跑到 rc=0 为止**，不能看到少了就停
+
+
+### 顺带修掉的长期 flaky：十连跑第一次 run#8 失败（**首次具名**）
+
+第七十批之前就有「历史无污染跑 ≥180 次里失败 1 次（≈0.5%）」的记录，一直没具名。
+第七十一批十连跑第一次就撞上并落盘了快照 —— **具名两条，同一形态**：
+
+```
+FAIL src/views/ComplianceHitsView.spec.ts > 筛选与分页 > ★★★ records 有 total ⇒ 分页信息是精确的
+FAIL src/views/RoutingOptView.spec.ts   > 入口与窗口控件 > ★ 填精确匹配条件后提交 ⇒ 带 taskType/provider 重查
+TypeError: Cannot read properties of undefined (reading '0')
+  ❯ ComplianceHitsView.spec.ts:365  expect(recMock.mock.calls[1]![0]).toMatchObject({ offset: 50 })
+  ❯ RoutingOptView.spec.ts:216     expect(metricsMock.mock.calls[1]![0]).toEqual({...})
+```
+
+即：**单次 `await flushPromises()` 之后 `mock.calls[1]` 仍是 undefined**。
+
+**处置**：两个 spec 里**所有**索引 ≥1 的 `mock.calls[N]` 断言（共 8 处）前面
+插入显式等待，把「靠时序巧合」换成「等到调用发生」：
+
+```ts
+await vi.waitFor(() => {
+  expect(recMock.mock.calls.length).toBeGreaterThanOrEqual(2)
+})
+expect(recMock.mock.calls[1]![0]).toMatchObject({ offset: 50 })
+```
+
+`vi.waitFor` 默认超时 1000ms ⇒ **第二次调用真的不来时仍然失败**，
+且报错带最后一次断言的详情（比裸 `TypeError` 可读）⇒ **不会把真 bug 藏起来**。
+
+**★ 根因未完全定位，如实记录**：
+
+1. 我先猜「第二次请求的 promise resolve 得慢」。**受控复现失败**，而且顺带证伪了这个假设：
+   **`mock.calls` 记录的是调用时刻，不是 resolve 时刻** ⇒ 慢 resolve 根本不会让
+   `calls[1]` 变 undefined（第一次注入 `setTimeout(0)` 时全绿，正是因为
+   `flushPromises` 内部用 `setImmediate`/宏任务，一轮就把单层 timer 抓到了；
+   改成三层嵌套 timer 仍全绿；最后加到 20ms 也全绿）。
+2. 视图侧排除项：`ComplianceHitsView.vue` 与 `RoutingOptView.vue` 里
+   **都没有** `debounce` / `setTimeout` / `watch` ⇒ 「防抖晚到」这条假设也没有代码依据。
+3. 修前版本在 4 并发 × 6 轮（共 24 次）下也**没复现** ⇒ 触发条件更接近
+   run#8 那种整体高负载（该轮 `environment` 累计 120.51s，明显高于其他轮次）。
+
+⇒ 所以准确的说法是：**脆弱的时序断言已改成显式等待**，而不是「已定位并修复根因」。
+若将来再次偶发，快照会比原来更容易读（`vi.waitFor` 的超时信息带完整调用轨迹）。
+
+**本轮实验沉淀的判据纪律**：
+设计「复现 flaky」的注入实验前，先问**判据的输入变量是不是你以为的那个**。
+我连续两次把变量选错（选 resolve 时机、选防抖），两次都被「全绿」证伪；
+真正该选的变量（**发起时刻**）当时没找到可注入点。
+**「全绿」在复现实验里同样是结果，要读，不要当成实验没跑。**
