@@ -1024,7 +1024,7 @@ if (resp.next_cursor) cursors.set(page, resp.next_cursor) // 写的是 page
 
 **读的是本页的游标、而本页的游标此刻还不存在** ⇒ 永远 `undefined`
 ⇒ **从不发送游标** ⇒ 后端每页都返回第 1 页的 20 条
-⇒ 按 `stableKey` 去重后列表再���增长 ⇒ 用户无限滚动而内容不动。
+⇒ 按 `stableKey` 去重后列表再也不增长 ⇒ 用户无限滚动而内容不动。
 
 它没被任何门拦住，原因是一条**恒真判据**：
 
