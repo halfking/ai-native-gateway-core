@@ -130,6 +130,22 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.maasRates',
     requiresRole: 'super_admin',
   },
+  // MaaS 租户运维面。**superAdmin 档**（/api/admin/maas/tenants/** 全 superAdmin）⇒ 须设。
+  {
+    key: 'maas-tenant-ops',
+    to: '/maas-tenant-ops',
+    icon: 'user',
+    titleKey: 'nav.maasTenantOps',
+    requiresRole: 'super_admin',
+  },
+  // MaaS 配置面。**superAdmin 档** ⇒ 须设。
+  {
+    key: 'maas-admin-catalog',
+    to: '/maas-admin-catalog',
+    icon: 'key',
+    titleKey: 'nav.maasAdminCatalog',
+    requiresRole: 'super_admin',
+  },
   // MaaS 订单。**superAdmin 档**（admin/maas_handlers.go:14-24）⇒ 须设 requiresRole。
   // ★ 订单详情页 /maas-orders/:id 不占席，只有列表页进 DRAWER_NAV。
   {

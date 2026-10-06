@@ -378,6 +378,22 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/MaasWalletView.vue'),
     meta: { titleKey: 'mw.title', requiresAuth: true },
   },
+  // MaaS 租户运维面（**superAdmin 档**，2026-10-08：/api/admin/maas/tenants/** 全 superAdmin）。
+  // ★★ 这两个 usage 端点**按 days 换物理表**（≤7 读 request_logs_hot）。
+  {
+    path: '/maas-tenant-ops',
+    name: 'maas-tenant-ops',
+    component: () => import('@/views/MaasTenantOpsView.vue'),
+    meta: { titleKey: 'mt.title', requiresAuth: true },
+  },
+  // MaaS 配置面（superAdmin 档）：完整 settings + 含停用行的套餐/充值包。
+  // ★ 与 admin 档的 /maas-catalog 形状相近但**内容差异大**（折扣、基价、停用行）。
+  {
+    path: '/maas-admin-catalog',
+    name: 'maas-admin-catalog',
+    component: () => import('@/views/MaasAdminCatalogView.vue'),
+    meta: { titleKey: 'mac.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
