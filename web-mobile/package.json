@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "typecheck": "vue-tsc -b",
     "test": "vitest run",
+    "test:stability": "node scripts/run-vitest-stability.mjs",
     "css:check": "node scripts/verify-css-media-syntax.mjs",
     "touch:check": "node scripts/verify-touch-targets.mjs",
     "i18n:check": "node scripts/verify-i18n-parity.mjs",
