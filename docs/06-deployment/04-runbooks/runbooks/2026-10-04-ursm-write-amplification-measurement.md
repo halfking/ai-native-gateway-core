@@ -9129,3 +9129,85 @@ PG 17 支持 `pglz` 与 **`lz4`**（`ALTER SYSTEM SET wal_compression = lz4`）�
 
 ⇒ 四条里，**唯一不需要任何人的决定、纯技术就能拿的，已经拿完了。**
 剩下三条全部要你拍板。
+
+---
+
+## §10.84 启动期最后一条无守卫的 request_logs DDL：把 109 秒独占锁消掉
+
+§10.79 测到 `request_logs` 上存在最长 **109 秒**的 ACCESS EXCLUSIVE 独占锁，
+并指出 `ADD COLUMN IF NOT EXISTS` **不省锁**。本节找到它的来源并修掉。
+**未上线。**
+
+### §10.84.1 排查：`request_logs` 上不止一条 DDL 路径
+
+`db/db.go` 里 `request_logs` 的启动期 DDL 分属三条路径：
+
+| 路径 | 守卫 | 结论 |
+|---|---|---|
+| `ensureRequestLogSchema`（31 列 + 13 索引） | `catalogShortCircuitSQL`：逐项比对 `information_schema.columns` / `pg_indexes`，缺失数为 0 就**零 DDL 零锁**返回 | ✅ 已短路 |
+| `ensureRoutingAnalyticsColumns`（:3522） | 有守卫 | ✅ |
+| **`ensureWorkTypeSchema` → `workTypeSchemaSQL`（:4205）** | **无** | ★ **元凶** |
+
+生产实测前两者的守卫清单**全部在位**（父表 31 列、hot 表 11 列、13 个索引，缺失 0 行）
+⇒ 短路径确实生效，109 秒那把锁**只可能来自第三条**。
+
+### §10.84.2 为什么这条特别贵
+
+```sql
+ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS work_type TEXT;
+```
+
+PG 必须先对**父表及全部月分区**取 ACCESS EXCLUSIVE，**才能**去检查列是否存在。
+生产 `request_logs` 有 **5 个月分区** ⇒ 一条什么都不改的语句要锁住 **6 个关系**，
+而且 `ensureWorkTypeSchema` 每次启动都无条件执行。
+
+这与 §10.73 记过的 `request_logs` 被反复 `ALTER` 是同一块表、同一类代价。
+
+### §10.84.3 改法
+
+把触碰 `request_logs` 的两条语句从 `workTypeSchemaSQL` 里摘出来成为
+`workTypeRequestLogsDDL`，并加 catalog 守卫 `workTypeRequestLogsCurrent`
+（列 + 索引都查，两者作为一体应用，因为索引依赖列先存在）。
+守卫命中即**整段跳过**。
+
+⚠️ 守卫的失败分支**必须返回 false（执行 DDL）**：
+探测出错若被当成「已就绪」，一个真缺列的库会被静默跳过、再也补不上。
+这是本条最危险的失效方向，门对它单独设了判据。
+
+生产已确认 `work_type` 列与 `idx_request_logs_work_type` **均在位** ⇒ 守卫会命中。
+
+### §10.84.4 门与变异
+
+`db/work_type_request_logs_guard_test.go`（5 子测试）+ `scripts/.mutate-worktype-request-logs-guard.sh`：
+
+| 变异 | 注入 | 命中的子测试 |
+|---|---|---|
+| M78 | 把 ALTER 塞回 `workTypeSchemaSQL`（守卫形同虚设） | `request_logs_ddl_is_a_separate_constant` |
+| M79 | 守卫写成 `if false && ...`（结果被丢弃） | `ddl_is_applied_only_after_the_guard_misses` |
+| M80 | 探测失败当成「已就绪」跳过 DDL | `failed_probe_falls_through_to_the_ddl` |
+| M81 | 守卫只查列不查索引 | `guard_checks_both_the_column_and_the_index` |
+
+**4/4 全红。**
+
+### §10.84.5 本节一次真缺口（M79 抓到的）
+
+第一版门只断言「守卫调用在 DDL 之前」——那是**位置**。
+把守卫改写成 `if false && d.workTypeRequestLogsCurrent(ctx) {` 后，
+源码里它仍在 DDL 之前，但**返回值被整个丢弃** ⇒ DDL 照常执行，
+即守卫要消除的那个缺陷原样回来，而门全绿。
+
+★ **位置不是控制流。** 断言「守卫的返回值被当作条件消费」
+（必须存在 `if d.workTypeRequestLogsCurrent(ctx) {` 这一确切形式）
+才抓得住它。同族：断言「A 在 B 之前」推不出「A 影响了 B」。
+
+（另：M78 首轮没红是我变异脚本的锚点写错——写成 `work_type_config_l1`，
+实际是 `idx_work_type_config_l1`，替换没生效、等于没变异。
+**变异没施上时脚本会自己报「字节没变」并判失败**，所以这属于脚本 bug 而非门无牙。）
+
+### §10.84.6 影响与边界
+
+- 部署后每次启动，`request_logs` 上的独占锁**从「必然」变为「仅当列真缺失」**。
+- ⚠️ **未上线**。本节只改代码，不含生产变更。
+- ⚠️ **边界要说清**：这只消掉了启动路径里**最后一条**无守卫的
+  `request_logs` DDL。§10.79 提到的「79 个 ensureXxx 串行调用」整体收敛
+  仍是更大的题目，本次只处理了被实测证明在生产上仍在排锁的那一条。

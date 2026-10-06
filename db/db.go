@@ -3938,12 +3938,73 @@ func (d *DB) ensureOrchestrationRuntimeInstancesSchema(ctx context.Context) erro
 	return nil
 }
 
+// workTypeRequestLogsDDL is the slice of the 002_work_types schema that
+// touches request_logs. It is kept out of workTypeSchemaSQL and applied under
+// its own catalog guard because it is the one statement here that costs an
+// exclusive lock on the hottest table in the database.
+//
+// 2026-10-06: `ALTER TABLE … ADD COLUMN IF NOT EXISTS` does NOT spare the
+// lock. PG must acquire ACCESS EXCLUSIVE on the parent and on every partition
+// before it can check whether the column exists, so a column that has been in
+// place for months still costs a full exclusive pass on every boot — measured
+// at up to 109,456 ms on production (runbook §10.79). request_logs carries 5
+// monthly partitions there, so that is 6 relations locked for a no-op, on
+// every gateway start, blocking concurrent writers of the busiest table.
+//
+// ensureRequestLogSchema already solves this for its own 31 columns with a
+// catalog short-circuit (see its comment); this applies the same shape to the
+// last unguarded request_logs DDL in the startup path.
+const workTypeRequestLogsDDL = `
+ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS work_type TEXT;
+CREATE INDEX IF NOT EXISTS idx_request_logs_work_type
+    ON request_logs (work_type, ts DESC)
+    WHERE work_type IS NOT NULL AND work_type <> '';`
+
+// workTypeRequestLogsCurrent reports whether request_logs already carries the
+// work_type column and its index, i.e. whether workTypeRequestLogsDDL would be
+// a pure no-op. Both are checked because the DDL is applied as one unit: the
+// index cannot be created before the column exists.
+func (d *DB) workTypeRequestLogsCurrent(ctx context.Context) bool {
+	var missing int
+	err := d.pool.QueryRow(ctx, `
+		SELECT
+		  (SELECT count(*) FROM (VALUES ('work_type')) AS want(name)
+		   WHERE to_regclass('public.request_logs') IS NOT NULL
+		     AND NOT EXISTS (
+		       SELECT 1 FROM information_schema.columns
+		        WHERE table_schema='public' AND table_name='request_logs'
+		          AND column_name = want.name))
+		  +
+		  (SELECT count(*) FROM (VALUES ('idx_request_logs_work_type')) AS want(name)
+		   WHERE NOT EXISTS (
+		       SELECT 1 FROM pg_indexes
+		        WHERE schemaname='public' AND indexname = want.name))
+	`).Scan(&missing)
+	if err != nil {
+		// A failed probe must not be read as "current": that would skip DDL on
+		// a database that genuinely needs it. Fall through to applying it.
+		slog.Warn("work_type request_logs probe failed; applying DDL", "error", err)
+		return false
+	}
+	return missing == 0
+}
+
 func (d *DB) ensureWorkTypeSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
-	_, err := d.pool.Exec(ctx, workTypeSchemaSQL)
-	if err != nil {
+	if _, err := d.pool.Exec(ctx, workTypeSchemaSQL); err != nil {
+		return err
+	}
+	// Guarded separately: this is the only statement above that takes an
+	// exclusive lock on request_logs. Everything in workTypeSchemaSQL touches
+	// small config tables and is cheap to re-check.
+	if d.workTypeRequestLogsCurrent(ctx) {
+		slog.Info("work_type_config schema ensured (22 seed rows idempotent); " +
+			"request_logs work_type column and index already present, DDL skipped")
+		return nil
+	}
+	if _, err := d.pool.Exec(ctx, workTypeRequestLogsDDL); err != nil {
 		return err
 	}
 	slog.Info("work_type_config schema ensured (22 seed rows idempotent)")
@@ -4201,11 +4262,6 @@ BEGIN
             ON DELETE CASCADE NOT VALID;
     END IF;
 END $$;
-
-ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS work_type TEXT;
-CREATE INDEX IF NOT EXISTS idx_request_logs_work_type
-    ON request_logs (work_type, ts DESC)
-    WHERE work_type IS NOT NULL AND work_type <> '';
 
 INSERT INTO work_type_config (key, label, category, l1_task_type, default_profile, tags, prompt_keywords, sort_order)
 VALUES
