@@ -163,35 +163,39 @@ function modelLabel(name: string | null | undefined): string {
 
       <div class="card models-card">
         <h3 class="section-title">{{ qp('modelDetails') }}</h3>
-        <table class="quality-table">
-          <thead>
-            <tr>
-              <th>{{ qp('model') }}</th>
-              <th>{{ qp('overallQuality') }}</th>
-              <th>{{ qp('grade') }}</th>
-              <th>{{ qp('availability') }}</th>
-              <th>{{ qp('performance') }}</th>
-              <th>{{ qp('stability') }}</th>
-              <th>{{ qp('costEfficiency') }}</th>
-              <th>{{ qp('updatedAt') }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="m in sortedModels" :key="m.model_name || '__provider__'">
-              <td>{{ modelLabel(m.model_name) }}</td>
-              <td class="num">{{ formatQualityScore(m.quality_score) }}</td>
-              <td>
-                <span class="grade-badge" :style="gradeStyle(m.quality_grade)">{{ m.quality_grade }}</span>
-                <span class="muted"> {{ gradeLabel(m.quality_grade) }}</span>
-              </td>
-              <td class="num">{{ formatQualityScore(m.scores.availability) }}</td>
-              <td class="num">{{ formatQualityScore(m.scores.performance) }}</td>
-              <td class="num">{{ formatQualityScore(m.scores.stability) }}</td>
-              <td class="num">{{ formatQualityScore(m.scores.cost_efficiency) }}</td>
-              <td class="muted">{{ formatCalculatedAt(m.calculated_at) }}</td>
-            </tr>
-          </tbody>
-        </table>
+        <div style="overflow-x:auto">
+          <table class="quality-table">
+
+            <thead>
+              <tr>
+                <th>{{ qp('model') }}</th>
+                <th>{{ qp('overallQuality') }}</th>
+                <th>{{ qp('grade') }}</th>
+                <th>{{ qp('availability') }}</th>
+                <th>{{ qp('performance') }}</th>
+                <th>{{ qp('stability') }}</th>
+                <th>{{ qp('costEfficiency') }}</th>
+                <th>{{ qp('updatedAt') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="m in sortedModels" :key="m.model_name || '__provider__'">
+                <td>{{ modelLabel(m.model_name) }}</td>
+                <td class="num">{{ formatQualityScore(m.quality_score) }}</td>
+                <td>
+                  <span class="grade-badge" :style="gradeStyle(m.quality_grade)">{{ m.quality_grade }}</span>
+                  <span class="muted"> {{ gradeLabel(m.quality_grade) }}</span>
+                </td>
+                <td class="num">{{ formatQualityScore(m.scores.availability) }}</td>
+                <td class="num">{{ formatQualityScore(m.scores.performance) }}</td>
+                <td class="num">{{ formatQualityScore(m.scores.stability) }}</td>
+                <td class="num">{{ formatQualityScore(m.scores.cost_efficiency) }}</td>
+                <td class="muted">{{ formatCalculatedAt(m.calculated_at) }}</td>
+              </tr>
+            </tbody>
+        
+          </table>
+        </div>
       </div>
     </template>
   </div>
