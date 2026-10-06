@@ -1,10 +1,18 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import type { Ref } from 'vue'
 
-// useWindowClass — 四档窗口 SSOT 的 TS 镜像（UI规范 01 §2）。
+// useWindowClass — 四档 window class 在 web-mobile 侧的 TS 镜像（UI规范 17 §4-R11）。
 // CSS token（styles/theme.css --app-bp-*）无法被 media query 引用，数值
 // 必须双镜像：改一处必改另一处；本文件断言见 useWindowClass.spec.ts。
 // JS 判移动只走 useWindowClass / currentWindowClass()，禁止新造 px 常量。
+//
+// ⚠️ 这里的 600/960/1280 **不是** UI规范 01 §2.1 的 768/1024/1440，也不是笔误。
+// 01 §2.1 对那组数值的原文是「参考仓用的是 600/960/1280。**本项目不采用**」，
+// 指的是本仓 `web/`（桌面侧，SSOT 在 `web/src/config/breakpoints.ts`）。
+// 17 号文档第 33 行的本仓注写明了两套并存：web-mobile/ 用 600/960/1280 自有断点，
+// 与 web/ 的 768/1024/1440 是两套事实，并明确「不要拿一套去改另一套」。
+// ⇒ 四档的**分类思路**来自 01 §2，本仓侧**数值**来自 17 §4-R11。
+// 改这里之前先回读那两段，别把 600 改成 768「对齐 01」。
 
 export type WindowClass = 'compact' | 'medium' | 'expanded' | 'large'
 
