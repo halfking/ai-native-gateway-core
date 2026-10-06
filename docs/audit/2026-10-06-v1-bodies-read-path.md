@@ -150,7 +150,7 @@ func SessionBodiesSourceSQL() string {
 
 ---
 
-## 五、门（4 道，常驻）
+## 五、门（5 道，常驻）
 
 | 门 | 断言什么 | 变异检验 |
 |---|---|---|
@@ -158,9 +158,17 @@ func SessionBodiesSourceSQL() string {
 | `TestBodiesReadPathClassifierSeparatesTheTwoHelpers` | 分类器分得清两个 helper | 退回裸 `Contains` → 红 |
 | `TestBodiesNativeReadKeyInRealDB` | 键**能读到**（读不到判红）+ 由值推出结论文字，两个分支都自洽 | —（**有意不断言配置值**：设成 true 是目标，不是缺陷） |
 | `TestBodiesReadPathAgreesWithTheShapeRegistry` | 与既有 `v1BodiesReaderShapes` **双向对质**，钉住切缝 | — |
+| ★ `TestBodiesSwitchPairIsPinnedAndPaired` | **P1 那一对开关逐个点名**（读端/写端各一、键名正确、两侧源码都带 **false 兜底**）—— 防止「只翻读端」重新变成一个看起来成立的选项 | 删写端 ⇒ 红；写端键换成别的开关 ⇒ 红；兜底 false→true ⇒ 红 |
 
-4 个变异全部按预期变红。★ 变异期间还抓到我一处**归属错误**：
-我一度把「默认臂 = v1」写成自己的发现，而既有登记表早已逐字登记。
+第 5 道是第七节那个生产实测出来之后才补的（**新门进代码却漏进本表**，
+是下一轮现核「门名清单 vs 文档声明」时数出来的：实际 16 道，本节当时仍写 4 道）。
+
+**7 个变异全部按预期变红**（前 4 个来自上面的三档分类，后 3 个来自成对开关那道门）。
+★ 变异期间还抓到我两处自己的问题：
+一处是**归属错误**——我一度把「默认臂 = v1」写成自己的发现，而既有登记表早已逐字登记；
+另一处是**变异脚本自己失败**：删写端那一发按手算行号删，连续两次 AssertionError，
+而失败时 `go test` 打的是 **ok**——那看起来就是「删掉写端门仍然绿」。
+⇒ 脚本有 stderr 而门那行是绿，就说明没变异；变异要按**内容定位**而不是数行号。
 
 ### ⚠ 我自己写了一道重复的门，然后删掉了
 
