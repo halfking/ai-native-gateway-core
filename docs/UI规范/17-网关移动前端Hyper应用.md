@@ -8576,3 +8576,107 @@ stats 的响应是 `overall` + `by_provider` + `by_annotator` + `by_reason` 四�
 三门 / `vue-tsc` / `build` 全 rc=0；十连跑 10/10（3266 × 10）。
 
 文档 §11.99 纯追加。
+
+### 11.100 第六十四批：审批查询面 API 层
+
+#### 11.100.1 ★★★★ 本族最刺眼的一处：`total` 不是真实总数
+
+`ListApprovals`（`api/approval_handler.go:336-372`）：
+
+```go
+filter := &sessionaudit.ApprovalFilter{
+    Limit:  req.PageSize,
+    Offset: (req.Page - 1) * req.PageSize,
+}
+records, err := h.manager.List(r.Context(), filter)
+// Get total count (simplified - return length for now)
+total := len(records)                                   // :348-350
+...
+totalPages := (total + req.PageSize - 1) / req.PageSize  // :357
+if totalPages < 1 { totalPages = 1 }
+```
+
+⇒ `records` 已带 `Limit`/`Offset`，**就是当前这一页**，
+所以 `total` = 本页返回了几条，**不是库里一共几条**
+（源码注释自己写着 "simplified - return length for now"）。
+
+连带地 `total_pages` 也失真：`total ≤ page_size` ⇒ `totalPages` **恒为 1**。
+
+⇒ **UI 绝不能**：
+- 显示「共 N 条」而不说明那是本页数；
+- 用 `total > items.length` 判断「还有更多」（永远为 false ⇒ 永远没有下一页）。
+
+翻页只能靠「本页取满」（`items.length >= page_size`）。
+
+#### 11.100.2 ★★★★ `risk_level` / `trigger_type` 可以是空串
+
+`buildListItem`（:530-549）只在 `record.DetectResult != nil` 时才填这两列：
+
+```go
+if record.DetectResult != nil {
+    item.RiskLevel   = string(record.DetectResult.Decision)
+    item.TriggerType = record.DetectResult.Reason
+}
+```
+
+⇒ 没有检测结果的行，这两列是**空字符串**，
+既不是「低风险」也不是「无风险」，是**「不知道」**。
+
+★ 与 [[累计量 ≠ 现状]] 同源：空串在这里是「未检测」，
+若渲染成「低」会让人以为系统判定过。
+
+#### 11.100.3 ★★★ `time_left` 与三个 omitempty 键
+
+| 键 | omitempty | 何时出现 |
+|---|---|---|
+| `time_left` | 是 | **仅** `status == pending` 且 `time.Until(ExpiresAt) > 0`（:551-556） |
+| `approved_by` | 是 | 已审批 |
+| `approved_at` | 是 | 已审批 |
+| `reason` | 是 | 有理由 |
+
+⇒ **`status == "pending"` 但**没有 `time_left` = **已过期却还标着待审批**。
+UI 必须显示「已逾期」，不能显示成「待审批中」。
+
+⚠ 判别样本的必要性在这里体现得很具体：
+`approvalCountingDown` 里的 `status === 'pending' &&` 去掉后，
+**全部 pending 夹具都测不出来**（它们的 `time_left` 要么有要么本就 pending）——
+需要构造「**已审批但仍带 `time_left`**」这个取值才能让两种实现分叉。
+（后端只在构造时按当时状态填一次，不回填清理，所以这个组合真实可达。）
+
+#### 11.100.4 ★★ 三种静默行为与一个「混口径」的统计端
+
+- `page` 非整数或 ≤0 ⇒ 静默回落 **1**（`err == nil && val > 0`）；
+- `page_size` 非整数或 >200 ⇒ 静默回落 **50**（多条件 `&&` 全过才用）；
+- `status` **完全不校验** ⇒ 非法值直接进 SQL filter，结果是**空列表**而非 400；
+- `start_time` / `end_time` 是 **RFC3339**，格式错 **`if err == nil` 不成立 ⇒ 静默忽略**（:398-408）。
+
+★ `ApprovalStats` 里还**混着两套口径**：
+`today_total` / `today_pending` 在 `calculateStats` 里按「今天」单独算，
+而 `start_time`/`end_time` 控制的是**其余八个字段**。
+⇒ 同一份响应里，六个数字是「按你给的时间范围」，两个是「今天」。
+
+另：`avg_approval_time_seconds` 是 `float64` 零值，
+分母为 0 时留 `0.0` ⇒ 与「真的是 0 秒审批」不可分，
+判据要看 `approved + rejected`（变异 #14 的判别样本：
+「`approved=0` 但 `rejected>0`」——这一种取值两种实现才分叉）。
+
+#### 11.100.5 权限与不碰的写操作
+
+两条注册都是 `wrapAdmin(...)`（`cmd/gateway/main.go:7384-7385`）
+⇒ tenant_admin 可用 ⇒ 抽屉席不设 `requiresRole`。
+
+不碰 `/api/v1/approvals/*` 下的 **approve / reject / resume** 三条
+（:7375-7381）：它们**真的改变审批状态**（会导致超时、影响会话是否放行）。
+
+#### 11.100.6 验证
+
+- 用例 **39 条**（`api/approvals.test.ts`）
+- 变异 `/tmp/mut-co64.mjs` **19 条，19/19 有牙、零可疑**，`RESTORED=OK`（逐字节一致）
+- 三门 / `vue-tsc` / `build` 全 rc=0；全量 3305 条（128 文件）rc=0；十连跑 10/10
+- ★ 首轮 16/19，三条异常里有**两条是判据无牙**（#5/#14，缺判别样本），
+  一条是**锚点错**（#19）。
+  补两条判别样本后，#5/#14 从「仍全绿」变成「红在**新加的那条**」——
+  这正好印证 [[量具先自证]] 的判读顺序：
+  **「仍全绿」先问判据够不够严（这里是不够），「rc≠0 没抓到名」先问锚点对不对。**
+
+文档 §11.100 纯追加。
