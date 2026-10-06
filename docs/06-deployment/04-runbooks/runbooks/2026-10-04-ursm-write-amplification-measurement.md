@@ -5968,3 +5968,80 @@ pss 窗口 `06:00:53 → 12:51:04` 内 `analyze_llm_gateway_table_stats` **Δcal
 且按 §10.52.2 的形状，收益比「均匀减半」更明确
 （消除的是挤在一起的那一次，不只是平均值的一半）。
 **未执行，等授权。**
+
+---
+
+## §10.53 追完锁的去向：promote 本来就有互斥，缺口只有 analyze
+
+§10.51.3 把「13 个 promote 函数体内无 advisory 调用」标成未验证项，
+并写了「锁可能在调用方」。本节追完，**结论同时更正 §10.51.3 的第 2 条**。
+
+### §10.53.1 锁在 Go 侧，promote 双实例是**设计上就考虑到的**
+
+`bg/partition_manager.go:1527-1598`，注释原文：
+
+> Both gateway instances (e.g. 245 + 154) share the same PostgreSQL, so two
+> concurrent hourly promote cycles can race the same `*_hot` table and one
+> ends up blocked into PG statement_timeout. `pg_try_advisory_xact_lock` on
+> this key makes the loser **skip the table for that tick** instead of waiting.
+
+每个 label 一把 `promoteLockKey`（FNV-1a，跨实例同值），
+取锁在**调用函数之前**，抢不到就 `Rollback` + Debug 日志跳过本表。
+
+⇒ **更正 §10.51.3 第 2 条**：「`promote_session_turns` 用阻塞锁 ⇒ 245 空等 5min」
+**不成立**。Go 的 try-lock 已在函数之前把输家挡掉，输家根本到不了函数内部的
+阻塞锁。何况两把锁**键空间不同**：
+
+- Go 侧：`fnv64a("llm-gateway:promote:" + label)`
+- 函数内：`hashtextextended('public.promote_<fn>', 0)`
+
+⇒ promote 侧**双实例不是缺陷，是被显式设计覆盖的形态**。
+
+### §10.53.2 真正的缺口只有一个：analyze 没有任何互斥
+
+`analyzePartitionStats`（:1756）**通篇无 advisory 调用**：
+Begin → `SET LOCAL statement_timeout` → 直接 `SELECT analyze_llm_gateway_table_stats($1)`。
+而它一次 ANALYZE 整组 **44 张表**，两台各跑一遍。
+
+⇒ 这才是 §10.52 实测到的 7+7=14（`tables: 44` 各一次），
+也是 3.54% 窗口占用的来源。**修 analyze 一处即可，不必动部署拓扑。**
+
+### §10.53.3 修法（提交 `219421f5a`，未部署）
+
+沿用**同文件已有的** try-lock 写法，在 `SET LOCAL` 之后、调用 analyze 之前
+抢 `analyzeLockKey()`；抢不到就 `Rollback` + Debug 日志跳过本轮，交给对端。
+
+`analyzeLockKey` 用 `llm-gateway:analyze:` 前缀，**与 promoteLockKey 分离** ——
+两作业独立，共用键会让 promote 持锁时 analyze 被跳过（反之亦然），
+那是不该有的耦合。
+
+粒度是「整轮一把锁」而非「每表一把」，因为 analyze 在单事务里处理固定的一组表。
+
+判据：键稳定性 + 撞键检测 + 接线门（读源码确认取锁在
+`analyzePartitionStats` 内、用 try 锁、有 `!locked` 跳过分支、
+日志可证伪、语句顺序为 `SET LOCAL → 取锁 → 调用`）。
+
+变异台账：
+
+| 编号 | 变异 | 期望 | 实测 |
+|---|---|---|---|
+| M44 | 把 `analyzeLockKey()` 换成别的键 | 接线门红，**键判据仍绿** | ✅ |
+| M45 | 删掉 `!locked` 分支 | 接线门红 | ✅ |
+| M46 | 让 `analyzeLockKey` 直接返回 `promoteLockKey(...)` | 撞键判据红 | ✅ |
+
+⚠ **M46 第一版编译失败，按纪律不计**；重做成能编译的等价撞键后才确认命中。
+M44 的价值在于：抽掉取锁后**接线门红而键稳定性判据 `ok`** ——
+证明「只测函数、不测接线」会漏。
+
+### §10.53.4 与 §10.51.4 单实例化的关系
+
+两者都能消除重复 ANALYZE，**取舍不同**：
+
+| | analyze try-lock（`219421f5a`） | 单实例化开关（`42f0fda8a`） |
+|---|---|---|
+| 改动面 | 一个函数，**不动部署拓扑** | 改 245/154 的环境变量 |
+| 漂移风险 | 无：两台都在，谁抢到谁做 | 抢到的那台挂了就没人做 |
+| 覆盖 | 只治 analyze | 连 promote/归档一起关 |
+
+⇒ **先上 try-lock**（更窄、无漂移风险）；
+单实例化保留为可选的拓扑开关（`42f0fda8a` 已在仓里，默认不变）。
