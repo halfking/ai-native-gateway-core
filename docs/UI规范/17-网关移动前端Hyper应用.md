@@ -4105,3 +4105,154 @@ feedbackNoTotalNote:
   i18n parity **各 1295 键**（源码字面量键 **1035**，扫了 **130** 个 `.vue/.ts`）。
 - `dynamicKeys.spec.ts` 动态前缀增至 **13 处**
   （新增 `compliance.ftype_`，取值来自 `COMPLIANCE_FEEDBACK_TYPES`）。
+
+### 11.70 会话分析面测绘：数据源是**从未被刷新过的物化视图**（第三十四轮，测绘，未实现）
+
+本轮先做差集测绘再决定做哪一族。测绘对象：
+`GET /api/admin/session-analytics/{clients,tasks,users}` 及各自的 `/{id}` 详情
+（`admin/handler.go:1091-1098`，6 条注册**全部** `admin(...)` ⇒ **admin 档**）。
+
+**本节只记录已查实的契约与一个后端缺陷，本轮未实现视图。**
+
+#### ★★★★★★ 头号发现：`session_client_stats` 等四个物化视图**没有任何东西在刷新**
+
+`admin/session_analytics_*.go` 读的是**物化视图**（不是表）：
+`session_client_stats` / `session_task_stats` / `session_client_task_matrix` / `session_owner_stats`
+（创建于 `sql/migrations/startup/357_session_analytics_aggregation_views.sql:13`
+与 `358_session_ownership.sql`）。
+
+刷新函数是 `refresh_session_analytics_views()`（357:128 定义、358:382 重定义），
+它自己的注释写着「**建议每小时或每日执行**」（357:137 / 358:392）。
+
+★ **而它的调用点只有两处，都在 migration 文件的末尾**：
+
+    357:143   SELECT refresh_session_analytics_views();   -- 「初始刷新（首次创建后立即填充数据）」
+    358:396   SELECT refresh_session_analytics_views();   -- 同上
+
+已穷尽核实的排除项（**不是「我没找到」，是逐条查过**）：
+
+| 可能来源 | 核实结果 |
+|---|---|
+| `bg.MaterializedViewRefresher`（本仓唯一的周期性 MV 刷新器，`RefreshInterval = 10 * time.Minute`） | 它硬编码管理的**只有** `routing_analytics_7d` 与 `routing_audit_summary_7d`（`cmd/gateway/main.go:3854` 构造） |
+| `pg_cron` / cron 注册 | 全仓无针对这四个视图的注册（`382_session_module_executions.sql` 的 pg_cron 是别的事） |
+| 任何 `.go` 里的调度器 | 全仓 `.go` 提到 `session_task_stats`/`session_owner_stats`/`session_client_task_matrix` 的**只有 `admin/` 的读取处** |
+| 安装脚本 / shell | 只有 `scripts/_lib/db-init-lib.sh` 提到过该函数名，且是在讲**另一个**问题（见下） |
+
+⇒ 迁移按版本在 `public.schema_migrations` 记账（`db/db.go:770/1043/1216` 的 `INSERT`）、
+**每个版本只跑一次** ⇒ 这四个视图自建表那次的「初始刷新」之后，
+**再没有任何自动刷新路径**。
+
+⚠️ **未验证的部分（不能下结论的部分）**：本轮**没有真库**，
+所以「线上现在是不是冻结的」**未实测**；运维手工执行过该函数也可能。
+**能确定的是「代码与迁移里没有周期刷新路径」**，不能确定「线上数据一定没变过」。
+
+★ 附带查到的一条**同类历史事故**：`scripts/_lib/db-init-lib.sh:283-296` 的
+Round 43 注释记载，`COMMENT ON FUNCTION refresh_session_analytics_views()`
+曾因被 pg_dump 排到 `CREATE FUNCTION` **之前**而导致 baseline 生成时整文件回滚
+（`function public.refresh_session_analytics_views() does not exist`，
+另见 `docs/handoff/20261001-baseline-generator-round.md:65`）
+⇒ 这个函数**连「存在」都曾经不稳定过**。
+
+**客户端义务（下一批实现时必须落进去）**：
+列表响应里**有 `refreshed_at`**，页面**必须显示「数据截至 …」**，
+否则等于把一份可能冻结的数字当实时指标展示。
+
+#### ★★★★★ `refreshed_at` 在**空列表**时是 Go 零值
+
+`var refreshedAt time.Time` 在循环**外**声明，每行 `rows.Scan(..., &refreshedAt)` **覆盖**，
+循环不执行就保持零值 ⇒ 空列表时序列化成
+`0001-01-01T00:00:00Z`。
+且它是**最后一行**的值——同一页内各行 `NOW()` 相同所以看不出差异，
+但**它不是「查询时刻」也不是「视图创建时刻」**，只是这一页最后扫到的那一行的刷新戳。
+
+#### ★★★★ 扫描失败是 `continue`（**静默丢行**），与 output-compliance 相反
+
+```go
+err := rows.Scan(...)
+if err != nil {
+    warnRowSkip("session analytics clients", err)
+    continue          // ← 跳过这一行，整份列表照常 200 返回
+}
+```
+
+⇒ 与 `output_compliance_handler.go` 的「一行为空 ⇒ **整个端点 500**」
+（§11.67 坑 7）**方向完全相反**。
+
+★ 由此产生一条**跨端点不可套用**的结论：
+`total` 来自独立的 `COUNT(*)`，而列表可能因为坏行而**少于** `total`
+⇒ **「共 N 条」与实际渲染条数天然可能对不上**。
+客户端必须**允许**「本页显示数 < total」并说明原因，**不能**把它当分页 bug。
+
+#### 可空列：哪些 NULL 会让整行消失
+
+物化视图定义（357:13-36）决定了可空性：
+
+| 列 | 视图里的表达式 | NULL 时 |
+|---|---|---|
+| `avg_health_score` | `AVG(health_score)::INT` | ✅ 已用 `sql.NullInt64` 兜住 |
+| `avg_latency_ms` | `AVG(avg_latency_ms)::INT` | ✅ 同上 |
+| `models_used` | `array_agg(...) FILTER (...)` | ✅ Go 侧 nil → `[]` |
+| **`first_seen_at`** | `MIN(first_request_at)` | ★★ **裸扫进 `time.Time` ⇒ NULL ⇒ 该行被 `continue` 丢掉** |
+| **`last_seen_at`** | `MAX(last_request_at)` | ★★ 同上 |
+| `total_cost_usd` / `avg_cost_per_session` | `SUM/AVG(...)` | ★ 可为 NULL ⇒ 裸扫 `float64` ⇒ 同样丢行 |
+
+★ `session_summaries.first_request_at` / `last_request_at` 是
+`timestamp with time zone` 且**无 NOT NULL**（`655_session_summaries_schema_reconcile.sql:48-49`）
+⇒ NULL 在库层面是允许的。
+
+#### 分页与排序（本仓第五种越界语义）
+
+- ★★★★ `limit := queryInt(r, "limit", 50)`；`if limit < 1 || limit > 200 { limit = 50 }`
+  ⇒ 越界是**回落 50**，**既不是 clamp 也不是回落 20**
+  （对比：pending 50/500 clamp、request-anomalies 50/500 clamp、
+  output-compliance 20→200 clamp、prompt-injection 20 **回落**）。
+- `offset := queryInt(r, "offset", 0)`。
+- ★★★ 三个列表的**默认排序各不相同**：
+  | 端点 | 默认 `order_by` | switch 认的值 | 未命中时 |
+  |---|---|---|---|
+  | clients | **`cost`** | `sessions` / `health` | 落回 `total_cost_usd DESC` |
+  | tasks | **`sessions`** | `cost` / `health` | 落回 `session_count DESC` |
+  ⇒ `switch` **没有 default 分支** ⇒ 传 `order_by=xxx` **静默落回默认排序，不报错**。
+- 响应 `{clients|tasks, total, limit, offset, refreshed_at}` —— **这族有 `total`**。
+
+#### 权限：比 `admin(...)` 更严
+
+- ★★★ 三处列表都显式挡普通用户：
+  `if IsRegularUser(r) { writeError(w, 403, "client analytics requires admin access") }`
+  ⇒ **注册档位是 admin，但普通用户仍被单独拒绝**。
+- ★★★ 租户隔离：非 superAdmin 且显式传了别的 `tenant_id` ⇒ **403 cross-tenant**；
+  非 superAdmin 且**不传** ⇒ **自动填成 `callerTenant`**（不是报错、也不是全库）。
+- 三个列表的 403 文案各不相同（`client analytics…` / `task analytics…`）。
+
+#### 错误分类：42P01 单列一档（**503**，不是 404）
+
+`writeAnalyticsDetailErr`（`admin/session_analytics_mv_guard_test.go:20-45` 固化的契约）：
+
+| 错误 | 状态 | 载荷 |
+|---|---|---|
+| `pgconn.PgError{Code:"42P01"}`（物化视图不存在） | **503** | 含 `analytics_view_missing` 与视图名 |
+| 其它（含 `ErrNoRows`） | **404** | 原文案 |
+
+★ 测试注释自陈这是 R35 复审的修复：「detail 端点此前把一切查询错误吞成 404——
+缺 357 视图时误导排查」。
+⇒ 与本仓其它族的 `{"error":"…"}` 字符串信封并存，**这一族多一个结构化引导码**。
+
+#### 下一批待办（留档）
+
+- 实现 `clients` / `tasks` 两个列表（同一 MV 族、形状对称，各带 `total`），
+  页面**必须显示 `refreshed_at`「数据截至」**；
+- `tasks` 比 `clients` 多一个 `clients_used` 数组；
+- `users` 列表的 handler 在 `admin/user_profile.go`，**读的是 `session_ownership` 活表**，
+  不是物化视图 ⇒ **数据新鲜度与前两者不同**，不能套用同一条说明；
+- 三个 `/{id}` 详情形状各不相同（`ClientAnalyticsDetailResponse` 含
+  `related_tasks`/`daily_cost_trend`/`recent_sessions`）。
+
+#### 本轮门禁
+
+- 本节**只做测绘**，未改任何 `web-mobile/` 代码；
+- 测绘本身的方法论：路由字面量 `grep` 得 **657 条 / 267 个域**，
+  移动端已覆 **37 个域**（`grep` 两份清单 → 去 `/api/` 前缀 →
+  `${…}` 折成 `{x}` → 排序后 `comm`）。
+  ★ **踩坑**：`comm` 要求字典序，我第一次喂的是按端点数降序的列表，
+  于是把 `prompt-injection` / `output-compliance` **误报成未覆盖**。
+  ⇒ **先排序再 `comm`**，否则差集结论整体不可信。
