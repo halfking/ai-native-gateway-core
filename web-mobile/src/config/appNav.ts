@@ -224,6 +224,16 @@ export const DRAWER_NAV: readonly NavItem[] = [
     icon: 'check',
     titleKey: 'nav.approvalConfig',
   },
+  // 审批队列（运行中的审批实例）。★ **admin 档**（main.go:7384-7385 两条
+  // 都是 wrapAdmin）⇒ tenant_admin 可用 ⇒ **故意不设** requiresRole；
+  // 设成 super_admin 必须让判据红。
+  // ★ 不碰 /api/v1/approvals/* 的 approve/reject/resume（真的改审批状态）。
+  {
+    key: 'approval-queue',
+    to: '/approval-queue',
+    icon: 'clock',
+    titleKey: 'nav.approvalQueue',
+  },
   // 审批人与规则。同样 admin 档，同样**故意不设** requiresRole。
   {
     key: 'approval-rules',

@@ -226,6 +226,17 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/AnnotationsView.vue'),
     meta: { titleKey: 'annotations.title', requiresAuth: true },
   },
+  // 审批队列（运行中的审批**实例**，只读）。
+  // ★ admin 档：cmd/gateway/main.go:7384-7385 两条注册都是 wrapAdmin(...)
+  //   ⇒ tenant_admin 可用 ⇒ 抽屉席**不设** requiresRole。
+  // ★ 与 /approval-config（配置）、/approval-rules（审批人与规则）不重叠：
+  //   那两页答「该问谁 / 什么条件下拦」，本页答「现在有几条在等」。
+  {
+    path: '/approval-queue',
+    name: 'approval-queue',
+    component: () => import('@/views/ApprovalQueueView.vue'),
+    meta: { titleKey: 'approvalQueue.title', requiresAuth: true },
+  },
   // ── 全局横向对比面（2026-10-07）──────────────────────────────────────
   // 与 /funnel 配对：漏斗是单模型纵深，矩阵/流量是全体模型横向对比。
   // ★ 两条都是 superAdmin：matrix/flow 在 RegisterAnalyticsRoutes 里
