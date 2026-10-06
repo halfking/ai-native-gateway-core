@@ -48,7 +48,9 @@
 | 告警 | `/alerts` | `/api/candidate-failures/alerts` | 时间线卡片 |
 | 路由检查 | `/routing` | `GET /api/routing/resolve?model=` | 抽屉席位；输入模型名 → 可路由/被阻塞候选分组（2026-10-06，见 §11） |
 | 供应商 | `/providers` | `GET /api/providers` | 抽屉席位；卡片 + 搜索（客户端）+ 可用性筛选（**服务端** routability）（2026-10-06，见 §11.6）；卡片可点开该供应商的**节点操作审计** Sheet |
+| 请求日志 | `/logs` | `GET /api/logs` | 抽屉席位，admin 档（tenant_admin 可用）；**时间窗按租户收窄**（2026-10-06，见 §11.15） |
 | 模型完整性 | `/integrity` | `GET /api/admin/model-integrity/{events,summary}` + `POST …/events/{id}/resolve` | 抽屉席位，**superAdmin 档**；**唯一的服务端分页列表** + 异常处置闭环（2026-10-06，见 §11.12） |
+| 请求日志 | `/logs` | `GET /api/logs` | 抽屉席位，admin 档（tenant_admin 可用）；**时间窗按租户收窄**（2026-10-06，见 §11.15） |
 | 模型完整性 | `/integrity` | `GET /api/admin/model-integrity/{events,summary}` + `POST …/events/{id}/resolve` | 抽屉席位，**superAdmin 档**；**唯一的服务端分页列表** + 异常处置闭环（2026-10-06，见 §11.12） |
 | 用量 | `/usage` | `/api/usage/summary` + `/api/usage/by-model` | 汇总卡 + 模型分布，Tab 停靠 |
 | 我的 | AccountSheet | `/api/auth/me` | 全屏 Sheet（用户/外观/语言/登出），02 §5 结构 |
@@ -456,3 +458,64 @@ id 非法 → 400 `invalid integrity id`（:276-279）。
 `web-mobile/` 实测：`vue-tsc -b` 通过；`vitest run` **168 用例 / 22 文件全绿**
 （新增 IntegrityView 5 条 + modelIntegrity API 13 条）；`npm run css:check` 通过（31 文件）；
 `npm run build` 通过。**并按 §11.13 的标准连跑 8 次全绿**（flaky 已消除）。
+
+
+### 11.15 请求日志（第五轮补齐，2026-10-06）
+
+`/logs` 抽屉席位，`GET /api/logs`（admin 档，**tenant_admin 可用**）。选它的理由：节点/
+供应商页回答「现在谁不健康」，请求日志回答「刚才那次到底发生了什么」——后者才是排障起点。
+
+**★ 时间窗会被后端静默收窄（`admin/logs.go:476` → `clampQueryWindowForTenant` :1336-1341）**：
+
+| 租户 | 最大跨度 | 常量 |
+| --- | --- | --- |
+| 非 default | **72h（3 天）** | `tenantLogQueryWindow` :1322 |
+| default / 空 tenant | **366 天** | `maxLogQueryWindow` |
+
+收窄方式是「**以 end 为锚、回推上限**」，且**响应里没有任何字段说明窗口被改过**，`count`
+也只是被改过之后的窗口内的计数。⇒ 用户选「最近 7 天」在非 default 租户上只拿到 3 天，
+看起来像「最近 3 天真的没请求」。
+
+⇒ 移动端的修法是 **UI 层就不提供超限选项**（`availableRanges` 按 `maxWindowHours()` 过滤），
+并额外显示 `logs.windowCapped` 提示。**不是**「先让用户选、事后告诉他被改了」。
+
+**分页参数与 model-integrity 不同**：`/api/logs` 用 `page` / `page_size`
+（`logs.go:478-488`，上限 500），**不是** `limit` / `offset`。两个分页端点参数名不同，
+照抄会静默停在第 1 页（多传的 `limit`/`offset` 被后端忽略，`page` 保持默认 1）。
+
+**第五种响应形态**：`{items, count, aggregate}`（`logs.go:831-833`）。本仓至此五形态并存，
+仍不抽通用解包器。
+
+**成本字段双形态**：`cost_usd` / `cost_display` 可能是 number 也可能是 string（列存路径按
+文本返回）。`costNumber()` 先挡空串 —— `Number('')` 是 **0** 不是 NaN，只判
+`Number.isFinite` 会把「无成本数据」渲染成「$0.0000」，那是在断言一个没有依据的数字。
+
+### 11.16 ★★★ flaky 收敛：这道题修了三轮才收敛（判据写法本身就是答案）
+
+`§11.13` 记录的 flaky 在新增 `/logs` 后**再次以同型复发**，且暴露出更深一层。
+三轮尝试的收敛过程（每一轮的失败都指向下一层）：
+
+| 尝试 | 做法 | 结果 | 它暴露的下一层 |
+| --- | --- | --- | --- |
+| 1 | `loadNext()` 前轮询 `controller.state` | 6 次里 3 次红 | ② state 会在 autoFill 轮间回 idle |
+| 2 | 轮询「不忙 **且** `mock.calls.length` 不变」 | 10 次里 8 次红 | ③ `mock.calls` 是**非响应式**的，定时器里读它同样有竞态 |
+| 3 | **固定时长真实等待**（macrotask 定时器） | **10 次全绿** | — |
+
+根因是 `autoFill`（`continuousList.ts:134-152`，07 §3 首屏补页 ≤3 页）本身是
+`for` 循环里 `await waitForIdleish()` **逐页**推进的：每轮之间 state 短暂回 idle ⇒
+任何「只看状态」的判据都会在间隙误判完成并提前返回。
+
+★ **这一轮的真正教训不是「用 sleep」**，而是：
+- **判据不该断言调用顺序**。`at(-1)` 等于把「补页正常发生」当成失败 ——
+  改成「请求集合**出现过** offset=0 / offset=20」后，判据与补页行为解耦，
+  这才同时消掉了 ② 和 ③。
+- 判据脆弱时，先问「**这个断言是否依赖被测系统没做的事**」。autoFill 不补页时
+  `at(-1)` 恰好成立，补页时就不成立 ⇒ 它验的不是映射规则，是**时序巧合**。
+- `vi.resetAllMocks()` 也不能替代等待：它清队列，不清**在途**。
+- 最终验收仍是**连跑 10 次全绿**（本轮达成）。
+
+### 11.17 本轮门禁（第五轮，含请求日志）
+
+`web-mobile/` 实测：`vue-tsc -b` 通过；`vitest run` **182 用例 / 24 文件全绿**
+（新增 RequestLogsView 5 条 + requestLogs API 9 条）；`npm run css:check` 通过（32 文件）；
+`npm run build` 通过。**并按 §11.16 的标准连跑 10 次全绿**。
