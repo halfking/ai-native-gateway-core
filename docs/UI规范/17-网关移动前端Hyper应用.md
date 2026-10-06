@@ -5986,3 +5986,210 @@ writeJSON(w, http.StatusOK, map[string]any{
 
 **下一批候选**：`admin/modules`（7）、`admin/logs`（7，混合读写）、
 `system/session-context`（6）。
+
+### 11.81 功能模块面上移（第四十五轮，`admin/modules`）
+
+本批把功能模块一族的**三条只读端点**上移。两个不碰的端点里有一个陷阱特别值得记：`POST /{key}/test` 虽然名字叫 test，但它**有外部副作用**。
+
+- 新 API 模块 `web-mobile/src/api/modules.ts`（三端点各自独立解包）
+- 新视图 `ModulesView.vue`（清单）+ `ModuleDetailView.vue`（详情 + 运行配置摘要）
+- 新路由 `/modules` 与 `/modules/:key`（**详情页不占抽屉席**）
+- 新增**一条 admin 档抽屉席** `modules`（**故意不设** `requiresRole`）
+- i18n 新命名空间 **`mods`** / **`modsDetail`**
+- 门禁：变异 **47/47 有牙**，用例 **101 条**（48 API + 27 列表视图 + 26 详情视图）
+
+#### ★★★★★★ 注册**不在** `admin/handler.go`，grep 路由注册必须限到全仓
+
+`admin/modules.go:1129-1134`：
+
+```go
+func (h *Handler) registerModuleRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/api/admin/modules",  h.admin(h.handleModulesList))
+	mux.HandleFunc("/api/admin/modules/", h.admin(h.handleModulesRouter))
+}
+```
+
+★ 我第一轮测绘**只 grep 了 `admin/handler.go`**，得出「这族根本没注册」的结论。
+⇒ 这是「推断出的陷阱必须追到代码确认」的又一例：路由注册分散在**多个文件**里，
+搜一个文件得到的是**否证**而不是证明。
+
+档位：两条都是 `h.admin(...)` ⇒ tenant_admin 可用 ⇒ 抽屉席**不设** `requiresRole`。
+`AppDrawer.spec.ts` 的 superAdmin 白名单**本批无需改动**（白名单是「被过滤掉的 key」逐个列出的断言，
+新增 admin 档席不会让它红）。
+
+#### ★★★★★★ `enabled: true` 可能是「没读到配置」的兜底，而且有**六种**成因
+
+`resolveModuleEnabled`（`admin/modules.go:628-648`）**五条**失败路径全部返回 `(true, "default")`：
+
+```go
+if m.SettingKey == ""   { return true, "default" }   // 1 压根没有开关
+sp := settings.Global.Spec(m.SettingKey)
+if sp == nil            { return true, "default" }   // 2 规格不存在
+raw, src, err := settings.Global.EffectiveValue(sp.Scope, m.SettingKey, "")
+if err != nil           { return true, "default" }   // 3 取值出错
+if raw == nil           { return true, "default" }   // 4 值为 NULL
+if err := json.Unmarshal(raw, &v); err != nil { return true, "default" }  // 5 值不是布尔
+```
+
+★ 复核 `settings/spec.go:284-317` 又查出**第六条**同形来源：优先级链是 **DB > env > default**，
+第 3 步 `return b, "default", nil` 把 spec 自己的 `Default` marshal 出来。
+
+⇒ ★★★ `source === "default"` 有**六种**成因，客户端**一种都分辨不出**。
+⇒ 页面**不说**「已启用」，只说「**没能读到配置**」或「读自 db/env」。
+
+#### ★★★ `source` 的取值集合被后端 doc 注释写死：只有三个
+
+`settings/spec.go:281-283`：
+
+```go
+// Returns (rawValue, source, error) where source ∈ {"db","env","default"}.
+```
+
+★★★ **我第一版测试夹具里编了 `'platform'` / `'tenant'` 两个不存在的值。**
+「夹具必须照抄后端」这条纪律又救了一次场 —— 但真正救我的是去读了那个函数的 doc 注释，
+而不是凭「source 听起来像作用域名」去猜。
+
+更糟的是我第一版把判读写成 `source !== 'default'`（「不是兜底就是真读到」），
+这在实现上恰好也成立，却**没有钉住取值集合**：任何新出现的 source 都会被判成「真读到」。
+⇒ 变异 T2 把实现退化成那一行，**全绿**。⇒ 补了「集合外的 source 不算真读到」这条判据。
+
+#### ★★★★★★ 配置键是**三**态，不是两态（第一轮测绘漏掉的第三态）
+
+`handleModulesGet` 的 config 循环（`admin/modules.go:816-833`）：
+
+```go
+raw, src2, err := settings.Global.EffectiveValue(sp.Scope, ck, "")
+if err != nil { continue }                       // ← 静默跳过（spec 不存在 或 取值出错）
+var v any
+jsoncol.Decode("admin.modulesGet/config_value", raw, &v)   // ← **没有 raw == nil 判断**
+config[ck] = map[string]any{"value": v, "source": src2, "spec": sp}
+```
+
+★ 对比 `resolveModuleEnabled` 是**有** `if raw == nil` 的。所以这里 `raw` 为 NULL 时
+**不会**被 `continue` 跳过，而是 `Decode` 失败、`v` 保持 nil、**键照样进 `config`**。
+
+⇒ 每个声明的配置键有**三**态：
+
+| 态 | 现象 | 成因 |
+|---|---|---|
+| 1 | **键整个不在** `config` 里 | spec 不存在 **或** EffectiveValue 报错（两处 `continue`，静默、无日志） |
+| 2 | **键在但 `value` 是 `null`** | 值确实是 NULL（读到了，只是没值） |
+| 3 | 键在且有值 | 正常 |
+
+⇒ 只报「缺了哪些键」会把第 2 态**误并进第 1 态**。页面三栏分开列。
+★ 顺带：旧的 `moduleConfigCoverage` 把第 2 态算作「已取到」（键确实在），
+而 `moduleMissingConfigKeys` 又看不到它 —— **同一个键，两条判据给出相反的结论**。
+
+#### ★★★★★★ 跨端点自相矛盾：同一个开关键，两处能对不上
+
+模块面和配置摘要读的是**同一个** `feishu_bot.enabled`，但判定函数不同：
+
+- `resolveModuleEnabled` 的失败路径 fallback 到 **`true`**
+- `readBool`（配置摘要里的）失败路径 fallback 到 **`false`**（Go 零值）
+
+⇒ ★★★ 读失败时，`GET /{key}` 报 `enabled: true`、`GET /{key}/config` 报 `enabled: false`。
+⇒ 页面**原样并列呈现两处**，不挑一个信、也不悄悄 reconcile。
+
+#### ★★★★★★ 配置摘要的两个**零值产物**
+
+`feishuBotConfigSummary`（`admin/modules.go:1289-1357`）的 20 个键是**逐个无条件赋值**的
+⇒ 响应里这 20 键**永远都在**，少一个都算形状不符（⇒ 20 条「缺它必抛错」判据）。
+但所有 `read*` helper 在 spec 不存在 / 取值出错 / raw 为 NULL / 解码失败四条路径上
+**全部返回零值**，于是有两个假信号：
+
+```go
+summary["allowed_user_count"] = len(strings.Split(readString("feishu_bot.allowed_users"), ","))
+// ★ readString 失败时返回 "" ⇒ strings.Split("", ",") == [""] ⇒ 长度是 1
+summary["quiet_hours_window"] = readString(start) + "–" + readString(end)
+// ★ 两端空时是字面量 "–"（U+2013 EN DASH），一个**看着像有值**的非空串
+```
+
+⇒ `allowed_user_count: 1` 不可分辨「一个都没配」与「恰好允许 1 个人」。
+⇒ 「静默时段非空」**不等于**配了。
+
+#### ★★ `/config` 只有 feishu_bot 实现 ⇒ 本仓**第一次**出现 501
+
+```go
+switch key {
+case "feishu_bot":
+	h.feishuBotConfigSummary(w, r)
+default:
+	writeError(w, http.StatusNotImplemented, "config endpoint not implemented for module: "+key)
+}
+```
+
+（此前本仓出现过 400/403/404/405/500/503/504，501 是新增。）
+⇒ 页面**先按 key 判断**再决定要不要给按钮，不去打注定 501 的请求；
+真收到 501 时**单列**渲染，不混进「其他错误」。
+
+#### ★★ `POST /{key}/test` 名字叫 test，但**真给飞书机器人发一条消息**
+
+`admin/modules.go:1169-1180` 的 handler 注释明写「对 feishu_bot：发送一条测试消息到
+`webhook_url`」⇒ **有外部副作用**，不是只读端点。本页一律不提供入口。
+（`PUT /{key}/toggle` 是写操作，同样不碰。）
+
+#### ★★★ `blocked_reason` 带 omitempty ⇒ 「没有阻塞」= 键**整个不存在**
+
+`moduleStatusMap`（`:731-738`）里 `CanToggleEnabled = (blocked == "")`，两者**联动**。
+⇒ 「没有阻塞」不是空串，是**键不存在**。⇒ `can_toggle_enabled: false` 时一定有非空
+`blocked_reason`，形如 `需先启用依赖模块: A、B`（只统计 `dep.Required` 的）。
+
+#### 读面三条的其余契约
+
+- `GET /api/admin/modules` ⇒ `{items: [...]}`，`items` 是 `make(..., 0, len(defs))` ⇒ **永不为 null**
+- `GET /{key}` ⇒ `{module, config}`，`config` 是 `make(map[string]any)` ⇒ 无键时是 `{}` 不是 `null`
+- `GET /{key}/config` ⇒ **没有信封**，响应本身就是那 20 个字段
+- 子树分派（`:1136-1161`）：`GET /{key}` / `PUT /{key}/toggle` / `POST /{key}/test` / `GET /{key}/config`，
+  其余（含空 key、`/{key}/unknown`）⇒ **404 `unknown modules endpoint`**
+- 503 有**两种文案**：`settings registry not initialised`（list/get）与
+  `settings not initialised`（feishubot 摘要）—— 都是 settings 注册表没起，**不是角色问题**
+
+#### ★★★ 本批的变异验证：47 条，挖出 **3 条真判据缺口**
+
+变异结果与分诊（`RESTORED=OK`，逐字节比对还原）：
+
+- **44/47 一轮就有牙**；余下 3 条经分诊**全是真缺口**，已补判据后二次跑满
+- `T4`（`moduleIsAlwaysOn` 退化成「只看 `setting_key`」）→ 仍全绿
+  ⇒ **缺口**：`setting_key === ''` 与 `source !== 'default'` 这两个条件**从没被拆开测过**
+- `T12`（`unwrapModules` 把 `Array.isArray(m.items)` 换成 `m.items !== undefined`）→ 仍全绿
+  ⇒ **缺口**：「键在但类型不对」这种形状**从没喂过**（裸数组被外层 `Array.isArray(resp)` 先挡掉）
+- `V9`（尾行的 `can_toggle_enabled ? '可' : '被依赖挡住'` 换成恒显示「可」）→ 仍全绿
+  ⇒ **缺口**：「不可切换」那一侧**从没被渲染过**
+- 另 5 条是**我 expect 串猜错**（写了 i18n 文案、或指向了另一条用例的名字），
+  红确实出现了、只是没命中我猜的名字 ⇒ 已按**实际 `it` 标题**改正
+- 2 条是**注入本身没施上**：D6 缩进写错（6 空格 vs 实际 8）、D9 替换串忘带标记
+
+★ 顺带修掉**产品真缺陷**：两个视图原本**一个刷新按钮都没有**（只读页没有任何重取手段），
+是写「先成功 → 再失败」序列用例时才发现的 ⇒ 两页各补一个 `common.refresh`。
+
+#### ★★★ 判据侧的自造错误（第 6 次 markdown 星号切断子串）
+
+`modsDetail.configThreeStateNote` 的文案是「每个声明的配置键有**三**种状态」，
+我断言 `toContain('三种状态')` —— `**` 把它切开了，**不是**子串。
+⇒ 判据串必须从**实际文案**里挑一段**不含 markdown 星号**的（本次改用「种状态」+「不是两种」）。
+
+★ 另一次是**否定断言被自己写的免责文案判红**：头号免责 `mods.fallbackNote` 把五条失败路径
+**逐条列出来**，其中一条就叫「没有开关键」⇒ 全页 `not.toContain('没有开关键')` 恒被自己的说明命中。
+⇒ 否定断言一律**按节点作用域**缩到条目内（`.mods__item .mods__note`）。
+
+#### 顺带修掉的仓库级缺陷：4 处 U+FFFD 乱码
+
+全仓扫 `U+FFFD`（非法 UTF-8 替换字符）发现 4 处**用户可见文案**里的汉字被吃掉，
+均由前几批引入：
+
+| 位置 | 原文 | 修成 |
+|---|---|---|
+| `src/i18n/zh-CN.ts:1363` | `这里◻◻◻的聚合计数` | `这里的聚合计数` |
+| `src/i18n/zh-CN.ts:2128` | `理论◻◻◻不该发生` | `理论上不该发生` |
+| `src/views/MaasOrdersView.spec.ts:16` | `跨租户要◻◻◻破` | `跨租户要突破` |
+| `src/views/InjectionConfigView.vue:5` | `（有没有被命中）◻◻◻ /injection` | `（有没有被命中）在 /injection` |
+
+⇒ ★ 建议在门禁里加一条「`src/**` 不得含 U+FFFD」的扫描：这类损坏**编译期完全合法**、
+测试**照样全绿**，只有肉眼读文案才会发现。
+
+#### 仍未上移
+
+`PUT /api/admin/modules/{key}/toggle`（写）、`POST /api/admin/modules/{key}/test`（**有外部副作用**）。
+
+**下一批候选**：`admin/logs` 的四条只读（`body-cache-stats` / `files` / `stats` / `archive/list`；
+**混合档** —— `config`/`archive`/`cleanup` 三条是 superAdmin）、`system/session-context`（6）。

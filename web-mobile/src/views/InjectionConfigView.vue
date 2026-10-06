@@ -2,7 +2,7 @@
 // InjectionConfigView — 提示词注入「配置面」（rules + engines + severity-matrix + canary-tokens，**admin 档**）。
 //
 // 它答的是「**现在用什么规则判、派到哪个模型、命中各级分别怎么处理、布了什么蜜罐**」。
-// 现象面（有没有被命中）��� /injection。
+// 现象面（有没有被命中）在 /injection。
 //
 // ⚠️★★★ 七个后端语义（详见 api/promptInjection.ts 文件头）：
 //
