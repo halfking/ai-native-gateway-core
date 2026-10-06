@@ -212,6 +212,15 @@ export const DRAWER_NAV: readonly NavItem[] = [
     icon: 'grid',
     titleKey: 'nav.approvalRules',
   },
+  // 附件留存清单。**admin 档**（handler.go:998-1008 六条全是 admin(...)）
+  // ⇒ **故意不设** requiresRole；设成 super_admin 必须让判据红。
+  // ★ 同一前缀下混着两条 superAdmin（cleanup/execute、filesystem/cleanup），本页两个都不碰。
+  {
+    key: 'attachments',
+    to: '/attachments',
+    icon: 'copy',
+    titleKey: 'nav.attachments',
+  },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))
