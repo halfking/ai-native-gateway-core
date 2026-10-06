@@ -170,6 +170,25 @@ export class ContinuousListController<T> {
     this.flightKey = null
   }
 
+  /**
+   * 组件卸载时调用（2026-10-06）。
+   *
+   * ★ 此前 HyperList 的 onBeforeUnmount 只 `observer?.disconnect()`，**没管在途请求**：
+   *   用户在列表加载途中切走（底栏/抽屉跳转，compact 档非常常见）⇒ fetchPage 的
+   *   await 续体照样回来改 `_items` / `emit()`，而组件已经不在了。
+   *   Vue 3 不报错、只产生一次警告 ⇒ 这个洞能一直躺着，单测也测不出来
+   *   （测试里卸载组件后照样全绿）。
+   *
+   *   加在 controller 层而不是每个视图里：AlertsView / ModelsView / NodesView /
+   *   ProvidersView / IntegrityView / RequestLogsView 六页都走同一条路径，
+   *   逐个视图补 abort 是「给每个用例加隔离助手」式的错解。
+   */
+  dispose(): void {
+    this._revision++
+    this.abortInFlight()
+    this.listeners.clear()
+  }
+
   private async fetch(kind: 'initial' | 'refresh' | 'next', page: number): Promise<void> {
     const revision = this._revision
     const key = `${this.opts.scopeKey ?? 'list'}#${revision}#${page}`

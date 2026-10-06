@@ -32,6 +32,9 @@ const formBudget = ref('')
 const creating = ref(false)
 const createdSecret = ref<string | null>(null)
 const createError = ref<string | null>(null)
+// 停用/启用的失败反馈（2026-10-06 补；原先 doDisable 无 catch ⇒ 失败静默）
+const disableError = ref<string | null>(null)
+const disabling = ref(false)
 const copied = ref(false)
 
 const formDirty = computed(() => formName.value.trim() !== '' || formAppCode.value.trim() !== '' || formBudget.value.trim() !== '')
@@ -107,17 +110,41 @@ async function doReveal(): Promise<void> {
   }
 }
 
+/**
+ * ★ 2026-10-06 修正：原实现**既无 catch 也无错误提示位** ——
+ * `try { ... } finally { disableTarget.value = null }`。
+ * 停用/启用失败时（如 409 已被别处停用、403 权限不足、500）用户点完确认框，
+ * 界面**毫无反馈**，误以为成功了。而同文件的 submitCreate 有完整 catch + 错误位
+ * （:48/:59/:193）⇒ 同页两套标准，这是漏写不是有意设计。
+ *
+ * 修复：加 catch + 错误位；403 单独说人话（权限档位问题，不是网络故障）。
+ */
 async function doDisable(): Promise<void> {
   if (!disableTarget.value) return
+  const target = disableTarget.value
+  const enabling = target.status === 'disabled'
+  disabling.value = true
+  disableError.value = null
   try {
-    if (disableTarget.value.status === 'disabled') {
-      await enableKey(disableTarget.value.id)
+    if (enabling) {
+      await enableKey(target.id)
     } else {
-      await disableKey(disableTarget.value.id)
+      await disableKey(target.id)
     }
     await controller.refresh()
-  } finally {
     disableTarget.value = null
+  } catch (err) {
+    const status = (err as { status?: number })?.status
+    disableError.value =
+      status === 403
+        ? t('keys.errForbidden')
+        : status === 409
+          ? t('keys.errConflict')
+          : err instanceof Error
+            ? err.message
+            : String(err)
+  } finally {
+    disabling.value = false
   }
 }
 
@@ -222,6 +249,10 @@ function keyName(k: ApiKey): string {
   </AppSheet>
 
   <!-- 停用/启用确认 -->
+  <!-- 停用/启用失败反馈（2026-10-06 补）。放在页面级而非确认框内：
+       AppConfirm 失败后会关闭（onConfirm 立即置 false），框内的提示没人看得到。 -->
+  <p v-if="disableError" class="keys__error" role="alert">{{ disableError }}</p>
+
   <AppConfirm
     :model-value="disableTarget != null"
     :title="disableTarget && disableTarget.status === 'disabled' ? t('keys.enable') : t('keys.disable')"

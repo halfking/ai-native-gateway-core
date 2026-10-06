@@ -89,6 +89,8 @@ export const enUS = {
     trend: 'Last 7 days',
     period: 'Last 7 days',
     requests: 'Requests',
+    errForbidden: 'Your account lacks permission for this operation',
+    errConflict: 'The key state changed (it may have been disabled or deleted). Refresh and try again.',
     cost: 'Cost',
     topModels: 'By model',
     backgroundTasks: 'Background tasks',
