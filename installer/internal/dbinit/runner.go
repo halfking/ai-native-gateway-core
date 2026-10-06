@@ -879,6 +879,12 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// REFRESH ... CONCURRENTLY 每轮重写 100% 的行（252 实测 100.7%，
 			// 真实差异仅 0.339%），是本网关库第 3 大 WAL 生产者（8.98%）。
 			"837_routing_mv_refresh_state.sql",
+			// 838: analyze_llm_gateway_table_stats 每月每小时重分析「上月」那批
+			// 冻结分区（跨月后不再写入、统计量不会失效）。252 实测这批占整趟
+			// 逐列统计工作量的 25.7%（§10.92），是网关库当前数据库时间的
+			// 第一名（81.0%，约 56 分钟/天）。改为：往月分区仅在
+			// pg_statistic 无行（从未被分析过）时才补，当月仍无条件分析。
+			"838_analyze_skip_frozen_month.sql",
 		},
 	}
 }
