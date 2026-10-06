@@ -104,6 +104,8 @@ export const DRAWER_NAV: readonly NavItem[] = [
   { key: 'session-audit', to: '/session-audit', icon: 'grid', titleKey: 'nav.sessionAudit' },
   // 活跃会话（游标分页）。★ superAdmin 后端不加租户过滤 ⇒ 页内按角色说明作用域。
   { key: 'sessions-online', to: '/sessions-online', icon: 'play', titleKey: 'nav.onlineSessions' },
+  // 系统监控：答「监控器这层自己在不在干活」。admin 档（adminWrap）⇒ 不设 requiresRole。
+  { key: 'system-monitor', to: '/system-monitor', icon: 'cpu', titleKey: 'nav.sysmon' },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))
