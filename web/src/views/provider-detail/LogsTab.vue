@@ -45,6 +45,20 @@ function goCanonical(name?: string | null) {
   if (q) router.push({ path: '/models', query: { q } })
 }
 
+/**
+ * 行上的 canonical 模型名（桌面表格里点 `ModelIdentityChip` 的那一段）。
+ *
+ * 卡片形态专用：compact 下 `#table` 插槽**不渲染**，而 canonical 那一段
+ * 又不在 `cardFields` 里（卡片只有 client_model 的纯文本），
+ * 于是「跳到 /models?q=」这个跨实体入口在手机上**整条消失**。
+ * 按 03 §3.3 条款 2，跨实体跳转属于「另一个意图」，本就该放 actions 区 ——
+ * 之前是位置放错，不是能力缺失。
+ */
+function canonicalOf(row: unknown): string | undefined {
+  const r = row as ProviderLogEntry
+  return r.canonical_name || r.canonical_model || undefined
+}
+
 function timeRange() {
   const end = new Date()
   const start = new Date(end.getTime() - hours.value * 3600 * 1000)
@@ -296,6 +310,22 @@ watch(() => props.providerId, () => { loadCredentials(); resetFilters() })
       :empty="rows.length === 0 && !loading"
       :empty-text="pl('empty')"
     >
+      <!--
+        2026-10-06（10 §4.6.35）：补上 compact 丢失的跨实体入口。
+        `#table` 只在桌面渲染，而 canonical 段既不在 `#table` 之外、
+        也不在 `cardFields` 里 ⇒ 手机上既看不到 canonical 模型、也点不到跳转。
+        这里复用**同一个** `ModelIdentityChip`（术语真源在组件里，不另写文案），
+        桌面表格零改动。门禁：`src/components/ui/mobileListUx.spec.ts` 的
+        双向相等断言（修好后必须把本条从 KNOWN_GAP 销账，否则门会红）。
+      -->
+      <template #actions="{ row }">
+        <ModelIdentityChip
+          v-if="canonicalOf(row)"
+          compact
+          :canonical-name="canonicalOf(row)"
+          @click-canonical="goCanonical(canonicalOf(row))"
+        />
+      </template>
       <template #table>
     <div class="card" style="overflow-x:auto">
       <table v-if="logs.length" class="data-table logs-table">
