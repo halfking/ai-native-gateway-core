@@ -30,6 +30,8 @@ export type IconName =
   | 'copy'
   | 'clock'
   | 'cpu'
+  | 'pause'
+  | 'play'
 
 const PATHS: Record<IconName, string> = {
   home: 'M3 10.5 12 3l9 7.5M5 9.5V21h5v-6h4v6h5V9.5',
@@ -56,6 +58,9 @@ const PATHS: Record<IconName, string> = {
   copy: 'M9 9h11v11H9zM15 9V4H4v11h5',
   clock: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3.5 2',
   cpu: 'M7 7h10v10H7zM10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4',
+  // 2026-10-06 凭据运维操作区新增：停用/启用凭据。feather pause / play 同款。
+  pause: 'M9 4v16M15 4v16',
+  play: 'M6 3.5 20 12 6 20.5V3.5z',
 }
 
 const d = computed(() => PATHS[props.name] ?? '')

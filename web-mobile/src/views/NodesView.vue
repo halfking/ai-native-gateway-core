@@ -1,18 +1,30 @@
 <script setup lang="ts">
 // NodesView — 节点（凭据）健康：连续加载卡片列表 + 搜索（250ms debounce，
-// 13 §5）+ 详情 Sheet（每模型探测宽表走专注模式，07 §8）。
+// 13 §5）+ 详情 Sheet（每模型探测宽表走专注模式，07 §8）+ **运维操作区**
+// （状态修改 / 凭据检查 / 强制恢复，17 §2 desktopOnly 让位轮）。
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { ContinuousListController, useHyperPage } from '@/hyper'
 import { fetchMonitorSummary, type CredentialMonitorSummary } from '@/api/nodes'
+import {
+  clearManualDisabled,
+  fetchCredentialDecisions,
+  forceRecoverCredential,
+  setManualDisabled,
+  submitCredentialProbe,
+  type CredentialRoutingDecision,
+} from '@/api/credentialsOps'
+import { useAuthStore } from '@/stores/auth'
 import { t } from '@/i18n'
 import HyperList from '@/components/common/HyperList.vue'
 import AppSheet from '@/components/common/AppSheet.vue'
+import AppConfirm from '@/components/common/AppConfirm.vue'
 import FocusLayer from '@/components/common/FocusLayer.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import AppIcon from '@/components/common/AppIcon.vue'
 import { relativeTime } from '@/utils/format'
 
 useHyperPage({ title: () => t('nodes.title') })
+const auth = useAuthStore()
 
 // 全量缓存 + 前端过滤：monitor-summary 单端点返回全网凭据（量级 ~百），
 // 分页在客户端切片；queryRevision 机制照常隔离 requery 前后响应。
@@ -57,15 +69,44 @@ onBeforeUnmount(() => {
 const detail = ref<CredentialMonitorSummary | null>(null)
 const focusActive = ref(false)
 
+// ── 近期路由决策（GET /api/credentials/decisions，admin 档）──────────────
+// 回答「这个凭据最近在承载什么流量」。**独立于详情主数据**：拉不到就只显示
+// 决策区的错误，不牵连状态字段与操作区 —— 它们各自独立有用。
+const decisions = ref<CredentialRoutingDecision[] | null>(null)
+const decisionsLoading = ref(false)
+const decisionsError = ref<string | null>(null)
+
+async function loadDecisions(credId: number): Promise<void> {
+  decisionsLoading.value = true
+  decisionsError.value = null
+  decisions.value = null
+  try {
+    decisions.value = await fetchCredentialDecisions(credId, { limit: 20 })
+  } catch (err) {
+    // 空数组 ≠ 拉取失败：空数组是「最近没有决策」的真实结论，要与错误区分开。
+    decisionsError.value = describeError(err)
+  } finally {
+    decisionsLoading.value = false
+  }
+}
+
 const detailOpenProxy = computed({
   get: () => detail.value != null,
   set: (v: boolean) => {
     if (!v) {
       detail.value = null
       focusActive.value = false
+      decisions.value = null
+      decisionsError.value = null
     }
   },
 })
+
+/** 打开详情时顺带拉决策；关闭时由 detailOpenProxy 复位。 */
+function openDetail(c: CredentialMonitorSummary): void {
+  detail.value = c
+  void loadDecisions(c.id)
+}
 
 function healthTone(c: CredentialMonitorSummary): 'success' | 'warning' | 'danger' | 'muted' {
   if (c.manual_disabled) return 'muted'
@@ -114,6 +155,121 @@ function probeBadge(state: string): { cls: string; label: string } {
 }
 
 const detailTitle = computed(() => detail.value ? `${detail.value.provider_name} · ${detail.value.label}` : '')
+
+// ── 运维操作区（17 §2 desktopOnly 让位轮）──────────────────────────────────
+//
+// **权限分档是硬约束，不是 UI 偏好**：后端中间件实测（注册处 admin/handler.go:880-888
+// 注释明写 tenant_admin 对 /api/admin/** 直接 403）：
+//   · set/clear-manual-disabled 走 h.admin      → tenant_admin 可用（限本 tenant）
+//   · /api/credentials/{id}/test、force-recover 走 h.superAdmin → 仅 super_admin
+// ⇒ 一律显示再吃 403 会让 tenant_admin 看到一堆必然失败的按钮，
+//   而移动端没有桌面端那种「打开抽屉才发现没权限」的过程。所以按 role 分档渲染。
+const isSuperAdmin = computed(() => auth.role === 'super_admin')
+
+type PendingOp = 'disable' | 'enable' | 'probe' | 'recover' | null
+const pendingOp = ref<PendingOp>(null)
+const opError = ref<string | null>(null)
+const opOk = ref<string | null>(null)
+const confirmOpen = ref(false)
+const confirmOp = ref<PendingOp>(null)
+
+/** reason 必填：后端 admin/credential_monitor.go:1785-1792 对空串直接 400。 */
+const reasonText = ref('')
+const reasonForOp = ref<PendingOp>(null)
+const needReason = computed(() => reasonForOp.value === 'disable' || reasonForOp.value === 'enable')
+
+function resetOpState(): void {
+  opError.value = null
+  opOk.value = null
+  reasonText.value = ''
+  reasonForOp.value = null
+}
+
+/** 动作 → 后端 reason。留空时给一个带凭据 id 的默认理由，不让用户空手提交。 */
+function effectiveReason(op: PendingOp): string {
+  const typed = reasonText.value.trim()
+  if (typed) return typed
+  const id = detail.value?.id
+  const who = auth.userInfo?.display_name || auth.userInfo?.username || 'mobile'
+  const base =
+    op === 'disable' ? t('nodes.reasonDefaultDisable') : op === 'enable' ? t('nodes.reasonDefaultEnable') : t('nodes.reasonDefaultRecover')
+  return id != null ? `${base} (#${id}, ${who})` : base
+}
+
+function requestOp(op: Exclude<PendingOp, null>): void {
+  resetOpState()
+  confirmOp.value = op
+  reasonForOp.value = op
+  confirmOpen.value = true
+}
+
+const confirmMeta = computed(() => {
+  switch (confirmOp.value) {
+    case 'disable':
+      return { title: t('nodes.confirmDisableTitle'), body: t('nodes.confirmDisableBody', { name: detailName.value }), label: t('nodes.disable'), danger: true }
+    case 'enable':
+      return { title: t('nodes.confirmEnableTitle'), body: t('nodes.confirmEnableBody', { name: detailName.value }), label: t('nodes.enable'), danger: false }
+    case 'probe':
+      return { title: t('nodes.confirmProbeTitle'), body: t('nodes.confirmProbeBody', { name: detailName.value }), label: t('nodes.probe'), danger: false }
+    case 'recover':
+      return { title: t('nodes.confirmRecoverTitle'), body: t('nodes.confirmRecoverBody', { name: detailName.value }), label: t('nodes.forceRecover'), danger: true }
+    default:
+      return { title: '', body: '', label: t('common.confirm'), danger: false }
+  }
+})
+
+const detailName = computed(() => (detail.value ? `${detail.value.provider_name} · ${detail.value.label}` : ''))
+
+async function runConfirmedOp(): Promise<void> {
+  const op = confirmOp.value
+  const cred = detail.value
+  if (!op || !cred || pendingOp.value) return
+  confirmOpen.value = false
+  pendingOp.value = op
+  opError.value = null
+  opOk.value = null
+  try {
+    if (op === 'disable') {
+      await setManualDisabled(cred.id, true, effectiveReason(op))
+      opOk.value = t('nodes.opDisabled')
+    } else if (op === 'enable') {
+      await clearManualDisabled(cred.id, effectiveReason(op))
+      opOk.value = t('nodes.opEnabled')
+    } else if (op === 'probe') {
+      // ⚠️ 后端 202 异步（credential_state_handlers.go:30-51），返回的是
+      // 「已提交」而不是探测结果。文案不能说成「探测通过」。
+      await submitCredentialProbe(cred.id)
+      opOk.value = t('nodes.opProbeSubmitted')
+    } else if (op === 'recover') {
+      await forceRecoverCredential(cred.id)
+      opOk.value = t('nodes.opRecovered')
+    }
+    // 写操作后重新拉全量：后端有 15s 缓存（monitor-summary TTL），
+    // 立即重查可能拿到旧值 —— 但仍要重查，因为缓存过期后自然刷新。
+    cache = await fetchMonitorSummary()
+    controller.loadFirst('requery')
+    // 就地更新 detail 引用，避免 Sheet 里继续显示旧状态
+    if (detail.value) {
+      const fresh = cache.find((c) => c.id === detail.value?.id)
+      if (fresh) detail.value = fresh
+    }
+  } catch (err) {
+    opError.value = describeError(err)
+  } finally {
+    pendingOp.value = null
+    reasonForOp.value = null
+    reasonText.value = ''
+  }
+}
+
+/** 403 单独说人话：这是权限档位问题，不是网络或服务端故障。 */
+function describeError(err: unknown): string {
+  const status = (err as { status?: number })?.status
+  if (status === 403) return t('nodes.errForbidden')
+  if (status === 401) return t('nodes.errUnauthorized')
+  const msg = err instanceof Error ? err.message : String(err)
+  return msg || t('common.error')
+}
 </script>
 
 <template>
@@ -137,7 +293,7 @@ const detailTitle = computed(() => detail.value ? `${detail.value.provider_name}
     </template>
 
     <template #item="{ item: c }">
-      <button type="button" class="data-card node-card" @click="detail = c">
+      <button type="button" class="data-card node-card" @click="openDetail(c)">
         <div class="card-row">
           <span class="node-card__name">
             <StatusDot :tone="healthTone(c)" />
@@ -187,6 +343,88 @@ const detailTitle = computed(() => detail.value ? `${detail.value.provider_name}
         </div>
       </div>
 
+      <!-- 运维操作区（17 §2 desktopOnly 让位轮）。
+           权限分档渲染：状态修改 admin 档人人可用，探测/强恢仅 super_admin
+           （后端 h.superAdmin 对 tenant_admin 直接 403，见脚本注释）。 -->
+      <div class="nodes__ops">
+        <h3 class="page__section-title" style="margin-inline: 0">{{ t('nodes.operations') }}</h3>
+
+        <p v-if="opOk" class="nodes__op-msg nodes__op-msg--ok" role="status">{{ opOk }}</p>
+        <p v-if="opError" class="nodes__op-msg nodes__op-msg--err" role="alert">{{ opError }}</p>
+
+        <div class="nodes__ops-row">
+          <button
+            v-if="!detail.manual_disabled"
+            type="button"
+            class="btn btn--danger"
+            :disabled="pendingOp !== null"
+            @click="requestOp('disable')"
+          >
+            <AppIcon name="pause" :size="16" />
+            {{ t('nodes.disable') }}
+          </button>
+          <button
+            v-else
+            type="button"
+            class="btn btn--primary"
+            :disabled="pendingOp !== null"
+            @click="requestOp('enable')"
+          >
+            <AppIcon name="play" :size="16" />
+            {{ t('nodes.enable') }}
+          </button>
+
+          <button
+            v-if="isSuperAdmin"
+            type="button"
+            class="btn"
+            :disabled="pendingOp !== null"
+            @click="requestOp('probe')"
+          >
+            <AppIcon name="refresh" :size="16" />
+            {{ t('nodes.probe') }}
+          </button>
+
+          <button
+            v-if="isSuperAdmin"
+            type="button"
+            class="btn btn--danger"
+            :disabled="pendingOp !== null"
+            @click="requestOp('recover')"
+          >
+            {{ t('nodes.forceRecover') }}
+          </button>
+        </div>
+
+        <p v-if="!isSuperAdmin" class="nodes__ops-hint">{{ t('nodes.opsAdminOnlyHint') }}</p>
+        <p v-if="detail.manual_disabled" class="nodes__ops-warn">{{ t('nodes.manualDisabledWarn') }}</p>
+      </div>
+
+      <!-- 近期路由决策：回答「这个凭据最近在承载什么流量」。与状态字段/操作区
+           彼此独立 —— 本区拉取失败不影响其余部分可用。 -->
+      <div class="nodes__decisions">
+        <h3 class="page__section-title" style="margin-inline: 0">{{ t('nodes.recentDecisions') }}</h3>
+        <p v-if="decisionsLoading" class="nodes__decisions-state">{{ t('common.loading') }}</p>
+        <p v-else-if="decisionsError" class="nodes__decisions-state nodes__decisions-state--err">
+          {{ decisionsError }}
+        </p>
+        <p v-else-if="decisions && decisions.length === 0" class="nodes__decisions-state">
+          {{ t('nodes.noDecisions') }}
+        </p>
+        <ul v-else-if="decisions" class="nodes__decisions-list">
+          <li v-for="d in decisions" :key="d.request_id" class="nodes__decision">
+            <span class="nodes__decision-dot" :class="d.success ? 'ok' : 'bad'" aria-hidden="true" />
+            <span class="nodes__decision-model">{{ d.model }}</span>
+            <span class="nodes__decision-meta">
+              {{ relativeTime(d.ts) }}
+              <template v-if="d.latency_ms != null"> · {{ d.latency_ms }}ms</template>
+              <template v-if="d.sticky_hit"> · {{ t('nodes.stickyHit') }}</template>
+            </span>
+            <span v-if="!d.success && d.error_class" class="nodes__decision-err">{{ d.error_class }}</span>
+          </li>
+        </ul>
+      </div>
+
       <div class="nodes__per-model-head">
         <h3 class="page__section-title" style="margin-inline: 0">{{ t('nodes.perModel') }}</h3>
         <button type="button" class="btn btn--sm" @click="focusActive = true">
@@ -227,6 +465,31 @@ const detailTitle = computed(() => detail.value ? `${detail.value.provider_name}
       </FocusLayer>
     </template>
   </AppSheet>
+
+  <!-- 写操作二次确认。后端 force-recover 只有 query id、无 X-Confirm 门禁
+       （对比 PATCH /api/admin/providers/{id}/enable 有），所以这层是唯一防线。 -->
+  <AppConfirm
+    :model-value="confirmOpen"
+    :title="confirmMeta.title"
+    :body="confirmMeta.body"
+    :confirm-label="confirmMeta.label"
+    :danger="confirmMeta.danger"
+    @confirm="runConfirmedOp"
+    @update:model-value="(v: boolean) => { if (!v) resetOpState() }"
+  >
+    <!-- reason：set/clear-manual-disabled 后端强制必填（credential_monitor.go:1785），
+         空串直接 400。探测/强恢不需要 reason，不渲染输入框。 -->
+    <label v-if="needReason" class="nodes__reason">
+      <span class="nodes__reason-label">{{ t('nodes.reasonLabel') }}</span>
+      <textarea
+        v-model="reasonText"
+        class="nodes__reason-input"
+        rows="2"
+        :placeholder="t('nodes.reasonPlaceholder')"
+      />
+      <span class="nodes__reason-hint">{{ t('nodes.reasonHint') }}</span>
+    </label>
+  </AppConfirm>
   </div>
 </template>
 
@@ -310,5 +573,155 @@ const detailTitle = computed(() => detail.value ? `${detail.value.provider_name}
   align-items: center;
   justify-content: space-between;
   margin: var(--app-space-4) 0 var(--app-space-2);
+}
+
+/* ── 运维操作区（17 §2 desktopOnly 让位轮）── */
+.nodes__ops {
+  margin-top: var(--app-space-4);
+  padding-top: var(--app-space-3);
+  border-top: 1px solid var(--app-border-subtle);
+}
+
+.nodes__ops-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--app-space-2);
+  margin-top: var(--app-space-2);
+}
+
+.nodes__ops-row .btn {
+  /* 触控热区下限 48px（06 §7 R1：新控件一律 ≥48） */
+  min-height: 48px;
+  flex: 1 1 auto;
+}
+
+.nodes__op-msg {
+  margin-top: var(--app-space-2);
+  font-size: 0.8125rem;
+  padding: var(--app-space-2) var(--app-space-3);
+  border-radius: var(--app-radius);
+}
+
+.nodes__op-msg--ok {
+  color: var(--app-success);
+  background: color-mix(in srgb, var(--app-success) 12%, transparent);
+}
+
+.nodes__op-msg--err {
+  color: var(--app-danger);
+  background: color-mix(in srgb, var(--app-danger) 12%, transparent);
+}
+
+.nodes__ops-hint,
+.nodes__ops-warn {
+  margin-top: var(--app-space-2);
+  font-size: 0.75rem;
+  color: var(--app-text-secondary);
+}
+
+.nodes__ops-warn {
+  color: var(--app-warning);
+}
+
+/* ── 近期路由决策 ── */
+.nodes__decisions {
+  margin-top: var(--app-space-4);
+  padding-top: var(--app-space-3);
+  border-top: 1px solid var(--app-border-subtle);
+}
+
+.nodes__decisions-state {
+  margin-top: var(--app-space-2);
+  font-size: 0.8125rem;
+  color: var(--app-text-secondary);
+}
+
+.nodes__decisions-state--err {
+  color: var(--app-danger);
+}
+
+.nodes__decisions-list {
+  list-style: none;
+  margin: var(--app-space-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--app-space-2);
+}
+
+.nodes__decision {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--app-space-1) var(--app-space-2);
+  font-size: 0.8125rem;
+}
+
+.nodes__decision-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+.nodes__decision-dot.ok {
+  background: var(--app-success);
+}
+
+.nodes__decision-dot.bad {
+  background: var(--app-danger);
+}
+
+.nodes__decision-model {
+  font-weight: 600;
+  color: var(--app-text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 55%;
+}
+
+.nodes__decision-meta {
+  color: var(--app-text-muted);
+  font-size: 0.75rem;
+}
+
+.nodes__decision-err {
+  color: var(--app-danger);
+  font-size: 0.75rem;
+}
+
+.nodes__reason {
+  display: block;
+  margin-bottom: var(--app-space-3);
+}
+
+.nodes__reason-label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--app-text-secondary);
+  margin-bottom: var(--app-space-1);
+}
+
+.nodes__reason-input {
+  width: 100%;
+  min-height: 48px;
+  padding: var(--app-space-2) var(--app-space-3);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-surface);
+  color: var(--app-text);
+  /* 16px：iOS Safari 聚焦时字号 <16px 会触发自动放大（UI规范 17 §2 登录页同款） */
+  font: inherit;
+  font-size: 16px;
+  resize: vertical;
+}
+
+.nodes__reason-hint {
+  display: block;
+  margin-top: var(--app-space-1);
+  font-size: 0.6875rem;
+  color: var(--app-text-muted);
 }
 </style>

@@ -40,6 +40,11 @@ function onCancel(): void {
     @update:model-value="(v: boolean) => emit('update:modelValue', v)"
   >
     <p v-if="body" class="confirm__body">{{ body }}</p>
+    <!-- 默认 slot（2026-10-06 新增）：确认框需要承载**必填输入**时用。
+         NodesView 的 set/clear-manual-disabled 要求 reason 非空（后端空串直接
+         400，admin/credential_monitor.go:1785-1792），靠 body 传纯文本满足不了。
+         放在 actions 之前 ⇒ 输入在按钮上方，符合移动端表单阅读顺序。 -->
+    <slot />
     <div class="confirm__actions">
       <button type="button" class="btn" @click="onCancel">{{ cancelLabel ?? t('common.cancel') }}</button>
       <button type="button" class="btn" :class="danger ? 'btn--danger' : 'btn--primary'" @click="onConfirm">

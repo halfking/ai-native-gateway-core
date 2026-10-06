@@ -58,6 +58,18 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'usage.title', requiresAuth: true },
   },
   {
+    path: '/providers',
+    name: 'providers',
+    component: () => import('@/views/ProvidersView.vue'),
+    meta: { titleKey: 'providers.title', requiresAuth: true },
+  },
+  {
+    path: '/routing',
+    name: 'routing',
+    component: () => import('@/views/RoutingCheckView.vue'),
+    meta: { titleKey: 'routing.title', requiresAuth: true },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),
