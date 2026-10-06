@@ -110,6 +110,8 @@ export const DRAWER_NAV: readonly NavItem[] = [
   { key: 'data-lifecycle', to: '/data-lifecycle', icon: 'grid', titleKey: 'nav.lifecycle' },
   // 路由优化器：准确率 + 激活参数 + 5 分钟明细。admin 档（admin(...)）⇒ 不设 requiresRole。
   { key: 'routing-opt', to: '/routing-opt', icon: 'cpu', titleKey: 'nav.routingOpt' },
+  // 待处理响应：有没有卡住的请求。admin 档（admin(...)）⇒ 不设 requiresRole。
+  { key: 'pending-responses', to: '/pending-responses', icon: 'play', titleKey: 'nav.pending' },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))
