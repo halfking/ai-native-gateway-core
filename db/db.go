@@ -1835,12 +1835,15 @@ func (d *DB) ensureURSMNodeSnapshotMinIdentityPK(ctx context.Context) error {
 	}
 
 	// 2) 拿不到锁就放弃：宁可下一轮 boot 再试，也不在启动路径上排队等写入。
+	// R49-D2（2026-10-07）：SET LOCAL 必须与 DDL 同批执行——单独一条
+	// pool.Exec 是 autocommit，SET LOCAL 的效果随该语句的隐式事务结束而
+	// 消失，后面的 ALTER TABLE 实际跑在默认 lock_timeout 上（守卫是死代码）。
+	// 同批（简单协议单隐式事务）才是有效作用域，范式同本文件
+	// ensureSessionSummariesAccessColumns 的 SET LOCAL+ALTER 同串写法。
 	conctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if _, err := d.pool.Exec(conctx, `SET LOCAL lock_timeout = '3s'`); err != nil {
-		return fmt.Errorf("set lock_timeout for %s identity reconcile: %w", table, err)
-	}
 	if _, err := d.pool.Exec(conctx, `
+		SET LOCAL lock_timeout = '3s';
 		ALTER TABLE public.`+table+` DROP CONSTRAINT IF EXISTS `+table+`_pkey;
 		ALTER TABLE public.`+table+` ADD CONSTRAINT `+table+`_pkey
 			PRIMARY KEY (`+ursmSnapshotIdentityPKCols+`);

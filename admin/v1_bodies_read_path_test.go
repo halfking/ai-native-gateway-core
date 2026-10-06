@@ -375,7 +375,7 @@ var bodiesSwitchPair = []struct {
 	{
 		Side: "写端",
 		Key:  bodiesWriteKey,
-		Why:  "S1b 灰度开关①；false ⇒ RequestDeltaJSON/ResponseDeltaJSON 不写进 session_turns，" +
+		Why: "S1b 灰度开关①；false ⇒ RequestDeltaJSON/ResponseDeltaJSON 不写进 session_turns，" +
 			"读端切过去读到的是空正文",
 	},
 }
@@ -448,7 +448,7 @@ func TestBodiesSwitchPairIsPinnedAndPaired(t *testing.T) {
 		if !byLiteral && !byConst {
 			t.Errorf("%s 里既没有 %q 这个键的字面量%s —— P1 清单与源码对不上了",
 				chk.rel, chk.key,
-				map[bool]string{true: "，也没有本侧常量 "+chk.constName+" 绑定到它", false: ""}[byConst || chk.constName != ""])
+				map[bool]string{true: "，也没有本侧常量 " + chk.constName + " 绑定到它", false: ""}[byConst || chk.constName != ""])
 		}
 		// ② 兜底必须是 false。键名/常量名都用 `[^)]*` 放过，
 		//    这样形态可变而「兜底被改成 true」这个危险变异仍会被抓住。

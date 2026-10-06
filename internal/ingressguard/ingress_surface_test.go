@@ -178,6 +178,21 @@ var registry = []surface{
 		RateLimit:   gateOwn,
 	},
 	{
+		// R49（2026-10-07）补登：2fb2ec53f 的 refine/analyze 转写后处理
+		// （audioTransformHandler）。预算闸自有（authenticateTransform 内
+		// CheckBudget，失败 fail-closed）；RPM 刻意不计：refine/analyze 的
+		// LLM 步骤环回 chat 面时带同一把调用方 key，那一跳已计一次 RPM
+		// ——此处再计即双计，默认 12/min 的周期任务会被打 429
+		// （TestTransformEndpointDoesNotConsumeRPM 钉住单计口径）。
+		Plane:       planeInference,
+		Routes:      []string{"/v1/audio/refine", "/v1/audio/analyze"},
+		HandlerVars: []string{"audioTransformHandler"},
+		File:        "../../domains/streaming/audio_transform.go",
+		Budget:      gateOwn,
+		RateLimit:   gateNone,
+		RateLimitWhy: "刻意单计：环回 chat 步带同一把调用方 key 已计一次 RPM，transform 端点自身不消耗（否则双计 429）；见 audio_transform.go 文件头与 TestTransformEndpointDoesNotConsumeRPM",
+	},
+	{
 		// Gemini：它自己的 ServeHTTP 里两道闸都没有，但它把 body 转成 OpenAI
 		// 形态后合成 path=/v1/chat/completions 的请求交给 chatHandler
 		// （handler_gemini.go:330 ParseGemini -> :352 SerializeOpenAI

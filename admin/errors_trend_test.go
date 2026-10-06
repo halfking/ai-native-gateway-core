@@ -41,10 +41,10 @@ func TestErrorsTrendFromStats(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectQuery("FROM supplier_error_stats").
-		WithArgs("hour", pgxmock.AnyArg(), pgxmock.AnyArg(), "", int64(0), "").
+		WithArgs("hour", pgxmock.AnyArg(), pgxmock.AnyArg(), "", int64(0), "", "").
 		WillReturnRows(statsTrendRows())
 	mock.ExpectQuery("FROM supplier_errors_unified").
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), "", int64(0), "").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), "", int64(0), "", "").
 		WillReturnRows(trendBreakdownRows())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/errors/trend?hours=24", nil)
@@ -115,18 +115,18 @@ func TestErrorsTrendFallsBackToUnifiedDetail(t *testing.T) {
 	// 调用序列：stats 明细（空）→ stats breakdown（空）→ unified 明细 →
 	// unified breakdown（loadFromStats 与 loadFromDetail 各跑一次 breakdown）。
 	mock.ExpectQuery("FROM supplier_error_stats").
-		WithArgs("minute", pgxmock.AnyArg(), pgxmock.AnyArg(), "", int64(0), "").
+		WithArgs("minute", pgxmock.AnyArg(), pgxmock.AnyArg(), "", int64(0), "", "").
 		WillReturnRows(pgxmock.NewRows([]string{"stat_time", "error_count", "unique_requests", "affected_users", "by_supplier", "by_error_type"}))
 	mock.ExpectQuery("FROM supplier_errors_unified").
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"kind", "key", "n"}))
 	bucket := time.Date(2026, 9, 5, 8, 30, 0, 0, time.UTC)
 	mock.ExpectQuery("FROM supplier_errors_unified").
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"bucket", "error_count", "unique_requests", "affected_users", "by_supplier", "by_error_type"}).
 			AddRow(bucket, 2, 2, 2, []byte(`{"zhipu":2}`), []byte(`{"timeout":2}`)))
 	mock.ExpectQuery("FROM supplier_errors_unified").
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(trendBreakdownRows())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/errors/trend?hours=1", nil)
@@ -191,7 +191,7 @@ func TestErrorsTrendValidationAndDBErrors(t *testing.T) {
 	t.Run("stats db error surfaces 500", func(t *testing.T) {
 		mock := newMock(t)
 		mock.ExpectQuery("FROM supplier_error_stats").
-			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 			WillReturnError(errors.New("db down"))
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/api/errors/trend", nil)
@@ -208,4 +208,48 @@ func TestErrorsTrendValidationAndDBErrors(t *testing.T) {
 			t.Fatalf("status=%d", rec.Code)
 		}
 	})
+}
+
+// R49-C1 回归门：tenant_admin 的租户 ID 必须真正落到 SQL 过滤参数里。
+// 修复前 TenantID 解析后从未进 SQL（叠加读事务 RLS 旁路 ⇒ tenant_admin
+// 可读全租户聚合）；本测试用「期望正则匹配 SQL 文本中的租户谓词」使
+// 无谓词的旧实现直接失败（无匹配期望 ⇒ 查询报错 ⇒ 500）。
+func TestErrorsTrendTenantScopedForTenantAdmin(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	// stats 腿：租户范围借 credential_id → credentials.tenant_id 子查询（$7）。
+	mock.ExpectQuery(`tenant_id = \$7`).
+		WithArgs("hour", pgxmock.AnyArg(), pgxmock.AnyArg(), "", int64(0), "", "acme").
+		WillReturnRows(statsTrendRows())
+	// breakdown 腿：unified 直带 tenant_id 谓词（$6）。
+	mock.ExpectQuery(`tenant_id = \$6`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), "", int64(0), "", "acme").
+		WillReturnRows(trendBreakdownRows())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/errors/trend?hours=24", nil)
+	req = SetAuthContext(req, &AuthContext{Role: "tenant_admin", TenantID: "acme"})
+	rec := httptest.NewRecorder()
+	(&errorsTrendHandlers{db: mock}).getErrorsTrend(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Source  string `json:"source"`
+		Summary struct {
+			TotalErrors int `json:"total_errors"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Source != "stats" || body.Summary.TotalErrors != 4 {
+		t.Fatalf("source=%s total=%d", body.Source, body.Summary.TotalErrors)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
 }

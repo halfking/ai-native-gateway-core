@@ -7468,6 +7468,15 @@ func main() {
 	// mux），保证所有响应（包括 panic 兜底、SSE 流、metrics scrape）都附
 	// 加安全响应头。位置选择：紧贴 mux 确保 Recovery 的 panic 响应也带
 	// 头；选在 Cors/Prometheus 之外避免被后续中间件覆盖。
+	//
+	// R49-A1 (2026-10-07): maintain 与 mobile 两个挂载必须组合在链**内**。
+	// 此前二者包在链外（先 Build().Then(mux) 再往外叠网关），/m、/m-assets、
+	// /maintain 的响应全部不带安全响应头（CSP/X-Frame-Options/nosniff/HSTS）、
+	// 不进日志/追踪/Recovery——而这两个都是带登录态的运维面。AuthMiddleware
+	// 的 bypass 名单（auth_mw.go）为 /m、/m-assets/、/maintain/ 放行全局
+	// API key，端点级鉴权仍由各挂载与 /api/* wrapAdmin 自守卫。
+	publicSurface := newMobileGatewayHandler(
+		newMaintainGatewayHandler(mux, maintainStatic), mobileStatic)
 	handler := middleware.NewBuilder().
 		Add(middleware.NewRecoveryMiddleware()).
 		Add(middleware.NewRequestIDMiddleware()).
@@ -7481,19 +7490,13 @@ func main() {
 		Add(middleware.NewLoggingMiddleware()).
 		Add(middleware.NewSecurityHeadersMiddleware()).
 		Build().
-		Then(mux)
+		Then(publicSurface)
 
 	slog.Info("CHECKPOINT: after middleware build, before http.Server init")
 
-	// Wrap the final handler with the maintain gateway: reverse-proxies
-	// /maintain-api/* (canonical) and legacy /api/* ops prefixes (with
-	// Deprecation headers) to the maintain backend, and serves maintain-web
-	// under /maintain/*. When MAINTAIN_SERVICE_URL is unset this is a no-op
-	// pass-through, preserving the pre-migration rollback path. This call
-	// was previously missing — the proxy existed but was never mounted.
-	finalHandler := newMaintainGatewayHandler(handler, maintainStatic)
-	// /m 与 /m-assets 由 mobile 静态挂载持有，其余透传（未配置时 no-op）。
-	finalHandler = newMobileGatewayHandler(finalHandler, mobileStatic)
+	// R49-A1: maintain/mobile 组合已上移进链（见上方 publicSurface），
+	// 此处不再在链外二次包裹。
+	finalHandler := handler
 
 	// 2026-08-11 (479): 构建 V2 多层队列调度 Pipeline 并注入 executor。
 	// Pipeline 长生命周期；adapters 在请求时惰性读取 routingExec 字段，

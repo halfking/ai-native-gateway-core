@@ -66,7 +66,7 @@ func TestDestructiveGateRefusesNonTestDatabase(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("URSM_825_ALLOW_ANY_DB", "")
+			t.Setenv("URSM_830_ALLOW_ANY_DB", "")
 			err := destructiveGate(tc.dsn)
 			if tc.wantErr && err == nil {
 				t.Fatalf("dsn=%q 应当被拒绝，却放行了 —— 这道门形同虚设，"+
@@ -81,15 +81,15 @@ func TestDestructiveGateRefusesNonTestDatabase(t *testing.T) {
 
 // 逃生阀必须真的有效，否则操作人被门挡住时的唯一出路是改门。
 func TestDestructiveGateEscapeHatchWorks(t *testing.T) {
-	t.Setenv("URSM_825_ALLOW_ANY_DB", "1")
+	t.Setenv("URSM_830_ALLOW_ANY_DB", "1")
 	if err := destructiveGate("postgres://u:p@h:5432/llm_gateway?sslmode=disable"); err != nil {
-		t.Fatalf("URSM_825_ALLOW_ANY_DB=1 时应当无条件放行，却仍被拒：%v", err)
+		t.Fatalf("URSM_830_ALLOW_ANY_DB=1 时应当无条件放行，却仍被拒：%v", err)
 	}
 }
 
 // 拒绝理由里必须带库名，否则操作人无法判断自己是不是被误伤。
 func TestDestructiveGateRejectionNamesTheDatabase(t *testing.T) {
-	t.Setenv("URSM_825_ALLOW_ANY_DB", "")
+	t.Setenv("URSM_830_ALLOW_ANY_DB", "")
 	err := destructiveGate("postgres://u:p@h:5432/llm_gateway?sslmode=disable")
 	if err == nil {
 		t.Fatal("应当被拒绝")

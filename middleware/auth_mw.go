@@ -34,6 +34,11 @@ func NewAuthMiddleware(apiKey string) *AuthMiddleware {
 			// rejected as missing_key. /admin/config/reload still has its
 			// own AdminTokenMiddleware after this bypass.
 			//
+			// /m、/m/、/m-assets/（R49-A1，2026-10-07）：mobile 运维 SPA 挂载。
+			// 自 R49-A1 起该挂载组合进中间件链内（main.go publicSurface），
+			// 与桌面 SPA 的 / 同模型：页面静态资源匿名可达，数据面 /api/*
+			// 由 wrapAdmin 端点级鉴权自守卫。此条缺失 ⇒ /m 全部 401 missing_key。
+			//
 			// SAFETY: every registered /api/* endpoint is wrapped by
 			// wrapAdmin/superAdmin in cmd/gateway/main.go and
 			// admin/handler.go. Verified 2026-06-30 via grep — see
@@ -51,8 +56,8 @@ func NewAuthMiddleware(apiKey string) *AuthMiddleware {
 				// 2026-08-29：加 /readyz + /version。供 scripts/lifecycle/preflight.sh 三段检查使用。
 				// /readyz 返回 DB+Redis 是否就绪（K8s readiness），/version 暴露 build metadata。
 				// 两者均无敏感信息，必须 anon 可达。
-				ExactPaths:   []string{"/healthz", "/healthz/full", "/readyz", "/version", "/metrics", "/"},
-				PathPrefixes: []string{"/api/", "/admin/", "/assets/", "/maintain/", "/plugins/", "/mock/"},
+				ExactPaths:   []string{"/healthz", "/healthz/full", "/readyz", "/version", "/metrics", "/", "/m"},
+				PathPrefixes: []string{"/api/", "/admin/", "/assets/", "/maintain/", "/plugins/", "/mock/", "/m/", "/m-assets/"},
 			},
 		},
 		expectedKey: apiKey,
