@@ -27,6 +27,15 @@ import (
 // columns), which is what makes the guard usable at all — a guard that never
 // became true would silently save 0% while looking correct.
 //
+// This file asserts the migration's TEXT. Its BEHAVIOUR — does the plpgsql
+// actually install, and does it actually skip the rolled-over month while
+// still covering a never-analyzed partition — is verified separately by
+// scripts/.verify-analyze-838-behavior.sh, which runs a throwaway
+// postgres:16-alpine container and asserts the analyzed count and the
+// per-relation last_analyze stamps across separate transactions. That script
+// is deliberately NOT wired into verify.sh: CI environments without docker
+// would go red for no product reason.
+//
 // Most assertions are scoped to the extracted function body on purpose. The
 // migration header and the COMMENT both legitimately name pg_statistic and
 // "never analyzed", so whole-file Contains/NotContains checks would pass on
