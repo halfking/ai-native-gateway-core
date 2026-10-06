@@ -39,6 +39,15 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const SRC = resolve(__dirname, '..')
 
 /**
+ * 扫描根目录。默认是 `web/`；`--root` 可指向别的应用，例如移动端 Hyper：
+ *   node scripts/compact-table-census.mjs --root ../web-mobile/src
+ * ⚠️ `--root` 必须在**任何扫描发生前**求值（分桶循环之前），
+ *    否则会拿着上一次的根目录去跑 —— 那是「同一个值被两套口径消费」的同款坑。
+ */
+const args = process.argv.slice(2)
+const rootIdx = args.indexOf('--root')
+const ROOT = rootIdx >= 0 && args[rootIdx + 1] ? resolve(process.cwd(), args[rootIdx + 1]) : SRC
+/**
  * 归一：统一成正斜杠。**保留 `src/` 前缀**。
  *
  * ⚠️ 这里曾经剥掉 `^src/`，而 `SRC` 本身就是 web 根 ⇒ 剥完再 `join(SRC, rel)`
@@ -87,11 +96,22 @@ function componentNameCollisions() {
 }
 
 function* walk(dir) {
+  for (const f of walkAll(dir)) if (f.endsWith('.vue')) yield f
+}
+
+/**
+ * 遍历**所有**文件（不只 .vue）。
+ * ⚠️ 别拿 `walk()` 干这活：它只 yield `.vue`，
+ *    早先 `globalCssIndex()` 用了它 ⇒ 一条 .css 都没进索引，
+ *    「全局样式表横滚容器」桶恒为 0，而症状是「看起来正常的 0」——
+ *    量具失明长得和「确实没有」一模一样。
+ */
+function* walkAll(dir) {
   for (const name of readdirSync(dir)) {
     if (name === 'node_modules' || name === 'dist' || name === '.git') continue
     const full = join(dir, name)
-    if (statSync(full).isDirectory()) yield* walk(full)
-    else if (name.endsWith('.vue')) yield full
+    if (statSync(full).isDirectory()) yield* walkAll(full)
+    else yield full
   }
 }
 
@@ -151,6 +171,62 @@ function hasScrollContainer(text) {
  */
 function hasNativeTableScroll(text) {
   return /<el-table\b/.test(text)
+}
+
+/**
+ * ⑥ **全局样式表**里定义的滚动容器（此前完全看不见的一层）。
+ *
+ * ★ 本轮自查又翻出一个假阳性：`NodeDetailRequestsPanel.vue` 用
+ *   `<div class="nd-table-wrap">` 包着 `<table>`，而 `.nd-table-wrap` 的
+ *   `overflow: auto` 定义在**另一个文件** `src/styles/node-detail-drawer.css:134`。
+ *   早先的判据只扫 .vue 自己的 `<style>` 块 ⇒ 把它误报进 unwrapped。
+ *   同一批自查里，**移动端两个表格页（NodesView / UsageView）也都靠
+ *   `web-mobile/src/styles/shared.css:227` 的 `.table-scroll` 才合规** ——
+ *   若普查扫到 web-mobile，会一次报出两个假阳性。
+ *
+ * ⚠️ **只认真正全局生效的来源**：独立 `.css` 文件 + 各 .vue 里**未加 scoped**
+ *   的 `<style>`。`<style scoped>` 编译后带 data 属性、**不跨组件生效**，
+ *   拿别的组件的 scoped 类名来判是**同名巧合**（第一版探针就栽在这：
+ *   `.card` 在别的组件里有 overflow，被误判成「已覆盖」）。
+ *
+ * 只查**表格外层最近 3 层**的祖先类名 —— 更外层的祖先通常不是滚动容器，
+ * 认得越宽，假阳性越多。
+ */
+function hasGlobalCssScrollContainer(text) {
+  const i = text.indexOf('<table')
+  if (i < 0) return false
+  const tags = [...text.slice(0, i).matchAll(/<([A-Za-z][\w-]*)([^<>]*?)\/?>/g)]
+  const idx = globalCssIndex()
+  for (let k = tags.length - 1; k >= 0 && k >= tags.length - 3; k--) {
+    const cm = tags[k][2].match(/class="([^"]+)"/)
+    if (!cm) continue
+    for (const c of cm[1].split(/\s+/)) {
+      const hit = idx.get(c)
+      if (hit && /overflow(?:-x|-y)?\s*:\s*(auto|scroll)/.test(hit)) return true
+    }
+  }
+  return false
+}
+
+/** 全局生效的 CSS：类名 → 规则体。懒建；scoped 的不收。 */
+let GLOBAL_CSS = null
+function globalCssIndex() {
+  if (GLOBAL_CSS) return GLOBAL_CSS
+  const map = new Map()
+  const add = (text) => {
+    const clean = text.replace(/\/\*[\s\S]*?\*\//g, '')
+    for (const m of clean.matchAll(/\.([A-Za-z0-9_-]+)\s*\{([^}]*)\}/g)) map.set(m[1], m[2])
+  }
+  for (const abs of walkAll(ROOT)) {
+    if (abs.endsWith('.css')) { add(readFileSync(abs, 'utf8')); continue }
+    if (!abs.endsWith('.vue')) continue
+    for (const m of readFileSync(abs, 'utf8').matchAll(/<style([^>]*)>([\s\S]*?)<\/style>/g)) {
+      if (/\bscoped\b/.test(m[1])) continue
+      add(m[2])
+    }
+  }
+  GLOBAL_CSS = map
+  return map
 }
 
 /** 页面里引用了哪些表格类组件（PascalCase 标签 + 已知表组件名）。 */
@@ -244,7 +320,6 @@ function narrowTableVerdict(text) {
   return 'unknown'
 }
 
-const args = process.argv.slice(2)
 const jsonIdx = args.indexOf('--json')
 const OUT = jsonIdx >= 0 ? args[jsonIdx + 1] : null
 
@@ -252,22 +327,24 @@ const buckets = {
   'cards（compact 出卡片）': [],
   'degradation（作者声明的横滚容器）': [],
   '组件原生横滚（el-table）': [],
+  '全局样式表横滚容器': [],
   'min-width 声明（待核容器）': [],
   'narrow（实测 ≤4 列窄表）': [],
   '列数不可静态测（组件式表格）': [],
   'unwrapped（待人判：既无横滚也非窄表）': [],
 }
 
-const files = [...walk(SRC)].map(f => relative(SRC, f)).sort()
+const files = [...walk(ROOT)].map(f => relative(ROOT, f)).sort()
 for (const relRaw of files) {
   const rel = norm(relRaw)
-  const text = readFileSync(join(SRC, relRaw), 'utf8')
+  const text = readFileSync(join(ROOT, relRaw), 'utf8')
   if (!/<table\b|<el-table\b|<AppDataTable\b|<DataTable\b/.test(text)) continue
 
   const verdict = narrowTableVerdict(text)
   if (isCardified(text)) buckets['cards（compact 出卡片）'].push(rel)
   else if (hasScrollContainer(text)) buckets['degradation（作者声明的横滚容器）'].push(rel)
   else if (hasNativeTableScroll(text)) buckets['组件原生横滚（el-table）'].push(rel)
+  else if (hasGlobalCssScrollContainer(text)) buckets['全局样式表横滚容器'].push(rel)
   else if (declaresMinWidth(text)) buckets['min-width 声明（待核容器）'].push(rel)
   else if (verdict === 'narrow') buckets['narrow（实测 ≤4 列窄表）'].push(rel)
   else if (verdict === 'unknown') buckets['列数不可静态测（组件式表格）'].push(rel)
@@ -276,6 +353,7 @@ for (const relRaw of files) {
 
 const total = Object.values(buckets).reduce((a, b) => a + b.length, 0)
 console.log('=== compact 数据表覆盖普查（不判红，只出报表）===')
+console.log(`扫描根：${ROOT}`)
 console.log(`扫描 .vue ${files.length} 个；含表格 ${total} 个\n`)
 for (const [k, v] of Object.entries(buckets)) {
   const full = k.startsWith('unwrapped') || k.startsWith('min-width') || k.startsWith('列数不可静态测') || k.startsWith('组件原生横滚')
@@ -300,7 +378,7 @@ if (componentNameCollisions().length) {
 const nativeList = buckets['组件原生横滚（el-table）']
 if (nativeList.length) {
   console.log('\n—— 组件原生横滚页的实测列数（能滚 ≠ 不挤）——')
-  const rows = nativeList.map((r) => ({ r, n: elTableColumnCount(readFileSync(join(SRC, r), 'utf8')) }))
+  const rows = nativeList.map((r) => ({ r, n: elTableColumnCount(readFileSync(join(ROOT, r), 'utf8')) }))
   rows.sort((a, b) => b.n - a.n)
   for (const { r, n } of rows) console.log(`    ${String(n).padStart(2)} 列  ${r}`)
 }
@@ -314,7 +392,7 @@ if (OUT) {
 const dbgIdx = args.indexOf('--debug')
 if (dbgIdx >= 0) {
   const target = args[dbgIdx + 1]
-  const p = join(SRC, target)
+  const p = join(ROOT, target)
   const t = readFileSync(p, 'utf8')
   console.log(`\n=== debug ${target} ===`)
   console.log('isCardified      :', isCardified(t))
