@@ -85,6 +85,15 @@ mutate "M123 守卫丢掉注释检查" "
 t = t.replace('AND col_description(a.attrelid, a.attnum) IS NOT NULL', 'AND TRUE')
 " guard_covers_the_comment_as_well_as_the_column
 
+# M128 ★ 条件取反 —— 文本门第一版看不见它，被真库行为测试抓到：
+# 探针统计的是「缺什么」，所以每一项都必须是「不在」测试。写成 WHERE EXISTS 会让
+# 守卫在注释存在时反而返回 false ⇒ 生产上每次启动仍白取两次锁，而所有文本断言全绿。
+mutate "M128 探针条件取反（NOT EXISTS → EXISTS）" "
+old = chr(10)+chr(9)*2+'   WHERE NOT EXISTS ('+chr(10)+chr(9)*2+'       SELECT 1'+chr(10)+chr(9)*2+'        FROM pg_attribute a'
+new = chr(10)+chr(9)*2+'   WHERE EXISTS ('+chr(10)+chr(9)*2+'       SELECT 1'+chr(10)+chr(9)*2+'        FROM pg_attribute a'
+assert old in t, 'M128 anchor not found in db.go'
+t = t.replace(old, new)
+" guard_covers_the_comment_as_well_as_the_column
 # M124 探测出错时 return true —— 探测失败被读成「已就位」，DDL 永久跳过
 mutate "M124 探测错误分支返回 true（不安全方向）" "
 t = t.replace('applying DDL\", \"error\", err)\n\t\treturn false', 'applying DDL\", \"error\", err)\n\t\treturn true')

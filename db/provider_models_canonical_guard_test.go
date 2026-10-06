@@ -120,6 +120,36 @@ func TestEnsureProviderModelsCanonicalClearedAt_ShortCircuitsDDL(t *testing.T) {
 		if !strings.Contains(probe, "col_description(a.attrelid, a.attnum) IS NOT NULL") {
 			t.Error("the probe must require the column to already carry a comment")
 		}
+		// ★ The probe counts what is MISSING, so every term must be a
+		// "not there" test. Mutation M128 proved the text assertions could not
+		// see an inverted one: the real-DB behaviour test caught `WHERE EXISTS`
+		// reporting "not missing" for a column whose comment *was* present,
+		// which left the guard permanently false on production while every text
+		// assertion stayed green.
+		at := strings.Index(probe, "col_description(")
+		if at < 0 {
+			t.Fatal("the probe must consult col_description")
+		}
+		// Take the whole second counting term, from its own `(SELECT count(*)`
+		// to the end of the probe. Two narrower slices both fail for different
+		// reasons: slicing forward to the first `))` stops inside the
+		// col_description call arguments, and taking the nearest preceding
+		// `WHERE ` lands on the *inner* `WHERE a.attrelid = …`, not on the one
+		// that governs the term.
+		head := probe[:at]
+		start := strings.LastIndex(head, "(SELECT count(*)")
+		if start < 0 {
+			t.Fatal("the col_description check should live in its own counting term")
+		}
+		term := probe[start:]
+		if !strings.Contains(term, "WHERE NOT EXISTS (") {
+			t.Error("the comment term must be governed by `WHERE NOT EXISTS` — the probe " +
+				"counts what is MISSING; `WHERE EXISTS` inverts it and the guard then never " +
+				"fires on a database that already carries the comment")
+		}
+		if strings.Contains(term, "WHERE EXISTS") {
+			t.Error("the comment term must not contain a bare `WHERE EXISTS`")
+		}
 	})
 
 	t.Run("probe_failure_falls_through_to_the_ddl", func(t *testing.T) {

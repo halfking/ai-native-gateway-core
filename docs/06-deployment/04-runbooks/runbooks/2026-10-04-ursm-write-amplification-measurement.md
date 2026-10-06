@@ -10799,3 +10799,66 @@ ACCESS EXCLUSIVE** 才能改写 catalog 条目。
 | 5 | `credits_charged`（§10.97） | `request_logs` | 父表 + 5 分区 | ~1.14 亿 |
 | — | `ensureWorkTypeRouteSource` | `work_type_model_route` | 61 行的表 | ~8.7k（**收益小，不做**） |
 | — | `ensureOrchestrationRuntimeInstancesSchema` | `orchestration_runtime_instances` | — | **0（不做）** |
+
+### §10.98.11 ★★ 行为验证抓到一个文本门完全看不见的缺陷（探针条件取反）
+
+§10.98.7~§10.98.9 加的三条守卫，此前只有**文本断言**。文本门能证明
+「源码里写了守卫调用」，证明不了「守卫真的短路、真的不再取锁」。
+于是补了真库行为验证：`db/startup_ddl_guards_realdb_test.go`
+（门控同 749/750：无 `TEST_DATABASE_URL` 即跳过）+
+一键脚本 `scripts/.verify-startup-guard-behavior.sh`（一次性容器，退出即回收）。
+
+每个守卫四类读数：
+
+| | 读数 | 作用 |
+|---|---|---|
+| A | 列/索引缺失时守卫必须 `false` | 缺 schema 的库不能被跳过 |
+| B | 齐备后守卫必须 `true` | 守卫不能恒假 |
+| **C** | **并发读持锁时，守卫后的 ensure 必须立即返回** | **守卫真的不再取锁** |
+| **D** | **同一条 DDL 不带守卫直接执行，必须被并发读挡住（55P03）** | **C 的反证** |
+
+★ **D 是 C 的前提**：没有 D，「C 没被挡住」可能是恒真（夹具没建好 / 超时没生效 /
+锁没冲突）。脚本因此**逐条点名** C 与 D 六个读数，缺一条就报错——
+不能让「没输出」冒充通过。
+
+#### ★★ 抓到的是什么
+
+`providerModelsCanonicalClearedAtCurrent` 的探针统计的是**缺什么**：
+
+```sql
+-- 第一项：列缺失计数（正确）
+(SELECT count(*) … WHERE to_regclass(…) IS NOT NULL AND NOT EXISTS (… column …))
+-- ★ 第二项我写成了：
+(SELECT count(*) … WHERE EXISTS ( … col_description(…) IS NOT NULL))   -- ← 取反了
+```
+
+`missing == 0` 的语义要求每项都是「**不在**」测试。第二项写成 `WHERE EXISTS` 后：
+
+| 生产实况 | 第一项 | 第二项 | `missing==0`？ | 后果 |
+|---|---|---|---|---|
+| 列在 + 注释在（**生产就是这样**） | 0 | **1** | **false** | **守卫恒失效，每次启动照样取两次锁** |
+| 列在 + 注释缺 | 0 | 0 | true | 跳过 DDL，**注释永远补不上** |
+
+⇒ **若上线，这笔改动等于白做，而且比不做更糟**（缺注释的库被永久跳过）。
+
+而**文本门 6 个子测试 + 变异 M118~M127 十条全部全绿** ——
+它们只断言「探针里出现了 `col_description(` 和 `canonical_cleared_at`」，
+对**语义方向**一无所知。⇒ 这是「文本门 ≠ 行为正确」的一个干净实例。
+
+#### 已做的三处补强
+
+1. **修 `NOT EXISTS`**（`db/db.go` 探针第二项）
+2. **变异 M128**：把 `NOT EXISTS` 改回 `EXISTS` ⇒ 文本门现在**也**转红
+3. **文本门加一条边界断言**：取出注释那一整项
+   （从它自己的 `(SELECT count(*)` 起），
+   要求 `WHERE NOT EXISTS (` 在场、裸 `WHERE EXISTS` 不在场
+
+★ 写这条断言时我连犯两次「切错边界」：先按 `))` 向前切，结果 `col_description(a.attrelid, a.attnum)`
+本身就以 `)` 结尾，第一个 `))` 落在**调用实参里**；改按「最近的 `WHERE`」向后找，
+又落到了**内层** `WHERE a.attrelid = …`。两次都表现为**门恒红**。
+⇒ 断言的切片边界必须落在**语法结构的起点**，不是某个字符序列。
+
+#### 当前读数
+
+三组 × 6~7 条，全绿；行为验证脚本独立复现通过。
+M118~M128 共 11 条变异全部按预期转红。

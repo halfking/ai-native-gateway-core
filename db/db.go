@@ -3344,7 +3344,7 @@ func (d *DB) providerModelsCanonicalClearedAtCurrent(ctx context.Context) bool {
 		          AND column_name = want.name))
 		  +
 		  (SELECT count(*) FROM (VALUES ('canonical_cleared_at')) AS want(name)
-		   WHERE EXISTS (
+		   WHERE NOT EXISTS (
 		       SELECT 1
 		        FROM pg_attribute a
 		        WHERE a.attrelid = 'public.provider_models'::regclass
