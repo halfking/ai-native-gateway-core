@@ -108,6 +108,8 @@ export const DRAWER_NAV: readonly NavItem[] = [
   { key: 'system-monitor', to: '/system-monitor', icon: 'cpu', titleKey: 'nav.sysmon' },
   // 数据生命周期：分区清单 + 体积榜。admin 档（admin()）⇒ 不设 requiresRole。
   { key: 'data-lifecycle', to: '/data-lifecycle', icon: 'grid', titleKey: 'nav.lifecycle' },
+  // 路由优化器：准确率 + 激活参数 + 5 分钟明细。admin 档（admin(...)）⇒ 不设 requiresRole。
+  { key: 'routing-opt', to: '/routing-opt', icon: 'cpu', titleKey: 'nav.routingOpt' },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))

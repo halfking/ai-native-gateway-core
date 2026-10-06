@@ -3218,3 +3218,186 @@ function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
   （每次失败内容都不同，不该进版本库）。
 ★ 全部跑绿时，末尾会明确写「本次未复现 —— 这不是『已修复』，只是没抓到」，
   避免把「没复现」读成「已解决」。
+
+---
+
+### 11.63 路由优化器上移：准确率 + 激活参数 + 5 分钟明细（第二十八轮，admin 档）
+
+新增 `src/api/routingOpt.ts`（4 端点）+ `src/views/RoutingOptView.vue` +
+路由 `/routing-opt` + 抽屉席「路由优化器」。
+这一族答的是「**优化器自己调得准不准、现在用的是哪套参数**」，
+与已上移的 `/overrides`（规则是什么）、`/routing-audit`（谁改的）、
+`/funnel`（请求漏斗）、`/matrix`（热力矩阵）、`/model-task-index`（5 分钟桶表现）
+**互不重叠** —— 这一族是**效果与参数**面。
+
+| 端点 | 移动端 | 档位 | 抽屉席 |
+|---|---|---|---|
+| `GET /api/admin/routing-opt/stats` | `/routing-opt`（总体准确率） | `admin` | 路由优化器 |
+| `GET /api/admin/routing-opt/accuracy` | 同上（小时 × 任务桶） | `admin` | 同上 |
+| `GET /api/admin/routing-opt/parameters` | 同上（激活参数） | `admin` | 同上 |
+| `GET /api/admin/routing-opt/metrics` | 同上（5 分钟明细） | `admin` | 同上 |
+
+累计（**当场实测**：`views/*.vue` 去 spec、`api/*.ts` 去 `*.spec.ts`/`*.test.ts`、
+抽屉席按 `appNav.ts` 实际条目）：
+**36 视图 / 35 API 模块 / 32 抽屉席**（**8 席 superAdmin** 档）。
+★ 沿用 §11.52 的告警：这个数是**目录现状**，并发会话仍在加文件
+（例如此前新增的 `transport.ts`），引用前必须当场实测。
+
+#### 七个坑（逐条实读源码，不是推断）
+
+1. ★★★★ **准确率是「1 条人工标注算 2 条」的加权平均，不是合并准确率。**
+   `routingOptWeightedAccuracy`：`denom = autoTotal + 2*humanTotal`、
+   `num = autoCorrect + 2*humanCorrect`、`accuracy = num/denom`
+   （`num` 另有 `if num > denom { num = denom }` 防御性夹取）。
+   ⇒ 用户按 `(correct+correct)/(total+total)` 算是**另一个数**。
+   ★ 更要紧：响应**只给样本量、不给命中数**（`auto_samples`/`human_samples` 是 COUNT，
+   没有 correct 字段）⇒ **客户端无法验证**这个加权值，只能照抄并说明口径。
+   页面三条说明常驻：加权口径 / 两种「正确」定义 / 无法验证。
+
+2. ★★★★ **auto 与 human 的「正确」是两种定义。**
+   `auto` = `SUM(CASE WHEN success THEN 1 ELSE 0 END)`（**请求成功**）；
+   `human` = `predicted_provider = correct_provider`（**命中人工真值**）。
+   加权平均把「成功」和「命中人工真值」揉成一个数，两者不能互相替代解读。
+
+3. ★★★★ **量纲第 5 处：`overall_accuracy` / `accuracy` 是 0..1 比率**，不是百分数
+   ⇒ 走 `formatRoutingOptAccuracy`（×100），刻意与 `formatSuccessRatePct`（0..100）、
+   `formatModelTaskRatePct`（0..1，task-index）**不同名**。
+
+4. ★★★ `accuracy` 每个桶 **恒有样本** ⇒ 桶里 `accuracy: 0` 是**真的 0%**。
+   ★★ 这是本轮**特意追到 SQL 才排除**的一处「疑似缺陷」：
+   handler 写 `b.Accuracy, _ = routingOptWeightedAccuracy(...)`，把 `hasData` 丢掉了 ——
+   按 §11.20 的「三态必须互斥」直觉（`degraded`/`empty` 那样），这看着像缺陷。
+   **但** SQL 是 `… GROUP BY date_trunc('hour',created_at), task_type`，**没有**
+   `generate_series`，而 `GROUP BY` 只产出非空组 ⇒ `COUNT(*) ≥ 1` ⇒ `denom ≥ 1 > 0`
+   ⇒ `hasData` **恒为 true** ⇒ 丢弃它**无害**。
+   ⇒ 既不该去「修」，也**不该在文档里写成坑**。
+   ★ 对照：`stats` 整窗无样本时 `hasData=false` 是**真会发生的**，后端也**正确处理**了
+   （回落 `persisted_state` 或 `none`）。两处不可混谈。
+
+5. ★★★ `accuracy_source` 有**三个语义完全不同的来源**，共用 `overall_accuracy` 一个字段，
+   不看它就分不出来：
+   `weighted_feedback`（窗口内实时算出）/ `persisted_state`（**旧值回落**，必须标出）/
+   `none`（既无反馈样本也无持久化状态）。未知来源要**如实显示来源名**，不得当实时。
+
+6. ★★ `hours` 是**静默回落 + 静默 clamp，永不报错**（`parseRoutingOptHours`）：
+   非数字 / <1 → 24；>720 → 720。
+   ★ 而 `stats` 的窗口是**写死的常量 24，根本没有参数**
+   ⇒ 两个端点的窗口**不能共用一个控件**；页面因此分成两组 chip。
+   ★★ 视图里 `ROUTING_OPT_STATS_WINDOW_HOURS` 不当摆设：它当**基准**用 ——
+     响应 `window_hours` 与它不等时**告警**（后端改了常量而文档没跟上），
+     而不是默默照抄响应。（这一处是被 `vue-tsc` TS6133 逼出来的，
+     但**接进判据**而不是删 import，比删掉多一层保护。）
+
+7. ★★★ `metrics` 的 `LIMIT 2000` 在长窗口下**必然命中**，且 `ORDER BY time_bucket DESC`
+   ⇒ **丢的是最旧的数据**。
+   ★ SQL 注释自陈「30 天 × 288 桶/天 × 维度组合，正常远小于此」—— 这条推理的**算术与自己的
+   LIMIT 矛盾**：5 分钟桶 ⇒ 一天 288 个；30 天（`hours=720`）⇒ **8640 个桶，仅时间桶就超 2000**。
+   好在**后端自带** `resp.Truncated = len(rows) >= 2000`
+   ⇒ 不要自己猜。这与 `availability-timeline`（写死 500 无标记）、
+   `cache-state`（ScanKeys 4096 无标记）**不同**。
+   ⇒ 页面两条：`truncated=true` 时说「已达 2000 行上限、丢最旧的」；
+     未命中但窗口够长（`hours × 12 ≥ 2000`，即 ≥168h）时给**预估**提示。
+
+★ 另两条：`parameters` 没有激活版本时返回 **404** `No active optimization state`
+  —— 那是「还没配置」，**不是错误**，独立渲染。
+★ `human_annotations_used` 与 `human_samples` **恒等**（都取 `humanTotal`）——
+  不是另一项统计，页面上只展示后者。
+★ 错误信封全族走 `http.Error`（**text/plain**），与 `writeError`（嵌套 JSON）不同族；
+  `routingOptPool() == nil` ⇒ **503** `Database not available`。
+
+8. ★★★★★ **四个端点里只有 `metrics` 读的是「物化聚合表」，另外三个都是实时读。**
+   ★★★ 这条**不是从 handler 看出来的** —— handler 只说「`FROM routing_optimization_metrics`」，
+   追到写入方 `bg/routing_metrics_aggregator.go` 才知道那张表是后台 sweep 从
+   `routing_feedback_log` 滚动写出来的（先 `DELETE … WHERE time_bucket >= $1`
+   再整窗 `INSERT`，事务级 advisory lock 串行化，避免同桶重复行让下游 `SUM` 双倍计数）。
+   ⇒ 后果：**sweep 没跑或落后时，`metrics` 会空/过期，而 `stats`/`accuracy` 却有数**
+     ⇒ 四个面板之间「对不上」**不是 bug**，是物化延迟。页面据此标注了 metrics 面板的来源。
+   ⇒ 同一处追出另外三件事：
+   - `accuracy_rate = successful::float / NULLIF(total,0)` ⇒ **0..1 确认**，
+     但它量的是**成功率**，名字却叫 accuracy ⇒ 这是本族**第三个** accuracy 口径
+     （另两个见坑 2）；
+   - `human_accuracy_rate` = `(successful + 2*human_agree)/(total + 2*human_count)`，
+     且 `human_count = 0` 时写的是 **NULL**（列 CHECK 允许 NULL），**不是 0、不是 1.0**；
+   - p50/p95/p99 与 `avg_latency_ms` 都是 `::int` ⇒ **整数毫秒**。
+
+#### ⚠️ 由坑 8 引出的一个**本轮自造的真缺陷**（已实修）
+
+聚合 SQL 用的是 `GROUPING SETS ((), (task_type), (predicted_provider))`
+⇒ **同一批数据会同时产出四类行**，而不是「按 task × provider 交叉」：
+
+| 类 | `task_type` | `predicted_provider` | 含义 |
+|---|---|---|---|
+| `task_provider` | 有 | 有 | 单个 (任务,供应商) 组合的分组行 |
+| `task` | 有 | **缺** | 该任务**跨供应商**的汇总行 |
+| `provider` | **缺** | 有 | 该供应商**跨任务**的汇总行 |
+| `global` | 缺 | 缺 | 整窗汇总行 |
+
+★ 我第一版写的 `metricsRowDimLabel` 只分「有维度 / 没维度」两类
+⇒ 把**三类汇总行中的两类当成明细行**，且供应商汇总行会被渲染成
+「全部任务 × openai」—— 用户会把它读成一条预测。
+现已改为 `metricsRowDim → 'task_provider'|'task'|'provider'|'global'`
+＋ `metricsRowIsAggregate`，三类汇总行统一标「汇总行」并用 `muted` 色。
+API spec 里那条 `('chat', undefined) → 'global'` 的**旧断言本身就是这个 bug**
+——它是先红的。
+
+★★ 一个容易跟着写错的细节：`''` **不是**维度缺失。
+`*string` + `omitempty` 只在 NULL 时丢键；存在但为空的维度会带着 `""` 出来
+⇒ 仍算「这一维有值」。（写断言时我一度把它当缺失，被自己的实现打回。）
+
+#### 范围外（主动划线，与前几批同口径）
+
+同族写操作一条不碰：`proposals/{approve,reject}`、`probe/cache-rebuild`；
+superAdmin 兄弟端点 `hot/cron/stats` 也不碰。
+
+#### 量纲累计（五处，函数一律不同名）
+
+| 函数 | 量纲 | 所属 |
+|---|---|---|
+| `formatSuccessRatePct` | 0..**100** | probeTimelineCache |
+| `formatModelTaskRatePct` | 0..**1** | modelTaskIndex |
+| `formatRoutingOptAccuracy` | 0..**1** | routingOpt（本轮） |
+
+#### 本轮门禁
+
+- **变异验证 9/9 + 2/2 有牙**（共 11 条）：
+  量纲漏乘 100（红 6 条）/ 来源判别错写 / p95 空指针回落成 0ms /
+  显示封顶 50→1000 / 删 `truncated` 告警 / 404 不再当「未配置」/
+  accuracy 失败连带清空 stats / 窗口说成可调 / 删窗口失配告警 /
+  四类行退回二分类 / 汇总行标签恒不显示。
+  全部红在**具名断言**上（非收集失败），还原后 **md5 与基线一致**、复跑全绿。
+- 全量 **10 连跑全绿，1087 用例**（连跑器落盘，**0 份失败快照**）。
+  其中本轮新增：`routingOpt.test.ts` + `RoutingOptView.spec.ts`；
+  并给 `dynamicKeys.spec.ts` 加了第 6 处动态前缀（`routingOpt.dim_`）。
+- `npm run build` **rc=0**（`BUILD_RC` 直接从命令取，未过管道）；
+  三门全过（css-media 57 文件 / touch-target 54 个 `.vue` / i18n parity **978 键**、
+  源码字面量键 780 个）；`vue-tsc -b` 无 TS6133。
+- 累计：**36 视图 / 35 API 模块 / 32 抽屉席（8 席 superAdmin）**。
+
+★★ **本轮两次「量具本身有问题」的现场记录**（都属于「结论长得像通过」那一类）：
+
+- **「`vue-tsc --noEmit` rc=0」是假读数。** 写成
+  `npx vue-tsc --noEmit … | tail -20; echo rc=$?`，`$?` 取的是 **`tail` 的退出码**。
+  紧接着 `npm run build`（内含 `vue-tsc -b`）当场报出 2 条 TS6133。
+  ⇒ 结论：**rc 必须从被测命令直接取**（`cmd > log 2>&1; echo $?`，
+  或用 `PIPESTATUS`），管道后的 `$?` 一律不作数。
+  ★ 另外 `--noEmit` 与构建用的 `-b`（project references）**不是同一模式**，
+  两者结论不可互相代替。
+- **一处变异转红了，但转红的原因不对。** 原 M7 把 `Promise.allSettled` 改成裸数组，
+  vitest 报的是 `no tests`（**收集失败**），不是断言红 —— 按四类归因这是「②前提失效」，
+  不能算「判据抓到了」。改成合法且可观测的注入
+  （在 accuracy 的 reject 分支里清空 `stats`）后，红在**具名断言**
+  `★★ accuracy 失败 ⇒ 不清空 metrics` 上，才算数。
+  ★ 中途还遇到一次**等价变异**：把清理放进 stats 的 reject 分支**居然没转红** ——
+    因为 `p/a/m` 三个分支在其后执行，会把值又写回去。
+    等价变异**不能**用来给判据背书，也不能用来指控判据无牙。
+- ★ 模板属性里写 `v-if="false" /* MARKER */"` 会让 SFC **收集失败**；
+  变异标记要放进**表达式内部**（`&& 'MARKER' === ''`）才安全。
+- ★ 还有一次「标记没落盘」：变异文本里**压根没写标记**，自检正确地拦下了
+  （G2 报「标记没落盘」而不是假装验证过）。
+  ⇒ 自检脚本必须真的检查**替换后的文件内容**，不能只检查替换字符串本身。
+
+### 11.64 flaky 复查（第二十八轮，未复现）
+
+改完代码后（GROUPING SETS 那处缺陷修完后）重跑 10 次全量：**10/10 全绿，1087 用例**。
+★ 这**不是**「已修复」，只是**没抓到**（连跑器全绿时的结尾语就是这个意思）。
+累计无污染全量跑 ≥76 次、失败仍为 1 次（≈1.3%），失败用例名**仍未捕获**。

@@ -37,6 +37,7 @@ export const zhCN = {
     onlineSessions: '在线会话',
     sysmon: '系统监控',
     lifecycle: '数据生命周期',
+    routingOpt: '路由优化器',
     nodeHealth: '健康时间线',
     account: '我的',
   },
@@ -869,6 +870,70 @@ export const zhCN = {
     topPercent: '榜内 {n}%',
     // ★ 分区父表体积已包含子分区，不可与分区行相加
     parentTable: '分区父表',
+  },
+  routingOpt: {
+    title: '路由优化器',
+    // ★★★★ 准确率是 1 条人工标注按 2 条计入的加权平均，不是命中数除以样本数
+    weightedNote: '这个准确率是加权平均：1 条人工标注按 2 条计入，所以它不等于「命中数 ÷ 样本数」。',
+    // ★★★ auto 与 human 的「正确」是两种定义
+    twoDefinitionsNote: '两半的「正确」含义不同：自动那半数的是请求有没有成功，人工那半数的是预测有没有命中人工标注。',
+    // ★★★ 响应只给样本量、不给命中数 ⇒ 客户端核不出来
+    notVerifiableNote: '接口只返回样本量、不返回命中数，所以这个百分比没法在客户端核对，只能照后端口径显示。',
+    // ★★★ 三种来源语义完全不同
+    sourceStale: '当前窗口没有新的反馈样本，这里显示的是持久化状态里的旧值，不是刚算出来的。',
+    sourceNone: '既没有反馈样本，也没有持久化状态，这个准确率没有数据来源。',
+    sourceUnknown: '准确率来源无法识别：{source}',
+    overall: '总体准确率',
+    window: '统计窗口',
+    // ★ stats 的窗口是后端写死的常量 24，接口不接受参数
+    windowFixed: '统计窗口 {n} 小时（后端写死，不能改）',
+    // ★ 响应与已实测常量不一致 ⇒ 后端改了而文档没跟上
+    windowMismatch: '注意：后端返回的窗口是 {got} 小时，与已知的写死值 {expect} 小时不一致，说明后端改过这个常量。',
+    paramVersion: '参数版本',
+    autoSamples: '自动样本',
+    humanSamples: '人工样本',
+    stateUpdatedAt: '状态更新于 {t}',
+    params: '当前激活参数',
+    // ★ 404 = 还没有激活版本，是正常状态而不是错误
+    noActiveParams: '还没有激活的优化器参数版本。',
+    version: '版本',
+    exploration: '探索率',
+    learningRate: '学习率',
+    adaptation: '自适应窗口',
+    activatedAt: '激活于 {t}',
+    createdBy: '创建者 {who}',
+    byHour: '按小时与任务类型',
+    // ★★ SQL 用 GROUP BY 且没有补空桶 ⇒ 每个桶恒有样本 ⇒ 0% 是真的 0%
+    bucketHasSamplesNote: '每个时间桶都有样本（后端按小时和任务类型分组，不补空桶），所以列表里的 0% 是真的 0%，不是「没有数据」。',
+    hoursLabel: '统计时长',
+    noBuckets: '这个窗口内没有反馈样本',
+    bucketAt: '时间 {t}',
+    bucketSamples: '样本 {n} 条（人工 {h} 条）',
+    metrics: '5 分钟聚合明细',
+    taskType: '任务类型',
+    provider: '供应商',
+    // ★ task_type / provider 都是精确匹配，不是模糊搜索；留空 = 不过滤
+    exactMatchHint: '精确匹配，留空为全部',
+    query: '查询',
+    // ★★ 后端硬上限 2000 行，命中时丢的是最旧的数据
+    metricsTruncated: '已达后端 {cap} 行上限，这里只有最新的 {cap} 行，最旧的数据被丢掉了。',
+    metricsLikelyTruncated: '当前窗口最多能产生约 {hours} × 12 个五分钟桶，可能撞上后端 {cap} 行上限；如果被截断，丢的是最旧的数据。',
+    noMetrics: '没有查到聚合明细',
+    // ★ 本页只渲染前 50 行，必须明说
+    displayCap: '另有 {hidden} 行没有显示，这里只列了最新的 {shown} 行。',
+    // ★★★★ 下面四类来自后端聚合 SQL 的 GROUPING SETS ((), (task_type), (predicted_provider))
+    dim_task_provider: '任务 × 供应商',
+    dim_task: '任务汇总',
+    dim_provider: '供应商汇总',
+    dim_global: '全局汇总',
+    aggregateRow: '汇总行',
+    // ★★★★ metrics 是四端点里唯一读**物化聚合表**的
+    metricsMaterializedNote: '这一块的数据来自后台定时汇总出来的聚合表，上面几个面板是实时统计的；所以汇总任务没跑或落后时，这里会和上面的准确率对不上。',
+    groupingSetsNote: '同一批数据会同时产出四种行：任务 × 供应商、任务汇总、供应商汇总、全局汇总。三种汇总行标了「汇总行」，别当成又一条预测。',
+    requests: '请求数',
+    accuracyRate: '准确率',
+    p95: 'P95 延时',
+    humanCorrections: '人工纠正',
   },
   sysmon: {
     title: '系统监控',
