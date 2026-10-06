@@ -106,6 +106,8 @@ export const DRAWER_NAV: readonly NavItem[] = [
   { key: 'sessions-online', to: '/sessions-online', icon: 'play', titleKey: 'nav.onlineSessions' },
   // 系统监控：答「监控器这层自己在不在干活」。admin 档（adminWrap）⇒ 不设 requiresRole。
   { key: 'system-monitor', to: '/system-monitor', icon: 'cpu', titleKey: 'nav.sysmon' },
+  // 数据生命周期：分区清单 + 体积榜。admin 档（admin()）⇒ 不设 requiresRole。
+  { key: 'data-lifecycle', to: '/data-lifecycle', icon: 'grid', titleKey: 'nav.lifecycle' },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))

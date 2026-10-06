@@ -2943,3 +2943,194 @@ handler 自己的注释就写着：
 不变量**写的，而不是靠一个大而全的断言兜着。
 ★ 「四项全 0」与「队列与运行全 0」是**两条独立判据**：
 它们都是「全 0」，若合并成一条判断，变异时无法定位是哪条语义被破坏。
+
+---
+
+### 11.59 数据生命周期上移：分区清单 + 体积榜（第二十六轮，admin 档）
+
+| 端点 | 移动端 | 档位 | 抽屉席 |
+|---|---|---|---|
+| `GET /api/admin/data-lifecycle/partitions` | `/data-lifecycle`（上半） | `admin` | 数据生命周期 |
+| `GET /api/admin/data-lifecycle/storage/tables` | 同上（下半） | `admin` | （不单独占席） |
+
+★ 同族其余端点**几乎全是 superAdmin 且多数是写操作**
+（`archive` / `archive-batch` / `drop` / `vacuum` / `vacuum-full` / `reindex` /
+`promote` / `hot/*` / `blobs/cleanup/execute` / `degradation/control` /
+`degradation/recover`）⇒ 本轮**一条都不碰**。
+唯一例外是 superAdmin 的只读 `hot/cron/stats`，留待后续。
+
+#### ★★★★ 陷阱一：`total_bytes` **不是整库大小**，是「返回的前 N 张之和」
+
+`queryTableSizes` 只在 **LIMIT 之后的循环里**累加：
+
+```go
+for rows.Next() {          // ← 已经 ORDER BY ... LIMIT $1 截断过了
+    …
+    totalBytes += t.TotalBytes
+    out = append(out, t)
+}
+```
+
+响应里的 `total_bytes` / `total_human` 就是这个 `totalBytes`。
+handler 自己的注释写明：
+
+> 占比对 Top-N 求和，截断会让 Top-N 大表榜 + DB 占用同时偏小。
+
+⇒ 显示成「本库共 12.3 GB」是**错的**。页面只能说「上榜 N 张表合计 X」，
+并把「不是整库大小」这句挂在榜的**上方**（不能塞进底部小字）。
+
+#### ★★★★ 陷阱二：`percent_of_db` 的分母是**榜内之和**
+
+```go
+out[i].PercentOfDB = int(out[i].TotalBytes * 100 / totalBytes)
+```
+
+⇒ 这一列恒以「榜内占比」为语义，加起来约 100%，
+与「占全库百分比」**毫无关系**。字段名 `percent_of_db` 在骗人。
+
+#### ★★★ 陷阱三：`rows` 是 planner 估计值
+
+SQL 取的是 `COALESCE(s.n_live_tup, 0) AS row_estimate`
+（`pg_stat_user_tables`，**需要 analyze 才有意义**，写入后未统计时会明显偏低），
+而 JSON 键叫 `rows`。⇒ 页面标「估计行数」。
+
+#### ★★★ 陷阱四：分区父表与分区**可能同时在榜**，体积**重复计入**
+
+`WHERE c.relkind IN ('r','p')` 同时包含普通表与分区父表，
+而 `pg_total_relation_size(父表)` **本身已经包含所有子分区**。
+⇒ 榜上同时出现 `request_logs`（'p'）与 `request_logs_2026_10`（'r'）时，
+两行体积**重叠**，累加会偏大。
+⇒ 榜里逐行标出「分区父表」，并提示不可与分区行相加。
+
+#### ★★★ 陷阱五：`row_count = -1` 是后端**明确的「未知」哨兵**
+
+每个分区单独 `SELECT COUNT(*)`；失败时 handler 显式写：
+
+```go
+pinfo.RowCount = -1 // Indicate unknown
+```
+
+⇒ 渲染成「未知」，**不是**「-1 行」，也不是「0 行」。
+★ 这是本专题遇到的**唯一一个后端主动提供的哨兵值** ——
+比那些「0 到底是真 0 还是没取到」的端点友好得多，应当优先利用。
+
+#### ★★ 陷阱六：`partitions` 里某张表**整个消失**是查不出来的
+
+handler 遍历固定表清单，某张表状态查询出错就 `slog.Warn` + `continue`：
+
+```go
+status, err := h.getPartitionTableStatus(ctx, tableConfig)
+if err != nil { slog.Warn(…); continue }
+```
+
+⇒ 响应少一张表，客户端**无法区分**「这张查不到」与「配置里就没有它」。
+⇒ 页面显示「本次返回 N 张分区表」+ 一句说明缺失不可分辨。
+
+#### ★★ 陷阱七：`archived_count` 把 **columnar** 的也算成「已归档」
+
+```go
+if pinfo.IsArchived || pinfo.IsColumnar { status.ArchivedCount++ }
+```
+
+⇒ 「已归档 N」≠「归档表里真有 N 个分区」。
+且 `IsArchived` 本身是**按分区名是否含 `_archive_` 推断**的
+（`containsSubstring(pinfo.PartitionName, "_archive_")`），不是查目录。
+
+★ 另有一条**静默丢行**：分区边界解析失败
+（`parsePartitionBounds`，例如 DEFAULT 分区）会 `continue`，
+**整个分区从清单里消失**（不只是缺日期）。
+handler 注释自陈：「少列一个分区就等于让管理员以为该分区不存在」。
+
+★ 关于日期：这里 `start_date` / `end_date` 是**非指针 `time.Time`**，
+  看起来会有「零值时间 `0001-01-01`」的风险 —— 但**实测不存在**：
+  解析失败的那一行会先 `continue`，所以凡是出现在 `partitions[]` 里的
+  分区都带真实日期。⇒ 客户端不必写零值兜底。
+  ★ 与 §11.57 的 `finished_at` 同款：**推断出来的坑必须追到代码才能写进契约**，
+    否则文档里会多一条并不存在的坑，后来的人会照着它加无用的防御。
+
+#### ★★ 一个**又犯了**的错：常量 import 却不接进判据
+
+§11.57 刚因为这个被 `vue-tsc` TS6133 抓到并定下「接进判据而不是删 import」的修法，
+§11.59 **又犯了一次**（5 个常量）。
+
+⇒ 说明「知道修法」不等于「下次会照做」。
+  把规则固化成一个**可执行的门**更可靠：给「导入了但未在模板/脚本里出现」
+  的标识符加一条检查。本轮已全部接进 `v-if` 条件
+  （`v-if="STORAGE_TOTAL_IS_TOPN_SUM"` 等），后端改语义时界面提示会自动消失。
+
+### 11.60 本轮门禁（第二十六轮，数据生命周期）
+
+| # | 门 | 结果 |
+|---|---|---|
+| 1 | css 门自测 | **11/11** |
+| 2 | 触控门自测 | **11/11** |
+| 3 | i18n 门自测 | **23/23** |
+| 4 | `gate:selftest` | **45 条断言全绿** |
+| 5 | `vue-tsc -b` | 通过（先抓到 5 处 TS6133 未用 import） |
+| 6 | i18n 键集门 | 通过（各 **928 键**，+26；**735 个源码字面量键全部存在**，扫 117 个 `.vue`/`.ts`） |
+| 7 | css 媒体查询门 | 通过（**56 文件**，+1） |
+| 8 | 触控热区门 | 通过（**53 个 .vue**，+1） |
+| 9 | `vitest run` | **1005 用例 / 66 文件**（+43：20 API + 23 视图）——★ 见下方 flaky 记录，**不能**写成「10 次全绿」 |
+| 10 | `npm run build` | 通过 |
+
+★ i18n 门又抓到一次「值 === 键名」：`en-US lifecycle.unknown = 'unknown'` ⇒ 改 `not measured`。
+  ★ 这已是**第三次**（`online.stale` / `sysmon.tokens` / `lifecycle.unknown`）。
+  ⇒ 规律固化为提交前检查项：英文里「标签词恰好等于键名」是最容易踩的一类，
+    因为直觉上 `unknown` / `stale` / `tokens` 看着就是对的译文。
+
+★ 变异证据（**10 处，全部转红**）：
+
+| 变异 | 结果 |
+|---|---|
+| 截断判定 `>=` 改 `>` | 3 failed |
+| ★ 「未知」哨兵改成判 `=== 0`（把真空值当成未知） | 3 failed |
+| archived 口径去掉 columnar 那一支 | 1 failed |
+| `limit` 上界守卫去掉 | 1 failed |
+| 「不是整库大小」提示恒假 | 1 failed |
+| 「分区父表」徽标恒假 | 1 failed |
+| 去掉「估计行数」标注 | 8 failed |
+| archived 口径说明恒假 | 1 failed |
+| ★ `-1` 不再当未知（直接打印 -1） | 1 failed |
+| 「上榜 N 张合计」写死 0 | 1 failed |
+
+★ 第 2 条与第 9 条是一对：哨兵方向搞反（把 0 当未知）和哨兵被忽略（把 -1 打出来）
+  都会让「未知」这层信息彻底消失，而两者的界面表现完全不同 ——
+  ⇒ 判据必须**双向**写：`0 ⇒ 显示 0`、`-1 ⇒ 显示 未知`。
+
+★ ★★ **本轮观测到一次未捕获的 flaky（必须如实记，不得抹掉）**
+
+十连跑的第 4 次出现 `Tests 2 failed | 1003 passed (1005)`。
+**失败用例名没有捕获到** —— 那一轮的后台循环只保留了汇总行
+（`grep -E '^ +Tests +'`），没有把完整输出落盘。这本身是个流程缺陷。
+
+随后为定位做了两组补充跑：
+
+| 跑法 | 次数 | 失败 |
+|---|---|---|
+| 全量 `vitest run`（第一组） | 4 | **1**（run#4，2 条） |
+| 全量 `vitest run`（第二组，带失败落盘） | 6 | 0 |
+| 全量 `vitest run`（第三组，带失败落盘） | 12 | 0 |
+| 本轮新增的 4 个视图 spec **隔离**跑 | 20 | 0 |
+| **合计全量** | **22** | **1（约 4.5%）** |
+
+⇒ **已排除**：本轮新增的四个视图 spec（隔离 20 次零失败）、
+  本轮新增的两个 API spec（随全量跑，零失败）。
+⇒ **未定位**：失败发生在哪两个用例、哪一层。可能是既有 spec，
+  也可能是并发会话新增的 `src/styles/safeArea.spec.ts`（归他们），
+  也可能是 vitest 多 worker 下的调度敏感。
+
+⇒ **提交纪律**：这一批**不写**「连跑 10 次全绿」。
+  门禁表里保留失败记录，并在此处列出复现所需的正确跑法：
+
+```bash
+# 只看汇总行会丢失败名 ⇒ 失败时必须落盘
+for i in $(seq 1 12); do
+  OUT=$(npx vitest run 2>&1)
+  echo "$OUT" | grep -qE '^ +Tests +.*failed' && echo "$OUT" > "/tmp/vitest-fail/run$i.txt"
+done
+```
+
+★ **教训**：十连跑的价值不在「跑了几次」，而在**失败时能不能说出是哪几条**。
+  只留汇总行的循环，等于在最需要证据的那一刻把证据丢了 ——
+  这与「报告里写「已验证」但没量过」是同一族问题。
+  ⇒ **门禁脚本必须默认落盘完整输出**，而不是在出问题时才想起来加。

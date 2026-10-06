@@ -36,6 +36,7 @@ export const zhCN = {
     sessionAudit: '会话审计',
     onlineSessions: '在线会话',
     sysmon: '系统监控',
+    lifecycle: '数据生命周期',
     nodeHealth: '健康时间线',
     account: '我的',
   },
@@ -834,6 +835,40 @@ export const zhCN = {
     lastActive: '最后活跃 {t}',
     loadMore: '加载更多',
     errForbidden: '当前账号没有查看在线会话的权限',
+  },
+  lifecycle: {
+    title: '数据生命周期',
+    partitions: '分区清单',
+    noPartitions: '没有查到分区表状态',
+    // ★★ 某张表查不到会整个消失，所以只说「返回了几张」
+    returnedTables: '本次返回 {n} 张分区表的状态。某张表查询失败时后端会直接跳过它，客户端无法判断少了的那张是查不到还是不存在。',
+    // ★★ archived_count 把 columnar 的也算进去
+    archivedCountNote: '「已归档」这一列把「列存（columnar）」的分区也算了进去，所以它不等于归档表里实际有多少个分区。',
+    pSize: '总体积',
+    archived: '已归档',
+    archivable: '可归档',
+    columnar: '列存',
+    canArchive: '可归档',
+    pRows: '行数',
+    // ★★ row_count=-1 是后端明确的「未知」哨兵
+    unknown: '未知',
+    storage: '体积榜',
+    // ★★★★ total_bytes 是返回行之和，不是整库大小
+    totalIsTopN: '下面的合计不是整库大小 —— 后端只累加了本次返回的这几张表，库里还有没上榜的表。',
+    // ★★★★ percent_of_db 的分母是榜内之和
+    percentIsTopN: '「榜内占比」的分母是上面这些表之和，不是全库；这一列加起来约等于 100%，与占全库百分比无关。',
+    limitLabel: '返回条数',
+    limitN: '前 {n}',
+    noTables: '没有查到表体积数据',
+    truncated: '已达本次请求的 {limit} 条上限（返回 {n} 条），榜上可能漏掉后面的表。',
+    listedSum: '上榜 {n} 张表合计 {size}',
+    collectedAt: '采集于 {t}',
+    // ★ rows 是 planner 估计值（n_live_tup），不是 COUNT(*)
+    estRows: '估计行数 {n}',
+    indexBytes: '索引 {n} B',
+    topPercent: '榜内 {n}%',
+    // ★ 分区父表体积已包含子分区，不可与分区行相加
+    parentTable: '分区父表',
   },
   sysmon: {
     title: '系统监控',
