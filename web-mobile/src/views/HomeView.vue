@@ -102,11 +102,24 @@ const creditsMissing = computed(() => !!summary.value?.credits_missing_view)
             <span v-if="board?.background_tasks?.degraded" class="badge badge--warning">{{ t('home.degraded') }}</span>
           </div>
 
-          <!-- 汇总卡 -->
+          <!-- 汇总卡。
+               ★ 2026-10-06 修正（与 UsageView 同一处缺陷）：原先只在
+               「请求数」「Token」两张卡挂 summaryMissing 提示，其余 6 张
+               （费用/积分/成功率/延迟/活跃 Key/活跃模型）**照常显示 0**。
+               而后端 dashboard_board_queries.go:159-164 的原话是：
+                 「数据源 X 不可用，本页所有汇总数字（请求/Token/费用）
+                   **均为 0，不可作为结论**」
+               ⇒ 一次主聚合表缺失（42P01）会被读成「今天没人用、花了 0 块」。
+               现在降级是**整块**声明：降级时不再展示那些无依据的 0。 -->
           <h2 class="page__section-title">{{ t('home.period') }}</h2>
-          <div class="home__grid">
-            <StatCard :label="t('home.totalRequests')" :value="fmtInt(summary?.total_requests)" :hint="degradedSummary ? t('home.summaryMissing') : undefined" />
-            <StatCard :label="t('home.totalTokens')" :value="fmtInt(summary?.total_tokens)" :hint="degradedSummary ? t('home.summaryMissing') : undefined" />
+          <p v-if="degradedSummary" class="home__degraded" role="status">
+            <span class="badge badge--warning">{{ t('home.degraded') }}</span>
+            {{ t('home.summaryDegradedAll') }}
+            <span v-if="summary?.summary_hint" class="home__degraded-reason">{{ summary.summary_hint }}</span>
+          </p>
+          <div v-else class="home__grid">
+            <StatCard :label="t('home.totalRequests')" :value="fmtInt(summary?.total_requests)" />
+            <StatCard :label="t('home.totalTokens')" :value="fmtInt(summary?.total_tokens)" />
             <StatCard :label="t('home.totalCost')" :value="fmtUsd(summary?.total_cost_usd)" />
             <StatCard :label="t('home.creditsCharged')" :value="fmtInt(summary?.total_credits_charged)" :hint="creditsMissing ? t('home.creditsMissing') : undefined" />
             <StatCard :label="t('home.successRate')" :value="summary?.success_rate != null ? fmtNum(summary.success_rate, 2) + '%' : '—'" />
@@ -152,6 +165,25 @@ const creditsMissing = computed(() => !!summary.value?.credits_missing_view)
 </template>
 
 <style scoped>
+.home__degraded {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--app-space-2);
+  padding: var(--app-space-3);
+  margin-bottom: var(--app-space-3);
+  border-radius: var(--app-radius);
+  background: color-mix(in srgb, var(--app-warning) 10%, transparent);
+  font-size: 0.8125rem;
+  color: var(--app-text-secondary);
+}
+
+.home__degraded-reason {
+  display: block;
+  width: 100%;
+  font-size: 0.6875rem;
+  color: var(--app-text-muted);
+}
 .home {
   display: flex;
   flex-direction: column;

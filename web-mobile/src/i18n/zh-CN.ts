@@ -100,6 +100,7 @@ export const zhCN = {
     stopped: '未运行',
     degraded: '降级',
     summaryMissing: '汇总不可用',
+    summaryDegradedAll: '数据源未就绪，本页汇总数字不完整，不能作为结论。',
     creditsMissing: '积分口径降级',
   },
   nodes: {
