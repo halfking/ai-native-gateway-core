@@ -10,6 +10,8 @@
 package bg
 
 import (
+	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -56,25 +58,83 @@ func TestBaselinePriceValidate(t *testing.T) {
 	}
 }
 
-// 内嵌清单必须能解析，且**不预置任何价格**。
+// 内嵌清单必须能解析，且每一条都**可审计**。
 //
-// 这条是刻意的：往计费系统里放未经原厂页面核实的数字，比没有价格更糟——
-// 没有价格时成本是显式未知的，错价格会一路流进成本核算。清单为空是这个
-// 设计的诚实起点，不是遗漏。
-func TestEmbeddedCatalogLoadsAndCarriesNoUnverifiedPrices(t *testing.T) {
+// # 这条判据 2026-10-06 被改写：原来它断言「清单必须是空的」
+//
+// 原断言是 `if len(catalog) != 0 { t.Errorf("…unverified price(s)") }`。
+// 它的用意是对的 —— 往计费系统里放未经原厂页面核实的数字比没有价格更糟。
+//
+// 但它把「每条都经过核实」这个**真不变量**换成了「一条都还没有」这个
+// **当时的状态**。后果是它只在 SSOT 永远为空时才成立；而填 SSOT 正是这个
+// 包存在的目的。⇒ 一旦填入第一条经核实的基准价，这条门就红，而红的理由
+// 写着「每个条目都必须先经原厂页面核对」—— 那会把下一个人引向「删掉这些
+// 基准价来修好这条门」。
+//
+// # 现在钉的是什么
+//
+//  1. 每条都过 `validate`（`loadBaselineCatalog` 内部逐条调用，缺 source_url /
+//     币种 / 非法 fetched_at 一律拒收）—— 这才是「可审计」的机械保证。
+//  2. 额外显式复核 source_url / fetched_at / currency / vendor 四个字段非空：
+//     validate 是库内契约，而字段非空是**人**读这个文件时需要的前提，两边都查。
+//  3. 清单**非空**：一条都没有同样是缺陷（会让对账器每轮无事可对）。
+//  4. 逐条打印成清单：SSOT 是权威面，「它现在装了什么」必须在测试输出里
+//     可核对，而不是要人去读 JSON。
+//  5. 反向：`_example` 那条占位（`gpt-4o`、价格全 0）**不得**混进 models
+//     ——它能过 validate（0 不是负数），只有显式拦它。
+func TestEmbeddedCatalogIsAuditableAndNotEmpty(t *testing.T) {
 	catalog, err := LoadEmbeddedBaselineCatalog()
 	if err != nil {
 		t.Fatalf("load embedded catalog: %v", err)
 	}
-	if len(catalog) != 0 {
-		names := make([]string, 0, len(catalog))
-		for n := range catalog {
-			names = append(names, n)
-		}
-		t.Errorf("embedded catalog carries %d unverified price(s): %v — "+
-			"每个条目都必须先经原厂页面核对并填 source_url/fetched_at 才会进来",
-			len(catalog), names)
+	if len(catalog) == 0 {
+		t.Fatal("embedded catalog is empty — supplier-vs-baseline deviation is not computable " +
+			"for any model, and the reconciliation worker has nothing to reconcile against. " +
+			"An empty SSOT was the honest starting point, not a permanent state.")
 	}
+
+	names := make([]string, 0, len(catalog))
+	for name, p := range catalog {
+		names = append(names, name)
+		if strings.TrimSpace(p.SourceURL) == "" {
+			t.Errorf("%s: empty source_url — a price without provenance is not auditable", name)
+		}
+		if strings.TrimSpace(p.Currency) == "" {
+			t.Errorf("%s: empty currency — an unknown currency cannot be compared against a "+
+				"supplier price, and defaulting it to USD would state a fact the source never said",
+				name)
+		}
+		if strings.TrimSpace(p.Vendor) == "" {
+			t.Errorf("%s: empty vendor — the reconciler groups by vendor and a blank one makes "+
+				"the corroboration look like a cross-vendor agreement", name)
+		}
+		if _, err := p.FetchedAtTime(); err != nil {
+			t.Errorf("%s: fetched_at: %v", name, err)
+		}
+	}
+	sort.Strings(names)
+	t.Logf("embedded SSOT carries %d verified baseline price(s):", len(catalog))
+	for _, n := range names {
+		p := catalog[n]
+		t.Logf("  %-26s %v/%v %v cache-read=%v vendor=%s fetched_at=%s",
+			n, derefOrZero(p.InputPer1M), derefOrZero(p.OutputPer1M), p.Currency,
+			derefOrZero(p.CacheReadPer1M), p.Vendor, p.FetchedAt)
+	}
+
+	// 反向：_example 的占位条目不得混进 models。它**能**过 validate
+	//（0 不是负数），所以这条断言不是重复劳动。
+	if p, ok := catalog["gpt-4o"]; ok {
+		t.Errorf("the _example placeholder (gpt-4o, all-zero prices) leaked into models "+
+			"as %v/%v — it would pass validate (0 is not negative), so only this check stops it",
+			derefOrZero(p.InputPer1M), derefOrZero(p.OutputPer1M))
+	}
+}
+
+func derefOrZero(f *float64) float64 {
+	if f == nil {
+		return 0
+	}
+	return *f
 }
 
 func TestReconcileVerdicts(t *testing.T) {

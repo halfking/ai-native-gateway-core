@@ -171,7 +171,28 @@ func TestParentsAreDeclaredInDDL(t *testing.T) {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(p, ".sql") {
+		// ★ 2026-10-06（R47）：`.sql.skip` 必须一并收进来。
+		//
+		// `404050630` 把 830 改标成
+		// `830_ursm_node_snapshot_min_partitioned.sql.skip`（它是一条
+		// manual-by-design 迁移：无人值守升级会 RENAME 一张 10GB 在线表）。
+		// 该扩展名以 `.skip` 结尾 ⇒ 被下面这条 `.sql` 后缀判断整个排除
+		// ⇒ 本门扫不到它的 `PARTITION BY` 声明 ⇒
+		// `TestParentsAreDeclaredInDDL` 把**仍然存在**的父表
+		// `ursm_node_snapshot_min` 报成「拼错或已下线」。
+		//
+		// 为什么必须收：`.sql.skip` 是本仓既有的「不投递、但保留 DDL」
+		// 形态（见 bg/partition_manager.go:39 对 336 的记述），
+		// DDL 仍是仓内关于该表形状的**唯一声明来源**。
+		// 排除它 ⇒ 任何改标为 skip 的分区表都会让本门失效，
+		// 且失效方向是「悄悄少扫」而不是「报错」。
+		//
+		// ⚠ 只改这一处，不改下面 :255 那处：那是 DDL 文件**计数**，
+		// 语义上只数真正会投递的 .sql；把 skip 计进去会漂移它的基线。
+		//
+		// 负控（去掉 `.sql.skip` 那一半）⇒ 精确复现原红：
+		//   guard_test.go:223: 父表清单里的 "ursm_node_snapshot_min" … 找不到
+		if !strings.HasSuffix(p, ".sql") && !strings.HasSuffix(p, ".sql.skip") {
 			return nil
 		}
 		b, rerr := os.ReadFile(p)

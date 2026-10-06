@@ -255,3 +255,78 @@ describe('CardList：空动作容器不占位', () => {
     expect(w.find('.card__actions').exists()).toBe(false)
   })
 })
+
+/**
+ * 03 §3.3「可点必须看得见」：可点行渲染右侧 chevron 指示器并有 `:active` 按压反馈；
+ * **指示器与可点性是同一个开关的两个表现**（Vant Cell 把箭头与可点绑在同一个
+ * `is-link` 上）。本组断言的正是「同一个开关」这条契约，而不只是「两样都存在」。
+ *
+ * 为什么值得单列一组：`clickable` 一旦被拆成 `clickable` + `showChevron` 两个 prop，
+ * 「有箭头但不可点」这种**说谎的指示器**就会重新长出来，而「两样都在」那类断言照样绿。
+ */
+describe('CardList：可点必须看得见（03 §3.3）', () => {
+  const ROWS = [{ id: 1 }]
+
+  it('clickable=true ⇒ 渲染 chevron，且 aria-hidden（装饰件不进无障碍树）', () => {
+    const w = mount(CardList, { props: { rows: ROWS, titleKey: 'id', clickable: true } })
+    const c = w.find('[data-testid="card-chevron"]')
+    expect(c.exists(), '可点行没有指示器 = 手机上看不出能点').toBe(true)
+    expect(c.attributes('aria-hidden')).toBe('true')
+  })
+
+  it('★ clickable=false ⇒ 绝不渲染 chevron（不可点就不许像可点，03 §3.3 条款 4）', () => {
+    const w = mount(CardList, { props: { rows: ROWS, titleKey: 'id', clickable: false } })
+    expect(w.find('[data-testid="card-chevron"]').exists()).toBe(false)
+  })
+
+  it('★ 默认值（不传 clickable）也是不可点、无 chevron', () => {
+    const w = mount(CardList, { props: { rows: ROWS, titleKey: 'id' } })
+    expect(w.find('[data-testid="card-chevron"]').exists()).toBe(false)
+  })
+
+  it('★ 同一个开关：chevron 的渲染条件必须字面上就是 `clickable`，不得是第二个 prop', () => {
+    // 这条是「两个表现一个开关」的**结构性**断言：
+    // 将来有人加 showChevron/indicator 之类独立开关时，这里会立刻转红。
+    const m = cardListSource.match(/<span[^>]*class="card__chevron"[^>]*>/)
+    expect(m, '源码里找不到 chevron 元素').not.toBeNull()
+    const tag = m![0]
+    expect(tag, `chevron 的渲染条件应写成 v-if="clickable"，实际是：${tag}`)
+      .toMatch(/v-if="clickable"/)
+    expect(cardListSource, '出现了与 clickable 无关的 chevron 开关（指示器会开始说谎）')
+      .not.toMatch(/v-if="(showChevron|indicator|hasChevron)"/)
+  })
+
+  it('★ `:active` 按压反馈存在，且只挂在可点行上', () => {
+    expect(cardListSource).toMatch(/\.card--clickable\s+\.card__head:active\s*\{/)
+  })
+
+  it('★ 按压反馈只用 transform / opacity，不得引发布局位移（长列表滚动会抖）', () => {
+    const m = cardListSource.match(/\.card--clickable\s+\.card__head:active\s*\{([^}]*)\}/)
+    expect(m, '找不到 :active 规则').not.toBeNull()
+    const body = m![1]!
+    for (const prop of ['width', 'height', 'margin', 'padding', 'top', 'left', 'font-size']) {
+      expect(body, `:active 里出现了会引发布局位移的 ${prop}`).not.toMatch(new RegExp(`${prop}\\s*:`))
+    }
+  })
+
+  it('chevron 是纯装饰：pointer-events:none，不抢卡头的点击', () => {
+    const m = cardListSource.match(/\.card__chevron\s*\{([^}]*)\}/)
+    expect(m, '找不到 .card__chevron 规则').not.toBeNull()
+    expect(m![1]!).toMatch(/pointer-events:\s*none/)
+  })
+
+  it('chevron 用逻辑属性定位 + RTL 覆写指向（i18n.ts 把 dir 写在 <html> 上）', () => {
+    const m = cardListSource.match(/\.card__chevron\s*\{([^}]*)\}/)
+    expect(m![1]!).toMatch(/inset-inline-end:/)
+    expect(cardListSource).toMatch(/\[dir='rtl'\]\s+\.card__chevron\s*\{/)
+  })
+
+  it('不可点行逐字不变：不因 chevron 多出右内边距', () => {
+    const m = cardListSource.match(/\.card--clickable\s+\.card__head\s*\{([^}]*)\}/)
+    expect(m![1]!).toMatch(/padding-inline-end:/)
+    // 基础 .card__head 不许带该内边距
+    const base = cardListSource.match(/(?<!clickable)\.card__head\s*\{([^}]*)\}/)
+    expect(base![1]!, '基础 .card__head 被塞进了 chevron 的让位内边距 → 静态行会凭空缩进')
+      .not.toMatch(/padding-inline-end:/)
+  })
+})

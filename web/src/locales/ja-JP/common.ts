@@ -138,6 +138,8 @@ export default {
   endDate: '終了日',
   exportFailed: 'エクスポートに失敗しました',
   exportTooLarge: 'ファイルが大きすぎます（上限 {max}）。デスクトップ版からエクスポートしてください。',
+  importTooLarge: 'ファイルが大きすぎます（上限 {max}）',
+  importBadType: '非対応ファイル形式です。{types} を選んでください',
   lastOccurred: '最終発生',
   loading: '読み込み中…',
   never: '未実行',

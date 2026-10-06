@@ -427,62 +427,66 @@ onUnmounted(() => {
 
     <!-- Models Table -->
     <div class="card">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>{{ t('probeHealth.table.model') }}</th>
-            <th>{{ t('probeHealth.table.provider') }}</th>
-            <th class="text-center">{{ t('probeHealth.table.total') }}</th>
-            <th class="text-center">{{ t('probeHealth.table.healthy') }}</th>
-            <th class="text-center">{{ t('probeHealth.table.suspicious') }}</th>
-            <th class="text-center">{{ t('probeHealth.table.failing') }}</th>
-            <th class="text-center">{{ t('probeHealth.table.priority') }}</th>
-            <th class="text-center">{{ t('probeHealth.table.successRate7d') }}</th>
-            <th class="text-center">{{ t('probeHealth.table.health') }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="model in filteredModels"
-            :key="model.provider_model_id"
-            style="cursor:pointer"
-            @click="router.push({ path: '/probe-health/detail', query: { model: model.raw_model_name } })"
-          >
-            <td>
-              <div class="model-name">{{ model.raw_model_name }}</div>
-              <div class="model-sub">{{ model.outbound_model_name }}</div>
-            </td>
-            <td>{{ model.provider_name }}</td>
-            <td class="text-center">{{ model.total_credentials }}</td>
-            <td class="text-center">
-              <span class="rate-good">{{ model.healthy_count }}</span>
-              <span class="muted-text"> ({{ model.healthy_percentage.toFixed(0) }}%)</span>
-            </td>
-            <td class="text-center">
-              <span class="rate-warn">{{ model.suspicious_count }}</span>
-            </td>
-            <td class="text-center">
-              <span class="rate-bad">{{ model.failing_count }}</span>
-              <span class="muted-text"> ({{ model.failing_percentage.toFixed(0) }}%)</span>
-            </td>
-            <td>
-              <div class="priority-list">
-                <span v-if="model.urgent_count > 0" class="badge badge-red">U:{{ model.urgent_count }}</span>
-                <span v-if="model.suspicious_priority_count > 0" class="badge badge-yellow">S:{{ model.suspicious_priority_count }}</span>
-                <span v-if="model.failing_priority_count > 0" class="badge badge-yellow">F:{{ model.failing_priority_count }}</span>
-              </div>
-            </td>
-            <td class="text-center">
-              <span class="rate-value">{{ model.avg_success_rate_7d.toFixed(1) }}%</span>
-            </td>
-            <td class="text-center">
-              <span :class="['badge', getHealthBadge(model.overall_health)]">
-                {{ model.overall_health }}
-              </span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <div style="overflow-x:auto">
+        <table class="data-table">
+
+          <thead>
+            <tr>
+              <th>{{ t('probeHealth.table.model') }}</th>
+              <th>{{ t('probeHealth.table.provider') }}</th>
+              <th class="text-center">{{ t('probeHealth.table.total') }}</th>
+              <th class="text-center">{{ t('probeHealth.table.healthy') }}</th>
+              <th class="text-center">{{ t('probeHealth.table.suspicious') }}</th>
+              <th class="text-center">{{ t('probeHealth.table.failing') }}</th>
+              <th class="text-center">{{ t('probeHealth.table.priority') }}</th>
+              <th class="text-center">{{ t('probeHealth.table.successRate7d') }}</th>
+              <th class="text-center">{{ t('probeHealth.table.health') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="model in filteredModels"
+              :key="model.provider_model_id"
+              style="cursor:pointer"
+              @click="router.push({ path: '/probe-health/detail', query: { model: model.raw_model_name } })"
+            >
+              <td>
+                <div class="model-name">{{ model.raw_model_name }}</div>
+                <div class="model-sub">{{ model.outbound_model_name }}</div>
+              </td>
+              <td>{{ model.provider_name }}</td>
+              <td class="text-center">{{ model.total_credentials }}</td>
+              <td class="text-center">
+                <span class="rate-good">{{ model.healthy_count }}</span>
+                <span class="muted-text"> ({{ model.healthy_percentage.toFixed(0) }}%)</span>
+              </td>
+              <td class="text-center">
+                <span class="rate-warn">{{ model.suspicious_count }}</span>
+              </td>
+              <td class="text-center">
+                <span class="rate-bad">{{ model.failing_count }}</span>
+                <span class="muted-text"> ({{ model.failing_percentage.toFixed(0) }}%)</span>
+              </td>
+              <td>
+                <div class="priority-list">
+                  <span v-if="model.urgent_count > 0" class="badge badge-red">U:{{ model.urgent_count }}</span>
+                  <span v-if="model.suspicious_priority_count > 0" class="badge badge-yellow">S:{{ model.suspicious_priority_count }}</span>
+                  <span v-if="model.failing_priority_count > 0" class="badge badge-yellow">F:{{ model.failing_priority_count }}</span>
+                </div>
+              </td>
+              <td class="text-center">
+                <span class="rate-value">{{ model.avg_success_rate_7d.toFixed(1) }}%</span>
+              </td>
+              <td class="text-center">
+                <span :class="['badge', getHealthBadge(model.overall_health)]">
+                  {{ model.overall_health }}
+                </span>
+              </td>
+            </tr>
+          </tbody>
+      
+        </table>
+      </div>
 
       <div v-if="loading" class="empty-state">{{ t('probeHealth.loading') }}</div>
       <div v-else-if="filteredModels.length === 0" class="empty-state">{{ t('probeHealth.empty') }}</div>
