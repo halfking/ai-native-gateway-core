@@ -345,6 +345,23 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/MaasRatesView.vue'),
     meta: { titleKey: 'maas.title', requiresAuth: true },
   },
+  // MaaS 订单列表（**superAdmin 档**，2026-10-08）。
+  // ★ 这条端点没有 offset/cursor，只有 limit ⇒ 页面不能有「下一页」控件。
+  // ★ 列表恒无 payment_hint / stub_mode（enrich 只在 GetOrder）⇒ 必须指向详情页。
+  {
+    path: '/maas-orders',
+    name: 'maas-orders',
+    component: () => import('@/views/MaasOrdersView.vue'),
+    meta: { titleKey: 'mo.title', requiresAuth: true },
+  },
+  // MaaS 订单详情（superAdmin 档）。响应是**裸对象**；404 身兼「不存在」与「查询失败」两职。
+  // ★ 详情页不占抽屉席（只有列表页进 DRAWER_NAV）。
+  {
+    path: '/maas-orders/:id',
+    name: 'maas-order-detail',
+    component: () => import('@/views/MaasOrderDetailView.vue'),
+    meta: { titleKey: 'mo.detailTitle', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',

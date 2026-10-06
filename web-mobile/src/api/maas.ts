@@ -347,3 +347,173 @@ export function maasEffectiveSource(
   if (maasDimUsesCustom(row, dim)) return 'custom'
   return maasGlobalRate(settings, dim).source === 'hardcoded' ? 'global_hardcoded' : 'global_configured'
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// orders —— 账单订单（本文件第一批只读端点是 model-rates）
+//
+// (11) ★★★★★★ `limit` 有**两层**限流，语义完全不同：
+//     · handler 层（maas_handlers.go:627-632）是**裸 `strconv.Atoi`**，
+//       **不校验**：0 / -5 / 99999 / "abc" 都能原样传下去。
+//     · 真正生效的是 `ListOrders` 里的第二层（orders.go:222-224）：
+//           if limit <= 0 || limit > 100 { limit = 20 }
+//       ⇒ **有效范围 1..100，越界回落 20**（**不是 clamp**，本仓第六种语义）。
+//     ★ handler 的默认 50 只在 1..100 内才有意义；
+//       发 `limit=200` 得到的是 **20 条**，不是 200 也不是 100。
+//
+// (12) ★★★★ admin 侧传的是 `ListOrders(ctx, "", limit)` ⇒ **tenantID 为空**
+//     ⇒ 走 else 分支（orders.go:241-252），**不按租户过滤**。
+//     超级管理员看到的是**全部租户**的订单 —— 这是设计如此，不是泄漏。
+//
+// (13) ★★★★★ `payment_hint` / `stub_mode` 在**列表里恒不出现**。
+//     `enrichOrderPaymentHint`（orders.go:284）**只在 `GetOrder`（:216）里调**，
+//     `ListOrders` 那一圈**没有调**。
+//     ⇒ 列表响应里 `payment_hint` 缺键、`stub_mode` 为 false 因 omitempty 也缺键。
+//     ★ 所以「列表看不到支付提示」是**端点差异**，不是「这单没有支付信息」。
+//     ★★ 两个字段都是 omitempty ⇒ **键可能整个不存在**。
+//
+// (14) ★★★ `plan_name` / `package_name` 是 `COALESCE(sp.name,'')` 的结果
+//     ⇒ LEFT JOIN 未命中时是**空字符串**（不是 null、不是「未知」）。
+//     ★ 而 `plan_id` / `package_id` 是 `*int` + omitempty ⇒ 键可能整个不存在。
+//     ⇒ 「有 package_id 但 package_name 是空」是**正常**组合（套餐被删了）。
+//
+// (15) ★★★ `amount_cents` 的单位是**分**，不是元。
+//     换算靠 settings 里的 `cents_per_credit`，但那是**积分**的单价，不是金额显示。
+//
+// (16) ★★ 响应**只有 `items`**：没有 `total`、没有 `limit` 回显
+//     ⇒ 分页只能是**近似**的（数返回条数 + 看是否排满）。
+//
+// (17) ★★ 详情端点 `GetOrder` 出错时**一律 404**
+//     （`writeError(w, 404, "order not found")`，不区分「不存在」与「查询失败」）。
+//
+// (18) ★ 错误信封：`writeError` ⇒ `{"error":{"detail":"…"}}`。
+//
+// ★★ 写操作 `POST /orders/{id}/confirm` 本页**不碰**。
+
+/** ★ `OrderType` 两个值（maas/orders.go:18-20）。 */
+export const MAAS_ORDER_TYPES = ['subscribe', 'topup'] as const
+export type MaasOrderType = (typeof MAAS_ORDER_TYPES)[number]
+
+/** ★ `OrderStatus` 四个值（maas/orders.go:26-30）。 */
+export const MAAS_ORDER_STATUSES = ['pending', 'paid', 'cancelled', 'expired'] as const
+export type MaasOrderStatus = (typeof MAAS_ORDER_STATUSES)[number]
+
+/** ★ `PaymentChannel` 三个值（maas/payment.go:12-14）。 */
+export const MAAS_PAYMENT_CHANNELS = ['alipay', 'wechat', 'manual'] as const
+export type MaasPaymentChannel = (typeof MAAS_PAYMENT_CHANNELS)[number]
+
+/** ★ `ListOrders` 的有效范围 1..100，越界回落 20（orders.go:222-224）。 */
+export const MAAS_ORDERS_LIMIT_DEFAULT = 20
+export const MAAS_ORDERS_LIMIT_MAX = 100
+
+/** ★ `BillingOrder`（maas/orders.go:33-55）。 */
+export interface MaasOrder {
+  id: number
+  order_no: string
+  tenant_id: string
+  order_type: string
+  status: string
+  /** ★ 单位是**分**。 */
+  amount_cents: number
+  credits: number
+  /** ★ 指针 + omitempty ⇒ 键可能整个不存在。 */
+  plan_id?: number
+  package_id?: number
+  payment_channel: string
+  qr_payload: string
+  qr_url: string
+  /** ★ 指针 + omitempty。 */
+  paid_at?: string
+  /** ★ 非指针 ⇒ 键一定存在。 */
+  expires_at: string
+  note: string
+  created_at: string
+  updated_at: string
+  /** ★★ **列表里恒不出现**（enrich 只在详情调）。见坑 13。 */
+  payment_hint?: string
+  /** ★★ 同上；且 bool + omitempty ⇒ false 时连键都没有。 */
+  stub_mode?: boolean
+  /** ★ COALESCE 出来的**空字符串**表示 LEFT JOIN 未命中。 */
+  plan_name?: string
+  package_name?: string
+}
+
+/** ★ 列表响应**只有 `items`**（maas_handlers.go:638）。 */
+export interface MaasOrdersResponse {
+  items: MaasOrder[]
+}
+
+export function fetchMaasOrders(
+  params: { limit?: number } = {},
+  options?: RequestOptions,
+): Promise<MaasOrdersResponse> {
+  const qs = new URLSearchParams()
+  if (typeof params.limit === 'number' && Number.isFinite(params.limit)) {
+    const n = Math.trunc(params.limit)
+    // ★ 与 ListOrders 同规则：越界**回落 20**，宁可不发会被后端改写的值
+    const eff = n < 1 || n > MAAS_ORDERS_LIMIT_MAX ? MAAS_ORDERS_LIMIT_DEFAULT : n
+    qs.set('limit', String(eff))
+  }
+  const s = qs.toString()
+  return req<unknown>('GET', `/api/admin/maas/orders${s ? '?' + s : ''}`, undefined, options).then(
+    unwrapMaasOrders,
+  )
+}
+
+/** ★ `writeJSON(w, 200, map[string]any{"items": items})`（maas_handlers.go:638）。 */
+export function unwrapMaasOrders(resp: unknown): MaasOrdersResponse {
+  if (resp && typeof resp === 'object' && Array.isArray((resp as MaasOrdersResponse).items)) {
+    return resp as MaasOrdersResponse
+  }
+  const actual = resp === null ? 'null' : Array.isArray(resp) ? 'array' : typeof resp
+  throw new Error(`maas/orders 响应形状不符：期望 {items:[…]}，实得 ${actual}`)
+}
+
+/**
+ * 订单详情。★ 后端 `writeJSON(w, 200, order)`（maas_handlers.go:683）传的是
+ * **裸对象**，**没有** `items` 也没有任何包装键。
+ * ★ 与列表的响应形状**不同**（列表是 `{items:[…]}`，详情是裸对象）。
+ */
+export function fetchMaasOrder(id: number, options?: RequestOptions): Promise<MaasOrder> {
+  if (!Number.isInteger(id) || id <= 0) {
+    // ★ 与后端 `ParseInt` + `id <= 0 ⇒ 400` 同规则
+    return Promise.reject(new Error(`maas/orders/${id}：order id 必须是正整数`))
+  }
+  return req<unknown>('GET', `/api/admin/maas/orders/${id}`, undefined, options).then(unwrapMaasOrder)
+}
+
+export function unwrapMaasOrder(resp: unknown): MaasOrder {
+  // ★ 裸对象：**不能**去读 `resp.items`（那是列表的形状）
+  if (resp && typeof resp === 'object' && !Array.isArray(resp)) {
+    const o = resp as MaasOrder
+    if (typeof o.order_no === 'string' && typeof o.id === 'number') {
+      return o
+    }
+  }
+  const actual = resp === null ? 'null' : Array.isArray(resp) ? 'array' : typeof resp
+  throw new Error(`maas/orders/{id} 响应形状不符：期望裸订单对象 {id, order_no, …}，实得 ${actual}`)
+}
+
+// ── 页面侧判读 ─────────────────────────────────────────────────────────
+
+/** ★ 金额单位是**分** ⇒ 显示时换算（不是乘 `cents_per_credit`，那是积分单价）。 */
+export function maasAmountYuan(o: MaasOrder): number {
+  return (o.amount_cents ?? 0) / 100
+}
+
+/**
+ * ★★ 列表里**恒**没有支付提示（enrich 只在详情调）。
+ * 返回 true 时页面要说「这是端点差异，去详情页看」，而不是「这单没有支付信息」。
+ */
+export function maasListLacksPaymentHint(o: MaasOrder): boolean {
+  return o.payment_hint === undefined
+}
+
+/** ★ 「有 id 但名字是空串」= 关联的套餐/包**已被删**（LEFT JOIN 未命中）。 */
+export function maasNameOrphaned(id: number | undefined, name: string | undefined): boolean {
+  return typeof id === 'number' && (!name || name === '')
+}
+
+/** ★ 列表响应没有 total ⇒ 只能按「这页排满」近似判断还有没有下一页。 */
+export function maasOrdersMaybeMore(items: MaasOrder[], limit: number): boolean {
+  return items.length >= limit
+}
