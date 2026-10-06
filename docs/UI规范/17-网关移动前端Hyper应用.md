@@ -4969,3 +4969,165 @@ settings PUT、model-rates 的 POST/PUT/DELETE）按前几批同口径**一律�
 - ★ **`/api/admin/maas/model-rates/{id}` 不是只读面**：只有 PUT / PATCH / DELETE。
 - 写操作一律不碰：settings PUT、model-rates 的 POST/PUT/DELETE/PATCH、batch 三条、
   `POST /orders/{id}/confirm`、`tenants/{code}/adjust|grant`。
+
+### 11.76 MaaS **superAdmin 租户运维面**上移：days **决定读哪张表**（第四十轮，superAdmin 档）
+
+新增 `src/api/maas.ts` 的**第四段**（坑 25~36）
++ `src/views/MaasTenantOpsView.vue` + `src/views/MaasAdminCatalogView.vue`
++ 路由 `/maas-tenant-ops`、`/maas-admin-catalog`
++ **两条 superAdmin 抽屉席**（⇒ 第 12、13 条 superAdmin 席）。
+
+本批 8 条只读端点（全部 `h.superAdmin(...)`）：
+`settings` / `plans` / `topup-packages` /
+`tenants/{code}/wallet|account|usage/summary|usage/detail|ledger`。
+
+#### ★★★★★★ 头号问题：days **决定读哪一张物理表**
+
+1. ★★★★★★ `requestLogsSource(days)`（maas/usage.go）：
+
+    ```go
+    func requestLogsSource(days int) (string, string) {
+        if days <= 7 { return "request_logs_hot AS r", "r" }
+        return "request_logs_with_current_month AS r", "r"
+    }
+    ```
+
+    ⇒ `days=7` 与 `days=8` 读的是**两张不同的表**。
+    ★ 这**不是**「窗口更长」，是**换了数据源** —— 两张表的保留期与新鲜度都可能不同，
+      跨过 7 这个数时**数据口径会变**（同一时刻两个窗口的数字可能对不上账）。
+    ⇒ 页面**必须**把「本次读的是哪张表」显式渲染出来，跨过边界时额外警告。
+2. ★★★ `days` 的选值刻意给 **1 / 7 / 30 / 90**，`7` 用虚线边框标出是**换表边界**。
+
+#### ★★★★★ 三套限幅各不相同，且 usage 的**两端不对称**
+
+3. ★★★★★ `ClampUsageDays`：`days < 1 ⇒ 1`、`days > 90 ⇒ 90`（**两端都 clamp**）。
+4. ★★★★★ `ClampUsageLimit`：`limit < 1 ⇒ **回落 10**`、`limit > 50 ⇒ 50`
+    ⇒ ★★ **两端不对称**：下界是**回落**到默认值 10，不是 clamp 到 1。
+5. ★★★ `ListLedger`：`limit <= 0 || limit > 200 { limit = 50 }` ⇒ **回落 50**。
+
+    | | 下界 | 上界 |
+    |---|---|---|
+    | `ClampUsageDays` | clamp 到 1 | clamp 到 90 |
+    | `ClampUsageLimit` | **回落 10** | clamp 到 50 |
+    | `ListLedger` | **回落 50** | **回落 50** |
+
+    ⇒ 这是本仓**第七种**分页语义。三处放在同一页上时，页面把三套生效值一起打出来
+      （变异 C3 / C4 各自钉住一条）。
+6. ★★★ handler 侧三个 query 参数都是
+    `if n, err := strconv.Atoi(v); err == nil { x = n }`
+    ⇒ **解析失败静默沿用默认值**（days=7 / limit=10 / ledger limit=50），**不是 400**。
+7. ★★ 与订单段正相反：`UsageSummary` **回显 clamp 后的 `days`**
+    ⇒ 客户端**能**核对生效值，页面把回显值渲染出来（变异对照）。
+
+#### ★★★★ 收入与毛利是**算出来的**，客户端要能核对
+
+8. ★★★★ `QueryConsumptionDetail` 逐行算：
+
+    ```go
+    row.TenantRevenueUSD = float64(row.CreditsCharged) * centsPerCredit / 100
+    row.GrossMarginUSD   = row.TenantRevenueUSD - row.UpstreamCostUSD
+    if row.TenantRevenueUSD != 0 { row.GrossMarginRate = row.GrossMarginUSD / row.TenantRevenueUSD }
+    ```
+
+    而 `centsPerCredit` 是 `SELECT … FROM maas_settings WHERE id = 1` 直读并**回显**
+    ⇒ ★★ 响应里带着复算所需的全部输入，客户端**独立复算**，
+      对不上就标出来（变异 C7 把 `/100` 去掉 ⇒ 红）。
+9. ★★★★ ★★★ `gross_margin_rate` 在**零收入**时**保持零值 0**（上面那个 `if` 不进）
+    ⇒ 响应里「rate = 0」有**两种**含义：真的是零毛利，**或者**根本没收入
+      （此时 rate **无定义**），两者**不可区分**。
+    ⇒ 页面在这行显示「（无收入 · 无定义）」而不是 `0.0%`。
+10. ★★★ `cost_usd` / `total_cost_usd` 是 **float64 + omitempty**
+    ⇒ **成本恰好为 0 时键整个不存在**。
+    ⇒ 页面必须显示 **0**，而不是「—」—— 否则「真·零成本」被误报成「数据缺失」。
+
+#### ★★★ 一个新的收入侧漏点被测了出来
+
+11. ★★★ `cancelled_billed_requests` 是 SQL `FILTER` 出来的计数：
+
+    ```sql
+    COUNT(*) FILTER (WHERE COALESCE(credits_charged,0) > 0
+                       AND COALESCE(stream_interrupted,false)
+                       AND lower(COALESCE(failure_detail_code, error_kind,''))
+                           IN ('client_cancel','client_disconnected'))
+    ```
+
+    ⇒ 「**已扣积分但被客户端取消**」的请求数。
+    非零时页面明确点出这是收入侧的已知漏点（变异 C16）。
+
+#### ★★★ 三种「键缺失」语义并存
+
+12. ★★★ `ConsumptionDetailRow` **同一个结构里 omitempty 混用**：
+    `owner_user` / `provider_id` / `credential_id` / `canonical_id` 带 omitempty
+    （指针 ⇒ 仅 `nil` 时省略）；其余 **15 个键无** omitempty ⇒ 一定存在。
+13. ★★★ 而 `LedgerEntry` 的 `pool` / `ref_type` / `ref_id` 是**指针但无** omitempty
+    ⇒ **键一定在、值为 `null`**。
+
+    | 结构 | 指针字段 | nil 时 |
+    |---|---|---|
+    | `ConsumptionDetailRow` | 带 omitempty | **缺键** |
+    | `LedgerEntry` | **无** omitempty | 键在，值 `null` |
+    | `Settings` | 全无 omitempty | 12 键一定都在 |
+
+    ⇒ **三套判读，不能一套通吃**。页面据此分别处理。
+
+#### ★★ 其余三条
+
+14. ★★ `tenant_id` 为空 ⇒ service 直接 `fmt.Errorf("tenant_id required")`
+    ⇒ handler 走 `writeInternalErr` ⇒ **500**（不是 400）。
+    而 `/tenants/` 后面**少于两段路径**时是 **404 `not found`**。
+15. ★★ 租户码里的 `/` 必须 `encodeURIComponent`
+    ⇒ 否则后端 `strings.Split(rest, "/")` 会把 `a/b` 劈成两段 ⇒ 404（变异 C8）。
+16. ★ admin 档的 plans / topup 传 `enabledOnly=false` ⇒ **含停用行**，
+    与 §11.75 的租户面（`true`）**响应形状相同、内容不同**；
+    配置面页面把停用行打标签并压暗，并说明「**租户那边根本列不出来**」。
+
+#### 本轮门禁（当场实测）
+
+- **变异验证 22/22 有牙**：C1 换表边界改成 30 / C2 换表判据恒 true /
+  C3 usage 下界改成 clamp 1 / C4 ledger 改成 clamp 200 /
+  C5 cost 缺失不再读 0 / C6 「零收入无定义」恒 false / C7 revenue 漏 /100 /
+  **C8 租户码不 encode** / C9 summary 不校验 trend / C10 account 不校验 wallet 形状 /
+  C11 admin settings 不校验 `global_discount` / C12 换表提示不渲染 /
+  **C13 抽屉席误改成 admin 档** / **C14 毛利率退化成正常百分比** /
+  C15 收入核对告警不渲染 / C16 取消计费提示不渲染 / **C17 空租户码不再本地拦截** /
+  **C18 catch 里不清空旧数据** / C19 折扣陷阱提示不渲染 /
+  C20 停用行不打标签 / C21 硬编码基价提示不渲染 / C22 租户看不到成本数据的说明不渲染。
+- 本批三个 spec：**166 用例全绿**（API 131 + 租户运维视图 21 + 配置面视图 16）；
+  `AppDrawer.spec.ts` 11 条（白名单加了 `maas-tenant-ops` / `maas-admin-catalog`）、
+  `dynamicKeys.spec.ts` 181 条仍全绿。
+- `npm run build` **rc=0**（含 `vue-tsc -b`）；三门全过
+  （css-media **72 文件** / touch-target **69 个 `.vue`** / i18n parity **各 1607 键**）。
+- ★ 途中修了四个我自己的问题：
+  1. 一条判据写成整页 `toContain('无定义')` ⇒ 被**上方提示文案**（「毛利率是**无定义**」）
+     喂饱 ⇒ **恒真，永不红**。改成按 `.mt__cell` 取值后才在 C14 变异下变红
+     （这是「正向 `toContain` 被散文喂饱」那条纪律的又一次实证）；
+  2. 一条「抛错时面板必须清空」的判据只在**首屏就失败**时验证 ⇒
+     首屏本来就是 null，**删掉 catch 里的清空语句照样全绿** ⇒ 补了
+     「先查成功 → 再查失败」的序列判据；
+  3. 三条判据期望值写错（`undefined` 第三参、`$` 前缀、「2 条」实际 1 条）；
+  4. 一条「nil ⇒ 缺键」判据在**自己写的 JS 字面量**上用 `in` 断言
+     ⇒ Go 的 omitempty 根本没参与，必然为 true。改成造 Go 实际吐出的形状。
+- 累计（**当场实测**）：**51 视图 / 42 API 模块 / 45 导航席（13 席 superAdmin）**。
+- 全量 **10 连跑全绿，1976 用例，0 份失败快照**（`STAB_RC=0`，10/10 `passed (1976)`）。
+  ★ 累计未定位的 flaky 仍**未捕获**（无污染跑 ≥136 次、失败 1 次，≈0.7%），
+  本批十连跑未复现 —— 这**不等于「已修复」**。
+
+#### MaaS 一族上移进度（截至本节）
+
+- **admin 档**（`/api/maas/**`，5 条读面）：**已全部上移**（§11.75）。
+- **superAdmin 档**（`/api/admin/maas/**`）：**只读面已全部上移** ——
+  model-rates（§11.73）、orders/orders/{id}（§11.74）、
+  admin 租户面（§11.75）、settings + plans + topup-packages +
+  tenants/{code}/五条（**本节**）。
+- ★ `/api/admin/maas/model-rates/{id}` **不是只读面**（只有 PUT/PATCH/DELETE）。
+- 写操作全部未上移（按前几批同口径）：settings PUT、model-rates 增删改、
+  batch 三条、`POST /orders/{id}/confirm`、`tenants/{code}/adjust|grant`。
+
+#### 下一批候选（已逐条核过 method）
+
+1. `GET /api/admin/maas/tenants/{code}/usage/**` 已做完 ⇒ 剩下的 superAdmin 面
+   就是 `admin/attachments`(8, admin)、`admin/modules`(7)、
+   `admin/logs`(7, 混合读写)、`system/session-context`(6)、
+   `admin/tenants`(25, 多为 superAdmin)。
+2. ★ `admin/tenants` 那 25 条里多�� superAdmin，且很可能带**租户筛选语义**
+   ⇒ 与本批的「跨租户 vs 本租户」那组对照值得单独一节。

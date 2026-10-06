@@ -950,3 +950,447 @@ describe('★★★★★★ wallet：裸对象 + 三处非显然语义', () => 
     expect(maasWalletHasSubscription(m)).toBe(true)
   })
 })
+
+// ════════════════════════════════════════════════════════════════════════
+// 第四段：superAdmin 租户运维面（第四十轮）
+// ════════════════════════════════════════════════════════════════════════
+
+import {
+  fetchMaasSettings,
+  unwrapMaasSettings,
+  fetchMaasAdminPlans,
+  fetchMaasAdminTopupPackages,
+  fetchMaasTenantWallet,
+  fetchMaasTenantAccount,
+  unwrapMaasTenantAccount,
+  fetchMaasUsageSummary,
+  unwrapMaasUsageSummary,
+  fetchMaasConsumptionDetail,
+  unwrapMaasConsumptionDetail,
+  fetchMaasTenantLedger,
+  unwrapMaasTenantLedger,
+  maasUsageDaysClamped,
+  maasUsageLimitEffective,
+  maasLedgerLimitEffective,
+  maasUsageReadsHotTable,
+  maasCostUsd,
+  maasTenantRevenueUsd,
+  maasMarginRateUndefined,
+  maasHasCancelledBilled,
+  MAAS_USAGE_DAYS_MIN,
+  MAAS_USAGE_DAYS_MAX,
+  MAAS_USAGE_HOT_DAYS_MAX,
+  MAAS_USAGE_LIMIT_DEFAULT,
+  MAAS_USAGE_LIMIT_MAX,
+  MAAS_LEDGER_LIMIT_DEFAULT,
+  MAAS_LEDGER_LIMIT_MAX,
+  MAAS_ACCOUNT_LEDGER_COUNT,
+  MAAS_ACCOUNT_ORDERS_COUNT,
+  type MaasUsageSummary,
+  type MaasConsumptionRow,
+  type MaasLedgerEntry,
+} from './maas'
+
+/** ★ `UsageSummary`（maas/usage.go）：`cost_usd` 是 float64 + omitempty。 */
+function usageSummary(over: Record<string, unknown> = {}): MaasUsageSummary {
+  return {
+    days: 7,
+    tenant_id: 'acme',
+    total_requests: 100,
+    total_credits: 5000,
+    total_cost_usd: 12.5,
+    by_model: [{ model: 'gpt-4o', requests: 100, credits: 5000, cost_usd: 12.5 }],
+    trend: [{ date: '2026-10-01', requests: 100, credits: 5000, cost_usd: 12.5 }],
+    ...over,
+  } as unknown as MaasUsageSummary
+}
+
+/** ★ `ConsumptionDetailRow`：★ 同一个结构里 omitempty 混用。 */
+function consumptionRow(over: Record<string, unknown> = {}): MaasConsumptionRow {
+  return {
+    tenant_id: 'acme',
+    owner_user: 'alice',
+    provider_id: 3,
+    provider_name: 'OpenAI',
+    credential_id: 9,
+    credential_label: 'sk-…',
+    canonical_id: 1,
+    model: 'gpt-4o',
+    requests: 100,
+    prompt_tokens: 1000,
+    completion_tokens: 2000,
+    cache_read_tokens: 300,
+    cache_write_tokens: 40,
+    credits_charged: 5000,
+    upstream_cost_usd: 10,
+    tenant_revenue_usd: 5, // 5000 * 0.1 / 100
+    gross_margin_usd: -5,
+    gross_margin_rate: -1,
+    cancelled_billed_requests: 2,
+    ...over,
+  } as unknown as MaasConsumptionRow
+}
+
+/** ★ `LedgerEntry`：`pool`/`ref_type`/`ref_id` 是**指针但无** omitempty。 */
+function ledgerEntry(over: Record<string, unknown> = {}): MaasLedgerEntry {
+  return {
+    id: 1,
+    entry_type: 'charge',
+    amount: -100,
+    balance_after: 900,
+    pool: 'purchased',
+    ref_type: 'order',
+    ref_id: 'ORD-7',
+    note: '',
+    created_at: '2026-10-01T00:00:00Z',
+    ...over,
+  } as unknown as MaasLedgerEntry
+}
+
+describe('★★★★★★ admin settings：裸全量 Settings（12 键无 omitempty）', () => {
+  beforeEach(() => {
+    fetchMock.mockResolvedValue(jsonResponse(settings()))
+  })
+
+  it('★★★★★★ 打 `/api/admin/maas/settings`，响应是**裸对象**（含 global_discount）', async () => {
+    const s = await fetchMaasSettings()
+    expect(lastUrl()).toBe('/api/admin/maas/settings')
+    // ★ admin 档看得到租户面看不到的这两个
+    expect(s.global_discount).toBe(1)
+    expect(s.base_credits_per_1m_in).toBe(0)
+  })
+
+  it('★★★★★ ★ 与租户面 3 键形状**必须**区分：少 `global_discount` ⇒ 抛错', () => {
+    expect(() => unwrapMaasSettings(publicSettings())).toThrow(/形状不符/)
+    expect(() => unwrapMaasSettings({ items: [] })).toThrow(/形状不符/)
+  })
+
+  it('★★★★★ 12 个键**无 omitempty** ⇒ 连空串与 0 都有键', () => {
+    const s = settings() as unknown as Record<string, unknown>
+    for (const k of [
+      'cents_per_credit',
+      'base_credits_per_1m',
+      'base_credits_per_1m_in',
+      'base_credits_per_1m_out',
+      'base_credits_per_1m_cache_in',
+      'base_credits_per_1m_cache_out',
+      'global_discount',
+      'currency_display',
+      'alipay_account',
+      'wechat_mch_id',
+      'stub_alipay_qr_url',
+      'stub_wechat_qr_url',
+    ]) {
+      expect(k in s, `admin Settings 该有 ${k}`).toBe(true)
+    }
+  })
+})
+
+describe('★★★★★ admin plans/topup：含停用行（形状与租户面相同）', () => {
+  it('★★★★★ 打对 URL', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ items: [plan()] }))
+    await fetchMaasAdminPlans()
+    expect(lastUrl()).toBe('/api/admin/maas/plans')
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ items: [topup()] }))
+    await fetchMaasAdminTopupPackages()
+    expect(lastUrl()).toBe('/api/admin/maas/topup-packages')
+  })
+
+  it('★★★★★ ★★ `enabled: false` 的行**会**出现在 admin 档（与租户面正相反）', async () => {
+    // ★ `enabledOnly=false` ⇒ 不加 WHERE ⇒ 含停用行
+    fetchMock.mockResolvedValueOnce(jsonResponse({ items: [plan({ enabled: false })] }))
+    const r = await fetchMaasAdminPlans()
+    expect(r.items[0]?.enabled).toBe(false)
+  })
+})
+
+describe('★★★★★★ tenants 前缀：路径拼法与 404/500 边界', () => {
+  it('★★★★★★ wallet / account / usage / ledger 四条路径都对', async () => {
+    const urls: string[] = []
+    fetchMock.mockResolvedValueOnce(jsonResponse(wallet()))
+    await fetchMaasTenantWallet('acme')
+    urls.push(lastUrl())
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ wallet: wallet(), recent_ledger: [], recent_orders: [] }))
+    await fetchMaasTenantAccount('acme')
+    urls.push(lastUrl())
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(usageSummary()))
+    await fetchMaasUsageSummary('acme', { days: 7, limit: 10 })
+    urls.push(lastUrl())
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ items: [ledgerEntry()] }))
+    await fetchMaasTenantLedger('acme', { limit: 50 })
+    urls.push(lastUrl())
+
+    expect(urls).toEqual([
+      '/api/admin/maas/tenants/acme/wallet',
+      '/api/admin/maas/tenants/acme/account',
+      '/api/admin/maas/tenants/acme/usage/summary?days=7&limit=10',
+      '/api/admin/maas/tenants/acme/ledger?limit=50',
+    ])
+  })
+
+  it('★★★★★ ★★ 租户码里带斜杠 ⇒ 必须 encodeURIComponent（否则路径会被劈开）', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(wallet()))
+    await fetchMaasTenantWallet('a/b')
+    expect(lastUrl()).toBe('/api/admin/maas/tenants/a%2Fb/wallet')
+    // ★ 后端 `strings.Split(strings.Trim(rest,"/"), "/")` 会按斜杠切段
+    //   ⇒ 不 encode 的话 `a/b` 会被当成「租户 a + 动作 b」⇒ 404。
+  })
+
+  it('★★★★ usage/detail 的 owner_user 只在非空时才发', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ tenant_id: 'acme', days: 7, cents_per_credit: 0.1, rows: [] }))
+    await fetchMaasConsumptionDetail('acme', { days: 7 })
+    expect(lastUrl()).not.toContain('owner_user')
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ tenant_id: 'acme', days: 7, cents_per_credit: 0.1, rows: [] }))
+    await fetchMaasConsumptionDetail('acme', { days: 7, ownerUser: 'alice' })
+    expect(lastUrl()).toContain('owner_user=alice')
+  })
+})
+
+describe('★★★★★★★ days 决定读哪张物理表', () => {
+  it('★★★★★★★ days <= 7 ⇒ 读 request_logs_hot；> 7 ⇒ 换表', () => {
+    expect(maasUsageReadsHotTable(1)).toBe(true)
+    expect(maasUsageReadsHotTable(7)).toBe(true)
+    expect(maasUsageReadsHotTable(8)).toBe(false)
+    expect(maasUsageReadsHotTable(30)).toBe(false)
+  })
+
+  it('★★★★★★ 判定用的是**clamp 之后**的 days', () => {
+    // days=0 ⇒ clamp 成 1 ⇒ 仍是热表
+    expect(maasUsageReadsHotTable(0)).toBe(true)
+    expect(maasUsageReadsHotTable(999)).toBe(false)
+    expect(MAAS_USAGE_HOT_DAYS_MAX).toBe(7)
+  })
+})
+
+describe('★★★★★★ 两套限幅：usage 两端不对称，ledger 回落 50', () => {
+  it('★★★★★★ ClampUsageDays：<1 ⇒ 1、>90 ⇒ 90（**两端都 clamp**）', () => {
+    expect(maasUsageDaysClamped(0)).toBe(MAAS_USAGE_DAYS_MIN)
+    expect(maasUsageDaysClamped(-5)).toBe(1)
+    expect(maasUsageDaysClamped(91)).toBe(MAAS_USAGE_DAYS_MAX)
+    expect(maasUsageDaysClamped(30)).toBe(30)
+  })
+
+  it('★★★★★★ ★★ ClampUsageLimit：<1 ⇒ **回落 10**（不是 clamp 到 1）、>50 ⇒ 50', () => {
+    // ★★ 这是本仓第七种分页语义，且**两端不对称**
+    expect(maasUsageLimitEffective(0)).toBe(MAAS_USAGE_LIMIT_DEFAULT)
+    expect(maasUsageLimitEffective(-3)).toBe(10)
+    expect(maasUsageLimitEffective(1)).toBe(1)
+    expect(maasUsageLimitEffective(51)).toBe(MAAS_USAGE_LIMIT_MAX)
+    expect(maasUsageLimitEffective(50)).toBe(50)
+  })
+
+  it('★★★★★ ListLedger：越界**回落 50**（不是 clamp 到 1 或 200）', () => {
+    expect(maasLedgerLimitEffective(0)).toBe(MAAS_LEDGER_LIMIT_DEFAULT)
+    expect(maasLedgerLimitEffective(201)).toBe(50)
+    expect(maasLedgerLimitEffective(200)).toBe(MAAS_LEDGER_LIMIT_MAX)
+    expect(maasLedgerLimitEffective(1)).toBe(1)
+    // ★★ 三套限幅摆在一起（usage 回落 10 / usage clamp 50 / ledger 回落 50）
+    //   ⇒ 绝不能假设「同族同规则」
+    expect(MAAS_LEDGER_LIMIT_MAX).toBe(200)
+    expect(MAAS_USAGE_LIMIT_MAX).toBe(50)
+  })
+
+  it('★★ GetAccount 的取数条数写死在 service 里（10 / 5，不可调）', () => {
+    expect(MAAS_ACCOUNT_LEDGER_COUNT).toBe(10)
+    expect(MAAS_ACCOUNT_ORDERS_COUNT).toBe(5)
+  })
+})
+
+describe('★★★★★★ UsageSummary 会回显 days（与 orders 段正相反）', () => {
+  beforeEach(() => {
+    fetchMock.mockResolvedValue(jsonResponse(usageSummary()))
+  })
+
+  it('★★★★★★ 解包成功且 days 可读', async () => {
+    const u = await fetchMaasUsageSummary('acme')
+    expect(u.days).toBe(7)
+    expect(u.tenant_id).toBe('acme')
+    expect(u.by_model).toHaveLength(1)
+    expect(u.trend).toHaveLength(1)
+  })
+
+  it('★★★★★ 缺 days / by_model / trend 任一 ⇒ 抛错', () => {
+    expect(() => unwrapMaasUsageSummary({ tenant_id: 'a', by_model: [], trend: [] })).toThrow(/形状不符/)
+    expect(() => unwrapMaasUsageSummary({ days: 7, by_model: [], trend: [] })).toThrow(/形状不符/)
+    expect(() => unwrapMaasUsageSummary({ days: 7, tenant_id: 'a', trend: [] })).toThrow(/形状不符/)
+    // ★★ 只缺 `trend`（by_model 在）也必须抛错 —— 否则「趋势图空着」
+    //   会被静默当成「这段时间没有趋势数据」。
+    expect(() => unwrapMaasUsageSummary({ days: 7, tenant_id: 'a', by_model: [] })).toThrow(/形状不符/)
+    expect(() => unwrapMaasUsageSummary({ days: 7, tenant_id: 'a', by_model: null })).toThrow(/形状不符/)
+  })
+})
+
+describe('★★★★★★ cost_usd 是 float64 + omitempty ⇒ 恰好 0 时键不存在', () => {
+  it('★★★★★★ 键缺失时读成 **0**（不是 undefined、不是「—」）', () => {
+    const zero = { model: 'm', requests: 1, credits: 0 } as unknown as { cost_usd?: number }
+    expect('cost_usd' in zero).toBe(false)
+    // ★ 若页面渲染成「—」，就把「真·零成本」误报成「数据缺失」
+    expect(maasCostUsd(zero)).toBe(0)
+    expect(maasCostUsd({ cost_usd: 12.5 })).toBe(12.5)
+  })
+
+  it('★★★ 顶层 total_cost_usd 同理', () => {
+    const s = usageSummary() as unknown as Record<string, unknown>
+    delete s.total_cost_usd
+    expect(maasCostUsd(s as unknown as { cost_usd?: number })).toBe(0)
+  })
+})
+
+describe('★★★★★★ 收入 / 毛利是算出来的，且 rate 在零收入时无定义', () => {
+  it('★★★★★★ 复算 revenue = credits_charged * cents_per_credit / 100', () => {
+    // 夹具里的 revenue 是 5（5000 * 0.1 / 100）⇒ 客户端能独立复算核对
+    const r = consumptionRow()
+    expect(maasTenantRevenueUsd(r.credits_charged, 0.1)).toBe(r.tenant_revenue_usd)
+  })
+
+  it('★★★★★★ ★★★ 收入为 0 时 rate=0 是**无定义**，不是「零毛利」', () => {
+    const zeroRevenue = consumptionRow({ tenant_revenue_usd: 0, gross_margin_usd: 0, gross_margin_rate: 0 })
+    expect(maasMarginRateUndefined(zeroRevenue)).toBe(true)
+    // ★ 响应里「rate = 0」有两种含义，**不可区分**
+    const realZeroMargin = consumptionRow({ tenant_revenue_usd: 100, gross_margin_usd: 0, gross_margin_rate: 0 })
+    expect(maasMarginRateUndefined(realZeroMargin)).toBe(false)
+  })
+
+  it('★★★ 「已计费但被客户端取消」能被识别', () => {
+    expect(maasHasCancelledBilled(consumptionRow({ cancelled_billed_requests: 2 }))).toBe(true)
+    expect(maasHasCancelledBilled(consumptionRow({ cancelled_billed_requests: 0 }))).toBe(false)
+  })
+})
+
+describe('★★★ ConsumptionDetailRow 的 omitempty 混用', () => {
+  beforeEach(() => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ tenant_id: 'acme', days: 7, cents_per_credit: 0.1, rows: [consumptionRow()] }),
+    )
+  })
+
+  it('★★★ 四个指针字段有值时**有键**', async () => {
+    const d = await fetchMaasConsumptionDetail('acme')
+    const r = d.rows[0]!
+    expect('owner_user' in r).toBe(true)
+    expect('provider_id' in r).toBe(true)
+    expect('credential_id' in r).toBe(true)
+    expect('canonical_id' in r).toBe(true)
+  })
+
+  it('★★★ Go 在 nil 时**省略**这些键 ⇒ 客户端必须能吃「键整个不存在」', async () => {
+    const d = await fetchMaasConsumptionDetail('acme')
+    // ★★★ 不能在测试里写 `{ provider_id: null }` 再用 `in` 断言 ——
+    //   那是**我自己造的 JS 字面量**，Go 的 omitempty 根本没参与，
+    //   `in` 必然为 true。必须造 Go 实际吐出的形状：**键整个不存在**。
+    const raw = consumptionRow() as unknown as Record<string, unknown>
+    for (const k of ['provider_id', 'credential_id', 'canonical_id', 'owner_user']) delete raw[k]
+    const r = raw as unknown as MaasConsumptionRow
+    for (const k of ['provider_id', 'credential_id', 'canonical_id', 'owner_user']) {
+      expect(k in r, `Go 省略后不该有 ${k}`).toBe(false)
+      // ⇒ 客户端读到的是 undefined（类型上声明为可选就是为此）
+      expect((r as unknown as Record<string, unknown>)[k]).toBeUndefined()
+    }
+    expect(d.tenant_id).toBe('acme')
+  })
+
+  it('★★★ `unwrapMaasConsumptionDetail` 形状校验（互喂必须抛错）', () => {
+    expect(() => unwrapMaasConsumptionDetail({ tenant_id: 'a', days: 7 })).toThrow(/形状不符/)
+    expect(() => unwrapMaasConsumptionDetail([{ tenant_id: 'a', days: 7, rows: [] }])).toThrow(/形状不符/)
+    // ★ 对照：wallet 形状（顶层有 total_available）喂进来也必须抛错
+    expect(() => unwrapMaasConsumptionDetail(wallet())).toThrow(/形状不符/)
+  })
+
+  it('★★★ 「键缺失(undefined)」与「值为 null」是**两回事**', async () => {
+    // ★★ 同一族里两种语义并存：ConsumptionDetailRow 是「nil ⇒ 缺键」，
+    //   LedgerEntry 是「无 omitempty ⇒ 键在、值为 null」。别混用判读。
+    const omitted = consumptionRow() as unknown as Record<string, unknown>
+    delete omitted.provider_id
+    const explicitNull = consumptionRow({ provider_id: null as unknown as number })
+    expect('provider_id' in omitted).toBe(false)
+    expect('provider_id' in explicitNull).toBe(true)
+    expect(explicitNull.provider_id).toBeNull()
+  })
+
+  it('★★★ 其余 15 个键**无** omitempty ⇒ 一定存在（哪怕值是 0）', () => {
+    const r = consumptionRow() as unknown as Record<string, unknown>
+    for (const k of [
+      'tenant_id',
+      'provider_name',
+      'credential_label',
+      'model',
+      'requests',
+      'prompt_tokens',
+      'completion_tokens',
+      'cache_read_tokens',
+      'cache_write_tokens',
+      'credits_charged',
+      'upstream_cost_usd',
+      'tenant_revenue_usd',
+      'gross_margin_usd',
+      'gross_margin_rate',
+      'cancelled_billed_requests',
+    ]) {
+      expect(k in r, `该有 ${k}`).toBe(true)
+    }
+  })
+})
+
+describe('★★★ LedgerEntry 的指针无 omitempty ⇒ 键在、值为 null', () => {
+  beforeEach(() => {
+    fetchMock.mockResolvedValue(jsonResponse({ items: [ledgerEntry()] }))
+  })
+
+  it('★★★ pool/ref_type/ref_id **无** omitempty ⇒ 键一定在，值可为 null', async () => {
+    const r = await fetchMaasTenantLedger('acme')
+    const e = r.items[0]!
+    expect('pool' in e).toBe(true)
+    expect('ref_type' in e).toBe(true)
+    expect('ref_id' in e).toBe(true)
+  })
+
+  it('★★★ null 值与「键缺失」是**两回事**（与上一条互为对照）', async () => {
+    const withNull = ledgerEntry({ pool: null, ref_type: null, ref_id: null })
+    expect(withNull.pool).toBeNull()
+    expect('pool' in withNull).toBe(true)
+    // ★★ 同一个响应里，LedgerEntry 是「键在值 null」，
+    //    ConsumptionDetailRow 是「nil 则缺键」⇒ **两套判读，不能混用**
+  })
+
+  it('★★ items 缺失 ⇒ 抛错', () => {
+    expect(() => unwrapMaasTenantLedger([ledgerEntry()])).toThrow(/形状不符/)
+    expect(() => unwrapMaasTenantLedger({ data: { items: [] } })).toThrow(/形状不符/)
+  })
+})
+
+describe('★★★ account 聚合响应的形状', () => {
+  beforeEach(() => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ wallet: wallet(), recent_ledger: [ledgerEntry()], recent_orders: [order()] }),
+    )
+  })
+
+  it('★★★ wallet + recent_ledger + recent_orders 三段齐', async () => {
+    const a = await fetchMaasTenantAccount('acme')
+    expect(a.wallet.tenant_id).toBe('acme')
+    expect(a.recent_ledger).toHaveLength(1)
+    expect(a.recent_orders).toHaveLength(1)
+  })
+
+  it('★★★ ★ recent_orders 里的行**恒无** payment_hint（与订单列表同一个原因）', async () => {
+    const a = await fetchMaasTenantAccount('acme')
+    expect('payment_hint' in (a.recent_orders[0] as unknown as Record<string, unknown>)).toBe(false)
+  })
+
+  it('★★★ 缺 wallet / recent_ledger / recent_orders 任一 ⇒ 抛错', () => {
+    expect(() => unwrapMaasTenantAccount({ recent_ledger: [], recent_orders: [] })).toThrow(/形状不符/)
+    expect(() => unwrapMaasTenantAccount({ wallet: wallet(), recent_orders: [] })).toThrow(/形状不符/)
+    expect(() => unwrapMaasTenantAccount({ wallet: wallet(), recent_ledger: [] })).toThrow(/形状不符/)
+  })
+
+  it('★★ wallet 形状不对时也算抛错（不能只看顶层三键）', () => {
+    expect(() => unwrapMaasTenantAccount({ wallet: { id: 1 }, recent_ledger: [], recent_orders: [] })).toThrow(
+      /形状不符/,
+    )
+  })
+})

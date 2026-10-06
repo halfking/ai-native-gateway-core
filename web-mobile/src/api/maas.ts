@@ -827,3 +827,409 @@ export function maasWalletTotalIsMixedUnit(w: MaasWallet): boolean {
 export function maasWalletBalanceIsSubstituted(w: MaasWallet): boolean {
   return w.balance_credits === w.granted_balance + w.purchased_balance && w.balance_credits !== 0
 }
+
+// ════════════════════════════════════════════════════════════════════════
+// 第四段：MaaS **superAdmin 租户运维面**（第三+四十轮）
+// ════════════════════════════════════════════════════════════════════════
+//
+// GET /api/admin/maas/settings
+// GET /api/admin/maas/plans
+// GET /api/admin/maas/topup-packages
+// GET /api/admin/maas/tenants/{code}/wallet
+// GET /api/admin/maas/tenants/{code}/account
+// GET /api/admin/maas/tenants/{code}/usage/summary?days=&limit=
+// GET /api/admin/maas/tenants/{code}/usage/detail?owner_user=&days=
+// GET /api/admin/maas/tenants/{code}/ledger?limit=
+//
+// ★★ 全部 `h.superAdmin(...)`（maas_handlers.go:14-24）⇒ 抽屉席须设
+//   requiresRole: 'super_admin'。**别**照抄第三段那 5 条 admin 席的写法。
+//
+// (25) ★★★★★★ ★★ 这两个 usage 端点**按 days 换物理表**：
+//     `requestLogsSource(days)`（maas/usage.go）：
+//         days <= 7 ⇒ "request_logs_hot AS r"
+//         days >  7 ⇒ "request_logs_with_current_month AS r"
+//     ⇒ days=7 与 days=8 **读的不是同一张表** —— 这不是「窗口更长」，
+//       是**换了数据源**（保留期/新鲜度都可能不同）。
+//     页面必须把「本次读的是哪张表」显式标出来。
+//
+// (26) ★★★★★ 两个端点的**天数/条数**各有一套限幅：
+//     `ClampUsageDays`：<1 ⇒ 1、>90 ⇒ 90（**两端都 clamp**）
+//     `ClampUsageLimit`：<1 ⇒ **10**、>50 ⇒ 50（★ **两端不对称**：
+//         下界是**回落 10** 而不是 clamp 到 1）
+//     ⇒ 第七种分页语义。本仓已确认七种，别再假设同族一致。
+//
+// (27) ★★★★★ `UsageSummary` **回显 `days` / `tenant_id`**（`out.Days = days`
+//     在 clamp **之后**赋值）⇒ 客户端**能**读回生效值。
+//     ★ 与 orders 段（`{items}` 无任何回显）正好相反，这里反而该用回显做校验。
+//
+// (28) ★★★★ `total_cost_usd` / `cost_usd` 是 **float64 + omitempty**
+//     ⇒ **成本恰好为 0 时键整个不存在**。
+//     ⇒ 页面读不到 `cost_usd` 时**必须**显示 0，而不是「—」（那会把
+//       「真·零成本」误报成「数据缺失」）。
+//
+// (29) ★★★★ `gross_margin_rate` 只在 `revenue != 0` 时才算
+//     （`if row.TenantRevenueUSD != 0 { … }`），否则保持零值 **0**。
+//     ⇒ ★★★ 响应里「rate = 0」有**两种**含义：真的是零毛利，
+//       **或者**根本没收入（此时 rate **无定义**），两者**不可区分**。
+//
+// (30) ★★★★ 收入/毛利是**算出来的**：
+//     `revenue = credits_charged * cents_per_credit / 100`
+//     `margin  = revenue - upstream_cost_usd`
+//     而 `cents_per_credit` 直接取自 `maas_settings WHERE id = 1`
+//     ⇒ 详情响应**回显** `cents_per_credit`，客户端可**独立复算**核对。
+//
+// (31) ★★★ `ConsumptionDetailRow` **同一个结构里 omitempty 混用**：
+//     `owner_user` / `provider_id` / `credential_id` / `canonical_id` 带 omitempty
+//     （指针 ⇒ 仅 nil 时省略）；其余 15 个键**无** omitempty ⇒ 一定存在。
+//     ★★ 而 `LedgerEntry` 的 `pool` / `ref_type` / `ref_id` 是
+//     **指针但无** omitempty ⇒ 键一定在，值为 `null`。
+//     ⇒ **三种「键缺失」语义并存**，不能一套判读通吃。
+//
+// (32) ★★★ `cancelled_billed_requests` 是 SQL `FILTER` 出来的计数：
+//     已扣积分 **且** 流被中断 **且** 失败码 ∈ {client_cancel, client_disconnected}
+//     ⇒ 「已计费但被客户端取消」的请求数，是收入侧的已知漏点，页面要点破。
+//
+// (33) ★★★ `ListLedger`：`if limit <= 0 || limit > 200 { limit = 50 }`
+//     ⇒ 有效 1..200，越界**回落 50**；handler 默认也是 50。
+//
+// (34) ★★★ 三个 query 参数的解析都是
+//     `if n, err := strconv.Atoi(v); err == nil { x = n }`
+//     ⇒ **解析失败静默沿用默认值**（days=7 / limit=10 / ledger limit=50），
+//     **不是 400**。发 `days=abc` 不会报错，会得到一份 7 天的数据。
+//
+// (35) ★★ `tenant_id` 为空 ⇒ service 直接 `fmt.Errorf("tenant_id required")`
+//     ⇒ handler 走 `writeInternalErr` ⇒ **500**，不是 400。
+//     ★ 而 `/tenants/` 后面**少于两段路径**时是 **404 `not found`**。
+//
+// (36) ★ admin 档的 plans / topup 传 `enabledOnly=false` ⇒ **含停用行**，
+//     与第三段租户面（`true` ⇒ 只列 enabled）形成对照，
+//     **响应形状完全相同**（都是 `{items}`）—— 差异只在**内容**。
+
+/** ★ `ClampUsageDays`：<1 ⇒ 1、>90 ⇒ 90（usage.go）。 */
+export const MAAS_USAGE_DAYS_MIN = 1
+export const MAAS_USAGE_DAYS_MAX = 90
+
+/** ★★ `days <= 7` 读 `request_logs_hot`，`> 7` 换另一张表（usage.go）。 */
+export const MAAS_USAGE_HOT_DAYS_MAX = 7
+
+/** ★★ `ClampUsageLimit`：<1 ⇒ **回落 10**、>50 ⇒ clamp 50（**两端不对称**）。 */
+export const MAAS_USAGE_LIMIT_DEFAULT = 10
+export const MAAS_USAGE_LIMIT_MAX = 50
+
+/** ★ `ListLedger`：<1 或 >200 ⇒ **回落 50**。 */
+export const MAAS_LEDGER_LIMIT_DEFAULT = 50
+export const MAAS_LEDGER_LIMIT_MAX = 200
+
+/** ★ handler 侧的默认值（解析失败时静默沿用它们，不是 400）。 */
+export const MAAS_USAGE_DAYS_DEFAULT = 7
+
+/** ★ `GetAccount` 里写死的一次取数条数（service 层，**不可调**）。 */
+export const MAAS_ACCOUNT_LEDGER_COUNT = 10
+export const MAAS_ACCOUNT_ORDERS_COUNT = 5
+
+/** ★★ admin 档 `writeJSON(w, 200, st)`：裸 `Settings`，**12 键、无 omitempty**。 */
+export function fetchMaasSettings(options?: RequestOptions): Promise<MaasSettings> {
+  return req<unknown>('GET', '/api/admin/maas/settings', undefined, options).then(unwrapMaasSettings)
+}
+
+export function unwrapMaasSettings(resp: unknown): MaasSettings {
+  if (resp && typeof resp === 'object' && !Array.isArray(resp)) {
+    const s = resp as Record<string, unknown>
+    // ★ 12 个键**无 omitempty** ⇒ 键一定都在（含空串与 0）
+    if (typeof s.cents_per_credit === 'number' && typeof s.global_discount === 'number' && typeof s.currency_display === 'string') {
+      return s as unknown as MaasSettings
+    }
+  }
+  const actual = resp === null ? 'null' : Array.isArray(resp) ? 'array' : typeof resp
+  throw new Error(`maas/admin settings 响应形状不符：期望裸 Settings（含 global_discount 等 12 键），实得 ${actual}`)
+}
+
+export interface MaasAdminPlansResponse {
+  items: MaasPlan[]
+}
+
+/** ★ `enabledOnly=false` ⇒ **含停用行**；形状与租户面 `{items}` 完全相同。 */
+export function fetchMaasAdminPlans(options?: RequestOptions): Promise<MaasAdminPlansResponse> {
+  return req<unknown>('GET', '/api/admin/maas/plans', undefined, options).then(
+    unwrapMaasPlans as (r: unknown) => MaasAdminPlansResponse,
+  )
+}
+
+export interface MaasAdminTopupResponse {
+  items: MaasTopupPackage[]
+}
+
+export function fetchMaasAdminTopupPackages(options?: RequestOptions): Promise<MaasAdminTopupResponse> {
+  return req<unknown>('GET', '/api/admin/maas/topup-packages', undefined, options).then(
+    unwrapMaasTopupPackages as (r: unknown) => MaasAdminTopupResponse,
+  )
+}
+
+function tenantsBase(tenantCode: string, action: string): string {
+  // ★ 与 orders 段同一条纪律：租户码原样拼进路径（后端 `strings.Trim` 后取 parts[0]）
+  return `/api/admin/maas/tenants/${encodeURIComponent(tenantCode)}/${action}`
+}
+
+/** ★ 与租户面**同形状、同 handler**，但这里 tenantCode 由调用方给（可跨租户）。 */
+export function fetchMaasTenantWallet(
+  tenantCode: string,
+  options?: RequestOptions,
+): Promise<MaasWallet> {
+  return req<unknown>('GET', tenantsBase(tenantCode, 'wallet'), undefined, options).then(unwrapMaasWallet)
+}
+
+export interface MaasLedgerEntry {
+  id: number
+  entry_type: string
+  amount: number
+  balance_after: number
+  /** ★ 指针但**无** omitempty ⇒ 键一定在，值可能为 `null`。 */
+  pool: string | null
+  ref_type: string | null
+  ref_id: string | null
+  note: string
+  created_at: string
+}
+
+export interface MaasLedgerResponse {
+  items: MaasLedgerEntry[]
+}
+
+/** ★ `GetAccount` = wallet + 最近 10 条流水 + 最近 5 条订单（条数写死在 service 里）。 */
+export interface MaasTenantAccount {
+  wallet: MaasWallet
+  recent_ledger: MaasLedgerEntry[]
+  recent_orders: MaasOrder[]
+}
+
+export function fetchMaasTenantAccount(
+  tenantCode: string,
+  options?: RequestOptions,
+): Promise<MaasTenantAccount> {
+  return req<unknown>('GET', tenantsBase(tenantCode, 'account'), undefined, options).then(
+    unwrapMaasTenantAccount,
+  )
+}
+
+export function unwrapMaasTenantAccount(resp: unknown): MaasTenantAccount {
+  if (resp && typeof resp === 'object' && !Array.isArray(resp)) {
+    const a = resp as Record<string, unknown>
+    const w = a.wallet as Record<string, unknown> | undefined
+    if (
+      w &&
+      typeof w === 'object' &&
+      typeof w.tenant_id === 'string' &&
+      Array.isArray(a.recent_ledger) &&
+      Array.isArray(a.recent_orders)
+    ) {
+      return a as unknown as MaasTenantAccount
+    }
+  }
+  const actual = resp === null ? 'null' : Array.isArray(resp) ? 'array' : typeof resp
+  throw new Error(`maas/tenants/account 响应形状不符：期望 {wallet, recent_ledger, recent_orders}，实得 ${actual}`)
+}
+
+export interface MaasUsageModelRow {
+  model: string
+  requests: number
+  credits: number
+  /** ★ float64 + omitempty ⇒ **恰好 0 时键不存在**。 */
+  cost_usd?: number
+}
+
+export interface MaasUsageTrendRow {
+  date: string
+  requests: number
+  credits: number
+  cost_usd?: number
+}
+
+export interface MaasUsageSummary {
+  /** ★ clamp **之后**回显 ⇒ 客户端能读回生效天数。 */
+  days: number
+  tenant_id: string
+  total_requests: number
+  total_credits: number
+  total_cost_usd?: number
+  by_model: MaasUsageModelRow[]
+  trend: MaasUsageTrendRow[]
+}
+
+export function fetchMaasUsageSummary(
+  tenantCode: string,
+  params: { days?: number; limit?: number } = {},
+  options?: RequestOptions,
+): Promise<MaasUsageSummary> {
+  const qs = new URLSearchParams()
+  if (typeof params.days === 'number' && Number.isFinite(params.days)) qs.set('days', String(Math.trunc(params.days)))
+  if (typeof params.limit === 'number' && Number.isFinite(params.limit)) qs.set('limit', String(Math.trunc(params.limit)))
+  const s = qs.toString()
+  return req<unknown>('GET', `${tenantsBase(tenantCode, 'usage/summary')}${s ? '?' + s : ''}`, undefined, options).then(
+    unwrapMaasUsageSummary,
+  )
+}
+
+export function unwrapMaasUsageSummary(resp: unknown): MaasUsageSummary {
+  if (resp && typeof resp === 'object' && !Array.isArray(resp)) {
+    const u = resp as Record<string, unknown>
+    if (
+      typeof u.days === 'number' &&
+      typeof u.tenant_id === 'string' &&
+      Array.isArray(u.by_model) &&
+      Array.isArray(u.trend)
+    ) {
+      return u as unknown as MaasUsageSummary
+    }
+  }
+  const actual = resp === null ? 'null' : Array.isArray(resp) ? 'array' : typeof resp
+  throw new Error(`maas/tenants/usage/summary 响应形状不符：期望 {days, tenant_id, by_model, trend}，实得 ${actual}`)
+}
+
+export interface MaasConsumptionRow {
+  tenant_id: string
+  /** ★ omitempty ⇒ 仅在非空时才有键。 */
+  owner_user?: string
+  /** ★ 指针 + omitempty ⇒ 仅 nil 时省略（指向 0 仍然有键）。 */
+  provider_id?: number
+  provider_name: string
+  credential_id?: number
+  credential_label: string
+  canonical_id?: number
+  model: string
+  requests: number
+  prompt_tokens: number
+  completion_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  credits_charged: number
+  upstream_cost_usd: number
+  /** ★ 算出来的：`credits_charged * cents_per_credit / 100`。 */
+  tenant_revenue_usd: number
+  gross_margin_usd: number
+  /** ★★ 收入为 0 时**保持零值 0**（无定义）⇒ 与「真·零毛利」不可区分。 */
+  gross_margin_rate: number
+  /** ★ SQL FILTER 计数：已计费 + 流中断 + 失败码 ∈ {client_cancel, client_disconnected}。 */
+  cancelled_billed_requests: number
+}
+
+export interface MaasConsumptionDetail {
+  tenant_id: string
+  owner_user?: string
+  days: number
+  /** ★ 从 `maas_settings WHERE id = 1` 直读 ⇒ 客户端可据此复算 revenue。 */
+  cents_per_credit: number
+  rows: MaasConsumptionRow[]
+}
+
+export function fetchMaasConsumptionDetail(
+  tenantCode: string,
+  params: { ownerUser?: string; days?: number } = {},
+  options?: RequestOptions,
+): Promise<MaasConsumptionDetail> {
+  const qs = new URLSearchParams()
+  if (params.ownerUser) qs.set('owner_user', params.ownerUser)
+  if (typeof params.days === 'number' && Number.isFinite(params.days)) qs.set('days', String(Math.trunc(params.days)))
+  const s = qs.toString()
+  return req<unknown>('GET', `${tenantsBase(tenantCode, 'usage/detail')}${s ? '?' + s : ''}`, undefined, options).then(
+    unwrapMaasConsumptionDetail,
+  )
+}
+
+export function unwrapMaasConsumptionDetail(resp: unknown): MaasConsumptionDetail {
+  if (resp && typeof resp === 'object' && !Array.isArray(resp)) {
+    const d = resp as Record<string, unknown>
+    if (typeof d.tenant_id === 'string' && typeof d.days === 'number' && Array.isArray(d.rows)) {
+      return d as unknown as MaasConsumptionDetail
+    }
+  }
+  const actual = resp === null ? 'null' : Array.isArray(resp) ? 'array' : typeof resp
+  throw new Error(`maas/tenants/usage/detail 响应形状不符：期望 {tenant_id, days, rows}，实得 ${actual}`)
+}
+
+export function fetchMaasTenantLedger(
+  tenantCode: string,
+  params: { limit?: number } = {},
+  options?: RequestOptions,
+): Promise<MaasLedgerResponse> {
+  const qs = new URLSearchParams()
+  if (typeof params.limit === 'number' && Number.isFinite(params.limit)) qs.set('limit', String(Math.trunc(params.limit)))
+  const s = qs.toString()
+  return req<unknown>('GET', `${tenantsBase(tenantCode, 'ledger')}${s ? '?' + s : ''}`, undefined, options).then(
+    unwrapMaasTenantLedger,
+  )
+}
+
+export function unwrapMaasTenantLedger(resp: unknown): MaasLedgerResponse {
+  if (resp && typeof resp === 'object' && Array.isArray((resp as MaasLedgerResponse).items)) {
+    return resp as MaasLedgerResponse
+  }
+  const actual = resp === null ? 'null' : Array.isArray(resp) ? 'array' : typeof resp
+  throw new Error(`maas/tenants/ledger 响应形状不符：期望 {items:[…]}，实得 ${actual}`)
+}
+
+// ── 页面侧判读 ─────────────────────────────────────────────────────────
+
+/** ★ `ClampUsageDays`：两端都 clamp。 */
+export function maasUsageDaysClamped(days: number): number {
+  if (!Number.isFinite(days)) return MAAS_USAGE_DAYS_DEFAULT
+  const n = Math.trunc(days)
+  if (n < MAAS_USAGE_DAYS_MIN) return MAAS_USAGE_DAYS_MIN
+  if (n > MAAS_USAGE_DAYS_MAX) return MAAS_USAGE_DAYS_MAX
+  return n
+}
+
+/** ★★ `ClampUsageLimit`：下界**回落 10**、上界 clamp 50 —— 两端不对称。 */
+export function maasUsageLimitEffective(limit: number): number {
+  if (!Number.isFinite(limit)) return MAAS_USAGE_LIMIT_DEFAULT
+  const n = Math.trunc(limit)
+  if (n < 1) return MAAS_USAGE_LIMIT_DEFAULT
+  if (n > MAAS_USAGE_LIMIT_MAX) return MAAS_USAGE_LIMIT_MAX
+  return n
+}
+
+/** ★ `ListLedger`：越界**回落 50**（不是 clamp 到上下界）。 */
+export function maasLedgerLimitEffective(limit: number): number {
+  if (!Number.isFinite(limit)) return MAAS_LEDGER_LIMIT_DEFAULT
+  const n = Math.trunc(limit)
+  if (n < 1 || n > MAAS_LEDGER_LIMIT_MAX) return MAAS_LEDGER_LIMIT_DEFAULT
+  return n
+}
+
+/**
+ * ★★★ 这两个 usage 端点**按 days 换物理表**。
+ * 返回 true 表示本次读的是 `request_logs_hot`（近期热表），
+ * false 表示读的是 `request_logs_with_current_month`。
+ */
+export function maasUsageReadsHotTable(days: number): boolean {
+  return maasUsageDaysClamped(days) <= MAAS_USAGE_HOT_DAYS_MAX
+}
+
+/**
+ * ★★ `cost_usd` 是 float64 + omitempty ⇒ **恰好 0 时键不存在**。
+ * 页面读不到时**必须**显示 0，而不是「—」——
+ * 否则「真·零成本」会被误报成「数据缺失」。
+ */
+export function maasCostUsd(row: { cost_usd?: number }): number {
+  return typeof row.cost_usd === 'number' ? row.cost_usd : 0
+}
+
+/**
+ * ★★★ 复算 `tenant_revenue_usd = credits_charged * cents_per_credit / 100`
+ * （service.go 里逐行算的）。客户端据此核对服务端给的数字。
+ */
+export function maasTenantRevenueUsd(creditsCharged: number, centsPerCredit: number): number {
+  return (creditsCharged * centsPerCredit) / 100
+}
+
+/**
+ * ★★★ `gross_margin_rate` 在 `revenue == 0` 时**保持零值**（无定义）。
+ * 返回 true 表示「这个 0 是无定义，不是零毛利」。
+ */
+export function maasMarginRateUndefined(r: { tenant_revenue_usd: number; gross_margin_rate: number }): boolean {
+  return r.tenant_revenue_usd === 0
+}
+
+/** ★★ 「已计费但被客户端取消」的请求数 —— 收入侧的已知漏点。 */
+export function maasHasCancelledBilled(r: MaasConsumptionRow): boolean {
+  return r.cancelled_billed_requests > 0
+}
