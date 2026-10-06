@@ -273,10 +273,20 @@ WebViewCompat.addDocumentStartJavaScript(webView, script, singleton(allowedOrigi
 | 件 | 状态 |
 |---|---|
 | 前端侧安装器（`CapacitorHttp` → `transport.ts` 的 `setTransport`） | ✅ 已落地（10 §4.6.39） |
-| 壳侧反代 | ❌ 未做 |
-| `main.ts` 接线（先 await 装传输再 `auth.hydrate()`） | ❌ 未做，**须显式裁决**：一旦接线，首屏时序与 ④ 的失败降级路径都要重新裁决 |
+| 应用侧拿到网关基址（读 `llmgw:shell.server` → `setGatewayBaseUrl`） | ❌ **零实现**，且**零生产调用方** |
+| 引导页「④ 模式下不 `location.replace`」分支 | ❌ 未做（当前 `webDist/index.html:323` **无条件跳转**） |
+| `web-mobile` 是否在壳里 | ❌ 不在（`capacitor.config.ts:111` `webDir: 'webDist'`，壳内只有引导页） |
+| `main.ts` 接线 | ❌ 未做 |
 
 ⇒ **仍不得据本节宣称「原生侧已解决」**；上面那句原文保留不改。
+
+★ **订正本节的成本估计**：上表原以为「壳侧反代 + 接线」两件即可，复查后发现差距是
+**三条、跨两个仓**，且**在此之前要先答一个更前面的问题**——
+移动端现已由网关**同源托管**（`cmd/gateway/mobile_static.go` 提供 `/m` + `/m-assets/`，
+`web-mobile/vite.config.ts:51` `base='/m-assets/'`），**同源下相对路径 fetch 成立，
+根本不需要 ④**。而 ④ 只对「web-mobile 内嵌壳内」有意义，那会推翻本仓头部的
+「壳内不打包业务前端：改 Vue 组件 = 发 Web，不发商店包」。
+详见 **10 §4.6.39 第十节**。
 
 10 §4.6.39 同时查出两条改变本节既有推论的事实：
 ① 原生传输**不带 cookie**（`CookieManager` 在 `HttpRequestHandler.java` /
