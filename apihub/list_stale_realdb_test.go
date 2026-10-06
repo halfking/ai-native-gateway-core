@@ -53,7 +53,10 @@ func seedStale(t *testing.T, n int) {
 			Version:     "0.0.0",
 		})
 	}
-	if err := NewPGStore(pool).UpsertBatch(context.Background(), assets); err != nil {
+	// UpsertBatch 自 §10.34（95721459b）起返回 (int, error)；此处只做 seed，
+	// 不需要行数，但仍必须接住两个返回值，否则 integration tag 下整棵树编译不过
+	// （TestIntegrationTaggedTreeCompiles 会红）。
+	if _, err := NewPGStore(pool).UpsertBatch(context.Background(), assets); err != nil {
 		t.Fatalf("seed UpsertBatch: %v", err)
 	}
 	// 回拨到 48 小时前，远超 6h 阈值。
