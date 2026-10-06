@@ -247,3 +247,319 @@ describe('RoutingCheckView 全量总览', () => {
     expect(w.html()).toContain('routing__hint')
   })
 })
+
+/**
+ * 模型路由树 / 熔断健康 / 可用模型名单的视图接入（2026-10-08）。
+ *
+ * ★★★ 这组用例的核心是**两种形状必须分流渲染**：
+ *   后端 `model-tree` 按角色返回两种结构（`readonly: true` 标记），
+ *   而 `available` 在两侧**层级与语义都不同**。
+ *   若不分开渲染，裁剪树会因 `v.credentials` 为 undefined 而整段空掉，
+ *   完整树则会显示出一个恒为 undefined 的「可用」列。
+ */
+vi.mock('@/api/routingTree', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/routingTree')>()
+  return {
+    ...actual,
+    fetchModelTree: vi.fn(),
+    fetchRoutingHealth: vi.fn(),
+    fetchAvailableModelsRaw: vi.fn(),
+  }
+})
+
+describe('RoutingCheckView 模型路由树（按形状分流）', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    vi.clearAllMocks()
+  })
+
+  async function loadTree(payload: unknown) {
+    const { fetchModelTree } = await import('@/api/routingTree')
+    ;(fetchModelTree as ReturnType<typeof vi.fn>).mockResolvedValue(payload as never)
+    const w = mount(RoutingCheckView)
+    await flushPromises()
+    const btn = w.findAll('button').find((b) => (b.text() ?? '').includes('Load tree'))
+    if (!btn) throw new Error('加载路由树按钮不存在')
+    await btn.trigger('click')
+    await flushPromises()
+    await flushPromises()
+    return w
+  }
+
+  it('★★★★ 按需加载：进页面不自动请求', async () => {
+    const { fetchModelTree } = await import('@/api/routingTree')
+    mount(RoutingCheckView)
+    await flushPromises()
+    expect(fetchModelTree).not.toHaveBeenCalled()
+  })
+
+  it('★★★★★ 裁剪形状（readonly）⇒ 显示「明细已隐藏」+ 凭据个数，**不列**凭据', async () => {
+    const w = await loadTree({
+      featured: ['gpt-4o'],
+      series: [
+        {
+          series: 'gpt',
+          generations: [
+            {
+              generation: 'gpt-4',
+              variants: [{ variant: 'gpt-4o', canonical_name: 'gpt-4o', tags: [], available: true, credential_count: 2 }],
+            },
+          ],
+        },
+      ],
+      unmapped: [],
+      readonly: true,
+    })
+    const text = w.text()
+    expect(text).toContain('credential details are hidden')
+    expect(text).toContain('2 credentials')
+    expect(text).toContain('all credentials available')
+    // ★ 裁剪形状根本没有凭据明细，绝不能凭 variant 名渲染出凭据行
+    expect(w.findAll('.routing__tree-cred').length).toBe(0)
+  })
+
+  it('★★★★★ 完整形状 ⇒ 逐凭据列出，且**不显示**「明细已隐藏」', async () => {
+    const w = await loadTree({
+      featured: ['gpt-4o'],
+      series: [
+        {
+          series: 'gpt',
+          generations: [
+            {
+              generation: 'gpt-4',
+              variants: [
+                {
+                  variant: 'gpt-4o',
+                  canonical_name: 'gpt-4o',
+                  tags: [],
+                  credentials: [
+                    {
+                      credential_id: 9, credential_label: 'tok-a', credential_status: 'active',
+                      provider_id: 3, provider_name: '小米大模型', available: true, tier: 1, weight: 100,
+                      unit_price_in_per_1m: 1, unit_price_out_per_1m: 2, success_rate: 0.98,
+                      p95_latency_ms: 800, currency: 'USD', availability_state: 'ready',
+                    },
+                    {
+                      // ★ 第二个凭据**不可用** ⇒ 「全部可用」的全称判断才有区分度。
+                      //   没有它，「fold 恒 false / 恒 true」两种变异都测不出来。
+                      credential_id: 10, credential_label: 'tok-b', credential_status: 'active',
+                      provider_id: 3, provider_name: '小米大模型', available: false, tier: 2, weight: 100,
+                      unit_price_in_per_1m: 1, unit_price_out_per_1m: 2, success_rate: 0.5,
+                      p95_latency_ms: 5000, currency: 'USD', availability_state: 'down',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      unmapped: [],
+    })
+    const text = w.text()
+    expect(text).not.toContain('credential details are hidden')
+    expect(text).toContain('tok-a')
+    expect(text).toContain('tok-b')
+    expect(w.findAll('.routing__tree-cred').length).toBe(2)
+    // ★★★ 完整形状自己 fold 出「部分不可用」；且**不出现**裁剪形状那档文案
+    expect(text).toContain('some credentials unavailable')
+    expect(text).not.toContain('all credentials available')
+    expect(text).not.toContain('credentials (details hidden)')
+    // ★★★★ 必须**结构性**断言是哪种判据算出来的：两处文案可能相同，
+    //   只看文本分不开「裁剪形状的 available」与「完整形状的 fold」。
+    expect(w.findAll('.routing__agg-full').length).toBe(1)
+    expect(w.findAll('.routing__agg-redacted').length).toBe(0)
+  })
+
+  it('★★★★★ 全部凭据都可用 ⇒ fold 判「全部可用」（恒 false 的变异才测得出）', async () => {
+    // ★ 这条是补的：前一个夹具里有一条不可用，于是「fold 恒 false」与正确实现
+    //   **输出完全相同** —— 测的是巧合。
+    const w = await loadTree({
+      featured: ['gpt-4o'],
+      series: [
+        {
+          series: 'gpt',
+          generations: [
+            {
+              generation: 'gpt-4',
+              variants: [
+                {
+                  variant: 'gpt-4o',
+                  canonical_name: 'gpt-4o',
+                  tags: [],
+                  credentials: [
+                    { credential_id: 9, credential_label: 'tok-a', credential_status: 'active',
+                      provider_id: 3, provider_name: 'p', available: true, tier: 1, weight: 100,
+                      unit_price_in_per_1m: 1, unit_price_out_per_1m: 2, success_rate: 0.9,
+                      p95_latency_ms: 9999, currency: 'USD', availability_state: 'ready' },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      unmapped: [],
+    })
+    const text = w.text()
+    expect(text).toContain('all credentials available')
+    expect(text).not.toContain('some credentials unavailable')
+    expect(w.findAll('.routing__agg-full').length).toBe(1)
+    expect(w.findAll('.routing__agg-redacted').length).toBe(0)
+  })
+
+  it('★★★★★ 裁剪形状的变体若**意外带了** credentials，也不得逐条渲染（形状判据优先）', async () => {
+    // ★ 这条是补的：夹具里裁剪形状本来就没有 credentials ⇒
+    //   「凭据列表不按形状分流」这种变异照样全绿 —— 测的是巧合。
+    const w = await loadTree({
+      featured: ['gpt-4o'],
+      series: [
+        {
+          series: 'gpt',
+          generations: [
+            {
+              generation: 'gpt-4',
+              variants: [
+                {
+                  variant: 'gpt-4o', canonical_name: 'gpt-4o', tags: [], available: true, credential_count: 2,
+                  // ★★ 契约漂移：readonly 形状却带了 credentials
+                  credentials: [
+                    { credential_id: 9, credential_label: 'SHOULD-NOT-RENDER', credential_status: 'active',
+                      provider_id: 3, provider_name: 'p', available: true, tier: 1, weight: 100,
+                      unit_price_in_per_1m: 1, unit_price_out_per_1m: 2, success_rate: 0.9,
+                      p95_latency_ms: 1, currency: 'USD', availability_state: 'ready' },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      unmapped: [],
+      readonly: true,
+    })
+    const text = w.text()
+    expect(text).not.toContain('SHOULD-NOT-RENDER')
+    expect(w.findAll('.routing__tree-cred').length).toBe(0)
+    expect(text).toContain('2 credentials')
+  })
+
+  it('★★★★★ 状态未知被后端写成 ready ⇒ 必须显示「状态未知」而不是「就绪」', async () => {
+    const w = await loadTree({
+      featured: [],
+      series: [
+        {
+          series: 'gpt',
+          generations: [
+            {
+              generation: 'gpt-4',
+              variants: [
+                {
+                  variant: 'gpt-4o',
+                  canonical_name: 'gpt-4o',
+                  tags: [],
+                  credentials: [
+                    {
+                      credential_id: 9, credential_label: 'tok-a', credential_status: 'unknown',
+                      provider_id: 3, provider_name: '小米大模型', available: true, tier: 1, weight: 100,
+                      unit_price_in_per_1m: 1, unit_price_out_per_1m: 2, success_rate: 0.9,
+                      p95_latency_ms: 9999, currency: 'USD', availability_state: 'ready',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      unmapped: [],
+    })
+    const text = w.text()
+    expect(text).toContain('status unknown')
+    // ★ 编造的 0.9 / 9999 也要带免责
+    expect(text).toContain('may be defaults')
+  })
+
+  it('★★★ featured 为空 ⇒ 提示「只看精选」不会生效', async () => {
+    const w = await loadTree({ featured: [], series: [], unmapped: [] })
+    expect(w.text()).toContain('featured only')
+  })
+
+  it('★★★★ 空树必须显示空态，而不是一片空白', async () => {
+    const w = await loadTree({ featured: ['gpt-4o'], series: [], unmapped: [] })
+    expect(w.text()).toContain('No matching model bindings')
+  })
+})
+
+describe('RoutingCheckView 熔断健康与可用模型名单', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    vi.clearAllMocks()
+  })
+
+  it('★★★★ summary 与实际列表对不上 ⇒ 提示契约漂移', async () => {
+    const { fetchRoutingHealth } = await import('@/api/routingTree')
+    ;(fetchRoutingHealth as ReturnType<typeof vi.fn>).mockResolvedValue({
+      credentials: [
+        { credential_id: 9, label: 'tok-a', status: 'active', circuit_state: 'open', consecutive_failures: 3, circuit_open_count_window: 2, cooling_until: null, provider_name: 'p', catalog_code: null },
+        { credential_id: 10, label: 'SHOULD-NOT-LIST-AS-OPEN', status: 'active', circuit_state: 'closed', consecutive_failures: 0, circuit_open_count_window: 0, cooling_until: null, provider_name: 'p', catalog_code: null },
+      ],
+      // ★ 对不上：列表 1 条但 summary 说 5 条
+      summary: { total: 5, open: 0, closed: 5 },
+    } as never)
+    const w = mount(RoutingCheckView)
+    await flushPromises()
+    const btn = w.findAll('button').find((b) => (b.text() ?? '').includes('Load health'))
+    await btn?.trigger('click')
+    await flushPromises()
+    await flushPromises()
+    expect(w.text()).toContain('contract drift')
+    // 熔断中的那条要列出来
+    expect(w.text()).toContain('tok-a')
+    // ★★ 而 closed 的那条**不能**被列进「熔断中」
+    expect(w.text()).not.toContain('SHOULD-NOT-LIST-AS-OPEN')
+  })
+
+  it('★★★ 没有熔断中的凭据 ⇒ 显示空态', async () => {
+    const { fetchRoutingHealth } = await import('@/api/routingTree')
+    ;(fetchRoutingHealth as ReturnType<typeof vi.fn>).mockResolvedValue({
+      credentials: [
+        { credential_id: 10, label: 'tok-b', status: 'active', circuit_state: 'closed', consecutive_failures: 0, circuit_open_count_window: 0, cooling_until: null, provider_name: 'p', catalog_code: null },
+      ],
+      summary: { total: 1, open: 0, closed: 1 },
+    } as never)
+    const w = mount(RoutingCheckView)
+    await flushPromises()
+    const btn = w.findAll('button').find((b) => (b.text() ?? '').includes('Load health'))
+    await btn?.trigger('click')
+    await flushPromises()
+    await flushPromises()
+    expect(w.text()).toContain('No credential is currently open')
+  })
+
+  it('★★★★★ 名单拉取失败 ⇒ 不得渲染成「零个可用模型」（故障 ≠ 真结论）', async () => {
+    const { fetchAvailableModelsRaw } = await import('@/api/routingTree')
+    ;(fetchAvailableModelsRaw as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+    const w = mount(RoutingCheckView)
+    await flushPromises()
+    const btn = w.findAll('button').find((b) => (b.text() ?? '').includes('Load names'))
+    await btn?.trigger('click')
+    await flushPromises()
+    await flushPromises()
+    // ★ 端点挂了，但清单非关键 ⇒ 什么都不显示，**绝不能**说「没有可用模型」
+    expect(w.text()).not.toContain('No model is currently available')
+  })
+
+  it('★★★ 可用模型名单为零 ⇒ 显示「没有可用模型」，不是错误态', async () => {
+    const { fetchAvailableModelsRaw } = await import('@/api/routingTree')
+    ;(fetchAvailableModelsRaw as ReturnType<typeof vi.fn>).mockResolvedValue([] as never)
+    const w = mount(RoutingCheckView)
+    await flushPromises()
+    const btn = w.findAll('button').find((b) => (b.text() ?? '').includes('Load names'))
+    await btn?.trigger('click')
+    await flushPromises()
+    await flushPromises()
+    expect(w.text()).toContain('No model is currently available')
+    expect(w.findAll('.routing__error').length).toBe(0)
+  })
+})
