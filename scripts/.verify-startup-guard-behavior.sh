@@ -50,15 +50,18 @@ DSN="postgres://postgres:$PW@127.0.0.1:$PORT/t?sslmode=disable"
 
 echo
 echo "== 真库行为验证 =="
-if TEST_DATABASE_URL="$DSN" go test ./db/ -run TestStartupDDLGuards_RealDB -count=1 -v 2>&1 |
+if TEST_DATABASE_URL="$DSN" go test ./db/ \
+     -run 'TestStartupDDLGuards_RealDB|TestStartupDDLGuards_EarlierOnes_RealDB' \
+     -count=1 -v 2>&1 |
      tee /tmp/guard_behavior.out | grep -E '^(    )*--- (PASS|FAIL)'; then
   :
 fi
 
 # 必须真的跑起来了，不能因为「没输出」而恒真
-if ! grep -q 'PASS: TestStartupDDLGuards_RealDB' /tmp/guard_behavior.out; then
-  fail "行为验证没有整体通过 —— 输出里找不到顶层 PASS"
-fi
+for top in TestStartupDDLGuards_RealDB TestStartupDDLGuards_EarlierOnes_RealDB; do
+  grep -q "^--- PASS: $top" /tmp/guard_behavior.out ||
+    fail "行为验证没有整体通过：$top"
+done
 # 负控与决定性两条是这套验证的全部价值所在，必须逐条点名
 for must in \
   'PASS: TestStartupDDLGuards_RealDB/provider_models_canonical_cleared_at/DDL_负控' \
@@ -66,13 +69,20 @@ for must in \
   'PASS: TestStartupDDLGuards_RealDB/goal_client_signal/DDL_负控' \
   'PASS: TestStartupDDLGuards_RealDB/provider_models_canonical_cleared_at/C_决定性' \
   'PASS: TestStartupDDLGuards_RealDB/provider_soft_delete/C_决定性' \
-  'PASS: TestStartupDDLGuards_RealDB/goal_client_signal/C_决定性' ; do
+  'PASS: TestStartupDDLGuards_RealDB/goal_client_signal/C_决定性' \
+  'PASS: TestStartupDDLGuards_EarlierOnes_RealDB/credits_charged/D_负控' \
+  'PASS: TestStartupDDLGuards_EarlierOnes_RealDB/credits_charged/C_决定性' \
+  'PASS: TestStartupDDLGuards_EarlierOnes_RealDB/quality_fix_mode/D_负控' \
+  'PASS: TestStartupDDLGuards_EarlierOnes_RealDB/quality_fix_mode/C_决定性' \
+  'PASS: TestStartupDDLGuards_EarlierOnes_RealDB/quality_fix_mode/rollup_必须始终被建出来' \
+  'PASS: TestStartupDDLGuards_EarlierOnes_RealDB/work_type_request_logs/D_负控' \
+  'PASS: TestStartupDDLGuards_EarlierOnes_RealDB/work_type_request_logs/C_决定性' ; do
   grep -q -- "$must" /tmp/guard_behavior.out || fail "缺少关键读数: $must"
 done
 
 echo
 if [ "$FAILED" -eq 0 ]; then
-  echo "==== 行为验证全部通过（含 3 条负控 + 3 条决定性读数） ===="
+  echo "==== 行为验证全部通过（六条守卫：6 条负控 + 6 条决定性读数） ===="
 else
   echo "==== 行为验证存在缺口 ===="
 fi

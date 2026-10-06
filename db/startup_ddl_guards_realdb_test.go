@@ -30,7 +30,24 @@ import (
 //
 // 无 TEST_DATABASE_URL / TEST_DB_URL 时跳过（与 749/750 真库回归同门控）。
 // 纪律：本测试只跑一次性 scratch 容器，绝不连 154/245/252。
-func TestStartupDDLGuards_RealDB(t *testing.T) {
+// guardEnv 是行为验证的共享脚手架：一次性真库 + 并发持锁 + 带 lock_timeout 的执行。
+// 两组测试（§10.98.7~§10.98.9 新增的三条、§10.98.12 更早的三条）共用同一套读数，
+// 避免"新验证自己另发明一套判据"导致两边的通过/失败不可比。
+type guardEnv struct {
+	dsn  string
+	ctx  context.Context
+	pool *pgxpool.Pool
+	d    *DB
+}
+
+// holdFor 必须明显大于 lockTimeout，否则负控可能只是"还没等到冲突"。
+const (
+	guardHoldFor    = "2.5" // seconds, as a pg_sleep literal
+	guardLockTimout = 1200 * time.Millisecond
+)
+
+func newGuardEnv(t *testing.T) *guardEnv {
+	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
 		dsn = os.Getenv("TEST_DB_URL")
@@ -38,89 +55,113 @@ func TestStartupDDLGuards_RealDB(t *testing.T) {
 	if dsn == "" {
 		t.Skip("TEST_DATABASE_URL / TEST_DB_URL 未设置，跳过真库行为验证")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	t.Cleanup(cancel)
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Skipf("connect real db: %v", err)
 	}
-	defer pool.Close()
-	d := &DB{pool: pool}
+	t.Cleanup(pool.Close)
+	return &guardEnv{dsn: dsn, ctx: ctx, pool: pool, d: &DB{pool: pool}}
+}
 
-	exec := func(t *testing.T, q string) {
-		t.Helper()
-		if _, err := pool.Exec(ctx, q); err != nil {
-			t.Fatalf("exec failed: %v\nSQL: %s", err, q)
-		}
+func (e *guardEnv) exec(t *testing.T, q string) {
+	t.Helper()
+	if _, err := e.pool.Exec(e.ctx, q); err != nil {
+		t.Fatalf("exec failed: %v\nSQL: %s", err, q)
 	}
-	dropAll := func(t *testing.T) {
-		t.Helper()
-		exec(t, `DROP TABLE IF EXISTS provider_models, providers, credentials,
-		         session_summaries, goal_sessions, schema_migrations CASCADE;`)
-	}
+}
 
-	// holdAccessShare 在另一个连接上打开目标表并把 ACCESS SHARE 持到事务结束。
-	// 读事务期间在同事务里 pg_sleep ⇒ 锁在整个 sleep 期间都在。
-	// ACCESS SHARE 正是 `ALTER TABLE … ADD COLUMN` 要的 ACCESS EXCLUSIVE 的冲突方。
-	holdAccessShare := func(t *testing.T, rel string, sleepLiteral string) func() {
-		t.Helper()
-		conn, err := pgx.Connect(ctx, dsn)
-		if err != nil {
-			t.Fatalf("second connection: %v", err)
-		}
-		var wg sync.WaitGroup
-		wg.Add(1)
-		ready := make(chan struct{})
-		go func() {
-			defer wg.Done()
-			defer conn.Close(context.Background())
-			tx, err := conn.Begin(context.Background())
-			if err != nil {
-				return
-			}
-			defer tx.Rollback(context.Background())
-			// 真正扫一遍表，锁在此刻取得
-			if _, err := tx.Exec(context.Background(), "SELECT count(*) FROM "+rel); err != nil {
-				return
-			}
-			close(ready) // 锁已持有
-			_, _ = tx.Exec(context.Background(), "SELECT pg_sleep("+sleepLiteral+")")
-			_ = tx.Commit(context.Background())
-		}()
-		select {
-		case <-ready:
-		case <-time.After(5 * time.Second):
-			t.Fatal("并发读会话没能在 5 秒内取得 ACCESS SHARE")
-		}
-		return func() { wg.Wait() }
-	}
+func (e *guardEnv) drop(t *testing.T, tables string) {
+	t.Helper()
+	e.exec(t, "DROP TABLE IF EXISTS "+tables+" CASCADE;")
+}
 
-	// runWithLockTimeout 在一条新连接上设 lock_timeout 后执行，返回错误文本（空 = 成功）。
-	//
-	// ★ 用 lock_timeout 而不是 statement_timeout：后者触发时 PG 报
-	// 57014 canceling statement，对「等锁」和「跑太久」不加区分；
-	// lock_timeout 只管锁等待，超时必然是 55P03 lock_not_available，
-	// 因此「这条 DDL 被并发读挡住了」是无歧义的读数。
-	runWithLockTimeout := func(t *testing.T, timeout time.Duration, sqlText string) string {
-		t.Helper()
-		conn, err := pgx.Connect(ctx, dsn)
-		if err != nil {
-			t.Fatalf("connect: %v", err)
-		}
+func (e *guardEnv) holdAccessShare(t *testing.T, rel string, sleepLiteral string) func() {
+	t.Helper()
+	conn, err := pgx.Connect(e.ctx, e.dsn)
+	if err != nil {
+		t.Fatalf("second connection: %v", err)
+	}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	ready := make(chan struct{})
+	go func() {
+		defer wg.Done()
 		defer conn.Close(context.Background())
-		if _, err := conn.Exec(ctx, "SET lock_timeout = '"+timeout.String()+"'"); err != nil {
-			t.Fatalf("set lock_timeout: %v", err)
+		tx, err := conn.Begin(context.Background())
+		if err != nil {
+			return
 		}
-		_, err = conn.Exec(ctx, sqlText)
-		if err == nil {
-			return ""
+		defer tx.Rollback(context.Background())
+		// 真正扫一遍表，锁在此刻取得
+		if _, err := tx.Exec(context.Background(), "SELECT count(*) FROM "+rel); err != nil {
+			return
 		}
+		close(ready) // 锁已持有
+		_, _ = tx.Exec(context.Background(), "SELECT pg_sleep("+sleepLiteral+")")
+		_ = tx.Commit(context.Background())
+	}()
+	select {
+	case <-ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("并发读会话没能在 5 秒内取得 ACCESS SHARE")
+	}
+	return func() { wg.Wait() }
+}
+
+// runWithLockTimeout 在一条新连接上设 lock_timeout 后执行，返回错误文本（空 = 成功）。
+//
+// ★ 用 lock_timeout 而不是 statement_timeout：后者触发时 PG 报
+// 57014 canceling statement，对「等锁」和「跑太久」不加区分；
+// lock_timeout 只管锁等待，超时必然是 55P03 lock_not_available，
+// 因此「这条 DDL 被并发读挡住了」是无歧义的读数。
+func (e *guardEnv) runWithLockTimeout(t *testing.T, sqlText string) string {
+	t.Helper()
+	conn, err := pgx.Connect(e.ctx, e.dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer conn.Close(context.Background())
+	if _, err := conn.Exec(e.ctx,
+		"SET lock_timeout = '"+guardLockTimout.String()+"'"); err != nil {
+		t.Fatalf("set lock_timeout: %v", err)
+	}
+	if _, err := conn.Exec(e.ctx, sqlText); err != nil {
 		return err.Error()
 	}
+	return ""
+}
 
-	// 持锁时长必须明显大于 lock_timeout，否则负控可能只是「还没等到冲突」。
-	const holdFor = "2.5" // seconds, as a pg_sleep literal
-	const lockTimeout = 1200 * time.Millisecond
+// expectLocked 是负控的判据：这条 DDL 在并发读持锁时必须被挡住。
+func (e *guardEnv) expectLocked(t *testing.T, rel string, sqlText string) {
+	t.Helper()
+	wait := e.holdAccessShare(t, rel, guardHoldFor)
+	defer wait()
+	errText := e.runWithLockTimeout(t, sqlText)
+	if errText == "" {
+		t.Fatal("负控失败：并发读持锁时这条 DDL 竟然没被阻塞 ⇒ " +
+			"夹具/超时没生效，后面 C 的「没阻塞」就没有意义")
+	}
+	if !strings.Contains(errText, "55P03") {
+		t.Errorf("负控期望 55P03 等锁超时，实际是: %s", errText)
+	}
+}
+
+func TestStartupDDLGuards_RealDB(t *testing.T) {
+	env := newGuardEnv(t)
+	ctx, pool, d := env.ctx, env.pool, env.d
+	exec := func(t *testing.T, q string) { env.exec(t, q) }
+	holdAccessShare := func(t *testing.T, rel, lit string) func() {
+		return env.holdAccessShare(t, rel, lit)
+	}
+	runWithLockTimeout := func(t *testing.T, sqlText string) string {
+		return env.runWithLockTimeout(t, sqlText)
+	}
+	dropAll := func(t *testing.T) {
+		env.drop(t, "provider_models, providers, credentials, session_summaries, "+
+			"goal_sessions, schema_migrations")
+	}
 
 	t.Run("provider_models_canonical_cleared_at", func(t *testing.T) {
 		dropAll(t)
@@ -137,9 +178,9 @@ func TestStartupDDLGuards_RealDB(t *testing.T) {
 		})
 
 		t.Run("DDL_负控_无守卫时必须被并发读阻塞", func(t *testing.T) {
-			wait := holdAccessShare(t, "provider_models", holdFor)
+			wait := holdAccessShare(t, "provider_models", guardHoldFor)
 			defer wait()
-			errText := runWithLockTimeout(t, lockTimeout, providerModelsCanonicalClearedAtDDL)
+			errText := runWithLockTimeout(t, providerModelsCanonicalClearedAtDDL)
 			if errText == "" {
 				t.Fatal("负控失败：并发读持锁时这条 DDL 竟然没被阻塞 ⇒ " +
 					"夹具/超时没生效，后面 C 的「没阻塞」就没有意义")
@@ -181,15 +222,15 @@ func TestStartupDDLGuards_RealDB(t *testing.T) {
 		})
 
 		t.Run("C_决定性_守卫后并发读下ensure必须立即成功", func(t *testing.T) {
-			wait := holdAccessShare(t, "provider_models", holdFor)
+			wait := holdAccessShare(t, "provider_models", guardHoldFor)
 			defer wait()
 			start := time.Now()
 			if err := d.ensureProviderModelsCanonicalClearedAt(ctx); err != nil {
 				t.Fatalf("守卫后仍被阻塞或报错: %v", err)
 			}
-			if elapsed := time.Since(start); elapsed > lockTimeout {
+			if elapsed := time.Since(start); elapsed > guardLockTimout {
 				t.Errorf("守卫后耗时 %v，超过负控的阻塞时长 %v ⇒ 守卫没有真正短路",
-					elapsed, lockTimeout)
+					elapsed, guardLockTimout)
 			}
 		})
 
@@ -222,9 +263,9 @@ func TestStartupDDLGuards_RealDB(t *testing.T) {
 		})
 
 		t.Run("DDL_负控_无守卫时必须被并发读阻塞", func(t *testing.T) {
-			wait := holdAccessShare(t, "providers", holdFor)
+			wait := holdAccessShare(t, "providers", guardHoldFor)
 			defer wait()
-			errText := runWithLockTimeout(t, lockTimeout, providerSoftDeleteDDL)
+			errText := runWithLockTimeout(t, providerSoftDeleteDDL)
 			if errText == "" {
 				t.Fatal("负控失败：并发读持锁时这条 DDL 竟然没被阻塞")
 			}
@@ -246,14 +287,14 @@ func TestStartupDDLGuards_RealDB(t *testing.T) {
 		})
 
 		t.Run("C_决定性_守卫后并发读下ensure必须立即成功", func(t *testing.T) {
-			wait := holdAccessShare(t, "providers", holdFor)
+			wait := holdAccessShare(t, "providers", guardHoldFor)
 			defer wait()
 			start := time.Now()
 			if err := d.ensureProviderSoftDelete(ctx); err != nil {
 				t.Fatalf("守卫后仍被阻塞或报错: %v", err)
 			}
-			if elapsed := time.Since(start); elapsed > lockTimeout {
-				t.Errorf("守卫后耗时 %v，超过负控阻塞时长 %v", elapsed, lockTimeout)
+			if elapsed := time.Since(start); elapsed > guardLockTimout {
+				t.Errorf("守卫后耗时 %v，超过负控阻塞时长 %v", elapsed, guardLockTimout)
 			}
 		})
 
@@ -279,9 +320,9 @@ func TestStartupDDLGuards_RealDB(t *testing.T) {
 		})
 
 		t.Run("DDL_负控_无守卫时必须被并发读阻塞", func(t *testing.T) {
-			wait := holdAccessShare(t, "session_summaries", holdFor)
+			wait := holdAccessShare(t, "session_summaries", guardHoldFor)
 			defer wait()
-			errText := runWithLockTimeout(t, lockTimeout, goalClientSignalDDL)
+			errText := runWithLockTimeout(t, goalClientSignalDDL)
 			if errText == "" {
 				t.Fatal("负控失败：并发读持锁时这条 DDL 竟然没被阻塞")
 			}
@@ -303,14 +344,14 @@ func TestStartupDDLGuards_RealDB(t *testing.T) {
 		})
 
 		t.Run("C_决定性_守卫后并发读下ensure必须立即成功", func(t *testing.T) {
-			wait := holdAccessShare(t, "session_summaries", holdFor)
+			wait := holdAccessShare(t, "session_summaries", guardHoldFor)
 			defer wait()
 			start := time.Now()
 			if err := d.ensureGoalClientSignalSchema(ctx); err != nil {
 				t.Fatalf("守卫后仍被阻塞或报错: %v", err)
 			}
-			if elapsed := time.Since(start); elapsed > lockTimeout {
-				t.Errorf("守卫后耗时 %v，超过负控阻塞时长 %v", elapsed, lockTimeout)
+			if elapsed := time.Since(start); elapsed > guardLockTimout {
+				t.Errorf("守卫后耗时 %v，超过负控阻塞时长 %v", elapsed, guardLockTimout)
 			}
 		})
 

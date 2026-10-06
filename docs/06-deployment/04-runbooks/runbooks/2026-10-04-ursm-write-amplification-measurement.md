@@ -10862,3 +10862,49 @@ ACCESS EXCLUSIVE** 才能改写 catalog 条目。
 
 三组 × 6~7 条，全绿；行为验证脚本独立复现通过。
 M118~M128 共 11 条变异全部按预期转红。
+
+### §10.98.12 把行为验证补齐到**全部六条**守卫（更早三批同样只有文本门）
+
+§10.98.11 的结论是「文本门 + 变异全绿 ≠ 语义对」。
+provider_models 那条守卫**读代码看不出问题**，而它有 6 个子测试 + 10 条变异撑着。
+那么同样形状、同样只靠文本门的**更早三批**就不能靠读：
+
+| 守卫 | 出处 | 读代码时的样子 |
+|---|---|---|
+| `credits_charged` | `maas_schema.go`（§10.97） | 两项都是 `NOT EXISTS`，看着对 |
+| `quality_fix_mode` | `db.go`（§10.98.3） | 用通用 helper `columnsAllPresent`，看着对 |
+| `work_type` | `db.go`（§10.84） | 两项都是 `NOT EXISTS`，看着对 |
+
+三条**读起来都对** ⇒ 一律真跑。判据与 §10.98.11 完全一致（A/B/C/D），
+并把脚手架抽成共享的 `guardEnv`，两组测试共用同一套读数，
+避免「新验证自己另发明一套判据」导致两边的通过/失败不可比。
+
+#### 结论：三条**都没有**语义缺陷
+
+| 守卫 | A 缺 schema | B 齐备 | C 决定性 | D 负控 | 额外 |
+|---|---|---|---|---|---|
+| `credits_charged` | ✅ false | ✅ true | ✅ 不被挡 | ✅ 55P03 | 删索引 ⇒ 仍 false ✅ |
+| `quality_fix_mode` | ✅ false | ✅ true | ✅ 不被挡 | ✅ 55P03 | **rollup 表始终被建出来** ✅ |
+| `work_type` | ✅ false | ✅ true | ✅ 不被挡 | ✅ 55P03 | 删索引 ⇒ 仍 false ✅ |
+
+★ `quality_fix_mode` 特意多验了一条：把 `provider_quality_rollup` 删掉后再跑
+ensure，它**必须被重新建出来**。这是 §10.98.3 把它留在未守卫批次的理由 ——
+一起跳过会让「有列但缺 rollup 表」的库永远补不上。
+
+⇒ 六条守卫现已全部具备：A/B + 6 条决定性 C + 6 条负控 D。
+`scripts/.verify-startup-guard-behavior.sh` 一键复现，逐条点名 12 条关键读数，
+缺一条即报错（不让「没输出」冒充通过）。
+
+#### 顺带记一个夹具教训
+
+`EnsureMaasSchema` 的夹具我一开始预建了 `maas_settings` / `maas_pricing`
+（`CREATE TABLE IF NOT EXISTS` 在本函数里自带）⇒ 预建让 `IF NOT EXISTS`
+变成空操作，后续引用 `base_credits_per_1m` 时报 42703。
+后来又少了 `models_canonical`（`model_credit_rates` 的外键目标，
+由别的子系统建）。
+
+⇒ **断言红时先分清「被测代码错」还是「夹具错」**：
+连着三次 42P01/42703 全是夹具的锅，而 `credits_charged` 的守卫本身是好的。
+办法是别一张张追依赖，一次列全：
+`grep -oE '(FROM|JOIN|UPDATE|INTO|REFERENCES) +[a-z_]+'` 减去
+`CREATE TABLE IF NOT EXISTS` 的结果，差集就是要给桩的表。
