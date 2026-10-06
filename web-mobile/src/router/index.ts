@@ -204,6 +204,19 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/ProbeModelHealthView.vue'),
     meta: { titleKey: 'probeModel.title', requiresAuth: true },
   },
+  // 可用性时间线 + Redis 可用性缓存快照（2026-10-07）。admin 档。
+  {
+    path: '/timeline',
+    name: 'timeline',
+    component: () => import('@/views/AvailabilityTimelineView.vue'),
+    meta: { titleKey: 'timeline.title', requiresAuth: true },
+  },
+  {
+    path: '/cache-state',
+    name: 'cache-state',
+    component: () => import('@/views/CacheStateView.vue'),
+    meta: { titleKey: 'cache.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',

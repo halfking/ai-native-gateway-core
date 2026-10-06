@@ -87,6 +87,10 @@ export const DRAWER_NAV: readonly NavItem[] = [
   // 模型级健康：答「哪个模型整体在坏」。与 /heatmap（模型×凭据）、
   // /probe（任务级 + 节点队列）构成从粗到细的完整粒度。admin 档。
   { key: 'probe-model', to: '/probe-model', icon: 'cube', titleKey: 'nav.probeModel' },
+  // 时间线回答「**它是什么时候开始坏的**」，是 /probe-model 的快照的另一半。
+  { key: 'timeline', to: '/timeline', icon: 'clock', titleKey: 'nav.timeline' },
+  // Redis 缓存快照回答「探测说它健康，路由为什么没选它」。admin 档。
+  { key: 'cache-state', to: '/cache-state', icon: 'globe', titleKey: 'nav.cache' },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))

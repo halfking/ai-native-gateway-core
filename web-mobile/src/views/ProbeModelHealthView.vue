@@ -130,7 +130,7 @@ onBeforeUnmount(() => {
       </label>
       <div class="pm__actions">
         <button type="submit" class="pm__btn pm__btn--go">{{ t('probeModel.search') }}</button>
-        <button v-if="model" type="button" class="pm__btn" @click="onClear">{{ t('common.cancel') }}</button>
+        <button v-if="model" type="button" class="pm__btn" @click="onClear">{{ t('common.clearFilters') }}</button>
       </div>
     </form>
 
