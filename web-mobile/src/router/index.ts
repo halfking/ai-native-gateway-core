@@ -330,6 +330,13 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/SessionAnalyticsView.vue'),
     meta: { titleKey: 'sa.title', requiresAuth: true },
   },
+  // 统一请求详情（admin 档，2026-10-08）。id 可选：从列表点进来时由 query/param 带入。
+  {
+    path: '/request-detail/:id?',
+    name: 'request-detail',
+    component: () => import('@/views/RequestDetailView.vue'),
+    meta: { titleKey: 'rd.title', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
