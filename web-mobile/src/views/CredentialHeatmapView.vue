@@ -19,6 +19,7 @@ import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useHyperPage } from '@/hyper'
 import AppIcon from '@/components/common/AppIcon.vue'
+import CredentialOpsSheet, { type OpsModel } from '@/components/credential/CredentialOpsSheet.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import { t } from '@/i18n'
 import {
@@ -149,6 +150,31 @@ function modelHasSamples(m: HeatmapModel): boolean {
 function openTimeline(credentialId: number): void {
   void router.push({ path: `/node-health/${credentialId}` })
 }
+
+// ── 写操作面板（2026-10-07）────────────────────────────────────────────
+// 入口挂在每张凭据卡上：调参（提升/降级/并发）与模型绑定开关都在那里。
+// 写完之后重拉热力图 —— 与 NodesView 同理，后端有缓存，立即重查可能拿到旧值，
+// 但仍要重查，因为缓存过期后会自然刷新。
+const opsOpen = ref(false)
+const opsCred = ref<{ id: number; label: string; models: OpsModel[] } | null>(null)
+
+function openOps(c: HeatmapCredential): void {
+  opsCred.value = {
+    id: c.credential_id,
+    label: c.label || String(c.credential_id),
+    // ★ 原样透传 raw_model_name：规范化会命中不了（404 binding not found）
+    models: modelsOf(c).map((m) => ({
+      raw_model_name: m.raw_model_name,
+      available: m.buckets?.some((b) => b.total_requests > 0) ?? m.node_status?.routable,
+      unavailable_reason: m.node_status?.state ?? null,
+    })),
+  }
+  opsOpen.value = true
+}
+
+async function onOpsDone(): Promise<void> {
+  await load()
+}
 </script>
 
 <template>
@@ -202,6 +228,7 @@ function openTimeline(credentialId: number): void {
           <span class="badge badge--muted">{{ t('heatmap.modelCount', { n: modelsOf(c).length }) }}</span>
         </div>
         <p v-if="c.provider_name" class="hm__cred-provider">{{ c.provider_name }}</p>
+        <button type="button" class="hm__ops-link" @click="openOps(c)">{{ t('credOps.title') }}</button>
         <button type="button" class="hm__timeline-link" @click="openTimeline(c.credential_id)">
           {{ t('heatmap.openTimeline') }}
         </button>
@@ -242,6 +269,15 @@ function openTimeline(credentialId: number): void {
         </template>
       </div>
     </div>
+
+    <CredentialOpsSheet
+      v-if="opsCred"
+      v-model:open="opsOpen"
+      :credential-id="opsCred.id"
+      :credential-label="opsCred.label"
+      :models="opsCred.models"
+      @done="onOpsDone"
+    />
   </div>
 </template>
 
@@ -316,6 +352,17 @@ function openTimeline(credentialId: number): void {
   margin: 4px 0 0;
   font-size: 12px;
   color: var(--app-text-muted);
+}
+.hm__ops-link {
+  min-height: 48px;
+  margin-top: var(--app-space-2);
+  margin-right: var(--app-space-2);
+  padding: 0 12px;
+  border: 1px solid var(--app-primary);
+  border-radius: var(--app-radius-sm);
+  background: var(--app-surface);
+  color: var(--app-primary);
+  font-size: 13px;
 }
 .hm__timeline-link {
   min-height: 48px;

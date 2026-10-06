@@ -1277,3 +1277,86 @@ marshal 成 map 后再塞 `unified`），`queue-snapshot` 同样是
 
 ★ 变异证据：把两个端点合并成一个 error + 把口径说明改成「出错才渲染」
 ⇒ 4 条视图用例转红（合并错误那条正好命中「仅一段失败」的反向锁定）。
+
+### 11.39 凭据**写入面**上移：模型绑定开关 + 凭据调参（第十六轮）
+
+移动端此前只有 5 个写操作（凭据探测提交 / 手动停用 / 手动恢复 / 强恢复 /
+密钥启停）。本轮补齐「改配置」类，让凭据运维闭环完整。
+
+| 端点 | 作用 | 门禁 |
+|---|---|---|
+| `POST /api/credentials/model-toggle` | 单个 (凭据, 模型) 绑定上/下线 | `h.admin` |
+| `POST /api/credentials/promote` | 手动提升为 `ready`，清 `recover_at` | `h.admin` |
+| `POST /api/credentials/demote` | 手动降级为 cooling + 定时自愈 | `h.admin` |
+| `POST /api/credentials/set-concurrency-auto` | 设自动并发上限 | `h.admin` |
+
+入口挂在凭据热力图的每张卡上（`CredentialOpsSheet`，抽成独立组件，
+因为 heatmap / nodes / node-health 三个入口都可能要用它）。
+
+#### ★★ 本组最反直觉的一处：reason 的强制性**在各端点之间不一致**
+
+| 端点 | reason |
+|---|---|
+| `model-toggle` | **必填**且 ≤500 字，空串 400（`validateModelToggleRequest`） |
+| `promote` | **不校验** |
+| `demote` | **不校验** |
+| `set-concurrency-auto` | **不校验** |
+
+四个都写 `auditLog`。所以「后端不要求」并不等于「可以不填」：
+空 reason 会让审计日志失去意义，且 `promote` 那条还会把
+`state_reason_detail = "manual_promote: " + reason` 落成悬空的 `"manual_promote: "`。
+
+⇒ **移动端一律强制 reason**，理由不是「对齐后端」而是：这几个操作会改变
+生产路由面，事后没人能说清「谁在什么时候因为什么把它降了级」。
+与 §11.1 对凭据操作区定的规矩同源。
+
+另一处不对称：`demote` 的 `recover_after_hours` 传 0 会被**默默改成 2**
+（不是报错）⇒ 前端显式发值，界面上写「几小时后恢复」就必须真的发几小时。
+
+#### ★ 「上线」不是随手可点的按钮
+
+`model-toggle` 的 `action=online` 在当前 reason 不是**恰好** `manual_offline` 时
+返回 409（后端原话：*only manual_offline can be toggled back to online*）。
+像 `model_probe_broken` 这类由**探测共识**持有的状态，操作员点了必然 409。
+
+⇒ UI 按 `unavailable_reason` 决定是否渲染「上线」，其余情况给一句说明。
+判据反向锁定：夹具里给三个模型（在线 / `manual_offline` / `model_probe_broken`），
+断言全文**只有一处**可点的「上线」。
+
+`raw_model_name` **原样透传不规范化** —— 规范化后命中不了，是 404
+`binding not found`；而 404 与「确实没绑这个模型」在移动端无法区分，
+所以错误文案必须写成「可能模型名已被规范化」而不是「凭据不存在」。
+
+#### 失败必须可见且区分档位
+
+403 = 权限档位、404 = 模型没绑上、409 = 被别处改动。三者各给一句人话，
+不混成一句「操作失败」—— 否则用户会去查网络而问题在权限/并发。
+（原 `KeysView.doDisable` 无 catch 导致失败完全静默，是本专题修过的真实缺陷。）
+
+### 11.40 本轮门禁（第十六轮，凭据写入面）
+
+`web-mobile/` 实测**十道**：
+1. css 门自测 **11/11**
+2. 触控门自测 **11/11**
+3. i18n 门自测 **14/14**
+4. `gate:selftest` **36 条断言全绿**
+5. `vue-tsc -b` 通过
+6. i18n 键集门 通过（各 **567 键**，含无重复键）
+7. css 媒体查询门 通过（42 文件）
+8. 触控热区门 通过（**39 个 .vue**）
+9. `vitest run` **353 用例 / 38 文件全绿**，**连跑 10 次全绿**（新增 21 条）
+10. `npm run build` 通过
+
+★ 变异证据（两处分别验，叠加时会因类型标注触发解析错，故分开跑）：
+- 去掉 `validateReason` 调用 ⇒ 2 条转红（空 reason 不发请求）
+- 把「上线」按钮的 `canToggleOnline` 换成 `true` ⇒ 1 条转红
+
+★ 本轮踩到的两个**与真实原因无关的报错**（都值得记）：
+- `AppSheet` 是 teleport 的，`w.findAll('button')` / `w.text()` 拿到空
+  ⇒ 报「按钮不存在：下线」/ `expected '' to contain ...`。
+  同款坑 KeysView.spec 已踩过一次（见 §11.29(3)），本次补了注释说明。
+- `vi.mock` 的工厂 `})` 后紧跟 `return` 缺分号，ASI 拼成 `})(return …)`。
+
+★ 还纠正了一个**我凭推断写下的错误注释**：曾写「model-toggle 找不到绑定会
+返回 200 当无操作」，回源码核对是 **404 `binding not found`**（`pgx.ErrNoRows`
+分支）。⇒ 注释里凡是「我以为后端会怎样」的断言，都要回源码核。
