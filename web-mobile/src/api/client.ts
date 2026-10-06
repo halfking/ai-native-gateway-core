@@ -1,4 +1,5 @@
 import { acceptLanguageHeader } from '@/i18n'
+import { getTransport, gatewayBaseUrl } from './transport'
 
 // client.ts — web-mobile 请求管线（复刻网关 web/src/api/_core.ts 语义，
 // UI规范 17 §5）：cookie 优先（credentials same-origin），无 userInfo 才补
@@ -133,8 +134,14 @@ export async function req<T>(method: string, path: string, body?: unknown, optio
     if (bearer) headers['Authorization'] = `Bearer ${bearer}`
   }
 
-  const r = await fetch(path, {
+  // ★ 传输层接缝（10 §4.6.31 / 04 §7.2 ④）：`getTransport()` 默认就是
+  //   `fetch(path, { … })` —— 与引入接缝之前**逐字相同**，网页形态零回归。
+  //   壳内原生传输（CapacitorHttp）由壳侧**显式** `setTransport()` 安装，
+  //   不自动生效 ⇒ 探测失败/未安装时自动落回网页形态，不会把用户卡死。
+  const r = await getTransport()({
     method,
+    path,
+    baseUrl: gatewayBaseUrl(),
     headers,
     credentials: 'same-origin',
     body: hasBody ? JSON.stringify(body) : undefined,
