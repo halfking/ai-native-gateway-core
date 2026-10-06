@@ -111,6 +111,18 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'waterfall.title', requiresAuth: true },
   },
   {
+    path: '/turns',
+    name: 'turns',
+    component: () => import('@/views/TurnsView.vue'),
+    meta: { titleKey: 'turns.title', requiresAuth: true },
+  },
+  {
+    path: '/routing-audit',
+    name: 'routing-audit',
+    component: () => import('@/views/RoutingAuditView.vue'),
+    meta: { titleKey: 'routingAudit.title', requiresAuth: true },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),

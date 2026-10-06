@@ -998,3 +998,111 @@ R1 门扫的是**所有** `min-height < 48px` 的选择器，不区分是否可�
 - 视图层：把 queues 的降级判据换成裸 `'degraded'`、把瀑布的
   `isWaterfallUnavailable` 换成 `false` ⇒ 4 条用例转红。
 - 门本身（§11.29）：旧正则塞回 css 门 ⇒ 自测 11/11 变 6 passed / 5 failed。
+
+### 11.33 运维排障线收尾：会话轮次 + 路由覆盖审计（第十三轮）
+
+补完 §11.31 提到的两个遗漏项。至此排障线 6 个端点全部上移。
+
+| 页面 | 端点 | 门禁 | tenant_admin |
+|---|---|---|---|
+| 会话轮次 `/turns` | `/api/admin/turns/sessions` + `/api/admin/sessions/{id}/turns` | `admin(...)` | ✅ |
+| 路由覆盖审计 `/routing-audit` | `/api/admin/routing/overrides/audit` | **`h.superAdmin`** | ❌ 403 |
+
+★ `/routing-audit` 是**整条排障线唯一的 superAdmin 档**（handler.go:1381
+`RegisterAutoRouteRoutes(mux, h.superAdmin)`，auth.go:353-357），所以它的
+`requiresRole: 'super_admin'`。这符合直觉：审计「谁改了配置」本身就是管理动作。
+
+#### ★★ 本轮最有价值的一条：一个真实缺陷，是被**判据自己走不通**逼出来的
+
+游标分页要套进 `ContinuousListController`（它传的是页号，本端点要的是不透明游标），
+我第一版写的是：
+
+```ts
+const cursor = page <= 1 ? undefined : cursors.get(page)   // ✗
+if (resp.next_cursor) cursors.set(page, resp.next_cursor) // 写的是 page
+```
+
+**读的是本页的游标、而本页的游标此刻还不存在** ⇒ 永远 `undefined`
+⇒ **从不发送游标** ⇒ 后端每页都返回第 1 页的 20 条
+⇒ 按 `stableKey` 去重后列表再���增长 ⇒ 用户无限滚动而内容不动。
+
+它没被任何门拦住，原因是一条**恒真判据**：
+
+> 我先写的是「改搜索后第 1 页不带 cursor」。
+> 但 `loadFirst` 会把页号重置为 1，而 `fetchPage` 对 `page<=1` **按设计就不取游标**
+> —— 删掉 `cursors.clear()` 那个变异，这条**照样全绿**。
+> ⇒ 它量的不是「清没清游标」，而是「第 1 页本来就不带游标」。
+
+拆成三步才真正照出来：
+
+1. **先量「发出去的那一枪」**：写探针打印每次 `fetchPage` 实际发出的参数，
+   看到第 2 页的 args 是 `{"limit":20}` —— 没有 cursor。缺陷暴露。
+2. **承认测试走不到第 2 页**：jsdom 的 `IntersectionObserver` 不触发，
+   HyperList 的 sentinel 永远不预载。⇒ 用 `defineExpose({ controller })`
+   让测试能主动 `loadNext()`。**这不是为测试开的后门，而是让「第二页」第一次
+   真的被走到过。**
+3. **修完再变异验一次**：`get(page)` 变体 ⇒ 转红（钉住了真缺陷）。
+
+⇒ 修正后 `get(page - 1)`，探针复测：第 2 页 args = `{"limit":20,"cursor":"CUR"}`。
+
+★ 顺带留档**判据自己走不通**的三种失败形态（都是本轮实际发生的）：
+- **恒真**：断言了一个本来就成立的性质（第一版游标断言）
+- **恒假**：断言了一个根本不成立的性质（第二版断言「改搜索后第 2 页没有 cursor」——
+  正常态也红。重置后第 1 页会刷成新游标，第 2 页本就该带它）
+- **走不到**：断言的目标路径在测试环境压根不会执行（第 2 页，需要 loadNext）
+
+#### ★ 诚实边界：`cursors.clear()` 并没有被测试证明是必要的
+
+删掉 `cursors.clear()` 这个变异**不会**让用例转红（实测）。原因是重置后的
+第 1 页请求总会覆写 `cursors[1]`，而第 2 页只读 `cursors[1]`
+⇒ 更高位的陈旧条目在被读到之前必被覆写。
+所以它是**防御性、当前非承重**的（为分页中途失败等边界留的），测试与代码注释都照此写明，
+不假装「这条锁住了它」。
+
+#### 其它后端约束（同样在发出前处理）
+
+- **同一族数据两个端点延迟字段名不同**：
+  sessions 列表 `TurnGroupItem.latency_ms`（omitempty）；
+  turns 树 `SessionTurnTreeItem.latency` ——
+  后者源码是 `LatencyMs *int \`json:"latency"\``（session_turns_tree.go:49），
+  **Go 字段名与 JSON 键不同**。照抄任一边到另一边都取不到，
+  而取不到的表现是「延迟永远 undefined」而不是报错。`latencyOf` 统一收口。
+- `limit` 越界是**静默回落 20**（turns_sessions.go:244-249），不是 400 ⇒ 前端夹 1..50。
+- 路由审计的 `days`(1..90) / `limit`(1..1000) 越界是 **400**，
+  ★ 与 `admin/audit_operations.go:95-103` 的**静默 clamp 语义相反** —— 两处不能互抄。
+- `filter` 回显是 `map[string]string`，**连 `days` 也是字符串**（routing_overrides.go:424-429）。
+- `override_id` 后端解析失败是**静默忽略该过滤条件**（:377-381）而不是报错
+  ⇒ 发非数字会让用户以为在按 ID 过滤、实际没过滤 ⇒ 前端只发合法数字。
+- `/api/admin/turns`（v2 扁平列表）**不用**：该端点 SQL 不扫两列，
+  恒返回 `"request_id": ""` 和 `"child_requests": null`。
+
+#### 延迟未知不许显示成 0ms
+
+`latency` 是 `*int`，NULL = 未知。渲染成 `0ms` 会让「这一轮慢」被读成
+「这一轮很快」，方向正好反。判据：`latency 为 null ⇒ 显示「延迟未知」`，
+且**反向锁定**不得出现字符串 `0ms`。变异（把占位符换成 `0ms`）实测转红。
+
+#### 一个被门逮住的「假绿」
+
+`AppDrawer.spec` 的「tenant_admin 少掉的只有超Admin 档」是**白名单式**断言
+（逐个列出 key 并排序后比对）。加 `/routing-audit` 后它转红——这正是它该做的，
+没有选择放宽。同时补了不变量本身：「被放行的项**必须**都不是 `super_admin`」，
+否则只列白名单会漏掉「某项被误标成 super_admin 导致对所有 admin 档用户消失」。
+
+### 11.34 本轮门禁（第十三轮，会话轮次 + 路由覆盖审计）
+
+`web-mobile/` 实测**十道**：
+1. css 门自测 **11/11**
+2. 触控门自测 **11/11**
+3. i18n 门自测 **9/9**
+4. `gate:selftest` **31 条断言全绿**
+5. `vue-tsc -b` 通过
+6. i18n 键集门 通过（zh-CN / en-US 各 **487 键**）
+7. css 媒体查询门 通过（38 文件）
+8. 触控热区门 通过（**35 个 .vue**）
+9. `vitest run` **290 用例 / 35 文件全绿**，**连跑 10 次全绿**（新增 29 条）
+10. `npm run build` 通过，2 个新视图各自产出独立 chunk
+
+★ 变异证据：本轮 3 处变异，其中 2 处**如期转红**（延迟未知→0ms；
+游标 `get(page)`），1 处**不转红并已如实标注为「防御性非承重」**
+（`cursors.clear()`）。

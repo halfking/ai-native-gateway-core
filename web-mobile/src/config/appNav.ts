@@ -51,6 +51,11 @@ export const DRAWER_NAV: readonly NavItem[] = [
   { key: 'journey', to: '/journey', icon: 'search', titleKey: 'nav.journey' },
   { key: 'routing-log', to: '/routing-log', icon: 'expand', titleKey: 'nav.routingLog' },
   { key: 'waterfall', to: '/waterfall', icon: 'play', titleKey: 'nav.waterfall' },
+  { key: 'turns', to: '/turns', icon: 'clock', titleKey: 'nav.turns' },
+  // ★ 排障线里**唯一**的 superAdmin 档：handler.go:1381
+  //   `RegisterAutoRouteRoutes(mux, h.superAdmin)`，auth.go:353-357 对非超管 403。
+  //   ⇒ 这里必须挡。理由与 /integrity 同：「按 role 分档渲染，不是一律显示再吃后端 403」。
+  { key: 'routing-audit', to: '/routing-audit', icon: 'check', titleKey: 'nav.routingAudit', requiresRole: 'super_admin' },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))
