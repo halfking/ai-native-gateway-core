@@ -9391,3 +9391,93 @@ AND NOT (COALESCE(c.reloptions, ARRAY[]::text[]) @> ARRAY[
   那不在本次工作范围内。
 
 ⇒ **该把这条转给 `smm` 的属主**，而不是由我直接动。
+
+---
+
+## §10.87 查询侧第一次实测：榜首是 37.5 小时的路由索引刷新
+
+前面所有轮次都在写/存储侧。用户目标里明确写着**「更新、查询」**，
+本节是第一次系统地量读路径。
+
+### §10.87.1 榜首
+
+按 `total_exec_time` 排序（本网关库，排除诊断语句与系统目录查询）：
+
+| 总耗时 | 次数 | 均值 | 返回行数 | 语句 |
+|---|---|---|---|---|
+| **134,917 s（37.5 小时）** | **187,883** | **718 ms** | 40,194,666 | `WITH latest_bucket AS (...)` |
+| 123,528 s | 6,412 | 19,265 ms | — | `REFRESH MATVIEW CONCURRENTLY routing_analytics_7d`（§10.81 已修） |
+| 94,393 s | 997 | **94,677 ms** | — | `SELECT analyze_llm_gateway_table_stats($1)` |
+| 71,052 s | 155,900 | 456 ms | 782,799 | `DELETE FROM session_aggregate_outbox ...` |
+
+★ 第 3 行补上了 §10.85.6 留的空白：`analyze_llm_gateway_table_stats`
+**每次 94.7 秒、累计约 26 小时**。那是「84 个 ensureXxx 的启动耗时」里最大的一块。
+
+### §10.87.2 榜首的结构性浪费
+
+```sql
+WITH latest_bucket AS (
+  SELECT credential_id, raw_model, MAX(bucket) FROM credential_model_index_with_current_month
+  GROUP BY credential_id, raw_model)
+SELECT ... FROM credential_model_index_with_current_month cmi JOIN latest_bucket lb ...
+```
+
+| 读数 | 值 |
+|---|---|
+| 表总量 | 347,225 行 / **1,038 组** / 6,414 个 bucket |
+| CTE 单独执行 | **182.8 ms**，扫 **350,048 行**，6,835 buffers |
+| CTE 的产出 | **1,038 行** |
+| 唯一索引 | `(bucket, credential_id, raw_model)` ← **bucket 在最前** |
+
+⇒ **聚合 35 万行只为得到 1 千行**，且现有索引对 `MAX(bucket) GROUP BY credential_id, raw_model`
+**完全用不上**（EXPLAIN 实测是纯 `HashAggregate` + 全 `ColumnarScan`，无任何索引扫描）。
+
+### §10.87.3 三个候选，逐个证伪
+
+| # | 候选 | 实测 | 判定 |
+|---|---|---|---|
+| 1 | 管理端 `/api/admin/auto-route/index` 在轮询 | 同文本的另一条统计只有 **41 次**（均值 1,330 ms）；前端 5 秒轮询只调 `loadAudit/loadDecisions`，**不调 `loadIndex()`** | **否掉** |
+| 2 | 收窄时间窗（只看最近 N 小时的 bucket） | 1,038 组中 **764 组**最新 bucket 超过 2 小时，最老的 **31 天**（指标只在有流量时落）；收窄到 2h 只剩 274 组 ⇒ **不等价**。且列扫分区虽 chunk 过滤掉 45,970 行，仍烧 **26,966 buffers** | **否掉** |
+| 3 | `SurvivalCoordinator.Run()` 的恢复重试循环每次 `c.Refresh` 打库 | 该链确实走到 `GetCandidatesByModality`，但它**有 TTL 缓存**；日志里 `cache_empty` 全量仅 **23 次** | **无法证实，不下结论** |
+
+### §10.87.4 一个仍未解释的缺口（明确留白，不猜）
+
+刷新器 `AutoIndexRefresher` 的 `defaultRefreshInterval = 5 * time.Minute`，
+**代码里没有任何 env / settings_kv 覆盖**。
+
+- 3 实例 × 288 次/天 × 25 天 = **约 864 次/天**
+- 实测 **7,515 次/天**（≈ 每 11.5 秒一次）
+- ⇒ **约 6,650 次/天的来源尚未定位**
+
+候选里 `SurvivalCoordinator` 的重试循环最像，但按 §10.87.3 第 3 条，
+现有证据**不足以断言**。可能是：实例数不止 3、重试循环确实在缓存 miss 时打了库、
+或有第三条调用路径。
+
+⚠️ **这条不能靠读代码定案**——需要 `recordRefreshOutcome` 指标里
+`refresh` 的实际触发来源，或在 `Index.Refresh` 入口打 caller 标记。
+**在那之前不写进任何结论。**
+
+### §10.87.5 剩下的修复方向（结构性，但收益未实测）
+
+唯一与调用方无关、且站得住的方向是**补索引**：
+
+```sql
+CREATE INDEX ... ON credential_model_index (credential_id, raw_model, bucket DESC);
+```
+
+理由是查询形状就是「每组最新一行」，而现有索引把 `bucket` 放在最前，
+服务不了这个形状。
+
+⚠️ **但收益我无法在只读前提下测量**——建索引是生产 DDL，需要授权。
+所以这里**只提出方向、不声明收益**。上线后应以
+`EXPLAIN (ANALYZE, BUFFERS)` 复核，而不是相信这段推测。
+（PG 17 无 loose index scan，是否真能跳过 35 万行也要实测才知道。）
+
+### §10.87.6 本节的方法论记录
+
+三条候选里有**两条是我自己最想相信的**：
+「管理页面在轮询」和「收窄时间窗」——两条都被实测否掉。
+第三条「重试循环打库」证据不足，**宁可留白也不写成结论**。
+
+★ 反复出现的形状：**查询慢的第一直觉往往是「调用太频繁」或「范围太大」，
+但必须先量「谁在调」和「范围能不能收」，两者都可能是错的。**
