@@ -118,22 +118,33 @@ func TestPublishedTimeParsesBothRealWorldFormats(t *testing.T) {
 
 // 量具自证 + 真实快照的结论必须与实测一致。
 //
-// 实测（2026-10-05，fetched_at = 当天，阈值 30 天）：
+// 实测（2026-10-06 重抓全部快照后，fetched_at = 当天，阈值 30 天）。
+// ★ 上一版（2026-10-05）的表按**更早**的快照写，xai/zhipu 当时是 5 月与 6 月
+// 的内容版本。2026-10-06 重跑 fetch-pricing.sh 后逐份读头：
 //
-//	xai.md      2026-05-27  落差 131 天  ⇒ stale
-//	zhipu.md    2026-06-11  落差 116 天  ⇒ stale
-//	openai.md   2026-10-04  落差   1 天  ⇒ fresh
-//	deepseek.md 2026-09-24  落差  11 天  ⇒ fresh
-//	其余 5 份无 Published Time             ⇒ no_evidence
+//	xai.md          2026-09-29  落差  6 天  ⇒ fresh
+//	zhipu.md        2026-09-24  落差 11 天  ⇒ fresh
+//	google-gemini.md 2026-10-01 落差  4 天  ⇒ fresh
+//	openai.md       2026-10-06  落差  0 天  ⇒ fresh
+//	deepseek.md     2026-09-24  落差 11 天  ⇒ fresh
+//	其余 4 份无 Published Time                  ⇒ no_evidence
+//
+// ⚠ 与本表配套的一条实测（很重要，别照抄「Published Time = 页面发布时间」
+// 的想当然）：`Published Time` 是 **r.jina.ai 缓存渲染的产物**。带
+// `x-no-cache: true` 重抓同一页，**整行消失**，而正文逐字相同（只差一个空行）。
+// 对同一页连续抓两次，PT 也可能逐字不变（deepseek 两次都是 09:35:27）。
+// ⇒ 它量的是「这份缓存内容是什么时候被渲染出来的」，重抓一次即归零，
+// 所以**它证明不了页面被更新过**。本表因此只能核「门对每份文件给出什么结论」，
+// 不足以核「价是最新的」—— 后者要靠互证（-corroborate）与人工比对。
 func TestRealSnapshotsGetTheFreshnessVerdictTheyEarn(t *testing.T) {
 	dir := "../../../docs/02-resources/research/pricing/raw"
 	fetched := ts(2026, time.October, 5)
 	want := map[string]snapshotAgeVerdict{
-		"xai.md": ageStale, "zhipu.md": ageStale,
+		"xai.md": ageFresh, "zhipu.md": ageFresh, "google-gemini.md": ageFresh,
 		"openai.md": ageFresh, "deepseek.md": ageFresh,
 		"anthropic.md": ageNoEvidence, "doubao.md": ageNoEvidence,
-		"google-gemini.md": ageNoEvidence, "MiniMax-paygo.md": ageNoEvidence,
-		"mistral.md": ageNoEvidence,
+		"MiniMax-paygo.md": ageNoEvidence,
+		"mistral.md":       ageNoEvidence,
 	}
 	seen := map[string]snapshotAgeVerdict{}
 	for name := range want {
