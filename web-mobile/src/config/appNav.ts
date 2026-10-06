@@ -100,6 +100,10 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.taskIndex',
     requiresRole: 'super_admin',
   },
+  // 会话审计清单 + 逐轮明细。admin 档（wrapAdmin）⇒ tenant_admin 可用，不设 requiresRole。
+  { key: 'session-audit', to: '/session-audit', icon: 'grid', titleKey: 'nav.sessionAudit' },
+  // 活跃会话（游标分页）。★ superAdmin 后端不加租户过滤 ⇒ 页内按角色说明作用域。
+  { key: 'sessions-online', to: '/sessions-online', icon: 'play', titleKey: 'nav.onlineSessions' },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))

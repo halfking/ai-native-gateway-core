@@ -2581,3 +2581,202 @@ if v, err := strconv.Atoi(r.URL.Query().Get("top")); err == nil && v > 0 && v <=
   ★ 这不是判据无牙，是**脚手架自检**在报警；
     补上 `data-mut="MUT5"` / `<!--MUT6-->` 后两条都转红。
     ⇒ 变异脚本的「施上确认」必须覆盖**每一条**，否则会误报成「判据无牙」。
+
+---
+
+### 11.55 会话运维面上移：审计清单 + 在线会话 + 轮次树（第二十四轮，admin 档）
+
+| 端点 | 移动端 | 档位 | 抽屉席 |
+|---|---|---|---|
+| `GET /api/admin/sessions/list` | `/session-audit` | `admin` | 会话审计 |
+| `GET /api/admin/sessions/online` | `/sessions-online` | `admin` | 在线会话 |
+| `GET /api/admin/sessions/{id}/timeline` | 同上，行内展开 | `admin` | （不单独占席） |
+
+三条都挂 `wrapAdmin` / `admin(...)`（`cmd/gateway/main.go:7268-7275`、
+`admin/handler.go:1182-1183`）⇒ **admin 档，tenant_admin 可用**，导航不设 `requiresRole`。
+
+★ 但同族的 **`/api/admin/sessions/summary` 是 POST-only**
+（`admin/session_summary_v2.go:89`）⇒ 同族端点方法不一致，本专题不碰它。
+
+#### ★★★ 陷阱一：同族三端「没登录」是**两种**状态码
+
+| 端点 | `GetAuthContext(r) == nil` 时 | 依据 |
+|---|---|---|
+| `sessions/list` | **404** `not found` | `session_list_v2.go:128-131`，注释明说「不能让 legacy default 掩盖缺失身份」 |
+| `sessions/online` | **401** `authentication required` | `handleSessionsOnline` |
+| `sessions/{id}/timeline` | 走 `auth.TenantID` 为空分支 | 同上 |
+
+⇒ 客户端**不能**用「404 ⇒ 没权限」做跨端点推断。
+本专题把 401/403/404 **都**映射成「没有权限」文案，但这是**逐端点各判各的**，
+不是抽一个通用规则（三个端点的错误信封本身也不一致，见陷阱八）。
+
+#### ★★★ 陷阱二：`list` 有**四个恒定字段**，本页面**故意不渲染**
+
+追到结构体构造处（`admin/session_list_v2.go:175-180` 包 `audit` ⇒
+`domains/sessionforensics/export.go:459` 的 `SessionAudit` 字面量）：
+
+| 字段 | 实际取值 | 原因 |
+|---|---|---|
+| `has_session_id` | **恒 `true`** | `export.go:456` 的 `if sid == nil \|\| *sid == "" { continue }` 已把空/NULL 行全部跳过 |
+| `missing_session_ids` | **恒 `0`** | 同上：NULL 行自成一组，又被整组跳过 |
+| `has_title` | **恒 `false`** | SQL 的 SELECT 列表里**根本没有** `session_titles` 表 |
+| `has_summary` | **恒 `false`** | 同上，`session_summaries` 也没 join |
+
+⇒ 渲染成「无标题」「会话 ID 缺失」= **编造一个后端根本没查的结论**。
+⇒ 页面改为：这三项一律不显示，页脚常驻图例**逐条解释为什么没有**。
+
+★ 这与 §11.53「三个数值列的 0 是 COALESCE 兜底」是同一族，
+但更极端 —— 那三个至少还是**测量过的值**，这四个是**压根没测**。
+
+#### ★★ 陷阱三：`limit` 与 `tenant` 都被**回显** ⇒ 截断是**精确**信号
+
+```go
+limit := 50
+if s := r.URL.Query().Get("limit"); s != "" {
+    if n, err := strconv.Atoi(s); err == nil && n > 0 && n <= 500 { limit = n }
+}
+```
+
+⇒ 越界**静默回落 50**（不是 400，第 8 种越界语义）。
+⇒ 但响应里同时回显 `"limit": limit` 和 `"tenant": tenantID`
+⇒ `sessions.length >= limit` 就是「**确实**被后端填满」，不需要说「可能」。
+
+★ 判据必须**用回显值**而不是客户端请求值：
+一条专门锁「请求 500 / 回显 2 / 返回 2 ⇒ 仍判截断」——
+若错用请求值，`2 < 500` 会漏报，而界面上看不出任何异常。
+
+★ 同理，页面显示的是**后端认下来的那个租户**，不是客户端猜的
+（`?tenant=` 只对 super/admin-key 生效，其余角色钉 auth 租户）。
+
+#### ★★★ 陷阱四：`online` 的 **superAdmin 不加租户过滤**
+
+```go
+if !IsSuperAdminOrLegacy(r) { query += ` AND rl.tenant_id = $1`; ... }
+```
+
+⇒ superAdmin / legacy 角色看到的是**全平台**活跃会话。
+⇒ 页首作用域提示必须**按角色**分支，不能只写一句中性说明 ——
+同一屏数据在两种角色下含义完全不同。
+
+#### ★★ 陷阱五：`online` 的 `limit` 是**静默 clamp**，与 `list` 的「回落」不同
+
+`NormalizePaginationParams`（`admin/session_online_pagination.go:122-130`）：
+`≤0 → 20`；**`>100 → 100`**（不发错、不提示）。
+
+⇒ 客户端只发 1..100；发 500 会被悄悄改成 100。
+⇒ 分页用 `LIMIT limit+1` 多取一条判 `has_more`
+⇒ **没有**「静默截断」问题，`has_more` 是精确信号（与前两轮不同）。
+⇒ `cursor` **不透明**（后端自己 base64 编解码）⇒ 客户端只用回传的
+  `next_cursor`，**绝不自己拼**；非法游标 ⇒ 400 `session.pagination_invalid_cursor`。
+
+#### ★★★ 陷阱六：`timeline` 的 `{id}` 有**三种身份**，且后端会告诉你用了哪种
+
+仓库有 5 类 ID 的互查表；这个端点接受其中两种入口：
+
+| 入口 | `session_id_source` |
+|---|---|
+| `{id}` 按**文本** `gw_session_id` 解释 | `path_gw_session_id` |
+| `?session_pk=<sessions.id 数值>` | `session_pk_resolved` |
+| **兜底**：`{id}` 是纯数字且按文本查不到行 ⇒ 再按 `sessions.id` 解析 | `numeric_fallback_resolved` |
+
+★ `numeric_fallback_resolved` 意味着「**你传的 id 我是猜的**」
+⇒ 页面必须标出来，否则用户会以为在看自己指定的那个会话。
+⇒ 未知来源也不能当正常路径，要如实把来源字符串打出来。
+
+★ `session_pk` 非正整数 ⇒ **400**（客户端先拦，不发）。
+★ ★★ 这个端点**自带 `truncated` 字段**（= `has_more`）——
+  与 `availability-timeline`（写死 500 无标记）、`cache-state`（4096 无标记）
+  **不同**，有标记就别再自己猜。
+
+#### ★ `models_used` 可能是 `null`，而 `sessions` 永远不是
+
+- `models_used` 来自 `array_agg(DISTINCT client_model) FILTER (WHERE client_model IS NOT NULL)`
+  ⇒ 组内**全部** `client_model` 为 NULL 时聚合结果是 NULL ⇒ 序列化成 **`null`**；
+- `sessions` 是 `make([]map[string]any, 0, len(audits))` ⇒ 永远 **`[]`**。
+
+⇒ 前者必须兜底成空数组并显示「未记录模型名」；后者不用管。
+
+#### ★ `total_cost_usd` 的 0 是 COALESCE 兜底（第 4 处同类）
+
+`COALESCE(SUM(cost_usd), 0)` ⇒ **0 = 没有成本数据**，不是免费。
+⇒ 复用 `modelTaskIndex.costMayBeNoData`（**同族收口，不重写一份**）。
+
+#### ★ 两种错误信封并存（唯一该共享解包的地方）
+
+- `writeExportJSONError`（`session_list_v2`）⇒ `{"error": "query sessions failed"}`（**扁串**）
+- `writeError` / `writeErrorWithCode`（`admin/handler.go`）⇒
+  `{"error": {"detail": ..., "code": ...}}`（**嵌套**）
+
+⇒ 响应体**各端点独立解包**（照旧），但**错误文案**由 `api/client.ts` 的
+`errorMessage()` 统一处理，它同时认这两种形状 —— 这是唯一合理的共享点
+（错误是给人看的字符串，响应体是要按字段解的契约）。
+
+#### ★ 本轮修的两处
+
+1. ★★ **重试不清理上一次错误 ⇒ 重试成功了也看不到内容。**
+   `SessionAuditView` 展开失败时写 `timelineError[id]`，
+   但重试**没有清**它，而模板是 `v-else-if="timelineError[id]"`
+   ⇒ 第二次拉成功时错误分支仍命中，轮次永远渲染不出来。
+   ⇒ 重试前先清。★ 这条是**判据抓到的产品缺陷**，不是测试写错：
+   「失败 → 收起 → 再展开能拿到数据」这条用例第一次就红了。
+2. ★★ **`.on__kv-v` 的 `—` 被整页子串断言误伤。**
+   判据写 `expect(text).not.toContain('0ms')`（延时缺失不该显示 0ms），
+   结果 freshness 里的 `1200ms` 命中了 `0ms`。
+   ⇒ 改成**按「最后延时」那一格的结构断言**（`cell.find('.on__kv-v').text() === '—'`）。
+   ★ 子串断言在有数字的页面上要格外小心：子串会被更大的数字包含。
+
+★ i18n 门抓到一条：`en-US` 的 `online.stale` 值写成 `'stale'`，
+  与键名同名 ⇒ 被判「未翻译」（运行时显示裸键）。
+  ⇒ 改成 `'outdated'`。★ 英文里「标签恰好等于键名」时仍要换词。
+
+★ **markdown 星号第 4 次复发**：本轮 `online.scopeSuper` 又写了
+  `后端**不加租户过滤**`。⇒ 提交前的固定动作应是：
+  `grep -n '\*\*' src/i18n/zh-CN.ts | grep -vE ':\s*(//|/\*)'`
+  （**排除注释行**再判，否则会把 20 多条正常开发备注一起报出来）。
+
+### 11.56 本轮门禁（第二十四轮，会话面）
+
+| # | 门 | 结果 |
+|---|---|---|
+| 1 | css 门自测 | **11/11** |
+| 2 | 触控门自测 | **11/11** |
+| 3 | i18n 门自测 | **23/23** |
+| 4 | `gate:selftest` | **45 条断言全绿** |
+| 5 | `vue-tsc -b` | 通过（先抓到一处未用 import：`ONLINE_LIMIT_DEFAULT`） |
+| 6 | i18n 键集门 | 通过（各 **867 键**，+42；**676 个源码字面量键全部存在**，扫 113 个 `.vue`/`.ts`） |
+| 7 | css 媒体查询门 | 通过（**54 文件**，+2） |
+| 8 | 触控热区门 | 通过（**51 个 .vue**，+2） |
+| 9 | `vitest run` | **910 用例 / 62 文件全绿**，**连跑 10 次全绿** |
+| 10 | `npm run build` | 通过 |
+
+★ 用例增量的**诚实拆分**：910 − 810 = 100，其中**本专题新增 93**
+（`sessions.test.ts` 39 + `SessionAuditView.spec.ts` 32 + `OnlineSessionsView.spec.ts` 22），
+**另 7 条属并发会话新增的 `src/styles/safeArea.spec.ts`**。
+⇒ 报增量必须逐文件数，不能拿总数差当自己的产出。
+
+★ 提交纪律：并发会话已把 `client.ts` / `transport.ts` / `AppSheet.vue` /
+  `HyperApp.vue` / `safeArea.spec.ts` / `theme.css` **加入暂存区**，
+  此时 `git commit`（不带路径）会把**他们的工作一起提交**。
+  ⇒ 必须用 `git commit --only <本专题路径>`，
+    `git add` 只用于让新文件变成「已跟踪」，不影响 `--only` 的边界。
+
+★ 变异证据（**12 处，全部转红**）：
+
+| 变异 | 结果 |
+|---|---|
+| 截断判定 `>=` 改 `>`（差一） | 4 failed |
+| `models_used` 的 null 不兜底 | 3 failed |
+| `online` 的 limit 上界守卫去掉（500 会发出去被 clamp） | 1 failed |
+| 「猜的 id」判定换成另一个来源 | 3 failed |
+| `countTurns` 只数顶层不递归 | 2 failed |
+| 删掉图例（恒定字段的解释） | 3 failed |
+| 「猜的 id」警告恒真 | 2 failed |
+| 截断提示恒假 | 2 failed |
+| 成本兜底弱化恒假 | 1 failed |
+| ★ 作用域文案恒用 superAdmin 版 | 2 failed |
+| ★ 「加载更多」不带 cursor（拿第一页冒充下一页） | 1 failed |
+| ★ 延时缺失显示成 `0ms` | 1 failed |
+
+★ 第 11 条值得记：不带 cursor 时**接口不报错、不空**，只是把第一页又返回了一遍 ——
+  界面上表现为「加载更多之后列表没变」，很容易被当成后端没数据。
+  ⇒ 判据必须断言**实际带上的 cursor 值**，不是只断言「有没有再请求」。
