@@ -2,7 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import ComplianceHitsView from './ComplianceHitsView.vue'
-import { fetchComplianceStats, fetchComplianceRecords, fetchComplianceReviewQueue } from '@/api/outputCompliance'
+import {
+  fetchComplianceStats,
+  fetchComplianceRecords,
+  fetchComplianceReviewQueue,
+  fetchComplianceFeedback,
+} from '@/api/outputCompliance'
 import { setLocale, locale } from '@/i18n'
 
 /**
@@ -15,6 +20,9 @@ import { setLocale, locale } from '@/i18n'
  * 5. ★★★★★ `content_preview` 只在 redacted=true 时有内容；未脱敏要明说「后端不给」；
  * 6. ★★★★★ 500 **绝不能**渲染成「队列为空 / 没有命中」；
  * 7. ★★★ review-queue 没有 total ⇒ 只能近似说「可能还有更多」。
+ * 8. ★★★★★★ `feedback` 的响应键是 **`feedback`** 而非 `items`
+ *    （后端 :711 vs review-queue 的 :602）—— 本模块第一版写错过，
+ *    而夹具也照着错的写 ⇒ 用例全绿、对真后端 100% 抛错。
  */
 
 vi.mock('@/hyper', async (importOriginal) => {
@@ -29,12 +37,14 @@ vi.mock('@/api/outputCompliance', async (importOriginal) => {
     fetchComplianceStats: vi.fn(),
     fetchComplianceRecords: vi.fn(),
     fetchComplianceReviewQueue: vi.fn(),
+    fetchComplianceFeedback: vi.fn(),
   }
 })
 
 const statsMock = fetchComplianceStats as unknown as ReturnType<typeof vi.fn>
 const recMock = fetchComplianceRecords as unknown as ReturnType<typeof vi.fn>
 const qMock = fetchComplianceReviewQueue as unknown as ReturnType<typeof vi.fn>
+const fbMock = fetchComplianceFeedback as unknown as ReturnType<typeof vi.fn>
 
 const ORIGIN_LOCALE = locale.value
 let mountedList: Array<{ unmount(): void }> = []
@@ -102,12 +112,37 @@ function queueResp(over: Record<string, unknown> = {}) {
   return { items: [queueItem()], status: 'pending', limit: 20, offset: 0, ...over }
 }
 
+/**
+ * ★★ 这里的键必须是 **`feedback`**。
+ * 后端 `admin/output_compliance_handler.go:711` 的 map 字面量是
+ *   `{"feedback": items, "limit": limit, "offset": offset}`
+ * 而同 handler 的 `review-queue`（:602）写的是 `"items"` —— **两个键不同名**。
+ * ★ 本轮第一版把两处都写成 `items`，夹具也跟着写错 ⇒ 全绿、对着真后端必抛。
+ *   所以这个夹具**只写后端真实键**，不为了迁就代码改。
+ */
+function fbItem(over: Record<string, unknown> = {}) {
+  return {
+    id: 11,
+    audit_id: 501,
+    feedback_type: 'false_positive',
+    reporter: 'alice@example.com',
+    comment: '这个不是 PII',
+    created_at: '2026-10-07T08:00:00Z',
+    ...over,
+  }
+}
+
+function fbResp(over: Record<string, unknown> = {}) {
+  return { feedback: [fbItem()], limit: 20, offset: 0, ...over }
+}
+
 beforeEach(() => {
   setLocale('zh-CN')
   vi.clearAllMocks()
   statsMock.mockResolvedValue(statsBody())
   recMock.mockResolvedValue(recResp())
   qMock.mockResolvedValue(queueResp())
+  fbMock.mockResolvedValue(fbResp())
   document.body.innerHTML = ''
 })
 afterEach(() => {
@@ -360,5 +395,147 @@ describe('队列可空列的降级', () => {
     qMock.mockResolvedValue(queueResp({ items: [queueItem({ reviewed_at: undefined })] }))
     const w = await mountView()
     expect(w.text()).not.toContain('复核于')
+  })
+})
+/**
+ * ★★★★★★ 复核结论面板（feedback）——本轮第三十三轮新增。
+ *
+ * 这一组的存在理由是一个**真实抓到过的 bug**：`unwrapComplianceFeedback`
+ * 曾把响应键写成 `items`（后端实际是 `feedback`），而夹具**照着错的写**，
+ * 于是用例全绿、对着真后端 100% 抛错，还带着 bug 过了两次提交。
+ * ⇒ 下面第 2、3 条就是那道守门判据。
+ */
+describe('★★★★★★ 复核结论面板（feedback）', () => {
+  it('★★★★★★ 挂载即请求 feedback 端点，且默认 limit=20 / offset=0 / 不带 type', async () => {
+    await mountView()
+    expect(fbMock).toHaveBeenCalledTimes(1)
+    expect(fbMock).toHaveBeenCalledWith({ type: undefined, limit: 20, offset: 0 })
+  })
+
+  it('★★★★★★ 渲染的是响应里的 `feedback` 数组（:711），**不是** `items`', async () => {
+    fbMock.mockResolvedValue(
+      fbResp({ feedback: [fbItem({ id: 21, audit_id: 777, comment: '哨兵评论' })] }),
+    )
+    const w = await mountView()
+    // ★ 守门判据：若代码改回读 `items`，这里会拿到 undefined ⇒ 面板空白 ⇒ 转红。
+    expect(w.text()).toContain('777')
+    expect(w.text()).toContain('哨兵评论')
+  })
+
+  it('★★★★★★ 响应里**只有** `items`（没有 `feedback` 键）⇒ 面板报错，**不**显示空态', async () => {
+    // ★ 这是 review-queue 的形状，不是 feedback 的。喂错形状必须显式失败。
+    fbMock.mockRejectedValue(new Error('形状不符：期望 {feedback:[…]}'))
+    const w = await mountView()
+    expect(w.text()).toContain('形状不符')
+    expect(w.text()).not.toContain('还没有人提交过复核结论')
+  })
+
+  it('★★★★★★ 真的空（`feedback: []`）⇒ 才显示空态文案', async () => {
+    fbMock.mockResolvedValue(fbResp({ feedback: [] }))
+    const w = await mountView()
+    expect(w.text()).toContain('还没有人提交过复核结论')
+  })
+
+  it('★★★★★★ 500 不许渲染成「还没有人提交过复核结论」', async () => {
+    fbMock.mockRejectedValue(new Error('Failed to list feedback'))
+    const w = await mountView()
+    expect(w.text()).toContain('Failed to list feedback')
+    // ★ 说明文案里必然含「后端扫到某几列是空值」这类成因 ⇒ 用结构断言，不做全文字面否定。
+    expect(w.text()).not.toContain('还没有人提交过复核结论')
+  })
+
+  it('★★★★★★ 明说「没有总数」，只能说「可能还有更多」而不是「共 N 条」', async () => {
+    const w = await mountView()
+    expect(w.text()).toContain('没有总数')
+    // ★★ 断言必须**按面板作用域**：records 面板**有** total、确实渲染「共 N 条」，
+    //   用全页 `not.toContain('共 ')` 会被那段**合法**文案判红（本轮真踩了一次）。
+    const fbPanel = w.findAll('.ch__panel').find((p) => p.text().includes('复核结论'))!
+    expect(fbPanel.text()).not.toContain('共 ')
+    // ★ 近似口径必须出现在 feedback 面板里（不是「精确总数」）。
+    expect(fbPanel.text()).toContain('推测后面还有')
+  })
+
+  it('★★★★★★ 这页排满（20 条）才说「可能还有更多」；不满**不**说', async () => {
+    // 排满 ⇒ 近似说有下一页
+    fbMock.mockResolvedValue(
+      fbResp({ feedback: Array.from({ length: 20 }, (_, i) => fbItem({ id: i + 1 })) }),
+    )
+    const w = await mountView()
+    expect(w.text()).toContain('可能还有')
+
+    // ★ 不满 ⇒ 同一句**不许**出现（夹具只 1 条，走的就是这条）
+    fbMock.mockResolvedValue(fbResp({ feedback: [fbItem()] }))
+    const w2 = await mountView()
+    const fbPanel2 = w2.findAll('.ch__panel').find((p) => p.text().includes('复核结论'))!
+    expect(fbPanel2.text()).not.toContain('可能还有')
+  })
+
+  it('★★★★★★ 明说响应键与队列不同名（feedback vs items）', async () => {
+    const w = await mountView()
+    expect(w.text()).toContain('键名不一样')
+  })
+
+  it('★★★★★★ 三种类型 chip 都在，且各有中文标签', async () => {
+    const w = await mountView()
+    for (const s of ['误报', '漏报', '判断正确', '全部']) {
+      expect(w.text()).toContain(s)
+    }
+  })
+
+  it('★★★★★★ 点「误报」⇒ 带 type=false_positive 且 offset 归 0', async () => {
+    const w = await mountView()
+    await w.findAll('button').find((b) => b.text() === '误报')!.trigger('click')
+    await flushPromises()
+    expect(fbMock).toHaveBeenLastCalledWith({ type: 'false_positive', limit: 20, offset: 0 })
+  })
+
+  it('★★★ 再点一次同一个 chip ⇒ 取消筛选（type 回到 undefined）', async () => {
+    const w = await mountView()
+    const chip = w.findAll('button').find((b) => b.text() === '漏报')!
+    await chip.trigger('click')
+    await flushPromises()
+    await chip.trigger('click')
+    await flushPromises()
+    expect(fbMock).toHaveBeenLastCalledWith({ type: undefined, limit: 20, offset: 0 })
+  })
+
+  it('★★★ 面板永远不提供「总数」控件：响应里没有 total 就不许渲染它', async () => {
+    // ★ 结构断言（有没有 total 那一格），不是文案否定断言。
+    const w = await mountView()
+    expect(w.find('.ch__panel').exists()).toBe(true)
+    expect(fbResp()).not.toHaveProperty('total')
+  })
+
+  it('★★★ `reporter` / `comment` 带 omitempty ⇒ 缺键时不渲染空白行', async () => {
+    fbMock.mockResolvedValue(fbResp({ feedback: [fbItem({ reporter: undefined, comment: undefined })] }))
+    const w = await mountView()
+    expect(w.text()).toContain('无')
+    expect(w.text()).toContain('未留说明')
+  })
+
+  it('★★ 三种类型都渲染出来，标签与原样值都在', async () => {
+    fbMock.mockResolvedValue(
+      fbResp({
+        feedback: [
+          fbItem({ id: 1, feedback_type: 'false_positive' }),
+          fbItem({ id: 2, feedback_type: 'false_negative' }),
+          fbItem({ id: 3, feedback_type: 'correct' }),
+        ],
+      }),
+    )
+    const w = await mountView()
+    for (const s of ['false_positive', 'false_negative', 'correct']) {
+      expect(w.text()).toContain(s)
+    }
+  })
+
+  it('★★ 本面板失败**不影响**上面三块（stats/records/queue 照常渲染）', async () => {
+    fbMock.mockRejectedValue(new Error('boom'))
+    const w = await mountView()
+    expect(w.text()).toContain('boom')
+    expect(w.text()).toContain('命中总数')
+    expect(statsMock).toHaveBeenCalled()
+    expect(recMock).toHaveBeenCalled()
+    expect(qMock).toHaveBeenCalled()
   })
 })

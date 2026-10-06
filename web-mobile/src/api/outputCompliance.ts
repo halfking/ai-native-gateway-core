@@ -122,10 +122,24 @@ import { req, type RequestOptions } from './client'
 // (14) ★ `policy.llm_engine_id` / `last_detection_at` 是**指针但 JSON tag 没有
 //     `omitempty`** ⇒ **键一定存在**，值可能为 `null`（不是「键缺失」）。
 //
-// (14) ★ 错误信封又是一种：`{"error":"Failed to …"}`（**`error` 是字符串**，
+// (15) ★ 错误信封又是一种：`{"error":"Failed to …"}`（**`error` 是字符串**，
 //     不是对象）—— 见 `writeInternalErrStr`（admin/internal_error.go:61-64）。
 //     ⇒ 至此本族共见**四种**：`error` 是字符串 / `error.message`+`code` /
 //       `error.detail` / text/plain。`api/client.ts` 的 `errorMessage` 全都兜得住。
+//
+// (16) ★★★★★★ **`feedback` 的响应键是 `feedback`，不是 `items`。**
+//     `listFeedback`（admin/output_compliance_handler.go:711）：
+//         writeJSON(w, 200, map[string]interface{}{
+//             "feedback": items, "limit": limit, "offset": offset})
+//     ⇒ 同一 handler 里 `review-queue`（:602）用的是 **`items`**，
+//       **`feedback` 用的是 `feedback`** —— 同族两个列表端点**键不同名**。
+//     ★★ 本模块第一版把这里写成了 `items`，**而当时的夹具也照着 `items` 写**
+//       ⇒ 三条用例全绿，对真后端却 **100% 抛错**，还带着 bug 过一次提交。
+//       这不是「判据无牙」，是**夹具验证的是「代码符合我对契约的理解」**。
+//     ⇒ 由此定一条硬规矩：**每个端点至少有一条判据，其夹具里的响应键
+//       必须是从后端 `writeJSON` 的 map 字面量**逐字抄**下来的，
+//       并在 spec 里标出该字面量的行号。见 `outputCompliance.test.ts`
+//       的「响应键必须逐字对得上 writeJSON」一组。
 
 /** ★ `output_compliance_review_queue.status` 的**全部**合法值（migration 365 的 CHECK）。 */
 export const COMPLIANCE_QUEUE_STATUSES = ['pending', 'approved', 'rejected'] as const
@@ -158,6 +172,8 @@ export const COMPLIANCE_TOTAL_CHECKS_MIRRORS_ISSUES = true
 export const COMPLIANCE_LIMIT_MAX = 200
 export const COMPLIANCE_RECORDS_DEFAULT_LIMIT = 50
 export const COMPLIANCE_QUEUE_DEFAULT_LIMIT = 20
+/** ★ `listFeedback` 也是 `parsePagination(r, 20, 0)` ⇒ 默认 20（与 queue 同，非 records 的 50）。 */
+export const COMPLIANCE_FEEDBACK_DEFAULT_LIMIT = 20
 
 // ── stats ──────────────────────────────────────────────────────────────────
 
@@ -312,8 +328,22 @@ export interface ComplianceFeedback {
   created_at: string
 }
 
+/**
+ * ★★★ 响应键是 **`feedback`**，**不是** `items`。
+ *
+ * 后端 `listFeedback` 的 `writeJSON` 字面量
+ * （`admin/output_compliance_handler.go:711`）：
+ *
+ *     writeJSON(w, http.StatusOK, map[string]interface{}{
+ *         "feedback": items, "limit": limit, "offset": offset})
+ *
+ * ⇒ 同一 handler 里 `review-queue` 用的是 `items`（:602），
+ *   **`feedback` 用的是 `feedback`** —— 同族两个列表端点的键**不同名**。
+ * ★ 本模块第一版把这里写成了 `items`，而当时的夹具也照着 `items` 写
+ *   ⇒ 三条用例全绿，**对着真后端却 100% 抛错**。见坑 16。
+ */
 export interface ComplianceFeedbackResponse {
-  items: ComplianceFeedback[]
+  feedback: ComplianceFeedback[]
   limit: number
   offset: number
 }
@@ -331,11 +361,13 @@ export function fetchComplianceFeedback(
 }
 
 export function unwrapComplianceFeedback(resp: unknown): ComplianceFeedbackResponse {
-  if (resp && typeof resp === 'object' && Array.isArray((resp as ComplianceFeedbackResponse).items)) {
+  // ★ 认 `feedback` 键（后端 :711 的 map 字面量），**不**认 `items` ——
+  //   `items` 是 review-queue（:602）的键，串了就会对真响应 100% 抛错。
+  if (resp && typeof resp === 'object' && Array.isArray((resp as ComplianceFeedbackResponse).feedback)) {
     return resp as ComplianceFeedbackResponse
   }
   const actual = resp === null ? 'null' : Array.isArray(resp) ? 'array' : typeof resp
-  throw new Error(`output-compliance/feedback 响应形状不符：期望 {items:[…], limit, offset}，实得 ${actual}`)
+  throw new Error(`output-compliance/feedback 响应形状不符：期望 {feedback:[…], limit, offset}，实得 ${actual}`)
 }
 
 // ── policy（当前策略，单条） ────────────────────────────────────────────────

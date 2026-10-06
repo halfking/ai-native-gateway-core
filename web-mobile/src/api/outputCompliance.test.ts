@@ -11,6 +11,7 @@ import {
   unwrapComplianceQueue,
   unwrapCompliancePolicy,
   unwrapComplianceKeywords,
+  unwrapComplianceFeedback,
   compliancePolicyIsSyntheticDefault,
   complianceFieldAlwaysZero,
   formatComplianceThreshold,
@@ -140,7 +141,7 @@ describe('路径', () => {
     await fetchComplianceRecords()
     fetchMock.mockResolvedValueOnce(jsonResponse({ items: [], status: 'pending', limit: 20, offset: 0 }))
     await fetchComplianceReviewQueue()
-    fetchMock.mockResolvedValueOnce(jsonResponse({ items: [], limit: 20, offset: 0 }))
+    fetchMock.mockResolvedValueOnce(jsonResponse({ feedback: [], limit: 20, offset: 0 }))
     await fetchComplianceFeedback()
     fetchMock.mockResolvedValueOnce(jsonResponse(policyBody()))
     await fetchCompliancePolicy()
@@ -313,7 +314,7 @@ describe('★★★ 判据 6：枚举字面值只发 CHECK 允许的', () => {
   })
 
   it('★★ feedback 非法 type 不发', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ items: [], limit: 20, offset: 0 }))
+    fetchMock.mockResolvedValueOnce(jsonResponse({ feedback: [], limit: 20, offset: 0 }))
     await fetchComplianceFeedback({ type: 'whatever' as never })
     expect(lastUrl()).not.toContain('type=')
   })
@@ -385,7 +386,7 @@ describe('形状不符抛错（含 500 不许退化成空清单）', () => {
     await expect(fetchComplianceKeywords()).rejects.toThrow(/形状不符/)
   })
 
-  it('★★★ feedback 缺 items ⇒ 抛错', async () => {
+  it('★★★ feedback 缺 feedback 键 ⇒ 抛错', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ limit: 20 }))
     await expect(fetchComplianceFeedback()).rejects.toThrow(/形状不符/)
   })
@@ -400,5 +401,118 @@ describe('形状不符抛错（含 500 不许退化成空清单）', () => {
     expect(() => unwrapComplianceQueue('x')).toThrow(/实得 string/)
     expect(() => unwrapComplianceKeywords([])).toThrow(/实得 array/)
     expect(() => unwrapComplianceStats(null)).toThrow(/形状不符/)
+  })
+})
+/**
+ * ★★★★★★ 响应键必须**逐字**对得上后端 `writeJSON` 的 map 字面量。
+ *
+ * **为什么要有这一组**（本轮真实踩到）：
+ * `unwrapComplianceFeedback` 第一版把键写成 `items`（后端实际是 `feedback`），
+ * 而**当时的夹具也照着 `items` 写** ⇒ 三条用例全绿，
+ * 对真后端却 **100% 抛错**，并且带着这个 bug 过了两次提交。
+ *
+ * ⇒ 夹具证明的是「**代码符合我对契约的理解**」，不是「代码符合真实契约」。
+ * 所以这一组不复用任何 helper，**每个端点的响应体都是从后端源码抄的**，
+ * 并在用例名里带上后端行号——后端改了行号或键名，这一组会先响。
+ *
+ * 后端逐条对应（`admin/output_compliance_handler.go`）：
+ *   :208  writeJSON(w, 200, policy)                                  → policy **无包装键**
+ *   :445  map[string]interface{}{"keywords": keywords}               → `keywords`
+ *   :602  {"items":…, "status":…, "limit":…, "offset":…}             → `items`
+ *   :711  {"feedback":…, "limit":…, "offset":…}                      → `feedback`  ★ 不是 items
+ *   :799  {"total_issues":…, "blocked":…, …}                         → **扁平**，无包装键
+ *   :924  {"records":…, "total":…, "limit":…, …}                     → `records` + `total`
+ */
+describe('★★★★★★ 响应键逐字对得上 writeJSON（后端行号钉死）', () => {
+  // ── 正向：抄来的字面量必须被接受 ──
+  it('★★★★★★ stats 的响应是**扁平**对象（:799），没有 `data`/`stats` 之类的包装键', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(statsBody()))
+    const s = await fetchComplianceStats()
+    expect(s.total_issues).toBe(3)
+    // ★ 若曾把它误当成 `{stats:{…}}`，这里会直接抛错而不是静默拿到 undefined。
+    expect(Object.prototype.hasOwnProperty.call(s, 'data')).toBe(false)
+  })
+
+  it('★★★★★★ records 的键是 `records`，且带 `total`（:924）', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ records: [], total: 0, limit: 50, offset: 0 }),
+    )
+    const r = await fetchComplianceRecords()
+    expect(r.records).toEqual([])
+    expect(r.total).toBe(0)
+  })
+
+  it('★★★★★★ review-queue 的键是 `items`（:602），**没有** `feedback`', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ items: [], status: 'pending', limit: 20, offset: 0 }),
+    )
+    const q = await fetchComplianceReviewQueue()
+    expect(q.items).toEqual([])
+    expect(q.status).toBe('pending')
+  })
+
+  it('★★★★★★ feedback 的键是 `feedback`（:711），**不是** `items`', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ feedback: [], limit: 20, offset: 0 }))
+    const f = await fetchComplianceFeedback()
+    expect(f.feedback).toEqual([])
+    expect(f.limit).toBe(20)
+    expect(f.offset).toBe(0)
+  })
+
+  it('★★★★★★ keywords 的键是 `keywords`（:445），不是 `items`', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ keywords: [] }))
+    const k = await fetchComplianceKeywords()
+    expect(k.keywords).toEqual([])
+  })
+
+  it('★★★★★★ policy 是**裸对象**（:208），没有 `policy` 之类的包装键', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(policyBody()))
+    const p = await fetchCompliancePolicy()
+    expect(p.id).toBe(7)
+    expect(Object.prototype.hasOwnProperty.call(p, 'policy')).toBe(false)
+  })
+
+  // ── 反向：同族兄弟的键**互不通用**（这一条就是本轮那个 bug 的守门人） ──
+  it('★★★★★★ 把 review-queue 的 `items` 喂给 feedback ⇒ 必须抛错（:711 的键是 feedback）', async () => {
+    // ★ 这正是第一版代码能过的那个形状：它当时认的就是 items。
+    fetchMock.mockResolvedValueOnce(jsonResponse({ items: [], limit: 20, offset: 0 }))
+    await expect(fetchComplianceFeedback()).rejects.toThrow(/feedback/)
+  })
+
+  it('★★★★★★ 把 feedback 的 `feedback` 喂给 review-queue ⇒ 必须抛错（:602 的键是 items）', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ feedback: [], limit: 20, offset: 0 }))
+    await expect(fetchComplianceReviewQueue()).rejects.toThrow(/形状不符/)
+  })
+
+  it('★★★★★★ `keywords` 与 `feedback` 的键也互不通用', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ feedback: [] }))
+    await expect(fetchComplianceKeywords()).rejects.toThrow(/形状不符/)
+    fetchMock.mockResolvedValueOnce(jsonResponse({ keywords: [] }))
+    await expect(fetchComplianceFeedback()).rejects.toThrow(/形状不符/)
+  })
+
+  // ── 反向：错误的包装形态一律不认（不是「宽容解包」） ──
+  it('★★★★★★ 包一层 `{data:{…}}` 一律抛错（后端没有这一层）', async () => {
+    for (const body of [
+      { data: { feedback: [], limit: 20, offset: 0 } },
+      { result: { feedback: [], limit: 20, offset: 0 } },
+    ]) {
+      fetchMock.mockResolvedValueOnce(jsonResponse(body))
+      await expect(fetchComplianceFeedback()).rejects.toThrow(/形状不符/)
+    }
+  })
+
+  it('★★★★★★ 顶层是数组时抛错（后端永不含裸数组）', async () => {
+    for (const unwrap of [unwrapComplianceFeedback, unwrapComplianceKeywords]) {
+      expect(() => unwrap([])).toThrow(/形状不符/)
+      expect(() => unwrap(null)).toThrow(/形状不符/)
+      expect(() => unwrap('x')).toThrow(/形状不符/)
+    }
+  })
+
+  it('★★ 抛错文案说清**期望的键名**，便于线上定位', () => {
+    // ★ 文案里必须出现后端真实的键名，否则线上报错会指向错的字段。
+    expect(() => unwrapComplianceFeedback({ items: [] })).toThrow(/\{feedback:\[…\], limit, offset\}/)
+    expect(() => unwrapComplianceKeywords({ items: [] })).toThrow(/\{keywords:\[…\]?\}/)
   })
 })

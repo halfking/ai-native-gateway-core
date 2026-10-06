@@ -16,9 +16,21 @@
 //     ⇒ 空预览 = 该行未脱敏（安全约束），不是「没记到内容」。
 // (5) ★★★★ `review-queue` / `keywords` 可能**整个端点 500**（可空列被裸扫）
 //     ⇒ 500 时渲染成「后端扫描失败」，**绝不**退化成「队列为空」。
-// (6) ★★★ `review-queue` 响应**没有 total**；默认条数 queue=20 / records=50。
+// (6) ★★★ `review-queue` 响应**没有 total**；默认条数 queue=20 / records=50 / feedback=20。
+// (7) ★★★★★★ **`feedback` 的响应键是 `feedback`，不是 `items`。**
+//     后端 `listFeedback`（admin/output_compliance_handler.go:711）写的是
+//     `"feedback": items`，而同 handler 的 `review-queue`（:602）写的是 `"items"`
+//     ⇒ 同族两个列表端点**键不同名**。本页两个面板各取各的键。
+//     ★ 本模块第一版把这里写成了 `items`，而夹具也照着 `items` 写 ⇒ 用例全绿、
+//       对真后端 100% 抛错。见 api/outputCompliance.ts 坑 16。
+// (8) ★★★★ `feedback.reporter` / `comment` 的 JSON tag 带 `omitempty`
+//     ⇒ **键可能整个不存在**（不是「值为空」）。
+// (9) ★★★ `feedback.created_at` 由 pgx 把 TIMESTAMPTZ **直接扫进字符串、没有 `.UTC()`**
+//     ⇒ 与 queue/keywords 同族，格式未实测；解析不了就原样回显。
+// (10) ★★★ `type` 查询参数**没有 allowlist**（DB CHECK 只约束写入）
+//     ⇒ 只发 `COMPLIANCE_FEEDBACK_TYPES` 这三个字面值。
 //
-// ★ 写操作 approve/reject 本页不碰。
+// ★ 写操作 approve/reject/feedback(POST) 本页一律不碰。
 
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { useHyperPage } from '@/hyper'
@@ -30,15 +42,20 @@ import {
   fetchComplianceStats,
   fetchComplianceRecords,
   fetchComplianceReviewQueue,
+  fetchComplianceFeedback,
   COMPLIANCE_QUEUE_STATUSES,
+  COMPLIANCE_FEEDBACK_TYPES,
   COMPLIANCE_ISSUE_TYPES,
   COMPLIANCE_RECORDS_DEFAULT_LIMIT,
   COMPLIANCE_QUEUE_DEFAULT_LIMIT,
+  COMPLIANCE_FEEDBACK_DEFAULT_LIMIT,
   COMPLIANCE_LIMIT_MAX,
   type ComplianceStats,
   type ComplianceRecord,
   type ComplianceQueueItem,
   type ComplianceQueueStatus,
+  type ComplianceFeedback,
+  type ComplianceFeedbackType,
 } from '@/api/outputCompliance'
 
 useHyperPage({ title: () => t('compliance.title') })
@@ -53,16 +70,23 @@ const hitType = ref('')
 const queueStatus = ref<ComplianceQueueStatus>('pending')
 const queueOffset = ref(0)
 
+/** ★ 空串 = 后端不过滤（`listFeedback` 只在 type != "" 时加条件）。 */
+const fbType = ref<ComplianceFeedbackType | ''>('')
+const fbOffset = ref(0)
+
 const stats = ref<ComplianceStats | null>(null)
 const records = ref<ComplianceRecord[]>([])
 const recTotal = ref(0)
 const queue = ref<ComplianceQueueItem[]>([])
+const feedback = ref<ComplianceFeedback[]>([])
 
 const statsError = ref<string | null>(null)
 const recError = ref<string | null>(null)
 const queueError = ref<string | null>(null)
+const fbError = ref<string | null>(null)
 const loadingRec = ref(false)
 const loadingQueue = ref(false)
+const loadingFb = ref(false)
 
 async function loadStats(): Promise<void> {
   try {
@@ -132,6 +156,37 @@ function applyQueueStatus(s: ComplianceQueueStatus): void {
   void loadQueue()
 }
 
+async function loadFeedback(): Promise<void> {
+  loadingFb.value = true
+  fbError.value = null
+  try {
+    const r = await fetchComplianceFeedback({
+      type: fbType.value === '' ? undefined : fbType.value,
+      limit: COMPLIANCE_FEEDBACK_DEFAULT_LIMIT,
+      offset: fbOffset.value,
+    })
+    // ★★★ 键是 `feedback`，**不是** `items`（后端 :711）。见坑 16。
+    feedback.value = r.feedback
+  } catch (e) {
+    // ★★ 抛错**不许**退化成空列表：那会把「后端扫描失败」显示成「还没有人复核过」。
+    feedback.value = []
+    fbError.value = (e as Error)?.message || t('common.error')
+  } finally {
+    loadingFb.value = false
+  }
+}
+
+function applyFeedbackType(v: ComplianceFeedbackType | ''): void {
+  fbType.value = fbType.value === v ? '' : v
+  fbOffset.value = 0
+  void loadFeedback()
+}
+
+function gotoFeedback(next: number): void {
+  fbOffset.value = Math.max(0, next)
+  void loadFeedback()
+}
+
 function gotoRecords(next: number): void {
   recOffset.value = Math.max(0, next)
   void loadRecords()
@@ -157,6 +212,7 @@ function clearFilters(): void {
 void loadStats()
 void loadRecords()
 void loadQueue()
+void loadFeedback()
 
 const recHasMore = computed(() => recOffset.value + records.value.length < recTotal.value)
 /**
@@ -164,6 +220,12 @@ const recHasMore = computed(() => recOffset.value + records.value.length < recTo
  * 这本身就是近似，所以页面上说「可能还有更多」而不是「共 N 条」。
  */
 const queueMaybeMore = computed(() => queue.value.length >= COMPLIANCE_QUEUE_DEFAULT_LIMIT)
+
+/**
+ * ★★ `feedback` 响应**同样没有 total** ⇒ 与队列一样只能按「这页刚好满」近似。
+ * 它和队列是同一复核闭环的两半（待复核 / 复核结论），所以放同一页相邻两块。
+ */
+const fbMaybeMore = computed(() => feedback.value.length >= COMPLIANCE_FEEDBACK_DEFAULT_LIMIT)
 
 /** ★ 五类取值域里，stats 只统计三类；差额就是另两类的命中（见坑 2）。 */
 const uncountedHits = computed(() => {
@@ -189,13 +251,37 @@ function hasPreview(r: ComplianceRecord): boolean {
   return r.redacted && r.content_preview !== ''
 }
 
+/**
+ * ★ `reporter` / `comment` 的 JSON tag 带 `omitempty` ⇒ **键可能整个不存在**。
+ * 这里统一走「有值才显示」，缺键与空串都不会渲染出空白行。
+ */
+function fbMeta(f: ComplianceFeedback): string {
+  const who = f.reporter || t('compliance.none')
+  const what = f.comment || t('compliance.noComment')
+  return `${who} · ${what}`
+}
+
+/**
+ * ★ 三种结论的语义方向不同，所以色也不同：
+ * `false_positive`（误报）= 引擎报错了 ⇒ **danger**；
+ * `false_negative`（漏报）= 引擎漏了   ⇒ **warning**；
+ * `correct`（正确）        = 判对了   ⇒ **muted**（正常态，不该抢眼）。
+ */
+function fbTypeTone(tp: string): 'danger' | 'warning' | 'muted' {
+  if (tp === 'false_positive') return 'danger'
+  if (tp === 'false_negative') return 'warning'
+  return 'muted'
+}
+
 onBeforeUnmount(() => {
   stats.value = null
   records.value = []
   queue.value = []
+  feedback.value = []
   statsError.value = null
   recError.value = null
   queueError.value = null
+  fbError.value = null
 })
 </script>
 
@@ -405,6 +491,76 @@ onBeforeUnmount(() => {
           {{ t('compliance.queuePage', { from: queueOffset + 1, to: queueOffset + queue.length, more: queueMaybeMore ? t('compliance.maybeMore') : '' }) }}
         </span>
         <button type="button" class="ch__btn" :disabled="!queueMaybeMore" @click="gotoQueue(queueOffset + COMPLIANCE_QUEUE_DEFAULT_LIMIT)">
+          {{ t('compliance.next') }}
+        </button>
+      </div>
+    </section>
+
+    <!-- ══════ 复核结论（feedback） ══════ -->
+    <section class="ch__panel">
+      <span class="ch__panel-title">{{ t('compliance.feedback') }}</span>
+
+      <!-- ★★ 与队列同样的两条限制：没有 total、默认 20 条 -->
+      <p class="ch__note">
+        <AppIcon name="alert" :size="13" />
+        <span>{{ t('compliance.feedbackNoTotalNote') }}</span>
+      </p>
+      <!-- ★★★ 响应键是 feedback 而不是 items；同族两个列表键不同名 -->
+      <p class="ch__note">
+        <AppIcon name="key" :size="13" />
+        <span>{{ t('compliance.feedbackKeyNote') }}</span>
+      </p>
+
+      <div class="ch__chips" role="group" :aria-label="t('compliance.feedbackTypeLabel')">
+        <button
+          type="button"
+          class="ch__chip"
+          :class="{ 'ch__chip--on': fbType === '' }"
+          @click="applyFeedbackType('')"
+        >
+          {{ t('compliance.fb_all') }}
+        </button>
+        <button
+          v-for="tp in COMPLIANCE_FEEDBACK_TYPES"
+          :key="tp"
+          type="button"
+          class="ch__chip"
+          :class="{ 'ch__chip--on': fbType === tp }"
+          @click="applyFeedbackType(tp)"
+        >
+          {{ t('compliance.ftype_' + tp) }}
+        </button>
+      </div>
+
+      <p v-if="loadingFb" class="ch__msg">{{ t('common.loading') }}</p>
+      <p v-if="fbError" class="ch__msg ch__msg--err">
+        {{ fbError }}
+        <span class="ch__sub">{{ t('compliance.scanFailHint') }}</span>
+      </p>
+      <p v-else-if="!feedback.length" class="ch__msg">{{ t('compliance.feedbackEmpty') }}</p>
+
+      <ul v-if="feedback.length" class="ch__list">
+        <li v-for="f in feedback" :key="f.id" class="ch__item">
+          <div class="ch__item-head">
+            <StatusDot :tone="fbTypeTone(f.feedback_type)" />
+            <span class="ch__type">{{ t('compliance.ftype_' + f.feedback_type) }}</span>
+            <span class="ch__hit">{{ f.feedback_type }}</span>
+          </div>
+          <p class="ch__meta">{{ t('compliance.auditRef', { id: f.audit_id }) }}</p>
+          <!-- ★ reporter/comment 带 omitempty ⇒ 键可能整个不存在，不渲染空白 -->
+          <p class="ch__meta">{{ fbMeta(f) }}</p>
+          <p class="ch__meta">{{ t('compliance.feedbackAt', { t: relativeTime(f.created_at) }) }}</p>
+        </li>
+      </ul>
+
+      <div v-if="feedback.length || fbOffset > 0" class="ch__row">
+        <button type="button" class="ch__btn" :disabled="fbOffset === 0" @click="gotoFeedback(fbOffset - COMPLIANCE_FEEDBACK_DEFAULT_LIMIT)">
+          {{ t('compliance.prev') }}
+        </button>
+        <span class="ch__meta">
+          {{ t('compliance.queuePage', { from: fbOffset + 1, to: fbOffset + feedback.length, more: fbMaybeMore ? t('compliance.maybeMore') : '' }) }}
+        </span>
+        <button type="button" class="ch__btn" :disabled="!fbMaybeMore" @click="gotoFeedback(fbOffset + COMPLIANCE_FEEDBACK_DEFAULT_LIMIT)">
           {{ t('compliance.next') }}
         </button>
       </div>
