@@ -9211,3 +9211,117 @@ PG 必须先对**父表及全部月分区**取 ACCESS EXCLUSIVE，**才能**去�
 - ⚠️ **边界要说清**：这只消掉了启动路径里**最后一条**无守卫的
   `request_logs` DDL。§10.79 提到的「79 个 ensureXxx 串行调用」整体收敛
   仍是更大的题目，本次只处理了被实测证明在生产上仍在排锁的那一条。
+
+---
+
+## §10.85 启动期 63 把独占锁：autovacuum reloption 循环没有任何守卫
+
+§10.84 修掉的是 6 个关系。这条是 **63 个**，量级差一个数量级。
+**未上线。**
+
+### §10.85.1 怎么找到的
+
+不猜，做了一次全量盘点：启动序列共 **84 个** `ensureXxx(migCtx)` 调用，
+按「是否含 DDL」+「是否触及热表」筛出 **9 个**候选，逐个读源码核实。
+
+| 函数 | 核实结果 |
+|---|---|
+| `ensureRequestLogSchema` | ✅ 有 catalog 短路（§10.84 已验证生产缺失 0） |
+| `ensureRoutingAnalyticsColumns` | ✅ `columnsAllPresent` 短路 |
+| `ensureSqlAuditPartialIndexes` | ✅ 逐索引查 `indisvalid` |
+| `ensureUsageFactsOccurredAtIndex` | ✅ 查 `indisvalid` |
+| `ensureReportSnapshots` / `ensureRoutingRecentSuccessRate` | ✅ 有守卫 |
+| **`ensurePartitionAutovacuumSchema`** | ★ **零守卫** |
+
+⚠️ 第一版脚本判定有**两个假阳性**：它把 `ensureRoutingAnalyticsColumns`、
+`ensureSqlAuditPartialIndexes` 标成「守卫在 DDL 之后」，
+因为它认不出 `columnsAllPresent` / `indisvalid` 这两种守卫形态，
+而 DDL 藏在 SQL 常量里逐行扫描也扫不到。
+**逐个读源码才把这两个否掉。** ⇒ 粗判据只能用来**排序**，不能用来**定案**。
+
+### §10.85.2 缺陷本体
+
+`ensurePartitionAutovacuumSchema` 定义 `apply_llm_gateway_autovacuum_settings()`，
+遍历两轮后**无条件**调用：
+
+```sql
+-- 循环 1：public 模式下所有 %_hot 表
+EXECUTE format('ALTER TABLE %I SET (%s)', r.relname, opts_sql);
+-- 循环 2：11 张父表的每一个分区（含 request_logs 的 5 个月分区）
+EXECUTE format('ALTER TABLE %I SET (%s)', r.relname, opts_sql);
+...
+SELECT apply_llm_gateway_autovacuum_settings();
+```
+
+`ALTER TABLE … SET (storage_parameter)` 与 `ADD COLUMN IF NOT EXISTS` 一样
+**不省锁**——它同样取 **ACCESS EXCLUSIVE**，哪怕一个值都没改。
+
+**生产实测（只读）**：
+
+| 目标 | 会 ALTER 的关系数 | 其中已配置正确 |
+|---|---|---|
+| `%_hot` 表 | **23** | **23** |
+| 11 张父表的分区 | **40** | **40** |
+| 合计 | **63** | **63（100%）** |
+
+⇒ **每次启动，63 个关系被排上独占锁，而它们 100% 已经是正确配置。**
+其中包含 `request_logs` 的月分区、`request_logs_bodies` 的分区等最热的表。
+
+### §10.85.3 改法
+
+两个循环的 `WHERE` 各加一条：
+
+```sql
+AND NOT (COALESCE(c.reloptions, ARRAY[]::text[]) @> ARRAY[
+    'autovacuum_enabled=true','autovacuum_vacuum_scale_factor=0.05',
+    'autovacuum_vacuum_threshold=10','autovacuum_analyze_scale_factor=0.02',
+    'autovacuum_analyze_threshold=50'])
+```
+
+三个细节都不是可选项：
+
+1. **`@>` 而不是 `=`**：`reloptions` 是 `text[]`，可能还带 `fillfactor` 等其它项。
+   用相等比较会**永不匹配** ⇒ 守卫静默失效，而它的失效形态
+   **长得和「守卫在工作」一模一样**。
+2. **`COALESCE(reloptions, ARRAY[]::text[])`**：`NULL @> ARRAY[...]` 是 `NULL`，
+   `NOT NULL` 也是 `NULL` ⇒ `WHERE` 把行过滤掉 ⇒
+   **从未配置过的表将永远得不到配置**。
+3. **两条循环都要加**：只修一条，另一半的锁原样存在；
+   而且两条循环**都会成功**，任何「跑一遍没报错」的测试都看不出半修。
+
+### §10.85.4 生产只读验证
+
+| 验证 | 结果 |
+|---|---|
+| 新谓词在循环 1 会 ALTER 的表 | **0 行** ⇒ 守卫命中 |
+| 新谓词在循环 2 会 ALTER 的分区 | **0 行** ⇒ 守卫命中 |
+| 鉴别力：只差一项的 `reloptions` | `f` ⇒ 仍会被 ALTER ✅ |
+| 鉴别力：数值写法不同（`0.050` vs `0.05`） | `f` ⇒ 仍会被 ALTER ✅ |
+| 完全匹配 | `t` ⇒ 跳过 ✅ |
+
+★ 第四条特意测了数值写法：**`0.050` 与 `0.05` 文本不同**，
+若真存在这种写法，会被当成「未配置」而重复 ALTER（保守方向，可接受）。
+
+### §10.85.5 门与变异
+
+`db/partition_autovacuum_guard_test.go`（6 子测试）+ `scripts/.mutate-partition-autovacuum-guard.sh`：
+
+| 变异 | 注入 | 命中的子测试 |
+|---|---|---|
+| M82 | 只删 hot 表循环的守卫 | `both_loops_are_guarded` |
+| M83 | 只删分区循环的守卫 | `both_loops_are_guarded` |
+| M84 | `@>` 改 `=`（守卫静默失效） | `both_loops_are_guarded` + `guard_uses_containment_not_equality` |
+| M85 | 去掉 `COALESCE`（NULL 表永不被配置） | `both_loops_are_guarded` + `null_reloptions_still_gets_configured` |
+| M86 | 守卫清单少查一项 | `guard_checks_every_reloption_the_function_sets` |
+
+**5/5 全红。**
+
+### §10.85.6 效果与边界
+
+- 部署后每次启动，本条贡献的独占锁从 **63 个必然发生**降为
+  **「仅当某张表真的缺某项设置」**。
+- ⚠️ **未上线**，本节只改代码。
+- ⚠️ **边界**：84 个 ensure 里有 DDL 的已逐个核实（9 个候选全部读过源码），
+  但 **ANALYZE 不排独占锁**，本轮不属缺陷。
+  更大的题目是「84 个串行 ensure 本身的启动耗时」，
+  本轮消除的是其中的**锁**成本，不是**耗时**成本。
