@@ -1537,6 +1537,23 @@ func promoteLockKey(label string) int64 {
 	return int64(h.Sum64())
 }
 
+// analyzeLockKey returns the advisory-lock key that serializes the whole
+// analyze pass. Same reasoning as promoteLockKey — the peer gateway shares
+// this PostgreSQL — but the granularity is the whole pass rather than one
+// table, because analyze_llm_gateway_table_stats ANALYZEs a fixed set of
+// tables inside a single transaction.
+//
+// Deliberately a DIFFERENT key namespace from promoteLockKey: the two paths
+// are independent jobs, and reusing a key would make a promote lock make
+// analyze skip (and vice versa) for reasons that have nothing to do with
+// each other.
+func analyzeLockKey() int64 {
+	const prefix = "llm-gateway:analyze:"
+	h := fnv.New64a()
+	h.Write([]byte(prefix))
+	return int64(h.Sum64())
+}
+
 func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 	if pm == nil || pm.db == nil {
 		return
@@ -1779,6 +1796,26 @@ func (pm *PartitionManager) analyzePartitionStats(ctx context.Context) {
 		"SET LOCAL statement_timeout = '10min'"); err != nil {
 		tx.Rollback(timeoutCtx)
 		slog.Warn("partition_manager: analyze timeout setup failed", "error", err)
+		return
+	}
+	// 2026-10-06（审计 §10.53）：analyze 此前**没有任何互斥**。
+	// promote 路径有 promoteLockKey + pg_try_advisory_xact_lock，其注释明确
+	// 「两台实例共享同一个 PG」，抢不到就跳过该表；而 analyze 是一次性
+	// ANALYZE 整组 44 张表，没有对应的锁 ⇒ 两台各跑一遍全量。
+	// 实测窗口 06:00:53~12:51:04：154 日志 7 次 + 245 journalctl 7 次
+	// = 14 次 = pg_stat_statements Δcalls，且两次落在同一分钟内互争 I/O。
+	// 这里沿用同一把锁的同型写法：抢不到就跳过本轮，交给对端做。
+	var locked bool
+	if err := tx.QueryRow(timeoutCtx,
+		"SELECT pg_try_advisory_xact_lock($1)", analyzeLockKey(),
+	).Scan(&locked); err != nil {
+		tx.Rollback(timeoutCtx)
+		slog.Warn("partition_manager: analyze lock failed", "error", err)
+		return
+	}
+	if !locked {
+		tx.Rollback(timeoutCtx)
+		slog.Debug("partition_manager: analyze skipped (peer holds lock)")
 		return
 	}
 	var n int64
