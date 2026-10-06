@@ -86,21 +86,26 @@
   --app-bp-medium: 600px;
   --app-bp-expanded: 960px;
   --app-bp-large: 1280px;
-  /* ---- safe-area 通道（10 §4.6.32）----------------------------------
-     **先读壳注入值，再回落 env()**，两条通道不是一回事：
+  /* ---- safe-area 通道（10 §4.6.32；严重度订正见 §4.6.33）----------------
+     **先读壳注入值，再回落 env()** —— 两条通道的可用性是**版本相关**的，
+     不该假设其中一条一定活着。
 
-     · 壳注入：Capacitor 8.5.2 `SystemBars.injectSafeAreaCSS()` 在
-       `insetsHandling:'css'` 下用 evaluateJavascript 往 documentElement
-       写 `--safe-area-inset-{top,right,bottom,left}` 四个**自定义属性**
-       （px 值 = 原生 inset / density）。这是上游唯一保证写到的通道。
-     · env()：浏览器原生 `env(safe-area-inset-*)`。要它非零，WebView 必须
-       被摆进刘海区，而上游 `@capacitor/android` **全包没有**
-       `LAYOUT_IN_DISPLAY_CUTOUT_MODE` / `windowLayoutInDisplayCutoutMode`。
+     Capacitor 8.5.2 `SystemBars.initWindowInsetsListener()` 的两个分支：
 
-     只读 env() ⇒ Android 上这四个 token 恒 0 ⇒ 11 处消费点全部形同虚设。
-     本壳 targetSdk 36：Android 15+ 强制 edge-to-edge，且
-     `windowOptOutEdgeToEdgeEnforcement` 退路在 targetSdk 36 已被移除，
-     所以内容**一定**画到状态栏/导航栏底下 —— 这不是「万一」，是必然。
+     · A 分支 `shouldPassthroughInsets` =
+       `getWebViewMajorVersion() >= WEBVIEW_VERSION_WITH_SAFE_AREA_FIX(140)`
+       `&& hasViewportCover`（页面 meta 含 viewport-fit=cover）。
+       此时**两条通道都有真值**：insets 被透传给 WebView（env() 生效），
+       同时 `injectSafeAreaCSS()` 写 `--safe-area-inset-*`。
+     · B 分支（WebView < 140，或页面缺 viewport-fit=cover）：
+       装饰 View 原生 padding，透传给 WebView 的 insets 被**显式置 0**，
+       注入的 CSS 变量**也是 0** ⇒ 两条通道同时为 0。
+
+     ⚠️ 订正：§4.6.32 写的「Android 上 env() 恒为 0」**说重了**。
+     实测模拟器 WebView 153 ≥ 140 且本页有 viewport-fit=cover ⇒ 走 A 分支，
+     env() 本来就能拿到真值。真正**无版本依赖**成立的两条是：
+       ① `--app-safe-left/right` 此前**零消费者**（横屏/手势侧边撞内容）；
+       ② 本 cascade 让「读哪条通道」不依赖 WebView 版本。
 
      浏览器/桌面未注入 `--safe-area-inset-*` ⇒ 回落 env() ⇒ 仍为 0
      ⇒ 桌面端零回归。 */

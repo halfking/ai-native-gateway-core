@@ -5,9 +5,15 @@ import { join, relative, resolve } from 'node:path'
 // safe-area 通道门禁（UI规范 10 §4.6.32）。
 //
 // 为什么需要门：Android 上壳注入的是 `--safe-area-inset-*` 自定义属性，
-// 而 `env(safe-area-inset-*)` 在无 cutout mode 的 WebView 上恒为 0。
-// 只读 env() 是一种「看起来在处理刘海、实际全程 0」的写法，且**不会报错**
-// —— 顶栏/底导航/抽屉/弹层共 11 处消费点会一起静默失效。
+// 门禁钉的是**形态**，不是某条分支下的实测值 —— 形状对了，两条通道都有值；
+// 形状错了，无论 WebView 落在哪个分支都会漏（10 §4.6.32 / §4.6.33）。
+//
+// ⚠️ 订正：本文件初版把理由写成「`env()` 在 Android 上恒为 0」——**说重了**。
+// 实测 WebView 153 ≥ Capacitor 的 `WEBVIEW_VERSION_WITH_SAFE_AREA_FIX(140)`
+// 且页面有 `viewport-fit=cover` ⇒ 落在 passthrough 分支，`env()` 也有真值。
+// 仍然成立、且与版本无关的两条是：
+//   ① `--app-safe-left/right` 零消费者（实测左侧手势 inset 29.7 CSS px）；
+//   ② 读通道不应依赖 WebView 版本（B 分支下两条通道同时为 0）。
 // 本组断言把三件事钉死：通道优先级、无消费者反模式、无恒零死项。
 
 const ROOT = resolve(process.cwd(), 'src')
