@@ -246,3 +246,4 @@
 228	833_supplier_price_nonneg_check.sql
 229	835_modality_verify_probe_ledger.sql
 230	836_supplier_errors_heap_reassert.sql
+231	837_routing_mv_refresh_state.sql
