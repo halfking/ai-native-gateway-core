@@ -607,6 +607,45 @@ SELECT
 		// baseline_price_missing 同一取舍）—— 真环境约 129 个模型，逐条报会占满
 		// 告警位，而它们说的是同一件事。
 		//
+		// ★★★ 报的是**绑定数/模型数**，而钱**不在均匀分布**上。
+		// 下面这组数是 2026-10-06 在真库（127.0.0.1:5432，只读 SELECT）量到的，
+		// 它决定「先修哪一个」——而上面那个 129 个模型的清单回答不了这个问题。
+		//
+		// 口径：request_logs 近 30 天，**已派发**（credential_id NOT NULL）且
+		// **成功**且 **cost_usd IS NULL** 的请求，按 token（prompt+completion）加权。
+		// 「已派发且成功」这两个条件不能省：未派发成功的请求（562,548 条，其中
+		// 562,482 条有 error_kind：no_candidate / rate_limit / invalid_key …）
+		// **本来就没有上游花费**，它们 cost 为 NULL 是正确的，把它们算进来会把
+		// 结论带偏。（我第一版就是算进来的，然后差点把「设计决定」报成缺陷。）
+		//
+		//	成功的无价请求            = 270,124 条 / 2,319,723,670 token
+		//	minimax-m3                = 81.32%   ← 一个模型
+		//	前 5 个模型                = 96.20%
+		//	「canonical_model IS NULL」 = 1.44%（按请求数是 126,617 条，
+		//	                              按 token 只有 0.033B —— 都是小请求）
+		//
+		// ⇒ **「129 个模型」这个数是准确的，但它不是工作量**：按 token 加权，
+		//   先定价 minimax-m3 一个就能覆盖 81%，前 5 个覆盖 96%。
+		//
+		// ⚠️ 顺带钉住一个**别被现有数骗到**的地方：拿 model_offers 上
+		//   「unit_price_in_per_1m IS NOT NULL」当「有价」，minimax-m3 会算成
+		//   「有价但没用上」（81.79%）。逐条看过之后那两个数是**垃圾**：
+		//   一条是 `0 / 0`（pricing_source=manual），另一条是
+		//   `0.1 / 0.1 CNY` 挂在 **billing_mode=monthly** 的订阅上 ——
+		//   平面月费被填进了「每 1M token」列。真要用它记账是 3000 倍少记。
+		//   （该凭据近 30 天 0 请求，所以是**潜伏**不是现网。）而真正在服务那
+		//   1.886B token 的三个凭据（hzx-2 / minimax-prod-v2 / demo-tokenplan）
+		//   价全是 NULL 或 0/0，pricing_plans 里 minimax-m3 **0 行**。
+		//
+		// ★ **刻意不把上面这组 token 聚合写进本检查的 SQL**：实测那条 30 天
+		//   聚合连跑三次是 **2.31s / 2.22s / 2.44s**（真库、2.08M 行/30 天，
+		//   没有能吃住 cost_usd IS NULL 的索引 —— 现存索引里最接近的
+		//   idx_request_logs_canonical_model_ts 是 partial 且以 canonical_model
+		//   打头）。把它放进一条路由健康检查，等于给一个高频检查加两秒。
+		//   ⇒ 数字留在这里（改这条检查的人一定读这段注释），查询留给
+		//   一次性分析。**这是量出来的取舍，不是猜的** —— 下次想「顺手加上」的人
+		//   请先看这三行时间。
+		//
 		// 刻意**不**报「成本被低估了多少」：那要拿基准价相乘，而 SSOT 的
 		// bg/data/model_baseline_prices.json 刻意是空的（models: []）⇒ 算不出金额。
 		// 能确定的是**多少计费流量没被计**，那就只报这个。
@@ -849,6 +888,187 @@ SELECT 'facts_start_' || facts.oldest::text || '_vs_projection_' || proj.oldest:
  WHERE facts.oldest IS NOT NULL
    AND proj.oldest IS NOT NULL
    AND proj.oldest < facts.oldest`},
+
+		// 第 17 条：offer_price_looks_like_placeholder
+		//
+		// 盯的是**「输入价与输出价逐个相等、且那个数是正的」**这个形态。2026-10-06
+		// 真库实测：八个 offer 全部 `in == out == 0.1`（另有一个 0.2），
+		// 跨 5 个模型、4 个供应商，`pricing_source` 是 manual / inherited /
+		// imported —— 也就是人敲进去的、继承来的、导入带出来的。
+		// 判别依据不是「0.1 太小」，而是 **in 与 out 精确相等**：真实 token 定价
+		// 几乎不会输入输出同价到分。
+		//
+		// ★ 这 9 条**已经在产生账面成本**（实测近 30 天 4,522 条请求的成本由它们
+		// 算出，合计 $0.04）⇒ 它们是「**看起来记了价**」的那一类，比没价更坏。
+		//
+		// ── 与第 14 条的措辞纪律同族：**两个总体需要相反的修法，不可合并** ──
+		// 另有 150 条 offer 是 `in == out == 0`。它们**不是**缺陷：
+		// `domains/streaming/usage.go` 的 `CalcCost` 对 `priceIn==0 && priceOut==0`
+		// 返回 **nil**，所以这些行诚实地留下 `cost_usd IS NULL`。
+		// 第 14 条盯的正是那个「0」——所以本条**只报正数那一族**，
+		// 并在报法里把零价那族点名说「不是缺陷」，否则运营会把两族一起处理，
+		// 而它们的修法是相反的（填真价 vs 删假价）。
+		//
+		// ★ 措辞刻意用「looks like a placeholder / 候选，需人工确认」而不是断言：
+		//   **对称定价也可能是真的**，数据上无法区分。
+		//
+		// ⚠ 刻意**不**把金额影响（4,522 条 / $0.04）写进本 SQL：那条 30 天
+		//   request_logs 聚合实测 2.31s / 2.22s / 2.44s（2.08M 行，无可用索引），
+		//   不能塞进一条高频检查。数字写在上面的注释里。
+		//   本 SQL 只读 model_offers（1,994 行），是廉价的那一半。
+		{CheckID: "offer_price_looks_like_placeholder", Severity: "warning", Optional: true, Query: `
+WITH shaped AS (
+    SELECT
+        count(*) FILTER (WHERE unit_price_in_per_1m > 0)::int AS positive_equal,
+        count(*) FILTER (WHERE unit_price_in_per_1m > 0 AND available)::int AS positive_equal_routable,
+        count(*) FILTER (WHERE unit_price_in_per_1m = 0)::int AS zero_equal,
+        array_agg(DISTINCT unit_price_in_per_1m::text)
+            FILTER (WHERE unit_price_in_per_1m > 0) AS values_seen
+      FROM public.model_offers
+     WHERE unit_price_in_per_1m IS NOT NULL
+       AND unit_price_in_per_1m = unit_price_out_per_1m
+)
+SELECT 'offer_in_equals_out_positive',
+       'model_offers: positive price with input == output',
+       positive_equal || ' binding(s) carry a POSITIVE price whose input and output are the ' ||
+       'same number (values seen: ' || array_to_string(values_seen, ', ') || '), of which ' ||
+       positive_equal_routable || ' are still routable. That shape is what a hand-typed ' ||
+       'placeholder looks like (pricing_source manual/inherited/imported), and such a ' ||
+       'binding DOES produce a recorded cost, which makes it look priced while the number ' ||
+       'means nothing. Symmetric pricing can also be genuine, so this is a candidate list ' ||
+       'for human review, not a verdict: confirm each, then either fill in the real ' ||
+       'per-direction price or clear it. SEPARATELY, ' || zero_equal || ' binding(s) have ' ||
+       'input == output == 0 and those are NOT defects -- CalcCost returns nil for a ' ||
+       'zero/zero price, so they correctly leave cost_usd NULL; the two populations need ' ||
+       'opposite fixes (fill in a real price vs remove a fake one) and must not be ' ||
+       'handled together.'
+  FROM shaped
+ WHERE positive_equal > 0`},
+
+		// canonical_row_discovered_but_never_referenced：自动发现写进
+		// models_canonical、却**没有任何东西引用**的模型行。
+		//
+		// # 立项依据（2026-10-06 真库读数，不是推演）
+		//
+		// 查「228 个模型永远无法核实」时撞出来的一个恒等式：
+		//
+		//	零引用的 models_canonical 行 = 228
+		//	永远无法核实的模型            = 228
+		//
+		// 两者**完全重合**，因为 modal prober 走 credential_model_bindings，
+		// 而一条没有任何 provider_models 行的 canonical 不可能有绑定。
+		// ⇒ 「228」不是「228 个模型没核实」，而是「**228 行 models_canonical
+		// 谁也没在用**」。这个区别决定处置完全不同：前者要接供应商，后者
+		// 大概率要删行。
+		//
+		// 按 provenance（source 列）切开后，auto_discovered 是那个离群值
+		// （真库读数，2026-10-06，960 行全量）：
+		//
+		//	source            行数   有引用   零引用
+		//	discovery          421     336      85
+		//	provider_refresh   321     318       3    ← 受信来源
+		//	db                  96      63      33
+		//	seed                59       3      56    ← 种子表，本来就未接
+		//	auto_discovered     58       8      50    ← 86% 零引用
+		//	migration-355        4       3       1
+		//	migration-354        1       1       0
+		//	------------------------------------------------
+		//	合计                960     732     228   ← 全库零引用 = 228
+		//
+		// ★ 上表的 50 与本检查实际报出的 38 不是两个数打架，是**status 过滤**：
+		//   auto_discovered 的 58 行 = 46 active + 12 disabled，而那 12 行
+		//   **全部零引用**（46→38、12→12）。它们是被人工下架过的，不是漏网之鱼：
+		//   `fake-model-99999` / `definitely-not-a-real-model` /
+		//   `non-existent-fake-model-12345` / 拼错的 `cluade-opus-5`、
+		//   旧名 `minimax-01` 与 `minimax-2.7`（真库 2026-10-06 逐行读出）。
+		//   ⇒ 只报 active。已 disabled 意味着「有人看过并判定它不该用」，
+		//   反复把它报出来只会训练运维忽略这条检查。
+		//
+		// 只报 `auto_discovered ∧ active ∧ 零引用`（38 行）而不是笼统的
+		// 「零引用」：`seed` 的 56 行零引用是**设计如此**（种子清单本来就还没
+		// 接供应商），把它们算进告警只会让这条检查永远在响。
+		//
+		// # 判据为什么按 source 而不是按模型名
+		//
+		// 名字正则会误伤。实测 `^text-` 会命中 `text-embedding-3` /
+		// `-large` / `-small` —— 那是 OpenAI 真模型。而按 source 切是
+		// 机制级的：它说的是「**自动发现写进来的东西没人用**」，不猜名字。
+		//
+		// # 里面藏着第二个缺陷：多模型挤一行
+		//
+		// 这 38 行里有 id=3256018 的 canonical_name =
+		// `gpt-5.6-terra claude-sonnet-5 claude-opus-5 gpt-6-sol gpt-6-astra`
+		// —— 五个模型名被存进了**一行** canonical（source=auto_discovered、
+		// created 2026-09-29）。⇒ 自动发现把某个多模型的行当成了一个模型名。
+		// 这与提案工具此前修掉的「一行多点名模型」是同一族解析缺陷，只是
+		// 发生在写入侧。所以本检查的 detail 显式点名「名字里有空白」这个信号：
+		// 它比任何统计都更能指出「解析器错了」而不是「清单没接」。
+		//
+		// # 不给一键修复
+		//
+		// 处置有两个方向（删行 / 接供应商补绑定），而哪条模型该接取决于业务，
+		// 不是一条 UPDATE 能替人决定的（同 recorded_cost_is_negative 与
+		// offer_price_looks_like_placeholder 的取舍）。
+		// ★ 刻意**不**声明 Optional。
+		//
+		// 本条只读 models_canonical 与 provider_models —— 两者都由基线
+		// 01-schema.sql 建出，不是「新迁移还没应用」的表。Optional 的用途是
+		// 「新表缺失时跳过，别让刚加迁移的环境健康面整体报错」，而这里标上它
+		// 会得到 HealthCheckDef 注释里点名禁止的那个后果：
+		// **provider_models 消失被说成一切正常**。本文件前 6 条检查读同样的
+		// 两张表、同样不标 Optional，本条与它们保持一致。
+		{CheckID: "canonical_row_discovered_but_never_referenced", Severity: "warning", Query: `
+WITH orphan AS (
+    SELECT mc.id,
+           mc.canonical_name,
+           COALESCE(mc.family, '(null)') AS family,
+           mc.created_at,
+           (mc.canonical_name ~ '\s') AS name_has_space
+      FROM public.models_canonical mc
+     WHERE mc.source = 'auto_discovered'
+       AND mc.status = 'active'
+       AND NOT EXISTS (SELECT 1 FROM public.provider_models pm
+                        WHERE pm.canonical_id = mc.id)
+), rows AS (
+    SELECT 0 AS ord,
+           o.canonical_name AS k,
+           o.canonical_name AS n,
+           'models_canonical id=' || o.id || ' family=' || o.family ||
+           ' created=' || o.created_at::date ||
+           CASE WHEN o.name_has_space
+                THEN ' — the name contains whitespace, so SEVERAL model names were ' ||
+                     'stored in one canonical row: auto-discovery parsed a multi-model ' ||
+                     'line as a single name (same family as the one-row-many-models ' ||
+                     'parse defect, on the write side)'
+                ELSE '' END ||
+           '. Nothing references it: no provider_models row carries this canonical_id, ' ||
+           'so the modality prober (which walks credential_model_bindings) can never ' ||
+           'schedule a probe for it, and it inflates every modality/verification ' ||
+           'denominator it appears in.' AS d
+      FROM orphan o
+    UNION ALL
+    SELECT 1 AS ord,
+           '(bulk) auto-discovered-orphan-canonical' AS k,
+           '(bulk) ' || (SELECT count(*) FROM orphan) ||
+           ' models_canonical row(s) are source=auto_discovered, status=active, and ' ||
+           'referenced by nothing' AS n,
+           'Measured 2026-10-06 on 960 rows: auto_discovered is the outlier among ' ||
+           'provenance values -- 50 of its 58 rows have no provider_models reference ' ||
+           '(86%), against 3 of 321 for provider_refresh. The 50 splits into 38 active ' ||
+           '(reported here) and 12 disabled, and those 12 are ALL unreferenced too: ' ||
+           'someone already switched them off by hand (fake-model-99999, ' ||
+           'definitely-not-a-real-model, the typo cluade-opus-5, the retired names ' ||
+           'minimax-01 and minimax-2.7), so re-reporting them would only teach ' ||
+           'operators to ignore this check. Auto-discovery records names it saw ' ||
+           'somewhere; nobody curates them afterwards. Reporting is scoped to ' ||
+           'this source on purpose: seed rows are unreferenced BY DESIGN (they are a ' ||
+           'not-yet-onboarded catalogue), so counting them would make this check cry ' ||
+           'wolf forever. Across all sources the unreferenced set is exactly 228 rows, ' ||
+           'which is the same 228 the modality prober can never reach. Deleting a row ' ||
+           'is an operator decision, not a fix_sql.' AS d
+      WHERE (SELECT count(*) FROM orphan) > 20
+)
+SELECT k, n, d FROM rows ORDER BY ord, n LIMIT 50`},
 	}
 }
 
@@ -1111,6 +1331,34 @@ func runChecks(ctx context.Context, db *pgxpool.Pool, checks []HealthCheckDef) (
 				// 不给一键修复：补 usage_facts 是一次回填，不是 UPDATE。更要紧的是
 				// **不能**提供「把这些差异标成已解决」的按钮——那会删掉唯一能分辨
 				// 真实成本漂移和幻影行的证据（见检查定义里的说明）。
+
+			case "offer_price_looks_like_placeholder":
+				// 首列是稳定的形态键（**字符串**），与 recorded_cost_is_negative /
+				// stats_ground_truth_gap 同形：不是数值 id，所以走 textHash。
+				var key, name, detailText string
+				if scanErr := rows.Scan(&key, &name, &detailText); scanErr != nil {
+					continue
+				}
+				entityID = textHash(key)
+				entityName = name
+				detail = detailText
+				// 不给一键修复。处置有**两个方向**（填真价 / 删假价），判据又明说
+				// 「对称也可能是真的」——一个 UPDATE 按钮只能替人做那个决定。
+				// 给个假按钮只会让人点了白点（同 recorded_cost_is_negative 的取舍）。
+
+			case "canonical_row_discovered_but_never_referenced":
+				// 首列是稳定键（canonical_name），走 textHash；汇总行的首列是
+				// 一个**常量**字符串，所以它每轮刷新同一行而不是每次换一行 ——
+				// 这一点与 modality_gate_readiness_floor 的处理同源。
+				var key, name, detailText string
+				if scanErr := rows.Scan(&key, &name, &detailText); scanErr != nil {
+					continue
+				}
+				entityID = textHash(key)
+				entityName = name
+				detail = detailText
+				// 不给 fix_sql：删 models_canonical 行还是接供应商补绑定，取决于
+				// 这个模型在业务上还要不要——一个 DELETE 按钮替不了人做这个决定。
 
 			case "modality_verification_stale":
 				var canonID int64

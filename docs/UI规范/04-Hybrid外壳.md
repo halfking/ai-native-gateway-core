@@ -265,6 +265,35 @@ WebViewCompat.addDocumentStartJavaScript(webView, script, singleton(allowedOrigi
 4. **仍未做**：本节是裁决登记。④ 的实现（壳侧反代 + 接线 + 门禁）**尚未开始**，
    不得据本节宣称「原生侧已解决」。
 
+#### 订正（2026-10-06，追加，原文保留）：第 4 条已部分过期
+
+④ 的**前端侧**已落地（10 §4.6.39）：`web-mobile/src/api/nativeTransport.ts`
+安装器 + 30 例门禁 + 变异台账 12/12。**「壳侧反代」与「接线」两件仍未做**：
+
+| 件 | 状态 |
+|---|---|
+| 前端侧安装器（`CapacitorHttp` → `transport.ts` 的 `setTransport`） | ✅ 已落地（10 §4.6.39） |
+| 应用侧拿到网关基址（读 `llmgw:shell.server` → `setGatewayBaseUrl`） | ❌ **零实现**，且**零生产调用方** |
+| 引导页「④ 模式下不 `location.replace`」分支 | ❌ 未做（当前 `webDist/index.html:323` **无条件跳转**） |
+| `web-mobile` 是否在壳里 | ❌ 不在（`capacitor.config.ts:111` `webDir: 'webDist'`，壳内只有引导页） |
+| `main.ts` 接线 | ❌ 未做 |
+
+⇒ **仍不得据本节宣称「原生侧已解决」**；上面那句原文保留不改。
+
+★ **订正本节的成本估计**：上表原以为「壳侧反代 + 接线」两件即可，复查后发现差距是
+**三条、跨两个仓**，且**在此之前要先答一个更前面的问题**——
+移动端现已由网关**同源托管**（`cmd/gateway/mobile_static.go` 提供 `/m` + `/m-assets/`，
+`web-mobile/vite.config.ts:51` `base='/m-assets/'`），**同源下相对路径 fetch 成立，
+根本不需要 ④**。而 ④ 只对「web-mobile 内嵌壳内」有意义，那会推翻本仓头部的
+「壳内不打包业务前端：改 Vue 组件 = 发 Web，不发商店包」。
+详见 **10 §4.6.39 第十节**。
+
+10 §4.6.39 同时查出两条改变本节既有推论的事实：
+① 原生传输**不带 cookie**（`CookieManager` 在 `HttpRequestHandler.java` /
+`CapacitorHttpUrlConnection.java` 中 0 命中）⇒ `client.ts` 的「cookie 优先」
+在 ④ 下退化为 **Bearer 优先**，`llmgw_session` 发不出去；
+② `Origin` 同样 0 命中 ⇒ 本节结论 1「CORS 白名单不再是接入前置」**经源码核实成立**。
+
 
 ### A-1 已修复（2026-10-04 实测），**原先那条修复路径是多余的**
 

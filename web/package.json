@@ -20,14 +20,21 @@
     "i18n:fix:dry": "node scripts/i18n-fix.mjs --dry-run",
     "i18n:fix": "node scripts/i18n-fix.mjs --apply --yes",
     "responsive:check": "node scripts/responsive-audit.mjs --strict",
+    "card:coverage": "node scripts/compact-card-coverage.mjs",
+    "card:coverage:self-test": "node scripts/compact-card-coverage.mjs --self-test",
     "device-fit": "node scripts/device-fit-audit.mjs",
+    "gesture:host": "node scripts/gesture-host-audit.mjs",
+    "census:table": "node scripts/compact-table-census.mjs",
     "element:check": "node scripts/element-import-audit.mjs",
     "color:check": "node scripts/color-token-audit.mjs --strict --baseline scripts/color-audit-baseline.json",
     "color:baseline:update": "node scripts/color-token-audit.mjs --update-baseline --baseline scripts/color-audit-baseline.json",
     "color:baseline:stale": "node scripts/color-baseline-stale.mjs",
     "ui:sweep:selftest": "node scripts/ui-sweep.mjs --selftest",
     "ui:sweep:pages": "node scripts/ui-sweep.mjs --strict",
-    "ui:sweep:overlays": "node scripts/ui-sweep.mjs --overlays --strict"
+    "ui:sweep:overlays": "node scripts/ui-sweep.mjs --overlays --strict",
+    "census:table:mobile": "node scripts/compact-table-census.mjs --root ../web-mobile/src",
+    "file-inputs:check": "node scripts/file-input-census.mjs",
+    "file-inputs:self-test": "node scripts/file-input-census.mjs --self-test"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

@@ -53,6 +53,12 @@ onMounted(() => update.start())
   height: 100vh;
   height: 100dvh;
   min-height: 0;
+  /* 横向 safe-area 在此**单点消费**（10 §4.6.32）：`--app-safe-left/right`
+     此前只有声明、零消费者，于是横屏刘海 / 曲面屏 / 折叠屏侧边一律撞内容。
+     放壳根而不是各页，是因为横屏下**所有**内容都可能被切到 —— 页内自补会漏。
+     竖屏与桌面该值恒 0 ⇒ 本行不产生任何位移，桌面零回归。
+     （box-sizing 已在 shared.css:8 全局 border-box，横向 padding 不外扩。） */
+  padding-inline: var(--app-safe-left) var(--app-safe-right);
 }
 
 /* 100dvh 仅 iOS 15.4+；先 100vh fallback 再增强（14 §3） */

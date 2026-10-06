@@ -137,6 +137,8 @@ export default {
   endDate: 'Fecha de fin',
   exportFailed: 'Error al exportar',
   exportTooLarge: 'El archivo es demasiado grande para exportarlo (límite {max}). Exporta desde el cliente de escritorio.',
+  importTooLarge: 'Archivo demasiado grande para importar (límite {max})',
+  importBadType: 'Tipo de archivo no admitido. Elija {types}',
   lastOccurred: 'Última ocurrencia',
   loading: 'Cargando…',
   never: 'Nunca',

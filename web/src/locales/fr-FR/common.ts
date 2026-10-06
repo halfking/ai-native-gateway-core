@@ -138,6 +138,8 @@ export default {
   endDate: 'Date de fin',
   exportFailed: 'Échec de l’export',
   exportTooLarge: 'Fichier trop volumineux pour l’export (limite {max}). Veuillez exporter depuis le client bureau.',
+  importTooLarge: 'Fichier trop volumineux pour l\'import (limite {max})',
+  importBadType: 'Type de fichier non pris en charge. Veuillez choisir {types}',
   lastOccurred: 'Dernière occurrence',
   loading: 'Chargement…',
   never: 'Jamais',

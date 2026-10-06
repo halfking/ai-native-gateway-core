@@ -238,8 +238,11 @@
 220	825_modality_graded_verification.sql
 221	826_model_baseline_price.sql
 222	827_modality_verification_progress_view.sql
-223	828_supplier_errors_unified_tracked.sql
-224	829_bodies_columnar_rollback.sql
-225	831_work_type_route_source.sql
-226	832_model_baseline_observation_health.sql
-227	833_supplier_price_nonneg_check.sql
+223	834_supplier_errors_base_tables.sql
+224	828_supplier_errors_unified_tracked.sql
+225	829_bodies_columnar_rollback.sql
+226	831_work_type_route_source.sql
+227	832_model_baseline_observation_health.sql
+228	833_supplier_price_nonneg_check.sql
+229	835_modality_verify_probe_ledger.sql
+230	836_supplier_errors_heap_reassert.sql
