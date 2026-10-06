@@ -5,19 +5,67 @@ import (
 	"log/slog"
 )
 
-// EnsureMaasSchema applies MaaS billing tables and pricing v2 columns (idempotent).
-func (d *DB) EnsureMaasSchema(ctx context.Context) error {
-	if d == nil || d.pool == nil {
-		return nil
-	}
-	_, err := d.pool.Exec(ctx, `
+// 2026-10-07 (audit §10.97): `ALTER TABLE … ADD COLUMN IF NOT EXISTS` does NOT
+// spare the lock. PostgreSQL must take ACCESS EXCLUSIVE on the parent table and
+// on every partition before it can check whether the column exists, so a column
+// that has been in place for months still costs a full exclusive pass on every
+// boot. On production this statement measured 420 calls with a mean of 2,289 ms
+// and a worst single call of 104,322 ms — against request_logs, the busiest
+// table in the database, with 5 monthly partitions there (6 relations locked)
+// for a statement that changes nothing. That is 16 minutes of cumulative
+// blocking on the hottest table over a 25.9 day window.
+//
+// The same shape is applied to work_type in db.go (workTypeRequestLogsCurrent);
+// this is the remaining unguarded request_logs DDL in the startup path.
+const maasRequestLogsDDL = `
 		ALTER TABLE request_logs
 		    ADD COLUMN IF NOT EXISTS credits_charged BIGINT;
 
 		CREATE INDEX IF NOT EXISTS idx_request_logs_credits_charged
 		    ON request_logs (tenant_id, ts DESC)
-		    WHERE credits_charged IS NOT NULL AND credits_charged > 0;
+		    WHERE credits_charged IS NOT NULL AND credits_charged > 0;`
 
+// maasRequestLogsCurrent reports whether request_logs already carries the
+// credits_charged column and its index, i.e. whether maasRequestLogsDDL would
+// be a pure no-op. Both are checked because the DDL is applied as one unit: the
+// index cannot be created before the column exists.
+func (d *DB) maasRequestLogsCurrent(ctx context.Context) bool {
+	var missing int
+	err := d.pool.QueryRow(ctx, `
+		SELECT
+		  (SELECT count(*) FROM (VALUES ('credits_charged')) AS want(name)
+		   WHERE to_regclass('public.request_logs') IS NOT NULL
+		     AND NOT EXISTS (
+		       SELECT 1 FROM information_schema.columns
+		        WHERE table_schema='public' AND table_name='request_logs'
+		          AND column_name = want.name))
+		  +
+		  (SELECT count(*) FROM (VALUES ('idx_request_logs_credits_charged')) AS want(name)
+		   WHERE NOT EXISTS (
+		       SELECT 1 FROM pg_indexes
+		        WHERE schemaname='public' AND indexname = want.name))
+	`).Scan(&missing)
+	if err != nil {
+		// A failed probe must not be read as "current": that would skip DDL on
+		// a database that genuinely needs it. Fall through to applying it.
+		slog.Warn("maas request_logs probe failed; applying DDL", "error", err)
+		return false
+	}
+	return missing == 0
+}
+
+// EnsureMaasSchema applies MaaS billing tables and pricing v2 columns (idempotent).
+func (d *DB) EnsureMaasSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	if d.maasRequestLogsCurrent(ctx) {
+		slog.Info("maas schema ensured (pricing v2 columns); request_logs credits_charged " +
+			"column and index already present, DDL skipped")
+	} else if _, err := d.pool.Exec(ctx, maasRequestLogsDDL); err != nil {
+		return err
+	}
+	_, err := d.pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS maas_settings (
 		    id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
 		    cents_per_credit NUMERIC(10, 4) NOT NULL DEFAULT 0.1,

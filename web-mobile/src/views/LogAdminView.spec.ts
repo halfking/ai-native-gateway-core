@@ -51,7 +51,7 @@ const archMock = fetchLogArchiveList as unknown as ReturnType<typeof vi.fn>
 const ORIGIN_LOCALE = locale.value
 let mountedList: Array<{ unmount(): void }> = []
 
-/** 抄自 `admin/logs_body_cache.go:142-149`。 */
+/** 抄自 `admin/logs_body_cache.go:139-146`。 */
 function cacheOf(over: Record<string, unknown> = {}): BodyCacheStats {
   return { size: 142, hits: 1023, misses: 287, evictions: 5, hit_rate: 1023 / 1310, cap: 1024, ...over } as BodyCacheStats
 }
