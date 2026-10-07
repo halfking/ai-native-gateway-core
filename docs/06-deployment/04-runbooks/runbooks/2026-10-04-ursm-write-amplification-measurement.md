@@ -11539,3 +11539,126 @@ sql/migrations/startup/830_ursm_node_snapshot_min_partitioned.down.sql    7,369 
 它现在是数据库时间第一名（81.0%，§10.93），而它**逐张表地**削弱本该由 autovacuum 承担的职责。
 本会话**不建议**直接动它（收益已由 837/838 拆分、839 交回覆盖），
 但这条机制应作为后续优化的一等公民记在册。
+
+---
+
+## §10.106 上线记录：五项 + 830 于 2026-10-07 全部落地（build 2485）
+
+### §10.106.1 ⚠ 上线前我算错了部署面，用的是陈旧基线
+
+执行前检查时我读 `/opt/llm-gateway-go/VERSION` 得出「生产落后 **8177** 提交」，
+并据此向用户申请了全量部署授权。**这是错的**：该 `VERSION` 文件停留在 7 月的
+`ad347ac6d`，而**实际运行的二进制是 `40405063` build 2470**（API `/healthz` 才是权威）。
+
+| | 我先前的报错 | 实际 |
+|---|---|---|
+| 部署面 | 8177 提交 | **247 提交**（huangzhouzixuan 117 / halfking 105 / mavis 19 / zcode 6） |
+| `bg/partition_manager.go` | +1698 行 | **+37 行**（analyze 互斥锁） |
+| `db/db.go` | +6200 行 | **+534/-34 行** |
+
+⇒ **判生产基线必须走 `/healthz` 或 `/api/system/version`，不能读 `VERSION` 文件**——
+后者没有任何机制保证与实际二进制同步。
+
+### §10.106.2 落地的五项 + 830
+
+| # | 项 | 落地方式 | 验证读数 |
+|---|---|---|---|
+| 1 | **analyze 互斥锁** | 随二进制（`bg/partition_manager.go`） | 两台同版本 2485，`pg_try_advisory_xact_lock` 生效后只有一台跑全量 |
+| 2 | **迁移 837** | 手工 `psql -1 -f` | 两个路由 MV 重建 + `routing_mv_refresh_state` 建表 2 行；**未跑安装器**（见 §10.106.4） |
+| 3 | **迁移 838** | 同上 | `analyze_llm_gateway_table_stats` 函数体 **1490 → 2068** 字节，含 `date_trunc('month')` 冻结月跳过逻辑 |
+| 4 | **迁移 839** | 同上 | **5 张**关系拿到 `autovacuum_analyze_scale_factor=0.005`，含最关键的 `request_logs_2026_10` |
+| 5 | **六条独占锁守卫** | 随二进制 | 二进制内符号自证：`ensureProviderSoftDelete` 2 / `goalclientsignal` 5 / `ensure_ursm_node_snapshot_min_daily_partition` 7 |
+| 6 | **`b03afa02a` 推 252** | 覆盖 `/opt/scripts/pg17-proactive-empty-table-cleanup.sh` | md5 与仓库 HEAD 一致、`bash -n` 通过、两道守卫各 2 处（`NOT c.relispartition` / `NOT LIKE '%_default'`） |
+| 7 | **`wal_compression=lz4`** | `ALTER SYSTEM` + `pg_reload_conf()` | `setting=lz4` / `source=configuration file` / **`pending_restart=f`（零停机）** |
+| 8 | **830 分区化** | 手工 `psql -1 -f`（**保留 `.skip` 文件名**） | 见 §10.106.3 |
+
+### §10.106.3 830 的执行与切换验证
+
+单事务 0.825 秒完成（RENAME → 改名 PK 约束 → 建父表 → 建 ensure 函数 → 预建 3 分区）：
+
+```
+new_relkind     = p                                    ← 分区父表
+legacy_relkind  = r                                    ← 历史留作 heap
+partitions      = _20261007, _20261008, _20261009      ← 契约命名合规
+new_pk          = ursm_node_snapshot_min_pkey           ← canonical 名让出后再取回
+legacy_pk       = ursm_node_snapshot_min_legacy_pkey    ← 改名而非删除，回滚仍有 arbiter
+legacy_rows     = 2,836,620                            ← 历史一行未丢
+new_cols        = 56                                   ← 32 基线 + 818 的 24
+```
+
+**切换是干净的**（不靠推断，靠两个 max_ts 对拍）：
+
+```
+新表  max_ts = 2026-10-07 13:05:08   （写入持续）
+_legacy max_ts = 2026-10-07 13:03:08 （停在切换那一刻，之后不再进）
+新表 5,355 行 100% 落在当日分区 _20261007  ← 分区路由正确
+```
+
+两台实例都持续写入且**无 `no partition of relation found`**：
+154 每分钟 `persist committed` 1,338~1,340 行、245 同量，healthz 均 `ready:true`。
+
+★ **保留 `.skip` 文件名是有意的**：installer's embed 与 `dbinit/runner.go` 都用
+**显式文件名**登记（已核，无 glob），830 不在其中；但把文件改成 `.sql`
+会让任何未来新增的 `*.sql` 遍历把它收进去。**应用事实由 `schema_migrations` 的 830 行承担。**
+
+### §10.106.4 为什么手工应用迁移、而不是跑安装器
+
+安装器的启动清单里 **834~839 全都登记在列**，跑安装器会连带应用
+**834/835/836**——不在本次授权范围内，且其中 836 是**真实的数据搬动**：
+它要把 `supplier_errors_2026_09/_10/_11` 三个 **columnar 分区 DETACH 后重建为 heap**
+（现网 `supplier_errors` 是 `relkind='p'`）。故本次只手工应用 837/838/839，
+834~836 留待单独窗口。
+
+### §10.106.5 839 跳过 2 张表：查清了，是无害的
+
+迁移输出两条 NOTICE：
+`skip credit_ledger_2026_10` / `skip tool_usage_stats_2026_10`
+（理由：`AccessExclusiveLock required to add toast table`）。
+
+真因不是锁竞争，而是**这两张表 `reltoastrelid = 0`（压根没有 TOAST 表）**——
+因为它们是**空表**：
+
+```
+credit_ledger_2026_10   0 行   0 bytes
+tool_usage_stats_2026_10 0 行   0 bytes
+request_logs_2026_10    127,457 行  144 MB   ← 真正重要的那张，已交回
+```
+
+⇒ 无行可统计、无需 autovacuum，**跳过是正确的**。重试一次仍跳过，符合预期。
+
+### §10.106.6 b03afa02a 上线前的事故核查：未造成损伤
+
+今天 02:00 的 cron 已用**旧版**脚本跑过一次。核查 15 个 `_default` 分区：
+**全部存在、父表齐全、无孤儿**，`usage_facts_default` 完好（0 bytes，父表 `usage_facts`）。
+⇒ 地雷未引爆（那些表当时非空），但 P0 已封堵。
+
+### §10.106.7 两处部署布局差异（下次部署会踩）
+
+| | 154 | 245 |
+|---|---|---|
+| 可执行路径 | `current/llm-gateway-go` | **`slots/8781/gateway`** |
+| 布局 | 单二进制 + symlink | **每端口 slot** → `releases/<seq>-<sha>/` |
+| 翻版动作 | stop → 换文件 → start | 建 `releases/<new>/` → 翻 `slots/8781` → restart |
+
+⇒ 我在 245 第一次只翻了 `current`，重启后 `/proc/<pid>/exe` **仍指向旧 release**；
+必须翻 `slots/8781`。**245 的 release 目录还需从旧版补 `configs/`、`deployment.json`、
+`SHA256SUMS`、`VERSION`**，否则启动会报 `configs/sensitive_*.yaml` 缺失（非致命）。
+
+### §10.106.8 回滚基线
+
+| 位置 | 内容 |
+|---|---|
+| 154 | `/opt/llm-gateway-go/current/llm-gateway-go.bak-pre2485-20261007-123726`（md5 `a16cdb02…`） |
+| 245 | `/opt/llm-gateway-go/releases/2476-e27a8fc2/`（**未动**，slot 翻回即可） |
+| 252 | `/opt/scripts/pg17-proactive-empty-table-cleanup.sh.bak-20261007-125619` |
+| DB | 837/838/839 各有 `.down.sql`；830 有 `830_ursm_node_snapshot_min_partitioned.down.sql`（要求 `_legacy` 仍在） |
+
+### §10.106.9 尚待观察（**不宣称已验证**）
+
+1. **留存切到 DROP 模式尚未观测到**：`SnapshotRetentionWorker.run()` 启动时跑一次、
+   之后每小时一次。830 在 13:03 执行，服务 12:37 启动，
+   ⇒ 下一次 tick 约 **13:37**。判据是日志出现
+   `"snapshot retention dropped expired partitions"`（而非 `removed expired snapshots`）。
+2. **analyze 互斥锁的实跑效果**需等两个实例各跑满一轮（`pg_stat_statements` 的
+   `analyze_llm_gateway_table_stats` 调用数应从 14 次/窗口降到 7 次）。
+3. **`_legacy` 的 DROP 责任人未定**，第 7 天（约 2026-10-14）不 DROP 则约 852 MB 白占。
