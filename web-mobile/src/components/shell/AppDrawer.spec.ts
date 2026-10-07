@@ -134,6 +134,10 @@ describe('navItemsFor', () => {
       'proposals',
       'request-anomalies',
       'routing-audit',
+      // ★ 2026-10-08 第一百零一批：路由策略配置面（`admin/handler.go:1200 :1201 :1215`
+      //   是 h.superAdmin）。同族的 `featured-models`（`:1216`）其实是 admin 档，
+      //   但这一席整体按 superAdmin 挡 —— 混档会让「谁能看哪块」不可解释。
+      'routing-policy',
       'task-index',
       'tenants',
     ])
