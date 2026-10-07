@@ -63,9 +63,20 @@ func expectAppendTurn(mock pgxmock.PgxPoolIface, rec TurnRecord, nextTurn int, i
 	mock.ExpectExec("session_turns_advisory_lock_key").
 		WithArgs(rec.TenantID, "request:"+rec.RequestID).
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
-	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
+	// The writer reads MAX(turn_no) from session_turns_hot first and only
+	// falls back to the partitioned parent when hot answers "empty"
+	// (COALESCE(MAX,0)+1 == 1 with zero rows). Keeping the two arms on
+	// distinct regexes is what makes this gate able to catch a writer that
+	// skips the fallback — identical regexes would make the assertion
+	// order-insensitive and therefore toothless.
+	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1 FROM public\\.session_turns_hot").
 		WithArgs(rec.TenantID, rec.SessionID).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(nextTurn))
+	if nextTurn <= 1 {
+		mock.ExpectQuery("SELECT COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1 FROM public\\.session_turns").
+			WithArgs(rec.TenantID, rec.SessionID).
+			WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(nextTurn))
+	}
 
 	// INSERT — exact WithArgs in the order the production code passes them:
 	//   $1  session_id
@@ -226,7 +237,12 @@ func TestTurnWriterAppendTurnRejectsRequestOwnedByAnotherSession(t *testing.T) {
 	mock.ExpectExec("session_turns_advisory_lock_key").
 		WithArgs(rec.TenantID, "request:"+rec.RequestID).
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
-	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
+	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1 FROM public\\.session_turns_hot").
+		WithArgs(rec.TenantID, rec.SessionID).
+		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
+	// hot answered "empty" (1 == COALESCE(MAX,0)+1 with zero rows) ⇒ the
+	// writer must fall back to the partitioned parent before inserting.
+	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1 FROM public\\.session_turns").
 		WithArgs(rec.TenantID, rec.SessionID).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").
