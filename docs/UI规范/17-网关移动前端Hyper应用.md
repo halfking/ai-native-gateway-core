@@ -10946,3 +10946,127 @@ WHERE credential_id = $1 AND started_at >= $2
    补「**没有 `resolved_at` 但有 `resolution_notes`**」后立刻有牙。
    ⇒ ★ 与「判据有两个必要条件各要一条」同族：
      **每个合取项都要有一条「只让那个项不同」的用例。**
+
+---
+
+## 11.118 响应格式异常：明细 + 汇总（第八十二批，2026-10-08）
+
+- 新增 `web-mobile/src/api/formatAnomalies.ts`
+- 新增 `web-mobile/src/api/formatAnomalies.test.ts`（**137 条**）
+- 覆盖 `GET /api/admin/format-anomalies` 与 `GET /api/admin/format-anomaly-summary`
+- **鉴权：`admin/handler.go:913` / `:914` 两个都是 `h.superAdmin`**
+  ⇒ 抽屉席须设 `requiresRole: 'super_admin'`，并同步 `AppDrawer.spec.ts` 白名单
+- ★ `:915` 的 `format-anomalies/{id}/resolve` 是 **POST 写操作** ⇒ 本模块**不碰**
+- 实现：`admin/format_anomalies.go`（list `:51-192`、summary `:194-267`）
+- 数据表：`response_format_anomalies`（`454_response_format_anomalies.sql`）
+
+### ★★ 这两张表不是同一张（批 81 的注释容易让人误会）
+
+`admin/model_integrity.go:48-49` 说 `ModelIntegritySummary` "Mirrors the SQL used by
+/api/admin/format-anomaly-summary" —— 指的是**聚合口径相似**，
+底表是 `response_format_anomalies` 而**不是** `model_integrity_events`。
+两表连 `severity` 的建表缺省都不同（`medium` vs `low`）⇒ 跨表比较前必须逐列对。
+
+### 本族最要紧的十五件事
+
+1. ★★★★★ **`count` 是「全表命中数」，不是本页长度 —— 与批 78/81 语义相反。**
+   `:100-111` 先跑**独立的** `SELECT COUNT(*)`，再跑带 `LIMIT/OFFSET` 的列表查询。
+   ⇒ 恒成立的不变式是 **`count >= anomalies.length`**。
+   ⇒ ★★ 批 78 的 `count == tasks.length`、批 81 的 `count == events.length` **在这里不成立**
+     ⇒ **判据不能跨族照抄**（本仓 `count` 已见三义）。
+2. ★★★★ `limit` 与 `offset` **都回显** ⇒ 分页可精确判定（本族能判「还有下一页」，
+   批 79/80/81 都只能靠「拿满上限」反推）。`limit` 缺省 50 / 上界 500；
+   `offset` 缺省 0、**无上界**（`offset=999999` 照发，返回空数组但 `count` 仍是全量）。
+3. ★★★★ `provider_code` 走 `LEFT JOIN providers` 补值，**展示与过滤用同一个 COALESCE**
+   （`:119` 与 `:81`）⇒ ★ 可自验：**`provider_code` 键缺失的行不可能是 provider 过滤的结果**
+   （`NULL = $1` 不为真）。
+4. ★★★★ `response_structure` 是 `map[string]any` + omitempty ⇒ **空 map 整个键被省略**
+   ⇒ **第十种 nil 编码的第二次出现**（批 79 的 `by_supplier` 同款）
+   ⇒ 推论：「键在」蕴含「非空」⇒「结构为空」这个判据**恒真**，按纪律**不提供**。
+5. ★★★★ `request_id` 是**非指针 string** ⇒ 恒在键，**但可以是空串**
+   （建表 `NOT NULL` 只保证不是 NULL）⇒ 与批 81 的 `RequestID *string` **正好相反**。
+6. ★★★ Go 字段 `ContentSize` 的 JSON 键是 **`content_size_bytes`**。
+   ⇒ ★★★ 它是**条件键** ⇒ **写错键名不抛错、静默返 `undefined`**
+   ⇒ 模块提供 `formatNumericValue()` 作为取值入口，spec 里有专属用例钉住。
+7. ★★★★ `anomaly_type` 与 `severity` 在这张表都是**开放域**：写入入口
+   `RecordDataAnomaly(ctx, anomalyType, severity, …)` **接受任意字符串**，建表也没有 CHECK。
+   ⇒ ★★★ 与批 81 正好相反（那里 `anomaly_type` 被 SQL 硬编码 ⇒ **可**严格校验）。
+   ⇒ ⇒ 只提供「是否落在已知集合内」（12 个字面量）的判据，解包器**不**拒绝未知取值。
+8. ★★★ 两张表的 `severity` **建表缺省不同**：`medium` vs `low`。
+9. ★★★★ summary 的三个 AVG 是 `*float64` + omitempty ⇒ **`AVG(...)` 返回 NULL 时键被省略**
+   （不是 0、不是 null）⇒ 算均值时不能把键缺当 0 参与求和。
+10. ★★★ `COUNT(DISTINCT request_id)` ⇒ 恒 **`affected_requests <= anomaly_count`**；
+    `FILTER (WHERE resolved)` ⇒ 恒 `resolved_count <= anomaly_count`。
+11. ★★★★ 排序是 `ORDER BY hour DESC, anomaly_count DESC` —— **不是**整体按计数降序。
+    ⇒ ★★★ 只能断言「`hour` 全局非增」+「**同一 hour 内** `anomaly_count` 非增」。
+    ⇒ 这是本族最容易被误用的不变量。
+12. ★★★ summary 的 `LIMIT 200` **硬编码在 SQL 里**（`:231`），不参数化、不回显
+    ⇒ 只能靠 `count === 200` 反推可能被截断（与 list 的可调 `limit` 鲜明对照）。
+13. ★★★ `hours` 回显生效值，上界是 **`24*30 = 720`** 小时
+    ⇒ 与批 81 的 `days <= 30` 是两套窗口语义。
+14. ★★★★ **503 检查排在 405 检查之前**（`:52` 在 `:56`）
+    ⇒ 「方法不是 GET **且** db 未配置」时拿到 **503 而不是 405**。
+15. ★★★★ 三条 500 文案**各不相同**，客户端可区分失败发生在哪一步：
+    `count query failed` / `list query failed` / `summary query failed`
+    ⇒ ★★ 与第八十批「两条子路径文案**完全相同**」正好相反。
+
+★ 又一次 `withAllTenantReadOnlyTx`（`:106` / `:143` / `:213`）⇒ **本仓第六次「不隔离」**。
+
+### 验证
+
+- 用例 **137 条全绿**
+- 变异 `/tmp/mut-co82.mjs`，见下节
+- 三门 rc=0；`vue-tsc` rc=0（首跑报 1 条 `TS2345`：用例里用错类型的夹具）；`npm run build` rc=0
+- U+FFFD 自查：源与用例均 0
+
+### 变异验证暴露的判据缺陷（67 条 → 首跑 59 有牙，修到 65）
+
+1. **★★★ 两条 STILL_GREEN 是可证等价，其余 7 条首跑绿全是夹具与锚点问题。**
+
+   **可证等价（2 条，保留 + 注释写明理由）**：
+   | # | 变异 | 为什么等价 |
+   |---|---|---|
+   | 20 | 去掉 `formatLimitIsSendable` 的 `Number.isFinite` | `Infinity` 被 `<= 500` 挡住、`NaN` 被 `>= 1` 挡住 |
+   | 53 | 把 `request_id === ''` 改成 `request_id.length === 0` | `request_id` 是**七恒在键之一**且解包器已校过是 string ⇒ 该判据**不可能**收到 `undefined` |
+
+   **夹具/锚点（7 条，逐条换夹具或改锚点后有牙）**：
+   | 变异 | 问题 | 修法 |
+   |---|---|---|
+   | #11 整型条件键列表丢掉 `content_size_bytes` | 锚点指的是 `provider_id` 类型错那条（两条共用循环） | 锚点改到专属的 `content_size_bytes` 类型错用例 |
+   | #31 删掉两个 time 字段的类型检查 | 锚点指「缺 `created_at`」，被 `requireKeys` 兜住 | 锚点改到「键齐全但类型错」那条 |
+   | #42 「还有下一页」漏掉 `offset` | `offset=0` 时两式相同 | 补「**中间页**（`offset>0`）」并把锚点指过去 |
+   | #48 `'k' in row` → `!!row[k]` | `context` 那条用 `{}`，`!!{}` 也是 true | 补「**键在但值是 `null`**」那一格（唯一能区分的输入） |
+   | #55 已知类型改成大小写不敏感 | 用的未知值小写形态也命中不了 | 补「**大写变体**」那条 |
+   | #59/#60 | **两条是同一个变异**（`from`/`to` 完全相同） | 删掉重复的 #59 |
+   | #61 | `from` 与 `to` 只差一句注释 ⇒ **行为根本没变** | 改成真变异（`>=` → `<=`） |
+
+   ⇒ ★★ #61 是「**注入标记 ≠ 变异**」的又一例：我以为改了一行，其实 `from`/`to` 只差注释，
+     `ORIG.replace` 产出的文件与原文件行为一致 ⇒ 必然 STILL_GREEN。
+     **dry 阶段的 `NO_EFFECT` 检查只能发现「完全没变」，发现不了「只变了注释」。**
+
+2. **★★ 改源码会让变异的 `from` 片段失配。**
+   为修构建门（`noUncheckedIndexedAccess` 下 `TS2345`）把
+   `if (typeof requestedHours !== 'number' …) / Math.trunc(requestedHours)`
+   改成局部常量 `asked`，⇒ 变异 #67 / #68 的 `from` 立刻 `NO_MATCH`。
+   ⇒ ★ 收尾顺序必须是：**先把源码改到最终形态，再跑一次变异**，
+     或改完源码后**逐条确认 `from` 仍能匹配**（脚本的 `NO_MATCH` 分支正是为此存在）。
+
+3. **★ `npm run build` 的类型门比 `vue-tsc` 更严（又一次，且是同一形态）。**
+   `vue-tsc --noEmit` rc=0，但 `npm run build` 报
+   `src/api/formatAnomalies.ts(596,21): error TS2345: 'number | undefined' is not assignable to 'number'`。
+   ⇒ 这是可选参数在严格模式下**没有**被 `typeof !== 'number'` 收窄到位；
+     显式 `const asked: number | undefined = requestedHours` 之后两者都绿。
+   ⇒ ★ 推论：**「vue-tsc 通过」不等于「构建通过」**，两个门都要跑。
+
+4. **★★ 条件键写错键名不会被解包器发现 ⇒ 必须给取值入口。**
+   `content_size_bytes`（键名与 Go 字段 `ContentSize` 不一致）是**条件键** ⇒ 缺键合法 ⇒
+   用错键名（如 `content_size`）**不抛错**、静默拿到 `undefined`。
+   ⇒ 模块提供 `formatNumericValue(row, key)` 作为唯一取值入口，
+     并写两条用例钉住：写错键名拿 `undefined`、走入口拿 2048。
+   ⇒ ★ 与已记的「`x ?? null` 会把字段名打错整个吞掉」同源，
+     但这次是**解包器的设计使然**（条件键不该强制存在）⇒ 必须在 API 层补入口。
+
+5. **★★ 一个族里的两个端点，503/405 的检查顺序可能不同。**
+   本族把 `h.db == nil` 放在方法检查**之前**（`:52` 在 `:56`）⇒ 「非 GET 且 db 未配置」得 503。
+   ⇒ 与批 81 的 dispatcher 表现相同，但**本族在 handler 里自己也有这道检查**（不只在 dispatcher）
+   ⇒ 这种顺序客户端观察不到（除非两种错误同时发生），但值得记下来。
