@@ -581,7 +581,7 @@ describe('★★★ (6) data_plane_tables 的 -1 是「查询失败」哨兵', (
     expect(opsDataPlaneCountIsAvailable(-1)).toBe(false)
   })
 
-  it('★ ★ 值是 0 ⇒ 判可用（可��计数，哨兵只有 -1）', () => {
+  it('★ ★ 值是 0 ⇒ 判可用（能是 0 计数，哨兵只有 -1）', () => {
     // ★ 这条才是「可用判据改成 > 0」的牙：真实计数 0 必须算可用。
     expect(opsDataPlaneCountIsAvailable(0)).toBe(true)
     expect(opsDataPlaneCountIsUnavailable(0)).toBe(false)
