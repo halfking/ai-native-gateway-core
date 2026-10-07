@@ -1006,6 +1006,12 @@ files=(
   # 元数据补全；落 main（cbce70a60，自称未部署）时又未登记——最高编号
   # 守卫按设计拦下。
   "$ROOT_DIR/sql/migrations/startup/842_credential_model_index_latest_bucket_idx.sql"
+  # 2026-10-07 §10.106.28：candidate_failure_logs 两臂补 (ts DESC) 索引。
+  # 该族无任何 ts 打头的索引 ⇒ 无过滤的 max(ts) 只能全量扫索引条目
+  # （父表 cost 4566 / hot 171，26 倍差），而告警语句 58,001 次调用。
+  # 本地同形状实测：加索引前读 55,000 行 2.736ms，加后读 1 行 0.036ms。
+  # 正常升级通道：部署扫描腿按目录+台账独立投递，登记是元数据补全。
+  "$ROOT_DIR/sql/migrations/startup/843_candidate_failure_logs_ts_desc_idx.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的

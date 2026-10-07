@@ -906,6 +906,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   启用需按族 INSERT 保留月数，那是业务决定，不在本迁移内。
 			"841_monthly_partition_retention.sql",
 			"842_credential_model_index_latest_bucket_idx.sql",
+			"843_candidate_failure_logs_ts_desc_idx.sql",
 		},
 	}
 }
