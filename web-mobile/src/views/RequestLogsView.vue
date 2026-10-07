@@ -349,7 +349,7 @@ watch(maxHours, () => {
 .logs__chip--on {
   background: var(--app-primary);
   border-color: var(--app-primary);
-  color: #fff;
+  color: var(--app-on-primary);
 }
 
 .logs__summary {

@@ -410,18 +410,18 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.tnd__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.tnd__panel { background: var(--app-surface); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .tnd__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .tnd__label { display: block; font-size: 12px; color: var(--app-text-muted); margin: 8px 0 4px; }
 
 /* ★ R1：新增交互控件 ≥48 CSS px */
 .tnd__seg { display: flex; gap: 6px; margin-bottom: 8px; }
 .tnd__seg-btn { flex: 1; min-height: 48px; font-size: 13px; border-radius: 8px;
-  border: 1px solid var(--border, #ddd); background: transparent; color: inherit; }
+  border: 1px solid var(--app-border); background: transparent; color: inherit; }
 .tnd__seg-btn--on { border-color: var(--app-primary); color: var(--app-primary); font-weight: 600; }
 .tnd__actions { display: flex; gap: 8px; margin-bottom: 12px; }
 .tnd__btn { flex: 1; min-height: 48px; font-size: 14px; border-radius: 8px;
-  border: 1px solid var(--border, #ddd); background: transparent; color: inherit; }
+  border: 1px solid var(--app-border); background: transparent; color: inherit; }
 .tnd__btn--primary { border-color: var(--app-primary); color: var(--app-primary); font-weight: 600; }
 
 .tnd__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
@@ -435,7 +435,7 @@ onBeforeUnmount(() => {
 .tnd__cell-v { font-size: 14px; font-weight: 600; }
 
 .tnd__list { list-style: none; margin: 0; padding: 0; }
-.tnd__item { padding: 10px 0; border-top: 1px solid var(--border, #eee); }
+.tnd__item { padding: 10px 0; border-top: 1px solid var(--app-border); }
 .tnd__item-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .tnd__title { font-size: 14px; font-weight: 600; }
 .tnd__badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
@@ -445,7 +445,7 @@ onBeforeUnmount(() => {
 
 .tnd__table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
 .tnd__table th { text-align: left; font-weight: 500; color: var(--app-text-muted); font-size: 11px;
-  border-bottom: 1px solid var(--border, #eee); padding: 4px 2px; }
+  border-bottom: 1px solid var(--app-border); padding: 4px 2px; }
 .tnd__table td { padding: 4px 2px; vertical-align: middle; }
 .tnd__td-l { color: var(--app-text-secondary); white-space: nowrap; }
 .tnd__td-v { font-weight: 600; text-align: right; }

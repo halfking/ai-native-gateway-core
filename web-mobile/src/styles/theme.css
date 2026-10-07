@@ -32,6 +32,10 @@
      四个状态色现由 src/styles/theme.spec.ts 逐个钉死，改色会被门拦下。 */
   --app-success: #116149;
   --app-warning: #8c5c18;
+  /* 2026-10-08 新增（10 §4.6.64）：警告色块上的文字色。
+     实测暗色下 `--app-warning` #e0a53a 配白字只有 2.18:1；
+     用深色前景 #1a222d 是 7.33:1。浅色保持白字（#fff on #8c5c18 = 5.74:1）。 */
+  --app-on-warning: #ffffff;
   --app-danger: #c2413b;
   --app-info: #3455c4;
   --app-focus: var(--app-primary);
@@ -153,6 +157,7 @@ html.dark {
   --app-bottomnav-bg: rgba(20, 26, 35, 0.94);
   --app-success: #3ecf8e;
   --app-warning: #e0a53a;
+  --app-on-warning: #1a222d;
   --app-danger: #f07167;
   --app-info: #7aa3ff;
   --app-success-soft: rgb(62 207 142 / 14%);

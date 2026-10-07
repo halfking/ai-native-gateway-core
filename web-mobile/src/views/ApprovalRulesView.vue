@@ -241,13 +241,13 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.ar__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.ar__panel { background: var(--app-surface); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .ar__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .ar__item-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 
 /* ★ R1：新增交互控件 ≥48 CSS px */
 .ar__input { width: 100%; min-height: 48px; padding: 0 12px; font-size: 14px;
-  border: 1px solid var(--border, #ddd); border-radius: 8px; background: transparent; color: inherit; }
+  border: 1px solid var(--app-border); border-radius: 8px; background: transparent; color: inherit; }
 
 .ar__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
 .ar__msg--err { color: var(--app-danger); }
@@ -255,7 +255,7 @@ onBeforeUnmount(() => {
   color: var(--app-text-secondary); margin: 6px 0; }
 .ar__note--warn { color: var(--app-warning); }
 .ar__list { list-style: none; margin: 0; padding: 0; }
-.ar__item { padding: 10px 0; border-top: 1px solid var(--border, #eee); }
+.ar__item { padding: 10px 0; border-top: 1px solid var(--app-border); }
 .ar__title { font-size: 14px; font-weight: 600; word-break: break-all; }
 .ar__badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
 .ar__badge-t { color: var(--app-text-secondary); }
