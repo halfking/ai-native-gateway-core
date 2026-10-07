@@ -305,6 +305,17 @@ func TestSnapshotRetentionHonorsCleanupWindow(t *testing.T) {
 		MaxCleanupWindow: time.Nanosecond, // deadline already passed after batch 1
 	})
 	worker.db = db
+	// 时钟缝注入（2026-10-07 96h 审计）：Windows 的 time.Now 粒度 ~0.5ms，
+	// fake DB 单批微秒级完成，两批之间的墙钟读数可能落在同一时钟刻度上，
+	// 「deadline 已过」判假 ⇒ 循环多跑一批（began=2）。阶梯时钟保证每次
+	// 读数推进 1ms：deadline=第一次读数+1ns，第二批检查时必然已越过 ⇒
+	// began=1 跨平台确定。
+	base := time.Now()
+	clockStep := 0
+	worker.now = func() time.Time {
+		clockStep++
+		return base.Add(time.Duration(clockStep) * time.Millisecond)
+	}
 
 	if _, err := worker.CleanupExpired(context.Background()); err != nil {
 		t.Fatal(err)

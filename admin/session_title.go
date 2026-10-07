@@ -646,8 +646,30 @@ func (h *Handler) handleSessionTitlesBatch(w http.ResponseWriter, r *http.Reques
 		pairs = append(pairs, [2]string{taskID, scoped})
 	}
 
+	// 租户收口（2026-10-07 审计）：task_id 由客户端直接提供，而
+	// session_titles 无 tenant_id 列，修复前 tenant_admin 可用任意
+	// task_id 跨租户探测会话标题。与 extraction-status 的
+	// assertTaskInTenant 门 / requireSessionTaskAccess 的跳过条件对齐
+	// （super_admin/admin_key/default 租户不过滤）。FAIL-CLOSED：租户
+	// 解析失败 ⇒ 空集 ⇒ 全部 key 视为不在租户内，标题富化降级为空。
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+	tenantID := ""
+	if IsTenantAdmin(r) && GetTenantID(r) != "" && GetTenantID(r) != "default" {
+		tenantID = GetTenantID(r)
+	}
+	if tenantID != "" {
+		taskIDs := make([]string, 0, len(pairs))
+		for _, p := range pairs {
+			taskIDs = append(taskIDs, p[0])
+		}
+		allowed, err := taskIDsInTenant(ctx, h.db, taskIDs, tenantID)
+		if err != nil {
+			slog.Warn("titles batch tenant scope failed; degrading to empty", "error", err)
+			allowed = map[string]bool{}
+		}
+		pairs = filterTaskPairsInTenant(pairs, allowed)
+	}
 
 	titles := h.loadSessionTitlesBatch(ctx, pairs)
 	slog.Debug("admin titles batch lookup",
