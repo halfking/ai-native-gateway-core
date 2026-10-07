@@ -143,8 +143,10 @@ function onKeydownTab(ev: KeyboardEvent): void {
 
 /* sheet：底部滑入，头部圆角，max 90dvh（compact 主形态） */
 .app-sheet__panel--sheet {
-  left: 0;
-  right: 0;
+  /* 横向 inset 自己消费（10 §4.6.61）：本面板 fixed/Teleport，壳根 padding 管不到。
+     实测未避让时抽屉链接有 18px 命中区落进 30px inset 带（图标被刘海压住）。 */
+  left: var(--app-safe-left);
+  right: var(--app-safe-right);
   bottom: 0;
   max-height: min(90dvh, 100vh);
   border-radius: var(--app-radius-lg) var(--app-radius-lg) 0 0;
@@ -154,7 +156,9 @@ function onKeydownTab(ev: KeyboardEvent): void {
 /* modal：居中卡片；compact 近全屏留 1rem 边（03 §4 居中 min(设计px, 100vw-2rem)） */
 .app-sheet__panel--modal {
   inset: 1rem;
-  inset-inline: max(1rem, calc(50% - 210px));
+  /* 居中卡片两侧各让一个 inset：窄屏横屏时 1rem 边小于 inset，边缘会进手势区 */
+  inset-inline-start: max(calc(1rem + var(--app-safe-left)), calc(50% - 210px));
+  inset-inline-end: max(calc(1rem + var(--app-safe-right)), calc(50% - 210px));
   top: max(3dvh, 1rem);
   margin: auto;
   width: auto;
@@ -165,7 +169,7 @@ function onKeydownTab(ev: KeyboardEvent): void {
 @media (min-width: 600px) {
   .app-sheet__panel--sheet {
     left: auto;
-    right: 0;
+    right: var(--app-safe-right);
     top: 0;
     max-height: none;
     width: min(420px, 92vw);
@@ -182,10 +186,12 @@ function onKeydownTab(ev: KeyboardEvent): void {
   /* 曾经这里有一行 `padding-top: calc(var(--app-space-3) + var(--app-safe-top) * 0)`
      —— 与上一行**逐字冗余**（`* 0` 使 safe-area 项恒为 0），却长得像在处理
      刘海。已删除并在此说明为什么**不需要** safe-top（10 §4.6.32）：
-     ≥600px 时本面板是右侧抽屉（left:auto; right:0），<600px 时是贴底 sheet，
-     两种形态的面板上沿都不在屏幕顶端，横屏刘海区也只在**左右**——那一侧由
-     `.hyper-app` 的 padding-inline 单点消费。所以此处不消费 top 是正确取舍，
-     而不是「忘了」。 */
+     ≥600px 时本面板是右侧抽屉（left:auto; right:var(--app-safe-right)），<600px 时是贴底 sheet，
+     两种形态的面板上沿都不在屏幕顶端，横屏刘海区也只在**左右**。
+     ⚠️ 订正（10 §4.6.61）：原文此处写「左右由 `.hyper-app` 的 padding-inline **单点消费**」
+     —— 那是**错的**。本面板 `position:fixed` + `Teleport to="body"`，包含块是视口，
+     壳根那点 padding 碰不到它（实测：抽屉链接 18px 命中区落进 30px inset 带）。
+     横向 inset 现由各 fixed 浮层**自己**消费，见上。 */
   border-bottom: 1px solid var(--app-border-subtle);
   flex-shrink: 0;
 }

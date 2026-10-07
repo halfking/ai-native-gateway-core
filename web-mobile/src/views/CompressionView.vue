@@ -502,30 +502,30 @@ onBeforeUnmount(() => {
 
 .cv__seg { display: flex; gap: 8px; margin: 8px 0; }
 .cv__segBtn { padding: 0 14px; font-size: 14px; border: 1px solid var(--cv-line, #e3e6ea); border-radius: 8px; }
-.cv__segBtn--on { border-color: #2563eb; color: #2563eb; font-weight: 600; }
+.cv__segBtn--on { border-color: var(--app-primary); color: var(--app-primary); font-weight: 600; }
 
 .cv__field { display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 13px; }
-.cv__fieldLabel { color: #6b7280; }
+.cv__fieldLabel { color: var(--app-text-secondary); }
 .cv__select { min-width: 110px; font-size: 14px; }
 .cv__input { min-width: 190px; font-size: 14px; }
 
 .cv__kv { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; margin: 8px 0; font-size: 13px; }
-.cv__kv dt { color: #6b7280; }
+.cv__kv dt { color: var(--app-text-secondary); }
 .cv__kv dd { margin: 0; text-align: right; }
 
 .cv__list { list-style: none; margin: 4px 0 0; padding: 0; }
 .cv__row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 8px 0; border-top: 1px solid var(--cv-line, #e3e6ea); font-size: 13px; }
 .cv__rowLabel { font-weight: 600; min-width: 96px; }
 .cv__rowMain { font-variant-numeric: tabular-nums; }
-.cv__rowMeta { color: #6b7280; font-size: 12px; }
+.cv__rowMeta { color: var(--app-text-secondary); font-size: 12px; }
 
-.cv__tag { display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid var(--cv-line, #e3e6ea); border-radius: 4px; font-size: 11px; color: #6b7280; }
+.cv__tag { display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid var(--cv-line, #e3e6ea); border-radius: 4px; font-size: 11px; color: var(--app-text-secondary); }
 .cv__tag--warn { border-color: #d97706; color: #b45309; }
 
-.cv__msg { margin: 6px 0; font-size: 13px; color: #6b7280; }
+.cv__msg { margin: 6px 0; font-size: 13px; color: var(--app-text-secondary); }
 .cv__msg--warn { color: #b45309; }
 .cv__msg--err { color: #b91c1c; }
-.cv__note { margin: 6px 0; font-size: 12px; color: #6b7280; }
+.cv__note { margin: 6px 0; font-size: 12px; color: var(--app-text-secondary); }
 
 .cv__banner { margin: 8px 0; padding: 8px 10px; border-left: 3px solid #d97706; background: #fff7ed; font-size: 12px; color: #9a3412; }
 

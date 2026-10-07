@@ -47,6 +47,11 @@ const moreLabel = t('nav.more')
   backdrop-filter: blur(14px);
   border-top: 1px solid var(--app-bottomnav-border);
   padding-bottom: var(--app-safe-bottom);
+  /* 横向 inset 必须**自己**消费（10 §4.6.61）：本栏是 fixed，包含块是视口，
+     壳根 `.hyper-app` 的 padding-inline 碰不到它。背景仍满宽（符合 HIG 的
+     「背景延伸、内容避让」），只有热区被推入安全区。竖屏该值恒 0 ⇒ 零位移。 */
+  padding-left: var(--app-safe-left);
+  padding-right: var(--app-safe-right);
 }
 
 .bottomnav__item {

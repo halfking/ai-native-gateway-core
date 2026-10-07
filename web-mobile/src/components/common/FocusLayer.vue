@@ -137,6 +137,9 @@ onBeforeUnmount(() => {
   background: var(--app-bg);
   padding-top: var(--app-safe-top);
   padding-bottom: var(--app-safe-bottom);
+  /* 横向 inset：fixed 满屏层不受壳根 padding-inline 约束（10 §4.6.61） */
+  padding-left: var(--app-safe-left);
+  padding-right: var(--app-safe-right);
 }
 
 .focus-layer__header {

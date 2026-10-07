@@ -24,6 +24,16 @@ export function layoutAudit() {
   const de = document.documentElement
   const MIN_TAP = 44   // iOS HIG 44pt —— **只用于无可见文字的图标类**目标（方形）
 const MIN_TAP_H = 48 // 本仓 R1：新增触控控件一律 ≥48 CSS px。与 scripts/verify-touch-targets.mjs 的 TARGET 同源，见下方 ② 的说明。
+  // ⚠️ 48 有一条**书面豁免**（17 §4-R1 原文 + 仓门第 15-18 行）：
+  //   「44px 是存量控件下限，不是新标准」，且仓门**明确不扫** shared.css 的
+  //   `.btn` / `.btn--sm`（它们是 44px 存量基线）。
+  //   实测代价（10 §4.6.61）：/m/keys 一屏 **249~250 个** `btn--sm`（高 44px）
+  //   在 medium 档被判成 249 处 medium 缺陷 ⇒ 离群的是**本判据**，不是仓门。
+  //   ⇒ 分三档报，判据与规则对账，不靠调阈值糊过去：
+  //     < 44        medium  违反硬底线（连 Apple 44pt 都不够）
+  //     44 ~ 48     low     存量区间（R1 允许），只作台账，不当缺陷
+  //     ≥ 48        —       合规
+  const R1_LEGACY_H = 44
 
   function path(el) {
     if (!el || el === de) return 'html'
@@ -95,8 +105,9 @@ const MIN_TAP_H = 48 // 本仓 R1：新增触控控件一律 ≥48 CSS px。与 
     })
   }
 
-  // ── ② 触控热区过小 ──────────────────────────────────────────
+    // ── ② 触控热区 ──
   const small = []
+  const legacy = []
   document.querySelectorAll('button,a,[role="button"],input,select,textarea,[onclick]').forEach((el) => {
     if (!vis(el)) return
     const s = getComputedStyle(el)
@@ -124,23 +135,42 @@ const MIN_TAP_H = 48 // 本仓 R1：新增触控控件一律 ≥48 CSS px。与 
     //     要求它 ≥44 是本仓从未采纳过的约束。
     //   依据核对：WCAG 2.2 SC 2.5.8 的 AA **规范下限是 24×24**（面积 2040 vs 576 远超），
     //   Apple 44pt / Material 48dp **都是指南不是规范**，本仓 R1 要 min-height ≥48。
+    //
+    // ⚠️⚠️ 二次对账（2026-10-08，doc 10 §4.6.61）：上面那句「与仓门同源」**只对了一半** ——
+    //   仓门有**书面豁免**：`verify-touch-targets.mjs` 第 15-18 行明写「不扫 shared.css 的
+    //   .btn / .btn--sm —— 它们是 44px 的**存量**基线」，依据 17 §4-R1
+    //   「新增一律 ≥48；**44px 是存量控件下限，不是新标准**」。
+    //   实测代价：`/m/keys` 的 `.btn--sm`（高 44px）一屏 **249~250 个**，
+    //   在 medium 档被本判据判成 249 处 medium ⇒ **离群的是本判据，不是仓门**。
+    //   ⇒ 文字类改三档：<44 medium（连硬底线都没有）/ 44~47 low（存量台账）/ ≥48 合规。
     const iconLike = txt.length === 0
     const tooSmall = iconLike
       ? (hr.width < MIN_TAP || hr.height < MIN_TAP)
-      : (hr.height < MIN_TAP_H)
+      : (hr.height < R1_LEGACY_H)
+    const isLegacy = !iconLike && !tooSmall && hr.height < MIN_TAP_H
     if (tooSmall) {
       small.push({ sel: path(el), w: Math.round(hr.width), h: Math.round(hr.height),
-        rule: iconLike ? `图标类 <${MIN_TAP}×${MIN_TAP}` : `文字类 高度<${MIN_TAP_H}`,
+        rule: iconLike ? `图标类 <${MIN_TAP}×${MIN_TAP}` : `文字类 高度<${R1_LEGACY_H}`,
         via: hit && hit !== el ? path(target) : undefined,
-        own: (iconLike ? (r.width < MIN_TAP || r.height < MIN_TAP) : (r.height < MIN_TAP_H))
+        own: (iconLike ? (r.width < MIN_TAP || r.height < MIN_TAP) : (r.height < R1_LEGACY_H))
           ? `${Math.round(r.width)}×${Math.round(r.height)}` : undefined,
+        text: txt.slice(0, 20) })
+    } else if (isLegacy) {
+      legacy.push({ sel: path(el), w: Math.round(hr.width), h: Math.round(hr.height),
+        rule: `文字类 存量 ${R1_LEGACY_H}~${MIN_TAP_H - 1}（R1 允许，非缺陷）`,
         text: txt.slice(0, 20) })
     }
   })
   I.stats.smallTargets = small.length
+  I.stats.legacyTargets = legacy.length
   if (small.length) {
     I.issues.push({ kind: 'tap-target', sev: 'medium',
-      detail: small.length + ' 个可点元素不足（图标类 <44×44 / 文字类 高度<48）', items: small.slice(0, 12) })
+      detail: small.length + ' 个可点元素不足（图标类 <44×44 / 文字类 高度<44）', items: small.slice(0, 12) })
+  }
+  if (legacy.length) {
+    I.issues.push({ kind: 'tap-target-legacy', sev: 'low',
+      detail: legacy.length + ' 个文字类控件落在 R1 存量区间 44~47px（书面允许，只作台账）',
+      items: legacy.slice(0, 6) })
   }
 
   // ── ③ 文字与背景几乎同色（看不见的字）────────────────────────
@@ -245,10 +275,16 @@ const MIN_TAP_H = 48 // 本仓 R1：新增触控控件一律 ≥48 CSS px。与 
   // ── ⑥ safe-area 避让 ───────────────────────────────────────
   // 移动端壳（Capacitor）里 SystemBars 用 insetsHandling:'css'，
   // 于是 env(safe-area-inset-*) 是唯一的避让来源；底栏不加就会被 Home 指示条压住。
+  //
+  // ⚠️ 读的是**算出来的** `--app-safe-*`，不是 env()：自定义属性在 computed-value
+  //   阶段就完成变量替换，壳注入 `--safe-area-inset-*` 后这里直接拿到 px；
+  //   浏览器/桌面两条通道都是 0 ⇒ 本节整体静默（不制造噪声）。
   const cs = getComputedStyle(de)
   const safe = {
     top: (cs.getPropertyValue('--app-safe-top') || '').trim(),
     bottom: (cs.getPropertyValue('--app-safe-bottom') || '').trim(),
+    left: (cs.getPropertyValue('--app-safe-left') || '').trim(),
+    right: (cs.getPropertyValue('--app-safe-right') || '').trim(),
   }
   I.stats.safeArea = safe
   I.stats.hasViewportFitCover = /viewport-fit=cover/.test(
@@ -263,6 +299,64 @@ const MIN_TAP_H = 48 // 本仓 R1：新增触控控件一律 ≥48 CSS px。与 
         detail: '底部固定栏 padding(' + pb + ')+border(' + bb + ') < safe-area-inset-bottom=' +
                 need + 'px（内容会压到 Home 指示条）',
         items: [{ bar: path(bottomBar.el) }] })
+    }
+  }
+
+  // ── ⑥-b 横向 safe-area（left / right）────────────────────────
+  // 为什么必须单列一节：壳根 `.hyper-app` 用 `padding-inline: var(--app-safe-left/right)`
+  // 消费横向 inset（10 §4.6.32），但**那只约束流内元素**。抽屉 / Sheet / FocusLayer
+  // 是 `position:fixed` 且 `Teleport to="body"`，底栏与更新条也是 fixed
+  // ⇒ 它们的包含块是**视口**，`left:0` 就是 x=0，壳根那点 padding 一丁点都碰不到它们。
+  // 横屏握持时左右两侧正是系统手势区 / 刘海所在，这块从来没被任何一档视口量到过
+  // （headless 的 env() 恒 0，视口宽度变化也改变不了 inset 带的位置）。
+  //
+  // 分级按几何谓词，不按元素类型：
+  //   high   可点目标的**命中区中心**落在 inset 带内 ⇒ 最有把握的那一点就点不到
+  //   medium 命中区探进 inset 带但中心在外 ⇒ 边缘死区（图标被刘海物理盖住 / 边缘误触返回）
+  const needL = parseFloat(safe.left) || 0
+  const needR = parseFloat(safe.right) || 0
+  I.stats.safeAreaLR = { left: needL, right: needR }
+  if (needL > 0 || needR > 0) {
+    const dead = [], graze = []
+    // 命中区口径与 ② 同源（label 会把点击转发给内部控件）
+    document.querySelectorAll('button,a,[role="button"],input,select,textarea,[onclick]').forEach((el) => {
+      if (!vis(el)) return
+      if (getComputedStyle(el).pointerEvents === 'none') return
+      const hit = el.closest('label,button,a,[role="button"]')
+      const target = hit && hit !== el ? hit : el
+      const r = target.getBoundingClientRect()
+      if (r.right <= 0 || r.left >= innerWidth) return
+      const cx = (r.left + r.right) / 2
+      // 最近的定位祖先：fixed/sticky/absolute 才是「逃出壳根 padding」的那一类
+      let pn = target.parentElement, anchored = ''
+      while (pn && pn.nodeType === 1) {
+        const ps = getComputedStyle(pn).position
+        if (ps === 'fixed' || ps === 'sticky' || ps === 'absolute') { anchored = ps; break }
+        pn = pn.parentElement
+      }
+      for (const side of ['left', 'right']) {
+        const need = side === 'left' ? needL : needR
+        if (!(need > 0)) continue
+        const over = side === 'left' ? need - r.left : r.right - (innerWidth - need)
+        if (over < 3) continue   // 亚像素/浮点噪声不算
+        const rec = { sel: path(target), side, over: Math.round(over), need: Math.round(need),
+          rect: [Math.round(r.left), Math.round(r.right)], anchored,
+          text: (target.innerText || target.textContent || '').trim().slice(0, 20) }
+        if (side === 'left' ? cx < need : cx > innerWidth - need) dead.push(rec)
+        else graze.push(rec)
+      }
+    })
+    if (dead.length) {
+      I.issues.push({ kind: 'tappable-in-inset', sev: 'high',
+        detail: dead.length + ' 个可点目标的命中区**中心**落在横向 inset 内（' +
+                'left=' + needL + ' right=' + needR + 'px）：最可靠的那一点就落在系统手势区/刘海里',
+        items: dead.slice(0, 10) })
+    }
+    if (graze.length) {
+      I.issues.push({ kind: 'tappable-grazes-inset', sev: 'medium',
+        detail: graze.length + ' 个可点目标的命中区探进横向 inset 带（' +
+                'left=' + needL + ' right=' + needR + 'px）：边缘是死区，图标会被刘海压住',
+        items: graze.slice(0, 10) })
     }
   }
 

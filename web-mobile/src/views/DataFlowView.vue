@@ -601,7 +601,7 @@ onBeforeUnmount(() => {
 }
 
 .df__kv dt {
-  color: #6b7280;
+  color: var(--app-text-secondary);
 }
 
 .df__kv dd {
@@ -640,7 +640,7 @@ onBeforeUnmount(() => {
 }
 
 .df__rowMeta {
-  color: #6b7280;
+  color: var(--app-text-secondary);
   font-size: 12px;
 }
 
@@ -651,7 +651,7 @@ onBeforeUnmount(() => {
   border: 1px solid var(--df-line, #e3e6ea);
   border-radius: 4px;
   font-size: 11px;
-  color: #6b7280;
+  color: var(--app-text-secondary);
 }
 
 .df__tag--warn {
@@ -662,7 +662,7 @@ onBeforeUnmount(() => {
 .df__msg {
   margin: 6px 0;
   font-size: 13px;
-  color: #6b7280;
+  color: var(--app-text-secondary);
 }
 
 .df__msg--warn {
@@ -676,7 +676,7 @@ onBeforeUnmount(() => {
 .df__note {
   margin: 6px 0;
   font-size: 12px;
-  color: #6b7280;
+  color: var(--app-text-secondary);
 }
 
 .df__banner {
@@ -697,7 +697,7 @@ onBeforeUnmount(() => {
 }
 
 .df__fieldLabel {
-  color: #6b7280;
+  color: var(--app-text-secondary);
 }
 
 /* R1：新增控件 ≥48px */
