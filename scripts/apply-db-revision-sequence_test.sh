@@ -43,6 +43,57 @@ gate_report() {
 # high-numbered canonical migrations must reach either a fresh install, an
 # upgrade, or a reviewed Go startup ensure. The inputs stay text lists so the
 # contract can exercise every route without mutating the real catalog.
+#
+# ═══════════════════════════════════════════════════════════════════════
+# ★★ 读这条门之前请先读完本段：仓库里其实有**两条**迁移投递腿，本门只认其中一条
+# ═══════════════════════════════════════════════════════════════════════
+#
+# ① **扫描腿**（部署时）
+#    scripts/deploy-lib/db-changelog.sh 的 `_deploy_pending_startup_migrations`：
+#      for f in sql/migrations/startup/[0-9]*.sql; do
+#        跳过 *.down.sql / *.skip / *.bak.skip / 头 15 行含 SUPERSEDED|DEPRECATED
+#        if (( ver >= ${DB_LEDGER_RECONCILE_FROM:-412} )) 且远端 schema_migrations
+#           没有该 version ⇒ 投递
+#      done
+#    投递后由同文件 `:518` 写 `schema_migrations` + `llm_gateway_migration_checksums`
+#    （advisory lock + NOT EXISTS 幂等）。调用链（2026-10-07 查实）：
+#      deploy-154.sh → deploy-seamless.sh:68 `source deploy-lib/db-changelog.sh`
+#    ⇒ **在 154 生产上，投递迁移的只有扫描腿这一条。**
+#
+# ② **通道腿**（本门要求的那条）
+#    scripts/apply-db-revision-sequence.sh 的 `files=(...)` 数组，
+#    记账表是 **`public.gateway_db_revision_sequences`**（按文件内容 sha256，
+#    内容变了但编号不变时会重放）。
+#    已确认的调用方只有 `scripts/deploy-local-sys.sh`。
+#    `scripts/deploy-252-schema-upgrade.sh` 里也调它，但**全仓穷尽 grep 后没有
+#    任何调用方**（2026-10-07 核过 scripts/deploy/installer/.github/.githooks/
+#    Makefile/根目录 *.sh，命中的只有一份历史审计文档与 .codegraph 索引库），
+#    ⇒ 通道腿在 154 生产上**不由它**投递。
+#
+# ── 两腿互不知情，各记一张表 ─────────────────────────────────────────
+# `deploy-lib` 里 grep 不到 apply-db-revision-sequence；通道脚本里也读不到
+# deploy-lib。⇒ **同一份迁移可能被两条腿各投递一次**，挡住重复的是
+# **迁移自身的幂等性**，不是记账。这也解释了 836 头部那句
+# 「813 的 sha 与台账一致 ⇒ 幂等通道每次都跳过它」——通道腿按 sha 跳，
+# 而扫描腿根本不查那张表。
+#
+# ── 为什么本门**不**把扫描腿算作一条投递路径（2026-10-07 人工拍板）────
+# 2026-10-07 实测确认扫描腿会投递 837-844（用它的真实循环逻辑跑过：已记账的
+# 844 被正确跳过，未记账的 837-843 被选中）。**所以「补登通道」不是修复投递
+# ——投递本来没坏。** 本门坚持要求显式登记，是在问一个扫描腿回答不了的问题：
+#
+#   「这条迁移的投递**顺序、幂等重放、以及它是否属于人工/带外交付**，
+#     在仓库里有没有被明确记录下来？」
+#
+# 扫描腿只回答「文件在目录里就会投」——它**说不出**这条迁移为什么该在
+# 这里、顺序依赖谁、重放时安全吗。**838→839 的函数链先后**就是只有通道腿
+# 能表达的信息（intentional_function_chains 就是为此存在）。
+#
+# ⇒ 保持本门的约束力（本轮拍板）；代价是**每个新迁移要在通道腿登记一次**，
+#   即使扫描腿也会投它。这是有意的代价，不是缺陷。
+# ⇒ ⚠ 若日后要让本门认扫描腿，必须同时解决「顺序依赖」问题 ——
+#   否则一个必须排在 838 之后的迁移，会因为「它在目录里」而被允许乱序投递。
+#   届时应改的是扫描腿（读顺序元数据），不是把第五条路径加进来。
 canonical_delivery_path_check() {
   local canonical_files="$1"
   local startup_files="$2"
