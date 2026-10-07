@@ -1,18 +1,18 @@
--- 842_supplier_view_cache_baseline_columns.down.sql
--- 回滚 842：把 v_supplier_price_vs_baseline **退回 826 的投影**（不含两个 cache 基准价）。
+-- 843_supplier_view_cache_baseline_columns.down.sql
+-- 回滚 843：把 v_supplier_price_vs_baseline **退回 826 的投影**（不含两个 cache 基准价）。
 --
 -- ⚠ 本回滚是**真实回滚**，不是「只删新机制」：
---   它会删掉两个 cache 倍率列，而它们正是 842 之后唯一一处
+--   它会删掉两个 cache 倍率列，而它们正是 843 之后唯一一处
 --   「缓存基准价进入告警通路」的地方。
 --   ⇒ 回滚后缓存基准价重新变成只写不读（826 的原始状态）。
---   这是刻意保留的事实：842 的效果就是那几个列。
+--   这是刻意保留的事实：843 的效果就是那几个列。
 --
 -- ⚠ 与别的 down 不同，这里**故意不动** credential_model_bindings 上
---   842 用 ADD COLUMN IF NOT EXISTS 补出来的两个 cache 价列。
---   理由：它们不是 842「建的」——模型 398 重建 model_offers 时就 SELECT 了它们，
+--   843 用 ADD COLUMN IF NOT EXISTS 补出来的两个 cache 价列。
+--   理由：它们不是 843「建的」——模型 398 重建 model_offers 时就 SELECT 了它们，
 --   在受追踪链之前的基线库里早就存在。删掉会破坏本回滚**之前**就存在的对象。
 --   ⇒ 判据：只回滚「投影」，不回滚「补列」。补列留在库里是无害的
---     （没有视图读它们，等同 842 之前）。
+--     （没有视图读它们，等同 843 之前）。
 --
 -- 幂等：DROP VIEW IF EXISTS + CREATE VIEW，重复应用同结果。
 --
@@ -23,10 +23,10 @@
 --   rc 仍是 0），却什么都没撤。
 --   ⇒ 删列只能 DROP VIEW + CREATE VIEW。代价是这条窗口里视图短暂不存在，
 --     所以用 IF EXISTS + 紧随其后的 CREATE，且**不放进单事务里**：
---     BEGIN 里 DROP 后 CREATE 失败会把整条回滚，等于撤不掉 842（更糟）。
+--     BEGIN 里 DROP 后 CREATE 失败会把整条回滚，等于撤不掉 843（更糟）。
 --     这里保持与 826/398 一致的「IF EXISTS + CREATE」幂等形态。
 --
--- Related: 842_supplier_view_cache_baseline_columns.sql
+-- Related: 843_supplier_view_cache_baseline_columns.sql
 --           sql/migrations/startup/826_model_baseline_price.sql
 
 DROP VIEW IF EXISTS public.v_supplier_price_vs_baseline;
@@ -68,7 +68,7 @@ FROM credential_model_bindings cmb
 JOIN provider_models pm ON pm.id = cmb.provider_model_id
 JOIN credentials c      ON c.id = cmb.credential_id
 LEFT JOIN providers p   ON p.id = c.provider_id
--- 条件 / ORDER BY / LIMIT 1 与 826、842 逐字一致（826 记录过 OR 条件会让一条
+-- 条件 / ORDER BY / LIMIT 1 与 826、843 逐字一致（826 记录过 OR 条件会让一条
 -- 绑定变三行的真实事故，去重修法不能被任何回滚移走）。
 LEFT JOIN LATERAL (
     SELECT mc.id, mc.canonical_name, mc.baseline_price_currency,
@@ -83,4 +83,4 @@ LEFT JOIN LATERAL (
 ) mc ON true;
 
 COMMENT ON VIEW public.v_supplier_price_vs_baseline IS
-    'Per (credential, model) supplier price against the vendor baseline. Ratios are NULL unless the currencies match and the baseline is set. Rolled back from 842: the two cache baseline columns and their ratios are gone, so cache pricing has no drift coverage.';
+    'Per (credential, model) supplier price against the vendor baseline. Ratios are NULL unless the currencies match and the baseline is set. Rolled back from 843: the two cache baseline columns and their ratios are gone, so cache pricing has no drift coverage.';
