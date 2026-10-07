@@ -69,6 +69,9 @@ const CASES = [
   { label: '@320 顶栏已避让', q: '/fixture?plants=covered-top-ok', w: 320 },
   { label: '@320 文本截断', q: '/fixture?plants=trunc', w: 320 },
   { label: '@1024 文本截断', q: '/fixture?plants=trunc', w: 1024 },
+  // 名称碰撞（§4.6.76）：两两比较才看得见的失效，两档都要有牙
+  { label: '@320 名称碰撞', q: '/fixture?plants=collide', w: 320 },
+  { label: '@1024 名称碰撞', q: '/fixture?plants=collide', w: 1024 },
 ]
 
 const HOST_PAGE = `<!doctype html><meta charset="utf-8">
@@ -535,6 +538,61 @@ cov('text-truncated')
   const w = R['@1024 文本截断']
   if (!w.report.issues.some((i) => i.kind === 'text-truncated' && i.sev === 'high')) {
     fails.push(`${w.label} 量值截断没报出来 —— 判据只在窄屏生效，等于宽屏盲区`)
+  }
+}
+
+// ── 名称碰撞（§4.6.76）────────────────────────────────────────────
+// 这条判据与上面那条**互补而不是替代**：逐条判「可见不足一半」看不见它，
+// 因为两个名字可以各自都可见过半、却截成同一串。
+// ★ 正控必须与真机同形：长公共前缀 + 窄槽（真机是 131px，这里是 46px）。
+for (const t of ['@320 名称碰撞', '@1024 名称碰撞']) {
+  const r = R[t]
+  // ★ 只挑**碰撞**那条（item 带 shown 字段）。标识符桶的 medium（可见不足一半）
+  //   与它是两回事，抓错了就等于没验到被测的那条判据。
+  const collide = (r?.report?.issues ?? []).filter((i) =>
+    i.kind === 'text-truncated' && i.sev === 'medium' && (i.items ?? []).some((o) => o.shown != null))
+  if (!collide.length) {
+    fails.push(`${t} 漏报名称碰撞：「zephyr-production-cluster-west」与「…-east」截断后显示同一串`)
+  } else {
+    const text = collide.flatMap((i) => (i.items ?? []).map((o) => String(o.text ?? ''))).join(' , ')
+    if (!text.includes('cluster-west') || !text.includes('cluster-east')) {
+      fails.push(`${t} 碰撞组没指出这两个名字。实际：${text}`)
+    }
+    if (!/显示为同一串/.test(collide[0].detail ?? '')) {
+      fails.push(`${t} 碰撞 detail 没写「显示为同一串」——读者看不出为什么算碰撞。实际：${collide[0].detail}`)
+    }
+  }
+  // ★ 三个 decoy：同名重复不是「无法区分」；不同容器不比较
+  for (const d of ['#decoy-trunc-same', '#decoy-trunc-crossbox-a', '#decoy-trunc-crossbox-b']) {
+    for (const b of collide) {
+      if (has(b.items, d)) {
+        fails.push(`${t} 误报 ${d}：同名重复或跨容器不是「截断后无法区分」`)
+      }
+    }
+  }
+  // ★ 反向：这条场景**不该**惊动「可见不足一半」那条判据
+  const hard = (r?.report?.issues ?? []).find((i) =>
+    i.kind === 'text-truncated' && i.sev === 'medium' && !(i.items ?? []).some((o) => o.shown != null))
+  if (hard) {
+    fails.push(`${t} 夹具被「可见不足一半」那条判据先报了（${hard.detail?.slice(0, 60)}…）——正控没隔离出被测判据`)
+  }
+
+  // ★ rtl 正控：这一条**专门**防判据的可见串测量退回 LTR 假设。
+  //   `west-…cluster` 与 `east-…cluster` 开头不同、结尾相同：
+  //   rtl 下都只显示结尾 ⇒ 必须报碰撞；
+  //   LTR 算法量出的是开头 ⇒ 判为「不冲突」⇒ 漏报 ⇒ 这里转红。
+  const rtl = (r?.report?.issues ?? []).filter((i) =>
+    i.kind === 'text-truncated' && i.sev === 'medium' && (i.items ?? []).some((o) => o.shown != null))
+  const rtlHit = rtl.flatMap((i) => (i.items ?? [])).some((o) => String(o.text ?? '').includes('west-zephyr-production-cluster'))
+  if (!rtlHit) {
+    fails.push(`${t} 漏报 rtl 碰撞：「west-zephyr-production-cluster」与「east-…」rtl 下显示同一串 —— ` +
+      '可见串的测量退回 LTR 假设了（应逐字符取几何、看谁真被绘制）')
+  }
+  // 负控：rtl 下可见部分就不同 ⇒ 不该报
+  for (const b of rtl) {
+    if (has(b.items, '#decoy-collide-rtl-distinct')) {
+      fails.push(`${t} 误报 #decoy-collide-rtl-distinct：rtl 下可见部分本就不同，不算碰撞`)
+    }
   }
 }
 
