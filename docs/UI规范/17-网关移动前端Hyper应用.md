@@ -9935,3 +9935,140 @@ WHERE credential_id = $1 AND started_at >= $2
 5. **一处防御被记为可证等价变异（保留）**：`reason_code` 取值里的 `!== ''` 判断。
    后端 `:105-107` 已经过滤掉空串 ⇒ 客户端这条分支**不可达**
    ⇒ 它是**防御性守卫**（防后端异常下发），按纪律**保留**并记为可证等价。
+
+
+## §11.110 请求动作时间线接 API 层（第七十四批）
+
+**产物**：`web-mobile/src/api/requestActions.ts`（新建）+ `.test.ts`（新建，71 用例）
+
+### 三路取证
+
+| 问 | 答 | 证据 |
+|---|---|---|
+| 后端注册存在吗 | 是 | `admin/handler.go:1026`，`admin(...)` |
+| 谁在提供 | **本进程** | 不在 `maintainCompatPrefixes` 里 |
+| 前端有调用方吗 | 桌面有、移动端无 | `ActionTimeline` 走的是 SSE，本端点是刷新后的 REST 回退 |
+
+**权限档位**：后端 `admin(...)` ⇒ tenant_admin 可用 ⇒ 抽屉席**不设** `requiresRole`。
+★ 名字里有 "actions"，但**它本身是只读端点**（只有 GET、只 `LRange` 读 Redis），
+与本仓一律不碰的写操作端点不是一回事。
+
+### ★★★★★ 本族最要紧的七件事
+
+1. **★★★★★ `actions[i]` 是一个「键集不可穷举」的开放对象。**
+   `admin/live_stream_lifecycle.go:96-125` `flattenActionEvent` 的做法是
+   「整体序列化 → 反序列化成 `map` → 把 `detail` 的每个键**摊平到顶层**」：
+   ```go
+   if detail, ok := m["detail"].(map[string]any); ok {
+       delete(m, "detail")
+       for k, v := range detail {
+           if _, taken := m[k]; !taken {   // ★ 不覆盖已存在的顶层键
+               m[k] = v
+           }
+       }
+   }
+   ```
+   ⇒ 顶层键 = `ActionEvent` 的固定键 ∪ **`detail` 里内容决定的任意键**。
+   ⇒ ★★ 这是本仓**第一次**出现「载荷形状开放」的端点
+     ⇒ 解包器**只能校验必有的那几个键**，绝不能对全部键做 `requireKeys`。
+   ⇒ ★★ 提升时**不覆盖**已有键 ⇒ 若 `detail` 里带了 `action` / `seq` 这类名字，
+     **会被静默丢弃**。
+   ⇒ 类型声明必须带索引签名 `readonly [key: string]: unknown`，
+     否则 TS 会把这些键当不存在的数据丢掉。
+
+2. **★★★★★ `detail` 这个键永远不出现**（`:108` `delete(m, "detail")`）
+   ⇒ 客户端按 `{action, detail: {...}}` 去读会拿到 `undefined`。
+
+3. **★★★★★ `action` 是**开放字符串**，不是封闭枚举。**
+   `admin/request_actions.go:90-92` 的 `decodeStoredAction` **只**判 `ev.Action == ""`：
+   ```go
+   if ev.Action == "" { return ev, false }
+   ```
+   **不校验是否在 `liveactions` 的 Action 常量列表内** ⇒ 后端放行任意非空字符串。
+   ⇒ 解包器**只校验「非空字符串」，绝不能校验枚举** ——
+     校验枚举会在后端新增动作时把正常响应判成异常。
+   ★★ 对照第七十三批的 `event_type`：那个是 `if/else` 决定的**三态**（**封闭**），
+     这个是 Redis 内容决定的（**开放**）⇒ 判据不能跨族照抄。
+
+4. **★★★★ `count` 是**去重后**的条数，不是分页元信息。**
+   `:65-68` 按 `seq` 去重；`seq` 跨进程重启会碰撞（`:55-57` 注释自陈），
+   碰撞时**保留先出现的那条**（LIST 头 = 最新优先扫描顺序）
+   ⇒ `count` 可能小于「实际匹配数」。
+
+5. **★★★★ 这是短期回放，不是历史。**
+   `:56` 的 `LRange(ctx, RedisKey, 0, RedisMaxLen-1)` 扫**整个**队列，
+   而队列是 `LPUSH` + `LTRIM 5000`（`internal/liveactions/liveactions.go:115-117`）
+   ⇒ **更老的事件已被 LTRIM 掉**。
+   `:23-24` 的注释自陈：「Long-term history stays in request journey
+   ⇒ **this endpoint must not scan Redis as the long-term solution**」。
+
+6. **★★★★ 失败编码有三种，其中一种是 502。**
+   | 情形 | 状态码 | message |
+   |---|---|---|
+   | `id` 为空（`:36-38`） | **400** | `missing request id` |
+   | Redis 未装配（`:41-44`） | **503** | `live actions store not wired` |
+   | Redis 读失败（`:52-56`） | **502** | `live actions store unavailable` |
+   ★★ **502 Bad Gateway** 在本仓基本不用 ⇒ 客户端的「网关错误」分类必须显式容纳它。
+   ★ 读 Redis 的超时只有 **2 秒**（`:29`）。
+
+7. **★★★ `credential_label` 在本端点永远不出现。**
+   `flattenActionEvent` 支持注入 `labels`（`:115-123`），但本端点调用时传的是
+   **`nil`**（`request_actions.go:69`）⇒ 那是 SSE 那条路才有的字段
+   ⇒ 按 SSE 契约去等它会永远等不到。
+
+### 另注
+
+- 排序：`actionEntryLess`（`:98-107`）先比 `ts`（两边都是 string 且不等时）、
+  否则比 `seq`（`.(float64)` 断言失败静默取 0）。
+  但 `ActionEvent` 的 `ts`/`seq` **都不带 omitempty** ⇒ 恒在 ⇒ 断言不会失败
+  ⇒ 排序实际可信。★ 真正让顺序看着反常的是**零值 `ts`**
+  （`time.Time{}` ⇒ `"0001-01-01T00:00:00Z"`，字符串比较下**最小** ⇒ 排到最前）。
+- `request_id` 是**原样回显**（`:78` 用 `r.PathValue("id")`，不 trim 不规范化），
+  且过滤是**精确比较**（`:62`）⇒ 大小写敏感、前后空格也不匹配。
+- `actions` 恒为数组（`make([]map[string]any, 0, 16)`，`:58`）。
+- 坏行被静默丢弃：JSON 解析失败（`:87-89`）与 `action` 为空（`:90-92`）都 `continue`
+  ⇒ 响应里看不出丢过东西。
+
+### 验证
+
+- 用例 **71 条全绿**
+- 变异 `/tmp/mut-co74.mjs` **40 条，40/40 有牙、零可疑**，`RESTORED=OK`
+- 三门 rc=0；`vue-tsc` rc=0；`npm run build` rc=0
+- 全量 **4032 条（138 文件）** rc=0；十连跑 10/10
+- U+FFFD 自查：源与用例均 0
+
+### 变异验证暴露的判据缺陷（真缺陷，已修）
+
+1. **★★ 锚点自检在 `--dry` 阶段就抓到了 1 条**（`ts 不是字符串时抛错` 不在任何标题里）
+   —— 本批把这个自检保留下来是对的：它比实跑快一个数量级。
+   ★ 而且它顺带暴露了**夹具的缺口**（见第 2 条）。
+
+2. **★★ 夹具缺口：「键缺」与「类型错」是两条不同的检查分支。**
+   我最初只有「删掉 `ts` 键」的夹具，而变异删的是 `typeof d.ts !== 'string'` 那行
+   ⇒ 删键仍由 `requireKeys` 拦下 ⇒ **判据无牙**。
+   ⇒ 补了「键在但类型错」的夹具（`ts: 7` / 容器 `request_id: 7`）。
+   ★★ 推论：`requireKeys`（缺键）与类型校验（键在但错）**永远是两条分支**，
+     覆盖其中一条时**必须同时覆盖另一条**。
+
+3. **★★ 夹具自身先抛，测的就不是被测代码。**
+   「actions 不是数组时抛错」原本用 `actionsOk(null as never)`，
+   而 `actionsOk` 内部要算 `actions.length` ⇒ **`TypeError` 在夹具里就抛了**，
+   根本没走到解包器（`rc=1` 但失败消息是
+   `Cannot read properties of null` 而不是我们的断言消息）。
+   ⇒ 改为直接构造对象。★ 这是「rc≠0 但失败消息不是被测代码的消息」的一个实例。
+
+4. **★★ 想造「类型错误的载荷」时，夹具签名不能太严。**
+   `entry(seq: number, action: string, ts: string)` 严格签名下
+   `entry(1, 7, '…')` 会在 **`vue-tsc` 里报错**，而 **`vitest` 不做类型检查**
+   ⇒ 两道门结论不一致（vitest 绿、type gate 红）。
+   ⇒ 新增 `entryRaw(o: Record<string, unknown>)` 专用于构造非法载荷。
+   ★★ 这是「`vitest` 通过 ≠ `vue-tsc` 通过」的又一个具体实例（前面已有 `noUncheckedIndexedAccess` 那次）。
+
+5. **★★ 判据恒真 + 夹具无区分力（各 1 条）。**
+   - 「ts 与 seq 都在时排序键齐全」断言 `toBe(true)` ⇒ **它本身是恒真的**
+     ⇒ 补了「ts 不是字符串时排序键不齐全」负控（需绕过解包器直接构造）。
+   - 「ts 倒退时判定不成立」的夹具 `[12:00, 08:00]` 对「只比 ts 不比 seq」的变异
+     **无区分力** ⇒ 补了「ts 相同但 seq 倒退」的夹具。
+
+6. **锚点指错 2 条**（#18 / #30 / #33 中有两条）—— 连续第八批。
+   ⇒ 每次**新加夹具或新加负控**之后，必须回头核对「对应变异的 `expect`」指向哪个标题。
