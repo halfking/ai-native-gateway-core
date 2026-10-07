@@ -11457,154 +11457,6 @@ GET `/api/admin/model-iq/node-latest` + `/history` + `/catalog`
 local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
 `web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
 
-## 11.121 节点智商三端点（第八十五批，2026-10-08）
-
-GET `/api/admin/model-iq/node-latest` + `/history` + `/catalog`
-
-- **注册**：`admin/handler.go:1470-1472`，三个都 `h.superAdmin(...)`
-  ⇒ ★★ **superAdmin 档** ⇒ 抽屉席须设 `requiresRole: 'super_admin'`
-  并同步 `AppDrawer.spec.ts` 白名单。
-- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
-- `trigger` 是 **POST**（要真花 token）⇒ **不碰**。
-- **实现**：`admin/model_iq.go`；写入侧取值域在 `domains/modelquality/`。
-
-### 本族最要紧的十四件事
-
-1. ★★★★★ **三个端点的响应都是顶层裸数组**，不是 `{data:…}` 信封。
-   `:120` / `:186` / `:254` 三处都是 `writeJSON(w, 200, out)`，
-   而 `out := []T{}` 初始化 ⇒ **无匹配时是 `[]` 而不是 `null`**。
-2. ★★★★★ **`catalog` 的 10 键里 4 个是 `*float64` 且无 omitempty**
-   ⇒ `standard_iq` / `node_avg_iq` / `max_node_iq` / `min_node_iq`
-   **都可能是裸 `null`**（「指针 + 无 omitempty ⇒ 裸 null」在**非 map** struct 上的形态）。
-3. ★★★★★ **`catalog` 有一条锐利的可自验不变式**：`node_count` 与三个聚合互为充要 ——
-   `LEFT JOIN LATERAL` 聚合无输入时 `count(*)` 返 0 而 `avg/max/min` 返 NULL：
-   - `node_count === 0` ⇒ 三个聚合**全 null**
-   - `node_count > 0` ⇒ 三个聚合**全非 null**
-
-   且 WHERE `standard_iq IS NOT NULL OR node_cnt > 0` ⇒
-   **`standard_iq` 与 `node_count > 0` 至少一个成立**。
-4. ★★★★★ **`status` 可从 `accuracy`/`stability` 反推**（`dbstorage.go:80-87`）：
-   ```go
-   status := "success"
-   if stability < 100 { status = "partial" }
-   if accuracy <= 0 && stability <= 0 { status = "failed" }   // 最后判定，覆盖前两条
-   ```
-   ⇒ 这是**写入侧**算出的三值域 ⇒ `/history` 客户端可做**自洽校验**。
-   ⇒ ★★ 第三条在**最后**且覆盖前两条 ⇒ `(0, 0)` 必定是 `failed` 而非 `partial`。
-5. ★★★★ **`node-latest` 的 13 键里 10 个被 COALESCE 兜底**（`:75-85`）
-   ⇒ 空串 / 0 全部可达；只有 `credential_id` 与 `raw_model_name` 是裸值。
-   ⇒ ★★ `provider_id` 会被 `COALESCE(c.provider_id,0)` 兜成 **0**
-   ⇒ 客户端不能把 `provider_id === 0` 当「非法」。
-6. ★★★★ **同一族、不同端点的参数校验风格与文案都不同**：
-   - `node-latest` 的 `provider_id`/`canonical_id`：`ParseInt` + **`<= 0` 拒绝**，
-     文案 `invalid provider_id` / `invalid canonical_id`（**ParseInt 前无 TrimSpace**）。
-   - `history` 的 `credential_id`：`ParseInt` + `<= 0` 拒绝，
-     但文案是 **`credential_id required`**（不是 invalid！）。
-
-   ⇒ ★★★ 同一个参数名在两个端点**错误文案不同**。
-7. ★★★★ **`history` 的 `limit` 静默回落，不 400**：`Atoi`（**无 TrimSpace**），
-   仅当 `n > 0 && n <= 500` 才采纳，否则**静默用缺省 50**。
-   ⇒ ★★ 非法 limit **不报错**，客户端无法从响应看出 limit 是否被采纳。
-8. ★★★ **`history` 把 `stability`/`latency_p95` COALESCE 成 0** ⇒ `0` 是二义的；
-   配合 (4)，DB 里 stability 为 NULL 的行在响应里**看起来像 failed**。
-9. ★★★★ **`history` 的 `tested_at` 是 `COALESCE(tested_at, created_at)`**
-   且列类型 `time.Time` ⇒ 回显 RFC3339Nano ⇒ **客户端无法区分**
-   「真的测过时间」与「用创建时间兜底」。
-10. ★★★★ **`catalog` 的 WHERE 排除了 `hidden` 状态**，而
-    `models_canonical.status` 的 CHECK 域是**四值**（含 `hidden`，
-    `deploy/sql/schemas/baseline/01-schema.sql:10325`）⇒
-    **hidden 模型永远不出现在 `/catalog`**。端点过滤 + 表有 CHECK 的组合。
-11. ★★★ **`node-latest` 排序是 `overall_score DESC NULLS LAST, credential_id`**，
-    而 `catalog` 是 `COALESCE(standard_iq, node_avg) DESC NULLS LAST`
-    ⇒ 两个端点降序口径不同。
-12. ★★★ **500 错误的 detail 就是 `op` 字符串**（`writeInternalErr` 原样写进 body）
-    ⇒ 本族 500 的 detail 只可能是 `query` / `scan` / `modelIQ.latest` /
-    `modelIQ.history` / `modelIQ.catalog` ⇒ ★★ **完全可区分**。
-    另有 `writeAggRowsErr`：遇 missing relation（42P01）会把迭代错误改写成
-    **503 `analytics_view_missing`**。
-13. ★★ 503 文案是 **`database not configured`**（对照批 84 的 `database not available`）。
-14. ★★ `probe_kind` 三值 `{gateway, direct, mock}`，写入缺省 `direct`；
-    `trigger_kind` 写入缺省 `scheduled`。`benchmark_type` 缺省 `mmlu_lite`，
-    但 **`/history` 不返回该列** ⇒ 不可见。
-
-**本模块声明的校验边界**：解包器校验三个端点的**顶层是数组** + 每项的
-**全部恒在键与类型**（13 / 9 / 10 键）+ 上述不变式的判据函数；不校验排序
-（排序依赖 DB 状态，客户端只作为提示）。
-
-### 验证
-
-- 用例 **142 条全绿**（`web-mobile/src/api/modelIQ.test.ts`）。
-- 变异 **56 条 = 54 有牙 + 2 可证等价**（`/tmp/mut-co85.mjs`，`RESTORED=OK`）。
-- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量与十连跑见下。
-
-### 变异验证暴露的判据缺陷（56 条 → 首跑 41 有牙，修到 54）
-
-首跑 15 条 STILL_GREEN，**归因三类**：
-
-1. **锚点指错 4 条（#10 / #27 / #28 / #29）。**
-   | 变异 | 问题 | 修法 |
-   |---|---|---|
-   | #10 不发 `canonical_id` | 指到「只给 provider_id 时不发 canonical_id」，那条**本来就该不发** | 锚点改到「**两个都发**」那条 |
-   | #27 `failed` 漏 stability 条件 | 指到 `accuracy=50, stability=0`（该格两式同答案） | 改指 `accuracy=0, stability=50` |
-   | #28 `failed` 漏 accuracy 条件 | 指到 `accuracy=0, stability=50` | 改指 `accuracy=50, stability=0` |
-   | #29 partial/failed 顺序反转 | 指到 `accuracy=50, stability=0`（反转后同答案） | 改指 **`(0,0) ⇒ failed`** |
-
-   ⇒ ★★ **#27 与 #28 的锚点互换了** —— 两条变异各自需要的是**对方**那一格
-     ⇒ 这是「两条变异只差一个合取项」时的必然：**专格是成对的**。
-2. **样本选歪 8 条（#16 / #19 / #22 / #34 / #35 / #46 / #47 / #53）。**
-   | 变异 | 锚点那格为什么同答案 | 补的专格/负控 |
-   |---|---|---|
-   | #16 `requireObject` 放过数组 | 元素是**字符串**，`typeof` 本来就拦住 | 补「**元素本身是数组**」（`typeof` 也是 object，只有 `Array.isArray` 能拦） |
-   | #19 去掉 `canonical_name` 字符串检查 | 样本是**空串**，两种实现都过 | 补「**canonical_name 是数字**」 |
-   | #22 去掉 `stability` 数字检查 | 样本是 **0**，本来就是数字 | 补「**stability 是字符串**」 |
-   | #34 `node_count=0` 分支漏 `min_node_iq` | 样本里 `max_node_iq` 非 null ⇒ 两式同 false | 补「**只有 min_node_iq 非 null**」 |
-   | #35 同上漏 `node_avg_iq` | 样本里三个全非 null | 补「**只有 node_avg_iq 非 null**」 |
-   | #46/#47 tested_at 两个真值判据 | 样本是非空串 / null ⇒ 两式同答案 | 补「**`tested_at` 是空串**」（两头一起断言） |
-   | #53 RFC3339 只看长度 | 样本是 10 位串，`length > 10` 本来就假 | 补「**长度 >10 但不含 T**」 |
-
-   ⇒ ★★ **专格必须是「其余项全为不触发值、只有被测项触发」** —— 这条纪律在本族
-     **连续第三次**生效（批 83 的四行 region、批 84 的三值判据、本批的三个聚合）。
-3. **可证等价 2 条（#39 / #52）。**
-   - `node_count === 0` 改成 `<= 0`：`node_count` 来自 SQL `count(*)` 扫进 Go `int`
-     ⇒ **可达集合只有非负整数** ⇒ 两式等价。
-   - `stability === 0` 改成 `!stability`：JSON 数字里**唯一的 falsy 就是 0**
-     （`NaN` 序列化不成、`-0 === 0` 且同样 falsy）⇒ 两式等价。
-
-   ⇒ ★ 处置：**保留**与后端形状对齐的写法 + 注释写明等价理由，不为不可达样本造夹具。
-   ⇒ ★ 与批 84 的 `degraded === true` 同型。
-
-### ★★ 补记：`from` 片段不唯一 ⇒ 注入到了另一个函数，且**两处都能全绿**
-
-#42 首跑 STILL_GREEN 的真正原因不是样本，而是
-**`  return row.node_avg_iq === null` 同时是 `modelIQCatalogAggregatesMatchCount`
-里那条更长表达式（`... === null && ... === null && ... === null`）的前缀**
-⇒ `String.replace` 只替换第一个匹配 ⇒ **变异注入到了另一个函数上**，
-而那个函数被注入后**所有用例仍然全绿**。
-
-⇒ ★★★ 这是已记的「`from` 必须唯一」的**第二次**踩坑，但形态更隐蔽：
-  批 81 那次是「改错位置且明显报错」，这次是
-  **「改错位置、代码仍合法、测试仍全绿」** ⇒ `NO_EFFECT` 检查抓不到
-  （文件确实变了）。
-⇒ ★ 修法：`from` **带函数名**、带完整函数体，做到肉眼唯一：
-
-  ```js
-  from: `export function modelIQCatalogNodeAvgIsNull(row: ModelIQCatalogRow): boolean {
-  return row.node_avg_iq === null
-}`
-  ```
-
-⇒ ★★ **可落地的自检**：写完变异表后，用一段脚本统计每条 `from`
-  在源文件里出现的次数，`> 1` 的一律加长。本批 56 条里只有 #42 命中。
-⇒ ★★★ 顺带一条判断纪律：`!x` 与 `x === null` 的差别只在
-  **「值是 falsy 但不是 null」**这一格；`0` **确实是**那一格
-  （`!0 === true` 而 `0 === null` 为 `false`）⇒ 这条样本是对的，
-  别因为「0 很常见」就误判成同答案格。
-
-### 收尾
-
-local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
-`web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
-
 ## 11.122 v1 数据地平线告示（第八十六批，2026-10-08）
 
 GET `/api/admin/v1-data-horizon`
@@ -11850,6 +11702,133 @@ GET `/api/admin/tiers`
    `description` 的可达集合是 `{任意非空串, 空串}`（表列 NOT NULL ⇒ 无 null/undefined）
    ⇒ 空串两边都 true、非空串两边都 false ⇒ **可证等价**
    ⇒ 保留与后端形状对齐的写法 + 注释写明理由。
+
+### 收尾
+
+local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
+`web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
+
+## 11.124 账号用量汇总与单用户画像（第八十八批，2026-10-08）
+
+GET `/api/admin/users/usage-summary` + `/api/admin/users/{id}/stats`
+
+- **注册**：`admin/handler.go:1104-1105`
+
+  ```go
+  mux.HandleFunc("/api/admin/users/usage-summary", admin(h.handleUserUsageSummary))
+  mux.HandleFunc("/api/admin/users/",           admin(h.handleUserStatsDispatcher))
+  ```
+
+  ⇒ ★★ 两个都是 **`admin(...)` 档**（tenant_admin 可用）⇒ 抽屉席**不设** `requiresRole`。
+  ⇒ ★ `usage-summary` 是**精确路径**、`users/` 是**前缀** ⇒ Go 1.22+ ServeMux
+    精确优先 ⇒ `usage-summary` 不会落进分发器。
+- **实现**：`admin/user_usage_stats.go`（395 行）。
+- **桌面调用方**：`web/src/api/admin.ts:485` / `:528`。
+- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+
+### 本族最要紧的十八件事
+
+1. ★★★★★ **`key_count` 查询失败只记日志、不报错**（`:217-222`）
+
+   ```go
+   if err := h.db.QueryRow(...).Scan(&resp.KeyCount); err != nil {
+       slog.Warn("user_stats: key count failed", …)
+   }
+   ```
+
+   ⇒ ★★★ `key_count` **恒为数字**，而 **0 是二义的**（真的 0 个密钥 / 那次 `COUNT(*)` 失败）
+   ⇒ ★★ 比批 80 的 `database.free_bytes` 更糟：那里作者**显式注释**说明是「测不到」位，
+     这里**没有任何注释**说明它可能不可信
+   ⇒ ⇒ 客户端**不能**把 0 读成「这个用户没有密钥」。
+2. ★★★★★ **三个 Top 桶与 `recent` 都是「失败即降级」，但响应仍是 200**：
+   桶查询失败 ⇒ 桶保持**空数组**；桶 `rows.Err()` ⇒ **只记日志**
+   ⇒ **截断的 Top 列表被当完整数据返回**。
+   ⇒ ★★★ 客户端**无法区分**「这个用户没有数据」与「这一段查询失败了」。
+3. ★★★★★ **`usage-summary` 的 `rows.Scan` 失败是裸 `continue`**（`:107-109`）——
+   **无 `slog`、无任何痕迹** ⇒ 本仓「静默跳行」最彻底的一处
+   ⇒ ★ 对照：同文件 `rows.Err()` **有**检查（`:112`）⇒ 迭代中断会 500。
+4. ★★★★ **`days` 上界两个端点不同**：`usage-summary` 365（`:63`）vs `{id}/stats` **90**（`:176`），
+   **差 4 倍**，且都是**静默回落 30 不 400**。
+5. ★★★★ **两个端点的窗口口径分叉**：`usage-summary` 是 `now() - days*1day`（**UTC，无日切**），
+   `daily` 是 `generate_series(date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai'))`
+   ⇒ **显式 Asia/Shanghai 日切**；注释自陈「对账页保持显式 UTC 日（**有意分叉**）」
+   ⇒ ⇒ 客户端**不能**跨这两个端点比较同一天的数字。
+6. ★★★★ `daily` 是**零填充**的 ⇒ `daily.length === days` 恒成立。
+7. ★★★★ **跨租户访问被掩蔽成 404**（`:199-205`），注释自陈理由：
+   先 403 会构成「跨租户用户 ID 存在性 oracle」
+   ⇒ ★★★ 客户端**不能**用 403 判权限，也**不能**用 404 判「用户不存在」。
+8. ★★★ 只有 `ErrNoRows` 映射 404（`user not found`），基础设施错误映射 500
+   （`lookup user failed`）⇒ 文案**可区分**。
+9. ★★★★ **租户隔离在两端点都被 `tenantID != "default"` 短路**
+   ⇒ ★★★ 租户键为 `"default"` 的那个租户，其 tenant_admin 会拿到**全平台**数据。
+10. ★★★★ **405 检查排在 503 之前**（`:53` vs `:57`、`:166` vs `:170`）
+    ⇒ 与批 83（405 在前）一致、与批 84（503 在前）相反。
+11. ★★★★ 503 文案是 **`db not available`** —— 本仓**第五种**措辞
+    （批 81/82/85/86 的 `database not configured`、批 84 的 `database not available`）。
+12. ★★★ `ORDER BY requests DESC` 与三个桶的 `ORDER BY COUNT(*) DESC LIMIT 5`
+    **都无 tiebreak** ⇒ 同值行顺序未定义（**不是**可以断言升序）。
+13. ★★★ `usage-summary` 用 `JOIN users u ON u.username = agg.owner`（`:95`）
+    ⇒ **owner 不在 `users` 表里的账号整行消失**（内连接）。
+14. ★★★ `last_active_at` 是 `*time.Time` 且**无 omitempty**（`:40`）⇒ 无数据时是**裸 `null`**。
+15. ★★★ `recent.first_chunk_ms` / `total_ms` 是 `*int64` 且无 omitempty（`:142-143`）
+    ⇒ **真会裸 `null`**；而 `kpi.latency_p95_ms` 虽同为 `*int64`，
+    SQL 有 `COALESCE(…, 0)` ⇒ 实际路径**恒为数字**。
+16. ★★★ `kpi.error_rate` **只在 `requests > 0` 时计算**（`:242-244`），否则保持零值
+    ⇒ ★★ `error_rate === 0` **是二义的**（真 0 / 无请求未计算）。
+17. ★★★ 五个占位符**各不相同**：`<unknown>`（模型桶与密钥桶）、`<none>`（应用桶）、
+    `'-'`（`recent.model`）、`'unknown'`（`recent.status`）
+    ⇒ ★★ `'-'` 与 `'unknown'` **只出现在 recent 里**，与三个桶的占位符不通用。
+18. ★★★ **分发表是手工拆路径**（`:380-394`）：
+    `TrimPrefix` → `TrimSuffix` → `SplitN(…, 2)`，要求**恰好两段且第二段是 `stats`**，
+    否则 404 `not found`；`{id}` 用 `Atoi`（**无 TrimSpace**）且 `id <= 0`
+    ⇒ 400 `invalid user id`。
+
+**校验边界**：解包器校验两个响应的**全部恒在键与类型**
+（usage-summary 信封 2 + 行 5；stats 10 + kpi 6 + 桶 5 + recent 6 + daily 7）。
+**刻意不校验** `top_*` 与 `recent` 的**完整性** —— 后端自己都保证不了（见 2、3）。
+
+### 验证
+
+- 用例 **111 条全绿**（`web-mobile/src/api/userUsageStats.test.ts`）。
+- 变异 **83 条 = 82 有牙 + 1 可证等价**（`/tmp/mut-co88.mjs`，`RESTORED=OK`）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **5616 条（152 文件）** rc=0。
+
+### 变异验证暴露的判据缺陷（83 条 → 首跑 79 有牙，修到 82）
+
+首跑 3 条 STILL_GREEN，**归因两类 + 1 条可证等价**：
+
+1. **★★ 锚点指错（#44 / #56）—— 本批唯一的新教训形态。**
+   | 变异 | 锚点那条为什么永远绿 | 修法 |
+   |---|---|---|
+   | #44 recent 只校验 `first_chunk_ms` | 锚点那条是 **`not.toThrow` 放行用例** ⇒ **删检查永远打不红它** | 改指「六个键逐个都要校验」里 `total_ms: 'x'` 那条**类型错误**用例 |
+   | #56 `daily.length === days` 放宽成 `>=` | 锚点那条是「**欠长** ⇒ false」⇒ 3 >= 30 仍 false ⇒ 同答案 | 区分格在「**超长**」那一格（3 > 2）⇒ 改指新补的超长用例 |
+
+   ⇒ ★★★ **新形态：`not.toThrow` 型放行用例对「删检查」类变异天然无牙。**
+     它们只能证明「合法形状被放行」，**不能**证明「非法形状被拦住」；
+     凡是删/放宽检查的变异，锚点必须落在**类型错误**或**键缺失**那条用例上。
+   ⇒ ★★ 与之配套：`===` 的两条放宽方向（`<=` / `>=`）**区分格方向相反**，
+     必须**各有一条用例**，否则其中一条会白绿（本批补 #83 `<` 配「欠长」用例）。
+2. **可证等价 1 条（#67）。** `error_rate === 0` 改成 `!error_rate`：
+   `error_rate` 的可达集合是**有限 JSON 数字**（`NaN` 不可达），
+   其中 falsy 的只有 `0` 与 `-0`，而 `-0 === 0` 为 true
+   ⇒ 两式在**全部可达输入**上等价 ⇒ **可证等价**
+   ⇒ 保留与后端形状对齐的 `=== 0` 写法 + 注释写明理由。
+3. ★★ 此外，本批**先补覆盖再跑变异**：原先
+   「行的 tokens / credits」「kpi 的 credits」「daily 的 cost」
+   「桶的四个数字键」「recent 的 model」这些**循环里的键**没有任何用例能打掉
+   ⇒ 新增 5 条**逐字段钉住**用例（`行的五个字段` / `顶层四个标量键` /
+   `kpi 的六个键` / `daily 的八个键` / `三个桶的五个键` / `recent 的六个键`）
+   + 5 条**常量钉桩**用例（原先 `*_PLACEHOLDER` 是「导出但没人读」的死导出）。
+   ⇒ ★★★ **循环里的键必须逐个有类型错误用例**，否则把某个键从循环数组里删掉不会有一条用例变红。
+
+### 顺手修掉的文档缺陷
+
+第八十五批把 §11.121 **整节写了两遍**（`11319-11459` 与 `11460-11607`）：
+两份**不是逐字相同** —— 第二份是**更早的草稿**（缺 #42 的修正、写着「样本选歪 8 条」），
+第一份才是修正后的版本（10 条、含 #42 与它的另一种归因）。
+⇒ 已**删除第二份**（148 行），保留修正版；两份的独有结论在第一份里都已覆盖，**无信息损失**
+⇒ ★★ 教训：**「文档纯追加」的证明（`new.startswith(old + '\n')`）只能证明没截断，
+  证明不了没重写** —— 重写整节时前缀仍然成立 ⇒ 追加类纪律需要**额外的节号唯一性检查**。
 
 ### 收尾
 
