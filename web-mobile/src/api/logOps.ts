@@ -185,7 +185,7 @@ export function logFilesTotalDisagrees(r: LogFilesListResponse): boolean {
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 /**
- * admin/logs_body_cache.go:143-152，**手写的 `map[string]any`**（不是 struct）
+ * admin/logs_body_cache.go:140-147，**手写的 `map[string]any`**（不是 struct）
  * ⇒ 键是字面量，没有任何 struct tag 可照抄；六个键恒发，无 omitempty。
  */
 export interface BodyCacheStats {
