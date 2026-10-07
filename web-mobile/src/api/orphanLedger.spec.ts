@@ -64,7 +64,6 @@ const KNOWN_ORPHANS: readonly string[] = [
   'platformSettings',
   'reportRollup',
   'requestActions',
-  'selfCheck',
   'sessionAnalyticsFilterOptions',
   'slidingWindow',
   'storageAndLogConfig',
@@ -78,7 +77,7 @@ const KNOWN_ORPHANS: readonly string[] = [
 ]
 
 /**
- * 现况（2026-10-08，第一百零五批后）：**26 项**。
+ * 现况（2026-10-08，第一百零六批后）：**25 项**。
  * ★ 上面文件头里那句「30 个」是第一百批当时的实测记录，**不要去改它** ——
  *   引用它时要连时刻一起引用（「第一百批那轮 30 个」）。
  *   清单本身是活的事实源，下面这条断言逐项对拍。
@@ -210,6 +209,12 @@ describe('孤儿棘轮', () => {
     //   所以它的席**不设** requiresRole ⇒ AppDrawer.spec.ts 的白名单里
     //   **不该**出现 probe-queue。两条判据合起来才覆盖「接上了且档位挂对了」。
     expect(currentOrphans()).not.toContain('probeTriStateTasks')
+  })
+
+  it('★ 已接线的哨兵：selfCheck 不在孤儿里（第一百零六批）', () => {
+    // ★ self-check 席是 **admin 档** ⇒ 不进 AppDrawer.spec.ts 的白名单，
+    //   跨租户门控在 SelfCheckView 内部按段落做。
+    expect(currentOrphans()).not.toContain('selfCheck')
   })
 
   it('★★★ 反向护栏：api 内部的互相引用不得凭空产生可达性', () => {

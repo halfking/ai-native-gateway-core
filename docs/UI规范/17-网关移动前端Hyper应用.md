@@ -14280,3 +14280,161 @@ expect(w.text()).not.toContain('dq-pending-1')
 
 `probeTriStateTasks` 从 `KNOWN_ORPHANS` 删掉一行并加哨兵。
 清单文件头那句「30 个」仍是第一百批的实测记录，**没有去改**。
+## 11.142 系统自检面接进 UI：第四次跨租户，而且这次**列就在表里**（第一百零六批，2026-10-08）
+
+本批消化孤儿 `selfCheck`（第七十六批做的：823 行 / 74 导出 / 1223 行判据 / 六个 GET）。
+它与上一批的探测队列在桌面上**同属自检页**（`web/src/api-selfcheck.ts`），
+移动端此前两块都没有。
+
+### 一、★★★★★★ 本仓第四次「不隔离 + admin 档」，而且是最重的一次
+
+`self_check_runs` 表**有** `tenant_id` 列：
+
+```sql
+-- deploy/sql/schemas/baseline/01-schema.sql:15470（建表第 19 行）
+tenant_id text DEFAULT 'default'::text NOT NULL,
+```
+
+而**六个 handler 一个都不引用它**：
+
+| handler | 过滤条件 | 行号 |
+|---|---|---|
+| `handleListRuns` | `WHERE 1=1` + 仅 `model_name` / `status` 可选 | `:126-150` |
+| `handleGetRun` | `WHERE id=$1` | `:223` |
+| `handleStats` | 三处 `WHERE started_at >= $1` | `:805+` |
+| `handleModels` | `GROUP BY model_name` | — |
+
+注册全是 `admin(...)`（`admin/self_check_handlers.go:60-68`）⇒
+**tenant_admin 能读所有租户的自检记录**。
+
+⇒ ⇒ ★ 与前三次（批 66 data-lifecycle、批 73 node-health、批 104 dashboard）
+**完全不同的一点**：**列就在表里，只是查询从不引用它** ——
+不是「表没有租户概念」，是**有概念但不接线**。⇒ 这类缺陷靠看 schema 发现不了，
+只能逐个 handler 读 WHERE 条件。
+
+★★ 而且比批 104 那次更重：批 104 泄漏的是**聚合计数**，
+这次 run 详情取 `request_body` / `response_preview`（`:241-242`）——
+**别的租户的完整请求与响应正文**。
+
+#### 前端处置：按段落分级门控，不是整族一刀切
+
+| 段 | 端点 | 档位 | 理由 |
+|---|---|---|---|
+| 运行记录 | `/runs` | **super_admin** | 跨租户 + `error_detail` / `upstream_error` |
+| 统计 | `/stats` | **super_admin** | 跨租户聚合 |
+| 模型分布 | `/models` | **super_admin** | 跨租户聚合 |
+| 设置 | `/settings` | admin | 网关自身单行配置，无租户数据 |
+| 触发可用性 | `/trigger/availability` | admin | 系统能力探测 |
+
+⇒ 抽屉席 `self-check` 本身**不设** `requiresRole`（与后端对齐），
+跨租户的三段在**视图内部**按段落门控。
+⇒ 判据逐个点名四个 admin 档段落标题，证明**没有一锅端**。
+
+⚠️ **这不是把后端修好了** —— 后端该给这四个 handler 加 tenant 条件。
+本页只是不替它兜底；绕过前端直接调端点仍拿得到全租户正文。
+⚠️ 本批**不做 run 详情**（正文级内容最多的一条），留给后续单独收口。
+
+### 二、★★★ 本族最严重的一处：**绿灯可能是查询失败**
+
+`stats.probe_system` 的两个查询的错都被 `_ =` 丢弃（`:941` / `:949`）
+⇒ 查询失败 ⇒ 全零 ⇒ `queue_ready_unclaimable == 0 && last_activity_at == nil`
+⇒ **`healthy = true`**。
+
+★ 而这个区块存在的理由（`:926-931` 的注释自陈）恰恰是
+「页面绿灯但探测管线已死」（glm-5.2 事故）——
+**它的查询失败恰好产出它要防的那种绿灯**。
+
+⇒ 视图用 `selfCheckProbeSystemLooksUnqueried` 判「两个查询都没查到」的形状并显式告警。
+判别格方向相反的那条也钉了：**正常在跑的探测管线不得报这条告警**。
+
+### 三、其余六条不变量
+
+| # | 不变量 | 出处 |
+|---|---|---|
+| 1 | `summary` 失败时全零 + `success_rate: 0.0` ⇒ 与「全失败」同值 | `:805` 丢错 + HTTP 200 |
+| 2 | `error_breakdown` / `trend` 失败时是 `[]` ⇒ 与「没有」同形 | `:872-874` / `:904-906` |
+| 3 | `success+partial+failed` **可能小于** `total_runs`（status 五值，统计只 FILTER 三个） | `:807-809` |
+| 4 | `range` 回显**请求原值**，未知值静默落 24h | `:777-794` / `:963` |
+| 5 | `/models` **没有 partial 计数**且是**全时段** | 文件头 (9) |
+| 6 | `credential_id` 不是 DB 列，是从 `model_name` 推导的 | `:75-85` |
+
+★ 第 3 条的后果是**拿三项相加当分母会算错** ⇒ 视图把「三项合计」与「总数」并排渲染，
+并在不等时明说「分母里含 running 与 retrying」。
+
+### 四、★★ 一条自己造的恒真判据，第三次同族（批 104 / 105 / 106 各一次）
+
+我照着批 104 的样子写了第二道取数屏障 + 一条判据：
+
+```ts
+if (!sectionAllowed(section)) return        // load() 里的早退
+expect(mock).not.toHaveBeenCalled()          // 「非超管一次 fetch 都没发」
+```
+
+变异 `S2` 删掉早退 ⇒ **一条没红**。⇒ 真因与批 104 **完全同因**：
+`load(section)` 的唯一触发器是该段的加载按钮，按钮随 `v-if` 一起不存在，
+组件也没有 `onMounted` 自动加载 ⇒ **分支可证不可达、判据可证恒真**。
+
+⇒ ★★★ **我明明在批 104 的文档里把这条写成了结论，却照样重犯。**
+⇒ 处置同样：删死代码、换成**结构性**判据（非超管 2 个加载按钮 / 超管 5 个，两侧必须不等）。
+
+### 五、★★ 一条「锚点不唯一」的判据：`'0 ms'` 是 `'1200 ms'` 的子串
+
+判据「后端若发 `0` 也要显示 0」我写的是 `expect(txt).toContain('0 ms')`，
+而同一张卡片里 `duration 1200 ms` —— **包含 `0 ms` 这个子串**。
+⇒ 变异把整个延迟行干掉，那条断言**照样绿**。
+
+⇒ ★★★ 修法：锚在「标签 + 值」（`上游延迟 0 ms`）而不是裸数值。
+★ 与批 105 的 `dedup_key` 那条同族：**断言文本必须是被测物独有的**。
+
+### 六、★★ 「可证等价」：`!== undefined` 与 `!` 在本族没有区别
+
+修完上一条后我又想：把 `!== undefined` 换成 `!`（真值判断）来打这条判据，
+**打不掉**。查因：
+
+`upstream_latency_ms` 是 `int` + `omitempty`
+⇒ **0 永远不会被编码出来** ⇒ 在后端能发出的**每一个取值**上，
+`undefined` 与 `0` 都是 falsy，两个判断结果**完全一致**。
+
+⇒ ⇒ ★★★★ **这不是「一种实现更对」，是可证等价。**
+`!== undefined` 取的是防御形态（万一将来有人去掉 `omitempty`），
+但**能钉住这个区别的夹具必须是一个后端发不出的值** ⇒ 那条判据是恒真的。
+
+⇒ 处置：**删掉那条判据，把契约写进 `latencyText` 的注释。**
+★ 对照批 105：那里的 `*int` ⇒ `0` **会出现** ⇒ 真值判断是真错；
+本族 `int` ⇒ `0` **消失** ⇒ 真值判断**无害**。
+**同家族，相反方向。**
+
+★ 同族新格：`selfCheckUpstreamOutcome` 的返回类型是
+`'tested' | 'not_tested' | 'result_empty' | 'result_present'`，
+但函数体**只可能返回后三个** —— `'tested'` 是联合类型里的**死成员**。
+我第一版按联合类型写 `outcome === 'tested' || outcome === 'result_present'`，
+于是 `result_empty`（`upstream_tested=true` 但 `upstream_result` 为空）**整类渲染不出延迟行**。
+⇒ 与批 103 同族：**联合/枚举里的每个值都要逐个验可达性。**
+⇒ 两侧 i18n 里那个死成员 `tested` 的文案也已删（它本就是 `result_empty` 的重复）。
+
+### 七、门禁与工装
+
+- `theme.spec.ts` 的「未定义 token 引用棘轮」**未**再红（沿用批 105 换成的 `--app-text`）。
+- `verify-i18n-parity.mjs` 抓到两条**未翻译**：`en-US sc.yes = yes` / `sc.no = no`
+  —— 口径是「**值 === 键名**」⇒ 改成 `'Yes'` / `'No'`。
+- ★ `vue-tsc` 报 TS6133「`STATS_INFLIGHT` 未使用」，复查发现它是我写重复的夹具
+  （与 `STATS_OK` 逐字相同）⇒ **删夹具**，而不是硬找地方用它。
+  ★ 同一次还报 `SELF_CHECK_RUN_STATUSES` / `echoedRangeEffective` 未使用，
+  复查**这两个是该用**：补了 status 筛选（后端 `WHERE 1=1 + AND status=$n` 真支持）
+  与「回显 range 失效」告警。⇒ **「未使用」不总是「该删」。**
+
+### 八、验证
+
+- 新增 `SelfCheckView.spec.ts` **37 条**；`orphanLedger.spec.ts` 11 → 12 条
+- ★★★ **变异 13/13 全有牙**（`/tmp/mut-co106.mjs`，标记 `CO106S1…S14`（S2 已删），
+  还原 md5 逐字节一致，未用 `git checkout --`；跑完复查文件里**零** `CO106S` 残留）
+- 五门 rc=0（i18n parity 2692 → **2742 键** / 触控 R1 95 个 `.vue` / CSS 98 文件 / `vue-tsc` / `build`）
+- 全量 **6971 条 / 171 文件** rc=0
+- 十连跑 **10/10 全绿、每轮 6971 逐条一致**（`总次数 10 · 失败次数 0 · 快照 0 份`）
+  ⇒ `ComplianceHitsView` / `RoutingOptView` 两个历史 flaky **本轮仍未复现** ——
+  按连跑器口径，这**不是「已修复」**，只是没抓到；连跑器存在的意义就是下次抓到时留下证据。
+
+### 九、孤儿 26 → 25
+
+`selfCheck` 从 `KNOWN_ORPHANS` 删掉一行并加哨兵。
+清单文件头那句「30 个」仍是第一百批的实测记录，**没有去改**。
