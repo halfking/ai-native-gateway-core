@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/maas"
 )
 
 func (h *Handler) shouldUseBoardLogsFallback(ctx context.Context, tenantID string, tr boardTimeRange) bool {
@@ -129,11 +131,20 @@ func (h *Handler) fallbackBoardSummary(ctx context.Context, tenantID string, tr 
 		return nil, scanErr
 	}
 
-	// 2026-10-03：回退路径的积分来自 queryTotalCreditsCharged，与主路径的
-	// request_stats_minute.credits_charged 是**两个数据源**。它降级时返回 0，
-	// 而这条路径的载荷没有任何降级标记 —— 看板首屏那个高亮的
-	// 「总积分消耗」卡片会照常显示 0。
-	credits, creditsDegradedView := h.queryTotalCreditsCharged(ctx, tenantID, tr.Days)
+	// 2026-10-03 的原始动机（上游注释，保留）：回退路径的积分与主路径的
+	// request_stats_minute.credits_charged 曾是两个数据源，缺源时返回 0 却无标记。
+	//
+	// 本次改成 queryBoardCreditsExcludingProbes 而非 queryTotalCreditsCharged：
+	//   · 同源 —— 主路径的 request_stats_minute.credits_charged 本身就是
+	//     maas.RequestLogCreditsSQL 对 request_logs 算出来的，回退路径读同源，
+	//     1d/7d/30d 切页时数字才不会因为换源而跳变（上游注释指出的正是这个缺陷）；
+	//   · 同口径 —— 其余读面（请求数/成功率/Token/费用）都经 boardLogsWhere 排除了
+	//     探针，积分若仍取自计费账本（账本无探针标记、探针轮次是真的被扣费的），
+	//     同一屏就会出现「Token 已排除探针、积分含探针」的自相矛盾。
+	//
+	// 降级契约不变：queryBoardCreditsExcludingProbes 与 queryTotalCreditsCharged
+	// 同签名 (int64, string)，42P01 仍以 credits_missing_view 上报，前端仍显示「—」。
+	credits, creditsDegradedView := h.queryBoardCreditsExcludingProbes(ctx, tenantID, tr)
 
 	var activeKeys, activeModels, providers int
 	_ = h.queryOverviewCounts(ctx, tenantID, tr, &activeKeys, &activeModels, &providers)
@@ -177,6 +188,63 @@ func (h *Handler) fallbackBoardSummary(ctx context.Context, tenantID string, tr 
 		payload["credits_hint"] = missingRelationHint(creditsDegradedView)
 	}
 	return payload, nil
+}
+
+// queryBoardCreditsExcludingProbes computes the board's 总积分消耗 without
+// falling back to the shared queryTotalCreditsCharged.
+//
+// Why the board cannot use queryTotalCreditsCharged: that helper reads
+// maas_credit_consumption_buckets, the billing ledger. The ledger stores
+// charged credits only — it carries no origin_stage / origin_actor /
+// quality_flags / task_type, so probe traffic cannot be filtered out of it
+// after the fact. Probe rounds really do get charged: the self-check key is
+// created with tenant_id='default' (bg/self_check_worker.go:901) and
+// shouldChargeUsage (domains/streaming/billing.go:9) inspects only token counts
+// and failure stage, never the probe markers.
+//
+// So the board derives credits from request_logs with the same exclusion every
+// other board read face uses. That also makes this path AGREE with the minute
+// rollup, which computes credits the same way (maas.RequestLogCreditsSQL over
+// probe-filtered rows) — before this change the two paths answered the same
+// field by different, non-comparable means.
+//
+// Scope (deliberate): billing stays untouched. queryTotalCreditsCharged is
+// shared with the usage page (admin/usage.go:150) and still reports actual
+// charged credits including probes; only the dashboard's operational view is
+// probe-free. If probes should not be billable at all, that is a separate
+// decision in shouldChargeUsage, not a statistics fix.
+//
+// Second return value mirrors queryTotalCreditsCharged's degraded-view
+// contract (admin/usage_credits.go:creditDegradedView): 42P01 means "not
+// computed", and the caller turns it into credits_missing_view so the board
+// renders "—" instead of a fabricated 0. Returning a bare 0 here would
+// reintroduce exactly the lie the upstream fix removed.
+func (h *Handler) queryBoardCreditsExcludingProbes(ctx context.Context, tenantID string, tr boardTimeRange) (int64, string) {
+	logsTable, alias := boardRequestLogsFromClause()
+	where, args := boardLogsWhere(tr, alias, tenantID)
+	where += " AND " + alias + `.request_status IN ('success', 'failure', 'rate_limited')`
+	where += " AND " + requestLogsBillableClause(alias)
+
+	creditsExpr := maas.RequestLogCreditsSQL(alias, tenantID == "" || tenantID == "default")
+	var credits int64
+	if err := h.db.QueryRow(ctx, `
+		SELECT COALESCE(SUM(`+creditsExpr+`), 0)::bigint
+		FROM `+logsTable+`
+		WHERE `+where, args...).Scan(&credits); err != nil {
+		// 42P01 → 「没算出来」，上报缺失视图让前端显示「—」；
+		// 其它错误按 queryTotalCreditsCharged 的同款口径走 slog.Warn，
+		// 不进 degraded 契约（契约只针对可迁移性缺失）。
+		if IsMissingRelationError(err) {
+			return 0, creditDegradedView(err)
+		}
+		slog.Warn("board credits (probe-excluded) failed",
+			"tenant_id", tenantID,
+			"start", tr.Start,
+			"end", tr.End,
+			"error", err)
+		return 0, ""
+	}
+	return credits, ""
 }
 
 func (h *Handler) queryOverviewCounts(ctx context.Context, tenantID string, tr boardTimeRange, keys, models, providers *int) error {

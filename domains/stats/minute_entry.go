@@ -1,6 +1,8 @@
 package stats
 
 import (
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
@@ -8,6 +10,52 @@ import (
 )
 
 const unknownDim = "__unknown__"
+
+// probeGatewayActors mirrors bg.ProbeTrafficExclusionPredicateView's
+// origin_actor arm. It lives here rather than importing bg because bg imports
+// this package (bg/stats_minute_rollup.go) — a shared const in bg would be an
+// import cycle. TestProbeActorSetMatchesSQLPredicate in this package fails if
+// the two lists ever drift.
+var probeGatewayActors = []string{
+	"node-probe-worker",
+	"active-probe-worker",
+	"probe-service",
+	"credential-selfcheck-worker",
+}
+
+// IsProbeTraffic reports whether a completed request_log entry is probe traffic
+// and must therefore be kept out of the dashboard's request/success counters.
+//
+// This is the live (Go) twin of bg.ProbeTrafficExclusionPredicateView and must
+// stay semantically identical to it. The SQL arm works on the 113-column view,
+// which has no origin_stage column, so it identifies probes via the three
+// remaining markers; the entry here carries origin_stage too, but we deliberately
+// do NOT add an origin_stage arm — that would make the live and rollup writers
+// disagree about which rows are business traffic, and the two writers feed the
+// same ON CONFLICT key in request_stats_minute.
+func IsProbeTraffic(entry *telemetry.RequestLogEntry) bool {
+	if entry == nil {
+		return false
+	}
+	if slices.Contains(entry.QualityFlags, "probe") {
+		return true
+	}
+	if task := strings.TrimSpace(derefString(entry.TaskType)); task == "probe_triggered" {
+		return true
+	}
+	if actor := strings.TrimSpace(derefString(entry.OriginActor)); actor != "" &&
+		slices.Contains(probeGatewayActors, actor) {
+		return true
+	}
+	return false
+}
+
+func derefString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
 
 // MinuteRow is a per-minute aggregate keyed by tenant + provider + model.
 type MinuteRow struct {
@@ -74,6 +122,12 @@ func FromTelemetryEntry(entry *telemetry.RequestLogEntry, ts time.Time) (
 	if status != telemetry.RequestStatusSuccess &&
 		status != telemetry.RequestStatusFailure &&
 		status != telemetry.RequestStatusRateLimited {
+		return main, nil, nil, false
+	}
+	// Probe traffic is not user traffic. Counting it here is what made the
+	// dashboard's 总请求数 include health checks and the 成功率 read as a
+	// meaningless number, because probes fail far more often than real calls.
+	if IsProbeTraffic(entry) {
 		return main, nil, nil, false
 	}
 
