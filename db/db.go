@@ -1835,12 +1835,15 @@ func (d *DB) ensureURSMNodeSnapshotMinIdentityPK(ctx context.Context) error {
 	}
 
 	// 2) 拿不到锁就放弃：宁可下一轮 boot 再试，也不在启动路径上排队等写入。
+	// R49-D2（2026-10-07）：SET LOCAL 必须与 DDL 同批执行——单独一条
+	// pool.Exec 是 autocommit，SET LOCAL 的效果随该语句的隐式事务结束而
+	// 消失，后面的 ALTER TABLE 实际跑在默认 lock_timeout 上（守卫是死代码）。
+	// 同批（简单协议单隐式事务）才是有效作用域，范式同本文件
+	// ensureSessionSummariesAccessColumns 的 SET LOCAL+ALTER 同串写法。
 	conctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if _, err := d.pool.Exec(conctx, `SET LOCAL lock_timeout = '3s'`); err != nil {
-		return fmt.Errorf("set lock_timeout for %s identity reconcile: %w", table, err)
-	}
 	if _, err := d.pool.Exec(conctx, `
+		SET LOCAL lock_timeout = '3s';
 		ALTER TABLE public.`+table+` DROP CONSTRAINT IF EXISTS `+table+`_pkey;
 		ALTER TABLE public.`+table+` ADD CONSTRAINT `+table+`_pkey
 			PRIMARY KEY (`+ursmSnapshotIdentityPKCols+`);
@@ -2756,15 +2759,27 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 // ensureQualityFixModeSchema mirrors db/migrations/017_quality_fix_mode.sql
 // for the providers table. Idempotent.  quality_fix_mode defaults to 'off'
 // so existing providers keep their current passthrough behavior.
+// qualityFixModeDDL —— 与下面那个批次分开声明，因为它里面唯一会取
+// ACCESS EXCLUSIVE 的就是这条 ALTER。2026-10-07 审计（§10.98）：列在位时它
+// 仍是纯 no-op，却要在 providers 上等锁——生产实测 522 次、均值 895 ms、
+// 最长单次 61,672 ms，累计堵锁 7.8 分钟（25.9 天窗口）。同 columnsAllPresent 注。
+const qualityFixModeDDL = `
+		ALTER TABLE providers
+		    ADD COLUMN IF NOT EXISTS quality_fix_mode TEXT NOT NULL DEFAULT 'off'
+		        CHECK (quality_fix_mode IN ('off', 'detect_only', 'fix'));`
+
 func (d *DB) ensureQualityFixModeSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
+	// 列在位则跳过那条 ALTER；provider_quality_rollup 的建表/建索引留在下方
+	// 未守卫批次里（两者一起跳过会让「有列但缺 rollup 表」的库永远补不上）。
+	if !d.columnsAllPresent(ctx, "providers", []string{"quality_fix_mode"}) {
+		if _, err := d.pool.Exec(ctx, qualityFixModeDDL); err != nil {
+			return err
+		}
+	}
 	_, err := d.pool.Exec(ctx, `
-		ALTER TABLE providers
-		    ADD COLUMN IF NOT EXISTS quality_fix_mode TEXT NOT NULL DEFAULT 'off'
-		        CHECK (quality_fix_mode IN ('off', 'detect_only', 'fix'));
-
 		CREATE TABLE IF NOT EXISTS provider_quality_rollup (
 		    provider_id       INT  NOT NULL,
 		    bucket_start      TIMESTAMPTZ NOT NULL,
@@ -2795,18 +2810,73 @@ func (d *DB) ensureQualityFixModeSchema(ctx context.Context) error {
 // 编号 SQL 文件供 DBA 同步流程使用；本函数保证二进制启动即生效，
 // 否则 admin 的 listProviders（WHERE p.deleted_at IS NULL）会在未同步的
 // 库上直接 500。
-func (d *DB) ensureProviderSoftDelete(ctx context.Context) error {
-	if d == nil || d.pool == nil {
-		return nil
-	}
-	_, err := d.pool.Exec(ctx, `
+// providerSoftDeleteDDL is the slice of the 631 provider/credential soft-delete
+// schema that touches providers. It is applied under its own catalog guard
+// because providers is one of the most heavily read tables in the shared
+// database and an unconditional no-op DDL there stalls live routing reads.
+//
+// 2026-10-07: keep this as a standalone const so the guard probe and the DDL
+// cannot drift apart, and so the guard test can assert on the exact statements
+// that are allowed to be skipped.
+const providerSoftDeleteDDL = `
 		ALTER TABLE providers
 		    ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 
 		CREATE INDEX IF NOT EXISTS idx_providers_live
 		    ON providers (id)
-		    WHERE deleted_at IS NULL;
+		    WHERE deleted_at IS NULL;`
 
+// providerSoftDeleteCurrent reports whether providers already carries the
+// deleted_at column and idx_providers_live, i.e. whether providerSoftDeleteDDL
+// would be a pure no-op. Both are checked because the DDL is applied as one
+// unit: the partial index cannot exist before the column it filters on.
+//
+// A failed probe returns false so the DDL still runs: reading a probe error as
+// "already current" would permanently skip the schema on a database that
+// genuinely needs it.
+func (d *DB) providerSoftDeleteCurrent(ctx context.Context) bool {
+	if d == nil || d.pool == nil {
+		return false
+	}
+	var missing int
+	err := d.pool.QueryRow(ctx, `
+		SELECT
+		  (SELECT count(*) FROM (VALUES ('deleted_at')) AS want(name)
+		   WHERE to_regclass('public.providers') IS NOT NULL
+		     AND NOT EXISTS (
+		       SELECT 1 FROM information_schema.columns
+		        WHERE table_schema='public' AND table_name='providers'
+		          AND column_name = want.name))
+		  +
+		  (SELECT count(*) FROM (VALUES ('idx_providers_live')) AS want(name)
+		   WHERE NOT EXISTS (
+		       SELECT 1 FROM pg_indexes
+		        WHERE schemaname='public' AND indexname = want.name))
+	`).Scan(&missing)
+	if err != nil {
+		slog.Warn("provider soft-delete probe failed; applying DDL", "error", err)
+		return false
+	}
+	return missing == 0
+}
+
+func (d *DB) ensureProviderSoftDelete(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	// providers 是共享库里读压最狠的表之一（实测 ~10.66M 次读取/天，其中
+	// ~479k 次顺序扫描）。`ALTER TABLE … ADD COLUMN IF NOT EXISTS` 并不因为
+	// 列早已存在就免锁：PG 必须先取 ACCESS EXCLUSIVE 才能判断列在不在，而
+	// ACCESS EXCLUSIVE 与每次路由查询持有的 ACCESS SHARE 直接冲突。
+	// §10.97 已按同一形状修过 credits_charged 与 quality_fix_mode；这里补第三个。
+	if !d.providerSoftDeleteCurrent(ctx) {
+		if _, err := d.pool.Exec(ctx, providerSoftDeleteDDL); err != nil {
+			return err
+		}
+	}
+	// credentials 的 CHECK 约束块自带 pg_constraint 定义守卫（2026-09-05），
+	// 目录命中时连验证扫描都不做，保持原样。
+	_, err := d.pool.Exec(ctx, `
 		-- 2026-09-05: credentials 是共享库最热表，此前这里的无条件 DROP+ADD 每次
 		-- 启动都对全表做验证扫描并持 ACCESS EXCLUSIVE。守卫：约束存在且定义一致
 		-- 则跳过；状态列表变更时同步更新期望的 pg_get_constraintdef 串即可自愈。
@@ -3222,21 +3292,85 @@ func (d *DB) ensureApiKeyAutoProfileIdentity(ctx context.Context) error {
 // SQLSTATE 42703，直到手工补列。本 ensure 让网关启动即自愈，与
 // ensureProviderSoftDelete（631）同一"二进制启动即生效"的兜底模式。
 // 幂等：ADD COLUMN IF NOT EXISTS，已应用库上为 no-op。
-func (d *DB) ensureProviderModelsCanonicalClearedAt(ctx context.Context) error {
-	if d == nil || d.pool == nil {
-		return nil
-	}
-	_, err := d.pool.Exec(ctx, `
+// providerModelsCanonicalClearedAtDDL is the slice of migration 693 that
+// touches provider_models.
+//
+// 2026-10-07: provider_models is the most heavily read table in the shared
+// production database — ~12.48M reads/day (1.95M sequential + 10.53M index)
+// on only 1,330 rows. Both statements here take ACCESS EXCLUSIVE before they
+// can conclude there is nothing to do: ALTER TABLE needs it to decide whether
+// the column exists, and COMMENT ON COLUMN needs it to rewrite the catalog
+// entry. Production already carries both the column and the comment, so every
+// boot was locking the busiest table in the database twice for a no-op.
+//
+// The schema_migrations INSERT stays outside this constant: it is an idempotent
+// stamp, not a lock-taking DDL, and the repo keeps those running on every boot.
+const providerModelsCanonicalClearedAtDDL = `
 		ALTER TABLE public.provider_models
 		    ADD COLUMN IF NOT EXISTS canonical_cleared_at TIMESTAMPTZ;
 
 		COMMENT ON COLUMN public.provider_models.canonical_cleared_at IS
-		    '管理员解绑标记。非空表示运营者已显式解绑 canonical_id，discovery 等自动路径不得写回 canonical_id；显式重新关联时置回 NULL。';
+		    '管理员解绑标记。非空表示运营者已显式解绑 canonical_id，discovery 等自动路径不得写回 canonical_id；显式重新关联时置回 NULL。';`
 
+// providerModelsCanonicalClearedAtStamp records the migration. It is
+// idempotent, does not lock provider_models, and therefore runs on every boot
+// regardless of whether the DDL above was skipped.
+const providerModelsCanonicalClearedAtStamp = `
 		INSERT INTO public.schema_migrations (version, description)
 		VALUES ('693', 'provider_models canonical_cleared_at admin-unbind marker')
-		ON CONFLICT (version) DO NOTHING;
-	`)
+		ON CONFLICT (version) DO NOTHING;`
+
+// providerModelsCanonicalClearedAtCurrent reports whether
+// providerModelsCanonicalClearedAtDDL would change nothing: the column exists
+// *and* it already carries a column comment.
+//
+// The comment is checked as well as the column. Skipping only the ALTER would
+// leave COMMENT ON COLUMN — which takes the very same ACCESS EXCLUSIVE — to run
+// unconditionally, so the guard would buy nothing on the hottest table.
+//
+// A failed probe returns false so the DDL still runs.
+func (d *DB) providerModelsCanonicalClearedAtCurrent(ctx context.Context) bool {
+	if d == nil || d.pool == nil {
+		return false
+	}
+	var missing int
+	err := d.pool.QueryRow(ctx, `
+		SELECT
+		  (SELECT count(*) FROM (VALUES ('canonical_cleared_at')) AS want(name)
+		   WHERE to_regclass('public.provider_models') IS NOT NULL
+		     AND NOT EXISTS (
+		       SELECT 1 FROM information_schema.columns
+		        WHERE table_schema='public' AND table_name='provider_models'
+		          AND column_name = want.name))
+		  +
+		  (SELECT count(*) FROM (VALUES ('canonical_cleared_at')) AS want(name)
+		   WHERE NOT EXISTS (
+		       SELECT 1
+		        FROM pg_attribute a
+		        WHERE a.attrelid = 'public.provider_models'::regclass
+		          AND a.attname = want.name
+		          AND col_description(a.attrelid, a.attnum) IS NOT NULL))
+	`).Scan(&missing)
+	if err != nil {
+		slog.Warn("provider_models canonical_cleared_at probe failed; applying DDL", "error", err)
+		return false
+	}
+	return missing == 0
+}
+
+func (d *DB) ensureProviderModelsCanonicalClearedAt(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	if d.providerModelsCanonicalClearedAtCurrent(ctx) {
+		// Still record the migration stamp: it is idempotent and does not lock
+		// provider_models.
+		if _, err := d.pool.Exec(ctx, providerModelsCanonicalClearedAtStamp); err != nil {
+			return fmt.Errorf("ensure provider_models canonical_cleared_at: %w", err)
+		}
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, providerModelsCanonicalClearedAtDDL+providerModelsCanonicalClearedAtStamp)
 	if err != nil {
 		return fmt.Errorf("ensure provider_models canonical_cleared_at: %w", err)
 	}
@@ -7879,6 +8013,17 @@ func (d *DB) ensurePartitionAutovacuumSchema(ctx context.Context) error {
 		        WHERE n.nspname = 'public' AND c.relkind = 'r'
 		          AND (c.relname LIKE '%\_hot' ESCAPE '\'
 		            OR c.relname = 'credential_probe_model_log')
+		          -- Skip tables whose reloptions already match. ALTER TABLE SET
+		          -- takes ACCESS EXCLUSIVE even when it changes nothing, so an
+		          -- unguarded loop locks every hot table on every boot.
+		          -- Measured on 252 production: 23 hot tables + 40 partitions =
+		          -- 63 exclusive locks per start, all already correct.
+		          AND NOT (COALESCE(c.reloptions, ARRAY[]::text[]) @> ARRAY[
+		              'autovacuum_enabled=true',
+		              'autovacuum_vacuum_scale_factor=0.05',
+		              'autovacuum_vacuum_threshold=10',
+		              'autovacuum_analyze_scale_factor=0.02',
+		              'autovacuum_analyze_threshold=50'])
 		    LOOP
 		        BEGIN
 		            EXECUTE format('ALTER TABLE %I SET (%s)', r.relname, opts_sql);
@@ -7898,6 +8043,14 @@ func (d *DB) ensurePartitionAutovacuumSchema(ctx context.Context) error {
 		              'routing_decision_log','request_wal','usage_ledger',
 		              'credit_ledger','tool_usage_stats','candidate_failure_logs',
 		              'handoff_logs','request_logs_bodies'])
+		          -- Same guard as the hot-table loop above: 40 partitions on
+		          -- 252 production, all already carrying these reloptions.
+		          AND NOT (COALESCE(c.reloptions, ARRAY[]::text[]) @> ARRAY[
+		              'autovacuum_enabled=true',
+		              'autovacuum_vacuum_scale_factor=0.05',
+		              'autovacuum_vacuum_threshold=10',
+		              'autovacuum_analyze_scale_factor=0.02',
+		              'autovacuum_analyze_threshold=50'])
 		    LOOP
 		        BEGIN
 		            EXECUTE format('ALTER TABLE %I SET (%s)', r.relname, opts_sql);

@@ -86,7 +86,7 @@ func TestFlushFailureCallSiteIsWired(t *testing.T) {
 		t.Fatalf("read main.go: %v", err)
 	}
 	if flushWarnCallSite.Match(b) {
-		t.Errorf("main.go 的 flush 失败分支里仍出现 slog.Warn —— 级别没真正改到生产路径上。\n"+
+		t.Errorf("main.go 的 flush 失败分支里仍出现 slog.Warn —— 级别没真正改到生产路径上。\n" +
 			"★ 本次事故的根因就在这里；函数测得再对，调用点没换就是零效果。")
 	}
 	if !strings.Contains(string(b), "ursmPersistFlushFailure(") {
@@ -95,7 +95,7 @@ func TestFlushFailureCallSiteIsWired(t *testing.T) {
 	}
 	// 成功一次必须清零，否则「持续停摆」会在多次偶发失败后永久挂着
 	if !regexp.MustCompile(`flushFailStreak = 0`).Match(b) {
-		t.Errorf("main.go 里找不到 flushFailStreak = 0 —— 成功一次后计数不清零的话，"+
+		t.Errorf("main.go 里找不到 flushFailStreak = 0 —— 成功一次后计数不清零的话，" +
 			"「持续停摆」会在若干次偶发失败后一直成立。")
 	}
 }

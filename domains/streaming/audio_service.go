@@ -434,6 +434,21 @@ func (e *audioUpstreamStatusError) Error() string {
 	return fmt.Sprintf("upstream http %d: %s", e.status, body)
 }
 
+// StatusCode / Body（R49-C2，2026-10-07）：把上游 HTTP 状态与原始响应体以
+// 结构化接口暴露给共享失败台账（executors.candidate_failure_logger 的
+// upstreamStatusBodyError）。此前 audio 面错误只有 Error() 文本，台账里
+// http_status 恒 NULL、error_kind 兜底 transient，凭据详情的服务质量面
+// 对音频供应商失真（distinct_status_codes/类型分布不可用）。
+func (e *audioUpstreamStatusError) StatusCode() int { return e.status }
+func (e *audioUpstreamStatusError) Body() string    { return e.body }
+
+// 编译期契约（R49-C2）：executors.candidate_failure_logger 按
+// StatusCode()+Body() 结构化接口提取上游状态/响应体，签名漂移在此断。
+var _ interface {
+	StatusCode() int
+	Body() string
+} = (*audioUpstreamStatusError)(nil)
+
 // clientFault 报告该上游错误是否应作为「调用方请求有问题」回报。
 // 401/403 是网关自己那把上游 key 的问题（不是调用方的），429 是配额，
 // 两者都不能算调用方错误。

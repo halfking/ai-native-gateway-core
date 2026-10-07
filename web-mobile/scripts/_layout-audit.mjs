@@ -22,7 +22,8 @@
 export function layoutAudit() {
   const I = { url: location.href, vw: innerWidth, vh: innerHeight, dpr: devicePixelRatio, issues: [], stats: {} }
   const de = document.documentElement
-  const MIN_TAP = 44 // iOS HIG 44pt / Android 48dp 取小的那个，两边都不破
+  const MIN_TAP = 44   // iOS HIG 44pt —— **只用于无可见文字的图标类**目标（方形）
+const MIN_TAP_H = 48 // 本仓 R1：新增触控控件一律 ≥48 CSS px。与 scripts/verify-touch-targets.mjs 的 TARGET 同源，见下方 ② 的说明。
 
   function path(el) {
     if (!el || el === de) return 'html'
@@ -101,15 +102,45 @@ export function layoutAudit() {
     const s = getComputedStyle(el)
     if (s.pointerEvents === 'none') return
     const r = el.getBoundingClientRect()
-    if (r.width < MIN_TAP || r.height < MIN_TAP) {
-      small.push({ sel: path(el), w: Math.round(r.width), h: Math.round(r.height),
-        text: (el.innerText || el.textContent || '').trim().slice(0, 20) })
+    // ⚠️ 量的是**有效命中区**，不是元素自身矩形（实测 /m/request-anomalies）：
+    //   `label.ra__check > input[type=checkbox]`，input 自身只有 **20×20**，
+    //   但它被整个 label 包着，点 label 任意位置都会切换 checkbox
+    //   ⇒ 实测 label = **270×48**，零违规（WCAG 2.5.8 AA 要 24×24，
+    //   本仓 R1 要 min-height 48，都达标）。只量 input 会报出一条**不存在的缺陷**。
+    //   「命中区」= 最近的可点祖先（label 会把点击转发给内部控件）。
+    const hit = el.closest('label,button,a,[role="button"]')
+    const target = hit && hit !== el ? hit : el
+    const hr = target.getBoundingClientRect()
+    const txt = (el.innerText || el.textContent || '').trim()
+    // ★ 方案 A（2026-10-07，doc 10 §4.6.55）：**判据与仓门对齐**，不再各自一套。
+    //   本仓两条并存的规则此前从没对过账：
+    //     · `scripts/verify-touch-targets.mjs`：TARGET=48，**只量 min-height**
+    //       （依据 17 §4-R1「新增控件一律 ≥48 CSS px；44px 是存量下限」）
+    //     · 本模块此前的 MIN_TAP=44：**宽高都量**（依据「iOS 44 / Android 48 取小者」）
+    //   两者因此对同一批 chip 给出相反读数（本模块红、仓门绿），
+    //   而 `/m/heatmap` 的 1h/1d 两个 chip 被本模块挂了四节。
+    //   ⇒ 改成：**图标类**（无可见文字）才量方形 44×44；**文字类**只量高度 48，
+    //     因为文字 chip 的宽度由标签长度决定（「1h」两个字符），
+    //     要求它 ≥44 是本仓从未采纳过的约束。
+    //   依据核对：WCAG 2.2 SC 2.5.8 的 AA **规范下限是 24×24**（面积 2040 vs 576 远超），
+    //   Apple 44pt / Material 48dp **都是指南不是规范**，本仓 R1 要 min-height ≥48。
+    const iconLike = txt.length === 0
+    const tooSmall = iconLike
+      ? (hr.width < MIN_TAP || hr.height < MIN_TAP)
+      : (hr.height < MIN_TAP_H)
+    if (tooSmall) {
+      small.push({ sel: path(el), w: Math.round(hr.width), h: Math.round(hr.height),
+        rule: iconLike ? `图标类 <${MIN_TAP}×${MIN_TAP}` : `文字类 高度<${MIN_TAP_H}`,
+        via: hit && hit !== el ? path(target) : undefined,
+        own: (iconLike ? (r.width < MIN_TAP || r.height < MIN_TAP) : (r.height < MIN_TAP_H))
+          ? `${Math.round(r.width)}×${Math.round(r.height)}` : undefined,
+        text: txt.slice(0, 20) })
     }
   })
   I.stats.smallTargets = small.length
   if (small.length) {
     I.issues.push({ kind: 'tap-target', sev: 'medium',
-      detail: small.length + ' 个可点元素 < ' + MIN_TAP + 'px', items: small.slice(0, 12) })
+      detail: small.length + ' 个可点元素不足（图标类 <44×44 / 文字类 高度<48）', items: small.slice(0, 12) })
   }
 
   // ── ③ 文字与背景几乎同色（看不见的字）────────────────────────
@@ -164,8 +195,16 @@ export function layoutAudit() {
   })
   I.stats.fixedBars = fixed.map((f) => ({ sel: path(f.el), pos: f.pos,
     top: Math.round(f.r.top), h: Math.round(f.r.height) }))
-  const bottomBar = fixed.find((f) => f.r.top > innerHeight * 0.6)
-  const topBar = fixed.find((f) => f.r.bottom < innerHeight * 0.4)
+  // ⚠️ 「固定栏」必须是**外壳 chrome**，不能是内容里的 sticky（实测 /m/matrix）：
+  //   该页有 **581 个** `position:sticky` 的 `.mx__rowhead`（表格行头），
+  //   只要有一个的 top 落在视口下 40% 就被 `find()` 选中当「底部固定栏」，
+  //   于是判出一句「内容底部伸入底部固定栏 122px」——而那一页**根本没有吸底栏**
+  //   （实测 `navs: []`），滚到底后被视口裁掉的单元格 = 0。
+  //   判别式：栏在滚动宿主**之外**（`nav.bottomnav` 的祖先里没有滚动容器），
+  //   内容里的 sticky 行头在 `.mx__scroll` **里面**。⇒ 用 inScroller 分。
+  const bars = fixed.filter((f) => !inScroller(f.el))
+  const bottomBar = bars.find((f) => f.r.top > innerHeight * 0.6)
+  const topBar = bars.find((f) => f.r.bottom < innerHeight * 0.4)
 
   // 内容容器底部是否伸进了底部固定栏
   if (bottomBar) {
@@ -242,7 +281,7 @@ export function layoutAudit() {
   I.stats.fontStatus = document.fonts ? document.fonts.status : 'unknown'
 
   // ── ⑨ 近白屏 ───────────────────────────────────────────────
-  I.stats.textChars = (document.body.innerText || '').trim().length
+  I.stats.textChars = (document.body?.innerText || '').trim().length
   I.stats.domNodes = document.querySelectorAll('*').length
   // 「页面几乎是空的」有两种完全不同的成因，只有一种是缺陷：
   //   · 终态视图（空态 / 错误态）本来就只有一句话 —— /alerts 的「暂无数据 | 近期无告警」实测 35 字符；
@@ -270,11 +309,21 @@ export function layoutAudit() {
   // 而滚到顶部时列表内容从半透明底栏下方经过，矩形相交 33–49%。
   // ⇒ 「滚动内容 × 固定底栏」一律不算重叠：**能不能点到底**由下面的
   //   covered-by-fixed（按 scrollHeight/clientHeight 判）单独回答，不在这里重复报。
-  const inScroller = (el) => {
+  // ⚠️ 判「滚动容器」**不能只看 overflow 的取值**（一次真实假阳性的根因）：
+  //   原实现要求 `overflowY === 'auto' | 'scroll'`。但本仓的滚动宿主是
+  //   `main#main-content.hyper-app__main`，它的 overflow 是 **hidden**
+  //   （HyperApp.vue 的 `.hyper-app__main { overflow: hidden }` —— 注释写明
+  //   「main 只做布局容器不滚动」），而实测它 **sh=1208 / ch=752 真实溢出**。
+  //   ⇒ 谓词返回 false ⇒ 下一行的「滚动内容 × 固定栏」排除**从不触发**，
+  //   `bottomnav__item` 与页面按钮的每一次「从下方经过」都被报成 tap-overlap
+  //   （实测 /m/maas-orders 滚到底后被盖 0 个 ⇒ 全部是假阳性）。
+  //
+  //   真正决定「内容能不能移开」的**不是 overflow 取值，而是这个元素有没有溢出**。
+  //   `scrollTop` 对 `overflow:hidden` 的容器照样可编程设置，滚动宿主也照样用它。
+  function inScroller(el) {   // 函数声明：会提升。fixedBars（165 行）先用到它，
     let n = el.parentElement
     while (n && n !== document.body) {
-      const s = getComputedStyle(n)
-      if ((s.overflowY === 'auto' || s.overflowY === 'scroll') && n.scrollHeight > n.clientHeight + 4) return true
+      if (n.scrollHeight > n.clientHeight + 4) return true
       n = n.parentElement
     }
     return false
@@ -282,7 +331,7 @@ export function layoutAudit() {
   // ⚠️ 必须**向上看祖先**：实测底栏里 `nav.bottomnav > a.bottomnav__item` 自身是
   // position:static，fixed 挂在父级 nav.bottomnav 上。
   // 只看元素自身 ⇒ 这类（最常见的）固定栏永远判不出来，假阳性就一直报。
-  const isFixedBar = (el) => {
+  function isFixedBar(el) {
     let n = el, d = 0
     while (n && n.nodeType === 1 && d < 6) {
       const s = getComputedStyle(n)
@@ -352,11 +401,18 @@ export async function waitForSettle(timeoutMs) {
   const busy = () =>
     isSkeleton() || !!document.querySelector('.state-view[aria-busy="true"]')
   // 「不再变化」的指纹：文字长度 + 节点数 + 开头 40 字（只比长度会被等长替换骗过）。
+  // ⚠️ `document.body` 必须可选链：导航切换的瞬间它可能是 null，
+  //   无保护地读 `.innerText` 会抛 `TypeError: Cannot read properties of null`。
+  //   实测 495 组里有 **181 组（36.6%）** 因此在 settle 采样阶段抛错，
+  //   靠 `rescuedByRetry` 兜住 —— 兜住的是**流程**，不是那 36.6% 的噪声。
+  //   body 为 null 本就等于「此刻什么都没渲染」，而「有没有内容」另有结构判据
+  //   `nonBlank()`（节点数门槛 20，与语言无关），两者互不替代。
+  const bodyText = () => (document.body?.innerText || '').replace(/\s+/g, ' ')
   const sig = () => {
-    const t = (document.body.innerText || '').replace(/\s+/g, ' ').trim()
+    const t = bodyText().trim()
     return `${t.length}:${document.querySelectorAll('*').length}:${t.slice(0, 40)}`
   }
-  const chars = () => (document.body.innerText || '').replace(/\s+/g, ' ').trim().length
+  const chars = () => bodyText().trim().length
   // ⚠️ 「这页有东西吗」**不能用文字字符数**判 —— 它随语言变：
   //   同一个 /m/login，zh-CN 是 28 字符（登录网关 使用网关管理员账号登录 用户名 密码 登录），
   //   en-US 是 77 字符（同一个 DOM、同样 34 个节点）。按字符数判 ⇒ 中文页被判白屏、

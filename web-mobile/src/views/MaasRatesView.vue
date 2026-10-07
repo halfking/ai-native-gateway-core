@@ -299,38 +299,38 @@ onBeforeUnmount(() => {
 <style scoped>
 .ms__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .ms__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
-.ms__label { display: block; font-size: 12px; color: var(--text-3, #999); margin-bottom: 4px; }
+.ms__label { display: block; font-size: 12px; color: var(--app-text-muted); margin-bottom: 4px; }
 /* ★ R1：新增交互控件 ≥48 CSS px */
 .ms__input { width: 100%; min-height: 48px; padding: 0 12px; font-size: 14px;
   border: 1px solid var(--border, #ddd); border-radius: 8px; background: transparent; color: inherit; }
 
-.ms__msg { font-size: 13px; color: var(--text-2, #666); padding: 8px 0; }
-.ms__msg--err { color: var(--danger, #c0392b); }
+.ms__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
+.ms__msg--err { color: var(--app-danger); }
 .ms__note { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; line-height: 1.5;
-  color: var(--text-2, #666); margin: 6px 0; }
-.ms__note--warn { color: var(--warn, #b26a00); }
+  color: var(--app-text-secondary); margin: 6px 0; }
+.ms__note--warn { color: var(--app-warning); }
 .ms__grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
 .ms__cell { display: flex; flex-direction: column; }
-.ms__cell-l { font-size: 11px; color: var(--text-3, #999); }
+.ms__cell-l { font-size: 11px; color: var(--app-text-muted); }
 .ms__cell-v { font-size: 14px; font-weight: 600; }
 
 .ms__list { list-style: none; margin: 0; padding: 0; }
 .ms__item { padding: 10px 0; border-top: 1px solid var(--border, #eee); }
 .ms__item-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .ms__title { font-size: 14px; font-weight: 600; }
-.ms__id { font-size: 12px; color: var(--text-2, #666); }
-.ms__meta { font-size: 12px; color: var(--text-2, #666); margin: 4px 0 0; }
+.ms__id { font-size: 12px; color: var(--app-text-secondary); }
+.ms__meta { font-size: 12px; color: var(--app-text-secondary); margin: 4px 0 0; }
 .ms__tag { font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--bg-2, #eee); }
-.ms__tag--warn { background: var(--warn, #b26a00); color: #fff; }
+.ms__tag--warn { background: var(--app-warning); color: #fff; }
 
 .ms__table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
-.ms__table th { text-align: left; font-weight: 500; color: var(--text-3, #999); font-size: 11px;
+.ms__table th { text-align: left; font-weight: 500; color: var(--app-text-muted); font-size: 11px;
   border-bottom: 1px solid var(--border, #eee); padding: 4px 2px; }
 .ms__table td { padding: 4px 2px; vertical-align: middle; }
-.ms__td-l { color: var(--text-2, #666); white-space: nowrap; }
+.ms__td-l { color: var(--app-text-secondary); white-space: nowrap; }
 .ms__td-v { font-weight: 600; text-align: right; }
 .ms__td-s { font-size: 11px; }
 .ms__src--custom { color: var(--success, #2e7d32); }
-.ms__src--global_configured { color: var(--warn, #b26a00); }
-.ms__src--global_hardcoded { color: var(--danger, #c0392b); }
+.ms__src--global_configured { color: var(--app-warning); }
+.ms__src--global_hardcoded { color: var(--app-danger); }
 </style>
