@@ -13172,3 +13172,148 @@ GET `/api/admin/session-analytics/filter-options`
   日志 `/tmp/co97-stability.log`）。★ ⚠️ **第一次那趟十连跑被运行时判为 `lost`、只完成 3/10**，
   那份读数**没有**被采信，已完整重跑一次。★ 仍未复现 `ComplianceHitsView.spec.ts` /
   `RoutingOptView.spec.ts` 的历史 flaky —— **没复现不等于已修复**。
+
+## 11.134 任务类型档案 + 人工修正反馈闭环（第九十八批，2026-10-08）
+
+GET `/api/admin/task-profile`
+
+- **注册**：**第七种注册形态 —— Go 1.22「方法内嵌路由模式」+ 另一个包**，
+  `taskprofile/handler.go:128-136`
+  ```go
+  func (h *Handlers) RegisterTaskProfileRoutes(mux *http.ServeMux, wrap func(http.HandlerFunc) http.HandlerFunc) {
+      mux.HandleFunc("GET /api/admin/task-profile", wrap(h.handleProfile))
+      mux.HandleFunc("POST /api/admin/task-profile/corrections", wrap(h.handleCreateCorrection))
+      mux.HandleFunc("GET  /api/admin/task-profile/corrections/stats", wrap(h.handleCorrectionStats))
+      …
+  }
+  ```
+  由 `admin/handler.go:1413` 现构造后挂载：`taskProfileHandlers.RegisterTaskProfileRoutes(mux, admin)`
+  ⇒ ★★ **admin 档** ⇒ 抽屉席不设 `requiresRole`。
+- **实现**：`taskprofile/handler.go:141-180`（`handleProfile`）· `:155-159`（`profileView`）
+  · `:435-441`（`ensurePool`）· `taskprofile/suggest.go:45-105`（`Suggest` / `escalateTier`）
+  · `taskprofile/corrections.go:131-163`（`Stats`）· `taskprofile/registry.go:25 :98-106 :128-136`。
+- **桌面调用方**：`web/src/api/taskProfile.ts:91` —— 直接强转，不做校验。
+- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+
+### ★★★★★ 判「端点是否存在」的清单必须加第 7 条
+
+既有的五处清单（`admin/handler.go` 的 `mux.HandleFunc` · `main.go:7070` 附近 requestJourney
+直挂 · `main.go:6964` 的 superAdmin 组 · `main.go` 现构造 + `RegisterRoutes` ·
+另一个文件里的 `RegisterXxxRoutes` 方法）**全部搜不到这个端点** ——
+本批实测：`grep -rn '"/api/admin/task-profile"'` **只命中一个测试文件**。
+
+⇒ ★★★ 因为真正的注册是 `"GET /api/admin/task-profile"`：**方法内嵌在路由模式里**，
+引号紧贴 `/api` 的那种 grep 永远搜不到。
+⇒ ⇒ 所以第六/七条要合并成一条更宽的判据：
+**`grep -rn 'api/admin/task-profile' --include=*.go`（不加引号锚定）**，
+再人工分辨它是 `mux.HandleFunc("GET /api/…")`、`mux.HandleFunc("/api/…")`
+还是只是一个字符串常量。
+⇒ ★★ **附带一个行为差异**：方法由 `ServeMux` 自己匹配 ⇒
+**非 GET 是 mux 直接回 405**（Go 标准库实现，带 `Allow` 头、`text/plain` 体），
+**不是** handler 里的 `writeError` ⇒ **任何 handler 内的方法校验都是死代码**。
+
+### 本族最要紧的十二件事
+
+1. ★★★★★ **★★ 错误体是 `text/plain`（`http.Error`），不是 JSON —— 本系列首次。**
+   `ensurePool` 用 `http.Error(w, "Database not available", 503)`（`:437`），
+   查询失败用 `http.Error(w, "query correction stats failed", 500)`（`:151`），
+   请求体解析失败也是 `http.Error(w, "invalid JSON body: "+err.Error(), 400)`。
+   ⇒ ⇒ ★★ **对这个端点调用 JSON 错误解包器一定失败**；只能读状态码 +（若需要）`text` 兜底。
+   与批 93–97 的 `{"error":{"detail":…}}` 是**两套错误契约**。
+2. ★★★★ **503 文案是本系列的第三种，而且首字母大写**：
+   `Database not available` ←→ `db not available`（§11.133） ←→ `database not configured`（§11.132）
+   ⇒ ★★ **文案不可跨端点套用，也不该用来判档位。**
+3. ★★★★★ **顶层是手写的 `map[string]any`，恒 4 个键**（`handler.go:174-179`）：
+   `registry_version` / `schema_version` / `task_types` / `profiles`
+   ⇒ ★ `schema_version` 是**编译期常量** `SchemaVersion = 1`（`registry.go:25`）⇒ 值域单点。
+4. ★★★★★ **`profiles` 被强制非 nil**（`:160` `make([]profileView, 0, len(profiles))`）
+   ⇒ ⇒ **空档案集是 `[]` 不是 `null`** —— 与 §11.133 的「零行即 `null`」正好相反。
+5. ★★★★★ **★ `task_types` 与 `profiles[].task_type` 是同一个集合，且两者都升序。**
+   `TaskTypes()` 取 `registry.Load().profiles` 的键后 `sort.Strings`（`:128-136`）；
+   `Snapshot()` 取同一张表的值后 `sort.Slice(… TaskType < TaskType)`（`:98-106`）
+   ⇒ ⇒ ★★★ **顺序在这个响应里可观测**（对照 §11.132 的 `last_at` 不可观测），
+     且 `task_types[i] === profiles[i].task_type` 对每个 `i` 成立。
+6. ★★★★★ **`profileView` 是 Go 匿名内嵌 struct ⇒ JSON 是扁平的**：
+   ```go
+   type profileView struct {
+       TaskProfile                                        // 5 个键被摊平
+       CorrectionStats *CorrectionStat `json:"correction_stats,omitempty"`
+       Suggestion                       `json:"suggestion"`
+   }
+   ```
+   ⇒ 每个 profile 对象是 **5 + 1 + 1 = 最多 7 个键**，而不是多一层嵌套。
+7. ★★★★★ **★ 同一个键 `correction_stats` 在两个层级各出现一次**：
+   profile 级（`handler.go:157`）与 `suggestion` 级（`suggest.go:40`）。
+   两者的**出现条件看起来不同**（profile 级只要 map 里有键；suggestion 级还要 `Total > 0`），
+   ⇒ ★★★ 但 `Stats` 的 SQL 是 `GROUP BY auto_task_type` 配 `COUNT(*)`（`corrections.go:137-142`）
+   ⇒ **每个分组 `Total ≥ 1`** ⇒ **零值行不可达**
+   ⇒ ⇒ **两种出现条件在真实数据上恒等价** ⇒ **不提供判据，契约由注释承担**
+   （`Suggest` 里那个 `stat.Total > 0` 守卫在真实数据上是冗余的）。
+8. ★★★★★ **★★ `suggestion` 是在 `confidence = 1.0` 下算出来的**（`handler.go:170`
+   `Suggest(p.TaskType, 1.0, stats)`），而 `minConf` 在升级分支里被 **cap 到 1**（`suggest.go:72-73`）
+   ⇒ ⇒ `if confidence < minConf`（`:77`）要求 `minConf > 1.0` ⇒ **永不成立**
+   ⇒ ⇒ ★★★ **`tier_source` 的 `confidence_escalation` 在本响应里是死值** ——
+     而 `suggest.go:34-36` 的注释把它列为三个合法值之一。
+     ⇒ **可达值只有 `registry` 与 `correction_escalation`。**
+     ⇒ ★ **本系列第三次「注释与代码矛盾」**（§11.132 的「近 30 天」、§11.131 的 `enabled_source`、
+       `task_quality_score` 0–1）⇒ **注释里的枚举值同样要逐个验可达性。**
+9. ★★★★★ **升级规则完全可观测**：
+   `if cs != nil && cs.Total >= correctionMinSamples && cs.CorrectionRate >= correctionEscalationRate`
+   （`suggest.go:69`；常量 `:20 :22 :24` = `0.30` / `5` / `+0.05`）
+   ⇒ 命中时 `tier = escalateTier(preferred_tier)`、`tier_source = "correction_escalation"`、
+     `min_confidence += 0.05`（cap 1）；未命中时 `tier === preferred_tier` 且 `tier_source === "registry"`。
+10. ★★★★★ **`escalateTier` 是三级表，且 `tier-a` 原地不动**（`suggest.go:96-105`）：
+    `c→b`、`b→a`、**`default→a`** ⇒ ⇒ 已在 `tier-a` 的类型即使满足升级条件也**留在 `tier-a`**，
+    但 `tier_source` **仍会变成 `correction_escalation`**
+    ⇒ ★★ **「tier 变了」与「source 变了」不是一回事。**
+11. ★★★★★ **`agrees + corrected === total`**：`Stats` 的 SQL 用一对
+    `SUM(CASE WHEN agrees THEN 1 ELSE 0 END)` / `SUM(CASE WHEN agrees THEN 0 ELSE 1 END)`
+    （`corrections.go:138-139`）—— **完备二分** ⇒ 每行恰好给两者之一 +1
+    ⇒ 且 `correction_rate = corrected / total`（`:158-160`，`Total ≥ 1` 见 (7)）
+    ⇒ ⇒ ★★ 客户端**不需要**写 `total === 0 ? rate : …` 分支。
+12. ★★★★ **未知任务类型有一条自造档案的分支**（`suggest.go:48-57`）：
+    不在 registry 里时用 `tier-b` + `[tier-a, tier-c]` + `min_confidence 0.70`
+    ⇒ ⇒ ★★ **空 `description` 是「该类型不在 registry 里」的信号**（自造档案没有 `Description`）。
+
+**校验边界**：顶层 4 键、每个 profile 的 6 个恒在键与类型、两处 `correction_stats` 的
+「存在才校验」分支、`suggestion` 的 5 个恒在键；为 (5)(9)(10)(11) 提供判据或决策函数。
+★ **不提供** 两层 `correction_stats` 出现条件的差异判据（(7) 恒真）；
+★ **不提供** 任何「非 GET 由 handler 回 405」相关的判据（它根本不是 handler 回的，见上）。
+
+### 变异验证暴露的四件事（72 条全有牙）
+
+1. ★★★★★ **★★ 锚点是 `expect.slice(0, 20)` ⇒ 「给标题加后缀来消歧」完全无效。**
+   本批有 9 条 `AMBIGUOUS_ANCHOR`，全是同名用例标题在三个层级上重名
+   （profile 顶层 / suggestion 内 / correction_stat 各有一个「缺 fallback_tiers」和一个
+   「task_type 是数字」）⇒ 我第一轮把限定词加在标题**末尾**（`…（profile 顶层那一层）`），
+   **一条都没消歧** —— 20 字符窗口根本看不到后缀。
+   ⇒ ★★★ 改成**前缀**后一次通过：`'profile 顶层缺 fallback_tiers …'`。
+2. ★★★ **变异的 `from` 必须逐字抄源码的多行形态**：`TASK_PROFILE_SUGGESTION_KEYS` 在源码里是
+   7 行多行数组，我写成单行 ⇒ 3 条 `NO_MATCH`。
+   ⇒ ★ 与「`from` 不唯一改错位置」（形态 b）并列为**两种 `NO_MATCH`**，修法不同。
+3. ★★★★ **首跑 66/72，6 条白绿，全部是「夹具缺区分格」或「锚点挂错」，0 条可证等价**：
+   - `correction_stats` 的校验删掉（两层）—— 我只测了**合法**形状，
+     区分点是**键不全**那一格 ⇒ 补了两条。
+   - `correction_rate` 判据退化成 `=== 0.3` —— 我的样本是 `3/10 = 0.3`，
+     **正好等于那个常量** ⇒ 两种实现同解 ⇒ 补 `1/10` 与 `5/10` 两个不等于 0.3 的样本。
+     ⇒ ★★★ **判据里出现常量时，样本绝不能撞上那个常量。**
+   - `escalatedTier` 的 default 分支改成原样返回 —— 区分格是**未知档位**（`tier-z`）而不是 `tier-a`
+     （`tier-a` 两种实现都给 `tier-a`）⇒ 换锚点。
+   - `s.total < 5` 改成 `> 5` —— 区分格是 `total = 4`，**不是** `total = 5`
+     （两者在 5 上同解）⇒ 换锚点。
+   - 同集合判据只比首项 —— 区分格是「**首项相同、次项不同**」⇒ 补了那条夹具。
+4. ★★★ **补完夹具后仍白绿的**（#58/#69）：**新加的区分格用例存在，但锚点还挂在老用例上**
+   ⇒ 白绿的成因从「夹具缺」变成了「锚点错」，而两者在汇总里长得一模一样。
+   ⇒ ★★ 补完夹具**必须同时换锚点**，否则会以为自己已经修好了。
+
+★ 附带：harness 的**量具阳性对照**在本批继续生效 —— 开跑前抓到 97 条红才开跑。
+
+### 验证
+
+- 用例 **128 条全绿**（`web-mobile/src/api/taskProfile.test.ts`）。
+- 变异 **72 条 = 72 条全有牙，0 可证等价**（`/tmp/mut-co98.mjs`，逐条还原后字节比对）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6524 条（163 文件）** rc=0（较上批 6396 正好 +128）。
+- 十连跑 **10/10 全绿**（`/tmp/co98-stability.log`），终止标记 `总次数 10 · 失败次数 0 · 快照 0 份`，
+  10 次的 `Tests` 行**条数全程一致 = 6524**，无 `×` / `FAIL` 行。
+  ⇒ `ComplianceHitsView.spec.ts` / `RoutingOptView.spec.ts` 两个历史 flaky 本批**未复现**
+  ⇒ ★ 按连跑器自己的口径：**未复现 ≠ 已修复**，只是这次没抓到。
