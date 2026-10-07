@@ -5,7 +5,7 @@ import { req, type RequestOptions } from './client'
  *
  * GET /api/admin/dashboard/operational
  *
- * 注册在 `admin/handler.go:1069` 的 `admin(...)` ⇒ **admin 档**，tenant_admin 可用
+ * 注册在 `admin/handler.go:1068` 的 `admin(...)` ⇒ **admin 档**，tenant_admin 可用
  * ⇒ 抽屉席**不设** `requiresRole`。
  *
  * 它是 `boardOperationalPayload()`（`admin/dashboard_operational.go:53-62`）的独立出口，
