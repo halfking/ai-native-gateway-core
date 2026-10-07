@@ -8413,9 +8413,33 @@ apply-db-revision-sequence contract FAILED: 1 problem(s)
   若确实另有一条扫描腿，则**该腿没有名字也没有位置**，
   下一个读这段注释的人会重走我这一遍查证。
 
-★★ 记这条不是为了推翻结论（登记进通道是否合适，是作者的判断，不归我），
-  而是因为**「它已经会自己被投递」是一个关于本仓机制的事实主张**，
-  而事实主张该由查证支持，不是由「登记是元数据补全」这句话支持。
+★★★★★ **上一条本身是错的，我在此更正（2026-10-07 20:50）。**
+  我用 `grep -rn "migrations/startup" scripts/ *.sh` 只搜了 `scripts/` **顶层**，
+  漏掉 `scripts/deploy-lib/` 这个**子目录**，就断言「本仓不存在扫描腿」。
+  ⇒ 而扫描腿**确实存在**：`scripts/deploy-lib/db-changelog.sh:241`
+    ```
+    for f in sql/migrations/startup/[0-9]*.sql; do
+      [[ "$base" == *.down.sql ]] && continue
+      [[ "$base" == *.skip ]]     && continue
+      …  按 schema_migrations 台账判「未记录 ⇒ 投递」
+    ```
+    且 `deploy-154.sh` 的头明确写着「切换前 DB 迁移 + db-changelog」。
+  ⇒ **并行线那条理由是对的**，我的「实测反证」站不住。
+
+⇒ ★★★ 这条错误的成因值得单独记：**我用一条覆盖面不足的 grep 去否定一个全集的存在性**，
+  而且**当我没搜到时，我读到的是「没有这条腿」，而不是「我可能没搜到它」**。
+  判别动作：**否定某个机制存在之前，先把搜索根列全**
+  （本例：`scripts/` 顶层 + `scripts/deploy-lib/` + `scripts/deploy-lib.legacy/`
+  + Makefile + workflows），并对每个根报出「搜到 N 条」——
+  **零命中的那个根必须显式说出来**，而不是沉默地被下一条命令覆盖。
+
+⇒ 与本轮前面三次同族错误排在一起，本轮共四次「用局部证据下全局结论」：
+  ① 分母用整包当真库判据；② 「无强制路径」用两条观察否定全集；
+  ③ 「channel_gap_allowlist 语义」拿名字推断；
+  ④ 「扫描腿不存在」用顶层 grep 否定子目录。
+  ⇒ **同一个错误模式在同一个会话里复发四次**，说明它不是偶发失误，
+    而是**我的默认推理习惯**。处方只有一条：
+  **凡要说「不存在 / 从未 / 总是」，先证明自己的搜索面覆盖了这个全集。**
 
 ### 二十四、我那侧登记的撤除（处置归属权归作者）
 
@@ -8440,3 +8464,40 @@ apply-db-revision-sequence contract FAILED: 1 problem(s)
 
 ★ 门在三次状态间都放行了：说明这 22 个远端提交**没有**重新引入
   「有 installer 腿无升级通道」那类缺口（并行线自己处置了它那两条）。
+
+## 2026-10-07 20:52 — 把「两条投递腿」这件事查清楚（更正上一条错反证的副产品）
+
+### 二十六、两条投递腿，各自的位置与**两张不同的台账**
+
+这是查证「扫描腿存不存在」时顺带查清的，**比原来那条错反证有用**：
+
+| 腿 | 位置 | 记账表 | 跳过依据 |
+|----|------|--------|---------|
+| **扫描腿** | `scripts/deploy-lib/db-changelog.sh:241` | `public.schema_migrations` | 台账里已有该 `version` |
+| **通道腿** | `scripts/apply-db-revision-sequence.sh` `files=(...)` | **`public.gateway_db_revision_sequences`** | 台账里 `content_sha256` 与文件当前 sha 相同 |
+
+扫描腿的实际逻辑（原文）：
+```bash
+for f in sql/migrations/startup/[0-9]*.sql; do
+  [[ "$base" == *.down.sql ]] && continue
+  [[ "$base" == *.skip ]]     && continue
+  if head -15 "$f" | grep -qiE 'SUPERSEDED|superceded|DEPRECATED'; then continue; fi
+  if (( 10#$ver >= ledger_reconcile_from )) && [[ -z "${applied[$((10#$ver))]+x}" ]]; then
+    printf '%s\n' "$f"
+  fi
+done
+```
+
+⇒ **两腿互不知情**（`deploy-lib` 里 grep 不到 `apply-db-revision-sequence`，
+  通道脚本里也读不到 `deploy-lib`）。
+
+⚠ **由此得到一个值得记住的结构性事实**：同一份迁移**可能被两条腿各投递一次**，
+  因为它们记在**两张互不相关的表**里，谁也看不见对方已投递过。
+  挡住重复的是**迁移自身的幂等性**，不是记账。
+  ⇒ 这也解释了本仓既有的那条注释（836 的头）：
+  「813 的文件 sha 与台账存的完全一致 ⇒ **幂等通道每次都跳过它**」——
+  通道腿的「跳过」靠的是 sha 相同，而扫描腿根本不查这张表。
+
+⇒ ★ 因此「登记进 `files=(...)`」与「扫描腿反正会投递」**两句话都对**，
+  它们说的是两件不同的事（显式元数据补全 vs 目录扫描投递）。
+  **这才是最初那条 842 冲突的根因**：不是谁错了，是两边在答不同的问题。
