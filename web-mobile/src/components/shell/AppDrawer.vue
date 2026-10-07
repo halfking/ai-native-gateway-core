@@ -107,8 +107,13 @@ onBeforeUnmount(() => overlay.release())
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 0;
+  /* 横屏刘海/手势侧边：面板整体右移一个 inset（10 §4.6.61）。
+     遮罩 `.drawer__scrim` 仍是 inset:0 满屏，点外面照样关。 */
+  left: var(--app-safe-left);
   width: min(300px, 82vw);
+  /* 两侧 inset 都算进宽度上限：左锚面板若只让左边，窄横屏下 300px 宽的面板
+     会顶进右侧手势带（10 §4.6.61）。竖屏 inset 恒 0 ⇒ 与改前逐像素相同。 */
+  max-width: calc(100vw - var(--app-safe-left) - var(--app-safe-right));
   display: flex;
   flex-direction: column;
   background: var(--app-surface);
