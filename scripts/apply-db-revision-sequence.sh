@@ -965,6 +965,22 @@ files=(
   # 列存漂移（3 个分区 + ensure 函数 + 盲掉的 columnar_healthcheck）永远没人修。
   # 本条无台账行 ⇒ 每次部署都跑；自身幂等。必须排在 813 之后。
   "$ROOT_DIR/sql/migrations/startup/836_supplier_errors_heap_reassert.sql"
+  # 2026-10-07（837~840，channel-gap 审计轮补登）：四条迁移 10-07 先后落 main
+  # 时均未登记本通道（4df816006/68d10ffaa 线），deploy 前扫描腿按目录+台账独立
+  # 投递（2490 已实投 840），契约门却红——登记是元数据补全，不改变投递行为。
+  # 各条与 Go 侧行的同步锚点：
+  #   837 摘 MV refreshed_at 列 —— db.go ensureReconcileRoutingMvShapes 持续对账
+  #     （routing_mv_refresh_state 表 + to_regclass 探测，db/db.go:3913-4060）。
+  #   838 跳过冻结月 ANALYZE —— analyze 函数体第五份活副本在 db.go:7992 起
+  #     （"must stay in sync with sql/migrations/startup/838..."）。
+  #   839 当月堆分区交还 autovacuum —— db.go:8052 起 reloptions 守卫 + 月份感知
+  #     SET（恢复路径实证 runbook §10.106.12.1）。
+  #   840 analyze 跨实例节流槽 —— 2026-10-07 seq 2490 已应用+verified；
+  #     幂等（CREATE FUNCTION），installer 腿 runner.go 已同步。
+  "$ROOT_DIR/sql/migrations/startup/837_routing_mv_refresh_state.sql"
+  "$ROOT_DIR/sql/migrations/startup/838_analyze_skip_frozen_month.sql"
+  "$ROOT_DIR/sql/migrations/startup/839_autovac_current_month_heap_handoff.sql"
+  "$ROOT_DIR/sql/migrations/startup/840_analyze_stats_throttle_slot.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的
@@ -999,6 +1015,12 @@ legacy_content_replays=(
 # SQL line/block comments and dollar-quoted bodies, so prose or dynamic SQL
 # that merely mentions CREATE OR REPLACE cannot trigger it.
 intentional_function_chains=(
+  # 839 supersedes 838's body of analyze_llm_gateway_table_stats：838 先把
+  # 冻结月（上月分区）从 ANALYZE 集里摘掉，839 在同一体上叠加「当月堆分区
+  # 交还 autovacuum + 月份感知 SET (0.005/0.02)」，**839 必须是最后一项**
+  # ——它是活库里应有的最终体（runbook §10.106.12.1 的 HEAD 恢复路径即
+  # 此链序）。840 的节流槽是另一函数，不入本链。
+  'analyze_llm_gateway_table_stats|838_analyze_skip_frozen_month.sql|839_autovac_current_month_heap_handoff.sql|'
   # 829 (2026-10-05, Owner 拍板补登通道腿) 重定义
   # ensure_request_logs_bodies_partition 为**纯 heap**，去掉 765 引入的
   # citus_columnar/USING columnar 分支。链序必须是 694 → 765 → 829：
