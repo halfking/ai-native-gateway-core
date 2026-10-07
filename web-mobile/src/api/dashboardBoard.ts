@@ -10,6 +10,32 @@ import { req, type RequestOptions } from './client'
  * 与同族的另外七条（`api/dashboard.ts`，`{success,data,metadata}` 信封 +
  * `metadata.degraded` 降级三联）**不是同一种形状**。
  * ⇒ 同一个 `/api/admin/dashboard/*` 前缀下有两种响应契约，不要跨端点类推。
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * ## ★★★★★★ `operational` 整段**不做租户隔离**（2026-10-08 第一百零四批复核）
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * ★★★ 这条**本模块原先没有记**，只记在孤儿模块 `boardOperational.ts` 的文件头里 ——
+ * 那是「知识被遗弃在没人看的地方」的典型：两边讲同一个端点，严谨的那份偏偏是没人调的那份。
+ * ⇒ 本批把契约搬到这里。**孤儿那份的处置另议（不合并），但知识必须跟着在用的代码走。**
+ *
+ * | 子查询 | 过滤条件 | 出处 |
+ * |---|---|---|
+ * | `model_discovery_runs` | **硬编码 `tenant_id = 'default'`** | `dashboard_board_aux.go:32` |
+ * | `credential_health_checks` | **完全没有 WHERE**（全租户合计） | `:52-56` |
+ * | `self_check_runs` | **只按时间，没有 tenant 条件** | `:83-89` |
+ *
+ * 而注册是 `admin(...)` 档（`admin/handler.go:1068`）⇒ **tenant_admin 够得着**。
+ * ⇒ ⇒ 在多租户部署下，一个**非 default 租户**的 tenant_admin 从这一段看到的是：
+ *   ① **default 租户**的 discovery 状态；② **所有租户**合计的凭据健康检查次数（10 分钟窗）；
+ *   ③ **所有租户**合计的 self-check 次数与成功率。
+ * ⇒ 这是本仓**第三次**「不按调用方隔离 + admin 档」的组合
+ *   （第六十六批 data-lifecycle `metrics`、第七十三批 node-health、本条）。
+ *
+ * ★★★ **前端处置：这一段只对 `super_admin` 可见**（前端严于后端），
+ *   见 `DashboardOpsView.vue` 的 `operationalVisible`。
+ *   ★ **这不是把后端修好了** —— 后端该加 tenant 条件，本条只是不让移动端替它兜底。
+ *   ⇒ 后端修复前，任何绕过前端直接调端点的调用方仍然会拿到全租户数据。
  */
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -71,6 +97,15 @@ export function fetchDashboardOperational(options?: RequestOptions): Promise<Ope
   )
 }
 
+/** ★ 第一百零四批新增：层级可指认的对象守卫（消息里带 where，不是一句 "in operator"）。 */
+function requireObject(v: unknown, where: string): Record<string, unknown> {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) {
+    const actual = v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v
+    throw new Error(`${where} 响应形状不符：期望裸对象，实得 ${actual}`)
+  }
+  return v as Record<string, unknown>
+}
+
 export function unwrapOperational(resp: unknown): OperationalResponse {
   if (!resp || typeof resp !== 'object' || Array.isArray(resp)) {
     const actual = resp === null ? 'null' : Array.isArray(resp) ? 'array' : typeof resp
@@ -86,21 +121,51 @@ export function unwrapOperational(resp: unknown): OperationalResponse {
   if (missing.length > 0) {
     throw new Error(`看板运维面 响应形状不符：缺 ${missing.length} 个键（${missing.join(', ')}）`)
   }
-  const bg = d.background_tasks as Record<string, unknown>
+  // ★★★ 2026-10-08 第一百零四批：三级子对象**在用 `k in x` 之前必须先过对象守卫**。
+  //   原先直接 `d.background_tasks as Record<...>` 然后 `k in bg` ——
+  //   ★ 而 `'a' in null` 在 JS 里抛的是 **TypeError: Cannot use 'in' operator**
+  //   （不是本模块的契约错误），调用方拿到的是一个无法归因的栈。
+  //   形状不符与键缺失要给出**能指认层级的**消息，否则线上排查只能看到 "in operator"。
+  const bg = requireObject(d['background_tasks'], '看板运维面 background_tasks')
   const bgMissing = OPERATIONAL_BG_KEYS.filter((k) => !(k in bg))
   if (bgMissing.length > 0) {
     throw new Error(`看板运维面 background_tasks 缺 ${bgMissing.length} 个键（${bgMissing.join(', ')}）`)
   }
-  const disc = bg.discovery as Record<string, unknown>
+  const disc = requireObject(bg['discovery'], '看板运维面 background_tasks.discovery')
   const discMissing = OPERATIONAL_DISCOVERY_KEYS.filter((k) => !(k in disc))
   if (discMissing.length > 0) {
     throw new Error(`看板运维面 discovery 缺 ${discMissing.length} 个键（${discMissing.join(', ')}）`)
   }
-  const sc = d.selfcheck as Record<string, unknown>
+  const sc = requireObject(d['selfcheck'], '看板运维面 selfcheck')
   const scMissing = OPERATIONAL_SELFCHECK_KEYS.filter((k) => !(k in sc))
   if (scMissing.length > 0) {
     throw new Error(`看板运维面 selfcheck 缺 ${scMissing.length} 个键（${scMissing.join(', ')}）`)
   }
+
+  // ★★★ 同批补上：原先**只校键、完全不校类型**。
+  //   「恒在键」= 后端无条件写进 map 的那些（`degraded` 是显式 `out["degraded"] = …`，
+  //   `discovery` 三键在 aux.go:42-46 恒赋值）⇒ 类型不符一定是出了问题，必须抛。
+  //   ★ 而 `checks_last_10m` 恒是数字（Go 侧 `var checksLast10m int`，查询失败时
+  //   Scan 不写、零值 0 原样下发）⇒ 校验它是类型校验，不是语义校验。
+  if (typeof disc['running'] !== 'boolean') {
+    throw new Error('看板运维面 discovery 的 running 不是布尔')
+  }
+  for (const k of ['status', 'trigger'] as const) {
+    if (disc[k] !== null && typeof disc[k] !== 'string') {
+      throw new Error(`看板运维面 discovery 的 ${k} 不是字符串也不是 null`)
+    }
+  }
+  if (typeof bg['degraded'] !== 'boolean') throw new Error('看板运维面 background_tasks 的 degraded 不是布尔')
+  const loop = requireObject(bg['probe_loop'], '看板运维面 background_tasks.probe_loop')
+  if (typeof loop['checks_last_10m'] !== 'number') {
+    throw new Error('看板运维面 probe_loop 的 checks_last_10m 不是数字')
+  }
+  if (typeof sc['total_runs_24h'] !== 'number') throw new Error('看板运维面 selfcheck 的 total_runs_24h 不是数字')
+  if (typeof sc['success_rate'] !== 'number') throw new Error('看板运维面 selfcheck 的 success_rate 不是数字')
+  if (sc['last_status'] !== null && typeof sc['last_status'] !== 'string') {
+    throw new Error('看板运维面 selfcheck 的 last_status 不是字符串也不是 null')
+  }
+  if (typeof sc['degraded'] !== 'boolean') throw new Error('看板运维面 selfcheck 的 degraded 不是布尔')
   return d as unknown as OperationalResponse
 }
 

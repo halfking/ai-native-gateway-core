@@ -1007,6 +1007,10 @@ export const enUS = {
     },
     operational: {
       title: 'Operational',
+      // ★★★★ Cross-tenant disclosure (batch 104): none of these three numbers are this tenant's.
+      //   discovery is hardcoded to tenant_id='default' (aux.go:32);
+      //   checks_last_10m and self_check_runs carry no tenant condition at all (:52-56 / :83-89).
+      crossTenant: '★ Cross-tenant: discovery status is always read from the default tenant, and the probe count and self-check totals are ALL-TENANT aggregates, not this tenant data.',
       status: 'Overall status',
       statusWordUnknown: 'Status unknown',
       statusWordDegraded: 'Degraded',

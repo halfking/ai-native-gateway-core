@@ -161,6 +161,191 @@ describe('dashboardBoard / operational 形状', () => {
   })
 })
 
+/**
+ * 第一百零四批（2026-10-08）新增两组判据。
+ *
+ * 缺陷 1：三级子对象在 `k in x` 之前**没有对象守卫** ——
+ *   而 `'a' in null` 抛的是 `TypeError: Cannot use 'in' operator to search for 'a' in null`，
+ *   **不是本模块的契约错误**。调用方只看到一个无法归因的栈，线上排查时连是哪一层都定位不到。
+ *   ⇒ 判据必须区分「抛出的是契约错误」与「抛出的是 TypeError」——
+ *     两者都叫「抛错了」，只断言 toThrow 等于没判。
+ *
+ * 缺陷 2：原先**只校键、完全不校类型**。
+ *   区分格取在 `strPtrVal` 那两个字段上：后端 `strPtrVal(nil)` 合法产出 `null`
+ *   （aux.go:196-201），所以 **`null` 必须过、别的类型必须抛** ——
+ *   一条只断言「null 通过」的判据恒真，锚点得落在「null 之外的那个格」。
+ */
+describe('dashboardBoard / operational 子对象不是对象时给契约错误（第一百零四批）', () => {
+  const LEVELS: Array<[string, unknown, string]> = [
+    ['background_tasks', null, '看板运维面 background_tasks 响应形状不符：期望裸对象，实得 null'],
+    ['background_tasks', 'oops', '看板运维面 background_tasks 响应形状不符：期望裸对象，实得 string'],
+    ['background_tasks', [], '看板运维面 background_tasks 响应形状不符：期望裸对象，实得 array'],
+  ]
+
+  for (const [k, bad, msg] of LEVELS) {
+    it(`★★★ ${k} = ${JSON.stringify(bad)} 抛的是契约错误且带层级名，不是 in operator 的 TypeError`, () => {
+      let caught: unknown = null
+      try {
+        unwrapOperational({ ...OPERATIONAL_OK, [k]: bad })
+      } catch (e) {
+        caught = e
+      }
+      // ★ 关键：先证明它**不是** TypeError。旧实现正是栽在这里。
+      expect(caught).toBeInstanceOf(Error)
+      expect((caught as Error).constructor.name).not.toBe('TypeError')
+      expect((caught as Error).message).not.toContain('in operator')
+      // ★ 再证明它是**带层级名的**契约错误。
+      expect((caught as Error).message).toBe(msg)
+    })
+  }
+
+  it('★★★ discovery 不是对象时同样给契约错误（层级名要指到 discovery）', () => {
+    for (const bad of [null, 'oops', [], 7] as const) {
+      let caught: unknown = null
+      try {
+        unwrapOperational({
+          ...OPERATIONAL_OK,
+          background_tasks: { ...OPERATIONAL_OK.background_tasks, discovery: bad },
+        })
+      } catch (e) {
+        caught = e
+      }
+      expect((caught as Error).constructor.name).not.toBe('TypeError')
+      expect((caught as Error).message).toContain('background_tasks.discovery 响应形状不符')
+    }
+  })
+
+  it('★★ selfcheck 不是对象时同样给契约错误', () => {
+    for (const bad of [null, 'oops', []] as const) {
+      let caught: unknown = null
+      try {
+        unwrapOperational({ ...OPERATIONAL_OK, selfcheck: bad })
+      } catch (e) {
+        caught = e
+      }
+      expect((caught as Error).constructor.name).not.toBe('TypeError')
+      expect((caught as Error).message).toContain('selfcheck 响应形状不符')
+    }
+  })
+
+  it('★★ probe_loop 不是对象时同样给契约错误', () => {
+    let caught: unknown = null
+    try {
+      unwrapOperational({
+        ...OPERATIONAL_OK,
+        background_tasks: { ...OPERATIONAL_OK.background_tasks, probe_loop: null },
+      })
+    } catch (e) {
+      caught = e
+    }
+    expect((caught as Error).constructor.name).not.toBe('TypeError')
+    expect((caught as Error).message).toContain('probe_loop 响应形状不符')
+  })
+
+  it('★★ 形状守卫在**键存在性**之前：键在但值是 null，不得报成「缺 1 个键」', () => {
+    // ★ 区分格方向：键缺失与「键在但值不是对象」必须给出**不同的**消息 ——
+    //   两者都归到「缺键」就会把形状问题误报成结构问题。
+    expect(() => unwrapOperational({ ...OPERATIONAL_OK, selfcheck: null })).not.toThrow(/缺 1 个键/)
+  })
+})
+
+describe('dashboardBoard / operational 恒在键的类型校验（第一百零四批）', () => {
+  /** 后端 `strPtrVal(nil)` 合法产出 null ⇒ null 必须过（这一格是「不该抛」的那一半）。 */
+  it('★★ status / trigger / last_status 为 null 时通过（strPtrVal 的合法产出）', () => {
+    const r = unwrapOperational({
+      ...OPERATIONAL_OK,
+      background_tasks: {
+        ...OPERATIONAL_OK.background_tasks,
+        discovery: { running: false, status: null, trigger: null },
+      },
+      selfcheck: { ...OPERATIONAL_OK.selfcheck, last_status: null },
+    })
+    expect(r.background_tasks.discovery.status).toBeNull()
+    expect(r.selfcheck.last_status).toBeNull()
+  })
+
+  /** 区分格：同一批字段，**换成别的类型必须抛**。 */
+  it('★★★ 同一批字段换成数字即抛错（不是「null 恒真」而是类型被校了）', () => {
+    expect(() =>
+      unwrapOperational({
+        ...OPERATIONAL_OK,
+        background_tasks: {
+          ...OPERATIONAL_OK.background_tasks,
+          discovery: { running: false, status: 42, trigger: null },
+        },
+      }),
+    ).toThrow('discovery 的 status 不是字符串也不是 null')
+    expect(() =>
+      unwrapOperational({ ...OPERATIONAL_OK, selfcheck: { ...OPERATIONAL_OK.selfcheck, last_status: 7 } }),
+    ).toThrow('selfcheck 的 last_status 不是字符串也不是 null')
+  })
+
+  it('★★ discovery.running 非布尔即抛错', () => {
+    expect(() =>
+      unwrapOperational({
+        ...OPERATIONAL_OK,
+        background_tasks: {
+          ...OPERATIONAL_OK.background_tasks,
+          discovery: { running: 'true', status: 'running', trigger: 'scheduled' },
+        },
+      }),
+    ).toThrow('running 不是布尔')
+  })
+
+  it('★★ 两处 degraded 非布尔即抛错（它是显式 map 赋值，恒发）', () => {
+    expect(() =>
+      unwrapOperational({
+        ...OPERATIONAL_OK,
+        background_tasks: { ...OPERATIONAL_OK.background_tasks, degraded: 1 },
+      }),
+    ).toThrow('background_tasks 的 degraded 不是布尔')
+    expect(() =>
+      unwrapOperational({ ...OPERATIONAL_OK, selfcheck: { ...OPERATIONAL_OK.selfcheck, degraded: 'no' } }),
+    ).toThrow('selfcheck 的 degraded 不是布尔')
+  })
+
+  it('★★ checks_last_10m 非数字即抛错（Go 侧 var int，查询失败也是数字 0）', () => {
+    expect(() =>
+      unwrapOperational({
+        ...OPERATIONAL_OK,
+        background_tasks: {
+          ...OPERATIONAL_OK.background_tasks,
+          probe_loop: { checks_last_10m: '42' },
+        },
+      }),
+    ).toThrow('checks_last_10m 不是数字')
+  })
+
+  it('★★ selfcheck 两个计数非数字即抛错', () => {
+    expect(() =>
+      unwrapOperational({ ...OPERATIONAL_OK, selfcheck: { ...OPERATIONAL_OK.selfcheck, total_runs_24h: '12' } }),
+    ).toThrow('total_runs_24h 不是数字')
+    expect(() =>
+      unwrapOperational({ ...OPERATIONAL_OK, selfcheck: { ...OPERATIONAL_OK.selfcheck, success_rate: null } }),
+    ).toThrow('success_rate 不是数字')
+  })
+
+  it('★ 键齐全、只错类型 ⇒ 报的是类型而不是缺键（两条分支不串味）', () => {
+    // ★ 手写夹具的「键缺」必须用 delete；这里反过来用「键齐全 + 类型错」，
+    //   确保走的是类型那条分支。
+    const bad: Record<string, unknown> = {
+      ...OPERATIONAL_OK.background_tasks,
+      degraded: 'false',
+    }
+    expect(Object.keys(bad)).toEqual(expect.arrayContaining([...OPERATIONAL_BG_KEYS]))
+    expect(() => unwrapOperational({ ...OPERATIONAL_OK, background_tasks: bad })).not.toThrow(/缺 \d+ 个键/)
+    expect(() => unwrapOperational({ ...OPERATIONAL_OK, background_tasks: bad })).toThrow('degraded 不是布尔')
+  })
+
+  it('★★ 条件键（degraded_reason / probe_degraded / started_at）不参与类型校验', () => {
+    // ★ 它们是**条件键**（仅在对应查询失败时写入），存在时的类型由后端保证 ——
+    //   但我们不校验它们，**也不校验它们的存在**，这与「恒在键」是两回事。
+    const r = unwrapOperational({ ...OPERATIONAL_OK })
+    expect(r.background_tasks.degraded_reason).toBeUndefined()
+    expect(r.background_tasks.probe_degraded).toBeUndefined()
+  })
+})
+
 describe('dashboardBoard / 「从未运行过」被算成降级', () => {
   it('★ degraded + status=null ⇒ 疑似从未运行，不是真故障', () => {
     expect(operationalDiscoveryNeverRan(OPERATIONAL_NEVER_RAN.background_tasks)).toBe(true)

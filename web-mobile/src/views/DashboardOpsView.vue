@@ -140,6 +140,23 @@ const days = ref(7)
 const tenantFilterVisible = computed(() => dashboardTenantFilterHonored(auth.role))
 const tenantId = ref('')
 
+/**
+ * ★★★★★★ `operational` 整段**只对 super_admin 可见**（第一百零四批）。
+ *
+ * 后端这一段的三个子查询**都不按调用方租户过滤**
+ * （`dashboard_board_aux.go:32` 硬编码 `tenant_id='default'`；
+ *  `:52-56` 的 `credential_health_checks` 与 `:83-89` 的 `self_check_runs` 连 WHERE 都没有），
+ * 而注册是 `admin(...)` 档（`admin/handler.go:1068`）⇒ tenant_admin 够得着。
+ * ⇒ 在多租户部署下，一个非 default 租户的 tenant_admin 会看到
+ *   **别的租户**的 discovery 状态与**全租户合计**的凭据健康检查次数、self-check 成功率。
+ *
+ * ★ **前端严于后端**：这是移动端能做的兜底，**不是把后端修好了**。
+ *   后端该加 tenant 条件；修好之前任何绕过前端直接调端点的调用方仍会拿到全租户数据。
+ * ★ 只挡这一段，不动整页 —— 其余七段（会话总览/趋势/健康/在线/模块统计/错误/性能）
+ *   的租户口径与本段不同，不能一锅端。
+ */
+const operationalVisible = computed(() => auth.role === 'super_admin')
+
 /** drill 的 error_kind 是**必填**，缺了后端 400 ⇒ 前端不填就别发。 */
 const errorKind = ref('')
 /** 选一个 kind 才允许加载 drill —— 这是唯一一条有前置输入的段。 */
@@ -164,6 +181,15 @@ function baseQuery(): { days: number; tenantId?: string } {
 }
 
 async function load(section: SectionKey): Promise<void> {
+  // ★ 第一百零四批原本在这里还有一句 `if (section === 'operational' && !operationalVisible.value) return`，
+  //   作为「不显示」之外的第二道取数屏障。**实测它是死代码，已删**：
+  //   `load('operational')` 的**唯一**触发器是那一段里的加载按钮，
+  //   而按钮随 `<section v-if="operationalVisible">` 一起不存在了；
+  //   本组件也没有 onMounted 自动加载。
+  //   ⇒ 留着一个打不到的分支，再配一条「它没被调用」的判据，就是**恒真判据** ——
+  //     判据全绿不代表有人在管，只代表没人能触发它。
+  //   ⇒ 现在这一段的取数边界是「按钮只对 super_admin 存在」这一条事实本身，
+  //     `DashboardOpsView.spec.ts` 里有对**结构**的断言（tenant_admin 只有 8 个加载按钮）。
   loading.value = section
   error.value[section] = null
   try {
@@ -815,7 +841,8 @@ onBeforeUnmount(() => {
     </section>
 
     <!-- ══ 8. 运维面（operational） ════════════════════════════════ -->
-    <section class="do__section">
+    <!-- ★ 第一百零四批：整段对非 super_admin 隐藏（后端不做租户过滤，见 operationalVisible） -->
+    <section v-if="operationalVisible" class="do__section">
       <header class="do__head">
         <h2 class="do__title">{{ t('dashboardOps.operational.title') }}</h2>
         <button
@@ -827,6 +854,9 @@ onBeforeUnmount(() => {
           {{ loaded.operational && !error.operational ? t('dashboardOps.reload') : t('dashboardOps.load') }}
         </button>
       </header>
+
+      <!-- ★★★ 数字是跨租户的，必须常驻披露，不能只写在文件头里 -->
+      <p class="do__msg do__msg--warn">{{ t('dashboardOps.operational.crossTenant') }}</p>
 
       <p v-if="error.operational" class="do__msg do__msg--err">{{ error.operational }}</p>
       <p v-if="loading === 'operational'" class="do__msg">{{ t('common.loading') }}</p>
