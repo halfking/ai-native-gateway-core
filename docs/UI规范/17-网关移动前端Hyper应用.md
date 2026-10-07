@@ -13592,3 +13592,98 @@ AssertionError: expected [ '__teethProbe', …(30) ] to deeply equal [ 'boardOpe
   10 次的 `Tests` 行**条数全程一致 = 6767**，无 `×` / `FAIL` 行。
   ⇒ `ComplianceHitsView.spec.ts` / `RoutingOptView.spec.ts` 两个历史 flaky 本批**未复现**
   ⇒ ★ 按连跑器自己的口径：**未复现 ≠ 已修复**，只是这次没抓到。
+## 11.137 路由策略配置面接进 UI：第一百零一批（2026-10-08）
+
+### 本批是 §11.136 那个口径修正的第一次执行
+
+孤儿清单里有两个模块正落在用户点名的那两条线上。本批先接 **`routingPolicy`**（路由检查线）。
+
+| 端点 | 档位 | 注册 | 行号 |
+|---|---|---|---|
+| `GET /api/routing/policy` | **superAdmin** | `h.superAdmin(...)` | `admin/handler.go:1200` |
+| `GET /api/routing/featured` | **superAdmin** | `h.superAdmin(...)` | `:1201` |
+| `GET /api/routing/scoring-weights` | **superAdmin** | `h.superAdmin(...)` | `:1215` |
+| `GET /api/routing/featured-models` | **admin** | `admin(...)` | `:1216` |
+
+⇒ ★ **同族三档一档**（本系列第 N 次出现，但这是第一次**同前缀内**三档一档）
+⇒ 抽屉席设 `requiresRole: 'super_admin'` 并同步 `AppDrawer.spec.ts` 的白名单。
+⇒ ★★ **后果**：第 4 个端点是 admin 档（tenant_admin 本可用），
+   在移动端被**顺带收严成 superAdmin**。这是刻意的取舍，
+   理由是「同一页混两档会让『谁能看哪块』不可解释」，已写进视图文件头备查。
+
+### ★★★★★ 本页最要紧的是三处「同形」绝不能渲染成确定结论
+
+前三批做 API 层时记下的契约（`api/routingPolicy.ts` 文件头 (2)(3)(6)），
+在 UI 上**必须**翻译成「说不准」的表达，否则等于凭空造事实：
+
+1. ★★★★★ **`policy` 返 `{}` 是三合一。**`routing.go:2533`
+   `if err != nil || raw == "" { writeJSON(w, 200, map[string]any{}); return }`
+   ⇒ 「没有这一行」「查询失败」「文本为空」**三种都回 HTTP 200 + `{}`**
+   ⇒ 模块层给 `null` ⇒ 视图只能渲染「**无法判定**」，
+   **绝不能写「策略未配置」**（判据里有一条专门断这句话不出现）。
+2. ★★★★★ **`scoring-weights` 的兜底值与真值完全同形。**`getScoringWeights`
+   （`:4026-4055`）在查询失败 / 解析失败 / 缺键三种情况下都返回同一份 `defaultWeights`，
+   响应里**没有任何标记** ⇒ 视图必须把 `note` 原文
+   （`these weights only affect … not live routing`）与兜底告警**常驻显示在数据旁边**。
+3. ★★★★ **`featured_models === []` 时「没配」与「查不出来」同形**（`:2594-2597`
+   只 `slog.Warn` 然后 `models = []`）。
+
+⇒ ⇒ ★★★ **这三条与批 99 的 (3)(8)(9) 是同一个形状**：
+**后端把「查不出来」编码成「什么都没有」**，
+客户端若把它渲染成「没有配置」，就把一个**查询失败**说成了**一个配置事实**。
+⇒ ★ 收进判据的方式也不同：不是校验响应，而是**断言页面里不出现那句错的话**。
+
+### ★★★★ 两个「精选」不是同一个东西，nil 编码还相反
+
+- `featured.featured_models` —— 恒为数组（`COALESCE(featured_models, ARRAY[]::TEXT[])`，`:2591`），
+  查询失败也回空数组；
+- `policy.featured_models` —— `row_to_json` 对可空列输出 **`null`**（`:2560` 附近的列定义）。
+
+⇒ ★★ 两者同名、语义相近（一个是生效列表，一个是原始列），
+**但 nil 编码相反**（`[]` vs `null`）—— 本系列第 N 次「同族不同端点 nil 编码相反」。
+⇒ ⇒ 若把两者混成一个「精选模型」列表，就会把「原始列没配」渲染成「生效列表为空」，
+**这两件事的可操作性完全不同**（一个是配置，一个是读数）。
+⇒ 视图因此分成两段，并加了一句提示把差别写在脸上。
+
+### ★★★ `standardized_name` 恒等于 `name`，只渲染一个
+
+`routing.go:4081-4082` 两个字段都取 `p.CanonicalName`
+⇒ 渲染两遍等于**凭空造出一个「标准化前后」的对照**。
+⇒ 判据用**出现次数**钉住：`w.text().split(name).length - 1 === 1`。
+
+### ★★★ `null` 与 `0` 必须显示成不同的东西
+
+`RoutingPolicyRow` 的 21 个键里 7 个 NOT NULL、14 个「键在但可为 null」。
+⇒ 把 `null` 渲染成 `0` 会**凭空造出「配置为 0」这个事实**
+（而 `local_bonus` 的合法值恰好就是 `0.000` ⇒ 两者会撞在一起）。
+⇒ 视图用 `fieldText()` 显式分三态：`null → 「（空）」`、`"" → 「（空串）」`、其余原样。
+⇒ 判据专门断 `local_bonus` 那一行：**含 `0`、不含「（空）」**。
+
+### 接线过程中撞到的四件事
+
+1. ★★★ **`icon: 'flex'` 又不在 `IconName` 里。**
+   第一百批刚犯过一次（`list`），本批又犯（`flex`）⇒ **`IconName` 那 29 个取值值得单列一张对照表**，
+   否则每次接新页都要靠类型门兜底。两次都被 `vue-tsc` 当场抓住，没有漏到运行时。
+2. ★★★★ **`fetchRoutingFeatured` 一开始是「未使用的 import」。**
+   类型门报 `TS6133` ⇒ 本来打算删。
+   ★★ 但复查后发现它**本来就该用**：`/featured` 是生效列表，`policy.featured_models` 是原始列，
+   两者是不同信息（见上一节）⇒ **该补的是视图，不是删 import。**
+   ⇒ ★★★ 与第一百批那条「`request_id` 缺失」同型：
+   **类型门报的「未使用」不总是「该删」，有时是「该用」。**
+3. ★★★ **两条判据红是因为断言找错了字段名。**
+   模板对两个 NOT NULL 列用的是 **i18n 标签**（`本地加权` / `粘性 TTL`），
+   对 14 个可空列用的是**原始字段名** ⇒ 我按 `local_bonus` 去找当然找不到。
+   ⇒ ★ 修法是**改断言按标签找**，不是改模板；
+   并顺手补了一条断「可空列确实用原始字段名」——
+   ★ 这条混合策略本身是**契约的一部分**（哪列可配、哪列固定），值得被钉住。
+4. ★★ 抽屉白名单是**排序后逐项列出**的 superAdmin 档 key，
+   加一席必须插到正确位置（`routing-audit` 与 `task-index` 之间），否则排序断言红。
+
+### 验证
+
+- 新增判据 **25 条**（`RoutingPolicyView.spec.ts` 24 + 棘轮新增哨兵 1）全绿。
+- ★ 棘轮清单同步删掉 `routingPolicy` 一行 ⇒ 当前孤儿 **30 → 29**。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6792 条（167 文件）** rc=0（较上批 6767 正好 +25）。- 十连跑 **10/10 全绿**（`/tmp/co101-stability.log`），终止标记 `总次数 10 · 失败次数 0 · 快照 0 份`，
+  10 次的 `Tests` 行**条数全程一致 = 6792**，无 `×` / `FAIL` 行。
+  ⇒ `ComplianceHitsView.spec.ts` / `RoutingOptView.spec.ts` 两个历史 flaky 本批**未复现**
+  ⇒ ★ 按连跑器自己的口径：**未复现 ≠ 已修复**，只是这次没抓到。

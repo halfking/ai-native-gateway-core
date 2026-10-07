@@ -645,6 +645,12 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'tp.title', requiresAuth: true },
   },
   {
+    path: '/routing-policy',
+    name: 'routing-policy',
+    component: () => import('@/views/RoutingPolicyView.vue'),
+    meta: { titleKey: 'rp.title', requiresAuth: true },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),
