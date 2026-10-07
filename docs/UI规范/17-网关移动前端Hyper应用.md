@@ -11183,3 +11183,135 @@ WHERE credential_id = $1 AND started_at >= $2
 
 local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
 `web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
+
+## 11.120 对账汇总与筛选栏候选（第八十四批，2026-10-08）
+
+GET `/api/admin/report-rollup/summary` + GET `/api/admin/report-rollup/dimensions`
+
+- **注册**：`admin/handler.go:1067`
+  `mux.HandleFunc("/api/admin/report-rollup/", h.superAdmin(h.handleReportRollup))`
+  ⇒ ★★ **整个前缀（含尾斜杠）都是 `superAdmin`** ⇒ 抽屉席须设
+  `requiresRole: 'super_admin'` 并同步 `AppDrawer.spec.ts` 白名单。
+- **分发**：`admin/report_rollup.go:94-118` 的 `strings.HasSuffix` switch
+  ⇒ `summary` / `export` / `dimensions` / `run`（POST，不碰）/ 404。
+- ★ `export` 是 **xlsx 二进制**（`Content-Type: …spreadsheetml.sheet`）
+  ⇒ **不是 JSON** ⇒ 本模块**不提供** export 的解包器。
+- **差集扫描排掉一个假阳性**：`data-lifecycle/jobs` 已被
+  `web-mobile/src/api/dataLifecycleStats.ts:434` 覆盖。
+
+### 本族最要紧的十八件事
+
+1. ★★★★★ **「降级」是 200 + 一个两键信封，不是错误 —— 主键整个消失。**
+   `:317-319`（summary）与 `:354-356`（dimensions）走同一条：
+   `reportDegraded`（`:291-293`）= **错误串里含 `report_snapshots`**（小写后 `Contains`）
+   ⇒ 是**字符串匹配**，不是哨兵错误类型。
+   ⇒ 降级响应里**没有** `report`、**没有** `dimensions`
+   ⇒ **解包器必须接受「只有降级两键」的形状**。
+2. ★★★ 503 文案是 **`database not available`** —— 本仓**第三种**措辞
+   （对照：批 81/82 的 `database not configured`、批 79 的 `database **is** not configured`）。
+3. ★★★ **503 检查排在 405 检查之前** ⇒ 与批 82 一致、**与批 83 相反**。
+4. ★★★ 子路由用 **`strings.HasSuffix`** 分发，不是路径段精确匹配
+   ⇒ `/api/admin/report-rollup/任意/summary` 也匹配。
+5. ★★★★ 缺省窗口是「**昨日往前 7 天**」闭区间且**不含今日**
+   （注释自陈原因：聚合语义是 **T+1** 凌晨出昨日报表 ⇒ 今日快照尚不存在）。
+6. ★★★★ 区间只接受 `YYYY-MM-DD`，四种 400 文案；上界判定是 `end − start > 366 天`
+   ⇒ **`start == end` 合法**（单日）。
+7. ★★★★ `view` 是四值枚举，但**大小写与空格都不敏感**（`ToLower(TrimSpace())`）
+   ⇒ 规范化之后**可以严格校验取值**。
+8. ★★★★ 三个数字维度用 `ParseInt` 且**前面先 `TrimSpace`**
+   ⇒ **同仓两种参数校验风格并存的又一例**（`/storage/tables` 与 `/errors/trend` 的
+   `strconv.Atoi` **没有** TrimSpace）。
+9. ★★★★★ `detail` 的缺省在 summary 与 export 里**正好相反**
+   ⇒ `detail=xyz` 在 summary 下是 **false**、在 export 下是 **true**
+   ⇒ 客户端**不能**用一个共享的「detail 解析」函数描述两者。
+10. ★★★★ `Filter GrainFilter` 标着 `json:"-"` ⇒ **过滤条件不回显**
+    ⇒ `view`/`start`/`end` 会回显，但**六个维度过滤一个都不回显**。
+11. ★★★★★ `error_breakdown` 在**父行是裸 `null`、在按天行是键缺失**
+    ⇒ 同一概念、同一份 SQL、**两种 nil 编码**。
+12. ★★★★ `Totals.CacheHitRatio` 是 `*float64` 且**无 omitempty**
+    ⇒ 分母为 0 时是**裸 `null`** ⇒ 客户端算命中率**必须**处理 `null`，不能 `|| 0`。
+13. ★★★ `error_count === request_count − success_count` 是**可自验的不变式**
+    （注释自陈「终态 success 之外一律计失败，**含 rate_limited**」）。
+14. ★★★★★ **`source` 不是独立字段，而是从 `coverage` 两个数组派生的**
+    （`grainreport.go:945-951`）⇒ 本族最锐利的**自洽性校验**：
+    | `legacy_dates` | `grain_dates` | `source` |
+    |---|---|---|
+    | 非空 | 非空 | `mixed` |
+    | 非空 | 空 | `legacy` |
+    | 空 | 任意 | `grain`（**default**） |
+    ⇒ ★★ 推论：**`source === "grain"` 不蕴含 `grain_dates` 非空**（两数组都空也走 default）。
+14b. ★★★★ `coverage` 的两个 `[]string` **无 omitempty** ⇒ 可为**裸 `null`**；
+    `:943-944` 对两者各 `sort.Strings` ⇒ **升序**（未去重 ⇒ 非降序）。
+15. ★★★★ `DimensionOption.Name` 是 omitempty 且 `fill()` 回查不到就**留空**
+    ⇒ `name` **可能缺键**；且候选 `key` **统一成字符串**（数值 id 也一样）
+    ⇒ 「Key 是数字」在 JSON 里看不出来。
+15a. ★★ 响应里的 `start`/`end` 是 **`time.Time`**，回显 **RFC3339Nano**，
+    **不是**发进去的 `YYYY-MM-DD` ⇒ 一进一出**两种形状**。
+16. ★★★ 文本维度 `tenant_id`/`person`/`model` **也做 `TrimSpace`**，
+    但**不做大小写折叠**（注释自陈：标识符折叠会把两个取值并成一个）。
+17. ★★ **503 / 405 / 400 / 500 的检查顺序与文案逐条列**，不做跨端点推断。
+18. ★★ **`fill()` 只回填了 `providers`/`credentials`/`api_keys`** 三行
+    ⇒ `models`/`tenants`/`persons` 的 `name` **恒缺** ⇒ 客户端不能把
+    「`name` 缺失」一律解释成「回查失败」。
+
+**本模块明确声明的校验边界**：解包器校验 **envelope 层**（降级两键、`report`/
+`dimensions` 主键、顶层数组形状、`Totals` 的 16 个恒在字段 + `internal_currency` 条件键）。
+★ `GrainReport` 的九种子行结构（每种 5~20 字段）**只校验「是数组 of 对象」** ——
+理由：那会引入 100+ 个纯数值透传的字段级断言，而 envelope 层的降级/枚举/不变式
+才是真正会出错的形状。⇒ **调用方拿到子行仍需自己判空**；未校验不等于「一定对」。
+
+### 验证
+
+- 用例 **191 条全绿**（`web-mobile/src/api/reportRollup.test.ts`）。
+- 变异 **73 条 = 72 有牙 + 1 可证等价**（`/tmp/mut-co84.mjs`，`RESTORED=OK`）。
+- 三门 rc=0（CSS media syntax / touch targets / i18n parity）；`vue-tsc` rc=0；
+  `npm run build` rc=0；全量 + 十连跑见下。
+
+### 变异验证暴露的判据缺陷（73 条 → 首跑 62 有牙，修到 72）
+
+首跑 12 条 STILL_GREEN，**归因分三类**，没有一条是「判据没意义」：
+
+1. **锚点指错 4 条（#11 / #13 / #22 / #59）—— 又一次同类。**
+   | 变异 | 锚点为什么错 | 修法 |
+   |---|---|---|
+   | #11 `top_error_count` 挪进恒在组 | 指到「恒在键不含 `filter`」，那条与本变异无关 | 锚点改到「**恒在键恰是 10 个**」 |
+   | #13 `start` 无条件发出 | 指到「`providerId = undefined` 不发」，与 `start` 无关 | 锚点改到「**无参数不带问号**」 |
+   | #22 `report` 主键检查被删 | 指到「降级响应没有 report 主键」，降级分支**提前 return**、根本走不到 | 锚点改到「**缺 report 主键 ⇒ 抛**」（错误文案从「缺 1 个键」变成「形状不符」，那条会红） |
+   | #59 `in` 改成真值 | `slice(0,20)` 截到 `★ ★ reportBreakdownI`，**落到了另一个函数**的用例上 | `expect` 改写成长片段，避开共享前缀 |
+   ⇒ ★★ 这是**连续第八批**出现锚点未同步；新形态是
+   **「共享前缀把锚点截到同名族的另一个函数」** ⇒ `expect` 至少要长到**跨过函数名**。
+
+2. **样本选歪 6 条（#50 / #56 / #60 / #64 / #69 / #71）—— 三种形态。**
+   | 变异 | 锚点那格为什么同答案 | 补的专格 |
+   |---|---|---|
+   | #50 漏掉 `start <= yesterday` | 用例里 `start` 越过了 `today` ⇒ 另一项也已为假 | today **再退一天**，让另两项为真、只有 B 假 |
+   | #56 `===` 改成 `<=` | 样本里 `error_count` **偏大**（9 > 3），`<=` 仍为假 | 补「**`error_count` 偏小**」（1 < 3）⇒ `<=` 翻成 true |
+   | #60 mixed 分支去掉 `grain>0` | 样本是「两数组都有」⇒ 两种实现都返回 `mixed` | 锚点改到「**只有 legacy 非空 ⇒ legacy**」 |
+   | #64 `length > 0` 改成真值 | 样本是 `null` ⇒ `!!null` 也是 false | 补「**空数组**」（`!![]` 为 true） |
+   | #69 RFC3339 判据只看长度 | 样本是 10 位串 ⇒ `length > 10` 本来就为假 | 补「**长度 >10 但不含 T**」（空格分隔的本地时间串） |
+   | #71 `'name' in o` 改成真值 | 样本是**键缺** ⇒ 真值与 `in` 同为 false | 补「**键在但值是空串**」 |
+   ⇒ ★★ 形态一：**两侧都假**（另项已触发）⇒ 补「其余项全为不触发值」。
+   ⇒ ★★ 形态二：**两侧都真**（样本落在同答案的中间格）⇒ 锚点改到边界格或补专格。
+   ⇒ ★★ 形态三：**不可达值**（`[]`/`''` 在真实响应里不会出现，但手写夹具能造）
+     ⇒ 这正是 `in` 与真值判断唯一能区分的那一格。
+
+3. **可证冗余 1 条（#49）—— 不是缺陷，是判据本身写错了。**
+   `reportRollupDefaultWindowExcludesToday` 原本有三个合取项
+   `start < today && start <= yesterday && yesterday < today`，
+   但 **`start < today` 被后两项蕴含**（字符串日期的传递性）
+   ⇒ 不改变任何一条分支的结果 ⇒ **可证冗余**。
+   ⇒ ★★ 处置：**删掉冗余项**（不是留着当恒真项），注释写明「由另两项蕴含」，
+     并补一条把「冗余」这件事钉住的用例（`start == today` 时
+     `start <= yesterday` 已为假 ⇒ 与显式写第三项同答案）。
+   ⇒ ⇒ 该分项从变异表里移除，变异数 74 → 73。
+
+4. **可证等价 1 条（#19）—— 保留写法，不为它造不可达样本。**
+   `isDegraded` 的 `d['degraded'] === true` 改成 `!!d['degraded']` 仍全绿。
+   ⇒ 后端**只**写 `true` 这个字面量（`:318` 与 `:355`），`degraded` 的可达集合
+     只有 `{true}` 或**键缺** ⇒ 两种写法在可达集合上**可证等价**。
+   ⇒ ★ 处置：**保留** `=== true`（与后端形状对齐）+ 注释写明等价理由。
+
+### 收尾
+
+local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
+`web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
