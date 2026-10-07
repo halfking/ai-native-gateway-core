@@ -11539,3 +11539,302 @@ sql/migrations/startup/830_ursm_node_snapshot_min_partitioned.down.sql    7,369 
 它现在是数据库时间第一名（81.0%，§10.93），而它**逐张表地**削弱本该由 autovacuum 承担的职责。
 本会话**不建议**直接动它（收益已由 837/838 拆分、839 交回覆盖），
 但这条机制应作为后续优化的一等公民记在册。
+
+---
+
+## §10.106 上线记录：五项 + 830 于 2026-10-07 全部落地（build 2485）
+
+### §10.106.1 ⚠ 上线前我算错了部署面，用的是陈旧基线
+
+执行前检查时我读 `/opt/llm-gateway-go/VERSION` 得出「生产落后 **8177** 提交」，
+并据此向用户申请了全量部署授权。**这是错的**：该 `VERSION` 文件停留在 7 月的
+`ad347ac6d`，而**实际运行的二进制是 `40405063` build 2470**（API `/healthz` 才是权威）。
+
+| | 我先前的报错 | 实际 |
+|---|---|---|
+| 部署面 | 8177 提交 | **247 提交**（huangzhouzixuan 117 / halfking 105 / mavis 19 / zcode 6） |
+| `bg/partition_manager.go` | +1698 行 | **+37 行**（analyze 互斥锁） |
+| `db/db.go` | +6200 行 | **+534/-34 行** |
+
+⇒ **判生产基线必须走 `/healthz` 或 `/api/system/version`，不能读 `VERSION` 文件**——
+后者没有任何机制保证与实际二进制同步。
+
+### §10.106.2 落地的五项 + 830
+
+| # | 项 | 落地方式 | 验证读数 |
+|---|---|---|---|
+| 1 | **analyze 互斥锁** | 随二进制（`bg/partition_manager.go`） | 两台同版本 2485，`pg_try_advisory_xact_lock` 生效后只有一台跑全量 |
+| 2 | **迁移 837** | 手工 `psql -1 -f` | 两个路由 MV 重建 + `routing_mv_refresh_state` 建表 2 行；**未跑安装器**（见 §10.106.4） |
+| 3 | **迁移 838** | 同上 | `analyze_llm_gateway_table_stats` 函数体 **1490 → 2068** 字节，含 `date_trunc('month')` 冻结月跳过逻辑 |
+| 4 | **迁移 839** | 同上 | **5 张**关系拿到 `autovacuum_analyze_scale_factor=0.005`，含最关键的 `request_logs_2026_10` |
+| 5 | **六条独占锁守卫** | 随二进制 | 二进制内符号自证：`ensureProviderSoftDelete` 2 / `goalclientsignal` 5 / `ensure_ursm_node_snapshot_min_daily_partition` 7 |
+| 6 | **`b03afa02a` 推 252** | 覆盖 `/opt/scripts/pg17-proactive-empty-table-cleanup.sh` | md5 与仓库 HEAD 一致、`bash -n` 通过、两道守卫各 2 处（`NOT c.relispartition` / `NOT LIKE '%_default'`） |
+| 7 | **`wal_compression=lz4`** | `ALTER SYSTEM` + `pg_reload_conf()` | `setting=lz4` / `source=configuration file` / **`pending_restart=f`（零停机）** |
+| 8 | **830 分区化** | 手工 `psql -1 -f`（**保留 `.skip` 文件名**） | 见 §10.106.3 |
+
+### §10.106.3 830 的执行与切换验证
+
+单事务 0.825 秒完成（RENAME → 改名 PK 约束 → 建父表 → 建 ensure 函数 → 预建 3 分区）：
+
+```
+new_relkind     = p                                    ← 分区父表
+legacy_relkind  = r                                    ← 历史留作 heap
+partitions      = _20261007, _20261008, _20261009      ← 契约命名合规
+new_pk          = ursm_node_snapshot_min_pkey           ← canonical 名让出后再取回
+legacy_pk       = ursm_node_snapshot_min_legacy_pkey    ← 改名而非删除，回滚仍有 arbiter
+legacy_rows     = 2,836,620                            ← 历史一行未丢
+new_cols        = 56                                   ← 32 基线 + 818 的 24
+```
+
+**切换是干净的**（不靠推断，靠两个 max_ts 对拍）：
+
+```
+新表  max_ts = 2026-10-07 13:05:08   （写入持续）
+_legacy max_ts = 2026-10-07 13:03:08 （停在切换那一刻，之后不再进）
+新表 5,355 行 100% 落在当日分区 _20261007  ← 分区路由正确
+```
+
+两台实例都持续写入且**无 `no partition of relation found`**：
+154 每分钟 `persist committed` 1,338~1,340 行、245 同量，healthz 均 `ready:true`。
+
+★ **保留 `.skip` 文件名是有意的**：installer's embed 与 `dbinit/runner.go` 都用
+**显式文件名**登记（已核，无 glob），830 不在其中；但把文件改成 `.sql`
+会让任何未来新增的 `*.sql` 遍历把它收进去。**应用事实由 `schema_migrations` 的 830 行承担。**
+
+### §10.106.4 为什么手工应用迁移、而不是跑安装器
+
+安装器的启动清单里 **834~839 全都登记在列**，跑安装器会连带应用
+**834/835/836**——不在本次授权范围内，且其中 836 是**真实的数据搬动**：
+它要把 `supplier_errors_2026_09/_10/_11` 三个 **columnar 分区 DETACH 后重建为 heap**
+（现网 `supplier_errors` 是 `relkind='p'`）。故本次只手工应用 837/838/839，
+834~836 留待单独窗口。
+
+### §10.106.5 839 跳过 2 张表：查清了，是无害的
+
+迁移输出两条 NOTICE：
+`skip credit_ledger_2026_10` / `skip tool_usage_stats_2026_10`
+（理由：`AccessExclusiveLock required to add toast table`）。
+
+真因不是锁竞争，而是**这两张表 `reltoastrelid = 0`（压根没有 TOAST 表）**——
+因为它们是**空表**：
+
+```
+credit_ledger_2026_10   0 行   0 bytes
+tool_usage_stats_2026_10 0 行   0 bytes
+request_logs_2026_10    127,457 行  144 MB   ← 真正重要的那张，已交回
+```
+
+⇒ 无行可统计、无需 autovacuum，**跳过是正确的**。重试一次仍跳过，符合预期。
+
+### §10.106.6 b03afa02a 上线前的事故核查：未造成损伤
+
+今天 02:00 的 cron 已用**旧版**脚本跑过一次。核查 15 个 `_default` 分区：
+**全部存在、父表齐全、无孤儿**，`usage_facts_default` 完好（0 bytes，父表 `usage_facts`）。
+⇒ 地雷未引爆（那些表当时非空），但 P0 已封堵。
+
+### §10.106.7 两处部署布局差异（下次部署会踩）
+
+| | 154 | 245 |
+|---|---|---|
+| 可执行路径 | `current/llm-gateway-go` | **`slots/8781/gateway`** |
+| 布局 | 单二进制 + symlink | **每端口 slot** → `releases/<seq>-<sha>/` |
+| 翻版动作 | stop → 换文件 → start | 建 `releases/<new>/` → 翻 `slots/8781` → restart |
+
+⇒ 我在 245 第一次只翻了 `current`，重启后 `/proc/<pid>/exe` **仍指向旧 release**；
+必须翻 `slots/8781`。**245 的 release 目录还需从旧版补 `configs/`、`deployment.json`、
+`SHA256SUMS`、`VERSION`**，否则启动会报 `configs/sensitive_*.yaml` 缺失（非致命）。
+
+### §10.106.8 回滚基线
+
+| 位置 | 内容 |
+|---|---|
+| 154 | `/opt/llm-gateway-go/current/llm-gateway-go.bak-pre2485-20261007-123726`（md5 `a16cdb02…`） |
+| 245 | `/opt/llm-gateway-go/releases/2476-e27a8fc2/`（**未动**，slot 翻回即可） |
+| 252 | `/opt/scripts/pg17-proactive-empty-table-cleanup.sh.bak-20261007-125619` |
+| DB | 837/838/839 各有 `.down.sql`；830 有 `830_ursm_node_snapshot_min_partitioned.down.sql`（要求 `_legacy` 仍在） |
+
+### §10.106.9 尚待观察（**不宣称已验证**）
+
+1. ★ **留存切到 DROP 模式**：
+   - **已确认（静态）**：分流代码确实在两台的二进制里 ——
+     `cleanupPartitioned`(2) / `isSnapshotPartitioned`(3) /
+     `"dropped expired partitions"`(1) / `"degrading to row delete"`(1)。
+   - **未确认（行为）**：`CleanupOnce` **只在真有东西可删/可删分区时才打日志**
+     （`res.PartitionsDropped > 0` 或 `res.RowsDeleted > 0`），
+     而 830 建的三个分区是 `20261007/08/09`，**全在 7 天保留期内，今天没有任何分区会过期**
+     ⇒ **「没有日志」不是「没工作」，也无法作为模式未切换的证据**。
+   - ⇒ 真正能观测到的那一行最早是 **2026-10-14**（第一个分区跨过 7 天），
+     届时应出现 `"snapshot retention dropped expired partitions"` 且**不再**出现
+     `"removed expired snapshots"`。
+   ⇒ **本节明确标注：切到 DROP 模式目前只有静态证据，没有任何行为证据。**
+2. **analyze 互斥锁的实跑效果**需等两个实例各跑满一轮（`pg_stat_statements` 的
+   `analyze_llm_gateway_table_stats` 调用数应从 14 次/窗口降到 7 次）。
+3. **`_legacy` 的 DROP 责任人未定**，第 7 天（约 2026-10-14）不 DROP 则约 852 MB 白占。
+   回滚脚本：`830_ursm_node_snapshot_min_partitioned.down.sql`
+   （它会先检查 `_legacy` 是否还在，不在则 RAISE 拒绝——**只能退不能进是假回滚**）。
+
+---
+
+## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」
+
+### §10.107.1 上线后第一件事：把 §10.106.9 的「待观察」变成读数
+
+上线后立即量（`journalctl | grep "partition_manager: analyze stats"`，INFO 级，
+即**真正执行**而非跳过）：
+
+```
+154: 12:42:00  ← 1 次（12:37 重启后）
+245: 12:46:33 与 12:48:01  ← 2 次
+12:50 之后两台均 0 次
+```
+
+245 的两次**不是缺陷，是我造成的**：为了翻它的 slot，我先后
+`systemctl restart` 了两次（12:44 翻 `current` 那次是无效的，12:46 翻 `slots/8781` 才生效），
+每次启动都会跑一次 `promoteDefaultToPartitions()` → 末尾调 `analyzePartitionStats()`。
+
+### §10.107.2 触发链（读源码得到）
+
+```
+runPromote()  →  每 DefaultPromoteInterval(=1h) 调 promoteDefaultToPartitions()
+                 └─ 末尾无条件调 pm.analyzePartitionStats(ctx)
+analyzePartitionStats()
+  └─ 5 分钟冷却（time.Since(lastAnalyzeAt) < 5min ⇒ return）
+     ⇒ 只防「连击」，**不防两台各自的每小时一拍**
+```
+
+⇒ **analyze 的节奏由 promote 的 1 小时 tick 决定，不是 24 小时的 mainTicker。**
+每台实例各跑一遍 ⇒ 两台合起来 **2 次/小时**。
+
+### §10.107.3 ⚠ 锁的作用域只有一次 pass 的时长（~94 秒）
+
+锁的实现（`bg/partition_manager.go:1810`）：
+
+```go
+if err := tx.QueryRow(timeoutCtx, "SELECT pg_try_advisory_xact_lock($1)", analyzeLockKey(),).Scan(&locked); ...
+if !locked { tx.Rollback(...); slog.Debug("... skipped (peer holds lock)"); return }
+```
+
+- `xact` 级 ⇒ 锁只活到事务结束，也就是**这一趟 pass 结束**为止；
+- `try` 语义 ⇒ **抢不到就跳过这一轮**，而不是「等到轮到它」。
+
+而两台的 tick 是**各自独立**的，本次实测偏移量：
+
+```
+154 最后一趟 12:42:00   245 最后一趟 12:48:01   ⇒  相距 6 分 01 秒
+单趟耗时 pg_stat_statements mean_exec_time = 93.81 秒
+```
+
+⇒ **偏移 6 分钟 ≫ 持有 94 秒 ⇒ 两把锁永远不会争用 ⇒ 互斥锁一次都不会命中。**
+下一拍可预期是 13:42 与 13:48，同样相隔 6 分钟。
+
+### §10.107.4 结论：这个缓解措施比它的目标弱
+
+| | §10.53 的问题陈述 | 本措施实际做到 |
+|---|---|---|
+| 症状 | 「两台各跑一遍全量」，14 次/窗口 | **未解决**：2 次/小时依旧 |
+| I/O 互争 | 「两次落在同一分钟内互争 I/O」 | ✅ 解决：那 94 秒的窗口内不会双跑 |
+
+**它解决的是「互争 I/O」，不是「重复执行」。**
+两者在 §10.53 里被并列写在同一段，但只有前者可由 `try` 语义解决。
+
+⇒ 要真正达成「每小时只跑一遍」，需要的是**跨实例共享的节流**而不是互斥锁，
+例如：把「上次 analyze 完成时刻」落到一张共享小表，
+两个实例都先读它、距上次不足 N 分钟就跳过本轮。
+（与 promote 的 `promoteLockKey` 同型的锁在 promote 路径上之所以成立，
+是因为那张路径**本来就是循环调**、两台 tick 对齐度高。）
+
+### §10.107.5 为什么 56 条变异全红没照出来
+
+三条门/变异都只验证「**锁存在、抢不到会跳过**」，
+没有一条验证「**两台合起来的 pass 次数减半**」——
+后者需要两台实例同时在跑，而门禁是单进程。
+⇒ 与 §10.105 同族：**机制断言 ≠ 效果断言**；
+「有没有那把锁」与「那把锁有没有把次数降到一半」是两个不同的问题。
+
+★ **待实测（2026-10-07 13:50 左右）**：数 13:42 / 13:48 两趟是否**都真的执行**。
+若都执行，则 §10.107.4 的推演成立；若只执行一趟，说明我对 tick 偏移的推演有误，当场订正。
+
+---
+
+## §10.108 真修法提案（**未实施**，等拍板）：把「互斥锁」换成「跨实例共享的节流槽」
+
+### §10.108.1 §10.107 结论的直接影响
+
+`analyze_llm_gateway_table_stats` 是数据库时间第一名（§10.93：**81.0%**），
+而它**每小时跑两遍**。按当前读数：
+
+```
+2 次/小时 × 93.79 秒 = 187.6 秒/小时 = 4,502 秒/天 ≈ 75.0 分钟/天
+```
+
+⇒ **把它压到 1 次/小时，等于每天省约 37 分钟数据库时间**，
+这是本轮所有条目里**单项收益最大**的一个。
+⚠ 93.79 秒是 **1027 次调用的历史均值**（绝大多数发生在 838 之前），
+838 落地后的真实单趟耗时要以 13:42/13:48 那两趟的 Δ 为准（见 §10.107.5）。
+
+### §10.108.2 为什么「对齐 ticker」不是解法
+
+一种直觉做法是让两台的 promote tick 对齐到同一墙钟时刻，让它们**必然争用**，
+然后靠现有的 `try` 锁让一台跳过。**不要这么做**：
+它把「两台各跑一遍」换成了「同一分钟两台同时抢锁」，
+I/O 争抢窗口没消失，只是从「每天都错开」变成「每天都撞在一起」，
+而且多了一个「谁抢到谁干活」的不确定性。
+
+### §10.108.3 推荐方案：一张一行的共享状态表 + 原子占槽
+
+```sql
+-- 迁移 840（幂等）
+CREATE TABLE IF NOT EXISTS public.llm_gateway_task_state (
+    task_name          text        PRIMARY KEY,
+    last_started_at    timestamptz NOT NULL,
+    last_completed_at  timestamptz
+);
+
+-- 占槽（原子）：距上次开始不足 N 分钟则返回 0 行 ⇒ 跳过本轮
+INSERT INTO public.llm_gateway_task_state (task_name, last_started_at, last_completed_at)
+VALUES ('analyze_llm_gateway_table_stats', now(), NULL)
+ON CONFLICT (task_name) DO UPDATE
+   SET last_started_at = now()
+ WHERE public.llm_gateway_task_state.last_started_at < now() - interval '50 minutes'
+RETURNING task_name;
+```
+
+- **原子性**：`INSERT … ON CONFLICT DO UPDATE … WHERE … RETURNING` 是单语句原子操作，
+  两个实例并发时**只有一个**能拿到返回行 ⇒ 天然互斥，且**不依赖任何锁**。
+- **与 `try` 锁正交**：可以**保留**现有 advisory lock（它防的是「同一分钟内两次」这种
+  真重叠），再叠加节流槽（防的是「错开的两拍」）。两者各管一段。
+- **失败语义**：占槽成功但过程崩溃时，`last_started_at` 已写 ⇒ 下一拍在 50 分钟后才重试。
+  这是**有意的**：宁可少跑一趟，不要两台都在半途重试。
+  想更保守可以同时记 `last_completed_at` 并用 `COALESCE(last_completed_at, last_started_at)` 判据。
+- **表不存在时降级**：`CREATE TABLE IF NOT EXISTS` 之外，Go 侧要对
+  `42P01`（undefined_table）**继续执行**而不是跳过 ⇒ 新表没建出来时行为退化为今天的样子。
+
+### §10.108.4 阈值 N 怎么定
+
+| N | 效果 | 风险 |
+|---|---|---|
+| 30 分钟 | 每小时 1~2 次，节流不彻底 | 无 |
+| **50 分钟** | **严格 1 次/小时**（留 10 分钟余量吸收时钟漂移与单趟 94 秒） | 若某趟跑超过 10 分钟，下一拍会被推迟到 60 分钟后——实际变成 ~1.1 次/小时 |
+| 70 分钟 | 偶发漏拍 | 分析间隔最长可达 ~2.2 小时，统计量陈旧窗口翻倍 |
+
+⇒ **取 50 分钟**：目标是 1 次/小时，而不是「越多越好」——
+统计量的价值在 838 之后已经由 autovacuum 接手（§10.105），
+手工 pass 不需要跑得勤。
+
+### §10.108.5 这类门禁该怎么写（对比 §10.107.5 的教训）
+
+**不能**只验「槽位函数存在」——那会重蹈 56 条变异全绿的覆辙。
+必须能验的两条：
+
+1. **同一时刻两次调用只有一次拿到槽**（单进程也能测：并发两次调用同一函数，
+   断言返回行数之和 = 1）。这是**效果**不是机制。
+2. **距上次不足 N 分钟时不更新**（把 `now() - interval` 改成 `+ interval`，
+   断言第二跳被拒）。这条有牙且可离线测。
+
+真实部署后仍需一次**两台读数**（§10.107.5 的方法）确认合起来是 1 次/小时。
+
+### §10.108.6 待你拍板
+
+- 是否实施（迁移 840 + `bg/partition_manager.go` 改动 + 测试 + 两台部署）
+- N 取 50 分钟是否合适
+- 838 落地后的真实单趟耗时（等 13:42/13:48 读数）会改变收益估算，但**不改变结论方向**
