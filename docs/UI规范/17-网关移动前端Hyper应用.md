@@ -12602,3 +12602,127 @@ GET `/api/admin/storage/config` · GET `/api/admin/logs/config`
 
 local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
 `web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
+## 11.130 凭据模型滑窗调用明细（第九十四批，2026-10-08）
+
+GET `/api/credentials/sliding-window?credential_id=X&model=Y&minutes=60&limit=50`
+
+- **注册**：**第五种注册形态**，`mux.HandleFunc` 在**另一个文件的方法**里
+  （`admin/credential_monitor.go:156` 的 `RegisterMonitorRoutes`），
+  由 `admin/handler.go:1453` 现构造并挂载：`monitorH.RegisterMonitorRoutes(mux, h.admin)`
+  ⇒ ★★★★★ **整族 `h.admin` 档 ⇒ tenant_admin 可用 ⇒ 抽屉席不设 `requiresRole`**
+  ⇒ ★ 与批 92 的 `model-history` **同一注册处、同一档位**（该方法还挂十余个端点）。
+- **实现**：`admin/credential_monitor.go:697-788`（handler）· `:790-809`（回退查询）·
+  `credentialhealth/recorder.go:16-22`（`CallEntry`）· `:155-177`（`ComputeStats`）。
+- **桌面调用方**：`web/src/api/credential-monitor.ts:149-168` —— 直接强转，不做校验。
+- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+
+### 本族最要紧的十四件事
+
+1. ★★★★★ **`h.admin` 档**（同批 92）。
+2. ★★★★★ **响应恒有 8 个键**（`:769-779` 的 `map[string]any`），
+   ★ **桌面类型只声明了 6 个** —— 漏掉 `limit` 与 `total_returned`
+   ⇒ ⇒ 照桌面类型写的客户端**看不到 `total_returned`**，也就发现不了 (3) 那组互锁。
+3. ★★★★★ **四个数字完全互锁**：
+   ```go
+   if len(entries) > limit { entries = entries[:limit] }   // :764-766 先截断
+   stats := credentialhealth.ComputeStats(entries)          // :768 再统计
+   … "total_returned": len(entries),                        // :775
+   ```
+   而 `ComputeStats` 第一行是 `Total: len(entries)`（`recorder.go:157`）
+   ⇒ ⇒ **`total_returned === entries.length === stats.total`**
+   ⇒ 且 `if e.Success { Success++ } else { Failed++ }`（`:162-165`，**完备二分**）
+   ⇒ ⇒ **`stats.success + stats.failed === stats.total`**
+   ⇒ ⇒ 四个数字锁在一起，任何一个错都会被另外三个抓住。
+4. ★★★★★ **`error_kinds` 的求和「小于等于」`failed`，而不是相等**：
+   `if e.ErrorKind != "" { stats.ErrorKinds[e.ErrorKind]++ }`（`recorder.go:166-168`）
+   ⇒ ★★★ **失败的条目若 `err` 是空串，就完全不进 `error_kinds`**
+   ⇒ ⇒ 「失败原因分布」比「失败数」少，**不是 bug，是那些失败没有归类**。
+5. ★★★★★ **`failure_rate` 是派生值，`total === 0` 时恒为 `0`**
+   （`if stats.Total > 0 { … }`，`:172-174`）⇒ **不是 NaN、不是 null**
+   ⇒ ⇒ 客户端**不能**直接写 `rate === failed / total`（`total === 0` 时那是 NaN）。
+6. ★★★★★ **`source` 只有一条方向可断言**：
+   ```go
+   source := "redis"
+   entries := make([]credentialhealth.CallEntry, 0)
+   if m.recorder != nil && m.recorder.Enabled() { entries, _ = m.recorder.GetRecent(…) }
+   if len(entries) == 0 { source = "request_logs"; … }
+   ```
+   ⇒ ⇒ **`source === 'redis'` ⟹ `entries.length > 0`**（空必回退）
+   ⇒ ⇒ ★★ **`source === 'request_logs'` 是二义的**：Redis 不可用 **或**
+     Redis 可用但窗口内无数据，**两种成因同形**。
+7. ★★★★★ **Redis 的错误被整个丢弃**（`entries, _ = …`，`:741`）
+   ⇒ Redis 挂掉 ⇒ 静默回退 ⇒ **响应里看不出 Redis 故障**
+   ⇒ ★ 与批 93 的 `enabled_source`、批 91 的 `count` 全 0 同族。
+8. ★★★★ **`entries` 被强制非 nil**（`:757-759`，注释自陈「否则前端
+   `windowEntries.length` 会抛 Cannot read properties of null」）⇒ **空时是 `[]`**。
+9. ★★★★ **`minutes` 完全没有校验**（`:715`），而 **`limit` 有 `1..500` 的 400**（`:725-728`）
+   ⇒ ★★★ **同一族的两个查询参数，一个校验一个不校验**
+   ⇒ ★★ `minutes=abc` 会被 `queryInt` **静默回落成 60**（`handler.go:1539-1542`）。
+10. ★★★★ **`credential_id == 0` 才判 400** —— **不是 `< 1`** ⇒ 负数能过（与批 92 同形）。
+11. ★★★★ **`model` 大小写不敏感**：`lower(COALESCE(outbound_model, client_model)) = lower($2)`（`:804`）
+    ⇒ ⇒ 客户端**不需要**自己 lowercase
+    ⇒ ★★ 但**回显的 `model` 是原样传入的那一个**（`:770` 直接回显，不做规范化）
+    ⇒ ⇒ **回显可能与实际命中的 `outbound_model` 大小写不同**。
+12. ★★★★ **两源的「历史深度」完全不同**：Redis recorder 是 **2 小时 / 100 条**
+    （`handler.go:713`），回退源 `request_logs_with_current_month` 是**当月视图**（`:797`）
+    ⇒ ⇒ 切到 `request_logs` 后能看到的范围**突然变大**，不是「补齐了缺失的数据」。
+13. ★★★★ **`CallEntry` 的 json tag 是缩写，与 Go 字段名完全不同**：
+    `RequestID→rid`、`Timestamp→ts`、`Success→ok`、`LatencyMs→lat`、`ErrorKind→err`
+    ⇒ ★★★ **照 Go 字段名写客户端必然全错**。
+    - `rid` 是**恒在键但可能为空串**（`COALESCE(request_id,'')`，`:798`）
+    - `ts` 是 **unix 毫秒**
+    - `err` 是**唯一带 `omitempty`** 的键 ⇒ 成功条目里**键消失**
+14. ★★★★ **回退查询 `ORDER BY ts DESC` 无 tiebreak**（`:807`）
+    ⇒ ★★★ **同毫秒时间戳的条目顺序未定义** ⇒ 只能断言**非升序**。
+
+**校验边界**：envelope 的 8 个恒在键与类型、每个 `CallEntry` 的 5 个键、`stats` 的 5 个键；
+为 (3)(4)(5)(6)(14) 各提供判据。
+★ **不校验** `source` / 各 `err` 取值的**取值域**（由 Redis / 日志自由文本决定）；
+★ **不提供**「`rid` 非空」判据（`COALESCE(…,'')` 表明空串是合法值）。
+
+### 变异验证暴露的六件事（66 条 → 65 条全有牙）
+
+首跑 59/66，另 1 条 `COLLECT_FAIL` + 6 条白绿，归因**五类**：
+
+1. ★★ **形态 (e) 又一次：`to` 丢了 `{`**（#18）。删掉一个循环项时我把
+   `for (…) {` 的花括号也一起吃掉了 ⇒ PARSE_ERROR。
+   ★ 修正：**删循环项的 `to` 必须原样保留 `{`** —— 与批 91 的「`//` 吃掉行尾代码」
+   是同一个教训的两副面孔，**凡是 `to` 结尾的行都要重新读一遍语法**。
+2. ★★★ **同形变异：换了被取值的源，错误消息却一字不差**（#29）。
+   `requireRecord(s['error_kinds'], …)` 改成 `requireRecord(s['stats'], …)`：
+   两者**抛的是同一个 where 标签的同一条消息**（`where` 字符串没变）
+   ⇒ 锚在「error_kinds 不是对象」那条上必然白绿。
+   ⇒ ★★★ 修法：锚点换到「error_kinds 的值**不是数字**」那条 ——
+     原实现读 `s['error_kinds']` 抛「…的 timeout 不是数字」，
+     变异读 `s['stats']`（undefined）抛「…不是对象」⇒ **两条输出真的不同**。
+   ⇒ ★ 这就是「判据可以证冗余 ⇒ 删代码」的**反面**：
+     **两条判据若产出同一条错误消息，它们在变异测试里是同一条**。
+3. ★★★ **`===` 两条放宽方向的区分格相反，我又一次写反了**（#45 / #46）。
+   `sum === total` 改成 `<=` 时区分格是「**和 < total**」，
+   改成 `>=` 时区分格是「**和 > total**」。
+   我把两个锚点挂反了 ⇒ 两条都白绿。
+   ⇒ ★★★ 这是本仓**第三次**踩（批 88 一次、批 94 一次，加这次共三次），
+     **必须写成一条硬规则**：写锚点前**手算两种实现在候选样本上的返回值**，
+     不要凭「看起来相关」挂。
+4. ★★★★ **样本选歪，两条**：
+   - #54（`failure_rate === 0` 改 `=== 1`）：我用的样本是 `failure_rate: 0.5`
+     ⇒ **两种实现都返回 false** ⇒ 区分格其实是 `=== 1`。
+   - #55（redis 判据去掉 source 守卫）：我用的样本 entries **非空**
+     ⇒ 两种实现都 true ⇒ 区分格是「非 redis **且** entries 为空」。
+   ⇒ 补了这两条专格用例。★ 与批 93 的「绿灯也可能只是夹具造假」同族。
+5. ★★★ **可证等价 ⇒ 删变异**（#50）。`classified === failed` 改成 `>=`：
+   `classified` 与 `failed` 在**同一次循环**里累加，每个条目最多各 +1
+   ⇒ **`classified <= failed` 恒成立** ⇒ `>=` 与 `===` 在可达输入域上等价
+   ⇒ 唯一区分格是 `classified > failed`，**不可达** ⇒ 删。
+   ⇒ ★ 这是批 91（`prev.key > cur.key` 改 `>=`）与批 92（`?` 改 `?&`）
+     之后的**第三例可证等价**。
+
+★ 附带：批 93 新增的**量具阳性对照**在本批生效 —— 开跑前先注入必然打红的改动，
+解析器抓到 **30 条红**才开跑。（若按批 93 前的旧 harness，这批的读数不可信。）
+
+### 验证
+
+- 用例 **80 条全绿**（`web-mobile/src/api/slidingWindow.test.ts`）。
+- 变异 **65 条 = 65 条全有牙，0 可证等价**（`/tmp/mut-co94.mjs`，逐条 `RESTORED` 字节比对；
+  ★ harness 带**量具阳性对照**，开跑前先注入必然打红的改动验证解析器，抓到 30 条红才开跑）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6144 条（159 文件）** rc=0。
