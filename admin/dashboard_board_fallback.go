@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/maas"
 )
 
@@ -249,6 +250,12 @@ func (h *Handler) fallbackErrorDrill(
 	where := alias + `.ts >= now() - ($1 * INTERVAL '1 day')`
 	where += ` AND ` + alias + `.request_status IN ('success', 'failure', 'rate_limited')`
 	where += ` AND COALESCE(` + alias + `.error_kind, '') = $2`
+	// 探针排除：错误钻取是看板的读面，与饼图/趋势/汇总必须同口径。
+	// 不加这条，分钟路径（已按探针排除写入 request_stats_error_drill_minute）
+	// 会报 0 条而 fallback 仍返回探针错误，运维点进错误饼图看到的是探针噪声。
+	// requestLogsFromClause 可能是物理表也可能是视图，但两条分支都有
+	// quality_flags / task_type / origin_actor 三列，故视图版谓词两边都成立。
+	where += " AND " + fmt.Sprintf(bg.ProbeTrafficExclusionPredicateView, alias, alias, alias)
 	args := []any{days, errorKind}
 	if tenantID != "" {
 		where += fmt.Sprintf(" AND %s.tenant_id = $%d", alias, len(args)+1)

@@ -12,7 +12,13 @@ import (
 // request_logs.canonical_id 累加；视图在已有 session_turns 时用 turn 的
 // canonical（经常仍是 NULL）和另一套 ts。删掉当前分钟会把尚未被 turn
 // 覆盖的累加行清掉。
-const retireClosedMainMinuteSQL = `
+//
+// 探针排除谓词必须与 rollupMainStatement 同源同形：整键替换不再产出「纯探针键」
+// 后，只有带同样谓词的 NOT EXISTS 才会把它们判成悬空键删掉。谓词漏在这里，
+// 纯探针键会被误判成「视图仍在产出」而永久留存，污染一直留在看板上。
+//
+// 注意这里是 var 而不是 const：谓词经 fmt.Sprintf 渲染，不是常量表达式。
+var retireClosedMainMinuteSQL = `
 DELETE FROM request_stats_minute AS m
 WHERE m.bucket >= date_trunc('minute', $1::timestamptz)
   AND m.bucket < date_trunc('minute', $2::timestamptz)
@@ -26,6 +32,7 @@ WHERE m.bucket >= date_trunc('minute', $1::timestamptz)
       AND COALESCE(NULLIF(r.tenant_id, ''), 'default') = m.tenant_id
       AND COALESCE(r.provider_id, 0) = m.provider_id
       AND COALESCE(r.canonical_id, 0) = m.canonical_id
+      AND ` + fmt.Sprintf(ProbeTrafficExclusionPredicateView, "r", "r", "r") + `
   )
 `
 
@@ -66,6 +73,7 @@ func retireScanFloor(since, until time.Time) time.Time {
 // retireClosedDimStatement 生成单个维度的闭分钟退役语句。dim_key 表达式
 // 与 error_kind 的 failure 过滤都来自 rollupDimQueries 的同一拼接口径——
 // 两套口径一旦漂移，NOT EXISTS 会把视图仍在产出的键误判成悬空键删掉。
+// 探针排除谓词同理必须与 rollupDims 的写入口径一致。
 func retireClosedDimStatement(dimKeyExpr string) string {
 	return `
 DELETE FROM request_stats_dim_minute AS m
@@ -82,6 +90,7 @@ WHERE m.bucket >= date_trunc('minute', $1::timestamptz)
       AND date_trunc('minute', r.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' = m.bucket
       AND COALESCE(NULLIF(r.tenant_id, ''), 'default') = m.tenant_id
       AND ` + dimKeyExpr + ` = m.dim_key
+      AND ` + fmt.Sprintf(ProbeTrafficExclusionPredicateView, "r", "r", "r") + `
   )
 `
 }
@@ -89,8 +98,8 @@ WHERE m.bucket >= date_trunc('minute', $1::timestamptz)
 // retireClosedErrorDrillMinuteSQL 同族退役 error 钻取表。model_name 的哨兵
 // 与 rollupDims 对齐用空串（累加器侧 minute_entry 写 '__unknown__'，两者
 // 不同恰好让累加器键落在「视图不产出」侧，由本语句清掉、视图键由整键
-// 替换管住——这正是跨分钟 turn 双计的消除路径）。
-const retireClosedErrorDrillMinuteSQL = `
+// 替换管住——这正是跨分钟 turn 双计的消除路径）。探针排除谓词与写入口径同源。
+var retireClosedErrorDrillMinuteSQL = `
 DELETE FROM request_stats_error_drill_minute AS m
 WHERE m.bucket >= date_trunc('minute', $1::timestamptz)
   AND m.bucket < date_trunc('minute', $2::timestamptz)
@@ -106,6 +115,7 @@ WHERE m.bucket >= date_trunc('minute', $1::timestamptz)
       AND COALESCE(NULLIF(r.outbound_model, ''), NULLIF(r.client_model, ''), '') = m.model_name
       AND COALESCE(r.provider_id, 0) = m.provider_id
       AND COALESCE(NULLIF(r.client_profile, ''), '') = m.client_profile
+      AND ` + fmt.Sprintf(ProbeTrafficExclusionPredicateView, "r", "r", "r") + `
   )
 `
 

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/bg"
 )
 
 // boardTimeRange is the resolved window for dashboard board queries.
@@ -96,6 +98,20 @@ func boardMinuteWhere(tr boardTimeRange, tenantID string, extraStartArg int) (wh
 	return where, args
 }
 
+// boardLogsWhere is the single WHERE builder for every board read face that goes
+// through request_logs (fallbackBoardSummary, fallbackBoardTrends,
+// fallbackBoardPies/fallbackDimPie, fillOverviewCountsFromLogs).
+//
+// The probe exclusion is applied HERE, once, rather than at each call site: the
+// board's 总请求数 and 成功率 must describe real user traffic only. Probe rows
+// share the same request_status values as real traffic, so a status filter
+// cannot separate them — and probes fail far more often, which is exactly why
+// including them made the board report a success rate no operator could
+// reproduce from the request log page.
+//
+// bg.ProbeTrafficExclusionPredicateView is the view-safe variant of the same
+// predicate (the physical-table variant references origin_stage, which the
+// 113-column view does not project — using it here would 42703 on every call).
 func boardLogsWhere(tr boardTimeRange, alias, tenantID string) (where string, args []any) {
 	args = []any{tr.Start, tr.End}
 	where = alias + ".ts >= $1 AND " + alias + ".ts < $2"
@@ -103,6 +119,7 @@ func boardLogsWhere(tr boardTimeRange, alias, tenantID string) (where string, ar
 		where += " AND " + alias + ".tenant_id = $3"
 		args = append(args, tenantID)
 	}
+	where += " AND " + fmt.Sprintf(bg.ProbeTrafficExclusionPredicateView, alias, alias, alias)
 	return where, args
 }
 
