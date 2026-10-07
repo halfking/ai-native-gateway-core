@@ -10821,3 +10821,128 @@ WHERE credential_id = $1 AND started_at >= $2
    1 条 `TS2352`（`StorageOverview` 无索引签名，不能直接断言成 `Record<string, unknown>`）。
    ⇒ ★ 提醒自己：**批量改用例写法之后必须重跑类型门**，
      删 import 这类「vitest 完全看不见」的后果就是漏在这里。
+
+---
+
+## 11.117 指纹漂移事件（第八十一批，2026-10-08）
+
+- 新增 `web-mobile/src/api/modelIntegrityDrift.ts`
+- 新增 `web-mobile/src/api/modelIntegrityDrift.test.ts`（**125 条**）
+- 覆盖 `GET /api/admin/model-integrity/fingerprint-drift?days=7&limit=200`
+- **鉴权：`admin/handler.go:924-925` 的整个 `/api/admin/model-integrity/` 前缀都是 `h.superAdmin`**
+  ⇒ ⇒ 接抽屉席**必须**设 `requiresRole: 'super_admin'`，并同步 `AppDrawer.spec.ts` 白名单
+- 分发：`admin/model_integrity.go:62-84` 的 switch；实现 `:314-388`
+- 桌面调用方：`web/src/api/integrity.ts:96-102`；视图 `ModelIntegrityView.vue` 的 fingerprint-drift 标签页
+
+### ★ 差集扫描排掉的一个假阳性（候选集不等于待办集）
+
+`/api/admin/auto-route/tuning/strategies` 在候选清单里，桌面 `web/src/api/tuning.ts:44`
+也在调它 —— 但后端**从不注册**：`admin/auto_route_tuning.go:838` 的
+`func (h *TuningHandlers) handleStrategies(...) //nolint:unused`
+标着 **`nolint:unused`**，而 `RegisterTuningRoutes`（`:82-91`）的六个 `mux.HandleFunc`
+里**没有** `strategies`。
+⇒ ★★ 桌面调的是一个**必然 404 的死端点**；handler 代码还在、注释也还在
+（`// handleStrategies: GET /tuning/strategies?days=7`），只有注册表里没有。
+⇒ **「handler 存在」不等于「端点可用」** —— 必须查注册表，不能只查 handler。
+
+### 本族最要紧的九件事
+
+1. ★★★★★ **19 键里 14 个是指针 + omitempty ⇒ 零值是「键缺失」，不是 `null`、不是 `0`。**
+   `ModelIntegrityRecord`（`model_integrity.go:19-40`）的**所有**可选字段都是
+   `*string` / `*int` / `*time.Time` / `any`，**没有一个是可空值类型**。
+   ⇒ **五键恒在**（`id` `detected_at` `anomaly_type` `severity` `resolved`）
+   / **十四键条件**（`request_id` `provider_id` `provider_code` `credential_id`
+   `client_model` `outbound_model` `raw_model_name` `expected_value` `actual_value`
+   `sample` `context` `resolved_at` `resolution_notes` `tenant_id`）。
+2. ★★★★★ **★ 指针 + omitempty 与值类型 + omitempty 的行为完全相反：零值指针会原样出现。**
+   `ProviderID *int`：DB 里 `provider_id = 0` ⇒ 扫成**非 nil 指针指向 0** ⇒ JSON 是
+   `provider_id: 0`（**键在**）；DB 里 `NULL` ⇒ 键被**省略**。
+   ⇒ ⇒ `if (row.provider_id)` 会把**真实的 0** 误判成「没有值」；
+     判据必须写 `'provider_id' in row`。
+   ⇒ ★ 与第八十批 `database` 块（值类型 + 无 omitempty ⇒ 恒 0）正好相反，
+     两个方向在本仓都出现过 ⇒ **先看 struct tag，再看声明类型**。
+3. ★★★★★ **读路径跨全部租户：SELECT 出 `tenant_id` 却从不过滤。**
+   `:328` 用 `withAllTenantReadOnlyTx`，WHERE 只有 `anomaly_type` 与时间窗，
+   **没有任何租户条件** ⇒ **本仓第五次「不隔离」**（批 75/76/77 共五次）。
+   ★ 这次档位是 **superAdmin**，tenant_admin 够不着这条路由，危害面比前几次小；
+     但平台超管看到的是**所有租户**的指纹漂移（含 `sample` 与 `context`）。
+4. ★★★★ `anomaly_type` 在这个端点是**硬编码常量** ⇒ 可严格校验取值。
+   `:336` 的 WHERE 写死 `anomaly_type = 'fingerprint_drift'`，而 SELECT 又把它扫进
+   非指针无 omitempty 的字段 ⇒ **每行必然等于该字面量**。
+   ⇒ 这是本族**唯一**能严格校验取值的字符串键。
+5. ★★★★ `severity` 有注释声明的四值域，但**表上没有任何 CHECK 约束**。
+   `462:52` 写的是 `severity TEXT NOT NULL DEFAULT 'low'  -- low | medium | high | critical`，
+   `baseline/01-schema.sql:9654` 同样没有 CHECK。
+   ⇒ 取值域只存在于**两处注释**：`integrity/signals.go:80` 的 `Severity` 常量族，
+   与 `bg/integrity_probe_sink.go:49-51` 的硬编码 `"high"` / `"low"`。
+   两条写入路径都在四值域内 ⇒ 可校验，但**依据是代码不是约束**。
+   ⇒ ★ 与批 78 的 `no_candidates`（不在 CHECK 内 ⇒ 那个分支项不可达）同族：
+     **注释里的取值域不等于数据库约束。**
+   ⇒ ★ 反例提醒：`domains/analysis/optimizer.go` 用的是**另一套** severity
+     （`warn` / `info` / `action_required`）⇒ 同名不同域，按字段名归类会出错。
+6. ★★★★ `days` 与 `limit` 都是**静默回落**，不是 400。
+   ```go
+   days := queryInt(r, "days", 7);   if days <= 0 || days > 30  { days = 7 }
+   limit := queryInt(r, "limit", 200); if limit <= 0 || limit > 500 { limit = 200 }
+   ```
+   `queryInt`（`handler.go:1534-1544`）用 `strconv.Atoi`，解析失败**直接返回缺省**
+   ⇒ `days=31` / `0` / `abc` / `" 7"` **四种写法都拿到 `days=7` 的数据**。
+7. ★★★ `days` 回显的是**生效窗口**，不是请求值 ⇒ 请求 31 拿到 7 并标着 7。
+   ★★ 与批 76 `errors/trend` 的 `range` 回显**请求值**正好相反
+   （那个是回显 `xyz` 却给 24h 数据）⇒ **同一仓两种回显口径，必须逐端点读。**
+   ⇒ 移动端可直接拿 `resp.days` 当窗口长度，**不要**另存请求值。
+8. ★★★ `count` 恒等于 `events.length`，`events` 恒数组（`make([]…, 0)`）。
+   ★★ 响应**只回显 `days`、不回显 `limit`** ⇒ 截断只能靠「拿满请求上限」反推。
+9. ★★ 错误信封嵌套 `{"error":{"detail":"…"}}`，三条固定文案：
+   非 GET ⇒ 405 `method not allowed`；`h.db == nil` ⇒ **503 `database not configured`**
+   （**dispatcher 层**，在子路径分发之前 ⇒ 与 `summary` / `events` 共享）；
+   查询失败 ⇒ 500 `drift query failed`。
+   ⇒ ★ 与批 79 `errors/trend` 的 `db_not_configured` 那条
+     `database **is** not configured`（多一个 is）**措辞不同**，别抄错。
+
+### 验证
+
+- 用例 **125 条全绿**
+- 变异 `/tmp/mut-co81.mjs` **57 条**，见下节
+- 三门 rc=0；`vue-tsc` rc=0（一次通过）；`npm run build` rc=0
+- U+FFFD 自查：源与用例均 0
+
+### 变异验证暴露的判据缺陷（57 条 → 首跑 45 有牙，修到 51）
+
+1. **★★★ 六条「判据函数里的守卫/分支」是可证冗余 ⇒ 等价变异，不是判据无牙。**
+   本批 8 条 STILL_GREEN 里有 **6 条**属于这一类，形态各不相同：
+   | # | 删掉的东西 | 为什么等价 |
+   |---|---|---|
+   | 16 | `Number.isFinite(days)` | `Infinity` 被 `<= 30` 挡住、`NaN` 被 `>= 1` 挡住 |
+   | 20 | `Number.isFinite(limit)` | 同上（上下界各挡一个） |
+   | 17 | `typeof days !== 'number'` | JS 里 `Number.isFinite(undefined)` 与 `(null)` **本来就返回 false** |
+   | 33 | `key in row &&`（`=== 0` 前半） | `k in obj && obj[k] === 0` ≡ `obj[k] === 0` —— `in` 只在值为 `undefined` 时才有区别，而 `undefined === 0` 恒假 |
+   | 36 | `Array.isArray(c)` 分支 | JSON 不产生稀疏数组，而 `Object.keys(A).length === 0` ⇔ `A.length === 0` |
+   | 37 | `if (!('context' in row)) return false` | 键缺时 `c` 是 `undefined`，过完下面三条分支仍落到 `return false` |
+   ⇒ ★★★ **规律**：判据函数（纯布尔、无副作用）里的前置守卫若**不改变任何一条分支的结果**，
+     就是可证冗余。这类函数尤其容易出现，因为没有「提前返回以避免类型错误」的刚需。
+   ⇒ ★★ 注意 #37 是「**守卫被下游兜住**」，而第七十九/八十批记的是「**下游兜住上游**」——
+     两者都是等价变异，方向相反、结论相同：**兜住 = 等价**。
+   ⇒ 处置一致：全部**保留**（都是可读的显式条件），在源文件注释里写明等价理由。
+
+2. **★★★ 样本要挑「两种实现输出不同」的那一格（又一次，4 条）。**
+   | 变异 | 我原来选的夹具 | 为什么不区分 | 换成的 |
+   |---|---|---|---|
+   | #35 `in` → `!!` | `context: {}` | `!!{}` 也是 true | `context: null`（键在但假值）|
+   | #39 `!== undefined` → `!!` | `tenant_id: 'default'` | 非空串真值判定也 true | `tenant_id: ''`（空串被真值吞掉）|
+   | #54 漏掉 `count` 条件 | 有行但 `count` 不对 | `events.length !== 0` 两边都 false | **无行但 `count=3`**（两边才分岔）|
+   | #57 换成 `count===0 && days===0` | 有行但 `count=5` | 两边都 false | **零行窗口（`days=7`）**（变异体 `days===0` 不成立）|
+   ⇒ ★ 与第八十批的教训同源：**「语义上最典型」的格子往往正是分不出来的格子**。
+
+3. **★★ 锚点未同步（第六次）。**
+   #54 / #57 补完夹具后忘了把变异指过去 ⇒ 又一次同一形态。
+   ⇒ 与批 76/77/78/79/80 连续六批同坑，已固化为流程的原子步骤：
+     **「加夹具」与「改锚点」必须一起做**。
+
+4. **★ 判据的反面形态也要单独一条用例。**
+   `driftIsUnresolved` 写成 `resolved===false && !resolved_at && !resolution_notes`
+   ⇒ 漏掉 `resolution_notes` 那一项时，我只有「有 `resolved_at`」的用例
+   （两种实现都 false）⇒ 指不到牙；
+   补「**没有 `resolved_at` 但有 `resolution_notes`**」后立刻有牙。
+   ⇒ ★ 与「判据有两个必要条件各要一条」同族：
+     **每个合取项都要有一条「只让那个项不同」的用例。**
