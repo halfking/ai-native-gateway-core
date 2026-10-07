@@ -43,6 +43,7 @@ export default {
       idPrefix: 'ID: ',
       manualPrefix: '手動: ',
       effectivePrefix: '生效: ',
+      modelsNotMeasured: '該憑據本次未回傳模型計數（未測量），不是「0 個可用」',
     },
     loading: '載入中...',
     empty: '暫無憑證',

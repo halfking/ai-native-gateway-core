@@ -23,9 +23,17 @@ export interface CredentialMonitorSummary {
   state_reason_detail: string | null
   health_checked_at: string | null
   total_requests: number
-  model_total: number
-  model_available: number
-  broken_model_count: number
+  // 2026-10-07：这三个键对一部分凭据是**整个键不存在**，不是值为 0。
+  // 245 实测 /api/credentials/monitor-summary?mode=core 的 65 条里
+  //   model_available / model_total  各缺 7 条（99001/99002/32/36/47/55/74，
+  //     如 canary-cred-A/B，auth_failed 且长期未检查）；
+  //   broken_model_count           缺 25 条。
+  // 声明成必填会让消费方以为「缺了就是 0」而写下 `?? 0` 回落 —— 那等于对
+  // 一个**没被测量过**的凭据断言「0 个可用」。故如实标为可选。
+  // 缺数据时的渲染约定见 CredentialMonitorTable.modelsLabel / modelsClass。
+  model_total?: number
+  model_available?: number
+  broken_model_count?: number
   // Per-(credential, model) availability breakdown (2026-06-22). Replaces the
   // single-model recent_window_stats. Empty array when the credential has no
   // model_offers rows.

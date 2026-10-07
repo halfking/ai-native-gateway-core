@@ -97,12 +97,16 @@ const filteredCreds = computed(() => {
   return result
 })
 
+// 2026-10-07：这里原先是 `?? 0`。对「本次没测到模型计数」的凭据补 0 会让表格
+// 显示「0/0」—— 那是对未测量项的断言。改为透传 null，由表格按未测量渲染「—」。
+// 详见 CredentialMonitorTable.modelsLabel 处的三条约束。
+// 移动端 NodesView.modelsLabel 是同一套语义（见 web-mobile/src/views/NodesView.vue）。
 const displayCreds = computed<CredentialRow[]>(() =>
   filteredCreds.value.map((c) => {
     return {
       ...c,
-      modelTotal: c.model_total ?? 0,
-      modelAvailable: c.model_available ?? 0,
+      modelTotal: c.model_total ?? null,
+      modelAvailable: c.model_available ?? null,
     }
   }),
 )

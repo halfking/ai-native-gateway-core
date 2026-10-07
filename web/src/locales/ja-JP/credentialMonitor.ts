@@ -43,6 +43,7 @@ export default {
       idPrefix: 'ID: ',
       manualPrefix: '手動: ',
       effectivePrefix: '有効: ',
+      modelsNotMeasured: 'この資格情報は今回モデル件数を返しませんでした（未計測）。「0 件利用可能」という意味ではありません',
     },
     loading: '読み込み中...',
     empty: '認証情報がありません',

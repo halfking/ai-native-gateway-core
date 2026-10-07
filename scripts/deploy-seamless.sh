@@ -727,6 +727,33 @@ upload_release() {
 # 移动端之前的旧发布）就保留 staged web-mobile。
 # 返回 0=已顶替；1=无法顶替（无 current / current 即新版本 / current 无
 # web / 远端拷贝失败），调用方降级保留 staged web 并 warn。
+# stage_mobile_surface <bundle_dir>
+# 2026-10-07：原实现在 web-mobile/dist 缺失时只 warn 就继续，于是 release 里带一个
+# **空** web-mobile/ 目录；网关侧 NewMobileStaticHandler 启动探测一次拿不到就返回
+# nil —— /m 与统一入口分流都不注册。发布日志一片绿，手机用户却悄悄回到桌面页。
+# 2485 就是这样把移动端下线掉的，直到有人从外部发现。
+#
+# 刻意分三路，而不是一刀切 exit 1：--no-frontend 的语义本就是「web 沿用线上」，
+# 那种情况下 dist 缺失是**预期**，稍后 carry_forward_web_remote 会从线上 current
+# 顶替（见该函数 2026-10-04 那段）。一刀切会把所有后端专用发布全拦死。
+#   · dist 存在                  → 拷贝
+#   · 缺失且 SKIP_FRONTEND=true   → warn（预期语义，但显式说出来，不静默）
+#   · 缺失且构建跑过（未跳过）    → 硬失败
+stage_mobile_surface() {
+  local bundle_dir=$1
+  mkdir -p "$bundle_dir/web-mobile"
+  if [[ -d web-mobile/dist ]]; then
+    cp -R web-mobile/dist/. "$bundle_dir/web-mobile/" || { err "stage web-mobile 失败"; return 1; }
+    return 0
+  fi
+  if [[ "$SKIP_FRONTEND" == "true" ]]; then
+    warn "web-mobile/dist 缺失（--no-frontend）：按语义沿用线上 current 的 web-mobile"
+    return 0
+  fi
+  err "web-mobile/dist 缺失但前端构建已执行 —— refusing to deploy without the mobile surface（/m 与统一入口分流将不注册）"
+  return 1
+}
+
 carry_forward_web_remote() {
   local new_version=$1
   local probe
@@ -947,12 +974,7 @@ do_deploy() {
   # 不覆盖 web-mobile（manifest 只保二进制/version/configs 的身份校验）。
   # 空目录兜底：docker/local 的 COPY 与远端软链形态稳定，缺构建时网关侧
   # NewMobileStaticHandler 返回 nil（/m 与入口分流静默不注册）。
-  mkdir -p "$bundle_dir/web-mobile"
-  if [[ -d web-mobile/dist ]]; then
-    cp -R web-mobile/dist/. "$bundle_dir/web-mobile/" || { err "stage web-mobile 失败"; exit 1; }
-  else
-    warn "web-mobile/dist 缺失——本发布不携带移动端（/m 与统一入口分流将不注册）"
-  fi
+  stage_mobile_surface "$bundle_dir" || exit 1
   ok "bundle: $bundle_dir"
   local expected_release_version expected_release_seq expected_release_sha expected_release_date
   read -r expected_release_version expected_release_seq expected_release_sha expected_release_date < <(

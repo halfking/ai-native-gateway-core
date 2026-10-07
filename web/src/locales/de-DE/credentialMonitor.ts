@@ -43,6 +43,7 @@ export default {
       idPrefix: 'ID: ',
       manualPrefix: 'Manuell: ',
       effectivePrefix: 'Wirksam: ',
+      modelsNotMeasured: 'Diese Anmeldedaten lieferten diesmal keine Modellzahlen (nicht gemessen) – nicht „0 verfügbar“',
     },
     loading: 'Wird geladen…',
     empty: 'Keine Anmeldedaten',
