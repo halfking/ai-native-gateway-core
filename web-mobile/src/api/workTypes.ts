@@ -44,11 +44,21 @@ import { req, type RequestOptions } from './client'
  * (4) ★★★★ **`ORDER BY sort_order, key`（`:544`）—— 本仓少见的「完全确定」排序**，
  *     有 key 做 tiebreak ⇒ 可断言严格升序（不像批 88/89/90 那些无 tiebreak 的）。
  *
- * (5) ★★★★★ **`model_routes` 有**三态**：键**消失** / `null` / 数组。
- *     - `out[i].ModelRoutes = routeMap[out[i].Key]`（`:573`）
- *     - `fetchRoutesForKeys` 对**没有路由的 key 根本不建 map 条目**（`:961` 只在有行时 append）
- *     - 且字段是 `json:"model_routes,omitempty"`（`:516`）⇒ nil ⇒ **键整个消失**
- *     ⇒ ★★ 与批 90 的 `old_value`（SQL NULL ⇒ 键消失）同型。
+ * (5) ★★★★★ **`model_routes` 后端只产生**两态**：键**消失** 或 **非空数组**。
+ *     ★★★ **本条原先写的是「三态（键消失 / null / 数组）」，第一百零三批复核后判定为错**，
+ *       因为 Go 的 `omitempty` 对 slice 的判定是 `len() == 0` ——
+ *       **非 nil 的空切片同样被省略**。两条装配路径都验过：
+ *       - `listWorkTypes`：`out[i].ModelRoutes = routeMap[key]`（`:573`），
+ *         而 `fetchRoutesForKeys` 只在 `rows.Next()` 里 append（`:961`），
+ *         **没建过条目的 key 取出来是 nil slice** ⇒ 省略；
+ *       - `getWorkType`：`fetchRoutes` 返回 `make([]modelRoute, 0)`（`:912`），
+ *         零行时是**非 nil 的空切片**，一样被省略。
+ *     ⇒ ⇒ **`null` 与 `[]` 都不可达**（除非将来有人去掉 `omitempty`）。
+ *     ⇒ 本模块仍按「存在且非 null 就必须是数组」宽容校验（`:405`），
+ *       那是**防御**，不是对后端形状的断言；`WorkTypeConfig.model_routes` 的
+ *       `| null` 同样只为宽容而留。
+ *     ⇒ ★★ 与批 90 的 `old_value`（SQL NULL ⇒ 键消失）同型，
+ *       但**成因不同**（那条是 NULL，这条是 omitempty 的 len 判定）。
  *
  * (6) ★★★★★ **`l1-task-types` 的 `items` 是「canonical 8 ∪ DB 里出现过的 L1 键」**
  *     （`mergeL1TaskTypes`，`:217-246`）

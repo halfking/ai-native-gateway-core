@@ -145,6 +145,17 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.tenants',
     requiresRole: 'super_admin',
   },
+  // 工作类型配置面。★ **整族 h.superAdmin**（`admin/handler.go:1434`
+  //   `wtH.RegisterWorkTypeRoutes(mux, h.superAdmin)`，四条 GET 全挂这一个中间件）
+  //   ⇒ 须设 requiresRole。
+  // ★ 与批 90 的 settings **同前缀邻域但档位相反** —— 别照抄那一席。
+  {
+    key: 'work-types',
+    to: '/work-types',
+    icon: 'cpu',
+    titleKey: 'nav.workTypes',
+    requiresRole: 'super_admin',
+  },
   // MaaS 租户运维面。**superAdmin 档**（/api/admin/maas/tenants/** 全 superAdmin）⇒ 须设。
   {
     key: 'maas-tenant-ops',
