@@ -481,7 +481,7 @@ onBeforeUnmount(() => {
 .cv__section {
   margin-bottom: 20px;
   padding: 12px;
-  border: 1px solid var(--cv-line, #e3e6ea);
+  border: 1px solid var(--app-border);
   border-radius: 10px;
 }
 
@@ -501,7 +501,9 @@ onBeforeUnmount(() => {
 .cv__load { min-width: 48px; padding: 0 14px; font-size: 14px; }
 
 .cv__seg { display: flex; gap: 8px; margin: 8px 0; }
-.cv__segBtn { padding: 0 14px; font-size: 14px; border: 1px solid var(--cv-line, #e3e6ea); border-radius: 8px; }
+.cv__segBtn { padding: 0 14px; font-size: 14px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); }
+/* 背景必须显式给：不给就吃 UA 的 ButtonFace（浅色 #efefef、暗色 #6b6b6b），
+   暗色下同一个 --app-primary 只有 1.69:1（10 §4.6.64）。 */
 .cv__segBtn--on { border-color: var(--app-primary); color: var(--app-primary); font-weight: 600; }
 
 .cv__field { display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 13px; }
@@ -514,12 +516,12 @@ onBeforeUnmount(() => {
 .cv__kv dd { margin: 0; text-align: right; }
 
 .cv__list { list-style: none; margin: 4px 0 0; padding: 0; }
-.cv__row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 8px 0; border-top: 1px solid var(--cv-line, #e3e6ea); font-size: 13px; }
+.cv__row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 8px 0; border-top: 1px solid var(--app-border); font-size: 13px; }
 .cv__rowLabel { font-weight: 600; min-width: 96px; }
 .cv__rowMain { font-variant-numeric: tabular-nums; }
 .cv__rowMeta { color: var(--app-text-secondary); font-size: 12px; }
 
-.cv__tag { display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid var(--cv-line, #e3e6ea); border-radius: 4px; font-size: 11px; color: var(--app-text-secondary); }
+.cv__tag { display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid var(--app-border); border-radius: 4px; font-size: 11px; color: var(--app-text-secondary); }
 .cv__tag--warn { border-color: #d97706; color: #b45309; }
 
 .cv__msg { margin: 6px 0; font-size: 13px; color: var(--app-text-secondary); }

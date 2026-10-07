@@ -168,6 +168,26 @@ const evaluate = async (expression) => {
 
 await send('Page.enable'); await send('Runtime.enable'); await send('Network.enable')
 
+// ── 主题开关（2026-10-08，§4.6.64）──────────────────────────────
+// 为什么需要：暗色是 `html.dark` **类**驱动（`stores/theme.ts`，键 `llmgw_mobile_theme`），
+// 不是 media query；而判据此前只在**浅色**下量过 ⇒ 暗色对比度从来没被量过。
+// 而实测已出现过「浅色达标、暗色根本不变色」的退化（4 个硬编码色）。
+// ⚠️ 用 `addScriptToEvaluateOnNewDocument` 在**应用初始化前**写 localStorage，
+//   而不是加载后加 class：后者会与 store 的初始化赛跑，且量到的是「被改过」的页面。
+const THEME = arg('theme', 'light')
+const THEME_KEY = 'llmgw_mobile_theme'
+const DARK_BG = '#0f141c'
+if (THEME === 'dark') {
+  await send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `try { localStorage.setItem(${JSON.stringify(THEME_KEY)}, 'dark') } catch (e) {}`,
+  })
+}
+// 量具自证：暗色必须真的生效（class 在 + --app-bg 变成暗色值），否则「暗色全绿」
+// 只会说明**暗色没开** —— 与「没量到」在报告里长得一模一样。
+const READ_THEME = `(() => { const cs = getComputedStyle(document.documentElement); return {
+  dark: document.documentElement.classList.contains('dark'),
+  bg: (cs.getPropertyValue('--app-bg') || '').trim().toLowerCase() } })()`
+
 // 预热：首导航要拉 bundle + 首次解析，settle 容易在挂载前就返回。
 // 不预热的话**第一组**会被自己的量具判成 no-content（实测踩到：/m @320 作废、
 // 同一路由 @914 却有 271 字）——那是启动时序，不是页面没内容。
@@ -243,6 +263,14 @@ for (const route of ROUTES) {
     let rep = null
     // 注入要在**判据跑之前**：自定义属性一改，下一次读 rect 就会重新布局。
     let ins = null
+    let thm = null
+    if (THEME === 'dark') {
+      thm = await evaluate(READ_THEME).catch((e) => ({ error: String(e) }))
+      if (!thm || thm.error || !thm.dark || thm.bg !== DARK_BG) {
+        rows.push({ ...row, invalid: 'theme-not-applied', got: JSON.stringify(thm) })
+        continue
+      }
+    }
     if (INJECT_INSETS) {
       await evaluate(INJECT_INSETS).catch((e) => ({ error: String(e) }))
       ins = await evaluate(READ_INSETS).catch((e) => ({ error: String(e) }))
@@ -254,7 +282,7 @@ for (const route of ROUTES) {
     }
     try { rep = await evaluate(`(${AUDIT_SRC})()`) } catch (e) { rep = { error: String(e) } }
     rows.push({ route, reqW: w, reqH: h, vw: probe.vw, vh: probe.vh, textLen: probe.len,
-                rescuedByRetry: rescued, settle, insets: ins, report: rep })
+                rescuedByRetry: rescued, settle, insets: ins, theme: THEME, report: rep })
 
     // 浮层状态：抽屉 / 账户 Sheet 默认关着，不驱动就量不到
     if (OVERLAY) {
@@ -268,7 +296,8 @@ for (const route of ROUTES) {
         let orep = null
         try { orep = await evaluate(`(${AUDIT_SRC})()`) } catch (e) { orep = { error: String(e) } }
         rows.push({ route, reqW: w, reqH: h, vw: probe.vw, vh: probe.vh, textLen: probe.len,
-                    rescuedByRetry: rescued, settle, insets: ins, state: 'overlay:' + which, report: orep })
+                    rescuedByRetry: rescued, settle, insets: ins, theme: THEME,
+                    state: 'overlay:' + which, report: orep })
         await evaluate(CLOSE_OVERLAY).catch(() => {})
         await sleep(400)
         // 量具自证：关不掉的话下一组的读数已经被浮层盖住了，必须报出来而不是继续
@@ -299,6 +328,7 @@ for (const r of rows) {
 
 console.log(`\n—— 量具自证 ——`)
 console.log(`目标 ${ORIGIN}  tag ${TAG}   路由 ${ROUTES.length} × 视口 ${SIZES.length} = ${rows.length} 组`)
+console.log(`主题 ${THEME === 'dark' ? '暗色（每组回读 html.dark 与 --app-bg，未生效即作废）' : '浅色（默认）'}`)
 console.log(`inset 注入 ${INSETS ? `left=${INSETS[0]} right=${INSETS[1] ?? INSETS[0]} top=${INSETS[2] ?? 0} bottom=${INSETS[3] ?? 0}（每组回读 --app-safe-*，读不回即作废）` : '未注入（env() 在 headless 恒 0 ⇒ 横向 safe-area 本轮结构性不可见）'}`)
 console.log(`浮层状态 ${OVERLAY ? '已开（每组多采一次抽屉/Sheet）' : '未开（抽屉默认关着 ⇒ 本轮量不到）'}`)
 console.log(`作废 ${rows.filter((r) => r.invalid).length}（视口回读不符 / 无内容 / 错误页）`)

@@ -304,16 +304,16 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.mp__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.mp__panel { background: var(--app-surface); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .mp__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .mp__label { display: block; font-size: 12px; color: var(--app-text-muted); margin: 8px 0 4px; }
 
 /* ★ R1：新增交互控件 ≥48 CSS px */
 .mp__input { width: 100%; min-height: 48px; padding: 0 12px; font-size: 14px;
-  border: 1px solid var(--border, #ddd); border-radius: 8px; background: transparent; color: inherit; }
+  border: 1px solid var(--app-border); border-radius: 8px; background: transparent; color: inherit; }
 .mp__seg { display: flex; gap: 6px; margin-bottom: 8px; }
 .mp__seg-btn { flex: 1; min-height: 48px; font-size: 13px; border-radius: 8px;
-  border: 1px solid var(--border, #ddd); background: transparent; color: inherit; }
+  border: 1px solid var(--app-border); background: transparent; color: inherit; }
 .mp__seg-btn--on { border-color: var(--app-primary); color: var(--app-primary); font-weight: 600; }
 .mp__btn { width: 100%; min-height: 48px; margin-top: 8px; font-size: 14px; border-radius: 8px;
   border: 1px solid var(--app-primary); background: transparent; color: var(--app-primary); }
@@ -330,7 +330,7 @@ onBeforeUnmount(() => {
 .mp__cell-v { font-size: 14px; font-weight: 600; }
 
 .mp__list { list-style: none; margin: 0; padding: 0; }
-.mp__item { padding: 10px 0; border-top: 1px solid var(--border, #eee); }
+.mp__item { padding: 10px 0; border-top: 1px solid var(--app-border); }
 .mp__item-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .mp__title { font-size: 14px; font-weight: 600; word-break: break-all; }
 .mp__badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
