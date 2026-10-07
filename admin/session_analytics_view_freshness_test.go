@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/bg"
 )
 
 // ── 357 会话分析视图的「陈旧度门」（2026-10-07）───────────────────────────
@@ -82,16 +84,47 @@ func TestRequireFreshSessionViews_NoDBFailsClosed(t *testing.T) {
 	}
 }
 
-// TestSessionMvFreshnessBudget_ExceedsInterval：预算必须大于刷新间隔，否则
-// 门会判定「刚刷完就已经陈旧」。session 族间隔是 60min（bg.SessionViewsInterval），
-// 这里锁住「预算 > 一小时」这个不等式本身，不去跨包引常量（会造依赖环）。
-func TestSessionMvFreshnessBudget_ExceedsSessionRefreshInterval(t *testing.T) {
-	if sessionMvFreshnessBudget <= 60*time.Minute {
-		t.Fatalf("陈旧度预算 %s 必须大于 60min 的刷新间隔，否则门会把刚刷新的数据判为陈旧",
-			sessionMvFreshnessBudget)
+// sessionMeasuredRefreshSeconds 是 245 线上实测的一轮耗时（2026-10-08 00:32:46
+// → 00:33:50，三个视图 10.6s / 19.6s / 33.3s）。它不是配置项，是**量出来的**，
+// 用来把下面的算术钉在真实数值上，而不是拍一个「余量」。
+const sessionMeasuredRefreshSeconds = 64 * time.Second
+
+// TestSessionMvFreshnessBudget_Arithmetic：预算不是「比间隔大一点」就够，也不是
+// 越大越好。它被两侧夹住，两侧都来自算术：
+//
+//	下界：稳定态最坏年龄 = 间隔 + 一轮实测耗时，必须 < 预算
+//	      否则每次都在刷新前一刻被判为陈旧，功能等于常年 503。
+//	上界：漏一轮之后的年龄 = 2×间隔 + 一轮耗时，必须 ≥ 预算
+//	      超了就等于允许把两小时前的数字当结论发出去 —— 那正是这道门要消灭的
+//	      形态。90min 是刻意的选择：漏一轮后 503 到下一轮成功（约一小时自愈），
+//	      期间不发过期数字。
+//
+// ★ 上一版这条断言是**错的**：它只查 budget > 间隔，还把「90min = 60min 间隔
+//   - 一轮漏刷余量」写进了失败信息。按实测算，漏一轮后是 121min，早就超 90min。
+//     判据与设计共享同一个错误前提 ⇒ 谁也发现不了。
+//     现在两侧都算，且都从 bg 的真常量取（admin 本来就 import bg，无环）。
+func TestSessionMvFreshnessBudget_Arithmetic(t *testing.T) {
+	interval := bg.SessionViewsInterval
+
+	steadyState := interval + sessionMeasuredRefreshSeconds
+	if sessionMvFreshnessBudget <= steadyState {
+		t.Fatalf("陈旧度预算 %s 必须大于稳定态最坏年龄（间隔 %s + 实测一轮 %s = %s），"+
+			"否则每次刷新前一刻都会被判为陈旧，功能等于常年 503",
+			sessionMvFreshnessBudget, interval, sessionMeasuredRefreshSeconds, steadyState)
 	}
-	if sessionMvFreshnessBudget != 90*time.Minute {
-		t.Fatalf("预算应为 90min（60min 间隔 + 一轮漏刷余量），实际 %s", sessionMvFreshnessBudget)
+
+	oneMissedCycle := 2*interval + sessionMeasuredRefreshSeconds
+	if sessionMvFreshnessBudget >= oneMissedCycle {
+		t.Fatalf("陈旧度预算 %s 不得达到漏一轮后的年龄（%s）—— 那会让两小时前的数字"+
+			"继续被当成结论发出去，正是这道门要消灭的形态。"+
+			"（若确实要放宽，先想清楚运维是否还能看出数据已经过期）",
+			sessionMvFreshnessBudget, oneMissedCycle)
+	}
+
+	// 上界算术依赖超时 < 间隔；顺带锁住这条，否则间隔被调小后上面的数会失真。
+	if bg.SessionViewsTimeout >= bg.SessionViewsInterval {
+		t.Fatalf("超时 %s 必须小于间隔 %s，否则刷新周期会堆积",
+			bg.SessionViewsTimeout, bg.SessionViewsInterval)
 	}
 }
 
