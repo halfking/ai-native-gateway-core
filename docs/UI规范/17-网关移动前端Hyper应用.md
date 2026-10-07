@@ -10682,3 +10682,142 @@ WHERE credential_id = $1 AND started_at >= $2
      参数化测试（`it.each` / `test.each`）的标题对 harness 不可见。
    ⇒ 已改成五条显式 `it('hours=… ⇒ …')`，顺带补了 `hours=0` 与 `hours=25`
      两条边界用例（判据是 `<=1` / `>24` 而不是 `===1` / `===24`）。
+
+---
+
+## 11.116 存储总览 + 表级大小（第八十批，2026-10-08）
+
+- 新增 `web-mobile/src/api/dataLifecycleStorage.ts`（`fetchStorageOverview` /
+  `fetchStorageTableSizesChecked` / 22 个语义判据 / `humanBytesGo` 复刻）
+- 新增 `web-mobile/src/api/dataLifecycleStorage.test.ts`（**165 条**）
+- 覆盖 `GET /api/admin/data-lifecycle/storage` 与 `GET /api/admin/data-lifecycle/storage/tables`
+- 鉴权：两个都是 `admin(...)`（`admin/handler.go:982` / `:983`）⇒ **admin 档**（tenant_admin 可用）
+- ★ 同族 `:986-992` 的 vacuum / vacuum-full / reindex（六个）**全是 `h.superAdmin` 且全是写操作** ⇒ 一条不碰
+- 实现：`admin/data_lifecycle_storage.go`（两个 handler `:131-229` + helpers `:232-561`）
+
+### 本族最要紧的十三件事
+
+1. ★★★★ **`database` 是值类型字段，查询失败留「全零整块」而不是缺键。**
+   `storageOverview.Database` 无 omitempty ⇒ 键恒在。`:150-152` 的 else 分支才赋值。
+   ⇒ 判据 `database_human === ''` ⇔ 查询失败（成功路径必然来自 `pg_size_pretty`）。
+   ⇒ 与 `columnar` 的失败表达**不同构**：columnar 用 `note` 说原因，database 只留零值 + `warnings`。
+2. ★★★★ **`database.free_bytes` 恒 0、`free_human` 恒 `""` —— 不是「空闲 0 字节」，是「测不到」。**
+   `queryDatabaseStorage`（`:242-290`）**从未给这两个字段赋值**，作者在 `:54` 自陈
+   「当前 connection 看不到 PG server 端 fs 剩余」。⇒ **第十种 nil 编码：显式声明的「测不到」位**。
+   ⇒ 客户端**禁止**把它渲染成「DB 剩余 0 B」；本模块只留常量 `STORAGE_DB_FREE_IS_UNMEASURED`，
+     **不提供**读它的判据函数（那是恒真判据，按纪律删）。
+3. ★★★★★ **同一个响应里有两套 humanize，单位串不重叠 ⇒ 可自验哪个是哪个。**
+   `database_human` 来自 **PostgreSQL 的 `pg_size_pretty`**（`"1 kB"` 小写 k、字节级是 `"512 bytes"`）；
+   其余全部 `*_human` 来自本仓 `humanBytes`（`:502-518`，`"1 KB"` **大写 K**）。
+   ⇒ `storageDatabaseHumanIsGoStyle` 能把「这个响应不是本端点的」挑出来。
+   ⇒ `humanBytesGo` 逐字复刻，含两级 `TrimRight` 的**顺序**（先去尾 `0` 再去尾 `.`）
+     ⇒ `1.0 KB` 渲染成 `"1 KB"`（无小数点），`1.25 KB` 渲染成 `"1.2 KB"`（**截断**不是四舍五入）。
+4. ★★★★ **`queryColumnarStorageSafe` 恒返回 `nil` error ⇒ `warnings` 里那条「列存统计查询失败」不可达。**
+   `:296-303` 两条出口都 `return …, nil` ⇒ handler `:155-161` 的 `if colErr != nil` **永假**。
+   ⇒ 列存失败的真实表达是 `columnar.note` 带前缀，**永远不会**出现在 `warnings` 里。
+   ⇒ 与第七十六批 `probe_system`（`err` 被 `_ =` 丢弃 ⇒ 失败被算成 `healthy: true`）同型：
+     那次是**静默成好**，这次是**静默留 note**。
+5. ★★★★ `columnar.total_human` 是**恒发键但可能为空串**，且它非空 ⇔ 统计查询成功。
+   `:343` 的赋值在扫描成功之后 ⇒ `available === true` **不**保证 `total_human` 非空
+   （扫描失败时 `Available` 已被 `:323` 置 true，`:341` 直接 return）。
+   ⇒ `note` 的四个出口（连接未就绪 / 扩展未安装 / 查询失败前缀 / 尚无表使用）是封闭的。
+6. ★★★★ `warnings` 六个取值，三条查询失败、三条阈值；5 倍那条有**三个必要条件**
+   （`db>0` ∧ `fs>0` ∧ **严格** `> 5.0`），5GB 那条是 `5<<30` = 5368709120 **严格大于**。
+   ⇒ `warnings` 在 `:141` 显式 `[]string{}` ⇒ 恒数组。
+7. ★★★★ `filesystem.free_bytes` 与 `used_bytes` **取自 statfs 的不同字段** ⇒ 两者不互补。
+   `:356-362` 用 `Bavail` 当 free、用 `Bfree` 算 used ⇒ `used + free ≠ total`，
+   差额是「预留给 root 的块」，由 `storageFilesystemReservedBytes()` 读出。
+   ⇒ 与 (2) 的 database 块是**两个不同性质**：这一个是**口径不齐**，那一个是**根本测不到**。
+8. ★★★ `local_logs` 是**指针 + omitempty**（`resolveLogDir` 失败时键被省略，实际恒在）。
+   `directoryInfo` 九键恒在，但 `size_human === ''` ⇔ `exists === false`（`:407` 的赋值在提前 return 之后），
+   `oldest_mtime === 0` ⇔ `files === 0`。
+9. ★★★ `database.total_bytes` 有静默兜底（`:268` 赋值 `= database_bytes`），
+   而 `:46` 注释里的不等式方向**其实是错的**：`pg_database_size` 算全库，
+   SUM 的 WHERE（`:263`）却把 `pg_catalog` / `information_schema` **排除**了
+   ⇒ **`database_bytes` 可以大于 `total_bytes`**，由 `storageDatabaseExceedsRelationSum()` 读出。
+10. ★★ `collected_at` 是 `time.Now().UTC()`（两个端点都是）⇒ 必以 `Z` 结尾，可自验。
+11. ★★ `limit` 用 `strconv.Atoi` ⇒ **静默回落 20，不是 400**。
+    三个必要条件：`Atoi` 不报错 ∧ `n > 0` ∧ `n <= 200`。
+    `Atoi` ≡ `ParseInt(s,10,0)` ⇒ `" 20"` / `"0x14"` / `"20.0"` 都报错 ⇒ 回落。
+    ⇒ 与第七十八批 `/api/admin/probe/tasks`（非法 limit ⇒ **400**）是同仓两种风格并存的又一例。
+12. ★★★ `/storage/tables` 只有一条错误路径，两条子路径（`Query` 失败 / `rows.Err()`）**文案逐字相同**
+    ⇒ 不可区分。500 是嵌套信封 `{"error":{"detail":"查询表大小失败"}}`（**无 `code`**），
+    且 `internal_error.go` 头注释明确「客户端只见到 op，绝不携带 `err.Error()`」。
+13. ★★★★ `tables` 是**恒数组**（`make(…,0,limit)`），行扫描失败**静默跳过**（`warnRowSkip` + `continue`）
+    ⇒ **`total_bytes === Σ tables[].total_bytes` 恒成立**（跳过多少行都不影响自洽），
+    `percent_of_db` 同样只对留存行算 ⇒ 逐行重算恒吻合。
+    ★ `percent_of_db` 凑不满 100（`3 × 33 = 99`）—— 整数除法截断。
+    ★ 与 (7)/(9) 同族：这里的 schema 排除列表只有两个，而 `queryColumnarStorage`（`:335-337`）
+      **还额外排除** `citus` / `citus_internal` / `columnar` / `columnar_internal` ⇒ **同族两个查询排除列表不同**。
+
+### 桌面侧缺陷（本批顺带记录，不在本模块修）
+
+★ `web/src/api/tuning.ts:456-468` 的 `TableSizeInfo` **漏了后端的 `toast_human`**（`:107`）——
+本模块按后端 struct 逐字带上，spec 里有一条专属用例钉住（`行缺 toast_human`）。
+
+### 验证
+
+- 用例 **165 条全绿**
+- 变异 `/tmp/mut-co80.mjs` **80 条**，见下节
+- 三门 rc=0；`vue-tsc` rc=0；`npm run build` rc=0
+- U+FFFD 自查：源与用例均 0
+
+### 变异验证暴露的判据缺陷（80 条 → 首跑 56 有牙，逐条修到 77）
+
+1. **★★★ 「下游的类型检查会兜住上一步的缺键检查」⇒ `toThrow` 的正则必须收紧到**自己那一步**的措辞。**
+   5 条键集变异（#7-#11：从 `STORAGE_*_KEYS` 里删掉一个键）首跑全绿。
+   归因：删掉 `requireKeys` 里的 `free_human` 后，**紧跟着的类型检查**
+   `typeof d['free_human'] !== 'string'` 看到 `undefined` 照样抛错，
+   而错误消息里也含 `free_human` ⇒ `/free_human/` 匹配上了 ⇒ 用例照绿。
+   ⇒ ★ 与已记录的「夹具被上游检查截胡」是**同一个陷阱的镜像**：
+     那次是更早的检查抛错、后面的分支从没执行；
+     这次是**更晚的检查兜住**、正则宽到两边都匹配。
+   ⇒ 修法：`toThrow(/缺 1 个键（free_human）/)` —— 只匹配 `requireKeys` 自己的措辞。
+
+2. **★★★ 夹具不得用被测常量造：文案类判据自指恒真。** 4 条（#14-#17）。
+   `storageColumnarNoteKind(col({ note: STORAGE_COLUMNAR_NOTE_EXT_MISSING }))`
+   里的夹具与被测常量是**同一个符号** ⇒ 改常量的值，两边一起变 ⇒ 永远绿。
+   ⇒ 改成逐字照抄后端源码的字面量：`note: 'citus_columnar 扩展未安装'`（`:320`）、
+     `'数据库连接未就绪'`（`:299`）、`'尚无表使用列存（citus_columnar 已加载）'`（`:345`）、
+     三个告警文案（`:183-184` / `:188` / `:192-193`，含全角 `—` `≥` `%` 与两个空格）。
+
+3. **★★★ 样本要挑「两种实现输出不同」的那一格，不是「语义上最典型」的那一格。** 8 条。
+   | 变异 | 我原来选的夹具 | 为什么不区分 | 换成的夹具 |
+   |---|---|---|---|
+   | #21 基数 1024→1000 | `humanBytesGo(1024)` | 两种进制都恰好进位到 1.0 ⇒ 都是 `"1 KB"` | `1500` ⇒ 1024 进制 `"1.4 KB"` / 1000 进制 `"1.5 KB"` |
+   | #31 漏 `free_bytes` | 整块全零 | 那个字段本来就是 0 ⇒ 漏不漏都一样 | 只有 `free_bytes` 非零、其余全零 |
+   | #32 漏 `server_version` | `db({database_human:''})` | 其余字段都非零 ⇒ 本来就 false | 其它全零但带着 `server_version` |
+   | #53 换成 `=== '0 B'` | 正常目录（`1 MB`） | 两种实现都 false | **空目录**（`size_human: '0 B'` 且 `exists: true`）|
+   | #54 换成 `files === 0` | 有文件的目录 | files=12 ⇒ 两种都 false | `files: 12` 但 `oldest_mtime: 0` |
+   | #55 改成严格 `<` | oldest<newest | 两种都 true | **单文件目录**（两者相等）|
+   | #61 放宽成 `>=` | total 比行和小（999）| 999 >= 和 仍是 false | total 比行和**大** |
+   | #65 trunc→round | 3 行各 1 字节 | 33.33 两种都得 33 | **6 行各 1 字节** ⇒ 16.67 ⇒ trunc 16 / round 17 |
+   ⇒ ★ 规律：**边界值相等的那一格**（1024 进位边界、单文件、并列行、total 相等）
+     往往正是两种实现分不出来的格子；阈值判据要挑**小数部分 ≥ 0.5** 的那一格。
+
+4. **★★ `String.prototype.replace` 只替换**第一个**匹配 ⇒ `from` 片段必须唯一。** 1 条（#47）。
+   `return 'unknown'\n}` 在 `storageColumnarNoteKind` 与 `storageWarningKind` 里各有一处
+   ⇒ 变异改的是**前者**，而锚点指向后者的用例 ⇒ 永远绿。
+   ⇒ 修法：`from` 带上紧邻的前置分支，让片段唯一。
+
+5. **★★ 锚点未同步（第五次，已连续两批）。**
+   补完 3 里的 8 条新用例后忘了把变异指向它们 ⇒ #21 仍绿。
+   ⇒ ★ 这已是同一形态的**第五次**（批 76/77/78/79 各踩过），
+     必须在流程里固化：**「加夹具」与「改锚点」是同一个原子步骤**，
+     或者跑完后逐条核对「每条变异指向的用例，是不是这条变异唯一能打红的用例」。
+
+6. **★ 三条可证等价变异（保留，理由写进源文件注释）。**
+   | # | 变异 | 为什么等价 |
+   |---|---|---|
+   | 27 | 删掉 `formatIntGo` 的 `if (n === 0) return '0'` | Go 侧**必须**有（buf 是定长数组，循环一次不进 ⇒ 切出空串）；JS 侧 `String(Math.trunc(0))` 天然是 `'0'` ⇒ 输出不变。保留是为了与 Go 逐字对齐。 |
+   | 48 | 去掉 `storageDbOverDiskRatio` 的 `db > 0` 那一项 | db=0 且 fs>0 时 `0/fs` 数学上恒为 0；db=0 且 fs=0 时又被 `fs > 0` 那一项挡在前面（返回 0，漏不出 `0/0=NaN`）⇒ **任何夹具下输出都不变**。后端 `:180` 把两项写成对称的 `&&`，客户端照抄。 |
+   | 60 | 去掉 `storageTablesLimitIsSendable` 的 `Number.isFinite` | `NaN` 被 `n >= 1` 挡住（NaN 参与比较恒假），`±Infinity` 被 `n <= 200` 挡住 ⇒ 完全冗余。保留是因为它可读，且 Go 的 `strconv.Atoi` 确有 `ErrRange` 语义，将来若改成透传原始字符串就会变得必要。 |
+   ⇒ ★ 与已记录的「恒真守卫 vs 恒真判据处置相反」一致：
+     这三条都是**可读的显式条件**，删了看不出意图 ⇒ 留，记等价，注释写明。
+
+7. **★ 类型门比 vitest 严（又一次，且是同一形态）。**
+   165 条 vitest 全绿，但 `vue-tsc` 报 4 条：3 条 `TS6133`（用例改成字面量后
+   `STORAGE_COLUMNAR_NOTE_DB_NOT_READY` 等三个 import 变成未使用）+
+   1 条 `TS2352`（`StorageOverview` 无索引签名，不能直接断言成 `Record<string, unknown>`）。
+   ⇒ ★ 提醒自己：**批量改用例写法之后必须重跑类型门**，
+     删 import 这类「vitest 完全看不见」的后果就是漏在这里。
