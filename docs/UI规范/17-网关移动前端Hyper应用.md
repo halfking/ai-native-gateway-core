@@ -13317,3 +13317,373 @@ GET `/api/admin/task-profile`
   10 次的 `Tests` 行**条数全程一致 = 6524**，无 `×` / `FAIL` 行。
   ⇒ `ComplianceHitsView.spec.ts` / `RoutingOptView.spec.ts` 两个历史 flaky 本批**未复现**
   ⇒ ★ 按连跑器自己的口径：**未复现 ≠ 已修复**，只是这次没抓到。
+## 11.135 人工修正统计 + 修正明细 + 修正驱动的分层建议（第九十九批，2026-10-08）
+
+GET `/api/admin/task-profile/corrections/stats`
+
+- **注册**：`taskprofile/handler.go:131`，
+  `mux.HandleFunc("GET /api/admin/task-profile/corrections/stats", wrap(h.handleCorrectionStats))`
+  ⇒ 与批 98 同为**Go 1.22 方法内嵌路由模式**（第七种注册形态）。
+  由 `admin/handler.go:1413` 挂载 ⇒ **admin 档** ⇒ 抽屉席不设 `requiresRole`。
+- **实现**：`taskprofile/handler.go:250-299`（`handleCorrectionStats`）· `:435-441`（`ensurePool`）
+  · `taskprofile/corrections.go:131-161`（`Stats`）/`:167-196`（`Recent`）/`:27-39`（`Correction`）
+  · `taskprofile/suggest.go:17-25`（阈值 var）/`:27-41`（`Suggestion`）/`:45-93`（`Suggest`）/`:96-105`（`escalateTier`）
+  · `taskprofile/registry.go:38-71`（内置档案）
+  · `sql/migrations/startup/724_task_type_corrections.sql:27-38`（建表）。
+- **桌面调用方**：`web/src/api/taskProfile.ts:95-100` —— ★ **只传 `since_days`，从不传 `recent_limit`**。
+- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+- **移动端此前 0 处实际调用**（端点串只在批 98 `taskProfile.ts:14` 的注释里出现过）。
+
+### ★★★★★ 本族最要紧的十四件事
+
+1. ★★★★★★★★ **同一个枚举值，在同族两个端点上的可达性完全相反。**
+   `Suggest` 的三个 `tier_source`（`suggest.go:34-36` 注释）里的 `confidence_escalation`：
+   - 批 98 的 `/api/admin/task-profile` 传 **`confidence = 1.0`**（`handler.go:170`），
+     而 `minConf` 在升级分支被 cap 到 1 ⇒ `1.0 < minConf` **永不成立** ⇒ **死值**；
+   - ★★★ 本端点传 **`confidence = 0.75`**（`handler.go:290`）⇒ `0.75 < minConf` 在
+     `minConf > 0.75` 时**成立** ⇒ **活值**。
+   注册表 `MinConfidence ∈ {0.65, 0.70, 0.75, 0.80, 0.85}`（`registry.go:39-70`）
+   ⇒ `devops`(0.80) / `chat`(0.80) / `documentation`(0.85) / `summary`(0.85) 会命中。
+   ⇒ ⇒ ★★★★ **可达性结论必须绑定到「哪个端点的哪个 confidence」，不能沿用到同族另一个端点。**
+   ⇒ ⇒ ★★ 与批 98 (8) 的「`confidence_escalation` 是死值」**直接冲突** ——
+     两节的结论各自成立，合起来才是「同一函数在不同 confidence 下取值集不同」。
+2. ★★★★★ **★ 升级过的 `min_confidence` 会把同一个类型推过 0.75 这条线。**
+   `suggest.go:72-74` 在命中升级规则时 `minConf += 0.05`（cap 1）
+   ⇒ base `0.75` 的类型（`coding` / `testing` / `dependency` / `code` / `creative`）
+   升级后成 `0.80` ⇒ `0.75 < 0.80` **成立** ⇒ 命中 `confidence_escalation`。
+   ⇒ ⇒ ★★ 边界实测（IEEE 双精度，非推算）：
+   `0.75 < (0.70 + 0.05)` = **false**（正好等于 0.75）· `0.75 < (0.75 + 0.05)` = **true**
+   ⇒ 边界落在 base `0.70` 与 `0.75` 之间，**不是**「≤ 都算」。
+   ⇒ ⇒ ★★★ 因此本端点上会出现「**既被修正升级过、又被置信度覆盖**」的建议：
+   `min_confidence = 0.80` 带着 +0.05 的痕迹，而 `tier_source = confidence_escalation`
+   —— **`tier_source` 被覆盖，`min_confidence` 却保留了升级的证据。**
+3. ★★★★★ **`suggest.go:80-82` 的「空 fallback 补 tier-b」分支在本端点是活的。**
+   `documentation` / `summary` 的 `FallbackTiers: []string{}`（`registry.go:46-47`）
+   ⇒ 命中 (1) ⇒ `fallbacks` 被补成 `["tier-b"]`；批 98 那个端点上同一分支是死的。
+4. ★★★★★ **错误体是 `text/plain`（`http.Error`），本系列第二次。**
+   503 `Database not available`（`:437`）· 500 `query stats failed`（`:276`）
+   · 500 `query recent failed`（`:282`）。
+   ⇒ ★★ `query stats failed` 与批 98 的 `query correction stats failed` **不是同一条**，别串用。
+5. ★★★★★ **★ 400 文案是本系列首次出现的「区间型」**：
+   `since_days must be an integer in [1,365]`（`:258`）·
+   `recent_limit must be an integer in [1,500]`（`:267`）
+   ⇒ 与之前所有定长文案都不同 ⇒ 文案不可跨端点套用，更不该拿来判档位。
+6. ★★★★★ **校验是「解析失败 ∨ 越界」的合取**（`:257` `err != nil || days <= 0 || days > 365`）：
+   `abc`、`0`、`366` **三种触发同一条 400** ⇒ 客户端**不能**区分是哪一种。
+7. ★★★★★ **★ `Recent` 内部那个夹取是死代码**（`corrections.go:171-173`
+   `if limit <= 0 || limit > 500 { limit = 100 }`）——
+   handler 已在 `:266-269` 先把越界值**拒掉了**，`Recent` 永远只收到 `[1,500]` 内的整数。
+   ⇒ ⇒ 与批 98 的 `confidence_escalation` 死值同型：**兜底分支被上游守卫折叠掉。**
+8. ★★★★★ **`since` 是绝对时间戳、非确定性**：`since.UTC().Format(time.RFC3339)`（`:294`）
+   ⇒ 客户端**只能校验格式**（`YYYY-MM-DDTHH:MM:SSZ`，秒级、无小数秒），不能校验具体值。
+9. ★★★★★ **★ 缺省 `since_days` 与显式 `since_days=30` 的 `since` 不保证逐字相等。**
+   缺省走 `time.Now().Add(-30*24*time.Hour)`（`:254`），显式走
+   `time.Now().Add(-time.Duration(days)*24*time.Hour)`（`:261`）
+   ⇒ **两次 `time.Now()` 是两个不同时刻** ⇒ 落到秒级格式上「通常相同、跨秒则不同」。
+   ⇒ ⇒ ★★ 语义等价但字节不必相等：拿它做快照比对会假报失败。
+10. ★★★★★ **顶层是手写 `map[string]any`，恒 4 键**：`since` / `stats` / `suggestions` / `recent`。
+    ⇒ ★★ 桌面把 `suggestions` 标成**可选**（`web/src/api/taskProfile.ts:67` `suggestions?`）
+    是**过度防御**：键是 map 字面量里的硬编码字符串 ⇒ **恒在**。客户端的可选性判断不能抄桌面。
+11. ★★★★★ **三个容器全部非 nil**（与批 98 的 `correction_stats` 相反）：
+    `Stats` 返回 `make(map[string]CorrectionStat)`（`corrections.go:149`）·
+    handler 里 `suggestions := make(map[string]Suggestion, len(stats))`（`:288`）·
+    `Recent` 返回 `make([]Correction, 0, limit)`（`corrections.go:186`）
+    ⇒ ⇒ **零行时是 `{}` / `{}` / `[]`，没有一格是 `null`。**
+12. ★★★★★ **`stats` 与 `suggestions` 是同一个键集**（`handler.go:289-291`
+    `for taskType := range stats { suggestions[taskType] = Suggest(taskType, 0.75, stats) }`）
+    ⇒ 同集合可断言。★ 与 (10)(11) 合起来给出「`suggestions` 是 `stats` 的逐项派生」。
+13. ★★★★★ **`Correction` 是 10 键全恒在，其中两键值可 `null`**（`corrections.go:28-39`）：
+    `ClassifierConfidence *float64` / `Profile *string` —— ★★ **指针但没有 `omitempty`**
+    ⇒ **键恒在、值可为 `null`**。建表 `724:33-34` 两列可空，
+    且 `Record` 把从 `auto_route_selections_all` 扫出的 `*float64` / `*string`
+    **原样透传**进 INSERT（`corrections.go:111`）⇒ **null 在真实数据上完全可达**。
+    ★ 对照：`Suggestion.CorrectionStats` 是指针**且**有 `omitempty`（`suggest.go:40`）⇒ **缺席**，不是 null。
+14. ★★★★★ **★ 升级用的 `+ 0.05` 在 float64 上不总得到「好看的两位小数」。**
+    `suggest.go:72` 是 `minConf += escalationMinConfidenceBump`，实测：
+    `0.70 + 0.05 === 0.75` ✓ · `0.75 + 0.05 === 0.80` ✓ · `0.85 + 0.05 === 0.90` ✓
+    · ★★ **`0.80 + 0.05 === 0.8500000000000001`（≠ `0.85`）**
+    · ★★ **`0.65 + 0.05 === 0.7000000000000001`（≠ `0.70`）**
+    ⇒ ⇒ ★★★ **夹具里写 `0.8 + 0.05` 这样的表达式，绝不能写四舍五入后的字面量** ——
+    Go 端算出来的就是那个长尾值，严格 `===` 会假报失败。
+
+★ 另注：`recent` 的 `ORDER BY created_at DESC`（`corrections.go:178`）只保证**非递增**，
+  **不保证严格递减**（同事务两行 `created_at` 可相等）⇒ 判据用 `≥` 而不是 `>`。
+★ 另注：`writeJSON` 用 `json.NewEncoder(w).Encode(payload)`（`handler.go:443-446`）
+  ⇒ **响应体末尾多一个 `\n`**。
+★ 另注：`minConf` 的 cap 到 1（`suggest.go:73`）在**全部内置档案**下不可达 ——
+  最大的 base 是 0.85，`0.85 + 0.05 = 0.90 < 1`。只有 overlay 档案（`TASKPROFILE_OVERLAY`）
+  能提供 `> 0.95` 的 `min_confidence` 才够到它。
+★ 另注：`Stats` 里 `if stat.Total > 0` 的守卫（`corrections.go:155-157`）在真实数据上恒真
+  （`GROUP BY` + `COUNT(*)` ⇒ `Total ≥ 1`），与批 98 (7) 同源。
+
+**校验边界**：顶层 4 键全部必查、`since` 的字符串类型、`stats`/`suggestions` 的对象类型与其逐项值、
+`recent` 的数组类型与其逐项 10 键（两个可空键**接受 `null`、拒绝 `undefined`**）；
+为 (1)(2)(3)(5)(6)(7)(8)(9)(12) 提供判据或决策函数。
+★ **不校验** `tier_source` 的枚举取值（(1) 已证明三个取值在本端点上都可达）。
+★ **不提供** 「非 GET 由 handler 回 405」相关的判据（是 `ServeMux` 自己回的）。
+
+### 变异验证暴露的六件事（87 条全有牙）
+
+分四轮收敛：**92 条 → 78 有牙 / 14 白绿 → 删 5 条可证等价 → 87 条 / 83 有牙 / 4 白绿
+→ 87 条 / 86 有牙 / 1 白绿 → 87 条 / 87 全有牙**。
+
+1. ★★★★★ **★ 首轮 14 条白绿，**没有一条是「判据无牙」** —— 全部是锚点、夹具或变异本身写错了。**
+   逐条归因：
+   | 条数 | 类别 | 实例 |
+   |---|---|---|
+   | 5 | **可证等价 / 不可达**（见下第 6 条） | #44 #54 #57 #58 #77 |
+   | 5 | **锚点挂错**（判据没问题，只是挂在一条测不到它的用例上） | #2 #50 #64 #65 #78 |
+   | 1 | ★ **变异根本没改到代码** | #34 |
+   | 3 | **夹具缺区分格** | #39 #74 #82 |
+2. ★★★★★★★★ **★★ 一条只插了注释的变异，`from` 自检和 `NO_EFFECT` 自检**双双放行**。**
+   #34 我原本写成「在 `if (params.sinceDays !== undefined) {` 前面插一行 `/*MUT*/`」——
+   文件确实变了（所以 `NO_EFFECT` 过了），`from` 也确实唯一命中（所以 `FROM_PROBLEM` 过了），
+   **但行为一个字都没改**，于是它永远白绿。
+   ⇒ ⇒ ★★★ **`NO_EFFECT` 只证明「文件变了」，不证明「行为变了」。**
+   恒真/恒假类变异必须**真的删掉或改写那条分支**，不能靠插标记达成。
+3. ★★★★★ **★ 「补完夹具**必须同时换锚点**」—— 批 97 之后的第三次重演。**
+   第二轮我补了 4 份区分格夹具（`前缀有多余字符` / `rate 恰为 0.30` / `fallback 少一项` /
+   `键数相同但键名不同`），**锚点却留在老用例上** ⇒ 4 条依旧白绿，
+   且汇总里与「判据无牙」长得一模一样（都只是一行 `STILL_GREEN`）。
+4. ★★★★★ **★ 一个判据里的两个检查，各有各的区分格，且方向互斥。**
+   - `suggestionKeysMatchStats` 里 `a.length !== b.length` 与 `k in r.suggestions`
+     是**两个独立检查**：长度检查的区分格是「**键数不同**」，`in` 检查的区分格是「**键数相同、键名不同**」。
+   - `suggestionMatchesConfidence075` 里 `length ===` 与 `.every(...)` 同理：
+     `.every` 遍历的是 **actual 的下标** ⇒ actual 比 expected **长**时它自己就会失败
+     （多出的那项去比 `fallbacks[i] === undefined`），
+     **只有 actual 比 expected 短时它才抓不住** ⇒ 我漏了那一侧。
+   ⇒ ⇒ ★★★ 通用式：**逐项比对不含「长度」语义**，长度检查与逐项检查的区分格必然**一长一短，两侧都要有样本。**
+   ⇒ ★★ 第三轮只剩 1 条白绿，正是因为我把 #64 的锚点挪去占用了「键数相同但键名不同」，
+     **把 #62（长度检查）的区分格挤掉了** ⇒ ★ **锚点是有限资源，两条变异抢同一格就会有一条变白绿。**
+5. ★★★★★ **正则「去起锚 `^`」的区分格是「前缀有多余字符」，不是「少一段」。**
+   我原本只测 `2026-09-08T09:12Z`（缺秒）—— 缺的那段整体不匹配，去锚后一样不匹配 ⇒ 两种实现同解。
+   ⇒ ★★★ 锚点类变异（`^` / `$`）的区分格必须**方向相反**：`$` 用「后缀多余」，`^` 用「前缀多余」。
+6. ★★★★★ **★ 夹具造错，而且是「方向反了」那种。**
+   首跑 4 条红，其中一条是我把 `STAT_RATE_04`（`4/10 = 0.4`，**高于** 0.30 阈值）
+   当成「未达阈值」用 ⇒ 用例逻辑与后端相反。
+   ⇒ ★★★ 报错形态极具迷惑性：`expected false to be true` 看起来像「判据太严」，
+   实际是「夹具的语义标错了」。**先确认夹具自身可信，再怀疑判据。**
+   ⇒ ★ 修法：补一份真正落在「样本够但率不够」的夹具（`STAT_BELOW_02`：`total 10 / rate 0.20`），
+   并把默认信封里的 stat 换成它 —— 否则**「解包通过」证明不了任何事**。
+   ⇒ ★★ 与之配套：删掉 5 条可证等价 / 不可达的变异，**而不是**为它们补用例 ——
+   4 条是「在 `requireKeys` 之后给检查加 `!== undefined` 放行」，而响应来自 `JSON.parse`，
+   **永远造不出 `undefined` 值**（与批 98/99 的「上游守卫折叠兜底」同型）；
+   1 条是「去掉 `minConf` 的 cap 到 1」，内置档案最大 `0.85` ⇒ `0.85 + 0.05 = 0.90 < 1`，
+   **只有 overlay 档案能够到** ⇒ 记进文档，不补用例。
+
+★ 附带：harness 的**量具阳性对照**继续生效 —— 开跑前抓到 69 条红才开跑。
+★ 另附：首轮那次「`grep` 落在错误的仓 root」的老坑又踩了一次 ——
+  默认搜索根是 `llm-gateway-client` 而不是 `llm-gateway-go`，
+  `grep 'task_type_corrections'` 一条不中，差点被我当成「表不存在」。**所有命令必须传显式绝对路径。**
+
+### 验证
+- 用例 **214 条全绿**（`web-mobile/src/api/taskTypeCorrectionStats.test.ts`）。
+- 变异 **87 条 = 87 条全有牙，0 白绿**（`/tmp/mut-co99.mjs`，逐条还原后字节比对）。
+  ★ 另有 **5 条可证等价 / 不可达的变异已删除**（详见上文第 6 条）——
+    按本系列纪律：**可证等价 ⇒ 删变异而不是补用例**。
+  ★ 首轮实况 **92 条 / 78 有牙 / 14 白绿**，四轮收敛到 87/87；**14 条白绿没有一条是判据无牙**。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6738 条（164 文件）** rc=0（较上批 6524 正好 +214）。
+- 十连跑 **10/10 全绿**（`/tmp/co99-stability.log`），终止标记 `总次数 10 · 失败次数 0 · 快照 0 份`，
+  10 次的 `Tests` 行**条数全程一致 = 6738**，无 `×` / `FAIL` 行。
+  ⇒ `ComplianceHitsView.spec.ts` / `RoutingOptView.spec.ts` 两个历史 flaky 本批**未复现**
+  ⇒ ★ 按连跑器自己的口径：**未复现 ≠ 已修复**，只是这次没抓到。
+## 11.136 把 API 模块接进 UI：孤儿棘轮门（第一百批，2026-10-08）
+
+### ★★★★★★★★ 本批是一次**方向修正**，不是一个新端点
+
+起因是 checkpoint 上的一次盘点：脚本枚举 `web-mobile/src/api/*.ts`，
+再在 `src/`（除 `src/api/` 自身）里找 `from '.../api/<模块名>'` 的引用，找不到的记为**孤儿**。
+
+结果：**93 个 api 模块里有 30 个是孤儿**，
+包括批 98 的 `taskProfile.ts` 与批 99 的 `taskTypeCorrectionStats.ts`
+—— 两个模块 128 + 214 条判据、87 条变异全有牙、文档 §11.134 / §11.135 写齐，
+**用户却点不到**。
+
+⇒ ⇒ ★★★★ **API 层做完 ≠ 功能复制到移动端。**
+⇒ ⇒ ★★★ 前几十批的「做完一个端点」口径有个隐含假设：
+**只要 API 模块存在，就算这个功能复制过来了。** 那个假设是错的。
+⇒ ★★ 本批起，口径改为：**一个端点算「复制完成」的条件是它有一条可达的 UI 入口**
+（抽屉席 + 路由 + 视图 + i18n 四件套齐备）。
+
+★ 与记忆里[[现状盘点类数字必然腐烂]]不冲突：那张说的是**把数字写进判据**。
+本批登记的是一个**集合**，且集合每次变化都要经过一次**显式 diff**——
+「变红」正是它的工作方式，不是它的缺陷。
+
+### 本批接线的内容
+
+| 端点 | 档位 | 席 | 路由 |
+|---|---|---|---|
+| `GET /api/admin/task-profile` | admin | 抽屉 `task-profile` | `/task-profile` |
+| `GET /api/admin/task-profile/corrections/stats` | admin | 同上 | 同上 |
+
+- **档位判定照旧**：`admin/handler.go:1413` 用 `admin` 挂载 `RegisterTaskProfileRoutes`
+  ⇒ **不设** `requiresRole`（与 `credential-model-state` 那一席相反，
+  那一席是 `h.superAdmin`）。⇒ 也**无需**同步 `AppDrawer.spec.ts` 的 superAdmin 白名单
+  （那一席只登记 `requiresRole === 'super_admin'` 的 key）。
+- **写端点一个不碰**：同族三个 POST（`apply-tier-config` / `reload` / `import`）都改后端状态。
+- 新增文件：`src/views/TaskProfileView.vue` + `.spec.ts`、`src/api/orphanLedger.spec.ts`；
+  改动：`src/config/appNav.ts`、`src/router/index.ts`、`src/i18n/zh-CN.ts`、`src/i18n/en-US.ts`。
+
+### ★★★★★ 判「孤儿」时必须排除 `src/api/` 自身的互相引用
+
+`taskTypeCorrectionStats.ts` 从 `./taskProfile` 导入 `unwrapCorrectionStat` /
+`unwrapTaskProfileSuggestion` —— 那是**同类型结构的模块间复用**（两者是同一个 Go struct 的 JSON），
+**不是「接上了 UI」**。
+
+⇒ ⇒ ★★★ 若把 `src/api/` 内部的引用也算进去，批 98 那个模块会被误判成已接线，
+**棘轮门就会给出一个虚假的绿灯**。
+⇒ ⇒ 判据实现里必须 `if (full === API_DIR) continue` 跳过 api 目录本身。
+
+### ★★★★★ 门禁自身要带两条作用面自证
+
+孤儿门与批 98 的「作用面自证」同族（[[量具先自证]]）：
+- `apiModules().length > 50` —— 目录塌缩到 0/1 时必须红，否则「0 个孤儿」是漂亮的假绿；
+- `uiSourceBlob().length > 10000` —— ★ **拼接失败时必须红**。
+  若 `src/api/` 被误跳过成整个 `src`，或 glob 写错导致拼出空串，
+  那么 `currentOrphans()` 会返回全部模块，第一条也会红——
+  ★ **两条自证必须都在**，否则「拼错路径」可能只表现为「孤儿变多」，
+  而那正好会被误读成「有人新增了模块」。
+
+### ★★★★★ 有牙验证：注入一个真孤儿
+
+判据写完立刻注入违规代码（`src/api/__teethProbe.ts`，内容一行 `export const x = 1`）：
+
+```
+FAIL … > ★ 当前孤儿集合与登记清单逐项相同
+AssertionError: expected [ '__teethProbe', …(30) ] to deeply equal [ 'boardOperational', …(29) ]
++   "__teethProbe",
+```
+
+⇒ 新增孤儿立刻红，且**名字直接出现在 diff 里**；移除探针后复跑回到 6/6 绿。
+
+★ 附带一条：棘轮是**双向**的 —— 接上一个孤儿也会红（清单多了一项），
+逼着人手工删那一行。这正是要的：**清单只能变小，每次变小都是一次有记录的收口。**
+
+### 接线过程中撞到的三件事
+
+1. ★★★ **`icon: 'list'` 不在 `IconName` 里。**
+   `AppIcon.vue:8-36` 只有 29 个取值，`list` / `display` / `flex-shrink` 都不在其中
+   ⇒ 抽屉席若写 `list`，`vue-tsc` 立刻报 `Type '"list"' is not assignable to type 'IconName'`。
+   ⇒ ★ 结论同[[用类型门探测非法枚举]]：**类型门不只是「能不能编译」**，
+   它也是「我以为存在的枚举值到底存不存在」的探测器。
+   ⇒ 最终选 `grid`（仓里已有的通用列表图标，已有 7 席在用）。
+2. ★★★★ **测试环境默认落到 `en-US` 词典，中文断言会全红。**
+   `i18n/index.ts:16-24` 的 `detectLocale()` 读 `navigator.language`，
+   jsdom 下不是 `zh` ⇒ 落到 `en-US`。
+   ⇒ 首跑 6 条红，其中 4 条纯粹是「我拿中文标签去断英文渲染」。
+   ⇒ 修法：spec 里 `beforeEach(() => setLocale('zh-CN'))`（`AnnotationsView.spec.ts:150` 是同一惯例）。
+   ⇒ ★★ **断言 i18n 文案之前必须先钉住 locale**，否则红的原因会被误读成「视图没接上」。
+3. ★★★ **视图漏渲染 `request_id`，而我在 spec 里断言了它。**
+   首跑那条红报的是「`req-8f21c0ab` 不在文本里」——
+   查下去是**视图根本没写这个字段**，不是断言写错。
+   ⇒ `request_id` 是把这条修正记录追回那条请求的连接键（本仓有 `/request-journey` 线），
+   **该渲染而不是删断言**。
+   ⇒ ★★★ 顺序很重要：先确认「被断言的东西有没有被实现」，再决定改断言还是改实现——
+   否则很容易把一个**真实缺陷**当成「断言太严」改掉。
+
+### 验证
+
+- 新增判据 **29 条**（`TaskProfileView.spec.ts` 23 + `orphanLedger.spec.ts` 6）全绿。
+- ★ 其中视图判据钉的是**真不变量**，不是快照：两个模块都真的被渲染、
+  空 `description` 走「未知类型」样式、`classifier_confidence` / `profile`
+  为 `null` 时不炸且**不把 `null` 渲染进 DOM**、`tier_source` 枚举外的值原样透出、
+  **单边失败不吞掉另一边**（`Promise.allSettled` 语义）、筛选只影响档案段。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6767 条（166 文件）** rc=0（较上批 6738 正好 +29）。- 十连跑 **10/10 全绿**（`/tmp/co100-stability.log`），终止标记 `总次数 10 · 失败次数 0 · 快照 0 份`，
+  10 次的 `Tests` 行**条数全程一致 = 6767**，无 `×` / `FAIL` 行。
+  ⇒ `ComplianceHitsView.spec.ts` / `RoutingOptView.spec.ts` 两个历史 flaky 本批**未复现**
+  ⇒ ★ 按连跑器自己的口径：**未复现 ≠ 已修复**，只是这次没抓到。
+## 11.137 路由策略配置面接进 UI：第一百零一批（2026-10-08）
+
+### 本批是 §11.136 那个口径修正的第一次执行
+
+孤儿清单里有两个模块正落在用户点名的那两条线上。本批先接 **`routingPolicy`**（路由检查线）。
+
+| 端点 | 档位 | 注册 | 行号 |
+|---|---|---|---|
+| `GET /api/routing/policy` | **superAdmin** | `h.superAdmin(...)` | `admin/handler.go:1200` |
+| `GET /api/routing/featured` | **superAdmin** | `h.superAdmin(...)` | `:1201` |
+| `GET /api/routing/scoring-weights` | **superAdmin** | `h.superAdmin(...)` | `:1215` |
+| `GET /api/routing/featured-models` | **admin** | `admin(...)` | `:1216` |
+
+⇒ ★ **同族三档一档**（本系列第 N 次出现，但这是第一次**同前缀内**三档一档）
+⇒ 抽屉席设 `requiresRole: 'super_admin'` 并同步 `AppDrawer.spec.ts` 的白名单。
+⇒ ★★ **后果**：第 4 个端点是 admin 档（tenant_admin 本可用），
+   在移动端被**顺带收严成 superAdmin**。这是刻意的取舍，
+   理由是「同一页混两档会让『谁能看哪块』不可解释」，已写进视图文件头备查。
+
+### ★★★★★ 本页最要紧的是三处「同形」绝不能渲染成确定结论
+
+前三批做 API 层时记下的契约（`api/routingPolicy.ts` 文件头 (2)(3)(6)），
+在 UI 上**必须**翻译成「说不准」的表达，否则等于凭空造事实：
+
+1. ★★★★★ **`policy` 返 `{}` 是三合一。**`routing.go:2533`
+   `if err != nil || raw == "" { writeJSON(w, 200, map[string]any{}); return }`
+   ⇒ 「没有这一行」「查询失败」「文本为空」**三种都回 HTTP 200 + `{}`**
+   ⇒ 模块层给 `null` ⇒ 视图只能渲染「**无法判定**」，
+   **绝不能写「策略未配置」**（判据里有一条专门断这句话不出现）。
+2. ★★★★★ **`scoring-weights` 的兜底值与真值完全同形。**`getScoringWeights`
+   （`:4026-4055`）在查询失败 / 解析失败 / 缺键三种情况下都返回同一份 `defaultWeights`，
+   响应里**没有任何标记** ⇒ 视图必须把 `note` 原文
+   （`these weights only affect … not live routing`）与兜底告警**常驻显示在数据旁边**。
+3. ★★★★ **`featured_models === []` 时「没配」与「查不出来」同形**（`:2594-2597`
+   只 `slog.Warn` 然后 `models = []`）。
+
+⇒ ⇒ ★★★ **这三条与批 99 的 (3)(8)(9) 是同一个形状**：
+**后端把「查不出来」编码成「什么都没有」**，
+客户端若把它渲染成「没有配置」，就把一个**查询失败**说成了**一个配置事实**。
+⇒ ★ 收进判据的方式也不同：不是校验响应，而是**断言页面里不出现那句错的话**。
+
+### ★★★★ 两个「精选」不是同一个东西，nil 编码还相反
+
+- `featured.featured_models` —— 恒为数组（`COALESCE(featured_models, ARRAY[]::TEXT[])`，`:2591`），
+  查询失败也回空数组；
+- `policy.featured_models` —— `row_to_json` 对可空列输出 **`null`**（`:2560` 附近的列定义）。
+
+⇒ ★★ 两者同名、语义相近（一个是生效列表，一个是原始列），
+**但 nil 编码相反**（`[]` vs `null`）—— 本系列第 N 次「同族不同端点 nil 编码相反」。
+⇒ ⇒ 若把两者混成一个「精选模型」列表，就会把「原始列没配」渲染成「生效列表为空」，
+**这两件事的可操作性完全不同**（一个是配置，一个是读数）。
+⇒ 视图因此分成两段，并加了一句提示把差别写在脸上。
+
+### ★★★ `standardized_name` 恒等于 `name`，只渲染一个
+
+`routing.go:4081-4082` 两个字段都取 `p.CanonicalName`
+⇒ 渲染两遍等于**凭空造出一个「标准化前后」的对照**。
+⇒ 判据用**出现次数**钉住：`w.text().split(name).length - 1 === 1`。
+
+### ★★★ `null` 与 `0` 必须显示成不同的东西
+
+`RoutingPolicyRow` 的 21 个键里 7 个 NOT NULL、14 个「键在但可为 null」。
+⇒ 把 `null` 渲染成 `0` 会**凭空造出「配置为 0」这个事实**
+（而 `local_bonus` 的合法值恰好就是 `0.000` ⇒ 两者会撞在一起）。
+⇒ 视图用 `fieldText()` 显式分三态：`null → 「（空）」`、`"" → 「（空串）」`、其余原样。
+⇒ 判据专门断 `local_bonus` 那一行：**含 `0`、不含「（空）」**。
+
+### 接线过程中撞到的四件事
+
+1. ★★★ **`icon: 'flex'` 又不在 `IconName` 里。**
+   第一百批刚犯过一次（`list`），本批又犯（`flex`）⇒ **`IconName` 那 29 个取值值得单列一张对照表**，
+   否则每次接新页都要靠类型门兜底。两次都被 `vue-tsc` 当场抓住，没有漏到运行时。
+2. ★★★★ **`fetchRoutingFeatured` 一开始是「未使用的 import」。**
+   类型门报 `TS6133` ⇒ 本来打算删。
+   ★★ 但复查后发现它**本来就该用**：`/featured` 是生效列表，`policy.featured_models` 是原始列，
+   两者是不同信息（见上一节）⇒ **该补的是视图，不是删 import。**
+   ⇒ ★★★ 与第一百批那条「`request_id` 缺失」同型：
+   **类型门报的「未使用」不总是「该删」，有时是「该用」。**
+3. ★★★ **两条判据红是因为断言找错了字段名。**
+   模板对两个 NOT NULL 列用的是 **i18n 标签**（`本地加权` / `粘性 TTL`），
+   对 14 个可空列用的是**原始字段名** ⇒ 我按 `local_bonus` 去找当然找不到。
+   ⇒ ★ 修法是**改断言按标签找**，不是改模板；
+   并顺手补了一条断「可空列确实用原始字段名」——
+   ★ 这条混合策略本身是**契约的一部分**（哪列可配、哪列固定），值得被钉住。
+4. ★★ 抽屉白名单是**排序后逐项列出**的 superAdmin 档 key，
+   加一席必须插到正确位置（`routing-audit` 与 `task-index` 之间），否则排序断言红。
+
+### 验证
+
+- 新增判据 **25 条**（`RoutingPolicyView.spec.ts` 24 + 棘轮新增哨兵 1）全绿。
+- ★ 棘轮清单同步删掉 `routingPolicy` 一行 ⇒ 当前孤儿 **30 → 29**。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6792 条（167 文件）** rc=0（较上批 6767 正好 +25）。- 十连跑 **10/10 全绿**（`/tmp/co101-stability.log`），终止标记 `总次数 10 · 失败次数 0 · 快照 0 份`，
+  10 次的 `Tests` 行**条数全程一致 = 6792**，无 `×` / `FAIL` 行。
+  ⇒ `ComplianceHitsView.spec.ts` / `RoutingOptView.spec.ts` 两个历史 flaky 本批**未复现**
+  ⇒ ★ 按连跑器自己的口径：**未复现 ≠ 已修复**，只是这次没抓到。
