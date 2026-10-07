@@ -11966,3 +11966,137 @@ GET `/api/admin/dispatch/journal/{tenant}/{request_id}`
 
 local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
 `web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
+
+## 11.126 平台设置：清单 / 单键 / 变更历史（第九十批，2026-10-08）
+
+GET `/api/admin/settings` · `/api/admin/settings/{key}` · `/api/admin/settings/{key}/history`
+
+- **注册**：**本仓第五种注册形态** —— `mux.HandleFunc` **不在** `admin/handler.go` 里，
+  而在**另一个文件的方法**中，由 `admin/handler.go:1123` 调用：
+
+  ```go
+  // admin/settings.go:22-30
+  func (h *Handler) registerSettingsRoutes(mux *http.ServeMux) {
+      mux.HandleFunc("/api/admin/settings", h.admin(h.settingsList))
+      mux.HandleFunc("/api/admin/settings/", h.admin(h.settingsRouter))
+      mux.HandleFunc("/api/admin/tenant-settings/", h.admin(h.tenantSettingsRouter))
+      …
+  }
+  // admin/handler.go:1123
+  h.registerSettingsRoutes(mux)
+  ```
+
+  ⇒ ★★★ 只 grep `admin/handler.go` 里的 `mux.HandleFunc` 会判成「死端点」
+  ⇒ ★ 与批 87（echo Group）、批 89（`RegisterRoutes` 方法）同族：
+    **每发现一种新形态就加进「必须查的清单」，现在共五处**。
+- **实现**：`admin/settings.go`（422 行）· `settings/spec.go`（Spec 与枚举）·
+  `settings/audit.go`（`ListAudit` / `AuditEntry`）。
+- **桌面调用方**：`web/src/api/settings.ts:53` / `:57` / `:70` —— ★ 三条都是
+  `req<{…}>` 直接强转，**不做任何校验** ⇒ 全部校验由本模块补上。
+- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+
+### 本族最要紧的十五件事
+
+1. ★★★★★ **三个端点权限档位相同：都是 `h.admin(...)` ⇒ admin 档**
+   （tenant_admin 可用，抽屉席**不设** `requiresRole`）
+   ⇒ ★★ 但 **`Dangerous` 档（`danger_level >= 2`）在 PUT 上有 super_admin 闸**
+   （`settings.go:236-239`）⇒ ⇒ **读不设闸、写才设**
+   ⇒ ⇒ 移动端抽屉席不进 `requiresRole`，但**写按钮必须按 `danger_level` 隐藏**，
+     否则用户点了就吃 403。
+2. ★★★★★ **503 有两种文案、两种前置条件**：
+   - `settings registry not initialised`（`:156` / `:200`）—— 查 `settings.Global == nil`
+   - `db not wired`（`:315`，**只有 history 有**）—— 查 `h.db == nil`
+   ⇒ ★★ **history 根本不看 `settings.Global`** ⇒ 即使注册表没初始化历史照样能查，
+     反之亦然 ⇒ 客户端**不能**用一个「设置系统可用」标志统管三者。
+3. ★★★★ **404 有两种，且方法不匹配返回的是 404 而不是 405**：
+   未知设置是 `unknown setting <key>`（**key 被拼进文案**，`:205`）；
+   路由/方法不匹配是 `unknown settings endpoint`（`:113-115` 的 `default` 分支）
+   ⇒ ★★ 与批 83（405 在前）、批 89（405 写在最前并带 `Allow` 头）**完全相反**
+   ⇒ ⇒ 本族**没有 405**；拿 POST 探 GET 得到的是 `unknown settings endpoint`。
+4. ★★★★★ **列表里 `value === null` ⟺ 该 spec 是 `tenant` 作用域**
+   （`settings.go:166-175`）：`var v json.RawMessage` 初始为 nil，
+   只有 `sp.Scope == ScopePlatform` 才被填；tenant 作用域**刻意不填**
+   ⇒ 序列化成 **`null`**，同时 `source` 是**空串** ⇒ **可自验的强不变量**。
+5. ★★★★★ **`items` 的 nil 编码在同一族里是**相反**的**：
+   - 清单：`items := []map[string]any{}`（`:160`）⇒ **恒为数组**，空时 `[]`
+   - 历史：`ListAudit` 里 `var out []AuditEntry`（`audit.go:92`），无行时保持 nil
+     ⇒ **`{"items": null}`**
+   ⇒ ★★★ **解包器不能共用**（本模块为两个端点写了两个）。
+6. ★★★★★ **历史只有 7 天窗口，且响应里没有任何字段说明** ——
+   `created_at > now() - INTERVAL '7 days'` 硬编码在 SQL 里（`audit.go:72` / `:83`），
+   无查询参数、无分页、无游标
+   ⇒ ★★ **7 天前的变更与「从未变更过」不可区分**。
+7. ★★★★★ **`old_value` / `new_value` 的「空」有**两种编码**：
+   - SQL NULL ⇒ `COALESCE(…,'')` 得空串 ⇒ `len(oldV) == 0` ⇒ `OldValue` 保持 nil
+     ⇒ `omitempty` 把**键整个删掉**
+   - 列里存的是 JSON `null` ⇒ `old_value::text` 是 4 字符 `"null"` ⇒ `len > 0`
+     ⇒ **键存在、值是 `null`**
+   ⇒ ★★★ 「这个概念为空」在**同一个响应里**可以有两种形态
+   ⇒ ⇒ 绝不能用 `'old_value' in entry` 判「曾经有过旧值」。
+8. ★★★★ **`tenant_id` / `client_ip` 也是 `omitempty`**（SQL 用 `COALESCE(…,'')`）
+   ⇒ 空串 ⇒ **键消失** ⇒ `AuditEntry` 恒在的只有 **5** 个键。
+9. ★★★★ **历史的 `Scan` 失败是裸 `continue`**（`audit.go:97-100`），**无任何日志**
+   ⇒ 又一处**静默跳行**（与批 88 的 `usage-summary` 同族）
+   ⇒ ⇒ `items` 长度不能当成「窗口内的变更条数」。
+10. ★★★★ **`ORDER BY created_at DESC LIMIT 50`，无 tiebreak** ⇒ 同秒行顺序未定义
+    ⇒ ★★ **只能断言「非升序」，不能断言「严格降序」**（同批 88 的 items 排序同族）。
+    `limit` 写死 50（`settings.go:321`），`ListAudit` 另有 `limit<1||>500 ⇒ 50` 钳制
+    （`audit.go:54-56`）—— 两者一致，所以永远取不到别的值。
+11. ★★★★★ **单键端点的 `spec` 是 PascalCase，而清单项是 snake_case** ——
+    `Spec` 结构体**一个 json tag 都没有**（`spec.go:92-116`）
+    ⇒ Go 按字段名原样输出 `Key`/`EnvName`/`Type`/`Scope`/`Category`/`Default`
+    /`Min`/`Max`/`Options`/`Description`/`DescriptionLong`/`Unit`
+    /`DangerLevel`/`HotReload`/`Observability`
+    ⇒ ★★★ **同族两端的键风格完全相反** ⇒ 绝不能共用一套键名常量。
+12. ★★★ **清单是「信息损失」的一端**：`settingsList` 的 15 个 map 键**漏掉了**
+    `DescriptionLong` 与 `Unit`（Spec 里有）⇒ 想看长描述与单位必须再打一次单键端点。
+13. ★★★ `Spec` 的 `Min` / `Max`（`*float64`）与 `Options`（`[]string`）
+    **三者都无 `omitempty`** ⇒ **恒在**且**都可为 `null`**。
+    ⇒ ★ 而 `DangerLevel` 是 `int` ⇒ **恒为数字，永不为 `null`**（与上面三个相反）。
+14. ★★★ **`settingsRouter` 只取 `parts[0]` 与 `parts[1]`，多余段被静默忽略**
+    （`:98-103`）⇒ `/api/admin/settings/a/history/extra` 与 `/a/history` **完全等价**
+    ⇒ ★ `key` **不 TrimSpace、不校验** ⇒ 空 key（路径以斜杠结尾）会进 handler
+    并报 `unknown setting `（**文案尾部有一个空格**）。
+15. ★★★ **`EffectiveValue` 出错时列表**静默跳过该条**（`:170-172` `continue`）
+    ⇒ ★★ `items.length` **小于**注册表 spec 总数是**正常**的
+    ⇒ ⇒ 列表长度不是「这个网关有多少个可调项」。
+
+**校验边界**：三个响应的**全部恒在键与类型** + `omitempty` 键**存在时**的类型。
+★ **刻意不做**三件事：
+① 不校验 `value` / `default` / `old_value` / `new_value` 的**取值** ——
+它们是 `json.RawMessage` / `any`，类型随 7 种 `ValueType` 变化，
+校验取值等于把 `type` 枚举复制一遍（恒真判据），由 `type` 字段 + 注释承担；
+② **不重复断言 `value` / `default` 的键存在性**（已由 `requireKeys` 覆盖，见下）；
+③ 不提供「列表是否完整」布尔判据（后端自己都保证不了，见 15）。
+
+### 验证
+
+- 用例 **94 条全绿**（`web-mobile/src/api/platformSettings.test.ts`）。
+- 变异 **69 条 = 69 条全有牙，0 可证等价**（`/tmp/mut-co90.mjs`，`RESTORED=OK`）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **5810 条（154 文件）** rc=0。
+
+### 变异验证暴露的判据缺陷（71 条 → 终态 69 条全有牙）
+
+首跑 4 条 STILL_GREEN，归因三类，**没有一条是「样本选歪」**：
+
+1. **★★★ 判据**可证冗余**（#35 / #44）—— 归因链的第⑤步。**
+   我写了 `if (!('value' in o)) throw …`，而 `value` **同时在**
+   `SETTINGS_LIST_ITEM_KEYS` 里 ⇒ `requireKeys` 已经拦下同一件事
+   ⇒ ★★★ **删掉那条断言，没有任何用例会变红** ⇒ 它是**死代码**。
+   ⇒ ★ 与批 87 的 `degraded` 同型，但这次是**我自己写的**。
+   ⇒ ★★★ 修法不是补用例，而是**把那三行从源码里删掉**并在原处写明
+     「键存在性已由 requireKeys 覆盖，重复断言可证冗余」——
+     **一个用例打不掉的断言，保留它只会让人误以为这里有检查**。
+   ⇒ ⇒ 这也是本批**变异数从 71 降到 69** 的原因：那两条变异的靶标已不存在。
+2. **★ 锚点指错（#65）。** `>= 2` 放宽成 `> 2` 的**唯一区分格是「正好等于阈值」的 2**，
+   而锚点指在 `danger_level 3` 那一格 ⇒ 3 > 2 两边都 true ⇒ 白绿。
+   ⇒ ★ 这与批 88 的「`===` 的两条放宽方向区分格相反」是同一条纪律的**另一面**：
+     **阈值判据的专格必须是「正好卡在阈值上」那一格**，取上界的相邻值是无效锚点。
+3. **★ 缺放行专格 + 锚点指错（#42）。** `Options` 不再接受 `null` 这个变异，
+   区分格是 **`Options: null`（合法形状被误拒）**，而我锚在「非数组非 null ⇒ 抛」那条
+   ⇒ 补了 `Options 是 null ⇒ 放行` 用例，并**把锚点改到它上面**。
+
+### 收尾
+
+local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
+`web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
