@@ -302,6 +302,32 @@ const creditsMissing = computed(() => !!summary.value?.credits_missing_view)
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* ★ 省略号落在**行首**，把**末尾**的区分字符留住（§4.6.76 / D-IDENT-01）。
+     为什么：`font_scale` 只放大渲染字号（rem/% 都不缩放，§4.6.72/§4.6.74）
+     ⇒ 名称列宽恒 131px，而 2.0× 下 `claude-opus-5-5` 要 199px。
+     顺截断会把**末尾**吃掉，而末尾恰恰是版本号：
+       修前：「claude-opus-5-5」与「claude-opus-5」**都显示为「claude-opus…」**
+             ⇒ 两个模型在同一个列表里渲染成同一串，用户无法区分。
+     `direction: rtl` 让溢出边变成行首 ⇒ 变成「…e-opus-5-5」/「…ude-opus-5」，可区分。
+
+     ⚠️⚠️ **`text-align: left` 不是锦上添花，是必需的**：
+       `direction: rtl` 会把默认对齐翻成行尾 ⇒ 未截断的短名字整体**右移**。
+       实测 100% 字号下首个字符距元素左沿 0px → 31.6 / 46 / 86.1px
+       ⇒ 那是对**所有正常字号用户**可见的版式回归。写上 `text-align: left` 后回到 0px。
+       ★ 判据：只看 `direction: rtl` 会得到「基线也变了」的结论；
+         必须同时量**首个字符距元素左沿的像素**，否则量不到这条。
+
+     为什么不用别的办法（都实测过）：
+       · 加宽 38%→52%：2.0× 可区分，但**正常字号下进度条 146→98px**（-33%），
+         为了大字号的问题牺牲每一屏的条形长度；
+       · 允许换行：2.0× 可区分且基线不变，但**行高 47→82px**（+75%），
+         条形列表行高不齐；本列是「名称 + 进度条」的一行，行高是要保的节奏。
+
+     ⚠️ 适用前提：模型名是 ASCII 字母数字 + `-`/`.`/`_`/`:`。
+     若将来出现含 RTL 文字、或**首尾是中性标点**的名字，bidi 可能把边缘字符挪位，
+     需重新评估（`start`/`end` 这类中性字符在 rtl 下是会被重排的）。 */
+  direction: rtl;
+  text-align: left;
 }
 
 .home__bar-track {
