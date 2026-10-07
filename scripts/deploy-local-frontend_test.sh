@@ -25,6 +25,13 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# 仅取 _dl_timeout：stock macOS 没有 GNU `timeout`，裸写 `timeout 30 …` 会以
+# 127 失败，本套测试因此在 macOS 上恒红（本文件不 source deploy-local-lib.sh，
+# 拿不到该 helper，故在此外层先 source 一次）。lib 不定义 fail/pass/warn/die，
+# 与本文件的同名 helper 无冲突。
+# shellcheck disable=SC1090
+source "$ROOT_DIR/scripts/deploy-local-lib.sh"
 SCRIPT="$ROOT_DIR/scripts/deploy-local.sh"
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -65,7 +72,7 @@ run_build_frontend() {
   PROJECT_ROOT="$TMP/project" \
   RUN_DIR="$TMP/run" \
   SKIP_FRONTEND=0 \
-  timeout 30 bash -c '
+  _dl_timeout 30 bash -c '
     set -euo pipefail
     need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "missing: $1" >&2; exit 1; }; }
     warn() { printf "WARN %s\n" "$*" >&2; }
@@ -93,7 +100,7 @@ pass 'a failing frontend build aborts the deploy, echoes diagnostics and leaves 
 
 # --- control: --no-frontend must remain a clean no-op ----------------------
 out_skip="$(PATH="$TMP/bin:$PATH" PROJECT_ROOT="$TMP/project" RUN_DIR="$TMP/run" \
-  SKIP_FRONTEND=1 timeout 30 bash -c '
+  SKIP_FRONTEND=1 _dl_timeout 30 bash -c '
     set -euo pipefail
     need_cmd() { command -v "$1" >/dev/null 2>&1 || exit 1; }
     warn() { printf "WARN %s\n" "$*" >&2; }
@@ -130,7 +137,7 @@ exit 0
 NPMEOF
 chmod +x "$TMP/bin2/npm"
 out2="$(PATH="$TMP/bin2:$PATH" PROJECT_ROOT="$TMP/project2" RUN_DIR="$TMP/run2" \
-  SKIP_FRONTEND=0 timeout 30 bash -c '
+  SKIP_FRONTEND=0 _dl_timeout 30 bash -c '
     set -euo pipefail
     need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "missing: $1" >&2; exit 1; }; }
     warn() { printf "WARN %s\n" "$*" >&2; }
