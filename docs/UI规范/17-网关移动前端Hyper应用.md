@@ -10072,3 +10072,104 @@ WHERE credential_id = $1 AND started_at >= $2
 
 6. **锚点指错 2 条**（#18 / #30 / #33 中有两条）—— 连续第八批。
    ⇒ 每次**新加夹具或新加负控**之后，必须回头核对「对应变异的 `expect`」指向哪个标题。
+
+## 11.111 看板运维芯片（dashboard/operational，第七十五批）
+
+- **端点**：`GET /api/admin/dashboard/operational`
+- **注册**：`admin/handler.go:1069` 的 `admin(...)` ⇒ **admin 档**，tenant_admin 可用 ⇒ 抽屉席不设 `requiresRole`
+- **不在** `maintainCompatPrefixes` ⇒ 本进程提供
+- **后端**：`admin/dashboard_operational.go`（83 行）+ `admin/dashboard_board_aux.go:23-111`
+- **落点**：`web-mobile/src/api/boardOperational.ts`（448 行）+ `.test.ts`（81 用例）
+
+### 挖到的八条契约
+
+1. **★★★★★ 三个子查询有三种租户口径，没有一种是「按调用方租户过滤」的。**
+
+   | 子查询 | 过滤条件 | 出处 |
+   |---|---|---|
+   | `model_discovery_runs` | **硬编码 `tenant_id = 'default'`** | `dashboard_board_aux.go:32` |
+   | `credential_health_checks` | **完全不过滤**（全租户合计） | `:53-56` |
+   | `self_check_runs` | **完全不过滤**（全租户合计） | `:84-89` |
+
+   ⇒ 本仓**第三次**「不按调用方隔离 + admin 档」（第六十六批 data-lifecycle `metrics`、
+   第七十三批 node-health、本条）。
+   ⇒ 非 default 租户的 tenant_admin 看到的是**别人**的 discovery 状态，而两个计数是**所有租户**的合计。
+
+2. **★★★★★ `degraded` 是显式 map 赋值 ⇒ 恒发，且由两个来源驱动。**
+
+   ```go
+   out["degraded"] = discErr != nil || checksErr != nil
+   if discErr != nil   { out["degraded_reason"] = "discovery status unavailable" }
+   if checksErr != nil { out["probe_degraded"] = true }
+   ```
+
+   ⇒ 两个条件键**各自对应一个查询** ⇒ `degraded: true` 时必须看条件键才知道是谁挂了。
+   ⇒ 判读要互斥：`degraded_reason` 在 ⇒ discovery 挂；`probe_degraded` 在 ⇒ 计数查询挂。
+
+3. **★★★★★ `degraded: true` 可能是「表里从来没有记录」，不是「查询失败」。**
+   `:35-37` 打日志时**排除**了 `pgx.ErrNoRows`，`:66` 的降级判定**没有排除**
+   ⇒ 「没跑过 discovery」也标成降级（`status: null` + 同一个 `degraded_reason`）。
+   而 `selfcheck` 用 `COUNT(*)` 聚合**恒返回一行** ⇒ 空表时不降级
+   ⇒ ★ **两个 `degraded` 的触发原因不同构**，客户端不能复用同一套文案。
+
+4. **★★★★ `checks_last_10m === 0` 是二义的。** 计数失败只 `slog.Warn`，值留 0（`:52`）
+   ⇒ 与第六十八批 `compressed_requests === 0` 同型 ⇒ 只有 `probe_degraded` 缺失时这个 0 才可信。
+
+5. **★★★★ `success_rate` 是 0-1 比例**（`:96-99`），且 `total == 0` 时**留 0.0**
+   ⇒ 「没跑过」与「全失败」同值 ⇒ 必须同时看 `total_runs_24h` 与 `degraded`。
+   ★ 单位是 0-1（对照 `percentage` 是 0-100）。
+
+6. **★★★ `discovery` 里恒发键与条件键混排**：`running`/`status`/`trigger` 恒发
+   （`strPtrVal(nil)` ⇒ JSON `null`），`started_at`/`heartbeat_at` 是条件键。
+
+7. **★★★ 30 秒缓存，两层**：进程内 `boardOperationalCache`（TTL 30s）+ 响应头
+   `Cache-Control: private, max-age=30` ⇒ 两次采样看不到变化**可能只是缓存**；缓存是进程内的，多副本各不同。
+
+8. **★★ `include_operational` 参数被本端点完全忽略** —— `includeBoardOperational`（`:44-52`）
+   是看板汇总那条路用的，handler 从头到尾没读这个 query 参数。
+
+### 验证
+
+- 用例 **81 条全绿**
+- 变异 `/tmp/mut-co75.mjs` **44 条 = 41 有牙 + 3 条可证等价 + 0 STILL_GREEN**，`RESTORED=OK`
+- 三门 rc=0；`vue-tsc` rc=0；`npm run build` rc=0
+- 全量 **4113 条（139 文件）** rc=0；十连跑 10/10
+- U+FFFD 自查：源与用例均 0
+
+### 变异验证暴露的判据缺陷
+
+1. **★★★★★ 量具缺陷：解包器在 `describe` 体顶层调用 ⇒ 整份 spec 收集期就挂。**
+   缓存那个 `describe` 里写的是
+
+   ```ts
+   const a = unwrapBoardOperational(payload())   // ← 顶层
+   ```
+
+   注入「把条件键误加进必检」后，抛错发生在**收集期** ⇒ vitest 报
+   `FAIL <file> [ <file> ]`（**没有 `>` 分隔符**）+ `Tests  no tests`。
+   我的 harness 只 grep `file > 用例名` 这一种形态 ⇒ **两条明明有牙的变异被报成 STILL_GREEN**。
+   ⇒ 两处都改：① spec 侧改成惰性 `healthy()` 构造；② harness 加 `parseFailures()`，
+     把「`Tests no tests` / `FAIL … [`」也算红。
+   ★★★ 归因顺序里第 ① 步（变异是否真改到行为）本来能抓到这个，
+   **是量具把「整份文件挂掉」呈现成了「一条都没红」** —— 零结果先怀疑量具。
+
+2. **★★★★ 判据缺口 3 处（`板` 判定只有正向、阈值相关判定被阈值掩盖、状态码只测了 200）。**
+   - `boardChecksCountMayBeFailed` 只有「0 + probe 降级 ⇒ true」的正向断言，
+     缺「0 + probe 未降级 ⇒ false」的负控 ⇒ 删掉 `&& boardBgProbeDegraded` 打不出差异。
+   - `boardSelfCheckHealthy(r, 0.8)` 在 `total=0` 时，`0.0 >= 0.8` 本来就是假
+     ⇒ 删掉 `if (boardSuccessRateIsMeaningless(r)) return false` **打不出差异**。
+     ⇒ 补「**阈值放宽到 0**」的用例：这时 `0.0 >= 0` 为真，
+     「没跑过 ≠ 健康」才真正与阈值解耦。
+   - `boardNotConfigured` 只测了 200 ⇒ 放宽成「所有 5xx」打不出差异
+     ⇒ 补「**500 + 同一个 message**」⇒ 挡住「一律说成数据库未配置」的错误处置指引。
+
+3. **★★★ 三条可证等价变异（保留守卫，不删）。**
+   `boardBgDiscoveryReason` / `boardDiscoveryStartedAtOrNull` / `boardSelfCheckReason`
+   里的 `v !== ''` 守卫：后端只写非空字面量（`degraded_reason`）或
+   `time.RFC3339` 格式化值（`started_at`）⇒ **该分支对本族契约不可达**。
+   保留的理由：这几个键是**条件键，解包器不校它们的类型** ⇒ 这是唯一兜底。
+   ⇒ 记为可证等价变异，已在源码注释里写明理由。
+
+4. **`--dry` 阶段抓到 3 处锚点错误**（1 处用例名不在标题里、2 处 `from` 前缀多两个空格）。
+   ★ 其中 #8 的用例名我写的是「**全**健康载荷原样通过」，实际标题是「健康载荷原样通过」
+   —— 又一次「`expect` 必须从 `it('…')` 标题里抄」。
