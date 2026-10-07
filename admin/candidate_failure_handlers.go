@@ -34,10 +34,18 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
+// candidateFailureDB is the narrow slice of the pool these handlers need —
+// an interface (errorsTrendDB 同款) so pgxmock can stand in for the
+// tenant-scoping regression test. *pgxpool.Pool satisfies it unchanged.
+type candidateFailureDB interface {
+	BeginTx(ctx context.Context, txOptions pgx.TxOptions) (pgx.Tx, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
 // candidateFailureHandlers bundles the read-only endpoints. nil-safe:
 // each method is a no-op when h.db is nil.
 type candidateFailureHandlers struct {
-	db *pgxpool.Pool
+	db candidateFailureDB
 
 	// alertsMu protects alertsGetter. Holds a closure that returns the
 	// current alert snapshot. nil when no monitor is wired, in which case
@@ -66,24 +74,34 @@ func (h *candidateFailureHandlers) SetRecentAlerts(getter func() []bg.CandidateF
 // 角色非 superuser 时直连读被静默过滤到 0 行、监控页恒空。事务内
 // set_config('app.bypass_rls','true',true)（is_local=true，errors_trend.go
 // withTrendReadTx 同一定式）保证旁路随事务提交即失效，连接归还池不保留提权。
+// 仅具体 *pgxpool.Pool 走事务路径；最小测试替身（pgxmock 等）保持既有
+// 直连 Query 路径——RLS 只在真实 PostgreSQL 上生效（withTrendReadTx 同款）。
 func (h *candidateFailureHandlers) withRLSBypassTx(ctx context.Context, sql string, args []any, fn func(rows pgx.Rows) error) error {
-	tx, err := h.db.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return fmt.Errorf("begin candidate failure read tx: %w", err)
+	if pool, ok := h.db.(*pgxpool.Pool); ok {
+		tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+		if err != nil {
+			return fmt.Errorf("begin candidate failure read tx: %w", err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.bypass_rls', 'true', true)"); err != nil {
+			return fmt.Errorf("set candidate failure RLS bypass GUC: %w", err)
+		}
+		rows, err := tx.Query(ctx, sql, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		if err := fn(rows); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, "SELECT set_config('app.bypass_rls', 'true', true)"); err != nil {
-		return fmt.Errorf("set candidate failure RLS bypass GUC: %w", err)
-	}
-	rows, err := tx.Query(ctx, sql, args...)
+	rows, err := h.db.Query(ctx, sql, args...)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	if err := fn(rows); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return fn(rows)
 }
 
 // listCandidateFailures returns the most recent N failures. Pagination is
@@ -109,6 +127,11 @@ func (h *candidateFailureHandlers) listCandidateFailures(w http.ResponseWriter, 
 	kind := r.URL.Query().Get("kind")
 	retryable := r.URL.Query().Get("retryable")
 	session := r.URL.Query().Get("session")
+	// 租户收口（2026-10-07 审计，C1 同根补漏）：本文件三个端点都在 RLS
+	// bypass 事务里跑，SQL 谓词是唯一防线；tenant_admin 只能看自己租户的
+	// 失败台账（含上游响应体预览），super_admin/admin_key 不限。
+	// errors_trend.go 明细腿同款 `($N = '' OR tenant_id = $N)` 判据。
+	tenantID := EffectiveTenantIDAll(r)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -142,9 +165,10 @@ func (h *candidateFailureHandlers) listCandidateFailures(w http.ResponseWriter, 
 		  AND ($2 = '' OR error_kind = $2)
 		  AND ($3 = '' OR retryable::text = $3)
 		  AND ($4 = '' OR session_id = $4)
+		  AND ($6 = '' OR tenant_id = $6)
 		ORDER BY ts DESC, id DESC
 		LIMIT $5
-	`, []any{since, kind, retryable, session, limit}, func(rows pgx.Rows) error {
+	`, []any{since, kind, retryable, session, limit, tenantID}, func(rows pgx.Rows) error {
 		for rows.Next() {
 			var x row
 			if err := rows.Scan(
@@ -191,6 +215,9 @@ func (h *candidateFailureHandlers) getCandidateFailuresByCredential(w http.Respo
 	}
 	limit := parseIntQuery(r, "limit", 50, 1, 200)
 	since := parseSinceQuery(r, "since", 24*time.Hour)
+	// 同 listCandidateFailures：RLS bypass 下凭据维度同样要按租户收口，
+	// 否则 tenant_admin 可用任意 credential_id 探测他租户凭据的失败历史。
+	tenantID := EffectiveTenantIDAll(r)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -216,9 +243,10 @@ func (h *candidateFailureHandlers) getCandidateFailuresByCredential(w http.Respo
 		FROM candidate_failure_logs_with_current_month
 		WHERE credential_id = $1
 		  AND ts >= $2
+		  AND ($3 = '' OR tenant_id = $3)
 		ORDER BY ts DESC, id DESC
-		LIMIT $3
-	`, []any{credID, since, limit}, func(rows pgx.Rows) error {
+		LIMIT $4
+	`, []any{credID, since, tenantID, limit}, func(rows pgx.Rows) error {
 		for rows.Next() {
 			var x row
 			if err := rows.Scan(
@@ -257,6 +285,8 @@ func (h *candidateFailureHandlers) getCandidateFailureStats(w http.ResponseWrite
 		return
 	}
 	since := parseSinceQuery(r, "since", 1*time.Hour)
+	// 同 listCandidateFailures：聚合端点同样按租户收口。
+	tenantID := EffectiveTenantIDAll(r)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -286,10 +316,11 @@ func (h *candidateFailureHandlers) getCandidateFailureStats(w http.ResponseWrite
 			MIN(ts)                        AS first_seen
 		FROM candidate_failure_logs_with_current_month
 		WHERE ts >= $1
+		  AND ($2 = '' OR tenant_id = $2)
 		GROUP BY raw_model_name, error_kind, credential_id, provider_id
 		ORDER BY count DESC
 		LIMIT 50
-	`, []any{since}, func(rows pgx.Rows) error {
+	`, []any{since, tenantID}, func(rows pgx.Rows) error {
 		for rows.Next() {
 			var x row
 			if err := rows.Scan(

@@ -108,7 +108,9 @@ func TestExemptionsStillResolve(t *testing.T) {
 			// 两条都是「门不能自证其覆盖」的情形，没有哪一条该只记日志。
 			t.Errorf("exemption %s is stale (line drift) —— 该行已没有 for X.Next() 循环，"+
 				"这条豁免正在假装有效。应删除该条目；若循环仍在、只是被改过，"+
-				"先用 git log -S '%s' 回原提交确认是「同一处漂移。R49（2026-10-07）改键 4736→4758：音频/AI-Q 装配块的窗口内提交继续把该循环下移 22 行；4758 逐字核对仍是同一处 credential_model_bindings→provider_models 的 DISTINCT 扫描 `for rows.Next()`（4750 即 SELECT DISTINCT pm.raw_model_name），同一处漂移」还是「另找一处顶上」再改键",
+				"先用 git log -S '%s' 回原提交确认是「同一处漂移」还是「另找一处顶上」再改键。"+
+				"（改键登记注：R49 2026-10-07 把 4736→4758——音频/AI-Q 装配块的窗口内提交把该循环下移 22 行；"+
+				"4758 逐字核对仍是同一处 credential_model_bindings→provider_models 的 DISTINCT 扫描 `for rows.Next()`，4750 即 SELECT DISTINCT pm.raw_model_name。）",
 				key, key)
 		}
 	}
