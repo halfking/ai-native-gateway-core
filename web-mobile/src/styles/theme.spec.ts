@@ -165,12 +165,23 @@ const EXTERNAL = new Set([
  *     重新出现都会命中「没有本门未登记的未定义 token」那条而变红。
  */
 const LEGACY: Record<string, number> = {
-  '--border': 74, '--surface': 29, '--success': 4, '--bg-2': 4, '--app-font-mono': 3,
+  // ★ 2026-10-08 再下调四项（§4.6.64）：`--surface` / `--border` / `--bg-2` /
+  //   `--cv-line` / `--df-line` 全部改为 `--app-*` token ⇒ 这几项从表里删除。
+  //   理由是**暗色下它们会造成白底/亮边框**：`var(--surface, #fff)` 在暗色主题里
+  //   恒为纯白，而文字已切到暗色主题的 `#e8eef7` ⇒ 实测 1.17:1，整块面板的字**消失**
+  //   （暗色普查 61 条路由里 29 条中招，`/m/attachments` 一页 70 处）。
+  //   `--text-2`（回落 `#666`）也在本轮换成 `--app-text-secondary`：
+  //     暗色下 #666 落在 --app-surface #1a222d 上只有 **2.79:1**（不可读），
+  //     而 --app-text-secondary 暗色值 5.66:1；浅色 5.74 → 5.01，两侧都达标。
+  //
+  //   其中 `--surface` 的浅色回落 `#fff` 与 `--app-surface` 的浅色值**逐像素相同**
+  //   ⇒ 这批替换对浅色主题零位移。
+  '--success': 4, '--app-font-mono': 3,
   // 2026-10-07 合并 feat/hyper-mobile-ui 入主干时的基线重钉：feat 侧 89 批视图
   // 先于本门写成，引用着这批未定义 token（全部带回落值，渲染是既成设计）。
   // 上限 = 合并树实测值；棘轮语义不变 —— 只许变少，按既有令牌化批次逐批下调。
-  '--app-surface-2': 1, '--app-text-primary': 4, '--cv-line': 4, '--danger': 7,
-  '--df-line': 3, '--primary': 4, '--text-2': 7, '--warning': 6,
+  '--app-surface-2': 1, '--app-text-primary': 4, '--danger': 7,
+  '--warning': 6,
 }
 
 /** 全部样式文件里定义过的 token。 */

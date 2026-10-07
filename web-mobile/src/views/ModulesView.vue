@@ -237,7 +237,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.mods__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.mods__panel { background: var(--app-surface); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .mods__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .mods__head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 
@@ -252,12 +252,12 @@ onBeforeUnmount(() => {
 .mods__badge-t { color: var(--app-text-secondary); }
 .mods__tail { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 8px 0 0; }
 .mods__tail-l { font-size: 11px; color: var(--app-text-muted); }
-.mods__chip { font-size: 11px; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--border, #ddd); }
+.mods__chip { font-size: 11px; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--app-border); }
 .mods__chip--danger { color: var(--app-danger); border-color: var(--app-danger); }
 .mods__chip--warning { color: var(--app-warning); border-color: var(--app-warning); }
 .mods__chip--muted { color: var(--app-text-muted); }
 .mods__list { list-style: none; margin: 0; padding: 0; }
-.mods__item { border-top: 1px solid var(--border, #eee); }
+.mods__item { border-top: 1px solid var(--app-border); }
 
 /* ★ R1：新增交互控件 ≥48 CSS px。整行可点，min-height 48 */
 .mods__row { display: block; width: 100%; min-height: 48px; padding: 10px 0; text-align: left;

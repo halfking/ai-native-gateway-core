@@ -304,7 +304,7 @@ async function onCostDimChange(d: CostTrendDimension): Promise<void> {
 .usage__dim--on {
   background: var(--app-primary);
   border-color: var(--app-primary);
-  color: #fff;
+  color: var(--app-on-primary);
 }
 
 .usage__cost-total {

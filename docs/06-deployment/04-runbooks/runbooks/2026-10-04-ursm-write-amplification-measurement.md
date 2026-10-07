@@ -11801,6 +11801,31 @@ credential_model_index_2026_10 autovacuum_analyze_scale_factor = 0.02  ← 同�
    或**同一版二进制同时带 `db.go` 修复与 840**。
 ⇒ 单独上 840 会「省下 20 分钟/天、同时把 838/839 再废一次」。
 
+#### §10.106.12.1 恢复路径已查清（15:30 只读核实）：**一次 HEAD 构建即可同时恢复 838 + 839-B**
+
+| 项 | 库里现状 | HEAD 启动路径会不会写回 |
+|---|---|---|
+| 838 analyze 函数体 | **1490 B**，分区循环 WHERE 只有裸 `c.relname ~ (...)` | ✅ 会。`db/db.go:8122-8135` 已含 handoff 谓词（`pg_statistic s WHERE s.starelid` + `relam`/`pg_am` 三条判据） |
+| 839-B 当月分区 reloptions | **0.02**（应为 0.005） | ✅ 会。`db/db.go:8061-8095` 的守卫与 SET **都月份感知**：`CASE WHEN heap AND 当月 THEN '0.005' ELSE '0.02'` |
+
+- ⇒ **不需要手工重放 838/839**。部署一个从 HEAD 构建的二进制，
+  启动时的 `ensurePartitionAutovacuumSchema` 会把两份正本都写回去。
+- ★ 若想**完全不动二进制**的最小补救：`apply_llm_gateway_current_month_analyze_scale_factor(numeric)`
+  这个函数**仍在库里**（未被撤销删除），单独执行一次
+  `SELECT apply_llm_gateway_current_month_analyze_scale_factor(0.005);` 即可只恢复 839-B；
+  但它**恢复不了 838 的函数体**，且下次用旧二进制重启仍会被改回。
+- ★ **同步已被钉住**：`migration_839_test.go` 的「第五份活副本(db.go)同步」子测试存在且通过
+  （7 个子测试全绿），另有「四处函数正本同步」。⇒ 两份正本不会再各自漂移。
+
+⚠️ **订正我在 §10.106.12 里用的一个无效判据**：
+`position('attstorage' in pg_get_functiondef(...))` **判不出任何东西** ——
+修好的版本也不使用 `attstorage` 这个字面量（它用 `relam` + `pg_am`）。
+本节的结论已改用**函数体原文 + 1490 B 尺寸 + 谓词缺失**三重取证。
+
+⇒ ★★ **落到行动上（仍需你授权）**：把 840 与这份 `db.go` 修复**同一版上线**，
+  一次部署同时得到：838 恢复 + 839-B 恢复 + 840 节流生效。
+  这比我先前「先修后 840」的两步走更省一次重启窗口。
+
 ---
 
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」

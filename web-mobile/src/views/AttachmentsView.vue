@@ -410,14 +410,14 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.att__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.att__panel { background: var(--app-surface); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .att__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .att__item-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .att__label { display: block; font-size: 12px; color: var(--app-text-muted); margin: 8px 0 4px; }
 
 /* ★ R1：新增交互控件 ≥48 CSS px */
 .att__input { width: 100%; min-height: 48px; padding: 0 12px; font-size: 14px;
-  border: 1px solid var(--border, #ddd); border-radius: 8px; background: transparent; color: inherit; }
+  border: 1px solid var(--app-border); border-radius: 8px; background: transparent; color: inherit; }
 .att__btn { width: 100%; min-height: 48px; margin-top: 8px; font-size: 14px; border-radius: 8px;
   border: 1px solid var(--app-primary); background: transparent; color: var(--app-primary); }
 
@@ -431,9 +431,9 @@ onBeforeUnmount(() => {
 .att__cell-l { font-size: 11px; color: var(--app-text-muted); }
 .att__cell-v { font-size: 14px; font-weight: 600; }
 .att__list { list-style: none; margin: 0; padding: 0; }
-.att__item { padding: 10px 0; border-top: 1px solid var(--border, #eee); }
+.att__item { padding: 10px 0; border-top: 1px solid var(--app-border); }
 .att__row { display: flex; flex-direction: column; gap: 2px; padding: 8px 0;
-  border-top: 1px solid var(--border, #eee); }
+  border-top: 1px solid var(--app-border); }
 .att__title { font-size: 14px; font-weight: 600; word-break: break-all; }
 .att__badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
 .att__badge-t { color: var(--app-text-secondary); }
