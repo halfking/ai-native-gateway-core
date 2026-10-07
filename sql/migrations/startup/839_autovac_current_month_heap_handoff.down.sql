@@ -4,6 +4,11 @@
 --
 -- 回滚后手工 pass 会重新每小时分析当月堆分区（§10.99.5 的方案随之作废），
 -- autovacuum 再次被清零计数器挡在门外。
+--
+-- ⚠ 2026-10-07 审计注：db/db.go ensurePartitionAutovacuumSchema 的内联副本
+-- （每次启动 CREATE OR REPLACE 的第五份活拷贝）自同日起与 839 正本同步——
+-- 回滚 839 必须连同回退该副本（或后续迁移），否则下次重启会把旧函数体与
+-- 0.005 重新装回去，回滚不生效。
 
 BEGIN;
 
@@ -40,10 +45,12 @@ CREATE OR REPLACE FUNCTION public.analyze_llm_gateway_table_stats(p_recent_month
 		END;
 		$_$;
 
--- 交还 scale_factor：复用 839 建的那个函数，传 0.02
+-- 交还 scale_factor：复用 839 建的那个函数，传 0.02。
+-- 注意必须用 to_regprocedure（函数名对 to_regclass 恒返回 NULL——
+-- 首版误用导致回滚静默少做一半，2026-10-07 审计订正）。
 DO $$
 BEGIN
-    IF to_regclass('public.apply_llm_gateway_current_month_analyze_scale_factor') IS NOT NULL THEN
+    IF to_regprocedure('public.apply_llm_gateway_current_month_analyze_scale_factor(numeric)') IS NOT NULL THEN
         PERFORM apply_llm_gateway_current_month_analyze_scale_factor(0.02);
     END IF;
 END $$;

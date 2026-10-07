@@ -316,16 +316,16 @@ onBeforeUnmount(() => {
 .cs__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .cs__sub { display: block; font-size: 13px; font-weight: 600; margin: 10px 0 4px; }
 .cs__head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-.cs__label { display: block; font-size: 12px; color: var(--text-3, #999); margin: 8px 0 4px; }
+.cs__label { display: block; font-size: 12px; color: var(--app-text-muted); margin: 8px 0 4px; }
 .cs__msg { font-size: 13px; color: var(--text-2, #666); padding: 8px 0; }
 .cs__msg--err { color: var(--danger, #c0392b); }
 .cs__note { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; line-height: 1.5;
   color: var(--text-2, #666); margin: 6px 0; }
-.cs__note--warn { color: var(--warn, #b26a00); }
+.cs__note--warn { color: var(--app-warning); }
 .cs__meta { font-size: 12px; color: var(--text-2, #666); margin: 4px 0 0; word-break: break-all; }
 .cs__grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-top: 6px; }
 .cs__cell { display: flex; flex-direction: column; }
-.cs__cell-l { font-size: 11px; color: var(--text-3, #999); }
+.cs__cell-l { font-size: 11px; color: var(--app-text-muted); }
 .cs__cell-v { font-size: 14px; font-weight: 600; word-break: break-all; }
 
 /* ★ R1：新增交互控件 ≥48 CSS px */
