@@ -65,6 +65,8 @@ const CASES = [
   { label: '@320 横向inset', q: '/fixture?plants=inset-lr', w: 320 },
   { label: '@320 横向inset已避让', q: '/fixture?plants=inset-lr-ok', w: 320 },
   { label: '@320 R1存量档', q: '/fixture?plants=tap-legacy', w: 320 },
+  { label: '@320 文本截断', q: '/fixture?plants=trunc', w: 320 },
+  { label: '@1024 文本截断', q: '/fixture?plants=trunc', w: 1024 },
 ]
 
 const HOST_PAGE = `<!doctype html><meta charset="utf-8">
@@ -172,7 +174,18 @@ const kind = (r, k) => r.report.issues.find((i) => i.kind === k)
 const kinds = (r) => r.report.issues.map((i) => i.kind).sort().join(',') || '（无）'
 const R = Object.fromEntries(results.map((r) => [r.label, r]))
 
+// ★ 覆盖率必须**算出来**，不许手写。
+//   起因：加 `text-truncated` 时末尾那句「11/12 类」是上一轮手写的常量；
+//   新增一类后没人改它 —— 自检照样全绿，而这一类其实**连 plant 都没有**。
+//   一个不验证任何东西的分数比没有分数更糟：它让人以为「N/M 类」是被守着的。
+//   现在：COV 由各断言块在**真的断言过之后**登记；SEEN 由实际读数去重得到。
+//   SEEN 里出现 COV 没登记的 kind ⇒ 直接判失败（「加了判据却没配正控」）。
+const COV = new Set()
+const cov = (...ks) => ks.forEach((k) => COV.add(k))
+
 // ① h-overflow / tap-target（@320 全量）
+cov('h-overflow', 'tap-target')
+
 {
   const r = R['@320 全量'], t = r.label
   const hOv = kind(r, 'h-overflow'), tap = kind(r, 'tap-target')
@@ -195,6 +208,8 @@ const R = Object.fromEntries(results.map((r) => [r.label, r]))
 }
 
 // ② h-overflow 的 offender 精度（@1024：480px 那块装得下，不该再出现）
+cov('h-overflow')
+
 {
   const r = R['@1024 全量'], t = r.label, hOv = kind(r, 'h-overflow')
   if (!hOv) fails.push(`${t} 漏报 h-overflow：1600px 那块任何视口都溢出`)
@@ -208,6 +223,8 @@ const R = Object.fromEntries(results.map((r) => [r.label, r]))
 }
 
 // ③ 仅小溢出：卡「容差被放宽」那种变异（大溢出会掩盖它）
+cov('h-overflow')
+
 {
   const r = R['@320 仅小溢出'], t = r.label, hOv = kind(r, 'h-overflow')
   if (!hOv) fails.push(`${t} 漏报 h-overflow：页面上唯一的缺陷是 ~40px 的小幅溢出，容差稍一放宽就会漏`)
@@ -217,6 +234,8 @@ const R = Object.fromEntries(results.map((r) => [r.label, r]))
 }
 
 // ④ 干净页：一张什么都没有的页面，判据不许报任何一条
+cov()
+
 {
   const r = R['@320 干净页'], t = r.label
   for (const k of ['h-overflow', 'tap-target', 'invisible-text', 'low-contrast', 'near-blank', 'broken-image', 'tap-overlap', 'covered-by-fixed']) {
@@ -225,6 +244,8 @@ const R = Object.fromEntries(results.map((r) => [r.label, r]))
 }
 
 // ⑤ 对比度：同色字 → invisible-text；低对比 → low-contrast；高对比诱饵不许进
+cov('invisible-text', 'low-contrast')
+
 {
   const r = R['@320 对比度'], t = r.label
   const inv = kind(r, 'invisible-text'), low = kind(r, 'low-contrast')
@@ -240,6 +261,8 @@ const R = Object.fromEntries(results.map((r) => [r.label, r]))
 }
 
 // ⑥ 坏图
+cov('broken-image')
+
 {
   const r = R['@320 坏图'], t = r.label, bk = kind(r, 'broken-image')
   if (!bk) fails.push(`${t} 漏报 broken-image：src 指向不存在的文件`)
@@ -252,6 +275,8 @@ const R = Object.fromEntries(results.map((r) => [r.label, r]))
 }
 
 // ⑦ 触控重叠
+cov('tap-overlap')
+
 {
   const r = R['@320 重叠'], t = r.label, ov = kind(r, 'tap-overlap')
   if (!ov) fails.push(`${t} 漏报 tap-overlap：两个 120×120 按钮重叠 > 30%`)
@@ -267,6 +292,8 @@ const R = Object.fromEntries(results.map((r) => [r.label, r]))
 }
 
 // ⑧ 固定底栏遮挡：压住时报，padding 够时不报
+cov('covered-by-fixed')
+
 {
   const r1 = R['@320 底栏遮挡'], r2 = R['@320 底栏已避让']
   if (!kind(r1, 'covered-by-fixed')) {
@@ -288,6 +315,8 @@ const R = Object.fromEntries(results.map((r) => [r.label, r]))
 }
 
 // ⑧-补 2026-07：三套「假阳性形状」必须**不报**（锁住本轮修的三处口径）
+cov()
+
 // ⚠️ 这三条是**诱饵**：种的是「看起来像缺陷」的形状。任一口径回退，自检立刻红。
 {
   // ① label 命中区：input 自身 20×20，但 label 270×48 ⇒ 零违规
@@ -311,6 +340,8 @@ const R = Object.fromEntries(results.map((r) => [r.label, r]))
 }
 
 // ⑨ 近白屏
+cov('near-blank')
+
 {
   const r = R['@320 近白屏'], t = r.label
   if (!kind(r, 'near-blank')) {
@@ -319,6 +350,8 @@ const R = Object.fromEntries(results.map((r) => [r.label, r]))
 }
 
 // ⑩ 横向 safe-area（left/right，2026-10-08）：贴边 fixed 浮层报，已避让不报
+cov('tappable-in-inset', 'tappable-grazes-inset')
+
 // ★ 为什么这次可以正控（推翻本文件旧头里「safe-area 故意不写断言」那条）：
 //   旧理由是「inset 是壳注入的量，夹具里自造 = 自造契约」。这句话只对**一半**成立：
 //   · 数值确实是合成的 —— 但判据对数值无感（>0 即生效），换 30px / 59px 结论不变；
@@ -376,6 +409,8 @@ const R = Object.fromEntries(results.map((r) => [r.label, r]))
 }
 
 // ⑪ R1 三档边界（2026-10-08）：43px 与 46px 只差 3px，必须分属 medium / low
+cov('tap-target', 'tap-target-legacy')
+
 // 为什么这条重要：`/m/keys` 一屏 249 个 `btn--sm`（44px，仓门**书面豁免**的存量基线）
 // 曾被报成 249 处 medium，真缺陷会被淹在噪声里。分档不是放宽，是把台账和缺陷分开。
 {
@@ -403,11 +438,72 @@ const R = Object.fromEntries(results.map((r) => [r.label, r]))
   }
 }
 
+// ⑫ 文本省略号截断（2026-10-08，§4.6.68）：量值与标识符必须**分属两个桶、两个严重级**
+cov('text-truncated')
+
+// 为什么这条重要：`/m/` 与 `/m/usage` 的 `.stat-card__value` 在 font_scale≥1.3 时
+// 把 `261,947,605` 截成 `261,9…`，**数字读不出来** —— 而它 `overflow:hidden`，
+// 所以 h-overflow / invisible-text / low-contrast **六类判据全测不到**（§4.6.65 报「零回归」是对的）。
+// 反过来，长 key 名被截断多半是**设计意图**；两种混在一个 medium 里，
+// 后果是把 41 处设计性截断和 12 处读不出数字报成同一个数 ⇒ 真缺陷被噪声淹掉。
+{
+  const r = R['@320 文本截断'], t = r.label
+  const all = r.report.issues.filter((i) => i.kind === 'text-truncated')
+  const metric = all.filter((i) => i.sev === 'high')
+  const label  = all.filter((i) => i.sev === 'medium' || i.sev === 'low')
+
+  if (!metric.length) {
+    fails.push(`${t} 漏报量值截断：96px 槽装不下「261,947,605」⇒ 数字读不出来（必须 sev=high）`)
+  } else {
+    const ids = metric[0].items.map((o) => o.sel).join(' , ')
+    if (!has(metric[0].items, '#plant-trunc-metric')) {
+      fails.push(`${t} 量值桶没指向 #plant-trunc-metric。实际：${ids}`)
+    }
+    // ★ 把量值判成 low/medium 是这一类判据最危险的失效：它就退化成「台账」，
+    //   而台账不会催人修 —— 等价于没报。
+    if (has(metric[0].items, '#plant-trunc-label')) {
+      fails.push(`${t} 量值桶误收 #plant-trunc-label：长 key 名是标识符，不是量值。实际：${ids}`)
+    }
+  }
+
+  if (!label.length) fails.push(`${t} 漏报标识符截断：「deploy-smoke-245-2026081」放不下 96px`)
+  else if (has(label[0].items, '#plant-trunc-metric')) {
+    fails.push(`${t} 标识符桶误收 #plant-trunc-metric（数字不是标识符）。实际：${label[0].items.map((o) => o.sel).join(' , ')}`)
+  }
+
+  // ★ 三个 decoy：任何一条被报，都说明判据退化成了「看到 ellipsis 就报」
+  const decoys = ['#decoy-trunc-fit', '#decoy-trunc-clamp', '#decoy-trunc-hard']
+  for (const d of decoys) {
+    for (const b of metric.concat(label)) {
+      if (b && has(b.items, d)) {
+        fails.push(`${t} 误报 ${d}：声明了 ellipsis/line-clamp 但内容放得下（或本就是硬裁切），不该进 text-truncated`)
+      }
+    }
+  }
+
+  // 两档视口都要成立：窄屏与宽屏下这条判据不能只在某一档有牙
+  const w = R['@1024 文本截断']
+  if (!w.report.issues.some((i) => i.kind === 'text-truncated' && i.sev === 'high')) {
+    fails.push(`${w.label} 量值截断没报出来 —— 判据只在窄屏生效，等于宽屏盲区`)
+  }
+}
+
 for (const r of results) console.log(`判据在 ${r.label.padEnd(16)} 返回：${kinds(r)}`)
+
+// 覆盖率对账：读数里出现的每个 kind 都必须有断言块登记过正控。
+// 没登记 ⇒ 「加了判据却忘了配 plant」，而这正是本节开头记的那个坑。
+const SEEN = [...new Set(results.flatMap((r) => r.report.issues.map((i) => i.kind)))].sort()
+const uncovered = SEEN.filter((k) => !COV.has(k))
+if (uncovered.length) {
+  fails.push(`这些 kind 读数里出现了、却没有任何断言块登记正控：${uncovered.join(' , ')} —— 加了判据必须同时加 plant + decoy`)
+}
+if (COV.has('')) fails.push('cov() 被误登记了空串 —— 批量插入脚本把空数组转成了 \'\'')
+
 if (fails.length) {
   console.error(`\n✗ 自检失败 ${fails.length} 条：`)
   for (const f of fails) console.error('  · ' + f)
   process.exit(1)
 }
-console.log('\n✓ 自检通过：11/12 类 kind 的 plant 全部被抓到、decoy 与干净页都没被误报 —— 尺子有牙')
+console.log(`\n✓ 自检通过：${SEEN.filter((k) => COV.has(k)).length}/${SEEN.length} 类 kind 的 plant 全部被抓到、decoy 与干净页都没被误报 —— 尺子有牙`)
+console.log('  （覆盖率是**算出来的**：SEEN 去重自实际读数，COV 由各断言块登记；对不上即失败）')
 console.log('  （safe-area 两节现已正控：横向通道名取自壳真正注入的 --safe-area-inset-*，只有数值是合成的）')

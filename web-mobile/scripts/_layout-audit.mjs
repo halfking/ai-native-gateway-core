@@ -371,6 +371,85 @@ const MIN_TAP_H = 48 // 本仓 R1：新增触控控件一律 ≥48 CSS px。与 
       detail: broken.length + ' 张图加载失败', items: broken.slice(0, 8).map((s) => ({ sel: s })) })
   }
 
+  // ── ⑨ 文本被省略号截断（2026-10-08，§4.6.67 真机读数后补）────
+  // 为什么补这一类：此前六类判据在 font_scale=2.0 的真机上全绿，
+  // 但 `/m/` 的 Tokens 卡显示 `261,1…` —— 数字**读不出来**。
+  // 根因是它 `overflow-x:hidden + text-overflow:ellipsis + white-space:nowrap`，
+  // 而值宽 224px > 槽宽 152px ⇒ 被省略号吃掉 72px。
+  // ⇒ 「不可见字」「低对比度」「横向溢出」全部测不到这一类：
+  //   文字**在**盒子里、颜色**正常**、只是**少了一截**。
+  //
+  // ⚠️ 只报「明确声明了 ellipsis / line-clamp 且确实溢出」的；
+  //    不去猜「看起来像被切了」—— 那类肉眼判断已被真机 CDP 证伪过
+  //    （见 §4.6.67：吸底栏 Overview 看着像被屏幕左缘切掉，
+  //      实测 scrollWidth == clientWidth、overflow-x:visible ⇒ 无裁切）。
+  //
+  // ★★ 为什么要分「量值 / 标识符」两桶（第一版没分，量出来 59 处一个数，
+  //    等于把两种相反的结论混成一句废话）：
+  //    · **量值**（数字 / 金额 / 百分比 / 时长 / 字节量）：被截断 ⇒ 用户
+  //      **读不出这个数**，而它是仪表盘的主体内容 ⇒ high。
+  //    · **标识符**（长 key 名 / 模型名 / 版本号）：截断通常就是**设计意图**
+  //      （长名字必然溢出，展开会破版）⇒ 不是缺陷。可见比例 <50% 时，
+  //      两个相近的名字（如 `deploy-smoke-245-…` 与 `deploy-smoke-154-…`）
+  //      在列表里**无法区分** ⇒ medium；否则 low，只作台账。
+  //
+  // ⚠️ 第一版用「文本含不含字母」当判据，被**回读自证当场拦下**：
+  //    `9,077ms`（延迟）因含 `m`/`s` 被判成标识符，落进 low 桶，
+  //    而它其实是溢出 74px 的量值。⇒ 判据必须是「**剥掉单位与货币符号后
+  //    整体仍是一个数**」，而不是「有没有字母」。
+  //    数字形态收紧成 `\d+(\.\d+)?`（至多一个小数点），
+  //    这样版本号 `1.2.3` 不会被误当成量值。
+  //    误判方向是**保守**的：判不出来的都落进 low 的标识符桶，不会虚报 high。
+  const UNIT_RE = /(ms|us|µs|min|hrs?|sec|days?|KB|MB|GB|TB|KiB|MiB|GiB|%|x|req|reqs|tokens?|calls?)$/i
+  const isMetric = (t) => {
+    let s = t.replace(/[\s,]/g, '').replace(/^[$¥€£]/, '')
+    s = s.replace(UNIT_RE, '')
+    return /^\d+(\.\d+)?$/.test(s)
+  }
+  const truncated = []
+  document.querySelectorAll('body *').forEach((el) => {
+    if (el.children.length > 0) return          // 只看叶子，避免同一处截断被父子各报一次
+    const s = getComputedStyle(el)
+    const declaresCut = s.textOverflow === 'ellipsis' ||
+                        (s.webkitLineClamp && s.webkitLineClamp !== 'none')
+    if (!declaresCut) return
+    if (el.clientWidth <= 0) return
+    const over = el.scrollWidth - el.clientWidth
+    if (over <= 1) return                        // 没真溢出就不报
+    const txt = (el.textContent || '').trim()
+    if (!txt) return
+    const bucket = isMetric(txt) ? 'metric' : 'label'
+    const ratio = over / el.scrollWidth          // 被吃掉的比例
+    truncated.push({ sel: path(el), text: txt.slice(0, 24), over, bucket,
+                     ratio: +ratio.toFixed(2),
+                     clientW: el.clientWidth, scrollW: el.scrollWidth })
+  })
+  I.stats.textTruncated = truncated.length
+  I.stats.textTruncatedMetric = truncated.filter((x) => x.bucket === 'metric').length
+  const byOver = (a, b) => b.over - a.over
+  const metrics = truncated.filter((x) => x.bucket === 'metric').sort(byOver)
+  const labels = truncated.filter((x) => x.bucket === 'label').sort(byOver)
+  if (metrics.length) {
+    const w = metrics[0]
+    I.issues.push({ kind: 'text-truncated', sev: 'high',
+      detail: metrics.length + ' 处**量值**被省略号截断（读不出数值）：最重 ' +
+              w.sel + ' 「' + w.text + '」少 ' + w.over + 'px（吃掉 ' +
+              Math.round(w.ratio * 100) + '%），槽宽 ' + w.clientW +
+              'px / 需要 ' + w.scrollW + 'px',
+      items: metrics.slice(0, 8) })
+  }
+  if (labels.length) {
+    const hard = labels.filter((x) => x.ratio >= 0.5)
+    const w = labels[0]
+    I.issues.push({ kind: 'text-truncated', sev: hard.length ? 'medium' : 'low',
+      detail: labels.length + ' 处**标识符**被省略号截断（长名称，多为设计意图；' +
+              '其中 ' + hard.length + ' 处可见不足一半、相近名字可能无法区分）。' +
+              '最重 ' + w.sel + ' 「' + w.text + '」少 ' + w.over +
+              'px（吃掉 ' + Math.round(w.ratio * 100) + '%），槽宽 ' +
+              w.clientW + 'px / 需要 ' + w.scrollW + 'px',
+      items: labels.slice(0, 8) })
+  }
+
   // ── ⑧ 字体没加载出来（回退字形 = 版式整体偏移）────────────────
   I.stats.fontStatus = document.fonts ? document.fonts.status : 'unknown'
 
