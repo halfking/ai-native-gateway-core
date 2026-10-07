@@ -10308,3 +10308,123 @@ WHERE credential_id = $1 AND started_at >= $2
 7. **顺手纠一处上一批的追溯错误。** 第七十五批把 `dashboard/operational` 写成
    `handler.go:1069`，实际是 **`:1068`**（`:1069` 是 `board/error-drill`）。
    ⇒ 行号是「逐字照抄」的产物，**跨批次也会漂**，每批开写前都要重新确认。
+
+## 11.113 路由策略配置面（routing policy，第七十七批）
+
+- **端点**：`GET /api/routing/{policy, featured, scoring-weights, featured-models}`
+- **注册**：`admin/handler.go:1200`（superAdmin）/ `:1201`（superAdmin）/ `:1215`（superAdmin）/ `:1216`（**admin**）
+- **后端**：`admin/routing.go`（4200+ 行）与 `deploy/sql/schemas/baseline/01-schema.sql`
+- **落点**：`web-mobile/src/api/routingPolicy.ts` + `.test.ts`（81 用例）
+
+### 挖到的七条契约
+
+1. **★★★★★ 一个族里三档一档：`featured-models` 是 admin 档，其余三个是 superAdmin 档。**
+   ⇒ ★★ **绝不能按「同前缀都是一类」定档** —— 必须逐条看注册。
+   ⇒ 抽屉席放后三个**必须**设 `requiresRole: 'super_admin'` 并同步
+     `src/components/shell/AppDrawer.spec.ts` 白名单；`featured-models` 不设。
+
+2. **★★★★★ `policy` 的响应形状是 `row_to_json(rp)` ⇒ 形状由表决定，不由代码决定。**
+   `routing.go:2527`：
+   ```sql
+   SELECT row_to_json(rp)::text FROM routing_policy rp WHERE tenant_id = 'default' ORDER BY id LIMIT 1
+   ```
+   ⇒ **21 个列全是响应键**（7 个 NOT NULL + 14 个可空），加一个 DDL 就要加一个客户端键。
+   ⇒ ★ `row_to_json` 对可空列输出 **`null` 而不是省略键**
+   ⇒ 这是本仓第**八**种 nil 编码，与第七十二批「同一载荷里两个数组键编码相反」同族。
+
+3. **★★★★★ 空对象 `{}` 是三合一语义。**
+   `routing.go:2533`：
+   ```go
+   if err := row.Scan(&raw); err != nil || raw == "" { writeJSON(w, http.StatusOK, map[string]any{}); return }
+   ```
+   ⇒ 「没有这一行」「查询失败」「文本为空」**三种都回 HTTP 200 + `{}`**
+   ⇒ ★ 解包器把 `{}` 解成 `null`，客户端**只能说「拿不到」**，不能说「未配置」。
+
+4. **★★★★ `scoring-weights` 的降级完全不可辨。**
+   `getScoringWeights`（`:4026-4055`）：
+   ```go
+   if err != nil || len(weightsJSON) == 0 { return defaultWeights }
+   if err := json.Unmarshal(...); err != nil { return defaultWeights }
+   for k, v := range defaultWeights { if _, ok := weights[k]; !ok { weights[k] = v } }
+   ```
+   ⇒ **查询失败、解析失败、缺键**三种都产出同一份默认值，响应里**没有任何标记**。
+   ⇒ ★★ 但**额外键能定案**：兜底分支 `return defaultWeights`（`:4041`/`:4046`）
+     那张 map 只有五个键 ⇒ 响应里只要有一个额外键，就一定来自 DB。
+     这条是本批唯一一个「不可辨 ⇒ 用别处证据定案」的正面例子。
+
+5. **★★★★ `scoring-weights` 的数字键是开放形状。**
+   `scoringWeightsDisplayOnlyPayload`（`:3919-3927`）把 jsonb 里**任意**键摊平，
+   再加两个披露键：
+   ```go
+   out["display_only"] = true
+   out["note"] = "these weights only affect /api/routing/resolve and /api/routing/score-details previews, not live routing"
+   ```
+   ⇒ 只有五个键**保证存在**（默认值回填）。
+   ⇒ ★ `display_only` 是**硬编码常量** ⇒ 校验它的取值是**恒真判据**，只校类型。
+
+6. **★★★★ 三个端点硬编码 `tenant_id = 'default'`，第四个是对的。**
+   `routing.go:2529` / `:2592` / `:4038` 写死；而 `featured-models`（`:4068`）走
+   `EffectiveTenantIDAll(r)`（`context.go:69`）—— tenant_admin 拿自己的租户、
+   super_admin 拿全租户合计。
+   ⇒ ★ **同族两个隔离口径**：与第七十三/七十五/七十六批「全族都不隔离」不同，
+     这里是「族里三个错、一个对」。
+
+7. **★★★ `featured-models` 的 `standardized_name` 恒等于 `name`。**
+   `routing.go:4081-4082` 两个字段都取 `p.CanonicalName`
+   ⇒ 客户端不该把它们渲染成两种东西，也不该拿它做「标准化前后」对照；
+   但**类型仍要校**（后端两处同源不等于两处同型）。
+
+### 另注
+
+- `featured_models` 恒为数组：`COALESCE(..., ARRAY[]::TEXT[])`（`:2591`）+ nil 兜底（`:2598`）
+  ⇒ **不会是 null**；但查询失败只 `slog.Warn` 后回 `[]` ⇒ 与「没配」**同形**。
+- `models` 恒数组（`make([]featuredModel, 0, len(popular))`），四键无 omitempty。
+- `source` 是**两个字面量**决定的封闭枚举（`:2862` 的 `"policy"`、`:2903` 的 `"usage"`）
+  ⇒ 与第七十四批「只判 `!= ""`」的开放字符串**不同**，这里**可以**校验取值。
+- `count` 在内层是 `*int`，写出时 nil→0 ⇒ 对外**恒为数字**。
+- usage limit 20 **只**作用于 usage 来源；`policy` 来源不受限（`:2865-2867` 的注释明说）。
+- 四个端点都是 5 秒超时；`policy` 的 PATCH 只读六个已知列、其余忽略（COALESCE 静态 UPDATE）。
+
+### 验证
+
+- 用例 **81 条全绿**
+- 变异 `/tmp/mut-co77.mjs` **55 条 55/55 有牙、零 STILL_GREEN**，`RESTORED=OK`
+- 三门 rc=0；`vue-tsc` rc=0；`npm run build` rc=0
+- 全量 **4345 条（141 文件）** rc=0；十连跑 10/10
+- U+FFFD 自查：源与用例均 0
+
+### 变异验证暴露的判据缺陷
+
+1. **★★★ 锚点未同步（两批内第三次，又是它）。**
+   补了三条负控（`undefined` 形状、`name` 类型错、只改最后一个权重键），
+   却先跑了一轮才发现 STILL_GREEN ⇒ 用例有牙、锚点没跟上。
+   ⇒ ★ **补负控与改锚点必须是同一个原子步骤**，不能只做前一半。
+
+2. **★★ 变异本身写错：`to` 只追加不替换。**
+   #25 我原本写的是「在 `requireObject` 里加一条 `resp === undefined` 的分支」，
+   但**没有删掉**原来的 `isPlainObject` 检查 ⇒ 两条路径吐同一句错误消息
+   ⇒ **行为完全没变**。
+   ⇒ ★ 这正是「注入标记 ≠ 变异」的另一种形态：标记也在、行为也没改。
+   ⇒ 自查方法：把 `to` 写完后问一句「原来那段代码还有没有一个字节留在这条路径上」。
+
+3. **★★★ 夹具被上游检查截胡（3 条）。**
+   - `★ 元素缺键抛错并点名下标` 用 `{ name: 'x' }`，它在 `requireKeys` 就抛了
+     ⇒ `name` 的类型分支**从没执行** ⇒ 删掉那个校验打不出差异。
+     ⇒ 补「四键齐全、只错类型」的夹具。
+   - 「响应形状不是裸对象时抛错」只测了 `null`/`[]`/`'x'`，漏 `undefined`
+     ⇒ 补 `undefined` 用例。
+   - 「改过任一键后不再判为可能是兜底」改的是 `price`（**第一个**键）
+     ⇒ 把 `default_price_usd`（最后一个）从判据里去掉打不出差异
+     ⇒ 补「只改最后一个键」的用例。**逐键都要有专属用例。**
+
+4. **★ 变异自身无区分力：同一个集合里重复一个键。**
+   #7 我把 `transient_fail_threshold` 在**必填集合里**写了两次
+   ⇒ 与可空集合仍然没有交集 ⇒ 断言照过。
+   ⇒ 改成「把必填键塞进可空集合」才真的制造了交集。
+   ⇒ 断言是 `A ∩ B = ∅` 时，变异必须动**跨集合**的关系，在集合内部打转没用。
+
+5. **★★ 首跑即红的实现缺陷（1 条）：判定写弱了。**
+   `routingScoringWeightsMayBeDefaults` 原本只看五个键的值，
+   于是「五键全是默认值 + 带一个额外键」也会被判成「可能是兜底」——
+   而额外键恰好是**唯一能定案**的证据。
+   ⇒ 补 `extraKeyCount(w) > 0 ⇒ false`，并把这条推理写进函数注释。
