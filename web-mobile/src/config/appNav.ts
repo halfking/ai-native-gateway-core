@@ -75,6 +75,11 @@ export const DRAWER_NAV: readonly NavItem[] = [
   //   adminWrap 是它传进去的）。tenant_admin 必 403 ⇒ 这里必须挡。
   { key: 'funnel', to: '/funnel', icon: 'chart', titleKey: 'nav.funnel', requiresRole: 'super_admin' },
   { key: 'proposals', to: '/proposals', icon: 'check', titleKey: 'nav.proposals', requiresRole: 'super_admin' },
+  // 自动路由读面：/proposals 答「系统认为该怎么调」，本页答「现在跑得怎么样、
+  // 花了多少钱」—— 建议与效果之间缺的就是这一页。
+  // ★ superAdmin 档：整条 auto-route 线由 handler.go:1381 / :1430 的
+  //   h.superAdmin 挂载（形参名 adminWrap 是假名，值在调用处才定）⇒ 必挡。
+  { key: 'auto-route', to: '/auto-route', icon: 'chart', titleKey: 'nav.autoRoute', requiresRole: 'super_admin' },
   // 全局横向对比面：/funnel 是单模型纵深，这两条是全体模型的横向对比。
   // ★ superAdmin 档：analytics.go:55-58 的 matrix/flow，
   //   而 RegisterAnalyticsRoutes 由 handler.go:1430 用 h.superAdmin 挂载。
@@ -171,6 +176,20 @@ export const DRAWER_NAV: readonly NavItem[] = [
   { key: 'maas-wallet', to: '/maas-wallet', icon: 'user', titleKey: 'nav.maasWallet' },
   // 会话分析面。admin 档（admin/handler.go:1091-1094 全是 admin(...)）⇒ 不设 requiresRole。
   { key: 'session-analytics', to: '/session-analytics', icon: 'chart', titleKey: 'nav.sessionAnalytics' },
+  // 看板读面（dashboard 九条）。★ admin 档（handler.go:1052-1069 全部 `admin(...)`）
+  // ⇒ **不设** requiresRole。
+  // ★ 与上面 /auto-route 的 super_admin 档相反 —— 这是本仓最容易照抄错的一处：
+  //   两条都叫「路由/看板面」，权限档却完全相反。
+  { key: 'dashboard-ops', to: '/dashboard-ops', icon: 'grid', titleKey: 'nav.dashboardOps' },
+  // 日志运维面。★ admin 档（handler.go:959/1115/1116 三条都是 admin(...)）
+  // ⇒ **不设** requiresRole。
+  // ⚠️ 同前缀下 config / archive / cleanup 是 h.superAdmin ——
+  //   那是**前缀级的巧合**，不是整族的档位；按前缀判权限会判错。
+  // 图标用 clock（时间轴语义）：IconName 里没有 file，类型门会红。
+  { key: 'log-ops', to: '/log-ops', icon: 'clock', titleKey: 'nav.logOps' },
+  // 人工标注工作台。★ admin 档（handler.go:1386/1389/1390 全是 admin(...)）
+  // ⇒ **不设** requiresRole。
+  { key: 'annotations', to: '/annotations', icon: 'check', titleKey: 'nav.annotations' },
   {
     key: 'request-anomalies',
     to: '/request-anomalies',
@@ -204,6 +223,16 @@ export const DRAWER_NAV: readonly NavItem[] = [
     to: '/approval-config',
     icon: 'check',
     titleKey: 'nav.approvalConfig',
+  },
+  // 审批队列（运行中的审批实例）。★ **admin 档**（main.go:7384-7385 两条
+  // 都是 wrapAdmin）⇒ tenant_admin 可用 ⇒ **故意不设** requiresRole；
+  // 设成 super_admin 必须让判据红。
+  // ★ 不碰 /api/v1/approvals/* 的 approve/reject/resume（真的改审批状态）。
+  {
+    key: 'approval-queue',
+    to: '/approval-queue',
+    icon: 'clock',
+    titleKey: 'nav.approvalQueue',
   },
   // 审批人与规则。同样 admin 档，同样**故意不设** requiresRole。
   {
@@ -249,6 +278,55 @@ export const DRAWER_NAV: readonly NavItem[] = [
     to: '/session-context',
     icon: 'grid',
     titleKey: 'nav.sessionContext',
+  },
+  // 免费资源自动发现读面。六条只读**全是 h.admin(...)**（handler.go:1302-1313）
+  // ⇒ **故意不设** requiresRole；设成 super_admin 必须让判据红。
+  // ★★ 第七条 scan-scheduler/status 是 **h.superAdmin(...)**（handler.go:1316）
+  //   —— 它**不占**抽屉席（否则 admin 档页面被 superAdmin 门挡住），
+  //   由本页面内单独探测并单列 403 态。
+  // ★★★★★★ 同一个 handler、同一条路径**按方法分档**：GET=admin、
+  //   POST/PUT/PATCH/DELETE=superAdmin（RequireSuperAdminForWrite）。
+  //   ⇒ 又一条「不能按路径或前缀判权限」的证据。
+  // ★ 五个写端点（建模板/改模板/删模板/scan/import/import-orbi）本页一律不碰。
+  {
+    key: 'free-discovery',
+    to: '/free-discovery',
+    icon: 'search',
+    titleKey: 'nav.freeDiscovery',
+  },
+  // 压缩可观测（stats/sessions，2026-10-08）。admin 档 ⇒ **不设** requiresRole。
+  // 与 /data-flow 配对：那页答「记录怎么分布」，本页答「压缩实际压了多少」。
+  // ⚠️ 本页压缩率是 **0-1 比例**，data-flow 的是 **0-100 百分数**，两者不可并列。
+  {
+    key: 'compression',
+    to: '/compression',
+    icon: 'cube',
+    titleKey: 'nav.compression',
+  },
+// 数据生命周期**记录级**（stats/metrics/jobs/blobs/top，2026-10-08）。
+  // 与 /data-lifecycle 按「答什么」划界：那页答「表级存储与保留」（分区 + 体积榜），
+  // 本页答「记录怎么分布 / 有没有在清理 / 大字段占多少」。粒度不同，不合并。
+  // ★ 四条注册（handler.go:960/962/979/994）全部是 `admin(...)`
+  //   ⇒ tenant_admin 可用 ⇒ **不设** requiresRole。
+  // ⚠️ 但本页的 `metrics` 是**全表口径**（SQL 无 WHERE，data_lifecycle_metrics.go:63），
+  //   而文件头注释写着「super-admin only」—— **与注册矛盾，以注册为准**。
+  {
+    key: 'data-flow',
+    to: '/data-flow',
+    icon: 'chart',
+    titleKey: 'nav.dataFlow',
+  },
+  // 凭据 × 模型实时状态。**这一条是 superAdmin 档**
+  // （`registerStateRoutes` 里 `wrap := h.superAdmin`，credential_state_handlers.go:175）
+  // ⇒ 抽屉席**必须**设 requiresRole: 'super_admin'（与前几批 admin 档页面相反）。
+  // ★ 加这一席时必须同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
+  // ★★ 同族三个 POST（单测/批测/按模型测）都**真的触发一次探测** ⇒ 本页一律不碰。
+  {
+    key: 'credential-model-state',
+    to: '/credential-model-state',
+    icon: 'cpu',
+    titleKey: 'nav.credModelState',
+    requiresRole: 'super_admin',
   },
 ] as const
 

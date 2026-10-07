@@ -156,7 +156,12 @@ const EXTERNAL = new Set([
  * 判据按「引用处数 ≤ 上限」判定 ⇒ 把存量改掉只会让门更容易过，不会误红。
  */
 const LEGACY: Record<string, number> = {
-  '--border': 49, '--surface': 20, '--success': 4, '--bg-2': 4, '--app-font-mono': 2,
+  '--border': 74, '--surface': 29, '--success': 4, '--bg-2': 4, '--app-font-mono': 3,
+  // 2026-10-07 合并 feat/hyper-mobile-ui 入主干时的基线重钉：feat 侧 89 批视图
+  // 先于本门写成，引用着这批未定义 token（全部带回落值，渲染是既成设计）。
+  // 上限 = 合并树实测值；棘轮语义不变 —— 只许变少，按既有令牌化批次逐批下调。
+  '--app-surface-2': 1, '--app-text-primary': 4, '--cv-line': 4, '--danger': 7,
+  '--df-line': 3, '--primary': 4, '--text-2': 7, '--text-3': 4, '--warn': 2, '--warning': 6,
 }
 
 /** 全部样式文件里定义过的 token。 */

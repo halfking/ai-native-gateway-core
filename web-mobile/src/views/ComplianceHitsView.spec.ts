@@ -316,9 +316,19 @@ describe('筛选与分页', () => {
     const chip = w.findAll('.ch__chip').find((c) => c.text() === '隐私信息')!
     await chip.trigger('click')
     await flushPromises()
+    // ★★ 单次 flushPromises 不保证第 2 次请求已发出：视图取数链要走两轮微任务，
+    //   机器负载高时 calls[1] 会短暂是 undefined（十连跑 run#8 实测偶发，2/3801）。
+    await vi.waitFor(() => {
+      expect(recMock.mock.calls.length).toBeGreaterThanOrEqual(2)
+    })
     expect(recMock.mock.calls[1]![0]).toMatchObject({ checkType: 'pii' })
     await chip.trigger('click')
     await flushPromises()
+    // ★★ 单次 flushPromises 不保证第 3 次请求已发出：视图取数链要走两轮微任务，
+    //   机器负载高时 calls[2] 会短暂是 undefined（十连跑 run#8 实测偶发，2/3801）。
+    await vi.waitFor(() => {
+      expect(recMock.mock.calls.length).toBeGreaterThanOrEqual(3)
+    })
     expect(recMock.mock.calls[2]![0]).toMatchObject({ checkType: undefined })
   })
 
@@ -332,6 +342,11 @@ describe('筛选与分页', () => {
     const w = await mountView()
     await w.findAll('.ch__chip').find((c) => c.text() === '已通过')!.trigger('click')
     await flushPromises()
+    // ★★ 单次 flushPromises 不保证第 2 次请求已发出：视图取数链要走两轮微任务，
+    //   机器负载高时 calls[1] 会短暂是 undefined（十连跑 run#8 实测偶发，2/3801）。
+    await vi.waitFor(() => {
+      expect(qMock.mock.calls.length).toBeGreaterThanOrEqual(2)
+    })
     expect(qMock.mock.calls[1]![0]).toMatchObject({ status: 'approved' })
   })
 
@@ -340,6 +355,11 @@ describe('筛选与分页', () => {
     await w.find('input').setValue('  email  ')
     await w.findAll('form')[0]!.trigger('submit')
     await flushPromises()
+    // ★★ 单次 flushPromises 不保证第 2 次请求已发出：视图取数链要走两轮微任务，
+    //   机器负载高时 calls[1] 会短暂是 undefined（十连跑 run#8 实测偶发，2/3801）。
+    await vi.waitFor(() => {
+      expect(recMock.mock.calls.length).toBeGreaterThanOrEqual(2)
+    })
     expect(recMock.mock.calls[1]![0]).toMatchObject({ hitType: 'email' })
   })
 
@@ -362,6 +382,11 @@ describe('筛选与分页', () => {
     expect(next.attributes('disabled')).toBeUndefined()
     await next.trigger('click')
     await flushPromises()
+    // ★★ 单次 flushPromises 不保证第 2 次请求已发出：视图取数链要走两轮微任务，
+    //   机器负载高时 calls[1] 会短暂是 undefined（十连跑 run#8 实测偶发，2/3801）。
+    await vi.waitFor(() => {
+      expect(recMock.mock.calls.length).toBeGreaterThanOrEqual(2)
+    })
     expect(recMock.mock.calls[1]![0]).toMatchObject({ offset: 50 })
   })
 

@@ -9,10 +9,26 @@ import {
   clearManualDisabled,
   fetchCredentialDecisions,
   forceRecoverCredential,
+  resetCredentialState,
+  resetStateOutcomeAmbiguous,
+  resetStateProbeIndeterminate,
   setManualDisabled,
   submitCredentialProbe,
   type CredentialRoutingDecision,
 } from '@/api/credentialsOps'
+import {
+  fetchRoutingBlockedDiagnostic,
+  routingBlockedBreakdownEmptyKey,
+  routingBlockedCredInternalMismatch,
+  routingBlockedManualDisabledUnreliable,
+  routingBlockedReasonAbsent,
+  routingBlockedReasonEmpty,
+  routingBlockedStateUnavailable,
+  routingBlockedSumMismatch,
+  routingBlockedTotalsDisagree,
+  routingBlockedTruncated,
+  type RoutingBlockedDiagnostic,
+} from '@/api/routingBlocked'
 import { useAuthStore } from '@/stores/auth'
 import { t } from '@/i18n'
 import HyperList from '@/components/common/HyperList.vue'
@@ -90,6 +106,44 @@ async function loadDecisions(credId: number): Promise<void> {
   }
 }
 
+// ── 供应商级路由阻塞诊断（GET /api/admin/diagnostics/routing-blocked）──────
+//
+// 存在的理由是后端注释原话：*"credentials look healthy but routing can't find
+// them"* —— monitor-summary 说这个凭据状态正常，而这个端点说它的每条
+// (credential, model) 绑定到底 is_routable 与为什么不是。**这正是用户要的
+// 「凭据检查」与「路由检查」的交汇点。**
+//
+// ★ 注册处 admin/handler.go:1464 是 `h.superAdmin` ⇒ tenant_admin 点下去必 403，
+//   所以入口按角色分档渲染，不靠后端报错兜底。
+//
+// ★★ **按需加载，不随详情自动拉**：它最坏返回 500 条绑定（后端 maxBindings），
+//   而详情是随手点开的；自动拉会让 90% 的打开动作付这个代价。
+const routingBlocked = ref<RoutingBlockedDiagnostic | null>(null)
+const routingBlockedLoading = ref(false)
+const routingBlockedError = ref<string | null>(null)
+const routingBlockedOpen = ref(false)
+
+async function loadRoutingBlocked(providerId: number): Promise<void> {
+  routingBlockedLoading.value = true
+  routingBlockedError.value = null
+  routingBlocked.value = null
+  try {
+    routingBlocked.value = await fetchRoutingBlockedDiagnostic(providerId)
+  } catch (err) {
+    routingBlockedError.value = describeError(err)
+  } finally {
+    routingBlockedLoading.value = false
+  }
+}
+
+/** 从详情进诊断：先记住 provider，再触发加载（避免 await 期间读 ref，见 §11.86）。 */
+async function openRoutingBlocked(): Promise<void> {
+  const pid = detail.value?.provider_id
+  if (pid == null) return
+  routingBlockedOpen.value = true
+  await loadRoutingBlocked(pid)
+}
+
 const detailOpenProxy = computed({
   get: () => detail.value != null,
   set: (v: boolean) => {
@@ -98,6 +152,9 @@ const detailOpenProxy = computed({
       focusActive.value = false
       decisions.value = null
       decisionsError.value = null
+      routingBlocked.value = null
+      routingBlockedError.value = null
+      routingBlockedOpen.value = false
     }
   },
 })
@@ -166,23 +223,49 @@ const detailTitle = computed(() => detail.value ? `${detail.value.provider_name}
 //   而移动端没有桌面端那种「打开抽屉才发现没权限」的过程。所以按 role 分档渲染。
 const isSuperAdmin = computed(() => auth.role === 'super_admin')
 
-type PendingOp = 'disable' | 'enable' | 'probe' | 'recover' | null
+type PendingOp = 'disable' | 'enable' | 'probe' | 'recover' | 'resetState' | null
 const pendingOp = ref<PendingOp>(null)
 const opError = ref<string | null>(null)
 const opOk = ref<string | null>(null)
 const confirmOpen = ref(false)
 const confirmOp = ref<PendingOp>(null)
 
-/** reason 必填：后端 admin/credential_monitor.go:1785-1792 对空串直接 400。 */
+/**
+ * reason 必填：后端 admin/credential_monitor.go:1785-1792 对空串直接 400。
+ *
+ * ★ `resetState` 也在内 —— 它的 reason 是**审计留痕**（routing_reset.go:69-72
+ * `reason is required for audit trail`），不填就 400。
+ */
 const reasonText = ref('')
 const reasonForOp = ref<PendingOp>(null)
-const needReason = computed(() => reasonForOp.value === 'disable' || reasonForOp.value === 'enable')
+const needReason = computed(
+  () =>
+    reasonForOp.value === 'disable' ||
+    reasonForOp.value === 'enable' ||
+    reasonForOp.value === 'resetState',
+)
+
+/**
+ * ★ `trigger_probe` 勾选位（后端 `req.TriggerProbe`）。
+ *
+ * ★★ 为什么 UI 不能对它的结果打包票：后端回的是
+ *   `probe_triggered = req.TriggerProbe && h.probeSubmitter != nil`
+ * （routing_reset.go:151）—— 提交器没接线时**静默**降级成 false，
+ * 而客户端不知道后端接没接 ⇒ 请求了却拿到 false 时**无法区分**「没生效」
+ * 与「压根没请求」。这个二义在下面 `resetProbeNote` 里如实呈现，不吞掉。
+ */
+const resetTriggerProbe = ref(false)
+
+/** ★ reset-state 的「探测到底有没有被触发」提示；非该操作时为空串。 */
+const resetProbeNote = ref('')
 
 function resetOpState(): void {
   opError.value = null
   opOk.value = null
   reasonText.value = ''
   reasonForOp.value = null
+  resetTriggerProbe.value = false
+  resetProbeNote.value = ''
 }
 
 /** 动作 → 后端 reason。留空时给一个带凭据 id 的默认理由，不让用户空手提交。 */
@@ -191,8 +274,17 @@ function effectiveReason(op: PendingOp): string {
   if (typed) return typed
   const id = detail.value?.id
   const who = auth.userInfo?.display_name || auth.userInfo?.username || 'mobile'
-  const base =
-    op === 'disable' ? t('nodes.reasonDefaultDisable') : op === 'enable' ? t('nodes.reasonDefaultEnable') : t('nodes.reasonDefaultRecover')
+  // ★ 用映射而不是三元链：新增 resetState 时三元链会静默落到 reasonDefaultRecover，
+  //   而那是个**语义错误**的默认理由（审计会记成「强制恢复」）。默认理由要能对得上动作。
+  const defaults: Record<Exclude<PendingOp, null>, string> = {
+    disable: t('nodes.reasonDefaultDisable'),
+    enable: t('nodes.reasonDefaultEnable'),
+    probe: t('nodes.reasonDefaultProbe'),
+    recover: t('nodes.reasonDefaultRecover'),
+    resetState: t('nodes.reasonDefaultResetState'),
+  }
+  if (!op) return ''
+  const base = defaults[op]
   return id != null ? `${base} (#${id}, ${who})` : base
 }
 
@@ -213,6 +305,10 @@ const confirmMeta = computed(() => {
       return { title: t('nodes.confirmProbeTitle'), body: t('nodes.confirmProbeBody', { name: detailName.value }), label: t('nodes.probe'), danger: false }
     case 'recover':
       return { title: t('nodes.confirmRecoverTitle'), body: t('nodes.confirmRecoverBody', { name: detailName.value }), label: t('nodes.forceRecover'), danger: true }
+    case 'resetState':
+      // ★ 后端 routing_reset.go:69-72 要求 reason 是**审计留痕**，不是备注；
+      //   且 :110-119 存在「DB 已改但请求以 5xx 结束」这一支 ⇒ 危险档。
+      return { title: t('nodes.confirmResetStateTitle'), body: t('nodes.confirmResetStateBody', { name: detailName.value }), label: t('nodes.resetState'), danger: true }
     default:
       return { title: '', body: '', label: t('common.confirm'), danger: false }
   }
@@ -243,6 +339,31 @@ async function runConfirmedOp(): Promise<void> {
     } else if (op === 'recover') {
       await forceRecoverCredential(cred.id)
       opOk.value = t('nodes.opRecovered')
+    } else if (op === 'resetState') {
+      // ★ rawModel 留空 = **整凭据**复位（routing_reset.go:37-39）：
+      //   覆盖该凭据的所有绑定模型。移动端不暴露「只复位某个模型」这个口子 ——
+      //   单模型复位会让「这个节点还是不通」的原因更难查。
+      //
+      // ★★★★★★ 必须把 trigger_probe **快照**下来，不能在 await 之后再读 ref。
+      //   实测（2026-10-08）：`confirmOpen.value = false` 会让 AppConfirm emit
+      //   `update:model-value(false)` → 视图的 `resetOpState()` 把
+      //   `resetTriggerProbe` 清成 false；而 Vue 的响应式 flush 发生在
+      //   **await 期间** ⇒ 请求体里明明带了 trigger_probe=true，
+      //   回调里读到的却是 false ⇒ 「未能确定」那句提示**永远不出现**。
+      //   同理 `reasonText` 也在 await 期间被清空 —— 只是 reason 是**作为实参**
+      //   在 await 之前求值的，才没出事。
+      const wantedProbe = resetTriggerProbe.value
+      const r = await resetCredentialState(cred.id, effectiveReason(op), '', wantedProbe)
+      opOk.value = t('nodes.opResetStateDone')
+      // ★★ probe_triggered 有三义，false 那一支尤其不能吞：
+      //   后端写的是 `req.TriggerProbe && probeSubmitter != nil`，客户端无从知道
+      //   提交器接没接 ⇒ 请求了却拿到 false = **未能确定**，不是「没触发」。
+      if (resetStateProbeIndeterminate(r, wantedProbe)) {
+        resetProbeNote.value = t('nodes.resetProbeIndeterminate')
+      } else if (r.probe_triggered) {
+        // 只代表「已提交」（fire-and-forget），不代表探测通过。
+        resetProbeNote.value = t('nodes.resetProbeSubmitted')
+      }
     }
     // 写操作后重新拉全量：后端有 15s 缓存（monitor-summary TTL），
     // 立即重查可能拿到旧值 —— 但仍要重查，因为缓存过期后自然刷新。
@@ -254,11 +375,21 @@ async function runConfirmedOp(): Promise<void> {
       if (fresh) detail.value = fresh
     }
   } catch (err) {
-    opError.value = describeError(err)
+    // ★★★★★★ reset-state 失败**不能**一律说「操作失败」：
+    //   routing_reset.go:110-119 存在「DB 效果已落地但请求以 5xx 结束」这一支，
+    //   而那一支走 writeInternalErr ⇒ 响应里**没有** db_committed/audit_outcome，
+    //   客户端拿到的报文与「完全没动」逐字节相同 ⇒ 只能对二义档说「去核实」。
+    //   4xx 则都发生在 applyForceEnable 之前（:56-89），可以确定地报「未执行」。
+    if (op === 'resetState' && resetStateOutcomeAmbiguous((err as { status?: number })?.status)) {
+      opError.value = t('nodes.resetStateMaybeApplied')
+    } else {
+      opError.value = describeError(err)
+    }
   } finally {
     pendingOp.value = null
     reasonForOp.value = null
     reasonText.value = ''
+    resetTriggerProbe.value = false
   }
 }
 
@@ -350,6 +481,9 @@ function describeError(err: unknown): string {
         <h3 class="page__section-title" style="margin-inline: 0">{{ t('nodes.operations') }}</h3>
 
         <p v-if="opOk" class="nodes__op-msg nodes__op-msg--ok" role="status">{{ opOk }}</p>
+        <!-- ★ 只在 reset-state 且探测状态有话可说时出现；成功文案下方，
+             不替换成功文案本身 —— 两件事都要让用户看到。 -->
+        <p v-if="resetProbeNote" class="nodes__op-msg nodes__op-msg--warn" role="status">{{ resetProbeNote }}</p>
         <p v-if="opError" class="nodes__op-msg nodes__op-msg--err" role="alert">{{ opError }}</p>
 
         <div class="nodes__ops-row">
@@ -394,6 +528,19 @@ function describeError(err: unknown): string {
           >
             {{ t('nodes.forceRecover') }}
           </button>
+
+          <!-- ★ reset-state 与 force-recover 的分工：那个是「凭据级 5 步全清」，
+               这个是「带审计 reason 的聚焦复位」，可顺带请求一次探测。
+               注册处 admin/handler.go:946 是 h.superAdmin ⇒ 与探测/强恢同档。 -->
+          <button
+            v-if="isSuperAdmin"
+            type="button"
+            class="btn btn--danger"
+            :disabled="pendingOp !== null"
+            @click="requestOp('resetState')"
+          >
+            {{ t('nodes.resetState') }}
+          </button>
         </div>
 
         <p v-if="!isSuperAdmin" class="nodes__ops-hint">{{ t('nodes.opsAdminOnlyHint') }}</p>
@@ -423,6 +570,90 @@ function describeError(err: unknown): string {
             <span v-if="!d.success && d.error_class" class="nodes__decision-err">{{ d.error_class }}</span>
           </li>
         </ul>
+      </div>
+
+      <!-- 供应商级路由阻塞诊断。按需加载（最坏 500 条绑定），失败不牵连上面几区。
+           ★ 这一区的每个「计数」都必须先过语义判据再显示 —— 后端的钳位
+           会让 total / routable / blocked 三个数互相矛盾（见 routingBlocked.ts）。 -->
+      <div class="nodes__rblocked">
+        <div class="nodes__per-model-head">
+          <h3 class="page__section-title" style="margin-inline: 0">{{ t('nodes.routingBlocked') }}</h3>
+          <button
+            v-if="isSuperAdmin && !routingBlockedOpen"
+            type="button"
+            class="btn btn--sm"
+            :disabled="routingBlockedLoading"
+            @click="openRoutingBlocked"
+          >
+            {{ t('nodes.routingBlockedOpen') }}
+          </button>
+        </div>
+
+        <p v-if="routingBlockedLoading" class="nodes__decisions-state">{{ t('common.loading') }}</p>
+        <p v-else-if="routingBlockedError" class="nodes__decisions-state nodes__decisions-state--err">
+          {{ routingBlockedError }}
+        </p>
+
+        <template v-else-if="routingBlocked">
+          <!-- ★ 截断：后端只把 total 钳到 500，routable 没钳 ⇒ 三个数可能互相矛盾。
+               这里如实说明「以下数字不可直接相加」，而不是把矛盾的数字原样显示。 -->
+          <p v-if="routingBlockedTruncated(routingBlocked)" class="nodes__decisions-state nodes__decisions-state--err">
+            {{ t('nodes.routingTruncated') }}
+          </p>
+          <p v-if="routingBlockedTotalsDisagree(routingBlocked)" class="nodes__decisions-state nodes__decisions-state--err">
+            {{ t('nodes.routingCountsInconsistent') }}
+          </p>
+          <p v-if="routingBlockedSumMismatch(routingBlocked)" class="nodes__decisions-state nodes__decisions-state--err">
+            {{ t('nodes.routingSumMismatch') }}
+          </p>
+          <!-- ★★ 状态整段缺失时 manual_disabled=false 是**错值**，不能当结论显示 -->
+          <p v-if="routingBlockedStateUnavailable(routingBlocked)" class="nodes__decisions-state nodes__decisions-state--err">
+            {{ t('nodes.routingStateUnavailable') }}
+          </p>
+          <p v-if="routingBlockedBreakdownEmptyKey(routingBlocked)" class="nodes__decisions-state nodes__decisions-state--err">
+            {{ t('nodes.routingEmptyReasonKey') }}
+          </p>
+
+          <p v-if="routingBlocked.credentials.length === 0" class="nodes__decisions-state">
+            {{ t('nodes.routingNoBindings') }}
+          </p>
+
+          <ul v-else class="nodes__rblocked-list">
+            <li v-for="c in routingBlocked.credentials" :key="c.credential_id" class="nodes__rblocked-cred">
+              <div class="nodes__rblocked-head">
+                <span class="nodes__rblocked-label">{{ c.credential_label }}</span>
+                <span v-if="routingBlockedManualDisabledUnreliable(c)" class="nodes__rblocked-unknown">
+                  {{ t('nodes.routingStateUnknownShort') }}
+                </span>
+                <span v-else-if="c.manual_disabled" class="nodes__rblocked-disabled">
+                  {{ t('nodes.routingManuallyDisabled') }}
+                </span>
+              </div>
+              <!-- ★ 状态缺失时不要把空串渲染成「状态：」这种看不出异常的形态 -->
+              <p v-if="routingBlockedManualDisabledUnreliable(c)" class="nodes__rblocked-meta">
+                {{ t('nodes.routingStateUnknownShort') }}
+              </p>
+              <p v-else class="nodes__rblocked-meta">
+                {{ c.status || '—' }} · {{ c.availability_state || '—' }} · {{ c.health_status || '—' }}
+              </p>
+              <p v-if="routingBlockedCredInternalMismatch(c)" class="nodes__rblocked-meta nodes__decisions-state--err">
+                {{ t('nodes.routingCredCountsBad') }}
+              </p>
+              <ul class="nodes__rblocked-bindings">
+                <li v-for="b in c.bindings" :key="`${c.credential_id}-${b.raw_model_name}`" class="nodes__rblocked-binding">
+                  <span class="nodes__decision-dot" :class="b.is_routable ? 'ok' : 'bad'" aria-hidden="true" />
+                  <span class="nodes__rblocked-model">{{ b.raw_model_name }}</span>
+                  <!-- ★★ 两种「拿不到原因」必须画得不一样：键不存在（NULL，后端会
+                       归成 unknown）vs 空串（后端确实存了空串）。 -->
+                  <span v-if="b.is_routable" class="nodes__rblocked-meta">{{ t('nodes.routingRoutable') }}</span>
+                  <span v-else-if="routingBlockedReasonAbsent(b)" class="nodes__rblocked-reason">{{ t('nodes.routingReasonNull') }}</span>
+                  <span v-else-if="routingBlockedReasonEmpty(b)" class="nodes__rblocked-reason">{{ t('nodes.routingReasonEmpty') }}</span>
+                  <span v-else class="nodes__rblocked-reason">{{ b.unavailable_reason }}</span>
+                </li>
+              </ul>
+            </li>
+          </ul>
+        </template>
       </div>
 
       <div class="nodes__per-model-head">
@@ -489,6 +720,15 @@ function describeError(err: unknown): string {
       />
       <span class="nodes__reason-hint">{{ t('nodes.reasonHint') }}</span>
     </label>
+
+    <!-- ★ trigger_probe：后端 req.TriggerProbe。勾了只是「请求一次探测」，
+         不是保证触发 —— 提交器没接线时后端静默降级成 false（routing_reset.go:125）。
+         所以这里**不写**任何承诺性文案，只描述请求本身。 -->
+    <label v-if="confirmOp === 'resetState'" class="nodes__probe-toggle">
+      <input v-model="resetTriggerProbe" type="checkbox" class="nodes__probe-checkbox" />
+      <span class="nodes__probe-label">{{ t('nodes.resetTriggerProbe') }}</span>
+    </label>
+    <p v-if="confirmOp === 'resetState'" class="nodes__reason-hint">{{ t('nodes.resetTriggerProbeHint') }}</p>
   </AppConfirm>
   </div>
 </template>
@@ -610,6 +850,94 @@ function describeError(err: unknown): string {
 .nodes__op-msg--err {
   color: var(--app-danger);
   background: color-mix(in srgb, var(--app-danger) 12%, transparent);
+}
+
+/* ★ 「探测是否被触发」是二义结论，不是成功也不是失败 ⇒ 单独一档，
+   复用 --app-warning，不复用 ok/err（那两档都会给出错误的安全感）。 */
+.nodes__op-msg--warn {
+  color: var(--app-warning);
+  background: color-mix(in srgb, var(--app-warning) 12%, transparent);
+}
+
+/* R1：新增触控控件 ≥48 CSS px。整行 label 是命中区，勾选框本身放大到 24px
+   视觉尺寸但由 label 承担点击面 —— 移动端直接点 16px 勾选框会点不中。 */
+.nodes__probe-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--app-space-2);
+  min-height: 48px;
+  margin-top: var(--app-space-2);
+  cursor: pointer;
+}
+
+.nodes__probe-checkbox {
+  width: 24px;
+  height: 24px;
+  accent-color: var(--app-primary);
+  flex: none;
+}
+
+.nodes__probe-label {
+  font-size: 0.8125rem;
+  color: var(--app-text-primary);
+}
+
+/* ── 路由阻塞诊断区 ────────────────────────────────────────────────── */
+.nodes__rblocked {
+  margin-top: var(--app-space-3);
+}
+
+.nodes__rblocked-list,
+.nodes__rblocked-bindings {
+  list-style: none;
+  margin: var(--app-space-2) 0 0;
+  padding: 0;
+}
+
+.nodes__rblocked-cred {
+  padding: var(--app-space-2) 0;
+  border-top: 1px solid var(--app-border);
+}
+
+.nodes__rblocked-head {
+  display: flex;
+  align-items: center;
+  gap: var(--app-space-2);
+  flex-wrap: wrap;
+}
+
+.nodes__rblocked-label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--app-text-primary);
+}
+
+.nodes__rblocked-meta,
+.nodes__rblocked-reason,
+.nodes__rblocked-unknown,
+.nodes__rblocked-disabled {
+  font-size: 0.75rem;
+  color: var(--app-text-secondary);
+}
+
+.nodes__rblocked-unknown {
+  color: var(--app-warning);
+}
+
+.nodes__rblocked-disabled {
+  color: var(--app-danger);
+}
+
+.nodes__rblocked-binding {
+  display: flex;
+  align-items: center;
+  gap: var(--app-space-2);
+  padding: 2px 0;
+}
+
+.nodes__rblocked-model {
+  font-size: 0.75rem;
+  color: var(--app-text-primary);
 }
 
 .nodes__ops-hint,

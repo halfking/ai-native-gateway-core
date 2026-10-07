@@ -171,6 +171,72 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/TuningProposalsView.vue'),
     meta: { titleKey: 'proposals.title', requiresAuth: true },
   },
+  // 自动路由读面：答「现在跑得怎么样、花了多少钱」——
+  // /proposals 答建议，本页答建议落地后的效果。两者之间缺的就是这一页。
+  // 五段：audit 聚合 / 凭据×模型索引 / 客户成本 / 模型成本 / 调优准确率。
+  // ★ 整条 auto-route 线是 superAdmin（handler.go:1381 与 :1430 都是
+  //   h.superAdmin；注意形参名 adminWrap 是假名，值在调用处才定）
+  //   ⇒ 抽屉席必须挡，tenant_admin 进去必然 403。
+  {
+    path: '/auto-route',
+    name: 'auto-route',
+    component: () => import('@/views/AutoRouteView.vue'),
+    meta: { titleKey: 'autoRoute.title', requiresAuth: true },
+  },
+  // 决策回放是**详情页，不占抽屉席**（口径同 /maas-orders/:id）。
+  // id 可选：从 /request-detail 带进来，或用户直接粘一个 id。
+  // ★ 端点是 superAdmin 档（同整条 auto-route 线）⇒ 抽屉层挡的是列表入口，
+  //   详情页靠页面内 403 文案 + /request-detail 入口按角色隐藏。
+  {
+    path: '/auto-route-decision/:id?',
+    name: 'auto-route-decision',
+    component: () => import('@/views/AutoRouteDecisionView.vue'),
+    meta: { titleKey: 'autoRouteDecision.title', requiresAuth: true },
+  },
+  // 看板读面（第九条 dashboard 端点线的 UI 入口）。
+  // ★ admin 档：handler.go:1052-1069 九条注册全部是 `admin(...)`
+  //   ⇒ tenant_admin 可用 ⇒ 抽屉席**不设** requiresRole。
+  // ★ 与 /auto-route 相反（那条整族是 h.superAdmin）—— 别照抄它。
+  {
+    path: '/dashboard-ops',
+    name: 'dashboard-ops',
+    component: () => import('@/views/DashboardOpsView.vue'),
+    meta: { titleKey: 'dashboardOps.title', requiresAuth: true },
+  },
+  // 日志运维面（logOps 三条只读端点）。
+  // ★ admin 档：`/api/admin/logs/{stats,files,body-cache-stats}` 都是 admin(...)
+  //   ⇒ tenant_admin 可用 ⇒ 抽屉席**不设** requiresRole。
+  // ⚠️ 同前缀下 config / archive / cleanup 是 h.superAdmin ——
+  //   往后往本页加任何一条，整页档位必须跟着升。
+  {
+    path: '/log-ops',
+    name: 'log-ops',
+    component: () => import('@/views/LogOpsView.vue'),
+    meta: { titleKey: 'logOps.title', requiresAuth: true },
+  },
+  // 人工标注工作台（三条**只读**端点；写操作三条一律不碰）。
+  // ★ admin 档：handler.go:1386/1389/1390 三条注册全是 admin(...)
+  //   ⇒ tenant_admin 可用 ⇒ 抽屉席**不设** requiresRole。
+  // ⚠️ 同前缀的 batch / annotations/{id}(DELETE) / annotations(POST)
+  //   也都是 admin 档，但它们**改标注事实**（删一条会改变 accuracy 口径），
+  //   本页刻意不接。
+  {
+    path: '/annotations',
+    name: 'annotations',
+    component: () => import('@/views/AnnotationsView.vue'),
+    meta: { titleKey: 'annotations.title', requiresAuth: true },
+  },
+  // 审批队列（运行中的审批**实例**，只读）。
+  // ★ admin 档：cmd/gateway/main.go:7384-7385 两条注册都是 wrapAdmin(...)
+  //   ⇒ tenant_admin 可用 ⇒ 抽屉席**不设** requiresRole。
+  // ★ 与 /approval-config（配置）、/approval-rules（审批人与规则）不重叠：
+  //   那两页答「该问谁 / 什么条件下拦」，本页答「现在有几条在等」。
+  {
+    path: '/approval-queue',
+    name: 'approval-queue',
+    component: () => import('@/views/ApprovalQueueView.vue'),
+    meta: { titleKey: 'approvalQueue.title', requiresAuth: true },
+  },
   // ── 全局横向对比面（2026-10-07）──────────────────────────────────────
   // 与 /funnel 配对：漏斗是单模型纵深，矩阵/流量是全体模型横向对比。
   // ★ 两条都是 superAdmin：matrix/flow 在 RegisterAnalyticsRoutes 里
@@ -259,6 +325,35 @@ const routes: RouteRecordRaw[] = [
     name: 'data-lifecycle',
     component: () => import('@/views/DataLifecycleView.vue'),
     meta: { titleKey: 'lifecycle.title', requiresAuth: true },
+  },
+  // 压缩可观测（stats/sessions，2026-10-08）。**admin 档**（admin(...)）
+  // ⇒ tenant_admin 可用，导航不设 requiresRole。
+  // ★ 与 /data-flow 按「答什么」划界：那页答「记录怎么分布」，本页答
+  //   「压缩策略实际压了多少、被压成什么样」。
+  //   ⚠️ 两处的压缩率**单位相反**（本页 0-1 比例 / data-flow 0-100 百分数）
+  //     ⇒ 不可并列成同一组对比。
+  // ★ 同族没有写操作，本页两条都是纯 GET。
+  {
+    path: '/compression',
+    name: 'compression',
+    component: () => import('@/views/CompressionView.vue'),
+    meta: { titleKey: 'compressionView.title', requiresAuth: true },
+  },
+  // 数据流与大字段（stats/metrics/jobs/blobs-top，2026-10-08）。**admin 档**（admin(...)）
+  // ⇒ tenant_admin 可用，导航不设 requiresRole。
+  // ★★★ 与上面的 /data-lifecycle 按「答什么」划界，不合并：
+  //   /data-lifecycle 答「数据库这一层什么状态」（分区清单 + 表体积榜，**表级**），
+  //   本页答「记录怎么分布 / 有没有在清理 / 大字段占多少」（**记录级**）。
+  //   合并会把两种粒度混在一起，且本页的 `metrics` 是**全表口径**
+  //   （data_lifecycle_metrics.go:63 的 FROM request_logs 无 WHERE），
+  //   与 /data-lifecycle 的租户/榜内口径并排会给出错误对比。
+  // ★ 同族的 cleanup/preview（POST 且 action 含 delete）、blobs/cleanup/*、
+  //   partitions/*、hot/promote 是写操作或 superAdmin，本页一条都不碰。
+  {
+    path: '/data-flow',
+    name: 'data-flow',
+    component: () => import('@/views/DataFlowView.vue'),
+    meta: { titleKey: 'dataFlow.title', requiresAuth: true },
   },
   // 路由优化器（stats/accuracy/parameters/metrics，2026-10-07）。**admin 档**（admin(...)）
   // ⇒ tenant_admin 可用，导航不设 requiresRole。
@@ -508,6 +603,40 @@ const routes: RouteRecordRaw[] = [
     name: 'session-context',
     component: () => import('@/views/SessionContextView.vue'),
     meta: { titleKey: 'sctx.title', requiresAuth: true },
+  },
+  // 免费资源自动发现读面（**admin 档**，2026-10-07：handler.go:1302-1313 六条只读）。
+  // ⚠️★ 抽屉席是 **admin 档**（不设 requiresRole），但同族第七条
+  //   `scan-scheduler/status` 是 **h.superAdmin(...)**（handler.go:1316）
+  //   ⇒ 由页面内单独探测、单列 403 态，不占抽屉席。
+  // ★★★★★★★★★★ `ListTasks` 的 SELECT **漏了 `updated_at`**（discovery_engine.go:460-464）
+  //   ⇒ `GET /tasks` 里每个任务的 `updated_at` 恒为 `"0001-01-01T00:00:00Z"`，
+  //   而 `GET /tasks/{id}` 给真值 ⇒ 同字段两端点两个值都 200。
+  // ★★★★★★★★ `templates` 有 nil-guard（永不为 null）、`presets` **没有**
+  //   （`var out []presetView`）⇒ 「空」在本族有两种表示。
+  // ★★★★★★★ `fdTenant` = `EffectiveTenantID` ⇒ **super_admin 看到的也只是
+  //   `default` 一个租户**，不是全部租户。
+  // ★ `limit` 超上界是**回落 50 而不是 clamp 到 200**（注释写的是 capped at 200）。
+  // ★ 五个写端点（templates POST / {id} PUT|PATCH|DELETE / scan / import / import-orbi）本页不碰。
+  {
+    path: '/free-discovery',
+    name: 'free-discovery',
+    component: () => import('@/views/FreeDiscoveryView.vue'),
+    meta: { titleKey: 'fd.title', requiresAuth: true },
+  },
+  // 凭据 × 模型实时状态（**superAdmin 档**，2026-10-07：
+  // credential_state_handlers.go:175 `wrap := h.superAdmin`）。
+  // ⚠️★ 与前几批相反：这一条**要**设 requiresRole，抽屉席也**要**设 super_admin。
+  // ★★★★★★★★★★ `state` **可以是 `null`** —— 三层缓存（内存→Redis→DB）全 miss，
+  //   manager.go:763 返回 `(nil, nil)`，handler 只判 `err != nil`
+  //   ⇒ **200 + state:null**，**不是** 404。
+  // ★★★★★★ 五条指标在**两条 DB 分支里根本没被赋值** ⇒ 恒 0；
+  //   缓存命中时才有真值 ⇒ 同一个 (凭据,模型) 两次查询可能给不同数字，都是 200。
+  // ★★★★ 错误响应是 **text/plain**（`http.Error`）且**带尾换行**，不是 JSON 信封。
+  {
+    path: '/credential-model-state',
+    name: 'credential-model-state',
+    component: () => import('@/views/CredentialStateView.vue'),
+    meta: { titleKey: 'cs.title', requiresAuth: true },
   },
   {
     path: '/:pathMatch(.*)*',
