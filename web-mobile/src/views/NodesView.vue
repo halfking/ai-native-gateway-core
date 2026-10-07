@@ -165,12 +165,40 @@ function openDetail(c: CredentialMonitorSummary): void {
   void loadDecisions(c.id)
 }
 
+// 2026-10-08：原先只分支 down / degraded 两个值，其余**全部**落到末尾的
+// return 'success'。245 线上实测 65 条凭据的 availability_state 分布是
+//   ready 40 / auth_failed 20 / unreachable 2 / suspended 2 / cooling 1
+// ⇒ 25 条走 success 全绿，其中 10 条是明确 auth_failed 或 suspended ——
+// **正在鉴权失败的凭据被渲染成「一切正常」的绿点。**
+// 这是「枚举 == 分支」的缺口形态：枚举有 5 个在用成员，分支只认 2 个；
+// 日后新增任何一个状态都是静默全绿，而不是显式失败。
+//
+// 三条改法，缺一不可：
+//  1) 分支覆盖**线上实测到的每一个状态**，而不是只挑两个典型的；
+//  2) 收尾**不再是裸的 return 'success'**，而是一次白名单匹配 ——
+//     没列进 ready 的都不给绿。这把「新增枚举成员」从静默全绿变成
+//     自动落到 warning，是本条改动的核心（fail-closed）。
+//  3) broken_model_count 缺失时**不参与**判断：它是 65 条里缺 25 条的字段，
+//     `?? 0` 等于对没测过的凭据断言「没有 broken 模型」。
+//     与同文件 modelsLabel 同一原则：没被测量过就不能声称结论。
+//
+// 映射口径（auth_failed / unreachable 归 danger 的理由：它们是**正在失败**，
+// 与 down 同级；suspended 归 warning 而非 muted，因为 muted 留给
+// manual_disabled —— 那是用户主动停用，属于明示意图，不是健康信号。
 function healthTone(c: CredentialMonitorSummary): 'success' | 'warning' | 'danger' | 'muted' {
   if (c.manual_disabled) return 'muted'
-  if (c.availability_state === 'down' || c.health_status === 'down') return 'danger'
-  if (c.availability_state === 'degraded' || c.consecutive_failures > 0 || (c.broken_model_count ?? 0) > 0)
+  const av = c.availability_state
+  const hs = c.health_status
+  if (av === 'down' || hs === 'down') return 'danger'
+  if (av === 'auth_failed' || av === 'unreachable' || hs === 'unreachable') return 'danger'
+  if (av === 'degraded' || av === 'cooling' || av === 'rate_limited' || av === 'quota_exhausted')
     return 'warning'
-  return 'success'
+  if (av === 'suspended' || av === 'disabled') return 'warning'
+  if ((c.consecutive_failures ?? 0) > 0) return 'warning'
+  if (typeof c.broken_model_count === 'number' && c.broken_model_count > 0) return 'warning'
+  // 白名单收尾：只有明确是 ready/healthy 的才给绿。未列出的状态一律 warning。
+  if (av === 'ready' && hs !== 'unknown') return 'success'
+  return 'warning'
 }
 
 // 2026-10-06：model_available / model_total 对一部分凭据是**整个键不存在**
