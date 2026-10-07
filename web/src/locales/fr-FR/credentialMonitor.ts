@@ -43,6 +43,7 @@ export default {
       idPrefix: 'ID : ',
       manualPrefix: 'Manuel : ',
       effectivePrefix: 'Effectif : ',
+      modelsNotMeasured: 'Cet identifiant n’a renvoyé aucun décompte de modèles cette fois (non mesuré) — ce n’est pas « 0 disponible »',
     },
     loading: 'Chargement…',
     empty: 'Aucun identifiant',

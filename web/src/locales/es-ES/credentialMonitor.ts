@@ -40,6 +40,7 @@ export default {
       idPrefix: 'ID: ',
       manualPrefix: 'Manual: ',
       effectivePrefix: 'Efectivo: ',
+      modelsNotMeasured: 'Esta credencial no devolvió recuentos de modelos esta vez (sin medir): no es «0 disponibles»',
     },
     loading: 'Cargando...',
     empty: 'No hay credenciales',
