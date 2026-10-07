@@ -15,6 +15,7 @@ export const enUS = {
     workTypes: 'Work types',
     probeQueue: 'Probe queue',
     selfCheck: 'Self-check',
+    connectionRegistry: 'Connection registry',
     modelPolicies: 'Model policies',
     modelPolicyAudit: 'Policy audit',
     approvalConfig: 'Approval config',
@@ -3091,6 +3092,79 @@ sctx: {
     featuredUnknown: '★ Undecidable (this endpoint was not fetched).',
     featuredTwoSources: '★ Above is the effective list from /featured (always an array); below is the usage ranking from /featured-models. They are not the same thing and their nil encodings are opposite.',
     featuredEmpty: '★ Empty list: "no featured models configured" and "could not query" look identical in the response.',
+  },
+  // ★ Batch 107: streaming connection registry. Wording maps 1:1 onto the backend
+  //   contract — read the seven notes at the top of views/ConnectionRegistryView.vue first.
+  cr: {
+    title: 'Connection registry',
+    subtitle: 'In-process streaming connection registry: live connections plus close audit. Read-only, no request or response bodies.',
+    load: 'Load',
+    reload: 'Reload',
+    // ★ 503 means not wired, which is not the same as wired with zero connections
+    notWired: 'Connection registry not wired: this process injected no registry instance, so both endpoints are unavailable.',
+    // ★ capacity is always ≥ 4096, so utilization is always meaningful
+    watermark: 'Live connections {n} / cap {cap}',
+    journey: 'Open request journey',
+    badge: {
+      // ★★★★ The race window: already flagged closed but still in the live table
+      closing: 'Closing',
+    },
+    no: {
+      // ★ All four are omitempty keys, so absence only means nothing was supplied at registration
+      protocol: 'Protocol not recorded',
+      client: 'Client not recorded',
+      tenant: 'Tenant not recorded',
+      reason: 'No close reason',
+      number: 'Not a number',
+    },
+    unit: {
+      // ★ frames_written / bytes_written are uint64 without omitempty, so keys always exist and 0 is real
+      // ★★ Capitalized on purpose: the i18n parity gate flags en values equal to the
+      //   leaf key name ('frames' === leaf 'frames' ⇒ reported as untranslated).
+      frames: 'Frames',
+      bytes: 'Bytes',
+    },
+    lastFrame: {
+      // ★ last_frame_at always exists, but is Go's zero time when no frame was ever written
+      never: 'Never wrote a frame',
+    },
+    search: {
+      title: 'Look up by request_id',
+      placeholder: 'request_id',
+      btn: 'Look up',
+      clear: 'Clear result',
+      // ★★★ 404 is byte-identical for "does not exist" and "already closed"
+      notFound: 'Not found. It may already be closed (the detail endpoint only reads the live table), or it may never have existed — both return exactly the same response.',
+      closedNote: 'Closed-history entries are not in the live table, so looking them up by id always fails; read them from the close records below.',
+    },
+    filter: {
+      placeholder: 'Filter by request_id, protocol, client, or tenant',
+      count: '{n} rows after filtering',
+    },
+    live: {
+      title: 'Live connections',
+      // ★ live: [] is a normal shape, because List() always returns a non-nil slice
+      empty: 'No live connections right now.',
+      closing: '{n} of these are already flagged closed but still in the live table (a write-deadline race window).',
+    },
+    closed: {
+      title: 'Close records',
+      // ★ closed is null when there is no history, not []
+      absent: 'No close history yet.',
+      empty: 'No close records match the filter.',
+      // ★★★★ Not "older ones were dropped": the ring buffer holds 256, the endpoint exposes 50
+      moreUnrevealed: 'Exposed the full {limit} records; the registry close ring buffer may still hold older records that this endpoint does not expose.',
+    },
+    col: {
+      protocol: 'Protocol',
+      client: 'Client',
+      tenant: 'Tenant',
+      frames: 'Frames written',
+      bytes: 'Bytes written',
+      registered: 'Registered at',
+      lastFrame: 'Last frame',
+      closeReason: 'Close reason',
+    },
   },
   sc: {
     title: 'Self-check',
