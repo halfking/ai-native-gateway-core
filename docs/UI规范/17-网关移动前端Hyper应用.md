@@ -10428,3 +10428,125 @@ WHERE credential_id = $1 AND started_at >= $2
    于是「五键全是默认值 + 带一个额外键」也会被判成「可能是兜底」——
    而额外键恰好是**唯一能定案**的证据。
    ⇒ 补 `extraKeyCount(w) > 0 ⇒ false`，并把这条推理写进函数注释。
+
+## 11.114 三态探测队列（probe/tasks，第七十八批）
+
+- **端点**：`GET /api/admin/probe/tasks?status=pending|in_flight|completed&limit=`
+- **注册**：`admin/probe_dashboard.go:1907` 的 `adminWrap(h.handleProbeTaskRoute)` ⇒ **admin 档**
+  ⇒ tenant_admin 可用 ⇒ 抽屉席不设 `requiresRole`
+- **路由是方法多路复用**：GET 走 `handleProbeTaskList`（`:1841`，只读）；
+  POST 走 `handleProbeTaskCreate`、DELETE 走 `handleProbeTaskCancel`
+  ⇒ 本批**只碰 GET**，写操作不碰
+- **表**：`credential_probe_queue`（`sql/migrations/domain/343_credential_probe_queue.sql`）
+- **桌面调用方**：`web/src/api-selfcheck.ts:313`、`components/probe/ProbeTriStateQueue.vue`
+- **落点**：`web-mobile/src/api/probeTriStateTasks.ts` + `.test.ts`（72 用例）
+
+### 挖到的八条契约
+
+1. **★★★★★ 响应里的 `status` 不是数据库里的 status。**
+   `queryProbeTriStateTasks`（`:1813-1821`）把六个 DB 状态压成三个：
+   ```go
+   switch t.Status {
+   case "ready":   t.Status = "pending"
+   case "running": t.Status = "in_flight"
+   default:        t.Outcome = t.Status; t.Status = "completed"
+   }
+   ```
+   DB 的 CHECK 是 **6 值**：`('ready','running','success','failed','expired','cancelled')`
+   ⇒ ★ **原始状态只在 completed 行以 `outcome` 保留**，
+     pending / in_flight 行的原值（`ready` / `running`）**被丢掉且不可恢复**。
+   ⇒ 客户端看到的 `status: 'pending'` **不能**反推「这一行是 ready 而不是别的」。
+
+2. **★★★★★ `outcome` 与 `status` 互斥且可验。**
+   ⇒ `status === 'completed'` ⇒ `outcome` 必在（四值之一）；
+     否则 `outcome` 必不在（omitempty）。
+   ⇒ ★ 因为 `:1818-1820` 的 default 分支是**唯一**给 `Outcome` 赋值的地方，
+     可达载荷恒满足 `outcome 存在 ⇔ status === 'completed'`。
+
+3. **★★★★★ `next_retry_at_ms` 的存在性 ⇔ `status === 'pending'`。**
+   `:1822-1824` 的条件是 `t.Status == "pending" && !nextRunAt.IsZero()`，
+   而 `next_run_at TIMESTAMPTZ NOT NULL DEFAULT now()` ⇒ pending 行必然非零
+   ⇒ ★ **pending 行必有这个键，另两条腿必没有**。退避信息只在 pending 腿有意义。
+
+4. **★★★★★ `*int` + omitempty 与 `int` + omitempty 的行为相反。**
+   `HTTPStatus *int` / `LatencyMs *int`（`:1733-1734`）是**指针**：
+   omitempty 只在 nil 时省略 ⇒ **数据库里的 0 会原样出现**（`http_status: 0`）。
+   对照第七十六批 `upstream_latency_ms int` ⇒ 0 被 omitempty **吃掉**变成键缺失。
+   ⇒ ★★ 用 `if (t.http_status)` 判「有没有测出状态码」会把 0 误判成「没有」。
+
+5. **★★★★ `provider_id` / `provider_name` / `provider_code` 三个都带 omitempty。**
+   provider_id 是 `*int64`（LEFT JOIN 可能 NULL）；
+   name/code 走 `COALESCE(NULLIF(...), NULLIF(...), NULLIF(...), '')`（`:1781-1782`）
+   ⇒ 三者皆空时 SQL 给 **`''`**，再被 omitempty 吃掉
+   ⇒ ★「供应商未知」表现为**键缺失**，不是空串也不是 null。
+
+6. **★★★★ `origin` 是从 `source` 推出来的三值枚举，且客户端可自验。**
+   `probeTriStateOrigin`（`:1743-1751`）：
+   ```go
+   case "request_failure", "no_candidates": return "error"
+   case "admin", "external_async":          return "manual"
+   default:                                  return "scheduled"
+   ```
+   ⇒ ★★ **`no_candidates` 不在 `source` 的 CHECK 约束里**
+   （CHECK 只有 `'request_failure','periodic','external_async','admin'`）
+   ⇒ 那个分支项**不可达**（恒真守卫，按既有纪律保留并在注释里写明）。
+   ⇒ 但 `origin` 与 `source` 的对应关系**客户端可自验**，不必信后端。
+
+7. **★★★ 参数是**严格校验**，不是静默回落。**
+   - `status` 不在白名单 ⇒ **400** `status must be pending|in_flight|completed`；
+   - `limit` 不在 `1..200` ⇒ **400** `limit must be 1..200`；
+   - 缺省 `status=pending`、`limit=50`。
+   ⇒ ★ 与第七十六批 `/self-check/runs` 的 `limit` **静默回落成 50** 形成直接对照：
+     **同一个仓里两种参数校验风格并存**，写客户端时不能凭直觉假设。
+
+8. **★★★ `count` 是本页长度，不是总数。**
+   `:1879` 的 `"count": len(tasks)` ⇒ `count === tasks.length` **恒成立**
+   ⇒ ★「还有没有下一页」只能靠 `tasks.length >= limit` 判断，`count` 不提供额外信息。
+
+### 另注
+
+- `tasks := []ProbeTriStateTask{}`（`:1797`）⇒ **恒数组，不是 null**。
+- **三条腿的排序键各不相同**：pending = `priority DESC, next_run_at ASC, id ASC`；
+  in_flight = `started_at DESC NULLS LAST, id DESC`；
+  completed = `COALESCE(finished_at, updated_at) DESC, id DESC`
+  ⇒ 客户端**不能**假设跨腿的统一排序。
+- 扫描失败是 `return nil, err` ⇒ **整条 500**（不像别处 `continue` 跳行）。
+- 503 `database not configured`；500 `internal server error`。
+- 结构体 13 个恒在键 + 9 个条件键 = 22 键；`outcome`/`next_retry_at_ms`/`http_status`/
+  `latency_ms`/`reason_code`/`finished_at` 都是条件键。
+- 注释自陈「Metadata only — no `result_body_preview`」（`:1709-1710`）⇒
+  **请求/响应正文刻意不进 API 与 SSE**（可观测安全红线）。
+
+### 验证
+
+- 用例 **72 条全绿**
+- 变异 `/tmp/mut-co78.mjs` **47 条 = 45 有牙 + 2 条可证等价 + 0 STILL_GREEN**，`RESTORED=OK`
+- 三门 rc=0；`vue-tsc` rc=0；`npm run build` rc=0
+- 全量 **4417 条（142 文件）** rc=0；十连跑 10/10
+- U+FFFD 自查：源与用例均 0
+
+### 变异验证暴露的判据缺陷
+
+1. **★★ 锚点指错（1 条）。**
+   `退避一致性只判 pending 腿` 那条变异打破的是「in_flight 居然带退避」那一支
+   （`true || …` 恒真），而我的锚点指着「pending 缺退避」——
+   那一支两条实现都返回 `false` ⇒ 打不出差异。
+   ⇒ 判据是**双向不变量**时，两个方向各要一条用例，锚点也要指向对的那一条。
+
+2. **★★ 两条可证等价变异。**
+   `probeTaskSucceeded` / `probeTaskFailedOrAbandoned` 里去掉 `status === 'completed'`，
+   对可达载荷行为不变（`:1818-1820` 保证 `outcome` 存在 ⇔ completed）。
+   ⇒ 记为可证等价，保留守卫。
+
+3. **★★ 实现缺陷（首跑即红）：字段名写错。**
+   `probeTaskLatencyMsOrNull` 里写的是 `t.latencyMs`，而字段名是 **`latency_ms`**
+   ⇒ 永远取到 `undefined` ⇒ 恒返回 `null`。
+   用例「`latency_ms` 为 0 时取得到 0 而不是 null」当场抓到。
+   ⇒ ★ **snake_case 的后端字段最容易在这里出错**；语义函数必须有一条
+     「键在时能取到值」的用例，否则 `?? null` 会把打错的字段名吞掉。
+
+4. **★★ 类型门比 vitest 更严（又一次）。**
+   `requireTask` 里 `(… as readonly string[]).includes(d.origin)` —— `d.origin` 是
+   `unknown`，`vitest` 不做类型检查所以全绿，`vue-tsc` 报 TS2345
+   ⇒ 补 `String(...)`。
+   ⇒ 与第七十四批那次同源：**「vitest 全绿」不等于「类型门绿」**。
