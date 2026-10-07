@@ -256,10 +256,22 @@ func (w *TurnWriter) AppendTurn(ctx context.Context, rec TurnRecord) (turnNo int
 // LockSessionInTx serializes all turn state reads and writes for one tenant/session.
 // Callers that derive a delta from the latest persisted body must acquire this
 // lock before the read so the derivation and appended turn share one snapshot.
+//
+// ★ 观测（runbook §10.106.16）：这里量的是**等锁时长**。它长期是一个盲区——
+// sessions_v2_write_latency_seconds 从取锁**之后**才起计，把排队全排除了。
+// 而 2026-10-07 实测：这一条 pg_advisory_xact_lock 语句占了网关 643.6 小时
+// 数据库时间里的 **83.9 小时（13.0%）**，均 99.7 ms/次——顾问锁无争用时
+// 只要微秒级，所以那 99.7 ms 几乎全是**在排队**。
+// 加这个直方图不是优化，是**补上缺失的仪表**。
+// ⚠️ 持锁时长（到 commit 为止）**没有**在这里量：锁是 xact 级的，
+// 释放点在事务边界、不在本函数内；要量它需在各调用方的 commit 处包一层。
 func (w *TurnWriter) LockSessionInTx(ctx context.Context, tx pgx.Tx, tenantID, sessionID string) error {
+	started := time.Now()
 	if _, err := tx.Exec(ctx, sessionAdvisoryLockSQL, tenantID, sessionID); err != nil {
 		return fmt.Errorf("acquire advisory lock: %w", err)
 	}
+	metrics.SessionsV2SessionLockWait.Observe(time.Since(started).Seconds())
+	metrics.SessionsV2SessionLockAcquisitions.Inc()
 	return nil
 }
 
