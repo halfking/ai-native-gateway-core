@@ -905,6 +905,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// ★ 配置表**建表即空** ⇒ 应用后不删任何东西；
 			//   启用需按族 INSERT 保留月数，那是业务决定，不在本迁移内。
 			"841_monthly_partition_retention.sql",
+			"842_credential_model_index_latest_bucket_idx.sql",
 		},
 	}
 }
