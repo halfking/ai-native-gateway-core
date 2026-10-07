@@ -651,6 +651,12 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'rp.title', requiresAuth: true },
   },
   {
+    path: '/work-types',
+    name: 'work-types',
+    component: () => import('@/views/WorkTypesView.vue'),
+    meta: { titleKey: 'wt.title', requiresAuth: true },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),

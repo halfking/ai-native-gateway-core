@@ -76,8 +76,14 @@ const KNOWN_ORPHANS: readonly string[] = [
   'usageTrendSeries',
   'userUsageStats',
   'v1DataHorizon',
-  'workTypes',
 ]
+
+/**
+ * 现况（2026-10-08，第一百零三批后）：**27 项**。
+ * ★ 上面文件头里那句「30 个」是第一百批当时的实测记录，**不要去改它** ——
+ *   引用它时要连时刻一起引用（「第一百批那轮 30 个」）。
+ *   清单本身是活的事实源，下面这条断言逐项对拍。
+ */
 
 const ROOT = join(process.cwd(), 'src')
 const API_DIR = join(ROOT, 'api')
@@ -190,6 +196,13 @@ describe('孤儿棘轮', () => {
     // ★ 它是被**委托**接上的：NodeHealthView → nodeHealth.ts → ./nodeHealthTimeline
     //   中间那一跳在 src/api/ 里且用相对导入 —— 两种口径都测得出这一点。
     expect(currentOrphans()).not.toContain('nodeHealthTimeline')
+  })
+
+  it('★★ 已接线的哨兵：workTypes 不在孤儿里（第一百零三批）', () => {
+    // ★ 工作类型配置面接上了抽屉席与路由 ⇒ 棘轮清单同步删掉那一行。
+    //   ★ 这一族是 h.superAdmin（admin/handler.go:1434），所以席的权限门控
+    //   由 AppDrawer.spec.ts 的白名单把守，两条判据合起来才覆盖「接上了且挂对了档」。
+    expect(currentOrphans()).not.toContain('workTypes')
   })
 
   it('★★★ 反向护栏：api 内部的互相引用不得凭空产生可达性', () => {
