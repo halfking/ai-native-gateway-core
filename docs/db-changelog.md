@@ -8634,3 +8634,44 @@ done
   这里是**一次性空库**（只跑过夹具自建的那部分迁移），不是完整部署态；
   那 8 条 FAIL 大多是 `42P01 relation … does not exist`。
   ⇒ 它证明的是**入口可用 + 读数口径正确**，不是产品健康。
+
+## 2026-10-07 23:53 — 再更正一条：扫描腿**不在本仓库里**（软链指向仓外 SSOT）
+
+### 三十三、抽查台账断言时发现的事实
+
+完成度审计抽查我此前写进台账的断言，逐条重验时第 ②③ 条失败：
+
+```
+git show origin/main:scripts/deploy-lib/db-changelog.sh
+→ 致命错误：路径在磁盘上，但不在 'origin/main' 中
+```
+
+查因：
+- `git ls-files scripts/deploy-lib/` ⇒ **空**（未跟踪）
+- `git check-ignore` ⇒ 未被 ignore（是**故意**不跟踪，不是被忽略）
+- `ls -l scripts/deploy-lib` ⇒ **软链** → `../../../../ai-native-tools/deploy-lib`
+- 解析后路径：`__DEV_HOME__/workspace/ai-native-tools/deploy-lib` ⇒ **在本仓之外**
+- 历史上存在过一次：commit `722e9020f`
+  「scripts/deploy-lib 转软链 → workspace deploy-lib SSOT，旧 7 文件留档 deploy-lib.legacy
+  ——对齐 P2 不变量，治理仓 deploy-lib-check 合规」
+
+⇒ `scripts/deploy-lib` 是一个**软链接**，指向仓外的 workspace SSOT。
+  ⇒ **扫描腿的代码不随本仓 clone 分发。** 换一台机器、或在 CI runner 上，
+  `scripts/deploy-lib/db-changelog.sh` **根本不存在**。
+
+⚠ 由此更正我此前那些表述的真实边界：
+  「154 生产上投递迁移的只有扫描腿」——
+  这个结论**在本机成立**（软链可达），但它**不是本仓库能自证的事实**，
+  而是「本机 workspace SSOT 的状态」。我此前把它当成仓库内事实来引用，
+  等于**让读者以为读仓内代码就能查证投递机制**。
+
+⇒ ★ 判别动作（这条是本节的真正产物）：
+  凡要引用一个**部署/构建机制**，先问「它在仓内还是仓外 SSOT」。
+  `git ls-files <路径>` 一次就能答，**不要**用 `ls` 看到文件就当它是仓内资产
+  —— 软链会让两者看起来完全一样。
+  同族：[[按名字/包名推断存在性]] · [[按日志文件统计之前先取内容首末时间戳]]。
+
+⇒ 这条对**本轮那条「契约门是否该认扫描腿」的裁决有直接影响**：
+  那个裁决的依据之一是「扫描腿在 154 生产上是活的」，
+  而**「它是否在别的环境也活」现在无法从本仓自证**。
+  ⇒ 台账已记：该裁决的前提需属主用 workspace SSOT 复核。
