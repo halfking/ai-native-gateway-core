@@ -30,11 +30,36 @@
 --
 -- ★ 本迁移只加索引，**不改任何查询、不改语义、零行为变化**。
 --
--- ⚠️ 为什么不加 CONCURRENTLY：
---   PostgreSQL 不支持在分区父表上 CREATE INDEX CONCURRENTLY（本写法在本库 PG 17
---   亦不可用）。普通 CREATE INDEX 会对每个分区取 ACCESS EXCLUSIVE 直到建完。
---   354,153 行分摊到 3 个分区，实测单分区规模下窗口应在秒级，
+-- ⚠️ 为什么不加 CONCURRENTLY（已实测，不是转述文档）：
+--   CREATE INDEX CONCURRENTLY 在分区父表上直接被拒。实测于 PG 17.11
+--   （本地一次性集群，分区父表 + 2 个分区）：
+--     CREATE INDEX CONCURRENTLY t ON part_parent (...) →
+--       ERROR: cannot create index on partitioned table concurrently
+--   该限制跨版本成立（分区表索引自 PG 11 起就不支持 CONCURRENTLY），
+--   所以本库 PG 17.10 的行为相同。实测同时确认：**失败后无残留对象**
+--   （pg_class 里查不到半成品/invalid 索引），不会留下需要清理的东西。
+--
+-- ⚠️ 普通 CREATE INDEX 的实际代价（同样实测，**此前这里写错了**）：
+--   它对**父表与全部分区**取 **ShareLock**，不是 ACCESS EXCLUSIVE。
+--   持锁者 = CREATE INDEX 本体后端 + 其 parallel worker（两个 pid 同时在锁表里）。
+--   连续 4 次采样中两个分区始终**同时**持锁 ⇒ 不是逐个分区轮流取锁，是一次全取。
+--   由此推出的两条阻塞面（lock_timeout=2s 实测）：
+--     · 写被完整阻塞：ShareLock 与 RowExclusiveLock 冲突；
+--       经父表 INSERT 与**直接写分区**都被阻塞，8 次尝试全部 lock timeout。
+--       对照组（无建索引时）同样语句 rc=0 ⇒ 量具本身不会恒红。
+--     · 读**完全不受影响**：AccessShareLock 与 ShareLock 不冲突，
+--       同窗口内 SELECT 正常返回计数。
+--   ⇒ 窗口内的表现是「写入报错、查询照常」，**不是整库不可用**。
+--   这比原先「ACCESS EXCLUSIVE ⇒ 全库不可用」的说法轻，但写入侧一样要等。
+--
+--   窗口长度（外推，非实测）：本地 4,000,003 行 / 1370 MB 建同形状索引
+--   耗时 19.7 s（≈203k 行/s）。本库父表 354,555 行按行数外推约 1~2 s，
+--   但生产盘更慢、行更宽，且上表数字是活表快照（会漂）——
 --   **仍建议在维护窗口应用**，并观察 `pg_stat_progress_create_index`。
+--   ★ 量具坑：`pg_total_relation_size('credential_model_index')` 返回 **0**
+--   （分区父表自身不存数据），要拿体量必须逐分区求和。
+--   同理查「线上有没有在写」要查 `credential_model_index_hot`，
+--   父表 `max(bucket)` 只反映 promote 进度。
 --
 -- ⚠️ 收益不预告：索引只能把「扫堆行」换成「扫窄索引条目」，
 --   **不能减少 35.6 万条要读的行数**（那是 PostgreSQL 的 loose index scan

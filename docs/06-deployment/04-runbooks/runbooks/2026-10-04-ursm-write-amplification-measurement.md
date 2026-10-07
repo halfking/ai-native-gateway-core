@@ -12653,6 +12653,75 @@ Index Only Scan，都必须在真库实测。**这属于生产 DDL，需明确�
 
 ---
 
+### §10.106.27 迁移 842 头注实测订正：普通 `CREATE INDEX` 在分区父表上取的是 **ShareLock**，**读完全不受影响**
+
+§10.106.26 末尾那条「候选 SQL」用 `CREATE INDEX CONCURRENTLY`，迁移 842 落地时头注写的是
+「PostgreSQL 不支持在分区父表上 CREATE INDEX CONCURRENTLY（本写法在本库 PG 17 亦不可用）。
+普通 CREATE INDEX 会对每个分区取 ACCESS EXCLUSIVE 直到建完。」
+
+这两句里，**第一句当时是未经验证的转述，第二句是错的**。本节用一次性 PG 集群把它们都测实。
+
+**量具**：Homebrew PG 17.11（`initdb` 到 `/tmp` 一次性目录），分区父表 + 2 个分区 + 1 张普通表，
+父表 4,000,003 行 / 1,370 MB。每组实验都先跑一遍**无建索引的对照组**，
+证明语句本身可执行（否则「被锁超时打断」可能是量具坏了）。
+
+| 实验 | 读数 |
+|---|---|
+| ① `CREATE INDEX CONCURRENTLY t ON part_parent (...)` | `ERROR: cannot create index on partitioned table concurrently`；**失败后无残留对象**（`pg_class` 查不到半成品） |
+| ② 普通 `CREATE INDEX` 期间的锁 | 父表与**两个分区**同时持 `ShareLock`，**不是 ACCESS EXCLUSIVE** |
+| ③ 持锁后端身份 | `client backend` + `parallel worker` 两个 pid（`pg_stat_activity.backend_type` 自证，不是靠猜） |
+| ④ 连续 4 次采样 | 两个分区**始终同时**持锁 ⇒ 一次全取，不是逐分区轮流 |
+| ⑤ 窗口内 `INSERT`（经父表 / 直接写分区） | 全部 `lock timeout`；**对照组 rc=0** |
+| ⑥ 窗口内 `SELECT` | **正常返回计数，不受阻塞** |
+
+⇒ **两条订正**：
+
+1. **锁是 `ShareLock`，不是 ACCESS EXCLUSIVE。** 结论方向没变（写入仍需等待），
+   但强度差一档：ACCESS EXCLUSIVE 会把读写一起挡住，ShareLock 不会。
+2. **窗口内的表现是「写入报错、查询照常」，不是整库不可用。**
+   机制：`ShareLock` 与 `RowExclusiveLock` 冲突 ⇒ 阻塞 DML；
+   `AccessShareLock` 与 `ShareLock` **不冲突** ⇒ 读畅通。
+   这对定窗口很关键——**窗口内不需要停服，只需挡住写**。
+
+**版本口径（不掩饰差异）**：实测用的是 17.11，生产 154 的 PG 是 **17.10**（Debian 17.10-1.pgdg13+1）。
+版本不同，但「分区父表不支持 CONCURRENTLY」是 PG 11 引入分区表索引以来就成立的限制，
+不随小版本变化 ⇒ 结论按跨版本限制采信，不假装是同版本复现。
+
+**窗口长度是外推不是实测**（此前头注写的「实测单分区规模下窗口应在秒级」措辞不成立，已一并订正）：
+本地 4,000,003 行 / 1,370 MB 建同形状索引耗时 **19.7 s**（≈203k 行/s）。
+生产 `credential_model_index` 今日各分区实测：
+
+| 分区 | 行数 |
+|---|---|
+| `credential_model_index_2026_09` | 301,255 |
+| `credential_model_index_2026_10` | 53,300 |
+| `credential_model_index_2026_11` | 0 |
+| 父表合计 | 354,555 |
+| `credential_model_index_hot` | 2,017 |
+| 视图总行数 / 去重组数 | 356,572 / **1,043** |
+
+按行数外推约 1~2 s，生产盘更慢、行更宽 ⇒ **仍建议维护窗口**并观察 `pg_stat_progress_create_index`。
+去重组 **1,043** 与 §10.106.26 完全一致 ⇒ 342 倍差距的结构性结论不受行数漂移影响。
+
+**两条同族的量具坑（本次又踩到，记下来）**：
+
+- `pg_total_relation_size('credential_model_index')` 在分区父表上返回 **0**
+  （父表自身不存数据）——要体量必须逐分区求和。这与本轮反复出现的
+  「查父表而不是 `_hot`」是同一族错误：**父表不是数据所在，父表是路由**。
+- `_hot` 是活表会缩（§10.106.26 记的 2,361 行今日 2,017），父表行数也会涨。
+  ⇒ **这类数字是快照**，引用时必须带日期，不能当常数。
+
+**落地**：迁移 842 头注已按上述实测重写（`ACCESS EXCLUSIVE` → `ShareLock`，
+补上「读不受影响」「失败无残留」「窗口为外推」「父表 size=0」四点），
+`installer/cmd/llm-gw-installer/embeddata/startup/842_*.sql` 副本同步为逐字节相同（契约门要求），
+842 契约门 6/6 通过。
+
+★ **未做**：§10.106.26 末尾那段 `CREATE INDEX CONCURRENTLY` 候选 SQL **照抄是不执行的**
+（会直接报错）。它留在正文里作为记录，**不要照抄**——正确形态就是迁移 842 里那份
+`CREATE INDEX IF NOT EXISTS`（分区父表走级联，非并发）。
+
+---
+
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」
 
 ### §10.107.1 上线后第一件事：把 §10.106.9 的「待观察」变成读数
