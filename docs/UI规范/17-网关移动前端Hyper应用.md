@@ -11315,3 +11315,292 @@ GET `/api/admin/report-rollup/summary` + GET `/api/admin/report-rollup/dimension
 
 local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
 `web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
+
+## 11.121 节点智商三端点（第八十五批，2026-10-08）
+
+GET `/api/admin/model-iq/node-latest` + `/history` + `/catalog`
+
+- **注册**：`admin/handler.go:1470-1472`，三个都 `h.superAdmin(...)`
+  ⇒ ★★ **superAdmin 档** ⇒ 抽屉席须设 `requiresRole: 'super_admin'`
+  并同步 `AppDrawer.spec.ts` 白名单。
+- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+- `trigger` 是 **POST**（要真花 token）⇒ **不碰**。
+- **实现**：`admin/model_iq.go`；写入侧取值域在 `domains/modelquality/`。
+
+### 本族最要紧的十四件事
+
+1. ★★★★★ **三个端点的响应都是顶层裸数组**，不是 `{data:…}` 信封。
+   `:120` / `:186` / `:254` 三处都是 `writeJSON(w, 200, out)`，
+   而 `out := []T{}` 初始化 ⇒ **无匹配时是 `[]` 而不是 `null`**。
+2. ★★★★★ **`catalog` 的 10 键里 4 个是 `*float64` 且无 omitempty**
+   ⇒ `standard_iq` / `node_avg_iq` / `max_node_iq` / `min_node_iq`
+   **都可能是裸 `null`**（「指针 + 无 omitempty ⇒ 裸 null」在**非 map** struct 上的形态）。
+3. ★★★★★ **`catalog` 有一条锐利的可自验不变式**：`node_count` 与三个聚合互为充要 ——
+   `LEFT JOIN LATERAL` 聚合无输入时 `count(*)` 返 0 而 `avg/max/min` 返 NULL：
+   - `node_count === 0` ⇒ 三个聚合**全 null**
+   - `node_count > 0` ⇒ 三个聚合**全非 null**
+   且 WHERE `standard_iq IS NOT NULL OR node_cnt > 0` ⇒
+   **`standard_iq` 与 `node_count > 0` 至少一个成立**。
+4. ★★★★★ **`status` 可从 `accuracy`/`stability` 反推**（`dbstorage.go:80-87`）：
+   ```go
+   status := "success"
+   if stability < 100 { status = "partial" }
+   if accuracy <= 0 && stability <= 0 { status = "failed" }   // 最后判定，覆盖前两条
+   ```
+   ⇒ 这是**写入侧**算出的三值域 ⇒ `/history` 客户端可做**自洽校验**。
+   ⇒ ★★ 第三条在**最后**且覆盖前两条 ⇒ `(0, 0)` 必定是 `failed` 而非 `partial`。
+5. ★★★★ **`node-latest` 的 13 键里 10 个被 COALESCE 兜底**（`:75-85`）
+   ⇒ 空串 / 0 全部可达；只有 `credential_id` 与 `raw_model_name` 是裸值。
+   ⇒ ★★ `provider_id` 会被 `COALESCE(c.provider_id,0)` 兜成 **0**
+   ⇒ 客户端不能把 `provider_id === 0` 当「非法」。
+6. ★★★★ **同一族、不同端点的参数校验风格与文案都不同**：
+   - `node-latest` 的 `provider_id`/`canonical_id`：`ParseInt` + **`<= 0` 拒绝**，
+     文案 `invalid provider_id` / `invalid canonical_id`（**ParseInt 前无 TrimSpace**）。
+   - `history` 的 `credential_id`：`ParseInt` + `<= 0` 拒绝，
+     但文案是 **`credential_id required`**（不是 invalid！）。
+   ⇒ ★★★ 同一个参数名在两个端点**错误文案不同**。
+7. ★★★★ **`history` 的 `limit` 静默回落，不 400**：`Atoi`（**无 TrimSpace**），
+   仅当 `n > 0 && n <= 500` 才采纳，否则**静默用缺省 50**。
+   ⇒ ★★ 非法 limit **不报错**，客户端无法从响应看出 limit 是否被采纳。
+8. ★★★ **`history` 把 `stability`/`latency_p95` COALESCE 成 0** ⇒ `0` 是二义的；
+   配合 (4)，DB 里 stability 为 NULL 的行在响应里**看起来像 failed**。
+9. ★★★★ **`history` 的 `tested_at` 是 `COALESCE(tested_at, created_at)`**
+   且列类型 `time.Time` ⇒ 回显 RFC3339Nano ⇒ **客户端无法区分**
+   「真的测过时间」与「用创建时间兜底」。
+10. ★★★★ **`catalog` 的 WHERE 排除了 `hidden` 状态**，而
+    `models_canonical.status` 的 CHECK 域是**四值**（含 `hidden`，
+    `deploy/sql/schemas/baseline/01-schema.sql:10325`）⇒
+    **hidden 模型永远不出现在 `/catalog`**。端点过滤 + 表有 CHECK 的组合。
+11. ★★★ **`node-latest` 排序是 `overall_score DESC NULLS LAST, credential_id`**，
+    而 `catalog` 是 `COALESCE(standard_iq, node_avg) DESC NULLS LAST`
+    ⇒ 两个端点降序口径不同。
+12. ★★★ **500 错误的 detail 就是 `op` 字符串**（`writeInternalErr` 原样写进 body）
+    ⇒ 本族 500 的 detail 只可能是 `query` / `scan` / `modelIQ.latest` /
+    `modelIQ.history` / `modelIQ.catalog` ⇒ ★★ **完全可区分**。
+    另有 `writeAggRowsErr`：遇 missing relation（42P01）会把迭代错误改写成
+    **503 `analytics_view_missing`**。
+13. ★★ 503 文案是 **`database not configured`**（对照批 84 的 `database not available`）。
+14. ★★ `probe_kind` 三值 `{gateway, direct, mock}`，写入缺省 `direct`；
+    `trigger_kind` 写入缺省 `scheduled`。`benchmark_type` 缺省 `mmlu_lite`，
+    但 **`/history` 不返回该列** ⇒ 不可见。
+
+**本模块声明的校验边界**：解包器校验三个端点的**顶层是数组** + 每项的
+**全部恒在键与类型**（13 / 9 / 10 键）+ 上述不变式的判据函数；不校验排序
+（排序依赖 DB 状态，客户端只作为提示）。
+
+### 验证
+
+- 用例 **142 条全绿**（`web-mobile/src/api/modelIQ.test.ts`）。
+- 变异 **56 条 = 54 有牙 + 2 可证等价**（`/tmp/mut-co85.mjs`，`RESTORED=OK`）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量与十连跑见下。
+
+### 变异验证暴露的判据缺陷（56 条 → 首跑 41 有牙，修到 54）
+
+首跑 15 条 STILL_GREEN，**归因三类**：
+
+1. **锚点指错 4 条（#10 / #27 / #28 / #29）。**
+   | 变异 | 问题 | 修法 |
+   |---|---|---|
+   | #10 不发 `canonical_id` | 指到「只给 provider_id 时不发 canonical_id」，那条**本来就该不发** | 锚点改到「**两个都发**」那条 |
+   | #27 `failed` 漏 stability 条件 | 指到 `accuracy=50, stability=0`（该格两式同答案） | 改指 `accuracy=0, stability=50` |
+   | #28 `failed` 漏 accuracy 条件 | 指到 `accuracy=0, stability=50` | 改指 `accuracy=50, stability=0` |
+   | #29 partial/failed 顺序反转 | 指到 `accuracy=50, stability=0`（反转后同答案） | 改指 **`(0,0) ⇒ failed`** |
+   ⇒ ★★ **#27 与 #28 的锚点互换了** —— 两条变异各自需要的是**对方**那一格
+     ⇒ 这是「两条变异只差一个合取项」时的必然：专格是**成对**的。
+2. **样本选歪 10 条（#16 / #19 / #22 / #34 / #35 / #42 / #46 / #47 / #53 等）。**
+   | 变异 | 锚点那格为什么同答案 | 补的专格/负控 |
+   |---|---|---|
+   | #16 `requireObject` 放过数组 | 元素是**字符串**，`typeof` 本来就拦住 | 补「**元素本身是数组**」（`typeof` 也是 object，只有 `Array.isArray` 能拦） |
+   | #19 去掉 `canonical_name` 字符串检查 | 样本是**空串**，两种实现都过 | 补「**canonical_name 是数字**」 |
+   | #22 去掉 `stability` 数字检查 | 样本是 **0**，本来就是数字 | 补「**stability 是字符串**」 |
+   | #34 `node_count=0` 分支漏 `min_node_iq` | 样本里 `max_node_iq` 非 null ⇒ 两式同 false | 补「**只有 min_node_iq 非 null**」 |
+   | #35 同上漏 `node_avg_iq` | 样本里三个全非 null | 补「**只有 node_avg_iq 非 null**」 |
+   | #42 `=== null` 改真值 | 见下（**归因不同**） | 补「**`node_avg_iq` 是 0**」 |
+   | #46/#47 tested_at 两个真值判据 | 样本是非空串 / null ⇒ 两式同答案 | 补「**`tested_at` 是空串**」（两头一起断言） |
+   | #53 RFC3339 只看长度 | 样本是 10 位串，`length > 10` 本来就假 | 补「**长度 >10 但不含 T**」 |
+   ⇒ ★★ **专格必须是「其余项全为不触发值、只有被测项触发」** —— 这条纪律在本族
+     **连续第三次**生效（批 83 的四行 region、批 84 的三值判据、本批的三个聚合）。
+3. **可证等价 2 条（#39 / #52）。**
+   - `node_count === 0` 改成 `<= 0`：`node_count` 来自 SQL `count(*)` 扫进 Go `int`
+     ⇒ **可达集合只有非负整数** ⇒ 两式等价。
+   - `stability === 0` 改成 `!stability`：JSON 数字里**唯一的 falsy 就是 0**
+     （`NaN` 序列化不成、`-0 === 0` 且同样 falsy）⇒ 两式等价。
+   ⇒ ★ 处置：**保留**与后端形状对齐的写法 + 注释写明等价理由，不为不可达样本造夹具。
+   ⇒ ★★ 与批 84 的 `degraded === true` 同型，但**这一条还要额外小心**：
+     我一度以为「`node_avg_iq` 是 0」能区分 `=== null` 与 `!x` ——
+     实际上 `!0` 是 `true` 而 `0 === null` 是 `false`，**那一格确实能区分**；
+     但它的 STILL_GREEN 有**另一个**原因（见下）。
+
+### ★★ 补记：`from` 片段不唯一 ⇒ 改错函数，且**两处都能全绿**
+
+#42 首跑 STILL_GREEN 的真正原因不是样本，而是
+**`  return row.node_avg_iq === null` 同时是 `modelIQCatalogAggregatesMatchCount`
+里那条更长表达式（`... === null && ... === null && ... === null`）的前缀**
+⇒ `String.replace` 只替换第一个匹配 ⇒ **变异注入到了另一个函数上**，
+而那个函数被注入后**所有用例仍然全绿**。
+
+⇒ ★★★ 这是已记的「`from` 必须唯一」的**第二次**踩坑，但形态更隐蔽：
+  批 81 那次是「改错位置且明显报错」，这次是
+  **「改错位置、代码仍合法、测试仍全绿」** ⇒ `NO_EFFECT` 检查抓不到
+  （文件确实变了）。
+⇒ ★ 修法：`from` **带函数名**、带完整函数体，做到肉眼唯一：
+  ```js
+  from: `export function modelIQCatalogNodeAvgIsNull(row: ModelIQCatalogRow): boolean {
+  return row.node_avg_iq === null
+}`
+  ```
+⇒ ★★ **可落地的自检**：写完变异表后，用一段脚本统计每条 `from`
+  在源文件里出现的次数，`> 1` 的一律加长。本批 56 条里只有 #42 命中。
+
+### 收尾
+
+local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
+`web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
+
+## 11.121 节点智商三端点（第八十五批，2026-10-08）
+
+GET `/api/admin/model-iq/node-latest` + `/history` + `/catalog`
+
+- **注册**：`admin/handler.go:1470-1472`，三个都 `h.superAdmin(...)`
+  ⇒ ★★ **superAdmin 档** ⇒ 抽屉席须设 `requiresRole: 'super_admin'`
+  并同步 `AppDrawer.spec.ts` 白名单。
+- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+- `trigger` 是 **POST**（要真花 token）⇒ **不碰**。
+- **实现**：`admin/model_iq.go`；写入侧取值域在 `domains/modelquality/`。
+
+### 本族最要紧的十四件事
+
+1. ★★★★★ **三个端点的响应都是顶层裸数组**，不是 `{data:…}` 信封。
+   `:120` / `:186` / `:254` 三处都是 `writeJSON(w, 200, out)`，
+   而 `out := []T{}` 初始化 ⇒ **无匹配时是 `[]` 而不是 `null`**。
+2. ★★★★★ **`catalog` 的 10 键里 4 个是 `*float64` 且无 omitempty**
+   ⇒ `standard_iq` / `node_avg_iq` / `max_node_iq` / `min_node_iq`
+   **都可能是裸 `null`**（「指针 + 无 omitempty ⇒ 裸 null」在**非 map** struct 上的形态）。
+3. ★★★★★ **`catalog` 有一条锐利的可自验不变式**：`node_count` 与三个聚合互为充要 ——
+   `LEFT JOIN LATERAL` 聚合无输入时 `count(*)` 返 0 而 `avg/max/min` 返 NULL：
+   - `node_count === 0` ⇒ 三个聚合**全 null**
+   - `node_count > 0` ⇒ 三个聚合**全非 null**
+
+   且 WHERE `standard_iq IS NOT NULL OR node_cnt > 0` ⇒
+   **`standard_iq` 与 `node_count > 0` 至少一个成立**。
+4. ★★★★★ **`status` 可从 `accuracy`/`stability` 反推**（`dbstorage.go:80-87`）：
+   ```go
+   status := "success"
+   if stability < 100 { status = "partial" }
+   if accuracy <= 0 && stability <= 0 { status = "failed" }   // 最后判定，覆盖前两条
+   ```
+   ⇒ 这是**写入侧**算出的三值域 ⇒ `/history` 客户端可做**自洽校验**。
+   ⇒ ★★ 第三条在**最后**且覆盖前两条 ⇒ `(0, 0)` 必定是 `failed` 而非 `partial`。
+5. ★★★★ **`node-latest` 的 13 键里 10 个被 COALESCE 兜底**（`:75-85`）
+   ⇒ 空串 / 0 全部可达；只有 `credential_id` 与 `raw_model_name` 是裸值。
+   ⇒ ★★ `provider_id` 会被 `COALESCE(c.provider_id,0)` 兜成 **0**
+   ⇒ 客户端不能把 `provider_id === 0` 当「非法」。
+6. ★★★★ **同一族、不同端点的参数校验风格与文案都不同**：
+   - `node-latest` 的 `provider_id`/`canonical_id`：`ParseInt` + **`<= 0` 拒绝**，
+     文案 `invalid provider_id` / `invalid canonical_id`（**ParseInt 前无 TrimSpace**）。
+   - `history` 的 `credential_id`：`ParseInt` + `<= 0` 拒绝，
+     但文案是 **`credential_id required`**（不是 invalid！）。
+
+   ⇒ ★★★ 同一个参数名在两个端点**错误文案不同**。
+7. ★★★★ **`history` 的 `limit` 静默回落，不 400**：`Atoi`（**无 TrimSpace**），
+   仅当 `n > 0 && n <= 500` 才采纳，否则**静默用缺省 50**。
+   ⇒ ★★ 非法 limit **不报错**，客户端无法从响应看出 limit 是否被采纳。
+8. ★★★ **`history` 把 `stability`/`latency_p95` COALESCE 成 0** ⇒ `0` 是二义的；
+   配合 (4)，DB 里 stability 为 NULL 的行在响应里**看起来像 failed**。
+9. ★★★★ **`history` 的 `tested_at` 是 `COALESCE(tested_at, created_at)`**
+   且列类型 `time.Time` ⇒ 回显 RFC3339Nano ⇒ **客户端无法区分**
+   「真的测过时间」与「用创建时间兜底」。
+10. ★★★★ **`catalog` 的 WHERE 排除了 `hidden` 状态**，而
+    `models_canonical.status` 的 CHECK 域是**四值**（含 `hidden`，
+    `deploy/sql/schemas/baseline/01-schema.sql:10325`）⇒
+    **hidden 模型永远不出现在 `/catalog`**。端点过滤 + 表有 CHECK 的组合。
+11. ★★★ **`node-latest` 排序是 `overall_score DESC NULLS LAST, credential_id`**，
+    而 `catalog` 是 `COALESCE(standard_iq, node_avg) DESC NULLS LAST`
+    ⇒ 两个端点降序口径不同。
+12. ★★★ **500 错误的 detail 就是 `op` 字符串**（`writeInternalErr` 原样写进 body）
+    ⇒ 本族 500 的 detail 只可能是 `query` / `scan` / `modelIQ.latest` /
+    `modelIQ.history` / `modelIQ.catalog` ⇒ ★★ **完全可区分**。
+    另有 `writeAggRowsErr`：遇 missing relation（42P01）会把迭代错误改写成
+    **503 `analytics_view_missing`**。
+13. ★★ 503 文案是 **`database not configured`**（对照批 84 的 `database not available`）。
+14. ★★ `probe_kind` 三值 `{gateway, direct, mock}`，写入缺省 `direct`；
+    `trigger_kind` 写入缺省 `scheduled`。`benchmark_type` 缺省 `mmlu_lite`，
+    但 **`/history` 不返回该列** ⇒ 不可见。
+
+**本模块声明的校验边界**：解包器校验三个端点的**顶层是数组** + 每项的
+**全部恒在键与类型**（13 / 9 / 10 键）+ 上述不变式的判据函数；不校验排序
+（排序依赖 DB 状态，客户端只作为提示）。
+
+### 验证
+
+- 用例 **142 条全绿**（`web-mobile/src/api/modelIQ.test.ts`）。
+- 变异 **56 条 = 54 有牙 + 2 可证等价**（`/tmp/mut-co85.mjs`，`RESTORED=OK`）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量与十连跑见下。
+
+### 变异验证暴露的判据缺陷（56 条 → 首跑 41 有牙，修到 54）
+
+首跑 15 条 STILL_GREEN，**归因三类**：
+
+1. **锚点指错 4 条（#10 / #27 / #28 / #29）。**
+   | 变异 | 问题 | 修法 |
+   |---|---|---|
+   | #10 不发 `canonical_id` | 指到「只给 provider_id 时不发 canonical_id」，那条**本来就该不发** | 锚点改到「**两个都发**」那条 |
+   | #27 `failed` 漏 stability 条件 | 指到 `accuracy=50, stability=0`（该格两式同答案） | 改指 `accuracy=0, stability=50` |
+   | #28 `failed` 漏 accuracy 条件 | 指到 `accuracy=0, stability=50` | 改指 `accuracy=50, stability=0` |
+   | #29 partial/failed 顺序反转 | 指到 `accuracy=50, stability=0`（反转后同答案） | 改指 **`(0,0) ⇒ failed`** |
+
+   ⇒ ★★ **#27 与 #28 的锚点互换了** —— 两条变异各自需要的是**对方**那一格
+     ⇒ 这是「两条变异只差一个合取项」时的必然：**专格是成对的**。
+2. **样本选歪 8 条（#16 / #19 / #22 / #34 / #35 / #46 / #47 / #53）。**
+   | 变异 | 锚点那格为什么同答案 | 补的专格/负控 |
+   |---|---|---|
+   | #16 `requireObject` 放过数组 | 元素是**字符串**，`typeof` 本来就拦住 | 补「**元素本身是数组**」（`typeof` 也是 object，只有 `Array.isArray` 能拦） |
+   | #19 去掉 `canonical_name` 字符串检查 | 样本是**空串**，两种实现都过 | 补「**canonical_name 是数字**」 |
+   | #22 去掉 `stability` 数字检查 | 样本是 **0**，本来就是数字 | 补「**stability 是字符串**」 |
+   | #34 `node_count=0` 分支漏 `min_node_iq` | 样本里 `max_node_iq` 非 null ⇒ 两式同 false | 补「**只有 min_node_iq 非 null**」 |
+   | #35 同上漏 `node_avg_iq` | 样本里三个全非 null | 补「**只有 node_avg_iq 非 null**」 |
+   | #46/#47 tested_at 两个真值判据 | 样本是非空串 / null ⇒ 两式同答案 | 补「**`tested_at` 是空串**」（两头一起断言） |
+   | #53 RFC3339 只看长度 | 样本是 10 位串，`length > 10` 本来就假 | 补「**长度 >10 但不含 T**」 |
+
+   ⇒ ★★ **专格必须是「其余项全为不触发值、只有被测项触发」** —— 这条纪律在本族
+     **连续第三次**生效（批 83 的四行 region、批 84 的三值判据、本批的三个聚合）。
+3. **可证等价 2 条（#39 / #52）。**
+   - `node_count === 0` 改成 `<= 0`：`node_count` 来自 SQL `count(*)` 扫进 Go `int`
+     ⇒ **可达集合只有非负整数** ⇒ 两式等价。
+   - `stability === 0` 改成 `!stability`：JSON 数字里**唯一的 falsy 就是 0**
+     （`NaN` 序列化不成、`-0 === 0` 且同样 falsy）⇒ 两式等价。
+
+   ⇒ ★ 处置：**保留**与后端形状对齐的写法 + 注释写明等价理由，不为不可达样本造夹具。
+   ⇒ ★ 与批 84 的 `degraded === true` 同型。
+
+### ★★ 补记：`from` 片段不唯一 ⇒ 注入到了另一个函数，且**两处都能全绿**
+
+#42 首跑 STILL_GREEN 的真正原因不是样本，而是
+**`  return row.node_avg_iq === null` 同时是 `modelIQCatalogAggregatesMatchCount`
+里那条更长表达式（`... === null && ... === null && ... === null`）的前缀**
+⇒ `String.replace` 只替换第一个匹配 ⇒ **变异注入到了另一个函数上**，
+而那个函数被注入后**所有用例仍然全绿**。
+
+⇒ ★★★ 这是已记的「`from` 必须唯一」的**第二次**踩坑，但形态更隐蔽：
+  批 81 那次是「改错位置且明显报错」，这次是
+  **「改错位置、代码仍合法、测试仍全绿」** ⇒ `NO_EFFECT` 检查抓不到
+  （文件确实变了）。
+⇒ ★ 修法：`from` **带函数名**、带完整函数体，做到肉眼唯一：
+
+  ```js
+  from: `export function modelIQCatalogNodeAvgIsNull(row: ModelIQCatalogRow): boolean {
+  return row.node_avg_iq === null
+}`
+  ```
+
+⇒ ★★ **可落地的自检**：写完变异表后，用一段脚本统计每条 `from`
+  在源文件里出现的次数，`> 1` 的一律加长。本批 56 条里只有 #42 命中。
+⇒ ★★★ 顺带一条判断纪律：`!x` 与 `x === null` 的差别只在
+  **「值是 falsy 但不是 null」**这一格；`0` **确实是**那一格
+  （`!0 === true` 而 `0 === null` 为 `false`）⇒ 这条样本是对的，
+  别因为「0 很常见」就误判成同答案格。
+
+### 收尾
+
+local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
+`web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
