@@ -22,6 +22,9 @@
        inset-lr         横向 inset：贴边 fixed 浮层（中心落在带内 + 探边）+ 流内容诱饵
        inset-lr-ok      同上但浮层已自补 padding-inline ⇒ 必须不报
        tap-legacy      R1 三档边界：43px（medium 缺陷）/ 46px（low 存量台账）
+       trunc           文本省略号截断：量值（high）+ 标识符（low/medium）两个桶，
+                       外加三个 decoy —— 放得下的 ellipsis / 放得下的 line-clamp /
+                       只 nowrap+overflow:hidden 但没声明 ellipsis（硬裁切不算）
        none             干净页（用来卡「判据对什么都乱报」）
   */
   body { margin: 0; font: 14px/1.5 system-ui, sans-serif; background: #fff; color: #111; }
@@ -91,6 +94,33 @@
   /* 流内容诱饵：壳根 padding 保护了它 ⇒ 判据不许报 */
   #decoy-inset-flow { padding-left: 30px; }
   #decoy-inset-flow-btn { width: 200px; height: 48px; }
+
+  /* ── 文本省略号截断类（10 §4.6.68）────────────────────────────
+     复刻 `.stat-card__value`（UsageView.vue:24 / StatCard.vue:24）的真实组合：
+     `overflow:hidden + text-overflow:ellipsis + white-space:nowrap` + 固定窄槽。
+     ⚠️ 这类元素**永远不会**触发 h-overflow —— 溢出被 ellipsis 转成了「截断」，
+        所以必须单独一条判据；否则 1.0× 绿、2.0× 数字读不出来，全程无告警。 */
+  .trunc-card { width: 96px; border: 1px solid #ccc; }
+  .trunc-card > .val {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 20px; font-weight: 600;
+  }
+  /* plant：量值（剥掉逗号后整体是数字）⇒ 必须报，且 sev=high */
+  #plant-trunc-metric .val { color: #111; }
+  /* plant：标识符（含字母）⇒ 必须报，但 sev 只能是 low/medium，绝不能 high */
+  #plant-trunc-label .val { color: #111; }
+  /* decoy：声明了 ellipsis，但内容**放得下** ⇒ 判据不许报。
+     这条专门卡「把 declaredCut 检查删掉、只留 scrollWidth 比较」的变异。 */
+  #decoy-trunc-fit .val { width: 320px; }
+  /* decoy：声明了 line-clamp，同样放得下 ⇒ 不许报 */
+  #decoy-trunc-clamp .val {
+    width: 320px; display: -webkit-box; -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2; white-space: normal;
+  }
+  /* decoy：nowrap + overflow:hidden 但**没声明** ellipsis/line-clamp
+     ⇒ 判据不许报（这是硬裁切，不是省略号截断，归属另一类） */
+  #decoy-trunc-hard { width: 96px; }
+  #decoy-trunc-hard .val { color: #111; text-overflow: clip; }
 </style>
 </head>
 <body>
@@ -230,6 +260,33 @@
 <div class="wrap">
   <button id="plant-tap-43" class="plant" data-plant="tap-target">43px 破底线</button>
   <button id="plant-tap-46" class="plant" data-plant="tap-target-legacy">46px 存量档</button>
+</div></template>
+
+<!-- ── trunc：文本省略号截断（§4.6.68）──────────────────────────
+     量值与标识符是**两个桶、两个严重级**：数字读不出来是 high，
+     长名字截断多半是设计意图（low/medium）。这条场景同时带三个 decoy。 -->
+<template id="s-trunc"><!--filler--><div><span>a</span><span>b</span><span>c</span><span>d</span><span>e</span><span>f</span><span>g</span></div>
+<div class="wrap">
+  <div id="plant-trunc-metric" class="trunc-card" data-plant="text-truncated">
+    <span>Tokens</span>
+    <div class="val">261,947,605</div>
+  </div>
+  <div id="plant-trunc-label" class="trunc-card" data-plant="text-truncated">
+    <span>Key</span>
+    <div class="val">deploy-smoke-245-2026081</div>
+  </div>
+  <div id="decoy-trunc-fit" class="trunc-card">
+    <span>正常</span>
+    <div class="val">1,234</div>
+  </div>
+  <div id="decoy-trunc-clamp" class="trunc-card">
+    <span>两行放得下</span>
+    <div class="val">第一行第二行</div>
+  </div>
+  <div id="decoy-trunc-hard" class="trunc-card">
+    <span>硬裁切非省略号</span>
+    <div class="val">8,888,888,888</div>
+  </div>
 </div></template>
 
 <!-- ── none：干净页。节点数必须 ≥ 20，否则 near-blank 会正确地报出来 ── -->
