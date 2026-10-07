@@ -1000,10 +1000,21 @@ files=(
   # 841：月度分区族的分区级 DROP 保留。**建表即为空 ⇒ 迁移应用后行为与今天完全一致**，
   # 真正启用需按族 INSERT 保留月数（业务决定，不在本迁移内）。
   "$ROOT_DIR/sql/migrations/startup/841_monthly_partition_retention.sql"
-  # 2026-10-07（843）：给 v_supplier_price_vs_baseline 补两个缓存基准价的投影。
-  # 编号注：本条原占 842，落地前与并行线的 842_credential_model_index_latest_bucket_idx
-  #   撞号（该条已于 19:25 先落 origin/main）；按「已落地者保留原号、后来者让位」
-  #   重排为 843。编号是身份键，同号两迁移会让契约门与台账同时指错对象。
+  # 2026-10-07（844）：给 v_supplier_price_vs_baseline 补两个缓存基准价的投影。
+  #
+  # 编号注（**本条让位两次**，最终 844）：
+  #   · 先占 842，落地前撞上并行线的 842_credential_model_index_latest_bucket_idx
+  #     （该条 19:25 先落 origin/main）⇒ 重排为 843；
+  #   · 重排后再次撞上并行线的 843_candidate_failure_logs_ts_desc_idx
+  #     （该条 20:05 先落 origin/main）⇒ **再**重排为 844。
+  # 两次都按同一惯例：**已落 origin/main 者保留原号，后来者让位。**
+  # 编号是身份键，同号两迁移会让契约门与台账同时指错对象。
+  #
+  # ⚠ 教训：本条从落地到推送**一直没上远端**，所以两次撞号都是「本地撞远端」。
+  #   并行线在一个会话里连落两条（20:05 前 12 分钟还有 19:25 那条），
+  #   ⇒ **推之前不 fetch 就提交编号，是可以预见的返工**。
+  #   判别动作：新建迁移时先 `git fetch && git ls-tree origin/main -- sql/migrations/startup`
+  #   看下一个空号，而不是看本地 `ls`。
   #
   # 缺口：826 建的视图只投影 in/out 两个基准价，cache 列只出现在 ADD COLUMN
   # 与 CHECK 段，连 LATERAL 子查询的 SELECT 列表里都没有 ⇒ 缓存基准价即使在库
@@ -1017,7 +1028,7 @@ files=(
   # 幂等（可重放）。⚠ 它会先 ADD COLUMN IF NOT EXISTS 补 credential_model_bindings
   # 的两个 cache 列——实测视图不能引用不存在的列（42703），而全仓没有任何迁移
   # 建过它们（398 只是 SELECT 过，不建列）。
-  "$ROOT_DIR/sql/migrations/startup/843_supplier_view_cache_baseline_columns.sql"
+  "$ROOT_DIR/sql/migrations/startup/844_supplier_view_cache_baseline_columns.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的
