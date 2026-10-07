@@ -65,23 +65,68 @@ import { req, type RequestOptions } from './client'
  *      ```
  *      ⇒ 装配后**没有任何 API 能把端点退回 503** ⇒ 注释是错的，以实现为准。
  *
- * (4) ★★★★ **`Lookup` 只查活跃条目，已注销的取不到。**
+ * (4) ★★★★ **`Lookup` 只查活跃条目，已注销的取不到 —— 但「已注销」不能只看 `closed`。**
  *      `domains/streaming/connection_registry.go:454-465` 只看 `r.entries`（活跃表），
  *      不看 `r.closed`（历史环）⇒ **`closed` 列表里的条目用详情端点必然 404**。
  *      ⇒ 「列表里看得到、点进去 404」是**契约行为**，不是 bug。
+ *      ⚠️★ 2026-10-08（第一百零七批）补充：这条**只对 `closed` 段成立**。
+ *      `closed === true` 的行**也可能出现在 `live` 段**（见 (8)），
+ *      而那一类**仍然留在 `r.entries` 里 ⇒ 详情端点查得到**。
+ *      ⇒ ★★★ 单看 `closed` 布尔**分不出这两格**（这正是
+ *      `registryRowIsNotFetchableById` 的盲区）⇒ 调用方必须**按行来自哪一段**判断，
+ *      不能按 `closed` 字段判断。
  *
  * (5) ★★★★ **零值时间戳会真的出现。**
  *      `LastFrameAt` 是 `time.Time` 且无 omitempty ⇒ 从未写过帧的连接
  *      `last_frame_at` 是 **`"0001-01-01T00:00:00Z"`**（Go 零值时间的 RFC3339）。
  *      ⇒ 客户端**不能**把「键存在」当「有值」，也不能把它渲染成「1970 年」或异常。
  *
- * (6) ★★★ **`live` 的顺序没有保证。**
+ * (6) ★★★ **`live` 的顺序没有保证 —— 而 `closed` 的顺序是保证的（两段相反）。**
  *      `List()` 的注释自陈「map walk is unordered, so callers sort as needed」（:467-471）
- *      ⇒ 数组顺序随进程内的 map 迭代变化 ⇒ **不能靠顺序判稳定**，也不能靠它做 diff。
+ *      ⇒ `live` 数组顺序随进程内的 map 迭代变化 ⇒ **不能靠顺序判稳定**，也不能靠它做 diff。
+ *      ★★ 但 `ClosedHistory(50)` 是 `copy` + 显式 reverse（`:483-497`）⇒ **newest first，稳定**。
+ *      ⇒ **同一份载荷里两段的顺序保证相反。**
  *
- * (7) ★★★ **上限 50 不回显。**
- *      `connection_registry.go:58` 写死 `reg.ClosedHistory(50)` ⇒ 注销历史最多 50 条，
- *      响应里**没有任何字段**说明被截断了。
+ * (7) ★★★★ **上限 50 不回显，而且它**不是**历史上限。**
+ *      `connection_registry.go:58` 写死 `reg.ClosedHistory(50)` ⇒ 端点只暴露最近 50 条，
+ *      响应里**没有任何字段**能说明「还有更早的」。
+ *      ★★★★ 但**环形缓冲本身**是 `DefaultClosedHistoryDepth = 256`
+ *      （`:65` / `:254`，`:355-356` 裁剪）⇒ **256 > 50，端点永远取不满缓冲区**。
+ *      ⇒ ★★★ 所以「看到 50 行」的准确含义是「**缓冲区里至少还有 50 条，
+ *        且可能还有更早的没被端点暴露**」，**不是**「更早的已经被丢了」。
+ *      ⇒ ★★ UI 文案必须按这个口径写：**不能**说「仅显示最近 50 条，更早的已丢弃」。
+ *      （真正的丢弃点在环形缓冲的 256 条，那是另一个阈值。）
+ *
+ * (8) ★★★★★★ **`live` 段里可能出现 `closed: true` 的行 —— 一个真实竞态窗口。**
+ *      `snapshot(false, "")`（`:476-491`）看着像「List 里恒 false」，但它内部有覆写分支：
+ *      ```go
+ *      s := ConnectionSnapshot{ ..., Closed: closed, CloseReason: reason }
+ *      if e.closed {            // ★ 会覆写上面两行（原码两字段行尾另有行内注释，
+ *                               //   原样写进本块注释会被提前终止，故从略）
+ *          s.Closed = true
+ *          s.CloseReason = e.closeReason
+ *      }
+ *      ```
+ *      而 `WriteFrame` 超时分支（`:417-441`）是**先标 closed、放开 entry 锁、再从 map 摘除**：
+ *      ```go
+ *      entry.closed = true                 // :419  先标
+ *      entry.closeReason = "write_deadline"
+ *      entry.mu.Unlock()                   // :421  锁放开  ← 窗口在这里
+ *      r.mu.Lock()
+ *      cur, ok := r.entries[requestID]
+ *      if ok && cur == entry { delete(r.entries, requestID) }   // :433  才摘除
+ *      ```
+ *      ⇒ 在 `:421` 与 `:433` 之间，`List()` / `Lookup()` 拿得到这个 entry
+ *      ⇒ **返回一行 `closed=true` + `close_reason="write_deadline"`，却出现在 `live` 段里。**
+ *      ⇒ 推论三条：
+ *        · `live_count` 会把它算进去（`:56` 的 `len(live)`）
+ *          ⇒ 「`live_count === live.length`」恒真**不蕴含**「live 里都是活连接」。
+ *        · **不能**按 `closed` 字段把行从 live 段搬到 closed 段 ——
+ *          它还没进环形缓冲（`detach` 还没跑），搬走就是凭空造出「已归档」。
+ *        · 判据**不能**断言「live 段行的 `closed` 恒 false」；
+ *          要断言的话夹具必须发得出来（后端确实发得出来）⇒ 这是一条**要判**的格子。
+ *      ★ 顺带：`Lookup` 走同一份 `snapshot`、同一个窗口 ⇒ 同理**可达**。
+
  *
  * ## 另注
  *
@@ -90,6 +135,10 @@ import { req, type RequestOptions } from './client'
  * · `live_count` 是服务端算的 `len(live)`（`:56`）⇒ 与 `live.length` 恒等
  *   ⇒ 客户端可以**自查**（若不等说明中间有人改过载荷）。
  * · `capacity` 是配置上界，可能远大于 `live_count` ⇒ 两者之比是注册台水位。
+ *   ★★ 2026-10-08（第一百零七批）补：`capacity` **恒 ≥ 4096，永不为 0** ——
+ *     `NewConnectionRegistry(0, 0, 0)`（`cmd/gateway/main.go:818`）的三个 0
+ *     都被默认值兜底（`connection_registry.go:241-243`）⇒ 装配处写的 0 不会变成 0。
+ *     且 `r.capacity` 是构造期常量、进程内从不写 ⇒ 水位是有意义的。
  * · Get 端点的 `request_id` 来自 `r.PathValue`（`:71`）⇒ 路径段要 encodeURIComponent。
  *
  * ## 桌面对照：两处**不要抄**
@@ -314,7 +363,16 @@ export function registryCountAgrees(r: ConnectionRegistryListResponse): boolean 
   return Number(r.live_count) === r.live.length
 }
 
-/** ★ 注册台水位：`live_count / capacity`。`capacity` 为 0 时无意义。 */
+/**
+ * ★ 注册台水位：`live_count / capacity`。
+ *
+ * ★★ 2026-10-08（第一百零七批）：下面的 `cap <= 0` 分支**后端当前产生不出来** ——
+ *   `NewConnectionRegistry` 把 ≤0 兜底成 `DefaultConnectionRegistryCapacity = 4096`，
+ *   `r.capacity` 又是构造期常量 ⇒ `capacity` 恒 ≥ 4096。
+ *   ⇒ 留它是**防御形态**（解包器只查键存在、不查 `capacity` 的类型），
+ *     **不为此写判据** —— 能钉住它的那个夹具必须是后端发不出的值（同批 selfCheck 的
+ *     `upstream_latency_ms === 0` 同理，见「可证等价 ⇒ 删判据」）。
+ */
 export function registryUtilization(r: ConnectionRegistryListResponse): number | null {
   const cap = Number(r.capacity)
   if (!Number.isFinite(cap) || cap <= 0) return null
@@ -375,8 +433,15 @@ export function registryLiveSortedByRegisteredAt(
 }
 
 /**
- * ★★★ 注销历史**可能被静默截断**：上限写死 50（`connection_registry.go:58`），
- *   响应里没有任何字段能证明没截断 ⇒ 只能说「可能还有更早的」。
+ * ★★★★ 「已暴露满 50 行」⇒ **可能还有更早的没被端点暴露**，但**不是**「更早的已经丢了」。
+ *
+ * ★★★ 2026-10-08（第一百零七批）修正措辞：原注释写「可能被**静默截断**」，
+ *   那个说法会让人以为「50 是历史上限，超出的被丢掉了」—— **不成立**。
+ *   环形缓冲 `closedHistory = DefaultClosedHistoryDepth = 256`（`:65`/`:254`，
+ *   `:355-356` 裁剪）⇒ **256 > 50，端点永远取不满缓冲区**
+ *   ⇒ 返回 50 行时缓冲区里**至少还躺着另外 206 条**没暴露。
+ *   ⇒ 行为不变（`rows.length >= 50` 确实成立），但**理由与 UI 文案都必须按上面写**。
+ *   ⇒ 真正的丢弃点在环形缓冲的 256 条 —— 那是另一个阈值，本响应里**量不出来**。
  */
 export function registryClosedPossiblyTruncated(
   r: ConnectionRegistryListResponse,
@@ -386,8 +451,17 @@ export function registryClosedPossiblyTruncated(
 }
 
 /**
- * ★★ 列表 `closed` 里的条目用详情端点**必然 404**（`Lookup` 只查活跃表）。
- *   ⇒ 命中已注销条目时 UI 不该发详情请求，而应直接用列表里那份快照。
+ * ★★★ **这个函数有盲区，调用方不能单靠它决定要不要发详情请求。**
+ *
+ * 它只看 `closed` 布尔，因此分不出两格：
+ * | 行的来源 | `closed` | 在 `r.entries` 里？ | 详情端点 |
+ * |---|---|---|---|
+ * | `closed` 段（已进环形缓冲） | `true` | **否** | **必然 404** |
+ * | `live` 段（`WriteFrame` 超时竞态窗口，见文件头 (8)） | `true` | **是** | **查得到** |
+ *
+ * ⇒ ★★ 正确口径是「**行来自哪一段**」—— 调用方在 UI 里天然知道
+ *   （live 段的行发详情请求，closed 段的行直接用列表里那份快照）。
+ * ⇒ 本函数只回答「这行的 `closed` 字段是不是 true」，**不回答**「能不能按 id 查到」。
  */
 export function registryRowIsNotFetchableById(s: ConnectionSnapshot): boolean {
   return s.closed === true

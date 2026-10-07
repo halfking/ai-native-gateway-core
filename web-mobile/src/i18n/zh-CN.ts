@@ -15,6 +15,7 @@ export const zhCN = {
     workTypes: '工作类型',
     probeQueue: '探测队列',
     selfCheck: '系统自检',
+    connectionRegistry: '连接注册台',
     modelPolicies: '模型策略',
     modelPolicyAudit: '策略审计',
     approvalConfig: '审批配置',
@@ -3131,6 +3132,77 @@ sctx: {
     featuredUnknown: '★ 无法判定（该端点未取到）。',
     featuredTwoSources: '★ 上面是 /featured 的生效列表（恒数组），下面是 /featured-models 的用量榜；两者不是同一个东西，nil 编码还相反。',
     featuredEmpty: '★ 空列表：「没配精选模型」与「查不出来」在响应里同形，无法区分。',
+  },
+  // ★ 第一百零七批：流式连接注册台。措辞逐条对应后端契约，改文案前先读
+  //   views/ConnectionRegistryView.vue 头部那七条。
+  cr: {
+    title: '连接注册台',
+    subtitle: '进程内流式连接注册表：活跃连接 + 注销审计。只读，不含请求/响应正文。',
+    load: '加载',
+    reload: '重新加载',
+    // ★ 503 = 没装配，与「装配了但当前没有连接」是两种不同的失败
+    notWired: '连接注册台未装配：本进程没有注入注册表实例，这两条端点不可用。',
+    // ★ capacity 恒 ≥ 4096 ⇒ 水位恒有意义
+    watermark: '活跃连接 {n} / 上限 {cap}',
+    journey: '打开请求旅程',
+    badge: {
+      // ★★★★ 竞态窗口：已被标记注销、但仍在活跃表里（还能按 id 查到）
+      closing: '正在注销',
+    },
+    no: {
+      // ★ 这四个都是 omitempty 条件键 ⇒ 缺失只是「注册时没带」，不是异常
+      protocol: '未标注协议',
+      client: '未标注客户端',
+      tenant: '未标注租户',
+      reason: '无注销原因',
+      number: '非数字',
+    },
+    unit: {
+      // ★ frames_written / bytes_written 是 uint64 无 omitempty ⇒ 键恒在，0 是真的 0
+      frames: '帧',
+      bytes: '字节',
+    },
+    lastFrame: {
+      // ★ last_frame_at 键恒在，但「从未发帧」时是 Go 零值时间
+      never: '从未发帧',
+    },
+    search: {
+      title: '按 request_id 查',
+      placeholder: 'request_id',
+      btn: '查询',
+      clear: '清除结果',
+      // ★★★ 404 与「id 不存在」「这行已注销」后端返回同一个响应 ⇒ 分不出，只能这样说
+      notFound: '查不到这一条。它可能已注销（详情端点只查活跃表），也可能从不存在——两者返回完全相同。',
+      closedNote: '注销历史里的条目不在活跃表内，按 id 查询一定失败；请直接看下方注销记录。',
+    },
+    filter: {
+      placeholder: '按 request_id / 协议 / 客户端 / 租户过滤',
+      count: '过滤后共 {n} 行',
+    },
+    live: {
+      title: '活跃连接',
+      // ★ live: [] 是正常形态（List() 恒返回非 nil 切片）
+      empty: '当前没有活跃连接。',
+      closing: '其中 {n} 行已被标记注销、仍在活跃表中（写帧超时的并发窗口）。',
+    },
+    closed: {
+      title: '注销记录',
+      // ★ closed 是 null（从无注销记录），不是 []
+      absent: '从无注销记录。',
+      empty: '没有匹配过滤条件的注销记录。',
+      // ★★★★ 不是「更早的已丢弃」：环形缓冲 256、端点只暴露 50 ⇒ 还有更早的没暴露
+      moreUnrevealed: '已暴露满 {limit} 条；注册台的注销环形缓冲里可能还有更早的记录未暴露。',
+    },
+    col: {
+      protocol: '协议',
+      client: '客户端',
+      tenant: '租户',
+      frames: '已写帧',
+      bytes: '已写字节',
+      registered: '注册于',
+      lastFrame: '最后一帧',
+      closeReason: '注销原因',
+    },
   },
   sc: {
     title: '系统自检',

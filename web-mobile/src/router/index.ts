@@ -669,6 +669,12 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'wt.title', requiresAuth: true },
   },
   {
+    path: '/connection-registry',
+    name: 'connection-registry',
+    component: () => import('@/views/ConnectionRegistryView.vue'),
+    meta: { titleKey: 'cr.title', requiresAuth: true },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),
