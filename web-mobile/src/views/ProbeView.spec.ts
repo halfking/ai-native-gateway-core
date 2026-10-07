@@ -312,3 +312,54 @@ describe('★ node-tasks：paused 与 pending 必须在视觉上分得开', () =
     expect(w.text()).toContain('gpt-4o-raw')
   })
 })
+
+/**
+ * ★ 2026-10-08 新增不变量：**慢端点不得拖住已经回来的段落**。
+ *
+ * 缺陷背景（245 线上实测，非推测）：
+ *     fetchProviderLatency  /api/admin/probe/provider-latency   1.6s
+ *     fetchProbeQueueTasks  /api/admin/probe/queue-tasks       2.4s
+ *     fetchProbeNodeTasks   /api/admin/probe/node-tasks       20.0s
+ * 原写法 `await Promise.allSettled([a,b,c])` **之后**才统一赋值三个面板，
+ * allSettled 要三个都 settle 才返回 ⇒ 那 17.6 秒里两个面板的数据早就在手上，
+ * 页面却一个字都不显示。ProbeHealthView 已于 2026-10-07 为同一问题改过，
+ * 这里是对齐它的修法（各自的段各自的赋值）。
+ *
+ * 本组用「让 node-tasks 永不 settle」把时间轴钉死：只要断言成立，
+ * 说明渲染与 settle 解耦了；只要改回 allSettled 就必然转红。
+ */
+describe('慢端点不得拖住已返回的段落', () => {
+  it('node-tasks 仍在 pending 时，queue 与 latency 段已经渲染出来', async () => {
+    // ★ 关键：node-tasks 永远不 settle。若渲染仍被 allSettled 卡着，
+    //   下面两条断言都不可能成立（队列与延时会一直是空态）。
+    nt.mockReturnValueOnce(new Promise(() => {}) as never)
+    qt.mockResolvedValueOnce({ tasks: [TASK], total: 1 })
+    pl.mockResolvedValueOnce({
+      entries: [
+        { provider_id: 7, provider_name: 'Anthropic', provider_code: 'anthropic', latency_ms: 320, probed_at: '2026-10-07T10:00:00Z' },
+      ],
+      total: 1,
+    })
+    const w = await mountView()
+
+    expect(w.text()).toContain('Anthropic')
+    expect(w.text()).toContain('320ms')
+    // 视图渲染 standardized_name（不是 raw_model）——别照抄 mock 里的字段名
+    expect(w.text()).toContain('claude-sonnet-4-6')
+    // node 段仍未回来 ⇒ 不能被渲染成「空」，也不能谎称已加载完
+    expect(w.text()).not.toContain('node boom')
+  })
+
+  it('loading 文案此时仍在（它只门控一行提示，不是整页遮罩）', async () => {
+    nt.mockReturnValueOnce(new Promise(() => {}) as never)
+    const w = await mountView()
+    // 分段渲染之后页面内容已经在，loading 只剩提示行 —— 这条钉住
+    // 「loading 仍是整页遮罩」的过度修法（那会把分段渲染又关回去）
+    expect(w.find('.pb__msg').exists()).toBe(true)
+  })
+
+  it('三段全部返回后 loading 文案消失', async () => {
+    const w = await mountView()
+    expect(w.find('.pb__msg').exists()).toBe(false)
+  })
+})
