@@ -15,7 +15,7 @@ import { req, type RequestOptions } from './client'
  *     并同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
  * - **分发**：`admin/model_integrity.go:62-84` 的 switch（`summary` / `events` /
  *   `events/{id}/resolve` / `fingerprint-drift`；未命中 ⇒ `http.NotFound`）。
- * - **实现**：`admin/model_integrity.go:314-388`。
+ * - **实现**：`admin/model_integrity.go:313-383`。
  * - **桌面调用方**：`web/src/api/integrity.ts:96-102`（`getModelIntegrityFingerprintDrift(days = 7)`），
  *   视图 `web/src/views/ModelIntegrityView.vue` 的 fingerprint-drift 标签页。
  *
