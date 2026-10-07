@@ -65,6 +65,8 @@ const CASES = [
   { label: '@320 横向inset', q: '/fixture?plants=inset-lr', w: 320 },
   { label: '@320 横向inset已避让', q: '/fixture?plants=inset-lr-ok', w: 320 },
   { label: '@320 R1存量档', q: '/fixture?plants=tap-legacy', w: 320 },
+  { label: '@320 顶栏遮挡', q: '/fixture?plants=covered-top', w: 320 },
+  { label: '@320 顶栏已避让', q: '/fixture?plants=covered-top-ok', w: 320 },
   { label: '@320 文本截断', q: '/fixture?plants=trunc', w: 320 },
   { label: '@1024 文本截断', q: '/fixture?plants=trunc', w: 1024 },
 ]
@@ -73,7 +75,21 @@ const HOST_PAGE = `<!doctype html><meta charset="utf-8">
 <body style="margin:0">
 <iframe id="f" src="/fixture" style="width:${HOST_W}px;height:820px;border:0"></iframe>
 <script>
-  window.setFixture = (w, q) => { const f = document.getElementById('f'); f.style.width = w + 'px'; f.src = q }
+  // ★ 每次切夹具都换一个**代次标记**，供宿主轮询就绪。
+  //   固定 sleep 是不够的：实测「坏图/重叠/底栏遮挡」轮流红，每次红的组都不同
+  //   —— 那是 iframe 还没加载完就在采样。间歇性红比稳定红更坏，它训练人忽略门禁。
+  window.setFixture = (w, q) => {
+    const f = document.getElementById('f');
+    window.__fixtureGen = (window.__fixtureGen || 0) + 1;
+    window.__fixtureReady = false;
+    f.style.width = w + 'px';
+    f.src = q;
+    return window.__fixtureGen;
+  };
+  window.fixtureReady = () => {
+    const d = document.getElementById('f').contentDocument;
+    return !!d && d.readyState === 'complete' && !!d.body && d.body.children.length > 0;
+  };
 </script>`
 
 const server = createServer((req, res) => {
@@ -154,7 +170,18 @@ async function runInFrame() {
 const results = []
 for (const c of CASES) {
   await cdp.send('Runtime.evaluate', { expression: `setFixture(${c.w}, ${JSON.stringify(c.q)})` })
-  await sleep(800)
+  // 等 iframe **真的就绪**再采样（readyState + body 有子节点），最多 6s。
+  // 量具自证：等不到就当场作废并退出 2，绝不拿「还没加载完的页面」当读数。
+  let ready = false
+  for (let i = 0; i < 120; i++) {
+    // ⚠️ 本仓的 CDP wrapper resolve 的是**整条消息**，不是 `m.result`
+    //   （见下面 runInFrame 的 `vwRes.result?.result?.value`）⇒ 少一层就是恒 undefined。
+    const v = await cdp.send('Runtime.evaluate', { expression: 'fixtureReady()' })
+    if (v?.result?.result?.value === true) { ready = true; break }
+    await sleep(50)
+  }
+  if (!ready) { console.error(`✗ 环境没生效（不是判据的问题）：${c.label} iframe 6s 内未就绪`); stop(); process.exit(2) }
+  await sleep(250)
   let got
   try { got = await runInFrame() } catch (e) {
     console.error(`✗ 环境没生效（不是判据的问题）：${c.label} ${e.message}`); stop(); process.exit(2)
@@ -311,6 +338,29 @@ cov('covered-by-fixed')
   }
   if (kind(r4, 'covered-by-fixed')) {
     fails.push(`${r4.label} 误报 covered-by-fixed：可滚动容器已有 80px padding-bottom`)
+  }
+
+  // ★ 同一条判据的**顶部**分支：这里曾有一个恒真假阳性（§4.6.69）。
+  //   顶栏是 sticky 且会被 `--app-safe-top` 顶高，真机一有非零 inset 就暴露。
+  {
+    const t1 = R['@320 顶栏遮挡'], t2 = R['@320 顶栏已避让']
+    const hit1 = (kind(t1, 'covered-by-fixed')?.items ?? []).map((i) => i.el).join(' , ')
+    if (!kind(t1, 'covered-by-fixed')) {
+      fails.push(`${t1.label} 漏报 covered-by-fixed：main 里的按钮被 64px 顶栏压住`)
+    } else if (!hit1.includes('#plant-top-first')) {
+      fails.push(`${t1.label} 顶栏分支没指向 #plant-top-first。实际：${hit1 || '(空)'}`)
+    }
+    // ★ 这条是**本节存在的全部理由**：顶栏自己的按钮必然落在栏区间内，
+    //   「拿栏比子元素」的写法恒真。headless 下 `--app-safe-top` 恒 0，
+    //   栏内按钮 top 落到 −0.5px 被 `top >= 0` 巧合挡下 ⇒ 全绿是巧合，不是正确。
+    if (hit1.includes('#plant-topbar-btn')) {
+      fails.push(`${t1.label} 恒真复发：把顶栏**自己的**按钮 #plant-topbar-btn 当成了被遮挡元素。实际：${hit1}`)
+    }
+    if (kind(t2, 'covered-by-fixed')) {
+      const d = kind(t2, 'covered-by-fixed').detail
+      const e2 = (kind(t2, 'covered-by-fixed').items ?? []).map((i) => i.el || i.bar || i.container).join(' , ')
+      fails.push(`${t2.label} 误报 covered-by-fixed：main 已补 padding-top 96px，按钮在栏下方。实际：${d} / ${e2}`)
+    }
   }
 }
 
