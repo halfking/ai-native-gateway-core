@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"strings"
 
 	compliancehook "github.com/kaixuan/llm-gateway-go/domains/hooks/outputcompliance"
@@ -84,8 +85,26 @@ func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any,
 			}
 			return c.unsafeToolValue(ctx, embedded, label, depth+1)
 		}
-		result, err := c.Check(ctx, "", value)
-		return err == nil && len(result.Issues) > 0, err
+		fragments, err := c.sanitizer.detector.Detect(ctx, value)
+		if err != nil {
+			return false, err
+		}
+		for _, fragment := range fragments {
+			if isNonRoutableAddressFragment(fragment) {
+				// 2026-10-08 minimax-m3/glm-5.3 fail-closed incident: the
+				// server_ip pattern matches any IPv4, and dev tooling echoes
+				// 127.0.0.1 / RFC1918 targets in model-generated commands
+				// constantly. These originate from the data owner's own session
+				// context and cannot be exfiltration destinations; blocking the
+				// whole stream on them (regardless of the configured OutputMask
+				// action) made tool-driving models unusable. Public addresses
+				// keep the hard block
+				// (TestGeneratedSensitiveToolOperationsAreBlocked contract).
+				continue
+			}
+			return true, nil
+		}
+		return false, nil
 	case map[string]any:
 		if credentialField(label) {
 			return true, nil
@@ -110,6 +129,19 @@ func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any,
 		}
 	}
 	return false, nil
+}
+
+// isNonRoutableAddressFragment reports whether a detected address fragment is
+// a loopback / private / link-local target. See unsafeToolValue's string case
+// for the 2026-10-08 incident rationale.
+func isNonRoutableAddressFragment(fragment SensitiveFragment) bool {
+	switch fragment.Type {
+	case TypeServerIP, SensitiveType("server_ipv6"):
+	default:
+		return false
+	}
+	ip := net.ParseIP(strings.TrimSpace(fragment.Value))
+	return ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified())
 }
 
 func (c *outputSensitiveChecker) Check(ctx context.Context, _ string, text string) (*outputcompliance.ComplianceResult, error) {
