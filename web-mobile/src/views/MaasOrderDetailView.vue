@@ -317,30 +317,30 @@ onBeforeUnmount(() => {
 .mo__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .mo__panel-sub { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 4px; }
 
-.mo__msg { font-size: 13px; color: var(--text-2, #666); padding: 8px 0; }
-.mo__msg--err { color: var(--danger, #c0392b); }
+.mo__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
+.mo__msg--err { color: var(--app-danger); }
 .mo__note { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; line-height: 1.5;
-  color: var(--text-2, #666); margin: 6px 0; }
-.mo__note--warn { color: var(--warn, #b26a00); }
+  color: var(--app-text-secondary); margin: 6px 0; }
+.mo__note--warn { color: var(--app-warning); }
 .mo__break { word-break: break-all; }
 
 .mo__grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
 .mo__cell { display: flex; flex-direction: column; }
-.mo__cell-l { font-size: 11px; color: var(--text-3, #999); }
+.mo__cell-l { font-size: 11px; color: var(--app-text-muted); }
 .mo__cell-v { font-size: 14px; font-weight: 600; }
-.mo__cell-s { font-size: 11px; font-weight: 400; color: var(--text-3, #999); margin-left: 4px; }
+.mo__cell-s { font-size: 11px; font-weight: 400; color: var(--app-text-muted); margin-left: 4px; }
 
 .mo__item-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .mo__title { font-size: 15px; font-weight: 700; }
 .mo__badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
-.mo__badge-t { color: var(--text-2, #666); }
+.mo__badge-t { color: var(--app-text-secondary); }
 .mo__amount { display: flex; align-items: baseline; gap: 10px; margin: 8px 0 0; }
 .mo__amount-v { font-size: 22px; font-weight: 700; }
-.mo__amount-u { font-size: 12px; color: var(--text-3, #999); }
+.mo__amount-u { font-size: 12px; color: var(--app-text-muted); }
 
 /* ★ R1：新增交互控件 ≥48 CSS px */
 .mo__actions { display: flex; gap: 8px; }
 .mo__btn { flex: 1; min-height: 48px; font-size: 14px; border-radius: 8px;
   border: 1px solid var(--border, #ddd); background: transparent; color: inherit; }
-.mo__btn--primary { border-color: var(--primary, #1976d2); color: var(--primary, #1976d2); font-weight: 600; }
+.mo__btn--primary { border-color: var(--app-primary); color: var(--app-primary); font-weight: 600; }
 </style>

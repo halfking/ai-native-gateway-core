@@ -285,7 +285,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .mo__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .mo__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
-.mo__label { display: block; font-size: 12px; color: var(--text-3, #999); margin-bottom: 4px; }
+.mo__label { display: block; font-size: 12px; color: var(--app-text-muted); margin-bottom: 4px; }
 
 /* ★ R1：新增交互控件 ≥48 CSS px */
 .mo__input { width: 100%; min-height: 48px; padding: 0 12px; font-size: 14px;
@@ -293,28 +293,28 @@ onBeforeUnmount(() => {
 .mo__seg { display: flex; gap: 6px; margin-bottom: 10px; }
 .mo__seg-btn { flex: 1; min-height: 48px; font-size: 14px; border-radius: 8px;
   border: 1px solid var(--border, #ddd); background: transparent; color: inherit; }
-.mo__seg-btn--on { border-color: var(--primary, #1976d2); color: var(--primary, #1976d2); font-weight: 600; }
+.mo__seg-btn--on { border-color: var(--app-primary); color: var(--app-primary); font-weight: 600; }
 .mo__open { display: block; width: 100%; text-align: left; background: transparent;
   border: 0; border-top: 1px solid var(--border, #eee); padding: 10px 0; color: inherit; font: inherit;
   min-height: 48px; }
 
-.mo__msg { font-size: 13px; color: var(--text-2, #666); padding: 8px 0; }
-.mo__msg--err { color: var(--danger, #c0392b); }
+.mo__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
+.mo__msg--err { color: var(--app-danger); }
 .mo__note { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; line-height: 1.5;
-  color: var(--text-2, #666); margin: 6px 0; }
-.mo__note--warn { color: var(--warn, #b26a00); }
+  color: var(--app-text-secondary); margin: 6px 0; }
+.mo__note--warn { color: var(--app-warning); }
 
 .mo__list { list-style: none; margin: 0; padding: 0; }
 .mo__item { padding: 0; }
 .mo__item-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .mo__title { font-size: 14px; font-weight: 600; }
 .mo__badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
-.mo__badge-t { color: var(--text-2, #666); }
-.mo__meta { font-size: 12px; color: var(--text-2, #666); margin: 4px 0 0; }
+.mo__badge-t { color: var(--app-text-secondary); }
+.mo__meta { font-size: 12px; color: var(--app-text-secondary); margin: 4px 0 0; }
 .mo__sep { margin: 0 4px; opacity: 0.5; }
 .mo__amount { display: flex; align-items: baseline; gap: 10px; margin: 6px 0 0; }
 .mo__amount-v { font-size: 17px; font-weight: 700; }
-.mo__amount-u { font-size: 12px; color: var(--text-3, #999); }
+.mo__amount-u { font-size: 12px; color: var(--app-text-muted); }
 .mo__tag { font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--bg-2, #eee); margin-left: 4px; }
-.mo__tag--warn { background: var(--warn, #b26a00); color: #fff; }
+.mo__tag--warn { background: var(--app-warning); color: #fff; }
 </style>

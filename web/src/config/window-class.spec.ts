@@ -133,6 +133,12 @@ describe('currentWindowClass：纯函数边界', () => {
     [1440, 'large'],
     [1920, 'large'],
     [2560, 'large'],
+    // ★ 横屏真机宽度：这两条把「横屏手机会落到哪一档」钉死，防止有人改断点时
+    //   静默改掉真机行为。背景见 docs/UI规范/15 §2.1：
+    //   914 ≥ 768 ⇒ medium（平板档布局），740 < 768 ⇒ compact。
+    //   两者**不在同一档**，而真机上横屏手机两种都可能出现 ⇒ 横屏验收必须两档都跑。
+    [740, 'compact'],
+    [914, 'medium'],
   ]
   it.each(cases)('宽度 %i → %s', (width, expected) => {
     expect(currentWindowClass(width)).toBe(expected)

@@ -345,14 +345,14 @@ void load()
   align-items: flex-start;
   font-size: 12px;
   line-height: 1.5;
-  color: var(--text-2, #666);
+  color: var(--app-text-secondary);
   margin: 6px 0;
 }
-.sa__note--warn { color: var(--warn, #b26a00); }
+.sa__note--warn { color: var(--app-warning); }
 .sa__mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; word-break: break-all; }
-.sa__msg { font-size: 13px; color: var(--text-2, #666); padding: 8px 0; }
-.sa__msg--err { color: var(--danger, #c0392b); }
-.sa__sub { display: block; font-size: 11px; color: var(--text-3, #999); }
+.sa__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
+.sa__msg--err { color: var(--app-danger); }
+.sa__sub { display: block; font-size: 11px; color: var(--app-text-muted); }
 
 .sa__chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
 /* ★ R1：新增触控控件 ≥48 CSS px */
@@ -365,26 +365,26 @@ void load()
   background: transparent;
   font-size: 13px;
 }
-.sa__chip--on { background: var(--accent, #2f6feb); color: #fff; border-color: transparent; }
+.sa__chip--on { background: var(--app-primary); color: #fff; border-color: transparent; }
 
 .sa__list { list-style: none; margin: 0; padding: 0; }
 .sa__item { padding: 10px 0; border-top: 1px solid var(--border, #eee); }
 .sa__item-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-.sa__title { font-size: 12px; color: var(--text-3, #999); }
+.sa__title { font-size: 12px; color: var(--app-text-muted); }
 .sa__id { font-size: 14px; font-weight: 600; word-break: break-all; }
 
 .sa__grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-top: 6px; }
 .sa__cell { display: flex; flex-direction: column; }
-.sa__cell-l { font-size: 11px; color: var(--text-3, #999); }
+.sa__cell-l { font-size: 11px; color: var(--app-text-muted); }
 .sa__cell-v { font-size: 14px; font-weight: 600; }
 .sa__fresh { display: flex; flex-direction: column; gap: 6px; }
 
 .sa__grades { display: flex; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
 .sa__grade { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
 .sa__grade-k { font-weight: 600; }
-.sa__grade-v { color: var(--text-2, #666); }
+.sa__grade-v { color: var(--app-text-secondary); }
 
-.sa__meta { font-size: 12px; color: var(--text-2, #666); margin: 4px 0 0; }
+.sa__meta { font-size: 12px; color: var(--app-text-secondary); margin: 4px 0 0; }
 .sa__row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; }
 .sa__btn {
   min-height: 48px;

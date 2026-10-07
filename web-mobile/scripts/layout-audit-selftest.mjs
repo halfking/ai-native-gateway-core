@@ -53,6 +53,10 @@ const CASES = [
   { label: '@320 底栏遮挡', q: '/fixture?plants=covered', w: 320 },
   { label: '@320 底栏已避让', q: '/fixture?plants=covered-ok', w: 320 },
   { label: '@320 近白屏', q: '/fixture?plants=blank', w: 320 },
+  // ── 2026-07 新增：三套「假阳性形状」诱饵，必须**不报** ──
+  { label: '@320 label命中区', q: '/fixture?plants=label-hit', w: 320 },
+  { label: '@320 内容sticky非栏', q: '/fixture?plants=sticky-content', w: 320 },
+  { label: '@320 滚得出来', q: '/fixture?plants=scroll-under', w: 320 },
   { label: '@320 底栏遮挡(滚动)', q: '/fixture?plants=covered-scroll', w: 320 },
   { label: '@320 底栏已避让(滚动)', q: '/fixture?plants=covered-scroll-ok', w: 320 },
 ]
@@ -274,6 +278,29 @@ const R = Object.fromEntries(results.map((r) => [r.label, r]))
   }
   if (kind(r4, 'covered-by-fixed')) {
     fails.push(`${r4.label} 误报 covered-by-fixed：可滚动容器已有 80px padding-bottom`)
+  }
+}
+
+// ⑧-补 2026-07：三套「假阳性形状」必须**不报**（锁住本轮修的三处口径）
+// ⚠️ 这三条是**诱饵**：种的是「看起来像缺陷」的形状。任一口径回退，自检立刻红。
+{
+  // ① label 命中区：input 自身 20×20，但 label 270×48 ⇒ 零违规
+  const r = R['@320 label命中区']
+  if (kind(r, 'tap-target')) {
+    fails.push(`${r.label} 误报 tap-target：label 包住的 20×20 input 有效热区是整个 label（min-height 48）`)
+  }
+  // ② 内容里的 sticky 不是固定栏：/m/matrix 有 581 个 sticky 行头，本页没有吸底栏
+  const r2 = R['@320 内容sticky非栏']
+  if (kind(r2, 'covered-by-fixed')) {
+    fails.push(`${r2.label} 误报 covered-by-fixed：position:sticky 的行头在滚动容器**里面**，不是底部固定栏`)
+  }
+  // ③ overflow:hidden 且真实溢出（sh>ch）⇒ 按钮滚得出来，不算被盖
+  const r3 = R['@320 滚得出来']
+  if (kind(r3, 'tap-overlap')) {
+    fails.push(`${r3.label} 误报 tap-overlap：滚动宿主是 overflow:hidden 但真实溢出，内容滚得出来`)
+  }
+  if (kind(r3, 'covered-by-fixed')) {
+    fails.push(`${r3.label} 误报 covered-by-fixed：main 已留 56px padding-bottom 等于吸底栏高`)
   }
 }
 

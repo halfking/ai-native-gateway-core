@@ -250,6 +250,30 @@ func (w *CandidateFailureWriter) buildRow(
 			}
 			row.UpstreamResponsePreview = preview
 		}
+	} else if sb := statusBodyFromErr(execErr); sb != nil {
+		// R49-C2（2026-10-07）：audio 面的上游错误是自有类型
+		// （streaming.audioUpstreamStatusError），不包装 *upstream.Error
+		// ——此前掉进消息分类兜底，supplier_errors_hot 的 http_status 恒
+		// NULL、error_kind 多误判 transient，凭据详情对音频供应商的服务
+		// 质量面失真。凡暴露 StatusCode()+Body() 的错误按同口径提取；
+		// kind 用状态码+响应体分类（429/401 等有状态门的词面在
+		// ClassifyErrorWithBody 内），与 *upstream.Error 路径同语义。
+		sc := sb.StatusCode()
+		if sc > 0 {
+			row.UpstreamStatusCode = &sc
+		}
+		if raw := sb.Body(); raw != "" {
+			body := string(errorsx.SanitizeErrorText([]byte(raw), 1024))
+			row.UpstreamResponseBody = body
+
+			preview := truncateUTF8(body, 320)
+			if len(preview) < len(body) {
+				preview += "..."
+			}
+			row.UpstreamResponsePreview = preview
+		}
+		kind = errorsx.ClassifyErrorWithBody(sc, []byte(sb.Body()))
+		row.ErrorKind = string(kind)
 	} else {
 		// Fallback: classify from the message.
 		kind = errorsx.ClassifyError(execErr, nil)
@@ -279,6 +303,25 @@ func unwrapErr(err error) error {
 	type unwrapper interface{ Unwrap() error }
 	if u, ok := err.(unwrapper); ok {
 		return u.Unwrap()
+	}
+	return nil
+}
+
+// upstreamStatusBodyError 匹配「自带上游 HTTP 状态与响应体、但不包装
+// *upstream.Error」的错误类型（首个实现：streaming.audioUpstreamStatusError，
+// R49-C2）。结构化接口而非具体类型断言：executors 包不 import streaming，
+// 未来其它 modality 的自有错误类型实现同方法即自动纳入。
+type upstreamStatusBodyError interface {
+	StatusCode() int
+	Body() string
+}
+
+// statusBodyFromErr 沿解包链找第一个实现该接口的错误；找不到返回 nil。
+func statusBodyFromErr(err error) upstreamStatusBodyError {
+	for cur := err; cur != nil; cur = unwrapErr(cur) {
+		if sb, ok := cur.(upstreamStatusBodyError); ok {
+			return sb
+		}
 	}
 	return nil
 }

@@ -28,7 +28,7 @@ var exemptions = map[string]string{
 	// 本文件另一条循环（当时 6510、6601、现在 6625）从未登记。
 	// TestExemptionsStillResolve 会把对不上的键报成 stale；
 	// **改键前必须回原提交确认是「同一处漂移」而不是「另找一处顶上」。**
-	"cmd/gateway/main.go:4736":                                      "one-shot/main package wiring, out of R66 scope。R44 改键 4642→4708，并**撤回旧理由里的漂移叙事**：那条「4552→4627→4640→4642, 4th drift」不可信——回原提交 8a6142263 看，main.go:4642 当时逐字是 `nodeProbeWorker.Submit(credID, model, \"default\", \"expired-binding-recovery\")`，**从来就不是循环行**。也就是说这条豁免在登记当天就键歪了，守卫直到本轮才报（它报的是「键指向的行没有 for X.Next()」）。4708 是该装配块内**唯一**的 `for rows.Next()`（credential_model_bindings→provider_models 的 DISTINCT 扫描），与本条声称的范围一致；未验证：无法证明它就是当年被豁免的那一处（线索已断），故此处的代价是「豁免可能比原意宽/窄一处的循环」，登记在案。R47（2026-10-05 收口轮）改键 4708→4719：同一处 DISTINCT 扫描循环被上游装配块的改动整体下移 11 行，逐字核对仍是 credential_model_bindings→provider_models 的 `SELECT DISTINCT pm.raw_model_name` 循环，同一处漂移。R48 遗漏项收口轮（2026-10-06）改键 4719→4736：v1 写入腿存活 worker 的接线（§9.264/R48-A5：变量声明 3 行 @~3800 + 独立启动块 @~3952 前插）把该循环整体下移 17 行；4736 逐字核对仍是同一处 `for rows.Next()`（`var models []string` 上方即 JOIN provider_models 的 DISTINCT 扫描），同一处漂移",
+	"cmd/gateway/main.go:4758":                                      "one-shot/main package wiring, out of R66 scope。R44 改键 4642→4708，并**撤回旧理由里的漂移叙事**：那条「4552→4627→4640→4642, 4th drift」不可信——回原提交 8a6142263 看，main.go:4642 当时逐字是 `nodeProbeWorker.Submit(credID, model, \"default\", \"expired-binding-recovery\")`，**从来就不是循环行**。也就是说这条豁免在登记当天就键歪了，守卫直到本轮才报（它报的是「键指向的行没有 for X.Next()」）。4708 是该装配块内**唯一**的 `for rows.Next()`（credential_model_bindings→provider_models 的 DISTINCT 扫描），与本条声称的范围一致；未验证：无法证明它就是当年被豁免的那一处（线索已断），故此处的代价是「豁免可能比原意宽/窄一处的循环」，登记在案。R47（2026-10-05 收口轮）改键 4708→4719：同一处 DISTINCT 扫描循环被上游装配块的改动整体下移 11 行，逐字核对仍是 credential_model_bindings→provider_models 的 `SELECT DISTINCT pm.raw_model_name` 循环，同一处漂移。R48 遗漏项收口轮（2026-10-06）改键 4719→4736：v1 写入腿存活 worker 的接线（§9.264/R48-A5：变量声明 3 行 @~3800 + 独立启动块 @~3952 前插）把该循环整体下移 17 行；4736 逐字核对仍是同一处 `for rows.Next()`（`var models []string` 上方即 JOIN provider_models 的 DISTINCT 扫描），同一处漂移",
 	"cmd/gateway/main_helpers.go:369":                               "one-shot/main package wiring, out of R66 scope",
 	"cmd/gateway/main_v32_wiring.go:119":                            "one-shot/main package wiring, out of R66 scope",
 	"cmd/fetch-standard-iq/main.go:103":                             "one-shot/main package, out of R66 scope",
@@ -108,7 +108,7 @@ func TestExemptionsStillResolve(t *testing.T) {
 			// 两条都是「门不能自证其覆盖」的情形，没有哪一条该只记日志。
 			t.Errorf("exemption %s is stale (line drift) —— 该行已没有 for X.Next() 循环，"+
 				"这条豁免正在假装有效。应删除该条目；若循环仍在、只是被改过，"+
-				"先用 git log -S '%s' 回原提交确认是「同一处漂移」还是「另找一处顶上」再改键",
+				"先用 git log -S '%s' 回原提交确认是「同一处漂移。R49（2026-10-07）改键 4736→4758：音频/AI-Q 装配块的窗口内提交继续把该循环下移 22 行；4758 逐字核对仍是同一处 credential_model_bindings→provider_models 的 DISTINCT 扫描 `for rows.Next()`（4750 即 SELECT DISTINCT pm.raw_model_name），同一处漂移」还是「另找一处顶上」再改键",
 				key, key)
 		}
 	}

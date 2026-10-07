@@ -289,35 +289,35 @@ onBeforeUnmount(() => {
 <style scoped>
 .mp__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .mp__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
-.mp__label { display: block; font-size: 12px; color: var(--text-3, #999); margin-bottom: 4px; }
+.mp__label { display: block; font-size: 12px; color: var(--app-text-muted); margin-bottom: 4px; }
 /* ★ R1：新增交互控件 ≥48 CSS px */
 .mp__input { width: 100%; min-height: 48px; padding: 0 12px; font-size: 14px;
   border: 1px solid var(--border, #ddd); border-radius: 8px; background: transparent; color: inherit; }
 
-.mp__msg { font-size: 13px; color: var(--text-2, #666); padding: 8px 0; }
-.mp__msg--err { color: var(--danger, #c0392b); }
+.mp__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
+.mp__msg--err { color: var(--app-danger); }
 .mp__note { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; line-height: 1.5;
-  color: var(--text-2, #666); margin: 6px 0; }
-.mp__note--warn { color: var(--warn, #b26a00); }
+  color: var(--app-text-secondary); margin: 6px 0; }
+.mp__note--warn { color: var(--app-warning); }
 .mp__grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
 .mp__cell { display: flex; flex-direction: column; }
-.mp__cell-l { font-size: 11px; color: var(--text-3, #999); }
+.mp__cell-l { font-size: 11px; color: var(--app-text-muted); }
 .mp__cell-v { font-size: 14px; font-weight: 600; }
 
 .mp__list { list-style: none; margin: 0; padding: 0; }
 .mp__item { padding: 10px 0; border-top: 1px solid var(--border, #eee); }
 .mp__item-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .mp__title { font-size: 14px; font-weight: 600; }
-.mp__id { font-size: 12px; color: var(--text-2, #666); }
+.mp__id { font-size: 12px; color: var(--app-text-secondary); }
 .mp__price { font-size: 15px; font-weight: 700; }
-.mp__meta { font-size: 12px; color: var(--text-2, #666); margin: 4px 0 0; }
+.mp__meta { font-size: 12px; color: var(--app-text-secondary); margin: 4px 0 0; }
 .mp__sep { margin: 0 4px; opacity: 0.5; }
-.mp__unit { font-size: 11px; color: var(--text-3, #999); margin: 4px 0 0; }
+.mp__unit { font-size: 11px; color: var(--app-text-muted); margin: 4px 0 0; }
 
 .mp__table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
-.mp__table th { text-align: left; font-weight: 500; color: var(--text-3, #999); font-size: 11px;
+.mp__table th { text-align: left; font-weight: 500; color: var(--app-text-muted); font-size: 11px;
   border-bottom: 1px solid var(--border, #eee); padding: 4px 2px; }
 .mp__table td { padding: 4px 2px; vertical-align: middle; }
-.mp__td-l { color: var(--text-2, #666); white-space: nowrap; }
+.mp__td-l { color: var(--app-text-secondary); white-space: nowrap; }
 .mp__td-v { font-weight: 600; text-align: right; }
 </style>

@@ -395,27 +395,27 @@ onBeforeUnmount(() => {
 .la__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .la__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .la__head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-.la__msg { font-size: 13px; color: var(--text-2, #666); padding: 8px 0; }
-.la__msg--err { color: var(--danger, #c0392b); }
+.la__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
+.la__msg--err { color: var(--app-danger); }
 .la__note { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; line-height: 1.5;
-  color: var(--text-2, #666); margin: 6px 0; }
-.la__note--warn { color: var(--warn, #b26a00); }
-.la__meta { font-size: 12px; color: var(--text-2, #666); margin: 4px 0 0; word-break: break-all; }
+  color: var(--app-text-secondary); margin: 6px 0; }
+.la__note--warn { color: var(--app-warning); }
+.la__meta { font-size: 12px; color: var(--app-text-secondary); margin: 4px 0 0; word-break: break-all; }
 .la__title { font-size: 14px; font-weight: 600; word-break: break-all; }
 .la__badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; flex-shrink: 0; }
-.la__badge-t { color: var(--text-2, #666); }
+.la__badge-t { color: var(--app-text-secondary); }
 .la__grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-top: 6px; }
 .la__cell { display: flex; flex-direction: column; }
-.la__cell-l { font-size: 11px; color: var(--text-3, #999); }
+.la__cell-l { font-size: 11px; color: var(--app-text-muted); }
 .la__cell-v { font-size: 14px; font-weight: 600; word-break: break-all; }
 .la__list { list-style: none; margin: 0; padding: 0; }
 .la__item { padding: 10px 0; border-top: 1px solid var(--border, #eee); }
 .la__tail { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 0; }
 .la__chip { font-size: 11px; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--border, #ddd); }
 .la__chip--ok { color: var(--success, #2e7d32); border-color: var(--success, #2e7d32); }
-.la__chip--muted { color: var(--text-3, #999); }
+.la__chip--muted { color: var(--app-text-muted); }
 
 /* ★ R1：新增交互控件 ≥48 CSS px */
 .la__btn { width: 100%; min-height: 48px; margin-top: 8px; font-size: 14px; border-radius: 8px;
-  border: 1px solid var(--primary, #1976d2); background: transparent; color: var(--primary, #1976d2); }
+  border: 1px solid var(--app-primary); background: transparent; color: var(--app-primary); }
 </style>

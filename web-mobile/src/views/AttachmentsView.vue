@@ -413,22 +413,22 @@ onBeforeUnmount(() => {
 .att__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .att__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .att__item-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-.att__label { display: block; font-size: 12px; color: var(--text-3, #999); margin: 8px 0 4px; }
+.att__label { display: block; font-size: 12px; color: var(--app-text-muted); margin: 8px 0 4px; }
 
 /* ★ R1：新增交互控件 ≥48 CSS px */
 .att__input { width: 100%; min-height: 48px; padding: 0 12px; font-size: 14px;
   border: 1px solid var(--border, #ddd); border-radius: 8px; background: transparent; color: inherit; }
 .att__btn { width: 100%; min-height: 48px; margin-top: 8px; font-size: 14px; border-radius: 8px;
-  border: 1px solid var(--primary, #1976d2); background: transparent; color: var(--primary, #1976d2); }
+  border: 1px solid var(--app-primary); background: transparent; color: var(--app-primary); }
 
-.att__msg { font-size: 13px; color: var(--text-2, #666); padding: 8px 0; }
-.att__msg--err { color: var(--danger, #c0392b); }
+.att__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
+.att__msg--err { color: var(--app-danger); }
 .att__note { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; line-height: 1.5;
-  color: var(--text-2, #666); margin: 6px 0; }
-.att__note--warn { color: var(--warn, #b26a00); }
+  color: var(--app-text-secondary); margin: 6px 0; }
+.att__note--warn { color: var(--app-warning); }
 .att__grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-top: 6px; }
 .att__cell { display: flex; flex-direction: column; }
-.att__cell-l { font-size: 11px; color: var(--text-3, #999); }
+.att__cell-l { font-size: 11px; color: var(--app-text-muted); }
 .att__cell-v { font-size: 14px; font-weight: 600; }
 .att__list { list-style: none; margin: 0; padding: 0; }
 .att__item { padding: 10px 0; border-top: 1px solid var(--border, #eee); }
@@ -436,6 +436,6 @@ onBeforeUnmount(() => {
   border-top: 1px solid var(--border, #eee); }
 .att__title { font-size: 14px; font-weight: 600; word-break: break-all; }
 .att__badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
-.att__badge-t { color: var(--text-2, #666); }
-.att__meta { font-size: 12px; color: var(--text-2, #666); margin: 4px 0 0; word-break: break-all; }
+.att__badge-t { color: var(--app-text-secondary); }
+.att__meta { font-size: 12px; color: var(--app-text-secondary); margin: 4px 0 0; word-break: break-all; }
 </style>

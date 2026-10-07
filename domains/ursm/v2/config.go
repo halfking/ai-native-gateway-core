@@ -137,6 +137,14 @@ type Config struct {
 	// generate snapshot_ts from their own local clock ~30s apart. That table
 	// is 10 GB, 45% of the database.
 	//
+	// ★ 2026-10-07 更正（§10.63 实测，R49-D3）：上一段的「~42% 被 ON CONFLICT
+	// 拒」是错的——两台网关的 snapshot_ts 相差 ~17s ⇒ 四元组主键不同 ⇒ 不构成
+	// 冲突 ⇒ **0% 被拒、100% 双份落库**（17 分钟实测 dup_ratio=2.000，
+	// distinct_pkey_rows == total_rows）。真实浪费是存储与写放大的 2 倍，
+	// 不是 1.7 倍；「重复存在 ≠ 重复被拒」。ShadowPersist 也救不了：
+	// ResolvePersistEnabled 对非 shadow 模式恒为 true（authoritative 分支
+	// 不受此开关控制），单侧关闭只从 2 份降到 1 份。根修见 §10.63 起。
+	//
 	// Turning ShadowDoubleWrite off to stop the waste would also destroy the
 	// drift evidence, so the two cannot be governed by one switch. This knob
 	// separates them: leave the sidecar recording (evidence preserved) and

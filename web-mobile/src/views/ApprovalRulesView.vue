@@ -249,17 +249,17 @@ onBeforeUnmount(() => {
 .ar__input { width: 100%; min-height: 48px; padding: 0 12px; font-size: 14px;
   border: 1px solid var(--border, #ddd); border-radius: 8px; background: transparent; color: inherit; }
 
-.ar__msg { font-size: 13px; color: var(--text-2, #666); padding: 8px 0; }
-.ar__msg--err { color: var(--danger, #c0392b); }
+.ar__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
+.ar__msg--err { color: var(--app-danger); }
 .ar__note { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; line-height: 1.5;
-  color: var(--text-2, #666); margin: 6px 0; }
-.ar__note--warn { color: var(--warn, #b26a00); }
+  color: var(--app-text-secondary); margin: 6px 0; }
+.ar__note--warn { color: var(--app-warning); }
 .ar__list { list-style: none; margin: 0; padding: 0; }
 .ar__item { padding: 10px 0; border-top: 1px solid var(--border, #eee); }
 .ar__title { font-size: 14px; font-weight: 600; word-break: break-all; }
 .ar__badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
-.ar__badge-t { color: var(--text-2, #666); }
-.ar__meta { font-size: 12px; color: var(--text-2, #666); margin: 4px 0 0; word-break: break-all; }
+.ar__badge-t { color: var(--app-text-secondary); }
+.ar__meta { font-size: 12px; color: var(--app-text-secondary); margin: 4px 0 0; word-break: break-all; }
 .ar__conds { list-style: none; margin: 4px 0 0; padding: 0; }
-.ar__cond { font-size: 12px; color: var(--text-2, #666); padding: 2px 0; }
+.ar__cond { font-size: 12px; color: var(--app-text-secondary); padding: 2px 0; }
 </style>

@@ -10,7 +10,7 @@ import { req, type RequestOptions } from './client'
 // 排障时「这条失败了」是日志给的，「它为什么失败 / 中途换了哪个节点」只有 journey 给。
 //
 // 鉴权：两条都是 `requestJourneyWrapAdmin` = `AdminMiddleware`
-//（cmd/gateway/main.go:7010-7011 → main_admin_wrappers.go:26-30）。
+//（cmd/gateway/main.go:7072-7073 → main_admin_wrappers.go:26-30）。
 // ★ AdminMiddleware 只做认证（admin/auth.go:76），**不校验角色** ⇒ tenant_admin 可用。
 //   唯一例外是 queues 的 `scope=all`，它自己判 super_admin（request_journey.go:41-44）。
 //
