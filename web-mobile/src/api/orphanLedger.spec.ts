@@ -54,7 +54,6 @@ const KNOWN_ORPHANS: readonly string[] = [
   'probeTriStateTasks',
   'reportRollup',
   'requestActions',
-  'routingPolicy',
   'selfCheck',
   'sessionAnalyticsFilterOptions',
   'slidingWindow',
@@ -129,5 +128,10 @@ describe('孤儿棘轮', () => {
     const orphans = currentOrphans()
     expect(orphans).not.toContain('taskProfile')
     expect(orphans).not.toContain('taskTypeCorrectionStats')
+  })
+
+  it('★ 已接线的哨兵：routingPolicy 不在孤儿里（第一百零一批）', () => {
+    // ★ 第一百零一批把路由策略配置面接上了 ⇒ 棘轮清单同步删掉那一行。
+    expect(currentOrphans()).not.toContain('routingPolicy')
   })
 })

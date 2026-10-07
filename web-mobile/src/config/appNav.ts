@@ -341,6 +341,19 @@ export const DRAWER_NAV: readonly NavItem[] = [
     icon: 'grid',
     titleKey: 'nav.taskProfile',
   },
+  // 2026-10-08 第一百零一批：路由策略配置面（**superAdmin 档**）。
+  // ★ 同族**三档一档**（`admin/handler.go:1200 :1201 :1215` 是 h.superAdmin，
+  //   而 `:1216` 的 featured-models 是 admin）⇒ 席设 super_admin。
+  // ⇒ ★ 后果：featured-models 在移动端被顺带收严成 superAdmin（前端严于后端）。
+  //   这是刻意的取舍 —— 同一页混档会让「谁能看哪块」不可解释。记在视图文件头。
+  // ★ 加这一席**必须**同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
+  {
+    key: 'routing-policy',
+    to: '/routing-policy',
+    icon: 'chart',
+    titleKey: 'nav.routingPolicy',
+    requiresRole: 'super_admin',
+  },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))
