@@ -190,36 +190,39 @@ done
 #   manualByDesign in installer/cmd/llm-gw-installer/stats_migrations_test.go.
 #   Editing one without the other leaves the other gate red — "已豁免" must hold
 #   on both sides at once (single-side green is not green).
-# 842 (2026-10-07)：latest_bucket 聚合的索引，**登记为带外交付（installer-only）**。
+# 842 —— 本条目曾在本清单里，**已于同日撤除**（记录留痕，避免下一个读到这个
+# 历史的人以为它还生效）。
 #
-# 归属与 691/747/748/759 同类，**不是** 830 那一类（manual-by-design）——
-# 两类的判据不同，别混：
-#   · 747/748/759/842 = 库**已经有了**，是补一条登记让门认识这个既成事实；
-#   · 830 = 迁移**根本不该被自动跑**（RENAME 活表），Go 侧还镜像了后半段。
-# 842 不满足 manualByDesign 的第 2 条（Go 侧无镜像）：全仓 grep
-# `credential_model_index_cred_model_bucket_idx` 只命中它自己的 .sql 与
-# migration_842_test.go，没有任何 Go ensure 镜像它。
+# 2026-10-07 20:36 人工拍板后，本会话一度把 842 登记为 installer-only
+# （当时的读数：只有 channel_gap_allowlist 这一条路能让门转绿）。
+# 20:41 合并 origin/main 时发现：**并行线已自己把它登记进
+# `scripts/apply-db-revision-sequence.sh` 的 files=(...) 正常升级通道**
+# （随迁移 843_candidate_failure_logs_ts_desc_idx 一起，理由写的是
+# 「部署扫描腿本就会按目录+台账投递，登记是元数据补全」）。
 #
-# 为什么登记（2026-10-07 人工拍板，由 mavis 代为处置）：
-#   842 已在 installer/internal/dbinit/runner.go:909 的 StartupFiles 里
-#   （= 全新安装会拿到它），缺的只是升级通道。此前无人登记 ⇒ 契约门红，
-#   而门红会挡住**整个仓库所有人的提交**（pre-commit 钩子于同日装上并实测
-#   生效：rc=1 阻断提交）。
+# ⇒ 处置归属权归作者，且**两个清单不能并存**（门只认「在任一处」，
+#   但一个说「库已经有了」、另一个说「它会被升级通道投递」，语义相反）。
+#   撤除本侧登记，保留作者的通道登记。
 #
-#   事实校准（不要沿用早期那个夸大的说法）：
-#   它建索引的对象是 **分区父表 public.credential_model_index**（3 分区，
-#   354,153 行）与 **普通堆表 credential_model_index_hot**（2,361 行）。
-#   ⚠ 「356,514 行」是那个 UNION ALL **视图**的行数，不是任何一张表的行数 ——
+# ★ 事实校准（留下给下一个读到 842 的人，它**不因撤除本条目而失效**）：
+#   · 842 建索引的对象是 **分区父表 public.credential_model_index**（3 分区，
+#     354,153 行）与 **普通堆表 credential_model_index_hot**（2,361 行）。
+#     ⚠「356,514 行」是那个 UNION ALL **视图**的行数，不是任何一张表的行数 ——
 #     父表自身不存数据（`pg_total_relation_size(<父表>)` 返回 0），体量要逐分区求和。
-#   它自己的头注明：不支持在分区父表上 CREATE INDEX CONCURRENTLY，普通建索引
-#   会对每个分区取锁直到建完 ⇒ 是否进无人值守升级是**部署窗口策略**问题。
+#   · 它自己的头注明：不支持在分区父表上 CREATE INDEX CONCURRENTLY，
+#     普通建索引会对每个分区取锁直到建完。
+#   · 全仓 grep `credential_model_index_cred_model_bucket_idx` 只命中它自己的
+#     `.sql` 与 `migration_842_test.go` ⇒ **没有 Go ensure 镜像**，
+#     所以它不属于 `manualByDesign` 那一类（该类要求 Go 侧镜像后半段）。
 #
-# ★ 代价（必须与「已豁免」一起读）：登记为 installer-only ⇒ **存量库永远拿不到
-#   这两个索引**。而 842 修的是 pg_stat_statements 里全库第 2 名的语句
-#   （累计 37.6 小时 / 188,357 次 / 均 719 ms）。⇒ 老库的慢查询不会因为这次登记
-#   而消失，需要人工在窗口期执行。**「已豁免」不等于「已解决」。**
-#   若日后决定让存量库也拿到，正确处置是把 842 加进
-#   scripts/apply-db-revision-sequence.sh 的 files=(...) 通道，并从本清单移除。
+# ⚠ 对作者那条理由的一处**实测反证**（2026-10-07 20:42）：
+#   「部署扫描腿本就会按目录+台账投递」在本仓**找不到对应实现** ——
+#   `scripts/` 下读 `migrations/startup` 的脚本都是**按固定编号列表**投递的
+#   （apply-hot-table-migrations.sh 按自己的 num 列表、apply-missing-migrations.sh
+#   只管 333/346），**没有任何一条会扫目录**。
+#   ⇒ 若通道登记是唯一投递腿，那它是**唯一**的；若真存在另一条扫描腿，
+#     则本条说明该腿的名字与位置，好让后来者不必再查一遍。
+#
 channel_gap_allowlist=$(cat <<'EOF'
 691_proxy_region_policy.sql
 692_session_summaries_user_intent_widen.sql
@@ -227,7 +230,6 @@ channel_gap_allowlist=$(cat <<'EOF'
 748_selfcheck_system_key_tier.sql
 759_report_snapshots_grain_dims.sql
 830_ursm_node_snapshot_min_partitioned.sql
-842_credential_model_index_latest_bucket_idx.sql
 EOF
 )
 

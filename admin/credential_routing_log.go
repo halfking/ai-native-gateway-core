@@ -352,7 +352,11 @@ func buildRoutingLogSQL(p routingLogParams) (string, []any) {
 			rdl.latency_ms,
 			rdl.error_class AS error_code,
 			rdl.failure_detail_code AS error_message,
-			rdl.request_id::text AS request_id,
+			-- 规范化成 32-hex：routing_decision_log.request_id 是 uuid 列，
+			-- ::text 会带连字符，而 request_logs / request_state_transitions 的
+			-- request_id 是 text 列、存的是无连字符 32-hex ⇒ 同一 id 两种文本表示，
+			-- 跨表 join 与 /journey/{id} 精确匹配必然落空（§4.6.66 D-RL-01）。
+			replace(rdl.request_id::text, '-', '') AS request_id,
 			rdl.tier,
 			'gateway' AS source,
 			NULL::text AS actor,

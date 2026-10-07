@@ -1000,6 +1000,16 @@ files=(
   # 841：月度分区族的分区级 DROP 保留。**建表即为空 ⇒ 迁移应用后行为与今天完全一致**，
   # 真正启用需按族 INSERT 保留月数（业务决定，不在本迁移内）。
   "$ROOT_DIR/sql/migrations/startup/841_monthly_partition_retention.sql"
+  # 842（2026-10-07 审计轮补登，837-841 同族复发后一小时）：给 autoroute
+  # latest_bucket 聚合补 (credential_id, raw_model, bucket) 索引（runbook
+  # §10.106.26）。正常升级通道：落 main 时未登记，最高编号守卫按设计拦下。
+  "$ROOT_DIR/sql/migrations/startup/842_credential_model_index_latest_bucket_idx.sql"
+  # 2026-10-07 §10.106.28：candidate_failure_logs 两臂补 (ts DESC) 索引。
+  # 该族无任何 ts 打头的索引 ⇒ 无过滤的 max(ts) 只能全量扫索引条目
+  # （父表 cost 4566 / hot 171，26 倍差），而告警语句 58,001 次调用。
+  # 本地同形状实测：加索引前读 55,000 行 2.736ms，加后读 1 行 0.036ms。
+  "$ROOT_DIR/sql/migrations/startup/843_candidate_failure_logs_ts_desc_idx.sql"
+
   # 2026-10-07（844）：给 v_supplier_price_vs_baseline 补两个缓存基准价的投影。
   #
   # 编号注（**本条让位两次**，最终 844）：
@@ -1011,9 +1021,7 @@ files=(
   # 编号是身份键，同号两迁移会让契约门与台账同时指错对象。
   #
   # ⚠ 教训：本条从落地到推送**一直没上远端**，所以两次撞号都是「本地撞远端」。
-  #   并行线在一个会话里连落两条（20:05 前 12 分钟还有 19:25 那条），
-  #   ⇒ **推之前不 fetch 就提交编号，是可以预见的返工**。
-  #   判别动作：新建迁移时先 `git fetch && git ls-tree origin/main -- sql/migrations/startup`
+  #   ⇒ 判别动作：新建迁移时先 `git fetch && git ls-tree origin/main -- sql/migrations/startup`
   #   看下一个空号，而不是看本地 `ls`。
   #
   # 缺口：826 建的视图只投影 in/out 两个基准价，cache 列只出现在 ADD COLUMN
