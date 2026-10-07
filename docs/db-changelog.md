@@ -7402,3 +7402,31 @@ seed offer (0/0): ERROR: null value in column "provider_id" of relation
 837 的实质变更见 `4df816006`（摘掉两个 routing analytics 物化视图里的
 `NOW() AS refreshed_at`，改由单行状态表盖章，每轮 100% 重写降到真实差异量）。
 838 的推导、读数与证据边界见 runbook §10.92 / §10.92.8。
+## 2026-10-07T09:47:27Z — deploy 154 build_seq 2492 (c982c224)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 841 | `841_monthly_partition_retention.sql` | `9d16cd2ec37d1cccc6fa7035a55c60c87de7223df49dd99bf7dce6f907a7c4c8` | applied+verified |
+
+
+## 2026-10-07T09:52Z — 更正：838 / 839-B / 840 的实际状态，以及一处登记缺口
+
+本次 deploy 2492 之后的只读复核发现：上面那张表把 838 记成 `pending deploy`，
+而 **838 / 839-B / 840 在库里其实早已生效**；同时 **840 从未被登记过**。
+
+| 迁移 | 文件 | 实际状态（2026-10-07 17:52 只读核验） | 判据 |
+|------|------|-------------------------------|------|
+| 838 | `838_analyze_skip_frozen_month.sql` | **applied** | `analyze_llm_gateway_table_stats` 函数体 **2142 B**（838 前值 1490） |
+| 839 | `839_autovac_current_month_heap_handoff.sql` | **applied**（839-B） | 库函数含 `opts_sql_base` 与 `0.005`；当月 11 族分区：columnar 4 个 @0.02（设计如此）、heap 5 个 @0.005 |
+| 840 | `840_analyze_stats_throttle_slot.sql` | **applied** | `llm_gateway_task_state` 存在，最早一行 `last_started_at=2026-10-07 15:22:57` |
+| 841 | `841_monthly_partition_retention.sql` | **applied+verified** | 两个函数与两张表均存在；`llm_gateway_partition_retention` **0 行**、`llm_gateway_partition_drop_log` **0 行**、`llm_gateway_expired_month_partitions()` 返回 **0** 行 ⇒ 本次部署未删除任何分区或数据 |
+
+**登记缺口（本身是个问题）**：245 上 2026-10-07 的两次部署
+（build_seq 2488 `73ef0bed`、build_seq **2490 `35cd7bc9`**，后者 15:22:32 生效）
+**在本文件里没有任何记录**——最后一条 245 登记仍停在 2026-10-04 的 build_seq 2458。
+840 就是这样「已应用但从未被登记」的。
+⇒ 后果：`pending deploy` 这类状态词在缺登记的情况下**不可信**，
+查现状必须回库读判据，不能以本文件为准。证据与时间线见 runbook §10.106.12 / §10.106.18。
+
+★ 另：838/839-B 曾于 12:39:56 被重启回退过一次，15:22 的 2490 部署才恢复；
+现读数是「恢复后」的状态。
