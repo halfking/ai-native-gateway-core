@@ -197,6 +197,12 @@ const READ_THEME = `(() => { const cs = getComputedStyle(document.documentElemen
 // 根字号未被锁定），改 `html{font-size}` 与平台字号放大在 rem 布局上等价。
 // ⚠️ 同样必须**回读自证**：不读回就会把「没放大」当成「放大后没问题」。
 const FONT_SCALE = Number(arg('font-scale', '1'))
+// 提前拒掉非有限值：NaN 会一路穿过下面的比较（NaN 参与的比较恒为 false），
+// 到最后只会留下一份「看起来跑了、其实没跑」的报告。
+if (!Number.isFinite(FONT_SCALE) || FONT_SCALE <= 0) {
+  console.error(`--font-scale 要的是**比值**（1 / 1.3 / 2），收到 ${JSON.stringify(arg('font-scale', '1'))}`)
+  process.exit(2)
+}
 const BASE_FONT_PX = 16
 const READ_FONT = `(() => getComputedStyle(document.documentElement).fontSize)()`
 
@@ -302,7 +308,14 @@ for (const route of ROUTES) {
            return +w.toFixed(2) })()`,
       ).catch((e) => ({ error: String(e) }))
       font = { want: wantFS, got, pct, oneRem: rem, remUnchanged: rem === BASE_FONT_PX }
-      if (typeof got !== 'string' || Math.abs(parseFloat(got) - parseFloat(wantFS)) > 0.5) {
+      // ⚠️ 这里原来写的是 `Math.abs(parseFloat(got) - parseFloat(wantFS)) > 0.5`。
+      //    `--font-scale` 传错单位（本该传比值 2，误传 '200%'）时 FONT_SCALE=NaN
+      //    ⇒ wantFS='NaNpx' ⇒ 差值恒为 NaN ⇒ **`NaN > 0.5` 恒为 false**
+      //    ⇒ 作废分支不触发、四档跑出四份逐字节相同的报告、而 font 段仍写着
+      //    `remUnchanged: true`。即：一个恒真判据给一次没跑过的机制发了绿灯。
+      //    任何 NaN 参与的比较都恒为 false，所以必须显式查有限性。
+      const delta = typeof got === 'string' ? Math.abs(parseFloat(got) - parseFloat(wantFS)) : NaN
+      if (typeof got !== 'string' || !Number.isFinite(delta) || delta > 0.5) {
         rows.push({ ...row, invalid: 'font-scale-not-applied', got: JSON.stringify(font) })
         continue
       }
