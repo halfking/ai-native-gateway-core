@@ -12,9 +12,15 @@ LIB="$ROOT_DIR/scripts/deploy-local-lib.sh"
 
 bash -n "$LIB"
 
+# 仅为了拿到 _dl_timeout：stock macOS 没有 GNU `timeout`，直接写 `timeout 20 …`
+# 会以 127 失败，于是本套测试在 macOS 上恒红（内层 source 的时机在 bash -c 之后，
+# 拿不到这个 helper，所以在外层先 source 一次）。
+# shellcheck disable=SC1090
+source "$LIB"
+
 run_preflight() {
   # shellcheck disable=SC1090
-  timeout 20 bash -c '
+  _dl_timeout 20 bash -c '
     set -euo pipefail
     log() { printf "L:%s\n" "$*"; }
     warn() { printf "W:%s\n" "$*"; }

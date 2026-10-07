@@ -150,6 +150,27 @@ test-pg-contracts: ## 隔离 PostgreSQL 合约门禁（需要两个专用、低�
 	TEST_PG_CONTRACTS_ISOLATED=1 $(GO) test -tags=integration ./bg -run '^TestProviderErrorAggregatorRealPG$$' -count=1 -v -timeout=90s
 	TEST_PG_CONTRACTS_ISOLATED=1 $(GO) test -tags=integration ./domains/requestjourney -run '^TestJournalSnapshotReceiptRealPG$$' -count=1 -v -timeout=90s
 
+# 真库判据（bg/*_realdb_test.go 一族）的显式运行入口，与 test-rls 同族。
+#
+# ★ 登记在这里的理由（2026-10-07）：该脚本一度只存在于文件系统里，
+#   全仓 grep 除它自身外**零命中** ⇒ 没有任何入口提到它 ⇒ 它不会有人跑。
+#   「写了脚本」不等于「门在那里」——一个没人知道的命令等于没有命令。
+#
+# 为什么不并进 pre-commit-check.sh：它连的是真生产库，
+# 让每次提交都能打生产库是**权限问题**，不是门禁松紧问题。
+# 所以它是显式登记的独立命令，形态与 test-rls 一致。
+#
+# 用法：
+#   make test-realdb-gate
+#   TEST_DATABASE_URL='postgres://...' make test-realdb-gate
+#   scripts/run-realdb-gate.sh --list      # 只列登记了哪些，不连库
+#
+# ⚠ 无 DSN 时脚本退出码是 **2**，不是 0 ⇒ 「没跑成」与「跑了且通过」
+#   在 make 层也可区分（不要只看 make 成功与否，先看退出码）。
+.PHONY: test-realdb-gate
+test-realdb-gate: ## 运行 bg 真库判据（需 TEST_DATABASE_URL/TEST_DB_URL；缺 DSN 退出码 2）
+	@bash scripts/run-realdb-gate.sh
+
 .PHONY: test-sessionforensics
 test-sessionforensics: ## sessionforensics 全套（含真实数据回放）
 	ABS_SESSIONS_DIR="$(ABS_SESSIONS_DIR)" $(GO) test ./domains/sessionforensics/... ./tests/session_replay/... -count=1 -v

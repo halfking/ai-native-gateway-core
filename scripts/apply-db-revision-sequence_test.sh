@@ -43,6 +43,68 @@ gate_report() {
 # high-numbered canonical migrations must reach either a fresh install, an
 # upgrade, or a reviewed Go startup ensure. The inputs stay text lists so the
 # contract can exercise every route without mutating the real catalog.
+#
+# ═══════════════════════════════════════════════════════════════════════
+# ★★ 读这条门之前请先读完本段：仓库里其实有**两条**迁移投递腿，本门只认其中一条
+# ═══════════════════════════════════════════════════════════════════════
+#
+# ① **扫描腿**（部署时）
+#    ⚠⚠ 它的代码**不在本仓库里**：`scripts/deploy-lib` 是**软链**，指向仓外
+#       workspace SSOT `ai-native-tools/deploy-lib`（commit 722e9020f 的治理决定，
+#       未跟踪、非 gitignore）。**换机器或在 CI runner 上这个路径不存在。**
+#       ⇒ 下面这个路径是**本机 workspace 的状态**，不是本仓能自证的事实。
+#       引用它之前先 `git ls-files scripts/deploy-lib/`（会返回空）。
+#
+#    本机可达时的实际逻辑（scripts/deploy-lib/db-changelog.sh 的
+#    `_deploy_pending_startup_migrations`）：
+#      for f in sql/migrations/startup/[0-9]*.sql; do
+#        跳过 *.down.sql / *.skip / *.bak.skip / 头 15 行含 SUPERSEDED|DEPRECATED
+#        if (( ver >= ${DB_LEDGER_RECONCILE_FROM:-412} )) 且远端 schema_migrations
+#           没有该 version ⇒ 投递
+#      done
+#    投递后由同文件 `:518` 写 `schema_migrations` + `llm_gateway_migration_checksums`
+#    （advisory lock + NOT EXISTS 幂等）。调用链（本机查实）：
+#      deploy-154.sh → deploy-seamless.sh:68 `source deploy-lib/db-changelog.sh`
+#
+# ② **通道腿**（本门要求的那条）
+#    scripts/apply-db-revision-sequence.sh 的 `files=(...)` 数组，**在本仓内**，
+#    记账表是 **`public.gateway_db_revision_sequences`**（按文件内容 sha256，
+#    内容变了但编号不变时会重放）。
+#    已确认的调用方只有 `scripts/deploy-local-sys.sh`。
+#    `scripts/deploy-252-schema-upgrade.sh` 里也调它，但**全仓穷尽 grep 后没有
+#    任何调用方**（2026-10-07 核过 scripts/deploy/installer/.github/.githooks/
+#    Makefile/根目录 *.sh，命中的只有一份历史审计文档与 .codegraph 索引库），
+#    ⇒ 通道腿不由它投递。
+#
+# ★ 因此本仓能自证的只有一句：**通道腿在本仓内，且有调用方（deploy-local-sys.sh）**。
+#   「154 生产上谁投递迁移」依赖仓外 SSOT（见上），**本仓无法回答** ——
+#   需要那个结论时请去 workspace SSOT 查，不要引用本文件当依据。
+#
+# ── 两腿互不知情，各记一张表 ─────────────────────────────────────────
+# `deploy-lib` 里 grep 不到 apply-db-revision-sequence；通道脚本里也读不到
+# deploy-lib。⇒ **同一份迁移可能被两条腿各投递一次**，挡住重复的是
+# **迁移自身的幂等性**，不是记账。这也解释了 836 头部那句
+# 「813 的 sha 与台账一致 ⇒ 幂等通道每次都跳过它」——通道腿按 sha 跳，
+# 而扫描腿根本不查那张表。
+#
+# ── 为什么本门**不**把扫描腿算作一条投递路径（2026-10-07 人工拍板）────
+# 2026-10-07 在**本机**实测确认扫描腿会投递 837-844（用它的真实循环逻辑跑过：
+# 已记账的 844 被正确跳过，未记账的 837-843 被选中）。
+# ⚠ 该读数依赖仓外 SSOT 软链，**别的环境无法复现**（见上 ⚠⚠）。
+# **所以：投递本来没坏。** 本门坚持要求显式登记，是在问一个扫描腿回答不了的问题：
+#
+#   「这条迁移的投递**顺序、幂等重放、以及它是否属于人工/带外交付**，
+#     在仓库里有没有被明确记录下来？」
+#
+# 扫描腿只回答「文件在目录里就会投」——它**说不出**这条迁移为什么该在
+# 这里、顺序依赖谁、重放时安全吗。**838→839 的函数链先后**就是只有通道腿
+# 能表达的信息（intentional_function_chains 就是为此存在）。
+#
+# ⇒ 保持本门的约束力（本轮拍板）；代价是**每个新迁移要在通道腿登记一次**，
+#   即使扫描腿也会投它。这是有意的代价，不是缺陷。
+# ⇒ ⚠ 若日后要让本门认扫描腿，必须同时解决「顺序依赖」问题 ——
+#   否则一个必须排在 838 之后的迁移，会因为「它在目录里」而被允许乱序投递。
+#   届时应改的是扫描腿（读顺序元数据），不是把第五条路径加进来。
 canonical_delivery_path_check() {
   local canonical_files="$1"
   local startup_files="$2"
@@ -229,9 +291,21 @@ done
 #   一条「已确认不存在」比「没查到」危险得多 —— 它会让下一个人
 #   直接采信并停止查证。⇒ 撤除错误陈述，并把它的成因留在这里。
 #
+# ✔ 更正二（2026-10-07 23:53）：上面这条更正**自身也不完整** ——
+#   `scripts/deploy-lib/db-changelog.sh` 不是仓内文件，而是**软链**，指向仓外
+#   workspace SSOT（`ai-native-tools/deploy-lib`，commit 722e9020f 的治理决定，
+#   `git ls-files scripts/deploy-lib/` 返回空）。
+#   ⇒ 「扫描腿确实存在」这句话**只在本机成立**：换机器或 CI runner 上
+#     该路径根本不存在，那时本文件的这一整段都无法自证。
+#   ⇒ 把它读成「本仓能证明扫描腿存在」是错的。
+#   要判断 842/843 在别的环境会不会被投递，**必须去 workspace SSOT 查**。
+#   判别动作：引用部署机制前先 `git ls-files <路径>`，
+#     不要用 `ls` 看到文件就当它是仓内资产 —— 软链让两者看起来完全一样。
+#
 # ★ 两条投递腿**彼此独立**（都不是对方的子集）：
-#   ① 扫描腿  scripts/deploy-lib/db-changelog.sh —— 扫目录 + 查台账，未记录即投递
-#   ② 通道腿  本脚本 files=(...) 数组 —— 显式列出才投递
+#   ① 扫描腿  scripts/deploy-lib/db-changelog.sh（★ 仓外软链 SSOT）
+#              —— 扫目录 + 查台账，未记录即投递
+#   ② 通道腿  本脚本 files=(...) 数组（★ 仓内）—— 显式列出才投递
 #   ⇒ 所以「登记 files=(...)」与「反正扫描腿会投递」**两句话都对**，
 #     而它们说的是两件不同的事。（这正是最初那条冲突的根因。）
 #

@@ -6,6 +6,7 @@ import {
   BREAKPOINT_EXPANDED_PX,
   BREAKPOINT_LARGE_PX,
 } from './useWindowClass'
+import { auditEntryUrl, LARGE_HANDOFF_PX } from '../../scripts/audit-entry-url.mjs'
 
 // 视口档位矩阵门禁（UI规范 15 §2.1 ＋ 10 §4.6.61）。
 //
@@ -26,6 +27,7 @@ import {
 
 const DOC = resolve(process.cwd(), '../docs/UI规范/15-真机验收与落地路线.md')
 const DRIVER = resolve(process.cwd(), 'scripts/layout-audit-web.mjs')
+const ENTRY_SWITCH = resolve(process.cwd(), 'public/entry-switch.js')
 
 /** 与 useWindowClass.classify 同构，但**只依赖导出的常量**（不碰 window）。 */
 function classify(w: number): 'compact' | 'medium' | 'expanded' | 'large' {
@@ -89,5 +91,45 @@ describe('§2.1 视口矩阵', () => {
       { onlyDoc, onlyDriver },
       '文档与审计脚本的视口集合对不上：只在文档里的档从此没人量，只在脚本里的档没人解释',
     ).toEqual({ onlyDoc: [], onlyDriver: [] })
+  })
+
+  // ── large 交接阈值的三份镜像（§4.6.75）─────────────────────────────
+  // entry-switch.js 自己在文件头要求「改断点必须三处同改」：
+  //   ① public/entry-switch.js 的 `(min-width: 1280px)` 字面量
+  //   ② useWindowClass.ts 的 BREAKPOINT_LARGE_PX
+  //   ③ scripts/audit-entry-url.mjs 的 LARGE_HANDOFF_PX（判据侧）
+  // 少改一处的后果不是「不一致」，而是**判据悄悄量错表面**。
+  it('large 交接阈值三处镜像一致', () => {
+    const entrySwitch = readFileSync(ENTRY_SWITCH, 'utf8')
+    const m = /min-width:\s*(\d+)px/.exec(entrySwitch)
+    expect(m, 'entry-switch.js 里找不到 min-width 阈值').not.toBeNull()
+    expect(Number(m?.[1]), 'entry-switch.js 的 large 阈值与 useWindowClass 不一致').toBe(BREAKPOINT_LARGE_PX)
+    expect(LARGE_HANDOFF_PX, '判据侧 LARGE_HANDOFF_PX 与 useWindowClass 不一致').toBe(BREAKPOINT_LARGE_PX)
+  })
+
+  it('≥1280 的根入口判据必须显式走 ?mobile（平板显式选移动端是受支持路径）', () => {
+    // 行为断言，不是源码 grep：把规则当函数量。
+    expect(auditEntryUrl('/m/', 1280)).toEqual({ url: '/m/?mobile', entryMode: 'mobile-forced', forceMobile: true })
+    expect(auditEntryUrl('/m/', 1440).forceMobile).toBe(true)
+    // 断点之下不该多此一举
+    expect(auditEntryUrl('/m/', 1194)).toEqual({ url: '/m/', entryMode: 'auto', forceMobile: false })
+    expect(auditEntryUrl('/m/', 411).url).toBe('/m/')
+    // 深链不进这条规则（entry-switch 同样只切根入口）
+    expect(auditEntryUrl('/m/usage', 1440).url).toBe('/m/usage')
+    expect(auditEntryUrl('/m/keys', 1280).forceMobile).toBe(false)
+  })
+
+  it('判据真的用上了这条规则（防止模块建了却没接）', () => {
+    const src = readFileSync(DRIVER, 'utf8')
+    expect(src, 'driver 没有 import auditEntryUrl').toContain("from './audit-entry-url.mjs'")
+    expect(src, 'driver 导航仍写死 ORIGIN + route').not.toMatch(/Page\.navigate',\s*\{\s*url:\s*ORIGIN \+ route\s*\}/)
+    expect(src, 'driver 没有把入口模式记进行里（报告将无法自证走的是哪条腿）').toContain('entryMode: entry.entryMode')
+    // 行对象必须整体带进报告：driver 曾经在这里从零重建 `{ route, reqW, … }`，
+    // 把 entryMode 静默丢掉 —— 源码里「写了这个字段」与报告里「有这个字段」是两件事。
+    expect(
+      src,
+      'driver 的 rows.push 从零重建行对象会丢掉 entryMode，必须展开 ...row',
+    ).not.toMatch(/rows\.push\(\{\s*route,\s*reqW/)
+    expect(src, 'driver 没有展开 ...row').toMatch(/rows\.push\(\{\s*\.\.\.row,/)
   })
 })

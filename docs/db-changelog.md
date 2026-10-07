@@ -8532,3 +8532,146 @@ done
         （本次 837-841、844 都登记了通道腿）。
   两种取舍都合理，**但必须有人明确选一种**，
   否则「这条迁移为什么在 files=(...) 里」永远只能靠逐个追溯历史回答。
+
+## 2026-10-07 23:42 — 契约门口径拍板：**保持门的约束力**，机制写进注释（不动判据）
+
+### 二十八、决定与理由（2026-10-07 拍板）
+
+上一节把「契约门该不该认扫描腿」作为一个待裁决的机制问题抛出。
+**拍板：不改判据，把机制写进注释。**
+
+理由（不是「改动最小所以选它」，而是门在问一个扫描腿回答不了的问题）：
+
+> 「这条迁移的**投递顺序、幂等重放、以及它是否属于人工/带外交付**，
+> 在仓库里有没有被明确记录下来？」
+
+扫描腿只回答「文件在目录里就会投」——它**说不出** 838 必须排在 839 之前
+（两者重定义同一个函数 `analyze_llm_gateway_table_stats`，
+顺序错了活库就停在中间形态）。**而这正是 `intentional_function_chains`
+存在的理由** —— 顺序信息只有通道腿能表达。
+
+⇒ 让门认扫描腿，等于允许「因为它在目录里」就放行一个**顺序未声明**的迁移。
+⇒ 这是本轮在两次撞号（842、843 各自与并行线相撞）里最需要的约束：
+   编号与顺序正是并行线最容易和本地撞车的地方。
+
+### 二十九、写入位置与内容
+
+写进 `scripts/apply-db-revision-sequence_test.sh` 里
+`canonical_delivery_path_check` 的**定义处**（不是某个 allowlist 上方）——
+判别动作：**下一个要改这条门的人，第一眼就会经过它**。
+若放进 allowlist 上方，只有读到 842 注释的人才会看到。
+
+内容含：两条腿的位置与调用链、各自的记账表、为什么互不知情、
+以及「为什么本门不认扫描腿」+ 「若日后要认，必须先解决顺序依赖」。
+
+### 三十、注释里每条断言都做了自证（不是照抄印象）
+
+| 断言 | 核验方式 |
+|------|---------|
+| 扫描腿函数 `_deploy_pending_startup_migrations` | `grep -c` = 2 |
+| 门槛变量 `DB_LEDGER_RECONCILE_FROM` | `grep -c` = 2 |
+| 通道腿台账 `gateway_db_revision_sequences` | `grep -c` = 9 |
+| `deploy-local-sys.sh` 调通道腿 | `grep -c` = 1 |
+| 两腿互不知情 | `grep -rc apply-db-revision-sequence scripts/deploy-lib/` = **0 个文件命中** |
+| 154 生产投递链 | `deploy-154.sh → deploy-seamless.sh:68 source deploy-lib/db-changelog.sh` |
+| `deploy-252-schema-upgrade.sh` 无调用方 | **全仓穷尽 grep**（scripts/deploy/installer/.github/.githooks/Makefile/根 *.sh）：命中仅一份历史审计文档 + `.codegraph/graph.db` 索引库，**无代码引用** |
+
+★ 最后一条特意写成「穷尽 grep 后无调用方」并列出搜索根，
+  因为本会话已在**否定性断言**上栽过一次（顶层 grep 漏 `deploy-lib/` 子目录，
+  误判「扫描腿不存在」）。⇒ 注释里的每条「不存在 / 无 / 从未」
+  都必须附上它是在哪些根上搜出来的。
+
+⇒ ★★ 顺带查清一件此前没人说清的事：
+  **在 154 生产上，投递迁移的只有扫描腿这一条**（deploy-154 → deploy-seamless
+  → db-changelog.sh）。通道腿的已确认调用方只有 `deploy-local-sys.sh`。
+  这解释了为什么 842 那条「反正扫描腿会投递」是对的，也解释了为什么
+  837-844 的通道登记**不是修复投递**（投递本来没坏）。
+
+## 2026-10-07 23:47 — 补完第 3 项的最后一步：把真库门**登记进清单**
+
+### 三十一、完成度审计发现的缺口：「写了脚本」≠「门在那里」
+
+目标第 3 项要求「接进会在真库运行的检查器，**或在门禁清单显式登记命令**」。
+我上一轮交付了 `scripts/run-realdb-gate.sh`，但**没有登记进任何清单**。
+
+实测（23:44）：`grep -rn "run-realdb-gate" .`（排除 .git / node_modules / 脚本自身）
+⇒ **除它内部文本外零命中**。`verify.sh` 的 8 条调用、Makefile 的 20+ 个 target、
+`.github/workflows/`、`.githooks/`、文档，**全都没有提到它**。
+
+⇒ ★★ 这就是本仓反复记的那条纪律的另一个实例：
+  **一道没有人知道的门，等于没有门。** 上一轮我把「脚本交付了」当成了
+  「防线常态化了」，而实测证明它**只存在于文件系统里**。
+  ⇒ 与 [[护栏存在但没人执行]] 同族，且更早一步：
+    连「被谁执行」都还没写下来。
+
+### 三十二、登记到 Makefile（与 test-rls 同族形态）
+
+已有先例：`test-rls`（需 `TEST_DATABASE_URL` 的真库门）。
+新增 `test-realdb-gate`，形态对齐（`## ` 帮助文本 + DSN 缺失即 exit）。
+
+实测三条：
+| 检查 | 结果 |
+|------|------|
+| `make help` 能看到 | ✅「test-realdb-gate  运行 bg 真库判据（需 DSN；缺 DSN 退出码 2）」 |
+| 无 DSN 时退出码 | ✅ **rc=2 透传**（make 没有把「没跑成」吞成成功） |
+| 接 DSN 真跑 | ✅ `make test-realdb-gate` → `PASS=33 / FAIL=8 / SKIP=8（分母=49）`，`make: *** Error 1` |
+| `make -n` 解析 + 既有 target 未破坏 | ✅ `test-rls` / `test-pg-contracts` / `guards` 均 OK |
+
+⚠ **本节我自己的量具失误（当场自查抓到）**：第一次测退出码写成
+  `make test-realdb-gate 2>&1 | grep …; echo "rc=${PIPESTATUS[0]}"`，
+  报出 `make rc=2`，而 make 自己打印的是 `Error 1`。
+  ⇒ 取到的是**管道末端命令**的退出码，不是 make 的。
+  重测（不经管道）得到真实值：脚本 **rc=1**（有 FAIL），
+  无 DSN 时 **rc=2**（没跑成），两者 make 均原样透传。
+  ⇒ **凡要引用退出码，一律 `out=$(cmd); rc=$?`，rc 后面不许接管道。**
+
+⚠ 在 Makefile 注释里明写「为什么不并进 pre-commit-check.sh」：
+  它连的是真生产库，让每次提交都能打生产库是**权限问题**，不是门禁松紧问题。
+
+⇒ 至此第 3 项才算闭合：脚本 ✅ + 清单登记 ✅ + 三条实测 ✅。
+
+⇒ ★★ 读数仍要带限定（与上一轮同一句，不因重复而失效）：
+  这里是**一次性空库**（只跑过夹具自建的那部分迁移），不是完整部署态；
+  那 8 条 FAIL 大多是 `42P01 relation … does not exist`。
+  ⇒ 它证明的是**入口可用 + 读数口径正确**，不是产品健康。
+
+## 2026-10-07 23:53 — 再更正一条：扫描腿**不在本仓库里**（软链指向仓外 SSOT）
+
+### 三十三、抽查台账断言时发现的事实
+
+完成度审计抽查我此前写进台账的断言，逐条重验时第 ②③ 条失败：
+
+```
+git show origin/main:scripts/deploy-lib/db-changelog.sh
+→ 致命错误：路径在磁盘上，但不在 'origin/main' 中
+```
+
+查因：
+- `git ls-files scripts/deploy-lib/` ⇒ **空**（未跟踪）
+- `git check-ignore` ⇒ 未被 ignore（是**故意**不跟踪，不是被忽略）
+- `ls -l scripts/deploy-lib` ⇒ **软链** → `../../../../ai-native-tools/deploy-lib`
+- 解析后路径：`__DEV_HOME__/workspace/ai-native-tools/deploy-lib` ⇒ **在本仓之外**
+- 历史上存在过一次：commit `722e9020f`
+  「scripts/deploy-lib 转软链 → workspace deploy-lib SSOT，旧 7 文件留档 deploy-lib.legacy
+  ——对齐 P2 不变量，治理仓 deploy-lib-check 合规」
+
+⇒ `scripts/deploy-lib` 是一个**软链接**，指向仓外的 workspace SSOT。
+  ⇒ **扫描腿的代码不随本仓 clone 分发。** 换一台机器、或在 CI runner 上，
+  `scripts/deploy-lib/db-changelog.sh` **根本不存在**。
+
+⚠ 由此更正我此前那些表述的真实边界：
+  「154 生产上投递迁移的只有扫描腿」——
+  这个结论**在本机成立**（软链可达），但它**不是本仓库能自证的事实**，
+  而是「本机 workspace SSOT 的状态」。我此前把它当成仓库内事实来引用，
+  等于**让读者以为读仓内代码就能查证投递机制**。
+
+⇒ ★ 判别动作（这条是本节的真正产物）：
+  凡要引用一个**部署/构建机制**，先问「它在仓内还是仓外 SSOT」。
+  `git ls-files <路径>` 一次就能答，**不要**用 `ls` 看到文件就当它是仓内资产
+  —— 软链会让两者看起来完全一样。
+  同族：[[按名字/包名推断存在性]] · [[按日志文件统计之前先取内容首末时间戳]]。
+
+⇒ 这条对**本轮那条「契约门是否该认扫描腿」的裁决有直接影响**：
+  那个裁决的依据之一是「扫描腿在 154 生产上是活的」，
+  而**「它是否在别的环境也活」现在无法从本仓自证**。
+  ⇒ 台账已记：该裁决的前提需属主用 workspace SSOT 复核。

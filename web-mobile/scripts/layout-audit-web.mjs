@@ -38,6 +38,7 @@ import { mkdirSync, writeFileSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { layoutAudit, waitForSettle } from './_layout-audit.mjs'
+import { auditEntryUrl } from './audit-entry-url.mjs'
 
 // ───────────────────────────── 参数 ─────────────────────────────
 const argv = process.argv.slice(2)
@@ -62,6 +63,7 @@ const ROUTES = arg('routes', '/,/models,/keys,/nodes,/usage,/alerts')
 //   568~932，而移动端 medium 从 600 起 ⇒ 少了它就量不到吸底栏（10 §4.6.61）。
 const SIZES = arg('sizes', '320x800,360x800,390x844,412x915,568x320,600x800,740x360,840x673,768x1024,914x411,1024x600,1024x768,1194x834,1280x800,1440x900')
   .split(',').map((s) => { const [w, h] = s.split('x').map(Number); return { w, h } })
+
 
 const SETTLE_MS = Number(arg('settle', '25000'))
 // 横向 safe-area 注入（2026-10-08）：`--insets 30,30[,top,bottom]`
@@ -197,6 +199,12 @@ const READ_THEME = `(() => { const cs = getComputedStyle(document.documentElemen
 // 根字号未被锁定），改 `html{font-size}` 与平台字号放大在 rem 布局上等价。
 // ⚠️ 同样必须**回读自证**：不读回就会把「没放大」当成「放大后没问题」。
 const FONT_SCALE = Number(arg('font-scale', '1'))
+// 提前拒掉非有限值：NaN 会一路穿过下面的比较（NaN 参与的比较恒为 false），
+// 到最后只会留下一份「看起来跑了、其实没跑」的报告。
+if (!Number.isFinite(FONT_SCALE) || FONT_SCALE <= 0) {
+  console.error(`--font-scale 要的是**比值**（1 / 1.3 / 2），收到 ${JSON.stringify(arg('font-scale', '1'))}`)
+  process.exit(2)
+}
 const BASE_FONT_PX = 16
 const READ_FONT = `(() => getComputedStyle(document.documentElement).fontSize)()`
 
@@ -235,13 +243,16 @@ const PROBE = `(() => {
 const rows = []
 for (const route of ROUTES) {
   for (const { w, h } of SIZES) {
-    const row = { route, reqW: w, reqH: h }
+    // ★ ≥1280 的**根入口**必须显式走 `?mobile`（§4.6.75）。规则与理由见
+    //   scripts/audit-entry-url.mjs；断点镜像一致性由 viewport-matrix.spec.ts 断言。
+    const entry = auditEntryUrl(route, w)
+    const row = { route, reqW: w, reqH: h, entryMode: entry.entryMode }
     // ① 先清 override，否则 CDP 会沿用上一档
     await send('Emulation.clearDeviceMetricsOverride').catch(() => {})
     await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 2, mobile: true })
     await send('Network.clearBrowserCookies')
     await send('Network.setCookie', { name: 'llmgw_session', value: cookie.split('=')[1], domain: host, path: '/', httpOnly: true, secure: ORIGIN.startsWith('https') })
-    await send('Page.navigate', { url: ORIGIN + route })
+    await send('Page.navigate', { url: ORIGIN + entry.url })
 
     // ③ 等稳定态再采样
     let settle = await evaluate(`(${SETTLE_SRC})(${SETTLE_MS})`).catch((e) => ({ error: String(e) }))
@@ -302,7 +313,14 @@ for (const route of ROUTES) {
            return +w.toFixed(2) })()`,
       ).catch((e) => ({ error: String(e) }))
       font = { want: wantFS, got, pct, oneRem: rem, remUnchanged: rem === BASE_FONT_PX }
-      if (typeof got !== 'string' || Math.abs(parseFloat(got) - parseFloat(wantFS)) > 0.5) {
+      // ⚠️ 这里原来写的是 `Math.abs(parseFloat(got) - parseFloat(wantFS)) > 0.5`。
+      //    `--font-scale` 传错单位（本该传比值 2，误传 '200%'）时 FONT_SCALE=NaN
+      //    ⇒ wantFS='NaNpx' ⇒ 差值恒为 NaN ⇒ **`NaN > 0.5` 恒为 false**
+      //    ⇒ 作废分支不触发、四档跑出四份逐字节相同的报告、而 font 段仍写着
+      //    `remUnchanged: true`。即：一个恒真判据给一次没跑过的机制发了绿灯。
+      //    任何 NaN 参与的比较都恒为 false，所以必须显式查有限性。
+      const delta = typeof got === 'string' ? Math.abs(parseFloat(got) - parseFloat(wantFS)) : NaN
+      if (typeof got !== 'string' || !Number.isFinite(delta) || delta > 0.5) {
         rows.push({ ...row, invalid: 'font-scale-not-applied', got: JSON.stringify(font) })
         continue
       }
@@ -330,7 +348,12 @@ for (const route of ROUTES) {
       }
     }
     try { rep = await evaluate(`(${AUDIT_SRC})()`) } catch (e) { rep = { error: String(e) } }
-    rows.push({ route, reqW: w, reqH: h, vw: probe.vw, vh: probe.vh, textLen: probe.len,
+    // ⚠️ 这里原来写的是 `{ route, reqW: w, reqH: h, … }` —— 从零重建行对象，
+    //   把 `row` 上挂的 entryMode（以及以后任何加在 row 上的字段）**静默丢掉**：
+    //   端到端跑出来 entryMode=undefined，报告无法自证走的是 ?mobile 还是自动入口。
+    //   ⇒ 必须 `...row`。守卫只查得到「意图被写进源码」，查不到「字段活到了报告」，
+    //   所以这一条由端到端实跑兜底（见 §4.6.75）。
+    rows.push({ ...row, vw: probe.vw, vh: probe.vh, textLen: probe.len,
                 rescuedByRetry: rescued, settle, insets: ins, theme: THEME, font, report: rep })
 
     // 浮层状态：抽屉 / 账户 Sheet 默认关着，不驱动就量不到
@@ -344,7 +367,7 @@ for (const route of ROUTES) {
       } else {
         let orep = null
         try { orep = await evaluate(`(${AUDIT_SRC})()`) } catch (e) { orep = { error: String(e) } }
-        rows.push({ route, reqW: w, reqH: h, vw: probe.vw, vh: probe.vh, textLen: probe.len,
+        rows.push({ ...row, vw: probe.vw, vh: probe.vh, textLen: probe.len,
                     rescuedByRetry: rescued, settle, insets: ins, theme: THEME,
                     state: 'overlay:' + which, report: orep })
         await evaluate(CLOSE_OVERLAY).catch(() => {})
