@@ -2,7 +2,7 @@ package bg
 
 // supplier_view_cache_baseline_test.go —— 「缓存基准价必须真的进入告警通路」
 //
-// 这条判据是 2026-10-07 缺口修复（迁移 842）的直接产物。
+// 这条判据是 2026-10-07 缺口修复（迁移 843）的直接产物。
 //
 // ── 缺陷 ──────────────────────────────────────────────────────────────
 // models_canonical 有 baseline_cache_read/write_price_per_1m（826 建列 +
@@ -38,8 +38,8 @@ import (
 // supplierViewFile 是承载该视图的受追踪迁移。
 const supplierViewFile = "sql/migrations/startup/826_model_baseline_price.sql"
 
-// cacheBaselineMigrationFile 是补登投影的迁移（842）。
-const cacheBaselineMigrationFile = "sql/migrations/startup/842_supplier_view_cache_baseline_columns.sql"
+// cacheBaselineMigrationFile 是补登投影的迁移（843）。
+const cacheBaselineMigrationFile = "sql/migrations/startup/843_supplier_view_cache_baseline_columns.sql"
 
 // mustReadRepoFile 读仓内文件；失败即 FAIL（不 SKIP）——
 // 「读不到判据要检查的文件」本身就是缺陷，不该被当成环境问题跳过。
@@ -76,9 +76,9 @@ func viewBody(t *testing.T, sql, viewName string) string {
 	return rest
 }
 
-// TestSupplierViewProjectsCacheBaselineColumns 钉住「842 之后视图导出两个缓存基准价」。
+// TestSupplierViewProjectsCacheBaselineColumns 钉住「843 之后视图导出两个缓存基准价」。
 //
-// 变异对照：把 842 的两个投影列删掉 ⇒ 红；
+// 变异对照：把 843 的两个投影列删掉 ⇒ 红；
 // 而**原始的 826**（投影缺失）本来就红 ⇒ 这条判据测的正是原来没测的那个量。
 func TestSupplierViewProjectsCacheBaselineColumns(t *testing.T) {
 	body := viewBody(t, mustReadRepoFile(t, cacheBaselineMigrationFile),
@@ -89,7 +89,7 @@ func TestSupplierViewProjectsCacheBaselineColumns(t *testing.T) {
 		"baseline_cache_write_per_1m",
 	} {
 		if !strings.Contains(body, col) {
-			t.Errorf("842 的视图定义里没有 %q。\n"+
+			t.Errorf("843 的视图定义里没有 %q。\n"+
 				"    models_canonical 与 credential_model_bindings 两侧都有缓存价、比得出来，\n"+
 				"    但视图不投影 ⇒ supplier_price_drift 永远看不到缓存那半边，\n"+
 				"    而 2026-10-07 拍板已把基准价定为「合理性下限」告警的依据。", col)
@@ -117,7 +117,7 @@ func TestSupplierViewCacheRatiosGuardZeroAndCurrency(t *testing.T) {
 		"cmb.cache_write_price_per_1m IS NULL",
 	} {
 		if !strings.Contains(body, guard) {
-			t.Errorf("842 的 cache 倍率缺少守卫 %q。\n"+
+			t.Errorf("843 的 cache 倍率缺少守卫 %q。\n"+
 				"    少一条就会在「基准为 0」「供应商没填」「币种不同」时算出一个\n"+
 				"    **看起来精确但其实是错的**倍率 —— 那比 NULL 更坏，\n"+
 				"    NULL 至少还长得像「没数据」。", guard)
@@ -125,19 +125,19 @@ func TestSupplierViewCacheRatiosGuardZeroAndCurrency(t *testing.T) {
 	}
 }
 
-// TestCacheBaselineMigrationSuppliesItsOwnColumns 钉住 842 自带补列。
+// TestCacheBaselineMigrationSuppliesItsOwnColumns 钉住 843 自带补列。
 //
 // 依据（本轮实测）：视图定义**不能引用不存在的列**。在只缺
 // credential_model_bindings.cache_read/write_price_per_1m 的库上直接建视图 ⇒
 //   ERROR: 字段 cmb.cache_read_price_per_1m 不存在 (42703)
 // 而全仓没有任何迁移建过这两个列（`ADD COLUMN ... cache_read` 只命中 826，
 // 而那是 baseline_cache_*，建在 models_canonical 上）。
-// ⇒ 842 必须自己 ADD COLUMN IF NOT EXISTS，不许依赖「反正 398 建过」。
+// ⇒ 843 必须自己 ADD COLUMN IF NOT EXISTS，不许依赖「反正 398 建过」。
 func TestCacheBaselineMigrationSuppliesItsOwnColumns(t *testing.T) {
 	body := mustReadRepoFile(t, cacheBaselineMigrationFile)
 
 	if !strings.Contains(body, "ALTER TABLE public.credential_model_bindings") {
-		t.Fatalf("842 没有补 credential_model_bindings 的缓存价列。\n"+
+		t.Fatalf("843 没有补 credential_model_bindings 的缓存价列。\n"+
 			"  实测：在缺这两列的库上，视图定义会 42703 硬失败（整条部署挂掉）。\n"+
 			"  全仓没有任何迁移建过它们 —— 398 只是 SELECT 过，不建列。")
 	}
@@ -146,7 +146,7 @@ func TestCacheBaselineMigrationSuppliesItsOwnColumns(t *testing.T) {
 		"ADD COLUMN IF NOT EXISTS cache_write_price_per_1m",
 	} {
 		if !strings.Contains(body, col) {
-			t.Errorf("842 缺 %q。\n"+
+			t.Errorf("843 缺 %q。\n"+
 				"    必须用 IF NOT EXISTS 保持幂等；裸 ADD COLUMN 重放会失败。", col)
 		}
 	}
@@ -160,7 +160,7 @@ func TestCacheBaselineMigrationSuppliesItsOwnColumns(t *testing.T) {
 // ⇒ 删列只能 DROP VIEW IF EXISTS + CREATE VIEW。这条判据就是不让它退回去。
 func TestCacheBaselineRollbackReallyRemovesColumns(t *testing.T) {
 	root := repoRootFromBg(t)
-	rel := "sql/migrations/startup/842_supplier_view_cache_baseline_columns.down.sql"
+	rel := "sql/migrations/startup/843_supplier_view_cache_baseline_columns.down.sql"
 	b, err := os.ReadFile(filepath.Join(root, rel))
 	if err != nil {
 		t.Fatalf("读取 %s 失败 %v。\n"+
@@ -193,16 +193,16 @@ func TestCacheBaselineRollbackReallyRemovesColumns(t *testing.T) {
 // （两个列由不同代码路径写入，不一致是可能状态），
 // 同一个供应商价被同时报成「比基准贵 20%」和「比基准便宜 40%」。
 // 修法是「名字匹配只在 canonical_id 为空时走」+ LATERAL LIMIT 1。
-// ⇒ 842 与它的 down 都必须保留这个形态，否则会把那个错价放回去。
+// ⇒ 843 与它的 down 都必须保留这个形态，否则会把那个错价放回去。
 //
 // ⚠ 断言必须打在**剥掉注释之后**的正文上。
-//   第一版直接 `strings.Contains(body, "LIMIT 1")`，而 842 的注释里就写着
+//   第一版直接 `strings.Contains(body, "LIMIT 1")`，而 843 的注释里就写着
 //   「ORDER BY、LIMIT 1 与 826 逐字一致」⇒ 变异「删掉真代码的 LIMIT 1」
 //   之后判据**照样 PASS**（实测 P3 变异绿）。
 //   这条判据的第一版是恒真的，第二版才是真的。
 func TestSupplierViewRowDedupGuardSurvived(t *testing.T) {
 	for _, rel := range []string{cacheBaselineMigrationFile,
-		"sql/migrations/startup/842_supplier_view_cache_baseline_columns.down.sql"} {
+		"sql/migrations/startup/843_supplier_view_cache_baseline_columns.down.sql"} {
 		code := stripSQLComments(mustReadRepoFile(t, rel))
 
 		if !strings.Contains(code, "OR (pm.canonical_id IS NULL") {

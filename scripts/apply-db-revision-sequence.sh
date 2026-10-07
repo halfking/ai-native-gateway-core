@@ -1000,7 +1000,10 @@ files=(
   # 841：月度分区族的分区级 DROP 保留。**建表即为空 ⇒ 迁移应用后行为与今天完全一致**，
   # 真正启用需按族 INSERT 保留月数（业务决定，不在本迁移内）。
   "$ROOT_DIR/sql/migrations/startup/841_monthly_partition_retention.sql"
-  # 2026-10-07（842）：给 v_supplier_price_vs_baseline 补两个缓存基准价的投影。
+  # 2026-10-07（843）：给 v_supplier_price_vs_baseline 补两个缓存基准价的投影。
+  # 编号注：本条原占 842，落地前与并行线的 842_credential_model_index_latest_bucket_idx
+  #   撞号（该条已于 19:25 先落 origin/main）；按「已落地者保留原号、后来者让位」
+  #   重排为 843。编号是身份键，同号两迁移会让契约门与台账同时指错对象。
   #
   # 缺口：826 建的视图只投影 in/out 两个基准价，cache 列只出现在 ADD COLUMN
   # 与 CHECK 段，连 LATERAL 子查询的 SELECT 列表里都没有 ⇒ 缓存基准价即使在库
@@ -1014,7 +1017,7 @@ files=(
   # 幂等（可重放）。⚠ 它会先 ADD COLUMN IF NOT EXISTS 补 credential_model_bindings
   # 的两个 cache 列——实测视图不能引用不存在的列（42703），而全仓没有任何迁移
   # 建过它们（398 只是 SELECT 过，不建列）。
-  "$ROOT_DIR/sql/migrations/startup/842_supplier_view_cache_baseline_columns.sql"
+  "$ROOT_DIR/sql/migrations/startup/843_supplier_view_cache_baseline_columns.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的

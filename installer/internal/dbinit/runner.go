@@ -905,13 +905,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// ★ 配置表**建表即空** ⇒ 应用后不删任何东西；
 			//   启用需按族 INSERT 保留月数，那是业务决定，不在本迁移内。
 			"841_monthly_partition_retention.sql",
-			// 842：给 v_supplier_price_vs_baseline 补两个缓存基准价的投影。
+			// 843：给 v_supplier_price_vs_baseline 补两个缓存基准价的投影。
 			// 缺了它们，缓存基准价只在 models_canonical 里躺着，永远进不了
 			// supplier_price_drift ⇒ 被 2026-10-07 拍板指定为「合理性下限告警」
 			// 依据的四个价里，有两个没有任何监控。
 			// ★ 幂等：CREATE OR REPLACE VIEW 只在末尾追加列，
 			//   既有列的位置/类型/顺序逐字不变，消费方不受影响。
-			"842_supplier_view_cache_baseline_columns.sql",
+			"843_supplier_view_cache_baseline_columns.sql",
 		},
 	}
 }
