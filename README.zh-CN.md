@@ -220,6 +220,27 @@ curl http://localhost:8781/healthz   # → 200 OK
 
 详细步骤见[入门指南](docs/getting-started.md)。
 
+### 方式 C：npm 安装（基于本地源码树）
+
+只需要 Node ≥ 18 —— 不需要 Go 工具链，也不依赖 npm registry。在克隆好的源码树里，
+`--channel npm` 自动安装树内的启动器包（`npm/llm-gw-installer`），不碰 registry：
+
+```bash
+# 从源码树内的 npm/llm-gw-installer 安装启动器
+npm install -g ./npm/llm-gw-installer
+
+# 或让引导脚本代劳（树内自动选本地包）
+bash install.sh --channel npm --mode lite   # lite=SQLite 单机；--mode full=Docker+PG+Redis
+```
+
+之后 `llm-gw-installer install --mode lite|full` 的取材顺序：本机已有的
+`llm-gw-installer` 二进制优先（比如 `bash install.sh build` 产出到
+`~/llm-gateway/bin/`），没有才转交官方一键脚本。`doctor` / `version` 由启动器
+本地应答，装完即可离线使用。
+
+> registry 包 `@kaixuan/llm-gw-installer` 尚未首发（首次发布前
+> `npm install -g @kaixuan/llm-gw-installer` 会 404）；树外场景请先用官方一键脚本。
+
 ---
 
 ## 部署模式

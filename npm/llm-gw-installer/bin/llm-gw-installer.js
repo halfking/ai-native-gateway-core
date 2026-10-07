@@ -11,10 +11,12 @@
 //
 // It deliberately does NOT re-implement the download/verify logic. The
 // release catalog, the download ticket and the mandatory sha256 check all
-// live in the maintain API and are already covered end-to-end by
-// scripts/tests/install-modes-test.sh. Re-implementing them in JS would be a
+// live in the maintain API and the Go installer's upgrader (covered by
+// installer/internal/upgrader tests). Re-implementing them in JS would be a
 // second source of truth that could silently drift away from the sha256 hard
-// gate. Instead this picks the right *already tested* path for the platform:
+// gate. This launcher's own contract — fallback shapes, doctor/version — is
+// pinned by scripts/checks/install-entrypoints-test.sh. It picks the right
+// *already tested* path for the platform:
 //
 //   1. an llm-gw-installer binary that is already on this machine
 //      (so `npm i -g` composes with `go install` / a release bundle)

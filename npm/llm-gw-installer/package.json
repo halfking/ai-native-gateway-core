@@ -27,8 +27,8 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/kaixuan/llm-gateway-go.git",
+    "url": "https://github.com/halfking/ai-native-gateway-core.git",
     "directory": "npm/llm-gw-installer"
   },
-  "homepage": "https://github.com/kaixuan/llm-gateway-go#install"
+  "homepage": "https://github.com/halfking/ai-native-gateway-core#install"
 }
