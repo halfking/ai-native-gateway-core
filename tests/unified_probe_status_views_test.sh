@@ -41,6 +41,14 @@ if [[ -z "${PGDATABASE:-}" && -f "$ROOT_DIR/.env.local" ]]; then
   export PGDATABASE="${LOCAL_PG_LLM_GATEWAY_DATABASE:-llm_gateway}"
 fi
 
+# 既没有 PG* 环境变量、本工作树也没有 .env.local 时（并行工作树常见形态），
+# 上面的回退分支整段不执行，PGUSER 等在 set -u 下直接把套件炸成 FAIL。
+# 按本文件自己的语义跳过：这是真库集成验证，没有库就 skip，不是失败。
+if [[ -z "${PGDATABASE:-}" ]]; then
+  echo "!! 未设置 PGDATABASE 且无 .env.local — 跳过(需真实 PG)" >&2
+  exit 0
+fi
+
 PSQL=(psql -v ON_ERROR_STOP=1 -q)
 
 echo "[1/5] 连接 $PGUSER@$PGHOST:$PGPORT/$PGDATABASE"
