@@ -19,6 +19,9 @@
        covered          <main> 末尾被固定底栏压住
        covered-ok       同上，但 main 有足够 padding-bottom（安全诱饵）
        blank            近白屏（节点数低于门槛 20）
+       inset-lr         横向 inset：贴边 fixed 浮层（中心落在带内 + 探边）+ 流内容诱饵
+       inset-lr-ok      同上但浮层已自补 padding-inline ⇒ 必须不报
+       tap-legacy      R1 三档边界：43px（medium 缺陷）/ 46px（low 存量台账）
        none             干净页（用来卡「判据对什么都乱报」）
   */
   body { margin: 0; font: 14px/1.5 system-ui, sans-serif; background: #fff; color: #111; }
@@ -42,6 +45,11 @@
   /* ── 触控热区 ──────────────────────────────────────────────── */
   #plant-tap-small { width: 24px; height: 24px; padding: 0; border: 0; background: #e33; color: #fff; }
   #decoy-tap-ok    { width: 48px; height: 48px; padding: 0; border: 0; background: #3a3; color: #fff; }
+  /* R1 三档的**边界**（17 §4-R1：新增 ≥48，44px 是存量下限）：
+     43px 破硬底线 ⇒ medium；46px 落存量区间 ⇒ low 台账。差 3px，判据必须分得开。 */
+  #plant-tap-43, #plant-tap-46 { min-width: 200px; padding: 0 12px; border: 0; background: #e33; color: #fff; }
+  #plant-tap-43 { height: 43px; }
+  #plant-tap-46 { height: 46px; }
 
   /* ── 对比度类 ──────────────────────────────────────────────── */
   #plant-invisible { color: #fff; background: #fff; }   /* ratio ≈ 1.00 < 1.25 */
@@ -58,6 +66,31 @@
   #plant-bar { position: fixed; left: 0; right: 0; bottom: 0; height: 56px; background: #234; color: #fff; }
   #plant-main { margin: 0; padding: 0; }
   .tall { height: 2000px; background: linear-gradient(#eef, #ccd); }
+
+  /* ── 横向 safe-area（inset）类 ────────────────────────────────
+     复刻真壳的两层结构（10 §4.6.32）：`.hyper-app` 用 padding-inline 消费
+     `--app-safe-left/right`，而 fixed 浮层的包含块是**视口**，不在这层保护里。
+     ⚠️ 通道名必须是壳真正写的那四个（Capacitor SystemBars.injectSafeAreaCSS），
+        这里只把**数值**设成合成的 30px；判据对数值无感（>0 即生效）。 */
+  :root {
+    --app-safe-left: var(--safe-area-inset-left, env(safe-area-inset-left, 0px));
+    --app-safe-right: var(--safe-area-inset-right, env(safe-area-inset-right, 0px));
+  }
+  /* high：贴左边轨道的 48×48 按钮，命中区中心 24px 落在 30px inset 带内 */
+  #plant-inset-rail { position: fixed; left: 0; top: 0; width: 48px; height: 200px; background: #234; }
+  #plant-inset-rail-btn { width: 48px; height: 48px; }
+  /* medium：吸底导航首尾项，命中区从 x=0 / 抵到 x=innerWidth，中心在外 */
+  #plant-inset-nav, .inset-ok-nav {
+    position: fixed; left: 0; right: 0; bottom: 0; height: 56px;
+    background: #234; display: flex;
+  }
+  #plant-inset-nav > button, .inset-ok-nav > button { flex: 1; height: 48px; background: #345; color: #fff; }
+  /* 已避让的对照：同样的 fixed 浮层，但自己补了 padding-inline */
+  .inset-ok-nav { padding-inline: 30px; }
+  .inset-ok-rail { position: fixed; left: 30px; top: 0; width: 48px; height: 200px; background: #234; }
+  /* 流内容诱饵：壳根 padding 保护了它 ⇒ 判据不许报 */
+  #decoy-inset-flow { padding-left: 30px; }
+  #decoy-inset-flow-btn { width: 200px; height: 48px; }
 </style>
 </head>
 <body>
@@ -164,6 +197,41 @@
 <div id="decoy-under-nav" class="decoy" style="position:fixed;left:0;right:0;bottom:0;height:56px;background:#234;color:#fff">
   <a id="decoy-under-a" href="#" style="display:inline-block;width:200px;height:48px">总览</a></div></template>
 
+<!-- ── inset-lr / inset-lr-ok：横向 safe-area（2026-10-08）──────────
+     ⛔→✅ 这两条**取代**了旧自检头里那句「safe-area 故意不写断言」。
+     当时的理由是「inset 是壳注入的量，浏览器夹具里自造等于自己造契约」——
+     这条理由只对**一半**：自造数值确实是造出来的，但**通道名不是**。
+     壳真正写的就是 `--safe-area-inset-left/right` 四个名字之一、落在 documentElement
+     （theme.css 注释与 safeArea.spec.ts 都引着这条），
+     所以夹具复刻的是**真实契约的形状**，只有数值是合成的，而判据对数值无感。
+     ⇒ 现在可以正控了，而且必须正控：⑥ 整节此前在浏览器里恒为 0（两条通道都没人注入），
+       也就是说「底栏没避让 Home 指示条」这条检查**从来没有被证明过有牙**。 -->
+<template id="s-inset-lr"><!--filler--><div><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span></div>
+<div class="wrap" id="decoy-inset-flow" data-decoy="inflow-padded">
+  <button id="decoy-inset-flow-btn" class="decoy">流内容（壳根已避让）</button>
+</div>
+<div id="plant-inset-rail" class="plant" data-plant="tappable-in-inset">
+  <button id="plant-inset-rail-btn" class="plant" data-plant="tappable-in-inset">≡</button></div>
+<div id="plant-inset-nav" class="plant" data-plant="tappable-grazes-inset">
+  <button class="plant" data-plant="tappable-grazes-inset">总览</button>
+  <button class="plant" data-plant="tappable-grazes-inset">更多</button></div></template>
+
+<!-- 已避让的对照：形状与上面逐条相同，只是浮层自己补了 padding-inline / left。
+     判据必须**不报** —— 否则「凡沾边就报」的判据会把这套判据变成噪声源。 -->
+<template id="s-inset-lr-ok"><!--filler--><div><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span></div>
+<div class="inset-ok-rail decoy"><button style="width:48px;height:48px">≡</button></div>
+<div class="inset-ok-nav decoy"><button>总览</button><button>更多</button></div></template>
+
+<!-- ── tap-legacy：R1 三档边界（2026-10-08）────────────────────────
+     43px 与 46px 只差 3px，却分属 medium / low 两档。
+     这条场景存在的理由：/m/keys 一屏 249 个 `btn--sm`（44px 存量基线）
+     曾被报成 249 处 medium，把真缺陷淹了（10 §4.6.61）。 -->
+<template id="s-tap-legacy"><!--filler--><div><span>a</span><span>b</span><span>c</span><span>d</span><span>e</span><span>f</span><span>g</span></div>
+<div class="wrap">
+  <button id="plant-tap-43" class="plant" data-plant="tap-target">43px 破底线</button>
+  <button id="plant-tap-46" class="plant" data-plant="tap-target-legacy">46px 存量档</button>
+</div></template>
+
 <!-- ── none：干净页。节点数必须 ≥ 20，否则 near-blank 会正确地报出来 ── -->
 <template id="s-none"><div class="wrap"><h2>干净页</h2>
   <p>这一页没有任何种下的缺陷，也没有诱饵；它的作用是证明判据对什么都**不**报。</p>
@@ -174,6 +242,13 @@
 
 <script>
   const mode = new URLSearchParams(location.search).get('plants') || 'all'
+  // 横向 inset 场景：先按壳的写法把两个通道值写到 documentElement，再挂内容。
+  // 通道名 = Capacitor SystemBars.injectSafeAreaCSS 真正写的名字（见 theme.css 注释）。
+  if (mode === 'inset-lr' || mode === 'inset-lr-ok') {
+    const st = document.documentElement.style
+    st.setProperty('--safe-area-inset-left', '30px')
+    st.setProperty('--safe-area-inset-right', '30px')
+  }
   if (mode === 'blank') {
     // near-blank 判的是 **document 里真实存在的节点数**（display:none 不算数），
     // 所以这里必须真的清空 body，而不是隐藏。

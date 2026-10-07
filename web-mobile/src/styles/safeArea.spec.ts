@@ -86,6 +86,39 @@ describe('safe-area 消费点', () => {
   })
 })
 
+// ⚠️ 上一条断言**只覆盖流内**（10 §4.6.61 的实测缺陷）：
+//   壳根 `.hyper-app` 没有 transform/filter/contain，而 `position: fixed` 的
+//   包含块是**视口** ⇒ 壳根那点 padding-inline 对 fixed 浮层完全无效。
+//   实测（注入 left/right=30px，740×360）：抽屉链接 `.drawer__link` 的命中区
+//   从 x=12 起，**18px 落在 30px inset 带内**，20px 图标被刘海压住；
+//   浮层里的可点目标共 65 个探边。改前 0 处、改后 0 处（判据同一次跑）。
+describe('fixed 浮层必须自己消费横向 inset', () => {
+  // 从源码里**现扫** fixed 元素，而不是手写文件清单 ——
+  // 手写清单会随新浮层一起腐烂，而腐烂的方向正是「新浮层没人管 inset」。
+  const fixedFiles = SOURCES.filter((f) => f.endsWith('.vue') && /position:\s*fixed/.test(readCode(f)))
+    .map(rel)
+    .sort()
+
+  it('至少扫到 5 个 fixed 浮层（清单本身不许空转）', () => {
+    expect(fixedFiles.length, `扫到的 fixed 浮层：${fixedFiles.join(', ')}`).toBeGreaterThanOrEqual(5)
+  })
+
+  it.each(fixedFiles)('%s 必须消费 --app-safe-left 与 --app-safe-right', (relPath) => {
+    const full = resolve(process.cwd(), relPath)
+    // 豁免标记读**原始**源码：stripComments 会把注释整段删掉，
+    // 在剥离后的文本里找标记等于永远找不到（这坑踩过一次就不再犯）。
+    if (/safe-area-opt-out/.test(read(full))) return
+    const code = readCode(full)
+    for (const side of ['left', 'right'] as const) {
+      expect(
+        code,
+        `${relPath} 是 position:fixed 浮层，必须自己消费 --app-safe-${side}` +
+        `（壳根 padding-inline 对 fixed 无效）；确实要满宽请加 /* safe-area-opt-out: 理由 */`,
+      ).toMatch(new RegExp(`var\\(--app-safe-${side}\\b`))
+    }
+  })
+})
+
 describe('safe-area 反模式', () => {
   it('不得存在 `var(--app-safe-*) * 0` 恒零死项', () => {
     const hits: string[] = []

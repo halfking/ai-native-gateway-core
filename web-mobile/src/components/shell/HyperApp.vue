@@ -53,11 +53,16 @@ onMounted(() => update.start())
   height: 100vh;
   height: 100dvh;
   min-height: 0;
-  /* 横向 safe-area 在此**单点消费**（10 §4.6.32）：`--app-safe-left/right`
+  /* 横向 safe-area 的**流内**消费点（10 §4.6.32）：`--app-safe-left/right`
      此前只有声明、零消费者，于是横屏刘海 / 曲面屏 / 折叠屏侧边一律撞内容。
-     放壳根而不是各页，是因为横屏下**所有**内容都可能被切到 —— 页内自补会漏。
+     放壳根而不是各页，是因为横屏下**流内**内容都可能被切到 —— 页内自补会漏。
      竖屏与桌面该值恒 0 ⇒ 本行不产生任何位移，桌面零回归。
-     （box-sizing 已在 shared.css:8 全局 border-box，横向 padding 不外扩。） */
+     （box-sizing 已在 shared.css:8 全局 border-box，横向 padding 不外扩。）
+     ⚠️ 订正（10 §4.6.61）：原文此处写的是「单点消费」，**说过了**。
+     本壳根没有 transform/filter/contain，而抽屉 / Sheet / FocusLayer 是
+     `position:fixed` + `Teleport to="body"`、底栏与更新条也是 fixed
+     ⇒ 它们的包含块是**视口**，这行 padding 对它们**完全无效**。
+     现在是「壳根管流内 + 各 fixed 浮层自己管自己」两处，缺一不可。 */
   padding-inline: var(--app-safe-left) var(--app-safe-right);
 }
 
