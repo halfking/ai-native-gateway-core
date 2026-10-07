@@ -801,23 +801,37 @@ func TestCreditsDegradationPropagates(t *testing.T) {
 	}
 
 	// 1) 调用点必须接住两个返回值，而不是把降级信息丢掉。
-	for _, f := range []string{"usage.go", "dashboard_board_queries.go"} {
+	//
+	// 2026-10-07：看板回退路径的积分 helper 由 queryTotalCreditsCharged 换成
+	// queryBoardCreditsExcludingProbes（计费账本 maas_credit_consumption_buckets
+	// 无 origin_stage/origin_actor/quality_flags/task_type，探针扣费事后滤不掉，
+	// 与同屏已排除探针的请求数/Token/费用自相矛盾）。
+	//
+	// **降级契约一个字没变**：仍是 (值, 缺失视图名) 两返回值、仍必须接住
+	// creditsDegradedView、仍必须写进载荷。所以这里把「该文件该调用哪个
+	// helper」显式列出来，而不是把符号名焊死在循环里 —— 判据强度不变
+	// （helper 退化成一返回值、或调用点丢弃降级名，两种变异照样红）。
+	for _, tc := range []struct{ file, helper, call string }{
+		{"usage.go", "queryTotalCreditsCharged", "queryTotalCreditsCharged(ctx, tid, days)"},
+		{"dashboard_board_queries.go", "queryBoardCreditsExcludingProbes",
+			"queryBoardCreditsExcludingProbes(ctx, tenantID, tr)"},
+	} {
+		f, helper, call := tc.file, tc.helper, tc.call
 		raw, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatalf("read %s: %v", f, err)
 		}
 		code := stripGoCommentsKeepLines(string(raw))
-		if !strings.Contains(code, "queryTotalCreditsCharged(") {
-			t.Errorf("%s 不再调用 queryTotalCreditsCharged：请确认积分 KPI 的降级标记", f)
+		if !strings.Contains(code, helper+"(") {
+			t.Errorf("%s 不再调用 %s：请确认积分 KPI 的降级标记", f, helper)
 			continue
 		}
-		if !strings.Contains(code, "queryTotalCreditsCharged(ctx, tid, days)") &&
-			!strings.Contains(code, "queryTotalCreditsCharged(ctx, tenantID, tr.Days)") {
+		if !strings.Contains(code, call) {
 			continue // 该文件不在这条路径上
 		}
 		if !strings.Contains(code, "creditsDegradedView") {
-			t.Errorf("%s 调用 queryTotalCreditsCharged 但没有接住降级视图名 —— "+
-				"credits 降级时载荷会退回「0 且无标记」", f)
+			t.Errorf("%s 调用 %s 但没有接住降级视图名 —— "+
+				"credits 降级时载荷会退回「0 且无标记」", f, helper)
 		}
 	}
 

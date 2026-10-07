@@ -11983,7 +11983,97 @@ credential_model_index_2026_10 autovacuum_analyze_scale_factor = 0.02  ← 同�
 —— 这正是本轮目标里「重构优化」该落的那一格，
 而且它一次就消掉「空壳分区留在规划里」与「旧月数据无限堆积」两个问题。
 
-### §10.106.16 迁移 841 已实现（**未部署**）：月度族分区级 DROP 保留
+### §10.106.16 查询侧盘点（2026-10-07 16:00 只读）：**阻塞锁占全库 13% 的数据库时间**
+
+⚠️ **先记一次量具事故**：我第一次跑「数据库时间 TOP 12」拿到
+`SELECT MAX(date) FROM daily_kline` 6.7 秒/次、14.8 小时，
+准备按「缺索引」立案。**但 `llm_gateway` 库里根本没有 `daily_kline` 这张表。**
+⇒ 用 `dbid` 复核才发现：这些条目属于 **`smm` 库**（dbid 78206906）——
+**本实例的 `pg_stat_statements` 视图不按当前库过滤，返回跨库条目。**
+⇒ ★★★ 凡是在共用实例上按数据库排名，**必须显式 `WHERE dbid = (SELECT oid FROM pg_database
+  WHERE datname = current_database())`**；默认写法会把邻居库的成本算到自己头上。
+
+#### 按 dbid 过滤后的真实排名（`llm_gateway` 总数据库时间 **2,317,049 秒 ≈ 643.6 小时**）
+
+| 总秒（小时） | 次数 | 均毫秒 | 语句 |
+|---|---|---|---|
+| **301,854（83.9h，占 13.0%）** | **3,027,459** | **99.7** | `SELECT pg_advisory_xact_lock(public.session_turns_advisory_lock_key($1,$2))` |
+| 135,330（37.6h） | 188,285 | 718.8 | credential 路由 CTE（`latest_bucket`） |
+| 123,969（34.4h） | 6,515 | **19,028** | `REFRESH MATERIALIZED VIEW CONCURRENTLY routing_analytics_7d` |
+| 95,656（26.6h） | 814,283 | 117.5 | `SELECT COALESCE(MAX(turn_no),$1)+$2 FROM public.session_turns_with_current_month` |
+| 94,394（26.2h） | 188,460 | 500.9 | `INSERT INTO credential_model_index_hot` |
+| 71,072（19.7h） | 159,804 | 444.7 | `DELETE FROM session_aggregate_outbox` |
+| 68,775（19.1h） | 111,004 | 619.6 | `DELETE FROM credential_model_index_hot` |
+
+#### ★ 第一名：`pg_advisory_xact_lock` 是**阻塞版**，且持锁到整个事务提交
+
+`domains/session/v2/turn_writer.go:47-52`：
+
+```sql
+SELECT set_config('max_parallel_workers_per_gather', '0', true),
+       pg_advisory_xact_lock(public.session_turns_advisory_lock_key($1, $2))
+-- 键 = hashtextextended(tenant_id || ':' || session_id, 0)，按 session 粒度
+```
+
+- 用途是**正确性**：保证 `turn_no` 在同一 session 内单调递增（注释原文「prevent concurrent conflicts」）。
+- ⚠️ 用的是 `pg_advisory_xact_lock`（**阻塞**），不是 `pg_try_…`。
+  一次无争用的 advisory lock 只要微秒级；**均 99.7 ms 意味着绝大部分是等待**
+  （此为推断，但量级差三个数量级，基本没有别的解释）。
+- ⚠️ 锁是 **xact 级** ⇒ 从取锁到**事务提交**一直持有，而这段事务里还有
+  `MAX(turn_no)`（均 117.5 ms）与 `INSERT` ⇒ **每条 turn 写入持锁数百毫秒**，
+  同一 session 的并发写全部排队。
+- ⇒ **13% 的数据库时间花在排队上，而不是在干活。**
+- ⇒ 可评估的改法（都需授权，本次只记录不实施）：
+  1. 把锁**范围收窄**到 `MAX(turn_no)` + `INSERT` 两步，别让无关语句占着锁；
+  2. 改 `pg_try_advisory_xact_lock` + 有限次重试，让排队变成显式失败而不是隐性等待；
+  3. 更彻底：把 `MAX(turn_no)` 换成**原子递增**（`INSERT ... SELECT COALESCE(MAX,0)+1`
+     已在做，但读侧仍走视图 Append），从根上不需要锁。
+
+#### ✅ 已补上缺失的仪表（本次唯一实施的改动）
+
+`sessions_v2_write_latency_seconds` 是从 `appendTurnInLockedTx` 顶部起计的，
+而那已经在**拿到 session 锁之后** ⇒ **它把全部排队排除在指标之外**。
+这就是 83.9 小时能安稳躲 26 天的原因：没有任何仪表能看见它。
+
+本次只做**观测**，不动任何并发语义：
+
+| 改动 | 文件 |
+|---|---|
+| 新增 `sessions_v2_session_lock_wait_seconds`（histogram，0.5ms→~4s） | `metrics/sessions_v2_metrics.go` |
+| 新增 `sessions_v2_session_lock_acquisitions_total`（counter） | 同上 |
+| 在 `LockSessionInTx` 里量等锁时长 | `domains/session/v2/turn_writer.go` |
+
+⚠️ **持锁时长没有量**：锁是 xact 级的，释放点在事务边界、不在 `LockSessionInTx` 内，
+要量它得在各调用方的 commit 处包一层。**这是有意留下的缺口，不是遗漏。**
+
+⇒ 真正的修法（收窄锁范围 / 改 `try`+有限重试 / 换原子递增）**需要先有这些读数**，
+   否则改完也不知道有没有把 13% 拿走。本轮只补仪表，不改语义。
+
+★ 顺带更正我自己的一个中间假设：曾怀疑 `session_writer_v2` 会对同一事务
+**重复取锁**（3,027,459 次 vs 814,283 次 turn，差 3.7 倍，像是多取了一次）。
+读代码后发现 `session_writer_v2.go:691` 调的**已经是**不取锁的
+`appendTurnInLockedTx` ⇒ **没有重复取锁**。差值来自不同调用方各自取锁，
+不是同一事务里的第二次。⇒ 与 §10.106.12.1 同一个教训：
+**机制层面的异常读数，要先读代码再下结论，不要先造一个解释。**
+
+★ 与 §10.53/§10.107 那两把 `try` 锁形成鲜明对比：
+  **同一份代码里，`try` 锁「一次都没命中」，而 `blocking` 锁「占了 13%」** ——
+  争用管理做反了。
+
+#### 另两项（量级已测，方案待评估）
+
+- `REFRESH MATERIALIZED VIEW CONCURRENTLY routing_analytics_7d`：**均 19.0 秒**、6,515 次
+  ⇒ 34.4 小时。并发刷新意味着每次都重算整窗；刷新频率与是否真被读需要核对。
+- `MAX(turn_no)`：均 117.5 ms、814,283 次 ⇒ 26.6 小时。走
+  `session_turns_with_current_month`（hot 反连接臂 + 全分区 Append），
+  取一个最大值却要 Append 全部分区。**这是与第一项同一个事务里的一步**，
+  两项合计 110.5 小时 ≈ 全库 17%。
+
+⇒ ★ 与 §10.105 的结论合起来看：**统计量与写入路径是同一处瓶颈的两端**——
+  autovacuum 在给这些表采统计量（81% 那项），而写入事务本身又在锁上排队（这 13%）。
+
+
+### §10.106.17 迁移 841 已实现（**未部署**）：月度族分区级 DROP 保留
 
 「机制先建、策略留空」：配置表 `llm_gateway_partition_retention` **建表即空**，
 ⇒ 应用 841 **不会删任何东西**；启用只需按族 `INSERT retain_months`（业务决定）。
