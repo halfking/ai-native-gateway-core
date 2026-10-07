@@ -7430,3 +7430,150 @@ seed offer (0/0): ERROR: null value in column "provider_id" of relation
 
 ★ 另：838/839-B 曾于 12:39:56 被重启回退过一次，15:22 的 2490 部署才恢复；
 现读数是「恢复后」的状态。
+
+## 2026-10-07 — 批判式审计：把「全绿」拆成「真的跑了什么」，并补上数据填充漂移的两道防线
+
+### 〇 这一节为什么存在
+
+上一节的收尾读数写着「`go test ./bg/` ok」「`pre-commit-check` PASS=5 FAIL=0」。
+**这两句都是真的，也都不完整**。本节把不完整的那部分补上，并记下本轮为此新增的
+两道防线。触发点是 2026-10-06 的一次数据填充审计：SSOT 落 16 条后，真库
+`models_canonical` 的 `baseline_cache_write_price_per_1m` **16 行全 NULL**（SSOT 里
+14 条有值），`baseline_price_fetched_at` 另有 12 条与 SSOT 不符。
+
+### 一、根因：不是「同步跑失败」，是「有人绕过同步手工 UPDATE」
+
+本仓的写价入口只有一个，`pricing_baseline_reconcile.go` 头里写着：
+
+> 它一条写价格的路径都没有——写价只在 `SyncBaselinePricesToDB` 里
+
+而那个唯一入口（`pricing_baseline_sync.go:383-397`）**确实写全 9 列**。所以：
+
+- 凡是跑过官方同步的库，永远是对的；
+- 出错的**必然**是绕过同步的第二条路径，而那条语句没带 `cache_write`。
+- `fetched_at` 也印证了这点：真库记的是 `12:41:48`，与当前提交的 SSOT
+  （`12:39:00`）不同 ⇒ 库里那份**不是**从当前提交的文件写的。
+
+**为什么此前没有任何判据变红**：第 18 条健康检查
+（`canonical_row_discovered_but_never_referenced`）判的是
+`baseline_input_price_per_1m IS NOT NULL` —— **存在性**，不是**数值**。
+少写一列，"存在性"照样成立。
+
+补齐方式是跑官方入口 `RunBaselinePriceSync`（`written=16/16`），并实测第二遍
+同步指纹不变（`66e09ee0…` 前后一致 ⇒ 幂等）。补齐后 16 行 × 9 字段零不一致。
+
+### 二、新增防线 A：写入方唯一 **且** 必须写全 9 列
+
+`bg/baseline_price_single_writer_test.go`，两条判据，**纯静态、每次 `go test ./bg/`
+都跑、不需要库**：
+
+| 判据 | 守什么 | 变异 |
+|---|---|---|
+| `TestBaselinePriceHasExactlyOneWriter` | 全仓只有 `bg/pricing_baseline_sync.go` 能写这族列 | M2：造第二个写入方 ⇒ 🔴 |
+| `TestCanonicalBaselineWriterSetsEveryColumn` | 那个唯一写入方的 SET 子句覆盖全部 9 列 | M1：删掉 `cache_write` 一行 ⇒ 🔴 |
+
+**两条必须都钉**：只钉「唯一」不够 —— 把现有 SET 子句里的 `cache_write` 删掉，
+「唯一写入方」仍然是绿的。实测 M1 正是这个形态（第一判据 🟢、第二判据 🔴 并点名
+`baseline_cache_write_price_per_1m`），证明两条信号彼此独立。
+
+**第一版判据有两个假阳性，已订正**（记录在此，因为这是最容易重犯的错）：
+
+- 模式写成 `\bSET\s+baseline_` 时，命中了 `routing_health_checks.go` 的告警英文
+  散文 `'…not being monitored. **Set baseline_price_currency from** the vendor
+  pricing page.'` —— 列名后面跟的是 `from` 不是 `=`。
+- 同一模式还命中了 `integrity_fingerprint_drift.go` 的
+  `DO UPDATE SET baseline_fingerprint = EXCLUDED.…` —— 那是**另一张表的另一列**，
+  名字里没有 `price`。
+
+最终模式要求 `SET <含 price 的列> =`，两个假阳性同时消失。另有两次实现期踩坑
+也记在这里：`filepath.Walk("..")` 的**根目录自身名字就是 `..`**，按点目录跳过时
+不豁免根就会 `SkipDir` 掉整棵子树（读数是「写入方实测 0 个」，与「不止一个」
+长得完全不一样）；以及从包目录（`bg/`）读文件必须保留 `../` 前缀，把同一个串
+既拿来读又拿来比，会全量 `no such file or directory`。
+
+### 三、新增防线 B：SSOT ↔ 真库逐字段一致（`baseline_price_ssot_parity_realdb_test.go`）
+
+与防线 A 失效方向不同：A 防「有人另开写价路径」，B 防「库里的值已经不是 SSOT 了」。
+
+★ 本条最要紧的不是比对逻辑，是**非恒真守卫**。集成门那套一次性新库是从迁移+种子
+  长出来的，种子**不带**基准价（实测 `sql/schema/` 下无任何文件写
+  `baseline_input_price_per_1m`），在那里跑本条会「0 行可比」。若那时报 PASS，
+  读数就与「逐条比对过且一致」完全同形 —— 这是最坏的一种绿。因此三种「跑不了」
+  全部**具名 SKIP**，只有真比对了才可能 PASS：
+
+| 情形 | 行为 |
+|---|---|
+| 未设 `TEST_DATABASE_URL` | SKIP，说明「需要已跑过同步的库」 |
+| 库里没有 `models_canonical` 表 | SKIP，说明「跑不了」不是「通过」 |
+| 表在但 0 行带基准价 | SKIP，说明「本条没有比对任何东西」 |
+| 有可比集 | 双向逐字段比（SSOT→库、库→SSOT、缺行），不一致即红并指名字段 |
+
+2026-10-06 对真库实测：`比对了 16 个库内模型 × 9 个字段` ⇒ PASS。
+
+运行方式（对**已跑过同步**的库）：
+
+```
+export TEST_DATABASE_URL="postgres://…/llm_gateway?sslmode=disable"
+go test ./bg/ -run TestBaselinePricesInDatabaseMatchTheSSOT -v
+```
+
+### 四、审计发现的另两处「只是声名」
+
+**① `BuildSettlementIndex` 生产调用点 = 0。** `bg/pricing_settlement_index.go`
+266 行实现 + 402 行判据全绿，但全仓 grep 没有任何**生产**代码调用它 —— 结算价指数
+不进任何运行路径，不参与计费、不写库、不进 HTTP 响应。文件头此前**没有**声明这一
+点，而文档注释写「纯函数……调用方负责把清单准备好」，读起来像已有调用方。已在
+文件头与该函数注释处各补一段如实声明，并要求「接线时把这段改成接线说明，别直接
+删」——删掉就又回到「没人知道它是死代码还是半成品」。
+
+**② 6 条真库判据在裸 `go test ./bg/` 下静默 SKIP。** 实测：
+
+```
+--- SKIP: TestOrphanCanonicalReportsOnlyAutoDiscoveredActiveUnreferencedRows
+--- SKIP: TestOrphanCanonicalWhitespaceNameIsCalledOutAsAParseDefect
+--- SKIP: TestOrphanCanonicalBulkSummaryAppearsOnlyAboveTwenty
+--- SKIP: TestOrphanCanonicalAlertRowIsActionableAndOffersNoOneClickFix
+--- SKIP: TestOrphanCanonicalFixtureHasTheColumnsTheQueryReads
+--- SKIP: TestReconcileRecordsSourceHealthEvenWhenBaselineCatalogIsEmpty
+```
+
+它们靠 `TEST_DATABASE_URL` 连库，未设就 Skip。**这不算缺陷**（本仓两层测试设计：
+无库则跳过，由集成门 `run-integration-gate.sh` 设 `TEST_DATABASE_URL` 执行），
+实测两条路径都绿：
+
+- 设上 `TEST_DATABASE_URL` 后 5 条 `TestOrphanCanonical*` 全 PASS；
+- `Test836*` 五条契约判据不需要库，**每次**都跑，全 PASS。
+
+但它意味着一件事，必须写进记录：**「`go test ./bg/` ok」不能证明这 6 条跑过**。
+引用判据状态时要连分母一起写（`PASS=N/SKIP=M`），否则就是拿一份没覆盖到的清单
+当证据。
+
+**③ 顺带记一条用词纪律**：`TestSupplierErrorsHeapReassert` 这个 `-run` 模式匹配不到
+任何用例 —— 真实名字是 `Test836*`。**「没跑成」与「红了」在 `-v` 输出里长得不一样
+但很容易被合并叙述**，上一节就差点把它写成「判据通过」。
+
+### 五、本轮门读数
+
+| 门 | 结果 |
+|---|---|
+| `go build ./...` | 干净（仅 `go-m1cpu` 的 cgo warning，与本仓无关） |
+| `go vet ./...` | 干净 |
+| `go test ./bg/`（无 DB） | `ok 27.921s`，**含新增两条静态判据** |
+| 防线 A（M1/M2 变异） | 双向红/绿符合预期；还原后 md5 `1733c90c…` 逐字节一致 |
+| 防线 B（真库 / 无表库 / 无库） | PASS / 具名 SKIP / 具名 SKIP |
+| `verify-migration-checksums` | `OK: 179 registered migrations verified`，0 mismatch |
+| `apply-db-revision-sequence` 契约 | **红，4 条** —— 见下 |
+
+★ **`apply-db-revision-sequence` 契约红，且不是本轮引入。** 4 条抱怨全部指向
+  `837_routing_mv_refresh_state` / `838_analyze_skip_frozen_month` /
+  `839_autovac_current_month_heap_handoff` 三个迁移「有 installer 腿但无升级通道」。
+  归属已核：三者均由 `halfking` 于 2026-10-06 23:07 / 10-07 01:02 / 04:33 引入
+  （`git log --diff-filter=A`），本轮提交早于它们。本轮改动只有 3 个文件：
+  两个新判据 + `pricing_settlement_index.go` 的注释，**不碰任何迁移**。
+
+  ★ **刻意不代为修复**：门给了四种合法处置（登记进 `files=(...)` 升级通道 /
+  Go-ensure allowlist / `channel_gap_allowlist` 的 installer-only /
+  `superseded_migrations` 的 never-run），**选哪个取决于这三个迁移的设计意图，
+  本轮无从判断**。而误把 manual-by-design 的迁移登记进无人值守升级通道，正是
+  830 改标 `.sql.skip` 时差点造成的那类生产事故（无人值守升级会 RENAME 一张
+  10GB 在线表）。这不是本提交该替别人做的决定，故留红并在此记账。
