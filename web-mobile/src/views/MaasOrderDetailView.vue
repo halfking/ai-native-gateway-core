@@ -313,7 +313,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.mo__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.mo__panel { background: var(--app-surface); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .mo__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .mo__panel-sub { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 4px; }
 
@@ -341,6 +341,6 @@ onBeforeUnmount(() => {
 /* ★ R1：新增交互控件 ≥48 CSS px */
 .mo__actions { display: flex; gap: 8px; }
 .mo__btn { flex: 1; min-height: 48px; font-size: 14px; border-radius: 8px;
-  border: 1px solid var(--border, #ddd); background: transparent; color: inherit; }
+  border: 1px solid var(--app-border); background: transparent; color: inherit; }
 .mo__btn--primary { border-color: var(--app-primary); color: var(--app-primary); font-weight: 600; }
 </style>
