@@ -97,6 +97,13 @@ func (h *Handler) handleTaskAnalyticsList(w http.ResponseWriter, r *http.Request
 	defer cancel()
 
 	// 构造查询
+	// 2026-10-07：查询前先问新鲜度 —— 过期数字没有查询价值（见 mv_guard 注释）。
+	// 位置说明：门落在权限检查与 ctx 建立**之后**、构造查询之前。
+	// 放在权限检查之前会让 405/403 也去查一次库；放在查询之后则过期数据已经付过一遍查询代价。
+	if !h.requireFreshSessionViews(w, r, "session_task_stats") {
+		return
+	}
+
 	whereClause := ""
 	args := []interface{}{}
 	if tenantID != "" {
@@ -243,6 +250,13 @@ func (h *Handler) handleTaskAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 	resp := &TaskAnalyticsDetailResponse{}
 
 	// 1. 查询基本统计（从物化视图）
+	// 2026-10-07：详情同时读 task_stats 与 matrix，两个都要新鲜。
+	// 位置说明：门落在权限检查与 ctx 建立**之后**、构造查询之前。
+	// 放在权限检查之前会让 405/403 也去查一次库；放在查询之后则过期数据已经付过一遍查询代价。
+	if !h.requireFreshSessionViews(w, r, "session_task_stats", "session_client_task_matrix") {
+		return
+	}
+
 	whereClause := "WHERE task_id = $1"
 	args := []interface{}{taskID}
 	if tenantID != "" {

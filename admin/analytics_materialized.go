@@ -56,6 +56,25 @@ const mvFreshnessBudget = 15 * time.Minute
 // package-internal constant: an identifier can never be interpolated into
 // SQL text by accident this way.
 func mvFreshWithin(ctx context.Context, db *pgxpool.Pool, view string) bool {
+	return mvFreshWithinBudget(ctx, db, view, mvFreshnessBudget)
+}
+
+// sessionMvFreshnessBudget 是 357 会话分析视图族的陈旧度预算（2026-10-07）。
+// 它的刷新间隔是 SessionViewsInterval=60min（实测一轮 40-70s，源表 919MB），
+// 而 routing 族是 10min —— 沿用 15min 预算会让 session 视图**几乎永远**被判为
+// 陈旧（刷新间隔比预算还长 4 倍）。沿用 routing 同一个「预算 > 间隔，留一轮
+// 漏刷余量」的原则：60min 间隔 ⇒ 90min 预算。
+//
+// 为什么需要这道门：357 建完视图时刷新过一次，之后**没有任何刷新排程**
+// （245 实测 2026-10-07 06:31:36 填的，16:07 端点仍在返回它，陈旧 9h37m，
+// 而 session_summaries 一直在写）。没有门的时候，端点返回的是一份看起来完全
+// 正常的数字，没有错误、没有提示 —— 过期被伪装成了「就是这个数」。
+const sessionMvFreshnessBudget = 90 * time.Minute
+
+// mvFreshWithinBudget reports whether the named materialized view exists and
+// was refreshed within budget. 缺失视图 / 查询出错 / 无刷新戳一律 false，
+// 调用方走降级方向。
+func mvFreshWithinBudget(ctx context.Context, db *pgxpool.Pool, view string, budget time.Duration) bool {
 	if db == nil {
 		return false
 	}
@@ -74,7 +93,12 @@ func mvFreshWithin(ctx context.Context, db *pgxpool.Pool, view string) bool {
 	if !viewExists || refreshedAt == nil {
 		return false
 	}
-	return time.Since(*refreshedAt) < mvFreshnessBudget
+	return time.Since(*refreshedAt) < budget
+}
+
+// mvFreshWithinBudgetFor 返回一个绑定了该预算的新鲜度探针，供多视图整体门使用。
+func mvFreshWithinBudgetFor(ctx context.Context, db *pgxpool.Pool, budget time.Duration) func(string) bool {
+	return func(view string) bool { return mvFreshWithinBudget(ctx, db, view, budget) }
 }
 
 // useMaterializedView decides whether analytics endpoints (matrix / flow)

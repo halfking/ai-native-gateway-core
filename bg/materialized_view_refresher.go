@@ -103,7 +103,48 @@ const (
 	// 180s（< 5min ctx，且 < RefreshInterval 的 2 倍，不会堆积周期），
 	// 用后立刻 RESET，不污染连接池归还后的其他语句。
 	mvRefreshStatementTimeout = "180s"
+
+	// ── 357 会话分析物化视图族（2026-10-07）─────────────────────────────
+	// 迁移 357 建了 session_client_stats / session_task_stats /
+	// session_client_task_matrix 三个物化视图，admin session-analytics 端点
+	// 直接读它们。**此前没有任何刷新排程**：迁移末尾的初始刷新跑过一次之后
+	// 就再没人管（245 实测：2026-10-07 06:31:36 填的，16:07 时端点仍在返回
+	// 这份数据，陈旧 9h37m，而 session_summaries 仍在持续写入）。
+	//
+	// 间隔按实测定，不是拍的（245，session_summaries 623,006 行 / 919MB）：
+	//   session_client_stats          聚合  8.3s
+	//   session_task_stats            聚合  4.8s
+	//   session_client_task_matrix    聚合 10.9s
+	// 三个合计 ≈24s；REFRESH CONCURRENTLY 还要另建堆并算唯一索引差，
+	// 整轮量级 40-70s。源表增速约 200k 行/天，小时级绰绰有余。
+	SessionViewsInterval = 60 * time.Minute
+
+	// SessionViewsTimeout 绑定一轮 session 刷新。它必须**明显大于**实测的
+	// 40-70s：被 ctx 掐断的表现不是报错，而是**后几个视图根本没刷新**，
+	// 且前面已刷的会留下半轮状态 —— 比整体失败更难发现。
+	SessionViewsTimeout = 10 * time.Minute
+
+	// sessionViewsInitialDelay 比 InitialDelay 长：startup 迁移正在创建并
+	// 首次填充这些视图，等它们落定再进第一轮，否则第一轮必然撞上
+	// skipped_missing_view。
+	sessionViewsInitialDelay = 2 * time.Minute
+
+	// sessionViewsDistLockLogical 是独立的 Redis 键后缀。与 10min 的
+	// routing 周期共用一个 token 会让两个节奏不同的周期互相抢票。
+	sessionViewsDistLockLogical = "materialized_view_refresh_session"
 )
+
+// SessionAnalyticsViews 是迁移 357 建立、admin session-analytics 端点读取的
+// 物化视图族。三个都带 UNIQUE 索引（idx_session_client_stats_tenant_client /
+// idx_session_task_stats_tenant_task / idx_session_client_task_matrix_uq），
+// 这是 REFRESH MATERIALIZED VIEW **CONCURRENTLY** 的硬前提 —— 缺了会直接报错，
+// 而不是退化成普通 REFRESH。refreshView 对不存在的视图会安全跳过
+// （skipped_missing_view），所以 357 未应用的库不会因此报错。
+var SessionAnalyticsViews = []string{
+	"session_client_stats",
+	"session_task_stats",
+	"session_client_task_matrix",
+}
 
 // MaterializedViewRefresher manages periodic refresh of routing analytics
 // materialized views.
@@ -215,6 +256,25 @@ func (r *MaterializedViewRefresher) refreshLoop(ctx context.Context) {
 	//（正确性无损，仅重复）。每轮重算等待时间，刷新耗时不会累积漂移。
 	timer := time.NewTimer(nextAlignedWait(time.Now(), RefreshInterval))
 	defer timer.Stop()
+
+	// 2026-10-07：357 会话分析视图族接入。**不新起 goroutine**，而是在同一个
+	// 循环里挂第二个定时器 —— Stop() 靠 refreshLoop 里的 close(r.done) 收口，
+	// 多一个 goroutine 就得多一套等待语义，而这里并不需要并发。
+	//
+	// 刻意用**另一个定时器**而不是把三个视图塞进 refreshAll：两个周期的节奏
+	// 与超时预算完全不同（10min/5min vs 60min/10min），共用一个 ctx 预算会让
+	// routing 那一轮被 session 的耗时吃掉预算。陈旧度契约也是分开的
+	// （15min vs sessionMvFreshnessBudget）。
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(sessionViewsInitialDelay - InitialDelay):
+	}
+	r.refreshSessionViews(ctx)
+
+	sessionTimer := time.NewTimer(nextAlignedWait(time.Now(), SessionViewsInterval))
+	defer sessionTimer.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -222,6 +282,9 @@ func (r *MaterializedViewRefresher) refreshLoop(ctx context.Context) {
 		case <-timer.C:
 			r.refreshAll(ctx)
 			timer.Reset(nextAlignedWait(time.Now(), RefreshInterval))
+		case <-sessionTimer.C:
+			r.refreshSessionViews(ctx)
+			sessionTimer.Reset(nextAlignedWait(time.Now(), SessionViewsInterval))
 		}
 	}
 }
@@ -267,7 +330,7 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 	// 红手抓捕 252-dev 刷新 98s 仍在跑）。现在 advisory lock 是唯一真理：
 	// 任一后端赢了选举，另一个实例 pg_try_advisory_lock 失败即跳过。
 	useAdvisoryLock := true
-	if handle := r.acquireDistLock(ctx); handle != nil {
+	if handle := r.acquireDistLock(ctx, mvRefreshDistLockLogical); handle != nil {
 		defer handle.Release(context.WithoutCancel(ctx))
 		if !handle.IsLeader() {
 			slog.Info("materialized view refresh skipped, redis token held by another instance")
@@ -336,6 +399,75 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 	}
 }
 
+// refreshSessionViews 刷新迁移 357 的会话分析物化视图族。
+//
+// 与 refreshAll 共用 refreshMu（本进程内串行），但走**独立的 Redis token 键**
+// —— 两个节奏不同的周期共用一个 token 会互相抢票。
+//
+// 关于 Postgres advisory lock：refreshView 内部用的是全局的 mvRefreshLockKey，
+// 这里沿用而没有另开一把。代价是两个周期撞上时其中一轮整体跳过；收益是不必给
+// refreshView 再串一个锁键参数。session 轮约 60s、每 60min 一次，与 10min 的
+// routing 轮相撞的概率约 1.7%，而 routing 的陈旧度预算（15min > 10min 间隔）
+// 本就允许漏一轮。这个取舍是安全的：跳过是可见的（skipped_follower 指标 +
+// Info 日志），而悄悄漏刷不是。
+//
+// 单视图失败不终止整轮：三个视图的用途彼此独立，第三个失败不该让前两个的
+// 成果作废。失败计入各自视图的 failure 指标。
+func (r *MaterializedViewRefresher) refreshSessionViews(parentCtx context.Context) {
+	if r == nil || r.db == nil {
+		return
+	}
+	r.refreshMu.Lock()
+	defer r.refreshMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(parentCtx, SessionViewsTimeout)
+	defer cancel()
+
+	if handle := r.acquireDistLock(ctx, sessionViewsDistLockLogical); handle != nil {
+		defer handle.Release(context.WithoutCancel(ctx))
+		if !handle.IsLeader() {
+			slog.Info("session analytics view refresh skipped, redis token held by another instance")
+			recordMVCoordination("redis_follower")
+			for _, v := range SessionAnalyticsViews {
+				recordMVRefreshSkipped(v, "skipped_follower")
+			}
+			return
+		}
+		slog.Info("session analytics view refresh: redis leader token acquired")
+		recordMVCoordination("redis_leader")
+	} else {
+		recordMVCoordination("advisory_only")
+	}
+
+	var failed int
+	for _, view := range SessionAnalyticsViews {
+		start := time.Now()
+		skipped, err := r.refreshView(ctx, view, true)
+		switch {
+		case err != nil:
+			// 不 return：三个视图用途独立，单个失败不该作废已刷好的。
+			failed++
+			recordMVRefreshFailure(view)
+			slog.Error("failed to refresh session analytics view",
+				"view", view, "error", err, "elapsed", time.Since(start))
+		case !skipped:
+			recordMVRefreshSuccess(view, time.Since(start).Seconds())
+			slog.Info("refreshed session analytics view",
+				"view", view, "elapsed", time.Since(start))
+		}
+	}
+
+	// 整轮被 ctx 掐断是最难发现的一种失败：已刷的视图盖上了新时间戳，
+	// 没刷的保持旧值，没有一条错误日志（refreshView 的错误由调用方 ctx 传播，
+	// 这里必须自己判）。落到周期级指标上。
+	if ctx.Err() != nil {
+		slog.Error("session analytics refresh cycle cut off by deadline",
+			"timeout", SessionViewsTimeout.String(),
+			"views", len(SessionAnalyticsViews), "failed_before_cutoff", failed)
+		recordMVRefreshFailure("session_analytics_cycle")
+	}
+}
+
 // acquireDistLock attempts the Redis token-bucket leader election for one
 // refresh cycle. Returns nil whenever Redis coordination was not usable —
 // no manager wired, the manager reports Enabled()==false, or Acquire itself
@@ -350,12 +482,12 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 // the leader to finish. That "return fast, let the caller decide" shape is
 // exactly the token-bucket semantics: a follower redeems no token and
 // skips the cycle instead of queueing behind the leader.
-func (r *MaterializedViewRefresher) acquireDistLock(ctx context.Context) *distlock.Handle {
+func (r *MaterializedViewRefresher) acquireDistLock(ctx context.Context, logical string) *distlock.Handle {
 	if r.distLock == nil || !r.distLock.Enabled() {
 		return nil
 	}
 	h, err := r.distLock.Acquire(ctx, distlock.AcquireOpts{
-		Key:   distlock.BuildKey(mvRefreshDistLockNamespace, mvRefreshDistLockLogical),
+		Key:   distlock.BuildKey(mvRefreshDistLockNamespace, logical),
 		TTL:   mvRefreshDistLockTTL,
 		Mode:  distlock.ModeWaitFollower,
 		Scope: "mv_refresh",
