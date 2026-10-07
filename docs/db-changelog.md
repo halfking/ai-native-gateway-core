@@ -7660,3 +7660,157 @@ go test ./bg/ -run TestBaselinePricesInDatabaseMatchTheSSOT -v
 引用门禁结论必须带分母与时刻；「没跑成」与「红了」分开表述；
 门自带的诊断措辞是**假设不是结论**（本节第一小节即是一例：门说 "6 problem(s)"，
 实为 5 个迁移被报 6 次，因为最高编号守卫会单独再数一次）。
+
+## 2026-10-07 — 定价拍板落地：把「基准价不参与金额计算」写成会咬人的判据
+
+### 〇 拍板内容（本节一切的前提）
+
+`baseline_*_price_per_1m` 在成本核算里的角色是**人工定价决策**，不是工程可推导项。
+2026-10-07 18:50 提问、18:50 拍板：
+
+- **基准价只做「合理性下限」告警，不参与金额计算。**
+  算账单金额只能用供应商实际报价（`Candidate.PriceInPer1M` 等）。
+- （同轮附带口径）将来若接线，缓存写入价**按 Anthropic 最短档计，不做 TTL 分档**。
+
+⇒ 结论落地为**代码约束**：`domains/streaming/usage.go` 的 `CalcCost`
+  **一行未动**，计费链路保持原样。
+
+### 一、为什么这件事需要判据，而不是一条注释
+
+「不接线」看起来是零成本选择，实际它是**默认值**：
+在 `CalcCost` 里加一句 `if baseline != nil { priceIn = min(priceIn, *baseline) }`
+只要三行，且**没有任何现有判据会变红**——因为全仓没有一条判据主张
+「基准价不得进金额」。
+
+代价也不对称：
+- 不接线 → 告警照常（`supplier_price_drift` 早已在用 baseline，阈值 1.5x），
+  账目口径干净，**没有可见损失**；
+- 接线 → **静默改变已记账金额的语义**。`cost_usd` 一旦混入基准价，
+  新旧行口径不同源，`recorded_cost_is_negative` 还会在负成本时报警，
+  而根因不是数据错，是口径中途改过。
+
+⇒ 判据的作用是**把默认值改成需要显式推翻的东西**。
+
+### 二、判据：`bg/baseline_price_not_in_billing_test.go`（纯静态，每次都跑）
+
+两条，缺一不可：
+
+1. `TestBaselinePriceNeverReachesBillingAmount` — 扫 `domains/` 与 `bg/` 的
+   **非测试** `.go`；某文件同时出现 `baseline_input_price_per_1m` 与
+   `cost_usd`/`cost_cents`/`total_cost` 之一即红。
+   豁免表逐个登记并写明理由（写入方 `pricing_baseline_sync.go`、
+   告警 SQL `routing_health_checks.go`），不用「跳过 test.go」这种粗规则。
+2. `TestBillingAmountSourcesAreSupplierPrices` — `usage.go` 出现 `baseline_`
+   即红。独立成条是因为它失效方式不同：第 1 条靠「字符串同时出现」发现问题，
+   这条靠「结构里没有该字段」证明，后者在有人把基准价作为**新字段**接进
+   `CostInput` 时会先红。
+
+⚠ 第 1 条是**有意的窄口径**：只抓「读基准价 + 算金额写在同一文件」的形态。
+  跨文件形态（A 文件算 ratio、B 文件落库）抓不到——那属于真要接线时的
+  独立复核，不由本条兜底。本条只负责让「顺手在 CostInput 旁边加一行 min()」
+  这种最常见、最像无意的形态变红。
+
+### 三、判据自身的两个坑（本轮实测踩到，记下来）
+
+1. **判据第一跑就红，因为它把自己当成了被测对象。**
+   错误消息模板里同时写着「基准价列」与「cost_usd」两个字符串 ⇒ 判据源码
+   自身满足违规条件。症状看着像「刚写的判据立刻红 = 判据写错了」，
+   实际是**扫描面定义错了**。
+   修法：整体排除 `_test.go`（判据问的是「生产代码会不会…」，
+   测试文件里出现这两个词本就正常）。
+   ⚠ 顺带否掉了一个更省事的错修法：把判据自己加进豁免表。那会开出
+   「把真逻辑藏进本判据文件就不红」的死角。
+2. **仓库里没有 `repoRoot` 这个 helper**，只有 `repoRootFromBg(t)`
+   （`bg/probe_policy_family_gate_test.go:70`）。写了 `repoRoot(t)` 会编译失败。
+
+### 四、验证（双向变异，绿灯不算证据）
+
+| 变异 | 手法 | 结果 |
+|------|------|------|
+| N1 | 在 `CalcCost` 里 `priceIn = min(priceIn, baselineFloor)` | **红**，第 2 条判据报出 |
+| N2 | 造一个同时含 `baseline_input_price_per_1m` 与 `cost_usd` 的**新**生产文件 | **红**，第 1 条判据报出，且证明扫描面确实能到豁免表之外 |
+| 还原 | 两次 | 绿；`diff -q` **逐字节一致** |
+
+### 五、顺带查清的一个真实 gap（本轮未修，记下备查）
+
+`sql/migrations/startup/826_model_baseline_price.sql` 建的
+`v_supplier_price_vs_baseline` 视图**只投影 in/out 两个基准价**
+（`baseline_in_per_1m` / `baseline_out_per_1m`），
+**没有投影 `baseline_cache_read_price_per_1m` / `baseline_cache_write_price_per_1m`**
+——cache 两列在该文件里只出现在 61/62 行的 `ADD COLUMN` 与 90/91 行的
+CHECK 约束里，**不在视图投影段**。
+
+⇒ 后果：缓存基准价即使在 SSOT 里正确、在库里非空，也**永远进不了
+  `supplier_price_drift`**（该检查的 WHERE 走视图列）。
+  这与本仓已有的两处「只写不读 / 无监控」是同一族。
+  要修需新建迁移扩视图投影（826 不可原地改）——属独立改动，本轮不并入。
+
+## 2026-10-07 — 防线 B 常态化：真库判据第一次有了**显式**运行入口
+
+### 〇 它治的病
+
+裸 `go test ./bg/` 时，`bg/*_realdb_test.go` 全部 **20 个文件 / 45 个用例**
+在 `TEST_DATABASE_URL` 未设置时**静默 `t.Skip`**。这在语法上完全合规——
+`--- SKIP` 与 `--- PASS` 混在同一个 `ok` 里，**没人能凭一次 go test
+说出真库判据到底跑没跑**。
+
+盘点确认：改前 `verify.sh` 调了 `apply-db-revision-sequence_test.sh`、
+`go test ./...`、`verify-migration-checksums.sh` 等 6 条，
+**没有任何一条带真库**；`pre-commit-check.sh` 也不调 `verify.sh`。
+
+### 一、为什么**不**并进 pre-commit-check.sh
+
+真库判据连的是**真生产库**。把连生产库的测试塞进每次提交的门禁，
+等于让每个人的每次提交都有权限打生产库——那是**权限问题，不是门禁松紧问题**。
+⇒ 处置为**显式登记的独立命令**（目标里给的第二个选项），
+  需要谁主动跑、或由运维在部署前后跑。
+
+### 二、`scripts/run-realdb-gate.sh`
+
+- `--list`：只列登记了哪些，不连库；
+- 带 DSN：连库跑 `go test ./bg/ -count=1 -v -timeout=900s`，
+  末尾输出 **`PASS=N / FAIL=M / SKIP=K` 三个数**；
+- 退出码：`0` 全通过 ／ `1` 有 FAIL ／ **`2` DSN 未设置（没跑成，不是通过）**。
+
+`-v` 是刻意的：不用 `-v` 时 go test 会折叠掉 SKIP 行，
+而「折叠掉的 SKIP」与「通过」在输出上无法区分——那正是本脚本要治的病。
+同理，`SKIP>0` 时脚本会额外提示「引用本读数时必须同时写 SKIP=K」。
+
+### 三、名单用**双向自检**钉住（这是本脚本唯一有价值的部分）
+
+`REALDB_FILES` 是一份显式名单，不靠 `*_realdb_test.go` 通配——
+因为**漏一个文件名 = 静默少跑一条判据，而那种漏是看不见的**。
+两头都查：
+
+1. **正向**：名单里的文件在磁盘上不存在 ⇒ **拒绝运行**（exit 1）。
+   ⚠ 这条不是假想的：初版名单里就真有一个手误的
+   `modality_modality_rollup_realdb_test.go`，自检当场抓住并拒绝运行。
+   若没有这道自检，`go test` 对不存在的文件**不报错**，
+   少跑一条判据会表现为「一切正常」。
+2. **反向**：磁盘上有、名单里没有的 `*_realdb_test.go` ⇒ **拒绝运行**。
+   治的是「新写了判据却没登记」——而「没登记」的默认表现正是不跑。
+
+⇒ 新增真库判据从此有了强制登记点：不登记，脚本直接不跑。
+
+### 四、本轮读数（不夸大）
+
+- `bash scripts/run-realdb-gate.sh --list` → 登记 **20** 个文件，rc=0；
+- 无 DSN 执行 → **rc=2**，输出明写「**没跑成**（不是通过）」。
+- ⚠ **本轮没有跑过真库**（无 `TEST_DATABASE_URL`），
+  所以**不能**给出任何真库判据的 PASS/SKIP 读数。
+  要取该读数必须带 DSN 执行本脚本；引用时按 `PASS=N/SKIP=M` 写。
+
+补一个把「静默」量化下来的读数（2026-10-07 18:58）：
+`go test ./bg/ -count=1` → **`ok … 40.676s`（整包绿）**，而同一份代码
+`go test ./bg/ -count=1 -v | grep -c '^--- SKIP'` → **90 条 SKIP**。
+⇒ 「整包 ok」与「90 条根本没跑」是**同一份输出能同时成立**的两件事。
+  目标里说的「6 条真库判据在裸 go test 下静默 SKIP」是准确的，
+  本节把量级补齐：不止 6 条，是 **90 条**（真库 45 条是其中一部分，
+  另有一部分是其他条件性跳过）。
+
+### 五、连带查清的一个真实 gap（与上一节第五点同源，已记备查）
+
+`v_supplier_price_vs_baseline`（826 建的视图）**没有投影两个 cache 基准价**，
+cache 列在该文件里只出现在 `ADD COLUMN` 与 CHECK 约束段。
+⇒ 缓存基准价即使在库里有值，也**永远进不了 `supplier_price_drift`**，
+  与本仓已记录的「只写不读 / 无监控」同族。要修需新建迁移扩投影，不并入本轮。
