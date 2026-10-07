@@ -30,7 +30,7 @@ import { join } from 'node:path'
 
 ★ 第一版只查**直接**引用，并且显式跳过 `src/api/` 整个目录。两处都错了：
 
-1. **跳过整个 `src/api/` 是错的。** 第���零二批消解 `nodeHealth.ts` / `nodeHealthTimeline.ts`
+1. **跳过整个 `src/api/` 是错的。** 第一百零二批消解 `nodeHealth.ts` / `nodeHealthTimeline.ts`
    这对副本时，靠的是**API 层内部的委托**（`nodeHealth.ts` 改成 import 厚的那个）。
    直接引用口径下，委托方在 `src/api/` 里 ⇒ 被跳过 ⇒ **计数一点没降**，
    而事实上重复契约已经合并、模块已经可达。
@@ -62,7 +62,6 @@ const KNOWN_ORPHANS: readonly string[] = [
   'nativeTransport',
   'opsOverview',
   'platformSettings',
-  'probeTriStateTasks',
   'reportRollup',
   'requestActions',
   'selfCheck',
@@ -79,7 +78,7 @@ const KNOWN_ORPHANS: readonly string[] = [
 ]
 
 /**
- * 现况（2026-10-08，第一百零三批后）：**27 项**。
+ * 现况（2026-10-08，第一百零五批后）：**26 项**。
  * ★ 上面文件头里那句「30 个」是第一百批当时的实测记录，**不要去改它** ——
  *   引用它时要连时刻一起引用（「第一百批那轮 30 个」）。
  *   清单本身是活的事实源，下面这条断言逐项对拍。
@@ -203,6 +202,14 @@ describe('孤儿棘轮', () => {
     //   ★ 这一族是 h.superAdmin（admin/handler.go:1434），所以席的权限门控
     //   由 AppDrawer.spec.ts 的白名单把守，两条判据合起来才覆盖「接上了且挂对了档」。
     expect(currentOrphans()).not.toContain('workTypes')
+  })
+
+  it('★ 已接线的哨兵：probeTriStateTasks 不在孤儿里（第一百零五批）', () => {
+    // ★ 凭据探测三态队列接上了抽屉席与路由 ⇒ 棘轮清单同步删掉那一行。
+    //   该族是 **admin 档**（admin/probe_dashboard.go:1907 的 adminWrap），
+    //   所以它的席**不设** requiresRole ⇒ AppDrawer.spec.ts 的白名单里
+    //   **不该**出现 probe-queue。两条判据合起来才覆盖「接上了且档位挂对了」。
+    expect(currentOrphans()).not.toContain('probeTriStateTasks')
   })
 
   it('★★★ 反向护栏：api 内部的互相引用不得凭空产生可达性', () => {

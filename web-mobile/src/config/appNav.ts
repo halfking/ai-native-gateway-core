@@ -156,6 +156,10 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.workTypes',
     requiresRole: 'super_admin',
   },
+  // 凭据探测三态队列。**admin 档**（admin/probe_dashboard.go:1907 的
+  //   `adminWrap(h.handleProbeTaskRoute)`）⇒ tenant_admin 可用 ⇒ **不设** requiresRole。
+  // ★ 该路由是**方法多路复用**（GET/POST/DELETE 同一条），本页只发 GET。
+  { key: 'probe-queue', to: '/probe-queue', icon: 'clock', titleKey: 'nav.probeQueue' },
   // MaaS 租户运维面。**superAdmin 档**（/api/admin/maas/tenants/** 全 superAdmin）⇒ 须设。
   {
     key: 'maas-tenant-ops',

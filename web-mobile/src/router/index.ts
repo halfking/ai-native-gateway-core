@@ -651,6 +651,12 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'rp.title', requiresAuth: true },
   },
   {
+    path: '/probe-queue',
+    name: 'probe-queue',
+    component: () => import('@/views/ProbeQueueView.vue'),
+    meta: { titleKey: 'pq.title', requiresAuth: true },
+  },
+  {
     path: '/work-types',
     name: 'work-types',
     component: () => import('@/views/WorkTypesView.vue'),
