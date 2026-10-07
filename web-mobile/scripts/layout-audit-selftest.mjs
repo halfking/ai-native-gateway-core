@@ -6,12 +6,14 @@
  *   而「判据返回 issues: []」与「页面真的没问题」**长得一模一样**。
  *   没有夹具，这把尺子永远无法被证伪 —— 尺子坏了也没人知道。
  *
- * ✅ 已正控的 kind（8 / 9）：h-overflow、tap-target、invisible-text、
- *   low-contrast、broken-image、tap-overlap、covered-by-fixed、near-blank。
+ * ✅ 已正控的 kind（11 / 12）：h-overflow、tap-target、tap-target-legacy、
+ *   invisible-text、low-contrast、broken-image、tap-overlap、covered-by-fixed、
+ *   near-blank、tappable-in-inset + tappable-grazes-inset（横向 safe-area 两级）。
  *   每条都同时有「plant（必须报）」与「decoy（不许报）」两侧。
- * ⛔ 仍未正控：safe-area —— 它要先有 `--app-safe-bottom` 变量才有意义，
- *   那是**壳注入**的量（模拟器那一轮才测得到），在浏览器夹具里自造一个
- *   等于自己造契约。故意不写断言，不用假阳性换「覆盖率」。
+ * ✅ safe-area 顶部（bottom）那条**仍然**没有断言：它只比 padding 与 inset 的差值，
+ *   夹具里补一个 padding 就能自洽，造不出「必须报」的那一侧。
+ *   横向（left/right）能正控，因为它判的是**几何谓词**（命中区中心/边缘 vs inset 带），
+ *   与 inset 数值无关 —— 见文末 ⑩ 段对「旧理由只对一半成立」的更正。
  *
  * ★★ 视口怎么定（踩了三个坑才定下来，勿改）：
  *   ① `Emulation.setDeviceMetricsOverride` 在本机 headless 下**经常不生效**
@@ -59,6 +61,10 @@ const CASES = [
   { label: '@320 滚得出来', q: '/fixture?plants=scroll-under', w: 320 },
   { label: '@320 底栏遮挡(滚动)', q: '/fixture?plants=covered-scroll', w: 320 },
   { label: '@320 底栏已避让(滚动)', q: '/fixture?plants=covered-scroll-ok', w: 320 },
+  // ── 横向 safe-area（2026-10-08）：见文末「为什么这次可以正控」──
+  { label: '@320 横向inset', q: '/fixture?plants=inset-lr', w: 320 },
+  { label: '@320 横向inset已避让', q: '/fixture?plants=inset-lr-ok', w: 320 },
+  { label: '@320 R1存量档', q: '/fixture?plants=tap-legacy', w: 320 },
 ]
 
 const HOST_PAGE = `<!doctype html><meta charset="utf-8">
@@ -312,11 +318,96 @@ const R = Object.fromEntries(results.map((r) => [r.label, r]))
   }
 }
 
+// ⑩ 横向 safe-area（left/right，2026-10-08）：贴边 fixed 浮层报，已避让不报
+// ★ 为什么这次可以正控（推翻本文件旧头里「safe-area 故意不写断言」那条）：
+//   旧理由是「inset 是壳注入的量，夹具里自造 = 自造契约」。这句话只对**一半**成立：
+//   · 数值确实是合成的 —— 但判据对数值无感（>0 即生效），换 30px / 59px 结论不变；
+//   · **通道名不是合成的** —— 壳真正写的就是 `--safe-area-inset-left/right`，
+//     落在 documentElement（theme.css 注释与 safeArea.spec.ts 引着这条），
+//     夹具复刻的是**真实契约的形状**。
+//   ⇒ 不正控的代价是实的：⑥ 整节在浏览器里恒为 0（没人注入），
+//     「底栏没避让 Home 指示条」这条检查**从来没被证明过有牙**，改坏了也不会红。
+{
+  const r1 = R['@320 横向inset'], t = r1.label
+  // 量具自证：inset 真的读到了 30px，读不到的话下面两条断言全是恒假
+  const lr = r1.report.stats.safeAreaLR || {}
+  if (lr.left !== 30 || lr.right !== 30) {
+    fails.push(`${t} 量具自证失败：stats.safeAreaLR 读回 ${JSON.stringify(lr)}，期望 left/right 都是 30 —— 判据没读到注入的通道值，下面的断言不作数`)
+  }
+  const dead = kind(r1, 'tappable-in-inset')
+  if (!dead) {
+    fails.push(`${t} 漏报 tappable-in-inset：#plant-inset-rail-btn 命中区 0–48、中心 24 落在 30px inset 带内`)
+  } else {
+    const ids = dead.items.map((o) => o.sel).join(' , ')
+    if (!has(dead.items, '#plant-inset-rail-btn')) fails.push(`${t} tappable-in-inset 没指向 #plant-inset-rail-btn。实际：${ids}`)
+    if (dead.items.some((o) => o.side !== 'left')) fails.push(`${t} tappable-in-inset 混进了非左侧项。实际：${ids}`)
+    // 反向自证：这条判据**不能**把「探边」也升成 high，否则两级会糊在一起
+    if (has(dead.items, '#plant-inset-nav')) fails.push(`${t} tappable-in-inset 误把「探边」升成 high（分级谓词被写坏）。实际：${ids}`)
+  }
+  const graze = kind(r1, 'tappable-grazes-inset')
+  if (!graze) {
+    fails.push(`${t} 漏报 tappable-grazes-inset：吸底导航首尾项命中区抵到 x=0 / x=innerWidth`)
+  } else {
+    const ids = graze.items.map((o) => o.sel).join(' , ')
+    if (!graze.items.some((o) => o.side === 'left')) fails.push(`${t} tappable-grazes-inset 缺左侧项（left:0 那侧）。实际：${ids}`)
+    if (!graze.items.some((o) => o.side === 'right')) fails.push(`${t} tappable-grazes-inset 缺右侧项（right:0 那侧）。实际：${ids}`)
+    // 贴边浮层必须被标成「逃出壳根 padding」的那一类，否则报告没法指认修法
+    if (graze.items.some((o) => o.anchored !== 'fixed')) {
+      fails.push(`${t} tappable-grazes-inset 的 anchored 没标出 fixed（无法区分「流内被 padding 保护」与「fixed 逃出保护」）。实际：${JSON.stringify(graze.items.map((o) => o.anchored))}`)
+    }
+    // 流内容诱饵：壳根 padding 已经把它推到 30px ⇒ 绝不许报
+    if (has(graze.items, '#decoy-inset-flow-btn') || has(dead.items ?? [], '#decoy-inset-flow-btn')) {
+      fails.push(`${t} 误报 #decoy-inset-flow-btn：它在流内、被 padding-left:30px 保护，判据对「流内已避让」没有 exempt`)
+    }
+  }
+  // 已避让的对照：形状逐条相同，只是浮层自己补了 padding-inline
+  const r2 = R['@320 横向inset已避让']
+  if (kind(r2, 'tappable-in-inset')) {
+    fails.push(`${r2.label} 误报 tappable-in-inset：左侧轨已 left:30px、导航已 padding-inline:30px`)
+  }
+  if (kind(r2, 'tappable-grazes-inset')) {
+    fails.push(`${r2.label} 误报 tappable-grazes-inset：所有命中区都在 inset 带之外`)
+  }
+  // 桌面/竖屏静默：没有注入就没有这两条（不制造噪声）
+  const r3 = R['@320 全量']
+  if (kind(r3, 'tappable-in-inset') || kind(r3, 'tappable-grazes-inset')) {
+    fails.push(`${r3.label} 误报横向 inset：未注入通道时 inset 恒 0，这两条必须静默（实际 ${kinds(r3)}）`)
+  }
+}
+
+// ⑪ R1 三档边界（2026-10-08）：43px 与 46px 只差 3px，必须分属 medium / low
+// 为什么这条重要：`/m/keys` 一屏 249 个 `btn--sm`（44px，仓门**书面豁免**的存量基线）
+// 曾被报成 249 处 medium，真缺陷会被淹在噪声里。分档不是放宽，是把台账和缺陷分开。
+{
+  const r = R['@320 R1存量档'], t = r.label
+  const bad = kind(r, 'tap-target'), leg = kind(r, 'tap-target-legacy')
+  if (!bad) fails.push(`${t} 漏报 tap-target：43px 连 44px 硬底线都没有`)
+  else {
+    const ids = bad.items.map((o) => o.sel).join(' , ')
+    if (!has(bad.items, '#plant-tap-43')) fails.push(`${t} tap-target items 缺 #plant-tap-43。实际：${ids}`)
+    if (has(bad.items, '#plant-tap-46')) fails.push(`${t} tap-target 误报 #plant-tap-46：46px 落 R1 存量区间，不是缺陷。实际：${ids}`)
+  }
+  if (!leg) fails.push(`${t} 漏报 tap-target-legacy：46px 应进存量台账（low），否则它会被当成合规放掉、连台账都没有`)
+  else {
+    const ids = leg.items.map((o) => o.sel).join(' , ')
+    if (!has(leg.items, '#plant-tap-46')) fails.push(`${t} tap-target-legacy items 缺 #plant-tap-46。实际：${ids}`)
+    if (has(leg.items, '#plant-tap-43')) fails.push(`${t} tap-target-legacy 误收 #plant-tap-43：破底线的必须是 medium。实际：${ids}`)
+    // low 是纪律的一部分：severity 写成 medium 就等于分档没做
+    if (leg.sev !== 'low') fails.push(`${t} tap-target-legacy 的 severity 应为 low（实际 ${leg.sev}）—— 台账不该与缺陷同级`)
+  }
+  if (r.report.stats.smallTargets !== 1) {
+    fails.push(`${t} stats.smallTargets 应为 1（只数破底线的），实际 ${r.report.stats.smallTargets} —— 分档写穿了两边`)
+  }
+  if (r.report.stats.legacyTargets !== 1) {
+    fails.push(`${t} stats.legacyTargets 应为 1，实际 ${r.report.stats.legacyTargets}`)
+  }
+}
+
 for (const r of results) console.log(`判据在 ${r.label.padEnd(16)} 返回：${kinds(r)}`)
 if (fails.length) {
   console.error(`\n✗ 自检失败 ${fails.length} 条：`)
   for (const f of fails) console.error('  · ' + f)
   process.exit(1)
 }
-console.log('\n✓ 自检通过：8/9 条判据的 plant 全部被抓到、decoy 与干净页都没被误报 —— 尺子有牙')
-console.log('  （safe-area 故意未正控：它依赖壳注入的 --app-safe-bottom，自造等于自造契约）')
+console.log('\n✓ 自检通过：11/12 类 kind 的 plant 全部被抓到、decoy 与干净页都没被误报 —— 尺子有牙')
+console.log('  （safe-area 两节现已正控：横向通道名取自壳真正注入的 --safe-area-inset-*，只有数值是合成的）')

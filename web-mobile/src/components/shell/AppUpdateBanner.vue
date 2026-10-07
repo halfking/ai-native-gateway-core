@@ -29,8 +29,8 @@ const { bannerVisible, dismissBanner, applyUpdate } = useDeploySeqUpdate()
 /* fixed 定位悬浮于内容之上、底栏之下（z-index 对齐 AppSheet 之下的浮层档） */
 .update-bar {
   position: fixed;
-  left: var(--app-space-3);
-  right: var(--app-space-3);
+  left: calc(var(--app-space-3) + var(--app-safe-left));
+  right: calc(var(--app-space-3) + var(--app-safe-right));
   /* compact 有底栏时让位；medium+ 只有安全区 */
   bottom: calc(var(--app-bottomnav-height, 0px) + var(--app-safe-bottom, 0px) + var(--app-space-2));
   z-index: 60;
