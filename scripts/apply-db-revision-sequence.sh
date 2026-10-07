@@ -1000,6 +1000,21 @@ files=(
   # 841：月度分区族的分区级 DROP 保留。**建表即为空 ⇒ 迁移应用后行为与今天完全一致**，
   # 真正启用需按族 INSERT 保留月数（业务决定，不在本迁移内）。
   "$ROOT_DIR/sql/migrations/startup/841_monthly_partition_retention.sql"
+  # 2026-10-07（842）：给 v_supplier_price_vs_baseline 补两个缓存基准价的投影。
+  #
+  # 缺口：826 建的视图只投影 in/out 两个基准价，cache 列只出现在 ADD COLUMN
+  # 与 CHECK 段，连 LATERAL 子查询的 SELECT 列表里都没有 ⇒ 缓存基准价即使在库
+  # 里非空，也永远进不了 supplier_price_drift。
+  # ⇒ 这不是中性的「只写不读」观察缺口，而是功能缺失：2026-10-07 人工拍板把
+  #   基准价定为「合理性下限」告警的依据，被指定的四个价里有两个没接进通路。
+  #
+  # 为什么可以安全进通道：CREATE OR REPLACE VIEW **只在末尾追加 4 列**，
+  # 既有列位置/类型/顺序逐字不变（8 个消费文件，无 SELECT * ⇒ 不受影响）；
+  # LATERAL 的 JOIN 条件、ORDER BY、LIMIT 1 一字未改 ⇒ 行数与去重行为不变；
+  # 幂等（可重放）。⚠ 它会先 ADD COLUMN IF NOT EXISTS 补 credential_model_bindings
+  # 的两个 cache 列——实测视图不能引用不存在的列（42703），而全仓没有任何迁移
+  # 建过它们（398 只是 SELECT 过，不建列）。
+  "$ROOT_DIR/sql/migrations/startup/842_supplier_view_cache_baseline_columns.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的

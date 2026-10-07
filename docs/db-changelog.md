@@ -7994,3 +7994,125 @@ if [[ -n "$f" ]] && head -5 "$f" | grep -qE '^//go:build'; then ...
 ⇒ 这条与本节第二节那条 `[no tests to run]` 报 PASS 恰好是一对：
   **一个把「没跑」说成「跑了」，一个把「功能没生效」说得像「没有这个需求」。**
   两者的共同处方都是同一件事：**先写下「它应该长什么样」，再看它长没长。**
+
+## 2026-10-07 — 补上 842：缓存基准价第一次进入告警通路（缺口诊断 + 迁移 + 6 条判据）
+
+### 〇 起点：这是上一轮记下但没修的缺口
+
+「定价拍板」那一节第五点记过一个真实 gap：`826` 建的
+`v_supplier_price_vs_baseline` **只投影 in/out 两个基准价**，
+`baseline_cache_read/write_price_per_1m` 只出现在 826 的 `ADD COLUMN`
+与 CHECK 段、**不在视图投影段**。
+
+本轮先重新核实（缺口可能已被别人修掉），确认仍成立，然后修了。
+
+### 一、为什么这个缺口值得现在修
+
+2026-10-07 人工拍板把基准价的角色定为**「合理性下限」告警，不参与金额计算**。
+⇒ 于是「基准价只写不读」**不再是中性的观察缺口，而是功能缺失**：
+  被明确指定为告警依据的四个价里，**有两个（缓存读/写）根本没接进通路**。
+  缓存计费金额偏高 —— 正是基准价本该报警的那一类 —— 完全静默。
+
+### 二、两侧都有值，**比得出来**，只是没人比
+
+| 侧 | 列 | 建它的迁移 |
+|----|----|-----------|
+| 供应商侧 | `credential_model_bindings.cache_read/write_price_per_1m` | ★ **无任何迁移建过**（见第四节） |
+| 基准侧 | `models_canonical.baseline_cache_read/write_price_per_1m` | 826（含非负 CHECK） |
+
+### 三、迁移 842 的形态与实测
+
+`sql/migrations/startup/842_supplier_view_cache_baseline_columns.sql`
+（+ `.down.sql`），五点同步：正本 / down / `embeddata/startup` 副本 /
+`installer/internal/dbinit/runner.go` StartupFiles / 通道 `files=(...)` 数组。
+
+★ **不原地改 826**：826 已 applied+verified，改它的内容会让幂等通道按 sha
+  的台账记账冲突（内容变而编号不变 ⇒ 每次部署重放）。本仓惯例是新开
+  re-assert 迁移（813 → 836 → 842）。
+
+安全性论证：
+- `CREATE OR REPLACE VIEW` **只在末尾追加列** ⇒ 既有 15 列位置/类型/顺序
+  **逐字不变**；8 个消费文件、**无 `SELECT *`** ⇒ 不受影响；
+- LATERAL 的 `JOIN 条件 / ORDER BY / LIMIT 1` **一字未改**
+  ⇒ 行数与去重行为与 826 完全一致（826 记录过「OR 条件把一条绑定变三行」
+  的真实错价事故，那个修法不能被本迁移动到）；
+- 幂等：实测二次应用 `rc=0`，只有 `已经存在，跳过` 的 NOTICE。
+
+**真库实测（一次性 PG 17.11，本轮）**：
+| 场景 | 读数 |
+|------|------|
+| 基准 0.50/1.25，供应商 1.00/2.50 | 倍率 **2.0000 / 2.0000** ✓ |
+| 币种改 CNY | 两个 cache 倍率 **NULL**（`currency_comparable=f`）✓ |
+| 基准 cache = 0 | **NULL**（0 分母无定义）✓ |
+| 供应商 cache 价 = NULL | **NULL** ✓ |
+| **升级路径**：先按 826 建视图（0 cache 列，复现原缺陷）→ 上 842 | **4 个 cache 列** ✓ |
+| down 后 | 视图 cache 列 **0 个**；`cmb` 的 2 列**保留**（刻意不删）✓ |
+
+### 四、实测推翻了我自己的一个假设（本节最要紧的一条）
+
+落笔前我以为：`cmb.cache_read_price_per_1m` 由迁移 398 建过，所以前提已成立
+（826 自己引用的 `cmb.success_rate` 等列同样没有迁移建，却 applied+verified）。
+落笔前我又核对了一次「谁 ADD COLUMN 了它」——
+**全仓只有 826，而那是 `baseline_cache_*`，建在 `models_canonical` 上**。
+398 确实 `SELECT cmb.cache_read_price_per_1m`，但那是在**重建
+`model_offers` 视图**时 ⇒ 说明当时库里已有这些列（来自受追踪链之前的基线
+schema），**却没有任何迁移负责把它们带进新库**。
+
+⇒ ★★ 「视图引用了某列」**不能**证明「某迁移建了那列」——
+  前者只说明写视图的人假定它在，**恰恰是本缺陷的成因**。
+  这是本仓「否定结论要用正向查证」的正向版本：
+  要证明列存在，得去 `information_schema` / 迁移里找 `ADD COLUMN`，不能靠引用。
+
+⇒ **实测证据**（不是推理）：在只缺这两列的库上直接建视图 ⇒
+  `ERROR: 字段 cmb.cache_read_price_per_1m 不存在`（**42703**，整条部署挂掉）。
+  ⇒ 842 必须**自带** `ADD COLUMN IF NOT EXISTS`，不许依赖「反正别人建过」。
+
+### 五、实测抓到 down 是一条**假回滚**
+
+第一版 down 用 `CREATE OR REPLACE VIEW` 撤列。实跑报
+`错误: 无法从视图中删除列`，而视图的 4 个 cache 列**一个没少** ——
+更糟的是 **psql 不带 `-v ON_ERROR_STOP` 时 rc 仍是 0**，
+也就是它「报成功」却什么都没撤。
+
+⇒ **删列只能 `DROP VIEW IF EXISTS` + `CREATE VIEW`**。
+  （顺带澄清一个我一度误读的机制：psql 对 `CREATE OR REPLACE VIEW`
+  回显的命令标签就是 `CREATE VIEW`，不是它偷偷 DROP 了。）
+
+### 六、判据 6 条（`bg/supplier_view_cache_baseline_test.go`，纯静态）
+
+投影两列 / 倍率四种守卫（基准 NULL、基准 0、供应商 NULL、币种不一致）/
+自带补列 / down 是真回滚 / 去重守卫未被回退 / **量具自证**。
+
+⚠ 第 6 条是必需的：前 5 条里那条「LATERAL LIMIT 1 还在吗」
+**第一版是恒真的**——它用 `strings.Contains(body, "LIMIT 1")` 直接查原文，
+而 **842 的注释里就写着「ORDER BY、LIMIT 1 与 826 逐字一致」** ⇒
+变异「删掉真代码的 LIMIT 1」后判据**照样 PASS**（P3 变异绿）。
+⇒ 修法：断言打在**剥掉注释后**的正文上（复用本包已有的 `stripSQLComments`，
+  同名函数在 `auto_index_refresher_sql_test.go` 还有个更强的加强版）。
+⇒ ★ 这与本轮早先那条定价判据（「判据把自己当成被测对象」）是**同一族**：
+  **判据读到它自己写的那段说明**。两处的处方相同：**断言对象不是注释。**
+
+★ 修的过程中还踩了一次：**我重复定义了 `stripSQLComments`**（本包已有），
+  整包 `go test ./bg/` 只表现为「FAIL … [build failed]」——
+  与「判据抓到缺陷」在观测上很像。⇒ 先查已有工具，再决定要不要新写。
+
+### 七、变异（双向，绿灯不算证据）
+
+| 变异 | 手法 | 结果 |
+|------|------|------|
+| P1 | 撤掉 842 的两个 cache 投影列 | **红**（投影判据） |
+| P2 | down 退回 `CREATE OR REPLACE VIEW` | **红**（真回滚判据） |
+| P3 | 删掉真代码里的 `LIMIT 1` | 第一版 **绿（恒真）**；修后 **红** |
+| 还原 | 三次 | 绿；`diff -q` **逐字节一致** |
+
+### 八、门禁读数
+
+- `apply-db-revision-sequence` 契约：842 落地后先红 **3 条**，五点同步补齐后
+  **`contract passed`，rc=0**（19:30）。
+  ⚠ 红的第 3 条文案写「has an installer leg but no upgrade path」——
+    那是**固定文案**，对任何未登记的迁移都这么写；
+    实测 842 当时**既无 embeddata 副本也无 runner 条目**。
+    ⇒ 又一次印证：**门自带措辞是假设，不是结论。**
+- `pre-commit-check`：`PASS=5 FAIL=0 WARN=0 SKIP=2`（19:31）。
+- 本节全部真库读数来自**一次性 PG 17.11**（用完已停库并删除），
+  它验证的是**迁移与视图行为**，不是产品健康。
