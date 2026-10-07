@@ -516,6 +516,24 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 			// outage stale-cache read.
 			kv.removeFromStore(keyHash)
 			kv.removeCache(rawKey)
+			// The predicate above collapses FOUR causes into one ErrNoRows:
+			// unknown key / enabled=false / revoked|disabled / expired. The
+			// 401 they all produce is byte-identical, so nginx and
+			// request_logs cannot tell them apart either — a client whose
+			// key was rotated looked exactly like a client whose key was
+			// revoked. This is that 2026-10-05~07 incident: ~3,200 failing
+			// requests/day with no way to name the credential.
+			//
+			// keyHash is an HMAC-SHA256 under a server-side secret, so the
+			// 16-char prefix is safe to log and is directly queryable:
+			//   SELECT id, status, enabled, expires_at FROM api_keys
+			//    WHERE key_hash LIKE '<prefix>%'
+			// A hit means the key EXISTS and a state column excluded it;
+			// a miss means the client is presenting a credential this
+			// database has never seen. Never log rawKey.
+			slog.Warn("key verify: rejected",
+				"key_hash_prefix", keyHashLogPrefix(keyHash),
+			)
 			return nil, &InvalidKeyError{Message: "Invalid or expired API key"}
 		}
 		return nil, err
@@ -615,6 +633,24 @@ func HashAPIKey(secretKey, rawKey string) string {
 // hashAPIKey is the unexported alias kept for the internal call sites below.
 func hashAPIKey(secretKey, rawKey string) string {
 	return HashAPIKey(secretKey, rawKey)
+}
+
+// keyHashLogPrefix returns the leading 16 hex chars of a stored key hash for
+// rejection logs. The hash is an HMAC-SHA256 under a server-side secret, so the
+// prefix is not reversible and can be matched straight against api_keys.key_hash
+// to tell "this key exists but a state column excluded it" apart from "this
+// database has never seen this credential".
+//
+// It is deliberately NOT the raw key, and deliberately NOT api_keys.key_prefix
+// (that column lives on the row we just failed to match, so it is unavailable
+// here). Degenerate inputs collapse to a fixed marker rather than leaking
+// length, so an empty hash cannot be mistaken for a real one.
+func keyHashLogPrefix(keyHash string) string {
+	const want = 16
+	if len(keyHash) < want {
+		return "<short>"
+	}
+	return keyHash[:want]
 }
 
 func (kv *KeyVerifier) getCache(key string) *KeyInfo {

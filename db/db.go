@@ -3804,6 +3804,10 @@ const routingAnalyticsMVSQL = `
 		  origin_stage::text AS origin_stage,
 		  auto_profile::text AS auto_profile
 		FROM request_logs_hot
+		-- ⚠️ 本视图里两处 request_id::text 都是 **text 列 → text 的空操作**
+		--   （request_logs* 的 request_id 本来就是 text），与 uuid 列的 ::text 不是一回事。
+		--   不要为了「统一」把它们改成 replace(...,'-','')，那是在制造噪音。
+		--   ⚠️ 注释里**不许出现反引号**：本段 SQL 在 Go raw string 里，反引号会提前终止字符串。
 		UNION ALL
 		SELECT
 		  ts,

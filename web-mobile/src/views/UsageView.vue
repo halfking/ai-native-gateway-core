@@ -346,12 +346,29 @@ async function onCostDimChange(d: CostTrendDimension): Promise<void> {
 
 .usage__grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* ★ 列数用 auto-fit，让「装得下几列就排几列」。
+     ⚠️⚠️ **下面这段理由已被 §4.6.72 / §4.6.74 推翻，保留原文只为对照，不要再当依据：**
+     原写「font_scale 改的是**根字号**，改不动 min-width:600px 的视口像素 ⇒ 列数不变；
+     同时外层 padding 用 rem ⇒ 字号越大、可用宽越小（实测 390 视口 358px@1.0× →
+     326px@2.0×）；两个方向叠加 ⇒ 值槽宽随字号**反向缩小**（141px → 89px）」——
+     **三处都不成立**：① font_scale 根本不碰 rem 基数（真机 font_scale=2.0 时
+     `1rem` 仍 16px、`9em` 仍 126px，只有渲染字号翻倍）；② padding 是 rem，
+     所以它**一点也不缩**，可用宽不变（真机容器宽恒 379.4px、gap 恒 8px）；
+     ③ 因此也不存在「槽宽反向缩小」。
+     真实机制：字放大 2×、版式一点没放宽 ⇒ 值槽恒 152px 而数字需 221~238px。
+     `auto-fit` 在这个机制下**并不能**让列数下降（rem 轨道下限恒定 ⇒ 恒 2 列），
+     它只是无害的兜底；真正解决截断的是 `.stat-card__value` 允许换行（§4.6.74）。
+     ⚠️ min 用 `min(9rem, 100%)`：`min()` 兜底防止窄视口下轨道下限撑破容器。
+     ⚠️⚠️ **只用在 compact 这一支。** `@media (min-width: 600px)` 里的列数
+     **必须保持写死**：第一版把它换成 auto-fit(7rem)，宽视口从 4 列变 6 列、
+     卡片变窄 ⇒ 7 个 ≥600px 视口**新增**量值截断（§4.6.70 第四节）。 */
+  grid-template-columns: repeat(auto-fit, minmax(min(9rem, 100%), 1fr));
   gap: var(--app-space-2);
 }
 
 @media (min-width: 600px) {
   .usage__grid {
+    /* ⚠️ 保持写死 3 列，不要换成 auto-fit（见 HomeView 同处注释） */
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }

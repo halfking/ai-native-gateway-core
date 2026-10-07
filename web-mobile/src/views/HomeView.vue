@@ -248,12 +248,29 @@ const creditsMissing = computed(() => !!summary.value?.credits_missing_view)
 
 .home__grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* ★ 列数用 auto-fit，让「装得下几列就排几列」。
+     ⚠️⚠️ **下面这段理由已被 §4.6.72 / §4.6.74 推翻，保留原文只为对照，不要再当依据：**
+     原写「font_scale 改的是**根字号**，改不动 min-width:600px 的视口像素 ⇒ 列数不变；
+     同时外层 padding 用 rem ⇒ 字号越大、可用宽越小（实测 390 视口 358px@1.0× →
+     326px@2.0×）；两个方向叠加 ⇒ 值槽宽随字号**反向缩小**（141px → 89px）」——
+     **三处都不成立**：① font_scale 根本不碰 rem 基数（真机 font_scale=2.0 时
+     `1rem` 仍 16px、`9em` 仍 126px，只有渲染字号翻倍）；② padding 是 rem，
+     所以它**一点也不缩**，可用宽不变（真机容器宽恒 379.4px、gap 恒 8px）；
+     ③ 因此也不存在「槽宽反向缩小」。
+     真实机制：字放大 2×、版式一点没放宽 ⇒ 值槽恒 152px 而数字需 221~238px。
+     `auto-fit` 在这个机制下**并不能**让列数下降（rem 轨道下限恒定 ⇒ 恒 2 列），
+     它只是无害的兜底；真正解决截断的是 `.stat-card__value` 允许换行（§4.6.74）。
+     ⚠️ min 用 `min(9rem, 100%)`：`min()` 兜底防止窄视口下轨道下限撑破容器。
+     ⚠️⚠️ **只用在 compact 这一支。** `@media (min-width: 600px)` 里的列数
+     **必须保持写死**：第一版把它换成 auto-fit(7rem)，宽视口从 4 列变 6 列、
+     卡片变窄 ⇒ 7 个 ≥600px 视口**新增**量值截断（§4.6.70 第四节）。 */
+  grid-template-columns: repeat(auto-fit, minmax(min(9rem, 100%), 1fr));
   gap: var(--app-space-2);
 }
 
 @media (min-width: 600px) {
   .home__grid {
+    /* ⚠️ 保持写死 4 列，不要换成 auto-fit（见上方注释里的实测回归） */
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
@@ -285,6 +302,32 @@ const creditsMissing = computed(() => !!summary.value?.credits_missing_view)
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* ★ 省略号落在**行首**，把**末尾**的区分字符留住（§4.6.76 / D-IDENT-01）。
+     为什么：`font_scale` 只放大渲染字号（rem/% 都不缩放，§4.6.72/§4.6.74）
+     ⇒ 名称列宽恒 131px，而 2.0× 下 `claude-opus-5-5` 要 199px。
+     顺截断会把**末尾**吃掉，而末尾恰恰是版本号：
+       修前：「claude-opus-5-5」与「claude-opus-5」**都显示为「claude-opus…」**
+             ⇒ 两个模型在同一个列表里渲染成同一串，用户无法区分。
+     `direction: rtl` 让溢出边变成行首 ⇒ 变成「…e-opus-5-5」/「…ude-opus-5」，可区分。
+
+     ⚠️⚠️ **`text-align: left` 不是锦上添花，是必需的**：
+       `direction: rtl` 会把默认对齐翻成行尾 ⇒ 未截断的短名字整体**右移**。
+       实测 100% 字号下首个字符距元素左沿 0px → 31.6 / 46 / 86.1px
+       ⇒ 那是对**所有正常字号用户**可见的版式回归。写上 `text-align: left` 后回到 0px。
+       ★ 判据：只看 `direction: rtl` 会得到「基线也变了」的结论；
+         必须同时量**首个字符距元素左沿的像素**，否则量不到这条。
+
+     为什么不用别的办法（都实测过）：
+       · 加宽 38%→52%：2.0× 可区分，但**正常字号下进度条 146→98px**（-33%），
+         为了大字号的问题牺牲每一屏的条形长度；
+       · 允许换行：2.0× 可区分且基线不变，但**行高 47→82px**（+75%），
+         条形列表行高不齐；本列是「名称 + 进度条」的一行，行高是要保的节奏。
+
+     ⚠️ 适用前提：模型名是 ASCII 字母数字 + `-`/`.`/`_`/`:`。
+     若将来出现含 RTL 文字、或**首尾是中性标点**的名字，bidi 可能把边缘字符挪位，
+     需重新评估（`start`/`end` 这类中性字符在 rtl 下是会被重排的）。 */
+  direction: rtl;
+  text-align: left;
 }
 
 .home__bar-track {

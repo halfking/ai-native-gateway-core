@@ -4,6 +4,7 @@
 # Usage:
 #   ./verify.sh                 # backend gate + govulncheck
 #   ./verify.sh --web            # backend gate + frontend typecheck/build
+#                                # (CHROME_BIN 已设置时额外跑 web-mobile layout-audit/settle 正控)
 #   ./verify.sh --skip-govulncheck  # diagnostic only; never use as release evidence
 
 set -euo pipefail
@@ -88,8 +89,19 @@ if [[ "$RUN_WEB" == true ]]; then
   pm_install web-mobile
   echo "[verify] web-mobile unit gates (contrast/token ratchets + view regressions)"
   pm_run test web-mobile
-  echo "[verify] web-mobile static-gate selftests (node-only; layout-audit selftest 依 Chrome,保持手动)"
+  echo "[verify] web-mobile static-gate selftests (node-only)"
   pm_run gate:selftest web-mobile
+  # R50-A2 遗留 #3 收口：layout-audit / settle 两条正控的判据跑在真实浏览器里，
+  # node-only 门代替不了。CI runner 装 Chrome 后注入 CHROME_BIN 即自动升级为必过门；
+  # 未注入时显式跳过并说明——不静默、也不假装跑过。
+  if [[ -n "${CHROME_BIN:-}" ]]; then
+    echo "[verify] web-mobile layout-audit positive control (Chrome: $CHROME_BIN)"
+    pm_run audit:selftest web-mobile
+    echo "[verify] web-mobile settle positive control (Chrome: $CHROME_BIN)"
+    pm_run audit:settle web-mobile
+  else
+    echo "[verify] SKIP web-mobile layout-audit/settle positive controls (CHROME_BIN 未设置; runner 安装 Chrome 并导出 CHROME_BIN 后自动接入)"
+  fi
 fi
 
 if rg -n '^(<<<<<<<|>>>>>>>)' --glob '!vendor/**' --glob '!web/node_modules/**' .; then

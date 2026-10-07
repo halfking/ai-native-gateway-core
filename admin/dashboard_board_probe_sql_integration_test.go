@@ -165,7 +165,10 @@ func TestDashboardBoardSummaryExecutesOnRealDatabase(t *testing.T) {
 	t.Run("fallback-summary", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
-		summary := h.fallbackBoardSummary(ctx, "", tr)
+		summary, err := h.fallbackBoardSummary(ctx, "", tr)
+		if err != nil {
+			t.Fatalf("fallbackBoardSummary: %v", err)
+		}
 		total, _ := summary["total_requests"].(int64)
 		rate, _ := summary["success_rate"].(float64)
 		t.Logf("fallback: total_requests=%d success_rate=%.4f", total, rate)
@@ -191,7 +194,10 @@ func TestDashboardBoardSummaryExecutesOnRealDatabase(t *testing.T) {
 	t.Run("board-credits-excluding-probes", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
-		credits := h.queryBoardCreditsExcludingProbes(ctx, "", tr)
+		credits, degraded := h.queryBoardCreditsExcludingProbes(ctx, "", tr)
+		if degraded != "" {
+			t.Logf("probe-excluded credits degraded view note: %s", degraded)
+		}
 		t.Logf("probe-excluded credits (1d): %d", credits)
 	})
 }
