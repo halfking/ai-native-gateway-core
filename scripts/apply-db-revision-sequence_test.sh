@@ -49,26 +49,36 @@ gate_report() {
 # ═══════════════════════════════════════════════════════════════════════
 #
 # ① **扫描腿**（部署时）
-#    scripts/deploy-lib/db-changelog.sh 的 `_deploy_pending_startup_migrations`：
+#    ⚠⚠ 它的代码**不在本仓库里**：`scripts/deploy-lib` 是**软链**，指向仓外
+#       workspace SSOT `ai-native-tools/deploy-lib`（commit 722e9020f 的治理决定，
+#       未跟踪、非 gitignore）。**换机器或在 CI runner 上这个路径不存在。**
+#       ⇒ 下面这个路径是**本机 workspace 的状态**，不是本仓能自证的事实。
+#       引用它之前先 `git ls-files scripts/deploy-lib/`（会返回空）。
+#
+#    本机可达时的实际逻辑（scripts/deploy-lib/db-changelog.sh 的
+#    `_deploy_pending_startup_migrations`）：
 #      for f in sql/migrations/startup/[0-9]*.sql; do
 #        跳过 *.down.sql / *.skip / *.bak.skip / 头 15 行含 SUPERSEDED|DEPRECATED
 #        if (( ver >= ${DB_LEDGER_RECONCILE_FROM:-412} )) 且远端 schema_migrations
 #           没有该 version ⇒ 投递
 #      done
 #    投递后由同文件 `:518` 写 `schema_migrations` + `llm_gateway_migration_checksums`
-#    （advisory lock + NOT EXISTS 幂等）。调用链（2026-10-07 查实）：
+#    （advisory lock + NOT EXISTS 幂等）。调用链（本机查实）：
 #      deploy-154.sh → deploy-seamless.sh:68 `source deploy-lib/db-changelog.sh`
-#    ⇒ **在 154 生产上，投递迁移的只有扫描腿这一条。**
 #
 # ② **通道腿**（本门要求的那条）
-#    scripts/apply-db-revision-sequence.sh 的 `files=(...)` 数组，
+#    scripts/apply-db-revision-sequence.sh 的 `files=(...)` 数组，**在本仓内**，
 #    记账表是 **`public.gateway_db_revision_sequences`**（按文件内容 sha256，
 #    内容变了但编号不变时会重放）。
 #    已确认的调用方只有 `scripts/deploy-local-sys.sh`。
 #    `scripts/deploy-252-schema-upgrade.sh` 里也调它，但**全仓穷尽 grep 后没有
 #    任何调用方**（2026-10-07 核过 scripts/deploy/installer/.github/.githooks/
 #    Makefile/根目录 *.sh，命中的只有一份历史审计文档与 .codegraph 索引库），
-#    ⇒ 通道腿在 154 生产上**不由它**投递。
+#    ⇒ 通道腿不由它投递。
+#
+# ★ 因此本仓能自证的只有一句：**通道腿在本仓内，且有调用方（deploy-local-sys.sh）**。
+#   「154 生产上谁投递迁移」依赖仓外 SSOT（见上），**本仓无法回答** ——
+#   需要那个结论时请去 workspace SSOT 查，不要引用本文件当依据。
 #
 # ── 两腿互不知情，各记一张表 ─────────────────────────────────────────
 # `deploy-lib` 里 grep 不到 apply-db-revision-sequence；通道脚本里也读不到
