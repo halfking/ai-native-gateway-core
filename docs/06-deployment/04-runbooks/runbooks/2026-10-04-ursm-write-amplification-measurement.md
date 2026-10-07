@@ -12518,6 +12518,68 @@ SELECT id, status, enabled, expires_at FROM api_keys WHERE key_hash LIKE '<prefi
 门 3 条 + 变异 3/3 有牙（M1 删日志 / M2 改记明文 / M3 helper 返回常量，三条全转红）。
 **上线需用户明确授权**（改的是鉴权热路径）。
 
+### §10.106.25 `MAX(turn_no)` 的 26.6 小时**不是执行成本，是规划成本**；真正的杠杆是不碰分区父表
+
+§10.106.16 把 `MAX(turn_no)`（26.6 小时 / 814,958 次 / 均 117 ms）排在查询侧第二。
+本节把它拆开，**结论与直觉相反**。
+
+**一、生产累计量（pg_stat_statements，本库）**
+
+```
+SELECT COALESCE(MAX(turn_no), $1) + $2 FROM public.session_turns_with_current_month …
+total_exec_time = 95,658,573 ms（26.6 h）   calls = 814,958   plans = 0
+⇒ 均 117 ms/次，而 plans = 0 ⇒ 每次调用都在重新解析规划
+```
+
+**二、执行其实只要约 1 毫秒**（同机实测，`EXPLAIN (ANALYZE)`）
+
+| 形态 | Planning | Execution |
+|---|---|---|
+| 走视图 `session_turns_with_current_month` | **44.4 ms** | **1.687 ms** |
+| 同上（第二次，`PREPARE` 之后） | **17.3 ms** | 0.773 ms |
+| 直查父表 `session_turns` | 137.1 ms | 0.506 ms |
+
+⇒ ★★ **规划是执行的 22~80 倍。** 且 **`PREPARE` 救不了**：
+第二次 `EXECUTE` 仍有 17.3 ms 规划（`plan_cache_mode=auto` 下仍会按参数重估），
+所以「上预编译语句」这条路**不成立**。
+
+⇒ 「全分区 Append」这个描述本身没错（计划里确实有 6 个 `Index Only Scan`、
+每个 `Heap Fetches: 0`），但它**不是执行慢的原因**——
+`Limit 1` + `Merge Append (turn_no DESC)` 让执行早早短路，只花 33 个 buffer。
+
+**三、贵的到底是哪一块**（拆分实测）
+
+| 查询形态 | Planning | Execution |
+|---|---|---|
+| A. 只查 `session_turns_hot`（单表 + 索引） | **4.9 ms** | 0.363 ms |
+| B. 只查 `session_turns`（6 分区 Append） | **21.4 ms** | 0.496 ms |
+| 现状：走视图（A ∪ B，带反连接） | 17.3~55 ms | 0.77~1.85 ms |
+
+⇒ ⚠️ **拆成两条简单查询不是解法**：B 单独就要 21.4 ms，与整条视图同量级。
+⇒ ★ **真正的成本来自「规划一个 6 分区 Append」**，而不是来自 union 或反连接。
+⇒ ⇒ **唯一有量级的杠杆是：热路径上不要碰分区父表。**
+
+**四、由此得到的优化方向（未实施）**
+
+写 turn 的时刻，该 session 的历史 turn **几乎总还在 `session_turns_hot`** ——
+`_hot` 只在 promote 时才被搬走，而 promote 是小时级。
+⇒ 把 `MAX(turn_no)` 改成：**先查 `session_turns_hot`（4.9 ms）**，
+**仅当它没有该 session 的行时**才回退到分区父表。
+规划成本从 17~55 ms 降到约 5 ms（实测值），且保留正确性回退。
+
+★ **不宣称收益**：生产均值 117 ms 高于本机实测的 20~56 ms（差异来自
+生产 session 的 turn 数分布与 IO 争用），所以能省多少**必须在实施后重测**，
+不能拿本机数字直接外推。
+
+★ 更彻底的方案是把 `next_turn_no` 记进 keystore（同一把 advisory 锁保护，
+`turn_no` 单调），热路径**完全不查库** —— 但那是更大的改动，且要处理
+进程重启后的重建，**不建议在没有实测收益前就做**。
+
+**同批记录**：阻塞 advisory 锁的现网读数（18:46，`acquisitions_total=49`，
+`sum=0.173 s` ⇒ 均 **3.53 ms**，48/49 落在 ≤16 ms 桶，最大 <128 ms）。
+与 §10.106.16 引用的历史均 99.7 ms **差约 30 倍** ⇒
+**那 83.9 小时是累计历史量，当前流量下不构成瓶颈**，三条改法继续不动。
+
 ---
 
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」
