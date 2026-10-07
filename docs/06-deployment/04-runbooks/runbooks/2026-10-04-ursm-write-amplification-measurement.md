@@ -12029,6 +12029,33 @@ SELECT set_config('max_parallel_workers_per_gather', '0', true),
   3. 更彻底：把 `MAX(turn_no)` 换成**原子递增**（`INSERT ... SELECT COALESCE(MAX,0)+1`
      已在做，但读侧仍走视图 Append），从根上不需要锁。
 
+#### ✅ 已补上缺失的仪表（本次唯一实施的改动）
+
+`sessions_v2_write_latency_seconds` 是从 `appendTurnInLockedTx` 顶部起计的，
+而那已经在**拿到 session 锁之后** ⇒ **它把全部排队排除在指标之外**。
+这就是 83.9 小时能安稳躲 26 天的原因：没有任何仪表能看见它。
+
+本次只做**观测**，不动任何并发语义：
+
+| 改动 | 文件 |
+|---|---|
+| 新增 `sessions_v2_session_lock_wait_seconds`（histogram，0.5ms→~4s） | `metrics/sessions_v2_metrics.go` |
+| 新增 `sessions_v2_session_lock_acquisitions_total`（counter） | 同上 |
+| 在 `LockSessionInTx` 里量等锁时长 | `domains/session/v2/turn_writer.go` |
+
+⚠️ **持锁时长没有量**：锁是 xact 级的，释放点在事务边界、不在 `LockSessionInTx` 内，
+要量它得在各调用方的 commit 处包一层。**这是有意留下的缺口，不是遗漏。**
+
+⇒ 真正的修法（收窄锁范围 / 改 `try`+有限重试 / 换原子递增）**需要先有这些读数**，
+   否则改完也不知道有没有把 13% 拿走。本轮只补仪表，不改语义。
+
+★ 顺带更正我自己的一个中间假设：曾怀疑 `session_writer_v2` 会对同一事务
+**重复取锁**（3,027,459 次 vs 814,283 次 turn，差 3.7 倍，像是多取了一次）。
+读代码后发现 `session_writer_v2.go:691` 调的**已经是**不取锁的
+`appendTurnInLockedTx` ⇒ **没有重复取锁**。差值来自不同调用方各自取锁，
+不是同一事务里的第二次。⇒ 与 §10.106.12.1 同一个教训：
+**机制层面的异常读数，要先读代码再下结论，不要先造一个解释。**
+
 ★ 与 §10.53/§10.107 那两把 `try` 锁形成鲜明对比：
   **同一份代码里，`try` 锁「一次都没命中」，而 `blocking` 锁「占了 13%」** ——
   争用管理做反了。
