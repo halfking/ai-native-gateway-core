@@ -221,9 +221,32 @@ bash install.sh version     # what version you have + how to get updates
 |---------|---------|-------|
 | Source build | `bash install.sh --channel source` | `go build` from this tree; needs Go, no registry |
 | Go ecosystem | `go install github.com/kaixuan/llm-gateway-go/installer/cmd/llm-gw-installer@latest` | canonical Go install |
-| npm | `npm install -g @kaixuan/llm-gw-installer` | lowest friction on Windows |
+| npm (from source) | `npm install -g ./npm/llm-gw-installer` | from this source tree — no registry, no Go; needs Node ≥ 18 |
+| npm (registry) | `npm install -g @kaixuan/llm-gw-installer` | pending first publish; until then use the row above |
 | Release binary | `bash install.sh --channel binary` | uses the bundled `llm-gw-installer-<os>-<arch>` |
 | Official one-liner | `bash install.sh --channel maintain` | `curl … \| bash`, always the newest published artifact |
+
+#### Install from source with npm
+
+The npm channel is **source-tree first**: inside a cloned repository it installs
+the in-tree launcher package (`npm/llm-gw-installer`) and never touches the npm
+registry — no Go toolchain required, only Node ≥ 18:
+
+```bash
+cd llm-gateway-go   # the tree you cloned above
+
+# launcher from the in-tree package …
+npm install -g ./npm/llm-gw-installer
+
+# … or let the bootstrap do it (auto-prefers the local package in-tree)
+bash install.sh --channel npm --mode lite
+```
+
+Afterwards `llm-gw-installer install --mode lite|full` runs an installer binary
+already on this machine when there is one — e.g. the output of `bash install.sh
+build`, which lands in `~/llm-gateway/bin/` — and otherwise hands over to the
+official installer one-liner for your platform. `doctor` and `version` are
+answered by the launcher itself, offline, right after `npm i -g`.
 
 Non-interactive (CI / unattended):
 
