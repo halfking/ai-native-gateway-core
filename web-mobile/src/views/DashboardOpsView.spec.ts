@@ -752,3 +752,103 @@ describe('DashboardOpsView 其余段', () => {
     expect(sectionOf(w, 6).findAll('.do__kpi').length).toBe(0)
   })
 })
+
+/**
+ * ① 跨租户暴露（2026-10-08，第一百零四批）。
+ *
+ * ★★★ 这不是一条「措辞」护栏，是**数据可见性**护栏。
+ *
+ * 后端 `operational` 整段的三个子查询**都不按调用方租户过滤**：
+ *   - `model_discovery_runs` 硬编码 `tenant_id = 'default'`（`dashboard_board_aux.go:32`）
+ *   - `credential_health_checks` **连 WHERE 都没有** ⇒ 全租户合计（`:52-56`）
+ *   - `self_check_runs` 只按时间过滤 ⇒ 全租户合计（`:83-89`）
+ * 而注册是 `admin(...)` 档（`admin/handler.go:1068`）⇒ **tenant_admin 够得着**。
+ * ⇒ 多租户部署下，一个非 default 租户的 tenant_admin 会看到别人的 discovery 状态
+ *   与全租户合计的**凭据健康检查次数**、self-check 成功率。
+ *
+ * ⇒ 前端处置：整段只给 `super_admin`，且**非 super_admin 根本不发请求**。
+ *   ★ 两道屏障是独立的：模板 `v-if` 只是不显示，`load()` 里的早退才是不取数 ——
+ *     只做前者，数据仍然会落进内存。
+ *
+ * ⚠️ **这不是把后端修好了**。后端该加 tenant 条件；修好之前任何绕过前端的调用方
+ *   仍然拿得到全租户数据。移动端能做的只是不替它兜底。
+ */
+describe('DashboardOpsView ⑦ operational 段只对 super_admin 可见（跨租户）', () => {
+  it('★★★ tenant_admin 的抽屉里**没有**这一段', async () => {
+    const w = await mountView('tenant_admin')
+    const txt = w.text()
+    // ★ 判别方向：super_admin 看得到的那句标题，tenant_admin 必须看不到。
+    expect(txt).not.toContain('运维面')
+  })
+
+  it('★★★ tenant_admin 时**没有**加载这一段的入口（按钮随整段一起不存在）', async () => {
+    const w = await mountView('tenant_admin')
+    // ★ 这一条替代了原先那条「fetch 一次都没被调用」——
+    //   那条是**恒真**的：按钮都渲染不出来，load('operational') 根本调不到，
+    //   于是无论有没有取数屏障它都绿。实测把它改成**结构性**断言才有牙：
+    //   段数从 9 掉到 8，且被挡的那段标题不出现。
+    const btns = w.findAll('.do__load')
+    expect(btns.length).toBe(8)
+    expect(operationalMock).not.toHaveBeenCalled()
+    // ★ 判别方向：super_admin 恰好 9 个 —— 两侧必须**不等**，
+    //   只断「小于等于 9」的话，把整段删掉也会绿。
+    const su = await mountView('super_admin')
+    expect(su.findAll('.do__load').length).toBe(9)
+  })
+
+  it('★★ admin 档页面不受影响（不得一锅端把整页挡掉）', async () => {
+    const w = await mountView('tenant_admin')
+    const txt = w.text()
+    // ★ 其余七段的租户口径与本段不同，不能连坐。
+    for (const s of ['会话总览', '会话趋势', '会话健康度', '活跃会话', '模块执行统计', '错误统计', '性能', '错误下钻']) {
+      expect(txt).toContain(s)
+    }
+  })
+
+  it('★★ super_admin 仍然看得到这一段（门控方向不得反）', async () => {
+    const w = await mountView('super_admin')
+    expect(w.text()).toContain('运维面')
+  })
+
+  it('★★ 跨租户披露是**常驻**的：加载前就必须在，不等数据到了才出现', async () => {
+    const w = await mountView('super_admin')
+    const sec = sectionOf(w, 7)
+    // ★ 未点击加载（operational 还是 null）时披露已在。
+    //   若把它放进 v-if="operational" 里，就变成「有数据才提示跨租户」——
+    //   而用户正是**因为看到数字**才会误以为那是自己的。
+    expect(sec.text()).toContain('跨租户')
+  })
+
+  it('★★ 披露必须同时说清两件事：default 硬编码 + 全租户合计', async () => {
+    const w = await mountView('super_admin')
+    const txt = sectionOf(w, 7).text()
+    expect(txt).toContain('default')
+    expect(txt).toContain('全租户合计')
+    expect(txt).toContain('不是本租户数据')
+  })
+
+  it('★★ 加载后披露仍在（不得被数据块覆盖）', async () => {
+    operationalMock.mockResolvedValue(OPERATIONAL_NORMAL)
+    const w = await mountView('super_admin')
+    await clickLoad(w, 7)
+    expect(sectionOf(w, 7).text()).toContain('跨租户')
+  })
+
+  it('★★ 加载后仍照常渲染三个跨租户数字（披露不等于隐藏数据）', async () => {
+    operationalMock.mockResolvedValue(OPERATIONAL_NORMAL)
+    const w = await mountView('super_admin')
+    await clickLoad(w, 7)
+    const txt = sectionOf(w, 7).text()
+    // ★ OPERATIONAL_NORMAL 的三个数：探测 12 次 / 自检 24 次 / 成功率 0.98
+    expect(txt).toContain('10 分钟检查数12')
+    expect(txt).toContain('24 小时自检次数24')
+    expect(txt).toContain('0.98')
+  })
+
+  it('★ role 为空（未 hydrate）也按最严处理，不放行', async () => {
+    const w = await mountView('')
+    // ★ 未 hydrate 时读到空角色 ⇒ 看不到这一段。
+    //   判别方向：默认放开会在「角色还没到位」的那一瞬间漏数据。
+    expect(w.text()).not.toContain('运维面')
+  })
+})

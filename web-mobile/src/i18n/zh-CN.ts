@@ -1049,6 +1049,10 @@ export const zhCN = {
     },
     operational: {
       title: '运维面',
+      // ★★★★ 跨租户披露（第一百零四批）：这三个数字**都不是本租户的**。
+      //   discovery 硬编码 tenant_id='default'（aux.go:32）；
+      //   checks_last_10m 与 self_check_runs 连 tenant 条件都没有（:52-56 / :83-89）。
+      crossTenant: '★ 跨租户：发现任务状态固定取 default 租户，探测次数与自检统计是**全租户合计**，不是本租户数据。',
       status: '总体状态',
       // ★★★ 「从未运行过」**不是**降级 —— 后端把 ErrNoRows 也算进 degraded
       //   （aux.go:66 拿原始 err 算，而 ORDER BY ... LIMIT 1 无行就返 ErrNoRows）。
