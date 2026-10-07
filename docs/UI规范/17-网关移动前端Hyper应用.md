@@ -12726,3 +12726,153 @@ GET `/api/credentials/sliding-window?credential_id=X&model=Y&minutes=60&limit=50
 - 变异 **65 条 = 65 条全有牙，0 可证等价**（`/tmp/mut-co94.mjs`，逐条 `RESTORED` 字节比对；
   ★ harness 带**量具阳性对照**，开跑前先注入必然打红的改动验证解析器，抓到 30 条红才开跑）。
 - 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6144 条（159 文件）** rc=0。
+
+## 11.131 附件存储目录迁移进度（第九十五批，2026-10-08）
+
+GET `/api/admin/storage/migration-state`
+
+- **注册**：`mux.HandleFunc` 直挂在 `admin/handler.go:1111`
+  `mux.HandleFunc("/api/admin/storage/migration-state", admin(h.handleMigrationState))`
+  ⇒ ★★ **admin 档**（`h.admin` = `AdminMiddleware`，`handler.go:880`）⇒ tenant_admin 可用
+  ⇒ ★★★ **与批 93 的 `storage/config`（`:1108`，**superAdmin** 档）同前缀、
+  相邻两行、两种档位** ⇒ 再次印证「不能按前缀推权限」。
+- **实现**：`admin/storage_migration.go:401-421`（handler）· `:425-427`（分发入口）
+  · `:99-112`（`getMigration`）· `:48-64`（`migrationRun`）· `:40-45`（状态枚举）。
+- **桌面调用方**：`web/src/api/tuning.ts:838-840` —— 直接强转，不做校验。
+- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+- **上游**：`PUT /api/admin/storage/config` 改附件目录后触发迁移，并在响应里附
+  `migration_run_id`（`storage_config.go:344-347`，`:349` 用完即清空）引导前端来轮询本端点。
+- **移动端**：批 93 的 `storageAndLogConfig.ts` 只在**注释**里提到过这条路径（对比档位），
+  精确串命中 1 处且是注释 ⇒ 本族**无既有实现**。
+
+### 本族最要紧的十一件事
+
+1. ★★★★★ **顶层是「2 键、两个值都可为裸 `null`」的裸对象**（`:409-412`）：
+   ```go
+   resp := map[string]any{ "running": nil, "latest": nil }
+   if run != nil { if run.Status == migrationRunning { resp["running"] = run } else { resp["latest"] = run } }
+   ```
+   ⇒ ⇒ **第四种顶层形状**：不是 envelope、不是裸数组、也不是「单主键恒在但值为 null」，
+     而是**两个并列槽位、键恒在、值二选一被填**。
+   ⇒ ★★ Go 的 `encoding/json` 序列化 map **按键名排序** ⇒ 线上键序恒为 `latest` 在前。
+2. ★★★★★ **「至多一个槽位非 null」是构造保证，不是数据属性** ——
+   `getMigration()`（`:99-112`）**只返回一个** run（`running` 优先于 `latest`，返回值拷贝）
+   ⇒ ⇒ 「两槽位同时非 null」在真后端上**不可达** ⇒ **不提供判据**。
+3. ★★★★★ **`status` 枚举声明 4 个值，但 `idle` 是死值**：
+   `migrationIdle migrationStatus = "idle"`（`:41`）——**全仓仅此一处，无任何赋值点**。
+   `startStorageMigration` 只会建 `migrationRunning`（`:133`），
+   `finishMigration` 只会写 `succeeded`/`failed` ⇒ ⇒ **可达取值只有 3 个**。
+   ⇒ ★★★ **桌面 `MigrationStatus`（`tuning.ts:813`）把 `idle` 列成了成员** ——
+     照它写的客户端会为一条**永不出现的分支**写代码。
+   ⇒ 本模块 `MIGRATION_STATUSES` 只列 3 个；**但不提供「status ∈ 枚举」判据**
+     （Go 常量封闭域 ⇒ 恒真判据，按 co93 纪律删除，契约由注释承担）。
+4. ★★★★★ **`migrationRun` 是 15 键 = 11 恒在 + 4 带 `omitempty`**
+   （脚本按 `` json:"…" `` 扫出，**不是手数**）：
+   - 恒在：`run_id` `status` `from_dir` `to_dir` `started_at` `files_total`
+     `files_copied` `bytes_total` `bytes_copied` `files_deleted` `old_dir_purged`
+   - `omitempty`：`finished_at` `heartbeat_at` `errors` `message`
+   ⇒ ★ 本批是**桌面类型没写错**的少数情况（`tuning.ts:815-831` 15 个键全对），
+     与批 94（桌面少声明 `limit` 与 `total_returned`）对照。
+5. ★★★★★ **`failed` 的 run 可能根本没有 `errors` 键** ——
+   `run.Errors = append(…)` 只发生在 4 处：panic（`:160`）、`filepath.Rel` 失败（`:219`）、
+   复制失败（`:226`）、删旧目录失败（`:274`）。
+   而 8 条 `finishMigration(run, migrationFailed, …)` 分支（`:169 :179 :189 :213 :229
+   :248 :257 :265`）**只写 `Message`、从不动 `Errors`** ⇒ ⇒
+   **「收集文件失败 / 校验失败 / 切换 BaseDir 失败 / 空间不足 / 超时」这些失败，
+   唯一的细节只在 `message` 里。**
+   ⇒ ⇒ 客户端**不能**用「`errors` 为空」推断「没有失败」⇒ 由此有 `migrationRunHasErrorDetail`。
+6. ★★★★ **`message` 是自由文本，共 14 种形态**（8 处 `run.Message = …` 加 `finishMigration`
+   的 8 个实参），中文前缀 + 英文错误串拼接（如 `"收集文件失败: " + err.Error()`）
+   ⇒ ⇒ **没有稳定错误码，客户端不得对 `message` 做 `startsWith` 判定。**
+7. ★★★★ **`files_deleted` 赋的是 `run.FilesTotal`，不是实际删除数**（`:277`），
+   且 `purged` 为 false 时**保持 0**（从不赋值）⇒ ⇒
+   「`files_deleted ∈ {0, files_total}`」「`files_deleted > 0` ⟹ `old_dir_purged === true`」
+   **都是恒真的** ⇒ 写进注释，不做判据。
+   ⇒ ★★★ **反过来是错的**：空目录 + 迁移期间有新写入 ⇒ 跳过删除（`:193-196`）
+   ⇒ **`files_deleted === 0`、`files_total === 0`、`old_dir_purged === false`**
+   ⇒ ★★★ **`files_deleted === files_total` 推不出「已清理」**（`0 === 0` 成立），
+     权威答案永远是 `old_dir_purged` ⇒ `migrationPurgeLooksComplete` 是**显式标注的弱信号**。
+8. ★★★★ **`files_copied` 是「已处理到第几个」不是「成功复制了几个」** ——
+   `run.FilesCopied = i + 1`（`:239`）在复制成功**之后**执行，但 `i` 遍历的是 `files`
+   （含此前失败的条目）⇒ ⇒ 某文件失败时 `FilesCopied` **不前进**，下一个成功时**一步跨过**。
+   ⇒ ⇒ `files_copied ≤ files_total` 恒真（不提供判据）；
+     **客户端不能把 `files_total - files_copied` 当「还剩几个失败」**。
+9. ★★★★ **空目录分支是一个「成功但零进度」的可达形状**（`:182-201`）：
+   `FilesTotal = 0`、`BytesTotal = 0`、`FilesCopied` **从未赋值**（保持 0），
+   终态仍是 `succeeded`（`:200`）⇒ ⇒
+   **`status === 'succeeded' && files_total === 0 && files_copied === 0` 是合法的成功态**
+   ⇒ ⇒ 进度比**必须**处理除零（`total === 0` 给 0，**不是 NaN/Infinity**）。
+10. ★★★ **`heartbeat_at` 恒在**：`startStorageMigration:137` 建 run 时就赋了 `&hb`，
+    复制循环 `:241` 只是更新 ⇒ `'heartbeat_at' in run` 恒真，不提供判据。
+    ⇒ ★★ 相应地**心跳停更在本响应里查不出来** —— 迁移 goroutine 卡死时 `status` 仍是
+      `running`、计数不再变，**没有「卡住」信号**。
+11. ★★★ **v1 冻结告示对本端点是噪音**：`writeJSON` 是中央出口、无条件调
+    `applyV1FreezeNotice`（`handler.go:1483`），而告示判据是 `request_logs` 写门
+    （`v1_freeze_notice.go:228-229`）⇒ ⇒ 响应头 `X-LLM-Gateway-V1-Data-Frozen` 可能出现，
+    但**迁移状态与 request_logs 无关** ⇒ ⇒
+    **移动端不要在本页挂「v1 数据已停更」横幅**（告示在**响应头**里，不在 body）。
+
+**校验边界**：顶层 2 键、每个槽位「null 或 run 对象」、`migrationRun` 的 11 恒在键与类型、
+4 个 `omitempty` 键的「存在才校验」两个分支；为 (1)(2)(3)(7)(9) 各提供判据。
+★ **不校验** `status` 取值域（Go 常量封闭域 ⇒ 恒真）；★ **不校验** `message` 取值（同 (6)）；
+★ **不校验** `errors` 是否存在（`failed` 也可以没有，见 (5)）；
+★ **不提供**「两槽位不同时非 null」（恒真，见 (2)）、
+`files_copied ≤ files_total`（恒真，见 (8)）、
+`files_deleted > 0 ⟹ old_dir_purged`（恒真，见 (7)）三条判据。
+
+### 变异验证暴露的五件事（67 → 65 条全有牙）
+
+首跑 67 条 = **64 有牙 + 3 白绿**，三条白绿归因**两类**：
+
+1. ★★★★ **样本选歪：区分格是「falsy 但不是 null」那一格**（#25）。
+   把错误消息里的 `v === null` 换成 `!v`：两者在 `null` 与 `42` 上**完全一致**，
+   区分格只在 `0` / `''` / `false` / `undefined` ⇒ 我原先的样本压根没覆盖到。
+   ⇒ ★★★ 补了「顶层是 0 时报 `number`」「顶层是空串时报 `string`」两条专格用例。
+   ⇒ ★ 这是「`in` 与真值判断的分界只在 falsy 但不是 null 那一格」在**错误消息侧**的同族，
+     也是「**有牙也要验可达性**」的镜像：这里不是判据无牙，是**样本没站在区分格上**。
+2. ★★★★★ **可证等价 ⇒ 删变异**（#51）。`s.running ?? s.latest` 改成 `s.latest ?? s.running`：
+   区分格是「两槽位同时非 null」，而 `getMigration()` **只返回一个**
+   ⇒ **该格不可达** ⇒ 两种实现对所有可达输入完全一致。
+   ⇒ ★ 补用例就得**造假夹具**（违反「夹具必须可达」）⇒ 删变异才是正解。
+3. ★★★★★ **可证等价 ⇒ 删变异 + 连带删掉两条恒真用例**（#62）。
+   把 `migrationPurgeLooksComplete` 改成只看 `files_deleted > 0`：
+   区分格是「`files_deleted > 0` 但 `old_dir_purged === false`」——
+   而 `run.FilesDeleted = run.FilesTotal`（`:277`）与 `run.OldDirPurged = true`（`:276`）
+   在**同一个 `else if purged` 分支**里赋值 ⇒ ⇒ **蕴含关系由分支结构保证，该格不可达**。
+   ⇒ ★★★ **本仓第三例可证等价**，并由此得到一条新的通用判别式：
+     **两个字段若在同一个分支里一起被赋值，它们之间的蕴含关系由结构决定；
+     只改其中一个的变异必然可证等价 ⇒ 删变异，不补夹具。**
+     （与批 91 `prev.key > cur.key`→`>=`、批 92 `?`→`?&`、
+     批 94 `classified === failed`→`>=` 并列。）
+   ⇒ ★★ **连带效应**：锚在它上面的两条用例（`复制中 files_deleted 为 0 时弱信号为 false`、
+     `非空目录未清理时 files_deleted 保持 0`）本身也是**恒真用例**（两种实现返回相同）
+     ⇒ 一并删掉，否则它们会持续给人「这条有牙」的错觉。
+4. ★★★ **我自己的夹具自相矛盾，被一条用例抓住**。
+   `purgedRun()` 声称「1200 个文件全部复制完成且已清理」，
+   却把 `bytes_copied` 留在中途的 `3100000000`（占总量 38%）
+   ⇒ 被「字节全部复制完成时进度是 1」打红。
+   ⇒ ★★ 判别式：**夹具的派生字段之间必须互锁** —— 一个自相矛盾的夹具会让
+     「全部完成」这类用例的锚点含义漂移，而它自己看起来完全合理。
+   ⇒ 修法：全部复制成功 ⇒ `bytes_copied === bytes_total`，`message` 里的
+     `humanBytes` 量级同步改成 `7.6 GiB`。
+5. ★★ **类型门在本批抓到两处**（都不是「能不能编译」层面的）：
+   - `delete verifyFailed['errors']` 报 TS7053 —— 对象字面量**展开后 TS 只保留写出的
+     那几个键的精确类型**，索引签名没了 ⇒ 显式标注 `Record<string, unknown>`。
+   - 未使用的 `MigrationStateResponse` 导入报 TS6133 ⇒ 与其删掉，不如**用它写一条
+     类型级判据**（两个槽位必须是 `MigrationRun | null` 而不是 `MigrationRun`）——
+     写成非空类型会让 `vue-tsc` 直接报错，**那就是它的牙**。
+   ⇒ ★ 再次印证：**类型门也是「表达式解析歧义」与「漏渲染未使用变量」的探测器**，
+     而 `vue-tsc` 通过仍**不等于**构建通过（本批两者都单独跑了）。
+
+★ 附带：批 93 新增的**量具阳性对照**在本批继续生效 —— 开跑前先注入必然打红的改动，
+解析器抓到 **75 条红**才开跑（若按批 93 前的旧 harness，这批的读数不可信）。
+
+### 验证
+
+- 用例 **88 条全绿**（`web-mobile/src/api/storageMigrationState.test.ts`）。
+- 变异 **65 条 = 65 条全有牙，0 可证等价**（`/tmp/mut-co95.mjs`，逐条还原后字节比对；
+  ★ harness 带**量具阳性对照**与 `from` 唯一性 + 锚点唯一性双自检）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6232 条（160 文件）** rc=0（较批 94 基线 6144 正好 +88）。
+- **十连跑 10/10 全绿**，每趟条数全程一致 6232（`npm run test:stability -- --runs=10`，
+  日志 `/tmp/co95-stability.log`）。★ 仍未复现 `ComplianceHitsView.spec.ts` /
+  `RoutingOptView.spec.ts` 的历史 flaky —— **没复现不等于已修复**。
