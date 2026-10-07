@@ -11834,3 +11834,135 @@ GET `/api/admin/users/usage-summary` + `/api/admin/users/{id}/stats`
 
 local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
 `web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
+
+## 11.125 调度轨迹快照（第八十九批，2026-10-08）
+
+GET `/api/admin/dispatch/journal/{tenant}/{request_id}`
+
+- **注册**：**本仓第四种注册形态** —— 既不在 `admin/handler.go` 的 mux 清单里，
+  也不在 `cmd/gateway/main.go:7070` 的 requestJourney 直挂清单里，而是**现构造、现挂载**：
+
+  ```go
+  // cmd/gateway/main.go:7074-7075
+  journalSnapshotAPI := admin.NewJournalSnapshotAPI(journalSnapshotStore)
+  journalSnapshotAPI.RegisterRoutes(mux, requestJourneyWrapAdmin)
+  ```
+
+  → `admin/journal_handlers.go:30-35`（内部才 `mux.HandleFunc("/api/admin/dispatch/journal/", wrap(api.ServeHTTP))`）
+  ⇒ ★★★ **只 grep `mux.HandleFunc` 或 `main.go` 的路由清单，两条路都会判成「死端点」。**
+  ⇒ ★ 与批 87 的 echo `Group` 形态同族：**判「端点是否注册」要查的第四处**。
+- **实现**：`admin/journal_handlers.go`（126 行）+ `domains/dispatch/journal_consumer.go`
+  + `domains/dispatch/journal.go`（条目结构）+ `domains/dispatch/pipeline.go:1852-1893`（发射）。
+- **桌面调用方**：`web/src/api/dispatchJournal.ts` —— ★ **它不做任何校验**，
+  直接 `req<DispatchJournalSnapshot>` 强转 ⇒ 全部校验由本模块补上。
+- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+
+### 本族最要紧的十五件事
+
+1. ★★★★★ **`not found` 有五种成因，返回的是完全相同的响应**：
+   `:55` 无租户上下文 / `:61` 角色不合法 / `:65` 非特权跨租户 / `:77` 快照不存在
+   / `:84` 快照与路径段不符（另有 `journal_consumer.go:99`、`:102` 两条内部闸）
+   ⇒ ★★★ 客户端**不能**用 404 判「快照不存在」，也**不能**用 404 判权限。
+2. ★★★★★ **中间件不做角色校验** —— `AdminMiddleware`（`admin/auth.go:76-130`）
+   只验 JWT 有效性，**不检查 role**，任何有效 JWT 都被放进 handler
+   ⇒ ⇒ **普通用户拿到的也是 404**，本族**根本没有 403 这条路**
+   ⇒ ★ 与批 88（403/404 可区分）正好相反。
+3. ★★★★★ **两种错误体形状并存，取决于「哪一层写的」**：
+   - handler 层 `writeRequestJourneyError`（`request_journey.go:287-291`）：
+     `{"error":{"message":msg,"type":"admin_error"}}`
+   - 中间件层 `writeError`（`handler.go:1494-1498`）：`{"error":{"detail":msg}}`
+     （401 `authentication required`、403 走这条）
+   ⇒ ★★ **同一个 admin 包里就有两种，键名互斥** ⇒ 错误映射必须按（**写出层**）分支。
+   ⇒ ★★ 还有第三种 `writeErrorWithCode`（`:1501`，带 `code`），本族未用到
+   ⇒ ⇒ **本仓「错误体按包分支」这条纪律要升级成「按写出层分支」。**
+4. ★★★★★ **快照是进程内 LRU 内存缓冲，不是持久化存储**：
+   `cmd/gateway/main.go:1080` `dispatch.NewInMemoryJournalStore(10000)`
+   - 进程重启 ⇒ 全没 ⇒ 404；容量 10000，满了淘汰最久未用的 ⇒ 404
+   - ★★ **`ConsumeSnapshot` 会 `moveToFrontLocked`（`journal_consumer.go:109`）⇒ 读操作有副作用**：
+     读一次就把这条快照「续命」。
+   - ★★ 而 `journal_consumer.go:16-17` 的注释自称「for testing and demonstration purposes /
+     生产实现应当用持久化存储」，**实际却接在生产路径上** ⇒ **注释与接线不符**。
+5. ★★★★★ **截断是两段式的，而只有第二段被报告**：
+   - 第一段（环形，`journal.go:137-140`）：每请求 ring 上限 `journalCapacity = 128`，
+     满了从**头部**丢最旧的 ⇒ ★★★ **这个丢弃没有任何标记**
+   - 第二段（快照，`pipeline.go:1874-1879`）：`len(entries) > maxJournalSnapshotEvents(50)`
+     ⇒ 保留**最近** 50 条，`truncated = true`，`truncated_count = 原长度 - 50`
+   ⇒ ★★★ **「`truncated === false`」不等于「轨迹完整」** —— 这是本族最锋利的「二义」。
+6. ★★★★ **`truncated === true` ⇒ `entries.length === 50`**（精确切片）
+   ⇒ 等价地 **`truncated_count === 0` ⟺ `!truncated`** ⇒ 两条都可自验。
+7. ★★★★ **末尾条目恒为终态** —— `emitJournalSnapshot` 只在 `complete()` 的终态路径被调
+   （`pipeline.go:1784`），而终态条目由 `complete()` 写、「no journal entry follows a terminal one」
+   （`notice.go:63-64`）⇒ ★ 截断只砍**头部** ⇒ 终态条目恒在最末 ⇒ 客户端**可自验**。
+8. ★★★★ **`snapshot_version === 最后一条的 seq`** ——
+   `SnapshotVersion = int64(qr.journalSeq)`（`pipeline.go:1880`），
+   而 `journalSeq` 的最后一次自增就发生在写终态条目时（`journal.go:118-119`）⇒ 又一条强不变量。
+9. ★★★★ **`seq` 首条为 1 且相邻差 1** —— `qr.journalSeq++; entry.Seq = qr.journalSeq`
+   ⇒ 两段截断都只砍**头部窗口**，保留下来的窗口内部**不会出现空洞** ⇒ 可自验。
+10. ★★★★ **`counts` 是累计快照、只增不减** —— `recordDecision` 先折叠再 `entry.Counts = qr.Counts`
+    （`journal.go:118-135`）⇒ 逐条非递减。
+    ★ 语义注释自陈：计数是**分类视图**，权威的尝试上限是 `AttemptCount`（`journal.go:60-62`），
+    且 **wait 类动作不计入** ⇒ ★★ 因此**刻意不提供**「计数器之和 == 尝试次数」这条判据
+    —— 后端没有承诺这个等式，判它成立需要一个本族**没有暴露**的口径。
+11. ★★★★ **条目 5 个恒在键 + 12 个 `omitempty` 可选键**：
+    恒在 `seq`/`at`/`action`/`attempt`/`counts`；
+    可选 `model`/`credential_id`/`provider_id`/`vendor`/`error_kind`/`http_status`
+    /`from_model`/`to_model`/`from_credential_id`/`to_credential_id`
+    /`from_provider_id`/`to_provider_id`
+    ⇒ ★★★ 12 个都是**值类型 + 无指针** ⇒ ★★ **`0` 与空串会被 `omitempty` 吃掉**
+    ⇒ 「`credential_id` 是 0」与「`credential_id` 不存在」**不可区分**。
+12. ★★★ `counts` 五键**无 `omitempty`**（`journal.go:63-69`）⇒ 恒在、恒为数字。
+13. ★★★★ **权限是「角色 × 路径里的租户」二维的**（`:59-67`）：
+    ```go
+    privileged := auth.Role == "super_admin" || auth.Role == "admin_key"
+    if !privileged && auth.Role != "tenant_admin" { 404 }
+    if !privileged && callerTenant != tenantID     { 404 }
+    ```
+    ⇒ ★★★ `super_admin` 与 `admin_key` **可读任意租户**；`tenant_admin` **只能读自己租户**
+    （租户键取自 JWT，不是 URL）⇒ ⇒ 抽屉席**不设** `requiresRole`。
+14. ★★★ **路径解析：先切分、后解码**（`:97-117`）—— `strings.Split(rest, "/")` 要求
+    **恰好两段且都非空**，随后 `PathUnescape` 再 `TrimSpace`，最后拒掉含 `/` `\` `\x00`
+    的段以及 `.` / `..`
+    ⇒ ★★ 编码过的 `%2F` **不会**穿越路径（切分在解码之前），但会在解码后被拒 ⇒ **400**。
+15. ★★★ **405 检查排在最前**（`:38-42`，并写 `Allow: GET` 头），
+    早于 `consumer == nil` 与路径解析 ⇒ 与批 88（405 在 503 之前）一致。
+
+**校验边界**：解包器校验 6 个恒在键与类型、每个条目的 5 个恒在键、
+`counts` 的 5 个键、以及 17 个 `omitempty` 键**存在时**的类型。
+**刻意不做**三件事：① 不硬拒未知的 `action`（后端 `NextActionKind` 可新增取值，
+硬拒会让客户端在网关升级后直接崩）；② 不提供「快照是否完整」判据（见 5）；
+③ 不提供「`counts` 之和是否等于尝试次数」判据（见 10）。
+
+### 验证
+
+- 用例 **100 条全绿**（`web-mobile/src/api/dispatchJournal.test.ts`）。
+- 变异 **72 条 = 71 有牙 + 1 可证等价**（`/tmp/mut-co89.mjs`，`RESTORED=OK`）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **5716 条（153 文件）** rc=0。
+
+### 变异验证暴露的判据缺陷（72 条 → 首跑 70 有牙，修到 71）
+
+首跑 2 条 STILL_GREEN，归因两类：
+
+1. **★ 锚点选歪 1 条（#20）。** 变异把**第二段**的 `encodeURIComponent` 去掉，
+   而锚点那条只测了**第一段**（`dispatchJournalPath('a/b', 'r')`）⇒ 两段里只钉住了一段。
+   ⇒ 补「含斜杠的 `requestId` 也被编码成 `%2F`」。
+   ⇒ ★ 推论：**对称的两段代码要用两条对称的用例** ——
+     「两段都要编码」「两组键都要校验」这类成对结构，只钉一侧等于没钉。
+2. **★ 可证等价 1 条（#21）。** 把 `` `${DISPATCH_JOURNAL_PATH_PREFIX}` `` 换成
+   **同值**字面量 `/api/admin/dispatch/journal/` ⇒ 值完全相同 ⇒ **行为一字未改**
+   ⇒ 无任何用例能打掉它（也不该有）。
+   ⇒ ★ 这是「`to` 是恒等变形」那一族在本仓的**新实例**：
+     **把常量替换成同值字面量**也是恒等变形，判据层面无解，只能靠阅读发现。
+
+另有一处**写用例时就抓到的自指**（在跑变异之前）：
+
+- ★★★ 四个「逐个都要检查」用例原本写成
+  `for (const key of DISPATCH_JOURNAL_SNAPSHOT_KEYS)` ——
+  **用被测常量造夹具** ⇒ 把某个键从常量里删掉，循环就跟着少跑一次，**仍然全绿**
+  ⇒ 改成**字面量**数组，让「循环逐键」与「常量钉桩」两条用例互为独立守卫
+  ⇒ 与批 88 的「循环里的键必须逐个有类型错误用例」是同一条纪律的**下一格**：
+  **循环体本身也不能来自被测常量。**
+
+### 收尾
+
+local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
+`web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
