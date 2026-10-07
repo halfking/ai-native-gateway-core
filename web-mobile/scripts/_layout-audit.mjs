@@ -260,8 +260,31 @@ const MIN_TAP_H = 48 // 本仓 R1：新增触控控件一律 ≥48 CSS px。与 
     }
   }
   // 顶部固定栏遮挡：首个可交互元素是否被压在 header 下面
+  //
+  // ★★ 这里曾有一个**恒真的假阳性**，2026-10-08 真机横屏才暴露（§4.6.69）：
+  //   1. 原选择器 `'main button, main a, …, #app button, #app a'` 的**兜底
+  //      `#app button` 会匹配到 topbar 自己的按钮**。而 `querySelector` 对逗号
+  //      列表是按**文档顺序**返回，不是按选择器书写顺序 ⇒ topbar 在 DOM 里
+  //      先于 `<main>`，于是命中的永远是 `BUTTON.topbar__btn`。
+  //      实测 `/m/keys` 的 `<main>` 里有 **249 个**按钮，照样被 topbar 的那个抢走。
+  //   2. 拿 `header.topbar` 去和**它自己的子元素**比「top < bar.bottom-2 &&
+  //      top >= 0」，对任何贴顶的栏都是**恒真**（栏内子元素必然落在栏的区间里）。
+  //   ⇒ 修法不是「把某个条件调严」，而是让这类比较**在结构上不可能发生**：
+  //      候选只从 `<main>` 里取，并剔除任何落在任一根栏内部的元素。
+  //
+  // ⚠️ 为什么 headless 的 930 组 + 字号 122 组全绿时它没响：那是**巧合**。
+  //   headless 的 `--app-safe-top` 恒 0 ⇒ 顶栏高只有 48px，栏内按钮的 top 落到
+  //   **−0.5px**，被 `top >= 0` 差一点点挡下；真机 top=24/48px 时按钮 top=23.6/47.6，
+  //   恒真立刻成立。⇒ 「headless 全绿」在这一条上**不构成正确性证据**。
   if (topBar) {
-    const first = document.querySelector('main button, main a, main input, #app button, #app a')
+    const inAnyBar = (el) => bars.some((b) => b.el === el || b.el.contains(el))
+    const mainCand = [...document.querySelectorAll(
+      'main button, main a, main input, main [role="button"], main [tabindex]:not([tabindex="-1"])')]
+      .filter((el) => !inAnyBar(el) && vis(el) && el.getBoundingClientRect().height > 0)
+    // `<main>` 里没有可交互元素时（Overview 全是 div），**没有可判的对象**，
+    // 此时报「被压住」是没有意义的 —— 宁可不报，也不要拿栏自己的按钮凑数。
+    const first = mainCand[0] || null
+    I.stats.topBarCandidates = mainCand.length
     if (first) {
       const fr = first.getBoundingClientRect()
       if (fr.top < topBar.r.bottom - 2 && fr.top >= 0) {
