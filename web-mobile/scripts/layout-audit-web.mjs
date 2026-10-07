@@ -278,14 +278,38 @@ for (const route of ROUTES) {
     let thm = null
     let font = null
     if (FONT_SCALE !== 1) {
-      const want = (BASE_FONT_PX * FONT_SCALE).toFixed(2) + 'px'
+      // ★★ 机制必须是 `text-size-adjust`，不是 html 内联 font-size（§4.6.72 真机实测）。
+      //   内联 font-size 改的是 **rem 基数** ⇒ 所有 rem 长度一起放大、
+      //   版式与文字等比放大、比例不变；真机上 rem 基数**根本不动**
+      //   （font_scale=2.0 实测 1rem 仍 16px，而 html 计算字号 32px）。
+      //   旧机制在本页量到「量值截断 0」，真机同一页是 2 处 —— 整批读数是机制误差。
+      //   `text-size-adjust` 就是 Android 的 text inflation，headless 与真机逐项吻合。
+      const pct = Math.round(FONT_SCALE * 100) + '%'
+      const wantFS = (BASE_FONT_PX * FONT_SCALE).toFixed(2) + 'px'
       const got = await evaluate(
-        `(() => { document.documentElement.style.fontSize = ${JSON.stringify(want)};
+        `(() => { const s = document.documentElement.style;
+           s.webkitTextSizeAdjust = ${JSON.stringify(pct)};
+           s.textSizeAdjust = ${JSON.stringify(pct)};
            return getComputedStyle(document.documentElement).fontSize })()`,
       ).catch((e) => ({ error: String(e) }))
-      font = { want, got }
-      if (typeof got !== 'string' || Math.abs(parseFloat(got) - parseFloat(want)) > 0.5) {
+      // 量具自证：回读**两个驱动版式的量** —— 计算字号必须放大、1rem 必须**不变**。
+      // 只回读计算字号的话，换回旧机制也会「通过」（这正是上一版的漏洞）。
+      const rem = await evaluate(
+        `(() => { const d = document.createElement('div');
+           d.style.cssText = 'position:fixed;top:-9999px;width:1rem';
+           document.body.appendChild(d);
+           const w = d.getBoundingClientRect().width; d.remove();
+           return +w.toFixed(2) })()`,
+      ).catch((e) => ({ error: String(e) }))
+      font = { want: wantFS, got, pct, oneRem: rem, remUnchanged: rem === BASE_FONT_PX }
+      if (typeof got !== 'string' || Math.abs(parseFloat(got) - parseFloat(wantFS)) > 0.5) {
         rows.push({ ...row, invalid: 'font-scale-not-applied', got: JSON.stringify(font) })
+        continue
+      }
+      if (!font.remUnchanged) {
+        // rem 跟着放大了 ⇒ text-size-adjust 没生效、页面退化成别的机制，
+        // 这组读数不可信（§4.6.72：整批字号读数曾因机制不同而全错）。
+        rows.push({ ...row, invalid: 'font-scale-mechanism-wrong', got: JSON.stringify(font) })
         continue
       }
     }
