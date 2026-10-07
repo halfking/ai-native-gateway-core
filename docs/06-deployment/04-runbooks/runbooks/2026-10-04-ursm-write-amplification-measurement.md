@@ -12450,6 +12450,74 @@ sessions_v2_write_success_total              7                ← 阳性对照�
 两次都是**在没把全天分布拉出来之前就下结论**。
 **把时间分布拉全再归因**，成本是一条 awk，却能省掉两次错误结论。
 
+### §10.106.24 401 根因链闭合：**网关侧无拒绝理由 ⇒ 客户端在发一把「本库没有的 key」**
+
+接着 §10.106.23 往下查，逐条排除了网关侧的所有可能原因。
+
+**一、先证明 `/v1/messages` 是有记录的（纠正上一节的一处说法）**
+
+`request_logs.client_endpoint` **全历史 `'/v1/messages'` = 0 行**，我一度据此写「该端点从不记录」。
+**错的**：`client_endpoint` 只取 `'/v1/chat/completions'`（17,541 行）或 **NULL**（81,108 行），
+而 `/v1/messages` 请求**落在 NULL 里**。
+用 10-06 19:50~20:05（claude-cli 仍有成功）做交叉验证：同期 nginx 记 **12 次** claude-cli 200，
+`request_logs` 同窗口有 `client_endpoint=NULL` + `client_model=claude-opus-5-5` 的行。
+⇒ **该端点有记录，只是没打端点标签**；它与「其它未标注路径」混在一起，无法按端点切分。
+
+**二、那把曾经能用的 key，今天仍然有效**
+
+| 项 | 值 |
+|---|---|
+| key 前缀 | **`sk-RZ8dm0z**`**（`api_keys.id=89`） |
+| `status` | **active** |
+| `enabled` | **true** |
+| `expires_at` | **NULL** |
+| `created_at` | 2026-07-28 15:11 |
+
+⇒ 这把 key **此刻仍能通过鉴权**。最后成功 10-06 19:55:45，之后同一批客户端全部 401。
+
+**三、逐条排除网关侧原因**
+
+| 假设 | 判据 | 结论 |
+|---|---|---|
+| key 过期 | 124 条 key **全部 `expires_at IS NULL`**；已过期 0、30 天内到期 0 | ✗ |
+| key 被停用/吊销 | id=89 是 `active` + `enabled=true` | ✗ |
+| `applications` INNER JOIN 把有效 key 滤掉 | `applications` 有 19 行，id=89 的 `application_id=9` **匹配成功**；全库被 join 丢弃的 key **= 0** | ✗ |
+| 换了一把新 key 但没建 | 10-04~10-05 新建的 11 条**全是 `sk-selfcheck****` 内部探针 key** | ✗ |
+| 网关配置变更 | 该 key 是 DB 校验路径（`sk-*`），不经过静态 `LLM_GATEWAY_API_KEY` 分支 | ✗ |
+
+⇒ ★★ **网关侧找不到任何拒绝理由 ⇒ 客户端发来的凭据不是这一把。**
+
+**四、真正卡住定位的那一环**
+
+`middleware/auth_mw.go:142` 的 `slog.Warn("auth: invalid API key", ...)` 带 `key_prefix`，
+**但它只挂在「非 `sk-`」那条分支上**；`sk-*` 请求在 `:133-136` 直接 `next.ServeHTTP` 放行给
+`KeyVerifier`，而 verifier 的失败路径（`:513-519`）**不记录任何 key 标识**。
+⇒ ★ **失败的 `sk-*` 请求在日志里不留任何凭据痕迹**，这正是「不知道客户端在发什么」的原因。
+
+**五、结论与建议**
+
+**这是客户端侧配置问题**：Claude CLI 自 10-05 起发的不再是 `sk-RZ8dm0z…`，
+而是一把本库不认的凭据（可能已轮换、可能指向另一套环境、也可能环境变量没注入）。
+**网关侧改配置、加 key 或重启都不会让它恢复。**
+
+⇒ **最有价值的一步**：在 `KeyVerifier` 的失败分支补一行带**哈希化前缀**的
+`slog.Warn`。它不改鉴权语义、不改响应、不影响热路径耗时，
+却能立刻回答「客户端到底在发哪一把」，把这件事从「不可定位」变成「一次查询」。
+
+**状态：已实现并提交（commit `e084e5754`），⚠️ 未部署。**
+实现要点：`callVerifyDB` 的 `ErrNoRows` 分支加 `slog.Warn("key verify: rejected")`，
+日志字段 `key_hash_prefix` = `key_hash` 前 16 位十六进制。
+`key_hash` 是服务端密钥下的 HMAC-SHA256，**不可逆**，可直接反查：
+
+```sql
+SELECT id, status, enabled, expires_at FROM api_keys WHERE key_hash LIKE '<prefix>%';
+```
+
+命中 ⇒ key 存在、被某个状态列排除；未命中 ⇒ 本库从未见过这个凭据。
+退化输入返回固定标记 `<short>`，**绝不记录 rawKey**。
+门 3 条 + 变异 3/3 有牙（M1 删日志 / M2 改记明文 / M3 helper 返回常量，三条全转红）。
+**上线需用户明确授权**（改的是鉴权热路径）。
+
 ---
 
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」
