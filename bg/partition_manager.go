@@ -1558,17 +1558,30 @@ func analyzeLockKey() int64 {
 // analyzeThrottleTaskName is the row key in public.llm_gateway_task_state that
 // both gateway instances contend for (migration 840).
 //
-// ★ 为什么需要它而不是 §10.53 那把 advisory 锁：实测（runbook §10.107）锁是
-// xact 级的，只活到本趟 pass 结束（mean 93.81 秒），而两台实例的 promote tick
-// 各自独立、实测偏移 6 分 01 秒 ⇒ **锁一次都不会命中**，2 次/小时原封不动。
-// 锁防的是「同一分钟内真重叠」；这个槽防的是「错开的两拍」。两者正交，都留着。
+// ★ 为什么需要它而不是 §10.53 那把 advisory 锁：实测（runbook §10.107.6）那把锁
+// 一次都没拦住 —— 2026-10-07 今日 154 跑 15 趟 / 245 跑 16 趟，**0 次跳过**，
+// 2 次/小时原封不动。
+//
+// ⚠️ 「锁不生效」的**成因目前仍未解释**，不要照抄旧结论：
+// · 旧结论说「两台 tick 偏移 6 分 01 秒 ≫ 持有时长 ⇒ 永不争用」——**该数字是错的**。
+// 稳态逐小时实测偏移只有约 40 秒（−52s ~ +36s 来回摆），不是 6 分钟。
+// · 已排除：两台不是不同库（DSN 同为 172.16.2.210:5432/llm_gateway）；
+// 锁键也不含实例身份（analyzeLockKey() 是常量 fnv64a("llm-gateway:analyze:")）。
+// · 未排除两种可能：「单趟其实 < 40s 所以两趟不重叠」与「重叠了但锁没拦住」。
+// 本函数只记 "tables" 不记耗时，历史读数无法回溯 ⇒ 需 2s 采样
+// pg_stat_activity 判定，采样前不下结论。
+//
+// ⇒ 无论成因是哪一种，**跨实例共享的节流槽都是必需的**：它把「每小时跑两遍」压成
+// 「每小时跑一遍」，不依赖任何时序侥幸。两者正交、都留着：
+// 锁防「同时」，槽防「重复」。
 const analyzeThrottleTaskName = "analyze_llm_gateway_table_stats"
 
 // analyzeThrottleMinInterval is the throttle window. The goal is ONE pass per
 // hour, not "as often as possible": after migration 838/839 the per-table
 // statistics burden belongs to autovacuum (runbook §10.105), so this manual
 // pass does not need to be frequent. 50 minutes leaves 10 minutes of slack to
-// absorb clock drift and the ~94-second single pass.
+// absorb clock drift and the single pass (838 落地后实测 51.3 秒，runbook §10.107.6；
+// 之前普遍是 94 秒，故这里的余量按更长的那个值留）。
 const analyzeThrottleMinInterval = 50 * time.Minute
 
 // isUndefinedTable reports whether err is a Postgres 42P01 (undefined_table).
