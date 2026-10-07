@@ -37,15 +37,15 @@ _dl_bool() { [[ "${1:-}" == 1 || "${1:-}" == true || "${1:-}" == yes ]]; }
 # 孙进程仍会跑完并持有继承来的 stdout —— 这不是回归，GNU timeout 同样如此。
 # 需要连子孙一起收的调用点应自行使用进程组（setsid / kill -- -pgid）。
 _dl_timeout() {
-  local deadline pid rc=0
-  deadline=$(( $(date +%s) + $1 ))
+  local deadline pid rc=0 dur="$1"
+  deadline=$(( $(date +%s) + dur ))
   shift
   if _dl_have timeout; then
-    timeout "$1" "${@:2}"
+    timeout "$dur" "$@"
     return $?
   fi
   if _dl_have gtimeout; then
-    gtimeout "$1" "${@:2}"
+    gtimeout "$dur" "$@"
     return $?
   fi
   "$@" &

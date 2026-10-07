@@ -297,7 +297,13 @@ detect_existing_containers() {
           fi
           redis_addr="127.0.0.1:${redis_port}"
         fi
-        export LLM_GATEWAY_REDIS_ADDR="$redis_addr"
+        # Caller-provided LLM_GATEWAY_REDIS_ADDR stays authoritative (same
+        # contract as the DSN block above): the scan tier can match unrelated
+        # redis-image containers (redclaw/memora), and silently repointing a
+        # pinned gateway at them loses the password + logical DB pairing.
+        if [[ -z "${LLM_GATEWAY_REDIS_ADDR:-}" ]]; then
+          export LLM_GATEWAY_REDIS_ADDR="$redis_addr"
+        fi
       fi
     fi
   fi
