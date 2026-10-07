@@ -12250,3 +12250,162 @@ GET `/api/admin/work-types` · `/api/admin/work-types/{key}` · `/api/admin/work
 
 local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
 `web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
+
+## 11.128 凭据模型状态变更历史（第九十二批，2026-10-08）
+
+GET `/api/credentials/model-history?credential_id=X&raw_model_name=Y&limit=50`
+
+- **注册**：**第五种注册形态**，`mux.HandleFunc` 在**另一个文件的方法**里
+  （`admin/credential_monitor.go:153-163` 的 `RegisterMonitorRoutes`），
+  由 `admin/handler.go:1453` 现构造并挂载：
+
+  ```go
+  // admin/handler.go:1453
+  monitorH.RegisterMonitorRoutes(mux, h.admin)   // ★ admin 档
+  ```
+
+  ⇒ ★★★★★ **整族是 `h.admin` 档 ⇒ tenant_admin 可用 ⇒ 抽屉席不设 `requiresRole`**
+  ⇒ ★ 与批 91 的 `work-types`（`h.superAdmin`）**正好相反，而两族都在 admin 包里**
+  ⇒ ★★ 同一注册处还挂着 `/api/credentials/sliding-window`、`heatmap`、`decisions` 等
+    十余个端点，**全部是 admin 档**。
+- **实现**：`admin/credential_monitor.go:1433-1478`（handler）·
+  `:1304-1318`（`ModelHistoryEvent`）· `:1329-1430`（`runModelHistory` 的 SQL）。
+- **桌面调用方**：`web/src/api/credential-monitor.ts:347-358` —— `req<ModelHistoryResponse>`
+  直接强转，**不做任何校验** ⇒ 全部校验由本模块补上。
+- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+
+### 本族最要紧的十四件事
+
+1. ★★★★★ **整族是 `h.admin` 档**（见上）⇒ tenant_admin 可用，不设 `requiresRole`。
+2. ★★★★★ **事件对象是「十个键全部恒在，其中六个可为裸 `null`」的形状**。
+   `ModelHistoryEvent`（`:1307-1318`）**十个字段一个 `omitempty` 都没有**，
+   `nullableString` / `nullableInt` 返回 `nil` 时**指针被写成 JSON `null`，键仍在**
+   ⇒ ★★★ ⇒ **`'probe_status' in ev` 这种存在性判断永远为真**；
+   要判「有没有值」必须判 `ev.probe_status !== null`。
+   ⇒ ★★★ **桌面类型把这六个键声明成可选**
+   （`web/src/api/credential-monitor.ts:330-337` 的 `probe_status?: string | null`）
+   ⇒ **桌面比现实宽松**，照它写的客户端会一直以为「键可能不存在」。
+3. ★★★★★ **`reason` 的「空」有两种编码，且与其他六个指针键相反**（`:1414-1418`）：
+   ```go
+   ev.Actor = nullableString(actor)                                     // 只看 Valid ⇒ 空串原样保留
+   if reason.Valid && reason.String != "" { ev.Reason = &reason.String }  // 多一条非空判据
+   ```
+   SQL 侧是 `COALESCE(al.after_json->>'reason', '')`（`:1361`）
+   ⇒ **空串会塌成 `null`**，而 `triggered_by` / `actor` 等只看 `Valid`
+   ⇒ ⇒ **`actor` 可以是空串，`reason` 不可能是空串**（取值域 = `{null, 非空串}`）
+   ⇒ ★★★ ⇒ 「reason 不为空串」因此是一条**恒真判据** ⇒ 本模块**刻意不提供**该判据，
+     由本条与源码头部注释承担（见下「变异验证暴露的判据缺陷」第 1 条）。
+4. ★★★★★ **两段数据的字段形状互补，由 `source` 区分**：
+
+   | 字段 | `source==='auto'` | `source==='manual'` |
+   |---|---|---|
+   | `triggered_by` | `mpr.triggered_by` | **恒 `null`**（`:1351`） |
+   | `event` | `recovered` / `broke` | `online` / `offline` |
+   | `probe_status` | `mpr.status` | **恒 `null`**（`:1355`） |
+   | `http_status` | `mpr.http_status` | **恒 `null`**（`:1356`） |
+   | `error_code` / `error_message` | 有值 | **恒 `null`**（`:1357-1358`） |
+   | `actor` | **恒 `null`**（`:1345`） | `al.actor` |
+   | `reason` | **恒 `null`**（`:1346`） | `after_json->>'reason'` |
+
+   ⇒ ⇒ **`auto` 行恰好两个键恒 `null`，`manual` 行恰好五个键恒 `null`**
+   ⇒ ⇒ 这是本族**最强的自验判据来源**。
+5. ★★★★★ **`event` 的值域随 `source` 变，不能全局枚举**：
+   auto 是 `mpr.state_change IN ('recovered','broke')`（`:1344`）⇒ 只有两值；
+   manual 是 `CASE al.action … END`（`:1353-1356`）⇒ 两个分支、**没有 `ELSE`**
+   ⇒ ★★ `CASE` 无 `ELSE` 意味着「不匹配就是 `NULL`」，而 `Event` 是**非指针 `string`**
+   ⇒ Scan 进 NULL 会失败 ⇒ 落进第 7 条的静默跳过。
+   （实际不触发：`WHERE al.action IN (...)` 已把两值之外的全排除了。）
+6. ★★★★ **`ORDER BY ts DESC`（`:1378`）无 tiebreak**
+   ⇒ ★★★ **同时间戳事件的顺序未定义** ⇒ 客户端**只能断言「非升序」**，
+   **不能**断言严格降序（与批 88/89/90/91 同族）。
+7. ★★★★★ **scan 失败被 `continue` 静默跳过，响应里查不到**（`:1405-1408`）：
+   `scanFailures++` + `slog.Warn` 后 `continue`。
+   ⇒ ★★ 响应结构**没有 `scan_failures` 字段** ⇒ 用户与客户端都看不出这批数据是否完整
+   ⇒ ★★ 好在有 `slog.Warn`（批 91 的 `work_types.go` 连 warn 都没有，只是裸 `continue`）。
+8. ★★★★★ **`rows.Err()` 不吞，直接 5xx**（`:1422-1426`），
+   注释自陈这是审计保证：`incomplete payloads never reach the UI`
+   ⇒ ★★★ **与批 91 `work_types.go` 的「半修吞错」正好构成对照**：
+   **同一个 admin 包里，一处选择不吞、一处吞掉三处。**
+9. ★★★★★ **`limit` 越界 400，范围 1–200，默认 50**（`:1448-1451`）。
+   ★★ 但 **`queryInt` 解析失败时静默回落默认值**（`admin/handler.go:1534-1544`）：
+   ```go
+   v, err := strconv.Atoi(s)
+   if err != nil { return def }   // ← 不报错
+   ```
+   ⇒ `limit=abc` ⇒ **静默当 50 用，不报 400**
+   ⇒ `credential_id=abc` ⇒ 回落 0 ⇒ 400，但文案说的是 **required**（不是格式错）
+   ⇒ ⇒ **客户端不能假设「400 就是参数非法」，400 有两种成因。**
+10. ★★★★ **`credential_id == 0` 判 400**（`:1451-1454`）—— **不是 `< 1`**
+    ⇒ ★★★ **负数 credential_id 能通过这一关**并进 SQL。
+11. ★★★★ **租户过滤两段各自做、形状一致**：
+    auto 侧 `AND ($4 = '' OR mpr.tenant_id = $4)`（`:1343`）、
+    manual 侧 `AND ($4 = '' OR al.tenant_id = $4)`（`:1369`）⇒ **两侧都过滤**。
+    `tenantID` 只在 `IsTenantAdmin(r)` 时取 `GetTenantID(r)`（`:1464-1467`），
+    否则是 `""` ⇒ 那个 `$4 = ''` 分支放行全部租户
+    ⇒ ⇒ **tenant_admin 只看自己租户；super_admin 看全部。**
+12. ★★★ **超时 5s**（`:1461`）。
+13. ★★★ **错误体是 `{"error":{"detail"}}`**（`writeError`，`handler.go:1494-1498`）
+    ⇒ 与批 91 的 `writeJSONErrCtx`（`{message, code, type}`）**不是同一种**
+    ⇒ ★★ 同一个 admin 包里至少有三种错误体（`detail` / `message+code+type` /
+    `code+detail`），**按「写出层」分支，不按包**。
+    503 的文案是 `database not configured`（`:1441`）——
+    ★ **与批 90 的两种 503 文案都不同**，别按字符串跨族匹配。
+14. ★★ **`events` 是 `make([]ModelHistoryEvent, 0)`（`:1389`）⇒ 空时是 `[]` 不是 `null`**，
+    且 **`count` 就是 `len(events)`**（`:1476`）⇒ 可自验 `count === events.length`。
+
+**校验边界**：envelope 的 4 个恒在键与类型、事件的 10 个**恒在**键与类型
+（6 个指针键接受 `null`），并为 (4)(5)(6)(9)(10)(14) 各提供判据（★ **刻意不为 (3) 提供**——它是恒真的，见下）。
+★ **不校验** `ts` 是合法 RFC3339（后端自己 `ts.UTC().Format(time.RFC3339)` 格式化出来的，
+不需要客户端再解一次），只校验它是字符串。
+
+### 验证
+
+- 用例 **77 条全绿**（`web-mobile/src/api/modelHistory.test.ts`）。
+- 变异 **62 条 = 62 条全有牙，0 可证等价**（`/tmp/mut-co92.mjs`，逐条 `RESTORED` 字节比对）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6021 条（157 文件）** rc=0。
+- 桌面对照：`web/src/api/credential-monitor.ts:319-344` 的
+  `ModelHistoryEventKind` / `ModelHistorySource` 联合类型与本模块的常量一致，
+  ★ 但**那六个指针键被声明成可选**（见 2）。
+
+### 变异验证暴露的五件事（65 条 → 终态 62 条全有牙）
+
+首跑 5 条 STILL_GREEN，归因**四类**，**没有一条是「被测函数防御」**：
+
+1. ★★★★★ **判据恒真 ⇒ 删代码而不是补用例**（#39 / #40）。
+   我写了 `modelHistoryReasonIsNeverEmptyString`，判据是
+   「`events` 里没有一项 `reason === ''`」。变异脚本实测：
+   - 改成 `some(e => e.reason !== '')` ⇒ **白绿**，
+   - 改成 `every(e => e.reason === '')` ⇒ 只有**反向**那条用例能打掉它。
+   ⇒ ★★★ 归因链的第④步：`every` 与 `some` 的**唯一区分格是「每一项都是空串」**，
+     而后端 `:1416-1418` 只在 `reason.String != ""` 时才赋值
+     ⇒ **`reason` 的取值域是 `{null, 非空串}`，`reason === ''` 在可达输入域上不可达**
+     ⇒ ⇒ **这条判据在可达输入域上是恒真的，任何写法都成立**
+     ⇒ ★★★ 修法：**从源码里删掉这个函数**、删掉它的 4 条用例，
+       并在源码头部与本文写明「本模块刻意不提供该判据，契约由注释承担」。
+     ⇒ ★★ 一个永远为真的断言保留下来，只会让人误以为这里有检查。
+     ⇒ ★ 与批 90 的「判据可证冗余 ⇒ 删代码」是**同一条纪律的第二次触发**
+       （第一次是断言重复，第二次是断言恒真）。
+2. ★★ **锚点指错，两条**（#3 / #38）—— 归因链的第③步。
+   - #3 把 `MODEL_HISTORY_LIMIT_MIN` 从 1 放宽到 0，
+     真正转红的是「**0 ⇒ 不成立**」那一格（`0 >= 0 && 0 <= 200` 变成 true），
+     我却把锚点指在「下界 1 ⇒ 成立」上 —— 那一格两种实现都返回 true。
+   - #38 把 `count === events.length` 改成 `<=`，
+     唯一区分格是「**count 小于** events.length」，锚点却指在「大于」那一格。
+   ⇒ ★★★ **阈值/比较类变异的锚点必须落在「两种实现输出不同」的那一格**，
+     而这一格**不是**随便挑的边界值。
+3. ★★ **恒等变形（第 (f) 形态的又一次）**（#63）。
+   我把 `q.set('raw_model_name', params.rawModelName)` 改成
+   `q.set('raw_model_name', String(params.rawModelName))` ——
+   ★ `rawModelName` 的类型**本来就是 `string`**，`String(x)` 是恒等变形，
+   文件字节变了、行为逐像素相同 ⇒ 白绿。
+   ⇒ 修法：换掉整段查询串构造（手工模板拼接、不走 `URLSearchParams`），
+     这才是真正「绕过编码」的那条变异。
+4. ★★ **可证等价 ⇒ 删变异**（#65）。
+   `?${q}` 改成 `?&${q}` —— URL 解析器把 `?&a=b` 与 `?a=b` 视作**完全等价**，
+   唯一区分的输入是「不存在的输入」。
+   ⇒ 与批 91 的 #64 同族：**区分格不可达 ⇒ 变异可证等价 ⇒ 删**。
+
+### 收尾
+
+local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
+`web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
