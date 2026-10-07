@@ -11973,6 +11973,43 @@ credential_model_index_2026_10 autovacuum_analyze_scale_factor = 0.02  ← 同�
 —— 这正是本轮目标里「重构优化」该落的那一格，
 而且它一次就消掉「空壳分区留在规划里」与「旧月数据无限堆积」两个问题。
 
+### §10.106.16 迁移 841 已实现（**未部署**）：月度族分区级 DROP 保留
+
+「机制先建、策略留空」：配置表 `llm_gateway_partition_retention` **建表即空**，
+⇒ 应用 841 **不会删任何东西**；启用只需按族 `INSERT retain_months`（业务决定）。
+
+| 件 | 内容 |
+|---|---|
+| 迁移 | `841_monthly_partition_retention.sql` + `.down.sql`（回滚只撤机制，不碰业务分区） |
+| SQL | `llm_gateway_expired_month_partitions()`（只读列出过期）+ `llm_gateway_drop_expired_month_partitions()`（真 DROP）+ 审计表 `llm_gateway_partition_drop_log` |
+| Go | `bg/partition_manager.go` 的 `dropExpiredMonthlyPartitions()`，接在 promote cycle 尾部；缺表/缺函数（42P01 / 42883）**降级为不做** |
+| 契约门 | `migration_841_test.go` **7 条** |
+| 行为门 | `bg/partition_retention_841_realdb_test.go` **5 条**（无 DSN 时干净 skip） |
+| 变异 | `scripts/.mutate-841-retention.sh` **M1~M9 全部有牙** |
+
+#### ★ 两个被门禁体系抓出来的缺陷（比功能本身更值得记）
+
+1. **真库行为门抓到一个契约门完全放行的 bug**：
+   `right(child.relname, 6)` 取月份，而 `2026_07` 是 **7** 个字符 ⇒ 得到 `026_07`
+   ⇒ `to_date` 返回无意义日期 ⇒ `mth < cutoff` 对**所有**分区成立
+   ⇒ **当月分区与预建的未来分区 `2026_11` 都会被 DROP**。
+   契约门查的是「`mth < cutoff` 在不在」——**在，完全通过**。
+   ⇒ 这是 §10.107.5「机制断言 ≠ 效果断言」最干净的一次复现：
+   **只有真跑一遍才看得见逻辑是错的**。已加回归断言 + `mth IS NULL → CONTINUE`。
+2. **M7 暴露一条恒真判据**：`.down.sql` 的检查用**子串黑名单**，
+   而 `"DROP TABLE IF EXISTS public._2026_"` 这种条目**永远匹配不到**
+   `DROP TABLE IF EXISTS public.session_turns_2026_09` ⇒ 该判据恒为真。
+   改成**白名单**：正则扫出所有 `DROP TABLE ... public.X`，逐个要求 X 是那两张
+   `llm_gateway_*` 表。⇒ 再次印证 **黑名单式子串检查几乎必然恒真**。
+
+★ 附带的自证修正：回归断言一度**误伤 SQL 里那段解释性注释**
+（注释字面写着 `right(relname, 6)` 作为反例）⇒ 断言必须只看**剥掉 `--` 注释后**的 SQL。
+★ 另：行为门最初 3 条假红，根因是**用例之间共用一个库**——被测函数会真 DROP 分区，
+  上一个用例的残留配置与已删夹具漏给了下一个 ⇒ 每个用例必须自建夹具并清空配置/审计表。
+
+⇒ **未部署**：841 与 840 一起等授权；两者都不该在「含 db.go 第五份活副本修复」的
+二进制上线之前单独部署（重启会撤销 838/839）。
+
 ---
 
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」
