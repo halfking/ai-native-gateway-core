@@ -74,41 +74,61 @@ const nodeTotal = ref(0)
 async function load(): Promise<void> {
   loading.value = true
   error.value = null
-  const [a, b, c] = await Promise.allSettled([
-    fetchProbeQueueTasks({ limit: PROBE_TASKS_DEFAULT_LIMIT }),
-    fetchProviderLatency(),
-    // ★ 不发 limit ⇒ 用后端自己的默认 120（node-tasks 的默认与 queue-tasks
-    //   的 100 **不同**，见 probeModelHealth.ts 文件头 (3)）。
-    fetchProbeNodeTasks(),
-  ])
-  if (a.status === 'fulfilled') {
-    tasks.value = a.value.tasks ?? []
-    taskTotal.value = a.value.total ?? tasks.value.length
-    taskError.value = null
-  } else {
-    tasks.value = []
-    taskTotal.value = 0
-    taskError.value = (a.reason as Error)?.message ?? null
-  }
-  if (b.status === 'fulfilled') {
-    entries.value = b.value.entries ?? []
-    latencyTotal.value = b.value.total ?? entries.value.length
-    latencyError.value = null
-  } else {
-    entries.value = []
-    latencyTotal.value = 0
-    latencyError.value = (b.reason as Error)?.message ?? null
-  }
-  if (c.status === 'fulfilled') {
-    nodeTasks.value = c.value.tasks ?? []
-    nodeTotal.value = c.value.total ?? nodeTasks.value.length
-    nodeError.value = null
-  } else {
-    nodeTasks.value = []
-    nodeTotal.value = 0
-    nodeError.value = (c.reason as Error)?.message ?? null
-  }
-  if (a.status === 'rejected' && b.status === 'rejected' && c.status === 'rejected') {
+  // ★★ 2026-10-08：原写法是 `await Promise.allSettled([a,b,c])` **之后**才统一赋值
+  //   三个面板。allSettled 要三个都 settle 才返回 ⇒ 最慢的那个把另外两个一起拖住。
+  //   245 实测（2026-10-08，admin token）：
+  //       fetchProbeQueueTasks  /api/admin/probe/queue-tasks   2.4s
+  //       fetchProviderLatency  /api/admin/probe/provider-latency 1.6s
+  //       fetchProbeNodeTasks   /api/admin/probe/node-tasks   20.0s
+  //   ⇒ 那 **17.6 秒**里队列与延迟两个面板的数据早就到手，页面却一个字都不显示。
+  //   与 ProbeHealthView 2026-10-07 的同款修法对齐：**各自的段各自的赋值**，
+  //   谁先回来谁先渲染；Promise.all 只用来收口 loading 与汇总错误，不再卡渲染。
+  //
+  //   注意 loading 只门控一行「正在加载…」（见模板 v-if="loading"），不是整页遮罩 ——
+  //   所以分段赋值一改，面板就真的能先出来。
+  const tasksTask = fetchProbeQueueTasks({ limit: PROBE_TASKS_DEFAULT_LIMIT }).then(
+    (v) => {
+      tasks.value = v.tasks ?? []
+      taskTotal.value = v.total ?? tasks.value.length
+      taskError.value = null
+    },
+    (e: unknown) => {
+      tasks.value = []
+      taskTotal.value = 0
+      taskError.value = (e as Error)?.message ?? null
+    },
+  )
+  const latencyTask = fetchProviderLatency().then(
+    (v) => {
+      entries.value = v.entries ?? []
+      latencyTotal.value = v.total ?? entries.value.length
+      latencyError.value = null
+    },
+    (e: unknown) => {
+      entries.value = []
+      latencyTotal.value = 0
+      latencyError.value = (e as Error)?.message ?? null
+    },
+  )
+  // ★ 不发 limit ⇒ 用后端自己的默认 120（node-tasks 的默认与 queue-tasks
+  //   的 100 **不同**，见 probeModelHealth.ts 文件头 (3)）。
+  const nodeTask = fetchProbeNodeTasks().then(
+    (v) => {
+      nodeTasks.value = v.tasks ?? []
+      nodeTotal.value = v.total ?? nodeTasks.value.length
+      nodeError.value = null
+    },
+    (e: unknown) => {
+      nodeTasks.value = []
+      nodeTotal.value = 0
+      nodeError.value = (e as Error)?.message ?? null
+    },
+  )
+
+  await Promise.all([tasksTask, latencyTask, nodeTask])
+
+  // 三段全挂才算整页失败 —— 一段挂不许把另外两段的成功盖掉。
+  if (taskError.value && latencyError.value && nodeError.value) {
     error.value = taskError.value ?? latencyError.value ?? nodeError.value
   }
   loading.value = false
