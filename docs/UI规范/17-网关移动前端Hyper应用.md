@@ -10173,3 +10173,138 @@ WHERE credential_id = $1 AND started_at >= $2
 4. **`--dry` 阶段抓到 3 处锚点错误**（1 处用例名不在标题里、2 处 `from` 前缀多两个空格）。
    ★ 其中 #8 的用例名我写的是「**全**健康载荷原样通过」，实际标题是「健康载荷原样通过」
    —— 又一次「`expect` 必须从 `it('…')` 标题里抄」。
+
+## 11.112 系统自检族（self-check，第七十六批）
+
+- **端点**：`/api/self-check/{runs, runs/{id}, settings, stats, models, trigger/availability}`
+- **注册**：`admin/self_check_handlers.go:60-68` 的 `RegisterRoutes`，六个 GET **全部 `admin(...)`**
+  ⇒ tenant_admin 可用 ⇒ 抽屉席**不设** `requiresRole`
+  （同族 `settings/update`（`:64`）与 `trigger`（`:66`）是 `superAdmin(...)`，写操作，不碰）
+- **表**：`deploy/sql/schemas/baseline/01-schema.sql`
+- **落点**：`web-mobile/src/api/selfCheck.ts` + `.test.ts`（151 用例）
+
+### 挖到的九条契约
+
+1. **★★★★★ `self_check_runs` 有 `tenant_id` 列，但六个 handler 一个都不用。**
+
+   ```sql
+   tenant_id text DEFAULT 'default'::text NOT NULL,
+   ```
+
+   而 `handleListRuns` 是 `WHERE 1=1`、`handleGetRun` 是 `WHERE id=$1`、
+   `handleStats` 三处是 `WHERE started_at >= $1`、`handleModels` 是 `GROUP BY model_name`
+   ⇒ **全部不带租户条件**；注册是 `admin(...)`
+   ⇒ **tenant_admin 能读所有租户的自检记录**，含 `error_detail`、`request_body`、
+   `response_preview` 等正文级内容。
+   ⇒ 本仓**第四次**「不隔离 + admin 档」。与前三次不同的是：
+   **列就在表里，只是查询从不引用它** —— 不是「表没有租户概念」。
+
+2. **★★★★★ `status` 是五值枚举，统计却只数三个。**
+   建表 CHECK：`('running','success','partial','failed','retrying')`；
+   而 summary / by_model 只 FILTER 三个 ⇒ `total_runs` 走 `COUNT(*)`，**含 running 与 retrying**
+   ⇒ `success_runs + partial_runs + failed_runs` **可能小于** `total_runs`。
+   ⇒ 拿三项相加当分母会算错。
+   ⇒ 桌面 `api-selfcheck.ts:55` 只声明四值，**漏 `retrying`**。
+
+3. **★★★★★ `range` 回显的是请求值，不是生效窗口。**
+   `:777-794` 用 `rangeParam` 原值算 `since`（未知值静默落 24h），
+   `:963` 又把**同一个原值**回显 ⇒ `range=xyz` 得到的是 **24h 的数据、标着 `xyz` 的 range**。
+
+4. **★★★★★ `stats` 四个区块有四种失败策略，其中两种会骗人。**
+
+   | 区块 | 查询失败时 | 客户端看到 |
+   |---|---|---|
+   | `summary` | **错误被丢弃**（`:805` 的 `Scan` 返回值没接） | 零值 + `success_rate: 0.0`，**HTTP 200** |
+   | `by_model` | 500 | 报错 |
+   | `error_breakdown` | 只 `slog.Warn`（`:872-874`） | `[]` —— **与「没有失败记录」同形** |
+   | `trend` | 只 `slog.Warn`（`:904-906`） | `[]` —— **与「该窗口没跑过」同形** |
+   | `probe_system` | 两个查询的错都 `_ =` 丢弃（`:941`/`:949`） | 全零 ⇒ **`healthy` 算成 `true`** |
+
+   ⇒ 最严重的是最后一行。这个区块的注释（`:926-931`）自陈存在的理由就是
+   「页面绿灯但探测管线已死」（glm-5.2 事故），而**它的查询失败恰好产出绿灯**：
+   `queue_ready_unclaimable == 0` 且 `last_activity_at == nil` ⇒ `healthy = true`。
+   ⇒ 与第六十八批 `compressed_requests === 0`、第七十五批 `checks_last_10m === 0`
+     同族，但这次**直接落在健康判据上**。
+
+5. **★★★★ `credential_id` 不是数据库列，是从 `model_name` 推导的。**
+   `credentialIDFromSelfCheckLabel`（`:75-85`）：前缀 `cred-` + `ParseInt` + `id > 0`，
+   否则 nil，`omitempty` ⇒ 键缺失。⇒ **客户端可以自己验算**。
+   ⇒ ★ `ParseInt` 不跳前导空白，`Number(" 7") === 7`；`ParseInt("0x10", 10, 64)` 报错，
+     `Number("0x10") === 16` ⇒ 用 JS 的 `Number()` 直译会推出错误的 id。
+
+6. **★★★★ `omitempty` 打在 `int` 上 ⇒ 0 毫秒是「键缺失」不是 `0`。**
+   `upstream_latency_ms`（`:106`）。同族 `error_type`/`error_detail`/`upstream_result`/
+   `upstream_error`/`selection_strategy` 是 SQL `COALESCE(...,'')` 成空串**再被 omitempty 吃掉**
+   ⇒ 「键在」等价于「非空」。scRun 一共 **9 个条件键 / 11 个恒在键**。
+
+7. **★★★★ run 详情把「数据库挂了」说成「记录不存在」。**
+   `:230-233`：`QueryRow(...).Scan(&err)` 的**任何**错误都走 404 `run not found`
+   ⇒ 客户端无法区分 404 的两种成因。
+
+8. **★★★ `settings` 这个 GET 有写副作用。**
+   `:327-345`：读不到行就 `INSERT ... ON CONFLICT (id) DO NOTHING` 播种默认值再重查一次。
+   ⇒ 它不是纯只读端点，预取会真的落库。播种常量见 `SELF_CHECK_DEFAULT_FEATURED_MODELS`（`:290`）。
+
+9. **★★★ `/models` 没有 `partial` 计数，而 `stats` 的 `by_model` 有。**
+   ⇒ 两个端点 `total` 口径相同，但 `success + failed` 在 models 里**不等于** `total`；
+   且 models 是**全时段**，stats 按窗口。
+
+### 另注
+
+- `error_type`（31 值）与 `selection_strategy`（7 值）都是**建表 CHECK 约束** ⇒ 真的封闭枚举，
+  与第七十四批 `action` 那种「只判 `!= ""`」的开放字符串不同。
+- `limit` 静默回落：`1..500` 才生效，其余（含 `0`/负数/`abc`/空）一律回 50，**不回显**。
+- `items` / `rounds` / `by_model` / `trend` / `models` 全是 `make(...,0)` ⇒ **恒数组，不是 null**。
+- `probe_system` 的两个时间键是 map 里塞 `*time.Time` ⇒ **恒在键但可为 null**；
+  而 `models[].last_run` 是 struct 字段 + omitempty ⇒ **可为键缺失**。两种编码出现在同一个族里。
+- 桌面 `SelfCheckStats` 类型**没有 `probe_system`** ⇒ 桌面把这个区块整个丢了。
+
+### 验证
+
+- 用例 **151 条全绿**
+- 变异 `/tmp/mut-co76.mjs` **96 条 = 92 有牙 + 4 条可证等价 + 0 STILL_GREEN**，`RESTORED=OK`
+- 三门 rc=0；`vue-tsc` rc=0；`npm run build` rc=0
+- 全量 **4264 条（140 文件）** rc=0；十连跑 10/10
+- U+FFFD 自查：源与用例均 0
+
+### 变异验证暴露的判据缺陷
+
+1. **★★★ 锚点未同步（第 N 次）：8 条 STILL_GREEN 全是这个。**
+   我补了有区分力的新用例（`gpt-0042`、前导空格、`cred-9` 不一致、含斜杠的 id…），
+   却**没回头改对应变异的 `expect` 指向** ⇒ 用例有牙、变异打偏。
+   ⇒ 「新加夹具/新加负控之后必须回头核对每个相关变异的锚点」——这条纪律的价值再次被证明。
+
+2. **★★★ 夹具无区分力（6 条），其中三条是同一个函数的两个分支各缺一半。**
+   - `selfCheckCredentialIdMatches` 的两个分支：`derived === null` 的用例一大把，
+     但**「有推导值且对不上」的用例一条都没有** ⇒ 把那一半恒真化打不出差异。
+   - 前缀检查：`'glm-5.2'` 的后缀本来就不是纯数字 ⇒ 删掉前缀检查照样返回 null
+     ⇒ 补 `'gpt-0042'`（无 `cred-` 前缀但后缀是纯数字）。
+   - 纯数字检查：`'cred-7a'` 交给 `Number()` 得 NaN ⇒ 仍返回 null
+     ⇒ 补 `'cred- 7'`（Go 的 `ParseInt` 报错）与 `'cred-0x10'`。
+
+3. **★★ 短路链让后面的分支测不到：`queue_last_activity_at === null` 那支。**
+   夹具 `probeSystem()` 默认 `queue_running: 1` ⇒ 判据在**下一行**就 `return true` 了
+   ⇒ 把 null 那支改成 `return false` 打不出差异。
+   ⇒ 测短路链的某一支，必须把它**前面所有分支的触发条件都关掉**。
+
+4. **★★ 数字键与字符串键合并校验 ⇒ 放行了 `error_type: 500`。**
+   我最初写的是 `typeof d[k] === 'string' || typeof d[k] === 'number'`，
+   用例「error_type 是数字时抛错」首跑就红 ⇒ 这是**实现缺陷**，不是判据缺陷。
+   ⇒ 改成 `SELF_CHECK_RUN_NUMERIC_OPTIONAL_KEYS` / `..._STRING_OPTIONAL_KEYS` 两组分别校。
+   ★ 与已记录的「`toThrow(/字段名/)` 被下游兜住」同族：**类型校验写宽等于没写**。
+
+5. **★★ 两条恒等式用错方向（我自己的断言写错，实现是对的）。**
+   - `error_type` 枚举我断言 32，**实际建表 CHECK 是 31 值** ⇒ 改断言。
+   - Go 是 `time.Since(...) < 15*time.Minute`（严格小于）⇒ 恰好 15 分钟判 stale。
+     我原本断言 true ⇒ 改断言，并补「差一毫秒仍在阈值内」。
+
+6. **★★★ 四条可证等价变异（保留守卫，不删）。**
+   `#54` 允许「键在而值为 undefined」——`requireKeys` 已保证键存在，JSON 解析也不会产出这种值；
+   `#70` `<= 0` 与 `=== 0`——`total_runs` 来自 `COUNT(*)` 恒 ≥ 0；
+   `#73` `> 0` 与 `!== 0`——`queue_ready_unclaimable` 同理；
+   `#84` `|| null` 与 `?? null`——`upstream_latency_ms` 带 omitempty，0 根本不落键。
+   ⇒ 全部记为可证等价变异，已在脚本与源码注释里写明理由。
+
+7. **顺手纠一处上一批的追溯错误。** 第七十五批把 `dashboard/operational` 写成
+   `handler.go:1069`，实际是 **`:1068`**（`:1069` 是 `board/error-drill`）。
+   ⇒ 行号是「逐字照抄」的产物，**跨批次也会漂**，每批开写前都要重新确认。
