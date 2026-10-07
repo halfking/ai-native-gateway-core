@@ -965,6 +965,41 @@ files=(
   # 列存漂移（3 个分区 + ensure 函数 + 盲掉的 columnar_healthcheck）永远没人修。
   # 本条无台账行 ⇒ 每次部署都跑；自身幂等。必须排在 813 之后。
   "$ROOT_DIR/sql/migrations/startup/836_supplier_errors_heap_reassert.sql"
+
+  # ── 2026-10-07：837-841 补登升级通道腿（R33 同型第 7 次）──
+  #
+  # 这五条带着完整的 installer 腿落地，却没有通道腿 ⇒ 全新安装拿得到，
+  # 在它们之前装的库永远拿不到。契约门连续报红（6 条：5 个迁移各报
+  # 「有 installer 腿无升级路径」+ 841 额外触发「最高编号必须在 files 数组」）。
+  #
+  # ★ 为什么这五条**不是** installer-only by design（因此不进 channel_gap_allowlist）：
+  # 上一轮刻意留红，理由是「选哪个取决于设计意图，无从判断」。本轮查证结论是
+  # **它们早已在生产 applied 并验证过**，不是「只在新装库跑过」：
+  #   · 838  analyze_llm_gateway_table_stats 函数体 2142 B（838 前值 1490）
+  #   · 839-B 库函数含 opts_sql_base 与 0.005；当月 11 族分区 heap 5 个 @0.005
+  #   · 840  llm_gateway_task_state 存在，最早一行 last_started_at=2026-10-07 15:22:57
+  #   · 841  两个函数与两张表均存在；retention 表 0 行、drop_log 0 行、
+  #          expired_month_partitions() 返回 0 行 ⇒ 未删任何分区或数据
+  #   证据：docs/db-changelog.md「2026-10-07T09:52Z 更正」节（17:52 只读核验）。
+  # ⇒ 手动部署已经发生，登记通道只是把**已经生效**的形态补成无人值守可达，
+  #   不是新增风险面。这正是通道存在的意义（825-828 / 831 同型）。
+  #
+  # ⚠ 判据与 830 的区别：830 之所以不登记，是因为它的 RENAME + CREATE PARENT TABLE
+  # 会原地改名一张 10GB+ 活表，**无人值守升级不该跑它**。这五条全部不满足那一条：
+  # 837 只重建两个 7 天窗口的物化视图（且 db.go 的 Go-ensure 已在每次启动用
+  # 「refreshed_at 不得存在」这条负控强制收敛，SQL 腿只是把同一形态补到新装库）；
+  # 838/839 只 CREATE OR REPLACE 一个函数体；840/841 只建表与函数，均不重写业务数据。
+  "$ROOT_DIR/sql/migrations/startup/837_routing_mv_refresh_state.sql"
+  # 838 → 839 必须成对且有序：839 重建的正是 838 那个函数体（839 把当月**堆**分区
+  # 交回 autovacuum），两者都要在通道里，否则升级库会停在中间形态。
+  "$ROOT_DIR/sql/migrations/startup/838_analyze_skip_frozen_month.sql"
+  "$ROOT_DIR/sql/migrations/startup/839_autovac_current_month_heap_handoff.sql"
+  # 840：跨实例共享的 analyze 节流槽。与 §10.53 的 advisory 锁正交，删掉这两个函数
+  # 后 Go 侧对 42P01 做降级 ⇒ 行为退化为「两台各跑一遍」（回到 10-07 上线前）。
+  "$ROOT_DIR/sql/migrations/startup/840_analyze_stats_throttle_slot.sql"
+  # 841：月度分区族的分区级 DROP 保留。**建表即为空 ⇒ 迁移应用后行为与今天完全一致**，
+  # 真正启用需按族 INSERT 保留月数（业务决定，不在本迁移内）。
+  "$ROOT_DIR/sql/migrations/startup/841_monthly_partition_retention.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的
@@ -1055,6 +1090,15 @@ intentional_function_chains=(
   # without this registration — same pre-flight guard abort class as 703
   # (caught 2026-09-14 when S1a files joined the sequence).
   'ensure_request_logs_partition|694_partition_ensure_timezone.sql|705_request_logs_reattach_detached_partitions.sql|'
+  # 2026-10-07（838 → 839）：同一个函数 analyze_llm_gateway_table_stats 被两条
+  # 通道文件先后重定义。838 让往月分区「只在从未被分析过时补」（省掉整趟 pass 的
+  # 25.7%）；839 进一步把当月**堆**分区交回 autovacuum 并下调其 scale_factor 到
+  # 0.005，同时**保留**对列存分区与首次覆盖的强制分析。
+  # ★ 839 必须是最后一项——它是活库里应有的最终体（生产实测已 applied 839-B）。
+  # ⚠ 注意：db/db.go ensurePartitionAutovacuumSchema 还有一份内联副本，每次启动
+  #   CREATE OR REPLACE 同名函数；它不在通道文件里，故不进本链，但必须与 839 同步
+  #   （839 的 .down.sql 头已把这条写成回滚判据）。
+  'analyze_llm_gateway_table_stats|838_analyze_skip_frozen_month.sql|839_autovac_current_month_heap_handoff.sql|'
   # 765 (R16 bodies columnar round) redefines 694's ensure_request_logs_bodies_partition
   # so new month partitions are created USING citus_columnar when the extension is
   # present (heap fallback otherwise); 765 must stay the later entry. 765 landed
