@@ -2,6 +2,7 @@ package bg
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -150,6 +151,67 @@ func (w *StatsMinuteRollup) rollupWindow(ctx context.Context, since, until time.
 	return w.rollupDims(ctx, since, until, creditsExpr)
 }
 
+// RebuildRangeStats re-aggregates [from, to) one day at a time.
+//
+// Why this exists: the rollup cursor only moves forward, so a minute is
+// aggregated exactly once and never revisited. Rows written before the probe
+// exclusion existed therefore keep their probe-inflated counts until they age
+// out of statsRetentionDays (90). Deploying the exclusion alone leaves the 7d
+// and 30d board tabs wrong for weeks — the code fix is correct but the stored
+// data is not.
+//
+// Re-aggregating a day is idempotent and safe:
+//   - keys the filtered view still produces are replaced wholesale by the
+//     ON CONFLICT DO UPDATE (整键替换), not added to;
+//   - keys that existed only because of probe traffic are no longer produced,
+//     and the probe-aware retire pass deletes them.
+//
+// It is derived data: request_logs remains the source of truth, so an
+// interrupted run is fixed by running it again.
+//
+// Day chunks are deliberate. A single pass over the whole retention window
+// scans months of request_logs and blows past the 2-minute rollup budget (the
+// scheduled path would fail and retry forever); one day per pass keeps each
+// statement bounded and the run resumable.
+func (w *StatsMinuteRollup) RebuildRangeStats(ctx context.Context, from, to time.Time) error {
+	if w == nil || w.db == nil {
+		return fmt.Errorf("stats rollup not configured")
+	}
+	from = from.UTC().Truncate(24 * time.Hour)
+	to = to.UTC()
+	if !to.After(from) {
+		return fmt.Errorf("empty rebuild range: from=%s to=%s", from, to)
+	}
+
+	days := 0
+	for day := from; day.Before(to); day = day.Add(24 * time.Hour) {
+		dayEnd := day.Add(24 * time.Hour)
+		if dayEnd.After(to) {
+			dayEnd = to
+		}
+		if err := w.rollupWindow(ctx, day, dayEnd); err != nil {
+			return fmt.Errorf("rebuild stats %s..%s (after %d days): %w",
+				day.Format("2006-01-02"), dayEnd.Format("2006-01-02"), days, err)
+		}
+		days++
+		if days%7 == 0 {
+			slog.Info("stats minute rebuild progress", "days_done", days, "day", day.Format("2006-01-02"))
+		}
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("stats rebuild cancelled after %d days: %w", days, err)
+		}
+	}
+	slog.Info("stats minute rebuild finished", "days", days, "from", from, "to", to)
+	return nil
+}
+
+// RebuildRangeStatsDetached decouples the rebuild from the request lifecycle,
+// matching ReportRollupWorker.RollupDateDetached: an operator closing the tab
+// must not abort a half-finished day.
+func (w *StatsMinuteRollup) RebuildRangeStatsDetached(from, to time.Time) error {
+	return w.RebuildRangeStats(context.Background(), from, to)
+}
+
 // rollupDimQueries drives rollupDims. client_ip（R57 B7）是真源客户端 IP 维度
 // （341 起落在 request_logs[_hot].client_ip，经 740 view 链投影）；virtual_ip
 // 是 identity 派生的假名 10.x，保留为遗留对照维度（同 client_profile/agent_name
@@ -176,6 +238,17 @@ var rollupDimQueries = []struct {
 	{"error_kind", `COALESCE(NULLIF(r.error_kind, ''), '__unknown__')`},
 }
 
+// rollupMainStatement materialises request_stats_minute — the table the
+// dashboard board's 总请求数 / 成功率 read face sums (admin/dashboard_board_queries.go:
+// queryBoardSummary). Every statement here now carries ProbeTrafficExclusionPredicateView.
+//
+// Why the exclusion has to live HERE rather than in the reader: the rollup table's
+// grain is (bucket, tenant_id, provider_id, canonical_id) — it has NO origin_stage /
+// origin_actor / quality_flags / task_type column, so by the time a row is summed the
+// request-level probe markers are already gone and no read-time WHERE can recover
+// them. Probe traffic failed at a far higher rate than real traffic, so folding it in
+// here is what dragged the board's success rate down to a meaningless figure. Excluding
+// at write time is the only place the markers still exist.
 func rollupMainStatement(creditsExpr string) string {
 	return `
 		INSERT INTO request_stats_minute (
@@ -201,6 +274,7 @@ func rollupMainStatement(creditsExpr string) string {
 		FROM request_logs_with_current_month r
 		WHERE r.request_status IN ('success', 'failure', 'rate_limited')
 		  AND r.ts >= $1 AND r.ts <= $2
+		  AND ` + fmt.Sprintf(ProbeTrafficExclusionPredicateView, "r", "r", "r") + `
 		GROUP BY 1, 2, 3, 4
 		ON CONFLICT (bucket, tenant_id, provider_id, canonical_id) DO UPDATE SET
 			requests = EXCLUDED.requests,
@@ -249,6 +323,7 @@ func (w *StatsMinuteRollup) rollupDims(ctx context.Context, since, until time.Ti
 			WHERE r.request_status IN ('success', 'failure', 'rate_limited')
 			  AND r.ts >= $1 AND r.ts <= $2
 			  AND ($3 <> 'error_kind' OR r.request_status = 'failure')
+			  AND `+fmt.Sprintf(ProbeTrafficExclusionPredicateView, "r", "r", "r")+`
 			GROUP BY 1, 2, 4
 			ON CONFLICT (bucket, tenant_id, dim_type, dim_key) DO UPDATE SET
 				requests = EXCLUDED.requests,
@@ -277,6 +352,7 @@ func (w *StatsMinuteRollup) rollupDims(ctx context.Context, since, until time.Ti
 		FROM request_logs_with_current_month r
 		WHERE r.request_status = 'failure'
 		  AND r.ts >= $1 AND r.ts <= $2
+		  AND `+fmt.Sprintf(ProbeTrafficExclusionPredicateView, "r", "r", "r")+`
 		GROUP BY 1, 2, 3, 4, 5, 6
 		ON CONFLICT (bucket, tenant_id, error_kind, model_name, provider_id, client_profile) DO UPDATE SET
 			requests = EXCLUDED.requests
