@@ -11937,6 +11937,42 @@ credential_model_index_2026_10 autovacuum_analyze_scale_factor = 0.02  ← 同�
 ⇒ ★ 这也说明：**「两台各跑一遍」这个结论对 analyze 是坐实的，对 promote 至今没有任何数据**——
   不要把 analyze 的读数外推到 promote。
 
+### §10.106.15 九月分区 = **4,767 MB（全库 32%）**，且**代码里没有 DROP 老月度分区的逻辑**
+
+⚠️ **订正我上一轮的口径**：我说「`session_*_2026_09` 三个分区 3,254 MB」——
+那只是被我的正则匹配到的 `session_` 前缀族。**全量是 24 个分区、4,767 MB**，
+横跨 13 个数据族。我低估了。
+
+```
+2026_09 全量：24 个分区   堆 2,195 MB   总计 4,767 MB  = 全库 15 GB 的 32%
+外键指向这些分区的约束：0 条   依赖它们的视图/物化视图：0 个
+⇒ DROP 在依赖层面是干净的（不搬数据、不破读路径）
+```
+
+| 归类 | 数据族 | 九月占用 | 建议口径 |
+|---|---|---|---|
+| **会话原始数据** | `session_turns` **2,634 MB** / `session_turn_details` 603 / `sessions` 88 / `session_memora` 53 / `session_censors` 28 / `session_bodies` 17 / `session_tools` 56 kB / `session_module_executions` 24 kB | **约 3,423 MB** | 保留期 ≤ 1 个月即可 DROP |
+| **账务** | `usage_ledger` **720 MB** / `credit_ledger` 32 kB | 720 MB | ⚠️ 计费数据，**大概率不可擅删** |
+| **审计** | `candidate_failure_logs` 145 / `routing_decision_log` 137 / `supplier_errors` 93 | 375 MB | ⚠️ 审计留痕，与账务同口径待定 |
+| **WAL/回放** | `request_wal` 193 MB | 193 MB | 看是否还有回放需求 |
+| 其余 | `credential_model_index` 21 / `request_logs` 14 / `auto_route_selections` 12 / `request_logs_bodies` 7.9 MB / 6 个空壳 | < 50 MB | 可随月滚动 |
+
+⇒ ★★ **决策必须按族给，不能笼统说「删九月」**：
+   会话原始数据 3.42 GB（23%）可删；账务 720 MB + 审计 375 MB 大概率要留。
+   我不擅自定，**等你逐族给保留期**。
+
+#### ★ 结构性缺口：月度分区**没有** DROP 级保留
+
+- `bg/partition_manager.go` 里唯一与保留期相关的常量是
+  `DefaultRetentionWindow = 8 * time.Hour`（§10.106.14 提到的 830 快照族，8 小时窗口）；
+- **全文没有任何「DROP 老月度分区」的逻辑**（只有一处注释提到另一个 helper 的逐分区 DROP）。
+⇒ 所以月度族只会「被清空」、不会「被丢弃」：
+**这正是 `session_*_2026_07` / `_2026_08` 变成 0 字节空壳却仍留在目录里的机制。**
+⇒ ⇒ **长期解不是手工 DROP 一次，而是给月度族补上分区级 DROP 保留**
+（每族各自的保留天数；到期 **DROP 分区**而非 DELETE）
+—— 这正是本轮目标里「重构优化」该落的那一格，
+而且它一次就消掉「空壳分区留在规划里」与「旧月数据无限堆积」两个问题。
+
 ---
 
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」
