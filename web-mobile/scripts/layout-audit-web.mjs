@@ -188,6 +188,18 @@ const READ_THEME = `(() => { const cs = getComputedStyle(document.documentElemen
   dark: document.documentElement.classList.contains('dark'),
   bg: (cs.getPropertyValue('--app-bg') || '').trim().toLowerCase() } })()`
 
+// ── 根字号缩放（2026-10-08，§4.6.65）────────────────────────────
+// 为什么需要：安卓「显示大小 / 字体大小」与 iOS 动态字体是**最常见**的真机差异，
+// 而本仓此前**零覆盖** —— `hyper/scroll/dock.ts:3` 的注释写着
+// 「旋转/分屏/字号走 ResizeObserver + visualViewport」，但那只保证吸顶偏移跟着变，
+// **不保证版式扛得住**。
+// 为什么改根字号是**忠实**的模拟：本仓版式以 `rem` 为主（`0.8125rem` / `0.75rem` …，
+// 根字号未被锁定），改 `html{font-size}` 与平台字号放大在 rem 布局上等价。
+// ⚠️ 同样必须**回读自证**：不读回就会把「没放大」当成「放大后没问题」。
+const FONT_SCALE = Number(arg('font-scale', '1'))
+const BASE_FONT_PX = 16
+const READ_FONT = `(() => getComputedStyle(document.documentElement).fontSize)()`
+
 // 预热：首导航要拉 bundle + 首次解析，settle 容易在挂载前就返回。
 // 不预热的话**第一组**会被自己的量具判成 no-content（实测踩到：/m @320 作废、
 // 同一路由 @914 却有 271 字）——那是启动时序，不是页面没内容。
@@ -264,6 +276,19 @@ for (const route of ROUTES) {
     // 注入要在**判据跑之前**：自定义属性一改，下一次读 rect 就会重新布局。
     let ins = null
     let thm = null
+    let font = null
+    if (FONT_SCALE !== 1) {
+      const want = (BASE_FONT_PX * FONT_SCALE).toFixed(2) + 'px'
+      const got = await evaluate(
+        `(() => { document.documentElement.style.fontSize = ${JSON.stringify(want)};
+           return getComputedStyle(document.documentElement).fontSize })()`,
+      ).catch((e) => ({ error: String(e) }))
+      font = { want, got }
+      if (typeof got !== 'string' || Math.abs(parseFloat(got) - parseFloat(want)) > 0.5) {
+        rows.push({ ...row, invalid: 'font-scale-not-applied', got: JSON.stringify(font) })
+        continue
+      }
+    }
     if (THEME === 'dark') {
       thm = await evaluate(READ_THEME).catch((e) => ({ error: String(e) }))
       if (!thm || thm.error || !thm.dark || thm.bg !== DARK_BG) {
@@ -282,7 +307,7 @@ for (const route of ROUTES) {
     }
     try { rep = await evaluate(`(${AUDIT_SRC})()`) } catch (e) { rep = { error: String(e) } }
     rows.push({ route, reqW: w, reqH: h, vw: probe.vw, vh: probe.vh, textLen: probe.len,
-                rescuedByRetry: rescued, settle, insets: ins, theme: THEME, report: rep })
+                rescuedByRetry: rescued, settle, insets: ins, theme: THEME, font, report: rep })
 
     // 浮层状态：抽屉 / 账户 Sheet 默认关着，不驱动就量不到
     if (OVERLAY) {
@@ -328,6 +353,7 @@ for (const r of rows) {
 
 console.log(`\n—— 量具自证 ——`)
 console.log(`目标 ${ORIGIN}  tag ${TAG}   路由 ${ROUTES.length} × 视口 ${SIZES.length} = ${rows.length} 组`)
+console.log(`根字号 ${FONT_SCALE === 1 ? '16px（默认，未缩放）' : `${FONT_SCALE}× = ${(BASE_FONT_PX * FONT_SCALE).toFixed(2)}px（每组回读 :root font-size，未生效即作废）`}`)
 console.log(`主题 ${THEME === 'dark' ? '暗色（每组回读 html.dark 与 --app-bg，未生效即作废）' : '浅色（默认）'}`)
 console.log(`inset 注入 ${INSETS ? `left=${INSETS[0]} right=${INSETS[1] ?? INSETS[0]} top=${INSETS[2] ?? 0} bottom=${INSETS[3] ?? 0}（每组回读 --app-safe-*，读不回即作废）` : '未注入（env() 在 headless 恒 0 ⇒ 横向 safe-area 本轮结构性不可见）'}`)
 console.log(`浮层状态 ${OVERLAY ? '已开（每组多采一次抽屉/Sheet）' : '未开（抽屉默认关着 ⇒ 本轮量不到）'}`)
