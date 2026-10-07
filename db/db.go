@@ -7988,8 +7988,17 @@ func (d *DB) ensureWebCookieSessionsSchema(ctx context.Context) error {
 	return nil
 }
 
-// ensurePartitionAutovacuumSchema mirrors sql/migrations/startup/404_partition_autovacuum_analyze.sql.
-// Applies aggressive autovacuum reloptions on hot/partition tables; ANALYZE runs via partition_manager.
+// ensurePartitionAutovacuumSchema mirrors sql/migrations/startup/404_partition_autovacuum_analyze.sql
+// plus the 838/839 handoff semantics: hot/partition tables get aggressive
+// autovacuum reloptions, the analyze function keeps never-analysed and
+// current-month columnar relations in the manual pass, and the current
+// month's heap partitions are handed back to autovacuum (analyze scale
+// factor 0.005). ANALYZE runs via partition_manager. The inline copies of
+// apply_llm_gateway_autovacuum_settings / analyze_llm_gateway_table_stats are
+// the LIVE fifth copies — this runs on every boot, after the migrations, so
+// they override whatever the migrations installed. They MUST stay in sync
+// with 838/839 (pinned by migration_839_test.go) or a reboot silently
+// reverts the migrations' behaviour.
 func (d *DB) ensurePartitionAutovacuumSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
@@ -7999,11 +8008,19 @@ func (d *DB) ensurePartitionAutovacuumSchema(ctx context.Context) error {
 		RETURNS integer LANGUAGE plpgsql AS $fn$
 		DECLARE
 		    opts_sql constant text := '
-		        autovacuum_enabled=true,
-		        autovacuum_vacuum_scale_factor=0.05,
-		        autovacuum_vacuum_threshold=10,
-		        autovacuum_analyze_scale_factor=0.02,
-		        autovacuum_analyze_threshold=50';
+			        autovacuum_enabled=true,
+			        autovacuum_vacuum_scale_factor=0.05,
+			        autovacuum_vacuum_threshold=10,
+			        autovacuum_analyze_scale_factor=0.02,
+			        autovacuum_analyze_threshold=50';
+		    -- Same options minus the analyze scale factor, which is
+		    -- month-aware on the partition loop (839: current-month heap
+		    -- partitions run 0.005).
+		    opts_sql_base constant text := '
+			        autovacuum_enabled=true,
+			        autovacuum_vacuum_scale_factor=0.05,
+			        autovacuum_vacuum_threshold=10,
+			        autovacuum_analyze_threshold=50';
 		    r record;
 		    applied integer := 0;
 		BEGIN
@@ -8032,8 +8049,21 @@ func (d *DB) ensurePartitionAutovacuumSchema(ctx context.Context) error {
 		            RAISE NOTICE 'skip autovacuum %: %', r.relname, SQLERRM;
 		        END;
 		    END LOOP;
+		    -- 839 (2026-10-07) handoff, kept alive here: the CURRENT month's
+		    -- heap partitions carry autovacuum_analyze_scale_factor=0.005
+		    -- (everything else stays at the 404 baseline 0.02). Guard and SET
+		    -- are both month-aware — a scale-only guard expecting 0.02 would
+		    -- rewrite 839's 0.005 back on the first boot, and a body that
+		    -- always sets 0.02 would silently drop the handoff again at the
+		    -- next month rollover (new partitions are created without
+		    -- reloptions). Must stay in sync with
+		    -- sql/migrations/startup/839_autovac_current_month_heap_handoff.sql.
 		    FOR r IN
-		        SELECT c.relname FROM pg_class c
+		        SELECT c.relname,
+		               CASE WHEN c.relam = (SELECT oid FROM pg_am WHERE amname = 'heap')
+		                         AND c.relname ~ ('_' || to_char(date_trunc('month', now()), 'YYYY_MM') || '$')
+		                    THEN '0.005' ELSE '0.02' END AS expect_sf
+		        FROM pg_class c
 		        JOIN pg_namespace n ON n.oid = c.relnamespace
 		        JOIN pg_inherits i ON i.inhrelid = c.oid
 		        JOIN pg_class p ON p.oid = i.inhparent
@@ -8049,11 +8079,15 @@ func (d *DB) ensurePartitionAutovacuumSchema(ctx context.Context) error {
 		              'autovacuum_enabled=true',
 		              'autovacuum_vacuum_scale_factor=0.05',
 		              'autovacuum_vacuum_threshold=10',
-		              'autovacuum_analyze_scale_factor=0.02',
-		              'autovacuum_analyze_threshold=50'])
+		              'autovacuum_analyze_threshold=50',
+		              'autovacuum_analyze_scale_factor=' ||
+		                  CASE WHEN c.relam = (SELECT oid FROM pg_am WHERE amname = 'heap')
+		                            AND c.relname ~ ('_' || to_char(date_trunc('month', now()), 'YYYY_MM') || '$')
+		                       THEN '0.005' ELSE '0.02' END])
 		    LOOP
 		        BEGIN
-		            EXECUTE format('ALTER TABLE %I SET (%s)', r.relname, opts_sql);
+		            EXECUTE format('ALTER TABLE %I SET (%s, autovacuum_analyze_scale_factor=%s)',
+		                r.relname, opts_sql_base, r.expect_sf);
 		            applied := applied + 1;
 		        EXCEPTION WHEN others THEN
 		            RAISE NOTICE 'skip autovacuum partition %: %', r.relname, SQLERRM;
@@ -8085,6 +8119,20 @@ func (d *DB) ensurePartitionAutovacuumSchema(ctx context.Context) error {
 		            JOIN pg_namespace n ON n.oid = c.relnamespace
 		            WHERE n.nspname = 'public' AND c.relkind = 'r'
 		              AND c.relname ~ ('^(credential_model_index|model_probe_runs|request_logs|routing_decision_log|request_wal|usage_ledger|credit_ledger|tool_usage_stats|candidate_failure_logs|handoff_logs|request_logs_bodies)_' || suffix || '$')
+		              -- 838/839 handoff predicate (must stay in sync with
+		              -- sql/migrations/startup/839_autovac_current_month_heap_handoff.sql):
+		              -- ① never-analysed relations always stay in the manual pass;
+		              -- ② current-month COLUMNAR partitions stay manual too
+		              --    (autovacuum gathers no stats for columnar);
+		              -- ③ current-month HEAP partitions are handed back to
+		              --    autovacuum (scale factor 0.005, see the guard above).
+		              AND (
+		                    NOT EXISTS (SELECT 1 FROM pg_statistic s WHERE s.starelid = c.oid)
+		                 OR (
+		                        m = 0
+		                        AND c.relam <> (SELECT oid FROM pg_am WHERE amname = 'heap')
+		                   )
+		              )
 		        LOOP
 		            EXECUTE format('ANALYZE %I', r.relname); analyzed := analyzed + 1;
 		        END LOOP;
