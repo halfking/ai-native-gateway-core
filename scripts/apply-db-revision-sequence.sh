@@ -1000,6 +1000,12 @@ files=(
   # 841：月度分区族的分区级 DROP 保留。**建表即为空 ⇒ 迁移应用后行为与今天完全一致**，
   # 真正启用需按族 INSERT 保留月数（业务决定，不在本迁移内）。
   "$ROOT_DIR/sql/migrations/startup/841_monthly_partition_retention.sql"
+  # 842（2026-10-07 审计轮补登，837-841 同族复发后一小时）：给 autoroute
+  # latest_bucket 聚合补 (credential_id, raw_model, bucket) 索引（runbook
+  # §10.106.26）。正常升级通道：部署扫描腿本就会按目录+台账投递，登记是
+  # 元数据补全；落 main（cbce70a60，自称未部署）时又未登记——最高编号
+  # 守卫按设计拦下。
+  "$ROOT_DIR/sql/migrations/startup/842_credential_model_index_latest_bucket_idx.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的
