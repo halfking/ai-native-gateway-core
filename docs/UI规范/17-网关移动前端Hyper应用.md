@@ -11070,3 +11070,116 @@ WHERE credential_id = $1 AND started_at >= $2
    本族把 `h.db == nil` 放在方法检查**之前**（`:52` 在 `:56`）⇒ 「非 GET 且 db 未配置」得 503。
    ⇒ 与批 81 的 dispatcher 表现相同，但**本族在 handler 里自己也有这道检查**（不只在 dispatcher）
    ⇒ 这种顺序客户端观察不到（除非两种错误同时发生），但值得记下来。
+
+---
+
+## 11.119 运维总览聚合包（第八十三批，2026-10-08）
+
+- 新增 `web-mobile/src/api/opsOverview.ts`
+- 新增 `web-mobile/src/api/opsOverview.test.ts`（**108 条**）
+- 覆盖 `GET /api/admin/ops/overview`
+- **鉴权：`admin/handler.go:1070` 的 `admin(...)` ⇒ admin 档**（与前两批的 superAdmin 不同）
+- ★ ★ **差集扫描排掉一个误判**：`ops` **不在** `cmd/gateway/maintain_proxy.go:37-54`
+  的 `maintainCompatPrefixes` 里 ⇒ 尽管桌面把 `/ops` 页面
+  `externalMaintainRedirect` 到独立 maintain 服务（`web/src/router.ts:309`），
+  **这个 API 仍由本进程的 admin mux 提供**。
+  ⇒ ★★ 别被**前端路由**的重定向误导 —— 前端重定向与 API 提供方是两件事。
+- 实现：`admin/ops_overview.go`（532 行）
+
+### 本族最要紧的十七件事
+
+1. ★★★★★ **十一个子查询并发跑，失败策略逐个不同。**
+   `:85-100` 每项一个 goroutine，`:117-125` 收集时 `if res.err != nil { continue }`
+   ⇒ ★★★ **单个子查询失败 ⇒ 那个键直接缺失，响应仍是 200**；
+   `if firstErr != nil && len(payload) <= 1` ⇒ **全部失败才 500**。
+   ⇒ ⇒ 客户端**无法区分**「这个子查询失败」与「后端版本不含这个子查询」。
+2. ★★★★★ **响应是开放形状：键数在 2..12 之间浮动。**
+   只有 `generated_at` 恒在 ⇒ **解包器不能 requireKeys 全部子查询键**，
+   但**存在**的键仍要逐个校验类型。
+3. ★★★★ `generated_at` 是 `time.RFC3339` ⇒ **秒级、无小数**（`:115`），
+   可自验；其它端点用 `time.Time` 直序列化 ⇒ RFC3339**Nano**，有小数。
+4. ★★★★ **15 秒内存缓存 + `Cache-Control: private, max-age=15`**
+   ⇒ 「两次采样相同」**不能**证明数据没变，可能只是命中了缓存。
+5. ★★★★★ `region_stats` 的三个 region（`local`/`245`/`154`）是**硬编码**的，
+   缺失时补零值占位并打 `missing: true` ⇒ **三行恒存在**。
+   ★★★ **额外行追加在后面，而 `for region, item := range byRegion` 是 map 遍历
+   ⇒ Go 的 map 迭代顺序随机** ⇒ 客户端**绝不能**依赖额外行的顺序。
+6. ★★★ `data_plane_tables` 每项失败写 **`-1` 而不是报错**（`:288-292`），
+   且函数**永不返回错误** ⇒ 这个键**恒存在**（11 个键里唯一这样的）。
+7. ★★★ `offline_requests` 把**同一个时间戳写了两个键**（`timestamp` 与 `created_at`）
+   ⇒ 可自验不变式 **`timestamp === created_at`**。
+8. ★★ `status` 走 `COALESCE(status,'pending')` ⇒ 恒非 NULL；
+   `approved_at` / `activation_code` 是条件键。
+9. ★★ `recent_upgrades` 的 `version` 也走 COALESCE，兜底值是**空串** ⇒ 键恒在但值可能是 `''`。
+10. ★★★★ `recent_faults` 只取 `status='new'`（SQL 硬编码 ⇒ **可校验取值**），
+    而 `fault_stats` 统计 `status IN ('new','acknowledged','resolving')` 三个
+    ⇒ ★ **跨子查询不变式 `recent_faults.total <= fault_stats.open_events`**。
+11. ★★ 两个「最近列表」的容器键名**不同**：`recent_faults` 是 `events`、
+    `recent_upgrades` 是 `items` ⇒ **不能共用一个取列表函数**。
+12. ★★★★★ **同一个文件里两种 nil 编码并存，而且是「同一概念的两个字段」**：
+    | 字段 | 写法 | NULL 的编码 |
+    |---|---|---|
+    | `region_stats[].last_heartbeat` | `if != nil { item[…] = *… }`（`:194-196`） | **键缺失** |
+    | `runtime_metrics_summary[].last_update` | 直接塞 `*time.Time`（`:523`） | **裸 `null`** |
+    ⇒ **第十一种 nil 编码：往 `map[string]any` 塞 Go 指针且不判空 ⇒ JSON `null`**。
+13. ★★★ `runtime_metrics_summary` 的 WHERE 是 `status != 'offline' OR m.last_update IS NOT NULL`
+    ⇒ **离线实例只要 24 小时内有指标就在榜上** ⇒ 不能用「在榜」推断「在线」。
+14. ★★★ 四个 AVG 全被 `COALESCE(…, 0)` 包住 ⇒ **`0` 是二义的**
+    （真 0 或「24 小时无指标」）⇒ 要区分必须看 `last_update`。
+15. ★★ 五个数组型结果都有 `if items == nil { …{} }` ⇒ 恒数组。
+16. ★★ **405 检查排在 503 之前** ⇒ 「非 GET **且** db 未配置」得 **405**
+    ⇒ ★★ 与第八十二批 `format-anomalies` **正好相反**（那里 503 在 405 之前）。
+17. ★ 500 是 `writeInternalErr(w, "internal error (see server logs)", err)`
+    ⇒ 固定文案、不含 `err.Error()`。
+
+★ 本端点**不按租户隔离**：11 个查询里没有任何租户条件（全是全局表）
+⇒ admin 档的 tenant_admin 看到的是**全平台运维数据**。
+
+### 验证
+
+- 用例 **108 条全绿**
+- 变异 `/tmp/mut-co83.mjs`，见下节
+- 三门 rc=0；`vue-tsc` rc=0；`npm run build` rc=0（两个门都一次通过）
+- U+FFFD 自查：源与用例均 0
+
+### 变异验证暴露的判据缺陷（52 条 → 首跑 42 有牙，修到 48）
+
+1. **★★★ 四条可证等价（保留 + 用例注释写明理由）。**
+   | # | 变异 | 为什么等价 |
+   |---|---|---|
+   | 29 | `missing === true` → `!!missing` | `missing` 的取值**恒为字面量 `true`**（`:217`），不存在「非真值但在键里」的形态 ⇒ 两种实现同答案 |
+   | 36 | `=== -1` → `< 0` | 可达取值集合只有 `{非负整数, -1}`（`:289` 只写 `-1`）⇒ 在可达集合上两式相同 |
+   | 40 | `'approved_at' in row` → `!!row.approved_at` | `approved_at` 非 nil 时是 RFC3339 串，**恒非空** ⇒ 真值与 `in` 一致 |
+   | 52 | `last_update !== null` → `!!last_update` | `last_update` 是 `*time.Time`：nil ⇒ `null`，非 nil ⇒ RFC3339 串（**零值也是串不是空串**）⇒ 可达集合只有 `{null, 非空串}` |
+   ⇒ ★★ 这四条与第八十一/八十二批的同类归因**方向一致**：
+     **条件键的取值域本身是封闭的 ⇒ 真值判断与 `in` 判断等价。**
+     ⇒ 保留 `in`/`=== null` 的写法是为了**与后端形状对齐**，不是为了打掉变异。
+
+2. **★★★ 「三值判据」里每一项都要一条「只有那项不同」的专格（4 条）。**
+   | 变异 | 问题 | 修法 |
+   |---|---|---|
+   | #33 「前三行覆盖」只查前两个 | 锚点那格第三行错位也能过 | 补「**第三行不是 154**」与「第二行不是 245」两条专格 |
+   | #34 「额外行在后」取反成 `some` | 锚点那格 tail 全是额外行 ⇒ `every`/`some` 同 true | 补「**两个额外行里混进一个硬编码 region**」 |
+   | #50 漏掉 `avg_tps` | 锚点那格三个都 0 ⇒ 漏项仍 true | 补「**只有 avg_tps 非 0**」 |
+   | #51 漏掉 `avg_cpu_pct` | 锚点那格 mem/tps 也非 0 ⇒ 漏项仍 false | 补「**只有 avg_cpu_pct 非 0**」 |
+   ⇒ ★★ 这是「判据有 N 个合取项 ⇒ N 条专属用例」在**三值**上的又一次应用
+     （前两次分别是两值与三值判据）。
+   ⇒ ★★ 规律补充：**锚点那格必须是「其它项全部为『不触发』值、只有被测项触发」**。
+
+3. **★★ `in` → 真值的变异，专属夹具要挑「键在但值是 falsy」那一格（2 条）。**
+   | 变异 | 问题 | 修法 |
+   |---|---|---|
+   | #21 `key in r` → `!!r[key]` | 锚点那格值是对象 ⇒ 真值为真 | 补「**键在但值是 `0`**」（`license_total` 在真实响应里可以是 0） |
+   | #37 `>= 0` → `> 0` | 锚点指到 `-2` 那格 ⇒ 两式同 false | 锚点改到「**值是 0 ⇒ 判可用**」 |
+
+4. **★★ 手写夹具的「键缺」必须用 `delete`，不能用 `undefined`。**
+   `region({ last_heartbeat: undefined })` 会**造出这个键**（spread 保留显式的 undefined）
+   ⇒ `'last_heartbeat' in row` 返回 true。
+   ⇒ ★ 这解释了为什么「JSON 反序列化的缺键」与「手写夹具的 undefined」在 JS 里是**两种形状**；
+     spec 里加了一条**陷阱对照**用例把这个差异钉住。
+   ⇒ ★ 同一批还踩了 `slice(3)` 对三元素数组返回空数组 ⇒ `every` 恒 true ⇒ 样本选歪。
+
+### 收尾
+
+local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
+`web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
