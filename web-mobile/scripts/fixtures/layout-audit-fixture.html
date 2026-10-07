@@ -121,6 +121,26 @@
      ⇒ 判据不许报（这是硬裁切，不是省略号截断，归属另一类） */
   #decoy-trunc-hard { width: 96px; }
   #decoy-trunc-hard .val { color: #111; text-overflow: clip; }
+
+  /* ── 顶栏遮挡类（§4.6.69 修的那个恒真假阳性）───────────────────
+     复刻真实形态：`.topbar` 是 **sticky**（不是 fixed），且 `--app-safe-top`
+     会把它顶高。真机 2.0 读数：headless top=48px 时栏内按钮 top=−0.5（刚好躲过
+     `top >= 0`），真机 top=24px 时栏内按钮 top=23.6 ⇒ 恒真成立。 */
+  #plant-topbar { position: sticky; top: 0; z-index: 10; height: 64px; background: #234; color: #fff; }
+  #plant-topbar-btn { width: 48px; height: 48px; margin: 8px; }
+  #plant-top-main { margin: 0; padding: 0; }
+  /* plant：main 里的按钮被顶栏压住（top 落在 0 < 64 区间内）。
+     ⚠️ 必须用 absolute 才能压到栏下；但 absolute **无视父级 padding**，
+        所以「已避让」那一档不能只给 main 加 padding —— 必须把定位改回 static。 */
+  #plant-top-first { position: absolute; top: 8px; left: 8px; width: 120px; height: 44px; }
+  /* 对照：main 已补 padding-top，按钮落到栏下方 ⇒ 必须不报 */
+  #plant-top-ok-main { padding-top: 96px; }
+  /* ⚠️ 对照组必须有自己的 id。
+     两个坑叠在一起，都不报错、只是「对照组其实没生效」：
+       ① 写成 `#plant-top-ok-first` 而元素带的是 class ⇒ 一个都选不到；
+       ② 改成 `.plant-top-ok-first` 后仍被 `#plant-top-first`（1,0,0 > 0,1,0）压过。
+     ⇒ 对照元素一律用独立 id，不与 plant 共用。 */
+  #plant-top-first-ok { position: static; display: block; width: 120px; height: 44px; }
 </style>
 </head>
 <body>
@@ -288,6 +308,27 @@
     <div class="val">8,888,888,888</div>
   </div>
 </div></template>
+
+<!-- ── covered-top：顶栏遮挡（§4.6.69）────────────────────────────
+     ★ 诱饵是这条场景存在的全部理由：`#plant-topbar-btn` 是**顶栏自己的按钮**，
+       它必然落在顶栏区间内 ⇒ 任何「拿栏比子元素」的写法都会恒真报出来。 -->
+<template id="s-covered-top"><!--filler--><div><span>a</span><span>b</span><span>c</span><span>d</span><span>e</span><span>f</span><span>g</span></div>
+<!-- ⚠️ 必须保留 `<div id="app">` 外层：**与真实壳同形**才是有效的负控。
+     真实 App 是 Vue 挂在 `<div id="app">` 下、topbar 在它里面，
+     所以旧兜底 `#app button` 才命中得到顶栏自己的按钮。
+     第一版夹具**没有这层** ⇒ 变异打回去时守卫仍全绿 ⇒ 这个 decoy 是假的。 -->
+<div id="app">
+<header id="plant-topbar"><button id="plant-topbar-btn">菜单</button></header>
+<main id="plant-top-main"><button id="plant-top-first">被压住的按钮</button></main>
+</div>
+</template>
+
+<template id="s-covered-top-ok"><!--filler--><div><span>a</span><span>b</span><span>c</span><span>d</span><span>e</span><span>f</span><span>g</span></div>
+<div id="app">
+<header id="plant-topbar"><button id="plant-topbar-btn">菜单</button></header>
+<main id="plant-top-ok-main"><button id="plant-top-first-ok">没被压住</button></main>
+</div>
+</template>
 
 <!-- ── none：干净页。节点数必须 ≥ 20，否则 near-blank 会正确地报出来 ── -->
 <template id="s-none"><div class="wrap"><h2>干净页</h2>
