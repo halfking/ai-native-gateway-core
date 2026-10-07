@@ -7577,3 +7577,86 @@ go test ./bg/ -run TestBaselinePricesInDatabaseMatchTheSSOT -v
   本轮无从判断**。而误把 manual-by-design 的迁移登记进无人值守升级通道，正是
   830 改标 `.sql.skip` 时差点造成的那类生产事故（无人值守升级会 RENAME 一张
   10GB 在线表）。这不是本提交该替别人做的决定，故留红并在此记账。
+
+## 2026-10-07 — 收口 837-841 的升级通道缺口：上一轮「无从判断」，本轮补上了判断依据
+
+### 〇 起点：契约门红，且红的原因不是「本轮改坏了」
+
+上一节记的「红，4 条」到本轮已变成 **红，6 条**——因为 `840` / `841` 在那之后落地，
+各自又被同一条检查数出一次。六条的构成（读数时刻 **2026-10-07 18:37 CST**，
+`scripts/pre-commit-check.sh` 自报 `PASS=4 FAIL=1 WARN=0 SKIP=2`）：
+
+- ① 最高编号守卫：`841 exists but is missing from the channel files=(...) array`
+- ②–⑥ `837/838/839/840/841` 各一条 `has an installer leg but no upgrade path`
+
+⇒ **6 条红对应 5 个迁移**，不是 6 个问题。门自己的措辞（"6 problem(s)"）按迁移计。
+
+### 一、拍板依据：这五个**不是** installer-only by design
+
+上一轮刻意留红，理由是「选哪个取决于设计意图，本轮无从判断」。本轮补上的正是这条依据 ——
+查 `docs/db-changelog.md` 的 **2026-10-07T09:52Z 更正节**（17:52 只读核验），四条硬判据：
+
+| 迁移 | 库里的实际状态 | 判据 |
+|------|--------------|------|
+| 838 | **applied** | `analyze_llm_gateway_table_stats` 函数体 2142 B（838 前值 1490） |
+| 839 | **applied（839-B）** | 库函数含 `opts_sql_base` 与 `0.005`；当月 11 族分区 heap 5 个 @0.005 |
+| 840 | **applied** | `llm_gateway_task_state` 存在，最早一行 `last_started_at=2026-10-07 15:22:57` |
+| 841 | **applied+verified** | 两函数两表均在；retention 表 **0 行**、drop_log **0 行**、`expired_month_partitions()` 返回 **0 行** |
+
+⇒ **它们早已在生产生效**。所以「无升级通道」不是一个待执行的决定，而是
+  **已经在生产手工执行过、但没把同一形态接成无人值守可达**的分叉。
+  登记通道不是新增风险面，是补齐既成事实 —— 与 825-828 / 831 同型（R33 复发族）。
+
+⚠ 该节同时记了一条**必须继承的告警**：245 上 10-07 的两次部署（build_seq 2488 / 2490）
+**在台账里没有任何记录**，840 正是这样「已应用但从未被登记」的。
+⇒ **`pending deploy` 这类状态词在缺登记时不可信，查现状必须回库读判据。**
+   本节的判断就是回库读判据读出来的，不是照抄台账的状态列。
+
+### 二、为什么 837 也进通道（它是唯一有真实风险的一条）
+
+837 带 `DROP MATERIALIZED VIEW … CASCADE` 并重建两个物化视图，是五条里唯一
+会丢对象的。但两条证据让它可以进通道：
+
+1. **丢的不是数据，是可重建的视图**：`CASCADE` 连带删掉的是依赖这两个视图的对象，
+   而 8 个 Go 文件消费它们，其中 `db.go` 的 `ensureRoutingAnalyticsMaterializedViews`
+   **每次启动都会重建**；
+2. **该 ensure 已内建 837 的负控**（`db/db.go:4011` 附近）——
+   `POSITION('refreshed_at' IN …pg_get_viewdef(…)) = 0`，注释明写
+   「这条负控才是真正强制 252 存量视图被重建的东西」。
+
+⇒ 837 的形态**已被 Go 侧每次启动强制收敛**；SQL 腿的作用是让**新装库**拿到同一形态
+  （installer 腿本就有）。两条腿指向同一个终态，不是两条会打架的路径。
+⇒ 实测确认 Go-ensure 的视图定义体内已无 `NOW()` 目标列（仅 WHERE 子句用时间窗口），
+  与 837 目标一致。
+
+### 三、本轮改动：只有 1 个文件
+
+`scripts/apply-db-revision-sequence.sh`，两处：
+
+- `files=(…)` 数组尾部按 **837 → 838 → 839 → 840 → 841** 顺序补 5 条通道腿；
+- `intentional_function_chains=(…)` 补 1 条：
+  `'analyze_llm_gateway_table_stats|838_analyze_skip_frozen_month.sql|839_autovac_current_month_heap_handoff.sql|'`
+  —— 838/839 双重定义同名函数，**不登记则部署在应用任何文件之前就 exit 5**；
+  839 必须是末项（它是活库最终体）。该链旁另记了 db.go 内联副本必须与 839 同步
+  （已核：含 `0.005` 与首覆盖 `NOT EXISTS pg_statistic` 守卫，与 839 一致）。
+
+**未动任何 .sql 文件**，未改 `channel_gap_allowlist`、未动 Go 代码。
+
+### 四、验证：绿灯不算证据，双向变异才算
+
+| 项 | 读数 |
+|----|------|
+| 契约门（修复后，18:42 CST） | `apply-db-revision-sequence contract passed`，rc=0 |
+| 变异 M1：撤掉 838→839 函数链登记 | **红**，rc=**5**，报 `clobber guard violation (deploy would exit 5)` |
+| 变异 M2：撤掉 841 通道腿 | **红**，rc=1，报 2 条（最高编号 + 无升级路径） |
+| 还原后 | 两次复跑均绿；`diff -q` **逐字节一致** |
+
+⚠ M1 的 rc=5 是个容易读错的信号：它与「门红」的 rc=1 **不是同一件事** ——
+  rc=1 是契约不通过，rc=5 是**部署本身会 abort**。两者混为一谈会把「部署会挂」
+  误读成「检查没过」。
+
+### 五、本轮继承的纪律
+
+引用门禁结论必须带分母与时刻；「没跑成」与「红了」分开表述；
+门自带的诊断措辞是**假设不是结论**（本节第一小节即是一例：门说 "6 problem(s)"，
+实为 5 个迁移被报 6 次，因为最高编号守卫会单独再数一次）。
