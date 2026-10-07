@@ -71,7 +71,12 @@ func expectTurnBodiesHappyPath(mock pgxmock.PgxPoolIface, req *ProcessedRequest)
 	expectSessionLock(mock)
 	expectListAllBodiesEmpty(mock)
 	expectRequestLock(mock)
-	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
+	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1 FROM public\\.session_turns_hot").
+		WithArgs(req.TenantID, req.SessionID).
+		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
+	// hot answered "empty" (COALESCE(MAX,0)+1 == 1 with zero rows),
+	// so the writer falls back to the partitioned parent.
+	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1 FROM public\\.session_turns").
 		WithArgs(req.TenantID, req.SessionID).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").
@@ -138,7 +143,12 @@ func TestSessionWriterMirror_WriteFailsNoMirror(t *testing.T) {
 	expectSessionLock(mock)
 	expectListAllBodiesEmpty(mock)
 	expectRequestLock(mock)
-	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
+	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1 FROM public\\.session_turns_hot").
+		WithArgs(req.TenantID, req.SessionID).
+		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
+	// hot answered "empty" (COALESCE(MAX,0)+1 == 1 with zero rows),
+	// so the writer falls back to the partitioned parent.
+	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1 FROM public\\.session_turns").
 		WithArgs(req.TenantID, req.SessionID).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").
@@ -184,7 +194,12 @@ func TestSessionWriterMirror_FinalFull(t *testing.T) {
 	expectSessionLock(mock)
 	expectListAllBodiesEmpty(mock)
 	expectRequestLock(mock)
-	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
+	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1 FROM public\\.session_turns_hot").
+		WithArgs(req.TenantID, req.SessionID).
+		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
+	// hot answered "empty" (COALESCE(MAX,0)+1 == 1 with zero rows),
+	// so the writer falls back to the partitioned parent.
+	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1 FROM public\\.session_turns").
 		WithArgs(req.TenantID, req.SessionID).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").
@@ -231,7 +246,12 @@ func TestSessionWriterMirror_CommitFailsNoMirror(t *testing.T) {
 	expectSessionLock(mock)
 	expectListAllBodiesEmpty(mock)
 	expectRequestLock(mock)
-	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
+	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1 FROM public\\.session_turns_hot").
+		WithArgs(req.TenantID, req.SessionID).
+		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
+	// hot answered "empty" (COALESCE(MAX,0)+1 == 1 with zero rows),
+	// so the writer falls back to the partitioned parent.
+	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1 FROM public\\.session_turns").
 		WithArgs(req.TenantID, req.SessionID).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").

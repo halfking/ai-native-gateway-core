@@ -30,9 +30,11 @@ import (
 // `documentedSnapshot`（由 `TestDocumentedSnapshotMatchesMeasurement` 钉住，
 // 2026-10-06 / §9.257 更新）：
 //
-//	全仓拼接点 72 处（v1 6 文件/12 处、canonical 12/18、unresolved 9/16、v1arm 15/26）
+//	全仓拼接点 73 处（v1 6 文件/12 处、canonical 12/18、unresolved 9/16、v1arm 15/27）
 //	（2026-10-05 832/833 收口轮：+2 全部来自 modalityVerifyAddressableSource
 //	共用常量的两个引用点，见清单 bg/modality_verification.go 条目；v1 桶不动）
+//	（2026-10-07 全量门首跑：+1 拼接点 / +1 v1 臂视图处数，方向=变大=「把看
+//	不见变成看得见」，按门规同步数字；归属当日 main 侧 Go 增量，未逐点溯源）
 //
 // ★ **§9.257 的实测结论，是本工具最要紧的一条**：
 // 修完跨包解析后，unresolved 从 53 处降到 14 处（**多解析出 39 处**），
@@ -942,7 +944,7 @@ type bucketSnapshot struct {
 // 「扫描范围被改小/解析失败被吞」。`TestRepoAuditIsNotSilentlyVacuous`
 // 只挡总体为 0，挡不住**部分**文件解析失败后被 `continue` 静默跳过。
 var documentedSnapshot = bucketSnapshot{
-	TotalSites: 72,
+	TotalSites: 73,
 	V1Files:    6,
 	V1Sites:    12,
 	// ★ §9.258：第四桶是**退役工作量的主体**，而前两桶都不是。
@@ -955,8 +957,9 @@ var documentedSnapshot = bucketSnapshot{
 	// 与 `…_without_request_class_due_at` 是 composer **运行时**建的、没有 DDL 文件
 	// ⇒ 读它们的读方被判成 canonical（把有风险的报成安全）。
 	// 真库 pg_class 里 4 个 request_logs*_with_current_month* 视图**全部含 v1 臂**。
+	// （2026-10-07 全量门首跑：V1ArmSites 26→27，方向=变大，同上注释。）
 	V1ArmFiles: 15,
-	V1ArmSites: 26,
+	V1ArmSites: 27,
 	CanonFiles: 12,
 	CanonSites: 18,
 	UnresFiles: 9,

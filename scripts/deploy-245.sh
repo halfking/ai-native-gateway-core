@@ -28,8 +28,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # deployment or leak into child processes.
 unset SSHPASS
 
+# scripts/deploy-lib is a repo-relative symlink that dangles in temporary
+# worktrees (/private/tmp/lgw-merge-*); resolve the SSOT robustly instead of
+# sourcing through it (env preset → link target → $HOME default, same order
+# as _shared-lib.sh; 2026-10-07 audit round F2).
+# shellcheck source=deploy-lib-resolve.sh
+source "$SCRIPT_DIR/deploy-lib-resolve.sh"
 # shellcheck source=deploy-lib/parse-wrapper-flags.sh
-source "$SCRIPT_DIR/deploy-lib/parse-wrapper-flags.sh"
+source "$AIAN_DEPLOY_LIB/parse-wrapper-flags.sh"
 
 # Strip operator-level recovery flags before delegating. The seamless
 # orchestrator owns recovery of all lock layers and then reacquires them.
