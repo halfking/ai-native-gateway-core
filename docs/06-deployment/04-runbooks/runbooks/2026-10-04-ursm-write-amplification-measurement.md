@@ -11901,15 +11901,25 @@ credential_model_index_2026_10 autovacuum_analyze_scale_factor = 0.02  ← 同�
 
 ⇒ 量具可信；且**今天两台相位差约 27 分钟，确实不存在争用**（与 §10.107.6 的预判一致）。
 
-**但逐拍间隔不同 ⇒ 相位在单向收敛**：
+**但逐拍间隔不同 ⇒ 相位在单向收敛**（**2026-10-07 15:45 用第 3 个间隔重估，结论比初版晚约 1.5 天**）：
 
 ```
-245 逐拍间隔  3687 s / 3670 s    均值 3678 s
-154 逐拍间隔  3618 s             均值 3618 s
-相对漂移 = -60.5 s/小时（245 每小时比 154 慢推进 1.01 分钟）
-相位差(154−245)：13 时 27.87 分钟 → 14 时 26.72 分钟
-⇒ 收敛到 0 需 26.5 小时 ⇒ 约 2026-10-08 17:13 两台 tick 首次重合
+154 逐拍  61m08s / 60m35s      均值 3651.5 s
+245 逐拍  61m27s / 61m10s      均值 3678.5 s
+相对漂移 = -27.0 s/小时
+相位差(154−245)：27:52 → 27:33 → 26:58（逐小时 −19s / −35s）
+⇒ 收敛到 0 需约 60 小时 ⇒ 约 2026-10-10 03:40
+⇒ 相位差降到 ~1 分钟（已接近单趟 50 秒）需约 58 小时 ⇒ 约 2026-10-10 01:27
 ```
+
+⚠️ **订正我自己的初版预测**：初版（§10.106.14 首写）用 **154 的单个间隔**估出
+−60.5 s/h，得出「2026-10-08 17:13 重合」。凑到第二个间隔后漂移率**减半**到
+−27.0 s/h，重合时刻推到 **10-10 03:40**，**差约 1.5 天**。
+⇒ ★★★ **用趋势外推未来几十小时，至少要 3 个间隔**；单间隔估斜率会把时刻算错一天以上。
+  每台逐拍间隔本身还有抖动（154 两拍差 33 秒），所以漂移率是 ±8s 量级的估计，
+  到达时刻应当按**小时级**读，不要按分钟级。
+⇒ ★ 相比外推，**累计相位差序列（27:52 → 27:33 → 26:58）比逐拍间隔更稳**，
+  外推应当用累计差的斜率。
 
 #### 为什么这件事比 analyze 严重得多
 
@@ -11973,7 +11983,70 @@ credential_model_index_2026_10 autovacuum_analyze_scale_factor = 0.02  ← 同�
 —— 这正是本轮目标里「重构优化」该落的那一格，
 而且它一次就消掉「空壳分区留在规划里」与「旧月数据无限堆积」两个问题。
 
-### §10.106.16 迁移 841 已实现（**未部署**）：月度族分区级 DROP 保留
+### §10.106.16 查询侧盘点（2026-10-07 16:00 只读）：**阻塞锁占全库 13% 的数据库时间**
+
+⚠️ **先记一次量具事故**：我第一次跑「数据库时间 TOP 12」拿到
+`SELECT MAX(date) FROM daily_kline` 6.7 秒/次、14.8 小时，
+准备按「缺索引」立案。**但 `llm_gateway` 库里根本没有 `daily_kline` 这张表。**
+⇒ 用 `dbid` 复核才发现：这些条目属于 **`smm` 库**（dbid 78206906）——
+**本实例的 `pg_stat_statements` 视图不按当前库过滤，返回跨库条目。**
+⇒ ★★★ 凡是在共用实例上按数据库排名，**必须显式 `WHERE dbid = (SELECT oid FROM pg_database
+  WHERE datname = current_database())`**；默认写法会把邻居库的成本算到自己头上。
+
+#### 按 dbid 过滤后的真实排名（`llm_gateway` 总数据库时间 **2,317,049 秒 ≈ 643.6 小时**）
+
+| 总秒（小时） | 次数 | 均毫秒 | 语句 |
+|---|---|---|---|
+| **301,854（83.9h，占 13.0%）** | **3,027,459** | **99.7** | `SELECT pg_advisory_xact_lock(public.session_turns_advisory_lock_key($1,$2))` |
+| 135,330（37.6h） | 188,285 | 718.8 | credential 路由 CTE（`latest_bucket`） |
+| 123,969（34.4h） | 6,515 | **19,028** | `REFRESH MATERIALIZED VIEW CONCURRENTLY routing_analytics_7d` |
+| 95,656（26.6h） | 814,283 | 117.5 | `SELECT COALESCE(MAX(turn_no),$1)+$2 FROM public.session_turns_with_current_month` |
+| 94,394（26.2h） | 188,460 | 500.9 | `INSERT INTO credential_model_index_hot` |
+| 71,072（19.7h） | 159,804 | 444.7 | `DELETE FROM session_aggregate_outbox` |
+| 68,775（19.1h） | 111,004 | 619.6 | `DELETE FROM credential_model_index_hot` |
+
+#### ★ 第一名：`pg_advisory_xact_lock` 是**阻塞版**，且持锁到整个事务提交
+
+`domains/session/v2/turn_writer.go:47-52`：
+
+```sql
+SELECT set_config('max_parallel_workers_per_gather', '0', true),
+       pg_advisory_xact_lock(public.session_turns_advisory_lock_key($1, $2))
+-- 键 = hashtextextended(tenant_id || ':' || session_id, 0)，按 session 粒度
+```
+
+- 用途是**正确性**：保证 `turn_no` 在同一 session 内单调递增（注释原文「prevent concurrent conflicts」）。
+- ⚠️ 用的是 `pg_advisory_xact_lock`（**阻塞**），不是 `pg_try_…`。
+  一次无争用的 advisory lock 只要微秒级；**均 99.7 ms 意味着绝大部分是等待**
+  （此为推断，但量级差三个数量级，基本没有别的解释）。
+- ⚠️ 锁是 **xact 级** ⇒ 从取锁到**事务提交**一直持有，而这段事务里还有
+  `MAX(turn_no)`（均 117.5 ms）与 `INSERT` ⇒ **每条 turn 写入持锁数百毫秒**，
+  同一 session 的并发写全部排队。
+- ⇒ **13% 的数据库时间花在排队上，而不是在干活。**
+- ⇒ 可评估的改法（都需授权，本次只记录不实施）：
+  1. 把锁**范围收窄**到 `MAX(turn_no)` + `INSERT` 两步，别让无关语句占着锁；
+  2. 改 `pg_try_advisory_xact_lock` + 有限次重试，让排队变成显式失败而不是隐性等待；
+  3. 更彻底：把 `MAX(turn_no)` 换成**原子递增**（`INSERT ... SELECT COALESCE(MAX,0)+1`
+     已在做，但读侧仍走视图 Append），从根上不需要锁。
+
+★ 与 §10.53/§10.107 那两把 `try` 锁形成鲜明对比：
+  **同一份代码里，`try` 锁「一次都没命中」，而 `blocking` 锁「占了 13%」** ——
+  争用管理做反了。
+
+#### 另两项（量级已测，方案待评估）
+
+- `REFRESH MATERIALIZED VIEW CONCURRENTLY routing_analytics_7d`：**均 19.0 秒**、6,515 次
+  ⇒ 34.4 小时。并发刷新意味着每次都重算整窗；刷新频率与是否真被读需要核对。
+- `MAX(turn_no)`：均 117.5 ms、814,283 次 ⇒ 26.6 小时。走
+  `session_turns_with_current_month`（hot 反连接臂 + 全分区 Append），
+  取一个最大值却要 Append 全部分区。**这是与第一项同一个事务里的一步**，
+  两项合计 110.5 小时 ≈ 全库 17%。
+
+⇒ ★ 与 §10.105 的结论合起来看：**统计量与写入路径是同一处瓶颈的两端**——
+  autovacuum 在给这些表采统计量（81% 那项），而写入事务本身又在锁上排队（这 13%）。
+
+
+### §10.106.17 迁移 841 已实现（**未部署**）：月度族分区级 DROP 保留
 
 「机制先建、策略留空」：配置表 `llm_gateway_partition_retention` **建表即空**，
 ⇒ 应用 841 **不会删任何东西**；启用只需按族 `INSERT retain_months`（业务决定）。
