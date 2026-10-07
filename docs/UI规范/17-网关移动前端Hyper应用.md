@@ -12876,3 +12876,140 @@ GET `/api/admin/storage/migration-state`
 - **十连跑 10/10 全绿**，每趟条数全程一致 6232（`npm run test:stability -- --runs=10`，
   日志 `/tmp/co95-stability.log`）。★ 仍未复现 `ComplianceHitsView.spec.ts` /
   `RoutingOptView.spec.ts` 的历史 flaky —— **没复现不等于已修复**。
+
+## 11.132 轮次列表页筛选框可选值（第九十六批，2026-10-08）
+
+GET `/api/admin/turns/sessions/filter-options`
+
+- **注册**：`admin/handler.go:1277`
+  `mux.HandleFunc("/api/admin/turns/sessions/filter-options", admin(h.handleTurnsFilterOptions))`
+  ⇒ ★★ **admin 档**（`h.admin` = `AdminMiddleware`，`handler.go:880`）⇒ 抽屉席不设 `requiresRole`。
+- **实现**：`admin/turns_filter_options.go:49-130`（handler）· `:37-46`（`TurnsFilterOptionsResponse`）
+  · `:136-154`（三段查询拼装）· `:157-181`（`runFilterOptionQueries`）。
+- **桌面调用方**：`web/src/api/turns.ts:204-206` `listTurnsFilterOptions()` —— **不带任何参数**；
+  类型 `TurnsFilterOptions`（`:147-157`）；消费方 `TurnsFilterBar.vue:139-184`。
+- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+- **同族列表端点** `/api/admin/turns/sessions`（`handler.go:1275`）**已由**
+  `web-mobile/src/api/turnsSessions.ts` 覆盖 ⇒ 本节只补 filter-options。
+
+### 本族最要紧的十二件事
+
+1. ★★★★★ **★ 桌面类型多声明了一个后端从不返回的键 `api_keys`。**
+   Go 结构体（`:37-46`）**只有 8 个键**，而桌面 `TurnsFilterOptions`（`turns.ts:147-157`）
+   有 **9 个** —— 多出 `api_keys` ⇒ ⇒ `'api_keys' in resp` **恒假** ⇒ 恒真判据，契约由注释承担。
+   ⇒ ★★★ **后果是用户可见的**：`TurnsFilterBar.vue:171` 写的是
+   `v-for="opt in filterOptions.api_keys || []"` —— 那句 `|| []` 就是作者撞到这个缺失键后打的补丁，
+   **于是那把「API Key」下拉在桌面上永远是空的**。移动端不渲染它。
+2. ★★★★★ **8 个键全部恒在、无 `omitempty`，且全部被强制非 nil**：
+   `*targets[i] = []string{}`（`:166`，在读第一行**之前**执行）⇒ ⇒ **空维度是 `[]` 不是 `null`**
+   ⇒ 客户端可以直接写 `resp.models.length`。
+3. ★★★★★ **★ 文件头注释说「基于近 30 天」，代码里 5 个维度根本没有时间窗。**
+   头注 `:5` 写「基于近 30 天实际使用数据」、`:19` 写「每个维度按最近活跃倒序取前 20」；
+   而 `lastActiveSource`（`:136-140`）拼的是
+   `SELECT <v> AS v, MAX(ss.first_request_at) AS last_at FROM session_summaries ss<…> WHERE <cond><tenantWhere> GROUP BY 1`
+   —— `<cond>` 与 `<tenantWhere>` 之间**没有任何时间条件**。
+   ⇒ ⇒ **只有走 `session_turns` 的 3 个维度（models / providers / status_codes）有 30 天窗口**
+   （`lastActiveTurnQuery:150-153`）；**projects / tasks / owners / clients / tags 是「全历史里最近活跃的」**。
+   ⇒ ★★★ 与批 93 的 `enabled_source` 三值注释、批 91 的 `task_quality_score` 0–1 同族：
+   **注释不是契约，赋值点是。**
+4. ★★★★ **响应里没有任何时间戳** ⇒ 「按最近活跃倒序」这件事**在响应里根本不可观测**
+   （`last_at` 只出现在 SQL 的 `ORDER BY` 里，不进 JSON）⇒ ⇒ **不提供任何顺序判据**。
+5. ★★★★ **`ORDER BY last_at DESC LIMIT 20` 无 tiebreak**（`:144` 与 `:152`）
+   ⇒ 同一 `last_at` 的多个值之间顺序未定义。
+6. ★★★★ **每维度上限恒为 20**（`turnsFilterOptionsLimit = 20`，`:33`）
+   ⇒ 客户端用它提示「还有更多」（`turnsFilterOptionIsTruncated`），但这是**客户端决策**，不是校验。
+   ⇒ ★ 区分格在**正好 20** —— `>=` 与 `>` 只在这里不同，而 `LIMIT 20` 完全能返回正好 20。
+7. ★★★★ **`status_codes` 的元素是数字串，不是数字** ——
+   SQL 选 `t.status_code::text`（`:122`），而 `session_turns.status_code` 是 **`integer`**
+   （`deploy/sql/schemas/baseline/01-schema.sql`）⇒ 元素形如 `"200"`、`"0"`。
+   ⇒ ★★★ **而桌面的查询参数类型写的是 `number`**（`turns.ts:164`），
+   `TurnsFilterBar.vue:155` 把**字符串**直接绑成下拉值 ⇒ **桌面的类型是错的**
+   （只因 `String(params.status_code)` 才没出事）。列表端点侧按原样比较
+   （`turns_sessions.go:439-442`），字符串参数会被 Postgres 推断成整数，所以「原样回传」安全；
+   移动端仍显式转换（见下面的 `statusCodeFilterValue`）。
+8. ★★★★ **`status_codes` 是唯一没有 `!= ''` 过滤的维度**（`:122` 只有 `IS NOT NULL`）
+   ⇒ 对 int 列做 `::text` 后不可能为空串，**无害**，但这是个不对称点。
+9. ★★★★ **`clients` 是 `client_id ∪ application_code` 的 UNION**（`:95-101`），
+   **不是单一列** ⇒ 同一个下拉里混着两种来源的标识。
+10. ★★★★ **`tags` 走 `LATERAL UNNEST(ss.user_tags)`**（`:103-104`），
+    且它的 `cond` 是 `"1=1"`（唯一一个不带空值过滤的取值条件）⇒ **数组里的空串会原样出现在结果里**。
+11. ★★★★ **★ 每条可达路径都有租户过滤，`tenantID != ""` 那个分支是死路。**
+    ```go
+    if IsTenantAdmin(r) { tenantID = GetTenantID(r) } else { tenantID = tenantFromQueryOrContext(r) }
+    if tenantID != "" { tenantWhere = " AND ss.tenant_id = $1" … }
+    ```
+    `GetTenantID` 在 auth 缺失时**兜底 `"default"`**（`context.go:37-42`）⇒ 恒非空；
+    `tenantFromQueryOrContext`（`session_turns_v2.go:889-905`）末尾也回落 `GetTenantID`
+    ⇒ ⇒ **响应永远是租户内的，不会出现跨租户数据。**
+    ⇒ ★★★ 但 `IsTenantAdmin` 要求 `Role == "tenant_admin"` **精确匹配**（`context.go:45-48`）
+    ⇒ **super_admin 走 `else` 分支**、才有机会用 `?tenant=` / `?tenant_id=` / `X-Tenant-ID` 覆盖
+    ⇒ ★★ 而**桌面从不传任何参数**（`turns.ts:205`）⇒ 桌面上即使是 super_admin 也只看自己那一个租户。
+12. ★★★ **★ 同名不同形的兄弟端点：`/api/admin/session-analytics/filter-options`。**
+    它在 `session_analytics_handler.go:728-729` 的一个**分发器**里分派（不是 `mux.HandleFunc` 直挂），
+    响应**只有 2 个键** `{models, providers}`（`session_analytics_top.go:49-50`），
+    租户口径是 `effectiveScopeTenant(r)`，503 文案 **`"db not available"`**
+    （本端点是 `"database not configured"`），超时 10s（本端点 12s）。
+    ⇒ ⇒ ★★★ **叶名相同、键数差 4 倍、注册机制不同、503 文案不同 —— 不可互相套用。**
+
+**校验边界**：顶层 8 个恒在键、每个维度是**字符串数组**（两分支：不是数组 / 元素不是字符串）；
+为 (1)(2)(6)(7) 提供判据或决策函数。
+★ **不校验** 任何维度的取值域（用户数据自由决定）；
+★ **不提供**顺序判据（(4)：响应里没有 `last_at`，顺序不可观测）；
+★ **不提供** `query/target count mismatch` 分支的判据（5 vs 5、3 vs 3 是字面量，不可达）；
+★ **不提供** 「维度长度 ≤ 20」的校验（后端 `LIMIT` 保证 ⇒ 恒真，改为给客户端一个决策函数）。
+
+### 三个「客户端函数」与它们的边界
+
+- `apiKeyFilterOptions(opts)` —— 对幽灵键 `api_keys` 的**容错取值**，恒给 `[]`。
+  ★ 刻意**不抛错**：键不存在是后端常态，不是响应形状错误。
+  ★ 其输入含**后端不可达**的取值 ⇒ 用例只固定容错行为，**不是后端契约判据**。
+- `turnsFilterOptionIsTruncated(values)` —— `>= 20`，用于提示「还有更多」。
+- `statusCodeFilterValue(v)` —— **只认十进制整数字面量**（`/^-?\d+$/`，先 `trim`）。同时堵掉四个坑：
+  `Number('')` 与 `Number('   ')` **都是 `0`**（空选项会被静默转成状态码 `0`）；
+  `parseInt('200abc')` 是 **200**、`parseInt('1e3')` 是 **1**（前缀截断把非法值变成看似合理的值）；
+  `Number('0x10')` 是 **16**、`Number('200.5')` 是 **200.5**。
+  ⇒ ★★ `^-?\d+$` **保留可选负号**：列是 `integer` 且**没有** `>= 0` 的过滤，`-1` 在真后端上可达。
+
+### 变异验证暴露的四件事（45 条全有牙）
+
+首跑 **45 条 = 39 有牙 + 6 白绿**，6 条全部归因于**锚点挂错**，另发现 **2 处夹具缺区分格**：
+
+1. ★★★★ **锚点挂到「测的是另一个函数」的用例上**（#35 / #36）。
+   两条变异改的是 `turnsFilterOptionsIsEmpty`，我却把锚点挂在 `turnsFilterOptionsHasAnyValue`
+   的用例上（「★ 只有 status_codes 非空时也算有值」）⇒ 那条**根本不受影响**，必然白绿。
+   ⇒ ★★★ **补了「★ 只有 tags 非空时判定为非空」**（测 `isEmpty`、且只填 `tags`）
+     —— 它同时能打掉 #35（只看 `models`）与 #36（列表漏掉 `tags`）。
+2. ★★★★ **改的是 fetch 的校验层，锚点却挂在缺键那条上**（#26）。
+   「fetch 丢掉维度校验」保留了顶层 `requireKeys`，所以**缺键照样 reject**。
+   ⇒ ★★ 真正的区分点是「**键齐全、只有某维度类型错**」⇒ 补了
+     「维度类型错时 Promise reject（键齐全、只有 projects 是对象）」与「维度元素类型错时…」两条。
+3. ★★★★ **可迭代的假样本让「不判数组」显形不了**（#30）。
+   `api_keys` 是**字符串**时，漏掉 `Array.isArray` 的实现会 `for...of` 逐字符迭代、
+   每个字符都被 `continue` 掉 ⇒ **结果仍是 `[]`** ⇒ 白绿。
+   ⇒ ★★★ 区分格是**不可迭代**的值：补了「`api_keys` 是数字 0 时取到空数组而不是抛迭代异常」
+     与「是布尔 true」两条。
+4. ★★★ **同族的第 N 条也可能恒绿，要各自算区分格**（#31 / #45）。
+   - #31（删 `Array.isArray(item)`）：用 `[[{id,label}]]` 这种**无属性数组**当样本是抓不到它的 ——
+     无属性数组走到字段检查时 `id`/`label` 都是 `undefined` ⇒ 仍被 `continue` 掉
+     ⇒ **两种实现都返回 `[]`**。
+     ⇒ ★★ **区分格是「数组上挂了 `id`/`label` 属性」**（`Object.assign([1,2], {id:1,label:'ok'})`）：
+       此时 `typeof item === 'object'` 与两个字段检查**全部通过**，只有 `Array.isArray(item)`
+       拦得住 ⇒ 不补这条用例，那一行就只是**只有 `typeof` 把关的半道防线**。
+   - #45（去掉 `v.trim()`）：挂「纯空白串转成 null」必然白绿 —— **正则已经把空白挡住了**，
+     trim 的区分格在**合法值带空白**那一侧（「`" 200 "`」）。⇒ 换锚点后有牙。
+   ⇒ ★★★ 通用式：**同一个函数的第 N 条变异，区分格往往落在与前 N−1 条不同的输入类别上**；
+     前 N−1 条有牙**不能**推出第 N 条也有牙。
+
+★ 附带：**开跑前的双自检就抓到 4 条锚点写错**（`NO_EXPECT_NAME`，把 `★` 写进了锚点
+而用例标题里没有）⇒ 这正是「锚点唯一性自检」的用处：它拦下的是**白绿**，
+而白绿在汇总里长得和「可证等价」一模一样。
+
+### 验证
+
+- 用例 **97 条全绿**（`web-mobile/src/api/turnsFilterOptions.test.ts`）。
+- 变异 **45 条 = 45 条全有牙，0 可证等价**（`/tmp/mut-co96.mjs`，逐条还原后字节比对；
+  ★ harness 带**量具阳性对照**，开跑前抓到 61 条红才开跑）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6329 条（161 文件）** rc=0（较上批 6232 正好 +97）。
+- **十连跑 10/10 全绿**，每趟条数全程一致 6329（`npm run test:stability -- --runs=10`，
+  日志 `/tmp/co96-stability.log`）。★ 仍未复现 `ComplianceHitsView.spec.ts` /
+  `RoutingOptView.spec.ts` 的历史 flaky —— **没复现不等于已修复**。
