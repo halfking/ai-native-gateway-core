@@ -328,6 +328,19 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.credModelState',
     requiresRole: 'super_admin',
   },
+  // 2026-10-08 第一百批：任务类型档案 + 人工修正反馈闭环。
+  // ★ admin 档（`admin/handler.go:1413` 用 `admin` 挂载 `RegisterTaskProfileRoutes`）
+  //   ⇒ **不设** requiresRole（与上面那席相反）。
+  // ★ 这一席同时接上批 98/99 的两个 API 模块 —— 它们此前**没有任何 UI 引用**，
+  //   全仓 94 个 API 模块里有 32 个是这种「做完了但用户点不到」的孤儿。
+  // ⚠️★ 同族的三个 POST（apply-tier-config / reload / import）**都有写副作用**，本页一律不碰。
+  // ⚠️★ 无需同步 `AppDrawer.spec.ts` 的 superAdmin 白名单 —— 那一席只列 super_admin 档的 key。
+  {
+    key: 'task-profile',
+    to: '/task-profile',
+    icon: 'grid',
+    titleKey: 'nav.taskProfile',
+  },
 ] as const
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))

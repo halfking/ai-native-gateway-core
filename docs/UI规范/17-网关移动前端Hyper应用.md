@@ -13487,3 +13487,108 @@ GET `/api/admin/task-profile/corrections/stats`
   10 次的 `Tests` 行**条数全程一致 = 6738**，无 `×` / `FAIL` 行。
   ⇒ `ComplianceHitsView.spec.ts` / `RoutingOptView.spec.ts` 两个历史 flaky 本批**未复现**
   ⇒ ★ 按连跑器自己的口径：**未复现 ≠ 已修复**，只是这次没抓到。
+## 11.136 把 API 模块接进 UI：孤儿棘轮门（第一百批，2026-10-08）
+
+### ★★★★★★★★ 本批是一次**方向修正**，不是一个新端点
+
+起因是 checkpoint 上的一次盘点：脚本枚举 `web-mobile/src/api/*.ts`，
+再在 `src/`（除 `src/api/` 自身）里找 `from '.../api/<模块名>'` 的引用，找不到的记为**孤儿**。
+
+结果：**93 个 api 模块里有 30 个是孤儿**，
+包括批 98 的 `taskProfile.ts` 与批 99 的 `taskTypeCorrectionStats.ts`
+—— 两个模块 128 + 214 条判据、87 条变异全有牙、文档 §11.134 / §11.135 写齐，
+**用户却点不到**。
+
+⇒ ⇒ ★★★★ **API 层做完 ≠ 功能复制到移动端。**
+⇒ ⇒ ★★★ 前几十批的「做完一个端点」口径有个隐含假设：
+**只要 API 模块存在，就算这个功能复制过来了。** 那个假设是错的。
+⇒ ★★ 本批起，口径改为：**一个端点算「复制完成」的条件是它有一条可达的 UI 入口**
+（抽屉席 + 路由 + 视图 + i18n 四件套齐备）。
+
+★ 与记忆里[[现状盘点类数字必然腐烂]]不冲突：那张说的是**把数字写进判据**。
+本批登记的是一个**集合**，且集合每次变化都要经过一次**显式 diff**——
+「变红」正是它的工作方式，不是它的缺陷。
+
+### 本批接线的内容
+
+| 端点 | 档位 | 席 | 路由 |
+|---|---|---|---|
+| `GET /api/admin/task-profile` | admin | 抽屉 `task-profile` | `/task-profile` |
+| `GET /api/admin/task-profile/corrections/stats` | admin | 同上 | 同上 |
+
+- **档位判定照旧**：`admin/handler.go:1413` 用 `admin` 挂载 `RegisterTaskProfileRoutes`
+  ⇒ **不设** `requiresRole`（与 `credential-model-state` 那一席相反，
+  那一席是 `h.superAdmin`）。⇒ 也**无需**同步 `AppDrawer.spec.ts` 的 superAdmin 白名单
+  （那一席只登记 `requiresRole === 'super_admin'` 的 key）。
+- **写端点一个不碰**：同族三个 POST（`apply-tier-config` / `reload` / `import`）都改后端状态。
+- 新增文件：`src/views/TaskProfileView.vue` + `.spec.ts`、`src/api/orphanLedger.spec.ts`；
+  改动：`src/config/appNav.ts`、`src/router/index.ts`、`src/i18n/zh-CN.ts`、`src/i18n/en-US.ts`。
+
+### ★★★★★ 判「孤儿」时必须排除 `src/api/` 自身的互相引用
+
+`taskTypeCorrectionStats.ts` 从 `./taskProfile` 导入 `unwrapCorrectionStat` /
+`unwrapTaskProfileSuggestion` —— 那是**同类型结构的模块间复用**（两者是同一个 Go struct 的 JSON），
+**不是「接上了 UI」**。
+
+⇒ ⇒ ★★★ 若把 `src/api/` 内部的引用也算进去，批 98 那个模块会被误判成已接线，
+**棘轮门就会给出一个虚假的绿灯**。
+⇒ ⇒ 判据实现里必须 `if (full === API_DIR) continue` 跳过 api 目录本身。
+
+### ★★★★★ 门禁自身要带两条作用面自证
+
+孤儿门与批 98 的「作用面自证」同族（[[量具先自证]]）：
+- `apiModules().length > 50` —— 目录塌缩到 0/1 时必须红，否则「0 个孤儿」是漂亮的假绿；
+- `uiSourceBlob().length > 10000` —— ★ **拼接失败时必须红**。
+  若 `src/api/` 被误跳过成整个 `src`，或 glob 写错导致拼出空串，
+  那么 `currentOrphans()` 会返回全部模块，第一条也会红——
+  ★ **两条自证必须都在**，否则「拼错路径」可能只表现为「孤儿变多」，
+  而那正好会被误读成「有人新增了模块」。
+
+### ★★★★★ 有牙验证：注入一个真孤儿
+
+判据写完立刻注入违规代码（`src/api/__teethProbe.ts`，内容一行 `export const x = 1`）：
+
+```
+FAIL … > ★ 当前孤儿集合与登记清单逐项相同
+AssertionError: expected [ '__teethProbe', …(30) ] to deeply equal [ 'boardOperational', …(29) ]
++   "__teethProbe",
+```
+
+⇒ 新增孤儿立刻红，且**名字直接出现在 diff 里**；移除探针后复跑回到 6/6 绿。
+
+★ 附带一条：棘轮是**双向**的 —— 接上一个孤儿也会红（清单多了一项），
+逼着人手工删那一行。这正是要的：**清单只能变小，每次变小都是一次有记录的收口。**
+
+### 接线过程中撞到的三件事
+
+1. ★★★ **`icon: 'list'` 不在 `IconName` 里。**
+   `AppIcon.vue:8-36` 只有 29 个取值，`list` / `display` / `flex-shrink` 都不在其中
+   ⇒ 抽屉席若写 `list`，`vue-tsc` 立刻报 `Type '"list"' is not assignable to type 'IconName'`。
+   ⇒ ★ 结论同[[用类型门探测非法枚举]]：**类型门不只是「能不能编译」**，
+   它也是「我以为存在的枚举值到底存不存在」的探测器。
+   ⇒ 最终选 `grid`（仓里已有的通用列表图标，已有 7 席在用）。
+2. ★★★★ **测试环境默认落到 `en-US` 词典，中文断言会全红。**
+   `i18n/index.ts:16-24` 的 `detectLocale()` 读 `navigator.language`，
+   jsdom 下不是 `zh` ⇒ 落到 `en-US`。
+   ⇒ 首跑 6 条红，其中 4 条纯粹是「我拿中文标签去断英文渲染」。
+   ⇒ 修法：spec 里 `beforeEach(() => setLocale('zh-CN'))`（`AnnotationsView.spec.ts:150` 是同一惯例）。
+   ⇒ ★★ **断言 i18n 文案之前必须先钉住 locale**，否则红的原因会被误读成「视图没接上」。
+3. ★★★ **视图漏渲染 `request_id`，而我在 spec 里断言了它。**
+   首跑那条红报的是「`req-8f21c0ab` 不在文本里」——
+   查下去是**视图根本没写这个字段**，不是断言写错。
+   ⇒ `request_id` 是把这条修正记录追回那条请求的连接键（本仓有 `/request-journey` 线），
+   **该渲染而不是删断言**。
+   ⇒ ★★★ 顺序很重要：先确认「被断言的东西有没有被实现」，再决定改断言还是改实现——
+   否则很容易把一个**真实缺陷**当成「断言太严」改掉。
+
+### 验证
+
+- 新增判据 **29 条**（`TaskProfileView.spec.ts` 23 + `orphanLedger.spec.ts` 6）全绿。
+- ★ 其中视图判据钉的是**真不变量**，不是快照：两个模块都真的被渲染、
+  空 `description` 走「未知类型」样式、`classifier_confidence` / `profile`
+  为 `null` 时不炸且**不把 `null` 渲染进 DOM**、`tier_source` 枚举外的值原样透出、
+  **单边失败不吞掉另一边**（`Promise.allSettled` 语义）、筛选只影响档案段。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6767 条（166 文件）** rc=0（较上批 6738 正好 +29）。- 十连跑 **10/10 全绿**（`/tmp/co100-stability.log`），终止标记 `总次数 10 · 失败次数 0 · 快照 0 份`，
+  10 次的 `Tests` 行**条数全程一致 = 6767**，无 `×` / `FAIL` 行。
+  ⇒ `ComplianceHitsView.spec.ts` / `RoutingOptView.spec.ts` 两个历史 flaky 本批**未复现**
+  ⇒ ★ 按连跑器自己的口径：**未复现 ≠ 已修复**，只是这次没抓到。
