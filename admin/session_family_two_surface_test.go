@@ -94,6 +94,18 @@ var sessionFamilyBareParentReaders = map[string]string{
 	//     守卫是 repair_two_surface_test.go，它逐条断两条 DELETE 各自的面覆盖。
 	"cmd/tools/validate_sessions_v2/repair.go": "修复工具：DELETE turns 父表腿的 hot 对偶在紧邻的上一条语句" +
 		"（跨语句配对，逐串判看不见）；两处 INSERT 是重建快照直落分区父表的写方选择，非漏读。",
+	// turn_writer 的 next-turn_no 是**两条独立 SQL 的热优先序贯**：先
+	// `SELECT MAX(turn_no) FROM public.session_turns_hot`，仅当 hot 无行
+	// （turnNo<=1，即该会话已整体晋升）才回退查 `public.session_turns`。
+	// 两面分处两条语句（同「判据单位是一条 SQL」盲区），逐串判只见父表腿。
+	// 正确性凭据（turn_writer.go :353-383 注释，runbook §10.106.25/26）：
+	// promote 按 ts 序搬 hot→父表，活跃会话的最新 turn 恒在 hot；
+	// 写路径持 per-session 顾问锁，turn_no 单调无并发推进，回退臂
+	// 只服务「每行都已晋升」的会话。父表腿若被删，重放/摘要类全晋升
+	// 会话的 turn_no 会从 1 重新计数——两面缺一不可。
+	"domains/session/v2/turn_writer.go": "MAX(turn_no) 热优先序贯：hot 臂在前，" +
+		"父表臂是「hot 无行才查」的晋升回退（两条独立 SQL，跨语句配对，逐串判看不见）；" +
+		"promote 按 ts 序 + 顾问锁串行写保证最新 turn 恒在 hot，回退臂覆盖全晋升会话。",
 }
 
 var sessionFamilyParents = []string{"session_turns", "session_bodies", "session_turn_details"}
