@@ -12501,10 +12501,22 @@ sessions_v2_write_success_total              7                ← 阳性对照�
 **网关侧改配置、加 key 或重启都不会让它恢复。**
 
 ⇒ **最有价值的一步**：在 `KeyVerifier` 的失败分支补一行带**哈希化前缀**的
-`slog.Warn`（`sha256(rawKey)[:12]`，**绝不记明文**）。
-它不改鉴权语义、不改响应、不影响热路径耗时，却能立刻回答
-「客户端到底在发哪一把」，从而把这件事从「不可定位」变成「一次查询」。
-**未实施**：改的是鉴权热路径，需用户明确授权后再动。
+`slog.Warn`。它不改鉴权语义、不改响应、不影响热路径耗时，
+却能立刻回答「客户端到底在发哪一把」，把这件事从「不可定位」变成「一次查询」。
+
+**状态：已实现并提交（commit `e084e5754`），⚠️ 未部署。**
+实现要点：`callVerifyDB` 的 `ErrNoRows` 分支加 `slog.Warn("key verify: rejected")`，
+日志字段 `key_hash_prefix` = `key_hash` 前 16 位十六进制。
+`key_hash` 是服务端密钥下的 HMAC-SHA256，**不可逆**，可直接反查：
+
+```sql
+SELECT id, status, enabled, expires_at FROM api_keys WHERE key_hash LIKE '<prefix>%';
+```
+
+命中 ⇒ key 存在、被某个状态列排除；未命中 ⇒ 本库从未见过这个凭据。
+退化输入返回固定标记 `<short>`，**绝不记录 rawKey**。
+门 3 条 + 变异 3/3 有牙（M1 删日志 / M2 改记明文 / M3 helper 返回常量，三条全转红）。
+**上线需用户明确授权**（改的是鉴权热路径）。
 
 ---
 
