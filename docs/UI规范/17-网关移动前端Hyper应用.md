@@ -10550,3 +10550,135 @@ WHERE credential_id = $1 AND started_at >= $2
    `unknown`，`vitest` 不做类型检查所以全绿，`vue-tsc` 报 TS2345
    ⇒ 补 `String(...)`。
    ⇒ 与第七十四批那次同源：**「vitest 全绿」不等于「类型门绿」**。
+
+## 11.115 供应商错误趋势（errors/trend，第七十九批）
+
+- **端点**：`GET /api/errors/trend`
+- **注册**：`admin/handler.go:1249` 的 `admin(h.errorsTrendHandlers.getErrorsTrend)` ⇒ **admin 档**
+  ⇒ tenant_admin 可用 ⇒ 抽屉席不设 `requiresRole`
+- **实现**：`admin/errors_trend.go`（350 行）
+- **落点**：`web-mobile/src/api/errorsTrend.ts` + `.test.ts`（74 用例）
+
+### 挖到的八条契约
+
+1. **★★★★★ 两个数据源，`source` 告诉你是哪个。**
+
+   | source | 读的是 | 何时被选中 |
+   |---|---|---|
+   | `stats` | `supplier_error_stats`（预聚合，分钟桶由后台聚合器每 5 分钟 UPSERT） | 该窗口该粒度**有行** |
+   | `fallback` | `supplier_errors_unified`（明细） | stats 返回**零行**（`:122-133`） |
+
+   ⇒ ★ `fallback` 只说明「**预聚合表在这个粒度上没有行**」，
+     **不一定是「没有错误」** —— 粒度不匹配（聚合器只写了别的粒度）也会走到这里。
+   ⇒ ★★ 但 `fallback` **且** `time_series` 为空是**确定的**：
+     fallback 分支总是被真的执行一遍，明细表也为空 ⇒ 窗口内确实没有错误。
+   ⇒ 对照第七十八批 `summary` 四区块四种失败策略：这里是**显式标出来源**的写法。
+
+2. **★★★★★ 读路径刻意绕过 RLS。**
+   `withTrendReadTx`（`:171-196`）在只读事务里
+   `set_config('app.bypass_rls','true',true)`（`is_local=true`，
+   保证旁路随事务提交即失效、pooled 连接不保留提权）。
+   注释自陈原因（`:163-170`）：`supplier_errors_hot` / `supplier_errors`
+   是 **FORCE RLS + 租户隔离**，而网关应用角色**不是 superuser**，
+   直连读会被**静默过滤到 0 行** ⇒「趋势数据闭环断裂」。
+   ⇒ ★★ **「0 行」本身是一个被代码注释文档化的失败模式**，
+     客户端看到的数字是 **bypass 之后**的；租户隔离靠 `EffectiveTenantIDAll(r)` 传参
+     而不是靠 RLS ⇒ super_admin 拿到的是全租户合计。
+
+3. **★★★★★ `summary.unique_requests` 是各桶相加，不是去重计数。**
+   `loadFromStats:221-222` / `loadFromDetail:263-264` 只做
+   ```go
+   resp.Summary.TotalErrors    += p.ErrorCount
+   resp.Summary.UniqueRequests += p.UniqueRequests
+   ```
+   ⇒ ★★ 一个跨桶的 `request_id` 会被数两次 ⇒ 汇总值**是上界**。
+   ⇒ 与第七十六批 `summary` 三项之和（含 running/retrying）是同一族陷阱：
+     **「桶求和」不等于「全局去重」**。
+
+4. **★★★★ `by_supplier` / `by_error_type` 是 `map[string]int` + `omitempty`。**
+   `:42-43` 两个键都带 omitempty，SQL 侧是
+   `jsonb_object_agg(...) FILTER (WHERE supplier <> '')`
+   ⇒ 全部被 FILTER 掉时聚合返回 NULL ⇒ 扫到空字节 ⇒ map 保持 nil
+   ⇒ ★ **空 map 被整个键省略**（不是 `{}`，不是 `null`）——
+     本仓第**九**种 nil 编码，也是**第一次出现 map 类型**。
+
+5. **★★★★ `top_error_types` / `top_suppliers` 显式初始化成空数组。**
+   `loadBreakdowns:308-309`：
+   ```go
+   resp.Summary.TopErrorTypes = []errorsTrendBreakdownRow{}
+   resp.Summary.TopSuppliers = []errorsTrendBreakdownRow{}
+   ```
+   ⇒ 恒数组，**不会是 null**（与第 (4) 条的 map 恰好相反，**同一个响应里并存**）
+   ⇒ ★★ 两者都被**截到 10 条**（`:319`/`:323`），**不回显被丢掉的数量**。
+
+6. **★★★★ `hours` 是严格三值枚举，`granularity` 的缺省由它推导。**
+   `parseVendorErrorHours`（`vendor_credential_error_handlers.go:182-191`）
+   只接受 `1 / 24 / 168`，其余（含 `0`、负数、`abc`）⇒ **400** `invalid_hours`。
+   `granularity` 缺省（`:81-90`）：
+   ```go
+   case hours <= 1:  granularity = "minute"
+   case hours <= 24: granularity = "hour"
+   default:          granularity = "day"
+   ```
+   显式传值则严格校验（`:91-94`）⇒ **400** `invalid_granularity`。
+   ⇒ ★ 判据是 `<=1` / `<=24` 而非 `===1` / `===24`，客户端复刻时要照抄。
+
+7. **★★★ 错误信封是嵌套的，与 `writeError` 的扁平形不同。**
+   `writeErrorWithCode`（`handler.go:1501-1508`）：
+   ```go
+   writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "detail": msg}})
+   ```
+   ⇒ 形状是 `{"error":{"code":"…","detail":"…"}}`。
+   六个 code：`db_not_configured`（503，detail 是 `database is not configured`
+   —— ★ 与别处的 `database not configured` **措辞不同**）、
+   `invalid_hours` / `invalid_granularity` / `invalid_credential_id`（三个 400）、
+   `trend_stats_query_failed` / `trend_fallback_query_failed`（两个 500，
+   ★ **detail 原文完全相同**，只有 code 能区分）。
+
+8. **★★★ `supplier` / `error_type` 的 `'all'` 是魔法值。**
+   三处 SQL 一致：`AND ($3 = '' OR $3 = 'all' OR supplier = $3)` 等。
+   ⇒ ★ 空串与字面量 `'all'` 都表示「不过滤」；
+     而 `credential_id` 只能用 `0` 表示不过滤，
+     但入口校验又要求它 `> 0`（`:97-103`）⇒ **一旦传了 credential_id 就一定是过滤**。
+
+### 另注
+
+- `time_series` 两条 load 函数都显式初始化 ⇒ 恒数组。
+- 8 秒超时；`since`/`until` 是服务端算的时间边界（`until = time.Now()`）并回显。
+- 扫描失败是 `return err` ⇒ **整条 500**（不跳行）。
+- `loadBreakdowns` 的第三个分支（`kind='creds'`）专门喂
+  `summary.affected_credentials`；注释自陈该 KPI「曾声明但从未计算（恒 0）」，
+  是 2026-09-12 审计 P2 补上的。
+
+### 验证
+
+- 用例 **74 条全绿**
+- 变异 `/tmp/mut-co79.mjs` **53 条 53/53 有牙、零 STILL_GREEN**，`RESTORED=OK`
+- 三门 rc=0；`vue-tsc` rc=0；`npm run build` rc=0
+- 全量 **4491 条（143 文件）** rc=0；十连跑 10/10
+- U+FFFD 自查：源与用例均 0
+
+### 变异验证暴露的判据缺陷
+
+1. **★★★ 「判据有两个必要条件」时，两个条件各要一条能单独打掉它的用例。**
+   - `errorsTrendGranularityIsDefault` 的变异去掉 `!granularityWasSent`：
+     我只测了「显式传了**且与缺省不同**」⇒ 两种实现都返回 false。
+     ⇒ 必须补「**显式传了、但值恰好等于推导值**」那条。
+   - `errorsTrendBreakdownIsTruncated` 的变异把阈值 10 改成 5：
+     我只测了「1 条」与「满 10 条」⇒ **中间那段 5..9 没有专属用例**。
+     ⇒ 阈值类判据要**逐段**覆盖。
+   ★ 这两条都是「**夹具要挑能打破某一个必要条件的输入**」，与第七十八批
+     「双向不变量两个方向各一条」同源。
+
+2. **★★★ 锚点未同步（又一次，已是第四次同一形态）。**
+   补完上面两条用例后先跑了一轮，仍 STILL_GREEN ⇒ 锚点还指着旧标题。
+   ⇒ **补负控与改锚点必须是同一个原子步骤**；这次是连着两批踩同一个坑，
+     说明它必须写成流程里的一步而不是靠记性。
+
+3. **★★ `it.each` 的标题抓不到：`/it\('([^']*)'/` 只认字面量。**
+   我用 `it.each(cases)('hours=%i ⇒ %s', …)` 生成三个粒度用例，
+   dry 阶段立刻报两条 `NO_EXPECT_NAME`。
+   ⇒ ★ 变异 harness 靠标题取锚点 ⇒ **用例标题必须字面量写出来**，
+     参数化测试（`it.each` / `test.each`）的标题对 harness 不可见。
+   ⇒ 已改成五条显式 `it('hours=… ⇒ …')`，顺带补了 `hours=0` 与 `hours=25`
+     两条边界用例（判据是 `<=1` / `>24` 而不是 `===1` / `===24`）。
