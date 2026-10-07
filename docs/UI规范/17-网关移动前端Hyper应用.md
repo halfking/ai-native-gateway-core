@@ -13013,3 +13013,162 @@ GET `/api/admin/turns/sessions/filter-options`
 - **十连跑 10/10 全绿**，每趟条数全程一致 6329（`npm run test:stability -- --runs=10`，
   日志 `/tmp/co96-stability.log`）。★ 仍未复现 `ComplianceHitsView.spec.ts` /
   `RoutingOptView.spec.ts` 的历史 flaky —— **没复现不等于已修复**。
+
+## 11.133 会话分析页模型 / 提供商筛选项（第九十七批，2026-10-08）
+
+GET `/api/admin/session-analytics/filter-options`
+
+- **注册**：**第六种注册形态 —— 前缀 catch-all + 方法内分发器**，`cmd/gateway/main.go:7186`
+  ```go
+  mux.HandleFunc("/api/admin/session-analytics/", wrapSessionAnalytics(adminHandler.RouteSessionAnalytics))
+  ```
+  分派点 `admin/session_analytics_handler.go:728-729`
+  （`case parts[0] == "filter-options" && len(parts) == 1: h.HandleFilterOptions(w, r)`）
+  ⇒ ★★ **它不在 `admin/handler.go` 的 `mux.HandleFunc` 里** —— 只查 `admin/handler.go` 会判「端点不存在」。
+- **实现**：`admin/session_analytics_top.go:190-272`（handler）· `:47-50`（`FilterOptionsResponse`）
+  · `admin/session_tenant.go:126-131`（`effectiveScopeTenant`）
+  · `cmd/gateway/main_admin_wrappers.go:42-64`（鉴权包装）。
+- **桌面调用方**：**没有**。全仓 `web/src/` 只出现 `/api/admin/turns/sessions/filter-options`。
+- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+
+### ★★★★★ 与批 96 的「同叶名兄弟」有六处正好相反 —— 抄错就是全错
+
+兄弟端点是 `/api/admin/turns/sessions/filter-options`
+（`web-mobile/src/api/turnsFilterOptions.ts`）。**叶名相同、键数差 4 倍、六处语义相反。**
+
+| 维度 | 本端点（session-analytics） | 兄弟端点（turns/sessions） |
+|---|---|---|
+| 响应键数 | **2** | 8 |
+| **空时编码** | ★★★★★ **`null`** | ★★★★★ **`[]`** |
+| **租户作用域** | ★★★★★ **super_admin 看全部租户** | ★★★★★ **永远租户内** |
+| **能否 `?tenant=` 收窄** | ★★★★ **不能** | 能（`tenantFromQueryOrContext`） |
+| **无 DB 时** | ★★★★ **404（整棵树不注册）** | 503（恒注册） |
+| **scan 失败** | ★★★★ **静默跳过该行** | 500 |
+
+1. ★★★★★ **响应只有 2 个键**（`FilterOptionsResponse`，`:48-49`），两个都是 `[]string`、
+   **无 `omitempty`** ⇒ 键恒在。
+2. ★★★★★ **★ 空时是 `null` 不是 `[]`** —— 与兄弟端点正好相反：
+   ```go
+   var ( models []string; providers []string )                      // :232-234 从 nil 开始
+   for modelRows.Next() {
+       if err := modelRows.Scan(&m); err == nil { models = append(models, m) }   // :243-245
+   }
+   ```
+   **从头到尾没有任何一处给它们赋空切片** ⇒ 零行 ⇒ 仍是 `nil` ⇒ JSON **`null`**。
+   对照兄弟端点 `*targets[i] = []string{}`（`turns_filter_options.go:166`）**显式赋空**。
+   ⇒ ★★★ **这两个端点的解包器绝不能共用。**
+3. ★★★★★ **两个槽位互相独立** ⇒ **半空形状可达**：
+   `{models: [...], providers: null}` 与反之都合法
+   （`models_used text[] DEFAULT '{}' NOT NULL`、`providers text[]` 可空，
+   `UNNEST` 空数组 / NULL 都只是零行而不是报错）。
+4. ★★★★★ **★ 租户作用域与兄弟端点方向相反**：
+   ```go
+   func effectiveScopeTenant(r *http.Request) string {   // session_tenant.go:126-131
+       if IsSuperAdminOrLegacy(r) { return "" }
+       return GetTenantID(r)
+   }
+   ```
+   super_admin / `admin_key` 拿到 **`""`** ⇒ `if tenantID != ""`（`:212`、`:225`）**不进**
+   ⇒ ⇒ **SQL 里没有租户条件** ⇒ **super_admin 看到的是全部租户的聚合。**
+   对照兄弟端点：那里的 `GetTenantID` 兜底 `"default"`（`context.go:37-42`）⇒ 恒非空 ⇒ **永远租户内**。
+5. ★★★★ **★ 而且这里没有 `?tenant=` 收窄手段** —— `effectiveScopeTenant` **不读查询参数**
+   （对照 `tenantFromQueryOrContext` 会读 `?tenant=` / `?tenant_id=` / `X-Tenant-ID`）
+   ⇒ ⇒ **super_admin 无法把这个端点收窄到某一个租户**，只能看全量聚合；
+   想要单租户视图，唯一办法是**用那个租户的账号登录**。
+6. ★★★★ **★ 整条 `/api/admin/session-analytics/` 树只在 `dbConn != nil` 时注册**
+   （`main.go:7085-7089`：`wrapSessionAnalytics` 只在有 DB 时才被赋值）
+   ⇒ ⇒ **没有数据库时这个路径是 404，而不是 503** ——
+   对照兄弟端点它恒注册（`handler.go:1277`）才在 handler 内判 `h.db == nil` 返 503。
+7. ★★★★ **鉴权是双模式的**（`main_admin_wrappers.go:42-64`）：
+   `session_service_auth.enabled` 为假、或 `LLM_GATEWAY_SESSION_SERVICE_JWT_SECRET` 为空
+   ⇒ 走 `admin.AdminMiddleware`（与兄弟端点同一套）；否则走
+   `admin.SessionAnalyticsMiddleware(...)`，issuer 默认 `ai-session-manager`、
+   audience 固定 `llm-gateway-session-analytics`
+   ⇒ ⇒ ★★★ **这个端点可以被 session-service JWT 调用，不只是管理员会话。**
+   ⇒ ★★ 且「enabled 但 secret 缺失」只 `slog.Warn` 一句就**回落到 admin 鉴权** ——
+     配错时的行为是**降级**，不是 fail-closed。
+8. ★★★★ **★ per-row 的 scan 失败被静默跳过**：
+   `if err := modelRows.Scan(&m); err == nil { models = append(models, m) }`（`:243-245`）
+   与 providers 侧同形（`:258-260`）⇒ **某一行取不出值就整行消失，无任何信号**。
+   对照兄弟端点 `turns_filter_options.go:169-173` 的 scan 失败是 **return err ⇒ 500**。
+   ⇒ ★★ 但**迭代级错误是被检查的**（`modelRows.Err()` `:247`、`providerRows.Err()` `:262`）
+   ⇒ 精确说法是「**行扫描吞、迭代不吞**」⇒ 客户端**不能**假定列表长度与 `DISTINCT` 结果一致。
+9. ★★★★ **★ 顺序与去重在响应里是可观测的** —— `ORDER BY model` / `ORDER BY provider`
+   （`:216`、`:229`）配 `DISTINCT`（`:207`、`:220`）⇒ **按值升序、无重复**。
+   ⇒ ★★★ 这是本系列第一个**顺序能被客户端校验**的筛选项端点：
+     兄弟端点的 `last_at` 只进 SQL 的 ORDER BY、不进 JSON（§11.132 (4)）⇒ 不可观测。
+10. ★★★ **这次头注与代码相符**：`last_request_at > NOW() - INTERVAL '30 days'`
+    （`:210`、`:223`）真的是 30 天窗口（对照 §11.132 那个 8 键端点，5 个维度根本没有窗口）。
+11. ★★★ **没有任何桌面调用方** ⇒ 这段代码**从未被现有前端消费过**
+    ⇒ 移动端是第一个调用方，也意味着它的行为**没有任何既有消费者验证过**。
+12. ★★★ 错误面：非 GET ⇒ **405**（`:191-194`）；`h.db == nil` ⇒
+    **503 `db not available`**（`:196`，★ 兄弟端点是 `database not configured`）；
+    查询失败 ⇒ **500 `query failed`**（`writeInternalErr` → `writeError`，`internal_error.go:46-49`）。
+    错误体一律 `{"error":{"detail":…}}`。超时 **10s**（`:200`，兄弟端点 12s）。
+
+**校验边界**：顶层 2 个恒在键、每个键是 **`null` 或字符串数组**
+（三分支：null / 不是数组 / 元素不是字符串）；为 (2)(3)(4)(9) 提供判据或决策函数。
+★ **不校验** 值的取值域；★ **不提供** 「两个列表必须有交集」这类后端无从保证的性质；
+★ **不提供** 「零行时响应非 null」这类后端不变式的判据（恒真，契约由注释承担）。
+
+### 三个客户端函数与它们的边界
+
+- `filterOptionList(v)` —— 把 `null` 归一成 `[]`，**本模块最该被复用的那一个**。
+  ★★ 凡是要 `.length` / `.map` / 迭代下拉项的地方都必须先过它，否则「网关还没跑过流量」
+  就会让移动端崩在 `Cannot read properties of null` 上 ——
+  ★ 与批 93 里那句「否则前端 `windowEntries.length` 会抛」是同一类事故，
+  ★★ 但**成因相反**：那边是后端没兜住，这边是后端**故意**发 `null`。
+- `sessionAnalyticsFilterOptionsIsEmpty(o)` / `…HasAnyValue(o)` —— 半空形状下前者返回 `false`，
+  让调用方知道「有的下拉有值、有的没有」，而不是笼统报「没有筛选项」。
+- `filterOptionValuesAreSortedUnique(values)` —— **客户端决策**（渲染前要不要自己再排一遍），
+  ★★ **不是响应校验**：对每个真实后端响应它都成立，所以生产里永远不会变红；
+  它防的是网关版本漂移 / 中间层改 body。
+
+### 变异验证暴露的五件事（32 条全有牙）
+
+首轮 dry 通过后、**正式跑之前**手工复核，直接剔除了 3 条不该存在的变异：
+
+1. ★★★★★ **变异形态 (d) 恒等变形：`return (A && B) && true`。**
+   原计划把空判定的 `A && B` 改成加 `&& true` ⇒ `(A&&B)&&true === A&&B`
+   ⇒ 什么都不会变 ⇒ **它不是变异，是噪声。**
+   ⇒ ★★ 写完 `to` 要**重读一遍它到底改变了什么**，而不是只看它和 `from` 长得像不像。
+2. ★★★★★ **可证等价：`v ?? []` → `v || []`。**
+   唯一可能的差别是「falsy 但不是 null/undefined」的值，
+   而 `[]` 在 JS 里是 **truthy** ⇒ `string[]` 里根本没有 falsy 值
+   ⇒ 两种实现在所有输入上一致 ⇒ 删。
+   ⇒ ★★ **`??` 与 `||` 只在 `[]` `0` `''` `false` `NaN` 上分得开** ——
+     类型是「数组」时它们等价，类型是「数字」时不等价。
+3. ★★★★ **`!(prev < cur)` → `!(prev <= cur)` 也是可证等价。**
+   相邻两项相等时两者都返回 `false` ⇒ 重复检测效果**完全相同** ⇒ 删。
+   ⇒ ★★★ **「这个比较符的放宽方向」必须手算，不能凭直觉** ——
+     本仓已因此栽过三次（批 88 / 94 / 97 的 #30 就是它的第三次）。
+4. ★★★★ **形态 (e) 的**类型侧变种**：`Array.isArray(v)` → `typeof v !== 'object'`
+   报的是 `COLLECT_FAIL` 而不是「有牙」。**
+   `Array.isArray(v)` 会把 `unknown` **收窄**成 `any[]`，后面的 `v.length` / `v[i]` 才编译得过；
+   换成 `typeof` 守卫后 `v` 仍是 `unknown`
+   ⇒ TS 报「Property 'length' does not exist on type 'unknown'」
+   ⇒ esbuild 阶段**整个文件加载失败**。
+   ⇒ ★★★ **不是代码不合法，是类型不成立** —— 这是形态 (e) 除「语法」之外的第二副面孔。
+   ⇒ ★★ 而且它是我**自己写坏的**：编辑 `to` 时把结尾的 `}` 写成了 `})`。
+     **凡是 `to` 结尾的那一行，改完必须重新读一遍语法**（§11.130 批 91 的同一教训）。
+5. ★★★★★ **取反方向我算反了一次，靠手工代入才抓出来。**
+   `!(prev < cur)` 换成 `!(prev === cur)` 时，我以为区分格是「乱序列表」，
+   实际手工代入后发现**突变版对任何含相邻不等元素的列表都返回 `false`**
+   （`!(不等)` 恒真 ⇒ 立刻 `return false`）⇒ 区分格是**升序**列表 ⇒ 换锚点后有牙。
+   ⇒ ★★★ 这是「**写锚点前手算两种实现在候选样本上的返回值**」的第四次生效，
+     前三次是 `===`/`<=`/`>=` 的方向，这次是**双重取反**。
+   ⇒ ★ 顺带：`!Array.isArray(v)` → `typeof v !== 'object'` 的区分格是**纯对象**
+     （`typeof {} === 'object'` ⇒ 突变版放行），**不是字符串**（两者抛同一条消息）。
+
+★ 首跑结果：**34 条 = 31 有牙 + 1 白绿 + 1 `COLLECT_FAIL` + 2 已剔除**，修完后 **32/32 全有牙**。
+★ 附带：harness 的**量具阳性对照**在本批继续生效 —— 开跑前抓到 42 条红才开跑。
+
+### 验证
+
+- 用例 **67 条全绿**（`web-mobile/src/api/sessionAnalyticsFilterOptions.test.ts`）。
+- 变异 **32 条 = 32 条全有牙，0 可证等价**（`/tmp/mut-co97.mjs`，逐条还原后字节比对）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6396 条（162 文件）** rc=0（较上批 6329 正好 +67）。
+- **十连跑 10/10 全绿**，每趟条数全程一致 6396（`npm run test:stability -- --runs=10`，
+  日志 `/tmp/co97-stability.log`）。★ ⚠️ **第一次那趟十连跑被运行时判为 `lost`、只完成 3/10**，
+  那份读数**没有**被采信，已完整重跑一次。★ 仍未复现 `ComplianceHitsView.spec.ts` /
+  `RoutingOptView.spec.ts` 的历史 flaky —— **没复现不等于已修复**。
