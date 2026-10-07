@@ -352,8 +352,9 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 	// Hot-first, partitioned parent only as a fallback. This used to be a
 	// single MAX() over session_turns_with_current_month (hot anti-join arm
 	// UNION ALL every monthly partition), which pg_stat_statements charges
-	// 95,658,573 ms across 814,958 calls — 26.6 h, the #2 statement in the
-	// database by total time.
+	// 95,658,573 ms across 814,958 calls — 26.6 h. (Rank: #5 by total time in
+	// the same snapshot; #1 is the advisory lock above and #2 is an unrelated
+	// credential_model_index aggregation — runbook §10.106.26.)
 	//
 	// The cost was never execution. Measured on 154 (runbook §10.106.25):
 	//   via the view   Planning 17.3–55 ms / Execution 0.77–1.85 ms
