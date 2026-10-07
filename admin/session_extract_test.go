@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -164,5 +165,37 @@ func TestHandleSessionContextRoutes_ForbiddenForNonAdmin(t *testing.T) {
 	// No auth set -> IsSuperAdminOrLegacy returns false -> 403
 	if w.Code != http.StatusForbidden {
 		t.Errorf("expected 403 for non-admin, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestSessionExtractionStatusDBFailureNotFoldedIntoExtractedFalse
+// （R50 遗留 #4 收口，2026-10-08）：extraction-status 曾把 DB 查询的
+// 一切错误折叠成 200 + extracted:false —— 与「未抽取」同形，故障被
+// 伪装成业务态。修复后只有 pgx.ErrNoRows 走业务态，其余错误一律
+// 503 如实上报。Handler.db 是具体 *pgxpool.Pool（pgxmock 不可注入，
+// 同 R50 candidate-failures 之前的处境），接线用本仓既定的文本锚定
+// 门防回退：三条要素缺一即红。
+func TestSessionExtractionStatusDBFailureNotFoldedIntoExtractedFalse(t *testing.T) {
+	raw, err := os.ReadFile("session_extract.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	for _, want := range []string{
+		// ErrNoRows 是唯一允许返回 extracted:false 的查询错误。
+		`errors.Is(err, pgx.ErrNoRows)`,
+		// 其余错误必须 503（不再是 writeJSON(200, extracted:false)）。
+		`writeError(w, http.StatusServiceUnavailable, "database query failed")`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("handleSessionExtractionStatus 缺少故障分形收口要素 %q", want)
+		}
+	}
+	// 顺序锚定：ErrNoRows 分支必须在 503 分支之前（先业务态后故障态），
+	// 防止有人把两个分支并成一个无条件 503 或恢复无条件 extracted:false。
+	noRowsIdx := strings.Index(src, `errors.Is(err, pgx.ErrNoRows)`)
+	svcIdx := strings.Index(src, `writeError(w, http.StatusServiceUnavailable, "database query failed")`)
+	if noRowsIdx < 0 || svcIdx < 0 || noRowsIdx > svcIdx {
+		t.Errorf("extraction-status 错误分支顺序错误: ErrNoRows@%d, 503@%d", noRowsIdx, svcIdx)
 	}
 }

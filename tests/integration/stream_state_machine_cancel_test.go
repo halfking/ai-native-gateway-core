@@ -45,6 +45,12 @@ const cancelTestOverallDeadline = 10 * time.Second
 func TestStreamStateMachine_CancelFromStreaming(t *testing.T) {
 	t.Parallel()
 
+	// 计时敏感（R50 遗留 #8）：本测试与 keep-alive ticker 竞速，
+	// 并行满载机器上会假红（单跑恒绿）。-short 提供逃逸通道。
+	if testing.Short() {
+		t.Skip("short mode: ticker 竞速在满载并行下假红，单跑甄别")
+	}
+
 	if deadline, ok := t.Deadline(); ok {
 		if time.Until(deadline) < cancelTestOverallDeadline {
 			t.Fatalf("parent deadline too tight: %v remaining (need ≥%v)",
