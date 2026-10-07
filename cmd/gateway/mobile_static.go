@@ -158,6 +158,11 @@ func (h *MobileStaticHandler) ServeSPA(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := os.Stat(h.indexFile); err == nil {
+		// no-cache on the SPA shell: hashed assets are immutable, but index.html
+		// itself is not — a heuristically cached old shell references asset
+		// filenames that vanish on the next deploy (404 → 白屏). Same shape as
+		// the maintain SPA (maintain_static.go); 2026-10-07 audit.
+		w.Header().Set("Cache-Control", "no-cache")
 		http.ServeFile(w, r, h.indexFile)
 		return
 	}
