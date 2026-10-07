@@ -11655,10 +11655,20 @@ request_logs_2026_10    127,457 行  144 MB   ← 真正重要的那张，已交
 
 ### §10.106.9 尚待观察（**不宣称已验证**）
 
-1. **留存切到 DROP 模式尚未观测到**：`SnapshotRetentionWorker.run()` 启动时跑一次、
-   之后每小时一次。830 在 13:03 执行，服务 12:37 启动，
-   ⇒ 下一次 tick 约 **13:37**。判据是日志出现
-   `"snapshot retention dropped expired partitions"`（而非 `removed expired snapshots`）。
+1. ★ **留存切到 DROP 模式**：
+   - **已确认（静态）**：分流代码确实在两台的二进制里 ——
+     `cleanupPartitioned`(2) / `isSnapshotPartitioned`(3) /
+     `"dropped expired partitions"`(1) / `"degrading to row delete"`(1)。
+   - **未确认（行为）**：`CleanupOnce` **只在真有东西可删/可删分区时才打日志**
+     （`res.PartitionsDropped > 0` 或 `res.RowsDeleted > 0`），
+     而 830 建的三个分区是 `20261007/08/09`，**全在 7 天保留期内，今天没有任何分区会过期**
+     ⇒ **「没有日志」不是「没工作」，也无法作为模式未切换的证据**。
+   - ⇒ 真正能观测到的那一行最早是 **2026-10-14**（第一个分区跨过 7 天），
+     届时应出现 `"snapshot retention dropped expired partitions"` 且**不再**出现
+     `"removed expired snapshots"`。
+   ⇒ **本节明确标注：切到 DROP 模式目前只有静态证据，没有任何行为证据。**
 2. **analyze 互斥锁的实跑效果**需等两个实例各跑满一轮（`pg_stat_statements` 的
    `analyze_llm_gateway_table_stats` 调用数应从 14 次/窗口降到 7 次）。
 3. **`_legacy` 的 DROP 责任人未定**，第 7 天（约 2026-10-14）不 DROP 则约 852 MB 白占。
+   回滚脚本：`830_ursm_node_snapshot_min_partitioned.down.sql`
+   （它会先检查 `_legacy` 是否还在，不在则 RAISE 拒绝——**只能退不能进是假回滚**）。
