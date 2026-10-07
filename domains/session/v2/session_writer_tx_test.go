@@ -194,7 +194,12 @@ func TestWrite_PersistsVersionedDigestInTurnTransaction(t *testing.T) {
 	expectSessionLock(mock)
 	expectListAllBodiesEmpty(mock)
 	expectRequestLock(mock)
-	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
+	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1 FROM public\\.session_turns_hot").
+		WithArgs(req.TenantID, req.SessionID).
+		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
+	// hot answered "empty" (COALESCE(MAX,0)+1 == 1 with zero rows),
+	// so the writer falls back to the partitioned parent.
+	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1 FROM public\\.session_turns").
 		WithArgs(req.TenantID, req.SessionID).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
 
@@ -300,7 +305,12 @@ func TestWrite_TurnAndBodiesAreAtomic_RollbackOnBodiesFailure(t *testing.T) {
 
 	// 2. AppendTurnInTx.
 	expectRequestLock(mock)
-	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
+	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1 FROM public\\.session_turns_hot").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
+	// hot answered "empty" (COALESCE(MAX,0)+1 == 1 with zero rows),
+	// so the writer falls back to the partitioned parent.
+	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1 FROM public\\.session_turns").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").
@@ -344,7 +354,12 @@ func TestWrite_TurnAndBodiesAreAtomic_CommitOnSuccess(t *testing.T) {
 	// 2. AppendTurnInTx.
 
 	expectRequestLock(mock)
-	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
+	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1 FROM public\\.session_turns_hot").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
+	// hot answered "empty" (COALESCE(MAX,0)+1 == 1 with zero rows),
+	// so the writer falls back to the partitioned parent.
+	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1 FROM public\\.session_turns").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").
@@ -459,7 +474,12 @@ func TestWrite_AggregateSnapshotIsIndependentOfCaller(t *testing.T) {
 	expectSessionLock(mock)
 	expectListAllBodiesEmpty(mock)
 	expectRequestLock(mock)
-	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
+	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1 FROM public\\.session_turns_hot").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
+	// hot answered "empty" (COALESCE(MAX,0)+1 == 1 with zero rows),
+	// so the writer falls back to the partitioned parent.
+	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1 FROM public\\.session_turns").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").
@@ -518,7 +538,12 @@ func TestWrite_AggregateGoroutineManagedByLifecycle(t *testing.T) {
 	expectSessionLock(mock)
 	expectListAllBodiesEmpty(mock)
 	expectRequestLock(mock)
-	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
+	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1 FROM public\\.session_turns_hot").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
+	// hot answered "empty" (COALESCE(MAX,0)+1 == 1 with zero rows),
+	// so the writer falls back to the partitioned parent.
+	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1 FROM public\\.session_turns").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").

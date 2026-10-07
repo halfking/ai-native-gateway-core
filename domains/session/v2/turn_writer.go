@@ -347,14 +347,56 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 		rec.Quality = "verified"
 	}
 
-	// 2. Get next turn_no
+	// 2. Get next turn_no.
+	//
+	// Hot-first, partitioned parent only as a fallback. This used to be a
+	// single MAX() over session_turns_with_current_month (hot anti-join arm
+	// UNION ALL every monthly partition), which pg_stat_statements charges
+	// 95,658,573 ms across 814,958 calls — 26.6 h. (Rank: #5 by total time in
+	// the same snapshot; #1 is the advisory lock above and #2 is an unrelated
+	// credential_model_index aggregation — runbook §10.106.26.)
+	//
+	// The cost was never execution. Measured on 154 (runbook §10.106.25):
+	//   via the view   Planning 17.3–55 ms / Execution 0.77–1.85 ms
+	//   session_turns_hot only       Planning  4.9 ms / Execution 0.36 ms
+	//   partitioned parent only      Planning 21.4 ms / Execution 0.50 ms
+	// Planning is 22–80x execution, and PREPARE does not help (the second
+	// EXECUTE still spends 17.3 ms planning), so the only lever with any
+	// magnitude is to stop planning a 6-way partition Append on the write
+	// path. Splitting into two simple queries does NOT: the parent arm alone
+	// costs 21.4 ms.
+	//
+	// Why hot-first is correct: promote moves hot rows into the partitions in
+	// ts order, so the newest turns of a live session are still in
+	// session_turns_hot. A session with hot rows therefore always has its
+	// maximum there. The fallback covers the one case where hot is empty —
+	// a session whose every turn has already been promoted (replays, digests).
+	// This is safe under the per-session advisory lock taken just above:
+	// turn_no is monotonic and no concurrent writer can advance it.
+	//
+	// If a turn could ever land in the partitions while its session still has
+	// newer rows in hot, MAX would be read from hot only. promote is ordered
+	// by ts and the lock serialises writers, so that ordering cannot invert.
 	err = tx.QueryRow(ctx, `
 		SELECT COALESCE(MAX(turn_no), 0) + 1
-		FROM public.session_turns_with_current_month
+		FROM public.session_turns_hot
 		WHERE tenant_id = $1 AND session_id = $2
 	`, rec.TenantID, rec.SessionID).Scan(&turnNo)
 	if err != nil {
-		return 0, fmt.Errorf("get next turn_no: %w", err)
+		return 0, fmt.Errorf("get next turn_no (hot): %w", err)
+	}
+	// 1 means "no row": the sequence starts at 1 (COALESCE(MAX,0)+1), so a
+	// stored turn_no is never 0 and a non-empty hot arm always returns >= 2.
+	if turnNo <= 1 {
+		turnNo = 0
+		err = tx.QueryRow(ctx, `
+			SELECT COALESCE(MAX(turn_no), 0) + 1
+			FROM public.session_turns
+			WHERE tenant_id = $1 AND session_id = $2
+		`, rec.TenantID, rec.SessionID).Scan(&turnNo)
+		if err != nil {
+			return 0, fmt.Errorf("get next turn_no (archived): %w", err)
+		}
 	}
 
 	partitionDate := calendarDate(rec.Ts)

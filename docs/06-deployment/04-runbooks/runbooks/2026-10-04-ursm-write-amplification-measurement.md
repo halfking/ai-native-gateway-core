@@ -12580,6 +12580,77 @@ total_exec_time = 95,658,573 ms（26.6 h）   calls = 814,958   plans = 0
 与 §10.106.16 引用的历史均 99.7 ms **差约 30 倍** ⇒
 **那 83.9 小时是累计历史量，当前流量下不构成瓶颈**，三条改法继续不动。
 
+### §10.106.26 查询侧第 2 名（**37.6 小时**）：`latest_bucket` 聚合扫 35.6 万行，而去重后只剩 **1,043 组**
+
+§10.106.16 排查询侧时把 `MAX(turn_no)` 当第 2 名。**它是第 5 名**。
+真正的第 2 名是一条 `latest_bucket` CTE，本节量化它。
+
+**一、生产累计（pg_stat_statements，本库）**
+
+```
+WITH latest_bucket AS (SELECT credential_id, raw_model, MAX(bucket) …
+                       FROM credential_model_index_with_current_month
+                       GROUP BY credential_id, raw_model) …
+total_exec_time = 135,396,957 ms（37.6 h）  calls = 188,357  ⇒ 均 719 ms/次
+```
+
+**二、规模对比：扫描量与结果量差 342 倍**
+
+```
+总行数 = 356,514     去重 (credential_id, raw_model) = 1,043
+```
+
+视图结构与两臂规模：
+`credential_model_index_hot`（**2,361** 行） `UNION ALL` `credential_model_index`
+（**354,153** 行 / 3 个分区）。
+
+**三、拆解耗时（154 实测，同机）**
+
+| 步骤 | Planning | Execution |
+|---|---|---|
+| 仅 CTE 的 `MAX(bucket) GROUP BY credential_id, raw_model` | 13.5 ms | **189.4 ms** |
+| `SELECT DISTINCT credential_id, raw_model`（走视图） | 16.9 ms | **258.8 ms** |
+
+⇒ 光是 CTE 内部那一步就是 189 ms；后面再回连视图取整行，才是 719 ms 的其余部分。
+⚠️ **`DISTINCT` 反而更慢（258.8 > 189.4）** ⇒ 「换成 DISTINCT 就快了」是错的。
+
+**四、根因：索引首列反了**
+
+```
+CREATE UNIQUE INDEX credential_model_index_bucket_cred_model_key
+  ON ONLY public.credential_model_index USING btree (bucket, credential_id, raw_model)
+```
+
+**首列是 `bucket`**，所以它服务不了 `GROUP BY credential_id, raw_model`，
+也服务不了「按 (credential_id, raw_model) 定位再 ORDER BY bucket DESC LIMIT 1」。
+`hot` 表上的索引同样是 `(bucket, credential_id, raw_model)`，
+外加一个单列 `(credential_id)` —— **没有 `(credential_id, raw_model, bucket)` 这种形状的索引**。
+
+⇒ 于是 PostgreSQL 只能对 356,514 行做全量 HashAggregate，
+而它要产出的结果只有 **1,043 行**。
+
+**五、建议的修法（⚠️ 未实施）**
+
+```sql
+-- 分区父表：按分区父级建，分区会自动继承
+CREATE INDEX CONCURRENTLY IF NOT EXISTS credential_model_index_cred_model_bucket_idx
+    ON public.credential_model_index (credential_id, raw_model, bucket DESC);
+-- hot 表同样补上（保证两臂形状一致）
+CREATE INDEX CONCURRENTLY IF NOT EXISTS credential_model_index_hot_cred_model_bucket_idx
+    ON public.credential_model_index_hot (credential_id, raw_model, bucket DESC);
+```
+
+有了它，`MAX(bucket) GROUP BY` 可以走 Index Only Scan，
+且「按对取最新一行」可用 `ORDER BY bucket DESC LIMIT 1` 直接定位。
+
+★ **不预告收益**：354,153 行上的索引体积、写放大、以及聚合是否真能转成
+Index Only Scan，都必须在真库实测。**这属于生产 DDL，需明确授权**，
+且按本仓惯例要走一条新迁移（登记 + 契约门 + `.down.sql`），本节只把判据留全。
+
+★ **同族检查（未做）**：839 覆盖的 11 个分区族若是同一个索引形状，
+都会带同样的「聚合扫全量」问题；本节只查了 `credential_model_index` 一族，
+**不宣称其余族同构** —— 要下结论必须逐族核对索引首列。
+
 ---
 
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」
