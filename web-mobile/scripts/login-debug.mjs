@@ -9,6 +9,12 @@ const PROFILE = path.join(os.tmpdir(), 'llmgw-login-debug')
 rmSync(PROFILE, { recursive: true, force: true })
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
+// 口令绝不入库（敏感扫描 CRED_ASSIGN 会拦，公开镜像更不能带）：运行时由
+// 环境变量提供。JSON.stringify 之后内嵌进页面脚本，引号安全。
+const ADMIN_USER = process.env.LOGIN_DEBUG_USER || 'admin'
+const ADMIN_PASSWORD = process.env.LOGIN_DEBUG_PASSWORD
+if (!ADMIN_PASSWORD) { console.error('缺少 LOGIN_DEBUG_PASSWORD 环境变量'); process.exit(2) }
+
 class CDP {
   constructor(ws){this.ws=ws;this.id=0;this.p=new Map();this.h=[]}
   static async connect(u){const ws=new WebSocket(u);await new Promise((r,j)=>{ws.addEventListener('open',r,{once:true});ws.addEventListener('error',()=>j(new Error('ws')),{once:true})})
@@ -67,7 +73,7 @@ const r = await cdp.send('Runtime.evaluate', { returnByValue: true, expression: 
   const ins = Array.from(document.querySelectorAll('input'))
   const u = ins[0], p = ins[1]
   if(!u||!p) return {ok:false,why:'输入框不足',n:ins.length}
-  setVal(u, 'admin'); setVal(p, '__REDACTED_ADMIN_PASSWORD__')
+  setVal(u, ${JSON.stringify(ADMIN_USER)}); setVal(p, ${JSON.stringify(ADMIN_PASSWORD)})
   const form = document.querySelector('form')
   const btn = document.querySelector('button[type=submit]') || Array.from(document.querySelectorAll('button')).find(b=>/登录/.test(b.textContent))
   if(!btn) return {ok:false,why:'无提交按钮'}
@@ -90,7 +96,7 @@ console.log(JSON.stringify(st.result.value, null, 1))
 console.log('\n=== 4. 直接手测 API（绕过页面）===')
 const direct = await cdp.send('Runtime.evaluate', { returnByValue: true, awaitPromise: true, expression: `
   fetch('/api/auth/token',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({username:'admin',password:'__REDACTED_ADMIN_PASSWORD__'}),credentials:'same-origin'})
+    body:JSON.stringify({username:${JSON.stringify(ADMIN_USER)},password:${JSON.stringify(ADMIN_PASSWORD)}}),credentials:'same-origin'})
     .then(async r => ({ status:r.status, setCookie:r.headers.get('set-cookie') ? 'yes' : 'no', body:(await r.text()).slice(0,120) }))
     .catch(e => ({ err: String(e) }))` })
 console.log(JSON.stringify(direct.result.value, null, 1))

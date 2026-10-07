@@ -128,7 +128,14 @@ EXCLUDE_FILES=("scan-secrets.sh" "scan-secrets.config" "scan-secrets.replacement
   "*.pem" "*.priv" "*.pub"
   # redaction_test.go contains synthetic credential fixtures (ghp_*, AKIA*,
   # JWT) used to assert redaction behaviour — never real secrets.
-  "redaction_test.go")
+  "redaction_test.go"
+  # rule_surface_244_test.go (domains/hooks/handoff) is the key-DETECTION
+  # audit corpus: hand-written provider key formats (sk-*/sk-ant-*/AKIA*/
+  # xoxb-*/AIza*) that MUST match key-shaped regexes to do their job — the
+  # strings cannot be reshaped without destroying the test. Same class as
+  # redaction_test.go; never real secrets (see the file's own req244Cases
+  # comment).
+  "rule_surface_244_test.go")
 EXCLUDE_EXTS=("png" "jpg" "jpeg" "gif" "ico" "svg" "woff" "woff2" "ttf" "eot"
   "pdf" "zip" "tar" "gz" "bz2" "xz" "7z"
   "bin" "exe" "dll" "so" "dylib" "class" "jar"

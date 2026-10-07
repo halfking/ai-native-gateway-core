@@ -96,7 +96,7 @@ func cleanupTestV2Data(t *testing.T, db *pgxpool.Pool, sessionID, tenantID strin
 // against the real PG17 on 252. Requires TEST_DB_URL with write access to
 // public.sessions / session_turns / session_bodies / session_turn_logs.
 //
-//	Run:   TEST_DB_URL="postgres://llm_gateway:$(pass)@172.16.2.210:5432/llm_gateway" \
+//	Run:   TEST_DB_URL="postgres://llm_gateway:${TEST_DB_PASSWORD}@<your-test-db-host>:5432/llm_gateway" \
 //	         go test -tags=integration -run TestPersistHook_Integration_DBWrite \
 //	         ./internal/sessionv2mirror/ -v -count=1
 func TestPersistHook_Integration_DBWrite(t *testing.T) {
