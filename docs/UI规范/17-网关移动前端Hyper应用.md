@@ -12100,3 +12100,153 @@ GET `/api/admin/settings` · `/api/admin/settings/{key}` · `/api/admin/settings
 
 local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
 `web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
+## 11.127 工作类型：清单 / 单项 / 统计 / L1 任务类型（第九十一批，2026-10-08）
+
+GET `/api/admin/work-types` · `/api/admin/work-types/{key}` · `/api/admin/work-types/stats` · `/api/admin/work-types/l1-task-types`
+
+- **注册**：**第五种注册形态**，与批 90 的 settings 同族但**档位不同**。
+  `mux.HandleFunc` 不在 `admin/handler.go` 里，而在**另一个文件的方法**中：
+
+  ```go
+  // admin/work_types.go:50-55
+  func (h *WorkTypeHandlers) RegisterWorkTypeRoutes(mux *http.ServeMux, adminWrap func(http.HandlerFunc) http.HandlerFunc) {
+      mux.HandleFunc("/api/admin/work-types",             adminWrap(h.handleRoot))
+      mux.HandleFunc("/api/admin/work-types/stats",       adminWrap(h.handleStats))
+      mux.HandleFunc("/api/admin/work-types/sync-from-acc", adminWrap(h.handleSyncFromACC))
+      mux.HandleFunc("/api/admin/work-types/",            adminWrap(h.handleSub))
+  }
+  // admin/handler.go:1433-1434
+  wtH := NewWorkTypeHandlers(h.db)
+  wtH.RegisterWorkTypeRoutes(mux, h.superAdmin)   // ★★ 不是 h.admin
+  ```
+
+  ⇒ ★★★★★ **整族是 `h.superAdmin` 档** ⇒ tenant_admin 直接 403
+  ⇒ ⇒ 移动端抽屉席**必须**设 `requiresRole: 'super_admin'` 并同步
+    `src/components/shell/AppDrawer.spec.ts` 白名单
+  ⇒ ★★★★ **同前缀邻域、不同档位**：`/api/admin/settings` 是 `h.admin`，
+    `/api/admin/work-types` 是 `h.superAdmin` ⇒ **不能按前缀推权限**。
+- **实现**：`admin/work_types.go`（1014 行）·
+  `deploy/sql/schemas/baseline/01-schema.sql:19408-19452`。
+- **桌面调用方**：`web/src/api-work-types.ts`（220 行）—— ★★ **它在 `web/src/`
+  根目录，不在 `web/src/api/` 下** ⇒ grep `web/src/api/` 会漏掉这一族。
+  四条 GET 全是 `req<T>` 直接强转，**不做任何校验** ⇒ 全部校验由本模块补上。
+
+### 本族最要紧的十九件事
+
+1. ★★★★★ **整族是 `h.superAdmin` 档**（见上）⇒ tenant_admin 403。
+2. ★★★★★ **错误体是本仓第四种形状**：`writeJSONErrCtx`（`auto_route.go:1089-1099`）
+   ⇒ `{"error":{"message","code","type":"admin_error"}}`
+   ⇒ ★★★ **`message` 是 `i18n.T(ctx,key)` 的本地化文本，`code` 才是稳定机读键**
+   （`admin_not_found` / `admin_method_not_allowed` / `admin_work_type_not_found`）
+   ⇒ ⇒ 客户端**必须匹配 `code`**，绝不能匹配 `message`（它随请求语言变）。
+   ⇒ ★ 与批 89 的「错误体按**写出层**分支」同族：本族写出层是 `writeJSONErrCtx`，
+     而 `writeError` 写的是 `{"error":{"detail"}}` —— 同一个 admin 包里两种并存。
+3. ★★★★ **清单端点是顶层裸数组**（`out := make([]workTypeConfig, 0)`，`:553`）
+   ⇒ 空时是 `[]` 不是 `null` ⇒ 解包器必须直接吃数组（本仓第三种顶层形状）。
+4. ★★★★ **`ORDER BY sort_order, key`（`:544`）—— 本仓少见的「完全确定」排序**，
+   有 key 做 tiebreak ⇒ **可断言严格升序**（不像批 88/89/90 那些无 tiebreak 的）。
+5. ★★★★★ **`model_routes` 有三态**：键**消失** / `null` / 数组。
+   `out[i].ModelRoutes = routeMap[out[i].Key]`（`:573`）+
+   `fetchRoutesForKeys` 对**没有路由的 key 根本不建 map 条目**（`:961`）+
+   字段是 `json:"model_routes,omitempty"` ⇒ nil ⇒ 键整个消失。
+6. ★★★★★ **`l1-task-types` 的 `items` 是「canonical 8 ∪ DB 里出现过的 L1 键」**
+   （`mergeL1TaskTypes`，`:217-246`）⇒ **长度 ≥ 8 且可以多于 8** ⇒ 客户端
+   **不能**假设恰好 8 条；新增项 `Label = k`（回落成 key 本身）、`Icon = "◆"`
+   （`:240-241`）⇒ ⇒ **可自验不变量：`icon === '◆'` ⟺ `label === key`**。
+7. ★★★★★ **`count` 全为 0 是二义的**：`dbCounts, _ := h.fetchL1Counts(ctx)`（`:167`）
+   **丢弃错误** ⇒ 三种成因同形：真没配置用它 / 那次查询失败 / `h.db == nil`
+   （`:179-181` 返回 `(nil, nil)`，连错误都不是）⇒ **不能**把「全是 0」读成
+   「没有工作类型在用这些 L1」。
+8. ★★★★★ **`count_24h` 是派生字段**（`:415-419`）：
+   `count := row.CountDirect; if count == 0 { count = row.CountL1 }`
+   ⇒ ★★★ 可自验 `count_24h === count_direct || count_24h === count_l1_proxy`
+   ⇒ ★★ `count_l1_proxy` 是该 L1 的**全局量** ⇒ 同一 L1 下多行共享同一个值
+   ⇒ 这张表**重复计数**，求和无意义。
+9. ★★★★★ **三处查询失败被静默吞掉，响应仍是 200**：
+   `if err == nil {…}` 包着 `by_work_type`（`:298`）与 `by_l1_task`（`:337`），
+   `_ = h.db.QueryRow(…).Scan(&totalAuto, &totalSpec)`（`:373`）错误整个丢弃
+   ⇒ ★★ `by_work_type` 空 / `total_auto === 0` **都可能只是查询挂了**
+   ⇒ ★★★ 注释 `:308-309` 自陈「This handler previously swallowed the rows error
+   entirely…」⇒ **他们修了 `rows.Err()` 那一处，但 `h.db.Query` 的错误仍被吞**
+   ⇒ 这是一处**半修**的吞错。
+10. ★★★★ **`by_work_type` 只含 `enabled = TRUE` 的配置**（`:399`）
+    ⇒ 停用的工作类型在统计里**整行消失** ⇒ 一处**看得见的**过滤。
+11. ★★★ `top_models` 是 `ORDER BY c DESC LIMIT 10`（`:452-453`），**无 tiebreak**
+    ⇒ 同计数行顺序未定义 ⇒ 只能断言「非升序」。
+12. ★★★★ **`model_routes` 排序是三层确定性 tiebreak**（`:941-944`）：
+    `work_type_key`、tier CASE（primary→0 / secondary→1 / fallback→2 / 其他→3）、
+    `weight DESC`、`canonical_name`
+    ⇒ 可断言「先 tier 分组、组内 weight 降序、同权重按 canonical_name 升序」。
+13. ★★★★ **`tier` 与 `task_quality_score` 恒非空且被 CHECK 锁死**：
+    SQL 用 `COALESCE(tier,'secondary')`、`COALESCE(task_quality_score, 0)`，
+    表上还有 `tier IN (primary,secondary,fallback)` 的 CHECK（`01-schema.sql:19450`）
+    ⇒ ⇒ ★★ **桌面那个 `normalizeRouteTier` 兜底是多余的**。
+14. ★★★ **`task_quality_score` 的真实域是 0–100，不是 0–1** ——
+    `numeric(5,2)` + CHECK `>= 0 AND <= 100`（`01-schema.sql:19449`），
+    而**桌面注释写的是「任务质量评分 0-1」** ⇒ ★★★ **前端注释是错的**
+    ⇒ 客户端绝不能按 0–1 校验或显示进度条。
+15. ★★★ **`tags` / `prompt_keywords` 是 `text[] DEFAULT '{}' NOT NULL`**
+    （`01-schema.sql:19419-19420`）⇒ **恒为数组、永不为 `null`**，可以是空数组。
+16. ★★ `include_disabled` 是**精确字符串比较** `== "true"`（`:534`）
+    ⇒ `"1"` / `"yes"` / `"TRUE"` **都不生效**（静默当作 false）。
+17. ★★★ **`l1-task-types` 是保留子路径，在通用 key 分发之前判断**
+    （`handleSub`，`:111-114`）—— 否则会被当成 work type key 去查表然后 404；
+    另有 `strings.Trim(rest, "/")`（`:102`）⇒ **尾斜杠与不带等价**，全空 ⇒ 404。
+18. ★★ **超时各不相同**：`stats` / `list` / `get` 是 **10s**，`l1-task-types` 是
+    **5s**（`:163`）⇒ 移动端的请求超时**不能统一**。
+19. ★★ 四个端点都走 `writeJSONOk`，而它内部调 `applyV1FreezeNotice(w)`
+    （`auto_route.go:1060`）⇒ ⇒ **这些端点也带 v1 数据冻结告示响应头**。
+
+**校验边界**：四个响应的**全部恒在键与类型**，外加 `omitempty` 键**存在时**的类型；
+为 (4)(6)(7)(8)(11)(12)(13) 各提供判据。
+★ **不校验** `tier` / `default_profile` 的**取值**（表 CHECK 锁死三值，
+校验取值等于把 CHECK 复制一遍 ⇒ 恒真判据），由常量 + 注释承担；
+★ **不校验** `count_24h` 的**正确性**（后端自己都可能取自错误路径），
+只校验它与另两个计数的**自洽关系**（见 8）。
+★ 本族响应形状有四种（裸数组 / envelope / 第四种错误体 / 顶层对象），
+**每一种各自解包，不抽通用解包器** —— 与批 90 的「同族两端 nil 编码相反」同源。
+
+### 验证
+
+- 用例 **122 条全绿**（`web-mobile/src/api/workTypes.test.ts`）。
+- 变异 **94 条 = 94 条全有牙，0 可证等价**（`/tmp/mut-co91.mjs`，逐条 `RESTORED` 字节比对）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **5944 条（156 文件）** rc=0。
+
+### 变异验证暴露的四件事（95 条 → 终态 94 条全有牙）
+
+首跑 5 条 STILL_GREEN，归因**四类**，其中两类是**工具缺陷**、只有一类是判据缺陷：
+
+1. ★★★★★ **harness 把「测试没跑起来」记成了「无牙」（#93 / #94 / #95）。**
+   这三条变异的 `to` 写成 `params.key //MUTCO91_93`，而被替换的片段**后面同一行还有代码**
+   （模板串的收尾 `` `, undefined, options) ``）⇒ `//` 把它整行吃掉
+   ⇒ **vitest 直接 PARSE_ERROR、`Tests no tests`**，而我的 `parseFailures`
+   把 `__COLLECT_FAIL__` 塞进 `failedNames` 之后，只判「锚点名在不在红名单里」
+   ⇒ 自然判成 STILL_GREEN。
+   ⇒ ★★★ **量具缺陷的形态与已记的「读数异常变动先验量具」一致，但这次更隐蔽**：
+     **「0 条变红」既可能是判据无牙，也可能是根本没跑**。
+     ⇒ 修法：`__COLLECT_FAIL__` 命中时**直接进 ERRORS 而不是 STILL_GREEN**。
+     ★ 这是 harness 里必须长期保留的一行断言。
+2. ★★★★ **同类的第二个坑：`to` 多带一个逗号**（#94 / #95）。
+   `from` 是 `` `${WORK_TYPES_PATH}/stats` ``（**不含**逗号），`to` 却补了个逗号
+   ⇒ 拼出 `` /*MUT94*/,, `` ⇒ 又是一个 PARSE_ERROR。
+   ⇒ ★ 与 (1) 同一族：**注入必须先验「替换后那一行还是不是合法 TS」**。
+   ⇒ 修法：`to` 只加**块注释**标记（`/*MUTCO91_94*/`），不动标点。
+3. ★★ **样本选歪：`some` 的真值分界不在「混合列表」上**（#73）。
+   `some(r => r.count !== 0)` 改成 `some(r => r.count === 0)`，而 fixture
+   （canonical 八项 + 一项新增）**既有 0 又有非 0** ⇒ **两个实现都返回 true**
+   ⇒ 白绿。⇒ 唯一区分格是「**一个 0 都没有**」。
+   ⇒ ★★★ 这是已记的「`in` 与真值判断的分界只在 falsy 但不是 null 那一格」的
+     **新变体**：**`some` 的两种写法只在「全部非 falsy」那一格区分**。
+   ⇒ 修法：补 `一个 0 都没有 ⇒ 仍判为有信号` 用例，并**把锚点移到它上面**。
+4. ★★ **可证等价 ⇒ 删变异而不是补用例**（#64）。
+   `prev.key > cur.key` 改成 `>=`，唯一区分格是「两行 key 相同」——
+   而 `work_type_config.key` 是**主键**，同一 `sort_order` 下不可能重复
+   ⇒ **在可达输入域上两种写法等价** ⇒ 补一条「同 key」的用例等于
+   **给判据编码一个后端不可能产出的契约**。
+   ⇒ ★★★ 修法：从变异表里删掉这条并在本文写明理由（归因链第④步）。
+   ⇒ ★ 与批 90 的「判据可证冗余 ⇒ 删代码」同族，这次是「**变异可证等价 ⇒ 删变异**」。
+
+### 收尾
+
+local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
+`web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
