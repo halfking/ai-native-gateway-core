@@ -12409,3 +12409,196 @@ GET `/api/credentials/model-history?credential_id=X&raw_model_name=Y&limit=50`
 
 local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
 `web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
+
+## 11.129 存储配置 + 日志轮转配置（第九十三批，2026-10-08）
+
+GET `/api/admin/storage/config` · GET `/api/admin/logs/config`
+
+- **注册**：`admin/handler.go:1108` 与 `:1114`，**两行相邻、同一个 mux**：
+
+  ```go
+  mux.HandleFunc("/api/admin/storage/config",            h.superAdmin(h.handleStorageConfig))  // :1108
+  mux.HandleFunc("/api/admin/storage/config/test-path",  h.superAdmin(h.handleStorageTestPath)) // :1109
+  mux.HandleFunc("/api/admin/storage/migration-state",   admin(h.handleMigrationState))        // :1111 ★ admin 档
+  mux.HandleFunc("/api/admin/logs/config",               h.superAdmin(h.handleLogConfig))       // :1114
+  ```
+
+  ⇒ ★★★★★ **`:1108` 与 `:1111` 相邻两行却是两种档位**（superAdmin vs admin）
+  ⇒ ⇒ **本族两族整族 `h.superAdmin` 档** ⇒ tenant_admin 直接 403
+  ⇒ ⇒ 移动端抽屉席**必须**设 `requiresRole: 'super_admin'`
+  ⇒ ★★★ **绝不能按 `/api/admin/storage/` 这个前缀推权限** ——
+    同前缀下的 `migration-state` 是 **admin 档**（tenant_admin 可用）。
+    ★ 这是「同一注册处、相邻两行、两种权限档位」的第二个实例（第一个是批 92 的
+    `:1453` 用 `h.admin` 而 `:1108/1114` 用 `h.superAdmin`）。
+- **实现**：`admin/storage_config.go`（570 行）· `admin/log_management.go`（669 行）。
+- **桌面调用方**：`web/src/api/tuning.ts:798` 与 `:930` —— `req<StorageConfig>` /
+  `req<LogConfig>` 直接强转，**不做任何校验** ⇒ 全部校验由本模块补上。
+- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+
+### 键数（脚本从 Go 结构体数出，**不要手数**）
+
+| 结构体 | 总 json tag | 恒在 | `omitempty` |
+|---|---|---|---|
+| `StorageConfigResponse`（`storage_config.go:32-70`） | **26** | **13** | **13** |
+| `LogConfigResponse`（`log_management.go:41-62`） | **15** | **15** | **0** |
+
+⇒ ★★★ 第一次写本节时我**手数成「18 恒在 + 8 可选」和「17 键」**，
+  两个数都是错的（常量列表本身写对了，注释写错了）
+⇒ ⇒ ★★★ **键数必须用脚本从 Go 结构体数，不能手数** ——
+  手数错了不会编译失败、不会让测试变红，**只会悄悄写进文档骗人**。
+
+### 本族最要紧的十六件事
+
+1. ★★★★★ **两族整族 `h.superAdmin` 档**（见上）⇒ tenant_admin 403。
+2. ★★★★★ **`storage/config` 的 `s3_use_ssl` 是 `bool` + `omitempty`**
+   ⇒ ★★★ **`false` 时键整个消失** ⇒ **「键存在」等价于「已启用」**，
+   `false` 与「没配 S3」在响应上**不可区分**。
+   ⇒ ★ 与批 91 的 `model_routes`（键消失 / null / 数组三态）、
+     批 92 的「键恒在但值为裸 `null`」并列为本仓**第三种可选键编码**。
+3. ★★★★★ **`logs/config` 的 15 个键一个 `omitempty` 都没有** ⇒ **恒在 15**。
+   ★ 与 (2) **恰好相反**：同一个 admin 包、同一种「配置读取」语义，
+   两个端点对「可选」的表达方式完全不同 ⇒ **解包器不能共用**。
+4. ★★★★★ **`config_source` 是「泄漏某一个键的来源」，不是整个响应的来源**
+   （`storage_config.go:139-152`）：
+
+   ```go
+   resp.ConfigSource = "default"
+   if storageType := readStringSetting("storage.type"); storageType != "" {
+       resp.ConfigSource = "db"      // ★ 硬编码 db —— readStringSetting 丢掉了 src
+   }
+   if v, src := readIntSetting("storage.attachment_ttl_days"); src != "" {
+       resp.ConfigSource = src       // ★ 只有这一个键的 src 会最终决定
+   }
+   ```
+
+   ⇒ ★★★ 三个取值 `default` / `env` / `db` **都真实存在**
+     （`settings.EffectiveValue` 的返回值，见 `settings/registry_test.go:126/145/169`），
+     ★ **但它只描述 `storage.attachment_ttl_days`**（或 `storage.type` 的存在性）
+   ⇒ ⇒ `ttl_days` 来自 env 而 `storage_type` 来自 db 时，
+     `config_source` 报 **`env`** ⇒ **不要用它给整张表单打「来源」标签**。
+   ⇒ ★★ `readStringSetting`（`:485-499`）**返回类型里没有 src** ⇒ 这条分支只能硬编码。
+5. ★★★★★ **`enabled_source` 的注释与代码矛盾**（`log_management.go:55` vs `:143-181`）：
+   注释写 `"db" | "env" | "default"`，但代码**初值硬编码 `"env"`**，
+   只有 `log.enabled` 的 `src == "db"` 时才改成 `"db"`
+   ⇒ ⇒ **实际只有 `env` / `db` 两值，`default` 永不出现**。
+   ⇒ ★★★ 与批 92 是**同一个陷阱的第二例**：**注释不是契约，赋值点是。**
+6. ★★★★★ **`hot_reloadable` 与 `enabled` 同源但**只有一个**可被 DB 改写**：
+   `HotReloadable: cur.File != ""`（`:150`）**永不被覆盖**，
+   `Enabled: cur.File != ""`（`:147`）**可被 `log.enabled` 覆盖**（`:178-181`）
+   ⇒ ⇒ **`hot_reloadable === false` ⇒ `log_file === ""` 且 `log_dir === ""`**（可自验）。
+7. ★★★★ **`log_dir` 只在 `cur.File != ""` 时才填**（`:152-154`）⇒ 否则是空串
+   ⇒ ⇒ `log_dir !== ""` ⇒ `log_file !== ""`。
+8. ★★★★ **`file_path` 可能与 `log_file` 不一致**：初值是 `cur.File`（运行时解析值），
+   但 DB 有 `log.file_path` 覆盖时**只改 `file_path`**（`:174-177`），**不动 `log_file`**
+   ⇒ ⇒ **`log_file` 才是「运行时真正的文件」，`file_path` 是「配置期望值」**。
+   ⇒ ★★ 字段注释写的是「DB/环境变量 解析后的**实际生效路径**」⇒ **注释不准**。
+9. ★★★★ **敏感值脱敏形态是 `"***" + secret[len(secret)-4:]`**（`:196`、`:212`）
+   ⇒ ⇒ **凡出现就一定以 `***` 开头**（可自验），长度随原长度变化。
+   ⇒ ★★★ ⚠️ **`secret` 长度 < 4 时 `secret[len(secret)-4:]` 会切片越界 panic**
+     （`len(secret)-4` 为负）—— 客户端遇到这种网关应视为 5xx，不是「脱敏失败」。
+10. ★★★★ **`current_disk_usage` 的 `0` 是二义的**：`diskUsageAt` 失败时
+    `resp.CurrentDiskUsage` 保持零值（`:203-207` 只在 `statErr == nil` 时赋值）
+    ⇒ ⇒ **「0%」既可能是真的 0%，也可能是探测失败**
+    ⇒ 客户端**不能**据此弹「磁盘已满 / 未用」。
+11. ★★★★ **`needs_restart` 的含义随运行时状态而变**（`:178-186`）：
+    未注入 `h.attachmentStorage` 时 `NeedsRestart = (AttachmentDirOverride != "")`；
+    已注入时比较 `filepath.Abs(BaseDir())` 与 `filepath.Abs(EffectiveDir)`
+    ⇒ ⇒ **同一个 `true` 在两种运行态下是两件事**。
+12. ★★★ **`storage_type` 决定哪些键会被填**（`:158-215` 的 `switch`）：
+    `local` 填 `attachment_dir_*` / `effective_dir` / `current_disk_usage`；
+    `oss` 填 5 个 `oss_*`；`s3` 填 7 个 `s3_*`
+    ⇒ ⇒ ★★ **`storage_type === "local"` 时那 12 个云厂商键必然全部缺席**。
+    ⇒ ★★ 这是**由 `switch` 决定的可达性**，**不是恒真判据**
+      （换 `storage_type` 它们就会出现）⇒ **可以断言**。
+13. ★★★ `download_url_prefix` 是**硬编码常量** `/api/attachments/`（`:220`），
+    与任何配置无关。
+14. ★★★ **`logs/config` 的 PUT/GET 键名不对称**（`:199` vs `:47`）：
+    GET 返回 `delete_days`，PUT 收的是 **`archive_delete_days`**
+    ⇒ ★★ 客户端双向同步**必须查对照表**；照 GET 的键名去 PUT 会被
+      **静默忽略**（`DeleteDays` 是 `*int` + omitempty，`nil` = 不改）。
+15. ★★★ `archive_days` / `delete_days` 的缺省是硬编码的 **7 / 30**（`:151-152`），
+    **不是注册表里的 spec**，且响应里**没有任何字段说明这是缺省**。
+16. ★★★ **方法不匹配返回 405**（`:123`、`:133`，`writeError` ⇒ `{"error":{"detail}}`）
+    ⇒ ★ **与批 91 的 work-types（不匹配返 404）相反**。
+    ⇒ ★★★ **`writeJSON` 是中央出口且内部统一调 `applyV1FreezeNotice`**
+      （`handler.go:1481-1483`）⇒ **判「这端点带不带 v1 冻结告示」不必逐端点查**：
+      看它最终走哪个写出层即可（`writeJSON` / `writeJSONOk` 都带，
+      手写 `w.Write` 的才不带）。
+
+**校验边界（★ 本批被变异脚本大幅改写，理由见下）**：
+只校验两个响应的**全部恒在键与类型**，外加 `omitempty` 键**存在时**的类型。
+★ **不提供**任何「后端保证的语义不变式」判据 ——
+(2)(4)(5)(6)(7)(9)(12)(13) 这八条**全部恒真**（见「变异暴露」第 2 条），
+契约一律由注释承担。语义层只保留**两个有区分力**的函数：
+`logConfigPathMatchesRuntime`（(8)）与 `logConfigPutKeyFor`（(14)）。
+
+★ 顺带修正一处**我写错的事实**：`storage_type` 的取值域**不是** `STORAGE_TYPES`
+那三个值 —— 初值 `"local"`（`:133`）可被 `readStringSetting("storage.type")`
+改成**任意字符串**（`:135-138`），第四种值会让 switch 三个 case 都不进
+⇒ 产生一个「所有云厂商键缺席 + local 运行时字段全是零值」的形状。
+
+### 验证
+
+- 用例 **43 条全绿**（`web-mobile/src/api/storageAndLogConfig.test.ts`）。
+- 变异 **46 条 = 46 条全有牙，0 可证等价**（`/tmp/mut-co93.mjs`，逐条 `RESTORED` 字节比对；
+  ★ harness 带**量具阳性对照**，开跑前先注入必然打红的改动验证解析器，抓到 22 条红才开跑）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6064 条（158 文件）** rc=0。
+
+### 变异验证暴露的五件事（60 条 → 46 条全有牙）
+
+首跑 **60 条全白绿、0 报错** —— 这种过于整齐的读数本身就是量具坏了的信号。
+
+1. ★★★★★ **量具本身坏了：复制 harness 时「转义文件名」没跟着换。**
+   `parseFailures` 的正则是 `/FAIL[^\n]*modelHistory\.test\.ts > (.+)/`，
+   我按 `String.replace("modelHistory.test.ts", …)` 替换
+   ⇒ **匹配不上带反斜杠的形式** ⇒ `SPEC` 换了、正则没换
+   ⇒ vitest 照跑（红了一大片），但解析器**一条红都看不见**
+   ⇒ 每条变异都判成 STILL_GREEN ⇒ **60/60 全假绿**。
+   ⇒ ★★★ 判别动作：**「100% 白绿 + 0 报错」必须先验量具**，
+     这与「数字异常」「数字没变」是同一类信号，但**更隐蔽** ——
+     这次的读数**内部完全自洽**，看起来就像一个正常结论。
+   ⇒ ★★★ 两条永久修法（已进 harness）：
+     ① **量具阳性对照**：开跑前注入一个必然打红的改动（往 `requireKeys` 里插 `throw`），
+       断言解析器抓得到、且抓到的是**用例名**而非 `__COLLECT_FAIL__`，否则 `exit 2`；
+     ② **零有牙大声告警**：`teeth===0 && errs===0` 时点名最可能原因。
+2. ★★★★★ **九条语义判据里八条是恒真的 —— 这是范畴错误，不是偶然。**
+   首轮我写了 9 条，全部是「后端保证的不变式」：
+   `s3_use_ssl 键存在⇒true`、`storage_type⇒哪些云厂商键在场`（三条）、
+   `脱敏值以 *** 开头`、`config_source` / `enabled_source` 的取值、
+   `download_url_prefix` 恒为常量、`hot_reloadable/log_file/log_dir` 三者同源（两条）。
+   ⇒ 逐条回源码核对后，**八条在可达输入域上恒成立**：
+   - 三个 `switch` 分支**各只设自己那一组键** ⇒ 「storage_type⇒键在场」三条全恒真；
+   - `s3_use_ssl` 只在 `if useSSL` 时被赋 `true` ⇒ 键要么缺席要么为 true，`false` 不可达；
+   - 脱敏值恒为 `"***" + …` ⇒ 「出现即带掩码」恒真；
+   - `config_source` / `enabled_source` 只从闭集取值 ⇒ 取值判据恒真
+     （★ 讽刺的是，我专门写了一条来断言「注释里的 `default` 不可达」，
+       而「只有两值」这件事本身就是恒真的）；
+   - `hot_reloadable` / `log_file` / `log_dir` **全部只依赖 `cur.File`**
+     ⇒ 恒有恒无一起动 ⇒ 那两条同源判据也恒真。
+   ⇒ ★★★ **修法：八条全删**（函数 + 用例），契约由注释承担；
+     语义层只留**真正有区分力**的两条。
+   ⇒ ⇒ ★★★ 这条比批 92 的「恒真判据」更系统：**变异测试能把「把后端不变式
+     写成客户端校验」这一整类错误一次性清出来** —— 因为这类函数本来就
+     区分不了任何两种实现。
+3. ★★★ **有三条变异的「有牙」是靠后端产不出的夹具打出来的。**
+   `logConfigColdReloadImpliesNoFile` 的一条「不成立」用例用了
+   `log_file:''` + `log_dir:'/var/log'` ⇒ **后端产不出这个组合**
+   （`log_dir` 只在 `cur.File != ""` 时填）
+   ⇒ 那条用例编码的是**假契约**，连同依赖它的两条变异一起删。
+   ⇒ ⇒ ★★★ **「有牙」也要验可达性** —— 白绿可能只是样本选歪，
+     **绿灯也可能只是夹具造假**。
+4. ★★ **三条白绿都是锚点/样本问题**：
+   `#44`（oss 判据漏掉 `s3_use_ssl`）与 `#48`（`startsWith` 改 `endsWith`）
+   的区分格都不可达 ⇒ 与第 3 条同因 ⇒ 连变异一起删；
+   `#53` 的区分格不可达 ⇒ 同因。
+5. ★★★ **键数我手数错了。** 第一次写注释时写的是
+   「`storage/config` 18 恒在 + 8 可选」与「`logs/config` 17 键」，
+   **两个数都是错的**（正确是 13 + 13 与 15），常量列表本身写对了、注释写错了。
+   ⇒ ★★★ **键数必须用脚本从 Go 结构体数，不能手数** ——
+   手数错了**不会编译失败、不会让任何测试变红**，只会悄悄写进文档骗人。
+   ⇒ 修法：写了个小脚本按 `` `json:"…"` `` 正则扫结构体，把 13/13/15 钉死。
+
+### 收尾
+
+local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
+`web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
