@@ -800,19 +800,19 @@ onBeforeUnmount(() => {
 .fd__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .fd__sub { display: block; font-size: 13px; font-weight: 600; margin: 10px 0 4px; }
 .fd__head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-.fd__label { display: block; font-size: 12px; color: var(--text-3, #999); margin: 8px 0 4px; }
+.fd__label { display: block; font-size: 12px; color: var(--app-text-muted); margin: 8px 0 4px; }
 .fd__msg { font-size: 13px; color: var(--text-2, #666); padding: 8px 0; }
 .fd__msg--err { color: var(--danger, #c0392b); }
 .fd__note { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; line-height: 1.5;
   color: var(--text-2, #666); margin: 6px 0; }
-.fd__note--warn { color: var(--warn, #b26a00); }
+.fd__note--warn { color: var(--app-warning); }
 .fd__meta { font-size: 12px; color: var(--text-2, #666); margin: 4px 0 0; word-break: break-all; }
 .fd__title { font-size: 14px; font-weight: 600; word-break: break-all; }
 .fd__badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; flex-shrink: 0; }
 .fd__badge-t { color: var(--text-2, #666); word-break: break-all; }
 .fd__grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-top: 6px; }
 .fd__cell { display: flex; flex-direction: column; }
-.fd__cell-l { font-size: 11px; color: var(--text-3, #999); }
+.fd__cell-l { font-size: 11px; color: var(--app-text-muted); }
 .fd__cell-v { font-size: 14px; font-weight: 600; word-break: break-all; }
 .fd__list { list-style: none; margin: 0; padding: 0; }
 .fd__item { padding: 10px 0; border-top: 1px solid var(--border, #eee); }
