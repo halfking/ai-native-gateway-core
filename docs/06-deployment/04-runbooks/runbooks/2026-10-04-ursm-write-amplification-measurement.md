@@ -12722,6 +12722,105 @@ Index Only Scan，都必须在真库实测。**这属于生产 DDL，需明确�
 
 ---
 
+### §10.106.28 §10.106.26 标注「同族检查（未做）」的那一轮：逐族核对完毕，**一阳一阴**
+
+§10.106.26 结尾写：「839 覆盖的 11 个分区族若是同一个索引形状，都会带同样的
+『聚合扫全量』问题；本节只查了 `credential_model_index` 一族，**不宣称其余族同构**
+—— 要下结论必须逐族核对索引首列。」本节把那轮核对做掉。
+
+**方法（四步，每步都能单独证伪）**：
+
+1. **结构面**：查出所有「`_hot` 表 UNION ALL 分区父表」形态的视图 = **19 个**；
+   全部分区父表 = **32 个**（顺带：`pg_total_relation_size` 在分区父表上恒 0，
+   体量必须逐分区求和，见 §10.106.27）。
+2. **成本面**：`pg_stat_statements` 逐视图归因，**按 `dbid` 过滤**且**剔除 `EXPLAIN`**。
+3. **首列普查**：对排前面的族逐条查「有没有以该列打头的索引」——精确查，**不靠列表顺序**。
+4. **计划面**：`EXPLAIN` **不带 `ANALYZE`**（只规划不执行，生产安全）。
+
+★ 第 2 步我自己出了两次量具错，都已当场发现并改正：
+
+- 第一版把 `calls` 写成 `count(*)`——那是**归一化查询文本的条数**，不是调用次数。
+  改 `sum(calls)` 后 `credential_model_index_with_current_month` 才回到
+  188,507 次 / 均 719.2 ms（与 §10.106.26 的 188,357 / 719 ms 一致，只是时间差）。
+- 第二版把列名标成 `hours`，实际算的是 `tot_ms/1000` = **秒**。
+  量级与 runbook 已有的 37.6 h 对得上，说明**数据没问题、标签错了**。
+
+**核对结果**：
+
+| 族 | 结论 | 依据 |
+|---|---|---|
+| `credential_model_index` | **阳性**（已修） | §10.106.26，迁移 842 |
+| `candidate_failure_logs` | **阳性**（迁移 843） | 见下 |
+| `request_logs` | **阴性**（不动） | 见下 |
+
+#### 阳性：`candidate_failure_logs` 与 842 同构，只是列不同
+
+842 是「`GROUP BY (credential_id, raw_model)`，索引首列却是 `bucket`」；
+本族是「`MAX(ts)` 无过滤，却**没有任何**索引以 `ts` 打头」——
+PostgreSQL 只在**首列**上做 MIN/MAX 优化，`ts` 在第二列就只能把索引从头扫到尾。
+
+**证据一（首列普查，154 只读实测）**：父表 6 个索引、`_hot` 6 个索引，
+以 `ts` 打头的各 **0 个**；最接近的是 `(credential_id, ts)` / `(provider_id, ts)`。
+
+**证据二（计划，`EXPLAIN` 不执行）**：`SELECT max(ts) FROM candidate_failure_logs`
+走 `Parallel Index Only Scan`，2026_09 臂 `rows=47375`、2026_10 臂 `rows=12724`
+—— **把 6 万条索引条目全扫一遍**只为取一行，`cost 4566.45`；
+hot 臂同形状 `cost 171.79` ⇒ **父表臂是 26 倍**。
+
+**证据三（调用规模）**：承载这条 `max(ts)` 的告警语句
+**58,001 次 / 均 501.2 ms / 合计 8.07 小时**（pg_stat_statements，本库，已剔除 EXPLAIN）。
+
+**本地正向验证**（一次性 PG 17.11 集群，复刻生产形状：ts 为第二列 + 无 ts 首列索引）：
+
+| | 计划 | 读入行数 | Execution |
+|---|---|---|---|
+| 加索引前 | Append / Seq Scan | **55,000** | 2.736 ms |
+| 加索引后 | Limit / Index Only Scan | **1** | **0.036 ms** |
+
+⇒ 迁移 **843**（`843_candidate_failure_logs_ts_desc_idx.sql`，已提交未部署）只加索引、
+不改查询、零行为变化；4 条腿（installer embeddata 逐字节副本 / `main.go` 三处 /
+`dbinit` 启动序列 / `apply-db-revision-sequence.sh` 升级通道）全部登记，
+契约门 9 条 + 变异 4/4 有牙。
+
+#### 阴性：`request_logs` **不是** 842 同构，不动
+
+我一度**假设**它是同构缺陷（父表没有无条件 `(ts DESC)` 索引），
+被自己的 `EXPLAIN` **推翻**——如实留档：
+
+- 它的热点语句
+  `WITH win AS (SELECT credential_id, COUNT(*) ... FROM request_logs_with_current_month
+  WHERE ts >= now() - interval $3 AND credential_id IS NOT NULL GROUP BY credential_id)`
+  **带时间窗**，扫描面被 `ts` 约束，不存在 842 那种「每次全量 35.6 万行」。
+- 父表臂实测走 `Index Only Scan`（用 `(tenant_id, ts DESC)` 索引的**第二列**做
+  `Index Cond`，`cost 2400`），**没有退化**。
+- 它确实没有无条件 `(ts DESC)`（唯一的 `idx_request_logs_discard_events_ts` 是
+  partial：`WHERE discard_events IS NOT NULL`），但**已有 38 个索引且计划可接受**
+  ⇒ **不为对称而对称，不动**。
+
+★ 由此得出一条通用式，也是本节最值钱的一句：
+**partial 索引对「无 WHERE 子句的 `MAX(ts)`」完全无效**——
+它匹配不上任何谓词。生产 `request_logs` 那个 partial `ts` 索引就是活标本。
+所以「有没有某个列的索引」这个问题问错了，**要问「有没有以该列打头的非 partial 索引」**。
+
+★ **门禁侧的一个教训（变异抓出来的恒真门）**：843 的契约门里我写了
+`TestMigration843_NotPartial`——按**行**扫含 `CREATE INDEX` 的行里有没有 `WHERE`。
+变异 M2 把索引改成 partial 时**这条门纹丝不动**：`CREATE INDEX` 与
+`ON ... (ts DESC) WHERE ...` 本来就分在**两行**，`WHERE` 根本不在被检查的那行里。
+⇒ 判 SQL 语句级性质必须**按分号切语句**，不能按行。
+修正后 M2 转红。当前 4 条变异全部有牙：M1 首列错（2 门红）、M2 partial、
+M3 撤掉升级通道登记、M4 down 里塞 `DELETE`。
+
+**仍未核对的族（不宣称结论）**：19 个视图里本节只逐族核对了成本排名前列的 3 个。
+`routing_analytics_source`（19,229 次 / 均 2005.2 ms / 10.7 h）、
+`auto_route_selections_all`（6,099 次 / 均 1789.1 ms / 3.0 h）、
+`session_bodies_unified`（2,291,360 次 / 均 5.0 ms —— 调用最多但均时最低，优先级低）
+**尚未逐族核对首列**。下一轮应从 `routing_analytics_source` 开始，
+它均时最高且形态上是 `routing_decision_log` 族（3 分区 / 158 MB）。
+
+---
+
+---
+
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」
 
 ### §10.107.1 上线后第一件事：把 §10.106.9 的「待观察」变成读数
