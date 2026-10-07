@@ -297,12 +297,12 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.ms__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.ms__panel { background: var(--app-surface); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .ms__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .ms__label { display: block; font-size: 12px; color: var(--app-text-muted); margin-bottom: 4px; }
 /* ★ R1：新增交互控件 ≥48 CSS px */
 .ms__input { width: 100%; min-height: 48px; padding: 0 12px; font-size: 14px;
-  border: 1px solid var(--border, #ddd); border-radius: 8px; background: transparent; color: inherit; }
+  border: 1px solid var(--app-border); border-radius: 8px; background: transparent; color: inherit; }
 
 .ms__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
 .ms__msg--err { color: var(--app-danger); }
@@ -315,17 +315,17 @@ onBeforeUnmount(() => {
 .ms__cell-v { font-size: 14px; font-weight: 600; }
 
 .ms__list { list-style: none; margin: 0; padding: 0; }
-.ms__item { padding: 10px 0; border-top: 1px solid var(--border, #eee); }
+.ms__item { padding: 10px 0; border-top: 1px solid var(--app-border); }
 .ms__item-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .ms__title { font-size: 14px; font-weight: 600; }
 .ms__id { font-size: 12px; color: var(--app-text-secondary); }
 .ms__meta { font-size: 12px; color: var(--app-text-secondary); margin: 4px 0 0; }
-.ms__tag { font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--bg-2, #eee); }
-.ms__tag--warn { background: var(--app-warning); color: #fff; }
+.ms__tag { font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--app-surface-muted); }
+.ms__tag--warn { background: var(--app-warning); color: var(--app-on-warning); }
 
 .ms__table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
 .ms__table th { text-align: left; font-weight: 500; color: var(--app-text-muted); font-size: 11px;
-  border-bottom: 1px solid var(--border, #eee); padding: 4px 2px; }
+  border-bottom: 1px solid var(--app-border); padding: 4px 2px; }
 .ms__table td { padding: 4px 2px; vertical-align: middle; }
 .ms__td-l { color: var(--app-text-secondary); white-space: nowrap; }
 .ms__td-v { font-weight: 600; text-align: right; }

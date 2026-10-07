@@ -392,7 +392,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.la__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.la__panel { background: var(--app-surface); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .la__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .la__head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .la__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
@@ -409,9 +409,9 @@ onBeforeUnmount(() => {
 .la__cell-l { font-size: 11px; color: var(--app-text-muted); }
 .la__cell-v { font-size: 14px; font-weight: 600; word-break: break-all; }
 .la__list { list-style: none; margin: 0; padding: 0; }
-.la__item { padding: 10px 0; border-top: 1px solid var(--border, #eee); }
+.la__item { padding: 10px 0; border-top: 1px solid var(--app-border); }
 .la__tail { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 0; }
-.la__chip { font-size: 11px; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--border, #ddd); }
+.la__chip { font-size: 11px; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--app-border); }
 .la__chip--ok { color: var(--success, #2e7d32); border-color: var(--success, #2e7d32); }
 .la__chip--muted { color: var(--app-text-muted); }
 

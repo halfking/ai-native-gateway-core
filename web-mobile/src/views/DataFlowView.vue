@@ -561,7 +561,7 @@ onBeforeUnmount(() => {
 .df__section {
   margin-bottom: 20px;
   padding: 12px;
-  border: 1px solid var(--df-line, #e3e6ea);
+  border: 1px solid var(--app-border);
   border-radius: 10px;
 }
 
@@ -621,7 +621,7 @@ onBeforeUnmount(() => {
   align-items: baseline;
   gap: 4px 10px;
   padding: 8px 0;
-  border-top: 1px solid var(--df-line, #e3e6ea);
+  border-top: 1px solid var(--app-border);
   font-size: 13px;
 }
 
@@ -648,7 +648,7 @@ onBeforeUnmount(() => {
   display: inline-block;
   margin-left: 6px;
   padding: 0 6px;
-  border: 1px solid var(--df-line, #e3e6ea);
+  border: 1px solid var(--app-border);
   border-radius: 4px;
   font-size: 11px;
   color: var(--app-text-secondary);

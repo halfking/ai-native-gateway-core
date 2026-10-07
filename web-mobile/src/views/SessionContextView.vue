@@ -317,7 +317,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.sc__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.sc__panel { background: var(--app-surface); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .sc__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .sc__sub { display: block; font-size: 13px; font-weight: 600; margin: 10px 0 4px; }
 .sc__head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
@@ -336,11 +336,11 @@ onBeforeUnmount(() => {
 .sc__cell-l { font-size: 11px; color: var(--app-text-muted); }
 .sc__cell-v { font-size: 14px; font-weight: 600; word-break: break-all; }
 .sc__list { list-style: none; margin: 0; padding: 0; }
-.sc__item { padding: 10px 0; border-top: 1px solid var(--border, #eee); }
+.sc__item { padding: 10px 0; border-top: 1px solid var(--app-border); }
 
 /* ★ R1：新增交互控件 ≥48 CSS px */
 .sc__input { width: 100%; min-height: 48px; padding: 8px 12px; font-size: 14px;
-  border: 1px solid var(--border, #ddd); border-radius: 8px; background: transparent; color: inherit; }
+  border: 1px solid var(--app-border); border-radius: 8px; background: transparent; color: inherit; }
 .sc__input--area { min-height: 96px; resize: vertical; }
 .sc__btn { width: 100%; min-height: 48px; margin-top: 8px; font-size: 14px; border-radius: 8px;
   border: 1px solid var(--app-primary); background: transparent; color: var(--app-primary); }
