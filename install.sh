@@ -82,7 +82,8 @@ install.sh — llm-gateway-go 安装引导（两种规模：lite 本地小规模
 安装方式（--channel）：
   source     从当前源码树 go build（拿到仓库就能装，最通用）
   goinstall  go install github.com/kaixuan/llm-gateway-go/installer/cmd/llm-gw-installer@latest
-  npm        npm install -g @kaixuan/llm-gw-installer
+  npm        npm install -g：源码树内装 ./npm/llm-gw-installer（不依赖 registry），
+             树外装 @kaixuan/llm-gw-installer
   binary     使用 release 包里自带的 llm-gw-installer-<os>-<arch> 二进制
   maintain   官方一键脚本：curl -fsSL "$MAINTAIN_BASE/distribution/install-scripts/install" | bash
 
@@ -320,12 +321,36 @@ install_via_goinstall() {
 }
 
 install_via_npm() {
-  log "npm install -g @kaixuan/llm-gw-installer"
-  run npm install -g @kaixuan/llm-gw-installer || die "npm 全局安装失败"
-  local prefix
+  # 源码树内直接装树里的 npm 包（npm/llm-gw-installer），不经过 registry ——
+  # 该包尚未发布到公共 registry，registry 装法现在只会 404。树外才回退 registry。
+  local pkgdir="$SCRIPT_DIR/npm/llm-gw-installer"
+  if [[ -f "$pkgdir/package.json" ]]; then
+    # ${pkgdir} 而非 $pkgdir：后面紧邻全角括号，bash 5.3 会把多字节首字节
+    # 吞进变量名，报 pkgdir 包含坏字节的 unbound。
+    log "npm install -g ${pkgdir}（本地源码树）"
+    run npm install -g "$pkgdir" || die "npm 全局安装失败"
+  else
+    log "npm install -g @kaixuan/llm-gw-installer"
+    run npm install -g @kaixuan/llm-gw-installer || die "npm 全局安装失败"
+  fi
+  # npm 的 bin 链接在 unix 放 ${prefix}/bin/，只有 windows 把 shim 直接铺在
+  # prefix 根（.cmd/.ps1/无后缀 sh shim 三件）。旧实现只找
+  # ${prefix}/llm-gw-installer${BIN_SUFFIX}，unix 少了 bin/、windows 把 .cmd
+  # 错拼成 .exe，两个平台都必然"装完就报二进制不存在"。
+  local prefix cand
   prefix="$(npm prefix -g 2>/dev/null || true)"
   if [[ -n "$prefix" ]]; then
-    RESOLVED_BINARY="${prefix}/llm-gw-installer${BIN_SUFFIX}"
+    for cand in \
+      "${prefix}/bin/llm-gw-installer${BIN_SUFFIX}" \
+      "${prefix}/llm-gw-installer${BIN_SUFFIX}" \
+      "${prefix}/llm-gw-installer.cmd" \
+      "${prefix}/llm-gw-installer.ps1" \
+      "${prefix}/llm-gw-installer"; do
+      if [[ -f "$cand" ]]; then RESOLVED_BINARY="$cand"; return 0; fi
+    done
+    # 都没命中（多半是 dry-run 什么都没装）：报错时给出 unix 的标准位置，
+    # 让用户至少知道该去哪个目录看。
+    RESOLVED_BINARY="${prefix}/bin/llm-gw-installer${BIN_SUFFIX}"
   fi
 }
 
@@ -410,8 +435,18 @@ cmd_install() {
     return 0
   fi
   [[ -n "$RESOLVED_BINARY" ]] || die "没有解析出可执行的 llm-gw-installer"
-  [[ -f "$RESOLVED_BINARY" ]] || die "installer 二进制不存在：$RESOLVED_BINARY"
-  mkdir -p "$INSTALL_DIR"
+  # dry-run 下 npm/goinstall 通道并没有真的安装，二进制必然还不存在；
+  # source 通道 build_from_source 也只打印命令。存在性检查只在真跑时有意义。
+  if [[ "$DRY_RUN" != "1" ]]; then
+    [[ -f "$RESOLVED_BINARY" ]] || die "installer 二进制不存在：$RESOLVED_BINARY"
+    mkdir -p "$INSTALL_DIR"
+  fi
+  # --dry-run 的契约是"只打印将要执行的命令"（usage 里写的），安装向导
+  # 不能在 dry-run 下真被拉起来。
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "(dry-run) $RESOLVED_BINARY install --dir $INSTALL_DIR --mode $MODE"
+    return 0
+  fi
   log "启动安装向导：$RESOLVED_BINARY install --dir $INSTALL_DIR --mode $MODE"
   "$RESOLVED_BINARY" install --dir "$INSTALL_DIR" --mode "$MODE"
 }

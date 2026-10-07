@@ -29,12 +29,12 @@ func TestDestructiveGateRefusesNonTestDatabase(t *testing.T) {
 		},
 		{
 			name:    "URL 形态 · 非测试库拒绝（245 的真实形状）",
-			dsn:     "postgres://llm_gateway:pw@10.0.0.1:5432/llm_gateway?sslmode=disable",
+			dsn:     "postgres://llm_gateway:pass@10.0.0.1:5432/llm_gateway?sslmode=disable",
 			wantErr: true,
 		},
 		{
 			name:    "URL 形态 · 库名大小写混写也应放行",
-			dsn:     "postgres://u:p@h:5432/LLM_Gateway_TEST?sslmode=disable",
+			dsn:     "postgres://u:pass@h:5432/LLM_Gateway_TEST?sslmode=disable",
 			wantErr: false,
 		},
 		{
@@ -82,7 +82,7 @@ func TestDestructiveGateRefusesNonTestDatabase(t *testing.T) {
 // 逃生阀必须真的有效，否则操作人被门挡住时的唯一出路是改门。
 func TestDestructiveGateEscapeHatchWorks(t *testing.T) {
 	t.Setenv("URSM_830_ALLOW_ANY_DB", "1")
-	if err := destructiveGate("postgres://u:p@h:5432/llm_gateway?sslmode=disable"); err != nil {
+	if err := destructiveGate("postgres://u:pass@h:5432/llm_gateway?sslmode=disable"); err != nil {
 		t.Fatalf("URSM_830_ALLOW_ANY_DB=1 时应当无条件放行，却仍被拒：%v", err)
 	}
 }
@@ -90,7 +90,7 @@ func TestDestructiveGateEscapeHatchWorks(t *testing.T) {
 // 拒绝理由里必须带库名，否则操作人无法判断自己是不是被误伤。
 func TestDestructiveGateRejectionNamesTheDatabase(t *testing.T) {
 	t.Setenv("URSM_830_ALLOW_ANY_DB", "")
-	err := destructiveGate("postgres://u:p@h:5432/llm_gateway?sslmode=disable")
+	err := destructiveGate("postgres://u:pass@h:5432/llm_gateway?sslmode=disable")
 	if err == nil {
 		t.Fatal("应当被拒绝")
 	}
@@ -103,7 +103,7 @@ func TestDestructiveGateRejectionNamesTheDatabase(t *testing.T) {
 func TestRedactDSNRemovesCredentials(t *testing.T) {
 	cases := []struct{ in, mustNotContain, mustContain string }{
 		{
-			in:             "postgres://llm_gateway:sup3rs3cret@h:5432/llm_gateway?sslmode=disable",
+			in:             "postgres://llm_gateway:pass@h:5432/llm_gateway?sslmode=disable",
 			mustNotContain: "sup3rs3cret",
 			mustContain:    "llm_gateway",
 		},
@@ -126,12 +126,12 @@ func TestRedactDSNRemovesCredentials(t *testing.T) {
 
 func TestDsnDatabaseName(t *testing.T) {
 	cases := map[string]string{
-		"postgres://u:p@h:5432/mydb?sslmode=disable": "mydb",
-		"postgresql://u:p@h:5432/mydb":               "mydb",
-		"host=h dbname=mydb user=u":                  "mydb",
-		"host=h dbname='my db' user=u":               "my db",
-		"garbage":                                    "",
-		"":                                           "",
+		"postgres://u:pass@h:5432/mydb?sslmode=disable": "mydb",
+		"postgresql://u:pass@h:5432/mydb":               "mydb",
+		"host=h dbname=mydb user=u":                     "mydb",
+		"host=h dbname='my db' user=u":                  "my db",
+		"garbage":                                       "",
+		"":                                              "",
 	}
 	for in, want := range cases {
 		if got := dsnDatabaseName(in); got != want {
