@@ -283,19 +283,19 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.mo__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.mo__panel { background: var(--app-surface); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .mo__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .mo__label { display: block; font-size: 12px; color: var(--app-text-muted); margin-bottom: 4px; }
 
 /* ★ R1：新增交互控件 ≥48 CSS px */
 .mo__input { width: 100%; min-height: 48px; padding: 0 12px; font-size: 14px;
-  border: 1px solid var(--border, #ddd); border-radius: 8px; background: transparent; color: inherit; }
+  border: 1px solid var(--app-border); border-radius: 8px; background: transparent; color: inherit; }
 .mo__seg { display: flex; gap: 6px; margin-bottom: 10px; }
 .mo__seg-btn { flex: 1; min-height: 48px; font-size: 14px; border-radius: 8px;
-  border: 1px solid var(--border, #ddd); background: transparent; color: inherit; }
+  border: 1px solid var(--app-border); background: transparent; color: inherit; }
 .mo__seg-btn--on { border-color: var(--app-primary); color: var(--app-primary); font-weight: 600; }
 .mo__open { display: block; width: 100%; text-align: left; background: transparent;
-  border: 0; border-top: 1px solid var(--border, #eee); padding: 10px 0; color: inherit; font: inherit;
+  border: 0; border-top: 1px solid var(--app-border); padding: 10px 0; color: inherit; font: inherit;
   min-height: 48px; }
 
 .mo__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
@@ -315,6 +315,6 @@ onBeforeUnmount(() => {
 .mo__amount { display: flex; align-items: baseline; gap: 10px; margin: 6px 0 0; }
 .mo__amount-v { font-size: 17px; font-weight: 700; }
 .mo__amount-u { font-size: 12px; color: var(--app-text-muted); }
-.mo__tag { font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--bg-2, #eee); margin-left: 4px; }
-.mo__tag--warn { background: var(--app-warning); color: #fff; }
+.mo__tag { font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--app-surface-muted); margin-left: 4px; }
+.mo__tag--warn { background: var(--app-warning); color: var(--app-on-warning); }
 </style>

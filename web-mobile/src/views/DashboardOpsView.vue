@@ -992,9 +992,9 @@ onBeforeUnmount(() => {
   min-height: 48px;
   min-width: 88px;
   padding: 0 16px;
-  border: 1px solid var(--border, #d0d7de);
+  border: 1px solid var(--app-border);
   border-radius: 8px;
-  background: var(--surface, #fff);
+  background: var(--app-surface);
   color: inherit;
   font-size: 14px;
   cursor: pointer;
@@ -1022,7 +1022,7 @@ onBeforeUnmount(() => {
 .do__input {
   min-height: 48px;
   padding: 0 10px;
-  border: 1px solid var(--border, #d0d7de);
+  border: 1px solid var(--app-border);
   border-radius: 8px;
   font-size: 14px;
 }
@@ -1060,7 +1060,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 2px;
   padding: 10px;
-  border: 1px solid var(--border, #d0d7de);
+  border: 1px solid var(--app-border);
   border-radius: 8px;
 }
 .do__kpi-label {
@@ -1105,7 +1105,7 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 .do__item {
-  border: 1px solid var(--border, #d0d7de);
+  border: 1px solid var(--app-border);
   border-radius: 8px;
   padding: 10px;
 }
@@ -1132,7 +1132,7 @@ onBeforeUnmount(() => {
 .do__chip {
   font-size: 12px;
   padding: 8px 10px;
-  border: 1px solid var(--border, #d0d7de);
+  border: 1px solid var(--app-border);
   border-radius: 999px;
   min-height: 48px;
   display: inline-flex;
@@ -1149,9 +1149,9 @@ onBeforeUnmount(() => {
   min-height: 48px;
   min-width: 72px;
   padding: 0 14px;
-  border: 1px solid var(--border, #d0d7de);
+  border: 1px solid var(--app-border);
   border-radius: 8px;
-  background: var(--surface, #fff);
+  background: var(--app-surface);
   color: inherit;
   font-size: 14px;
   cursor: pointer;

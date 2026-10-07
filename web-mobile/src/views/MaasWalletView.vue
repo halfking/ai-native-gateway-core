@@ -193,7 +193,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.mw__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.mw__panel { background: var(--app-surface); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .mw__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 
 .mw__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }

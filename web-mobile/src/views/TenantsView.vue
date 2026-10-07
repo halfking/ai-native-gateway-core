@@ -216,19 +216,19 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.tn__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.tn__panel { background: var(--app-surface); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .tn__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .tn__label { display: block; font-size: 12px; color: var(--app-text-muted); margin: 8px 0 4px; }
 
 /* ★ R1：新增交互控件 ≥48 CSS px */
 .tn__input { width: 100%; min-height: 48px; padding: 0 12px; font-size: 14px;
-  border: 1px solid var(--border, #ddd); border-radius: 8px; background: transparent; color: inherit; }
+  border: 1px solid var(--app-border); border-radius: 8px; background: transparent; color: inherit; }
 .tn__seg { display: flex; gap: 6px; margin-bottom: 8px; }
 .tn__seg-btn { flex: 1; min-height: 48px; font-size: 13px; border-radius: 8px;
-  border: 1px solid var(--border, #ddd); background: transparent; color: inherit; }
+  border: 1px solid var(--app-border); background: transparent; color: inherit; }
 .tn__seg-btn--on { border-color: var(--app-primary); color: var(--app-primary); font-weight: 600; }
 .tn__open { display: block; width: 100%; text-align: left; background: transparent; color: inherit;
-  border: 0; border-top: 1px solid var(--border, #eee); padding: 10px 0; font: inherit; min-height: 48px; }
+  border: 0; border-top: 1px solid var(--app-border); padding: 10px 0; font: inherit; min-height: 48px; }
 
 .tn__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
 .tn__msg--err { color: var(--app-danger); }
