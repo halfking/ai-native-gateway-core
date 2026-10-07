@@ -11890,6 +11890,126 @@ credential_model_index_2026_10 autovacuum_analyze_scale_factor = 0.02  ← 同�
 其它 body/turn 族全部正常 ⇒ **不影响其它表的容量估算**。
 机制仍需 DBA 级校验（heap 校验 / `pg_dump` 往返）定性，不在本轮授权内。
 
+### §10.106.14 ⚠️ 预测：两台 tick 将在 **2026-10-08 17:13** 首次真正重合，promote 锁届时才第一次受考
+
+采样器 v3（每条自带阳性对照 `ctl`）已**两次**与日志交叉验证通过：
+
+| 趟 | 采样器捕获 | 日志佐证 | 并发峰值 |
+|---|---|---|---|
+| 154 | 14:43:27 ~ 14:44:17（50 s） | 14:43:09 完成 | 1 |
+| 245 | 15:17:09 ~ 15:17:54（45 s） | 15:17:54 完成 `tables=44` | 1 |
+
+⇒ 量具可信；且**今天两台相位差约 27 分钟，确实不存在争用**（与 §10.107.6 的预判一致）。
+
+**但逐拍间隔不同 ⇒ 相位在单向收敛**：
+
+```
+245 逐拍间隔  3687 s / 3670 s    均值 3678 s
+154 逐拍间隔  3618 s             均值 3618 s
+相对漂移 = -60.5 s/小时（245 每小时比 154 慢推进 1.01 分钟）
+相位差(154−245)：13 时 27.87 分钟 → 14 时 26.72 分钟
+⇒ 收敛到 0 需 26.5 小时 ⇒ 约 2026-10-08 17:13 两台 tick 首次重合
+```
+
+#### 为什么这件事比 analyze 严重得多
+
+- `analyze` 重跑的代价是**多花约 50 秒数据库时间**（840 能压掉）。
+- `promote` 用的是**同一套 tick** 与同型 advisory 锁
+  （`promoteLockKey(label)` + `pg_try_advisory_xact_lock`，
+  抢不到就 `slog.Debug("promote skipped (peer holds lock)")` 跳过该表）。
+  `bg/partition_manager.go:1530-1531` 的注释写明这把锁的存在理由正是
+  「concurrent hourly promote cycles can race the same `*_hot` table and one
+  ends up blocked into PG statement_timeout」。
+- ⇒ **相位重合那一刻，这把 promote 锁才第一次真正被考**（此前两台从未同时在跑）。
+  若它与 analyze 锁有**同一处缺陷**，后果是**两台同时 promote 同一张 `*_hot` 表**
+  ⇒ 正是那把锁要防的事：一边被 statement_timeout 打死，更糟的是同一张热表上出现两个写者。
+- ⚠️ **840 只节流 analyze，不覆盖 promote** ⇒ §10.106.12.1 的「840 + db.go 修复同版上线」
+  **并不能解除这个风险**。
+
+⇒ ★★ **行动建议（择一，需你授权）**：
+1. 在 **2026-10-08 17:13 之前**先判定 advisory 锁是否真有效
+   （最快：让两台相位人工贴近一次，或用 §10.107.6 那套带对照列的采样器盯住 15:xx~17:00 窗口）；或
+2. 在该时刻**主动停掉一台的 partition_manager**（只停这一个后台作业，不停服务），
+   把 promote 争用窗口人为消除；或
+3. 接受风险，但**在该时刻盯住 `promote skipped` / `promote lock failed` 与
+   `*_hot` 表的写入冲突**，出现即人工介入。
+
+⇒ ★ 这也说明：**「两台各跑一遍」这个结论对 analyze 是坐实的，对 promote 至今没有任何数据**——
+  不要把 analyze 的读数外推到 promote。
+
+### §10.106.15 九月分区 = **4,767 MB（全库 32%）**，且**代码里没有 DROP 老月度分区的逻辑**
+
+⚠️ **订正我上一轮的口径**：我说「`session_*_2026_09` 三个分区 3,254 MB」——
+那只是被我的正则匹配到的 `session_` 前缀族。**全量是 24 个分区、4,767 MB**，
+横跨 13 个数据族。我低估了。
+
+```
+2026_09 全量：24 个分区   堆 2,195 MB   总计 4,767 MB  = 全库 15 GB 的 32%
+外键指向这些分区的约束：0 条   依赖它们的视图/物化视图：0 个
+⇒ DROP 在依赖层面是干净的（不搬数据、不破读路径）
+```
+
+| 归类 | 数据族 | 九月占用 | 建议口径 |
+|---|---|---|---|
+| **会话原始数据** | `session_turns` **2,634 MB** / `session_turn_details` 603 / `sessions` 88 / `session_memora` 53 / `session_censors` 28 / `session_bodies` 17 / `session_tools` 56 kB / `session_module_executions` 24 kB | **约 3,423 MB** | 保留期 ≤ 1 个月即可 DROP |
+| **账务** | `usage_ledger` **720 MB** / `credit_ledger` 32 kB | 720 MB | ⚠️ 计费数据，**大概率不可擅删** |
+| **审计** | `candidate_failure_logs` 145 / `routing_decision_log` 137 / `supplier_errors` 93 | 375 MB | ⚠️ 审计留痕，与账务同口径待定 |
+| **WAL/回放** | `request_wal` 193 MB | 193 MB | 看是否还有回放需求 |
+| 其余 | `credential_model_index` 21 / `request_logs` 14 / `auto_route_selections` 12 / `request_logs_bodies` 7.9 MB / 6 个空壳 | < 50 MB | 可随月滚动 |
+
+⇒ ★★ **决策必须按族给，不能笼统说「删九月」**：
+   会话原始数据 3.42 GB（23%）可删；账务 720 MB + 审计 375 MB 大概率要留。
+   我不擅自定，**等你逐族给保留期**。
+
+#### ★ 结构性缺口：月度分区**没有** DROP 级保留
+
+- `bg/partition_manager.go` 里唯一与保留期相关的常量是
+  `DefaultRetentionWindow = 8 * time.Hour`（§10.106.14 提到的 830 快照族，8 小时窗口）；
+- **全文没有任何「DROP 老月度分区」的逻辑**（只有一处注释提到另一个 helper 的逐分区 DROP）。
+⇒ 所以月度族只会「被清空」、不会「被丢弃」：
+**这正是 `session_*_2026_07` / `_2026_08` 变成 0 字节空壳却仍留在目录里的机制。**
+⇒ ⇒ **长期解不是手工 DROP 一次，而是给月度族补上分区级 DROP 保留**
+（每族各自的保留天数；到期 **DROP 分区**而非 DELETE）
+—— 这正是本轮目标里「重构优化」该落的那一格，
+而且它一次就消掉「空壳分区留在规划里」与「旧月数据无限堆积」两个问题。
+
+### §10.106.16 迁移 841 已实现（**未部署**）：月度族分区级 DROP 保留
+
+「机制先建、策略留空」：配置表 `llm_gateway_partition_retention` **建表即空**，
+⇒ 应用 841 **不会删任何东西**；启用只需按族 `INSERT retain_months`（业务决定）。
+
+| 件 | 内容 |
+|---|---|
+| 迁移 | `841_monthly_partition_retention.sql` + `.down.sql`（回滚只撤机制，不碰业务分区） |
+| SQL | `llm_gateway_expired_month_partitions()`（只读列出过期）+ `llm_gateway_drop_expired_month_partitions()`（真 DROP）+ 审计表 `llm_gateway_partition_drop_log` |
+| Go | `bg/partition_manager.go` 的 `dropExpiredMonthlyPartitions()`，接在 promote cycle 尾部；缺表/缺函数（42P01 / 42883）**降级为不做** |
+| 契约门 | `migration_841_test.go` **7 条** |
+| 行为门 | `bg/partition_retention_841_realdb_test.go` **5 条**（无 DSN 时干净 skip） |
+| 变异 | `scripts/.mutate-841-retention.sh` **M1~M9 全部有牙** |
+
+#### ★ 两个被门禁体系抓出来的缺陷（比功能本身更值得记）
+
+1. **真库行为门抓到一个契约门完全放行的 bug**：
+   `right(child.relname, 6)` 取月份，而 `2026_07` 是 **7** 个字符 ⇒ 得到 `026_07`
+   ⇒ `to_date` 返回无意义日期 ⇒ `mth < cutoff` 对**所有**分区成立
+   ⇒ **当月分区与预建的未来分区 `2026_11` 都会被 DROP**。
+   契约门查的是「`mth < cutoff` 在不在」——**在，完全通过**。
+   ⇒ 这是 §10.107.5「机制断言 ≠ 效果断言」最干净的一次复现：
+   **只有真跑一遍才看得见逻辑是错的**。已加回归断言 + `mth IS NULL → CONTINUE`。
+2. **M7 暴露一条恒真判据**：`.down.sql` 的检查用**子串黑名单**，
+   而 `"DROP TABLE IF EXISTS public._2026_"` 这种条目**永远匹配不到**
+   `DROP TABLE IF EXISTS public.session_turns_2026_09` ⇒ 该判据恒为真。
+   改成**白名单**：正则扫出所有 `DROP TABLE ... public.X`，逐个要求 X 是那两张
+   `llm_gateway_*` 表。⇒ 再次印证 **黑名单式子串检查几乎必然恒真**。
+
+★ 附带的自证修正：回归断言一度**误伤 SQL 里那段解释性注释**
+（注释字面写着 `right(relname, 6)` 作为反例）⇒ 断言必须只看**剥掉 `--` 注释后**的 SQL。
+★ 另：行为门最初 3 条假红，根因是**用例之间共用一个库**——被测函数会真 DROP 分区，
+  上一个用例的残留配置与已删夹具漏给了下一个 ⇒ 每个用例必须自建夹具并清空配置/审计表。
+
+⇒ **未部署**：841 与 840 一起等授权；两者都不该在「含 db.go 第五份活副本修复」的
+二进制上线之前单独部署（重启会撤销 838/839）。
+
 ---
 
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」

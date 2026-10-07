@@ -11966,3 +11966,763 @@ GET `/api/admin/dispatch/journal/{tenant}/{request_id}`
 
 local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
 `web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
+
+## 11.126 平台设置：清单 / 单键 / 变更历史（第九十批，2026-10-08）
+
+GET `/api/admin/settings` · `/api/admin/settings/{key}` · `/api/admin/settings/{key}/history`
+
+- **注册**：**本仓第五种注册形态** —— `mux.HandleFunc` **不在** `admin/handler.go` 里，
+  而在**另一个文件的方法**中，由 `admin/handler.go:1123` 调用：
+
+  ```go
+  // admin/settings.go:22-30
+  func (h *Handler) registerSettingsRoutes(mux *http.ServeMux) {
+      mux.HandleFunc("/api/admin/settings", h.admin(h.settingsList))
+      mux.HandleFunc("/api/admin/settings/", h.admin(h.settingsRouter))
+      mux.HandleFunc("/api/admin/tenant-settings/", h.admin(h.tenantSettingsRouter))
+      …
+  }
+  // admin/handler.go:1123
+  h.registerSettingsRoutes(mux)
+  ```
+
+  ⇒ ★★★ 只 grep `admin/handler.go` 里的 `mux.HandleFunc` 会判成「死端点」
+  ⇒ ★ 与批 87（echo Group）、批 89（`RegisterRoutes` 方法）同族：
+    **每发现一种新形态就加进「必须查的清单」，现在共五处**。
+- **实现**：`admin/settings.go`（422 行）· `settings/spec.go`（Spec 与枚举）·
+  `settings/audit.go`（`ListAudit` / `AuditEntry`）。
+- **桌面调用方**：`web/src/api/settings.ts:53` / `:57` / `:70` —— ★ 三条都是
+  `req<{…}>` 直接强转，**不做任何校验** ⇒ 全部校验由本模块补上。
+- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+
+### 本族最要紧的十五件事
+
+1. ★★★★★ **三个端点权限档位相同：都是 `h.admin(...)` ⇒ admin 档**
+   （tenant_admin 可用，抽屉席**不设** `requiresRole`）
+   ⇒ ★★ 但 **`Dangerous` 档（`danger_level >= 2`）在 PUT 上有 super_admin 闸**
+   （`settings.go:236-239`）⇒ ⇒ **读不设闸、写才设**
+   ⇒ ⇒ 移动端抽屉席不进 `requiresRole`，但**写按钮必须按 `danger_level` 隐藏**，
+     否则用户点了就吃 403。
+2. ★★★★★ **503 有两种文案、两种前置条件**：
+   - `settings registry not initialised`（`:156` / `:200`）—— 查 `settings.Global == nil`
+   - `db not wired`（`:315`，**只有 history 有**）—— 查 `h.db == nil`
+   ⇒ ★★ **history 根本不看 `settings.Global`** ⇒ 即使注册表没初始化历史照样能查，
+     反之亦然 ⇒ 客户端**不能**用一个「设置系统可用」标志统管三者。
+3. ★★★★ **404 有两种，且方法不匹配返回的是 404 而不是 405**：
+   未知设置是 `unknown setting <key>`（**key 被拼进文案**，`:205`）；
+   路由/方法不匹配是 `unknown settings endpoint`（`:113-115` 的 `default` 分支）
+   ⇒ ★★ 与批 83（405 在前）、批 89（405 写在最前并带 `Allow` 头）**完全相反**
+   ⇒ ⇒ 本族**没有 405**；拿 POST 探 GET 得到的是 `unknown settings endpoint`。
+4. ★★★★★ **列表里 `value === null` ⟺ 该 spec 是 `tenant` 作用域**
+   （`settings.go:166-175`）：`var v json.RawMessage` 初始为 nil，
+   只有 `sp.Scope == ScopePlatform` 才被填；tenant 作用域**刻意不填**
+   ⇒ 序列化成 **`null`**，同时 `source` 是**空串** ⇒ **可自验的强不变量**。
+5. ★★★★★ **`items` 的 nil 编码在同一族里是**相反**的**：
+   - 清单：`items := []map[string]any{}`（`:160`）⇒ **恒为数组**，空时 `[]`
+   - 历史：`ListAudit` 里 `var out []AuditEntry`（`audit.go:92`），无行时保持 nil
+     ⇒ **`{"items": null}`**
+   ⇒ ★★★ **解包器不能共用**（本模块为两个端点写了两个）。
+6. ★★★★★ **历史只有 7 天窗口，且响应里没有任何字段说明** ——
+   `created_at > now() - INTERVAL '7 days'` 硬编码在 SQL 里（`audit.go:72` / `:83`），
+   无查询参数、无分页、无游标
+   ⇒ ★★ **7 天前的变更与「从未变更过」不可区分**。
+7. ★★★★★ **`old_value` / `new_value` 的「空」有**两种编码**：
+   - SQL NULL ⇒ `COALESCE(…,'')` 得空串 ⇒ `len(oldV) == 0` ⇒ `OldValue` 保持 nil
+     ⇒ `omitempty` 把**键整个删掉**
+   - 列里存的是 JSON `null` ⇒ `old_value::text` 是 4 字符 `"null"` ⇒ `len > 0`
+     ⇒ **键存在、值是 `null`**
+   ⇒ ★★★ 「这个概念为空」在**同一个响应里**可以有两种形态
+   ⇒ ⇒ 绝不能用 `'old_value' in entry` 判「曾经有过旧值」。
+8. ★★★★ **`tenant_id` / `client_ip` 也是 `omitempty`**（SQL 用 `COALESCE(…,'')`）
+   ⇒ 空串 ⇒ **键消失** ⇒ `AuditEntry` 恒在的只有 **5** 个键。
+9. ★★★★ **历史的 `Scan` 失败是裸 `continue`**（`audit.go:97-100`），**无任何日志**
+   ⇒ 又一处**静默跳行**（与批 88 的 `usage-summary` 同族）
+   ⇒ ⇒ `items` 长度不能当成「窗口内的变更条数」。
+10. ★★★★ **`ORDER BY created_at DESC LIMIT 50`，无 tiebreak** ⇒ 同秒行顺序未定义
+    ⇒ ★★ **只能断言「非升序」，不能断言「严格降序」**（同批 88 的 items 排序同族）。
+    `limit` 写死 50（`settings.go:321`），`ListAudit` 另有 `limit<1||>500 ⇒ 50` 钳制
+    （`audit.go:54-56`）—— 两者一致，所以永远取不到别的值。
+11. ★★★★★ **单键端点的 `spec` 是 PascalCase，而清单项是 snake_case** ——
+    `Spec` 结构体**一个 json tag 都没有**（`spec.go:92-116`）
+    ⇒ Go 按字段名原样输出 `Key`/`EnvName`/`Type`/`Scope`/`Category`/`Default`
+    /`Min`/`Max`/`Options`/`Description`/`DescriptionLong`/`Unit`
+    /`DangerLevel`/`HotReload`/`Observability`
+    ⇒ ★★★ **同族两端的键风格完全相反** ⇒ 绝不能共用一套键名常量。
+12. ★★★ **清单是「信息损失」的一端**：`settingsList` 的 15 个 map 键**漏掉了**
+    `DescriptionLong` 与 `Unit`（Spec 里有）⇒ 想看长描述与单位必须再打一次单键端点。
+13. ★★★ `Spec` 的 `Min` / `Max`（`*float64`）与 `Options`（`[]string`）
+    **三者都无 `omitempty`** ⇒ **恒在**且**都可为 `null`**。
+    ⇒ ★ 而 `DangerLevel` 是 `int` ⇒ **恒为数字，永不为 `null`**（与上面三个相反）。
+14. ★★★ **`settingsRouter` 只取 `parts[0]` 与 `parts[1]`，多余段被静默忽略**
+    （`:98-103`）⇒ `/api/admin/settings/a/history/extra` 与 `/a/history` **完全等价**
+    ⇒ ★ `key` **不 TrimSpace、不校验** ⇒ 空 key（路径以斜杠结尾）会进 handler
+    并报 `unknown setting `（**文案尾部有一个空格**）。
+15. ★★★ **`EffectiveValue` 出错时列表**静默跳过该条**（`:170-172` `continue`）
+    ⇒ ★★ `items.length` **小于**注册表 spec 总数是**正常**的
+    ⇒ ⇒ 列表长度不是「这个网关有多少个可调项」。
+
+**校验边界**：三个响应的**全部恒在键与类型** + `omitempty` 键**存在时**的类型。
+★ **刻意不做**三件事：
+① 不校验 `value` / `default` / `old_value` / `new_value` 的**取值** ——
+它们是 `json.RawMessage` / `any`，类型随 7 种 `ValueType` 变化，
+校验取值等于把 `type` 枚举复制一遍（恒真判据），由 `type` 字段 + 注释承担；
+② **不重复断言 `value` / `default` 的键存在性**（已由 `requireKeys` 覆盖，见下）；
+③ 不提供「列表是否完整」布尔判据（后端自己都保证不了，见 15）。
+
+### 验证
+
+- 用例 **94 条全绿**（`web-mobile/src/api/platformSettings.test.ts`）。
+- 变异 **69 条 = 69 条全有牙，0 可证等价**（`/tmp/mut-co90.mjs`，`RESTORED=OK`）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **5810 条（154 文件）** rc=0。
+
+### 变异验证暴露的判据缺陷（71 条 → 终态 69 条全有牙）
+
+首跑 4 条 STILL_GREEN，归因三类，**没有一条是「样本选歪」**：
+
+1. **★★★ 判据**可证冗余**（#35 / #44）—— 归因链的第⑤步。**
+   我写了 `if (!('value' in o)) throw …`，而 `value` **同时在**
+   `SETTINGS_LIST_ITEM_KEYS` 里 ⇒ `requireKeys` 已经拦下同一件事
+   ⇒ ★★★ **删掉那条断言，没有任何用例会变红** ⇒ 它是**死代码**。
+   ⇒ ★ 与批 87 的 `degraded` 同型，但这次是**我自己写的**。
+   ⇒ ★★★ 修法不是补用例，而是**把那三行从源码里删掉**并在原处写明
+     「键存在性已由 requireKeys 覆盖，重复断言可证冗余」——
+     **一个用例打不掉的断言，保留它只会让人误以为这里有检查**。
+   ⇒ ⇒ 这也是本批**变异数从 71 降到 69** 的原因：那两条变异的靶标已不存在。
+2. **★ 锚点指错（#65）。** `>= 2` 放宽成 `> 2` 的**唯一区分格是「正好等于阈值」的 2**，
+   而锚点指在 `danger_level 3` 那一格 ⇒ 3 > 2 两边都 true ⇒ 白绿。
+   ⇒ ★ 这与批 88 的「`===` 的两条放宽方向区分格相反」是同一条纪律的**另一面**：
+     **阈值判据的专格必须是「正好卡在阈值上」那一格**，取上界的相邻值是无效锚点。
+3. **★ 缺放行专格 + 锚点指错（#42）。** `Options` 不再接受 `null` 这个变异，
+   区分格是 **`Options: null`（合法形状被误拒）**，而我锚在「非数组非 null ⇒ 抛」那条
+   ⇒ 补了 `Options 是 null ⇒ 放行` 用例，并**把锚点改到它上面**。
+
+### 收尾
+
+local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
+`web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
+## 11.127 工作类型：清单 / 单项 / 统计 / L1 任务类型（第九十一批，2026-10-08）
+
+GET `/api/admin/work-types` · `/api/admin/work-types/{key}` · `/api/admin/work-types/stats` · `/api/admin/work-types/l1-task-types`
+
+- **注册**：**第五种注册形态**，与批 90 的 settings 同族但**档位不同**。
+  `mux.HandleFunc` 不在 `admin/handler.go` 里，而在**另一个文件的方法**中：
+
+  ```go
+  // admin/work_types.go:50-55
+  func (h *WorkTypeHandlers) RegisterWorkTypeRoutes(mux *http.ServeMux, adminWrap func(http.HandlerFunc) http.HandlerFunc) {
+      mux.HandleFunc("/api/admin/work-types",             adminWrap(h.handleRoot))
+      mux.HandleFunc("/api/admin/work-types/stats",       adminWrap(h.handleStats))
+      mux.HandleFunc("/api/admin/work-types/sync-from-acc", adminWrap(h.handleSyncFromACC))
+      mux.HandleFunc("/api/admin/work-types/",            adminWrap(h.handleSub))
+  }
+  // admin/handler.go:1433-1434
+  wtH := NewWorkTypeHandlers(h.db)
+  wtH.RegisterWorkTypeRoutes(mux, h.superAdmin)   // ★★ 不是 h.admin
+  ```
+
+  ⇒ ★★★★★ **整族是 `h.superAdmin` 档** ⇒ tenant_admin 直接 403
+  ⇒ ⇒ 移动端抽屉席**必须**设 `requiresRole: 'super_admin'` 并同步
+    `src/components/shell/AppDrawer.spec.ts` 白名单
+  ⇒ ★★★★ **同前缀邻域、不同档位**：`/api/admin/settings` 是 `h.admin`，
+    `/api/admin/work-types` 是 `h.superAdmin` ⇒ **不能按前缀推权限**。
+- **实现**：`admin/work_types.go`（1014 行）·
+  `deploy/sql/schemas/baseline/01-schema.sql:19408-19452`。
+- **桌面调用方**：`web/src/api-work-types.ts`（220 行）—— ★★ **它在 `web/src/`
+  根目录，不在 `web/src/api/` 下** ⇒ grep `web/src/api/` 会漏掉这一族。
+  四条 GET 全是 `req<T>` 直接强转，**不做任何校验** ⇒ 全部校验由本模块补上。
+
+### 本族最要紧的十九件事
+
+1. ★★★★★ **整族是 `h.superAdmin` 档**（见上）⇒ tenant_admin 403。
+2. ★★★★★ **错误体是本仓第四种形状**：`writeJSONErrCtx`（`auto_route.go:1089-1099`）
+   ⇒ `{"error":{"message","code","type":"admin_error"}}`
+   ⇒ ★★★ **`message` 是 `i18n.T(ctx,key)` 的本地化文本，`code` 才是稳定机读键**
+   （`admin_not_found` / `admin_method_not_allowed` / `admin_work_type_not_found`）
+   ⇒ ⇒ 客户端**必须匹配 `code`**，绝不能匹配 `message`（它随请求语言变）。
+   ⇒ ★ 与批 89 的「错误体按**写出层**分支」同族：本族写出层是 `writeJSONErrCtx`，
+     而 `writeError` 写的是 `{"error":{"detail"}}` —— 同一个 admin 包里两种并存。
+3. ★★★★ **清单端点是顶层裸数组**（`out := make([]workTypeConfig, 0)`，`:553`）
+   ⇒ 空时是 `[]` 不是 `null` ⇒ 解包器必须直接吃数组（本仓第三种顶层形状）。
+4. ★★★★ **`ORDER BY sort_order, key`（`:544`）—— 本仓少见的「完全确定」排序**，
+   有 key 做 tiebreak ⇒ **可断言严格升序**（不像批 88/89/90 那些无 tiebreak 的）。
+5. ★★★★★ **`model_routes` 有三态**：键**消失** / `null` / 数组。
+   `out[i].ModelRoutes = routeMap[out[i].Key]`（`:573`）+
+   `fetchRoutesForKeys` 对**没有路由的 key 根本不建 map 条目**（`:961`）+
+   字段是 `json:"model_routes,omitempty"` ⇒ nil ⇒ 键整个消失。
+6. ★★★★★ **`l1-task-types` 的 `items` 是「canonical 8 ∪ DB 里出现过的 L1 键」**
+   （`mergeL1TaskTypes`，`:217-246`）⇒ **长度 ≥ 8 且可以多于 8** ⇒ 客户端
+   **不能**假设恰好 8 条；新增项 `Label = k`（回落成 key 本身）、`Icon = "◆"`
+   （`:240-241`）⇒ ⇒ **可自验不变量：`icon === '◆'` ⟺ `label === key`**。
+7. ★★★★★ **`count` 全为 0 是二义的**：`dbCounts, _ := h.fetchL1Counts(ctx)`（`:167`）
+   **丢弃错误** ⇒ 三种成因同形：真没配置用它 / 那次查询失败 / `h.db == nil`
+   （`:179-181` 返回 `(nil, nil)`，连错误都不是）⇒ **不能**把「全是 0」读成
+   「没有工作类型在用这些 L1」。
+8. ★★★★★ **`count_24h` 是派生字段**（`:415-419`）：
+   `count := row.CountDirect; if count == 0 { count = row.CountL1 }`
+   ⇒ ★★★ 可自验 `count_24h === count_direct || count_24h === count_l1_proxy`
+   ⇒ ★★ `count_l1_proxy` 是该 L1 的**全局量** ⇒ 同一 L1 下多行共享同一个值
+   ⇒ 这张表**重复计数**，求和无意义。
+9. ★★★★★ **三处查询失败被静默吞掉，响应仍是 200**：
+   `if err == nil {…}` 包着 `by_work_type`（`:298`）与 `by_l1_task`（`:337`），
+   `_ = h.db.QueryRow(…).Scan(&totalAuto, &totalSpec)`（`:373`）错误整个丢弃
+   ⇒ ★★ `by_work_type` 空 / `total_auto === 0` **都可能只是查询挂了**
+   ⇒ ★★★ 注释 `:308-309` 自陈「This handler previously swallowed the rows error
+   entirely…」⇒ **他们修了 `rows.Err()` 那一处，但 `h.db.Query` 的错误仍被吞**
+   ⇒ 这是一处**半修**的吞错。
+10. ★★★★ **`by_work_type` 只含 `enabled = TRUE` 的配置**（`:399`）
+    ⇒ 停用的工作类型在统计里**整行消失** ⇒ 一处**看得见的**过滤。
+11. ★★★ `top_models` 是 `ORDER BY c DESC LIMIT 10`（`:452-453`），**无 tiebreak**
+    ⇒ 同计数行顺序未定义 ⇒ 只能断言「非升序」。
+12. ★★★★ **`model_routes` 排序是三层确定性 tiebreak**（`:941-944`）：
+    `work_type_key`、tier CASE（primary→0 / secondary→1 / fallback→2 / 其他→3）、
+    `weight DESC`、`canonical_name`
+    ⇒ 可断言「先 tier 分组、组内 weight 降序、同权重按 canonical_name 升序」。
+13. ★★★★ **`tier` 与 `task_quality_score` 恒非空且被 CHECK 锁死**：
+    SQL 用 `COALESCE(tier,'secondary')`、`COALESCE(task_quality_score, 0)`，
+    表上还有 `tier IN (primary,secondary,fallback)` 的 CHECK（`01-schema.sql:19450`）
+    ⇒ ⇒ ★★ **桌面那个 `normalizeRouteTier` 兜底是多余的**。
+14. ★★★ **`task_quality_score` 的真实域是 0–100，不是 0–1** ——
+    `numeric(5,2)` + CHECK `>= 0 AND <= 100`（`01-schema.sql:19449`），
+    而**桌面注释写的是「任务质量评分 0-1」** ⇒ ★★★ **前端注释是错的**
+    ⇒ 客户端绝不能按 0–1 校验或显示进度条。
+15. ★★★ **`tags` / `prompt_keywords` 是 `text[] DEFAULT '{}' NOT NULL`**
+    （`01-schema.sql:19419-19420`）⇒ **恒为数组、永不为 `null`**，可以是空数组。
+16. ★★ `include_disabled` 是**精确字符串比较** `== "true"`（`:534`）
+    ⇒ `"1"` / `"yes"` / `"TRUE"` **都不生效**（静默当作 false）。
+17. ★★★ **`l1-task-types` 是保留子路径，在通用 key 分发之前判断**
+    （`handleSub`，`:111-114`）—— 否则会被当成 work type key 去查表然后 404；
+    另有 `strings.Trim(rest, "/")`（`:102`）⇒ **尾斜杠与不带等价**，全空 ⇒ 404。
+18. ★★ **超时各不相同**：`stats` / `list` / `get` 是 **10s**，`l1-task-types` 是
+    **5s**（`:163`）⇒ 移动端的请求超时**不能统一**。
+19. ★★ 四个端点都走 `writeJSONOk`，而它内部调 `applyV1FreezeNotice(w)`
+    （`auto_route.go:1060`）⇒ ⇒ **这些端点也带 v1 数据冻结告示响应头**。
+
+**校验边界**：四个响应的**全部恒在键与类型**，外加 `omitempty` 键**存在时**的类型；
+为 (4)(6)(7)(8)(11)(12)(13) 各提供判据。
+★ **不校验** `tier` / `default_profile` 的**取值**（表 CHECK 锁死三值，
+校验取值等于把 CHECK 复制一遍 ⇒ 恒真判据），由常量 + 注释承担；
+★ **不校验** `count_24h` 的**正确性**（后端自己都可能取自错误路径），
+只校验它与另两个计数的**自洽关系**（见 8）。
+★ 本族响应形状有四种（裸数组 / envelope / 第四种错误体 / 顶层对象），
+**每一种各自解包，不抽通用解包器** —— 与批 90 的「同族两端 nil 编码相反」同源。
+
+### 验证
+
+- 用例 **122 条全绿**（`web-mobile/src/api/workTypes.test.ts`）。
+- 变异 **94 条 = 94 条全有牙，0 可证等价**（`/tmp/mut-co91.mjs`，逐条 `RESTORED` 字节比对）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **5944 条（156 文件）** rc=0。
+
+### 变异验证暴露的四件事（95 条 → 终态 94 条全有牙）
+
+首跑 5 条 STILL_GREEN，归因**四类**，其中两类是**工具缺陷**、只有一类是判据缺陷：
+
+1. ★★★★★ **harness 把「测试没跑起来」记成了「无牙」（#93 / #94 / #95）。**
+   这三条变异的 `to` 写成 `params.key //MUTCO91_93`，而被替换的片段**后面同一行还有代码**
+   （模板串的收尾 `` `, undefined, options) ``）⇒ `//` 把它整行吃掉
+   ⇒ **vitest 直接 PARSE_ERROR、`Tests no tests`**，而我的 `parseFailures`
+   把 `__COLLECT_FAIL__` 塞进 `failedNames` 之后，只判「锚点名在不在红名单里」
+   ⇒ 自然判成 STILL_GREEN。
+   ⇒ ★★★ **量具缺陷的形态与已记的「读数异常变动先验量具」一致，但这次更隐蔽**：
+     **「0 条变红」既可能是判据无牙，也可能是根本没跑**。
+     ⇒ 修法：`__COLLECT_FAIL__` 命中时**直接进 ERRORS 而不是 STILL_GREEN**。
+     ★ 这是 harness 里必须长期保留的一行断言。
+2. ★★★★ **同类的第二个坑：`to` 多带一个逗号**（#94 / #95）。
+   `from` 是 `` `${WORK_TYPES_PATH}/stats` ``（**不含**逗号），`to` 却补了个逗号
+   ⇒ 拼出 `` /*MUT94*/,, `` ⇒ 又是一个 PARSE_ERROR。
+   ⇒ ★ 与 (1) 同一族：**注入必须先验「替换后那一行还是不是合法 TS」**。
+   ⇒ 修法：`to` 只加**块注释**标记（`/*MUTCO91_94*/`），不动标点。
+3. ★★ **样本选歪：`some` 的真值分界不在「混合列表」上**（#73）。
+   `some(r => r.count !== 0)` 改成 `some(r => r.count === 0)`，而 fixture
+   （canonical 八项 + 一项新增）**既有 0 又有非 0** ⇒ **两个实现都返回 true**
+   ⇒ 白绿。⇒ 唯一区分格是「**一个 0 都没有**」。
+   ⇒ ★★★ 这是已记的「`in` 与真值判断的分界只在 falsy 但不是 null 那一格」的
+     **新变体**：**`some` 的两种写法只在「全部非 falsy」那一格区分**。
+   ⇒ 修法：补 `一个 0 都没有 ⇒ 仍判为有信号` 用例，并**把锚点移到它上面**。
+4. ★★ **可证等价 ⇒ 删变异而不是补用例**（#64）。
+   `prev.key > cur.key` 改成 `>=`，唯一区分格是「两行 key 相同」——
+   而 `work_type_config.key` 是**主键**，同一 `sort_order` 下不可能重复
+   ⇒ **在可达输入域上两种写法等价** ⇒ 补一条「同 key」的用例等于
+   **给判据编码一个后端不可能产出的契约**。
+   ⇒ ★★★ 修法：从变异表里删掉这条并在本文写明理由（归因链第④步）。
+   ⇒ ★ 与批 90 的「判据可证冗余 ⇒ 删代码」同族，这次是「**变异可证等价 ⇒ 删变异**」。
+
+### 收尾
+
+local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
+`web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
+
+## 11.128 凭据模型状态变更历史（第九十二批，2026-10-08）
+
+GET `/api/credentials/model-history?credential_id=X&raw_model_name=Y&limit=50`
+
+- **注册**：**第五种注册形态**，`mux.HandleFunc` 在**另一个文件的方法**里
+  （`admin/credential_monitor.go:153-163` 的 `RegisterMonitorRoutes`），
+  由 `admin/handler.go:1453` 现构造并挂载：
+
+  ```go
+  // admin/handler.go:1453
+  monitorH.RegisterMonitorRoutes(mux, h.admin)   // ★ admin 档
+  ```
+
+  ⇒ ★★★★★ **整族是 `h.admin` 档 ⇒ tenant_admin 可用 ⇒ 抽屉席不设 `requiresRole`**
+  ⇒ ★ 与批 91 的 `work-types`（`h.superAdmin`）**正好相反，而两族都在 admin 包里**
+  ⇒ ★★ 同一注册处还挂着 `/api/credentials/sliding-window`、`heatmap`、`decisions` 等
+    十余个端点，**全部是 admin 档**。
+- **实现**：`admin/credential_monitor.go:1433-1478`（handler）·
+  `:1304-1318`（`ModelHistoryEvent`）· `:1329-1430`（`runModelHistory` 的 SQL）。
+- **桌面调用方**：`web/src/api/credential-monitor.ts:347-358` —— `req<ModelHistoryResponse>`
+  直接强转，**不做任何校验** ⇒ 全部校验由本模块补上。
+- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+
+### 本族最要紧的十四件事
+
+1. ★★★★★ **整族是 `h.admin` 档**（见上）⇒ tenant_admin 可用，不设 `requiresRole`。
+2. ★★★★★ **事件对象是「十个键全部恒在，其中六个可为裸 `null`」的形状**。
+   `ModelHistoryEvent`（`:1307-1318`）**十个字段一个 `omitempty` 都没有**，
+   `nullableString` / `nullableInt` 返回 `nil` 时**指针被写成 JSON `null`，键仍在**
+   ⇒ ★★★ ⇒ **`'probe_status' in ev` 这种存在性判断永远为真**；
+   要判「有没有值」必须判 `ev.probe_status !== null`。
+   ⇒ ★★★ **桌面类型把这六个键声明成可选**
+   （`web/src/api/credential-monitor.ts:330-337` 的 `probe_status?: string | null`）
+   ⇒ **桌面比现实宽松**，照它写的客户端会一直以为「键可能不存在」。
+3. ★★★★★ **`reason` 的「空」有两种编码，且与其他六个指针键相反**（`:1414-1418`）：
+   ```go
+   ev.Actor = nullableString(actor)                                     // 只看 Valid ⇒ 空串原样保留
+   if reason.Valid && reason.String != "" { ev.Reason = &reason.String }  // 多一条非空判据
+   ```
+   SQL 侧是 `COALESCE(al.after_json->>'reason', '')`（`:1361`）
+   ⇒ **空串会塌成 `null`**，而 `triggered_by` / `actor` 等只看 `Valid`
+   ⇒ ⇒ **`actor` 可以是空串，`reason` 不可能是空串**（取值域 = `{null, 非空串}`）
+   ⇒ ★★★ ⇒ 「reason 不为空串」因此是一条**恒真判据** ⇒ 本模块**刻意不提供**该判据，
+     由本条与源码头部注释承担（见下「变异验证暴露的判据缺陷」第 1 条）。
+4. ★★★★★ **两段数据的字段形状互补，由 `source` 区分**：
+
+   | 字段 | `source==='auto'` | `source==='manual'` |
+   |---|---|---|
+   | `triggered_by` | `mpr.triggered_by` | **恒 `null`**（`:1351`） |
+   | `event` | `recovered` / `broke` | `online` / `offline` |
+   | `probe_status` | `mpr.status` | **恒 `null`**（`:1355`） |
+   | `http_status` | `mpr.http_status` | **恒 `null`**（`:1356`） |
+   | `error_code` / `error_message` | 有值 | **恒 `null`**（`:1357-1358`） |
+   | `actor` | **恒 `null`**（`:1345`） | `al.actor` |
+   | `reason` | **恒 `null`**（`:1346`） | `after_json->>'reason'` |
+
+   ⇒ ⇒ **`auto` 行恰好两个键恒 `null`，`manual` 行恰好五个键恒 `null`**
+   ⇒ ⇒ 这是本族**最强的自验判据来源**。
+5. ★★★★★ **`event` 的值域随 `source` 变，不能全局枚举**：
+   auto 是 `mpr.state_change IN ('recovered','broke')`（`:1344`）⇒ 只有两值；
+   manual 是 `CASE al.action … END`（`:1353-1356`）⇒ 两个分支、**没有 `ELSE`**
+   ⇒ ★★ `CASE` 无 `ELSE` 意味着「不匹配就是 `NULL`」，而 `Event` 是**非指针 `string`**
+   ⇒ Scan 进 NULL 会失败 ⇒ 落进第 7 条的静默跳过。
+   （实际不触发：`WHERE al.action IN (...)` 已把两值之外的全排除了。）
+6. ★★★★ **`ORDER BY ts DESC`（`:1378`）无 tiebreak**
+   ⇒ ★★★ **同时间戳事件的顺序未定义** ⇒ 客户端**只能断言「非升序」**，
+   **不能**断言严格降序（与批 88/89/90/91 同族）。
+7. ★★★★★ **scan 失败被 `continue` 静默跳过，响应里查不到**（`:1405-1408`）：
+   `scanFailures++` + `slog.Warn` 后 `continue`。
+   ⇒ ★★ 响应结构**没有 `scan_failures` 字段** ⇒ 用户与客户端都看不出这批数据是否完整
+   ⇒ ★★ 好在有 `slog.Warn`（批 91 的 `work_types.go` 连 warn 都没有，只是裸 `continue`）。
+8. ★★★★★ **`rows.Err()` 不吞，直接 5xx**（`:1422-1426`），
+   注释自陈这是审计保证：`incomplete payloads never reach the UI`
+   ⇒ ★★★ **与批 91 `work_types.go` 的「半修吞错」正好构成对照**：
+   **同一个 admin 包里，一处选择不吞、一处吞掉三处。**
+9. ★★★★★ **`limit` 越界 400，范围 1–200，默认 50**（`:1448-1451`）。
+   ★★ 但 **`queryInt` 解析失败时静默回落默认值**（`admin/handler.go:1534-1544`）：
+   ```go
+   v, err := strconv.Atoi(s)
+   if err != nil { return def }   // ← 不报错
+   ```
+   ⇒ `limit=abc` ⇒ **静默当 50 用，不报 400**
+   ⇒ `credential_id=abc` ⇒ 回落 0 ⇒ 400，但文案说的是 **required**（不是格式错）
+   ⇒ ⇒ **客户端不能假设「400 就是参数非法」，400 有两种成因。**
+10. ★★★★ **`credential_id == 0` 判 400**（`:1451-1454`）—— **不是 `< 1`**
+    ⇒ ★★★ **负数 credential_id 能通过这一关**并进 SQL。
+11. ★★★★ **租户过滤两段各自做、形状一致**：
+    auto 侧 `AND ($4 = '' OR mpr.tenant_id = $4)`（`:1343`）、
+    manual 侧 `AND ($4 = '' OR al.tenant_id = $4)`（`:1369`）⇒ **两侧都过滤**。
+    `tenantID` 只在 `IsTenantAdmin(r)` 时取 `GetTenantID(r)`（`:1464-1467`），
+    否则是 `""` ⇒ 那个 `$4 = ''` 分支放行全部租户
+    ⇒ ⇒ **tenant_admin 只看自己租户；super_admin 看全部。**
+12. ★★★ **超时 5s**（`:1461`）。
+13. ★★★ **错误体是 `{"error":{"detail"}}`**（`writeError`，`handler.go:1494-1498`）
+    ⇒ 与批 91 的 `writeJSONErrCtx`（`{message, code, type}`）**不是同一种**
+    ⇒ ★★ 同一个 admin 包里至少有三种错误体（`detail` / `message+code+type` /
+    `code+detail`），**按「写出层」分支，不按包**。
+    503 的文案是 `database not configured`（`:1441`）——
+    ★ **与批 90 的两种 503 文案都不同**，别按字符串跨族匹配。
+14. ★★ **`events` 是 `make([]ModelHistoryEvent, 0)`（`:1389`）⇒ 空时是 `[]` 不是 `null`**，
+    且 **`count` 就是 `len(events)`**（`:1476`）⇒ 可自验 `count === events.length`。
+
+**校验边界**：envelope 的 4 个恒在键与类型、事件的 10 个**恒在**键与类型
+（6 个指针键接受 `null`），并为 (4)(5)(6)(9)(10)(14) 各提供判据（★ **刻意不为 (3) 提供**——它是恒真的，见下）。
+★ **不校验** `ts` 是合法 RFC3339（后端自己 `ts.UTC().Format(time.RFC3339)` 格式化出来的，
+不需要客户端再解一次），只校验它是字符串。
+
+### 验证
+
+- 用例 **77 条全绿**（`web-mobile/src/api/modelHistory.test.ts`）。
+- 变异 **62 条 = 62 条全有牙，0 可证等价**（`/tmp/mut-co92.mjs`，逐条 `RESTORED` 字节比对）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6021 条（157 文件）** rc=0。
+- 桌面对照：`web/src/api/credential-monitor.ts:319-344` 的
+  `ModelHistoryEventKind` / `ModelHistorySource` 联合类型与本模块的常量一致，
+  ★ 但**那六个指针键被声明成可选**（见 2）。
+
+### 变异验证暴露的五件事（65 条 → 终态 62 条全有牙）
+
+首跑 5 条 STILL_GREEN，归因**四类**，**没有一条是「被测函数防御」**：
+
+1. ★★★★★ **判据恒真 ⇒ 删代码而不是补用例**（#39 / #40）。
+   我写了 `modelHistoryReasonIsNeverEmptyString`，判据是
+   「`events` 里没有一项 `reason === ''`」。变异脚本实测：
+   - 改成 `some(e => e.reason !== '')` ⇒ **白绿**，
+   - 改成 `every(e => e.reason === '')` ⇒ 只有**反向**那条用例能打掉它。
+   ⇒ ★★★ 归因链的第④步：`every` 与 `some` 的**唯一区分格是「每一项都是空串」**，
+     而后端 `:1416-1418` 只在 `reason.String != ""` 时才赋值
+     ⇒ **`reason` 的取值域是 `{null, 非空串}`，`reason === ''` 在可达输入域上不可达**
+     ⇒ ⇒ **这条判据在可达输入域上是恒真的，任何写法都成立**
+     ⇒ ★★★ 修法：**从源码里删掉这个函数**、删掉它的 4 条用例，
+       并在源码头部与本文写明「本模块刻意不提供该判据，契约由注释承担」。
+     ⇒ ★★ 一个永远为真的断言保留下来，只会让人误以为这里有检查。
+     ⇒ ★ 与批 90 的「判据可证冗余 ⇒ 删代码」是**同一条纪律的第二次触发**
+       （第一次是断言重复，第二次是断言恒真）。
+2. ★★ **锚点指错，两条**（#3 / #38）—— 归因链的第③步。
+   - #3 把 `MODEL_HISTORY_LIMIT_MIN` 从 1 放宽到 0，
+     真正转红的是「**0 ⇒ 不成立**」那一格（`0 >= 0 && 0 <= 200` 变成 true），
+     我却把锚点指在「下界 1 ⇒ 成立」上 —— 那一格两种实现都返回 true。
+   - #38 把 `count === events.length` 改成 `<=`，
+     唯一区分格是「**count 小于** events.length」，锚点却指在「大于」那一格。
+   ⇒ ★★★ **阈值/比较类变异的锚点必须落在「两种实现输出不同」的那一格**，
+     而这一格**不是**随便挑的边界值。
+3. ★★ **恒等变形（第 (f) 形态的又一次）**（#63）。
+   我把 `q.set('raw_model_name', params.rawModelName)` 改成
+   `q.set('raw_model_name', String(params.rawModelName))` ——
+   ★ `rawModelName` 的类型**本来就是 `string`**，`String(x)` 是恒等变形，
+   文件字节变了、行为逐像素相同 ⇒ 白绿。
+   ⇒ 修法：换掉整段查询串构造（手工模板拼接、不走 `URLSearchParams`），
+     这才是真正「绕过编码」的那条变异。
+4. ★★ **可证等价 ⇒ 删变异**（#65）。
+   `?${q}` 改成 `?&${q}` —— URL 解析器把 `?&a=b` 与 `?a=b` 视作**完全等价**，
+   唯一区分的输入是「不存在的输入」。
+   ⇒ 与批 91 的 #64 同族：**区分格不可达 ⇒ 变异可证等价 ⇒ 删**。
+
+### 收尾
+
+local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
+`web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
+
+## 11.129 存储配置 + 日志轮转配置（第九十三批，2026-10-08）
+
+GET `/api/admin/storage/config` · GET `/api/admin/logs/config`
+
+- **注册**：`admin/handler.go:1108` 与 `:1114`，**两行相邻、同一个 mux**：
+
+  ```go
+  mux.HandleFunc("/api/admin/storage/config",            h.superAdmin(h.handleStorageConfig))  // :1108
+  mux.HandleFunc("/api/admin/storage/config/test-path",  h.superAdmin(h.handleStorageTestPath)) // :1109
+  mux.HandleFunc("/api/admin/storage/migration-state",   admin(h.handleMigrationState))        // :1111 ★ admin 档
+  mux.HandleFunc("/api/admin/logs/config",               h.superAdmin(h.handleLogConfig))       // :1114
+  ```
+
+  ⇒ ★★★★★ **`:1108` 与 `:1111` 相邻两行却是两种档位**（superAdmin vs admin）
+  ⇒ ⇒ **本族两族整族 `h.superAdmin` 档** ⇒ tenant_admin 直接 403
+  ⇒ ⇒ 移动端抽屉席**必须**设 `requiresRole: 'super_admin'`
+  ⇒ ★★★ **绝不能按 `/api/admin/storage/` 这个前缀推权限** ——
+    同前缀下的 `migration-state` 是 **admin 档**（tenant_admin 可用）。
+    ★ 这是「同一注册处、相邻两行、两种权限档位」的第二个实例（第一个是批 92 的
+    `:1453` 用 `h.admin` 而 `:1108/1114` 用 `h.superAdmin`）。
+- **实现**：`admin/storage_config.go`（570 行）· `admin/log_management.go`（669 行）。
+- **桌面调用方**：`web/src/api/tuning.ts:798` 与 `:930` —— `req<StorageConfig>` /
+  `req<LogConfig>` 直接强转，**不做任何校验** ⇒ 全部校验由本模块补上。
+- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+
+### 键数（脚本从 Go 结构体数出，**不要手数**）
+
+| 结构体 | 总 json tag | 恒在 | `omitempty` |
+|---|---|---|---|
+| `StorageConfigResponse`（`storage_config.go:32-70`） | **26** | **13** | **13** |
+| `LogConfigResponse`（`log_management.go:41-62`） | **15** | **15** | **0** |
+
+⇒ ★★★ 第一次写本节时我**手数成「18 恒在 + 8 可选」和「17 键」**，
+  两个数都是错的（常量列表本身写对了，注释写错了）
+⇒ ⇒ ★★★ **键数必须用脚本从 Go 结构体数，不能手数** ——
+  手数错了不会编译失败、不会让测试变红，**只会悄悄写进文档骗人**。
+
+### 本族最要紧的十六件事
+
+1. ★★★★★ **两族整族 `h.superAdmin` 档**（见上）⇒ tenant_admin 403。
+2. ★★★★★ **`storage/config` 的 `s3_use_ssl` 是 `bool` + `omitempty`**
+   ⇒ ★★★ **`false` 时键整个消失** ⇒ **「键存在」等价于「已启用」**，
+   `false` 与「没配 S3」在响应上**不可区分**。
+   ⇒ ★ 与批 91 的 `model_routes`（键消失 / null / 数组三态）、
+     批 92 的「键恒在但值为裸 `null`」并列为本仓**第三种可选键编码**。
+3. ★★★★★ **`logs/config` 的 15 个键一个 `omitempty` 都没有** ⇒ **恒在 15**。
+   ★ 与 (2) **恰好相反**：同一个 admin 包、同一种「配置读取」语义，
+   两个端点对「可选」的表达方式完全不同 ⇒ **解包器不能共用**。
+4. ★★★★★ **`config_source` 是「泄漏某一个键的来源」，不是整个响应的来源**
+   （`storage_config.go:139-152`）：
+
+   ```go
+   resp.ConfigSource = "default"
+   if storageType := readStringSetting("storage.type"); storageType != "" {
+       resp.ConfigSource = "db"      // ★ 硬编码 db —— readStringSetting 丢掉了 src
+   }
+   if v, src := readIntSetting("storage.attachment_ttl_days"); src != "" {
+       resp.ConfigSource = src       // ★ 只有这一个键的 src 会最终决定
+   }
+   ```
+
+   ⇒ ★★★ 三个取值 `default` / `env` / `db` **都真实存在**
+     （`settings.EffectiveValue` 的返回值，见 `settings/registry_test.go:126/145/169`），
+     ★ **但它只描述 `storage.attachment_ttl_days`**（或 `storage.type` 的存在性）
+   ⇒ ⇒ `ttl_days` 来自 env 而 `storage_type` 来自 db 时，
+     `config_source` 报 **`env`** ⇒ **不要用它给整张表单打「来源」标签**。
+   ⇒ ★★ `readStringSetting`（`:485-499`）**返回类型里没有 src** ⇒ 这条分支只能硬编码。
+5. ★★★★★ **`enabled_source` 的注释与代码矛盾**（`log_management.go:55` vs `:143-181`）：
+   注释写 `"db" | "env" | "default"`，但代码**初值硬编码 `"env"`**，
+   只有 `log.enabled` 的 `src == "db"` 时才改成 `"db"`
+   ⇒ ⇒ **实际只有 `env` / `db` 两值，`default` 永不出现**。
+   ⇒ ★★★ 与批 92 是**同一个陷阱的第二例**：**注释不是契约，赋值点是。**
+6. ★★★★★ **`hot_reloadable` 与 `enabled` 同源但**只有一个**可被 DB 改写**：
+   `HotReloadable: cur.File != ""`（`:150`）**永不被覆盖**，
+   `Enabled: cur.File != ""`（`:147`）**可被 `log.enabled` 覆盖**（`:178-181`）
+   ⇒ ⇒ **`hot_reloadable === false` ⇒ `log_file === ""` 且 `log_dir === ""`**（可自验）。
+7. ★★★★ **`log_dir` 只在 `cur.File != ""` 时才填**（`:152-154`）⇒ 否则是空串
+   ⇒ ⇒ `log_dir !== ""` ⇒ `log_file !== ""`。
+8. ★★★★ **`file_path` 可能与 `log_file` 不一致**：初值是 `cur.File`（运行时解析值），
+   但 DB 有 `log.file_path` 覆盖时**只改 `file_path`**（`:174-177`），**不动 `log_file`**
+   ⇒ ⇒ **`log_file` 才是「运行时真正的文件」，`file_path` 是「配置期望值」**。
+   ⇒ ★★ 字段注释写的是「DB/环境变量 解析后的**实际生效路径**」⇒ **注释不准**。
+9. ★★★★ **敏感值脱敏形态是 `"***" + secret[len(secret)-4:]`**（`:196`、`:212`）
+   ⇒ ⇒ **凡出现就一定以 `***` 开头**（可自验），长度随原长度变化。
+   ⇒ ★★★ ⚠️ **`secret` 长度 < 4 时 `secret[len(secret)-4:]` 会切片越界 panic**
+     （`len(secret)-4` 为负）—— 客户端遇到这种网关应视为 5xx，不是「脱敏失败」。
+10. ★★★★ **`current_disk_usage` 的 `0` 是二义的**：`diskUsageAt` 失败时
+    `resp.CurrentDiskUsage` 保持零值（`:203-207` 只在 `statErr == nil` 时赋值）
+    ⇒ ⇒ **「0%」既可能是真的 0%，也可能是探测失败**
+    ⇒ 客户端**不能**据此弹「磁盘已满 / 未用」。
+11. ★★★★ **`needs_restart` 的含义随运行时状态而变**（`:178-186`）：
+    未注入 `h.attachmentStorage` 时 `NeedsRestart = (AttachmentDirOverride != "")`；
+    已注入时比较 `filepath.Abs(BaseDir())` 与 `filepath.Abs(EffectiveDir)`
+    ⇒ ⇒ **同一个 `true` 在两种运行态下是两件事**。
+12. ★★★ **`storage_type` 决定哪些键会被填**（`:158-215` 的 `switch`）：
+    `local` 填 `attachment_dir_*` / `effective_dir` / `current_disk_usage`；
+    `oss` 填 5 个 `oss_*`；`s3` 填 7 个 `s3_*`
+    ⇒ ⇒ ★★ **`storage_type === "local"` 时那 12 个云厂商键必然全部缺席**。
+    ⇒ ★★ 这是**由 `switch` 决定的可达性**，**不是恒真判据**
+      （换 `storage_type` 它们就会出现）⇒ **可以断言**。
+13. ★★★ `download_url_prefix` 是**硬编码常量** `/api/attachments/`（`:220`），
+    与任何配置无关。
+14. ★★★ **`logs/config` 的 PUT/GET 键名不对称**（`:199` vs `:47`）：
+    GET 返回 `delete_days`，PUT 收的是 **`archive_delete_days`**
+    ⇒ ★★ 客户端双向同步**必须查对照表**；照 GET 的键名去 PUT 会被
+      **静默忽略**（`DeleteDays` 是 `*int` + omitempty，`nil` = 不改）。
+15. ★★★ `archive_days` / `delete_days` 的缺省是硬编码的 **7 / 30**（`:151-152`），
+    **不是注册表里的 spec**，且响应里**没有任何字段说明这是缺省**。
+16. ★★★ **方法不匹配返回 405**（`:123`、`:133`，`writeError` ⇒ `{"error":{"detail}}`）
+    ⇒ ★ **与批 91 的 work-types（不匹配返 404）相反**。
+    ⇒ ★★★ **`writeJSON` 是中央出口且内部统一调 `applyV1FreezeNotice`**
+      （`handler.go:1481-1483`）⇒ **判「这端点带不带 v1 冻结告示」不必逐端点查**：
+      看它最终走哪个写出层即可（`writeJSON` / `writeJSONOk` 都带，
+      手写 `w.Write` 的才不带）。
+
+**校验边界（★ 本批被变异脚本大幅改写，理由见下）**：
+只校验两个响应的**全部恒在键与类型**，外加 `omitempty` 键**存在时**的类型。
+★ **不提供**任何「后端保证的语义不变式」判据 ——
+(2)(4)(5)(6)(7)(9)(12)(13) 这八条**全部恒真**（见「变异暴露」第 2 条），
+契约一律由注释承担。语义层只保留**两个有区分力**的函数：
+`logConfigPathMatchesRuntime`（(8)）与 `logConfigPutKeyFor`（(14)）。
+
+★ 顺带修正一处**我写错的事实**：`storage_type` 的取值域**不是** `STORAGE_TYPES`
+那三个值 —— 初值 `"local"`（`:133`）可被 `readStringSetting("storage.type")`
+改成**任意字符串**（`:135-138`），第四种值会让 switch 三个 case 都不进
+⇒ 产生一个「所有云厂商键缺席 + local 运行时字段全是零值」的形状。
+
+### 验证
+
+- 用例 **43 条全绿**（`web-mobile/src/api/storageAndLogConfig.test.ts`）。
+- 变异 **46 条 = 46 条全有牙，0 可证等价**（`/tmp/mut-co93.mjs`，逐条 `RESTORED` 字节比对；
+  ★ harness 带**量具阳性对照**，开跑前先注入必然打红的改动验证解析器，抓到 22 条红才开跑）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6064 条（158 文件）** rc=0。
+
+### 变异验证暴露的五件事（60 条 → 46 条全有牙）
+
+首跑 **60 条全白绿、0 报错** —— 这种过于整齐的读数本身就是量具坏了的信号。
+
+1. ★★★★★ **量具本身坏了：复制 harness 时「转义文件名」没跟着换。**
+   `parseFailures` 的正则是 `/FAIL[^\n]*modelHistory\.test\.ts > (.+)/`，
+   我按 `String.replace("modelHistory.test.ts", …)` 替换
+   ⇒ **匹配不上带反斜杠的形式** ⇒ `SPEC` 换了、正则没换
+   ⇒ vitest 照跑（红了一大片），但解析器**一条红都看不见**
+   ⇒ 每条变异都判成 STILL_GREEN ⇒ **60/60 全假绿**。
+   ⇒ ★★★ 判别动作：**「100% 白绿 + 0 报错」必须先验量具**，
+     这与「数字异常」「数字没变」是同一类信号，但**更隐蔽** ——
+     这次的读数**内部完全自洽**，看起来就像一个正常结论。
+   ⇒ ★★★ 两条永久修法（已进 harness）：
+     ① **量具阳性对照**：开跑前注入一个必然打红的改动（往 `requireKeys` 里插 `throw`），
+       断言解析器抓得到、且抓到的是**用例名**而非 `__COLLECT_FAIL__`，否则 `exit 2`；
+     ② **零有牙大声告警**：`teeth===0 && errs===0` 时点名最可能原因。
+2. ★★★★★ **九条语义判据里八条是恒真的 —— 这是范畴错误，不是偶然。**
+   首轮我写了 9 条，全部是「后端保证的不变式」：
+   `s3_use_ssl 键存在⇒true`、`storage_type⇒哪些云厂商键在场`（三条）、
+   `脱敏值以 *** 开头`、`config_source` / `enabled_source` 的取值、
+   `download_url_prefix` 恒为常量、`hot_reloadable/log_file/log_dir` 三者同源（两条）。
+   ⇒ 逐条回源码核对后，**八条在可达输入域上恒成立**：
+   - 三个 `switch` 分支**各只设自己那一组键** ⇒ 「storage_type⇒键在场」三条全恒真；
+   - `s3_use_ssl` 只在 `if useSSL` 时被赋 `true` ⇒ 键要么缺席要么为 true，`false` 不可达；
+   - 脱敏值恒为 `"***" + …` ⇒ 「出现即带掩码」恒真；
+   - `config_source` / `enabled_source` 只从闭集取值 ⇒ 取值判据恒真
+     （★ 讽刺的是，我专门写了一条来断言「注释里的 `default` 不可达」，
+       而「只有两值」这件事本身就是恒真的）；
+   - `hot_reloadable` / `log_file` / `log_dir` **全部只依赖 `cur.File`**
+     ⇒ 恒有恒无一起动 ⇒ 那两条同源判据也恒真。
+   ⇒ ★★★ **修法：八条全删**（函数 + 用例），契约由注释承担；
+     语义层只留**真正有区分力**的两条。
+   ⇒ ⇒ ★★★ 这条比批 92 的「恒真判据」更系统：**变异测试能把「把后端不变式
+     写成客户端校验」这一整类错误一次性清出来** —— 因为这类函数本来就
+     区分不了任何两种实现。
+3. ★★★ **有三条变异的「有牙」是靠后端产不出的夹具打出来的。**
+   `logConfigColdReloadImpliesNoFile` 的一条「不成立」用例用了
+   `log_file:''` + `log_dir:'/var/log'` ⇒ **后端产不出这个组合**
+   （`log_dir` 只在 `cur.File != ""` 时填）
+   ⇒ 那条用例编码的是**假契约**，连同依赖它的两条变异一起删。
+   ⇒ ⇒ ★★★ **「有牙」也要验可达性** —— 白绿可能只是样本选歪，
+     **绿灯也可能只是夹具造假**。
+4. ★★ **三条白绿都是锚点/样本问题**：
+   `#44`（oss 判据漏掉 `s3_use_ssl`）与 `#48`（`startsWith` 改 `endsWith`）
+   的区分格都不可达 ⇒ 与第 3 条同因 ⇒ 连变异一起删；
+   `#53` 的区分格不可达 ⇒ 同因。
+5. ★★★ **键数我手数错了。** 第一次写注释时写的是
+   「`storage/config` 18 恒在 + 8 可选」与「`logs/config` 17 键」，
+   **两个数都是错的**（正确是 13 + 13 与 15），常量列表本身写对了、注释写错了。
+   ⇒ ★★★ **键数必须用脚本从 Go 结构体数，不能手数** ——
+   手数错了**不会编译失败、不会让任何测试变红**，只会悄悄写进文档骗人。
+   ⇒ 修法：写了个小脚本按 `` `json:"…"` `` 正则扫结构体，把 13/13/15 钉死。
+
+### 收尾
+
+local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
+`web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
+## 11.130 凭据模型滑窗调用明细（第九十四批，2026-10-08）
+
+GET `/api/credentials/sliding-window?credential_id=X&model=Y&minutes=60&limit=50`
+
+- **注册**：**第五种注册形态**，`mux.HandleFunc` 在**另一个文件的方法**里
+  （`admin/credential_monitor.go:156` 的 `RegisterMonitorRoutes`），
+  由 `admin/handler.go:1453` 现构造并挂载：`monitorH.RegisterMonitorRoutes(mux, h.admin)`
+  ⇒ ★★★★★ **整族 `h.admin` 档 ⇒ tenant_admin 可用 ⇒ 抽屉席不设 `requiresRole`**
+  ⇒ ★ 与批 92 的 `model-history` **同一注册处、同一档位**（该方法还挂十余个端点）。
+- **实现**：`admin/credential_monitor.go:697-788`（handler）· `:790-809`（回退查询）·
+  `credentialhealth/recorder.go:16-22`（`CallEntry`）· `:155-177`（`ComputeStats`）。
+- **桌面调用方**：`web/src/api/credential-monitor.ts:149-168` —— 直接强转，不做校验。
+- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+
+### 本族最要紧的十四件事
+
+1. ★★★★★ **`h.admin` 档**（同批 92）。
+2. ★★★★★ **响应恒有 8 个键**（`:769-779` 的 `map[string]any`），
+   ★ **桌面类型只声明了 6 个** —— 漏掉 `limit` 与 `total_returned`
+   ⇒ ⇒ 照桌面类型写的客户端**看不到 `total_returned`**，也就发现不了 (3) 那组互锁。
+3. ★★★★★ **四个数字完全互锁**：
+   ```go
+   if len(entries) > limit { entries = entries[:limit] }   // :764-766 先截断
+   stats := credentialhealth.ComputeStats(entries)          // :768 再统计
+   … "total_returned": len(entries),                        // :775
+   ```
+   而 `ComputeStats` 第一行是 `Total: len(entries)`（`recorder.go:157`）
+   ⇒ ⇒ **`total_returned === entries.length === stats.total`**
+   ⇒ 且 `if e.Success { Success++ } else { Failed++ }`（`:162-165`，**完备二分**）
+   ⇒ ⇒ **`stats.success + stats.failed === stats.total`**
+   ⇒ ⇒ 四个数字锁在一起，任何一个错都会被另外三个抓住。
+4. ★★★★★ **`error_kinds` 的求和「小于等于」`failed`，而不是相等**：
+   `if e.ErrorKind != "" { stats.ErrorKinds[e.ErrorKind]++ }`（`recorder.go:166-168`）
+   ⇒ ★★★ **失败的条目若 `err` 是空串，就完全不进 `error_kinds`**
+   ⇒ ⇒ 「失败原因分布」比「失败数」少，**不是 bug，是那些失败没有归类**。
+5. ★★★★★ **`failure_rate` 是派生值，`total === 0` 时恒为 `0`**
+   （`if stats.Total > 0 { … }`，`:172-174`）⇒ **不是 NaN、不是 null**
+   ⇒ ⇒ 客户端**不能**直接写 `rate === failed / total`（`total === 0` 时那是 NaN）。
+6. ★★★★★ **`source` 只有一条方向可断言**：
+   ```go
+   source := "redis"
+   entries := make([]credentialhealth.CallEntry, 0)
+   if m.recorder != nil && m.recorder.Enabled() { entries, _ = m.recorder.GetRecent(…) }
+   if len(entries) == 0 { source = "request_logs"; … }
+   ```
+   ⇒ ⇒ **`source === 'redis'` ⟹ `entries.length > 0`**（空必回退）
+   ⇒ ⇒ ★★ **`source === 'request_logs'` 是二义的**：Redis 不可用 **或**
+     Redis 可用但窗口内无数据，**两种成因同形**。
+7. ★★★★★ **Redis 的错误被整个丢弃**（`entries, _ = …`，`:741`）
+   ⇒ Redis 挂掉 ⇒ 静默回退 ⇒ **响应里看不出 Redis 故障**
+   ⇒ ★ 与批 93 的 `enabled_source`、批 91 的 `count` 全 0 同族。
+8. ★★★★ **`entries` 被强制非 nil**（`:757-759`，注释自陈「否则前端
+   `windowEntries.length` 会抛 Cannot read properties of null」）⇒ **空时是 `[]`**。
+9. ★★★★ **`minutes` 完全没有校验**（`:715`），而 **`limit` 有 `1..500` 的 400**（`:725-728`）
+   ⇒ ★★★ **同一族的两个查询参数，一个校验一个不校验**
+   ⇒ ★★ `minutes=abc` 会被 `queryInt` **静默回落成 60**（`handler.go:1539-1542`）。
+10. ★★★★ **`credential_id == 0` 才判 400** —— **不是 `< 1`** ⇒ 负数能过（与批 92 同形）。
+11. ★★★★ **`model` 大小写不敏感**：`lower(COALESCE(outbound_model, client_model)) = lower($2)`（`:804`）
+    ⇒ ⇒ 客户端**不需要**自己 lowercase
+    ⇒ ★★ 但**回显的 `model` 是原样传入的那一个**（`:770` 直接回显，不做规范化）
+    ⇒ ⇒ **回显可能与实际命中的 `outbound_model` 大小写不同**。
+12. ★★★★ **两源的「历史深度」完全不同**：Redis recorder 是 **2 小时 / 100 条**
+    （`handler.go:713`），回退源 `request_logs_with_current_month` 是**当月视图**（`:797`）
+    ⇒ ⇒ 切到 `request_logs` 后能看到的范围**突然变大**，不是「补齐了缺失的数据」。
+13. ★★★★ **`CallEntry` 的 json tag 是缩写，与 Go 字段名完全不同**：
+    `RequestID→rid`、`Timestamp→ts`、`Success→ok`、`LatencyMs→lat`、`ErrorKind→err`
+    ⇒ ★★★ **照 Go 字段名写客户端必然全错**。
+    - `rid` 是**恒在键但可能为空串**（`COALESCE(request_id,'')`，`:798`）
+    - `ts` 是 **unix 毫秒**
+    - `err` 是**唯一带 `omitempty`** 的键 ⇒ 成功条目里**键消失**
+14. ★★★★ **回退查询 `ORDER BY ts DESC` 无 tiebreak**（`:807`）
+    ⇒ ★★★ **同毫秒时间戳的条目顺序未定义** ⇒ 只能断言**非升序**。
+
+**校验边界**：envelope 的 8 个恒在键与类型、每个 `CallEntry` 的 5 个键、`stats` 的 5 个键；
+为 (3)(4)(5)(6)(14) 各提供判据。
+★ **不校验** `source` / 各 `err` 取值的**取值域**（由 Redis / 日志自由文本决定）；
+★ **不提供**「`rid` 非空」判据（`COALESCE(…,'')` 表明空串是合法值）。
+
+### 变异验证暴露的六件事（66 条 → 65 条全有牙）
+
+首跑 59/66，另 1 条 `COLLECT_FAIL` + 6 条白绿，归因**五类**：
+
+1. ★★ **形态 (e) 又一次：`to` 丢了 `{`**（#18）。删掉一个循环项时我把
+   `for (…) {` 的花括号也一起吃掉了 ⇒ PARSE_ERROR。
+   ★ 修正：**删循环项的 `to` 必须原样保留 `{`** —— 与批 91 的「`//` 吃掉行尾代码」
+   是同一个教训的两副面孔，**凡是 `to` 结尾的行都要重新读一遍语法**。
+2. ★★★ **同形变异：换了被取值的源，错误消息却一字不差**（#29）。
+   `requireRecord(s['error_kinds'], …)` 改成 `requireRecord(s['stats'], …)`：
+   两者**抛的是同一个 where 标签的同一条消息**（`where` 字符串没变）
+   ⇒ 锚在「error_kinds 不是对象」那条上必然白绿。
+   ⇒ ★★★ 修法：锚点换到「error_kinds 的值**不是数字**」那条 ——
+     原实现读 `s['error_kinds']` 抛「…的 timeout 不是数字」，
+     变异读 `s['stats']`（undefined）抛「…不是对象」⇒ **两条输出真的不同**。
+   ⇒ ★ 这就是「判据可以证冗余 ⇒ 删代码」的**反面**：
+     **两条判据若产出同一条错误消息，它们在变异测试里是同一条**。
+3. ★★★ **`===` 两条放宽方向的区分格相反，我又一次写反了**（#45 / #46）。
+   `sum === total` 改成 `<=` 时区分格是「**和 < total**」，
+   改成 `>=` 时区分格是「**和 > total**」。
+   我把两个锚点挂反了 ⇒ 两条都白绿。
+   ⇒ ★★★ 这是本仓**第三次**踩（批 88 一次、批 94 一次，加这次共三次），
+     **必须写成一条硬规则**：写锚点前**手算两种实现在候选样本上的返回值**，
+     不要凭「看起来相关」挂。
+4. ★★★★ **样本选歪，两条**：
+   - #54（`failure_rate === 0` 改 `=== 1`）：我用的样本是 `failure_rate: 0.5`
+     ⇒ **两种实现都返回 false** ⇒ 区分格其实是 `=== 1`。
+   - #55（redis 判据去掉 source 守卫）：我用的样本 entries **非空**
+     ⇒ 两种实现都 true ⇒ 区分格是「非 redis **且** entries 为空」。
+   ⇒ 补了这两条专格用例。★ 与批 93 的「绿灯也可能只是夹具造假」同族。
+5. ★★★ **可证等价 ⇒ 删变异**（#50）。`classified === failed` 改成 `>=`：
+   `classified` 与 `failed` 在**同一次循环**里累加，每个条目最多各 +1
+   ⇒ **`classified <= failed` 恒成立** ⇒ `>=` 与 `===` 在可达输入域上等价
+   ⇒ 唯一区分格是 `classified > failed`，**不可达** ⇒ 删。
+   ⇒ ★ 这是批 91（`prev.key > cur.key` 改 `>=`）与批 92（`?` 改 `?&`）
+     之后的**第三例可证等价**。
+
+★ 附带：批 93 新增的**量具阳性对照**在本批生效 —— 开跑前先注入必然打红的改动，
+解析器抓到 **30 条红**才开跑。（若按批 93 前的旧 harness，这批的读数不可信。）
+
+### 验证
+
+- 用例 **80 条全绿**（`web-mobile/src/api/slidingWindow.test.ts`）。
+- 变异 **65 条 = 65 条全有牙，0 可证等价**（`/tmp/mut-co94.mjs`，逐条 `RESTORED` 字节比对；
+  ★ harness 带**量具阳性对照**，开跑前先注入必然打红的改动验证解析器，抓到 30 条红才开跑）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6144 条（159 文件）** rc=0。

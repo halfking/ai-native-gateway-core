@@ -895,10 +895,16 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// ★ 列存分区与「从未被分析过」的分区仍必须留在手工 pass：
 			//   生产实测列存 autoanalyze_count = 0，autovacuum 不采集。
 			"839_autovac_current_month_heap_handoff.sql",
-			// 840：analyze 跨实例共享节流槽。§10.53 那把 advisory 锁实测永不命中
-			// （xact 级只活 93.81 秒，两台 promote tick 偏移 6 分 01 秒）⇒
+			// 840：analyze 跨实例共享节流槽。§10.53 那把 advisory 锁实测一次都没命中
+			// （2026-10-07 今日 32 趟 / 0 次跳过，见 runbook §10.107.6）⇒
 			// 「两台各跑一遍」原封不动；这张共享表用原子占槽把 2 次/小时压到 1 次。
+			// ⚠️ 「偏移 6 分 01 秒」是旧结论的**错误数字**，已撤回：稳态逐小时实测
+			//    偏移约 40 秒。成因仍未解释（runbook §10.107.6）。
 			"840_analyze_stats_throttle_slot.sql",
+			// 841：月度分区族的分区级 DROP 保留（runbook §10.106.15）。
+			// ★ 配置表**建表即空** ⇒ 应用后不删任何东西；
+			//   启用需按族 INSERT 保留月数，那是业务决定，不在本迁移内。
+			"841_monthly_partition_retention.sql",
 		},
 	}
 }
