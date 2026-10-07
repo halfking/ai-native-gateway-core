@@ -126,7 +126,7 @@ const BODY_CACHE_NO_SAMPLE = { size: 0, hits: 0, misses: 0, evictions: 0, hit_ra
  * A. logs/stats
  * ═══════════════════════════════════════════════════════════════════════ */
 
-describe('logOps logs/stats（admin/log_management.go:1116）', () => {
+describe('logOps logs/stats（admin/log_management.go:319）', () => {
   it('正常载荷逐键解包通过', () => {
     const r = unwrapLogStats(STATS_NORMAL)
     expect(r.log_dir).toBe('/var/log/llmgw')
@@ -216,7 +216,7 @@ describe('logOps logs/stats（admin/log_management.go:1116）', () => {
  * B. logs/files
  * ═══════════════════════════════════════════════════════════════════════ */
 
-describe('logOps logs/files（admin/log_management.go:1115）', () => {
+describe('logOps logs/files（admin/log_management.go:294）', () => {
   it('★ 内嵌结构被扁平化：六个内层字段与 size_human 平级', () => {
     const r = unwrapLogFiles(FILES_NORMAL)
     // ★ 没有 log_file_info 嵌套层

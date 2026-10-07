@@ -601,7 +601,7 @@ describe('503 与 fetch', () => {
   })
 
   it('★ 500 配同一 message 不判为未配置', () => {
-    // ★★ 后端未配置只走 503（`dashboard_operational.go:159`）⇒ 「同一个 message」
+    // ★★ 后端未配置只走 503（`dashboard_operational.go:76`）⇒ 「同一个 message」
     //   不足以判「未配置」。这里挡的是**别的** 5xx（网关 bug / 上游 500）撞上同一个文案，
     //   客户端若一律说成「数据库未配置」就会给出错误的处置指引。
     expect(boardNotConfigured(500, BOARD_DB_NOT_CONFIGURED_MESSAGE)).toBe(false)
