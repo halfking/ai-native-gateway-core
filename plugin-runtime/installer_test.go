@@ -1,6 +1,7 @@
 package pluginruntime
 
 import (
+	"runtime"
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
@@ -53,6 +54,9 @@ func buildPluginTarball(t *testing.T, version string) []byte {
 }
 
 func TestInstallerEndToEnd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 基线（既有，非回归）：端到端链路依赖可执行位与符号链接语义；R50 遗留 #9 skip 化治理")
+	}
 	tarball := buildPluginTarball(t, "0.2.0")
 	sha := sha256hex(t, tarball)
 

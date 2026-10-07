@@ -1,4 +1,4 @@
--- 842_supplier_view_cache_baseline_columns.sql
+-- 844_supplier_view_cache_baseline_columns.sql
 -- 2026-10-07：让 v_supplier_price_vs_baseline **导出两个缓存基准价**。
 --
 -- 背景（这是一个「写入方齐全、读取方为零」的实例）：
@@ -39,7 +39,7 @@
 --     不能被本迁移动到）。
 --
 -- 幂等：先补列（IF NOT EXISTS）+ CREATE OR REPLACE VIEW，重复应用同结果。
--- 回滚：842_supplier_view_cache_baseline_columns.down.sql
+-- 回滚：844_supplier_view_cache_baseline_columns.down.sql
 -- Related: sql/migrations/startup/826_model_baseline_price.sql
 --           bg/routing_health_checks.go（supplier_price_drift）
 
@@ -61,7 +61,7 @@ BEGIN;
 --   基线 schema），但**没有任何迁移负责把它们带进新库**。
 --
 --   ⇒ 与 826 依赖 `cmb.success_rate` / `routing_tier` / `billing_mode` 是同一形态，
---     但 842 不继承那个依赖：补列是幂等且零风险的，不补则是硬失败。
+--     但 844 不继承那个依赖：补列是幂等且零风险的，不补则是硬失败。
 --   ⇒ 类型取 numeric(14,6)，与 826 给 baseline 侧定的类型一致。
 ALTER TABLE public.credential_model_bindings
     ADD COLUMN IF NOT EXISTS cache_read_price_per_1m  numeric(14,6),
@@ -104,7 +104,7 @@ SELECT
        IS NOT DISTINCT FROM COALESCE(mc.baseline_price_currency, 'USD'))  AS currency_comparable,
     (mc.baseline_input_price_per_1m IS NOT NULL)    AS has_baseline,
     mc.baseline_price_fetched_at                    AS baseline_fetched_at,
-    -- ── 842 新增：两个缓存基准价 ────────────────────────────────────────
+    -- ── 844 新增：两个缓存基准价 ────────────────────────────────────────
     -- 放在末尾是因为 CREATE OR REPLACE VIEW 只能追加末尾列。
     -- 加进告警通路后，下面两条**倍率**才有可能被算出来。
     mc.baseline_cache_read_price_per_1m             AS baseline_cache_read_per_1m,
@@ -141,7 +141,7 @@ LEFT JOIN LATERAL (
     SELECT mc.id, mc.canonical_name, mc.baseline_price_currency,
            mc.baseline_input_price_per_1m, mc.baseline_output_price_per_1m,
            mc.baseline_price_fetched_at,
-           -- 842 新增：这两个列不进子查询，842 的主 SELECT 就引用不到它们。
+           -- 844 新增：这两个列不进子查询，844 的主 SELECT 就引用不到它们。
            mc.baseline_cache_read_price_per_1m, mc.baseline_cache_write_price_per_1m
       FROM public.models_canonical mc
      WHERE mc.id = pm.canonical_id
@@ -152,6 +152,6 @@ LEFT JOIN LATERAL (
 ) mc ON true;
 
 COMMENT ON VIEW public.v_supplier_price_vs_baseline IS
-    'Per (credential, model) supplier price against the vendor baseline. Ratios are NULL unless the currencies match and the baseline is set — a CNY supplier price divided by a USD baseline produces a number that looks like a deviation but is pure noise, so currency_comparable is exposed rather than folded into the ratio. Migration 842 appends the two cache baseline prices and their ratios; they were absent before, which is why cache pricing had no drift coverage at all.';
+    'Per (credential, model) supplier price against the vendor baseline. Ratios are NULL unless the currencies match and the baseline is set — a CNY supplier price divided by a USD baseline produces a number that looks like a deviation but is pure noise, so currency_comparable is exposed rather than folded into the ratio. Migration 844 appends the two cache baseline prices and their ratios; they were absent before, which is why cache pricing had no drift coverage at all.';
 
 COMMIT;
