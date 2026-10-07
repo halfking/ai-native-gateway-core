@@ -12726,3 +12726,594 @@ GET `/api/credentials/sliding-window?credential_id=X&model=Y&minutes=60&limit=50
 - 变异 **65 条 = 65 条全有牙，0 可证等价**（`/tmp/mut-co94.mjs`，逐条 `RESTORED` 字节比对；
   ★ harness 带**量具阳性对照**，开跑前先注入必然打红的改动验证解析器，抓到 30 条红才开跑）。
 - 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6144 条（159 文件）** rc=0。
+
+## 11.131 附件存储目录迁移进度（第九十五批，2026-10-08）
+
+GET `/api/admin/storage/migration-state`
+
+- **注册**：`mux.HandleFunc` 直挂在 `admin/handler.go:1111`
+  `mux.HandleFunc("/api/admin/storage/migration-state", admin(h.handleMigrationState))`
+  ⇒ ★★ **admin 档**（`h.admin` = `AdminMiddleware`，`handler.go:880`）⇒ tenant_admin 可用
+  ⇒ ★★★ **与批 93 的 `storage/config`（`:1108`，**superAdmin** 档）同前缀、
+  相邻两行、两种档位** ⇒ 再次印证「不能按前缀推权限」。
+- **实现**：`admin/storage_migration.go:401-421`（handler）· `:425-427`（分发入口）
+  · `:99-112`（`getMigration`）· `:48-64`（`migrationRun`）· `:40-45`（状态枚举）。
+- **桌面调用方**：`web/src/api/tuning.ts:838-840` —— 直接强转，不做校验。
+- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+- **上游**：`PUT /api/admin/storage/config` 改附件目录后触发迁移，并在响应里附
+  `migration_run_id`（`storage_config.go:344-347`，`:349` 用完即清空）引导前端来轮询本端点。
+- **移动端**：批 93 的 `storageAndLogConfig.ts` 只在**注释**里提到过这条路径（对比档位），
+  精确串命中 1 处且是注释 ⇒ 本族**无既有实现**。
+
+### 本族最要紧的十一件事
+
+1. ★★★★★ **顶层是「2 键、两个值都可为裸 `null`」的裸对象**（`:409-412`）：
+   ```go
+   resp := map[string]any{ "running": nil, "latest": nil }
+   if run != nil { if run.Status == migrationRunning { resp["running"] = run } else { resp["latest"] = run } }
+   ```
+   ⇒ ⇒ **第四种顶层形状**：不是 envelope、不是裸数组、也不是「单主键恒在但值为 null」，
+     而是**两个并列槽位、键恒在、值二选一被填**。
+   ⇒ ★★ Go 的 `encoding/json` 序列化 map **按键名排序** ⇒ 线上键序恒为 `latest` 在前。
+2. ★★★★★ **「至多一个槽位非 null」是构造保证，不是数据属性** ——
+   `getMigration()`（`:99-112`）**只返回一个** run（`running` 优先于 `latest`，返回值拷贝）
+   ⇒ ⇒ 「两槽位同时非 null」在真后端上**不可达** ⇒ **不提供判据**。
+3. ★★★★★ **`status` 枚举声明 4 个值，但 `idle` 是死值**：
+   `migrationIdle migrationStatus = "idle"`（`:41`）——**全仓仅此一处，无任何赋值点**。
+   `startStorageMigration` 只会建 `migrationRunning`（`:133`），
+   `finishMigration` 只会写 `succeeded`/`failed` ⇒ ⇒ **可达取值只有 3 个**。
+   ⇒ ★★★ **桌面 `MigrationStatus`（`tuning.ts:813`）把 `idle` 列成了成员** ——
+     照它写的客户端会为一条**永不出现的分支**写代码。
+   ⇒ 本模块 `MIGRATION_STATUSES` 只列 3 个；**但不提供「status ∈ 枚举」判据**
+     （Go 常量封闭域 ⇒ 恒真判据，按 co93 纪律删除，契约由注释承担）。
+4. ★★★★★ **`migrationRun` 是 15 键 = 11 恒在 + 4 带 `omitempty`**
+   （脚本按 `` json:"…" `` 扫出，**不是手数**）：
+   - 恒在：`run_id` `status` `from_dir` `to_dir` `started_at` `files_total`
+     `files_copied` `bytes_total` `bytes_copied` `files_deleted` `old_dir_purged`
+   - `omitempty`：`finished_at` `heartbeat_at` `errors` `message`
+   ⇒ ★ 本批是**桌面类型没写错**的少数情况（`tuning.ts:815-831` 15 个键全对），
+     与批 94（桌面少声明 `limit` 与 `total_returned`）对照。
+5. ★★★★★ **`failed` 的 run 可能根本没有 `errors` 键** ——
+   `run.Errors = append(…)` 只发生在 4 处：panic（`:160`）、`filepath.Rel` 失败（`:219`）、
+   复制失败（`:226`）、删旧目录失败（`:274`）。
+   而 8 条 `finishMigration(run, migrationFailed, …)` 分支（`:169 :179 :189 :213 :229
+   :248 :257 :265`）**只写 `Message`、从不动 `Errors`** ⇒ ⇒
+   **「收集文件失败 / 校验失败 / 切换 BaseDir 失败 / 空间不足 / 超时」这些失败，
+   唯一的细节只在 `message` 里。**
+   ⇒ ⇒ 客户端**不能**用「`errors` 为空」推断「没有失败」⇒ 由此有 `migrationRunHasErrorDetail`。
+6. ★★★★ **`message` 是自由文本，共 14 种形态**（8 处 `run.Message = …` 加 `finishMigration`
+   的 8 个实参），中文前缀 + 英文错误串拼接（如 `"收集文件失败: " + err.Error()`）
+   ⇒ ⇒ **没有稳定错误码，客户端不得对 `message` 做 `startsWith` 判定。**
+7. ★★★★ **`files_deleted` 赋的是 `run.FilesTotal`，不是实际删除数**（`:277`），
+   且 `purged` 为 false 时**保持 0**（从不赋值）⇒ ⇒
+   「`files_deleted ∈ {0, files_total}`」「`files_deleted > 0` ⟹ `old_dir_purged === true`」
+   **都是恒真的** ⇒ 写进注释，不做判据。
+   ⇒ ★★★ **反过来是错的**：空目录 + 迁移期间有新写入 ⇒ 跳过删除（`:193-196`）
+   ⇒ **`files_deleted === 0`、`files_total === 0`、`old_dir_purged === false`**
+   ⇒ ★★★ **`files_deleted === files_total` 推不出「已清理」**（`0 === 0` 成立），
+     权威答案永远是 `old_dir_purged` ⇒ `migrationPurgeLooksComplete` 是**显式标注的弱信号**。
+8. ★★★★ **`files_copied` 是「已处理到第几个」不是「成功复制了几个」** ——
+   `run.FilesCopied = i + 1`（`:239`）在复制成功**之后**执行，但 `i` 遍历的是 `files`
+   （含此前失败的条目）⇒ ⇒ 某文件失败时 `FilesCopied` **不前进**，下一个成功时**一步跨过**。
+   ⇒ ⇒ `files_copied ≤ files_total` 恒真（不提供判据）；
+     **客户端不能把 `files_total - files_copied` 当「还剩几个失败」**。
+9. ★★★★ **空目录分支是一个「成功但零进度」的可达形状**（`:182-201`）：
+   `FilesTotal = 0`、`BytesTotal = 0`、`FilesCopied` **从未赋值**（保持 0），
+   终态仍是 `succeeded`（`:200`）⇒ ⇒
+   **`status === 'succeeded' && files_total === 0 && files_copied === 0` 是合法的成功态**
+   ⇒ ⇒ 进度比**必须**处理除零（`total === 0` 给 0，**不是 NaN/Infinity**）。
+10. ★★★ **`heartbeat_at` 恒在**：`startStorageMigration:137` 建 run 时就赋了 `&hb`，
+    复制循环 `:241` 只是更新 ⇒ `'heartbeat_at' in run` 恒真，不提供判据。
+    ⇒ ★★ 相应地**心跳停更在本响应里查不出来** —— 迁移 goroutine 卡死时 `status` 仍是
+      `running`、计数不再变，**没有「卡住」信号**。
+11. ★★★ **v1 冻结告示对本端点是噪音**：`writeJSON` 是中央出口、无条件调
+    `applyV1FreezeNotice`（`handler.go:1483`），而告示判据是 `request_logs` 写门
+    （`v1_freeze_notice.go:228-229`）⇒ ⇒ 响应头 `X-LLM-Gateway-V1-Data-Frozen` 可能出现，
+    但**迁移状态与 request_logs 无关** ⇒ ⇒
+    **移动端不要在本页挂「v1 数据已停更」横幅**（告示在**响应头**里，不在 body）。
+
+**校验边界**：顶层 2 键、每个槽位「null 或 run 对象」、`migrationRun` 的 11 恒在键与类型、
+4 个 `omitempty` 键的「存在才校验」两个分支；为 (1)(2)(3)(7)(9) 各提供判据。
+★ **不校验** `status` 取值域（Go 常量封闭域 ⇒ 恒真）；★ **不校验** `message` 取值（同 (6)）；
+★ **不校验** `errors` 是否存在（`failed` 也可以没有，见 (5)）；
+★ **不提供**「两槽位不同时非 null」（恒真，见 (2)）、
+`files_copied ≤ files_total`（恒真，见 (8)）、
+`files_deleted > 0 ⟹ old_dir_purged`（恒真，见 (7)）三条判据。
+
+### 变异验证暴露的五件事（67 → 65 条全有牙）
+
+首跑 67 条 = **64 有牙 + 3 白绿**，三条白绿归因**两类**：
+
+1. ★★★★ **样本选歪：区分格是「falsy 但不是 null」那一格**（#25）。
+   把错误消息里的 `v === null` 换成 `!v`：两者在 `null` 与 `42` 上**完全一致**，
+   区分格只在 `0` / `''` / `false` / `undefined` ⇒ 我原先的样本压根没覆盖到。
+   ⇒ ★★★ 补了「顶层是 0 时报 `number`」「顶层是空串时报 `string`」两条专格用例。
+   ⇒ ★ 这是「`in` 与真值判断的分界只在 falsy 但不是 null 那一格」在**错误消息侧**的同族，
+     也是「**有牙也要验可达性**」的镜像：这里不是判据无牙，是**样本没站在区分格上**。
+2. ★★★★★ **可证等价 ⇒ 删变异**（#51）。`s.running ?? s.latest` 改成 `s.latest ?? s.running`：
+   区分格是「两槽位同时非 null」，而 `getMigration()` **只返回一个**
+   ⇒ **该格不可达** ⇒ 两种实现对所有可达输入完全一致。
+   ⇒ ★ 补用例就得**造假夹具**（违反「夹具必须可达」）⇒ 删变异才是正解。
+3. ★★★★★ **可证等价 ⇒ 删变异 + 连带删掉两条恒真用例**（#62）。
+   把 `migrationPurgeLooksComplete` 改成只看 `files_deleted > 0`：
+   区分格是「`files_deleted > 0` 但 `old_dir_purged === false`」——
+   而 `run.FilesDeleted = run.FilesTotal`（`:277`）与 `run.OldDirPurged = true`（`:276`）
+   在**同一个 `else if purged` 分支**里赋值 ⇒ ⇒ **蕴含关系由分支结构保证，该格不可达**。
+   ⇒ ★★★ **本仓第三例可证等价**，并由此得到一条新的通用判别式：
+     **两个字段若在同一个分支里一起被赋值，它们之间的蕴含关系由结构决定；
+     只改其中一个的变异必然可证等价 ⇒ 删变异，不补夹具。**
+     （与批 91 `prev.key > cur.key`→`>=`、批 92 `?`→`?&`、
+     批 94 `classified === failed`→`>=` 并列。）
+   ⇒ ★★ **连带效应**：锚在它上面的两条用例（`复制中 files_deleted 为 0 时弱信号为 false`、
+     `非空目录未清理时 files_deleted 保持 0`）本身也是**恒真用例**（两种实现返回相同）
+     ⇒ 一并删掉，否则它们会持续给人「这条有牙」的错觉。
+4. ★★★ **我自己的夹具自相矛盾，被一条用例抓住**。
+   `purgedRun()` 声称「1200 个文件全部复制完成且已清理」，
+   却把 `bytes_copied` 留在中途的 `3100000000`（占总量 38%）
+   ⇒ 被「字节全部复制完成时进度是 1」打红。
+   ⇒ ★★ 判别式：**夹具的派生字段之间必须互锁** —— 一个自相矛盾的夹具会让
+     「全部完成」这类用例的锚点含义漂移，而它自己看起来完全合理。
+   ⇒ 修法：全部复制成功 ⇒ `bytes_copied === bytes_total`，`message` 里的
+     `humanBytes` 量级同步改成 `7.6 GiB`。
+5. ★★ **类型门在本批抓到两处**（都不是「能不能编译」层面的）：
+   - `delete verifyFailed['errors']` 报 TS7053 —— 对象字面量**展开后 TS 只保留写出的
+     那几个键的精确类型**，索引签名没了 ⇒ 显式标注 `Record<string, unknown>`。
+   - 未使用的 `MigrationStateResponse` 导入报 TS6133 ⇒ 与其删掉，不如**用它写一条
+     类型级判据**（两个槽位必须是 `MigrationRun | null` 而不是 `MigrationRun`）——
+     写成非空类型会让 `vue-tsc` 直接报错，**那就是它的牙**。
+   ⇒ ★ 再次印证：**类型门也是「表达式解析歧义」与「漏渲染未使用变量」的探测器**，
+     而 `vue-tsc` 通过仍**不等于**构建通过（本批两者都单独跑了）。
+
+★ 附带：批 93 新增的**量具阳性对照**在本批继续生效 —— 开跑前先注入必然打红的改动，
+解析器抓到 **75 条红**才开跑（若按批 93 前的旧 harness，这批的读数不可信）。
+
+### 验证
+
+- 用例 **88 条全绿**（`web-mobile/src/api/storageMigrationState.test.ts`）。
+- 变异 **65 条 = 65 条全有牙，0 可证等价**（`/tmp/mut-co95.mjs`，逐条还原后字节比对；
+  ★ harness 带**量具阳性对照**与 `from` 唯一性 + 锚点唯一性双自检）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6232 条（160 文件）** rc=0（较批 94 基线 6144 正好 +88）。
+- **十连跑 10/10 全绿**，每趟条数全程一致 6232（`npm run test:stability -- --runs=10`，
+  日志 `/tmp/co95-stability.log`）。★ 仍未复现 `ComplianceHitsView.spec.ts` /
+  `RoutingOptView.spec.ts` 的历史 flaky —— **没复现不等于已修复**。
+
+## 11.132 轮次列表页筛选框可选值（第九十六批，2026-10-08）
+
+GET `/api/admin/turns/sessions/filter-options`
+
+- **注册**：`admin/handler.go:1277`
+  `mux.HandleFunc("/api/admin/turns/sessions/filter-options", admin(h.handleTurnsFilterOptions))`
+  ⇒ ★★ **admin 档**（`h.admin` = `AdminMiddleware`，`handler.go:880`）⇒ 抽屉席不设 `requiresRole`。
+- **实现**：`admin/turns_filter_options.go:49-130`（handler）· `:37-46`（`TurnsFilterOptionsResponse`）
+  · `:136-154`（三段查询拼装）· `:157-181`（`runFilterOptionQueries`）。
+- **桌面调用方**：`web/src/api/turns.ts:204-206` `listTurnsFilterOptions()` —— **不带任何参数**；
+  类型 `TurnsFilterOptions`（`:147-157`）；消费方 `TurnsFilterBar.vue:139-184`。
+- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+- **同族列表端点** `/api/admin/turns/sessions`（`handler.go:1275`）**已由**
+  `web-mobile/src/api/turnsSessions.ts` 覆盖 ⇒ 本节只补 filter-options。
+
+### 本族最要紧的十二件事
+
+1. ★★★★★ **★ 桌面类型多声明了一个后端从不返回的键 `api_keys`。**
+   Go 结构体（`:37-46`）**只有 8 个键**，而桌面 `TurnsFilterOptions`（`turns.ts:147-157`）
+   有 **9 个** —— 多出 `api_keys` ⇒ ⇒ `'api_keys' in resp` **恒假** ⇒ 恒真判据，契约由注释承担。
+   ⇒ ★★★ **后果是用户可见的**：`TurnsFilterBar.vue:171` 写的是
+   `v-for="opt in filterOptions.api_keys || []"` —— 那句 `|| []` 就是作者撞到这个缺失键后打的补丁，
+   **于是那把「API Key」下拉在桌面上永远是空的**。移动端不渲染它。
+2. ★★★★★ **8 个键全部恒在、无 `omitempty`，且全部被强制非 nil**：
+   `*targets[i] = []string{}`（`:166`，在读第一行**之前**执行）⇒ ⇒ **空维度是 `[]` 不是 `null`**
+   ⇒ 客户端可以直接写 `resp.models.length`。
+3. ★★★★★ **★ 文件头注释说「基于近 30 天」，代码里 5 个维度根本没有时间窗。**
+   头注 `:5` 写「基于近 30 天实际使用数据」、`:19` 写「每个维度按最近活跃倒序取前 20」；
+   而 `lastActiveSource`（`:136-140`）拼的是
+   `SELECT <v> AS v, MAX(ss.first_request_at) AS last_at FROM session_summaries ss<…> WHERE <cond><tenantWhere> GROUP BY 1`
+   —— `<cond>` 与 `<tenantWhere>` 之间**没有任何时间条件**。
+   ⇒ ⇒ **只有走 `session_turns` 的 3 个维度（models / providers / status_codes）有 30 天窗口**
+   （`lastActiveTurnQuery:150-153`）；**projects / tasks / owners / clients / tags 是「全历史里最近活跃的」**。
+   ⇒ ★★★ 与批 93 的 `enabled_source` 三值注释、批 91 的 `task_quality_score` 0–1 同族：
+   **注释不是契约，赋值点是。**
+4. ★★★★ **响应里没有任何时间戳** ⇒ 「按最近活跃倒序」这件事**在响应里根本不可观测**
+   （`last_at` 只出现在 SQL 的 `ORDER BY` 里，不进 JSON）⇒ ⇒ **不提供任何顺序判据**。
+5. ★★★★ **`ORDER BY last_at DESC LIMIT 20` 无 tiebreak**（`:144` 与 `:152`）
+   ⇒ 同一 `last_at` 的多个值之间顺序未定义。
+6. ★★★★ **每维度上限恒为 20**（`turnsFilterOptionsLimit = 20`，`:33`）
+   ⇒ 客户端用它提示「还有更多」（`turnsFilterOptionIsTruncated`），但这是**客户端决策**，不是校验。
+   ⇒ ★ 区分格在**正好 20** —— `>=` 与 `>` 只在这里不同，而 `LIMIT 20` 完全能返回正好 20。
+7. ★★★★ **`status_codes` 的元素是数字串，不是数字** ——
+   SQL 选 `t.status_code::text`（`:122`），而 `session_turns.status_code` 是 **`integer`**
+   （`deploy/sql/schemas/baseline/01-schema.sql`）⇒ 元素形如 `"200"`、`"0"`。
+   ⇒ ★★★ **而桌面的查询参数类型写的是 `number`**（`turns.ts:164`），
+   `TurnsFilterBar.vue:155` 把**字符串**直接绑成下拉值 ⇒ **桌面的类型是错的**
+   （只因 `String(params.status_code)` 才没出事）。列表端点侧按原样比较
+   （`turns_sessions.go:439-442`），字符串参数会被 Postgres 推断成整数，所以「原样回传」安全；
+   移动端仍显式转换（见下面的 `statusCodeFilterValue`）。
+8. ★★★★ **`status_codes` 是唯一没有 `!= ''` 过滤的维度**（`:122` 只有 `IS NOT NULL`）
+   ⇒ 对 int 列做 `::text` 后不可能为空串，**无害**，但这是个不对称点。
+9. ★★★★ **`clients` 是 `client_id ∪ application_code` 的 UNION**（`:95-101`），
+   **不是单一列** ⇒ 同一个下拉里混着两种来源的标识。
+10. ★★★★ **`tags` 走 `LATERAL UNNEST(ss.user_tags)`**（`:103-104`），
+    且它的 `cond` 是 `"1=1"`（唯一一个不带空值过滤的取值条件）⇒ **数组里的空串会原样出现在结果里**。
+11. ★★★★ **★ 每条可达路径都有租户过滤，`tenantID != ""` 那个分支是死路。**
+    ```go
+    if IsTenantAdmin(r) { tenantID = GetTenantID(r) } else { tenantID = tenantFromQueryOrContext(r) }
+    if tenantID != "" { tenantWhere = " AND ss.tenant_id = $1" … }
+    ```
+    `GetTenantID` 在 auth 缺失时**兜底 `"default"`**（`context.go:37-42`）⇒ 恒非空；
+    `tenantFromQueryOrContext`（`session_turns_v2.go:889-905`）末尾也回落 `GetTenantID`
+    ⇒ ⇒ **响应永远是租户内的，不会出现跨租户数据。**
+    ⇒ ★★★ 但 `IsTenantAdmin` 要求 `Role == "tenant_admin"` **精确匹配**（`context.go:45-48`）
+    ⇒ **super_admin 走 `else` 分支**、才有机会用 `?tenant=` / `?tenant_id=` / `X-Tenant-ID` 覆盖
+    ⇒ ★★ 而**桌面从不传任何参数**（`turns.ts:205`）⇒ 桌面上即使是 super_admin 也只看自己那一个租户。
+12. ★★★ **★ 同名不同形的兄弟端点：`/api/admin/session-analytics/filter-options`。**
+    它在 `session_analytics_handler.go:728-729` 的一个**分发器**里分派（不是 `mux.HandleFunc` 直挂），
+    响应**只有 2 个键** `{models, providers}`（`session_analytics_top.go:49-50`），
+    租户口径是 `effectiveScopeTenant(r)`，503 文案 **`"db not available"`**
+    （本端点是 `"database not configured"`），超时 10s（本端点 12s）。
+    ⇒ ⇒ ★★★ **叶名相同、键数差 4 倍、注册机制不同、503 文案不同 —— 不可互相套用。**
+
+**校验边界**：顶层 8 个恒在键、每个维度是**字符串数组**（两分支：不是数组 / 元素不是字符串）；
+为 (1)(2)(6)(7) 提供判据或决策函数。
+★ **不校验** 任何维度的取值域（用户数据自由决定）；
+★ **不提供**顺序判据（(4)：响应里没有 `last_at`，顺序不可观测）；
+★ **不提供** `query/target count mismatch` 分支的判据（5 vs 5、3 vs 3 是字面量，不可达）；
+★ **不提供** 「维度长度 ≤ 20」的校验（后端 `LIMIT` 保证 ⇒ 恒真，改为给客户端一个决策函数）。
+
+### 三个「客户端函数」与它们的边界
+
+- `apiKeyFilterOptions(opts)` —— 对幽灵键 `api_keys` 的**容错取值**，恒给 `[]`。
+  ★ 刻意**不抛错**：键不存在是后端常态，不是响应形状错误。
+  ★ 其输入含**后端不可达**的取值 ⇒ 用例只固定容错行为，**不是后端契约判据**。
+- `turnsFilterOptionIsTruncated(values)` —— `>= 20`，用于提示「还有更多」。
+- `statusCodeFilterValue(v)` —— **只认十进制整数字面量**（`/^-?\d+$/`，先 `trim`）。同时堵掉四个坑：
+  `Number('')` 与 `Number('   ')` **都是 `0`**（空选项会被静默转成状态码 `0`）；
+  `parseInt('200abc')` 是 **200**、`parseInt('1e3')` 是 **1**（前缀截断把非法值变成看似合理的值）；
+  `Number('0x10')` 是 **16**、`Number('200.5')` 是 **200.5**。
+  ⇒ ★★ `^-?\d+$` **保留可选负号**：列是 `integer` 且**没有** `>= 0` 的过滤，`-1` 在真后端上可达。
+
+### 变异验证暴露的四件事（45 条全有牙）
+
+首跑 **45 条 = 39 有牙 + 6 白绿**，6 条全部归因于**锚点挂错**，另发现 **2 处夹具缺区分格**：
+
+1. ★★★★ **锚点挂到「测的是另一个函数」的用例上**（#35 / #36）。
+   两条变异改的是 `turnsFilterOptionsIsEmpty`，我却把锚点挂在 `turnsFilterOptionsHasAnyValue`
+   的用例上（「★ 只有 status_codes 非空时也算有值」）⇒ 那条**根本不受影响**，必然白绿。
+   ⇒ ★★★ **补了「★ 只有 tags 非空时判定为非空」**（测 `isEmpty`、且只填 `tags`）
+     —— 它同时能打掉 #35（只看 `models`）与 #36（列表漏掉 `tags`）。
+2. ★★★★ **改的是 fetch 的校验层，锚点却挂在缺键那条上**（#26）。
+   「fetch 丢掉维度校验」保留了顶层 `requireKeys`，所以**缺键照样 reject**。
+   ⇒ ★★ 真正的区分点是「**键齐全、只有某维度类型错**」⇒ 补了
+     「维度类型错时 Promise reject（键齐全、只有 projects 是对象）」与「维度元素类型错时…」两条。
+3. ★★★★ **可迭代的假样本让「不判数组」显形不了**（#30）。
+   `api_keys` 是**字符串**时，漏掉 `Array.isArray` 的实现会 `for...of` 逐字符迭代、
+   每个字符都被 `continue` 掉 ⇒ **结果仍是 `[]`** ⇒ 白绿。
+   ⇒ ★★★ 区分格是**不可迭代**的值：补了「`api_keys` 是数字 0 时取到空数组而不是抛迭代异常」
+     与「是布尔 true」两条。
+4. ★★★ **同族的第 N 条也可能恒绿，要各自算区分格**（#31 / #45）。
+   - #31（删 `Array.isArray(item)`）：用 `[[{id,label}]]` 这种**无属性数组**当样本是抓不到它的 ——
+     无属性数组走到字段检查时 `id`/`label` 都是 `undefined` ⇒ 仍被 `continue` 掉
+     ⇒ **两种实现都返回 `[]`**。
+     ⇒ ★★ **区分格是「数组上挂了 `id`/`label` 属性」**（`Object.assign([1,2], {id:1,label:'ok'})`）：
+       此时 `typeof item === 'object'` 与两个字段检查**全部通过**，只有 `Array.isArray(item)`
+       拦得住 ⇒ 不补这条用例，那一行就只是**只有 `typeof` 把关的半道防线**。
+   - #45（去掉 `v.trim()`）：挂「纯空白串转成 null」必然白绿 —— **正则已经把空白挡住了**，
+     trim 的区分格在**合法值带空白**那一侧（「`" 200 "`」）。⇒ 换锚点后有牙。
+   ⇒ ★★★ 通用式：**同一个函数的第 N 条变异，区分格往往落在与前 N−1 条不同的输入类别上**；
+     前 N−1 条有牙**不能**推出第 N 条也有牙。
+
+★ 附带：**开跑前的双自检就抓到 4 条锚点写错**（`NO_EXPECT_NAME`，把 `★` 写进了锚点
+而用例标题里没有）⇒ 这正是「锚点唯一性自检」的用处：它拦下的是**白绿**，
+而白绿在汇总里长得和「可证等价」一模一样。
+
+### 验证
+
+- 用例 **97 条全绿**（`web-mobile/src/api/turnsFilterOptions.test.ts`）。
+- 变异 **45 条 = 45 条全有牙，0 可证等价**（`/tmp/mut-co96.mjs`，逐条还原后字节比对；
+  ★ harness 带**量具阳性对照**，开跑前抓到 61 条红才开跑）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6329 条（161 文件）** rc=0（较上批 6232 正好 +97）。
+- **十连跑 10/10 全绿**，每趟条数全程一致 6329（`npm run test:stability -- --runs=10`，
+  日志 `/tmp/co96-stability.log`）。★ 仍未复现 `ComplianceHitsView.spec.ts` /
+  `RoutingOptView.spec.ts` 的历史 flaky —— **没复现不等于已修复**。
+
+## 11.133 会话分析页模型 / 提供商筛选项（第九十七批，2026-10-08）
+
+GET `/api/admin/session-analytics/filter-options`
+
+- **注册**：**第六种注册形态 —— 前缀 catch-all + 方法内分发器**，`cmd/gateway/main.go:7186`
+  ```go
+  mux.HandleFunc("/api/admin/session-analytics/", wrapSessionAnalytics(adminHandler.RouteSessionAnalytics))
+  ```
+  分派点 `admin/session_analytics_handler.go:728-729`
+  （`case parts[0] == "filter-options" && len(parts) == 1: h.HandleFilterOptions(w, r)`）
+  ⇒ ★★ **它不在 `admin/handler.go` 的 `mux.HandleFunc` 里** —— 只查 `admin/handler.go` 会判「端点不存在」。
+- **实现**：`admin/session_analytics_top.go:190-272`（handler）· `:47-50`（`FilterOptionsResponse`）
+  · `admin/session_tenant.go:126-131`（`effectiveScopeTenant`）
+  · `cmd/gateway/main_admin_wrappers.go:42-64`（鉴权包装）。
+- **桌面调用方**：**没有**。全仓 `web/src/` 只出现 `/api/admin/turns/sessions/filter-options`。
+- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+
+### ★★★★★ 与批 96 的「同叶名兄弟」有六处正好相反 —— 抄错就是全错
+
+兄弟端点是 `/api/admin/turns/sessions/filter-options`
+（`web-mobile/src/api/turnsFilterOptions.ts`）。**叶名相同、键数差 4 倍、六处语义相反。**
+
+| 维度 | 本端点（session-analytics） | 兄弟端点（turns/sessions） |
+|---|---|---|
+| 响应键数 | **2** | 8 |
+| **空时编码** | ★★★★★ **`null`** | ★★★★★ **`[]`** |
+| **租户作用域** | ★★★★★ **super_admin 看全部租户** | ★★★★★ **永远租户内** |
+| **能否 `?tenant=` 收窄** | ★★★★ **不能** | 能（`tenantFromQueryOrContext`） |
+| **无 DB 时** | ★★★★ **404（整棵树不注册）** | 503（恒注册） |
+| **scan 失败** | ★★★★ **静默跳过该行** | 500 |
+
+1. ★★★★★ **响应只有 2 个键**（`FilterOptionsResponse`，`:48-49`），两个都是 `[]string`、
+   **无 `omitempty`** ⇒ 键恒在。
+2. ★★★★★ **★ 空时是 `null` 不是 `[]`** —— 与兄弟端点正好相反：
+   ```go
+   var ( models []string; providers []string )                      // :232-234 从 nil 开始
+   for modelRows.Next() {
+       if err := modelRows.Scan(&m); err == nil { models = append(models, m) }   // :243-245
+   }
+   ```
+   **从头到尾没有任何一处给它们赋空切片** ⇒ 零行 ⇒ 仍是 `nil` ⇒ JSON **`null`**。
+   对照兄弟端点 `*targets[i] = []string{}`（`turns_filter_options.go:166`）**显式赋空**。
+   ⇒ ★★★ **这两个端点的解包器绝不能共用。**
+3. ★★★★★ **两个槽位互相独立** ⇒ **半空形状可达**：
+   `{models: [...], providers: null}` 与反之都合法
+   （`models_used text[] DEFAULT '{}' NOT NULL`、`providers text[]` 可空，
+   `UNNEST` 空数组 / NULL 都只是零行而不是报错）。
+4. ★★★★★ **★ 租户作用域与兄弟端点方向相反**：
+   ```go
+   func effectiveScopeTenant(r *http.Request) string {   // session_tenant.go:126-131
+       if IsSuperAdminOrLegacy(r) { return "" }
+       return GetTenantID(r)
+   }
+   ```
+   super_admin / `admin_key` 拿到 **`""`** ⇒ `if tenantID != ""`（`:212`、`:225`）**不进**
+   ⇒ ⇒ **SQL 里没有租户条件** ⇒ **super_admin 看到的是全部租户的聚合。**
+   对照兄弟端点：那里的 `GetTenantID` 兜底 `"default"`（`context.go:37-42`）⇒ 恒非空 ⇒ **永远租户内**。
+5. ★★★★ **★ 而且这里没有 `?tenant=` 收窄手段** —— `effectiveScopeTenant` **不读查询参数**
+   （对照 `tenantFromQueryOrContext` 会读 `?tenant=` / `?tenant_id=` / `X-Tenant-ID`）
+   ⇒ ⇒ **super_admin 无法把这个端点收窄到某一个租户**，只能看全量聚合；
+   想要单租户视图，唯一办法是**用那个租户的账号登录**。
+6. ★★★★ **★ 整条 `/api/admin/session-analytics/` 树只在 `dbConn != nil` 时注册**
+   （`main.go:7085-7089`：`wrapSessionAnalytics` 只在有 DB 时才被赋值）
+   ⇒ ⇒ **没有数据库时这个路径是 404，而不是 503** ——
+   对照兄弟端点它恒注册（`handler.go:1277`）才在 handler 内判 `h.db == nil` 返 503。
+7. ★★★★ **鉴权是双模式的**（`main_admin_wrappers.go:42-64`）：
+   `session_service_auth.enabled` 为假、或 `LLM_GATEWAY_SESSION_SERVICE_JWT_SECRET` 为空
+   ⇒ 走 `admin.AdminMiddleware`（与兄弟端点同一套）；否则走
+   `admin.SessionAnalyticsMiddleware(...)`，issuer 默认 `ai-session-manager`、
+   audience 固定 `llm-gateway-session-analytics`
+   ⇒ ⇒ ★★★ **这个端点可以被 session-service JWT 调用，不只是管理员会话。**
+   ⇒ ★★ 且「enabled 但 secret 缺失」只 `slog.Warn` 一句就**回落到 admin 鉴权** ——
+     配错时的行为是**降级**，不是 fail-closed。
+8. ★★★★ **★ per-row 的 scan 失败被静默跳过**：
+   `if err := modelRows.Scan(&m); err == nil { models = append(models, m) }`（`:243-245`）
+   与 providers 侧同形（`:258-260`）⇒ **某一行取不出值就整行消失，无任何信号**。
+   对照兄弟端点 `turns_filter_options.go:169-173` 的 scan 失败是 **return err ⇒ 500**。
+   ⇒ ★★ 但**迭代级错误是被检查的**（`modelRows.Err()` `:247`、`providerRows.Err()` `:262`）
+   ⇒ 精确说法是「**行扫描吞、迭代不吞**」⇒ 客户端**不能**假定列表长度与 `DISTINCT` 结果一致。
+9. ★★★★ **★ 顺序与去重在响应里是可观测的** —— `ORDER BY model` / `ORDER BY provider`
+   （`:216`、`:229`）配 `DISTINCT`（`:207`、`:220`）⇒ **按值升序、无重复**。
+   ⇒ ★★★ 这是本系列第一个**顺序能被客户端校验**的筛选项端点：
+     兄弟端点的 `last_at` 只进 SQL 的 ORDER BY、不进 JSON（§11.132 (4)）⇒ 不可观测。
+10. ★★★ **这次头注与代码相符**：`last_request_at > NOW() - INTERVAL '30 days'`
+    （`:210`、`:223`）真的是 30 天窗口（对照 §11.132 那个 8 键端点，5 个维度根本没有窗口）。
+11. ★★★ **没有任何桌面调用方** ⇒ 这段代码**从未被现有前端消费过**
+    ⇒ 移动端是第一个调用方，也意味着它的行为**没有任何既有消费者验证过**。
+12. ★★★ 错误面：非 GET ⇒ **405**（`:191-194`）；`h.db == nil` ⇒
+    **503 `db not available`**（`:196`，★ 兄弟端点是 `database not configured`）；
+    查询失败 ⇒ **500 `query failed`**（`writeInternalErr` → `writeError`，`internal_error.go:46-49`）。
+    错误体一律 `{"error":{"detail":…}}`。超时 **10s**（`:200`，兄弟端点 12s）。
+
+**校验边界**：顶层 2 个恒在键、每个键是 **`null` 或字符串数组**
+（三分支：null / 不是数组 / 元素不是字符串）；为 (2)(3)(4)(9) 提供判据或决策函数。
+★ **不校验** 值的取值域；★ **不提供** 「两个列表必须有交集」这类后端无从保证的性质；
+★ **不提供** 「零行时响应非 null」这类后端不变式的判据（恒真，契约由注释承担）。
+
+### 三个客户端函数与它们的边界
+
+- `filterOptionList(v)` —— 把 `null` 归一成 `[]`，**本模块最该被复用的那一个**。
+  ★★ 凡是要 `.length` / `.map` / 迭代下拉项的地方都必须先过它，否则「网关还没跑过流量」
+  就会让移动端崩在 `Cannot read properties of null` 上 ——
+  ★ 与批 93 里那句「否则前端 `windowEntries.length` 会抛」是同一类事故，
+  ★★ 但**成因相反**：那边是后端没兜住，这边是后端**故意**发 `null`。
+- `sessionAnalyticsFilterOptionsIsEmpty(o)` / `…HasAnyValue(o)` —— 半空形状下前者返回 `false`，
+  让调用方知道「有的下拉有值、有的没有」，而不是笼统报「没有筛选项」。
+- `filterOptionValuesAreSortedUnique(values)` —— **客户端决策**（渲染前要不要自己再排一遍），
+  ★★ **不是响应校验**：对每个真实后端响应它都成立，所以生产里永远不会变红；
+  它防的是网关版本漂移 / 中间层改 body。
+
+### 变异验证暴露的五件事（32 条全有牙）
+
+首轮 dry 通过后、**正式跑之前**手工复核，直接剔除了 3 条不该存在的变异：
+
+1. ★★★★★ **变异形态 (d) 恒等变形：`return (A && B) && true`。**
+   原计划把空判定的 `A && B` 改成加 `&& true` ⇒ `(A&&B)&&true === A&&B`
+   ⇒ 什么都不会变 ⇒ **它不是变异，是噪声。**
+   ⇒ ★★ 写完 `to` 要**重读一遍它到底改变了什么**，而不是只看它和 `from` 长得像不像。
+2. ★★★★★ **可证等价：`v ?? []` → `v || []`。**
+   唯一可能的差别是「falsy 但不是 null/undefined」的值，
+   而 `[]` 在 JS 里是 **truthy** ⇒ `string[]` 里根本没有 falsy 值
+   ⇒ 两种实现在所有输入上一致 ⇒ 删。
+   ⇒ ★★ **`??` 与 `||` 只在 `[]` `0` `''` `false` `NaN` 上分得开** ——
+     类型是「数组」时它们等价，类型是「数字」时不等价。
+3. ★★★★ **`!(prev < cur)` → `!(prev <= cur)` 也是可证等价。**
+   相邻两项相等时两者都返回 `false` ⇒ 重复检测效果**完全相同** ⇒ 删。
+   ⇒ ★★★ **「这个比较符的放宽方向」必须手算，不能凭直觉** ——
+     本仓已因此栽过三次（批 88 / 94 / 97 的 #30 就是它的第三次）。
+4. ★★★★ **形态 (e) 的**类型侧变种**：`Array.isArray(v)` → `typeof v !== 'object'`
+   报的是 `COLLECT_FAIL` 而不是「有牙」。**
+   `Array.isArray(v)` 会把 `unknown` **收窄**成 `any[]`，后面的 `v.length` / `v[i]` 才编译得过；
+   换成 `typeof` 守卫后 `v` 仍是 `unknown`
+   ⇒ TS 报「Property 'length' does not exist on type 'unknown'」
+   ⇒ esbuild 阶段**整个文件加载失败**。
+   ⇒ ★★★ **不是代码不合法，是类型不成立** —— 这是形态 (e) 除「语法」之外的第二副面孔。
+   ⇒ ★★ 而且它是我**自己写坏的**：编辑 `to` 时把结尾的 `}` 写成了 `})`。
+     **凡是 `to` 结尾的那一行，改完必须重新读一遍语法**（§11.130 批 91 的同一教训）。
+5. ★★★★★ **取反方向我算反了一次，靠手工代入才抓出来。**
+   `!(prev < cur)` 换成 `!(prev === cur)` 时，我以为区分格是「乱序列表」，
+   实际手工代入后发现**突变版对任何含相邻不等元素的列表都返回 `false`**
+   （`!(不等)` 恒真 ⇒ 立刻 `return false`）⇒ 区分格是**升序**列表 ⇒ 换锚点后有牙。
+   ⇒ ★★★ 这是「**写锚点前手算两种实现在候选样本上的返回值**」的第四次生效，
+     前三次是 `===`/`<=`/`>=` 的方向，这次是**双重取反**。
+   ⇒ ★ 顺带：`!Array.isArray(v)` → `typeof v !== 'object'` 的区分格是**纯对象**
+     （`typeof {} === 'object'` ⇒ 突变版放行），**不是字符串**（两者抛同一条消息）。
+
+★ 首跑结果：**34 条 = 31 有牙 + 1 白绿 + 1 `COLLECT_FAIL` + 2 已剔除**，修完后 **32/32 全有牙**。
+★ 附带：harness 的**量具阳性对照**在本批继续生效 —— 开跑前抓到 42 条红才开跑。
+
+### 验证
+
+- 用例 **67 条全绿**（`web-mobile/src/api/sessionAnalyticsFilterOptions.test.ts`）。
+- 变异 **32 条 = 32 条全有牙，0 可证等价**（`/tmp/mut-co97.mjs`，逐条还原后字节比对）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6396 条（162 文件）** rc=0（较上批 6329 正好 +67）。
+- **十连跑 10/10 全绿**，每趟条数全程一致 6396（`npm run test:stability -- --runs=10`，
+  日志 `/tmp/co97-stability.log`）。★ ⚠️ **第一次那趟十连跑被运行时判为 `lost`、只完成 3/10**，
+  那份读数**没有**被采信，已完整重跑一次。★ 仍未复现 `ComplianceHitsView.spec.ts` /
+  `RoutingOptView.spec.ts` 的历史 flaky —— **没复现不等于已修复**。
+
+## 11.134 任务类型档案 + 人工修正反馈闭环（第九十八批，2026-10-08）
+
+GET `/api/admin/task-profile`
+
+- **注册**：**第七种注册形态 —— Go 1.22「方法内嵌路由模式」+ 另一个包**，
+  `taskprofile/handler.go:128-136`
+  ```go
+  func (h *Handlers) RegisterTaskProfileRoutes(mux *http.ServeMux, wrap func(http.HandlerFunc) http.HandlerFunc) {
+      mux.HandleFunc("GET /api/admin/task-profile", wrap(h.handleProfile))
+      mux.HandleFunc("POST /api/admin/task-profile/corrections", wrap(h.handleCreateCorrection))
+      mux.HandleFunc("GET  /api/admin/task-profile/corrections/stats", wrap(h.handleCorrectionStats))
+      …
+  }
+  ```
+  由 `admin/handler.go:1413` 现构造后挂载：`taskProfileHandlers.RegisterTaskProfileRoutes(mux, admin)`
+  ⇒ ★★ **admin 档** ⇒ 抽屉席不设 `requiresRole`。
+- **实现**：`taskprofile/handler.go:141-180`（`handleProfile`）· `:155-159`（`profileView`）
+  · `:435-441`（`ensurePool`）· `taskprofile/suggest.go:45-105`（`Suggest` / `escalateTier`）
+  · `taskprofile/corrections.go:131-163`（`Stats`）· `taskprofile/registry.go:25 :98-106 :128-136`。
+- **桌面调用方**：`web/src/api/taskProfile.ts:91` —— 直接强转，不做校验。
+- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+
+### ★★★★★ 判「端点是否存在」的清单必须加第 7 条
+
+既有的五处清单（`admin/handler.go` 的 `mux.HandleFunc` · `main.go:7070` 附近 requestJourney
+直挂 · `main.go:6964` 的 superAdmin 组 · `main.go` 现构造 + `RegisterRoutes` ·
+另一个文件里的 `RegisterXxxRoutes` 方法）**全部搜不到这个端点** ——
+本批实测：`grep -rn '"/api/admin/task-profile"'` **只命中一个测试文件**。
+
+⇒ ★★★ 因为真正的注册是 `"GET /api/admin/task-profile"`：**方法内嵌在路由模式里**，
+引号紧贴 `/api` 的那种 grep 永远搜不到。
+⇒ ⇒ 所以第六/七条要合并成一条更宽的判据：
+**`grep -rn 'api/admin/task-profile' --include=*.go`（不加引号锚定）**，
+再人工分辨它是 `mux.HandleFunc("GET /api/…")`、`mux.HandleFunc("/api/…")`
+还是只是一个字符串常量。
+⇒ ★★ **附带一个行为差异**：方法由 `ServeMux` 自己匹配 ⇒
+**非 GET 是 mux 直接回 405**（Go 标准库实现，带 `Allow` 头、`text/plain` 体），
+**不是** handler 里的 `writeError` ⇒ **任何 handler 内的方法校验都是死代码**。
+
+### 本族最要紧的十二件事
+
+1. ★★★★★ **★★ 错误体是 `text/plain`（`http.Error`），不是 JSON —— 本系列首次。**
+   `ensurePool` 用 `http.Error(w, "Database not available", 503)`（`:437`），
+   查询失败用 `http.Error(w, "query correction stats failed", 500)`（`:151`），
+   请求体解析失败也是 `http.Error(w, "invalid JSON body: "+err.Error(), 400)`。
+   ⇒ ⇒ ★★ **对这个端点调用 JSON 错误解包器一定失败**；只能读状态码 +（若需要）`text` 兜底。
+   与批 93–97 的 `{"error":{"detail":…}}` 是**两套错误契约**。
+2. ★★★★ **503 文案是本系列的第三种，而且首字母大写**：
+   `Database not available` ←→ `db not available`（§11.133） ←→ `database not configured`（§11.132）
+   ⇒ ★★ **文案不可跨端点套用，也不该用来判档位。**
+3. ★★★★★ **顶层是手写的 `map[string]any`，恒 4 个键**（`handler.go:174-179`）：
+   `registry_version` / `schema_version` / `task_types` / `profiles`
+   ⇒ ★ `schema_version` 是**编译期常量** `SchemaVersion = 1`（`registry.go:25`）⇒ 值域单点。
+4. ★★★★★ **`profiles` 被强制非 nil**（`:160` `make([]profileView, 0, len(profiles))`）
+   ⇒ ⇒ **空档案集是 `[]` 不是 `null`** —— 与 §11.133 的「零行即 `null`」正好相反。
+5. ★★★★★ **★ `task_types` 与 `profiles[].task_type` 是同一个集合，且两者都升序。**
+   `TaskTypes()` 取 `registry.Load().profiles` 的键后 `sort.Strings`（`:128-136`）；
+   `Snapshot()` 取同一张表的值后 `sort.Slice(… TaskType < TaskType)`（`:98-106`）
+   ⇒ ⇒ ★★★ **顺序在这个响应里可观测**（对照 §11.132 的 `last_at` 不可观测），
+     且 `task_types[i] === profiles[i].task_type` 对每个 `i` 成立。
+6. ★★★★★ **`profileView` 是 Go 匿名内嵌 struct ⇒ JSON 是扁平的**：
+   ```go
+   type profileView struct {
+       TaskProfile                                        // 5 个键被摊平
+       CorrectionStats *CorrectionStat `json:"correction_stats,omitempty"`
+       Suggestion                       `json:"suggestion"`
+   }
+   ```
+   ⇒ 每个 profile 对象是 **5 + 1 + 1 = 最多 7 个键**，而不是多一层嵌套。
+7. ★★★★★ **★ 同一个键 `correction_stats` 在两个层级各出现一次**：
+   profile 级（`handler.go:157`）与 `suggestion` 级（`suggest.go:40`）。
+   两者的**出现条件看起来不同**（profile 级只要 map 里有键；suggestion 级还要 `Total > 0`），
+   ⇒ ★★★ 但 `Stats` 的 SQL 是 `GROUP BY auto_task_type` 配 `COUNT(*)`（`corrections.go:137-142`）
+   ⇒ **每个分组 `Total ≥ 1`** ⇒ **零值行不可达**
+   ⇒ ⇒ **两种出现条件在真实数据上恒等价** ⇒ **不提供判据，契约由注释承担**
+   （`Suggest` 里那个 `stat.Total > 0` 守卫在真实数据上是冗余的）。
+8. ★★★★★ **★★ `suggestion` 是在 `confidence = 1.0` 下算出来的**（`handler.go:170`
+   `Suggest(p.TaskType, 1.0, stats)`），而 `minConf` 在升级分支里被 **cap 到 1**（`suggest.go:72-73`）
+   ⇒ ⇒ `if confidence < minConf`（`:77`）要求 `minConf > 1.0` ⇒ **永不成立**
+   ⇒ ⇒ ★★★ **`tier_source` 的 `confidence_escalation` 在本响应里是死值** ——
+     而 `suggest.go:34-36` 的注释把它列为三个合法值之一。
+     ⇒ **可达值只有 `registry` 与 `correction_escalation`。**
+     ⇒ ★ **本系列第三次「注释与代码矛盾」**（§11.132 的「近 30 天」、§11.131 的 `enabled_source`、
+       `task_quality_score` 0–1）⇒ **注释里的枚举值同样要逐个验可达性。**
+9. ★★★★★ **升级规则完全可观测**：
+   `if cs != nil && cs.Total >= correctionMinSamples && cs.CorrectionRate >= correctionEscalationRate`
+   （`suggest.go:69`；常量 `:20 :22 :24` = `0.30` / `5` / `+0.05`）
+   ⇒ 命中时 `tier = escalateTier(preferred_tier)`、`tier_source = "correction_escalation"`、
+     `min_confidence += 0.05`（cap 1）；未命中时 `tier === preferred_tier` 且 `tier_source === "registry"`。
+10. ★★★★★ **`escalateTier` 是三级表，且 `tier-a` 原地不动**（`suggest.go:96-105`）：
+    `c→b`、`b→a`、**`default→a`** ⇒ ⇒ 已在 `tier-a` 的类型即使满足升级条件也**留在 `tier-a`**，
+    但 `tier_source` **仍会变成 `correction_escalation`**
+    ⇒ ★★ **「tier 变了」与「source 变了」不是一回事。**
+11. ★★★★★ **`agrees + corrected === total`**：`Stats` 的 SQL 用一对
+    `SUM(CASE WHEN agrees THEN 1 ELSE 0 END)` / `SUM(CASE WHEN agrees THEN 0 ELSE 1 END)`
+    （`corrections.go:138-139`）—— **完备二分** ⇒ 每行恰好给两者之一 +1
+    ⇒ 且 `correction_rate = corrected / total`（`:158-160`，`Total ≥ 1` 见 (7)）
+    ⇒ ⇒ ★★ 客户端**不需要**写 `total === 0 ? rate : …` 分支。
+12. ★★★★ **未知任务类型有一条自造档案的分支**（`suggest.go:48-57`）：
+    不在 registry 里时用 `tier-b` + `[tier-a, tier-c]` + `min_confidence 0.70`
+    ⇒ ⇒ ★★ **空 `description` 是「该类型不在 registry 里」的信号**（自造档案没有 `Description`）。
+
+**校验边界**：顶层 4 键、每个 profile 的 6 个恒在键与类型、两处 `correction_stats` 的
+「存在才校验」分支、`suggestion` 的 5 个恒在键；为 (5)(9)(10)(11) 提供判据或决策函数。
+★ **不提供** 两层 `correction_stats` 出现条件的差异判据（(7) 恒真）；
+★ **不提供** 任何「非 GET 由 handler 回 405」相关的判据（它根本不是 handler 回的，见上）。
+
+### 变异验证暴露的四件事（72 条全有牙）
+
+1. ★★★★★ **★★ 锚点是 `expect.slice(0, 20)` ⇒ 「给标题加后缀来消歧」完全无效。**
+   本批有 9 条 `AMBIGUOUS_ANCHOR`，全是同名用例标题在三个层级上重名
+   （profile 顶层 / suggestion 内 / correction_stat 各有一个「缺 fallback_tiers」和一个
+   「task_type 是数字」）⇒ 我第一轮把限定词加在标题**末尾**（`…（profile 顶层那一层）`），
+   **一条都没消歧** —— 20 字符窗口根本看不到后缀。
+   ⇒ ★★★ 改成**前缀**后一次通过：`'profile 顶层缺 fallback_tiers …'`。
+2. ★★★ **变异的 `from` 必须逐字抄源码的多行形态**：`TASK_PROFILE_SUGGESTION_KEYS` 在源码里是
+   7 行多行数组，我写成单行 ⇒ 3 条 `NO_MATCH`。
+   ⇒ ★ 与「`from` 不唯一改错位置」（形态 b）并列为**两种 `NO_MATCH`**，修法不同。
+3. ★★★★ **首跑 66/72，6 条白绿，全部是「夹具缺区分格」或「锚点挂错」，0 条可证等价**：
+   - `correction_stats` 的校验删掉（两层）—— 我只测了**合法**形状，
+     区分点是**键不全**那一格 ⇒ 补了两条。
+   - `correction_rate` 判据退化成 `=== 0.3` —— 我的样本是 `3/10 = 0.3`，
+     **正好等于那个常量** ⇒ 两种实现同解 ⇒ 补 `1/10` 与 `5/10` 两个不等于 0.3 的样本。
+     ⇒ ★★★ **判据里出现常量时，样本绝不能撞上那个常量。**
+   - `escalatedTier` 的 default 分支改成原样返回 —— 区分格是**未知档位**（`tier-z`）而不是 `tier-a`
+     （`tier-a` 两种实现都给 `tier-a`）⇒ 换锚点。
+   - `s.total < 5` 改成 `> 5` —— 区分格是 `total = 4`，**不是** `total = 5`
+     （两者在 5 上同解）⇒ 换锚点。
+   - 同集合判据只比首项 —— 区分格是「**首项相同、次项不同**」⇒ 补了那条夹具。
+4. ★★★ **补完夹具后仍白绿的**（#58/#69）：**新加的区分格用例存在，但锚点还挂在老用例上**
+   ⇒ 白绿的成因从「夹具缺」变成了「锚点错」，而两者在汇总里长得一模一样。
+   ⇒ ★★ 补完夹具**必须同时换锚点**，否则会以为自己已经修好了。
+
+★ 附带：harness 的**量具阳性对照**在本批继续生效 —— 开跑前抓到 97 条红才开跑。
+
+### 验证
+
+- 用例 **128 条全绿**（`web-mobile/src/api/taskProfile.test.ts`）。
+- 变异 **72 条 = 72 条全有牙，0 可证等价**（`/tmp/mut-co98.mjs`，逐条还原后字节比对）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6524 条（163 文件）** rc=0（较上批 6396 正好 +128）。
+- 十连跑 **10/10 全绿**（`/tmp/co98-stability.log`），终止标记 `总次数 10 · 失败次数 0 · 快照 0 份`，
+  10 次的 `Tests` 行**条数全程一致 = 6524**，无 `×` / `FAIL` 行。
+  ⇒ `ComplianceHitsView.spec.ts` / `RoutingOptView.spec.ts` 两个历史 flaky 本批**未复现**
+  ⇒ ★ 按连跑器自己的口径：**未复现 ≠ 已修复**，只是这次没抓到。
