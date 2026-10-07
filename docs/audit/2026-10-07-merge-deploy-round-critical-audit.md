@@ -38,6 +38,7 @@
 - **本轮裁决（bfc22da00）**：四条按正常升级通道登记 `files=()`；补登揭出第二层——838/839 同体重定义 `analyze_llm_gateway_table_stats` 触发 clobber guard（deploy exit 5），按 572→563→661 先例登记 `intentional_function_chains`（838→839，839 为终态体，runbook §10.106.12.1）。
 - **关键机理澄清**（审计中实证）：deploy 前扫描腿按**目录+schema_migrations 台账**独立投递（deploy-lib/db-changelog.sh:241），通道登记只是元数据、不改投递行为；245 共享 PG 上 837-839 早已 applied（竞品修的生产侧证据：838 库函数体 2142B、839-B 含 opts_sql_base 与 0.005），故 2490 部署只实投了缺台账行的 840。本地 dev 库台账另有历史（830-842 区间仅 831），与共享 PG 不可混读。
 - **消重**：main 侧并发会话 18:46 以同方案+更强证据独立修复（0b53b7a0f，837-**841** 五迁移六红）。合并 56b900272 时该文件冲突**取对方版本**（超集），bfc22da00 保留在历史中、内容被取代。
+- **同日复发实录**：约一小时后 main 又落 cbce70a60（迁移 842，自称未部署），依旧未登记——契约门再红（2 条），e2ce7e156 补登。一个下午两波同族红说明该门缺的是「新迁移必登记」的流程位（提交钩子按 staged 域裁剪 + main 侧未跑整树门），不是一次性修复；已入 §6.2 滞后债同族观察。
 - **结果**：契约门 standalone exit 0；`go test ./sql/migrations/startup/` 全过；Go 侧无镜像钉桩需同步（grep 证据，830 式双侧钉仅适用于 channel_gap 豁免类）。
 
 ## F4 web 桌面端门缩水
@@ -93,4 +94,6 @@ web 完整 build = export-menu-config + element-import-audit + ui-audit --strict
 | 56b900272 | merge origin/main（通道竞品修 0b53b7a0f + 基准价判据 + runbook） |
 | 2ad7b6282 | merge origin/feat（移动端 95-98 批，纯新增 API 层） |
 | 67141ca69 | §3.1 首跑两红收口：快照同步 + integration 标签树编译断裂根修 |
+| de688318b | merge origin/main（迁移 842 + runbook 订正） |
+| e2ce7e156 | 842 通道补登（F3 同族复发实录，见上） |
 | 本文档 | docs/audit/2026-10-07-merge-deploy-round-critical-audit.md |
