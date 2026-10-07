@@ -122,6 +122,21 @@
   #decoy-trunc-hard { width: 96px; }
   #decoy-trunc-hard .val { color: #111; text-overflow: clip; }
 
+  /* collide 场景：两个长公共前缀的名字落进同一个窄槽（§4.6.76） */
+  .collide-box { width: 220px; color: #111; }
+  .collide-box .row { padding: 2px 0; }
+  .collide-box .nm {
+    display: block;
+    width: 20ch;                 /* 见 s-collide 注释：可见字符数须落在 [16,26] 的正中 */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* rtl 变体：溢出边在行首 ⇒ 保住**末尾**。
+     ⚠️ `text-align: left` 不可省：`direction: rtl` 会把默认对齐翻成行尾，
+     那样**未截断**的名字会整体右移（真机实测 0px → 31.6/46/86.1px）。 */
+  .collide-box .nm.rtl { direction: rtl; text-align: left; }
+
   /* ── 顶栏遮挡类（§4.6.69 修的那个恒真假阳性）───────────────────
      复刻真实形态：`.topbar` 是 **sticky**（不是 fixed），且 `--app-safe-top`
      会把它顶高。真机 2.0 读数：headless top=48px 时栏内按钮 top=−0.5（刚好躲过
@@ -306,6 +321,55 @@
   <div id="decoy-trunc-hard" class="trunc-card">
     <span>硬裁切非省略号</span>
     <div class="val">8,888,888,888</div>
+  </div>
+</div></template>
+
+<!-- ── collide：同一列表里两个不同名字截断后显示成同一串（§4.6.76）────
+     ★ 这条场景存在的原因是**逐条判不出来**：
+       两个名字需要的宽度不同、被吃掉的比例也不同，但落在同一个槽里，
+       显示的是**同一个串**。每一条单独看都还「可见过半」⇒ 只有两两比较才看得见。
+     ★★★ 槽宽是这个场景的全部难点，踩过一次坑：
+       第一版给 46px ⇒ 两条各自都「吃掉 73%」⇒ **旧判据先报成 medium**，
+       新判据根本没被单独验到（自测立刻报出 8 条失败）。
+       ⇒ 正控必须**隔离出被测的那条判据**：每条都要「可见过半」（否则旧判据先中），
+         同时可见部分**落在公共前缀之内**（否则两条本来就不同）。
+       公共前缀 26 字符、全名 31 字符 ⇒ 可见字符数须落在 [16, 26]，
+       `20ch` 落在正中，且用 `ch` 而非 px ⇒ 换字体度量也不会跑出这个窗口。 -->
+<template id="s-collide"><!--filler--><div><span>a</span><span>b</span><span>c</span><span>d</span><span>e</span><span>f</span><span>g</span></div>
+<div class="wrap">
+  <div id="plant-trunc-collide" class="collide-box" data-plant="text-truncated">
+    <div class="row"><span class="nm">zephyr-production-cluster-west</span></div>
+    <div class="row"><span class="nm">zephyr-production-cluster-east</span></div>
+  </div>
+  <!-- 正控②：★ rtl 专用的正控，**专门防判据退回 LTR 假设**。
+       判据的可见串用「逐字符几何、落在盒子里才算绘制」，对 ltr/rtl 都成立。
+       若哪天有人把它改回「从第 0 个字符起能放几个」，这里就抓得到：
+       这两个名字**开头不同、结尾相同**，rtl 下都只显示结尾 ⇒ 应当碰撞；
+       而 LTR 算法量出来的是开头（`west-…` vs `east-…`）⇒ 判为「不冲突」⇒ 判据漏报。 -->
+  <div id="plant-trunc-collide-rtl" class="collide-box" data-plant="text-truncated">
+    <div class="row"><span class="nm rtl">west-zephyr-production-cluster</span></div>
+    <div class="row"><span class="nm rtl">east-zephyr-production-cluster</span></div>
+  </div>
+  <!-- 负控：rtl 下**可见部分**就不同 ⇒ 不算碰撞（防过度报） -->
+  <div id="decoy-collide-rtl-distinct" class="collide-box">
+    <div class="row"><span class="nm rtl">zephyr-production-cluster-west</span></div>
+    <div class="row"><span class="nm rtl">zephyr-production-canary-east</span></div>
+  </div>
+  <!-- 负控：同名重复**不是**「无法区分」，确实一样就没什么可区分的。
+       ⚠️ 名字必须**确定会被截断**才有承重能力：第一版用 21 字符的
+       `identical-model-name`，在 20ch 槽里量到并未溢出 ⇒ 压根没进扫描面
+       ⇒ 把判据里的同名去重删掉，自测**照样全绿**（变异 M2 没转红）。
+       所以这里刻意加长，确保它是「已截断且同名」。 -->
+  <div id="decoy-trunc-same" class="collide-box">
+    <div class="row"><span class="nm">identical-model-name-abcdefgh</span></div>
+    <div class="row"><span class="nm">identical-model-name-abcdefgh</span></div>
+  </div>
+  <!-- 负控：不同容器里的同名不算冲突（分组只在同一列表内比较） -->
+  <div id="decoy-trunc-crossbox-a" class="collide-box solo">
+    <div class="row"><span class="nm">cross-box-shared-name-abcdefgh</span></div>
+  </div>
+  <div id="decoy-trunc-crossbox-b" class="collide-box solo">
+    <div class="row"><span class="nm">cross-box-shared-name-abcdefgh</span></div>
   </div>
 </div></template>
 
