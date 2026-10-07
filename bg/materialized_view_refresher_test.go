@@ -163,7 +163,7 @@ func newDistLockForTest(t *testing.T) distlock.Manager {
 // never calls SetDistLock, preserving the pre-2026-09-01 contract.
 func TestMaterializedViewRefresher_DistLockNilFallsBackToAdvisory(t *testing.T) {
 	refresher := NewMaterializedViewRefresher(nil)
-	require.Nil(t, refresher.acquireDistLock(context.Background()),
+	require.Nil(t, refresher.acquireDistLock(context.Background(), mvRefreshDistLockLogical),
 		"no distLock wired must yield a nil handle so callers fall back to advisory lock")
 }
 
@@ -174,7 +174,7 @@ func TestMaterializedViewRefresher_DistLockNilFallsBackToAdvisory(t *testing.T) 
 func TestMaterializedViewRefresher_DistLockDisabledManagerFallsBack(t *testing.T) {
 	refresher := NewMaterializedViewRefresher(nil)
 	refresher.SetDistLock(distlock.NewRedisManager(nil))
-	require.Nil(t, refresher.acquireDistLock(context.Background()),
+	require.Nil(t, refresher.acquireDistLock(context.Background(), mvRefreshDistLockLogical),
 		"a disabled distlock.Manager must yield a nil handle so callers fall back to advisory lock")
 }
 
@@ -191,12 +191,12 @@ func TestMaterializedViewRefresher_DistLockLeaderElection(t *testing.T) {
 	r2.SetDistLock(mgr)
 
 	ctx := context.Background()
-	h1 := r1.acquireDistLock(ctx)
+	h1 := r1.acquireDistLock(ctx, mvRefreshDistLockLogical)
 	require.NotNil(t, h1, "first acquirer should get a handle")
 	defer h1.Release(ctx)
 	require.True(t, h1.IsLeader(), "first acquirer should be elected leader")
 
-	h2 := r2.acquireDistLock(ctx)
+	h2 := r2.acquireDistLock(ctx, mvRefreshDistLockLogical)
 	require.NotNil(t, h2, "second acquirer should get a handle (follower)")
 	defer h2.Release(ctx)
 	require.False(t, h2.IsLeader(), "second acquirer must not also be leader — token-bucket has exactly one redeemer per cycle")
@@ -213,14 +213,14 @@ func TestMaterializedViewRefresher_DistLockReleaseFreesToken(t *testing.T) {
 
 	r1 := NewMaterializedViewRefresher(nil)
 	r1.SetDistLock(mgr)
-	h1 := r1.acquireDistLock(ctx)
+	h1 := r1.acquireDistLock(ctx, mvRefreshDistLockLogical)
 	require.NotNil(t, h1)
 	require.True(t, h1.IsLeader())
 	h1.Release(ctx)
 
 	r2 := NewMaterializedViewRefresher(nil)
 	r2.SetDistLock(mgr)
-	h2 := r2.acquireDistLock(ctx)
+	h2 := r2.acquireDistLock(ctx, mvRefreshDistLockLogical)
 	require.NotNil(t, h2)
 	defer h2.Release(ctx)
 	require.True(t, h2.IsLeader(), "next cycle's Acquire must be able to win the token once the previous leader released it")
@@ -240,7 +240,7 @@ func TestMaterializedViewRefresher_RefreshAllSkipsWhenFollower(t *testing.T) {
 	// guaranteed to observe a follower handle.
 	holder := NewMaterializedViewRefresher(nil)
 	holder.SetDistLock(mgr)
-	holderHandle := holder.acquireDistLock(ctx)
+	holderHandle := holder.acquireDistLock(ctx, mvRefreshDistLockLogical)
 	require.NotNil(t, holderHandle)
 	require.True(t, holderHandle.IsLeader())
 	defer holderHandle.Release(ctx)
