@@ -22,7 +22,8 @@
 export function layoutAudit() {
   const I = { url: location.href, vw: innerWidth, vh: innerHeight, dpr: devicePixelRatio, issues: [], stats: {} }
   const de = document.documentElement
-  const MIN_TAP = 44 // iOS HIG 44pt / Android 48dp 取小的那个，两边都不破
+  const MIN_TAP = 44   // iOS HIG 44pt —— **只用于无可见文字的图标类**目标（方形）
+const MIN_TAP_H = 48 // 本仓 R1：新增触控控件一律 ≥48 CSS px。与 scripts/verify-touch-targets.mjs 的 TARGET 同源，见下方 ② 的说明。
 
   function path(el) {
     if (!el || el === de) return 'html'
@@ -110,18 +111,36 @@ export function layoutAudit() {
     const hit = el.closest('label,button,a,[role="button"]')
     const target = hit && hit !== el ? hit : el
     const hr = target.getBoundingClientRect()
-    if (hr.width < MIN_TAP || hr.height < MIN_TAP) {
+    const txt = (el.innerText || el.textContent || '').trim()
+    // ★ 方案 A（2026-10-07，doc 10 §4.6.55）：**判据与仓门对齐**，不再各自一套。
+    //   本仓两条并存的规则此前从没对过账：
+    //     · `scripts/verify-touch-targets.mjs`：TARGET=48，**只量 min-height**
+    //       （依据 17 §4-R1「新增控件一律 ≥48 CSS px；44px 是存量下限」）
+    //     · 本模块此前的 MIN_TAP=44：**宽高都量**（依据「iOS 44 / Android 48 取小者」）
+    //   两者因此对同一批 chip 给出相反读数（本模块红、仓门绿），
+    //   而 `/m/heatmap` 的 1h/1d 两个 chip 被本模块挂了四节。
+    //   ⇒ 改成：**图标类**（无可见文字）才量方形 44×44；**文字类**只量高度 48，
+    //     因为文字 chip 的宽度由标签长度决定（「1h」两个字符），
+    //     要求它 ≥44 是本仓从未采纳过的约束。
+    //   依据核对：WCAG 2.2 SC 2.5.8 的 AA **规范下限是 24×24**（面积 2040 vs 576 远超），
+    //   Apple 44pt / Material 48dp **都是指南不是规范**，本仓 R1 要 min-height ≥48。
+    const iconLike = txt.length === 0
+    const tooSmall = iconLike
+      ? (hr.width < MIN_TAP || hr.height < MIN_TAP)
+      : (hr.height < MIN_TAP_H)
+    if (tooSmall) {
       small.push({ sel: path(el), w: Math.round(hr.width), h: Math.round(hr.height),
+        rule: iconLike ? `图标类 <${MIN_TAP}×${MIN_TAP}` : `文字类 高度<${MIN_TAP_H}`,
         via: hit && hit !== el ? path(target) : undefined,
-        own: r.width < MIN_TAP || r.height < MIN_TAP
+        own: (iconLike ? (r.width < MIN_TAP || r.height < MIN_TAP) : (r.height < MIN_TAP_H))
           ? `${Math.round(r.width)}×${Math.round(r.height)}` : undefined,
-        text: (el.innerText || el.textContent || '').trim().slice(0, 20) })
+        text: txt.slice(0, 20) })
     }
   })
   I.stats.smallTargets = small.length
   if (small.length) {
     I.issues.push({ kind: 'tap-target', sev: 'medium',
-      detail: small.length + ' 个可点元素 < ' + MIN_TAP + 'px', items: small.slice(0, 12) })
+      detail: small.length + ' 个可点元素不足（图标类 <44×44 / 文字类 高度<48）', items: small.slice(0, 12) })
   }
 
   // ── ③ 文字与背景几乎同色（看不见的字）────────────────────────
