@@ -13687,3 +13687,128 @@ AssertionError: expected [ '__teethProbe', …(30) ] to deeply equal [ 'boardOpe
   10 次的 `Tests` 行**条数全程一致 = 6792**，无 `×` / `FAIL` 行。
   ⇒ `ComplianceHitsView.spec.ts` / `RoutingOptView.spec.ts` 两个历史 flaky 本批**未复现**
   ⇒ ★ 按连跑器自己的口径：**未复现 ≠ 已修复**，只是这次没抓到。
+## 11.138 两个模块讲同一个端点，而**孤儿那个才是对的**（第一百零二批，2026-10-08）
+
+### ★★★★★★★★ 本批是一次**查账**，不是接线；查出来的是一条线上缺陷
+
+原计划是接线 `nodeHealthTimeline`（孤儿清单里、且正落在用户点名的「节点状态」线上）。
+动手前按惯例先确认它是不是真孤儿 —— 结果发现：
+
+| | `src/api/nodeHealth.ts` | `src/api/nodeHealthTimeline.ts` |
+|---|---|---|
+| 体量 | 115 行 | **453 行** |
+| 导出 | 6 个 | **30+ 个** |
+| 判据文件 | ★ **没有** | `nodeHealthTimeline.test.ts`（27 KB） |
+| 取数方式 | `req<NodeRecoveryTimelineResponse>` **裸强转，零校验** | `req<unknown>` + **`unwrapNodeRecoveryTimeline`** |
+| 被谁引用 | **`NodeHealthView.vue`（线上在跑）** | **没人（孤儿）** |
+
+⇒ 两者打**同一个端点** `/api/admin/node-health/{id}/timeline`。
+⇒ ⇒ ★★★★ **孤儿那个才是对的，被用的那个是裸的。**
+⇒ ⇒ ★★★ 第七十三批那 27 KB 判据，一直挂在一个没人用的模块上。
+
+### ★★★★★ 查出来的线上缺陷：成功的**强制恢复**被渲染成失败徽章
+
+`admin/node_health.go:81-88` 的 `mapProbeRunToEvent` 只产生**三个**值：
+
+```go
+eventType := "failed"
+if row.Success {
+    eventType = "recovered"
+    if row.TriggerKind == "credential_recovery" { eventType = "reconnected" }
+}
+```
+
+⇒ `reconnected` 是 `row.Success` 的**子分支** ⇒ 它是**成功**事件，
+且**只在「强制恢复」触发时出现**（`trigger_kind = 'credential_recovery'`，模块头里的
+`NODE_TIMELINE_FORCE_RECOVERY_TRIGGER` 正是它）。
+
+而 `nodeHealth.ts` 旧实现写的是：
+
+```ts
+return e.event_type === 'recovered' || e.event_type === 'recovery' || e.event_type === 'healthy'
+```
+
+⇒ ★★★★ `recovery` / `healthy` **后端根本不产生**，而真正会出现的 `reconnected` **恰恰漏掉**。
+⇒ ★★★ 后果链：`NodeHealthView.vue:128` 直接 `badge--${eventTone(e)}` ⇒
+**一次成功的强制恢复显示成 warning / danger。**
+⇒ ★★ 为什么没被发现：**这个文件一个判据都没有。**
+
+### ★★★ 同一个错在第三个地方
+
+`credentialHeatmap.test.ts` 里也有 `eventTone` 的用例，用的是
+`'broke'` 与 `'probing'` —— 同样**后端不产生**。
+它们之所以能过，只是因为旧实现对**任意非恢复值**都落进同一分支。
+⇒ 类型门在收窄类型后当场把它们报出来（`TS2322`），改夹具为真值时补了一条 `reconnected` 护栏。
+
+⇒ ★★★★ **同一个端点的 `event_type` 值域，本仓一度有三份互相矛盾的写法**，
+而**被类型门抓住的是唯一没写过判据的那两处**。
+
+### 本批的处理：不是「接线」也不是「删一份」，而是**让薄的去调厚的**
+
+`nodeHealth.ts` 改写成薄适配器：
+- `fetchNodeHealthTimeline` = 本地 id 校验 + `req<unknown>` + **`unwrapNodeRecoveryTimeline`**；
+- `isRecoveryEvent` / `eventTone` 按后端三值重写；
+- 类型改为 re-export 厚的那个模块的；
+- 视图层便利函数（`buildSince` / `credentialIdOf` / 三个常量）**保留** ——
+  `NodeHealthView.vue` 按这些名字引，且厚的那个没有 1:1 对应物（`eventTone` 尤其没有）。
+
+⇒ ★★★ 于是两份**互相矛盾**的契约合并成一份，孤儿也顺带变成被引用者。
+
+### ★★★★ 改这个适配层时，判据当场抓到我自己写的一个错
+
+第一版把 id 转成字符串再传给校验函数：
+
+```ts
+const id = String(Math.trunc(credentialId ?? 0))
+const invalid = nodeTimelineCredentialIdInvalid(id)   // ← 该函数判的是 typeof id !== 'number'
+```
+
+⇒ ★★★★ **每次取数都被本地误拒**，`fetchNodeHealthTimeline(42)` 永远 reject。
+⇒ 是判据 `★ 完整响应被解出` 与另外 10 条当场抓到的。
+⇒ ★★★ 又一次：「复用一个模块的函数」不等于「复用了它的契约」——
+入参类型是契约的一部分，而**跨模块调用时它不会自己跳出来提醒你**。
+
+### ★★★★★ 棘轮门自己也有盲区，而且盲区恰好落在本批要修的那件事上
+
+§11.136 那道门的第一版口径是「**只看直接引用，并跳过整个 `src/api/`**」。
+本批正是靠 **API 层内部的委托**消解副本的 ⇒ 在那个口径下**计数一点不降**。
+
+⇒ ★★★★★ 改成**从 UI 出发的传递可达性**：
+种子 = 被 UI 文件直接 import 的模块，再沿 api 模块之间的 import 边做闭包。
+⇒ 这样 api 内部的互相引用**不会凭空产生可达性**（种子不从那里起，
+第九十九批那个假阳性仍然被挡住），而**真正的委托会被算进去** —— 两个问题一次性解决。
+
+★ 改完立刻发现**量具自己的第二个盲区**：`importsOf` 原来只认 `@/api/<name>`，
+而 **api 模块之间用的是 `./<name>` 相对形式** ⇒ 委托边完全不可见。
+补上相对形式之后，`transport`（经 `client.ts` ⇒ 每个 api 模块都依赖它）
+**一直就是可达的** —— 我第一版把它误报成了孤儿。
+⇒ ⇒ ★★★★ **量具的第一版口径同时有「太宽」和「太窄」两个方向的错**，
+而两者都不会让门变红，只会让它安静地给出错误的清单。
+⇒ 孤儿 **30 → 28**（`nodeHealthTimeline` 与 `transport` 两条修正）。
+
+★ 已加一条**反向护栏**：断言 `turnsFilterOptions` / `storageMigrationState` 仍在孤儿集合里 ——
+若有人把 api 内部互相 import 也当成种子，第九十九批的假阳性就会回来。
+
+### 关于那个跨租户缺陷：本批没有接线，所以**没有把它放到 tenant_admin 面前**
+
+`nodeHealthTimeline.ts` 文件头 (1) 记着：这条端点**完全没有租户过滤**
+（`admin/node_health.go:183-184` 只有 `credential_id` 与 `started_at` 两个条件），
+而注册是 `admin` 档 ⇒ **tenant_admin 能查任意 credential_id 的完整探测时间线**
+（含 `reason_code` 与 `note`）。
+
+⇒ ★★★ 本批把两个模块合并成一份，但**没有新增抽屉席**，
+所以**这个已知缺陷仍然完全未被移动端用户触及** —— 合并是净收益，不是新增暴露面。
+⇒ 若将来要接 UI，席应设 `requiresRole: 'super_admin'`（前端严于后端），
+并把这条限制写在界面上而不是只写在文件头。
+
+### 验证
+
+- 新增判据 **34 条**（`nodeHealth.test.ts`）全绿。
+- ★★★ **有牙验证**：把旧 bug 原样注入回去
+  （`return e.event_type === 'recovered'`），**恰好 3 条转红**且都是 `reconnected` 那三格；
+  还原后回绿。
+- ★★ 顺带把 `credentialHeatmap.test.ts` 的两处假值改成后端真值并补一条护栏。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6829 条（168 文件）** rc=0（较上批 6792 正好 +37）。- 十连跑 **10/10 全绿**（`/tmp/co102-stability.log`），终止标记 `总次数 10 · 失败次数 0 · 快照 0 份`，
+  10 次的 `Tests` 行**条数全程一致 = 6829**，无 `×` / `FAIL` 行。
+  ⇒ `ComplianceHitsView.spec.ts` / `RoutingOptView.spec.ts` 两个历史 flaky 本批**未复现**
+  ⇒ ★ 按连跑器自己的口径：**未复现 ≠ 已修复**，只是这次没抓到。

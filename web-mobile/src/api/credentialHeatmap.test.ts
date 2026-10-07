@@ -191,12 +191,18 @@ describe('eventTone', () => {
   it('恢复类事件是 success', () => {
     expect(eventTone({ credential_id: '1', event_type: 'recovered', occurred_at: '' })).toBe('success')
   })
+  // ★ 后端 admin/node_health.go:84-88 只产生 failed / recovered / reconnected；
+  //   原先这里写的是 'broke' 与 'probing' —— 两个**后端根本不产生**的值，
+  //   它们能通过只是因为旧实现的判定对任意非恢复值都落到同一分支。
   it('带 reason_code 是 danger', () => {
     expect(
-      eventTone({ credential_id: '1', event_type: 'broke', occurred_at: '', reason_code: 'E_UPSTREAM' }),
+      eventTone({ credential_id: '1', event_type: 'failed', occurred_at: '', reason_code: 'E_UPSTREAM' }),
     ).toBe('danger')
   })
   it('其余是 warning', () => {
-    expect(eventTone({ credential_id: '1', event_type: 'probing', occurred_at: '' })).toBe('warning')
+    expect(eventTone({ credential_id: '1', event_type: 'failed', occurred_at: '' })).toBe('warning')
+  })
+  it('★★ reconnected 是 success（★ 与 nodeHealth.test.ts 同一格，两处都要钉）', () => {
+    expect(eventTone({ credential_id: '1', event_type: 'reconnected', occurred_at: '' })).toBe('success')
   })
 })
