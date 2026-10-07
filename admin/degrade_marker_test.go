@@ -155,6 +155,14 @@ var degradeMarkerOutOfScope = map[string]string{
 	"bg/modality_verification.go": "recordProbeLedger 的 42P01 是 bg worker 台账写入降级：" +
 		"once-Warn 留痕+跳过写入，核实循环继续，无 200+空载荷；" +
 		"与 routing_health_checks 的 Optional 纪律同源（本文件注释自证）",
+
+	// 2026-10-07（R50 96h 审计轮登记，站点由并行 840 轮引入）：analyze 节流槽
+	// claim 失败（非 42P01）⇒ Warn 留痕后整趟 return——bg worker 降级，
+	// 无 HTTP 载荷可标；「缺表（840 未应用）⇒ 照常执行」的兄弟分支是
+	// 840 .down.sql 的目标行为，不是降级。降级形状由
+	// bg/analyze_throttle_840_realdb_test.go 与文件内注释把守。
+	"bg/partition_manager.go": "analyze 节流槽 claim 失败 ⇒ Warn 留痕+跳过本趟，" +
+		"是 bg worker 降级，无 200+空载荷；缺表分支按 840 设计照常执行（非降级）",
 }
 
 // markerPatterns 是「这个载荷带降级标记」的判定。

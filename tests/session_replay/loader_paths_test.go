@@ -12,7 +12,12 @@ func TestLoadAllFallsBackToManifestDirectory(t *testing.T) {
 	if err := os.WriteFile(sessionFile, []byte(`{"session_meta":{"id":"session-a"},"turns":[]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	manifest := `{"session_files":[{"session_id":"session-a","file":"/tmp/session_export/sessions/session_a.json"}]}`
+	// manifest 指向一个不存在的绝对路径（导出机上的布局），LoadAll 应回退到
+	// manifest 所在目录取同名文件。用「临时目录下必然不存在的子目录」构造
+	// 绝对路径：写死 /tmp/... 在 Windows 上 filepath.IsAbs 恒 false，回退
+	// 分支永不触发（2026-10-07 跨平台修正，语义不变）。
+	missing := filepath.Join(dir, "not_exported_here", "session_a.json")
+	manifest := `{"session_files":[{"session_id":"session-a","file":"` + filepath.ToSlash(missing) + `"}]}`
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +38,9 @@ func TestLoadAllKeepsExistingExplicitPath(t *testing.T) {
 	if err := os.WriteFile(external, []byte(`{"session_meta":{"id":"session-b"},"turns":[]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	manifest := `{"session_files":[{"session_id":"session-b","file":"` + external + `"}]}`
+	// filepath.ToSlash：Windows 反斜杠路径直接嵌 JSON 会产生非法转义
+	// （\U/\T），ToSlash 后正反斜杠文件系统都能打开。
+	manifest := `{"session_files":[{"session_id":"session-b","file":"` + filepath.ToSlash(external) + `"}]}`
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}

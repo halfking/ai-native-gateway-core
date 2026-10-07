@@ -83,6 +83,35 @@ func TestMobileSPAResponsesCarrySecurityHeaders(t *testing.T) {
 	}
 }
 
+// 行为面（2026-10-07 审计补）：裸 /maintain（无尾斜杠）由 maintain_proxy.go
+// 的 mux.Handle("/maintain", ...) 精确注册，前缀条目 /maintain/ 不匹配它。
+// A1 根修后挂载进链，若 auth bypass 名单只有 /maintain/ 而无 /maintain，
+// 全局 API key 部署下裸 /maintain 401 missing_key（/m 有 exact 条目，此条
+// 漏配）。
+func TestMaintainRootPathBypassesGlobalAuth(t *testing.T) {
+	t.Setenv("MAINTAIN_SERVICE_URL", "") // 强制 proxy-disabled 分支：/maintain 是确定性不可用页
+	maintain := newMaintainGatewayHandler(http.NotFoundHandler(), nil)
+	mobile := mobileStaticForTest(t)
+	inner := newMobileGatewayHandler(maintain, mobile)
+	h := chainForTest(t, inner)
+
+	for _, path := range []string{"/maintain", "/maintain/"} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code == http.StatusUnauthorized {
+				t.Fatalf("%s 被 auth 中间件 401 —— bypass 名单缺裸 /maintain 条目（2026-10-07 审计回归）", path)
+			}
+			for _, hdr := range []string{"X-Frame-Options", "X-Content-Type-Options"} {
+				if rec.Header().Get(hdr) == "" {
+					t.Fatalf("%s 响应缺 %s —— 挂载不在安全头链内", path, hdr)
+				}
+			}
+		})
+	}
+}
+
 // 行为面：/m-assets 静态资产同样必须带安全头（同链）。
 func TestMobileAssetsCarrySecurityHeaders(t *testing.T) {
 	mobile := mobileStaticForTest(t)
