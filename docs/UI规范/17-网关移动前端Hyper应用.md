@@ -11727,3 +11727,131 @@ GET `/api/admin/v1-data-horizon`
 
 local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
 `web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
+
+## 11.123 订阅档与每档模块（第八十七批，2026-10-08）
+
+GET `/api/admin/tiers`
+
+- ★★★★★ **注册机制与本仓绝大多数端点不同**：它**不在** `admin/handler.go` 的
+  `mux.HandleFunc` 里，而在 **echo 的 group** 上：
+  - `cmd/gateway/main.go:6964`　`adminGroup := e.Group("/api/admin", requireSuperAdmin)`
+  - `cmd/gateway/main.go:6966`　`licensing.RegisterModuleRoutes(adminGroup, licensingStore)`
+  - `licensing/admin_api.go:33-36`　`mh.RegisterRoutes(g)`
+  - `licensing/module_api.go:22`　`g.GET("/tiers", h.ListTiers)`
+
+  ⇒ ★★★ **这是本仓第三种注册机制**（前两种：`admin/handler.go` 的 mux、
+    `cmd/gateway/main.go:7070` 附近的 requestJourney 一族）。
+  ⇒ ★★★ **只 grep mux 会把「已注册」误判成「死端点」** —— 本批取证时
+    先看到 `SubscriptionTierInfo` 在 Go 侧不存在、`/api/admin/tiers` 不在
+    `handler.go` 里，几乎按批 81 的「`//nolint:unused` 死端点」下结论，
+    **再查 echo group 才发现它活着**。
+  ⇒ ★★ 中间件是 `requireSuperAdmin` ⇒ **superAdmin 档**（tenant_admin 403）
+  ⇒ 抽屉席须设 `requiresRole: 'super_admin'` 并同步 `AppDrawer.spec.ts` 白名单。
+- **实现**：`licensing/module_api.go:64-98`；类型 `licensing/types.go:149-155`；
+  查询 `licensing/store_pgx.go:686-691` / `:708-711`。
+
+### 本族最要紧的十三件事
+
+1. ★★★★★ **内嵌 struct 的 JSON 是**扁平**的**，不是嵌套。
+   `:80-83` 是匿名内嵌：
+
+   ```go
+   type tierWithModules struct {
+       SubscriptionTier            // 内嵌，无 json tag
+       ModuleKeys []string `json:"module_keys"`
+   }
+   ```
+
+   ⇒ Go 把**匿名内嵌**的字段**平铺**到同一层 ⇒ 响应是
+   `{code, name, description, price_cents, sort_order, module_keys}` **六键同层**，
+   **不是** `{tier:{…}, module_keys:[…]}`。
+   ⇒ ★ 客户端若按 `row.tier.code` 读，会全盘 `undefined` 而**不报错**。
+2. ★★★★ **响应是顶层裸数组**（`:97` `c.JSON(200, result)`），
+   而 `result := make([]tierWithModules, 0, len(tiers))`
+   ⇒ **无订阅档时是 `[]` 而不是 `null`**。
+3. ★★★ 六键**恒在**（五个内嵌字段与 `module_keys` 都无 omitempty）。
+4. ★★★★ **`module_keys` 在「该档没有模块」时被显式补成 `[]string{}`**（`:87-90`）：
+
+   ```go
+   keys := modulesByTier[t.Code]
+   if keys == nil { keys = []string{} }
+   ```
+
+   ⇒ ★★★ 作者刻意兜底 ⇒ **该键恒为数组，永不为 `null`**
+   ⇒ ★ 与「nil slice ⇒ JSON `null`」（批 84 的 `coverage.grain_dates`）相反。
+5. ★★★★★ **`module_keys` 的顺序未定义** —— `ListTierModuleMaps`
+   （`store_pgx.go:708-711`）的 SQL **既无 `ORDER BY` 也无 `WHERE`/`LIMIT`**
+   ⇒ PG 不保证返回行序 ⇒ 客户端**绝不能**按顺序取元素。
+   ⇒ ★★ 对照：tiers 主查询**有** `ORDER BY sort_order`（`:690`）
+   ⇒ **行顺序是定义的，组内顺序不是**。
+6. ★★★★ **`module_keys` 内部无重复** —— 表上有
+   `PRIMARY KEY (tier_code, module_key)`
+   （`deploy/sql/schemas/baseline/01-schema.sql:22468-22469`）
+   ⇒ 「无序」不等于「可重复」：**顺序未定义、元素唯一**。
+7. ★★★★★ **`enabled` 列存在，但 SELECT 根本没取它** ——
+   表定义 `enabled boolean DEFAULT true NOT NULL`（`:16835`），
+   而 SELECT（`:688`）只取 `code, name, description, price_cents, sort_order`。
+   ⇒ ★★★ **被停用的订阅档也会出现在响应里**，且客户端**看不到 `enabled`**
+   ⇒ 这是「**不可见的过滤维度**」。
+   ⇒ ★★ 与批 85 的 `catalog`（WHERE `status IN (…)` **主动排除** `hidden`）
+     正好相反：那次的过滤是**端点主动做的**，这次的过滤**根本没有发生**
+     （端点连那一列都没读）。
+8. ★★★★ **`max_features` 被 SELECT 了但被丢弃** ——
+   `ListTierModuleMaps` 取了 `COALESCE(max_features,'')`，
+   Go 侧存进 `TierModuleMap.MaxFeatures`，而 `tierWithModules` **没有这个字段**
+   ⇒ 响应里**没有** `max_features` ⇒ 客户端拿不到模块配额上限，是**信息损失**。
+9. ★★★★★ **错误体形状与 `admin` 包不同** ——
+   `licensing/internal_error.go:36-39` 返回 `{"error": op}`（**字符串**），
+   而 `admin` 包的 `writeError` 是 `{"error":{"detail":msg}}`（**对象**）
+   ⇒ ★★★ 本仓**第四种错误体形状** ⇒ 错误映射**不能**跨包复用。
+10. ★★ 两条 500 文案各不相同：`list tiers failed` / `list tier module maps failed`
+    ⇒ 客户端**可区分**是哪一步失败。
+11. ★★ `description` / `price_cents` / `sort_order` 在表上都是 `NOT NULL`
+    ⇒ 三键恒非 null；`description` 可为空串。
+12. ★★ `code` 有 UNIQUE 约束（`:22353-22356`）⇒ 数组内 `code` 唯一。
+13. ★★ 该端点**不按租户隔离**（读的是全局 `subscription_tiers`）。
+
+**校验边界**：解包器校验**顶层是数组** + 每项六个恒在键与类型 + `module_keys` 元素类型；
+**刻意不提供**「`module_keys` 顺序是否有序」这条判据 ——
+写它就是**恒真判据**，正确做法是不做断言并在调用方注释里写明「顺序未定义」。
+
+### 验证
+
+- 用例 **53 条全绿**（`web-mobile/src/api/subscriptionTiers.test.ts`）。
+- 变异 **28 条 = 27 有牙 + 1 可证等价**（`/tmp/mut-co87.mjs`，`RESTORED=OK`）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **5505 条（150 文件）** rc=0。
+
+### 变异验证暴露的判据缺陷（28 条 → 首跑 23 有牙，修到 27）
+
+首跑 5 条 STILL_GREEN，**归因四类**：
+
+1. **★ 变异写法本身引入了语法错误（1 条，#6）—— 新形态。**
+   #6 要删掉顶层守卫，我的 `to` 顺手补了一句 `const arr = resp as unknown[]`，
+   而原文下面**已经有一行** `const arr = resp`
+   ⇒ 注入后**重复声明** ⇒ 整个文件解析失败
+   ⇒ vitest 只报 `FAIL … test.ts [`（收集失败），**没有任何用例标题**
+   ⇒ harness 的 `__COLLECT_FAIL__` 兜底抓到了「整体挂了」，但锚点匹配不到
+   ⇒ 记成 STILL_GREEN。
+   ⇒ ★★ 这是「注入标记 ≠ 变异」的**第五种形态**：(a) `to` 只追加不替换、
+     (b) `from` 不唯一改错位置、(c) `from`/`to` 只差注释、
+     (d) `to` 是恒等变形、**(e) `to` 破坏了语法**。
+   ⇒ ★ 修法：`to` 只做「删掉那几行」，**不补任何替代声明**。
+2. **样本选歪 2 条（#7 / #24）。**
+   | 变异 | 锚点那格为什么同答案 | 补的专格 |
+   |---|---|---|
+   | #7 `requireObject` 放过数组 | 元素是**字符串**，`typeof` 本来就拦住 | 补「**元素本身是数组**」（与批 85 的 #16 同一条纪律，同一处再犯一次） |
+   | #24 `IsFlat` 去掉「没有 tier 包装层」 | 嵌套样本**连顶层 code 都没有** ⇒ 前一项先失败 | 补「**两层都有 code，只有 tier 包装层能区分**」 |
+
+   ⇒ ★★ 形态二：「**更早的一项先失败**」⇒ 补专格时要让**前面的项都为真**，
+     只让被测项单独决定结果。
+3. **锚点指错 1 条（#25）。** `IsFlat` 改成恒真，锚点却指到「六键同层 ⇒ true」那条
+   —— 那条用合法扁平行，恒真后仍 true ⇒ 改指「**嵌套形状 ⇒ false**」。
+4. **可证等价 1 条（#27）。** `description === ''` 改成 `!description`：
+   `description` 的可达集合是 `{任意非空串, 空串}`（表列 NOT NULL ⇒ 无 null/undefined）
+   ⇒ 空串两边都 true、非空串两边都 false ⇒ **可证等价**
+   ⇒ 保留与后端形状对齐的写法 + 注释写明理由。
+
+### 收尾
+
+local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
+`web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
