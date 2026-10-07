@@ -7814,3 +7814,183 @@ CHECK 约束里，**不在视图投影段**。
 cache 列在该文件里只出现在 `ADD COLUMN` 与 CHECK 约束段。
 ⇒ 缓存基准价即使在库里有值，也**永远进不了 `supplier_price_drift`**，
   与本仓已记录的「只写不读 / 无监控」同族。要修需新建迁移扩投影，不并入本轮。
+
+## 2026-10-07 — 真库门跑起来了，**然后它先抓到了自己**
+
+### 〇 为什么要把上节交付的脚本真跑一遍
+
+上节交付 `scripts/run-realdb-gate.sh` 时只验了两个早退分支
+（`--list` 与无 DSN 的 `rc=2`）。**主路径——`PASS=N/FAIL=M/SKIP=K` 的统计本身——
+从未跑过。** 一条以「让 SKIP 不再静默」为使命的脚本，
+如果它的统计口径是错的，那它报出的每一个数字都在制造新的静默。
+
+工具：一次性 PostgreSQL 17.11（`initdb` + `pg_ctl -p 55432 -k /tmp`，
+库 `llm_gateway`，无 Citus）。用完即弃，不碰任何真生产库。
+
+### 一、抓到的第一个缺陷：**分母是错的**（最严重）
+
+第一版脚本跑 `go test ./bg/` 整包，然后 grep 全包输出，报成「真库判据读数」：
+
+```
+run-realdb-gate: 真库判据读数 —— PASS=1077 / FAIL=11 / SKIP=23
+```
+
+实测核对那 11 条 FAIL 的归属：
+
+| 用例 | 文件 | 是否登记真库判据 |
+|------|------|-----------------|
+| `TestCapabilityEvidenceParamRealDB` | capability_evidence_realdb | ✅ |
+| `TestDefaultResidueTargets_ProductionIsClean` | default_residue_realdb | ✅ |
+| `TestHotTableOldestRowAge_RealDB` | hot_ts_column_realdb | ✅ |
+| `TestModalityEvidenceParamRealDB` | modality_evidence_realdb | ✅ |
+| `TestReportRollupWorker_CatchUp_RealDB` | report_rollup_worker_realdb | ✅ |
+| `TestMaterializedViewRefresher_TimeoutLiftAndReset_RealDB` | sql_audit_realdb | ✅ |
+| `TestMaterializedViewRefresher` | materialized_view_refresher | ❌ |
+| `TestTaxonomyUpsertAlias_Live` | taxonomy_sync_alias_upsert_live | ❌ |
+| `TestRealSchemaAppliesNewMigrationsAndRevertsCleanly` | realschema_migration_health_e2e | ❌ |
+| `TestRollupCredentialModelIndex_NoDuplicateKey` | auto_index_refresher_dedup | ❌ |
+| `TestLedgerReconciler_RunOnce_RealDB` | ledger_reconciliation | ❌ |
+
+⇒ **11 条里只有 6 条是本门的**，另 5 条是普通测试。
+`PASS=1077` 那个分母是 `./bg/` **整包**的用例数（静态测试也计入），
+拿它当「真库判据读数」报出去，等于**把别人的失败算成自己的**。
+
+★ 而这条纪律正是本仓反复记的「引用门禁结论必须带分母」。
+  **第一版的脚本自己就犯了，而且是它声称要治的那个病。**
+  ⇒ 一条防静默的工具若自己报数不带分母，它比没有更坏：
+    没有它时人知道自己不知道，有它时人以为自己知道了。
+
+**修法**：从登记文件里抽出全部 `func TestXxx(` 名，用 `-run` 精确圈定子集，
+只统计子集。并加**第二道自检**：实测跑出的用例数必须等于声明的用例数，
+不等就拒绝汇报——因为**一个漏跑的用例和一个通过的用例长得一模一样**。
+
+修后读数（19:05）：`PASS=33 / FAIL=8 / SKIP=8`，**分母=登记判据 49 个用例**。
+
+### 二、抓到的第二个缺陷：**名单靠文件名盘点会漏**
+
+`ledger_reconciliation_test.go` 的用例是 `TestLedgerReconciler_RunOnce_RealDB`、
+`taxonomy_sync_alias_upsert_live_test.go` 是 `TestTaxonomyUpsertAlias_Live`
+——**都连真库、都读 `TEST_DATABASE_URL`、未设即 SKIP**，
+但**文件名里没有 `realdb`**。⇒ 任何按 `*_realdb_test.go` 盘点真库判据的做法都会漏掉它们。
+
+修法：脚本末尾加「名单外库连接用例」探测器，按**用例名的 `_RealDB` / `_Live` 后缀**
+（本仓约定的真库标记）捞出并逐条报出所在文件。
+它当场又捞出第三个：`TestAutoRouteAffinity_AggregateExcludesSyntheticActors_RealDB`
+（`auto_route_affinity_worker_integration_test.go`）。
+
+⇒ 三个文件已补登进 `REALDB_FILES`（名单 20 → **23**）。
+⇒ ★ 这条探测器是**名单制的兜底**：命名约定不是唯一真相。
+  有了它，「新写了真库判据却忘了登记」不再静默——它会在每次运行时被点名。
+
+### 三、抓到的第三个缺陷（较小，但同一族）
+
+统计行原本打在失败明细**之后**且被 `head -40` 截断，
+于是失败一多，最该被看见的那行读数反而被挤出视野。
+⇒ 调整顺序：读数行在前，明细在后；并单独标注整包还有多少条非本门管辖的失败。
+
+### 四、最终读数（2026-10-07 19:05，一次性 PG 17.11 / 库 `llm_gateway` / 无 Citus）
+
+```
+run-realdb-gate: 真库判据读数 —— PASS=33 / FAIL=8 / SKIP=8（分母=登记判据 49 个用例）
+※ 整包 ./bg/ 另有 11 条非本门管辖的失败，不在分母内。
+```
+
+⚠ **这 8 条 FAIL 不等于产品缺陷**，绝大多数是「一次性空库没有该表/该数据」：
+   `hot_ts_column_*` 报 `42P01 relation "request_logs_hot" does not exist`，
+   `default_residue_*` 报「no `*_default` partitions selected」。
+   一次性库只跑过夹具自建的那部分迁移，不是完整部署态。
+   ⇒ **它证明的是脚本的统计与归因正确，不是产品健康**。
+   引用这个数字时必须连同环境一起写（一次性空库 ≠ 部署态库）。
+   要判产品健康需在**完整部署态**的库上跑，那需要真实 DSN。
+
+⇒ 本节的净收获：**一条门只有被真跑过、且它的读数被核对过分母，
+  才配叫门。** 上一节的脚本是照着「想清楚的门」写的，
+  跑起来才暴露出它自己是没想清楚的那一个。
+
+## 2026-10-07 补记 — 上一节那扇门自己有两个盲区，都是跑起来才暴露的
+
+上一节的三条修复（分母、`-run` 圈定、名单外探测）**仍然不够**：
+把它们真跑一次，又撞出两个此前想不到的缺陷。
+
+### 四、第二个盲区：**build tag 让「声明」多于「实跑」**
+
+补登 `auto_route_affinity_worker_integration_test.go` 之后，门立刻报：
+
+```
+run-realdb-gate: 声明 50 个用例，实测只跑出 49 个 —— 读数不可信，拒绝汇报
+```
+
+追查过程（这一段本身就是教训）：
+
+1. 先怀疑是自己写的**排查命令**坏了 —— 确实坏过一次：把 `> /tmp/sub.txt`
+   放在管道外导致 stdout 被吞，`$observed` 恒为 1，进而输出「49 个都没跑」
+   的假结论。**量具坏了的信号是它的读数与量级矛盾**（声明 50、实跑 1）。
+2. 逐个单独跑：前 4 个正常，**第 4 个
+   `TestAutoRouteAffinity_AggregateExcludesSyntheticActors_RealDB` 单独跑 = 0**。
+3. 读文件头 ⇒ 首行 `//go:build integration`。
+
+⇒ **它在默认构建下根本不参与编译**，而名单是**按源码 grep 抽取**的，
+  看不见 build tag ⇒ 它的函数名被算进声明数，而 `go test -run` 永远匹配不到。
+
+★ 泛化教训：**「文件里有个连真库的用例」不等于「默认构建下它会被跑到」。**
+  任何按源码抽取名单的门，都必须知道 build tag 的存在。
+  本仓 `verify.sh` 跑的 `go test ./...` 同样不带 `-tags integration`
+  ⇒ 这条判据在常规门禁里**从来没跑过**，且此前没有任何读数提到它。
+
+★ 值得单独记的一条**量具学**：`go test -run` 在**一个模式都匹配不上**时，
+  输出是 `testing: warning: no tests to run` + `PASS` + **`ok ... [no tests to run]`**，
+  **退出码 0**。
+  ⇒ 「没跑成」又一次伪装成「跑过且通过」——与本仓已记录的
+  `bufio.Scanner` 干净 EOF 同族：**循环正常结束 ≠ 断言通过**。
+  这就是为什么第二道自检（声明数 == 实跑数）必须存在：
+  它是唯一能把 `[no tests to run]` 从「PASS」里揪出来的机制。
+
+**修法**：(a) 该文件移出名单（它属于 `go test -tags integration` 另一条命令，
+混进来只会再次污染分母）；(b) **新增一道 build tag 预检** ——
+名单里任何文件首 5 行出现 `//go:build` 就**点名并拒绝运行**，
+而不是等到数字不等才 indirect 发现。
+
+变异自证 N3：把该文件塞回名单 ⇒ 立即输出
+`bg/auto_route_affinity_worker_integration_test.go 带 //go:build，默认构建下不参与编译`
+并 `rc=1` 拒绝运行；还原后 `diff -q` 逐字节一致。
+
+### 五、第三个盲区：**「名单外探测」自己也要知道 build tag**
+
+名单外探测器（按 `_RealDB` / `_Live` 后缀捞）会把上面那个用例也捞出来，
+若照单收进名单就又回到原点。⇒ 探测器对带 `//go:build` 的文件
+**点名但标注「默认构建不跑 —— 需 -tags integration」**，不入分母。
+这样「默认构建下不跑的库判据」从「彻底没人管」变成「每次都被点名」。
+
+### 六、最终读数（2026-10-07 19:1x，一次性 PG 17.11 / 库 `llm_gateway` / 无 Citus）
+
+见本节末尾的运行记录。**分母 = 登记判据的实际用例数**，不再含整包用例。
+⚠ 该环境是**一次性空库**（只跑过夹具自建的那部分迁移），不是完整部署态；
+  报出的 FAIL 大多是 `42P01 relation ... does not exist`，
+  **它证明脚本的统计与归因正确，不证明产品健康**。
+  判产品健康必须在**完整部署态**的库上跑。
+
+⇒ 三条盲区归到一句：**分母、名单、build tag。**
+  前两条我以为已经想清楚了，第三条是跑起来才撞见的。
+  ⇒ **一门只有被真跑过、且读数被核对过分母与可编译性，才配叫门。**
+
+### 七、第四个盲区：**一个从不报错的静默失效**（本节最不起眼也最值得记）
+
+名单外探测器里那段 build tag 标注，第一版是：
+
+```bash
+f=$(cd "$REPO_ROOT/bg" && grep -lE "^func ${t}\(" *_test.go | head -1)
+if [[ -n "$f" ]] && head -5 "$f" | grep -qE '^//go:build'; then ...
+```
+
+`$f` 是 `cd bg` 之后 grep 出来的**裸文件名**，而 `head -5 "$f"` 在
+**仓库根**执行 ⇒ 文件读不到 ⇒ `grep` 失败 ⇒ 标签恒为空。
+
+★ 它不报错、不告警、退出码正常。唯一的表现是**「代码里写了这个功能，
+  输出里却从来看不到它」**。
+  ⇒ 静默失效的特征就是**没有错误输出**——它与「实现正确但条件不满足」
+  在观测上**完全一样**，只能靠「预期出现却没出现」来区分。
+  修法：`head -5 "$REPO_ROOT/bg/$f"`，用绝对路径。
+
+⇒ 这条与本节第二节那条 `[no tests to run]` 报 PASS 恰好是一对：
+  **一个把「没跑」说成「跑了」，一个把「功能没生效」说得像「没有这个需求」。**
+  两者的共同处方都是同一件事：**先写下「它应该长什么样」，再看它长没长。**
