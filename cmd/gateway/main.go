@@ -5368,6 +5368,12 @@ func main() {
 			// but do not wire it into the live request path.
 			statsMinuteRollup = bg.NewStatsMinuteRollup(dbConn.Pool())
 			statsMinuteRollup.Start(context.Background())
+			// 探测排除的历史回填（superAdmin 端点）：
+			// POST /api/admin/dashboard/rollup/rebuild
+			// 游标只前进，已聚合的分钟不会被重算，存量脏数据只能靠它修正。
+			if adminHandler != nil {
+				adminHandler.SetStatsMinuteRebuilder(statsMinuteRollup)
+			}
 
 			slog.Info("CHECKPOINT: after weeklyPeakRollup.Start")
 			slotSuggester = bg.NewSlotSuggester(dbConn.Pool())

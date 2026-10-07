@@ -1744,6 +1744,10 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 		}
 	}
 	pm.analyzePartitionStats(ctx)
+	// 841（2026-10-07）：月度分区族的 DROP 保留清扫。
+	// 放在 promote cycle 尾部 ⇒ 与「保证当月分区存在」同一条 tick，
+	// 但**独立降级**：841 未应用 / 配置表为空 ⇒ 一个分区都不会被删。
+	pm.dropExpiredMonthlyPartitions(ctx)
 }
 
 // hotTableBacklogRows counts remaining rows in a spec's hot table. The
@@ -1916,6 +1920,49 @@ func (pm *PartitionManager) analyzePartitionStats(ctx context.Context) {
 	if n > 0 {
 		slog.Info("partition_manager: analyze stats", "tables", n)
 	}
+}
+
+// dropExpiredMonthlyPartitions sweeps monthly partitions that are past the
+// retention configured in public.llm_gateway_partition_retention (migration
+// 841). DROP, never DELETE — measured dead-tuple ratios on these families are
+// ~0%, so DELETE reclaims nothing (runbook §10.106.13).
+//
+// ★ The config table ships EMPTY, so this is a no-op until someone INSERTs a
+// per-family retain_months row. That keeps the mechanism deployable without
+// baking in a retention policy, which is a business decision.
+// ★ Missing table/function (841 not applied, or after .down.sql) degrades to
+// "do nothing" for the same reason 840's slot claim does.
+func (pm *PartitionManager) dropExpiredMonthlyPartitions(ctx context.Context) {
+	if pm == nil || pm.db == nil {
+		return
+	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	var dropped []string
+	err := pm.db.QueryRow(timeoutCtx,
+		"SELECT llm_gateway_drop_expired_month_partitions()",
+	).Scan(&dropped)
+	if err != nil {
+		if isUndefinedTable(err) || isUndefinedFunction(err) {
+			slog.Info("partition_manager: partition retention table missing (migration 841 not applied?) — skipping sweep")
+			return
+		}
+		slog.Warn("partition_manager: partition retention sweep failed (non-fatal)", "error", err)
+		return
+	}
+	// ★ Info, not Debug: "expired partitions existed but were not dropped" and
+	// "nothing was expired" must both be visible when auditing (§10.107.1).
+	slog.Info("partition_manager: monthly partition retention sweep",
+		"dropped", len(dropped), "partitions", dropped)
+}
+
+// isUndefinedFunction reports whether err is a Postgres 42883
+// (undefined_function). 841 can be rolled back while the table survives
+// (or vice versa), so the sweep must handle both codes independently.
+func isUndefinedFunction(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "42883"
 }
 
 // resolvePromoteConfig returns the retention interval and batch size for
