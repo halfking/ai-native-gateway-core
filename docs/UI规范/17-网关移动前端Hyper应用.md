@@ -6556,3 +6556,5413 @@ COALESCE(detail, '{}'::jsonb)
 **下一批候选**：MaaS settings（PUT）/ model-rates 写、routing-opt proposals 决策、
 pending-responses DELETE、request-anomalies resolve、tenants 创建/更新
 （以上按既有口径都属于写操作，本仓继续不碰；需要另找只读面）。
+
+### 11.84 免费资源自动发现读面上移（第四十八轮，`admin/free-discovery`）
+
+本批把 `free-discovery` **整族 7 条只读 GET** 上移 —— 这是全仓路由差集扫描（472 注册 / 449 已覆盖 / 23 未覆盖）
+定位到的**唯一一整族未上移的只读面**。六个写端点（建模板 / PUT / PATCH / 删模板 / scan / import /
+import-orbi）一律不碰。
+
+- 新 API 模块 `web-mobile/src/api/freeDiscovery.ts`（七条**各自独立**解包，不抽通用解包器）
+- 新视图 `FreeDiscoveryView.vue`（五个面板：模板 / 预设 / 任务列表 / 任务详情与结果 / 调度器）
+- 新路由 `/free-discovery`
+- 新增**一条 admin 档抽屉席** `free-discovery`（**故意不设** `requiresRole`）
+- i18n 新命名空间 **`fd`**（101 个 `fd.*` + 1 个 `nav.freeDiscovery`）
+- 门禁：变异 **52/52 有牙**，用例 **160 条**（96 API + 64 视图）
+
+#### ★★★★★★ 头号缺陷一：任务列表的 `updated_at` **恒为 Go 零值**
+
+`domains/freediscovery/discovery_engine.go:460-464`（`ListTasks`）：
+
+```go
+SELECT id, tenant_id, template_id, provider_code, status, trigger_type,
+       COALESCE(triggered_by,''), started_at, completed_at,
+       COALESCE(error_message,''), models_found, models_imported, created_at   ← ★ 没有 updated_at
+FROM discovery_tasks ORDER BY created_at DESC LIMIT $1
+```
+
+而同一个结构体、同一个表的 `GetTask`（`:408-412`）**有**这一列：
+
+```go
+       COALESCE(error_message,''), models_found, models_imported, created_at, updated_at
+```
+
+⇒ ★★★★★★★★★★ **`GET /tasks` 里每个任务的 `updated_at` 恒为 `"0001-01-01T00:00:00Z"`**，
+而 **`GET /tasks/{id}` 给的是真值**。
+⇒ **同字段、同名、同结构体、两个端点、两个值、都 200。**
+
+`scanTemplate` 走的是**同一份列清单**（`template_manager.go:401-438`，`Get` 与 `List` 共用），
+所以**模板面没有这个病** —— 只有任务面有。这正是「不能从一个端点外推到另一个端点」的一例。
+
+处置：页面在列表里**不显示** `updated_at`，改为常驻一条免责说明 + 每行一个
+`data-fd="updated-at-unreadable"` 标记节点；详情端点才显示真值。
+判据同时钉住两侧（列表里出现零值时间 ⇒ 红；详情里被说成「读不出来」⇒ 红）。
+
+#### ★★★★★★ 头号缺陷二：「空列表」在本族有**两种表示**
+
+| 端点 | 代码 | 空的时候 |
+|---|---|---|
+| `templates` | `free_discovery.go:121-123` `if tpls == nil { … }` | `[]` |
+| `tasks` | `:383-385` `if tasks == nil { … }` | `[]` |
+| `results` | `:439-441` `if results == nil { … }` | `[]` |
+| **`presets`** | **`:218` `var out []presetView`** | **`null`** |
+
+⇒ ★★★ 同一个 handler 文件里四条列表端点，**三条做了 nil-guard、一条没做**。
+⇒ 客户端**不能统一按数组处理**：`presets` 为 `null` 是合法响应，必须**原样保留那个 null**
+（降级成 `[]` 就丢掉了「后端没兜底」这条信息）。页面分别渲染 `data-fd="presets-null"` 与
+`data-fd="presets-empty"` 两个**不同节点、不同文案**。
+
+#### ★★★★★★ 头号缺陷三：**按方法分档**（又一条「不能按路径判权限」）
+
+`admin/handler.go:1302-1309`：
+
+```go
+mux.HandleFunc("GET  /api/free-discovery/templates",      h.admin(h.handleFreeDiscoveryTemplates))
+mux.HandleFunc("POST /api/free-discovery/templates",      h.admin(h.handleFreeDiscoveryTemplates))
+mux.HandleFunc("GET  /api/free-discovery/templates/{id}", h.admin(h.handleFreeDiscoveryTemplateByID))
+mux.HandleFunc("PUT  /api/free-discovery/templates/{id}", h.admin(h.handleFreeDiscoveryTemplateByID))
+…
+```
+
+★ 同一个 handler、同一条路径，GET 注册为 `h.admin`，写方法也注册为 `h.admin` ——
+但 handler 内每个写分支开头都有 `RequireSuperAdminForWrite(w, r)`（`free_discovery.go:127 / 170 / 186`）
+⇒ **GET 是 admin 档，POST/PUT/PATCH/DELETE 是 superAdmin 档。**
+⇒ 抽屉席（读面 admin）**不设** `requiresRole`；但同路径的写操作 tenant_admin 拿到 **403**
+`tenant_admin has read-only access; write operations require super_admin`。
+
+#### ★★★★★★★ 头号缺陷四：super_admin 看到的**不是全部租户**
+
+`free_discovery.go:100-103` → `admin/context.go:60-65`：
+
+```go
+func EffectiveTenantID(r *http.Request) string {
+    if IsTenantAdmin(r) { return GetTenantID(r) }
+    return "default"
+}
+```
+
+⇒ ★★★★★★★ **super_admin / legacy admin_key ⇒ `"default"`，只有这一个租户。**
+本仓存在 `EffectiveTenantIDAll`（`admin/context.go:69-74`，返回 `""` = 查全部），
+但**这条线没有用它** ⇒ 又一条「按角色判可见范围会判反」的陷阱。
+
+#### ★★★★★★ 头号缺陷五：两种「scheduler 不存在」是**两种表示**
+
+- `h.scanSchedulerStatus == nil` ⇒ **503** `scan-scheduler is not available`（`free_discovery.go:84-87`）
+- 接口里装着 typed-nil `*ScanScheduler` ⇒ `Status()` 走 `bg/scan_scheduler.go:509-511`
+  返回 `ScanSchedulerStatus{Enabled: false}` ⇒ **200** + `interval:""` + 全 0 计数 + **无 `last_error`**
+
+⇒ ★★ `interval === ""` 是 typed-nil 分支的**唯一指纹**（真 scheduler 至少有 `"0s"`）。
+⇒ ★★★ 而且它是全族**唯一不查 `fdDeps`** 的端点 ⇒ **六条都在 503 的同时它可以 200**。
+
+#### ★★★★ 方法检查与依赖检查的顺序不一致
+
+`presets` 是**唯一 405 在 503 之前**的（`:202-208`），其余五条都是先 `fdDeps(w)` 再判 method。
+
+#### ★★★★ `limit` 是**回落 50 而不是 clamp 到 200**（本仓第 11 种限幅语义）
+
+`discovery_engine.go:445-449`：
+
+```go
+// ListTasks lists the tenant's tasks (newest first; limit capped at 200).   ← ★ 注释说 capped
+func (e *DiscoveryEngine) ListTasks(ctx context.Context, tenantID string, limit int) ([]*DiscoveryTask, error) {
+    if limit <= 0 || limit > 200 { limit = 50 }                             ← ★ 实现是回落 50
+```
+
+- `200` **合法**（就是 200）；**`201` ⇒ 50**（不是 200）
+- `limit, _ := strconv.Atoi(...)`（`free_discovery.go:375`）**丢弃 error** ⇒ `?limit=abc` ⇒ 0 ⇒ 50
+
+⇒ **注释与实现不符**。页面在用户填的值被静默改写时显式提示，并复刻生效值。
+
+#### ★★★★ `?status=` 未知取值**不被拒**
+
+`:429-432` 空 ⇒ 默认 `"pending"`；`discovery_engine.go:519` `status != "" && status != "all"` ⇒ 加 `AND import_status=$2`
+⇒ `?status=bogus` ⇒ **200 + 空数组**，与「没有 pending 结果」**分不开**。
+
+#### ★★★ 其余六条已查实的契约
+
+1. **`enabled` 只认字面 `"true"`**（`:115` `== "true"`）⇒ `"1"`/`"TRUE"`/`"yes"` ⇒ **过滤关闭，返回全部**
+2. **`DiscoveryTask.template_id` 是 `*int64` 且没有 `omitempty`**（`types.go:152`）⇒ 键**恒存在**，
+   模板被删后（`ON DELETE SET NULL`）是 **JSON `null`** ⇒ 按 `typeof === 'number'` 校验会**拒掉合法形状**
+3. **`DiscoveryResult.tenant_id` 不来自 DB**：`ListResults` 的 SELECT（`:512-517`）**没有这一列**，
+   Go 侧 `r.TenantID = tenantID`（`:544`）用**请求者的租户**回填
+4. **四个 0 全是二义**（`COALESCE(…,0)`）：`context_window` / `max_tokens` / `monthly_tokens` / `daily_tokens`
+   ⇒ **对照**：`free_type` 的 `''` **不是**二义 —— `CHECK (free_type IN (…7 值…))`（084 迁移 `:107-110`）
+   **不允许 `''`** ⇒ `''` **唯一**对应 SQL NULL ⇒ 反而是确定的「推断不出」
+5. **`ProviderTemplate.APIKeyEncrypted` 是 `json:"-"`**（`types.go:93`）⇒ 密文**从不下发**；
+   而 `HasCredential()`（`:111-113`）还看 `len(APIKeyEncrypted) > 0`
+   ⇒ ★★★ **客户端算不出这个谓词**：`api_key_env === ''` 同时意味着「无认证」和「有密文但没 env 引用」
+6. **两条 404 的 detail 形状不同**：模板 = sentinel 原文（**不带 id**，`template_manager.go:148`）；
+   任务 = `fmt.Errorf("%w (id %d)")`（`discovery_engine.go:424`）⇒ **带 `(id 42)`**
+7. `presetView`（`:209-217`）**丢了 `tos_url`** ⇒ `ProviderPreset` 有 `TosURL`，但**客户端永远拿不到预设的条款链接**
+8. **两个 `omitempty` 键**：`last_scan_failure_at` / `auto_disabled_at` ⇒ **条件存在，缺失 ≠ null**
+9. **同族两个 500 文案**：`templates` GET 直接 `writeInternalErr`（`:118`）⇒ `internal error (see server logs)`；
+   另外五条走 `writeFDErr` ⇒ `free discovery request failed`
+
+#### ★★★★ 变异验证：首轮 44/52，分诊出 **6 条真等价变异 + 1 条 expect 指错 + 1 条判据缺口**
+
+**★ 真等价变异（6 条，全部是产品里的死代码）**
+
+V14–V19 都是「抛错时不清空」。第一版只删 `catch` 分支那一行 ⇒ **仍全绿**。
+实测确认：六个 loader 的 `ref.value = null` 都写在 **`try` 之前**，
+所以 `catch` 分支里那行是**死代码** ⇒ 行为不变 ⇒ **等价变异，不是判据无牙**。
+⇒ 改成「**两处都删**」后 6 条全部有牙（失败后旧数据真的留在屏幕上）。
+
+★ 这是第四十七轮 §82.10 那条结论的**独立复现**（不同文件、不同视图）。
+⇒ 「变异后仍绿先证明该变异可观测」这条纪律，第二次拦下了一个会被误判成「判据无牙」的结论。
+
+**★ 判据缺口（1 条，已补）**
+
+A9 把「任务详情解包」换成「先套列表信封再取第一项」⇒ **仍全绿**。
+因为抛错时机一样、只是**错误文案里的端点名**从 `tasks/{id}` 变成了 `tasks`。
+⇒ 补一条钉住端点名的断言后转红。
+⇒ ★ 这类「把 A 端点实现换成 B 端点实现」的变异，只有**断言错误文案的来源**才抓得到。
+
+**★ expect 串指错（1 条，已改）**
+
+A31 让 `scanSchedulerMissingMessage` 也认 `free-discovery is not available (...)`
+⇒ 确实转红了，但命中的是「六条 deps 端点的 503 文案」那条（它断言 scheduler 判据对 deps 文案为 false），
+而我写的 expect 指向了另一条只断言反方向的用例。
+⇒ ★★ **转红但未命中预期用例名 ≠ 缺陷**，要读具名红再判归属，不能直接当「判据缺口」处理。
+
+**注入自身**
+
+- Vue 模板里一律用 `data-mut="MUT-<id>"` 带标记（属性位不允许 JS 注释，见第四十七轮 §11.83）
+- `--dry` 模式先验 52 条注入全部匹配上（`注入匹配 52/52`）**才**跑用例 —— 纪律要求「当场验证匹配数」
+
+#### ★★ 视图用例的三个断言纪律（本轮新踩）
+
+1. **★ 含 `{占位符}` 的 i18n 值不能整串匹配渲染文本** ——
+   渲染后占位符已被替换成实参，字面量对不上。首轮 **10 条失败里 8 条**栽在这。
+   ⇒ 修法：取第一个 `{` 之前的**字面量部分**做前缀断言（`head()` helper），仍然不手打文案。
+2. **★ 自造免责文案会把否定断言喂饱** —— 只读说明那句话里就列了「触发扫描 / 批量导入 / 删模板」，
+   于是「页面不该出现写操作词」的全页 `not.toContain` **恒被自己的文案判红**；
+   同理免责文案里写了「（0001-01-01）」，于是「零值时间不该出现」的**全面板**否定断言也恒红。
+   ⇒ 修法：分别落到**按钮文本集合**与 **`.fd__cell-v` 数据格作用域**上。
+3. **★ 面板标题/说明会喂饱面板级 `not.toContain`**（第四十七轮已记，本轮在「零值时间」那条再次确认）
+
+#### 仍未上移
+
+`POST /api/free-discovery/templates`（建模板）、`PUT|PATCH|DELETE /templates/{id}`（改/删模板）、
+`POST /api/free-discovery/scan`（触发扫描）、`POST /api/free-discovery/import`（批量导入）、
+`POST /api/free-discovery/templates/import-orbi`（导入 Orbi 模板，1 MiB 上限）。
+以上按既有口径都属于**写操作**，本仓继续不碰。
+
+**差集里剩下的「候选」已几乎全是写操作。** 真正还没上移的只读面，
+全仓扫描下来只剩 `GET /api/credentials/{id}/models/{model}/state` 一条（档位待查）。
+⇒ **下一批候选**：那一条单端点，或按需扩到 credentials 族的其余只读面。
+
+### 11.85 凭据×模型状态读面上移（第四十九轮，`credentials/.../state`，**superAdmin 档**）
+
+全仓路由差集扫描（472 注册 / 449 已覆盖 / 23 未覆盖）里**最后一条还没上移的只读面**：
+`GET /api/credentials/{id}/models/{model}/state`。同族另外三条是 **superAdmin 档且真的会触发一次探测**
+（有外部副作用）⇒ 一律不碰。
+
+- 新 API 模块 `web-mobile/src/api/credentialState.ts`
+- 新视图 `CredentialStateView.vue`（单面板：查询 + 十格 + 分层说明）
+- 新路由 `/credential-model-state`
+- 新增**一条 superAdmin 档抽屉席** `credential-model-state`（**要**设 `requiresRole`，并同步
+  `AppDrawer.spec.ts` 的白名单）
+- i18n 新命名空间 **`cs`**（47 个 `cs.*` + 1 个 `nav.credModelState`）
+- 门禁：变异 **33/33 有牙**，用例 **79 条**（38 API + 41 视图）
+
+#### ★★ 方向与前几批相反：这一条**要**设 `requiresRole`
+
+`admin/credential_state_handlers.go:174-180`：
+
+```go
+func (h *Handler) registerStateRoutes(mux *http.ServeMux) {
+	wrap := h.superAdmin                                                     // ← ★ 不是 h.admin
+	mux.HandleFunc("POST /api/credentials/{id}/test", wrap(h.handleTestCredential))
+	mux.HandleFunc("POST /api/credentials/test-batch", wrap(h.handleBatchTestCredentials))
+	mux.HandleFunc("POST /api/credentials/{id}/models/{model}/test", wrap(h.handleTestCredentialModel))
+	mux.HandleFunc("GET  /api/credentials/{id}/models/{model}/state", wrap(h.handleCredentialStateQuery))
+}
+```
+
+⇒ 前几批（`free-discovery` / `logs` / `modules` / `session-context`）的抽屉席都**故意不设** `requiresRole`，
+**照抄那条会把这页暴露给租户管理员**。视图用例专门加了一条反向判据：
+前三批的 key 仍**不设** `requiresRole`，本批的 key **必须**设。
+
+#### ★★★★★★★★★★ 头号陷阱一：这一族系列的错误是 **text/plain**，而且**带尾换行**
+
+四个 handler 全部用 `http.Error(w, msg, code)`（`:143 / :158 / :185 / :198`），
+而本仓其它端点用 `writeError(w, code, msg)` ⇒ `{"error":{"detail":msg}}`。
+
+⇒ ★★★★ 响应体是纯文本，**`error.detail` 根本不存在**。
+  移动端 `client.ts` 的 `errorMessage()` 走 `JSON.parse` 失败分支 ⇒ **原样返回整段文本**。
+⇒ ★★★★★★ 而且 `http.Error` 走 Go 的 `fmt.Fprintln(w, error)` ⇒ **追加一个换行符**
+  ⇒ 移动端拿到的是 `"state service not available\n"`
+  ⇒ **任何带 `$` 锚点的正则都匹配不上**，任何 `toBe(原文)` 都失败。
+⇒ ★★★ `admin` 包里 `http.Error` 共 **165 处**、横跨 20+ 文件 ⇒ **不是孤例**，
+  已上移的页面里凡是用 `http.Error` 的端点，其报错文案都带这个不可见字符。
+⇒ 本批所有错误判据一律**不做 `$` 锚点**，并另给 `stripHttpErrorNewline` / `HTTP_ERROR_TRAILING_NEWLINE`。
+
+★ **变异 A17 的分诊（真等价变异 + 「双重保护」）**：
+第一版给 `stateServiceMissingMessage` 加 `$` 锚点 ⇒ **仍全绿**。
+实测发现判据里已经「**先 `stripHttpErrorNewline` 再 `.trim()`**」⇒ 尾换行根本到不了正则面前
+⇒ **等价变异**。改成**两处都拆**（strip 变恒等 + 判据不再 `trim`）后才有牙。
+⇒ ★★ 与第四十八轮的「两处都删」同一形态：**单侧改动被另一侧的防御抵消，就是等价变异**。
+
+#### ★★★★★★★★★★ 头号陷阱二：`state` **可以是 `null`** —— 三层缓存全 miss
+
+`domains/credentialstate/manager.go:738-765`：
+
+```go
+func (m *Manager) GetState(ctx context.Context, credID int, model string) (*State, error) {
+	if state, ok := m.getFromMemCache(key); ok { return state, nil }        // L1 内存
+	if state, err := m.getFromRedis(ctx, key); err == nil && state != nil { … }  // L2 Redis（★err 被吞）
+	state, err := m.getFromDB(ctx, credID, model)                            // L3 DB
+	if err != nil { return nil, err }
+	if state != nil { … }
+	return state, nil          // ★★ state 可能是 nil，且**不报错**
+}
+```
+
+handler（`:152-167`）只判 `err != nil` ⇒ `state == nil` 时照样序列化：
+
+```go
+_ = json.NewEncoder(w).Encode(map[string]any{
+	"credential_id": credID, "model": model, "state": state,   // ← state 是 nil ⇒ JSON null
+})
+```
+
+⇒ ★★★★ 「从没探测过」返回 **200 + `{"credential_id":N,"model":"M","state":null}`**，**不是** 404。
+⇒ 按 `state.available === boolean` 之类校验会**拒掉合法形状**。
+⇒ 视图单列 `data-cs="state-null"` 节点，并且**null 态下不渲染任何数据格**
+  （「没量过」绝不能显示成「可用」）。
+
+#### ★★★★★★★★★★ 头号陷阱三：五条指标在**两条 DB 分支里根本没被赋值**
+
+`cache.go:118-134`（`node_probe_state` 支）只填 7 个字段：
+`CredentialID / Model / Available / ConsecutiveFails / LastUpdatedAt / RecoverAt / Source`。
+`cache.go:144-202`（`model_probe_state` 旧支）只填 5 个。
+
+⇒ ★★★★ `success_rate` / `avg_latency_ms` / `p95_latency_ms` / `active_sessions` / `concurrency_limit`
+  在**两条 DB 分支里都是 Go 零值** ⇒ 序列化成 `0`。
+⇒ ★★★ 而缓存命中时（探测写入的完整 State）它们**有真值**
+  ⇒ **同一个 (凭据, 模型) 第一次查是 0、缓存后再查可能是 0.87**，两次都是 200，
+  **没有任何字段说明差异来自哪一层**。
+⇒ `success_rate === 0` 有**三种**成因（DB 没实现 / 真的是 0% / 从没成功过），分不开。
+
+★ 顺带：`getFromDB` **先查新表 `node_probe_state`，miss 才回退旧表 `model_probe_state`**
+⇒ 同一端点在**新探测模式**与**老部署**下返回的形状可能不同。
+
+#### ★★★★★★★★ 头号陷阱四：两处枚举的**注释是不全的**
+
+| 字段 | 注释（`state.go:15,27`） | 实际还会出现 |
+|---|---|---|
+| `source` | `request, probe_v2, model_probe, passive, manual` | `node_probe_db`（`cache.go:133`）、`db`（`cache.go:199`） |
+| `health_status` | `healthy, warning, degraded, unreachable` | `healthy_confirmed` / `probing` / `available`（`cache.go:184-187`）、**空串**（`cache.go:131-133` 未赋值时） |
+
+⇒ ★★ 按注释建枚举会把**真实取值判成异常**。
+⇒ ★★ `health_status === ''` **不等于「健康」** —— 它表示「没被判为不可达」。
+⇒ ★★ `source` 记的是「**谁写的**」，**不是**「从哪一层读的」⇒ 命中层**不可判**。
+
+#### ★★★★ 静默降级两处
+
+- `manager.go:748` `if state, err := m.getFromRedis(...); err == nil && state != nil`
+  ⇒ ★★★ **Redis 挂掉 / 超时 / 反序列化失败全部被吞掉**，直接落到 DB，无任何信号
+  ⇒ ★★ 因此「500 `failed to get state`」**不会**由 Redis 挂掉引起 —— 客户端看到的只是一次成功的 DB 查询
+- `cache.go:138` `isUndefinedTable(nodeErr)`（PG 错误码 42P01，表不存在）
+  ⇒ ★★★ **表不存在被当作「这一支没数据」**，静默落到旧表
+
+#### ★★★ 时间字段的两处陷阱
+
+- `cache.go:128` `LastUpdatedAt: time.Now()` ⇒ `node_probe` 支的「最后更新」是**查询时刻**，不是探测时刻
+- `cache.go:190-192` `lastAttemptAt` 为 `*time.Time`，为 NULL 时**保持 Go 零值**
+  ⇒ ★★★ `last_updated_at` 可能是 `"0001-01-01T00:00:00Z"`
+  （本仓**第 2 处** Go 零值时间；第 1 处是第四十八轮 free-discovery `ListTasks` 的 `updated_at`）
+- `cache.go:197` `state.RecoverAt = nextRetryAt` 是**值类型** `time.Time`
+  ⇒ 即使是零值也会赋 ⇒ 该 `omitempty` 键在这两条分支里**恒存在**，且可能是 Go 零值
+
+#### ★★ 其余已查实的契约
+
+1. `parseCredentialID`（`:182-189`）：`Atoi` 失败**或** `<= 0` ⇒ 同一句 **400** `invalid credential ID`
+2. `model == ""` ⇒ 400 `model is required`（`:142-145`）——★ **实际不可达**：Go 1.22 的 `{model}` 不匹配空段，
+   而 ServeMux 会先把 `//` 清理掉 ⇒ `/models//state` 被重定向成 `/models/state`
+3. 503 `state service not available`（`:197-199`）；`Enabled() = m != nil && m.db != nil`（`manager.go:899`）
+4. 500 `failed to get state`（`:158`）
+5. 成功响应用 `json.NewEncoder(w).Encode(...)` ⇒ **末尾带换行符**
+6. `State` 是 12 个恒存在键 + **4 个 `omitempty` 键**（`last_success_at` / `last_failure_at` / `recover_at` / `last_error`）
+7. 两条自相矛盾的组合**后端不可能产生**，页面单列成异常上报：
+   `health_status === 'unreachable'` 却 `available === true`（`cache.go:131-133` 两者同时设）；
+   `available === false` 配 `healthy_confirmed/probing/available/healthy`（旧支从不把 `available` 置否）
+
+#### ★★★ 变异验证：首轮 23/33，分诊出 8 条 expect 指错 + 2 条**变异自身写错**
+
+**★ 变异自身写错（2 条，都不是判据问题）**
+
+1. **V1 第一版是个空变异**：只往抽屉席插了一行注释、**没有真删** `requiresRole` ⇒ 行为没变 ⇒ 必然全绿。
+   ⇒ 改成**真删**那一行后转红。★ 这正是「变异注入失败被读成判据无牙」的形态，
+   而 `--dry` 只能验「匹配上了」，**验不出「改了行为」** ⇒ 仍全绿时必须先查变异本体。
+2. **A17 第一版被双重保护**（见上文「头号陷阱一」）。
+
+**★ 8 条 expect 串指错**：转红了，但命中的不是我写的那条用例名 —— 逐条读具名红后改正。
+⇒ ★★ **「转红但未命中预期用例名」≠ 缺陷**，这条纪律本轮又用上 8 次。
+
+**★★ 本批最有价值的一条：`vue-test-utils` 的 `.text()` 会 `trim()`**
+
+V11 把视图里的 `stripHttpErrorNewline(errMsg)` 换成 `errMsg` ⇒ **仍全绿**。
+原因不是等价变异，而是 **DOM 断言根本看不见尾换行**：
+`wrapper.text()` 返回的是 `element.textContent?.trim()`。
+⇒ 修法：断言改读 **`element.textContent`** 原始值（本批已改成 `w.find(...).element.textContent`），
+  并同时保留 `.text()` 断言给可读部分。
+⇒ ★★★ **凡是断言「不可见字符」是否存在，必须绕过工具的规范化，直接读原始 DOM 文本。**
+  同族：不可见字符、零宽字符、大小写折叠、全角半角 —— 都会被工具悄悄规范化掉。
+
+#### 仍未上移
+
+`POST /api/credentials/{id}/test`（单凭据快速探测）、
+`POST /api/credentials/test-batch`（批量快速探测，上限 100）、
+`POST /api/credentials/{id}/models/{model}/test`（按模型手动探测）。
+三条都是 **superAdmin 档且真的会触发一次探测**（有外部副作用）⇒ 本仓继续不碰。
+
+**至此，全仓路由差集里「只读且未上移」的部分已经扫空** ——
+剩下的全部是写操作或有外部副作用的端点。若要继续上移，需要先定「哪些写操作允许在移动端暴露」的策略，
+这属于范围决策，不在「只读面复制」的既定口径内。
+
+---
+
+## 11.86 第五十批：凭据写操作面补测 + `reset-state` 端点首次接入（2026-10-08）
+
+### 起因：一次自查推翻了上一条结论
+
+上一条回复把「强制恢复」列成待决策项，**这是错的**。
+`forceRecoverCredential` 早已实现，`NodesView.vue:244` 有入口、有二次确认、测试里有 mock。
+⇒ **在把某项能力写进「待办/待决策」之前，先 grep 一遍确认它是否真的缺。**
+  凭印象记账会凭空造出一个不存在的缺口，并让用户以为要替他做决定。
+
+本批真正的缺口是另一件事：**`credentialsOps.test.ts` 整个文件只测了一个只读解包函数，
+七个写操作函数一个都没测**，`resetCredentialState` 与 `submitBatchProbe` 更是**零引用**。
+
+### 后端实读：`routing_reset.go` 逐字段
+
+`POST /api/routing/credentials/{id}/reset-state`，注册 `admin/handler.go:946` = **`h.superAdmin`**。
+
+| 位置 | 事实 |
+|---|---|
+| `:56-60` | 405 `method not allowed` |
+| `:62-65` | 400 `id path param must be a positive integer` |
+| `:69-72` | 400 `reason is required for audit trail`（reason 是**审计留痕**，不是备注） |
+| `:37-39` | `raw_model` 空串 = **整凭据**复位 |
+| `:93-96` | ★ `actor` 回退是 `r.RemoteAddr`（**裸 IP**）；对比 `fdActor` 回退 `"legacy-admin-key"` ⇒ **同仓两套回退** |
+| `:98-104` | `beforeAfter` 恒含 5 键：`credential_id` / `raw_model` / `reason` / `endpoint`(恒 `"reset-state"`) / `actor` |
+| `:106-119` | ★★★ 部分失败支 |
+| `:125` | `trigger_probe` 守卫 `req.TriggerProbe && h.probeSubmitter != nil` |
+| `:136-140` | `autoHealOneShot` **独立于** `trigger_probe`，命中才加 `auto_heal_pairs_submitted` |
+| `:146-153` | 真实响应**只有 6 个键**：`message` / `credential_id` / `raw_model` / `actor` / `probe_triggered` / `details` |
+
+★ 移动端原先的 TS 接口是**凭空造的**：写了 `success` / `reset_fields`（后端一个都不发），
+又漏了 `raw_model` / `actor` / `probe_triggered` / `details` 四个。本批按后端逐字段重写，
+并把原先的 `req<ResetStateResult>` **零校验**直传改成逐键校验的 `unwrapResetState`。
+
+### ★★★★★★★★ 缺陷一：`partial_failed` 分支的错误响应里**没有** `details`
+
+```go
+if err := h.applyForceEnable(...); err != nil {
+    if committed { beforeAfter["audit_outcome"] = "partial_failed"; h.logAudit(...) }
+    writeInternalErr(w, "internal error (see server logs)", err)   // ← 5xx
+}
+```
+
+`writeInternalErr` → `writeError` → `{"error":{"detail":"internal error (see server logs)"}}`。
+⇒ **`db_committed` / `audit_outcome` / `details` 一个都不在响应里**，
+客户端拿到的 5xx 与「DB 完全没动」在报文上**逐字节相同**。
+
+推论一：`audit_outcome` 只对**审计消费方**可见，HTTP 客户端永远读不到。
+推论二：**失败必须按 status 分档**，`resetStateOutcomeAmbiguous(status)`：
+- 4xx（400/401/403/404/405）**全部**在 `applyForceEnable` 之前 return ⇒ 能证明「什么都没发生」；
+- 5xx ⇒ 假定「可能已改」；
+- ★ `status === 0`（`client.ts:172` 把传输层失败归一成 `network_error`）与
+  `status === undefined`（`EpochError` / 非 `ApiError`）**同样二义** ——
+  请求可能已到达服务端并落库，只是回程断了。
+  ⇒ **「失败 = 没生效」这个直觉在两个方向都错。**
+
+⚠️ 本批第一版写的判据是 `resetStatePartiallyFailed(msg, details?)`，
+读的是 `details.audit_outcome` —— **那个值在 HTTP 路径上永远拿不到**，是条不可达的判据。
+它「看起来对」是因为读的是后端源码里的字段名，但没追问**该字段是否会出现在响应体里**。
+⇒ 写完判据要追问一句：**这个值在这个调用点上真的可得吗？**
+
+### ★★★★★★ 缺陷二：`probe_triggered` 的 `false` 分不开「没请求」与「请求了但没生效」
+
+后端写的是 `req.TriggerProbe && h.probeSubmitter != nil`。提交器没接线时**静默**降级成 `false`，
+而客户端无从知道后端接没接 ⇒ `resetStateProbeIndeterminate(r, requested)` 必须把
+「请求了却拿到 false」单列为**未能确定**，UI 不能承诺「已触发探测」。
+反向也要守：`probe_triggered: true` 只代表 fire-and-forget 的**已提交**，不代表探测通过
+（提交是 `h.probeSubmitter(credID, m, ...)`，错误不传播）。
+
+三档文案因此必须互斥：`resetProbeSubmitted`（已提交 + 免责句）/
+`resetProbeIndeterminate`（未能确定）/ 空（压根没请求探测）。
+
+### ★★★★★★★ 本轮实抓的**前端**缺陷：await 期间 ref 被清空
+
+现象：`reset-state` 的「未能确定」提示**永远不出现**，尽管请求体里明明带了 `trigger_probe=true`。
+
+链条：
+1. `runConfirmedOp()` 开头 `confirmOpen.value = false`；
+2. `AppConfirm` 随之 emit `update:model-value(false)`；
+3. 视图绑的是 `@update:model-value="(v) => { if (!v) resetOpState() }"`，
+   而 `resetOpState()` 会把 `resetTriggerProbe` 清成 `false`；
+4. ★ **Vue 的响应式 flush 发生在 `await` 期间** ⇒
+   `const r = await resetCredentialState(..., resetTriggerProbe.value)` 的**实参**求值在前（拿到 `true`），
+   回调里 `resetStateProbeIndeterminate(r, resetTriggerProbe.value)` 的**读值**在后（拿到 `false`）。
+
+修法：**在 `await` 之前把值快照成局部变量**，`await` 之后只用快照。
+
+⇒ ★★★ 通则：**`await` 之后再读任何会被「关闭对话框 / 重置表单」清空的 ref，拿到的都是过期值。**
+  同一次 `runConfirmedOp` 里 `reasonText` 有同样的暴露，只是它作为**实参**在 `await` 前求值才幸免。
+  这类缺陷**不会让任何用例变红**（功能看起来「正常地什么都不显示」），
+  只有当判据明确要求那条提示存在时才会暴露 —— 这也是把它写成独立用例的价值。
+
+### 变异验证：37 条，36 有牙 + 1 真等价
+
+| 组 | 条数 | 覆盖 |
+|---|---|---|
+| A 解包与守卫 | 9 | 6 个必填键、details 5 键、类型校验、两个可选键清单 |
+| B 失败分档 | 4 | 5xx / `status===0` / `undefined` / `>=500` vs `===500` |
+| C `probe_triggered` 三义 | 3 | 丢掉 `requested`、恒 false、`!==false` |
+| D 小判据 | 3 | 裸 IP（含 IPv6）、整凭据、空 reason |
+| E 批量上限 | 2 | 不截断、上限挪到 101 |
+| F 其余写操作 URL/body | 4 | `manual_disabled` 键名、clear 专用端点、两处 id 守卫、`raw_model` 缺省 |
+| G 视图 | 9 | **快照回退**、失败分档、reason 必填、角色分档、默认理由、`probe_triggered=true` 分支、`raw_model` 传值、danger 档 |
+| H 文案 | 3 | 二义失败提示、未能确定提示、免责句 |
+
+**分诊（三处真缺口 + 一类变异自身问题）：**
+
+1. **A8 判据缺口（已补）**：`RESET_STATE_DETAIL_REQUIRED_KEYS` 的内容**从未被逐字断言**。
+   而「缺任一个都抛错」那条用例遍历的**就是这个常量本身** ⇒
+   把清单缩短一个键，循环永远不会去试那个键，校验随之变弱而**全绿**。
+   ⇒ 已补 `toEqual([...])`。★ **遍历一个常量的循环，必须另有一条断言钉住那个常量的内容。**
+2. **G9 判据缺口（已补）**：没有任何断言钉住确认框的 `danger` 标志
+   （`AppConfirm.vue:50` 用 `danger ? 'btn--danger' : 'btn--primary'`）
+   ⇒ 不可撤销的审计写入可以静默降级成普通档。已补。
+3. **G8 / A6 / A7 是 expect 串指错**（变异确实转红，只是命中了相邻用例名）⇒ 已改指。
+4. **H1/H2/H3 打在没人读的语种上**：第一版变异改的是 `zh-CN.ts`，而用例断言的是**英文**渲染文本
+   ⇒ 三条全绿，但这既不是等价变异也不是判据无牙，是**变异本体选错了文件**。
+   已切到 `en-US.ts`，三条立刻有牙。
+   ⇒ 判读「仍全绿」时，**先问这个变异改的东西有没有人读**。
+5. **C3 是真等价变异**：`probe_triggered === true` → `!== false`。
+   实跑对照表证明两版只在值不是布尔量时不等价，而 `unwrapResetState` 的
+   `typeof ... !== 'boolean'` 把这批值全部拒掉（该守卫由 **A5 证明有牙**）
+   ⇒ 在 API 层可达域内**恒等**。
+
+### 顺带修掉的自身问题：i18n 门 rc=1
+
+门报 `nodes.confirmResetStateBody`「两侧一致地缺」。真因不是漏写，是我把长文案写成了
+**跨行值**（`key:` 换行再写字符串），而门按单行 `key: 'value'` 解析 ⇒ 判成缺失。
+邻居那些长文案（如 `confirmRecoverBody`）全是单行。⇒ 已改回单行，门 rc=0。
+⇒ ★ i18n 门的 rc=1 要先分清是**「键真的缺」**还是**「值的写法没被解析到」**，
+  两者的修法完全不同；本次是后者。
+
+### 产物
+
+- API：`src/api/credentialsOps.ts` —— `ResetStateResult` 按后端逐字段重写；
+  新增 `RESET_STATE_REQUIRED_KEYS`(6) / `RESET_STATE_DETAIL_REQUIRED_KEYS`(5) /
+  `RESET_STATE_DETAIL_OPTIONAL_KEYS`(3) / `unwrapResetState` /
+  `resetStateOutcomeAmbiguous` / `resetStateProbeIndeterminate` /
+  `resetStateProbeOnlySubmitted` / `resetStateActorLooksLikeIp` /
+  `resetStateIsWholeCredential` / `resetStateReasonMissing`
+- 视图：`src/views/NodesView.vue` —— 新增 `resetState` 动作（superAdmin 档、危险档）、
+  reason 审计输入、`trigger_probe` 勾选位（R1 ≥48px 命中区）、三档探测提示、二义失败提示；
+  `effectiveReason` 的默认理由由三元链改成**全函数映射**
+  （三元链在新增动作时会静默落到别的动作的理由上，审计因此记错）
+- 用例：API 34 条 + 视图 19 条；全量 2820 条（114 文件）
+- 门禁：build / 三门 / `vue-tsc` 全 rc=0；十连跑 10/10
+
+### 仍未上移
+
+`POST /api/credentials/{id}/test`、`POST /api/credentials/test-batch`、
+`POST /api/credentials/{id}/models/{model}/test` 三条快速探测
+—— superAdmin 档且**真的会触发一次探测**（有外部副作用）⇒ 本仓继续不碰。
+`submitBatchProbe` 的**契约层与上限截断**已补测，但**不接 UI 入口**。
+
+---
+
+## 11.87 第五十一批：★ 重建路由差集基线（推翻前几轮结论）+ 路由阻塞诊断
+
+### ★★★★★★★ 本批第一件事：发现前几轮的「只读面已扫空」建立在**坏的量具**上
+
+上一轮结尾写下的基线是「后端注册 472 条 / 移动端已覆盖 449 条 / 未覆盖 23 条」，
+并据此宣布「全仓路由差集里只读且未上移的部分已经扫空」。
+
+本轮按惯例重建清单时，**读数与该基线矛盾了一个数量级**（已覆盖 113 vs 449）。
+按纪律先怀疑量具、不急着采信「又缺了 300 个」，逐层查下去，**是量具坏了**：
+
+| 层 | 缺陷 | 后果 |
+|---|---|---|
+| 1 | 归一函数没剥 Go 1.22 的**方法前缀** | `"POST /api/x"` 永远匹配不上前端路径 |
+| 2 | 后端正则只认 `mux.HandleFunc` | 漏掉 `h.mux.` / `adminMux.` / `r.` 等全部接收者；且只扫了 3 个顶层目录，漏掉 `api/`、`taskprofile/` |
+| 3 | 前端路径正则被 **`${`** 截断 | 模板字面量产出 `/api/admin/maas/orders${s` 这类垃圾条目 |
+| 4 | 分母用错 | 拿「后端注册数」当分母 —— 很多端点**桌面 web 也没用**，根本不是「功能」 |
+
+修好后用**地面实况**校准（6 条逐条 grep 验证）：`audit-logs` / `cache-metrics` /
+`backups` / `auto-route/index` 在移动端**零引用**，而 `monitor-summary` 有 2 处 ——
+读数与事实吻合。
+
+**修正后的对照：**
+
+| 口径 | 数量 |
+|---|---|
+| 后端注册端点 | 450 |
+| **桌面 web 实际调用**（真正的「功能面」） | 394 |
+| 移动端实际调用 | 136 |
+| **桌面有、移动端没有** | **258**（其中 GET 只读 **145**） |
+
+⇒ **「只读面已扫空」是错的。** 只读缺口还有 145 条，工作远未收口。
+
+★★★ 可迁移的教训：
+1. **读数与已知基线矛盾时，先查量具。**「又缺了 300 个」和「基线错了」，
+   前者会让人重新扫一遍，后者才是真相。
+2. **分母要用「谁真的在用」**，不是「注册了多少」。注册了没人调用的端点不是功能面。
+3. **提取器要对样例逐条人工验证**再采信它的汇总数。
+4. ★ **别把上一轮自己的结论当既成事实**。本批第一件事就是重测基线，
+   而它确实是错的。
+
+### 后端实读：`admin/diagnostics_routing.go`（`h.superAdmin`，handler.go:1464）
+
+`GET /api/admin/diagnostics/routing-blocked?provider_id=X`
+后端注释原话：*"credentials look healthy but routing can't find them"*
+—— 判据来自视图 `v_routable_credential_models`，**不是**从 `credentials` 表反推。
+这正是「凭据节点检查」与「路由检查」两条诉求的交汇点。
+
+| 位置 | 事实 |
+|---|---|
+| `:61-64` | 405 `method not allowed` |
+| `:65-70` | 400 `missing or invalid provider_id query parameter` —— 缺失 / Atoi 失败 / ≤0 **三种同一个文案** |
+| `:72` | 10s 超时 |
+| `:90` | `maxBindings = 500`，但 SQL 取 **501** 行用于判定截断 |
+| `:144-147` | ★★★ `truncated = total > 500` ⇒ **`total` 被钳到 500** |
+| `:140-142` | ★ `rows.Err()` 有查（否则静默返回截断列表，方向完全错） |
+| `:119-122` | ★★ `warnRowSkip`：**Scan 失败就跳行**，只写服务端日志 ⇒ 客户端**完全看不到**少了几条 |
+| `:130-133` | ★★ 原因取 `UnavailableReason`，**只在非 nil 时**才换成 `"unknown"` ⇒ 空串会原样落进 breakdown |
+| `:27` | `UnavailableReason *string` + `omitempty` ⇒ NULL 时**整个键消失** |
+| `:168` | ★ `credential_label` 是**拼接值** `name \|\| ':' \|\| COALESCE(provider_name,'unknown')` |
+| `:173-196` | ★★★★★ 凭据状态查询**失败也不报错**，五个字段全落回零值 |
+| `:238-247` | ★★★ `BindingsBlocked = total - routable`，用的是**钳后**的 total |
+
+#### ★★★★★★★ 缺陷：钳位只钳了一半，计数可以自相矛盾到 `blocked` 为负
+
+`total` 被钳到 500，但 `routable` 是**遍历 LIMIT 501 命中的全部行**累加的、**没钳**，
+而 `blocked = 钳后total - routable`。当 501 行里几乎全可路由时：
+
+```
+bindings_total=500  bindings_routable=501  bindings_blocked=-1
+```
+
+★ **子集大于全集，且「被阻塞数」为负。** 截断时逐凭据 `bindings_total` 之和
+（未钳，=501）也必然与顶层（500）对不上。
+
+⚠️ 踩过的坑：我第一版把判据写成 `total !== routable + blocked`。
+**这个等式恒成立**（`blocked` 就是用钳后的 `total` 减出来的），检测不出任何异常 ——
+第一版 22 条里它一条红都没报。真正的判据是**子集 > 全集** `routable > total`，
+或直接看 `blocked < 0`。
+⇒ ★ **写「三个数对不上」的判据前，先问这个等式是不是被构造出来恒真的。**
+
+#### ★★★★★★ 缺陷：凭据状态整段缺失时 `manual_disabled: false` 是**危险错值**
+
+`:173-196` 的 best-effort 设计：状态查询失败只 `slog.Warn`，响应照发。
+后果是 `status` / `availability_state` / `health_status` / `lifecycle_status`
+全为 `""`，且 ★★ `manual_disabled` 变成 **`false`** ——
+**一个真被手动停用的凭据会显示成「未停用」**。
+`credential_label` 至少有回退路径（`:214-217` 用 binding 侧标签），
+但**五个状态字段没有任何回退，也没有任何「未知」标记**。
+
+代码注释自己写明了「否则『凭据状态全空』会被误读成『所有凭据都没有状态』」——
+**但它并没有做任何标记让客户端能识别这件事**。
+⇒ 移动端因此加了两道判据：`routingBlockedStateUnavailable()`（整段）与
+`routingBlockedManualDisabledUnreliable(c)`（逐条），
+UI 显示「状态未知」而不是「正常 / 未停用」。
+
+#### ★★ `unavailable_reason` 的两种「拿不到原因」语义不同
+
+| 形态 | 含义 | 后端行为 |
+|---|---|---|
+| **键不存在** | SQL 里是 NULL | breakdown 记为 `"unknown"` |
+| `"unavailable_reason": ""` | 后端确实存了空串 | breakdown 记为 **`""`（空字符串键）** |
+
+`:130-133` 判的是 `!= nil` 而不是 `!= ""` ⇒ **breakdown 里可能存在一个空字符串键**。
+UI 必须把两者画成不同的文案，合并就丢掉了「原因字段本身是空的」这条线索。
+
+### 移动端实现
+
+- API：`src/api/routingBlocked.ts` —— 三层结构**各自**校验必填键（7 / 11 / 4），
+  **不抽通用解包器**（这个端点的层级各有清单，混进通用函数会丢层）；
+  `unavailable_reason` 与 `truncated` 因 `omitempty` 不进必填清单
+- 视图：`src/views/NodesView.vue` 详情内新增诊断区。★ **按需加载**，
+  不随详情自动拉 —— 最坏 500 条绑定，而详情是随手点开的
+- 权限：`h.superAdmin` ⇒ 入口按角色分档，tenant_admin 看不到
+
+### 变异：36 条 —— 32 有牙 + 3 真等价 + 1 变异本体写错（已修）
+
+| 组 | 条数 | 覆盖 |
+|---|---|---|
+| A 三层解包 | 9 | 顶层 7 键 / 凭据 11 键 / 绑定 4 键、类型校验、三份必填清单 |
+| B 钳位判据 | 6 | 子集>全集、恒真等式、blocked<0、truncated、求和不一致、逐凭据矛盾 |
+| C 状态与原因 | 8 | 整段状态缺失、逐条不可信、空 credentials、原因两义、breakdown 空键 |
+| D 守卫与路径 | 2 | provider_id 守卫、URL 缺 query |
+| E 视图 | 9 | 角色分档、按需加载、截断/矛盾/状态/求和提示、原因两渲染、provider_id 取值 |
+| F 文案 | 2 | 状态不可信提示、空串原因文案 |
+
+**首轮 29/36，分诊后收口到 32 有牙。三类问题分开归因：**
+
+1. **判据缺口 2 处（已补）**
+   - **A5**：此前只钉了「缺键」，**整段顶层类型校验可以被整段删掉而全绿**
+     （`block_reason_breakdown` 传数组、`bindings_total` 传字符串都不报）。
+     ⇒ 已补「键在但类型错」七条断言。★ **缺键与类型错是两种不同的漂移，两条都要钉。**
+   - **C7**：`routingBlockedReasonEmpty` 原有样本用
+     `is_routable: true, unavailable_reason: undefined` ⇒ `=== ''` 本来就是 false，
+     于是「判据不看 `is_routable`」这种变异照样全绿。
+     ⇒ 已补「可路由 **且** 原因为空串」的样本。
+     ★ **样本选得「恰好不触发」时，判据等于没测。**
+
+2. **夹具巧合 1 处（已补负控）**
+   - **E8**：视图把 `loadRoutingBlocked(pid)` 硬编码成 `loadRoutingBlocked(3)`
+     时**全绿** —— 因为夹具的 `provider_id` 恰好也是 3（`WITH_COUNTS`）。
+     ⇒ 已加负控：换成 `provider_id: 7` 的卡片，并显式断言**没有**用 3
+     （3 是全仓最常见的默认供应商 id，硬编码它会让绝大多数用例照常通过）。
+     ★ **变异选的值必须与夹具无关，否则测的是巧合。**
+
+3. **变异本体写错 1 处（已修）**
+   - **E1**：把 `v-if="isSuperAdmin && !routingBlockedOpen"` 改成
+     `v-if="!routingBlockedOpen" /* MUT-E1 */` —— 标记放在**标签属性区**，
+     Vue 编译报 `SyntaxError: Illegal '/' in tags` ⇒ **收集失败**，
+     不是判据问题。⇒ 改放进属性值的 JS 表达式注释里（Vue 3 表达式支持注释）。
+     ★ rc≠0 且抓不到具名用例名时，**先查是不是收集失败**，别急着判判据无牙。
+
+4. **真等价变异 3 条（用穷举证明，不是推理）**
+   | 变异 | 等价性证明 |
+   |---|---|
+   | **B3** 只保留 `routable > total` | 穷举 56 组真实可达输入（`blocked` 由后端算成 `total - routable`）**零不一致**：`blocked < 0 ⇔ routable > total`。构造的反例组合后端算不出来 ⇒ 等价**仅限可达域**。 |
+   | **C4** 去掉 `manual_disabled === false` | 差异只出现在「状态全空 **且** `manual_disabled: true`」，而状态查询失败时五个字段**全部取零值**（`:173-196`）⇒ 该组合后端不可达。（且 C4 的更宽松版本其实更稳健。） |
+   | **E2** `await load...` 改 `void load...` | 该函数 `await` 之后无语句、不返回值、不被别处 await ⇒ 改 fire-and-forget 不改变任何可观测行为。 |
+
+★ 这三条的共性：**等价性只在「后端真实可达域」内成立**，域外两者确有差异。
+  所以「等价」这个结论必须附上域，否则就等于没验证。
+
+### B2：一条用来证明「恒真等式检测不出异常」的变异
+
+把判据改回 `total !== routable + blocked` 那个**恒成立**的等式 —— 它有牙，
+因为新增的那条判据直接断言「这个等式在矛盾数据上**依然成立**，而矛盾判据为真」。
+⇒ 这条变异的作用不是证明原判据对，而是**把「我第一版写错了」这件事钉成可执行事实**。
+
+---
+
+## 11.88 第五十二批：路由决策面三条只读端点（overview / decisions / audit）
+
+### 差集清单必须**每轮重算**
+
+上一轮做完 routing-blocked 后，我直接复用了那份「未覆盖」清单来选题 ——
+清单里 `/api/admin/diagnostics/routing-blocked` 还在，因为它是**实现前**生成的。
+⇒ 刚做完的东西还在待办里，是差集清单不新鲜最直观的症状。
+重新提取后：桌面 394 / 移动端 **137**（+1）/ 缺口 257（GET 只读 144）。
+**差集清单是易腐的产物，不是可以跨轮复用的结论。**
+
+### 三条端点：同一族，三种形状
+
+| 端点 | 权限档（实读） | 形状 | handler |
+|---|---|---|---|
+| `GET /api/routing/overview` | `admin`（handler.go:930） | 信封 `{featured, rows}` | routing.go:2075 |
+| `GET /api/routing/decisions` | `admin`（:1204） | 信封 `{total, offset, limit, decisions}` | routing.go:3215 |
+| `GET /api/routing/audit` | **`h.superAdmin`**（:1206） | **裸数组** `[]` | routing.go:3443 |
+
+⚠️ 同一族里 admin 档与 superAdmin 档混排，**不能按路径前缀判权限**。
+⚠️ `audit` 是裸数组而 `decisions` 是信封 —— 同一族两种形状，
+   所以本批**没有**抽通用解包器，各端点独立解包 + 各自的必填键清单。
+
+### ★★★★★★★★ overview 的两个**编造默认值**
+
+`routing.go:2138-2141` 的 SQL：
+
+```sql
+COALESCE(mo.success_rate, 0.9)::float8  AS success_rate,
+COALESCE(mo.p95_latency_ms, 9999)::int   AS p95_latency_ms
+```
+
+⇒ 一个**从没探测过**的凭据，会以「成功率 90%、p95 延迟 9999ms」出现在表里。
+后端**不给任何「这是默认值」的标记** ⇒ 客户端无法把它们与真值区分
+（真值恰好是 0.9/9999 时更无从分辨）。
+
+⇒ 移动端只能靠形状给出**免责**（`overviewMetricsMayBePlaceholder()`），
+  并在 UI 上明说「可能是默认值（未探测过）」，**不许当成实测指标展示**。
+
+另两处同类：`tier` 兜 2、`weight` 兜 100。
+
+### ★★★ overview 的其它事实
+
+- ★★ `routable` 与 `runtime_routable` 是**同一个变量**赋给两个键
+  （`:2199-2200`）⇒ 永远不可能不相等；不等即**契约漂移信号**（已加判据）。
+- ★★ `featured` 查询的 error 被**丢弃**（`_ = h.db.QueryRow(...)`，`:2084`）
+  ⇒ DB 出错时就是空数组、无任何信号；而 `featured_only=true` 且 featured 为空时
+  **过滤条件整个不下发**（`:2133` 的 `if featuredOnly && len(featured) > 0`）
+  ⇒ 「只看精选」静默退化成「看全部」。已显式提示。
+- ★ `runtime_block_reason` **条件存在**（只在不可路由时写入）
+  ⇒ 不能拿它当「可路由」的判据。
+- ★ `warnRowSkip`（`:119-122`）：Scan 失败跳行，只写服务端日志 ⇒ 客户端看不到少了几条。
+- `routingBlockReason` 的 `"unknown"` 分支**不可达**（只在 `!runtimeRoutable` 时调用，
+  而那六个条件至少有一个必假）—— 一条死分支。
+- `if outRows == nil`（`:2212`）同理不可达：`make([]map[string]any, 0)` 永不为 nil。
+- tenant 在 SQL 里硬编码 `'default'`。
+
+### ★★★★★★★★ audit 查询失败回的是 **200 + 空数组**
+
+```go
+rows, err := h.db.Query(ctx, `...`)
+if err != nil { writeJSON(w, http.StatusOK, []any{}); return }   // routing.go:3460-3463
+```
+
+⇒ 客户端拿到的「没有审计记录」与「数据库查询失败」**完全一致**。
+对一个审计端点，这意味着故障期间运维会看到「最近没人动过配置」——**方向完全错**。
+已加 `routingAuditEmptyIsUnreliable(rows, status)` 显式标记这一档。
+
+### ★★ decisions 的两处「静默失真」
+
+- `total` 的计数查询 error 被吞成 0（`:3259-3262`）⇒ **有数据但 total=0**。
+  已加 `routingDecisionsTotalUnreliable()`。
+- `limit > 500` 是 **clamp 到 500**（`:3222-3224`），不是回落
+  —— 与 free-discovery 那条「超上界回落 50」的写法不同，**不能跨端点类推**。
+
+### ★★ jsonb 损坏与 NULL 不可区分
+
+`:3480-3481` 调 `jsoncol.Decode(...)` 但**忽略返回值**
+⇒ 损坏的 `before_json` / `after_json` 与真的 SQL NULL **都**渲染成 `null`。
+（`internal/jsoncol` 的文档明确说这个包就是为区分二者而写的，返回值即那个区分；
+调用方丢掉返回值，问题就回到了原点。）
+
+### 两个防撞/防呆
+
+1. ★★ **命名防撞**：仓里已有 `@/api/routingAudit` 导出同名的 `fetchRoutingAudit`，
+   但它打的是**另一个端点** `/api/admin/routing/overrides/audit`。
+   本批的改叫 `fetchRoutingAuditLog`。
+   ⇒ **同名不同端点时给其中一个加限定词**，别让调用方靠记忆区分。
+2. ★ `!(k in obj)` 的括号：`!(k) in obj` 会被解析成 `(!(k)) in obj`，
+   返回值类型变成 boolean、整段「键存在性」判据**静默失效**。
+   本批第一版就踩了，`vue-tsc` 报了 `TS2322` 才暴露出来。
+   ⇒ **类型门不只是「能不能编译」，也是表达式解析歧义的探测器。**
+
+### 视图
+
+`/api/routing/overview` 接进已有的 `/routing` 页（`RoutingCheckView.vue`），
+与 explain 并存且**按需加载** —— overview 是全网 `model_offers × credentials` 的笛卡尔积，
+自动拉会让每次进页面都付这个代价。
+被阻塞的组合按 `runtime_routable` 分栏列出，并带上编造默认值的免责。
+
+### 变异：29 条 —— **29 有牙，零可疑**
+
+| 组 | 条数 | 覆盖 |
+|---|---|---|
+| A overview 解包 | 5 | 信封 2 键、行内 31 键、数组类型、清单增删（含把条件键算成必填） |
+| B 编造默认值 / 可路由性 | 8 | 默认值判据、可路由键、阻塞原因、契约漂移、featured 失效 |
+| C decisions | 4 | 信封 4 键、类型校验、还有下一页、total 不可信 |
+| D audit 裸数组 | 5 | 裸数组 vs 信封、行内 8 键、空列表不可信、actor 空串 |
+| E 视图 | 5 | 按需加载、featured 提示、默认值免责、漂移提示、阻塞栏条目 |
+| F 文案 | 2 | 免责句、featured 失效提示 |
+
+**首轮 21/29，分诊后 29/29。四类问题：**
+
+1. **判据缺口 3 处（已补）—— 都是「样本恰好不触发」**
+   - **B2**：`overviewMetricsMayBePlaceholder` 原有样本只覆盖「两个都命中」与「两个都不命中」
+     ⇒ 「判据只看其中一个」照样全绿。已补「只命中一半」的两条。
+   - **B3**：所有样本都让 `routable` 与 `runtime_routable` **同值**
+     ⇒ 「判据改看另一个键」测的是巧合。已补两键漂移的正反两个样本。
+   - **B4**：可路由的行**本来就没有**原因键，所以「判据不先看可路由性」永远测不出来。
+     已补「可路由的行**带了**原因键」这一漂移形态。
+   ★ **三条同源：样本里被测的那个差异被消掉了。变异比断言更容易发现这一点。**
+
+2. **变异本体没改到行为 1 处（已修）**
+   - **E1** 第一版把自动加载插进 `loadOverview()` —— 但那个函数**只有按钮会调**，
+     于是「变异注入成功、行为没变、全绿」。已改为在 `onMounted` 上注入，
+     并且**由变异自己补上 import**：生产代码不该为了「让变异能跑」而留一个没用到的导入。
+
+3. **变异本体写错 1 处（已修）**
+   - **E2/E3/E4** 把标记放在 `<p v-if="..." class=...>` 的**标签属性区**，
+     Vue 编译报 `SyntaxError: Illegal '/' in tags` ⇒ **收集失败**而非判据失效。
+     已改放进属性**值**的 JS 表达式注释。
+     ★ 这已是**连续两批**踩同一个坑（上一批的 E1 同因）⇒ 写成固定规矩：
+     **模板里的标记一律放进属性值，不要放进标签区。**
+
+4. **夹具巧合 1 处（已修）**
+   - **E5** 第一版让阻塞栏过滤 `credential_id !== 99` —— 而夹具的阻塞行是 10，
+     过滤后结果不变 ⇒ 变异是空转。已改成「阻塞栏返回全部行」，
+     并**补上条目数断言**（夹具 2 行 ⇒ 阻塞栏必须恰好 1 条），
+     这样判据不再依赖任何具体 id。
+     ★ 只断言「阻塞原因出现在页面上」会被这种变异蒙混过去 —— 因为可路由那行里
+     也写着同一个值。**「某段文本出现了」不等于「它在正确的分段里」。**
+
+### ⚠️ 本轮自己踩的一条操作纪律
+
+变异套件在跑的同时我并行跑了全量测试，`routingRead.test.ts` 报了一条红。
+**归因：变异脚本此刻正把 B7 注入源文件**，全量撞进了注入窗口。
+⇒ 与「投测试前先扫一眼别的重测试进程」同族：**变异脚本会改源文件，
+  跑全量/十连跑之前必须确认它已结束**，否则会把环境干扰读成回归。
+（确认变异收口后重跑：2883 条全绿 rc=0。）
+
+---
+
+## 11.89 第五十三批：模型路由树 / 可用模型原始名单 / 熔断健康
+
+三条 admin 档只读端点：`model-tree`（handler.go:1199）、`available-models/raw`（:1203）、`health`（:1205）。
+
+### ★★★★★★★★ 同一端点，按调用者角色返回**两种形状**
+
+`admin/routing.go:2261`：`hideCredentialDetails := IsTenantAdmin(r)`
+
+| | super_admin | tenant_admin |
+|---|---|---|
+| 顶层键 | `featured, series, unmapped` | `featured, series, unmapped, **`readonly: true`**` |
+| variant 级 | 只有 `credentials[]`（逐凭据详情） | `available` + `credential_count`，**无 credentials** |
+| `available` 含义 | `credentials[].available` = **该单个凭据** | `variants[].available` = **全部**凭据都可用（`:2482` 遇任一 false 即 break） |
+
+★★ `readonly: true` 是**两侧唯一的区分标记**。
+★★★ `available` 这个名字在两侧**层级不同、语义也不同** ——
+一个是单凭据的可用性，一个是全称判断。把它当同一个指标读会得到**相反**的结论。
+
+移动端因此把两种形状建成**两套类型**、给一个显式分流判据
+（`modelTreeIsRedacted` / `isSimpleVariant`），并让
+`modelTreeVariantAvailable()` 在完整形状下**返回 `null` 而不是猜一个**。
+⇒ 「拿不到答案」就明说拿不到，别返回一个看着像答案的值。
+
+### ★★★★★★ `availability_state` 的 NULL 被写成 **`"ready"`**
+
+SQL（`:2276`）：`COALESCE(c.availability_state, 'ready')`
+相邻的 `credential_status` 兜的是 `'unknown'`（`:2275`）——
+**两个兜底值不一致，恰恰说明 `'ready'` 是失误而非设计**。
+
+后果比 §11.87 那两个编造默认值（`0.9` / `9999`）更严重：
+那两个编造的是**展示指标**，这个直接改变「这条能不能路由」的判断
+⇒ 一个状态未知的凭据在树里显示为「就绪」。
+已加 `modelTreeAvailabilityFabricated()`（判据要求 `status === 'unknown'` 才算命中，
+因为单独看 `availability_state === 'ready'` 不足以判定）。
+
+### ★★★ `available-models/raw` 零行返回 **`null`** 而不是 `[]`
+
+```go
+var names []string          // routing.go:3203 —— nil 切片
+for rows.Next() { names = append(names, name) }
+writeJSON(w, http.StatusOK, names)
+```
+
+`json.Marshal` 把 **nil slice** 编码成 `null`；只有 `make([]string, 0)` 才是 `[]`。
+⇒ 「一个可用模型都没有」与「契约漂移」在客户端必须分开处理。
+
+★ 同族对照：§11.88 的 `audit` 走的是 `make([]map[string]any, 0)` ⇒ 返 `[]`。
+**同一族两种表示**，不能跨端点类推。
+⇒ 已让 `unwrapAvailableModelsRaw` 显式接受 `null` 并归一成 `[]`，
+  但**非数组且非 null 仍然抛错**（不静默返回空）。
+
+### ★★ `featured_only` 在 model-tree 里同样会**整个失效**
+
+过滤写在 Go 里（`:2387` `if featuredOnly && len(featuredModels) > 0`），
+按 `rawName` 或 `canonicalName` 匹配 ⇒ featured 为空时过滤条件整个不下发，
+返回全量且无提示。与 §11.88 的 `overview` 是同一个坑的两个实例。
+
+### ★★ `routing/health` 的 summary 三个数是**客户端可复算**的
+
+`total = len(credentials)`、`open = circuit_state=='open'` 的条数、`closed = total - open`
+（`:3415-3440`）⇒ `routingHealthSummaryDisagrees()` 现场复算一遍，
+对不上即契约漂移或中间层加工过。
+
+另外加了 `routingHealthCoolingDesynced()`：`cooling_until` 非空但
+`circuit_state` 不是 `open` ⇒ 冷却窗口与熔断状态不同步。
+
+### 类型上的一个坑
+
+`modelTreeVariants()` 要在**两种结构不同的 series 联合类型**上做 `flatMap`，
+TS 推不出共同元素类型（两个重载都不匹配）⇒ 那里有一处**显式 cast**，
+并在注释里写明「安全的前提是调用方按 `isSimpleVariant` 分流」。
+⇒ **类型门不只是「能不能编译」，也是联合类型设计的探测器**：
+它逼着人把「两种形状」这件事在类型层面说清楚，而不是用 `any` 混过去。
+
+### 变异：26 条 —— **26 有牙，零可疑**
+
+| 组 | 条数 | 覆盖 |
+|---|---|---|
+| A model-tree 形状 | 9 | 信封 3 键、三处数组类型、`readonly` 分流（恒 false / 只看真值 / 看 credentials 在不在）、全称 fold（漏 single / 空列表）、变体跨层展开、两个伪造判据、featured 失效 |
+| B available-models-raw | 4 | null 放行、非数组抛错、重复检出、非字符串元素滤除 |
+| C routing/health | 8 | 信封、summary 类型、凭据 9 键、summary 可复算（恒 false / 恒 true / 只看 total）、冷却不同步两支 |
+
+**首轮 21/26，分诊出的 5 条里 3 条是同一个病根：「样本恰好不触发」。**
+
+| 变异 | 为什么测不出来 | 补法 |
+|---|---|---|
+| **A4** 判据只看真值（`!!`） | 后端只发 `readonly: true` 或**键不存在** —— 这两种输入下 `=== true` 与 `!!` **恒等** | 加一条真值非布尔（字符串 `"true"`）的契约漂移样本 |
+| **A9** 只取第一层 generation | 夹具里每个 series **只有一个** generation | 夹具加第二个 generation，并断言变体总数与 `gpt-35-turbo` 在列 |
+| **B4** 原样返回不过滤 | 夹具里**全是字符串** | 加一条混入 `[1, null, {}]` 的样本 |
+
+★★★ 这已经是**连续第三批**同一病根（§11.87 的「样本只命中一半」「两键同值」「可路由行本就没原因键」，
+§11.88 的三条同源缺口，本批又三条）。
+⇒ **规律**：变异比断言更容易发现「样本选歪」。断言断言的是**一个具体样本**的行为，
+变异扰动的是**规则**；样本恰好没落在规则的敏感区，规则改了也测不出来。
+⇒ 已定做法：**写判据时主动构造「两个实现只在边缘输入上分叉」的样本**，
+   而不是只写一个「正常样本 + 一个明显错的样本」。
+
+另 2 条（A5/A6）是 expect 串指错 —— 变异确实转红，只是命中了相邻用例名。
+
+### 类型门也是「联合类型设计」的探测器
+
+`modelTreeVariants()` 要在两种**结构不同**的 series 上做 `flatMap`，
+TS 推不出共同元素类型（两个重载都不匹配），逼出一处显式 cast。
+那处 cast 不是偷懒 —— 它迫使「两种形状」这件事在类型层面被说清楚，
+而不是用 `any` 糊过去。
+
+---
+
+## 11.90 第五十四批：模型路由树 / 熔断健康 / 可用模型名单接入 `/routing` 页
+
+§11.89 把三条端点的**契约层**做完了，本批接上 UI。三段都**按需加载**——
+树是全网 `model_offers × credentials` 的笛卡尔积，健康是全量凭据，名单是全网模型名；
+自动拉会让每次进 `/routing` 都付这三份代价，而这一页的主动作是 explain（有个输入框）。
+
+### ★★★★★★★ 两种形状在 UI 上必须**分流渲染**
+
+后端同一个 URL 按角色返回两种结构（`routing.go:2261`）。UI 上的坑不是「字段读不到」，
+而是**同名不同义**：
+
+| | super_admin（完整树） | tenant_admin（裁剪树，`readonly: true`） |
+|---|---|---|
+| variant 级 | `credentials[]` 明细 | `available` + `credential_count` |
+| 「全部可用」怎么来 | 客户端**自己 fold** `credentials` | **后端已经算好**在 `available` 上 |
+| 明细区 | 逐凭据渲染 | **不渲染**，只显示「N 个凭据（明细不可见）」 |
+
+⇒ 不分流的两种典型坏结果：
+1. 裁剪树去渲染 `credentials` ⇒ 那一整段空掉，用户以为「这个模型没有凭据」；
+2. 完整树去读 variant 级的 `available` ⇒ 恒 `undefined`，被 `!== null` 判成「有值」
+   而显示成**恰好相反**的结论。
+
+第三种坏结果最隐蔽：`readonly` 形状的变体**万一带了** `credentials`（契约漂移），
+仍然必须按形状判据走、不逐条渲染。已为此单独立了一条用例 ——
+**形状判据优先于字段是否恰好存在**。
+
+### ★★★★ 两条「编造值」的免责在 UI 上是硬要求
+
+- `availability_state` 的 NULL 被写成 `"ready"` ⇒ UI 必须显示
+  「状态未知（服务端把空值填成了就绪）」，不能显示「就绪」。
+- `success_rate` / `p95` 的 COALESCE 兜底 ⇒ 显示时必须带免责句。
+
+这两条在 UI 上都是 `v-if` 级别的开关，任何一条被去掉都不会让页面崩，
+只会让用户**相信一个假数字** —— 所以它们必须各有独立的变异。
+
+### ★★★ 「故障」与「真结论」在 UI 上也要分开
+
+`available-models/raw` 拉取失败时，视图**保持不显示**，
+**不**渲染成「当前没有任何可用模型」——
+端点挂了不等于没有可用模型。这与「零行显示空态」是两条独立判据：
+零行 ⇒ 显示「没有可用模型」；失败 ⇒ 什么都不显示。
+
+### 本轮变异：18 条
+
+首轮 **3/18**，分诊出的不是等价变异，而是两类系统性问题：
+
+1. **expect 串指错（10 条）**：我把 `expect` 指向了**英文渲染文本**
+   （如 `'status unknown'`），而脚本的具名匹配读的是**中文用例名**。
+   ⇒ 变异其实已经转红，只是没匹配上。
+   ★ 写变异脚本时 `expect` 必须对准**用例名**，不是断言里检查的字符串。
+2. **判据缺口（8 条，全部是「样本恰好不触发」）**：
+   | 变异 | 为什么测不出来 | 补法 |
+   |---|---|---|
+   | A3 凭据列表不按形状分流 | 裁剪形状的夹具本来就没有 `credentials` | 加「裁剪形状却带了 credentials」的漂移形态 |
+   | A5/A7/A8 两处全称判断 | 完整形状夹具只有一个**可用**凭据 | 加第二个**不可用**凭据，并断言显示的是「部分不可用」且不出现「全部可用」 |
+   | B4 空树空态 | 没有专门断言空态 | 加空树用例 |
+   | D2 熔断列表不过滤 | 夹具里只有一条**熔断中**的凭据 | 加一条 `closed` 的，断言它**不出现** |
+   | D3 健康空态 | 没断言 | 加「无熔断」用例 |
+   | D5 失败被当成零 | 只测了成功路径 | 加失败路径用例 |
+   
+★★★ **这是同一病根的第四批**（§11.87 三条、§11.88 三条、§11.53 三条、本批八条）。
+   连续四批的共同形态：**夹具里缺一个「反向」或「漂移」的样本**。
+   ⇒ 已把它写成固定检查项：每写一个判据，问「有没有一个样本能让**两种实现分叉**，
+     而不只是「看起来正常」或「明显错误」」。
+
+## 11.91 自动路由读面六条端点（第五十五批，API 层）
+
+### 基线刷新
+
+差集清单是易腐产物，每轮必须重算（第五十二批复用旧清单，导致已完成的
+`routing-blocked` 还挂在待办里）。本批重算：
+
+| | 第五十二批 | 本批 |
+|---|---|---|
+| 移动端实际调用 | 137 | **144** |
+| 桌面有、移动端无 | 257 | **252** |
+| 其中只读 GET | 144 | **139** |
+
+第五十三批新增的三条（`model-tree` / `available-models/raw` / `health`）已计入。
+量具自检：那三条已不在缺口清单里，地面实况 `api/routingTree.ts:122/217/263` 对得上。
+
+### ★★★★★★★ 权限档位是 superAdmin，**形参名 `adminWrap` 是假名**
+
+三个注册函数的形参都叫 `adminWrap`，看起来像 admin 档：
+
+```go
+// admin/auto_route.go:99
+func (h *AutoRouteHandlers) RegisterAutoRouteRoutes(mux *http.ServeMux, adminWrap func(http.HandlerFunc) http.HandlerFunc)
+```
+
+但实际绑定的值是：
+
+- `admin/handler.go:1381` `autoH.RegisterAutoRouteRoutes(mux, h.superAdmin)`
+- `admin/handler.go:1430` `analyticsH.RegisterAnalyticsRoutes(mux, h.superAdmin)`
+- `admin/auto_route.go:116` `tuning.RegisterTuningRoutes(mux, adminWrap)` —— 转手，
+  而 `adminWrap` 就是上一行那个形参，**值仍是 `h.superAdmin`**
+
+`h.superAdmin` = `SuperAdminMiddleware`（`handler.go:886`）⇒ **tenant_admin 直接 403**。
+
+⚠️ 本族六条端点全部是 superAdmin 档。挂抽屉席时必须 `requiresRole: 'super_admin'`，
+否则 tenant_admin 用户点进去只看到 403。这是「不能按名字判权限」的一个实例：
+**名字骗人，要读到实际绑定的那个值。**
+
+### ★★★★★★ 一条**完全死掉的垂直切片**——照抄清单就会给 404 做 UI
+
+差集清单里列着 `/api/admin/auto-route/tuning/strategies`。按「清单即待办」的惯例
+直接搬到移动端，就会给一个 404 做出一整套 UI。正面枚举全仓 21 条 auto-route 注册：
+
+```
+admin/auto_route.go:100-125   decisions / index / profile / audit / refresh /
+                             cost/customer / cost/model / quality-correlations /
+                             defaults / defaults/ / affinity / affinity/selections
+admin/auto_route_tuning.go:83-89  tuning/proposals / proposals/generate /
+                             proposals/ / tuning/accuracy / POST tuning/analyze
+admin/analytics.go:55-59     analytics/matrix / flow / model-task-index / funnel /
+                             analytics/decision/
+admin/auto_route_correlations.go:332  correlations
+```
+
+**`tuning/strategies` 不在其中。** 全仓唯一的字面量出现在 handler 自己的注释上
+（`auto_route_tuning.go:826`），而函数本体带 `//nolint:unused`（`:838`）
+—— golangci-lint 的 `unused` 检查器只对**无引用**的函数标这个，
+所以它是货真价实的死代码。
+
+前端侧同样死：`web/src/api/tuning.ts:42` 的 `getTuningStrategies` 全仓**只有定义处**，
+没有任何调用方（`web/src/api.ts:33` 的 `export *` 只是把名字再导出一次）。
+
+⇒ 后端 handler 没注册、前端封装没人调，**两端都是死的**。当前没有线上影响
+（没有 UI 会触发它），但这是差集扫描给出的一个**假缺口**。
+**教训：清单里的每一项，在写代码之前都要先确认它真的注册了。**
+
+### ★★★★★ 三条数组端点全是稀疏键
+
+`index` / `cost/customer` / `cost/model` 逐行用 `*float64` / `*int` 指针扫，
+再按 `if xxx != nil` 决定写不写这个键：
+
+| 端点 | 无条件键 | 条件键 |
+|---|---|---|
+| `index` | **4 个**：`bucket` `credential_id` `raw_model` `updated_at` | 13 个 |
+| `cost/customer` | **1 个**：`api_key_id` | 13 个 |
+| `cost/model` | **1 个**：`raw_model` | 7 个 |
+
+⇒ **「键缺失」= 该指标无数据，不是 0。** UI 把两者都渲染成 0% 会让运维
+以为「这个模型成功率 0%」，实际是「这一列没数据」。
+
+### ★★★★★ 空索引返回的是**异构哨兵**，不是 `[]`
+
+`auto_route.go:294-297`：索引表为空时后端返回
+
+```go
+writeJSONOk(w, []map[string]interface{}{
+    {"warning": "credential_model_index is empty; awaiting first bg worker refresh (…)"},
+})
+```
+
+一个**只有 `warning`、没有 `credential_id`** 的元素，与正常行结构不同。
+照「数组里每行都有 `credential_id`」去解包，网关启动 5 分钟内每次进这一页都会抛错。
+⇒ 解包器必须放行它，并且单独提供 `autoRouteIndexAwaitingFirstRefresh()` 把它
+与「真·空索引」区分开。
+
+### ★★★★ `audit` 的三个块**查询失败时键直接缺失，HTTP 仍 200**
+
+`task_distribution` / `profile_distribution` / `top_chosen_models`
+三处赋值**全部包在 `if err == nil` 里**（`auto_route.go:627 / :665 / :724 / :758`）。
+
+⇒ 「这一块没有数据」与「这一块的查询挂了」在响应里**长得一模一样**。
+UI 若把「键缺失」渲染成空分布，等于把一次数据库故障报成「没有流量」。
+`autoRouteAuditMissingBlocks()` 专门返回缺哪几块，供 UI 渲染成「查询失败」而非 0。
+
+同一端点的 `outcome_source`（`auto_route_outcome_freshness.go:70-76`）是刻意加的
+证据源：这一屏的成功率/奖励/路由数字由后台 settle worker 回填，不由被统计的请求测出来。
+`stale === true` ⇒ **数字不再产生**，与「数字低」必须分开显示。
+
+**可复算不变量**：`total_requests === total_auto_requests + specified_model_requests`
+在基表与物化视图**两条路径上都成立**——两者的 WHERE 准入条件逐字相同
+（`auto_route.go:559-563` vs migration `649:112`），且对布尔列 `= TRUE` 与
+`IS NOT TRUE` 是互斥且穷尽的划分（NULL 归后者）。⇒ 可做客户端交叉校验。
+
+### ★★★★ `analytics/decision` 的 `l1` 会被 blob **逐键覆盖**，且**不可判定**
+
+`analytics.go:830-840` 的赋值顺序是：
+
+1. `l1 := {task_type, profile}`（DB 列，经 `nullStringOrEmpty`）
+2. `if confidence != nil { l1["confidence"] = … }`
+3. `json.Unmarshal(auto_decision)` 后 **`for k, v := range parsed { l1[k] = v }`**
+
+第 3 步在最后 ⇒ blob 里的同名键**覆盖**前两步。客户端不能假设 `l1.task_type`
+来自数据库。
+
+⚠️ 更麻烦的是**不可判定**：合并之后响应里已经分不清「这个键来自 DB 列」还是
+「来自 blob」。所以**空结果也不能当免责**——blob 完全可能只带一个同名的
+`task_type` 而不带任何新键，此时一切看起来都正常，值已经被顶掉了。
+本批只提供可判定的那一半（`autoRouteDecisionL1SplatKeys` = l1 里出现三个
+DB 键之外的任何键 ⇒ splat 跑过），并在注释里写明它**不构成免责**。
+
+`l2` 是条件键，缺失有三种原因而响应里区分不了：后端根本没查
+（`l2Lookup` 只在 id 能生成 dashed 变体时为真，`:854-859`）／查了但无决策日志／
+L2 查询真出错（那条是 500，走错误分支）。⇒ UI 只能说「没有 L2 记录」。
+
+### ★★★ `tuning/accuracy` 的五个 `avg_*` 全是 **COALESCE 编造的 0**
+
+`auto_route_tuning.go:774-778` 五列全部 `COALESCE(…, 0)`。一行 `total > 0`
+但源列全 NULL 时，`avg_success = 0` 与「真的 0% 成功率」**逐字节相同**。
+
+同端点还有一处口径切换：后端**按窗口长度换物化视图**（`:757-763`），
+`days <= 7` 走 5 分钟桶、8..90 走天桶 ⇒ 同一组 task_type 的 `avg_*`
+在两个窗口下**不可直接比大小**。
+
+★ 与同族的 `top` 处理**完全相反**：`days` 越界是 400 报错，
+而 `index`/`cost` 的 `top` 越界是**静默回落**（且三端默认值/上限各不相同：
+index 100/1000，cost 50/500）⇒ **不能跨端点类推**。
+
+### 变异 44 条 → 44 有牙，零可疑
+
+首轮 40/44。四条可疑，**分诊后是四种不同的原因**：
+
+| id | 现象 | 真实归因 | 处置 |
+|---|---|---|---|
+| A9 | 仍全绿 | **判据无牙（样本缺失）**：index 的 top 用例只有 `0/-1/1001`，全是整数，去掉 `Number.isInteger` 测不到 | 补非整数样本 `0.5` / `10.5` / `NaN`（并顺手给同族的 cost top 也补上） |
+| B2 | 转红未命中 | **expect 串指错**：真正被它打红的是「三个条件键全缺失」那条 | 改 expect |
+| E8 | 疑似收集失败 | **变异写错**：只替换了括号里的表达式，留下 `return ( return false )` ⇒ 语法错误 | 连 `return (` 一起替换 |
+| F9 | 转红未命中 | **expect 串指错**：真正被它打红的是「blob 带来新键」那条 | 改 expect |
+
+★★★ A9 又是那个病根：**同族的两个判据，只有一个带了边缘样本**
+（`accuracyDaysAccepted` 有 `7.5`，`indexTopAccepted` 没有）。
+连续五批同一形态（§11.87/§11.88/§11.89/§11.90/本批）。
+
+★ 另有一条**自造缺陷**在写测试时暴露：本批第一版把遮蔽判据写成
+「`l1` 里有没有 `task_type`/`profile`」，而这两个是**恒在的必填键** ⇒
+**恒真判据**，永远返回它俩、完全不区分。是类型门 + 用例自己把它顶出来的
+（首轮 60 条里 2 条红）。改成可判定的 `autoRouteDecisionL1SplatKeys`，
+并补了一条「真正的盲区样本」：blob 只带同名键、不带新键时谓词返回空
+——**空结果不构成免责**，这一点写进了注释。
+
+### 门禁
+
+build / 三门 / vue-tsc 全 rc=0；`autoRoute.test.ts` 60 条；全量 2976 条（118 文件）；
+十连跑 10/10。
+
+文档 §11.91 纯追加。
+
+## 11.92 自动路由读面接 UI（第五十六批）
+
+### 落点
+
+新页 `/auto-route`（`AutoRouteView.vue`），抽屉席，`requiresRole: 'super_admin'`，
+与 `/proposals` 配对：**那一页答「系统认为规则该怎么调」，这一页答「现在跑得怎么样、
+花了多少钱」** —— 建议与效果之间缺的就是这一页。
+
+五段全部**按需加载**（index 是全网 credential × model 的笛卡尔积，cost/model 是全网
+模型名，audit 要扫 7 天窗口 ⇒ 自动拉会让每次进这一页都付这三份代价）。
+
+同时把第五十五批的 `api/autoRoute.ts` 改名 **`autoRouteRead.ts`**：仓里已有
+`autoRouteInsights.ts`（funnel + proposals），两个 `autoRoute*.ts` 覆盖**零重叠**的
+端点集却只差一个后缀，是个必然踩的坑。改名同时对齐既有 `routingRead.ts` 约定。
+
+### ★ 五处「不能都渲染成同一个东西」
+
+| # | 场景 | 错误渲染 | 本页渲染 |
+|---|---|---|---|
+| 1 | **稀疏键缺失**（每行只有 1~4 个键无条件） | `0.00` | `无数据` + `.ar__cell--nodata` |
+| 2 | **audit 块缺键**（查询失败，HTTP 仍 200） | `没有数据` | `查询失败` + `.ar__block-failed` |
+| 3 | **outcome_source.stale** | 照常显示成功率 | 挂免责句「数字是停止产生后的残留」 |
+| 4 | **空索引哨兵** `[{warning}]` | `没有数据` | `等待后台首轮刷新` |
+| 5 | **success_rate=0** | `0.00%` | `没有流量`（带独立 class 与斜体） |
+
+外加：模型成本的「每请求成本」在**分母缺失或为 0** 时显示 `无数据` ——
+否则会算出 Infinity/NaN，渲染成**空白而不是错误**，用户只会以为这一列没数据。
+
+### 变异 28 条 → 28 有牙，零可疑
+
+首轮 23/28。五条可疑是**五种不同原因**：
+
+| id | 现象 | 真实归因 | 处置 |
+|---|---|---|---|
+| A1 | 转红未命中，**具名红 0 条** | **TDZ**：注入点排在 `useHyperPage`（第 64 行），而 `load` 依赖的 `loading`/`error` 还是未初始化的 const ⇒ setup 抛 ReferenceError。**rc≠0 但没有具名红就是收集失败，不是判据失效** | 注入点挪到 `onBeforeUnmount` 之前 |
+| B8 | 疑似收集失败 | **变异写错**：删掉那个 `v-if` 后，紧邻的 `v-else` 失去前驱 ⇒ Vue 模板编译失败 | 只换文案，模板保持合法 |
+| D3 | 转红未命中 | **expect 串指错**：真正被它打红的是 index 失败那条 | 改 expect |
+| F2 | 转红未命中 | **expect 串指错**：被新增的「整表 + 逐行各一次」计数断言抓到 | 改 expect |
+| G2 | 仍全绿 | **判据无牙（样本没触发）**：原用例只在**首次**就失败，`audit.value` 从未被赋值 ⇒ 「清不清旧数据」无从观测 | 补「先成功、再失败」的用例 |
+
+复验时又暴露两处**判据/断言的粗细问题**：
+
+- **B8 第二次仍全绿**：三处空块共用一个文案，我改的只是其中一处，而用例只断言
+  「出现过『没有数据』」⇒ 改成 `.ar__cell--nodata:not(.ar__block-failed)` 定位后
+  **逐个断言文案**。
+- ★★ **同一个用例里挂两个 wrapper 会互相干扰**：用 `attachTo: document.body` 时，
+  第二个 wrapper 的文本计数把 3 数成了 6。**每个用例只挂一次。**
+
+★ 顺带一个 class 设计上的教训：`.ar__cell--nodata` 被**空数据格与失败格共用**
+（失败格额外挂 `.ar__block-failed`），所以这两个 class **不互斥**，
+按 class 计数时必须 `:not()` 排除，否则数出来的不是想数的东西。
+
+### 门禁
+
+build / 三门 / vue-tsc 全 rc=0；`AutoRouteView.spec.ts` 34 条；
+全量 3010 条（119 文件）；十连跑 10/10。
+
+文档 §11.92 纯追加。
+
+## 11.93 决策回放接入口（第五十七批）
+
+### 落点
+
+新详情页 `/auto-route-decision/:id?`（`AutoRouteDecisionView.vue`），
+**不占抽屉席**（口径同 `/maas-orders/:id`）。id 可从 `/request-detail` 带进来，
+也可直接粘。
+
+★ 入口按**角色**隐藏：`/request-detail` 是 admin 档而决策回放是 superAdmin 档
+⇒ 在 `RequestDetailView` 里用 `auth.role === 'super_admin'` 挡掉，
+否则 tenant_admin 点进去只会撞 403（口径同 `/integrity`）。
+
+### ★ 补了一条 API 判据：id 形态上有没有可能带出 l2
+
+`uuidVariants`（`analytics.go:1147-1166`）只有当 id **去连字符后长度恰为 32 且全为 hex**
+时才产出 `{id, dashed}` 两个变体 ⇒ `l2Lookup = true`。
+任何别的形态（探测 id、带前缀 id）**只返 1 个变体 ⇒ 后端连查询都不发 ⇒ l2 必然缺失**。
+
+`autoRouteDecisionCanHaveL2()` 逐字照抄这条规则，于是页面能在**发请求之前**
+就告诉用户「这个 id 不可能有 L2 段」，而不是让他加载完看一个空白区块。
+
+⚠️ 它是**必要条件**不是充分条件 —— 形态对了也可能表里没这行。用例里钉住了这一点。
+
+### ★ 四处「不能只说一半」
+
+| # | 场景 | 错误渲染 | 本页渲染 |
+|---|---|---|---|
+| 1 | **404 身兼两职**（不存在 / 跨租户被拒） | 「查不到」 | 「可能不属于你可见的租户，两种情况无法区分」 |
+| 2 | **l2 缺失** | 统一说「没有记录」 | 形态不可能 / 查了但没这行，**两种说法** |
+| 3 | **l1 被 blob 覆盖** | 无标记 | 有 splat 证据⇒免责+`shadowed` 标记；**无证据⇒另挂「不能证明」免责** |
+| 4 | **模型双空** | 合并成一句 | 单侧空不合并；两个都空才说「没有模型信息」 |
+
+### ★★ 用例当场顶出一个**死分支**
+
+第一版 404 同时写进了 `notFound` 和 `error`，而模板里
+`v-else-if="error"` 排在 `v-else-if="notFound"` **前面**
+⇒ 双职提示那条分支**永远不渲染**。用例直接顶出来（渲染出来的是短版「查不到」）。
+修法：404 时 `error` 置 null，只走 `notFound` 分支。
+
+★ 顺带一条：这条分支的失败**只有**在「error 不置位」时才会显形 ——
+它是一条**只靠渲染文本就能发现**的死分支，不需要变异。
+
+### 变异 23 条 → 23 有牙，零可疑
+
+覆盖两个面：`api/autoRouteRead.ts` 的 `canHaveL2` 判据 + 视图本身。
+
+首轮 20/23，三条可疑：
+
+| id | 现象 | 真实归因 | 处置 |
+|---|---|---|---|
+| A2 | 仍全绿 | **判据无牙（路径没被走到）**：原用例只设了非法 id，但**按钮是禁用的、根本没点**，`load()` 里的本地守卫从未执行 | 补「回车触发」用例 —— 按钮禁用时只有 `@keyup.enter` 会真的调 `load()` |
+| B2 | 仍全绿 | **判据无牙（样本没触发）**：原用例只在**首次**就 404，`detail` 从未被赋值，「L1 不出现」是恒真的 | 补「先成功回放、再 404」用例（与第五十六批 G2 同一个坑） |
+| D1 | 转红未命中 | **自己的工具错了**：用**无范围的 `sed`** 改 expect 串，而 D1 与 D3 本来就是同一句 ⇒ 两条一起被改 | 改用 Python 按块定位精修 |
+
+★ 附带一条：变异脚本**自己**把 D1/D3 两条 expect 改串这件事，
+是靠运行器打印的「实际具名红列表」当场看出来的 —— 所以**分诊时先读那条列表**，
+不要凭印象判断「是不是变异没施上」。
+
+### 门禁
+
+build / 三门 / vue-tsc 全 rc=0；`AutoRouteDecisionView.spec.ts` 21 条；
+`autoRouteRead.test.ts` 67 条；全量 3038 条（120 文件）；十连跑 10/10。
+
+文档 §11.93 纯追加。
+
+## 11.94 Dashboard API v2 七条只读端点（第五十八批，API 层）
+
+### ★ 缺口清单先取证，再开写
+
+第五十五批的教训（`tuning/strategies` 两端都死）在这一族没有重演：
+正面枚举全仓 dashboard 注册（`grep -rn 'HandleFunc("[^"]*dashboard'`），
+清单里的九条**全部真的注册**。
+
+⚠️ 但**权限档位与 auto-route 族相反**：这九条是 `admin(...)`（`handler.go:1053-1069`）
+⇒ **tenant_admin 可用**，抽屉席**不设** `requiresRole`。
+
+### ★★★★★★ 降级响应的 data 与「真的全是零」**逐字段相同**
+
+`admin/dashboardapi/types.go:186-192` 的 `writeSuccessJSON` 产出：
+
+```json
+{ "success": true, "data": {…}, "metadata": {…}, "timestamp": "…" }
+```
+
+而 `writeDegraded`（`errors.go:319-334` 等）**也是 HTTP 200 + `success:true`**，
+只是把 `data` 填成**零值/空数组**，并在 metadata 上打三个键：
+
+```json
+"metadata": { "degraded": true, "missing_view": "request_logs_7d",
+              "hint": "数据视图尚未初始化，请先执行数据聚合迁移" }
+```
+
+⇒ 客户端若只看 data，会在聚合迁移没跑时给出一张**全部正常的看板**。
+这是本族最危险的一处，也是本批所有判据的重心。
+
+★ `degraded` 带 omitempty ⇒ **正常时是键缺失，不是 `false`**。
+   判据必须用 `=== true`；写成 `!== false` 会把「键缺失」判成降级
+   （D3 变异专测这一条）。
+
+### ★★★ tenant_admin 填 `tenant_id` 会被**静默改写**
+
+`normalizeDashboardScope`（`auth.go:39-45`）：非 `super_admin`/`admin_key`
+一律 `params.TenantID = auth.TenantID` ⇒ 用户填别的租户也会拿到自己租户的数据，
+而**响应里没有任何标记告诉他「你填的被忽略了」**。
+⇒ UI **不得**给 tenant_admin 提供这个筛选框。
+
+### ★ 三处容易踩的参数口径（与同批其它端点又不一样）
+
+| 参数 | 口径 |
+|---|---|
+| `days` | 越界或非整数 ⇒ **静默回落 7**（不是 400） |
+| `size` | 越界 ⇒ 静默回落 20，上限 100 |
+| `refresh` | 后端判 `== "true"`，**严格相等** ⇒ 必须发字面量 `true` |
+
+⚠️ auto-route 的 `tuning/accuracy` 里 `days` 越界是 **400 报错**，
+`index`/`cost` 的 `top` 是**静默回落**，audit 的 `limit>500` 是 **clamp** ——
+**同一个参数名在这一个仓里至少有四种口径，不能跨端点类推。**
+
+### ★ 一处字段名与 JSON 键不一致
+
+`ErrorStatsResponse.Trend` 的 JSON tag 是 **`recent_errors`**（`errors.go:31`）。
+按 Go 字段名去读 JSON 会读到 `undefined`。
+
+### 变异 27 条 → 27 有牙，零可疑
+
+首轮 25/27，两条可疑：
+
+- **D4 仍全绿** ⇒ **判据无牙（样本没触发）**：`missingView` 去掉 `isDegraded`
+  守卫后看不出来，因为**正常夹具里本来就没有 `missing_view`**。
+  补「判别样本」：metadata 里有 `missing_view` 但**没有** `degraded`
+  ⇒ 降级标记缺失时就不许声称「缺表」。
+  （后端两个键总是一起写，这个组合理论上不会发生；判据的价值正在这里。）
+- **F2 转红未命中** ⇒ expect 串指错，变异实际打红的是
+  「session-overview 打 GET 且带查询参数」。
+
+★ 又一次印证：**去掉某个守卫的变异，要先构造一个「该守卫唯一在生效」的样本**，
+否则两条实现输出相同，判据测不出。
+
+### 门禁
+
+build / 三门 / vue-tsc 全 rc=0；`dashboard.test.ts` 35 条；
+全量 3073 条（121 文件）；十连跑 10/10。
+
+文档 §11.94 纯追加。
+
+## 11.95 看板的两条裸 JSON 端点（第五十九批，API 层）
+
+`operational`（handler.go:1068）+ `board/error-drill`（:1069），同为 `admin(...)` 档。
+
+⚠️ 这两条**不在** `admin/dashboardapi` 包里，走 `writeJSON` ⇒ **无信封**。
+与第五十八批那七条（`{success,data,metadata}` 信封 + `metadata.degraded` 降级三联）
+**不是同一种形状** ⇒ **同一个 `/api/admin/dashboard/*` 前缀下有两种响应契约，
+不能跨端点类推。** 解包器里专门加了一道反向检测：拿到
+`{success,timestamp}` 信封形状就报错，避免把 `success`/`timestamp` 当业务数据。
+
+### ★★★★★ 后端缺陷：「从未运行过」被算成 `degraded`
+
+`queryBoardBackgroundTasks`（`dashboard_board_aux.go:29-37`）只对**非**
+`pgx.ErrNoRows` 记 slog，但第 66 行算 degraded 用的是**原始 err**：
+
+```go
+out["degraded"] = discErr != nil || checksErr != nil
+if discErr != nil { out["degraded_reason"] = "discovery status unavailable" }
+```
+
+而那条查询是 `... ORDER BY started_at DESC LIMIT 1`
+⇒ **一行都没跑过时返回 ErrNoRows ⇒ degraded=true**。
+且 `strPtrVal(nil)` = `null`（不是空串），所以真错误与「没记录」在 `status` 上
+**完全一样** ⇒ 客户端分不开。
+
+**后果**：一套**从未跑过 discovery** 的新网关会一直挂着一个红的降级提示，
+直到第一次真正跑起来 —— 而它什么故障都没有。
+
+★ 那句注释（aux.go:65「恒发：前端要区分『真的 0 次』与『没查出来』」）说明
+**意图是对的**，只是把第三种情况（没有记录）也塞进了 degraded。
+`selfcheck` 那条查询是聚合、恒返一行，不会有 ErrNoRows ⇒ 该缺陷只在
+`background_tasks.discovery` 上。
+
+⇒ 客户端只能把它说成「**状态未知 / 从未运行过**」，**不能直接说「降级」**。
+
+### ★ `source` 是条件键，真正的取数来源**根本没下发**
+
+- 命中看板缓存 → 多写一个 `"source": "redis"`（dashboard_board.go:187）
+- 未命中 → 那个 map 里**只有 `error_kind`/`dimension`/`items`**（:198-202）
+
+而 `queryErrorDrill`（aux.go:115-136）在分钟视图失败/为空时会**回落到 hot-log 兜底**；
+能说清来源的 `boardSource()`（`request_stats_minute` vs
+`request_logs_with_current_month`）**只在 `/dashboard/board` 用**（:121），
+本端点根本调不到它。
+
+⇒ **「兜底来的」与「权威视图来的」在响应里无法区分。**
+同理「零行」既可能是真没有，也可能是兜底查完仍然空。
+
+### ★ `days` 在本仓已是第四种口径
+
+`boardDays`（dashboard_board.go:204-213）是 **clamp 到 [1,90]，默认 1**。
+
+| 端点 | `days` 口径 |
+|---|---|
+| dashboardapi 七条 | 越界/非整数 ⇒ **静默回落 7** |
+| auto-route `tuning/accuracy` | 越界 ⇒ **400 报错** |
+| `board/error-drill` | **clamp 到 [1,90]**，默认 1 |
+| auto-route `audit` `limit>500` | clamp（另一个参数名） |
+
+### 变异 24 条 → 24 有牙，零可疑
+
+首轮 22/24，两条**都是 expect 串指错**（变异确实转红，只是命中我没想到的用例）：
+
+- **B3**（去掉 `b.degraded` 守卫）实际打红的是「degraded=false 时即便 status=null
+  也不算」—— 那正是「去掉守卫后多认的那一类」。
+- **C5**（drill 信封检测恒真）打红 10 条，其中包含被判为「按预期通过」的那条
+  （因为它本来就期待抛错）。
+
+★ 这两处的教训是同一条：**「打红了几条」不等于「我指的那条红了」**，
+分诊时必须看**实际具名列表**里有没有自己的 expect 串。
+
+### 门禁
+
+build / 三门 / vue-tsc 全 rc=0；`dashboardBoard.test.ts` 27 条；
+全量 3100 条（122 文件）；十连跑 10/10。
+
+文档 §11.95 纯追加。
+
+### 11.96 第六十批：dashboard 九条接 UI（`DashboardOpsView`，admin 档）
+
+**背景**：第五十八批做了 dashboardapi 七条的 API 层，第五十九批做了
+`operational` + `board/error-drill` 两条裸 JSON 端点。两条 API 模块
+（`api/dashboard.ts` 60 个导出、`api/dashboardBoard.ts` 28 个导出）
+在第五十九批收口时**全无 UI 消费方**（`grep "from '@/api/dashboard'"` 与
+`from '@/api/dashboardBoard'` 均只命中各自的 `.test.ts`）
+—— 「写完 API 层就算接完了」是最常见的一种自我交付：
+声明了不等于消费了。本批把九条端点接进一个页面。
+
+#### 11.96.1 交付物
+
+| 文件 | 性质 | 说明 |
+|---|---|---|
+| `web-mobile/src/views/DashboardOpsView.vue` | 新建 | 九段，全部按需加载 |
+| `web-mobile/src/views/DashboardOpsView.spec.ts` | 新建 | 40 条 |
+| `web-mobile/src/router/index.ts` | 改 | `/dashboard-ops` |
+| `web-mobile/src/config/appNav.ts` | 改 | 抽屉席 `dashboard-ops` |
+| `web-mobile/src/i18n/zh-CN.ts` / `en-US.ts` | 改 | `nav.dashboardOps` + `dashboardOps.*` 段 |
+
+**权限档位**：`admin/handler.go:1052-1069` 九条注册**全部**是 `admin(...)`
+⇒ tenant_admin 可用 ⇒ **抽屉席不设 `requiresRole`**。
+
+★ 这与 `/auto-route` **相反**（那条整族是 `h.superAdmin`，`handler.go:1381/:1430`）。
+两条都叫「路由/看板面」，权限档却完全相反，是本仓最容易照抄错的一处。
+变异 #23 专门钉这条：把抽屉席改成 `requiresRole: 'super_admin'`
+⇒ `AppDrawer.spec.ts` 转红。
+
+**与既有页面的边界**：
+- `/session-analytics` 走 `/api/admin/session-analytics/*`（另一族前缀），
+  字段与降级语义与本页**完全不同**，不可互相顶替；
+- `HomeView` 已消费 `/dashboard/board`（饼图那套，含 `include_operational=1`），
+  本页**不重复**它，聚焦另外九条。
+
+#### 11.96.2 六处「不能都渲染成同一个东西」
+
+| # | 语义 | 后端依据 | UI 处置 |
+|---|---|---|---|
+| 1 | **降级 = HTTP 200 + `success:true` + data 全零** | `dashboardapi/errors.go:319-334` | 数字渲染成 `—` + `do__nodata` class，并挂免责句 |
+| 2 | **「从未运行过」被算成 `degraded`** | `dashboard_board_aux.go:66` | 措辞降级成「状态未知 / 从未运行过」 |
+| 3 | **tenant_admin 的 `tenant_id` 被静默改写** | `dashboardapi/auth.go:39-45` | 该角色**不给**筛选框 |
+| 4 | **drill 的 `source` 是条件键** | `dashboard_board.go:187` vs `:198-202` | 键缺失 = 现算，不是「来源未知」 |
+| 5 | **`days` 两种口径** | `types.go:119-148` vs `dashboard_board.go:204-213` | 顶部回显「静默回落 7」，drill 回显「钳位 [1,90]」 |
+| 6 | **分页双份** | `session_active.go:44-45` + `:62-63` | 不一致单独报警 |
+
+**★ 关于 (1) 的 `degraded` 键**：`Metadata.Degraded` 带 `omitempty`
+⇒ **正常时是键缺失而非 `false`**。判据必须写 `=== true`；
+写 `'degraded' in metadata` 会把全部正常响应误判成降级。
+
+**★ 关于 (2)**：`queryBoardBackgroundTasks` 第 66 行
+`out["degraded"] = discErr != nil || checksErr != nil` 用的是**原始 err**，
+而那条查询是 `ORDER BY started_at DESC LIMIT 1` ⇒ 一张都没跑过时
+返回 `pgx.ErrNoRows` ⇒ degraded=true；`strPtrVal(nil)` = `null`
+⇒ 真错误与「没记录」在 status 上一样是 `null`，客户端**分不开**。
+⇒ UI 只能说「状态未知 / 从未运行过」，说「降级」等于告诉运维「你这里有故障」，
+而它其实什么都没跑过。
+
+**★ 关于 (5)**：本仓 `days` 到本批为止共**四种口径**：
+
+| 端点 | 越界行为 | 默认 |
+|---|---|---|
+| dashboardapi 七条 | 静默回落 **7** | 7 |
+| auto-route `tuning/accuracy` | **400 报错** | — |
+| `board/error-drill` | **clamp 到 [1,90]** | **1** |
+| auto-route `audit`（参数名 `limit`） | clamp | — |
+
+⇒ 顶部的窗口选择器**不能**同时驱动信封族与 drill（口径不同、默认值不同），
+本批给 drill 单独一个输入框与单独的回显。
+
+#### 11.96.3 类型门当场抓出的两个「凭印象写字段」
+
+写视图时我凭 `api/board.ts` 里 `BoardBackgroundTasks` 的形状写了
+`probe_loop.running` 与 `probe_loop.checks_last_10m === null`，
+`vue-tsc` 立刻报 `TS2339: Property 'running' does not exist`。回查后端：
+
+- `probe_loop` **恒是单键 map**（`aux.go:61`
+  `map[string]any{"checks_last_10m": checksLast10m}`）⇒ 没有 `running`；
+  `running` 只存在于 `discovery`（`aux.go:41-44`）。
+  照着 `board.ts` 写会**凭空造出一个后端从没说过的状态**。
+- `checks_last_10m` / `total_runs_24h` / `success_rate` 分别是
+  `int` / `int` / `float64` 的 Go 零值，查询失败时 `Scan` 不写
+  （`aux.go:53-58` / `:86-89` 只 `slog.Warn`）⇒ **恒非 null**。
+  判 `=== null` 是**恒真判据**。真正可用的信号是兄弟键
+  `probe_degraded`（仅 `checksErr != nil` 时出现）与 `selfcheck.degraded`。
+
+★ 也就是说：这三条不是「类型不匹配」这么轻——照原样上线会让
+「查不出来」被渲染成「真的 0 次检查」。
+
+#### 11.96.4 变异验证：23 条，**23/23 有牙**
+
+脚本 `/tmp/mut-co60.mjs`（含 `--dry` / `--only=N`），被测面三个文件
+（`DashboardOpsView.vue` / `appNav.ts` / `dashboard.ts` / `dashboardBoard.ts`），
+还原用 `writeFileSync` 原始内容 + 逐字节比对（`RESTORED=OK`，
+md5 与备份一致）。
+
+**首轮 20/23，三条异常分诊后补了两条判别样本 + 改了两个 expect 锚点，
+终轮 23/23、零可疑。**
+
+★ **三条异常的形态各不相同，值得单记**：
+
+| # | 症状 | 真实原因 | 修法 |
+|---|---|---|---|
+| 4 | `rc=1` 但没抓到期望用例名 | **锚点错了**，不是判据无牙 | `expect` 改指判别样本 B |
+| 9 | **仍全绿** | 真无牙：`tenant_admin` 看不到输入框 ⇒ `tenantId` 恒为 `''`，去掉 `tenantFilterVisible.value &&` 也照样不发 | 构造「残留值 + 角色降级」样本 |
+| 19 | **仍全绿** | 真无牙：只喂了 `running=true`，把模板改成恒「运行中」看不出差别 | 补 `running=false` 反例 |
+
+**★ #4 是本批最容易误判的一条**：`rc≠0` 说明判据**有牙**，
+但红在另一条用例上。若按「没抓到期望名 = 变异没施上」去分诊，
+就会白白去查脚本、查源码改动 —— 实际只需改 `expect` 指向。
+判读顺序：**先读脚本打印的实际具名红列表**，再决定动不动手。
+
+**★ #9 的判别样本是真实的可达路径**，不是硬凑的：
+先以 `super_admin` 登录填了租户号，token 过期后服务端把角色降级，
+页面上的 `tenantId` ref 仍留着旧值 —— 这时若还照发，
+后端会静默改写成调用者自己的租户（`auth.go:39-45`），
+用户看到的是**别的租户**的数据却以为自己在筛选。
+
+**★ #19 是「只测一种取值等于没测这个分支」的教科书形态**：
+`OPERATIONAL_NORMAL` 的 `running` 就是 `true`，
+所以「把三元改成恒运行中」这条变异打上去是全绿的。
+一个 `v-if` 写成恒真、恒假、或只喂一种取值，都属同一类。
+
+
+### 11.97 第六十一批：人工标注工作台 API 层 + 差集基线刷新
+
+#### 11.97.1 功能面基线刷新（第六十批前一直是陈旧的）
+
+差集扫描重算（`/tmp/gapscan.py`，显式传绝对路径，工作区根是另一个仓）：
+
+| | 第五十五批基线 | 本批刷新 |
+|---|---|---|
+| 桌面 web 实际调用 | 394 | **394**（不变） |
+| 移动端实际调用 | 144 | **160** |
+| 缺口 | 252 | **237** |
+| 其中 GET 只读 | 139 | **124** |
+
+移动端 +16 正是第五十六~六十批新增的调用点（`/auto-route` 1、
+`/auto-route-decision` 1、`/dashboard-ops` 9、加上既有页面的连带调用）。
+
+★ **差集清单是易腐产物**：连续五批都拿 144/252 当分母，
+实际分母早就不是那个数了。分母变了，「还剩多少」这个判断本身就会错。
+
+#### 11.97.2 ★★★ 差集清单里**有一整族是不该做的**
+
+`GET /api/admin/center/*`（4 条）与 `GET /api/admin/faults/*`（2 条）
+在差集里排在最前面，看起来是「最该补的缺口」。全仓一搜才发现：
+
+```
+cmd/gateway/maintain_proxy.go:34  maintainCompatPrefixes = []string{
+    "/api/admin/licenses", "/api/admin/downloads", "/api/admin/faults",
+    "/api/admin/releases", "/api/admin/autoupdate", "/api/admin/center", ...
+```
+
+这两个前缀**在网关进程里根本没有 handler**——它们被
+`maintainReverseProxy` 反向代理到**独立的 maintain 服务**
+（`/maintain-api`），并打上 `deprecated` 标签。
+
+⇒ 照差集清单做，等于给一个**由另一个进程提供、且已被标记弃用**的端点做移动端 UI。
+同族还有 `licenses` / `releases` / `downloads` / `autoupdate` / `vibecoding` /
+`donations` / `offline-activation` 等 —— **占差集清单相当大一块**。
+
+★ 这是第五十五批教训（`auto-route/tuning/strategies` 两端都死）的**更大规模版本**：
+那次是单条，这次是**一整族**。差集清单必须先过「谁在提供这个端点」，
+再谈移动端要不要做。
+
+#### 11.97.3 交付物：annotations 三条（`api/annotations.ts`）
+
+| 端点 | 权限 | 形状 |
+|---|---|---|
+| `GET /api/admin/annotations/stats` | `admin(...)` | 裸 JSON |
+| `GET /api/admin/annotations/samples` | `admin(...)` | 裸 JSON |
+| `GET /api/admin/annotations/first-turn-samples` | `admin(...)` | 裸 JSON |
+
+后端注册 `admin/handler.go:1386-1393`。三条走 `json.NewEncoder(w).Encode(resp)`
+⇒ **无信封**，与 `api/dashboard.ts` 不是一个家族
+（解包器里加了反向检测：拿到 `success`+`timestamp` 就报错）。
+
+**不碰写操作**：`POST /annotations`、`POST /annotations/batch`、
+`DELETE /annotations/{request_id}` 会改标注事实，且互不可逆
+（删一条标注会改变该样本 accuracy 的统计口径）。
+
+#### 11.97.4 ★★★★ 本族最刺眼的一处：零标注时 stats 整条 500
+
+`GetOverallStats`（`annotation/stats.go:31-59`）是一条**没有聚合子句**的
+
+```sql
+SELECT total_annotations, correct_count, incorrect_count,
+       accuracy_percent, num_annotators, first_annotation_at, last_annotation_at
+FROM annotation_stats
+```
+
+`annotation_stats` 是**单行汇总表**，不是明细表。
+⇒ **表里没有行时返回 `pgx.ErrNoRows`**
+⇒ `handler.go:1136-1139` 直接 `writeInternalTextErr` ⇒ **HTTP 500**。
+
+更糟的是四个块是**串联早退**：
+
+```go
+overall, err := querier.GetOverallStats(ctx);      if err != nil { …500; return }
+byProvider, err := querier.GetProviderAccuracy(ctx);  if err != nil { …500; return }
+byAnnotator, err := querier.GetAnnotatorStats(ctx);   if err != nil { …500; return }
+byReason, err := querier.GetReasonDistribution(ctx);  if err != nil { …500; return }
+```
+
+任一块出错**整条端点**就 500，客户端拿不到「部分可用」。
+
+⇒ **客户端故意不写 try/catch 降级**：500 与「统计为零」在响应上不可分，
+降级等于把一次数据库故障讲成「大家一条标注都没打」。
+让错误以错误形态冒出来，是本批唯一诚实的选择。
+（对照 `writeDegraded` 那种「200 + 全零 + `metadata.degraded`」的设计，
+本族**连那个标志都没有**。）
+
+**★ `overall` 是指针字段**（`handler.go:131` `*annotation.AnnotationStats`），
+是本族唯一可能为 `null` 的块 ⇒ 解包时 `null` **不得**要求它的 7 个子键，
+而「缺键」必须抛错。两者在响应上长得一样（都是读不到子键），语义完全相反。
+
+#### 11.97.5 本族第 5、6 种 `days` 类参数口径
+
+到本批为止，本仓**同名/同类参数**的越界行为已确认六种：
+
+| 端点 | 参数 | 越界行为 | 默认 |
+|---|---|---|---|
+| dashboardapi 七条 | `days` | 静默回落 **7** | 7 |
+| auto-route `tuning/accuracy` | `days` | **400 报错** | — |
+| `board/error-drill` | `days` | **clamp [1,90]** | **1** |
+| auto-route `audit` | `limit` | clamp | — |
+| `annotations/samples` | `page` | 静默回落 **1** | 1 |
+| `annotations/samples` | `size` | **双向钳位 [1,200]** | 50 |
+| `annotations/samples` | `per_strata` | 钳位 [1,20] | 5 |
+| `annotations/samples` | `strategy` | **400**（唯一会报错的） | recent |
+| `first-turn-samples` | `start_date` | **格式错 400**（`YYYY-MM-DD`） | **今天(UTC)** |
+
+★ **`first-turn` 的缺省日期是「今天」而不是「不限」**
+（`resolveFirstTurnDateRange`，`handler.go:628-633`），
+而 `samples` 的缺省是**不限窗口** —— 同一个族里两个端点的缺省语义**相反**。
+
+★ **`strategy` 非法值会 400**，是本族唯一会报错的参数 ⇒ 前端在
+`fetchSamples` 里**前置拦截**（`Promise.reject`），不发那个必失败的往返。
+同理 `first-turn` 的日期格式也在前端拦。
+
+#### 11.97.6 ★ 条件键与字段名陷阱
+
+- **`strategy` 是条件键**：`resp.Strategy` 带 omitempty，且只在
+  `strategy != "recent"` 时赋值（`handler.go:225-227`）
+  ⇒ **键缺失 = recent**，不是「策略未知」。
+  `unwrapFirstTurnSamples` 里有**反向检测**：本端点没有 `strategy` 键，
+  拿到就报「串了端点」—— 形状对但语义错的情形。
+- **`ReasonDistribution.Percent` 的 JSON 键是 `percentage`**（`types.go:97`），
+  不是 `percent` ⇒ 按 Go 字段名去写前端类型会读到 undefined。
+  变异 #6 专钉这条。
+- `AnnotatorStats.FirstAnnotationAt` 是 `time.Time`（**非指针**）⇒ 恒有值；
+  而 `AnnotationStats.FirstAnnotationAt` 是 `*time.Time` ⇒ 可能 `null`。
+  **同名字段在同一族里一个指针一个值**。
+
+#### 11.97.7 验证
+
+- 用例 **43 条**（`api/annotations.test.ts`）
+- 变异 `/tmp/mut-co61.mjs` **22 条，22/22 有牙、零可疑**，
+  `RESTORED=OK`（逐字节一致）
+- 三门全 rc=0；`vue-tsc --noEmit` rc=0；`npm run build` rc=0
+- 全量 3183 条（124 文件）rc=0；十连跑 10/10（3183 × 10）
+- ★ 本批 22 条变异**首轮即 22/22**，未出现第六十批那种「判别样本缺失」——
+  差别在于**先写夹具时就把每个分支的两侧取值都准备了**
+  （零标注 vs 有标注、自相矛盾 vs 正常、键缺失 vs null、
+  键存在 vs 键缺失），而不是只写「正常」那一种。
+
+文档 §11.97 纯追加。
+
+### 11.98 第六十二批：日志运维面（API 层 + UI）
+
+#### 11.98.1 ★★ 同一前缀下混着两种权限档
+
+`/api/admin/logs/*` 的七条注册（`admin/handler.go:959` / `:1114-1119`）：
+
+| 端点 | 档位 | 本批 |
+|---|---|---|
+| `body-cache-stats` | `admin(...)` | ✔ |
+| `files` | `admin(...)` | ✔ |
+| `stats` | `admin(...)` | ✔ |
+| `archive/list` | `admin(...)` | — |
+| `config` | **`h.superAdmin(...)`** | ✘ 另有 `PUT` 写操作 |
+| `archive` | **`h.superAdmin(...)`** | ✘ 归档（动文件） |
+| `cleanup` | **`h.superAdmin(...)`** | ✘ 删除（动文件） |
+
+⇒ 本页三条都是 admin 档，**抽屉席不设 `requiresRole`**。
+但这是**前缀级的巧合**，不是整族的档位 ——
+★ **按前缀判权限会判错**。往后往本页加 `config`/`archive`/`cleanup`
+任何一条，**整页档位必须跟着升**，不能只加端点不改抽屉席。
+
+不碰写操作的三条理由各不相同：`config` 的 `PUT` 改的是日志级别（改行为），
+`archive` 移动文件，`cleanup` **删文件**。
+
+#### 11.98.2 ★★★★★ 五处「不能都渲染成同一个东西」
+
+**(1) 三种「什么都没有」长得不一样**（`handleLogStats` 的三条早退路径）：
+
+```go
+resp := LogStatsResponse{}
+if cur.File == "" { writeJSON(w, 200, resp); return }   // :326-329 文件日志未启用
+resp.LogDir = dir
+resp.Exists = dirExists(dir)
+if !resp.Exists { writeJSON(w, 200, resp); return }     // :332-335 目录不存在
+```
+
+| 信号 | 语义 | UI 文案 |
+|---|---|---|
+| `log_dir === ''` | **文件日志根本没启用** | 「文件日志未启用」 |
+| `log_dir !== '' && exists === false` | 配了路径但**目录不存在** | 「日志目录不存在：{dir}」 |
+| `exists === true && total_files === 0` | 目录在，**真的没文件** | 「目录存在但一个文件都没有」 |
+
+三者都写「没有数据」的话，运维会去查一个**根本不存在的目录问题**。
+
+**(2) `disk_usage_pct` 的 0 是 Go 零值**：
+
+```go
+if pct, _, _, _, err := diskUsageAt(dir); err == nil { resp.DiskUsagePct = pct }   // :367-369
+```
+
+查失败时只是**不赋值** ⇒ 下发 0，与「真的 0%」不可分。
+⇒ 页面**不**把 0% 讲成「磁盘没被日志占」，而是照回显并附口径说明
+（「这个 0 可能是查询失败，不是真的没占」）。
+
+**(3) `hit_rate` 同构**：`hits/(hits+misses)`，分母为 0 时后端留 `0.0`
+（`logs_body_cache.go:139-142`）⇒ 「无样本」与「0% 命中率」必须分开。
+
+**(4) `files` 的空列表也有两种成因**：
+`logging.ListFiles()` 在文件日志未启用时返回**空切片 + nil 错误**
+（`internal/logging/logging.go:408-410` 注释原文），
+而 handler 对此**没有早退**（`log_management.go:305-315` 一路构造到底）
+⇒ 唯一区分信号是 `dir` 是否为空串。
+
+**(5) 时间指针可为 null**：`OldestMtime`/`NewestMtime` 是 `*time.Time`
+（`:363-364` 直接赋可能为 nil 的指针），目录里没文件时序列化成 `null`
+⇒ 时间跨度**算不出来**，不能拿「现在」或默认值顶上去。
+
+#### 11.98.3 ★ Go 内嵌结构体会被 JSON 扁平化
+
+`LogFileInfoExt`（`log_management.go:85-88`）内嵌 `logging.LogFileInfo`：
+
+```go
+type LogFileInfoExt struct {
+    logging.LogFileInfo          // 内嵌 ⇒ json 编码**扁平化**
+    SizeHuman string `json:"size_human"`
+}
+```
+
+⇒ 响应里**没有** `log_file_info` 这样的嵌套层，
+内层六个字段（`name`/`size_bytes`/`mod_time`/`is_current`/`is_compressed`/`is_archived`，
+`internal/logging/logging.go:399-406`）与 `size_human` **平级**。
+按「外层只有一个内嵌字段」的直觉写前端类型 ⇒ 七个键一个都读不到。
+变异 #8（把必填键改成 `['log_file_info', 'size_human']`）专钉这条。
+
+#### 11.98.4 变异验证：18 + 15 条，全部有牙
+
+- API 层 `/tmp/mut-co62.mjs`：**18/18**（首轮 17/18，#6 是 `expect` 锚点错）
+- 视图 + 抽屉席 `/tmp/mut-co62b.mjs`：**15/15**（其中 1 条可证等价变异）
+- 两轮 `RESTORED=OK`（逐字节一致，md5 与备份相符）
+
+**★ 一条可证等价变异（#2）**，值得单记 —— 它不是判据无牙：
+
+```ts
+const statsState = computed(() => {
+  if (!stats.value) return 'ok'
+  if (logStatsNotEnabled(stats.value)) return 'notEnabled'   // log_dir === ''
+  if (logStatsDirMissing(stats.value)) return 'dirMissing'   // !notEnabled && exists === false
+  if (logStatsEmpty(stats.value)) return 'empty'             // exists === true && total_files === 0
+  return 'ok'
+})
+```
+
+把 `logStatsEmpty` 里的 `exists === true` 去掉，**全绿**。
+但这不是判据无牙，而是**守卫顺序使其可证冗余**：
+到达 `empty` 分支时，上一行 `logStatsDirMissing` 刚返回 false，
+即 `!notEnabled && exists === false` 为假 ⇒ `exists !== false`；
+`exists` 是 boolean ⇒ 必为 true ⇒ 被删的检查是**恒真项**。
+
+⇒ 这与「恒真判据」的处置相反：**恒真判据要删，恒真**守卫**要留**，
+因为前者是无用的复杂度，后者是可读的显式条件。
+本仓 API 层那条同名检查的判据由 `mut-co62.mjs` #3 覆盖（已验证转红）。
+
+**★ 变异 #1/#9 首轮是「rc=1 但零具名红」—— 又是收集失败而非判据失效。**
+原因是我的变异把 `/*MUTCO62B_01*/` 注释放进了**标签属性区**
+（`v-else-if="false"` 后面跟注释），Vue 模板编译直接失败：
+
+```
+Error: Codegen node is missing for element/if/for node.
+  Plugin: vite:vue
+```
+
+⇒ **`rc≠0` 且具名红为 0 ⇒ 先看是不是编译失败**，
+模板里的变异标记必须放进属性「值」的 JS 表达式里
+（`v-if="cond /*MUT*/"`），不能放在标签属性区。
+
+#### 11.98.5 ★★ 一条被十连跑本身抓出来的流程问题
+
+第一次十连跑报「10/10 全绿」，但日志里：
+
+```
+run#1 … run#8   Tests  3214 passed (3214)
+run#9 … run#10  Tests  3238 passed (3238)
+```
+
+⇒ **中途测试条数变了**：我在这轮十连跑运行期间新增了 `LogOpsView.spec.ts`
+的 24 条用例。也就是说**那轮十连跑覆盖的不是最终代码**，
+前 8 轮跑的是旧代码、后 2 轮跑的是新代码。
+
+⇒ 纪律补充：**十连跑必须在代码完全静止后启动**。
+「10/10」这个数字若不附条数，是不足以证明它跑的是哪份代码的。
+本批已按最终代码重跑一遍（3239 × 10）。
+
+#### 11.98.6 交付物
+
+| 文件 | 性质 | 说明 |
+|---|---|---|
+| `web-mobile/src/api/logOps.ts` | 新建 | 三条只读端点 |
+| `web-mobile/src/api/logOps.test.ts` | 新建 | 31 条 |
+| `web-mobile/src/views/LogOpsView.vue` | 新建 | 三段，全部按需加载 |
+| `web-mobile/src/views/LogOpsView.spec.ts` | 新建 | 25 条 |
+| `web-mobile/src/router/index.ts` | 改 | `/log-ops` |
+| `web-mobile/src/config/appNav.ts` | 改 | 抽屉席 `log-ops`（admin 档） |
+| `web-mobile/src/i18n/zh-CN.ts` / `en-US.ts` | 改 | `nav.logOps` + `logOps.*` 段 |
+
+验证：全量 3239 条（126 文件）rc=0；三门 / `vue-tsc` / `build` 全 rc=0；
+十连跑 10/10（3239 × 10）。
+
+文档 §11.98 纯追加。
+
+### 11.99 第六十三批：标注工作台接 UI（`AnnotationsView`）
+
+第六十一批做好的 `api/annotations.ts`（43 条用例）**全无 UI 消费方**——
+写完 API 层不等于接完了。本批补上这一段。
+
+#### 11.99.1 交付物与权限
+
+| 文件 | 性质 |
+|---|---|
+| `web-mobile/src/views/AnnotationsView.vue` | 新建 |
+| `web-mobile/src/views/AnnotationsView.spec.ts` | 新建（27 条） |
+| `web-mobile/src/router/index.ts` | 改（`/annotations`） |
+| `web-mobile/src/config/appNav.ts` | 改（抽屉席 `annotations`） |
+| `web-mobile/src/i18n/zh-CN.ts` / `en-US.ts` | 改 |
+
+权限：`handler.go:1386/1389/1390` 三条注册全是 `admin(...)`
+⇒ tenant_admin 可用 ⇒ **抽屉席不设 `requiresRole`**。
+
+**本页只有只读面**。同前缀的三条写操作全部不接：
+`POST /annotations`、`POST /annotations/batch`、`DELETE /annotations/{id}`。
+后两者互不可逆 —— 删一条标注会改变该样本 accuracy 的统计口径，
+而 stats 端是历史累计值，删完就对不上了。
+
+#### 11.99.2 ★★★★★ 稀疏键是本族最刺眼的一处
+
+`FirstTurnSample`（`admin/annotation_handler.go:100-121`）有 **9 个指针字段**，
+其中 **5 个标注字段带 `omitempty`**：
+
+```go
+Title       *string    `json:"title"`                             // 无 omitempty ⇒ 可能是 null
+Confidence  *float64   `json:"confidence"`
+StatusCode  *int       `json:"status_code"`
+Success     *bool      `json:"success"`
+LatencyMs   *int       `json:"latency_ms"`
+TotalTurns  *int       `json:"total_turns"`
+HumanTaskType *string  `json:"human_task_type,omitempty"`           // ★ 有 omitempty
+HumanModel    *string  `json:"human_model,omitempty"`
+HumanProvider *string  `json:"human_provider,omitempty"`
+IsCorrect     *bool    `json:"is_correct,omitempty"`
+Reason        *string  `json:"reason,omitempty"`
+Annotator     *string  `json:"annotator,omitempty"`
+AnnotatedAt   *time.Time `json:"annotated_at,omitempty"`
+```
+
+⇒ **未标注的行，那些键根本不存在**（不是 `null`）。
+⇒ 缺键必须渲染成「未标注」，**绝不能**渲染成 0、空串或「正确」——
+「没标过」与「标了但判错」是两件完全不同的事，混起来会让工作台的产出不可信。
+
+同理 `AnnotationStats.FirstAnnotationAt` 是 `*time.Time` ⇒ 可能 `null`，
+而 `AnnotatorStats.FirstAnnotationAt` 是 `time.Time` ⇒ **恒有值**。
+
+#### 11.99.3 ★★ 零标注时 stats 整条 500 —— 页面不许把它讲成「没人标注」
+
+第六十一批已挖到：`GetOverallStats` 查的是无聚合子句的单行汇总表
+（`FROM annotation_stats`），空表返 `pgx.ErrNoRows` ⇒ handler 500；
+且四个块串联早退、任一失败整条挂。
+
+本批在 UI 侧的处置：
+
+- **不写任何 try/catch 降级**（与 dashboard 的 `writeDegraded` 相反）；
+- 500 时显示的文案**明说这是查询失败**，
+  并直接写出「一条标注都没有时这个端点也会返回 500，两者无法区分」；
+- 失败时**不渲染任何 KPI** —— 画一个「0 条标注」的 KPI 等于把 500 讲成业务事实。
+
+#### 11.99.4 三个分布块都要渲染
+
+stats 的响应是 `overall` + `by_provider` + `by_annotator` + `by_reason` 四块。
+我在第一版**只渲染了 `by_provider` 与 `by_reason`，漏了 `by_annotator`** ——
+是 `vue-tsc` 报 `TS6133: 'annotatorRows' is declared but its value is never read`
+把它顶出来的。
+
+★ 漏一块比不渲染更糟：三个分布块里少一个，
+看的人会以为「没有人标注」，而实际上是「这一块的代码没写」。
+变异 #10 专钉这条（把 `v-if="annotatorRows.length"` 改成恒 false）。
+
+#### 11.99.5 两种「日期缺省」语义相反
+
+| 端点 | 日期留空时 |
+|---|---|
+| `/annotations/samples` | **不限窗口** |
+| `/annotations/first-turn-samples` | **只看今天（UTC）** |
+
+（`resolveFirstTurnDateRange`，`handler.go:628-633`：`startStr == ""` ⇒ 取今天）
+
+⇒ 本页给 first-turn 段一个**常驻提示**说明这一点，
+并配一条判据：日期留空时请求里**不得**带 `start_date`
+（否则等于把窗口锁死在 2000-01-01，变异 #17 覆盖）。
+
+#### 11.99.6 ★ 用例里的一次样本选歪（子串匹配）
+
+写「人工判定」那两行的断言时用了
+`r.text().includes('人工判定')` 找行 —— 而页面上还有一行标签叫
+**「人工判定模型」**，它是「人工判定」的前缀，`find` 先撞上前者，
+于是取到了 `human_model` 的值（`claude`），断言失败。
+
+修法是加一个 `rowByLabel(w, i, label)` 工具，按 `<dt>` **精确**文本找行。
+
+★ 这是 [[变异比断言更容易发现样本选歪]] 的又一次同族表现：
+**互为前缀的标签 + 子串匹配 = 断言打在错误的行上**，
+症状还很像「实现写错了」，容易去改实现。
+
+#### 11.99.7 变异验证：20 条，20/20 有牙
+
+脚本 `/tmp/mut-co63.mjs`（含 `--dry` / `--only=N`），
+被测面 `AnnotationsView.vue` + `appNav.ts`，
+`RESTORED=OK`（逐字节一致，md5 与备份相符）。
+
+**★ 本轮踩了一次自己的坑**：前六条模板类变异我写成
+`v-if="cond"` → `v-if="cond /*MUT*/"` —— **条件根本没变**，只是多了个注释，
+六条全部「仍全绿」。按 [[量具先自证]] 的判读顺序，
+第一步「变异本体是否真改到行为」就已经否定了它们；
+改成 `v-if="false /*MUT*/"` 后六条全部转红。
+
+⇒ **注入标记不等于变异**。带标记是为了事后 grep 与还原，
+但**判据有没有牙取决于行为是否真的改变** —— 这两件事要分开确认。
+
+验证：全量 3266 条（127 文件）rc=0；
+三门 / `vue-tsc` / `build` 全 rc=0；十连跑 10/10（3266 × 10）。
+
+文档 §11.99 纯追加。
+
+### 11.100 第六十四批：审批查询面 API 层
+
+#### 11.100.1 ★★★★ 本族最刺眼的一处：`total` 不是真实总数
+
+`ListApprovals`（`api/approval_handler.go:336-372`）：
+
+```go
+filter := &sessionaudit.ApprovalFilter{
+    Limit:  req.PageSize,
+    Offset: (req.Page - 1) * req.PageSize,
+}
+records, err := h.manager.List(r.Context(), filter)
+// Get total count (simplified - return length for now)
+total := len(records)                                   // :348-350
+...
+totalPages := (total + req.PageSize - 1) / req.PageSize  // :357
+if totalPages < 1 { totalPages = 1 }
+```
+
+⇒ `records` 已带 `Limit`/`Offset`，**就是当前这一页**，
+所以 `total` = 本页返回了几条，**不是库里一共几条**
+（源码注释自己写着 "simplified - return length for now"）。
+
+连带地 `total_pages` 也失真：`total ≤ page_size` ⇒ `totalPages` **恒为 1**。
+
+⇒ **UI 绝不能**：
+- 显示「共 N 条」而不说明那是本页数；
+- 用 `total > items.length` 判断「还有更多」（永远为 false ⇒ 永远没有下一页）。
+
+翻页只能靠「本页取满」（`items.length >= page_size`）。
+
+#### 11.100.2 ★★★★ `risk_level` / `trigger_type` 可以是空串
+
+`buildListItem`（:530-549）只在 `record.DetectResult != nil` 时才填这两列：
+
+```go
+if record.DetectResult != nil {
+    item.RiskLevel   = string(record.DetectResult.Decision)
+    item.TriggerType = record.DetectResult.Reason
+}
+```
+
+⇒ 没有检测结果的行，这两列是**空字符串**，
+既不是「低风险」也不是「无风险」，是**「不知道」**。
+
+★ 与 [[累计量 ≠ 现状]] 同源：空串在这里是「未检测」，
+若渲染成「低」会让人以为系统判定过。
+
+#### 11.100.3 ★★★ `time_left` 与三个 omitempty 键
+
+| 键 | omitempty | 何时出现 |
+|---|---|---|
+| `time_left` | 是 | **仅** `status == pending` 且 `time.Until(ExpiresAt) > 0`（:551-556） |
+| `approved_by` | 是 | 已审批 |
+| `approved_at` | 是 | 已审批 |
+| `reason` | 是 | 有理由 |
+
+⇒ **`status == "pending"` 但**没有 `time_left` = **已过期却还标着待审批**。
+UI 必须显示「已逾期」，不能显示成「待审批中」。
+
+⚠ 判别样本的必要性在这里体现得很具体：
+`approvalCountingDown` 里的 `status === 'pending' &&` 去掉后，
+**全部 pending 夹具都测不出来**（它们的 `time_left` 要么有要么本就 pending）——
+需要构造「**已审批但仍带 `time_left`**」这个取值才能让两种实现分叉。
+（后端只在构造时按当时状态填一次，不回填清理，所以这个组合真实可达。）
+
+#### 11.100.4 ★★ 三种静默行为与一个「混口径」的统计端
+
+- `page` 非整数或 ≤0 ⇒ 静默回落 **1**（`err == nil && val > 0`）；
+- `page_size` 非整数或 >200 ⇒ 静默回落 **50**（多条件 `&&` 全过才用）；
+- `status` **完全不校验** ⇒ 非法值直接进 SQL filter，结果是**空列表**而非 400；
+- `start_time` / `end_time` 是 **RFC3339**，格式错 **`if err == nil` 不成立 ⇒ 静默忽略**（:398-408）。
+
+★ `ApprovalStats` 里还**混着两套口径**：
+`today_total` / `today_pending` 在 `calculateStats` 里按「今天」单独算，
+而 `start_time`/`end_time` 控制的是**其余八个字段**。
+⇒ 同一份响应里，六个数字是「按你给的时间范围」，两个是「今天」。
+
+另：`avg_approval_time_seconds` 是 `float64` 零值，
+分母为 0 时留 `0.0` ⇒ 与「真的是 0 秒审批」不可分，
+判据要看 `approved + rejected`（变异 #14 的判别样本：
+「`approved=0` 但 `rejected>0`」——这一种取值两种实现才分叉）。
+
+#### 11.100.5 权限与不碰的写操作
+
+两条注册都是 `wrapAdmin(...)`（`cmd/gateway/main.go:7384-7385`）
+⇒ tenant_admin 可用 ⇒ 抽屉席不设 `requiresRole`。
+
+不碰 `/api/v1/approvals/*` 下的 **approve / reject / resume** 三条
+（:7375-7381）：它们**真的改变审批状态**（会导致超时、影响会话是否放行）。
+
+#### 11.100.6 验证
+
+- 用例 **39 条**（`api/approvals.test.ts`）
+- 变异 `/tmp/mut-co64.mjs` **19 条，19/19 有牙、零可疑**，`RESTORED=OK`（逐字节一致）
+- 三门 / `vue-tsc` / `build` 全 rc=0；全量 3305 条（128 文件）rc=0；十连跑 10/10
+- ★ 首轮 16/19，三条异常里有**两条是判据无牙**（#5/#14，缺判别样本），
+  一条是**锚点错**（#19）。
+  补两条判别样本后，#5/#14 从「仍全绿」变成「红在**新加的那条**」——
+  这正好印证 [[量具先自证]] 的判读顺序：
+  **「仍全绿」先问判据够不够严（这里是不够），「rc≠0 没抓到名」先问锚点对不对。**
+
+文档 §11.100 纯追加。
+
+### 11.101 第六十五批：审批队列接 UI（`ApprovalQueueView`）
+
+第六十四批的 `api/approvals.ts`（39 条用例）**全无 UI 消费方**。本批补上。
+
+#### 11.101.1 与既有审批页的边界（三页不重叠）
+
+| 页面 | 答什么 | API 模块 |
+|---|---|---|
+| `/approval-config` | 租户审批**配置** | `api/approvalConfig.ts` |
+| `/approval-rules` | 审批人与**规则** | 同上 |
+| `/approval-queue`（本批） | 运行中的**审批实例** | `api/approvals.ts` |
+
+配置说「该问谁」，规则说「什么条件下拦」，本页说「现在有几条在等」。
+
+权限：`main.go:7384-7385` 两条都是 `wrapAdmin(...)` ⇒ tenant_admin 可用
+⇒ 抽屉席**不设** `requiresRole`（与同族的 `approval-config`/`approval-rules` 一致）。
+
+不碰 `/api/v1/approvals/*` 的 **approve / reject / resume**（:7375-7381）——
+它们真的改变审批状态，会导致超时、影响会话是否放行。
+
+#### 11.101.2 ★★★★★ 五处「不能都渲染成同一个东西」
+
+**(1) `total` 是本页条数。** UI 因此显示「**本页返回 N 条**（后端只给本页数，
+不给库里总数）」，并且**明确排除「共 N 条」这种措辞**。
+配套钉一条 `approvalsTotalIsPageSize`：`total !== items.length` ⇒ 报契约异常。
+
+**(2) 翻页判据只能靠「本页取满」。**
+`total_pages` 恒为 1（`total ≤ page_size`），
+用它会让「下一页」按钮**永远禁用**。变异 #3 专门把判据换成
+`page < total_pages`，实测转红。
+
+**(3) `risk_level`/`trigger_type` 空串 = 未检测。**
+`buildListItem` 只在 `DetectResult != nil` 时才填（:546-549）。
+⇒ 变异 #4 把空串渲染成「低」，实测转红 ——
+「低风险」会让运维以为系统判定过，而实际上**根本没检测**。
+
+**(4) 三态互斥：倒计时 / 已逾期 / 已决定。**
+
+| 条件 | 显示 |
+|---|---|
+| `status == pending` 且有 `time_left` | 倒计时 |
+| `status == pending` 且**无** `time_left` | **已逾期**（带 `aq__overdue` class） |
+| 已审批（`approved_at` 键存在） | 处理时间 |
+| 其它 | 无数据占位 |
+
+★ 「已逾期」是本族**唯一会挡住会话**的状态，所以给了独立底色，
+并且页面顶部额外提醒「本页有 N 条已逾期的待审批 —— 它们还在挡着会话」。
+
+**(5) 统计端混两套口径。**
+`today_total`/`today_pending` 按「今天」算，与 `start_time`/`end_time`
+控制的其余八个字段**无关** ⇒ 页面上分区呈现，并明写
+「今天」那两个不受时间范围影响。
+
+另：`avg_approval_time_seconds` 分母为 0 时是 Go 零值，
+⇒ 显示「无样本（还没有已通过/已拒绝的记录）」而不是「0 秒」。
+
+#### 11.101.3 ★ 一条判别样本**自己漏了**的真实案例
+
+本批变异 #8（把 `approvalCountingDown` 的首个分支改成恒 false）
+报「rc≠0 但没抓到期望名」。追下去发现两件事：
+
+**一、锚点命名误导了我。** 我把 `expect` 指向「已审批但仍带 `time_left`」
+那条判别样本，但它红在「pending + 有 `time_left` ⇒ 显示倒计时」——
+因为 `LIST_NORMAL` 里有三条 item，`rowByLabel` 返回**第一条**，
+它的 `58m` 先消失。两条都是真缺陷，`namedFails` 只报首个。
+
+**二、更值得记的是那条判别样本自己太弱。**
+它原本只断言：
+
+```ts
+expect(row.find('dd').classes()).not.toContain('aq__overdue')
+```
+
+而变异让 `itemState` 落到 `'other'`（渲染成「—」）时**照样通过** ——
+**判别样本自己也漏**。已改成正面断言：
+
+```ts
+expect(row.find('dd').element.textContent).toBe('2026-10-08T01:30:00Z')
+expect(row.find('dd').element.textContent).not.toContain('58m')
+expect(row.find('dd').classes()).not.toContain('aq__overdue')
+expect(row.find('dd').classes()).not.toContain('aq__nodata')
+```
+
+★ **「判别样本」也需要被变异检验。** 它的作用是让两种实现在该取值上分叉，
+但**断言强度不够时，它会「通过」而什么也没证明** ——
+与 [[量具先自证]] 同源，只是这次漏在**用例**而不是**工具**上。
+
+#### 11.101.4 验证
+
+- 用例 **30 条**（`ApprovalQueueView.spec.ts`）
+- 变异 `/tmp/mut-co65.mjs` **20 条，20/20 有牙、零可疑**，`RESTORED=OK`（逐字节一致）
+- 三门 / `vue-tsc` / `build` 全 rc=0；全量 3335 条（129 文件）rc=0；十连跑 10/10
+- ★ 本轮写脚本时又踩了一次嵌套模板字符串：变异串里写
+  `` t(\`approvalQueue.status.${statusEcho}\`) `` 会被 **JS 求值**（`statusEcho is not defined`
+  直接崩在脚本加载阶段）⇒ 变异串里的 `${}` 必须写成 `\${}`。
+
+文档 §11.101 纯追加。
+
+---
+
+### 11.102 data-lifecycle 只读四条接 API 层（第六十六批）
+
+**范围**：`web-mobile/src/api/dataLifecycleStats.ts`（新建）+ `.test.ts`（新建）
+**四条的注册（全部 `admin` 档，tenant_admin 可用）**
+
+| 端点 | 注册 | handler |
+|---|---|---|
+| `GET /api/admin/data-lifecycle/stats` | `admin(...)` | `handler.go:960` |
+| `GET /api/admin/data-lifecycle/metrics` | `admin(...)` | `handler.go:962` |
+| `GET /api/admin/data-lifecycle/jobs` | `admin(...)` | `handler.go:979` |
+| `GET /api/admin/data-lifecycle/blobs/top` | `admin(...)` | `handler.go:994` |
+
+**与既有 `api/dataLifecycle.ts` 不重叠**：那个模块只覆盖 `storage/tables` 与 `partitions` 两条。
+
+**排除的写操作**：`POST /data-lifecycle/cleanup/preview`（虽名为 preview，body 带
+`action ∈ {trim, archive, delete}` 且走 POST）、`POST /blobs/cleanup/*`、`/partitions/*`、`/hot/promote`。
+
+**同前缀混两档**：`partitions/archive` 起、`hot/*`、`storage/tables/vacuum*|reindex` 是
+`h.superAdmin`（`handler.go:963-978`），本批这四条是 `admin` ⇒ **不能按前缀判权限**。
+
+#### 11.102.1 ★★★★★ `metrics` 恒不提供清理/归档时间——是死字段，不是「从未清理过」
+
+`data_lifecycle_metrics.go:33-34` 声明了
+
+```go
+LastCleanupAt *string `json:"last_cleanup_at,omitempty"`
+LastArchiveAt *string `json:"last_archive_at,omitempty"`
+```
+
+而 `handleDataLifecycleMetrics`（`:39-86`）**从头到尾没有给它们赋值**——
+一次 `QueryRow(...).Scan(10 个目标)` 只覆盖十个数字字段。
+全仓 grep 证据：这两个标识符**只出现在那两行声明里，零个赋值点**。
+
+⇒ 这两个键**永远不存在**，无论清理/归档是否真的发生过。
+⇒ 键缺失**不能**说成「从未清理过」。清理可能早就跑过了，只是这个端点不报。
+⇒ 客户端只能保留可选字段以求前向兼容，措辞必须是「本端点不提供这个时间」。
+
+> ★ 第一版我把这里写成了「从没清理/归档过时键不存在」，并配了
+> `metricsNeverCleaned()` / `metricsNeverArchived()`。
+> 写用例时才发现**这两个函数是恒真的**（真实响应恒无键），
+> 而恒真会让 UI 永远显示「从未清理」——一句**假话**。
+> 这是本批唯一一个「注释写错 ⇒ 判据恒真 ⇒ UI 撒谎」的完整链条。
+
+#### 11.102.2 ★★★★ `jobs.running` 空时是 `null`，`history` 空时是 `[]`
+
+```go
+// data_lifecycle_jobs.go:237  listJobs
+var running []*JobRun            // ← nil 切片
+// :247
+hs := make([]*JobRun, 0, ...)    // ← 非 nil
+```
+
+无任务时 `running` 的 `append` 一次都不执行 ⇒ `json.Encode(nil 切片)` ⇒ **`null`**；
+而 `history` 由 `make(..., 0, ...)` 起步 ⇒ 恒为 `[]`。
+**「刚重启、一个任务都没起过」是常态** ⇒ `running: null` 是高频合法响应。
+
+第一版 `unwrapLifecycleJobs` 对两个键一律 `requireArray` ⇒ **一上线就抛错**。
+改为 `nullableArray`：`null` 归一为 `[]`，非 null 非数组仍抛错。
+
+> ★ 对照：`blobs/top` 的 `rows` 是 `make([]blobRow, 0, limit)`（`:120`）⇒ **恒 `[]`**。
+> **同一个 Go 家族里两个切片的空态编码不同**，只能逐个读源码，不能类推。
+
+#### 11.102.3 ★★★★ `metrics` 不做租户隔离，但注册是 `admin` 档
+
+`data_lifecycle_metrics.go:3-11` 的文件头注释写着：
+
+> Currently the endpoint is super-admin only and the SQL is left unscoped.
+
+而注册处是 `admin(...)` ⇒ **tenant_admin 实际能调**，
+而 SQL 是 `FROM request_logs`（`:63`）**无 WHERE** ⇒ 它讲的是**整表**。
+同时 `stats`（`:57-63`）与 `blobs/top`（`:91-97`）都做了 `IsTenantAdmin(r)` 判别
+⇒ **同族三条端点的隔离口径不一致**。
+
+> **注释与注册矛盾时以注册为准。** 这条与 `/auto-route` 的 `h.superAdmin` 正好相反，
+> 照抄任一边都会错。
+
+#### 11.102.4 ★★★★ `stats` 里混了两种口径，且一个端点有三种「查不出来」编码
+
+**混口径**：`total_rows` 走 `COUNT(*) … WHERE 1=1` + `tenantFilter`（`:75-79`），
+而 `total_size_bytes` 是 `pg_total_relation_size('request_logs')`（`:76`）——
+**整张表的物理大小，不带任何过滤**。同一个对象里既有租户口径又有全表口径
+⇒ 不能并排写成「本租户 X 行 / Y 字节」。
+
+同理每段 / 每租户的 `size_bytes` 是
+`pg_total_relation_size('request_logs') * rows / total_count`（`:105-106`）——
+**按行数摊派出来的估算值（含索引），不是实测大小**。
+
+**三种失败编码并存**：
+
+| 环节 | 后端行为 | 客户端看到 |
+|---|---|---|
+| 总量查询失败 | `:81-85` **500** | 整条挂 |
+| 分段查询失败 | `:137-141` **500** | 整条挂 |
+| 分段行 `Scan` 失败 | `:146-149` `warnRowSkip` + `continue` | **该段 `null`** |
+| `by_tenant` 查询失败 | `:197-201` 非致命（注释 "non-fatal, continue"） | **`[]`** |
+| `growth_trend` 查询失败 | `:262-266` 非致命 | **`[]`** |
+
+⇒ `[]` 与「真的没有数据」**不可分** ⇒ UI 不能说「无数据」，
+只能说「没有可展示的记录」。导出 `listEmptyIsAmbiguous()` 钉住这一点。
+
+#### 11.102.5 ★★★ 30 天边界是双侧闭区间 ⇒ 段行数之和可能超过 `total_rows`
+
+```sql
+-- warm (:116)  ts BETWEEN NOW() - INTERVAL '30 days' AND NOW() - INTERVAL '7 days'
+-- cold (:124)  ts BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '30 days'
+```
+
+Postgres 的 `NOW()` 在一个语句内是同一个事务时间，两侧都含端点
+⇒ 落在 `NOW()-30d` 那一瞬间的行**会被数两次**。
+
+⇒ 「四段之和 > `total_rows`」不是数据错了，而是**边界重复计数**。
+解读时不能报成缺陷。`metrics` 侧（`:57-60`）同一成因。
+
+#### 11.102.6 ★★★ 其余已确认的契约
+
+- `days` 是**后端写死的标注值** `:165/168/171/174` = `7 / 23 / 60 / 999`
+  （不是区间上界；`warm` 是 23 不是 30，`expired` 是 999 不是 91）。
+- `percent_of_total` 是 **0-100**（`:153` `rows/total*100`），不是 0-1；
+  `total_rows === 0` 时四个都留 `0.0`，与「真的是 0%」不可分。
+- `compression_rate` **被后端夹到 100**（`:280-282`），且 `requests === 0` 时留 `0.0`。
+- `by_tenant` `LIMIT 10`、`growth_trend` `LIMIT 7` 且 **`ORDER BY day DESC`（新的一天在前）**
+  ⇒ 折线图若按返回序直接连线会**倒着走**。
+- `jobs` 的 `limit` **硬编码 50**（`:322` `h.listJobs(50)`），
+  而 `listJobs` 内部又钳到 `registry.maxKeep`（`:244-246`）⇒ 前端传什么都没用。
+- `JobRun` 除 `run_id`/`op`/`status`/`duration_ms` 外**十个字段都带 omitempty**。
+  `finalizeJob`（`:200-219`）入历史前必设 `finished_at` ⇒
+  `running` 列表无 `finished_at`、`history` 列表必有。
+- `blobs/top` 的 `total_bytes` 是**这 N 行的合计**（`:135` 逐行累加），**不是全表总量**。
+- `blobs/top` 的 `limit` 口径：`Atoi` 成功 **且** `0 < n <= 200` 才生效，
+  否则**静默回落 20**（`:82-86`）——注意**不是** approvals 的「回落 50」。
+- `blobs/top` 的逐行 `total_bytes` 是后端在 Go 里现算的（`:133`）⇒
+  客户端的一致性校验**结构上恒真**，抓的是形状不符/传输损坏，不是后端逻辑错。
+- ★ 同一响应里两种时间精度：`occurred_at` 是 `ts.UTC().Format(time.RFC3339)`（`:132`）⇒ **秒级 + Z**；
+  `collected_at` 是 Go `time.Time` 直编 ⇒ **纳秒级**。
+- `blobs/top` 的 `session_key`/`tenant_id` 是 `COALESCE(..., '')` ⇒ 无会话/无租户时是**空串**不是 null；
+  `model` 是 `COALESCE(outbound_model, '')` + omitempty ⇒ 无模型时**键不存在**。
+
+#### 11.102.7 ★ 变异暴露的判据缺陷：夹具用常量造 = 自指恒真
+
+`/tmp/mut-co66.mjs` 第一轮 **35/43**，8 条异常。判读结果：
+
+- **5 条是锚点指错**（变异确实转红了，只是红在别的判别样本上）——
+  与 §11.101 的老问题同源：`namedFails` 只报首个红名，
+  锚点必须指向「该变异第一个破坏的取值」。
+  例：把 `>= GROWTH_TREND_DAYS` 放宽成 `> 0` 后，
+  「满 7 条」那条仍为 true，**分叉点是「只有 3 天却判成截断」**。
+- **3 条是真缺陷**（判据无牙 / 测试自指）：
+  1. `by_tenant 满 10 条` 用 `Array.from({length: BY_TENANT_LIMIT})` 造夹具
+     ⇒ **改常量两边一起变**（变异 #22 把 10 改成 20 仍全绿）。
+  2. `growth_trend 满 7 条` 同样自指（变异 #23）。
+  3. 缺「未取满 ⇒ 未截断」的**负控**（变异 #17 放宽后仍全绿）。
+
+修法：夹具条数**硬写后端 SQL 的字面量**（10 / 7），并补负控；
+再把常量值本身也断言（`BY_TENANT_LIMIT === 10`）。
+
+> ★ **同族**：「`--dry` 只验匹配验不出行为」——这里更隐蔽：
+> **自指夹具能让「匹配上 + 改了常量 + 用例照过」三者同时成立。**
+> 判据的输入里若出现被测常量本身，那条判据对它就是恒真。
+> 判据的输入必须来自**外部真相**（后端源码的字面量），不能来自被测代码。
+
+#### 11.102.8 验证
+
+- 用例 **99 条**（`dataLifecycleStats.test.ts`）
+- 变异 `/tmp/mut-co66.mjs` **43 条，43/43 有牙、零可疑**，`RESTORED=OK`（逐字节一致）
+- 三门 rc=0（css-media 91 文件 / touch-target 88 个 .vue / i18n 2457 键一致）
+- `vue-tsc --noEmit -p tsconfig.app.json` rc=0；`npm run build` rc=0
+- 全量 **3434 条（130 文件）** rc=0
+
+> ★ 类型门又抓出两处：`noUncheckedIndexedAccess` 下
+> `s.growth_trend[i].date` 报 TS2532（要显式收窄）；
+> 以及给夹具加了返回类型标注后，`as Record<string, unknown>` 全部撞 TS2352
+> （接口无索引签名）⇒ 改用 `raw()` 辅助走 `unknown` 中转。
+
+#### 11.102.9 留给第六十七批（UI）的硬约束
+
+1. `metrics` 必须标「**全表口径**」，不能与 `stats`（做了租户过滤）并排成同口径的两个数。
+2. `stats.total_rows` 是租户口径、`total_size_bytes` 是全表口径 ⇒ 不能并排写「本租户 X 行 / Y 字节」。
+3. 四段 `null` 要显示「**查不出来**」，不是「0 行」。
+4. `by_tenant` / `growth_trend` 空数组措辞只能是「没有可展示的记录」。
+5. `growth_trend` 折线要**反转**成时间正序再画。
+6. `jobs` 的 `limit` 是 50 的后端硬编码，UI 不该给「条数」选择器。
+7. `blobs/top` 的 `total_bytes` 要标「本次 N 行合计」。
+8. `last_cleanup_at` / `last_archive_at` 标「本端点不提供」，**绝不能**说「从未清理」。
+9. 抽屉席：admin 档，**不设** `requiresRole`。
+
+文档 §11.102 纯追加。
+
+---
+
+### 11.103 data-lifecycle 只读四条接 UI（第六十七批）
+
+**范围**：`web-mobile/src/views/DataFlowView.vue` + `.spec.ts`（新建）、
+`router/index.ts`、`config/appNav.ts`、`i18n/{zh-CN,en-US}.ts`
+**路由**：`/data-flow`，抽屉席 key `data-flow`，**admin 档不设 `requiresRole`**
+（四条注册 `admin/handler.go:960/962/979/994` 全部是 `admin(...)`）。
+
+#### 11.103.1 ★ 新建独立页而不是并进 `/data-lifecycle` —— 按「答什么」划界
+
+| 页面 | 答什么 | 粒度 |
+|---|---|---|
+| `/data-lifecycle` | 数据库这一层什么状态（分区清单 + 表体积榜） | **表级** |
+| `/data-flow`（本页） | 记录怎么分布 / 有没有在清理 / 大字段占多少 | **记录级** |
+
+理由不只是粒度不同：本页的 `metrics` 是**全表口径**
+（`data_lifecycle_metrics.go:63` 的 `FROM request_logs` 无 WHERE，注册却是 `admin`），
+而 `/data-lifecycle` 的数字是租户/榜内口径 ⇒
+**并排会给出错误对比**。合并两页就是本仓反复踩的「按名字划界」。
+
+#### 11.103.2 ★★★★★ UI 必须钉住的九件事（全部来自 §11.102 取证）
+
+| # | 约束 | UI 处置 |
+|---|---|---|
+| ① | `metrics` 全表口径 | 独立区顶部挂橙色横幅「整张表」，且**不得**在 stats 区出现同一块横幅 |
+| ② | `total_rows` 租户口径 / `total_size_bytes` 全表口径 | 两行**各挂口径标签**，并明写「口径不同」 |
+| ③ | 四段可为 `null` | 显示「这一段查不出来」，**不是「0 行」**（独立 class `df__rowMain--unknown`） |
+| ④ | 空数组是二义的 | 措辞「没有可展示的记录 —— 也可能是这一段查询被跳过了」 |
+| ⑤ | 趋势新的一天在前 | 列表 `.reverse()` 成时间正序，并明写「已改成时间正序」 |
+| ⑥ | `jobs` limit 硬编码 50 | **刻意不给条数选择器**，只写「传了也不会生效」 |
+| ⑦ | `total_bytes` 是 N 行合计 | 横幅带 N：「本次返回的 2 行合计 249 KB（不是全表总量）」 |
+| ⑧ | 清理/归档时间恒不存在 | 显示「本端点不提供」，并解释「不能说从未清理」 |
+| ⑨ | `size_bytes` 是摊派估算 | 每处带「摊派估算 {size}」 |
+
+#### 11.103.3 ★ 变异暴露的三处判据缺陷（本批真缺陷）
+
+第一轮 **18/28**，10 条异常。判读结果：
+
+1. **7 条锚点指错**（变异确实转红，只是红在别的用例上）——
+   与 §11.101/§11.102 同源。**锚点必须指向用例标题里的片段**，
+   我第一版把断言**正文**里的字样（如「值单元格断言」「摊派估算 512 MB」）
+   当成了 `expect` ⇒ 一条都没匹配上。
+2. **`segment()` 里的三元是恒真死代码**：
+   ```ts
+   return segmentUnavailable(s, key) ? null : s[key]
+   //                    为真时 s[key] 本来就是 null ⇒ 两个分支同值
+   ```
+   变异把它改成 `return s[key]` 仍全绿。⇒ 已删（`DataLifecycleStats[key]`
+   的类型本身就是 `DataSegment | null`）。
+   替代变异改成「让 `segmentSizeText` 不走 UNAVAILABLE 兜底」——
+   它**仍是等价变异**，因为模板的 `v-else` 已先行分流，null 段根本走不到那个 helper。
+   按「恒真守卫要留」处置，标记为**可证等价变异**并单列统计。
+3. **两条缺失用例**（都是变异实测漏出来的，不是想出来的）：
+   - **`statsRowsDisagree` 在视图层完全没覆盖**。补用例时才发现：
+     该判据在**有段缺失时直接返回 false**（缺段不代表多算了），
+     而默认夹具里 `cold_data` 恰是 `null` ⇒
+     **不先把四段补齐就永远测不到这条判据**。
+     ⇒ 夹具必须**显式**造一个「四段齐全但和 > 总量」的样本。
+   - **「报错时清空数据」在首次失败时是空操作**。原用例只测首次失败 ⇒
+     清空前本来就是 null，改不改编排一样。
+     ⇒ 改成「先成功加载一次，再让第二次失败」，断言旧数据消失。
+
+> ★ 后者是「**判据的输入必须能区分被测的两个分支**」的又一例：
+> 若判据的两条路径在夹具上等价，它就对改动无感。
+
+#### 11.103.4 其它
+
+- 抽屉席**不设** `requiresRole`；变异 #28 把它误设成 `super_admin`
+  ⇒ `AppDrawer.spec.ts` 的白名单式断言转红（该门已能抓到这类误标）。
+- i18n：新增 69 键（`dataFlow.*` 66 个 + `nav.dataFlow` + 2 个），
+  zh-CN / en-US 各 2526 键，键集一致。
+  ★ 首次跑 i18n 门报了 **13 个「视图引用了词典里不存在的键」** ——
+  我把键嵌在 `stats`/`jobs`/`blobs` 子对象下，视图却按**顶层**路径取，
+  另有 `rateSaturated`/`rateNoSamples` **压根没定义**。
+  这正是那道门存在的意义。
+- 类型门（`vue-tsc --noEmit`）抓出三处：夹具返回类型未标注导致
+  `cold_data` 被推成 `null` 字面量、`f[k]` 在 `noUncheckedIndexedAccess` 下
+  可能为 null、`f.hot_data.rows` 漏收窄。
+  ★ **`build` 里内含类型门** ⇒ 只跑 `vue-tsc` 通过还不够，`npm run build` 必须单独 rc=0。
+
+#### 11.103.5 验证
+
+- 用例 **47 条**（`DataFlowView.spec.ts`）
+- 变异 `/tmp/mut-co67.mjs` **28 条：27 条有牙 + 1 条可证等价，零异常**，
+  `RESTORED=OK`（视图与 `appNav.ts` 均逐字节一致）
+- 三门 rc=0（css-media 91 文件 / touch-target **89 个 .vue** / i18n 2526 键一致）
+- `vue-tsc` rc=0；`npm run build` rc=0
+- 全量 **3481 条（131 文件）** rc=0；十连跑 10/10
+
+文档 §11.103 纯追加。
+
+---
+
+### 11.104 差集基线刷新 + compression 只读两条接 API 层（第六十八批）
+
+#### 11.104.1 ★ 差集基线（第二次经量具校准）
+
+| 指标 | 上一基线（第六十一批） | 本次 | 变化 |
+|---|---|---|---|
+| 桌面 web 实际调用 | 394 | **394** | — |
+| 移动端实际调用 | 160 | **175** | **+15** |
+| 桌面有 / 移动端无 | 237 | **225** | −12 |
+| 其中 GET 只读 | 124 | **112** | −12 |
+
+已排除（属 `cmd/gateway/maintain_proxy.go:34` 的 `maintainCompatPrefixes`，
+由独立 maintain 服务代管且已 deprecated）：`center/*`、`faults/*`、`licenses*`、
+`releases*`、`downloads/*`。
+
+#### 11.104.2 本批范围
+
+| 端点 | 注册 | handler |
+|---|---|---|
+| `GET /api/admin/compression/stats` | `admin(...)` | `handler.go:954` |
+| `GET /api/admin/compression/sessions` | `admin(...)` | `handler.go:955` |
+
+桌面调用方：`web/src/api/compression.ts:40,77`。移动端此前**无**本族模块
+（`dataLifecycleStats` 里的 `compression_rate` 是另一个字段，无关）。
+
+#### 11.104.3 ★★★★★ 本族最要紧的五件事
+
+**(1) ★★★★★ `count` 查询失败返的是 200 + `{items:[], count:0}`，不是 500**
+
+```go
+// compression_sessions.go:108-112
+if err := h.db.QueryRow(ctx, countSQL, args...).Scan(&totalCount); err != nil {
+    slog.Warn("compression_sessions count query failed", "error", err)
+    writeJSON(w, http.StatusOK, compressionSessionsResponse{Items: make([]compressionSessionItem, 0), Count: 0})
+    return   // ← 主查询根本没跑
+}
+```
+
+⇒ `count: 0` **无法区分**「真的没有会话」与「count 查询失败」，且后者连主查询都没跑。
+⇒ 同时注意主查询失败走的是 **500**（:155-160）——**两条失败路径不一致**。
+
+**(2) ★★★★ `hours` 只在 `from` 与 `to` 都缺省时才参与时间窗计算**
+
+```go
+// :89-109（stats）与 :64-85（sessions）逐字相同
+if fromStr != "" { from = parse(fromStr) } else { to = now; from = to - hours }
+if toStr   != "" { to   = parse(toStr)   } else if fromStr != "" { to = now }
+```
+
+⇒ **只要传了 `from` 或 `to` 任一，`hours` 就被完全忽略。**
+前端「顺手」带上 `hours` + `from` 会出现「界面上显示 hours，实际没生效」。
+⇒ 导出 `timeWindowMode()` / `timeWindowQuery()`，后者**只在 hours 口径下才发 `hours`**。
+
+另：`hours` 是 **clamp 到 [1,720]**（:75-80），而 sessions 的 `page_size`
+是**静默回落 50**（:56-58）—— 同一族里两种越界口径。
+`from`/`to` 格式错 ⇒ **400**（不是静默忽略）。
+
+**(3) ★★★★ `compressed_total` 是组级口径，不是行级口径**
+
+```go
+// compression_stats.go:173-176
+result.TotalRequests += cnt
+if withOutbound > 0 { result.CompressedTotal += cnt }   // ← 整组都算
+```
+
+按 `strategy` 分组，`with_outbound = COUNT(rb.outbound_body)` 是**组内**计数
+⇒ 只要组内有任意一行有 outbound_body，**整组 cnt 都进 `CompressedTotal`**。
+
+⇒ `compression_rate = CompressedTotal / TotalRequests`（:187，**0-1 比例**）
+的分子**不是**「被压缩的行数」，而是「至少有一行被压缩的策略组的行数之和」。
+
+★ 与 `data-lifecycle` 的 `percent_of_total`（0-100）**单位相反**，两族不可直接比较。
+
+**(4) ★★★★ 本族两个端点的 nil 指针编码相反**
+
+| 位置 | 字段 | 编码 |
+|---|---|---|
+| `compressionStats` | 七个 token 字段 | `*int64` + **omitempty** ⇒ 值不大于阈值时**键不存在** |
+| `compressionSessionItem` | 四个 `*int` | **无 omitempty** ⇒ 键**恒存在**，值为 **`null`** |
+
+⇒ 「键缺失」与「值为 null」在本族是**两种不同的失败语义**，不能互相套用。
+`sessions` 的解包器因此**逐个校类型但不校非空**。
+
+**`estimated_tokens_saved` 尤其危险**：只在
+`estimated_original_tokens > total_outbound_tokens` 时才设指针（:204-206）
+⇒ 「节省为 0」「节省为负」「估算查询静默失败」**三种情况都是键缺失**
+⇒ 客户端**不能**把缺失说成「没节省」。
+
+`estimated_original_tokens` 的缺失同理：估算查询失败只有 `slog.Warn`
+（:196-200，**静默**），与「值为 0」（:202）**分不出来**。
+后端注释自己记了这个历史坑：pre-P2-C1 的 `::text` 缺失导致该字段
+**一辈子没被填过**，被 `err==nil` 静默吞掉。
+
+**(5) ★★★ 租户隔离之外还有第二重口径差异：`($3 OR rl.success)`**
+
+`$3 = !tenantFilter`（:135 / :90）⇒ **只有非 tenant_admin 才忽略 `success`**
+⇒ **tenant_admin 只看成功请求**，super_admin 的数字含失败请求。
+
+另：租户过滤走 `tenantLogsClause`（`admin/session_tenant.go:16-26`），
+它**只对非 default 租户的 tenant_admin 注入** `AND tenant_id = $N`
+⇒ **default 租户的 tenant_admin 不被隔离**（看得到全部租户的行）。
+这与 `data-lifecycle` 的 `IsTenantAdmin` + 字符串拼 `tenant_id`
+（`data_lifecycle.go:57-63`）**口径不同** —— 那条连 default 租户也过滤。
+⇒ **两族的租户隔离不可类推。**
+
+#### 11.104.4 ★ 与 approvals 的关键对比：`count` 是真实总数
+
+| | `approvals.total` | `compression.sessions.count` |
+|---|---|---|
+| 来源 | `total := len(records)`（records 已带 Limit/Offset） | `COUNT(DISTINCT gw_session_id)`（全量） |
+| 含义 | **本页条数** | **真实总数** |
+| 可否据此翻页 | ❌ 只能「本页取满」 | ✅ 可以 |
+
+★ 但 `count` 与 `items` 仍有**两处**对不上，且都是**可预期**的：
+
+1. 空 `gw_session_id` 的行被 `if item.GwSessionID != ""`（:190）**静默丢弃**，
+   而 `COUNT(DISTINCT)` **把空串也算进去**
+   （where 里只有 `gw_session_id IS NOT NULL`，**空串**仍会通过）。
+2. 逐行 `Scan` 失败走 `continue`（:177-180），count 不受扫描失败影响。
+
+#### 11.104.5 ★ 其余已确认的契约
+
+- `hourly_series` 的粒度**随时间窗变化**（:257-266），字段名骗人：
+  `≤48h` ⇒ 每小时；`≤168h` ⇒ **每 6 小时**（`date_trunc('day') + 6h*(hour/6)`）；
+  更长 ⇒ 每天。导出 `seriesGranularityOf()`。
+- 桶查询失败是**静默**的（:279-280）⇒ `hourly_series` 空数组**不能**断言「没有流量」。
+- `strategy_distribution` 与 `hourly_series` 都预置为空（:131-132）
+  ⇒ 空值恒为 `{}` / `[]`，**不是 null**。
+- `strategy` 过滤是精确 `=` 且**不校验合法性** ⇒ 非法值返回空列表而非 400。
+- sessions 的 where 含 `rb.outbound_body IS NOT NULL AND rl.gw_session_id IS NOT NULL`
+  ⇒ **列表天然只含「确实有 outbound_body 的会话」**。
+- `compression_strategy` 用 `MAX(rl.compression_strategy)`（:129）
+  ⇒ **字典序最大**的那一条，不是首个也不是最新（会话中途换策略时读到的是巧合值）。
+- `sample_request_id` 是 `MAX(rl.request_id)` ⇒ **字典序最大**，不是最新那次。
+- `first_ts`/`last_ts` 是 Go `time.Time` 直编 ⇒ RFC3339 **纳秒**级。
+- `estimated_original_msgs` 由 SQL 侧 `COALESCE(latest.orig_msg_count, 0)` 兜底（:125）
+  ⇒ **恒非 null**；而 `outbound_msg_count` 直接 `MAX()` 扫进指针 ⇒ **可为 null**。
+  ⇒ 同名字段族里一个恒有值一个可能为空。
+- `msg_reduction` 只在两个指针都非 nil 时才计算（:183），
+  且 **`red = orig - outbound`，负值被夹到 0**（:185-187）⇒ **永不出现负数**。
+  ⚠️ 判「被夹住」的条件是 **`outbound > orig`**（本批写反过一次，被变异 #29 抓到）。
+- `compression_sessions.go:199-201` 的 `if items == nil` 是**死代码**：
+  `:163` 已经 `make([]compressionSessionItem, 0)`，永不为 nil。
+
+#### 11.104.6 验证
+
+- 用例 **58 条**（`compression.test.ts`）
+- 变异 `/tmp/mut-co68.mjs` **30 条，30/30 有牙、零可疑**，
+  `RESTORED=OK`（逐字节一致）。#29 直接抓出「夹值判断方向写反」这个真缺陷。
+- 三门 rc=0；`vue-tsc` rc=0；`npm run build` rc=0
+- 全量 **3539 条（132 文件）** rc=0；十连跑 10/10
+
+#### 11.104.7 留给第六十九批（UI）的硬约束
+
+1. `count` 可以当总数用，但 `count ≠ items.length` 时**不要报成 bug**。
+2. `count: 0` 的空态措辞只能说「没有可展示的记录」。
+3. `compression_rate` 是 **0-1 比例**，UI 要乘 100 再显示，且**不能**与
+   data-flow 的 `percent_of_total`（0-100）并列。
+4. 传了 `from`/`to` 时**不要**再显示 `hours` 控件。
+5. `hourly_series` 要按 `seriesGranularityOf` 标注真实粒度，不能写「按小时」。
+6. 三个 token 估算字段缺键时统一措辞「未给出估算」，**不能**说「为 0」/「没节省」。
+7. `msg_reduction` 为 null 显示「未知」；`= 0` 且 outbound > orig 时
+   要提示「压缩后消息数未减少（已按 0 记）」。
+8. `compression_strategy` / `sample_request_id` 都要标「取字典序最大值」，不是最新。
+9. tenant_admin 看到的是**仅成功请求**的数字，要标明。
+
+文档 §11.104 纯追加。
+
+---
+
+### 11.105 compression 只读两条接 UI（第六十九批）
+
+**范围**：`web-mobile/src/views/CompressionView.vue` + `.spec.ts`（新建）、
+`router/index.ts`、`config/appNav.ts`、`i18n/{zh-CN,en-US}.ts`
+**路由**：`/compression`，抽屉席 key `compression`，**admin 档不设 `requiresRole`**
+（`handler.go:954/955` 两条都是 `admin(...)`）。
+
+#### 11.105.1 与既有页面的分工（按「答什么」划界）
+
+| 页面 | 答什么 | 压缩率单位 |
+|---|---|---|
+| `/data-flow` | 记录怎么分布（逐日冷热、增长趋势） | **0-100 百分数** |
+| `/compression`（本页） | 压缩策略实际压了多少、被压成什么样 | **0-1 比例** |
+
+⚠️ **单位相反，不可并列成同一组对比** —— 页面上以明示文案挡住。
+
+#### 11.105.2 ★★★★★ UI 必须钉住的九件事（§11.104.7）
+
+| # | 约束 | UI 处置 |
+|---|---|---|
+| ① | `count` 是真实总数，可据此翻页；但 `count > items.length` 是**可预期**的 | 页码按 `sessionsHasNextPage(resp, pageSize)` 判；缺口用「是可预期的」说明，**不报成 bug** |
+| ② | `count: 0` 是二义的 | 空态文案「总数查询被跳过了……和『真的没有』分不出来」 |
+| ③ | `compression_rate` 是 0-1 比例 | 展示 ×100 并标「比例」，另附「与数据流页不是同一单位」 |
+| ④ | `hours` 只在 from/to 都缺省时生效 | **二选一切换器**；切到自定义区间时跨度控件**整块消失** |
+| ⑤ | 序列粒度随窗口变 | 标题带真实粒度（每小时 / 每 6 小时 / 每天） |
+| ⑥ | 三个估算字段缺键 | 统一「未给出估算」；节省字段单独说「未给出节省估算」 |
+| ⑦ | `msg_reduction` null / 被夹 | null ⇒「未知」；`=0` 且 outbound > orig ⇒ 额外挂「后端按 0 记」 |
+| ⑧ | 两个 `MAX()` 字段 | 策略与样本请求都标「取字典序最大值」 |
+| ⑨ | tenant_admin 只看成功请求 | 时间窗区顶部挂常驻横幅 |
+
+★ ④ 的实现要点：切口径时**必须重新拉取**，否则界面上留着上一套时间窗的数字。
+切换器因此调用 `reloadAll()` 而不是只切 UI。
+
+#### 11.105.3 ★ 变异暴露的判据缺陷（本批真缺陷）
+
+第一轮 **20/29**，10 条异常。判读结果：
+
+1. **6 条锚点指错**（变异确实转红，只是红在别的用例上）——
+   锚点必须取用例**标题**里的片段（§11.101 / §11.102 / §11.103 连续三批同款）。
+2. **2 条「注入标记 ≠ 变异」** —— 我自己犯的：
+   - #1 删掉了一行**注释**（`<!-- explicit 口径：hours 控件整块消失 -->`），
+     渲染完全不变 ⇒ 根本不是变异。
+   - #18 把 HTML 注释塞在插值表达式**后面**，渲染同样不变。
+   ⇒ 改成真变异：#1 改为 `v-if="windowMode === 'hours'"` → `v-if="true"`
+   （explicit 模式下选择器仍在）；#18 改为删掉整个 `<span>`。
+   ⇒ **判据**：注入后先问「渲染结果变了吗」，只看「代码变了」不算。
+3. **3 条是真缺用例**：
+   - 策略分布对不上总数时的提示（#23）：夹具 `none:400 + p2c:600 = 1000 = total`，
+     永远一致 ⇒ 判据从来没被触发过。
+   - 每页条数「越界静默回落 50」的说明（#26）：选择器值有断言，说明文案没有。
+   - **stats 报错时清空数据**（#28）：又是「首次失败是空操作」——
+     必须**先成功一次再让第二次失败**（§11.103.3 同款）。
+
+#### 11.105.4 ★ i18n 门抓到的三件事（与 §11.103 同款，但多了一个新的）
+
+1. **键路径不匹配**：`reductionUnknown` / `reductionClamped` 嵌在 `sessions` 子对象下，
+   视图却按顶层取；`ratioNote` 反过来（词典在顶层、视图按 `stats.` 取）⇒ 3 个裸键。
+2. **en-US「值 === 键名」**：`band.preliminary = 'preliminary'`、
+   `band.forced = 'forced'` 被判未翻译 ⇒ 改成 `'preliminary band'` / `'forced band'`。
+3. **★ 新增：中文文案被 shell heredoc 损坏**。
+   `estimateNote` 里出现 **2 个 U+FFFD**（「没给␦␦」）。
+   ⇒ 我此前的 U+FFFD 扫描**只查了文档文件**，没查 i18n。
+   ⇒ 从本批起，U+FFFD 扫描的**范围**扩到 `src/i18n/*.ts`。
+
+#### 11.105.5 验证
+
+- 用例 **45 条**（`CompressionView.spec.ts`）
+- 变异 `/tmp/mut-co69.mjs` **29 条，29/29 有牙、零可疑**，
+  `RESTORED=OK`（视图与 `appNav.ts` 逐字节一致）
+- 三门 rc=0（css-media 91 文件 / touch-target **90 个 .vue** / i18n 2592 键一致）
+- `vue-tsc` rc=0；`npm run build` rc=0
+- 全量 **3584 条（133 文件）** rc=0；十连跑 10/10
+
+文档 §11.105 纯追加。
+
+---
+
+### 11.106 usage 增强三条接 API 层（第七十批）
+
+**范围**：`web-mobile/src/api/usageEnhanced.ts` + `.test.ts`（新建）
+**三条端点都挂在 `h.admin(h.HandleUsageAdmin)`（`admin/handler.go:1267`）这个前缀子路由上**
+（分派见 `admin/usage.go:49-68`）⇒ tenant_admin 可用。
+
+| 端点 | handler | 缺省时间窗 |
+|---|---|---|
+| `GET /api/admin/usage/cost-trend` | `usage_enhanced.go:128` | **7 天** |
+| `GET /api/admin/usage/period-compare` | `usage_enhanced.go:347` | **不接受时间窗** |
+| `GET /api/admin/usage/cache-economics` | `usage_enhanced.go:616` | **30 天** |
+
+同族 `trend-series` / `trend-models` 也是 admin 档（`admin/usage_trend_series.go`），
+**留下一批**（该文件 615 行，另起一批更划算）。
+
+**权限档位取证**：`format-anomaly*`（`handler.go:913-915`）、`report-rollup/`（`:1067`）、
+`storage/config`（`:1108`）都是 **`h.superAdmin`** ⇒ 将来接时抽屉席必须设
+`requiresRole: 'super_admin'`；`storage/migration-state`（`:1111`）、
+`ops/overview`（`:1070`）、`connection-registry`（`:1024-1025`）是 `admin(...)`。
+
+#### 11.106.1 ★★★★★ 本族最要紧的五件事
+
+**(1) ★★★★★ `degraded` 是恒发字段（不带 omitempty），`degraded_reason` 才是条件键**
+
+```go
+// usage_enhanced.go:51-52 / :334-336 / :612-613（三处逐字相同）
+Degraded       bool   `json:"degraded"`                 // 恒发
+DegradedReason string `json:"degraded_reason,omitempty"` // 仅降级时下发
+```
+
+注释写明理由：字段缺失与 `false` 在 API 语义上无法区分，
+**那正是这个字段要消灭的歧义** ⇒ 客户端可以断言「服务端确认过它是好的」。
+
+> ★ **本仓少见的「故意不省略」写法**，与 compression / data-lifecycle 族的
+> omitempty 条件键**正好相反** ⇒ **不能照抄别族的「键缺失即异常」判据**。
+
+降级时返回的是 **200 + 全 0**（`:215-228` / `:387-393` / `:703-709`）。
+注释记了实测：2026-09 实际花费 1139.62 美元，period-compare 却显示 0 ——
+**用户看到的是「本月没花钱」**。⇒ UI 必须先读 `degraded`。
+
+**(2) ★★★★★ `cache-economics` 的四个「节省」数字全是按硬编码假设推算的**
+
+```go
+avgPricePerToken = dollarsSpent / (cacheReadTokens + promptTokens) // :729 把「已花的钱」当单价
+dollarsSaved     = cacheReadTokens * avgPricePerToken * 0.9         // :733 ← 假设缓存价是 10%
+compressionSaved = compressedRequests * 8000 * avgPricePerToken     // :739 ← 假设每次省 8000 token
+totalSaved       = dollarsSaved + compressionSaved                  // :743
+```
+
+⇒ `dollars_saved` / `compression_saved` / `total_saved` / `savings_rate`
+**不是实测账单**，是「三条写死的假设」的推论 ⇒ UI 必须标「估算」。
+
+**(3) ★★★★ `compressed_requests === 0` 分不清「没压缩」与「查询静默失败」**
+
+压缩计数是**附加信息**，主聚合成功后才取，失败只记日志（`:694-697`）
+⇒ 它是 0 时**分不清**两种情况 ⇒ 连锁着 `compression_saved` / `total_saved` /
+`savings_rate` 一起不可信。导出 `compressedCountMayBeFailed()` /
+`compressionSavedUnreliable()` 把这条连锁显式化。
+
+**(4) ★★★★ `group_by` 决定读哪张表**（`planCostTrend`，`:91-126`）
+
+| 维度 | 基表 |
+|---|---|
+| `model` / `provider` / `api_key` | `usage_ledger_with_current_month ul` |
+| `work_type` / `intent` | `request_logs_with_current_month rl` |
+
+⇒ 换 `group_by` 就**换基表**。两表 cost 口径经注释核对一致（`:660`），
+但那是某一天的一次实测，**不是契约保证** ⇒ 导出 `REQUEST_SIDE_GROUP_BYS` /
+`costTrendSwitchesBaseTable()` 供 UI 标注。
+另：`group_by` 非法 ⇒ **400**（`:142`），**不是**静默回落；而缺省是 `model`。
+
+**(5) ★★★ 三条端点的时间窗缺省各不相同，参数名也与别族不同**
+
+- 参数是 **`start` / `end`**（不是 `from`/`to`），**必须同时给**，
+  只给一个 ⇒ **400**（`usage.go:1448-1450`）；格式 `YYYY-MM-DD`，错 ⇒ 400；
+  `end < start` ⇒ 400。
+- `days` 是 **clamp [1,366]**（`:1439-1444`），且走 days 口径时起点被
+  `.Truncate(24*time.Hour)` **对齐到 UTC 零点**（`:1445`）⇒ 不是「此刻往前 N 天」。
+- `period-compare` **不接受时间窗**，只收 `current` / `previous` 两个
+  `YYYY-MM`（`time.Parse("2006-01", …)`），**两个都必填**、缺任一 ⇒ 400（`:357-360`）。
+
+#### 11.106.2 ★ 其余已确认的契约
+
+- `entries` **不是全集**：占比 <2% 且已有 10 条的条目被合并进 `other`（`:262-267`）
+  ⇒ `other_cost` / `other_count` 给出被合并的量。
+- `total_cost` 是**合并前**所有分组之和（`:259`）⇒ 应等于 `Σ entries + other_cost`。
+- `dimension_value` 来自 `COALESCE(…, 'unknown')`（`:165`）⇒ 分组值缺失归到 `'unknown'`。
+- **`percentage` 是 0-100**（`:205`），而 **`error_rate` 是 0-1**（`:187`）⇒ 同一响应两种单位。
+- `trend` 阈值 **±5%**（`:426-430`），`significant` 阈值 **±20%**（`:433-435`）
+  ⇒ **可能「up 但不 significant」** ⇒ 导出 `trendWithoutSignificance()`。
+- 上期成本为 0 ⇒ `change_pct` 留 **0**（`:421-423`），不是无穷大也不是 null。
+- `by_dimension` 只在 `len(modelChanges) > 0` 时才放 `"model"` 键（`:447-449`）
+  ⇒ 查询失败时是 `{}`，与「查了但无变化」**同形**（R68 注释自陈，只留 `slog.Warn`）。
+- 维度明细 SQL 硬编码 **`LIMIT 10`**（`:563`）。
+- `effective_cost_ratio` 分母为 0 时留 **1.0**（`:746` 初始化），不是 0
+  ⇒ 「成本占比 100%」是假的 ⇒ 导出 `effectiveCostRatioIsFakeFull()`。
+- `cache_hit_ratio` 分母为 0 时留 0（`:719-722`）。
+- `PeriodStats.unique_sessions` 已于 2026-10-03 **删除**，注释记了三条理由，
+  核心是：「一个无消费者的指标算不出来时，返回 0 与『真的是 0』在报告上无法区分」
+  ⇒ 客户端**不要**去读这个键。
+- 租户口径用的是 `EffectiveTenantIDAll`（`context.go:69-74`）——
+  本仓**第三种**租户过滤（见 §11.108 的三口径对照）。
+
+#### 11.106.3 ★ 本批最大的一处：自己写出了**冗余判据**
+
+第一轮变异 **28/32**，4 条 `STILL_GREEN` 里最要紧的一条是：
+
+```ts
+// 两条检查同时存在：
+requireKeys(d, [..., 'degraded'], '成本趋势')     // 存在性
+if (typeof d.degraded !== 'boolean') throw ...   // 类型
+```
+
+**后一条完全覆盖前一条**（`typeof undefined !== 'boolean'` 也会抛）
+⇒ 把 `'degraded'` 从必检键里删掉，用例照样全绿
+⇒ 这是我自己写的**恒真判据**（无用复杂度）。
+
+修法：把 `degraded` 从三个必检键数组里**移出**，只由类型校验单独把关，
+并把这条冗余写进代码注释（免得下一个维护的人又把它加回去）。
+
+> ★ **判据**：两条检查若**一条蕴含另一条**，那条被蕴含的就是恒真。
+> 与 §11.103 的「判据两条路径在夹具上等价」同源 ——
+> 都在问「**两个版本在所有输入上等价吗**」。
+
+另有 3 条真缺用例（补上）：
+`by_dimension` 不是对象、period-compare 缺参不静默填默认值、
+period-compare 的 `degraded` 键缺失/类型错。
+
+#### 11.106.4 验证
+
+- 用例 **59 条**（`usageEnhanced.test.ts`）
+- 变异 `/tmp/mut-co70.mjs` **32 条，32/32 有牙、零可疑**，`RESTORED=OK`（逐字节一致）
+- 三门 rc=0；`vue-tsc` rc=0；`npm run build` rc=0
+- 全量 **3643 条（134 文件）** rc=0；十连跑 10/10
+- U+FFFD 自查：源与用例均 0（按 §11.105 新增的规则，扫描范围含本批新写文件）
+
+文档 §11.106 纯追加。
+
+
+## §11.107 usage 趋势线两条接 API 层（第七十一批）
+
+**产物**：`web-mobile/src/api/usageTrendSeries.ts`（新建）+ `.test.ts`（新建，158 用例）
+
+### 三路取证（写代码前）
+
+| 问 | 答 | 证据 |
+|---|---|---|
+| 后端注册存在吗 | 是 | `admin/handler.go:1267` `h.admin(h.HandleUsageAdmin)`；分派 `admin/usage.go:60-64` 两个 case |
+| 谁在提供 | **本进程**，不经 maintain 反代 | 不在 `cmd/gateway/maintain_proxy.go:37` 的 `maintainCompatPrefixes` 里 |
+| 前端有调用方吗 | 桌面有、移动端无 | `web/src/api/usage.ts:508/512`；`BoardUsageTrendSection.vue`、`UsageTrendExplorer.vue`；移动端只有 `usageEnhanced.ts:12` 一句「留待下一批」 |
+
+**权限档位**：`h.admin(...)` ⇒ **tenant_admin 可用** ⇒ 将来接抽屉席**不设** `requiresRole`。
+
+### 本族挖到的后端缺陷 / 契约（★ 越高越要紧）
+
+1. **★★★★★ `degraded` 又是恒发字段（不带 `omitempty`）——第二次遇到。**
+   `usage_trend_series.go:75-80` / `:96-101` 两个响应都是：
+   ```go
+   // 恒发（无 omitempty）：空序列与「真的没有用量」在图上同形。
+   Degraded       bool   `json:"degraded"`                 // 恒发
+   DegradedReason string `json:"degraded_reason,omitempty"` // 仅降级
+   ```
+   `dashboard_degrade.go:105` 的注释写明「与 `PeriodCompareResponse.Degraded` 同理」
+   ⇒ **这是本仓既定风格，不是偶然**（第七十批 usageEnhanced 同款）。
+   压缩统计（第六十八批）的 `*int64`+omitempty 条件键恰好相反
+   ⇒ **不能照抄别族的「键缺失即异常」判据**。
+
+2. **★★★★★ 降级时 `top` 与 `bucket_minutes` 仍是解析后的值，不是零值**（`:204-205`）
+   ⇒ 「降级 + 空序列」与「成功 + 零用量」的区分**只能靠 `degraded` 那一个键**。
+   判据 `trendSeriesIsGenuinelyEmpty()` 两个分支都写了。
+
+3. **★★★★★ `days` 的 clamp 是 90，不是 366。**
+   本族走 `boardTimeRangeFromRequest`（`board_time_range.go:17-38`）→ `boardDays`
+   （`dashboard_board.go:204-213`，clamp **[1,90]**），**不是** `resolveUsageTimeRange` 的 366。
+   起点 `boardPresetTimeRange`（`board_time_range.go:120`）是
+   `todayStart.Add(-(days-1)*24h)` ⇒ **减 days-1 天**，days=7 起点是**六天前**零点。
+   ⚠️ `resolveUsageTimeRange` 的 days 分支减 `days` 天（`usage.go:1447`）——**两套语义差一天**，
+   但那条分支在本族**不可达**（只在 `start`/`end` 至少给一个时被调用，而它内部 days 分支
+   的前提正是两者都缺省）⇒ 死代码，仅作对照。
+
+4. **★★★★★ 自定义区间左闭右开，响应 `end` 是「次日零点」。**
+   `usage.go:1467-1469`：`return startDay.UTC(), endDay.Add(24*time.Hour).UTC()`
+   ⇒ 用户选 2026-01-01 ~ 2026-01-07，响应 `end` 是 `2026-01-08T00:00:00Z`。
+   对照 days 预设路径的 `End = now`（带时分秒）⇒ **两条路径 `end` 形态不同**，
+   `trendEndIsNextMidnight()` 可用来判断后端走了哪条。
+
+5. **★★★★ 分桶两套规则，同一个实际跨度可能是两个档位。**
+   `trendBucketMinutes`（`board_time_range.go:47-67`）：
+   - 预设档按 `Days`：`<=1` → 5；`<=7` → 15；否则 60
+   - 自定义档按实际 `span`：`<=48h` → 5；`<=14d` → 15；否则 60
+   ⇒ `start`/`end` 恰好 24 小时跨度 ⇒ **5 分钟**；days=2 预设 ⇒ **15 分钟**。
+
+6. **★★★★ 非法 / 负数 ID 静默换数据档，不报 400。**
+   `queryInt`（`handler.go:1539-1542`）解析失败**回落默认值**；`usageTrendSource`
+   （`:155-164`）判的是 `f.providerID > 0` / `f.apiKeyID > 0`
+   ⇒ `provider_id=abc` 与 `provider_id=-5` 都变成 0 ⇒ 落到 **default 档（dim）**。
+   用户以为加了过滤，实际拿到的是**另一张表**的数据。
+   ⇒ 客户端只发正整数 ID（`trendQuery` 里 `Math.trunc(x) > 0` 才发），
+   并提供 `trendFilterIdInvalid()` 在发请求前拦住。
+
+7. **★★★★ `source` 少 `_without_customer_id` 后缀。**
+   `:158` 对外返回 `"request_logs_with_current_month"`，真实读的是
+   `request_logs_with_current_month_without_customer_id`（`:407`/`:588`）
+   ⇒ **不能把 `source` 当真实表名用**，`trendSourceRealTable()` 做映射。
+
+8. **★★★ 三个不同的上限，后两个都不回显。**
+   - `top`：默认 8、clamp **[1,20]**（`:129`/`:144-149`）⇒ **响应回显 clamp 后的值**，
+     降级时也回显 ⇒ UI 可以照着显示「已按 N 展示」
+   - `model` 多选：空值/重复剔除，超过 **20** 截断（`:133-143`）
+   - `trend-models` 的 SQL **硬编码 `LIMIT 100`**（`:524`/`:554`/`:592`）
+     ⇒ 超 100 个模型**静默截断，响应里没有任何字段说明被截断了**
+
+9. **★★★ 折叠只在「没指定 model」且「模型数 > top」时发生。**
+   `foldUsageTrendRows:439` 的 `modelFiltered || len(rows)==0` 直接透传 ⇒ **指定 model 一律不折叠**；
+   `:455-457` 的 `len(ranked) <= top` 也透传 ⇒ **恰好 top 条不折叠**
+   ⇒ 判据必须用 **`>`** 而不是 `>=`。
+
+10. **★★★ `__others__` 固定排最后**（`:221-229`），其余按 `TotalRequests` 降序。
+    ★★ **`sort.SliceStable` 的「同请求数保持原序」客户端验证不了** ——
+    后端原序来自 SQL `ORDER BY 2, 1`（`:334`），响应里没有可比对的参照物。
+    ⇒ 我第一版写了 `trendTiesKeepOriginalOrder()` 去验这件事，**变异 #47 实测它恒真**
+    （在已排好序的序列上「相邻不递减」本来就是排序的定义）
+    ⇒ 重做成可验证的那一半：`trendSeriesNonIncreasing()`，并配了乱序负控。
+
+11. **★★ `degraded_reason` 与 `missing_view` 是同一个值**（`:209-210`、`:283-284`）⇒ 两键恒等。
+12. **★★ `hint` 可本地推导**（`dashboard_degrade.go:83-88`）⇒ 客户端自己拼（可本地化），
+    后端那份只当契约校验对象（`trendHintDisagrees()`）。
+13. **★★ detail 档的 `request_status` 是三态白名单**
+    `IN ('success','failure','rate_limited')`（`:383`/`:565`）⇒ 不是只看成功。
+    对照压缩统计的 `($3 OR rl.success)` 又是另一种口径。
+14. **★ 租户：`statsTenantScope`（`stats.go:87-97`）** —— 角色不是 `super_admin`/`admin_key`
+    就用 `auth.TenantID` 并**忽略 `tenant_id` 参数** ⇒ tenant_admin 天然隔离。
+    ★ 与 data-lifecycle 的 `metrics` 端点（**不隔离但注册是 admin 档**）**恰好相反**
+    ⇒ 本族是本仓**第四种**租户口径。
+15. **★ 超时 45 秒**（`:182`/`:260`），detail 档长窗可能超时
+    （文件头注释：前端对超时给出「缩短时间范围」提示）。
+
+### 桌面对照：两处**不要抄**
+
+- `web/src/api/usage.ts:456`/`:474` 把 `degraded` 声明成 `degraded?: boolean`
+  ⇒ 可选，暗示可能缺键，但后端恒发 ⇒ 桌面「缺键即降级」恒假
+- `BoardUsageTrendSection.vue:71` `resp.bucket_minutes || …` /
+  `UsageTrendExplorer.vue:167` `resp.bucket_minutes || 60`
+  ⇒ 后端恒发 int ⇒ **兜底恒不生效**，且 60 不是唯一合法档位（还有 5/15）
+
+### 顺带记录：后端文件头注释的格式损坏
+
+`usage_trend_series.go:21-23`：
+```
+// 唯一含 api_key_id 的读面；无 api_key 索引的旧分区上长窗会慢，前端对超时
+//
+//	给出「缩短时间范围」提示。
+```
+中间断了一行、`给出` 那行被 tab 缩进 ⇒ Go doc 把它当代码块渲染。不影响行为，但会误导读者。
+
+### 验证
+
+- 用例 **158 条全绿**
+- 变异 `/tmp/mut-co71.mjs` **54 条，54/54 有牙、零可疑**，`RESTORED=OK`（逐字节一致）
+- 三门 rc=0；`vue-tsc --noEmit -p tsconfig.app.json` rc=0；`npm run build` rc=0
+- 全量 **3801 条（135 文件）** rc=0；十连跑 10/10
+- U+FFFD 自查：源、用例、两侧 i18n 均 0
+
+### 变异验证暴露的判据缺陷（真缺陷，已修）
+
+1. **锚点指错 2 条**（#43 / #54）：变异实际打红的是**相邻**用例，
+   而 `expect` 写在了「看起来最相关」的那条标题上 ⇒ 报成 STILL_GREEN。
+   连续第五批踩这个坑（第六十六~六十八、六十九、七十、本批）。
+2. **自己写出了恒真守卫 1 条**（#47 `trendTiesKeepOriginalOrder`）：
+   它承诺了一件客户端**无法验证**的事（后端 SliceStable 的原序），
+   在任何已排好序的载荷上都返回 true ⇒ 重做成可验证的 `trendSeriesNonIncreasing` + 乱序负控。
+3. **反向检测顺序写反**（首次跑就红 2 条）：`requireKeys` 先于「拿到对方载荷形状」检查，
+   报的是「缺 3 个键」而掩盖了真正的原因 ⇒ 改成**反向检测先于缺键检查**。
+4. **夹具数错 1 条**：写「25 个位置 21 个不同值」实际写了 23 个位置 13 个不同值。
+
+### 本批新增的类型门教训
+
+`noUncheckedIndexedAccess` 下 **`arr[i]` 一律是 `T | undefined`**：
+- 源文件里 `r.series[i].model` 直接编译不过 ⇒ 改用 `findIndex` / `slice(1).every` 这类
+  **不产生索引访问**的写法，而不是靠 `!` 糊过去
+- 测试文件里 4 处 `reqMock.mock.calls[0][1]` 与 6 处 `(d.series as …)[0]` 必须显式 `!`
+- 一轮 `vue-tsc` 只清掉当轮暴露的那批 ⇒ **要跑到 rc=0 为止**，不能看到少了就停
+
+
+### 顺带修掉的长期 flaky：十连跑第一次 run#8 失败（**首次具名**）
+
+第七十批之前就有「历史无污染跑 ≥180 次里失败 1 次（≈0.5%）」的记录，一直没具名。
+第七十一批十连跑第一次就撞上并落盘了快照 —— **具名两条，同一形态**：
+
+```
+FAIL src/views/ComplianceHitsView.spec.ts > 筛选与分页 > ★★★ records 有 total ⇒ 分页信息是精确的
+FAIL src/views/RoutingOptView.spec.ts   > 入口与窗口控件 > ★ 填精确匹配条件后提交 ⇒ 带 taskType/provider 重查
+TypeError: Cannot read properties of undefined (reading '0')
+  ❯ ComplianceHitsView.spec.ts:365  expect(recMock.mock.calls[1]![0]).toMatchObject({ offset: 50 })
+  ❯ RoutingOptView.spec.ts:216     expect(metricsMock.mock.calls[1]![0]).toEqual({...})
+```
+
+即：**单次 `await flushPromises()` 之后 `mock.calls[1]` 仍是 undefined**。
+
+**处置**：两个 spec 里**所有**索引 ≥1 的 `mock.calls[N]` 断言（共 8 处）前面
+插入显式等待，把「靠时序巧合」换成「等到调用发生」：
+
+```ts
+await vi.waitFor(() => {
+  expect(recMock.mock.calls.length).toBeGreaterThanOrEqual(2)
+})
+expect(recMock.mock.calls[1]![0]).toMatchObject({ offset: 50 })
+```
+
+`vi.waitFor` 默认超时 1000ms ⇒ **第二次调用真的不来时仍然失败**，
+且报错带最后一次断言的详情（比裸 `TypeError` 可读）⇒ **不会把真 bug 藏起来**。
+
+**★ 根因未完全定位，如实记录**：
+
+1. 我先猜「第二次请求的 promise resolve 得慢」。**受控复现失败**，而且顺带证伪了这个假设：
+   **`mock.calls` 记录的是调用时刻，不是 resolve 时刻** ⇒ 慢 resolve 根本不会让
+   `calls[1]` 变 undefined（第一次注入 `setTimeout(0)` 时全绿，正是因为
+   `flushPromises` 内部用 `setImmediate`/宏任务，一轮就把单层 timer 抓到了；
+   改成三层嵌套 timer 仍全绿；最后加到 20ms 也全绿）。
+2. 视图侧排除项：`ComplianceHitsView.vue` 与 `RoutingOptView.vue` 里
+   **都没有** `debounce` / `setTimeout` / `watch` ⇒ 「防抖晚到」这条假设也没有代码依据。
+3. 修前版本在 4 并发 × 6 轮（共 24 次）下也**没复现** ⇒ 触发条件更接近
+   run#8 那种整体高负载（该轮 `environment` 累计 120.51s，明显高于其他轮次）。
+
+⇒ 所以准确的说法是：**脆弱的时序断言已改成显式等待**，而不是「已定位并修复根因」。
+若将来再次偶发，快照会比原来更容易读（`vi.waitFor` 的超时信息带完整调用轨迹）。
+
+**本轮实验沉淀的判据纪律**：
+设计「复现 flaky」的注入实验前，先问**判据的输入变量是不是你以为的那个**。
+我连续两次把变量选错（选 resolve 时机、选防抖），两次都被「全绿」证伪；
+真正该选的变量（**发起时刻**）当时没找到可注入点。
+**「全绿」在复现实验里同样是结果，要读，不要当成实验没跑。**
+
+
+## §11.108 流式连接注册台两条接 API 层（第七十二批）
+
+**产物**：`web-mobile/src/api/connectionRegistry.ts`（新建）+ `.test.ts`（新建，76 用例）
+
+### 三路取证（写代码前）
+
+| 问 | 答 | 证据 |
+|---|---|---|
+| 后端注册存在吗 | 是 | `admin/handler.go:1024-1025`，两个都是 `admin(...)` |
+| 谁在提供 | **本进程** | 不在 `cmd/gateway/maintain_proxy.go:37` 的 `maintainCompatPrefixes` 里 |
+| 前端有调用方吗 | 桌面有、移动端无 | `web/src/api/connection-registry.ts:30/36` |
+
+**权限档位**：后端 `admin(...)` ⇒ **tenant_admin 可用** ⇒ 将来接抽屉席**不设** `requiresRole`。
+⚠️ 但桌面 `web/src/router.ts:284` 与 `web/src/config/appNav.ts:195` 把这条路由
+标成了 `requiresSuper: true` / `super: true` ⇒ **前端比后端严**。
+按纪律以可执行的注册为准，**不按前端标记判权限**。
+
+### ★ 同批排除掉的两个候选
+
+- **`ops/overview` 不做**：后端 `handler.go:1070` 确实注册了，但桌面
+  `web/src/router.ts:309` 是 `externalMaintainRedirect('/ops', '/maintain/ops/overview')`，
+  `web/src/config/edition.ts:112` 也标了 `external: true`
+  ⇒ **桌面的真实入口在 maintain 服务**，本进程这个注册是死路径。
+  这正是「要确认**是谁在提供**」那条纪律拦下来的。
+- **`storage/migration-state` 暂不做**：`getStorageMigrationState`
+  （`admin/storage_migration.go:403-421`）只有 18 行，载荷恒为
+  `{running: nil, latest: nil}` 二选一 ⇒ 信息量太薄，不值当单独一批。
+  （它本身有个可测契约：两个键**恒在**、值恒为 `null` 或同一个 run 对象、**互斥**。）
+
+### 本族挖到的后端缺陷 / 契约（★ 越高越要紧）
+
+1. **★★★★★ `live` 恒数组，`closed` 恒「`null` 或非空数组」，绝不会是 `[]`。**
+   ```go
+   // List()：domains/streaming/connection_registry.go:473
+   out := make([]ConnectionSnapshot, 0, len(entries))   // ⇒ 恒非 nil ⇒ JSON 恒 []
+
+   // ClosedHistory()：:483-493
+   if n <= 0 || len(r.closed) == 0 {
+       return nil                                       // ⇒ JSON 是 null，不是 []
+   }
+   if n > len(r.closed) { n = len(r.closed) }
+   out := make([]ConnectionSnapshot, n)                 // n ≥ 1 ⇒ 恒非空数组
+   ```
+   ⇒ **同一份载荷里两个数组键的 nil 编码相反**，且 `closed: []` **后端永不产生**
+   ⇒ 客户端收到空数组就说明契约漂了。
+   这是本仓**第五种** nil 编码（已见：恒数组 / 键缺失 / 裸 null / omitempty 条件键 /
+   恒发布尔），且**同载荷内两个数组键编码相反**是首次。
+
+2. **★★★★★ 4 个 omitempty 条件键 + 1 个恒发布尔 —— 与前两批恰好相反。**
+   `domains/streaming/connection_registry.go:151-163`：
+   ```go
+   RequestID     string    `json:"request_id"`              // 恒在
+   Protocol      string    `json:"protocol,omitempty"`      // ★ 条件键
+   ClientType    string    `json:"client_type,omitempty"`   // ★ 条件键
+   TenantID      string    `json:"tenant_id,omitempty"`     // ★ 条件键
+   RegisteredAt  time.Time `json:"registered_at"`           // 恒在
+   LastFrameAt   time.Time `json:"last_frame_at"`           // 恒在
+   FramesWritten uint64    `json:"frames_written"`          // 恒在
+   BytesWritten  uint64    `json:"bytes_written"`           // 恒在
+   CloseReason   string    `json:"close_reason,omitempty"`  // ★ 条件键
+   Closed        bool      `json:"closed"`                  // ★ 恒发（无 omitempty）
+   ```
+   ⇒ 第七十/七十一批那两条端点的 `degraded` 是**恒发**，本族这 4 个是**条件键**
+   ⇒ **判据不能跨族照抄**：前者缺键才异常，本族缺键才正常。
+   ⇒ `closed` 恒发布尔 ⇒ 「是否已注销」这一条**不是恒真判据**（真能区分 live/closed）。
+
+3. **★★★★★ 注释与实现矛盾：`SetConnectionRegistry(nil)` 不能解绑。**
+   `admin/connection_registry.go:32-37`：
+   ```go
+   // SetConnectionRegistry wires ... Pass nil to disable (endpoints return 503).
+   func SetConnectionRegistry(reg *streaming.ConnectionRegistry) {
+       if reg == nil {
+           return          // ← 注释说「传 nil 可禁用」，代码是「传 nil 什么也不做」
+       }
+       connectionRegistry.Store(reg)
+   }
+   ```
+   ⇒ 装配后**没有任何 API 能把端点退回 503** ⇒ 注释是错的，以实现为准。
+   （同族参照：第六十六批 `data_lifecycle_metrics.go` 的 `LastCleanupAt` 也是注释有、实现无。）
+
+4. **★★★★ `Lookup` 只查活跃表，已注销的取不到。**
+   `domains/streaming/connection_registry.go:454-465` 只看 `r.entries`，不看 `r.closed`
+   ⇒ **`closed` 列表里的条目用详情端点必然 404**
+   ⇒ 「列表里看得到、点进去 404」是**契约行为**，不是 bug。
+
+5. **★★★★ Go 零值时间会真的出现。**
+   `LastFrameAt` 是 `time.Time` 且无 omitempty ⇒ 从未写过帧的连接
+   `last_frame_at` 是 **`"0001-01-01T00:00:00Z"`**（`time.Time{}.Format(RFC3339)`）
+   ⇒ 不能把「键存在」当「有值」，也不能渲染成「1970 年」或异常。
+   ⇒ 自查判据 `snapshotFrameFieldsAgree()`：`frames_written === 0` **应当**配零值时间。
+
+6. **★★★ `live` 的顺序没有保证。**
+   `List()` 的注释自陈「map walk is unordered, so callers sort as needed」（:467-471）
+   ⇒ 不能靠顺序判稳定，也不能靠它做 diff ⇒ 客户端要自己按 `registered_at` 排。
+
+7. **★★★ 上限 50 不回显。** `connection_registry.go:58` 写死 `reg.ClosedHistory(50)`
+   ⇒ 注销历史最多 50 条，响应里**没有任何字段**说明被截断了。
+
+8. **★★ 503 与「没数据」是两种不同的失败**：未装配返 **503 `connection registry not wired`**，
+   不是空列表 ⇒ 「空列表」永远只表示「装配了但当前没有连接」。
+
+9. **★ `live_count` 是可自查的冗余字段**：`:56` 的 `len(live)` 与 `live.length` 恒等
+   ⇒ 不等就说明载荷被换过/被代理改过，不是「后端口径变了」。
+
+### 桌面对照：三处**不要抄**
+
+- `web/src/api/connection-registry.ts:12-23` 把 `registered_at` / `last_frame_at` /
+  `frames_written` / `bytes_written` / `closed` 五个**恒在**键标成了可选（`?:`）
+- 同文件 `:28` 把 `closed: ConnectionSnapshot[]` 标成**必定是数组**
+  ⇒ 而后端无历史时给的是 **`null`** ⇒ 按那个类型直接 `.map()`/`.length`
+  会在「从无注销记录」时抛 `Cannot read properties of null`
+- `web/src/router.ts:284` 的 `requiresSuper: true` 比后端 `admin(...)` 严
+
+### 验证
+
+- 用例 **76 条全绿**
+- 变异 `/tmp/mut-co72.mjs` **42 条，42/42 有牙、零可疑**，`RESTORED=OK`（逐字节一致）
+- 三门 rc=0；`vue-tsc --noEmit -p tsconfig.app.json` rc=0；`npm run build` rc=0
+- 全量 **3877 条（136 文件）** rc=0；十连跑 10/10
+- U+FFFD 自查：源、用例、两侧 i18n 均 0
+
+### 变异验证暴露的判据缺陷（真缺陷，已修）
+
+1. **★★ `.toThrow(/live/)` 这类过宽正则会匹配上 TypeError。**
+   第一轮 42 条里 8 条 STILL_GREEN，其中 2 条的根因是**判据本身无牙**：
+   ```ts
+   expect(() => unwrap(listWith({ live: {} }))).toThrow(/live/)   // ✗
+   ```
+   变异把 `!Array.isArray(d.live)` 换成 `d.live === null` 后，解包器不再拦 `live: {}`，
+   于是执行到 `d.live.forEach(...)` 抛 **`d.live.forEach is not a function`** ——
+   **这条 TypeError 消息里含 "live" ⇒ 宽松正则照样匹配 ⇒ 用例绿。**
+   ⇒ 判据无牙的形态不是「断言太弱」，而是「**断言太宽，恰好被下游的意外异常兜住了**」。
+   ⇒ 修法：收紧到**自己写的错误文案**（`/live 不是数组/`、`/live\[0\] 不是对象/`），
+     而不是「载荷里那个字段名」。
+   ★ 同族教训：`toThrow(/字段名/)` 这类写法在本仓已被证伪两次
+     （本批 2 次 + `d.closed.forEach` 1 次）。
+
+2. **★★ 自己写出了**被蕴含的冗余判据**：解包器里
+   `if (d.live === null || !Array.isArray(d.live))` 里的 `=== null` 分支是**恒被蕴含**的
+   —— `Array.isArray(null)` 本身就是 `false` ⇒ 删掉它用例照样全绿。
+   ⇒ 已删（并把理由写进代码注释），记为**可证等价变异**。
+
+3. **锚点指错 2 条**（#12 / #20）：变异实际打红的是**相邻**用例
+   （「closed 为 null 时通过」/「六个恒在键一起缺失时报缺六」），而 `expect` 写在了
+   「看起来最相关」的那条标题上。连续第六批踩这个坑。
+
+4. **`from` 片段不唯一 1 条**（#22）：`registryRowIsNotFetchableById` 的函数体与
+   `snapshotIsClosed` **逐字相同**（都是 `return s.closed === true`）
+   ⇒ `String.replace` 只替换第一处 ⇒ 变异打在了**错误的函数**上。
+   ⇒ 变异脚本里凡是函数体只有一两行的，`from` 必须带**函数签名**做唯一锚点。
+
+5. **两条我选错了等价变异**（#16 / #35）：`length === 0` 改成 `length < 1`（对非负整数等价）、
+   `status >= 500`（对夹具里的 200/404 仍为假）⇒ 变异本身无效，不是判据问题。
+   ⇒ 与第六十九批「注入标记 ≠ 变异」同族：**注入必须真的改变被观察行为**，
+     且要拿夹具里的**实际取值**去验「变了吗」。
+
+
+## §11.109 节点恢复时间线接 API 层（第七十三批）
+
+**产物**：`web-mobile/src/api/nodeHealthTimeline.ts`（新建）+ `.test.ts`（新建，84 用例）
+
+### 三路取证
+
+| 问 | 答 | 证据 |
+|---|---|---|
+| 后端注册存在吗 | 是 | `admin/handler.go:1028`，`admin(...)` |
+| 谁在提供 | **本进程** | 不在 `maintainCompatPrefixes` 里 |
+| 前端有调用方吗 | 桌面有、移动端无 | `web/src/api/node-health.ts:38`、`NodeHealthTimelineView.vue` |
+
+**权限档位**：后端 `admin(...)` ⇒ tenant_admin 可用 ⇒ 抽屉席**不设** `requiresRole`。
+⚠️ 桌面 `web/src/router.ts:285` 又标了 `requiresSuper: true` ——
+**连续第二批**遇到「前端比后端严」。
+
+### ★★★ 本族最大的问题：这条端点没有租户过滤
+
+`admin/node_health.go:183-184`：
+```sql
+WHERE credential_id = $1 AND started_at >= $2
+```
+**只有两个条件，没有 `tenant_id`** ⇒ 而注册是 `admin(...)` 档
+⇒ ★★ **tenant_admin 能查任意 credential_id 的完整探测时间线**，
+包括 `reason_code`（错误码）与 `note`（模型名 · 触发来源）。
+⇒ 与第六十六批 data-lifecycle 的 `metrics` 同型（「不隔离 + admin 档」），
+   本仓已出现**两次**。
+⇒ 移动端接入时不要把它放在 tenant_admin 可见的位置而不加说明。
+
+### 其它挖到的契约
+
+1. **★★★★★ `observation_status` 是硬编码 `"complete"`，没有任何分支能产生别的值。**
+   `admin/node_health.go:173`，而查询失败走的是 **503**（`:165-167`），
+   不是「status: partial + 空 events」⇒ **「部分观测」在本端点上不可表达**。
+   ⇒ 解包器**只校验它是字符串，不校验取值** —— 校验 `"complete"` 是**恒真判据**。
+
+2. **★★★★★ `event_type` 是三态，且「恢复」有两个值。**
+   `admin/node_health.go:82-90`：
+   ```go
+   eventType := "failed"
+   if row.Success {
+       eventType = "recovered"
+       if row.TriggerKind == "credential_recovery" {
+           eventType = "reconnected"      // ← 强制恢复触发的探测
+       }
+   }
+   ```
+   ★★ 把「恢复」当单一状态会**漏掉 `reconnected`**
+   —— 而 `credential_recovery` 正是**强制恢复**那条路径的触发来源。
+
+3. **★★★★ 三个条件键全是「指针 + omitempty」，填充条件各不相同。**
+   | 键 | 什么时候**有**键 |
+   |---|---|
+   | `duration_ms` | **仅 `> 0`**（`:100-102`）⇒ 0 毫秒 ⇒ **键缺失**，不是 `0` |
+   | `reason_code` | 非 nil **且** trim 后非空 **且 ≠ `"none"`**（`:105-107`） |
+   | `note` | 模型名 / 触发来源至少一个非空（`:108-109` + `formatProbeNote :126-140`） |
+   ★★ `"none"` 是**哨兵**：`firstNonEmptyPtr` 选中它、紧接着的过滤又丢掉它
+     ⇒ **客户端永远看不到 `"none"`**，键缺失就是「无原因码」。
+   ★ 这是本仓**第六种**缺键编码（已见：恒数组 / 键缺失 / 裸 null /
+     omitempty 条件键 / 恒发布尔 / **指针+omitempty**）。
+
+4. **★★★★ 查询失败是 503 不是 500**（`:165-167`），
+   且与「数据库没配」（`:158`）**同为 503**，只能靠 message 区分。
+
+5. **★★★★ `since` 按后缀分派两套语法，超上限静默 clamp 到 7 天。**
+   `parseTimelineSince`（`:52-79`）：`Nd` 走 `Atoi`，其余走 `time.ParseDuration`
+   （Go 的 ParseDuration **不认 `d`** ⇒ 两套语法不打架）；
+   两者**都** clamp 到 7 天、**都**不报错；缺省是 **24h**。
+   ⇒ 客户端只对 `^[+-]?\d+d$` 做 clamp，**不重新实现** `ParseDuration`
+     （那套语法可小数可多段，复刻容易把合法值变成 400）。
+
+6. **★★★ 排序键与展示键不是同一个字段。**
+   SQL `ORDER BY started_at DESC LIMIT 200`（`:186-187`），
+   展示用的 `occurred_at` 优先取 `CompletedAt`、回落 `StartedAt`（`:91-94`）
+   ⇒ **跨完成的探测会与「开始时间」的排序不一致**；
+   并且过滤也按 `started_at >= $2` ⇒ **`since` 过滤的是开始时间**。
+
+7. **★★★ 上限 200 不回显，被丢的是最早的**（`:21` + `:187` + `:211-213` 的反转）。
+
+8. **★★ 响应里的 `credential_id` 是字符串**（`strconv.FormatInt`，`:172`），
+   且 `credential_id <= 0` 判 400（`:146-151`）；
+   `events` 恒为数组（`make(...,0,32)` + `:169-171` 兜底）；
+   `occurred_at` 是 RFC3339**Nano**。
+
+### 验证
+
+- 用例 **84 条全绿**
+- 变异 `/tmp/mut-co73.mjs` **46 条，46/46 有牙、零可疑**，`RESTORED=OK`
+- 三门 rc=0；`vue-tsc` rc=0；`npm run build` rc=0
+- 全量 **3961 条（137 文件）** rc=0；十连跑 10/10
+- U+FFFD 自查：源、用例、两侧 i18n 均 0
+
+### U+FFFD 扫描当场抓到一处写坏的字
+
+写完 `nodeHealthTimeline.ts` 第一次扫描就抓到 **2 个 U+FFFD**，在第 100 行：
+```
+ * 而展示用的 `occurred_at` 优先取 `CompletedAt`、回<U+FFFD><U+FFFD> `StartedAt`
+                                                     ↑ 「落」字被写坏
+```
+⇒ 由「回落」修复为「回落」后归零。
+★★ 这正是 §11.105 立的那条规则的直接收益：
+**扫描范围必须覆盖本批新写的每个文件**（i18n 门**不检查替换字符**，
+文档扫描也不会扫到 `.ts`）。中文字符在批量写入时可能被截断成 U+FFFD，
+而**肉眼看代码是发现不了的** —— 第 100 行在注释里，不影响任何行为。
+
+### 变异验证暴露的判据缺陷（真缺陷，已修）
+
+1. **★★ 判据正则要区分「同一条端点的不同失败分支」。**
+   「缺 `observation_status` 时抛错」原来写 `.toThrow(/observation_status/)`
+   ⇒ 变异把 `requireKeys` 删掉后，改由下面的**类型校验**抛
+   `observation_status 不是字符串`，**同一个词照样匹配** ⇒ 判据被自己的另一条分支兜住。
+   ⇒ 收紧成 `.toThrow(/缺 1 个键/)`。
+   ★ 这是第七十二批「正则太宽」那条教训的**同族第二形态**：
+     上次是被**下游 TypeError** 兜住，这次是被**自己的另一条错误分支**兜住。
+
+2. **★★ 锚点指错 3 条**（#22 / #39 / #45）：实际转红的是**相邻**用例。
+   连续第七批踩这个坑。其中两条是我**新加了夹具却没同步锚点** ——
+   加完用例必须回头核对「这条判据对应哪个标题」。
+
+3. **★★ 夹具缺键数与变异的敏感度要匹配。**
+   变异 #22 把 `filter(缺键).slice(0, 1)` 注入后**全部用例仍绿**，
+   手工实测才确认：**每条「缺某个键」的用例都只缺 1 个键**，
+   `slice(0, 1)` 对单元素数组**无影响** ⇒ 对现有夹具是**等价变异**。
+   ⇒ 补了一条「**两个**恒在键一起缺失」的夹具才有区分力；
+   且特意选了**不做取值校验**的两个键（`event_type` 有取值校验会兜住）。
+
+4. **两条我选错了等价变异**：
+   - #11 `days < 1` 守卫删掉后，后续 `days > 7` 判断对 0/负数仍为假 ⇒ 仍返回原值。
+   - #44 `credential_id` 是 `number` ⇒ `String(id)` 只有数字
+     ⇒ `encodeURIComponent` **恒等于恒等** ⇒ 改成「路径写错」才是真变异。
+   ⇒ 与第六十九/七十二批同族：**注入必须真的改变被观察行为**。
+
+5. **一处防御被记为可证等价变异（保留）**：`reason_code` 取值里的 `!== ''` 判断。
+   后端 `:105-107` 已经过滤掉空串 ⇒ 客户端这条分支**不可达**
+   ⇒ 它是**防御性守卫**（防后端异常下发），按纪律**保留**并记为可证等价。
+
+
+## §11.110 请求动作时间线接 API 层（第七十四批）
+
+**产物**：`web-mobile/src/api/requestActions.ts`（新建）+ `.test.ts`（新建，71 用例）
+
+### 三路取证
+
+| 问 | 答 | 证据 |
+|---|---|---|
+| 后端注册存在吗 | 是 | `admin/handler.go:1026`，`admin(...)` |
+| 谁在提供 | **本进程** | 不在 `maintainCompatPrefixes` 里 |
+| 前端有调用方吗 | 桌面有、移动端无 | `ActionTimeline` 走的是 SSE，本端点是刷新后的 REST 回退 |
+
+**权限档位**：后端 `admin(...)` ⇒ tenant_admin 可用 ⇒ 抽屉席**不设** `requiresRole`。
+★ 名字里有 "actions"，但**它本身是只读端点**（只有 GET、只 `LRange` 读 Redis），
+与本仓一律不碰的写操作端点不是一回事。
+
+### ★★★★★ 本族最要紧的七件事
+
+1. **★★★★★ `actions[i]` 是一个「键集不可穷举」的开放对象。**
+   `admin/live_stream_lifecycle.go:96-125` `flattenActionEvent` 的做法是
+   「整体序列化 → 反序列化成 `map` → 把 `detail` 的每个键**摊平到顶层**」：
+   ```go
+   if detail, ok := m["detail"].(map[string]any); ok {
+       delete(m, "detail")
+       for k, v := range detail {
+           if _, taken := m[k]; !taken {   // ★ 不覆盖已存在的顶层键
+               m[k] = v
+           }
+       }
+   }
+   ```
+   ⇒ 顶层键 = `ActionEvent` 的固定键 ∪ **`detail` 里内容决定的任意键**。
+   ⇒ ★★ 这是本仓**第一次**出现「载荷形状开放」的端点
+     ⇒ 解包器**只能校验必有的那几个键**，绝不能对全部键做 `requireKeys`。
+   ⇒ ★★ 提升时**不覆盖**已有键 ⇒ 若 `detail` 里带了 `action` / `seq` 这类名字，
+     **会被静默丢弃**。
+   ⇒ 类型声明必须带索引签名 `readonly [key: string]: unknown`，
+     否则 TS 会把这些键当不存在的数据丢掉。
+
+2. **★★★★★ `detail` 这个键永远不出现**（`:108` `delete(m, "detail")`）
+   ⇒ 客户端按 `{action, detail: {...}}` 去读会拿到 `undefined`。
+
+3. **★★★★★ `action` 是**开放字符串**，不是封闭枚举。**
+   `admin/request_actions.go:90-92` 的 `decodeStoredAction` **只**判 `ev.Action == ""`：
+   ```go
+   if ev.Action == "" { return ev, false }
+   ```
+   **不校验是否在 `liveactions` 的 Action 常量列表内** ⇒ 后端放行任意非空字符串。
+   ⇒ 解包器**只校验「非空字符串」，绝不能校验枚举** ——
+     校验枚举会在后端新增动作时把正常响应判成异常。
+   ★★ 对照第七十三批的 `event_type`：那个是 `if/else` 决定的**三态**（**封闭**），
+     这个是 Redis 内容决定的（**开放**）⇒ 判据不能跨族照抄。
+
+4. **★★★★ `count` 是**去重后**的条数，不是分页元信息。**
+   `:65-68` 按 `seq` 去重；`seq` 跨进程重启会碰撞（`:55-57` 注释自陈），
+   碰撞时**保留先出现的那条**（LIST 头 = 最新优先扫描顺序）
+   ⇒ `count` 可能小于「实际匹配数」。
+
+5. **★★★★ 这是短期回放，不是历史。**
+   `:56` 的 `LRange(ctx, RedisKey, 0, RedisMaxLen-1)` 扫**整个**队列，
+   而队列是 `LPUSH` + `LTRIM 5000`（`internal/liveactions/liveactions.go:115-117`）
+   ⇒ **更老的事件已被 LTRIM 掉**。
+   `:23-24` 的注释自陈：「Long-term history stays in request journey
+   ⇒ **this endpoint must not scan Redis as the long-term solution**」。
+
+6. **★★★★ 失败编码有三种，其中一种是 502。**
+   | 情形 | 状态码 | message |
+   |---|---|---|
+   | `id` 为空（`:36-38`） | **400** | `missing request id` |
+   | Redis 未装配（`:41-44`） | **503** | `live actions store not wired` |
+   | Redis 读失败（`:52-56`） | **502** | `live actions store unavailable` |
+   ★★ **502 Bad Gateway** 在本仓基本不用 ⇒ 客户端的「网关错误」分类必须显式容纳它。
+   ★ 读 Redis 的超时只有 **2 秒**（`:29`）。
+
+7. **★★★ `credential_label` 在本端点永远不出现。**
+   `flattenActionEvent` 支持注入 `labels`（`:115-123`），但本端点调用时传的是
+   **`nil`**（`request_actions.go:69`）⇒ 那是 SSE 那条路才有的字段
+   ⇒ 按 SSE 契约去等它会永远等不到。
+
+### 另注
+
+- 排序：`actionEntryLess`（`:98-107`）先比 `ts`（两边都是 string 且不等时）、
+  否则比 `seq`（`.(float64)` 断言失败静默取 0）。
+  但 `ActionEvent` 的 `ts`/`seq` **都不带 omitempty** ⇒ 恒在 ⇒ 断言不会失败
+  ⇒ 排序实际可信。★ 真正让顺序看着反常的是**零值 `ts`**
+  （`time.Time{}` ⇒ `"0001-01-01T00:00:00Z"`，字符串比较下**最小** ⇒ 排到最前）。
+- `request_id` 是**原样回显**（`:78` 用 `r.PathValue("id")`，不 trim 不规范化），
+  且过滤是**精确比较**（`:62`）⇒ 大小写敏感、前后空格也不匹配。
+- `actions` 恒为数组（`make([]map[string]any, 0, 16)`，`:58`）。
+- 坏行被静默丢弃：JSON 解析失败（`:87-89`）与 `action` 为空（`:90-92`）都 `continue`
+  ⇒ 响应里看不出丢过东西。
+
+### 验证
+
+- 用例 **71 条全绿**
+- 变异 `/tmp/mut-co74.mjs` **40 条，40/40 有牙、零可疑**，`RESTORED=OK`
+- 三门 rc=0；`vue-tsc` rc=0；`npm run build` rc=0
+- 全量 **4032 条（138 文件）** rc=0；十连跑 10/10
+- U+FFFD 自查：源与用例均 0
+
+### 变异验证暴露的判据缺陷（真缺陷，已修）
+
+1. **★★ 锚点自检在 `--dry` 阶段就抓到了 1 条**（`ts 不是字符串时抛错` 不在任何标题里）
+   —— 本批把这个自检保留下来是对的：它比实跑快一个数量级。
+   ★ 而且它顺带暴露了**夹具的缺口**（见第 2 条）。
+
+2. **★★ 夹具缺口：「键缺」与「类型错」是两条不同的检查分支。**
+   我最初只有「删掉 `ts` 键」的夹具，而变异删的是 `typeof d.ts !== 'string'` 那行
+   ⇒ 删键仍由 `requireKeys` 拦下 ⇒ **判据无牙**。
+   ⇒ 补了「键在但类型错」的夹具（`ts: 7` / 容器 `request_id: 7`）。
+   ★★ 推论：`requireKeys`（缺键）与类型校验（键在但错）**永远是两条分支**，
+     覆盖其中一条时**必须同时覆盖另一条**。
+
+3. **★★ 夹具自身先抛，测的就不是被测代码。**
+   「actions 不是数组时抛错」原本用 `actionsOk(null as never)`，
+   而 `actionsOk` 内部要算 `actions.length` ⇒ **`TypeError` 在夹具里就抛了**，
+   根本没走到解包器（`rc=1` 但失败消息是
+   `Cannot read properties of null` 而不是我们的断言消息）。
+   ⇒ 改为直接构造对象。★ 这是「rc≠0 但失败消息不是被测代码的消息」的一个实例。
+
+4. **★★ 想造「类型错误的载荷」时，夹具签名不能太严。**
+   `entry(seq: number, action: string, ts: string)` 严格签名下
+   `entry(1, 7, '…')` 会在 **`vue-tsc` 里报错**，而 **`vitest` 不做类型检查**
+   ⇒ 两道门结论不一致（vitest 绿、type gate 红）。
+   ⇒ 新增 `entryRaw(o: Record<string, unknown>)` 专用于构造非法载荷。
+   ★★ 这是「`vitest` 通过 ≠ `vue-tsc` 通过」的又一个具体实例（前面已有 `noUncheckedIndexedAccess` 那次）。
+
+5. **★★ 判据恒真 + 夹具无区分力（各 1 条）。**
+   - 「ts 与 seq 都在时排序键齐全」断言 `toBe(true)` ⇒ **它本身是恒真的**
+     ⇒ 补了「ts 不是字符串时排序键不齐全」负控（需绕过解包器直接构造）。
+   - 「ts 倒退时判定不成立」的夹具 `[12:00, 08:00]` 对「只比 ts 不比 seq」的变异
+     **无区分力** ⇒ 补了「ts 相同但 seq 倒退」的夹具。
+
+6. **锚点指错 2 条**（#18 / #30 / #33 中有两条）—— 连续第八批。
+   ⇒ 每次**新加夹具或新加负控**之后，必须回头核对「对应变异的 `expect`」指向哪个标题。
+
+## 11.111 看板运维芯片（dashboard/operational，第七十五批）
+
+- **端点**：`GET /api/admin/dashboard/operational`
+- **注册**：`admin/handler.go:1069` 的 `admin(...)` ⇒ **admin 档**，tenant_admin 可用 ⇒ 抽屉席不设 `requiresRole`
+- **不在** `maintainCompatPrefixes` ⇒ 本进程提供
+- **后端**：`admin/dashboard_operational.go`（83 行）+ `admin/dashboard_board_aux.go:23-111`
+- **落点**：`web-mobile/src/api/boardOperational.ts`（448 行）+ `.test.ts`（81 用例）
+
+### 挖到的八条契约
+
+1. **★★★★★ 三个子查询有三种租户口径，没有一种是「按调用方租户过滤」的。**
+
+   | 子查询 | 过滤条件 | 出处 |
+   |---|---|---|
+   | `model_discovery_runs` | **硬编码 `tenant_id = 'default'`** | `dashboard_board_aux.go:32` |
+   | `credential_health_checks` | **完全不过滤**（全租户合计） | `:53-56` |
+   | `self_check_runs` | **完全不过滤**（全租户合计） | `:84-89` |
+
+   ⇒ 本仓**第三次**「不按调用方隔离 + admin 档」（第六十六批 data-lifecycle `metrics`、
+   第七十三批 node-health、本条）。
+   ⇒ 非 default 租户的 tenant_admin 看到的是**别人**的 discovery 状态，而两个计数是**所有租户**的合计。
+
+2. **★★★★★ `degraded` 是显式 map 赋值 ⇒ 恒发，且由两个来源驱动。**
+
+   ```go
+   out["degraded"] = discErr != nil || checksErr != nil
+   if discErr != nil   { out["degraded_reason"] = "discovery status unavailable" }
+   if checksErr != nil { out["probe_degraded"] = true }
+   ```
+
+   ⇒ 两个条件键**各自对应一个查询** ⇒ `degraded: true` 时必须看条件键才知道是谁挂了。
+   ⇒ 判读要互斥：`degraded_reason` 在 ⇒ discovery 挂；`probe_degraded` 在 ⇒ 计数查询挂。
+
+3. **★★★★★ `degraded: true` 可能是「表里从来没有记录」，不是「查询失败」。**
+   `:35-37` 打日志时**排除**了 `pgx.ErrNoRows`，`:66` 的降级判定**没有排除**
+   ⇒ 「没跑过 discovery」也标成降级（`status: null` + 同一个 `degraded_reason`）。
+   而 `selfcheck` 用 `COUNT(*)` 聚合**恒返回一行** ⇒ 空表时不降级
+   ⇒ ★ **两个 `degraded` 的触发原因不同构**，客户端不能复用同一套文案。
+
+4. **★★★★ `checks_last_10m === 0` 是二义的。** 计数失败只 `slog.Warn`，值留 0（`:52`）
+   ⇒ 与第六十八批 `compressed_requests === 0` 同型 ⇒ 只有 `probe_degraded` 缺失时这个 0 才可信。
+
+5. **★★★★ `success_rate` 是 0-1 比例**（`:96-99`），且 `total == 0` 时**留 0.0**
+   ⇒ 「没跑过」与「全失败」同值 ⇒ 必须同时看 `total_runs_24h` 与 `degraded`。
+   ★ 单位是 0-1（对照 `percentage` 是 0-100）。
+
+6. **★★★ `discovery` 里恒发键与条件键混排**：`running`/`status`/`trigger` 恒发
+   （`strPtrVal(nil)` ⇒ JSON `null`），`started_at`/`heartbeat_at` 是条件键。
+
+7. **★★★ 30 秒缓存，两层**：进程内 `boardOperationalCache`（TTL 30s）+ 响应头
+   `Cache-Control: private, max-age=30` ⇒ 两次采样看不到变化**可能只是缓存**；缓存是进程内的，多副本各不同。
+
+8. **★★ `include_operational` 参数被本端点完全忽略** —— `includeBoardOperational`（`:44-52`）
+   是看板汇总那条路用的，handler 从头到尾没读这个 query 参数。
+
+### 验证
+
+- 用例 **81 条全绿**
+- 变异 `/tmp/mut-co75.mjs` **44 条 = 41 有牙 + 3 条可证等价 + 0 STILL_GREEN**，`RESTORED=OK`
+- 三门 rc=0；`vue-tsc` rc=0；`npm run build` rc=0
+- 全量 **4113 条（139 文件）** rc=0；十连跑 10/10
+- U+FFFD 自查：源与用例均 0
+
+### 变异验证暴露的判据缺陷
+
+1. **★★★★★ 量具缺陷：解包器在 `describe` 体顶层调用 ⇒ 整份 spec 收集期就挂。**
+   缓存那个 `describe` 里写的是
+
+   ```ts
+   const a = unwrapBoardOperational(payload())   // ← 顶层
+   ```
+
+   注入「把条件键误加进必检」后，抛错发生在**收集期** ⇒ vitest 报
+   `FAIL <file> [ <file> ]`（**没有 `>` 分隔符**）+ `Tests  no tests`。
+   我的 harness 只 grep `file > 用例名` 这一种形态 ⇒ **两条明明有牙的变异被报成 STILL_GREEN**。
+   ⇒ 两处都改：① spec 侧改成惰性 `healthy()` 构造；② harness 加 `parseFailures()`，
+     把「`Tests no tests` / `FAIL … [`」也算红。
+   ★★★ 归因顺序里第 ① 步（变异是否真改到行为）本来能抓到这个，
+   **是量具把「整份文件挂掉」呈现成了「一条都没红」** —— 零结果先怀疑量具。
+
+2. **★★★★ 判据缺口 3 处（`板` 判定只有正向、阈值相关判定被阈值掩盖、状态码只测了 200）。**
+   - `boardChecksCountMayBeFailed` 只有「0 + probe 降级 ⇒ true」的正向断言，
+     缺「0 + probe 未降级 ⇒ false」的负控 ⇒ 删掉 `&& boardBgProbeDegraded` 打不出差异。
+   - `boardSelfCheckHealthy(r, 0.8)` 在 `total=0` 时，`0.0 >= 0.8` 本来就是假
+     ⇒ 删掉 `if (boardSuccessRateIsMeaningless(r)) return false` **打不出差异**。
+     ⇒ 补「**阈值放宽到 0**」的用例：这时 `0.0 >= 0` 为真，
+     「没跑过 ≠ 健康」才真正与阈值解耦。
+   - `boardNotConfigured` 只测了 200 ⇒ 放宽成「所有 5xx」打不出差异
+     ⇒ 补「**500 + 同一个 message**」⇒ 挡住「一律说成数据库未配置」的错误处置指引。
+
+3. **★★★ 三条可证等价变异（保留守卫，不删）。**
+   `boardBgDiscoveryReason` / `boardDiscoveryStartedAtOrNull` / `boardSelfCheckReason`
+   里的 `v !== ''` 守卫：后端只写非空字面量（`degraded_reason`）或
+   `time.RFC3339` 格式化值（`started_at`）⇒ **该分支对本族契约不可达**。
+   保留的理由：这几个键是**条件键，解包器不校它们的类型** ⇒ 这是唯一兜底。
+   ⇒ 记为可证等价变异，已在源码注释里写明理由。
+
+4. **`--dry` 阶段抓到 3 处锚点错误**（1 处用例名不在标题里、2 处 `from` 前缀多两个空格）。
+   ★ 其中 #8 的用例名我写的是「**全**健康载荷原样通过」，实际标题是「健康载荷原样通过」
+   —— 又一次「`expect` 必须从 `it('…')` 标题里抄」。
+
+## 11.112 系统自检族（self-check，第七十六批）
+
+- **端点**：`/api/self-check/{runs, runs/{id}, settings, stats, models, trigger/availability}`
+- **注册**：`admin/self_check_handlers.go:60-68` 的 `RegisterRoutes`，六个 GET **全部 `admin(...)`**
+  ⇒ tenant_admin 可用 ⇒ 抽屉席**不设** `requiresRole`
+  （同族 `settings/update`（`:64`）与 `trigger`（`:66`）是 `superAdmin(...)`，写操作，不碰）
+- **表**：`deploy/sql/schemas/baseline/01-schema.sql`
+- **落点**：`web-mobile/src/api/selfCheck.ts` + `.test.ts`（151 用例）
+
+### 挖到的九条契约
+
+1. **★★★★★ `self_check_runs` 有 `tenant_id` 列，但六个 handler 一个都不用。**
+
+   ```sql
+   tenant_id text DEFAULT 'default'::text NOT NULL,
+   ```
+
+   而 `handleListRuns` 是 `WHERE 1=1`、`handleGetRun` 是 `WHERE id=$1`、
+   `handleStats` 三处是 `WHERE started_at >= $1`、`handleModels` 是 `GROUP BY model_name`
+   ⇒ **全部不带租户条件**；注册是 `admin(...)`
+   ⇒ **tenant_admin 能读所有租户的自检记录**，含 `error_detail`、`request_body`、
+   `response_preview` 等正文级内容。
+   ⇒ 本仓**第四次**「不隔离 + admin 档」。与前三次不同的是：
+   **列就在表里，只是查询从不引用它** —— 不是「表没有租户概念」。
+
+2. **★★★★★ `status` 是五值枚举，统计却只数三个。**
+   建表 CHECK：`('running','success','partial','failed','retrying')`；
+   而 summary / by_model 只 FILTER 三个 ⇒ `total_runs` 走 `COUNT(*)`，**含 running 与 retrying**
+   ⇒ `success_runs + partial_runs + failed_runs` **可能小于** `total_runs`。
+   ⇒ 拿三项相加当分母会算错。
+   ⇒ 桌面 `api-selfcheck.ts:55` 只声明四值，**漏 `retrying`**。
+
+3. **★★★★★ `range` 回显的是请求值，不是生效窗口。**
+   `:777-794` 用 `rangeParam` 原值算 `since`（未知值静默落 24h），
+   `:963` 又把**同一个原值**回显 ⇒ `range=xyz` 得到的是 **24h 的数据、标着 `xyz` 的 range**。
+
+4. **★★★★★ `stats` 四个区块有四种失败策略，其中两种会骗人。**
+
+   | 区块 | 查询失败时 | 客户端看到 |
+   |---|---|---|
+   | `summary` | **错误被丢弃**（`:805` 的 `Scan` 返回值没接） | 零值 + `success_rate: 0.0`，**HTTP 200** |
+   | `by_model` | 500 | 报错 |
+   | `error_breakdown` | 只 `slog.Warn`（`:872-874`） | `[]` —— **与「没有失败记录」同形** |
+   | `trend` | 只 `slog.Warn`（`:904-906`） | `[]` —— **与「该窗口没跑过」同形** |
+   | `probe_system` | 两个查询的错都 `_ =` 丢弃（`:941`/`:949`） | 全零 ⇒ **`healthy` 算成 `true`** |
+
+   ⇒ 最严重的是最后一行。这个区块的注释（`:926-931`）自陈存在的理由就是
+   「页面绿灯但探测管线已死」（glm-5.2 事故），而**它的查询失败恰好产出绿灯**：
+   `queue_ready_unclaimable == 0` 且 `last_activity_at == nil` ⇒ `healthy = true`。
+   ⇒ 与第六十八批 `compressed_requests === 0`、第七十五批 `checks_last_10m === 0`
+     同族，但这次**直接落在健康判据上**。
+
+5. **★★★★ `credential_id` 不是数据库列，是从 `model_name` 推导的。**
+   `credentialIDFromSelfCheckLabel`（`:75-85`）：前缀 `cred-` + `ParseInt` + `id > 0`，
+   否则 nil，`omitempty` ⇒ 键缺失。⇒ **客户端可以自己验算**。
+   ⇒ ★ `ParseInt` 不跳前导空白，`Number(" 7") === 7`；`ParseInt("0x10", 10, 64)` 报错，
+     `Number("0x10") === 16` ⇒ 用 JS 的 `Number()` 直译会推出错误的 id。
+
+6. **★★★★ `omitempty` 打在 `int` 上 ⇒ 0 毫秒是「键缺失」不是 `0`。**
+   `upstream_latency_ms`（`:106`）。同族 `error_type`/`error_detail`/`upstream_result`/
+   `upstream_error`/`selection_strategy` 是 SQL `COALESCE(...,'')` 成空串**再被 omitempty 吃掉**
+   ⇒ 「键在」等价于「非空」。scRun 一共 **9 个条件键 / 11 个恒在键**。
+
+7. **★★★★ run 详情把「数据库挂了」说成「记录不存在」。**
+   `:230-233`：`QueryRow(...).Scan(&err)` 的**任何**错误都走 404 `run not found`
+   ⇒ 客户端无法区分 404 的两种成因。
+
+8. **★★★ `settings` 这个 GET 有写副作用。**
+   `:327-345`：读不到行就 `INSERT ... ON CONFLICT (id) DO NOTHING` 播种默认值再重查一次。
+   ⇒ 它不是纯只读端点，预取会真的落库。播种常量见 `SELF_CHECK_DEFAULT_FEATURED_MODELS`（`:290`）。
+
+9. **★★★ `/models` 没有 `partial` 计数，而 `stats` 的 `by_model` 有。**
+   ⇒ 两个端点 `total` 口径相同，但 `success + failed` 在 models 里**不等于** `total`；
+   且 models 是**全时段**，stats 按窗口。
+
+### 另注
+
+- `error_type`（31 值）与 `selection_strategy`（7 值）都是**建表 CHECK 约束** ⇒ 真的封闭枚举，
+  与第七十四批 `action` 那种「只判 `!= ""`」的开放字符串不同。
+- `limit` 静默回落：`1..500` 才生效，其余（含 `0`/负数/`abc`/空）一律回 50，**不回显**。
+- `items` / `rounds` / `by_model` / `trend` / `models` 全是 `make(...,0)` ⇒ **恒数组，不是 null**。
+- `probe_system` 的两个时间键是 map 里塞 `*time.Time` ⇒ **恒在键但可为 null**；
+  而 `models[].last_run` 是 struct 字段 + omitempty ⇒ **可为键缺失**。两种编码出现在同一个族里。
+- 桌面 `SelfCheckStats` 类型**没有 `probe_system`** ⇒ 桌面把这个区块整个丢了。
+
+### 验证
+
+- 用例 **151 条全绿**
+- 变异 `/tmp/mut-co76.mjs` **96 条 = 92 有牙 + 4 条可证等价 + 0 STILL_GREEN**，`RESTORED=OK`
+- 三门 rc=0；`vue-tsc` rc=0；`npm run build` rc=0
+- 全量 **4264 条（140 文件）** rc=0；十连跑 10/10
+- U+FFFD 自查：源与用例均 0
+
+### 变异验证暴露的判据缺陷
+
+1. **★★★ 锚点未同步（第 N 次）：8 条 STILL_GREEN 全是这个。**
+   我补了有区分力的新用例（`gpt-0042`、前导空格、`cred-9` 不一致、含斜杠的 id…），
+   却**没回头改对应变异的 `expect` 指向** ⇒ 用例有牙、变异打偏。
+   ⇒ 「新加夹具/新加负控之后必须回头核对每个相关变异的锚点」——这条纪律的价值再次被证明。
+
+2. **★★★ 夹具无区分力（6 条），其中三条是同一个函数的两个分支各缺一半。**
+   - `selfCheckCredentialIdMatches` 的两个分支：`derived === null` 的用例一大把，
+     但**「有推导值且对不上」的用例一条都没有** ⇒ 把那一半恒真化打不出差异。
+   - 前缀检查：`'glm-5.2'` 的后缀本来就不是纯数字 ⇒ 删掉前缀检查照样返回 null
+     ⇒ 补 `'gpt-0042'`（无 `cred-` 前缀但后缀是纯数字）。
+   - 纯数字检查：`'cred-7a'` 交给 `Number()` 得 NaN ⇒ 仍返回 null
+     ⇒ 补 `'cred- 7'`（Go 的 `ParseInt` 报错）与 `'cred-0x10'`。
+
+3. **★★ 短路链让后面的分支测不到：`queue_last_activity_at === null` 那支。**
+   夹具 `probeSystem()` 默认 `queue_running: 1` ⇒ 判据在**下一行**就 `return true` 了
+   ⇒ 把 null 那支改成 `return false` 打不出差异。
+   ⇒ 测短路链的某一支，必须把它**前面所有分支的触发条件都关掉**。
+
+4. **★★ 数字键与字符串键合并校验 ⇒ 放行了 `error_type: 500`。**
+   我最初写的是 `typeof d[k] === 'string' || typeof d[k] === 'number'`，
+   用例「error_type 是数字时抛错」首跑就红 ⇒ 这是**实现缺陷**，不是判据缺陷。
+   ⇒ 改成 `SELF_CHECK_RUN_NUMERIC_OPTIONAL_KEYS` / `..._STRING_OPTIONAL_KEYS` 两组分别校。
+   ★ 与已记录的「`toThrow(/字段名/)` 被下游兜住」同族：**类型校验写宽等于没写**。
+
+5. **★★ 两条恒等式用错方向（我自己的断言写错，实现是对的）。**
+   - `error_type` 枚举我断言 32，**实际建表 CHECK 是 31 值** ⇒ 改断言。
+   - Go 是 `time.Since(...) < 15*time.Minute`（严格小于）⇒ 恰好 15 分钟判 stale。
+     我原本断言 true ⇒ 改断言，并补「差一毫秒仍在阈值内」。
+
+6. **★★★ 四条可证等价变异（保留守卫，不删）。**
+   `#54` 允许「键在而值为 undefined」——`requireKeys` 已保证键存在，JSON 解析也不会产出这种值；
+   `#70` `<= 0` 与 `=== 0`——`total_runs` 来自 `COUNT(*)` 恒 ≥ 0；
+   `#73` `> 0` 与 `!== 0`——`queue_ready_unclaimable` 同理；
+   `#84` `|| null` 与 `?? null`——`upstream_latency_ms` 带 omitempty，0 根本不落键。
+   ⇒ 全部记为可证等价变异，已在脚本与源码注释里写明理由。
+
+7. **顺手纠一处上一批的追溯错误。** 第七十五批把 `dashboard/operational` 写成
+   `handler.go:1069`，实际是 **`:1068`**（`:1069` 是 `board/error-drill`）。
+   ⇒ 行号是「逐字照抄」的产物，**跨批次也会漂**，每批开写前都要重新确认。
+
+## 11.113 路由策略配置面（routing policy，第七十七批）
+
+- **端点**：`GET /api/routing/{policy, featured, scoring-weights, featured-models}`
+- **注册**：`admin/handler.go:1200`（superAdmin）/ `:1201`（superAdmin）/ `:1215`（superAdmin）/ `:1216`（**admin**）
+- **后端**：`admin/routing.go`（4200+ 行）与 `deploy/sql/schemas/baseline/01-schema.sql`
+- **落点**：`web-mobile/src/api/routingPolicy.ts` + `.test.ts`（81 用例）
+
+### 挖到的七条契约
+
+1. **★★★★★ 一个族里三档一档：`featured-models` 是 admin 档，其余三个是 superAdmin 档。**
+   ⇒ ★★ **绝不能按「同前缀都是一类」定档** —— 必须逐条看注册。
+   ⇒ 抽屉席放后三个**必须**设 `requiresRole: 'super_admin'` 并同步
+     `src/components/shell/AppDrawer.spec.ts` 白名单；`featured-models` 不设。
+
+2. **★★★★★ `policy` 的响应形状是 `row_to_json(rp)` ⇒ 形状由表决定，不由代码决定。**
+   `routing.go:2527`：
+   ```sql
+   SELECT row_to_json(rp)::text FROM routing_policy rp WHERE tenant_id = 'default' ORDER BY id LIMIT 1
+   ```
+   ⇒ **21 个列全是响应键**（7 个 NOT NULL + 14 个可空），加一个 DDL 就要加一个客户端键。
+   ⇒ ★ `row_to_json` 对可空列输出 **`null` 而不是省略键**
+   ⇒ 这是本仓第**八**种 nil 编码，与第七十二批「同一载荷里两个数组键编码相反」同族。
+
+3. **★★★★★ 空对象 `{}` 是三合一语义。**
+   `routing.go:2533`：
+   ```go
+   if err := row.Scan(&raw); err != nil || raw == "" { writeJSON(w, http.StatusOK, map[string]any{}); return }
+   ```
+   ⇒ 「没有这一行」「查询失败」「文本为空」**三种都回 HTTP 200 + `{}`**
+   ⇒ ★ 解包器把 `{}` 解成 `null`，客户端**只能说「拿不到」**，不能说「未配置」。
+
+4. **★★★★ `scoring-weights` 的降级完全不可辨。**
+   `getScoringWeights`（`:4026-4055`）：
+   ```go
+   if err != nil || len(weightsJSON) == 0 { return defaultWeights }
+   if err := json.Unmarshal(...); err != nil { return defaultWeights }
+   for k, v := range defaultWeights { if _, ok := weights[k]; !ok { weights[k] = v } }
+   ```
+   ⇒ **查询失败、解析失败、缺键**三种都产出同一份默认值，响应里**没有任何标记**。
+   ⇒ ★★ 但**额外键能定案**：兜底分支 `return defaultWeights`（`:4041`/`:4046`）
+     那张 map 只有五个键 ⇒ 响应里只要有一个额外键，就一定来自 DB。
+     这条是本批唯一一个「不可辨 ⇒ 用别处证据定案」的正面例子。
+
+5. **★★★★ `scoring-weights` 的数字键是开放形状。**
+   `scoringWeightsDisplayOnlyPayload`（`:3919-3927`）把 jsonb 里**任意**键摊平，
+   再加两个披露键：
+   ```go
+   out["display_only"] = true
+   out["note"] = "these weights only affect /api/routing/resolve and /api/routing/score-details previews, not live routing"
+   ```
+   ⇒ 只有五个键**保证存在**（默认值回填）。
+   ⇒ ★ `display_only` 是**硬编码常量** ⇒ 校验它的取值是**恒真判据**，只校类型。
+
+6. **★★★★ 三个端点硬编码 `tenant_id = 'default'`，第四个是对的。**
+   `routing.go:2529` / `:2592` / `:4038` 写死；而 `featured-models`（`:4068`）走
+   `EffectiveTenantIDAll(r)`（`context.go:69`）—— tenant_admin 拿自己的租户、
+   super_admin 拿全租户合计。
+   ⇒ ★ **同族两个隔离口径**：与第七十三/七十五/七十六批「全族都不隔离」不同，
+     这里是「族里三个错、一个对」。
+
+7. **★★★ `featured-models` 的 `standardized_name` 恒等于 `name`。**
+   `routing.go:4081-4082` 两个字段都取 `p.CanonicalName`
+   ⇒ 客户端不该把它们渲染成两种东西，也不该拿它做「标准化前后」对照；
+   但**类型仍要校**（后端两处同源不等于两处同型）。
+
+### 另注
+
+- `featured_models` 恒为数组：`COALESCE(..., ARRAY[]::TEXT[])`（`:2591`）+ nil 兜底（`:2598`）
+  ⇒ **不会是 null**；但查询失败只 `slog.Warn` 后回 `[]` ⇒ 与「没配」**同形**。
+- `models` 恒数组（`make([]featuredModel, 0, len(popular))`），四键无 omitempty。
+- `source` 是**两个字面量**决定的封闭枚举（`:2862` 的 `"policy"`、`:2903` 的 `"usage"`）
+  ⇒ 与第七十四批「只判 `!= ""`」的开放字符串**不同**，这里**可以**校验取值。
+- `count` 在内层是 `*int`，写出时 nil→0 ⇒ 对外**恒为数字**。
+- usage limit 20 **只**作用于 usage 来源；`policy` 来源不受限（`:2865-2867` 的注释明说）。
+- 四个端点都是 5 秒超时；`policy` 的 PATCH 只读六个已知列、其余忽略（COALESCE 静态 UPDATE）。
+
+### 验证
+
+- 用例 **81 条全绿**
+- 变异 `/tmp/mut-co77.mjs` **55 条 55/55 有牙、零 STILL_GREEN**，`RESTORED=OK`
+- 三门 rc=0；`vue-tsc` rc=0；`npm run build` rc=0
+- 全量 **4345 条（141 文件）** rc=0；十连跑 10/10
+- U+FFFD 自查：源与用例均 0
+
+### 变异验证暴露的判据缺陷
+
+1. **★★★ 锚点未同步（两批内第三次，又是它）。**
+   补了三条负控（`undefined` 形状、`name` 类型错、只改最后一个权重键），
+   却先跑了一轮才发现 STILL_GREEN ⇒ 用例有牙、锚点没跟上。
+   ⇒ ★ **补负控与改锚点必须是同一个原子步骤**，不能只做前一半。
+
+2. **★★ 变异本身写错：`to` 只追加不替换。**
+   #25 我原本写的是「在 `requireObject` 里加一条 `resp === undefined` 的分支」，
+   但**没有删掉**原来的 `isPlainObject` 检查 ⇒ 两条路径吐同一句错误消息
+   ⇒ **行为完全没变**。
+   ⇒ ★ 这正是「注入标记 ≠ 变异」的另一种形态：标记也在、行为也没改。
+   ⇒ 自查方法：把 `to` 写完后问一句「原来那段代码还有没有一个字节留在这条路径上」。
+
+3. **★★★ 夹具被上游检查截胡（3 条）。**
+   - `★ 元素缺键抛错并点名下标` 用 `{ name: 'x' }`，它在 `requireKeys` 就抛了
+     ⇒ `name` 的类型分支**从没执行** ⇒ 删掉那个校验打不出差异。
+     ⇒ 补「四键齐全、只错类型」的夹具。
+   - 「响应形状不是裸对象时抛错」只测了 `null`/`[]`/`'x'`，漏 `undefined`
+     ⇒ 补 `undefined` 用例。
+   - 「改过任一键后不再判为可能是兜底」改的是 `price`（**第一个**键）
+     ⇒ 把 `default_price_usd`（最后一个）从判据里去掉打不出差异
+     ⇒ 补「只改最后一个键」的用例。**逐键都要有专属用例。**
+
+4. **★ 变异自身无区分力：同一个集合里重复一个键。**
+   #7 我把 `transient_fail_threshold` 在**必填集合里**写了两次
+   ⇒ 与可空集合仍然没有交集 ⇒ 断言照过。
+   ⇒ 改成「把必填键塞进可空集合」才真的制造了交集。
+   ⇒ 断言是 `A ∩ B = ∅` 时，变异必须动**跨集合**的关系，在集合内部打转没用。
+
+5. **★★ 首跑即红的实现缺陷（1 条）：判定写弱了。**
+   `routingScoringWeightsMayBeDefaults` 原本只看五个键的值，
+   于是「五键全是默认值 + 带一个额外键」也会被判成「可能是兜底」——
+   而额外键恰好是**唯一能定案**的证据。
+   ⇒ 补 `extraKeyCount(w) > 0 ⇒ false`，并把这条推理写进函数注释。
+
+## 11.114 三态探测队列（probe/tasks，第七十八批）
+
+- **端点**：`GET /api/admin/probe/tasks?status=pending|in_flight|completed&limit=`
+- **注册**：`admin/probe_dashboard.go:1907` 的 `adminWrap(h.handleProbeTaskRoute)` ⇒ **admin 档**
+  ⇒ tenant_admin 可用 ⇒ 抽屉席不设 `requiresRole`
+- **路由是方法多路复用**：GET 走 `handleProbeTaskList`（`:1841`，只读）；
+  POST 走 `handleProbeTaskCreate`、DELETE 走 `handleProbeTaskCancel`
+  ⇒ 本批**只碰 GET**，写操作不碰
+- **表**：`credential_probe_queue`（`sql/migrations/domain/343_credential_probe_queue.sql`）
+- **桌面调用方**：`web/src/api-selfcheck.ts:313`、`components/probe/ProbeTriStateQueue.vue`
+- **落点**：`web-mobile/src/api/probeTriStateTasks.ts` + `.test.ts`（72 用例）
+
+### 挖到的八条契约
+
+1. **★★★★★ 响应里的 `status` 不是数据库里的 status。**
+   `queryProbeTriStateTasks`（`:1813-1821`）把六个 DB 状态压成三个：
+   ```go
+   switch t.Status {
+   case "ready":   t.Status = "pending"
+   case "running": t.Status = "in_flight"
+   default:        t.Outcome = t.Status; t.Status = "completed"
+   }
+   ```
+   DB 的 CHECK 是 **6 值**：`('ready','running','success','failed','expired','cancelled')`
+   ⇒ ★ **原始状态只在 completed 行以 `outcome` 保留**，
+     pending / in_flight 行的原值（`ready` / `running`）**被丢掉且不可恢复**。
+   ⇒ 客户端看到的 `status: 'pending'` **不能**反推「这一行是 ready 而不是别的」。
+
+2. **★★★★★ `outcome` 与 `status` 互斥且可验。**
+   ⇒ `status === 'completed'` ⇒ `outcome` 必在（四值之一）；
+     否则 `outcome` 必不在（omitempty）。
+   ⇒ ★ 因为 `:1818-1820` 的 default 分支是**唯一**给 `Outcome` 赋值的地方，
+     可达载荷恒满足 `outcome 存在 ⇔ status === 'completed'`。
+
+3. **★★★★★ `next_retry_at_ms` 的存在性 ⇔ `status === 'pending'`。**
+   `:1822-1824` 的条件是 `t.Status == "pending" && !nextRunAt.IsZero()`，
+   而 `next_run_at TIMESTAMPTZ NOT NULL DEFAULT now()` ⇒ pending 行必然非零
+   ⇒ ★ **pending 行必有这个键，另两条腿必没有**。退避信息只在 pending 腿有意义。
+
+4. **★★★★★ `*int` + omitempty 与 `int` + omitempty 的行为相反。**
+   `HTTPStatus *int` / `LatencyMs *int`（`:1733-1734`）是**指针**：
+   omitempty 只在 nil 时省略 ⇒ **数据库里的 0 会原样出现**（`http_status: 0`）。
+   对照第七十六批 `upstream_latency_ms int` ⇒ 0 被 omitempty **吃掉**变成键缺失。
+   ⇒ ★★ 用 `if (t.http_status)` 判「有没有测出状态码」会把 0 误判成「没有」。
+
+5. **★★★★ `provider_id` / `provider_name` / `provider_code` 三个都带 omitempty。**
+   provider_id 是 `*int64`（LEFT JOIN 可能 NULL）；
+   name/code 走 `COALESCE(NULLIF(...), NULLIF(...), NULLIF(...), '')`（`:1781-1782`）
+   ⇒ 三者皆空时 SQL 给 **`''`**，再被 omitempty 吃掉
+   ⇒ ★「供应商未知」表现为**键缺失**，不是空串也不是 null。
+
+6. **★★★★ `origin` 是从 `source` 推出来的三值枚举，且客户端可自验。**
+   `probeTriStateOrigin`（`:1743-1751`）：
+   ```go
+   case "request_failure", "no_candidates": return "error"
+   case "admin", "external_async":          return "manual"
+   default:                                  return "scheduled"
+   ```
+   ⇒ ★★ **`no_candidates` 不在 `source` 的 CHECK 约束里**
+   （CHECK 只有 `'request_failure','periodic','external_async','admin'`）
+   ⇒ 那个分支项**不可达**（恒真守卫，按既有纪律保留并在注释里写明）。
+   ⇒ 但 `origin` 与 `source` 的对应关系**客户端可自验**，不必信后端。
+
+7. **★★★ 参数是**严格校验**，不是静默回落。**
+   - `status` 不在白名单 ⇒ **400** `status must be pending|in_flight|completed`；
+   - `limit` 不在 `1..200` ⇒ **400** `limit must be 1..200`；
+   - 缺省 `status=pending`、`limit=50`。
+   ⇒ ★ 与第七十六批 `/self-check/runs` 的 `limit` **静默回落成 50** 形成直接对照：
+     **同一个仓里两种参数校验风格并存**，写客户端时不能凭直觉假设。
+
+8. **★★★ `count` 是本页长度，不是总数。**
+   `:1879` 的 `"count": len(tasks)` ⇒ `count === tasks.length` **恒成立**
+   ⇒ ★「还有没有下一页」只能靠 `tasks.length >= limit` 判断，`count` 不提供额外信息。
+
+### 另注
+
+- `tasks := []ProbeTriStateTask{}`（`:1797`）⇒ **恒数组，不是 null**。
+- **三条腿的排序键各不相同**：pending = `priority DESC, next_run_at ASC, id ASC`；
+  in_flight = `started_at DESC NULLS LAST, id DESC`；
+  completed = `COALESCE(finished_at, updated_at) DESC, id DESC`
+  ⇒ 客户端**不能**假设跨腿的统一排序。
+- 扫描失败是 `return nil, err` ⇒ **整条 500**（不像别处 `continue` 跳行）。
+- 503 `database not configured`；500 `internal server error`。
+- 结构体 13 个恒在键 + 9 个条件键 = 22 键；`outcome`/`next_retry_at_ms`/`http_status`/
+  `latency_ms`/`reason_code`/`finished_at` 都是条件键。
+- 注释自陈「Metadata only — no `result_body_preview`」（`:1709-1710`）⇒
+  **请求/响应正文刻意不进 API 与 SSE**（可观测安全红线）。
+
+### 验证
+
+- 用例 **72 条全绿**
+- 变异 `/tmp/mut-co78.mjs` **47 条 = 45 有牙 + 2 条可证等价 + 0 STILL_GREEN**，`RESTORED=OK`
+- 三门 rc=0；`vue-tsc` rc=0；`npm run build` rc=0
+- 全量 **4417 条（142 文件）** rc=0；十连跑 10/10
+- U+FFFD 自查：源与用例均 0
+
+### 变异验证暴露的判据缺陷
+
+1. **★★ 锚点指错（1 条）。**
+   `退避一致性只判 pending 腿` 那条变异打破的是「in_flight 居然带退避」那一支
+   （`true || …` 恒真），而我的锚点指着「pending 缺退避」——
+   那一支两条实现都返回 `false` ⇒ 打不出差异。
+   ⇒ 判据是**双向不变量**时，两个方向各要一条用例，锚点也要指向对的那一条。
+
+2. **★★ 两条可证等价变异。**
+   `probeTaskSucceeded` / `probeTaskFailedOrAbandoned` 里去掉 `status === 'completed'`，
+   对可达载荷行为不变（`:1818-1820` 保证 `outcome` 存在 ⇔ completed）。
+   ⇒ 记为可证等价，保留守卫。
+
+3. **★★ 实现缺陷（首跑即红）：字段名写错。**
+   `probeTaskLatencyMsOrNull` 里写的是 `t.latencyMs`，而字段名是 **`latency_ms`**
+   ⇒ 永远取到 `undefined` ⇒ 恒返回 `null`。
+   用例「`latency_ms` 为 0 时取得到 0 而不是 null」当场抓到。
+   ⇒ ★ **snake_case 的后端字段最容易在这里出错**；语义函数必须有一条
+     「键在时能取到值」的用例，否则 `?? null` 会把打错的字段名吞掉。
+
+4. **★★ 类型门比 vitest 更严（又一次）。**
+   `requireTask` 里 `(… as readonly string[]).includes(d.origin)` —— `d.origin` 是
+   `unknown`，`vitest` 不做类型检查所以全绿，`vue-tsc` 报 TS2345
+   ⇒ 补 `String(...)`。
+   ⇒ 与第七十四批那次同源：**「vitest 全绿」不等于「类型门绿」**。
+
+## 11.115 供应商错误趋势（errors/trend，第七十九批）
+
+- **端点**：`GET /api/errors/trend`
+- **注册**：`admin/handler.go:1249` 的 `admin(h.errorsTrendHandlers.getErrorsTrend)` ⇒ **admin 档**
+  ⇒ tenant_admin 可用 ⇒ 抽屉席不设 `requiresRole`
+- **实现**：`admin/errors_trend.go`（350 行）
+- **落点**：`web-mobile/src/api/errorsTrend.ts` + `.test.ts`（74 用例）
+
+### 挖到的八条契约
+
+1. **★★★★★ 两个数据源，`source` 告诉你是哪个。**
+
+   | source | 读的是 | 何时被选中 |
+   |---|---|---|
+   | `stats` | `supplier_error_stats`（预聚合，分钟桶由后台聚合器每 5 分钟 UPSERT） | 该窗口该粒度**有行** |
+   | `fallback` | `supplier_errors_unified`（明细） | stats 返回**零行**（`:122-133`） |
+
+   ⇒ ★ `fallback` 只说明「**预聚合表在这个粒度上没有行**」，
+     **不一定是「没有错误」** —— 粒度不匹配（聚合器只写了别的粒度）也会走到这里。
+   ⇒ ★★ 但 `fallback` **且** `time_series` 为空是**确定的**：
+     fallback 分支总是被真的执行一遍，明细表也为空 ⇒ 窗口内确实没有错误。
+   ⇒ 对照第七十八批 `summary` 四区块四种失败策略：这里是**显式标出来源**的写法。
+
+2. **★★★★★ 读路径刻意绕过 RLS。**
+   `withTrendReadTx`（`:171-196`）在只读事务里
+   `set_config('app.bypass_rls','true',true)`（`is_local=true`，
+   保证旁路随事务提交即失效、pooled 连接不保留提权）。
+   注释自陈原因（`:163-170`）：`supplier_errors_hot` / `supplier_errors`
+   是 **FORCE RLS + 租户隔离**，而网关应用角色**不是 superuser**，
+   直连读会被**静默过滤到 0 行** ⇒「趋势数据闭环断裂」。
+   ⇒ ★★ **「0 行」本身是一个被代码注释文档化的失败模式**，
+     客户端看到的数字是 **bypass 之后**的；租户隔离靠 `EffectiveTenantIDAll(r)` 传参
+     而不是靠 RLS ⇒ super_admin 拿到的是全租户合计。
+
+3. **★★★★★ `summary.unique_requests` 是各桶相加，不是去重计数。**
+   `loadFromStats:221-222` / `loadFromDetail:263-264` 只做
+   ```go
+   resp.Summary.TotalErrors    += p.ErrorCount
+   resp.Summary.UniqueRequests += p.UniqueRequests
+   ```
+   ⇒ ★★ 一个跨桶的 `request_id` 会被数两次 ⇒ 汇总值**是上界**。
+   ⇒ 与第七十六批 `summary` 三项之和（含 running/retrying）是同一族陷阱：
+     **「桶求和」不等于「全局去重」**。
+
+4. **★★★★ `by_supplier` / `by_error_type` 是 `map[string]int` + `omitempty`。**
+   `:42-43` 两个键都带 omitempty，SQL 侧是
+   `jsonb_object_agg(...) FILTER (WHERE supplier <> '')`
+   ⇒ 全部被 FILTER 掉时聚合返回 NULL ⇒ 扫到空字节 ⇒ map 保持 nil
+   ⇒ ★ **空 map 被整个键省略**（不是 `{}`，不是 `null`）——
+     本仓第**九**种 nil 编码，也是**第一次出现 map 类型**。
+
+5. **★★★★ `top_error_types` / `top_suppliers` 显式初始化成空数组。**
+   `loadBreakdowns:308-309`：
+   ```go
+   resp.Summary.TopErrorTypes = []errorsTrendBreakdownRow{}
+   resp.Summary.TopSuppliers = []errorsTrendBreakdownRow{}
+   ```
+   ⇒ 恒数组，**不会是 null**（与第 (4) 条的 map 恰好相反，**同一个响应里并存**）
+   ⇒ ★★ 两者都被**截到 10 条**（`:319`/`:323`），**不回显被丢掉的数量**。
+
+6. **★★★★ `hours` 是严格三值枚举，`granularity` 的缺省由它推导。**
+   `parseVendorErrorHours`（`vendor_credential_error_handlers.go:182-191`）
+   只接受 `1 / 24 / 168`，其余（含 `0`、负数、`abc`）⇒ **400** `invalid_hours`。
+   `granularity` 缺省（`:81-90`）：
+   ```go
+   case hours <= 1:  granularity = "minute"
+   case hours <= 24: granularity = "hour"
+   default:          granularity = "day"
+   ```
+   显式传值则严格校验（`:91-94`）⇒ **400** `invalid_granularity`。
+   ⇒ ★ 判据是 `<=1` / `<=24` 而非 `===1` / `===24`，客户端复刻时要照抄。
+
+7. **★★★ 错误信封是嵌套的，与 `writeError` 的扁平形不同。**
+   `writeErrorWithCode`（`handler.go:1501-1508`）：
+   ```go
+   writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "detail": msg}})
+   ```
+   ⇒ 形状是 `{"error":{"code":"…","detail":"…"}}`。
+   六个 code：`db_not_configured`（503，detail 是 `database is not configured`
+   —— ★ 与别处的 `database not configured` **措辞不同**）、
+   `invalid_hours` / `invalid_granularity` / `invalid_credential_id`（三个 400）、
+   `trend_stats_query_failed` / `trend_fallback_query_failed`（两个 500，
+   ★ **detail 原文完全相同**，只有 code 能区分）。
+
+8. **★★★ `supplier` / `error_type` 的 `'all'` 是魔法值。**
+   三处 SQL 一致：`AND ($3 = '' OR $3 = 'all' OR supplier = $3)` 等。
+   ⇒ ★ 空串与字面量 `'all'` 都表示「不过滤」；
+     而 `credential_id` 只能用 `0` 表示不过滤，
+     但入口校验又要求它 `> 0`（`:97-103`）⇒ **一旦传了 credential_id 就一定是过滤**。
+
+### 另注
+
+- `time_series` 两条 load 函数都显式初始化 ⇒ 恒数组。
+- 8 秒超时；`since`/`until` 是服务端算的时间边界（`until = time.Now()`）并回显。
+- 扫描失败是 `return err` ⇒ **整条 500**（不跳行）。
+- `loadBreakdowns` 的第三个分支（`kind='creds'`）专门喂
+  `summary.affected_credentials`；注释自陈该 KPI「曾声明但从未计算（恒 0）」，
+  是 2026-09-12 审计 P2 补上的。
+
+### 验证
+
+- 用例 **74 条全绿**
+- 变异 `/tmp/mut-co79.mjs` **53 条 53/53 有牙、零 STILL_GREEN**，`RESTORED=OK`
+- 三门 rc=0；`vue-tsc` rc=0；`npm run build` rc=0
+- 全量 **4491 条（143 文件）** rc=0；十连跑 10/10
+- U+FFFD 自查：源与用例均 0
+
+### 变异验证暴露的判据缺陷
+
+1. **★★★ 「判据有两个必要条件」时，两个条件各要一条能单独打掉它的用例。**
+   - `errorsTrendGranularityIsDefault` 的变异去掉 `!granularityWasSent`：
+     我只测了「显式传了**且与缺省不同**」⇒ 两种实现都返回 false。
+     ⇒ 必须补「**显式传了、但值恰好等于推导值**」那条。
+   - `errorsTrendBreakdownIsTruncated` 的变异把阈值 10 改成 5：
+     我只测了「1 条」与「满 10 条」⇒ **中间那段 5..9 没有专属用例**。
+     ⇒ 阈值类判据要**逐段**覆盖。
+   ★ 这两条都是「**夹具要挑能打破某一个必要条件的输入**」，与第七十八批
+     「双向不变量两个方向各一条」同源。
+
+2. **★★★ 锚点未同步（又一次，已是第四次同一形态）。**
+   补完上面两条用例后先跑了一轮，仍 STILL_GREEN ⇒ 锚点还指着旧标题。
+   ⇒ **补负控与改锚点必须是同一个原子步骤**；这次是连着两批踩同一个坑，
+     说明它必须写成流程里的一步而不是靠记性。
+
+3. **★★ `it.each` 的标题抓不到：`/it\('([^']*)'/` 只认字面量。**
+   我用 `it.each(cases)('hours=%i ⇒ %s', …)` 生成三个粒度用例，
+   dry 阶段立刻报两条 `NO_EXPECT_NAME`。
+   ⇒ ★ 变异 harness 靠标题取锚点 ⇒ **用例标题必须字面量写出来**，
+     参数化测试（`it.each` / `test.each`）的标题对 harness 不可见。
+   ⇒ 已改成五条显式 `it('hours=… ⇒ …')`，顺带补了 `hours=0` 与 `hours=25`
+     两条边界用例（判据是 `<=1` / `>24` 而不是 `===1` / `===24`）。
+
+---
+
+## 11.116 存储总览 + 表级大小（第八十批，2026-10-08）
+
+- 新增 `web-mobile/src/api/dataLifecycleStorage.ts`（`fetchStorageOverview` /
+  `fetchStorageTableSizesChecked` / 22 个语义判据 / `humanBytesGo` 复刻）
+- 新增 `web-mobile/src/api/dataLifecycleStorage.test.ts`（**165 条**）
+- 覆盖 `GET /api/admin/data-lifecycle/storage` 与 `GET /api/admin/data-lifecycle/storage/tables`
+- 鉴权：两个都是 `admin(...)`（`admin/handler.go:982` / `:983`）⇒ **admin 档**（tenant_admin 可用）
+- ★ 同族 `:986-992` 的 vacuum / vacuum-full / reindex（六个）**全是 `h.superAdmin` 且全是写操作** ⇒ 一条不碰
+- 实现：`admin/data_lifecycle_storage.go`（两个 handler `:131-229` + helpers `:232-561`）
+
+### 本族最要紧的十三件事
+
+1. ★★★★ **`database` 是值类型字段，查询失败留「全零整块」而不是缺键。**
+   `storageOverview.Database` 无 omitempty ⇒ 键恒在。`:150-152` 的 else 分支才赋值。
+   ⇒ 判据 `database_human === ''` ⇔ 查询失败（成功路径必然来自 `pg_size_pretty`）。
+   ⇒ 与 `columnar` 的失败表达**不同构**：columnar 用 `note` 说原因，database 只留零值 + `warnings`。
+2. ★★★★ **`database.free_bytes` 恒 0、`free_human` 恒 `""` —— 不是「空闲 0 字节」，是「测不到」。**
+   `queryDatabaseStorage`（`:242-290`）**从未给这两个字段赋值**，作者在 `:54` 自陈
+   「当前 connection 看不到 PG server 端 fs 剩余」。⇒ **第十种 nil 编码：显式声明的「测不到」位**。
+   ⇒ 客户端**禁止**把它渲染成「DB 剩余 0 B」；本模块只留常量 `STORAGE_DB_FREE_IS_UNMEASURED`，
+     **不提供**读它的判据函数（那是恒真判据，按纪律删）。
+3. ★★★★★ **同一个响应里有两套 humanize，单位串不重叠 ⇒ 可自验哪个是哪个。**
+   `database_human` 来自 **PostgreSQL 的 `pg_size_pretty`**（`"1 kB"` 小写 k、字节级是 `"512 bytes"`）；
+   其余全部 `*_human` 来自本仓 `humanBytes`（`:502-518`，`"1 KB"` **大写 K**）。
+   ⇒ `storageDatabaseHumanIsGoStyle` 能把「这个响应不是本端点的」挑出来。
+   ⇒ `humanBytesGo` 逐字复刻，含两级 `TrimRight` 的**顺序**（先去尾 `0` 再去尾 `.`）
+     ⇒ `1.0 KB` 渲染成 `"1 KB"`（无小数点），`1.25 KB` 渲染成 `"1.2 KB"`（**截断**不是四舍五入）。
+4. ★★★★ **`queryColumnarStorageSafe` 恒返回 `nil` error ⇒ `warnings` 里那条「列存统计查询失败」不可达。**
+   `:296-303` 两条出口都 `return …, nil` ⇒ handler `:155-161` 的 `if colErr != nil` **永假**。
+   ⇒ 列存失败的真实表达是 `columnar.note` 带前缀，**永远不会**出现在 `warnings` 里。
+   ⇒ 与第七十六批 `probe_system`（`err` 被 `_ =` 丢弃 ⇒ 失败被算成 `healthy: true`）同型：
+     那次是**静默成好**，这次是**静默留 note**。
+5. ★★★★ `columnar.total_human` 是**恒发键但可能为空串**，且它非空 ⇔ 统计查询成功。
+   `:343` 的赋值在扫描成功之后 ⇒ `available === true` **不**保证 `total_human` 非空
+   （扫描失败时 `Available` 已被 `:323` 置 true，`:341` 直接 return）。
+   ⇒ `note` 的四个出口（连接未就绪 / 扩展未安装 / 查询失败前缀 / 尚无表使用）是封闭的。
+6. ★★★★ `warnings` 六个取值，三条查询失败、三条阈值；5 倍那条有**三个必要条件**
+   （`db>0` ∧ `fs>0` ∧ **严格** `> 5.0`），5GB 那条是 `5<<30` = 5368709120 **严格大于**。
+   ⇒ `warnings` 在 `:141` 显式 `[]string{}` ⇒ 恒数组。
+7. ★★★★ `filesystem.free_bytes` 与 `used_bytes` **取自 statfs 的不同字段** ⇒ 两者不互补。
+   `:356-362` 用 `Bavail` 当 free、用 `Bfree` 算 used ⇒ `used + free ≠ total`，
+   差额是「预留给 root 的块」，由 `storageFilesystemReservedBytes()` 读出。
+   ⇒ 与 (2) 的 database 块是**两个不同性质**：这一个是**口径不齐**，那一个是**根本测不到**。
+8. ★★★ `local_logs` 是**指针 + omitempty**（`resolveLogDir` 失败时键被省略，实际恒在）。
+   `directoryInfo` 九键恒在，但 `size_human === ''` ⇔ `exists === false`（`:407` 的赋值在提前 return 之后），
+   `oldest_mtime === 0` ⇔ `files === 0`。
+9. ★★★ `database.total_bytes` 有静默兜底（`:268` 赋值 `= database_bytes`），
+   而 `:46` 注释里的不等式方向**其实是错的**：`pg_database_size` 算全库，
+   SUM 的 WHERE（`:263`）却把 `pg_catalog` / `information_schema` **排除**了
+   ⇒ **`database_bytes` 可以大于 `total_bytes`**，由 `storageDatabaseExceedsRelationSum()` 读出。
+10. ★★ `collected_at` 是 `time.Now().UTC()`（两个端点都是）⇒ 必以 `Z` 结尾，可自验。
+11. ★★ `limit` 用 `strconv.Atoi` ⇒ **静默回落 20，不是 400**。
+    三个必要条件：`Atoi` 不报错 ∧ `n > 0` ∧ `n <= 200`。
+    `Atoi` ≡ `ParseInt(s,10,0)` ⇒ `" 20"` / `"0x14"` / `"20.0"` 都报错 ⇒ 回落。
+    ⇒ 与第七十八批 `/api/admin/probe/tasks`（非法 limit ⇒ **400**）是同仓两种风格并存的又一例。
+12. ★★★ `/storage/tables` 只有一条错误路径，两条子路径（`Query` 失败 / `rows.Err()`）**文案逐字相同**
+    ⇒ 不可区分。500 是嵌套信封 `{"error":{"detail":"查询表大小失败"}}`（**无 `code`**），
+    且 `internal_error.go` 头注释明确「客户端只见到 op，绝不携带 `err.Error()`」。
+13. ★★★★ `tables` 是**恒数组**（`make(…,0,limit)`），行扫描失败**静默跳过**（`warnRowSkip` + `continue`）
+    ⇒ **`total_bytes === Σ tables[].total_bytes` 恒成立**（跳过多少行都不影响自洽），
+    `percent_of_db` 同样只对留存行算 ⇒ 逐行重算恒吻合。
+    ★ `percent_of_db` 凑不满 100（`3 × 33 = 99`）—— 整数除法截断。
+    ★ 与 (7)/(9) 同族：这里的 schema 排除列表只有两个，而 `queryColumnarStorage`（`:335-337`）
+      **还额外排除** `citus` / `citus_internal` / `columnar` / `columnar_internal` ⇒ **同族两个查询排除列表不同**。
+
+### 桌面侧缺陷（本批顺带记录，不在本模块修）
+
+★ `web/src/api/tuning.ts:456-468` 的 `TableSizeInfo` **漏了后端的 `toast_human`**（`:107`）——
+本模块按后端 struct 逐字带上，spec 里有一条专属用例钉住（`行缺 toast_human`）。
+
+### 验证
+
+- 用例 **165 条全绿**
+- 变异 `/tmp/mut-co80.mjs` **80 条**，见下节
+- 三门 rc=0；`vue-tsc` rc=0；`npm run build` rc=0
+- U+FFFD 自查：源与用例均 0
+
+### 变异验证暴露的判据缺陷（80 条 → 首跑 56 有牙，逐条修到 77）
+
+1. **★★★ 「下游的类型检查会兜住上一步的缺键检查」⇒ `toThrow` 的正则必须收紧到**自己那一步**的措辞。**
+   5 条键集变异（#7-#11：从 `STORAGE_*_KEYS` 里删掉一个键）首跑全绿。
+   归因：删掉 `requireKeys` 里的 `free_human` 后，**紧跟着的类型检查**
+   `typeof d['free_human'] !== 'string'` 看到 `undefined` 照样抛错，
+   而错误消息里也含 `free_human` ⇒ `/free_human/` 匹配上了 ⇒ 用例照绿。
+   ⇒ ★ 与已记录的「夹具被上游检查截胡」是**同一个陷阱的镜像**：
+     那次是更早的检查抛错、后面的分支从没执行；
+     这次是**更晚的检查兜住**、正则宽到两边都匹配。
+   ⇒ 修法：`toThrow(/缺 1 个键（free_human）/)` —— 只匹配 `requireKeys` 自己的措辞。
+
+2. **★★★ 夹具不得用被测常量造：文案类判据自指恒真。** 4 条（#14-#17）。
+   `storageColumnarNoteKind(col({ note: STORAGE_COLUMNAR_NOTE_EXT_MISSING }))`
+   里的夹具与被测常量是**同一个符号** ⇒ 改常量的值，两边一起变 ⇒ 永远绿。
+   ⇒ 改成逐字照抄后端源码的字面量：`note: 'citus_columnar 扩展未安装'`（`:320`）、
+     `'数据库连接未就绪'`（`:299`）、`'尚无表使用列存（citus_columnar 已加载）'`（`:345`）、
+     三个告警文案（`:183-184` / `:188` / `:192-193`，含全角 `—` `≥` `%` 与两个空格）。
+
+3. **★★★ 样本要挑「两种实现输出不同」的那一格，不是「语义上最典型」的那一格。** 8 条。
+   | 变异 | 我原来选的夹具 | 为什么不区分 | 换成的夹具 |
+   |---|---|---|---|
+   | #21 基数 1024→1000 | `humanBytesGo(1024)` | 两种进制都恰好进位到 1.0 ⇒ 都是 `"1 KB"` | `1500` ⇒ 1024 进制 `"1.4 KB"` / 1000 进制 `"1.5 KB"` |
+   | #31 漏 `free_bytes` | 整块全零 | 那个字段本来就是 0 ⇒ 漏不漏都一样 | 只有 `free_bytes` 非零、其余全零 |
+   | #32 漏 `server_version` | `db({database_human:''})` | 其余字段都非零 ⇒ 本来就 false | 其它全零但带着 `server_version` |
+   | #53 换成 `=== '0 B'` | 正常目录（`1 MB`） | 两种实现都 false | **空目录**（`size_human: '0 B'` 且 `exists: true`）|
+   | #54 换成 `files === 0` | 有文件的目录 | files=12 ⇒ 两种都 false | `files: 12` 但 `oldest_mtime: 0` |
+   | #55 改成严格 `<` | oldest<newest | 两种都 true | **单文件目录**（两者相等）|
+   | #61 放宽成 `>=` | total 比行和小（999）| 999 >= 和 仍是 false | total 比行和**大** |
+   | #65 trunc→round | 3 行各 1 字节 | 33.33 两种都得 33 | **6 行各 1 字节** ⇒ 16.67 ⇒ trunc 16 / round 17 |
+   ⇒ ★ 规律：**边界值相等的那一格**（1024 进位边界、单文件、并列行、total 相等）
+     往往正是两种实现分不出来的格子；阈值判据要挑**小数部分 ≥ 0.5** 的那一格。
+
+4. **★★ `String.prototype.replace` 只替换**第一个**匹配 ⇒ `from` 片段必须唯一。** 1 条（#47）。
+   `return 'unknown'\n}` 在 `storageColumnarNoteKind` 与 `storageWarningKind` 里各有一处
+   ⇒ 变异改的是**前者**，而锚点指向后者的用例 ⇒ 永远绿。
+   ⇒ 修法：`from` 带上紧邻的前置分支，让片段唯一。
+
+5. **★★ 锚点未同步（第五次，已连续两批）。**
+   补完 3 里的 8 条新用例后忘了把变异指向它们 ⇒ #21 仍绿。
+   ⇒ ★ 这已是同一形态的**第五次**（批 76/77/78/79 各踩过），
+     必须在流程里固化：**「加夹具」与「改锚点」是同一个原子步骤**，
+     或者跑完后逐条核对「每条变异指向的用例，是不是这条变异唯一能打红的用例」。
+
+6. **★ 三条可证等价变异（保留，理由写进源文件注释）。**
+   | # | 变异 | 为什么等价 |
+   |---|---|---|
+   | 27 | 删掉 `formatIntGo` 的 `if (n === 0) return '0'` | Go 侧**必须**有（buf 是定长数组，循环一次不进 ⇒ 切出空串）；JS 侧 `String(Math.trunc(0))` 天然是 `'0'` ⇒ 输出不变。保留是为了与 Go 逐字对齐。 |
+   | 48 | 去掉 `storageDbOverDiskRatio` 的 `db > 0` 那一项 | db=0 且 fs>0 时 `0/fs` 数学上恒为 0；db=0 且 fs=0 时又被 `fs > 0` 那一项挡在前面（返回 0，漏不出 `0/0=NaN`）⇒ **任何夹具下输出都不变**。后端 `:180` 把两项写成对称的 `&&`，客户端照抄。 |
+   | 60 | 去掉 `storageTablesLimitIsSendable` 的 `Number.isFinite` | `NaN` 被 `n >= 1` 挡住（NaN 参与比较恒假），`±Infinity` 被 `n <= 200` 挡住 ⇒ 完全冗余。保留是因为它可读，且 Go 的 `strconv.Atoi` 确有 `ErrRange` 语义，将来若改成透传原始字符串就会变得必要。 |
+   ⇒ ★ 与已记录的「恒真守卫 vs 恒真判据处置相反」一致：
+     这三条都是**可读的显式条件**，删了看不出意图 ⇒ 留，记等价，注释写明。
+
+7. **★ 类型门比 vitest 严（又一次，且是同一形态）。**
+   165 条 vitest 全绿，但 `vue-tsc` 报 4 条：3 条 `TS6133`（用例改成字面量后
+   `STORAGE_COLUMNAR_NOTE_DB_NOT_READY` 等三个 import 变成未使用）+
+   1 条 `TS2352`（`StorageOverview` 无索引签名，不能直接断言成 `Record<string, unknown>`）。
+   ⇒ ★ 提醒自己：**批量改用例写法之后必须重跑类型门**，
+     删 import 这类「vitest 完全看不见」的后果就是漏在这里。
+
+---
+
+## 11.117 指纹漂移事件（第八十一批，2026-10-08）
+
+- 新增 `web-mobile/src/api/modelIntegrityDrift.ts`
+- 新增 `web-mobile/src/api/modelIntegrityDrift.test.ts`（**125 条**）
+- 覆盖 `GET /api/admin/model-integrity/fingerprint-drift?days=7&limit=200`
+- **鉴权：`admin/handler.go:924-925` 的整个 `/api/admin/model-integrity/` 前缀都是 `h.superAdmin`**
+  ⇒ ⇒ 接抽屉席**必须**设 `requiresRole: 'super_admin'`，并同步 `AppDrawer.spec.ts` 白名单
+- 分发：`admin/model_integrity.go:62-84` 的 switch；实现 `:314-388`
+- 桌面调用方：`web/src/api/integrity.ts:96-102`；视图 `ModelIntegrityView.vue` 的 fingerprint-drift 标签页
+
+### ★ 差集扫描排掉的一个假阳性（候选集不等于待办集）
+
+`/api/admin/auto-route/tuning/strategies` 在候选清单里，桌面 `web/src/api/tuning.ts:44`
+也在调它 —— 但后端**从不注册**：`admin/auto_route_tuning.go:838` 的
+`func (h *TuningHandlers) handleStrategies(...) //nolint:unused`
+标着 **`nolint:unused`**，而 `RegisterTuningRoutes`（`:82-91`）的六个 `mux.HandleFunc`
+里**没有** `strategies`。
+⇒ ★★ 桌面调的是一个**必然 404 的死端点**；handler 代码还在、注释也还在
+（`// handleStrategies: GET /tuning/strategies?days=7`），只有注册表里没有。
+⇒ **「handler 存在」不等于「端点可用」** —— 必须查注册表，不能只查 handler。
+
+### 本族最要紧的九件事
+
+1. ★★★★★ **19 键里 14 个是指针 + omitempty ⇒ 零值是「键缺失」，不是 `null`、不是 `0`。**
+   `ModelIntegrityRecord`（`model_integrity.go:19-40`）的**所有**可选字段都是
+   `*string` / `*int` / `*time.Time` / `any`，**没有一个是可空值类型**。
+   ⇒ **五键恒在**（`id` `detected_at` `anomaly_type` `severity` `resolved`）
+   / **十四键条件**（`request_id` `provider_id` `provider_code` `credential_id`
+   `client_model` `outbound_model` `raw_model_name` `expected_value` `actual_value`
+   `sample` `context` `resolved_at` `resolution_notes` `tenant_id`）。
+2. ★★★★★ **★ 指针 + omitempty 与值类型 + omitempty 的行为完全相反：零值指针会原样出现。**
+   `ProviderID *int`：DB 里 `provider_id = 0` ⇒ 扫成**非 nil 指针指向 0** ⇒ JSON 是
+   `provider_id: 0`（**键在**）；DB 里 `NULL` ⇒ 键被**省略**。
+   ⇒ ⇒ `if (row.provider_id)` 会把**真实的 0** 误判成「没有值」；
+     判据必须写 `'provider_id' in row`。
+   ⇒ ★ 与第八十批 `database` 块（值类型 + 无 omitempty ⇒ 恒 0）正好相反，
+     两个方向在本仓都出现过 ⇒ **先看 struct tag，再看声明类型**。
+3. ★★★★★ **读路径跨全部租户：SELECT 出 `tenant_id` 却从不过滤。**
+   `:328` 用 `withAllTenantReadOnlyTx`，WHERE 只有 `anomaly_type` 与时间窗，
+   **没有任何租户条件** ⇒ **本仓第五次「不隔离」**（批 75/76/77 共五次）。
+   ★ 这次档位是 **superAdmin**，tenant_admin 够不着这条路由，危害面比前几次小；
+     但平台超管看到的是**所有租户**的指纹漂移（含 `sample` 与 `context`）。
+4. ★★★★ `anomaly_type` 在这个端点是**硬编码常量** ⇒ 可严格校验取值。
+   `:336` 的 WHERE 写死 `anomaly_type = 'fingerprint_drift'`，而 SELECT 又把它扫进
+   非指针无 omitempty 的字段 ⇒ **每行必然等于该字面量**。
+   ⇒ 这是本族**唯一**能严格校验取值的字符串键。
+5. ★★★★ `severity` 有注释声明的四值域，但**表上没有任何 CHECK 约束**。
+   `462:52` 写的是 `severity TEXT NOT NULL DEFAULT 'low'  -- low | medium | high | critical`，
+   `baseline/01-schema.sql:9654` 同样没有 CHECK。
+   ⇒ 取值域只存在于**两处注释**：`integrity/signals.go:80` 的 `Severity` 常量族，
+   与 `bg/integrity_probe_sink.go:49-51` 的硬编码 `"high"` / `"low"`。
+   两条写入路径都在四值域内 ⇒ 可校验，但**依据是代码不是约束**。
+   ⇒ ★ 与批 78 的 `no_candidates`（不在 CHECK 内 ⇒ 那个分支项不可达）同族：
+     **注释里的取值域不等于数据库约束。**
+   ⇒ ★ 反例提醒：`domains/analysis/optimizer.go` 用的是**另一套** severity
+     （`warn` / `info` / `action_required`）⇒ 同名不同域，按字段名归类会出错。
+6. ★★★★ `days` 与 `limit` 都是**静默回落**，不是 400。
+   ```go
+   days := queryInt(r, "days", 7);   if days <= 0 || days > 30  { days = 7 }
+   limit := queryInt(r, "limit", 200); if limit <= 0 || limit > 500 { limit = 200 }
+   ```
+   `queryInt`（`handler.go:1534-1544`）用 `strconv.Atoi`，解析失败**直接返回缺省**
+   ⇒ `days=31` / `0` / `abc` / `" 7"` **四种写法都拿到 `days=7` 的数据**。
+7. ★★★ `days` 回显的是**生效窗口**，不是请求值 ⇒ 请求 31 拿到 7 并标着 7。
+   ★★ 与批 76 `errors/trend` 的 `range` 回显**请求值**正好相反
+   （那个是回显 `xyz` 却给 24h 数据）⇒ **同一仓两种回显口径，必须逐端点读。**
+   ⇒ 移动端可直接拿 `resp.days` 当窗口长度，**不要**另存请求值。
+8. ★★★ `count` 恒等于 `events.length`，`events` 恒数组（`make([]…, 0)`）。
+   ★★ 响应**只回显 `days`、不回显 `limit`** ⇒ 截断只能靠「拿满请求上限」反推。
+9. ★★ 错误信封嵌套 `{"error":{"detail":"…"}}`，三条固定文案：
+   非 GET ⇒ 405 `method not allowed`；`h.db == nil` ⇒ **503 `database not configured`**
+   （**dispatcher 层**，在子路径分发之前 ⇒ 与 `summary` / `events` 共享）；
+   查询失败 ⇒ 500 `drift query failed`。
+   ⇒ ★ 与批 79 `errors/trend` 的 `db_not_configured` 那条
+     `database **is** not configured`（多一个 is）**措辞不同**，别抄错。
+
+### 验证
+
+- 用例 **125 条全绿**
+- 变异 `/tmp/mut-co81.mjs` **57 条**，见下节
+- 三门 rc=0；`vue-tsc` rc=0（一次通过）；`npm run build` rc=0
+- U+FFFD 自查：源与用例均 0
+
+### 变异验证暴露的判据缺陷（57 条 → 首跑 45 有牙，修到 51）
+
+1. **★★★ 六条「判据函数里的守卫/分支」是可证冗余 ⇒ 等价变异，不是判据无牙。**
+   本批 8 条 STILL_GREEN 里有 **6 条**属于这一类，形态各不相同：
+   | # | 删掉的东西 | 为什么等价 |
+   |---|---|---|
+   | 16 | `Number.isFinite(days)` | `Infinity` 被 `<= 30` 挡住、`NaN` 被 `>= 1` 挡住 |
+   | 20 | `Number.isFinite(limit)` | 同上（上下界各挡一个） |
+   | 17 | `typeof days !== 'number'` | JS 里 `Number.isFinite(undefined)` 与 `(null)` **本来就返回 false** |
+   | 33 | `key in row &&`（`=== 0` 前半） | `k in obj && obj[k] === 0` ≡ `obj[k] === 0` —— `in` 只在值为 `undefined` 时才有区别，而 `undefined === 0` 恒假 |
+   | 36 | `Array.isArray(c)` 分支 | JSON 不产生稀疏数组，而 `Object.keys(A).length === 0` ⇔ `A.length === 0` |
+   | 37 | `if (!('context' in row)) return false` | 键缺时 `c` 是 `undefined`，过完下面三条分支仍落到 `return false` |
+   ⇒ ★★★ **规律**：判据函数（纯布尔、无副作用）里的前置守卫若**不改变任何一条分支的结果**，
+     就是可证冗余。这类函数尤其容易出现，因为没有「提前返回以避免类型错误」的刚需。
+   ⇒ ★★ 注意 #37 是「**守卫被下游兜住**」，而第七十九/八十批记的是「**下游兜住上游**」——
+     两者都是等价变异，方向相反、结论相同：**兜住 = 等价**。
+   ⇒ 处置一致：全部**保留**（都是可读的显式条件），在源文件注释里写明等价理由。
+
+2. **★★★ 样本要挑「两种实现输出不同」的那一格（又一次，4 条）。**
+   | 变异 | 我原来选的夹具 | 为什么不区分 | 换成的 |
+   |---|---|---|---|
+   | #35 `in` → `!!` | `context: {}` | `!!{}` 也是 true | `context: null`（键在但假值）|
+   | #39 `!== undefined` → `!!` | `tenant_id: 'default'` | 非空串真值判定也 true | `tenant_id: ''`（空串被真值吞掉）|
+   | #54 漏掉 `count` 条件 | 有行但 `count` 不对 | `events.length !== 0` 两边都 false | **无行但 `count=3`**（两边才分岔）|
+   | #57 换成 `count===0 && days===0` | 有行但 `count=5` | 两边都 false | **零行窗口（`days=7`）**（变异体 `days===0` 不成立）|
+   ⇒ ★ 与第八十批的教训同源：**「语义上最典型」的格子往往正是分不出来的格子**。
+
+3. **★★ 锚点未同步（第六次）。**
+   #54 / #57 补完夹具后忘了把变异指过去 ⇒ 又一次同一形态。
+   ⇒ 与批 76/77/78/79/80 连续六批同坑，已固化为流程的原子步骤：
+     **「加夹具」与「改锚点」必须一起做**。
+
+4. **★ 判据的反面形态也要单独一条用例。**
+   `driftIsUnresolved` 写成 `resolved===false && !resolved_at && !resolution_notes`
+   ⇒ 漏掉 `resolution_notes` 那一项时，我只有「有 `resolved_at`」的用例
+   （两种实现都 false）⇒ 指不到牙；
+   补「**没有 `resolved_at` 但有 `resolution_notes`**」后立刻有牙。
+   ⇒ ★ 与「判据有两个必要条件各要一条」同族：
+     **每个合取项都要有一条「只让那个项不同」的用例。**
+
+---
+
+## 11.118 响应格式异常：明细 + 汇总（第八十二批，2026-10-08）
+
+- 新增 `web-mobile/src/api/formatAnomalies.ts`
+- 新增 `web-mobile/src/api/formatAnomalies.test.ts`（**137 条**）
+- 覆盖 `GET /api/admin/format-anomalies` 与 `GET /api/admin/format-anomaly-summary`
+- **鉴权：`admin/handler.go:913` / `:914` 两个都是 `h.superAdmin`**
+  ⇒ 抽屉席须设 `requiresRole: 'super_admin'`，并同步 `AppDrawer.spec.ts` 白名单
+- ★ `:915` 的 `format-anomalies/{id}/resolve` 是 **POST 写操作** ⇒ 本模块**不碰**
+- 实现：`admin/format_anomalies.go`（list `:51-192`、summary `:194-267`）
+- 数据表：`response_format_anomalies`（`454_response_format_anomalies.sql`）
+
+### ★★ 这两张表不是同一张（批 81 的注释容易让人误会）
+
+`admin/model_integrity.go:48-49` 说 `ModelIntegritySummary` "Mirrors the SQL used by
+/api/admin/format-anomaly-summary" —— 指的是**聚合口径相似**，
+底表是 `response_format_anomalies` 而**不是** `model_integrity_events`。
+两表连 `severity` 的建表缺省都不同（`medium` vs `low`）⇒ 跨表比较前必须逐列对。
+
+### 本族最要紧的十五件事
+
+1. ★★★★★ **`count` 是「全表命中数」，不是本页长度 —— 与批 78/81 语义相反。**
+   `:100-111` 先跑**独立的** `SELECT COUNT(*)`，再跑带 `LIMIT/OFFSET` 的列表查询。
+   ⇒ 恒成立的不变式是 **`count >= anomalies.length`**。
+   ⇒ ★★ 批 78 的 `count == tasks.length`、批 81 的 `count == events.length` **在这里不成立**
+     ⇒ **判据不能跨族照抄**（本仓 `count` 已见三义）。
+2. ★★★★ `limit` 与 `offset` **都回显** ⇒ 分页可精确判定（本族能判「还有下一页」，
+   批 79/80/81 都只能靠「拿满上限」反推）。`limit` 缺省 50 / 上界 500；
+   `offset` 缺省 0、**无上界**（`offset=999999` 照发，返回空数组但 `count` 仍是全量）。
+3. ★★★★ `provider_code` 走 `LEFT JOIN providers` 补值，**展示与过滤用同一个 COALESCE**
+   （`:119` 与 `:81`）⇒ ★ 可自验：**`provider_code` 键缺失的行不可能是 provider 过滤的结果**
+   （`NULL = $1` 不为真）。
+4. ★★★★ `response_structure` 是 `map[string]any` + omitempty ⇒ **空 map 整个键被省略**
+   ⇒ **第十种 nil 编码的第二次出现**（批 79 的 `by_supplier` 同款）
+   ⇒ 推论：「键在」蕴含「非空」⇒「结构为空」这个判据**恒真**，按纪律**不提供**。
+5. ★★★★ `request_id` 是**非指针 string** ⇒ 恒在键，**但可以是空串**
+   （建表 `NOT NULL` 只保证不是 NULL）⇒ 与批 81 的 `RequestID *string` **正好相反**。
+6. ★★★ Go 字段 `ContentSize` 的 JSON 键是 **`content_size_bytes`**。
+   ⇒ ★★★ 它是**条件键** ⇒ **写错键名不抛错、静默返 `undefined`**
+   ⇒ 模块提供 `formatNumericValue()` 作为取值入口，spec 里有专属用例钉住。
+7. ★★★★ `anomaly_type` 与 `severity` 在这张表都是**开放域**：写入入口
+   `RecordDataAnomaly(ctx, anomalyType, severity, …)` **接受任意字符串**，建表也没有 CHECK。
+   ⇒ ★★★ 与批 81 正好相反（那里 `anomaly_type` 被 SQL 硬编码 ⇒ **可**严格校验）。
+   ⇒ ⇒ 只提供「是否落在已知集合内」（12 个字面量）的判据，解包器**不**拒绝未知取值。
+8. ★★★ 两张表的 `severity` **建表缺省不同**：`medium` vs `low`。
+9. ★★★★ summary 的三个 AVG 是 `*float64` + omitempty ⇒ **`AVG(...)` 返回 NULL 时键被省略**
+   （不是 0、不是 null）⇒ 算均值时不能把键缺当 0 参与求和。
+10. ★★★ `COUNT(DISTINCT request_id)` ⇒ 恒 **`affected_requests <= anomaly_count`**；
+    `FILTER (WHERE resolved)` ⇒ 恒 `resolved_count <= anomaly_count`。
+11. ★★★★ 排序是 `ORDER BY hour DESC, anomaly_count DESC` —— **不是**整体按计数降序。
+    ⇒ ★★★ 只能断言「`hour` 全局非增」+「**同一 hour 内** `anomaly_count` 非增」。
+    ⇒ 这是本族最容易被误用的不变量。
+12. ★★★ summary 的 `LIMIT 200` **硬编码在 SQL 里**（`:231`），不参数化、不回显
+    ⇒ 只能靠 `count === 200` 反推可能被截断（与 list 的可调 `limit` 鲜明对照）。
+13. ★★★ `hours` 回显生效值，上界是 **`24*30 = 720`** 小时
+    ⇒ 与批 81 的 `days <= 30` 是两套窗口语义。
+14. ★★★★ **503 检查排在 405 检查之前**（`:52` 在 `:56`）
+    ⇒ 「方法不是 GET **且** db 未配置」时拿到 **503 而不是 405**。
+15. ★★★★ 三条 500 文案**各不相同**，客户端可区分失败发生在哪一步：
+    `count query failed` / `list query failed` / `summary query failed`
+    ⇒ ★★ 与第八十批「两条子路径文案**完全相同**」正好相反。
+
+★ 又一次 `withAllTenantReadOnlyTx`（`:106` / `:143` / `:213`）⇒ **本仓第六次「不隔离」**。
+
+### 验证
+
+- 用例 **137 条全绿**
+- 变异 `/tmp/mut-co82.mjs`，见下节
+- 三门 rc=0；`vue-tsc` rc=0（首跑报 1 条 `TS2345`：用例里用错类型的夹具）；`npm run build` rc=0
+- U+FFFD 自查：源与用例均 0
+
+### 变异验证暴露的判据缺陷（67 条 → 首跑 59 有牙，修到 65）
+
+1. **★★★ 两条 STILL_GREEN 是可证等价，其余 7 条首跑绿全是夹具与锚点问题。**
+
+   **可证等价（2 条，保留 + 注释写明理由）**：
+   | # | 变异 | 为什么等价 |
+   |---|---|---|
+   | 20 | 去掉 `formatLimitIsSendable` 的 `Number.isFinite` | `Infinity` 被 `<= 500` 挡住、`NaN` 被 `>= 1` 挡住 |
+   | 53 | 把 `request_id === ''` 改成 `request_id.length === 0` | `request_id` 是**七恒在键之一**且解包器已校过是 string ⇒ 该判据**不可能**收到 `undefined` |
+
+   **夹具/锚点（7 条，逐条换夹具或改锚点后有牙）**：
+   | 变异 | 问题 | 修法 |
+   |---|---|---|
+   | #11 整型条件键列表丢掉 `content_size_bytes` | 锚点指的是 `provider_id` 类型错那条（两条共用循环） | 锚点改到专属的 `content_size_bytes` 类型错用例 |
+   | #31 删掉两个 time 字段的类型检查 | 锚点指「缺 `created_at`」，被 `requireKeys` 兜住 | 锚点改到「键齐全但类型错」那条 |
+   | #42 「还有下一页」漏掉 `offset` | `offset=0` 时两式相同 | 补「**中间页**（`offset>0`）」并把锚点指过去 |
+   | #48 `'k' in row` → `!!row[k]` | `context` 那条用 `{}`，`!!{}` 也是 true | 补「**键在但值是 `null`**」那一格（唯一能区分的输入） |
+   | #55 已知类型改成大小写不敏感 | 用的未知值小写形态也命中不了 | 补「**大写变体**」那条 |
+   | #59/#60 | **两条是同一个变异**（`from`/`to` 完全相同） | 删掉重复的 #59 |
+   | #61 | `from` 与 `to` 只差一句注释 ⇒ **行为根本没变** | 改成真变异（`>=` → `<=`） |
+
+   ⇒ ★★ #61 是「**注入标记 ≠ 变异**」的又一例：我以为改了一行，其实 `from`/`to` 只差注释，
+     `ORIG.replace` 产出的文件与原文件行为一致 ⇒ 必然 STILL_GREEN。
+     **dry 阶段的 `NO_EFFECT` 检查只能发现「完全没变」，发现不了「只变了注释」。**
+
+2. **★★ 改源码会让变异的 `from` 片段失配。**
+   为修构建门（`noUncheckedIndexedAccess` 下 `TS2345`）把
+   `if (typeof requestedHours !== 'number' …) / Math.trunc(requestedHours)`
+   改成局部常量 `asked`，⇒ 变异 #67 / #68 的 `from` 立刻 `NO_MATCH`。
+   ⇒ ★ 收尾顺序必须是：**先把源码改到最终形态，再跑一次变异**，
+     或改完源码后**逐条确认 `from` 仍能匹配**（脚本的 `NO_MATCH` 分支正是为此存在）。
+
+3. **★ `npm run build` 的类型门比 `vue-tsc` 更严（又一次，且是同一形态）。**
+   `vue-tsc --noEmit` rc=0，但 `npm run build` 报
+   `src/api/formatAnomalies.ts(596,21): error TS2345: 'number | undefined' is not assignable to 'number'`。
+   ⇒ 这是可选参数在严格模式下**没有**被 `typeof !== 'number'` 收窄到位；
+     显式 `const asked: number | undefined = requestedHours` 之后两者都绿。
+   ⇒ ★ 推论：**「vue-tsc 通过」不等于「构建通过」**，两个门都要跑。
+
+4. **★★ 条件键写错键名不会被解包器发现 ⇒ 必须给取值入口。**
+   `content_size_bytes`（键名与 Go 字段 `ContentSize` 不一致）是**条件键** ⇒ 缺键合法 ⇒
+   用错键名（如 `content_size`）**不抛错**、静默拿到 `undefined`。
+   ⇒ 模块提供 `formatNumericValue(row, key)` 作为唯一取值入口，
+     并写两条用例钉住：写错键名拿 `undefined`、走入口拿 2048。
+   ⇒ ★ 与已记的「`x ?? null` 会把字段名打错整个吞掉」同源，
+     但这次是**解包器的设计使然**（条件键不该强制存在）⇒ 必须在 API 层补入口。
+
+5. **★★ 一个族里的两个端点，503/405 的检查顺序可能不同。**
+   本族把 `h.db == nil` 放在方法检查**之前**（`:52` 在 `:56`）⇒ 「非 GET 且 db 未配置」得 503。
+   ⇒ 与批 81 的 dispatcher 表现相同，但**本族在 handler 里自己也有这道检查**（不只在 dispatcher）
+   ⇒ 这种顺序客户端观察不到（除非两种错误同时发生），但值得记下来。
+
+---
+
+## 11.119 运维总览聚合包（第八十三批，2026-10-08）
+
+- 新增 `web-mobile/src/api/opsOverview.ts`
+- 新增 `web-mobile/src/api/opsOverview.test.ts`（**108 条**）
+- 覆盖 `GET /api/admin/ops/overview`
+- **鉴权：`admin/handler.go:1070` 的 `admin(...)` ⇒ admin 档**（与前两批的 superAdmin 不同）
+- ★ ★ **差集扫描排掉一个误判**：`ops` **不在** `cmd/gateway/maintain_proxy.go:37-54`
+  的 `maintainCompatPrefixes` 里 ⇒ 尽管桌面把 `/ops` 页面
+  `externalMaintainRedirect` 到独立 maintain 服务（`web/src/router.ts:309`），
+  **这个 API 仍由本进程的 admin mux 提供**。
+  ⇒ ★★ 别被**前端路由**的重定向误导 —— 前端重定向与 API 提供方是两件事。
+- 实现：`admin/ops_overview.go`（532 行）
+
+### 本族最要紧的十七件事
+
+1. ★★★★★ **十一个子查询并发跑，失败策略逐个不同。**
+   `:85-100` 每项一个 goroutine，`:117-125` 收集时 `if res.err != nil { continue }`
+   ⇒ ★★★ **单个子查询失败 ⇒ 那个键直接缺失，响应仍是 200**；
+   `if firstErr != nil && len(payload) <= 1` ⇒ **全部失败才 500**。
+   ⇒ ⇒ 客户端**无法区分**「这个子查询失败」与「后端版本不含这个子查询」。
+2. ★★★★★ **响应是开放形状：键数在 2..12 之间浮动。**
+   只有 `generated_at` 恒在 ⇒ **解包器不能 requireKeys 全部子查询键**，
+   但**存在**的键仍要逐个校验类型。
+3. ★★★★ `generated_at` 是 `time.RFC3339` ⇒ **秒级、无小数**（`:115`），
+   可自验；其它端点用 `time.Time` 直序列化 ⇒ RFC3339**Nano**，有小数。
+4. ★★★★ **15 秒内存缓存 + `Cache-Control: private, max-age=15`**
+   ⇒ 「两次采样相同」**不能**证明数据没变，可能只是命中了缓存。
+5. ★★★★★ `region_stats` 的三个 region（`local`/`245`/`154`）是**硬编码**的，
+   缺失时补零值占位并打 `missing: true` ⇒ **三行恒存在**。
+   ★★★ **额外行追加在后面，而 `for region, item := range byRegion` 是 map 遍历
+   ⇒ Go 的 map 迭代顺序随机** ⇒ 客户端**绝不能**依赖额外行的顺序。
+6. ★★★ `data_plane_tables` 每项失败写 **`-1` 而不是报错**（`:288-292`），
+   且函数**永不返回错误** ⇒ 这个键**恒存在**（11 个键里唯一这样的）。
+7. ★★★ `offline_requests` 把**同一个时间戳写了两个键**（`timestamp` 与 `created_at`）
+   ⇒ 可自验不变式 **`timestamp === created_at`**。
+8. ★★ `status` 走 `COALESCE(status,'pending')` ⇒ 恒非 NULL；
+   `approved_at` / `activation_code` 是条件键。
+9. ★★ `recent_upgrades` 的 `version` 也走 COALESCE，兜底值是**空串** ⇒ 键恒在但值可能是 `''`。
+10. ★★★★ `recent_faults` 只取 `status='new'`（SQL 硬编码 ⇒ **可校验取值**），
+    而 `fault_stats` 统计 `status IN ('new','acknowledged','resolving')` 三个
+    ⇒ ★ **跨子查询不变式 `recent_faults.total <= fault_stats.open_events`**。
+11. ★★ 两个「最近列表」的容器键名**不同**：`recent_faults` 是 `events`、
+    `recent_upgrades` 是 `items` ⇒ **不能共用一个取列表函数**。
+12. ★★★★★ **同一个文件里两种 nil 编码并存，而且是「同一概念的两个字段」**：
+    | 字段 | 写法 | NULL 的编码 |
+    |---|---|---|
+    | `region_stats[].last_heartbeat` | `if != nil { item[…] = *… }`（`:194-196`） | **键缺失** |
+    | `runtime_metrics_summary[].last_update` | 直接塞 `*time.Time`（`:523`） | **裸 `null`** |
+    ⇒ **第十一种 nil 编码：往 `map[string]any` 塞 Go 指针且不判空 ⇒ JSON `null`**。
+13. ★★★ `runtime_metrics_summary` 的 WHERE 是 `status != 'offline' OR m.last_update IS NOT NULL`
+    ⇒ **离线实例只要 24 小时内有指标就在榜上** ⇒ 不能用「在榜」推断「在线」。
+14. ★★★ 四个 AVG 全被 `COALESCE(…, 0)` 包住 ⇒ **`0` 是二义的**
+    （真 0 或「24 小时无指标」）⇒ 要区分必须看 `last_update`。
+15. ★★ 五个数组型结果都有 `if items == nil { …{} }` ⇒ 恒数组。
+16. ★★ **405 检查排在 503 之前** ⇒ 「非 GET **且** db 未配置」得 **405**
+    ⇒ ★★ 与第八十二批 `format-anomalies` **正好相反**（那里 503 在 405 之前）。
+17. ★ 500 是 `writeInternalErr(w, "internal error (see server logs)", err)`
+    ⇒ 固定文案、不含 `err.Error()`。
+
+★ 本端点**不按租户隔离**：11 个查询里没有任何租户条件（全是全局表）
+⇒ admin 档的 tenant_admin 看到的是**全平台运维数据**。
+
+### 验证
+
+- 用例 **108 条全绿**
+- 变异 `/tmp/mut-co83.mjs`，见下节
+- 三门 rc=0；`vue-tsc` rc=0；`npm run build` rc=0（两个门都一次通过）
+- U+FFFD 自查：源与用例均 0
+
+### 变异验证暴露的判据缺陷（52 条 → 首跑 42 有牙，修到 48）
+
+1. **★★★ 四条可证等价（保留 + 用例注释写明理由）。**
+   | # | 变异 | 为什么等价 |
+   |---|---|---|
+   | 29 | `missing === true` → `!!missing` | `missing` 的取值**恒为字面量 `true`**（`:217`），不存在「非真值但在键里」的形态 ⇒ 两种实现同答案 |
+   | 36 | `=== -1` → `< 0` | 可达取值集合只有 `{非负整数, -1}`（`:289` 只写 `-1`）⇒ 在可达集合上两式相同 |
+   | 40 | `'approved_at' in row` → `!!row.approved_at` | `approved_at` 非 nil 时是 RFC3339 串，**恒非空** ⇒ 真值与 `in` 一致 |
+   | 52 | `last_update !== null` → `!!last_update` | `last_update` 是 `*time.Time`：nil ⇒ `null`，非 nil ⇒ RFC3339 串（**零值也是串不是空串**）⇒ 可达集合只有 `{null, 非空串}` |
+   ⇒ ★★ 这四条与第八十一/八十二批的同类归因**方向一致**：
+     **条件键的取值域本身是封闭的 ⇒ 真值判断与 `in` 判断等价。**
+     ⇒ 保留 `in`/`=== null` 的写法是为了**与后端形状对齐**，不是为了打掉变异。
+
+2. **★★★ 「三值判据」里每一项都要一条「只有那项不同」的专格（4 条）。**
+   | 变异 | 问题 | 修法 |
+   |---|---|---|
+   | #33 「前三行覆盖」只查前两个 | 锚点那格第三行错位也能过 | 补「**第三行不是 154**」与「第二行不是 245」两条专格 |
+   | #34 「额外行在后」取反成 `some` | 锚点那格 tail 全是额外行 ⇒ `every`/`some` 同 true | 补「**两个额外行里混进一个硬编码 region**」 |
+   | #50 漏掉 `avg_tps` | 锚点那格三个都 0 ⇒ 漏项仍 true | 补「**只有 avg_tps 非 0**」 |
+   | #51 漏掉 `avg_cpu_pct` | 锚点那格 mem/tps 也非 0 ⇒ 漏项仍 false | 补「**只有 avg_cpu_pct 非 0**」 |
+   ⇒ ★★ 这是「判据有 N 个合取项 ⇒ N 条专属用例」在**三值**上的又一次应用
+     （前两次分别是两值与三值判据）。
+   ⇒ ★★ 规律补充：**锚点那格必须是「其它项全部为『不触发』值、只有被测项触发」**。
+
+3. **★★ `in` → 真值的变异，专属夹具要挑「键在但值是 falsy」那一格（2 条）。**
+   | 变异 | 问题 | 修法 |
+   |---|---|---|
+   | #21 `key in r` → `!!r[key]` | 锚点那格值是对象 ⇒ 真值为真 | 补「**键在但值是 `0`**」（`license_total` 在真实响应里可以是 0） |
+   | #37 `>= 0` → `> 0` | 锚点指到 `-2` 那格 ⇒ 两式同 false | 锚点改到「**值是 0 ⇒ 判可用**」 |
+
+4. **★★ 手写夹具的「键缺」必须用 `delete`，不能用 `undefined`。**
+   `region({ last_heartbeat: undefined })` 会**造出这个键**（spread 保留显式的 undefined）
+   ⇒ `'last_heartbeat' in row` 返回 true。
+   ⇒ ★ 这解释了为什么「JSON 反序列化的缺键」与「手写夹具的 undefined」在 JS 里是**两种形状**；
+     spec 里加了一条**陷阱对照**用例把这个差异钉住。
+   ⇒ ★ 同一批还踩了 `slice(3)` 对三元素数组返回空数组 ⇒ `every` 恒 true ⇒ 样本选歪。
+
+### 收尾
+
+local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
+`web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
+
+## 11.120 对账汇总与筛选栏候选（第八十四批，2026-10-08）
+
+GET `/api/admin/report-rollup/summary` + GET `/api/admin/report-rollup/dimensions`
+
+- **注册**：`admin/handler.go:1067`
+  `mux.HandleFunc("/api/admin/report-rollup/", h.superAdmin(h.handleReportRollup))`
+  ⇒ ★★ **整个前缀（含尾斜杠）都是 `superAdmin`** ⇒ 抽屉席须设
+  `requiresRole: 'super_admin'` 并同步 `AppDrawer.spec.ts` 白名单。
+- **分发**：`admin/report_rollup.go:94-118` 的 `strings.HasSuffix` switch
+  ⇒ `summary` / `export` / `dimensions` / `run`（POST，不碰）/ 404。
+- ★ `export` 是 **xlsx 二进制**（`Content-Type: …spreadsheetml.sheet`）
+  ⇒ **不是 JSON** ⇒ 本模块**不提供** export 的解包器。
+- **差集扫描排掉一个假阳性**：`data-lifecycle/jobs` 已被
+  `web-mobile/src/api/dataLifecycleStats.ts:434` 覆盖。
+
+### 本族最要紧的十八件事
+
+1. ★★★★★ **「降级」是 200 + 一个两键信封，不是错误 —— 主键整个消失。**
+   `:317-319`（summary）与 `:354-356`（dimensions）走同一条：
+   `reportDegraded`（`:291-293`）= **错误串里含 `report_snapshots`**（小写后 `Contains`）
+   ⇒ 是**字符串匹配**，不是哨兵错误类型。
+   ⇒ 降级响应里**没有** `report`、**没有** `dimensions`
+   ⇒ **解包器必须接受「只有降级两键」的形状**。
+2. ★★★ 503 文案是 **`database not available`** —— 本仓**第三种**措辞
+   （对照：批 81/82 的 `database not configured`、批 79 的 `database **is** not configured`）。
+3. ★★★ **503 检查排在 405 检查之前** ⇒ 与批 82 一致、**与批 83 相反**。
+4. ★★★ 子路由用 **`strings.HasSuffix`** 分发，不是路径段精确匹配
+   ⇒ `/api/admin/report-rollup/任意/summary` 也匹配。
+5. ★★★★ 缺省窗口是「**昨日往前 7 天**」闭区间且**不含今日**
+   （注释自陈原因：聚合语义是 **T+1** 凌晨出昨日报表 ⇒ 今日快照尚不存在）。
+6. ★★★★ 区间只接受 `YYYY-MM-DD`，四种 400 文案；上界判定是 `end − start > 366 天`
+   ⇒ **`start == end` 合法**（单日）。
+7. ★★★★ `view` 是四值枚举，但**大小写与空格都不敏感**（`ToLower(TrimSpace())`）
+   ⇒ 规范化之后**可以严格校验取值**。
+8. ★★★★ 三个数字维度用 `ParseInt` 且**前面先 `TrimSpace`**
+   ⇒ **同仓两种参数校验风格并存的又一例**（`/storage/tables` 与 `/errors/trend` 的
+   `strconv.Atoi` **没有** TrimSpace）。
+9. ★★★★★ `detail` 的缺省在 summary 与 export 里**正好相反**
+   ⇒ `detail=xyz` 在 summary 下是 **false**、在 export 下是 **true**
+   ⇒ 客户端**不能**用一个共享的「detail 解析」函数描述两者。
+10. ★★★★ `Filter GrainFilter` 标着 `json:"-"` ⇒ **过滤条件不回显**
+    ⇒ `view`/`start`/`end` 会回显，但**六个维度过滤一个都不回显**。
+11. ★★★★★ `error_breakdown` 在**父行是裸 `null`、在按天行是键缺失**
+    ⇒ 同一概念、同一份 SQL、**两种 nil 编码**。
+12. ★★★★ `Totals.CacheHitRatio` 是 `*float64` 且**无 omitempty**
+    ⇒ 分母为 0 时是**裸 `null`** ⇒ 客户端算命中率**必须**处理 `null`，不能 `|| 0`。
+13. ★★★ `error_count === request_count − success_count` 是**可自验的不变式**
+    （注释自陈「终态 success 之外一律计失败，**含 rate_limited**」）。
+14. ★★★★★ **`source` 不是独立字段，而是从 `coverage` 两个数组派生的**
+    （`grainreport.go:945-951`）⇒ 本族最锐利的**自洽性校验**：
+    | `legacy_dates` | `grain_dates` | `source` |
+    |---|---|---|
+    | 非空 | 非空 | `mixed` |
+    | 非空 | 空 | `legacy` |
+    | 空 | 任意 | `grain`（**default**） |
+    ⇒ ★★ 推论：**`source === "grain"` 不蕴含 `grain_dates` 非空**（两数组都空也走 default）。
+14b. ★★★★ `coverage` 的两个 `[]string` **无 omitempty** ⇒ 可为**裸 `null`**；
+    `:943-944` 对两者各 `sort.Strings` ⇒ **升序**（未去重 ⇒ 非降序）。
+15. ★★★★ `DimensionOption.Name` 是 omitempty 且 `fill()` 回查不到就**留空**
+    ⇒ `name` **可能缺键**；且候选 `key` **统一成字符串**（数值 id 也一样）
+    ⇒ 「Key 是数字」在 JSON 里看不出来。
+15a. ★★ 响应里的 `start`/`end` 是 **`time.Time`**，回显 **RFC3339Nano**，
+    **不是**发进去的 `YYYY-MM-DD` ⇒ 一进一出**两种形状**。
+16. ★★★ 文本维度 `tenant_id`/`person`/`model` **也做 `TrimSpace`**，
+    但**不做大小写折叠**（注释自陈：标识符折叠会把两个取值并成一个）。
+17. ★★ **503 / 405 / 400 / 500 的检查顺序与文案逐条列**，不做跨端点推断。
+18. ★★ **`fill()` 只回填了 `providers`/`credentials`/`api_keys`** 三行
+    ⇒ `models`/`tenants`/`persons` 的 `name` **恒缺** ⇒ 客户端不能把
+    「`name` 缺失」一律解释成「回查失败」。
+
+**本模块明确声明的校验边界**：解包器校验 **envelope 层**（降级两键、`report`/
+`dimensions` 主键、顶层数组形状、`Totals` 的 16 个恒在字段 + `internal_currency` 条件键）。
+★ `GrainReport` 的九种子行结构（每种 5~20 字段）**只校验「是数组 of 对象」** ——
+理由：那会引入 100+ 个纯数值透传的字段级断言，而 envelope 层的降级/枚举/不变式
+才是真正会出错的形状。⇒ **调用方拿到子行仍需自己判空**；未校验不等于「一定对」。
+
+### 验证
+
+- 用例 **191 条全绿**（`web-mobile/src/api/reportRollup.test.ts`）。
+- 变异 **73 条 = 72 有牙 + 1 可证等价**（`/tmp/mut-co84.mjs`，`RESTORED=OK`）。
+- 三门 rc=0（CSS media syntax / touch targets / i18n parity）；`vue-tsc` rc=0；
+  `npm run build` rc=0；全量 + 十连跑见下。
+
+### 变异验证暴露的判据缺陷（73 条 → 首跑 62 有牙，修到 72）
+
+首跑 12 条 STILL_GREEN，**归因分三类**，没有一条是「判据没意义」：
+
+1. **锚点指错 4 条（#11 / #13 / #22 / #59）—— 又一次同类。**
+   | 变异 | 锚点为什么错 | 修法 |
+   |---|---|---|
+   | #11 `top_error_count` 挪进恒在组 | 指到「恒在键不含 `filter`」，那条与本变异无关 | 锚点改到「**恒在键恰是 10 个**」 |
+   | #13 `start` 无条件发出 | 指到「`providerId = undefined` 不发」，与 `start` 无关 | 锚点改到「**无参数不带问号**」 |
+   | #22 `report` 主键检查被删 | 指到「降级响应没有 report 主键」，降级分支**提前 return**、根本走不到 | 锚点改到「**缺 report 主键 ⇒ 抛**」（错误文案从「缺 1 个键」变成「形状不符」，那条会红） |
+   | #59 `in` 改成真值 | `slice(0,20)` 截到 `★ ★ reportBreakdownI`，**落到了另一个函数**的用例上 | `expect` 改写成长片段，避开共享前缀 |
+   ⇒ ★★ 这是**连续第八批**出现锚点未同步；新形态是
+   **「共享前缀把锚点截到同名族的另一个函数」** ⇒ `expect` 至少要长到**跨过函数名**。
+
+2. **样本选歪 6 条（#50 / #56 / #60 / #64 / #69 / #71）—— 三种形态。**
+   | 变异 | 锚点那格为什么同答案 | 补的专格 |
+   |---|---|---|
+   | #50 漏掉 `start <= yesterday` | 用例里 `start` 越过了 `today` ⇒ 另一项也已为假 | today **再退一天**，让另两项为真、只有 B 假 |
+   | #56 `===` 改成 `<=` | 样本里 `error_count` **偏大**（9 > 3），`<=` 仍为假 | 补「**`error_count` 偏小**」（1 < 3）⇒ `<=` 翻成 true |
+   | #60 mixed 分支去掉 `grain>0` | 样本是「两数组都有」⇒ 两种实现都返回 `mixed` | 锚点改到「**只有 legacy 非空 ⇒ legacy**」 |
+   | #64 `length > 0` 改成真值 | 样本是 `null` ⇒ `!!null` 也是 false | 补「**空数组**」（`!![]` 为 true） |
+   | #69 RFC3339 判据只看长度 | 样本是 10 位串 ⇒ `length > 10` 本来就为假 | 补「**长度 >10 但不含 T**」（空格分隔的本地时间串） |
+   | #71 `'name' in o` 改成真值 | 样本是**键缺** ⇒ 真值与 `in` 同为 false | 补「**键在但值是空串**」 |
+   ⇒ ★★ 形态一：**两侧都假**（另项已触发）⇒ 补「其余项全为不触发值」。
+   ⇒ ★★ 形态二：**两侧都真**（样本落在同答案的中间格）⇒ 锚点改到边界格或补专格。
+   ⇒ ★★ 形态三：**不可达值**（`[]`/`''` 在真实响应里不会出现，但手写夹具能造）
+     ⇒ 这正是 `in` 与真值判断唯一能区分的那一格。
+
+3. **可证冗余 1 条（#49）—— 不是缺陷，是判据本身写错了。**
+   `reportRollupDefaultWindowExcludesToday` 原本有三个合取项
+   `start < today && start <= yesterday && yesterday < today`，
+   但 **`start < today` 被后两项蕴含**（字符串日期的传递性）
+   ⇒ 不改变任何一条分支的结果 ⇒ **可证冗余**。
+   ⇒ ★★ 处置：**删掉冗余项**（不是留着当恒真项），注释写明「由另两项蕴含」，
+     并补一条把「冗余」这件事钉住的用例（`start == today` 时
+     `start <= yesterday` 已为假 ⇒ 与显式写第三项同答案）。
+   ⇒ ⇒ 该分项从变异表里移除，变异数 74 → 73。
+
+4. **可证等价 1 条（#19）—— 保留写法，不为它造不可达样本。**
+   `isDegraded` 的 `d['degraded'] === true` 改成 `!!d['degraded']` 仍全绿。
+   ⇒ 后端**只**写 `true` 这个字面量（`:318` 与 `:355`），`degraded` 的可达集合
+     只有 `{true}` 或**键缺** ⇒ 两种写法在可达集合上**可证等价**。
+   ⇒ ★ 处置：**保留** `=== true`（与后端形状对齐）+ 注释写明等价理由。
+
+### 收尾
+
+local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
+`web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
+
+## 11.121 节点智商三端点（第八十五批，2026-10-08）
+
+GET `/api/admin/model-iq/node-latest` + `/history` + `/catalog`
+
+- **注册**：`admin/handler.go:1470-1472`，三个都 `h.superAdmin(...)`
+  ⇒ ★★ **superAdmin 档** ⇒ 抽屉席须设 `requiresRole: 'super_admin'`
+  并同步 `AppDrawer.spec.ts` 白名单。
+- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+- `trigger` 是 **POST**（要真花 token）⇒ **不碰**。
+- **实现**：`admin/model_iq.go`；写入侧取值域在 `domains/modelquality/`。
+
+### 本族最要紧的十四件事
+
+1. ★★★★★ **三个端点的响应都是顶层裸数组**，不是 `{data:…}` 信封。
+   `:120` / `:186` / `:254` 三处都是 `writeJSON(w, 200, out)`，
+   而 `out := []T{}` 初始化 ⇒ **无匹配时是 `[]` 而不是 `null`**。
+2. ★★★★★ **`catalog` 的 10 键里 4 个是 `*float64` 且无 omitempty**
+   ⇒ `standard_iq` / `node_avg_iq` / `max_node_iq` / `min_node_iq`
+   **都可能是裸 `null`**（「指针 + 无 omitempty ⇒ 裸 null」在**非 map** struct 上的形态）。
+3. ★★★★★ **`catalog` 有一条锐利的可自验不变式**：`node_count` 与三个聚合互为充要 ——
+   `LEFT JOIN LATERAL` 聚合无输入时 `count(*)` 返 0 而 `avg/max/min` 返 NULL：
+   - `node_count === 0` ⇒ 三个聚合**全 null**
+   - `node_count > 0` ⇒ 三个聚合**全非 null**
+   且 WHERE `standard_iq IS NOT NULL OR node_cnt > 0` ⇒
+   **`standard_iq` 与 `node_count > 0` 至少一个成立**。
+4. ★★★★★ **`status` 可从 `accuracy`/`stability` 反推**（`dbstorage.go:80-87`）：
+   ```go
+   status := "success"
+   if stability < 100 { status = "partial" }
+   if accuracy <= 0 && stability <= 0 { status = "failed" }   // 最后判定，覆盖前两条
+   ```
+   ⇒ 这是**写入侧**算出的三值域 ⇒ `/history` 客户端可做**自洽校验**。
+   ⇒ ★★ 第三条在**最后**且覆盖前两条 ⇒ `(0, 0)` 必定是 `failed` 而非 `partial`。
+5. ★★★★ **`node-latest` 的 13 键里 10 个被 COALESCE 兜底**（`:75-85`）
+   ⇒ 空串 / 0 全部可达；只有 `credential_id` 与 `raw_model_name` 是裸值。
+   ⇒ ★★ `provider_id` 会被 `COALESCE(c.provider_id,0)` 兜成 **0**
+   ⇒ 客户端不能把 `provider_id === 0` 当「非法」。
+6. ★★★★ **同一族、不同端点的参数校验风格与文案都不同**：
+   - `node-latest` 的 `provider_id`/`canonical_id`：`ParseInt` + **`<= 0` 拒绝**，
+     文案 `invalid provider_id` / `invalid canonical_id`（**ParseInt 前无 TrimSpace**）。
+   - `history` 的 `credential_id`：`ParseInt` + `<= 0` 拒绝，
+     但文案是 **`credential_id required`**（不是 invalid！）。
+   ⇒ ★★★ 同一个参数名在两个端点**错误文案不同**。
+7. ★★★★ **`history` 的 `limit` 静默回落，不 400**：`Atoi`（**无 TrimSpace**），
+   仅当 `n > 0 && n <= 500` 才采纳，否则**静默用缺省 50**。
+   ⇒ ★★ 非法 limit **不报错**，客户端无法从响应看出 limit 是否被采纳。
+8. ★★★ **`history` 把 `stability`/`latency_p95` COALESCE 成 0** ⇒ `0` 是二义的；
+   配合 (4)，DB 里 stability 为 NULL 的行在响应里**看起来像 failed**。
+9. ★★★★ **`history` 的 `tested_at` 是 `COALESCE(tested_at, created_at)`**
+   且列类型 `time.Time` ⇒ 回显 RFC3339Nano ⇒ **客户端无法区分**
+   「真的测过时间」与「用创建时间兜底」。
+10. ★★★★ **`catalog` 的 WHERE 排除了 `hidden` 状态**，而
+    `models_canonical.status` 的 CHECK 域是**四值**（含 `hidden`，
+    `deploy/sql/schemas/baseline/01-schema.sql:10325`）⇒
+    **hidden 模型永远不出现在 `/catalog`**。端点过滤 + 表有 CHECK 的组合。
+11. ★★★ **`node-latest` 排序是 `overall_score DESC NULLS LAST, credential_id`**，
+    而 `catalog` 是 `COALESCE(standard_iq, node_avg) DESC NULLS LAST`
+    ⇒ 两个端点降序口径不同。
+12. ★★★ **500 错误的 detail 就是 `op` 字符串**（`writeInternalErr` 原样写进 body）
+    ⇒ 本族 500 的 detail 只可能是 `query` / `scan` / `modelIQ.latest` /
+    `modelIQ.history` / `modelIQ.catalog` ⇒ ★★ **完全可区分**。
+    另有 `writeAggRowsErr`：遇 missing relation（42P01）会把迭代错误改写成
+    **503 `analytics_view_missing`**。
+13. ★★ 503 文案是 **`database not configured`**（对照批 84 的 `database not available`）。
+14. ★★ `probe_kind` 三值 `{gateway, direct, mock}`，写入缺省 `direct`；
+    `trigger_kind` 写入缺省 `scheduled`。`benchmark_type` 缺省 `mmlu_lite`，
+    但 **`/history` 不返回该列** ⇒ 不可见。
+
+**本模块声明的校验边界**：解包器校验三个端点的**顶层是数组** + 每项的
+**全部恒在键与类型**（13 / 9 / 10 键）+ 上述不变式的判据函数；不校验排序
+（排序依赖 DB 状态，客户端只作为提示）。
+
+### 验证
+
+- 用例 **142 条全绿**（`web-mobile/src/api/modelIQ.test.ts`）。
+- 变异 **56 条 = 54 有牙 + 2 可证等价**（`/tmp/mut-co85.mjs`，`RESTORED=OK`）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量与十连跑见下。
+
+### 变异验证暴露的判据缺陷（56 条 → 首跑 41 有牙，修到 54）
+
+首跑 15 条 STILL_GREEN，**归因三类**：
+
+1. **锚点指错 4 条（#10 / #27 / #28 / #29）。**
+   | 变异 | 问题 | 修法 |
+   |---|---|---|
+   | #10 不发 `canonical_id` | 指到「只给 provider_id 时不发 canonical_id」，那条**本来就该不发** | 锚点改到「**两个都发**」那条 |
+   | #27 `failed` 漏 stability 条件 | 指到 `accuracy=50, stability=0`（该格两式同答案） | 改指 `accuracy=0, stability=50` |
+   | #28 `failed` 漏 accuracy 条件 | 指到 `accuracy=0, stability=50` | 改指 `accuracy=50, stability=0` |
+   | #29 partial/failed 顺序反转 | 指到 `accuracy=50, stability=0`（反转后同答案） | 改指 **`(0,0) ⇒ failed`** |
+   ⇒ ★★ **#27 与 #28 的锚点互换了** —— 两条变异各自需要的是**对方**那一格
+     ⇒ 这是「两条变异只差一个合取项」时的必然：专格是**成对**的。
+2. **样本选歪 10 条（#16 / #19 / #22 / #34 / #35 / #42 / #46 / #47 / #53 等）。**
+   | 变异 | 锚点那格为什么同答案 | 补的专格/负控 |
+   |---|---|---|
+   | #16 `requireObject` 放过数组 | 元素是**字符串**，`typeof` 本来就拦住 | 补「**元素本身是数组**」（`typeof` 也是 object，只有 `Array.isArray` 能拦） |
+   | #19 去掉 `canonical_name` 字符串检查 | 样本是**空串**，两种实现都过 | 补「**canonical_name 是数字**」 |
+   | #22 去掉 `stability` 数字检查 | 样本是 **0**，本来就是数字 | 补「**stability 是字符串**」 |
+   | #34 `node_count=0` 分支漏 `min_node_iq` | 样本里 `max_node_iq` 非 null ⇒ 两式同 false | 补「**只有 min_node_iq 非 null**」 |
+   | #35 同上漏 `node_avg_iq` | 样本里三个全非 null | 补「**只有 node_avg_iq 非 null**」 |
+   | #42 `=== null` 改真值 | 见下（**归因不同**） | 补「**`node_avg_iq` 是 0**」 |
+   | #46/#47 tested_at 两个真值判据 | 样本是非空串 / null ⇒ 两式同答案 | 补「**`tested_at` 是空串**」（两头一起断言） |
+   | #53 RFC3339 只看长度 | 样本是 10 位串，`length > 10` 本来就假 | 补「**长度 >10 但不含 T**」 |
+   ⇒ ★★ **专格必须是「其余项全为不触发值、只有被测项触发」** —— 这条纪律在本族
+     **连续第三次**生效（批 83 的四行 region、批 84 的三值判据、本批的三个聚合）。
+3. **可证等价 2 条（#39 / #52）。**
+   - `node_count === 0` 改成 `<= 0`：`node_count` 来自 SQL `count(*)` 扫进 Go `int`
+     ⇒ **可达集合只有非负整数** ⇒ 两式等价。
+   - `stability === 0` 改成 `!stability`：JSON 数字里**唯一的 falsy 就是 0**
+     （`NaN` 序列化不成、`-0 === 0` 且同样 falsy）⇒ 两式等价。
+   ⇒ ★ 处置：**保留**与后端形状对齐的写法 + 注释写明等价理由，不为不可达样本造夹具。
+   ⇒ ★★ 与批 84 的 `degraded === true` 同型，但**这一条还要额外小心**：
+     我一度以为「`node_avg_iq` 是 0」能区分 `=== null` 与 `!x` ——
+     实际上 `!0` 是 `true` 而 `0 === null` 是 `false`，**那一格确实能区分**；
+     但它的 STILL_GREEN 有**另一个**原因（见下）。
+
+### ★★ 补记：`from` 片段不唯一 ⇒ 改错函数，且**两处都能全绿**
+
+#42 首跑 STILL_GREEN 的真正原因不是样本，而是
+**`  return row.node_avg_iq === null` 同时是 `modelIQCatalogAggregatesMatchCount`
+里那条更长表达式（`... === null && ... === null && ... === null`）的前缀**
+⇒ `String.replace` 只替换第一个匹配 ⇒ **变异注入到了另一个函数上**，
+而那个函数被注入后**所有用例仍然全绿**。
+
+⇒ ★★★ 这是已记的「`from` 必须唯一」的**第二次**踩坑，但形态更隐蔽：
+  批 81 那次是「改错位置且明显报错」，这次是
+  **「改错位置、代码仍合法、测试仍全绿」** ⇒ `NO_EFFECT` 检查抓不到
+  （文件确实变了）。
+⇒ ★ 修法：`from` **带函数名**、带完整函数体，做到肉眼唯一：
+  ```js
+  from: `export function modelIQCatalogNodeAvgIsNull(row: ModelIQCatalogRow): boolean {
+  return row.node_avg_iq === null
+}`
+  ```
+⇒ ★★ **可落地的自检**：写完变异表后，用一段脚本统计每条 `from`
+  在源文件里出现的次数，`> 1` 的一律加长。本批 56 条里只有 #42 命中。
+
+### 收尾
+
+local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
+`web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
+
+## 11.122 v1 数据地平线告示（第八十六批，2026-10-08）
+
+GET `/api/admin/v1-data-horizon`
+
+- **注册**：`admin/handler.go:1088`
+  `mux.HandleFunc("/api/admin/v1-data-horizon", admin(h.handleV1DataHorizon))`
+  ⇒ ★ **admin 档**（tenant_admin 可用）⇒ 抽屉席**不设** `requiresRole`。
+  ⇒ 不在 `maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+- **实现**：`admin/v1_freeze_notice.go`；决策纯函数 `v1GateState` 在 `:147-155`。
+- ★ 差集扫描排掉两个**假阳性**：`session-analytics/users` 与
+  `prompt-injection/policy` 在缺口清单里，但移动端**已有**对应 api 文件
+  （`web-mobile/src/api/sessionAnalytics.ts` / `promptInjection.ts`）。
+
+### 本族最要紧的十一件事
+
+1. ★★★★★ **主键恒在，值有「对象」与「裸 `null`」两种形态** —— 不是主键消失。
+   `:258-261`（有告示）与 `:265-268`（无告示）都写**两键**：
+
+   ```go
+   {"v1_data_horizon": notice, "//": "frozen=true 表示…"}
+   ```
+
+   ⇒ ★★★ 与批 84 的降级信封（**主键整个消失**）**正好相反**。
+   ⇒ ⇒ 判据必须是「**值为 null ⇒ 未停更**」，**不能**是「键存在 ⇒ 有告示」。
+2. ★★★★★ **后端刻意不产出「有对象但 `frozen=false` 且 `unknown=false`」**。
+   类型注释（`:75-77`）与 `handleV1DataHorizon`（`:264`）都写明：那种情形返回 `null`。
+   ⇒ ★★★ 强不变量：**有对象 ⇒ `frozen` 与 `unknown` 恰好一个为 true**
+   （frozen 分支 `:217-224` 只设 `Frozen`；unknown 分支 `:207-215` 只设 `Unknown`）。
+3. ★★★★★ **`frozen: false` 现在是有合法实例的**（就是 unknown 那一档）⇒
+   判「已停更」**不能**只读 `frozen`。桌面客户端注释亦明写这一点。
+4. ★★★★★ **三态判定是一个三行纯函数**（`:147-155`），可逐行镜像：
+
+   ```go
+   if source == "" || source == "default" { return unavailable }
+   if logsWriteEnabled { return live }
+   return frozen
+   ```
+
+   ⇒ ★★★ **头号陷阱**：`logsWriteEnabled === true` **但** `source` 回落成 `default`
+   ⇒ 结果是 **unavailable 而不是 live**。这正是整个文件存在的理由 ——
+   `settings.GetPlatformBool` 有三个回落点，**全部返回 fallback=true**。
+5. ★★★★ **空串与 `"default"` 同义**（`:143-146`）。
+   `EffectiveValue` 出错时返回 `("", err)`，调用方把 err 与空串一起折叠成 default；
+   若把空串当「显式」，**读失败就会显示成「数据是新的」**。
+6. ★★★★ **响应头 `X-LLM-Gateway-V1-Data-Frozen` 是「三值 + 缺失」**
+   （`applyV1FreezeNotice`，`:236-248`）：
+   - live ⇒ **头根本不设置**（`:238-240` 直接 return）
+   - frozen ⇒ 头 `"1"`
+   - unknown ⇒ 头 `"unknown"`（**与 frozen 用不同值**，抓包必须能区分）
+
+   ⇒ ★★★ 这是**第十二种 nil 编码：头缺失**。头与 body 是**两套独立表达**，
+   客户端可交叉验证（`v1FreezeHeaderMatchesBody`）。
+7. ★★★★ **`source` 这个名字在本响应里指两件不同的事**（命名陷阱）：
+   - `notice.source` = **硬编码字面量** `"request_logs"`（被冻结的读源族，`:210/:219`）
+   - gate 的 source = `{db, env, default}`（`spec.go:283`），**不出现**在响应里
+
+   ⇒ ★★ 客户端不要把 `notice.source` 当成「配置来源」。
+8. ★★★ `gate_key` 恒为字面量 **`storage.request_logs_write_enabled`**
+   （`settings/key_request_logs_write_enabled.go:19`）⇒ 恒定常量，
+   本模块导出但**不提供校验取值的判据**（恒真）。
+9. ★★★ `affects` 三值 `{silently_frozen, silently_degraded_content, silently_empty}`，
+   **两个分支的字面量完全相同**（`:214` 与 `:223`）。
+10. ★★ `effect` / `silence` 是**给人读的文案**，两个分支各一套 ⇒
+    客户端**不要**用文案判状态，要用 `frozen`/`unknown`。
+11. ★★ `V1FreezeNotice` 七键**无 omitempty** ⇒ **七键恒在**。
+
+**校验边界**：解包器校验**两键信封恒在** + 主键是「七键对象」或「`null`」+ 各键类型；
+**不校验** `effect`/`silence` 的文案内容（展示文案，两套字面量都是后端硬编码）。
+
+### 验证
+
+- 用例 **92 条全绿**（`web-mobile/src/api/v1DataHorizon.test.ts`）。
+- 变异 **40 条 = 39 有牙 + 1 可证等价**（`/tmp/mut-co86.mjs`，`RESTORED=OK`）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量与十连跑见下。
+
+### 变异验证暴露的判据缺陷（40 条 → 首跑 33 有牙，修到 39）
+
+首跑 7 条 STILL_GREEN，**归因四类**：
+
+1. **★ 变异本身没改行为（1 条，#27）—— 新形态。**
+   #27 我想把 `ExactlyOneFlag` 改成恒真，写出来的 `to` 却是
+
+   ```js
+   return n === null || n.frozen !== n.unknown
+   ```
+
+   ⇒ 它与原文 `if (n===null) return true; return n.frozen !== n.unknown` **完全等价**
+   ⇒ 文件变了、代码合法、dry 全绿、`NO_EFFECT` 也抓不到（文件确实变了），
+   而行为**一个字都没改**。
+   ⇒ ★★★ 这是「注入标记 ≠ 变异」的**第四种形态**，前三种是
+   (a) `to` 只追加不替换、(b) `from` 片段不唯一改错位置、(c) `from`/`to` 只差注释；
+   **本条是 (d) `to` 是原文的恒等变形**。
+   ⇒ ★ **自检**：写完 `to` 要问「这两段在**所有可达输入**上真的不同吗」。
+     本批修法是换成真的改行为的 `n.frozen === n.unknown`。
+2. **锚点指错 2 条（#9 / #26）。**
+   | 变异 | 问题 | 修法 |
+   |---|---|---|
+   | #9 主键名常量改错 | 指到「两个键都缺」那条 —— 但键集常量（`ENVELOPE_KEYS`）没变，那条仍抛同样的错 | 改指「**主键为 null ⇒ 放行**」（主键名常量只在解包后读值时用） |
+   | #26 `!==` 改成 `||` | 指到「两个都是 false」那格 ⇒ `false \|\| false` 与 `false !== false` **都是 false** | 改指「**两个都是 true**」（那格 `true \|\| true` 为 true、`!==` 为 false） |
+
+   ⇒ ★★ 形态：**「或」与「不等」的差异只在「两个都为真」那一格**，
+     「两个都假」是**同答案格** ⇒ 锚点必须挑前者。
+3. **样本选歪 3 条（#24 / #25 / #40）。**
+   | 变异 | 锚点那格为什么同答案 | 补的专格 |
+   |---|---|---|
+   | #24 `IsFrozen` 去掉 `unknown` 合取项 | unknown 档的 `frozen` 本来就 false | 补「**两个标志都为 true** ⇒ 两者都必须 false」 |
+   | #25 `IsUnknown` 去掉 `frozen` 合取项 | frozen 档的 `unknown` 本来就 false | 同上（一条断言同时打掉两条变异） |
+   | #40 显式判据改成恒真 | `db`/`env`/`''` 三格**全部**两式同 false | 补「**域外非空值**」（非空但不在域里） |
+
+   ⇒ ★★ 「去掉一个合取项」的专格必须是「**两个合取项都为真**」——
+     只有那一格才能暴露「少判一项」。
+   ⇒ ★★ 与批 84/85 的「其余项全为不触发值」是**同一条纪律的两端**：
+     这里需要的是「**其余项全为触发值**」。
+4. **可证等价 1 条（#23）。** `v1_data_horizon === null` 改成 `!v1_data_horizon`：
+   主键的可达集合是 `{七键对象, null}`，**对象永远是真值** ⇒ 两式可证等价。
+   ⇒ ★ 与 `*float64` 的「0 是 falsy」那种情况**不同**，这里没有可区分的中间格
+   ⇒ 保留与后端形状对齐的写法 + 注释写明理由。
+
+### 收尾
+
+local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
+`web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
+
+## 11.123 订阅档与每档模块（第八十七批，2026-10-08）
+
+GET `/api/admin/tiers`
+
+- ★★★★★ **注册机制与本仓绝大多数端点不同**：它**不在** `admin/handler.go` 的
+  `mux.HandleFunc` 里，而在 **echo 的 group** 上：
+  - `cmd/gateway/main.go:6964`　`adminGroup := e.Group("/api/admin", requireSuperAdmin)`
+  - `cmd/gateway/main.go:6966`　`licensing.RegisterModuleRoutes(adminGroup, licensingStore)`
+  - `licensing/admin_api.go:33-36`　`mh.RegisterRoutes(g)`
+  - `licensing/module_api.go:22`　`g.GET("/tiers", h.ListTiers)`
+
+  ⇒ ★★★ **这是本仓第三种注册机制**（前两种：`admin/handler.go` 的 mux、
+    `cmd/gateway/main.go:7070` 附近的 requestJourney 一族）。
+  ⇒ ★★★ **只 grep mux 会把「已注册」误判成「死端点」** —— 本批取证时
+    先看到 `SubscriptionTierInfo` 在 Go 侧不存在、`/api/admin/tiers` 不在
+    `handler.go` 里，几乎按批 81 的「`//nolint:unused` 死端点」下结论，
+    **再查 echo group 才发现它活着**。
+  ⇒ ★★ 中间件是 `requireSuperAdmin` ⇒ **superAdmin 档**（tenant_admin 403）
+  ⇒ 抽屉席须设 `requiresRole: 'super_admin'` 并同步 `AppDrawer.spec.ts` 白名单。
+- **实现**：`licensing/module_api.go:64-98`；类型 `licensing/types.go:149-155`；
+  查询 `licensing/store_pgx.go:686-691` / `:708-711`。
+
+### 本族最要紧的十三件事
+
+1. ★★★★★ **内嵌 struct 的 JSON 是**扁平**的**，不是嵌套。
+   `:80-83` 是匿名内嵌：
+
+   ```go
+   type tierWithModules struct {
+       SubscriptionTier            // 内嵌，无 json tag
+       ModuleKeys []string `json:"module_keys"`
+   }
+   ```
+
+   ⇒ Go 把**匿名内嵌**的字段**平铺**到同一层 ⇒ 响应是
+   `{code, name, description, price_cents, sort_order, module_keys}` **六键同层**，
+   **不是** `{tier:{…}, module_keys:[…]}`。
+   ⇒ ★ 客户端若按 `row.tier.code` 读，会全盘 `undefined` 而**不报错**。
+2. ★★★★ **响应是顶层裸数组**（`:97` `c.JSON(200, result)`），
+   而 `result := make([]tierWithModules, 0, len(tiers))`
+   ⇒ **无订阅档时是 `[]` 而不是 `null`**。
+3. ★★★ 六键**恒在**（五个内嵌字段与 `module_keys` 都无 omitempty）。
+4. ★★★★ **`module_keys` 在「该档没有模块」时被显式补成 `[]string{}`**（`:87-90`）：
+
+   ```go
+   keys := modulesByTier[t.Code]
+   if keys == nil { keys = []string{} }
+   ```
+
+   ⇒ ★★★ 作者刻意兜底 ⇒ **该键恒为数组，永不为 `null`**
+   ⇒ ★ 与「nil slice ⇒ JSON `null`」（批 84 的 `coverage.grain_dates`）相反。
+5. ★★★★★ **`module_keys` 的顺序未定义** —— `ListTierModuleMaps`
+   （`store_pgx.go:708-711`）的 SQL **既无 `ORDER BY` 也无 `WHERE`/`LIMIT`**
+   ⇒ PG 不保证返回行序 ⇒ 客户端**绝不能**按顺序取元素。
+   ⇒ ★★ 对照：tiers 主查询**有** `ORDER BY sort_order`（`:690`）
+   ⇒ **行顺序是定义的，组内顺序不是**。
+6. ★★★★ **`module_keys` 内部无重复** —— 表上有
+   `PRIMARY KEY (tier_code, module_key)`
+   （`deploy/sql/schemas/baseline/01-schema.sql:22468-22469`）
+   ⇒ 「无序」不等于「可重复」：**顺序未定义、元素唯一**。
+7. ★★★★★ **`enabled` 列存在，但 SELECT 根本没取它** ——
+   表定义 `enabled boolean DEFAULT true NOT NULL`（`:16835`），
+   而 SELECT（`:688`）只取 `code, name, description, price_cents, sort_order`。
+   ⇒ ★★★ **被停用的订阅档也会出现在响应里**，且客户端**看不到 `enabled`**
+   ⇒ 这是「**不可见的过滤维度**」。
+   ⇒ ★★ 与批 85 的 `catalog`（WHERE `status IN (…)` **主动排除** `hidden`）
+     正好相反：那次的过滤是**端点主动做的**，这次的过滤**根本没有发生**
+     （端点连那一列都没读）。
+8. ★★★★ **`max_features` 被 SELECT 了但被丢弃** ——
+   `ListTierModuleMaps` 取了 `COALESCE(max_features,'')`，
+   Go 侧存进 `TierModuleMap.MaxFeatures`，而 `tierWithModules` **没有这个字段**
+   ⇒ 响应里**没有** `max_features` ⇒ 客户端拿不到模块配额上限，是**信息损失**。
+9. ★★★★★ **错误体形状与 `admin` 包不同** ——
+   `licensing/internal_error.go:36-39` 返回 `{"error": op}`（**字符串**），
+   而 `admin` 包的 `writeError` 是 `{"error":{"detail":msg}}`（**对象**）
+   ⇒ ★★★ 本仓**第四种错误体形状** ⇒ 错误映射**不能**跨包复用。
+10. ★★ 两条 500 文案各不相同：`list tiers failed` / `list tier module maps failed`
+    ⇒ 客户端**可区分**是哪一步失败。
+11. ★★ `description` / `price_cents` / `sort_order` 在表上都是 `NOT NULL`
+    ⇒ 三键恒非 null；`description` 可为空串。
+12. ★★ `code` 有 UNIQUE 约束（`:22353-22356`）⇒ 数组内 `code` 唯一。
+13. ★★ 该端点**不按租户隔离**（读的是全局 `subscription_tiers`）。
+
+**校验边界**：解包器校验**顶层是数组** + 每项六个恒在键与类型 + `module_keys` 元素类型；
+**刻意不提供**「`module_keys` 顺序是否有序」这条判据 ——
+写它就是**恒真判据**，正确做法是不做断言并在调用方注释里写明「顺序未定义」。
+
+### 验证
+
+- 用例 **53 条全绿**（`web-mobile/src/api/subscriptionTiers.test.ts`）。
+- 变异 **28 条 = 27 有牙 + 1 可证等价**（`/tmp/mut-co87.mjs`，`RESTORED=OK`）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **5505 条（150 文件）** rc=0。
+
+### 变异验证暴露的判据缺陷（28 条 → 首跑 23 有牙，修到 27）
+
+首跑 5 条 STILL_GREEN，**归因四类**：
+
+1. **★ 变异写法本身引入了语法错误（1 条，#6）—— 新形态。**
+   #6 要删掉顶层守卫，我的 `to` 顺手补了一句 `const arr = resp as unknown[]`，
+   而原文下面**已经有一行** `const arr = resp`
+   ⇒ 注入后**重复声明** ⇒ 整个文件解析失败
+   ⇒ vitest 只报 `FAIL … test.ts [`（收集失败），**没有任何用例标题**
+   ⇒ harness 的 `__COLLECT_FAIL__` 兜底抓到了「整体挂了」，但锚点匹配不到
+   ⇒ 记成 STILL_GREEN。
+   ⇒ ★★ 这是「注入标记 ≠ 变异」的**第五种形态**：(a) `to` 只追加不替换、
+     (b) `from` 不唯一改错位置、(c) `from`/`to` 只差注释、
+     (d) `to` 是恒等变形、**(e) `to` 破坏了语法**。
+   ⇒ ★ 修法：`to` 只做「删掉那几行」，**不补任何替代声明**。
+2. **样本选歪 2 条（#7 / #24）。**
+   | 变异 | 锚点那格为什么同答案 | 补的专格 |
+   |---|---|---|
+   | #7 `requireObject` 放过数组 | 元素是**字符串**，`typeof` 本来就拦住 | 补「**元素本身是数组**」（与批 85 的 #16 同一条纪律，同一处再犯一次） |
+   | #24 `IsFlat` 去掉「没有 tier 包装层」 | 嵌套样本**连顶层 code 都没有** ⇒ 前一项先失败 | 补「**两层都有 code，只有 tier 包装层能区分**」 |
+
+   ⇒ ★★ 形态二：「**更早的一项先失败**」⇒ 补专格时要让**前面的项都为真**，
+     只让被测项单独决定结果。
+3. **锚点指错 1 条（#25）。** `IsFlat` 改成恒真，锚点却指到「六键同层 ⇒ true」那条
+   —— 那条用合法扁平行，恒真后仍 true ⇒ 改指「**嵌套形状 ⇒ false**」。
+4. **可证等价 1 条（#27）。** `description === ''` 改成 `!description`：
+   `description` 的可达集合是 `{任意非空串, 空串}`（表列 NOT NULL ⇒ 无 null/undefined）
+   ⇒ 空串两边都 true、非空串两边都 false ⇒ **可证等价**
+   ⇒ 保留与后端形状对齐的写法 + 注释写明理由。
+
+### 收尾
+
+local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
+`web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
+
+## 11.124 账号用量汇总与单用户画像（第八十八批，2026-10-08）
+
+GET `/api/admin/users/usage-summary` + `/api/admin/users/{id}/stats`
+
+- **注册**：`admin/handler.go:1104-1105`
+
+  ```go
+  mux.HandleFunc("/api/admin/users/usage-summary", admin(h.handleUserUsageSummary))
+  mux.HandleFunc("/api/admin/users/",           admin(h.handleUserStatsDispatcher))
+  ```
+
+  ⇒ ★★ 两个都是 **`admin(...)` 档**（tenant_admin 可用）⇒ 抽屉席**不设** `requiresRole`。
+  ⇒ ★ `usage-summary` 是**精确路径**、`users/` 是**前缀** ⇒ Go 1.22+ ServeMux
+    精确优先 ⇒ `usage-summary` 不会落进分发器。
+- **实现**：`admin/user_usage_stats.go`（395 行）。
+- **桌面调用方**：`web/src/api/admin.ts:485` / `:528`。
+- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+
+### 本族最要紧的十八件事
+
+1. ★★★★★ **`key_count` 查询失败只记日志、不报错**（`:217-222`）
+
+   ```go
+   if err := h.db.QueryRow(...).Scan(&resp.KeyCount); err != nil {
+       slog.Warn("user_stats: key count failed", …)
+   }
+   ```
+
+   ⇒ ★★★ `key_count` **恒为数字**，而 **0 是二义的**（真的 0 个密钥 / 那次 `COUNT(*)` 失败）
+   ⇒ ★★ 比批 80 的 `database.free_bytes` 更糟：那里作者**显式注释**说明是「测不到」位，
+     这里**没有任何注释**说明它可能不可信
+   ⇒ ⇒ 客户端**不能**把 0 读成「这个用户没有密钥」。
+2. ★★★★★ **三个 Top 桶与 `recent` 都是「失败即降级」，但响应仍是 200**：
+   桶查询失败 ⇒ 桶保持**空数组**；桶 `rows.Err()` ⇒ **只记日志**
+   ⇒ **截断的 Top 列表被当完整数据返回**。
+   ⇒ ★★★ 客户端**无法区分**「这个用户没有数据」与「这一段查询失败了」。
+3. ★★★★★ **`usage-summary` 的 `rows.Scan` 失败是裸 `continue`**（`:107-109`）——
+   **无 `slog`、无任何痕迹** ⇒ 本仓「静默跳行」最彻底的一处
+   ⇒ ★ 对照：同文件 `rows.Err()` **有**检查（`:112`）⇒ 迭代中断会 500。
+4. ★★★★ **`days` 上界两个端点不同**：`usage-summary` 365（`:63`）vs `{id}/stats` **90**（`:176`），
+   **差 4 倍**，且都是**静默回落 30 不 400**。
+5. ★★★★ **两个端点的窗口口径分叉**：`usage-summary` 是 `now() - days*1day`（**UTC，无日切**），
+   `daily` 是 `generate_series(date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai'))`
+   ⇒ **显式 Asia/Shanghai 日切**；注释自陈「对账页保持显式 UTC 日（**有意分叉**）」
+   ⇒ ⇒ 客户端**不能**跨这两个端点比较同一天的数字。
+6. ★★★★ `daily` 是**零填充**的 ⇒ `daily.length === days` 恒成立。
+7. ★★★★ **跨租户访问被掩蔽成 404**（`:199-205`），注释自陈理由：
+   先 403 会构成「跨租户用户 ID 存在性 oracle」
+   ⇒ ★★★ 客户端**不能**用 403 判权限，也**不能**用 404 判「用户不存在」。
+8. ★★★ 只有 `ErrNoRows` 映射 404（`user not found`），基础设施错误映射 500
+   （`lookup user failed`）⇒ 文案**可区分**。
+9. ★★★★ **租户隔离在两端点都被 `tenantID != "default"` 短路**
+   ⇒ ★★★ 租户键为 `"default"` 的那个租户，其 tenant_admin 会拿到**全平台**数据。
+10. ★★★★ **405 检查排在 503 之前**（`:53` vs `:57`、`:166` vs `:170`）
+    ⇒ 与批 83（405 在前）一致、与批 84（503 在前）相反。
+11. ★★★★ 503 文案是 **`db not available`** —— 本仓**第五种**措辞
+    （批 81/82/85/86 的 `database not configured`、批 84 的 `database not available`）。
+12. ★★★ `ORDER BY requests DESC` 与三个桶的 `ORDER BY COUNT(*) DESC LIMIT 5`
+    **都无 tiebreak** ⇒ 同值行顺序未定义（**不是**可以断言升序）。
+13. ★★★ `usage-summary` 用 `JOIN users u ON u.username = agg.owner`（`:95`）
+    ⇒ **owner 不在 `users` 表里的账号整行消失**（内连接）。
+14. ★★★ `last_active_at` 是 `*time.Time` 且**无 omitempty**（`:40`）⇒ 无数据时是**裸 `null`**。
+15. ★★★ `recent.first_chunk_ms` / `total_ms` 是 `*int64` 且无 omitempty（`:142-143`）
+    ⇒ **真会裸 `null`**；而 `kpi.latency_p95_ms` 虽同为 `*int64`，
+    SQL 有 `COALESCE(…, 0)` ⇒ 实际路径**恒为数字**。
+16. ★★★ `kpi.error_rate` **只在 `requests > 0` 时计算**（`:242-244`），否则保持零值
+    ⇒ ★★ `error_rate === 0` **是二义的**（真 0 / 无请求未计算）。
+17. ★★★ 五个占位符**各不相同**：`<unknown>`（模型桶与密钥桶）、`<none>`（应用桶）、
+    `'-'`（`recent.model`）、`'unknown'`（`recent.status`）
+    ⇒ ★★ `'-'` 与 `'unknown'` **只出现在 recent 里**，与三个桶的占位符不通用。
+18. ★★★ **分发表是手工拆路径**（`:380-394`）：
+    `TrimPrefix` → `TrimSuffix` → `SplitN(…, 2)`，要求**恰好两段且第二段是 `stats`**，
+    否则 404 `not found`；`{id}` 用 `Atoi`（**无 TrimSpace**）且 `id <= 0`
+    ⇒ 400 `invalid user id`。
+
+**校验边界**：解包器校验两个响应的**全部恒在键与类型**
+（usage-summary 信封 2 + 行 5；stats 10 + kpi 6 + 桶 5 + recent 6 + daily 7）。
+**刻意不校验** `top_*` 与 `recent` 的**完整性** —— 后端自己都保证不了（见 2、3）。
+
+### 验证
+
+- 用例 **111 条全绿**（`web-mobile/src/api/userUsageStats.test.ts`）。
+- 变异 **83 条 = 82 有牙 + 1 可证等价**（`/tmp/mut-co88.mjs`，`RESTORED=OK`）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **5616 条（152 文件）** rc=0。
+
+### 变异验证暴露的判据缺陷（83 条 → 首跑 79 有牙，修到 82）
+
+首跑 3 条 STILL_GREEN，**归因两类 + 1 条可证等价**：
+
+1. **★★ 锚点指错（#44 / #56）—— 本批唯一的新教训形态。**
+   | 变异 | 锚点那条为什么永远绿 | 修法 |
+   |---|---|---|
+   | #44 recent 只校验 `first_chunk_ms` | 锚点那条是 **`not.toThrow` 放行用例** ⇒ **删检查永远打不红它** | 改指「六个键逐个都要校验」里 `total_ms: 'x'` 那条**类型错误**用例 |
+   | #56 `daily.length === days` 放宽成 `>=` | 锚点那条是「**欠长** ⇒ false」⇒ 3 >= 30 仍 false ⇒ 同答案 | 区分格在「**超长**」那一格（3 > 2）⇒ 改指新补的超长用例 |
+
+   ⇒ ★★★ **新形态：`not.toThrow` 型放行用例对「删检查」类变异天然无牙。**
+     它们只能证明「合法形状被放行」，**不能**证明「非法形状被拦住」；
+     凡是删/放宽检查的变异，锚点必须落在**类型错误**或**键缺失**那条用例上。
+   ⇒ ★★ 与之配套：`===` 的两条放宽方向（`<=` / `>=`）**区分格方向相反**，
+     必须**各有一条用例**，否则其中一条会白绿（本批补 #83 `<` 配「欠长」用例）。
+2. **可证等价 1 条（#67）。** `error_rate === 0` 改成 `!error_rate`：
+   `error_rate` 的可达集合是**有限 JSON 数字**（`NaN` 不可达），
+   其中 falsy 的只有 `0` 与 `-0`，而 `-0 === 0` 为 true
+   ⇒ 两式在**全部可达输入**上等价 ⇒ **可证等价**
+   ⇒ 保留与后端形状对齐的 `=== 0` 写法 + 注释写明理由。
+3. ★★ 此外，本批**先补覆盖再跑变异**：原先
+   「行的 tokens / credits」「kpi 的 credits」「daily 的 cost」
+   「桶的四个数字键」「recent 的 model」这些**循环里的键**没有任何用例能打掉
+   ⇒ 新增 5 条**逐字段钉住**用例（`行的五个字段` / `顶层四个标量键` /
+   `kpi 的六个键` / `daily 的八个键` / `三个桶的五个键` / `recent 的六个键`）
+   + 5 条**常量钉桩**用例（原先 `*_PLACEHOLDER` 是「导出但没人读」的死导出）。
+   ⇒ ★★★ **循环里的键必须逐个有类型错误用例**，否则把某个键从循环数组里删掉不会有一条用例变红。
+
+### 顺手修掉的文档缺陷
+
+第八十五批把 §11.121 **整节写了两遍**（`11319-11459` 与 `11460-11607`）：
+两份**不是逐字相同** —— 第二份是**更早的草稿**（缺 #42 的修正、写着「样本选歪 8 条」），
+第一份才是修正后的版本（10 条、含 #42 与它的另一种归因）。
+⇒ 已**删除第二份**（148 行），保留修正版；两份的独有结论在第一份里都已覆盖，**无信息损失**
+⇒ ★★ 教训：**「文档纯追加」的证明（`new.startswith(old + '\n')`）只能证明没截断，
+  证明不了没重写** —— 重写整节时前缀仍然成立 ⇒ 追加类纪律需要**额外的节号唯一性检查**。
+
+### 收尾
+
+local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
+`web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
+
+## 11.125 调度轨迹快照（第八十九批，2026-10-08）
+
+GET `/api/admin/dispatch/journal/{tenant}/{request_id}`
+
+- **注册**：**本仓第四种注册形态** —— 既不在 `admin/handler.go` 的 mux 清单里，
+  也不在 `cmd/gateway/main.go:7070` 的 requestJourney 直挂清单里，而是**现构造、现挂载**：
+
+  ```go
+  // cmd/gateway/main.go:7074-7075
+  journalSnapshotAPI := admin.NewJournalSnapshotAPI(journalSnapshotStore)
+  journalSnapshotAPI.RegisterRoutes(mux, requestJourneyWrapAdmin)
+  ```
+
+  → `admin/journal_handlers.go:30-35`（内部才 `mux.HandleFunc("/api/admin/dispatch/journal/", wrap(api.ServeHTTP))`）
+  ⇒ ★★★ **只 grep `mux.HandleFunc` 或 `main.go` 的路由清单，两条路都会判成「死端点」。**
+  ⇒ ★ 与批 87 的 echo `Group` 形态同族：**判「端点是否注册」要查的第四处**。
+- **实现**：`admin/journal_handlers.go`（126 行）+ `domains/dispatch/journal_consumer.go`
+  + `domains/dispatch/journal.go`（条目结构）+ `domains/dispatch/pipeline.go:1852-1893`（发射）。
+- **桌面调用方**：`web/src/api/dispatchJournal.ts` —— ★ **它不做任何校验**，
+  直接 `req<DispatchJournalSnapshot>` 强转 ⇒ 全部校验由本模块补上。
+- **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+
+### 本族最要紧的十五件事
+
+1. ★★★★★ **`not found` 有五种成因，返回的是完全相同的响应**：
+   `:55` 无租户上下文 / `:61` 角色不合法 / `:65` 非特权跨租户 / `:77` 快照不存在
+   / `:84` 快照与路径段不符（另有 `journal_consumer.go:99`、`:102` 两条内部闸）
+   ⇒ ★★★ 客户端**不能**用 404 判「快照不存在」，也**不能**用 404 判权限。
+2. ★★★★★ **中间件不做角色校验** —— `AdminMiddleware`（`admin/auth.go:76-130`）
+   只验 JWT 有效性，**不检查 role**，任何有效 JWT 都被放进 handler
+   ⇒ ⇒ **普通用户拿到的也是 404**，本族**根本没有 403 这条路**
+   ⇒ ★ 与批 88（403/404 可区分）正好相反。
+3. ★★★★★ **两种错误体形状并存，取决于「哪一层写的」**：
+   - handler 层 `writeRequestJourneyError`（`request_journey.go:287-291`）：
+     `{"error":{"message":msg,"type":"admin_error"}}`
+   - 中间件层 `writeError`（`handler.go:1494-1498`）：`{"error":{"detail":msg}}`
+     （401 `authentication required`、403 走这条）
+   ⇒ ★★ **同一个 admin 包里就有两种，键名互斥** ⇒ 错误映射必须按（**写出层**）分支。
+   ⇒ ★★ 还有第三种 `writeErrorWithCode`（`:1501`，带 `code`），本族未用到
+   ⇒ ⇒ **本仓「错误体按包分支」这条纪律要升级成「按写出层分支」。**
+4. ★★★★★ **快照是进程内 LRU 内存缓冲，不是持久化存储**：
+   `cmd/gateway/main.go:1080` `dispatch.NewInMemoryJournalStore(10000)`
+   - 进程重启 ⇒ 全没 ⇒ 404；容量 10000，满了淘汰最久未用的 ⇒ 404
+   - ★★ **`ConsumeSnapshot` 会 `moveToFrontLocked`（`journal_consumer.go:109`）⇒ 读操作有副作用**：
+     读一次就把这条快照「续命」。
+   - ★★ 而 `journal_consumer.go:16-17` 的注释自称「for testing and demonstration purposes /
+     生产实现应当用持久化存储」，**实际却接在生产路径上** ⇒ **注释与接线不符**。
+5. ★★★★★ **截断是两段式的，而只有第二段被报告**：
+   - 第一段（环形，`journal.go:137-140`）：每请求 ring 上限 `journalCapacity = 128`，
+     满了从**头部**丢最旧的 ⇒ ★★★ **这个丢弃没有任何标记**
+   - 第二段（快照，`pipeline.go:1874-1879`）：`len(entries) > maxJournalSnapshotEvents(50)`
+     ⇒ 保留**最近** 50 条，`truncated = true`，`truncated_count = 原长度 - 50`
+   ⇒ ★★★ **「`truncated === false`」不等于「轨迹完整」** —— 这是本族最锋利的「二义」。
+6. ★★★★ **`truncated === true` ⇒ `entries.length === 50`**（精确切片）
+   ⇒ 等价地 **`truncated_count === 0` ⟺ `!truncated`** ⇒ 两条都可自验。
+7. ★★★★ **末尾条目恒为终态** —— `emitJournalSnapshot` 只在 `complete()` 的终态路径被调
+   （`pipeline.go:1784`），而终态条目由 `complete()` 写、「no journal entry follows a terminal one」
+   （`notice.go:63-64`）⇒ ★ 截断只砍**头部** ⇒ 终态条目恒在最末 ⇒ 客户端**可自验**。
+8. ★★★★ **`snapshot_version === 最后一条的 seq`** ——
+   `SnapshotVersion = int64(qr.journalSeq)`（`pipeline.go:1880`），
+   而 `journalSeq` 的最后一次自增就发生在写终态条目时（`journal.go:118-119`）⇒ 又一条强不变量。
+9. ★★★★ **`seq` 首条为 1 且相邻差 1** —— `qr.journalSeq++; entry.Seq = qr.journalSeq`
+   ⇒ 两段截断都只砍**头部窗口**，保留下来的窗口内部**不会出现空洞** ⇒ 可自验。
+10. ★★★★ **`counts` 是累计快照、只增不减** —— `recordDecision` 先折叠再 `entry.Counts = qr.Counts`
+    （`journal.go:118-135`）⇒ 逐条非递减。
+    ★ 语义注释自陈：计数是**分类视图**，权威的尝试上限是 `AttemptCount`（`journal.go:60-62`），
+    且 **wait 类动作不计入** ⇒ ★★ 因此**刻意不提供**「计数器之和 == 尝试次数」这条判据
+    —— 后端没有承诺这个等式，判它成立需要一个本族**没有暴露**的口径。
+11. ★★★★ **条目 5 个恒在键 + 12 个 `omitempty` 可选键**：
+    恒在 `seq`/`at`/`action`/`attempt`/`counts`；
+    可选 `model`/`credential_id`/`provider_id`/`vendor`/`error_kind`/`http_status`
+    /`from_model`/`to_model`/`from_credential_id`/`to_credential_id`
+    /`from_provider_id`/`to_provider_id`
+    ⇒ ★★★ 12 个都是**值类型 + 无指针** ⇒ ★★ **`0` 与空串会被 `omitempty` 吃掉**
+    ⇒ 「`credential_id` 是 0」与「`credential_id` 不存在」**不可区分**。
+12. ★★★ `counts` 五键**无 `omitempty`**（`journal.go:63-69`）⇒ 恒在、恒为数字。
+13. ★★★★ **权限是「角色 × 路径里的租户」二维的**（`:59-67`）：
+    ```go
+    privileged := auth.Role == "super_admin" || auth.Role == "admin_key"
+    if !privileged && auth.Role != "tenant_admin" { 404 }
+    if !privileged && callerTenant != tenantID     { 404 }
+    ```
+    ⇒ ★★★ `super_admin` 与 `admin_key` **可读任意租户**；`tenant_admin` **只能读自己租户**
+    （租户键取自 JWT，不是 URL）⇒ ⇒ 抽屉席**不设** `requiresRole`。
+14. ★★★ **路径解析：先切分、后解码**（`:97-117`）—— `strings.Split(rest, "/")` 要求
+    **恰好两段且都非空**，随后 `PathUnescape` 再 `TrimSpace`，最后拒掉含 `/` `\` `\x00`
+    的段以及 `.` / `..`
+    ⇒ ★★ 编码过的 `%2F` **不会**穿越路径（切分在解码之前），但会在解码后被拒 ⇒ **400**。
+15. ★★★ **405 检查排在最前**（`:38-42`，并写 `Allow: GET` 头），
+    早于 `consumer == nil` 与路径解析 ⇒ 与批 88（405 在 503 之前）一致。
+
+**校验边界**：解包器校验 6 个恒在键与类型、每个条目的 5 个恒在键、
+`counts` 的 5 个键、以及 17 个 `omitempty` 键**存在时**的类型。
+**刻意不做**三件事：① 不硬拒未知的 `action`（后端 `NextActionKind` 可新增取值，
+硬拒会让客户端在网关升级后直接崩）；② 不提供「快照是否完整」判据（见 5）；
+③ 不提供「`counts` 之和是否等于尝试次数」判据（见 10）。
+
+### 验证
+
+- 用例 **100 条全绿**（`web-mobile/src/api/dispatchJournal.test.ts`）。
+- 变异 **72 条 = 71 有牙 + 1 可证等价**（`/tmp/mut-co89.mjs`，`RESTORED=OK`）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **5716 条（153 文件）** rc=0。
+
+### 变异验证暴露的判据缺陷（72 条 → 首跑 70 有牙，修到 71）
+
+首跑 2 条 STILL_GREEN，归因两类：
+
+1. **★ 锚点选歪 1 条（#20）。** 变异把**第二段**的 `encodeURIComponent` 去掉，
+   而锚点那条只测了**第一段**（`dispatchJournalPath('a/b', 'r')`）⇒ 两段里只钉住了一段。
+   ⇒ 补「含斜杠的 `requestId` 也被编码成 `%2F`」。
+   ⇒ ★ 推论：**对称的两段代码要用两条对称的用例** ——
+     「两段都要编码」「两组键都要校验」这类成对结构，只钉一侧等于没钉。
+2. **★ 可证等价 1 条（#21）。** 把 `` `${DISPATCH_JOURNAL_PATH_PREFIX}` `` 换成
+   **同值**字面量 `/api/admin/dispatch/journal/` ⇒ 值完全相同 ⇒ **行为一字未改**
+   ⇒ 无任何用例能打掉它（也不该有）。
+   ⇒ ★ 这是「`to` 是恒等变形」那一族在本仓的**新实例**：
+     **把常量替换成同值字面量**也是恒等变形，判据层面无解，只能靠阅读发现。
+
+另有一处**写用例时就抓到的自指**（在跑变异之前）：
+
+- ★★★ 四个「逐个都要检查」用例原本写成
+  `for (const key of DISPATCH_JOURNAL_SNAPSHOT_KEYS)` ——
+  **用被测常量造夹具** ⇒ 把某个键从常量里删掉，循环就跟着少跑一次，**仍然全绿**
+  ⇒ 改成**字面量**数组，让「循环逐键」与「常量钉桩」两条用例互为独立守卫
+  ⇒ 与批 88 的「循环里的键必须逐个有类型错误用例」是同一条纪律的**下一格**：
+  **循环体本身也不能来自被测常量。**
+
+### 收尾
+
+local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
+`web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
