@@ -11604,3 +11604,126 @@ GET `/api/admin/model-iq/node-latest` + `/history` + `/catalog`
 
 local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
 `web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
+
+## 11.122 v1 数据地平线告示（第八十六批，2026-10-08）
+
+GET `/api/admin/v1-data-horizon`
+
+- **注册**：`admin/handler.go:1088`
+  `mux.HandleFunc("/api/admin/v1-data-horizon", admin(h.handleV1DataHorizon))`
+  ⇒ ★ **admin 档**（tenant_admin 可用）⇒ 抽屉席**不设** `requiresRole`。
+  ⇒ 不在 `maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
+- **实现**：`admin/v1_freeze_notice.go`；决策纯函数 `v1GateState` 在 `:147-155`。
+- ★ 差集扫描排掉两个**假阳性**：`session-analytics/users` 与
+  `prompt-injection/policy` 在缺口清单里，但移动端**已有**对应 api 文件
+  （`web-mobile/src/api/sessionAnalytics.ts` / `promptInjection.ts`）。
+
+### 本族最要紧的十一件事
+
+1. ★★★★★ **主键恒在，值有「对象」与「裸 `null`」两种形态** —— 不是主键消失。
+   `:258-261`（有告示）与 `:265-268`（无告示）都写**两键**：
+
+   ```go
+   {"v1_data_horizon": notice, "//": "frozen=true 表示…"}
+   ```
+
+   ⇒ ★★★ 与批 84 的降级信封（**主键整个消失**）**正好相反**。
+   ⇒ ⇒ 判据必须是「**值为 null ⇒ 未停更**」，**不能**是「键存在 ⇒ 有告示」。
+2. ★★★★★ **后端刻意不产出「有对象但 `frozen=false` 且 `unknown=false`」**。
+   类型注释（`:75-77`）与 `handleV1DataHorizon`（`:264`）都写明：那种情形返回 `null`。
+   ⇒ ★★★ 强不变量：**有对象 ⇒ `frozen` 与 `unknown` 恰好一个为 true**
+   （frozen 分支 `:217-224` 只设 `Frozen`；unknown 分支 `:207-215` 只设 `Unknown`）。
+3. ★★★★★ **`frozen: false` 现在是有合法实例的**（就是 unknown 那一档）⇒
+   判「已停更」**不能**只读 `frozen`。桌面客户端注释亦明写这一点。
+4. ★★★★★ **三态判定是一个三行纯函数**（`:147-155`），可逐行镜像：
+
+   ```go
+   if source == "" || source == "default" { return unavailable }
+   if logsWriteEnabled { return live }
+   return frozen
+   ```
+
+   ⇒ ★★★ **头号陷阱**：`logsWriteEnabled === true` **但** `source` 回落成 `default`
+   ⇒ 结果是 **unavailable 而不是 live**。这正是整个文件存在的理由 ——
+   `settings.GetPlatformBool` 有三个回落点，**全部返回 fallback=true**。
+5. ★★★★ **空串与 `"default"` 同义**（`:143-146`）。
+   `EffectiveValue` 出错时返回 `("", err)`，调用方把 err 与空串一起折叠成 default；
+   若把空串当「显式」，**读失败就会显示成「数据是新的」**。
+6. ★★★★ **响应头 `X-LLM-Gateway-V1-Data-Frozen` 是「三值 + 缺失」**
+   （`applyV1FreezeNotice`，`:236-248`）：
+   - live ⇒ **头根本不设置**（`:238-240` 直接 return）
+   - frozen ⇒ 头 `"1"`
+   - unknown ⇒ 头 `"unknown"`（**与 frozen 用不同值**，抓包必须能区分）
+
+   ⇒ ★★★ 这是**第十二种 nil 编码：头缺失**。头与 body 是**两套独立表达**，
+   客户端可交叉验证（`v1FreezeHeaderMatchesBody`）。
+7. ★★★★ **`source` 这个名字在本响应里指两件不同的事**（命名陷阱）：
+   - `notice.source` = **硬编码字面量** `"request_logs"`（被冻结的读源族，`:210/:219`）
+   - gate 的 source = `{db, env, default}`（`spec.go:283`），**不出现**在响应里
+
+   ⇒ ★★ 客户端不要把 `notice.source` 当成「配置来源」。
+8. ★★★ `gate_key` 恒为字面量 **`storage.request_logs_write_enabled`**
+   （`settings/key_request_logs_write_enabled.go:19`）⇒ 恒定常量，
+   本模块导出但**不提供校验取值的判据**（恒真）。
+9. ★★★ `affects` 三值 `{silently_frozen, silently_degraded_content, silently_empty}`，
+   **两个分支的字面量完全相同**（`:214` 与 `:223`）。
+10. ★★ `effect` / `silence` 是**给人读的文案**，两个分支各一套 ⇒
+    客户端**不要**用文案判状态，要用 `frozen`/`unknown`。
+11. ★★ `V1FreezeNotice` 七键**无 omitempty** ⇒ **七键恒在**。
+
+**校验边界**：解包器校验**两键信封恒在** + 主键是「七键对象」或「`null`」+ 各键类型；
+**不校验** `effect`/`silence` 的文案内容（展示文案，两套字面量都是后端硬编码）。
+
+### 验证
+
+- 用例 **92 条全绿**（`web-mobile/src/api/v1DataHorizon.test.ts`）。
+- 变异 **40 条 = 39 有牙 + 1 可证等价**（`/tmp/mut-co86.mjs`，`RESTORED=OK`）。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量与十连跑见下。
+
+### 变异验证暴露的判据缺陷（40 条 → 首跑 33 有牙，修到 39）
+
+首跑 7 条 STILL_GREEN，**归因四类**：
+
+1. **★ 变异本身没改行为（1 条，#27）—— 新形态。**
+   #27 我想把 `ExactlyOneFlag` 改成恒真，写出来的 `to` 却是
+
+   ```js
+   return n === null || n.frozen !== n.unknown
+   ```
+
+   ⇒ 它与原文 `if (n===null) return true; return n.frozen !== n.unknown` **完全等价**
+   ⇒ 文件变了、代码合法、dry 全绿、`NO_EFFECT` 也抓不到（文件确实变了），
+   而行为**一个字都没改**。
+   ⇒ ★★★ 这是「注入标记 ≠ 变异」的**第四种形态**，前三种是
+   (a) `to` 只追加不替换、(b) `from` 片段不唯一改错位置、(c) `from`/`to` 只差注释；
+   **本条是 (d) `to` 是原文的恒等变形**。
+   ⇒ ★ **自检**：写完 `to` 要问「这两段在**所有可达输入**上真的不同吗」。
+     本批修法是换成真的改行为的 `n.frozen === n.unknown`。
+2. **锚点指错 2 条（#9 / #26）。**
+   | 变异 | 问题 | 修法 |
+   |---|---|---|
+   | #9 主键名常量改错 | 指到「两个键都缺」那条 —— 但键集常量（`ENVELOPE_KEYS`）没变，那条仍抛同样的错 | 改指「**主键为 null ⇒ 放行**」（主键名常量只在解包后读值时用） |
+   | #26 `!==` 改成 `||` | 指到「两个都是 false」那格 ⇒ `false \|\| false` 与 `false !== false` **都是 false** | 改指「**两个都是 true**」（那格 `true \|\| true` 为 true、`!==` 为 false） |
+
+   ⇒ ★★ 形态：**「或」与「不等」的差异只在「两个都为真」那一格**，
+     「两个都假」是**同答案格** ⇒ 锚点必须挑前者。
+3. **样本选歪 3 条（#24 / #25 / #40）。**
+   | 变异 | 锚点那格为什么同答案 | 补的专格 |
+   |---|---|---|
+   | #24 `IsFrozen` 去掉 `unknown` 合取项 | unknown 档的 `frozen` 本来就 false | 补「**两个标志都为 true** ⇒ 两者都必须 false」 |
+   | #25 `IsUnknown` 去掉 `frozen` 合取项 | frozen 档的 `unknown` 本来就 false | 同上（一条断言同时打掉两条变异） |
+   | #40 显式判据改成恒真 | `db`/`env`/`''` 三格**全部**两式同 false | 补「**域外非空值**」（非空但不在域里） |
+
+   ⇒ ★★ 「去掉一个合取项」的专格必须是「**两个合取项都为真**」——
+     只有那一格才能暴露「少判一项」。
+   ⇒ ★★ 与批 84/85 的「其余项全为不触发值」是**同一条纪律的两端**：
+     这里需要的是「**其余项全为触发值**」。
+4. **可证等价 1 条（#23）。** `v1_data_horizon === null` 改成 `!v1_data_horizon`：
+   主键的可达集合是 `{七键对象, null}`，**对象永远是真值** ⇒ 两式可证等价。
+   ⇒ ★ 与 `*float64` 的「0 是 falsy」那种情况**不同**，这里没有可区分的中间格
+   ⇒ 保留与后端形状对齐的写法 + 注释写明理由。
+
+### 收尾
+
+local HEAD 已推送；工作树只剩并发会话的四个文件（`VERSION` / `version.json` /
+`web/public/menu-config.json` / `web/public/version.json`），本批**未触碰**。
