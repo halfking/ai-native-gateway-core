@@ -248,12 +248,28 @@ const creditsMissing = computed(() => !!summary.value?.credits_missing_view)
 
 .home__grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* ★ 列数必须随字号缩放自己下降（§4.6.70 / D-TRUNC-01）。
+     为什么不能写死：font_scale 改的是**根字号**，改不动 `min-width: 600px` 的
+     视口像素 ⇒ 列数不变；同时外层 padding 用 rem ⇒ 字号越大、可用宽越小
+     （实测 390 视口：358px@1.0× → 326px@2.0×）。
+     两个方向叠加 ⇒ 值槽宽随字号**反向缩小**（141px → 89px），而数字在变大
+     ⇒ 溢出从 1.3× 就开始，且没有任何字号档能消掉。
+     `auto-fit` 让「装得下几列就排几列」：1.0× 仍是 2 列（版式不变），
+     1.3×/1.5×/2.0× 自动降到 1 列，槽宽从 89px 变 326px ⇒ 数字放得下。
+     ⚠️ min 用 `min(9rem, 100%)`：① 8rem 时 1.3× 仍是 2 列、槽 125px 装不下
+        155px 的数字；② 窄视口 + 特大字号时 9rem 会大于容器，
+        minmax 的下限会**撑破容器**造成横向溢出，所以要用 min() 兜住。
+     ⚠️⚠️ **只用在 compact 这一支。** 下面 `@media (min-width: 600px)`
+        里的列数**必须保持写死**：第一版顺手把它也换成 auto-fit(7rem)，
+        结果宽视口从 4 列变成 6 列，卡片窄了 ⇒ 7 个 ≥600px 视口**新增**
+        量值截断（原本 0，现在各 1 处）。实测对照见 §4.6.70 第四节。 */
+  grid-template-columns: repeat(auto-fit, minmax(min(9rem, 100%), 1fr));
   gap: var(--app-space-2);
 }
 
 @media (min-width: 600px) {
   .home__grid {
+    /* ⚠️ 保持写死 4 列，不要换成 auto-fit（见上方注释里的实测回归） */
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
