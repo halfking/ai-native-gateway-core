@@ -108,8 +108,17 @@ func (it *SanitizeRestoreInterceptor) restoreSSEEvent(ctx context.Context, event
 			// release the frame — mirroring the non-stream maskUnrecognizedBody
 			// precedent. Markers outside those lanes (unknown/metadata fields)
 			// keep the block: no restorer owns those bytes.
-			if it.maskUnmappedStreamMarkers(raw) {
-				if out, merr := json.Marshal(raw); merr == nil && !bytes.Contains(out, []byte("{SENSITIVE:")) {
+			if it.maskUnmappedStreamMarkers(ctx, raw) {
+				if out, merr := json.Marshal(raw); merr == nil && !containsNonForeignMarker(ctx, out) {
+					return rewrite(out), true, false
+				}
+			}
+			if allMarkersForeign(ctx, raw) {
+				// Every marker left in this frame was minted by a downstream
+				// hop. Nothing here owns those bytes and nothing here can
+				// resolve them; the peer that issued them will.
+				out, merr := json.Marshal(raw)
+				if merr == nil && !containsNonForeignMarker(ctx, out) {
 					return rewrite(out), true, false
 				}
 			}
@@ -119,12 +128,12 @@ func (it *SanitizeRestoreInterceptor) restoreSSEEvent(ctx context.Context, event
 	}
 
 	out, err := json.Marshal(raw)
-	if err != nil || bytes.Contains(out, []byte("{SENSITIVE:")) {
+	if err != nil || containsNonForeignMarker(ctx, out) {
 		// A partially-restored frame can still carry an unmapped marker in a
 		// lane this interceptor owns (e.g. one marker restored from the map, a
 		// mangled sibling left behind). Mask it before giving up on the frame.
-		if err == nil && it.maskUnmappedStreamMarkers(raw) {
-			if out, merr := json.Marshal(raw); merr == nil && !bytes.Contains(out, []byte("{SENSITIVE:")) {
+		if err == nil && it.maskUnmappedStreamMarkers(ctx, raw) {
+			if out, merr := json.Marshal(raw); merr == nil && !containsNonForeignMarker(ctx, out) {
 				return rewrite(out), true, false
 			}
 		}
@@ -142,10 +151,11 @@ const maxDegenerateMarkerSpan = 128
 // grammar-violating echoes the PlaceholderPattern mask pass cannot match —
 // with [REDACTED]. It reports false when a span has no closing brace inside
 // the bound, leaving the text unchanged so the caller can fail closed.
-func maskDegenerateMarkerSpans(text string) (string, bool) {
+func maskDegenerateMarkerSpans(ctx context.Context, text string) (string, bool) {
 	if !strings.Contains(text, "{SENSITIVE:") {
 		return text, true
 	}
+	foreign := foreignMarkersFromContext(ctx)
 	var b strings.Builder
 	b.Grow(len(text))
 	for {
@@ -158,6 +168,17 @@ func maskDegenerateMarkerSpans(text string) (string, bool) {
 		if end < 0 || end > maxDegenerateMarkerSpan {
 			return text, false
 		}
+		span := text[start : start+end+1]
+		// A span a downstream hop minted is handed back verbatim: it carries no
+		// secret bytes and the hop that issued it still holds the mapping. A span
+		// that does not parse is a degenerate echo, not a foreign marker, so it
+		// keeps being masked.
+		if parsed, ok := ParsePlaceholder(span); ok && foreign.isForeignPlaceholder(parsed.Type, parsed.Index) {
+			b.WriteString(text[:start])
+			b.WriteString(span)
+			text = text[start+end+1:]
+			continue
+		}
 		b.WriteString(text[:start])
 		b.WriteString("[REDACTED]")
 		text = text[start+end+1:]
@@ -169,7 +190,7 @@ func maskDegenerateMarkerSpans(text string) (string, bool) {
 // restoreStream*Delta walkers own). It reports whether any marker was masked;
 // the caller must still verify the re-marshalled payload is marker-free so
 // markers in fields no restorer owns keep failing closed.
-func (it *SanitizeRestoreInterceptor) maskUnmappedStreamMarkers(raw map[string]any) bool {
+func (it *SanitizeRestoreInterceptor) maskUnmappedStreamMarkers(ctx context.Context, raw map[string]any) bool {
 	masked := false
 	if value, ok := raw["choices"].([]any); ok {
 		for _, cAny := range value {
@@ -177,7 +198,7 @@ func (it *SanitizeRestoreInterceptor) maskUnmappedStreamMarkers(raw map[string]a
 			if !ok {
 				continue
 			}
-			if maskStringLeaf(c, "text") {
+			if maskStringLeaf(ctx, c, "text") {
 				masked = true
 			}
 			delta, ok := c["delta"].(map[string]any)
@@ -185,17 +206,17 @@ func (it *SanitizeRestoreInterceptor) maskUnmappedStreamMarkers(raw map[string]a
 				continue
 			}
 			for _, field := range []string{"content", "refusal", "reasoning_content"} {
-				if maskStringLeaf(delta, field) {
+				if maskStringLeaf(ctx, delta, field) {
 					masked = true
 				}
 			}
 			if audio, ok := delta["audio"].(map[string]any); ok {
-				if maskStringLeaf(audio, "transcript") {
+				if maskStringLeaf(ctx, audio, "transcript") {
 					masked = true
 				}
 			}
 			if functionCall, ok := delta["function_call"].(map[string]any); ok {
-				if maskStringLeaf(functionCall, "arguments") {
+				if maskStringLeaf(ctx, functionCall, "arguments") {
 					masked = true
 				}
 			}
@@ -209,7 +230,7 @@ func (it *SanitizeRestoreInterceptor) maskUnmappedStreamMarkers(raw map[string]a
 				if !ok {
 					continue
 				}
-				if maskStringLeaf(fn, "arguments") {
+				if maskStringLeaf(ctx, fn, "arguments") {
 					masked = true
 				}
 			}
@@ -218,7 +239,7 @@ func (it *SanitizeRestoreInterceptor) maskUnmappedStreamMarkers(raw map[string]a
 	if t, _ := raw["type"].(string); t == "content_block_delta" {
 		if delta, ok := raw["delta"].(map[string]any); ok {
 			for _, field := range []string{"text", "input", "partial_json"} {
-				if maskStringLeaf(delta, field) {
+				if maskStringLeaf(ctx, delta, field) {
 					masked = true
 				}
 			}
@@ -229,20 +250,20 @@ func (it *SanitizeRestoreInterceptor) maskUnmappedStreamMarkers(raw map[string]a
 		"response.refusal.delta", "response.audio_transcript.delta",
 		"response.reasoning_text.delta", "response.reasoning_summary_text.delta",
 		"response.custom_tool_call_input.delta":
-		if maskStringLeaf(raw, "delta") {
+		if maskStringLeaf(ctx, raw, "delta") {
 			masked = true
 		}
 	case "response.output_text.done", "response.reasoning_text.done",
 		"response.reasoning_summary_text.done":
-		if maskStringLeaf(raw, "text") {
+		if maskStringLeaf(ctx, raw, "text") {
 			masked = true
 		}
 	case "response.function_call_arguments.done":
-		if maskStringLeaf(raw, "arguments") {
+		if maskStringLeaf(ctx, raw, "arguments") {
 			masked = true
 		}
 	case "response.custom_tool_call_input.done":
-		if maskStringLeaf(raw, "input") {
+		if maskStringLeaf(ctx, raw, "input") {
 			masked = true
 		}
 	case "response.refusal.done", "response.audio_transcript.done":
@@ -250,7 +271,7 @@ func (it *SanitizeRestoreInterceptor) maskUnmappedStreamMarkers(raw map[string]a
 		if _, ok := raw[strings.TrimSuffix(t, ".done")]; ok {
 			field = strings.TrimSuffix(strings.TrimPrefix(t, "response."), ".done")
 		}
-		if maskStringLeaf(raw, field) {
+		if maskStringLeaf(ctx, raw, field) {
 			masked = true
 		}
 	}
@@ -260,12 +281,12 @@ func (it *SanitizeRestoreInterceptor) maskUnmappedStreamMarkers(raw map[string]a
 // maskStringLeaf replaces reserved-marker spans in one owned string field.
 // Tool-argument lanes stay JSON-safe: [REDACTED] replaces a span that lived
 // inside a JSON string value, never across structural bytes.
-func maskStringLeaf(object map[string]any, field string) bool {
+func maskStringLeaf(ctx context.Context, object map[string]any, field string) bool {
 	value, ok := object[field].(string)
 	if !ok || !strings.Contains(value, "{SENSITIVE:") {
 		return false
 	}
-	masked, complete := maskDegenerateMarkerSpans(value)
+	masked, complete := maskDegenerateMarkerSpans(ctx, value)
 	if !complete {
 		return false
 	}

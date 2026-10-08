@@ -43,6 +43,11 @@ type InterceptRequest struct {
 	SubAgentsTotal       int
 	SubAgentsCompleted   int
 	SubAgentsPending     int
+
+	// SanitizeHop mirrors InterceptRequest.SanitizeHop; see that field and
+	// security/sanitize/hop.go. Carried here because a streamed marker is
+	// rewritten chunk by chunk, long after the request body is gone.
+	SanitizeHop SanitizeHop
 }
 
 // InterceptResult contains the outcome of response interception.
@@ -91,9 +96,27 @@ type StreamMeta struct {
 	SubAgentsCompleted   int
 	SubAgentsPending     int
 
+	// SanitizeHop mirrors InterceptRequest.SanitizeHop; see that field and
+	// security/sanitize/hop.go. Carried here because a streamed marker is
+	// rewritten chunk by chunk, long after the request body is gone.
+	SanitizeHop SanitizeHop
+
 	// State is scoped to one intercepting response writer. Interceptors may use
 	// it for bounded per-stream carry state; it is not shared across requests.
 	State *StreamState
+}
+
+// SanitizeHop describes gateway placeholders that a downstream sanitize hop
+// already placed in this request. It is populated at the HTTP boundary and lets
+// the restore stage hand foreign markers back untouched instead of destroying
+// them. See security/sanitize/hop.go for the full contract.
+type SanitizeHop struct {
+	// Enabled reports that a peer declared itself a sanitize hop and the body
+	// actually carried markers. The header alone is never trusted.
+	Enabled bool
+	// Foreign holds canonical "{SENSITIVE:type:index}" spellings observed in
+	// the inbound request.
+	Foreign []string
 }
 
 // StreamState stores request-local interceptor state. Its lifetime is bounded

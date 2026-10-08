@@ -33,6 +33,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
+	"github.com/kaixuan/llm-gateway-go/security/sanitize"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
@@ -813,6 +814,13 @@ func (e *Executor) executeOpenAI(
 			}
 			if sid := params.R.Header.Get("X-Session-Id"); sid != "" {
 				req.Header.Set("X-Session-Id", sid)
+			}
+			// Declare this instance as a sanitize hop when it actually emitted
+			// placeholders, so an upstream instance of the same gateway hands those
+			// markers back instead of masking them. Read from the sanitize context,
+			// never from an inbound header: a client must not be able to forge this.
+			if nonce := sanitize.SanitizeHopForOutbound(params.R.Context()); nonce != "" {
+				req.Header.Set(sanitize.SanitizeHopHeader, nonce)
 			}
 			if fpLease != nil && fpLease.Egress != nil {
 				credentialfpslot.ApplyEgressHeaders(req.Header, fpLease.Egress)

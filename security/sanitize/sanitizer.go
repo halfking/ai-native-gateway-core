@@ -257,18 +257,32 @@ func (s *Sanitizer) RestoreOutput(_ context.Context, text string, sm SanitizeMap
 //
 // 与 RestoreOutput 的区别：如果占位符在映射表中不存在，
 // 会用 [REDACTED] 替换而非保留原占位符文本（用于面向最终用户的场景）。
+//
+// 网关套网关时有一条例外（见 hop.go）：请求里**确实带着**、由下游同款网关
+// 签发的占位符原样放行，由持有映射的那一跳去还原。判据是"入站观察到过"，
+// 不是"本实例还原不了"——伪造的标记没入站过，仍然照常 mask。
 func (s *Sanitizer) RestoreOutputOrMask(ctx context.Context, text string, sm SanitizeMap) (string, error) {
 	if s == nil {
 		return "", ErrNilSanitizer
 	}
+	foreign := foreignMarkersFromContext(ctx)
 	if len(sm) == 0 {
-		result := PlaceholderPattern.ReplaceAllString(text, "[REDACTED]")
+		result := PlaceholderPattern.ReplaceAllStringFunc(text, func(match string) string {
+			if foreign.isForeign(match) {
+				return match
+			}
+			return "[REDACTED]"
+		})
 		return result, nil
 	}
 
 	result := PlaceholderPattern.ReplaceAllStringFunc(text, func(match string) string {
 		if original, ok := sm[match]; ok {
 			return original
+		}
+		if foreign.isForeign(match) {
+			// 下游签发、本实例不还原：原样带回，由那一跳复原。
+			return match
 		}
 		s.logger.WarnContext(ctx, "sanitize: placeholder not found in map, masking",
 			"placeholder", match,

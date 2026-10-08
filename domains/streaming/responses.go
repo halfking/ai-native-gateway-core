@@ -24,6 +24,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/resolve"
+	"github.com/kaixuan/llm-gateway-go/security/sanitize" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 type responsesRequestBody struct {
@@ -822,6 +823,7 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 				TenantID:       tenantID,
 				CallerOwner:    callerOwner,
 				ClientProtocol: "openai-responses",
+				SanitizeHop:    sanitize.SanitizeHopFromContext(r.Context()),
 				ClientModel:    clientModel,
 			})
 			base = nativeStreamWriter
@@ -851,6 +853,7 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 				TenantID:       tenantID,
 				CallerOwner:    callerOwner,
 				ClientProtocol: "openai-responses",
+				SanitizeHop:    sanitize.SanitizeHopFromContext(r.Context()),
 				ClientModel:    clientModel,
 			})
 			defer nativeStreamWriter.finish()

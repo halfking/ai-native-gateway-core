@@ -61,6 +61,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/registry"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/security/armor"
+	"github.com/kaixuan/llm-gateway-go/security/sanitize" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -4631,6 +4632,7 @@ func (h *ChatHandler) serveWithExecutor(
 				TenantID:       tenantID,
 				CallerOwner:    callerOwner,
 				ClientProtocol: clientProtocolLane,
+				SanitizeHop:    sanitize.SanitizeHopFromContext(r.Context()),
 				ClientModel:    clientModel,
 			})
 			defer base.(*interceptingStreamWriter).finish()
@@ -4696,6 +4698,7 @@ func (h *ChatHandler) serveWithExecutor(
 				TenantID:       tenantID,
 				CallerOwner:    callerOwner,
 				ClientProtocol: clientProtocolLane,
+				SanitizeHop:    sanitize.SanitizeHopFromContext(r.Context()),
 				ClientModel:    clientModel,
 			})
 			streamWriter = interceptedWriter
@@ -5631,6 +5634,7 @@ goalRetryLoopDone:
 			IsStreaming:          isStream,
 			FollowUpAction:       strings.TrimSpace(r.Header.Get("X-Gw-Follow-Up-Action")),
 			GoalModeHeader:       strings.TrimSpace(r.Header.Get("X-Gw-Goal-Mode")),
+			SanitizeHop:          sanitize.SanitizeHopFromContext(r.Context()),
 			ClientSignalAllowed:  ClientSignalRequested(r),
 			HandoffSignalAllowed: HandoffSignalRequested(r),
 			SubAgentsTotal:       subAgents.Total,
