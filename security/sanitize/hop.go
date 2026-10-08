@@ -88,13 +88,25 @@ type foreignMarkerSet map[string]struct{}
 // model produces happen downstream of this point and are handled by the
 // ordinary restore stage.
 func CollectForeignMarkers(body []byte) []string {
-	if !strings.Contains(string(body), "{SENSITIVE:") {
+	if !strings.ContainsAny(string(body), "{｛") {
 		return nil
 	}
 	seen := make(map[string]struct{})
 	for _, marker := range PlaceholderPattern.FindAllString(string(body), -1) {
 		if parsed, ok := ParsePlaceholder(marker); ok && parsed.Index >= 0 {
 			seen[parsed.String()] = struct{}{}
+		}
+	}
+	// A peer that already restores re-spelled markers can hand one back in a
+	// mutated spelling. Recognize those too, so the exemption still matches the
+	// canonical token the peer holds.
+	for _, span := range loosePlaceholderSpanPattern.FindAllStringIndex(string(body), -1) {
+		candidate := string(body[span[0]:span[1]])
+		if PlaceholderPattern.MatchString(candidate) {
+			continue
+		}
+		if typ, index, ok := parseLoosePlaceholder(candidate); ok && index >= 0 {
+			seen[(Placeholder{Type: typ, Index: index}).String()] = struct{}{}
 		}
 	}
 	if len(seen) == 0 || len(seen) > maxForeignMarkers {
@@ -233,38 +245,56 @@ func SanitizeHopForOutbound(ctx context.Context) string {
 
 // containsNonForeignMarker reports whether payload still carries a reserved
 // marker that this gateway is responsible for. Markers that arrived from a
-// downstream hop do not count: they are not this gateway's residue, and blocking
-// on them is what breaks the chain in the first place.
+// downstream hop do not count — they are resolved by the peer that issued them.
 //
-// Without an inbound set this is exactly the old literal check, so a deployment
-// without hop signalling keeps its previous behaviour byte for byte.
+// It also recognizes re-spelled markers, which the literal "{SENSITIVE:" test
+// misses. That matters in both directions: without it a lowercased or full-width
+// marker passes every probe in the package and lands on the client verbatim,
+// and with it a marker this gateway cannot resolve still fails closed.
+//
+// Without an inbound set this reduces to "any marker at all", so a deployment
+// without hop signalling keeps its previous behaviour.
 func containsNonForeignMarker(ctx context.Context, payload []byte) bool {
-	foreign := foreignMarkersFromContext(ctx)
-	if foreign == nil {
-		return bytes.Contains(payload, []byte("{SENSITIVE:"))
-	}
-	if !bytes.Contains(payload, []byte("{SENSITIVE:")) {
+	if !mayCarryMarker(payload) {
 		return false
 	}
 	spans := markerSpans(string(payload))
 	if len(spans) == 0 {
-		// A marker prefix with no closing brace inside the bound is malformed,
-		// and malformed is not foreign. Fail closed rather than treat an
-		// unaccounted span as clean.
+		return false
+	}
+	foreign := foreignMarkersFromContext(ctx)
+	if foreign == nil {
+		// No peer to defer to: any marker at all is ours to account for. This is
+		// the pre-hop behaviour, now covering the re-spelled spellings too.
 		return true
 	}
 	for _, span := range spans {
-		parsed, ok := ParsePlaceholder(span)
-		if !ok || !foreign.isForeignPlaceholder(parsed.Type, parsed.Index) {
+		typ, index, ok := parseClosedLoosePlaceholder(span)
+		if !ok || index < 0 || !foreign.isForeignPlaceholder(typ, index) {
 			return true
 		}
 	}
 	return false
 }
 
-// allMarkersForeign reports whether every reserved marker in value was minted
-// by a downstream hop, so this gateway has nothing left to resolve or mask in
-// it. A value with no marker at all is not "all foreign" — callers use this to
+// fullWidthBraceLeadByte is the UTF-8 lead byte shared by '｛' (U+FF5B) and
+// '｝' (U+FF5D). It is deliberately the shared byte rather than the two full
+// code points: this is a negative filter, and being over-inclusive only costs
+// the regex scan that follows.
+const fullWidthBraceLeadByte = 0xEF
+
+// mayCarryMarker is the cheap negative filter every marker probe runs first.
+// A body with no opening brace — half or full width — cannot carry a marker in
+// any spelling, and the tolerant stage that replaced the old "{SENSITIVE:"
+// byte search scans the whole payload with a regex. Most responses take this
+// path, so it has to stay a pair of memchr calls rather than a scan.
+func mayCarryMarker(payload []byte) bool {
+	return bytes.IndexByte(payload, '{') >= 0 || bytes.IndexByte(payload, fullWidthBraceLeadByte) >= 0
+}
+
+// allMarkersForeign reports whether every marker in text was minted by a
+// downstream hop, so this gateway has nothing left to resolve or mask in it.
+// A value with no marker at all is not "all foreign" — callers use this to
 // decide whether to release a frame it could not otherwise account for.
 func allMarkersForeign(ctx context.Context, value any) bool {
 	foreign := foreignMarkersFromContext(ctx)
@@ -275,31 +305,61 @@ func allMarkersForeign(ctx context.Context, value any) bool {
 	if !ok || len(markers) == 0 {
 		return false
 	}
-	for _, span := range markers {
-		parsed, parsedOK := ParsePlaceholder(span)
-		if !parsedOK || !foreign.isForeignPlaceholder(parsed.Type, parsed.Index) {
+	return allMarkerSpansForeign(strings.Join(markers, " "), foreign)
+}
+
+// allMarkerSpansForeign reports whether every marker span in text resolves to a
+// foreign marker. A span that does not parse — a degenerate echo such as
+// {SENSITIVE:secret:X} — and a span with no closing brace are not foreign and
+// keep failing closed.
+func allMarkerSpansForeign(text string, foreign foreignMarkerSet) bool {
+	spans := markerSpans(text)
+	if len(spans) == 0 {
+		return false
+	}
+	for _, span := range spans {
+		typ, index, ok := parseClosedLoosePlaceholder(span)
+		if !ok || index < 0 || !foreign.isForeignPlaceholder(typ, index) {
 			return false
 		}
 	}
 	return true
 }
 
-// markerSpans returns every {SENSITIVE:...} span in text, including the
-// degenerate ones that do not parse. Bounded like the mask pass.
+// markerSpans returns every brace-delimited candidate span that could be a
+// marker, in either spelling. Bounded like the mask pass; spans that do not
+// parse are returned too, so callers can classify them as corrupt rather than
+// silently treat them as clean.
 func markerSpans(text string) []string {
-	var spans []string
-	for {
-		start := strings.Index(text, "{SENSITIVE:")
-		if start < 0 {
-			return spans
-		}
-		end := strings.IndexByte(text[start:], '}')
-		if end < 0 || end > maxDegenerateMarkerSpan {
-			return spans
-		}
-		spans = append(spans, text[start:start+end+1])
-		text = text[start+end+1:]
+	if !strings.ContainsAny(text, "{｛") {
+		return nil
 	}
+	var spans []string
+	for _, span := range loosePlaceholderSpanPattern.FindAllStringIndex(text, -1) {
+		candidate := text[span[0]:span[1]]
+		if PlaceholderPattern.MatchString(candidate) {
+			spans = append(spans, candidate)
+			continue
+		}
+		if _, _, ok := parseLoosePlaceholder(candidate); ok {
+			spans = append(spans, candidate)
+			continue
+		}
+		// A span that names the marker but does not parse — a degenerate echo
+		// such as {SENSITIVE:secret:X}. Keep it visible so callers fail closed
+		// on it instead of treating an unaccounted span as clean.
+		if looksLikeMarkerSpan(candidate) {
+			spans = append(spans, candidate)
+		}
+	}
+	// A trailing run with no closing brace is a truncated marker: the residual
+	// probes must still see it, since a leaked half-token reaches the client
+	// just as visibly as a whole one.
+	if tail := unterminatedPlaceholderSpanPattern.FindString(text); tail != "" &&
+		looksLikeMarkerSpan(tail) {
+		spans = append(spans, tail)
+	}
+	return spans
 }
 
 // collectMarkerSpansInValue gathers marker spans from a decoded response tree.
@@ -309,7 +369,7 @@ func collectMarkerSpansInValue(value any, depth int) ([]string, bool) {
 	}
 	switch typed := value.(type) {
 	case string:
-		if !strings.Contains(typed, "{SENSITIVE:") {
+		if !strings.ContainsAny(typed, "{｛") {
 			return nil, true
 		}
 		return markerSpans(typed), true

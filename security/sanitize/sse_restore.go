@@ -44,11 +44,11 @@ func splitSSEEvents(chunk []byte) [][]byte {
 	return events
 }
 
-func markerOutsideSSEData(frame []byte) bool {
+func markerOutsideSSEData(ctx context.Context, frame []byte) bool {
 	for pos := 0; pos < len(frame); {
 		contentEnd, end := nextSSELine(frame, pos)
 		line := frame[pos:contentEnd]
-		if !bytes.HasPrefix(line, []byte("data:")) && looksLikeUnparsedMarker(line) {
+		if !bytes.HasPrefix(line, []byte("data:")) && looksLikeUnparsedMarker(ctx, line) {
 			return true
 		}
 		if end == pos {
@@ -60,7 +60,7 @@ func markerOutsideSSEData(frame []byte) bool {
 }
 
 func (it *SanitizeRestoreInterceptor) restoreSSEEvent(ctx context.Context, event []byte, sm SanitizeMap, state *streamRestoreState) ([]byte, bool, bool) {
-	if markerOutsideSSEData(event) {
+	if markerOutsideSSEData(ctx, event) {
 		return nil, false, true
 	}
 	payload, hasData, rewrite := sseparser.ParseDataFrame(event)
@@ -73,7 +73,7 @@ func (it *SanitizeRestoreInterceptor) restoreSSEEvent(ctx context.Context, event
 		// An opaque payload cannot be assigned to the lane of a withheld
 		// placeholder prefix. A literal/escaped reserved marker also must not
 		// leave the interceptor inside malformed JSON.
-		if len(state.tails) > 0 || looksLikeUnparsedMarker(payload) {
+		if len(state.tails) > 0 || looksLikeUnparsedMarker(ctx, payload) {
 			return nil, false, true
 		}
 		return nil, false, false
@@ -152,7 +152,7 @@ const maxDegenerateMarkerSpan = 128
 // with [REDACTED]. It reports false when a span has no closing brace inside
 // the bound, leaving the text unchanged so the caller can fail closed.
 func maskDegenerateMarkerSpans(ctx context.Context, text string) (string, bool) {
-	if !strings.Contains(text, "{SENSITIVE:") {
+	if !placeholderCandidate(text) {
 		return text, true
 	}
 	foreign := foreignMarkersFromContext(ctx)
@@ -283,7 +283,7 @@ func (it *SanitizeRestoreInterceptor) maskUnmappedStreamMarkers(ctx context.Cont
 // inside a JSON string value, never across structural bytes.
 func maskStringLeaf(ctx context.Context, object map[string]any, field string) bool {
 	value, ok := object[field].(string)
-	if !ok || !strings.Contains(value, "{SENSITIVE:") {
+	if !ok || !placeholderCandidate(value) {
 		return false
 	}
 	masked, complete := maskDegenerateMarkerSpans(ctx, value)
@@ -294,8 +294,8 @@ func maskStringLeaf(ctx context.Context, object map[string]any, field string) bo
 	return true
 }
 
-func looksLikeUnparsedMarker(payload []byte) bool {
-	if bytes.Contains(payload, []byte("{SENSITIVE:")) {
+func looksLikeUnparsedMarker(ctx context.Context, payload []byte) bool {
+	if placeholderCandidate(string(payload)) {
 		return true
 	}
 	if !bytes.Contains(payload, []byte("\\u")) {
@@ -316,11 +316,11 @@ func looksLikeUnparsedMarker(payload []byte) bool {
 		}
 		normalized = append(normalized, payload[i])
 	}
-	return bytes.Contains(normalized, []byte("{SENSITIVE:"))
+	return placeholderCandidate(string(normalized))
 }
 
 func containsReservedJSONToken(payload []byte) bool {
-	if !bytes.Contains(payload, []byte("SENSITIVE")) && !bytes.Contains(payload, []byte("\\u")) {
+	if !strings.ContainsAny(string(payload), "{｛") && !bytes.Contains(payload, []byte("\\u")) {
 		return false
 	}
 	decoder := json.NewDecoder(bytes.NewReader(payload))
@@ -332,7 +332,7 @@ func containsReservedJSONToken(payload []byte) bool {
 		if err != nil {
 			return true
 		}
-		if value, ok := token.(string); ok && strings.Contains(value, "{SENSITIVE:") {
+		if value, ok := token.(string); ok && placeholderCandidate(value) {
 			return true
 		}
 	}

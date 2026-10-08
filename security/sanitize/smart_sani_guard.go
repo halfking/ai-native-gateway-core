@@ -1380,22 +1380,34 @@ func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Conte
 		}
 	}
 
-	restoreMap := sm
+	resolve := sm.resolverFor()
+	encodeFailed := false
 	if strings.HasSuffix(lane, ".arguments") || strings.HasSuffix(lane, ".partial_json") || (strings.HasPrefix(lane, "anthropic.") && strings.HasSuffix(lane, ".input")) || strings.Contains(lane, "response.function_call_arguments.") {
-		restoreMap = make(SanitizeMap)
-		for _, token := range PlaceholderPattern.FindAllString(safe, -1) {
-			if original, ok := sm[token]; ok {
-				encoded, err := json.Marshal(original)
-				if err != nil {
-					return false, true
-				}
-				restoreMap[token] = string(encoded[1 : len(encoded)-1])
+		// Tool arguments are a JSON document, so a restored value has to be
+		// re-encoded as a JSON string literal before it is spliced in. Resolve
+		// through a JSON-escaping adapter rather than pre-building a token map:
+		// a re-spelled marker never appears as an exact token, so an exact-only
+		// index would silently miss it here.
+		resolve = func(typ SensitiveType, index int) (string, bool) {
+			original, ok := sm[(Placeholder{Type: typ, Index: index}).String()]
+			if !ok {
+				return "", false
 			}
+			encoded, err := json.Marshal(original)
+			if err != nil {
+				// A value that cannot be encoded cannot be spliced into a JSON
+				// document. Keep the pre-existing fail-closed answer rather than
+				// letting it fall through to masking, which would hand the tool
+				// a silently wrong value instead of an error.
+				encodeFailed = true
+				return "", false
+			}
+			return string(encoded[1 : len(encoded)-1]), true
 		}
 	}
-	restored, err := it.sanitizer.RestoreOutputOrMask(ctx, safe, restoreMap)
-	if err != nil {
-		return false, false
+	restored := it.sanitizer.restoreText(ctx, safe, resolve, looseMaskUnknown)
+	if encodeFailed {
+		return false, true
 	}
 	if previous != "" && tail == "" && restored == combined {
 		// The continuation made the buffered prefix syntactically invalid. A
@@ -1403,8 +1415,8 @@ func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Conte
 		// the continuation to preserve the response. Once the reserved marker
 		// prefix has started, redact this delta instead of either exposing a
 		// malformed internal token or aborting the whole client stream.
-		if strings.HasPrefix(previous, "{SENSITIVE:") {
-			object[field] = "[REDACTED]"
+		if reservedMarkerStarted(previous) {
+			object[field] = redactedMarker
 			return true, false
 		}
 		object[field] = combined
@@ -1439,42 +1451,14 @@ func incompletePlaceholderStart(text string) (int, bool) {
 	return start, true
 }
 
+// validPlaceholderPrefix accepts any prefix of the placeholder grammar, in the
+// spellings placeholder_loose.go tolerates. A streamed delta routinely cuts a
+// marker after the brace, after a space, or halfway through the marker word —
+// and a model that re-spelled the marker makes even the completed token look
+// different from the canonical form. Holding those bytes is what keeps a
+// mutated marker from reaching the client half-restored.
 func validPlaceholderPrefix(candidate string) bool {
-	const marker = "{SENSITIVE:"
-	if len(candidate) <= len(marker) {
-		return strings.HasPrefix(marker, candidate)
-	}
-	if !strings.HasPrefix(candidate, marker) || strings.Contains(candidate, "}") {
-		return false
-	}
-	rest := candidate[len(marker):]
-	colon := strings.IndexByte(rest, ':')
-	if colon < 0 {
-		if rest == "" {
-			return true
-		}
-		for _, r := range rest {
-			if !(r >= 'a' && r <= 'z') && r != '_' {
-				return false
-			}
-		}
-		return true
-	}
-	if colon == 0 {
-		return false
-	}
-	for _, r := range rest[:colon] {
-		if !(r >= 'a' && r <= 'z') && r != '_' {
-			return false
-		}
-	}
-	index := rest[colon+1:]
-	for _, r := range index {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
+	return validLoosePlaceholderPrefix(candidate)
 }
 
 // restoreStringField 把 m[field]（必须为 string）做占位符替换后写回。
@@ -1560,7 +1544,8 @@ func (it *SanitizeRestoreInterceptor) loadMap(ctx context.Context, sessionID str
 func (it *SanitizeRestoreInterceptor) validatePlaceholders(ctx context.Context, body []byte, sm SanitizeMap) []string {
 	var invalidPlaceholders []string
 
-	matches := PlaceholderPattern.FindAllString(string(body), -1)
+	text := string(body)
+	matches := PlaceholderPattern.FindAllString(text, -1)
 	seen := make(map[string]bool)
 
 	for _, match := range matches {
@@ -1578,6 +1563,28 @@ func (it *SanitizeRestoreInterceptor) validatePlaceholders(ctx context.Context, 
 		}
 		// LLM 生成了不在映射表中的占位符
 		invalidPlaceholders = append(invalidPlaceholders, match)
+	}
+
+	// 被改写过的标记同样计入篡改观测：归一化回规范形态后仍查不到本会话发出的
+	// 映射行，说明要么是模型漂移，要么是上游网关带了 token 进来。归一化后能
+	// 命中的不算篡改——那是容错还原正常工作的结果。
+	for _, span := range loosePlaceholderSpanPattern.FindAllStringIndex(text, -1) {
+		candidate := text[span[0]:span[1]]
+		if seen[candidate] || PlaceholderPattern.MatchString(candidate) {
+			continue
+		}
+		typ, index, ok := parseLoosePlaceholder(candidate)
+		if !ok || index < 0 {
+			continue
+		}
+		seen[candidate] = true
+		if _, hit := sm[(Placeholder{Type: typ, Index: index}).String()]; hit {
+			continue
+		}
+		if foreignMarkersFromContext(ctx).isForeignPlaceholder(typ, index) {
+			continue
+		}
+		invalidPlaceholders = append(invalidPlaceholders, candidate)
 	}
 
 	return invalidPlaceholders
@@ -1657,7 +1664,7 @@ func (it *SanitizeRestoreInterceptor) restoreResponseBody(ctx context.Context, b
 // 原值，未映射的 mask 成 [REDACTED]。仅当字段被改动时返回 true。
 func restoreLegacyTextField(ctx context.Context, s *Sanitizer, obj map[string]any, field string, sm SanitizeMap) bool {
 	value, ok := obj[field].(string)
-	if !ok || !PlaceholderPattern.MatchString(value) {
+	if !ok || !placeholderCandidate(value) {
 		return false
 	}
 	restored, err := s.RestoreOutputOrMask(ctx, value, sm)
@@ -1672,7 +1679,7 @@ func restoreLegacyTextField(ctx context.Context, s *Sanitizer, obj map[string]an
 // arguments 不是合法 JSON 对象时退化为普通字符串还原。
 func restoreLegacyFunctionArgs(ctx context.Context, s *Sanitizer, fn map[string]any, sm SanitizeMap) bool {
 	argsStr, ok := fn["arguments"].(string)
-	if !ok || !PlaceholderPattern.MatchString(argsStr) {
+	if !ok || !placeholderCandidate(argsStr) {
 		return false
 	}
 	decoder := json.NewDecoder(strings.NewReader(argsStr))
@@ -1730,7 +1737,7 @@ func restoreJSONRecursive(ctx context.Context, s *Sanitizer, m map[string]any, s
 	for k, v := range m {
 		switch vv := v.(type) {
 		case string:
-			if !PlaceholderPattern.MatchString(vv) {
+			if !placeholderCandidate(vv) {
 				continue
 			}
 			restored, err := s.RestoreOutputOrMask(ctx, vv, sm)
@@ -1746,7 +1753,7 @@ func restoreJSONRecursive(ctx context.Context, s *Sanitizer, m map[string]any, s
 			for i, item := range vv {
 				switch it := item.(type) {
 				case string:
-					if !PlaceholderPattern.MatchString(it) {
+					if !placeholderCandidate(it) {
 						continue
 					}
 					restored, err := s.RestoreOutputOrMask(ctx, it, sm)

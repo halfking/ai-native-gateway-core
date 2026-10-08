@@ -104,6 +104,20 @@ var (
 		Name: "sanitize_placeholder_tampering_total",
 		Help: "Invalid (never-issued) placeholders found in LLM responses.",
 	}, []string{"source"})
+
+	// SanitizePlaceholderMutationTotal counts placeholders the upstream model
+	// re-spelled instead of echoing verbatim (extra spaces, reflow, case, full
+	// width punctuation, zero-padded index, hyphenated type). The tolerant
+	// restore stage normalizes those back to their canonical token and looks
+	// the value up under the same session map key, so "recovered" is a value
+	// the client would otherwise have lost — or, before this stage, a response
+	// the gateway blocked outright. "unresolved" is a re-spelled marker whose
+	// normalized form still names no issued mapping row: model drift, or an
+	// upstream gateway emitting tokens of its own.
+	SanitizePlaceholderMutationTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "sanitize_placeholder_mutation_total",
+		Help: "Re-spelled placeholders recovered or masked by the tolerant restore stage.",
+	}, []string{"outcome"})
 )
 
 var (

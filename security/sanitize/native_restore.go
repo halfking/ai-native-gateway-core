@@ -17,7 +17,7 @@ const maxNativeToolInputDepth = 256
 // are resolved by the peer that issued them — so with an inbound set present the
 // check narrows to "a marker I am responsible for survives".
 func hasReservedPlaceholder(ctx context.Context, body []byte) bool {
-	if bytes.Contains(body, []byte("{SENSITIVE:")) && containsNonForeignMarker(ctx, body) {
+	if containsNonForeignMarker(ctx, body) {
 		return true
 	}
 	if !bytes.Contains(body, []byte("\\u")) {
@@ -29,7 +29,7 @@ func hasReservedPlaceholder(ctx context.Context, body []byte) bool {
 		// those strings as well as ordinary JSON values.
 		return containsResidualPlaceholder(ctx, decoded, 0)
 	}
-	return looksLikeUnparsedMarker(body)
+	return looksLikeUnparsedMarker(ctx, body)
 }
 
 // A recognized response may carry opaque vendor or media fields. We leave
@@ -42,7 +42,7 @@ func containsResidualPlaceholder(ctx context.Context, value any, depth int) bool
 	}
 	switch typed := value.(type) {
 	case string:
-		return containsNonForeignMarker(ctx, []byte(typed)) || looksLikeUnparsedMarker([]byte(typed))
+		return containsNonForeignMarker(ctx, []byte(typed)) || looksLikeUnparsedMarker(ctx, []byte(typed))
 	case json.Number:
 		return false
 	case map[string]any:
@@ -63,7 +63,7 @@ func containsResidualPlaceholder(ctx context.Context, value any, depth int) bool
 
 func restoreNativeTextField(ctx context.Context, s *Sanitizer, object map[string]any, field string, sm SanitizeMap) (bool, error) {
 	value, ok := object[field].(string)
-	if !ok || !strings.Contains(value, "{SENSITIVE:") {
+	if !ok || !placeholderCandidate(value) {
 		return false, nil
 	}
 	restored, err := s.RestoreOutputOrMask(ctx, value, sm)
@@ -369,7 +369,7 @@ func restoreNativeNestedValue(ctx context.Context, s *Sanitizer, value any, sm S
 	}
 	switch current := value.(type) {
 	case string:
-		if !strings.Contains(current, "{SENSITIVE:") {
+		if !placeholderCandidate(current) {
 			return current, false, nil
 		}
 		restored, err := s.RestoreOutputOrMask(ctx, current, sm)

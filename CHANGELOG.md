@@ -13,6 +13,16 @@
   - 测试：`security/sanitize/hop_test.go`。**关键用例是反向的**——`TestHopDoesNotExemptForgedMarkers`（伪造标记仍被遮蔽）、`TestHopWithoutPeerDeclarationIsUnchanged`（无 peer 声明时行为逐字节不变）、`TestHopDoesNotExemptExpiredOwnMapping`（本实例映射过期仍 fail-closed）、`TestSanitizeHopForOutboundRequiresRealSanitizing`（客户端伪造 header 无效）。`TestTwoGatewayRoundTrip` 用两个同款实例串起完整往返：主机 IP 与密码原样送达客户端，伪造标记被遮蔽。
   - 顺带修掉一处本次引入的 fail-open：标记前缀没有闭合花括号时解析不出 span，若照"没有非外来标记"处理就会放行。已改为 fail-closed 并由 `TestHopMalformedMarkerStillFailsClosed` 钉住。
   - **未含**：占位符被模型改写（多空格/换行、大小写、全角、编号补零）后的容错归一化还原。那是另一件事，留在 `fix/sanitize-mutation-tolerant-restore` 分支上等基线稳定后单独移植——它与 9c3548691 的遮蔽逻辑会相互作用，不宜混在一次合入里。
+- **占位符被模型改写后不再整条拦截——容错归一化还原（2026-10-08）**：输入侧把密码/主机 IP/其它地址替换为 `{SENSITIVE:type:index}`，但输出侧只认逐字节相同的整串 token。模型不会原样回抄：重排配置行时给冒号两侧补空格、续写时改小写、中文输入法带出全角标点、编号补零。任一空格就让精确匹配落空，而落空的后果不是"少还原一个值"——`hasReservedPlaceholder` 判定响应体仍带内部标记，fail-closed 直接 `ShouldBlock`，客户端拿到的是错误而不是答案。
+  - **实测（当前 main，修复前 → 修复后，真实模型输出经生产 `SanitizeRestoreInterceptor`）**：规范 token ✅→✅；多空格 ❌整条拦截→✅；换行重排 ❌整条拦截→✅；连字符类型名 ❌整条拦截→✅；编号补零 ❌`[REDACTED]` 丢值→✅；小写 ❌**内部标记原样漏到客户端**→✅；全角 ❌**内部标记原样漏到客户端**→✅。最后两类是更严重的一半：改写后的标记不再含 `{SENSITIVE:` 字面量，原本能绕过包内**每一道**残余探针，直接落到客户端。
+  - 新增 `security/sanitize/placeholder_loose.go` 做第二级还原：**归一化而非猜测**。变体先折叠全角、丢弃不可见字符、转小写，再按 `sensitive:*<type>:*<index>` 校验，然后用会话映射表里同一个 key 查回原值。安全边界是归一化命中只可能来自映射表中真实存在的一行，因此容错还原不可能吐出精确匹配本会拒绝的值。
+  - 三处是真 bug 而非设计选择：**`:` 是唯一分隔符**（把 `-` `/` 也当分隔符会让 `{SENSITIVE:secret:-1}` 归一化到编号 1）；**两级共用同一个 resolver**（原先精确阶段拿整串 token 当 map key，补零的 `{SENSITIVE:secret:01}` 在精确阶段查不到就被立刻 mask，容错阶段再也看不到）；**流式 tool arguments 改走 JSON-escaping resolver**，不再预建精确 token 索引——变体本来就不会以精确 token 形态出现。
+  - 与 `9c3548691`（模型回显劣化占位符时就地遮蔽放行）的关系：劣化到**无法解析**的（`{SENSITIVE:secret:X}`）仍走那条遮蔽通道；能解析的由容错层还原。两者不重叠。
+  - **语义改名不做**：`server_ip` → `ip` 属于猜测而非归一化，会话内多候选时必然歧义，这类标记维持 fail-closed。
+  - 残余探针同步放宽：被改写的标记不再含 `{SENSITIVE:` 字面量，能识别它才谈得上 fail-closed，这是净安全增量。判定收紧在"像标记"这一层——`{sensitive_value}`、`{"sensitive": true}` 这类正常输出不会被误判遮蔽。
+  - 输入侧 `reserveMutatedPlaceholders` 抬高中位数，避免本轮新分配的凭据与客户端回抄的变体撞号。指标 `sanitize_placeholder_mutation_total{recovered|unresolved}`。
+  - **移植中发现并修掉一处自引入的 fail-open**：peer 豁免原本被嵌在 `resolve != nil` 之内，而上游跳实例本就没有自己的映射表（`resolve` 为 nil），于是它把本该原样带回的 peer 标记也一并遮蔽——`TestTwoGatewayRoundTrip` 与 `TestPeerPassthroughWithoutOwnMap` 钉住。豁免现在与有无 resolver 无关。
+  - 测试：`placeholder_loose_test.go`、`mutation_restore_test.go`、`domains/streaming/sanitize_mutation_e2e_test.go`（含真实输入中间件 + 真实会话映射表的端到端往返），以及本轮针对"截断标记不豁免""退化标记 vs 正常文本"的定向用例。
 
 ### Added
 ### Added

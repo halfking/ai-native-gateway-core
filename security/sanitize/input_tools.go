@@ -42,6 +42,7 @@ func reserveInputPlaceholdersDepth(body []byte, offsets map[SensitiveType]int, d
 					offsets[p.Type] = p.Index
 				}
 			}
+			reserveMutatedPlaceholders(text, offsets)
 		}
 	}
 }
