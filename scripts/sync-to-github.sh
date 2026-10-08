@@ -72,7 +72,6 @@ validate_replacements() {
 }
 
 verify_history_removed_sources() {
-  local source
   local -a revisions=()
   while IFS= read -r revision; do
     [[ -n "$revision" ]] && revisions+=("$revision")
@@ -82,18 +81,37 @@ verify_history_removed_sources() {
     return 1
   }
 
-  while IFS= read -r source; do
-    [[ -z "$source" ]] && continue
-    if git -C "$mirror_dir" grep -I -F -q -- "$source" "${revisions[@]}"; then
-      echo "❌ Filtered mirror still contains a replacement source in reachable history." >&2
-      return 1
-    fi
-  done < <(
-    awk '
+  # 旧实现对每个 source × 每个 revision 各跑一次 git grep（逐修订整树遍历），
+  # 本仓库规模（13.6k 修订 × ~30 source）实测单串就要小时级、全表 >20 小时，
+  # 门等于不可用（2026-10-08 dry-run 实测卡死 35 分钟没跑完一个串）。改为
+  # 单遍流式扫描：cat-file --batch-all-objects 把所有对象（blob 内容、提交与
+  # 标签消息）展平成一路字节流，grep -aF -f 对全部 source 只扫一遍——覆盖面
+  # 反而更大（连消息一起查），代价是分钟级。grep 用 -c 而不是 -q：-q 命中即
+  # 提前退出会让上游 git 吃 SIGPIPE，pipefail 下管道返回 141 会被 if 误判成
+  # "没命中"，命中反而放行。
+  local srcs_file hits
+  srcs_file=$(mktemp "${TMPDIR:-/tmp}/llmgw-srcs.XXXXXX")
+  awk '
       /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
       index($0, "==>") { print substr($0, 1, index($0, "==>") - 1) }
-    ' "$replacements" "$private_replacements"
-  )
+    ' "$replacements" "$private_replacements" > "$srcs_file"
+  if [[ ! -s "$srcs_file" ]]; then
+    echo "❌ No replacement sources parsed — refusing to verify vacuously." >&2
+    rm -f "$srcs_file"
+    return 1
+  fi
+  hits=$(git -C "$mirror_dir" cat-file --batch-all-objects --batch --unordered \
+    | LC_ALL=C grep -a -c -F -f "$srcs_file" || true)
+  if [[ "${hits:-0}" -gt 0 ]]; then
+    echo "❌ Filtered mirror still contains a replacement source (content or commit message)." >&2
+    echo "   matched sources (deduped, first 20):" >&2
+    git -C "$mirror_dir" cat-file --batch-all-objects --batch --unordered \
+      | LC_ALL=C grep -a -o -h -F -f "$srcs_file" 2>/dev/null | sort -u \
+      | head -20 | sed 's/^/     /' >&2
+    rm -f "$srcs_file"
+    return 1
+  fi
+  rm -f "$srcs_file"
 }
 
 echo "🚀 SI-LLM-Gateway → GitHub sync"
@@ -129,7 +147,11 @@ cat "$replacements" "$private_replacements" > "$filter_replacements"
 echo "━━━ Step 3/5: Create and rewrite local mirror ━━━"
 rm -rf "$mirror_dir"
 git clone --mirror --no-hardlinks "$repo_root" "$mirror_dir"
-git -C "$mirror_dir" filter-repo --force --replace-text "$filter_replacements"
+# --replace-text 只改 blob 内容；提交/标签消息里的敏感串原样存活（实测：
+# 00e12a579 的消息标题就带着口令原文，仅 replace-text 时会原样回公开镜像）。
+# 消息必须与内容同表同改。
+git -C "$mirror_dir" filter-repo --force --replace-text "$filter_replacements" \
+  --replace-message "$filter_replacements"
 echo "   ✓ history rewritten"
 
 echo "━━━ Step 4/5: Verify all mirror refs and reachable history ━━━"

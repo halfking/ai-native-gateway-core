@@ -324,8 +324,19 @@ scan_working_tree() {
   trap 'rm -rf "$tmpdir"' RETURN
 
   # ── Step 1: Build candidate file list ──────────────────────────────
-  if [[ $TRACKED_ONLY -eq 1 ]] && git rev-parse --git-dir >/dev/null 2>&1; then
-    git ls-files -- "${PATHS[@]}" 2>/dev/null | while IFS= read -r f; do
+  if [[ $TRACKED_ONLY -eq 1 ]] && git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    # ls-files 必须以 REPO_ROOT 为根、用仓库相对 pathspec：sync-to-github.sh
+    # 以 --repo-root=<验证克隆> --paths=<验证克隆> 调本扫描器，而 CWD 还在主
+    # 工作树——在别人的仓库里拿绝对路径当 pathspec 会扫到 0 个文件，门的
+    # CLEAN 是空的（2026-10-08 dry-run 实测 Files scanned: 0）。
+    local -a rel_paths=()
+    local p
+    for p in "${PATHS[@]}"; do
+      if [[ "$p" == "$REPO_ROOT" ]]; then rel_paths+=(".")
+      elif [[ "$p" == "$REPO_ROOT"/* ]]; then rel_paths+=("${p#"$REPO_ROOT"/}")
+      else rel_paths+=("$p"); fi
+    done
+    git -C "$REPO_ROOT" ls-files -- "${rel_paths[@]}" 2>/dev/null | while IFS= read -r f; do
       [[ -f "$REPO_ROOT/$f" ]] && echo "$REPO_ROOT/$f"
     done > "$candidates"
   else
@@ -445,7 +456,11 @@ scan_working_tree() {
 
   # ── Step 7: Single grep pass over all scannable files ──────────────
   local raw_matches="$tmpdir/matches"
-  xargs grep -niE "${grep_args[@]}" -- < "$scannable" > "$raw_matches" 2>/dev/null || true
+  # -H 强制文件名前缀：BSD grep 在 xargs 只喂到一个文件时会省略文件名输出，
+  # Step 8 把行号当文件名、行内容当行号解析，命中被静默丢弃——不止
+  # 单文件仓库会踩，主仓 14k 文件时 xargs 末批恰好剩一个文件也会漏报
+  # （2026-10-08 镜像验证克隆实测 1 文件全漏）。
+  xargs grep -H -niE "${grep_args[@]}" -- < "$scannable" > "$raw_matches" 2>/dev/null || true
 
   # ── Step 8: Parse matches and attribute to rules ──────────────────
   # Pre-build bash-compatible regex arrays for zero-fork matching.
