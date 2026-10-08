@@ -40,9 +40,21 @@
 //   - 限速：批内按 row 计费消费 limiter tick，ratePerSec 的语义与
 //     session_digest_backfill 一致（rows/s），只是把 N 行的写合并成 1 条
 //     UPDATE 语句。默认 100 rows/s ⇒ 1.5M 行约 4.2 小时。
-//   - 游标：request_status IS NULL 上**没有**部分索引（不同于 digest 有
-//     idx_session_turns_digest_null），所以候选 SELECT 用 id 键集分页 +
-//     ORDER BY id，单调前进，避免每批从头重扫。
+//   - 游标：request_status IS NULL 上**没有**父表级部分索引（846 之后父表有
+//     idx_session_turns_req_status_backfill，per-partition 形态早已存在），候选
+//     SELECT 用 id 键集分页 + ORDER BY id，单调前进，避免每批从头重扫。
+//   - 时间下界（2026-10-09 审计 R30）：候选 SELECT 带
+//     `partition_date >= (now() - interval '7 days')::date`。可回填候选的
+//     存在窗口 = 「823 之后写入 + promote 保留期（8h）」——小时级；7 天是
+//     ~21 倍安全系数的滚动窗口。窗外行 = 823 之前的 v1 历史行（252 实测
+//     793,519 行，全部 partition_date ≤ 2026-09-30，且 request_logs 源行已
+//     被 TTL 清除——头注 26-29 行的「结构性无法回填」族），排除它们不改变
+//     可回填集合，却把「证明无候选」的空扫从 pkey 全程（79.3 万 NULL 行
+//     × JOIN 探测，30s rolconfig 必杀，252 实测 103 击杀/日）缩到当月分区
+//     的零星 NULL 行（本机 EXPLAIN 实测：窗内 2 行 vs 30 天窗 55,868 行
+//     1.39s；7 天窗毫秒级）。窗口随时间滚动自愈。若 worker 停摆超过窗口，
+//     gauge（不带窗口，度量全部可回填行）保持 >0，release gate 诚实卡住
+//     而不是静默放行——这正是期望的保守行为，窗口宽度以此为界是安全的。
 //
 // 退役终态（request_logs 被删）：
 //
@@ -515,11 +527,22 @@ const sessionRequestStatusSourceProbeSQL = `
 // sessionRequestStatusRemainingSQL. "Rows this job can still fix" and "rows
 // that would be lost at retirement" are different questions, and only the
 // second one may be used as a release gate.
+//
+// The 7-day partition_date floor (R30, 2026-10-09) is what bounds the idle
+// empty scan. Without it, proving "no candidates" means walking the pkey past
+// every structurally-unfillable NULL row (823-pre v1 history; 793,519 rows on
+// 252, source rows already TTL'd) with a JOIN probe each — >30s, killed by the
+// role-level statement_timeout, retried every MaxIdle. The real backfillable
+// window is the write path (823) plus the promote retention (8h) — hours; the
+// 7-day floor is a ~21x margin. If the job ever stalls longer than that, the
+// window-less gauge keeps reporting the backlog and the release gate stays
+// honest. See the file header for the full argument.
 const sessionRequestStatusCandidateSQL = `
 	SELECT t.id, t.partition_date, t.tenant_id, t.request_id
 	FROM public.session_turns t
 	JOIN public.request_logs l ON l.request_id = t.request_id
 	WHERE t.id > $1
+	  AND t.partition_date >= (now() - interval '7 days')::date
 	  AND t.request_status IS NULL
 	  AND l.request_status IS NOT NULL
 	ORDER BY t.id
