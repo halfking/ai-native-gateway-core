@@ -225,17 +225,21 @@ verify_history_removed_sources
 echo "   ✓ mirror refs and reachable history clean"
 
 echo "━━━ Step 4.5/5: Prune mirror refs to the published set ━━━"
-# 公开镜像是『阶段发布』面，只发布 main + tags。镜像 clone 是一次性副本，
-# 这里删 ref 不碰源仓库；不修剪的话 push --mirror 会把工作树里并行会话的
-# WIP 分支名（agent/* feat/* fix/* …）连同 refs/remotes/* 一起 spray 到
-# 公开仓库。SYNC_ALL_BRANCHES=1 恢复全量 refs 行为（默认关闭）。
+# 公开镜像是『阶段发布』面，只发布 main + 发布形态的 tags（[vV]?整数点分段，
+# 如 1.0 / V2.2.9 / v2.4.1）。镜像 clone 是一次性副本，这里删 ref 不碰源仓库；
+# 不修剪的话 push --mirror 会把工作树里并行会话的 WIP 分支名（agent/* feat/*
+# fix/* …）连同 refs/remotes/* 一起 spray 到公开仓库。首轮实测另有两个坑：
+#   - 'main' 不锚定 $ 会把 main-final-*/main-merge* 一起放行；
+#   - 'refs/tags/' 全量放行会把 backup/* rollback/* archive/*
+#     domain-refactor-phase-* 等内部考古 tag 一并发布。
+# SYNC_ALL_BRANCHES=1 恢复全量 refs 行为（默认关闭）。
 if [[ "${SYNC_ALL_BRANCHES:-0}" == "1" ]]; then
   echo "   SYNC_ALL_BRANCHES=1 — 保留全部 refs（不修剪）"
 else
   while IFS= read -r ref; do
     git -C "$mirror_dir" update-ref -d "$ref"
   done < <(git -C "$mirror_dir" for-each-ref --format='%(refname)' \
-    | grep -vE '^(refs/heads/main|refs/tags/)' || true)
+    | grep -vE '^(refs/heads/main$|refs/tags/[vV]?[0-9]+(\.[0-9]+)+$)' || true)
   echo "   remaining refs:"
   git -C "$mirror_dir" for-each-ref --format='     %(refname)'
 fi

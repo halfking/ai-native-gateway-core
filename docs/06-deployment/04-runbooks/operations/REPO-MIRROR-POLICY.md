@@ -252,9 +252,17 @@ git config core.hooksPath  # 应输出 .githooks
   ```
   脚本从本地原始历史确定性重导出脱敏镜像，可重复执行；替换表不变时产物
   SHA 稳定。
-- 镜像只发布 `refs/heads/main` + `refs/tags/*`（2026-10-08 新增 Step 4.5
-  修剪）；全量 refs 同步需显式 `SYNC_ALL_BRANCHES=1`，避免并行会话的 WIP
-  分支名 spray 到公开仓库。
+- 镜像只发布 `refs/heads/main` + 发布形态 tags（`[vV]?整数点分段`，如
+  `1.0`/`V2.2.9`/`v2.4.1`；`backup/*`、`rollback/*`、`archive/*`、
+  `domain-refactor-phase-*` 等内部考古 tag 不发布——2026-10-08 新增
+  Step 4.5 修剪）；全量 refs 同步需显式 `SYNC_ALL_BRANCHES=1`，避免并行
+  会话的 WIP 分支名 spray 到公开仓库。
+- 改写覆盖面（2026-10-08 实测补齐）：blob 内容（含二进制——
+  `--replace-text` 会整体跳过非 UTF-8 blob，由生成的 `--blob-callback`
+  字节级兜底）、提交/标签消息（`--replace-message`）、树对象里的路径名
+  （`--filename-callback`）、作者/提交者 ident（`--commit-callback`）。
+  四类机制全部由同一对替换表程序化生成，缺一类就是一类泄漏（首轮
+  dry-run 批量验证门实测揪出 415 处残留）。
 - 已知残留：GitHub 对 force-push 后的不可达对象会保留一段时间（旧 SHA 的
   raw URL 在 GC 前可能仍可访问）；如需立即清除请联系 GitHub Support。
 - 口令轮换建议不变：历史改写只解决"可发现性"，已泄露口令仍应轮换。
