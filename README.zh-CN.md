@@ -483,6 +483,16 @@ git push              # → codeup (no extra checks)
 git push github       # → github (secret scan, blocked on BLOCK-level hit)
 ```
 
+自 2026-10-08 起镜像历史经 **filter-repo 全量脱敏**（已编目敏感串替换为
+`__REDACTED_*__` 形态），镜像 commit SHA 与 codeup 有意分叉，普通
+`git push github main` 会被拒（non-fast-forward）。镜像同步一律走完整管线，
+它从本地原始历史确定性重导出脱敏镜像：
+
+```bash
+bash scripts/sync-to-github.sh --dry-run   # 演练：扫描 → 改写 → 验证
+bash scripts/sync-to-github.sh             # 确认后 force-push（main + tags）
+```
+
 敏感信息保护：推送 GitHub 时，`.githooks/pre-push` 自动运行 `scripts/scan-secrets.sh`（50 规则；默认 normal 模式 —— BLOCK 级命中阻断、WARN 级告警；`STRICT_SCANNER=1` 开启严格模式）。详见[镜像策略](docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md)。
 
 ---

@@ -546,6 +546,17 @@ git push              # → codeup (no extra checks)
 git push github       # → github (secret scan, blocked on BLOCK-level hit)
 ```
 
+Since 2026-10-08 the mirror's history is **filter-repo scrubbed** (known
+sensitive strings replaced with `__REDACTED_*__` shapes), so the mirror's commit
+SHAs intentionally diverge from codeup and a plain `git push github main` is
+rejected as non-fast-forward. Sync the mirror through the full pipeline instead —
+it deterministically re-derives the scrubbed mirror from local history:
+
+```bash
+bash scripts/sync-to-github.sh --dry-run   # rehearse: scan → rewrite → verify
+bash scripts/sync-to-github.sh             # confirm, then force-push (main + tags)
+```
+
 Sensitive-information protection: `.githooks/pre-push` automatically runs `scripts/scan-secrets.sh` (50 rules; default normal mode — BLOCK findings block, WARN findings warn; `STRICT_SCANNER=1` opts into strict) when pushing to GitHub. See the [mirror policy](docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md).
 
 ---
