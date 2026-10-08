@@ -142,6 +142,22 @@ git clone --no-hardlinks "$mirror_dir" "$verify_dir"
 verify_history_removed_sources
 echo "   ✓ mirror refs and reachable history clean"
 
+echo "━━━ Step 4.5/5: Prune mirror refs to the published set ━━━"
+# 公开镜像是『阶段发布』面，只发布 main + tags。镜像 clone 是一次性副本，
+# 这里删 ref 不碰源仓库；不修剪的话 push --mirror 会把工作树里并行会话的
+# WIP 分支名（agent/* feat/* fix/* …）连同 refs/remotes/* 一起 spray 到
+# 公开仓库。SYNC_ALL_BRANCHES=1 恢复全量 refs 行为（默认关闭）。
+if [[ "${SYNC_ALL_BRANCHES:-0}" == "1" ]]; then
+  echo "   SYNC_ALL_BRANCHES=1 — 保留全部 refs（不修剪）"
+else
+  while IFS= read -r ref; do
+    git -C "$mirror_dir" update-ref -d "$ref"
+  done < <(git -C "$mirror_dir" for-each-ref --format='%(refname)' \
+    | grep -vE '^(refs/heads/main|refs/tags/)' || true)
+  echo "   remaining refs:"
+  git -C "$mirror_dir" for-each-ref --format='     %(refname)'
+fi
+
 if [[ $DRY_RUN -eq 1 ]]; then
   echo "━━━ Step 5/5: DRY RUN — would push to $github_url ━━━"
   exit 0
