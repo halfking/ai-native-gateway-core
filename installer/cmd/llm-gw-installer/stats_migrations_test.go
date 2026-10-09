@@ -48,9 +48,11 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		}
 		checked++
 	}
-	// TSV 注册 200 条 = 199 条 canonical 镜像 + 1 条 installer-only bootstrap
-	// （session_turns_hot_bootstrap.sql，上面已豁免）。
-	if checked < 199 {
+	// 下限的实测取值（2026-10-08 multimedia/R30 同步后复核）：
+	// TSV 注册 243 条 = 242 条 canonical 镜像 + 1 条 installer-only bootstrap
+	// （session_turns_hot_bootstrap.sql，上面已豁免）。前值 199/200 是
+	// 218 号时代的旧测，此后多个会话登记了新迁移而未更新此下限。
+	if checked < 242 {
 		t.Fatalf("parity sweep covered only %d startup migrations; embeddedSQLFiles lost entries", checked)
 	}
 }

@@ -918,6 +918,25 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   既有列的位置/类型/顺序逐字不变，消费方不受影响。
 			// ★ 编号注：本条先撞 842（19:25）重排为 843，再撞 843（20:05）重排为 844。
 			"844_supplier_view_cache_baseline_columns.sql",
+			// 845（R30，2026-10-09）：stats_event_dedup 补 (event_id, occurred_at)
+			// 复合索引，消 stats 日聚合 JOIN 的逐行 heap 回表。
+			// ★ 文件带 dbinit:no-transaction 标记（CREATE INDEX CONCURRENTLY
+			//   不能进事务块），applySQL 据此走非事务通道，
+			//   TestNoTransactionMarkerIsJustified 钉住「标记文件必须真含
+			//   不可事务化语句」。
+			"845_stats_event_dedup_join_index.sql",
+			// 846（R30，2026-10-09）：session_turns 父表 partial 索引
+			// (id) WHERE request_status IS NULL，回填 worker 候选捞取的承重索引。
+			// ★ 分区父表不能 CONCURRENTLY（R46/843 先例），改普通 CREATE INDEX
+			//   IF NOT EXISTS（幂等），ShareLock 随部署窗口；全新安装时表为空，
+			//   无代价。
+			"846_session_turns_req_status_backfill_idx.sql",
+			// 847（multimedia，2026-10-08）：credentials 加 routing_scope
+			// （all|text_only|media_only），多模态路由隔离的候选闸。
+			"847_credential_routing_scope.sql",
+			// 848（multimedia，2026-10-08）：billing_unit（token|image|audio_second）
+			// 与 audio_second 计费列骨架。
+			"848_billing_unit_and_audio_seconds.sql",
 		},
 	}
 }

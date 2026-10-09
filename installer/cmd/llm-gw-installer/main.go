@@ -807,6 +807,18 @@ var candidateFailureLogsTsDescIdx843 []byte
 //go:embed embeddata/startup/844_supplier_view_cache_baseline_columns.sql
 var supplierViewCacheBaselineColumns844 []byte
 
+//go:embed embeddata/startup/845_stats_event_dedup_join_index.sql
+var statsEventDedupJoinIndex845 []byte
+
+//go:embed embeddata/startup/846_session_turns_req_status_backfill_idx.sql
+var sessionTurnsReqStatusBackfillIdx846 []byte
+
+//go:embed embeddata/startup/847_credential_routing_scope.sql
+var credentialRoutingScope847 []byte
+
+//go:embed embeddata/startup/848_billing_unit_and_audio_seconds.sql
+var billingUnitAndAudioSeconds848 []byte
+
 //go:embed embeddata/startup/829_bodies_columnar_rollback.sql
 var bodiesColumnarRollback829 []byte
 
@@ -1062,6 +1074,10 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/842_credential_model_index_latest_bucket_idx.sql":                       credentialModelIndexLatestBucketIdx842,
 	"startup/843_candidate_failure_logs_ts_desc_idx.sql":                             candidateFailureLogsTsDescIdx843,
 	"startup/844_supplier_view_cache_baseline_columns.sql":                           supplierViewCacheBaselineColumns844,
+	"startup/845_stats_event_dedup_join_index.sql":                                   statsEventDedupJoinIndex845,
+	"startup/846_session_turns_req_status_backfill_idx.sql":                          sessionTurnsReqStatusBackfillIdx846,
+	"startup/847_credential_routing_scope.sql":                                       credentialRoutingScope847,
+	"startup/848_billing_unit_and_audio_seconds.sql":                                 billingUnitAndAudioSeconds848,
 	"startup/829_bodies_columnar_rollback.sql":                                       bodiesColumnarRollback829,
 	"startup/835_modality_verify_probe_ledger.sql":                                   modalityVerifyProbeLedger835,
 	"startup/834_supplier_errors_base_tables.sql":                                    supplierErrorsBaseTables834,
