@@ -3,6 +3,7 @@ package v2
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -781,16 +782,28 @@ func expectIdleBatchAt(mock pgxmock.PgxPoolIface, cursor int64, batchSize int) {
 	mock.ExpectRollback()
 }
 
+// remainingTimeoutArg is the value sampleRemaining passes to
+// set_config('statement_timeout', $1, true), derived from the same constant
+// the code uses — the expectation and the enforced budget cannot drift apart.
+func remainingTimeoutArg() string {
+	return fmt.Sprintf("%ds", int(sessionRequestStatusRemainingTimeout.Seconds()))
+}
+
 // expectStatusRemaining programs the tx-scoped remaining-count sample: BEGIN,
-// the two RLS bypass GUCs (the SAME prologue as the batch path — the count
-// walks RLS-protected tables), the count itself, ROLLBACK. Programming the
-// Begin is itself the pin: a regression to a bare pool.QueryRow would consume
-// no Begin and fail these expectations.
+// the two RLS bypass GUCs plus the statement_timeout lift (the SAME prologue
+// family as the batch path — the count walks RLS-protected tables and the
+// role-default 30s would kill it before its own budget; R31 2026-10-10), the
+// count itself, ROLLBACK. Programming the Begin is itself the pin: a
+// regression to a bare pool.QueryRow would consume no Begin and fail these
+// expectations.
 func expectStatusRemaining(mock pgxmock.PgxPoolIface, n int64) {
 	mock.ExpectBegin()
 	mock.ExpectExec("SELECT set_config\\('app.current_role', 'super_admin', true\\)").
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectExec("SELECT set_config\\('app.bypass_rls', 'true', true\\)").
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectExec("SELECT set_config\\('statement_timeout', \\$1, true\\)").
+		WithArgs(remainingTimeoutArg()).
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectQuery("JOIN public\\.request_logs l ON l\\.request_id").
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(n))
@@ -803,6 +816,9 @@ func expectStatusRemainingErr(mock pgxmock.PgxPoolIface, err error) {
 	mock.ExpectExec("SELECT set_config\\('app.current_role', 'super_admin', true\\)").
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectExec("SELECT set_config\\('app.bypass_rls', 'true', true\\)").
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectExec("SELECT set_config\\('statement_timeout', \\$1, true\\)").
+		WithArgs(remainingTimeoutArg()).
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectQuery("JOIN public\\.request_logs l ON l\\.request_id").
 		WillReturnError(err)
