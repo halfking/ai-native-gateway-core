@@ -59,6 +59,7 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { useHyperPage } from '@/hyper'
 import { t } from '@/i18n'
+import { useAuthStore } from '@/stores/auth'
 import { fmtInt, fmtNum } from '@/utils/format'
 import {
   fetchCompressionStats,
@@ -94,6 +95,7 @@ import {
 } from '@/api/compression'
 
 useHyperPage({ title: () => t('compressionView.title') })
+const auth = useAuthStore()
 
 const UNAVAILABLE = '—'
 
@@ -328,7 +330,7 @@ onBeforeUnmount(() => {
       </template>
 
       <!-- ★★ tenant_admin 只看成功请求 -->
-      <p class="cv__banner">{{ t('compressionView.successOnlyNote') }}</p>
+      <p v-if="auth.role === 'tenant_admin'" class="cv__banner">{{ t('compressionView.successOnlyNote') }}</p>
     </section>
 
     <!-- ══ 1. 压缩统计 ═════════════════════════════════════════════ -->

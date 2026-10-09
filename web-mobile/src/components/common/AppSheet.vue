@@ -32,6 +32,7 @@ const overlay = useHyperOverlay({
     emit('update:modelValue', false)
   },
 })
+const isTopOverlay = overlay.isTop
 
 watch(
   () => props.modelValue,
@@ -71,6 +72,13 @@ function requestClose(): void {
   })()
 }
 
+function onScrimClick(): void {
+  // Close after the complete tap, not on touch-down. Removing a nested modal
+  // while a gesture is still in flight can retarget the same tap to its parent.
+  if (!overlay.isTop.value) return
+  requestClose()
+}
+
 // 焦点困层（简化版 07 §9：Tab 循环限制在面板内）
 function onKeydownTab(ev: KeyboardEvent): void {
   if (ev.key !== 'Tab' || !panelRef.value) return
@@ -96,12 +104,12 @@ function onKeydownTab(ev: KeyboardEvent): void {
       <div
         v-if="modelValue"
         class="app-sheet"
-        :class="`app-sheet--${presentation}`"
+        :class="[`app-sheet--${presentation}`, { 'app-sheet--inactive': !isTopOverlay }]"
         role="dialog"
         aria-modal="true"
         :aria-label="title"
       >
-        <div class="app-sheet__scrim" @mousedown="requestClose" />
+        <div class="app-sheet__scrim" @click.self="onScrimClick" />
         <div
           ref="panelRef"
           class="app-sheet__panel"
@@ -128,6 +136,17 @@ function onKeydownTab(ev: KeyboardEvent): void {
   position: fixed;
   inset: 0;
   z-index: var(--app-z-overlay);
+}
+
+/* Only the top overlay may receive input; nested modal scrims must not close a parent. */
+.app-sheet--inactive {
+  pointer-events: none;
+}
+
+/* 确认框可嵌在账户 Sheet 等浮层中；它也必须盖过全屏专注层（+10）。 */
+.app-sheet--modal {
+  /* Keep this as a token value: iOS 15 WebKit drops calc() on integer z-index. */
+  z-index: var(--app-z-modal);
 }
 
 .app-sheet__scrim {

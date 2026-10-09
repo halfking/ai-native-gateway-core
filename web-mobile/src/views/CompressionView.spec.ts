@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import CompressionView from './CompressionView.vue'
+import { useAuthStore } from '@/stores/auth'
 import {
   fetchCompressionStats,
   fetchCompressionSessions,
@@ -58,9 +59,18 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-async function mountView(): Promise<ReturnType<typeof mount>> {
+async function mountView(role: 'tenant_admin' | 'super_admin' = 'tenant_admin'): Promise<ReturnType<typeof mount>> {
   const pinia = createPinia()
   setActivePinia(pinia)
+  useAuthStore(pinia).userInfo = {
+    id: 1,
+    tenant_id: 'tenant-test',
+    username: 'compression-test',
+    display_name: 'Compression test',
+    email: '',
+    role,
+    enabled: true,
+  }
   const w = mount(CompressionView, { attachTo: document.body, global: { plugins: [pinia] } })
   mountedList.push(w)
   await flushPromises()
@@ -189,9 +199,14 @@ describe('CompressionView / 时间窗', () => {
     expect(sectionOf(w, 0).text()).toContain('以起止时间为准')
   })
 
-  it('⑨ 页面标明 tenant_admin 只看成功请求', async () => {
+  it('⑨ tenant_admin 页面标明只看成功请求的口径', async () => {
     const w = await mountView()
     expect(sectionOf(w, 0).find('.cv__banner').text()).toContain('只有成功请求')
+  })
+
+  it('⑨ super_admin 页面不显示 tenant_admin 专属口径说明', async () => {
+    const w = await mountView('super_admin')
+    expect(sectionOf(w, 0).find('.cv__banner').exists()).toBe(false)
   })
 
   it('切到自定义区间会自动重新拉取（口径变了，数字不能留着旧的）', async () => {

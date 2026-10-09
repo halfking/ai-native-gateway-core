@@ -33,14 +33,14 @@ func cookieSecure(r *http.Request) bool {
 }
 
 // clearSessionCookie expires the session cookie (MaxAge=-1) on the client.
-func clearSessionCookie(w http.ResponseWriter) {
+func clearSessionCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
-		Secure:   cookieSecure(nil),
+		Secure:   cookieSecure(r),
 		SameSite: http.SameSiteStrictMode,
 	})
 }
