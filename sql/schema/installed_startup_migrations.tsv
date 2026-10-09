@@ -5,7 +5,7 @@
 # this file against StartupFiles entry by entry and fails on any difference, so a
 # hand edit here is a test failure, not a silent divergence.
 #
-# Why it exists: sql/migrations/startup/ holds 458 migration numbers but only 200
+# Why it exists: sql/migrations/startup/ holds 495 migration numbers but only 243
 # are registered, and the registered ORDER is not numeric order (bootstrap sits at
 # index 3, 715 at index 149, 704 after 713). A test that needs to replay "the state
 # just before migration N" cannot work that out from filenames.
@@ -254,3 +254,7 @@
 236	842_credential_model_index_latest_bucket_idx.sql
 237	843_candidate_failure_logs_ts_desc_idx.sql
 238	844_supplier_view_cache_baseline_columns.sql
+239	845_stats_event_dedup_join_index.sql
+240	846_session_turns_req_status_backfill_idx.sql
+241	847_credential_routing_scope.sql
+242	848_billing_unit_and_audio_seconds.sql
