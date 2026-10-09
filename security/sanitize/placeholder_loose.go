@@ -274,6 +274,12 @@ func restoreLooseMarkers(ctx context.Context, text string, resolve placeholderRe
 		if !ok {
 			continue
 		}
+		if foreign.isForeignPlaceholder(typ, index) {
+			// The inbound peer owns this marker. Do not even consult the local
+			// resolver: shared session maps may contain the same token key.
+			stats.passthrough++
+			continue
+		}
 		replacement := ""
 		resolved := false
 		if resolve != nil {
@@ -283,10 +289,6 @@ func restoreLooseMarkers(ctx context.Context, text string, resolve placeholderRe
 		case resolved:
 			stats.recovered++
 			changed = true
-		case foreign.isForeignPlaceholder(typ, index):
-			// 下游跳签发、本实例不还原：原样带回，由那一跳复原。
-			stats.passthrough++
-			continue
 		case policy == looseMaskUnknown:
 			stats.unresolved++
 			replacement, changed = redactedMarker, true

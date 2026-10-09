@@ -195,6 +195,55 @@ func TestInputSanitizerProtocolTextAndOpaqueMedia(t *testing.T) {
 	}
 }
 
+func TestInputToolValuePreservesMutatedPlaceholder(t *testing.T) {
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	worker := &requestInputSanitizer{
+		ctx:       context.Background(),
+		sanitizer: s,
+		offset:    make(map[SensitiveType]int),
+		mapping:   make(SanitizeMap),
+		usedCount: make(map[string]int),
+		existing:  make(sanitizeReuseIndex),
+	}
+
+	for _, value := range []string{
+		"{SENSITIVE:secret:1}",
+		"{SENSITIVE: secret : 1}",
+		"{sensitive:secret:01}",
+		"｛ＳＥＮＳＩＴＩＶＥ：ｓｅｃｒｅｔ：１｝",
+	} {
+		t.Run(value, func(t *testing.T) {
+			raw, marshalErr := json.Marshal(value)
+			require.NoError(t, marshalErr)
+			got, changed, sanitizeErr := worker.sanitizeToolValueWithLabel(raw, 0, "password")
+			require.NoError(t, sanitizeErr)
+			require.False(t, changed, "an already-issued token must not be wrapped in a second token")
+			require.Equal(t, string(raw), string(got))
+		})
+	}
+	require.Empty(t, worker.mapping, "passing a placeholder through must not create another mapping")
+}
+
+func TestInputToolValueDoesNotSkipUnbracedMarkerLikePassword(t *testing.T) {
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	worker := &requestInputSanitizer{
+		ctx:       context.Background(),
+		sanitizer: s,
+		offset:    make(map[SensitiveType]int),
+		mapping:   make(SanitizeMap),
+		usedCount: make(map[string]int),
+		existing:  make(sanitizeReuseIndex),
+	}
+	raw, err := json.Marshal("sensitive:secret:1")
+	require.NoError(t, err)
+	_, changed, err := worker.sanitizeToolValueWithLabel(raw, 0, "password")
+	require.NoError(t, err)
+	require.True(t, changed, "marker-like password text without braces is not a placeholder")
+	require.Len(t, worker.mapping, 1, "the ordinary password still needs a new mapping")
+}
+
 type unavailableInputDetector struct{}
 
 func (unavailableInputDetector) Name() string { return "unavailable" }

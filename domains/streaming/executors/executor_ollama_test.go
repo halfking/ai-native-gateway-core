@@ -18,6 +18,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/kaixuan/llm-gateway-go/security/sanitize"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
@@ -680,8 +681,10 @@ func newTestExecutor() *Executor {
 // with a real client wire body.
 func TestExecutor_ExecuteOllama_NonStream(t *testing.T) {
 	seenPath := ""
+	seenHop := ""
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seenPath = r.URL.Path
+		seenHop = r.Header.Get(sanitize.SanitizeHopHeader)
 		// Echo the request body so we can verify SerializeOllama
 		// preserved Ollama-private fields from the OpenAI wire's
 		// ollama.* Extensions passthrough.
@@ -724,13 +727,16 @@ func TestExecutor_ExecuteOllama_NonStream(t *testing.T) {
 	// SerializeOllama).
 	wireBody := []byte(`{
 		"model":"llama3.1",
-		"messages":[{"role":"user","content":"ping"}],
+		"messages":[{"role":"user","content":"ping {SENSITIVE:secret:1}"}],
 		"ollama.format":"json",
 		"ollama.keep_alive":"5m",
 		"ollama.options.num_ctx":4096
 	}`)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(wireBody))
+	req = req.WithContext(sanitize.WithSanitizeMap(req.Context(), sanitize.SanitizeMap{
+		"{SENSITIVE:secret:1}": "password-value",
+	}))
 	rec := httptest.NewRecorder()
 	params := &ExecParams{
 		W:              rec,
@@ -762,6 +768,9 @@ func TestExecutor_ExecuteOllama_NonStream(t *testing.T) {
 	}
 	if seenPath != "/api/chat" {
 		t.Errorf("upstream path = %q, want /api/chat", seenPath)
+	}
+	if seenHop != sanitize.SanitizeHopNonce() {
+		t.Errorf("upstream sanitize-hop header = %q, want this gateway's nonce", seenHop)
 	}
 	body := rec.Body.String()
 	if !strings.Contains(body, `"content":"ok"`) {

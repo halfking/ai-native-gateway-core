@@ -20,6 +20,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/kaixuan/llm-gateway-go/security/sanitize"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -570,6 +571,9 @@ func (e *Executor) applyCompactionRequestHeaders(req *http.Request, params *Exec
 				req.Header.Set(k, v)
 			}
 		}
+	}
+	if nonce := sanitize.SanitizeHopForOutbound(params.R.Context()); nonce != "" {
+		req.Header.Set(sanitize.SanitizeHopHeader, nonce)
 	}
 }
 

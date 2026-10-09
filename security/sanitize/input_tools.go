@@ -154,8 +154,14 @@ func (s *requestInputSanitizer) sanitizeToolValueWithLabel(raw json.RawMessage, 
 		if err := json.Unmarshal(raw, &text); err != nil {
 			return nil, false, err
 		}
-		_, marker := ParsePlaceholder(text)
-		if credentialField(label) && text != "" && !marker {
+		_, _, marker := parseClosedLoosePlaceholder(text)
+		if marker {
+			// Marker text is already a protected value. Do not feed its index or
+			// type through the detector again (a short numeric suffix can itself
+			// match a sensitive-data rule and mint a second placeholder).
+			return raw, false, nil
+		}
+		if credentialField(label) && text != "" {
 			typ := TypeSecret
 			switch strings.ToLower(label) {
 			case "account", "username", "user_name", "login", "帐号", "账号", "账户", "用户名":
