@@ -1,6 +1,6 @@
 # 多媒体 API 统一网关 + 凭据路由域隔离 + 凭据详情 UI —— 可行性与实施方案
 
-> 状态：**方案定稿；Phase A–C 已落地代码（待部署验证）**  
+> 状态：**方案定稿；Phase A–C 已落地；245 部署验证通过（seq=2510, migration 847/848）**  
 > 日期：2026-10-08  
 > 范围：llm-gateway-go 数据面 / 凭据模型 / Admin UI（`/providers/:id?tab=creds`）  
 > 关联：`2026-10-03-audio-transcription-gateway-plan.md`、`2026-10-06-audio-multi-provider-and-transform.md`  

@@ -8675,3 +8675,12 @@ git show origin/main:scripts/deploy-lib/db-changelog.sh
   那个裁决的依据之一是「扫描腿在 154 生产上是活的」，
   而**「它是否在别的环境也活」现在无法从本仓自证**。
   ⇒ 台账已记：该裁决的前提需属主用 workspace SSOT 复核。
+## 2026-10-09T02:00:49Z — deploy 245 build_seq 2510 (3c0367f5)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 845 | `845_stats_event_dedup_join_index.sql` | `078ffeb44a866acf565063a4affc215d2ccde9dcacedb56823165c75f21c0237` | applied+verified |
+| 846 | `846_session_turns_req_status_backfill_idx.sql` | `5c702997d56ea1a75897810799b5bca560de7359ca4b4b30702581e50fc49d5b` | applied+verified |
+| 847 | `847_credential_routing_scope.sql` | `c0c22db5ef3e06f317a70c87f230c186c46e0c3d8b892dc584ecc8b91529269e` | applied+verified |
+| 848 | `848_billing_unit_and_audio_seconds.sql` | `8e229f94d20f64a54e4cca681e4d22b12acc5f32ccad0972405f11a03aeceecb` | applied+verified |
+
