@@ -109,6 +109,10 @@ type AudioService struct {
 	// （与 embeddings 同款接线，R40 收口 R39 §七.3 移交项）。可选接线；
 	// nil 时跳过台账写入（默认），所有调用点 nil-safe。
 	failureLogger *executors.CandidateFailureWriter
+	// maas 可选：成功转写后按时长扣租户积分（2026-10-08 Phase B）。
+	maas audioMaasCharger
+	// usageLog 可选：把 audio_seconds / credits 写入 request_logs_hot。
+	usageLog AudioUsageLogger
 }
 
 func NewAudioService(resolver AudioProviderResolver, upstreamClient *upstream.Client) *AudioService {

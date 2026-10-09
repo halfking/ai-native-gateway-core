@@ -50,6 +50,7 @@ export default {
     addBtn: "+ إضافة بيانات اعتماد",
     table: {
       cred: "بيانات الاعتماد",
+      routingScope: "نطاق التوجيه",
       status: "الحالة",
       probe: "الفحص",
       defaultProbeModel: "نموذج الفحص الافتراضي",
@@ -185,6 +186,20 @@ export default {
       retired: "retired (تقاعد)"
     },
     drawerFieldPlanType: "نوع الخطة",
+    drawerTabInfo: "معلومات",
+    drawerTabModels: "النماذج",
+    drawerFieldRoutingScope: "نطاق التوجيه",
+    routingScopeHint: "لا تُختار بيانات اعتماد media_only لمكالمات الدردشة/النص القياسية",
+    routingScopeFailed: "فشل تعيين routing_scope",
+    manualPrefix: "يدوي ",
+    routingScopes: {
+      all: "all (عام)",
+      chatOnly: "chat_only (نص فقط)",
+      mediaOnly: "media_only (وسائط فقط)",
+      allShort: "عام",
+      chatOnlyShort: "نص",
+      mediaOnlyShort: "وسائط",
+    },
     planTypeUnset: "غير محدد (يُعامل كـ token)",
     planTypeHint: "يستخدمه التوجيه؛ يُشتق cmb.billing_mode منه",
     planTypes: {

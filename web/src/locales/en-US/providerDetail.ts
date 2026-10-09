@@ -50,6 +50,7 @@ export default {
     addBtn: "+ Add credential",
     table: {
       cred: "Credential",
+      routingScope: "Routing scope",
       status: "Status",
       probe: "Probe",
       defaultProbeModel: "Default probe model",
@@ -164,6 +165,20 @@ export default {
       retired: "retired"
     },
     drawerFieldPlanType: "Plan Type",
+    drawerTabInfo: "Info",
+    drawerTabModels: "Models",
+    drawerFieldRoutingScope: "Routing scope",
+    routingScopeHint: "media_only credentials are never selected for standard chat/text calls",
+    routingScopeFailed: "Failed to set routing_scope",
+    manualPrefix: "Manual ",
+    routingScopes: {
+      all: "all (general)",
+      chatOnly: "chat_only (text only)",
+      mediaOnly: "media_only (multimedia only)",
+      allShort: "All",
+      chatOnlyShort: "Chat",
+      mediaOnlyShort: "Media",
+    },
     planTypeUnset: "Not set (treated as token)",
     planTypeHint: "Used by v_routable_credential_models rule 8; cmb.billing_mode is auto-derived from this",
     planTypes: {

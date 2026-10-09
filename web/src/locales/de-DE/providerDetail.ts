@@ -50,6 +50,7 @@ export default {
     addBtn: "+ Anmeldedaten hinzufügen",
     table: {
       cred: "Anmeldedaten",
+      routingScope: "Routing-Bereich",
       status: "Status",
       probe: "Prüfung",
       defaultProbeModel: "Standard-Prüfmodell",
@@ -185,6 +186,20 @@ export default {
       retired: "retired (ausgemustert)"
     },
     drawerFieldPlanType: "Plan-Typ",
+    drawerTabInfo: "Info",
+    drawerTabModels: "Modelle",
+    drawerFieldRoutingScope: "Routing-Bereich",
+    routingScopeHint: "media_only-Credentials werden bei Standard-Chat/Text nicht ausgewählt",
+    routingScopeFailed: "routing_scope konnte nicht gesetzt werden",
+    manualPrefix: "Manuell ",
+    routingScopes: {
+      all: "all (allgemein)",
+      chatOnly: "chat_only (nur Text)",
+      mediaOnly: "media_only (nur Multimedia)",
+      allShort: "Allgemein",
+      chatOnlyShort: "Text",
+      mediaOnlyShort: "Media",
+    },
     planTypeUnset: "Nicht gesetzt (als token behandelt)",
     planTypeHint: "Vom Routing verwendet; cmb.billing_mode wird daraus abgeleitet",
     planTypes: {

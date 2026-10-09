@@ -1710,6 +1710,9 @@ func candidateQuerySQLBase() string {
 			      $3 = ''
 			      OR $3 = 'text'
 			      OR ($3 IN ('vision', 'audio') AND COALESCE(mc.modality, 'text') IN ($3, 'multimodal'))
+			      -- 2026-10-08 Phase C: dedicated /v1/images/* uses modality=image
+			      -- and accepts vision|image|multimodal catalog rows.
+			      OR ($3 = 'image' AND COALESCE(mc.modality, 'text') IN ('image', 'vision', 'multimodal'))
 			      OR COALESCE(mc.modality, 'text') = $3
 			  )
 			  /*MODALITY_VERDICT_GATE*/
@@ -1891,6 +1894,23 @@ SELECT
 		  -- v.is_routable is FALSE for any model with manual disable at any layer
 		  -- (provider.manual_disabled, credentials.manual_disabled, or cmb.unavailable_reason='manual')
 		  AND v.is_routable = TRUE
+		  -- 2026-10-08 migration 847: routing_scope hard isolation.
+		  -- media_only credentials must never enter text/chat/embedding
+		  -- candidate pools (prevents burning media-package keys on standard
+		  -- completions). chat_only credentials are excluded from audio/video
+		  -- dedicated endpoints. vision/multimodal keep all three scopes so
+		  -- chat-embedded vision keys (chat_only/all) and dedicated media
+		  -- keys (media_only) both remain selectable.
+		  AND (
+		      CASE
+		        WHEN $3 = '' OR $3 = 'text' OR $3 = 'embedding' THEN
+		          COALESCE(c.routing_scope, 'all') IN ('all', 'chat_only')
+		        WHEN $3 IN ('audio', 'video', 'image') THEN
+		          COALESCE(c.routing_scope, 'all') IN ('all', 'media_only')
+		        ELSE
+		          TRUE
+		      END
+		  )
 		  -- 2026-06-22 defect (2): drop (credential, model) pairs whose
 		  -- model_probe_state is 'broken_confirmed'. The probe worker marks a
 		  -- binding broken_confirmed after 3 consecutive targeted-probe
@@ -1909,6 +1929,11 @@ SELECT
 				WHEN 'code_plan' THEN 1
 				WHEN 'agent_plan' THEN 1
 				WHEN 'monthly' THEN 1
+				-- 848: duration / per-request media units stay in PAYG round
+				-- (explicit ELSE arms keep audio_second|request from ever
+				-- matching a plan bucket by accident if billing_mode is mis-set).
+				WHEN 'audio_second' THEN 2
+				WHEN 'request' THEN 2
 				ELSE 2
 			END,
 			COALESCE(mo.manual_priority, 99),

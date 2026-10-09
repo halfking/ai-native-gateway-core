@@ -50,6 +50,7 @@ export default {
     addBtn: "+ 新增憑證",
     table: {
       cred: "憑證",
+      routingScope: '路由域',
       status: "狀態",
       probe: "探活",
       defaultProbeModel: "預設探活模型",
@@ -184,6 +185,20 @@ export default {
       retired: "retired (退役)"
     },
     drawerFieldPlanType: "計費方案",
+    drawerTabInfo: "資訊",
+    drawerTabModels: "模型",
+    drawerFieldRoutingScope: "路由域",
+    routingScopeHint: "media_only 憑證不會被標準 chat/文字呼叫選中",
+    routingScopeFailed: "設定 routing_scope 失敗",
+    manualPrefix: "手動",
+    routingScopes: {
+      all: "all（通用）",
+      chatOnly: "chat_only（僅文字）",
+      mediaOnly: "media_only（僅多媒體）",
+      allShort: "通用",
+      chatOnlyShort: "文字",
+      mediaOnlyShort: "多媒體",
+    },
     planTypeUnset: "未設定（按 token 處理）",
     planTypeHint: "路由配接時，cmb.billing_mode 將自動從此衍生",
     planTypes: {

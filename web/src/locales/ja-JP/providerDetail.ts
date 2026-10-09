@@ -50,6 +50,7 @@ export default {
     addBtn: "+ 認証情報を追加",
     table: {
       cred: "認証情報",
+      routingScope: "ルーティング領域",
       status: "ステータス",
       probe: "プローブ",
       defaultProbeModel: "デフォルトプローブモデル",
@@ -185,6 +186,20 @@ export default {
       retired: "retired (リタイア)"
     },
     drawerFieldPlanType: "課金プラン",
+    drawerTabInfo: "情報",
+    drawerTabModels: "モデル",
+    drawerFieldRoutingScope: "ルーティング領域",
+    routingScopeHint: "media_only 認証情報は標準 chat/テキスト呼び出しでは選ばれません",
+    routingScopeFailed: "routing_scope の設定に失敗しました",
+    manualPrefix: "手動",
+    routingScopes: {
+      all: "all（汎用）",
+      chatOnly: "chat_only（テキストのみ）",
+      mediaOnly: "media_only（マルチメディアのみ）",
+      allShort: "汎用",
+      chatOnlyShort: "テキスト",
+      mediaOnlyShort: "メディア",
+    },
     planTypeUnset: "未設定（token として処理）",
     planTypeHint: "ルーティング時、cmb.billing_mode はここから自動派生します",
     planTypes: {

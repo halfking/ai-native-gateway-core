@@ -50,6 +50,7 @@ export default {
     addBtn: "+ Añadir credencial",
     table: {
       cred: "Credencial",
+      routingScope: "Ámbito de enrutado",
       status: "Estado",
       probe: "Sonda",
       defaultProbeModel: "Modelo de sonda predeterminado",
@@ -185,6 +186,20 @@ export default {
       retired: "retired (retirado)"
     },
     drawerFieldPlanType: "Tipo de plan",
+    drawerTabInfo: "Info",
+    drawerTabModels: "Modelos",
+    drawerFieldRoutingScope: "Ámbito de enrutado",
+    routingScopeHint: "Las credenciales media_only no se eligen en llamadas chat/texto estándar",
+    routingScopeFailed: "Error al establecer routing_scope",
+    manualPrefix: "Manual ",
+    routingScopes: {
+      all: "all (general)",
+      chatOnly: "chat_only (solo texto)",
+      mediaOnly: "media_only (solo multimedia)",
+      allShort: "General",
+      chatOnlyShort: "Texto",
+      mediaOnlyShort: "Media",
+    },
     planTypeUnset: "Sin definir (tratado como token)",
     planTypeHint: "Usado por el enrutamiento; cmb.billing_mode se deriva de aquí",
     planTypes: {
