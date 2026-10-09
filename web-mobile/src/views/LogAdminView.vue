@@ -35,6 +35,7 @@ import { useHyperPage } from '@/hyper'
 import AppIcon from '@/components/common/AppIcon.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import { t } from '@/i18n'
+import { useTopbarAction } from '@/components/shell/topbarActions'
 import { relativeTime } from '@/utils/format'
 import {
   fetchBodyCacheStats,
@@ -110,6 +111,14 @@ async function load(): Promise<void> {
   if (a.status === 'rejected') archivesError.value = (a.reason as Error)?.message || t('common.error')
   loading.value = false
 }
+
+useTopbarAction({
+  key: 'refresh',
+  label: () => t('common.refresh'),
+  icon: 'refresh',
+  disabled: () => loading.value,
+  onClick: load,
+})
 
 void load()
 
@@ -385,9 +394,6 @@ onBeforeUnmount(() => {
       <AppIcon name="key" :size="13" />
       <span>{{ t('logsAdmin.readOnlyNote') }}</span>
     </p>
-    <button type="button" class="la__btn" @click="load">
-      {{ t('common.refresh') }}
-    </button>
   </div>
 </template>
 
@@ -415,7 +421,4 @@ onBeforeUnmount(() => {
 .la__chip--ok { color: var(--success, #2e7d32); border-color: var(--success, #2e7d32); }
 .la__chip--muted { color: var(--app-text-muted); }
 
-/* ★ R1：新增交互控件 ≥48 CSS px */
-.la__btn { width: 100%; min-height: 48px; margin-top: 8px; font-size: 14px; border-radius: 8px;
-  border: 1px solid var(--app-primary); background: transparent; color: var(--app-primary); }
 </style>

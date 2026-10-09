@@ -161,6 +161,14 @@ R3 已补齐六字段；R2/R6/R7/R8/R9 登记「未实现/不适用」）。R11 
 
 请求层契约（复刻网关 `web/src/api/_core.ts` 语义）：cookie 优先（`credentials:'same-origin'`），无 userInfo 才补 `Authorization: Bearer`；401 → replace 到 `/login?redirect=`（06 §4）；`AbortSignal` 全链路透传；`ApiError` 携带 status + detail。
 
+### 5.1 移动端登录状态
+
+服务端签发的 HttpOnly `llmgw_session` 是唯一持久认证凭据，当前 cookie/JWT 有效期均为
+24 小时。`localStorage['llmgw_mobile_user']` 只缓存展示用用户资料；App 冷启动时调用
+`auth.hydrate()` → `/api/auth/me` 校验 cookie，成功后直接进入上次登录态。账户 Sheet 内的
+「退出登录」调用后端登出，并清掉展示资料、在途请求代次和 Hyper 导航恢复数据。原生壳不
+保存密码或 JWT。详见 [14 §7.1](./14-原生桥与生命周期.md)。
+
 ## 6. i18n 与主题
 
 - 首轮 **zh-CN + en-US** 两语言，点路径词典（无 i18n 运行时依赖），`localStorage['llmgw_mobile_locale']`，`Accept-Language` 随请求携带。桌面端 8 语言体系不因此迁移。

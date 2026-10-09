@@ -40,8 +40,13 @@ watch(
       lastFocused = document.activeElement
       overlay.present()
       void nextTick(() => {
+        if (window.matchMedia?.('(pointer: coarse)').matches || window.matchMedia?.('(hover: none)').matches) {
+          const closeButton = panelRef.value?.querySelector<HTMLElement>('.app-sheet__close')
+          ;(closeButton ?? panelRef.value)?.focus()
+          return
+        }
         const focusable = panelRef.value?.querySelector<HTMLElement>(
-          'input, select, textarea, button:not([aria-label="关闭"]), [tabindex]:not([tabindex="-1"])',
+          'input, select, textarea, button:not(.app-sheet__close), [tabindex]:not([tabindex="-1"])',
         )
         focusable?.focus()
       })
@@ -105,7 +110,7 @@ function onKeydownTab(ev: KeyboardEvent): void {
         >
           <header class="app-sheet__header">
             <h2 class="app-sheet__title">{{ title }}</h2>
-            <button type="button" class="app-sheet__close" :aria-label="t('common.close')" @click="requestClose">
+            <button id="app-sheet-close" type="button" class="app-sheet__close" :aria-label="t('common.close')" @click="requestClose">
               <AppIcon name="close" :size="20" />
             </button>
           </header>

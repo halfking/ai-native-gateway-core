@@ -2,7 +2,7 @@
 // HyperApp — 应用壳（唯一布局）：顶栏 + 主滚动区 + compact 底栏 +
 // 抽屉/账户 Sheet。headerless 路由（登录页）隐藏全部 chrome。
 // DockCoordinator 的 effectiveTop 以本壳顶栏实测为准（07 §4）。
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, provide, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useWindowClass } from '@/composables/useWindowClass'
 import { useDeploySeqUpdate } from '@/hyper/update/useDeploySeqUpdate'
@@ -11,10 +11,14 @@ import AppBottomNav from './AppBottomNav.vue'
 import AppDrawer from './AppDrawer.vue'
 import AppAccountSheet from './AppAccountSheet.vue'
 import AppUpdateBanner from './AppUpdateBanner.vue'
+import { createTopbarActionRegistry, TOPBAR_ACTIONS } from './topbarActions'
 
 const route = useRoute()
 const { windowClass } = useWindowClass()
 const update = useDeploySeqUpdate()
+const topbar = createTopbarActionRegistry()
+const topbarActions = topbar.actions
+provide(TOPBAR_ACTIONS, topbar)
 
 const drawerOpen = ref(false)
 const accountOpen = ref(false)
@@ -29,7 +33,7 @@ onMounted(() => update.start())
 
 <template>
   <div id="hyper-app-root" class="hyper-app" :class="{ 'hyper-app--bare': headerless }">
-    <AppTopbar v-if="!headerless" @menu="drawerOpen = true" @account="accountOpen = true" />
+    <AppTopbar v-if="!headerless" :actions="topbarActions" @menu="drawerOpen = true" @account="accountOpen = true" />
 
     <main id="main-content" class="hyper-app__main" :class="{ 'hyper-app__main--padded': showBottomNav }">
       <RouterView v-slot="{ Component }">

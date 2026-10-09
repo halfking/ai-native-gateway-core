@@ -1977,6 +1977,7 @@ export const enUS = {
   },
   // ↓ Tenant detail (2026-10-08, superAdmin tier)
   tnd: {
+    dailyTitle: 'Daily usage details',
     title: 'Tenant Detail',
     needCode: 'The tenant code is empty.',
     created: 'Created',

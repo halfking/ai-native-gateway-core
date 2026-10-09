@@ -16,7 +16,10 @@ const submitting = ref(false)
 const failed = ref(false)
 const usernameRef = ref<HTMLInputElement | null>(null)
 
-void nextTick(() => usernameRef.value?.focus())
+void nextTick(() => {
+  if (window.matchMedia?.('(pointer: coarse)').matches || window.matchMedia?.('(hover: none)').matches) return
+  usernameRef.value?.focus()
+})
 
 async function submit(): Promise<void> {
   if (submitting.value || !username.value || !password.value) return
@@ -49,6 +52,7 @@ async function submit(): Promise<void> {
           <span class="login__label">{{ t('login.username') }}</span>
           <input
             ref="usernameRef"
+            id="mobile-login-username"
             v-model="username"
             type="text"
             name="username"
@@ -59,12 +63,24 @@ async function submit(): Promise<void> {
         </label>
         <label class="login__field">
           <span class="login__label">{{ t('login.password') }}</span>
-          <input v-model="password" type="password" name="password" autocomplete="current-password" required />
+          <input
+            id="mobile-login-password"
+            v-model="password"
+            type="password"
+            name="password"
+            autocomplete="current-password"
+            required
+          />
         </label>
 
         <p v-if="failed" class="login__error" role="alert">{{ t('login.failed') }}</p>
 
-        <button type="submit" class="btn btn--primary btn--block" :disabled="submitting || !username || !password">
+        <button
+          id="mobile-login-submit"
+          type="submit"
+          class="btn btn--primary btn--block"
+          :disabled="submitting || !username || !password"
+        >
           {{ submitting ? t('login.submitting') : t('login.submit') }}
         </button>
       </form>

@@ -276,11 +276,11 @@ function keyName(k: ApiKey): string {
 }
 
 .key-card__name {
+  flex: 1;
+  min-width: 0;
   font-weight: 600;
   font-size: 0.9375rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .key-card__prefix {

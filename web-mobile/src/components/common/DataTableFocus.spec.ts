@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { setLocale } from '@/i18n'
 import DataTableFocus from './DataTableFocus.vue'
 
 const viewport = vi.hoisted(() => ({ value: 'compact' }))
@@ -20,9 +21,11 @@ describe('DataTableFocus', () => {
   afterEach(() => {
     document.body.innerHTML = ''
     viewport.value = 'compact'
+    setLocale('en-US')
   })
 
   it('offers a fullscreen entry on compact widths and preserves the table content', async () => {
+    setLocale('zh-CN')
     const wrapper = mount(DataTableFocus, {
       props: { title: '用量明细' },
       slots: { default: '<table><tbody><tr><td>模型 A</td></tr></tbody></table>' },
@@ -37,6 +40,7 @@ describe('DataTableFocus', () => {
   })
 
   it('does not expose the fullscreen entry at medium and larger widths', () => {
+    setLocale('zh-CN')
     viewport.value = 'medium'
     const wrapper = mount(DataTableFocus, {
       props: { title: '用量明细' },

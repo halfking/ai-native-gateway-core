@@ -39,6 +39,7 @@ import { useHyperPage } from '@/hyper'
 import AppIcon from '@/components/common/AppIcon.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import { t } from '@/i18n'
+import { useTopbarAction } from '@/components/shell/topbarActions'
 import {
   fetchModules,
   moduleEnabledMayBeFallback,
@@ -92,6 +93,14 @@ async function load(): Promise<void> {
     loading.value = false
   }
 }
+
+useTopbarAction({
+  key: 'refresh',
+  label: () => t('common.refresh'),
+  icon: 'refresh',
+  disabled: () => loading.value,
+  onClick: load,
+})
 
 function openDetail(m: ModuleWithStatus): void {
   void router.push(`/modules/${encodeURIComponent(m.key)}`)
@@ -156,10 +165,6 @@ onBeforeUnmount(() => {
           <AppIcon name="key" :size="13" />
           <span>{{ t('mods.readOnlyNote') }}</span>
         </p>
-        <!-- ★ 只读页也得有重取手段：模块开关在别处被改后，这一页没有任何刷新入口 -->
-        <button type="button" class="mods__btn mods__btn--refresh" @click="load">
-          {{ t('common.refresh') }}
-        </button>
       </section>
 
       <section class="mods__panel">

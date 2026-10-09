@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import ModulesView from './ModulesView.vue'
 import { fetchModules, type ModuleList, type ModuleWithStatus } from '@/api/modules'
 import { setLocale, locale } from '@/i18n'
+import { createTopbarActionRegistry, TOPBAR_ACTIONS } from '@/components/shell/topbarActions'
 
 /**
  * ModulesView 的不变量（2026-10-08）。
@@ -36,6 +37,7 @@ const listMock = fetchModules as unknown as ReturnType<typeof vi.fn>
 
 const ORIGIN_LOCALE = locale.value
 let mountedList: Array<{ unmount(): void }> = []
+let topbarRegistry = createTopbarActionRegistry()
 
 /** 抄自 `ModuleWithStatus`（admin/modules.go:55-61）。 */
 function mod(over: Record<string, unknown> = {}): ModuleWithStatus {
@@ -71,7 +73,11 @@ async function mountView(list?: unknown): Promise<ReturnType<typeof mount>> {
   const pinia = createPinia()
   setActivePinia(pinia)
   setList(list)
-  const w = mount(ModulesView, { attachTo: document.body, global: { plugins: [pinia] } })
+  topbarRegistry = createTopbarActionRegistry()
+  const w = mount(ModulesView, {
+    attachTo: document.body,
+    global: { plugins: [pinia], provide: { [TOPBAR_ACTIONS as symbol]: topbarRegistry } },
+  })
   mountedList.push(w)
   await flushPromises()
   await flushPromises()
@@ -251,9 +257,10 @@ describe('★★★★★★ 抛错不许退化成空清单', () => {
     expect(w.findAll('.mods__item').length).toBe(1)
 
     listMock.mockRejectedValue(new Error('later boom'))
-    // ★ 成功态也必须有重取入口 —— 只读页原本一个刷新按钮都没有（真缺陷，已补）
-    expect(w.findAll('button.mods__btn--refresh')).toHaveLength(1)
-    await w.find('button.mods__btn--refresh').trigger('click')
+    // 刷新位于应用顶栏，页面正文不再留一整行按钮。
+    expect(w.findAll('button.mods__btn--refresh')).toHaveLength(0)
+    expect(topbarRegistry.actions.value.map((action) => action.key)).toEqual(['refresh'])
+    await topbarRegistry.actions.value[0]!.onClick()
     await flushPromises()
     await flushPromises()
 

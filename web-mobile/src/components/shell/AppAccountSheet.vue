@@ -158,7 +158,7 @@ function pickLocale(): void {
       </div>
     </div>
 
-    <button type="button" class="btn btn--danger btn--block account__logout" @click="confirmLogout = true">
+    <button id="account-logout" type="button" class="btn btn--danger btn--block account__logout" @click="confirmLogout = true">
       {{ t('common.logout') }}
     </button>
 

@@ -1991,6 +1991,7 @@ export const zhCN = {
   // ↓ 租户详情（2026-10-08，superAdmin 档）
   tnd: {
     title: '租户详情',
+    dailyTitle: '每日用量明细',
     needCode: '租户码为空。',
     created: '创建',
     requests7d: '近 7 天请求',

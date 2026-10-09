@@ -34,7 +34,7 @@ import { t } from '@/i18n'
 import HyperList from '@/components/common/HyperList.vue'
 import AppSheet from '@/components/common/AppSheet.vue'
 import AppConfirm from '@/components/common/AppConfirm.vue'
-import FocusLayer from '@/components/common/FocusLayer.vue'
+import DataTableFocus from '@/components/common/DataTableFocus.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import AppIcon from '@/components/common/AppIcon.vue'
 import { relativeTime } from '@/utils/format'
@@ -83,7 +83,6 @@ onBeforeUnmount(() => {
 
 // 详情 Sheet + 专注宽表
 const detail = ref<CredentialMonitorSummary | null>(null)
-const focusActive = ref(false)
 
 // ── 近期路由决策（GET /api/credentials/decisions，admin 档）──────────────
 // 回答「这个凭据最近在承载什么流量」。**独立于详情主数据**：拉不到就只显示
@@ -149,7 +148,6 @@ const detailOpenProxy = computed({
   set: (v: boolean) => {
     if (!v) {
       detail.value = null
-      focusActive.value = false
       decisions.value = null
       decisionsError.value = null
       routingBlocked.value = null
@@ -686,16 +684,7 @@ function describeError(err: unknown): string {
         </template>
       </div>
 
-      <div class="nodes__per-model-head">
-        <h3 class="page__section-title" style="margin-inline: 0">{{ t('nodes.perModel') }}</h3>
-        <button type="button" class="btn btn--sm" @click="focusActive = true">
-          <AppIcon name="expand" :size="16" />
-          {{ t('common.focusView') }}
-        </button>
-      </div>
-
-      <!-- 专注层：单实例 Teleport，inactive 原位渲染 -->
-      <FocusLayer v-model:active="focusActive" :title="detailTitle">
+      <DataTableFocus :title="detailTitle" :heading="t('nodes.perModel')">
         <div class="table-scroll">
           <table class="table">
             <thead>
@@ -723,7 +712,7 @@ function describeError(err: unknown): string {
             </tbody>
           </table>
         </div>
-      </FocusLayer>
+      </DataTableFocus>
     </template>
   </AppSheet>
 

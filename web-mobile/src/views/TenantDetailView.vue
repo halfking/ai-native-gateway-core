@@ -29,7 +29,9 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useHyperPage } from '@/hyper'
+import { useTopbarAction } from '@/components/shell/topbarActions'
 import AppIcon from '@/components/common/AppIcon.vue'
+import DataTableFocus from '@/components/common/DataTableFocus.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import { t } from '@/i18n'
 import { fmtInt, fmtNum, fmtTime, relativeTime } from '@/utils/format'
@@ -128,6 +130,14 @@ function reload(): void {
   }
   void load(c)
 }
+
+useTopbarAction({
+  key: 'refresh',
+  label: () => t('common.refresh'),
+  icon: 'refresh',
+  disabled: () => loading.value,
+  onClick: reload,
+})
 
 function goBack(): void {
   void router.push('/tenants')
@@ -290,10 +300,10 @@ onBeforeUnmount(() => {
         <span>{{ t('tnd.dailyComplete', { n: stats.daily.length }) }}</span>
       </p>
 
-      <!-- R49-E2：横向滚动包裹（UI规范 10 §4.6.26）——五列表在 375px 视口
-           必然溢出撑破容器；沿 web 侧收敛先例（TenantModelPolicyPanel）的包裹样式。 -->
-      <div style="overflow-x:auto">
-        <table class="tnd__table">
+      <!-- 五列表在窄屏可横向浏览，也能切到全屏查看完整列。 -->
+      <DataTableFocus :title="t('tnd.dailyTitle')">
+        <div style="overflow-x:auto">
+          <table class="tnd__table">
           <thead>
             <tr>
               <th>{{ t('tnd.date') }}</th>
@@ -312,8 +322,9 @@ onBeforeUnmount(() => {
               <td class="tnd__td-v">{{ fmtInt(d.credits) }}</td>
             </tr>
           </tbody>
-        </table>
-      </div>
+          </table>
+        </div>
+      </DataTableFocus>
       <p v-if="!stats.by_model.length" class="tnd__msg">{{ t('tnd.emptyModels') }}</p>
     </section>
 
@@ -397,15 +408,14 @@ onBeforeUnmount(() => {
       </ul>
     </section>
 
-    <div class="tnd__actions">
-      <button type="button" class="tnd__btn" @click="goBack">{{ t('tnd.backToList') }}</button>
-      <button type="button" class="tnd__btn tnd__btn--primary" @click="reload">{{ t('common.refresh') }}</button>
-    </div>
-
     <p class="tnd__note">
       <AppIcon name="key" :size="13" />
       <span>{{ t('tnd.readOnlyNote') }}</span>
     </p>
+
+    <div class="tnd__actions">
+      <button type="button" class="tnd__btn" @click="goBack">{{ t('tnd.backToList') }}</button>
+    </div>
   </div>
 </template>
 
@@ -422,8 +432,6 @@ onBeforeUnmount(() => {
 .tnd__actions { display: flex; gap: 8px; margin-bottom: 12px; }
 .tnd__btn { flex: 1; min-height: 48px; font-size: 14px; border-radius: 8px;
   border: 1px solid var(--app-border); background: transparent; color: inherit; }
-.tnd__btn--primary { border-color: var(--app-primary); color: var(--app-primary); font-weight: 600; }
-
 .tnd__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
 .tnd__msg--err { color: var(--app-danger); }
 .tnd__note { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; line-height: 1.5;

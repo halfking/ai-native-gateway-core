@@ -4,13 +4,14 @@ import FocusLayer from './FocusLayer.vue'
 
 vi.mock('@/hyper', () => ({
   FocusMachine: class {
-    async enter() {}
-    async exit() {}
+    async enter(onEnter?: () => void) { onEnter?.() }
+    async exit(onExit?: () => void) { onExit?.() }
     reset() {}
   },
   Hyper: {
     presentOverlay: vi.fn(),
     dismissOverlay: vi.fn(),
+    scroll: { register: vi.fn(() => vi.fn()) },
   },
   lockScroll: vi.fn(() => vi.fn()),
 }))
@@ -69,6 +70,25 @@ describe('FocusLayer mobile exit controls', () => {
     table.dispatchEvent(touch('touchend', 100, 44))
 
     expect(wrapper.emitted('update:active')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('moves the same table node into focus mode and keeps its horizontal scroll position', async () => {
+    const wrapper = mount(FocusLayer, {
+      props: { active: false, title: '用量明细' },
+      slots: { default: '<div class="table-scroll"><table><tbody><tr><td>row</td></tr></tbody></table></div>' },
+      attachTo: document.body,
+    })
+    const tableScroll = document.body.querySelector<HTMLElement>('.table-scroll')!
+    tableScroll.scrollLeft = 68
+
+    await wrapper.setProps({ active: true })
+    expect(document.body.querySelector('.table-scroll')).toBe(tableScroll)
+    expect(tableScroll.scrollLeft).toBe(68)
+
+    await wrapper.setProps({ active: false })
+    expect(document.body.querySelector('.table-scroll')).toBe(tableScroll)
+    expect(tableScroll.scrollLeft).toBe(68)
     wrapper.unmount()
   })
 })
