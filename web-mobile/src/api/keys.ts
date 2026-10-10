@@ -34,6 +34,7 @@ export interface KeyCreatedResponse {
 }
 
 export interface CreateKeyPayload {
+  tenant_id?: string
   application_code: string
   key_alias?: string
   budget_usd?: number

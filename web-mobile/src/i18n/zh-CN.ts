@@ -2605,6 +2605,7 @@ export const zhCN = {
       appNamePlaceholder: '例如：mobile-debug',
       appNameRequired: '请填写应用标识',
       budget: '预算上限 (USD)',
+      budgetInvalid: '预算必须为不小于 0 的有效数字。',
       budgetPlaceholder: '可选，例如：100',
       submit: '创建',
     },
@@ -2687,6 +2688,9 @@ export const zhCN = {
     nodeQrAlt: '已签名的网关节点二维码',
     nodeQrExpires: '有效期至 {time}',
     openNodeManager: '打开节点管理器',
+    nodeQrExpired: '二维码已过期，请重新生成。',
+    nodeFingerprint: '签名公钥指纹（SHA-256）',
+    nodeFingerprintHint: '请通过已认证的管理页面，独立向手机操作者提供此指纹。',
     nodeQrUnavailable: '无法生成网关二维码，请检查节点和 NetBird 配置。',
   },
   update: {

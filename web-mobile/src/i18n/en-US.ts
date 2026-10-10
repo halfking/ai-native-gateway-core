@@ -2561,6 +2561,7 @@ export const enUS = {
       appNamePlaceholder: 'e.g. mobile-debug',
       appNameRequired: 'Application code is required',
       budget: 'Budget cap (USD)',
+      budgetInvalid: 'Budget must be a valid nonnegative number.',
       budgetPlaceholder: 'optional, e.g. 100',
       submit: 'Create',
     },
@@ -2643,6 +2644,9 @@ export const enUS = {
     nodeQrAlt: 'Signed gateway node QR code',
     nodeQrExpires: 'Valid until {time}',
     openNodeManager: 'Open node manager',
+    nodeQrExpired: 'The QR code expired. Generate a new code.',
+    nodeFingerprint: 'Signing key fingerprint (SHA-256)',
+    nodeFingerprintHint: 'Provide this fingerprint independently from the authenticated admin page to the mobile operator.',
     nodeQrUnavailable: 'Could not create the gateway QR code. Check node and NetBird configuration.',
   },
   update: {

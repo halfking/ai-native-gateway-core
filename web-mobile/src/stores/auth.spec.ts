@@ -206,3 +206,45 @@ describe('auth store 用户信息的读取', () => {
     expect(auth.authHydrated).toBe(true)
   })
 })
+describe('origin-scoped logout and in-flight authentication', () => {
+  it('offline logout stays logged out after reload and preserves node preferences', async () => {
+    localStorage.setItem('llmgw:shell.directory:v2', 'node-directory')
+    mocks.logout.mockRejectedValueOnce(new Error('offline'))
+    const auth = useAuthStore()
+    await auth.login('admin', 'secret', { rememberMe: true })
+    await auth.logout()
+    setActivePinia(createPinia())
+    const restored = useAuthStore()
+    await restored.hydrate()
+    expect(restored.isAuthenticated).toBe(false)
+    expect(mocks.fetchMe).not.toHaveBeenCalled()
+    expect(localStorage.getItem('llmgw:shell.directory:v2')).toBe('node-directory')
+    await restored.login('admin', 'secret')
+    expect(localStorage.getItem('llmgw_mobile_logged_out')).toBeNull()
+    expect(restored.isAuthenticated).toBe(true)
+  })
+  it('late hydration cannot restore a session after logout', async () => {
+    let resolve!: (value: ReturnType<typeof userPayload>) => void
+    mocks.fetchMe.mockReturnValueOnce(new Promise((done) => { resolve = done }))
+    const auth = useAuthStore()
+    const pending = auth.hydrate()
+    await auth.logout()
+    resolve(userPayload())
+    await pending
+    expect(auth.isAuthenticated).toBe(false)
+    expect(localStorage.getItem(USER_KEY)).toBeNull()
+  })
+  it('login waits for a pending server logout before issuing a new cookie', async () => {
+    let resolve!: () => void
+    mocks.logout.mockReturnValueOnce(new Promise<void>((done) => { resolve = done }))
+    const auth = useAuthStore()
+    const exiting = auth.logout()
+    const entering = auth.login('admin', 'secret')
+    expect(auth.isAuthenticated).toBe(false)
+    expect(mocks.login).not.toHaveBeenCalled()
+    resolve()
+    await exiting
+    await entering
+    expect(auth.isAuthenticated).toBe(true)
+  })
+})

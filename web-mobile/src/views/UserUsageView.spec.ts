@@ -48,14 +48,14 @@ vi.mock('@/api/keys', async (importOriginal) => {
 })
 
 const MANAGED_USERS = [
-  { id: 7, tenant_id: 'default', username: 'alice', display_name: 'Alice', email: 'a@x', role: 'user', enabled: true, must_change_password: false, last_login_at: null, created_at: '2026-10-01T00:00:00Z' },
+  { id: 7, tenant_id: 'tenant-a', username: 'alice', display_name: 'Alice', email: 'a@x', role: 'user', enabled: true, must_change_password: false, last_login_at: null, created_at: '2026-10-01T00:00:00Z' },
 ]
 
-const SUMMARY = { days: 30, items: [{ username: 'alice', requests: 10, tokens: 1000, credits: 0 }] }
+const SUMMARY = { days: 30, items: [{ username: 'alice', requests: 10, tokens: 1000, credits: 0, last_active_at: null }] }
 
 const DETAIL = {
-  user: { id: 7, tenant_id: 'default', username: 'alice' },
-  kpi: { requests: 10, tokens: 1000, credits: 0, errors: 0, error_rate: 0, latency_p95_ms: null },
+  user_id: 7, username: 'alice', days: 30,
+  kpi: { requests: 10, tokens: 1000, credits: 0, errors: 0, error_rate: 0.5, latency_p95_ms: null, cost_usd: 12.5 },
   daily: [],
   top_models: [],
   top_apps: [],
@@ -85,7 +85,7 @@ async function mountView() {
   await router.isReady()
   useAuthStore().userInfo = {
     id: 1, tenant_id: 'default', username: 'admin', display_name: 'A',
-    email: 'a@x', role: 'admin', enabled: true,
+    email: 'a@x', role: 'super_admin', enabled: true,
   }
   const w = mount(UserUsageView, { attachTo: document.body, global: { plugins: [pinia, router] } })
   mounted.push(w)
@@ -149,8 +149,9 @@ describe('UserUsageView 用户下创建 API Key 入口', () => {
     await flushPromises()
     await flushPromises()
     expect(vi.mocked(createKey)).toHaveBeenCalledTimes(1)
-    const payload = vi.mocked(createKey).mock.calls[0][0] as { owner_user?: string }
+    const payload = vi.mocked(createKey).mock.calls[0]![0] as { owner_user?: string; tenant_id?: string }
     expect(payload.owner_user).toBe('alice')
+    expect(payload.tenant_id).toBe('tenant-a')
   })
 
   it('成功后展示明文 api_key 与复制按钮', async () => {
@@ -188,5 +189,41 @@ describe('UserUsageView 用户下创建 API Key 入口', () => {
     await flushPromises()
     await flushPromises()
     expect(vi.mocked(fetchUserStats).mock.calls.length).toBeGreaterThan(callsBefore)
+  })
+})
+
+describe('UserUsageView audit regressions', () => {
+  it('renders a fractional error rate as a percentage and uses the complete-window cost', async () => {
+    const w = await mountView()
+    expect(w.text()).toContain('50.00%')
+    expect(w.text()).toContain('12.50')
+  })
+  it('discards an older detail response after selecting a different user', async () => {
+    let resolve!: (value: typeof DETAIL) => void
+    vi.mocked(fetchUserStats).mockReturnValueOnce(new Promise((done) => { resolve = done }))
+    const w = await mountView()
+    vi.mocked(fetchUserStats).mockResolvedValueOnce({ ...DETAIL, user_id: 8, username: 'bob', kpi: { ...DETAIL.kpi, cost_usd: 99 } })
+    await w.vm.$router.push('/users/8')
+    await flushPromises()
+    resolve(DETAIL)
+    await flushPromises()
+    expect(w.text()).toContain('99.00')
+    expect(w.text()).not.toContain('12.50')
+  })
+  it('does not restore a secret after its creation sheet closes', async () => {
+    let resolve!: (value: Awaited<ReturnType<typeof createKey>>) => void
+    vi.mocked(createKey).mockReturnValueOnce(new Promise((done) => { resolve = done }))
+    const w = await mountView()
+    await w.findAll('button.btn--primary').find((b) => b.text().includes(t('keys.create')))!.trigger('click')
+    await flushPromises()
+    document.querySelector<HTMLButtonElement>('.user-usage__create button.btn--primary')!.click()
+    await flushPromises()
+    w.findComponent({ name: 'AppSheet' }).vm.$emit('update:modelValue', false)
+    await flushPromises()
+    resolve({ id: 99, api_key: 'sk-late-secret', key_prefix: 'sk-late', application_code: 'alice', message: 'ok' })
+    await flushPromises()
+    await w.findAll('button.btn--primary').find((b) => b.text().includes(t('keys.create')))!.trigger('click')
+    await flushPromises()
+    expect(document.body.textContent).not.toContain('sk-late-secret')
   })
 })

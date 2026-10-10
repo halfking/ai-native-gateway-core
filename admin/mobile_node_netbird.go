@@ -12,6 +12,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const mobilePolicyMarker = "managed-by=llmgw-mobile-node"
@@ -22,6 +24,7 @@ type NetBirdGatewayAccess struct {
 	apiURL, token, gatewayGroupID, mobileAdminGroupID string
 	policyName                                        string
 	client                                            *http.Client
+	lock                                              func(context.Context, string) (func(), error)
 }
 
 type netBirdGroup struct {
@@ -34,15 +37,78 @@ type netBirdGroup struct {
 }
 
 type netBirdRule struct {
-	Name          string   `json:"name"`
-	Description   string   `json:"description"`
-	Enabled       bool     `json:"enabled"`
-	Action        string   `json:"action"`
-	Bidirectional bool     `json:"bidirectional"`
-	Protocol      string   `json:"protocol"`
-	Ports         []string `json:"ports"`
-	Sources       []string `json:"sources"`
-	Destinations  []string `json:"destinations"`
+	Name                string              `json:"name"`
+	Description         string              `json:"description"`
+	Enabled             bool                `json:"enabled"`
+	Action              string              `json:"action"`
+	Bidirectional       bool                `json:"bidirectional"`
+	Protocol            string              `json:"protocol"`
+	Ports               []string            `json:"ports"`
+	Sources             netBirdGroupIDs     `json:"sources"`
+	Destinations        netBirdGroupIDs     `json:"destinations"`
+	PortRanges          []json.RawMessage   `json:"port_ranges,omitempty"`
+	AuthorizedGroups    map[string][]string `json:"authorized_groups,omitempty"`
+	SourceResource      *json.RawMessage    `json:"sourceResource,omitempty"`
+	DestinationResource *json.RawMessage    `json:"destinationResource,omitempty"`
+}
+
+// NetBird GET returns group objects; POST accepts group IDs.
+type netBirdGroupIDs []string
+
+func (ids *netBirdGroupIDs) UnmarshalJSON(data []byte) error {
+	var entries []json.RawMessage
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		var id string
+		if err := json.Unmarshal(entry, &id); err != nil {
+			var group struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(entry, &group); err != nil {
+				return err
+			}
+			id = group.ID
+		}
+		if id == "" {
+			return errors.New("NetBird group reference has no ID")
+		}
+		*ids = append(*ids, id)
+	}
+	return nil
+}
+
+// Keep the session lock across the complete read/validate/write sequence.
+// All replicas managing a node must share the gateway database.
+func netBirdDatabaseLock(pool *pgxpool.Pool) func(context.Context, string) (func(), error) {
+	return func(ctx context.Context, key string) (func(), error) {
+		if pool == nil {
+			return nil, errors.New("NetBird reconciliation requires a database lock")
+		}
+		conn, err := pool.Acquire(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock(hashtextextended($1, 0))", key); err != nil {
+			// Acquisition can succeed just before cancellation; never recycle this session.
+			closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = conn.Hijack().Close(closeCtx)
+			return nil, err
+		}
+		return func() {
+			closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			var unlocked bool
+			err := conn.QueryRow(closeCtx, "SELECT pg_advisory_unlock(hashtextextended($1, 0))", key).Scan(&unlocked)
+			if err != nil || !unlocked {
+				_ = conn.Hijack().Close(closeCtx)
+				return
+			}
+			conn.Release()
+		}, nil
+	}
 }
 
 type netBirdPolicy struct {
@@ -82,7 +148,7 @@ func NewNetBirdGatewayAccessFromEnv() (*NetBirdGatewayAccess, error) {
 	return &NetBirdGatewayAccess{
 		apiURL: apiURL, token: token, gatewayGroupID: gatewayGroup,
 		mobileAdminGroupID: adminGroup, policyName: policyName,
-		client: &http.Client{Timeout: 8 * time.Second},
+		client: &http.Client{Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 	}, nil
 }
 
@@ -116,10 +182,11 @@ func (n *NetBirdGatewayAccess) request(ctx context.Context, method, path string,
 	if output == nil || resp.StatusCode == http.StatusNoContent {
 		return nil
 	}
-	decoder := json.NewDecoder(io.LimitReader(resp.Body, 1<<20))
-	if err := decoder.Decode(output); err != nil {
+	data, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+	if err != nil || len(data) > 1<<20 || json.Unmarshal(data, output) != nil {
 		return errors.New("NetBird API returned an invalid response")
 	}
+
 	return nil
 }
 
@@ -127,62 +194,82 @@ func (n *NetBirdGatewayAccess) EnsureGatewayAccess(ctx context.Context, nodeID, 
 	if peerID == "" {
 		return errors.New("gateway NetBird peer ID is missing")
 	}
-	var group netBirdGroup
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if n.lock == nil {
+		return errors.New("NetBird reconciliation lock is not configured")
+	}
+	unlock, err := n.lock(ctx, "llmgw-mobile-netbird:"+n.apiURL+":"+n.gatewayGroupID)
+	if err != nil {
+		return fmt.Errorf("lock NetBird reconciliation: %w", err)
+	}
+	defer unlock()
+	var group, mobileGroup netBirdGroup
 	if err := n.request(ctx, http.MethodGet, "/groups/"+url.PathEscape(n.gatewayGroupID), nil, &group); err != nil {
-		return fmt.Errorf("load configured gateway group: %w", err)
+		return fmt.Errorf("load gateway group: %w", err)
 	}
-	if group.ID != n.gatewayGroupID {
-		return errors.New("NetBird API returned a different gateway group than configured")
+	if group.ID != n.gatewayGroupID || group.Name == "" {
+		return errors.New("invalid configured gateway group")
 	}
+	if err := n.request(ctx, http.MethodGet, "/groups/"+url.PathEscape(n.mobileAdminGroupID), nil, &mobileGroup); err != nil {
+		return fmt.Errorf("load mobile admin group: %w", err)
+	}
+	if mobileGroup.ID != n.mobileAdminGroupID {
+		return errors.New("invalid configured mobile admin group")
+	}
+	var peer struct {
+		ID string `json:"id"`
+	}
+	if err := n.request(ctx, http.MethodGet, "/peers/"+url.PathEscape(peerID), nil, &peer); err != nil {
+		return fmt.Errorf("load gateway peer: %w", err)
+	}
+	if peer.ID != peerID {
+		return errors.New("invalid configured gateway peer")
+	}
+	// A node owns an exclusive destination group, avoiding cross-node grants.
 	peerPresent := false
-	peerIDs := make([]string, 0, len(group.Peers)+1)
-	for _, peer := range group.Peers {
-		if peer.ID == "" {
-			continue
+	for _, member := range group.Peers {
+		if member.ID != peerID {
+			return errors.New("gateway group contains a different peer; use a dedicated group per node")
 		}
-		peerIDs = append(peerIDs, peer.ID)
-		peerPresent = peerPresent || peer.ID == peerID
+		peerPresent = true
 	}
-	if !peerPresent {
-		peerIDs = append(peerIDs, peerID)
-		input := map[string]any{"name": group.Name, "peers": peerIDs}
-		if len(group.Resources) > 0 {
-			input["resources"] = group.Resources
-		}
-		if err := n.request(ctx, http.MethodPut, "/groups/"+url.PathEscape(group.ID), input, nil); err != nil {
-			return fmt.Errorf("add gateway peer to NetBird group: %w", err)
-		}
+	if len(group.Resources) > 0 {
+		return errors.New("gateway group contains network resources; use a dedicated peer group")
 	}
-
 	var policies []netBirdPolicy
 	if err := n.request(ctx, http.MethodGet, "/policies", nil, &policies); err != nil {
 		return fmt.Errorf("load NetBird policies: %w", err)
 	}
-	policy := netBirdPolicy{
-		Name:        n.policyName,
-		Description: mobilePolicyMarker + " node=" + safeNodeID(nodeID),
-		Enabled:     true,
-		Rules: []netBirdRule{{
-			Name: "Mobile HTTPS", Description: "Allow logged-in mobile operators to reach the gateway HTTPS endpoint",
-			Enabled: true, Action: "accept", Bidirectional: false, Protocol: "tcp", Ports: []string{"443"},
-			Sources: []string{n.mobileAdminGroupID}, Destinations: []string{n.gatewayGroupID},
-		}},
-	}
+	managedCount := 0
 	for _, existing := range policies {
 		if existing.Name != n.policyName {
 			continue
 		}
-		if !strings.Contains(existing.Description, mobilePolicyMarker) || !isManagedMobilePolicy(existing, n.mobileAdminGroupID, n.gatewayGroupID) {
-			return errors.New("a NetBird policy already uses the configured mobile policy name with unmanaged rules")
+		managedCount++
+		if existing.ID == "" || existing.Description != mobilePolicyMarker+" node="+safeNodeID(nodeID) || !isManagedMobilePolicy(existing, n.mobileAdminGroupID, n.gatewayGroupID) {
+			return errors.New("configured NetBird policy name has unmanaged rules")
 		}
-		policy.ID = existing.ID
-		policy.SourcePostureChecks = existing.SourcePostureChecks
-		break
 	}
-	if policy.ID == "" {
-		return n.request(ctx, http.MethodPost, "/policies", policy, nil)
+	if managedCount > 1 {
+		return errors.New("duplicate managed NetBird policies; reconcile them before pairing")
 	}
-	return n.request(ctx, http.MethodPut, "/policies/"+url.PathEscape(policy.ID), policy, nil)
+	// Validation is complete before any mutation. Reuse matching policies verbatim
+	// (including their posture checks), rather than rewriting them on every QR scan.
+	if managedCount == 0 {
+		policy := netBirdPolicy{Name: n.policyName, Description: mobilePolicyMarker + " node=" + safeNodeID(nodeID), Enabled: true,
+			Rules: []netBirdRule{{Name: "Mobile HTTPS", Description: "Mobile gateway HTTPS", Enabled: true, Action: "accept", Protocol: "tcp", Ports: []string{"443"}, Sources: netBirdGroupIDs{n.mobileAdminGroupID}, Destinations: netBirdGroupIDs{n.gatewayGroupID}}}}
+		if err := n.request(ctx, http.MethodPost, "/policies", policy, nil); err != nil {
+			return fmt.Errorf("create mobile HTTPS policy: %w", err)
+		}
+	}
+	if !peerPresent {
+		input := map[string]any{"name": group.Name, "peers": []string{peerID}, "resources": []any{}}
+		if err := n.request(ctx, http.MethodPut, "/groups/"+url.PathEscape(group.ID), input, nil); err != nil {
+			return fmt.Errorf("add gateway peer to NetBird group: %w", err)
+		}
+	}
+	return nil
 }
 
 func isManagedMobilePolicy(policy netBirdPolicy, mobileAdminGroupID, gatewayGroupID string) bool {
@@ -190,7 +277,7 @@ func isManagedMobilePolicy(policy netBirdPolicy, mobileAdminGroupID, gatewayGrou
 		return false
 	}
 	rule := policy.Rules[0]
-	return rule.Enabled && rule.Name == "Mobile HTTPS" && rule.Action == "accept" &&
+	return len(rule.PortRanges) == 0 && len(rule.AuthorizedGroups) == 0 && rule.SourceResource == nil && rule.DestinationResource == nil && rule.Enabled && rule.Name == "Mobile HTTPS" && rule.Action == "accept" &&
 		rule.Protocol == "tcp" && !rule.Bidirectional &&
 		len(rule.Ports) == 1 && rule.Ports[0] == "443" &&
 		len(rule.Sources) == 1 && rule.Sources[0] == mobileAdminGroupID &&

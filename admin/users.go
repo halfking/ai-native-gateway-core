@@ -308,6 +308,10 @@ func (h *Handler) handleUsers(w http.ResponseWriter, r *http.Request) {
 // does not enforce an administrative role.
 func requireUserManager(w http.ResponseWriter, r *http.Request) bool {
 	auth := GetAuthContext(r)
+	if auth != nil && auth.Role == "tenant_admin" && strings.TrimSpace(auth.TenantID) == "" {
+		writeError(w, http.StatusForbidden, "tenant scope unavailable")
+		return false
+	}
 	if auth != nil && (auth.Role == "super_admin" || auth.Role == "tenant_admin" || auth.Role == "admin_key") {
 		return true
 	}

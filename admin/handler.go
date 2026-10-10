@@ -593,6 +593,9 @@ func (h *Handler) SetProviderCostReconciliationHandler(hh *ProviderCostReconcili
 
 // SetMobileNodeDescriptorService enables signed gateway QR provisioning.
 func (h *Handler) SetMobileNodeDescriptorService(service *MobileNodeDescriptorService) {
+	if service != nil && service.netbird != nil {
+		service.netbird.lock = netBirdDatabaseLock(h.db)
+	}
 	h.mobileNodeDescriptor = service
 }
 

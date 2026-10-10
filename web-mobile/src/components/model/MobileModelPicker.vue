@@ -13,8 +13,6 @@ const props = withDefaults(defineProps<{
   disabled?: boolean
 }>(), {
   mode: 'single',
-  title: () => t('modelPicker.title'),
-  placeholder: () => t('modelPicker.trigger'),
   disabled: false,
 })
 const emit = defineEmits<{ 'update:modelValue': [value: string | string[]] }>()
@@ -126,9 +124,9 @@ function displayName(version: AvailableVersion): string {
 
 <template>
   <button class="model-picker-trigger" type="button" :disabled="disabled" @click="beginSelection">
-    {{ triggerLabel || placeholder }}
+    {{ triggerLabel || placeholder || t('modelPicker.trigger') }}
   </button>
-  <AppSheet v-model="open" presentation="sheet" :title="title">
+  <AppSheet v-model="open" presentation="sheet" :title="title || t('modelPicker.title')">
     <div class="model-picker">
       <input v-model="search" class="model-picker__search" type="search" :placeholder="t('modelPicker.search')" />
       <p v-if="error" class="model-picker__error" role="alert">

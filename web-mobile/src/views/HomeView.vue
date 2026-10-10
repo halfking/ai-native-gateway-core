@@ -86,7 +86,7 @@ async function loadAll(): Promise<void> {
 async function refresh(): Promise<void> {
   lastRefreshFailed.value = false
   try {
-    await loadAll()
+    await Promise.all([loadAll(), loadLiveQueue()])
   } catch {
     lastRefreshFailed.value = true
   }
@@ -94,7 +94,8 @@ async function refresh(): Promise<void> {
 
 onMounted(async () => {
   await loadAll()
-  if (!disposed) initialLoading.value = false
+  if (disposed) return
+  initialLoading.value = false
   void loadLiveQueue()
   queueTimer = window.setInterval(() => void loadLiveQueue(), 10_000)
 })
@@ -146,8 +147,8 @@ const creditsMissing = computed(() => !!summary.value?.credits_missing_view)
           <RouterLink to="/journey" class="data-card home__queue" :aria-label="t('home.openQueue')">
             <div class="card-row">
               <strong>{{ t('home.queueTitle') }}</strong>
-              <span v-if="queueDegraded" class="badge badge--warning">{{ t('home.queueDegraded') }}</span>
-              <span v-else-if="queueFailed" class="badge badge--warning">{{ t('home.queueUnavailable') }}</span>
+              <span v-if="queueFailed" class="badge badge--warning">{{ t('home.queueUnavailable') }}</span>
+              <span v-else-if="queueDegraded" class="badge badge--warning">{{ t('home.queueDegraded') }}</span>
               <span v-else class="home__queue-refresh">{{ t('home.queueRefresh') }}</span>
             </div>
             <div v-if="liveQueue" class="home__queue-stats">
