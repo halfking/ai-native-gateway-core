@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -28,6 +29,12 @@ type patternEntry struct {
 	sType SensitiveType
 	regex *regexp.Regexp
 	group int // Optional submatch containing only the value, preserving labels.
+	// vendorKeyShape marks the built-in sk-/ak- rule, whose pattern matches
+	// a bare shape and whose whole-string qualification lives in
+	// credibleSecretCandidate. Rules loaded from a YAML config own their
+	// own regex semantics and are never subject to that filter — a config
+	// author writing `KEY-[A-Z]{4}` means it literally.
+	vendorKeyShape bool
 }
 
 // PatternDetector 基于正则模式匹配的检测器
@@ -71,6 +78,9 @@ func (d *PatternDetector) Detect(_ context.Context, text string) ([]SensitiveFra
 
 			value := text[start:end]
 			typ := p.sType
+			if p.vendorKeyShape && !credibleSecretCandidate(value) {
+				continue
+			}
 			if typ == TypeServerIP || typ == TypeInternalIP {
 				address, err := netip.ParseAddr(value)
 				if err != nil {
@@ -96,6 +106,55 @@ func (d *PatternDetector) Detect(_ context.Context, text string) ([]SensitiveFra
 		return fragments[i].Start < fragments[j].Start
 	})
 	return fragments, nil
+}
+
+// vendorKeyShapeSource is the shape the built-in rule and the shipped
+// `secret.api_key` rule share. Detection is by pattern text rather than by
+// rule name so a deployment that names its own short-token rule `api_key`
+// keeps literal semantics.
+//
+// The prefix set is the union of what each side used to cover: the built-in
+// fallback had `sk|ak`, the shipped YAML had `sk|key|token|api|bearer`.
+// Narrowing either one would silently drop keys the other already caught.
+const vendorKeyShapeSource = `\b(?:sk|ak|key|token|api|bearer)[-_]?[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*\b`
+
+func isVendorKeyShapeRegex(pattern string) bool {
+	return pattern == vendorKeyShapeSource
+}
+
+// minSecretBodyLen is the floor the pre-244 rule expressed as `{16,}` on the
+// key body. It is preserved here because the pattern can no longer carry it.
+const minSecretBodyLen = 16
+
+// credibleSecretCandidate filters the shape-only secret match down to things
+// that look like an actual key.
+//
+// The secret pattern deliberately matches a bare `sk-`/`ak-` prefix plus
+// hyphen-joined alphanumerics, because the infix hyphens are what real
+// vendor keys carry (audit 244 F2). On its own that shape also matches
+// ordinary hyphenated English, so two whole-string rules are applied here —
+// both are properties of the entire candidate, which RE2 cannot express
+// without lookahead assertions that Go's regexp rejects:
+//
+//  1. the body must be at least minSecretBodyLen characters, which keeps
+//     `sk-test` / `ak-short` / `sk-or-v1` out;
+//  2. the body must contain a digit, which keeps pure-alphabetic prose
+//     ("api-design-patterns", "bearer-of-responsibility",
+//     "token-bucket-algorithm") out. Real vendor keys mix letters and
+//     digits; those three phrases do not.
+//
+// Both rules deliberately mirror what the old `{16,}` pattern already
+// implied for the non-hyphenated case, so nothing that used to be detected
+// stops being detected.
+func credibleSecretCandidate(value string) bool {
+	body := value
+	if i := strings.IndexByte(body, '-'); i >= 0 {
+		body = body[i+1:]
+	}
+	if len(body) < minSecretBodyLen {
+		return false
+	}
+	return strings.ContainsFunc(body, func(r rune) bool { return r >= '0' && r <= '9' })
 }
 
 func outsideReservedSpans(start, end int, reserved [][]int) [][2]int {
@@ -129,7 +188,20 @@ func defaultPatternEntries() []patternEntry {
 		{sType: TypeIDCard, regex: regexp.MustCompile(`\d{17}[\dXx]`)},
 		{sType: TypeEmail, regex: regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)},
 		{sType: TypeCreditCard, regex: regexp.MustCompile(`\b(?:4\d{12,15}|5[1-5]\d{14}|3[47]\d{13}|6(?:011|5\d{2})\d{12})\b`)},
-		{sType: TypeSecret, regex: regexp.MustCompile(`(sk|ak)-[a-zA-Z0-9]{16,}`)},
+		// 2026-10-10: audit 244 F2 fix — the key body now admits infix
+		// hyphens, so the real vendor formats (sk-proj-…, sk-ant-api03-…,
+		// sk-or-v1-…) match instead of stopping at the first hyphen. The
+		// old `[a-zA-Z0-9]{16,}` class made every hyphen-bearing key a
+		// silent miss, forwarding the plaintext key upstream and persisting
+		// it in request_logs_bodies.
+		//
+		// Shape only. The 16-character floor and the "contains a digit"
+		// rule are whole-string properties that RE2 cannot express without
+		// a lookahead assertion (which Go's regexp rejects outright), so
+		// they live in credibleSecretCandidate below. Keeping them in Go
+		// rather than in the pattern is also what lets the same rule serve
+		// the YAML-loaded production detector.
+		{sType: TypeSecret, regex: regexp.MustCompile(vendorKeyShapeSource), vendorKeyShape: true},
 	}, operationalPatternEntries()...)
 }
 

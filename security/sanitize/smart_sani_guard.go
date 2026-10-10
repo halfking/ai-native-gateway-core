@@ -1409,6 +1409,24 @@ func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Conte
 	if encodeFailed {
 		return false, true
 	}
+	// 2026-10-10: the guard used to be `restored == combined`, which only fires
+	// when restoreText leaves the text untouched. When a buffered marker prefix
+	// is completed by garbage, restoreText masks the marker word and returns
+	// something different — "{" + "[REDACTED]" + the continuation — so the
+	// guard never ran and the half-masked token plus the continuation reached
+	// the client.
+	//
+	// The distinguishing signal is that restoreText had to MASK: a marker that
+	// resolves to a real value comes back with that value and no redacted
+	// marker. So the extra condition is "the restore pass produced a redaction
+	// while completing a reserved prefix". Checking for that alone (rather
+	// than "the text changed") is what keeps the normal split-across-chunks
+	// restore working — that path resolves and must pass through untouched.
+	if previous != "" && tail == "" && reservedMarkerStarted(previous) &&
+		strings.Contains(restored, redactedMarker) {
+		object[field] = redactedMarker
+		return true, false
+	}
 	if previous != "" && tail == "" && restored == combined {
 		// The continuation made the buffered prefix syntactically invalid. A
 		// plain brace prefix is common in streamed JSON/code, so release it with
@@ -1439,13 +1457,54 @@ func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Conte
 // incompletePlaceholderStart finds a valid prefix of the placeholder grammar
 // at the end of text. Invalid brace text is ordinary model output and passes
 // through; a full placeholder is handled by RestoreOutputOrMask.
+//
+// 2026-10-10: a streamed delta can also open a marker with '(' — observed on
+// minimax-m3, which rewrote `{SENSITIVE:…}` as `(SENSITIVE:` and split it
+// across chunks. The old '{'-only scan missed that fragment, released it to
+// the client, and the continuation ("phone:1}") then arrived with nothing to
+// rejoin — so an internal token reached the client mid-marker. '{' is still
+// tried first because it is the canonical spelling.
 func incompletePlaceholderStart(text string) (int, bool) {
+	if start, ok := braceMarkerStart(text); ok {
+		return start, true
+	}
+	return parenMarkerStart(text)
+}
+
+// braceMarkerStart keeps the original contract: a '{' whose tail the loose
+// grammar accepts as an arriving (never completed) marker.
+func braceMarkerStart(text string) (int, bool) {
 	start := strings.LastIndexByte(text, '{')
 	if start < 0 {
 		return 0, false
 	}
-	candidate := text[start:]
-	if !validPlaceholderPrefix(candidate) {
+	if !validPlaceholderPrefix(text[start:]) {
+		return 0, false
+	}
+	return start, true
+}
+
+// parenMarkerStart handles the re-spelled opening bracket. It cannot reuse
+// validPlaceholderPrefix (which requires a '{'), so it admits a fragment only
+// when the text right after '(' starts the marker word or is a still-arriving
+// prefix of it. That keeps ordinary prose such as "hello (world" from being
+// buffered while still holding "(SENS" until its continuation lands.
+func parenMarkerStart(text string) (int, bool) {
+	start := strings.LastIndexByte(text, '(')
+	if start < 0 {
+		return 0, false
+	}
+	rest := text[start+1:]
+	if rest == "" {
+		// "(" at the very end with nothing after it yet: too early to tell a
+		// re-spelled marker from ordinary prose. Hold nothing — the next
+		// delta re-evaluates the combined text anyway.
+		return 0, false
+	}
+	if len(rest) > len(placeholderMarkerWord) {
+		rest = rest[:len(placeholderMarkerWord)]
+	}
+	if !strings.HasPrefix(placeholderMarkerWord, normalizePlaceholder(rest)) {
 		return 0, false
 	}
 	return start, true

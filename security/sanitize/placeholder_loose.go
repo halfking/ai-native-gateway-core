@@ -69,8 +69,39 @@ const (
 // be a mutated marker. It is deliberately permissive about the *inside* of the
 // brackets: parseLoosePlaceholder is the strict validator, so an over-broad
 // span costs one failed validation instead of a rewrite.
+//
+// 2026-10-10: measured on 154, minimax-m3 also drops the *braces* entirely and
+// writes a bare "SENSITIVE:phone" (sometimes "SENSITIVE:phone, SENSITIVE:email,
+// SENSITIVE:id_card") inside reasoning_content. The brace-delimited alternative
+// below never matches that, so the bare form reached the client verbatim. This
+// is a structural rewrite, not the semantic renaming the package header declines
+// to repair — it sits next to the already-supported case normalisation
+// ("{sensitive:…}" for "{SENSITIVE:…}") — so it is in scope for the tolerant
+// stage.
+//
+// The bare alternative is anchored on the marker word itself rather than on
+// arbitrary text, which is what keeps prose out: "sensitive data", "sensitive:
+// 12345" and "the sensitive field" never satisfy it, because the span must be
+// followed by ":" plus a type identifier, and parseLoosePlaceholder is still
+// the strict validator on top.
+//
+// The index is optional on purpose. Measured on 154, the model does not just
+// strip the braces — it enumerates the types it was shown, as in
+// "（SENSITIVE:phone, SENSITIVE:email, SENSITIVE:id_card）", with no index at
+// all. A form that resolves to nothing still has to be masked rather than
+// passed through, so the span pattern admits it and the strict parser decides
+// what (if anything) it resolves to.
 var loosePlaceholderSpanPattern = regexp.MustCompile(
-	`[\{｛][^{}｛｝]{0,` + strconv.Itoa(loosePlaceholderMaxSpan) + `}[\}｝]`)
+	`[\{｛][^{}｛｝]{0,` + strconv.Itoa(loosePlaceholderMaxSpan) + `}[\}｝]` +
+		`|` + looseBareMarkerSpanSource)
+
+// looseBareMarkerSpanSource is the brace-less form on its own. The re-scan
+// below needs it separately: inside a brace-delimited span the same span
+// pattern would match the very run being consumed, so the re-scan would never
+// make progress.
+var looseBareMarkerSpanSource = `\b(?i:sensitive):+[a-z_][a-z0-9_-]{0,31}:*[0-9]{0,9}\b`
+
+var looseBareMarkerSpanPattern = regexp.MustCompile(looseBareMarkerSpanSource)
 
 // unterminatedPlaceholderSpanPattern matches the same bounded run anchored at the
 // end of the text, i.e. a marker whose closing brace never arrived. A truncated
@@ -90,8 +121,23 @@ var unterminatedPlaceholderSpanPattern = regexp.MustCompile(
 // out of "key: value" context emits doubled colons, and a missing one is
 // tolerated for the same reason. The type may contain "-", which folds back to
 // "_" so "server-ip" resolves to the same type as "server_ip".
+//
+// The index is optional (2026-10-10): measured on 154, minimax-m3 enumerates
+// the marker types it was shown — "（SENSITIVE:phone, SENSITIVE:email,
+// SENSITIVE:id_card）" — with no index on any of them. Requiring digits there
+// made the whole span unparseable, so restoreLooseMarkers skipped it and the
+// internal token reached the client. A missing index parses as marker syntax
+// with index -1, which already has a defined meaning downstream: it can never
+// resolve to a mapping row, so mask-mode callers redact it and the value is
+// dropped rather than leaked.
+//
+// The type group therefore ends on a non-digit ([a-z0-9_-]*[a-z_-], or a bare
+// leading [a-z_]). Making it optional-index without that would regress the
+// long-standing "missing separator" case: "{SENSITIVEsecret1}" must split into
+// type=secret index=1, and a type class that may end in a digit swallows the
+// "1" instead, because an empty index group no longer forces the split.
 var loosePlaceholderGrammar = regexp.MustCompile(
-	`^` + placeholderMarkerWord + `:*([a-z_][a-z0-9_-]*):*([0-9]+)$`)
+	`^` + placeholderMarkerWord + `:*([a-z_](?:[a-z0-9_-]*[a-z_-])?):*([0-9]*)$`)
 
 // placeholderResolver reports the plaintext for a recognized marker.
 type placeholderResolver func(typ SensitiveType, index int) (string, bool)
@@ -259,8 +305,22 @@ type looseRestoreStats struct {
 // restoreLooseMarkers rewrites every mutated marker in text that the resolver
 // recognizes. Exact markers are handled by the caller's exact pass first, so
 // this pass only ever sees text the exact grammar rejected.
+// maxLooseRescanDepth bounds the re-scan loop below. Each level strictly
+// shrinks the text (the span is a proper substring), so termination is
+// structural, but the cap keeps a pathological input from turning the pass
+// into deep recursion on the request path.
+const maxLooseRescanDepth = 4
+
 func restoreLooseMarkers(ctx context.Context, text string, resolve placeholderResolver, foreign foreignMarkerSet, policy looseUnknownPolicy) looseRestoreStats {
-	spans := loosePlaceholderSpanPattern.FindAllStringIndex(text, -1)
+	return restoreLooseMarkersDepth(ctx, text, resolve, foreign, policy, 0)
+}
+
+func restoreLooseMarkersDepth(ctx context.Context, text string, resolve placeholderResolver, foreign foreignMarkerSet, policy looseUnknownPolicy, depth int) looseRestoreStats {
+	return rewriteLooseSpans(ctx, text, resolve, foreign, policy, depth,
+		loosePlaceholderSpanPattern.FindAllStringIndex(text, -1))
+}
+
+func rewriteLooseSpans(ctx context.Context, text string, resolve placeholderResolver, foreign foreignMarkerSet, policy looseUnknownPolicy, depth int, spans [][]int) looseRestoreStats {
 	if len(spans) == 0 {
 		return looseRestoreStats{text: text}
 	}
@@ -270,8 +330,32 @@ func restoreLooseMarkers(ctx context.Context, text string, resolve placeholderRe
 	changed := false
 	stats := looseRestoreStats{}
 	for _, span := range spans {
-		typ, index, ok := parseLoosePlaceholder(text[span[0]:span[1]])
+		candidate := text[span[0]:span[1]]
+		typ, index, ok := parseLoosePlaceholder(candidate)
 		if !ok {
+			// The span was matched but is not itself a marker. That happens
+			// when a brace-delimited run swallows more than one marker, the
+			// common case being a JSON document whose *value* is a bare form:
+			// {"phone":"SENSITIVE:phone"} is captured whole by the brace
+			// branch, so skipping it outright would leave the inner marker
+			// unscanned and let it reach the client. Re-scan inside the span
+			// and splice the result back so the surrounding JSON survives.
+			if depth >= maxLooseRescanDepth {
+				continue
+			}
+			// Re-scan with the brace-less pattern only: the full pattern would
+			// re-match the run being consumed and never terminate the descent.
+			inner := rewriteLooseSpans(ctx, candidate, resolve, foreign, policy, depth+1,
+				looseBareMarkerSpanPattern.FindAllStringIndex(candidate, -1))
+			if inner.text != candidate {
+				b.WriteString(text[last:span[0]])
+				b.WriteString(inner.text)
+				last = span[1]
+				changed = true
+				stats.recovered += inner.recovered
+				stats.unresolved += inner.unresolved
+				stats.passthrough += inner.passthrough
+			}
 			continue
 		}
 		if foreign.isForeignPlaceholder(typ, index) {
