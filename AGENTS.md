@@ -280,3 +280,86 @@ bash scripts/deploy-245.sh --seq <seq>          # seq 必须自增且不与他�
 仓库里 `scripts/deploy-lib` 的软链目标（`ai-native-workspace/…`）与本机实际
 SSOT（`ai-native-tools/…`）不一致。**用 `AIAN_DEPLOY_LIB` 环境变量指真实路径，
 不要依赖软链。** 软链的事留给维护者裁决，不要自行改提交。
+---
+
+# 追加：2026-10-11 154/252 事故与批判式审计（root 会话 `mvs_771078044a9a4dc8960546e26f653367`）
+
+## ⚠️ 先更正本文件上方一处我自己的错误结论
+
+上一轮我断言「本机只有 bash 3.2，没有 bash 4+，deploy-lib 的 `${var^^}` 阻塞部署，
+需打补丁副本绕过」。**该结论是错的**：我只查了 `/opt/homebrew/bin`、`/usr/local/bin`、
+`/bin` 就下了判断，漏了 `~/sdk/`。
+
+实测（2026-10-11）：
+
+```bash
+~/sdk/bash5/bin/bash --version        # GNU bash 5.2.0
+~/sdk/bash5/bin/bash -c 't=154; echo "HOST_${t^^}_ROOT"'      # HOST_154_ROOT  ✅
+~/sdk/bash5/bin/bash -c 'set -euo pipefail; a=(); printf "[%s]\n" "${a[@]}"'  # []  ✅
+# 对照 /bin/bash 3.2：bad substitution / unbound variable
+```
+
+⇒ **deploy-lib 不需要任何修改，也不需要打补丁副本**。用
+`~/sdk/bash5/bin/bash scripts/deploy-154.sh` 即可，两个构造都正常。
+上方「部署 245 的实操」一节已经写对了，本条只是提醒别再重复我这个误判。
+
+## 本会话 checkout 与上方记录不一致
+
+上方「仓库快照」写的是 `llm-gateway-go-cursor`，**本会话实际在
+`llm-gateway-go-5`**。这是第三份 checkout（与 `-cursor`、无后缀那份并发）。
+部署锁会互相抢，提交前务必 `git fetch && git status -sb`。
+
+## 154/252 事故（已修复并验证）
+
+根因是单条链：`scripts/252-monitor/pg17-disk-watch.sh` 每 10 分钟被 cron 拉起，
+但既无单实例锁也无任何超时。PG「半死」时 psql 永久挂起、副本只增不减 →
+内存耗尽触发内核 OOM → 15:54:42 杀掉 llmgw Redis（`exit=137`，已 crash-loop 4 次）
+与 PG 后端 → PG 对 154 返回 `57P03` → 一小时 194 个 503。
+
+现场峰值：load **334**、进程 **3012**、副本 **310** 份、僵死 `docker exec psql` **154** 个、
+`du` 卡 D 状态 11 个、swap **4095/4095 全占**、`oom_kill` 累计 414。
+
+处置后实测：load 334→**14.5**、进程 3012→**508**、Redis 6389 恢复、`docker exec` 可用。
+详见 `scripts/252-monitor/README.md` §11（事故）与 §12（对其自身修复的批判式审计）。
+
+已推送：`b6e38b709`（两道闸）、`aba353243`（web-mobile lockfile）、
+`11f46052c`（部署身份 2522）、`c88bc79e3`（审计修复 5 个缺陷）。
+
+## ★ 未解决：154 的 503 率仍然很高（下一轮的主线）
+
+基础设施层已经干净（8 小时 `57P03=0`），但**用户侧成功率仍然只有约 50%**：
+
+| 时间 | 503 / 200 |
+|---|---|
+| 10-10 19时 | 457 / 820 |
+| 10-10 21时 | 259 / 813 |
+| 10-11 00时 | **843 / 1218（69%）** |
+
+根因**不是**昨天的事故，而是**上游凭据/节点大量不可路由**：
+
+- `node_probe_state`：**755 行里 553 行 `last_direct_ok=false`，527 行正在退避**；
+  错误码分布 `http_404`×205、`http_410`×81、`http_403`×75、`http_429`×41、
+  `http_502`×40、`http_400`×38、`timeout`×25、`network_error`×12。
+  探针仍在持续更新（不是数据陈旧）。
+- `credentials`：74 个中 **28 个非 ready、32 个非 healthy**、14 个人工禁用。
+- 日志：`all 0 candidates failed`、`no routable credential/model available`、
+  `fp_slot_saturation_critical degradation_ratio=1`（claude-opus-5，阈值 0.1）。
+
+⇒ 404/410 是**模型目录漂移**（凭据配了上游已不提供的模型/端点），
+属数据/配置层决策，**不是**改代码能解的。下一轮需要用户拍板：
+是清退失效绑定、修模型目录，还是降低这些模型权重。
+
+## deploy-154.sh 本会话实测（与 245 的差异）
+
+1. 端口：154 本会话结束时 active_port=**8781**（`/opt/llm-gateway-go/run/active-upstream.conf`
+   是唯一权威）。部署期间出现过 8782 → 8781 漂移，**探活两个端口都要试**。
+2. `--force` 的正确用法：仅当**确认持有者是已死进程**时。上方 245 一节说「别硬抢」
+   是针对**并发 checkout 的活部署**。本会话遇到的是我自己上一轮崩在 bash 错误里
+   留下的 stale lock（metadata 里的 pid 已不存在、且无 deploy 进程在跑），
+   这种 stale 场景用 `--force` 是文档给出的正确恢复路径。
+   **判据**：先 `cat` 锁 metadata 看 pid/source_user，再 `pgrep -af deploy` 确认无活进程。
+3. 前端依赖：`web-mobile/package-lock.json` 与 `package.json` 不同步会让
+   `npm ci` **整体失败**（连构建都不开始）。已用
+   `npm install --package-lock-only` 重生成修过一次；**改依赖后记得同步**。
+4. 部署全程需要：`PATH` 含 `~/sdk/go/bin`（go1.27.1）与
+   `~/sdk/bash5/bin`（deploy-lib bash 4+ 语法），否则分别在后端构建与 lib 加载处失败。
