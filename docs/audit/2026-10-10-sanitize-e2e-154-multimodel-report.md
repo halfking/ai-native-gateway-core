@@ -977,3 +977,81 @@ grep -o '"content":"[^"]*"' /tmp/m3.sse | head -20
 
 若这里首帧也是多字符，则客户端渲染层是唯一嫌疑；若这里已经是单字符，
 问题在更上游，需要连同客户端的换行策略一起看。
+
+## 十四、根因：minimax-m3 是推理模型，每条回复都以 `<think>` 块开头（15:55）
+
+第十三节把最后一跳交给客户端之前，我先在**本机经公网入口实测抓了一次真实客户端字节**
+（`https://llm.kxpms.cn/v1/chat/completions`，`curl -N`，key 在 154 本地读取、
+不外传）。这一抓同时给出了前十三节都没拿到的关键事实。
+
+### 客户端实际收到的内容
+
+```
+delta 0  len=111  '<think>The user is asking me to introduce myself in one sentence, in Chinese...'
+delta 1  len=94   ' they asked in Chinese, and follow my system prompt about being a thinking model...'
+delta 2  len=71   '</think>\n\n我是由 MiniMax 开发的 AI 助手 MiniMax-M3，...'
+```
+
+拼起来的完整文本：
+
+```
+<think>The user is asking me ... being a thinking model from MiniMax.</think>\n\n我是由 MiniMax 开发的 AI 助手...
+```
+
+**客户端收到的是一段英文推理过程，然后才是答案。**
+
+### 模型归因：这是 minimax-m3 独有的
+
+按模型统计「以 `<think>` 开头的回复占比」（raw_data 全量，修正口径）：
+
+```
+model           resp   think    think%
+minimax-m3      1145    1003     87.6%
+glm-5.2          111       0      0.0%
+```
+
+**minimax-m3 有 87.6% 的回复以 `<think>` 开头；glm-5.2 是 0%。**
+这就是「为什么只有 minimax-m3 会这样」的答案：它是推理模型，
+`<think>` 推理块写在 `delta.content` 里，是模型的固有行为。
+
+> 口径更正：第十二节写的「0/1243 以 `<think>` 开头」是**我写错了检索串**——
+> 查的是 `<thinking>`（带 ing），而模型实际吐的标签是 `<think>`。用正确
+> 标签重算即上表 87.6%。
+
+### 网关侧没有任何响应侧的 think 过滤
+
+全仓检索确认：所有 "thinking strip" 代码（`domains/hooks/compression/strip.go`、
+`internal/paramguard/guard.go`）作用方向都是**出站请求**——为省 token 把
+Anthropic 请求里的 thinking 块删掉，与「把 `<think>` 从响应里滤掉」无关。
+唯一对响应做 think 剥离的是 `cmd/autoclass-bench/main.go` 的 `stripThink`，
+那是压测工具，不在请求路径上。
+
+所以 `<think>...</think>` 是**原样透传**给客户端的。
+（`security/sanitize/sse_restore.go:101` 的注释也确认网关知道「minimax <think>
+会原样回显」，但那是为占位符还原服务的，不是为隐藏推理内容。）
+
+### 这解释了症状的哪部分
+
+| 观察 | 是否解释 |
+|---|---|
+| 只在 minimax-m3 出现 | ✅ 该模型 87.6% 带 `<think>`，glm-5.2 为 0% |
+| 「总出现」（每次都有） | ✅ 87.6% ≈ 绝大多数请求 |
+| 第一个请求回复「不对」 | ✅ 用户先看到的是模型的英文推理，不是答案 |
+| **「单字一行」的具体排版** | ❌ 仍未解释，需客户端侧确认 |
+
+最后一行是诚实的缺口：`<think>` 一旦被客户端渲染，排版成什么样取决于客户端。
+本仓观察到的首帧单字符率只有 0.18%，所以「单字一行」**不是网关输出的形状**；
+但「第一段内容是推理块」这件事本身就足以让用户觉得「第一个请求回复不正常」，
+而推理块被客户端逐行拆开渲染是完全可能的（推理文本里含标点、换行、缩进）。
+
+### 建议的两条修法（均未执行，需用户裁决）
+
+1. **网关侧加响应过滤**：在 SSE 出站前丢弃 `<think>...</think>` 区间，
+   只把 `</think>` 之后的正文发给客户端。对 OpenAI 兼容端点语义最干净，
+   但会改变现有行为——如果客户端正是靠这个块渲染「思考过程」UI，会失效。
+2. **客户端侧折叠**：保留透传，由客户端把 `<think>` 块折叠成可展开区域。
+   这是目前不少客户端（含部分 agent IDE）的既有做法。
+
+需要先确认：**你们的客户端是否已经自己处理 `<think>`？** 如果没有，
+症状就是「网关透传了推理块 + 客户端不会折叠」的组合后果，
+两条修法选哪条取决于你们想要的产品形态。
