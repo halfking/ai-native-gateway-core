@@ -156,11 +156,24 @@ func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any,
 }
 
 // isNonRoutableAddressFragment reports whether a detected address fragment is
-// a loopback / private / link-local target. See unsafeToolValue's string case
-// for the 2026-10-08 incident rationale.
+// a loopback / private / link-local / unspecified target.
+//
+// 2026-10-11（245 build_seq 2531 部署后端到端实测）：类型集合里**必须**包含
+// TypeInternalIP，否则 r1008 的私网豁免形同虚设。
+//
+// 成因是一步类型重写：DetectScope 命中 server_ip 后发现
+// `address.IsPrivate()`，就把片段重写成 TypeInternalIP（detector.go）。而本函数
+// 原来只对 server_ip / server_ipv6 做豁免判定，于是 internal_ip 落到 default
+// 分支返回 false —— **恰好是私网地址被改成了唯一不被豁免的那个类型**，r1008
+// 加固被自己的重写作废。生产用的是 YAML 检测器（带 server_ip 规则），于是模型
+// 生成的 tool 参数里只要有私网地址就整条响应 `output_policy_blocked`，用户无法
+// 执行任何指向自己内网的命令。
+//
+// 既有的 TestEgressGuardStillIgnoresPrivateAddresses 用内置 fallback 检测器，
+// 而 fallback 里根本没有地址规则，所以那条判据恒真、盖不住这个洞。
 func isNonRoutableAddressFragment(fragment SensitiveFragment) bool {
 	switch fragment.Type {
-	case TypeServerIP, SensitiveType("server_ipv6"):
+	case TypeServerIP, TypeInternalIP, SensitiveType("server_ipv6"):
 	default:
 		return false
 	}
