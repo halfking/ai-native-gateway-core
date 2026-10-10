@@ -54,6 +54,9 @@ func (h *Handler) handleUserUsageSummary(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	if !requireUserManager(w, r) {
+		return
+	}
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "db not available")
 		return
@@ -72,10 +75,12 @@ func (h *Handler) handleUserUsageSummary(w http.ResponseWriter, r *http.Request)
 	args := []any{days}
 	if IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
 		tenantID := GetTenantID(r)
-		if tenantID != "" && tenantID != "default" {
-			where = " AND f.tenant_id = $2"
-			args = append(args, tenantID)
+		if tenantID == "" {
+			writeError(w, http.StatusForbidden, "tenant scope unavailable")
+			return
 		}
+		where = " AND f.tenant_id = $2"
+		args = append(args, tenantID)
 	}
 
 	rows, err := h.db.Query(ctx, `
@@ -167,6 +172,9 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request, id int
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	if !requireUserManager(w, r) {
+		return
+	}
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "db not available")
 		return
@@ -196,7 +204,11 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request, id int
 	}
 	if IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
 		myTenant := GetTenantID(r)
-		if myTenant != "" && myTenant != "default" && myTenant != tenantID {
+		if myTenant == "" {
+			writeError(w, http.StatusForbidden, "tenant scope unavailable")
+			return
+		}
+		if myTenant != tenantID {
 			// 跨租户目标与不存在统一 404 掩蔽（R36-A4，对齐兄弟实现
 			// requireSessionTaskAccess 的口径）：先 403 会构成跨租户用户
 			// ID 存在性 oracle。

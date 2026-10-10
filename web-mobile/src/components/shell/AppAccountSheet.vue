@@ -1,15 +1,17 @@
 <script setup lang="ts">
 // AppAccountSheet — 账户全屏 Sheet（UI规范 02 §5 结构：header 用户元信息 /
 // body 分组（用户、外观=语言+主题）/ footer 登出）。行 48px、:active 高亮。
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
+import QRCode from 'qrcode'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
-import { setLocale, t, locale } from '@/i18n'
+import { LOCALE_OPTIONS, getLocale, setLocale, t, locale, type Locale } from '@/i18n'
 import { appBase } from '@/utils/base'
 import { useDeploySeqUpdate } from '@/hyper/update/useDeploySeqUpdate'
 import AppIcon from '@/components/common/AppIcon.vue'
 import AppSheet from '@/components/common/AppSheet.vue'
 import AppConfirm from '@/components/common/AppConfirm.vue'
+import { fetchMobileNodeDescriptor } from '@/api/mobileNode'
 
 defineProps<{ modelValue: boolean }>()
 const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>()
@@ -25,6 +27,10 @@ const {
   checkNow: runUpdateCheck,
 } = useDeploySeqUpdate()
 const confirmLogout = ref(false)
+const nodeQrCanvas = ref<HTMLCanvasElement | null>(null)
+const nodeQrLoading = ref(false)
+const nodeQrError = ref('')
+const nodeQrExpiresAt = ref('')
 
 const roleLabel = computed(() => {
   if (auth.role === 'super_admin') return t('account.superAdmin')
@@ -62,7 +68,7 @@ const updateReasonLabel = computed(() => {
 const lastCheckLabel = computed(() =>
   updateLastCheckedAt.value === null
     ? t('update.never')
-    : new Date(updateLastCheckedAt.value).toLocaleTimeString(),
+    : new Date(updateLastCheckedAt.value).toLocaleTimeString(getLocale()),
 )
 
 async function doLogout(): Promise<void> {
@@ -72,8 +78,27 @@ async function doLogout(): Promise<void> {
   window.location.assign(`${appBase()}login`)
 }
 
-function pickLocale(): void {
-  setLocale(locale.value === 'zh-CN' ? 'en-US' : 'zh-CN')
+function pickLocale(event: Event): void {
+  setLocale((event.target as HTMLSelectElement).value as Locale)
+}
+
+async function showNodeQr(): Promise<void> {
+  nodeQrLoading.value = true
+  nodeQrError.value = ''
+  try {
+    const response = await fetchMobileNodeDescriptor()
+    nodeQrExpiresAt.value = response.expires_at
+    await nextTick()
+    if (!nodeQrCanvas.value) throw new Error('QR canvas is unavailable')
+    await QRCode.toCanvas(nodeQrCanvas.value, response.payload, {
+      width: 260, margin: 2, errorCorrectionLevel: 'Q',
+      color: { dark: '#07112c', light: '#ffffff' },
+    })
+  } catch {
+    nodeQrError.value = t('account.nodeQrUnavailable')
+  } finally {
+    nodeQrLoading.value = false
+  }
 }
 </script>
 
@@ -104,12 +129,27 @@ function pickLocale(): void {
           <AppIcon name="chevron" :size="16" class="account__chev" />
         </button>
 
-        <button type="button" class="account__row" @click="pickLocale">
+        <label class="account__row account__language">
           <AppIcon name="globe" :size="20" />
           <span class="account__row-label">{{ t('account.language') }}</span>
-          <span class="account__row-value">{{ locale === 'zh-CN' ? '简体中文' : 'English' }}</span>
+          <select class="account__language-select" :value="locale" :aria-label="t('account.language')" @change="pickLocale">
+            <option v-for="option in LOCALE_OPTIONS" :key="option.code" :value="option.code">{{ option.label }}</option>
+          </select>
           <AppIcon name="chevron" :size="16" class="account__chev" />
+        </label>
+      </div>
+
+      <div v-if="auth.role === 'super_admin'" class="account__group">
+        <div class="account__group-label">{{ t('account.gatewayNode') }}</div>
+        <button type="button" class="btn btn--secondary btn--block" :disabled="nodeQrLoading" @click="showNodeQr">
+          {{ nodeQrLoading ? t('common.loading') : t('account.showNodeQr') }}
         </button>
+        <div v-if="nodeQrExpiresAt" class="account__node-qr">
+          <canvas ref="nodeQrCanvas" :aria-label="t('account.nodeQrAlt')" />
+          <p>{{ t('account.nodeQrExpires', { time: new Date(nodeQrExpiresAt).toLocaleTimeString(getLocale()) }) }}</p>
+          <a href="llmgw://nodes">{{ t('account.openNodeManager') }}</a>
+        </div>
+        <p v-if="nodeQrError" class="account__reason" role="alert">{{ nodeQrError }}</p>
       </div>
 
       <!-- 版本与更新（UI规范 18 §4）：当前序号、来源、已检查次数 + 手动检查 -->
@@ -265,6 +305,40 @@ function pickLocale(): void {
   color: var(--app-text-secondary);
   font-size: 0.8125rem;
 }
+
+.account__language-select {
+  max-width: 45%;
+  min-width: 8rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-sm);
+  background: var(--app-surface);
+  color: var(--app-text);
+  font: inherit;
+  text-align: end;
+}
+
+.account__node-qr {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  gap: var(--app-space-2);
+  padding: var(--app-space-3);
+  margin-top: var(--app-space-3);
+  border: 1px solid var(--app-border-subtle);
+  border-radius: var(--app-radius);
+  background: var(--app-surface-muted);
+  text-align: center;
+}
+
+.account__node-qr canvas {
+  width: min(260px, 72vw);
+  height: auto;
+  border-radius: var(--app-radius-sm);
+  background: #fff;
+}
+
+.account__node-qr p { margin: 0; color: var(--app-text-secondary); font-size: 0.75rem; }
 
 .account__chev {
   color: var(--app-text-muted);

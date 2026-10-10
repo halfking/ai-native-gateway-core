@@ -179,7 +179,10 @@ type Handler struct {
 	// diff 查询). nil (default) keeps the endpoints unregistered —
 	// flag-off behavior is identical to main.
 	providerCostReconciliationHandler *ProviderCostReconciliationHandler
-	peakCollector                     interface {
+	// mobileNodeDescriptor signs short-lived node QR payloads for the native
+	// client; the signed endpoint remains super-admin-only.
+	mobileNodeDescriptor *MobileNodeDescriptorService
+	peakCollector        interface {
 		Acquire(credID int64, model string)
 		Release(credID int64, model string)
 		Stats() map[string]interface{}
@@ -588,6 +591,11 @@ func (h *Handler) SetProviderCostReconciliationHandler(hh *ProviderCostReconcili
 	h.providerCostReconciliationHandler = hh
 }
 
+// SetMobileNodeDescriptorService enables signed gateway QR provisioning.
+func (h *Handler) SetMobileNodeDescriptorService(service *MobileNodeDescriptorService) {
+	h.mobileNodeDescriptor = service
+}
+
 // SetSessionManager (2026-07-06) wires the session.Manager for the
 // /api/admin/sessions/* endpoints. Pass nil to disable.
 func (h *Handler) SetSessionManager(m *session.Manager) {
@@ -928,6 +936,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/model-integrity/", h.superAdmin(h.handleModelIntegrity))
 	mux.HandleFunc("/api/admin/tenants", h.superAdmin(h.handleTenants))
 	mux.HandleFunc("/api/admin/tenants/", h.superAdmin(h.handleTenants))
+	mux.HandleFunc("/api/admin/mobile-node/descriptor", h.superAdmin(h.handleMobileNodeDescriptor))
 	mux.HandleFunc("/api/users/", admin(h.handleUsers))
 	mux.HandleFunc("/api/routing/resolve", admin(h.handleRoutingResolve))
 	mux.HandleFunc("/api/routing/overview", admin(h.handleRoutingOverview))
