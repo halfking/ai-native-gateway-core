@@ -149,9 +149,9 @@ describe('UserUsageView 用户下创建 API Key 入口', () => {
     await flushPromises()
     await flushPromises()
     expect(vi.mocked(createKey)).toHaveBeenCalledTimes(1)
-    const payload = vi.mocked(createKey).mock.calls[0]![0] as { owner_user?: string; tenant_id?: string }
-    expect(payload.owner_user).toBe('alice')
-    expect(payload.tenant_id).toBe('tenant-a')
+    const payload = vi.mocked(createKey).mock.calls[0]?.[0] as { owner_user?: string; tenant_id?: string } | undefined
+    expect(payload?.owner_user).toBe('alice')
+    expect(payload?.tenant_id).toBe('tenant-a')
   })
 
   it('成功后展示明文 api_key 与复制按钮', async () => {
