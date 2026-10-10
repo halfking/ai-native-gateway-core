@@ -16,6 +16,7 @@ export const zhCN = {
     probeQueue: '探测队列',
     selfCheck: '系统自检',
     connectionRegistry: '连接注册台',
+    usageTrendSeries: '用量趋势线',
     modelPolicies: '模型策略',
     modelPolicyAudit: '策略审计',
     approvalConfig: '审批配置',
@@ -3306,6 +3307,79 @@ sctx: {
       registered: '注册于',
       lastFrame: '最后一帧',
       closeReason: '注销原因',
+    },
+  },
+  // ★ 第一百零八批：用量趋势线。措辞逐条对应后端契约，改文案前先读
+  //   views/UsageTrendSeriesView.vue 头部那八条。
+  uts: {
+    title: '用量趋势线',
+    load: '加载',
+    reload: '重新加载',
+    loadModels: '加载模型清单',
+    others: '其余模型合计',
+    window: {
+      title: '时间窗',
+      preset: '预设天数',
+      custom: '自定义区间',
+      days: '天',
+      // ★★ days=N 的起点是 **N-1 天前**的 UTC 零点（todayStart.Add(-(days-1)*24h)）
+      daysHint: '起点是 {n} 天前的零点，窗口不足 {n} 天整。',
+      start: '起始日',
+      end: '结束日',
+      // ★★★ 只给一个日期 ⇒ 后端 400（usage.go:1451-1453）
+      pairBroken: '起始日与结束日必须同时给；只给一个后端会返回 400，本页因此不发出请求。',
+      pairBlocked: '先补全起止日期再加载。',
+      // ★★ end 有两种形态：预设是 now（带时分秒），自定义是次日零点
+      echo: '窗口 {s} ~ {e}（{path}）',
+      pathPreset: '预设路径，结束时间即服务端当前时刻',
+      pathCustom: '自定义路径，结束日为次日零点、已减一天显示',
+      startDrift: '响应起点 {got} 与本地推算的 {want} 不一致，后端把窗口换掉了。',
+    },
+    filter: {
+      title: '过滤',
+      top: 'Top',
+      providerId: '供应商 ID',
+      apiKeyId: 'API Key ID',
+      models: '模型',
+    },
+    models: {
+      truncated: '清单已达服务端硬上限 {limit} 条，更早的模型被静默截断、无法证明是否还有。',
+      // ★★ 传了 model 多选 ⇒ trend-models 被 = ANY 收敛，不再是「可选清单」
+      constrained: '已选模型后，这份清单已被收敛成「已选模型的量」，不能当作可选清单。',
+      empty: '这段时间没有可用模型。',
+      dropped: '选了超过 {max} 个模型，多出的 {n} 个被截断，实际按前 {max} 个查。',
+      selected: '已选 {n} 个模型。',
+    },
+    series: {
+      title: '趋势序列',
+      meta: '桶粒度 {bucket} 分钟 · top={top} · 读面 {source}',
+      // ★★ 空序列 + degraded=false ⇒ 真的是零用量
+      trulyEmpty: '这段时间确实没有用量。',
+      // ★★★★ 空序列 + degraded=true ⇒ **不是**「没有用量」，是「没算出来」
+      emptyDegraded: '序列为空，但服务端处于降级状态 —— 这不代表没有用量，而是没算出来。',
+      folded: '已发生 top-N 折叠：排名 {top} 之后的模型汇总成「其余模型合计」。',
+      // ★ 指定了 model 时长尾不折叠（foldUsageTrendRows:439）
+      foldSuppressed: '已指定模型，按后端口径不做折叠，条数可以超过 top。',
+      orderBad: '各序列的请求数不是非递增的，与后端排序契约不符。',
+      othersNotLast: '「其余模型合计」不在末位，与后端排序契约不符。',
+      othersNote: '「其余模型合计」是聚合线，不是真实模型名。',
+    },
+    degraded: {
+      badge: '服务端降级：数据读面不可用',
+      hintDrift: '后端返回的 hint 与本地推算不一致，两端口径已漂。',
+    },
+    points: {
+      zero: '没有数据点',
+      unit: '点',
+    },
+    unit: {
+      requests: '次请求',
+    },
+    col: {
+      tokens: '总 tokens',
+      credits: '总 credits',
+      cost: '总费用 USD',
+      points: '数据点',
     },
   },
   sc: {

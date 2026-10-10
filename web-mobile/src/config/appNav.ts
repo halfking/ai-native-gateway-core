@@ -176,6 +176,12 @@ export const DRAWER_NAV: readonly NavItem[] = [
   // ★ 数据源是**进程内**状态（domains/streaming.ConnectionRegistry），不是数据库
   //   ⇒ 本族**没有跨租户查询**（对比批 104/106 那两个真正跨租户的族）。
   { key: 'connection-registry', to: '/connection-registry', icon: 'server', titleKey: 'nav.connectionRegistry' },
+  // 用量趋势线。**admin 档**（admin/handler.go:1267 的 `h.admin(h.HandleUsageAdmin)`
+  //   前缀子路由，分派 admin/usage.go:60-64）⇒ tenant_admin 可用 ⇒ **不设** requiresRole。
+  // ★ 本族的租户口径是本仓第四种：`statsTenantScope`（admin/stats.go:87-97）对非
+  //   super_admin 强制用 auth.TenantID 并**忽略 tenant_id 参数** ⇒ tenant_admin 天然隔离，
+  //   与批 104（硬编码 tenant）与批 106（有列不接线）相反 ⇒ 不需要段落级门控。
+  { key: 'usage-trend-series', to: '/usage-trend-series', icon: 'chart', titleKey: 'nav.usageTrendSeries' },
   // MaaS 租户运维面。**superAdmin 档**（/api/admin/maas/tenants/** 全 superAdmin）⇒ 须设。
   {
     key: 'maas-tenant-ops',

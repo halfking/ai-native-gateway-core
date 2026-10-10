@@ -16,6 +16,7 @@ export const enUS = {
     probeQueue: 'Probe queue',
     selfCheck: 'Self-check',
     connectionRegistry: 'Connection registry',
+    usageTrendSeries: 'Usage trends',
     modelPolicies: 'Model policies',
     modelPolicyAudit: 'Policy audit',
     approvalConfig: 'Approval config',
@@ -3268,6 +3269,79 @@ sctx: {
       registered: 'Registered at',
       lastFrame: 'Last frame',
       closeReason: 'Close reason',
+    },
+  },
+  // ★ Batch 108: usage trend lines. Wording maps 1:1 onto the backend contract —
+  //   read the eight notes at the top of views/UsageTrendSeriesView.vue first.
+  uts: {
+    title: 'Usage trends',
+    load: 'Load',
+    reload: 'Reload',
+    loadModels: 'Load model list',
+    others: 'All other models',
+    window: {
+      title: 'Time window',
+      preset: 'Preset days',
+      custom: 'Custom range',
+      days: 'Days',
+      // ★★ The start of days=N is **N-1** days back at UTC midnight
+      daysHint: 'The window starts N-1 days back at midnight, so it is short of N full days.',
+      start: 'Start day',
+      end: 'End day',
+      // ★★★ Sending only one of the two makes the backend return 400
+      pairBroken: 'Start and end must be sent together; sending only one makes the backend return 400, so this page issues no request.',
+      pairBlocked: 'Fill in both dates before loading.',
+      // ★★ end has two shapes: preset is now (with time), custom is next-day midnight
+      echo: 'Window {s} to {e} ({path})',
+      pathPreset: 'preset path, end is the server current time',
+      pathCustom: 'custom path, end is next-day midnight and is shown one day earlier',
+      startDrift: 'Response start {got} differs from the locally derived {want}; the backend changed the window.',
+    },
+    filter: {
+      title: 'Filters',
+      top: 'Top',
+      providerId: 'Provider ID',
+      apiKeyId: 'API key ID',
+      models: 'Models',
+    },
+    models: {
+      truncated: 'The list hit the server-side hard limit of {limit} entries; older models were silently truncated and there is no field proving whether more exist.',
+      // ★★ With a model multi-select the list is narrowed by = ANY and is no longer a picker
+      constrained: 'With models selected this list has been narrowed to the selected ones, so it cannot be used as a picker.',
+      empty: 'No models available for this window.',
+      dropped: 'More than {max} models selected; {n} were truncated and the query used the first {max}.',
+      selected: '{n} models selected.',
+    },
+    series: {
+      title: 'Trend series',
+      meta: 'Bucket {bucket} min · top={top} · source {source}',
+      // ★★ Empty series with degraded=false really is zero usage
+      trulyEmpty: 'There genuinely was no usage in this window.',
+      // ★★★★ Empty series with degraded=true is NOT "no usage", it is "not computed"
+      emptyDegraded: 'The series is empty, but the server is degraded — that does not mean no usage, it means it could not be computed.',
+      folded: 'Top-N folding applied: models ranked below {top} were aggregated into "all other models".',
+      // ★ With an explicit model selection the tail is not folded
+      foldSuppressed: 'Models were explicitly selected, so the backend does not fold; the count may exceed top.',
+      orderBad: 'Series request counts are not non-increasing, which contradicts the backend ordering contract.',
+      othersNotLast: '"All other models" is not last, which contradicts the backend ordering contract.',
+      othersNote: '"All other models" is an aggregate line, not a real model name.',
+    },
+    degraded: {
+      badge: 'Server degraded: the data view is unavailable',
+      hintDrift: 'The hint returned by the backend disagrees with the locally derived one; the two sides have drifted.',
+    },
+    points: {
+      zero: 'No data points',
+      unit: 'points',
+    },
+    unit: {
+      requests: 'Requests',
+    },
+    col: {
+      tokens: 'Total tokens',
+      credits: 'Total credits',
+      cost: 'Total cost USD',
+      points: 'Data points',
     },
   },
   sc: {
