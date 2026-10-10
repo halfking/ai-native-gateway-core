@@ -407,7 +407,14 @@ env[1621] "msg":"sanitize pattern detector ready","path":"configs/sensitive_patt
 
 ---
 
-## 九之二、遗留缺陷：完整占位符 fail-open 透传（本次未修）
+## 九之二、完整占位符 fail-open 透传（当时的遗留缺陷）
+
+> **【2026-10-10 23:30 审计更正】本节的结论已被后续提交推翻，缺陷不复存在。**
+> 本节写于 `ce5e35ab3`（遮蔽标记带类型，16:31）之前，当时观察到的 96 行透传
+> 来自修复前的构建。审计已用探针在当前 HEAD 上逐条复验：9 种拼写变体
+> （精确全角、补零索引、大小写、空格、全宽、去括号连字、缺索引、小写 marker）
+> **全部 fail-closed**，且报告建议的结构化日志已就位。
+> 逐条证据见第二十节。本节以下内容保留为**发现时的原始观察**，不作为当前结论。
 
 部署后取证发现一个**先前未记录的缺陷**，不属于本次五处修复。
 速率在部署后有所下降（18.5 → 13.9 每千行），但**未清零**，
@@ -472,19 +479,20 @@ account 43 / email 23 / id_card 15 / phone 11 / custom 10 / credit_card 8。
 它只断言了映射行存在，从未校验该列是否有值。实测该列 100% 为 NULL，
 即 **DB 侧从未具备可逆性**（这一点成立，且与 Redis 无关）。
 
-### 修法（均未执行，需用户裁决）
+### 修法（当时的选项；第 2、3 项事后已由既有提交覆盖）
 
 1. ~~配置密钥能让还原生效~~ —— **该建议已撤回**。`security/sanitize/db_sink.go` 文件头写明
    「全仓没有任何解密读取方……只配密钥会让列里出现无人能解的密文」，
    且 `placeholder.go:48` 确认还原路径只读 Redis、从不读 DB。
    配密钥只会让 DB 多一批无人解的密文，**不会改变还原行为**。
    它的真实价值仅在于让 DB 侧的脱敏元数据具备审计可追溯性。
-2. **改 fail-open 为 fail-closed**：对「有合法索引但解析不出值」的占位符改为打码而非透传。
-   这是代码改动，需另行发布。风险：会让部分当前以字面量展示的占位符变成 `[REDACTED]`，
-   需评估是否有下游消费方依赖该字面量。
-3. **定位透传的真实成因**：本报告未完成。建议手段——在 fail-open 分支加结构化日志
-   （会话 ID、占位符、索引、当时 map 命中与否），跑一轮真实流量即可确定是 TTL、
-   租户哈希不匹配还是别的路径。
+2. ~~**改 fail-open 为 fail-closed**~~ —— **已落地，非本次新增**。
+   当前 HEAD 的所有客户端可见路径都走 `RestoreOutputOrMask`（`looseMaskUnknown`），
+   未解析出的占位符一律打码；`RestoreOutput`（`looseKeepUnknown`，唯一保留字面量的入口）
+   在生产代码中**零调用点**，只被测试引用。风险项「下游依赖该字面量」因此不成立。
+3. ~~**在 fail-open 分支加结构化日志**~~ —— **已就位**。`sanitizer.go:263` 与
+   `sanitizer.go:285` 分别记录精确未命中与改写未命中，容错分支在 mask 模式下同样计数上报，
+   指标为 `sanitize_placeholder_mutation_total{result}`。
 
 ---
 
@@ -1345,3 +1353,105 @@ bash scripts/deploy-154.sh
 
 「某依赖不存在」只能由**穷举搜索**得出，不能由「两个常见路径没找到」外推。
 `~/sdk/` 这种非标准前缀目录是本次漏查的直接原因。
+
+---
+
+## 二十、审计 pass：代码复核结论（2026-10-10 23:30）
+
+按用户要求对本次全部工作做一次独立审计。基线 `1d127e38e`，先并入
+`origin/main` 的 6 个提交（mobile 前端批次，无冲突），再逐项复核。
+
+### 20.1 静态检查
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| 编译 | `go build ./...` | **rc=0**，零错误 |
+| 静态分析 | `go vet ./...` | **零告警** |
+| 格式 | `gofmt -l .` | 376 个文件未格式化 |
+
+gofmt 的 376 个是**上游长期存量**，与本次工作无关：逐个核对了本会话
+六个提交（`7dd0b4b67` / `2bf5b3870` / `558953c52` / `d44a29f77` / `e3e2b4ef`
+及报告提交）涉及的 `.go` 文件，**全部已格式化**。按既定口径不顺手格式化无关文件——
+那会把一次审计变成一次巨型 diff，且会在共享仓库里制造冲突面。
+
+工具链：本机 Go 在**非标准路径** `~/sdk/go/bin/go`（1.27.1 darwin/arm64），
+不在 `PATH` 上。这与第十九节记录的 `~/sdk/bash5` 是同一类问题——
+`AGENTS.md` 里「本机无 Go/brew」的旧结论同样应以 `~/sdk/` 为准重新核对。
+
+### 20.2 测试
+
+```
+go test ./security/... ./domains/streaming/...
+```
+
+| 包 | 结果 |
+|---|---|
+| `security/sanitize` | ok 5.2s |
+| `security/armor` / `guardian` / `sensitive` | ok |
+| `domains/streaming` | ok 167.4s |
+| `domains/streaming/executors` | ok 50.1s |
+| `.../webcookie` / `integrity` / `state` | ok |
+
+**9 包全绿，rc=0。**
+
+### 20.3 第九之二节的缺陷复核（重点）
+
+审计前把「完整占位符 fail-open 透传」列为唯一待查缺陷。结论：**当前 HEAD 不复现**。
+
+方法是写探针直接打 `RestoreOutputOrMask`，用一张**不含目标键**的映射表
+模拟 TTL 过期 / 租户哈希不匹配，覆盖 9 种拼写变体：
+
+| 输入 | 输出 | 判定 |
+|---|---|---|
+| `{SENSITIVE:secret:21}`（精确） | `[REDACTED:secret]` | fail-closed |
+| `{SENSITIVE:server_ip:01}`（补零索引） | `[REDACTED:server_ip]` | fail-closed |
+| `{SENSITIVE:secret}`（缺索引） | `[REDACTED]` | fail-closed |
+| `SENSITIVE:secret:21`（去括号） | `[REDACTED]` | fail-closed |
+| `{SENSITIVE:SECRET:21}`（大写类型） | `[REDACTED]` | fail-closed |
+| `{ＳＥＮＳＩＴＩＶＥ：ｓｅｃｒｅｔ：２１}`（全宽） | `[REDACTED]` | fail-closed |
+| `{SENSITIVE: server_ip : 1}`（加空格） | `[REDACTED]` | fail-closed |
+| `{SENSITIVE:server-ip:1}`（连字类型） | `[REDACTED]` | fail-closed |
+| `{sensitive:server_ip:1}`（小写 marker） | `[REDACTED]` | fail-closed |
+
+**零条透传**；同时正向验证还原未回归——`{SENSITIVE:phone:1}` 在表内时
+正确还原为 `13900004444`。
+
+代码层面的依据（不依赖探针，独立成立）：
+
+- 所有客户端可见路径都走 `RestoreOutputOrMask`，policy 为 `looseMaskUnknown`；
+- 唯一保留字面量的入口是 `RestoreOutput`（`looseKeepUnknown`），
+  `grep` 确认它在**生产代码中零调用点**，只被测试引用；
+- 流式路径同样 fail-closed：`sse_restore.go:110` 要么经 `maskUnmappedStreamMarkers`
+  打码后放行、要么整帧拦截（`return nil, false, true`），不存在第三条出口。
+
+因此第九之二节的两项修法建议**已由既有提交提前覆盖**，本节当时未定位到成因，
+是因为观察窗口的构建早于 `ce5e35ab3`（16:31，遮蔽标记带类型）。
+「成因未确认」这个表述本身也已被排除——不存在需要定位的成因。
+
+**审计动作**：改的是报告，不是代码。代码不需要改。
+
+### 20.4 仓库卫生
+
+| 检查 | 结果 |
+|---|---|
+| 工作区 | 干净 |
+| 暂存区 | 空 |
+| 未跟踪文件 | 0（审计探针已移出仓库） |
+| 已跟踪的 AppleDouble（`._*`）残留 | 0 |
+
+第十一节记录的 `._audio_billing.go` tar 传输污染，确认已彻底清除。
+
+### 20.5 审计未覆盖的项（明确留白，不当作已验证）
+
+1. **未重跑 `go test ./...` 全量**。`verify.sh:51` 在 `set -e` 下无条件全量测试，
+   而 `admin/request_logs_bodies_retirement_gate_test.go` 里的
+   `TestV1BodiesReadersAreAssessed` 是**故意红的负向闸门**（判据：登记表覆盖全部
+   bodies 读方）。按既定维护策略不修、不加白名单，因此全量门长期为红是预期行为，
+   本次审计只跑了 sanitize / streaming 相关的 9 包子集。
+2. **未做真库回归**。需要 docker + Postgres + Redis，本机不具备，
+   且依赖安装属用户侧决策（`AGENTS.md`）。生产侧的实际状态由两轮成功部署的
+   `/healthz` `ready:true` 佐证，而非本地测试。
+3. **未验证 Redis 容器被移除的成因**（第十六之二节）。两台网关均已自愈，
+   成因属环境侧，待定。
+4. **未审计 `web-mobile` 前端**。`origin/main` 新增的 6 个提交是 mobile 批次，
+   本次审计只覆盖其 Go 侧编译与 vet 通过，未跑 `npm test` / `vitest`。
