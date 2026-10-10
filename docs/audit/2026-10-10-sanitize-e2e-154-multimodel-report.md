@@ -1055,3 +1055,55 @@ Anthropic 请求里的 thinking 块删掉，与「把 `<think>` 从响应里滤�
 需要先确认：**你们的客户端是否已经自己处理 `<think>`？** 如果没有，
 症状就是「网关透传了推理块 + 客户端不会折叠」的组合后果，
 两条修法选哪条取决于你们想要的产品形态。
+
+## 十五、精确到代码：`<think>` 是 minimax 清理器唯一漏掉的一类（15:58）
+
+第十四节说「网关没有 think 过滤」是对的，但**不够精确**——会让修法看起来
+像要从零设计。实际是：**网关已经在过滤同一类 minimax 泄漏，只是漏了这一种。**
+
+### 已有的清理器
+
+`internal/vendorstrip/minimax.go` → `cleanMinimaxLeakFields()` 针对 m3 处理两类
+已知的「内部符号漏进 `content`」：
+
+1. `UnwrapMiniMaxTokenWrappers()` —— 去 `minimax[>[...payload]<]` 包装。
+   注释原文：*"removes MiniMax streaming token wrappers of the form
+   minimax[>[payload]<] that otherwise leak into client-visible text
+   (observed as ... on m3)"*
+2. `<function_calls>` —— 去掉泄漏的工具调用标记及其相邻残片。
+
+两者作用在 `message` 的 `reasoning_content` 与 `content` 两个字段上，
+即**响应方向**，且逐 delta 生效。
+
+### 决定性验证：清理器在流式路径上确实在跑
+
+对 154 raw_data 1270 条回复统计三类标记的出现率：
+
+```
+start with <think>      : 1013  (79.8%)   ← 漏
+contain minimax[>[     :    0  ( 0.0%)   ← 已清
+contain <function_calls>:    0  ( 0.0%)   ← 已清
+```
+
+后两类降到 **0%**，说明 `cleanMinimaxLeakFields` **确实在流式响应路径上执行**，
+且清理彻底。`<think>` 的 79.8% 不是「清理器没跑」，而是**清单里没有这一项**。
+
+### 这把修法从「设计题」变成「补一行」
+
+现状不是「要不要让网关过滤推理内容」这种产品形态题（那种题确实该问用户），
+而是**同一个已知泄漏类别的第三个成员被遗漏**。把 `<think>` 补进
+`cleanMinimaxLeakFields` 的清理集合，与既有两项同构、同位置、同生效时机。
+
+仍然保留的产品决策（需要你定）：
+
+- `minimax[>[` 与 `<function_calls>` 是**协议垃圾**，客户端永远不该看到，
+  清掉零争议。
+- `<think>...</think>` 是**推理模型的有意义输出**，不少客户端（含部分 agent IDE）
+  会据此渲染「思考过程」折叠区。若你们的客户端已在折叠，网关清掉会让那个 UI
+  失效；若客户端没折叠，清掉才是根治。
+
+所以判断依据只有一个：**你们的客户端现在会不会自己折叠 `<think>`？**
+
+- 会 → 不要在网关清（保持透传），本节结论仅作为「行为符合预期」的记录。
+- 不会 → 在 `cleanMinimaxLeakFields` 补 `<think>` 清理，与既有两项一致，
+  并补一条回归测试（断言 `<think>` 清理后 0% 泄漏、既有两项不回退）。
