@@ -917,3 +917,63 @@ glm-5.3-flash         1         2       0     0.00%   50.00%
 在此之前，任何在网关侧「修单字行」的改动都缺乏证据支撑——本轮所有改动
 （bash 3.2 部署可移植性、web-mobile lockfile、迁移 849 超时）都不在该症状
 的代码路径上。
+
+## 十三、最后一跳（nginx）已排查干净（2026-10-10 15:52）
+
+网关日志缺 `client_response`，但网关与客户端之间的 nginx 代理层是可以检查的。
+这是**唯一还能被观测的中间跳**，逐项查完：
+
+### 1. 缓冲区会重新切分 SSE 帧 —— 未开启
+
+两台在流式端点上都显式关掉了缓冲：
+
+```
+154  location ~ ^/v1/(chat/completions|messages) {  proxy_buffering off; }
+245  location ~ ^/v1/(chat/completions|messages) {  proxy_buffering off; }
+```
+
+`/v1/`、`/v1beta/`、`/v2/`、`/api/`、`/api/admin/live-stream` 同样都是
+`proxy_buffering off`。nginx 默认 `proxy_buffering on` 会把上游响应攒进缓冲区再吐，
+确实有能力改变分帧边界；这条路径上它没生效。
+
+### 2. gzip 会改写字节流 —— 未覆盖 text/event-stream
+
+两台都是全局 `gzip on`，但 `gzip_types` 里**没有 `text/event-stream`**
+（在 `nginx.conf` 的 `default_types` 中匹配数为 0）。nginx 不压缩
+Content-Type 不在 `gzip_types` 里的响应，SSE 原样透传。
+
+### 结论
+
+可观测链路已全部走完且干净：
+
+```
+模型 ──► 网关        minimax-m3 首帧单字符 0.18%（第十二节）
+网关 ──► nginx       proxy_buffering off + SSE 不在 gzip_types ✔
+nginx ──► 客户端     ✗ 无 client_response 日志，且尚未拿到客户端抓包
+```
+
+**症状只能产生在最后一跳或客户端自身。** 这与第十二节的反向对照一致：
+若真有「每帧换行」的问题，glm-5.2（首字单字符 12.61%）会先炸，而不是 minimax-m3
+（0.18%）。
+
+### 抓取客户端字节的最短命令
+
+在**客户端所在机器**执行（key 请用你自己的，不要贴回会话）：
+
+```bash
+curl -N -sS https://llm.kxpms.cn/v1/chat/completions \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"minimax-m3","stream":true,
+       "messages":[{"role":"user","content":"用一句话介绍你自己"}]}' \
+  | tee /tmp/m3.sse
+```
+
+判据：统计 `data:` 行里 `content` 长度为 1 的比例，并看第一帧：
+
+```bash
+grep -o '"content":"[^"]*"' /tmp/m3.sse | head -20
+```
+
+若这里首帧也是多字符，则客户端渲染层是唯一嫌疑；若这里已经是单字符，
+问题在更上游，需要连同客户端的换行策略一起看。
