@@ -149,6 +149,11 @@ export function fetchTenant(code: string, options?: RequestOptions): Promise<Ten
   return req<unknown>('GET', tenantPath(code), undefined, options).then(unwrapTenant)
 }
 
+/** Status changes are super-admin writes; callers should confirm and reload. */
+export function updateTenantStatus(code: string, status: 'active' | 'disabled', options?: RequestOptions): Promise<TenantInfo> {
+  return req<unknown>('PATCH', tenantPath(code), { status }, options).then(unwrapTenant)
+}
+
 /** ★ 响应是**裸对象**（`writeJSON(w, 200, t)`）。 */
 export function unwrapTenant(resp: unknown): TenantInfo {
   if (resp && typeof resp === 'object' && !Array.isArray(resp)) {
