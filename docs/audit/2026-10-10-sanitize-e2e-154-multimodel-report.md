@@ -13,7 +13,9 @@
 
 ## 一、结论
 
-**脱敏与还原的主链路是正常的**：入向替换为占位符、出向不含明文、跨轮与流式都能把原文还原回客户端、无敏感信息不被误伤。
+**脱敏（出向不含明文、不误伤）这一半是正常的**：入向替换为占位符、出向无明文残留、流式与跨协议均无占位符泄漏、无敏感信息不被误伤。
+
+**但「还原回原文」这一半在生产上从未真正生效**——`original_encrypted` 全表 NULL、Redis 里也没有任何 `session:*:sanitize` 映射键，无处可取原值。详见第八节与第九之二节。
 
 **但发现五个真实缺陷，均已修复**：
 
@@ -281,9 +283,13 @@ outer spans=[[0 27]]
 
 **这不是本轮新问题**——审计 41-R71 与 2026-09-30 复审都已记录同一现象（`count(original_encrypted) = 0`，且全仓无解密读取方）。本轮只是再次实测确认现状未变。
 
-影响：
-- **不影响**脱敏与还原——还原走 Redis 热缓存，实测正常
-- **影响**的是审计可追溯性：占位符→原文的映射没有加密留痕，事后无法从 DB 还原某个占位符当时对应什么值
+影响（**本节于部署后订正，原文「还原走 Redis 热缓存，实测正常」是错的**）：
+
+- **不影响脱敏**——出向确实不含明文
+- **影响还原**——原值既不在 DB（`original_encrypted` 全 NULL），也不在 Redis。
+  部署后实测 Redis db2 中 `session:*:sanitize` 匹配键数为 **0**，`PING` 正常，
+  即「热缓存兜底」并不存在。因此占位符无法还原，闸门只能打码或（对带索引者）fail-open 透传
+- **影响审计可追溯性**：占位符→原文的映射没有加密留痕，事后无法从 DB 还原某个占位符当时对应什么值
 - 因此 `session_censors` 不能按「DB 为权威」判可逆——这是 41-R71 已写明的验收口径
 
 配置位置见 `envs.samples/02-gateway-features.env.sample:335`。密钥生成与分发属用户侧决策，本轮未擅自配置。
@@ -370,6 +376,17 @@ env[1621] "msg":"sanitize pattern detector ready","path":"configs/sensitive_patt
 误伤审计：`api-design-patterns` / `token-bucket-algorithm` / `key-value-store` /
 `bearer-of-responsibility` 四种高危普通英文形态在部署后窗口内出现 **0 次**——原样通过，未被误脱敏。
 
+**关于 `go test ./admin/...` 的失败定性**：首次跑出现 4 个失败，全部与本次改动无关——
+三个是 `TestAuditGatesAreRegisteredInTheirDocs` / `TestAuditDocSilentClaimMatchesRegistry` /
+`TestAuditDocSilentClaimIsMarkedAsMachineChecked`，报 `docs/audit/*.md: no such file or directory`，
+根因是**同步构建树时为了省带宽排除了 `docs/`**（测试台取舍，非代码问题）。
+补齐 `docs/`（329 份审计文档）后重跑，三者**全部 PASS（rc=0）**。
+第四个 `TestV1BodiesReadersAreAssessed` 是 AGENTS.md 明确记录的**故意红负向闸门**，重跑仍红，符合预期。
+
+本次改动的实际受影响面只有 `security/sanitize` 与 `configs/sensitive_patterns.yaml`，
+`go test ./security/sanitize/...` 全绿；`gofmt -l` 在 `security/sanitize/` 下仅报
+`input_protocols.go` 与 `deployment_pattern_config_test.go` 两个**既有未改动文件**。
+
 泄漏速率前后对比（按每千行归一化，避免窗口长度不同造成误读）：
 
 | 窗口 | 行数 | 裸形态泄漏 | 每千行 | 完整占位符泄漏 | 每千行 |
@@ -406,13 +423,17 @@ env[1621] "msg":"sanitize pattern detector ready","path":"configs/sensitive_patt
 | 历史 | 84584 | 84584 |
 | 本轮 E2E | 157 | 157 |
 
-映射行在、加密原值全空。还原路径于是变成：
-找到映射行 → 解密 `original_encrypted` → 是 NULL → 解析不出 → **走 fail-open 分支把占位符原样透传**。
+映射行在、加密原值全空。Redis 也救不了：部署后实测 db2 中 `session:*:sanitize`
+匹配键数为 **0**（`PING` 返回 PONG，说明是「确实没有键」而非「连不上」）。
+还原路径于是变成：找到映射行 → 解密 `original_encrypted` → 是 NULL → 解析不出 →
+**走 fail-open 分支把占位符原样透传**。
 
 ### 为什么之前没被发现
 
 此前报告里「E2 占位符映射已落库（original_encrypted 加密存储）」这句话是**误导性的**——
-它只断言了映射行存在。该列实际 100% 为 NULL，还原这一半在生产上**从未真正生效过**。
+它只断言了映射行存在。该列实际 100% 为 NULL，且 Redis 中亦无对应映射键，
+**还原这一半在生产上从未真正生效过**。E2E 矩阵里所有模型的 A3/C3 标注「未还原出原文」
+正是这个事实的表现，当时被当成「模型拒绝复述」归因了。
 本轮 `LLM_GATEWAY_SESSION_CENSOR_KEY` 经用户决定暂不配置，故这不是回归，是既有状态的显形。
 
 ### 两条可选修法（均未执行，需用户裁决）
