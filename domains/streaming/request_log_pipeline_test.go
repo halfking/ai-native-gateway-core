@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/kaixuan/llm-gateway-go/domains/session" //nolint:depguard // request context carries the loaded session
@@ -21,7 +22,8 @@ import (
 func TestRequestLogContext_SetAutoDecisionCanonicalizesTierFailoverModels(t *testing.T) {
 	ctx := &RequestLogContext{}
 	ctx.SetAutoDecision(&autoRouteDecision{
-		ChosenModel: "Z-AI/GLM-5.2",
+		ChosenModel:     "Z-AI/GLM-5.2",
+		ClassifierUsage: &autoroute.ExternalClassifierUsage{Provider: "typesafe", Model: "jev-latest", InputTokens: 123, OutputTokens: 4, CostUSD: 0.000005166},
 		failoverModels: []string{
 			"glm-5.2",
 			" Anthropic/Claude-Sonnet ",
@@ -33,6 +35,14 @@ func TestRequestLogContext_SetAutoDecisionCanonicalizesTierFailoverModels(t *tes
 	want := []string{"claude-sonnet", "gpt-5.1"}
 	if !reflect.DeepEqual(ctx.AutoFallbackModels, want) {
 		t.Fatalf("AutoFallbackModels: got %v, want %v", ctx.AutoFallbackModels, want)
+	}
+	var audit map[string]any
+	if err := json.Unmarshal(ctx.AutoDecision, &audit); err != nil {
+		t.Fatalf("unmarshal server audit decision: %v", err)
+	}
+	usage, ok := audit["classifier_usage"].(map[string]any)
+	if !ok || usage["input_tokens"] != float64(123) || usage["output_tokens"] != float64(4) {
+		t.Fatalf("server audit lost Jev usage: %#v", audit["classifier_usage"])
 	}
 }
 

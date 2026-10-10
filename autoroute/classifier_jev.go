@@ -38,6 +38,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"sort"
@@ -66,10 +67,12 @@ func jevTaskTypeRubrics() map[string]string {
 }
 
 const (
-	jevDefaultBaseURL = "https://api.typesafe.ai"
-	jevDefaultModel   = "jev-latest"
-	jevDefaultTimeout = 3 * time.Second
-	jevMaxTimeout     = 10 * time.Second
+	jevDefaultBaseURL                  = "https://api.typesafe.ai"
+	jevDefaultModel                    = "jev-latest"
+	jevDefaultTimeout                  = 3 * time.Second
+	jevMaxTimeout                      = 10 * time.Second
+	jevDefaultInputPricePerMillionUSD  = 0.042
+	jevDefaultOutputPricePerMillionUSD = 0.0
 
 	// jevBreakerFailures / jevBreakerCooldown mirror CircuitBreakerCaller's
 	// 5-failure / 30s posture: a flaky third-party endpoint must not turn
@@ -84,11 +87,13 @@ const (
 // Thread-safe: the breaker state is mutex-guarded; the http.Client is
 // safe for concurrent use.
 type JevClassifier struct {
-	endpoint string
-	apiKey   string
-	model    string
-	timeout  time.Duration
-	http     *http.Client
+	endpoint                 string
+	apiKey                   string
+	model                    string
+	timeout                  time.Duration
+	inputPricePerMillionUSD  float64
+	outputPricePerMillionUSD float64
+	http                     *http.Client
 
 	mu          sync.Mutex
 	consecutive int
@@ -142,6 +147,24 @@ func BuildJevClassifierFromEnv(envLookup func(string) string) (*JevClassifier, b
 			}
 		}
 	}
+	inputPrice := jevDefaultInputPricePerMillionUSD
+	if raw := strings.TrimSpace(envLookup("LLM_GATEWAY_JEV_INPUT_PRICE_PER_MILLION_USD")); raw != "" {
+		parsed, err := parseFloatSeconds(raw)
+		if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed < 0 || parsed > 10000 {
+			slog.Warn("autoroute: invalid LLM_GATEWAY_JEV_INPUT_PRICE_PER_MILLION_USD; keeping Jev disabled", "error", err)
+			return nil, false
+		}
+		inputPrice = parsed
+	}
+	outputPrice := jevDefaultOutputPricePerMillionUSD
+	if raw := strings.TrimSpace(envLookup("LLM_GATEWAY_JEV_OUTPUT_PRICE_PER_MILLION_USD")); raw != "" {
+		parsed, err := parseFloatSeconds(raw)
+		if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed < 0 || parsed > 10000 {
+			slog.Warn("autoroute: invalid LLM_GATEWAY_JEV_OUTPUT_PRICE_PER_MILLION_USD; keeping Jev disabled", "error", err)
+			return nil, false
+		}
+		outputPrice = parsed
+	}
 
 	endpoint := base + "/v1/systemone"
 	slog.Info("autoroute: Jev fallback classifier enabled",
@@ -149,11 +172,13 @@ func BuildJevClassifierFromEnv(envLookup func(string) string) (*JevClassifier, b
 		"model", model,
 		"timeout", timeout.String())
 	return &JevClassifier{
-		endpoint: endpoint,
-		apiKey:   apiKey,
-		model:    model,
-		timeout:  timeout,
-		http:     &http.Client{},
+		endpoint:                 endpoint,
+		apiKey:                   apiKey,
+		model:                    model,
+		timeout:                  timeout,
+		inputPricePerMillionUSD:  inputPrice,
+		outputPricePerMillionUSD: outputPrice,
+		http:                     &http.Client{},
 	}, true
 }
 
@@ -184,6 +209,12 @@ type jevChoiceAnswer struct {
 type jevResponse struct {
 	Model   string                     `json:"model"`
 	Answers map[string]jevChoiceAnswer `json:"answers"`
+	Usage   *jevUsage                  `json:"usage"`
+}
+
+type jevUsage struct {
+	InputTokens  *int `json:"input_tokens"`
+	OutputTokens *int `json:"output_tokens"`
 }
 
 // jevState is the `state` payload. Structured (not concatenated text) so
@@ -295,6 +326,11 @@ func (c *JevClassifier) classifyOnce(ctx context.Context, sigs ClassificationSig
 	if !valid {
 		return nil, fmt.Errorf("jev classify: unknown task type %q", answer.Choice)
 	}
+	if parsed.Usage == nil || parsed.Usage.InputTokens == nil || parsed.Usage.OutputTokens == nil ||
+		*parsed.Usage.InputTokens < 0 || *parsed.Usage.OutputTokens < 0 ||
+		*parsed.Usage.InputTokens > 100_000_000 || *parsed.Usage.OutputTokens > 100_000_000 {
+		return nil, fmt.Errorf("jev classify: response missing or invalid usage")
+	}
 
 	confidence := answer.Confidence
 	if confidence <= 0 || confidence > 1 {
@@ -311,6 +347,12 @@ func (c *JevClassifier) classifyOnce(ctx context.Context, sigs ClassificationSig
 		Secondary:  jevSecondaryFromProbabilities(answer.Probabilities, primary),
 		Signals:    sigs,
 		Classifier: "jev",
+		ExternalUsage: &ExternalClassifierUsage{
+			Provider: "typesafe", Model: parsed.Model,
+			InputTokens: *parsed.Usage.InputTokens, OutputTokens: *parsed.Usage.OutputTokens,
+			CostUSD:           (float64(*parsed.Usage.InputTokens)*c.inputPricePerMillionUSD + float64(*parsed.Usage.OutputTokens)*c.outputPricePerMillionUSD) / 1_000_000,
+			CostPricingSource: "deployment_config_or_public_default_estimate",
+		},
 		Reason: fmt.Sprintf("jev choice p=%.2f conf=%.2f (model %s)",
 			answer.Probabilities[string(primary)], answer.Confidence, parsed.Model),
 	}, nil

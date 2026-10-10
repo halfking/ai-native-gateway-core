@@ -226,6 +226,9 @@ func (c *CachedClassifier) Classify(ctx context.Context, signals ClassificationS
 	lookupStarted := time.Now()
 	if result, ok := c.cache.Get(key, now); ok {
 		recordClassificationCacheMetric(true)
+		// This request did not call the external classifier; do not attribute
+		// the original miss's usage a second time.
+		result.ExternalUsage = nil
 		recordClassificationMetrics(result, result.Classifier, "cache", time.Since(lookupStarted))
 		return result, nil
 	}
@@ -245,5 +248,9 @@ func cloneClassification(in *Classification) *Classification {
 	}
 	out := *in
 	out.Secondary = append([]TaskScore(nil), in.Secondary...)
+	if in.ExternalUsage != nil {
+		usage := *in.ExternalUsage
+		out.ExternalUsage = &usage
+	}
 	return &out
 }
