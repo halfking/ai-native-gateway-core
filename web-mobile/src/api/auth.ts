@@ -7,8 +7,61 @@ export interface LoginResponse {
   user: UserInfo
 }
 
-export function login(username: string, password: string, options?: RequestOptions): Promise<LoginResponse> {
-  return req<LoginResponse>('POST', '/api/auth/token', { username, password }, options)
+/** GET /api/auth/captcha 的响应（后端 admin/auth_captcha.go）。 */
+export interface CaptchaResponse {
+  /** 服务端签发的凭证 ID，登录时原样回传。答案本身不在这份响应里。 */
+  captcha_id: string
+  /** `data:image/png;base64,…` 的位图验证码。 */
+  image: string
+  expires_at: string
+  /**
+   * 后端判定「这个来源已被强制要求验证码」。
+   * true 时前端把输入框标成必填并在未填时拦下提交，
+   * 免得用户提交完才收到 400 captcha_required。
+   */
+  required: boolean
+  ttl_seconds: number
+}
+
+export interface LoginOptions {
+  /** 「保持登录」勾选状态。true=持久 cookie（24h），false=会话级 cookie。 */
+  rememberMe?: boolean
+  captchaId?: string
+  captchaCode?: string
+}
+
+/**
+ * 拉一张登录验证码。未达失败阈值时后端 `required=false`，此时验证码**可选**
+ * ——用户可以直接留空提交（见 admin/auth_captcha.go 的自适应闸门）。
+ */
+export function fetchCaptcha(options?: RequestOptions): Promise<CaptchaResponse> {
+  return req<CaptchaResponse>('GET', '/api/auth/captcha', undefined, options)
+}
+
+/**
+ * 登录。
+ *
+ * ⚠️ `options` 同时承载 RequestOptions（signal）与 LoginOptions，是因为两者
+ * 都是「这次请求的可选修饰」；拆成两个并列的可选参数会让调用点出现
+ * `login(u, p, undefined, { rememberMe })` 这种只为占位的调用。
+ */
+export function login(
+  username: string,
+  password: string,
+  options?: RequestOptions & LoginOptions,
+): Promise<LoginResponse> {
+  return req<LoginResponse>(
+    'POST',
+    '/api/auth/token',
+    {
+      username,
+      password,
+      remember_me: options?.rememberMe ?? false,
+      captcha_id: options?.captchaId ?? '',
+      captcha_code: options?.captchaCode ?? '',
+    },
+    options,
+  )
 }
 
 export function logout(options?: RequestOptions): Promise<void> {
