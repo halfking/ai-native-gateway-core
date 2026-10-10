@@ -456,7 +456,7 @@ function describeError(err: unknown): string {
         <div class="card-row">
           <span class="node-card__name">
             <StatusDot :tone="healthTone(c)" />
-            {{ c.provider_name }} · {{ c.label }}
+            <span class="node-card__name-text">{{ c.provider_name }} · {{ c.label }}</span>
           </span>
           <span class="badge" :class="stateBadge(c).cls">{{ stateBadge(c).label }}</span>
         </div>
@@ -799,16 +799,33 @@ function describeError(err: unknown): string {
   background: var(--app-primary-softer);
 }
 
+.node-card > .card-row {
+  width: 100%;
+  min-width: 0;
+}
+
 .node-card__name {
-  display: inline-flex;
-  align-items: center;
+  display: flex;
+  align-items: flex-start;
   gap: var(--app-space-2);
   font-weight: 600;
   font-size: 0.9375rem;
+  flex: 1 1 0;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow: visible;
+  white-space: normal;
+}
+
+.node-card__name-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.node-card .badge {
+  flex-shrink: 0;
 }
 
 .node-card__fields {
