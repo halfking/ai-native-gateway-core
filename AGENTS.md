@@ -8,10 +8,18 @@
 
 - 路径：`/Users/huangxt/workspace/llm-gateway-go`
 - 远端：codeup.aliyun.com（`origin/main`）
-- HEAD：`22e5e3f8f`（软链 SSOT 迁移）→ `7cbf65478`（sanitize 占位符容错归一化还原）→ `1a368a301`（网关套网关 peer 占位符透传）→ `ed9c4a7c5`（mirror main 锚定 `$` 防分支前缀漏剪）→ `c68365455`（mirror filter-repo 补齐三类覆盖缺口）
+- HEAD：`7817f1c1a`（审计 pass：第二十节结论 + 第九之二节更正）→ `7dd0b4b67`（sanitize 五项修复）→ `e3e2b4ef`（migration 849 `SET LOCAL statement_timeout`）→ `d44a29f77`（web-mobile lockfile）→ `558953c52`（bash 3.2 兼容）→ `2bf5b3870`（deploy-seamless 依赖安装判据）
 - 分支：仅 `main`；仓库多会话共享且推送频繁，提交前先 `git fetch && git status -sb` 避免覆盖他人改动
 - Go 模块：见仓库根 `go.mod`
-- 入口二进制：`cmd/gateway/main.go`（v1，默认 `:8781`）、`cmd/gateway-v2/main.go`（v2，默认 `:8782`，独立）
+- 入口二进制：`cmd/gateway/main.go`（v1，`:8781`）、`cmd/gateway-v2/main.go`（v2，`:8782`，独立）
+
+> **端口以部署现场为准，不要照抄本文件的默认值。** 两台机器都用蓝绿部署，
+> 实际监听端口由 `/opt/llm-gateway-go/run/active-upstream.conf` 决定，
+> nginx 通过 `upstream llm_local { include … }` 引用它。
+> 2026-10-10 实测：**154 与 245 均运行在 `:8782`**，`slots/` 下只有 `8782 ->` 一个软链。
+> 探活前先读该文件确认端口，不要假定 8781 还在监听——直连 `127.0.0.1:8781` 会
+> 得到 connection refused，看起来像故障，实际服务健康。
+> 经 nginx 的 `curl http://127.0.0.1/healthz` 是与部署形态一致的探活方式。
 
 ## 已完成（已推送）
 
@@ -19,6 +27,7 @@
 2. `df69ef0be`：`scripts/deploy-local-lib.sh` macOS timeout 可移植性修复（`timeout → gtimeout → 纯 bash 轮询看门狗`，轮询实现避免子 shell sleep 孙进程变孤儿拖满时限）
 3. `7fd9b2ceb`：`tests/deploy_timeout_portability_test.sh` 回归门接入 `verify.sh`；7 套 deploy-local 测试 `rc=0`；变异验证确认有牙
 4. `22e5e3f8f`：`scripts/deploy-lib` 软链 SSOT 路径迁移（`ai-native-tools/deploy-lib` → `ai-native-workspace/deploy-lib`，与本机实际 SSOT 一致）
+5. `7817f1c1a`：审计 pass（2026-10-10 23:30）——`go build`/`go vet`/`security/*`+`streaming/*` 9 包全绿；**第九之二节「占位符 fail-open 透传」经 9 种拼写变体探针复验确认已不复现**（当前 HEAD 全程 fail-closed），该节结论已更正；仓库卫生干净。审计结论详见 `docs/audit/2026-10-10-sanitize-e2e-154-multimodel-report.md` 第二十节
 
 ## 剩余任务（按依赖顺序）
 
@@ -26,7 +35,7 @@
 
 **前置**：安装 Go（项目 `go.mod` 指定版本，常见 1.22+）。
 
-**命令**：
+**命令**（先 `export PATH="$HOME/sdk/go/bin:$PATH"`，见任务 2 的工具链提示）：
 
 ```bash
 go build ./...
@@ -35,6 +44,23 @@ gofmt -l .                                # 无输出即过
 CGO_ENABLED=0 go test \
   ./admin/... ./bg/... ./domains-stats/... ./settings/...
 ```
+
+> **`gofmt -l .` 目前输出 376 个文件，这是上游长期存量，不是你的回归。**
+> 2026-10-10 审计实测：`go build ./...` rc=0、`go vet ./...` 零告警，
+> 而 `gofmt -l .` 有 376 个未格式化文件。**不要顺手全量格式化**——
+> 那会产生巨型 diff 并在多会话共享仓库里制造冲突面。只保证你本次改动的
+> `.go` 文件已格式化（提交前跑 `gofmt -l <你改的文件>`）。
+
+**已验证绿的子集**（2026-10-10 审计，`go test ./security/... ./domains/streaming/...`，rc=0）：
+
+| 包 | 耗时 |
+|---|---|
+| `security/sanitize` | 5.2s |
+| `domains/streaming` | 167.4s |
+| `domains/streaming/executors` | 50.1s |
+| `security/armor` `guardian` `sensitive`、`streaming/{integrity,state,executors/webcookie}` | ok |
+
+sanitize / streaming 这条线在当前 HEAD 是全绿的，可直接作为改动后的回归门。
 
 **已知故意红的负向闸门，不要修复也不要加白名单**（维护者策略）：
 
@@ -56,11 +82,16 @@ LLM_GATEWAY_LITE_DB_PATH=/tmp/gateway-lite.db \
 bash scripts/start-lite.sh
 # 等待 /healthz 返回 ready=true
 curl -fsS http://localhost:8781/healthz
-# 也可显式指 host：curl -fsS http://*********:8781/healthz
-# v1 默认 :8781，v2 默认 :8782
+# 也可显式指 host：curl -fsS http://<host>:8781/healthz
+# 本地 lite 走 v1(:8781)。远程机器端口另见仓库快照处的蓝绿端口说明。
 ```
 
 预期：服务可启动；未带凭据访问新端点应返回 `401`。`start-lite.sh` 内部走 `go run ./cmd/gateway`，等价于直接 `go run ./cmd/gateway` 加 lite 环境变量。
+
+> **本机 Go 不在 `PATH` 上。** 工具链在 `~/sdk/go/bin/go`（1.27.1），
+> 同类非标准前缀还有 `~/sdk/bash5/bin/bash`（5.2.0）。
+> 跑任何 `go` 命令前先 `export PATH="$HOME/sdk/go/bin:$PATH"`。
+> 参见第十九节：非标准前缀目录是本仓多次「某依赖不存在」误判的直接原因。
 
 ### 任务 3 — 真库回归（full 模式）
 
