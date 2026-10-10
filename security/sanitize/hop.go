@@ -38,7 +38,6 @@
 package sanitize
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -265,10 +264,11 @@ func SanitizeHopForOutbound(ctx context.Context) string {
 // Without an inbound set this reduces to "any marker at all", so a deployment
 // without hop signalling keeps its previous behaviour.
 func containsNonForeignMarker(ctx context.Context, payload []byte) bool {
-	if !mayCarryMarker(payload) {
+	text := string(payload)
+	if !mayContainMarkerText(text) {
 		return false
 	}
-	spans := markerSpans(string(payload))
+	spans := markerSpans(text)
 	if len(spans) == 0 {
 		return false
 	}
@@ -287,19 +287,76 @@ func containsNonForeignMarker(ctx context.Context, payload []byte) bool {
 	return false
 }
 
-// fullWidthBraceLeadByte is the UTF-8 lead byte shared by '｛' (U+FF5B) and
-// '｝' (U+FF5D). It is deliberately the shared byte rather than the two full
-// code points: this is a negative filter, and being over-inclusive only costs
-// the regex scan that follows.
-const fullWidthBraceLeadByte = 0xEF
-
 // mayCarryMarker is the cheap negative filter every marker probe runs first.
-// A body with no opening brace — half or full width — cannot carry a marker in
-// any spelling, and the tolerant stage that replaced the old "{SENSITIVE:"
-// byte search scans the whole payload with a regex. Most responses take this
-// path, so it has to stay a pair of memchr calls rather than a scan.
+// A body with no opening brace — half or full width — and no case-folded
+// "sensitive" run cannot carry a marker in any spelling, and the tolerant
+// stage that replaced the old "{SENSITIVE:" byte search scans the whole
+// payload with a regex. Most responses take this path, so it has to stay
+// cheap rather than a regex scan.
+//
+// 2026-10-11: the brace-less bare form ("SENSITIVE:phone:1", observed on
+// minimax-m3) entered the tolerated grammar on 2026-10-10, but this filter
+// still keyed on braces only — a body whose markers were all bare passed
+// every probe as clean, so the non-stream restorers (gated on
+// placeholderCandidate) skipped the field and the residual guards blocked the
+// whole response instead. The fold-case word scan keeps the filter honest for
+// that spelling at the same cost class.
 func mayCarryMarker(payload []byte) bool {
-	return bytes.IndexByte(payload, '{') >= 0 || bytes.IndexByte(payload, fullWidthBraceLeadByte) >= 0
+	return mayContainMarkerText(string(payload))
+}
+
+// mayContainMarkerText is mayCarryMarker for callers that already hold the
+// payload as a string, so the conversion happens once per probe.
+func mayContainMarkerText(text string) bool {
+	if strings.ContainsAny(text, "{｛") {
+		return true
+	}
+	return containsFoldCaseWord(text, placeholderMarkerWord)
+}
+
+// containsFoldCaseWord reports whether text contains word, ASCII
+// case-insensitively, without allocating a lowercased copy.
+func containsFoldCaseWord(text, word string) bool {
+	n := len(word)
+	for i := 0; i+n <= len(text); i++ {
+		match := true
+		for j := 0; j < n; j++ {
+			c := text[i+j]
+			if 'A' <= c && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c != word[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
+// containsFoldCaseWordBytes is containsFoldCaseWord for byte slices.
+func containsFoldCaseWordBytes(text []byte, word string) bool {
+	n := len(word)
+	for i := 0; i+n <= len(text); i++ {
+		match := true
+		for j := 0; j < n; j++ {
+			c := text[i+j]
+			if 'A' <= c && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c != word[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
 }
 
 // allMarkersForeign reports whether every marker in text was minted by a
@@ -340,8 +397,13 @@ func allMarkerSpansForeign(text string, foreign foreignMarkerSet) bool {
 // marker, in either spelling. Bounded like the mask pass; spans that do not
 // parse are returned too, so callers can classify them as corrupt rather than
 // silently treat them as clean.
+//
+// 2026-10-11: the brace-only early bail predated the bare (brace-less) marker
+// form and hid it from every probe built on this function
+// (placeholderCandidate / hasReservedPlaceholder / containsNonForeignMarker);
+// mayCarryMarker now admits the bare spelling and this function mirrors it.
 func markerSpans(text string) []string {
-	if !strings.ContainsAny(text, "{｛") {
+	if !mayContainMarkerText(text) {
 		return nil
 	}
 	var spans []string

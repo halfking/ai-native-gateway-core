@@ -124,14 +124,12 @@ func Test836HealthcheckBodyIsVerbatimFromBaseline(t *testing.T) {
 	got := sqlStatement(t, readMigrationFile(t, m836),
 		"CREATE OR REPLACE FUNCTION public.columnar_healthcheck")
 	baseline := readMigrationFile(t, mBaseline)
-	want := sqlStatement(t, baseline, "CREATE FUNCTION public.columnar_healthcheck")
+	want := sqlStatement(t, baseline, "CREATE OR REPLACE FUNCTION public.columnar_healthcheck")
 
-	// 刻意差异：基线写 CREATE FUNCTION（全新安装时该函数不存在），836 跑在已经
-	// 有它的库上，裸 CREATE 会以 "function already exists" 中止 —— 也就是迁移会
-	// 在它专门要修的那些库上失败。所以语句是 CREATE OR REPLACE，**体必须逐字相同**。
-	if strings.Replace(got, "CREATE OR REPLACE FUNCTION", "CREATE FUNCTION", 1) != want {
+	// 基线与迁移都使用 CREATE OR REPLACE；整条语句（含签名、函数体和终止分号）必须相同。
+	if got != want {
 		t.Error("836's columnar_healthcheck body is not verbatim from sql/schema/01-schema.sql. " +
-			"The CREATE-vs-CREATE-OR-REPLACE difference above is intended; anything else is drift")
+			"Any statement difference indicates schema drift")
 	}
 	// 载荷的**用意**：没有它，转换完成后这一族仍然报 expected='unknown'，也就是
 	// 漂移仍不可见。这条断言钉住「修复看得见」这半边，而不只是「分区转了」。

@@ -2,9 +2,12 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useHyperPage } from '@/hyper'
+import { ApiError } from '@/api/client'
 import { fetchUserStats, fetchUserUsageSummary, type UserStatsResponse, type UserUsageRow } from '@/api/userUsageStats'
 import { fetchManagedUsers, setManagedUserEnabled, type ManagedUser } from '@/api/users'
+import { fetchTenants, fetchTenantUsers, fetchTenantStats, type TenantInfo, type TenantStats, type TenantUser } from '@/api/tenants'
 import { createKey } from '@/api/keys'
+import { useAuthStore } from '@/stores/auth'
 import { t } from '@/i18n'
 import AppStateView from '@/components/common/AppStateView.vue'
 import AppSheet from '@/components/common/AppSheet.vue'
@@ -15,12 +18,17 @@ import { formatApiError } from '@/utils/errors'
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
+const isSuperAdmin = computed(() => auth.role === 'super_admin')
 const selectedId = computed(() => { const id = Number(route.params.id); return Number.isSafeInteger(id) && id > 0 ? id : 0 })
 useHyperPage({ title: () => selectedId.value ? t('users.detailTitle') : t('users.title') })
 
 const days = ref(30)
 const users = ref<ManagedUser[]>([])
 const usage = ref<UserUsageRow[]>([])
+const tenants = ref<TenantInfo[]>([])
+interface TenantSection { expanded: boolean; users: TenantUser[] | null; stats: TenantStats | null; loading: boolean; error: string | null; usersError: string | null; statsError: string | null }
+const tenantSections = ref<Record<string, TenantSection>>({})
 const detail = ref<UserStatsResponse | null>(null)
 const loading = ref(true)
 const updatingId = ref<number | null>(null)
@@ -28,11 +36,9 @@ const query = ref('')
 const error = ref<string | null>(null)
 const detailError = ref<string | null>(null)
 
+const visibleTenants = computed(() => tenants.value.filter((tenant) => `${tenant.name} ${tenant.code} ${tenant.status}`.toLowerCase().includes(query.value.trim().toLowerCase())))
+const visibleUsers = computed(() => users.value.filter((user) => `${user.username} ${user.display_name} ${user.email} ${user.tenant_id}`.toLowerCase().includes(query.value.trim().toLowerCase())))
 const usageByUsername = computed(() => new Map(usage.value.map((row) => [row.username, row])))
-const visibleUsers = computed(() => users.value.filter((user) => {
-  const value = `${user.username} ${user.display_name} ${user.email} ${user.tenant_id}`.toLowerCase()
-  return value.includes(query.value.trim().toLowerCase())
-}))
 const selectedUser = computed(() => users.value.find((user) => user.id === selectedId.value) ?? null)
 const detailLoading = ref(false)
 let disposed = false
@@ -59,21 +65,68 @@ async function loadList(): Promise<void> {
   const signal = listAborter.signal
   loading.value = true
   error.value = null
+  tenants.value = []
   users.value = []
   usage.value = []
+  tenantSections.value = {}
   try {
-    const [managed, summary] = await Promise.all([
-      fetchManagedUsers({ signal }),
-      fetchUserUsageSummary({ days: days.value }, { signal }),
-    ])
+    const listData = isSuperAdmin.value
+      ? await fetchTenants({}, { signal })
+      : await Promise.all([fetchManagedUsers({ signal }), fetchUserUsageSummary({ days: days.value }, { signal })])
     if (signal.aborted || disposed) return
-    users.value = managed
-    usage.value = summary.items
+    if (isSuperAdmin.value) tenants.value = listData as TenantInfo[]
+    else { users.value = listData[0] as ManagedUser[]; usage.value = (listData[1] as Awaited<ReturnType<typeof fetchUserUsageSummary>>).items }
   } catch (cause) {
     if (!signal.aborted && !disposed) error.value = formatApiError(cause)
   } finally {
     if (!signal.aborted && !disposed) loading.value = false
   }
+}
+
+function tenantSection(code: string): TenantSection {
+  return tenantSections.value[code] ?? { expanded: false, users: null, stats: null, loading: false, error: null, usersError: null, statsError: null }
+}
+
+async function toggleTenant(tenant: TenantInfo): Promise<void> {
+  const state = tenantSection(tenant.code)
+  state.expanded = !state.expanded
+  tenantSections.value = { ...tenantSections.value, [tenant.code]: state }
+  if (!state.expanded || state.loading || (state.users && state.stats)) return
+  await loadTenantSection(tenant, state)
+}
+
+async function loadTenantSection(tenant: TenantInfo, state: TenantSection): Promise<void> {
+  if (state.loading) return
+  state.loading = true
+  state.error = null
+  state.usersError = null
+  state.statsError = null
+  tenantSections.value = { ...tenantSections.value, [tenant.code]: state }
+  const [usersResult, statsResult] = await Promise.allSettled([
+    fetchTenantUsers(tenant.code),
+    fetchTenantStats(tenant.code, { days: days.value }),
+  ])
+  if (usersResult.status === 'fulfilled') state.users = usersResult.value
+  else state.usersError = formatApiError(usersResult.reason)
+  if (statsResult.status === 'fulfilled') state.stats = statsResult.value
+  else state.statsError = statsResult.reason instanceof ApiError && statsResult.reason.status === 504
+    ? t('users.tenantStatsTimeout')
+    : formatApiError(statsResult.reason)
+  if (!state.users && !state.stats) state.error = [state.usersError, state.statsError].filter(Boolean).join(' · ')
+  state.loading = false
+  tenantSections.value = { ...tenantSections.value, [tenant.code]: state }
+}
+
+function retryTenant(tenant: TenantInfo): void {
+  const state = tenantSection(tenant.code)
+  state.users = null
+  state.stats = null
+  state.error = null
+  state.usersError = null
+  state.statsError = null
+  state.expanded = true
+  tenantSections.value = { ...tenantSections.value, [tenant.code]: state }
+  void loadTenantSection(tenant, state)
 }
 
 async function loadDetail(): Promise<void> {
@@ -87,8 +140,11 @@ async function loadDetail(): Promise<void> {
   if (!selectedId.value) return
   detailLoading.value = true
   try {
-    const response = await fetchUserStats({ userId: selectedId.value, days: days.value }, { signal })
-    if (!signal.aborted && !disposed) detail.value = response
+    const [response, managedUsers] = await Promise.all([
+      fetchUserStats({ userId: selectedId.value, days: days.value }, { signal }),
+      fetchManagedUsers({ signal }),
+    ])
+    if (!signal.aborted && !disposed) { detail.value = response; users.value = managedUsers }
   } catch (cause) {
     if (!signal.aborted && !disposed) detailError.value = formatApiError(cause)
   } finally {
@@ -96,7 +152,7 @@ async function loadDetail(): Promise<void> {
   }
 }
 
-async function toggleEnabled(user: ManagedUser): Promise<void> {
+async function toggleEnabled(user: ManagedUser | TenantUser): Promise<void> {
   const next = !user.enabled
   const confirmed = window.confirm(t(next ? 'users.enableConfirm' : 'users.disableConfirm', { name: user.display_name || user.username }))
   if (!confirmed || updatingId.value != null) return
@@ -104,8 +160,14 @@ async function toggleEnabled(user: ManagedUser): Promise<void> {
   error.value = null
   try {
     await setManagedUserEnabled(user.id, next)
-    await loadList()
     if (selectedId.value) await loadDetail()
+    else {
+      const state = tenantSection(user.tenant_id)
+      state.users = null
+      tenantSections.value = { ...tenantSections.value, [user.tenant_id]: state }
+      const tenant = tenants.value.find((item) => item.code === user.tenant_id)
+      if (tenant && state.expanded) await loadTenantSection(tenant, state)
+    }
   } catch (cause) {
     error.value = formatApiError(cause)
   } finally {
@@ -113,7 +175,7 @@ async function toggleEnabled(user: ManagedUser): Promise<void> {
   }
 }
 
-function showDetails(user: ManagedUser): void {
+function showDetails(user: ManagedUser | TenantUser): void {
   void router.push(`/users/${user.id}`)
 }
 
@@ -189,12 +251,19 @@ async function copySecret(): Promise<void> {
 }
 
 onMounted(async () => {
-  await loadList()
+  if (!selectedId.value) await loadList()
+  else loading.value = false
   await loadDetail()
 })
 watch(days, async () => {
-  await loadList()
-  await loadDetail()
+  if (selectedId.value) { await loadDetail(); return }
+  const expanded = Object.entries(tenantSections.value).filter(([, state]) => state.expanded)
+  await Promise.all(expanded.map(async ([code, state]) => {
+    state.stats = null
+    tenantSections.value = { ...tenantSections.value, [code]: state }
+    const tenant = tenants.value.find((item) => item.code === code)
+    if (tenant) await loadTenantSection(tenant, state)
+  }))
 })
 watch(selectedId, () => { closeCreate(); void loadDetail() })
 onBeforeUnmount(() => { disposed = true; listAborter?.abort(); detailAborter?.abort(); closeCreate() })
@@ -219,28 +288,82 @@ onBeforeUnmount(() => { disposed = true; listAborter?.abort(); detailAborter?.ab
     <template v-else-if="!selectedId">
       <label class="user-usage__search">
         <span>{{ t('common.search') }}</span>
-        <input v-model="query" type="search" :placeholder="t('users.searchPlaceholder')" />
+        <input v-model="query" type="search" :placeholder="isSuperAdmin ? t('users.searchTenantPlaceholder') : t('users.searchPlaceholder')" />
       </label>
-      <p v-if="!visibleUsers.length" class="user-usage__empty">{{ t('common.empty') }}</p>
+      <template v-if="isSuperAdmin">
+      <p v-if="!visibleTenants.length" class="user-usage__empty">{{ t('common.empty') }}</p>
       <ul v-else class="user-usage__list">
-        <li v-for="user in visibleUsers" :key="user.id" class="user-usage__card">
-          <div class="user-usage__head">
-            <div><strong>{{ user.display_name || user.username }}</strong><small>{{ user.username }} · {{ user.tenant_id }}</small></div>
-            <span class="badge" :class="user.enabled ? 'badge--success' : 'badge--muted'">{{ user.enabled ? t('users.enabled') : t('users.disabled') }}</span>
-          </div>
-          <div class="user-usage__metrics">
-            <span><small>{{ t('users.requests') }}</small><b>{{ fmtInt(usageByUsername.get(user.username)?.requests ?? 0) }}</b></span>
-            <span><small>{{ t('users.tokens') }}</small><b>{{ fmtInt(usageByUsername.get(user.username)?.tokens ?? 0) }}</b></span>
-            <span><small>{{ t('users.credits') }}</small><b>{{ fmtInt(usageByUsername.get(user.username)?.credits ?? 0) }}</b></span>
-          </div>
-          <div class="user-usage__actions">
-            <button type="button" class="btn" @click="showDetails(user)">{{ t('users.details') }}</button>
-            <button type="button" class="btn" :disabled="updatingId != null" @click="toggleEnabled(user)">
-              {{ user.enabled ? t('users.disable') : t('users.enable') }}
-            </button>
-          </div>
+        <li v-for="tenant in visibleTenants" :key="tenant.code" class="user-usage__tenant">
+          <button type="button" class="user-usage__tenant-head" :aria-expanded="tenantSections[tenant.code]?.expanded ?? false" @click="toggleTenant(tenant)">
+            <span><strong>{{ tenant.name }}</strong><small>{{ tenant.code }} · {{ tenant.status }}</small></span>
+            <span class="user-usage__tenant-count">{{ tenant.user_count == null ? '—' : fmtInt(tenant.user_count) }} {{ t('users.tenantUsers') }} <b>{{ tenantSections[tenant.code]?.expanded ? '−' : '+' }}</b></span>
+          </button>
+          <section v-if="tenantSections[tenant.code]?.expanded" class="user-usage__tenant-body">
+            <p v-if="tenantSections[tenant.code]?.loading" class="user-usage__empty">{{ t('common.loading') }}</p>
+            <div v-else-if="tenantSections[tenant.code]?.error" class="user-usage__error" role="alert">
+              <p>{{ tenantSections[tenant.code]?.error }}</p>
+              <button type="button" class="btn" @click="retryTenant(tenant)">{{ t('common.retry') }}</button>
+            </div>
+            <template v-else>
+              <p v-if="tenantSections[tenant.code]?.statsError" class="user-usage__error" role="status">{{ tenantSections[tenant.code]?.statsError }}</p>
+              <p v-if="tenantSections[tenant.code]?.usersError" class="user-usage__error" role="status">{{ tenantSections[tenant.code]?.usersError }}</p>
+              <template v-if="tenantSections[tenant.code]?.stats">
+              <div class="user-usage__tenant-kpis">
+                <StatCard :label="t('users.requests')" :value="fmtInt(tenantSections[tenant.code]!.stats!.total_requests)" />
+                <StatCard :label="t('users.tokens')" :value="fmtInt(tenantSections[tenant.code]!.stats!.total_tokens)" />
+                <StatCard :label="t('users.cost')" :value="fmtUsd(tenantSections[tenant.code]!.stats!.total_cost_usd)" />
+                <StatCard :label="t('users.credits')" :value="fmtInt(tenantSections[tenant.code]!.stats!.total_credits)" />
+              </div>
+              <section class="user-usage__tenant-breakdown">
+                <h3>{{ t('users.topModels') }}</h3>
+                <p v-if="!tenantSections[tenant.code]!.stats!.by_model.length" class="user-usage__empty">{{ t('common.empty') }}</p>
+                <div v-for="row in tenantSections[tenant.code]!.stats!.by_model" :key="row.model" class="user-usage__bucket"><span>{{ row.model }}</span><b>{{ fmtInt(row.requests) }} {{ t('users.requests') }} · {{ fmtUsd(row.cost_usd) }}</b></div>
+              </section>
+              <section class="user-usage__tenant-breakdown">
+                <h3>{{ t('users.topApps') }}</h3>
+                <div v-for="row in tenantSections[tenant.code]!.stats!.by_application" :key="row.application_code" class="user-usage__bucket"><span>{{ row.application_code }}</span><b>{{ fmtInt(row.requests) }} {{ t('users.requests') }} · {{ fmtUsd(row.cost_usd) }}</b></div>
+              </section>
+              <section class="user-usage__tenant-breakdown">
+                <h3>{{ t('users.daily') }} · {{ tenantSections[tenant.code]!.stats!.days }} {{ t('users.days') }}</h3>
+                <div v-for="row in tenantSections[tenant.code]!.stats!.daily" :key="row.date" class="user-usage__bucket"><span>{{ fmtDate(`${row.date}T00:00:00`) }}</span><b>{{ fmtInt(row.requests) }} {{ t('users.requests') }} · {{ fmtInt(row.tokens) }} {{ t('users.tokens') }} · {{ fmtUsd(row.cost_usd) }}</b></div>
+              </section>
+              </template>
+              <template v-if="tenantSections[tenant.code]?.users">
+              <div class="user-usage__users-head"><h3>{{ t('users.tenantUsers') }}</h3><span>{{ fmtInt(tenantSections[tenant.code]!.users!.length) }}</span></div>
+              <p v-if="!tenantSections[tenant.code]!.users!.length" class="user-usage__empty">{{ t('users.noTenantUsers') }}</p>
+              <article v-for="user in tenantSections[tenant.code]!.users" :key="user.id" class="user-usage__card">
+                <div class="user-usage__head"><div><strong>{{ user.display_name || user.username }}</strong><small>{{ user.username }} · {{ user.email || '—' }}</small></div><span class="badge" :class="user.enabled ? 'badge--success' : 'badge--muted'">{{ user.enabled ? t('users.enabled') : t('users.disabled') }}</span></div>
+                <div class="user-usage__actions">
+                  <button type="button" class="btn" @click="showDetails(user)">{{ t('users.details') }}</button>
+                  <button type="button" class="btn" :disabled="updatingId != null" @click="toggleEnabled(user)">{{ user.enabled ? t('users.disable') : t('users.enable') }}</button>
+                </div>
+              </article>
+              </template>
+            </template>
+          </section>
         </li>
       </ul>
+      </template>
+      <template v-else>
+        <p v-if="!visibleUsers.length" class="user-usage__empty">{{ t('common.empty') }}</p>
+        <ul v-else class="user-usage__list">
+          <li v-for="user in visibleUsers" :key="user.id" class="user-usage__card">
+            <div class="user-usage__head">
+              <div><strong>{{ user.display_name || user.username }}</strong><small>{{ user.username }} · {{ user.tenant_id }} · {{ user.email || '—' }}</small></div>
+              <span class="badge" :class="user.enabled ? 'badge--success' : 'badge--muted'">{{ user.enabled ? t('users.enabled') : t('users.disabled') }}</span>
+            </div>
+            <div class="user-usage__metrics">
+              <span><small>{{ t('users.requests') }}</small><b>{{ fmtInt(usageByUsername.get(user.username)?.requests ?? 0) }}</b></span>
+              <span><small>{{ t('users.tokens') }}</small><b>{{ fmtInt(usageByUsername.get(user.username)?.tokens ?? 0) }}</b></span>
+              <span><small>{{ t('users.credits') }}</small><b>{{ fmtInt(usageByUsername.get(user.username)?.credits ?? 0) }}</b></span>
+            </div>
+            <div class="user-usage__actions">
+              <button type="button" class="btn" @click="showDetails(user)">{{ t('users.details') }}</button>
+              <button type="button" class="btn" :disabled="updatingId != null" @click="toggleEnabled(user)">{{ user.enabled ? t('users.disable') : t('users.enable') }}</button>
+            </div>
+          </li>
+        </ul>
+      </template>
     </template>
 
     <template v-else>
@@ -323,7 +446,17 @@ onBeforeUnmount(() => { disposed = true; listAborter?.abort(); detailAborter?.ab
 .user-usage__toolbar label, .user-usage__search { display: grid; gap: 5px; color: var(--app-text-muted); font-size: 12px; }
 .user-usage select, .user-usage input { min-height: 48px; padding: 0 12px; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-surface); color: var(--app-text); font: inherit; }
 .user-usage__list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
-.user-usage__card, .user-usage__section { min-width: 0; padding: 14px; background: var(--app-surface); border: 1px solid var(--app-border); border-radius: 12px; }
+.user-usage__card, .user-usage__section, .user-usage__tenant { min-width: 0; padding: 14px; background: var(--app-surface); border: 1px solid var(--app-border); border-radius: 12px; }
+.user-usage__tenant { padding: 0; overflow: hidden; }
+.user-usage__tenant-head { display: flex; width: 100%; min-height: 64px; align-items: center; justify-content: space-between; gap: 8px; padding: 12px; border: 0; background: transparent; color: var(--app-text); text-align: left; }
+.user-usage__tenant-head > span:first-child { display: grid; gap: 4px; }
+.user-usage__tenant-head small, .user-usage__tenant-count { color: var(--app-text-muted); font-size: 12px; }
+.user-usage__tenant-count b { margin-left: 8px; color: var(--app-primary); font-size: 18px; }
+.user-usage__tenant-body { display: grid; gap: 12px; padding: 12px; border-top: 1px solid var(--app-border); }
+.user-usage__tenant-kpis { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
+.user-usage__tenant-breakdown { display: grid; gap: 6px; }
+.user-usage__tenant-breakdown h3, .user-usage__users-head h3 { margin: 0; font-size: 14px; }
+.user-usage__users-head { display: flex; align-items: center; justify-content: space-between; }
 .user-usage__head, .user-usage__actions, .user-usage__bucket { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .user-usage__head small, .user-usage__metrics small { display: block; color: var(--app-text-muted); }
 .user-usage__metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 14px 0; }
@@ -338,7 +471,7 @@ onBeforeUnmount(() => { disposed = true; listAborter?.abort(); detailAborter?.ab
 .user-usage__section h2 { margin: 0 0 10px; font-size: 14px; }
 .user-usage__bucket { min-height: 48px; border-top: 1px solid var(--app-border); overflow-wrap: anywhere; }
 .user-usage__bucket b { font-size: 0.75rem; text-align: end; }
-@media (min-width: 700px) { .user-usage__list { grid-template-columns: repeat(2, minmax(0, 1fr)); } .user-usage__kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (min-width: 700px) { .user-usage__list { grid-template-columns: 1fr; } .user-usage__kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } .user-usage__tenant-kpis { grid-template-columns: repeat(4,minmax(0,1fr)); } }
 
 /* 「在用户名下添加 apikey」抽屉内排版（2026-10-10） */
 .user-usage__create { display: grid; gap: 12px; }

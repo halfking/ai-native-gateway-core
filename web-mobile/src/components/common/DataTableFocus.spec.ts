@@ -39,15 +39,22 @@ describe('DataTableFocus', () => {
     wrapper.unmount()
   })
 
-  it('does not expose the fullscreen entry at medium and larger widths', () => {
+  it.each(['medium', 'expanded', 'large'])('keeps fullscreen available at %s widths, including unfolded phones', async (width) => {
     setLocale('zh-CN')
-    viewport.value = 'medium'
+    viewport.value = width
     const wrapper = mount(DataTableFocus, {
       props: { title: '用量明细' },
       slots: { default: '<table><tbody><tr><td>模型 A</td></tr></tbody></table>' },
     })
 
+    const open = wrapper.find('button[aria-label="专注查看"]')
+    expect(open.exists()).toBe(true)
+    await open.trigger('click')
+    expect(wrapper.find('[role="dialog"][aria-label="用量明细"]').exists()).toBe(true)
     expect(wrapper.find('button[aria-label="专注查看"]').exists()).toBe(false)
+    await wrapper.find('[role="dialog"] button').trigger('click')
+    expect(wrapper.find('button[aria-label="专注查看"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('模型 A')
     wrapper.unmount()
   })
 })

@@ -66,19 +66,27 @@ export const fetchTransport: Transport = async (r) => {
 }
 
 let current: Transport = fetchTransport
+let currentTransportUsesCookieJar = true
 
 export function getTransport(): Transport {
   return current
 }
 
 /** 安装传输（壳侧原生传输 / 测试替身）。**显式调用，不自动生效。 */
-export function setTransport(t: Transport): void {
+export function setTransport(t: Transport, options: { cookieJar?: boolean } = {}): void {
   current = t
+  currentTransportUsesCookieJar = options.cookieJar ?? true
 }
 
 /** 回到网页形态的默认传输。 */
 export function resetTransport(): void {
   current = fetchTransport
+  currentTransportUsesCookieJar = true
+}
+
+/** Native HTTP transports do not share the WebView cookie jar and need Bearer auth. */
+export function transportUsesCookieJar(): boolean {
+  return currentTransportUsesCookieJar
 }
 
 /** 由 status 派生 ok，保持与 `Response.ok`（200–299）同语义。 */

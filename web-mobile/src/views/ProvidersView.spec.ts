@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
+import { createPinia } from 'pinia'
 import ProvidersView from './ProvidersView.vue'
 import { getProviders, type Provider } from '@/api/providers'
 
@@ -27,7 +28,13 @@ vi.mock('@/api/nodeAudit', async (importOriginal) => {
 
 vi.mock('@/api/providers', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/providers')>()
-  return { ...actual, getProviders: vi.fn(async () => []) }
+  return {
+    ...actual,
+    getProviders: vi.fn(async () => []),
+    getProviderDetail: vi.fn(),
+    getProviderCredentials: vi.fn(async () => []),
+    getProviderModels: vi.fn(async () => []),
+  }
 })
 
 const P_DOWN: Provider = {
@@ -49,7 +56,7 @@ const P_OK: Provider = {
 }
 
 async function mountView() {
-  const w = mount(ProvidersView, { attachTo: document.body })
+  const w = mount(ProvidersView, { attachTo: document.body, global: { plugins: [createPinia()] } })
   await flushPromises()
   await flushPromises()
   return w
@@ -137,11 +144,18 @@ describe('ProvidersView 审计入口', () => {
 
   it('点供应商卡打开审计 Sheet，且按该 provider 拉取', async () => {
     const { fetchNodeAudit } = await import('@/api/nodeAudit')
+    const { getProviderDetail } = await import('@/api/providers')
     ;(getProviders as ReturnType<typeof vi.fn>).mockResolvedValueOnce([P_DOWN])
+    ;(getProviderDetail as ReturnType<typeof vi.fn>).mockResolvedValueOnce(P_DOWN)
     const w = await mountView()
     expect(fetchNodeAudit).not.toHaveBeenCalled()
 
     await w.find('.provider-card').trigger('click')
+    await flushPromises()
+    await flushPromises()
+    const auditButton = document.querySelector<HTMLButtonElement>('.provider-detail__audit')
+    expect(auditButton).toBeTruthy()
+    auditButton!.click()
     await flushPromises()
     await flushPromises()
 

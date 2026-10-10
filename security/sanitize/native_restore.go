@@ -1,7 +1,6 @@
 package sanitize
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,11 +15,18 @@ const maxNativeToolInputDepth = 256
 // gateway owns. Markers minted by a downstream sanitize hop do not count — they
 // are resolved by the peer that issued them — so with an inbound set present the
 // check narrows to "a marker I am responsible for survives".
+//
+// 2026-10-11: a bare (brace-less) marker inside a JSON string value hides from
+// the raw-body scan — the span pattern's brace branch consumes the JSON run
+// around the value, so the bare alternative never sees it. When the raw bytes
+// carry the marker word at all, walk the decoded string leaves instead; the
+// fold-case prefilter keeps ordinary responses (and prose containing the word
+// "sensitive") on the cheap path.
 func hasReservedPlaceholder(ctx context.Context, body []byte) bool {
 	if containsNonForeignMarker(ctx, body) {
 		return true
 	}
-	if !bytes.Contains(body, []byte("\\u")) {
+	if !containsFoldCaseWordBytes(body, placeholderMarkerWord) {
 		return false
 	}
 	var decoded any
@@ -42,7 +48,7 @@ func containsResidualPlaceholder(ctx context.Context, value any, depth int) bool
 	}
 	switch typed := value.(type) {
 	case string:
-		return containsNonForeignMarker(ctx, []byte(typed)) || looksLikeUnparsedMarker(ctx, []byte(typed))
+		return containsNonForeignMarker(ctx, []byte(typed)) || looksLikeUnparsedNonForeignMarker(ctx, typed)
 	case json.Number:
 		return false
 	case map[string]any:
