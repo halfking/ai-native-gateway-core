@@ -70,7 +70,6 @@ const KNOWN_ORPHANS: readonly string[] = [
   'subscriptionTiers',
   'turnsFilterOptions',
   'usageEnhanced',
-  'userUsageStats',
   'v1DataHorizon',
 ]
 

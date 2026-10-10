@@ -79,6 +79,9 @@ const errorKind = ref<'none' | 'timeout' | 'notfound' | 'unconfigured' | 'other'
 const loading = ref(false)
 const operating = ref(false)
 const operationError = ref<string | null>(null)
+let disposed = false
+let aborter: AbortController | null = null
+function clearData(): void { tenant.value = null; users.value = null; keys.value = null; stats.value = null }
 
 /** ★ 1 / 7 / 30 / 90 / 365 —— 上界 365 是后端 clamp 点。 */
 const dayChoices = [1, 7, 30, 90, TENANT_STATS_DAYS_MAX] as const
@@ -92,21 +95,28 @@ const neverLoggedIn = computed(() => (users.value ?? []).filter(tenantUserNeverL
 const detailAggShaky = computed(() => (tenant.value ? tenantUsageMayBeDegraded(tenant.value) : false))
 
 async function load(c: string): Promise<void> {
+  if (disposed) return
+  aborter?.abort()
+  aborter = new AbortController()
+  const signal = aborter.signal
+  clearData()
   loading.value = true
   error.value = null
   errorKind.value = 'none'
   try {
     const [t1, u, k, s] = await Promise.all([
-      fetchTenant(c),
-      fetchTenantUsers(c),
-      fetchTenantKeys(c),
-      fetchTenantStats(c, { days: days.value }),
+      fetchTenant(c, { signal }),
+      fetchTenantUsers(c, { signal }),
+      fetchTenantKeys(c, { signal }),
+      fetchTenantStats(c, { days: days.value }, { signal }),
     ])
+    if (signal.aborted || disposed) return
     tenant.value = t1
     users.value = u
     keys.value = k
     stats.value = s
   } catch (e) {
+    if (signal.aborted || disposed) return
     tenant.value = null
     users.value = null
     keys.value = null
@@ -119,38 +129,42 @@ async function load(c: string): Promise<void> {
     else if (/tenant not found|404/i.test(msg)) errorKind.value = 'notfound'
     else errorKind.value = 'other'
   } finally {
-    loading.value = false
+    if (!signal.aborted && !disposed) loading.value = false
   }
 }
 
 async function runOperation(action: () => Promise<unknown>): Promise<void> {
-  if (operating.value) return
+  if (operating.value || loading.value || disposed) return
+  const targetCode = code.value
   operating.value = true
   operationError.value = null
   try {
     await action()
-    await load(code.value)
+    if (!disposed && code.value === targetCode) await load(targetCode)
   } catch (cause) {
-    operationError.value = formatApiError(cause)
+    if (!disposed && code.value === targetCode) operationError.value = formatApiError(cause)
   } finally {
     operating.value = false
   }
 }
 
 async function toggleTenant(): Promise<void> {
-  if (!tenant.value) return
+  if (!tenant.value || loading.value || operating.value) return
+  const targetCode = tenant.value.code
   const status = tenant.value.status === 'disabled' ? 'active' : 'disabled'
   if (!window.confirm(t(status === 'active' ? 'tnd.enableTenantConfirm' : 'tnd.disableTenantConfirm', { name: tenant.value.name }))) return
-  await runOperation(() => updateTenantStatus(code.value, status))
+  await runOperation(() => updateTenantStatus(targetCode, status))
 }
 
 async function toggleUser(user: TenantUser): Promise<void> {
+  if (loading.value || operating.value) return
   const enabled = !user.enabled
   if (!window.confirm(t(enabled ? 'tnd.enableUserConfirm' : 'tnd.disableUserConfirm', { name: user.display_name || user.username }))) return
   await runOperation(() => setManagedUserEnabled(user.id, enabled))
 }
 
 async function toggleKey(key: TenantKey): Promise<void> {
+  if (loading.value || operating.value) return
   const enabled = !key.enabled
   if (!window.confirm(t(enabled ? 'tnd.enableKeyConfirm' : 'tnd.disableKeyConfirm', { name: key.key_alias || key.key_prefix }))) return
   await runOperation(async () => { if (enabled) await enableKey(key.id); else await disableKey(key.id) })
@@ -159,6 +173,7 @@ async function toggleKey(key: TenantKey): Promise<void> {
 function reload(): void {
   const c = code.value.trim()
   if (!c) {
+    aborter?.abort()
     tenant.value = null
     users.value = null
     keys.value = null
@@ -200,6 +215,8 @@ watch(days, () => {
 })
 
 onBeforeUnmount(() => {
+  disposed = true
+  aborter?.abort()
   tenant.value = null
   users.value = null
   keys.value = null
@@ -244,7 +261,7 @@ onBeforeUnmount(() => {
           <span class="tnd__badge-t">{{ tenant.status }}</span>
         </span>
       </div>
-      <button v-if="code !== 'default'" type="button" class="tnd__op" :disabled="operating" @click="toggleTenant">
+      <button v-if="code !== 'default'" type="button" class="tnd__op" :disabled="operating || loading" @click="toggleTenant">
         {{ tenant.status === 'disabled' ? t('tnd.enableTenant') : t('tnd.disableTenant') }}
       </button>
       <p v-else class="tnd__note">{{ t('tnd.defaultTenantProtected') }}</p>
@@ -414,7 +431,7 @@ onBeforeUnmount(() => {
             <AppIcon name="alert" :size="13" />
             <span>{{ t('tnd.mustChangePwd') }}</span>
           </p>
-          <button type="button" class="tnd__op" :disabled="operating" @click="toggleUser(u)">
+          <button type="button" class="tnd__op" :disabled="operating || loading" @click="toggleUser(u)">
             {{ u.enabled ? t('tnd.disableUser') : t('tnd.enableUser') }}
           </button>
         </li>
@@ -451,7 +468,7 @@ onBeforeUnmount(() => {
           </p>
           <p v-if="tenantKeyNeverExpires(k)" class="tnd__meta">{{ t('tnd.neverExpires') }}</p>
           <p v-else class="tnd__meta">{{ t('tnd.expiresAt') }}: {{ fmtTime(k.expires_at) }}</p>
-          <button type="button" class="tnd__op" :disabled="operating" @click="toggleKey(k)">
+          <button type="button" class="tnd__op" :disabled="operating || loading" @click="toggleKey(k)">
             {{ k.enabled ? t('tnd.disableKey') : t('tnd.enableKey') }}
           </button>
         </li>

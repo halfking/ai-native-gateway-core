@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // AppAccountSheet — 账户全屏 Sheet（UI规范 02 §5 结构：header 用户元信息 /
 // body 分组（用户、外观=语言+主题）/ footer 登出）。行 48px、:active 高亮。
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import QRCode from 'qrcode'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
@@ -13,7 +13,7 @@ import AppSheet from '@/components/common/AppSheet.vue'
 import AppConfirm from '@/components/common/AppConfirm.vue'
 import { fetchMobileNodeDescriptor } from '@/api/mobileNode'
 
-defineProps<{ modelValue: boolean }>()
+const props = defineProps<{ modelValue: boolean }>()
 const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>()
 
 const auth = useAuthStore()
@@ -31,6 +31,20 @@ const nodeQrCanvas = ref<HTMLCanvasElement | null>(null)
 const nodeQrLoading = ref(false)
 const nodeQrError = ref('')
 const nodeQrExpiresAt = ref('')
+const nodeFingerprint = ref('')
+let qrGeneration = 0
+let qrAborter: AbortController | null = null
+let qrExpiryTimer: ReturnType<typeof setTimeout> | undefined
+function clearQr(): void {
+  ++qrGeneration
+  qrAborter?.abort()
+  clearTimeout(qrExpiryTimer)
+  nodeQrExpiresAt.value = ''
+  nodeFingerprint.value = ''
+  nodeQrLoading.value = false
+}
+watch(() => [props.modelValue, auth.role], () => { clearQr(); nodeQrError.value = '' })
+onBeforeUnmount(clearQr)
 
 const roleLabel = computed(() => {
   if (auth.role === 'super_admin') return t('account.superAdmin')
@@ -83,21 +97,39 @@ function pickLocale(event: Event): void {
 }
 
 async function showNodeQr(): Promise<void> {
+  clearQr()
+  const generation = qrGeneration
+  qrAborter = new AbortController()
+  const signal = qrAborter.signal
   nodeQrLoading.value = true
   nodeQrError.value = ''
   try {
-    const response = await fetchMobileNodeDescriptor()
-    nodeQrExpiresAt.value = response.expires_at
-    await nextTick()
-    if (!nodeQrCanvas.value) throw new Error('QR canvas is unavailable')
-    await QRCode.toCanvas(nodeQrCanvas.value, response.payload, {
+    const response = await fetchMobileNodeDescriptor({ signal })
+    if (generation !== qrGeneration) return
+    const remaining = Date.parse(response.expires_at) - Date.now()
+    if (!Number.isFinite(remaining) || remaining <= 0) throw new Error('Expired QR')
+    const rendered = document.createElement('canvas')
+    await QRCode.toCanvas(rendered, response.payload, {
       width: 260, margin: 2, errorCorrectionLevel: 'Q',
       color: { dark: '#07112c', light: '#ffffff' },
     })
+    if (generation !== qrGeneration) return
+    nodeQrExpiresAt.value = response.expires_at
+    nodeFingerprint.value = response.signing_key_fingerprint ?? ''
+    await nextTick()
+    if (generation !== qrGeneration) return
+    const canvas = nodeQrCanvas.value
+    if (!canvas) throw new Error('QR canvas unavailable')
+    canvas.width = rendered.width
+    canvas.height = rendered.height
+    canvas.getContext('2d')?.drawImage(rendered, 0, 0)
+    qrExpiryTimer = setTimeout(() => { clearQr(); nodeQrError.value = t('account.nodeQrExpired') }, Math.max(0, Date.parse(response.expires_at) - Date.now()))
   } catch {
+    if (generation !== qrGeneration) return
+    clearQr()
     nodeQrError.value = t('account.nodeQrUnavailable')
   } finally {
-    nodeQrLoading.value = false
+    if (generation === qrGeneration) nodeQrLoading.value = false
   }
 }
 </script>
@@ -139,15 +171,16 @@ async function showNodeQr(): Promise<void> {
         </label>
       </div>
 
-      <div v-if="auth.role === 'super_admin'" class="account__group">
+      <div class="account__group">
         <div class="account__group-label">{{ t('account.gatewayNode') }}</div>
-        <button type="button" class="btn btn--secondary btn--block" :disabled="nodeQrLoading" @click="showNodeQr">
+        <a href="llmgw://nodes" class="account__row">{{ t('account.openNodeManager') }}</a>
+        <button v-if="auth.role === 'super_admin'" type="button" class="btn btn--secondary btn--block" :disabled="nodeQrLoading" @click="showNodeQr">
           {{ nodeQrLoading ? t('common.loading') : t('account.showNodeQr') }}
         </button>
         <div v-if="nodeQrExpiresAt" class="account__node-qr">
           <canvas ref="nodeQrCanvas" :aria-label="t('account.nodeQrAlt')" />
           <p>{{ t('account.nodeQrExpires', { time: new Date(nodeQrExpiresAt).toLocaleTimeString(getLocale()) }) }}</p>
-          <a href="llmgw://nodes">{{ t('account.openNodeManager') }}</a>
+<template v-if="nodeFingerprint"><p>{{ t('account.nodeFingerprint') }}</p><code>{{ nodeFingerprint }}</code><p>{{ t('account.nodeFingerprintHint') }}</p></template>
         </div>
         <p v-if="nodeQrError" class="account__reason" role="alert">{{ nodeQrError }}</p>
       </div>

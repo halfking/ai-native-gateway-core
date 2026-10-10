@@ -9,14 +9,43 @@ import { t } from '@/i18n'
 import AppIcon from '@/components/common/AppIcon.vue'
 import type { TopbarAction } from './topbarActions'
 
-const props = withDefaults(defineProps<{ onMenu: () => void; onAccount: () => void; actions?: TopbarAction[] }>(), {
-  actions: () => [],
-})
+const props = withDefaults(
+  defineProps<{
+    onMenu: () => void
+    onAccount: () => void
+    /**
+     * 2026-10-10：弹窗/drawer/account sheet 打开时，导航栏左边那一颗按钮
+     * 视觉上变成「叉叉」，但沿用原 click —— 用户预期它关弹窗，而不是再
+     * 触发抽屉。`onCloseOverlay` 由父组件根据自身状态判断后回调：未传则
+     * 走原来的菜单/返回路径，行为不变。覆盖优先级：
+     *   onCloseOverlay 存在 && (drawerOpen || accountOpen)  → 关弹窗
+     *   showBack                                         → 后退
+     *   否则                                              → 打开抽屉（菜单）
+     */
+    onCloseOverlay?: () => void
+    overlayActive?: boolean
+    actions?: TopbarAction[]
+  }>(),
+  { actions: () => [], onCloseOverlay: undefined, overlayActive: false },
+)
 
 const route = useRoute()
 const title = computed(() => Hyper.title.value.title)
 const showBack = computed(() => !isRootRoute(route.path))
+const showClose = computed(() => Boolean(props.onCloseOverlay) && props.overlayActive)
 const pageActions = computed(() => props.actions)
+
+function handleLeftClick(): void {
+  if (showClose.value && props.onCloseOverlay) {
+    props.onCloseOverlay()
+    return
+  }
+  if (showBack.value) {
+    Hyper.back()
+    return
+  }
+  props.onMenu()
+}
 
 function actionLabel(action: TopbarAction): string {
   return typeof action.label === 'function' ? action.label() : action.label
@@ -31,16 +60,33 @@ function actionDisabled(action: TopbarAction): boolean {
   <header class="topbar">
     <div class="topbar__side">
       <button
-        v-if="showBack"
+        v-if="showClose"
+        type="button"
+        class="topbar__btn"
+        id="topbar-close-overlay"
+        :aria-label="t('common.close')"
+        @click="handleLeftClick"
+      >
+        <AppIcon name="close" :size="22" />
+      </button>
+      <button
+        v-else-if="showBack"
         type="button"
         class="topbar__btn"
         id="topbar-back"
         :aria-label="t('common.back')"
-        @click="Hyper.back()"
+        @click="handleLeftClick"
       >
         <AppIcon name="back" :size="22" />
       </button>
-      <button v-else id="topbar-menu" type="button" class="topbar__btn" :aria-label="t('nav.more')" @click="onMenu">
+      <button
+        v-else
+        id="topbar-menu"
+        type="button"
+        class="topbar__btn"
+        :aria-label="t('nav.more')"
+        @click="handleLeftClick"
+      >
         <AppIcon name="menu" :size="22" />
       </button>
     </div>
@@ -123,13 +169,22 @@ function actionDisabled(action: TopbarAction): boolean {
 }
 
 .topbar__title {
-  flex: 1;
+  /* 2026-10-10：原 `flex:1; min-width:0; text-align:center; white-space:nowrap`
+     在窄屏（iPhone 6s / 6s Plus）配合 6 字节中文字符串把标题硬截成
+     「请求旅程队列」一类看不到后半截，用户扫不到当前所在页。
+     现允许两行（左对齐 + overflow-wrap），既扩出宽度又不顶破细音尾巴。 */
+  flex: 1 1 auto;
   min-width: 0;
-  text-align: center;
-  font-size: 1rem;
+  margin: 0;
+  text-align: left;
+  font-size: 0.95rem;
   font-weight: 600;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 </style>

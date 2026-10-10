@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import TenantDetailView from './TenantDetailView.vue'
 import {
   fetchTenant,
+  updateTenantStatus,
   fetchTenantUsers,
   fetchTenantKeys,
   fetchTenantStats,
@@ -47,6 +48,7 @@ vi.mock('@/api/tenants', async (importOriginal) => {
   return {
     ...actual,
     fetchTenant: vi.fn(),
+    updateTenantStatus: vi.fn(),
     fetchTenantUsers: vi.fn(),
     fetchTenantKeys: vi.fn(),
     fetchTenantStats: vi.fn(),
@@ -284,9 +286,18 @@ describe('★★ 用户安全指标 + 排序方向', () => {
     expect(w.text()).toContain('正序')
   })
 
-  it('★★ 明说本页只读', async () => {
+  it('requires confirmation before changing tenant status and reloads after success', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    vi.mocked(updateTenantStatus).mockResolvedValue(tenant({ status: 'disabled' }))
     const w = await mountView()
-    expect(w.text()).toContain('只读')
+    const button = w.findAll('.tnd__op').find((b) => b.text().includes('停用租户'))!
+    await button.trigger('click')
+    expect(updateTenantStatus).not.toHaveBeenCalled()
+    confirm.mockReturnValue(true)
+    await button.trigger('click'); await flushPromises()
+    expect(updateTenantStatus).toHaveBeenCalledWith('acme', 'disabled')
+    expect(tMock).toHaveBeenCalledTimes(2)
+    confirm.mockRestore()
   })
 
   it('★★★★★★ ★ 先查成功、再查失败 ⇒ **旧数据必须被清掉**', async () => {

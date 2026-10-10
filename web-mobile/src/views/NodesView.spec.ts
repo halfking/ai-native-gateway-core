@@ -232,6 +232,22 @@ describe('NodesView 凭据卡的模型计数', () => {
     expect(whole).not.toContain('undefined')
     expect(whole).not.toContain('null')
   })
+
+  it('长 provider/label 全文保留在可换行容器内，状态徽标仍可见', async () => {
+    const { fetchMonitorSummary } = await import('@/api/nodes')
+    const providerName = '家用 CLI 桥（NetBird 100.106.119.36:8317）'
+    const label = 'netbird-bridge-yonyou'
+    ;(fetchMonitorSummary as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      { ...WITH_COUNTS, provider_name: providerName, label },
+    ])
+
+    const w = await mountView()
+    const name = w.find('.node-card__name-text')
+
+    expect(name.exists()).toBe(true)
+    expect(name.text()).toBe(`${providerName} · ${label}`)
+    expect(w.find('.node-card .badge').exists()).toBe(true)
+  })
 })
 
 /**

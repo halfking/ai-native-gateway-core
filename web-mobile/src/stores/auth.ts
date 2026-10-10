@@ -25,6 +25,17 @@ import { Hyper } from '@/hyper'
 // 残留着上一次勾选的账号」这种幽灵登录态。
 
 const USER_KEY = 'llmgw_mobile_user'
+// Origin-scoped tombstone survives an offline logout without erasing node profiles.
+const LOGOUT_KEY = 'llmgw_mobile_logged_out'
+function wasLoggedOut(): boolean {
+  try { if (localStorage.getItem(LOGOUT_KEY) === '1') return true } catch { /* unavailable */ }
+  try { return sessionStorage.getItem(LOGOUT_KEY) === '1' } catch { return false }
+}
+function markLoggedOut(value: boolean): void {
+  for (const area of [localStorage, sessionStorage]) {
+    try { if (value) area.setItem(LOGOUT_KEY, '1'); else area.removeItem(LOGOUT_KEY) } catch { /* unavailable */ }
+  }
+}
 
 function readUser(raw: string | null): UserInfo | null {
   if (!raw) return null
@@ -96,7 +107,10 @@ function safeClear(area: Storage): void {
 }
 
 export const useAuthStore = defineStore('auth', () => {
-  const restored = loadStoredUser()
+  const restored = wasLoggedOut() ? { user: null, remember: null } : loadStoredUser()
+  let generation = 0
+  let authAborter: AbortController | null = null
+  let pendingLogout: Promise<void> | null = null
   const userInfo = ref<UserInfo | null>(restored.user)
   const token = ref('') // 内存 only
   const authHydrated = ref(false)
@@ -113,26 +127,45 @@ export const useAuthStore = defineStore('auth', () => {
   const accountId = computed(() => String(userInfo.value?.id ?? 'anon'))
 
   async function hydrate(): Promise<void> {
+    authAborter?.abort()
+    authAborter = new AbortController()
+    const signal = authAborter.signal
+    const current = ++generation
+    if (wasLoggedOut() || pendingLogout) {
+      userInfo.value = null
+      authHydrated.value = true
+      return
+    }
     try {
-      const me = await authApi.fetchMe()
+      const me = await authApi.fetchMe({ signal })
+      if (current !== generation) return
       userInfo.value = me
       persistUser(me)
     } catch {
+      if (current !== generation) return
       userInfo.value = null
       token.value = ''
       safeClear(localStorage)
       safeClear(sessionStorage)
     } finally {
-      authHydrated.value = true
+      if (current === generation) authHydrated.value = true
     }
   }
 
   async function login(username: string, password: string, options?: LoginOptions): Promise<UserInfo> {
-    const resp = await authApi.login(username, password, options)
+    // A late logout response must not clear a newly issued session cookie.
+    if (pendingLogout) await pendingLogout
+    authAborter?.abort()
+    authAborter = new AbortController()
+    const current = ++generation
+    const resp = await authApi.login(username, password, { ...options, signal: authAborter.signal })
+    if (current !== generation) throw new Error('Login superseded')
     bumpSessionEpoch()
+    markLoggedOut(false)
     token.value = resp.access_token
     userInfo.value = resp.user
     rememberMe.value = options?.rememberMe ?? false
+    authHydrated.value = true
     persistUser(resp.user)
     return resp.user
   }
@@ -154,19 +187,24 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function logout(): Promise<void> {
-    try {
-      await authApi.logout()
-    } catch {
-      /* 后端不可达也照样清本地 */
-    }
+    if (pendingLogout) return pendingLogout
+    ++generation
+    authAborter?.abort()
     bumpSessionEpoch()
+    markLoggedOut(true)
     token.value = ''
     userInfo.value = null
     rememberMe.value = null
+    authHydrated.value = true
     safeClear(localStorage)
     safeClear(sessionStorage)
-    // 06 §3：登出/换号清空导航持久化（scope 隔离）
     Hyper.clearPersistence()
+    const aborter = new AbortController()
+    const timeout = setTimeout(() => aborter.abort(), 5000)
+    pendingLogout = authApi.logout({ signal: aborter.signal }).catch(() => {
+      // Offline logout stays logged out on this origin until an explicit login.
+    }).finally(() => { clearTimeout(timeout); pendingLogout = null })
+    return pendingLogout
   }
 
   function bearer(): string {

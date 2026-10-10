@@ -1,17 +1,24 @@
 package admin
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 )
 
 const mobileNodeDescriptorTTL = 5 * time.Minute
@@ -59,7 +66,10 @@ func NewMobileNodeDescriptorServiceFromEnv() (*MobileNodeDescriptorService, erro
 	case ed25519.SeedSize:
 		signingKey = ed25519.NewKeyFromSeed(keyBytes)
 	case ed25519.PrivateKeySize:
-		signingKey = ed25519.PrivateKey(keyBytes)
+		signingKey = ed25519.NewKeyFromSeed(keyBytes[:ed25519.SeedSize])
+		if !bytes.Equal(signingKey, keyBytes) {
+			return nil, errors.New("mobile node private key public half does not match its seed")
+		}
 	default:
 		return nil, errors.New("mobile node signing key must contain an Ed25519 seed or private key")
 	}
@@ -84,10 +94,14 @@ func NewMobileNodeDescriptorServiceFromEnv() (*MobileNodeDescriptorService, erro
 		peerID:        strings.TrimSpace(os.Getenv("NETBIRD_GATEWAY_PEER_ID")),
 		signingKey:    signingKey,
 	}
-	if service.nodeID == "" || service.name == "" {
+	if !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`).MatchString(service.nodeID) || strings.HasPrefix(service.nodeID, "preset:") || strings.HasPrefix(service.nodeID, "legacy:") || service.name == "" || len(utf16.Encode([]rune(service.name))) > 160 || len(service.peerID) > 128 {
 		return nil, errors.New("LLMGW_NODE_ID and LLMGW_NODE_NAME are required")
 	}
 	if netbirdOrigin != "" {
+		originURL, _ := url.Parse(netbirdOrigin)
+		if originURL.Port() != "" {
+			return nil, errors.New("NetBird gateway origin must use HTTPS port 443")
+		}
 		access, err := NewNetBirdGatewayAccessFromEnv()
 		if err != nil {
 			return nil, err
@@ -105,20 +119,32 @@ func normalizeGatewayOrigin(raw string) (string, error) {
 	if raw == "" {
 		return "", nil
 	}
+	if len(raw) > 512 {
+		return "", errors.New("origin is too long")
+	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
 		return "", errors.New("must be an origin without a path, credentials, query, or fragment")
 	}
 	u.Scheme = strings.ToLower(u.Scheme)
-	if u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1")) {
-		return "", errors.New("HTTPS is required outside localhost")
+	if u.Scheme != "https" {
+		return "", errors.New("HTTPS is required")
+	}
+	if port := u.Port(); port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return "", errors.New("invalid port")
+		}
 	}
 	u.Path = ""
 	u.RawPath = ""
 	u.RawQuery = ""
 	u.Fragment = ""
-	if (u.Scheme == "https" && u.Port() == "443") || (u.Scheme == "http" && u.Port() == "80") {
-		u.Host = u.Hostname()
+	if u.Port() == "443" {
+		u.Host = strings.ToLower(u.Hostname())
+		if strings.Contains(u.Host, ":") {
+			u.Host = "[" + u.Host + "]"
+		}
 	}
 	return strings.TrimSuffix(u.String(), "/"), nil
 }
@@ -126,11 +152,6 @@ func normalizeGatewayOrigin(raw string) (string, error) {
 func (s *MobileNodeDescriptorService) Create(r *http.Request) (string, time.Time, error) {
 	if s == nil {
 		return "", time.Time{}, errors.New("mobile node QR provisioning is not configured")
-	}
-	if s.netbird != nil {
-		if err := s.netbird.EnsureGatewayAccess(r.Context(), s.nodeID, s.peerID); err != nil {
-			return "", time.Time{}, err
-		}
 	}
 	expires := time.Now().UTC().Add(mobileNodeDescriptorTTL)
 	nonce := make([]byte, 18)
@@ -146,6 +167,14 @@ func (s *MobileNodeDescriptorService) Create(r *http.Request) (string, time.Time
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("encode mobile node descriptor: %w", err)
+	}
+	if len(payloadBytes) > 2048 {
+		return "", time.Time{}, errors.New("mobile node descriptor exceeds client size limit")
+	}
+	if s.netbird != nil {
+		if err := s.netbird.EnsureGatewayAccess(r.Context(), s.nodeID, s.peerID); err != nil {
+			return "", time.Time{}, err
+		}
 	}
 	signature := ed25519.Sign(s.signingKey, payloadBytes)
 	envelope := "llmgw-node:v1." + base64.RawURLEncoding.EncodeToString(payloadBytes) + "." + base64.RawURLEncoding.EncodeToString(signature)
@@ -163,6 +192,7 @@ func (h *Handler) handleMobileNodeDescriptor(w http.ResponseWriter, r *http.Requ
 	}
 	payload, expires, err := h.mobileNodeDescriptor.Create(r)
 	if err != nil {
+		slog.Warn("mobile node access reconciliation failed", "node_id", h.mobileNodeDescriptor.nodeID, "error", err)
 		// Avoid reflecting provider/network errors or credentials to the caller.
 		http.Error(w, "could not prepare gateway access; check NetBird and node configuration", http.StatusServiceUnavailable)
 		return
@@ -170,5 +200,6 @@ func (h *Handler) handleMobileNodeDescriptor(w http.ResponseWriter, r *http.Requ
 	w.Header().Set("Cache-Control", "no-store, max-age=0")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(map[string]string{"payload": payload, "expires_at": expires.Format(time.RFC3339)})
+	digest := sha256.Sum256(h.mobileNodeDescriptor.signingKey.Public().(ed25519.PublicKey))
+	_ = json.NewEncoder(w).Encode(map[string]string{"payload": payload, "expires_at": expires.Format(time.RFC3339), "signing_key_fingerprint": hex.EncodeToString(digest[:])})
 }
