@@ -191,15 +191,195 @@ dl_cleanup_legacy_downloads() {
   printf '[deploy-local] legacy Downloads cleanup completed; review %s before deleting\n' "$archive"
 }
 
+# ---------------------------------------------------------------------------
+# Host-first discovery (2026-10-10)
+#
+# 为什么改成「主机优先」：旧顺序先扫 docker 容器，扫到就直接把 DL_DB_MODE /
+# DL_REDIS_MODE 定成 docker，主机上真实跑着的 pg/redis（源码编译的 pg18 +
+# columnar、本机 redis）反而被跳过。目标要求「从主机到 docker 中寻找，以主机
+# 上的优先匹配」，所以探测顺序必须是 host → docker → 自动安装。
+#
+# 主机探测只在**真的能连上并通过健康检查**时才认领：
+#   - PG：psql SELECT 1（无 psql 时退回 pg_isready，再退回 TCP）
+#   - Redis：redis-cli PING → PONG
+# 这样「端口在监听但服务是坏的」不会被误判成可用实例。
+# ---------------------------------------------------------------------------
+
+# Candidate host ports for a locally-installed service. Ports already claimed
+# by an explicit caller override stay authoritative and are probed first.
+# 5432 是标准口；54318 是本机 kaixuan/pg18 实例（见 ~/kaixuan/scripts/verify-pg18.sh）。
+dl_host_pg_candidate_ports() {
+  local p
+  for p in "${LLM_GATEWAY_PG_PORT:-}" "${PGPORT:-}" 5432 54318; do
+    [[ -z "$p" ]] && continue
+    printf '%s\n' "$p"
+  done | awk 'NF && !seen[$0]++'
+}
+
+# Host-native pg/redis binaries that this repo's sibling installs (kaixuan
+# tree) drop into ~/kaixuan. They are NOT on PATH by default, so every probe
+# below prepends the known prefixes instead of assuming a login shell.
+dl_host_bin_prefixes() {
+  local shared; shared=$(dl_default_shared_root 2>/dev/null || printf '%s' "$HOME/kaixuan")
+  printf '%s\n' "$shared/pg18/bin" "$shared/redis/bin" "$shared/deps/bin"
+}
+
+# Run a probe binary, preferring host-native installs over PATH.
+dl_host_run() {
+  local bin="$1"; shift
+  local prefix
+  while read -r prefix; do
+    [[ -x "$prefix/$bin" ]] && { "$prefix/$bin" "$@"; return $?; }
+  done < <(dl_host_bin_prefixes)
+  command -v "$bin" >/dev/null 2>&1 && { "$bin" "$@"; return $?; }
+  return 127
+}
+
+dl_host_have() {
+  local bin="$1" prefix
+  while read -r prefix; do
+    [[ -x "$prefix/$bin" ]] && return 0
+  done < <(dl_host_bin_prefixes)
+  command -v "$bin" >/dev/null 2>&1
+}
+
+# Prepend the host-native bin dirs to PATH so the rest of the deploy can
+# invoke psql/redis-cli/pg_ctl without assuming a login shell profile. The
+# tier-2 probes resolve those binaries through dl_host_bin_prefixes, but the
+# deploy body (psql_query, dl_wait_pg_isready, migrate helpers) still uses
+# plain `psql`/`redis-cli` lookups — on a machine whose only PG client is
+# ~/kaixuan/pg18/bin/psql those lookups failed with "psql is required" and
+# killed the deploy AFTER the host instance had already been claimed.
+dl_export_host_bin_path() {
+  local prefix new_path="$PATH"
+  while read -r prefix; do
+    [[ -d "$prefix" ]] || continue
+    case ":$new_path:" in *":$prefix:"*) continue ;; esac
+    new_path="$prefix:$new_path"
+  done < <(dl_host_bin_prefixes)
+  [[ "$new_path" == "$PATH" ]] && return 0
+  export PATH="$new_path"
+  printf '[deploy-local] host-discover: PATH += %s\n' "$(dl_host_bin_prefixes | paste -sd: -)" >&2
+}
+
+# Health-check a host PostgreSQL. Sets DL_HOST_PG_PORT / DL_HOST_PG_USER /
+# DL_HOST_PG_DB on success. User precedence: caller override > PGUSER > $USER.
+dl_pg_try_host() {
+  local port user db pass=''
+  user="${LLM_GATEWAY_PG_USER:-${PGUSER:-$USER}}"
+  db="${LLM_GATEWAY_PG_DATABASE:-llm_gateway}"
+  # An explicit DSN from the caller already resolves its own endpoint; when it
+  # points at loopback we can still use it as a health-checked host instance.
+  if [[ -n "${LLM_GATEWAY_DATABASE_URL:-}" ]]; then
+    local dsn_port dsn_user dsn_db
+    dsn_port=$(printf '%s' "$LLM_GATEWAY_DATABASE_URL" | sed -nE 's|^postgres(ql)?://[^@]*@[^:]+:([0-9]+)/.*|\2|p')
+    dsn_user=$(printf '%s' "$LLM_GATEWAY_DATABASE_URL" | sed -nE 's|^postgres(ql)?://([^:@/]+).*|\2|p')
+    dsn_db=$(printf '%s' "$LLM_GATEWAY_DATABASE_URL" | sed -nE 's|^postgres(ql)?://[^@]*/([^?]+).*|\2|p')
+    [[ -n "$dsn_port" ]] && port="$dsn_port"
+    [[ -n "$dsn_user" ]] && user="$dsn_user"
+    [[ -n "$dsn_db" ]] && db="$dsn_db"
+  fi
+  [[ -n "${LLM_GATEWAY_PG_PASSWORD:-}" ]] && pass="$LLM_GATEWAY_PG_PASSWORD"
+  while read -r port; do
+    [[ -z "$port" ]] && continue
+    if dl_host_have psql; then
+      # Probe the always-present `postgres` maintenance database rather than
+      # the app database. A cluster whose llm_gateway database does not exist
+      # yet is still a healthy, usable instance — the deploy creates that
+      # database later. Connecting straight to $db would report "database
+      # does not exist" and refuse to claim a live server, pushing a
+      # docker-less host into the install path for no reason.
+      if PGPASSWORD="$pass" _dl_timeout 5 "$(dl_host_bin_prefixes | head -1)/psql" -X -v ON_ERROR_STOP=1 -Atqc 'SELECT 1' \
+           -h 127.0.0.1 -p "$port" -U "$user" -d postgres >/dev/null 2>&1; then
+        DL_HOST_PG_PORT="$port"; DL_HOST_PG_USER="$user"; DL_HOST_PG_DB="$db"; DL_HOST_PG_PASS="$pass"
+        return 0
+      fi
+    elif dl_host_have pg_isready; then
+      if _dl_timeout 5 "$(dl_host_bin_prefixes | head -1)/pg_isready" -h 127.0.0.1 -p "$port" -U "$user" >/dev/null 2>&1; then
+        DL_HOST_PG_PORT="$port"; DL_HOST_PG_USER="$user"; DL_HOST_PG_DB="$db"; DL_HOST_PG_PASS="$pass"
+        return 0
+      fi
+    else
+      # No client binary at all: a TCP handshake is advisory only (proves a
+      # listener, not a working cluster). Accept it so a docker-less host with
+      # a running PG is still claimed, and let dl_wait_pg_isready be the
+      # fail-closed gate before the gateway starts.
+      (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null && { exec 3<&-; exec 3>&-
+        DL_HOST_PG_PORT="$port"; DL_HOST_PG_USER="$user"; DL_HOST_PG_DB="$db"; DL_HOST_PG_PASS="$pass"; return 0; }
+    fi
+  done < <(dl_host_pg_candidate_ports)
+  return 1
+}
+
+# Health-check a host Redis. Sets LLM_GATEWAY_REDIS_ADDR on PONG.
+dl_redis_try_host() {
+  dl_host_have redis-cli || return 1
+  local port cli pass=''
+  cli="$(dl_host_bin_prefixes | while read -r p; do [[ -x "$p/redis-cli" ]] && { printf '%s' "$p/redis-cli"; break; }; done)"
+  [[ -n "${LLM_GATEWAY_REDIS_PASSWORD:-}" ]] && pass="$LLM_GATEWAY_REDIS_PASSWORD"
+  while read -r port; do
+    [[ -z "$port" ]] && continue
+    if [[ -n "$pass" ]]; then
+      _dl_timeout 5 "$cli" -h 127.0.0.1 -p "$port" -a "$pass" ping 2>/dev/null | grep -q PONG && {
+        export LLM_GATEWAY_REDIS_ADDR="127.0.0.1:${port}"; DL_REDIS_MODE=host; return 0; }
+    else
+      _dl_timeout 5 "$cli" -h 127.0.0.1 -p "$port" ping 2>/dev/null | grep -q PONG && {
+        export LLM_GATEWAY_REDIS_ADDR="127.0.0.1:${port}"; DL_REDIS_MODE=host; return 0; }
+    fi
+  done < <(dl_redis_host_listen_ports)
+  return 1
+}
+
 # Detect without stopping or recreating anything. Results are exported for the
 # caller and deliberately distinguish an existing service from a new local one.
+#
+# Order (2026-10-10, host-first): explicit caller config → host service →
+# docker service. See the block comment above dl_host_pg_candidate_ports for
+# why the host is probed before docker.
 dl_detect_resources() {
   DL_DOCKER=0; DL_COMPOSE=0; DL_PG_CONTAINER=; DL_REDIS_CONTAINER=
   DL_PG_SOURCE=; DL_REDIS_SOURCE=; DL_PG_MOUNT_TYPE=; DL_REDIS_MOUNT_TYPE=
   DL_DB_MODE=none; DL_REDIS_MODE=none
+  DL_HOST_PG_PORT=; DL_HOST_PG_USER=; DL_HOST_PG_DB=; DL_HOST_PG_PASS=
+
+  # --- Tier 1: caller-supplied configuration is always authoritative. ---
+  if [[ -n "${LLM_GATEWAY_DATABASE_URL:-}" ]]; then DL_DB_MODE=external; fi
+  if [[ "${MINIMAL_DEPLOY:-0}" == 1 ]]; then
+    DL_REDIS_MODE=minimal
+  elif [[ -n "${LLM_GATEWAY_REDIS_ADDR:-}" ]]; then
+    DL_REDIS_MODE=external
+  fi
+
+  # --- Tier 2: host-installed services (priority over docker). ---
+  if [[ "$DL_DB_MODE" == none ]] && dl_pg_try_host; then
+    DL_DB_MODE=host
+    printf '[deploy-local] pg-discover: host → 127.0.0.1:%s db=%s\n' "$DL_HOST_PG_PORT" "$DL_HOST_PG_DB" >&2
+    # Materialize a DSN for a host instance that was not caller-supplied, so
+    # every downstream consumer (env file, migrations, pre-flight) sees one
+    # canonical connection string instead of re-deriving host/port.
+    if [[ -z "${LLM_GATEWAY_DATABASE_URL:-}" ]]; then
+      local dsn_pass="$DL_HOST_PG_PASS"
+      local creds="$DL_HOST_PG_USER"
+      [[ -n "$dsn_pass" ]] && creds="${creds}:${dsn_pass}"
+      export LLM_GATEWAY_DATABASE_URL="postgresql://${creds}@127.0.0.1:${DL_HOST_PG_PORT}/${DL_HOST_PG_DB}?sslmode=disable"
+      export DATABASE_URL="$LLM_GATEWAY_DATABASE_URL"
+      export LLM_GATEWAY_PG_USER="$DL_HOST_PG_USER" LLM_GATEWAY_PG_DATABASE="$DL_HOST_PG_DB"
+    fi
+  fi
+  if [[ "${MINIMAL_DEPLOY:-0}" == 0 && "$DL_REDIS_MODE" == none ]] && dl_redis_try_host; then
+    printf '[deploy-local] redis-discover: host → %s\n' "$LLM_GATEWAY_REDIS_ADDR" >&2
+  fi
+  # Any host-native service claimed → make its client binaries visible to the
+  # deploy body for the rest of the run (see dl_export_host_bin_path).
+  if [[ "$DL_DB_MODE" == host || "$DL_REDIS_MODE" == host ]]; then
+    dl_export_host_bin_path
+  fi
+
+  # --- Tier 3: docker containers. Only consulted when the host has nothing. ---
   # 2026-09-18: docker info 偶发卡住（macOS Docker Desktop 繁忙时可能超时），
   # 导致 deploy-local.sh status 15s+ 挂死。加 timeout 5s 防护，超时时跳过
   # Docker 路径但不失败（外部 DSN/Redis 模式仍可用）。
+  if [[ "$DL_DB_MODE" == none || "$DL_REDIS_MODE" == none ]]; then
   if _dl_have docker && _dl_timeout 5 docker info >/dev/null 2>&1; then
     DL_DOCKER=1
     _dl_timeout 3 docker compose version >/dev/null 2>&1 && DL_COMPOSE=1 || true
@@ -216,29 +396,32 @@ dl_detect_resources() {
         printf '[deploy-local] redis-discover: scan → %s\n' "$DL_REDIS_CONTAINER" >&2
       fi
     fi
-    if [[ -n "$DL_PG_CONTAINER" ]]; then
+    # A host instance claimed in tier 2 keeps the slot: docker discovery below
+    # may still set DL_DOCKER (used for the compose/dependency path), but it
+    # must not downgrade a healthy host PG to a container.
+    if [[ -n "$DL_PG_CONTAINER" && "$DL_DB_MODE" == none ]]; then
       DL_DB_MODE=docker
       DL_PG_SOURCE=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql/data"}}{{.Source}}{{end}}{{end}}' "$DL_PG_CONTAINER" 2>/dev/null || true)
       DL_PG_MOUNT_TYPE=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql/data"}}{{.Type}}{{end}}{{end}}' "$DL_PG_CONTAINER" 2>/dev/null || true)
     fi
-    if [[ -n "$DL_REDIS_CONTAINER" ]]; then
+    if [[ -n "$DL_REDIS_CONTAINER" && "$DL_REDIS_MODE" == none ]]; then
       DL_REDIS_MODE=docker
       DL_REDIS_SOURCE=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' "$DL_REDIS_CONTAINER" 2>/dev/null || true)
       DL_REDIS_MOUNT_TYPE=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Type}}{{end}}{{end}}' "$DL_REDIS_CONTAINER" 2>/dev/null || true)
     fi
   fi
-  if [[ "$DL_DB_MODE" == none && -n "${LLM_GATEWAY_DATABASE_URL:-}" ]]; then DL_DB_MODE=external; fi
-  if [[ "${MINIMAL_DEPLOY:-0}" == 1 ]]; then
-    DL_REDIS_MODE=minimal
-  elif [[ "$DL_REDIS_MODE" == none && -n "${LLM_GATEWAY_REDIS_ADDR:-}" ]]; then
-    DL_REDIS_MODE=external
-  elif [[ "$DL_REDIS_MODE" == none ]] && dl_redis_try_system; then
+  fi  # end tier-3 docker guard
+  # Legacy fallbacks for hosts whose client binaries are only on PATH. The
+  # host tier above already covers loopback instances; these catch a
+  # pg_isready-only environment and keep the pre-host behavior intact.
+  if [[ "$DL_REDIS_MODE" == none ]] && dl_redis_try_system; then
     printf '[deploy-local] redis-discover: system → %s\n' "$LLM_GATEWAY_REDIS_ADDR" >&2
   fi
   if [[ "$DL_DB_MODE" == none ]] && { _dl_have pg_isready || _dl_have psql; }; then
-    if _dl_have pg_isready && pg_isready -h 127.0.0.1 -p "${PGPORT:-5432}" >/dev/null 2>&1; then DL_DB_MODE=system; fi
+    if _dl_have pg_isready && pg_isready -h 127.0.0.1 -p "${PGPORT:-5432}" >/dev/null 2>&1; then DL_DB_MODE=host; fi
   fi
   export DL_DOCKER DL_COMPOSE DL_PG_CONTAINER DL_REDIS_CONTAINER DL_PG_SOURCE DL_REDIS_SOURCE DL_PG_MOUNT_TYPE DL_REDIS_MOUNT_TYPE DL_DB_MODE DL_REDIS_MODE
+  export DL_HOST_PG_PORT DL_HOST_PG_USER DL_HOST_PG_DB DL_HOST_PG_PASS
 }
 
 # First-pass Redis discovery: check environment variable first, then fall back
