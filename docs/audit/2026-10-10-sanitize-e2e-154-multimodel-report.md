@@ -1291,3 +1291,57 @@ prompt              deltas  first  first-repr                  NL?  prefix
 
 `bd638a7a` 已随 `3346008d8` 并入 main，故部署 main 是**前进**而非分叉；
 seq 回到单调（floor 已由并行会话推到 2522，下一次部署为 2523/2524）。
+
+## 十九、更正：bash 5.2 其实一直在本机（17:12）
+
+**第十一节的前提是错的。** 该节写「本机只有 macOS 自带的 bash 3.2.57，
+`/opt/homebrew/bin/bash` 与 `/usr/local/bin/bash` 均不存在」，
+并据此断定 deploy-lib SSOT 的 bash 4+ 语法无法满足、只能绕开。
+
+错在**只查了两个 Homebrew 路径就外推成「本机没有 bash 4+」**。本机实际装有：
+
+```
+/Users/niuer/sdk/bash5/bin/bash → GNU bash 5.2.0(1) aarch64-apple-darwin25.2.0
+```
+
+（与 Go 同在 `~/sdk/` 下——之前找 Go 时只看了 `~/sdk/go`，没往旁边看。）
+
+实测**未经任何修改的 SSOT** 在 bash 5.2 下直接可用：
+
+```
+host_root_for 245   -> /opt/llm-gateway-go
+_ssh_key_for 245    -> /Users/niuer/.ssh/id_ed25519
+_ssh_host_for 245   -> root@8.136.114.245
+target_unsupported  -> {"target":"bogus-host", ... "ssh_key_env":"SSH_KEY_BOGUS-HOST" ...}
+bash5 + UNMODIFIED SSOT: OK
+```
+
+即 `${target^^}`、`declare -A` 等全部原生支持。**第十一节那套「拷到 /tmp 逐处改写」
+的绕行方案是不必要的**，正确做法一直是：
+
+```bash
+export PATH="$HOME/sdk/bash5/bin:$HOME/sdk/go/bin:$PATH"
+export AIAN_DEPLOY_LIB="$HOME/workspace/ai-native-tools/deploy-lib"   # 原版 SSOT
+bash scripts/deploy-154.sh
+```
+
+旁证：并行会话（worktree `llm-gateway-go-cursor`）一直是这么跑的——
+`export PATH=$HOME/sdk/bash5/bin:...`，且 `AIAN_DEPLOY_LIB` 指向**原版 SSOT**，
+从未打过补丁。
+
+### 仍然有效的部分
+
+第十一节里这几条结论与 bash 版本无关，不受本次更正影响：
+
+1. **`558953c52`（deploy-245/154 空 ARGS unbound）仍是真 bug。**
+   `deploy-245.sh:44` 的守卫确实漏了末尾 `exec` 行，154 入口也确实没有守卫——
+   这是代码缺陷，与本机装什么 bash 无关。
+2. **「只在 node_modules 缺失时装依赖」是真 bug**（`2bf5b3870`），
+   已导致 245 部署因 `TS2307: Cannot find module 'qrcode'` 中止。
+3. deploy-lib 里 `declare -A` / `${var^^}` 的写法在**只有 bash 3.2 的机器**上
+   确实跑不了——只是这台机器并不是那种机器。
+
+### 教训
+
+「某依赖不存在」只能由**穷举搜索**得出，不能由「两个常见路径没找到」外推。
+`~/sdk/` 这种非标准前缀目录是本次漏查的直接原因。
