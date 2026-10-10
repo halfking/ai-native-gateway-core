@@ -937,6 +937,20 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 848（multimedia，2026-10-08）：billing_unit（token|image|audio_second）
 			// 与 audio_second 计费列骨架。
 			"848_billing_unit_and_audio_seconds.sql",
+			// 851（2026-10-10）：停用 316 播种的 pii_patterns.ip_address 规则。
+			//
+			// 为什么必须在这里显式登记：316 是**幂等播种**，全新安装必然把这条
+			// 规则种成 enabled=true，而它把每一个 IPv4（含环回、版本号）都当成
+			// PII 在**输出侧**单向遮成 `*********`。遮蔽发生在 sanitize 还原
+			// **之后**（见 cmd/gateway/goal_control.go 的链序：guard → 还原 →
+			// 输出合规），因此模型回显的地址刚被还原成原文就被压成星号，且不可
+			// 还原——客户端拿到的是坏掉的运维命令 / 坏掉的工具参数。
+			//
+			// 这条迁移此前**从未被登记**：文件躺在 sql/migrations/startup/ 里，
+			// deploy 的目录扫描会捡到它，但安装器只跑 StartupFiles，于是每台
+			// 全新安装的机器上这条规则都还开着。登记它是对「文件存在 ≠ 迁移会
+			// 运行」这一形态的修复，不是新增策略。
+			"851_disable_overbroad_pii_ip_address_rule.sql",
 		},
 	}
 }

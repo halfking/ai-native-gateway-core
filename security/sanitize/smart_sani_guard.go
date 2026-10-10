@@ -1601,6 +1601,52 @@ func (it *SanitizeRestoreInterceptor) loadMap(ctx context.Context, sessionID str
 	return sm, nil
 }
 
+// SessionValues 返回本会话映射表里的全部原值，供输出侧判定「这段文本是网关
+// 刚还原回去的调用方原值」而用（2026-10-10）。
+//
+// 背景：响应链顺序是 强制守卫 → 占位符还原 → 输出合规。输出合规排在还原
+// 之后，看到的文本里混着模型写的值和刚被换回来的调用方原值，却分不出来，
+// 于是把后者也单向遮成星号——用户自己发来的 IP 刚被还原出来就被压成
+// `*********`，而且没有任何映射能把它换回去。
+//
+// 返回全集（而不是本轮实际命中的那几个 token 的值）是刻意的保守：命中判定
+// 是「整段文本相等」，全集只可能多豁免掉「模型恰好复述了调用方自己某个值」
+// 的片段，而那本来就是调用方自己的数据，回给它不构成新的信息泄漏。
+func (it *SanitizeRestoreInterceptor) SessionValues(ctx context.Context, sessionID string, tenantIDs ...string) ([]string, error) {
+	if it == nil || sessionID == "" {
+		return nil, nil
+	}
+	// 优先用 ctx 里那份：输入中间件在请求入口就把**整本会话字典**挂进了
+	// r.Context()（见 Wrap 里的 WithSanitizeMap），响应侧的 ctx 正是它的后代。
+	// 命中这里就完全不碰 Redis——否则每个响应会为同一份映射表多付一次往返，
+	// 而它挂在输出合规这条热路径上。ctx 没有（降级部署、后台上下文）时才
+	// 回落到 Redis 读。
+	//
+	// 这条路径同时更准：ctx 里那份就是**本次请求**的字典，Redis 那份可能是
+	// 更晚的代次（loadMap 自己会用 generation 守卫挡掉）。
+	if local, ok := SanitizeMapFromContext(ctx); ok && len(local) > 0 {
+		return sanitizeMapValues(local), nil
+	}
+	sm, err := it.loadMap(ctx, sessionID, tenantIDs...)
+	if err != nil {
+		return nil, err
+	}
+	if len(sm) == 0 {
+		return nil, nil
+	}
+	return sanitizeMapValues(sm), nil
+}
+
+func sanitizeMapValues(sm SanitizeMap) []string {
+	values := make([]string, 0, len(sm))
+	for _, value := range sm {
+		if value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
 // validatePlaceholders 验证响应中的占位符是否都在映射表中。
 // 返回不在映射表中的占位符列表（LLM 生成的伪造占位符）。
 func (it *SanitizeRestoreInterceptor) validatePlaceholders(ctx context.Context, body []byte, sm SanitizeMap) []string {

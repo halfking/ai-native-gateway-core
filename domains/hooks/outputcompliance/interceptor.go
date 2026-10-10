@@ -42,6 +42,42 @@ type OutputComplianceInterceptor struct {
 	ownerFn   OwnerContextFunc // 可空：为 nil 时 caller/data owner 均视为空（保守脱敏）
 	mandatory bool
 	stateKey  string
+
+	// restoredValues 解析「本次响应已还原值」的来源，可空。为 nil 时豁免机制
+	// 整体关闭（行为与旧版一致），因此未装配 sanitize 的部署不受影响。
+	restoredValues func(ctx context.Context, sessionID, tenantID string) ([]string, error)
+}
+
+// SetRestoredValueSource 注入「本次响应已还原值」的来源。
+//
+// 存在的理由只有一个：输出合规排在占位符还原**之后**（链序见
+// cmd/gateway/goal_control.go），因此它看到的文本里混着模型写的值和网关刚
+// 还原回去的调用方原值，两者不可分辨。旧实现一视同仁地遮蔽，用户自己发来的
+// IP/账号刚被还原出来就被压成星号且换不回去。
+func (it *OutputComplianceInterceptor) SetRestoredValueSource(fn func(ctx context.Context, sessionID, tenantID string) ([]string, error)) {
+	if it == nil || it.mandatory {
+		// 强制守卫排在还原**之前**，它的职责正是筛查模型自己造出来的值：
+		// 那时候还没有任何东西被还原，豁免机制对它没有意义，给它反而会
+		// 让「与历史轮次某个调用方值重合」的模型输出溜过去。
+		return
+	}
+	it.restoredValues = fn
+}
+
+// withRestoredValues 把已还原值集合挂到 ctx 上，供这一次响应内的每一次
+// checker.Check 读取。解析失败**不阻断响应**：豁免是保护措施，不是闸门，
+// 拿不到集合时退回到旧行为（遮蔽照做），而不是把流量打挂。
+func (it *OutputComplianceInterceptor) withRestoredValues(ctx context.Context, sessionID, tenantID string) context.Context {
+	if it == nil || it.restoredValues == nil || sessionID == "" {
+		return ctx
+	}
+	values, err := it.restoredValues(ctx, sessionID, tenantID)
+	if err != nil {
+		slog.Warn("output_compliance_interceptor: restored-value lookup failed; masking as before",
+			"error", err, "session_id", sessionID)
+		return ctx
+	}
+	return outputcompliance.WithRestoredValues(ctx, outputcompliance.NewRestoredValues(values))
 }
 
 // NewMandatoryOutputComplianceInterceptor reuses the protocol walker and
@@ -125,6 +161,8 @@ func (it *OutputComplianceInterceptor) InterceptNonStream(ctx context.Context, r
 	// R25-E: request-scoped policy cache so a multi-field body loads the
 	// tenant policy once (the stream path already wraps its check context).
 	ctx = outputcompliance.WithRequestPolicyCache(ctx)
+	// 2026-10-10: 本次响应里被还原器注入的调用方原值不得被遮蔽销毁。
+	ctx = it.withRestoredValues(ctx, req.SessionID, req.TenantID)
 	return it.processBody(ctx, req)
 }
 
@@ -158,6 +196,7 @@ func (it *OutputComplianceInterceptor) InterceptStreamEnd(ctx context.Context, m
 	}
 	// R25-E: request-scoped policy cache, same as InterceptNonStream.
 	ctx = outputcompliance.WithRequestPolicyCache(ctx)
+	ctx = it.withRestoredValues(ctx, meta.SessionID, meta.TenantID)
 	res, err := it.processBody(ctx, req)
 	if err != nil || res == nil {
 		return nil, err

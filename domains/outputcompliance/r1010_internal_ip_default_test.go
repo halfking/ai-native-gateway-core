@@ -23,7 +23,10 @@ package outputcompliance
 // 只测「默认不遮蔽」是不够的：必须同时钉住「仍然检出」与「仍然不阻断」，
 // 否则下一次有人把 detectInternalIP 整个删掉，这三条一起变绿。
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // TestInternalIPIsDetectedButNotRedactedByDefault 固化默认动作。
 func TestInternalIPIsDetectedButNotRedactedByDefault(t *testing.T) {
@@ -49,7 +52,7 @@ func TestInternalIPIsDetectedButNotRedactedByDefault(t *testing.T) {
 		}
 	}
 
-	got := c.redactOutput(output, issues, policy)
+	got := c.redactOutput(context.Background(), output, issues, policy)
 	if got != output {
 		t.Errorf("internal IP text was rewritten\n got: %s\nwant: %s", got, output)
 	}
@@ -68,8 +71,8 @@ func TestInternalIPRedactionStillWorksWhenOperatorOptsIn(t *testing.T) {
 	if len(issues) != 1 {
 		t.Fatalf("expected 1 issue, got %d", len(issues))
 	}
-	got := c.redactOutput(output, issues, policy)
-	want := "connect to **********:5432"
+	got := c.redactOutput(context.Background(), output, issues, policy)
+	want := "connect to " + RedactionMarker("internal_ip") + ":5432"
 	if got != want {
 		t.Errorf("opt-in redaction = %q, want %q", got, want)
 	}
@@ -86,8 +89,8 @@ func TestSecretsStillRedactedByDefault(t *testing.T) {
 	if len(issues) != 1 {
 		t.Fatalf("expected 1 secret issue, got %d: %+v", len(issues), issues)
 	}
-	got := c.redactOutput(output, issues, policy)
-	want := "key is ******************* at 10.24.7.91"
+	got := c.redactOutput(context.Background(), output, issues, policy)
+	want := "key is " + RedactionMarker("api_key") + " at 10.24.7.91"
 	if got != want {
 		t.Errorf("secret redaction = %q, want %q", got, want)
 	}
