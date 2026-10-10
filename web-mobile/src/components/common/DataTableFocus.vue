@@ -1,22 +1,19 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { useWindowClass } from '@/composables/useWindowClass'
+import { ref } from 'vue'
 import { t } from '@/i18n'
 import AppIcon from './AppIcon.vue'
 import FocusLayer from './FocusLayer.vue'
 
 const props = defineProps<{ title: string; heading?: string }>()
-const { windowClass } = useWindowClass()
-const compact = computed(() => windowClass.value === 'compact')
 const active = ref(false)
 </script>
 
 <template>
   <div class="data-table-focus">
-    <div v-if="compact && !active || heading" class="data-table-focus__toolbar">
+    <div v-if="!active || heading" class="data-table-focus__toolbar">
       <h3 v-if="heading" class="data-table-focus__heading">{{ heading }}</h3>
       <button
-        v-if="compact && !active"
+        v-if="!active"
         type="button"
         class="data-table-focus__button"
         :aria-label="t('common.focusView')"

@@ -1,5 +1,5 @@
 import { acceptLanguageHeader } from '@/i18n'
-import { getTransport, gatewayBaseUrl, type TransportResponse } from './transport'
+import { getTransport, gatewayBaseUrl, transportUsesCookieJar, type TransportResponse } from './transport'
 
 // client.ts — web-mobile 请求管线（复刻网关 web/src/api/_core.ts 语义，
 // UI规范 17 §5）：cookie 优先（credentials same-origin），无 userInfo 才补
@@ -161,7 +161,10 @@ export async function req<T>(method: string, path: string, body?: unknown, optio
 
   // cookie 优先：userInfo 存在 = JWT 登录成功后端已设 HttpOnly llmgw_session，
   // 内存 Bearer 不携带以免遮蔽其它标签页更新的 cookie（web/_core.ts 同源裁决）
-  if (!authContext.isAuthenticated() || !authContext.getUserInfo()) {
+  // Browser fetch carries the HttpOnly session cookie. CapacitorHttp does not
+  // share that cookie jar, so an authenticated native request must also carry
+  // the short-lived Bearer token held in memory or admin APIs return 401.
+  if (!transportUsesCookieJar() || !authContext.isAuthenticated() || !authContext.getUserInfo()) {
     const bearer = authContext.getBearer()
     if (bearer) headers['Authorization'] = `Bearer ${bearer}`
   }

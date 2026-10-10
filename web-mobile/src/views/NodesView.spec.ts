@@ -245,7 +245,8 @@ describe('NodesView 凭据卡的模型计数', () => {
     const name = w.find('.node-card__name-text')
 
     expect(name.exists()).toBe(true)
-    expect(name.text()).toBe(`${providerName} · ${label}`)
+    expect(w.find('.provider-group__header h2').text()).toBe(providerName)
+    expect(name.text()).toBe(label)
     expect(w.find('.node-card .badge').exists()).toBe(true)
   })
 })

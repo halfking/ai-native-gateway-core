@@ -46,26 +46,48 @@ const auth = useAuthStore()
 // 分页在客户端切片；queryRevision 机制照常隔离 requery 前后响应。
 let cache: CredentialMonitorSummary[] = []
 const query = ref('')
+const providerFilter = ref('')
+const modelFilter = ref('')
 
-const controller = new ContinuousListController<CredentialMonitorSummary>({
+interface ProviderGroup { providerId: number; name: string; credentials: CredentialMonitorSummary[] }
+
+const controller = new ContinuousListController<ProviderGroup>({
   fetchPage: async (page) => {
-    if (page > 1) return { items: [], total: filtered().length }
+    if (page > 1) return { items: [], total: grouped().length }
     if (cache.length === 0) {
       cache = await fetchMonitorSummary()
     }
-    const items = filtered()
+    const items = grouped()
     return { items, total: items.length }
   },
-  stableKey: (c) => `cred-${c.id}`,
+  stableKey: (group) => `provider-${group.providerId}`,
   scopeKey: 'nodes',
 })
 
 function filtered(): CredentialMonitorSummary[] {
   const q = query.value.trim().toLowerCase()
-  if (!q) return cache
-  return cache.filter(
-    (c) => c.provider_name.toLowerCase().includes(q) || c.label.toLowerCase().includes(q),
-  )
+  return cache.filter((c) => {
+    if (providerFilter.value && String(c.provider_id) !== providerFilter.value) return false
+    if (modelFilter.value && !c.models?.some((m) => m.canonical_name === modelFilter.value || m.raw_model_name === modelFilter.value)) return false
+    if (!q) return true
+    return [c.provider_name, c.label, ...(c.models ?? []).flatMap((m) => [m.raw_model_name, m.canonical_name ?? ''])].some((v) => v.toLowerCase().includes(q))
+  })
+}
+
+const providerOptions = computed(() => [...new Map(cache.map((c) => [String(c.provider_id), c.provider_name])).entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name)))
+const modelOptions = computed(() => [...new Set(cache.flatMap((c) => (c.models ?? []).flatMap((m) => [m.canonical_name, m.raw_model_name]).filter((name): name is string => Boolean(name))))].sort((a, b) => a.localeCompare(b)))
+
+function grouped(): ProviderGroup[] {
+  const byProvider = new Map<number, ProviderGroup>()
+  for (const credential of filtered()) {
+    let group = byProvider.get(credential.provider_id)
+    if (!group) {
+      group = { providerId: credential.provider_id, name: credential.provider_name, credentials: [] }
+      byProvider.set(credential.provider_id, group)
+    }
+    group.credentials.push(credential)
+  }
+  return [...byProvider.values()].sort((a, b) => a.name.localeCompare(b.name))
 }
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -432,11 +454,11 @@ function describeError(err: unknown): string {
 </script>
 
 <template>
-  <div class="view-root">
+<div class="view-root">
   <HyperList
     :controller="controller"
-    :item-key="(c: CredentialMonitorSummary) => `cred-${c.id}`"
-    :on-refresh="async () => { cache = await fetchMonitorSummary() }"
+    :item-key="(group: ProviderGroup) => `provider-${group.providerId}`"
+    :on-refresh="async () => { cache = await fetchMonitorSummary(); controller.loadFirst('requery') }"
     :empty-hint="t('common.empty')"
   >
     <template #header>
@@ -449,26 +471,31 @@ function describeError(err: unknown): string {
           @input="onSearchInput"
         />
       </div>
+      <div class="nodes__filters">
+        <label><span>{{ t('nodes.filterProvider') }}</span><select v-model="providerFilter" @change="controller.loadFirst('requery')"><option value="">{{ t('nodes.allProviders') }}</option><option v-for="provider in providerOptions" :key="provider.id" :value="provider.id">{{ provider.name }}</option></select></label>
+        <label><span>{{ t('nodes.filterModel') }}</span><select v-model="modelFilter" @change="controller.loadFirst('requery')"><option value="">{{ t('nodes.allModels') }}</option><option v-for="model in modelOptions" :key="model" :value="model">{{ model }}</option></select></label>
+      </div>
     </template>
 
-    <template #item="{ item: c }">
-      <button type="button" class="data-card node-card" @click="openDetail(c)">
-        <div class="card-row">
-          <span class="node-card__name">
-            <StatusDot :tone="healthTone(c)" />
-            <span class="node-card__name-text">{{ c.provider_name }} · {{ c.label }}</span>
-          </span>
-          <span class="badge" :class="stateBadge(c).cls">{{ stateBadge(c).label }}</span>
-        </div>
-        <div class="node-card__fields">
-          <span v-if="modelsLabel(c)" class="node-card__field">{{ modelsLabel(c) }}</span>
-          <span class="node-card__field">{{ t('nodes.concurrency') }} {{ c.effective_concurrency }}</span>
-          <span class="node-card__field">{{ t('nodes.lastChecked') }} {{ relativeTime(c.health_checked_at) }}</span>
-        </div>
-        <div v-if="c.consecutive_failures > 0" class="node-card__warn">
-          {{ t('nodes.consecutiveFailures', { n: c.consecutive_failures }) }}
-        </div>
-      </button>
+    <template #item="{ item: group }">
+      <section class="provider-group">
+        <header class="provider-group__header"><h2>{{ group.name }}</h2><span class="badge badge--muted">{{ t('nodes.credentialCount', { n: group.credentials.length }) }}</span></header>
+        <button v-for="c in group.credentials" :key="c.id" type="button" class="data-card node-card" @click="openDetail(c)">
+          <div class="card-row">
+            <span class="node-card__name">
+              <StatusDot :tone="healthTone(c)" />
+              <span class="node-card__name-text">{{ c.label }}</span>
+            </span>
+            <span class="badge" :class="stateBadge(c).cls">{{ stateBadge(c).label }}</span>
+          </div>
+          <div class="node-card__fields">
+            <span v-if="modelsLabel(c)" class="node-card__field">{{ modelsLabel(c) }}</span>
+            <span class="node-card__field">{{ t('nodes.concurrency') }} {{ c.effective_concurrency }}</span>
+            <span class="node-card__field">{{ t('nodes.lastChecked') }} {{ relativeTime(c.health_checked_at) }}</span>
+          </div>
+          <div v-if="c.consecutive_failures > 0" class="node-card__warn">{{ t('nodes.consecutiveFailures', { n: c.consecutive_failures }) }}</div>
+        </button>
+      </section>
     </template>
   </HyperList>
 
@@ -782,6 +809,12 @@ function describeError(err: unknown): string {
 .nodes__search input:focus {
   outline: none;
 }
+.nodes__filters { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; margin-bottom: 12px; }
+.nodes__filters label { display: grid; gap: 4px; color: var(--app-text-muted); font-size: 12px; }
+.nodes__filters select { min-width: 0; min-height: 48px; padding: 0 10px; border: 1px solid var(--app-border); border-radius: var(--app-radius); background: var(--app-surface); color: var(--app-text); }
+.provider-group { display: grid; gap: 8px; margin-bottom: 14px; }
+.provider-group__header { display: flex; align-items: center; justify-content: space-between; padding: 0 2px; }
+.provider-group__header h2 { min-width: 0; margin: 0; overflow-wrap: anywhere; font-size: 0.9375rem; }
 
 .node-card {
   display: flex;
