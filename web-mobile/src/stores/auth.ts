@@ -4,6 +4,7 @@ import type { UserInfo } from '@/api/client'
 import { bumpSessionEpoch } from '@/api/client'
 import * as authApi from '@/api/auth'
 import type { LoginOptions } from '@/api/auth'
+import { nativeSignOut } from '@/api/authSession'
 import { Hyper } from '@/hyper'
 
 // 鉴权 store — 网关 web/src/store.ts 的 2026-08-26 P1-7 语义照搬：
@@ -167,6 +168,12 @@ export const useAuthStore = defineStore('auth', () => {
     safeClear(sessionStorage)
     // 06 §3：登出/换号清空导航持久化（scope 隔离）
     Hyper.clearPersistence()
+    // 2026-10-10：原壳内登出擦不掉远程 origin 的 HttpOnly cookie —— 那是
+    // CookieJar 由 origin 通过 Set-Cookie 注入、JS 不可达。让原生层把整
+    // 个 WebView 的 cookie + LocalStorage/SessionStorage 一起清掉，下次
+    // 启动时 CookieJar 是空的，hydrate() 拿到 null 自动退到登录页。
+    // 失败吞掉 —— 兜底已经由 localStorage/sessionStorage 那一步完成。
+    void nativeSignOut()
   }
 
   function bearer(): string {

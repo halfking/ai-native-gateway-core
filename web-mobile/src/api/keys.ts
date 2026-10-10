@@ -39,6 +39,13 @@ export interface CreateKeyPayload {
   budget_usd?: number
   rate_limit_rpm?: number
   remark?: string
+  /**
+   * 用户下创建（2026-10-10 第二百零一批）：owner_user = username。
+   * 后端 admin/keys.go 接受 `owner_user` 为 username 字符串（不是 user id）；
+   * 不传则不绑定到任何用户。当前仅在 UserUsageView 的「在用户名下添加 apikey」
+   * 入口处使用，KeysView 仍是全租户级别。
+   */
+  owner_user?: string
 }
 
 export interface RevealedKey {
