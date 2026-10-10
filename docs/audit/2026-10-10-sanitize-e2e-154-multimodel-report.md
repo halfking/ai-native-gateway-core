@@ -414,7 +414,32 @@ env[1621] "msg":"sanitize pattern detector ready","path":"configs/sensitive_patt
 而是**原样作为字面文本进入客户端响应**。部署后窗口内 4 条，全部来自同一个真实用户会话
 `gw_bab6a75e…` / minimax-m3。
 
-泄漏的是标记语法、类型与索引，**不泄漏敏感值本身**。
+### 敏感值本身没有泄漏——但已量化确认
+
+对当天全部 **96 行**透传记录做过真值扫描，私网 IP / 11 位手机号 / 邮箱 / `sk-` 开头密钥
+四类真值形态的命中数**均为 0**。占位符确实占住了真值位置。
+
+透传的标记按类型分布（366 个实例 / 96 行）：
+
+| 类型 | 透传实例数 | 说明 |
+|---|---|---|
+| server_ip | 158 | 内部主机 IP |
+| secret | 87 | **API 密钥**（值未泄漏，仅标记语法外泄） |
+| internal_ip | 69 | 私网地址 |
+| custom | 21 | 自定义类型 |
+| email | 17 | |
+| phone | 9 | |
+| id_card | 5 | |
+
+对照：同期出向被正确保护的占位符分布为 server_ip 653 / secret 146 / internal_ip 83 /
+account 43 / email 23 / id_card 15 / phone 11 / custom 10 / credit_card 8。
+
+因此实际泄漏的是**内部标记语法本身**：类型名、索引，以及
+**该会话内被检测到的不同敏感值数量**（索引 55 即意味着本会话捕获了 55 个不同密钥）。
+上下文样本形如 ``cfg.ACCServiceToken ={SENSITIVE:secret:21} ""`` —— 位置正确、值为空标记。
+
+严重性判定：不泄漏敏感值；但向客户端暴露脱敏机制的存在与规模，
+且对同一会话的观察者可推断敏感值种类与数量。属中低危的信息暴露，不是凭据泄露。
 
 ### 根因：缺 `LLM_GATEWAY_SESSION_CENSOR_KEY`
 
@@ -661,3 +686,15 @@ ok  …/executors/webcookie  ok  …/integrity     ok  …/state
 
 验证判据：`curl -fsS http://<245>:8781/healthz` 的 `build_seq` 变为 2515、
 `git_sha` 变为 `869c04bf2`。
+
+### 补记：154 已由并行会话升级到 2515
+
+11:34 复核时，154 已由另一会话部署为 `2.5.8-7dd0b4b67-20261010-2515`
+（`/healthz` `ready:true`）。在该新版本上重跑第九节的取证探针：
+
+```
+minimax-m3 chat.completions 流式：deltas 17，single-char 0
+sizes[:12] = [28,16,17,10,11,12,6,2,3,10,3,3]
+```
+
+**结论不变**：2515 上网关侧依然没有单字分片，「单字一行」不是网关产生的。
