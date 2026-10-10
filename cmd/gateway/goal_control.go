@@ -573,6 +573,15 @@ func installSmartSaniGuard(chatHandler *streaming.ChatHandler, redisClient *redi
 	// 因此可以安全重建。
 	existing := chatHandler.ResponseInterceptorForWire()
 	ordered := insertSanitizeRestoreBeforeOutputCompliance(existing.ListInterceptors(), restoreHook)
+	// 同一个来源还要喂给 write-time 脱敏器（BuildRedactBodyFn）：它跑在还原
+	// 之后、改的是 w.Write 之前的客户端字节，是离客户端最近的一道，豁免不到
+	// 就等于把拦截器刚放行的值又毁在这里。
+	restoredValues := sanitizeSessionValuesFunc(
+		func(ctx context.Context, sessionID, tenantID string) ([]string, error) {
+			return restoreHook.SessionValues(ctx, sessionID, tenantID)
+		})
+	storeSanitizeRestoredValues(restoredValues)
+	wireRestoredValueSource(ordered, restoredValues)
 	s, _ := sanitize.NewSanitizer(detector)
 	action := sanitize.OutputMask
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("LLM_GATEWAY_SANITIZE_OUTPUT_ACTION")), "block") {
@@ -588,7 +597,6 @@ func installSmartSaniGuard(chatHandler *streaming.ChatHandler, redisClient *redi
 		}
 	}
 	chatHandler.SetResponseInterceptor(response.NewInterceptorChain(ordered...))
-	wireRestoredValueSource(ordered, restoreHook)
 	slog.Info("smart_sani_guard: restore interceptor wired",
 		"chain_length", len(ordered), "output_sensitive_action", action)
 	return detector
@@ -598,14 +606,14 @@ func installSmartSaniGuard(chatHandler *streaming.ChatHandler, redisClient *redi
 //
 // 为什么需要（2026-10-10）：输出合规排在占位符还原**之后**，因此它看到的
 // 文本里混着模型写的值和网关刚还原回去的调用方原值，却分不出来。旧实现两者
-// 一视同仁地遮蔽，于是用户自己发来的 IP 刚被还原出来就被压成 `*********`，
-// 且没有任何映射能换回去——请求里好好的、响应回来变成 ****，可复制的运维
-// 命令与工具参数（代码执行走同一条链）全部失效。
+// 一视同仁地遮蔽，于是用户自己发来的 IP 刚被还原出来就被压成星号，且没有
+// 任何映射能换回去——请求里好好的、响应回来变成 ****，可复制的运维命令与
+// 工具参数（代码执行走同一条链）全部失效。
 //
 // 强制守卫不受影响：SetRestoredValueSource 内部对 mandatory 实例直接返回，
 // 它排在还原之前，职责是筛查模型自造值，豁免对它没有意义。
-func wireRestoredValueSource(interceptors []response.ResponseInterceptor, restoreHook *sanitize.SanitizeRestoreInterceptor) {
-	if restoreHook == nil {
+func wireRestoredValueSource(interceptors []response.ResponseInterceptor, source sanitizeSessionValuesFunc) {
+	if source == nil {
 		return
 	}
 	for _, interceptor := range interceptors {
@@ -613,9 +621,7 @@ func wireRestoredValueSource(interceptors []response.ResponseInterceptor, restor
 		if !ok {
 			continue
 		}
-		compliance.SetRestoredValueSource(func(ctx context.Context, sessionID, tenantID string) ([]string, error) {
-			return restoreHook.SessionValues(ctx, sessionID, tenantID)
-		})
+		compliance.SetRestoredValueSource(source)
 	}
 }
 
