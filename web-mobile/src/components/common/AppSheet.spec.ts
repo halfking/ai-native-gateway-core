@@ -5,9 +5,11 @@ import { setLocale } from '@/i18n'
 import AppSheet from './AppSheet.vue'
 
 const closeOverlay = vi.hoisted(() => vi.fn())
+const topOverlay = vi.hoisted(() => ({ value: true }))
 
 vi.mock('@/hyper', () => ({
   useHyperOverlay: () => ({
+    isTop: { get value() { return topOverlay.value } },
     present: vi.fn(),
     close: closeOverlay,
     release: vi.fn(),
@@ -19,6 +21,7 @@ describe('AppSheet mobile focus behavior', () => {
     document.body.innerHTML = ''
     vi.unstubAllGlobals()
     closeOverlay.mockClear()
+    topOverlay.value = true
     setLocale('en-US')
   })
 
@@ -62,6 +65,20 @@ describe('AppSheet mobile focus behavior', () => {
     document.body.querySelector<HTMLButtonElement>('.app-sheet__close')?.click()
 
     expect(closeOverlay).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('does not let a lower sheet close when its scrim receives a nested-overlay gesture', async () => {
+    const wrapper = mount(AppSheet, {
+      props: { modelValue: false, title: '账户设置' },
+      attachTo: document.body,
+    })
+
+    await wrapper.setProps({ modelValue: true })
+    topOverlay.value = false
+    document.body.querySelector<HTMLElement>('.app-sheet__scrim')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+
+    expect(closeOverlay).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 })

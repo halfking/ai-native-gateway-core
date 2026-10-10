@@ -18,6 +18,20 @@ const props = withDefaults(
 
 const emit = defineEmits<{ 'update:active': [value: boolean] }>()
 
+// WKWebView on iOS 15 can retain the inline Teleport node's former document
+// position when `disabled` flips to false. Keep the fullscreen geometry inline
+// so the moved layer is pinned to the visual viewport immediately.
+const focusLayerFrameStyle = {
+  position: 'fixed',
+  top: '0',
+  right: '0',
+  bottom: '0',
+  left: '0',
+  zIndex: '1010',
+  display: 'flex',
+  flexDirection: 'column',
+} as const
+
 let touchStart: { x: number; y: number; fromTable: boolean } | null = null
 
 function onTouchStart(event: TouchEvent): void {
@@ -146,6 +160,7 @@ onBeforeUnmount(() => {
     <div
       class="focus-inline"
       :class="{ 'focus-layer': active }"
+      :style="active ? focusLayerFrameStyle : undefined"
       :role="active ? 'dialog' : undefined"
       :aria-modal="active ? 'true' : undefined"
       :aria-label="active ? title : undefined"

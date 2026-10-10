@@ -426,6 +426,27 @@ func (b *sessionRequestStatusBackfill) sampleRemaining(ctx context.Context) {
 		requestStatusBackfillRemaining.Set(-1)
 		return
 	}
+	// Lift the role-level statement_timeout for this transaction only. The
+	// count's own budget is sessionRequestStatusRemainingTimeout, but on 252
+	// the llm_gateway role carries statement_timeout=30s (rolconfig) — the
+	// count was killed at 30s ~3/h (R31, 2026-10-10) with its parallel workers
+	// terminated alongside, so the gauge never produced a value and stayed at
+	// -1 ("could not measure") forever. SET LOCAL mirrors the batch path and
+	// the matview refresher's mvRefreshStatementTimeout pin; the third
+	// set_config argument keeps it transaction-local so nothing leaks back to
+	// the pool. The full-window reservoir scan (793k NULL rows × per-row
+	// request_logs partition probes on 252) needs the whole budget: 849's
+	// covering partial index trims the t side to index-only, and what remains
+	// is the JOIN probe count itself.
+	if _, err := tx.Exec(ctx,
+		"SELECT set_config('statement_timeout', $1, true)",
+		fmt.Sprintf("%ds", int(sessionRequestStatusRemainingTimeout.Seconds()))); err != nil {
+		requestStatusBackfillTotal.WithLabelValues("error").Inc()
+		slog.Warn("session_turns request_status backfill: remaining count timeout GUC failed",
+			"error", err)
+		requestStatusBackfillRemaining.Set(-1)
+		return
+	}
 	qCtx, cancel := context.WithTimeout(ctx, sessionRequestStatusRemainingTimeout)
 	defer cancel()
 	var n int64
@@ -462,6 +483,14 @@ func (b *sessionRequestStatusBackfill) sampleRemaining(ctx context.Context) {
 // which is a green light on a retirement that then loses them. That failure mode
 // is not hypothetical: any gateway process still running a pre-823 binary writes
 // NULL labels into _hot, and the parent-only gauge cannot see them.
+//
+// R31 (2026-10-10, 252 审计): the exact window-less count is only affordable
+// if the physical plan is. On 252 it wasn't: 793k permanent-NULL rows ×
+// per-row request_logs partition probes blew past the role's 30s
+// statement_timeout ~3/h forever, the gauge sat at -1 and the release gate
+// was unmeasurable. 849 (covering partial index on (request_id)) plus the
+// sampleRemaining SET LOCAL budget lift make the same SQL completable —
+// the semantics (window-less, both surfaces, -1 on failure) are untouched.
 //
 // The candidate query below deliberately does NOT cover _hot — see its own
 // comment. Backfill scope and gauge scope are different questions; making them

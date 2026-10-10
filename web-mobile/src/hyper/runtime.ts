@@ -51,6 +51,8 @@ export class HyperRuntime {
   private pageTick = ref(0)
   private routeTitle = ref<string | undefined>(undefined)
   private markerStack: string[] = []
+  /** Pending history pops started while programmatically dismissing an overlay. */
+  private pendingOverlayHistoryPops = 0
   private options: HyperRuntimeOptions | null = null
   private router: Router | null = null
   private detach: Array<() => void> = []
@@ -155,11 +157,13 @@ export class HyperRuntime {
 
   // ---- 路由提交（06 §4 语义表） ----
 
-  private onRouteCommitted(to: { fullPath: string; name?: string | symbol; meta?: Record<string, unknown> }, _from: { fullPath: string }): void {
+  private onRouteCommitted(to: { fullPath: string; name?: string | symbol; meta?: Record<string, unknown> }, from: { fullPath: string }): void {
     if (!this.options) return
     // 路由离开必须清理覆盖层（07 §9）：静默关闭（guards 已在 beforeEach 由
     // 各 Sheet 自行处理弹层内确认）；残留的 history 标记由 popstate 消费为 no-op。
-    this.closeAllOverlaysSilently()
+    // 关闭弹层自身会回退同 URL 的 history 标记，Vue Router 也会观察到这次
+    // popstate。它不是离页，不能因此把仍打开的父弹层一并清掉。
+    if (to.fullPath !== from.fullPath) this.closeAllOverlaysSilently()
 
     // 离开页滚动快照（entryId + renderEpoch 校验在 store.saveView 内）
     const prev = this.nav.current()
@@ -270,6 +274,7 @@ export class HyperRuntime {
       this.markerStack.splice(markerIdx, 1)
       // 标记仍是历史栈顶 → 弹出它（popstate 到页面态，注册表已无该层 → no-op）
       if (markerIdx === this.markerStack.length && readMarkerFromState(window.history.state) === id) {
+        this.pendingOverlayHistoryPops += 1
         window.history.back()
       }
     }
@@ -293,6 +298,12 @@ export class HyperRuntime {
   /** popstate：落点是标记态 → no-op；否则有未清标记 = 标记被弹出 → 关顶层。 */
   private onPopState(ev: PopStateEvent): void {
     const stateMarker = readMarkerFromState(ev.state)
+    // WKWebView may report the same-URL pop caused by this close with an
+    // unmarked state. That bookkeeping event must not close the parent overlay.
+    if (this.pendingOverlayHistoryPops > 0) {
+      this.pendingOverlayHistoryPops -= 1
+      return
+    }
     if (stateMarker) return // 落在标记上（补偿 forward / 并发），不动
     if (this.markerStack.length === 0) return
     const topMarker = this.markerStack.pop()
@@ -420,6 +431,7 @@ export class HyperRuntime {
     this.nav.reset()
     this.overlayRecords = []
     this.markerStack = []
+    this.pendingOverlayHistoryPops = 0
     this.pageReg = null
     this.pendingRestore = null
     this.lastHistoryPosition = null
