@@ -87,6 +87,10 @@ host 模式会在「psql is required」死掉（这正是 2026-10-11 修掉的�
 > `curl http://llm.itestu.cn:8782/healthz`。2026-10-11 凌晨在线 peer 无一
 > 提供 shell，此步留待有 peer 在线时执行（见 §6 待验项）。
 
+> **HTTPS 终结**（`https://llm.itestu.cn`，浏览器侧）：远端 peer 走 mesh 入站
+> 用 HTTP 即可；浏览器场景需 HTTPS 终结，独立方案见
+> [local-https-termination-20261011.md](./local-https-termination-20261011.md)。
+
 ## 6. 验证矩阵
 
 | 层 | 命令 | 结果（2026-10-11） |
