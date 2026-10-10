@@ -675,6 +675,12 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'cr.title', requiresAuth: true },
   },
   {
+    path: '/usage-trend-series',
+    name: 'usage-trend-series',
+    component: () => import('@/views/UsageTrendSeriesView.vue'),
+    meta: { titleKey: 'uts.title', requiresAuth: true },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),
