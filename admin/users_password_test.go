@@ -54,6 +54,9 @@ func TestHandleChangePassword_RejectsInvalidJSON(t *testing.T) {
 	}
 }
 
+// handleUsers 是 authz-first（4b06bd50b 落地的路由级加固）：未过管理员角色
+// 检查的调用方在参数校验之前就拿到 403，invalid user id / method not allowed
+// 等校验细节只对已授权主体可见。
 func TestHandleUsersPasswordRoute_RejectsInvalidUserID(t *testing.T) {
 	h := &Handler{}
 	req := httptest.NewRequest(http.MethodPut, "/api/users/not-a-number/password", strings.NewReader(`{"password":"ValidPass123"}`))
@@ -61,8 +64,21 @@ func TestHandleUsersPasswordRoute_RejectsInvalidUserID(t *testing.T) {
 
 	h.handleUsers(rec, req)
 
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for unauthenticated caller, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "administrator role required") {
+		t.Fatalf("expected administrator role error, got %s", rec.Body.String())
+	}
+
+	authed := httptest.NewRequest(http.MethodPut, "/api/users/not-a-number/password", strings.NewReader(`{"password":"ValidPass123"}`))
+	authed = SetAuthContext(authed, &AuthContext{UserID: 1, Username: "root", Role: "super_admin", IsJWT: true})
+	rec = httptest.NewRecorder()
+
+	h.handleUsers(rec, authed)
+
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 400 for authorized caller, got %d body=%s", rec.Code, rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), "invalid user id") {
 		t.Fatalf("expected invalid user id error, got %s", rec.Body.String())
@@ -76,8 +92,21 @@ func TestHandleUsersPasswordRoute_RejectsNonPUT(t *testing.T) {
 
 	h.handleUsers(rec, req)
 
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for unauthenticated caller, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "administrator role required") {
+		t.Fatalf("expected administrator role error, got %s", rec.Body.String())
+	}
+
+	authed := httptest.NewRequest(http.MethodPost, "/api/users/12/password", strings.NewReader(`{"password":"ValidPass123"}`))
+	authed = SetAuthContext(authed, &AuthContext{UserID: 1, Username: "root", Role: "super_admin", IsJWT: true})
+	rec = httptest.NewRecorder()
+
+	h.handleUsers(rec, authed)
+
 	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("expected 405, got %d body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 405 for authorized caller, got %d body=%s", rec.Code, rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), "method not allowed") {
 		t.Fatalf("expected method not allowed error, got %s", rec.Body.String())

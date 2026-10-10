@@ -819,6 +819,15 @@ var credentialRoutingScope847 []byte
 //go:embed embeddata/startup/848_billing_unit_and_audio_seconds.sql
 var billingUnitAndAudioSeconds848 []byte
 
+//go:embed embeddata/startup/849_session_turns_req_status_backfill_cover_idx.sql
+var sessionTurnsReqStatusBackfillCoverIdx849 []byte
+
+//go:embed embeddata/startup/850_session_summaries_project_backfill_recent_idx.sql
+var sessionSummariesProjectBackfillRecentIdx850 []byte
+
+//go:embed embeddata/startup/851_disable_overbroad_pii_ip_address_rule.sql
+var disableOverbroadPiiIpAddressRule851 []byte
+
 //go:embed embeddata/startup/829_bodies_columnar_rollback.sql
 var bodiesColumnarRollback829 []byte
 
@@ -1078,6 +1087,9 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/846_session_turns_req_status_backfill_idx.sql":                          sessionTurnsReqStatusBackfillIdx846,
 	"startup/847_credential_routing_scope.sql":                                       credentialRoutingScope847,
 	"startup/848_billing_unit_and_audio_seconds.sql":                                 billingUnitAndAudioSeconds848,
+	"startup/849_session_turns_req_status_backfill_cover_idx.sql":                    sessionTurnsReqStatusBackfillCoverIdx849,
+	"startup/850_session_summaries_project_backfill_recent_idx.sql":                  sessionSummariesProjectBackfillRecentIdx850,
+	"startup/851_disable_overbroad_pii_ip_address_rule.sql":                          disableOverbroadPiiIpAddressRule851,
 	"startup/829_bodies_columnar_rollback.sql":                                       bodiesColumnarRollback829,
 	"startup/835_modality_verify_probe_ledger.sql":                                   modalityVerifyProbeLedger835,
 	"startup/834_supplier_errors_base_tables.sql":                                    supplierErrorsBaseTables834,
