@@ -1170,3 +1170,42 @@ ERROR http_request POST /v1/chat/completions status=503 duration_ms=168124
 
 **未擅自重启**：共享生产 Redis 容器的启停属基础设施决策，且重启涉及
 会话/限流/配额等易失状态，需运维侧确认。
+
+### 十六之二、252 上的进一步定位：容器不是「停了」，是「不存在」（16:12）
+
+补查 252，结论比第十六节更具体，且改变了处置方式：
+
+```
+podman container exists llm-gateway-redis   → rc=1  (3s)   容器不存在
+podman ps                                    → rc=124 (30s)  挂起
+```
+
+- **`llm-gateway-redis` 容器不存在**，不是 exited。`podman container exists`
+  3 秒返回 rc=1（未找到），说明不是 podman 全面卡死，而是**该容器已被移除**。
+- 因此**不能靠 `docker start llm-gateway-redis` 恢复** —— 那只对「exited」
+  状态有效。需要**重新拉起/重新 provision**。
+- 在 252 上 `grep -rl 6389 /root /opt /etc/systemd/system /home` **无命中**，
+  即容器定义（compose 文件 / systemd unit / 启动脚本）已不在这些路径下。
+  恢复所需的编排定义来源需要运维侧提供。
+
+运行时背景：252 的 `docker` 是 podman 兼容垫片
+（`/var/run/docker.sock -> /run/podman/podman.sock`），无 `docker.service`，
+`podman system service`（pid 224507，已跑约 7.2h）活着，其余容器
+（pms-mysql / veritrans-* / netbird-*，conmon 存活约 79 天）都正常。
+即**不是整机或运行时整体故障，是这一个容器消失了**。
+
+附带异常：`podman ps` 挂起 >30s，而 `podman container exists` 3s 返回，
+两者路径不一致，建议运维顺带查一下 podman 的 sqlite DB 锁 / storage 状态
+（`/var/lib/containers/storage`）。
+
+### 处置口径（未执行）
+
+1. **立即**：运维确认 `llm-gateway-redis` 的编排定义来源并重新拉起，
+   端口仍需映射到 **6389**（网关两台的 `LLM_GATEWAY_REDIS_ADDR` 指向
+   `172.16.2.210:6389`）。
+2. **起来即自愈**：Redis 一恢复，两台 sanitize 随即可用，`ready` 回 true，
+   无需重部署（与 15:40 PG 恢复后一致）。
+3. **顺带**：查 `podman ps` 挂起与容器为何被移除（是否有清理任务/定时器误删）。
+
+> 本会话未对 252 做任何写操作：重建共享生产 Redis 容器涉及持久化数据
+> 与业务连续性，属运维决策。
