@@ -704,10 +704,14 @@ ok  …/executors/webcookie  ok  …/integrity     ok  …/state
 两处 `gofmt -l` 命中（`input_protocols.go`、`deployment_pattern_config_test.go`）
 经核对是 **origin/main 上就已存在**的格式问题，非本轮引入，未擅自改动。
 
-### 245 部署：被环境前置条件挡住，未完成
+### ~~245 部署：被环境前置条件挡住，未完成~~ → 已在本节之后完成
 
-245 当前跑 `build_seq 2512 / 786de4a1`，`/healthz` 返回 `ready:true`（本次尝试
-未改变它）。`scripts/deploy-245.sh --dry-run` 正常，但真正执行连续失败：
+> **本小节结论已作废。** 当时的判断「本机不满足 deploy 侧前置条件、需用户装
+> bash 4+」是**不完整的**：bash 3.2 确实是障碍，但它是可以绕开而不必安装任何
+> 东西的。下面先保留当时的错误结论与实测证据，随后在「十一」节记录解除阻塞
+> 与两台机器实际部署完成的全过程。
+
+当时的实测（保留作为问题定义）：
 
 ```
 1) scripts/deploy-245.sh:75: ARGS[@]: unbound variable
@@ -716,28 +720,11 @@ ok  …/executors/webcookie  ok  …/integrity     ok  …/state
 ```
 
 根因：**deploy-lib SSOT 使用 bash 4+ 语法**（`${var^^}` 大写展开、
-`${!var}` 间接引用、空数组在 `set -u` 下的展开），
-而本机只有 macOS 自带的 **bash 3.2.57**，`/opt/homebrew/bin/bash`
-与 `/usr/local/bin/bash` 均不存在。
+空数组在 `set -u` 下的展开、`declare -A`），而本机只有 macOS 自带的
+**bash 3.2.57**，`/opt/homebrew/bin/bash` 与 `/usr/local/bin/bash` 均不存在。
 
-仓库对此并不陌生：`scripts/checks/` 里有专门的门
-（`install-entrypoints-test.sh`、`user-scripts-sync-test.sh`）要求**用户脚本**
-兼容 bash 3.2；但 `deploy-lib` 是仓外 SSOT，它面向的是 bash 4+ 环境。
-两者不冲突，只是**本机不满足 deploy 侧的前置条件**。
-
-按 AGENTS.md「依赖安装属用户侧决策」，本轮**未擅自 brew install bash**。
-
-### 需要用户侧提供（二选一或其一）
-
-1. 安装 bash 4+（`brew install bash`），然后重跑：
-   ```bash
-   export AIAN_DEPLOY_LIB="$HOME/workspace/ai-native-tools/deploy-lib"
-   bash scripts/deploy-245.sh --seq 2515
-   ```
-2. 或在已具备 bash 4+ 的机器/会话上执行同一条命令。
-
-验证判据：`curl -fsS http://<245>:8781/healthz` 的 `build_seq` 变为 2515、
-`git_sha` 变为 `869c04bf2`。
+仓库对此并不陌生：`scripts/checks/` 里有专门的门要求**用户脚本**兼容 bash 3.2；
+但 `deploy-lib` 是仓外 SSOT，它面向的是 bash 4+ 环境。
 
 ### 补记：154 已由并行会话升级到 2515
 
@@ -750,3 +737,122 @@ sizes[:12] = [28,16,17,10,11,12,6,2,3,10,3,3]
 ```
 
 **结论不变**：2515 上网关侧依然没有单字分片，「单字一行」不是网关产生的。
+
+## 十一、解除 bash 3.2 阻塞，245 与 154 部署完成（11:36–11:58）
+
+第十节的「需用户装 bash 4+」结论作废。本轮**未安装任何东西**，
+用只读复制 + 就地修补的方式绕开了 SSOT，把两台机器都部署到位。
+
+### 十一之一、绕开 SSOT：拷贝到 /tmp 再改，不动共享状态
+
+`deploy-lib` 是跨仓共享 SSOT（git 仓、工作区干净）。直接改它会影响其他仓与
+其他会话，因此本轮**不在 SSOT 上落任何改动**：
+
+```bash
+cp -R ~/workspace/ai-native-tools/deploy-lib /tmp/deploy-lib-b32
+export AIAN_DEPLOY_LIB=/tmp/deploy-lib-b32   # deploy-lib-resolve.sh 第 1 优先级，caller wins
+```
+
+`scripts/deploy-lib-resolve.sh` 的解析顺序把 `$AIAN_DEPLOY_LIB` 放在第 1 位
+且「caller wins, never clobbered」，所以指向副本是受支持的用法，不是 hack。
+
+bash 4+ 构造一共只有 5 处，全部替换为 bash 3.2 等价写法：
+
+| 文件 | 原写法 | 替换 |
+|---|---|---|
+| `host.sh:69,103` | `HOST_${target^^}_ROOT` | `tr` 大写 |
+| `targets.sh:119,300` | `SSH_KEY_${target^^}` | `tr` 大写 |
+| `ssh-retry.sh:223` | `"${arr[@]}"`（`set -u` 下空数组） | `"${arr[@]+"${arr[@]}"}"` |
+| `db-changelog.sh:230` | `declare -A applied` | 线性成员扫描 |
+| `db-changelog.sh:268` | `local -A seen` | 两组平行数组 |
+
+语义等价性都做了实证，不只靠 `bash -n`（后者查不出变量先用后赋）：
+
+- `host_root_for 245` / `host_release_layout 245` / `_ssh_key_for 245` /
+  `_ssh_host_for 245` / `target_unsupported_contract` 全部正常返回；
+  `SSH_KEY_BOGUS-HOST` 说明 `tr` 与 `^^` 对非数字输入行为一致。
+- 迁移成员判定：`411→PENDING / 412→applied / 500→applied / 501→PENDING`，
+  空数组在 `set -u` 下不炸。
+- 版本冲突门：唯一版本放行；`849_first.sql + 849_second.sql` 被拒且报错行
+  `version 849: 849_first.sql, 849_second.sql` 仍指向**首个**文件，与原实现一致。
+
+> 第一次补丁把 `_t_upper` 赋值写在了使用点之后，是 `bash -n` 放行、
+> 运行时报 `unbound variable` 才暴露的——这也是为什么坚持跑函数级冒烟。
+
+### 十一之二、仓库内三个真修复（均已提交）
+
+1. **`558953c52` deploy-245/154 空 ARGS 在 bash 3.2 下 unbound**
+   `deploy-245.sh:44` 早就有 `${#ARGS[@]} > 0` 守卫，但只护住了 `--help` /
+   `--dry-run` 两个分支，漏掉末尾 `exec bash ... "${ARGS[@]}"`；154 入口完全没有
+   守卫。改为 `"${ARGS[@]+"${ARGS[@]}"}"`。
+
+2. **`d44a29f77` web-mobile 补 package-lock.json**
+   `web-mobile/` 是仓内唯一没有 lockfile 的前端子项目，部署脚本因此退回非冻结
+   `npm install`，在 npm 10.9.9 上稳定崩在 arborist：
+   `Cannot read properties of null (reading 'edgesOut')` @ `#loadPeerSet`
+   （解析 `vitest@^4.1.11` 的 peer 集合时）。补 lockfile 后部署走 `npm ci` 冻结
+   安装，不再触发 ideal-tree 的 peer 解析。
+
+3. **`e3e2b4ef` 迁移 849 补 `SET LOCAL statement_timeout`**
+   245 部署实录（seq 2517）：
+
+   ```
+   psql:.../849_..._cover_idx.sql:50: ERROR:  canceling statement due to statement timeout
+   ```
+
+   根因是 252 共享 PG 的 `statement_timeout=30s`，而本迁移是 6 分区父表上的普通
+   `CREATE INDEX`（分区父表拒绝 CONCURRENTLY，R46/843/846 先例），持 ShareLock
+   为 ~79.3 万 NULL 行建索引。**该文件自己的 Background 段已经写明要配套
+   `SET LOCAL` 抬升，只是 up.sql 从未落地。** 按 649/834/836/837 同一先例系
+   钉 `10min`。
+   改动安全性：849 在 245 与 154（共享 252 PG）均**未**进 `schema_migrations`、
+   索引也不存在（两处实测 `count=0`），属纯 pending 迁移，就地修正不产生
+   已应用迁移漂移。
+
+### 十一之三、另外两个非代码障碍
+
+- **build_seq 回退风险**：本机 floor 停在 2510，而 245 跑 2512、154 跑 2515。
+  直接部署会把 2512 覆盖成 2511（回退）。已把 floor 抬到 2515（全局最大已部署值），
+  之后按 `max(version.json, floor)+1` 递增，最终落到 2518/2519，全程单调。
+- **Go 不在 PATH**：工具链其实**已装**在 `~/sdk/go/bin/go`（go1.27.1，与
+  `go.mod` 的 `go 1.27.1` 完全一致，`vendor/` 齐备），只是没进 PATH。
+  `export PATH="$HOME/sdk/go/bin:$PATH"` 即可——这是**使用**既有工具链，
+  不是安装，不触犯 AGENTS.md「依赖安装属用户侧决策」。
+  预检 `go build ./...` 23s 通过。
+
+- **stale 部署锁**：首次执行撞上 `/var/lib/llm-gateway-go/deploy.lock`（rc=75）。
+  读取 `metadata` 确认持有者是**另一个会话**（`commit=869c04bf2`，
+  `started_at=2026-10-10T03:33:12Z`），本机 `pid 76002` 已不存在、无任何
+  deploy 进程在跑，且该会话在 session list 里是 `idle`——判定为崩溃残留的
+  **陈旧锁**，才使用文档化的 `--force` 恢复。没有猜测性地强杀。
+
+### 十一之四、部署结果（两台都成功）
+
+```
+245  seq=2518 sha=e3e2b4ef  active_port=8782  总 275s / 切换 61s
+     old=2512-786de4a1 → new=2518-e3e2b4ef
+     迁移 849 + 850 新应用（849 的 BEGIN/SET/CREATE INDEX/COMMIT 四步全过）
+     healthz + readyz + DB + release identity + 凭据解密冒烟 全通过
+     /healthz → {"build_seq":2518,"git_sha":"e3e2b4ef","ready":true}
+
+154  seq=2519 sha=a0fdaaa5  active_port=8781  总 237s / 切换 119s
+     old=2515-7dd0b4b67 → new=2519-a0fdaaa5
+     无 pending startup 迁移（849/850 已由 245 那轮落到共享 252 PG）
+     healthz + readyz + DB + release identity + 凭据解密冒烟 全通过
+     /healthz → {"build_seq":2519,"git_sha":"a0fdaaa5","ready":true}
+```
+
+两次 handoff 都远超 2s 阈值（61s / 119s），脚本按设计**保留旧实例用于回滚**、
+不停止旧服务；2517/2515 两个未验证 release 已被 prune。
+
+> 注意端口轮换：245 的 active 端口现在是 **8782**（8781 已 drain），
+> 154 是 **8781**。写监控/探针时不要写死 245:8781。
+
+### 十一之五、本轮没有改变的结论
+
+「minimax-m3 首个请求单字一行」**仍未定位到网关侧成因**，本次两台部署不涉及
+该症状的任何代码路径。第十节的取证结论继续成立：网关侧单字率 1.5%（220/14378），
+真实会话原样回放 0 单字，2515 上复验 17 分片 0 单字。
+
+要把这个症状真正关掉，仍缺第十节列的客户端侧证据——ZCode/agent 客户端实际
+收到的原始 SSE 字节，或确认该客户端是否把每帧当一行渲染、是否自建掩码层。
