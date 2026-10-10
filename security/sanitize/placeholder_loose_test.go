@@ -184,7 +184,9 @@ func TestRestoreOutputOrMaskDoesNotFabricate(t *testing.T) {
 		t.Run("mask/"+forged, func(t *testing.T) {
 			got, err := s.RestoreOutputOrMask(context.Background(), forged, sm)
 			require.NoError(t, err)
-			assert.Equal(t, redactedMarker, got)
+			// Each forged span has its own type, so the marker is typed. Assert
+			// the shape and the absence of the secret rather than one literal.
+			assert.Regexp(t, `^\[REDACTED(:[a-z_]+)?\]$`, got)
 			assert.NotContains(t, got, "s3cr3t")
 		})
 	}
@@ -387,7 +389,7 @@ func TestPeerPassthroughWithoutOwnMap(t *testing.T) {
 	got, err := s.RestoreOutputOrMask(ctx,
 		"host {SENSITIVE:internal_ip:1} pwd {sensitive:secret:01} forged {SENSITIVE:secret:9}", SanitizeMap{})
 	require.NoError(t, err)
-	assert.Equal(t, "host {SENSITIVE:internal_ip:1} pwd {sensitive:secret:01} forged [REDACTED]", got,
+	assert.Equal(t, "host {SENSITIVE:internal_ip:1} pwd {sensitive:secret:01} forged "+RedactionMarker(TypeSecret), got,
 		"peer markers come back verbatim; anything else is still masked")
 
 	// The same holds for the non-masking mode, which must not invent a value.

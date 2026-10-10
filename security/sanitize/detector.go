@@ -24,6 +24,55 @@ type Detector interface {
 	Name() string
 }
 
+// DetectionScope selects which rules a Detect call is allowed to match.
+//
+// The split exists because "should this byte be replaced before the request
+// leaves the gateway" and "could this address be an exfiltration target" are
+// different questions with different answers, and 2026-10-10 forced them
+// apart. Address-shaped text (http_proxy=http://127.0.0.1:7890, deploy
+// commands against 10.x, k8s service DNS) is ordinary operational context:
+// masking it turns a correct, copy-pasteable command into a broken one, and
+// the user-visible loss is paid on every request to gain nothing. Excluding
+// addresses from redaction is therefore the default, and it is what
+// ScopeRedact means.
+//
+// Public routable addresses appearing in model-generated tool arguments are a
+// genuinely different risk: there the address is a *destination* the model
+// chose, and blocking it is the only thing standing between a session and a
+// data exfiltration path (audit 154 / r1008). ScopeEgress keeps that rule
+// while ScopeRedact drops it, so widening the redaction scope never silently
+// widens the egress surface, and narrowing it never silently disarms the
+// guard.
+type DetectionScope int
+
+const (
+	// ScopeRedact is the default scope: everything except address-shaped
+	// rules. Used by input sanitization and output text redaction.
+	ScopeRedact DetectionScope = iota
+	// ScopeEgress additionally matches address rules. Used only by the
+	// tool-argument egress guard.
+	ScopeEgress
+)
+
+// scopedType reports whether a fragment type belongs to the address family
+// that ScopeRedact excludes. Kept as a type check rather than a per-entry
+// flag so a YAML-loaded rule (server_ip / server_ipv6 / internal_ip) is
+// classified identically to the built-in fallback — the production detector
+// and the fallback must not drift apart on this decision.
+func scopedType(typ SensitiveType) bool {
+	switch typ {
+	case TypeServerIP, TypeInternalIP, typeServerIPv6:
+		return true
+	}
+	return false
+}
+
+// typeServerIPv6 mirrors the `server_ipv6` YAML rule name. It is not a
+// SensitiveType constant because an IPv6 literal can never allocate a
+// placeholder (it is excluded from ScopeRedact), so no token is ever minted
+// with this type — but the config loader still needs to name it.
+const typeServerIPv6 SensitiveType = "server_ipv6"
+
 // patternEntry 内部模式条目
 type patternEntry struct {
 	sType SensitiveType
@@ -53,7 +102,15 @@ func NewPatternDetector() *PatternDetector {
 
 func (d *PatternDetector) Name() string { return "pattern" }
 
-func (d *PatternDetector) Detect(_ context.Context, text string) ([]SensitiveFragment, error) {
+// Detect runs the redaction scope: address-shaped rules are excluded.
+func (d *PatternDetector) Detect(ctx context.Context, text string) ([]SensitiveFragment, error) {
+	return d.DetectScope(ctx, text, ScopeRedact)
+}
+
+// DetectScope runs the detector under an explicit scope. ScopeRedact is what
+// Detect does; ScopeEgress additionally matches address rules and is reserved
+// for the tool-argument egress guard.
+func (d *PatternDetector) DetectScope(_ context.Context, text string, scope DetectionScope) ([]SensitiveFragment, error) {
 	if d == nil {
 		return nil, nil
 	}
@@ -65,6 +122,9 @@ func (d *PatternDetector) Detect(_ context.Context, text string) ([]SensitiveFra
 	reserved := PlaceholderPattern.FindAllStringIndex(text, -1)
 
 	for _, p := range patterns {
+		if scope == ScopeRedact && scopedType(p.sType) {
+			continue
+		}
 		matches := p.regex.FindAllStringSubmatchIndex(text, -1)
 		for _, m := range matches {
 			start, end := m[2*p.group], m[2*p.group+1]

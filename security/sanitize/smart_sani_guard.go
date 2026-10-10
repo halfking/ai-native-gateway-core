@@ -1373,7 +1373,10 @@ func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Conte
 	if partial {
 		candidate := combined[start:]
 		if len(candidate) > maxPlaceholderTailBytes {
-			safe = combined[:start] + "[REDACTED]"
+			// Over-length tail: the marker never completed, so no type was ever
+			// parsed out of it. Bare marker — naming a type here would be a
+			// guess about bytes nobody resolved.
+			safe = combined[:start] + redactedMarker
 		} else {
 			safe = combined[:start]
 			tail = candidate

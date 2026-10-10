@@ -173,14 +173,21 @@ func maskDegenerateMarkerSpans(ctx context.Context, text string) (string, bool) 
 		// secret bytes and the hop that issued it still holds the mapping. A span
 		// that does not parse is a degenerate echo, not a foreign marker, so it
 		// keeps being masked.
-		if parsed, ok := ParsePlaceholder(span); ok && foreign.isForeignPlaceholder(parsed.Type, parsed.Index) {
+		parsed, parses := ParsePlaceholder(span)
+		if parses && foreign.isForeignPlaceholder(parsed.Type, parsed.Index) {
 			b.WriteString(text[:start])
 			b.WriteString(span)
 			text = text[start+end+1:]
 			continue
 		}
 		b.WriteString(text[:start])
-		b.WriteString("[REDACTED]")
+		// A parseable span keeps its type in the mask; a degenerate one has no
+		// type to report and falls back to the bare marker.
+		if parses {
+			b.WriteString(RedactionMarker(parsed.Type))
+		} else {
+			b.WriteString(redactedMarker)
+		}
 		text = text[start+end+1:]
 	}
 }
