@@ -480,31 +480,47 @@ func (c *Checker) getPolicy(ctx context.Context, tenantID string) (*Policy, erro
 
 func defaultPolicy(tenantID string) *Policy {
 	return &Policy{
-		TenantID:                             tenantID,
-		Enabled:                              true,
-		EnforcementMode:                      "observe",
-		PIIEngine:                            "regex",
-		ToxicityEngine:                       "keyword",
-		CheckPII:                             true,
-		CheckToxicity:                        true,
-		CheckBias:                            false,
-		CheckHallucination:                   false,
-		CheckSecrets:                         true,
-		CheckInternalIP:                      true,
-		CheckJailbreakResponse:               false,
-		CheckInstructionInjectionResponse:    false,
-		PIIThreshold:                         0.7,
-		ToxicityThreshold:                    0.7,
-		BiasThreshold:                        0.6,
-		HallucinationThreshold:               0.7,
-		SecretsThreshold:                     0.7,
-		InternalIPThreshold:                  0.7,
-		ActionOnPII:                          "redact",
-		ActionOnToxicity:                     "warn",
-		ActionOnBias:                         "log",
-		ActionOnHallucination:                "log",
-		ActionOnSecrets:                      "redact",
-		ActionOnInternalIP:                   "redact",
+		TenantID:                          tenantID,
+		Enabled:                           true,
+		EnforcementMode:                   "observe",
+		PIIEngine:                         "regex",
+		ToxicityEngine:                    "keyword",
+		CheckPII:                          true,
+		CheckToxicity:                     true,
+		CheckBias:                         false,
+		CheckHallucination:                false,
+		CheckSecrets:                      true,
+		CheckInternalIP:                   true,
+		CheckJailbreakResponse:            false,
+		CheckInstructionInjectionResponse: false,
+		PIIThreshold:                      0.7,
+		ToxicityThreshold:                 0.7,
+		BiasThreshold:                     0.6,
+		HallucinationThreshold:            0.7,
+		SecretsThreshold:                  0.7,
+		InternalIPThreshold:               0.7,
+		ActionOnPII:                       "redact",
+		ActionOnToxicity:                  "warn",
+		ActionOnBias:                      "log",
+		ActionOnHallucination:             "log",
+		ActionOnSecrets:                   "redact",
+		// 2026-10-10: redact -> log. detectInternalIP still fires and still
+		// records the hit (compliance stats, review queue, audit rows are
+		// unchanged) — only the client-visible rewrite stops.
+		//
+		// RFC1918 addresses are operational context, not secrets: masking
+		// `10.24.7.91:5432` turns a correct, copy-pasteable deploy command into
+		// a broken one, and the loss is paid on every response to protect
+		// nothing. The exfiltration risk that genuinely justifies acting on an
+		// address is model-authored tool arguments naming a routable
+		// destination, and that is enforced separately and fail-closed by
+		// security/sanitize's ScopeEgress egress guard (audit 154 / r1008).
+		//
+		// Keeping detection while dropping redaction is deliberate: the hit is
+		// still visible in the audit trail, so this narrows user-visible damage
+		// without weakening observability. Operators who want the old masking
+		// back set action_on_internal_ip = 'redact' per tenant.
+		ActionOnInternalIP:                   "log",
 		ActionOnJailbreakResponse:            "block",
 		ActionOnInstructionInjectionResponse: "block",
 		AutoRedact:                           true,
