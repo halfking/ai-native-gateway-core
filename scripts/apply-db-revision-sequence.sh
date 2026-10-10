@@ -591,6 +591,17 @@ files=(
   # durable_llm_tasks 直接 42P01。516 全语句幂等（20 处 IF [NOT] EXISTS /
   # DROP POLICY IF EXISTS），登记在 722 之前兜底建表；中间形态库上零变化。
   "$ROOT_DIR/sql/migrations/startup/516_durable_llm_tasks.sql"
+  # 2026-10-11 R36 五点登记补漏：517_handoff_pending_confirmations。h36
+  # 引入的「半确认 handoff 中间表」在原始交付时漏登记到本脚本（仅做了
+  # installer 五点同步 + 通道腿登记的另一支），h39 才补通道；本机 schema 快照
+  # 不含该表，导致 722/738/815 的列族视图与 handoff_logs FK 引用悬空。
+  # 全语句 IF NOT EXISTS 幂等；handoff_logs 在 534 已建。
+  "$ROOT_DIR/sql/migrations/startup/517_handoff_pending_confirmations.sql"
+  # 2026-10-11 R36 五点登记补漏：547_session_project_attribution。
+  # session_dim 在 407 已建，session_project_attribution 通过 IF NOT EXISTS
+  # 幂等补建（项目归属打点用）。原交付漏登记，host-first 部署走 schema 快照
+  # + 已登记迁移时直接缺失。
+  "$ROOT_DIR/sql/migrations/startup/547_session_project_attribution.sql"
   "$ROOT_DIR/sql/migrations/startup/722_durable_family_schema_convergence.sql"
   # 2026-09-18 R40 审计（新迁移登记）：723 RLS Phase1#3 空 RLS 补 ENABLE——
   # attachments / candidate_failure_logs_columnar_old 两表 policy 已在且词汇
