@@ -245,7 +245,10 @@ func TestNonStreamReSpelledForgedMarkerStillMasks(t *testing.T) {
 		} `json:"choices"`
 	}
 	require.NoError(t, json.Unmarshal(result.ModifiedBody, &got))
-	require.Equal(t, "a p@ss w0rd b [REDACTED]", got.Choices[0].Message.Content)
+	// The tolerant stage masks a re-spelled marker through the loose path,
+	// which normalizes the span but has no exact-type parse to name — so this
+	// one keeps the bare marker. The exact stage is what carries the type.
+	require.Equal(t, "a p@ss w0rd b "+redactedMarker, got.Choices[0].Message.Content)
 	assert.NotContains(t, string(result.ModifiedBody), "SENSITIVE")
 }
 

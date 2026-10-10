@@ -7,13 +7,14 @@ import type { ComponentPublicInstance } from 'vue'
 import { useHyperPage } from '@/hyper'
 import { fetchHealthz, type HealthzInfo } from '@/api/system'
 import { fetchBoard, type BoardPayload } from '@/api/board'
+import { fetchJourneyQueues, isDegraded as journeyIsDegraded } from '@/api/requestJourney'
 import { t } from '@/i18n'
 import PullRefreshContainer from '@/components/common/PullRefreshContainer.vue'
 import AppStateView from '@/components/common/AppStateView.vue'
 import StatCard from '@/components/common/StatCard.vue'
 import Sparkline from '@/components/common/Sparkline.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
-import { fmtInt, fmtNum, fmtUsd, relativeTime } from '@/utils/format'
+import { fmtInt, fmtNum, fmtTime, fmtUsd, relativeTime } from '@/utils/format'
 
 const pullRef = ref<ComponentPublicInstance<{ rootRef: HTMLElement | null }> | null>(null)
 
@@ -28,6 +29,10 @@ const initialLoading = ref(true)
 const loadError = ref<string | null>(null)
 const lastRefreshFailed = ref(false)
 const healthzFailed = ref(false)
+const liveQueue = ref<{ pending?: number; in_flight?: number; completed?: number } | null>(null)
+const queueDegraded = ref(false)
+const queueFailed = ref(false)
+const queueUpdatedAt = ref<string | null>(null)
 
 /**
  * 2026-10-06：补 AbortSignal。
@@ -42,7 +47,26 @@ const healthzFailed = ref(false)
  * ② 卸载时 abort（17 §7 单飞 + 卸载清理，与 UsageView / RequestLogsView 同一套）。
  */
 let aborter: AbortController | null = null
+let queueAborter: AbortController | null = null
+let queueTimer: number | null = null
 let disposed = false
+
+async function loadLiveQueue(): Promise<void> {
+  queueAborter?.abort()
+  queueAborter = new AbortController()
+  const signal = queueAborter.signal
+  try {
+    const response = await fetchJourneyQueues({ view: 'total' }, { signal })
+    if (signal.aborted || disposed) return
+    liveQueue.value = response.total_snapshot ?? {}
+    queueDegraded.value = journeyIsDegraded(response)
+    queueFailed.value = false
+    queueUpdatedAt.value = new Date().toISOString()
+  } catch {
+    if (signal.aborted || disposed) return
+    queueFailed.value = true
+  }
+}
 
 async function loadAll(): Promise<void> {
   aborter?.abort()
@@ -62,7 +86,7 @@ async function loadAll(): Promise<void> {
 async function refresh(): Promise<void> {
   lastRefreshFailed.value = false
   try {
-    await loadAll()
+    await Promise.all([loadAll(), loadLiveQueue()])
   } catch {
     lastRefreshFailed.value = true
   }
@@ -70,12 +94,17 @@ async function refresh(): Promise<void> {
 
 onMounted(async () => {
   await loadAll()
-  if (!disposed) initialLoading.value = false
+  if (disposed) return
+  initialLoading.value = false
+  void loadLiveQueue()
+  queueTimer = window.setInterval(() => void loadLiveQueue(), 10_000)
 })
 
 onBeforeUnmount(() => {
   disposed = true
   aborter?.abort()
+  queueAborter?.abort()
+  if (queueTimer !== null) window.clearInterval(queueTimer)
 })
 
 const summary = computed(() => board.value?.summary)
@@ -114,6 +143,22 @@ const creditsMissing = computed(() => !!summary.value?.credits_missing_view)
             </div>
             <div v-else-if="healthzFailed" class="home__meta">{{ t('common.error') }}</div>
           </div>
+
+          <RouterLink to="/journey" class="data-card home__queue" :aria-label="t('home.openQueue')">
+            <div class="card-row">
+              <strong>{{ t('home.queueTitle') }}</strong>
+              <span v-if="queueFailed" class="badge badge--warning">{{ t('home.queueUnavailable') }}</span>
+              <span v-else-if="queueDegraded" class="badge badge--warning">{{ t('home.queueDegraded') }}</span>
+              <span v-else class="home__queue-refresh">{{ t('home.queueRefresh') }}</span>
+            </div>
+            <div v-if="liveQueue" class="home__queue-stats">
+              <span><strong>{{ fmtInt(liveQueue.pending) }}</strong>{{ t('home.queuePending') }}</span>
+              <span><strong>{{ fmtInt(liveQueue.in_flight) }}</strong>{{ t('home.queueInFlight') }}</span>
+              <span><strong>{{ fmtInt(liveQueue.completed) }}</strong>{{ t('home.queueCompleted') }}</span>
+            </div>
+            <small v-if="queueUpdatedAt" class="home__queue-updated">{{ t('home.queueUpdated') }} · {{ fmtTime(queueUpdatedAt) }}</small>
+            <p v-else class="home__queue-refresh">{{ queueFailed ? t('home.queueUnavailable') : t('common.loading') }}</p>
+          </RouterLink>
 
           <!-- 后台任务 chips -->
           <div v-if="discovery || probeLoop" class="home__chips">
@@ -222,6 +267,13 @@ const creditsMissing = computed(() => !!summary.value?.credits_missing_view)
   color: var(--app-warning);
   margin-bottom: var(--app-space-2);
 }
+
+.home__queue { display: block; padding: var(--app-space-3); color: var(--app-text); text-decoration: none; }
+.home__queue-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--app-space-2); margin-top: var(--app-space-3); }
+.home__queue-stats span { display: flex; min-width: 0; flex-direction: column; gap: 2px; color: var(--app-text-muted); font-size: 0.75rem; }
+.home__queue-stats strong { color: var(--app-text); font-size: 1.25rem; }
+.home__queue-refresh { color: var(--app-text-muted); font-size: 0.75rem; }
+.home__queue-updated { display: block; margin-top: var(--app-space-2); color: var(--app-text-muted); font-size: 0.6875rem; }
 
 .home__status-label {
   display: inline-flex;

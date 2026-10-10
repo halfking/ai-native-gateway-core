@@ -23,7 +23,10 @@ func TestPatternDetector_Detect(t *testing.T) {
 		{"no PII", "今天天气真好", 0},
 		{"empty", "", 0},
 		{"secret key", "API key is sk-abcdef1234567890abcdef12", 1},
-		{"internal IP RFC1918", "内网地址192.168.1.1", 1},
+		// 2026-10-10: addresses are out of the redaction scope. Detect() runs
+		// ScopeRedact; TestPatternDetector_ScopeSplit covers the egress scope
+		// that still matches them.
+		{"internal IP RFC1918", "内网地址192.168.1.1", 0},
 	}
 
 	for _, tt := range tests {

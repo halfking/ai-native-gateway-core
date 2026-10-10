@@ -45,6 +45,14 @@ bash tests/deploy_timeout_portability_test.sh
 # 已认领的槽位、维护库探活（应用库还没建时也要认领）、以及自动安装先于 docker 失败。
 echo "[verify] deploy host-first resource contracts"
 bash tests/deploy_host_first_contract_test.sh
+# 2026-10-10：252 上 pg17-disk-watch.sh 堆到 310 份副本、149 个僵死
+# `docker exec ... psql`，把 15G 内存吃到 swap 100% / load 300，PG 因此
+# 无法服务 154 网关（SQLSTATE 57P03、一小时 194 个 HTTP 503）。
+# 根因是本目录巡检**普遍**缺单实例闸门与查询超时，属于会再次发生的形态，
+# 因此单挂这道零外部依赖的聚焦门防同类回归（静态部分任何 runner 都能跑，
+# 行为部分需要 flock，在 Linux 上才执行）。
+echo "[verify] 252-monitor single-instance gate contracts"
+bash tests/monitor_single_instance_gate_test.sh
 
 echo "[verify] pre-commit checks"
 ./scripts/pre-commit-check.sh

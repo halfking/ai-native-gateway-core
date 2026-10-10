@@ -1373,7 +1373,10 @@ func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Conte
 	if partial {
 		candidate := combined[start:]
 		if len(candidate) > maxPlaceholderTailBytes {
-			safe = combined[:start] + "[REDACTED]"
+			// Over-length tail: the marker never completed, so no type was ever
+			// parsed out of it. Bare marker — naming a type here would be a
+			// guess about bytes nobody resolved.
+			safe = combined[:start] + redactedMarker
 		} else {
 			safe = combined[:start]
 			tail = candidate
@@ -1409,6 +1412,24 @@ func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Conte
 	if encodeFailed {
 		return false, true
 	}
+	// 2026-10-10: the guard used to be `restored == combined`, which only fires
+	// when restoreText leaves the text untouched. When a buffered marker prefix
+	// is completed by garbage, restoreText masks the marker word and returns
+	// something different — "{" + "[REDACTED]" + the continuation — so the
+	// guard never ran and the half-masked token plus the continuation reached
+	// the client.
+	//
+	// The distinguishing signal is that restoreText had to MASK: a marker that
+	// resolves to a real value comes back with that value and no redacted
+	// marker. So the extra condition is "the restore pass produced a redaction
+	// while completing a reserved prefix". Checking for that alone (rather
+	// than "the text changed") is what keeps the normal split-across-chunks
+	// restore working — that path resolves and must pass through untouched.
+	if previous != "" && tail == "" && reservedMarkerStarted(previous) &&
+		strings.Contains(restored, redactedMarker) {
+		object[field] = redactedMarker
+		return true, false
+	}
 	if previous != "" && tail == "" && restored == combined {
 		// The continuation made the buffered prefix syntactically invalid. A
 		// plain brace prefix is common in streamed JSON/code, so release it with
@@ -1439,13 +1460,54 @@ func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Conte
 // incompletePlaceholderStart finds a valid prefix of the placeholder grammar
 // at the end of text. Invalid brace text is ordinary model output and passes
 // through; a full placeholder is handled by RestoreOutputOrMask.
+//
+// 2026-10-10: a streamed delta can also open a marker with '(' — observed on
+// minimax-m3, which rewrote `{SENSITIVE:…}` as `(SENSITIVE:` and split it
+// across chunks. The old '{'-only scan missed that fragment, released it to
+// the client, and the continuation ("phone:1}") then arrived with nothing to
+// rejoin — so an internal token reached the client mid-marker. '{' is still
+// tried first because it is the canonical spelling.
 func incompletePlaceholderStart(text string) (int, bool) {
+	if start, ok := braceMarkerStart(text); ok {
+		return start, true
+	}
+	return parenMarkerStart(text)
+}
+
+// braceMarkerStart keeps the original contract: a '{' whose tail the loose
+// grammar accepts as an arriving (never completed) marker.
+func braceMarkerStart(text string) (int, bool) {
 	start := strings.LastIndexByte(text, '{')
 	if start < 0 {
 		return 0, false
 	}
-	candidate := text[start:]
-	if !validPlaceholderPrefix(candidate) {
+	if !validPlaceholderPrefix(text[start:]) {
+		return 0, false
+	}
+	return start, true
+}
+
+// parenMarkerStart handles the re-spelled opening bracket. It cannot reuse
+// validPlaceholderPrefix (which requires a '{'), so it admits a fragment only
+// when the text right after '(' starts the marker word or is a still-arriving
+// prefix of it. That keeps ordinary prose such as "hello (world" from being
+// buffered while still holding "(SENS" until its continuation lands.
+func parenMarkerStart(text string) (int, bool) {
+	start := strings.LastIndexByte(text, '(')
+	if start < 0 {
+		return 0, false
+	}
+	rest := text[start+1:]
+	if rest == "" {
+		// "(" at the very end with nothing after it yet: too early to tell a
+		// re-spelled marker from ordinary prose. Hold nothing — the next
+		// delta re-evaluates the combined text anyway.
+		return 0, false
+	}
+	if len(rest) > len(placeholderMarkerWord) {
+		rest = rest[:len(placeholderMarkerWord)]
+	}
+	if !strings.HasPrefix(placeholderMarkerWord, normalizePlaceholder(rest)) {
 		return 0, false
 	}
 	return start, true
@@ -1537,6 +1599,52 @@ func (it *SanitizeRestoreInterceptor) loadMap(ctx context.Context, sessionID str
 	_ = it.redis.Expire(ctx, sanitizeOffsetKey(tenant, sessionID), it.ttl).Err()
 	_ = it.redis.Expire(ctx, sanitizeGenerationKey(tenant, sessionID), it.ttl).Err()
 	return sm, nil
+}
+
+// SessionValues 返回本会话映射表里的全部原值，供输出侧判定「这段文本是网关
+// 刚还原回去的调用方原值」而用（2026-10-10）。
+//
+// 背景：响应链顺序是 强制守卫 → 占位符还原 → 输出合规。输出合规排在还原
+// 之后，看到的文本里混着模型写的值和刚被换回来的调用方原值，却分不出来，
+// 于是把后者也单向遮成星号——用户自己发来的 IP 刚被还原出来就被压成
+// `*********`，而且没有任何映射能把它换回去。
+//
+// 返回全集（而不是本轮实际命中的那几个 token 的值）是刻意的保守：命中判定
+// 是「整段文本相等」，全集只可能多豁免掉「模型恰好复述了调用方自己某个值」
+// 的片段，而那本来就是调用方自己的数据，回给它不构成新的信息泄漏。
+func (it *SanitizeRestoreInterceptor) SessionValues(ctx context.Context, sessionID string, tenantIDs ...string) ([]string, error) {
+	if it == nil || sessionID == "" {
+		return nil, nil
+	}
+	// 优先用 ctx 里那份：输入中间件在请求入口就把**整本会话字典**挂进了
+	// r.Context()（见 Wrap 里的 WithSanitizeMap），响应侧的 ctx 正是它的后代。
+	// 命中这里就完全不碰 Redis——否则每个响应会为同一份映射表多付一次往返，
+	// 而它挂在输出合规这条热路径上。ctx 没有（降级部署、后台上下文）时才
+	// 回落到 Redis 读。
+	//
+	// 这条路径同时更准：ctx 里那份就是**本次请求**的字典，Redis 那份可能是
+	// 更晚的代次（loadMap 自己会用 generation 守卫挡掉）。
+	if local, ok := SanitizeMapFromContext(ctx); ok && len(local) > 0 {
+		return sanitizeMapValues(local), nil
+	}
+	sm, err := it.loadMap(ctx, sessionID, tenantIDs...)
+	if err != nil {
+		return nil, err
+	}
+	if len(sm) == 0 {
+		return nil, nil
+	}
+	return sanitizeMapValues(sm), nil
+}
+
+func sanitizeMapValues(sm SanitizeMap) []string {
+	values := make([]string, 0, len(sm))
+	for _, value := range sm {
+		if value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
 }
 
 // validatePlaceholders 验证响应中的占位符是否都在映射表中。

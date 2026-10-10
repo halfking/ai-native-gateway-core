@@ -53,6 +53,23 @@ func (d *DB) ensureSessionSummariesCanonical(ctx context.Context) error {
 			"(run sql/migrations/startup/655_session_summaries_schema_reconcile.sql to restore)")
 		return nil
 	}
+	// 2026-10-11（245 build_seq 2530 部署现场取证）：形状已完全到位时，整条
+	// reconcile 仍然会对 session_summaries 申请 **ACCESS EXCLUSIVE**——
+	// `ADD COLUMN IF NOT EXISTS` 逐列 no-op 也一样要锁，而共享库上持续有
+	// 写流（2026-10-10 252 SQL 日志审计第 31 轮量化的 gauge / backfill 扫描）。
+	// 实测候选槽连续三轮都卡在这条 ALTER 上：00:03:26 → 00:06:27 才因
+	// `context deadline exceeded` 失败，boot 重试又撞同一堵墙，healthz 起不来，
+	// 部署安全网只能回滚。日志逐字归因：本 ensure 之前的三条（847/848/704）都
+	// 打了 "catalog short-circuit"，唯独这条没有。
+	//
+	// 与 credentials / request_logs 的既有修法同构（db.go:columnsAllPresent）：
+	// 形状齐全就零 DDL 直返。守卫覆盖列、索引、约束与 user_intent 的 widen，
+	// 任一不满足即回落到原 ensure 路径——那条路径自含幂等，缺什么补什么。
+	if d.sessionSummariesCanonicalComplete(ctx) {
+		slog.Info("session_summaries canonical schema ensured " +
+			"(catalog short-circuit: all columns/indexes/constraints present, zero DDL)")
+		return nil
+	}
 	_, err := d.pool.Exec(ctx, `
 		-- 先确保 tenant_id 存在（memora 最小 shape 可能缺失）
 		ALTER TABLE public.session_summaries

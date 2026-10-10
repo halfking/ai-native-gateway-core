@@ -78,6 +78,10 @@ func (h *ProviderCostReconciliationHandler) handleImportBill(w http.ResponseWrit
 		writeError(w, http.StatusBadRequest, "provider_id is required")
 		return
 	}
+	if req.InputTokens < 0 || req.OutputTokens < 0 || req.TotalTokens < 0 || req.TotalCost < 0 {
+		writeError(w, http.StatusBadRequest, "bill tokens and cost must be nonnegative")
+		return
+	}
 	month, err := time.Parse("2006-01", req.Month)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "month must be in YYYY-MM format")

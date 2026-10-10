@@ -25,11 +25,28 @@ type RedactOwnerContextFunc func(sessionID, tenantID string) (callerOwner, dataO
 // 参数：
 //   - checker: 必须非 nil，用于检测和脱敏。
 //   - ownerFn: 可为 nil，为 nil 时 caller/data owner 均视为空（保守脱敏）。
+//   - restoredValues: 可为 nil。提供「本次会话已还原值」的来源（2026-10-10）。
+//     为 nil 时行为与旧版一致。
 //
 // 返回：
 //   - func(body []byte, sessionID, tenantID string) []byte
 //     输入完整 OpenAI response JSON，返回脱敏后 JSON。失败时返回原 body（降级保守）。
-func BuildRedactBodyFn(checker *outputcompliance.Checker, ownerFn RedactOwnerContextFunc) func([]byte, string, string) []byte {
+//
+// 为什么 write-time 路径也需要豁免（2026-10-10）
+//
+// 这条路径是**最后一米**：它直接改 w.Write 之前的客户端可见字节，跑在占位符
+// 还原**之后**。因此它看到的文本里同样混着模型写的值和网关刚换回来的调用方
+// 原值，而这里用的是 context.Background()（注释里写明「write-time 无请求
+// 上下文」），豁免集合根本到不了检查器。
+//
+// 结果是：拦截器已经放行的调用方原值，在这里仍会被压成 `[REDACTED:...]` 或
+// 星号串。两条路径幂等互补不等于其中一条可以破坏另一条的判断——这条离客户端
+// 最近，破坏发生在这里就无从挽回。
+func BuildRedactBodyFn(
+	checker *outputcompliance.Checker,
+	ownerFn RedactOwnerContextFunc,
+	restoredValues func(ctx context.Context, sessionID, tenantID string) ([]string, error),
+) func([]byte, string, string) []byte {
 	if checker == nil {
 		return nil
 	}
@@ -50,8 +67,17 @@ func BuildRedactBodyFn(checker *outputcompliance.Checker, ownerFn RedactOwnerCon
 			return body
 		}
 
-		// 3. 检测 PII/敏感（context.Background 因 write-time 无请求上下文）
+		// 3. 检测 PII/敏感（write-time 无请求上下文，故从 Background 起挂豁免集合）
 		ctx := context.Background()
+		if restoredValues != nil && sessionID != "" {
+			// 解析失败退回旧行为（照遮），不阻断响应：豁免是保护措施不是闸门。
+			if values, err := restoredValues(ctx, sessionID, tenantID); err == nil {
+				ctx = outputcompliance.WithRestoredValues(ctx, outputcompliance.NewRestoredValues(values))
+			} else {
+				slog.Warn("redact_body: restored-value lookup failed; masking as before",
+					"error", err, "session_id", sessionID)
+			}
+		}
 		result, err := checker.Check(ctx, tenantID, output)
 		if err != nil || result == nil || len(result.Issues) == 0 {
 			return body

@@ -143,7 +143,7 @@ func ModuleSpecs() []*Spec {
 			Category:        CategoryModules,
 			Default:         true,
 			Description:     "自动脱敏",
-			DescriptionLong: "自动脱敏命中的敏感内容（匹配项替换为 [REDACTED]）。",
+			DescriptionLong: "自动脱敏命中的敏感内容（匹配项替换为 [REDACTED:类型]，标明被遮蔽的类别）。地址类文本（IP、端口、主机名）不在脱敏范围内。",
 			DangerLevel:     Warning,
 			HotReload:       true,
 		},

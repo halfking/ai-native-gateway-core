@@ -54,6 +54,9 @@ func (h *Handler) handleUserUsageSummary(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	if !requireUserManager(w, r) {
+		return
+	}
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "db not available")
 		return
@@ -72,27 +75,29 @@ func (h *Handler) handleUserUsageSummary(w http.ResponseWriter, r *http.Request)
 	args := []any{days}
 	if IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
 		tenantID := GetTenantID(r)
-		if tenantID != "" && tenantID != "default" {
-			where = " AND f.tenant_id = $2"
-			args = append(args, tenantID)
+		if tenantID == "" {
+			writeError(w, http.StatusForbidden, "tenant scope unavailable")
+			return
 		}
+		where = " AND f.tenant_id = $2"
+		args = append(args, tenantID)
 	}
 
 	rows, err := h.db.Query(ctx, `
 		SELECT agg.owner, agg.requests, agg.tokens, agg.credits, agg.last_active
 		FROM (
-			SELECT k.owner_user AS owner,
+			SELECT k.owner_user AS owner, k.tenant_id AS tenant,
 			       COUNT(*)::bigint AS requests,
 			       COALESCE(SUM(f.total_tokens), 0)::bigint AS tokens,
 			       COALESCE(SUM(f.credits_charged), 0)::bigint AS credits,
 			       MAX(f.occurred_at) AS last_active
 			FROM usage_facts f
-			JOIN api_keys k ON k.id = f.api_key_id
+			JOIN api_keys k ON k.id = f.api_key_id AND k.tenant_id = f.tenant_id
 			WHERE f.occurred_at >= now() - ($1 * INTERVAL '1 day')
 			  AND COALESCE(k.owner_user, '') <> ''`+where+`
-			GROUP BY 1
+			GROUP BY 1, 2
 		) agg
-		JOIN users u ON u.username = agg.owner
+		JOIN users u ON u.username = agg.owner AND u.tenant_id = agg.tenant
 		ORDER BY agg.requests DESC
 	`, args...)
 	if err != nil {
@@ -105,7 +110,8 @@ func (h *Handler) handleUserUsageSummary(w http.ResponseWriter, r *http.Request)
 	for rows.Next() {
 		var row userUsageRow
 		if err := rows.Scan(&row.OwnerUser, &row.Requests, &row.Tokens, &row.Credits, &row.LastActive); err != nil {
-			continue
+			writeInternalErr(w, "usage summary scan failed", err)
+			return
 		}
 		resp.Items = append(resp.Items, row)
 	}
@@ -120,6 +126,7 @@ func (h *Handler) handleUserUsageSummary(w http.ResponseWriter, r *http.Request)
 type userStatsKpi struct {
 	Requests     int64   `json:"requests"`
 	Tokens       int64   `json:"tokens"`
+	CostUSD      float64 `json:"cost_usd"`
 	Credits      int64   `json:"credits"`
 	Errors       int64   `json:"errors"`
 	ErrorRate    float64 `json:"error_rate"`
@@ -137,6 +144,7 @@ type userStatsBucket struct {
 
 // userStatsRecentRequest — 最近请求行（ttft=首字延迟，latency=总耗时）。
 type userStatsRecentRequest struct {
+	RequestID    string    `json:"request_id"`
 	Ts           time.Time `json:"ts"`
 	Model        string    `json:"model"`
 	FirstChunkMs *int64    `json:"first_chunk_ms"`
@@ -167,6 +175,9 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request, id int
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	if !requireUserManager(w, r) {
+		return
+	}
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "db not available")
 		return
@@ -179,12 +190,22 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request, id int
 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
+	tx, err := h.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		writeInternalErr(w, "begin user stats snapshot", err)
+		return
+	}
+	defer func() {
+		rollbackCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = tx.Rollback(rollbackCtx)
+	}()
 
 	// 解析用户 + 权限（tenant_admin 只能看本租户用户）。
 	// 仅 ErrNoRows 映射 404；基础设施错误（DB 不可达/超时）走 500，
 	// 不与「用户不存在」混淆（R36-A2 审计修复，先例 analytics.go R46 F9）。
 	var username, tenantID string
-	err := h.db.QueryRow(ctx, `SELECT username, tenant_id FROM users WHERE id = $1`, id).Scan(&username, &tenantID)
+	err = tx.QueryRow(ctx, `SELECT username, tenant_id FROM users WHERE id = $1`, id).Scan(&username, &tenantID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
@@ -196,7 +217,11 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request, id int
 	}
 	if IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
 		myTenant := GetTenantID(r)
-		if myTenant != "" && myTenant != "default" && myTenant != tenantID {
+		if myTenant == "" {
+			writeError(w, http.StatusForbidden, "tenant scope unavailable")
+			return
+		}
+		if myTenant != tenantID {
 			// 跨租户目标与不存在统一 404 掩蔽（R36-A4，对齐兄弟实现
 			// requireSessionTaskAccess 的口径）：先 403 会构成跨租户用户
 			// ID 存在性 oracle。
@@ -214,28 +239,30 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request, id int
 		TopKeys:   []userStatsBucket{},
 		Recent:    []userStatsRecentRequest{},
 	}
-	// 密钥数是抽屉上的导航计数，失败不把整份画像打成 500。
-	if err := h.db.QueryRow(ctx,
+	// Only complete statistics are returned. Failed queries must not look like zero usage.
+	if err := tx.QueryRow(ctx,
 		`SELECT COUNT(*) FROM api_keys WHERE owner_user = $1 AND tenant_id = $2`,
 		username, tenantID).Scan(&resp.KeyCount); err != nil {
-		slog.Warn("user_stats: key count failed", "user_id", id, "err", err)
+		writeInternalErr(w, "key count query failed", err)
+		return
 	}
 
 	// 事实行统一过滤片：该账号名下密钥 + 租户 + 窗口。
-	const factFilter = ` f.api_key_id IN (SELECT id FROM api_keys WHERE owner_user = $1)
+	const factFilter = ` f.api_key_id IN (SELECT id FROM api_keys WHERE owner_user = $1 AND tenant_id = $2)
 		AND f.tenant_id = $2 AND f.occurred_at >= now() - ($3 * INTERVAL '1 day')`
 
 	// KPI（单行聚合；窗口内无事实行时全部零值）。Scan 错误（超时/连接）
 	// 必须 500，绝不静默降级成「该用户无用量」。
-	if err := h.db.QueryRow(ctx, `
+	if err := tx.QueryRow(ctx, `
 		SELECT COUNT(*)::bigint,
 		       COALESCE(SUM(f.total_tokens), 0)::bigint,
 		       COALESCE(SUM(f.credits_charged), 0)::bigint,
 		       COUNT(*) FILTER (WHERE f.status <> 'success')::bigint,
-		       COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY f.latency_ms), 0)::bigint
+		       percentile_cont(0.95) WITHIN GROUP (ORDER BY f.latency_ms) FILTER (WHERE f.latency_ms > 0)::bigint,
+		       COALESCE(SUM(f.cost_amount), 0)::float8
 		FROM usage_facts f
 		WHERE `+factFilter, username, tenantID, days).Scan(
-		&resp.Kpi.Requests, &resp.Kpi.Tokens, &resp.Kpi.Credits, &resp.Kpi.Errors, &resp.Kpi.LatencyP95Ms); err != nil {
+		&resp.Kpi.Requests, &resp.Kpi.Tokens, &resp.Kpi.Credits, &resp.Kpi.Errors, &resp.Kpi.LatencyP95Ms, &resp.Kpi.CostUSD); err != nil {
 		writeInternalErr(w, "kpi query failed", err)
 		return
 	}
@@ -247,10 +274,10 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request, id int
 	// Asia/Shanghai（R36-A3）：与 usage_facts 日分区边界（迁移 750/751）及
 	// 租户统计 daily 同口径；不随会话时区漂移（UTC 服务器上否则与分区
 	// 归属差最多 8h）。对账页保持显式 UTC 日（结算口径，有意分叉）。
-	if dailyRows, derr := h.db.Query(ctx, `
+	if dailyRows, derr := tx.Query(ctx, `
 		WITH days AS (
 			SELECT generate_series(
-				date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') - (($3::int - 1) * INTERVAL '1 day'),
+				date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') - ($3::int * INTERVAL '1 day'),
 				date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai'),
 				INTERVAL '1 day')::date AS d
 		), agg AS (
@@ -273,9 +300,12 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request, id int
 	`, username, tenantID, days); derr == nil {
 		for dailyRows.Next() {
 			var d tenantDailyStat
-			if serr := dailyRows.Scan(&d.Date, &d.Requests, &d.Success, &d.Errors, &d.Tokens, &d.Credits, &d.Cost); serr == nil {
-				resp.Daily = append(resp.Daily, d)
+			if serr := dailyRows.Scan(&d.Date, &d.Requests, &d.Success, &d.Errors, &d.Tokens, &d.Credits, &d.Cost); serr != nil {
+				dailyRows.Close()
+				writeInternalErr(w, "daily scan failed", serr)
+				return
 			}
+			resp.Daily = append(resp.Daily, d)
 		}
 		if rowsErr := dailyRows.Err(); rowsErr != nil {
 			dailyRows.Close()
@@ -283,6 +313,9 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request, id int
 			return
 		}
 		dailyRows.Close()
+	} else {
+		writeInternalErr(w, "daily query failed", derr)
+		return
 	}
 
 	// Top 模型 / 应用 / 密钥（各 5 行）。
@@ -321,31 +354,32 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request, id int
 			GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 5`},
 	}
 	for _, bq := range bucketQueries {
-		// 桶查询失败/中断只降级该桶（fail-open），但必须留日志并可感知
-		// rows.Err()——15s ctx 中途超时会把截断的 Top 列表当完整数据
-		// 返回（R36-A2 审计修复）。
-		bRows, berr := h.db.Query(ctx, bq.sql, username, tenantID, days)
+		// Reject failed or truncated buckets rather than returning an empty success.
+		bRows, berr := tx.Query(ctx, bq.sql, username, tenantID, days)
 		if berr != nil {
-			slog.Warn("user_stats: bucket query failed", "user_id", id, "err", berr)
-			continue
+			writeInternalErr(w, "bucket query failed", berr)
+			return
 		}
 		for bRows.Next() {
 			var b userStatsBucket
 			if serr := bRows.Scan(&b.Name, &b.Requests, &b.Tokens, &b.Credits, &b.CostUSD); serr != nil {
-				slog.Warn("user_stats: bucket scan failed", "user_id", id, "err", serr)
-				continue
+				bRows.Close()
+				writeInternalErr(w, "bucket scan failed", serr)
+				return
 			}
 			*bq.target = append(*bq.target, b)
 		}
 		if rerr := bRows.Err(); rerr != nil {
-			slog.Warn("user_stats: bucket rows aborted", "user_id", id, "err", rerr)
+			bRows.Close()
+			writeInternalErr(w, "bucket rows aborted", rerr)
+			return
 		}
 		bRows.Close()
 	}
 
 	// 最近请求（10 行，窗口内）。
-	rRows, rerr := h.db.Query(ctx, `
-		SELECT f.occurred_at,
+	rRows, rerr := tx.Query(ctx, `
+		SELECT COALESCE(f.request_id, ''), f.occurred_at,
 		       COALESCE(NULLIF(f.raw_model_name, ''), '-'),
 		       f.ttft_ms, f.latency_ms,
 		       COALESCE(f.credits_charged, 0),
@@ -354,24 +388,32 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request, id int
 		WHERE `+factFilter+`
 		ORDER BY f.occurred_at DESC LIMIT 10
 	`, username, tenantID, days)
-	// 同上：失败/中断降级留日志，不把截断列表当完整数据（R36-A2）。
+	// A failed recent request list invalidates the response.
 	if rerr != nil {
-		slog.Warn("user_stats: recent query failed", "user_id", id, "err", rerr)
+		writeInternalErr(w, "recent query failed", rerr)
+		return
 	} else {
 		for rRows.Next() {
 			var rr userStatsRecentRequest
-			if serr := rRows.Scan(&rr.Ts, &rr.Model, &rr.FirstChunkMs, &rr.TotalMs, &rr.Credits, &rr.Status); serr != nil {
-				slog.Warn("user_stats: recent scan failed", "user_id", id, "err", serr)
-				continue
+			if serr := rRows.Scan(&rr.RequestID, &rr.Ts, &rr.Model, &rr.FirstChunkMs, &rr.TotalMs, &rr.Credits, &rr.Status); serr != nil {
+				rRows.Close()
+				writeInternalErr(w, "recent scan failed", serr)
+				return
 			}
 			resp.Recent = append(resp.Recent, rr)
 		}
 		if rerr2 := rRows.Err(); rerr2 != nil {
-			slog.Warn("user_stats: recent rows aborted", "user_id", id, "err", rerr2)
+			rRows.Close()
+			writeInternalErr(w, "recent rows aborted", rerr2)
+			return
 		}
 		rRows.Close()
 	}
 
+	if err := tx.Commit(ctx); err != nil {
+		writeInternalErr(w, "commit user stats snapshot", err)
+		return
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 

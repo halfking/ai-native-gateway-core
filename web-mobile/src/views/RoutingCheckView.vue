@@ -38,6 +38,7 @@ import {
 import { ApiError } from '@/api/client'
 import { t } from '@/i18n'
 import AppIcon from '@/components/common/AppIcon.vue'
+import MobileModelPicker from '@/components/model/MobileModelPicker.vue'
 
 useHyperPage({ title: () => t('routing.title') })
 
@@ -241,6 +242,7 @@ function submitOnEnter(ev: KeyboardEvent): void {
         :disabled="loading"
         @keydown="submitOnEnter"
       />
+      <MobileModelPicker v-model="model" />
       <button type="button" class="btn btn--primary routing__go" :disabled="!canQuery" @click="run">
         {{ loading ? t('common.loading') : t('routing.check') }}
       </button>

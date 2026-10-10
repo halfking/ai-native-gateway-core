@@ -267,6 +267,13 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureBillingUnitAndAudioSeconds(migCtx); err != nil {
 		return err
 	}
+	// 2026-10-10 migration 851: 停用过宽的 pii_patterns.ip_address 规则。
+	// 该规则把每个 IPv4 在输出侧单向遮成 `*********`，且遮蔽发生在占位符还原
+	// 之后、不可还原。文件此前从未登记进安装器 StartupFiles，自愈是第二道
+	// 保险：无论这台库是全新安装、目录扫描部署还是历史遗留，重启即收敛。
+	if err := db.ensurePIIIPAddressRuleDisabled(migCtx); err != nil {
+		return err
+	}
 	// 2026-09-17 (087 自愈): provider_templates 健康反馈三列。freediscovery
 	// 扫描调度器的失败计数/自动禁用分支每周期读写，缺列即 42703 空转。
 	if err := db.ensureFreediscoveryTemplateHealth(migCtx); err != nil {
@@ -3088,6 +3095,54 @@ func (d *DB) ensureCredentialRoutingScope(ctx context.Context) error {
 		return err
 	}
 	slog.Info("credential routing_scope schema ensured (migration 847)")
+	return nil
+}
+
+// ensurePIIIPAddressRuleDisabled mirrors
+// sql/migrations/startup/851_disable_overbroad_pii_ip_address_rule.sql.
+//
+// 2026-10-10 补登。851 此前只以文件形式躺在 sql/migrations/startup/ 里：
+// 部署脚本的目录扫描会捡到它，但**安装器只跑 StartupFiles**，而 851 从未被
+// 登记进去。于是每台全新安装的机器上，316 幂等播种的 pii_patterns.ip_address
+// 规则都仍然是 enabled=true。
+//
+// 这条规则把每一个 IPv4（环回、RFC1918、公网，连版本号一起）都当成 PII，
+// 在**输出侧**单向遮成 `*********`。而响应链的顺序是
+//
+//	mandatory 输出守卫 → 占位符还原 → 输出合规（cmd/gateway/goal_control.go）
+//
+// 输出合规排在还原**之后**，所以模型回显的地址刚被还原成原文，就被压成星号，
+// 而且没有任何映射能把它换回来——客户端拿到的是坏掉的运维命令、坏掉的工具
+// 参数（代码执行路径同样走这条链）。
+//
+// 与 851 等价：幂等 UPDATE，不删行（316 的幂等重放会把删掉的行重新种回来，
+// UPDATE 不会），成功即 stamp，使安装器台账与实际状态一致。
+// 表不存在说明 316 没装过，属另一种缺失形态，不在这里把启动打成失败。
+func (d *DB) ensurePIIIPAddressRuleDisabled(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	var exists bool
+	if err := d.pool.QueryRow(ctx,
+		`SELECT to_regclass('public.pii_patterns') IS NOT NULL`).Scan(&exists); err != nil {
+		return fmt.Errorf("probe pii_patterns state: %w", err)
+	}
+	if !exists {
+		return nil
+	}
+	if _, err := d.pool.Exec(ctx, `
+		UPDATE public.pii_patterns
+		   SET enabled = false
+		 WHERE pattern_name = 'ip_address'
+		   AND enabled IS DISTINCT FROM false;
+
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('851', 'disable overbroad pii_patterns.ip_address rule (address-shaped text is operational context, not a secret)')
+		ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+	`); err != nil {
+		return err
+	}
+	slog.Info("pii_patterns.ip_address rule disabled (migration 851)")
 	return nil
 }
 

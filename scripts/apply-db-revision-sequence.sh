@@ -1194,6 +1194,38 @@ files=(
   # 的两个 cache 列——实测视图不能引用不存在的列（42703），而全仓没有任何迁移
   # 建过它们（398 只是 SELECT 过，不建列）。
   "$ROOT_DIR/sql/migrations/startup/844_supplier_view_cache_baseline_columns.sql"
+
+  # 2026-10-11（845-851 补登通道腿，本仓审计轮）：这七条此前只做了 installer
+  # 五点同步（8429b1524 补 845-848；e47c1102b 落 851），通道腿整段漏登——
+  # apply-db-revision-sequence_test.sh 八连红（[1] 最高编号守卫 + [2]-[8]
+  # installer-leg-no-upgrade-path）。按 842 先例补登：部署扫描腿本就会按
+  # 目录+台账投递它们，登记是元数据补全（顺序/重放/归属的显式记录），
+  # 不是新增投递。全部幂等（IF NOT EXISTS / UPDATE...WHERE），可重放。
+  # 845：stats 事件 dedup JOIN 补索引。
+  "$ROOT_DIR/sql/migrations/startup/845_stats_event_dedup_join_index.sql"
+  # 846：session_turns (id) 部分索引 WHERE request_status IS NULL——分区父表
+  # 不能 CONCURRENTLY（R46/843 先例），普通 CREATE INDEX，ShareLock 随部署窗口。
+  "$ROOT_DIR/sql/migrations/startup/846_session_turns_req_status_backfill_idx.sql"
+  # 847（multimedia）：credentials 加 routing_scope（all|text_only|media_only），
+  # 多模态路由隔离的候选闸。
+  "$ROOT_DIR/sql/migrations/startup/847_credential_routing_scope.sql"
+  # 848（multimedia）：billing_unit（token|image|audio_second）与 audio_second
+  # 计费列骨架。
+  "$ROOT_DIR/sql/migrations/startup/848_billing_unit_and_audio_seconds.sql"
+  # 849：session_turns (request_id) 覆盖式部分索引，remaining-count gauge 的
+  # t 侧走 index-only；文件自带 BEGIN / SET LOCAL statement_timeout='10min' /
+  # COMMIT 防部署期 57014（e3e2b4ef5）。通道按 psql -f 逐文件执行，与
+  # 836/837 同形，有先例。
+  "$ROOT_DIR/sql/migrations/startup/849_session_turns_req_status_backfill_cover_idx.sql"
+  # 850：session_summaries (created_at, session_key) 部分索引 WHERE
+  # gw_project_id IS NULL，project_backfill 候选捞取 48h 滚动窗的索引腿，
+  # 消除每日 ~6,700s 的「证明无事」空扫。
+  "$ROOT_DIR/sql/migrations/startup/850_session_summaries_project_backfill_recent_idx.sql"
+  # 851：停用 316 播种的 pii_patterns.ip_address 规则（UPDATE...WHERE 按行名，
+  # 幂等）。升级库上 316 早已应用，通道投递有意义；全新安装走安装器通道时
+  # pii_patterns 只有空表（316 不在 StartupFiles，是刻意的），兜底是
+  # db.go 的 ensurePIIIPAddressRuleDisabled（重启即收敛）。
+  "$ROOT_DIR/sql/migrations/startup/851_disable_overbroad_pii_ip_address_rule.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的

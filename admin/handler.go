@@ -179,7 +179,10 @@ type Handler struct {
 	// diff 查询). nil (default) keeps the endpoints unregistered —
 	// flag-off behavior is identical to main.
 	providerCostReconciliationHandler *ProviderCostReconciliationHandler
-	peakCollector                     interface {
+	// mobileNodeDescriptor signs short-lived node QR payloads for the native
+	// client; the signed endpoint remains super-admin-only.
+	mobileNodeDescriptor *MobileNodeDescriptorService
+	peakCollector        interface {
 		Acquire(credID int64, model string)
 		Release(credID int64, model string)
 		Stats() map[string]interface{}
@@ -588,6 +591,14 @@ func (h *Handler) SetProviderCostReconciliationHandler(hh *ProviderCostReconcili
 	h.providerCostReconciliationHandler = hh
 }
 
+// SetMobileNodeDescriptorService enables signed gateway QR provisioning.
+func (h *Handler) SetMobileNodeDescriptorService(service *MobileNodeDescriptorService) {
+	if service != nil && service.netbird != nil {
+		service.netbird.lock = netBirdDatabaseLock(h.db)
+	}
+	h.mobileNodeDescriptor = service
+}
+
 // SetSessionManager (2026-07-06) wires the session.Manager for the
 // /api/admin/sessions/* endpoints. Pass nil to disable.
 func (h *Handler) SetSessionManager(m *session.Manager) {
@@ -902,6 +913,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Public routes (no Bearer admin key)
 	mux.HandleFunc("/api/auth/token", h.handleLogin)
 	mux.HandleFunc("/api/auth/logout", h.handleLogout)
+	// 登录图形验证码签发（2026-10-10）。公开端点 —— 它必须能在未登录时取到，
+	// 否则「登录失败 N 次后才要验证码」的路径就自相矛盾了（用户拿不到验证码，
+	// 也就永远无法登录）。
+	mux.HandleFunc("/api/auth/captcha", h.handleCaptcha)
 	mux.HandleFunc("/api/system/version", h.handleSystemVersion)    // Public endpoint for frontend version display
 	mux.HandleFunc("/api/system/client-error", h.handleClientError) // Frontend error reporting (public, rate-limited)
 	// JWT-authenticated routes (JWT or admin key)
@@ -928,6 +943,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/model-integrity/", h.superAdmin(h.handleModelIntegrity))
 	mux.HandleFunc("/api/admin/tenants", h.superAdmin(h.handleTenants))
 	mux.HandleFunc("/api/admin/tenants/", h.superAdmin(h.handleTenants))
+	mux.HandleFunc("/api/admin/mobile-node/descriptor", h.superAdmin(h.handleMobileNodeDescriptor))
 	mux.HandleFunc("/api/users/", admin(h.handleUsers))
 	mux.HandleFunc("/api/routing/resolve", admin(h.handleRoutingResolve))
 	mux.HandleFunc("/api/routing/overview", admin(h.handleRoutingOverview))

@@ -45,12 +45,22 @@ pii:
       regex: '(?i)(?:account|username|user_name|login|帐号|账号|账户|用户名)["'']?\s*[:=：]\s*("(?:\\.|[^"\\])*"|''[^'']*''|(?:\{SENSITIVE:[a-z_]+:[0-9]+\}|[^\s"'',;，；<>{}\]]+)+)'
       group: 1
       description: "带标签的登录帐号"
+    # 2026-10-10: server_ip / server_ipv6 不再进入脱敏范围。
+    #
+    # 地址类文本（http_proxy=http://127.0.0.1:7890、host: 10.24.7.91、
+    # k8s service DNS、部署目标）是运维上下文而不是机密：把它脱敏只会把一条
+    # 正确的、可直接复制执行的命令变成坏命令，代价由每一个请求承担，而收益
+    # 为零。security/sanitize 的 ScopeRedact 因此不匹配这两条规则。
+    #
+    # 它们仍被载入——不是遗漏，是给输出侧的防外传守卫（ScopeEgress）用的：
+    # 模型生成的 tool 参数里出现公网地址时，那是一个"外传目的地"而不是普通
+    # 文本，仍然硬阻断（见 security/sanitize/output_sensitive.go）。
     server_ip:
       regex: '\b(?:\d{1,3}\.){3}\d{1,3}\b'
-      description: "公网及内网服务器 IPv4，解析验证有效地址"
+      description: "公网及内网服务器 IPv4 —— 仅供 ScopeEgress 防外传守卫，不参与脱敏"
     server_ipv6:
       regex: '(?:[0-9A-Fa-f]{0,4}:){2,}[0-9A-Fa-f:.]*(?:%[A-Za-z0-9_.-]+)?'
-      description: "服务器 IPv6，解析验证有效地址"
+      description: "服务器 IPv6 —— 仅供 ScopeEgress 防外传守卫，不参与脱敏"
 
   keywords:
     - "身份证"
@@ -75,11 +85,16 @@ secret:
   enabled: true
   patterns:
     # API Key 格式
+    # 2026-10-10: audit 244 F2 —— 键体放开中缀连字符，修 sk-proj- / sk-ant- /
+    # sk-or-v1- 三家真实格式的系统性漏检（明文密钥会直接进上游并落库）。
+    # 这里只描述「形状」：sk/ak- 前缀 + 连字符分段。16 位长度下限与「键体含数字」
+    # 这两条是整串属性，RE2 无法用前瞻断言表达（Go regexp 直接报错），由
+    # security/sanitize 的 credibleSecretCandidate 统一后置过滤 —— 内置 fallback
+    # 与本文件共用同一个过滤器，两份规则因此不会各自漂移。
     api_key:
-      regex: '\b(sk|key|token|api|bearer)[-_]?[A-Za-z0-9]{16,}\b'
+      regex: '\b(?:sk|ak|key|token|api|bearer)[-_]?[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*\b'
       confidence: 0.9
-      description: "API密钥"
-      
+      description: "API密钥"      
     # 密码字段
     password:
       regex: '(?i)(?:password|passwd|pwd|secret|token|api_key|apikey|access_key|authorization|密码|口令)["'']?\s*[:=：]\s*("(?:\\.|[^"\\])*"|''[^'']*''|(?:\{SENSITIVE:[a-z_]+:[0-9]+\}|[^\s"'',;，；<>{}\]]+)+)'

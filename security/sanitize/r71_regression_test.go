@@ -382,7 +382,7 @@ func TestInterceptNonStream_UnrecognizedEnvelopeNeverLeaksMarker(t *testing.T) {
 			if name != "forged marker" {
 				require.Contains(t, out, "13800138000", "known placeholder should be restored: %s", out)
 			} else {
-				require.Contains(t, out, "[REDACTED]", "unknown placeholder must be redacted: %s", out)
+				require.Contains(t, out, RedactionMarker(TypePhone), "unknown placeholder must be redacted: %s", out)
 			}
 		})
 	}

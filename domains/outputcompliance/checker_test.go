@@ -1,6 +1,7 @@
 package outputcompliance
 
 import (
+	"context"
 	"testing"
 )
 
@@ -76,7 +77,7 @@ func TestRedactOutputSkipsException(t *testing.T) {
 	issues := []ComplianceIssue{
 		{Type: "secret", Location: "char:8-29", Content: "************************", ExceptionMatched: true},
 	}
-	got := c.redactOutput(output, issues, policy)
+	got := c.redactOutput(context.Background(), output, issues, policy)
 	if got != output {
 		t.Errorf("exception-matched issue should not be redacted; got %q", got)
 	}
@@ -87,10 +88,10 @@ func TestRedactOutputSecret(t *testing.T) {
 	policy := &Policy{AutoRedact: true, ActionOnSecrets: "redact"}
 	output := "key is sk-abcd1234abcd1234"
 	issues := []ComplianceIssue{
-		{Type: "secret", Location: "char:7-26", Content: "*******************"},
+		{Type: "secret", Location: "char:7-26", Content: RedactionMarker("api_key")},
 	}
-	got := c.redactOutput(output, issues, policy)
-	want := "key is *******************"
+	got := c.redactOutput(context.Background(), output, issues, policy)
+	want := "key is " + RedactionMarker("api_key")
 	if got != want {
 		t.Errorf("redactOutput = %q, want %q", got, want)
 	}

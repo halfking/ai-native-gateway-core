@@ -26,6 +26,22 @@ const accountOpen = ref(false)
 const headerless = computed(() => route.meta.headerless === true)
 const showBottomNav = computed(() => !headerless.value && windowClass.value === 'compact')
 
+// 2026-10-10：弹窗（drawer / 账户 sheet / AppSheet）打开时，顶栏左按钮
+// 要变 X 才能让用户关掉，而不是再触发一层抽屉。哪个 overlay 在最前面
+// 就关哪个 —— 「最前」按 Hyper overlay 的注册顺序（最新注册在最前）。
+const overlayActive = computed(() => drawerOpen.value || accountOpen.value)
+function closeActiveOverlay(): void {
+  // 优先关最近打开的那一个，避免一次性全关导致视觉跳变。
+  if (accountOpen.value) {
+    accountOpen.value = false
+    return
+  }
+  if (drawerOpen.value) {
+    drawerOpen.value = false
+    return
+  }
+}
+
 // 部署序号检查（UI规范 18 §4）：headerless（登录页）同样检查——长期停在
 // 登录页的设备也该收到更新提示；首次检查延迟晚于首屏落地。
 onMounted(() => update.start())
@@ -33,7 +49,14 @@ onMounted(() => update.start())
 
 <template>
   <div id="hyper-app-root" class="hyper-app" :class="{ 'hyper-app--bare': headerless }">
-    <AppTopbar v-if="!headerless" :actions="topbarActions" @menu="drawerOpen = true" @account="accountOpen = true" />
+    <AppTopbar
+      v-if="!headerless"
+      :actions="topbarActions"
+      :overlay-active="overlayActive"
+      :on-close-overlay="closeActiveOverlay"
+      @menu="drawerOpen = true"
+      @account="accountOpen = true"
+    />
 
     <main id="main-content" class="hyper-app__main" :class="{ 'hyper-app__main--padded': showBottomNav }">
       <RouterView v-slot="{ Component }">

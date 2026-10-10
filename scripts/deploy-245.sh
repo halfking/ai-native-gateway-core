@@ -72,4 +72,6 @@ fi
 # 调用方可用 PROBE_TIMEOUT_SECS / PROBE_RETRY_TIMEOUT_SECS 覆盖（透传链仍生效）。
 export PROBE_TIMEOUT_SECS="${PROBE_TIMEOUT_SECS:-600}"
 
-exec bash "$SCRIPT_DIR/deploy-seamless.sh" deploy 245 "${ARGS[@]}"
+# bash 3.2 + set -u: the `${ARGS[@]}+${ARGS[@]}` guard keeps the no-arg path
+# (empty ARGS) from dying as an unbound variable, same reason as the guard above.
+exec bash "$SCRIPT_DIR/deploy-seamless.sh" deploy 245 "${ARGS[@]+"${ARGS[@]}"}"

@@ -32,6 +32,8 @@ export const BOTTOM_NAV: readonly NavItem[] = [
 export const DRAWER_NAV: readonly NavItem[] = [
   { key: 'alerts', to: '/alerts', icon: 'alert', titleKey: 'nav.alerts' },
   { key: 'usage', to: '/usage', icon: 'chart', titleKey: 'nav.usage' },
+  { key: 'users', to: '/users', icon: 'user', titleKey: 'nav.users', requiresRole: 'admin' },
+  { key: 'reconciliation', to: '/reconciliation', icon: 'chart', titleKey: 'nav.reconciliation', requiresRole: 'super_admin' },
   // 2026-10-06：路由检查（只读 explain）从 desktopOnly 收进移动端，抽屉席位。
   // 不占底栏（02 §4 底栏 ≤5 席已满），与「告警/用量」同级。admin 档。
   { key: 'routing', to: '/routing', icon: 'search', titleKey: 'nav.routing' },
@@ -174,6 +176,12 @@ export const DRAWER_NAV: readonly NavItem[] = [
   // ★ 数据源是**进程内**状态（domains/streaming.ConnectionRegistry），不是数据库
   //   ⇒ 本族**没有跨租户查询**（对比批 104/106 那两个真正跨租户的族）。
   { key: 'connection-registry', to: '/connection-registry', icon: 'server', titleKey: 'nav.connectionRegistry' },
+  // 用量趋势线。**admin 档**（admin/handler.go:1267 的 `h.admin(h.HandleUsageAdmin)`
+  //   前缀子路由，分派 admin/usage.go:60-64）⇒ tenant_admin 可用 ⇒ **不设** requiresRole。
+  // ★ 本族的租户口径是本仓第四种：`statsTenantScope`（admin/stats.go:87-97）对非
+  //   super_admin 强制用 auth.TenantID 并**忽略 tenant_id 参数** ⇒ tenant_admin 天然隔离，
+  //   与批 104（硬编码 tenant）与批 106（有列不接线）相反 ⇒ 不需要段落级门控。
+  { key: 'usage-trend-series', to: '/usage-trend-series', icon: 'chart', titleKey: 'nav.usageTrendSeries' },
   // MaaS 租户运维面。**superAdmin 档**（/api/admin/maas/tenants/** 全 superAdmin）⇒ 须设。
   {
     key: 'maas-tenant-ops',
@@ -403,11 +411,15 @@ export function isNavItemActive(item: NavItem, path: string): boolean {
  * 角色判定口径与 UI规范 17 §11.1 一致：`authStore.role` 为 'super_admin' 才算
  * 超管。⚠️ 注意 `admin` 是**独立角色**、不等于超管 —— 后端 `h.admin` 允许
  * tenant_admin，`h.superAdmin` 不允许（admin/handler.go:880-888）。所以
- * `requiresRole: 'admin'` 在这里**不额外过滤**：移动端所有非 superAdmin 端点
- * 走的都是 h.admin，登录用户都能进，挡在这里反而会误伤。
- * 需要真过滤的只有 super_admin 档。
+ * `admin` 表示管理员工作台角色（tenant_admin / super_admin / legacy admin_key）；
+ * `super_admin` 表示仅超级管理员。其余用户不能访问管理入口。
  */
 export function navItemsFor(items: readonly NavItem[], role: string | null | undefined): NavItem[] {
   const isSuper = role === 'super_admin'
-  return items.filter((item) => item.requiresRole !== 'super_admin' || isSuper)
+  const isAdmin = isSuper || role === 'tenant_admin' || role === 'admin_key'
+  return items.filter((item) => item.requiresRole === 'super_admin'
+    ? isSuper
+    : item.requiresRole === 'admin'
+      ? isAdmin
+      : true)
 }

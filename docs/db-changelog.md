@@ -8684,3 +8684,10 @@ git show origin/main:scripts/deploy-lib/db-changelog.sh
 | 847 | `847_credential_routing_scope.sql` | `c0c22db5ef3e06f317a70c87f230c186c46e0c3d8b892dc584ecc8b91529269e` | applied+verified |
 | 848 | `848_billing_unit_and_audio_seconds.sql` | `8e229f94d20f64a54e4cca681e4d22b12acc5f32ccad0972405f11a03aeceecb` | applied+verified |
 
+## 2026-10-10T03:51:55Z — deploy 245 build_seq 2518 (e3e2b4ef)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 849 | `849_session_turns_req_status_backfill_cover_idx.sql` | `0cf88e59a94e04f41c22a5badfa2422ec072715d218a12457b1ffcd037417b73` | applied+verified |
+| 850 | `850_session_summaries_project_backfill_recent_idx.sql` | `089db5d53fbb71084b33571a22856fd4ab2ca4fb2643f450369cd199eb928869` | applied+verified |
+

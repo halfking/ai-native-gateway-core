@@ -255,7 +255,7 @@ func TestSanitizeRestoreInterceptor_CrossTenant_DoesNotLeakMap(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result, "tenant B must still scrub unknown placeholder tokens")
 	require.NotContains(t, string(result.ModifiedBody), "13800138000", "tenant B must not read tenant A's mapped PII")
-	require.Contains(t, string(result.ModifiedBody), "[REDACTED]")
+	require.Contains(t, string(result.ModifiedBody), RedactionMarker(TypePhone))
 	require.NotContains(t, string(result.ModifiedBody), "{SENSITIVE:")
 }
 
