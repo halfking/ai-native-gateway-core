@@ -58,11 +58,11 @@ type AnomalyReport struct {
 // constants so producers can switch on the typed value rather than
 // a stringly-typed `anomaly_type` field.
 const (
-	AnomalyTypeToolCallsMissing    = "tool_calls_missing"
-	AnomalyTypeConversionError     = "conversion_error"
-	AnomalyTypeSemanticIncomplete  = "semantic_incomplete"
-	AnomalyTypeRawLogOverflow      = "raw_log_overflow"
-	AnomalyTypeRawLogCloseDrained  = "raw_log_close_drained"
+	AnomalyTypeToolCallsMissing   = "tool_calls_missing"
+	AnomalyTypeConversionError    = "conversion_error"
+	AnomalyTypeSemanticIncomplete = "semantic_incomplete"
+	AnomalyTypeRawLogOverflow     = "raw_log_overflow"
+	AnomalyTypeRawLogCloseDrained = "raw_log_close_drained"
 )
 
 // LockFreeAnomalyReporter 无锁异常报告器
@@ -100,6 +100,35 @@ type LockFreeAnomalyReporter struct {
 	// 统计信息
 	reportsSent   atomic.Uint64
 	reportsFailed atomic.Uint64
+
+	// consecutive permanent endpoint rejections (404/405/410/401/...).
+	// 2026-10-11: 154 生产事故 — endpoint 配置到一个本网关不存在的路由
+	// （/api/diagnostics/anomalies，实际路由是 /api/admin/format-anomalies），
+	// postBatch 对非 2xx 一律 requeue，sendWorker 每 5s 重发同一批 →
+	// 24h 内 9341 次 404 循环。永久性 4xx 重试永远不可能成功，连续
+	// permanentFailuresThreshold 次后自禁用报告器。
+	permanentFailures atomic.Uint32
+}
+
+// permanentFailuresThreshold is the number of consecutive permanent endpoint
+// rejections after which the reporter disables itself.
+const permanentFailuresThreshold = 3
+
+// isPermanentAnomalyStatus reports whether an HTTP status makes retrying the
+// same batch pointless. Auth failures are included: the reporter sends no
+// credentials, so a 401/403 from the endpoint cannot self-heal.
+func isPermanentAnomalyStatus(code int) bool {
+	switch code {
+	case http.StatusUnauthorized,
+		http.StatusForbidden,
+		http.StatusNotFound,
+		http.StatusMethodNotAllowed,
+		http.StatusGone,
+		http.StatusUnsupportedMediaType,
+		http.StatusUnprocessableEntity:
+		return true
+	}
+	return false
 }
 
 // NewLockFreeAnomalyReporter 创建无锁异常报告器
@@ -412,12 +441,31 @@ func (r *LockFreeAnomalyReporter) postBatch(parent context.Context, batch []Anom
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		r.reportsSent.Add(uint64(len(batch)))
+		r.permanentFailures.Store(0)
 		slog.Debug("lockfree_anomaly_reporter: sent batch successfully",
 			"batch_size", len(batch),
 			"status", resp.StatusCode)
 		return true
 	}
 	r.reportsFailed.Add(uint64(len(batch)))
+	if isPermanentAnomalyStatus(resp.StatusCode) {
+		n := r.permanentFailures.Add(1)
+		if n <= permanentFailuresThreshold {
+			slog.Error("lockfree_anomaly_reporter: endpoint permanently rejected batch, dropping (retry can never succeed)",
+				"status", resp.StatusCode,
+				"endpoint", r.endpoint,
+				"batch_size", len(batch),
+				"consecutive_permanent_rejections", n)
+		}
+		if n >= permanentFailuresThreshold && r.enabled.CompareAndSwap(true, false) {
+			slog.Error("lockfree_anomaly_reporter: disabled after repeated permanent endpoint rejections",
+				"status", resp.StatusCode,
+				"endpoint", r.endpoint,
+				"hint", "check LLM_GATEWAY_ANOMALY_ENDPOINT points to a route this gateway serves")
+		}
+		// 返回 true 让调用方丢弃 batch 而不是重新入队。
+		return true
+	}
 	slog.Warn("lockfree_anomaly_reporter: server returned non-2xx, re-enqueuing",
 		"status", resp.StatusCode,
 		"batch_size", len(batch))

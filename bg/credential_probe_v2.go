@@ -1327,7 +1327,16 @@ func classifyProbeFailure(errMsg string) probeResult {
 // scope removal) and must NOT be treated as a single-binding failure.
 func isPerModelChatFailure(errMsg string) bool {
 	if !(strings.Contains(errMsg, "model not found") ||
-		strings.Contains(errMsg, "model has been deprecated")) {
+		strings.Contains(errMsg, "model has been deprecated") ||
+		// 2026-10-11: nvidia integrate 的 EOL 文案是 "has reached its
+		// end of life ... and is no longer available"（chat 410）。
+		// 此前匹配不上 → 落到 default 分支被归类为凭据级 unreachable，
+		// 154 现场 credential 19 连续失败 1058 次仍在被周期重探，
+		// 且每次失败触发兄弟模型 request_failure 重入队（probe 风暴）。
+		// 两种措辞都只在下方 chat 404/410 前缀守卫下才生效，
+		// 不会误伤 /v1/models 级别的凭据错误。
+		strings.Contains(errMsg, "end of life") ||
+		strings.Contains(errMsg, "no longer available")) {
 		return false
 	}
 	return strings.Contains(errMsg, "chat status 404") ||

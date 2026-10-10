@@ -38,6 +38,20 @@
 > 会混入 `mavis-trash:` 字样导致编译失败（`unknown type name 'mavis'`）。
 > 已把该脚本改为直接输出固定值 `PIPESIZE 65536`。重编时注意这一点。
 
+## host-first 本地部署（2026-10-11 落地，本仓 llm-gateway-go-2）
+
+- 方案文档（发现链/自动安装/域名/验证矩阵）：`docs/06-deployment/01-environments/local-host-first-deploy-20261011.md`
+- 部署：`LLM_GATEWAY_ROOT=~/kaixuan/llm-gateway-go-v2 PATH="$HOME/sdk/go/bin:$PATH" GOPROXY=https://goproxy.cn,direct GOMODCACHE="$HOME/sdk/gomodcache" GOCACHE="$HOME/sdk/gocache" bash scripts/deploy-local.sh deploy`（active 8782）
+- 发现链：caller 显式配置 → 主机原生服务（本机 pg18:54318 + redis:6379，含 PATH 注入）→ docker → 自动源码安装（PG17 最新小版本 + pgcolumnar v1.0-alpha4（Citus columnar 独立发行）+ Redis 7.4.2）
+- 密钥在仓库 `.env.local`（gitignored，含 admin 凭据）；缓存=host redis，数据=host pg18
+- 域名：`llm.itestu.cn` → NetBird DNS zone `llm-itestu-zone` A 记录 → 100.106.169.63:8782（本机 peer nb-macmini-29）
+- **坑（2026-10-11 实测）**：
+  - `com.kaixuan.llm-gateway` launchd 代理已停用（备份 `~/kaixuan/llm-gateway-go-v2/backups/`）——KeepAlive 重生网关会跟 deploy-local 的 nohup+pid 生命周期互踩（抢 8781 候选端口）；
+  - 最新 macOS SDK（27.0）与 CLT 链接器不兼容（tapi error），`dl_resolve_sdkroot` 自动降级（当前 26.5）；裸 `go run`（cgo 形态）会 SIGSEGV，用 CGO_ENABLED=0 + SDKROOT 钉扎；
+  - PG 的 E'' 替换串里 `\1` 是八进制转义不是 backreference；视图族有冻结/动态交集两代合法形态，通道文件按形态探测分支。
+- 契约门：`bash tests/deploy_host_first_contract_test.sh`（verify.sh 已接）；自动安装端到端：`DL_AUTOINSTALL_TEST=1 bash tests/deploy_host_autoinstall_test.sh`（真实源码构建，分钟级，opt-in）
+- 迁移通道 host-first 收敛轮补登：532/392/631/407/536/540/510/513/516/542/361b + 新增 680b；738/740/815/816/817/824 兼容动态交集形态。
+
 ## 端口：必须现场确认，不要假设
 
 两台机器都是蓝绿部署，监听端口由 `/opt/llm-gateway-go/run/active-upstream.conf`

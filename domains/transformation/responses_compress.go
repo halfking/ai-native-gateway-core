@@ -1,6 +1,10 @@
 package transformation
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/kaixuan/llm-gateway-go/internal/markerbound"
+)
 
 // CompressResponsesInputIfNeeded removes the oldest removable items from an
 // OpenAI Responses request when its estimated size exceeds the input budget.
@@ -394,7 +398,20 @@ func trimResponsesInputString(request map[string]json.RawMessage, input string, 
 				KeptRunes:     len(runes),
 			}
 		}
-		runes = runes[len(runes)/2:]
+		// 2026-10-11: marker-aware halving (internal/markerbound). This trimmed
+		// string becomes the outbound request verbatim; a cut through a
+		// {SENSITIVE:type:index} placeholder would send a mangled internal
+		// token upstream and permanently break that value's restoration. The
+		// cut moves to the marker start so a boundary marker stays whole —
+		// unless that would keep the entire string (marker spanning the whole
+		// half-cut at position 0), where dropping the marker at its end keeps
+		// the halving loop terminating.
+		current := string(runes)
+		cut := markerbound.SafeCutKeepTailRunes(current, len(runes)/2)
+		if cut == 0 {
+			cut = markerbound.SafeCutKeepHead(current, len(runes)/2)
+		}
+		runes = []rune(current[cut:])
 	}
 	return original, nil
 }
