@@ -143,8 +143,11 @@ pass "pg17-disk-watch.sh 同时具备单实例闸门与查询/连接超时"
 if ! command -v flock >/dev/null 2>&1; then
   # macOS 默认没有 flock。本仓库的既有约定是：行为断言只在量具可用时跑，
   # 静态门在任何 runner 上都要跑。开发机上缺 flock 不是缺陷。
-  printf 'SKIP: 本机无 flock，跳过行为断言（静态门已全部执行）\n'
-  exit 0
+  printf 'NOTE: 本机无 flock（macOS 自带 bash 3.2），仅跳过 6/7/8 三条互斥行为断言。\n'
+  printf '      其余静态门与第 9 节的量具不可用/孤儿回收断言**仍然执行**。\n'
+  HAVE_FLOCK=0
+else
+  HAVE_FLOCK=1
 fi
 
 # 行为断言用的是**脚本里那段闸门的真实文本**，不是复制的副本 ——
@@ -213,6 +216,11 @@ export LLMGW_LOCK_SKIP_LOG="$tmp/skip.log"
 RUNS_FILE="$tmp/runs"
 export RUNS_FILE
 
+# 6~8 三条依赖 flock 的互斥行为断言（无 flock 的机器上跳过，但**不是**直接
+# exit 掉整个门——否则第 9 节那些不需要 flock 的断言会跟着一起不执行，
+# 变成「看着有门、其实从没跑过」。这正是本门第一版的毛病。
+if [ "$HAVE_FLOCK" = "1" ]; then
+
 # 6. N 份并发 → 恰好 1 份进入主体。
 #
 #    2026-10-10 的现场是 310 份副本。这里用 8 份：足以复现重叠，
@@ -276,6 +284,154 @@ entered=${entered// /}
 [ "$entered" = "1" ] \
   || fail "前一轮结束后本轮没有进入主体（进入 $entered 次，期望 1）—— 锁泄漏了"
 pass "上一轮结束后锁正常释放，下一轮可以正常进入"
+
+fi  # HAVE_FLOCK — 6/7/8 结束
+
+# =====================================================================
+# 9. 量具不可用必须与「一切正常」分开（2026-10-11 审计新增）
+#
+# ★ 这道门是被本次审计自己的发现逼出来的，不是预防性加的。
+#   事故当天全天 psql 一条都取不到，而采样行始终是 `level=ok`——
+#   因为 `de()` 失败返回 "0"，而每条阈值判断都是「>= 阈值」，
+#   **取不到值**与**一切正常**在判据里完全同形。
+#   ⇒ 监控在完全瞎掉的状态下报了 8 小时健康，而那 8 小时正是
+#     154 被 Redis/PG 拖垮、无人能从监控侧发现的时间窗。
+#   本目录契约里 3 = 量具不可用，这里就必须落到 gauge_unavailable。
+# =====================================================================
+
+# 9.1 静态：必须存在量具可用性判定，且失败计数走**文件**而非变量。
+#
+#     走变量是错的：调用方一律 `x=$(de ...)`，那是子 shell，自增出不来
+#     （第一版就是这么写的，失败计数恒为 0，等于没记）。
+#
+# ★ 所有静态断言都只匹配**代码行**，必须先剥掉整行注释。
+#   第一版直接 grep 整个文件，立刻翻车：断言自己在解释性注释里写了
+#   `du -s /var/lib/containers/...` 和 `${ts:0:7}` 这两个「反面教材」字符串，
+#   于是脚本明明已经改对了，门却报 FAIL。
+#   ⇒ 一道会被自己的注释触发的门，等于没有门。
+#   （已知局限：只剥整行注释，行尾注释仍会被匹配；本目录脚本的注释都是整行。）
+dw_code=$(grep -vE '^[[:space:]]*#' "$dw")
+
+case "$dw_code" in
+  *gauge_unavailable*)
+    : ;;
+  *)
+    fail "pg17-disk-watch.sh 没有 gauge_unavailable 判定。
+   ★ 没有它，取不到值与一切正常同形：监控瞎掉也会报 level=ok。" ;;
+esac
+case "$dw_code" in
+  *_DE_STAT_FILE*) : ;;
+  *)
+    fail "pg17-disk-watch.sh 的 de() 失败计数没有走文件。
+   ★ \`x=\$(de ...)\` 是子 shell，变量自增出不来，计数必须落盘。" ;;
+esac
+case "$dw_code" in
+  *"alerts=()"*|*"alerts+="*) : ;;
+  *)
+    fail "pg17-disk-watch.sh 里找不到 alerts 数组，无法承载量具不可用告警。" ;;
+esac
+
+# 9.2 静态：不得再有全量遍历容器存储的 du。
+#
+#     实测 252 上 `du -s /var/lib/containers/storage/` **跑 280 秒仍未返回**。
+#     它本就是事故当天两个负载源之一（现场 11 个 du 卡 D 状态）。
+case "$dw_code" in
+  *"du -s /var/lib/containers"*)
+    fail "pg17-disk-watch.sh 又出现了 du -s /var/lib/containers。
+   ★ 实测该命令在 252 上跑 280 秒仍未返回；事故当天现场 11 个 du 卡在
+     D 状态，它就是两个负载源之一。给它加超时只会把指标**永久打瞎**
+     （采样行长期 n/a），比慢但正确更糟——请用 df -P 取所在文件系统用量。" ;;
+  *) : ;;
+esac
+
+# 9.3 静态：不得引用未赋值的 ${ts:...}（曾在生产 bash 4.4 上崩掉告警通路）。
+case "$dw_code" in
+  *'${ts'*)
+    fail "pg17-disk-watch.sh 引用了 \${ts:...}，但脚本里从未给 ts 赋值。
+   ★ 已在 252 实测：bash 4.4 + set -u 会报 \`ts: unbound variable\` 并退出 1，
+     后果是**任何一次真告警都在最后一步崩掉、IM 永远推不出去**。" ;;
+  *) : ;;
+esac
+
+# 9.4 行为：伪容器下必须报量具不可用，且退出码为 3。
+#
+#     这是**端到端**跑真脚本，不是 grep。它同时覆盖了：
+#       - 「一条阈值都没触发」时脚本不得崩（bash 3.2 空数组展开曾使其当场退出）
+#       - gauge 失败计数确实能被数出来（子 shell 文件计数是否真的生效）
+#       - top5 / dead_tup 不得谎称 clean
+bdir=$(mktemp -d)
+LLMGW_LOCK_DIR="$bdir/lock" \
+LLMGW_DISK_WATCH_LOG="$bdir/dw.log" \
+LLMGW_DISK_WATCH_ALERT_LOG="$bdir/dw.alert.log" \
+LLMGW_PG_CONTAINER="definitely-not-a-container" \
+LLMGW_QUERY_TIMEOUT=3 \
+  bash "$dw" >/dev/null 2>&1
+dw_rc=$?
+[ "$dw_rc" -eq 3 ] \
+  || fail "伪容器下 pg17-disk-watch.sh 退出码 ${dw_rc}，期望 3（量具不可用）。
+   ★ 若为 0 就是「取不到值被当成一切正常」——这正是 10-10 那天报错了 8 小时的状态。"
+grep -q 'level=gauge_unavailable' "$bdir/dw.log" 2>/dev/null \
+  || fail "伪容器下采样行没有 level=gauge_unavailable。实际内容：
+$(cat "$bdir/dw.log" 2>/dev/null)"
+grep -qE 'gauge=[1-9][0-9]*/' "$bdir/dw.log" 2>/dev/null \
+  || fail "采样行里 gauge 计数为 0，说明 de() 的失败没有被记下来：
+$(cat "$bdir/dw.log" 2>/dev/null)"
+if grep -q 'dead_tup_top3: clean' "$bdir/dw.log" 2>/dev/null; then
+  fail "伪容器下 dead_tup_top3 显示 clean —— 查不到时被谎称为健康。"
+fi
+pass "伪容器下报 gauge_unavailable + 退出码 3（查不到 ≠ 没问题）"
+
+# 9.5 行为：超时必须按进程组回收，不能留下孙进程。
+#
+#     ★ 这道门对应审计实测出的真 bug：`kill -9 <直接子进程>` 之后
+#       `bash -c 'sleep 45; …'` 里那条 sleep **会活下来**，连调 3 次漏 3 个。
+#       「超时的进程留下来继续跑」正是 2026-10-10 事故的形态——
+#       超时这道闸若自己漏进程，等于把事故原样复现。
+#
+#     ★★ 第一版这里是**空转**的（变异验证当场抓出来）：它写的是
+#       `eval "$wd_fn"' 2 bash -c "..."'`。eval 不会改变位置参数，
+#       于是函数体里的 `local secs="$1"` 读到的是**外层脚本**的 $1，
+#       看门狗根本没被执行 → 恒为「零孤儿」→ 这条断言永远绿。
+#       ⇒ 改为把函数落到真实脚本文件里、用真实参数调用。
+if [ -f "$tmp/gate.txt" ]; then
+  wd_fn=$(awk '/^_llmgw_run_bounded\(\) \{/,/^\}/' "$dw")
+  if [ -n "$wd_fn" ]; then
+    {
+      printf '%s\n' '#!/usr/bin/env bash' 'set -uo pipefail'
+      printf '%s\n' "$wd_fn"
+      # 注意不能用 `|| true`：那会把看门狗的 124 吞成 0，自证就永远失败。
+      # 这里显式把函数的返回码作为脚本退出码传出去。
+      printf '%s\n' '_llmgw_run_bounded 2 bash -c "sleep 45; date > /dev/null"'
+      printf '%s\n' 'exit $?'
+    } > "$tmp/wd_run.sh"
+    chmod +x "$tmp/wd_run.sh"
+
+    # 先自证这扇门真的会跑：正常路径应当在 2~4s 内自己结束并返回 124。
+    probe_s=$(date +%s)
+    bash "$tmp/wd_run.sh" >/dev/null 2>&1
+    probe_rc=$?
+    probe_e=$(date +%s)
+    [ "$probe_rc" -eq 124 ] \
+      || fail "看门狗探针自证失败：返回码 ${probe_rc}，期望 124。
+   ★ 若探针根本没执行，本节后续的「零孤儿」就是**空转的绿**——
+     必须先证明探针会跑，结论才有意义。"
+    [ $((probe_e - probe_s)) -le 8 ] \
+      || fail "看门狗探针耗时 $((probe_e - probe_s))s，说明超时上界没生效"
+
+    base_sleep=$(pgrep -x sleep 2>/dev/null | wc -l | tr -d ' ')
+    for _ in 1 2 3; do bash "$tmp/wd_run.sh" >/dev/null 2>&1; done
+    sleep 2
+    after_sleep=$(pgrep -x sleep 2>/dev/null | wc -l | tr -d ' ')
+    leak=$((after_sleep - base_sleep))
+    [ "$leak" -le 0 ] \
+      || fail "看门狗超时后留下 $leak 个孙进程（期望 0）。
+   ★ 只 kill 直接子进程会漏掉 \`bash -c 'sleep …'\` 的 sleep。
+     事故当天「进程只增不减」就是这个形态：超时闸自己漏进程。"
+    pass "看门狗按进程组回收，连调 3 次零孤儿（探针已自证确实在跑）"
+  fi
+fi
+
+rm -rf "$bdir"
 
 printf '\nOK: monitor_single_instance_gate_test 全部通过\n'
 exit 0
