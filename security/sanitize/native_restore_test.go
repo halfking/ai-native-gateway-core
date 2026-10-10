@@ -82,7 +82,7 @@ func TestNativeResponsesNonStreamRestoresTextAndJSONArguments(t *testing.T) {
 	require.NoError(t, json.Unmarshal(result.ModifiedBody, &got))
 	content := got.Output[0]["content"].([]any)
 	require.Equal(t, "call 13800138000", content[0].(map[string]any)["text"])
-	require.Equal(t, "unknown [REDACTED]", content[1].(map[string]any)["refusal"])
+	require.Equal(t, "unknown "+RedactionMarker(TypePhone), content[1].(map[string]any)["refusal"])
 	require.Equal(t, "encoded-audio", content[2].(map[string]any)["audio"])
 	arguments := got.Output[1]["arguments"].(string)
 	var args map[string]any
@@ -157,7 +157,7 @@ func TestNativeNonStreamRestoreTenantScopeAndUnsafeBodies(t *testing.T) {
 		want   string
 	}{
 		{"tenant-A", "13800138000"},
-		{"tenant-B", "[REDACTED]"},
+		{"tenant-B", RedactionMarker(TypePhone)},
 	} {
 		result, err := it.InterceptNonStream(context.Background(), &response.InterceptRequest{
 			TenantID: tc.tenant, SessionID: session, ClientProtocol: "anthropic-messages", ResponseBody: body,
@@ -172,7 +172,7 @@ func TestNativeNonStreamRestoreTenantScopeAndUnsafeBodies(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, otherTenant)
-	require.Contains(t, string(otherTenant.ModifiedBody), "[REDACTED]")
+	require.Contains(t, string(otherTenant.ModifiedBody), RedactionMarker(TypePhone))
 	require.NotContains(t, string(otherTenant.ModifiedBody), "13800138000")
 
 	for _, unsafe := range [][]byte{

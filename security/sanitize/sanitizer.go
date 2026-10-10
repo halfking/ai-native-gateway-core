@@ -244,6 +244,7 @@ func allocateSensitivePlaceholder(typ SensitiveType, value string, offset map[Se
 func (s *Sanitizer) restoreText(ctx context.Context, text string, resolve placeholderResolver, policy looseUnknownPolicy) string {
 	foreign := foreignMarkersFromContext(ctx)
 	result := PlaceholderPattern.ReplaceAllStringFunc(text, func(match string) string {
+		var parsedType SensitiveType
 		if parsed, ok := ParsePlaceholder(match); ok {
 			// A token observed in the inbound body belongs to the downstream
 			// hop even when this gateway can also see the same session mapping
@@ -252,6 +253,7 @@ func (s *Sanitizer) restoreText(ctx context.Context, text string, resolve placeh
 			if foreign.isForeign(match) {
 				return match
 			}
+			parsedType = parsed.Type
 			if resolve != nil {
 				if original, hit := resolve(parsed.Type, parsed.Index); hit {
 					return original
@@ -263,7 +265,10 @@ func (s *Sanitizer) restoreText(ctx context.Context, text string, resolve placeh
 			}
 		}
 		if policy == looseMaskUnknown {
-			return redactedMarker
+			// The marker parsed, so its type is known and the mask can say so.
+			// A non-parsing match leaves parsedType empty and falls back to the
+			// bare form rather than guessing.
+			return RedactionMarker(parsedType)
 		}
 		return match
 	})

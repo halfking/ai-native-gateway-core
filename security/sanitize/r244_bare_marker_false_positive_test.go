@@ -60,7 +60,7 @@ func TestBareFormRulesStillCatchRealMarkers(t *testing.T) {
 	if strings.Contains(out, "SENSITIVE:phone") {
 		t.Errorf("bare marker inside tool-argument JSON survived: %s", out)
 	}
-	if !strings.Contains(out, "[REDACTED]") {
+	if !strings.Contains(out, "[REDACTED") {
 		t.Errorf("expected a redaction, got: %s", out)
 	}
 	if !strings.Contains(out, `"phone"`) {

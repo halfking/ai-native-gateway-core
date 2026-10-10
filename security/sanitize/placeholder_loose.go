@@ -158,6 +158,26 @@ const (
 
 const redactedMarker = "[REDACTED]"
 
+// RedactionMarker returns the client-visible mask for a known sensitive type:
+// "[REDACTED:phone]", "[REDACTED:secret]", and so on.
+//
+// A bare [REDACTED] tells the reader that *something* was removed and nothing
+// else, which is why "why is my proxy address masked?" and "was that a phone
+// number or a key?" could not be answered from anything the gateway emitted.
+// The type is not sensitive — it is the name of a rule, not the value it
+// matched — and naming it makes the loss self-describing.
+//
+// A marker whose type is unknown or empty falls back to the bare form. That
+// case is real, not hypothetical: maskDegenerateMarkerSpans and the
+// over-length placeholder tail mask bytes before any type has been parsed, and
+// inventing a type there would be a guess about bytes nobody resolved.
+func RedactionMarker(typ SensitiveType) string {
+	if typ == "" {
+		return redactedMarker
+	}
+	return redactedMarker[:len(redactedMarker)-1] + ":" + string(typ) + "]"
+}
+
 // foldPlaceholderWidth maps full-width ASCII to half-width and the ideographic
 // space to a plain space. A CJK input method turns "{SENSITIVE:secret:1}" into
 // "{ＳＥＮＳＩＴＩＶＥ：ｓｅｃｒｅｔ：１}" without the model noticing.

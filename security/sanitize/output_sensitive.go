@@ -26,6 +26,29 @@ func NewOutputSensitiveInterceptor(s *Sanitizer, action OutputSensitiveAction) *
 	return compliancehook.NewMandatoryOutputComplianceInterceptor(&outputSensitiveChecker{sanitizer: s, action: action}, "sanitize.output.pending")
 }
 
+// detectEgress runs the detector in ScopeEgress, which is the only scope that
+// still matches address rules.
+//
+// This is the whole point of the split: input sanitization and plain output
+// redaction both run under ScopeRedact (addresses are operational text, not
+// secrets), while this guard needs the address rules because a routable address
+// in a model-authored tool argument is an exfiltration *destination*. Widening
+// the redaction scope therefore cannot quietly widen the egress surface.
+func (c *outputSensitiveChecker) detectEgress(ctx context.Context, text string) ([]SensitiveFragment, error) {
+	if c == nil || c.sanitizer == nil {
+		return nil, ErrNilSanitizer
+	}
+	detector := c.sanitizer.detector
+	if scoped, ok := detector.(interface {
+		DetectScope(context.Context, string, DetectionScope) ([]SensitiveFragment, error)
+	}); ok {
+		return scoped.DetectScope(ctx, text, ScopeEgress)
+	}
+	// A pluggable Detector without scope support gets the default Detect; it
+	// simply has no address rules to contribute here.
+	return detector.Detect(ctx, text)
+}
+
 type outputSensitiveChecker struct {
 	sanitizer *Sanitizer
 	action    OutputSensitiveAction
@@ -61,7 +84,8 @@ func (c *outputSensitiveChecker) CheckField(ctx context.Context, tenant, label, 
 		return &outputcompliance.ComplianceResult{Compliant: true, RedactedOutput: text}, nil
 	}
 	if label != "" && credentialField(label) && text != "" && !isMarker {
-		return &outputcompliance.ComplianceResult{Blocked: true, RedactedOutput: "[REDACTED]", Issues: []outputcompliance.ComplianceIssue{{Type: "sensitive", Subtype: "credential", Content: "[REDACTED]", Severity: 8}}}, nil
+		marker := RedactionMarker(TypeSecret)
+		return &outputcompliance.ComplianceResult{Blocked: true, RedactedOutput: marker, Issues: []outputcompliance.ComplianceIssue{{Type: "sensitive", Subtype: "credential", Content: marker, Severity: 8}}}, nil
 	}
 	return c.Check(ctx, tenant, text)
 }
@@ -85,7 +109,7 @@ func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any,
 			}
 			return c.unsafeToolValue(ctx, embedded, label, depth+1)
 		}
-		fragments, err := c.sanitizer.detector.Detect(ctx, value)
+		fragments, err := c.detectEgress(ctx, value)
 		if err != nil {
 			return false, err
 		}
@@ -161,10 +185,10 @@ func (c *outputSensitiveChecker) Check(ctx context.Context, _ string, text strin
 	last := 0
 	for _, span := range spans {
 		safe.WriteString(text[last:span.start])
-		safe.WriteString("[REDACTED]")
+		safe.WriteString(RedactionMarker(span.typ))
 		last = span.end
 		result.Issues = append(result.Issues, outputcompliance.ComplianceIssue{
-			Type: "sensitive", Subtype: string(span.typ), Content: "[REDACTED]", Severity: 8, Score: 1, Redacted: c.action != OutputBlock,
+			Type: "sensitive", Subtype: string(span.typ), Content: RedactionMarker(span.typ), Severity: 8, Score: 1, Redacted: c.action != OutputBlock,
 		})
 	}
 	safe.WriteString(text[last:])
