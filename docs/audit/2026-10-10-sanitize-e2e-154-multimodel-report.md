@@ -1107,3 +1107,66 @@ contain <function_calls>:    0  ( 0.0%)   ← 已清
 - 会 → 不要在网关清（保持透传），本节结论仅作为「行为符合预期」的记录。
 - 不会 → 在 `cleanMinimaxLeakFields` 补 `<think>` 清理，与既有两项一致，
   并补一条回归测试（断言 `<think>` 清理后 0% 泄漏、既有两项不回退）。
+
+## 十六、【生产事故】Redis 6389 宕机 → sanitize fail-closed 全量 503（16:00）
+
+执行第十四节的多次端到端复现时，捕获脚本开始返回 108 字节的错误体：
+
+```json
+{"error":{"code":"sanitization_failed","message":"Request sanitization unavailable","type":"server_error"}}
+```
+
+### 定位
+
+从 154 与 245 分别探测 252（`172.16.2.210`）：
+
+```
+host 172.16.2.210   ping 0% loss, rtt 0.42ms      ← 机器活着
+PG      172.16.2.210:5432   OK                   ← 数据库正常
+Redis   172.16.2.210:6389   REFUSED              ← 宕机
+redis-cli -h 172.16.2.210 -p 6389 ping → Connection refused
+```
+
+252 上 `ss -lntp` 无 6389 监听；`ps` 显示 3 个 `redis-server *:6379`
+（均为 30~40 天前起的存量进程，与网关用的 6389 不是同一实例）；
+无 `redis*.service`。`deploy-lib/redis-discover.sh` 头部注明
+*"154/245 通过 252 使用"*，即网关的 Redis 是 252 上的**容器**，
+命名候选含 `llm-gateway-redis` —— 该实例已不在监听。
+
+时间线：15:38 探测 6389 仍返回 `NOAUTH Authentication required`（说明当时在跑，
+只是需要认证），16:00 已 refused。**窗口约 15:38–16:00 之间。**
+
+### 影响面
+
+网关 sanitize 层依赖 Redis，且**设计上 fail-closed**（宁可拒绝不放行）：
+
+```
+245:8781  bd638a7a-2515  ready:false
+154:8782  bd638a7a-2516  ready:false
+```
+
+154 日志同时刷出：
+
+```
+ERROR call_history_aggregator failed      dial tcp 172.16.2.210:6389: connection refused
+WARN  session lookup failed               redis TYPE check failed: connection refused
+WARN  request journey observation degraded
+ERROR http_request POST /v1/chat/completions status=503 duration_ms=168124
+```
+
+即 **所有经网关的推理请求被拒绝**，这是网关的全路径中断，不是单模型问题。
+
+### 与本次工作无关
+
+本会话的所有代码提交均为 docs / 部署脚本 / 前端 lockfile / 一条已应用迁移，
+不触及 Redis 配置或 sanitize 的依赖关系。并行会话
+`mvs_241c29396ed146989150374cbba8a047`（agent-companion）也在同一时段报
+`503 Request sanitization unavailable`，与本故障同源。
+
+### 待处置（未执行）
+
+恢复 252 上的 Redis 6389 实例即自动恢复，无需重部署——两台的 sanitize
+会在 Redis 回来后自愈（与 15:40 PG 恢复后的表现一致）。
+
+**未擅自重启**：共享生产 Redis 容器的启停属基础设施决策，且重启涉及
+会话/限流/配额等易失状态，需运维侧确认。
