@@ -787,12 +787,31 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 	})
 }
 
-// slidingWindowQuery 构造凭据监控抽屉的 request_logs 回退查询。2026-09-21
-// 提取为函数：真库回归测试（sliding_window_realdb_test.go）复用同一文本，
-// 防测试与生产 SQL 漂移——bg/feature_stats_worker.go featureDistributionQuery
+// slidingWindowHotMaxMinutes 划分抽屉回退查询的两条路径：
+// ≤ 120 分钟走 hot 窗快路径（session_turns_hot / request_logs_hot，
+// 252 实测 0.6ms vs canonical 视图 med 1.27s，~2,000×）；更长窗口保留
+// canonical 视图慢路径（视图三臂含全分区反连接，语义全域正确）。
+// 上界依据：hot 保留名义 8h（promote retention），水位滞后实测 ~12h
+// （R16 fact 85），120min 对最坏滞后仍有 4× 边际；batch 端点上限
+// 1440min，超过阈值的窗口必须走视图，否则会静默截断历史。
+const slidingWindowHotMaxMinutes = 120
+
+// slidingWindowQuery 构造凭据监控抽屉的 request_logs 回退查询（长窗
+// 路径，> slidingWindowHotMaxMinutes 时使用）。2026-09-21 提取为函数：
+// 真库回归测试（sliding_window_realdb_test.go）复用同一文本，防测试与
+// 生产 SQL 漂移——bg/feature_stats_worker.go featureDistributionQuery
 // 同款。视图 request_logs_with_current_month 冻结不可改投影（R37 定案），
 // 729 迁移以 (CASE credential, ts DESC) 表达式索引伺服其 session_turns
 // 分支的长窗分支。
+//
+// 2026-10-11 252 审计第 32 轮：该查询在窗口内时改走
+// slidingWindowHotQuery —— batch 端点（8 worker × 100 pairs）对空 pair
+// 的 Redis miss 全部落到本查询，canonical 视图的反连接结构阻断 LIMIT
+// 下推（R8 fact 43 同款），252 实测单次 med 1.27s、事故期 ×3,283/h，
+// 观测负载反过来放大了宿主 OOM 事故。热路径语义在窗口内与视图精确
+// 等价（对拍 EXCEPT 双向差集 0）：窗口 ≤ hot 保留期时，与 request 行
+// 同生的 turn 必在 session_turns_hot，故分区臂与 request_logs 的
+// session_turns（全分区）反连接可安全省略。
 func slidingWindowQuery() string {
 	return `
 		SELECT COALESCE(request_id, ''), EXTRACT(EPOCH FROM ts)::bigint * 1000,
@@ -803,6 +822,47 @@ func slidingWindowQuery() string {
 		  -- from model_offers.raw_model_name (e.g. "MiniMax-M3" vs "minimax-m3"),
 		  -- so a plain = misses most rows.
 		  AND lower(COALESCE(outbound_model, client_model)) = lower($2)
+		AND ts > NOW() - ($3 || ' minutes')::interval
+		ORDER BY ts DESC
+		LIMIT $4
+	`
+}
+
+// slidingWindowHotQuery 构造抽屉回退的 hot 窗快路径查询（窗口 ≤
+// slidingWindowHotMaxMinutes）。与 canonical 视图的窗内等价性论证见
+// slidingWindowQuery 头注；列投影与视图回退查询逐列一致，扫描面：
+//   - session_turns_hot 臂：idx_session_turns_hot_credential_ts
+//     ((CASE credential)::bigint, ts) 表达式索引伺服 credential+窗过滤；
+//   - request_logs_hot 臂：idx_request_logs_hot_credential_model_ts
+//     (credential, lower(COALESCE(model)), ts) 表达式索引把模型过滤
+//     一并推入索引条件，反连接探测走
+//     idx_session_turns_hot_request 的 Index Only。
+//
+// 252 真库实测（2026-10-11）：EXPLAIN ANALYZE 0.644ms，全臂索引条件
+// 下推，无排序溢出；对拍 canonical 视图 EXCEPT 双向差集 0。
+func slidingWindowHotQuery() string {
+	return `
+		SELECT COALESCE(request_id, ''), EXTRACT(EPOCH FROM ts)::bigint * 1000,
+		       success, COALESCE(latency_ms, 0), COALESCE(error_kind, '')
+		FROM (
+		    SELECT t.request_id, t.ts, t.success, t.latency_ms, t.error_kind,
+		           t.model AS outbound_model, d.client_model,
+		           CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint END AS credential_id
+		    FROM session_turns_hot t
+		    LEFT JOIN session_turn_details_hot d
+		      ON d.tenant_id::text = t.tenant_id::text
+		     AND d.request_id = t.request_id
+		     AND d.partition_date = t.partition_date
+		    UNION ALL
+		    SELECT r.request_id, r.ts, r.success, r.latency_ms, r.error_kind,
+		           r.outbound_model, r.client_model, r.credential_id
+		    FROM request_logs_hot r
+		    WHERE NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = r.request_id)
+		) cand
+		WHERE credential_id = $1
+		  -- 与视图路径同款大小写折叠：outbound_model 与 model_offers 大小写
+		  -- 可能不一致（"MiniMax-M3" vs "minimax-m3"）。
+		  AND lower(COALESCE(outbound_model, client_model)) = lower($2)
 		  AND ts > NOW() - ($3 || ' minutes')::interval
 		ORDER BY ts DESC
 		LIMIT $4
@@ -810,11 +870,16 @@ func slidingWindowQuery() string {
 }
 
 // slidingWindowFromRequestLogs builds CallEntry timeline data directly from
-// the request_logs table. Used when the Redis recorder is unavailable. Uses
-// idx_request_logs_credential_ts (credential_id, ts DESC) so the LIMIT scan
-// is an index descent.
+// the request_logs tables. Used when the Redis recorder is unavailable or
+// returns no entries. Window-gated: ≤ slidingWindowHotMaxMinutes reads the
+// hot dual-write tables (index descent, ~sub-ms); longer windows read the
+// canonical view (slidingWindowQuery, 729-serviced) which sees full history.
 func (m *CredentialMonitorHandlers) slidingWindowFromRequestLogs(ctx context.Context, credentialID int, model string, minutes, limit int) ([]credentialhealth.CallEntry, error) {
-	rows, err := m.h.db.Query(ctx, slidingWindowQuery(), credentialID, model, fmt.Sprintf("%d", minutes), limit)
+	q := slidingWindowQuery()
+	if minutes <= slidingWindowHotMaxMinutes {
+		q = slidingWindowHotQuery()
+	}
+	rows, err := m.h.db.Query(ctx, q, credentialID, model, fmt.Sprintf("%d", minutes), limit)
 	if err != nil {
 		return nil, err
 	}

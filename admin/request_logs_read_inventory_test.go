@@ -80,7 +80,7 @@ var requestLogsReadInventory = map[string]int{
 	"admin/body_resolver.go":                4,
 	"admin/compression_sessions.go":         5,
 	"admin/compression_stats.go":            4,
-	"admin/credential_monitor.go":           3,
+	"admin/credential_monitor.go":           4,
 	"admin/credential_monitor_heatmap.go":   1,
 	"admin/credential_success_rate.go":      2,
 	"admin/data_lifecycle.go":               16,
