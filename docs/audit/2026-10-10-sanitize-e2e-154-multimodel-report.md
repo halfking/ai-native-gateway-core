@@ -356,7 +356,7 @@ env[1621] "msg":"sanitize pattern detector ready","path":"configs/sensitive_patt
 **E2E 场景矩阵：42 通过 / 0 失败**（minimax-m3、gpt-6-luna、glm-5.3、deepseek-v4-pro、mimo-v2.5-pro）。
 部署前那次的 deepseek-v4-pro C2 偶发超时未复现。
 
-出向明文取证：117 行 `outbound_body`，**剥除占位符后残留 0 行**，
+出向明文取证：158 行 `outbound_body`，**剥除占位符后残留 0 行**，
 `sk-[A-Za-z0-9]+-[A-Za-z0-9-]{15,}` 明文密钥 **0 条**。
 
 **三协议 + 工具路径矩阵：全绿**（`client_placeholder_leak` 全部 False）：
@@ -392,17 +392,20 @@ env[1621] "msg":"sanitize pattern detector ready","path":"configs/sensitive_patt
 | 窗口 | 行数 | 裸形态泄漏 | 每千行 | 完整占位符泄漏 | 每千行 |
 |---|---|---|---|---|---|
 | 部署前（06:00–11:13） | 4658 | 34 | 7.3 | 86 | 18.5 |
-| 部署后（11:13– ） | 283 | 1 | **3.5** | 4 | **14.1** |
+| 部署后（11:13– ） | 360 | 2 | **5.6** | 5 | **13.9** |
 
-裸形态泄漏从 7.3/1000 降到 **3.5/1000**（约 −52%），五处修复生效；
-完整占位符泄漏从 18.5/1000 降到 **14.1/1000**（约 −24%）——下降但未清零，见下节。
+裸形态 7.3 → 5.6、完整占位符 18.5 → 13.9，两项均下降，但**降幅远小于小样本时的观感**：
+部署后窗口内裸形态只有 2 例，逐千行归一化后单条事件就会让数字在 3.5–5.6 之间跳动。
+**这两个比率只能作为方向性参考，不足以支撑「修复降低了 X%」的结论**；
+可信的是绝对量级对比（4658 行 34 例 vs 360 行 2 例）与出向零残留。
+完整占位符一项未清零，见下节。
 
 ---
 
 ## 九之二、遗留缺陷：完整占位符 fail-open 透传（本次未修）
 
 部署后取证发现一个**先前未记录的缺陷**，不属于本次五处修复。
-速率在部署后有所下降（18.5 → 14.1 每千行），但**未清零**，
+速率在部署后有所下降（18.5 → 13.9 每千行），但**未清零**，
 说明它是既有行为、并非本次发布引入的回归，同时也说明本次五处修复并未覆盖它。
 
 ### 现象
@@ -597,3 +600,64 @@ FAIL  github.com/kaixuan/llm-gateway-go/security/sanitize
    `r244_bare_marker_form_test.go`、`r244_bare_marker_corpus_audit_test.go`、
    `r244_bare_marker_false_positive_test.go` 等文件。此时提交会把他人在途、
    且测试红的改动一并带入。
+
+---
+
+## 十、合并 origin/main 与 245 部署状态（11:30）
+
+### 合并
+
+`main` 与 `origin/main` 分叉（本地 ahead 1 / behind 6）。按用户决定先合并：
+
+```
+git merge origin/main   # 75d9c879f，无冲突
+```
+
+合并后 `security/sanitize` 与 `domains/streaming` 全套件在 154 上**全绿**：
+
+```
+ok  security/armor      ok  security/guardian   ok  security/sanitize
+ok  security/sensitive  ok  domains/streaming   ok  domains/streaming/executors
+ok  …/executors/webcookie  ok  …/integrity     ok  …/state
+```
+
+第九节记录的 4 个红测，是**另一个会话在编辑过程中的中间快照**；
+`7dd0b4b67` 提交后的状态本身就是绿的，此前判断有误，此处更正。
+
+两处 `gofmt -l` 命中（`input_protocols.go`、`deployment_pattern_config_test.go`）
+经核对是 **origin/main 上就已存在**的格式问题，非本轮引入，未擅自改动。
+
+### 245 部署：被环境前置条件挡住，未完成
+
+245 当前跑 `build_seq 2512 / 786de4a1`，`/healthz` 返回 `ready:true`（本次尝试
+未改变它）。`scripts/deploy-245.sh --dry-run` 正常，但真正执行连续失败：
+
+```
+1) scripts/deploy-245.sh:75: ARGS[@]: unbound variable
+2) deploy-lib/host.sh:103: HOST_${target^^}_ROOT: bad substitution
+   deploy-lib/ssh-retry.sh:223: extra_flags[@]: unbound variable
+```
+
+根因：**deploy-lib SSOT 使用 bash 4+ 语法**（`${var^^}` 大写展开、
+`${!var}` 间接引用、空数组在 `set -u` 下的展开），
+而本机只有 macOS 自带的 **bash 3.2.57**，`/opt/homebrew/bin/bash`
+与 `/usr/local/bin/bash` 均不存在。
+
+仓库对此并不陌生：`scripts/checks/` 里有专门的门
+（`install-entrypoints-test.sh`、`user-scripts-sync-test.sh`）要求**用户脚本**
+兼容 bash 3.2；但 `deploy-lib` 是仓外 SSOT，它面向的是 bash 4+ 环境。
+两者不冲突，只是**本机不满足 deploy 侧的前置条件**。
+
+按 AGENTS.md「依赖安装属用户侧决策」，本轮**未擅自 brew install bash**。
+
+### 需要用户侧提供（二选一或其一）
+
+1. 安装 bash 4+（`brew install bash`），然后重跑：
+   ```bash
+   export AIAN_DEPLOY_LIB="$HOME/workspace/ai-native-tools/deploy-lib"
+   bash scripts/deploy-245.sh --seq 2515
+   ```
+2. 或在已具备 bash 4+ 的机器/会话上执行同一条命令。
+
+验证判据：`curl -fsS http://<245>:8781/healthz` 的 `build_seq` 变为 2515、
+`git_sha` 变为 `869c04bf2`。
