@@ -118,8 +118,15 @@
 
 ## 剩余任务
 
-- **154 生产未部署本次改动**：`configs/sensitive_patterns.yaml` 与 851 迁移
-  会随部署生效，但 154 的 `pii_patterns` 是独立库，迁移需单独执行。
+- ~~**154 生产未部署本次改动**~~ —— **2026-10-11 实测推翻，已作废**。
+  原文称「154 的 `pii_patterns` 是独立库，迁移需单独执行」，这是**错的**：
+  154 与 245 指向**同一个** PostgreSQL（`172.16.2.210:5432/llm_gateway`，
+  键名是 `LLM_GATEWAY_DATABASE_URL`，**不在** `/etc/llm-gateway-go/env` 之外的
+  `LLM_GATEWAY_DB_DSN` 里——按后者 grep 会一无所获，这是个坑）。
+  实测：154 运行 `2533-3cac0431`，二进制指纹确认含本轮全部修复；
+  `pii_patterns.ip_address`=disabled、`schema_migrations` 有 851、
+  `session_summaries` 60 列，两台机共享这一份结果，端到端 8/8 通过。
+  DB 侧**不存在**「各跑各的迁移」这回事，改一处两边同时生效。
 - **域名形式的外传目标从不被拦**（`curl http://evil.example.com/collect`
   不触发阻断）：`ScopeEgress` 只匹配 IP 规则。先于本次改动存在，未处理。
 
