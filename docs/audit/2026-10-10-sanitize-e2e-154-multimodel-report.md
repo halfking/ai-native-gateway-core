@@ -1107,3 +1107,241 @@ contain <function_calls>:    0  ( 0.0%)   ← 已清
 - 会 → 不要在网关清（保持透传），本节结论仅作为「行为符合预期」的记录。
 - 不会 → 在 `cleanMinimaxLeakFields` 补 `<think>` 清理，与既有两项一致，
   并补一条回归测试（断言 `<think>` 清理后 0% 泄漏、既有两项不回退）。
+
+## 十六、【生产事故】Redis 6389 宕机 → sanitize fail-closed 全量 503（16:00）
+
+执行第十四节的多次端到端复现时，捕获脚本开始返回 108 字节的错误体：
+
+```json
+{"error":{"code":"sanitization_failed","message":"Request sanitization unavailable","type":"server_error"}}
+```
+
+### 定位
+
+从 154 与 245 分别探测 252（`172.16.2.210`）：
+
+```
+host 172.16.2.210   ping 0% loss, rtt 0.42ms      ← 机器活着
+PG      172.16.2.210:5432   OK                   ← 数据库正常
+Redis   172.16.2.210:6389   REFUSED              ← 宕机
+redis-cli -h 172.16.2.210 -p 6389 ping → Connection refused
+```
+
+252 上 `ss -lntp` 无 6389 监听；`ps` 显示 3 个 `redis-server *:6379`
+（均为 30~40 天前起的存量进程，与网关用的 6389 不是同一实例）；
+无 `redis*.service`。`deploy-lib/redis-discover.sh` 头部注明
+*"154/245 通过 252 使用"*，即网关的 Redis 是 252 上的**容器**，
+命名候选含 `llm-gateway-redis` —— 该实例已不在监听。
+
+时间线：15:38 探测 6389 仍返回 `NOAUTH Authentication required`（说明当时在跑，
+只是需要认证），16:00 已 refused。**窗口约 15:38–16:00 之间。**
+
+### 影响面
+
+网关 sanitize 层依赖 Redis，且**设计上 fail-closed**（宁可拒绝不放行）：
+
+```
+245:8781  bd638a7a-2515  ready:false
+154:8782  bd638a7a-2516  ready:false
+```
+
+154 日志同时刷出：
+
+```
+ERROR call_history_aggregator failed      dial tcp 172.16.2.210:6389: connection refused
+WARN  session lookup failed               redis TYPE check failed: connection refused
+WARN  request journey observation degraded
+ERROR http_request POST /v1/chat/completions status=503 duration_ms=168124
+```
+
+即 **所有经网关的推理请求被拒绝**，这是网关的全路径中断，不是单模型问题。
+
+### 与本次工作无关
+
+本会话的所有代码提交均为 docs / 部署脚本 / 前端 lockfile / 一条已应用迁移，
+不触及 Redis 配置或 sanitize 的依赖关系。并行会话
+`mvs_241c29396ed146989150374cbba8a047`（agent-companion）也在同一时段报
+`503 Request sanitization unavailable`，与本故障同源。
+
+### 待处置（未执行）
+
+恢复 252 上的 Redis 6389 实例即自动恢复，无需重部署——两台的 sanitize
+会在 Redis 回来后自愈（与 15:40 PG 恢复后的表现一致）。
+
+**未擅自重启**：共享生产 Redis 容器的启停属基础设施决策，且重启涉及
+会话/限流/配额等易失状态，需运维侧确认。
+
+### 十六之二、252 上的进一步定位：容器不是「停了」，是「不存在」（16:12）
+
+补查 252，结论比第十六节更具体，且改变了处置方式：
+
+```
+podman container exists llm-gateway-redis   → rc=1  (3s)   容器不存在
+podman ps                                    → rc=124 (30s)  挂起
+```
+
+- **`llm-gateway-redis` 容器不存在**，不是 exited。`podman container exists`
+  3 秒返回 rc=1（未找到），说明不是 podman 全面卡死，而是**该容器已被移除**。
+- 因此**不能靠 `docker start llm-gateway-redis` 恢复** —— 那只对「exited」
+  状态有效。需要**重新拉起/重新 provision**。
+- 在 252 上 `grep -rl 6389 /root /opt /etc/systemd/system /home` **无命中**，
+  即容器定义（compose 文件 / systemd unit / 启动脚本）已不在这些路径下。
+  恢复所需的编排定义来源需要运维侧提供。
+
+运行时背景：252 的 `docker` 是 podman 兼容垫片
+（`/var/run/docker.sock -> /run/podman/podman.sock`），无 `docker.service`，
+`podman system service`（pid 224507，已跑约 7.2h）活着，其余容器
+（pms-mysql / veritrans-* / netbird-*，conmon 存活约 79 天）都正常。
+即**不是整机或运行时整体故障，是这一个容器消失了**。
+
+附带异常：`podman ps` 挂起 >30s，而 `podman container exists` 3s 返回，
+两者路径不一致，建议运维顺带查一下 podman 的 sqlite DB 锁 / storage 状态
+（`/var/lib/containers/storage`）。
+
+### 处置口径（未执行）
+
+1. **立即**：运维确认 `llm-gateway-redis` 的编排定义来源并重新拉起，
+   端口仍需映射到 **6389**（网关两台的 `LLM_GATEWAY_REDIS_ADDR` 指向
+   `172.16.2.210:6389`）。
+2. **起来即自愈**：Redis 一恢复，两台 sanitize 随即可用，`ready` 回 true，
+   无需重部署（与 15:40 PG 恢复后一致）。
+3. **顺带**：查 `podman ps` 挂起与容器为何被移除（是否有清理任务/定时器误删）。
+
+> 本会话未对 252 做任何写操作：重建共享生产 Redis 容器涉及持久化数据
+> 与业务连续性，属运维决策。
+
+## 十七、Redis 恢复自愈 + 端到端采样补完（16:38–16:48）
+
+### 事故收尾：自愈成立，无需重部署
+
+第十六节的 Redis 事故在 16:38 复核时已恢复：
+
+```
+Redis 172.16.2.210:6389   TCP OK
+245:8781  bd638a7a-2515  ready:true
+154:8782  bd638a7a-2516  ready:true
+```
+
+两台**未做任何重部署即自愈**，与 15:40 PG 恢复后的表现一致。这条经验值得固化：
+Redis / PG 任一恢复后不需要重跑 deploy，只需要确认 `ready` 回来即可。
+
+### 端到端采样（公网入口，4 个提示词）
+
+```
+prompt              deltas  first  first-repr                  NL?  prefix
+说三个字               19     18  '<think>The user is'          no   THINK
+用一句话介绍你自己         9      9  '<think>用户'                no   THINK
+解释一下什么是索引       33     29  '<think>\nThe user is as'    \n   THINK
+你好                  25     10  '<think>The'                 no   THINK
+```
+
+两个硬结论：
+
+1. **`<think>` 前缀率 4/4 = 100%**（raw_data 全量口径 87.6%，小样本全中属正常）。
+2. **首帧长度 18 / 9 / 29 / 10，全部多字符。** 网关在任何一次采样中都没有
+   产出过单字符首帧——与第十二节 0.18% 的大样本结论一致。
+
+附带观察：`解释一下什么是索引` 的首帧是 `<think>\nThe user is as`，
+**`<think>` 之后紧跟换行**。模型在推理块开头会插入换行；客户端若按行渲染，
+回复一开头就会被打断成两段。这是「第一个请求回复看起来不对」的一个具体放大器，
+但仍不是「单字一行」——后者需要客户端侧逐字渲染才能成立。
+
+### 收口
+
+至此可观测链路全部取过证，且结论一致：
+
+| 环节 | 证据 | 结论 |
+|---|---|---|
+| 模型 | minimax-m3 1013/1145 带 `<think>`；glm-5.2 0/111 | 模型独有行为 |
+| 网关 | `minimax[>[` 与 `<function_calls>` 均 0%，`<think>` 79.8% | 清理器在跑，缺 `<think>` 一项 |
+| nginx | `proxy_buffering off`；SSE 不在 `gzip_types` | 不改写分帧 |
+| 客户端 | 首帧 9~29 字符，无单字 | 渲染层行为，网关侧无法解释 |
+
+**「单字一行」不是网关产生的字节形状。** 要坐实最后一环，仍需客户端侧
+截图或渲染逻辑；而「第一个请求回复异常」已可完全归因于 `<think>` 透传。
+
+## 十八、用户裁决：客户端会自动折叠思考 → 网关不改（17:00）
+
+**用户答复**：*"客户端会自动折叠思考，请继续下一步。"*
+
+据此，第十四/十五节提出的两条修法**都不执行**：
+
+- ❌ 不在 `cleanMinimaxLeakFields` 补 `<think>` 清理 —— 客户端靠这个块渲染
+  折叠 UI，网关清掉会让该 UI 失效，**属于净损失**。
+- ❌ 不要求客户端改造 —— 客户端行为已符合预期。
+
+因此 `<think>` 原样透传**确认为既定设计而非缺陷**。第十四节末尾的疑问
+（"客户端是否自行折叠"）就此关闭，结论落定为：
+**网关侧无需任何改动；观测到的"第一个请求回复异常"观感问题，
+由客户端折叠 UI 承担。**
+
+同时需要接受的后果：minimax-m3 的推理内容会持续出现在网络层，
+`<think>` 块中的内容对下游可见。若日后对推理内容有脱敏要求，
+应在 sanitize 层做**内容级**处理，而不是靠删除整个块来"顺便"达到。
+
+### "下一步"：修复生产 seq 回退
+
+当前生产仍落后 main：
+
+```
+245  bd638a7a-2515  ready:true
+154  bd638a7a-2516  ready:true
+历史已部署：2518-e3e2b4ef（245）/ 2519-a0fdaaa5（154）
+```
+
+`bd638a7a` 已随 `3346008d8` 并入 main，故部署 main 是**前进**而非分叉；
+seq 回到单调（floor 已由并行会话推到 2522，下一次部署为 2523/2524）。
+
+## 十九、更正：bash 5.2 其实一直在本机（17:12）
+
+**第十一节的前提是错的。** 该节写「本机只有 macOS 自带的 bash 3.2.57，
+`/opt/homebrew/bin/bash` 与 `/usr/local/bin/bash` 均不存在」，
+并据此断定 deploy-lib SSOT 的 bash 4+ 语法无法满足、只能绕开。
+
+错在**只查了两个 Homebrew 路径就外推成「本机没有 bash 4+」**。本机实际装有：
+
+```
+/Users/niuer/sdk/bash5/bin/bash → GNU bash 5.2.0(1) aarch64-apple-darwin25.2.0
+```
+
+（与 Go 同在 `~/sdk/` 下——之前找 Go 时只看了 `~/sdk/go`，没往旁边看。）
+
+实测**未经任何修改的 SSOT** 在 bash 5.2 下直接可用：
+
+```
+host_root_for 245   -> /opt/llm-gateway-go
+_ssh_key_for 245    -> /Users/niuer/.ssh/id_ed25519
+_ssh_host_for 245   -> root@8.136.114.245
+target_unsupported  -> {"target":"bogus-host", ... "ssh_key_env":"SSH_KEY_BOGUS-HOST" ...}
+bash5 + UNMODIFIED SSOT: OK
+```
+
+即 `${target^^}`、`declare -A` 等全部原生支持。**第十一节那套「拷到 /tmp 逐处改写」
+的绕行方案是不必要的**，正确做法一直是：
+
+```bash
+export PATH="$HOME/sdk/bash5/bin:$HOME/sdk/go/bin:$PATH"
+export AIAN_DEPLOY_LIB="$HOME/workspace/ai-native-tools/deploy-lib"   # 原版 SSOT
+bash scripts/deploy-154.sh
+```
+
+旁证：并行会话（worktree `llm-gateway-go-cursor`）一直是这么跑的——
+`export PATH=$HOME/sdk/bash5/bin:...`，且 `AIAN_DEPLOY_LIB` 指向**原版 SSOT**，
+从未打过补丁。
+
+### 仍然有效的部分
+
+第十一节里这几条结论与 bash 版本无关，不受本次更正影响：
+
+1. **`558953c52`（deploy-245/154 空 ARGS unbound）仍是真 bug。**
+   `deploy-245.sh:44` 的守卫确实漏了末尾 `exec` 行，154 入口也确实没有守卫——
+   这是代码缺陷，与本机装什么 bash 无关。
+2. **「只在 node_modules 缺失时装依赖」是真 bug**（`2bf5b3870`），
+   已导致 245 部署因 `TS2307: Cannot find module 'qrcode'` 中止。
+3. deploy-lib 里 `declare -A` / `${var^^}` 的写法在**只有 bash 3.2 的机器**上
+   确实跑不了——只是这台机器并不是那种机器。
+
+### 教训
+
+「某依赖不存在」只能由**穷举搜索**得出，不能由「两个常见路径没找到」外推。
+`~/sdk/` 这种非标准前缀目录是本次漏查的直接原因。
