@@ -156,7 +156,9 @@ func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any,
 }
 
 // isNonRoutableAddressFragment reports whether a detected address fragment is
-// a loopback / private / link-local / unspecified target.
+// a target that cannot carry exfiltration. 实际判定委派给
+// isNonExfiltrationAddress，故覆盖范围以那里为准（loopback / private /
+// link-local / unspecified / CGNAT / multicast），不要在本文件里重复枚举网段。
 //
 // 2026-10-11（245 build_seq 2531 部署后端到端实测）：类型集合里**必须**包含
 // TypeInternalIP，否则 r1008 的私网豁免形同虚设。
@@ -173,12 +175,48 @@ func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any,
 // 而 fallback 里根本没有地址规则，所以那条判据恒真、盖不住这个洞。
 func isNonRoutableAddressFragment(fragment SensitiveFragment) bool {
 	switch fragment.Type {
-	case TypeServerIP, TypeInternalIP, SensitiveType("server_ipv6"):
+	case TypeServerIP, TypeInternalIP, typeServerIPv6:
 	default:
 		return false
 	}
-	ip := net.ParseIP(strings.TrimSpace(fragment.Value))
-	return ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified())
+	return isNonExfiltrationAddress(fragment.Value)
+}
+
+// isNonExfiltrationAddress 回答「这个地址能不能是外传目的地」。
+//
+// 2026-10-11 批判性审计（承接 dc63f19ff）：原来的写法是枚举豁免谓词
+// （loopback / private / linklocal / unspecified），这个方向本身就是错的——
+// 它把「没列举到的」默认成外传，于是每出现一个新网段就复发一次同类故障。
+// 已实测复发过一次：CGNAT 100.64.0.0/10（Tailscale / WireGuard 常用）与
+// 云元数据 100.100.100.100（阿里云）都会让指向自己内网或 mesh 的 tool 调用
+// 整条 output_policy_blocked，与 dc63f19ff 修的私网阻断是同一个用户症状。
+//
+// 改为反过来问：默认按公网可达处理（fail-closed 保住），只对**明确不可路由**
+// 的地址放行。新增的两类都来自实测：
+//
+//   - CGNAT 100.64.0.0/10（RFC 6598）：net.IP.IsPrivate() 不认它，但它是共享
+//     地址空间，恰恰是 overlay 网络的地址段。
+//   - 组播 224.0.0.0/4：不是单播目的地，不可能承载外传。
+//
+// 云元数据 169.254.169.254 走 IsLinkLocalUnicast 已被覆盖，这里只补注释说明
+// 它是被显式意图覆盖的，不是侥幸命中。
+func isNonExfiltrationAddress(value string) bool {
+	ip := net.ParseIP(strings.TrimSpace(value))
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+		return true
+	}
+	if ip.IsMulticast() {
+		return true
+	}
+	// RFC 6598 shared address space (CGNAT)：net 的 IsPrivate 不覆盖，但 Tailscale
+	// / WireGuard / 运营商级 NAT 都在这里，是典型的不该被当成外传目的地的地址。
+	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+		return true
+	}
+	return false
 }
 
 func (c *outputSensitiveChecker) Check(ctx context.Context, _ string, text string) (*outputcompliance.ComplianceResult, error) {
