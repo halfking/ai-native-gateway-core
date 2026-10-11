@@ -13620,6 +13620,103 @@ DB 打戳是权威证据 ⇒ 该小时三兄弟**一次都没刷新**，数据�
 本节两条通道给出 122.0 s 与 129.6 s（差 6%）才算互证；
 只看一条就会把 journald 的丢日志误读成「没刷新」。
 
+### §10.106.38 修 §10.106.37 §六 发现的整轮丢失：**锁冲突退避重试**（提交未部署）
+
+§10.106.37 测出 02:00 那轮三兄弟整轮丢失后，本节把它修掉。
+⚠️ **只提交、未部署**：它改的是刷新排程行为，上线需与部署窗口一起决定。
+
+#### 一、先推翻一条**写在代码注释里**的错误估计
+
+`refreshSessionViews` 原注释写：「session 轮约 60s、每 60min 一次，与 10min 的
+routing 轮**相撞的概率约 1.7%**，这个取舍是安全的」。
+
+**这个估计的方向是反的**：
+
+```
+SessionViewsInterval = 60min   = RefreshInterval(10min) × 6      ← 整数倍
+两个定时器都走 nextAlignedWait(...)  ← 对齐墙钟整点
+⇒ 两个周期每个整点必然同时醒，撞在同一把 mvRefreshLockKey 上
+```
+
+不是 1.7% 的巧合，是**每个整点一次的结构性碰撞**。
+之所以平时看不出来，是因为锁只在**真正执行 REFRESH 期间**持有（实测单轮 14~195s），
+谁先拿到谁先刷、后到的等十几秒就轮上了；而 10-12 02:00 那次两台都在整点抢，
+其中一个实例恰好连续输掉三轮（154 侧日志：拿到 Redis 令牌后三个视图
+`skipped_no_lock`），于是整轮归零。
+
+⇒ 注释里那个「1.7%」应当被删掉而不是修正——它的**推理方式**（把整点对齐的
+两个整数倍周期当成随机相位）就是错的，留着会误导下一个读代码的人。
+
+#### 二、修法选型：**退避重试**，不是「另开一把锁键」
+
+| 方案 | 后果 | 判断 |
+|---|---|---|
+| 两个周期各开一把 advisory lock | routing 与 session 的 REFRESH **并发**跑 | ❌ session 一轮已占集群 62%~75% 的 WAL，再叠一路并发刷新不可接受 |
+| **撞锁就退避重试** | 锁只在执行 REFRESH 期间持有 ⇒ 等十几秒就能拿到 | ✅ **采纳** |
+| 保持现状 | 每个整点都可能被整轮跳过 | ❌ 就是当前缺陷 |
+
+关键前提是实测出来的：**锁不是整轮持有**。`refreshView` 里
+`pg_try_advisory_lock` → `execRefresh` → `pg_advisory_unlock` 都在同一条
+pin 住的连接上，持有窗口 = 单次 REFRESH 时长（14~195s），不是 60 分钟。
+所以「稍后重试」有确定的上界，不需要并发。
+
+#### 三、改动清单
+
+1. **`refreshView` 的返回从 `(bool, error)` 变成 `(mvSkipReason, error)`**：
+   新增 `mvRefreshed` / `mvSkippedMissingView` / `mvSkippedLockHeld` 三态。
+   **这是修法的必要前提**——原来「视图不存在」和「别人正刷」压成同一个 `true`，
+   调用方只能二选一：全不重试（现状）或全重试（那会把一个真正缺失的视图
+   也重试到超时，把一个配置错误伪装成一次锁竞争）。
+2. **新增 `retryOnLockHeld`**：只在 `mvSkippedLockHeld` 时退避重试，
+   遇 error / 缺失 / 成功立即返回。
+3. **重试预算是整轮共享的**（`retryDeadline := time.Now().Add(SessionViewLockRetryBudget)`，
+   在 `for` 循环**外**算一次）：`SessionViewsTimeout` 是**整轮**预算，
+   每视图各 4min 会把「撞锁跳过」换成「被 ctx 静默掐断」——那是更难发现的一种失败。
+4. **退避 2s 起、翻倍、封顶 15s**，整轮上限 4min。
+   取 4min 的依据：实测最长一轮 195s，4min + 195s ≈ 7.3min < `SessionViewsTimeout`(10min)。
+5. **routing 轮零行为变更**：它继续直接调 `refreshView`，只适配了新返回值。
+6. 新增指标 result 值 `lock_retry`（`mvRefreshTotal{result="lock_retry"}`）。
+
+#### 四、判据与它们各自的**承重点**
+
+判据文件 `bg/materialized_view_refresher_lockretry_test.go`。
+测的是 `retryOnLockHeld` **策略**而非 `refreshView`：锁冲突是两个进程加一把
+advisory lock 的性质，单测造不出来，能造出来的只有源码文本断言。
+所以 `attempt` 被做成参数，每条判据都能真的驱动一遍「撞锁 → 退避 → 拿到锁」。
+
+| 判据 | 承重点 | 为什么不能弱化成「最终状态对」 |
+|---|---|---|
+| `RetriesUntilTheLockIsFree` | `calls == 3` | 只断言最终 `mvRefreshed` 与「一次就成功」同形 |
+| `DoesNotRetryAMissingView` | `calls == 1` | 「允许侧」判据必须配一条「前提仍在场」，否则分不清没重试还是没撞锁 |
+| `DoesNotRetryOnError` | `calls == 1` + 错误原样返回 | 吞掉错误会让部署期问题变成静默陈旧 |
+| `StopsWhenTheBudgetIsSpent` | `calls ≥ 2` 且 `elapsed < 1s` | 退避起点 2s ≫ 预算 40ms：**不截断就会睡满 2s**，elapsed 上限专抓这一条 |
+| `StopsWhenTheContextIsCancelled` | `calls == 1` 且 `elapsed < 500ms` | 不认 ctx 的实现会把 `Stop()` 拖满预算（部署摘流量时挂住） |
+| `NextLockRetryBackoff_DoublesThenClamps` | 退避表按值断言 | 用「睡一会儿再量」测封顶，会在机器繁忙时因别的原因通过 |
+| `SessionViewLockRetryBudget_FitsInsideTheCycleBudget` | 两个不等式 | 常量给错都是静默失败，给小=静默掐断、给大=拖进下一轮 |
+| `RefreshSessionViews_RetriesThroughTheWrapper` | 接线 + deadline 在循环外 | 前六条测的是策略，这条钉的是「session 轮调的是包装器而不是裸调用」 |
+
+★ **本节没有把 `refreshView` 抽象成接口**：锁竞争要复现得有两个真连接，
+`bg` 这一族测试没有真库设施（本地一次性 PG 集群不在 CI 里）。
+⇒ **诚实标注强度**：上面第 8 条是源码文本断言，强度只到「调用点换没换」；
+`attempt` 闭包里包的是什么，由前七条的行为判据负责，不由它负责。
+
+#### 五、变异验证（5/5 变红，改完逐字节还原）
+
+| 变异 | 变红条数 | 被哪条判据抓住 |
+|---|---|---|
+| M1 取消重试（`reason != mvSkippedLockHeld` → `err != nil`） | **2** | `RetriesUntilTheLockIsFree`、`StopsWhenTheBudgetIsSpent` |
+| M2 任何跳过都重试（判定取反） | **1** | `DoesNotRetryAMissingView` |
+| M3 预算不再截断等待 | **1** | `StopsWhenTheBudgetIsSpent`（elapsed 上限） |
+| M4 不认 ctx 取消 | **1** | `StopsWhenTheContextIsCancelled` |
+| M5 退避不封顶 | **1** | `NextLockRetryBackoff_DoublesThenClamps` |
+
+⇒ **零条判据在五个变异下全绿过**，没有需要靠「变异无效」解释的条目。
+
+★ M2 这条值得单独记：它是本节**唯一**能区分
+「修好了」与「把所有跳过都重试」两种实现的判据，而后者在生产上
+会把一个真正缺失的物化视图重试满 4 分钟、把另外两个视图的刷新挤掉。
+**把判定写成一个布尔值时，「重试哪些」和「重试多久」一样重要。**
+
 ---
 
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」

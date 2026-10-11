@@ -124,6 +124,26 @@ const (
 	// 且前面已刷的会留下半轮状态 —— 比整体失败更难发现。
 	SessionViewsTimeout = 10 * time.Minute
 
+	// SessionViewLockRetryBudget 是**整轮共享**的锁等待预算（不是每视图一份）。
+	//
+	// 2026-10-12 实测（§10.106.37 §六）：两个周期共用一把 mvRefreshLockKey，
+	// 而 60min 的 session 周期是 10min routing 周期的整数倍，两个定时器又都
+	// 对齐墙钟（nextAlignedWait）⇒ 它们每个整点必然撞在同一把锁上。
+	// 10-12 02:00 那轮三个视图全部 skipped_no_lock，MV 数据陈旧 2 小时。
+	// 锁只在真正执行 REFRESH 期间被持有（单轮 14-200s），不是整轮持有，
+	// 所以「等一会儿再试」就能拿到 —— 不需要给两个周期各开一把锁键。
+	//
+	// 取 4min 的理由：实测最长一轮 195s（245 03:00 轮），
+	// 4min 重试 + 195s 物化 = ~7.3min，仍在 SessionViewsTimeout(10min) 之内；
+	// 共享而非每视图一份，是因为 SessionViewsTimeout 是**整轮**预算，
+	// 三视图各等 4min 会把 ctx 掐断变成新的失败形态。
+	SessionViewLockRetryBudget = 4 * time.Minute
+
+	// 退避序列：2s 起，翻倍，封顶 15s。起步要小（典型冲突只差十几秒），
+	// 封顶要让「对方这一轮刷了 200s」这种情况仍在预算内等到。
+	mvLockRetryInitialBackoff = 2 * time.Second
+	mvLockRetryMaxBackoff     = 15 * time.Second
+
 	// sessionViewsInitialDelay 比 InitialDelay 长：startup 迁移正在创建并
 	// 首次填充这些视图，等它们落定再进第一轮，否则第一轮必然撞上
 	// skipped_missing_view。
@@ -353,7 +373,7 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 	var failedView string
 
 	start := time.Now()
-	if skipped, err := r.refreshView(ctx, "routing_analytics_7d", useAdvisoryLock); err != nil {
+	if reason, err := r.refreshView(ctx, "routing_analytics_7d", useAdvisoryLock); err != nil {
 		hasError = true
 		lastErr = err
 		failedView = "routing_analytics_7d"
@@ -361,7 +381,7 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 		slog.Error("failed to refresh routing_analytics_7d",
 			"error", err,
 			"elapsed", time.Since(start))
-	} else if !skipped {
+	} else if !reason.skipped() {
 		recordMVRefreshSuccess("routing_analytics_7d", time.Since(start).Seconds())
 		slog.Info("refreshed routing_analytics_7d",
 			"elapsed", time.Since(start))
@@ -369,7 +389,7 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 	}
 
 	auditStart := time.Now()
-	if skipped, err := r.refreshView(ctx, "routing_audit_summary_7d", useAdvisoryLock); err != nil {
+	if reason, err := r.refreshView(ctx, "routing_audit_summary_7d", useAdvisoryLock); err != nil {
 		hasError = true
 		lastErr = err
 		failedView = "routing_audit_summary_7d"
@@ -377,7 +397,7 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 		slog.Error("failed to refresh routing_audit_summary_7d",
 			"error", err,
 			"elapsed", time.Since(auditStart))
-	} else if !skipped {
+	} else if !reason.skipped() {
 		recordMVRefreshSuccess("routing_audit_summary_7d", time.Since(auditStart).Seconds())
 		slog.Info("refreshed routing_audit_summary_7d",
 			"elapsed", time.Since(auditStart))
@@ -405,11 +425,19 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 // —— 两个节奏不同的周期共用一个 token 会互相抢票。
 //
 // 关于 Postgres advisory lock：refreshView 内部用的是全局的 mvRefreshLockKey，
-// 这里沿用而没有另开一把。代价是两个周期撞上时其中一轮整体跳过；收益是不必给
-// refreshView 再串一个锁键参数。session 轮约 60s、每 60min 一次，与 10min 的
-// routing 轮相撞的概率约 1.7%，而 routing 的陈旧度预算（15min > 10min 间隔）
-// 本就允许漏一轮。这个取舍是安全的：跳过是可见的（skipped_follower 指标 +
-// Info 日志），而悄悄漏刷不是。
+// 这里沿用而没有另开一把。收益是不必给 refreshView 再串一个锁键参数。
+//
+// ⚠️ 2026-10-12 订正（§10.106.37 §六）：本函数原注释称「相撞概率约 1.7%，
+// 这个取舍是安全的」——**这个估计是错的，而且方向相反**。
+// SessionViewsInterval(60min) 是 RefreshInterval(10min) 的**整数倍**，
+// 两个定时器又都走 nextAlignedWait 对齐墙钟 ⇒ 它们每个整点**必然**撞在同一把锁上，
+// 不是 1.7% 的巧合。实测 2026-10-12 02:00 那一轮三个视图全部 skipped_no_lock，
+// MV 数据陈旧 2 小时，00:00~03:00 四小时只落地三轮（0.75 次/小时）。
+//
+// 修法不是另开锁键（那会让 routing 与 session 的 REFRESH 并发跑，
+// 而 session 一轮已经占掉集群 62%~75% 的 WAL），而是**遇到锁就退避重试**：
+// 锁只在真正执行 REFRESH 期间持有，不是整轮持有。
+// 见 SessionViewLockRetryBudget 与 retryOnLockHeld。
 //
 // 单视图失败不终止整轮：三个视图的用途彼此独立，第三个失败不该让前两个的
 // 成果作废。失败计入各自视图的 failure 指标。
@@ -439,10 +467,19 @@ func (r *MaterializedViewRefresher) refreshSessionViews(parentCtx context.Contex
 		recordMVCoordination("advisory_only")
 	}
 
+	// 2026-10-12（§10.106.37 §六）：retryDeadline 整轮共享，不是每视图一份。
+	// 两个周期共用一把 advisory lock，而 60min 的 session 周期是 10min routing
+	// 周期的整数倍、两个定时器又都对齐墙钟 ⇒ 整点必然撞锁。撞上就整轮跳过的话，
+	// session 数据会陈旧整整一小时（实测 2026-10-12 02:00 丢了一整轮）。
+	// 锁只在真正执行 REFRESH 期间持有（实测单轮 14~195s），等一会儿就能拿到。
+	retryDeadline := time.Now().Add(SessionViewLockRetryBudget)
+
 	var failed int
 	for _, view := range SessionAnalyticsViews {
 		start := time.Now()
-		skipped, err := r.refreshView(ctx, view, true)
+		reason, err := retryOnLockHeld(ctx, view, retryDeadline, func() (mvSkipReason, error) {
+			return r.refreshView(ctx, view, true)
+		})
 		switch {
 		case err != nil:
 			// 不 return：三个视图用途独立，单个失败不该作废已刷好的。
@@ -450,7 +487,7 @@ func (r *MaterializedViewRefresher) refreshSessionViews(parentCtx context.Contex
 			recordMVRefreshFailure(view)
 			slog.Error("failed to refresh session analytics view",
 				"view", view, "error", err, "elapsed", time.Since(start))
-		case !skipped:
+		case !reason.skipped():
 			recordMVRefreshSuccess(view, time.Since(start).Seconds())
 			slog.Info("refreshed session analytics view",
 				"view", view, "elapsed", time.Since(start))
@@ -571,7 +608,28 @@ func (r *MaterializedViewRefresher) checkConsistency(ctx context.Context, viewNa
 // the Redis leader token for this cycle, since a second lock layer would
 // only add latency. It stays true whenever Redis coordination is
 // unavailable, preserving the original single-database dedup behaviour.
-func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName string, useAdvisoryLock bool) (bool, error) {
+// mvSkipReason tells apart "we did not try" from "somebody else got there
+// first". Only the latter is worth waiting out: a view that does not exist
+// will still be missing thirty seconds later, and spending the retry budget
+// on it would delay the views that could have been refreshed.
+//
+// Before this distinction existed, refreshView returned a bare bool and the
+// session cycle had to choose between retrying every skip (wasteful, and it
+// hides a genuinely broken view behind a timeout) and retrying none of them
+// (the measured starvation in §10.106.37 §六: 2026-10-12 02:00 lost the whole
+// session round to a 10-minute routing cycle that held the same lock key).
+type mvSkipReason uint8
+
+const (
+	mvRefreshed mvSkipReason = iota
+	mvSkippedMissingView
+	mvSkippedLockHeld
+)
+
+// skipped reports whether the view was left alone.
+func (s mvSkipReason) skipped() bool { return s != mvRefreshed }
+
+func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName string, useAdvisoryLock bool) (mvSkipReason, error) {
 	var exists bool
 	err := r.db.QueryRow(ctx, `
 		SELECT EXISTS (
@@ -581,13 +639,13 @@ func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName st
 		)
 	`, viewName).Scan(&exists)
 	if err != nil {
-		return false, err
+		return mvRefreshed, err
 	}
 	if !exists {
 		recordMVRefreshSkipped(viewName, "skipped_missing_view")
 		slog.Warn("materialized view does not exist, skipping refresh",
 			"view", viewName)
-		return true, nil
+		return mvSkippedMissingView, nil
 	}
 
 	// Pin one connection for the whole timeout/refresh(/lock/unlock) sequence:
@@ -595,7 +653,7 @@ func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName st
 	// session-scoped, and pool.Exec may hop connections.
 	conn, err := r.db.Acquire(ctx)
 	if err != nil {
-		return false, err
+		return mvRefreshed, err
 	}
 	defer conn.Release()
 
@@ -605,26 +663,29 @@ func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName st
 	// connection to the pool.
 	if _, err := conn.Exec(ctx,
 		"SET statement_timeout = '"+mvRefreshStatementTimeout+"'"); err != nil {
-		return false, err
+		return mvRefreshed, err
 	}
 	defer func() {
 		_, _ = conn.Exec(context.WithoutCancel(ctx), "RESET statement_timeout")
 	}()
 
 	if !useAdvisoryLock {
-		return false, r.execRefresh(ctx, conn, viewName)
+		if err := r.execRefresh(ctx, conn, viewName); err != nil {
+			return mvRefreshed, err
+		}
+		return mvRefreshed, nil
 	}
 
 	var locked bool
 	if err := conn.QueryRow(ctx,
 		`SELECT pg_try_advisory_lock($1)`, mvRefreshLockKey).Scan(&locked); err != nil {
-		return false, err
+		return mvRefreshed, err
 	}
 	if !locked {
 		recordMVRefreshSkipped(viewName, "skipped_no_lock")
 		slog.Info("materialized view refresh skipped, another instance holds the lock",
 			"view", viewName)
-		return true, nil
+		return mvSkippedLockHeld, nil
 	}
 	defer func() {
 		// Unlock even when ctx is done, or the lock sticks to the pooled
@@ -633,7 +694,72 @@ func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName st
 			`SELECT pg_advisory_unlock($1)`, mvRefreshLockKey)
 	}()
 
-	return false, r.execRefresh(ctx, conn, viewName)
+	if err := r.execRefresh(ctx, conn, viewName); err != nil {
+		return mvRefreshed, err
+	}
+	return mvRefreshed, nil
+}
+
+// retryOnLockHeld re-runs attempt while the only thing standing in the way is
+// another instance holding mvRefreshLockKey. It gives up on the first attempt
+// that reports anything else — an error, a missing view, or a success —
+// because none of those get better by waiting, and a missing view in
+// particular would burn the whole budget before the next view got a turn.
+//
+// The attempt function is a parameter rather than a hard-coded call to
+// refreshView so the policy can be tested without a database: the contention
+// we are fixing is a property of two processes and a Postgres advisory lock,
+// and a unit test that cannot manufacture that contention would only be able
+// to assert on the source text.
+func retryOnLockHeld(ctx context.Context, view string, deadline time.Time, attempt func() (mvSkipReason, error)) (mvSkipReason, error) {
+	return retryOnLockHeldWithBackoff(ctx, view, deadline,
+		mvLockRetryInitialBackoff, mvLockRetryMaxBackoff, attempt)
+}
+
+func retryOnLockHeldWithBackoff(ctx context.Context, view string, deadline time.Time,
+	initial, max time.Duration, attempt func() (mvSkipReason, error)) (mvSkipReason, error) {
+	backoff := initial
+	for {
+		reason, err := attempt()
+		if err != nil || reason != mvSkippedLockHeld {
+			return reason, err
+		}
+
+		wait := backoff
+		if remaining := time.Until(deadline); remaining < wait {
+			wait = remaining
+		}
+		if wait <= 0 {
+			slog.Info("session analytics view refresh gave up waiting for the advisory lock",
+				"view", view, "budget", SessionViewLockRetryBudget.String())
+			return mvSkippedLockHeld, nil
+		}
+
+		recordMVRefreshSkipped(view, "lock_retry")
+		slog.Info("session analytics view refresh contended on the advisory lock, retrying",
+			"view", view, "wait", wait.String())
+
+		select {
+		case <-ctx.Done():
+			return mvSkippedLockHeld, nil
+		case <-time.After(wait):
+		}
+
+		if backoff < max {
+			backoff = nextLockRetryBackoff(backoff, max)
+		}
+	}
+}
+
+// nextLockRetryBackoff doubles the wait and clamps it to max. Extracted so the
+// schedule is testable as a value: asserting on it by timing the loop would
+// need sleeps, and sleep-based assertions pass on a loaded CI box for the
+// wrong reason.
+func nextLockRetryBackoff(current, max time.Duration) time.Duration {
+	if next := current * 2; next < max {
+		return next
+	}
+	return max
 }
 
 // execRefresh runs one REFRESH ... CONCURRENTLY and, only on success, records
