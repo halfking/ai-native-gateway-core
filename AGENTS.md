@@ -231,7 +231,9 @@ sanitize / streaming 这条线在当前 HEAD 是全绿的，可直接作为改�
 
 ```bash
 LLM_GATEWAY_STORAGE_MODE=lite \
-LLM_GATEWAY_LITE_DB_PATH=/tmp/gateway-lite.db \
+LLM_GATEWAY_SQLITE_PATH=/tmp/gateway-lite.db \
+LLM_GATEWAY_SECRET_KEY=local-smoke-test-key \
+LLM_GATEWAY_CORS_ORIGINS='*' \
 bash scripts/start-lite.sh
 # 等待 /healthz 返回 ready=true
 curl -fsS http://localhost:8781/healthz
@@ -239,7 +241,20 @@ curl -fsS http://localhost:8781/healthz
 # 本地 lite 走 v1(:8781)。远程机器端口另见仓库快照处的蓝绿端口说明。
 ```
 
-预期：服务可启动；未带凭据访问新端点应返回 `401`。`start-lite.sh` 内部走 `go run ./cmd/gateway`，等价于直接 `go run ./cmd/gateway` 加 lite 环境变量。
+预期：服务可启动；坏/缺凭据访问数据面应被 **fail-closed 拒绝**。两个必需 env
+是 r1017 前后的 fail-closed 门加出来的，缺一不可（2026-10-11 实测，原文档的
+`LLM_GATEWAY_LITE_DB_PATH` 变量名已过时，脚本认 `LLM_GATEWAY_SQLITE_PATH`）：
+
+- `LLM_GATEWAY_SECRET_KEY`：缺了直接拒启——「lite mode requires data-plane
+  authentication」（静态 key / keystore snapshot / 显式 ALLOW_UNAUTHENTICATED 三选一）。
+- `LLM_GATEWAY_CORS_ORIGINS`：缺了启动 panic——CORS 必须显式配置（fail-closed）。
+
+实测 fail 行为（都正确，不是放行）：无鉴权存储时 `/v1/models`、
+`/v1/chat/completions` 返回 **503**（`database_unavailable` / 
+`executor_unavailable`），坏 `sk-` key 拿不到模型清单；`/admin/users` 返回 200
+但内容是 SPA 静态 HTML（前端路由 fallback），admin 数据在 `/api/admin/*` 后面。
+
+`start-lite.sh` 内部走 `go run ./cmd/gateway`，等价于直接 `go run ./cmd/gateway` 加 lite 环境变量。
 
 > **本机 Go 不在 `PATH` 上。** 工具链在 `~/sdk/go/bin/go`（1.27.1），
 > 同类非标准前缀还有 `~/sdk/bash5/bin/bash`（5.2.0）。
