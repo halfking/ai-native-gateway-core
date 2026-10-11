@@ -7106,6 +7106,12 @@ func main() {
 	requestJourneyAPI := admin.NewRequestJourneyAPI(journeyQueryService)
 	mux.HandleFunc("/api/admin/request-journeys/queues", requestJourneyWrapAdmin(requestJourneyAPI.ServeHTTP))
 	mux.HandleFunc("/api/admin/request-journeys/", requestJourneyWrapAdmin(requestJourneyAPI.ServeHTTP))
+	// A2 量具出库（2026-10-11）：自禁用位与永久拒绝计数此前只活在 Stats()
+	// 里且无生产读方；未启用报告器时端点回 {"enabled":false}。lite（无 db）
+	// 模式 wrapAdmin 为 nil，与其他 admin 注册点同口径跳过。
+	if wrapAdmin != nil {
+		mux.HandleFunc("/api/admin/anomaly-reporter/stats", wrapAdmin(handleAnomalyReporterStats(anomalyReporter)))
+	}
 	journalSnapshotAPI := admin.NewJournalSnapshotAPI(journalSnapshotStore)
 	journalSnapshotAPI.RegisterRoutes(mux, requestJourneyWrapAdmin)
 	slog.Info("request journey admin API enabled",
