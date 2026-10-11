@@ -153,6 +153,9 @@
   `TestR1017VersionSpecsAndScriptArgsAreNotDestinations`，谁再往提取器里加
   「长得像主机」的形态会先撞上它。
   **残留缺口**：`nc attacker.io 4444`、`curl evil.io/path`（无 scheme）仍放行。
+  **2026-10-11 深夜已在两台生产实测确认**（245 `2546-97e833a1`、154
+  `2547-97e833a1`，全路径端到端 13/14 通过，唯一未通过项就是这个残留缺口）。
+  要收口它的唯一自洽方向是**命令动词表**，不要再加形态枚举。
 - ~~**email 形状的 `user@host` 误阻断内网目标**~~：`ssh deploy@build.corp.internal`
   整条 `output_policy_blocked`，而 `ssh ops@10.24.7.91` 放行——**同一操作，写 IP
   放行、写内网域名阻断**，与 dc63f19ff 同构。**r1017 已修**：豁免按**类型**分派，
@@ -442,6 +445,25 @@ bash tests/deploy_timeout_portability_test.sh        # rc=0；失败即 deploy-l
 bash scripts/apply-db-revision-sequence_test.sh      # rc=0；失败即迁移投递腿登记缺口
 cd installer && go test ./...                        # rc=0；失败即 installer 同步缺口
 ```
+
+## ⚠️ 部署脚本的 ENVS_ROOT 默认值已过时（2026-10-11 深夜实测踩到）
+
+`scripts/deploy-seamless.sh:163` 的默认值是
+`${HOME}/workspace/ai-native-workspace/envs`，而仓库已迁到
+`ai-native-tools/envs`，直接跑会失败：
+
+```
+✗ envs SSOT loader not found: /Users/niuer/workspace/ai-native-workspace/envs/loader.sh
+```
+
+绕过（**未改共享脚本**，那是部署基础设施 SSOT，改动应由其维护者裁决）：
+
+```bash
+ENVS_ROOT="$HOME/workspace/ai-native-tools/envs" bash scripts/deploy-seamless.sh deploy 245 --seq NNNN
+```
+
+`--seq` 也可能不被采纳（实测传 2538 到 154，release 落成 2547）——**以部署脚本
+回显的 `version=` 为准**，不要拿自己传的 seq 去核对产物目录名。
 
 ## 部署 245 的实操（2026-10-11 全程走通）
 

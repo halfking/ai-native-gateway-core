@@ -21,7 +21,7 @@ case "$TARGET" in
 esac
 
 # Load envs
-ENVS_ROOT="${ENVS_ROOT:-${HOME}/workspace/ai-native-tools/envs}"
+ENVS_ROOT="${ENVS_ROOT:-${HOME}/workspace/ai-native-workspace/envs}"
 case "$TARGET" in
   245) ENV_SERVER="8.136.114.245" ;;
   154) ENV_SERVER="47.97.111.154" ;;

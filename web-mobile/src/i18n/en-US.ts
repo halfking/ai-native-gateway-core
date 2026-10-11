@@ -861,7 +861,7 @@ export const enUS = {
     noData: 'No data',
     contradiction: 'Counters contradict: successes exceed requests',
     errForbidden: 'Only super admins can view the auto-route readout',
-    outcome: { live: 'live', no_rows: 'no rows', stale: 'stale', absent: 'retired', query_failed: 'query failed', unknown: 'unknown' },
+    outcome: { live: 'Live', no_rows: 'no rows', stale: 'Stale', absent: 'retired', query_failed: 'query failed', unknown: 'Unknown' },
     outcomeLine: 'Source: {reason} · newest data {age} ago · available: {available}',
     audit: {
       title: 'Routing audit (7 days)',
@@ -903,7 +903,7 @@ export const enUS = {
       success: 'Avg success',
       drift: 'Drift rate',
       granularityNote: 'The backend switches aggregation granularity by window: currently {gran} buckets, so averages are not comparable across windows.',
-      granularity: { '5m': '5-minute', daily: 'daily' },
+      granularity: { '5m': '5-minute', daily: 'Daily' },
       zeroPlaceholder: 'All averages on this row are 0, which may be values fabricated by a backend COALESCE default — not real measurements.',
     },
   },
@@ -3452,7 +3452,7 @@ sctx: {
     unknown: 'unknown code',
     // ★★★★ Cross-tenant: self_check_runs HAS a tenant_id column, but no handler filters on it
     crossTenant: '★ Cross-tenant: the self-check table has a tenant_id column, but no query filters on it. This is ALL tenants data.',
-    status: { running: 'running', success: 'success', partial: 'partial', failed: 'failed', retrying: 'retrying' },
+    status: { running: 'Running', success: 'Success', partial: 'Partial', failed: 'Failed', retrying: 'Retrying' },
     // ★ 'tested' is in the union but selfCheckUpstreamOutcome **never returns it**
     outcome: { not_tested: 'upstream not tested', result_empty: 'upstream tested (empty result)', result_present: 'upstream tested, has result' },
     runs: {
@@ -3535,7 +3535,7 @@ sctx: {
     outcome: 'Outcome',
     outcomeNone: 'no outcome',
     outcomeMismatch: 'outcome should only appear on the completed leg, this one is {status}',
-    outcomeDetail: { success: 'success', failed: 'failed', expired: 'expired', cancelled: 'cancelled' },
+    outcomeDetail: { success: 'Success', failed: 'Failed', expired: 'Expired', cancelled: 'Cancelled' },
     // ★★★ 0 is a real value for http_status / latency and must never read as "not measured"
     httpStatus: 'HTTP status',
     latency: 'Latency',

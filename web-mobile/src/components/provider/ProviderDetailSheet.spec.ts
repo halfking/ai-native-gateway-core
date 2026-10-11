@@ -101,4 +101,26 @@ describe('ProviderDetailSheet', () => {
   // 「必须是最顶 overlay」守卫 ⇒ 单元测试里没有 overlay registry ⇒ 跳过这一支，
   // 在 Maestro / iOS 上点 scrim 真测就行。
   it.skip('clicking the scrim also closes the sheet', () => {})
+
+  // 2026-10-11 真机实测缺陷：KPI 小卡的标题渲染成字面量「{n} 个凭据」。
+  // providers.credentials 的文案把计数内嵌在句子里（给列表页整句用的），
+  // 这里 t() 没传参 ⇒ {n} 原样留在页面上。数字由 <strong> 单独呈现，
+  // 标题要的是纯名词（providers.tab.*）。
+  // 判据直接钉「渲染结果里不得出现未替换的占位符」——它对将来改 key 免疫。
+  it('KPI 卡片标题不出现未替换的 {n} 占位符', async () => {
+    const wrapper = mount(ProviderDetailSheet, {
+      attachTo: document.body,
+      props: { modelValue: true, provider },
+      global: { plugins: [pinia] },
+    })
+    await flushPromises()
+    const kpis = Array.from(document.body.querySelectorAll('.provider-detail__kpis small'))
+      .map((el) => el.textContent ?? '')
+    expect(kpis.length).toBe(3)
+    for (const label of kpis) {
+      expect(label, `KPI 标题残留占位符：${label}`).not.toMatch(/\{\w+\}/)
+      expect(label.trim()).not.toBe('')
+    }
+    wrapper.unmount()
+  })
 })

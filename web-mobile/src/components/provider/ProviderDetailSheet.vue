@@ -131,9 +131,14 @@ function statusTone(status?: string | null): 'success' | 'warning' | 'danger' | 
           <button type="button" class="btn" :disabled="loading || updating" @click="load">{{ t('common.refresh') }}</button>
         </div>
       </div>
+      <!-- ⚠️ 2026-10-11：这三张小卡的标题必须用 **不带计数** 的 tab.* 键。
+           providers.credentials / providers.models 的文案是「{n} 个凭据」
+           （计数内嵌在文案里，给列表页那种整句用的），而这里 t() 没传参，
+           于是 {n} 原样显示成「{n} 个凭据」—— iOS 26 模拟器真机截图实测。
+           数字由下面的 <strong> 单独呈现，所以标题要的是纯名词。 -->
       <div v-if="detail" class="provider-detail__kpis">
-        <article><small>{{ t('providers.credentials') }}</small><strong>{{ detail.active_cred_count ?? credentials.length }}</strong></article>
-        <article><small>{{ t('providers.models') }}</small><strong>{{ detail.available_model_count ?? models.filter((m) => m.available).length }}</strong></article>
+        <article><small>{{ t('providers.tab.credentials') }}</small><strong>{{ detail.active_cred_count ?? credentials.length }}</strong></article>
+        <article><small>{{ t('providers.tab.models') }}</small><strong>{{ detail.available_model_count ?? models.filter((m) => m.available).length }}</strong></article>
         <article><small>{{ t('providers.errorRate') }}</small><strong>{{ detail.error_rate_24h == null ? '—' : `${(detail.error_rate_24h * 100).toFixed(1)}%` }}</strong></article>
       </div>
       <div class="provider-detail__tabs" role="tablist">

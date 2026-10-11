@@ -129,7 +129,10 @@ db_query() {
     local db_pass="${DB_PASS:-}"
     
     if [ -z "$db_pass" ]; then
-        db_pass=$(bash ~/workspace/ai-native-tools/envs/loader.sh query COMMON_PG_SUPERUSER_PASS 2>/dev/null || echo "")
+        # ENVS_ROOT 指向 envs/loader 所在目录；默认与本机 ai-native-tools SSOT 兼容。
+        # 其他机器可 export ENVS_ROOT=/path/to/ai-native-tools 覆盖。
+        : "${ENVS_ROOT:=$HOME/workspace/ai-native-tools}"
+        db_pass=$(bash "$ENVS_ROOT/envs/loader.sh" query COMMON_PG_SUPERUSER_PASS 2>/dev/null || echo "")
     fi
     
     if [ -z "$db_pass" ]; then
