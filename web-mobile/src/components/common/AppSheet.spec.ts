@@ -5,12 +5,13 @@ import { setLocale } from '@/i18n'
 import AppSheet from './AppSheet.vue'
 
 const closeOverlay = vi.hoisted(() => vi.fn())
-const topOverlay = vi.hoisted(() => ({ value: true }))
+const topOverlay = vi.hoisted(() => ({ value: false }))
+const presentOverlay = vi.hoisted(() => vi.fn(() => { topOverlay.value = true }))
 
 vi.mock('@/hyper', () => ({
   useHyperOverlay: () => ({
     isTop: { get value() { return topOverlay.value } },
-    present: vi.fn(),
+    present: presentOverlay,
     close: closeOverlay,
     release: vi.fn(),
   }),
@@ -21,8 +22,22 @@ describe('AppSheet mobile focus behavior', () => {
     document.body.innerHTML = ''
     vi.unstubAllGlobals()
     closeOverlay.mockClear()
-    topOverlay.value = true
+    presentOverlay.mockClear()
+    topOverlay.value = false
     setLocale('en-US')
+  })
+
+  it('registers a sheet that is mounted already open', async () => {
+    const wrapper = mount(AppSheet, {
+      props: { modelValue: true, title: '供应商详情' },
+      attachTo: document.body,
+    })
+
+    await nextTick()
+
+    expect(presentOverlay).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('.app-sheet--inactive').exists()).toBe(false)
+    wrapper.unmount()
   })
 
   it('does not focus a text/select control when opened on a touch device', async () => {
