@@ -14224,6 +14224,272 @@ DROP 旧视图时要删掉 **211,157 行 + 它们的索引** ⇒ **首次执行�
 4. 日志里 `refreshed session analytics view` 三条**每轮都出现**（不再是偶尔整轮消失）；
 5. 10 分钟差分窗口的第二轮读数落在 **~5 MB/轮** 附近（±50% 之内即算兑现）。
 
+### §10.106.46 重复索引复核：§10.56 的判决仍成立，但有三处要更新/新增
+
+全库扫了一遍**同定义重复索引**（19 张表命中），最大的仍是 `session_summaries`
+那一对。按纪律「台账已答过也要先核对它答得对不对」，复核如下。
+
+#### 一、判决复核：**结论不变，且今天重新实测过**
+
+```sql
+CREATE UNIQUE INDEX session_summaries_pkey            ON public.session_summaries USING btree (session_key)
+CREATE UNIQUE INDEX session_summaries_session_key_uidx ON public.session_summaries USING btree (session_key)
+```
+
+两条定义**逐字相同**（只差名字）；`session_summaries_session_key_uidx`
+的 `pg_constraint` 引用数 = **0**（不被任何约束背着）。
+⇒ 与 §10.56 的判决一致：**可裸删，删它不改变任何查询结果**。
+⚠️ §10.56.3 明确写了「上表仍是**建议**，不是已执行动作；DDL 未动」——
+**至今仍未执行**，本次复核没有改变这一点，只是再次确认结论成立。
+
+#### 二、⚠️ 两边的读数来自**不同的库**，不要当成「数字降了」
+
+- §10.56 的读数出自 **252**（「252 真机复跑输出」一节），
+  表里那列叫 `idx_scan(13d)`——**是被刻意 reset 过统计、量了 13 天**的数字。
+- 今天这次查的是 **154/245 共用的 `llm_gateway`（10.88.1.188）**，
+  `pg_stat_database.stats_reset` 为 **NULL**（从未重置）。
+
+⇒ 同一对索引，`idx_scan` 今天是 **750,150**（PK 25,065），
+台账记的是 **1,671,093**（PK 162,490）。
+⇒ **这两个数不可直接比较**：不同库、不同统计窗口。
+⚠️ **不要把它读成「使用量下降了 55%」**——那是拿两个量具的读数当同一条时间序列。
+
+#### 三、新增：台账的巡检**结构上找不到**的第三个索引
+
+今天这次是按「索引定义归一化后分组找重复」扫的，它**按定义只能报出同列的重复**。
+因此下面这个**它报不出来**：
+
+| 索引 | 定义 | 体量 | idx_scan | 被约束 |
+|---|---|---|---|---|
+| `session_summaries_session_key_per_tenant` | UNIQUE **(tenant_id, session_key)** | **45 MB** | **0** | **是** |
+
+⚠️ 它是**该表最大的单个索引**（45 MB > PK 39 MB > 可删副本 39 MB），
+而且**一次都没被用过**（idx_scan = 0）。
+⇒ 与 PK 的列不同 ⇒ 同定义分组**结构上不会**报它 ⇒ §10.56 也没有它。
+
+⇒ 但要动它**不是纯运维动作**：`DROP INDEX` 会被拒，必须先 `DROP CONSTRAINT`，
+而那个多租户唯一性约束**是谁在依赖，是语义决策**（代码里有没有按名引用、
+有没有依赖它做 `INSERT ... ON CONFLICT`）。
+⚠️ 且在解释 `idx_scan = 0` 之前**不要把统计状态当已知**：
+本轮同时观察到 `stats_reset` 为 NULL（从未重置）与 `last_analyze` 全空（§10.106.42），
+**这两件事互相矛盾**，尚未解释。
+
+#### 四、全库规模（154/245 共用库，今天实测）
+
+| 表 | 重复索引对 | 浪费 |
+|---|---|---|
+| `session_summaries` | `pkey` + `session_key_uidx` | **78 MB** |
+| `runtime_metrics` | `idx_rt_instance_time` + `idx_runtime_metrics_instance` | 2.6 MB |
+| `runtime_metrics` | `idx_rt_time` + `idx_runtime_metrics_timestamp` | 880 kB |
+| `routing_audit_log` | `idx_routing_audit_log_idempotency` + `uq_routing_audit_log_idem` | 376 kB |
+| 其余 15 张 | 各一对 | 各 16~32 kB |
+
+**合计浪费 ≈ 82 MB**，其中 95% 集中在 `session_summaries` 那一对。
+
+⇒ 这一刀的收益有两份：**回收 39 MB 存储** + **全库最热表的一个唯一列上，
+每行写入少维护一个索引**（`session_summaries` 是 session 生命周期的主写路径）。
+⚠️ 两者都需要生产 DDL 授权；本轮**未执行任何 DDL**。
+
+### §10.106.47 ⚠️⚠️ 本库的 `pg_stat_all_tables` **整族不可用于决策**——214 张表自相矛盾
+
+§10.106.46 留了个未解矛盾（`stats_reset` 为 NULL 却 `last_analyze` 全空）。
+本节把它量化，并把结论落成一条**可操作的禁令**。
+
+#### 一、矛盾的规模（154/245 共用库，今天实测）
+
+```sql
+SELECT count(*) FILTER (WHERE last_analyze IS NULL)          AS analyze_null,
+       count(*)                                              AS total_tables,
+       count(*) FILTER (WHERE <该表有 pg_statistic 条目>)      AS have_statistic,
+       count(*) FILTER (WHERE last_analyze IS NULL
+                          AND <该表有 pg_statistic 条目>)      AS null_but_has_stat
+FROM pg_stat_user_tables WHERE schemaname='public';
+```
+
+| 读数 | 值 |
+|---|---|
+| public 表总数 | **576** |
+| `last_analyze` 为 NULL | **543**（94%） |
+| 有 `pg_statistic` 条目 | **234** |
+| **两者同时成立**（说没 analyze，却有统计条目） | **214** |
+
+同时 `pg_stat_database.stats_reset` 在本机**所有**数据库上都为 NULL（从未 reset）。
+
+⇒ `pg_statistic` 条目只能由 `ANALYZE` 产生，⇒ **至少 214 张表被 analyze 过，
+但 `last_analyze` 说没有。** 成因未查清（推测与 `pgstat.stat` 文件被替换/回滚有关），
+但**机制不是重点，下面这条才是**。
+
+#### 二、⚠️ 落成禁令（**本日已自订正过一次，见 §二之二**）
+
+**本库 `pg_stat_all_tables` 的「analyze 时间戳族」不可用于决策。**
+
+| 想回答的问题 | ⛔ 别用 | ✅ 改用 |
+|---|---|---|
+| 表有没有统计信息 | `last_analyze` / `last_autoanalyze` | `pg_class.reltuples` + `pg_statistic` 条目数；或直接看 `EXPLAIN` 的估计行数准不准 |
+| 表有多少活行 | `n_live_tup` | 受控观察，或 `COUNT(*)` |
+
+#### 二之二、🔴 **本人自订正**：`idx_scan` **不在**这条禁令里
+
+我最初把 `pg_stat_all_tables` / `pg_stat_user_indexes` **整族**一起禁了，
+理由是「它们在同一个视图里」。**那是按家族相似做的推断，不是证据——而它是错的。**
+
+直接证据（全库 2,161 个 public 索引）：
+
+| 读数 | 值 |
+|---|---|
+| `idx_scan = 0` | 1,727（80%） |
+| `idx_scan > 0` | 434 |
+| **最大 `idx_scan`** | **182,588,227** |
+| p99 | 2,662,377 |
+
+⇒ 计数**明显在累积**（单个索引 1.8 亿次扫描不可能出现在被重置过的统计文件里）。
+⇒ **`idx_scan = 0` 仍然是一个有意义的读数。**
+
+⇒ ⚠️ **教训与 §10.106.39 的「grep 滤掉承载结论的那一行」同族**：
+我手上有一条**实测证据**（214 张表的 analyze 时间戳矛盾），
+然后把它**推广到同一视图里的其他字段**，并用这个推广去**撤回了一个候选**。
+⇒ **一条证据只能否掉它指向的那个字段。**「同族」是相关性，不是因果；
+要禁一个字段，得先量那个字段本身。
+
+⚠️ 保留的 caveat 仍然是：`idx_scan = 0` 的含义是
+「**自统计窗口起没被用过**」，不是「历史上从未被用过」。
+窗口起点未知 ⇒ 删一个**被约束背着**的索引之前仍应做受控观察。
+
+#### 三、回头订正 §10.106.46 的一个候选
+
+§10.106.46 我把 `session_summaries_session_key_per_tenant`（45 MB、`idx_scan = 0`）
+摆成了「大候选索引」，并**一度用 §二 的过宽禁令把它的证据撤回**。
+
+⇒ 两次都订正回来，最终状态：
+- 该索引**定义与 PK 不同**（UNIQUE(tenant_id, session_key)）⇒ 同定义巡检结构上报不出它；
+- 体量 **45 MB 是全表最大**；
+- **`idx_scan = 0` 的证据站得住**（见 §二之二），但含义是「统计窗口内未被用过」；
+- **被一个约束背着** ⇒ 要删必须先 `DROP CONSTRAINT`，**属语义决策**（谁在依赖那个多租户唯一性）。
+
+⇒ 建议路径：**受控观察（记基线 → 跑过一个业务周期 → 取增量）→ 确认无代码按名引用
+  `ON CONFLICT` → 才进 DDL 评审。** 本轮未执行任何 DDL。
+
+### §10.106.48 🔴 45 MB 那个索引**不是纯冗余**——我自己的「逻辑蕴含」推论在此被否掉
+
+§10.106.46/47 留了一个 45 MB 的候选（`session_summaries_session_key_per_tenant`）。
+本节查了它的依赖链，**先肯定、再否掉自己**。
+
+#### 一、先肯定的那半句（成立）
+
+```sql
+session_summaries_pkey                          PRIMARY KEY (session_key)
+session_summaries_session_key_per_tenant        UNIQUE (tenant_id, session_key)
+```
+
+PK 在 `session_key` 上且 NOT NULL ⇒ `(tenant_id, session_key)` 必然唯一
+⇒ **这个复合 UNIQUE 永远不可能被违反**，它在**逻辑上**完全被主键蕴含。
+
+#### 二、🔴 但它**不是**可以直接删的——PG 要一个「列集合恰好匹配」的仲裁索引
+
+`ON CONFLICT (a, b) DO …` 的列推断要求存在一个**唯一索引，其列集合恰好是 {a,b}**。
+PK 只覆盖 `{session_key}`，**推不出这个二元组**。
+
+全仓广搜（两种列序都搜）：
+
+```
+./domains/hooks/handoff/confirmation_pg_semantics_test.go:133
+    INSERT INTO session_summaries … ON CONFLICT (session_key, tenant_id) DO NOTHING
+```
+
+**这是全仓唯一一处**用到 `session_summaries` 双列 `ON CONFLICT` 的地方——
+而它正落在那个复合约束的索引上。
+
+⚠️ 因此：**「逻辑蕴含 ⇒ 可删」这个推理在 PG 的仲裁索引语义下不成立。**
+⇒ 该索引是**承重的**（虽然只被一个测试用到），删它要连同改这一处。
+
+#### 三、两个候选的最终判决（并附「为什么删了会自己长回来」）
+
+| 索引 | 体量 | 判定 | 删了会怎样 |
+|---|---|---|---|
+| `session_summaries_session_key_uidx`<br>UNIQUE INDEX (session_key) | **39 MB** | **与 PK 定义逐字相同**，且**全仓无 `ON CONFLICT ON CONSTRAINT <名>`**（那本来也指不到裸索引），所有 `ON CONFLICT (session_key)` 由 PK 充当仲裁 | **会自己长回来** —— 见下 |
+| `session_summaries_session_key_per_tenant`<br>UNIQUE (tenant_id, session_key) | **45 MB** | 逻辑上被 PK 蕴含，但**是该二元列组的唯一仲裁索引**，承重 | 需先改 `confirmation_pg_semantics_test.go:133` |
+
+⚠️ **「在生产上 DROP 一下」是不够的**——这两个对象都被**三处**代码/迁移钉着：
+
+| 位置 | 钉的方式 |
+|---|---|
+| `db/session_summaries_schema.go:174` / `:189` | ensure 链每次启动 `CREATE UNIQUE INDEX` / `ADD CONSTRAINT` |
+| `db/db_session_summaries_shortcircuit.go:99` / `:110` | `sessionSummariesCanonicalIndexes` / `Constraints` 清单，缺一个就判「表不完整」→ 触发全量 reconcile |
+| `sql/migrations/startup/655_session_summaries_schema_reconcile.sql:164`、`560_...tenant_uniqueness.sql:40` | 幂等 reconcile，发现缺失就补建 |
+
+⇒ **只做 DDL 会在下一次 ensure 时被原样建回来**，而且中间还会因为
+short-circuit 判「不完整」而多跑一轮 reconcile。
+⇒ 真要做，是一个**代码 + 迁移 + 测试三处同改**的变更，且必须同批上线。
+
+★ 本节的真正价值不在那 45 MB，而在**两处推理都被自己否掉**：
+第一处「一个视图同族 ⇒ 整族不可信」（§10.106.47），
+第二处「逻辑蕴含 ⇒ 可删」。**两处都是把一条证据的适用范围放大了。**
+
+### §10.106.49 `latest_bucket` 收口：**改查询这条路，实测是死的**（建议：不要做）
+
+长期挂着一条「索引路径已到头，只剩改查询（hot 优先 + LATERAL，语义变更）」。
+本节把它量完——**结论是：别做**，且理由不是「收益小」，而是**语义代价被低估了**。
+
+#### 一、先把现状钉住（此前从没被量化过）
+
+`refreshIndexSQL`（`autoroute/index.go:520`）不只被 admin 端点用，
+**后台刷新器每 5 分钟跑一次**（`bg/auto_index_refresher.go:42`
+`defaultRefreshInterval = 5 * time.Minute`）。
+⇒ 这条查询的真实权重是 **12 次/小时 × 3.17 s ≈ 38 秒数据库时间/小时**。
+
+#### 二、三种形态的实测耗时（同一会话）
+
+| 形态 | 执行时间 | 相对 |
+|---|---|---|
+| **A 现网**：CTE + JOIN 全视图 | **3,167 ms** | 1× |
+| B 全覆盖改写（UNION ALL + NOT EXISTS 回退） | **5,754 ms** | **1.8× 更慢** ❌ |
+| C 只读 hot 臂 | **8.8 ms** | **359× 更快** ✅ |
+
+⇒ A→B 证明「保持语义的前提下改写」是**负收益**：
+LATERAL/UNION 的回退臂仍要扫 55 MB 列存分区，等于白加一层。
+
+⇒ C 的 359 倍来自物理形态差异：**三个月度分区是列存**
+（`relam = 215879`，共 55 MB），而 **hot 臂是堆表**（`relam = 2`，6.5 MB）且 842 的索引在这里可用。
+⇒ 「索引失效」这个前提是对的，但**修法不是重写查询，是不要去扫列存**。
+
+#### 三、🔴 但 C 的语义代价是**静默给路由喂陈旧价格**
+
+```sql
+SELECT pg_get_viewdef('credential_model_index_with_current_month');
+--  credential_model_index_hot  UNION ALL  credential_model_index
+```
+
+⇒ **hot 是视图的子集。** 于是逐 pair 比对两边的 `MAX(bucket)`：
+
+| 读数 | 值 |
+|---|---|
+| 全部 pair | **1,068** |
+| hot 的 max 与视图一致 | **718**（67.3%） |
+| **两边不一致** | **350（32.8%）** |
+
+⇒ 因为 hot ⊆ 视图，那 350 个 pair 必然是 **`hmax.bucket < vmax.bucket`**。
+⇒ 只读 hot 臂，对这 350 个 pair 会返回**旧 bucket 那一行**——
+而那一行带着 `unit_price_in_per_1m`、`billing_mode`、`success_rate`、
+`p95_latency_ms`、`routing_tier`、各项 score，**是 auto-route 直接拿去选模型的字段**。
+⇒ ⚠️ **不是「少 33% 的行」，是「对三分之一的凭据-模型对，静默用陈旧的定价与路由档位做决策」。**
+这比慢 3 秒危险得多。
+
+#### 四、判决
+
+| 方案 | 判决 |
+|---|---|
+| A 保持现状（3.17 s / 5 分钟） | ✅ **建议**。≈38 秒数据库时间/小时，相对三兄弟的 4.6 GB/天 WAL 是**小数点后的量级** |
+| B 全覆盖改写 | ❌ 实测慢 1.8 倍 |
+| C hot 优先 | ❌ 359 倍的收益换来 33% 的陈旧定价，**不可接受** |
+
+⇒ **`latest_bucket` 这一项就此收口：不是「还没做」，是「实测结论是不该做」。**
+⇒ 若将来 columnar 分区被搬回堆表（839-B 的 columnar↔heap 往返），C 会重新变成一个
+真选项——**现在不是**，因为热区数据本身就只有 67% 落在 hot 臂里。
+
+★ 与 §10.106.37 同一族的教训：**先量，再判「值不值得」**。
+本项在台账上挂了六轮，每一轮的措辞都默认「索引失效 ⇒ 该改查询」，
+而没有人量过改完是快是慢、也没人量过会丢掉多少。
+
 ---
 
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」
