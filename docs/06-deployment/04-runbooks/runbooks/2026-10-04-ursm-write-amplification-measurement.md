@@ -12999,6 +12999,106 @@ key_prefix，`sk-*` 在放行分支里失败即无声）。
 
 ---
 
+### §10.106.31 同族续查收口：**两个候选族都是阴性**，真正的新发现是三个 MV 带着 `now()` 刷新；顺带订正 §10.75
+
+§10.106.28 留下的续查项：`routing_analytics_source`（均 2,005 ms）与
+`auto_route_selections_all`（均 1,789 ms）。本节按同一套四步方法跑完。
+
+#### 一、两个候选族：**都不是 842 同构，不动**
+
+- `routing_analytics_source` = `request_logs_hot UNION ALL request_logs`（同族结构），
+  但它最贵的两条语句都不是它自己，而是**读 `routing_analytics_7d` /
+  `routing_audit_summary_7d` 这两个物化视图**的查询（211 次 / 1,945.5 ms 与 1,162.6 ms）。
+  聚合的成本在源侧，不在视图的索引形状上 ⇒ 无 842 同构缺陷。
+- `auto_route_selections_all` 读 `auto_route_selections`（5 分区 / 12.6 MB），
+  体量小，无同构缺陷。
+
+⇒ §10.106.28 的同族清单至此逐族核对完毕：
+`credential_model_index` 阳性(842) / `candidate_failure_logs` 阳性(843) /
+`request_logs` 阴性 / `routing_analytics_source` 阴性 / `auto_route_selections_all` 阴性。
+
+#### 二、新发现：三个物化视图带着 `now() AS refreshed_at` 刷新（runbook 此前零命中）
+
+`session_task_stats` 在本 runbook 里**一次都没出现过**，而它是第二贵的刷新。
+把 7 个 MV 全列出来后，形态分得干干净净：
+
+| 物化视图 | 输出行数 | 有 `now() AS refreshed_at` | calls | 均时 | 合计 |
+|---|---|---|---|---|---|
+| `session_task_stats` | 104,299 | **是** | 38 | **60,091 ms** | 2,283.5 s |
+| `session_client_stats` | **948** | **是** | 38 | **42,491 ms** | 1,614.7 s |
+| `session_client_task_matrix` | 105,907 | **是** | 36 | **25,296 ms** | 910.7 s |
+| `routing_analytics_7d` | 4,811 | 否 | 212 | 13,927 ms | 2,952.6 s |
+| `routing_audit_summary_7d` | 1 | 否 | 212 | 1,480 ms | 313.8 s |
+| `tuning_signals_5m` | 250 | 否 | 803 | 407 ms | 326.9 s |
+| `tuning_signals_daily` | 40 | 否 | 803 | 113 ms | 91.1 s |
+
+**带 `now()` 的三个恰好是最贵的三个**（25~60 s），不带的最贵才 13.9 s、最便宜的 113 ms。
+这与 §10.75 已诊断的机制**同型**：`REFRESH ... CONCURRENTLY` 靠逐行比对新旧只写差异行，
+而 `now()` 每次都变 ⇒ 每行都被判为「变了」⇒ 差异比对的全套开销照付，然后仍整表删+插。
+
+**总量**：reset 后 29.9 h 内，7 个 MV 刷新合计 **8,493 s ≈ 2.36 小时**的数据库时间。
+
+★ **最刺眼的一条**：`session_client_stats` 只有 **948 行**产出，刷新却要 **42.5 秒**。
+948 行不可能有 42 s 的计算量——说明成本在**源侧聚合或刷新机制**，
+不在输出规模。这一条单独值得下一轮拆开看（它不属于本节已验证的范围）。
+
+`session_task_stats` 的 60 s 结构（`EXPLAIN` 不执行，取计划形态）：
+```
+Parallel Hash Left Join
+  -> Parallel Seq Scan on session_summaries ss   (668,438 行 / 599 MB)
+  -> Parallel Hash -> Parallel Seq Scan on session_dim sd (264,694 行)
+```
+聚合定义里还有 **两个 `array_agg(DISTINCT ...)`**（`primary_model`、`client_models[1]`），
+各需对 66 万值排序去重。整体是「全量聚合 × 每 47 分钟重跑一次」的形态。
+
+⚠️ **我本轮的假设被自己的证据推翻了**：我先怀疑连接条件上的 `::text` 转换废掉了索引
+（`ss.session_key::text = sd.gw_session_id::text`）。查 `information_schema` 后发现
+四列本来就都是 `character varying`，`varchar→text` 是二进制可强转的，**不影响索引使用**。
+真实计划是 Hash Join + 两侧全扫，那是聚合本身的固有代价。
+（记录在此，避免下轮有人重提这个已被证伪的解释。）
+
+#### 三、⚠️ **订正 §10.75 的根因归属**
+
+§10.75.2 写：「MV 定义里有一列 **`now() AS refreshed_at`**（`db/db.go:3622`）」，
+并据此把 `routing_analytics_7d` 的 WAL 退化归因于它。
+
+**当前生产 `routing_analytics_7d` 的定义里没有这一列**（本节实测 `has_now_col = f`，
+与 `tuning_signals_5m` / `tuning_signals_daily` / `routing_audit_summary_7d` 同为「否」）。
+两种可能：① 该 MV 之后被重建/改写；② §10.75 当初读的是**源码里的定义**
+（`db/db.go`）而生产实例上的定义已不同。
+⇒ **§10.75 的「WAL 第 3 大」这个事实仍成立，但「根因是 `now()`」这一条在当前生产不成立**，
+需要查 `db/db.go:3622` 与生产定义的差异才能定性。**登记为待查，不擅自改写 §10.75。**
+
+#### 四、⚠️ 本轮流程失误（比技术结论更值得记）
+
+我做这次同族续查**之前没有先查 runbook 已有的结论**，于是：
+
+- `routing_analytics_7d` 的刷新退化 —— §10.75 早已分析并给了根因；
+- `session_summaries` 的重复索引 —— §10.55/§10.56 已闭合并**已有守卫**
+  （`scripts/ursmcheck/duplicate_index_check_test.go` 专门加了「受约束」一列，
+  就是为了防止删错那个 PK），另有监控脚本
+  `scripts/252-monitor/pg17-duplicate-index-check.sh`；
+- 我为此**差点为已闭合一题新造迁移 852**（去删 `session_summaries_session_key_uidx`）。
+
+⇒ **教训**：做「逐族核对」这类横向扫描时，**第一件事是查这份文档/看板里对同一族已有什么结论**，
+而不是先动手量。横向扫描的产出天然与既有台账重叠，
+**不先读台账 ⇒ 大概率重做**。
+
+★ 实测复数（仅供对照，说明台账会腐烂）：`session_summaries_session_key_uidx`
+今日 39 MB / `idx_scan` 670,362，而 §10.56 记的是 54 MB / 1,671,093。
+`idx_scan` 的下降是 **10-10 那次 `pg_stat_statements_reset` 的记账归零**，不是用量变化
+——**别把它读成「查询改走别的索引了」**。
+
+★ 顺带记录一条**新的**：`session_summaries_session_key_per_tenant`（UNIQUE
+`(tenant_id, session_key)`，45 MB，**`idx_scan = 0`**）。由于 `session_key` 已由主键
+全局唯一，该索引的唯一性在逻辑上被蕴含。§10.55/§10.56 的表里**没有这一条**。
+**本节只登记，不建议删**——它是 655 迁移建的（`655_session_summaries_schema_reconcile.sql:169`
+的 `UNIQUE (tenant_id, session_key)`），可能有 `ON CONFLICT` 在依赖其存在。
+
+---
+
+---
+
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」
 
 ### §10.107.1 上线后第一件事：把 §10.106.9 的「待观察」变成读数
