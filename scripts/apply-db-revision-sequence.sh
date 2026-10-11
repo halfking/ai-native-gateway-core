@@ -155,15 +155,37 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/357_session_analytics_aggregation_views.sql"
   "$ROOT_DIR/sql/migrations/startup/358_session_ownership.sql"
   "$ROOT_DIR/sql/migrations/startup/394_request_stats_minute.sql"
+  # 2026-10-12 host-first PG/gateway log audit: the candidate-binding scope
+  # revision chain (541 raw_model table → 569 canonical table + cmb triggers →
+  # 571 priority_hash → 578 filter-disabled reconciliation) was never
+  # registered. admin/routing.go queries both tables by name, so mirror-lineage
+  # databases logged 42P01 continuously (438 hits within minutes on the local
+  # host). 571/578 carry their own fail-fast guards requiring 569/541; all are
+  # idempotent (IF NOT EXISTS / DROP+CREATE TRIGGER / guarded DO blocks).
+  "$ROOT_DIR/sql/migrations/startup/541_candidate_binding_scope_revision.sql"
+  "$ROOT_DIR/sql/migrations/startup/569_candidate_binding_scope_revision_canonical.sql"
+  "$ROOT_DIR/sql/migrations/startup/571_candidate_binding_scope_revision_canonical_priority_hash.sql"
+  "$ROOT_DIR/sql/migrations/startup/578_candidate_binding_scope_filter_disabled.sql"
+  # 2026-10-12 host-first PG/gateway log audit: 543 (streaming observability's
+  # discard_events on request_logs{,_hot}, 4x IF NOT EXISTS) was never
+  # registered. Must precede 695: its promote column list selects
+  # discard_events, so every promote_request_logs_hot_to_partition cycle
+  # died with 42703 on hosts where 543 never ran.
+  "$ROOT_DIR/sql/migrations/startup/543_request_logs_discard_events.sql"
   # 2026-10-12 host-first PG/gateway log audit: the provider-error aggregation
-  # chain was never registered. 622 seeds provider_error_aggregator_state
-  # (42P01 on every aggregator tick) plus the hot aggregation_id column and
-  # its sequence; 627 adds the parent column, creates the
-  # candidate_failure_logs_unified view the runtime actually reads
+  # chain was never registered. 617 aligns candidate_failure_logs{,_hot} with
+  # the writer's session_id/per_attempt_latency_ms columns (803's own header
+  # names it as a dependency; without it 627's unified view dies on 42703
+  # because 392's CREATE TABLE predates both columns). 622 seeds
+  # provider_error_aggregator_state (42P01 on every aggregator tick) plus the
+  # hot aggregation_id column and its sequence; 627 adds the parent column,
+  # creates the candidate_failure_logs_unified view the runtime actually reads
   # (bg/provider_error_aggregator.go) and seeds the watermark; 628 rewrites
-  # the promote so partitioned rows carry real aggregation_ids. 627/628 must
-  # precede 644 (its section D re-creates the same view when present) and
-  # 639/698/803, which also reference the view/column. All idempotent.
+  # the promote so partitioned rows carry real aggregation_ids. 617 must
+  # precede 627 (its view selects those columns); 627/628 must precede 644
+  # (its section D re-creates the same view when present) and 639/698/803,
+  # which also reference the view/column. All idempotent.
+  "$ROOT_DIR/sql/migrations/startup/617_candidate_failure_logs_hot_contract.sql"
   "$ROOT_DIR/sql/migrations/startup/622_provider_error_aggregator_state.sql"
   "$ROOT_DIR/sql/migrations/startup/627_candidate_failure_logs_aggregation_id_unified.sql"
   "$ROOT_DIR/sql/migrations/startup/628_candidate_failure_logs_promote_atomic_v3.sql"
@@ -395,22 +417,34 @@ files=(
   # 纯 CREATE OR REPLACE VIEW（尾部追加列，无 DROP），幂等收敛，down 无。
   # 编号前已查生产双账本：696 在 gateway_db_revision_sequences 与
   # schema_migrations 均未被本库或其他项目占用。
-  # 2026-10-12 host-first PG/gateway log audit: the probe pipeline quartet was
+  # 2026-10-12 host-first PG/gateway log audit: the probe pipeline set was
   # never registered, so the gateway logged errors continuously: 484
   # (request_logs_hot.status_code — credential selfcheck's LATERAL reads it
-  # every 5min, 42703), 486 (credential_model_bindings.probe_revert_at —
-  # probe_rollback revert scan every 10s, 42703), 489/490
-  # (credential_probe_queue + runtime columns — ProbeQueueWorker requeue
-  # ~4x/sec, 42P01) and 538 (extends the queue source CHECK with 'selfcheck',
-  # which the 489/490 shape lacks, and aligns node_probe_runs.trigger_kind).
-  # All five are idempotent; both 484 and 489 carry headers recording the same
-  # error classes previously fixed on production 154. 489 precedes 490 then
-  # 538; the whole group must precede 835, which references the queue.
+  # every 5min, 42703), 489/490 (credential_probe_queue + runtime columns —
+  # ProbeQueueWorker requeue ~4x/sec, 42P01) and 538 (extends the queue source
+  # CHECK with 'selfcheck', which the 489/490 shape lacks, and aligns
+  # node_probe_runs.trigger_kind). All four are idempotent; both 484 and 489
+  # carry headers recording the same error classes previously fixed on
+  # production 154. 489 precedes 490 then 538; the whole group must precede
+  # 835, which references the queue. (486 is registered once at the tail of
+  # the array — see its own comment there; deduped 2026-10-12.)
   "$ROOT_DIR/sql/migrations/startup/484_request_logs_hot_add_status_code.sql"
-  "$ROOT_DIR/sql/migrations/startup/486_credential_model_bindings_add_probe_revert_at.sql"
   "$ROOT_DIR/sql/migrations/startup/489_credential_probe_queue_startup_backfill.sql"
   "$ROOT_DIR/sql/migrations/startup/490_credential_probe_queue_runtime_columns.sql"
+  # 2026-10-12 host-first PG/gateway log audit: 526's
+  # session_turns_advisory_lock_key is required by the sessionv2mirror shadow
+  # write, but 526 itself is un-registrable wholesale on mirror-lineage
+  # databases: its session_turns_with_current_month view definition predates
+  # the applied shape and CREATE OR REPLACE VIEW cannot drop columns
+  # (42603), the same reason 523 was reconciled as 804 instead of being
+  # registered. 854 reconciles the missing function alone (853 pattern).
+  "$ROOT_DIR/sql/migrations/startup/854_session_turns_advisory_lock_key.sql"
   "$ROOT_DIR/sql/migrations/startup/538_node_probe_runs_trigger_kind_unified_queue.sql"
+  # 853 (2026-10-12): deploy-chain V360's automatic column on the queue, never
+  # mirrored into any startup/domain migration although bg/probe_queue.go's
+  # enqueue/claim reference it by name. Must follow 489/490 (table creator);
+  # see the file header for the full reconciliation rationale.
+  "$ROOT_DIR/sql/migrations/startup/853_credential_probe_queue_automatic.sql"
   # 2026-10-10 host-first deploy: 696 rebuilds the request_logs views to also
   # expose system_fingerprint, which 487 adds to request_logs / _hot. It was
   # never registered, so on a host where the Go ensure chain had not booted
@@ -1360,6 +1394,16 @@ intentional_function_chains=(
   # refresh_session_analytics_views when it takes over session ownership
   # analytics; 358 stays last, matching production's numeric order.
   'refresh_session_analytics_views|357_session_analytics_aggregation_views.sql|358_session_ownership.sql|'
+  # 2026-10-12 channel-leg registration: the candidate-binding scope revision
+  # trigger bodies are defined in 541/569, extended by 571, and reconciled by
+  # 578; 578 stays last on every chain, matching production's numeric order.
+  'bump_candidate_binding_scope_revision_insert|541_candidate_binding_scope_revision.sql|578_candidate_binding_scope_filter_disabled.sql|'
+  'bump_candidate_binding_scope_revision_update|541_candidate_binding_scope_revision.sql|578_candidate_binding_scope_filter_disabled.sql|'
+  'bump_candidate_binding_scope_revision_delete|541_candidate_binding_scope_revision.sql|578_candidate_binding_scope_filter_disabled.sql|'
+  'bump_candidate_binding_scope_revision_canonical_insert|569_candidate_binding_scope_revision_canonical.sql|571_candidate_binding_scope_revision_canonical_priority_hash.sql|578_candidate_binding_scope_filter_disabled.sql|'
+  'bump_candidate_binding_scope_revision_canonical_update|569_candidate_binding_scope_revision_canonical.sql|571_candidate_binding_scope_revision_canonical_priority_hash.sql|578_candidate_binding_scope_filter_disabled.sql|'
+  'bump_candidate_binding_scope_revision_canonical_delete|569_candidate_binding_scope_revision_canonical.sql|571_candidate_binding_scope_revision_canonical_priority_hash.sql|578_candidate_binding_scope_filter_disabled.sql|'
+  'bump_candidate_binding_scope_revision_canonical_pm_update|569_candidate_binding_scope_revision_canonical.sql|571_candidate_binding_scope_revision_canonical_priority_hash.sql|578_candidate_binding_scope_filter_disabled.sql|'
   # 654 supersedes 653's DELETE-based archive body with the columnar-safe
   # DETACH PARTITION + DROP path and must stay the later entry.
   'archive_credential_model_index|653_archive_credential_model_index_canonical_return.sql|654_archive_credential_model_index_detach_drop.sql|'

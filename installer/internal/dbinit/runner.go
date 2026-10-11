@@ -445,6 +445,23 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// defaults and indexes match 469/478 exactly. 045/422/451 are also
 			// unregistered but fully covered by the baseline (verified live).
 			"852_models_canonical_column_set_reconcile.sql",
+			// 853 (wired 2026-10-12): deploy-chain V360's automatic column on
+			// credential_probe_queue was never mirrored into the startup chain
+			// — no startup/domain migration adds it, yet bg/probe_queue.go's
+			// enqueue/claim reference it by name (since e2d3490e38). Fresh
+			// installs hit 42703 'column q.automatic does not exist' on every
+			// claim scan once 489/490 create the queue. Column type, default
+			// and partial index match V360 exactly; deploy-lineage databases
+			// ran V360 long ago, so the reconcile is a no-op there.
+			"853_credential_probe_queue_automatic.sql",
+			// 854 (wired 2026-10-12): 526's session_turns_advisory_lock_key is
+			// required by the sessionv2mirror shadow write, but 526 cannot be
+			// registered wholesale — its session_turns_with_current_month view
+			// definition predates the applied shape and CREATE OR REPLACE VIEW
+			// cannot drop columns (the same reason 523 was reconciled as 804
+			// instead of registered). Function body matches 526 verbatim;
+			// 526-lineage databases already have it, so this is a no-op there.
+			"854_session_turns_advisory_lock_key.sql",
 			"682_model_offers_context_window_columns.sql",
 			// 805 (wired 2026-10-01): session_dim's canonical creators (350/358)
 			// are un-registrable wholesale — 350 rewrites update_session_summary()
