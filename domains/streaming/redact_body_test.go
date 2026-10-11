@@ -9,7 +9,7 @@ import (
 )
 
 func TestBuildRedactBodyFn_NoChecker(t *testing.T) {
-	fn := BuildRedactBodyFn(nil, nil)
+	fn := BuildRedactBodyFn(nil, nil, nil)
 	if fn != nil {
 		t.Fatal("expected nil when checker is nil")
 	}
@@ -90,7 +90,7 @@ func TestBuildRedactBodyFn_Integration(t *testing.T) {
 		return "caller1", "owner1"
 	}
 
-	fn := BuildRedactBodyFn(checker, ownerFn)
+	fn := BuildRedactBodyFn(checker, ownerFn, nil)
 	if fn == nil {
 		t.Fatal("expected non-nil fn")
 	}

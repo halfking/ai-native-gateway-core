@@ -255,6 +255,9 @@ func EnsureSeedAdmin(pool *pgxpool.Pool) {
 }
 
 func (h *Handler) handleUsers(w http.ResponseWriter, r *http.Request) {
+	if !requireUserManager(w, r) {
+		return
+	}
 	if r.URL.Path == "/api/users" || r.URL.Path == "/api/users/" {
 		switch r.Method {
 		case http.MethodGet:
@@ -298,6 +301,22 @@ func (h *Handler) handleUsers(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+// requireUserManager prevents ordinary user principals from reaching the account
+// directory and write surface. AdminMiddleware authenticates but intentionally
+// does not enforce an administrative role.
+func requireUserManager(w http.ResponseWriter, r *http.Request) bool {
+	auth := GetAuthContext(r)
+	if auth != nil && auth.Role == "tenant_admin" && strings.TrimSpace(auth.TenantID) == "" {
+		writeError(w, http.StatusForbidden, "tenant scope unavailable")
+		return false
+	}
+	if auth != nil && (auth.Role == "super_admin" || auth.Role == "tenant_admin" || auth.Role == "admin_key") {
+		return true
+	}
+	writeError(w, http.StatusForbidden, "administrator role required")
+	return false
 }
 
 func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
@@ -416,6 +435,9 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request, id int) {
+	if !requireUserManager(w, r) {
+		return
+	}
 	var req updateUserRequest
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")

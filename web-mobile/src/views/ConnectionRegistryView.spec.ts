@@ -167,6 +167,16 @@ beforeEach(() => {
   mById.mockResolvedValue(LIVE_OK)
 })
 
+describe('移动端页面标题', () => {
+  it('页面标题只交给导航栏展示，正文不重复标题', async () => {
+    const w = await mountView()
+    const sectionHeadings = w.findAll('.cr__h').map((heading) => heading.text())
+
+    expect(sectionHeadings).not.toContain('连接注册台')
+    expect(sectionHeadings).toContain('按 request_id 查')
+  })
+})
+
 // ── ① 竞态窗口：live 段的 closed 行必须可见标注，且不被搬段 ────────────────
 
 describe('① live 段的竞态 closed 行', () => {

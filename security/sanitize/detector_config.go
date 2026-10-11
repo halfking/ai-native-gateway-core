@@ -100,7 +100,23 @@ func parsePatternConfig(data []byte) ([]patternEntry, error) {
 			if pattern.Group < 0 || pattern.Group > re.NumSubexp() {
 				return nil, fmt.Errorf("invalid capture group (name=%s)", name)
 			}
-			entries = append(entries, patternEntry{sType: sensitiveTypeForPattern(category.name, name), regex: re, group: pattern.Group})
+			// The shipped `secret.api_key` rule is the same vendor-key shape
+			// as the built-in fallback (audit 244 F2): a bare sk-/ak- style
+			// match whose 16-char floor and digit requirement live in
+			// credibleSecretCandidate. Marking it here is what keeps the
+			// YAML-loaded production detector and the built-in fallback
+			// behaving identically.
+			//
+			// The test is on the pattern's own text, not on the rule name:
+			// a deployment may legitimately name its own short-token rule
+			// `api_key`, and that rule means exactly what it says.
+			vendorKeyShape := isVendorKeyShapeRegex(pattern.Regex)
+			entries = append(entries, patternEntry{
+				sType:          sensitiveTypeForPattern(category.name, name),
+				regex:          re,
+				group:          pattern.Group,
+				vendorKeyShape: vendorKeyShape,
+			})
 		}
 	}
 	if len(entries) == 0 {

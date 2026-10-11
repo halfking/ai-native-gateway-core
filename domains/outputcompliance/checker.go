@@ -199,7 +199,7 @@ func (c *Checker) Check(ctx context.Context, tenantID, output string) (*Complian
 
 	// 自动脱敏
 	if policy.AutoRedact && len(result.Issues) > 0 {
-		result.RedactedOutput = c.redactOutput(output, result.Issues, policy)
+		result.RedactedOutput = c.redactOutput(ctx, output, result.Issues, policy)
 	}
 
 	result.Compliant = len(result.Issues) == 0 || !policy.StrictMode
@@ -291,7 +291,7 @@ func (c *Checker) detectToxicity(output string, policy *Policy) []ComplianceIssu
 				Subtype:     toxicWord.Category,
 				Severity:    toxicWord.Severity,
 				Location:    fmt.Sprintf("char:%d-%d", index, index+len(keyword)),
-				Content:     strings.Repeat("*", len(keyword)),
+				Content:     toxicReplacement(policy, toxicWord.Category),
 				Score:       1.0,
 				Redacted:    policy.ActionOnToxicity == "redact",
 				Description: fmt.Sprintf("检测到%s内容", c.getCategoryLabel(toxicWord.Category)),
@@ -480,31 +480,47 @@ func (c *Checker) getPolicy(ctx context.Context, tenantID string) (*Policy, erro
 
 func defaultPolicy(tenantID string) *Policy {
 	return &Policy{
-		TenantID:                             tenantID,
-		Enabled:                              true,
-		EnforcementMode:                      "observe",
-		PIIEngine:                            "regex",
-		ToxicityEngine:                       "keyword",
-		CheckPII:                             true,
-		CheckToxicity:                        true,
-		CheckBias:                            false,
-		CheckHallucination:                   false,
-		CheckSecrets:                         true,
-		CheckInternalIP:                      true,
-		CheckJailbreakResponse:               false,
-		CheckInstructionInjectionResponse:    false,
-		PIIThreshold:                         0.7,
-		ToxicityThreshold:                    0.7,
-		BiasThreshold:                        0.6,
-		HallucinationThreshold:               0.7,
-		SecretsThreshold:                     0.7,
-		InternalIPThreshold:                  0.7,
-		ActionOnPII:                          "redact",
-		ActionOnToxicity:                     "warn",
-		ActionOnBias:                         "log",
-		ActionOnHallucination:                "log",
-		ActionOnSecrets:                      "redact",
-		ActionOnInternalIP:                   "redact",
+		TenantID:                          tenantID,
+		Enabled:                           true,
+		EnforcementMode:                   "observe",
+		PIIEngine:                         "regex",
+		ToxicityEngine:                    "keyword",
+		CheckPII:                          true,
+		CheckToxicity:                     true,
+		CheckBias:                         false,
+		CheckHallucination:                false,
+		CheckSecrets:                      true,
+		CheckInternalIP:                   true,
+		CheckJailbreakResponse:            false,
+		CheckInstructionInjectionResponse: false,
+		PIIThreshold:                      0.7,
+		ToxicityThreshold:                 0.7,
+		BiasThreshold:                     0.6,
+		HallucinationThreshold:            0.7,
+		SecretsThreshold:                  0.7,
+		InternalIPThreshold:               0.7,
+		ActionOnPII:                       "redact",
+		ActionOnToxicity:                  "warn",
+		ActionOnBias:                      "log",
+		ActionOnHallucination:             "log",
+		ActionOnSecrets:                   "redact",
+		// 2026-10-10: redact -> log. detectInternalIP still fires and still
+		// records the hit (compliance stats, review queue, audit rows are
+		// unchanged) — only the client-visible rewrite stops.
+		//
+		// RFC1918 addresses are operational context, not secrets: masking
+		// `10.24.7.91:5432` turns a correct, copy-pasteable deploy command into
+		// a broken one, and the loss is paid on every response to protect
+		// nothing. The exfiltration risk that genuinely justifies acting on an
+		// address is model-authored tool arguments naming a routable
+		// destination, and that is enforced separately and fail-closed by
+		// security/sanitize's ScopeEgress egress guard (audit 154 / r1008).
+		//
+		// Keeping detection while dropping redaction is deliberate: the hit is
+		// still visible in the audit trail, so this narrows user-visible damage
+		// without weakening observability. Operators who want the old masking
+		// back set action_on_internal_ip = 'redact' per tenant.
+		ActionOnInternalIP:                   "log",
 		ActionOnJailbreakResponse:            "block",
 		ActionOnInstructionInjectionResponse: "block",
 		AutoRedact:                           true,
@@ -550,13 +566,12 @@ func (c *Checker) detectSecrets(output string, policy *Policy) []ComplianceIssue
 		matches := re.FindAllStringIndex(output, -1)
 		for _, match := range matches {
 			start, end := match[0], match[1]
-			content := output[start:end]
 			issues = append(issues, ComplianceIssue{
 				Type:        "secret",
 				Subtype:     p.patternType,
 				Severity:    p.severity,
 				Location:    fmt.Sprintf("char:%d-%d", start, end),
-				Content:     strings.Repeat("*", len(content)),
+				Content:     RedactionMarker(p.patternType),
 				Score:       1.0,
 				Redacted:    policy.ActionOnSecrets == "redact",
 				Description: p.desc,
@@ -575,13 +590,12 @@ func (c *Checker) detectInternalIP(output string, policy *Policy) []ComplianceIs
 	matches := re.FindAllStringIndex(output, -1)
 	for _, match := range matches {
 		start, end := match[0], match[1]
-		content := output[start:end]
 		issues = append(issues, ComplianceIssue{
 			Type:        "internal_ip",
 			Subtype:     "rfc1918",
 			Severity:    6,
 			Location:    fmt.Sprintf("char:%d-%d", start, end),
-			Content:     strings.Repeat("*", len(content)),
+			Content:     RedactionMarker("internal_ip"),
 			Score:       1.0,
 			Redacted:    policy.ActionOnInternalIP == "redact",
 			Description: "检测到内网 IP",
@@ -611,51 +625,29 @@ func (c *Checker) shouldCheckPIIType(piiType string, policy *Policy) bool {
 	}
 }
 
-// maskPII 脱敏 PII
-func (c *Checker) maskPII(content, piiType string) string {
-	switch piiType {
-	case "email":
-		parts := strings.Split(content, "@")
-		if len(parts) == 2 {
-			user := parts[0]
-			domain := parts[1]
-			if len(user) > 1 {
-				user = string(user[0]) + "***"
-			}
-			if len(domain) > 4 {
-				domain = string(domain[0]) + "***" + domain[len(domain)-4:]
-			}
-			return user + "@" + domain
-		}
-		return "***@***.com"
+// maskPII 生成命中值的客户端可见替代物。
+//
+// 2026-10-10 起不再用星号串（`138****8000` / `a***@e***.com` /
+// 与原文等长的 `*********`）代替原值。星号串没有编码、不进任何映射，
+// 命中即永久丢失，且长度会泄漏原值长度；「保留首尾」的形状则暗示保留了
+// 可用部分，实际是网关编造的字符串。统一改为带类型的标记：
+// 遮掉了哪一类是公开信息（规则名），原值不是。见 redaction_marker.go。
+func (c *Checker) maskPII(_ string, piiType string) string {
+	return RedactionMarker(piiType)
+}
 
-	case "phone":
-		if len(content) >= 11 {
-			return content[:3] + "****" + content[len(content)-4:]
+// toxicReplacement 返回命中毒性词的客户端可见替代物。
+//
+// 优先用运营配置的 ToxicReplacement：它此前在遮蔽路径上**从未被读取**
+// （redactOutput 写死的是等长星号串），配置项形同虚设。未配置时才退回带
+// 类型的标记，仍然不用星号串。
+func toxicReplacement(policy *Policy, category string) string {
+	if policy != nil {
+		if configured := strings.TrimSpace(policy.ToxicReplacement); configured != "" {
+			return configured
 		}
-		return "***-****-****"
-
-	case "id_card":
-		if len(content) >= 18 {
-			return "******" + content[6:10] + "******"
-		}
-		return "******19******"
-
-	case "credit_card":
-		if len(content) >= 16 {
-			return "****-****-****-" + content[len(content)-4:]
-		}
-		return "****-****-****-****"
-
-	case "bank_card":
-		if len(content) >= 16 {
-			return "****-****-****-" + content[len(content)-4:]
-		}
-		return "****-****-****-****"
-
-	default:
-		return strings.Repeat("*", len(content))
 	}
+	return RedactionMarker(category)
 }
 
 // redactOutput 脱敏输出。
@@ -668,7 +660,15 @@ func (c *Checker) maskPII(content, piiType string) string {
 //
 // 扩展：secret/internal_ip 命中时，若 policy 动作不是 redact，则不写入 RedactedOutput；
 // 命中 exception 规则的 issue 会被跳过。
-func (c *Checker) redactOutput(output string, issues []ComplianceIssue, policy *Policy) string {
+//
+// 2026-10-10：ctx 上带「本次响应已还原值」时逐条豁免（见 restored_values.go）。
+// 输出合规排在占位符还原**之后**，因此本函数看到的文本里混着模型写的值和
+// 网关刚还原回去的调用方原值。旧实现一视同仁地遮蔽，于是用户自己发来的
+// IP/账号刚被还原出来就被压成星号且再也换不回去——请求里好好的、响应回来
+// 变成 ****，可复制的运维命令和工具参数（代码执行走同一条链）全部失效。
+// 豁免只影响客户端可见文本：issue 仍然照记，合规统计 / 复核队列 / 审计行不变。
+func (c *Checker) redactOutput(ctx context.Context, output string, issues []ComplianceIssue, policy *Policy) string {
+	restored := RestoredValuesFromContext(ctx)
 	// 只保留需要脱敏的 issue，并按 start 降序排序（从后往前替换，避免位移）。
 	type redactItem struct {
 		start, end  int
@@ -686,7 +686,7 @@ func (c *Checker) redactOutput(output string, issues []ComplianceIssue, policy *
 			}
 		} else if issue.Type == "toxic" && action == "redact" {
 			if s, e, ok := parseCharLocation(issue.Location); ok {
-				items = append(items, redactItem{s, e, issue.Content}) // Content 已是 ****
+				items = append(items, redactItem{s, e, issue.Content}) // Content 已是 ToxicReplacement 或带类型标记
 			}
 		} else if (issue.Type == "secret" || issue.Type == "internal_ip") && action == "redact" {
 			if s, e, ok := parseCharLocation(issue.Location); ok {
@@ -709,6 +709,11 @@ func (c *Checker) redactOutput(output string, issues []ComplianceIssue, policy *
 	redacted := output
 	for _, it := range items {
 		if it.start < 0 || it.end > len(redacted) || it.start >= it.end {
+			continue
+		}
+		// 本次响应由占位符还原器注入的调用方原值：不遮蔽。它按定义已经在
+		// 调用方手里，遮掉它既不防泄漏，又必然毁掉内容。
+		if restored.Contains(redacted[it.start:it.end]) {
 			continue
 		}
 		redacted = redacted[:it.start] + it.replacement + redacted[it.end:]

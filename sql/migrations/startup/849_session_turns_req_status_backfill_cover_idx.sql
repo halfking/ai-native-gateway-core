@@ -45,6 +45,17 @@
 --   注：本机库验证时 PG 会把既有等价 per-partition 索引 ATTACH 收编而非
 --   新建（R30 纪律 73）；252 无同谓词子索引，本迁移为全新建。
 -- ===========================================================================
+BEGIN;
+
+-- 252 共享 PG 的 statement_timeout=30s 在部署链上直接击杀本迁移
+-- （2026-10-10 实录：245 deploy-2517 在此处 57014 canceling statement due to
+-- statement timeout 失败并中止切换）。6 分区父表普通 CREATE INDEX 持 ShareLock
+-- 建 ~79.3 万条索引项，在共享库负载下超过 30s 属预期——按 649/834/836/837
+-- 同一先例系把预算钉在本事务内。
+SET LOCAL statement_timeout = '10min';
+
 CREATE INDEX IF NOT EXISTS idx_session_turns_req_status_backfill_cov
     ON public.session_turns (request_id)
     WHERE request_status IS NULL;
+
+COMMIT;

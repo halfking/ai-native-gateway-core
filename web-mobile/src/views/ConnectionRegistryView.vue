@@ -227,8 +227,7 @@ onBeforeUnmount(() => {
   <div class="cr">
     <!-- ══ 状态行 ══ -->
     <section class="cr__sec">
-      <header class="cr__head">
-        <h2 class="cr__h">{{ t('cr.title') }}</h2>
+      <header class="cr__head cr__head--actions">
         <button type="button" class="cr__btn" :disabled="loading" @click="load">
           {{ list ? t('cr.reload') : t('cr.load') }}
         </button>
@@ -491,6 +490,10 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: var(--app-space-2);
+}
+
+.cr__head--actions {
+  justify-content: flex-end;
 }
 
 .cr__h {

@@ -24,6 +24,7 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
+	"sync/atomic"
 
 	outputcompliancehook "github.com/kaixuan/llm-gateway-go/domains/hooks/outputcompliance"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
@@ -48,6 +49,38 @@ func buildOutputComplianceInterceptor(db *sql.DB) *outputcompliancehook.OutputCo
 	return outputcompliancehook.NewOutputComplianceInterceptor(checker, ownerFn)
 }
 
+// sanitizeRestoredValues 持有「本会话已还原值」的来源函数，由
+// installSmartSaniGuard 在装配还原拦截器时写入，供 write-time 脱敏器
+// （buildRedactBodyFn）读取（2026-10-10）。
+//
+// 为什么是包级持有而不是构造参数：两处装配点相隔数百行且不在同一个函数里
+// （main.go 的 routing 装配 vs installSmartSaniGuard），穿参数要动启动主流程的
+// 签名。它持有的是**无状态函数值**，不是租户数据——真正的会话映射表每次调用
+// 都从 ctx / Redis 现取，进程里不缓存任何一条敏感值。
+//
+// 为 nil（未装配 sanitize、或还原器初始化失败）时两条路径都退回旧行为。
+var sanitizeRestoredValues atomic.Value
+
+// sanitizeSessionValuesFunc 是上面那个持有槽的类型别名，读写两侧共用。
+type sanitizeSessionValuesFunc func(ctx context.Context, sessionID, tenantID string) ([]string, error)
+
+// storeSanitizeRestoredValues 写入来源（installSmartSaniGuard 调用）。
+func storeSanitizeRestoredValues(fn sanitizeSessionValuesFunc) {
+	if fn == nil {
+		return
+	}
+	sanitizeRestoredValues.Store(fn)
+}
+
+// loadSanitizeRestoredValues 读取来源；未装配时返回 nil。
+func loadSanitizeRestoredValues() sanitizeSessionValuesFunc {
+	if sanitizeRestoredValues.Load() == nil {
+		return nil
+	}
+	fn, _ := sanitizeRestoredValues.Load().(sanitizeSessionValuesFunc)
+	return fn
+}
+
 // buildRedactBodyFn 构造 write-time 客户端可见脱敏函数（2026-07-09，增强 1）。
 // 与 buildOutputComplianceInterceptor 使用同一个 checker；write-time 路径没有
 // 请求上下文，caller/data owner 均来自 DB 查询（RedactOwnerContextFunc 形态）。
@@ -60,7 +93,7 @@ func buildRedactBodyFn(db *sql.DB) func([]byte, string, string) []byte {
 		slog.Warn("output_compliance_control: buildRedactBodyFn NewChecker failed", "error", err)
 		return nil
 	}
-	return streaming.BuildRedactBodyFn(checker, makeRedactOwnerLookup(db))
+	return streaming.BuildRedactBodyFn(checker, makeRedactOwnerLookup(db), loadSanitizeRestoredValues())
 }
 
 // lookupOwners resolves (callerOwner, dataOwner) for a session in one DB

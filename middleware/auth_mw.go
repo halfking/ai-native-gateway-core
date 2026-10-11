@@ -79,6 +79,23 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 			return
 		}
 
+		// SPA deep-link bypass (2026-10-11, white-page incident): browser
+		// navigations carry Accept: text/html. The console SPA serves its
+		// top-level routes (/dashboard, /login, /routing-v2/… — formerly
+		// /admin/*) through the "/" static handler's index.html fallback;
+		// a full page load of such a path carries no API key and must not
+		// die here with 401 missing_key before the mux ever sees it (the
+		// 2026-10-11 2538 deploy turned every refresh on /dashboard into a
+		// bare JSON error page). Only navigations are exempted: SDK/curl
+		// callers (Accept absent or JSON) keep the original gate, and the
+		// data-plane / self-guarded prefixes are excluded outright in
+		// isSPANavigation — /api/* and /admin/* stay wrapAdmin-guarded
+		// behind this bypass either way.
+		if m.isSPANavigation(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		// Anthropic Messages clients authenticate with x-api-key per the
 		// Anthropic spec (Claude Code with ANTHROPIC_API_KEY sends ONLY this
 		// header). Without the fallback they die here with 401 missing_key
@@ -146,6 +163,34 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 		)
 		writeAuthUnauthorized(r.Context(), w, i18n.MsgInvalidKey, "invalid_key")
 	})
+}
+
+// spaProtectedPrefixes must never ride the SPA-navigation bypass: /v1 is
+// the data plane, /mock and /plugins are self-guarded subsystems whose
+// front door this gate is part of.
+//
+// 维护契约（2026-10-11 审计）：本 bypass 的安全性是隐式的——它依赖
+// 「除上述前缀外，AuthMiddleware 后面的每个 handler 要么已在原生
+// BypassRule 内且自带 AdminToken/authz 守卫（如 /internal/*、/api/v1/plugins/*），
+// 要么在 handler 内自校验 API key（如 ChatHandler 的 keyVerifier 段，含经
+// GeminiHandler 转发的 /v1beta|/v1/models/{m}:generateContent）」。
+// 未来把任何无自守卫的新 handler 挂到顶层路径（或把现有自守卫 handler
+// 挪出这些前缀）时，必须同步加进本清单，否则 text/html 请求将匿名直达。
+var spaProtectedPrefixes = []string{"/v1", "/mock", "/plugins"}
+
+// isSPANavigation reports whether r looks like a browser page navigation
+// (Accept includes text/html) to a path outside the protected prefixes.
+func (m *AuthMiddleware) isSPANavigation(r *http.Request) bool {
+	if !strings.Contains(r.Header.Get("Accept"), "text/html") {
+		return false
+	}
+	p := r.URL.Path
+	for _, prefix := range spaProtectedPrefixes {
+		if p == prefix || strings.HasPrefix(p, prefix+"/") {
+			return false
+		}
+	}
+	return true
 }
 
 // bearerKeyPrefixForLog returns a redacted prefix of a bearer token safe

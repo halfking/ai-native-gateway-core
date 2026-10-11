@@ -1,7 +1,7 @@
 # Jev 快速判断节点适用性分析与整合方案 —— 任务编排「匹配 / 过程 / 完成」三节点
 
 日期：2026-09-24
-状态：方案（Phase 0 已落地，其余待评审）
+状态：方案（Phase 0 已落地；2026-10-11 补充成功调用 usage 审计，其余待评审）
 前置调研：2026-09-18 Jev 调研轮（Awesome Jev 14 项目全量抓取 + TypeSafe 官方公告/API 文档核对，结论存 `docs/design/` 本文件与提交 a1f561bb1 的 classifier_jev.go 注释）
 关联代码：`autoroute/classifier_jev.go`（已落地）、`autoroute/decision.go`（fallback 槽）、`taskprofile/`（画像+纠正闭环）、`autoroute/feedback.go:137`（DetectSessionDrift）
 
@@ -33,6 +33,10 @@
 - 70-500ms、输入 $0.042/MTok、输出免费（≈$0.00003/决策）；基数上限 255。
 - 校准训练（RLCD）：confidence 由概率分布导出，生态项目直接把它当策略阈值用。
 - 供应商风险：waitlist 早期访问、定价可持续性官方自认存疑、单点。
+
+### 1.2.1 网关用量与成本审计边界（2026-10-11）
+
+Jev 成功响应现要求包含非负且有上限的 `usage.input_tokens` / `usage.output_tokens`，并将提供方、模型、token 数及成本估算写入服务端 `request_logs.auto_decision`。响应头会剔除该内部字段。估算单价默认为 $0.042/MTok 输入、$0/MTok 输出，可通过 `LLM_GATEWAY_JEV_INPUT_PRICE_PER_MILLION_USD` 与 `LLM_GATEWAY_JEV_OUTPUT_PRICE_PER_MILLION_USD` 覆盖。它是平台成本观察值，不是 tenant charge 或供应商账单；正式成本账仍须通过供应商账单对账，并把请求级调用事件（含超时/断连导致的未知用量）写入独立计量流水。供应商不返回 usage 时，本次分类 fail-open 到启发式结果，不以缺失 token 当作零成本。
 
 ### 1.2 评估维度
 

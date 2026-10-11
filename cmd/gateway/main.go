@@ -2411,6 +2411,10 @@ func main() {
 	if keyVerifier.Enabled() {
 		slidingRL := ratelimit.NewRedisLimiterFromEnv()
 		chatHandler.SetAuth(keyVerifier, slidingRL)
+		// 2026-10-11: /v1/models 此前从未接上 KeyVerifier，而 AuthMiddleware 对
+		// sk-* 故意放行（Rule 20 §2），于是任意 sk- 开头的字符串都能拉到全量
+		// 模型清单。补上这一节委托链，详见 streaming/models.go 的 SetAuth。
+		modelsHandler.SetAuth(keyVerifier)
 		// /v1/embeddings handler (22 章 §22.2). providerClient + upClient
 		// are both ready by this point.
 		embeddingsHandler = streaming.NewEmbeddingsHandler(providerClient, upClient)
@@ -3119,6 +3123,12 @@ func main() {
 			adminDB = dbConn.Pool()
 		}
 		adminHandler = admin.NewHandler(adminDB, cfg.SecretKey, fernetKey)
+		if mobileNodeService, mobileNodeErr := admin.NewMobileNodeDescriptorServiceFromEnv(); mobileNodeErr != nil {
+			slog.Warn("mobile node QR provisioning disabled; check node descriptor and NetBird configuration")
+		} else if mobileNodeService != nil && adminHandler != nil {
+			adminHandler.SetMobileNodeDescriptorService(mobileNodeService)
+			slog.Info("mobile node QR provisioning enabled")
+		}
 		if adminHandler != nil {
 			adminHandler.StartProxyRuntime()
 		}

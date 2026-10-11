@@ -176,7 +176,7 @@ $$;
 -- Name: analyze_llm_gateway_table_stats(integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.analyze_llm_gateway_table_stats(p_recent_months integer DEFAULT 2) RETURNS integer
+CREATE OR REPLACE FUNCTION public.analyze_llm_gateway_table_stats(p_recent_months integer DEFAULT 2) RETURNS integer
     LANGUAGE plpgsql
     AS $_$
 		DECLARE r record; suffix text; m integer; analyzed integer := 0;
@@ -231,7 +231,7 @@ Columnar partitions do not always get autovacuum analyze after bulk INSERT.';
 -- Name: apply_llm_gateway_autovacuum_settings(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.apply_llm_gateway_autovacuum_settings() RETURNS integer
+CREATE OR REPLACE FUNCTION public.apply_llm_gateway_autovacuum_settings() RETURNS integer
     LANGUAGE plpgsql
     AS $$
 		DECLARE
@@ -294,7 +294,7 @@ Idempotent. Migration 404 / partition_manager startup.';
 -- Name: archive_credential_model_index(date); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.archive_credential_model_index(archive_month date) RETURNS TABLE(status text, rows_archived bigint, rows_deleted bigint)
+CREATE OR REPLACE FUNCTION public.archive_credential_model_index(archive_month date) RETURNS TABLE(status text, rows_archived bigint, rows_deleted bigint)
     LANGUAGE plpgsql
     AS $$
 		DECLARE
@@ -352,7 +352,7 @@ Fixed 2026-06-30 in migration 318 (was using ON CONFLICT DO NOTHING).';
 -- Name: archive_request_logs(date); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.archive_request_logs(archive_month date) RETURNS TABLE(status text, rows_migrated bigint, partition_dropped boolean)
+CREATE OR REPLACE FUNCTION public.archive_request_logs(archive_month date) RETURNS TABLE(status text, rows_migrated bigint, partition_dropped boolean)
     LANGUAGE plpgsql
     AS $$
 		DECLARE
@@ -426,7 +426,7 @@ after a successful run.';
 -- Name: archive_request_wal(date); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.archive_request_wal(archive_month date) RETURNS TABLE(status text, rows_migrated bigint, partition_dropped boolean)
+CREATE OR REPLACE FUNCTION public.archive_request_wal(archive_month date) RETURNS TABLE(status text, rows_migrated bigint, partition_dropped boolean)
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -521,7 +521,7 @@ archive functions).';
 -- Name: archive_routing_decision_log(date); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.archive_routing_decision_log(archive_month date) RETURNS TABLE(status text, rows_migrated bigint, partition_dropped boolean)
+CREATE OR REPLACE FUNCTION public.archive_routing_decision_log(archive_month date) RETURNS TABLE(status text, rows_migrated bigint, partition_dropped boolean)
     LANGUAGE plpgsql
     AS $$
 		DECLARE
@@ -590,7 +590,7 @@ Fixed 2026-06-30 in migration 318 (was a single batched INSERT).';
 -- Name: array_unique_append(text[], text); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.array_unique_append(arr text[], new_elem text) RETURNS text[]
+CREATE OR REPLACE FUNCTION public.array_unique_append(arr text[], new_elem text) RETURNS text[]
     LANGUAGE plpgsql IMMUTABLE
     AS $$ BEGIN IF new_elem IS NULL THEN RETURN arr; END IF; IF new_elem = ANY(arr) THEN RETURN arr; ELSE RETURN array_append(arr, new_elem); END IF; END; $$;
 
@@ -599,7 +599,7 @@ CREATE FUNCTION public.array_unique_append(arr text[], new_elem text) RETURNS te
 -- Name: auto_rotate_to_columnar(boolean, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.auto_rotate_to_columnar(dry_run boolean DEFAULT false, age_days integer DEFAULT 30) RETURNS TABLE(action text, table_name text, access_method text, size_before text, size_after text, status text, message text)
+CREATE OR REPLACE FUNCTION public.auto_rotate_to_columnar(dry_run boolean DEFAULT false, age_days integer DEFAULT 30) RETURNS TABLE(action text, table_name text, access_method text, size_before text, size_after text, status text, message text)
     LANGUAGE plpgsql
     AS $_$
 DECLARE
@@ -667,7 +667,7 @@ $_$;
 -- Name: auto_set_fp_slot_limit(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.auto_set_fp_slot_limit() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.auto_set_fp_slot_limit() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -722,7 +722,7 @@ $$;
 -- Name: calculate_request_cost(character varying, integer, integer, integer, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.calculate_request_cost(p_model_canonical character varying, p_input_tokens integer, p_output_tokens integer, p_cache_write_tokens integer DEFAULT 0, p_cache_read_tokens integer DEFAULT 0) RETURNS bigint
+CREATE OR REPLACE FUNCTION public.calculate_request_cost(p_model_canonical character varying, p_input_tokens integer, p_output_tokens integer, p_cache_write_tokens integer DEFAULT 0, p_cache_read_tokens integer DEFAULT 0) RETURNS bigint
     LANGUAGE plpgsql STABLE
     AS $$
 DECLARE
@@ -765,7 +765,7 @@ $$;
 -- Name: check_credential_dates(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.check_credential_dates() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.check_credential_dates() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -783,7 +783,7 @@ $$;
 -- Name: cleanup_expired_session_requests(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.cleanup_expired_session_requests() RETURNS TABLE(deleted_count bigint)
+CREATE OR REPLACE FUNCTION public.cleanup_expired_session_requests() RETURNS TABLE(deleted_count bigint)
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -810,7 +810,7 @@ COMMENT ON FUNCTION public.cleanup_expired_session_requests() IS '清理过期�
 -- Name: cleanup_old_credential_model_index(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.cleanup_old_credential_model_index() RETURNS bigint
+CREATE OR REPLACE FUNCTION public.cleanup_old_credential_model_index() RETURNS bigint
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -847,7 +847,7 @@ COMMENT ON FUNCTION public.cleanup_old_credential_model_index() IS 'Daily cleanu
 -- Name: cleanup_old_credential_probe_model_log(integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.cleanup_old_credential_probe_model_log(p_retention_days integer DEFAULT 90) RETURNS bigint
+CREATE OR REPLACE FUNCTION public.cleanup_old_credential_probe_model_log(p_retention_days integer DEFAULT 90) RETURNS bigint
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -879,7 +879,7 @@ COMMENT ON FUNCTION public.cleanup_old_credential_probe_model_log(p_retention_da
 -- Name: cleanup_stale_in_progress_requests(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.cleanup_stale_in_progress_requests() RETURNS TABLE(cleaned_count bigint)
+CREATE OR REPLACE FUNCTION public.cleanup_stale_in_progress_requests() RETURNS TABLE(cleaned_count bigint)
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -912,7 +912,7 @@ $$;
 -- Name: columnar_insert_only_parents(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.columnar_insert_only_parents() RETURNS text[]
+CREATE OR REPLACE FUNCTION public.columnar_insert_only_parents() RETURNS text[]
     LANGUAGE sql STABLE
     AS $$
     SELECT ARRAY['routing_decision_log'];
@@ -923,7 +923,7 @@ $$;
 -- Name: columnar_heal(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.columnar_heal() RETURNS TABLE(parent_name text, partition_name text, converted boolean, pre_size_bytes bigint, post_size_bytes bigint, error_message text)
+CREATE OR REPLACE FUNCTION public.columnar_heal() RETURNS TABLE(parent_name text, partition_name text, converted boolean, pre_size_bytes bigint, post_size_bytes bigint, error_message text)
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -975,7 +975,7 @@ $$;
 -- Name: columnar_healthcheck(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.columnar_healthcheck() RETURNS TABLE(parent_name text, partition_name text, storage text, expected text, compliant boolean, total_size_bytes bigint, n_live_tup bigint)
+CREATE OR REPLACE FUNCTION public.columnar_healthcheck() RETURNS TABLE(parent_name text, partition_name text, storage text, expected text, compliant boolean, total_size_bytes bigint, n_live_tup bigint)
     LANGUAGE sql STABLE
     AS $$
     WITH config AS (
@@ -1041,7 +1041,7 @@ $$;
 -- Name: columnar_drift_report(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.columnar_drift_report() RETURNS TABLE(parent_name text, compliant_count integer, noncompliant_count integer, total_size_bytes bigint, heap_size_bytes bigint, columnar_size_bytes bigint)
+CREATE OR REPLACE FUNCTION public.columnar_drift_report() RETURNS TABLE(parent_name text, compliant_count integer, noncompliant_count integer, total_size_bytes bigint, heap_size_bytes bigint, columnar_size_bytes bigint)
     LANGUAGE sql STABLE
     AS $$
     SELECT
@@ -1058,7 +1058,7 @@ $$;
 
 
 
-CREATE FUNCTION public.create_next_month_partitions() RETURNS text
+CREATE OR REPLACE FUNCTION public.create_next_month_partitions() RETURNS text
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -1123,7 +1123,7 @@ COMMENT ON FUNCTION public.create_next_month_partitions() IS '自动创建下个
 -- Name: create_next_month_routing_partitions(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.create_next_month_routing_partitions() RETURNS void
+CREATE OR REPLACE FUNCTION public.create_next_month_routing_partitions() RETURNS void
     LANGUAGE plpgsql
     AS $$
 		DECLARE
@@ -1158,7 +1158,7 @@ COMMENT ON FUNCTION public.create_next_month_routing_partitions() IS 'Auto-creat
 -- Name: diagnose_failure_kind(integer, text); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.diagnose_failure_kind(p_status integer, p_body text) RETURNS text
+CREATE OR REPLACE FUNCTION public.diagnose_failure_kind(p_status integer, p_body text) RETURNS text
     LANGUAGE plpgsql IMMUTABLE
     AS $_$
 DECLARE
@@ -1335,7 +1335,7 @@ COMMENT ON FUNCTION public.diagnose_failure_kind(p_status integer, p_body text) 
 -- Name: drop_old_model_probe_runs_partitions(integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.drop_old_model_probe_runs_partitions(p_retention_days integer) RETURNS TABLE(dropped_partition text, rows_dropped bigint)
+CREATE OR REPLACE FUNCTION public.drop_old_model_probe_runs_partitions(p_retention_days integer) RETURNS TABLE(dropped_partition text, rows_dropped bigint)
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -1348,7 +1348,7 @@ $$;
 -- Name: drop_old_request_logs_bodies_partitions(integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.drop_old_request_logs_bodies_partitions(p_retention_days integer) RETURNS TABLE(dropped_partition text, rows_dropped bigint)
+CREATE OR REPLACE FUNCTION public.drop_old_request_logs_bodies_partitions(p_retention_days integer) RETURNS TABLE(dropped_partition text, rows_dropped bigint)
     LANGUAGE plpgsql
     AS $_$
 DECLARE
@@ -1389,7 +1389,7 @@ $_$;
 -- Name: drop_old_state_partitions(integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.drop_old_state_partitions(p_retention_days integer DEFAULT 30) RETURNS bigint
+CREATE OR REPLACE FUNCTION public.drop_old_state_partitions(p_retention_days integer DEFAULT 30) RETURNS bigint
     LANGUAGE plpgsql
     AS $_$
 DECLARE
@@ -1460,7 +1460,7 @@ COMMENT ON FUNCTION public.drop_old_state_partitions(p_retention_days integer) I
 -- Name: enforce_columnar_partition(text, text); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.enforce_columnar_partition(p_partition_name text, p_parent_name text) RETURNS void
+CREATE OR REPLACE FUNCTION public.enforce_columnar_partition(p_partition_name text, p_parent_name text) RETURNS void
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -1502,7 +1502,7 @@ $$;
 -- Name: ensure_cache_metrics_partition(date); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_cache_metrics_partition(target_date date DEFAULT CURRENT_DATE) RETURNS text
+CREATE OR REPLACE FUNCTION public.ensure_cache_metrics_partition(target_date date DEFAULT CURRENT_DATE) RETURNS text
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -1612,7 +1612,7 @@ Idempotent. Added 2026-06-30 in migration 319.';
 -- Name: ensure_credit_ledger_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_credit_ledger_partition(target_month timestamp with time zone DEFAULT now()) RETURNS text
+CREATE OR REPLACE FUNCTION public.ensure_credit_ledger_partition(target_month timestamp with time zone DEFAULT now()) RETURNS text
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -1660,7 +1660,7 @@ Originally in migration 334; recreated in 475 to fix production silent-skip.';
 -- Name: ensure_dashboard_events_partition(date); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_dashboard_events_partition(target_date date DEFAULT NULL::date) RETURNS text
+CREATE OR REPLACE FUNCTION public.ensure_dashboard_events_partition(target_date date DEFAULT NULL::date) RETURNS text
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -1694,7 +1694,7 @@ $$;
 -- Name: ensure_handoff_logs_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_handoff_logs_partition(p_month timestamp with time zone) RETURNS void
+CREATE OR REPLACE FUNCTION public.ensure_handoff_logs_partition(p_month timestamp with time zone) RETURNS void
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -1707,7 +1707,7 @@ $$;
 -- Name: ensure_model_probe_runs_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_model_probe_runs_partition(target_ts timestamp with time zone) RETURNS text
+CREATE OR REPLACE FUNCTION public.ensure_model_probe_runs_partition(target_ts timestamp with time zone) RETURNS text
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -1991,7 +1991,7 @@ Idempotent. Added 2026-06-30 in migration 319.';
 -- Name: ensure_session_module_executions_partition(date); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_session_module_executions_partition(target_date date DEFAULT NULL::date) RETURNS text
+CREATE OR REPLACE FUNCTION public.ensure_session_module_executions_partition(target_date date DEFAULT NULL::date) RETURNS text
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -2053,7 +2053,7 @@ $$;
 -- Name: ensure_sessions_v2_partitions(date); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_sessions_v2_partitions(target_date date DEFAULT CURRENT_DATE) RETURNS void
+CREATE OR REPLACE FUNCTION public.ensure_sessions_v2_partitions(target_date date DEFAULT CURRENT_DATE) RETURNS void
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -2101,7 +2101,7 @@ COMMENT ON FUNCTION public.ensure_sessions_v2_partitions(target_date date) IS 'E
 -- Name: ensure_supplier_errors_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_supplier_errors_partition(target_ts timestamp with time zone) RETURNS text
+CREATE OR REPLACE FUNCTION public.ensure_supplier_errors_partition(target_ts timestamp with time zone) RETURNS text
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -2137,7 +2137,7 @@ $$;
 -- Name: ensure_tool_usage_stats_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_tool_usage_stats_partition(target_month timestamp with time zone DEFAULT now()) RETURNS text
+CREATE OR REPLACE FUNCTION public.ensure_tool_usage_stats_partition(target_month timestamp with time zone DEFAULT now()) RETURNS text
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -2216,7 +2216,7 @@ $$;
 -- Name: fn_enforce_columnar_event_trigger(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.fn_enforce_columnar_event_trigger() RETURNS event_trigger
+CREATE OR REPLACE FUNCTION public.fn_enforce_columnar_event_trigger() RETURNS event_trigger
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -2250,7 +2250,7 @@ $$;
 -- Name: get_current_tenant(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.get_current_tenant() RETURNS text
+CREATE OR REPLACE FUNCTION public.get_current_tenant() RETURNS text
     LANGUAGE sql STABLE
     AS $$ SELECT COALESCE(NULLIF(current_setting('app.current_tenant', true), ''), 'default'); $$;
 
@@ -2259,7 +2259,7 @@ CREATE FUNCTION public.get_current_tenant() RETURNS text
 -- Name: get_last_successful_request(character varying, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.get_last_successful_request(p_session_id character varying, p_minutes integer DEFAULT 60) RETURNS TABLE(request_id bigint, created_at timestamp with time zone, latency_ms integer, response_text text)
+CREATE OR REPLACE FUNCTION public.get_last_successful_request(p_session_id character varying, p_minutes integer DEFAULT 60) RETURNS TABLE(request_id bigint, created_at timestamp with time zone, latency_ms integer, response_text text)
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -2290,7 +2290,7 @@ COMMENT ON FUNCTION public.get_last_successful_request(p_session_id character va
 -- Name: get_model_pricing_summary(character varying); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.get_model_pricing_summary(p_model_canonical character varying) RETURNS TABLE(model character varying, display_name character varying, input_price_cny numeric, output_price_cny numeric, tier character varying, active boolean)
+CREATE OR REPLACE FUNCTION public.get_model_pricing_summary(p_model_canonical character varying) RETURNS TABLE(model character varying, display_name character varying, input_price_cny numeric, output_price_cny numeric, tier character varying, active boolean)
     LANGUAGE plpgsql STABLE
     AS $$
 BEGIN
@@ -2365,7 +2365,7 @@ COMMENT ON COLUMN public.prompt_injection_policies.content_replacement_strategy 
 -- Name: get_prompt_injection_policy(character varying); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.get_prompt_injection_policy(p_tenant_id character varying) RETURNS public.prompt_injection_policies
+CREATE OR REPLACE FUNCTION public.get_prompt_injection_policy(p_tenant_id character varying) RETURNS public.prompt_injection_policies
     LANGUAGE plpgsql STABLE
     AS $$ DECLARE v_policy prompt_injection_policies; BEGIN SELECT * INTO v_policy FROM prompt_injection_policies WHERE tenant_id = p_tenant_id; RETURN v_policy; END; $$;
 
@@ -2374,7 +2374,7 @@ CREATE FUNCTION public.get_prompt_injection_policy(p_tenant_id character varying
 -- Name: get_session_last_request(character varying); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.get_session_last_request(p_session_id character varying) RETURNS TABLE(request_id bigint, status character varying, user_message text, cached_response text, response_chunks integer, model character varying, provider_id integer, latency_ms integer, age_seconds integer)
+CREATE OR REPLACE FUNCTION public.get_session_last_request(p_session_id character varying) RETURNS TABLE(request_id bigint, status character varying, user_message text, cached_response text, response_chunks integer, model character varying, provider_id integer, latency_ms integer, age_seconds integer)
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -2407,7 +2407,7 @@ COMMENT ON FUNCTION public.get_session_last_request(p_session_id character varyi
 -- Name: get_setting_bool(character varying); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.get_setting_bool(setting_key character varying) RETURNS boolean
+CREATE OR REPLACE FUNCTION public.get_setting_bool(setting_key character varying) RETURNS boolean
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -2433,7 +2433,7 @@ COMMENT ON FUNCTION public.get_setting_bool(setting_key character varying) IS '�
 -- Name: get_setting_int(character varying); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.get_setting_int(setting_key character varying) RETURNS integer
+CREATE OR REPLACE FUNCTION public.get_setting_int(setting_key character varying) RETURNS integer
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -2459,7 +2459,7 @@ COMMENT ON FUNCTION public.get_setting_int(setting_key character varying) IS '�
 -- Name: get_setting_value(character varying); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.get_setting_value(setting_key character varying) RETURNS text
+CREATE OR REPLACE FUNCTION public.get_setting_value(setting_key character varying) RETURNS text
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -2485,7 +2485,7 @@ COMMENT ON FUNCTION public.get_setting_value(setting_key character varying) IS '
 -- Name: get_standardized_name(text); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.get_standardized_name(p_raw_model_name text) RETURNS text
+CREATE OR REPLACE FUNCTION public.get_standardized_name(p_raw_model_name text) RETURNS text
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -2528,7 +2528,7 @@ Priority: 1. model_name_mapping table, 2. provider_models.standardized_name, 3. 
 -- Name: key_applications_set_updated_at(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.key_applications_set_updated_at() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.key_applications_set_updated_at() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -2542,7 +2542,7 @@ $$;
 -- Name: log_model_pricing_change(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.log_model_pricing_change() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.log_model_pricing_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -2575,7 +2575,7 @@ $$;
 -- Name: model_name_mapping_updated_at(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.model_name_mapping_updated_at() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.model_name_mapping_updated_at() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -2589,7 +2589,7 @@ $$;
 -- Name: model_offers_delete_trigger(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.model_offers_delete_trigger() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.model_offers_delete_trigger() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -2608,7 +2608,7 @@ $$;
 -- Name: model_offers_insert_trigger(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.model_offers_insert_trigger() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.model_offers_insert_trigger() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -2678,7 +2678,7 @@ $$;
 -- Name: model_offers_update_trigger(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.model_offers_update_trigger() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.model_offers_update_trigger() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -2742,7 +2742,7 @@ $$;
 -- Name: model_probe_backoff(integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.model_probe_backoff(consecutive_failures integer) RETURNS interval
+CREATE OR REPLACE FUNCTION public.model_probe_backoff(consecutive_failures integer) RETURNS interval
     LANGUAGE sql IMMUTABLE
     AS $$
 		    SELECT CASE
@@ -2758,7 +2758,7 @@ CREATE FUNCTION public.model_probe_backoff(consecutive_failures integer) RETURNS
 -- Name: model_probe_backoff_v2(integer, timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.model_probe_backoff_v2(consecutive_failures integer, last_attempt_at timestamp with time zone) RETURNS interval
+CREATE OR REPLACE FUNCTION public.model_probe_backoff_v2(consecutive_failures integer, last_attempt_at timestamp with time zone) RETURNS interval
     LANGUAGE sql IMMUTABLE
     AS $$
     WITH age AS (
@@ -2791,7 +2791,7 @@ COMMENT ON FUNCTION public.model_probe_backoff_v2(consecutive_failures integer, 
 -- Name: model_probe_cleanup_stuck_probing(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.model_probe_cleanup_stuck_probing() RETURNS integer
+CREATE OR REPLACE FUNCTION public.model_probe_cleanup_stuck_probing() RETURNS integer
     LANGUAGE plpgsql
     AS $$ DECLARE cleaned_count INTEGER; BEGIN WITH cleaned AS (UPDATE model_probe_state SET state = 'suspicious', probing_started_at = NULL, next_retry_at = NOW() + INTERVAL '2 minutes' WHERE state = 'probing' AND probing_started_at IS NOT NULL AND probing_started_at < NOW() - INTERVAL '5 minutes' RETURNING 1) SELECT COUNT(*) INTO cleaned_count FROM cleaned; RETURN cleaned_count; END; $$;
 
@@ -2800,7 +2800,7 @@ CREATE FUNCTION public.model_probe_cleanup_stuck_probing() RETURNS integer
 -- Name: model_probe_expire_to_suspicious(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.model_probe_expire_to_suspicious() RETURNS integer
+CREATE OR REPLACE FUNCTION public.model_probe_expire_to_suspicious() RETURNS integer
     LANGUAGE plpgsql
     AS $$ DECLARE expired_count INTEGER; BEGIN WITH updated AS (UPDATE model_probe_state SET state = 'suspicious', marked_suspicious_at = NOW(), state_expires_at = NULL, next_retry_at = NOW() WHERE state IN ('available', 'unavailable') AND state_expires_at IS NOT NULL AND state_expires_at <= NOW() RETURNING 1) SELECT COUNT(*) INTO expired_count FROM updated; RETURN expired_count; END; $$;
 
@@ -2809,7 +2809,7 @@ CREATE FUNCTION public.model_probe_expire_to_suspicious() RETURNS integer
 -- Name: model_probe_mark_available(bigint, text, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.model_probe_mark_available(p_credential_id bigint, p_raw_model_name text, p_latency_ms integer DEFAULT 0) RETURNS void
+CREATE OR REPLACE FUNCTION public.model_probe_mark_available(p_credential_id bigint, p_raw_model_name text, p_latency_ms integer DEFAULT 0) RETURNS void
     LANGUAGE plpgsql
     AS $$
 		BEGIN
@@ -2854,7 +2854,7 @@ CREATE FUNCTION public.model_probe_mark_available(p_credential_id bigint, p_raw_
 -- Name: model_probe_mark_unavailable(bigint, text, text, text); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.model_probe_mark_unavailable(p_credential_id bigint, p_raw_model_name text, p_error_code text, p_error_message text DEFAULT ''::text) RETURNS void
+CREATE OR REPLACE FUNCTION public.model_probe_mark_unavailable(p_credential_id bigint, p_raw_model_name text, p_error_code text, p_error_message text DEFAULT ''::text) RETURNS void
     LANGUAGE plpgsql
     AS $$
 		BEGIN
@@ -2903,7 +2903,7 @@ CREATE FUNCTION public.model_probe_mark_unavailable(p_credential_id bigint, p_ra
 -- Name: model_probe_passive_boost(bigint, text, timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.model_probe_passive_boost(p_credential_id bigint, p_raw_model_name text, p_now timestamp with time zone) RETURNS void
+CREATE OR REPLACE FUNCTION public.model_probe_passive_boost(p_credential_id bigint, p_raw_model_name text, p_now timestamp with time zone) RETURNS void
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -2949,7 +2949,7 @@ COMMENT ON FUNCTION public.model_probe_passive_boost(p_credential_id bigint, p_r
 -- Name: model_probe_reclaim_idle_slots(integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.model_probe_reclaim_idle_slots(reclaim_after_seconds integer) RETURNS TABLE(deleted_slots integer, deleted_pins integer)
+CREATE OR REPLACE FUNCTION public.model_probe_reclaim_idle_slots(reclaim_after_seconds integer) RETURNS TABLE(deleted_slots integer, deleted_pins integer)
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -3007,7 +3007,7 @@ COMMENT ON FUNCTION public.model_probe_reclaim_idle_slots(reclaim_after_seconds 
 -- Name: model_probe_start_probing(bigint, text, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.model_probe_start_probing(p_credential_id bigint, p_raw_model_name text, p_max_credential_concurrency integer DEFAULT 2) RETURNS boolean
+CREATE OR REPLACE FUNCTION public.model_probe_start_probing(p_credential_id bigint, p_raw_model_name text, p_max_credential_concurrency integer DEFAULT 2) RETURNS boolean
     LANGUAGE plpgsql
     AS $$ DECLARE current_concurrency INTEGER; can_probe BOOLEAN := FALSE; BEGIN SELECT model_probe_credential_concurrency(p_credential_id) INTO current_concurrency; IF current_concurrency >= p_max_credential_concurrency THEN RETURN FALSE; END IF; WITH updated AS (UPDATE model_probe_state SET state = 'probing', probing_started_at = NOW(), last_attempt_at = NOW() WHERE credential_id = p_credential_id AND raw_model_name = p_raw_model_name AND state = 'suspicious' RETURNING 1) SELECT COUNT(*) > 0 INTO can_probe FROM updated; RETURN can_probe; END; $$;
 
@@ -3016,14 +3016,14 @@ CREATE FUNCTION public.model_probe_start_probing(p_credential_id bigint, p_raw_m
 -- Name: notify_auto_route_refresh(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.notify_auto_route_refresh() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.notify_auto_route_refresh() RETURNS trigger
     LANGUAGE plpgsql
     AS $$ DECLARE entity_id text := ''; BEGIN IF TG_TABLE_NAME = 'credential_model_bindings' THEN entity_id := COALESCE(NEW.credential_id, OLD.credential_id)::text; ELSIF TG_TABLE_NAME IN ('credentials', 'api_keys', 'providers') THEN entity_id := COALESCE(NEW.id, OLD.id)::text; END IF; PERFORM pg_notify('auto_route_refresh', TG_TABLE_NAME || ':' || TG_OP || ':' || entity_id); RETURN COALESCE(NEW, OLD); END; $$;
 
 -- Name: bump_credentials_governor_revision(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.bump_credentials_governor_revision() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.bump_credentials_governor_revision() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -3047,7 +3047,7 @@ $$;
 -- Name: notify_credentials_governor_revision(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.notify_credentials_governor_revision() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.notify_credentials_governor_revision() RETURNS trigger
     LANGUAGE plpgsql
     AS $$ BEGIN PERFORM pg_notify('credentials_revision', NEW.revision::text); RETURN NEW; END; $$;
 
@@ -3056,7 +3056,7 @@ CREATE FUNCTION public.notify_credentials_governor_revision() RETURNS trigger
 -- Name: populate_model_name_mapping_from_provider_models(); Type: FUNCTION; Schema: public; Owner: -
 
 
-CREATE FUNCTION public.populate_model_name_mapping_from_provider_models() RETURNS void
+CREATE OR REPLACE FUNCTION public.populate_model_name_mapping_from_provider_models() RETURNS void
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -3166,7 +3166,7 @@ $function$;
 -- Name: promote_credential_model_index_default_batch(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.promote_credential_model_index_default_batch(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
+CREATE OR REPLACE FUNCTION public.promote_credential_model_index_default_batch(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -3261,7 +3261,7 @@ $$;
 -- Name: promote_credit_ledger_default_batch(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.promote_credit_ledger_default_batch(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
+CREATE OR REPLACE FUNCTION public.promote_credit_ledger_default_batch(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -3347,7 +3347,7 @@ $$;
 -- Name: promote_dashboard_access_events_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.promote_dashboard_access_events_hot_to_partition(p_retention interval DEFAULT '08:00:00'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
+CREATE OR REPLACE FUNCTION public.promote_dashboard_access_events_hot_to_partition(p_retention interval DEFAULT '08:00:00'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -3426,7 +3426,7 @@ $$;
 -- Name: promote_handoff_logs_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.promote_handoff_logs_hot_to_partition(p_retention interval DEFAULT '08:00:00'::interval, p_batch_size integer DEFAULT 200) RETURNS bigint
+CREATE OR REPLACE FUNCTION public.promote_handoff_logs_hot_to_partition(p_retention interval DEFAULT '08:00:00'::interval, p_batch_size integer DEFAULT 200) RETURNS bigint
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -3459,7 +3459,7 @@ $$;
 -- Name: promote_model_probe_runs_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.promote_model_probe_runs_hot_to_partition(p_retention interval, p_batch_size integer) RETURNS bigint
+CREATE OR REPLACE FUNCTION public.promote_model_probe_runs_hot_to_partition(p_retention interval, p_batch_size integer) RETURNS bigint
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -3472,7 +3472,7 @@ $$;
 -- Name: promote_request_logs_bodies_default_batch(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.promote_request_logs_bodies_default_batch(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
+CREATE OR REPLACE FUNCTION public.promote_request_logs_bodies_default_batch(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -3597,7 +3597,7 @@ $$;
 -- Name: promote_request_logs_default_batch(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.promote_request_logs_default_batch(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
+CREATE OR REPLACE FUNCTION public.promote_request_logs_default_batch(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -3824,7 +3824,7 @@ $$;
 -- Name: promote_request_wal_default_batch(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.promote_request_wal_default_batch(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
+CREATE OR REPLACE FUNCTION public.promote_request_wal_default_batch(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -3920,7 +3920,7 @@ $$;
 -- Name: promote_routing_decision_log_default_batch(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.promote_routing_decision_log_default_batch(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
+CREATE OR REPLACE FUNCTION public.promote_routing_decision_log_default_batch(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -4028,7 +4028,7 @@ $$;
 -- Name: promote_session_module_executions_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.promote_session_module_executions_hot_to_partition(p_retention interval DEFAULT '08:00:00'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
+CREATE OR REPLACE FUNCTION public.promote_session_module_executions_hot_to_partition(p_retention interval DEFAULT '08:00:00'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -4167,7 +4167,7 @@ $$;
 -- Name: promote_tool_usage_stats_default_batch(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.promote_tool_usage_stats_default_batch(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
+CREATE OR REPLACE FUNCTION public.promote_tool_usage_stats_default_batch(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -4259,7 +4259,7 @@ $$;
 -- Name: promote_usage_ledger_default_batch(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.promote_usage_ledger_default_batch(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
+CREATE OR REPLACE FUNCTION public.promote_usage_ledger_default_batch(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -4364,7 +4364,7 @@ $$;
 -- Name: tenant_model_policies_audit_fn(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.tenant_model_policies_audit_fn() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.tenant_model_policies_audit_fn() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 		DECLARE
@@ -4417,7 +4417,7 @@ CREATE FUNCTION public.tenant_model_policies_audit_fn() RETURNS trigger
 -- Name: touch_route_incidents_updated_at(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.touch_route_incidents_updated_at() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.touch_route_incidents_updated_at() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 		BEGIN
@@ -4431,7 +4431,7 @@ CREATE FUNCTION public.touch_route_incidents_updated_at() RETURNS trigger
 -- Name: trg_cmb_protect_manual_disable(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.trg_cmb_protect_manual_disable() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.trg_cmb_protect_manual_disable() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -4461,7 +4461,7 @@ $$;
 -- Name: trg_session_audit_records_updated_at(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.trg_session_audit_records_updated_at() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.trg_session_audit_records_updated_at() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -4475,7 +4475,7 @@ $$;
 -- Name: unified_probe_mark_failing(bigint, text, text, text, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.unified_probe_mark_failing(p_credential_id bigint, p_raw_model_name text, p_error_code text, p_error_message text DEFAULT ''::text, p_retry_after_seconds integer DEFAULT 60) RETURNS void
+CREATE OR REPLACE FUNCTION public.unified_probe_mark_failing(p_credential_id bigint, p_raw_model_name text, p_error_code text, p_error_message text DEFAULT ''::text, p_retry_after_seconds integer DEFAULT 60) RETURNS void
     LANGUAGE plpgsql
     AS $$
 		DECLARE
@@ -4540,7 +4540,7 @@ CREATE FUNCTION public.unified_probe_mark_failing(p_credential_id bigint, p_raw_
 -- Name: unified_probe_mark_healthy(bigint, text, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.unified_probe_mark_healthy(p_credential_id bigint, p_raw_model_name text, p_latency_ms integer DEFAULT 0) RETURNS void
+CREATE OR REPLACE FUNCTION public.unified_probe_mark_healthy(p_credential_id bigint, p_raw_model_name text, p_latency_ms integer DEFAULT 0) RETURNS void
     LANGUAGE plpgsql
     AS $$
 		DECLARE
@@ -4608,7 +4608,7 @@ CREATE FUNCTION public.unified_probe_mark_healthy(p_credential_id bigint, p_raw_
 -- Name: update_api_key_model_cost(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.update_api_key_model_cost() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.update_api_key_model_cost() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -4671,7 +4671,7 @@ $$;
 -- Name: update_api_key_model_cost_stmt(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.update_api_key_model_cost_stmt() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.update_api_key_model_cost_stmt() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -4741,7 +4741,7 @@ $$;
 -- Name: update_approval_updated_at(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.update_approval_updated_at() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.update_approval_updated_at() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -4755,7 +4755,7 @@ $$;
 -- Name: update_intent_feedback_correctness(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.update_intent_feedback_correctness() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.update_intent_feedback_correctness() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -4780,7 +4780,7 @@ COMMENT ON FUNCTION public.update_intent_feedback_correctness() IS '触发器函
 -- Name: update_model_pricing_updated_at(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.update_model_pricing_updated_at() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.update_model_pricing_updated_at() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -4794,7 +4794,7 @@ $$;
 -- Name: update_modified_column(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.update_modified_column() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.update_modified_column() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -4808,7 +4808,7 @@ $$;
 -- Name: update_output_compliance_modified_column(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.update_output_compliance_modified_column() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.update_output_compliance_modified_column() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -4822,7 +4822,7 @@ $$;
 -- Name: update_provider_settings_updated_at(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.update_provider_settings_updated_at() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.update_provider_settings_updated_at() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -4836,7 +4836,7 @@ $$;
 -- Name: update_session_last_requests_updated_at(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.update_session_last_requests_updated_at() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.update_session_last_requests_updated_at() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -4850,7 +4850,7 @@ $$;
 -- Name: update_session_summary(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.update_session_summary() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.update_session_summary() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -4959,7 +4959,7 @@ $$;
 -- Name: update_system_settings_updated_at(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.update_system_settings_updated_at() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.update_system_settings_updated_at() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -4973,7 +4973,7 @@ $$;
 -- Name: upsert_session_last_request(character varying, bigint, character varying, text, text, integer, character varying, integer, integer, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.upsert_session_last_request(p_session_id character varying, p_request_id bigint, p_status character varying, p_user_message text, p_response_cached text, p_response_chunks integer, p_model character varying, p_provider_id integer, p_latency_ms integer, p_ttl_seconds integer DEFAULT 3600) RETURNS void
+CREATE OR REPLACE FUNCTION public.upsert_session_last_request(p_session_id character varying, p_request_id bigint, p_status character varying, p_user_message text, p_response_cached text, p_response_chunks integer, p_model character varying, p_provider_id integer, p_latency_ms integer, p_ttl_seconds integer DEFAULT 3600) RETURNS void
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -10136,7 +10136,7 @@ CREATE TABLE public.model_probe_state (
 -- Name: model_probe_credential_concurrency(bigint); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.model_probe_credential_concurrency(p_credential_id bigint) RETURNS integer
+CREATE OR REPLACE FUNCTION public.model_probe_credential_concurrency(p_credential_id bigint) RETURNS integer
     LANGUAGE sql STABLE
     AS $$ SELECT COUNT(*)::INTEGER FROM model_probe_state WHERE credential_id = p_credential_id AND state = 'probing' AND probing_started_at > NOW() - INTERVAL '5 minutes'; $$;
 
@@ -10145,7 +10145,7 @@ CREATE FUNCTION public.model_probe_credential_concurrency(p_credential_id bigint
 -- Name: get_model_state_summary(text); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.get_model_state_summary(p_raw_model_name text) RETURNS TABLE(state text, priority text, count bigint, avg_success_rate numeric, next_probe_in_seconds integer)
+CREATE OR REPLACE FUNCTION public.get_model_state_summary(p_raw_model_name text) RETURNS TABLE(state text, priority text, count bigint, avg_success_rate numeric, next_probe_in_seconds integer)
     LANGUAGE sql STABLE
     AS $$
 		    SELECT
@@ -13643,7 +13643,7 @@ WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacu
 -- Name: credential_most_used_model(integer, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.credential_most_used_model(p_credential_id integer, p_lookback_hours integer DEFAULT 24) RETURNS text
+CREATE OR REPLACE FUNCTION public.credential_most_used_model(p_credential_id integer, p_lookback_hours integer DEFAULT 24) RETURNS text
     LANGUAGE plpgsql STABLE
     AS $$
 DECLARE
@@ -13693,7 +13693,7 @@ COMMENT ON FUNCTION public.credential_most_used_model(p_credential_id integer, p
 -- Name: credential_most_used_model(bigint, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.credential_most_used_model(p_credential_id bigint, p_window_hours integer DEFAULT 24) RETURNS TABLE(raw_model_name text, call_count bigint)
+CREATE OR REPLACE FUNCTION public.credential_most_used_model(p_credential_id bigint, p_window_hours integer DEFAULT 24) RETURNS TABLE(raw_model_name text, call_count bigint)
     LANGUAGE sql STABLE
     AS $$
     SELECT pm.raw_model_name, COUNT(*) AS call_count
@@ -28839,7 +28839,7 @@ ALTER INDEX public.idx_usage_ledger_part_ts ATTACH PARTITION public.usage_ledger
 
 -- recent_success_rate — moved from earlier in the dump.
 
-CREATE FUNCTION public.recent_success_rate(p_credential_id bigint, p_raw_model text, p_sample_n integer DEFAULT 50, p_window_hours integer DEFAULT 3) RETURNS TABLE(rate double precision, samples integer)
+CREATE OR REPLACE FUNCTION public.recent_success_rate(p_credential_id bigint, p_raw_model text, p_sample_n integer DEFAULT 50, p_window_hours integer DEFAULT 3) RETURNS TABLE(rate double precision, samples integer)
     LANGUAGE sql STABLE
     AS $$
 			    WITH recent AS (
@@ -28868,7 +28868,7 @@ CREATE FUNCTION public.recent_success_rate(p_credential_id bigint, p_raw_model t
 -- Name: routing_overrides_audit_fn(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.routing_overrides_audit_fn() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.routing_overrides_audit_fn() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 		DECLARE
@@ -28918,7 +28918,7 @@ CREATE FUNCTION public.routing_overrides_audit_fn() RETURNS trigger
 -- Name: system_health_status(integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.system_health_status(p_window_seconds integer DEFAULT 30) RETURNS TABLE(status text, success_rate numeric, sample_count bigint, failure_count bigint, last_check_at timestamp with time zone)
+CREATE OR REPLACE FUNCTION public.system_health_status(p_window_seconds integer DEFAULT 30) RETURNS TABLE(status text, success_rate numeric, sample_count bigint, failure_count bigint, last_check_at timestamp with time zone)
     LANGUAGE sql STABLE
     AS $$
     WITH win AS (

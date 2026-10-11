@@ -38,6 +38,28 @@ bash tests/db252_tunnel_test.sh
 echo "[verify] deploy timeout portability contracts"
 bash tests/deploy_timeout_portability_test.sh
 
+# 2026-10-10：资源探测改为「主机优先」（host → docker → 自动安装）。
+# 旧顺序先扫 docker，扫到就把 mode 定成 docker，主机上真跑着的 pg/redis 被跳过；
+# 而 docker-less 机器会直接 die 在 "Docker Compose is unavailable"。
+# 这道门零外部依赖（mock 二进制即可跑），锁住：探测顺序、docker 不得覆写主机
+# 已认领的槽位、维护库探活（应用库还没建时也要认领）、以及自动安装先于 docker 失败。
+echo "[verify] deploy host-first resource contracts"
+bash tests/deploy_host_first_contract_test.sh
+# 2026-10-10：252 上 pg17-disk-watch.sh 堆到 310 份副本、149 个僵死
+# `docker exec ... psql`，把 15G 内存吃到 swap 100% / load 300，PG 因此
+# 无法服务 154 网关（SQLSTATE 57P03、一小时 194 个 HTTP 503）。
+# 根因是本目录巡检**普遍**缺单实例闸门与查询超时，属于会再次发生的形态，
+# 因此单挂这道零外部依赖的聚焦门防同类回归（静态部分任何 runner 都能跑，
+# 行为部分需要 flock，在 Linux 上才执行）。
+echo "[verify] 252-monitor single-instance gate contracts"
+bash tests/monitor_single_instance_gate_test.sh
+
+# 2026-10-11：2533 部署轮遗留 4 个孤儿网关（stop_instance 只发 TERM 不等待、
+# cutover 重试后旧 pid 失去 pidfile 引用）。这道零外部依赖门锁住
+# TERM→KILL 升级与部署收尾 reap_stray_gateways 的行为（含变异验证）。
+echo "[verify] deploy-local orphan gateway reap contracts"
+bash tests/deploy_local_reap_test.sh
+
 echo "[verify] pre-commit checks"
 ./scripts/pre-commit-check.sh
 

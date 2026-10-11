@@ -937,6 +937,30 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 848（multimedia，2026-10-08）：billing_unit（token|image|audio_second）
 			// 与 audio_second 计费列骨架。
 			"848_billing_unit_and_audio_seconds.sql",
+			// 849（R31 SQL 审计，2026-10-10）：session_turns 补 (request_id)
+			// 覆盖式部分索引 WHERE request_status IS NULL，remaining-count
+			// gauge 的 t 侧走 index-only；事务内 SET LOCAL statement_timeout
+			// = '10min' 防部署期 57014（e3e2b4ef5）。
+			"849_session_turns_req_status_backfill_cover_idx.sql",
+			// 850（R31 SQL 审计，2026-10-10）：session_summaries 补 (created_at,
+			// session_key) 部分索引 WHERE gw_project_id IS NULL，支撑
+			// project_backfill 候选捞取的 48h 滚动窗，消除每日 ~6,700s 的
+			// 「证明无事」空扫。
+			"850_session_summaries_project_backfill_recent_idx.sql",
+			// 851（2026-10-10）：停用 316 播种的 pii_patterns.ip_address 规则。
+			//
+			// 为什么必须在这里显式登记：316 是**幂等播种**，全新安装必然把这条
+			// 规则种成 enabled=true，而它把每一个 IPv4（含环回、版本号）都当成
+			// PII 在**输出侧**单向遮成 `*********`。遮蔽发生在 sanitize 还原
+			// **之后**（见 cmd/gateway/goal_control.go 的链序：guard → 还原 →
+			// 输出合规），因此模型回显的地址刚被还原成原文就被压成星号，且不可
+			// 还原——客户端拿到的是坏掉的运维命令 / 坏掉的工具参数。
+			//
+			// 这条迁移此前**从未被登记**：文件躺在 sql/migrations/startup/ 里，
+			// deploy 的目录扫描会捡到它，但安装器只跑 StartupFiles，于是每台
+			// 全新安装的机器上这条规则都还开着。登记它是对「文件存在 ≠ 迁移会
+			// 运行」这一形态的修复，不是新增策略。
+			"851_disable_overbroad_pii_ip_address_rule.sql",
 		},
 	}
 }

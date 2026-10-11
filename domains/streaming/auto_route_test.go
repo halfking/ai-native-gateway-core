@@ -133,9 +133,10 @@ func TestWriteAutoDecisionHeader_NilAndJSON(t *testing.T) {
 	}
 
 	wire := &autoRouteDecision{
-		TaskType:       "code",
-		ChosenModel:    "claude-sonnet",
-		CandidatesTop3: []autoRouteCandidate{{Model: "claude-sonnet", Score: 85}},
+		TaskType:        "code",
+		ChosenModel:     "claude-sonnet",
+		CandidatesTop3:  []autoRouteCandidate{{Model: "claude-sonnet", Score: 85}},
+		ClassifierUsage: &autoroute.ExternalClassifierUsage{Provider: "typesafe", InputTokens: 123, CostUSD: 0.000005166},
 	}
 	writeAutoDecisionHeader(w, wire)
 	header := w.Header().Get(autoHeaderName)
@@ -151,6 +152,9 @@ func TestWriteAutoDecisionHeader_NilAndJSON(t *testing.T) {
 	}
 	if decoded.ChosenModel != "claude-sonnet" || len(decoded.CandidatesTop3) != 1 {
 		t.Fatalf("unexpected header payload: %+v", decoded)
+	}
+	if strings.Contains(header, "classifier_usage") || decoded.ClassifierUsage != nil {
+		t.Fatalf("internal classifier usage leaked into response header: %s", header)
 	}
 }
 

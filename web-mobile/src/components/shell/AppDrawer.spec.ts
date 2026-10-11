@@ -132,6 +132,7 @@ describe('navItemsFor', () => {
       'model-policy-audit',
       'overrides',
       'proposals',
+      'reconciliation',
       'request-anomalies',
       'routing-audit',
       // ★ 2026-10-08 第一百零一批：路由策略配置面（`admin/handler.go:1200 :1201 :1215`
