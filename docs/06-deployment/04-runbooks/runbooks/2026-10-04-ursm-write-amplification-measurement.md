@@ -13927,6 +13927,92 @@ SELECT ..., NOW() as refreshed_at FROM session_summaries ...
    与既有读事务排队；CREATE MATERIALIZED VIEW 单事务建完（实测聚合约 29s 热态）。
    ⇒ 选低峰，并预期该窗口内读请求短暂阻塞（不是报错——旧视图在事务提交前仍可见）。
 
+### §10.106.41 855 的**实跑验证**：7 条文本判据之外，真在 PG 上跑一遍
+
+上一节的门全是**文本级**断言。正则能钉住形状，钉不住「这段 SQL 能不能执行」。
+⇒ 本节起一次性本地 PG 17.11 集群（`initdb` 到 `/tmp`，与生产无关），跑完整往返。
+
+样本刻意跨 30 天分界：200 个近 30 天会话（挂 5 个「活跃」task）
++ 8,000 个 90 天以上的老会话（挂 8,000 个「长尾」task）。
+
+#### 一、全链路读数
+
+| 步骤 | 结果 | task 组数 |
+|---|---|---|
+| 建样本 | in_window=200 / total=8,200 | — |
+| 跑 **357**（无窗口基线） | OK | **8,005** |
+| 跑 **855**（加窗口） | **执行成功** | **5**（只剩活跃 task） |
+| 855 再跑一遍 | **幂等，OK** | 5 |
+| 跑 **855.down**（回滚） | OK | **8,005**（恢复全量） |
+
+⇒ 窗口确实按设计生效：8,005 → 5，塌掉了 99.94% 的长尾 task 组
+（本生产数据是 104,299 → 1,832，-98.2%，比例一致）。
+⇒ **down 是真的回滚**，不是 up 的复制品。
+
+#### 二、**重建后 CONCURRENTLY 刷新仍可用**——这是 855 最主要的风险点
+
+刷新器每轮真正执行的就是 `REFRESH MATERIALIZED VIEW CONCURRENTLY <view>`。
+DROP + CREATE 之后它还认不认，直接决定迁移是成功还是把 MV 冻死：
+
+```
+session_client_stats          OK
+session_task_stats            OK
+session_client_task_matrix    OK
+（down 之后复测，同样 OK）
+```
+
+三条唯一索引重建后 `indisunique = true`，实测确认。
+
+**阴性验证（把判据 M3 的前提从「文档常识」变成「实测」）**：
+
+```
+DROP INDEX idx_session_task_stats_tenant_task;
+REFRESH MATERIALIZED VIEW CONCURRENTLY session_task_stats;
+ 错误:  不能同时刷新物化视图 "public.session_task_stats"
+ 提示:  在物化视图的一个或多个列上创建不带WHERE子句的唯一索引.
+```
+
+⇒ 唯一索引一旦在重建里漏掉，**该视图每一轮刷新都会失败**，
+表现为每轮一条 error 日志 + MV 冻在旧快照——不是报错退出，是静默陈旧。
+⇒ 这正是契约门里 `UniqueIndexesSurviveTheRebuild` 那一条存在的理由。
+
+#### 三、⚠️ 本轮踩到的两个量具坑（都留档）
+
+**（1）`information_schema.columns` 不列物化视图的列。**
+
+核对 `refreshed_at` 是否还在时，这条查询返回三行 `false`：
+
+```sql
+SELECT ... FROM information_schema.columns WHERE column_name='refreshed_at';
+-- → session_client_stats / session_task_stats / session_client_task_matrix 全 false
+```
+
+而 `pg_attribute` 与实际取值都证明**列一直在**：
+
+```
+pg_attribute → 三个视图各有 refreshed_at [timestamp with time zone]
+SELECT refreshed_at FROM session_task_stats LIMIT 1; → 2026-10-12 06:17:56.747041+08
+```
+
+⇒ PG 的 `information_schema.columns` 只覆盖 table 与 view，**不含 materialized view**。
+⇒ ⚠️ 这是**假阴性**，而假阴性在这个场景里方向很危险：
+「读成列不存在」很容易被当成「迁移删了列」而去改迁移，
+或者被当成「契约门的 refreshed_at 断言写错了」而去改判据——
+**两个反应都会把一个正确的迁移改坏**。
+⇒ 核物化视图的列要用 `pg_attribute`，或直接 `SELECT ... LIMIT 1`。
+
+**（2）把错误输出吞掉，量具就读成了「没报错」。**
+
+第一次做上面那个阴性验证时我写了 `psql ... >/dev/null 2>&1`，
+于是 psql 明明打了 ERROR，我看到的却只有下一条命令的 `CREATE INDEX`——
+读数是「删索引后刷新照常成功」，**与事实完全相反**。
+⇒ `2>&1` 的顺序（先重定向 stdout 再 stderr）在这里没起作用，
+真正的问题是**我想看的那份输出根本不该被重定向走**。
+⇒ 做阴性验证时，**被测命令的 stdout 与 stderr 必须都留在输出里**。
+
+★ 两条合起来是同一句话：**读数与预期不符时，第一嫌疑永远是量具，不是被测对象。**
+本节两次都是量具错了，迁移从头到尾是对的。
+
 ---
 
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」
