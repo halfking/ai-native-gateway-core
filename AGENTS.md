@@ -394,29 +394,31 @@ SSOT（`ai-native-tools/…`）不一致。**用 `AIAN_DEPLOY_LIB` 环境变量�
 已推送：`b6e38b709`（两道闸）、`aba353243`（web-mobile lockfile）、
 `11f46052c`（部署身份 2522）、`c88bc79e3`（审计修复 5 个缺陷）。
 
-## ★ 未解决：154 的 503 率仍然很高（下一轮的主线）
+## ★ 154 的 503 主线：口径已修正，实况大幅好转（2026-10-11 午间复测）
 
-基础设施层已经干净（8 小时 `57P03=0`），但**用户侧成功率仍然只有约 50%**：
+**上轮本节的「50-69% 失败率」口径是错的**，三类噪音混进了 `success` 列的统计：
+探针自身失败（`probe_direct_*`，6h 约 3090 条被记进 request_logs）、
+**invalid_key 401 风暴**（6h 1566 条——一批失效 `sk-*` key 在 09:36-09:38
+集中轮换重试，已自停）、以及 transient/provider_error 等。真实口径：
 
-| 时间 | 503 / 200 |
-|---|---|
-| 10-10 19时 | 457 / 820 |
-| 10-10 21时 | 259 / 813 |
-| 10-11 00时 | **843 / 1218（69%）** |
+- HTTP 503 ≈ **2.5%**（网关日志 2000 条中 49 条）；真实路由失败
+  （no_candidate/no_candidates）6h 仅 143 条；11 时真实成功率约 75%。
+- claude-opus-5 的失败 95% 是 401 风暴连带，`fp_slot_saturation_critical` 已缓解。
+- `health_auto_recover` 11:26 捞回 97 个凭据绑定，自愈在正常工作。
 
-根因**不是**昨天的事故，而是**上游凭据/节点大量不可路由**：
+**模型目录漂移仍是实体问题**（也是原拍板项的实体）：12 个凭据、96 个模型名
+404/410（nvidia-build-new/v2、endless 各约 80 绑定全灭；sensenova 系 5 凭据；
+glm-5.2 系 10×410）。**待 owner 拍板：清退 / 修目录 / 降权**——本轮未动生产数据。
 
-- `node_probe_state`：**755 行里 553 行 `last_direct_ok=false`，527 行正在退避**；
-  错误码分布 `http_404`×205、`http_410`×81、`http_403`×75、`http_429`×41、
-  `http_502`×40、`http_400`×38、`timeout`×25、`network_error`×12。
-  探针仍在持续更新（不是数据陈旧）。
-- `credentials`：74 个中 **28 个非 ready、32 个非 healthy**、14 个人工禁用。
-- 日志：`all 0 candidates failed`、`no routable credential/model available`、
-  `fp_slot_saturation_critical degradation_ratio=1`（claude-opus-5，阈值 0.1）。
+**新发现真 bug**：生产 `archive_request_logs_default` 仍是 754「S-01 首跑即死」
+修复前的坏版本（42703），TTL 归档从未工作；重放 754 即修（幂等，步骤在审计文档 §五）。
 
-⇒ 404/410 是**模型目录漂移**（凭据配了上游已不提供的模型/端点），
-属数据/配置层决策，**不是**改代码能解的。下一轮需要用户拍板：
-是清退失效绑定、修模型目录，还是降低这些模型权重。
+**观测口径陷阱**：实时数据在 `request_logs_hot`（8h 窗口 → promote 排水到月
+分区），查 `request_logs` 父表有 8 小时滞后——审计统计成功率一律用热表或
+按 `error_kind` 细分，别再拿父表 `success` 列算比率。
+
+详见 `docs/audit/2026-10-11-154-503-口径修正与漂移清单.md`（含漂移全景表、
+401 风暴分析、754 重放步骤）。
 
 ## deploy-154.sh 本会话实测（与 245 的差异）
 
