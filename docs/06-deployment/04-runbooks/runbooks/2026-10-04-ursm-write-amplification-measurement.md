@@ -13620,6 +13620,610 @@ DB 打戳是权威证据 ⇒ 该小时三兄弟**一次都没刷新**，数据�
 本节两条通道给出 122.0 s 与 129.6 s（差 6%）才算互证；
 只看一条就会把 journald 的丢日志误读成「没刷新」。
 
+### §10.106.38 修 §10.106.37 §六 发现的整轮丢失：**锁冲突退避重试**（提交未部署）
+
+§10.106.37 测出 02:00 那轮三兄弟整轮丢失后，本节把它修掉。
+⚠️ **只提交、未部署**：它改的是刷新排程行为，上线需与部署窗口一起决定。
+
+#### 一、先推翻一条**写在代码注释里**的错误估计
+
+`refreshSessionViews` 原注释写：「session 轮约 60s、每 60min 一次，与 10min 的
+routing 轮**相撞的概率约 1.7%**，这个取舍是安全的」。
+
+**这个估计的方向是反的**：
+
+```
+SessionViewsInterval = 60min   = RefreshInterval(10min) × 6      ← 整数倍
+两个定时器都走 nextAlignedWait(...)  ← 对齐墙钟整点
+⇒ 两个周期每个整点必然同时醒，撞在同一把 mvRefreshLockKey 上
+```
+
+不是 1.7% 的巧合，是**每个整点一次的结构性碰撞**。
+之所以平时看不出来，是因为锁只在**真正执行 REFRESH 期间**持有（实测单轮 14~195s），
+谁先拿到谁先刷、后到的等十几秒就轮上了；而 10-12 02:00 那次两台都在整点抢，
+其中一个实例恰好连续输掉三轮（154 侧日志：拿到 Redis 令牌后三个视图
+`skipped_no_lock`），于是整轮归零。
+
+⇒ 注释里那个「1.7%」应当被删掉而不是修正——它的**推理方式**（把整点对齐的
+两个整数倍周期当成随机相位）就是错的，留着会误导下一个读代码的人。
+
+#### 二、修法选型：**退避重试**，不是「另开一把锁键」
+
+| 方案 | 后果 | 判断 |
+|---|---|---|
+| 两个周期各开一把 advisory lock | routing 与 session 的 REFRESH **并发**跑 | ❌ session 一轮已占集群 62%~75% 的 WAL，再叠一路并发刷新不可接受 |
+| **撞锁就退避重试** | 锁只在执行 REFRESH 期间持有 ⇒ 等十几秒就能拿到 | ✅ **采纳** |
+| 保持现状 | 每个整点都可能被整轮跳过 | ❌ 就是当前缺陷 |
+
+关键前提是实测出来的：**锁不是整轮持有**。`refreshView` 里
+`pg_try_advisory_lock` → `execRefresh` → `pg_advisory_unlock` 都在同一条
+pin 住的连接上，持有窗口 = 单次 REFRESH 时长（14~195s），不是 60 分钟。
+所以「稍后重试」有确定的上界，不需要并发。
+
+#### 三、改动清单
+
+1. **`refreshView` 的返回从 `(bool, error)` 变成 `(mvSkipReason, error)`**：
+   新增 `mvRefreshed` / `mvSkippedMissingView` / `mvSkippedLockHeld` 三态。
+   **这是修法的必要前提**——原来「视图不存在」和「别人正刷」压成同一个 `true`，
+   调用方只能二选一：全不重试（现状）或全重试（那会把一个真正缺失的视图
+   也重试到超时，把一个配置错误伪装成一次锁竞争）。
+2. **新增 `retryOnLockHeld`**：只在 `mvSkippedLockHeld` 时退避重试，
+   遇 error / 缺失 / 成功立即返回。
+3. **重试预算是整轮共享的**（`retryDeadline := time.Now().Add(SessionViewLockRetryBudget)`，
+   在 `for` 循环**外**算一次）：`SessionViewsTimeout` 是**整轮**预算，
+   每视图各 4min 会把「撞锁跳过」换成「被 ctx 静默掐断」——那是更难发现的一种失败。
+4. **退避 2s 起、翻倍、封顶 15s**，整轮上限 4min。
+   取 4min 的依据：实测最长一轮 195s，4min + 195s ≈ 7.3min < `SessionViewsTimeout`(10min)。
+5. **routing 轮零行为变更**：它继续直接调 `refreshView`，只适配了新返回值。
+6. 新增指标 result 值 `lock_retry`（`mvRefreshTotal{result="lock_retry"}`）。
+
+#### 四、判据与它们各自的**承重点**
+
+判据文件 `bg/materialized_view_refresher_lockretry_test.go`。
+测的是 `retryOnLockHeld` **策略**而非 `refreshView`：锁冲突是两个进程加一把
+advisory lock 的性质，单测造不出来，能造出来的只有源码文本断言。
+所以 `attempt` 被做成参数，每条判据都能真的驱动一遍「撞锁 → 退避 → 拿到锁」。
+
+| 判据 | 承重点 | 为什么不能弱化成「最终状态对」 |
+|---|---|---|
+| `RetriesUntilTheLockIsFree` | `calls == 3` | 只断言最终 `mvRefreshed` 与「一次就成功」同形 |
+| `DoesNotRetryAMissingView` | `calls == 1` | 「允许侧」判据必须配一条「前提仍在场」，否则分不清没重试还是没撞锁 |
+| `DoesNotRetryOnError` | `calls == 1` + 错误原样返回 | 吞掉错误会让部署期问题变成静默陈旧 |
+| `StopsWhenTheBudgetIsSpent` | `calls ≥ 2` 且 `elapsed < 1s` | 退避起点 2s ≫ 预算 40ms：**不截断就会睡满 2s**，elapsed 上限专抓这一条 |
+| `StopsWhenTheContextIsCancelled` | `calls == 1` 且 `elapsed < 500ms` | 不认 ctx 的实现会把 `Stop()` 拖满预算（部署摘流量时挂住） |
+| `NextLockRetryBackoff_DoublesThenClamps` | 退避表按值断言 | 用「睡一会儿再量」测封顶，会在机器繁忙时因别的原因通过 |
+| `SessionViewLockRetryBudget_FitsInsideTheCycleBudget` | 两个不等式 | 常量给错都是静默失败，给小=静默掐断、给大=拖进下一轮 |
+| `RefreshSessionViews_RetriesThroughTheWrapper` | 接线 + deadline 在循环外 | 前六条测的是策略，这条钉的是「session 轮调的是包装器而不是裸调用」 |
+
+★ **本节没有把 `refreshView` 抽象成接口**：锁竞争要复现得有两个真连接，
+`bg` 这一族测试没有真库设施（本地一次性 PG 集群不在 CI 里）。
+⇒ **诚实标注强度**：上面第 8 条是源码文本断言，强度只到「调用点换没换」；
+`attempt` 闭包里包的是什么，由前七条的行为判据负责，不由它负责。
+
+#### 五、变异验证（5/5 变红，改完逐字节还原）
+
+| 变异 | 变红条数 | 被哪条判据抓住 |
+|---|---|---|
+| M1 取消重试（`reason != mvSkippedLockHeld` → `err != nil`） | **2** | `RetriesUntilTheLockIsFree`、`StopsWhenTheBudgetIsSpent` |
+| M2 任何跳过都重试（判定取反） | **1** | `DoesNotRetryAMissingView` |
+| M3 预算不再截断等待 | **1** | `StopsWhenTheBudgetIsSpent`（elapsed 上限） |
+| M4 不认 ctx 取消 | **1** | `StopsWhenTheContextIsCancelled` |
+| M5 退避不封顶 | **1** | `NextLockRetryBackoff_DoublesThenClamps` |
+
+⇒ **零条判据在五个变异下全绿过**，没有需要靠「变异无效」解释的条目。
+
+★ M2 这条值得单独记：它是本节**唯一**能区分
+「修好了」与「把所有跳过都重试」两种实现的判据，而后者在生产上
+会把一个真正缺失的物化视图重试满 4 分钟、把另外两个视图的刷新挤掉。
+**把判定写成一个布尔值时，「重试哪些」和「重试多久」一样重要。**
+
+### §10.106.39 三兄弟加时间窗：**先量后建**——数据形状与一个反直觉的执行计划
+
+用户拍板走「加时间窗（近 30 天）」这条路。本节是动手前的**可行性取证**，
+结论直接改变了实现方案，因此先落档再动代码。
+
+#### 一、数据形状：30 天窗口砍掉 **64.8%** 的行（`session_summaries`，154 生产）
+
+| 口径 | 行数 | 占比 |
+|---|---|---|
+| 全部 | **682,049** | 100% |
+| 近 1 天 | 11,540 | 1.7% |
+| 近 7 天 | 89,723 | 13.2% |
+| **近 30 天** | **240,311** | **35.2%** |
+| 近 60 天 | 678,887 | 99.5% |
+| 近 90 天 | 682,049 | 100% |
+
+数据最早只到 **2026-08-06**（全库两个月零六天）。
+
+⇒ **60 天窗口等于没加**（99.5%），窗口长度这件事在本仓只有 30 天这一档真正有效。
+⇒ ⚠️ **30 天窗口会让 8 月整月从报表里消失**（占现存量 64.8%）。
+这不是「砍掉一点陈旧数据」，而是**砍掉三分之二的历史**——
+口径变更的幅度比选项描述里暗示的大，动手前要让 owner 知道具体后果。
+⇒ 顺带：这也说明**保留期（待定项 N=1 个月）与时间窗是同一件事的两个面**，
+若保留期定在 1 个月，窗口将自动等于「全量」，此刀失效。
+
+#### 二、⚠️ 反直觉读数：**光加 WHERE 反而慢 2.6 倍**
+
+按「砍掉 65% 的行 ⇒ 也砍掉 65% 的开销」动手是最自然的想法。先验证它：
+
+```sql
+-- 同口径对照，只差一个 WHERE
+SELECT count(*) FROM session_summaries;                              -- 4,385 ms
+SELECT count(*) FROM session_summaries
+ WHERE last_request_at >= now() - interval '30 days';               -- 11,418 ms
+```
+
+| 口径 | 执行时间 | Buffers | 扫描方式 |
+|---|---|---|---|
+| 无窗口 | **4,385 ms** | 40,539 hit | Parallel **Seq Scan** |
+| 加 30 天窗口 | **11,418 ms**（2.6× 慢） | 203,779 hit + 2,671 read | Parallel **Index Only Scan** + **255,598 次 Heap Fetches** |
+
+⇒ 过滤条件**没有**换来剪枝，反而把 planner 引到一个坏计划上：
+`idx_session_summaries_tenant_time(tenant_id, last_request_at DESC)` 被当成
+可用索引路径，于是要回表 25 万次，而全表顺序扫只要读 4 万个 buffer。
+
+★ **这是本节最贵的一条**：如果照着「砍 65% 行 ⇒ 省 65% 开销」直接写迁移，
+交付的是一个**让生产更慢**的刷新器，而且从代码上完全看不出问题。
+⇒ **过滤谓词的价值取决于 planner 有没有东西可剪枝，没有剪枝就是纯成本。**
+
+⇒ 由此确定实现前提：**时间窗必须配一个真正能剪枝的索引**（BRIN 天然适配
+append-only 的时间列），否则宁可不做。这需要在生产上建索引（DDL，需授权），
+或先在本地一次性集群上验证剪枝是否真的生效。
+
+#### 三、⚠️⚠️ 本节中途**推翻了自己两次**：两条量具纪律，都留档
+
+**（1）「嵌套循环」是我 grep 出来的假象。**
+
+第一次对照：无窗口 **136.0 s** / 有窗口 **25.4 s**。看到计划里两条
+`Index Scan` 加一条 `Join Filter`，我判定「planner 选了嵌套循环 + 连接条件
+被降级成 filter」，并据此推出「缺连接列索引 / 统计缺失」。
+
+第二次只做规划（`EXPLAIN`，不执行，毫秒级）拿完整计划：
+
+```
+GroupAggregate
+  ->  Sort
+    ->  Merge Left Join
+          Merge Cond: ((ss.session_key)::text = (sd.gw_session_id)::text)
+          Join Filter: ((ss.tenant_id)::text = (sd.tenant_id)::text)
+```
+
+**planner 选的就是 Merge Join**，而那行 `Merge Left Join` 恰好不在我的
+grep 模式里（模式含 `Hash`/`Nested`/`Loop`，不含 `Merge`）。
+⇒ **「没看到连接节点」被我读成了「用错了连接方式」。**
+grep 的命中行不等于上下文——**当结论是关于「用了哪种算法」时，
+把承载该结论的那一行滤掉，读数就与事实完全同形。**
+
+**（2）A/B 同会话串行 = 把缓存温度编进了对照。**
+
+A（无窗口）先跑、B（有窗口）后跑。A 冷、B 热，于是 5.3× 里混着缓存效应。
+更糟的是第三次：套一层 `count(*) FROM (...)` 想只看时间，
+**planner 直接把 `array_agg` 等重列剪掉了**（输出被外层不用），
+测出来 10 s——那个数根本不是全量聚合的代价，136 s 才是。
+
+⇒ 同一会话里串行跑两个变体，**先后顺序就是自变量**。
+要比较就必须**各自预热一轮再取第二轮**，且两轮交叉（U1→W1→U2→W2），
+否则「谁先跑」一直在替它们说话。
+
+★ 这两条与本会话此前记的「grep 只吐匹配行」「差分窗口要盖住事件」同族，
+但更狠：**前者的错误方向是「把条件当成无条件」，这一次的错误方向是
+「把『没看见』当成『不存在』」，而我的 grep 模式恰好滤掉了那个算法名。**
+
+#### 四、干净对照的结果：**时间窗在 CPU 上只值 8%，在 WAL 上值 98.2%**
+
+同会话、交叉预热、跑**完整聚合**（不过 `count(*)`，避免 planner 剪列）：
+
+| | 第 1 次（冷） | 第 2 次（热） |
+|---|---|---|
+| U 无窗口 | 49.1 s | **28.7 s** |
+| W 有 30 天窗口 | 53.6 s | **26.4 s** |
+
+⇒ **热态 28.7 → 26.4 s，CPU 只省 8%。**
+上一轮那个「136 s → 25.4 s（省 81%）」**作废**，它是冷/热混淆的产物。
+
+**CPU 省得少，原因清楚**：时间窗砍掉的是**聚合的输入行**（682,049 → 240,311），
+但**全表顺序扫那一段省不掉**——表才 317 MB（40,539 buffer），扫一遍 4.4 s，
+而整轮 28.7 s 的大头在连接、聚合与 TOAST 数组上。
+
+**但输出组数塌了 98.2%**：
+
+| 口径 | 输出组数 |
+|---|---|
+| 无窗口 | **104,299** |
+| 行级 30 天窗口 | **1,832** |
+
+⇒ `task_id` 维度有 **10 万个长尾历史 task_id**，而近 30 天里只有 1,832 个组合还在活动。
+⇒ MV 的堆+索引会从 182 MB 塌到 MB 级，**每轮重写的 WAL 随之塌到近零**
+（删 10 万行的元组开销是一次性的，之后每轮只写 1,832 行）。
+
+★ **这才是真正的杠杆**：时间窗在 CPU 上是 8%，在 WAL 上是 98.2%——
+而 §10.106.37 已经量到这三兄弟占集群 WAL 的 62%~75%。**刀要砍在 WAL 上，不是 CPU 上。**
+
+#### 五、⚠️ 顺带证伪了「去 `now()` 列能降低写放大」这个前提
+
+查四个 MV 的写入计数：
+
+```
+relname                     n_tup_ins   n_tup_upd   n_tup_del   n_live_tup
+routing_analytics_7d           608,607           0     607,896       6,948
+session_client_stats            38,832           0      38,802         949
+session_client_task_matrix   4,392,600           0   4,765,595     105,909
+session_task_stats           4,391,436           0   4,797,754     104,299
+```
+
+**关键在第一行**：`routing_analytics_7d` 是 **837 已经去掉 `NOW()` 列**的那一张，
+它的 `n_tup_del ≈ n_tup_ins`、每轮删多少插多少（607,896 / 228 轮 ≈ 2,666 行/轮）
+⇒ **它每一轮仍然是整份快照的 delete + insert。**
+
+⇒ 由此**实测否掉**了 §10.106.34 建立在一个前提上的论证：
+「MV 目标列里的 `NOW()` 让 REFRESH 无法判断哪些行真的变了，于是 100% 重写」。
+去掉 `NOW()` 之后**写放大并没有降**——`REFRESH MATERIALIZED VIEW CONCURRENTLY`
+本身就是整份快照替换。
+
+⇒ ⚠️ **`n_tup_upd` 全 0 这件事本身就是「没有任何一次刷新只改了几行」的直接证据。**
+⇒ ⇒ **「去 `now()` 列」这条迁移（§10.106.34）的 WAL 收益应视为 ~0**，
+它剩下的价值只有那 4 个读点不再依赖易碎的重构点（陈旧度读法更稳），
+**不足以单独支撑一次破坏性迁移**。而它砍不掉的那部分，正好是时间窗能砍的。
+
+### §10.106.40 迁移 855：给三兄弟加 30 天时间窗（**已提交，未部署**）
+
+#### 一、方案：**不需要状态表，也不需要改那 4 个读点**
+
+§10.106.34 的规格要求「新增状态表 + 把 4 个 `refreshed_at` 读点改读状态表」。
+实施时发现**那一步的前提是错的**：
+
+```sql
+-- 357 建出来的视图，目标列里本来就有 NOW()
+SELECT ..., NOW() as refreshed_at FROM session_summaries ...
+```
+
+⇒ **物化视图的定义里本来就可以出现 `NOW()`**。PG 只禁止它出现在
+索引表达式与生成列里，物化视图不受此限（357 早就在这么用，且在线上跑了两个月）。
+⇒ 直接写 `WHERE ... >= NOW() - INTERVAL '30 days'` 即可：
+**零状态表、零读点改动**，改动面从「迁移 + 4 处 Go」缩到「一个迁移」。
+
+`refreshed_at` 列**保留**——它承载 admin 侧 4 个读点，
+而 §10.106.39 已实测证明留着它并不额外付出写放大。
+
+#### 二、接线（刻意只登记一条腿）
+
+| 位置 | 处置 | 理由 |
+|---|---|---|
+| `sql/migrations/startup/855_*.sql` + `.down.sql` | 新增 | 迁移本体 |
+| `scripts/apply-db-revision-sequence.sh` 的 `files=(...)` | **登记**，紧随 357/358 | 357 建视图、358 建 `session_dim`（连接目标），855 必须在两者之后 |
+| installer `go:embed` / `embeddedSQLFiles` / `dbinit StartupFiles` / `installed_startup_migrations.tsv` | **不登记** | `session_dim` 由 350/358 建，而 357 本身就**不在** `StartupFiles` 里 ⇒ installer 路径上这三个视图压根不存在，登记 855 只会让全新安装在缺前置对象时失败 |
+
+⚠️ 这是**刻意的不对称**，不是漏登记：`files=(...)` 与 installer StartupFiles
+是两条独立投递腿（runbook §10.106.37 §四已记），此处只需要前者。
+
+#### 三、契约门 7 条 + 变异 7/7 变红
+
+`sql/migrations/startup/migration_855_test.go`。门钉的是**重建出来的形状**，
+因为 855 是 DROP + CREATE，视图本来就有，「建了视图」这种断言恒绿。
+
+| 判据 | 钉住什么 | 丢了会怎样 |
+|---|---|---|
+| `EveryViewGetsATimeWindow` | 三个视图**各自**带窗口 | 漏改一个，那个视图照旧全量重写 |
+| `WindowUsesLastRequestAtNotCreatedAt` | 按 `last_request_at` 而非 `created_at` | 三月创建、四月仍在用的会话被误排除 |
+| `KeepsRefreshedAtColumn` | 保留 `refreshed_at` | 新鲜度门永久读成 stale，静默回落基表查询 |
+| `UniqueIndexesSurviveTheRebuild` | 三条唯一索引重建 | **CONCURRENTLY 刷新整轮失败**，MV 冻在旧快照 |
+| `DropsEachViewBeforeRecreating` | DROP 先于 CREATE | CREATE 撞同名视图，迁移变成报错而非变更 |
+| `DownRestoresTheFullHistoryWindow` | down 真的去掉窗口 | down 复制 up，回滚静默无效 |
+| `DownRebuildsTheSameColumns` | down 列集与 up 一致 | 回滚变成改 schema |
+
+★ **判据自己撞了两次坑，都靠归因而不是改迁移修好的**：
+① `WHERE \w+\.last_request_at` 匹配不到 `session_client_stats` 的**无别名**列；
+② `WHERE last_request_at >=` 匹配到了 `active_sessions_24h` 的
+`FILTER (WHERE ...)`——**同列、同运算符、完全不同的含义**。
+⇒ 修法是把断言范围限定到 `FROM session_summaries` 之后的语句尾部，
+并给否定式判据配**阳性对照**（同样的正则去匹 `last_request_at` 必须命中，
+否则「不该匹配 created_at」可能只是因为正则什么都匹配不到）。
+
+#### 四、上线前必须知道的两件事
+
+1. **口径变更幅度**：报表的 task 维度从 104,299 组降到 1,832 组（-98.2%），
+   且数据最早只到 2026-08-06 ⇒ **八月整月从报表里消失**。
+2. **首次执行会比后续慢**：DROP 会取 ACCESS EXCLUSIVE，
+   与既有读事务排队；CREATE MATERIALIZED VIEW 单事务建完（实测聚合约 29s 热态）。
+   ⇒ 选低峰，并预期该窗口内读请求短暂阻塞（不是报错——旧视图在事务提交前仍可见）。
+
+### §10.106.41 855 的**实跑验证**：7 条文本判据之外，真在 PG 上跑一遍
+
+上一节的门全是**文本级**断言。正则能钉住形状，钉不住「这段 SQL 能不能执行」。
+⇒ 本节起一次性本地 PG 17.11 集群（`initdb` 到 `/tmp`，与生产无关），跑完整往返。
+
+样本刻意跨 30 天分界：200 个近 30 天会话（挂 5 个「活跃」task）
++ 8,000 个 90 天以上的老会话（挂 8,000 个「长尾」task）。
+
+#### 一、全链路读数
+
+| 步骤 | 结果 | task 组数 |
+|---|---|---|
+| 建样本 | in_window=200 / total=8,200 | — |
+| 跑 **357**（无窗口基线） | OK | **8,005** |
+| 跑 **855**（加窗口） | **执行成功** | **5**（只剩活跃 task） |
+| 855 再跑一遍 | **幂等，OK** | 5 |
+| 跑 **855.down**（回滚） | OK | **8,005**（恢复全量） |
+
+⇒ 窗口确实按设计生效：8,005 → 5，塌掉了 99.94% 的长尾 task 组
+（本生产数据是 104,299 → 1,832，-98.2%，比例一致）。
+⇒ **down 是真的回滚**，不是 up 的复制品。
+
+#### 二、**重建后 CONCURRENTLY 刷新仍可用**——这是 855 最主要的风险点
+
+刷新器每轮真正执行的就是 `REFRESH MATERIALIZED VIEW CONCURRENTLY <view>`。
+DROP + CREATE 之后它还认不认，直接决定迁移是成功还是把 MV 冻死：
+
+```
+session_client_stats          OK
+session_task_stats            OK
+session_client_task_matrix    OK
+（down 之后复测，同样 OK）
+```
+
+三条唯一索引重建后 `indisunique = true`，实测确认。
+
+**阴性验证（把判据 M3 的前提从「文档常识」变成「实测」）**：
+
+```
+DROP INDEX idx_session_task_stats_tenant_task;
+REFRESH MATERIALIZED VIEW CONCURRENTLY session_task_stats;
+ 错误:  不能同时刷新物化视图 "public.session_task_stats"
+ 提示:  在物化视图的一个或多个列上创建不带WHERE子句的唯一索引.
+```
+
+⇒ 唯一索引一旦在重建里漏掉，**该视图每一轮刷新都会失败**，
+表现为每轮一条 error 日志 + MV 冻在旧快照——不是报错退出，是静默陈旧。
+⇒ 这正是契约门里 `UniqueIndexesSurviveTheRebuild` 那一条存在的理由。
+
+#### 三、⚠️ 本轮踩到的两个量具坑（都留档）
+
+**（1）`information_schema.columns` 不列物化视图的列。**
+
+核对 `refreshed_at` 是否还在时，这条查询返回三行 `false`：
+
+```sql
+SELECT ... FROM information_schema.columns WHERE column_name='refreshed_at';
+-- → session_client_stats / session_task_stats / session_client_task_matrix 全 false
+```
+
+而 `pg_attribute` 与实际取值都证明**列一直在**：
+
+```
+pg_attribute → 三个视图各有 refreshed_at [timestamp with time zone]
+SELECT refreshed_at FROM session_task_stats LIMIT 1; → 2026-10-12 06:17:56.747041+08
+```
+
+⇒ PG 的 `information_schema.columns` 只覆盖 table 与 view，**不含 materialized view**。
+⇒ ⚠️ 这是**假阴性**，而假阴性在这个场景里方向很危险：
+「读成列不存在」很容易被当成「迁移删了列」而去改迁移，
+或者被当成「契约门的 refreshed_at 断言写错了」而去改判据——
+**两个反应都会把一个正确的迁移改坏**。
+⇒ 核物化视图的列要用 `pg_attribute`，或直接 `SELECT ... LIMIT 1`。
+
+**（2）把错误输出吞掉，量具就读成了「没报错」。**
+
+第一次做上面那个阴性验证时我写了 `psql ... >/dev/null 2>&1`，
+于是 psql 明明打了 ERROR，我看到的却只有下一条命令的 `CREATE INDEX`——
+读数是「删索引后刷新照常成功」，**与事实完全相反**。
+⇒ `2>&1` 的顺序（先重定向 stdout 再 stderr）在这里没起作用，
+真正的问题是**我想看的那份输出根本不该被重定向走**。
+⇒ 做阴性验证时，**被测命令的 stdout 与 stderr 必须都留在输出里**。
+
+★ 两条合起来是同一句话：**读数与预期不符时，第一嫌疑永远是量具，不是被测对象。**
+本节两次都是量具错了，迁移从头到尾是对的。
+
+### §10.106.42 ⚠️ `last_analyze` 为 NULL **不等于**这张表没有统计信息
+
+§10.106.39 调查期间顺手查过一张表，撞上一个当时以为无关、其实是个真陷阱的读数：
+
+```sql
+SELECT relname, last_analyze, last_autoanalyze, n_live_tup FROM pg_stat_user_tables
+WHERE relname IN ('session_dim','session_summaries');
+--   session_dim        | (空) | (空) |  18,778
+--   session_summaries  | (空) | (空) |  21,604
+```
+
+实际行数却是 726,360 与 682,049 ⇒ 当时记的是「**这两张表从未被 ANALYZE 过，
+统计信息缺失是坏计划的根因**」。
+
+**这是错的。** 复核：
+
+| 表 | `pg_class.reltuples` | 实际行数 | `pg_stats` 列数 | `pg_statistic` 条目 |
+|---|---|---|---|---|
+| `session_dim` | 635,237 | 726,360 | 17 | 17 |
+| `session_summaries` | 668,438 | 682,049 | 60 | — |
+
+⇒ **统计信息在，而且相当准**（`session_summaries` 误差 2%）。
+这也正好解释了 §10.106.39 那些计划里的行估计为什么准得离谱
+（估 695,565 vs 实际 682,051）——**当时我据此判断「统计缺失」是误判，
+但没有回头解释 `last_analyze` 为什么是空的。**
+
+⇒ ⚠️ **`pg_stat_user_tables.last_analyze` / `last_autoanalyze` / `n_live_tup`
+是「统计计数器」，不是「统计信息是否存在」。**
+前者可以被重置（`pg_stat_reset()`、统计文件丢失后的恢复等）而清空，
+后者存在 `pg_statistic` 与 `pg_class.reltuples` 里，**不受影响**。
+
+⇒ **判别动作**：判断 planner 有没有统计信息，要查
+`pg_class.reltuples` 与 `pg_statistic` 的条目数；查计划里的估计行数准不准，
+比查 `last_analyze` 可靠得多——**估计准就说明统计在**。
+
+★ 这与 §10.106.41 的 `information_schema.columns` 是同一个族的两个实例：
+**一个信息源对某件事「为空」，不等于那件事是假的。**
+本轮两次都是「查不到」被读成了「不存在」，而两次真相都在别处。
+⇒ 凡是要下「某能力/某对象缺失」这类结论，**必须换一个独立信息源交叉证伪**，
+   否则就是把一个待查项当成结论——而这正是「依据 642/843 在别的环境会不会被投递，
+必须去 workspace SSOT 查」那条纪律的同族。
+
+### §10.106.43 ⚠️ 部署边界：**部署 154 会自动应用 855**（授权语义与直觉不同）
+
+准备「等授权再上线」时才发现：**855 与代码部署是绑定的，分不开。**
+
+#### 一、先把机制查到 SSOT（而不是靠注释推断）
+
+§10.106.39 留过一条纪律：「要判断某迁移会不会被投递，**必须去 workspace SSOT 查**；
+引用部署机制前先 `git ls-files <路径>`，不要用 `ls` 看到文件就当它是仓内资产」。
+
+照做时先撞上**软链在本 checkout 里是断的**：
+
+```
+$ git ls-files scripts/deploy-lib/     → 空（软链，非仓内资产）
+$ ls -la scripts/deploy-lib            → -> ../../ai-native-workspace/deploy-lib
+```
+
+⚠️ 该软链解析到 `…/syncfield/ai-native-workspace/deploy-lib`，
+**而 SSOT 实际在 `…/ai-native-tools/deploy-lib/`**——本 checkout 比软链假设的布局深一级。
+⇒ **在 `syncfield/` 下的任何一份 checkout，`scripts/deploy-lib` 都是断链。**
+⇒ 真实 SSOT：`/Users/xutaohuang/workspace/ai-native-tools/deploy-lib/db-changelog.sh`（586 行）。
+
+#### 二、扫描腿的实际判定（`db-changelog.sh:241-256`）
+
+```bash
+for f in sql/migrations/startup/[0-9]*.sql; do
+  base=$(basename "$f")
+  [[ "$base" == *.down.sql ]] && continue
+  ver=$(echo "$base" | grep -oE '^[0-9]+')
+  [[ "$base" =~ ^[0-9]{3}_ ]] || continue
+  if head -15 "$f" | grep -qiE 'SUPERSEDED|superceded|DEPRECATED'; then continue; fi
+  if (( 10#$ver >= ledger_reconcile_from )) && [[ -z "${applied[$ver]+x}" ]]; then
+    printf '%s\n' "$f"        # 投递
+  fi
+done
+```
+
+`ledger_reconcile_from` 默认 **412**（`DB_LEDGER_RECONCILE_FROM` 可覆盖）。
+
+#### 三、855 的逐条判定（实测，非推断）
+
+| 条件 | 855 的读数 | 结果 |
+|---|---|---|
+| `^[0-9]{3}_` 前缀 | `855_session_analytics_time_window.sql` | ✓ 匹配 |
+| 前 15 行含 `SUPERSEDED/DEPRECATED` | 不含 | ✓ 不跳过 |
+| `855 >= ledger_reconcile_from(412)` | 855 ≥ 412 | ✓ 在范围内 |
+| 855 是否已入 `schema_migrations` | **否**（154 台账已到 854） | ⇒ **未应用 ⇒ 投递** |
+| `855_...down.sql` 会被误投递吗 | 命中 `*.down.sql` continue | ✓ 不会 |
+
+⇒ **结论：只要部署 154，855 就在切流前被应用。**
+
+#### 四、这对授权意味着什么
+
+⚠️ **不存在「先上代码、迁移以后再说」这个选项**——
+除非把 855 改成 `.skip`（扫描腿会跳过 `*.skip`，但**通道腿的 `files=(...)`
+数组按精确文件名引用，rename 会让契约门红**，两者必须一起改）。
+
+| 选项 | 做法 | 代价 |
+|---|---|---|
+| **A. 一起上** | 授权部署，855 随切流应用 | 一轮到位；口径变更与代码同批生效 |
+| **B. 只上代码** | 855 → `.skip` + 同步改通道数组，部署；之后再单独放开 | 多一轮部署；契约门需同步改 |
+
+⚠️ 另有两条已核实的边界，供部署时对账：
+- **网关进程自己不应用这些文件**（`db/db_migration_709_test.go:11`：
+  「binary environments only run the db.go ensure chain
+  (sql/migrations/startup files are never applied there)」）
+  ⇒ 迁移由**部署工具**在切流前应用，不是进程启动时。
+- 生产 `schema_migrations` 当前 398 行、数字迁移盖到 **854**，`855` 未入台账。
+
+### §10.106.44 855 的**下游口径影响**：详情页有可选窗口，汇总页没有
+
+授权前把消费端追了一遍，结论有一条必须先说：**「首次活跃」那个标签不受影响**
+（我一度担心 `first_seen_at` 的 `MIN()` 会被窗口改成「窗口内首末」，
+实际追下去发现——`/admin/session-analytics/users` 读的是 `session_dim` 系的
+`owner_user`，**不是这三个 MV**；两个 MV 页面根本不渲染 `first_seen_at`）。
+
+真正的问题是另一条，而且**855 会让它从「可辩护」变成「自相矛盾」**。
+
+#### 一、两个页面的数据来源不是一个口径
+
+| 位置 | 取数 | 时间口径 |
+|---|---|---|
+| 列表页汇总（`ClientAnalyticsView` / `TaskAnalyticsView` 的 `session_count` / `total_cost_usd` / `avg_health`） | **三个 MV** | 855 之前=**全历史**；855 之后=**固定 30 天**（`last_request_at` 滚动） |
+| 详情页「每日成本趋势」 | `session_summaries` **基表实时算** | **用户可选** 7 / 30 / 90 天（默认 30），锚点是 `DATE(first_request_at) >= CURRENT_DATE - N` |
+
+`ClientAnalyticsView.vue:23-27` 有 7/30/90 三档选择器；后端
+`admin/session_analytics_clients.go:236` 取 `days`（默认 30，夹在 1..90）。
+
+#### 二、这个不一致**早就存在**，855 只是把它变坏
+
+- **今天**：汇总是全历史，趋势可选。读作「终身总量 + 可缩放的趋势」尚可解释。
+- **855 之后**：汇总恒为 30 天，趋势仍可选到 90 天
+  ⇒ 用户选「近 90 天」会拿到 **30 天的汇总 + 90 天的趋势**，字面自相矛盾。
+
+⚠️ 而且两者的窗口**定义就不同**，即使都填 30 也对不上：
+
+| | 锚点列 | 起点语义 |
+|---|---|---|
+| MV 窗口 | `last_request_at` | 滚动 720 小时 |
+| 趋势查询 | `DATE(first_request_at)` | 自然日边界 |
+
+⇒ 一条 8 月创建、9 月仍活跃的会话：MV 计入（`last_request_at` 在窗口内），
+趋势按 `first_request_at` 则落在 8 月、不进近 30 天趋势。
+
+#### 三、三个选项与我的建议
+
+| 选项 | 做法 | 判断 |
+|---|---|---|
+| (i) 接受 + **标注** | 汇总口径标注为「近 30 天固定」，趋势仍可选 | ✅ **建议**。一行文案，零结构改动 |
+| (ii) 锁死选择器 | 详情页只留 30 天，隐藏 7/90 | 改交互，且 7 天视图是真实需求，代价大 |
+| (iii) 把窗口放大到 90 天 | 让选择器最大值对齐 | ❌ 实测 90 天窗 = **100% 的行**，等于没加（§10.106.39 §一） |
+
+⇒ 855 与选择器的对齐**做不到**：MV 定义里的字面量是**构建期**常量，
+同一个视图不可能按请求参数返回不同窗口。
+⇒ **(i) 是唯一诚实的解法**：让页面明说汇总口径，让趋势继续可选，
+   两者不一致这件事**显示出来**而不是藏在数字里。
+
+⚠️ 这条**不阻塞部署**，但若不标注，报表上线后会出现「数字变了但没人知道为什么」
+的静默信任损失——而这种损失比省下的 WAL 更难挽回。
+
+### §10.106.45 855 的**上线前基线与验收读数**（部署后照此复核）
+
+部署前把三兄弟的「现状」与「预期」都钉成数，部署后一轮差分即可判定兑现与否。
+
+#### 一、实测基线（154 生产，2026-10-12 06:3x）
+
+| 视图 | 当前行数 | 当前体量（含索引） | 行级 30 天窗口后 | 行数比 |
+|---|---|---|---|---|
+| `session_client_stats` | 949 | 824 kB | **884** | 93.1% |
+| `session_client_task_matrix` | 105,909 | 72 MB | **3,336** | 3.15% |
+| `session_task_stats` | 104,299 | 96 MB | **1,832** | 1.76% |
+| **合计** | **211,157** | **~169 MB** | **6,052** | **2.87%** |
+
+⚠️ `session_client_stats` **几乎不变**（949 → 884，-6.8%）——
+client 维度本来就只有几百个组合，加窗对它基本没影响。
+**三兄弟的收益全部来自 task 与 matrix 两个视图。**
+⇒ 汇报收益时不要把三者当成一起降，否则会高估 client 那一路。
+
+#### 二、预期读数（**模型，不是实测**）
+
+按「体量随行数线性缩放 × §10.106.36 实测的 0.93× 系数」：
+
+| 口径 | 现状（实测） | 855 后（模型） |
+|---|---|---|
+| 单轮重写体量 | ~169 MB | **~4.7 MB** |
+| **单轮 WAL** | **169.3 MB（实测差分）** | **~4.4 MB** |
+| 每小时 WAL（1.14~1.37 轮/h） | 193~232 MB | **~5.0~6.0 MB** |
+| 占集群 WAL（基线 310.2 MB/h） | **62%~75%** | **~1.6%~1.9%** |
+
+⚠️ **这是模型**（行数线性缩放 × 0.93 系数）。B-tree 页填充率、
+`array_agg` 数组变短都可能让实际值偏离。
+⇒ **部署后按 §10.106.37 的一、/二、同款 10 分钟差分窗口复测**
+（基线非刷新区间速率 + 覆盖一次刷新的区间），
+**只有差分读数能把这一行升级为实测**。
+
+#### 三、一次性成本（部署当下就会发生，别误判成「没生效」）
+
+DROP 旧视图时要删掉 **211,157 行 + 它们的索引** ⇒ **首次执行会多出约 169 MB 的
+删除 WAL**，且该次 CREATE 本身要重建 6,052 行。
+⇒ **部署后第一轮的 WAL 会偏高，第二轮起才进入稳态。**
+⇒ 判定时看**第二轮之后**的差分，别拿第一轮说事。
+
+#### 四、验收清单（部署后逐条核对）
+
+1. `schema_migrations` 出现 `855`；
+2. 三个视图行数落到 **884 / 3,336 / 1,832** 附近（±10%，随时间推移窗口会滑动）；
+3. 三个视图的**唯一索引仍在**（`indisunique=true`）——缺一个则该视图每轮刷新失败；
+4. 日志里 `refreshed session analytics view` 三条**每轮都出现**（不再是偶尔整轮消失）；
+5. 10 分钟差分窗口的第二轮读数落在 **~5 MB/轮** 附近（±50% 之内即算兑现）。
+
 ---
 
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」

@@ -154,6 +154,15 @@ files=(
   # DO NOTHING); 357 precedes 358 (session_owner_stats reads its shapes).
   "$ROOT_DIR/sql/migrations/startup/357_session_analytics_aggregation_views.sql"
   "$ROOT_DIR/sql/migrations/startup/358_session_ownership.sql"
+  # 2026-10-12: 855 puts a 30-day window on the three session-analytics MVs.
+  # Measured on 154 production: the trio rewrites ~169.3 MB of WAL per cycle,
+  # 62%~75% of cluster-wide WAL, and the driver is output group count — the
+  # task dimension carries 104,299 long-tail historical task_ids while only
+  # 1,832 combinations saw activity in the last 30 days. Windowing collapses
+  # that to 1,832 (-98.2%) for ~8% CPU. Must run after 357 (creates the views)
+  # and 358 (session_dim, the join target); the views are dropped and rebuilt,
+  # so the unique indexes REFRESH CONCURRENTLY needs are recreated here too.
+  "$ROOT_DIR/sql/migrations/startup/855_session_analytics_time_window.sql"
   "$ROOT_DIR/sql/migrations/startup/394_request_stats_minute.sql"
   # 2026-10-12 host-first PG/gateway log audit: the candidate-binding scope
   # revision chain (541 raw_model table → 569 canonical table + cmb triggers →
