@@ -1204,6 +1204,13 @@ write_instance_env() {
 instance_name() { printf 'llm-gateway-local-%s\n' "$1"; }
 pid_file() { printf '%s/gateway-%s.pid\n' "$RUN_DIR" "$1"; }
 
+# zombie-aware 存活判定：ps 输出为空（进程不存在）或 STAT 以 Z 开头（已
+# 死待收）都视为不存活。kill -0 对 zombie 返回 0，直接拿它等退出会永假。
+_dl_gw_alive() {
+  local st; st=$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ')
+  [[ -n "$st" && "$st" != Z* ]]
+}
+
 # Wait for a TCP port to be free after a previous container was killed.
 # 2026-09-09 现象：active cutover 偶发失败，8782 verify 在 60s 内 /healthz
 # 持续 connection refused；同时段 8781 candidate 一切正常。docker rm -f
@@ -1233,7 +1240,34 @@ stop_instance() {
   local port="$1" name; name=$(instance_name "$port")
   if (( DL_DOCKER )) && docker ps -a --format '{{.Names}}' | grep -Fxq "$name"; then docker rm -f "$name" >/dev/null 2>&1 || true; fi
   local pf; pf=$(pid_file "$port")
-  if [[ -f "$pf" ]]; then kill "$(cat "$pf")" 2>/dev/null || true; rm -f "$pf"; fi
+  if [[ -f "$pf" ]]; then
+    local gw_pid; gw_pid=$(cat "$pf")
+    kill "$gw_pid" 2>/dev/null || true
+    # 2026-10-11 孤儿回收：host 模式 gateway 的 graceful shutdown 在后台
+    # 任务持着已关闭连接池等场景下会 hang 在退出路径（2533 切换轮实测旧
+    # 进程以 pool-closed 状态存活 12h+，持续刷后台错误日志）。TERM 之后
+    # 必须等进程真正退出，超时升级 KILL；否则该 pid 随 pidfile 清掉后
+    # 不再被任何东西引用，cutover 重试与后续部署都收不回它。原实现只发
+    # TERM 不等待，且 dl_wait_port_free 仅覆盖 Docker 模式的端口释放。
+    if _dl_gw_alive "$gw_pid"; then
+      local deadline=$(( $(date +%s) + 10 ))
+      while (( $(date +%s) < deadline )); do
+        _dl_gw_alive "$gw_pid" || break
+        sleep 0.3
+      done
+      if _dl_gw_alive "$gw_pid"; then
+        printf '    [stop] gateway pid %s did not exit 10s after TERM; sending KILL\n' "$gw_pid" >&2
+        kill -KILL "$gw_pid" 2>/dev/null || true
+        deadline=$(( $(date +%s) + 5 ))
+        while (( $(date +%s) < deadline )); do
+          _dl_gw_alive "$gw_pid" || break
+          sleep 0.3
+        done
+        _dl_gw_alive "$gw_pid" && printf '    [stop] warning: gateway pid %s still alive after KILL\n' "$gw_pid" >&2
+      fi
+    fi
+    rm -f "$pf"
+  fi
   # 2026-09-09：docker rm -f 之后立即 docker run 同端口偶发 EADDRINUSE
   # （macOS Docker Desktop 端口分配/TIME_WAIT 释放慢）。verify_instance
   # 拿到 connection refused 就会在 60s 后 die，破坏 active cutover。
@@ -1397,6 +1431,32 @@ PY
 }
 
 record_success() { dl_record_verify "$ROOT_DIR" "$DL_DB_MODE" "$DL_REDIS_MODE" "$RELEASE_VERSION" "$(dl_active_port)"; }
+
+# 2026-10-11 孤儿网关回收兜底：部署成功收尾后扫描本部署根 bin/ 下的
+# gateway 进程，凡不是 active pidfile 记录的一律 TERM→KILL。背景：2533
+# 部署轮遗留 4 个跨版本孤儿（2521/2522/2533，PPID=1、无监听、部分处于
+# pool-closed 半死态持续刷后台错误日志 12h+）。stop_instance 修好后仍可
+# 能有漏网（pidfile 被 cutover 重试覆盖、KILL 后伪存活），收尾统一清扫。
+# 只在部署成功路径调用——cutover 重试/回滚期间端口两侧都是合法进程；
+# 模式锚定 $ROOT_DIR，不会误伤同机其他部署根（多 checkout 并发部署）。
+reap_stray_gateways() {
+  local keep_pid="$1" pid
+  [[ -n "$keep_pid" ]] || return 0
+  for pid in $(pgrep -f "$ROOT_DIR/bin/.*/gateway" 2>/dev/null || true); do
+    [[ "$pid" == "$keep_pid" ]] && continue
+    printf '    [reap] stray gateway pid %s (active is %s); terminating\n' "$pid" "$keep_pid" >&2
+    kill -TERM "$pid" 2>/dev/null || continue
+    local deadline=$(( $(date +%s) + 10 ))
+    while (( $(date +%s) < deadline )); do
+      _dl_gw_alive "$pid" || break
+      sleep 0.3
+    done
+    if _dl_gw_alive "$pid"; then
+      kill -KILL "$pid" 2>/dev/null || true
+      printf '    [reap] pid %s did not exit after TERM; KILLed\n' "$pid" >&2
+    fi
+  done
+}
 
 # A gateway deployed without LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY cannot
 # decrypt stored provider credentials (incident 2026-09-05: every apikey on
@@ -1620,6 +1680,8 @@ deploy() {
   chmod 0600 "$RUN_DIR/active-port"
   dl_mark_verified "$bundle"
   printf 'active=%s\n' "$RELEASE_VERSION" > "$RUN_DIR/deployment-state"
+  # 收尾兜底：此刻 active 已稳定，pidfile 记录的就是唯一合法进程
+  reap_stray_gateways "$(cat "$(pid_file "$candidate_port")" 2>/dev/null || true)"
   record_success
 }
 

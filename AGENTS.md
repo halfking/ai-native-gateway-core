@@ -27,11 +27,11 @@
 | 工具 | 状态 | 说明 |
 |---|---|---|
 | `go` | `~/sdk/go/bin/go` 1.27.1 | **不在 PATH 上**，跑任何 go 命令前 `export PATH="$HOME/sdk/go/bin:$PATH"` |
-| `bash` ≥4 | `~/sdk/bash5/bin/bash` 5.2.0 | 系统只有 3.2，deploy-lib 用到 `${var^^}`（bash 4+）必须用这个 |
+| `bash` ≥4 | `~/sdk/bash5/bin/bash` 5.2.0 | 系统只有 3.2，deploy-lib 用到 `${var^^}`（bash 4+）必须用这个。**2026-10-11 下午曾被整目录清掉**（`~/sdk/` 只剩 go/caddy/缓存），已按下方重编法重建回原路径——`~/sdk/` 下的工具可能被清理，用前先 `ls` 确认 |
 | `pnpm` | `corepack prepare pnpm@10.29.2` | 仓库 `packageManager` 锁 10.29.2 |
-| `node` | nvm 22.23.3 | 在 PATH 上 |
-| `brew` / `docker` | **确实缺失** | 真库回归（full 模式）仍做不了 |
-| `psql` | 有 | 可直连生产 DSN 做只读查询 |
+| `node` | nvm 24.21.0 | 在 PATH 上（22.23.3 已被升级替代） |
+| `brew` / `docker` | **确实缺失** | 真库回归（full 模式）仍做不了；host-first 本地部署不依赖它们 |
+| `psql` | `~/kaixuan/pg18/bin/psql` | host pg18 自带；**不在 PATH 上**，或跑部署时把该目录加进 PATH |
 
 > bash 5.2 若需重编：`~/sdk/bashbuild/bash-5.2`。构建时
 > `builtins/psize.sh` 的 `mktemp` 会被沙箱 wrapper 污染，生成物 `pipesize.h`
@@ -215,6 +215,29 @@
    - **通道腿整段漏登 845-851**（存量八连红）：按 842 先例补登进 `scripts/apply-db-revision-sequence.sh` 的 files 数组，`apply-db-revision-sequence_test.sh` rc=0；
    - **admin 过时测试 vs authz-first**：4b06bd50b（窗口内）给 `handleUsers` 加路由级 `requireUserManager` 后漏改 2026-06-28 的两个旧断言——改为「未授权 403 + 已授权 400/405」双断言，admin 子集仅剩已知负向闸门红。
    - 另实测：`./domains-stats/...` 是本文件历史笔误（git 全历史无此路径，实为 `./domains/stats/...`），已在本文件更正；web-mobile 7169 / web 2401 前端测试全绿。
+7. **2026-10-11 下午本地部署审计轮**（本会话）。拉取 7 提交快进后审计本机
+   host-first 部署，修复四族问题并重新部署 2.5.8.2538：
+   - **孤儿网关**：2533 轮遗留 4 个跨版本孤儿（PPID=1、无监听、两个以
+     pool-closed 半死态刷错误日志 12h+）。根因是 `stop_instance` 只发 TERM
+     不等待且 cutover 重试后旧 pid 失去 pidfile 引用。修复：TERM→轮询(10s)
+     →KILL 升级 + 部署收尾 `reap_stray_gateways`（模式锚定部署根，不误伤
+     其他 checkout）；行为回归门 `tests/deploy_local_reap_test.sh` 已接入
+     verify.sh（zombie-aware 判活；三个变异验证全红在正确断言）。
+   - **迁移 517 在 host-first 从零建库必炸**：534 重建后 `handoff_logs` 是
+     RANGE(created_at) 分区父表，PG 不允许不含分区键的唯一约束，517 的
+     `REFERENCES handoff_logs(id)` 必然 `no unique constraint`（生产是
+     「先 517 后 534」的历史顺序才没炸）。修复：FK 改 DO 块按 relkind 形态
+     探测——分区父表引用 `handoff_logs_hot(id)`，heap 形态保持
+     `handoff_logs(id)`；canonical 与 installer embeddata 双点同步；两种
+     形态 + fail-fast + 幂等四项验证通过。
+   - **环境漂移**：`~/.ssh/config` 丢失（245/154/252 别名全失效，`ssh 252`
+     会被解析成 IP 0.0.0.0.252）——已从
+     `ai-native-workspace/docs/win11/ssh-config-fleet.txt` 恢复；
+     `~/sdk/bash5` 被清——已重编（psize.sh 固定 PIPESIZE 65536 的坑再次确认）。
+   - **部署轮验证**：2538 上线后 127.0.0.1:8782 / mesh 8782 / mesh 8443
+     (caddy) / 公网 443 SNI→252:9443→mesh 8782 四入口全绿，**收尾零孤儿
+     进程**（新机制首次实战生效）。
+
 
 ## 剩余任务（按依赖顺序）
 
@@ -419,9 +442,28 @@ bash scripts/deploy-245.sh --seq <seq>          # seq 必须自增且不与他�
 
 ### SSOT 软链的真实情况
 
-仓库里 `scripts/deploy-lib` 的软链目标（`ai-native-workspace/…`）与本机实际
-SSOT（`ai-native-tools/…`）不一致。**用 `AIAN_DEPLOY_LIB` 环境变量指真实路径，
-不要依赖软链。** 软链的事留给维护者裁决，不要自行改提交。
+**2026-10-11 下午更新：`~/workspace/ai-native-tools/` 目录已从本机消失**，
+`~/workspace/ai-native-workspace/deploy-lib`（软链目标，`lock.sh` 在场）成为唯一
+SSOT——**软链现在解析有效**，`AIAN_DEPLOY_LIB` 可不设或指 ai-native-workspace。
+本机各目录朝不保夕（同日 `~/sdk/bash5` 也被清过），用前先 `ls` 确认。
+
+### host-first 本地部署的 2538 轮新坑（2026-10-11 下午实测）
+
+1. **显式 DSN 会把 `DL_DB_MODE` 定成 `external`，跳过 host claim 的
+   `dl_export_host_bin_path` PATH 注入**——部署中段直接 die 在
+   `psql is required for database verification`。对策：跑部署的 shell
+   自带 `PATH="$HOME/kaixuan/pg18/bin:$HOME/kaixuan/redis/bin:..."`。
+2. **ZCode 会话的嵌套 bash 环境里 `netstat -an` 输出缺整个 TCP/LISTEN 表**
+   （只剩 Multipath/LOCAL/kernel 段；`lsof -iTCP` 正常；真终端里 netstat
+   正常——02:44 同机部署过此关）。`dl_redis_host_listen_ports` 靠 netstat
+   枚举端口 → `dl_redis_try_host` 恒失败 → die `no usable PostgreSQL/Redis`。
+   对策（不改产品代码）：`export LLM_GATEWAY_DATABASE_URL=postgresql://huangxt@127.0.0.1:54318/llm_gateway?sslmode=disable
+   LLM_GATEWAY_REDIS_ADDR=127.0.0.1:6379`——发现链 Tier 1 caller 显式配置
+   最优先，完全绕开 netstat 探测。这也顺带解释了 2533/2534 轮与 2538 轮
+   行为差异：探测成败取决于跑部署的 shell 环境，不在代码。
+3. 2538 起部署收尾多了孤儿网关清扫（见「已完成」2026-10-11 下午审计轮）；
+   `run/gateway.build` 是每次部署的构建暂存产物，属正常残留，不用手工清。
+
 ---
 
 # 追加：2026-10-11 154/252 事故与批判式审计（root 会话 `mvs_771078044a9a4dc8960546e26f653367`）
