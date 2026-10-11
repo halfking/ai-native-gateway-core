@@ -84,12 +84,61 @@ host 模式会在「psql is required」死掉（这正是 2026-10-11 修掉的�
 
 > 本机自连 mesh IP（curl/ping 100.106.169.63）在 userspace 栈下不通属预期
 > 怪癖，不代表远端入站状态。**远端 peer 验证命令**（任一在线 peer 上执行）：
-> `curl http://llm.itestu.cn:8782/healthz`。2026-10-11 凌晨在线 peer 无一
-> 提供 shell，此步留待有 peer 在线时执行（见 §6 待验项）。
+> `curl http://llm.itestu.cn:8782/healthz`。**2026-10-11 上午已经 252 实测通过**
+>（见 §6），当初「无在线可登录 peer」的留待项作废。
 
 > **HTTPS 终结**（`https://llm.itestu.cn`，浏览器侧）：远端 peer 走 mesh 入站
 > 用 HTTP 即可；浏览器场景需 HTTPS 终结，独立方案见
 > [local-https-termination-20261011.md](./local-https-termination-20261011.md)。
+
+### 5.1 域名的两条入口与 252 侧链路（2026-10-11 排障沉淀）
+
+`llm.itestu.cn` 有**两条并存入口**，故障定位时先分清走的是哪条：
+
+| 入口 | 解析 | 链路 | 状态（2026-10-11） |
+|---|---|---|---|
+| mesh 内 | NetBird zone `llm-itestu-zone` → `100.106.169.63` | peer → 网关 `:8782`（HTTP）/ mac Caddy `:8443`（自签 HTTPS） | ✅ |
+| 公网 | 公网 DNS（hichina）`llm.itestu.cn → 115.29.212.252` | 252 nginx stream `:443`（SNI `ssl_preread` 透传）→ `:9443`（letsencrypt TLS 终结，证书公网校验通过）→ upstream `100.106.169.63:8782`（走 wt0 mesh）→ 网关 | ✅ |
+
+**踩坑一（已修）：252 上 mihomo fake-ip 劫持 mesh 域名。** 252 跑着 mihomo
+（tun + `dns-hijack: any:53` + fake-ip），发往任何 DNS 的查询都被劫持发
+fake-IP；`DOMAIN-SUFFIX,itestu.cn,DIRECT` 规则救不了它——mihomo 自己再解析
+`llm.itestu.cn` 走公网 DNS 拿到 `115.29.212.252`（252 自己），回环死锁，
+表现为 252 上按域名访问网关超时而按 IP 一切正常。**修法**（`/etc/mihomo/config.yaml`，
+备份 `config.yaml.bak-llm-mesh-dns-*`，API 热重载 `PUT 127.0.0.1:9090/configs?force=true`）：
+
+```yaml
+dns:
+  fake-ip-filter:
+  - +.llm.itestu.cn                      # 只豁免 mesh 域名；ai./netbird. 等兄弟域保持 fake-ip 行为
+  nameserver-policy:
+    +.llm.itestu.cn: 100.106.190.139     # 指向 252 netbird 客户端自身的解析器（zone 权威应答）
+```
+
+> **nameserver-policy 不可省**：只加 fake-ip-filter 时 mihomo 会退回公网解析
+> → 解到 252 自己，照死。**策略必须收窄到 `+.llm.itestu.cn`**：放宽到
+> `+.itestu.cn` 会把兄弟域的解析也交给 netbird 转发链路，而 netbird 的上游
+> 转发同样被 `any:53` 劫持（实测 `nb-macmini-29.itestu.cn` 解出 fake-IP），
+> 反而弄坏现在工作正常的兄弟 vhost。
+
+**踩坑二（已修）：252 nginx upstream 硬编码单一端口。** 蓝绿部署 active 端口
+会在 8781/8782 间漂移（本机 2026-10-11 凌晨实测漂过一次，vhost 备份
+`bak-port8781-fix-*` 即为手修痕迹）。已给 upstream 加 backup 兜底
+（备份 `llm.itestu.cn.conf.bak-mesh-upstream-*`）：
+
+```nginx
+upstream llm_gateway_upstream {
+    server 100.106.169.63:8782 max_fails=2 fail_timeout=10s;
+    server 100.106.169.63:8781 max_fails=2 fail_timeout=10s backup;   # 漂移兜底
+    keepalive 32;
+}
+```
+
+**遗留隐患（未修，需用户决策）：252 的 netbird 客户端二进制已被删除。**
+`/proc/$(pgrep -f "netbird service run")/exe` 指向 `(deleted)`，进程还在跑
+（252 mesh IP `100.106.190.139`、wt0、nginx upstream 全依赖它），但一旦
+崩溃/重启就无法拉起，公网与 mesh 域名两条入口同时断。重装需要重新
+setup key 登录，会换 peer 身份，留给用户侧裁决。
 
 ## 6. 验证矩阵
 
@@ -101,7 +150,8 @@ host 模式会在「psql is required」死掉（这正是 2026-10-11 修掉的�
 | 全链路部署 | `bash scripts/deploy-local.sh deploy`（LLM_GATEWAY_ROOT=~/kaixuan/llm-gateway-go-v2） | **rc=0**：release `2.5.8.2522`，cutover 8782 active；`/healthz` ready:true、`/readyz` database+redis 双 connected（latency µs 级）、admin 登录冒烟通过（凭据扫描 WARN=no_credentials_to_scan，非阻断）、记录 `VERIFY_DATABASE=host VERIFY_REDIS=host` |
 | LAN 入站 | `curl http://192.168.31.29:8782/healthz` | 200（版本一致） |
 | DNS | `dig llm.itestu.cn @100.106.255.254` | 100.106.169.63 |
-| 远端 peer 回连 | `curl http://llm.itestu.cn:8782/healthz`（peer 上执行） | **待验**（凌晨无在线可登录 peer；绑定 \*:8782 + 防火墙关 + Default 策略放行 + LAN 实测均已就绪） |
+| 远端 peer 回连（mesh） | `curl http://llm.itestu.cn:8782/healthz`（252 上执行，2026-10-11 上午） | **200**（修复 mihomo fake-ip 劫持后）；`https://llm.itestu.cn:8443`（mac Caddy 自签，-k）**200** |
+| 公网入口 | `curl --resolve llm.itestu.cn:443:115.29.212.252 https://llm.itestu.cn/healthz`（2026-10-11 上午） | **200，证书公网校验通过（免 -k）**；链路 252 stream 透传 → 9443 终结 → mesh 8782 |
 
 ### 本轮迁移通道修复清单（host-first 库从「Go ensure 链从未启动」状态收敛）
 
