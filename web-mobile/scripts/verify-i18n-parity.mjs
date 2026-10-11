@@ -64,6 +64,36 @@ function parseDict(path) {
       stack.push(open[2])
       continue
     }
+    // ★ 单行对象字面量：`  tab: { overview: '概览', credentials: '凭据' },`
+    //   2026-10-11 后补。初版只认「对象另起一行」，而 zh-CN.ts / en-US.ts 里
+    //   有 9 处这种写法，于是它们**整段被静默丢弃**：视图一旦引用其中任何一个
+    //   键（例如 `providers.tab.credentials`），本门就报「词典里不存在」——
+    //   而那个键明明就在词典里。
+    //   这正是「量具失灵比没量具更危险」的形态：门给的是**假红**，会让人去
+    //   改调用方或加重复键，而真问题在量具本身。
+    //   放在 open 之后、leaf 之前：open 形态是本正则的子集，顺序不能反。
+    const inlineObj = line.match(/^(\s*)([A-Za-z_$][\w$]*):\s*\{(.+)\}\s*,?\s*$/)
+    if (inlineObj && stack.length > 0) {
+      const parent = inlineObj[2]
+      // 叶子键允许带引号（`'5m'` 这种），值仍是单行字符串字面量。
+      const inner = inlineObj[3].matchAll(
+        /(?:^|,)\s*(?:'([^']+)'|([A-Za-z_$][\w$]*))\s*:\s*'((?:[^'\\]|\\.)*)'\s*(?=,|$)/g,
+      )
+      let hits = 0
+      for (const m of inner) {
+        hits++
+        const name = m[1] ?? m[2]
+        const keyPath = [...stack, parent, name].join('.')
+        if (firstSeen.has(keyPath)) {
+          duplicates.push(`${keyPath}（第 ${firstSeen.get(keyPath)} 行与第 ${i + 1} 行）`)
+        } else {
+          firstSeen.set(keyPath, i + 1)
+          out.set(keyPath, m[3])
+        }
+      }
+      // 没解析出任何叶子 ⇒ 这行不是本门认识的单行对象（宁可放过也不误报）。
+      if (hits > 0) continue
+    }
     // 叶子： `  key: 'value',` 或 `  key: 'value'`
     const leaf = line.match(/^(\s*)([A-Za-z_$][\w$]*):\s*'((?:[^'\\]|\\.)*)'\s*,?\s*$/)
     if (leaf && stack.length > 0) {
