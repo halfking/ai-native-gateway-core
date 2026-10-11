@@ -14055,6 +14055,74 @@ WHERE relname IN ('session_dim','session_summaries');
    否则就是把一个待查项当成结论——而这正是「依据 642/843 在别的环境会不会被投递，
 必须去 workspace SSOT 查」那条纪律的同族。
 
+### §10.106.43 ⚠️ 部署边界：**部署 154 会自动应用 855**（授权语义与直觉不同）
+
+准备「等授权再上线」时才发现：**855 与代码部署是绑定的，分不开。**
+
+#### 一、先把机制查到 SSOT（而不是靠注释推断）
+
+§10.106.39 留过一条纪律：「要判断某迁移会不会被投递，**必须去 workspace SSOT 查**；
+引用部署机制前先 `git ls-files <路径>`，不要用 `ls` 看到文件就当它是仓内资产」。
+
+照做时先撞上**软链在本 checkout 里是断的**：
+
+```
+$ git ls-files scripts/deploy-lib/     → 空（软链，非仓内资产）
+$ ls -la scripts/deploy-lib            → -> ../../ai-native-workspace/deploy-lib
+```
+
+⚠️ 该软链解析到 `…/syncfield/ai-native-workspace/deploy-lib`，
+**而 SSOT 实际在 `…/ai-native-tools/deploy-lib/`**——本 checkout 比软链假设的布局深一级。
+⇒ **在 `syncfield/` 下的任何一份 checkout，`scripts/deploy-lib` 都是断链。**
+⇒ 真实 SSOT：`/Users/xutaohuang/workspace/ai-native-tools/deploy-lib/db-changelog.sh`（586 行）。
+
+#### 二、扫描腿的实际判定（`db-changelog.sh:241-256`）
+
+```bash
+for f in sql/migrations/startup/[0-9]*.sql; do
+  base=$(basename "$f")
+  [[ "$base" == *.down.sql ]] && continue
+  ver=$(echo "$base" | grep -oE '^[0-9]+')
+  [[ "$base" =~ ^[0-9]{3}_ ]] || continue
+  if head -15 "$f" | grep -qiE 'SUPERSEDED|superceded|DEPRECATED'; then continue; fi
+  if (( 10#$ver >= ledger_reconcile_from )) && [[ -z "${applied[$ver]+x}" ]]; then
+    printf '%s\n' "$f"        # 投递
+  fi
+done
+```
+
+`ledger_reconcile_from` 默认 **412**（`DB_LEDGER_RECONCILE_FROM` 可覆盖）。
+
+#### 三、855 的逐条判定（实测，非推断）
+
+| 条件 | 855 的读数 | 结果 |
+|---|---|---|
+| `^[0-9]{3}_` 前缀 | `855_session_analytics_time_window.sql` | ✓ 匹配 |
+| 前 15 行含 `SUPERSEDED/DEPRECATED` | 不含 | ✓ 不跳过 |
+| `855 >= ledger_reconcile_from(412)` | 855 ≥ 412 | ✓ 在范围内 |
+| 855 是否已入 `schema_migrations` | **否**（154 台账已到 854） | ⇒ **未应用 ⇒ 投递** |
+| `855_...down.sql` 会被误投递吗 | 命中 `*.down.sql` continue | ✓ 不会 |
+
+⇒ **结论：只要部署 154，855 就在切流前被应用。**
+
+#### 四、这对授权意味着什么
+
+⚠️ **不存在「先上代码、迁移以后再说」这个选项**——
+除非把 855 改成 `.skip`（扫描腿会跳过 `*.skip`，但**通道腿的 `files=(...)`
+数组按精确文件名引用，rename 会让契约门红**，两者必须一起改）。
+
+| 选项 | 做法 | 代价 |
+|---|---|---|
+| **A. 一起上** | 授权部署，855 随切流应用 | 一轮到位；口径变更与代码同批生效 |
+| **B. 只上代码** | 855 → `.skip` + 同步改通道数组，部署；之后再单独放开 | 多一轮部署；契约门需同步改 |
+
+⚠️ 另有两条已核实的边界，供部署时对账：
+- **网关进程自己不应用这些文件**（`db/db_migration_709_test.go:11`：
+  「binary environments only run the db.go ensure chain
+  (sql/migrations/startup files are never applied there)」）
+  ⇒ 迁移由**部署工具**在切流前应用，不是进程启动时。
+- 生产 `schema_migrations` 当前 398 行、数字迁移盖到 **854**，`855` 未入台账。
+
 ---
 
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」
