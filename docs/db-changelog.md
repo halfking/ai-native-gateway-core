@@ -8716,3 +8716,11 @@ git show origin/main:scripts/deploy-lib/db-changelog.sh
 | 817 | `817_request_logs_view_client_ip_semantic_guard.sql` | `8cbc0f2f8fd79464a7107ee9aca3992ef3da669bd2f4ccb069c3355ab274d862` | 补登记 `4f5ae1a82`：同 815 的逐列探测剔除（姊妹篇）。原登记行 e101a688… / 48bfe9df… 均保留 |
 | 824 | `824_request_status_rate_limited_projection.sql` | `ba19fb20cd1d43d67ea1a47dffe0d6d59111978109b48da087a37825653acfa2` | 补登记 `4f5ae1a82`：同 815 的逐列探测剔除（姊妹篇）。⚠️ 原登记行标注的「pending deploy / 未应用于任何库」是 **2026-10-04 的陈述**，本次只登记字节、**未重新核实**任何环境的应用状态。原登记行 a7f6d00b… 保留 |
 
+## 2026-10-11T20:23:18Z — deploy 245 build_seq 2548 (a87a134a)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 852 | `852_models_canonical_column_set_reconcile.sql` | `5410c11de43b322f5a64fb7675f7af02e7e6112f592390172c7553d3eee587db` | applied+verified |
+| 853 | `853_credential_probe_queue_automatic.sql` | `aec09f5e4c689a0d7d24b3d9056b1eff577cf3263d6f0f764b2a806c42befc4a` | applied+verified |
+| 854 | `854_session_turns_advisory_lock_key.sql` | `fb88ad0b5ef2f554e39c74e506449fdfc25e9f57ba494cfbd1d150b0bae2f2e8` | applied+verified |
+
