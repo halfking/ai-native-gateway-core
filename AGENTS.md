@@ -171,8 +171,9 @@
 2. ~~**r1016/r1017 未上生产是时间线事实**~~ —— **2026-10-11 21:00 实测推翻，已作废**。
    本条写入时（2533，01:39）属实，但 16:34 的 2537/2539 部署（`37099db2`）已把
    两者带上生产。**取证时踩了两个量具坑，都记在这里**：
-   - 245 的 release 二进制叫 **`gateway`**，不叫 `llm-gateway-go`；按后者
-     `strings` 会报 No such file，看起来像「二进制不存在 / 被 strip」。
+   - **245 的 release 二进制叫 `gateway`，不叫 `llm-gateway-go`**；按后者
+     `strings` 会报 No such file，看起来像「二进制不存在 / 被 strip」。本文件
+     早前「245 是 stripped ELF」的结论据此作废——它有完整符号表（`go1.` 命中 3）。
    - **包级 `var` 不会留下 Go 符号名**（`egressHostFromBarePort`、
      `egressHostFromPort` 均为 0），**`const` 更没有**（`barePortFollower` 为 0）。
      拿符号名当指纹会得到假的「未包含」。可靠口径是 **rodata 里的正则字面量**
