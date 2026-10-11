@@ -72,8 +72,11 @@ func (h *ModelsHandler) SetAuth(kv *authentication.KeyVerifier) {
 
 // authenticate 校验 /v1/models 的调用方。
 //
-// 只做认证，不做限流与预算：这是纯读端点，套上数据面的 RPM/预算判定会改变
-// 现有客户端的可见行为（大量客户端用 /v1/models 做模型发现），超出本修复范围。
+// 只做认证，不做限流、预算与状态门：这是纯读端点，套上数据面的 RPM/预算判定会
+// 改变现有客户端的可见行为（大量客户端用 /v1/models 做模型发现）；对
+// `throttled` 状态同样放行——限流管的是生成容量，在这里 429 会让客户端在限流
+// 尖峰期连「有哪些模型可用」都探不到。两者都超出本修复范围，且要变更需单独
+// 评估客户端兼容性。判据见 TestModelsThrottledKeyStillGetsCatalog。
 func (h *ModelsHandler) authenticate(w http.ResponseWriter, r *http.Request) bool {
 	if h.keyVerifier == nil || !h.keyVerifier.Enabled() {
 		// lite / 本地模式没有校验器，沿用旧行为。
