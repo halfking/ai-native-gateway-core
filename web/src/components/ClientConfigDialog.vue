@@ -5,8 +5,9 @@ import { getKeys, listModels, getFeatured, applyForKey, revealKey, type ApiKey, 
 import {
   TOOLS, OS_INFO,
   type ToolId, type OS, type ModelScope,
+  type ModelItem,
   renderZCodeConfig, renderOpenCodeConfig,
-  renderCherryStudioConfig, renderRooCodeSettings,
+  renderCherryStudioConfig, renderRooCodeSettings, renderMiniMaxCodeProvider,
   generateShellScript, getManualSteps,
   downloadFile, auditAction,
 } from '../composables/useClientConfig'
@@ -64,6 +65,22 @@ async function submitApply() {
 
 // ── Step 2: OS selection ─────────────────────────────────────────────────────
 const selectedOS = ref<OS>('macos')
+const baseURL = ref('')
+const generationError = ref('')
+
+function defaultGatewayBaseURL(): string {
+  const origin = typeof window !== 'undefined' ? window.location.origin : 'https://llm.itestu.cn'
+  return `${origin.replace(/\/+$/, '')}/v1`
+}
+
+function normalizeBaseURL(): string {
+  const value = baseURL.value.trim()
+  const parsed = new URL(value)
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error('API 地址必须使用 HTTP 或 HTTPS。')
+  }
+  return value.replace(/\/+$/, '')
+}
 
 // ── Step 3: Model scope + custom selection ──────────────────────────────────
 const selectedScope = ref<ModelScope>('featured')
@@ -191,6 +208,8 @@ watch(() => props.open, (val) => {
     selectedScope.value = 'featured'
     selectedModels.value = []
     selectedOS.value = 'macos'
+    baseURL.value = defaultGatewayBaseURL()
+    generationError.value = ''
   }
 }, { immediate: true })
 
@@ -207,55 +226,70 @@ watch(selectedScope, async (scope) => {
 
 const selectedKey = computed(() => keys.value.find(k => k.id === selectedKeyId.value))
 
-const fileExt = computed(() => props.tool === 'cherry_studio' ? '.json' : '.json')
+const fileExt = computed(() => props.tool === 'minimax_code' ? '.yaml' : '.json')
 const scriptExt = computed(() => selectedOS.value === 'windows' ? '.ps1' : '.sh')
 
 async function generate() {
   if (!selectedKey.value) return
   generating.value = true
   hasGenerated.value = false
+  generationError.value = ''
 
-  const key = selectedKey.value
-  const baseURL = 'https://llmgateway.internal.example.com/v1'
-  let models = selectedModels.value
-  if (selectedScope.value === 'featured') models = [...featuredModels.value]
+  try {
+    const key = selectedKey.value
+    const gatewayURL = normalizeBaseURL()
+    const models = selectedScope.value === 'featured' ? [...featuredModels.value] : [...selectedModels.value]
+    if (models.length === 0) throw new Error('请至少选择一个模型；特色模型为空时请先到「路由策略」配置。')
+    if (!allModelsLoaded.value) await loadAllModels()
+    const modelInfo: ModelItem[] = models.map((id) => {
+      const model = allModels.value.find((item) => item.canonical_name === id)
+      return {
+        id,
+        name: id,
+        contextWindow: model?.context_window ?? undefined,
+      }
+    })
 
-  // Pre-existing safety bug (caught by vue-tsc): the render helpers
-  // expect a string apiKey, but `key` is the full ApiKey object.
-  // The old code passed the object, which JSON.stringify would have
-  // serialized to a giant metadata blob — the generated config
-  // never worked because the consumer expected a string. Reveal the
-  // real key server-side, then pass the string.
-  const revealed = await revealKey(key.id)
-  const apiKey = revealed.api_key
+    // The selected API key is revealed only for the generated client artifact.
+    const revealed = await revealKey(key.id)
+    const apiKey = revealed.api_key
 
-  let fileContent: any
-  if (props.tool === 'zcode') {
-    fileContent = renderZCodeConfig(apiKey, models)
-  } else if (props.tool === 'opencode') {
-    fileContent = renderOpenCodeConfig(apiKey, models)
-  } else if (props.tool === 'cherry_studio') {
-    fileContent = renderCherryStudioConfig(apiKey, models)
-  } else if (props.tool === 'roocode') {
-    fileContent = renderRooCodeSettings(apiKey, baseURL)
-  } else {
-    fileContent = { note: 'Cursor 不支持文件写入，请在 Settings UI 中手动配置' }
+    let fileContent: any
+    if (props.tool === 'zcode') {
+      fileContent = renderZCodeConfig(apiKey, models, gatewayURL, modelInfo)
+    } else if (props.tool === 'opencode') {
+      fileContent = renderOpenCodeConfig(apiKey, models, gatewayURL, modelInfo)
+    } else if (props.tool === 'minimax_code') {
+      const provider = renderMiniMaxCodeProvider(apiKey, models, gatewayURL, modelInfo)
+      fileContent = `custom_provider:\n${provider.split('\n').filter(Boolean).map(line => `  ${line}`).join('\n')}\n`
+    } else if (props.tool === 'cherry_studio') {
+      fileContent = renderCherryStudioConfig(apiKey, models, gatewayURL)
+    } else if (props.tool === 'roocode') {
+      fileContent = renderRooCodeSettings(apiKey, gatewayURL)
+    } else {
+      fileContent = { note: 'Cursor 不支持文件写入，请在 Settings UI 中手动配置' }
+    }
+
+    generatedFile.value = typeof fileContent === 'string'
+      ? fileContent
+      : JSON.stringify(fileContent, null, 2)
+    generatedScript.value = generateShellScript(props.tool, selectedOS.value, generatedFile.value, apiKey, gatewayURL)
+    generatedManual.value = getManualSteps(props.tool, selectedOS.value, gatewayURL, models)
+    hasGenerated.value = true
+
+    await auditAction({
+      action: 'generate',
+      tool: props.tool,
+      os: selectedOS.value,
+      keyId: key.id,
+      modelCount: models.length,
+      modelScope: selectedScope.value,
+    })
+  } catch (error: any) {
+    generationError.value = error?.message || '配置生成失败，请重试。'
+  } finally {
+    generating.value = false
   }
-
-  generatedFile.value = JSON.stringify(fileContent, null, 2)
-  generatedScript.value = generateShellScript(props.tool, selectedOS.value, generatedFile.value, apiKey)
-  generatedManual.value = getManualSteps(props.tool, selectedOS.value)
-  hasGenerated.value = true
-  generating.value = false
-
-  await auditAction({
-    action: 'generate',
-    tool: props.tool,
-    os: selectedOS.value,
-    keyId: key.id,
-    modelCount: models.length,
-    modelScope: selectedScope.value,
-  })
 }
 
 function copyFile() {
@@ -271,7 +305,7 @@ function downloadScript() {
 
 function downloadFileContent() {
   const filename = `${props.tool}-config${fileExt.value}`
-  downloadFile(generatedFile.value, filename, 'application/json')
+  downloadFile(generatedFile.value, filename, props.tool === 'minimax_code' ? 'application/yaml' : 'application/json')
 }
 
 function close() {
@@ -343,9 +377,16 @@ function goManageFeatured() {
           </div>
         </div>
 
-        <!-- Step 3: Model scope -->
+        <!-- Step 3: Gateway URL -->
         <div class="step-section">
-          <div class="step-label">③ 选择模型范围</div>
+          <div class="step-label">③ 网关 API 地址</div>
+          <input v-model="baseURL" class="select-field" type="url" placeholder="https://llm.itestu.cn/v1" />
+          <div class="path-hint">默认使用当前网关站点地址。配置中会包含所选 API Key，请妥善保管生成文件和脚本。</div>
+        </div>
+
+        <!-- Step 4: Model scope -->
+        <div class="step-section">
+          <div class="step-label">④ 选择模型范围</div>
           <div class="scope-radios">
             <label class="radio-label">
               <input type="radio" value="featured" v-model="selectedScope" />
@@ -426,6 +467,7 @@ function goManageFeatured() {
 
         <!-- Sticky footer with primary action -->
         <div class="drawer-footer">
+          <div v-if="generationError" class="alert alert-danger">{{ generationError }}</div>
           <div class="footer-info" v-if="hasGenerated">
             <span class="footer-hint">已生成 {{ selectedModels.length }} 个模型配置</span>
           </div>
@@ -450,7 +492,7 @@ function goManageFeatured() {
         <!-- Results -->
         <div v-if="hasGenerated" class="results-section">
           <div class="result-tabs">
-            <button :class="['tab-btn', activeTab === 'file' ? 'active' : '']" @click="activeTab = 'file'">配置文件</button>
+            <button :class="['tab-btn', activeTab === 'file' ? 'active' : '']" @click="activeTab = 'file'">{{ tool === 'minimax_code' ? 'YAML 片段' : '配置文件' }}</button>
             <button
               v-if="tool !== 'cherry_studio' && tool !== 'cursor'"
               :class="['tab-btn', activeTab === 'script' ? 'active' : '']" @click="activeTab = 'script'"
@@ -472,7 +514,7 @@ function goManageFeatured() {
             <pre class="code-preview script-code">{{ generatedScript }}</pre>
             <div class="result-actions">
               <button class="btn btn-primary btn-sm" @click="downloadScript">下载脚本</button>
-              <span class="action-hint">脚本自动备份旧配置文件</span>
+              <span class="action-hint">脚本先备份旧配置，再合并 itestuu，保留其他供应商</span>
             </div>
           </div>
 

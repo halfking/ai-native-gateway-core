@@ -240,6 +240,7 @@ export const NAV_GROUPS: NavGroup[] = [
     labelKey: 'nav.group.guide',
     items: [
       { path: '/examples', label: '接入示例', labelKey: 'nav.item.examples', icon: '📝' },
+      { path: '/examples#auto-config', label: '自动配置', icon: '🛠️' },
       { path: '/maintain/ops/autoupdate', label: '自动更新', labelKey: 'nav.item.opsAutoUpdate', icon: '🚀', external: true, opsPlatform: true, activateWhenNotActivated: true },
       { path: '/maintain/donate', label: '赞助与捐赠', labelKey: 'nav.item.supportDonate', icon: '💖', external: true },
     ],

@@ -313,7 +313,7 @@ function toggleGuide(id: ClientGuideId) {
       网关兼容 OpenAI API 协议。将 <code>base_url</code> 指向此网关即可使用任意支持的模型；也可在侧栏「对话」直接网页聊天。
     </p>
 
-    <h3 class="section-heading">常用客户端配置</h3>
+    <h3 id="auto-config" class="section-heading">常用客户端配置</h3>
     <ClientConfigGenerator />
 
     <div class="guide-list">
