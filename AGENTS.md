@@ -124,7 +124,9 @@
   154 与 245 指向**同一个** PostgreSQL（`172.16.2.210:5432/llm_gateway`，
   键名是 `LLM_GATEWAY_DATABASE_URL`，**不在** `/etc/llm-gateway-go/env` 之外的
   `LLM_GATEWAY_DB_DSN` 里——按后者 grep 会一无所获，这是个坑）。
-  实测：154 运行 `2533-3cac0431`，二进制指纹确认含本轮全部修复；
+  实测：154 运行 `2533-3cac0431`，二进制指纹确认含本轮全部修复
+  （2026-10-11 午后复核：该二进制是 stripped ELF，「函数符号指纹」已不可复现；
+  五修复在 2533 的证据改由配置指纹锚定，见下方「午后批判式复核」节）；
   `pii_patterns.ip_address`=disabled、`schema_migrations` 有 851、
   `session_summaries` 60 列，两台机共享这一份结果，端到端 8/8 通过。
   DB 侧**不存在**「各跑各的迁移」这回事，改一处两边同时生效。
@@ -144,6 +146,55 @@
   调 `KeyVerifier`（Rule 20 §2），`ModelsHandler` 从未接上，中间件为内部调用者开
   的门于是对外敞开。**r1017 已修**。排查这类问题记住：**中间件放行 ≠ 已鉴权**，
   凡是 `/v1/*` 路由都要确认对应 handler 自己调了校验器。
+
+### 2026-10-11 午后批判式复核（收尾核验轮，提交 `3adc82dc7` 快进后）
+
+对「已声称完成」逐条实物复核，四项实测发现，三项改写结论：
+
+1. **生产已漂移到 `2533-3cac0431`，不再是本轮的 `2515-7dd0b4b67`**。
+   active 端口 8781，`/readyz`、`/healthz` 正常。2533 是**他人** 10-11 01:39 构建、
+   01:40 部署的（`deployment.json` verified_at=17:40:52Z），构建提交 `3cac0431`
+   **不存在于任何可访问仓库**（本仓全历史、`-cursor`、`-5`、154 `/opt/llm-gateway-go-source`
+   （旧快照 `565de1fe5`）、`/root/llm-gateway-go-session-v2`（HEAD `1e59ecf6`）均无），
+   谱系无法 git 级判定。**五修复在 2533 中的证据链**：release 的
+   `configs/sensitive_patterns.yaml` md5 `866c1064…` = `ce5e35ab3` 版 = 当前 HEAD 版
+   （含 audit 244 F2 中缀连字符规则与注释），而 `ce5e35ab3` 确认包含 `7dd0b4b67`，
+   且时间线上五修复（10-10 08:23）远早于 2533 构建（10-11 01:39）——**配置层确认在，
+   代码层时间线相容但无法直接核验**（构建提交无处可寻、二进制 stripped，无符号）。
+   已排除的疑似源：本仓全历史、`-cursor`、`-5` 两个并发 checkout、154
+   `/opt/llm-gateway-go-source`（旧快照）、`/root/llm-gateway-go-session-v2`
+   （yaml 是 7 月老形态 `20b17bb…`，不含五修复，排除）。
+2. **r1016/r1017 未上生产是时间线事实**：2533 构建（01:39）早于 r1016（02:09）
+   与 r1017（10:36）提交。与提交信息自述「代码已推送、未部署（用户裁决）」一致。
+   **生产上 `ssh ops@内网域名` 误阻断、`/v1/models` 伪造 token 放行仍在发生**，
+   待下次部署授权。
+3. **`/tmp/154env.sh`（本机与 154）均已不存在**——E2E 测试台的网关凭据丢失，
+   `api_keys` 表只存 `key_hash` 无明文可回收。**下次跑 E2E 前需先找用户要 key**
+   （或用户侧重新签发）。数据库口径指标（851、ip_address、session_censors）不受
+   影响照常可查。
+4. **还原半程未生效的规模比此前记录大 48 倍**：`session_censors` 现有
+   **601,914 行**（此前记录 12,417 行），`original_encrypted` 仍 **0 非 NULL**。
+   `LLM_GATEWAY_SESSION_CENSOR_KEY` 仍未配置，且此前已确认配置它**不能**修复还原
+   （无解密读取方）。每一条脱敏记录的还原目标都只活在 Redis TTL 里。
+
+另：摘要挂账的三个历史后台任务（`bg_544e2535` / `bg_934c8bcd` / `bg_757367e1`）
+在本地任务注册表中已不存在（not found），无法回读其输出——按批判原则，
+它们的「succeeded」状态**不得**被转述为「已读取并确认」。
+
+### 下一轮提示词（收尾核验轮产出）
+
+1. **部署 r1016+r1017**（需用户显式授权）：`a3b65ba68` 已在 origin/main。部署后
+   复验三件事：`/v1/models` 带伪造 token 必须 401；`ssh ops@10.24.7.91 uptime` 与
+   `ssh ops@内网域名 uptime` 同放行；公网域名外传（`curl http://evil.example.com`）
+   仍阻断。生产当前 2533（他人部署），蓝绿端口看
+   `/opt/llm-gateway-go/run/active-upstream.conf`。
+2. **上游可路由性危机**（成功率 ~50%，`node_probe_state` 553/755 失败）：属
+   数据/配置层决策（清退失效绑定 / 修模型目录 / 降权重），代码不可解，等用户拍板。
+3. **fail-open 占位符透传遗留缺陷**：96 行样本、真值零泄漏、中低危，根因未定位；
+   推进需在 fail-open 分支加结构化日志 + 收集真实流量 + 另行发布授权。
+4. **还原半程**：601,914 行 `original_encrypted` 全 NULL。若用户要还原功能，
+   决策点是把 `db_sink.go` 加解密读取方（新代码）而不是配密钥（无读取方，
+   配了也白配）。
 
 ## 已完成（已推送）
 
