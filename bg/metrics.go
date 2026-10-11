@@ -196,6 +196,26 @@ var (
 		[]string{"table"},
 	)
 
+	// 2026-10-11（runbook §10.106.29）：analyze 整趟耗时直方图。
+	//
+	// 为什么补这个指标：promote 路径有 hotTablePromoteDurationSeconds，
+	// analyze 路径此前**一个耗时指标都没有**，日志也只记 "tables" 不记耗时
+	//（partition_manager.go 里维护者自己写了「历史读数无法回溯 ⇒ 需 2s 采样
+	// pg_stat_activity 判定」）。结果是这条每小时做几十秒到上百秒数据库工作、
+	// 且受 Go 侧 10min 预算与 SET LOCAL statement_timeout='10min' 双重约束
+	// 的路径**无法判断是否正在逼近预算**。
+	//
+	// 桶按实测口径选：838 落地后单趟基线 51.3s（runbook §10.107.6），
+	// 2026-10-11 观测到单趟均 154s，故上界一路铺到 600s（Go 预算）。
+	// 不加 label —— 这是整趟粒度的单一序列，label 只会带来基数而无信息。
+	analyzeStatsDurationSeconds = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "llm_gateway_analyze_stats_duration_seconds",
+			Help:    "Duration of one analyze_llm_gateway_table_stats pass (whole-pass granularity, only recorded when the throttle slot was actually claimed)",
+			Buckets: []float64{5, 15, 30, 60, 90, 120, 180, 300, 600},
+		},
+	)
+
 	// 2026-08-31 (P2-8 audit-data-closure): per-table gauge tracking how
 	// many consecutive promote cycles have been skipped because the
 	// advisory lock is held. A persistently positive value indicates a
@@ -317,6 +337,16 @@ func recordPromoteDuration(table string, seconds float64) {
 // recordPromoteSkipped increments the skipped counter.
 func recordPromoteSkipped(table string) {
 	hotTablePromoteSkippedTotal.WithLabelValues(table).Inc()
+}
+
+// recordAnalyzeDuration observes one whole analyze pass.
+//
+// Only called when the throttle slot was actually claimed — the skip path
+// rolls back before reaching the analyze call, so this series counts real
+// passes and not "ticked but skipped" ticks. Keep it that way: mixing the two
+// is exactly the mistake that made the log's tables-only line unreadable.
+func recordAnalyzeDuration(seconds float64) {
+	analyzeStatsDurationSeconds.Observe(seconds)
 }
 
 // recordHotTableBacklog sets the post-drain hot table row count (R47).
