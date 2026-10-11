@@ -13340,6 +13340,55 @@ GROUP BY tenant_id, (client_models[1]);
 ★ **与 §10.106.33 的关系**：那一节回答「值不值」，本节回答「怎么改、有什么坑」。
 两节合起来才构成可执行提案。
 
+### §10.106.34.1 订正 §10.106.34 规格：**第 2 步（刷新器打戳）早已完成，别再写一遍**
+
+写完 §10.106.34 后我按纪律**当场核实了规格里点名的对象**，结果抓到自己写错一步。
+
+**核实一：三个 UNIQUE 索引名全部属实**（`CONCURRENTLY` 的硬前提，必须逐字对）：
+
+| 视图 | UNIQUE 索引 |
+|---|---|
+| `session_client_stats` | `idx_session_client_stats_tenant_client` (tenant_id, client_id) |
+| `session_task_stats` | `idx_session_task_stats_tenant_task` (tenant_id, task_id) |
+| `session_client_task_matrix` | `idx_session_client_task_matrix_uq` (tenant_id, client_id, task_id) |
+
+**核实二：打戳早就做了。** `routing_mv_refresh_state` 现存 **5 行**：
+
+```
+routing_analytics_7d       2026-10-12 01:10:07
+routing_audit_summary_7d   2026-10-12 01:10:09
+session_client_stats       2026-10-12 01:01:07   <-- 已在打戳
+session_client_task_matrix 2026-10-12 01:02:51   <-- 已在打戳
+session_task_stats         2026-10-12 01:02:30   <-- 已在打戳
+```
+
+⇒ **§10.106.34 规格第 2 步「把三兄弟并入 `execRefresh` 的打戳路径」是多余的**——
+它们**本来就在被打戳**。我写那一行时读的是
+`db/db.go:4139 stampRoutingMVRefresh` 那个函数**存在**，
+就推断调用侧也已覆盖；**没有去查状态表里实际有没有它们的行**。
+⇒ 「能力存在」≠「已被调用」，与本会话里那条
+`middleware 放行 ≠ 已鉴权`、`e084e5754` 补观测缺口同族。
+
+**订正后的真实改动面（比 §10.106.34 少一步）**：
+
+| 步 | §10.106.34 原文 | 订正 |
+|---|---|---|
+| 1 | 迁移 852 重建三 MV 去 `now()` 列 | ✅ 仍然需要 |
+| 2 | 三兄弟并入打戳路径 | ❌ **删除——早已完成** |
+| 3 | 4 个读点改读状态表 | ✅ 仍然需要（且状态表已有现成行可读） |
+| 4~6 | `.down.sql` / 四条腿 / 契约门 | ✅ 不变 |
+
+`routing_mv_refresh_state` 的结构是 `(view_name text NOT NULL, refreshed_at timestamptz NOT NULL)`
+—— 每视图一行，**无需任何 schema 变更**即可承载。
+另注：三兄弟的打戳时刻（01:01~01:02）与 routing 两兄弟（01:10）**不同**，
+说明它们的刷新调度也不同相 ⇒ 迁移里不要假设三兄弟与 routing 同批刷新。
+
+★ **教训（本会话第三次同族）**：
+① 「函数存在」不等于「已被调用」，要用**下游产物**（这里是状态表里的行）验证；
+② **写进规格的对象名必须当场核实**——本节三个索引名全部核实通过，
+唯独那一步的**存在性**判断错了。
+⇒ 规格里凡写「已有 X」，都要用 X 的**可观测痕迹**确认，而不是用 X 的**定义**确认。
+
 ---
 
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」
