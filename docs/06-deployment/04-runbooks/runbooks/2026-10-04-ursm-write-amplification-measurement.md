@@ -14013,6 +14013,48 @@ SELECT refreshed_at FROM session_task_stats LIMIT 1; → 2026-10-12 06:17:56.747
 ★ 两条合起来是同一句话：**读数与预期不符时，第一嫌疑永远是量具，不是被测对象。**
 本节两次都是量具错了，迁移从头到尾是对的。
 
+### §10.106.42 ⚠️ `last_analyze` 为 NULL **不等于**这张表没有统计信息
+
+§10.106.39 调查期间顺手查过一张表，撞上一个当时以为无关、其实是个真陷阱的读数：
+
+```sql
+SELECT relname, last_analyze, last_autoanalyze, n_live_tup FROM pg_stat_user_tables
+WHERE relname IN ('session_dim','session_summaries');
+--   session_dim        | (空) | (空) |  18,778
+--   session_summaries  | (空) | (空) |  21,604
+```
+
+实际行数却是 726,360 与 682,049 ⇒ 当时记的是「**这两张表从未被 ANALYZE 过，
+统计信息缺失是坏计划的根因**」。
+
+**这是错的。** 复核：
+
+| 表 | `pg_class.reltuples` | 实际行数 | `pg_stats` 列数 | `pg_statistic` 条目 |
+|---|---|---|---|---|
+| `session_dim` | 635,237 | 726,360 | 17 | 17 |
+| `session_summaries` | 668,438 | 682,049 | 60 | — |
+
+⇒ **统计信息在，而且相当准**（`session_summaries` 误差 2%）。
+这也正好解释了 §10.106.39 那些计划里的行估计为什么准得离谱
+（估 695,565 vs 实际 682,051）——**当时我据此判断「统计缺失」是误判，
+但没有回头解释 `last_analyze` 为什么是空的。**
+
+⇒ ⚠️ **`pg_stat_user_tables.last_analyze` / `last_autoanalyze` / `n_live_tup`
+是「统计计数器」，不是「统计信息是否存在」。**
+前者可以被重置（`pg_stat_reset()`、统计文件丢失后的恢复等）而清空，
+后者存在 `pg_statistic` 与 `pg_class.reltuples` 里，**不受影响**。
+
+⇒ **判别动作**：判断 planner 有没有统计信息，要查
+`pg_class.reltuples` 与 `pg_statistic` 的条目数；查计划里的估计行数准不准，
+比查 `last_analyze` 可靠得多——**估计准就说明统计在**。
+
+★ 这与 §10.106.41 的 `information_schema.columns` 是同一个族的两个实例：
+**一个信息源对某件事「为空」，不等于那件事是假的。**
+本轮两次都是「查不到」被读成了「不存在」，而两次真相都在别处。
+⇒ 凡是要下「某能力/某对象缺失」这类结论，**必须换一个独立信息源交叉证伪**，
+   否则就是把一个待查项当成结论——而这正是「依据 642/843 在别的环境会不会被投递，
+必须去 workspace SSOT 查」那条纪律的同族。
+
 ---
 
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」
