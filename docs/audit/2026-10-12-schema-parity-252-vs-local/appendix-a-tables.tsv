@@ -1,0 +1,111 @@
+表名	分类	创建迁移	备注
+cache_metrics	ARCHIVE_PARTITION		月度分区父表，本地完全缺失(仅剩 ensure_cache_metrics_partition 函数)；creator 470/472 → 本轮 01 腿补建
+ursm_node_snapshot_min_legacy	ARCHIVE_PARTITION		830 分区化前的遗留快照表（生产血统），不修
+bak_20260920_api_key_model_cost	BACKUP		2026-09-20 模型目录/路由重构前手工备份
+bak_20260920_credential_model_index_2026_10	BACKUP		同上
+bak_20260920_credential_model_index_hot	BACKUP		同上
+bak_20260920_local_models	BACKUP		同上
+bak_20260920_model_aliases	BACKUP		同上
+bak_20260920_model_credit_rates	BACKUP		同上
+bak_20260920_model_fingerprints	BACKUP		同上
+bak_20260920_model_iq_runs	BACKUP		同上
+bak_20260920_model_offers	BACKUP		同上
+bak_20260920_model_task_index	BACKUP		同上
+bak_20260920_models_canonical	BACKUP		同上
+bak_20260920_pricing_plans	BACKUP		同上
+bak_20260920_prompt_injection_llm_engines	BACKUP		同上
+bak_20260920_provider_models	BACKUP		同上
+bak_20260920_provider_scores	BACKUP		同上
+bak_20260920_role_task_llm_mapping	BACKUP		同上
+bak_20260920_sticky_sessions	BACKUP		同上
+bak_20260920_task_model_affinity	BACKUP		同上
+bak_20260920_tenant_model_policies	BACKUP		同上
+bak_20260920_tenant_model_policies_active	BACKUP		同上
+bak_20260920_work_type_model_route	BACKUP		同上
+bak_20261011_drift_bindings	BACKUP		2026-10-11 drift bindings 变更前备份
+bak_20261011_drift_bindings_b	BACKUP		同上
+instance_heartbeats_old_backup	BACKUP		名称含 old_backup 的旧心跳表备份
+audit_attachments_cleanup	CANONICAL_MISSING_LOCAL	startup/629	→ 01 腿补建
+audit_attachments_filesystem_cleanup	CANONICAL_MISSING_LOCAL	startup/632	→ 01 腿补建
+candidate_binding_scope_revision	CANONICAL_MISSING_LOCAL	startup/541	→ 01 腿补建
+candidate_binding_scope_revision_canonical	CANONICAL_MISSING_LOCAL	startup/569(+571/578)	本地日志 42P01×219 根修 → 01 腿补建
+durable_task_settlement_intents	CANONICAL_MISSING_LOCAL	startup/520	→ 01 腿补建
+goal_run_actions	CANONICAL_MISSING_LOCAL	startup/554	→ 01 腿补建
+goal_run_steps	CANONICAL_MISSING_LOCAL	startup/554	→ 01 腿补建
+goal_runs	CANONICAL_MISSING_LOCAL	startup/554	→ 01 腿补建
+mcp_registry	CANONICAL_MISSING_LOCAL	local/641	本地共享平台 fixup → 01 腿补建
+mcp_tools	CANONICAL_MISSING_LOCAL	local/641	同上
+task_assigner_agents	CANONICAL_MISSING_LOCAL	local/641	同上（ACC 依赖）
+task_assigner_assignments	CANONICAL_MISSING_LOCAL	local/641	同上（ACC 依赖）
+request_abandoned	CANONICAL_MISSING_LOCAL	startup/819	→ 01 腿补建
+session_analysis_metadata	CANONICAL_MISSING_LOCAL	startup/567	→ 01 腿补建
+session_cluster_members	CANONICAL_MISSING_LOCAL	startup/351	→ 01 腿补建
+session_clusters	CANONICAL_MISSING_LOCAL	startup/351	→ 01 腿补建
+session_embeddings	CANONICAL_MISSING_LOCAL	startup/351	→ 01 腿补建
+session_optimization_suggestions	CANONICAL_MISSING_LOCAL	startup/351	→ 01 腿补建
+session_request_summaries	CANONICAL_MISSING_LOCAL	startup/351	→ 01 腿补建
+session_tags	CANONICAL_MISSING_LOCAL	startup/351	→ 01 腿补建
+task_type_centroids	CANONICAL_MISSING_LOCAL	startup/426	TSV✓ 却缺本地 → 01 腿补建
+（以下 62 张 INVESTIGATE：外部子系统在共享库自建，全仓库无 CREATE TABLE，不属本仓库对账范围）
+agent_discovery	INVESTIGATE		agent discovery/gateway 外部服务表
+agent_gateways	INVESTIGATE		同上
+agent_migration_log	INVESTIGATE		agent 迁移日志表
+auth_api_key_requests	INVESTIGATE		认证子系统表
+auth_apikey_applications	INVESTIGATE		认证子系统表
+auth_sessions	INVESTIGATE		认证子系统表
+auth_users	INVESTIGATE		认证子系统表
+chat_messages	INVESTIGATE		chat 会话存储（疑外部服务）
+chat_sessions	INVESTIGATE		同上
+conversation_history	INVESTIGATE		仅 admin gate 测试与 handoff 文档引用
+credential_client_quota	INVESTIGATE		仅 docs/database 审计产物提及
+doc_tools_tasks	INVESTIGATE		doc tools 任务/上传表
+doc_tools_uploads	INVESTIGATE		同上
+document_chunks	INVESTIGATE		文档/RAG 服务表簇
+document_feedback	INVESTIGATE		同上
+document_links	INVESTIGATE		同上
+document_retrieval_events	INVESTIGATE		同上
+documents	INVESTIGATE		同上
+gateway_run_bindings	INVESTIGATE		gateway run 绑定表（疑外部编排）
+graph_entities	INVESTIGATE		graph memory 服务实体存储
+graph_episodes	INVESTIGATE		同上
+graph_facts	INVESTIGATE		同上
+industry_registry	INVESTIGATE		行业注册表（疑外部）
+knowledge	INVESTIGATE		knowledge/RAG 知识库服务表簇
+knowledge_annotations	INVESTIGATE		同上
+knowledge_base_acl	INVESTIGATE		同上
+knowledge_bases	INVESTIGATE		同上
+knowledge_entities	INVESTIGATE		同上
+knowledge_lineages	INVESTIGATE		同上
+knowledge_metadata	INVESTIGATE		同上
+knowledge_relations	INVESTIGATE		同上
+knowledge_versions	INVESTIGATE		同上
+kxmemory_migration_ownership	INVESTIGATE		kxmemory 记忆服务私有表
+memora_schema_migrations	INVESTIGATE		memora 记忆服务私有 schema 账本
+memora_session_summaries_orphan	INVESTIGATE		memora 孤儿清理表
+memories	INVESTIGATE		memory 服务表簇
+memory	INVESTIGATE		同上
+memory_candidate_events	INVESTIGATE		同上
+memory_candidates	INVESTIGATE		同上
+memory_conversation_links	INVESTIGATE		同上
+memory_ingest_receipts	INVESTIGATE		同上
+openclaw_events	INVESTIGATE		openclaw 外部服务表簇
+openclaw_feedback	INVESTIGATE		同上
+openclaw_handoffs	INVESTIGATE		同上
+openclaw_prompt_ledger	INVESTIGATE		同上
+openclaw_shared_thread	INVESTIGATE		同上
+orchestration_sessions	INVESTIGATE		编排会话表（疑外部）
+project_dreams	INVESTIGATE		projects/编排投影服务表簇
+project_identity_audit	INVESTIGATE		同上
+project_insights	INVESTIGATE		同上
+project_jobs	INVESTIGATE		同上
+project_observations	INVESTIGATE		同上
+project_states	INVESTIGATE		同上
+projects	INVESTIGATE		同上
+repository_schema_migrations	INVESTIGATE		遗留迁移账本（run-migrations-strict.sh 引用）
+source_assets	INVESTIGATE		源资产表（疑外部）
+user_profiles	INVESTIGATE		用户画像表（疑外部）
+wiki_page_versions	INVESTIGATE		wiki 服务表簇
+wiki_pages	INVESTIGATE		同上
+wiki_pages_legacy_v1	INVESTIGATE		wiki 旧版遗留
+wiki_proposals	INVESTIGATE		同上
+wiki_sections	INVESTIGATE		同上
