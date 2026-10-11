@@ -13099,6 +13099,72 @@ Parallel Hash Left Join
 
 ---
 
+### §10.106.32 闭合 §10.106.31 留下的疑点：**§10.75 的根因归属是错的，且源码与生产都没有那一列**
+
+§10.106.31 §三 登记的待查项：`routing_analytics_7d` 的 WAL 退化到底是不是
+`now() AS refreshed_at` 造成的。本节比对源码与生产定义，**结论是：不是，那一列根本不存在。**
+
+**证据一：§10.75 引的行号本身就是错的。**
+它写「（`db/db.go:3622`）」。实测 `db/db.go:3622` 落在
+`ensureFreediscoveryTemplateHealth()` 里（provider_templates 的 health feedback 列），
+与 `routing_analytics_7d` 毫无关系。真实定义在 **`db/db.go:4002`**
+（`CREATE MATERIALIZED VIEW IF NOT EXISTS routing_analytics_7d AS …`）。
+⇒ **行号漂移**：该文件此后被编辑过（§10.106 期间 db.go 改动频繁），
+旧行号已不可作锚点。**引用行号前必须当场核一次。**
+
+**证据二：源码里没有那一列。** `db/db.go:4002-4033` 的 SELECT 列表是
+`time_bucket / effective_task_type / effective_model / effective_work_type /
+effective_provider_id / is_auto_request / tenant_id / request_count /
+success_count / auto_request_count / specified_request_count /
+p50_latency_ms / p95_latency_ms / p99_latency_ms / total_cost_usd`
+——**没有 `refreshed_at`**，也没有任何 `now()` 输出列。
+与生产实测 `has_now_col = f` **完全一致**（§10.106.31）。
+
+⇒ **§10.75.2 的「根因是 `now() AS refreshed_at`」不成立**，
+且它在**两个层面**上都错（行号错、列不存在）。§10.75 的**事实部分
+（`routing_analytics_7d` 是 WAL 第 3 大生产者，56.2 GB / 7.9%）仍成立**，
+只是归因要换。
+
+**那真正的成因是什么（用 §10.75 自己的数字算）**：
+
+| 量 | 值 | 来源 |
+|---|---|---|
+| WAL 总量 | 56.2 GB | §10.75 |
+| 刷新次数 | 6,381 | §10.75 |
+| **每次刷新 WAL** | **≈ 8.8 MB** | 56.2 GB ÷ 6,381 |
+| MV 自身大小 | 9.03 MB | §10.75 |
+
+⇒ **每次刷新的 WAL ≈ 整个 MV 的大小**，这正是「整表删 + 整表插」的指纹。
+
+成因不是某列在变，而是**内容本来就在变**：MV 的过滤条件是
+`WHERE ts >= NOW() - INTERVAL '7 days'` 且按 `DATE_TRUNC('hour', ts)` 分桶——
+**滑动 7 天窗口 + 每小时新增一个桶**，于是**每次刷新都必然有增有删**
+（新增当前小时桶、淘汰滑出窗口的旧桶）。
+`REFRESH ... CONCURRENTLY` 的差量判定看到内容不同 ⇒ 照样整表重写。
+**`now()` 列只是「让每行都变」的一种可能机制，这里它不成立，但结果一样。**
+
+**成本驱动因素（源码实测，之前没被点名）**：
+1. **三个有序集聚合** `percentile_cont(0.5 / 0.95 / 0.99) WITHIN GROUP (ORDER BY latency_ms)`
+   —— 每个都要对分组内全部 `latency_ms` 排序；
+2. `GROUP BY` 里嵌着**逐行标量子查询**
+   `COALESCE(provider_id, (SELECT cr.provider_id FROM credentials cr WHERE cr.id = credential_id LIMIT 1))`；
+3. 源 `routing_analytics_source` = `request_logs_hot ∪ request_logs`（约 15 万行）。
+
+★ **处置方向（不改语义的那一档）**：这条 MV 只有 **4,811 行 / 9 MB**，
+却按 **7.1 次/小时**（§10.106.31 实测 212 次 / 29.9 h）刷新。
+**降刷新频率是杠杆最大的一步**——7 天窗口的**小时级**聚合，每 9 分钟重算一次，
+在数据上并不必要。
+⇒ 但刷新节奏属**调度配置**，**需授权**；本节只登记，不擅改。
+
+⚠️ **流程复盘（第二次同族失误的另一半）**：§10.106.31 说「台账已答过就别重做」，
+但本节是**相反**的情形——§10.75 的答案是**错的**，此时不查到底就是把错误继续传下去。
+⇒ **台账已答过 ⇒ 先核对它答得对不对，再决定要不要重做**；
+「别重做」针对的是**结论正确**的台账，**不是**任何台账。
+
+---
+
+---
+
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」
 
 ### §10.107.1 上线后第一件事：把 §10.106.9 的「待观察」变成读数
