@@ -136,6 +136,12 @@ export const zhCN = {
     minutesAgo: '{n} 分钟前',
     hoursAgo: '{n} 小时前',
     daysAgo: '{n} 天前',
+    // 2026-10-11：费用对账等场景需要一个不会被键盘挤压的月份选择；iOS `<select>`
+    // 转盘不触发键盘，所以把 1..12 月份名放进 common.month.* 让多个视图共享。
+    month: {
+      jan: '1 月', feb: '2 月', mar: '3 月', apr: '4 月', may: '5 月', jun: '6 月',
+      jul: '7 月', aug: '8 月', sep: '9 月', oct: '10 月', nov: '11 月', dec: '12 月',
+    },
   },
   login: {
     title: '登录网关',
@@ -488,7 +494,13 @@ export const zhCN = {
   },
   reconciliation: {
     title: '供应商费用对账',
+    // 2026-10-11：原 `<input type="month">` 在 iOS 上同时弹键盘与转盘，半屏被压；
+    // 改为年份 + 月份两个 `<select>`（iOS 转盘选择，不触发键盘），并把月份
+    // 拉成 `全部月份` 选项以保留「想看全年趋势」的诉求。
+    monthYear: '年份',
     month: '月份',
+    allMonths: '全部月份',
+    refresh: '刷新对账',
     scope: '对比所选月份的网关用量与供应商账单。',
     gatewayTotal: '网关费用',
     providerTotal: '供应商费用',

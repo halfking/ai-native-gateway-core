@@ -74,6 +74,16 @@ export function fetchMe(options?: RequestOptions): Promise<UserInfo> {
 }
 
 /**
+ * 2026-10-11：raw 版 hydrate 使用。`/api/auth/me` 的常规路径（包裹态）会顺带回一份
+ * 新的 access_token；unwrap 之后那一份就丢了——而壳内 CapacitorHttp 不共享 WebView
+ * cookie jar，旧实现导致冷启动后 Bearer 永远空，所有受保护请求 401 ⇒ 整页跳登录。
+ * 这里暴露原响应供 store 一次取齐 user + token。
+ */
+export function fetchMeRaw(options?: RequestOptions): Promise<MeResponse> {
+  return req<MeResponse>('GET', '/api/auth/me', undefined, options)
+}
+
+/**
  * `/api/auth/me` 的实际响应有**两种形态**（见后端 admin/users.go handleAuthMe）：
  *
  *   ① 包裹态 { access_token, expires_at, user: UserInfo }  ← 签发新 token 成功时（常规路径）

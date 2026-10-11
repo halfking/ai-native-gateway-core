@@ -76,4 +76,29 @@ describe('ProviderDetailSheet', () => {
     prompt.mockRestore()
     wrapper.unmount()
   })
+
+  // 2026-10-11：原 AppSheet 内置的「叉叉」按钮（id="app-sheet-close"）必须把
+  // 父组件的 modelValue 翻成 false、并 emit `close` —— 之前用户实测说
+  // 「供应商详情弹窗关不掉」，现在钉死这条路径。点叉叉 ⇒ modelValue=false。
+  it('close button on AppSheet header emits update:modelValue=false so parent can clear selection', async () => {
+    const wrapper = mount(ProviderDetailSheet, {
+      attachTo: document.body,
+      props: { modelValue: true, provider },
+      global: { plugins: [pinia] },
+    })
+    await flushPromises()
+    const closeBtn = document.body.querySelector<HTMLButtonElement>('#app-sheet-close')
+    expect(closeBtn).not.toBeNull()
+    closeBtn!.click()
+    await flushPromises()
+    expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual([false])
+    expect(wrapper.emitted('close')).toBeTruthy()
+    wrapper.unmount()
+  })
+
+  // 2026-10-11：scrim 点击同样要走 close 路径（与叉叉按钮等价），否则用户
+  // 在弹窗外一点却没反应会以为「点不动」。但 AppSheet 的 `onScrimClick` 有一道
+  // 「必须是最顶 overlay」守卫 ⇒ 单元测试里没有 overlay registry ⇒ 跳过这一支，
+  // 在 Maestro / iOS 上点 scrim 真测就行。
+  it.skip('clicking the scrim also closes the sheet', () => {})
 })

@@ -137,9 +137,21 @@ export const useAuthStore = defineStore('auth', () => {
       return
     }
     try {
-      const me = await authApi.fetchMe({ signal })
+      // 2026-10-11：`/api/auth/me` 在签发新 token 成功时返回**包裹态**
+      //   { access_token, expires_at, user }（admin/users.go handleAuthMe）。
+      //   旧实现只取 user ⇒ 冷启动后 Bearer 丢失 ⇒ 壳内 CapacitorHttp
+      //   不共享 WebView cookie jar（client.ts:165-170 注释），所有无 token 的
+      //   受保护请求直接 401 ⇒ unauthorizedHandler 把整页跳到 /login。
+      //   修法：用 fetchMeRaw 拿到原响应，unwrap 出 user 与 access_token，
+      //   二者都装进 store。
+      const raw = await authApi.fetchMeRaw({ signal })
       if (current !== generation) return
+      const me = authApi.unwrapMe(raw)
+      const refreshedToken = typeof raw.access_token === 'string' ? raw.access_token : ''
       userInfo.value = me
+      // ★ 不要**清掉**一份还在内存里的合法 token：hydrate 期间用户可能
+      //   又触发 login() 拿到新 token；只在 /me 真给了新 token 时才覆盖。
+      if (refreshedToken) token.value = refreshedToken
       persistUser(me)
     } catch {
       if (current !== generation) return

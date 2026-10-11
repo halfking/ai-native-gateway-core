@@ -134,6 +134,12 @@ export const enUS = {
     minutesAgo: '{n}m ago',
     hoursAgo: '{n}h ago',
     daysAgo: '{n}d ago',
+    // 2026-10-11：费用对账等场景需要一个不会被键盘挤压的月份选择；iOS `<select>`
+    // 转盘不触发键盘，所以把 1..12 月份名放进 common.month.* 让多个视图共享。
+    month: {
+      jan: 'Jan', feb: 'Feb', mar: 'Mar', apr: 'Apr', may: 'May', jun: 'Jun',
+      jul: 'Jul', aug: 'Aug', sep: 'Sep', oct: 'Oct', nov: 'Nov', dec: 'Dec',
+    },
   },
   login: {
     title: 'Sign in to gateway',
@@ -487,7 +493,13 @@ export const enUS = {
   },
   reconciliation: {
     title: 'Provider cost reconciliation',
+    // 2026-10-11：原 `<input type="month">` 在 iOS 上同时弹键盘与转盘，半屏被压；
+    // 改为年份 + 月份两个 `<select>`（iOS 转盘选择，不触发键盘），并把月份
+    // 拉成 `All months` 选项以保留「想看全年趋势」的诉求。
+    monthYear: 'Year',
     month: 'Month',
+    allMonths: 'All months',
+    refresh: 'Refresh reconciliation',
     scope: 'Gateway usage is compared with provider billing data for this month.',
     gatewayTotal: 'Gateway cost',
     providerTotal: 'Provider cost',

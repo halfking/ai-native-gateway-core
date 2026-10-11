@@ -91,6 +91,18 @@ button {
   color: inherit;
 }
 
+/* 2026-10-11（UX5）：iOS WKWebView 弹键盘时把聚焦的输入框 scroll-into-view，
+   默认会贴到 viewport 底沿被键盘压半截。给文本类输入加 scroll-margin，
+   让浏览器自己留出键盘高度的空间。
+   · 80px 大致是 iPhone 6s / 标准 iOS 键盘的高度上限；
+   · 紧贴视觉上沿处聚焦时浏览器仍会把它推到该上沿，scroll-margin 不
+     影响非聚焦态。 */
+input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='hidden']),
+select,
+[contenteditable]:focus {
+  scroll-margin-block-end: 80px;
+}
+
 /* 数字等宽（金额/统计右对齐场景） */
 .num,
 .tabular-nums {
