@@ -14290,6 +14290,58 @@ CREATE UNIQUE INDEX session_summaries_session_key_uidx ON public.session_summari
 每行写入少维护一个索引**（`session_summaries` 是 session 生命周期的主写路径）。
 ⚠️ 两者都需要生产 DDL 授权；本轮**未执行任何 DDL**。
 
+### §10.106.47 ⚠️⚠️ 本库的 `pg_stat_all_tables` **整族不可用于决策**——214 张表自相矛盾
+
+§10.106.46 留了个未解矛盾（`stats_reset` 为 NULL 却 `last_analyze` 全空）。
+本节把它量化，并把结论落成一条**可操作的禁令**。
+
+#### 一、矛盾的规模（154/245 共用库，今天实测）
+
+```sql
+SELECT count(*) FILTER (WHERE last_analyze IS NULL)          AS analyze_null,
+       count(*)                                              AS total_tables,
+       count(*) FILTER (WHERE <该表有 pg_statistic 条目>)      AS have_statistic,
+       count(*) FILTER (WHERE last_analyze IS NULL
+                          AND <该表有 pg_statistic 条目>)      AS null_but_has_stat
+FROM pg_stat_user_tables WHERE schemaname='public';
+```
+
+| 读数 | 值 |
+|---|---|
+| public 表总数 | **576** |
+| `last_analyze` 为 NULL | **543**（94%） |
+| 有 `pg_statistic` 条目 | **234** |
+| **两者同时成立**（说没 analyze，却有统计条目） | **214** |
+
+同时 `pg_stat_database.stats_reset` 在本机**所有**数据库上都为 NULL（从未 reset）。
+
+⇒ `pg_statistic` 条目只能由 `ANALYZE` 产生，⇒ **至少 214 张表被 analyze 过，
+但 `last_analyze` 说没有。** 成因未查清（推测与 `pgstat.stat` 文件被替换/回滚有关），
+但**机制不是重点，下面这条才是**。
+
+#### 二、⚠️ 落成禁令
+
+**本库 `pg_stat_all_tables` / `pg_stat_user_indexes` 的整族字段
+（`last_analyze` / `last_autoanalyze` / `n_live_tup` / `idx_scan`）
+都不能用来回答「这张表有没有统计」或「这个索引有没有被用过」。**
+
+| 想回答的问题 | ⛔ 别用 | ✅ 改用 |
+|---|---|---|
+| 表有没有统计信息 | `last_analyze` | `pg_class.reltuples` + `pg_statistic` 条目数；或直接看 `EXPLAIN` 的估计行数准不准 |
+| 索引有没有被用过 | `idx_scan` | **受控观察**：记基线 → 等一个业务周期 → 取差值 |
+| 表有多少活行 | `n_live_tup` | 受控观察，或 `COUNT(*)` |
+
+#### 三、🔴 回头订正 §10.106.46 的一个候选
+
+§10.106.46 我把 `session_summaries_session_key_per_tenant`（45 MB、`idx_scan = 0`）
+摆成了「大候选索引」。**按本节，那条证据不成立** —— `idx_scan` 正是本库不可信的字段。
+
+⇒ **撤回「它一次都没被用过」这个说法。** 现有证据只能说：
+定义不同（所以同定义巡检报不出它）、体量 45 MB 是全表最大、被一个约束背着。
+⇒ 要判断它能不能删，**必须先做一次受控观察**（记录当前 `idx_scan` 与查询基线，
+跑过一个完整业务周期后取增量），而不是拿今天的 0 下结论。
+⇒ 45 MB 的诱惑足够大，**这正是该字段最容易被误用的地方**——记在这里当反面教材。
+
 ---
 
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」
