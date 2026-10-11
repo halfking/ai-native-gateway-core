@@ -114,7 +114,7 @@ func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any,
 			return false, err
 		}
 		for _, fragment := range fragments {
-			if isNonRoutableAddressFragment(fragment) {
+			if isNonExfiltrationFragment(fragment) {
 				// 2026-10-08 minimax-m3/glm-5.3 fail-closed incident: the
 				// server_ip pattern matches any IPv4, and dev tooling echoes
 				// 127.0.0.1 / RFC1918 targets in model-generated commands
@@ -187,6 +187,48 @@ func isNonRoutableAddressFragment(fragment SensitiveFragment) bool {
 		return false
 	}
 	return isNonExfiltrationAddress(fragment.Value)
+}
+
+// isNonExfiltrationEmailFragment 判断一个邮箱形状的片段在 egress 语境下是不是
+// 「明确不可路由的目的地」。
+//
+// 2026-10-11 生产探针实测的误阻断：email 规则把任何 user@host.tld 当成敏感值，
+// 而 egress 侧对非地址类片段一律硬阻断，于是内网的 SSH/SCP 目标被整条响应
+// `output_policy_blocked`：
+//
+//	ssh ops@10.24.7.91 uptime                        → 放行
+//	ssh deploy@build.corp.internal systemctl status → **阻断**
+//	scp file.txt user@fileserver.corp.internal:/tmp/ → **阻断**
+//	ssh deploy@build-server.local                   → **阻断**
+//	mail ops@kaixuan.com                            → 阻断（这条是对的）
+//
+// 注意前三行与第一行的矛盾：**同一个操作，写 IP 放行、写内网域名阻断**。判定
+// 取决于写法而不是可达性——这与 dc63f19ff 修的「私网地址恰好被重写成唯一不被
+// 豁免的类型」是同一类错误的镜像。
+//
+// 修法不是「放过邮箱」（那会让 mail/收件人形态真的外传无人管），而是把邮箱的
+// **主机部分**交回主机可达性判定：内部主机放行，公网主机仍然阻断。于是
+// user@attacker.io、mail ops@kaixuan.com 的阻断原样保留。
+func isNonExfiltrationEmailFragment(fragment SensitiveFragment) bool {
+	if fragment.Type != TypeEmail {
+		return false
+	}
+	at := strings.LastIndex(fragment.Value, "@")
+	if at < 0 || at == len(fragment.Value)-1 {
+		return false
+	}
+	return isNonExfiltrationHost(fragment.Value[at+1:])
+}
+
+// isNonExfiltrationFragment 是守卫唯一的豁免入口：片段能否承载外传。
+//
+// 分派理由与形状无关——只问「这个目的地可不可路由」。地址问地址，主机问主机，
+// 邮箱形状的主机部分问主机。新增片段类型时在这里补一条即可，不要在调用点分支。
+func isNonExfiltrationFragment(fragment SensitiveFragment) bool {
+	if isNonRoutableAddressFragment(fragment) {
+		return true
+	}
+	return isNonExfiltrationEmailFragment(fragment)
 }
 
 // isNonExfiltrationAddress 回答「这个地址能不能是外传目的地」。

