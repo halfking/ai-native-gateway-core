@@ -2,7 +2,7 @@
 //
 // B-01: OpenAI chat 完成式响应 + message.tool_calls[*].function.arguments 还原
 // B-02: OpenAI chat 流式 + delta.tool_calls[*].function.arguments 还原
-// B-03: 未知占位符 → [REDACTED] mask，覆盖 tool_calls.arguments 路径
+// B-03: 未知占位符 → [REDACTED:<type>] mask，覆盖 tool_calls.arguments 路径
 //
 // 跑测：
 //
@@ -103,8 +103,8 @@ func TestBusiness_ToolCallsArgs_Restore_NonStream(t *testing.T) {
 	var resp struct {
 		Choices []struct {
 			Message struct {
-				Content    string `json:"content"`
-				ToolCalls  []struct {
+				Content   string `json:"content"`
+				ToolCalls []struct {
 					ID       string `json:"id"`
 					Function struct {
 						Name      string `json:"name"`
@@ -158,7 +158,12 @@ func TestBusiness_ToolCallsArgs_Restore_Stream(t *testing.T) {
 }
 
 // TestBusiness_ToolCallsArgs_UnknownPlaceholderMasked
-// 未知占位符 → [REDACTED]，覆盖 tool_calls.arguments 路径。
+// 未知占位符 → 带类型的遮蔽标记（[REDACTED:phone] / [REDACTED:email]），
+// 覆盖 tool_calls.arguments 路径。
+//
+// 注：2026-09-23 初版断言的是裸 "[REDACTED]"；ce5e35ab3 起遮蔽标记带类型，
+// 实际输出一直是 "[REDACTED:<type>]"，原断言因此恒红（fail-open 占位符透传
+// 并未复发：raw 占位符从来没到过上游，见下方 NotContains 断言）。
 func TestBusiness_ToolCallsArgs_UnknownPlaceholderMasked(t *testing.T) {
 	rdb := setupRedis(t)
 	sid := "sess-tool-call-unknown"
@@ -201,8 +206,23 @@ func TestBusiness_ToolCallsArgs_UnknownPlaceholderMasked(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(result.ModifiedBody, &resp))
 	arg := resp.Choices[0].Message.ToolCalls[0].Function.Arguments
-	assert.Contains(t, arg, "13800138000", "已知占位符必须还原")
-	assert.Contains(t, arg, "[REDACTED]", "未知占位符必须 mask")
+
+	// 判据落在字段上（不是整串 Contains）：整串匹配会漏掉「占位符被还原成了
+	// 另一个字段的真值」这类串位缺陷 —— 那样 13800138000 仍然出现在 arg 里，
+	// 旧的 Contains 断言照样绿。
+	var fields map[string]string
+	require.NoError(t, json.Unmarshal([]byte(arg), &fields), "arguments 必须是合法 JSON 对象：%s", arg)
+	assert.Equal(t, "13800138000", fields["to"], "已知占位符必须还原成自己的真值")
+
+	// 未知占位符 → mask。标记带类型（ce5e35ab3「遮蔽标记带类型」）是当前契约，
+	// 这里 pin 精确字面量而不是 `[REDACTED]` 前缀：前缀断言放得过宽，
+	// 退回无类型标记也不会被发现。
+	assert.Equal(t, "[REDACTED:phone]", fields["backup"],
+		"未知 phone 占位符必须 mask 成带类型的遮蔽标记（不得回落成裸 [REDACTED]）")
+	assert.Equal(t, "[REDACTED:email]", fields["cc"],
+		"未知 email 占位符必须 mask 成带类型的遮蔽标记（不得回落成裸 [REDACTED]）")
+
 	assert.NotContains(t, arg, "{SENSITIVE:phone:99}", "raw 占位符文本必须消失")
 	assert.NotContains(t, arg, "{SENSITIVE:email:99}", "raw 占位符文本必须消失")
+	assert.NotContains(t, arg, "{SENSITIVE:", "任何 raw 占位符文本都不得透传给上游")
 }
