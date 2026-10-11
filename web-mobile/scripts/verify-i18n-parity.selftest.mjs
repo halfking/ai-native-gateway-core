@@ -93,6 +93,36 @@ const doc = (body) => `export const D = {\n${body}\n} as const\n`
   rmSync(root, { recursive: true, force: true })
 }
 
+// ── 1b. 单行对象字面量（2026-10-11 后补的解析能力，必须自证）────────────
+{
+  console.log('\n[1b] 单行对象字面量：`tab: { a: \'x\', b: \'y\' },` 整段不能丢')
+  // 背景：初版解析器只认「对象另起一行」，单行写法在 zh-CN.ts / en-US.ts 里有
+  // 9 处，被**整段静默丢弃**。视图一旦引用其中任一键，门就报「词典里不存在」——
+  // 而那个键明明在词典里。假红比漏红更危险：它把人引去改调用方。
+  const inline = "  providers: {\n    tab: { overview: '概览', credentials: '凭据' },\n  },\n"
+  const inlineEn = "  providers: {\n    tab: { overview: 'Overview', credentials: 'Credentials' },\n  },\n"
+  const root = makeRepo({
+    zh: doc(inline),
+    en: doc(inlineEn),
+    views: ["<template><p>{{ t('providers.tab.credentials') }}</p></template>" + NL],
+  })
+  const r = runGate(root)
+  check('两侧都是单行写法且被视图引用 → 放行（不能报缺键）', r.code === 0, r.out)
+  check('报文中不含 providers.tab.credentials', !r.out.includes('providers.tab.credentials'), r.out)
+
+  // 反向：单行写法里真的少一个键，仍然要拦下（别把判据放松成「看不见就不管」）
+  const root2 = makeRepo({
+    zh: doc(inline),
+    en: doc("  providers: {\n    tab: { overview: 'Overview' },\n  },\n"),
+    views: ["<template><p>{{ t('providers.tab.credentials') }}</p></template>" + NL],
+  })
+  const r2 = runGate(root2)
+  check('单行写法里少一个键 → 仍拦下', r2.code === 1, r2.out)
+  check('报出 providers.tab.credentials', r2.out.includes('providers.tab.credentials'), r2.out)
+  rmSync(root, { recursive: true, force: true })
+  rmSync(root2, { recursive: true, force: true })
+}
+
 // ── 2. 仅 zh 多键 ───────────────────────────────────────────────────────
 {
   console.log('\n[2] 反例：仅 zh-CN 多一个键')
