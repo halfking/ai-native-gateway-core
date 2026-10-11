@@ -14369,6 +14369,62 @@ FROM pg_stat_user_tables WHERE schemaname='public';
 ⇒ 建议路径：**受控观察（记基线 → 跑过一个业务周期 → 取增量）→ 确认无代码按名引用
   `ON CONFLICT` → 才进 DDL 评审。** 本轮未执行任何 DDL。
 
+### §10.106.48 🔴 45 MB 那个索引**不是纯冗余**——我自己的「逻辑蕴含」推论在此被否掉
+
+§10.106.46/47 留了一个 45 MB 的候选（`session_summaries_session_key_per_tenant`）。
+本节查了它的依赖链，**先肯定、再否掉自己**。
+
+#### 一、先肯定的那半句（成立）
+
+```sql
+session_summaries_pkey                          PRIMARY KEY (session_key)
+session_summaries_session_key_per_tenant        UNIQUE (tenant_id, session_key)
+```
+
+PK 在 `session_key` 上且 NOT NULL ⇒ `(tenant_id, session_key)` 必然唯一
+⇒ **这个复合 UNIQUE 永远不可能被违反**，它在**逻辑上**完全被主键蕴含。
+
+#### 二、🔴 但它**不是**可以直接删的——PG 要一个「列集合恰好匹配」的仲裁索引
+
+`ON CONFLICT (a, b) DO …` 的列推断要求存在一个**唯一索引，其列集合恰好是 {a,b}**。
+PK 只覆盖 `{session_key}`，**推不出这个二元组**。
+
+全仓广搜（两种列序都搜）：
+
+```
+./domains/hooks/handoff/confirmation_pg_semantics_test.go:133
+    INSERT INTO session_summaries … ON CONFLICT (session_key, tenant_id) DO NOTHING
+```
+
+**这是全仓唯一一处**用到 `session_summaries` 双列 `ON CONFLICT` 的地方——
+而它正落在那个复合约束的索引上。
+
+⚠️ 因此：**「逻辑蕴含 ⇒ 可删」这个推理在 PG 的仲裁索引语义下不成立。**
+⇒ 该索引是**承重的**（虽然只被一个测试用到），删它要连同改这一处。
+
+#### 三、两个候选的最终判决（并附「为什么删了会自己长回来」）
+
+| 索引 | 体量 | 判定 | 删了会怎样 |
+|---|---|---|---|
+| `session_summaries_session_key_uidx`<br>UNIQUE INDEX (session_key) | **39 MB** | **与 PK 定义逐字相同**，且**全仓无 `ON CONFLICT ON CONSTRAINT <名>`**（那本来也指不到裸索引），所有 `ON CONFLICT (session_key)` 由 PK 充当仲裁 | **会自己长回来** —— 见下 |
+| `session_summaries_session_key_per_tenant`<br>UNIQUE (tenant_id, session_key) | **45 MB** | 逻辑上被 PK 蕴含，但**是该二元列组的唯一仲裁索引**，承重 | 需先改 `confirmation_pg_semantics_test.go:133` |
+
+⚠️ **「在生产上 DROP 一下」是不够的**——这两个对象都被**三处**代码/迁移钉着：
+
+| 位置 | 钉的方式 |
+|---|---|
+| `db/session_summaries_schema.go:174` / `:189` | ensure 链每次启动 `CREATE UNIQUE INDEX` / `ADD CONSTRAINT` |
+| `db/db_session_summaries_shortcircuit.go:99` / `:110` | `sessionSummariesCanonicalIndexes` / `Constraints` 清单，缺一个就判「表不完整」→ 触发全量 reconcile |
+| `sql/migrations/startup/655_session_summaries_schema_reconcile.sql:164`、`560_...tenant_uniqueness.sql:40` | 幂等 reconcile，发现缺失就补建 |
+
+⇒ **只做 DDL 会在下一次 ensure 时被原样建回来**，而且中间还会因为
+short-circuit 判「不完整」而多跑一轮 reconcile。
+⇒ 真要做，是一个**代码 + 迁移 + 测试三处同改**的变更，且必须同批上线。
+
+★ 本节的真正价值不在那 45 MB，而在**两处推理都被自己否掉**：
+第一处「一个视图同族 ⇒ 整族不可信」（§10.106.47），
+第二处「逻辑蕴含 ⇒ 可删」。**两处都是把一条证据的适用范围放大了。**
+
 ---
 
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」
