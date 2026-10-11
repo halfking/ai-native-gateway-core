@@ -116,3 +116,85 @@ func TestAnomalyReporterSuccessResetsPermanentCounter(t *testing.T) {
 	}
 	_ = time.Second // keep time import if assertions evolve
 }
+
+// A2：自禁用必须从 Stats() 上可读。
+//
+// 修之前 Stats() 的 5 个字段里没有任何一个能区分「刚自禁用」与「一直没
+// 启用」——enqueue 归 false、Report* 静默返回之后，监控看到的是
+// QueueSize=0 / Sent=0 / Failed=N 这样一条读数完全正常的死量具。
+// 同批 c88bc79e3 在脚本侧立的规矩是「量具不可用不得报 ok」，这里补上
+// Go 侧的同一个洞。
+func TestAnomalyReporterSelfDisableIsObservableInStats(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	r := NewLockFreeAnomalyReporter(srv.URL, true, 100)
+	defer r.Close()
+
+	// 禁用前：enabled 但没停摆，两位都必须是「未发生」。
+	if s := r.Stats(); s.PermanentlyDisabled || s.PermanentRejections != 0 {
+		t.Fatalf("before any rejection: PermanentlyDisabled=%v PermanentRejections=%d, want false/0",
+			s.PermanentlyDisabled, s.PermanentRejections)
+	}
+
+	for i := 0; i < permanentFailuresThreshold; i++ {
+		r.enqueue(AnomalyReport{RequestID: "req-obs", AnomalyType: "conversion_error"})
+		r.sendBatchContext(context.Background())
+	}
+
+	// 禁用后：enabled=false 这个事实本身已经「测得到」，
+	// 但真正能被运维读到的判据是这两位。
+	if !r.enabled.Load() {
+		// 前提：确保确实走到自禁用，否则本判据会因前提不成立而假绿。
+		if s := r.Stats(); !s.PermanentlyDisabled {
+			t.Fatal("reporter is disabled but Stats() reports PermanentlyDisabled=false")
+		}
+	}
+	s := r.Stats()
+	if !s.PermanentlyDisabled {
+		t.Fatal("Stats().PermanentlyDisabled must be true after self-disable")
+	}
+	if s.PermanentRejections < permanentFailuresThreshold {
+		t.Fatalf("Stats().PermanentRejections = %d, want >= %d",
+			s.PermanentRejections, permanentFailuresThreshold)
+	}
+}
+
+// 三种 enabled=false 的成因必须可区分：只有「自禁用」需要人介入。
+//
+// Close() 会把标记清掉——否则进程正常收尾时，监控读数会把「按计划关停」
+// 误报成「端点永久拒绝导致停摆」，那是另一种假信号。
+func TestAnomalyReporterNormalCloseIsNotReportedAsFault(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	r := NewLockFreeAnomalyReporter(srv.URL, true, 100)
+	if s := r.Stats(); s.PermanentlyDisabled {
+		t.Fatal("a healthy reporter must not report PermanentlyDisabled")
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("Close() = %v, want nil", err)
+	}
+	if s := r.Stats(); s.PermanentlyDisabled {
+		t.Fatal("Close() must clear PermanentlyDisabled (planned shutdown is not a fault)")
+	}
+	if r.enabled.Load() {
+		t.Fatal("Close() must disable the reporter")
+	}
+}
+
+// 构造时就没启用，同样不是故障。
+func TestAnomalyReporterDisabledAtConstructionIsNotAFault(t *testing.T) {
+	r := NewLockFreeAnomalyReporter("http://example.invalid/anomalies", false, 10)
+	defer r.Close()
+	if r.enabled.Load() {
+		t.Fatal("reporter must start disabled")
+	}
+	if s := r.Stats(); s.PermanentlyDisabled {
+		t.Fatal("never-enabled reporter must not report PermanentlyDisabled")
+	}
+}

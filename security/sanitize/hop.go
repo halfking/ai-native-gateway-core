@@ -38,6 +38,7 @@
 package sanitize
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -287,6 +288,12 @@ func containsNonForeignMarker(ctx context.Context, payload []byte) bool {
 	return false
 }
 
+// fullWidthBraceLeadByte is the UTF-8 lead byte shared by '｛' (U+FF5B) and
+// '｝' (U+FF5D). It is deliberately the shared byte rather than the two full
+// code points: this is a negative filter, and being over-inclusive only costs
+// the regex scan that follows.
+const fullWidthBraceLeadByte = 0xEF
+
 // mayCarryMarker is the cheap negative filter every marker probe runs first.
 // A body with no opening brace — half or full width — and no case-folded
 // "sensitive" run cannot carry a marker in any spelling, and the tolerant
@@ -300,9 +307,22 @@ func containsNonForeignMarker(ctx context.Context, payload []byte) bool {
 // every probe as clean, so the non-stream restorers (gated on
 // placeholderCandidate) skipped the field and the residual guards blocked the
 // whole response instead. The fold-case word scan keeps the filter honest for
-// that spelling at the same cost class.
+// that spelling.
+//
+// 2026-10-11（本轮 12h 审计 A1）：把裸形认进过滤器是对的，但实现整轮换成了
+// 朴素双重循环 + 一次 `string(payload)` 全量拷贝，实测在 16KB 真实响应体上
+// 由 5.6ns/0-alloc 退化为 2477ns/12KB-alloc（~444×），512KB body 上退化为
+// 2362470ns/524KB-alloc。mayCarryMarker 是每个 SSE 帧、每个响应体都要跑的
+// 否定过滤（containsNonForeignMarker 13 个调用点 / hasReservedPlaceholder
+// 9 个调用点），这正是本仓反复吃过亏的那类「为修漏判而放大常态成本」。
+//
+// 修法：保留裸形语义，把成本拉回 memchr 量级——两条 memchr 分别定位
+// '{'/0xEF 与候选首字节，只在命中处做定长比较；全程不拷贝 body。
 func mayCarryMarker(payload []byte) bool {
-	return mayContainMarkerText(string(payload))
+	if bytes.IndexByte(payload, '{') >= 0 || bytes.IndexByte(payload, fullWidthBraceLeadByte) >= 0 {
+		return true
+	}
+	return containsFoldCaseWordBytes(payload, placeholderMarkerWord)
 }
 
 // mayContainMarkerText is mayCarryMarker for callers that already hold the
@@ -314,18 +334,53 @@ func mayContainMarkerText(text string) bool {
 	return containsFoldCaseWord(text, placeholderMarkerWord)
 }
 
+// asciiLower folds one ASCII byte to lower case, leaving every other byte
+// alone. The marker word is ASCII, so this is exact for our purposes and
+// avoids allocating a lowercased copy of the payload.
+func asciiLower(c byte) byte {
+	if 'A' <= c && c <= 'Z' {
+		return c + ('a' - 'A')
+	}
+	return c
+}
+
 // containsFoldCaseWord reports whether text contains word, ASCII
 // case-insensitively, without allocating a lowercased copy.
+//
+// The first-byte gate is the whole point: strings.IndexByte is a vectorized
+// memchr, while the naive form compared len(word) bytes at every offset. Only
+// offsets whose first byte matches are worth a full comparison, and on ordinary
+// model output there are none.
+// foldCaseBytePair returns the lower- and upper-case spellings of an ASCII
+// byte. For a non-letter they are the same byte.
+func foldCaseBytePair(c byte) (lower, upper byte) {
+	lower = asciiLower(c)
+	upper = lower
+	if 'a' <= lower && lower <= 'z' {
+		upper = lower - ('a' - 'A')
+	}
+	return lower, upper
+}
+
 func containsFoldCaseWord(text, word string) bool {
+	if word == "" {
+		return true
+	}
 	n := len(word)
-	for i := 0; i+n <= len(text); i++ {
+	lower, upper := foldCaseBytePair(word[0])
+	for offset := 0; offset+n <= len(text); {
+		idx := indexAnyByteString(text[offset:], lower, upper)
+		if idx < 0 {
+			return false
+		}
+		i := offset + idx
+		offset = i + 1 // 严格前进 ⇒ 各次 memchr 扫描区间不重叠，总量 O(n)
+		if i+n > len(text) {
+			return false // 候选位够近但剩余长度不足 n，后面更不可能
+		}
 		match := true
-		for j := 0; j < n; j++ {
-			c := text[i+j]
-			if 'A' <= c && c <= 'Z' {
-				c += 'a' - 'A'
-			}
-			if c != word[j] {
+		for j := 1; j < n; j++ {
+			if asciiLower(text[i+j]) != word[j] {
 				match = false
 				break
 			}
@@ -337,17 +392,45 @@ func containsFoldCaseWord(text, word string) bool {
 	return false
 }
 
-// containsFoldCaseWordBytes is containsFoldCaseWord for byte slices.
+// indexAnyByteString 返回 lower/upper 两个字节中「最早」出现的位置。
+//
+// 必须取最早而不是「先命中哪条就用哪条」：只取先命中的那条会让
+// "SeNsItIvE" 因小写 s 在 index 3 命中而跳过 index 0 的大写 S，
+// 把真实存在的裸形标记判成不存在（12h 审计 A1 修复过程中的差分自测实证）。
+func indexAnyByteString(s string, lower, upper byte) int {
+	lo := strings.IndexByte(s, lower)
+	if lower == upper {
+		return lo
+	}
+	up := strings.IndexByte(s, upper)
+	if up >= 0 && (lo < 0 || up < lo) {
+		return up
+	}
+	return lo
+}
+
+// containsFoldCaseWordBytes is containsFoldCaseWord for byte slices. It runs
+// the same first-byte-gated comparison so callers holding a []byte (the common
+// case on the response path) never pay for a string conversion of the body.
 func containsFoldCaseWordBytes(text []byte, word string) bool {
+	if word == "" {
+		return true
+	}
 	n := len(word)
-	for i := 0; i+n <= len(text); i++ {
+	lower, upper := foldCaseBytePair(word[0])
+	for offset := 0; offset+n <= len(text); {
+		idx := indexAnyByteSlice(text[offset:], lower, upper)
+		if idx < 0 {
+			return false
+		}
+		i := offset + idx
+		offset = i + 1
+		if i+n > len(text) {
+			return false
+		}
 		match := true
-		for j := 0; j < n; j++ {
-			c := text[i+j]
-			if 'A' <= c && c <= 'Z' {
-				c += 'a' - 'A'
-			}
-			if c != word[j] {
+		for j := 1; j < n; j++ {
+			if asciiLower(text[i+j]) != word[j] {
 				match = false
 				break
 			}
@@ -357,6 +440,18 @@ func containsFoldCaseWordBytes(text []byte, word string) bool {
 		}
 	}
 	return false
+}
+
+func indexAnyByteSlice(s []byte, lower, upper byte) int {
+	lo := bytes.IndexByte(s, lower)
+	if lower == upper {
+		return lo
+	}
+	up := bytes.IndexByte(s, upper)
+	if up >= 0 && (lo < 0 || up < lo) {
+		return up
+	}
+	return lo
 }
 
 // allMarkersForeign reports whether every marker in text was minted by a
