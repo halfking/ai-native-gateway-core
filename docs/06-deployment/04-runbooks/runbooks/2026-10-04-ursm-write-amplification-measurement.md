@@ -13202,6 +13202,63 @@ GROUP BY tenant_id, (client_models[1]);
 或降低刷新频率，都能直接砍掉这 2.36 小时里的大头。
 但**加时间窗会改变统计口径**，属产品语义决策 ⇒ 不擅改。
 
+### §10.106.33 抄 837 的做法值不值：**session-analytics 三兄弟「值」，routing_analytics_7d「不值」**
+
+§10.106.32 把 `now() AS refreshed_at` 定性为 §10.75 的误判根因。补查后发现**更完整**的图景：
+
+**迁移 837 恰恰就是为这个缺陷写的**（`migration_837_test.go` 头注明写）：
+去掉两个 routing analytics 物化视图的 `NOW() AS refreshed_at`，
+把刷新时间改记到 `routing_mv_refresh_state`，刷新后由
+`db/db.go:4128 StampRoutingMVRefreshSQL` 打戳。
+⇒ **`routing_analytics_7d` 今天没有 `now()` 列，是因为 837 修过。**
+§10.75.2 当时**没说错**，只是那条记录随 837 落地而过期了。
+（§10.106.32 说「归因不成立」需要修正为「**当时成立、现已修复**」——
+这是同一类腐化的另一个方向：不是错，是**被后续修复覆盖了**。）
+
+★ **但 `SessionAnalyticsViews` 三兄弟不在 837 的范围内**
+（`bg/materialized_view_refresher.go:143` 显式列出
+`session_client_stats` / `session_task_stats` / `session_client_task_matrix`），
+它们**至今仍带 `now() AS refreshed_at`**，而它们恰好是最贵的三个。
+
+#### 写放大实测：四个 MV 都在每次刷新整表重写
+
+`pg_stat_user_tables`（154 生产，只读）：
+
+| 物化视图 | n_live_tup | n_tup_ins | **每活行插入次数** | §10.106.31 实测刷新次数 |
+|---|---|---|---|---|
+| `routing_analytics_7d` | 4,811 | 527,397 | **109** | 212 |
+| `session_client_stats` | 948 | 35,987 | **37** | **38** |
+| `session_client_task_matrix` | 105,907 | 3,862,263 | **36** | **36** |
+| `session_task_stats` | 104,299 | 4,078,539 | **39** | **38** |
+
+★ **判别式**：「每活行插入次数」≈「刷新次数」⇒ **每次刷新重写 100% 的行**。
+后三个几乎**逐一相等**（37/36/39 对 38/36/38），这不是巧合，是恒等式。
+
+#### 两个族的结论不同，不能一并照抄
+
+| 族 | 为什么整表重写 | 去掉 `now()` 能否解决 |
+|---|---|---|
+| `routing_analytics_7d` | **7 天滑动窗口 + 每小时新桶** ⇒ 内容每次必然有增有删 | ❌ **不能**。837 已去掉该列，实测仍是 109 倍 |
+| `session_client_stats`<br>`session_task_stats`<br>`session_client_task_matrix` | **没有时间窗**，内容只在底层会话变化时才变；唯一的易变元素就是 `now()` 列 | ✅ **应该能**。三者的定义里除了 `now()` 没有任何随时间自动变化的列 |
+
+⇒ **可执行建议（需授权）**：把 **837 的做法**（去 `now()` 列 + 建状态表 + 刷新后打戳）
+**扩展到 session-analytics 三兄弟**。预期效果是把这三个 MV 的
+**写量从 100% 降到「真正变化的那部分」**。
+⚠️ 但**必须说清它买不到什么**：`REFRESH CONCURRENTLY` 省的是**写**，
+**聚合计算照付**——三兄弟的 60.1s / 42.5s / 25.3s 里大头是
+「全扫 599 MB `session_summaries` + `array_agg(DISTINCT)`」的计算
+（§10.106.32.1 已证）。
+⇒ **这刀砍的是 WAL/写放大，不是那 2.36 小时的 CPU。**
+想砍 CPU 只能加时间窗（改口径，需产品决策）或降刷新频率（需调度授权）。
+
+⚠️ **不要反向推广**：`routing_analytics_7d` 已经证明「去 `now()`」这一刀
+**不能**解决滑动窗口型 MV。**同一刀对不同成因的族效果相反。**
+
+★ **一个必须承认的观测缺口**：本节只能证明「routing_analytics_7d 在 837 之后
+仍然整表重写」，**无法证明 837 带来的净收益是多少**（需要 837 前后的
+`n_tup_ins` 对照，而 `pg_stat_user_tables` 的窗口起点不可回溯）。
+⇒ **登记为未验证，不要用本节的数据去评价 837 本身**。
+
 ---
 
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」
