@@ -13259,6 +13259,87 @@ GROUP BY tenant_id, (client_models[1]);
 `n_tup_ins` 对照，而 `pg_stat_user_tables` 的窗口起点不可回溯）。
 ⇒ **登记为未验证，不要用本节的数据去评价 837 本身**。
 
+### §10.106.34 把 837 扩展到 session-analytics 三兄弟：**规格与耦合面已钉清，本轮不实施**（破坏性列移除，需授权）
+
+§10.106.33 判定「这一刀对三兄弟值」。本节把改动面**全部查清**，
+使其成为一份可直接开工的规格 —— **但本轮不实施**，理由见末。
+
+#### 一、耦合面：4 个读点 + 前端契约，改列即改 API
+
+`refreshed_at` 是**直接从物化视图里 SELECT 出来的**，不是从状态表：
+
+| 位置 | 形态 |
+|---|---|
+| `admin/session_analytics_clients.go:155` | `… models_used, refreshed_at FROM session_client_stats` |
+| `admin/session_analytics_clients.go:290` | 同上（另一条查询路径） |
+| `admin/session_analytics_tasks.go:139` | `… models_used, clients_used, refreshed_at FROM session_task_stats` |
+| `admin/session_analytics_tasks.go:278` | 同上 |
+
+对外响应体字段 `refreshed_at string`（`admin/session_analytics_clients.go:19`、
+`admin/session_analytics_tasks.go` 对应结构），
+`web/src/api/admin.ts:165,191` 与 `web-mobile/src/router/index.ts:433` 都在用。
+
+⇒ **去掉该列 = 改 API 的取值来源**，必须与「改成读状态表」**同一次**发布，
+否则 4 个查询点全部报 `column "refreshed_at" does not exist`。
+⇒ **这与 842/843 那两条「只加索引」的迁移不同类：那两条可以只提交不部署、
+风险为零；这一条必须代码与迁移同批上，否则是一次线上 API 事故。**
+
+#### 二、顺带订正一条**错的注释**（它会误导下一个人）
+
+`web-mobile/src/views/SessionAnalyticsView.spec.ts:11` 写着：
+「数据源是**没有周期刷新路径**的物化视图 ⇒ 页面必须显示 `refreshed_at`」。
+
+**实测该视图有周期刷新**：`bg/materialized_view_refresher.go:143 SessionAnalyticsViews`
+明确列出这三个视图；生产 `pg_stat_statements` 实测
+`session_client_stats` 38 次 / `session_task_stats` 38 次 /
+`session_client_task_matrix` 36 次（29.9 h 窗口）。
+⇒ 该注释的**前提已过期**，但它推出的**结论（页面要显示数据截至时间）依然正确**
+——现在应改为「有周期刷新，`refreshed_at` 显示的是上次刷新时刻」，
+且刷新时刻应改为读 `routing_mv_refresh_state` 风格的状态表。
+★ 这与 §10.106.33 是同一类腐化：**注释的前提过期、结论侥幸仍对**。
+⇒ **读注释的「理由」也要核，只信「结论」不够。**
+
+#### 三、实施规格（照 837 的既成模式，编号 852 已核空闲）
+
+1. **迁移 852**：DROP + 重建三个 MV，**去掉 `now() AS refreshed_at`**，
+   保留 `CONCURRENTLY` 所需的 UNIQUE 索引
+   （`idx_session_client_stats_tenant_client` / `idx_session_task_stats_tenant_task` /
+   `idx_session_client_task_matrix_uq`，见 `bg/materialized_view_refresher.go:138-140`）；
+   `routing_mv_refresh_state` 是**每视图一行**的结构，可直接复用、无需新表。
+2. **刷新器**：三兄弟并入 `execRefresh` 的打戳路径
+   （`db/db.go:4139 stampRoutingMVRefresh` 已是 `views ...string` 变参，直接传三个即可）。
+3. **4 个读点**：把 `refreshed_at` 从 SELECT 列表换成
+   `(SELECT refreshed_at FROM routing_mv_refresh_state WHERE view_name = '<view>')`，
+   响应体字段名**不变** ⇒ 前端零改动。
+4. **`.down.sql`**：照 837 形态把 `NOW() AS refreshed_at` 加回去，
+   头注写明「回滚即恢复整表重写」。
+5. **四条腿**：installer embeddata 逐字节副本 / `main.go` 三处 /
+   `dbinit` 启动序列 / `apply-db-revision-sequence.sh` 升级通道（该腿已复发八次）。
+6. **契约门**：至少钉住「MV 定义不含 `now() AS refreshed_at`」
+   「4 个读点不再从视图 SELECT 该列」「打戳在 REFRESH 之后」。
+
+#### 四、预期收益与**买不到的东西**（再强调一次）
+
+- ✅ **买得到**：三个 MV 的写量从 **100% 降到真正变化的那部分**。
+  实测当前每活行插入 36~39 次 ⇒ 每次刷新整表删+插（WAL 写放大）。
+- ❌ **买不到**：那 **60.1 s / 42.5 s / 25.3 s** 的大头是
+  「全扫 599 MB `session_summaries` + 两个 `array_agg(DISTINCT)`」的**计算**，
+  `REFRESH CONCURRENTLY` 对此无能为力。
+⇒ **CPU 那一块只能靠加时间窗（改统计口径）或降刷新频率**，与本迁移正交。
+
+#### 五、本轮**不实施**的理由
+
+1. **破坏性且需同批发布**：加索引的迁移可以「提交不部署、风险为零」；
+   本条一旦只上迁移不上代码，就是一次线上 API 事故（4 个读点全断）。
+   在没有明确部署授权的前提下起手，违反本仓「破坏性变更先授权」的纪律。
+2. **上下文预算**：本会话已消耗极大，一个跨越
+   「迁移 + 刷新器 + 4 处 admin 读点 + 契约门 + 四条腿」的改动
+   值得一个**完整**的上下文，而不是收尾时赶出来的一半。
+⇒ **本节交付物是一份可直接开工的规格**，不是半成品。
+
+★ **与 §10.106.33 的关系**：那一节回答「值不值」，本节回答「怎么改、有什么坑」。
+两节合起来才构成可执行提案。
+
 ---
 
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」
