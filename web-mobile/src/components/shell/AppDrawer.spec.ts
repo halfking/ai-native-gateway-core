@@ -243,14 +243,15 @@ describe('AppDrawer 导航后收起', () => {
   })
 
   it('★ 点「当前已经在的」那个导航项也必须收起 —— 路由没变，watcher 不会响', async () => {
-    // 这条是本组判据里**唯一**能区分「点击收口」与「路由 watcher 收口」的：
-    // 已经停在 /providers 时再点 /providers，route.fullPath **不变**，
-    // watcher 根本不触发；只有点击自身那条收口才会 emit。
-    // 没有这条，上面两条即便把 @click 删掉也照样全绿（已实测）。
-    const w = await mountDrawerAs('super_admin', '/providers')
+    // 本组里能区分「点击收口」与「路由 watcher 收口」的那一条：
+    // 已经停在 /logs 时再点 /logs，route.fullPath **不变**，watcher 不触发，
+    // 只有 onNavClick 会 emit。
+    // 刻意用 /logs 而不是 /providers —— 证明实现里没写死某条路径。
+    // 把 onNavClick 整个删掉，这一条会红（已实测）。
+    const w = await mountDrawerAs('super_admin', '/logs')
     const self = Array.from(document.body.querySelectorAll<HTMLAnchorElement>('a.drawer__link'))
-      .find((a) => a.getAttribute('href') === '/providers')
-    expect(self, '应在 /providers 页仍能看到抽屉入口').toBeTruthy()
+      .find((a) => a.getAttribute('href') === '/logs')
+    expect(self, '应在 /logs 页仍能看到抽屉入口').toBeTruthy()
     const before = (w.emitted('update:modelValue') ?? []).length
     self!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await flushPromises()
@@ -258,21 +259,26 @@ describe('AppDrawer 导航后收起', () => {
     expect(after, '路由未变化时点击也必须收起抽屉').toContainEqual([false])
   })
 
-  it('每个导航项都带这个收口（白名单式：不靠抽样）', async () => {
-    const w = await mountDrawerAs('super_admin')
-    // 只取 <a>：抽屉里「我的」也是 .drawer__link，但它是个 <button>，
-    // emit 的是 account 而不是「收起」，混进来会让计数对不上。
-    const links = Array.from(document.body.querySelectorAll<HTMLAnchorElement>('a.drawer__link'))
-    expect(links.length).toBe(DRAWER_NAV.length)
-    for (const a of links) {
+  it('★ 穷举：站在每个导航项自己的路由上点它，都必须收起（不抽样、不写死路径）', async () => {
+    // 守卫是 `route.path === to`，一旦实现里写死某条路径，这里就会红。
+    // ⚠️ 注意这条不能靠「从 / 出发点每个链接」来写 —— 那条路径上
+    // route.fullPath **会变**，watcher 会替 onNavClick 把活干完，
+    // 把 onNavClick 整个删掉也照样全绿（已实测）。必须站在该项自己的路由上点它。
+    for (const item of DRAWER_NAV) {
+      const w = await mountDrawerAs('super_admin', item.to)
+      // 只取 <a>：抽屉里「我的」也是 .drawer__link，但它是 <button>，
+      // emit 的是 account 而非「收起」，混进来会让计数对不上。
+      const self = Array.from(document.body.querySelectorAll<HTMLAnchorElement>('a.drawer__link'))
+        .find((a) => a.getAttribute('href') === item.to)
+      expect(self, `抽屉里应有指向 ${item.to} 的入口`).toBeTruthy()
       const before = (w.emitted('update:modelValue') ?? []).length
-      a.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      self!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
       await flushPromises()
       const after = (w.emitted('update:modelValue') ?? []).slice(before)
-      expect(
-        after,
-        `导航项 ${a.getAttribute('href')} 点击后没有收起抽屉`,
-      ).toContainEqual([false])
+      expect(after, `在 ${item.to} 上点自己没收起抽屉`).toContainEqual([false])
+      w.unmount()
+      document.body.innerHTML = ''
+      mounted = []
     }
   })
 })

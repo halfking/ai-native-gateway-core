@@ -43,15 +43,9 @@ watch(
   },
 )
 
-// 路由跳转后收抽屉（02 §3 closeIfCompact 语义）
-//
-// ⚠️ 2026-10-11：**这条 watch 单独用是不够的**。iOS 26 模拟器上 Maestro 端到端
-// 实测，同一段「打开抽屉 → 点供应商」连跑两轮：一轮抽屉正常收起，另一轮
-// **抽屉压在供应商列表上不消失**（截图：抽屉里「供应商」已高亮=路由确实变了，
-// 但面板还在），后续所有点击都打在抽屉上，整页不可用。
-// 路由变了而 watcher 没把 modelValue 落下去 ⇒ 这是竞态，不能当唯一收口。
-// 下面 RouterLink 上的 @click 是**确定性**的那一道：点了就收，不依赖
-// 路由 watcher 恰好在这一轮触发。两条并存是刻意的冗余，不是重复代码。
+// 路由跳转后收抽屉（02 §3 closeIfCompact 语义）—— 这是**正常路径**的收口。
+// 它唯一够不着的是「点的是当前所在路由」那一档（fullPath 不变，不触发），
+// 由下面的 onNavClick 补，理由与踩过的坑见那里。
 watch(
   () => route.fullPath,
   () => {
@@ -60,18 +54,25 @@ watch(
 )
 
 /**
- * 点导航项后收起抽屉。
+ * 点导航项后收起抽屉 —— **只补 watcher 够不着的那一种情况**。
  *
- * ⚠️ 必须**推迟到本 tick 之后**，不能同步 emit（2026-10-11 模拟器实测踩过）：
- * RouterLink 的 navigate() 与本函数是同一个 click 上的两个监听器。同步 emit
- * 会让父组件立刻把 modelValue 置 false，Teleport 里的整个抽屉（含这个
- * RouterLink）在 navigate() 跑之前就被卸载 ⇒ **导航丢失**，点「供应商」停在
- * 总览；随后 `dismissOverlay` 发现标记仍是栈顶再 `history.back()`（runtime.ts:277），
- * 于是连历史都被弹回，彻底停在原页。
- * 推迟一个 tick 后，navigate() 一定已经 push 过路由，收起就只是收起了。
+ * 收口本来有两条，职责必须分清：
+ *   ① `watch(() => route.fullPath)`：路由真的变了才触发。这是**正常路径**。
+ *   ② 本函数：只补「点的是当前所在路由」——此时 fullPath **不变**，① 根本不会
+ *      触发，抽屉会留在屏幕上（2026-10-11 模拟器实测：人已经在 /providers 时
+ *      再点「供应商」，抽屉不关，后续点击全打在抽屉上）。
+ *
+ * ⚠️ 曾经试过「无条件在 click 里收起」，两条一起收 —— **实测是功能回归**：
+ * iOS 26 模拟器上点「供应商」抽屉是关了，人却停在总览，
+ * `/api/admin/providers` 一个请求都没发。RouterLink 的 navigate() 与收口在
+ * 同一个 click 上，抢跑就把导航整段丢了；随后 dismissOverlay 判定标记仍是栈顶
+ * 再 history.back()（runtime.ts:277），连历史一起弹回。
+ * 推迟到 nextTick 也**没有**用（seq=2542 实测仍然停在总览）——
+ * 所以正确的做法不是排序，是**别在需要导航时插手**：下面这个 route.path === to
+ * 的守卫就是「不需要导航」的充要条件。
  */
-function onNavClick(): void {
-  void nextTick(() => emit('update:modelValue', false))
+function onNavClick(to: string): void {
+  if (route.path === to) emit('update:modelValue', false)
 }
 
 onBeforeUnmount(() => overlay.release())
@@ -95,7 +96,7 @@ onBeforeUnmount(() => overlay.release())
               :to="item.to"
               class="drawer__link"
               :class="{ 'drawer__link--active': isNavItemActive(item, route.path) }"
-              @click="onNavClick"
+              @click="onNavClick(item.to)"
             >
               <AppIcon :name="item.icon" :size="20" />
               <span>{{ t(item.titleKey) }}</span>
