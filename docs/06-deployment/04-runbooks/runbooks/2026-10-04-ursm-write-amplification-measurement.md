@@ -13163,6 +13163,45 @@ p50_latency_ms / p95_latency_ms / p99_latency_ms / total_cost_usd`
 
 ---
 
+### §10.106.32.1 追加：把 §10.106.31 留的「948 行却 42.5 秒」也解掉了——**它不是异常**
+
+`session_client_stats` 的定义尾部（生产实测）：
+
+```sql
+… array_agg(DISTINCT primary_model) FILTER (WHERE primary_model IS NOT NULL) AS models_used,
+   now() AS refreshed_at
+FROM session_summaries
+GROUP BY tenant_id, (client_models[1]);
+```
+
+**没有 JOIN，也没有时间窗。** 每次刷新把 `session_summaries` 的
+**668,438 行 / 599 MB** 全表扫一遍（含 `array_agg(DISTINCT primary_model)`，
+需对 66 万值排序去重），最后只产出 **948 组**。
+
+⇒ **成本随输入规模走，与输出规模无关**。「948 行却 42.5 秒」不是反常，
+是我拿「输出行数」当分母去解释一个「输入扫描量」决定的成本。
+（与 §10.106.31 那条被证伪的 `::text` 假设同族：**先问成本由哪个量决定**。）
+
+**三个最贵的 MV 由此归成一形态**（实测定义尾部）：
+
+| MV | 源 | 时间窗 | 均时 |
+|---|---|---|---|
+| `session_client_stats` | `session_summaries` | **无** | 42.5 s |
+| `session_task_stats` | `session_summaries` LEFT JOIN `session_dim` | **无** | 60.1 s |
+| `session_client_task_matrix` | 同上 | **无** | 25.3 s |
+
+⇒ 共性不是 `now()`（那只是 §10.75 误判的机制），
+而是**每次刷新都全量重扫 599 MB 的 `session_summaries`，且都没有时间过滤**。
+对比之下 `routing_analytics_7d` 有 `WHERE ts >= NOW() - INTERVAL '7 days'`，
+均时反而只有 13.9 s。
+
+⚠️ 顺带订正一个量具读数：planner 对 `session_dim` 的估计是 264,694 行，
+**实测 635,237 行 / 324 MB**——低估了 2.4 倍。成本估算不要用 planner 的 `rows` 代替实测。
+
+★ **处置方向（需授权，本节只登记）**：这三个 MV 若加时间窗（例如「近 30 天」），
+或降低刷新频率，都能直接砍掉这 2.36 小时里的大头。
+但**加时间窗会改变统计口径**，属产品语义决策 ⇒ 不擅改。
+
 ---
 
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」
