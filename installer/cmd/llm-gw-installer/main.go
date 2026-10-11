@@ -117,6 +117,9 @@ var billingCancellationAuditMigration388 []byte
 //go:embed embeddata/startup/484_request_logs_hot_add_status_code.sql
 var requestLogsHotAddStatusCodeMigration484 []byte
 
+//go:embed embeddata/startup/486_credential_model_bindings_add_probe_revert_at.sql
+var credentialModelBindingsProbeRevertAt486 []byte
+
 //go:embed embeddata/startup/491_request_logs_queue_timestamps.sql
 var requestLogsQueueTimestampsMigration491 []byte
 
@@ -828,6 +831,9 @@ var sessionSummariesProjectBackfillRecentIdx850 []byte
 //go:embed embeddata/startup/851_disable_overbroad_pii_ip_address_rule.sql
 var disableOverbroadPiiIpAddressRule851 []byte
 
+//go:embed embeddata/startup/852_models_canonical_column_set_reconcile.sql
+var modelsCanonicalColumnSetReconcile852 []byte
+
 //go:embed embeddata/startup/829_bodies_columnar_rollback.sql
 var bodiesColumnarRollback829 []byte
 
@@ -860,6 +866,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/487_request_logs_add_system_fingerprint.sql":                            requestLogsAddSystemFingerprintMigration487,
 	"startup/388_billing_cancellation_audit.sql":                                     billingCancellationAuditMigration388,
 	"startup/484_request_logs_hot_add_status_code.sql":                               requestLogsHotAddStatusCodeMigration484,
+	"startup/486_credential_model_bindings_add_probe_revert_at.sql":                  credentialModelBindingsProbeRevertAt486,
 	"startup/491_request_logs_queue_timestamps.sql":                                  requestLogsQueueTimestampsMigration491,
 	"startup/510_request_type.sql":                                                   requestTypeMigration510,
 	"startup/532_request_logs_final_success.sql":                                     requestLogsFinalSuccessMigration532,
@@ -1090,6 +1097,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/849_session_turns_req_status_backfill_cover_idx.sql":                    sessionTurnsReqStatusBackfillCoverIdx849,
 	"startup/850_session_summaries_project_backfill_recent_idx.sql":                  sessionSummariesProjectBackfillRecentIdx850,
 	"startup/851_disable_overbroad_pii_ip_address_rule.sql":                          disableOverbroadPiiIpAddressRule851,
+	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/829_bodies_columnar_rollback.sql":                                       bodiesColumnarRollback829,
 	"startup/835_modality_verify_probe_ledger.sql":                                   modalityVerifyProbeLedger835,
 	"startup/834_supplier_errors_base_tables.sql":                                    supplierErrorsBaseTables834,

@@ -164,6 +164,12 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// timestamps, and request_type — all consumed by 573's rebuilt view
 			// and 696/700.
 			"484_request_logs_hot_add_status_code.sql",
+			// 486 (wired 2026-10-12): probe_rollback/node_probe revert scans
+			// read cmb.probe_revert_at; 486 fixed the production 42703 on
+			// 2026-08-13 but was never registered, so fresh installs re-hit
+			// the identical failure every ~30s (1088 repeats on the host-first
+			// install before this was wired).
+			"486_credential_model_bindings_add_probe_revert_at.sql",
 			"485_request_logs_add_raw_model_name.sql",
 			"487_request_logs_add_system_fingerprint.sql",
 			"491_request_logs_queue_timestamps.sql",
@@ -425,6 +431,20 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// which CREATE OR REPLACE VIEW forbids), so only the columns are
 			// reconciled here.
 			"804_credential_model_context_window_columns.sql",
+			// 852 (wired 2026-10-12) closes the second half of 804's gap plus a
+			// sibling found in the same file-level audit: 469 (context_window
+			// triplet) and 478 (reasoning_caps column + partial indexes) on
+			// models_canonical were never registered, and the 01-schema
+			// baseline predates both — fresh installs silently lack them, and
+			// any query joining those columns (admin provider/credential model
+			// lists' three-level override chain, the capability column block)
+			// dies with 42703. Observed live as GET /api/providers/{id}/models
+			// and .../credentials/{cid}/models → 500 on the host-first fresh
+			// install (2026-10-12). Deploy-lineage databases ran 469/478 long
+			// ago; the IF NOT EXISTS reconcile is a no-op there. Column types,
+			// defaults and indexes match 469/478 exactly. 045/422/451 are also
+			// unregistered but fully covered by the baseline (verified live).
+			"852_models_canonical_column_set_reconcile.sql",
 			"682_model_offers_context_window_columns.sql",
 			// 805 (wired 2026-10-01): session_dim's canonical creators (350/358)
 			// are un-registrable wholesale — 350 rewrites update_session_summary()
