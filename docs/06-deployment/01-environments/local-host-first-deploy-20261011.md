@@ -134,11 +134,38 @@ upstream llm_gateway_upstream {
 }
 ```
 
-**遗留隐患（未修，需用户决策）：252 的 netbird 客户端二进制已被删除。**
-`/proc/$(pgrep -f "netbird service run")/exe` 指向 `(deleted)`，进程还在跑
-（252 mesh IP `100.106.190.139`、wt0、nginx upstream 全依赖它），但一旦
-崩溃/重启就无法拉起，公网与 mesh 域名两条入口同时断。重装需要重新
-setup key 登录，会换 peer 身份，留给用户侧裁决。
+**netbird 客户端（252）的正确形态（2026-10-11 下午核实并安装，更正本节早前误诊）。**
+252 的 netbird 客户端**不是宿主机原生服务**，而是 podman 容器 `nb-252-host`
+（镜像 `netbirdio/netbird:0.74.6`，与管理面同版本；host 网络，wt0/100.106.190.139
+由它创建；状态盘 bind-mount 在宿主 `/opt/netbird/openpocket/nb-252-host-state/`，
+peer 身份在其中的 `default.json`）。宿主机上没有 `/usr/local/bin/netbird` 只是
+因为二进制从来就在镜像里——早前「exe 指向 (deleted)、无法重启」是跨 mount
+namespace 误读，**作废**。现已补齐管理面：
+
+- 宿主 CLI：从镜像提取同版本二进制装到 `/usr/local/bin/netbird`（0.74.6）；
+- 管理封装：`netbird-252 status [-d]`（= `podman exec nb-252-host netbird …`，
+  守护进程 socket 在容器内，宿主 CLI 直连不了）；
+- 重启程序：`podman restart nb-252-host`——2026-10-11 实测身份/IP/连接全保留
+  （IP 仍 100.106.190.139，Management/Signal Connected，Relays 5/5），wt0 闪断
+  数秒后 mesh 域名 8782/8443 与公网 443 全部自愈，无需改 mihomo/nginx。
+- 留档 setup key：`/opt/netbird/openpocket/setup-key*`（root only）。
+
+**代理订阅更新（2026-10-11 下午，按 mac 本地配置对齐）。** 252 mihomo 原用
+efanyun 订阅的**陈旧内联节点快照**（机场已整批轮换服务端，114 节点全死，
+google/github 全挂）。已改为与 mac（network-switch）相同的 `proxy-providers`
+方案：provider `efanyun`（同订阅 URL，`proxy: DIRECT` 直拉，interval 6h，种子
+文件取自 mac 缓存 `~/Library/Application Support/network-switch/core/providers/efanyun.yaml`）；
+组 rewiring：`Auto`=url-test over provider、`Entry-Proxy/Auto-US/LLM-Traffic/
+Grok-Traffic/x-traffic` 收敛为纯组引用、`Cursor-Direct`=fallback(provider,
+filter `(?i)US|美国`)。实测 101/101 节点存活（最佳 32ms），google/github 200，
+llm 三链路与兄弟域名 fake-ip 行为零回归。手术前的完整备份在
+`/etc/mihomo/backups/config.yaml.bak-pre-efanyun-*`。
+
+> **教训（YAML 文本手术）**：该配置里组列表项首键不统一（多数 `- name:`，
+> 但 `Auto`/`Cursor-Direct` 首键是 `- interval:`）——按 `^- name:` 切块会把
+> 后者整块并入前组，替换时连带删除；必须按 `^- `（列 0 列表项）切块、组名
+> 同时匹配 `- name:` 头与缩进 `name:` 键。本轮两个中间态事故（组段头丢失、
+> rules 尾巴被砍）均在本地复现定位后修正，线上未受影响（备份恢复）。
 
 ## 6. 验证矩阵
 
@@ -152,6 +179,8 @@ setup key 登录，会换 peer 身份，留给用户侧裁决。
 | DNS | `dig llm.itestu.cn @100.106.255.254` | 100.106.169.63 |
 | 远端 peer 回连（mesh） | `curl http://llm.itestu.cn:8782/healthz`（252 上执行，2026-10-11 上午） | **200**（修复 mihomo fake-ip 劫持后）；`https://llm.itestu.cn:8443`（mac Caddy 自签，-k）**200** |
 | 公网入口 | `curl --resolve llm.itestu.cn:443:115.29.212.252 https://llm.itestu.cn/healthz`（2026-10-11 上午） | **200，证书公网校验通过（免 -k）**；链路 252 stream 透传 → 9443 终结 → mesh 8782 |
+| netbird 客户端可恢复性 | `podman restart nb-252-host` 后复查三链路（2026-10-11 下午） | **身份/IP 保留**（100.106.190.139），wt0 闪断数秒后 mesh 域名 8782/8443 与公网 443 全部自愈 200 |
+| 代理出口（252 mihomo） | `curl -m 15 -o /dev/null -w %{http_code} https://www.google.com`（2026-10-11 下午） | 改 efanyun provider 后 **200**（此前 114 死节点全 000）；Auto 组测速 101/101 存活 |
 
 ### 本轮迁移通道修复清单（host-first 库从「Go ensure 链从未启动」状态收敛）
 
