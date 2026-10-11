@@ -164,6 +164,12 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// timestamps, and request_type — all consumed by 573's rebuilt view
 			// and 696/700.
 			"484_request_logs_hot_add_status_code.sql",
+			// 486 (wired 2026-10-12): probe_rollback/node_probe revert scans
+			// read cmb.probe_revert_at; 486 fixed the production 42703 on
+			// 2026-08-13 but was never registered, so fresh installs re-hit
+			// the identical failure every ~30s (1088 repeats on the host-first
+			// install before this was wired).
+			"486_credential_model_bindings_add_probe_revert_at.sql",
 			"485_request_logs_add_raw_model_name.sql",
 			"487_request_logs_add_system_fingerprint.sql",
 			"491_request_logs_queue_timestamps.sql",
@@ -425,6 +431,37 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// which CREATE OR REPLACE VIEW forbids), so only the columns are
 			// reconciled here.
 			"804_credential_model_context_window_columns.sql",
+			// 852 (wired 2026-10-12) closes the second half of 804's gap plus a
+			// sibling found in the same file-level audit: 469 (context_window
+			// triplet) and 478 (reasoning_caps column + partial indexes) on
+			// models_canonical were never registered, and the 01-schema
+			// baseline predates both — fresh installs silently lack them, and
+			// any query joining those columns (admin provider/credential model
+			// lists' three-level override chain, the capability column block)
+			// dies with 42703. Observed live as GET /api/providers/{id}/models
+			// and .../credentials/{cid}/models → 500 on the host-first fresh
+			// install (2026-10-12). Deploy-lineage databases ran 469/478 long
+			// ago; the IF NOT EXISTS reconcile is a no-op there. Column types,
+			// defaults and indexes match 469/478 exactly. 045/422/451 are also
+			// unregistered but fully covered by the baseline (verified live).
+			"852_models_canonical_column_set_reconcile.sql",
+			// 853 (wired 2026-10-12): deploy-chain V360's automatic column on
+			// credential_probe_queue was never mirrored into the startup chain
+			// — no startup/domain migration adds it, yet bg/probe_queue.go's
+			// enqueue/claim reference it by name (since e2d3490e38). Fresh
+			// installs hit 42703 'column q.automatic does not exist' on every
+			// claim scan once 489/490 create the queue. Column type, default
+			// and partial index match V360 exactly; deploy-lineage databases
+			// ran V360 long ago, so the reconcile is a no-op there.
+			"853_credential_probe_queue_automatic.sql",
+			// 854 (wired 2026-10-12): 526's session_turns_advisory_lock_key is
+			// required by the sessionv2mirror shadow write, but 526 cannot be
+			// registered wholesale — its session_turns_with_current_month view
+			// definition predates the applied shape and CREATE OR REPLACE VIEW
+			// cannot drop columns (the same reason 523 was reconciled as 804
+			// instead of registered). Function body matches 526 verbatim;
+			// 526-lineage databases already have it, so this is a no-op there.
+			"854_session_turns_advisory_lock_key.sql",
 			"682_model_offers_context_window_columns.sql",
 			// 805 (wired 2026-10-01): session_dim's canonical creators (350/358)
 			// are un-registrable wholesale — 350 rewrites update_session_summary()
