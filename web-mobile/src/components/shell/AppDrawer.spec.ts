@@ -56,7 +56,7 @@ async function mountDrawerAs(role: string, startPath = '/') {
   mounted.push(w)
   await flushPromises()
   await flushPromises()
-  return w
+  return Object.assign(w, { __router: router })
 }
 
 describe('AppDrawer 权限门控', () => {
@@ -218,6 +218,27 @@ describe('AppDrawer 导航后收起', () => {
     expect(link, '抽屉里应有指向 /providers 的入口').toBeTruthy()
     link!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await flushPromises()
+    expect(w.emitted('update:modelValue')).toContainEqual([false])
+  })
+
+  it('★ 点不同路由的导航项：既收起抽屉，也**真的导航过去了**', async () => {
+    // 钉两条不变量：抽屉收起 **且** 路由真的变了。
+    // 只断言 emit(false) 是不够的 —— 「抽屉关了但人还停在原页」这种状态
+    // emit 也是 false，却完全不可用。
+    //
+    // ⚠️ 但必须说清楚这条**能覆盖什么、不能覆盖什么**：
+    // 真机上出现过的那个回归是「同步 emit 导致 Teleport 里的 RouterLink 在
+    // navigate() 之前被卸载」。jsdom 复现不了 —— Vue 的 scheduler 在微任务里
+    // 刷新，同步 emit 也不会同步卸载（已实测：把 onNavClick 改回同步 emit，
+    // 本文件 15 条照样全绿）。所以这一条能钉「结果」，**钉不住时序**；
+    // 时序那一半的判据是模拟器上的 flow 08，不是本文件。
+    const w = await mountDrawerAs('super_admin')
+    const link = Array.from(document.body.querySelectorAll<HTMLAnchorElement>('a.drawer__link'))
+      .find((a) => a.getAttribute('href') === '/providers')
+    link!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+    await flushPromises()
+    expect(w.__router.currentRoute.value.path).toBe('/providers')
     expect(w.emitted('update:modelValue')).toContainEqual([false])
   })
 

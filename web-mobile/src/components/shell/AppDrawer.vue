@@ -59,6 +59,21 @@ watch(
   },
 )
 
+/**
+ * 点导航项后收起抽屉。
+ *
+ * ⚠️ 必须**推迟到本 tick 之后**，不能同步 emit（2026-10-11 模拟器实测踩过）：
+ * RouterLink 的 navigate() 与本函数是同一个 click 上的两个监听器。同步 emit
+ * 会让父组件立刻把 modelValue 置 false，Teleport 里的整个抽屉（含这个
+ * RouterLink）在 navigate() 跑之前就被卸载 ⇒ **导航丢失**，点「供应商」停在
+ * 总览；随后 `dismissOverlay` 发现标记仍是栈顶再 `history.back()`（runtime.ts:277），
+ * 于是连历史都被弹回，彻底停在原页。
+ * 推迟一个 tick 后，navigate() 一定已经 push 过路由，收起就只是收起了。
+ */
+function onNavClick(): void {
+  void nextTick(() => emit('update:modelValue', false))
+}
+
 onBeforeUnmount(() => overlay.release())
 </script>
 
@@ -80,7 +95,7 @@ onBeforeUnmount(() => overlay.release())
               :to="item.to"
               class="drawer__link"
               :class="{ 'drawer__link--active': isNavItemActive(item, route.path) }"
-              @click="emit('update:modelValue', false)"
+              @click="onNavClick"
             >
               <AppIcon :name="item.icon" :size="20" />
               <span>{{ t(item.titleKey) }}</span>
