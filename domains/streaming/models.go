@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // same handler authentication surface
 )
 
 // modelsStaleGrace bounds how long the last successful /v1/models result
@@ -31,6 +33,11 @@ type modelEntry struct {
 type ModelsHandler struct {
 	dbPool *pgxpool.Pool
 
+	// keyVerifier 校验调用方。2026-10-11 起不再是可选的「装饰」——
+	// AuthMiddleware 对 sk-* 故意放行（见 middleware/auth_mw.go 的 Rule 20 §2），
+	// 校验责任落在各 handler 自己身上，漏掉就是无鉴权端点。
+	keyVerifier requestKeyVerifier
+
 	staleMu      sync.Mutex
 	staleEntries []modelEntry
 	staleAt      time.Time
@@ -44,7 +51,63 @@ func (h *ModelsHandler) SetDB(pool *pgxpool.Pool) {
 	h.dbPool = pool
 }
 
+// SetAuth wires the data-plane key verifier.
+//
+// 2026-10-11 生产实测的鉴权缺口（154 与 245 均复现）：
+//
+//	不带 Authorization                        → 401
+//	Bearer sk-totally-bogus（凭空伪造）        → 200，返回全量 615 个模型
+//	已吊销的 key                               → 200
+//	同一 token 打 /v1/chat/completions          → 401
+//
+// 成因不是「鉴权没开」，是**委托链断了一节**：middleware/auth_mw.go 明确规定
+// sk-* 由各 handler 自行调用 KeyVerifier（Rule 20 §2），本 handler 从未接上，
+// 于是中间件那扇为内部调用者开的门，对外成了任意字符串即可通行。
+func (h *ModelsHandler) SetAuth(kv *authentication.KeyVerifier) {
+	if h == nil || kv == nil {
+		return
+	}
+	h.keyVerifier = kv
+}
+
+// authenticate 校验 /v1/models 的调用方。
+//
+// 只做认证，不做限流与预算：这是纯读端点，套上数据面的 RPM/预算判定会改变
+// 现有客户端的可见行为（大量客户端用 /v1/models 做模型发现），超出本修复范围。
+func (h *ModelsHandler) authenticate(w http.ResponseWriter, r *http.Request) bool {
+	if h.keyVerifier == nil || !h.keyVerifier.Enabled() {
+		// lite / 本地模式没有校验器，沿用旧行为。
+		return true
+	}
+	rawKey := extractBearerToken(r)
+	if rawKey == "" {
+		writeModelsAuthError(w, "Missing API key", "missing_key")
+		return false
+	}
+	if _, err := h.keyVerifier.Verify(r.Context(), rawKey); err != nil {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		writeModelsAuthError(w, "Invalid or expired API key", "invalid_key")
+		return false
+	}
+	return true
+}
+
+// writeModelsAuthError 用与本文件其它错误一致的 OpenAI 形状，避免客户端因为
+// 换了错误结构而走不同分支。
+func writeModelsAuthError(w http.ResponseWriter, message, code string) {
+	writeJSON(w, http.StatusUnauthorized, map[string]any{
+		"error": map[string]string{
+			"message": message,
+			"type":    "authentication_error",
+			"code":    code,
+		},
+	})
+}
+
 func (h *ModelsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !h.authenticate(w, r) {
+		return
+	}
 	if h.dbPool == nil {
 		if entries, ok := h.lastGoodEntries(); ok {
 			slog.Warn("models: no database connection, serving last-good list")

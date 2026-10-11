@@ -1,0 +1,63 @@
+-- ===========================================================================
+-- File:          sql/migrations/startup/850_session_summaries_project_backfill_recent_idx.sql
+-- Migration:     850
+-- Database:      llm_gateway
+-- Purpose:       给 session_project_backfill worker 的候选捞取补
+--                (created_at, session_key) 部分索引 WHERE gw_project_id IS NULL，
+--                支撑候选查询的 48h 滚动窗口，消除每日 ~6,700s 的
+--                「证明无事」全水库重扫
+--
+-- Status:        active
+-- Idempotent:    YES (CREATE INDEX IF NOT EXISTS)
+-- Dependencies:  762（session_summaries.gw_project_id 列 +
+--                sync_session_project_attr / 触发器写入路径）、
+--                idx_session_summaries_project_null（762 建的同谓词
+--                (session_key) 索引——本索引与之并存，窗口化扫描走本索引，
+--                历史形状回退时旧索引仍可用）
+--
+-- Background:
+--   2026-10-10 252 PG SQL 日志审计第 31 轮
+--   (docs/audit/2026-10-10-252-sql-log-audit-round31.md)。
+--   bg/project_backfill_worker.go 的 sessionProjectBackfillSQL（10min × 2
+--   实例）在真实积压清零后仍在空扫：252 实测 session_summaries 有
+--   128,699 行 gw_project_id IS NULL，其中可解析积压 = **0**（逐行验证），
+--   其余全部是 project_id 与 application_code 双空的**结构性不可解析行**
+--   ——gw_resolve_project_ref 是纯字符串推导（无查表），今天解不出 =
+--   永远解不出。每 tick 顺序走完 12.8 万行 NULL 索引 + 63 万行 session_dim
+--   pkey merge 才能证明「无事可做」，单次 40-117s（120s SET LOCAL 预算
+--   内不被杀，所以不进 30s 击杀计数，全以慢查形式消耗），~6,700s/天
+--   DB 墙钟，是 252 本库第一大慢查族。
+--
+--   本索引 + 代码侧同批落地的 48h 滚动窗口（`ss.created_at >= now() -
+--   interval '48 hours'`）把扫描面从 12.8 万行裁到窗内 NULL 行
+--   （252 实测 48h ≈ 1.3 万行，且随旧窗口滚动持续缩到稳态 ~出生速率×2 天）。
+--
+--   窗口安全性证明（为什么裁剪无损）：
+--   1. gw_resolve_project_ref(project_id, application_code) 是纯函数——
+--      可解析性在 session_dim 行创建时即冻结。已核查全部 session_dim
+--      UPDATE 站点（admin/session_health_api.go 会话关闭、
+--      bg/session_lifecycle_worker.go 回收），均只写
+--      status/closed_at/stop_reason/updated_at，project 字段不可变。
+--   2. 新会话的 gw_project_id 由 762 触发器（trg_session_dim_project_attr_*）
+--      在写入路径同步，worker 只是失败重试的安全网；候选的存在窗口 =
+--      触发器失败到下一次重试 ≈ 分钟级，48h = ~300 倍边际。
+--   3. 窗外行 = 出生即不可解析的行（无 sd 记录或双空 ref），它们在
+--      窗口内外都改变不了自己，裁剪零信息损失。
+--   ⚠️ 若未来出现「给历史 session_dim 补写/修改 project 字段」的机制，
+--      上述第 1 条失效，本窗口必须随之重估（代码侧窗口谓词处有同款警告）。
+--
+--   曾评估并否决的替代形状（记录防重蹈）：以 session_dim 可解析面为驱动侧
+--   + 可解析谓词部分索引——252 实测可解析面 662,893 行，是 NULL 水库的
+--   5 倍，翻转反而更贵。
+--
+-- 上线代价：session_summaries 65.3 万行普通表，索引只收 12.8 万 NULL 行
+--   （252 预估 ~10-15MB），普通 CREATE INDEX 秒级 ShareLock，随部署窗口应用。
+--   注意与 idx_session_summaries_project_null 的分工：两索引同谓词、不同
+--   列序——旧索引服务无窗口的历史形状（ORDER BY session_key 直接走索引序），
+--   本索引服务窗口化扫描（created_at 范围 + session_key 排序）。窗口化查询
+--   稳定后若确认旧索引无其他消费方，可在后续轮次评估退役（本迁移不动它，
+--   避免 deploy 即回滚时两面全空）。
+-- ===========================================================================
+CREATE INDEX IF NOT EXISTS idx_session_summaries_project_null_recent
+    ON public.session_summaries (created_at, session_key)
+    WHERE gw_project_id IS NULL;

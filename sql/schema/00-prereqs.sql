@@ -21,9 +21,53 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto    WITH SCHEMA public;   -- gen_random_u
 CREATE EXTENSION IF NOT EXISTS plpgsql     WITH SCHEMA pg_catalog;
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements WITH SCHEMA public; -- query stats
 CREATE EXTENSION IF NOT EXISTS pgstattuple WITH SCHEMA public;   -- table/blob stats
-CREATE EXTENSION IF NOT EXISTS citus       WITH SCHEMA pg_catalog; -- distributed/columnar tables
-CREATE EXTENSION IF NOT EXISTS citus_columnar WITH SCHEMA pg_catalog; -- columnar access method
 CREATE EXTENSION IF NOT EXISTS vector      WITH SCHEMA public;   -- pgvector embeddings
+
+-- Columnar storage: Citus is the production choice, but it is not available on
+-- every host (it needs a C toolchain and a coordinated build). The MIT
+-- pgColumnar extension provides the same table access method semantics under a
+-- different name (`pgcolumnar` instead of `columnar`), so fall back to it
+-- rather than aborting the whole schema on a host without Citus.
+--
+-- The rest of this schema (and 01-schema.sql) spells the access method
+-- `USING columnar`. Register that name as an alias of whichever implementation
+-- is present, so the DDL below is identical on Citus and pgColumnar hosts.
+DO $$
+DECLARE
+  have_citus boolean;
+BEGIN
+  BEGIN
+    CREATE EXTENSION IF NOT EXISTS citus WITH SCHEMA pg_catalog;
+    have_citus := true;
+  EXCEPTION WHEN OTHERS THEN
+    have_citus := false;
+  END;
+
+  IF have_citus THEN
+    BEGIN
+      CREATE EXTENSION IF NOT EXISTS citus_columnar WITH SCHEMA pg_catalog;
+    EXCEPTION WHEN OTHERS THEN
+      RAISE NOTICE 'citus present but citus_columnar unavailable: %', SQLERRM;
+    END;
+  ELSE
+    RAISE NOTICE 'citus not available; falling back to pgcolumnar for USING columnar';
+    BEGIN
+      CREATE EXTENSION IF NOT EXISTS pgcolumnar;
+    EXCEPTION WHEN OTHERS THEN
+      RAISE EXCEPTION 'neither citus nor pgcolumnar is installable: %', SQLERRM;
+    END;
+  END IF;
+
+  -- Expose the canonical `columnar` access-method name if only pgColumnar
+  -- supplied it. CREATE ACCESS METHOD has no IF NOT EXISTS, so check first.
+  -- pgColumnar registers its handler as pgcolumnar.columnar_handler; Citus
+  -- calls its own citus_columnar access method `columnar` directly, so this
+  -- branch only runs on the pgColumnar fallback path.
+  IF NOT EXISTS (SELECT 1 FROM pg_am WHERE amname = 'columnar') THEN
+    EXECUTE 'CREATE ACCESS METHOD columnar TYPE TABLE HANDLER pgcolumnar.columnar_handler';
+  END IF;
+END
+$$;
 
 -- Verify installed extensions match production
 -- Expected:

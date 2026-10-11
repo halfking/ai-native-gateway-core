@@ -84,6 +84,7 @@ func (it *SanitizeRestoreInterceptor) restoreSSEEvent(ctx context.Context, event
 		it.restoreStreamOpenAIDelta,
 		it.restoreStreamAnthropicDelta,
 		it.restoreStreamResponsesDelta,
+		it.restoreStreamResponsesTerminal,
 	} {
 		fieldChanged, blocked := restore(ctx, raw, sm, state)
 		if blocked {
@@ -245,7 +246,7 @@ func (it *SanitizeRestoreInterceptor) maskUnmappedStreamMarkers(ctx context.Cont
 	}
 	if t, _ := raw["type"].(string); t == "content_block_delta" {
 		if delta, ok := raw["delta"].(map[string]any); ok {
-			for _, field := range []string{"text", "input", "partial_json"} {
+			for _, field := range []string{"text", "thinking", "input", "partial_json"} {
 				if maskStringLeaf(ctx, delta, field) {
 					masked = true
 				}
@@ -308,9 +309,26 @@ func looksLikeUnparsedMarker(ctx context.Context, payload []byte) bool {
 	if !bytes.Contains(payload, []byte("\\u")) {
 		return false
 	}
-	// Malformed JSON can still carry a Unicode-escaped marker. Decode only
-	// ASCII \uXXXX escapes for this safety probe; ordinary malformed control
-	// data with an unrelated Unicode escape remains passthrough.
+	return placeholderCandidate(string(decodeASCIIEscapedMarkers(payload)))
+}
+
+// looksLikeUnparsedNonForeignMarker is the hop-aware twin of
+// looksLikeUnparsedMarker for walking already-decoded JSON leaves
+// (containsResidualPlaceholder): an escape-hidden marker flags the leaf only
+// when it is one this gateway owns. A leaf whose decoded markers all belong
+// to a downstream hop stays passthrough — the peer that issued them restores
+// them (hop contract, r1015 regression).
+func looksLikeUnparsedNonForeignMarker(ctx context.Context, payload string) bool {
+	if !strings.Contains(payload, "\\u") {
+		return false
+	}
+	return containsNonForeignMarker(ctx, decodeASCIIEscapedMarkers([]byte(payload)))
+}
+
+// decodeASCIIEscapedMarkers decodes ASCII \uXXXX escapes so a marker hidden
+// behind them becomes visible to the span probes. Ordinary malformed control
+// data with an unrelated Unicode escape decodes to the same bytes either way.
+func decodeASCIIEscapedMarkers(payload []byte) []byte {
 	normalized := make([]byte, 0, len(payload))
 	for i := 0; i < len(payload); i++ {
 		if payload[i] == '\\' && i+5 < len(payload) && payload[i+1] == 'u' {
@@ -323,7 +341,7 @@ func looksLikeUnparsedMarker(ctx context.Context, payload []byte) bool {
 		}
 		normalized = append(normalized, payload[i])
 	}
-	return placeholderCandidate(string(normalized))
+	return normalized
 }
 
 func containsReservedJSONToken(payload []byte) bool {

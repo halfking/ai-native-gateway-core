@@ -151,6 +151,22 @@ BEGIN
       E'\n[[:space:]]+source\.raw_model_name\n[[:space:]]+FROM request_logs_with_current_month_without_request_class_due_at v',
       E'\n             source.raw_model_name\n   , v.credits_rate_multiplier\n            FROM request_logs_with_current_month_without_request_class_due_at v'
     );
+    -- 2026-10-11 host-first deploy: 动态交集形态（680b / Go 自愈
+    -- ensureRequestLogsCurrentMonthView 重建的 base 自带
+    -- system_fingerprint / raw_model_name，734 的 probe 不追加
+    -- source.raw_model_name）下上面的正则不命中，内层子查询缺列而
+    -- 5c-2 仍在外层引用 rl.credits_rate_multiplier → 42703。退而在
+    -- 内层 source.due_at 之后追加（两种形态下 source.due_at 都存在）。
+    -- 注意替换串不得使用 \1 回引：E'' 转义串里 \1 是八进制控制字符
+    -- 而非 backreference（PG18 实测替换成空导致语法错误），替换文本
+    -- 全部字面量拼写。
+    IF position('v.credits_rate_multiplier' in v_top_ddl) = 0 THEN
+      v_top_ddl := regexp_replace(
+        v_top_ddl,
+        E'\n[[:space:]]+source\.due_at\n[[:space:]]+FROM request_logs_with_current_month_without_request_class_due_at v',
+        E'\n            source.due_at, v.credits_rate_multiplier\n           FROM request_logs_with_current_month_without_request_class_due_at v'
+      );
+    END IF;
     --    5c-2) v1 兜底分支 — 外 SELECT 加 rl.credits_rate_multiplier（让 UNION 列对齐）
     v_top_ddl := regexp_replace(
       v_top_ddl,

@@ -59,9 +59,54 @@ BEGIN
     WHERE schemaname = 'public'
       AND viewname = 'request_logs_with_current_month'
   ) INTO canonical_exists;
+
+  -- 2026-10-10 (host-first local deploy): existence alone is NOT sufficient.
+  -- sql/schema/01-schema.sql ships an OLD shape of this view that predates
+  -- 577 (customer_id) and 610 (request_class / due_at). On a fresh deploy the
+  -- snapshot creates it, this guard saw the name and returned early, and the
+  -- wrapper views below were never created — so 696 later aborted with
+  --     ERROR: relation "request_logs_with_current_month_without_request_class_due_at"
+  --            does not exist
+  -- leaving the sequence permanently stuck.
+  --
+  -- So the guard now checks the SHAPE: a view is only treated as canonical
+  -- when it actually exposes the three columns the wrappers select. Anything
+  -- else falls through to the rebuild below, which drops and recreates it.
   IF canonical_exists THEN
-    RAISE NOTICE '680: request_logs_with_current_month already exists; nothing to do';
-    RETURN;
+    SELECT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'request_logs_with_current_month'
+        AND column_name = 'customer_id'
+    )
+    AND EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'request_logs_with_current_month'
+        AND column_name = 'request_class'
+    )
+    AND EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'request_logs_with_current_month'
+        AND column_name = 'due_at'
+    )
+    INTO canonical_exists;
+
+    IF canonical_exists THEN
+      RAISE NOTICE '680: request_logs_with_current_month already canonical; nothing to do';
+      RETURN;
+    END IF;
+
+    RAISE NOTICE '680: request_logs_with_current_month exists but lacks 577/610 columns; rebuilding';
+    -- Drop order matters: the canonical view is defined AS a SELECT over the
+    -- ..._without_request_class_due_at wrapper, so the canonical view has to
+    -- go FIRST or PostgreSQL refuses with 2BP01 "cannot drop view ... because
+    -- other objects depend on it".
+    DROP VIEW IF EXISTS public.request_logs_with_current_month CASCADE;
+    DROP VIEW IF EXISTS public.request_logs_with_current_month_without_request_class_due_at;
+    DROP VIEW IF EXISTS public.request_logs_with_current_month_without_customer_id;
+    canonical_exists := false;
   END IF;
 
   SELECT EXISTS (

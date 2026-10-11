@@ -339,3 +339,35 @@ func TestUniqueStringSet(t *testing.T) {
 		}
 	}
 }
+
+// 2026-10-11 回归（154 生产）：nvidia integrate 的 EOL 文案
+// "has reached its end of life ... and is no longer available"（chat 410）
+// 此前匹配不上 isPerModelChatFailure，被归类为凭据级 unreachable，
+// credential 19 连续失败 1058 次仍在被周期重探，且每次失败触发兄弟模型
+// request_failure 重入队（probe 风暴）。必须归为 BindingOnly。
+func TestClassifyProbeFailure_ModelEOLEndOfLifeIsBindingOnly(t *testing.T) {
+	// 154 journal 2026-10-11 01:13:37 原始报错（credential 19,
+	// deepseek-ai/deepseek-v4-flash, nvidia integrate API）。
+	pr := classifyProbeFailure(`chat unreachable (after 3 attempts): chat status 410: {"type":"about:blank","title":"Gone","status":410,"detail":"The model 'deepseek-ai/deepseek-v4-flash' has reached its end of life on 2026-08-07T09:00:00Z and is no longer available."}`)
+	if !pr.BindingOnly {
+		t.Fatalf("EOL 410 must be binding-only, got %+v", pr)
+	}
+	if pr.AvailabilityState != "ready" {
+		t.Fatalf("EOL 410 AvailabilityState = %q, want ready (siblings stay routable)", pr.AvailabilityState)
+	}
+	if pr.HealthStatus != "warning" || pr.StateReasonCode != "model_binding_error" {
+		t.Fatalf("EOL 410 classification wrong: %+v", pr)
+	}
+}
+
+// "end of life" 措辞从 /v1/models 通道来时仍是凭据级错误 ——
+// 守卫必须继续要求 chat 级 404/410 前缀。
+func TestClassifyProbeFailure_ModelsEndpointEOLEndOfLifeRemainsCredentialScoped(t *testing.T) {
+	pr := classifyProbeFailure(`models endpoint unreachable (after 3 attempts): status 410: {"detail":"The model 'x' has reached its end of life and is no longer available."}`)
+	if pr.BindingOnly {
+		t.Fatalf("models endpoint EOL must remain credential-scoped: %+v", pr)
+	}
+	if pr.AvailabilityState != "unreachable" {
+		t.Fatalf("models endpoint EOL AvailabilityState = %q, want unreachable", pr.AvailabilityState)
+	}
+}
