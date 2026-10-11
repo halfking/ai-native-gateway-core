@@ -21,6 +21,10 @@ describe('AppSheet mobile focus behavior', () => {
   afterEach(() => {
     document.body.innerHTML = ''
     vi.unstubAllGlobals()
+    // 必须还原 prototype 上的 spy：否则上一条用例 mock 掉的
+    // HTMLElement.prototype.focus 会漏到下一条，导致 background.focus()
+    // 什么都没做、document.activeElement 停在 body 上（2026-10-12 实测踩到）。
+    vi.restoreAllMocks()
     closeOverlay.mockClear()
     presentOverlay.mockClear()
     topOverlay.value = false
@@ -80,6 +84,37 @@ describe('AppSheet mobile focus behavior', () => {
     document.body.querySelector<HTMLButtonElement>('.app-sheet__close')?.click()
 
     expect(closeOverlay).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('blurs the background input when it opens, so iOS AutoFill cannot swallow taps', async () => {
+    // 2026-10-12 实测（iOS 26.3 模拟器，供应商列表 → 点卡片 → 弹详情）：
+    // 列表顶部的搜索框保持 focus 时，iOS 的自动填充条一直浮在弹层上方，
+    // 且落在页面上的点按会被判成「长按文本」→ 弹出「粘贴 / 自动填充」浮层，
+    // ✕ 按钮根本收不到那一下 ⇒ 用户看到的现象是「弹窗关不掉」。
+    //
+    // 判据直接盯 blur 的接收者，而不是盯 document.activeElement 的最终值 ——
+    // 因为弹层自己随后会把焦点移到 ✕ 上，即使没有 blur，activeElement 也变了，
+    // 那样这条判据在删掉修复后仍然是绿的 ⇒ 等于没钉住。
+    const background = document.createElement('input')
+    background.type = 'search'
+    background.id = 'provider-search'
+    document.body.appendChild(background)
+    background.focus()
+    expect(document.activeElement).toBe(background)
+
+    const blurSpy = vi.spyOn(HTMLElement.prototype, 'blur')
+    const wrapper = mount(AppSheet, {
+      props: { modelValue: false, title: '供应商详情' },
+      attachTo: document.body,
+    })
+
+    await wrapper.setProps({ modelValue: true })
+    await nextTick()
+
+    expect(blurSpy.mock.instances[0]).toBe(background)
+    expect(blurSpy).toHaveBeenCalled()
+
     wrapper.unmount()
   })
 
