@@ -36,13 +36,13 @@ FROM session_summaries
 GROUP BY tenant_id, client_models[1];
 
 -- 创建索引
-CREATE UNIQUE INDEX idx_session_client_stats_tenant_client 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_session_client_stats_tenant_client 
     ON session_client_stats(tenant_id, client_id);
-CREATE INDEX idx_session_client_stats_cost 
+CREATE INDEX IF NOT EXISTS idx_session_client_stats_cost 
     ON session_client_stats(tenant_id, total_cost_usd DESC);
-CREATE INDEX idx_session_client_stats_sessions 
+CREATE INDEX IF NOT EXISTS idx_session_client_stats_sessions 
     ON session_client_stats(tenant_id, session_count DESC);
-CREATE INDEX idx_session_client_stats_health 
+CREATE INDEX IF NOT EXISTS idx_session_client_stats_health 
     ON session_client_stats(tenant_id, avg_health_score DESC NULLS LAST);
 
 COMMENT ON MATERIALIZED VIEW session_client_stats IS 
@@ -81,13 +81,13 @@ LEFT JOIN session_dim sd ON ss.session_key = sd.gw_session_id AND ss.tenant_id =
 GROUP BY ss.tenant_id, sd.task_id;
 
 -- 创建索引
-CREATE UNIQUE INDEX idx_session_task_stats_tenant_task 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_session_task_stats_tenant_task 
     ON session_task_stats(tenant_id, task_id);
-CREATE INDEX idx_session_task_stats_cost 
+CREATE INDEX IF NOT EXISTS idx_session_task_stats_cost 
     ON session_task_stats(tenant_id, total_cost_usd DESC);
-CREATE INDEX idx_session_task_stats_sessions 
+CREATE INDEX IF NOT EXISTS idx_session_task_stats_sessions 
     ON session_task_stats(tenant_id, session_count DESC);
-CREATE INDEX idx_session_task_stats_health 
+CREATE INDEX IF NOT EXISTS idx_session_task_stats_health 
     ON session_task_stats(tenant_id, avg_health_score DESC NULLS LAST);
 
 COMMENT ON MATERIALIZED VIEW session_task_stats IS 
@@ -114,9 +114,9 @@ GROUP BY ss.tenant_id, ss.client_models[1], sd.task_id;
 -- 唯一索引：REFRESH MATERIALIZED VIEW CONCURRENTLY 要求物化视图有唯一索引
 CREATE UNIQUE INDEX IF NOT EXISTS idx_session_client_task_matrix_uq
     ON session_client_task_matrix(tenant_id, client_id, task_id);
-CREATE INDEX idx_session_client_task_matrix_client 
+CREATE INDEX IF NOT EXISTS idx_session_client_task_matrix_client 
     ON session_client_task_matrix(tenant_id, client_id, total_cost_usd DESC);
-CREATE INDEX idx_session_client_task_matrix_task 
+CREATE INDEX IF NOT EXISTS idx_session_client_task_matrix_task 
     ON session_client_task_matrix(tenant_id, task_id, total_cost_usd DESC);
 
 COMMENT ON MATERIALIZED VIEW session_client_task_matrix IS 

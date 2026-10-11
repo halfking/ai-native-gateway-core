@@ -589,14 +589,14 @@ func (r *LockFreeAnomalyReporter) Stats() AnomalyReporterStats {
 	}
 }
 
-// AnomalyReporterStats 异常报告器统计信息
+// AnomalyReporterStats 异常报告统计信息
 type AnomalyReporterStats struct {
-	QueueSize     int64  // 当前队列大小
-	QueueCapacity int64  // 队列容量
-	Enqueued      uint64 // 入队总数
-	Dropped       uint64 // 丢弃总数（队列满）
-	Sent          uint64 // 成功发送总数
-	Failed        uint64 // 发送失败总数
+	QueueSize     int64  `json:"queue_size"`     // 当前队列大小
+	QueueCapacity int64  `json:"queue_capacity"` // 队列容量
+	Enqueued      uint64 `json:"enqueued"`       // 入队总数
+	Dropped       uint64 `json:"dropped"`        // 丢弃总数（队列满）
+	Sent          uint64 `json:"sent"`           // 成功发送总数
+	Failed        uint64 `json:"failed"`         // 发送失败总数
 
 	// PermanentlyDisabled 报告器是否因端点永久性拒绝而自禁用。自禁用后
 	// 不再接受任何上报（enqueue 直接返回 false），需要人改配置后重启——

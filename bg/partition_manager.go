@@ -1896,16 +1896,30 @@ func (pm *PartitionManager) analyzePartitionStats(ctx context.Context) {
 		return
 	}
 
+	// 2026-10-11（runbook §10.106.29）：整趟计时。此前这条路径既不记日志耗时
+	// 也没有 Prometheus 指标（metrics.go 里 analyze 相关一条都没有），
+	// 而它受 Go 侧 10min 预算 + SET LOCAL statement_timeout='10min' 双重约束
+	// —— 没有读数就无法判断是否在逼近预算。
+	//
+	// ★ 计时起点选在**认领节流槽之后**：跳过路径在认领失败时就 return 了，
+	// 根本走不到这里，所以这条序列天然只含**真实执行**的趟次。
+	analyzeStart := time.Now()
 	var n int64
 	err = tx.QueryRow(timeoutCtx,
 		"SELECT analyze_llm_gateway_table_stats($1)", 2,
 	).Scan(&n)
+	analyzeSeconds := time.Since(analyzeStart).Seconds()
+	// 成功与失败都记：失败趟恰恰是最需要被看见的（逼近/撞上预算的那种），
+	// 只记成功等于把最该告警的那批样本丢掉。
+	defer recordAnalyzeDuration(analyzeSeconds)
 	if cerr := tx.Commit(timeoutCtx); cerr != nil {
-		slog.Warn("partition_manager: analyze commit failed", "error", cerr)
+		slog.Warn("partition_manager: analyze commit failed",
+			"error", cerr, "duration_s", analyzeSeconds)
 		return
 	}
 	if err != nil {
-		slog.Warn("partition_manager: analyze stats failed", "error", err)
+		slog.Warn("partition_manager: analyze stats failed",
+			"error", err, "duration_s", analyzeSeconds)
 		return
 	}
 
@@ -1918,7 +1932,7 @@ func (pm *PartitionManager) analyzePartitionStats(ctx context.Context) {
 	}
 
 	if n > 0 {
-		slog.Info("partition_manager: analyze stats", "tables", n)
+		slog.Info("partition_manager: analyze stats", "tables", n, "duration_s", analyzeSeconds)
 	}
 }
 

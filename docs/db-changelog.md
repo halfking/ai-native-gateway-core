@@ -8691,3 +8691,36 @@ git show origin/main:scripts/deploy-lib/db-changelog.sh
 | 849 | `849_session_turns_req_status_backfill_cover_idx.sql` | `0cf88e59a94e04f41c22a5badfa2422ec072715d218a12457b1ffcd037417b73` | applied+verified |
 | 850 | `850_session_summaries_project_backfill_recent_idx.sql` | `089db5d53fbb71084b33571a22856fd4ab2ca4fb2643f450369cd199eb928869` | applied+verified |
 
+## 2026-10-11 — 补登 `4f5ae1a82`（host-first 本地部署）改过字节却没登记的 7 件
+
+`4f5ae1a82` 为 host-first 部署把月视图族收敛到**动态交集形态**，改动了 7 件迁移
+的字节，但没有按字节级门禁纪律同步登记 ⇒ `scripts/verify-migration-checksums.sh`
+对它们判 MISMATCH 并 exit 1（CI Unified Verification 失败）。
+
+七件**全部是语义变更**（`DO $$` 体内的判定/重建分支），不是注释变更 ⇒ 按
+816/817 的 R29 既有多行登记惯例，**补登当前磁盘实测 sha，原登记行一律保留**
+（已应用库按旧字节核对仍有效；任一命中即过，
+`scripts/verify-migration-checksums.sh:94-103`）。
+
+⚠️ 本节**只登记字节，不裁决环境间行为分叉**：各环境装的是哪一版字节取决于何时
+重放，与 816/817 同款，分叉未由此消除（待裁决 87）。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 680 | `680_request_logs_current_month_view_bootstrap.sql` | `1f51e20dd5c8334c512069d4bd74f777633afa3011a8b35e08f7b980c21aa50e` | 补登记 `4f5ae1a82`：早退守卫由「同名即 canonical」改为**按形状**判定（customer_id / request_class / due_at 三列齐备才算 canonical），否则按依赖序 DROP CASCADE 重建三视图——解 696 卡死在 `relation ... without_request_class_due_at does not exist`。原登记行 a96f25ed… 保留 |
+| 680 | `680_request_logs_current_month_view_bootstrap.sql` | `55990d73b5e54d260c353bbf1689b1852912e3ac666a6c9579f1d809180ac434` | 补登记 2026-10-11 审计：680 文件头的安全检查注释仍在写「Purely additive; never drops」，与代码里 `4f5ae1a82` 引入的 `DROP VIEW … CASCADE` 早退守卫矛盾（本仓第 6 条已知形态——注释说一套、代码做另一套，会把后来人引向错误的修改方向）。**本次仅修注释，SQL 语义零变更**，故字节变化只来自注释行。三行并存、任一命中即过：`1f51e20d…` = `4f5ae1a82` 的 HEAD blob、`a96f25ed…` = 更早已应用字节 |
+| 738 | `738_view_chain_credits_rate_multiplier.sql` | `c61a44760bdc9ff765f651c682a4c7e63cbb688086d5c2111a3f86ed22fa147d` | 补登记 `4f5ae1a82`：动态交集形态下原 regexp 不命中、内层子查询缺列而外层仍引用，补 `source.due_at` 之后的追加分支（替换串禁 `\1` 回引）。原登记行 8ad1cf9a… 保留 |
+| 740 | `740_view_chain_client_ip.sql` | `2bc79b0f96c7d0b056a938b4545791802454f1752c8a7fb066c2fbd12ac16146` | 补登记 `4f5ae1a82`：bottom/mid 的**绝对列数断言（110/111）改为结构断言**（必须暴露 client_ip + mid=bottom+1），top=115 列契约绝对数维持。原登记行 e4343e3c… 保留 |
+| 815 | `815_request_logs_view_stage_band_cff.sql` | `c02261928facb0c2afae768f51acae8c041af304a83ea0a55fd7d890d57eb7a2` | 补登记 `4f5ae1a82`：逐列探测，基座已带的 origin_stage / token_band / client_forwarded_for 从 lateral 追加清单剔除（防 v.* 与 source.* 同名歧义 42702；冻结形态行为不变）。原登记行 895fe8fd… 保留 |
+| 816 | `816_request_logs_view_client_ip_projection.sql` | `53dc9e8d59c4d699cf53d7aaf3b4a03e1d5ac41353774a2ad5ee3fdb186420b4` | 补登记 `4f5ae1a82`：同 815 的逐列探测剔除（姊妹篇）。原登记行 e6f41a1f… / ad508335… 均保留 |
+| 817 | `817_request_logs_view_client_ip_semantic_guard.sql` | `8cbc0f2f8fd79464a7107ee9aca3992ef3da669bd2f4ccb069c3355ab274d862` | 补登记 `4f5ae1a82`：同 815 的逐列探测剔除（姊妹篇）。原登记行 e101a688… / 48bfe9df… 均保留 |
+| 824 | `824_request_status_rate_limited_projection.sql` | `ba19fb20cd1d43d67ea1a47dffe0d6d59111978109b48da087a37825653acfa2` | 补登记 `4f5ae1a82`：同 815 的逐列探测剔除（姊妹篇）。⚠️ 原登记行标注的「pending deploy / 未应用于任何库」是 **2026-10-04 的陈述**，本次只登记字节、**未重新核实**任何环境的应用状态。原登记行 a7f6d00b… 保留 |
+
+## 2026-10-11T20:23:18Z — deploy 245 build_seq 2548 (a87a134a)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 852 | `852_models_canonical_column_set_reconcile.sql` | `5410c11de43b322f5a64fb7675f7af02e7e6112f592390172c7553d3eee587db` | applied+verified |
+| 853 | `853_credential_probe_queue_automatic.sql` | `aec09f5e4c689a0d7d24b3d9056b1eff577cf3263d6f0f764b2a806c42befc4a` | applied+verified |
+| 854 | `854_session_turns_advisory_lock_key.sql` | `fb88ad0b5ef2f554e39c74e506449fdfc25e9f57ba494cfbd1d150b0bae2f2e8` | applied+verified |
+

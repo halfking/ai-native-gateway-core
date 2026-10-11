@@ -12821,6 +12821,807 @@ M3 撤掉升级通道登记、M4 down 里塞 `DELETE`。
 
 ---
 
+### §10.106.29 四天后复核：**842/843 已被别人部署带上线**；842 只交付了一半，analyze 的「3 倍回归」是我的假警报
+
+本节写于 **2026-10-11**。距 §10.106.28（10-07）过了 4 天，**上次那份状态清单已按「现状盘点类数字必然腐烂」作废重测**。
+
+#### 一、待授权项已被别人完成
+
+`schema_migrations.applied_at` 实测：
+
+| 迁移 | applied_at |
+|---|---|
+| 840 / 841 | 2026-10-07 15:22 / 17:47 |
+| **842 / 843** | **2026-10-07 21:23:02 / 21:23:08** |
+| 844 | 2026-10-07 21:23:15 |
+
+⇒ 我 10-07 推上去的 842/843，在**当天晚上就被随后的部署带上生产了**，
+不是我授权的那一次。两个索引对实物俱在。生产现为 **build 2537 / `37099db2`**，active 8782，healthy。
+**§10.106.28 的「未部署」标注就此作废。**
+
+#### 二、上线后复测（收口 §10.106.26/.28 的「上线后必做」）
+
+| 目标 | 落地前 | 落地后（实测） | 判定 |
+|---|---|---|---|
+| 843：告警 `max(ts)` | 均 **501.2 ms** | 均 **231.0 ms**（3,582 次） | ✅ **降 54%** |
+| e6c1134f0：`MAX(turn_no)` 父表臂 | 均 **117 ms** | 均 **12.0 ms**（18,073 次） | ✅ **约 10 倍** |
+| e6c1134f0：hot 臂 | —— | 均 **1.3 ms**（23,159 次） | ✅ hot-first 双查询形态在跑 |
+| 842：`latest_bucket` | 均 719 ms | 均 **2,146 ms** | ❌ **未修好** |
+
+⚠️ 上表的可比性：842/843 是 10-07 21:23 上线，`pg_stat_statements` 于
+**10-10 16:11 被 reset** ⇒ 落地后读数**全部在 reset 之后**，都是纯上线后样本。
+而落地前的数字来自 reset 之前的另一段累计量——两者**窗口长度不同**，
+只有「同一 queryid 的增量」才可比。这正是下条要吃的教训。
+
+#### 三、842 为什么没修好：**三个分区是 columnar，btree 索引用不上**
+
+`EXPLAIN ANALYZE`（真实执行，227 ms）显示的计划是：
+
+```
+HashAggregate (actual rows=1068)
+  -> Append (actual rows=388691)
+     -> Seq Scan on credential_model_index_hot          (3,267 行)
+     -> Custom Scan (ColumnarScan) on credential_model_index_2026_09 (301,255)
+     -> Custom Scan (ColumnarScan) on credential_model_index_2026_10 (84,148)
+     -> Custom Scan (ColumnarScan) on credential_model_index_2026_11 (0)
+```
+
+`pg_class.relam` 确认三个分区全是 **columnar**。索引计数器给出同一结论：
+
+| 索引 | idx_scan | 判定 |
+|---|---|---|
+| 842 的 hot 臂 `..._hot_cred_model_bucket_idx` | **667,371** | 在用（服务按对点查） |
+| 842 的三个**列存分区**索引 | **0 / 0 / 0** | 从未使用，约 **23 MB** 死索引 |
+
+⇒ **842 部分交付**：hot 臂那半个是真在服务查询的；
+但它本来要修的聚合**一分钱没省**——主导成本在列存分区，而列存不走 btree 索引扫描。
+**我 842 头注里「索引能把『扫堆行』换成『扫窄索引条目』」的前提就错了：它们根本不是堆表。**
+索引这条路已经走到头，剩下的只有**改查询**（hot 优先 + LATERAL，语义变更，仍待拍板）。
+
+★ **未做（需授权）**：是否 DROP 掉那 23 MB 从未使用的列存分区索引。
+顾虑是 839-B 会在「当月分区」上做 columnar↔heap 往返，若某个分区转回 heap，
+索引会重新变得可用 ⇒ **不建议现在删**，登记为待决项。
+
+#### 四、**我自己的假警报**：analyze「3 倍回归」不存在
+
+`SELECT analyze_llm_gateway_table_stats($1)` 在 reset 后累计 24 次 / 均 **154.4 s**。
+对照 `partition_manager.go` 里维护者写的基线「838 落地后实测 **51.3 秒**」
+⇒ 表面是 **3 倍回归**，且它吃着 Go 侧 10min 预算的 1/4。
+
+**双采样增量测得实为 62.2 秒**：
+
+```
+T1: 24 次 / 3,706,089.7 ms  @ 21:56
+T2: 25 次 / 3,768,286.2 ms  @ 23:02
+增量：1 次 / 62,196.5 ms  ⇒ 单次 62.2 s
+```
+
+⇒ 对 51.3 s 基线是 **1.2 倍，不是 3 倍**，且 154.4 s 是 reset 之后早期几次
+（冷缓存 + 新索引首次统计）把**累计均值**拉高的假象。
+★ **教训**：`pg_stat_statements` 的 `total_exec_time/calls` 在**短窗口 + 窗口内有异常值**时
+**不能当现状用**；要么取两次采样的**增量**，要么等窗口拉长。
+（同 §10.106.27 那次「实测」其实是外推，是同族错误。）
+
+#### 五、补上 analyze 的可观测性缺口（本轮代码改动，已提交未部署）
+
+`bg/metrics.go` 里 **analyze 相关指标一条都没有**（promote 有
+`hotTablePromoteDurationSeconds`，analyze 没有），日志也只记 `"tables", n`。
+维护者自己在 `partition_manager.go` 注释里写了「本函数只记 tables 不记耗时，
+历史读数无法回溯 ⇒ 需 2s 采样 pg_stat_activity 判定」——本轮第四节那 62.2 秒
+正是被这条注释预言的麻烦。
+
+**改动**（`bg/metrics.go` + `bg/partition_manager.go`）：
+1. 新增 `llm_gateway_analyze_stats_duration_seconds` 直方图，桶
+   `{5,15,30,60,90,120,180,300,600}`——上界铺到 600s 是 Go 侧预算；
+   **不加 label**（整趟粒度的单序列，label 只带来基数而无信息）；
+2. `analyzePartitionStats` 记录整趟耗时，**成功与失败都记**（失败趟恰恰最该被看见）；
+3. 日志补 `duration_s` 字段；
+4. ★ 计时起点放在**节流槽认领之后**：跳过路径在认领失败时就 `return` 了，
+   根本走不到计时处 ⇒ 序列天然只含**真实执行**的趟次，不混入 0 秒样本。
+
+**门禁**（`bg/analyze_duration_metrics_test.go`，3 条 + 变异 4/4 有牙）：
+运行时门从默认 registry gather 读**样本数与总和**（不是「没 panic」）；
+源码门要求 `duration_s` 是**真正的 slog key-value** 而非注释里出现这个词；
+顺序门钉住「计时起点在守卫之后」。
+
+⚠️ **顺序门首版自己有洞，是变异 M2 当场打红的**：它用
+「含 `slotClaimed` 标识符且带 return」来认守卫，而同一函数里**更早**还有一个
+`if err := ...Scan(&slotClaimed); err != nil { ...; return }`（认领出错分支）——
+门锚在了那个分支上，它天然位于计时器之前，于是**把计时器挪到真守卫之前也照样全绿**。
+修法：守卫节点必须认到 `if !slotClaimed` 这个**取反条件**本身，而不是「包含这个标识符」。
+修后 M2 转红（`"15" is not less than "14"`）。
+★ 与 [[中间件放行 ≠ 已鉴权]] 同族：**「调用存在」不等于「它被放在了正确的位置」**。
+
+#### 六、环境漂移（本机换网）
+
+本机 en0 从 `192.168.31.x` 变为 `10.238.43.110`，而 **git 的代理仍指向
+`http://192.168.31.30:7897`**（仓库级 + 全局），导致一切 fetch/push 挂死
+（`Failed to connect to 192.168.31.30 port 7897 after 75005 ms`）。
+本机 mihomo 在 `127.0.0.1:7890` 正常监听、环境变量 `HTTP(S)_PROXY` 也是它。
+已把三级代理配置统一改到 `127.0.0.1:7890` 并 fetch 验证通过。
+⇒ 与 §10.106 环境漂移（`~/.ssh/config` 丢失、`~/sdk/bash5` 被清）同族：
+**机器换网络后，凡写死旧网段地址的配置都要重新核一遍**。
+
+---
+
+---
+
+### §10.106.30 §10.106.24 的 401 推断拿到**指纹级实证**：`e084e5754` 上线后当场兑现
+
+§10.106.24 逐条排除后得出的结论是「客户端在发**本库没有的** key」。
+那句话当时是**推断**——因为失败路径不留任何痕迹（`auth_mw.go` 只对非 `sk-` 分支记
+key_prefix，`sk-*` 在放行分支里失败即无声）。
+§10.106.26 补的 `KeyVerifier` 拒绝日志（`key_hash_prefix`，commit `e084e5754`）
+已于 10-11 随生产部署上线，本节是它的**第一次读数**。
+
+**证据一：日志已在生产产生记录**（`gateway-canary-8782.log`）
+```
+{"level":"WARN","msg":"key verify: rejected","key_hash_prefix":"e1efa94bfa7c68e2"}
+```
+计数 1,890 条 —— 观测缺口闭合。
+
+**证据二：被拒最多的前缀，本库一个都没有**（154 只读实测）：
+
+| key_hash_prefix | 出现次数 | 在 `api_keys` 命中 |
+|---|---|---|
+| `182f30cb54936c6b` | 48 | **0** |
+| `9cdaa3e91d0bc06b` | 48 | **0** |
+| `95cca375104d2fce` | 48 | **0** |
+| `bc906289a148f0bf` | 48 | **0** |
+| `4cb5d86304a72a16` | 48 | **0** |
+| `8037ac02df1dea4f` | 48 | **0** |
+
+⇒ **「本库没有」不再是推断，是逐条对账出来的**（`api_keys` 共 131 行，
+六个前缀 `left(key_hash,16)` 全部 0 命中）。
+
+★ **一个此前没注意到的形态：六个前缀的出现次数**完全相同（各 48 次）**。
+这不是「一把坏 key 在刷」，而是客户端在**轮询一把 key 集合**——
+像是持有一个 key 环/池，逐个试过来。这与「曾用的 key 至今仍有效」
+（§10.106.24，`sk-RZ8dm0z**` id=89 status=active）并不矛盾：
+池子里的 key **有的**在本库有效、**有的**不在，于是表现为「时好时坏」。
+⇒ **这也解释了 10-04 成功率 79% → 10-05 0.6% 的陡降**：
+不是「一把 key 失效」，而是**池子里有效 key 的比例归零**。
+
+**证据三：问题仍在持续**（近 6h，`request_logs_hot`）
+`failure 5,225 / success 2,141 / in_progress 24 / rate_limited 3`
+⇒ 失败率约 **71%**。
+
+⚠️ **量具坑（又一次）**：查 `/v1/messages` 的端点时用
+`client_endpoint LIKE '%messages%'` 会**返回 0 行**——`/v1/messages`
+在 `client_endpoint` 里落进 NULL，筛不出来。必须**不限定端点**看全局分布。
+（同 §10.106.22 已记过一次「`/v1/messages` 从不记录」的同型误判。）
+
+**归属不变**：这仍是**客户端侧**问题。网关改配置、加 key、重启都不会让它恢复。
+现在多了一样东西——**可以指名道姓地告诉对方是哪几把 key**，
+而不必再靠「成功率曲线」互相猜。
+
+---
+
+---
+
+### §10.106.31 同族续查收口：**两个候选族都是阴性**，真正的新发现是三个 MV 带着 `now()` 刷新；顺带订正 §10.75
+
+§10.106.28 留下的续查项：`routing_analytics_source`（均 2,005 ms）与
+`auto_route_selections_all`（均 1,789 ms）。本节按同一套四步方法跑完。
+
+#### 一、两个候选族：**都不是 842 同构，不动**
+
+- `routing_analytics_source` = `request_logs_hot UNION ALL request_logs`（同族结构），
+  但它最贵的两条语句都不是它自己，而是**读 `routing_analytics_7d` /
+  `routing_audit_summary_7d` 这两个物化视图**的查询（211 次 / 1,945.5 ms 与 1,162.6 ms）。
+  聚合的成本在源侧，不在视图的索引形状上 ⇒ 无 842 同构缺陷。
+- `auto_route_selections_all` 读 `auto_route_selections`（5 分区 / 12.6 MB），
+  体量小，无同构缺陷。
+
+⇒ §10.106.28 的同族清单至此逐族核对完毕：
+`credential_model_index` 阳性(842) / `candidate_failure_logs` 阳性(843) /
+`request_logs` 阴性 / `routing_analytics_source` 阴性 / `auto_route_selections_all` 阴性。
+
+#### 二、新发现：三个物化视图带着 `now() AS refreshed_at` 刷新（runbook 此前零命中）
+
+`session_task_stats` 在本 runbook 里**一次都没出现过**，而它是第二贵的刷新。
+把 7 个 MV 全列出来后，形态分得干干净净：
+
+| 物化视图 | 输出行数 | 有 `now() AS refreshed_at` | calls | 均时 | 合计 |
+|---|---|---|---|---|---|
+| `session_task_stats` | 104,299 | **是** | 38 | **60,091 ms** | 2,283.5 s |
+| `session_client_stats` | **948** | **是** | 38 | **42,491 ms** | 1,614.7 s |
+| `session_client_task_matrix` | 105,907 | **是** | 36 | **25,296 ms** | 910.7 s |
+| `routing_analytics_7d` | 4,811 | 否 | 212 | 13,927 ms | 2,952.6 s |
+| `routing_audit_summary_7d` | 1 | 否 | 212 | 1,480 ms | 313.8 s |
+| `tuning_signals_5m` | 250 | 否 | 803 | 407 ms | 326.9 s |
+| `tuning_signals_daily` | 40 | 否 | 803 | 113 ms | 91.1 s |
+
+**带 `now()` 的三个恰好是最贵的三个**（25~60 s），不带的最贵才 13.9 s、最便宜的 113 ms。
+这与 §10.75 已诊断的机制**同型**：`REFRESH ... CONCURRENTLY` 靠逐行比对新旧只写差异行，
+而 `now()` 每次都变 ⇒ 每行都被判为「变了」⇒ 差异比对的全套开销照付，然后仍整表删+插。
+
+**总量**：reset 后 29.9 h 内，7 个 MV 刷新合计 **8,493 s ≈ 2.36 小时**的数据库时间。
+
+★ **最刺眼的一条**：`session_client_stats` 只有 **948 行**产出，刷新却要 **42.5 秒**。
+948 行不可能有 42 s 的计算量——说明成本在**源侧聚合或刷新机制**，
+不在输出规模。这一条单独值得下一轮拆开看（它不属于本节已验证的范围）。
+
+`session_task_stats` 的 60 s 结构（`EXPLAIN` 不执行，取计划形态）：
+```
+Parallel Hash Left Join
+  -> Parallel Seq Scan on session_summaries ss   (668,438 行 / 599 MB)
+  -> Parallel Hash -> Parallel Seq Scan on session_dim sd (264,694 行)
+```
+聚合定义里还有 **两个 `array_agg(DISTINCT ...)`**（`primary_model`、`client_models[1]`），
+各需对 66 万值排序去重。整体是「全量聚合 × 每 47 分钟重跑一次」的形态。
+
+⚠️ **我本轮的假设被自己的证据推翻了**：我先怀疑连接条件上的 `::text` 转换废掉了索引
+（`ss.session_key::text = sd.gw_session_id::text`）。查 `information_schema` 后发现
+四列本来就都是 `character varying`，`varchar→text` 是二进制可强转的，**不影响索引使用**。
+真实计划是 Hash Join + 两侧全扫，那是聚合本身的固有代价。
+（记录在此，避免下轮有人重提这个已被证伪的解释。）
+
+#### 三、⚠️ **订正 §10.75 的根因归属**
+
+§10.75.2 写：「MV 定义里有一列 **`now() AS refreshed_at`**（`db/db.go:3622`）」，
+并据此把 `routing_analytics_7d` 的 WAL 退化归因于它。
+
+**当前生产 `routing_analytics_7d` 的定义里没有这一列**（本节实测 `has_now_col = f`，
+与 `tuning_signals_5m` / `tuning_signals_daily` / `routing_audit_summary_7d` 同为「否」）。
+两种可能：① 该 MV 之后被重建/改写；② §10.75 当初读的是**源码里的定义**
+（`db/db.go`）而生产实例上的定义已不同。
+⇒ **§10.75 的「WAL 第 3 大」这个事实仍成立，但「根因是 `now()`」这一条在当前生产不成立**，
+需要查 `db/db.go:3622` 与生产定义的差异才能定性。**登记为待查，不擅自改写 §10.75。**
+
+#### 四、⚠️ 本轮流程失误（比技术结论更值得记）
+
+我做这次同族续查**之前没有先查 runbook 已有的结论**，于是：
+
+- `routing_analytics_7d` 的刷新退化 —— §10.75 早已分析并给了根因；
+- `session_summaries` 的重复索引 —— §10.55/§10.56 已闭合并**已有守卫**
+  （`scripts/ursmcheck/duplicate_index_check_test.go` 专门加了「受约束」一列，
+  就是为了防止删错那个 PK），另有监控脚本
+  `scripts/252-monitor/pg17-duplicate-index-check.sh`；
+- 我为此**差点为已闭合一题新造迁移 852**（去删 `session_summaries_session_key_uidx`）。
+
+⇒ **教训**：做「逐族核对」这类横向扫描时，**第一件事是查这份文档/看板里对同一族已有什么结论**，
+而不是先动手量。横向扫描的产出天然与既有台账重叠，
+**不先读台账 ⇒ 大概率重做**。
+
+★ 实测复数（仅供对照，说明台账会腐烂）：`session_summaries_session_key_uidx`
+今日 39 MB / `idx_scan` 670,362，而 §10.56 记的是 54 MB / 1,671,093。
+`idx_scan` 的下降是 **10-10 那次 `pg_stat_statements_reset` 的记账归零**，不是用量变化
+——**别把它读成「查询改走别的索引了」**。
+
+★ 顺带记录一条**新的**：`session_summaries_session_key_per_tenant`（UNIQUE
+`(tenant_id, session_key)`，45 MB，**`idx_scan = 0`**）。由于 `session_key` 已由主键
+全局唯一，该索引的唯一性在逻辑上被蕴含。§10.55/§10.56 的表里**没有这一条**。
+**本节只登记，不建议删**——它是 655 迁移建的（`655_session_summaries_schema_reconcile.sql:169`
+的 `UNIQUE (tenant_id, session_key)`），可能有 `ON CONFLICT` 在依赖其存在。
+
+---
+
+---
+
+### §10.106.32 闭合 §10.106.31 留下的疑点：**§10.75 的根因归属是错的，且源码与生产都没有那一列**
+
+§10.106.31 §三 登记的待查项：`routing_analytics_7d` 的 WAL 退化到底是不是
+`now() AS refreshed_at` 造成的。本节比对源码与生产定义，**结论是：不是，那一列根本不存在。**
+
+**证据一：§10.75 引的行号本身就是错的。**
+它写「（`db/db.go:3622`）」。实测 `db/db.go:3622` 落在
+`ensureFreediscoveryTemplateHealth()` 里（provider_templates 的 health feedback 列），
+与 `routing_analytics_7d` 毫无关系。真实定义在 **`db/db.go:4002`**
+（`CREATE MATERIALIZED VIEW IF NOT EXISTS routing_analytics_7d AS …`）。
+⇒ **行号漂移**：该文件此后被编辑过（§10.106 期间 db.go 改动频繁），
+旧行号已不可作锚点。**引用行号前必须当场核一次。**
+
+**证据二：源码里没有那一列。** `db/db.go:4002-4033` 的 SELECT 列表是
+`time_bucket / effective_task_type / effective_model / effective_work_type /
+effective_provider_id / is_auto_request / tenant_id / request_count /
+success_count / auto_request_count / specified_request_count /
+p50_latency_ms / p95_latency_ms / p99_latency_ms / total_cost_usd`
+——**没有 `refreshed_at`**，也没有任何 `now()` 输出列。
+与生产实测 `has_now_col = f` **完全一致**（§10.106.31）。
+
+⇒ **§10.75.2 的「根因是 `now() AS refreshed_at`」不成立**，
+且它在**两个层面**上都错（行号错、列不存在）。§10.75 的**事实部分
+（`routing_analytics_7d` 是 WAL 第 3 大生产者，56.2 GB / 7.9%）仍成立**，
+只是归因要换。
+
+**那真正的成因是什么（用 §10.75 自己的数字算）**：
+
+| 量 | 值 | 来源 |
+|---|---|---|
+| WAL 总量 | 56.2 GB | §10.75 |
+| 刷新次数 | 6,381 | §10.75 |
+| **每次刷新 WAL** | **≈ 8.8 MB** | 56.2 GB ÷ 6,381 |
+| MV 自身大小 | 9.03 MB | §10.75 |
+
+⇒ **每次刷新的 WAL ≈ 整个 MV 的大小**，这正是「整表删 + 整表插」的指纹。
+
+成因不是某列在变，而是**内容本来就在变**：MV 的过滤条件是
+`WHERE ts >= NOW() - INTERVAL '7 days'` 且按 `DATE_TRUNC('hour', ts)` 分桶——
+**滑动 7 天窗口 + 每小时新增一个桶**，于是**每次刷新都必然有增有删**
+（新增当前小时桶、淘汰滑出窗口的旧桶）。
+`REFRESH ... CONCURRENTLY` 的差量判定看到内容不同 ⇒ 照样整表重写。
+**`now()` 列只是「让每行都变」的一种可能机制，这里它不成立，但结果一样。**
+
+**成本驱动因素（源码实测，之前没被点名）**：
+1. **三个有序集聚合** `percentile_cont(0.5 / 0.95 / 0.99) WITHIN GROUP (ORDER BY latency_ms)`
+   —— 每个都要对分组内全部 `latency_ms` 排序；
+2. `GROUP BY` 里嵌着**逐行标量子查询**
+   `COALESCE(provider_id, (SELECT cr.provider_id FROM credentials cr WHERE cr.id = credential_id LIMIT 1))`；
+3. 源 `routing_analytics_source` = `request_logs_hot ∪ request_logs`（约 15 万行）。
+
+★ **处置方向（不改语义的那一档）**：这条 MV 只有 **4,811 行 / 9 MB**，
+却按 **7.1 次/小时**（§10.106.31 实测 212 次 / 29.9 h）刷新。
+**降刷新频率是杠杆最大的一步**——7 天窗口的**小时级**聚合，每 9 分钟重算一次，
+在数据上并不必要。
+⇒ 但刷新节奏属**调度配置**，**需授权**；本节只登记，不擅改。
+
+⚠️ **流程复盘（第二次同族失误的另一半）**：§10.106.31 说「台账已答过就别重做」，
+但本节是**相反**的情形——§10.75 的答案是**错的**，此时不查到底就是把错误继续传下去。
+⇒ **台账已答过 ⇒ 先核对它答得对不对，再决定要不要重做**；
+「别重做」针对的是**结论正确**的台账，**不是**任何台账。
+
+---
+
+### §10.106.32.1 追加：把 §10.106.31 留的「948 行却 42.5 秒」也解掉了——**它不是异常**
+
+`session_client_stats` 的定义尾部（生产实测）：
+
+```sql
+… array_agg(DISTINCT primary_model) FILTER (WHERE primary_model IS NOT NULL) AS models_used,
+   now() AS refreshed_at
+FROM session_summaries
+GROUP BY tenant_id, (client_models[1]);
+```
+
+**没有 JOIN，也没有时间窗。** 每次刷新把 `session_summaries` 的
+**668,438 行 / 599 MB** 全表扫一遍（含 `array_agg(DISTINCT primary_model)`，
+需对 66 万值排序去重），最后只产出 **948 组**。
+
+⇒ **成本随输入规模走，与输出规模无关**。「948 行却 42.5 秒」不是反常，
+是我拿「输出行数」当分母去解释一个「输入扫描量」决定的成本。
+（与 §10.106.31 那条被证伪的 `::text` 假设同族：**先问成本由哪个量决定**。）
+
+**三个最贵的 MV 由此归成一形态**（实测定义尾部）：
+
+| MV | 源 | 时间窗 | 均时 |
+|---|---|---|---|
+| `session_client_stats` | `session_summaries` | **无** | 42.5 s |
+| `session_task_stats` | `session_summaries` LEFT JOIN `session_dim` | **无** | 60.1 s |
+| `session_client_task_matrix` | 同上 | **无** | 25.3 s |
+
+⇒ 共性不是 `now()`（那只是 §10.75 误判的机制），
+而是**每次刷新都全量重扫 599 MB 的 `session_summaries`，且都没有时间过滤**。
+对比之下 `routing_analytics_7d` 有 `WHERE ts >= NOW() - INTERVAL '7 days'`，
+均时反而只有 13.9 s。
+
+⚠️ 顺带订正一个量具读数：planner 对 `session_dim` 的估计是 264,694 行，
+**实测 635,237 行 / 324 MB**——低估了 2.4 倍。成本估算不要用 planner 的 `rows` 代替实测。
+
+★ **处置方向（需授权，本节只登记）**：这三个 MV 若加时间窗（例如「近 30 天」），
+或降低刷新频率，都能直接砍掉这 2.36 小时里的大头。
+但**加时间窗会改变统计口径**，属产品语义决策 ⇒ 不擅改。
+
+### §10.106.33 抄 837 的做法值不值：**session-analytics 三兄弟「值」，routing_analytics_7d「不值」**
+
+§10.106.32 把 `now() AS refreshed_at` 定性为 §10.75 的误判根因。补查后发现**更完整**的图景：
+
+**迁移 837 恰恰就是为这个缺陷写的**（`migration_837_test.go` 头注明写）：
+去掉两个 routing analytics 物化视图的 `NOW() AS refreshed_at`，
+把刷新时间改记到 `routing_mv_refresh_state`，刷新后由
+`db/db.go:4128 StampRoutingMVRefreshSQL` 打戳。
+⇒ **`routing_analytics_7d` 今天没有 `now()` 列，是因为 837 修过。**
+§10.75.2 当时**没说错**，只是那条记录随 837 落地而过期了。
+（§10.106.32 说「归因不成立」需要修正为「**当时成立、现已修复**」——
+这是同一类腐化的另一个方向：不是错，是**被后续修复覆盖了**。）
+
+★ **但 `SessionAnalyticsViews` 三兄弟不在 837 的范围内**
+（`bg/materialized_view_refresher.go:143` 显式列出
+`session_client_stats` / `session_task_stats` / `session_client_task_matrix`），
+它们**至今仍带 `now() AS refreshed_at`**，而它们恰好是最贵的三个。
+
+#### 写放大实测：四个 MV 都在每次刷新整表重写
+
+`pg_stat_user_tables`（154 生产，只读）：
+
+| 物化视图 | n_live_tup | n_tup_ins | **每活行插入次数** | §10.106.31 实测刷新次数 |
+|---|---|---|---|---|
+| `routing_analytics_7d` | 4,811 | 527,397 | **109** | 212 |
+| `session_client_stats` | 948 | 35,987 | **37** | **38** |
+| `session_client_task_matrix` | 105,907 | 3,862,263 | **36** | **36** |
+| `session_task_stats` | 104,299 | 4,078,539 | **39** | **38** |
+
+★ **判别式**：「每活行插入次数」≈「刷新次数」⇒ **每次刷新重写 100% 的行**。
+后三个几乎**逐一相等**（37/36/39 对 38/36/38），这不是巧合，是恒等式。
+
+#### 两个族的结论不同，不能一并照抄
+
+| 族 | 为什么整表重写 | 去掉 `now()` 能否解决 |
+|---|---|---|
+| `routing_analytics_7d` | **7 天滑动窗口 + 每小时新桶** ⇒ 内容每次必然有增有删 | ❌ **不能**。837 已去掉该列，实测仍是 109 倍 |
+| `session_client_stats`<br>`session_task_stats`<br>`session_client_task_matrix` | **没有时间窗**，内容只在底层会话变化时才变；唯一的易变元素就是 `now()` 列 | ✅ **应该能**。三者的定义里除了 `now()` 没有任何随时间自动变化的列 |
+
+⇒ **可执行建议（需授权）**：把 **837 的做法**（去 `now()` 列 + 建状态表 + 刷新后打戳）
+**扩展到 session-analytics 三兄弟**。预期效果是把这三个 MV 的
+**写量从 100% 降到「真正变化的那部分」**。
+⚠️ 但**必须说清它买不到什么**：`REFRESH CONCURRENTLY` 省的是**写**，
+**聚合计算照付**——三兄弟的 60.1s / 42.5s / 25.3s 里大头是
+「全扫 599 MB `session_summaries` + `array_agg(DISTINCT)`」的计算
+（§10.106.32.1 已证）。
+⇒ **这刀砍的是 WAL/写放大，不是那 2.36 小时的 CPU。**
+想砍 CPU 只能加时间窗（改口径，需产品决策）或降刷新频率（需调度授权）。
+
+⚠️ **不要反向推广**：`routing_analytics_7d` 已经证明「去 `now()`」这一刀
+**不能**解决滑动窗口型 MV。**同一刀对不同成因的族效果相反。**
+
+★ **一个必须承认的观测缺口**：本节只能证明「routing_analytics_7d 在 837 之后
+仍然整表重写」，**无法证明 837 带来的净收益是多少**（需要 837 前后的
+`n_tup_ins` 对照，而 `pg_stat_user_tables` 的窗口起点不可回溯）。
+⇒ **登记为未验证，不要用本节的数据去评价 837 本身**。
+
+### §10.106.34 把 837 扩展到 session-analytics 三兄弟：**规格与耦合面已钉清，本轮不实施**（破坏性列移除，需授权）
+
+§10.106.33 判定「这一刀对三兄弟值」。本节把改动面**全部查清**，
+使其成为一份可直接开工的规格 —— **但本轮不实施**，理由见末。
+
+#### 一、耦合面：4 个读点 + 前端契约，改列即改 API
+
+`refreshed_at` 是**直接从物化视图里 SELECT 出来的**，不是从状态表：
+
+| 位置 | 形态 |
+|---|---|
+| `admin/session_analytics_clients.go:155` | `… models_used, refreshed_at FROM session_client_stats` |
+| `admin/session_analytics_clients.go:290` | 同上（另一条查询路径） |
+| `admin/session_analytics_tasks.go:139` | `… models_used, clients_used, refreshed_at FROM session_task_stats` |
+| `admin/session_analytics_tasks.go:278` | 同上 |
+
+对外响应体字段 `refreshed_at string`（`admin/session_analytics_clients.go:19`、
+`admin/session_analytics_tasks.go` 对应结构），
+`web/src/api/admin.ts:165,191` 与 `web-mobile/src/router/index.ts:433` 都在用。
+
+⇒ **去掉该列 = 改 API 的取值来源**，必须与「改成读状态表」**同一次**发布，
+否则 4 个查询点全部报 `column "refreshed_at" does not exist`。
+⇒ **这与 842/843 那两条「只加索引」的迁移不同类：那两条可以只提交不部署、
+风险为零；这一条必须代码与迁移同批上，否则是一次线上 API 事故。**
+
+#### 二、顺带订正一条**错的注释**（它会误导下一个人）
+
+`web-mobile/src/views/SessionAnalyticsView.spec.ts:11` 写着：
+「数据源是**没有周期刷新路径**的物化视图 ⇒ 页面必须显示 `refreshed_at`」。
+
+**实测该视图有周期刷新**：`bg/materialized_view_refresher.go:143 SessionAnalyticsViews`
+明确列出这三个视图；生产 `pg_stat_statements` 实测
+`session_client_stats` 38 次 / `session_task_stats` 38 次 /
+`session_client_task_matrix` 36 次（29.9 h 窗口）。
+⇒ 该注释的**前提已过期**，但它推出的**结论（页面要显示数据截至时间）依然正确**
+——现在应改为「有周期刷新，`refreshed_at` 显示的是上次刷新时刻」，
+且刷新时刻应改为读 `routing_mv_refresh_state` 风格的状态表。
+★ 这与 §10.106.33 是同一类腐化：**注释的前提过期、结论侥幸仍对**。
+⇒ **读注释的「理由」也要核，只信「结论」不够。**
+
+#### 三、实施规格（照 837 的既成模式，编号 852 已核空闲）
+
+1. **迁移 852**：DROP + 重建三个 MV，**去掉 `now() AS refreshed_at`**，
+   保留 `CONCURRENTLY` 所需的 UNIQUE 索引
+   （`idx_session_client_stats_tenant_client` / `idx_session_task_stats_tenant_task` /
+   `idx_session_client_task_matrix_uq`，见 `bg/materialized_view_refresher.go:138-140`）；
+   `routing_mv_refresh_state` 是**每视图一行**的结构，可直接复用、无需新表。
+2. **刷新器**：三兄弟并入 `execRefresh` 的打戳路径
+   （`db/db.go:4139 stampRoutingMVRefresh` 已是 `views ...string` 变参，直接传三个即可）。
+3. **4 个读点**：把 `refreshed_at` 从 SELECT 列表换成
+   `(SELECT refreshed_at FROM routing_mv_refresh_state WHERE view_name = '<view>')`，
+   响应体字段名**不变** ⇒ 前端零改动。
+4. **`.down.sql`**：照 837 形态把 `NOW() AS refreshed_at` 加回去，
+   头注写明「回滚即恢复整表重写」。
+5. **四条腿**：installer embeddata 逐字节副本 / `main.go` 三处 /
+   `dbinit` 启动序列 / `apply-db-revision-sequence.sh` 升级通道（该腿已复发八次）。
+6. **契约门**：至少钉住「MV 定义不含 `now() AS refreshed_at`」
+   「4 个读点不再从视图 SELECT 该列」「打戳在 REFRESH 之后」。
+
+#### 四、预期收益与**买不到的东西**（再强调一次）
+
+- ✅ **买得到**：三个 MV 的写量从 **100% 降到真正变化的那部分**。
+  实测当前每活行插入 36~39 次 ⇒ 每次刷新整表删+插（WAL 写放大）。
+- ❌ **买不到**：那 **60.1 s / 42.5 s / 25.3 s** 的大头是
+  「全扫 599 MB `session_summaries` + 两个 `array_agg(DISTINCT)`」的**计算**，
+  `REFRESH CONCURRENTLY` 对此无能为力。
+⇒ **CPU 那一块只能靠加时间窗（改统计口径）或降刷新频率**，与本迁移正交。
+
+#### 五、本轮**不实施**的理由
+
+1. **破坏性且需同批发布**：加索引的迁移可以「提交不部署、风险为零」；
+   本条一旦只上迁移不上代码，就是一次线上 API 事故（4 个读点全断）。
+   在没有明确部署授权的前提下起手，违反本仓「破坏性变更先授权」的纪律。
+2. **上下文预算**：本会话已消耗极大，一个跨越
+   「迁移 + 刷新器 + 4 处 admin 读点 + 契约门 + 四条腿」的改动
+   值得一个**完整**的上下文，而不是收尾时赶出来的一半。
+⇒ **本节交付物是一份可直接开工的规格**，不是半成品。
+
+★ **与 §10.106.33 的关系**：那一节回答「值不值」，本节回答「怎么改、有什么坑」。
+两节合起来才构成可执行提案。
+
+### §10.106.34.1 订正 §10.106.34 规格：**第 2 步（刷新器打戳）早已完成，别再写一遍**
+
+写完 §10.106.34 后我按纪律**当场核实了规格里点名的对象**，结果抓到自己写错一步。
+
+**核实一：三个 UNIQUE 索引名全部属实**（`CONCURRENTLY` 的硬前提，必须逐字对）：
+
+| 视图 | UNIQUE 索引 |
+|---|---|
+| `session_client_stats` | `idx_session_client_stats_tenant_client` (tenant_id, client_id) |
+| `session_task_stats` | `idx_session_task_stats_tenant_task` (tenant_id, task_id) |
+| `session_client_task_matrix` | `idx_session_client_task_matrix_uq` (tenant_id, client_id, task_id) |
+
+**核实二：打戳早就做了。** `routing_mv_refresh_state` 现存 **5 行**：
+
+```
+routing_analytics_7d       2026-10-12 01:10:07
+routing_audit_summary_7d   2026-10-12 01:10:09
+session_client_stats       2026-10-12 01:01:07   <-- 已在打戳
+session_client_task_matrix 2026-10-12 01:02:51   <-- 已在打戳
+session_task_stats         2026-10-12 01:02:30   <-- 已在打戳
+```
+
+⇒ **§10.106.34 规格第 2 步「把三兄弟并入 `execRefresh` 的打戳路径」是多余的**——
+它们**本来就在被打戳**。我写那一行时读的是
+`db/db.go:4139 stampRoutingMVRefresh` 那个函数**存在**，
+就推断调用侧也已覆盖；**没有去查状态表里实际有没有它们的行**。
+⇒ 「能力存在」≠「已被调用」，与本会话里那条
+`middleware 放行 ≠ 已鉴权`、`e084e5754` 补观测缺口同族。
+
+**订正后的真实改动面（比 §10.106.34 少一步）**：
+
+| 步 | §10.106.34 原文 | 订正 |
+|---|---|---|
+| 1 | 迁移 852 重建三 MV 去 `now()` 列 | ✅ 仍然需要 |
+| 2 | 三兄弟并入打戳路径 | ❌ **删除——早已完成** |
+| 3 | 4 个读点改读状态表 | ✅ 仍然需要（且状态表已有现成行可读） |
+| 4~6 | `.down.sql` / 四条腿 / 契约门 | ✅ 不变 |
+
+`routing_mv_refresh_state` 的结构是 `(view_name text NOT NULL, refreshed_at timestamptz NOT NULL)`
+—— 每视图一行，**无需任何 schema 变更**即可承载。
+另注：三兄弟的打戳时刻（01:01~01:02）与 routing 两兄弟（01:10）**不同**，
+说明它们的刷新调度也不同相 ⇒ 迁移里不要假设三兄弟与 routing 同批刷新。
+
+★ **教训（本会话第三次同族）**：
+① 「函数存在」不等于「已被调用」，要用**下游产物**（这里是状态表里的行）验证；
+② **写进规格的对象名必须当场核实**——本节三个索引名全部核实通过，
+唯独那一步的**存在性**判断错了。
+⇒ 规格里凡写「已有 X」，都要用 X 的**可观测痕迹**确认，而不是用 X 的**定义**确认。
+
+### §10.106.35 WAL 差分的**阴性结果**，以及一个被推翻的隐含假设：两组 MV 不同频
+
+§10.106.33 说「这一刀砍的是 WAL」，但**WAL 本身多大没量过**。
+PG 17.10 没有 per-table WAL 列（PG 18+ 才有），于是做跨周期 `pg_stat_wal` 差分。
+
+#### 一、差分读数（只读，48 分钟窗口）
+
+```
+T1 @ 01:19:02   wal_total 26,220,713,702   ra7_ins 527,397
+T2 @ 02:07:23   wal_total 26,509,669,169   ra7_ins 539,940
+差分：集群总 WAL +288,955,467 B（289 MB / 48 分钟 ≈ 360 MB/小时）
+      routing_analytics_7d 插入 +12,543 行（≈2.6 次 4,817 行的整表重写）
+      三个 session-analytics MV：n_tup_ins **一字未变**
+```
+
+⇒ **这个窗口里三兄弟一次都没刷新 ⇒ 直接 WAL 归因【没测到】。**
+本节只能给出模型估算 + 一个被推翻的假设，**不宣称测到了它们的 WAL**。
+
+#### 二、⚠️ 被推翻的隐含假设：**两组 MV 不同频**
+
+`bg/materialized_view_refresher.go:63` 的 `RefreshInterval = 10 * time.Minute`
+让人以为所有视图都按 10 分钟刷。**打戳时刻实测否掉了这一点**：
+
+| MV 组 | 最近刷新时刻 | 距今（读数时） |
+|---|---|---|
+| `routing_analytics_7d` / `routing_audit_summary_7d` | 02:01:38 / 02:01:42 | **6.4 分钟** |
+| `session_client_stats` / `session_client_task_matrix` / `session_task_stats` | 01:01:07 / 01:02:51 / 01:02:30 | **65~67 分钟** |
+
+⇒ **routing 两兄弟是 10 分钟级；三兄弟是小时级**（§10.106.31 由
+38 次 / 29.9 h 反推出的「约每 47 分钟一次」与此吻合）。
+⇒ ⚠️ **凡是把所有 MV 当成同一节奏来估算负载的结论，都要重算。**
+
+#### 三、模型估算（**估算，不是实测**）
+
+按「整表重写一轮 ≈ 删+插两份」的保守口径：
+
+| 对象 | 单轮体量 | 频率 | 估算 WAL |
+|---|---|---|---|
+| `routing_analytics_7d` | 9 MB | ~6 次/小时 | ~108 MB/小时 |
+| 三兄弟合计 | ~66 MB 堆（56+9+1.2） | ~1.27 次/小时 | **~168 MB/小时** |
+
+⇒ 即便刷新频次只有 routing 的 1/5，三兄弟因表大 ~7 倍，**估算 WAL 反而更高**，
+占集群 360 MB/小时的量级在 **~45%** 附近。
+⚠️ **这三行是模型，不是读数。** 要变成读数需要一次**跨过三兄弟刷新时刻**的窗口
+（≥80 分钟），本轮 48 分钟窗口没踩到。**未补测前不得据此下单破坏性改动。**
+
+★ **方法论**：差分测量的窗口若没有**盖住事件**，得到的是一个合法的**阴性读数**
+（「这段时间没发生」），**不是**「这件事不耗资源」。
+本节第一行就得写清楚这一点，否则下一个人会把 289 MB 记成「三兄弟的成本」。
+
+★ **又一次「存在 ≠ 被调用」**：§10.106.34.1 刚用它抓出「打戳早已完成」；
+本节它又帮我**没有**误把 `RefreshInterval` 常量当成「三兄弟也按 10 分钟刷」的依据
+—— 常量存在，不代表这三张视图挂在同一个 ticker 上。
+
+### §10.106.36 订正 §10.106.35 的模型：重写体积要**含索引**；三兄弟才是 WAL 主体
+
+#### 一、⚠️ 852 **已被占用**（§10.106.34 的「852 已核空闲」已过期）
+
+```
+sql/migrations/startup/852_models_canonical_column_set_reconcile.sql   ← 已存在
+```
+⇒ 本会话开头「编号空闲」的核验结论**只在那时成立**。
+真要实施该迁移必须重新取号（远端已推进到 854）。
+★ 与本会话反复出现的「台账/编号会腐化」同族：**编号是活状态，不是常量**，
+动手前那一刻要再核一次。
+
+#### 二、模型订正：整表重写要算 **堆 + 全部索引**
+
+§10.106.35 的估算用的是「堆」，但**索引在整表重写时同样被重写**：
+
+| 视图 | 堆 | 索引 | **重写总量** |
+|---|---|---|---|
+| `session_client_stats` | 368 kB | 368 kB | **736 kB** |
+| `session_client_task_matrix` | 27 MB | 58 MB | **85 MB** |
+| `session_task_stats` | 56 MB | 40 MB | **96 MB** |
+| `routing_analytics_7d` | 1,696 kB | 1,192 kB | **2,888 kB** |
+
+⇒ **三兄弟合计 182 MB**（不是我此前写的 ~66 MB），**高估 2.8 倍**。
+
+#### 三、订正后的估算与**实测对上了账**
+
+口径：整表重写一轮 ≈ 1.2 × 重写总量（删只写元组、插才写全行，
+所以不是简单 2×；1.2 是保守取值）。
+
+| 对象 | 重写总量 | 频率（§10.106.35 实测反推） | 估算 WAL |
+|---|---|---|---|
+| 三兄弟合计 | 182 MB | ~1.27 次/小时 | **~277 MB/小时** |
+| `routing_analytics_7d` | 2.9 MB | ~7.1 次/小时 | ~25 MB/小时 |
+| **MV 合计** | | | **~302 MB/小时** |
+
+⇒ 对照 §10.106.35 的**实测**：集群总 WAL **360 MB/小时**。
+**MV 占 ~84%，且三兄弟是 routing_analytics_7d 的 ~11 倍。**
+
+★ **这是模型与独立实测第一次对平**（302 vs 360，同量级且能解释绝大部分），
+比单边估算可信得多。**但仍不是直接测量**——三兄弟的实际 WAL 份额
+要等轮询探针（≥100 分钟窗口，跨过刷新时刻）跑完才能落为读数。
+⇒ **在探针出结果前，不据此下单破坏性改动**；出结果后若与本节一致，
+852（或新编号）的收益就从「模型」升级为「模型 + 读数」双证。
+
+⚠️ **本节推翻的是我自己 §10.106.35 的两个数**（852 空闲、66 MB 重写量）。
+留在案卷里是为了让后来者知道这两个数曾经错在哪。
+
+### §10.106.37 三兄弟的 WAL 份额落为**读数**：169.3 MB/轮、193~232 MB/小时、占集群 62%~75%
+
+§10.106.35 欠的那一步（跨过刷新时刻的差分窗口）本轮补上了，窗口 100 分钟、
+11 组采样，**恰好盖住一轮刷新**。
+
+#### 一、探针读数（10 分钟粒度，11 组全量）
+
+| 时刻 | `pg_stat_wal.wal_bytes` | 本段增量 | 备注 |
+|---|---|---|---|
+| 02:09:36 | 26,513,587,000 | — | |
+| 02:19:38 | 26,538,650,927 | 25,063,927 | |
+| 02:29:39 | 26,569,248,626 | 30,597,699 | |
+| 02:39:40 | 26,596,874,024 | 27,625,398 | |
+| 02:49:41 | 26,643,979,393 | 47,105,369 | |
+| 02:59:43 | 26,693,677,191 | 49,697,798 | |
+| **03:09:44** | **26,897,724,273** | **204,047,082** | **← 覆盖刷新轮** |
+| 03:19:46 | 26,929,023,411 | 31,299,138 | |
+| 03:29:47 | 26,958,461,249 | 29,437,838 | |
+| 03:39:48 | 26,986,318,304 | 27,857,055 | |
+| 03:49:50 | 27,030,050,898 | 43,732,594 | |
+
+同期 `session_task_stats.n_tup_ins`：4,078,539 → **4,182,838**（+104,299，
+恰好一次整表重写），且**只在** 03:09:44 那一组跳变 ⇒ 三兄弟在窗口内**只刷过一次**。
+
+#### 二、差分归因
+
+```
+基线（9 段非刷新区间）：312,416,816 B / 5,409 s = 57,760 B/s ≈ 207.9 MB/小时
+刷新区间实测：        204,047,082 B /   601 s = 339,514 B/s  = 基线的 5.88 倍
+刷新区间的基线期望：   57,760 × 601 = 34.7 MB
+──────────────────────────────────────────────────
+⇒ 归因给该轮刷新的 WAL：169.3 MB（≈161.5 MiB）
+```
+
+窗口整体：516,463,898 B / 5,994 s = 86,164 B/s ≈ **310.2 MB/小时**。
+
+#### 三、轮次与后端耗时：换一条独立通道取读数
+
+`pg_stat_statements`（两台网关共用同一库 ⇒ 同一条 query 文本的 `calls` 是**合并值**）：
+
+| 视图 | calls | `stats_since` 至今 | 轮次/小时 | 平均耗时 |
+|---|---|---|---|---|
+| `session_task_stats` | 39 | 34.28 h | **1.14** | 60.8 s |
+| `session_client_stats` | 39 | 34.32 h | **1.14** | 43.5 s |
+| `session_client_task_matrix` | 37 | 26.91 h | **1.37** | 25.4 s |
+
+⇒ **每轮后端耗时 129.6 s**，与日志逐轮统计（55.4+43.6+23.0 = 122.0 s，16 轮）差 6%，两条通道互证。
+
+#### 四、把读数折成小时/日，并给出**占集群的份额**
+
+| 口径 | 数值 |
+|---|---|
+| 单轮 WAL（实测差分） | **169.3 MB** |
+| 单轮后端耗时（实测） | 129.6 s |
+| 合计轮次（实测 `stats_since`） | 1.14 ~ 1.37 次/小时 |
+| **三兄弟 WAL** | **193 ~ 232 MB/小时**（4.6 ~ 5.6 GB/天） |
+| 三兄弟后端耗时 | 148 ~ 178 s/小时 |
+| 集群 WAL（同期实测） | 310.2 MB/小时 |
+| **⇒ 三兄弟占集群 WAL** | **62% ~ 75%** |
+
+**§10.106.35 的「~45%」和 §10.106.36 的「~84%」都不作数**：前者漏了含索引的重写量，
+后者把重写系数与频率都取高了。
+
+#### 五、与 §10.106.36 的模型对账：**模型高估 1.2~1.4 倍，份额基本对上**
+
+| | §10.106.36 模型 | 本轮实测 | 偏差 |
+|---|---|---|---|
+| 单轮重写→WAL 系数 | 1.2× | **0.93×**（169.3 / 182 MB） | 模型高 29% |
+| 三兄弟 WAL | ~277 MB/小时 | **193~232 MB/小时** | 模型高 1.2~1.4× |
+| MV 占集群份额 | ~84%（对 360 MB/h） | 三兄弟 62~75%（对 310 MB/h） | 量级一致 |
+
+⇒ 高估的来源被定位到**系数**（1.2 → 实测 0.93），频率取值（1.27）在实测区间内、不是元凶。
+⇒ **`1.2×` 这个安全系数应当改成实测的 `~0.95×`**，否则后续任何 MV 侧的估算都会继续偏高。
+
+#### 六、⚠️ 新事实（此前 runbook 未记）：刷新那一轮属于 **245**，而且**两台网关都在刷同一批 MV**
+
+`03:01:39 / 03:03:06 / 03:03:34` 这组时刻在 **245**（pid 2496601）的日志里，
+**154 的日志没有**。查下来是：
+
+- 154（active `:8781`）与 245（active `:8782`）**各自跑着同一个刷新器**，
+  打同一个 PostgreSQL；
+- 协调靠 `bg/materialized_view_refresher.go` 的 Redis 令牌选主 +
+  Postgres advisory lock（`mvRefreshLockKey = 632_2026_08_31`）**双层**，日志实证：
+  `session analytics view refresh: redis leader token acquired` /
+  `... skipped, redis token held by another instance`。
+- ⇒ 这是**设计如此、不是缺陷**。但它有两个此前没被量化的后果：
+
+**（1）小时节奏不是保证，是尽力而为 —— 10-12 02:00 那一轮两台都丢了。**
+
+`routing_mv_refresh_state` 打戳：01:01:39 →（**02:00 无**）→ 03:01:39。
+DB 打戳是权威证据 ⇒ 该小时三兄弟**一次都没刷新**，数据最旧陈旧 **2 小时**。
+154 侧同一时刻的三条日志说明了原因：
+
+```
+02:00:00.040  session analytics view refresh: redis leader token acquired
+02:00:00.104  materialized view refresh skipped, another instance holds the lock
+02:00:00.112  materialized view refresh skipped, another instance holds the lock
+02:00:00.117  materialized view refresh skipped, another instance holds the lock
+```
+
+⚠️ 这**不是新缺陷**：`materialized_view_refresher.go:405-409` 的注释已把
+「两条节奏不同的周期共用一把 advisory lock，撞上时其中一轮整体跳过」
+写成**明确的取舍**。本节的新增量只是**第一次给它读数**——
+按 10-12 00:00~03:00 实测，4 小时里只落地 3 轮（**0.75 次/小时**）。
+
+**（2）本轮 100 分钟窗口里基线之所以干净，正是因为 02:00 那轮丢了。**
+若那一轮正常发生，差分窗口会含两次刷新、单次 5.88× 的尖峰会变成双峰——
+基线仍可算，但归因需要拆峰。**读数方法本身不受影响，但「窗口必须只含一次事件」这条要写进案卷。**
+
+#### 七、顺带订正的环境事实（不是缺陷，是漂移）
+
+- **154 的 active 端口已从 `:8782` 变成 `:8781`**：
+  `/opt/llm-gateway-go/run/active-upstream.conf` = `server 127.0.0.1:8781`，
+  `ss` 只有 8781 在听，`/readyz` 8781→200 / 8782→000。
+  ⇒ 与 AGENTS.md「探活一律两个端口都试」一致；**别再假设 8782 是活的**。
+- ⚠️ **`llm-gateway-go-canary@8782.service` 自 10-11 15:26 起是 `failed`**（`ExecMainStatus=9` = 被 SIGKILL，
+  蓝绿切换杀掉旧实例的正常结局）。⇒ **154 当前的回滚目标是停的**，
+  下次部署若要回滚 8782，得先把它拉起来。**本轮未做任何恢复动作**（生产动作需授权）。
+
+★ **方法论三则**：
+① **差分归因必须先证明「窗口里事件只发生一次」**——本轮靠 `n_tup_ins` 单点跳变
+加 DB 打戳做到，而不是靠「我没看到第二次」。
+② **`pg_stat_statements` 的 `stats_since` 是被低估的取数频率的正解**：
+`calls / (now() - stats_since)` 直接给轮次/小时，**不需要**逐条翻日志，
+也不会被 journald 丢日志带偏（本次 journald 16 轮 vs 文件全量明显有缺口）。
+③ **日志是"归因"通道，`pg_stat_statements` 是"计数"通道**：
+本节两条通道给出 122.0 s 与 129.6 s（差 6%）才算互证；
+只看一条就会把 journald 的丢日志误读成「没刷新」。
+
+---
+
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」
 
 ### §10.107.1 上线后第一件事：把 §10.106.9 的「待观察」变成读数
