@@ -160,7 +160,14 @@
   整条 `output_policy_blocked`，而 `ssh ops@10.24.7.91` 放行——**同一操作，写 IP
   放行、写内网域名阻断**，与 dc63f19ff 同构。**r1017 已修**：豁免按**类型**分派，
   邮箱的主机部分交回主机可达性判定（`isNonExfiltrationFragment` 单一入口）。
-- ~~**`/v1/models` 对任意 `sk-` 字符串开放**~~：`Bearer sk-totally-bogus` 能拿到
+- - ~~**`/v1/completions` 鉴权失败返回 HTTP 200**~~ —— **2026-10-12 实测推翻，
+  该端点无缺陷**。原结论是取证错误：探针发的是 **GET**，命中的是静态提示处理器
+  （`{"message":"Chat completions endpoint is available...","status":"ok"}`），
+  与 POST 的鉴权路径无关。分离方法后：POST `/v1/completions` 与
+  POST `/v1/chat/completions` 均正确返 401 `invalid_key`，匿名 GET 被中间件 401。
+  **教训**：从「看到一个异常响应」到「这是缺陷」之间隔着变量隔离，探针必须逐个
+  控制 HTTP 方法 / 路径 / 凭据再下结论。
+~~**`/v1/models` 对任意 `sk-` 字符串开放**~~：`Bearer sk-totally-bogus` 能拿到
   全量 615 个模型清单，同一 token 在 `/v1/chat/completions` 上正确 401。
   **根因是委托链断了一节**：`middleware/auth_mw.go` 规定 sk-* 由各 handler 自行
   调 `KeyVerifier`（Rule 20 §2），`ModelsHandler` 从未接上，中间件为内部调用者开
