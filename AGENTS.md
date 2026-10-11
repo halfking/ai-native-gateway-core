@@ -541,6 +541,82 @@ checkout 或当时目录状态确有变化（同日 `~/sdk/bash5` 确被清过�
 
 ---
 
+# 追加：2026-10-11 深夜轮——154 全局变慢根因修复（UrsmlHealthyKeyReconciler）
+
+> 会话时间 2026-10-11 23:29 → 10-12 01:00。用户目标：154 网关响应非常慢，
+> 分析 154 网关 + 252 网关数据库日志，修正后优化 252 数据库，验证后提交推送。
+> **已完成分析、止血、代码修复（含变异验证）、252 DB 优化项核验、提交推送。**
+
+## 根因（端到端证据链，全部实测）
+
+1. **症状**：`/v1/chat/completions` p90=16.8s、p99=889s、max=85 分钟；
+   `router: URSM v2 authoritative view filtered out every candidate` 告警全天上升
+   （15 时 21 条 → 22 时 352 条）。机制：候选全灭后请求进
+   `wait_recovery_window`——30s 间隔、deadline 5 小时（`deadline_remaining_sec:17999`），
+   客户端拿到 200+keepalive 后被一直挂着 = 用户看到的「非常慢」。
+   受灾模型：gpt-6-astra(566)/glm-5.3(482)/claude-opus-5(373)。
+2. **直接原因**：URSM v2（Redis db2，authoritative 模式）里这些健康凭据的
+   节点键缺失/过期。T4 契约：**缺键 = Available=false**（fail-closed 保护拒绝）。
+3. **为什么会缺**（结构性，三件事叠加）：
+   - 2026-09-20 probe-volume 政策（`MarkNodeProbeHealthy`）：每次成功业务请求把
+     node_probe_state 行 park 30 天（`next_retry_at = now() + interval '30 days'`，
+     bg/node_probe.go:1510）——健康对**不再有任何主动探测**。
+   - 节点键只剩请求遥测在写（record_request.lua，priority=10，**分钟级 TTL**）。
+     probeWriteTTLFloor=7h 只作用于探测写，而 park 政策后探测写永不发生。
+   - 流量间隙 > TTL ⇒ 键过期 ⇒ 全灭 ⇒ park 5h；park 期间**无遥测、无探测、无恢复
+     路径**（36h lookback 只覆盖 `cmb.available=FALSE` 的绑定，健康对是盲区），
+     直到每天 ~00:30 integrity_verify 清扫才自愈。**这是死锁式锁死**。
+4. **今日放大器**：15:45:58 一次 `redis_unavailable` recovery（epoch 哈希：
+   recovery_counter=5537、recovered_keys_count=769）用快照覆盖/替换了大量节点键
+   ——此后告警从个位数暴涨。recover 之所以被触发：persist collect 对共享 db2
+   （**170 万键**）做全量 SCAN，30s 预算实测要 12.95–30.40s，频繁 i/o timeout
+   （gateway 日志 `persist collect failed` 多条）。代码注释（cmd/gateway/main.go
+   URSM_V2_REDIS_DB 段）自己就预言了这个代价。
+5. **旁证**：gateway 模式探测全部 401（r1016/r1017 鉴权修复连带，node_probe_runs
+   里 `gateway_ok=f 401` vs `direct_ok=t 200`）；direct 探测不受影响。
+
+## 已落地
+
+1. **止血（生产 Redis，~00:10-00:45）**：按 DB 健康谓词（bindings available +
+   credentials active/ready + providers enabled + nps 无失败）筛出 253 对健康绑定，
+   用 apply_probe.lua 成功语义重写节点键（priority=20，TTL 7h）；其中唯一
+   单凭据无探测覆盖的 gpt-6-astra 单独补写。**效果：告警 100+/10min → 00:41 起 0**。
+2. **代码修复（本提交）**：`bg/ursm_healthy_reconcile.go` +
+   `bg/ursm_healthy_reconcile_test.go` + `cmd/gateway/main.go` 接线（bootstrap 块后）。
+   `UrsmlHealthyKeyReconciler`：默认 60s tick（settings_kv
+   `ursm.healthy_reconcile_interval_seconds`，<=0 关闭），每轮把 **DB 验证健康**
+   的可路由对经 `FilterAndScoreReady`（单条 pipeline，无 SCAN）读视图，
+   对判不可用者走 `ApplyProbeForTenant(success=true)`（与探测同路径：
+   probe 优先级 + 7h TTL floor + manual_hold 让步 + 冷却即恢复）。
+   安全边界：只写 DB 健康对（T4 fail-closed 对无证据对不被打穿）；
+   ready 门关着时整轮跳过；authoritative 模式空租户对跳过。
+   **7 个单测 + 两轮变异验证有牙**（删 Available 过滤→红；绕 ready 门→红；
+   第一版关闸测试因未播种 DB 行是假绿，已修——AGENTS「判据必须在同一层」再+1）。
+3. **252 数据库优化项核验**：`archive_request_logs_default` 实测已含
+   `gw_session_id` 且手动执行成功（42703 已消，幂等重放已被并行会话完成）。
+   其余 PG 负载（analyze_llm_gateway_table_stats 均值 150s×25、session 分析族、
+   MV 刷新）为产品功能非故障，未动。
+
+## 待办（下一轮）
+
+1. **★ 重部署 154/245 网关使 reconciler 生效**（本提交只在仓库；生产当前靠
+   止血 + 每日 integrity 清扫维持，明日流量间隙仍可能复现个别模型锁死至 00:30）。
+   部署后验证：日志应出现 `ursm.v2 healthy-key reconciler started`，且
+   `filtered out every candidate` 告警不再持续出现。
+2. **URSM_V2_REDIS_DB 迁移到独立 db**（代码已支持，注释在 main.go URSM 段）：
+   一并消除 persist SCAN 走 170 万会话键的超时 → redis_unavailable 假恢复
+   的触发源。需要重启 + coverage bootstrap 收敛，留维护者窗口。
+3. 观测：`ursm:v2:meta:epoch` 的 recovery_counter（5537）与
+   `persist collect failed` 频率是本链路的健康表；接线到 /metrics 更好
+   （与已登记的 A2 量具缺口同类）。
+4. 现场残留：Redis db2 有少量键名含 `':'` 引号的乱码节点键
+   （如 `ursm:v2:node:default':'61':'gpt-6-astra`，来源未定，疑似并行会话/脚本；
+   无读方，无害）——下次维护可顺手清。
+5. gateway 模式探测 401（r1017 连带）与 EOL 措辞 contains 脆弱（已登记项）
+   未动；glm-5.2 系 410、sensenova 系等模型目录漂移仍待 owner 拍板。
+
+---
+
 # 追加：2026-10-11 154/252 事故与批判式审计（root 会话 `mvs_771078044a9a4dc8960546e26f653367`）
 
 ## ⚠️ 先更正本文件上方一处我自己的错误结论
