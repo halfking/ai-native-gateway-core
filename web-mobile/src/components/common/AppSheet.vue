@@ -59,6 +59,7 @@ watch(
       }
     }
   },
+  { immediate: true },
 )
 
 onBeforeUnmount(() => {
