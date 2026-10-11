@@ -139,10 +139,11 @@ func (h *LiveStreamSSEHub) startRecordDrainer() {
 }
 
 // runRecordDrainer FIFO 逐条执行 store.Record。关停契约: stopCh 关闭后排空
-// 已缓冲条目再退出 (上限 recordQueueCapacity×200ms ≈ 51s, 可能超过 Stop 的
-// join 预算 —— joinAsyncWorkers 的 doc 详述该取舍), 避免突发流量后立刻 Stop
-// 丢掉整个尾巴; Stop 的 asyncMu 串行化保证排空期间不会再有新条目入队
-// (close(stopCh) 与 enqueueRecord 互斥, 见 Stop 的注释)。
+// 已缓冲条目再退出; 排空时长不是 recordQueueCapacity×200ms (该 200ms 预算
+// 在客户端未收窄 ReadTimeout 时不成立, 见 joinAsyncWorkers 的实测数据), 而是
+// recordQueueCapacity×**单条实际写入耗时**, 因此可能超过 Stop 的 join 预算 ——
+// join 超时只 Warn, drainer 留在后台继续排空。Stop 的 asyncMu 串行化保证排空
+// 期间不会再有新条目入队 (close(stopCh) 与 enqueueRecord 互斥, 见 Stop 的注释)。
 func (h *LiveStreamSSEHub) runRecordDrainer() {
 	defer close(h.recordDrainerDone)
 	for {
@@ -210,14 +211,29 @@ func (h *LiveStreamSSEHub) recordToStore(req LiveRequest) {
 // ── shutdown join ───────────────────────────────────────────────────────────
 
 // joinAsyncWorkers 有界等待异步 worker 退出, 由 Stop() 在 close(stopCh)
-// 之后调用。共享一个总 deadline (3s): action worker 最坏一次 poll ≈
-// actionReadTimeout(2s)+500ms, 在预算内; record drainer 的关停排空上限
-// 是 recordQueueCapacity×200ms ≈ 51s, **可能超出本预算** —— 这是刻意取舍:
-// Stop 不悬挂优先于排空完整性, 超时只 Warn, drainer 留在后台继续排空,
-// 进程退出时随之消亡 (k8s SIGTERM 宽限期内通常已排完, 残余随进程丢失,
-// 与 forwarder 关停不 drain 的取舍一致)。任何一个 worker 超时只 Warn。
+// 之后调用。共享一个总 deadline (asyncWorkerJoinTimeout = 60s):
+// action worker 最坏一次 poll ≈ actionReadTimeout(2s)+500ms, 在预算内;
+// record drainer 的关停排空上限是 recordQueueCapacity×**每次写入实际耗时**。
+//
+// 2026-10-11 订正两处与代码不符的数字（原注释写 "3s"，且按 200ms 估算排空
+// 上限 ≈51s 从而声称"可能超出本预算"——两者都不成立）:
+//  1. 预算是 60s (asyncWorkerJoinTimeout), 不是 3s。该值自 a579b1348 引入后
+//     未变, 变的是注释。
+//  2. 每条排空记录的耗时**不是** liveStreamRecordWriteTimeout 的 200ms。
+//     实测 (go-redis v9.20.0, 服务端接受连接但不回应): ctx 传 200ms 而客户端
+//     未设 ReadTimeout 时, 单条 SetNX 实耗 3.0s——go-redis 不会把 ctx deadline
+//     压到自己的 ReadTimeout 之下, 它只在耗尽后报 "context deadline exceeded"。
+//     默认 ReadTimeout=3s, 是文档预算的 15 倍。所以排空上限实际是
+//     recordQueueCapacity × 3s ≈ 12.8min, 而非 51s, 确实远超 60s 预算。
+//
+// 取舍不变: Stop 不悬挂优先于排空完整性, 超时只 Warn, drainer 留在后台继续排空,
+// 进程退出时随之消亡 (k8s SIGTERM 宽限期内通常已排完, 残余随进程丢失, 与
+// forwarder 关停不 drain 的取舍一致)。任何一个 worker 超时只 Warn。
 // done chan 为 nil (worker 从未启动, 即 Run 未被调用) 时直接跳过, 保证
 // Stop 永不挂起。
+//
+// ⚠️ 若要让 200ms 预算在生产中真正生效, 必须把 Redis 客户端的 ReadTimeout 一并
+// 收窄——只靠 ctx 做不到。admin/live_stream_async_test.go 里有可复现的实测数据。
 func (h *LiveStreamSSEHub) joinAsyncWorkers() {
 	h.asyncMu.Lock()
 	actionDone := h.actionWorkerDone

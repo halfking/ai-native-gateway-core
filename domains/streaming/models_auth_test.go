@@ -31,6 +31,7 @@ import (
 type modelsAuthStub struct {
 	enabled bool
 	valid   map[string]bool
+	status  string
 	calls   int
 	seen    []string
 }
@@ -41,7 +42,7 @@ func (s *modelsAuthStub) Verify(_ context.Context, rawKey string) (*authenticati
 	s.calls++
 	s.seen = append(s.seen, rawKey)
 	if s.valid[rawKey] {
-		return &authentication.KeyInfo{ID: 1, Status: "active"}, nil
+		return &authentication.KeyInfo{ID: 1, Status: s.status}, nil
 	}
 	return nil, context.Canceled // 任意非 nil error 都算校验失败
 }
@@ -182,5 +183,29 @@ func TestModelsAuthErrorShapeMatchesOpenAI(t *testing.T) {
 	}
 	if msg, _ := errObj["message"].(string); strings.TrimSpace(msg) == "" {
 		t.Error("message 为空")
+	}
+}
+
+// TestModelsThrottledKeyStillGetsCatalog 钉住一处**有意的行为偏差**。
+//
+// 数据面其它端点对 `throttled` 的 key 返 429（handler.go:2376），而 /v1/models
+// 只做认证、不看状态——被标记为异常用量的 key 仍然能拉到模型目录。
+//
+// 这是刻意的：模型目录是只读发现端点，限流管的是**生成容量**；在这里 429 会让
+// 客户端在限流尖峰期连「有哪些模型可用」都探不到，反而退化得更厉害。
+//
+// 钉住它是为了防止以后有人看到「与 chat 面不一致」就顺手改成 429——那是一次
+// 行为变更，需要单独评估客户端兼容性，不该混在鉴权修复里。
+func TestModelsThrottledKeyStillGetsCatalog(t *testing.T) {
+	stub := &modelsAuthStub{enabled: true, valid: map[string]bool{"sk-throttled-key": true}, status: "throttled"}
+	rec := probeModelsAuth(t, stub, "sk-throttled-key")
+	if rec.Code == http.StatusUnauthorized {
+		t.Fatalf("throttled key 被当成未鉴权拒了（HTTP %d）: %s", rec.Code, rec.Body.String())
+	}
+	if rec.Code == http.StatusTooManyRequests {
+		t.Fatal("throttled key 拿到 429 —— 这是刻意保留的偏差，见本用例注释；要改需单独评估兼容性")
+	}
+	if stub.calls != 1 {
+		t.Errorf("应当恰好校验一次，实际 %d 次", stub.calls)
 	}
 }

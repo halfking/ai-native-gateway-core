@@ -132,6 +132,23 @@ func TestGeneratorExtensionQueryCoversCommittedPrereqs(t *testing.T) {
 // committed-file-only check would pass even if the generator were fixed by
 // hand-editing all three copies again — which is exactly the drift this
 // round set out to end.
+//
+// 2026-10-11: the probe used to anchor on the literal "<ext>)" — i.e. on a
+// `case` arm in db_init::dump_prereqs' flat per-extension emitter. The
+// generator no longer emits the columnar family flat: citus / citus_columnar /
+// pgcolumnar are mutually exclusive fallbacks for the `columnar` access method
+// and a flat CREATE EXTENSION aborts a fresh install on a host that has only
+// one of them, so they now come out of one conditional DO block (mirroring
+// sql/schema/00-prereqs.sql).
+//
+// Anchoring on the case-arm spelling therefore reported "找不到 emission 分支"
+// for a generator that still emits the extension WITH SCHEMA pg_catalog — the
+// assertion and the code disagreed about *where* to look, not about *what*.
+// The requirement is unchanged and now probes the actual statement: find
+// "CREATE EXTENSION IF NOT EXISTS <ext>" and require WITH SCHEMA pg_catalog in
+// the statement that follows. That spelling matches both the old flat arm and
+// the new conditional block, so this is a re-pinning of the probe, not a
+// relaxation of the gate.
 func TestGeneratorEmitsPgCatalogForCitus(t *testing.T) {
 	lib, err := os.ReadFile(generatorLib)
 	if err != nil {
@@ -139,16 +156,30 @@ func TestGeneratorEmitsPgCatalogForCitus(t *testing.T) {
 	}
 	src := string(lib)
 	for _, ext := range []string{"citus", "citus_columnar"} {
-		idx := strings.Index(src, ext+")")
+		// The trailing space is load-bearing: without it, the needle for "citus"
+		// is a PREFIX of "... IF NOT EXISTS citus_columnar WITH SCHEMA
+		// pg_catalog", so a fixed-width window around the citus statement would
+		// pick up citus_columnar's own clause and pass even when citus itself
+		// was emitted into public. That was measured, not hypothesised: the
+		// first version of this probe stayed green under exactly that mutation.
+		needle := "CREATE EXTENSION IF NOT EXISTS " + ext + " "
+		idx := strings.Index(src, needle)
 		if idx < 0 {
-			t.Errorf("生成器里找不到 %q 的 emission 分支", ext)
+			t.Errorf("生成器里找不到 %q 的 CREATE EXTENSION 发射点", ext)
 			continue
 		}
+		// Bound the segment at the end of THIS statement. A window that can run
+		// into the next CREATE EXTENSION would let a sibling extension's clause
+		// satisfy this extension's requirement.
 		seg := src[idx:min(idx+400, len(src))]
+		if end := strings.Index(seg, ";"); end >= 0 {
+			seg = seg[:end]
+		}
 		if !strings.Contains(seg, "WITH SCHEMA pg_catalog") {
 			t.Errorf("生成器中 %s 的 CREATE EXTENSION 未指定 WITH SCHEMA pg_catalog；\n"+
 				"  实测：写成 public 会让全新安装失败于 "+
-				"extension \"%s\" must be installed in schema \"pg_catalog\"", ext, ext)
+				"extension \"%s\" must be installed in schema \"pg_catalog\"\n"+
+				"  该语句实际为：%s", ext, ext, strings.TrimSpace(seg))
 		}
 	}
 }

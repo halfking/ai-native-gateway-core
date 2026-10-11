@@ -1,9 +1,12 @@
 // Package safety - D14 安全测试：敏感信息还原的注入面 / 跨租户隔离。
 //
 // SF-01: 伪造占位符（{SENSITIVE:phone:99} 不在 sm）→ mask；
-//         metrics.SanitizePlaceholderTamperingTotal 计数自增
+//
+//	metrics.SanitizePlaceholderTamperingTotal 计数自增
+//
 // SF-02: 跨租户（X-Gw-Tenant-Id A vs B）→ A 的 sm 不能被 B 还原，
-//         覆盖 tool_calls.arguments 路径
+//
+//	覆盖 tool_calls.arguments 路径
 //
 // 跑测：
 //
@@ -16,12 +19,12 @@ import (
 	"testing"
 	"time"
 
-	dto "github.com/prometheus/client_model/go"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/security/sanitize"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -47,7 +50,11 @@ func readCounter(t *testing.T, c prometheus.Counter) float64 {
 
 // TestSafety_ToolCallsArgs_ForgedPlaceholderMasked
 // LLM 在 tool_calls.arguments 里伪造 {SENSITIVE:phone:99}（sm 中没有），
-// 必须 mask 为 [REDACTED] 并触发 SanitizePlaceholderTamperingTotal 计数。
+// 必须 mask 为带类型的遮蔽标记（[REDACTED:phone]）并触发
+// SanitizePlaceholderTamperingTotal 计数。
+//
+// 注：2026-09-23 初版断言裸 "[REDACTED]"，ce5e35ab3 起标记带类型，实际输出
+// 一直是 "[REDACTED:phone]"，原断言因此恒红。
 func TestSafety_ToolCallsArgs_ForgedPlaceholderMasked(t *testing.T) {
 	rdb := setupRedis(t)
 	sid := "sess-safety-forged"
@@ -94,9 +101,16 @@ func TestSafety_ToolCallsArgs_ForgedPlaceholderMasked(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(result.ModifiedBody, &resp))
 	arg := resp.Choices[0].Message.ToolCalls[0].Function.Arguments
-	assert.Contains(t, arg, "13800138000", "已知占位符必须还原")
-	assert.Contains(t, arg, "[REDACTED]", "伪造占位符必须 mask")
+
+	// 判据落在字段上：伪造位若被错还原成已知位的真值，整串 Contains 仍会绿。
+	var fields map[string]string
+	require.NoError(t, json.Unmarshal([]byte(arg), &fields), "arguments 必须是合法 JSON 对象：%s", arg)
+	assert.Equal(t, "13800138000", fields["known"], "已知占位符必须还原成自己的真值")
+	// 伪造占位符必须 mask；标记带类型是 ce5e35ab3 起的契约，pin 精确字面量。
+	assert.Equal(t, "[REDACTED:phone]", fields["forged"],
+		"伪造占位符必须 mask 成带类型的遮蔽标记（不得回落成裸 [REDACTED]）")
 	assert.NotContains(t, arg, "{SENSITIVE:phone:99}", "raw 占位符文本必须消失")
+	assert.NotContains(t, arg, "{SENSITIVE:", "任何 raw 占位符文本都不得透传给上游")
 
 	// Prometheus 计数：1 个伪造占位符 → +1
 	after := readCounter(t, counter)

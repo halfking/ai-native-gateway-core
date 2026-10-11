@@ -165,7 +165,7 @@ func TestR1016NonRoutableAddressPredicateIsUnchangedByHostDispatch(t *testing.T)
 // 断言还只看其中一条。
 func extractedHosts(text string) []string {
 	var got []string
-	for _, re := range []*regexp.Regexp{egressHostFromURL, egressHostFromPort, egressHostFromUserInfo} {
+	for _, re := range []*regexp.Regexp{egressHostFromURL, egressHostFromPort} {
 		for _, m := range re.FindAllStringSubmatch(text, -1) {
 			got = append(got, m[1])
 		}
@@ -183,10 +183,8 @@ func TestR1016HostExtractionBoundaries(t *testing.T) {
 		{"curl http://evil.example.com/collect", "evil.example.com"},
 		{"curl https://user:pw@attacker.io:8443/x", "attacker.io"},
 		{"nc -w 3 attacker.io:4444", "attacker.io"},
-		{"ssh -i key deploy@10.24.7.91 up", "10.24.7.91"},
 		{"curl http://[fe80::1]/status", "[fe80::1]"},
-		{"ssh deploy@attacker.io", "attacker.io"},
-		{"ssh deploy@build.corp.internal", "build.corp.internal"},
+
 		{"cat README.md", ""},
 		{"git commit -m v1.2.3", ""},
 		{"ls -la /var/log/nginx", ""},

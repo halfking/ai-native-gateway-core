@@ -1283,6 +1283,17 @@ func main() {
 		}
 	}
 
+	// 2026-10-11 (154 fleet-wide park incident): healthy pairs are parked in
+	// node_probe_state for 30 days by the probe-volume policy, so nothing
+	// refreshes their URSM v2 node keys when request telemetry goes quiet —
+	// the T4 fail-closed read then filters every candidate and requests park
+	// for up to 5h. The reconciler re-writes DB-verified healthy pairs whose
+	// URSM v2 view reads unavailable, at probe priority with the 7h TTL floor.
+	// Disabled via settings_kv ursm.healthy_reconcile_interval_seconds <= 0.
+	if ursmV2Mgr != nil && dbConn != nil && dbConn.Enabled() {
+		bg.NewUrsmlHealthyKeyReconciler(ursmV2Mgr, dbConn.Pool()).Start(context.Background())
+	}
+
 	// URSM v2 persist writer snapshots live v2 state for audit. Off mode
 	// never scans a leftover namespace; shadow starts persistence only when
 	// its outcome double-write is enabled.
@@ -7106,6 +7117,12 @@ func main() {
 	requestJourneyAPI := admin.NewRequestJourneyAPI(journeyQueryService)
 	mux.HandleFunc("/api/admin/request-journeys/queues", requestJourneyWrapAdmin(requestJourneyAPI.ServeHTTP))
 	mux.HandleFunc("/api/admin/request-journeys/", requestJourneyWrapAdmin(requestJourneyAPI.ServeHTTP))
+	// A2 量具出库（2026-10-11）：自禁用位与永久拒绝计数此前只活在 Stats()
+	// 里且无生产读方；未启用报告器时端点回 {"enabled":false}。lite（无 db）
+	// 模式 wrapAdmin 为 nil，与其他 admin 注册点同口径跳过。
+	if wrapAdmin != nil {
+		mux.HandleFunc("/api/admin/anomaly-reporter/stats", wrapAdmin(handleAnomalyReporterStats(anomalyReporter)))
+	}
 	journalSnapshotAPI := admin.NewJournalSnapshotAPI(journalSnapshotStore)
 	journalSnapshotAPI.RegisterRoutes(mux, requestJourneyWrapAdmin)
 	slog.Info("request journey admin API enabled",

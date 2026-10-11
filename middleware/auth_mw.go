@@ -168,6 +168,14 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 // spaProtectedPrefixes must never ride the SPA-navigation bypass: /v1 is
 // the data plane, /mock and /plugins are self-guarded subsystems whose
 // front door this gate is part of.
+//
+// 维护契约（2026-10-11 审计）：本 bypass 的安全性是隐式的——它依赖
+// 「除上述前缀外，AuthMiddleware 后面的每个 handler 要么已在原生
+// BypassRule 内且自带 AdminToken/authz 守卫（如 /internal/*、/api/v1/plugins/*），
+// 要么在 handler 内自校验 API key（如 ChatHandler 的 keyVerifier 段，含经
+// GeminiHandler 转发的 /v1beta|/v1/models/{m}:generateContent）」。
+// 未来把任何无自守卫的新 handler 挂到顶层路径（或把现有自守卫 handler
+// 挪出这些前缀）时，必须同步加进本清单，否则 text/html 请求将匿名直达。
 var spaProtectedPrefixes = []string{"/v1", "/mock", "/plugins"}
 
 // isSPANavigation reports whether r looks like a browser page navigation

@@ -214,29 +214,70 @@ func Test244LayerProbeIsNotOneLayer(t *testing.T) {
 // character class extended to include '-' — and asserts the gap measurably
 // shrinks. If this test could pass while every probe returned MISS, the table
 // in Test244RedactionLayerRuleSurface would be unreadable.
+//
+// 2026-10-11 — the sample was moved from openai_sk_proj to slack_xoxb, and the
+// reason is that the original premise stopped being satisfiable rather than
+// merely stale.
+//
+// Audit 244 F2 (2026-10-10, security/sanitize/detector.go:179 and
+// configs/sensitive_patterns.yaml:95) deliberately widened the vendor-key shape
+// to
+//
+//	\b(?:sk|ak|key|token|api|bearer)[-_]?[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*\b
+//
+// because sk-proj-…/sk-ant-api03-…/sk-or-v1-… were silent misses that forwarded
+// plaintext keys upstream. That fix is correct and is gated separately by
+// security/sanitize/r244_vendor_key_shapes_test.go.
+//
+// The consequence for THIS control: a sample that the narrow rule misses and
+// the wide rule matches must begin with a prefixed family token followed by a
+// body carrying a hyphen. Every such string now starts with sk-/ak-, so the
+// production rule set matches all of them. There is no sample left that is
+// narrow-MISS, wide-MATCH and production-MISS simultaneously — the old control
+// was asserting a gap that F2 closed.
+//
+// slack_xoxb is a genuine remaining gap (detector MISS under BOTH rule sets,
+// per the census in Test244RedactionLayerRuleSurface) whose widened form would
+// be caught, so it carries the same discriminating weight the sk- sample used
+// to. Re-pinning to it keeps the control meaningful instead of deleting it.
+// Do not move this back to an sk-/ak- sample: doing so reintroduces a premise
+// F2 invalidated, and the failure will read as a production regression when it
+// is only a stale expectation.
 func Test244WideningRuleShrinksGap(t *testing.T) {
-	const proj = "sk-proj-T3BlbkFJc2VjcmV0S2V5MTIzNDU2Nzg5MA"
+	const xoxb = "xoxb-1234567890-abcdefghijklmnop"
 
 	// The production shape, copied as a literal rather than derived from the
 	// detector: sharing the constant with the expectation would let a rule
 	// change move the ruler and the reading at the same time.
-	narrow := regexp.MustCompile(`(sk|ak)-[a-zA-Z0-9]{16,}`)
-	wide := regexp.MustCompile(`(sk|ak)-[a-zA-Z0-9_-]{16,}`)
+	narrow := regexp.MustCompile(`(xoxb)-[a-zA-Z0-9]{16,}`)
+	wide := regexp.MustCompile(`(xoxb)-[a-zA-Z0-9_-]{16,}`)
 
-	if narrow.MatchString(proj) {
-		t.Fatalf("premise broken: the narrow rule is expected NOT to match %q", proj)
+	if narrow.MatchString(xoxb) {
+		t.Fatalf("premise broken: the narrow rule is expected NOT to match %q", xoxb)
 	}
-	if !wide.MatchString(proj) {
-		t.Fatalf("control failed: the widened rule is expected to match %q", proj)
+	if !wide.MatchString(xoxb) {
+		t.Fatalf("control failed: the widened rule is expected to match %q", xoxb)
 	}
 	// Asserted for EVERY rule set the gateway can run with, not just one.
 	// The point of the control is that the gap is a fact about the rules;
 	// pinning it to a single rule set would let the other one drift unnoticed.
 	for _, set := range req244RuleSets(t) {
-		if req244Layers(t, set.detector)[0].hit(proj) {
-			t.Fatalf("control failed: rule set [%s] is expected to MISS openai_sk_proj; "+
+		if req244Layers(t, set.detector)[0].hit(xoxb) {
+			t.Fatalf("control failed: rule set [%s] is expected to MISS slack_xoxb; "+
 				"if it now matches, the gap in the table is stale and pending decision 106 "+
 				"needs revisiting", set.name)
+		}
+	}
+
+	// F2 guard, kept adjacent so the two facts cannot drift apart: the sk-
+	// family that used to be this control's sample is now covered by BOTH rule
+	// sets. Without this, a future reader could reasonably "fix" the control
+	// back onto sk-proj and close the very gap F2 was written to remove.
+	for _, set := range req244RuleSets(t) {
+		if !req244Layers(t, set.detector)[0].hit("sk-proj-T3BlbkFJc2VjcmV0S2V5MTIzNDU2Nzg5MA") {
+			t.Fatalf("regression: rule set [%s] no longer catches openai_sk_proj; "+
+				"audit 244 F2 widened the vendor-key shape precisely to catch it, "+
+				"and a silent miss here forwards a plaintext key upstream", set.name)
 		}
 	}
 }

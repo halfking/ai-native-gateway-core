@@ -115,7 +115,7 @@ db_init::dump_prereqs() {
   extensions=$(PGPASSWORD="${PGPASSWORD:-}" psql "$db_url" -t -A -c "
     SELECT extname || '|' || extversion
     FROM pg_extension
-    WHERE extname IN ('plpgsql','pgcrypto','btree_gist','pg_trgm','uuid-ossp','citus','citus_columnar','vector','pg_stat_statements','pgstattuple')
+    WHERE extname IN ('plpgsql','pgcrypto','btree_gist','pg_trgm','uuid-ossp','citus','citus_columnar','pgcolumnar','vector','pg_stat_statements','pgstattuple')
     ORDER BY extname;
   " 2>/dev/null | sort)
 
@@ -146,14 +146,64 @@ db_init::dump_prereqs() {
         btree_gist)      echo "CREATE EXTENSION IF NOT EXISTS btree_gist  WITH SCHEMA public;   -- multi-column GiST indexes" ;;
         pg_trgm)         echo "CREATE EXTENSION IF NOT EXISTS pg_trgm     WITH SCHEMA public;   -- trigram fuzzy text search" ;;
         uuid_ossp|uuid-ossp) echo "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\" WITH SCHEMA public;   -- uuid_generate_v4() etc." ;;
-        citus)           echo "CREATE EXTENSION IF NOT EXISTS citus          WITH SCHEMA pg_catalog; -- distributed tables + coordinator" ;;
-        citus_columnar)  echo "CREATE EXTENSION IF NOT EXISTS citus_columnar WITH SCHEMA pg_catalog; -- columnar access method (default_table_access_method)" ;;
+        # citus / citus_columnar / pgcolumnar are mutually exclusive fallbacks
+        # for the `columnar` access method and MUST NOT be emitted flat: a
+        # plain CREATE EXTENSION IF NOT EXISTS suppresses only "already
+        # exists", never "extension not installable here". Emitting them flat
+        # aborts a fresh install on a host that has only one of the two. They
+        # are emitted once as the conditional block below instead.
+        citus|citus_columnar|pgcolumnar) : ;;
         vector)          echo "CREATE EXTENSION IF NOT EXISTS vector         WITH SCHEMA public;   -- pgvector embeddings" ;;
         pg_stat_statements)
                         echo "CREATE EXTENSION IF NOT EXISTS pg_stat_statements WITH SCHEMA public; -- query stats" ;;
         pgstattuple)     echo "CREATE EXTENSION IF NOT EXISTS pgstattuple    WITH SCHEMA public;   -- bloat/dead-tuple measurement" ;;
       esac
     done
+    # 2026-10-11: mirrors sql/schema/00-prereqs.sql verbatim. Previously this
+    # generator emitted flat per-extension lines and knew nothing about
+    # pgcolumnar, so regenerating the baseline silently dropped the pgColumnar
+    # fallback branch added by 4f5ae1a82 — sql/schema/generator_contract_test.go
+    # (TestGeneratorExtensionQueryCoversCommittedPrereqs) is the gate for that.
+    if printf '%s\n' "$extensions" | cut -d'|' -f1 | grep -qxE 'citus|citus_columnar|pgcolumnar'; then
+      cat <<'PREREQ_COLUMNAR_BLOCK'
+-- Columnar storage: Citus is the production choice, but it is not available on
+-- every host (it needs a C toolchain and a coordinated build). The MIT
+-- pgColumnar extension provides the same table access method semantics under a
+-- different name (`pgcolumnar` instead of `columnar`), so fall back to it
+-- rather than aborting the whole schema on a host without Citus.
+DO $$
+DECLARE
+  have_citus boolean;
+BEGIN
+  BEGIN
+    CREATE EXTENSION IF NOT EXISTS citus WITH SCHEMA pg_catalog;
+    have_citus := true;
+  EXCEPTION WHEN OTHERS THEN
+    have_citus := false;
+  END;
+
+  IF have_citus THEN
+    BEGIN
+      CREATE EXTENSION IF NOT EXISTS citus_columnar WITH SCHEMA pg_catalog;
+    EXCEPTION WHEN OTHERS THEN
+      RAISE NOTICE 'citus present but citus_columnar unavailable: %', SQLERRM;
+    END;
+  ELSE
+    RAISE NOTICE 'citus not available; falling back to pgcolumnar for USING columnar';
+    BEGIN
+      CREATE EXTENSION IF NOT EXISTS pgcolumnar;
+    EXCEPTION WHEN OTHERS THEN
+      RAISE EXCEPTION 'neither citus nor pgcolumnar is installable: %', SQLERRM;
+    END;
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM pg_am WHERE amname = 'columnar') THEN
+    EXECUTE 'CREATE ACCESS METHOD columnar TYPE TABLE HANDLER pgcolumnar.columnar_handler';
+  END IF;
+END
+$$;
+PREREQ_COLUMNAR_BLOCK
+    fi
     echo ""
     echo "-- Verify installed extensions match production"
     echo "-- Expected:"

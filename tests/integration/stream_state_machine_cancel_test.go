@@ -37,6 +37,13 @@ const cancelLatencyBudget = 30 * time.Millisecond
 // will trip the outer t.Deadline() and fail the test.
 const cancelTestOverallDeadline = 10 * time.Second
 
+// Bound for "the keep-alive ticker fired at least once". Generous
+// (200x the 5ms tick) on purpose: this is a liveness *precondition*,
+// not the thing under test, so it must not be the flaky edge. A ticker
+// that genuinely never starts still fails the test — just after this
+// budget instead of after 10ms.
+const tickerFirstFireBudget = time.Second
+
 // TestStreamStateMachine_CancelFromStreaming drives the state machine
 // all the way to StateStreaming, then issues a client cancel. The
 // cancel must propagate to StateCancelled within cancelLatencyBudget,
@@ -370,16 +377,28 @@ func TestStreamStateMachine_TickerGoroutineStopsOnCancel(t *testing.T) {
 	}
 
 	// Confirm the ticker is alive (otherwise the test below is
-	// meaningless). Channel-based wait (no time.Sleep for sync).
+	// meaningless). The predicate is "at least one keep-alive frame",
+	// but the *wait* must be a deadline poll rather than a single
+	// 2*interval sleep: 2*5ms is a zero-slack bet on the ticker
+	// goroutine getting scheduled within 10ms, which a loaded runner
+	// loses routinely (R50 遗留 #8 — same race the sibling test above
+	// documents). Measured under 12x CPU oversubscription, first fire
+	// lands at 6-14ms, so the old wait reported "never fired" for a
+	// ticker that was demonstrably alive (0/150 runs ever needed more
+	// than 2s). The leak assertions below are unaffected — they only
+	// need the ticker to have fired once, not to have fired fast.
 	if ps.Frames() == 0 {
-		select {
-		case <-time.After(2 * cancelTestTickerInterval):
-		case <-ctx.Done():
-			t.Fatalf("ctx done waiting for ticker to fire: %v", ctx.Err())
+		fireDeadline := time.Now().Add(tickerFirstFireBudget)
+		for ps.Frames() == 0 {
+			if time.Now().After(fireDeadline) {
+				t.Fatalf("ticker never fired within %v — leak check cannot proceed", tickerFirstFireBudget)
+			}
+			select {
+			case <-time.After(cancelTestTickerInterval):
+			case <-ctx.Done():
+				t.Fatalf("ctx done waiting for ticker to fire: %v", ctx.Err())
+			}
 		}
-	}
-	if ps.Frames() == 0 {
-		t.Fatalf("ticker never fired — leak check cannot proceed")
 	}
 
 	// Hammer the runtime with spurious events to maximise the chance

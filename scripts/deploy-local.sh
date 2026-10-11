@@ -1132,6 +1132,12 @@ build_frontend() {
         tail -40 "$web_log" >&2 || true
         die "frontend build failed (see $web_log) — refusing to deploy a release whose web/dist is stale"
       fi
+    elif [[ ! -f "$PROJECT_ROOT/web/dist/index.html" ]]; then
+      # 2026-10-11 2538 轮事故收口：node_modules 缺失时旧实现只 warn，而
+      # dist 也缺失（干净 checkout）时 staging 会把仅含 version.json 的空
+      # web/ 打进发布包，网关静态探测回落到源码 web/ 的未构建 Vite 模板
+      # ——浏览器白页。「保留既有 dist」只在 dist 真的存在时可接受。
+      die "web/node_modules missing AND web/dist/index.html absent — refusing to stage an empty web/ (2026-10-11 2538 white-page incident); install frontend deps first (corepack pnpm install --frozen-lockfile in web/)"
     else warn 'web/node_modules is missing; retaining existing web/dist'; fi
   fi
   # 2026-10-04 统一入口轮：web-mobile（Hyper 移动前端）与 web 同链路构建。
@@ -1145,7 +1151,9 @@ build_frontend() {
         tail -40 "$mobile_log" >&2 || true
         die "web-mobile build failed (see $mobile_log) — refusing to deploy a release without the mobile surface"
       fi
-    else warn 'web-mobile/node_modules is missing; bundle will stage an empty web-mobile (unified entry /m stays unregistered)'; fi
+    elif [[ ! -f "$PROJECT_ROOT/web-mobile/dist/index.html" ]]; then
+      die "web-mobile/node_modules missing AND web-mobile/dist/index.html absent — refusing to stage an empty web-mobile; install frontend deps first (corepack pnpm install --frozen-lockfile in web-mobile/)"
+    else warn 'web-mobile/node_modules is missing; retaining existing web-mobile/dist'; fi
   fi
 }
 

