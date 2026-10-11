@@ -14224,6 +14224,72 @@ DROP 旧视图时要删掉 **211,157 行 + 它们的索引** ⇒ **首次执行�
 4. 日志里 `refreshed session analytics view` 三条**每轮都出现**（不再是偶尔整轮消失）；
 5. 10 分钟差分窗口的第二轮读数落在 **~5 MB/轮** 附近（±50% 之内即算兑现）。
 
+### §10.106.46 重复索引复核：§10.56 的判决仍成立，但有三处要更新/新增
+
+全库扫了一遍**同定义重复索引**（19 张表命中），最大的仍是 `session_summaries`
+那一对。按纪律「台账已答过也要先核对它答得对不对」，复核如下。
+
+#### 一、判决复核：**结论不变，且今天重新实测过**
+
+```sql
+CREATE UNIQUE INDEX session_summaries_pkey            ON public.session_summaries USING btree (session_key)
+CREATE UNIQUE INDEX session_summaries_session_key_uidx ON public.session_summaries USING btree (session_key)
+```
+
+两条定义**逐字相同**（只差名字）；`session_summaries_session_key_uidx`
+的 `pg_constraint` 引用数 = **0**（不被任何约束背着）。
+⇒ 与 §10.56 的判决一致：**可裸删，删它不改变任何查询结果**。
+⚠️ §10.56.3 明确写了「上表仍是**建议**，不是已执行动作；DDL 未动」——
+**至今仍未执行**，本次复核没有改变这一点，只是再次确认结论成立。
+
+#### 二、⚠️ 两边的读数来自**不同的库**，不要当成「数字降了」
+
+- §10.56 的读数出自 **252**（「252 真机复跑输出」一节），
+  表里那列叫 `idx_scan(13d)`——**是被刻意 reset 过统计、量了 13 天**的数字。
+- 今天这次查的是 **154/245 共用的 `llm_gateway`（10.88.1.188）**，
+  `pg_stat_database.stats_reset` 为 **NULL**（从未重置）。
+
+⇒ 同一对索引，`idx_scan` 今天是 **750,150**（PK 25,065），
+台账记的是 **1,671,093**（PK 162,490）。
+⇒ **这两个数不可直接比较**：不同库、不同统计窗口。
+⚠️ **不要把它读成「使用量下降了 55%」**——那是拿两个量具的读数当同一条时间序列。
+
+#### 三、新增：台账的巡检**结构上找不到**的第三个索引
+
+今天这次是按「索引定义归一化后分组找重复」扫的，它**按定义只能报出同列的重复**。
+因此下面这个**它报不出来**：
+
+| 索引 | 定义 | 体量 | idx_scan | 被约束 |
+|---|---|---|---|---|
+| `session_summaries_session_key_per_tenant` | UNIQUE **(tenant_id, session_key)** | **45 MB** | **0** | **是** |
+
+⚠️ 它是**该表最大的单个索引**（45 MB > PK 39 MB > 可删副本 39 MB），
+而且**一次都没被用过**（idx_scan = 0）。
+⇒ 与 PK 的列不同 ⇒ 同定义分组**结构上不会**报它 ⇒ §10.56 也没有它。
+
+⇒ 但要动它**不是纯运维动作**：`DROP INDEX` 会被拒，必须先 `DROP CONSTRAINT`，
+而那个多租户唯一性约束**是谁在依赖，是语义决策**（代码里有没有按名引用、
+有没有依赖它做 `INSERT ... ON CONFLICT`）。
+⚠️ 且在解释 `idx_scan = 0` 之前**不要把统计状态当已知**：
+本轮同时观察到 `stats_reset` 为 NULL（从未重置）与 `last_analyze` 全空（§10.106.42），
+**这两件事互相矛盾**，尚未解释。
+
+#### 四、全库规模（154/245 共用库，今天实测）
+
+| 表 | 重复索引对 | 浪费 |
+|---|---|---|
+| `session_summaries` | `pkey` + `session_key_uidx` | **78 MB** |
+| `runtime_metrics` | `idx_rt_instance_time` + `idx_runtime_metrics_instance` | 2.6 MB |
+| `runtime_metrics` | `idx_rt_time` + `idx_runtime_metrics_timestamp` | 880 kB |
+| `routing_audit_log` | `idx_routing_audit_log_idempotency` + `uq_routing_audit_log_idem` | 376 kB |
+| 其余 15 张 | 各一对 | 各 16~32 kB |
+
+**合计浪费 ≈ 82 MB**，其中 95% 集中在 `session_summaries` 那一对。
+
+⇒ 这一刀的收益有两份：**回收 39 MB 存储** + **全库最热表的一个唯一列上，
+每行写入少维护一个索引**（`session_summaries` 是 session 生命周期的主写路径）。
+⚠️ 两者都需要生产 DDL 授权；本轮**未执行任何 DDL**。
+
 ---
 
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」
