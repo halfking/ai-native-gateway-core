@@ -209,34 +209,39 @@
 在本地任务注册表中已不存在（not found），无法回读其输出——按批判原则，
 它们的「succeeded」状态**不得**被转述为「已读取并确认」。
 
-### 下一轮提示词（2026-10-11 晚间审计轮更新）
+### 下一轮提示词（2026-10-12 深夜轮更新）
 
-1. **r1016/r1017 已随 2537/2539 上线（16:34，并行会话部署）——下轮对生产复验**：
-   `/v1/models` 带伪造 token 必须 401；`ssh ops@10.24.7.91 uptime` 与
-   `ssh ops@内网域名 uptime` 同放行；公网域名外传仍阻断。另验
-   12272e57c 的效果：probe 风暴应消失（此前 credential 19 连续失败 1058 次
-   仍被周期重探），`node_probe_state` 里 EOL 凭据应保持 ready、仅 binding 摘除。
-   蓝绿端口看 `/opt/llm-gateway-go/run/active-upstream.conf`。
-2. **上游可路由性（口径已修正）**：旧口径「成功率 ~50%」系统计噪音（探针失败 +
-   401 风暴混入），午间复测实况 503≈2.5%、11 时真实成功率约 75%（详见
-   `docs/audit/2026-10-11-154-503-口径修正与漂移清单.md`）。**模型目录漂移仍是
-   实体问题**：12 凭据、96 模型名 404/410。属数据/配置层决策（清退失效绑定 /
-   修模型目录 / 降权重），代码不可解，等用户拍板。**另注意生产
-   `archive_request_logs_default`（42703）是 754 修复前的坏版本，TTL 归档从未
-   工作，重放 754 即修（幂等，步骤在审计文档 §五）**。审计统计一律用热表，
-   别拿父表 `success` 列算比率（8h 滞后）。
-3. **fail-open 占位符透传遗留缺陷**：96 行样本、真值零泄漏、中低危，根因未定位；
+1. ~~r1016/r1017 生产复验~~ **已完成（深夜轮独立复验，非转抄 7d5efa21c）**：
+   154=2547、245=2546 均含 r1016/r1017/r1018；models 伪造 token 401、
+   ssh@IP/内网域名放行、npm install 放行、公网域名 403+`output_policy_blocked`、
+   EOL 凭据 healthy 仅 binding 摘除——全部通过，详见
+   `docs/audit/2026-10-12-深夜轮-r1018复验与拍板执行.md`。
+2. ~~漂移绑定 + archive 42703 两项拍板~~ **已执行（深夜轮）**：漂移绑定清退 228 条
+   （`model_probe_broken` 词汇，双备份表 `bak_20261011_drift_bindings{,_b}` 可逆，
+   残留 0）；archive 42703 发现已被部署链修复（函数体含 gw_session_id），手动
+   触发 `archive_request_logs_default(30)` 成功建出 `request_logs_archive_2026_08`。
+3. **深夜轮三项代码收口已推送（394da3d12）待部署**：EOL 识别改按 410 状态码
+   （不再押厂商措辞，404 保留措辞门槛）、A2 量具接
+   `/api/admin/anomaly-reporter/stats`、deploy-local 空 web/ refuse 门。
+   下次部署授权时随包上线（不要为它们单独赶一轮部署）。
+4. **probe_direct_auth_failed 是探针失败主体**（2546 上线后 30min 内 204 条，
+   集中在 8/18/19 等凭据）——凭据 key 疑似真死，数据/配置层清退决策待 owner。
+   失效 sk-* key 持有方通知（漂移文档 §三）仍未落地。审计统计一律用热表
+   `request_logs_hot` 或按 `error_kind` 细分，别拿父表 `success` 列算比率。
+5. **fail-open 占位符透传遗留缺陷**：96 行样本、真值零泄漏、中低危，根因未定位；
    推进需在 fail-open 分支加结构化日志 + 收集真实流量 + 另行发布授权。
-4. **还原半程**：601,914 行 `original_encrypted` 全 NULL。若用户要还原功能，
+6. **还原半程**：601,914 行 `original_encrypted` 全 NULL。若用户要还原功能，
    决策点是把 `db_sink.go` 加解密读取方（新代码）而不是配密钥（无读取方，
    配了也白配）。
-5. **晚间审计轮新增遗留**：(a) A2 的 `PermanentlyDisabled`/`PermanentRejections`
-   量具字段无生产消费方，接线到 /metrics 或 admin 端点；(b) deploy-local 对空
-   `web/` 补 refuse 门（52 行坑的代码侧收口）；(c) 12272e57c 的 EOL 措辞
-   contains 匹配脆弱（上游换文案即漏判回凭据级）；(d) 窗口外 8 条 UNMERGED
-   远端分支待维护者裁决（`2026-07-25-realtime-routing-self-heal`、
-   `fix/context-limit-p2-audit`、`fix/hotzone-plan-critical-audit` 等，最后
-   提交均 ≤09-28）。
+7. 窗口外分支：远端 UNMERGED 剩 3 条承载独有内容的
+   （`2026-07-25-realtime-routing-self-heal` 24 篇设计文档归档 +9536 行、
+   `fix/w5-ml-ci-runbook` +327、`fix/w6-monitor-docs` +613），留置待维护者
+   决定合并或放弃；本地分支已清空；已删 5 远端（3 条 patch-id 等价于 main、
+   2 条 3 行过期 README 徽章同步）+ 2 本地已合并。
+8. **批量操作量具坑（新增，判据纪律第 5 条）**：`node_probe_state` 被探针周期
+   并发改写，READ COMMITTED 逐语句快照会在改写窗口读到半写状态（深夜轮第一批
+   清退因此静默漏掉 cred 18/19 的 127 条——预览 234、执行 107，非数据变化）。
+   凡以它为源的批量操作一律 REPEATABLE READ 单快照 + 双时间点复验。
 
 ## 已完成（已推送）
 
@@ -272,11 +277,22 @@
    - **部署轮验证**：2538 上线后 127.0.0.1:8782 / mesh 8782 / mesh 8443
      (caddy) / 公网 443 SNI→252:9443→mesh 8782 四入口全绿，**收尾零孤儿
      进程**（新机制首次实战生效）。
+8. **2026-10-12 深夜轮**（r1018 生产复验 + 两项拍板执行 + 分支裁决），详见
+   `docs/audit/2026-10-12-深夜轮-r1018复验与拍板执行.md`：
+   - 独立复验 2546/245 + 2547/154 全通过（复验矩阵见审计文档 §二）；
+   - 漂移绑定清退 228 条（0 残留，双备份表可逆）；archive 42703 已被部署链
+     修复，手动触发归档验证通过；
+   - 三项代码收口（EOL 按 410 状态码 / A2 admin 端点 / refuse 门）已推送
+     394da3d12，**待下次部署**；
+   - 分支裁决：删 5 远端 + 2 本地，留 3 条独有内容远端；
+   - 新增量具坑：`node_probe_state` 并发改写窗口读半写（判据纪律第 5 条）。
 
 
 ## 剩余任务（按依赖顺序）
 
-0. **陈旧分支清理（窗口外遗留，下轮顺手项）**：本地分支 `fix/sanitize-mutation-tolerant-restore`（d47f52703，10-08）已被已合并的 v2（`fix/sanitize-mutation-tolerant-restore-v2`，7cbf65478）取代，远端引用已被 prune——下轮确认后 `git branch -D` 即可。
+~~0. **陈旧分支清理（窗口外遗留，下轮顺手项）**~~ **已完成（2026-10-12 深夜轮）**：
+`fix/sanitize-mutation-tolerant-restore-v2` 与 `fix/sanitize-hop-passthrough`
+均已 `git branch -d` 删除（当时确认已合并），本地仅剩 main。
 
 ### 任务 1 — 编译 / vet / gofmt / 单元测试
 
