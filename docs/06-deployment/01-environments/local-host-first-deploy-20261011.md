@@ -167,6 +167,37 @@ llm 三链路与兄弟域名 fake-ip 行为零回归。手术前的完整备份�
 > 同时匹配 `- name:` 头与缩进 `name:` 键。本轮两个中间态事故（组段头丢失、
 > rules 尾巴被砍）均在本地复现定位后修正，线上未受影响（备份恢复）。
 
+### 5.2 白页事故（2026-10-11 下午，2538→2540）
+
+`https://llm.itestu.cn/?login=1` 白页，根因**两层**：
+
+1. **PC 前端构建被静默跳过**：2538 部署时 checkout 里 `web/node_modules`
+   缺失，`build_frontend` 走「warn + 保留现有 web/dist」分支，而现有
+   `web/dist` 根本不存在 → 发布包 `web/` 只staging了一个 version.json。
+   网关进程 cwd=checkout 根，`defaultStaticDir()` 启动时探测
+   `web/dist`（缺）→ 回落 `web/`（**源码目录**）→ 把未构建的 Vite 模板
+   （`__LLMGW_DEPLOY_SEQ__` 占位符、`/src/main.ts`）当 SPA 首页发出 →
+   浏览器无可执行 JS，白页。**修法**：`corepack pnpm install --frozen-lockfile`
+   后重新 deploy（构建产物按请求读盘+重启重探测，2539 起恢复）。
+   ⚠️ 部署前置条件：`web/` 与 `web-mobile/` 都要先装好依赖；deploy-local
+   对「node_modules 缺失→staging 空 web/」目前只 warn 不拒绝（deploy-245
+   是 refuse 语义），建议后续补齐 refuse 门。
+2. **SPA 深链被全局鉴权截胡（紧邻缺陷，已修码）**：控制台 SPA 从
+   `/admin/*` 旧路由迁到顶层路由（`/dashboard`、`/login`、`/routing-v2/*`…）
+   后，`middleware/auth_mw.go` 的 BypassRule 名单没跟着更新——任何深链/
+   刷新（无 API key）在路由前 401 `missing_key` 裸 JSON，SPA 回退永远
+   走不到。**修法**（r2540）：`AuthMiddleware` 增加 SPA 导航放行——
+   `Accept: text/html` 的浏览器导航、且不在 `/v1`、`/mock`、`/plugins`
+   前缀内 → 放行给 mux（静态处理器仅服务 web/dist 白名单扩展 + index
+   回退，无新增暴露面；`/api/*`、`/admin/*` 本就 bypass 由 wrapAdmin
+   自守卫）。回归测试三件套 + 变异验证（middleware/auth_mw_test.go）。
+
+浏览器侧验收（IAB，127.0.0.1:8782）：登录 admin 成功、控制台外壳完整
+渲染（#2540）、深链 `/dashboard` 整页加载正常。首次启动激活向导会持续
+把路由弹回 `/bootstrap`——这是产品自身的激活门禁（License 决策属用户侧），
+非缺陷。另有一条非阻断提示「Stop-write switch is not explicitly
+configured」（数据状态无法确认新鲜度），待管理员在设置里显式配置。
+
 ## 6. 验证矩阵
 
 | 层 | 命令 | 结果（2026-10-11） |
