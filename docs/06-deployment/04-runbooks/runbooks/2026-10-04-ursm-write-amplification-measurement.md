@@ -13865,6 +13865,68 @@ session_task_stats           4,391,436           0   4,797,754     104,299
 它剩下的价值只有那 4 个读点不再依赖易碎的重构点（陈旧度读法更稳），
 **不足以单独支撑一次破坏性迁移**。而它砍不掉的那部分，正好是时间窗能砍的。
 
+### §10.106.40 迁移 855：给三兄弟加 30 天时间窗（**已提交，未部署**）
+
+#### 一、方案：**不需要状态表，也不需要改那 4 个读点**
+
+§10.106.34 的规格要求「新增状态表 + 把 4 个 `refreshed_at` 读点改读状态表」。
+实施时发现**那一步的前提是错的**：
+
+```sql
+-- 357 建出来的视图，目标列里本来就有 NOW()
+SELECT ..., NOW() as refreshed_at FROM session_summaries ...
+```
+
+⇒ **物化视图的定义里本来就可以出现 `NOW()`**。PG 只禁止它出现在
+索引表达式与生成列里，物化视图不受此限（357 早就在这么用，且在线上跑了两个月）。
+⇒ 直接写 `WHERE ... >= NOW() - INTERVAL '30 days'` 即可：
+**零状态表、零读点改动**，改动面从「迁移 + 4 处 Go」缩到「一个迁移」。
+
+`refreshed_at` 列**保留**——它承载 admin 侧 4 个读点，
+而 §10.106.39 已实测证明留着它并不额外付出写放大。
+
+#### 二、接线（刻意只登记一条腿）
+
+| 位置 | 处置 | 理由 |
+|---|---|---|
+| `sql/migrations/startup/855_*.sql` + `.down.sql` | 新增 | 迁移本体 |
+| `scripts/apply-db-revision-sequence.sh` 的 `files=(...)` | **登记**，紧随 357/358 | 357 建视图、358 建 `session_dim`（连接目标），855 必须在两者之后 |
+| installer `go:embed` / `embeddedSQLFiles` / `dbinit StartupFiles` / `installed_startup_migrations.tsv` | **不登记** | `session_dim` 由 350/358 建，而 357 本身就**不在** `StartupFiles` 里 ⇒ installer 路径上这三个视图压根不存在，登记 855 只会让全新安装在缺前置对象时失败 |
+
+⚠️ 这是**刻意的不对称**，不是漏登记：`files=(...)` 与 installer StartupFiles
+是两条独立投递腿（runbook §10.106.37 §四已记），此处只需要前者。
+
+#### 三、契约门 7 条 + 变异 7/7 变红
+
+`sql/migrations/startup/migration_855_test.go`。门钉的是**重建出来的形状**，
+因为 855 是 DROP + CREATE，视图本来就有，「建了视图」这种断言恒绿。
+
+| 判据 | 钉住什么 | 丢了会怎样 |
+|---|---|---|
+| `EveryViewGetsATimeWindow` | 三个视图**各自**带窗口 | 漏改一个，那个视图照旧全量重写 |
+| `WindowUsesLastRequestAtNotCreatedAt` | 按 `last_request_at` 而非 `created_at` | 三月创建、四月仍在用的会话被误排除 |
+| `KeepsRefreshedAtColumn` | 保留 `refreshed_at` | 新鲜度门永久读成 stale，静默回落基表查询 |
+| `UniqueIndexesSurviveTheRebuild` | 三条唯一索引重建 | **CONCURRENTLY 刷新整轮失败**，MV 冻在旧快照 |
+| `DropsEachViewBeforeRecreating` | DROP 先于 CREATE | CREATE 撞同名视图，迁移变成报错而非变更 |
+| `DownRestoresTheFullHistoryWindow` | down 真的去掉窗口 | down 复制 up，回滚静默无效 |
+| `DownRebuildsTheSameColumns` | down 列集与 up 一致 | 回滚变成改 schema |
+
+★ **判据自己撞了两次坑，都靠归因而不是改迁移修好的**：
+① `WHERE \w+\.last_request_at` 匹配不到 `session_client_stats` 的**无别名**列；
+② `WHERE last_request_at >=` 匹配到了 `active_sessions_24h` 的
+`FILTER (WHERE ...)`——**同列、同运算符、完全不同的含义**。
+⇒ 修法是把断言范围限定到 `FROM session_summaries` 之后的语句尾部，
+并给否定式判据配**阳性对照**（同样的正则去匹 `last_request_at` 必须命中，
+否则「不该匹配 created_at」可能只是因为正则什么都匹配不到）。
+
+#### 四、上线前必须知道的两件事
+
+1. **口径变更幅度**：报表的 task 维度从 104,299 组降到 1,832 组（-98.2%），
+   且数据最早只到 2026-08-06 ⇒ **八月整月从报表里消失**。
+2. **首次执行会比后续慢**：DROP 会取 ACCESS EXCLUSIVE，
+   与既有读事务排队；CREATE MATERIALIZED VIEW 单事务建完（实测聚合约 29s 热态）。
+   ⇒ 选低峰，并预期该窗口内读请求短暂阻塞（不是报错——旧视图在事务提交前仍可见）。
+
 ---
 
 ## §10.107 analyze 互斥锁的真实效果边界：它只防「同时」，不防「重复」
