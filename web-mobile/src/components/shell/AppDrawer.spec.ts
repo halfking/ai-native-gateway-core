@@ -29,7 +29,7 @@ vi.mock('@/hyper', async (importOriginal) => {
 
 let mounted: Array<{ unmount(): void }> = []
 
-async function mountDrawerAs(role: string) {
+async function mountDrawerAs(role: string, startPath = '/') {
   const pinia = createPinia()
   setActivePinia(pinia)
   useAuthStore().userInfo = {
@@ -46,7 +46,7 @@ async function mountDrawerAs(role: string) {
       ...DRAWER_NAV.map((n) => ({ path: n.to, component: { template: '<div/>' } })),
     ],
   })
-  await router.push('/')
+  await router.push(startPath)
   await router.isReady()
   const w = mount(AppDrawer, {
     props: { modelValue: true },
@@ -187,5 +187,71 @@ describe('isNavItemActive', () => {
   it('★ 前缀相同但不是子路径的不算激活（/logs 不激活 /logs-archive）', () => {
     const logs = DRAWER_NAV.find((n) => n.key === 'logs')!
     expect(isNavItemActive(logs, '/logs-archive')).toBe(false)
+  })
+})
+
+/**
+ * 抽屉导航后**必须收起**（2026-10-11 真机/模拟器端到端实测缺陷）。
+ *
+ * 现象：iOS 26 模拟器上 Maestro 连跑两轮同一段「打开抽屉 → 点供应商」，
+ * 一轮正常收起，另一轮**抽屉压在供应商列表上不消失**（抽屉里「供应商」
+ * 已高亮 ⇒ 路由确实变了，但面板还在）。后续点击全打在抽屉上，整页不可用。
+ *
+ * 根因边界：`watch(route.fullPath)` 单独作为收口存在竞态（路由变了但
+ * modelValue 没落下去）。判据因此钉在**点击本身**这条确定性路径上：
+ * 点导航项 ⇒ 立刻 emit('update:modelValue', false)，不依赖 watcher。
+ */
+describe('AppDrawer 导航后收起', () => {
+  beforeEach(() => {
+    for (const w of mounted) {
+      try { w.unmount() } catch { /* ignore */ }
+    }
+    mounted = []
+    document.body.innerHTML = ''
+    vi.resetAllMocks()
+  })
+
+  it('点导航项立即 emit update:modelValue=false（不依赖路由 watcher）', async () => {
+    const w = await mountDrawerAs('super_admin')
+    const link = Array.from(document.body.querySelectorAll<HTMLAnchorElement>('a.drawer__link'))
+      .find((a) => a.getAttribute('href') === '/providers')
+    expect(link, '抽屉里应有指向 /providers 的入口').toBeTruthy()
+    link!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+    expect(w.emitted('update:modelValue')).toContainEqual([false])
+  })
+
+  it('★ 点「当前已经在的」那个导航项也必须收起 —— 路由没变，watcher 不会响', async () => {
+    // 这条是本组判据里**唯一**能区分「点击收口」与「路由 watcher 收口」的：
+    // 已经停在 /providers 时再点 /providers，route.fullPath **不变**，
+    // watcher 根本不触发；只有点击自身那条收口才会 emit。
+    // 没有这条，上面两条即便把 @click 删掉也照样全绿（已实测）。
+    const w = await mountDrawerAs('super_admin', '/providers')
+    const self = Array.from(document.body.querySelectorAll<HTMLAnchorElement>('a.drawer__link'))
+      .find((a) => a.getAttribute('href') === '/providers')
+    expect(self, '应在 /providers 页仍能看到抽屉入口').toBeTruthy()
+    const before = (w.emitted('update:modelValue') ?? []).length
+    self!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+    const after = (w.emitted('update:modelValue') ?? []).slice(before)
+    expect(after, '路由未变化时点击也必须收起抽屉').toContainEqual([false])
+  })
+
+  it('每个导航项都带这个收口（白名单式：不靠抽样）', async () => {
+    const w = await mountDrawerAs('super_admin')
+    // 只取 <a>：抽屉里「我的」也是 .drawer__link，但它是个 <button>，
+    // emit 的是 account 而不是「收起」，混进来会让计数对不上。
+    const links = Array.from(document.body.querySelectorAll<HTMLAnchorElement>('a.drawer__link'))
+    expect(links.length).toBe(DRAWER_NAV.length)
+    for (const a of links) {
+      const before = (w.emitted('update:modelValue') ?? []).length
+      a.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await flushPromises()
+      const after = (w.emitted('update:modelValue') ?? []).slice(before)
+      expect(
+        after,
+        `导航项 ${a.getAttribute('href')} 点击后没有收起抽屉`,
+      ).toContainEqual([false])
+    }
   })
 })

@@ -44,6 +44,14 @@ watch(
 )
 
 // 路由跳转后收抽屉（02 §3 closeIfCompact 语义）
+//
+// ⚠️ 2026-10-11：**这条 watch 单独用是不够的**。iOS 26 模拟器上 Maestro 端到端
+// 实测，同一段「打开抽屉 → 点供应商」连跑两轮：一轮抽屉正常收起，另一轮
+// **抽屉压在供应商列表上不消失**（截图：抽屉里「供应商」已高亮=路由确实变了，
+// 但面板还在），后续所有点击都打在抽屉上，整页不可用。
+// 路由变了而 watcher 没把 modelValue 落下去 ⇒ 这是竞态，不能当唯一收口。
+// 下面 RouterLink 上的 @click 是**确定性**的那一道：点了就收，不依赖
+// 路由 watcher 恰好在这一轮触发。两条并存是刻意的冗余，不是重复代码。
 watch(
   () => route.fullPath,
   () => {
@@ -72,6 +80,7 @@ onBeforeUnmount(() => overlay.release())
               :to="item.to"
               class="drawer__link"
               :class="{ 'drawer__link--active': isNavItemActive(item, route.path) }"
+              @click="emit('update:modelValue', false)"
             >
               <AppIcon :name="item.icon" :size="20" />
               <span>{{ t(item.titleKey) }}</span>
