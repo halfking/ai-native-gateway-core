@@ -389,12 +389,41 @@ func (e *Executor) executeOpenAI(
 	// is irrelevant when no Responses body was prepared. The mode-fallback
 	// path populates ResponsesBodyBytes from the chat body before calling
 	// executeOpenAI, so reqprobe-driven Responses→Chat fallback still works.
+	//
+	// R-vapeur4 (2026-10-12, chat→responses proactive upgrade): the chat→
+	// responses bridge below (line ~1335) is REACTIVE — it only fires after
+	// the chat leg returns a 4xx with a verdict-matching body. For bindings
+	// whose /chat/completions leg is intermittently slow, returns 200 with
+	// empty content, or simply ignores chat requests (vapeur / grok-4.6 is
+	// the production example — capability row records /v1/responses → 200
+	// while /v1/chat/completions is unreliable in prod logs), that
+	// reactivity is a real user-visible regression: every chat-shape request
+	// spends one doomed upstream call before the bridge kicks in. When the
+	// binding has a VERIFIED positive capability row (SupportsNativeResponses
+	// known AND true), we instead upgrade proactively: convert the chat
+	// body to Responses-shape once at entry, then drive /v1/responses as the
+	// primary leg. Reactive bridge stays in place for unknown-capability or
+	// negative-capability bindings (preserves the existing fail-safe), and
+	// tryUnsupportedResponsesFallback below still flips back to chat if the
+	// proactive Responses call is itself rejected (so a stale capability row
+	// cannot deadlock the request).
+	proactiveResponsesBody, proactiveUpgraded := proactiveChatToResponsesUpgrade(cand, params)
+	if proactiveUpgraded {
+		slog.Debug("proactive chat→responses upgrade on verified capability",
+			"request_id", params.RequestID,
+			"provider_id", cand.ProviderID,
+			"credential_id", cand.CredentialID,
+			"raw_model", cand.RawModel,
+			"is_stream", params.IsStream,
+		)
+	}
+
 	nativeNonStream := cand.Protocol == providercatalog.ProtocolOpenAIResponses &&
 		cand.SupportsNativeResponses && !params.IsStream &&
-		len(params.ResponsesBodyBytes) > 0
+		(len(params.ResponsesBodyBytes) > 0 || len(proactiveResponsesBody) > 0)
 	nativeStream := cand.Protocol == providercatalog.ProtocolOpenAIResponses &&
 		cand.SupportsNativeResponsesStream && params.IsStream &&
-		len(params.ResponsesBodyBytes) > 0
+		(len(params.ResponsesBodyBytes) > 0 || len(proactiveResponsesBody) > 0)
 
 	// A live request is authoritative protocol-capability evidence on both an
 	// exact unsupported response and a completed native Responses exchange.
@@ -523,14 +552,27 @@ func (e *Executor) executeOpenAI(
 	// Declared here, before the retry loop, for the same reason as the other
 	// per-attempt locals: a mode fallback mutates them and returns
 	// retryableError, so they must survive into the next iteration.
-	upgradedFromChat := false
+	//
+	// R-vapeur4 (2026-10-12): upgradedFromChat is also set proactively below
+	// when proactiveChatToResponsesUpgrade produced a Responses body from the
+	// client's chat body. The success path must in both cases convert the
+	// Responses reply back into a chat envelope before writing it.
+	upgradedFromChat := proactiveUpgraded
 	var bodyBytes []byte
 	// R34-A1: responses 专属压缩链的 provenance JSON（strategy + dropped
 	// indexes + AlignmentMap）。proactive 与 4xx recovery 两条路径写入，
 	// preTrimMeta 构建处统一合入 request_logs.compression_meta。
 	var responsesProvenance []byte
 	if nativeNonStream || nativeStream {
-		sourceBody = append([]byte(nil), params.ResponsesBodyBytes...)
+		// R-vapeur4 (2026-10-12): prefer the proactively converted body over
+		// params.ResponsesBodyBytes. A genuine Responses client populates the
+		// latter; a chat client triggers the proactive path and has no value
+		// there yet.
+		if len(params.ResponsesBodyBytes) > 0 {
+			sourceBody = append([]byte(nil), params.ResponsesBodyBytes...)
+		} else {
+			sourceBody = proactiveResponsesBody
+		}
 		if len(sourceBody) == 0 {
 			return nil, &upstreampkg.Error{
 				Kind:       errorsx.KindUnsupportedFeature,
@@ -616,8 +658,21 @@ func (e *Executor) executeOpenAI(
 	// requests before the ordinary 5xx retry/failover branch handles relay 502s.
 	// The non-stream Responses handler can convert the Chat result only when it
 	// owns the final write (SuppressSuccessWrite).
+	//
+	// R-vapeur4 (2026-10-12): the original `!(nativeNonStream || nativeStream)`
+	// gate assumed a static starting leg (chat → /chat/completions; responses
+	// → /v1/responses). The proactive upgrade added in R-vapeur4 starts a chat
+	// client on the /v1/responses leg WITHOUT going through this function's
+	// gate contract — if the proactive call is itself rejected (stale capability
+	// row), we still want to fall back to chat. The verdict-only check that
+	// follows (ResponsesUnsupportedError) is what actually protects against
+	// false positives: it requires the upstream body to mention "responses api"
+	// AND a negation/redirect, which is only meaningful on a responses-leg
+	// rejection. Chat-leg rejections that match this detector still flow
+	// through the chat→responses reactive bridge above, which runs first in
+	// the upstream-handling chain.
 	tryUnsupportedResponsesFallback := func(status int, errorBody []byte, kind errorsx.ErrorKind, headers http.Header) (bool, error) {
-		if !(nativeNonStream || nativeStream) || probe.modeTried ||
+		if probe.modeTried ||
 			!providercap.ResponsesUnsupportedError(status, string(errorBody)) {
 			return false, nil
 		}
@@ -1332,7 +1387,7 @@ func (e *Executor) executeOpenAI(
 				// 早期实现对两者一视同仁地走「转成 chat」，于是 /v1/responses
 				// 客户端收到 chat.completion.chunk，responses handler 判不出终止帧
 				// → response.failed / All providers unavailable（真机实证）。
-				if !probe.modeTried && !upgradedFromChat &&
+				if !probe.modeTried &&
 					cand.Protocol == providercatalog.ProtocolOpenAIResponses &&
 					!nativeNonStream && !nativeStream &&
 					chatRequiresResponses(resp.StatusCode, string(body[:n])) {
@@ -2802,4 +2857,80 @@ func parseMiniMaxBaseResp(body []byte) (statusCode int, statusMsg string, isErro
 
 func classifyMiniMaxStatusCode(code int) errorsx.ErrorKind {
 	return vendorstrip.ClassifyMiniMaxStatusCode(code)
+}
+
+// proactiveChatToResponsesUpgrade converts a chat-format request to a
+// Responses-format body ahead of the first upstream call, but ONLY when the
+// binding's native-Responses capability has been positively verified. It is
+// the proactive counterpart to the reactive chat→responses bridge inside
+// executeOpenAI (line ~1335), which only fires after the chat leg returns a
+// 4xx with a verdict-matching body.
+//
+// Why proactive is needed at all (R-vapeur4, 2026-10-12): the chat leg can be
+// intermittently slow, return 200 with empty content, or simply be ignored by
+// the upstream (vapeur / grok-4.6 in prod — capability row records
+// /v1/responses → 200 while /v1/chat/completions returns 200 with body_bytes
+// 80 and 3-8s latency, sometimes a 5s-canceled timeout). The reactive bridge
+// catches the 4xx case but does nothing for 200-with-empty or 5xx-canceled —
+// every chat-shape request still spends one doomed upstream call.
+//
+// Gates (every clause must hold; all-or-nothing is intentional):
+//
+//   - cand.Protocol == openai-responses
+//     Without this the conversion would route to a non-Responses endpoint and
+//     always fail. Also matches the existing chat→responses reactive bridge
+//     gate.
+//   - cand.SupportsNativeResponsesKnown && cand.SupportsNativeResponses
+//     A missing or stale capability row MUST NOT trigger the proactive path;
+//     reactive bridge keeps handling that case unchanged. The two checks
+//     together mean "the capability table has a row saying supported=true for
+//     THIS (credential, model)".
+//   - !params.IsStream OR (params.IsStream && cand.SupportsNativeResponsesStream)
+//     Streaming requires its own positive capability row.
+//   - len(params.ResponsesBodyBytes) == 0
+//     A genuine Responses client already populated its own Responses body —
+//     nothing to upgrade. Without this guard we would silently overwrite the
+//     client's bytes with a converted chat body.
+//   - params.ClientProtocol != openai-responses
+//     Symmetric to the previous guard at the protocol layer.
+//   - len(params.BodyBytes) > 0
+//     Need a chat body to convert from. Empty body would be silently rewritten
+//     into an invalid Responses body and is more likely a misuse signal.
+//   - chatBodyToResponsesBody succeeds
+//     Pure conversion; failure falls back to the original chat leg (where
+//     the reactive bridge can still run if the upstream rejects chat).
+//
+// Returns nil/false when ANY gate fails. The caller MUST treat false as
+// "no proactive upgrade; use the original chat leg" — never as an error.
+//
+// Mirrored by the test TestProactiveChatToResponsesUpgrade_Gates in
+// proactive_responses_upgrade_test.go.
+func proactiveChatToResponsesUpgrade(cand provider.Candidate, params *ExecParams) (body []byte, upgraded bool) {
+	if cand.Protocol != providercatalog.ProtocolOpenAIResponses {
+		return nil, false
+	}
+	if !cand.SupportsNativeResponsesKnown || !cand.SupportsNativeResponses {
+		return nil, false
+	}
+	if params == nil {
+		return nil, false
+	}
+	if params.IsStream && !cand.SupportsNativeResponsesStream {
+		return nil, false
+	}
+	if len(params.ResponsesBodyBytes) > 0 {
+		// Genuine Responses client already provided its own body.
+		return nil, false
+	}
+	if params.ClientProtocol == providercatalog.ProtocolOpenAIResponses {
+		return nil, false
+	}
+	if len(params.BodyBytes) == 0 {
+		return nil, false
+	}
+	converted, ok := chatBodyToResponsesBody(params.BodyBytes, cand.RawModel)
+	if !ok {
+		return nil, false
+	}
+	return converted, true
 }
