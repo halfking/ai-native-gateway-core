@@ -221,6 +221,21 @@ type Classification struct {
 	// Reason is a human-readable explanation of the dominant signals
 	// that drove the classification. Surfaced in admin UI.
 	Reason string
+
+	// ExternalUsage records metered usage returned by an external classifier.
+	// It is audit metadata only; callers must not treat it as customer billing.
+	ExternalUsage *ExternalClassifierUsage
+}
+
+// ExternalClassifierUsage is provider-reported usage for a classifier call.
+// CostUSD is an estimate from deployment-configured pricing, never a charge.
+type ExternalClassifierUsage struct {
+	Provider          string  `json:"provider"`
+	Model             string  `json:"model,omitempty"`
+	InputTokens       int     `json:"input_tokens"`
+	OutputTokens      int     `json:"output_tokens"`
+	CostUSD           float64 `json:"cost_usd,omitempty"`
+	CostPricingSource string  `json:"cost_pricing_source,omitempty"`
 }
 
 // TaskScore pairs a task type with its computed score.

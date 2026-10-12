@@ -48,6 +48,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/memory" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/internal/markerbound"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -799,21 +800,34 @@ const maxCompactionBody = 4 << 20 // 4 MiB; the summary is bounded by max_tokens
 // trimTextToTokenBudget keeps the summarize input under tokenBudget
 // tokens by hard-truncating chars at the head. 3.5 chars/token heuristic
 // matches compressor/estimator.go.
+//
+// 2026-10-11: the cut is marker-aware (internal/markerbound). The input is
+// sanitized conversation text carrying {SENSITIVE:type:index} placeholders; a
+// byte cut through a marker mangles it, the summary LLM echoes the fragment,
+// and the mangled token later rides back to the client unrestored (or gets
+// the whole response blocked). The cut moves to the marker start so a
+// boundary marker stays whole, at most ~96 bytes over budget.
 func trimTextToTokenBudget(text string, tokenBudget int) string {
 	maxChars := tokenBudget * 7 / 2 // ×3.5 chars/token
 	if len(text) <= maxChars {
 		return text
 	}
-	return text[len(text)-maxChars:]
+	return text[markerbound.SafeCutKeepTail(text, len(text)-maxChars):]
 }
 
 // truncateForLog is a small helper for log output that bounds the
 // preview length so a giant upstream error body doesn't blow out slog.
+//
+// 2026-10-11: marker-aware for the same reason as trimTextToTokenBudget —
+// despite the name this also feeds the summarizer's conversation text
+// (tool arguments/results, conversation_text.go), so a cut through a
+// placeholder breaks its restoration. A boundary marker is kept whole
+// (≤ ~96 bytes over the bound).
 func truncateForLog(b []byte, n int) string {
 	if len(b) <= n {
 		return string(b)
 	}
-	return string(b[:n])
+	return string(b[:markerbound.SafeCutKeepHead(string(b), n)])
 }
 
 // buildUserSummaryInstruction composes the user-role prompt for the

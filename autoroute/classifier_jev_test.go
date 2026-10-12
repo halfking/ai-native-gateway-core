@@ -26,11 +26,12 @@ func jevTestClassifier(t *testing.T, handler http.HandlerFunc) (*JevClassifier, 
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	return &JevClassifier{
-		endpoint: srv.URL + "/v1/systemone",
-		apiKey:   "ts-test-key",
-		model:    jevDefaultModel,
-		timeout:  2 * time.Second,
-		http:     srv.Client(),
+		endpoint:                srv.URL + "/v1/systemone",
+		apiKey:                  "ts-test-key",
+		model:                   jevDefaultModel,
+		timeout:                 2 * time.Second,
+		inputPricePerMillionUSD: jevDefaultInputPricePerMillionUSD,
+		http:                    srv.Client(),
 	}, srv
 }
 
@@ -56,7 +57,8 @@ func TestJevClassifier_Success(t *testing.T) {
 					"probabilities": {"code": 0.82, "agent": 0.11, "chat": 0.07},
 					"confidence": 0.91
 				}
-			}
+			},
+			"usage": {"input_tokens": 123, "output_tokens": 4}
 		}`))
 	})
 
@@ -95,6 +97,12 @@ func TestJevClassifier_Success(t *testing.T) {
 	if cls.Classifier != "jev" {
 		t.Errorf("Classifier = %q, want jev", cls.Classifier)
 	}
+	if cls.ExternalUsage == nil || cls.ExternalUsage.InputTokens != 123 || cls.ExternalUsage.OutputTokens != 4 {
+		t.Fatalf("ExternalUsage = %+v, want input=123 output=4", cls.ExternalUsage)
+	}
+	if cls.ExternalUsage.CostUSD <= 0 {
+		t.Errorf("estimated classifier cost = %v, want positive configured estimate", cls.ExternalUsage.CostUSD)
+	}
 	if cls.Confidence < 0.9 || cls.Confidence > 0.92 {
 		t.Errorf("Confidence = %v, want ~0.91 from answer payload", cls.Confidence)
 	}
@@ -115,7 +123,7 @@ func TestJevClassifier_StateCappedAndCarriesSignals(t *testing.T) {
 		_ = json.Unmarshal(body, &req)
 		stateBytes, _ := json.Marshal(req.State)
 		_ = json.Unmarshal(stateBytes, &gotState)
-		_, _ = w.Write([]byte(`{"answers":{"task":{"type":"choice","choice":"chat","probabilities":{"chat":0.6},"confidence":0.5}}}`))
+		_, _ = w.Write([]byte(`{"usage":{"input_tokens":10,"output_tokens":1},"answers":{"task":{"type":"choice","choice":"chat","probabilities":{"chat":0.6},"confidence":0.5}}}`))
 	})
 
 	long := strings.Repeat("x", llmFallbackUserPromptLimit+500)
@@ -161,6 +169,12 @@ func TestJevClassifier_FailModes(t *testing.T) {
 		}},
 		{"unknown_task", func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte(`{"answers":{"task":{"type":"choice","choice":"quantum_gravity","probabilities":{"quantum_gravity":1.0},"confidence":0.9}}}`))
+		}},
+		{"missing_usage", func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"answers":{"task":{"type":"choice","choice":"chat","probabilities":{"chat":1.0},"confidence":0.9}}}`))
+		}},
+		{"negative_usage", func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"usage":{"input_tokens":-1,"output_tokens":0},"answers":{"task":{"type":"choice","choice":"chat","probabilities":{"chat":1.0},"confidence":0.9}}}`))
 		}},
 		{"bad_json", func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte(`not-json`))
@@ -244,6 +258,25 @@ func TestBuildJevClassifierFromEnv_Gating(t *testing.T) {
 	}
 	if clf.timeout != 1500*time.Millisecond {
 		t.Errorf("timeout = %v, want 1.5s", clf.timeout)
+	}
+	if clf.inputPricePerMillionUSD != jevDefaultInputPricePerMillionUSD || clf.outputPricePerMillionUSD != jevDefaultOutputPricePerMillionUSD {
+		t.Errorf("default price = input %v / output %v, want %v / %v", clf.inputPricePerMillionUSD, clf.outputPricePerMillionUSD, jevDefaultInputPricePerMillionUSD, jevDefaultOutputPricePerMillionUSD)
+	}
+	priced, ok := BuildJevClassifierFromEnv(env(map[string]string{
+		"LLM_GATEWAY_JEV_CLASSIFIER":                   "true",
+		"TYPESAFE_API_KEY":                             "ts-k",
+		"LLM_GATEWAY_JEV_INPUT_PRICE_PER_MILLION_USD":  "0.1",
+		"LLM_GATEWAY_JEV_OUTPUT_PRICE_PER_MILLION_USD": "0.2",
+	}))
+	if !ok || priced.inputPricePerMillionUSD != 0.1 || priced.outputPricePerMillionUSD != 0.2 {
+		t.Errorf("price overrides not honored: %+v", priced)
+	}
+	if clf, ok := BuildJevClassifierFromEnv(env(map[string]string{
+		"LLM_GATEWAY_JEV_CLASSIFIER":                  "true",
+		"TYPESAFE_API_KEY":                            "ts-k",
+		"LLM_GATEWAY_JEV_INPUT_PRICE_PER_MILLION_USD": "NaN",
+	})); ok || clf != nil {
+		t.Errorf("non-finite pricing must keep Jev disabled: classifier=%+v", clf)
 	}
 
 	base, ok := BuildJevClassifierFromEnv(env(map[string]string{

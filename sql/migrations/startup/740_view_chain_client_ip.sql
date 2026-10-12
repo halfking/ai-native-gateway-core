@@ -372,29 +372,40 @@ END $$;
 
 -- 列数对账（fail-closed，738/R56 先例：ON_ERROR_STOP 不拦 WARNING，
 -- regexp 未命中静默交付残缺视图链正是要防的事故形态）。
+-- 2026-10-11 host-first deploy: bottom/mid 原为冻结形态绝对列数（110/111，
+-- 252 历史快照标定）。动态交集形态（680b 引导重建 / Go ensure
+-- ensureRequestLogsCurrentMonthView 的 hot∩parent 自愈，base 含 487/491
+-- 族后加列）下 bottom 合法列数远大于 110，绝对断言必炸。改为结构断言：
+--   (a) bottom/mid 都暴露 client_ip（regexp 未命中的核心事故形态）
+--   (b) mid = bottom + 1（customer_id 层未被破坏）
+--   (c) top = 115（列契约绝对数，两种形态一致，维持原断言）
 DO $$
 DECLARE
-  cnt integer;
+  cnt_bot integer; cnt_mid integer; cnt_top integer;
+  bot_ip boolean; mid_ip boolean;
 BEGIN
-  SELECT count(*) INTO cnt
+  SELECT count(*), COALESCE(bool_or(column_name='client_ip'), false) INTO cnt_bot, bot_ip
     FROM information_schema.columns
    WHERE table_schema='public' AND table_name='request_logs_with_current_month_without_customer_id';
-  IF cnt <> 110 THEN
-    RAISE EXCEPTION '740: request_logs_with_current_month_without_customer_id column count = % (expected 110); bottom view rebuild did not converge — aborting migration (738 idiom, frozen view bodies 680/717/734)', cnt;
-  END IF;
-  SELECT count(*) INTO cnt
+  SELECT count(*), COALESCE(bool_or(column_name='client_ip'), false) INTO cnt_mid, mid_ip
     FROM information_schema.columns
    WHERE table_schema='public' AND table_name='request_logs_with_current_month_without_request_class_due_at';
-  IF cnt <> 111 THEN
-    RAISE EXCEPTION '740: request_logs_with_current_month_without_request_class_due_at column count = % (expected 111); middle view rebuild did not converge — aborting migration', cnt;
+  IF NOT bot_ip THEN
+    RAISE EXCEPTION '740: bottom view does not expose client_ip (count=%); bottom view rebuild did not converge — aborting migration (738 idiom)', cnt_bot;
   END IF;
-  SELECT count(*) INTO cnt
+  IF NOT mid_ip THEN
+    RAISE EXCEPTION '740: middle view does not expose client_ip (count=%); middle view rebuild did not converge — aborting migration', cnt_mid;
+  END IF;
+  IF cnt_mid <> cnt_bot + 1 THEN
+    RAISE EXCEPTION '740: middle view count % <> bottom+1 %; wrapper layering broken — aborting migration', cnt_mid, cnt_bot;
+  END IF;
+  SELECT count(*) INTO cnt_top
     FROM information_schema.columns
    WHERE table_schema='public' AND table_name='request_logs_with_current_month';
-  IF cnt <> 115 THEN
-    RAISE EXCEPTION '740: request_logs_with_current_month column count = % (expected 115); view chain rebuild did not converge — aborting migration', cnt;
+  IF cnt_top <> 115 THEN
+    RAISE EXCEPTION '740: request_logs_with_current_month column count = % (expected 115); view chain rebuild did not converge — aborting migration', cnt_top;
   END IF;
-  RAISE NOTICE '740: view chain column counts = 110/111/115 OK';
+  RAISE NOTICE '740: view chain column counts = %/%/115 OK (structural: client_ip on bottom+mid, mid=bottom+1)', cnt_bot, cnt_mid;
 END $$;
 
 -- Ledger self-registration（710/734/738 惯例）

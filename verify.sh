@@ -47,6 +47,12 @@ bash tests/deploy_timeout_portability_test.sh
 echo "[verify] 252-monitor single-instance gate contracts"
 bash tests/monitor_single_instance_gate_test.sh
 
+# 2026-10-11：2533 部署轮遗留 4 个孤儿网关（stop_instance 只发 TERM 不等待、
+# cutover 重试后旧 pid 失去 pidfile 引用）。这道零外部依赖门锁住
+# TERM→KILL 升级与部署收尾 reap_stray_gateways 的行为（含变异验证）。
+echo "[verify] deploy-local orphan gateway reap contracts"
+bash tests/deploy_local_reap_test.sh
+
 echo "[verify] pre-commit checks"
 ./scripts/pre-commit-check.sh
 

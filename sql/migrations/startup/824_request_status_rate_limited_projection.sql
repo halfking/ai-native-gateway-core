@@ -97,6 +97,8 @@ DO $$
 DECLARE
   base_has_fp   boolean;
   base_has_raw  boolean;
+  v824_col      text;
+  v824_base_has_col boolean;
   middle_cols   text;
   append_cols   text := 'source.request_class, source.due_at, source.origin_stage, source.token_band, source.client_forwarded_for';
   lateral_h     text := 'h.request_class, h.due_at, h.origin_stage, h.token_band, h.client_forwarded_for';
@@ -156,6 +158,24 @@ BEGIN
       lateral_h   := lateral_h || ', h.raw_model_name';
       lateral_p   := lateral_p || ', p.raw_model_name';
     END IF;
+    -- 2026-10-11 host-first deploy: 动态交集形态（680b 引导重建 / Go 自愈
+    -- 重建的 base 自带后加列）下，origin_stage / token_band /
+    -- client_forwarded_for 已在 wrapper 基座里，再从 lateral 追加会让
+    -- v.* 与 source.* 同名同位——names 里的裸引用即歧义（42702）。逐列
+    -- 探测：基座已有则从追加清单剔除（与 815 同款，冻结形态行为不变）。
+    FOREACH v824_col IN ARRAY ARRAY['origin_stage','token_band','client_forwarded_for'] LOOP
+      SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'request_logs_with_current_month_without_customer_id'
+          AND column_name = v824_col
+      ) INTO v824_base_has_col;
+      IF v824_base_has_col THEN
+        append_cols := regexp_replace(append_cols, ', source\.' || v824_col, '');
+        lateral_h   := regexp_replace(lateral_h, ', h\.' || v824_col, '');
+        lateral_p   := regexp_replace(lateral_p, ', p\.' || v824_col, '');
+      END IF;
+    END LOOP;
 
     SELECT COALESCE(string_agg(quote_ident(a.attname), ', ' ORDER BY a.attnum), '')
       INTO middle_cols

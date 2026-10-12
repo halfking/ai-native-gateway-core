@@ -49,6 +49,9 @@ type Decision struct {
 	// Reason is the human-readable explanation (shown in admin UI).
 	Reason string
 
+	// ExternalUsage is provider-reported classifier usage for server-side audit.
+	ExternalUsage *ExternalClassifierUsage
+
 	// CandidatesTopN is the top-N candidates sorted by descending score.
 	// The first element is the winner. Used for audit and admin UI.
 	CandidatesTopN []ScoredCandidate
@@ -699,6 +702,7 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 		Profile:            profile,
 		Classifier:         cls.Classifier,
 		Reason:             cls.Reason,
+		ExternalUsage:      cls.ExternalUsage,
 		CandidatesTopN:     recommended,
 		DecidedAt:          time.Now(),
 		RoutingSource:      routingSource,

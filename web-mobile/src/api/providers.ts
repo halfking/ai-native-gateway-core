@@ -28,6 +28,64 @@ export interface Provider {
   [k: string]: unknown
 }
 
+export interface ProviderDetail extends Provider {
+  kind?: string
+  category?: string
+  vendor_name?: string | null
+  egress_profile?: string | null
+  header_profile_code?: string | null
+  domestic?: boolean
+  discount_rate?: number
+  active_cred_count?: number
+  healthy_cred_count?: number
+  warning_cred_count?: number
+  cooling_cred_count?: number
+  unreachable_cred_count?: number
+  available_model_count?: number
+  unavailable_model_count?: number
+  error_rate_24h?: number
+  health_checked_at?: string | null
+  created_at?: string | null
+}
+
+export interface ProviderCredentialDetail {
+  id: number
+  label: string
+  status: string
+  lifecycle_status?: string | null
+  availability_state?: string | null
+  health_status?: string | null
+  health_error?: string | null
+  state_reason_detail?: string | null
+  manual_disabled?: boolean
+  total_requests?: number
+  total_cost_usd?: number | string
+  total_prompt_tokens?: number
+  total_completion_tokens?: number
+  balance_usd?: number | string | null
+  updated_at?: string
+}
+
+export interface ProviderModelOffer {
+  id: number
+  credential_id: number
+  credential_label: string
+  raw_model_name: string
+  standardized_name: string | null
+  display_name: string
+  available: boolean
+  unavailable_reason: string | null
+  p95_latency_ms: number | null
+  success_rate: number | null
+  input_price: number | null
+  output_price: number | null
+  cache_read_price?: number | null
+  cache_write_price?: number | null
+  routing_tier: string
+  availability_source: string
+  canonical_name?: string
+}
+
 /** 与桌面 providers.ts:107-113 的四态口径一致，避免「true=only / false=exclude」二义。 */
 export type RoutabilityFilter = 'available' | 'unavailable' | 'no_models' | 'manual_disabled' | 'all'
 
@@ -46,6 +104,26 @@ export function getProviders(
     undefined,
     options,
   ).then(unwrapProviders)
+}
+
+export function getProviderDetail(id: number, options?: RequestOptions): Promise<ProviderDetail> {
+  return req<ProviderDetail>('GET', `/api/providers/${id}`, undefined, options)
+}
+
+export function getProviderCredentials(id: number, options?: RequestOptions): Promise<ProviderCredentialDetail[]> {
+  return req<ProviderCredentialDetail[]>('GET', `/api/providers/${id}/credentials`, undefined, options)
+}
+
+export function getProviderModels(id: number, options?: RequestOptions): Promise<ProviderModelOffer[]> {
+  return req<ProviderModelOffer[]>('GET', `/api/providers/${id}/models`, undefined, options)
+}
+
+export function toggleProvider(id: number, options?: RequestOptions): Promise<{ message: string }> {
+  return req('PATCH', `/api/providers/${id}/toggle`, undefined, options)
+}
+
+export function setProviderManualDisabled(id: number, manual_disabled: boolean, reason = '', options?: RequestOptions): Promise<{ message: string; manual_disabled: boolean; actor: string }> {
+  return req('PATCH', `/api/providers/${id}/manual-disabled`, { manual_disabled, reason }, options)
 }
 
 /**

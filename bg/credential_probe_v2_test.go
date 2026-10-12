@@ -339,3 +339,97 @@ func TestUniqueStringSet(t *testing.T) {
 		}
 	}
 }
+
+// 2026-10-11 回归（154 生产）：nvidia integrate 的 EOL 文案
+// "has reached its end of life ... and is no longer available"（chat 410）
+// 此前匹配不上 isPerModelChatFailure，被归类为凭据级 unreachable，
+// credential 19 连续失败 1058 次仍在被周期重探，且每次失败触发兄弟模型
+// request_failure 重入队（probe 风暴）。必须归为 BindingOnly。
+func TestClassifyProbeFailure_ModelEOLEndOfLifeIsBindingOnly(t *testing.T) {
+	// 154 journal 2026-10-11 01:13:37 原始报错（credential 19,
+	// deepseek-ai/deepseek-v4-flash, nvidia integrate API）。
+	pr := classifyProbeFailure(`chat unreachable (after 3 attempts): chat status 410: {"type":"about:blank","title":"Gone","status":410,"detail":"The model 'deepseek-ai/deepseek-v4-flash' has reached its end of life on 2026-08-07T09:00:00Z and is no longer available."}`)
+	if !pr.BindingOnly {
+		t.Fatalf("EOL 410 must be binding-only, got %+v", pr)
+	}
+	if pr.AvailabilityState != "ready" {
+		t.Fatalf("EOL 410 AvailabilityState = %q, want ready (siblings stay routable)", pr.AvailabilityState)
+	}
+	if pr.HealthStatus != "warning" || pr.StateReasonCode != "model_binding_error" {
+		t.Fatalf("EOL 410 classification wrong: %+v", pr)
+	}
+}
+
+// "end of life" 措辞从 /v1/models 通道来时仍是凭据级错误 ——
+// 守卫必须继续要求 chat 级 404/410 前缀。
+func TestClassifyProbeFailure_ModelsEndpointEOLEndOfLifeRemainsCredentialScoped(t *testing.T) {
+	pr := classifyProbeFailure(`models endpoint unreachable (after 3 attempts): status 410: {"detail":"The model 'x' has reached its end of life and is no longer available."}`)
+	if pr.BindingOnly {
+		t.Fatalf("models endpoint EOL must remain credential-scoped: %+v", pr)
+	}
+	if pr.AvailabilityState != "unreachable" {
+		t.Fatalf("models endpoint EOL AvailabilityState = %q, want unreachable", pr.AvailabilityState)
+	}
+}
+
+// 2026-10-11 晚（r1018 后续收口）：分类主信号从措辞换成 HTTP 状态码。
+// 12272e57c 的措辞表只覆盖 nvidia 的确切文案，上游换措辞（或新厂商用
+// 不同的下架文案）就会静默翻回凭据级 unreachable → probe 风暴复发。
+// 410 Gone 本身是标准化信号，必须与正文措辞无关地归 binding 级。
+func TestClassifyProbeFailure_Chat410IsBindingOnlyRegardlessOfWording(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  string
+	}{
+		{
+			// 措辞被上游改掉后本仓从未见过的假想新文案——旧措辞表判据
+			// 在这条上是凭据级（风暴复发点），新判据必须仍是 binding 级。
+			name: "reworded_eol_body",
+			msg:  `chat unreachable (after 3 attempts): chat status 410: {"error":"model_retired","message":"此模型已停止服务"}`,
+		},
+		{
+			name: "410_with_no_parseable_body",
+			msg:  `chat unreachable (after 3 attempts): chat status 410: <binary>`,
+		},
+		{
+			name: "messages_channel_410",
+			msg:  `messages unreachable (after 3 attempts): messages status 410: {"detail":"gone"}`,
+		},
+	}
+	for _, tc := range cases {
+		pr := classifyProbeFailure(tc.msg)
+		if !pr.BindingOnly {
+			t.Fatalf("%s: chat 410 must be binding-only regardless of body wording, got %+v", tc.name, pr)
+		}
+		if pr.AvailabilityState != "ready" || pr.StateReasonCode != "model_binding_error" {
+			t.Fatalf("%s: classification wrong: %+v", tc.name, pr)
+		}
+	}
+}
+
+// 对照组：404 仍然歧义（探针路径写错与模型下线同形），没有措辞信号时
+// 必须保持凭据级默认分支——这条防止「状态码足够」被扩大到 404。
+func TestClassifyProbeFailure_Chat404WithoutWordingStaysCredentialScoped(t *testing.T) {
+	pr := classifyProbeFailure(`chat unreachable (after 3 attempts): chat status 404: {"error":"not_found"}`)
+	if pr.BindingOnly {
+		t.Fatalf("chat 404 without wording signal must stay credential-scoped: %+v", pr)
+	}
+}
+
+// 前缀是本包 fmt.Sprintf 生成的内部契约；提取器只认 chat/messages 两个
+// 前缀，/v1/models 通道（"models endpoint unreachable ... status 410"）
+// 不得被误提。这钉的是提取器自身，防止未来扩成「全文找三位数字」。
+func TestChatProbeStatusCodeOnlyTrustsOwnPrefixes(t *testing.T) {
+	if got := chatProbeStatusCode(`chat unreachable (after 3 attempts): chat status 410: body`); got != 410 {
+		t.Fatalf("chat prefix extraction = %d, want 410", got)
+	}
+	if got := chatProbeStatusCode(`messages unreachable (after 3 attempts): messages status 404: body`); got != 404 {
+		t.Fatalf("messages prefix extraction = %d, want 404", got)
+	}
+	if got := chatProbeStatusCode(`models endpoint unreachable (after 3 attempts): status 410: body`); got != 0 {
+		t.Fatalf("models channel must not be extracted (credential-scoped), got %d", got)
+	}
+	if got := chatProbeStatusCode(`chat unreachable: chat status 41: body`); got != 0 {
+		t.Fatalf("two-digit run must not parse, got %d", got)
+	}
+}

@@ -1282,6 +1282,17 @@ func (it *SanitizeRestoreInterceptor) restoreStreamAnthropicDelta(ctx context.Co
 	} else if didChange {
 		changed = true
 	}
+	// 2026-10-11: thinking 增量（delta.type=thinking_delta）与 text 同为客户端
+	// 可见正文。两个来源都会把请求里的占位符回显进思考流——原生 Anthropic
+	// extended thinking 透传，以及 chat→anthropic 桥把上游 reasoning_content
+	// 合成成 thinking_delta（anthropic_stream.go）。此前 thinking 不在任何
+	// 还原通道里：已映射的占位符原样下发（未还原），残缺标记则让
+	// containsReservedJSONToken 把整帧（及其后所有帧）阻断。
+	if didChange, blocked := it.restoreStreamStringField(ctx, delta, "thinking", sm, state, "anthropic."+index+".thinking"); blocked {
+		return changed, true
+	} else if didChange {
+		changed = true
+	}
 	// Anthropic tool_use.input 是 partial JSON：先把增量累计成一个 JSON 字符串
 	// 做占位符替换（占位符必须整段出现才会被识别，所以一般 incremental
 	// 输出含 partial 字段名/数字的场景不会误命中；只要完整 JSON 落地时
@@ -1330,6 +1341,55 @@ func (it *SanitizeRestoreInterceptor) restoreStreamResponsesDelta(ctx context.Co
 	}
 	lane := "responses." + t + "." + streamLaneValue(raw, "output_index", 0) + "." + streamLaneValue(raw, "content_index", 0) + "." + streamLaneValue(raw, "summary_index", 0) + "." + streamLaneID(raw, "item_id")
 	return it.restoreStreamStringField(ctx, raw, field, sm, state, lane)
+}
+
+// restoreStreamResponsesTerminal restores markers inside the full-text trees
+// that Responses terminal and summary events embed: response.completed /
+// response.incomplete carry the whole response object, response.output_item.done
+// carries one complete output item, and the *.part.done events carry the final
+// summary/text part. Upstream never saw restored values, so these nested trees
+// hold the raw placeholders even though every per-delta lane was already
+// restored — without this walker the terminal frame failed the residual probe
+// and was blocked, truncating the client stream after all content deltas had
+// been delivered. The nested trees are walked by the same restorers the
+// non-stream Responses body uses, so mapped markers restore, unmapped ones
+// redact, and anything left in unowned vendor fields still fails closed.
+func (it *SanitizeRestoreInterceptor) restoreStreamResponsesTerminal(ctx context.Context, raw map[string]any, sm SanitizeMap, _ *streamRestoreState) (bool, bool) {
+	t, _ := raw["type"].(string)
+	switch t {
+	case "response.completed", "response.incomplete":
+		resp, ok := raw["response"].(map[string]any)
+		if !ok {
+			return false, false
+		}
+		changed, _, err := it.restoreNativeResponsesBody(ctx, resp, sm)
+		if err != nil {
+			return false, true
+		}
+		return changed, false
+	case "response.output_item.done":
+		item, ok := raw["item"].(map[string]any)
+		if !ok {
+			return false, false
+		}
+		pseudo := map[string]any{"object": "response", "output": []any{item}}
+		changed, _, err := it.restoreNativeResponsesBody(ctx, pseudo, sm)
+		if err != nil {
+			return false, true
+		}
+		return changed, false
+	case "response.content_part.done", "response.reasoning_summary_part.done":
+		part, ok := raw["part"].(map[string]any)
+		if !ok {
+			return false, false
+		}
+		didChange, err := restoreNativeTextField(ctx, it.sanitizer, part, "text", sm)
+		if err != nil {
+			return false, true
+		}
+		return didChange, false
+	}
+	return false, false
 }
 
 func streamLaneValue(object map[string]any, key string, fallback int) string {

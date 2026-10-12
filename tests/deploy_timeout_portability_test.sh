@@ -16,7 +16,7 @@
 # ## 为什么单独一个文件，而不是并进 deploy_local_contract_test.sh
 #
 # 那套契约测试依赖共享部署库 SSOT（AIAN_DEPLOY_LIB 默认解析到
-# $HOME/workspace/ai-native-tools/deploy-lib）。CI runner 上没有这个目录，整个套件
+# $HOME/workspace/ai-native-workspace/deploy-lib）。CI runner 上没有这个目录，整个套件
 # 会在 line 165 的 fixture 组装处 `cd` 失败并 exit 64——**接进 verify.sh 会直接把
 # 主门跑挂**。本文件只做两件事：静态断言没有裸 timeout，以及行为断言 _dl_timeout
 # 真的会超时。零外部依赖，因此在任何 runner（含 macOS）都能跑。

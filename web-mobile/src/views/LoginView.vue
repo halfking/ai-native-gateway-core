@@ -126,6 +126,9 @@ async function submit(): Promise<void> {
             type="password"
             name="password"
             autocomplete="current-password"
+            data-lpignore="true"
+            data-1p-ignore="true"
+            data-form-type="other"
             required
           />
         </label>

@@ -16,7 +16,7 @@ func (c *countingClassifier) Classify(_ context.Context, signals ClassificationS
 	c.mu.Lock()
 	c.calls++
 	c.mu.Unlock()
-	return &Classification{Primary: TaskCode, Confidence: 0.9, Signals: signals, Secondary: []TaskScore{{Task: TaskChat, Score: 0.1}}}, nil
+	return &Classification{Primary: TaskCode, Confidence: 0.9, Signals: signals, Secondary: []TaskScore{{Task: TaskChat, Score: 0.1}}, ExternalUsage: &ExternalClassifierUsage{Provider: "test", InputTokens: 12}}, nil
 }
 
 func (c *countingClassifier) Name() string { return "counting" }
@@ -76,6 +76,9 @@ func TestCachedClassifierAvoidsRepeatedClassification(t *testing.T) {
 	}
 	if second.Secondary[0].Score != 0.1 {
 		t.Fatalf("cached result was not defensive copied: %+v", second.Secondary)
+	}
+	if first.ExternalUsage == nil || second.ExternalUsage != nil {
+		t.Fatalf("usage should be attributed to the cache miss only: first=%+v second=%+v", first.ExternalUsage, second.ExternalUsage)
 	}
 }
 

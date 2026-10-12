@@ -145,6 +145,14 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/564_session_summary_backfill_safe.sql"
   "$ROOT_DIR/sql/migrations/startup/644_tuning_views_selfcheck_and_candidate_failure_cache.sql"
   "$ROOT_DIR/sql/migrations/startup/645_session_bodies_hot_request_unique_repair.sql"
+  # 2026-10-10 host-first deploy: 650/656 ALTER public.auto_route_selections,
+  # which on a normal host is created by the gateway's own ensure chain during
+  # startup. On a docker-less host-first deploy the sequence runs BEFORE that
+  # chain has ever booted, so the table did not exist yet and 650 aborted with
+  # 42P01 'relation public.auto_route_selections does not exist'. 478 is the
+  # migration that creates it; it is idempotent (DO block guarded by an
+  # existence check plus 6x IF NOT EXISTS) and must run before 650.
+  "$ROOT_DIR/sql/migrations/startup/478_auto_route_affinity.sql"
   "$ROOT_DIR/sql/migrations/startup/650_auto_route_selection_treatment_attribution.sql"
   "$ROOT_DIR/sql/migrations/startup/656_auto_route_selections_hot.sql"
   # 2026-09-06 deploy-gap audit: 658 (structured feature columns on the
@@ -162,6 +170,19 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/654_archive_credential_model_index_detach_drop.sql"
   "$ROOT_DIR/sql/migrations/startup/660_credential_model_weekly_peak_unique.sql"
   "$ROOT_DIR/sql/migrations/startup/661_session_summary_token_ratio_reassert.sql"
+  # 2026-10-10 host-first deploy: same class of gap as 478 above. 664 dedups
+  # provider_error_details on a fingerprint that includes credential_id, but
+  # that column is added by 639 (migration 435 creates the table without it).
+  # On a host where the Go ensure chain has not booted yet, 664 aborted with
+  # 42703 'column "credential_id" does not exist'. 639 is idempotent (6x
+  # IF [NOT] EXISTS guards) and must run before 664.
+  #
+  # 620 is 639's own prerequisite: it adds provider_error_details
+  # .aggregation_bucket, which 639's duplicate-detection guard groups by.
+  # Registering 639 alone aborted with 42703 on that column instead, so both
+  # are needed, in this order.
+  "$ROOT_DIR/sql/migrations/startup/620_provider_error_details_tenant_scope.sql"
+  "$ROOT_DIR/sql/migrations/startup/639_provider_error_details_credential.sql"
   # 2026-09-06 PG log audit: bg/feature_stats_worker.go computes daily feature
   # distributions and dedup rates for AUTO route ML training quality monitoring,
   # but 662 (feature_distribution_stats + dedup_stats tables) had no deployment
@@ -248,6 +269,14 @@ files=(
   # /api/logs request with 42P01. 680 is a staged, purely-additive rebuild of
   # the 577+610 wrapper chain; db.ensureRequestLogsCurrentMonthView mirrors it
   # at every boot. Idempotent no-op on a healthy database.
+  # 2026-10-10 host-first deploy: 680 rebuilds
+  # request_logs_with_current_month with request_class / due_at selected from
+  # request_logs_hot and request_logs. Those two columns are added by 610,
+  # which was never registered, so on a host where the Go ensure chain had not
+  # booted the rebuild failed with 42703 'column h.request_class does not
+  # exist'. 610 is idempotent (6x ADD COLUMN IF NOT EXISTS) and must run
+  # before 680.
+  "$ROOT_DIR/sql/migrations/startup/610_request_class_due_at.sql"
   "$ROOT_DIR/sql/migrations/startup/680_request_logs_current_month_view_bootstrap.sql"
   # 2026-09-07 网关日志审计 (42703 x 92+): 469 只给 models_canonical 加了
   # context_window_override 三列,provider_models 有同名列,但 model_offers
@@ -255,6 +284,17 @@ files=(
   # "column mo.context_window_override does not exist"。682 按 678 的
   # DROP+重建+重挂触发器模式给视图追加三列。独立、幂等,顺序仅要求在 678
   # 之后(同为视图重建,后写者胜,两者追加的列互不重叠)。
+  # 2026-10-10 host-first deploy: 682 rebuilds the model_offers view to expose
+  # credential_model_bindings.context_window_source/_updated_at, which the
+  # schema snapshot does not create. On a host where the Go ensure chain has
+  # not booted yet, 682 aborted with 42703.
+  #
+  # Note: 523_credential_model_context_window_override.sql also adds these
+  # columns, but it additionally rebuilds the model_offers view in a shape
+  # that conflicts with the snapshot's (42701 "cannot change name of view
+  # column raw_model_name to canonical_raw_name"), so it is NOT used here.
+  # A minimal, idempotent column-only prelude is the safe prerequisite.
+  "$ROOT_DIR/sql/migrations/startup/682b_model_offers_context_window_columns_prelude.sql"
   "$ROOT_DIR/sql/migrations/startup/682_model_offers_context_window_columns.sql"
   # 2026-09-07 网关日志审计 (42703 x ~19/min): internal/sessionv2mirror 的
   # session_dim upsert 引用 api_key_id/application_*/owner_*/end_user_id/
@@ -262,6 +302,17 @@ files=(
   # 从未落地。683 只取 358:25-45 的列+索引段(定义完全一致) —— 不能整
   # 文件重放 358,其 update_session_summary() 体会覆盖 572|563|661 链的
   # 661 终版(clobber guard 有意维护)。幂等,独立,顺序无要求。
+  # 2026-10-10 host-first deploy: 683 ALTERs session_dim, which is created by
+  # 350 and widened by 358. Neither was registered, so on a host where the Go
+  # ensure chain has not booted the sequence aborted with 42P01
+  # 'relation "session_dim" does not exist'.
+  #
+  # Registering 350/358 themselves is NOT viable: 350 does
+  # DROP FUNCTION update_session_summary() (needed to re-attach its trigger)
+  # and that aborts with 2BP01 once 563 has already created the trigger on the
+  # function — a dependency 350 cannot satisfy. 683b creates just the table
+  # 683 needs, guarded and idempotent.
+  "$ROOT_DIR/sql/migrations/startup/683b_session_dim_table_prelude.sql"
   "$ROOT_DIR/sql/migrations/startup/683_session_dim_ownership_columns.sql"
   # 2026-09-07 部署后观察 (聚合器 tick 23505 间歇复现): 坏 665 残留的
   # idx_provider_error_details_tenant_fingerprint(键含 LEFT(error_message,200)、
@@ -293,6 +344,16 @@ files=(
   # （695 重编号时确认 690-694 已占用），升级库按账本跳过、其余环境正常
   # 应用；纯 CREATE OR REPLACE FUNCTION，幂等收敛，序列内无同名函数冲突
   # （各 ensure_* 的更早定义文件均不在本序列），故无需 clobber chain 登记。
+  # 2026-10-11 host-first deploy: 532（is_final_success，hot+parent 双侧
+  # ADD COLUMN IF NOT EXISTS ×10 幂等）是 734 的 113 列契约成员且从未登记，
+  # host-first 库双侧皆缺。它同时重定义 ensure_request_logs_partition 的
+  # 2026-08-18 旧体，必须置于 694/705 之前，保证链尾（活库最终体）仍是
+  # 705 的重挂分支版（clobber chain 见 intentional_function_chains）。
+  # 同轮登记 392（candidate_failure_logs 月分区族，幂等 ×23）：843 引用
+  # 其 hot 表；392 也带旧版 promote/ensure 函数体，同样必须置于 694/698
+  # 之前让链尾保持时区钉扎版（链序见 intentional_function_chains）。
+  "$ROOT_DIR/sql/migrations/startup/532_request_logs_final_success.sql"
+  "$ROOT_DIR/sql/migrations/startup/392_candidate_failure_logs_monthly_partition.sql"
   "$ROOT_DIR/sql/migrations/startup/694_partition_ensure_timezone.sql"
   # 2026-09-12 同款升级通道缺口：695 promote final-success 冲突自愈（P2
   # 冷迁移停滞根因的数据面修复）同样只存在于仓库文件，db.go 无 ensure 镜像、
@@ -310,6 +371,22 @@ files=(
   # 纯 CREATE OR REPLACE VIEW（尾部追加列，无 DROP），幂等收敛，down 无。
   # 编号前已查生产双账本：696 在 gateway_db_revision_sequences 与
   # schema_migrations 均未被本库或其他项目占用。
+  # 2026-10-10 host-first deploy: 696 rebuilds the request_logs views to also
+  # expose system_fingerprint, which 487 adds to request_logs / _hot. It was
+  # never registered, so on a host where the Go ensure chain had not booted
+  # the rebuild failed with 42703 'column h.system_fingerprint does not exist'.
+  # 487 is idempotent (3x ADD COLUMN IF NOT EXISTS) and must run before 696.
+  # 2026-10-10 host-first deploy: 700 rebuilds the same view family as 696 but
+  # additionally selects raw_model_name from both relations. 485 introduces it
+  # on the partitioned parent; it was not registered, so the rebuild failed
+  # with 42703 on p.raw_model_name. Idempotent; must run before 700.
+  "$ROOT_DIR/sql/migrations/startup/485_request_logs_add_raw_model_name.sql"
+  "$ROOT_DIR/sql/migrations/startup/487_request_logs_add_system_fingerprint.sql"
+  # 487 only alters the partitioned parent; 696's LATERAL also reads
+  # request_logs_hot, which the snapshot creates with an independent column
+  # list. 487b/487c add the same columns (485/487 pairs) to the hot heap.
+  "$ROOT_DIR/sql/migrations/startup/487b_request_logs_hot_system_fingerprint.sql"
+  "$ROOT_DIR/sql/migrations/startup/487c_request_logs_hot_raw_model_name.sql"
   "$ROOT_DIR/sql/migrations/startup/696_request_logs_view_system_fingerprint.sql"
   # 2026-09-12 指纹写路径贯通:697 把 system_fingerprint 追加进 promote 的
   # RETURNING/INSERT/SELECT 三列清单尾部(695 体),使 telemetry 新落的
@@ -377,7 +454,18 @@ files=(
   # 本通道清单内的唯一定义者,无 chain 登记需求(526/615/626/636/638/640/688
   # 不在本清单)。
   "$ROOT_DIR/sql/migrations/startup/706_session_family_s1a.sql"
+  # 2026-10-10 host-first deploy: 707 ALTERs public.session_turns_hot, which
+  # 526 creates — and 526 is deliberately absent from this list because on a
+  # normal host the Go ensure chain creates that table during first boot. This
+  # sequence runs before that chain has ever booted on a host-first deploy, so
+  # 707 aborted with 42P01 and blocked every later file. 706b creates the table
+  # from the live session_turns catalog with 526's exact constraint names, so
+  # 526's own post-condition still passes when the chain gets there.
+  "$ROOT_DIR/sql/migrations/startup/706b_session_turns_hot_prelude.sql"
   "$ROOT_DIR/sql/migrations/startup/707_session_turns_s1a.sql"
+  # Same class of gap as 706b: 708 ALTERs session_bodies_hot, created by 614
+  # (absent from this list by design). 707b creates it from the live parent.
+  "$ROOT_DIR/sql/migrations/startup/707b_session_bodies_hot_prelude.sql"
   "$ROOT_DIR/sql/migrations/startup/708_session_bodies_s1a.sql"
   # 2026-09-15 存储优化方案 v2 S4 前置（plan §4-S4 / §4.2-10，观察台账
   # Round 1b）：713 turns cost_usd numeric(12,6)→(14,8)（E5 G1-cost 舍入
@@ -391,6 +479,12 @@ files=(
   # 先例重编号 713；重编号前已核远端 main(7ffcddaee) 双账本 713 零命中。
   # 存量库若已按旧 '711' 应用过同体，重放 713 幂等(ALTER TYPE 同精度无害)。
   "$ROOT_DIR/sql/migrations/startup/712_session_mirror_outbox.sql"
+  # 2026-10-10 host-first deploy: 713 ALTERs session_turns / _hot and touches
+  # client_protocol, which 640 adds. It was never registered, so on a host
+  # where the Go ensure chain had not booted the sequence aborted with 42703
+  # 'column "client_protocol" does not exist'. 640 is idempotent (10x
+  # ADD COLUMN IF NOT EXISTS) and must run before 713.
+  "$ROOT_DIR/sql/migrations/startup/640_session_turns_protocol_fields.sql"
   "$ROOT_DIR/sql/migrations/startup/713_session_turns_cost_precision.sql"
   # 2026-09-15 R29 审计：hostedtask P0(711_hosted_tasks)此前只进 installer
   # 全新安装通道，存量库(seq 通道)永远没有三表——功能开关一旦打开即每 5s
@@ -412,6 +506,13 @@ files=(
   # 查本机双账本 710 空闲(schema_migrations/sequences 均 0 命中)。
   # Go 镜像体:db/request_logs_view_schema.go canonicalV2DDL(启动自愈/升级
   # 同体),等价性由 db/view_schema_v2_contract_test.go 校验。
+  # 2026-10-10 host-first deploy: 710 rebuilds the request_logs view family
+  # over the queue-timing columns (t0_arrived_at … t9_response_end_at), which
+  # 491 adds to request_logs / _hot. It was never registered, so on a host
+  # where the Go ensure chain had not booted the sequence aborted with 42703
+  # 'column "t0_arrived_at" does not exist'. 491 is idempotent (23x
+  # ADD COLUMN IF NOT EXISTS) and must run before 710.
+  "$ROOT_DIR/sql/migrations/startup/491_request_logs_queue_timestamps.sql"
   "$ROOT_DIR/sql/migrations/startup/710_request_logs_view_session_family_v2.sql"
   # 2026-09-16 R30 审计（时区钉扎波收尾）：694/698 漏网的 6 个分区函数统一
   # 钉扎 Asia/Shanghai——4 个 ensure（session_module_executions/
@@ -455,6 +556,11 @@ files=(
   # 创建者；request_envelope/sticky_sessions 补 expires_at 索引、
   # session_aggregate_outbox 补 claimable partial 索引）。非分区表 CONCURRENTLY；
   # 父表 idx_request_logs_ts_desc 级联清 attached 叶子副本。生产低峰执行。
+  # 2026-10-10 host-first deploy: 718 touches session_aggregate_outbox, which
+  # 630 creates and which the schema snapshot does not ship. Not registered,
+  # so on a host where the Go ensure chain had not booted the sequence aborted
+  # with 42P01. 630 is idempotent (4x IF NOT EXISTS); must run before 718.
+  "$ROOT_DIR/sql/migrations/startup/630_session_aggregate_outbox.sql"
   "$ROOT_DIR/sql/migrations/startup/718_drop_redundant_indexes_and_add_ttl_indexes.sql"
   # 2026-09-17 R38 审计（新迁移登记）：719 ensure 约束影蔽索引根治 + request_logs
   # 父索引跨通道所有权归一（drop idx_request_logs_parent_request_id，canonical
@@ -479,6 +585,23 @@ files=(
   # 形态的存量库（本机真库取证：中间形态从未入 git，marker 已锁死 516、
   # ensure 链无 durable 条目，代码引用缺失表/列 = 首次事件写入即运行时失败）。
   # 全语句幂等，全新安装零变化。
+  # 2026-10-11 host-first deploy: 722 的登记假设存量库至少带着 516 中间形态
+  # （durable_llm_tasks 已建）。host-first 部署的库只有 schema 快照 + 已登记
+  # 迁移，Go ensure 链从未启动，722 第 50 行 events 表的外键引用
+  # durable_llm_tasks 直接 42P01。516 全语句幂等（20 处 IF [NOT] EXISTS /
+  # DROP POLICY IF EXISTS），登记在 722 之前兜底建表；中间形态库上零变化。
+  "$ROOT_DIR/sql/migrations/startup/516_durable_llm_tasks.sql"
+  # 2026-10-11 R36 五点登记补漏：517_handoff_pending_confirmations。h36
+  # 引入的「半确认 handoff 中间表」在原始交付时漏登记到本脚本（仅做了
+  # installer 五点同步 + 通道腿登记的另一支），h39 才补通道；本机 schema 快照
+  # 不含该表，导致 722/738/815 的列族视图与 handoff_logs FK 引用悬空。
+  # 全语句 IF NOT EXISTS 幂等；handoff_logs 在 534 已建。
+  "$ROOT_DIR/sql/migrations/startup/517_handoff_pending_confirmations.sql"
+  # 2026-10-11 R36 五点登记补漏：547_session_project_attribution。
+  # session_dim 在 407 已建，session_project_attribution 通过 IF NOT EXISTS
+  # 幂等补建（项目归属打点用）。原交付漏登记，host-first 部署走 schema 快照
+  # + 已登记迁移时直接缺失。
+  "$ROOT_DIR/sql/migrations/startup/547_session_project_attribution.sql"
   "$ROOT_DIR/sql/migrations/startup/722_durable_family_schema_convergence.sql"
   # 2026-09-18 R40 审计（新迁移登记）：723 RLS Phase1#3 空 RLS 补 ENABLE——
   # attachments / candidate_failure_logs_columnar_old 两表 policy 已在且词汇
@@ -530,7 +653,24 @@ files=(
   # 734 把 canonical 视图 session 分支 30 个 NULL 占位换成 details
   # LEFT JOIN。Go 侧 ensure（ensureRequestLogsCurrentMonthView）在表族
   # 缺席时自动回退 710 形态，双形态兼容。
+  # 2026-10-11 host-first deploy: 733 的 request_logs 反向回填 SELECT 了
+  # request_type 列（510 加的）。host-first 库上 Go ensure 链未启动、510
+  # 从未登记，第 558 行 42703 'column "request_type" does not exist'。510
+  # 全幂等（ADD COLUMN IF NOT EXISTS ×5），登记在 733 之前兜底。
+  "$ROOT_DIR/sql/migrations/startup/510_request_type.sql"
   "$ROOT_DIR/sql/migrations/startup/733_session_turn_details.sql"
+  # 2026-10-11 host-first deploy: 734 的 canonical 视图 details JOIN 读了
+  # request_logs.t0_arrived_at（491 加的 T0–T9 列，已在 710 前登记）并 JOIN
+  # session_turns（513 建表）。host-first 库 session_turns 缺失，734 第 234
+  # 行 42703。513（IF [NOT] EXISTS ×21，自述"重复跑安全"）全幂等，登记在
+  # 734 之前兜底。
+  "$ROOT_DIR/sql/migrations/startup/513_schema_unification_and_session_turns_dual_write.sql"
+  # 2026-10-11 host-first deploy: 610 的 helper 视图在"已扩展"分支直接 RETURN，
+  # 列集冻结在其首次应用时刻（当时 491 的 t0–t9 尚未进库），734 读该视图
+  # 42703。680b 按当前 catalog 重建 helper（规则=610 冷启动分支），canonical
+  # 视图随 CASCADE 丢弃后由紧随其后的 734 立即重建。健康库零变化。
+  #（532 补挂的 is_final_success 列在 694 之前登记应用，见该处注释。）
+  "$ROOT_DIR/sql/migrations/startup/680b_request_logs_helper_view_column_resync.sql"
   "$ROOT_DIR/sql/migrations/startup/734_request_logs_view_details_join.sql"
   # 2026-09-21 252 部署验证轮：729 session_turns credential+ts 表达式索引
   # （父表 + 存量月分区三段式 + session_turns_hot 独立表）——抽屉轮询查询
@@ -606,6 +746,10 @@ files=(
   # （psql --single-transaction 容不下 CONCURRENTLY）；存量库由本通道 +
   # db.ensureUsageFactsOccurredAtIndex 双臂收敛（真库 ensure 回归 +
   # EXPLAIN 实证走索引）。
+  # 2026-10-11 host-first deploy: 749 探测 usage_facts 分区族，该表由 537
+  # 建且从未登记——host-first 库（Go ensure 链未启动过）42P01。537 全幂等
+  #（IF NOT EXISTS ×6），登记在 749 之前兜底建表。
+  "$ROOT_DIR/sql/migrations/startup/537_usage_facts.sql"
   "$ROOT_DIR/sql/migrations/startup/749_usage_facts_occurred_at_index.sql"
   # 2026-09-26 R68 24h 审计轮：750 usage_facts 按日分区函数 + 当日/次日
   # 预建——749 仅解决索引，partition pruning 仍不可用（无具体分区则 PG
@@ -633,6 +777,10 @@ files=(
   # DO NOTHING 幂等）。原 deploy/sql/migrations/V800__*.sql 从未进任何
   # 存量库投递通道，本轮移入 startup 目录并在此登记（文件移动由并行代理
   # 完成，登记先行；无 Go boot ensure，本通道是升级库唯一投递路径）。
+  # 2026-10-11 host-first deploy: 800 的回填 WHERE p.deleted_at IS NULL
+  # 引用 providers.deleted_at（631 加的列）。host-first 库 631 未登记，
+  # 42703。631 幂等（DO 守卫 + IF NOT EXISTS），登记在 800 之前兜底。
+  "$ROOT_DIR/sql/migrations/startup/631_provider_credential_soft_delete.sql"
   "$ROOT_DIR/sql/migrations/startup/800_provider_endpoint_protocols.sql"
   # 2026-09-27 R67 session-storage 审计子任务 2：753 session_turn_logs
   # 可配 TTL——保留期在写入方（turn_logs_writer.go）按 settings_kv 的
@@ -674,6 +822,14 @@ files=(
   # processing_status（R28 HC-10 收口）；762 项目维度回填链（resolve/sync
   # 函数 + session_dim 双触发器 + 回填扫描部分索引，R33 P-3）。三者均幂等，
   # 且已在 installer embeddata 完成五点同步。
+  # 2026-10-11 host-first deploy: 760-762 引用 stats_event_inbox /
+  # analysis_events（536 建，幂等 ×18）、stats_event_inbox.processing_status
+  #（540 加列+CHECK，幂等 ×14）与 session_dim.project_id（407 加列，
+  # 幂等 ×11）——host-first 库三件都未走过 installer 通道也从未进本序列，
+  # 42P01/42703。登记在 760 之前兜底。
+  "$ROOT_DIR/sql/migrations/startup/536_stats_analytics_foundation.sql"
+  "$ROOT_DIR/sql/migrations/startup/540_stats_event_inbox_consumer.sql"
+  "$ROOT_DIR/sql/migrations/startup/407_request_context_attrs.sql"
   "$ROOT_DIR/sql/migrations/startup/760_analysis_events_inbox_ttl_indexes.sql"
   "$ROOT_DIR/sql/migrations/startup/761_stats_inbox_sync_status_backfill.sql"
   "$ROOT_DIR/sql/migrations/startup/762_session_project_backfill_chain.sql"
@@ -792,6 +948,11 @@ files=(
   # admin/compression_stats.go 分带聚合的既有读点（此前每调 42703 被
   # 吞掉、仪表盘静默为空）。顶层 view 全量重建为 118 列契约；幂等。
   # 三基线+installer 五点同步（815 曾漏登本通道=守卫红，见 f7f1c97f4）。
+  # 2026-10-11 host-first deploy: 815 的重建前置探测要求 request_logs(_hot)
+  # 三列齐备，缺列时静默 skip 但尾部列数对账仍 fail-closed（内部不一致）。
+  # token_band 由 542 加列（幂等 ×7）且从未进本序列，host-first 库上必缺
+  # ⇒ 登记在 815 之前兜底，消除 skip/对账互斥。
+  "$ROOT_DIR/sql/migrations/startup/542_request_logs_token_band.sql"
   "$ROOT_DIR/sql/migrations/startup/815_request_logs_view_stage_band_cff.sql"
 
   # 2026-10-02 s4-audit §9.46（816）：canonical 视图 client_ip 从 NULL
@@ -1029,6 +1190,38 @@ files=(
   # 的两个 cache 列——实测视图不能引用不存在的列（42703），而全仓没有任何迁移
   # 建过它们（398 只是 SELECT 过，不建列）。
   "$ROOT_DIR/sql/migrations/startup/844_supplier_view_cache_baseline_columns.sql"
+
+  # 2026-10-11（845-851 补登通道腿，本仓审计轮）：这七条此前只做了 installer
+  # 五点同步（8429b1524 补 845-848；e47c1102b 落 851），通道腿整段漏登——
+  # apply-db-revision-sequence_test.sh 八连红（[1] 最高编号守卫 + [2]-[8]
+  # installer-leg-no-upgrade-path）。按 842 先例补登：部署扫描腿本就会按
+  # 目录+台账投递它们，登记是元数据补全（顺序/重放/归属的显式记录），
+  # 不是新增投递。全部幂等（IF NOT EXISTS / UPDATE...WHERE），可重放。
+  # 845：stats 事件 dedup JOIN 补索引。
+  "$ROOT_DIR/sql/migrations/startup/845_stats_event_dedup_join_index.sql"
+  # 846：session_turns (id) 部分索引 WHERE request_status IS NULL——分区父表
+  # 不能 CONCURRENTLY（R46/843 先例），普通 CREATE INDEX，ShareLock 随部署窗口。
+  "$ROOT_DIR/sql/migrations/startup/846_session_turns_req_status_backfill_idx.sql"
+  # 847（multimedia）：credentials 加 routing_scope（all|text_only|media_only），
+  # 多模态路由隔离的候选闸。
+  "$ROOT_DIR/sql/migrations/startup/847_credential_routing_scope.sql"
+  # 848（multimedia）：billing_unit（token|image|audio_second）与 audio_second
+  # 计费列骨架。
+  "$ROOT_DIR/sql/migrations/startup/848_billing_unit_and_audio_seconds.sql"
+  # 849：session_turns (request_id) 覆盖式部分索引，remaining-count gauge 的
+  # t 侧走 index-only；文件自带 BEGIN / SET LOCAL statement_timeout='10min' /
+  # COMMIT 防部署期 57014（e3e2b4ef5）。通道按 psql -f 逐文件执行，与
+  # 836/837 同形，有先例。
+  "$ROOT_DIR/sql/migrations/startup/849_session_turns_req_status_backfill_cover_idx.sql"
+  # 850：session_summaries (created_at, session_key) 部分索引 WHERE
+  # gw_project_id IS NULL，project_backfill 候选捞取 48h 滚动窗的索引腿，
+  # 消除每日 ~6,700s 的「证明无事」空扫。
+  "$ROOT_DIR/sql/migrations/startup/850_session_summaries_project_backfill_recent_idx.sql"
+  # 851：停用 316 播种的 pii_patterns.ip_address 规则（UPDATE...WHERE 按行名，
+  # 幂等）。升级库上 316 早已应用，通道投递有意义；全新安装走安装器通道时
+  # pii_patterns 只有空表（316 不在 StartupFiles，是刻意的），兜底是
+  # db.go 的 ensurePIIIPAddressRuleDisabled（重启即收敛）。
+  "$ROOT_DIR/sql/migrations/startup/851_disable_overbroad_pii_ip_address_rule.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的
@@ -1082,6 +1275,13 @@ intentional_function_chains=(
   # （DECLARE 初始化器移入函数体）。714 必须保持为后项——与 699/703 的
   # V371-track 同型：钉扎版必须是活库里的最终体。
   'ensure_handoff_logs_partition|534_handoff_logs_hot_columnar.sql|714_partition_timezone_pin_remaining.sql|'
+  # 2026-10-10 host-first deploy: 640 was registered for 713's client_protocol
+  # prerequisite. It also redefines promote_session_turns_hot_to_partition, and
+  # 640 is sequenced AFTER 707 — which the block comment above names as the
+  # single authoritative rewriter of that function within this list. So 707
+  # must stay first and 640 last, or the SELECT * form 707 installs would be
+  # clobbered.
+  'promote_session_turns_hot_to_partition|707_session_turns_s1a.sql|640_session_turns_protocol_fields.sql|'
   # 563 restores the hot trigger with the corrected unbounded-numeric ratio
   # body; 661 re-asserts the same fixed body AFTER 563 and validates the
   # function source. 572 must stay before 563; 661 must stay last.
@@ -1124,7 +1324,15 @@ intentional_function_chains=(
   # timezone-pinned body; the rewrite must stay the later entry. 705 landed
   # without this registration — same pre-flight guard abort class as 703
   # (caught 2026-09-14 when S1a files joined the sequence).
-  'ensure_request_logs_partition|694_partition_ensure_timezone.sql|705_request_logs_reattach_detached_partitions.sql|'
+  # 2026-10-11 host-first deploy: 532 补登（is_final_success 列 + 该函数的
+  # 2026-08-18 旧体重定义）。链序 532 → 694 → 705，705 是活库最终体
+  # （时区钉扎 + 重挂分支），532 必须最先应用（其文件登记在 694 之前）。
+  'ensure_request_logs_partition|532_request_logs_final_success.sql|694_partition_ensure_timezone.sql|705_request_logs_reattach_detached_partitions.sql|'
+  # 2026-10-11 host-first deploy: 392 补登（candidate_failure_logs 月分区
+  # 族建表 + 旧版 promote/ensure 函数体）。链序 392 → 694/698，链尾是
+  # 时区钉扎版函数体（392 文件登记在 694 之前）。
+  'ensure_candidate_failure_logs_partition|392_candidate_failure_logs_monthly_partition.sql|694_partition_ensure_timezone.sql|'
+  'promote_candidate_failure_logs_hot_to_partition|392_candidate_failure_logs_monthly_partition.sql|698_promote_hot_partition_timezone_pin.sql|'
   # 2026-10-07（838 → 839）：同一个函数 analyze_llm_gateway_table_stats 被两条
   # 通道文件先后重定义。838 让往月分区「只在从未被分析过时补」（省掉整趟 pass 的
   # 25.7%）；839 进一步把当月**堆**分区交回 autovacuum 并下调其 scale_factor 到

@@ -324,14 +324,21 @@ func TestReaderPopulationGroundTruth(t *testing.T) {
 // same treatment as every other hand-maintained list in this audit: it is
 // asserted to be consistent with what the instrument measured on the same
 // commit, rather than being trusted.
-var unjudgedBaseline = 47
+var unjudgedBaseline = 48
 
 // unjudgedBaselineFiles is the membership that goes with unjudgedBaseline.
 // A set, not a count: see the swap case in TestReaderPopulationGroundTruth.
+//
+// 47→48（2026-10-11 252 审计第 32 轮）：admin/credential_monitor.go 的抽屉
+// 回退查询新增 hot 快路径（session_turns_hot ∪ request_logs_hot 反连接），
+// 使该文件首次成为 v1 基表直读者——按设计读 v1（窗口 ≤ 120min 语义与
+// canonical 视图精确等价，252 EXCEPT 对拍双向差集 0），退役时随 v1 一并
+// 改指或退役，与 v1_write_liveness 的 ③ 类同档；完整退役判定待退役轮做。
 var unjudgedBaselineFiles = map[string]bool{
 	"admin/analytics.go":                            true,
 	"admin/auto_route_outcome_freshness.go":         true,
 	"admin/body_resolver.go":                        true,
+	"admin/credential_monitor.go":                   true,
 	"admin/credential_success_rate.go":              true,
 	"admin/data_lifecycle.go":                       true,
 	"admin/data_lifecycle_blobs.go":                 true,

@@ -153,5 +153,56 @@ mob_log="$(grep -oE '[A-Za-z0-9_./-]*build-frontend-mobile[^ ]*\.log' <<<"$out2"
 grep -q 'css-gate' "$mob_log" || fail "web-mobile log lacks the diagnostic: $mob_log"
 pass 'a failing web-mobile build aborts the deploy with its own named log'
 
-printf 'OK: build_frontend contract (3 assertion groups)\n'
+# --- 2026-10-11 2538 轮事故收口：node_modules 缺失 + dist 缺失必须 refuse ----
+# 旧实现两个分支都只 warn：干净 checkout（node_modules 与 dist 都没有）会把
+# 仅含 version.json 的空 web/ staging 进发布包 → 网关静态探测回落源码模板
+# → 浏览器白页。refuse 门只在「dist 也不在场」时拒绝；dist 在场时保留旧的
+# 「保留既有 dist」行为（warn 放行），--no-frontend 的显式豁免不受影响。
+mkdir -p "$TMP/project3/web" "$TMP/run3" "$TMP/bin3"
+touch "$TMP/project3/web/package.json"
+out3="$(PATH="$TMP/bin3:$PATH" PROJECT_ROOT="$TMP/project3" RUN_DIR="$TMP/run3" \
+  SKIP_FRONTEND=0 _dl_timeout 30 bash -c '
+    set -euo pipefail
+    need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "missing: $1" >&2; exit 1; }; }
+    warn() { printf "WARN %s\n" "$*" >&2; }
+    die()  { printf "ERROR %s\n" "$*" >&2; exit 1; }
+    source '"$TMP"'/fn.sh
+    build_frontend
+  ' 2>&1)" && rc3=0 || rc3=$?
+[[ "$rc3" -ne 0 ]] || fail 'build_frontend exited 0 with node_modules AND dist both missing — empty web/ would be staged (2538 white-page regression)'
+grep -q 'refusing to stage an empty web/' <<<"$out3" || fail "refusal did not name the empty-web staging hazard; got: $out3"
+pass 'missing node_modules + missing dist refuses to stage an empty web/'
+
+# 对照组：dist 在场（含 index.html）时缺 node_modules 保持旧「保留既有 dist」放行。
+mkdir -p "$TMP/project4/web/dist" "$TMP/run4"
+touch "$TMP/project4/web/package.json" "$TMP/project4/web/dist/index.html"
+out4="$(PATH="$TMP/bin3:$PATH" PROJECT_ROOT="$TMP/project4" RUN_DIR="$TMP/run4" \
+  SKIP_FRONTEND=0 _dl_timeout 30 bash -c '
+    set -euo pipefail
+    need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "missing: $1" >&2; exit 1; }; }
+    warn() { printf "WARN %s\n" "$*" >&2; }
+    die()  { printf "ERROR %s\n" "$*" >&2; exit 1; }
+    source '"$TMP"'/fn.sh
+    build_frontend
+  ' 2>&1)" || fail "retaining an existing dist must stay a warn-and-proceed path; got: $out4"
+grep -q 'retaining existing web/dist' <<<"$out4" || fail "existing-dist path lost its warn marker; got: $out4"
+pass 'missing node_modules with an existing dist still retains it (warn, not refuse)'
+
+# web-mobile 同一门：缺失且 dist 不在场 → refuse。
+mkdir -p "$TMP/project5/web-mobile" "$TMP/run5"
+touch "$TMP/project5/web-mobile/package.json"
+out5="$(PATH="$TMP/bin3:$PATH" PROJECT_ROOT="$TMP/project5" RUN_DIR="$TMP/run5" \
+  SKIP_FRONTEND=0 _dl_timeout 30 bash -c '
+    set -euo pipefail
+    need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "missing: $1" >&2; exit 1; }; }
+    warn() { printf "WARN %s\n" "$*" >&2; }
+    die()  { printf "ERROR %s\n" "$*" >&2; exit 1; }
+    source '"$TMP"'/fn.sh
+    build_frontend
+  ' 2>&1)" && rc5=0 || rc5=$?
+[[ "$rc5" -ne 0 ]] || fail 'build_frontend exited 0 with web-mobile deps and dist both missing'
+grep -q 'refusing to stage an empty web-mobile' <<<"$out5" || fail "web-mobile refusal message missing; got: $out5"
+pass 'web-mobile empty-staging refusal mirrors the web gate'
+
+printf 'OK: build_frontend contract (6 assertion groups)\n'
 

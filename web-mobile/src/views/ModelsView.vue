@@ -1,240 +1,360 @@
 <script setup lang="ts">
-// ModelsView — 模型目录：家族分组连续加载 + 搜索；点开 Sheet 看版本明细。
-import { computed, onBeforeUnmount, ref } from 'vue'
-import { ContinuousListController, useHyperPage } from '@/hyper'
-import { fetchAvailableModels, type ModelFamily, type AvailableVersion } from '@/api/models'
+import { computed, onMounted, ref } from 'vue'
+import { useHyperPage } from '@/hyper'
+import { useTopbarAction } from '@/components/shell/topbarActions'
+import {
+  createCanonicalAlias,
+  fetchAvailableModels,
+  fetchCanonicalModel,
+  fetchCanonicalModels,
+  fetchFeaturedModels,
+  updateCanonicalAlias,
+  updateCanonicalTags,
+  saveFeaturedModels,
+  updateCanonicalModel,
+  type CanonicalModel,
+  type CanonicalModelDetail,
+  type ModelStatus,
+} from '@/api/models'
+import { useAuthStore } from '@/stores/auth'
 import { t } from '@/i18n'
-import HyperList from '@/components/common/HyperList.vue'
 import AppSheet from '@/components/common/AppSheet.vue'
-import AppIcon from '@/components/common/AppIcon.vue'
-import { fmtCompact } from '@/utils/format'
+import AppStateView from '@/components/common/AppStateView.vue'
 
 useHyperPage({ title: () => t('models.title') })
-
-let cache: ModelFamily[] = []
+const auth = useAuthStore()
+const canManage = computed(() => auth.role === 'super_admin')
+const models = ref<CanonicalModel[]>([])
+const featured = ref<string[]>([])
+const featuredDraft = ref<string[]>([])
 const query = ref('')
-let unmapped = 0
-
-const controller = new ContinuousListController<ModelFamily>({
-  fetchPage: async (page) => {
-    if (page > 1) return { items: [], total: filtered().length }
-    if (cache.length === 0) {
-      const resp = await fetchAvailableModels()
-      cache = resp.families ?? []
-      unmapped = resp.unmapped ?? 0
-    }
-    const items = filtered()
-    return { items, total: items.length }
-  },
-  stableKey: (f) => `family-${f.id}`,
-  scopeKey: 'models',
-})
-
-function filtered(): ModelFamily[] {
-  const q = query.value.trim().toLowerCase()
-  if (!q) return cache
-  return cache.filter(
-    (f) =>
-      f.display_name.toLowerCase().includes(q) ||
-      f.vendor.toLowerCase().includes(q) ||
-      f.versions.some((v) => v.canonical_name.toLowerCase().includes(q)),
-  )
-}
-
-let debounceTimer: ReturnType<typeof setTimeout> | null = null
-function onSearchInput(ev: Event): void {
-  const value = (ev.target as HTMLInputElement).value
-  if (debounceTimer) clearTimeout(debounceTimer)
-  debounceTimer = setTimeout(() => {
-    query.value = value
-    controller.loadFirst('requery')
-  }, 250)
-}
-onBeforeUnmount(() => {
-  if (debounceTimer) clearTimeout(debounceTimer)
-})
-
-const detail = ref<ModelFamily | null>(null)
+const tab = ref<'all' | 'featured'>('all')
+const loading = ref(true)
+const savingFeatured = ref(false)
+const loadingDetail = ref(false)
+const savingDetail = ref(false)
+const error = ref('')
+const detailError = ref('')
+const detail = ref<CanonicalModelDetail | null>(null)
 const detailOpen = computed({
-  get: () => detail.value != null,
-  set: (v: boolean) => {
-    if (!v) detail.value = null
-  },
+  get: () => detail.value !== null,
+  set: (open: boolean) => { if (!open) detail.value = null },
+})
+const form = ref({ display_name: '', family: '', modality: 'text', context_window: '', parameters_b: '', status: 'active' as ModelStatus, disabled_reason: '', notes: '', reasoning_caps: '', multimodal_caps: '', tags: '' })
+const aliasForm = ref({ raw_name: '', surface: '', quantization: '', notes: '' })
+const aliasSaving = ref(false)
+const aliasForms = ref<Record<number, { raw_name: string; surface: string; quantization: string; status: ModelStatus; notes: string }>>({})
+
+useTopbarAction({
+  key: 'refresh',
+  label: () => t('common.refresh'),
+  icon: 'refresh',
+  disabled: () => loading.value,
+  onClick: load,
 })
 
-function maxContext(f: ModelFamily): number | null {
-  const vals = f.versions.map((v) => v.context_window).filter((v): v is number => v != null)
-  return vals.length > 0 ? Math.max(...vals) : null
+const filtered = computed(() => {
+  const q = query.value.trim().toLowerCase()
+  return models.value.filter((model) => {
+    if (tab.value === 'featured' && !featured.value.includes(model.canonical_name)) return false
+    if (!q) return true
+    return [model.canonical_name, model.display_name ?? '', model.family ?? '', model.vendor ?? '', ...model.tags].some((v) => v.toLowerCase().includes(q))
+  })
+})
+
+async function load(): Promise<void> {
+  loading.value = true
+  error.value = ''
+  try {
+    const [catalog, available] = await Promise.all([fetchCanonicalModels(), fetchAvailableModels()])
+    models.value = catalog.items
+    const fallback = available.families.flatMap((family) => family.versions.filter((version) => version.featured).map((version) => version.canonical_name))
+    if (canManage.value) {
+      try {
+        const configured = await fetchFeaturedModels()
+        featured.value = configured.featured_models
+      } catch {
+        // Keep the catalog's feature markers visible if the write-protected policy API is unavailable.
+        featured.value = fallback
+      }
+    } else {
+      featured.value = fallback
+    }
+    featuredDraft.value = [...featured.value]
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : t('models.loadFailed')
+  } finally {
+    loading.value = false
+  }
 }
 
-function maxProviders(f: ModelFamily): number {
-  return Math.max(...f.versions.map((v) => v.provider_count), 0)
+function toggleFeatured(name: string): void {
+  featuredDraft.value = featuredDraft.value.includes(name)
+    ? featuredDraft.value.filter((item) => item !== name)
+    : [...featuredDraft.value, name]
 }
 
-const footerHint = computed(() => (unmapped > 0 ? t('models.unmappedHint', { n: unmapped }) : ''))
-
-function versionMeta(v: AvailableVersion): string[] {
-  const parts: string[] = []
-  if (v.modality) parts.push(v.modality)
-  if (v.context_window != null) parts.push(t('models.contextWindow', { n: Math.round(v.context_window / 1024) }))
-  if (v.parameters_b != null) parts.push(t('models.parameters', { n: v.parameters_b }))
-  return parts
+async function saveFeatured(): Promise<void> {
+  if (!canManage.value || savingFeatured.value) return
+  savingFeatured.value = true
+  error.value = ''
+  try {
+    const next = [...new Set(featuredDraft.value)]
+    await saveFeaturedModels(next)
+    featured.value = next
+    featuredDraft.value = [...featured.value]
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : t('models.saveFailed')
+  } finally {
+    savingFeatured.value = false
+  }
 }
+
+async function openModel(model: CanonicalModel): Promise<void> {
+  detail.value = null
+  detailError.value = ''
+  loadingDetail.value = true
+  aliasForm.value = { raw_name: '', surface: '', quantization: '', notes: '' }
+  try {
+    const loaded = await fetchCanonicalModel(model.id)
+    detail.value = loaded
+    form.value = {
+      display_name: loaded.display_name ?? '',
+      family: loaded.family ?? '',
+      modality: loaded.modality || 'text',
+      context_window: loaded.context_window == null ? '' : String(loaded.context_window),
+      parameters_b: loaded.parameters_b == null ? '' : String(loaded.parameters_b),
+      status: loaded.status,
+      disabled_reason: loaded.disabled_reason ?? '',
+      notes: loaded.notes ?? '',
+      reasoning_caps: loaded.reasoning_caps ? JSON.stringify(loaded.reasoning_caps, null, 2) : '',
+      multimodal_caps: (loaded.multimodal_caps ?? []).join(', '),
+      tags: loaded.tags.join(', '),
+    }
+    aliasForms.value = Object.fromEntries(loaded.aliases.map((alias) => [alias.id, {
+      raw_name: alias.raw_name, surface: alias.surface ?? '', quantization: alias.quantization ?? '', status: alias.status, notes: alias.notes ?? '',
+    }]))
+  } catch (cause) {
+    detailError.value = cause instanceof Error ? cause.message : t('models.loadDetailFailed')
+  } finally {
+    loadingDetail.value = false
+  }
+}
+
+function numberOrNull(value: string): number | null | undefined {
+  if (!value.trim()) return null
+  const number = Number(value)
+  return Number.isFinite(number) && number >= 0 ? number : undefined
+}
+
+async function saveModel(): Promise<void> {
+  if (!detail.value || !canManage.value || savingDetail.value) return
+  const contextWindow = numberOrNull(form.value.context_window)
+  const parameters = numberOrNull(form.value.parameters_b)
+  if (contextWindow === undefined || parameters === undefined) {
+    detailError.value = t('models.invalidNumber')
+    return
+  }
+  let reasoningCaps: Record<string, unknown> | null = null
+  if (form.value.reasoning_caps.trim()) {
+    try {
+      const parsed: unknown = JSON.parse(form.value.reasoning_caps)
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('expected object')
+      reasoningCaps = parsed as Record<string, unknown>
+    } catch {
+      detailError.value = t('models.invalidReasoningCaps')
+      return
+    }
+  }
+  savingDetail.value = true
+  detailError.value = ''
+  try {
+    let updated = await updateCanonicalModel(detail.value.id, {
+      display_name: form.value.display_name.trim() || null,
+      family: form.value.family.trim() || null,
+      modality: form.value.modality,
+      context_window: contextWindow,
+      parameters_b: parameters,
+      status: form.value.status,
+      disabled_reason: form.value.disabled_reason.trim() || null,
+      notes: form.value.notes.trim() || null,
+      reasoning_caps: reasoningCaps,
+      multimodal_caps: form.value.multimodal_caps.split(',').map((item) => item.trim()).filter(Boolean),
+    })
+    const tags = [...new Set(form.value.tags.split(',').map((item) => item.trim()).filter(Boolean))]
+    if (tags.join('\u0000') !== detail.value.tags.join('\u0000')) updated = await updateCanonicalTags(detail.value.id, tags)
+    Object.assign(detail.value, updated)
+    const row = models.value.find((item) => item.id === updated.id)
+    if (row) Object.assign(row, updated)
+  } catch (cause) {
+    detailError.value = cause instanceof Error ? cause.message : t('models.saveFailed')
+  } finally {
+    savingDetail.value = false
+  }
+}
+
+async function addAlias(): Promise<void> {
+  if (!detail.value || !canManage.value || aliasSaving.value || !aliasForm.value.raw_name.trim()) return
+  aliasSaving.value = true
+  detailError.value = ''
+  try {
+    await createCanonicalAlias(detail.value.id, {
+      raw_name: aliasForm.value.raw_name.trim(),
+      surface: aliasForm.value.surface.trim() || null,
+      quantization: aliasForm.value.quantization.trim() || null,
+      notes: aliasForm.value.notes.trim() || null,
+    })
+    detail.value = await fetchCanonicalModel(detail.value.id)
+    aliasForm.value = { raw_name: '', surface: '', quantization: '', notes: '' }
+  } catch (cause) {
+    detailError.value = cause instanceof Error ? cause.message : t('models.saveFailed')
+  } finally {
+    aliasSaving.value = false
+  }
+}
+
+async function saveAlias(aliasId: number): Promise<void> {
+  if (!detail.value || !canManage.value || aliasSaving.value) return
+  const alias = aliasForms.value[aliasId]
+  if (!alias?.raw_name.trim()) return
+  aliasSaving.value = true
+  detailError.value = ''
+  try {
+    await updateCanonicalAlias(detail.value.id, aliasId, {
+      raw_name: alias.raw_name.trim(), surface: alias.surface.trim() || null,
+      quantization: alias.quantization.trim() || null, status: alias.status, notes: alias.notes.trim() || null,
+    })
+    detail.value = await fetchCanonicalModel(detail.value.id)
+    aliasForms.value = Object.fromEntries(detail.value.aliases.map((item) => [item.id, {
+      raw_name: item.raw_name, surface: item.surface ?? '', quantization: item.quantization ?? '', status: item.status, notes: item.notes ?? '',
+    }]))
+  } catch (cause) {
+    detailError.value = cause instanceof Error ? cause.message : t('models.saveFailed')
+  } finally {
+    aliasSaving.value = false
+  }
+}
+
+onMounted(() => { void load() })
 </script>
 
 <template>
-  <div class="view-root">
-  <HyperList
-    :controller="controller"
-    :item-key="(f: ModelFamily) => `family-${f.id}`"
-    :on-refresh="async () => { const resp = await fetchAvailableModels(); cache = resp.families ?? []; unmapped = resp.unmapped ?? 0 }"
-    :empty-hint="footerHint || t('common.empty')"
-  >
-    <template #header>
-      <div class="models__search">
-        <AppIcon name="search" :size="18" />
-        <input type="search" :placeholder="t('models.searchPlaceholder')" :aria-label="t('common.search')" @input="onSearchInput" />
+  <div class="view-root model-catalog">
+    <div class="model-catalog__toolbar">
+      <div class="model-catalog__tabs" role="tablist" :aria-label="t('models.title')">
+        <button type="button" role="tab" :aria-selected="tab === 'all'" :class="{ active: tab === 'all' }" @click="tab = 'all'">{{ t('models.allModels') }}</button>
+        <button type="button" role="tab" :aria-selected="tab === 'featured'" :class="{ active: tab === 'featured' }" @click="tab = 'featured'">★ {{ t('models.featured') }} <span>{{ featured.length }}</span></button>
       </div>
-      <p v-if="footerHint" class="models__unmapped">{{ footerHint }}</p>
+    </div>
+    <label class="model-catalog__search"><span>{{ t('common.search') }}</span><input v-model="query" type="search" :placeholder="t('models.searchPlaceholder')" /></label>
+    <p v-if="error" class="model-catalog__error" role="alert">{{ error }}</p>
+    <AppStateView v-if="loading" :loading="true" />
+    <template v-else>
+      <section v-if="tab === 'featured'" class="model-catalog__featured">
+        <div><strong>★ {{ t('models.featured') }}</strong><p>{{ t('models.featuredDescription') }}</p></div>
+        <button v-if="canManage" type="button" class="btn btn--primary" :disabled="savingFeatured || featuredDraft.length === featured.length && featuredDraft.every((x) => featured.includes(x))" @click="saveFeatured">{{ savingFeatured ? t('common.loading') : t('models.saveFeatured') }}</button>
+      </section>
+      <p v-if="!filtered.length" class="model-catalog__empty">{{ tab === 'featured' ? t('models.noFeatured') : t('common.empty') }}</p>
+      <ul v-else class="model-catalog__list">
+        <li v-for="model in filtered" :key="model.id" class="model-catalog__card">
+          <button type="button" class="model-catalog__open" @click="openModel(model)">
+            <span class="model-catalog__identity"><strong>{{ model.display_name || model.canonical_name }}</strong><code>{{ model.canonical_name }}</code></span>
+            <span class="model-catalog__meta"><span class="badge badge--muted">{{ model.vendor || model.family || t('common.unknown') }}</span><span class="badge" :class="model.status === 'active' ? 'badge--success' : 'badge--muted'">{{ model.status }}</span><span v-if="featured.includes(model.canonical_name)" class="badge badge--info">★ {{ t('models.featured') }}</span></span>
+            <span class="model-catalog__stats">{{ model.modality }} · {{ model.context_window == null ? '—' : `${model.context_window.toLocaleString()} ${t('models.tokenUnit')}` }} · {{ model.offer_count ?? 0 }} {{ t('models.providers') }}</span>
+          </button>
+          <button v-if="canManage" type="button" class="model-catalog__star" :aria-pressed="featuredDraft.includes(model.canonical_name)" :aria-label="t(featuredDraft.includes(model.canonical_name) ? 'models.removeFeatured' : 'models.addFeatured')" @click="toggleFeatured(model.canonical_name)">{{ featuredDraft.includes(model.canonical_name) ? '★' : '☆' }}</button>
+        </li>
+      </ul>
+      <p v-if="canManage && tab === 'all'" class="model-catalog__hint">{{ t('models.featuredChangesHint') }}</p>
     </template>
 
-    <template #item="{ item: f }">
-      <button type="button" class="data-card family-card" @click="detail = f">
-        <div class="card-row">
-          <span class="family-card__name">{{ f.display_name }}</span>
-          <span v-if="f.versions.some((v) => v.featured)" class="badge badge--info">{{ t('models.featured') }}</span>
-        </div>
-        <div class="family-card__meta">
-          <span class="badge badge--muted">{{ f.vendor }}</span>
-          <span class="family-card__stat">{{ t('models.versions', { n: f.versions.length }) }}</span>
-          <span class="family-card__stat">{{ t('models.providerCount', { n: maxProviders(f) }) }}</span>
-          <span v-if="maxContext(f) != null" class="family-card__stat">
-            {{ t('models.contextWindow', { n: Math.round((maxContext(f) ?? 0) / 1024) }) }}
-          </span>
-        </div>
-      </button>
-    </template>
-  </HyperList>
-
-  <AppSheet v-model="detailOpen" presentation="sheet" :title="detail?.display_name ?? ''">
-    <template v-if="detail">
-      <div class="models__version-list">
-        <div v-for="v in detail.versions" :key="v.canonical_name" class="data-card models__version">
-          <div class="card-row">
-            <span class="models__version-name">{{ v.display_name || v.canonical_name }}</span>
-            <span class="badge badge--muted num">{{ fmtCompact(v.provider_count) }} P</span>
+    <AppSheet v-model="detailOpen" presentation="sheet" :title="detail?.canonical_name ?? t('models.detail')">
+      <AppStateView v-if="loadingDetail" :loading="true" />
+      <p v-if="detailError" class="model-catalog__error" role="alert">{{ detailError }}</p>
+      <template v-if="detail && !loadingDetail">
+        <p class="model-catalog__readonly"><span>{{ t('models.canonicalName') }}</span><code>{{ detail.canonical_name }}</code></p>
+        <fieldset class="model-catalog__form" :disabled="!canManage || savingDetail">
+          <label><span>{{ t('models.displayName') }}</span><input v-model="form.display_name" /></label>
+          <label><span>{{ t('models.family') }}</span><input v-model="form.family" /></label>
+          <label><span>{{ t('models.status') }}</span><select v-model="form.status"><option v-for="status in (['active','disabled','deprecated','hidden'] as ModelStatus[])" :key="status" :value="status">{{ status }}</option></select></label>
+          <label><span>{{ t('models.modality') }}</span><select v-model="form.modality"><option v-for="item in ['text','vision','audio','multimodal','embedding']" :key="item" :value="item">{{ item }}</option></select></label>
+          <label><span>{{ t('models.contextWindowLabel') }}</span><input v-model="form.context_window" inputmode="numeric" type="number" min="0" /></label>
+          <label><span>{{ t('models.parametersLabel') }}</span><input v-model="form.parameters_b" inputmode="decimal" type="number" min="0" step="any" /></label>
+          <label><span>{{ t('models.disabledReason') }}</span><input v-model="form.disabled_reason" /></label>
+          <label><span>{{ t('models.notes') }}</span><textarea v-model="form.notes" rows="3" /></label>
+          <label><span>{{ t('models.reasoningCaps') }}</span><textarea v-model="form.reasoning_caps" rows="4" spellcheck="false" /></label>
+          <label><span>{{ t('models.multimodalCaps') }}</span><input v-model="form.multimodal_caps" /></label>
+          <label><span>{{ t('models.tags') }}</span><input v-model="form.tags" /></label>
+        </fieldset>
+        <button v-if="canManage" type="button" class="btn btn--primary model-catalog__save" :disabled="savingDetail" @click="saveModel">{{ savingDetail ? t('common.loading') : t('common.save') }}</button>
+        <section class="model-catalog__aliases">
+          <h3>{{ t('models.aliases') }} <span>{{ detail.aliases.length }}</span></h3>
+          <p v-if="!detail.aliases.length" class="model-catalog__hint">{{ t('models.noAliases') }}</p>
+          <div v-for="alias in detail.aliases" :key="alias.id" class="model-catalog__alias-editor">
+            <template v-if="canManage && aliasForms[alias.id]">
+              <label><span>{{ t('models.rawAlias') }}</span><input v-model="aliasForms[alias.id]!.raw_name" /></label>
+              <label><span>{{ t('models.surface') }}</span><input v-model="aliasForms[alias.id]!.surface" /></label>
+              <label><span>{{ t('models.quantization') }}</span><input v-model="aliasForms[alias.id]!.quantization" /></label>
+              <label><span>{{ t('models.status') }}</span><select v-model="aliasForms[alias.id]!.status"><option v-for="status in (['active','disabled','deprecated','hidden'] as ModelStatus[])" :key="status" :value="status">{{ status }}</option></select></label>
+              <label><span>{{ t('models.notes') }}</span><input v-model="aliasForms[alias.id]!.notes" /></label>
+              <button type="button" class="btn" :disabled="aliasSaving" @click="saveAlias(alias.id)">{{ aliasSaving ? t('common.loading') : t('common.save') }}</button>
+            </template>
+            <div v-else class="model-catalog__alias"><code>{{ alias.raw_name }}</code><span>{{ alias.surface || alias.quantization || '—' }}</span><span class="badge badge--muted">{{ alias.status }}</span></div>
           </div>
-          <div class="models__version-meta">
-            <span v-for="meta in versionMeta(v)" :key="meta" class="family-card__stat">{{ meta }}</span>
+          <div v-if="detail.offers.length" class="model-catalog__offers">
+            <h4>{{ t('models.providerOffers') }}</h4>
+            <article v-for="offer in detail.offers" :key="`${offer.provider_id}-${offer.credential_id}-${offer.raw_model_name}`">
+              <div><strong>{{ offer.provider_name }}</strong><small>{{ offer.credential_label }} · {{ offer.raw_model_name }}</small></div>
+              <span class="badge" :class="offer.available ? 'badge--success' : 'badge--danger'">{{ offer.available ? t('providers.available') : t('providers.unavailable') }}</span>
+              <small>{{ offer.p95_latency_ms == null ? '—' : `${offer.p95_latency_ms}ms` }} · {{ offer.success_rate == null ? '—' : `${(offer.success_rate * 100).toFixed(1)}%` }}</small>
+            </article>
           </div>
-          <code v-if="v.canonical_name" class="models__canonical">{{ v.canonical_name }}</code>
-        </div>
-      </div>
-    </template>
-  </AppSheet>
+          <div v-if="canManage" class="model-catalog__alias-form">
+            <label><span>{{ t('models.rawAlias') }}</span><input v-model="aliasForm.raw_name" /></label>
+            <label><span>{{ t('models.surface') }}</span><input v-model="aliasForm.surface" /></label>
+            <label><span>{{ t('models.quantization') }}</span><input v-model="aliasForm.quantization" /></label>
+            <button type="button" class="btn" :disabled="aliasSaving || !aliasForm.raw_name.trim()" @click="addAlias">{{ aliasSaving ? t('common.loading') : t('models.addAlias') }}</button>
+          </div>
+        </section>
+      </template>
+    </AppSheet>
   </div>
 </template>
 
 <style scoped>
-.models__search {
-  display: flex;
-  align-items: center;
-  gap: var(--app-space-2);
-  height: 48px;
-  padding: 0 var(--app-space-3);
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius);
-  background: var(--app-surface);
-  color: var(--app-text-muted);
-  margin-bottom: var(--app-space-3);
-}
-
-.models__search input {
-  flex: 1;
-  border: none;
-  background: transparent;
-  color: var(--app-text);
-  font-size: var(--app-font-input);
-  min-width: 0;
-  /* 2026-10-04 实测改：容器 48px 但 input 自身只有 20px 高（实测 309×20）。
-     容器是 div 不是 label，**点容器的 padding 不会聚焦 input**，
-     所以真实可点区域就是那 20px —— 外框看起来很大，手指能落的地方却是一条。
-     让 input 自己撑满整行，行内任意一点都能唤起键盘。 */
-  height: 100%;
-  align-self: stretch;
-}
-
-.models__search input:focus {
-  outline: none;
-}
-
-.models__unmapped {
-  font-size: 0.75rem;
-  color: var(--app-text-muted);
-  margin-bottom: var(--app-space-2);
-}
-
-.family-card {
-  display: flex;
-  flex-direction: column;
-  gap: var(--app-space-2);
-  width: 100%;
-  text-align: left;
-  cursor: pointer;
-  font: inherit;
-  color: inherit;
-}
-
-.family-card:active {
-  background: var(--app-primary-softer);
-}
-
-.family-card__name {
-  font-weight: 600;
-  font-size: 0.9375rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.family-card__meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--app-space-1) var(--app-space-2);
-}
-
-.family-card__stat {
-  font-size: 0.75rem;
-  color: var(--app-text-secondary);
-}
-
-.models__version-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--app-space-3);
-}
-
-.models__version-name {
-  font-weight: 600;
-  font-size: 0.875rem;
-}
-
-.models__version-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--app-space-1) var(--app-space-2);
-  margin-top: var(--app-space-1);
-}
-
-.models__canonical {
-  display: block;
-  margin-top: var(--app-space-2);
-  font-size: 0.75rem;
-  color: var(--app-text-muted);
-  background: var(--app-surface-muted);
-  border-radius: var(--app-radius-sm);
-  padding: 4px 8px;
-  word-break: break-all;
-}
+.model-catalog { display: grid; gap: 12px; padding-bottom: var(--app-safe-bottom); }
+.model-catalog__toolbar, .model-catalog__featured, .model-catalog__identity, .model-catalog__meta, .model-catalog__alias { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
+.model-catalog__tabs { display: flex; gap: 6px; overflow-x: auto; }
+.model-catalog__tabs button { min-height: 48px; padding: 0 14px; border: 1px solid var(--app-border); border-radius: 999px; background: var(--app-surface); color: var(--app-text); white-space: nowrap; }
+.model-catalog__tabs button.active { border-color: var(--app-primary); color: var(--app-primary); }
+.model-catalog__tabs span, .model-catalog__aliases h3 span { color: var(--app-text-muted); }
+.model-catalog__search, .model-catalog__form label, .model-catalog__alias-form label { display: grid; gap: 6px; color: var(--app-text-muted); font-size: 12px; }
+.model-catalog input, .model-catalog select, .model-catalog textarea { width: 100%; min-height: 48px; padding: 10px 12px; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-surface); color: var(--app-text); font: inherit; }
+.model-catalog__featured, .model-catalog__card, .model-catalog__readonly, .model-catalog__aliases { padding: 14px; border: 1px solid var(--app-border); border-radius: 12px; background: var(--app-surface); }
+.model-catalog__featured p, .model-catalog__hint { margin: 5px 0 0; color: var(--app-text-muted); font-size: 12px; }
+.model-catalog__list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.model-catalog__card { display: flex; align-items: center; gap: 8px; }
+.model-catalog__open { display: grid; flex: 1; min-width: 0; gap: 8px; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; }
+.model-catalog__identity { align-items: flex-start; flex-direction: column; }
+.model-catalog__identity strong { overflow-wrap: anywhere; }
+.model-catalog code { overflow-wrap: anywhere; font-size: 12px; }
+.model-catalog__meta { justify-content: flex-start; flex-wrap: wrap; }
+.model-catalog__stats, .model-catalog__readonly { color: var(--app-text-muted); font-size: 12px; }
+.model-catalog__star { width: 48px; min-width: 48px; height: 48px; border: 0; background: transparent; color: var(--app-primary); font-size: 28px; }
+.model-catalog__form { display: grid; gap: 12px; margin: 16px 0; padding: 0; border: 0; }
+.model-catalog__form:disabled { opacity: .7; }
+.model-catalog__save { width: 100%; min-height: 48px; }
+.model-catalog__aliases { display: grid; gap: 10px; margin-top: 16px; }
+.model-catalog__aliases h3 { margin: 0; font-size: 14px; }
+.model-catalog__alias { justify-content: flex-start; flex-wrap: wrap; min-height: 48px; border-top: 1px solid var(--app-border); }
+.model-catalog__alias-editor, .model-catalog__offers { display: grid; gap: 10px; padding: 12px 0; border-top: 1px solid var(--app-border); }
+.model-catalog__alias-editor label { display: grid; gap: 6px; color: var(--app-text-muted); font-size: 12px; }
+.model-catalog__offers h4 { margin: 0; font-size: 14px; }
+.model-catalog__offers article { display: grid; grid-template-columns: 1fr auto; gap: 5px 10px; padding: 10px; border: 1px solid var(--app-border); border-radius: 10px; }
+.model-catalog__offers article div { display: grid; gap: 4px; min-width: 0; }
+.model-catalog__offers article small { color: var(--app-text-muted); overflow-wrap: anywhere; }
+.model-catalog__alias-form { display: grid; gap: 10px; padding-top: 10px; border-top: 1px solid var(--app-border); }
+.model-catalog__error { color: var(--app-danger); overflow-wrap: anywhere; }
+.model-catalog__empty { text-align: center; color: var(--app-text-muted); }
+@media (min-width: 700px) { .model-catalog__list { grid-template-columns: repeat(2,minmax(0,1fr)); } .model-catalog__form { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 </style>

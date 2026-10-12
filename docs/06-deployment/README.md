@@ -17,6 +17,7 @@
 ## 2. 文档入口
 
 - [环境规则与构建](01-environments/README.md)
+- [本地 host-first 部署方案（2026-10-11：主机优先发现 + 自动安装 PG17+Citus columnar/Redis + NetBird 域名）](01-environments/local-host-first-deploy-20261011.md)
 - [客户安装](01-environments/customer-install/README.md)
 - 数据库初始化和迁移：`02-database/`、`03-initialization/`
 - 运维 runbook：`04-runbooks/`

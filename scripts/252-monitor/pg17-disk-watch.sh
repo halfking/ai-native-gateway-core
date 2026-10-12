@@ -62,11 +62,11 @@ fi
 CONF=${LLMGW_PG17_CONF:-/etc/llmgw/pg17.conf}
 [ -f "$CONF" ] && source "$CONF"
 
-CONTAINER=pg-252-pg17
+CONTAINER=${LLMGW_PG_CONTAINER:-pg-252-pg17}
 PG_USER=llm_gateway
 PG_DB=llm_gateway
-LOG=/var/log/pg17-disk-watch.log
-ALERT_LOG=/var/log/pg17-disk-watch.alert.log
+LOG=${LLMGW_DISK_WATCH_LOG:-/var/log/pg17-disk-watch.log}
+ALERT_LOG=${LLMGW_DISK_WATCH_ALERT_LOG:-/var/log/pg17-disk-watch.alert.log}
 NOTIFY=/opt/scripts/notify.sh
 
 # === 阈值（可被 conf 覆盖）===========================================
@@ -110,44 +110,79 @@ _llmgw_run_bounded() {
     timeout -k 5 "$secs" "$@"
     return $?
   fi
+  # 纯 bash 回退。★ 必须**按进程组杀**，不能只 kill 直接子进程：
+  #   实测（本次审计）：`kill -9 <子进程>` 之后，`bash -c 'sleep 60; …'`
+  #   里那条 sleep **会活下来**。连续 3 次超时调用 = 留下 3 个孤儿。
+  #   而「超时的进程留下来继续跑」正是 2026-10-10 事故的形态 ——
+  #   超时这道闸若自己漏进程，就等于把事故原样复现一遍。
+  #   方案取舍（实测）：函数内 `set -m` 让后台作业自成进程组，
+  #   `kill -9 -$pid` 整组回收 ⇒ 0 孤儿；
+  #   而 `( set -m; exec … ) &` 子 shell 写法实测**仍漏 3 个**，故不用。
+  set -m
   "$@" &
   local pid=$! waited=0
   while kill -0 "$pid" 2>/dev/null; do
     if [ "$waited" -ge "$secs" ]; then
-      kill -9 "$pid" 2>/dev/null || true
+      kill -9 -"$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
+      set +m
       return 124
     fi
     sleep 1
     waited=$((waited + 1))
   done
-  wait "$pid"
+  wait "$pid"; local _rc=$?
+  set +m
+  return $_rc
 }
 
 # PGOPTIONS 走服务端超时，exec 外的 timeout 走客户端超时。两者不可互相替代：
 # 只设客户端的话，连接会按时断开但**查询仍占着 PG 的进程槽**直到服务端自己放弃。
+#
+# ★ 每次调用都往状态文件记一行 ok/fail。**必须用文件而不是变量**：
+#   调用方一律写成 `x=$(de ...)`，那是子 shell，变量自增出不来
+#   （第一版就是这么写的，于是失败计数恒为 0，等于没记）。
+_DE_STAT_FILE=$(mktemp "${TMPDIR:-/tmp}/llmgw-dw-stat.XXXXXX")
+trap 'rm -f "$_DE_STAT_FILE"' EXIT
+
 de() {
-  _llmgw_run_bounded "$LLMGW_QUERY_TIMEOUT" \
-    docker exec \
-      -e "PGOPTIONS=-c statement_timeout=${LLMGW_QUERY_TIMEOUT_MS} -c lock_timeout=5000" \
-      -e "PGCONNECT_TIMEOUT=$LLMGW_CONNECT_TIMEOUT" \
-      "$CONTAINER" "$@" 2>/dev/null || echo "0"
+  local out rc
+  if out=$(_llmgw_run_bounded "$LLMGW_QUERY_TIMEOUT" \
+      docker exec \
+        -e "PGOPTIONS=-c statement_timeout=${LLMGW_QUERY_TIMEOUT_MS} -c lock_timeout=5000" \
+        -e "PGCONNECT_TIMEOUT=$LLMGW_CONNECT_TIMEOUT" \
+        "$CONTAINER" "$@" 2>/dev/null); then
+    rc=0
+  else
+    rc=$?
+  fi
+  # 空输出同样算失败：psql 成功但返回空（例如聚合无行）与「压根没跑成」
+  # 在下游完全同形，都不能当成一个可信的数字往下传。
+  if [ "$rc" -ne 0 ] || [ -z "$out" ]; then
+    printf 'fail\n' >> "$_DE_STAT_FILE" 2>/dev/null || true
+    printf '0'
+    return 0
+  fi
+  printf 'ok\n' >> "$_DE_STAT_FILE" 2>/dev/null || true
+  printf '%s' "$out"
 }
 
 used_pct=$(df -P / | awk 'NR==2 {gsub("%","",$5); print $5}')
 used_gb=$(df -P / | awk 'NR==2 {printf "%.1f", $3/1024/1024}')
 avail_gb=$(df -P / | awk 'NR==2 {printf "%.1f", $4/1024/1024}')
-# ★ `du -s` 全量遍历容器存储目录，是本脚本里最贵的一个动作：
-#   事故当天现场的 du 进程集体卡在 D 状态（不可中断 IO）。
-#   它对告警阈值的贡献只是一个参考数字，**不值得**为它压垮磁盘，
-#   所以单独给它一个更短的上界，拿不到就记 n/a（下面的阈值判断不会因此误报）。
-# ★ `set -o pipefail` 下，被超时杀掉的 du 会让整条管道返回 124，
-#   而 `set -e` 把 `x=$(...)` 的非零退出当成致命错误直接终止脚本 ——
-#   那就变成「du 超时 ⇒ 整个巡检不产出任何一行采样」，比 du 拿不到值更糟。
-#   故显式吞掉。
-docker_storage_gb=$(_llmgw_run_bounded "${LLMGW_DU_TIMEOUT:-30}" \
-  du -s /var/lib/containers/storage/ 2>/dev/null | awk '{printf "%.1f", $1/1024/1024}' || true)
-[ -n "$docker_storage_gb" ] || docker_storage_gb="n/a"
+# ★ 2026-10-11 审计修正：这里原本是 `du -s /var/lib/containers/storage/`。
+#   实测（252，负载已回落之后）该命令**跑 280 秒仍未返回** ——
+#   事故当天现场有 11 个 du 卡在 D 状态，它本就是两个负载源之一。
+#   我上一轮给它加了 30s 上界，结果是**把这个原本能取到值的指标永久打瞎**
+#   （采样行里长期是 `docker_storage=n/a`）—— 一个"有界的失败"，
+#   比一个"慢但正确"更糟，因为它让人以为这块已经有人管了。
+#   ⇒ 改成 `df -P`：瞬时返回，且给出的信号（容器存储所在文件系统已用/可用）
+#     才是真正可执行的告警依据。注意语义变了：这是**文件系统用量**，
+#     不是容器总量，故日志字段改名 storage_fs_gb 以免误读。
+#   本指标只写日志、不参与任何阈值判断（见下方 alerts 段），故不丢告警能力。
+STORAGE_DIR=/var/lib/containers/storage
+storage_fs_gb=$(_llmgw_run_bounded 10 df -P "$STORAGE_DIR" 2>/dev/null | awk 'NR==2 {printf "%.1f", $3/1024/1024}' || true)
+[ -n "$storage_fs_gb" ] || storage_fs_gb="n/a"
 
 db_size_bytes=$(de psql -U "$PG_USER" -d "$PG_DB" -tAc "SELECT pg_database_size('$PG_DB')")
 db_size_gb=$(awk -v b="$db_size_bytes" 'BEGIN {printf "%.2f", b/1024/1024/1024}')
@@ -204,13 +239,47 @@ avail_floor=$(awk_floor "$avail_gb")
 [ "$(awk_gte "$pg_wal_gb" "$PG_WAL_GB")" = "1" ] && \
   alerts+=("🟡WAL 拥堵: ${pg_wal_gb}GB, 阈值 ${PG_WAL_GB}GB")
 
+# ★ 2026-10-11 审计修：原来这里是裸 `for a in "${alerts[@]}"`，
+#   而 bash 3.2（macOS 自带）在 `set -u` 下展开**空数组**会报
+#   `alerts[@]: unbound variable` 并退出 —— 也就是说「一条阈值都没触发」
+#   （最常见的那种情况）反而让脚本当场死掉、连采样行都写不出来。
+#   本机无 docker/bash 3.2 上跑本脚本时必现，已实测复现。
+#   bash 4.4+ 才把空数组展开当合法，故 252 上一直没暴露。
+#   修法与本仓 deploy 侧「空 ARGS 在 bash 3.2 下 unbound」同源：按个数守卫。
 level=ok
-if [ "${#alerts[@]}" -gt 0 ]; then level=warning; fi
-for a in "${alerts[@]}"; do
-  case "$a" in 🔴*) level=critical; break;; esac
-done
+_de_alert_count=${#alerts[@]}
+if [ "$_de_alert_count" -gt 0 ]; then
+  level=warning
+  for a in "${alerts[@]}"; do
+    case "$a" in 🔴*) level=critical; break;; esac
+  done
+fi
 
-echo "[$(date -Iseconds)] level=$level gate=$([ "$_llmgw_single_instance_guarded" = true ] && echo guarded || echo FAIL_OPEN) disk=${used_pct}% avail=${avail_gb}GB db_llm_gateway=${db_size_gb}GB db_total=${db_all_gb}GB req_logs_hot=${req_logs_hot_size}MB mp_hot=${mp_hot_size}MB handoff=${handoff_size}MB columnar_chunk=${columnar_chunk_gb}GB wal=${pg_wal_gb}GB docker_storage=${docker_storage_gb}GB" >> "$LOG"
+# === 量具可用性判定（2026-10-11 审计新增）===============================
+# ★ 这是本次事故最该被记住的一课：
+#   `de()` 失败返回 "0"，而上面每一条阈值判断都是「>= 阈值」——
+#   于是**取不到值**与**一切正常**在判据里完全同形。
+#   2026-10-10 全天 psql 一条都取不到，采样行却始终是 `level=ok`，
+#   dead_tup 还会显示成 `clean`：**监控在完全瞎掉的状态下报了 8 小时健康**。
+#   那 8 小时正是 154 被 Redis/PG 拖垮、而无人从监控侧发现的时间窗。
+#
+#   ⇒ 「查不到」必须与「没问题」分开判。本目录契约里 3 = 量具不可用，
+#     这里落到 gauge_unavailable，且**永不允许**降级成 ok。
+_de_total=$(wc -l < "$_DE_STAT_FILE" 2>/dev/null | tr -d ' ') || _de_total=0
+_de_fail=$(grep -c '^fail$' "$_DE_STAT_FILE" 2>/dev/null) || _de_fail=0
+: "${_de_total:=0}"; : "${_de_fail:=0}"
+
+if [ "$_de_fail" -gt 0 ]; then
+  alerts+=("⚠️量具不可用: ${_de_fail}/${_de_total} 个 DB 指标取不到（psql/exec 超时或失败）。
+   ★ 这**不等于** PG 健康。本次运行对 DB 相关维度**没有结论**。")
+  # critical 磁盘告警比「量具不可用」更紧急，保留；否则明确标为量具不可用。
+  [ "$level" = "ok" ] && level=gauge_unavailable
+  # 这两个字段在「查不到」与「正常为空」之间同形，查不到时不准说 clean/n/a。
+  case "$top_tables" in "0"|"n/a") top_tables="unavailable(量具故障)";; esac
+  case "$dead_tup_pct_top" in "0"|"clean") dead_tup_pct_top="unavailable(量具故障)";; esac
+fi
+
+echo "[$(date -Iseconds)] level=$level gate=$([ "$_llmgw_single_instance_guarded" = true ] && echo guarded || echo FAIL_OPEN) gauge=${_de_fail}/${_de_total} disk=${used_pct}% avail=${avail_gb}GB db_llm_gateway=${db_size_gb}GB db_total=${db_all_gb}GB req_logs_hot=${req_logs_hot_size}MB mp_hot=${mp_hot_size}MB handoff=${handoff_size}MB columnar_chunk=${columnar_chunk_gb}GB wal=${pg_wal_gb}GB storage_fs=${storage_fs_gb}GB" >> "$LOG"
 echo "[$(date -Iseconds)] top5: $top_tables" >> "$LOG"
 echo "[$(date -Iseconds)] dead_tup_top3: $dead_tup_pct_top" >> "$LOG"
 
@@ -235,13 +304,33 @@ if [ "$level" != "ok" ]; then
 
   if [ -x "$NOTIFY" ]; then
     # 默认有 cooldown:critical 1h / warning 30min
+    #
+    # ★ `*)` 兜底是必需的，不是防御性冗余：
+    #   本 case 的结果直接进 `$((COOLDOWN_MIN * 60))`，一旦某个新 level
+    #   没有对应分支，COOLDOWN_MIN 就是未绑定变量，而这里是 `set -u`
+    #   ⇒ 脚本会在告警路径上崩掉、IM 推不出去。2026-10-11 审计在下面
+    #   的 fingerprint 那行就抓到过一个同类的真事故（见 ts 说明）。
     case "$level" in
-      critical) COOLDOWN_MIN=${PG17_CRIT_COOLDOWN_MIN:-60};;
-      warning)  COOLDOWN_MIN=${PG17_WARN_COOLDOWN_MIN:-30};;
-      info)     COOLDOWN_MIN=${PG17_INFO_COOLDOWN_MIN:-1440};;
+      critical)          COOLDOWN_MIN=${PG17_CRIT_COOLDOWN_MIN:-60};;
+      warning)           COOLDOWN_MIN=${PG17_WARN_COOLDOWN_MIN:-30};;
+      info)              COOLDOWN_MIN=${PG17_INFO_COOLDOWN_MIN:-1440};;
+      gauge_unavailable) COOLDOWN_MIN=${PG17_GAUGE_COOLDOWN_MIN:-30};;
+      *)                 COOLDOWN_MIN=30;;
     esac
+    # notify.sh 只认 critical/warning/info 这类严重度，而
+    # 「监控自己瞎了」按本目录教训应当**按 critical 报**——10-10 那 8 小时
+    # 正是没人从监控侧看到。所以这里做映射，标题仍保留量具不可用字样。
+    notify_level=$level
+    case "$notify_level" in critical|warning|info) ;; *) notify_level=critical;; esac
 
-    fingerprint=$(printf '%s\n%s\n%s' "$level" "$(printf '%s\n' "${alerts[@]}" | md5sum | cut -d' ' -f1)" "${ts:0:7}" | md5sum | cut -d' ' -f1)
+    # ★ 2026-10-11 审计修掉的真缺陷：这里原本写的是 "${ts:0:7}"，
+    #   而 `ts` 在整个脚本里**从未被赋值**（模板残留）。
+    #   macOS bash 3.2 静默取空（fingerprint 退化，尚可用），
+    #   但生产的 bash 4.4 上 `set -u` 直接报 `ts: unbound variable` 并退出 1
+    #   —— 已在 252 实测复现。后果：**任何一次真告警都会在最后一步崩掉，
+    #   IM 永远推不出去**（alert log 写了，但没人收到）。
+    #   即 252 的告警投递通路在这次事故之前就是断的。
+    fingerprint=$(printf '%s\n%s\n%s' "$level" "$(printf '%s\n' "${alerts[@]}" | md5sum | cut -d' ' -f1)" "$(date +%Y-%m)" | md5sum | cut -d' ' -f1)
     cooldown_file=/var/tmp/pg17-disk-watch.cooldown
     now_epoch=$(date +%s)
     # 读上次同 fingerprint 推送时间（grep 无匹配时 exit 1 -> || true 屏蔽）
@@ -255,7 +344,7 @@ if [ "$level" != "ok" ]; then
     fi
 
     if [ "$push_im" = "true" ]; then
-      "$NOTIFY" --level "$level" --title "252 ${level}" --body "$msg" || true
+      "$NOTIFY" --level "$notify_level" --title "252 ${level}" --body "$msg" || true
       # 写入 cooldown 标记
       mkdir -p "$(dirname "$cooldown_file")" 2>/dev/null
       # 删除此 fp 的旧行,追加新行
@@ -266,3 +355,18 @@ if [ "$level" != "ok" ]; then
     fi
   fi
 fi
+
+# === 退出码（对齐本目录契约）=============================================
+#   0  正常
+#   1  检出阈值问题（warning / critical）
+#   3  量具不可用 —— 本次对 DB 维度**没有结论**，**不等于** PG 健康
+#
+# ★ 为什么要显式写：cron 那行是 `>/dev/null 2>&1`，rc 到不了 cron 的 job 状态
+#   （本目录已登记该缺口，见 etc.cron.d.pg17 注释 C7-P3-2）。但手工/门禁运行
+#   时 rc 是唯一能一眼区分「查过了没问题」「查过了有问题」「压根没查成」的信号，
+#   而这三种在 10-10 那 8 小时里**全是同一个 level=ok**。
+case "$level" in
+  gauge_unavailable) exit 3 ;;
+  ok)                exit 0 ;;
+  *)                 exit 1 ;;
+esac

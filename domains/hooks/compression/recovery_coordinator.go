@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/cache/prefix"
+	"github.com/kaixuan/llm-gateway-go/internal/markerbound"
 )
 
 // RecoveryDeps holds the external dependencies for the recovery coordinator.
@@ -583,9 +584,13 @@ func extractSummaryText(body []byte, plan CutPlan) string {
 		}
 		text := rawJSONTextContent(probe.Content)
 		if probe.Role == "user" && text != "" {
-			// Truncate to first 500 chars.
+			// Truncate to first 500 chars. Marker-aware (2026-10-11): this
+			// summary is mechanical fallback text that goes straight into the
+			// outbound body and the session cache, so a byte cut through a
+			// {SENSITIVE:...} placeholder would put a mangled internal token
+			// upstream. A boundary marker is kept whole instead.
 			if len(text) > 500 {
-				text = text[:500] + "..."
+				text = text[:markerbound.SafeCutKeepHead(text, 500)] + "..."
 			}
 			b = append(b, []byte("[Initial request] "+text+"\n\n")...)
 			break
@@ -615,7 +620,8 @@ func extractSummaryText(body []byte, plan CutPlan) string {
 		if json.Unmarshal(last, &probe) == nil {
 			text := rawJSONTextContent(probe.Content)
 			if len(text) > 300 {
-				text = text[:300] + "..."
+				// Marker-aware, same reason as the [Initial request] cut above.
+				text = text[:markerbound.SafeCutKeepHead(text, 300)] + "..."
 			}
 			if text != "" {
 				b = append(b, []byte(fmt.Sprintf("[Last before cut - %s] %s\n", probe.Role, text))...)

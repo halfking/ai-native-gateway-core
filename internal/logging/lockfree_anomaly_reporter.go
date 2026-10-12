@@ -58,11 +58,11 @@ type AnomalyReport struct {
 // constants so producers can switch on the typed value rather than
 // a stringly-typed `anomaly_type` field.
 const (
-	AnomalyTypeToolCallsMissing    = "tool_calls_missing"
-	AnomalyTypeConversionError     = "conversion_error"
-	AnomalyTypeSemanticIncomplete  = "semantic_incomplete"
-	AnomalyTypeRawLogOverflow      = "raw_log_overflow"
-	AnomalyTypeRawLogCloseDrained  = "raw_log_close_drained"
+	AnomalyTypeToolCallsMissing   = "tool_calls_missing"
+	AnomalyTypeConversionError    = "conversion_error"
+	AnomalyTypeSemanticIncomplete = "semantic_incomplete"
+	AnomalyTypeRawLogOverflow     = "raw_log_overflow"
+	AnomalyTypeRawLogCloseDrained = "raw_log_close_drained"
 )
 
 // LockFreeAnomalyReporter 无锁异常报告器
@@ -100,6 +100,49 @@ type LockFreeAnomalyReporter struct {
 	// 统计信息
 	reportsSent   atomic.Uint64
 	reportsFailed atomic.Uint64
+
+	// consecutive permanent endpoint rejections (404/405/410/401/...).
+	// 2026-10-11: 154 生产事故 — endpoint 配置到一个本网关不存在的路由
+	// （/api/diagnostics/anomalies，实际路由是 /api/admin/format-anomalies），
+	// postBatch 对非 2xx 一律 requeue，sendWorker 每 5s 重发同一批 →
+	// 24h 内 9341 次 404 循环。永久性 4xx 重试永远不可能成功，连续
+	// permanentFailuresThreshold 次后自禁用报告器。
+	permanentFailures atomic.Uint32
+
+	// permanentlyDisabled records that this reporter shut ITSELF off after
+	// permanentFailuresThreshold consecutive permanent endpoint rejections.
+	//
+	// 2026-10-11（12h 审计 A2）：自禁用本身没有留下任何可观测痕迹——enabled
+	// 归零后 enqueue 直接 false、所有 Report* 静默返回，而 Stats() 的 5 个字段
+	// 里没有任何一个能区分「刚自禁用」与「一直没启用」。于是运维看到的是
+	// 一条读数正常的死量具。同批 c88bc79e3 在脚本侧立的规矩正是「量具不可用
+	// 不得报 ok」，Go 侧留了同一个盲区。
+	//
+	// 单独一个 flag（而不是读 enabled）的原因：enabled=false 有三种成因
+	// （构造时未启用、Close 已调用、自禁用），只有自禁用这一种需要人介入。
+	// Close 也会置它，保证进程收尾时不会把「正常关闭」误报成故障。
+	permanentlyDisabled atomic.Bool
+}
+
+// permanentFailuresThreshold is the number of consecutive permanent endpoint
+// rejections after which the reporter disables itself.
+const permanentFailuresThreshold = 3
+
+// isPermanentAnomalyStatus reports whether an HTTP status makes retrying the
+// same batch pointless. Auth failures are included: the reporter sends no
+// credentials, so a 401/403 from the endpoint cannot self-heal.
+func isPermanentAnomalyStatus(code int) bool {
+	switch code {
+	case http.StatusUnauthorized,
+		http.StatusForbidden,
+		http.StatusNotFound,
+		http.StatusMethodNotAllowed,
+		http.StatusGone,
+		http.StatusUnsupportedMediaType,
+		http.StatusUnprocessableEntity:
+		return true
+	}
+	return false
 }
 
 // NewLockFreeAnomalyReporter 创建无锁异常报告器
@@ -412,12 +455,34 @@ func (r *LockFreeAnomalyReporter) postBatch(parent context.Context, batch []Anom
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		r.reportsSent.Add(uint64(len(batch)))
+		r.permanentFailures.Store(0)
 		slog.Debug("lockfree_anomaly_reporter: sent batch successfully",
 			"batch_size", len(batch),
 			"status", resp.StatusCode)
 		return true
 	}
 	r.reportsFailed.Add(uint64(len(batch)))
+	if isPermanentAnomalyStatus(resp.StatusCode) {
+		n := r.permanentFailures.Add(1)
+		if n <= permanentFailuresThreshold {
+			slog.Error("lockfree_anomaly_reporter: endpoint permanently rejected batch, dropping (retry can never succeed)",
+				"status", resp.StatusCode,
+				"endpoint", r.endpoint,
+				"batch_size", len(batch),
+				"consecutive_permanent_rejections", n)
+		}
+		if n >= permanentFailuresThreshold && r.enabled.CompareAndSwap(true, false) {
+			// 与 enabled 同一临界区内翻转：先置 flag 再关闸，读 Stats 的
+			// 人不会看到「已禁用但没标记」的中间态。
+			r.permanentlyDisabled.Store(true)
+			slog.Error("lockfree_anomaly_reporter: disabled after repeated permanent endpoint rejections",
+				"status", resp.StatusCode,
+				"endpoint", r.endpoint,
+				"hint", "check LLM_GATEWAY_ANOMALY_ENDPOINT points to a route this gateway serves")
+		}
+		// 返回 true 让调用方丢弃 batch 而不是重新入队。
+		return true
+	}
 	slog.Warn("lockfree_anomaly_reporter: server returned non-2xx, re-enqueuing",
 		"status", resp.StatusCode,
 		"batch_size", len(batch))
@@ -469,6 +534,9 @@ func (r *LockFreeAnomalyReporter) Close() error {
 		r.closing.Store(true)
 		r.submitMu.Lock()
 		r.enabled.Store(false)
+		// 正常关闭不是故障：显式清掉自禁用标记，避免收尾读数把
+		// 「按计划关停」误报成「端点永久拒绝导致停摆」。
+		r.permanentlyDisabled.Store(false)
 		r.submitMu.Unlock()
 		r.cancel()
 		<-r.done
@@ -514,17 +582,29 @@ func (r *LockFreeAnomalyReporter) Stats() AnomalyReporterStats {
 		Dropped:       queueStats.DropCount,
 		Sent:          r.reportsSent.Load(),
 		Failed:        r.reportsFailed.Load(),
+		// A2: 自禁用必须从读数上可区分——否则一条读数正常的死量具
+		// 和一个健康的量具在监控里完全同形。
+		PermanentlyDisabled: r.permanentlyDisabled.Load(),
+		PermanentRejections: uint64(r.permanentFailures.Load()),
 	}
 }
 
-// AnomalyReporterStats 异常报告器统计信息
+// AnomalyReporterStats 异常报告统计信息
 type AnomalyReporterStats struct {
-	QueueSize     int64  // 当前队列大小
-	QueueCapacity int64  // 队列容量
-	Enqueued      uint64 // 入队总数
-	Dropped       uint64 // 丢弃总数（队列满）
-	Sent          uint64 // 成功发送总数
-	Failed        uint64 // 发送失败总数
+	QueueSize     int64  `json:"queue_size"`     // 当前队列大小
+	QueueCapacity int64  `json:"queue_capacity"` // 队列容量
+	Enqueued      uint64 `json:"enqueued"`       // 入队总数
+	Dropped       uint64 `json:"dropped"`        // 丢弃总数（队列满）
+	Sent          uint64 `json:"sent"`           // 成功发送总数
+	Failed        uint64 `json:"failed"`         // 发送失败总数
+
+	// PermanentlyDisabled 报告器是否因端点永久性拒绝而自禁用。自禁用后
+	// 不再接受任何上报（enqueue 直接返回 false），需要人改配置后重启——
+	// 因此该位为 true 就是一个待处置的故障，不是一次瞬时抖动。
+	PermanentlyDisabled bool `json:"permanently_disabled"`
+	// PermanentRejections 连续永久性 4xx 计数（2xx 成功后归零）。
+	// 与 PermanentlyDisabled 一起看可区分「正在逼近阈值」与「已停摆」。
+	PermanentRejections uint64 `json:"permanent_rejections"`
 }
 
 // AnomalyReportEnvelope is the correlation context attached to every

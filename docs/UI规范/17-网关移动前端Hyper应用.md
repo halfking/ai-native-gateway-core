@@ -163,11 +163,18 @@ R3 已补齐六字段；R2/R6/R7/R8/R9 登记「未实现/不适用」）。R11 
 
 ### 5.1 移动端登录状态
 
-服务端签发的 HttpOnly `llmgw_session` 是唯一持久认证凭据，当前 cookie/JWT 有效期均为
-24 小时。`localStorage['llmgw_mobile_user']` 只缓存展示用用户资料；App 冷启动时调用
-`auth.hydrate()` → `/api/auth/me` 校验 cookie，成功后直接进入上次登录态。账户 Sheet 内的
-「退出登录」调用后端登出，并清掉展示资料、在途请求代次和 Hyper 导航恢复数据。原生壳不
-保存密码或 JWT。详见 [14 §7.1](./14-原生桥与生命周期.md)。
+服务端签发的 HttpOnly `llmgw_session` 是唯一持久认证凭据；会话寿命由登录请求的
+`remember_me` 选择和服务端策略决定。登录页提供「保持登录」选项：开启后，受服务端有效期
+约束，关闭并重启 App 后仍尝试恢复登录；未开启时只保留当前 WebView 会话。`localStorage`
+中的 `llmgw_mobile_user` 只缓存展示用用户资料，不含密码、JWT 或 API Key。App 冷启动时调用
+`auth.hydrate()` → `/api/auth/me` 校验 Cookie；仅校验成功才恢复已登录界面，401 清除缓存并
+返回登录页。账户 Sheet 内的「退出登录」始终可用，调用当前网关的同源登出 API，并清除该
+网关的展示资料、在途请求代次和 Hyper 导航恢复数据。不得通过原生插件全局清除 Cookie、
+LocalStorage 或 SessionStorage；多网关数据必须按 WebView origin 隔离。原生壳不保存密码或
+JWT。详见 [14 §7.1](./14-原生桥与生命周期.md)。
+
+真机验收必须分别覆盖保持登录后的杀进程/重启恢复、账户内退出、离线退出后重启、登录过期
+后的 401 回登录流程；设备记录必须包含机型与系统版本，不得以模拟器结果代替指定真机结论。
 
 ## 6. i18n 与主题
 

@@ -328,6 +328,9 @@ type autoRouteDecision struct {
 	// 其余来源值 V1/V2 早已落库，全量透出会改变 flag-off 字节流）。
 	RoutingSource  string               `json:"routing_source,omitempty"`
 	CandidatesTop3 []autoRouteCandidate `json:"candidates_top3"`
+	// ClassifierUsage is server-side audit metadata. The response-header writer
+	// strips it before returning the decision to clients.
+	ClassifierUsage *autoroute.ExternalClassifierUsage `json:"classifier_usage,omitempty"`
 
 	// Process-local inputs for pre-first-byte dispatch recovery. They are not
 	// serialized into the response header or audit JSON.
@@ -762,6 +765,7 @@ func decisionToWire(d *autoroute.Decision) *autoRouteDecision {
 		Confidence:          d.Confidence,
 		Profile:             string(d.Profile),
 		Classifier:          d.Classifier,
+		ClassifierUsage:     d.ExternalUsage,
 		Reason:              d.Reason,
 		ChosenModel:         d.ChosenModel,
 		ChosenRawModel:      d.ChosenRawModel,
@@ -840,8 +844,12 @@ func writeAutoDecisionHeader(w http.ResponseWriter, wire *autoRouteDecision) {
 	if wire == nil {
 		return
 	}
-	wire = capDecisionSize(wire)
-	b, err := json.Marshal(wire)
+	// Vendor usage and estimated spend are internal audit data. Keep them in
+	// request_logs.auto_decision, but do not expose them in a client response.
+	clientWire := *wire
+	clientWire.ClassifierUsage = nil
+	clientWire = *capDecisionSize(&clientWire)
+	b, err := json.Marshal(&clientWire)
 	if err != nil {
 		return
 	}

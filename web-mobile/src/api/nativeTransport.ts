@@ -483,6 +483,8 @@ export async function installNativeTransport(
 ): Promise<NativeInstallReport> {
   const report = await probeNativeTransport(options)
   if (!report.gatesOk) return { ...report, installed: false }
-  setTransport(createNativeTransport(options))
+  // CapacitorHttp has its own network stack and does not send WebView cookies.
+  // Mark this explicitly so req() supplies the in-memory login Bearer token.
+  setTransport(createNativeTransport(options), { cookieJar: false })
   return { ...report, installed: true }
 }

@@ -192,6 +192,22 @@ describe('LoginView 验证码', () => {
     wrapper.unmount()
   })
 
+  it('password 字段带「跳过密码管理器」的 iOS 标签（避免 Keychain 弹窗）', async () => {
+    // 2026-10-11 加：iOS 26 模拟器 WKWebView 在 password autocomplete 上
+    // 会触发「输入 iPhone 密码」系统级 Keychain 弹窗，整张登录页被遮住。
+    // data-lpignore / data-1p-ignore / data-form-type 是 1Password / iCloud
+    // Keychain / Dashlane 通用的「跳过此字段」标记，保留 autocomplete 让
+    // 真机的「saved password」列表仍能正常显示。
+    const wrapper = mount(LoginView)
+    await flushPromises()
+    const pw = wrapper.find('#mobile-login-password')
+    expect(pw.attributes('autocomplete')).toBe('current-password')
+    expect(pw.attributes('data-lpignore')).toBe('true')
+    expect(pw.attributes('data-1p-ignore')).toBe('true')
+    expect(pw.attributes('data-form-type')).toBe('other')
+    wrapper.unmount()
+  })
+
   it('captcha_required 走专用文案，而不是「用户名或密码错误」', async () => {
     mocks.login.mockRejectedValue(new ApiError(400, 'captcha required', 'captcha_required'))
     const wrapper = mount(LoginView)

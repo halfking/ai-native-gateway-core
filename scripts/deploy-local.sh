@@ -518,6 +518,334 @@ load_redis_image_if_needed() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# Host-native service installation (2026-10-10)
+#
+# 目标要求：主机与 docker 都没有时，自动安装 redis 与 pg17+citus(columnar)。
+# 这里走「源码装到共享服务目录」的路线，而不是 brew/apt：
+#   - 不假设主机有包管理器（CI / 纯净 macOS / 容器内都常见没有）
+#   - 版本与扩展（pgcolumnar）由脚本显式钉住，跨机一致
+# 安装位置遵循既有共享服务目录规范：$(dl_shared_root)/redis、.../postgres。
+#
+# 可用环境变量：
+#   DL_HOST_INSTALL=0      完全跳过本路径
+#   DL_HOST_PG_VERSION     默认 17（主版本；最新小版本自动从官方源解析，
+#                          也可直接给全版本号如 17.11）
+#   DL_PGCOLUMNAR_VERSION  默认 v1.0-alpha4（Citus columnar 独立发行）
+#   DL_REDIS_VERSION       默认 7.4.2
+#   DL_HOST_SDKROOT        显式指定 macOS SDK（见下方 SDK 选择逻辑）
+# ---------------------------------------------------------------------------
+
+# macOS ships several SDKs; the newest .tbd files may list targets the
+# installed linker cannot parse ("tapi error: malformed file" on
+# arm64e.x1-macos). Probe newest-first and keep the first that links a
+# trivial program, so a toolchain/SDK mismatch degrades to an older SDK
+# instead of failing the whole build.
+dl_resolve_sdkroot() {
+  [[ -n "${DL_HOST_SDKROOT:-}" ]] && { printf '%s\n' "$DL_HOST_SDKROOT"; return 0; }
+  [[ "$(uname -s 2>/dev/null || printf unknown)" == Darwin ]] || return 1
+  local sdk base probe
+  for base in /Library/Developer/CommandLineTools/SDKs /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs; do
+    [[ -d "$base" ]] || continue
+    for sdk in $(ls -1 "$base" 2>/dev/null | sort -Vr); do
+      [[ -d "$base/$sdk" ]] || continue
+      probe="$(mktemp -d)"
+      printf 'int main(void){return 0;}\n' > "$probe/probe.c" 2>/dev/null || { rm -rf "$probe"; continue; }
+      if SDKROOT="$base/$sdk" clang -o "$probe/probe" "$probe/probe.c" >/dev/null 2>&1; then
+        rm -rf "$probe"
+        printf '%s\n' "$base/$sdk"
+        return 0
+      fi
+      rm -rf "$probe"
+    done
+  done
+  return 1
+}
+
+dl_host_src_dir() { printf '%s\n' "${DL_HOST_SRC_DIR:-$(dl_shared_root)/src}"; }
+dl_host_logs_dir() { printf '%s\n' "$(dl_shared_root)/logs"; }
+
+# Download+extract a source tarball into $2, atomically enough for reruns.
+dl_fetch_tarball() {
+  local url="$1" dest="$2" name
+  name="$(basename "$dest")"
+  mkdir -p "$(dirname "$dest")" "$dest"
+  if [[ -f "$dest/.extracted" ]]; then
+    log "host-install: $name already extracted"
+    return 0
+  fi
+  local tarball="$dest.tar.gz"
+  if [[ ! -s "$tarball" ]]; then
+    log "host-install: downloading $url"
+    curl -fsSL --max-time "${DL_HOST_FETCH_TIMEOUT:-600}" -o "$tarball.part" "$url" \
+      || { warn "host-install: download failed: $url"; return 1; }
+    mv "$tarball.part" "$tarball"
+  fi
+  tar xzf "$tarball" -C "$dest" --strip-components=1 || { warn "host-install: extract failed: $tarball"; return 1; }
+  : > "$dest/.extracted"
+}
+
+# Build + install Redis into the shared service dir and start it.
+# Redis 7.x builds with the system clang; MALLOC=libc avoids the jemalloc
+# dependency that has no macOS arm64 default.
+dl_install_redis() {
+  local ver="${DL_REDIS_VERSION:-7.4.2}"
+  local base; base=$(dl_shared_redis_dir)
+  local src; src="$(dl_host_src_dir)/redis-$ver"
+  local prefix="$base"
+  # The build below redirects into $(dl_host_logs_dir) BEFORE any other step
+  # creates it (the E2E run 2026-10-11 died here with "redis-build.log: No
+  # such file or directory" on a fresh shared root — dl_fetch_tarball only
+  # creates the src dir, and unlike dl_install_postgres this function had no
+  # mkdir of its own).
+  mkdir -p "$(dl_host_logs_dir)" "$prefix"
+  if [[ -x "$prefix/bin/redis-server" ]]; then
+    log "host-install: redis already present at $prefix/bin/redis-server"
+  else
+    dl_fetch_tarball "https://download.redis.io/releases/redis-$ver.tar.gz" "$src" || return 1
+    log "host-install: building redis $ver → $prefix"
+    mkdir -p "$prefix/bin" "$prefix/data" "$prefix/logs" "$prefix/run"
+    local sdkroot=""
+    # macOS only: a mismatched SDK breaks the link step. Pass through the
+    # environment so both configure and make see the same sysroot.
+    if [[ "$(uname -s 2>/dev/null || printf unknown)" == Darwin ]]; then
+      sdkroot=$(dl_resolve_sdkroot) || { warn 'host-install: no usable macOS SDK found'; return 1; }
+      log "host-install: using SDK $sdkroot"
+    fi
+    ( cd "$src" && SDKROOT="$sdkroot" MALLOC=libc make -j"$(dl_host_jobs)" ) \
+      > "$(dl_host_logs_dir)/redis-build.log" 2>&1 \
+      || { warn "host-install: redis build failed, see $(dl_host_logs_dir)/redis-build.log"; return 1; }
+    cp "$src/src/redis-server" "$src/src/redis-cli" "$prefix/bin/" || return 1
+    chmod +x "$prefix/bin/redis-server" "$prefix/bin/redis-cli"
+  fi
+  dl_start_redis "$prefix"
+}
+
+dl_host_jobs() { printf '%s\n' "${DL_HOST_JOBS:-$( (command -v nproc >/dev/null 2>&1 && nproc) || sysctl -n hw.ncpu 2>/dev/null || echo 4 )}"; }
+
+# Write a managed redis.conf and start it if it is not already answering.
+dl_start_redis() {
+  local prefix="$1" port="${LLM_GATEWAY_REDIS_PORT:-6379}" conf_dir="$prefix/conf"
+  mkdir -p "$prefix/data" "$prefix/logs" "$prefix/run" "$conf_dir"
+  local conf="$conf_dir/redis.conf"
+  {
+    printf 'bind 127.0.0.1\n'
+    printf 'port %s\n' "$port"
+    printf 'daemonize yes\n'
+    printf 'dir %s/data\n' "$prefix"
+    printf 'logfile %s/logs/redis.log\n' "$prefix"
+    printf 'pidfile %s/run/redis.pid\n' "$prefix"
+    printf 'appendonly yes\n'
+    printf 'save 900 1\n'
+    if [[ -n "${LLM_GATEWAY_REDIS_PASSWORD:-}" ]]; then
+      printf 'requirepass %s\n' "$LLM_GATEWAY_REDIS_PASSWORD"
+    fi
+  } > "$conf"
+  chmod 0600 "$conf"
+  if "$prefix/bin/redis-cli" -h 127.0.0.1 -p "$port" ping >/dev/null 2>&1; then
+    log "host-install: redis already listening on 127.0.0.1:$port"
+    return 0
+  fi
+  log "host-install: starting redis on 127.0.0.1:$port"
+  "$prefix/bin/redis-server" "$conf" || { warn 'host-install: redis failed to start'; return 1; }
+  local i
+  for i in {1..30}; do
+    "$prefix/bin/redis-cli" -h 127.0.0.1 -p "$port" ping >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  warn 'host-install: redis did not answer PING within 30s'
+  return 1
+}
+
+install_host_services() {
+  local need_pg="${1:-0}" need_redis="${2:-0}" rc=0
+  (( need_redis )) && { dl_install_redis || rc=1; }
+  # PostgreSQL is only installed here when there is genuinely nothing usable.
+  # A full source build plus initdb is minutes-scale, so it runs last and only
+  # when required; DL_HOST_INSTALL_PG=0 skips it (docker path or operator
+  # supplied DSN).
+  if (( need_pg )) && [[ "${DL_HOST_INSTALL_PG:-1}" != 0 ]]; then
+    dl_install_postgres || rc=1
+  fi
+  return "$rc"
+}
+
+# Full PostgreSQL source build + initdb into the shared service dir.
+# Defaults to PG17 with the pgcolumnar (Citus columnar) table AM, matching the
+# deployment target; a prebuilt pg under the shared root is reused as-is.
+#
+# "Citus columnar" here ships as the standalone pgcolumnar distribution
+# (github.com/commandprompt/pgcolumnar, same columnar table AM that the full
+# Citus install exposes as extension citus_columnar). The gateway runs single
+# node, so the distributed machinery of full Citus is not needed — only the
+# columnar AM is, and pgcolumnar is the only form that builds cleanly against
+# a source PG on macOS (see ~/kaixuan/docs/ANALYSIS.md for the selection).
+#
+# Tarball URLs need a full minor version (postgresql-17.tar.gz does not
+# exist upstream); resolve the latest minor of DL_HOST_PG_VERSION per line.
+dl_resolve_pg_full_version() {
+  local ver="${DL_HOST_PG_VERSION:-17}"
+  if [[ "$ver" == *.* ]]; then printf '%s\n' "$ver"; return 0; fi
+  local full
+  full=$(curl -fsSL --max-time 30 https://ftp.postgresql.org/pub/source/ 2>/dev/null \
+    | grep -oE "v${ver}\.[0-9]+" | sort -uV | tail -1 | sed "s/^v//") || true
+  if [[ -z "$full" ]]; then
+    warn "host-install: cannot list ftp.postgresql.org for latest $ver.x; falling back to ${ver}.0"
+    full="${ver}.0"
+  fi
+  printf '%s\n' "$full"
+}
+
+# Build + install the pgcolumnar extension against $1 (a pg install prefix
+# that carries PGXS via install-world-bin). Skipped when already installed.
+# Optional codec deps (lz4/zstd) are picked up through pkg-config when
+# present; without them the extension still builds, just with fewer codecs.
+dl_install_pgcolumnar() {
+  local pg_prefix="$1"
+  local ver="${DL_PGCOLUMNAR_VERSION:-v1.0-alpha4}"
+  local logs; logs=$(dl_host_logs_dir)
+  if [[ -f "$("$pg_prefix/bin/pg_config" --sharedir)/extension/pgcolumnar.control" ]]; then
+    log "host-install: pgcolumnar already installed for $pg_prefix"
+    return 0
+  fi
+  local src; src="$(dl_host_src_dir)/pgcolumnar-$ver"
+  dl_fetch_tarball "https://codeload.github.com/commandprompt/pgcolumnar/tar.gz/refs/tags/$ver" "$src" || return 1
+  local sdkroot=""
+  if [[ "$(uname -s 2>/dev/null || printf unknown)" == Darwin ]]; then
+    sdkroot=$(dl_resolve_sdkroot) || { warn 'host-install: no usable macOS SDK found'; return 1; }
+  fi
+  # pgcolumnar's Makefile appends its codec libs (zlib/lz4/zstd) to SHLIB_LINK
+  # via pkg-config. A source-only workstation has no pkg-config, so the zlib
+  # link flag silently never lands and MODULE_big fails with undefined
+  # _inflate/_inflateInit2_ (2026-10-11 E2E). Pass -lz through LDFLAGS when
+  # pkg-config is absent (libz.tbd ships in every macOS SDK).
+  local columnar_ldflags=""
+  if ! command -v pkg-config >/dev/null 2>&1; then
+    columnar_ldflags="-lz"
+    log "host-install: no pkg-config; injecting -lz into pgcolumnar LDFLAGS"
+  fi
+  log "host-install: building pgcolumnar $ver against $pg_prefix"
+  ( cd "$src" && SDKROOT="$sdkroot" make -j"$(dl_host_jobs)" PG_CONFIG="$pg_prefix/bin/pg_config" LDFLAGS="$columnar_ldflags" \
+      && SDKROOT="$sdkroot" make PG_CONFIG="$pg_prefix/bin/pg_config" LDFLAGS="$columnar_ldflags" install ) > "$logs/pgcolumnar-build.log" 2>&1 \
+    || { warn "host-install: pgcolumnar build failed, see $logs/pgcolumnar-build.log"; return 1; }
+  log "host-install: pgcolumnar $ver installed for $pg_prefix"
+}
+
+dl_install_postgres() {
+  local shared; shared=$(dl_shared_root)
+  local pg_prefix="${DL_HOST_PG_PREFIX:-$shared/pg}"
+  local ver; ver=$(dl_resolve_pg_full_version)
+  local src; src="$(dl_host_src_dir)/postgresql-$ver"
+  local logs; logs=$(dl_host_logs_dir)
+  mkdir -p "$logs" "$shared"
+
+  if [[ ! -x "$pg_prefix/bin/pg_ctl" ]]; then
+    dl_fetch_tarball "https://ftp.postgresql.org/pub/source/v$ver/postgresql-$ver.tar.gz" "$src" || return 1
+    local sdkroot=""
+    if [[ "$(uname -s 2>/dev/null || printf unknown)" == Darwin ]]; then
+      sdkroot=$(dl_resolve_sdkroot) || { warn 'host-install: no usable macOS SDK found'; return 1; }
+    fi
+    log "host-install: building postgresql $ver → $pg_prefix"
+    # ICU: PG17's configure wants ICU by default; a source-only workstation
+    # (no pkg-config, no icu headers — the 2026-10-11 E2E run died here with
+    # "configure: error: ICU library not found") has none. Probe first and
+    # degrade to --without-icu (libc collations) instead of failing; machines
+    # that do carry ICU keep the default. kaixuan-style deps (PKG_CONFIG_PATH
+    # pointing at a self-built icu) are honored through the environment.
+    local icu_args=""
+    if ! printf '#include <unicode/ucol.h>\nint main(void){return 0;}\n' \
+         | cc $([ -n "$sdkroot" ] && printf -- '-isysroot %s' "$sdkroot") -fsyntax-only -x c - >/dev/null 2>&1; then
+      log "host-install: ICU headers not found; configuring --without-icu"
+      icu_args="--without-icu"
+    fi
+    # BSD uuid (--with-uuid=bsd) is FreeBSD API; this CLT SDK's configure
+    # aborts with "BSD UUID functions are not present" (2026-10-11 E2E). The
+    # gateway only needs core gen_random_uuid() (PG13+), so omit the flag
+    # unless the symbols actually link.
+    local uuid_args="--with-uuid=bsd"
+    if ! printf '#include <uuid.h>\nint main(void){uuid_to_string(0,0);return 0;}\n' \
+         | cc $([ -n "$sdkroot" ] && printf -- '-isysroot %s' "$sdkroot") -x c - -o /dev/null >/dev/null 2>&1; then
+      log "host-install: BSD uuid functions unavailable; building without --with-uuid (core gen_random_uuid unaffected)"
+      uuid_args=""
+    fi
+    ( cd "$src" && SDKROOT="$sdkroot" ./configure --prefix="$pg_prefix" $uuid_args $icu_args \
+        && SDKROOT="$sdkroot" make -j"$(dl_host_jobs)" world-bin \
+        && SDKROOT="$sdkroot" make install-world-bin ) > "$logs/pg-build.log" 2>&1 \
+      || { warn "host-install: postgresql build failed, see $logs/pg-build.log"; return 1; }
+  fi
+  # The columnar AM must be installed BEFORE the first start: the cluster
+  # config below preloads pgcolumnar, and a missing preload library aborts
+  # postmaster startup outright.
+  dl_install_pgcolumnar "$pg_prefix" || return 1
+
+  local datadir="$shared/postgres/data"
+  local port="${LLM_GATEWAY_PG_PORT:-5432}"
+  local dbuser="${LLM_GATEWAY_PG_USER:-$USER}"
+  local dbname="${LLM_GATEWAY_PG_DATABASE:-llm_gateway}"
+  if [[ ! -f "$datadir/PG_VERSION" ]]; then
+    log "host-install: initdb → $datadir"
+    mkdir -p "$datadir"
+    "$pg_prefix/bin/initdb" -D "$datadir" -U "$dbuser" -E UTF8 > "$logs/pg-initdb.log" 2>&1 \
+      || { warn "host-install: initdb failed, see $logs/pg-initdb.log"; return 1; }
+    {
+      printf '\n# added by deploy-local host install\n'
+      printf "port = %s\n" "$port"
+      printf "listen_addresses = '127.0.0.1'\n"
+      printf "unix_socket_directories = '%s'\n" "$shared/run"
+      printf "shared_preload_libraries = 'pg_stat_statements,pgcolumnar'\n"
+    } >> "$datadir/postgresql.conf"
+  elif ! grep -q '^shared_preload_libraries.*pgcolumnar' "$datadir/postgresql.conf" 2>/dev/null; then
+    # Existing cluster installed before pgcolumnar was wired in: append the
+    # preload (later assignments win in postgresql.conf) and restart below.
+    printf "shared_preload_libraries = 'pg_stat_statements,pgcolumnar'\n" >> "$datadir/postgresql.conf"
+    "$pg_prefix/bin/pg_ctl" -D "$datadir" -m fast -w restart >/dev/null 2>&1 || true
+  fi
+  mkdir -p "$shared/run" "$(dl_pg_log_dir)" "$(dl_pg_backup_dir)"
+  if ! "$pg_prefix/bin/pg_isready" -h 127.0.0.1 -p "$port" >/dev/null 2>&1; then
+    log "host-install: starting postgresql on 127.0.0.1:$port"
+    "$pg_prefix/bin/pg_ctl" -D "$datadir" -l "$(dl_pg_log_dir)/postgresql.log" -w start >/dev/null 2>&1 \
+      || { warn 'host-install: postgres failed to start'; return 1; }
+  fi
+  # Create the application role/database when missing. Idempotent, and never
+  # alters an existing role's password.
+  if ! PGPASSWORD="${LLM_GATEWAY_PG_PASSWORD:-}" "$pg_prefix/bin/psql" -h 127.0.0.1 -p "$port" -U "$dbuser" -d postgres -X -Atqc 'SELECT 1' >/dev/null 2>&1; then
+    warn 'host-install: cannot connect to the freshly started cluster; skipping role bootstrap'
+    return 1
+  fi
+  local pw="${LLM_GATEWAY_PG_PASSWORD:-}"
+  local role_exists db_exists
+  role_exists=$(PGPASSWORD="$pw" "$pg_prefix/bin/psql" -h 127.0.0.1 -p "$port" -U "$dbuser" -d postgres -X -Atqc "SELECT 1 FROM pg_roles WHERE rolname='$dbuser'" 2>/dev/null || true)
+  if [[ "$role_exists" != 1 ]]; then
+    PGPASSWORD="$pw" "$pg_prefix/bin/psql" -h 127.0.0.1 -p "$port" -U "$dbuser" -d postgres -X -q \
+      -c "CREATE ROLE \"$dbuser\" LOGIN" >/dev/null 2>&1 || true
+  fi
+  db_exists=$(PGPASSWORD="$pw" "$pg_prefix/bin/psql" -h 127.0.0.1 -p "$port" -U "$dbuser" -d postgres -X -Atqc "SELECT 1 FROM pg_database WHERE datname='$dbname'" 2>/dev/null || true)
+  if [[ "$db_exists" != 1 ]]; then
+    PGPASSWORD="$pw" "$pg_prefix/bin/psql" -h 127.0.0.1 -p "$port" -U "$dbuser" -d postgres -X -q \
+      -c "CREATE DATABASE \"$dbname\" OWNER \"$dbuser\"" >/dev/null 2>&1 || true
+  fi
+  # Activate the columnar AM in the application database. This is the
+  # "citus columnar" deliverable of the host install: without it the columnar
+  # table AM exists on disk but no schema can reference it.
+  if ! PGPASSWORD="$pw" "$pg_prefix/bin/psql" -h 127.0.0.1 -p "$port" -U "$dbuser" -d "$dbname" -X -q \
+       -c 'CREATE EXTENSION IF NOT EXISTS pgcolumnar' >/dev/null 2>&1; then
+    warn 'host-install: CREATE EXTENSION pgcolumnar failed — the deploy continues on heap tables only (see '"$(dl_pg_log_dir)"'/postgresql.log)'
+  else
+    local am_ok
+    # Standalone pgcolumnar registers the table AM as `pgcolumnar`; full
+    # Citus installs expose the same AM as `columnar`. Either name proves the
+    # columnar path is usable.
+    am_ok=$(PGPASSWORD="$pw" "$pg_prefix/bin/psql" -h 127.0.0.1 -p "$port" -U "$dbuser" -d "$dbname" -X -Atqc "SELECT count(*) FROM pg_am WHERE amname IN ('columnar','pgcolumnar')" 2>/dev/null || true)
+    if [[ "$am_ok" -ge 1 ]]; then
+      log "host-install: columnar table AM active in db=$dbname"
+    else
+      warn 'host-install: pgcolumnar extension created but no columnar table access method found'
+    fi
+  fi
+  log "host-install: postgresql ready on 127.0.0.1:$port (db=$dbname)"
+  return 0
+}
+
 ensure_resources() {
   dl_detect_resources
   detect_existing_containers
@@ -534,8 +862,23 @@ ensure_resources() {
   fi
   dl_link_existing_data
   dl_prepare_layout "$need_pg" "$need_redis"
+  # Host-first install (2026-10-10): when the host has neither a native PG nor
+  # a native Redis, install them locally before falling back to Docker. This
+  # is the branch that makes a docker-less workstation deployable at all.
+  # Opt out with DL_HOST_INSTALL=0 (e.g. CI that asserts the docker path).
+  if (( need_pg || need_redis )) && [[ "${DL_HOST_INSTALL:-1}" != 0 ]]; then
+    install_host_services "$need_pg" "$need_redis" || true
+    # Re-detect: a successful install flips DL_DB_MODE/DL_REDIS_MODE away from
+    # `none`, and materializes the DSN / REDIS_ADDR the rest of the deploy uses.
+    dl_detect_resources
+    detect_existing_containers
+    [[ "$DL_DB_MODE" == none ]] && need_pg=1 || need_pg=0
+    if (( MINIMAL_DEPLOY == 0 )); then
+      [[ "$DL_REDIS_MODE" == none && -z "${LLM_GATEWAY_REDIS_ADDR:-}" ]] && need_redis=1 || need_redis=0
+    fi
+  fi
   if (( need_pg || need_redis )); then
-    (( DL_DOCKER && DL_COMPOSE )) || die 'no usable PostgreSQL/Redis and Docker Compose is unavailable'
+    (( DL_DOCKER && DL_COMPOSE )) || die 'no usable PostgreSQL/Redis; automatic host install unavailable and Docker Compose is missing (set DL_HOST_INSTALL=1 and install a source toolchain, or enable Docker)'
     # Try to load Redis image from base images if needed
     if (( need_redis )); then
       load_redis_image_if_needed || log "will attempt to pull Redis image from registry"
@@ -593,9 +936,18 @@ psql_query() {
 
 apply_schema_if_empty() {
   local count
-  count=$(psql_query "SELECT count(*) FROM pg_class WHERE relnamespace='public'::regnamespace AND relkind IN ('r','p','v','m','S','f') AND relname <> 'repository_schema_migrations';") || die 'cannot inspect PostgreSQL schema'
+  # "Empty" must be judged on the CORE tables, not on the object count.
+  # A previous failed run can leave a handful of unrelated objects behind
+  # (session_summaries and its indexes, gateway_db_revision_sequences, the
+  # pg_stat_statements views) while the 01-schema.sql snapshot was never
+  # applied. Counting every object then reported "not empty", skipped the
+  # snapshot, and the migration leg immediately failed on missing base tables
+  # such as request_logs_hot — with no schema ever installed.
+  # Probe a handful of core tables that 01-schema.sql always creates. Any one
+  # of them present means the snapshot was applied and this step is a no-op.
+  count=$(psql_query "SELECT count(*) FROM pg_class WHERE relnamespace='public'::regnamespace AND relkind IN ('r','p') AND relname IN ('users','request_logs','credentials','api_keys','agents');") || die 'cannot inspect PostgreSQL schema'
   [[ "$count" == 0 ]] || return 0
-  log 'empty PostgreSQL detected; applying schema snapshot once'
+  log 'core tables absent; applying schema snapshot once'
   local f log_file
   for f in 00-prereqs.sql 01-schema.sql 02-seed.sql; do
     log_file="$RUN_DIR/schema-${f}.log"
@@ -617,6 +969,20 @@ build_backend() {
   local target_os="${GOOS:-$(uname -s | tr '[:upper:]' '[:lower:]')}"
   local target_arch="${GOARCH:-$(go env GOARCH)}"
   (( DL_DOCKER )) && target_os=linux
+  # macOS 工具链失配（2026-10-10 实测）：系统最新的 SDK（MacOSX27.0.sdk）的
+  # .tbd 声明了 arm64e.x1-macos 等 target，而 CommandLineTools 自带的
+  # Apple clang 15 链接器不认这些 target，于是每一个需要链接的包都报
+  # "tapi error: malformed file / unknown architecture"，go build 直接失败。
+  # 该失败会掉进下面的 docker CGO 回退分支——而 docker-less 的机器上
+  # 那条路也不存在，等于双重死锁。所以在编译前就钉一个能用的 SDK。
+  local build_sdkroot=""
+  if [[ "$target_os" == darwin && "$(uname -s 2>/dev/null || printf unknown)" == Darwin ]]; then
+    if build_sdkroot=$(dl_resolve_sdkroot); then
+      log "macOS build: using SDK $build_sdkroot"
+    else
+      warn 'macOS build: no linkable SDK found; go build may fail with tapi errors'
+    fi
+  fi
   # 先删除旧产物：go build 失败时绝不能把陈旧 gateway.build 留给后续
   # step_release 打包（2026-09-05 事故：编译失败被赋值语境的 set -e 怪癖
   # 静默吞掉，两个新版本号打包了同一个 4 小时前的旧二进制）。
@@ -626,7 +992,7 @@ build_backend() {
   # 守卫永远失败（2026-09-23 实测）。进一步用 /bin/rm 直调避免 osascript
   # Finder 删大二进制时挂死（实测 1m+ 卡在 osascript 上）。
   /bin/rm -f "$out" >/dev/null 2>&1
-  if ! (cd "$PROJECT_ROOT" && CGO_ENABLED=0 GOOS="$target_os" GOARCH="$target_arch" go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$out" ./cmd/gateway) 2>"$RUN_DIR/build-host.log"; then
+  if ! (cd "$PROJECT_ROOT" && SDKROOT="$build_sdkroot" CGO_ENABLED=0 GOOS="$target_os" GOARCH="$target_arch" go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$out" ./cmd/gateway) 2>"$RUN_DIR/build-host.log"; then
     # 2026-09-07: 上游 0e3fa12f6 线引入了 CGO-only 依赖（mattn/go-sqlite3、
     # yalue/onnxruntime_go，见 Dockerfile 2026-09-05 的 CGO_ENABLED=1 注），
     # 纯静态 CGO=0 构建自此后必然失败（"build constraints exclude all Go
@@ -766,6 +1132,12 @@ build_frontend() {
         tail -40 "$web_log" >&2 || true
         die "frontend build failed (see $web_log) — refusing to deploy a release whose web/dist is stale"
       fi
+    elif [[ ! -f "$PROJECT_ROOT/web/dist/index.html" ]]; then
+      # 2026-10-11 2538 轮事故收口：node_modules 缺失时旧实现只 warn，而
+      # dist 也缺失（干净 checkout）时 staging 会把仅含 version.json 的空
+      # web/ 打进发布包，网关静态探测回落到源码 web/ 的未构建 Vite 模板
+      # ——浏览器白页。「保留既有 dist」只在 dist 真的存在时可接受。
+      die "web/node_modules missing AND web/dist/index.html absent — refusing to stage an empty web/ (2026-10-11 2538 white-page incident); install frontend deps first (corepack pnpm install --frozen-lockfile in web/)"
     else warn 'web/node_modules is missing; retaining existing web/dist'; fi
   fi
   # 2026-10-04 统一入口轮：web-mobile（Hyper 移动前端）与 web 同链路构建。
@@ -779,7 +1151,9 @@ build_frontend() {
         tail -40 "$mobile_log" >&2 || true
         die "web-mobile build failed (see $mobile_log) — refusing to deploy a release without the mobile surface"
       fi
-    else warn 'web-mobile/node_modules is missing; bundle will stage an empty web-mobile (unified entry /m stays unregistered)'; fi
+    elif [[ ! -f "$PROJECT_ROOT/web-mobile/dist/index.html" ]]; then
+      die "web-mobile/node_modules missing AND web-mobile/dist/index.html absent — refusing to stage an empty web-mobile; install frontend deps first (corepack pnpm install --frozen-lockfile in web-mobile/)"
+    else warn 'web-mobile/node_modules is missing; retaining existing web-mobile/dist'; fi
   fi
 }
 
@@ -838,6 +1212,13 @@ write_instance_env() {
 instance_name() { printf 'llm-gateway-local-%s\n' "$1"; }
 pid_file() { printf '%s/gateway-%s.pid\n' "$RUN_DIR" "$1"; }
 
+# zombie-aware 存活判定：ps 输出为空（进程不存在）或 STAT 以 Z 开头（已
+# 死待收）都视为不存活。kill -0 对 zombie 返回 0，直接拿它等退出会永假。
+_dl_gw_alive() {
+  local st; st=$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ')
+  [[ -n "$st" && "$st" != Z* ]]
+}
+
 # Wait for a TCP port to be free after a previous container was killed.
 # 2026-09-09 现象：active cutover 偶发失败，8782 verify 在 60s 内 /healthz
 # 持续 connection refused；同时段 8781 candidate 一切正常。docker rm -f
@@ -867,7 +1248,34 @@ stop_instance() {
   local port="$1" name; name=$(instance_name "$port")
   if (( DL_DOCKER )) && docker ps -a --format '{{.Names}}' | grep -Fxq "$name"; then docker rm -f "$name" >/dev/null 2>&1 || true; fi
   local pf; pf=$(pid_file "$port")
-  if [[ -f "$pf" ]]; then kill "$(cat "$pf")" 2>/dev/null || true; rm -f "$pf"; fi
+  if [[ -f "$pf" ]]; then
+    local gw_pid; gw_pid=$(cat "$pf")
+    kill "$gw_pid" 2>/dev/null || true
+    # 2026-10-11 孤儿回收：host 模式 gateway 的 graceful shutdown 在后台
+    # 任务持着已关闭连接池等场景下会 hang 在退出路径（2533 切换轮实测旧
+    # 进程以 pool-closed 状态存活 12h+，持续刷后台错误日志）。TERM 之后
+    # 必须等进程真正退出，超时升级 KILL；否则该 pid 随 pidfile 清掉后
+    # 不再被任何东西引用，cutover 重试与后续部署都收不回它。原实现只发
+    # TERM 不等待，且 dl_wait_port_free 仅覆盖 Docker 模式的端口释放。
+    if _dl_gw_alive "$gw_pid"; then
+      local deadline=$(( $(date +%s) + 10 ))
+      while (( $(date +%s) < deadline )); do
+        _dl_gw_alive "$gw_pid" || break
+        sleep 0.3
+      done
+      if _dl_gw_alive "$gw_pid"; then
+        printf '    [stop] gateway pid %s did not exit 10s after TERM; sending KILL\n' "$gw_pid" >&2
+        kill -KILL "$gw_pid" 2>/dev/null || true
+        deadline=$(( $(date +%s) + 5 ))
+        while (( $(date +%s) < deadline )); do
+          _dl_gw_alive "$gw_pid" || break
+          sleep 0.3
+        done
+        _dl_gw_alive "$gw_pid" && printf '    [stop] warning: gateway pid %s still alive after KILL\n' "$gw_pid" >&2
+      fi
+    fi
+    rm -f "$pf"
+  fi
   # 2026-09-09：docker rm -f 之后立即 docker run 同端口偶发 EADDRINUSE
   # （macOS Docker Desktop 端口分配/TIME_WAIT 释放慢）。verify_instance
   # 拿到 connection refused 就会在 60s 后 die，破坏 active cutover。
@@ -1031,6 +1439,32 @@ PY
 }
 
 record_success() { dl_record_verify "$ROOT_DIR" "$DL_DB_MODE" "$DL_REDIS_MODE" "$RELEASE_VERSION" "$(dl_active_port)"; }
+
+# 2026-10-11 孤儿网关回收兜底：部署成功收尾后扫描本部署根 bin/ 下的
+# gateway 进程，凡不是 active pidfile 记录的一律 TERM→KILL。背景：2533
+# 部署轮遗留 4 个跨版本孤儿（2521/2522/2533，PPID=1、无监听、部分处于
+# pool-closed 半死态持续刷后台错误日志 12h+）。stop_instance 修好后仍可
+# 能有漏网（pidfile 被 cutover 重试覆盖、KILL 后伪存活），收尾统一清扫。
+# 只在部署成功路径调用——cutover 重试/回滚期间端口两侧都是合法进程；
+# 模式锚定 $ROOT_DIR，不会误伤同机其他部署根（多 checkout 并发部署）。
+reap_stray_gateways() {
+  local keep_pid="$1" pid
+  [[ -n "$keep_pid" ]] || return 0
+  for pid in $(pgrep -f "$ROOT_DIR/bin/.*/gateway" 2>/dev/null || true); do
+    [[ "$pid" == "$keep_pid" ]] && continue
+    printf '    [reap] stray gateway pid %s (active is %s); terminating\n' "$pid" "$keep_pid" >&2
+    kill -TERM "$pid" 2>/dev/null || continue
+    local deadline=$(( $(date +%s) + 10 ))
+    while (( $(date +%s) < deadline )); do
+      _dl_gw_alive "$pid" || break
+      sleep 0.3
+    done
+    if _dl_gw_alive "$pid"; then
+      kill -KILL "$pid" 2>/dev/null || true
+      printf '    [reap] pid %s did not exit after TERM; KILLed\n' "$pid" >&2
+    fi
+  done
+}
 
 # A gateway deployed without LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY cannot
 # decrypt stored provider credentials (incident 2026-09-05: every apikey on
@@ -1254,6 +1688,8 @@ deploy() {
   chmod 0600 "$RUN_DIR/active-port"
   dl_mark_verified "$bundle"
   printf 'active=%s\n' "$RELEASE_VERSION" > "$RUN_DIR/deployment-state"
+  # 收尾兜底：此刻 active 已稳定，pidfile 记录的就是唯一合法进程
+  reap_stray_gateways "$(cat "$(pid_file "$candidate_port")" 2>/dev/null || true)"
   record_success
 }
 

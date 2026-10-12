@@ -50,6 +50,16 @@ export function login(
   password: string,
   options?: RequestOptions & LoginOptions,
 ): Promise<LoginResponse> {
+  // ⚠️ 2026-10-11 实测缺陷（iOS 模拟器端到端登录卡死）：自适应验证码是**成对**
+  // 契约 —— 后端 verifyLoginCaptcha（admin/auth_captcha.go:471-481）只在
+  // `captcha_id` 与 `captcha_code` **同时非空**时才认为「用户提交了验证码」；
+  // 只带 id 不带答案会直接被判 captcha_invalid。
+  // 而页面 onMounted 总会先取一张码 ⇒ `captchaId` **永远非空**，于是旧实现
+  // 把「用户没填验证码」也发成了「提交了一个空验证码」——
+  // 未达失败阈值（required=false）时本来该放行的自适应路径 100% 走不通，
+  // 用户看到的是「验证码错误或已过期，请重新输入」，且**永远不会**成功。
+  // 修法：答案为空时两个字段一起留空，让服务端走「没带验证码」的分支。
+  const captchaCode = (options?.captchaCode ?? '').trim()
   return req<LoginResponse>(
     'POST',
     '/api/auth/token',
@@ -57,8 +67,8 @@ export function login(
       username,
       password,
       remember_me: options?.rememberMe ?? false,
-      captcha_id: options?.captchaId ?? '',
-      captcha_code: options?.captchaCode ?? '',
+      captcha_id: captchaCode ? (options?.captchaId ?? '') : '',
+      captcha_code: captchaCode,
     },
     options,
   )
@@ -71,6 +81,16 @@ export function logout(options?: RequestOptions): Promise<void> {
 /** 冷启动水合探测：401 = 未登录（正常路径，非错误）。 */
 export function fetchMe(options?: RequestOptions): Promise<UserInfo> {
   return req<MeResponse>('GET', '/api/auth/me', undefined, options).then((resp) => unwrapMe(resp))
+}
+
+/**
+ * 2026-10-11：raw 版 hydrate 使用。`/api/auth/me` 的常规路径（包裹态）会顺带回一份
+ * 新的 access_token；unwrap 之后那一份就丢了——而壳内 CapacitorHttp 不共享 WebView
+ * cookie jar，旧实现导致冷启动后 Bearer 永远空，所有受保护请求 401 ⇒ 整页跳登录。
+ * 这里暴露原响应供 store 一次取齐 user + token。
+ */
+export function fetchMeRaw(options?: RequestOptions): Promise<MeResponse> {
+  return req<MeResponse>('GET', '/api/auth/me', undefined, options)
 }
 
 /**

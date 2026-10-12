@@ -64,7 +64,11 @@ fi
 
 # 步骤3: 数据库记录
 print_step "步骤3: 数据库版本记录"
-DB_PASS=$(bash ~/workspace/ai-native-tools/envs/loader.sh query COMMON_PG_SUPERUSER_PASS 2>/dev/null || echo "")
+
+# ENVS_ROOT 指向 envs/loader 所在目录；默认与本机 ai-native-tools SSOT 兼容。
+# 其他机器可 export ENVS_ROOT=/path/to/ai-native-tools 覆盖。
+: "${ENVS_ROOT:=$HOME/workspace/ai-native-tools}"
+DB_PASS=$(bash "$ENVS_ROOT/envs/loader.sh" query COMMON_PG_SUPERUSER_PASS 2>/dev/null || echo "")
 
 if [ -z "$DB_PASS" ]; then
     skip_test_case "步骤3-数据库记录" "无法获取数据库密码"

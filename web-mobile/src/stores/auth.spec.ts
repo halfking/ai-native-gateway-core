@@ -6,6 +6,8 @@ const mocks = vi.hoisted(() => ({
   login: vi.fn(),
   logout: vi.fn(),
   fetchMe: vi.fn(),
+  fetchMeRaw: vi.fn(),
+  unwrapMe: vi.fn(),
   clearPersistence: vi.fn(),
 }))
 
@@ -13,6 +15,8 @@ vi.mock('@/api/auth', () => ({
   login: mocks.login,
   logout: mocks.logout,
   fetchMe: mocks.fetchMe,
+  fetchMeRaw: mocks.fetchMeRaw,
+  unwrapMe: mocks.unwrapMe,
 }))
 
 vi.mock('@/hyper', () => ({
@@ -40,10 +44,20 @@ beforeEach(() => {
   mocks.login.mockReset()
   mocks.logout.mockReset()
   mocks.fetchMe.mockReset()
+  mocks.fetchMeRaw.mockReset()
+  mocks.unwrapMe.mockReset()
   mocks.clearPersistence.mockReset()
   mocks.login.mockResolvedValue({ access_token: 'tok', user: userPayload() })
   mocks.logout.mockResolvedValue(undefined)
   mocks.fetchMe.mockResolvedValue(userPayload())
+  // 2026-10-11：hydrate 改走 fetchMeRaw 以拿到 access_token；unwrapMe 是
+  // 纯函数 —— spec 里把它实现成 unwrap 包裹态/裸态，返回内层 user。
+  mocks.fetchMeRaw.mockImplementation(async () => userPayload())
+  mocks.unwrapMe.mockImplementation((raw: unknown) => {
+    const r = raw as { user?: unknown } | null
+    if (r && typeof r === 'object' && r.user && typeof r.user === 'object') return r.user as ReturnType<typeof userPayload>
+    return raw as ReturnType<typeof userPayload>
+  })
 })
 
 afterEach(() => {
@@ -103,7 +117,8 @@ describe('auth store 「保持登录」的落盘位置', () => {
 
     await auth.hydrate()
 
-    expect(mocks.fetchMe).toHaveBeenCalledTimes(1)
+    // 2026-10-11：已从 fetchMe 切到 fetchMeRaw 以拿到 access_token。
+    expect(mocks.fetchMeRaw).toHaveBeenCalledTimes(1)
     expect(window.sessionStorage.getItem(USER_KEY)).toBeTruthy()
     expect(window.localStorage.getItem(USER_KEY)).toBeNull()
   })
@@ -195,7 +210,7 @@ describe('auth store 用户信息的读取', () => {
   it('hydrate 失败时两侧落盘都清掉', async () => {
     window.localStorage.setItem(USER_KEY, JSON.stringify(userPayload()))
     window.sessionStorage.setItem(USER_KEY, JSON.stringify(userPayload()))
-    mocks.fetchMe.mockRejectedValue(new Error('401'))
+    mocks.fetchMeRaw.mockRejectedValue(new Error('401'))
 
     const auth = useAuthStore()
     await auth.hydrate()
@@ -204,6 +219,28 @@ describe('auth store 用户信息的读取', () => {
     expect(window.localStorage.getItem(USER_KEY)).toBeNull()
     expect(window.sessionStorage.getItem(USER_KEY)).toBeNull()
     expect(auth.authHydrated).toBe(true)
+  })
+
+  // 2026-10-11：hydrate 收到包裹态 { access_token, user } 时必须把新
+  // access_token 喂进 store.bearer()——否则壳内 CapacitorHttp 不共享
+  // WebView cookie jar，所有受保护请求都会因没 Bearer 而 401。
+  it('hydrate 收到 access_token 时把它装进 bearer()，而不是扔掉', async () => {
+    mocks.fetchMeRaw.mockResolvedValueOnce({ access_token: 'refreshed-jwt', user: userPayload() })
+    const auth = useAuthStore()
+    await auth.hydrate()
+    expect(auth.bearer()).toBe('refreshed-jwt')
+    expect(auth.role).toBe('super_admin')
+  })
+
+  // /me 在兜底分支只回 UserInfo 时不要把 bearer 清成空字符串
+  // （如：hydrate 期间用户已 login 拿到了合法 token，/me 又不补发新 token）。
+  it('hydrate 收到裸 UserInfo 时不要清掉内存里的合法 bearer', async () => {
+    mocks.fetchMeRaw.mockResolvedValueOnce(userPayload())
+    const auth = useAuthStore()
+    await auth.login('admin', 'secret')
+    expect(auth.bearer()).toBe('tok')
+    await auth.hydrate()
+    expect(auth.bearer()).toBe('tok')
   })
 })
 describe('origin-scoped logout and in-flight authentication', () => {
@@ -225,7 +262,7 @@ describe('origin-scoped logout and in-flight authentication', () => {
   })
   it('late hydration cannot restore a session after logout', async () => {
     let resolve!: (value: ReturnType<typeof userPayload>) => void
-    mocks.fetchMe.mockReturnValueOnce(new Promise((done) => { resolve = done }))
+    mocks.fetchMeRaw.mockReturnValueOnce(new Promise((done) => { resolve = done }))
     const auth = useAuthStore()
     const pending = auth.hydrate()
     await auth.logout()

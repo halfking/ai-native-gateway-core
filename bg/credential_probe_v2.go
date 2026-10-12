@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1325,15 +1326,57 @@ func classifyProbeFailure(errMsg string) probeResult {
 // credential-scoped path — a 404 from /v1/models means the provider
 // refused to enumerate any models for this account (auth/revocation/
 // scope removal) and must NOT be treated as a single-binding failure.
+//
+// 2026-10-11 晚（r1018 后续收口）：分类主信号从「厂商措辞」换成
+// 「HTTP 状态码」。12272e57c 把 nvidia 的 EOL 措辞（"end of life" /
+// "no longer available"）加进措辞表——那是把分类押在上游文案上，上游
+// 一改措辞（或换一家措辞不同的厂商）分类就静默翻回凭据级 unreachable，
+// probe 风暴复发。改为：410 Gone 本身就是标准化的「资源已永久移除」
+// 信号，与正文措辞无关，直接归 binding 级；404 仍然歧义（探针路径写错
+// 与模型下线在报文上同形），保留措辞信号作为门槛。
 func isPerModelChatFailure(errMsg string) bool {
-	if !(strings.Contains(errMsg, "model not found") ||
-		strings.Contains(errMsg, "model has been deprecated")) {
-		return false
+	switch chatProbeStatusCode(errMsg) {
+	case 410:
+		// chat/messages 通道上的 410 Gone：探针模型已被上游永久移除。
+		// 状态码是标准信号，厂商换措辞不影响判定；/v1/models 通道的
+		// 410 仍走凭据级（下方提取器只认 chat/messages 前缀）。
+		return true
+	case 404:
+		// 404 有歧义：探针路径配置错与模型下线在报文上同形，保留
+		// 措辞门槛（该清单现在只守 404，不再守 410）。
+		return strings.Contains(errMsg, "model not found") ||
+			strings.Contains(errMsg, "model has been deprecated") ||
+			strings.Contains(errMsg, "end of life") ||
+			strings.Contains(errMsg, "no longer available")
 	}
-	return strings.Contains(errMsg, "chat status 404") ||
-		strings.Contains(errMsg, "chat status 410") ||
-		strings.Contains(errMsg, "messages status 404") ||
-		strings.Contains(errMsg, "messages status 410")
+	return false
+}
+
+// chatProbeStatusCode extracts the HTTP status code embedded by this
+// package's own probe callers ("chat unreachable (after 3 attempts):
+// chat status 410: <body>" / "messages status 404: <body>"). The
+// prefix is produced by fmt.Sprintf in this file, so it is a stable
+// internal contract — unlike the vendor body text after it. Returns 0
+// when no well-formed three-digit code is present (including the
+// /v1/models channel's "models endpoint unreachable" prefix, which
+// must stay credential-scoped).
+func chatProbeStatusCode(errMsg string) int {
+	for _, prefix := range []string{"chat status ", "messages status "} {
+		i := strings.Index(errMsg, prefix)
+		if i < 0 {
+			continue
+		}
+		rest := errMsg[i+len(prefix):]
+		n := 0
+		for n < len(rest) && rest[n] >= '0' && rest[n] <= '9' {
+			n++
+		}
+		if n == 3 {
+			code, _ := strconv.Atoi(rest[:3])
+			return code
+		}
+	}
+	return 0
 }
 
 // writeHealth persists probe results with manual-disable guard.

@@ -29,7 +29,7 @@ vi.mock('@/hyper', async (importOriginal) => {
 
 let mounted: Array<{ unmount(): void }> = []
 
-async function mountDrawerAs(role: string) {
+async function mountDrawerAs(role: string, startPath = '/') {
   const pinia = createPinia()
   setActivePinia(pinia)
   useAuthStore().userInfo = {
@@ -46,7 +46,7 @@ async function mountDrawerAs(role: string) {
       ...DRAWER_NAV.map((n) => ({ path: n.to, component: { template: '<div/>' } })),
     ],
   })
-  await router.push('/')
+  await router.push(startPath)
   await router.isReady()
   const w = mount(AppDrawer, {
     props: { modelValue: true },
@@ -56,7 +56,7 @@ async function mountDrawerAs(role: string) {
   mounted.push(w)
   await flushPromises()
   await flushPromises()
-  return w
+  return Object.assign(w, { __router: router })
 }
 
 describe('AppDrawer 权限门控', () => {
@@ -187,5 +187,98 @@ describe('isNavItemActive', () => {
   it('★ 前缀相同但不是子路径的不算激活（/logs 不激活 /logs-archive）', () => {
     const logs = DRAWER_NAV.find((n) => n.key === 'logs')!
     expect(isNavItemActive(logs, '/logs-archive')).toBe(false)
+  })
+})
+
+/**
+ * 抽屉导航后**必须收起**（2026-10-11 真机/模拟器端到端实测缺陷）。
+ *
+ * 现象：iOS 26 模拟器上 Maestro 连跑两轮同一段「打开抽屉 → 点供应商」，
+ * 一轮正常收起，另一轮**抽屉压在供应商列表上不消失**（抽屉里「供应商」
+ * 已高亮 ⇒ 路由确实变了，但面板还在）。后续点击全打在抽屉上，整页不可用。
+ *
+ * 根因边界：`watch(route.fullPath)` 单独作为收口存在竞态（路由变了但
+ * modelValue 没落下去）。判据因此钉在**点击本身**这条确定性路径上：
+ * 点导航项 ⇒ 立刻 emit('update:modelValue', false)，不依赖 watcher。
+ */
+describe('AppDrawer 导航后收起', () => {
+  beforeEach(() => {
+    for (const w of mounted) {
+      try { w.unmount() } catch { /* ignore */ }
+    }
+    mounted = []
+    document.body.innerHTML = ''
+    vi.resetAllMocks()
+  })
+
+  it('点导航项立即 emit update:modelValue=false（不依赖路由 watcher）', async () => {
+    const w = await mountDrawerAs('super_admin')
+    const link = Array.from(document.body.querySelectorAll<HTMLAnchorElement>('a.drawer__link'))
+      .find((a) => a.getAttribute('href') === '/providers')
+    expect(link, '抽屉里应有指向 /providers 的入口').toBeTruthy()
+    link!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+    expect(w.emitted('update:modelValue')).toContainEqual([false])
+  })
+
+  it('★ 点不同路由的导航项：既收起抽屉，也**真的导航过去了**', async () => {
+    // 钉两条不变量：抽屉收起 **且** 路由真的变了。
+    // 只断言 emit(false) 是不够的 —— 「抽屉关了但人还停在原页」这种状态
+    // emit 也是 false，却完全不可用。
+    //
+    // ⚠️ 但必须说清楚这条**能覆盖什么、不能覆盖什么**：
+    // 真机上出现过的那个回归是「同步 emit 导致 Teleport 里的 RouterLink 在
+    // navigate() 之前被卸载」。jsdom 复现不了 —— Vue 的 scheduler 在微任务里
+    // 刷新，同步 emit 也不会同步卸载（已实测：把 onNavClick 改回同步 emit，
+    // 本文件 15 条照样全绿）。所以这一条能钉「结果」，**钉不住时序**；
+    // 时序那一半的判据是模拟器上的 flow 08，不是本文件。
+    const w = await mountDrawerAs('super_admin')
+    const link = Array.from(document.body.querySelectorAll<HTMLAnchorElement>('a.drawer__link'))
+      .find((a) => a.getAttribute('href') === '/providers')
+    link!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+    await flushPromises()
+    expect(w.__router.currentRoute.value.path).toBe('/providers')
+    expect(w.emitted('update:modelValue')).toContainEqual([false])
+  })
+
+  it('★ 点「当前已经在的」那个导航项也必须收起 —— 路由没变，watcher 不会响', async () => {
+    // 本组里能区分「点击收口」与「路由 watcher 收口」的那一条：
+    // 已经停在 /logs 时再点 /logs，route.fullPath **不变**，watcher 不触发，
+    // 只有 onNavClick 会 emit。
+    // 刻意用 /logs 而不是 /providers —— 证明实现里没写死某条路径。
+    // 把 onNavClick 整个删掉，这一条会红（已实测）。
+    const w = await mountDrawerAs('super_admin', '/logs')
+    const self = Array.from(document.body.querySelectorAll<HTMLAnchorElement>('a.drawer__link'))
+      .find((a) => a.getAttribute('href') === '/logs')
+    expect(self, '应在 /logs 页仍能看到抽屉入口').toBeTruthy()
+    const before = (w.emitted('update:modelValue') ?? []).length
+    self!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+    const after = (w.emitted('update:modelValue') ?? []).slice(before)
+    expect(after, '路由未变化时点击也必须收起抽屉').toContainEqual([false])
+  })
+
+  it('★ 穷举：站在每个导航项自己的路由上点它，都必须收起（不抽样、不写死路径）', async () => {
+    // 守卫是 `route.path === to`，一旦实现里写死某条路径，这里就会红。
+    // ⚠️ 注意这条不能靠「从 / 出发点每个链接」来写 —— 那条路径上
+    // route.fullPath **会变**，watcher 会替 onNavClick 把活干完，
+    // 把 onNavClick 整个删掉也照样全绿（已实测）。必须站在该项自己的路由上点它。
+    for (const item of DRAWER_NAV) {
+      const w = await mountDrawerAs('super_admin', item.to)
+      // 只取 <a>：抽屉里「我的」也是 .drawer__link，但它是 <button>，
+      // emit 的是 account 而非「收起」，混进来会让计数对不上。
+      const self = Array.from(document.body.querySelectorAll<HTMLAnchorElement>('a.drawer__link'))
+        .find((a) => a.getAttribute('href') === item.to)
+      expect(self, `抽屉里应有指向 ${item.to} 的入口`).toBeTruthy()
+      const before = (w.emitted('update:modelValue') ?? []).length
+      self!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await flushPromises()
+      const after = (w.emitted('update:modelValue') ?? []).slice(before)
+      expect(after, `在 ${item.to} 上点自己没收起抽屉`).toContainEqual([false])
+      w.unmount()
+      document.body.innerHTML = ''
+      mounted = []
+    }
   })
 })

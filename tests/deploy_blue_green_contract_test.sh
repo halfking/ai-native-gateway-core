@@ -11,7 +11,7 @@ require(){ local d=$1 p=$2 f=$3; grep -Eq "$p" "$f" && pass "$d" || fail "$d"; }
 # path would false-PASS via `! grep` semantics — assert resolvability first.
 if [[ ! -f "$ROOT/scripts/deploy-lib/targets.sh" ]]; then
   fail "deploy-lib symlink resolves (target: $(readlink "$ROOT/scripts/deploy-lib" 2>/dev/null || echo '?'))"
-  printf 'FAIL %s\n' "  fix: ln -sfn ../../../../ai-native-tools/deploy-lib $ROOT/scripts/deploy-lib" >&2
+  printf 'FAIL %s\n' "  fix: ln -sfn ../../../../ai-native-workspace/deploy-lib $ROOT/scripts/deploy-lib" >&2
   exit 1
 fi
 pass 'deploy-lib symlink resolves'

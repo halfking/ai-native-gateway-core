@@ -248,3 +248,94 @@ func TestAuthMiddleware_BearerTakesPrecedenceOverXApiKey(t *testing.T) {
 		t.Errorf("expected 401, got %d", rr.Code)
 	}
 }
+
+func TestAuthMiddleware_SPANavigationDeepLinksBypass(t *testing.T) {
+	// 2026-10-11 白页事故：控制台 SPA 从 /admin/* 旧路由迁到顶层路由后，
+	// 深链/刷新（/dashboard 等）不带 API key，在全局门前 401 missing_key，
+	// 静态处理器的 index.html 回退永远走不到。浏览器导航（Accept:
+	// text/html）到非数据面路径必须放行给 mux。
+	called := false
+	mw := NewAuthMiddleware("secret-key")
+	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	cases := []string{
+		"/dashboard",
+		"/login",
+		"/bootstrap",
+		"/forbidden",
+		"/routing-v2/credentials",
+		"/tenant/models",
+		"/keys/42",
+		"/user-agreement.html",
+	}
+
+	for _, path := range cases {
+		called = false
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+		// NO Authorization header — 深链导航本就无 key
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		if !called {
+			t.Errorf("%s: SPA navigation should bypass auth, got status=%d body=%s", path, rr.Code, rr.Body.String())
+		}
+	}
+}
+
+func TestAuthMiddleware_SPABypassNeverCoversDataPlane(t *testing.T) {
+	// 数据面 / 自守卫前缀不参与 SPA 导航放行：即使 Accept 带上 text/html，
+	// 无 key 的 /v1/*、/mock/*、/plugins/* 仍必须 401 missing_key。
+	mw := NewAuthMiddleware("secret-key")
+	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("%s: handler must not be reached for data-plane path", r.URL.Path)
+	}))
+
+	// 注：/mock/*、/plugins/* 在既有 BypassRule.PathPrefixes 里本就放行
+	//（自守卫子系统，端点自带 auth.MockEndpoint 等守卫），不属本改动守卫
+	// 范围；数据面前门只断言 /v1*。
+	cases := []string{
+		"/v1/chat/completions",
+		"/v1/messages",
+		"/v1",
+		"/v1/models",
+	}
+
+	for _, path := range cases {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,*/*;q=0.8")
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusUnauthorized {
+			t.Errorf("%s: expected 401 for keyless data-plane request, got %d body=%s", path, rr.Code, rr.Body.String())
+		}
+	}
+}
+
+func TestAuthMiddleware_NonNavigationRequestsKeepGate(t *testing.T) {
+	// 非 text/html 的 Accept（SDK/curl 的 application/json、*/*）保持原门：
+	// 无 key 访问 SPA 路由仍 401，不放水。
+	mw := NewAuthMiddleware("secret-key")
+	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("%s: handler must not be reached without navigation Accept", r.URL.Path)
+	}))
+
+	accepts := []string{"application/json", "*/*", ""}
+
+	for _, accept := range accepts {
+		req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+		if accept != "" {
+			req.Header.Set("Accept", accept)
+		}
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusUnauthorized {
+			t.Errorf("Accept=%q: expected 401 for keyless /dashboard, got %d", accept, rr.Code)
+		}
+	}
+}

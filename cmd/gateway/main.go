@@ -2411,6 +2411,10 @@ func main() {
 	if keyVerifier.Enabled() {
 		slidingRL := ratelimit.NewRedisLimiterFromEnv()
 		chatHandler.SetAuth(keyVerifier, slidingRL)
+		// 2026-10-11: /v1/models 此前从未接上 KeyVerifier，而 AuthMiddleware 对
+		// sk-* 故意放行（Rule 20 §2），于是任意 sk- 开头的字符串都能拉到全量
+		// 模型清单。补上这一节委托链，详见 streaming/models.go 的 SetAuth。
+		modelsHandler.SetAuth(keyVerifier)
 		// /v1/embeddings handler (22 章 §22.2). providerClient + upClient
 		// are both ready by this point.
 		embeddingsHandler = streaming.NewEmbeddingsHandler(providerClient, upClient)
@@ -7102,6 +7106,12 @@ func main() {
 	requestJourneyAPI := admin.NewRequestJourneyAPI(journeyQueryService)
 	mux.HandleFunc("/api/admin/request-journeys/queues", requestJourneyWrapAdmin(requestJourneyAPI.ServeHTTP))
 	mux.HandleFunc("/api/admin/request-journeys/", requestJourneyWrapAdmin(requestJourneyAPI.ServeHTTP))
+	// A2 量具出库（2026-10-11）：自禁用位与永久拒绝计数此前只活在 Stats()
+	// 里且无生产读方；未启用报告器时端点回 {"enabled":false}。lite（无 db）
+	// 模式 wrapAdmin 为 nil，与其他 admin 注册点同口径跳过。
+	if wrapAdmin != nil {
+		mux.HandleFunc("/api/admin/anomaly-reporter/stats", wrapAdmin(handleAnomalyReporterStats(anomalyReporter)))
+	}
 	journalSnapshotAPI := admin.NewJournalSnapshotAPI(journalSnapshotStore)
 	journalSnapshotAPI.RegisterRoutes(mux, requestJourneyWrapAdmin)
 	slog.Info("request journey admin API enabled",
