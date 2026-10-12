@@ -347,6 +347,26 @@ var unsupportedFeatureRe = regexp.MustCompile(
 		`当前模型不支持)`,
 )
 
+// unsupportedParamValueRe matches OpenAI-style validation rejections of a
+// parameter VALUE (as opposed to the parameter itself):
+//
+//	{"error":{"message":"Unsupported value: 'reasoning_effort' does not
+//	 support 'max' with this model. Supported values are: 'none', 'low',
+//	 'medium', 'high', and 'xhigh'.","type":"invalid_request_error",
+//	 "param":"reasoning_effort","code":"unsupported_value"}}
+//
+// 2026-10-13（gpt-5.6-sol 无响应事故）：这类 400 此前不匹配任何专用正则，
+// 落到 ClassifyResponseStatus 的 default → KindTransient —— 同一 body 被
+// 盲重试三次，且 transientSuppressErrorCode 把 (credential, model) 按
+// http_5xx 拉黑 5 分钟（后续请求 no_candidate，"无响应"的直接放大器）。
+// 请求携带上游不支持的参数值是请求侧问题：重试同 body 必然再败，
+// 节点本身是健康的。归类 KindClientBug：跳过盲重试、不冷却凭据；
+// reqprobe 的参数剔除重试（executor 里先于可重试判定执行）仍然兜底。
+var unsupportedParamValueRe = regexp.MustCompile(
+	`(?i)(["']code["']\s*:\s*["']unsupported[_ -]?value["']|` +
+		`unsupported value:?\s*['"\x60][a-z0-9_.\-]+['"\x60])`,
+)
+
 // modelDeprecatedRe matches upstream error bodies that signal the model has
 // been permanently removed / end-of-lifed / deprecated by the provider.
 //
@@ -1044,6 +1064,11 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		if (status == 400 || status == 422) && invalidRequestFormatRe.Match(body) {
 			return KindClientBug
 		}
+		// 参数值不被支持（code:"unsupported_value"），见 unsupportedParamValueRe
+		// 注释：请求侧问题，盲重试必再败，且不得按 transient 拉黑节点。
+		if (status == 400 || status == 422) && unsupportedParamValueRe.Match(body) {
+			return KindClientBug
+		}
 		// 2026-08-20 P0 fix (apigpt/apiclaude.cc node-credit-exhaustion regression):
 		// the budgetExhaustion check has been moved ABOVE the concurrentOverload
 		// check in this function (right after the noAvailableChannel/degraded
@@ -1371,6 +1396,11 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 			return KindToolCallIdMismatch
 		}
 		if (status == 400 || status == 422) && invalidRequestFormatRe.Match(body) {
+			return KindClientBug
+		}
+		// 参数值不被支持（code:"unsupported_value"）——与 ClassifyErrorWithBody
+		// 同判（SSE 流内错误帧同型）。
+		if (status == 400 || status == 422) && unsupportedParamValueRe.Match(body) {
 			return KindClientBug
 		}
 		if (status == 400 || status == 403 || status == 422 || status == 451 || status >= 500) &&
