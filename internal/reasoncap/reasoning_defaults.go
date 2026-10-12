@@ -98,9 +98,15 @@ var reasoningRules = []reasoningRule{
 	// ══════════════════════════════════════════════════════════════════════
 
 	// ─── OpenAI gpt-5 family (reasoning built in) ─────────────────────────
+	// 2026-10-13（gpt-5.6-sol 无响应事故）：effort 集去掉 "max"。上游
+	// api.vapeur.ai 实测该家族 400 报错明示支持集为
+	// none/low/medium/high/xhigh —— 声明含 max 会让 paramguard 的
+	// ClampEffort 就近映射空转（max 在集合内原样放行），客户端
+	// reasoning.effort="max" 三连 400 后节点还被 transient 抑制拉黑
+	// 5 分钟（no_candidate）。去掉后 ClampEffort 把 max 就近降到 xhigh。
 	{"gpt-5", 1, Caps{
 		Supported: true, Dialect: DialectOpenAI,
-		Efforts:    []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"},
+		Efforts:    []string{"none", "minimal", "low", "medium", "high", "xhigh"},
 		CanDisable: true,
 	}},
 

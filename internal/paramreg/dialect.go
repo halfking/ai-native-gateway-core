@@ -97,6 +97,14 @@ func IsOpenAIShaped(d Dialect) bool {
 	return BaseProtocol(d) == DialectOpenAIChat
 }
 
+// CatalogCodeUnknownRelay 是 executor 侧的显式哨兵（2026-10-13）：
+// 候选已选定、但其 catalog_code 为空串（联界/智码/maishouai 等未挂
+// catalog 的 openai 形态中转）。它刻意不进 catalogToDialect —— 解析结果
+// 恒为 DialectUnknown，扩展字段还原走 fail-open（宁可多传，错误面交
+// reqprobe 学习兜底）。与 TargetProvider 空串的「路由前序列化点
+// fail-closed」语义（见 serialize_openai_minimax_dialect_test.go）相区分。
+const CatalogCodeUnknownRelay = "unknown-relay"
+
 // catalogToDialect 把 provider catalog code 映射到方言。
 //
 // catalog code 取值来自 provider_catalog 表 / provider.Candidate.CatalogCode，

@@ -117,12 +117,30 @@ func restoreExtensions(out map[string]any, req *InternalRequest, targetProtocol 
 //
 // TargetProvider（来自 provider.Candidate.CatalogCode）比协议粒度更细 ——
 // DeepSeek 和 GLM 都说 openai-chat，但私有参数互不相认。优先用它；
-// 无法识别时回退到目标协议。
+// TargetProvider 为空时（如 apiclaude 等未挂 catalog 的中转）回退到目标协议。
+//
+// 2026-10-13（交叉格式矩阵 A1.6）：catalog 非空但未登记的供应商
+// （suyun/apigpt/apinext 等）此前同样走协议回退，DialectOpenAIChat 成为
+// 目标方言后，别家厂商的方言私有字段（grok 的 search_parameters、
+// DeepSeek 的 prefix）按「目标不认识」被裁剪 —— 这违背了
+// DialectForCatalogCode 对未登记厂商「不该因为没登记就丢参数」的
+// fail-open 承诺。未登记就是没有立场替对方做兼容判断：维持
+// DialectUnknown（knownBy=true / rejects=false，最宽松），错误面交给
+// reqprobe 的 4xx 学习兜底。
+//
+// 注意 TargetProvider == ""（空串）**不走**上面的 fail-open：它同时承担
+// 「路由前序列化点」语义（会话恢复/预渲染，见
+// serialize_openai_minimax_dialect_test.go 的 pre-routing 契约），那里
+// fail-closed 是对的。路由已定但 catalog_code 为空串的中转（联界/智码
+// 等本地主力，2026-10-13 R2.D1 实测盲区）由 executor 盖
+// paramreg.CatalogCodeUnknownRelay 哨兵区分——非空且必然未登记，
+// 自然落到 DialectUnknown fail-open。
 func resolveTargetDialect(req *InternalRequest, targetProtocol string) paramreg.Dialect {
 	if req.TargetProvider != "" {
 		if d := paramreg.DialectForCatalogCode(req.TargetProvider); d != paramreg.DialectUnknown {
 			return d
 		}
+		return paramreg.DialectUnknown
 	}
 	return paramreg.DialectForProtocol(targetProtocol)
 }

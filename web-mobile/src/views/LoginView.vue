@@ -2,16 +2,21 @@
 // LoginView — 登录（headerless）：16px 输入防 iOS 缩放；失败信息内联展示。
 //
 // 2026-10-10 新增「保持登录」与图形验证码：
-//   - 「保持登录」勾选 → 后端下发 24h 持久 cookie；不勾选 → 会话级 cookie。
+//   - 「保持登录」勾选 → 后端下发 7d 持久 cookie；不勾选 → 会话级 cookie。
 //     落盘位置的选择在 auth store 里（localStorage vs sessionStorage）。
 //   - 验证码是**自适应**的：后端未达失败阈值时 `required=false`，此时输入框
 //     可见但留空也能提交；连续失败 3 次后 `required=true`，必须输入。
 //     所以这里是「显示但可空」，而不是一上来就拦人。
+//
+// 2026-10-13 新增「站点选择」：登录前可切到生产/测试/内部任一网关。
+//   切换是**整页跳转**到目标站点的 `/m/login`，不是改 base 再发请求
+//   （理由见 api/gatewaySites.ts）。
 import { nextTick, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { fetchCaptcha } from '@/api/auth'
 import { ApiError } from '@/api/client'
+import { GATEWAY_SITES, currentSite, isCurrentSite, siteLoginUrl, type GatewaySite } from '@/api/gatewaySites'
 import { t } from '@/i18n'
 import AppIcon from '@/components/common/AppIcon.vue'
 
@@ -33,6 +38,30 @@ const submitting = ref(false)
  *  密码错误需要**不同**的话术，一个布尔量表达不了两件事）。 */
 const errorText = ref('')
 const usernameRef = ref<HTMLInputElement | null>(null)
+const sitePanelOpen = ref(false)
+const switchingSite = ref<string | null>(null)
+
+/** 当前所在站点。不在目录里（自建/测试环境）时为 null —— 那时不显示站点条，
+ *  而不是显示一个「未知站点」，免得把正常场景说成异常。 */
+const site = currentSite()
+
+/**
+ * 切到另一站点。
+ *
+ * ⚠️ 切换前必须**登出当前站点**：`llmgw_session` 是 cookie，跨 origin 不共享，
+ *   留着它不会让新站点自动登录；但当前站点的 localStorage 里有 `llmgw_mobile_user`，
+ *   整页跳走后新站点的 store 会从**自己的** storage 读，不会串。
+ *   所以这里刻意不做 logout —— 那会顺手清掉节点配置等不该清的东西。
+ */
+async function switchSite(target: GatewaySite): Promise<void> {
+  if (switchingSite.value || isCurrentSite(target)) return
+  switchingSite.value = target.id
+  try {
+    window.location.replace(siteLoginUrl(target))
+  } catch {
+    switchingSite.value = null
+  }
+}
 
 void nextTick(() => {
   if (window.matchMedia?.('(pointer: coarse)').matches || window.matchMedia?.('(hover: none)').matches) return
@@ -102,6 +131,42 @@ async function submit(): Promise<void> {
         <AppIcon name="cpu" :size="34" class="login__logo" />
         <h1 class="login__title">{{ t('login.title') }}</h1>
         <p class="login__hint">{{ t('login.hint') }}</p>
+      </div>
+
+      <!-- 站点选择：只有身处预置站点时才显示（自建环境不显示，见 site 注释） -->
+      <div v-if="site" class="login__sites">
+        <button
+          id="mobile-login-site-toggle"
+          type="button"
+          class="login__site-toggle"
+          :aria-expanded="sitePanelOpen"
+          aria-controls="mobile-login-site-list"
+          @click="sitePanelOpen = !sitePanelOpen"
+        >
+          <span class="login__site-current">
+            <span class="login__site-env" :data-env="site.env">{{ t(`login.siteEnv.${site.env}`) }}</span>
+            <span class="login__site-name">{{ site.name }}</span>
+          </span>
+          <span class="login__site-caret" aria-hidden="true">{{ sitePanelOpen ? '▴' : '▾' }}</span>
+        </button>
+
+        <ul v-show="sitePanelOpen" id="mobile-login-site-list" class="login__site-list">
+          <li v-for="option in GATEWAY_SITES" :key="option.id">
+            <button
+              type="button"
+              class="login__site-option"
+              :class="{ 'login__site-option--active': isCurrentSite(option) }"
+              :data-site-id="option.id"
+              :aria-current="isCurrentSite(option) ? 'true' : undefined"
+              :disabled="switchingSite !== null"
+              @click="switchSite(option)"
+            >
+              <span class="login__site-env" :data-env="option.env">{{ t(`login.siteEnv.${option.env}`) }}</span>
+              <span class="login__site-name">{{ option.name }}</span>
+              <code class="login__site-origin">{{ option.origin }}</code>
+            </button>
+          </li>
+        </ul>
       </div>
 
       <form class="login__form" @submit.prevent="submit">
@@ -303,6 +368,109 @@ async function submit(): Promise<void> {
 
 /* 「保持登录」整行都是热区：勾选框只有十几像素，单独一个 label 会让
    移动端点不中（R1）。 */
+/* ── 站点选择（2026-10-13）── */
+
+.login__sites {
+  display: grid;
+  gap: var(--app-space-2);
+  margin-bottom: var(--app-space-4);
+}
+
+.login__site-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--app-space-2);
+  width: 100%;
+  min-height: 48px;
+  padding: 8px 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  background: var(--app-surface-muted);
+  color: var(--app-text);
+  font: inherit;
+  text-align: start;
+}
+
+.login__site-current {
+  display: flex;
+  align-items: center;
+  gap: var(--app-space-2);
+  min-width: 0;
+}
+
+.login__site-name {
+  font-weight: 600;
+}
+
+.login__site-caret {
+  color: var(--app-text-secondary);
+  font-size: 12px;
+}
+
+/* 环境徽标：生产用 danger 醒目，避免在生产站点上误操作。 */
+.login__site-env {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--app-surface-raised);
+  border: 1px solid var(--app-border);
+  color: var(--app-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.login__site-env[data-env='production'] {
+  border-color: var(--app-danger);
+  color: var(--app-danger);
+}
+
+.login__site-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  border: 1px solid var(--app-border-subtle);
+  border-radius: 10px;
+  background: var(--app-surface-raised);
+}
+
+.login__site-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 4px var(--app-space-2);
+  width: 100%;
+  min-height: 48px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--app-text);
+  font: inherit;
+  text-align: start;
+}
+
+.login__site-option:active {
+  background: var(--app-surface-muted);
+}
+
+.login__site-option--active {
+  border-color: var(--app-primary);
+  background: var(--app-surface-muted);
+}
+
+/* origin 另起一行：域名比中文名长，挤在同一行会把两处都折行（CJK 逐字折行，
+   见 iPad 引导页「语言」标签那个缺陷的同款机理）。 */
+.login__site-origin {
+  grid-column: 1 / -1;
+  color: var(--app-text-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
 .login__remember {
   display: flex;
   align-items: center;

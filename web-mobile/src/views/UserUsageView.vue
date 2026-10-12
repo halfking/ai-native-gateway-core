@@ -441,7 +441,21 @@ onBeforeUnmount(() => { disposed = true; listAborter?.abort(); detailAborter?.ab
 </template>
 
 <style scoped>
-.user-usage { display: grid; gap: 12px; padding-bottom: var(--app-safe-bottom); }
+/* ⚠️ 2026-10-13 真机实测修的缺陷：横向内边距此前**完全缺失**。
+   留白在本仓来自 `HyperList`（`padding: … var(--app-space-content-x) …`）
+   与 `.page`，而本视图的根容器是裸 `<div class="user-usage">`，两者都没用。
+   ⇒ 工具栏的「统计天数」「搜索」两个**裸标签**直接贴到屏幕边缘。
+   实测（iPhone 6s 真机截图 750px@2x 逐行扫描最左非背景像素）：
+     本页左边距众数 x=0 ；走 HyperList 的用量页 x=32（=1rem，全站一致）。
+   ⇒ 顶部导航在 x=39、页面内容在 x=0，同一屏内两套左边距。
+   ⚠️ 只补**横向**：`padding-bottom` 原来就有，别覆盖。
+   ⚠️ 别改成 `.page` 类 —— 本视图不是滚动宿主，换类会引入第二个滚动根。 */
+.user-usage {
+  display: grid;
+  gap: 12px;
+  padding-inline: var(--app-space-content-x);
+  padding-bottom: var(--app-safe-bottom);
+}
 .user-usage__toolbar { display: flex; gap: 10px; align-items: end; justify-content: space-between; }
 .user-usage__toolbar label, .user-usage__search { display: grid; gap: 5px; color: var(--app-text-muted); font-size: 12px; }
 .user-usage select, .user-usage input { min-height: 48px; padding: 0 12px; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-surface); color: var(--app-text); font: inherit; }

@@ -54,7 +54,7 @@ func jwtExpiry() time.Duration {
 			return d
 		}
 	}
-	return 24 * time.Hour // SSOT: admin/auth_params.go JWTDefaultTTL
+	return 7 * 24 * time.Hour // SSOT: admin/auth_params.go JWTDefaultTTL
 }
 
 // SignToken creates a signed JWT string for the given user.

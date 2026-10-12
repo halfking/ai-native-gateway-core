@@ -1002,6 +1002,12 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 
 	// Phase D (2026-06-22): use InboundBody (original client body) for audit
 	// logging, not RequestBody (which may be protocol-converted for upstream).
+	// 2026-10-13（交叉格式矩阵 B6 观测缺口）：chat 入向在 serveWithExecutor
+	// 里经 applyActualOutboundBody 把 executor 实发字节落进
+	// request_logs_bodies_hot.outbound_body，anthropic 入向此前没有对应
+	// 调用——/v1/messages 请求的出站体永远 NULL，Q2/Q4 的扩展字段保留
+	// 无法在存档层核验。与 chat 路径同款兜底（nil/空体安全）。
+	applyActualOutboundBody(logCtx, result)
 	h.chatHandler.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "messages", txResult, result.InboundBody, responseBody, logCtx)
 	*attemptLogged = true
 }

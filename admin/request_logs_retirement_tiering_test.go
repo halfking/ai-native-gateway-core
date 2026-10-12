@@ -202,7 +202,10 @@ var v1ArmLiteralBlindSpot = []string{
 	"admin/attempt_quality_api.go",
 	"admin/auto_route.go",
 	"admin/auto_route_correlations.go",
-	"admin/body_resolver.go",
+	// admin/body_resolver.go 与 admin/unified_detail.go 于 2026-10-13
+	// （S4 停写交接）移出本桶：两处 bodies 读各加了 session 家族兜底腿
+	// （+dbpkg.SessionFamilyBodiesSourceSQL()+ 拼接点），拼接点工具从此
+	// 看得见它们 —— 按本门的口径迁入 v1ReaderIndirectPopulation。
 	"admin/compression_sessions.go",
 	"admin/credential_monitor.go",
 	"admin/credential_monitor_heatmap.go",
@@ -224,7 +227,8 @@ var v1ArmLiteralBlindSpot = []string{
 	"admin/session_timeline_query.go",
 	"admin/session_turns_unified.go",
 	"admin/top_problems.go",
-	"admin/unified_detail.go",
+	// admin/unified_detail.go 于 2026-10-13（S4 停写交接）移出本桶：bodies
+	// 读加了 session 兜底拼接点，工具可见（迁入 v1ReaderIndirectPopulation）。
 	"admin/usage.go",
 	"admin/usage_trend_series.go",
 	"bg/candidate_failure_monitor.go",
@@ -253,6 +257,10 @@ var v1ArmLiteralBlindSpot = []string{
 // 实测：字面量 107 ∩ 间接 22 = 14，并集 = **115**。
 var v1ReaderIndirectPopulation = []string{
 	"admin/auto_title_generator.go",
+	// 2026-10-13（S4 停写交接）自 v1ArmLiteralBlindSpot 迁入：bodies 读加
+	// 了 session 兜底拼接点（+dbpkg.SessionFamilyBodiesSourceSQL()+），
+	// 拼接点工具从此看得见。
+	"admin/body_resolver.go",
 	"admin/compression_stats.go",
 	"admin/dashboard_board_queries.go",
 	"admin/logs.go",
@@ -264,6 +272,8 @@ var v1ReaderIndirectPopulation = []string{
 	"admin/session_sanitize_matches.go",
 	"admin/session_title.go",
 	"admin/tenants.go",
+	// 2026-10-13（S4 停写交接）自 v1ArmLiteralBlindSpot 迁入（同上）。
+	"admin/unified_detail.go",
 	"admin/usage_credits.go",
 	"bg/auto_route_settle_sql.go",
 	"bg/passive_probe_listener.go",
@@ -357,8 +367,11 @@ func TestV1ReaderTieringDomainIsBothPopulations(t *testing.T) {
 		got, exp int
 	}{
 		{"字面量总体", len(literal), 108},
-		{"间接总体", len(indirect), 22},
-		{"交集", inter, 14},
+		// 2026-10-13（S4 停写交接）：body_resolver / unified_detail 因加了
+		// session 兜底拼接点自盲区桶迁入（+2）；两者同时仍是字面量读方
+		//（交集 14→16），并集不变。
+		{"间接总体", len(indirect), 24},
+		{"交集", inter, 16},
 		{"并集（域）", union, 116},
 	} {
 		if c.got != c.exp {

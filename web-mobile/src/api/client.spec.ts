@@ -93,14 +93,28 @@ describe('api/client（17 §5 契约）', () => {
     expect(handler).not.toHaveBeenCalled()
     // 探针确实发出去了（否则这条断言会因为「压根没探」而假绿）
     expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/api/auth/me'))).toBe(true)
+    // 裁决结论必须随错误传下去：文案层据此不说「登录状态已过期」
+    // （2026-10-13 实测：不带这个字段时页面仍在说「请重新登录」，与事实相反）
+    expect((err as ApiError).sessionAlive).toBe(true)
   })
 
   it('401：会话探针也 401 ⇒ 仍踢登录（token 真被吊销的行为不能丢）', async () => {
     const handler = vi.fn()
     setUnauthorizedHandler(handler)
     fetchMock.mockImplementation(() => new Response(JSON.stringify({ error: 'no session' }), { status: 401 }))
-    await expect(req('GET', '/api/keys')).rejects.toThrow(ApiError)
+    const err = await req('GET', '/api/keys').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ApiError)
     expect(handler).toHaveBeenCalledTimes(1)
+    expect((err as ApiError).sessionAlive).toBe(false)
+  })
+
+  it('401 未探针时 sessionAlive 必须是 undefined 而不是 false（三态判据）', async () => {
+    const handler = vi.fn()
+    setUnauthorizedHandler(handler)
+    // /api/auth/me 属探针路径 ⇒ 不探 ⇒ 「没探」既不是 true 也不是 false
+    fetchMock.mockResolvedValue(new Response('{"error":"no session"}', { status: 401 }))
+    const err = await req('GET', '/api/auth/me').catch((e: unknown) => e)
+    expect((err as ApiError).sessionAlive).toBeUndefined()
   })
 
   it('并发 401 只探一次会话（探针单飞，不是每个 401 都打一轮）', async () => {

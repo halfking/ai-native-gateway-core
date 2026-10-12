@@ -91,10 +91,53 @@ func TestConvertResponsesToChatBody_PreservesExtraParams(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "get_model", fn["name"])
 	assert.Equal(t, "required", result["tool_choice"])
-	reasoning, ok := result["reasoning"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, "high", reasoning["effort"])
+	// 2026-10-13（gpt-5.6-sol 无响应事故）：reasoning 对象不再原样透传
+	// （chat 线型无此字段，严格上游按未知参数整单 400），effort 翻译为
+	// 顶层 reasoning_effort；值域收窄由 paramguard 统一做。
+	assert.Equal(t, "high", result["reasoning_effort"])
+	assert.NotContains(t, result, "reasoning", "responses reasoning 对象不得原样进入 chat 线型")
 	assert.Equal(t, true, result["parallel_tool_calls"])
+}
+
+// 2026-10-13 gpt-5.6-sol 无响应事故判据（converter 层）。
+//
+// 事故形态：客户端 /v1/responses 发 reasoning:{effort:"max"}，
+// converter 把对象原样拷进 chat body —— vapeur 中转把 effort 映射成
+// reasoning_effort="max" 后被上游 400（该家族最高 xhigh），三连败后节点
+// 被 transient 抑制拉黑（no_candidate）。判据锁三件事：
+//  1. effort 翻译为顶层 reasoning_effort（事故值 max 原样保留——收窄是
+//     paramguard 的职责，见 effort_clamp_gpt56_test.go）；
+//  2. reasoning 对象本体不出现在 chat body；
+//  3. 无 effort 的 reasoning 对象（仅 summary 等 Responses 专属成员）
+//     整体丢弃，不产生半翻译残留。
+func TestConvertResponsesToChatBody_TranslatesReasoningEffort(t *testing.T) {
+	var req responsesRequestBody
+	err := json.Unmarshal([]byte(`{
+		"model":"gpt-5.6-sol",
+		"input":[{"role":"user","content":"hi"}],
+		"reasoning":{"effort":"max","summary":"auto"},
+		"stream":true
+	}`), &req)
+	require.NoError(t, err)
+
+	result := convertResponsesToChatBody(&req)
+	assert.Equal(t, "max", result["reasoning_effort"])
+	assert.NotContains(t, result, "reasoning")
+}
+
+func TestConvertResponsesToChatBody_DropsEffortlessReasoningObject(t *testing.T) {
+	var req responsesRequestBody
+	err := json.Unmarshal([]byte(`{
+		"model":"gpt-5.6-sol",
+		"input":[{"role":"user","content":"hi"}],
+		"reasoning":{"summary":"detailed"},
+		"stream":false
+	}`), &req)
+	require.NoError(t, err)
+
+	result := convertResponsesToChatBody(&req)
+	assert.NotContains(t, result, "reasoning")
+	assert.NotContains(t, result, "reasoning_effort")
 }
 
 func TestConvertResponsesToChatBody_PreservesFunctionCallChain(t *testing.T) {

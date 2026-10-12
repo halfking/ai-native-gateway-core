@@ -1761,18 +1761,18 @@ func (e *Executor) executeOpenAI(
 						"chunk_count", streamOutcome.ChunkCount,
 					)
 					return &ExecuteResult{
-						Response:       resp,
-						Candidate:      cand,
-						LatencyMs:      latencyMs,
-						RequestBody:    append([]byte(nil), bodyBytes...),
-						InboundBody:    sourceBody,
-						RoutingTracker: params.RoutingTracker,
-					}, &streamInterruptedError{
-						reason:       streamOutcome.Reason,
-						credentialID: cand.CredentialID,
-						resumable:    false,
-						kind:         errorsx.KindCanceled,
-					}
+							Response:       resp,
+							Candidate:      cand,
+							LatencyMs:      latencyMs,
+							RequestBody:    append([]byte(nil), bodyBytes...),
+							InboundBody:    sourceBody,
+							RoutingTracker: params.RoutingTracker,
+						}, &streamInterruptedError{
+							reason:       streamOutcome.Reason,
+							credentialID: cand.CredentialID,
+							resumable:    false,
+							kind:         errorsx.KindCanceled,
+						}
 				}
 				if streamOutcome.Interrupted {
 					isResumable := streamOutcome.Resumable && streamOutcome.ChunkCount < e.StreamRetryThreshold
@@ -1860,23 +1860,23 @@ func (e *Executor) executeOpenAI(
 					}
 
 					return &ExecuteResult{
-						Response:    resp,
-						Candidate:   cand,
-						LatencyMs:   latencyMs,
-						RequestBody: append([]byte(nil), bodyBytes...),
-						// Phase D (2026-06-22): inbound body for audit logging
-						InboundBody: sourceBody,
-						// 2026-06-19 quality fix mode: capture any flags the
-						// stream reader observed before the interrupt fired.
-						QualityFlags:   streamQualityFlags,
-						QualityScore:   streamQualityScore,
-						RoutingTracker: params.RoutingTracker,
-					}, &streamInterruptedError{
-						reason: streamOutcome.Reason, credentialID: cand.CredentialID,
-						resumable: isResumable, kind: streamKind,
-						statusCode: resp.StatusCode, rawError: streamOutcome.Reason,
-						terminalRendered: streamOutcome.TerminalRendered,
-					}
+							Response:    resp,
+							Candidate:   cand,
+							LatencyMs:   latencyMs,
+							RequestBody: append([]byte(nil), bodyBytes...),
+							// Phase D (2026-06-22): inbound body for audit logging
+							InboundBody: sourceBody,
+							// 2026-06-19 quality fix mode: capture any flags the
+							// stream reader observed before the interrupt fired.
+							QualityFlags:   streamQualityFlags,
+							QualityScore:   streamQualityScore,
+							RoutingTracker: params.RoutingTracker,
+						}, &streamInterruptedError{
+							reason: streamOutcome.Reason, credentialID: cand.CredentialID,
+							resumable: isResumable, kind: streamKind,
+							statusCode: resp.StatusCode, rawError: streamOutcome.Reason,
+							terminalRendered: streamOutcome.TerminalRendered,
+						}
 				}
 				recordAttemptSuccess(streamOutcome.ChunkCount)
 				return &ExecuteResult{
@@ -2346,7 +2346,16 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 		// req.TargetProvider 渲染方言 —— transport 层兜底够不到它，导致
 		// Anthropic 协议入向到 MiniMax/DeepSeek 等 OpenAI 形态上游时推理
 		// 意图被静默丢弃（P5）。
-		irReq.TargetProvider = cand.CatalogCode
+		//
+		// 2026-10-13（交叉矩阵 R2.D1）：catalog_code 为空串的中转（联界/
+		// 智码等）盖 unknown-relay 哨兵 —— 路由已定但厂商未知，扩展字段
+		// 还原走 DialectUnknown fail-open；空串留给「路由前序列化点」的
+		// fail-closed 语义。
+		if cand.CatalogCode != "" {
+			irReq.TargetProvider = cand.CatalogCode
+		} else {
+			irReq.TargetProvider = paramreg.CatalogCodeUnknownRelay
+		}
 		if lf := len(irReq.Messages); lf != msgCountBefore {
 			slog.Debug("finalizeOpenAIUpstreamBody: IR validate+fix applied",
 				"request_id", params.RequestID,
@@ -2426,7 +2435,12 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 			// 规则（如 thinking enabled→adaptive for MiniMax）全部不生效。
 			// ParseAnthropic 分支靠 SetContext(UpstreamCatalogCode) 在 transport
 			// 层二次还原兜底；本分支没有那次兜底，必须在序列化前直接标上。
-			irReq.TargetProvider = cand.CatalogCode
+			// 空串 catalog 盖哨兵，语义同上（R2.D1）。
+			if cand.CatalogCode != "" {
+				irReq.TargetProvider = cand.CatalogCode
+			} else {
+				irReq.TargetProvider = paramreg.CatalogCodeUnknownRelay
+			}
 			// R45 (2026-09-19, Gemini thinking 专项): Gemini 入向在 handler
 			// step-6 路由前序列化，thinkingConfig 的 budget 形 intent 已在
 			// 合成 body 中丢失。从请求 context 恢复（见 ir.SourceReasoning），

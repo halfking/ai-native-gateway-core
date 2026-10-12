@@ -198,12 +198,17 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 	out := make([]map[string]interface{}, 0)
 	for rows.Next() {
 		var ts time.Time
-		var reqID, taskType, clientModel, outbound string
+		var reqID, clientModel, outbound string
 		// 2026-10-03：auto_profile 允许为 NULL（没有命中自动路由画像的请求）。
 		// 原来按 string 扫（dest 是 *string = 不可空），遇到 NULL 行直接
 		// `cannot scan NULL into *string` → 整页 /routing-v2/work-types 500。
 		// 同一行的其它可空列本来都用指针，这里是漏网的。
 		var prof *string
+		// task_type 同族补漏（2026-10-13，S4 停写交接实测）：停写后新行走
+		// 视图 session 分支，探针类 auto 请求（is_auto_request=TRUE、无任务
+		// 分类）的 task_type 投影为 NULL，按 string 扫会让整页
+		// /api/admin/auto-route/decisions 500（row skip + 空页）。
+		var taskType sql.NullString
 		var workTypeVal sql.NullString
 		var apiKeyID, credentialID *int
 		var confidence *float64
@@ -219,11 +224,13 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 		entry := map[string]interface{}{
 			"ts":             ts.Format(time.RFC3339),
 			"request_id":     reqID,
-			"task_type":      taskType,
 			"auto_profile":   prof,
 			"client_model":   clientModel,
 			"outbound_model": outbound,
 			"success":        success,
+		}
+		if taskType.Valid {
+			entry["task_type"] = taskType.String
 		}
 		if workTypeVal.Valid && workTypeVal.String != "" {
 			entry["work_type"] = workTypeVal.String

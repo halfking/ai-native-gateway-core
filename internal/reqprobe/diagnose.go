@@ -46,12 +46,16 @@ type Input struct {
 //   - Anthropic: "unexpected field `thinking`" / "temperature: field required"
 //   - xAI/Grok: "Invalid value for 'reasoning_effort': 'x-high' is not one of ..."
 //   - 中转通用: "Extra inputs are not permitted" (无点名，靠键名交集)
+//   - kimi-k3 聚合中转 (2026-10-13 实测): "Validation: Unsupported
+//     parameter(s): `web_search`" —— 名词带括号复数 (s)/(es)，两条点名
+//     正则此前在此断链：param_rejected 判得出来、参数名提不出来，
+//     剥参重试静默不触发，整单六候选全灭。
 var namedParamPatterns = []*regexp.Regexp{
 	// "Invalid value for 'reasoning_effort': 'x-high' is not one of [...]"
 	regexp.MustCompile("(?:invalid|unsupported|unknown|unexpected)\\s+(?:value|type)\\s+for\\s+['\"`]([A-Za-z_][A-Za-z0-9_.\\-]{1,64})['\"`]"),
-	regexp.MustCompile("(?:argument|parameter|param|field|input)s?[\\s:]*['\"`]([A-Za-z_][A-Za-z0-9_.\\-]{1,64})['\"`]"),
+	regexp.MustCompile("(?:argument|parameter|param|field|input)s?(?:\\([a-z]+\\))?[\\s:]*['\"`]([A-Za-z_][A-Za-z0-9_.\\-]{1,64})['\"`]"),
 	regexp.MustCompile("['\"`]([A-Za-z_][A-Za-z0-9_.\\-]{1,64})['\"`]\\s+(?:is not one of|is not supported|is not a valid|is invalid|must be|does not exist|is not recognized|is not allowed|is unknown|is unsupported)"),
-	regexp.MustCompile("(?:unknown|unrecognized|unexpected|unsupported|invalid|extra|additional)\\s+(?:request\\s+)?(?:argument|parameter|field|input|property|key)\\s*[:\\s]*['\"`]?([A-Za-z_][A-Za-z0-9_.\\-]{1,64})['\"`]?"),
+	regexp.MustCompile("(?:unknown|unrecognized|unexpected|unsupported|invalid|extra|additional)\\s+(?:request\\s+)?(?:argument|parameter|field|input|property|key)s?(?:\\([a-z]+\\))?\\s*[:\\s]*['\"`]?([A-Za-z_][A-Za-z0-9_.\\-]{1,64})['\"`]?"),
 }
 
 // modeMismatchHints：端点/形态不匹配的文案信号（小写子串匹配）。

@@ -1072,8 +1072,30 @@ func convertResponsesToChatBody(req *responsesRequestBody) map[string]any {
 		chatBody["top_p"] = *req.TopP
 	}
 
+	// reasoning → reasoning_effort（2026-10-13，gpt-5.6-sol 无响应事故）。
+	// Responses 的 reasoning 对象在 chat/completions 线型上没有对应字段：
+	// 原样透传只是「宽容中转恰好认识它」（vapeur 会自行把 effort 映射成
+	// reasoning_effort），严格上游会按未知参数整单 400。这里只翻译可移植
+	// 成员 effort；summary/context 为 Responses 专属，chat 线型无法表达，
+	// 就地丢弃（与 IR 路径的 loss 上报口径一致）。值域收窄不在此做——
+	// paramguard（嵌套/顶层两种载体）在两条出站腿上统一 clamp。
+	if rawReasoning, ok := req.Extra["reasoning"]; ok && len(rawReasoning) > 0 && string(rawReasoning) != "null" {
+		var r struct {
+			Effort string `json:"effort"`
+		}
+		if json.Unmarshal(rawReasoning, &r) == nil && r.Effort != "" {
+			if _, exists := chatBody["reasoning_effort"]; !exists {
+				chatBody["reasoning_effort"] = r.Effort
+			}
+		}
+	}
+
 	for key, raw := range req.Extra {
 		if len(raw) == 0 || string(raw) == "null" {
+			continue
+		}
+		// reasoning 已按 chat 线型翻译为 reasoning_effort，对象本体不再透传。
+		if key == "reasoning" {
 			continue
 		}
 		var value any

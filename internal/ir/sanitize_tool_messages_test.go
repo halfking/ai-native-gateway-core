@@ -158,6 +158,148 @@ func TestSanitizeToolMessages_RealWorldMiniMaxBug(t *testing.T) {
 	}
 }
 
+// TestSanitizeToolMessages_MergesConsecutiveAssistantToolCallSplits is the
+// 2026-10-13 production incident regression (request
+// d717f89a8c79123c7ca7cd69ff2cbf9d, MiniMax 400 "tool call result does not
+// follow tool call (2013)").
+//
+// Agent clients (ZCode) emit parallel tool calls as consecutive assistant
+// messages each carrying ONE tool_call, followed by the tool results in call
+// order. The old scope rule closed the previous scope on every assistant
+// message, so only the LAST call's result survived sanitization; MiniMax then
+// rejected the request because the earlier calls had no results — the exact
+// error this sanitizer was built to prevent.
+func TestSanitizeToolMessages_MergesConsecutiveAssistantToolCallSplits(t *testing.T) {
+	toolCall := func(id, name string) ToolCall {
+		var tc ToolCall
+		tc.ID = id
+		tc.Type = "function"
+		tc.Function.Name = name
+		tc.Function.Arguments = "{}"
+		return tc
+	}
+	messages := []Message{
+		{Role: "system", Content: []ContentBlock{{Type: "text", Text: "You are ZCode"}}},
+		{Role: "user", Content: []ContentBlock{{Type: "text", Text: "check the repo"}}},
+		{Role: "assistant", Content: []ContentBlock{{Type: "text", Text: "let me run three commands"}}},
+		{Role: "assistant", ToolCalls: []ToolCall{toolCall("call_f7", "Bash")}},
+		{Role: "assistant", ToolCalls: []ToolCall{toolCall("call_f8", "Bash")}},
+		{Role: "assistant", ToolCalls: []ToolCall{toolCall("call_f9", "Bash")}},
+		{Role: "tool", ToolCallID: "call_f7", Content: []ContentBlock{{Type: "text", Text: "git status output"}}},
+		{Role: "tool", ToolCallID: "call_f8", Content: []ContentBlock{{Type: "text", Text: "git branch output"}}},
+		{Role: "tool", ToolCallID: "call_f9", Content: []ContentBlock{{Type: "text", Text: "git log output"}}},
+		{Role: "user", Content: []ContentBlock{{Type: "text", Text: "continue"}}},
+	}
+
+	result := SanitizeToolMessages(messages, "")
+
+	// Shape: system, user, assistant(text), assistant(3 merged tool_calls),
+	// tool f7, tool f8, tool f9, user → 8 messages, nothing dropped.
+	if len(result) != 8 {
+		t.Fatalf("expected 8 messages after merge, got %d:", len(result))
+	}
+	for i, m := range result {
+		t.Logf("  [%d] role=%s tool_calls=%d tool_call_id=%s", i, m.Role, len(m.ToolCalls), m.ToolCallID)
+	}
+
+	// The three split assistant messages must be ONE canonical message whose
+	// tool_calls array carries all three ids (premise-still-present guard:
+	// passing the result-count check alone doesn't prove the calls survived).
+	var mergedIdx = -1
+	for i, m := range result {
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			if mergedIdx != -1 {
+				t.Fatalf("found a second assistant message with tool_calls at index %d; split messages were not merged", i)
+			}
+			mergedIdx = i
+		}
+	}
+	if mergedIdx == -1 {
+		t.Fatal("no assistant message with tool_calls survived sanitization")
+	}
+	gotIDs := make([]string, 0, 3)
+	for _, tc := range result[mergedIdx].ToolCalls {
+		gotIDs = append(gotIDs, tc.ID)
+	}
+	wantIDs := []string{"call_f7", "call_f8", "call_f9"}
+	if len(gotIDs) != len(wantIDs) {
+		t.Fatalf("expected merged assistant to carry %d tool_calls, got %v", len(wantIDs), gotIDs)
+	}
+	for i := range wantIDs {
+		if gotIDs[i] != wantIDs[i] {
+			t.Errorf("merged tool_calls[%d] = %s, want %s", i, gotIDs[i], wantIDs[i])
+		}
+	}
+
+	// All three tool results must survive (the incident dropped f7/f8).
+	kept := map[string]bool{}
+	for _, m := range result {
+		if m.Role == "tool" {
+			kept[m.ToolCallID] = true
+		}
+	}
+	for _, id := range wantIDs {
+		if !kept[id] {
+			t.Errorf("tool result %s was removed; MiniMax would reject its call as result-less (2013)", id)
+		}
+	}
+
+	// The merged assistant message must sit immediately before its results.
+	if mergedIdx+3 >= len(result) || result[mergedIdx+1].ToolCallID != "call_f7" ||
+		result[mergedIdx+2].ToolCallID != "call_f8" || result[mergedIdx+3].ToolCallID != "call_f9" {
+		t.Error("merged assistant message is not immediately followed by its three tool results")
+	}
+}
+
+// TestValidateAndFix_ParallelCallSplitSurvives runs the incident shape through
+// the full ValidateAndFixRequest pipeline (the actual entry point the
+// executor calls), so a future reordering of pipeline steps can't reintroduce
+// the drop by another route.
+func TestValidateAndFix_ParallelCallSplitSurvives(t *testing.T) {
+	toolCall := func(id string) ToolCall {
+		var tc ToolCall
+		tc.ID = id
+		tc.Type = "function"
+		tc.Function.Name = "Bash"
+		tc.Function.Arguments = "{\"command\":\"pwd\"}"
+		return tc
+	}
+	messages := []Message{
+		{Role: "user", Content: []ContentBlock{{Type: "text", Text: "go"}}},
+		{Role: "assistant", ToolCalls: []ToolCall{toolCall("call_f7")}},
+		{Role: "assistant", ToolCalls: []ToolCall{toolCall("call_f8")}},
+		{Role: "assistant", ToolCalls: []ToolCall{toolCall("call_f9")}},
+		{Role: "tool", ToolCallID: "call_f7", Content: []ContentBlock{{Type: "text", Text: "r7"}}},
+		{Role: "tool", ToolCallID: "call_f8", Content: []ContentBlock{{Type: "text", Text: "r8"}}},
+		{Role: "tool", ToolCallID: "call_f9", Content: []ContentBlock{{Type: "text", Text: "r9"}}},
+		{Role: "user", Content: []ContentBlock{{Type: "text", Text: "next"}}},
+	}
+
+	result := ValidateAndFixRequest(&InternalRequest{Messages: messages}, "test_parallel_split")
+
+	for _, id := range []string{"call_f7", "call_f8", "call_f9"} {
+		found := false
+		for _, m := range result.Messages {
+			if m.Role == "tool" && m.ToolCallID == id {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("full pipeline dropped tool result %s", id)
+		}
+	}
+	assistantWithCalls := 0
+	for _, m := range result.Messages {
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			assistantWithCalls++
+		}
+	}
+	if assistantWithCalls != 1 {
+		t.Errorf("expected exactly 1 assistant message with tool_calls after full pipeline, got %d", assistantWithCalls)
+	}
+}
+
 // TestValidateAndFix_EmptyUserBetweenToolResults 是 2026-08-06 审计回归测试。
 //
 // 旧 validateAndFixMessages 先跑 SanitizeToolMessages 再跑 removeEmptyMessages。

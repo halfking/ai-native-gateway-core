@@ -160,7 +160,23 @@ deploy_cleanup() {
 trap deploy_cleanup EXIT INT TERM
 
 # Load the shared envs SSOT before resolving SSH keys or target settings.
-ENVS_ROOT="${ENVS_ROOT:-${HOME}/workspace/ai-native-workspace/envs}"
+# ⚠️ 2026-10-13：这一行原本只有一个默认值（ai-native-workspace/envs）且**没有兜底**，
+# 与同文件族 `_shared-lib.sh` 已有的「两个候选都试」不一致。
+# 后果实测：本机实际布局是 ai-native-tools/，于是每次部署都在第一步就
+# `envs SSOT loader not found: .../ai-native-workspace/envs/loader.sh` 退出，
+# 报的是一个**不存在的死路径**，看起来像「envs 丢了」，实际是默认值没跟着迁移改。
+# 修法与 _shared-lib.sh 对齐：显式 ENVS_ROOT 优先，否则新布局优先、旧布局兜底。
+if [[ -z "${ENVS_ROOT:-}" ]]; then
+  for _envs_candidate in \
+    "${HOME}/workspace/ai-native-workspace/envs" \
+    "${HOME}/workspace/ai-native-tools/envs"; do
+    if [[ -f "$_envs_candidate/loader.sh" ]]; then
+      ENVS_ROOT="$_envs_candidate"
+      break
+    fi
+  done
+  ENVS_ROOT="${ENVS_ROOT:-${HOME}/workspace/ai-native-workspace/envs}"
+fi
 case "$TARGET" in
   245) ENV_SERVER="8.136.114.245" ;;
   154) ENV_SERVER="47.97.111.154" ;;

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
 )
 
@@ -282,6 +283,17 @@ func (r *pgBodyReader) loadOutboundBody(ctx context.Context, requestID string) (
 		err = r.db.QueryRow(ctx, `
 			SELECT outbound_body::text
 			  FROM request_logs_bodies_with_current_month
+			 WHERE request_id = $1
+			 LIMIT 1
+		`, requestID).Scan(&raw)
+	}
+
+	// 阶段 3（S4 停写交接，2026-10-13）：session 家族兜底 —— 停写后新请求
+	// 的正文只落 session_bodies；旧请求在 v1 双腿命中，本腿纯增量。
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = r.db.QueryRow(ctx, `
+			SELECT outbound_body::text
+			  FROM `+dbpkg.SessionFamilyBodiesSourceSQL()+`
 			 WHERE request_id = $1
 			 LIMIT 1
 		`, requestID).Scan(&raw)

@@ -26,7 +26,7 @@ type loginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 	// RememberMe 勾选「保持登录」时为 true：session cookie 带 Max-Age，
-	// 浏览器重启后仍然有效（默认 24h，见 auth_params.go CookieMaxAge）。
+	// 浏览器重启后仍然有效（默认 7d，见 auth_params.go CookieMaxAge）。
 	// false（不勾选）时下发**会话级** cookie——不带 Max-Age/Expires，
 	// 浏览器会话结束即失效。对应前端 auth store 只写 sessionStorage。
 	RememberMe bool `json:"remember_me"`
