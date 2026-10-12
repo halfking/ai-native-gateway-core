@@ -46,7 +46,8 @@ func clearSessionCookie(w http.ResponseWriter, r *http.Request) {
 }
 
 // setSessionCookie writes the JWT as an HttpOnly+Secure+SameSite=Strict cookie.
-// Persistent variant: Max-Age follows the token expiry (default 24h).
+// Persistent variant: Max-Age follows the token expiry (default 7d — see
+// auth_params.go CookieMaxAge; 2026-10-13 changed from 24h).
 func setSessionCookie(w http.ResponseWriter, r *http.Request, token string, expiresAt time.Time) {
 	maxAge := int(CookieMaxAge.Seconds())
 	if !expiresAt.IsZero() {
