@@ -221,6 +221,13 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 			sessionID = bodySessionID
 		}
 
+		// 记录"这是一个 sanitize 跳"：peer 声明了，且请求里确实带着它的标记。
+		// 两项缺一不可——只看 header 的话，客户端自己伪造 header 就能买到
+		// 透传豁免（hop.go）。
+		if hopCtx := AdoptSanitizeHop(r.Context(), r.Header.Get(SanitizeHopHeader), body); hopCtx != r.Context() {
+			*r = *r.WithContext(hopCtx)
+		}
+
 		// 解析并脱敏。只有存在跨请求共享的会话状态（Redis 租约 + offset +
 		// 映射表）时才需要加锁，且按 (租户, 会话) 键控：同一会话的并发
 		// 轮次仍串行，不同会话互不阻塞。没有会话 ID 或没有 Redis 时，
@@ -709,13 +716,18 @@ func (it *SanitizeRestoreInterceptor) InterceptNonStream(ctx context.Context, re
 	if it == nil || it.sanitizer == nil || req == nil || len(req.ResponseBody) == 0 {
 		return nil, nil
 	}
+	// Adopt the inbound marker set before anything else so every probe and
+	// restore call below is hop-aware (see hop.go).
+	if foreign := foreignMarkerSetFromHop(req.SanitizeHop); foreign != nil {
+		ctx = WithForeignMarkers(ctx, foreign)
+	}
 	localMap, _ := SanitizeMapFromContext(ctx)
 	if req.SessionID == "" && len(localMap) == 0 {
 		// Without a session we cannot load the mapping table, so nothing in
 		// this body can be restored. A reserved marker must still not reach
 		// the client (the stream wing blocks for the same reason); mask it
 		// rather than pass the internal token through.
-		if hasReservedPlaceholder(req.ResponseBody) {
+		if hasReservedPlaceholder(ctx, req.ResponseBody) {
 			it.logger.WarnContext(ctx, "sanitize_restore: no session id, masking placeholders")
 			return it.maskUnrecognizedBody(ctx, req, SanitizeMap{})
 		}
@@ -736,12 +748,12 @@ func (it *SanitizeRestoreInterceptor) InterceptNonStream(ctx context.Context, re
 		// (smart_sani_guard_test contract).
 		if root := mustDecodeJSONMap(req.ResponseBody); root != nil &&
 			(isNativeMessagesShape(root) || isNativeResponsesShape(root)) &&
-			bytes.Contains(req.ResponseBody, []byte("{SENSITIVE:")) {
+			containsNonForeignMarker(ctx, req.ResponseBody) {
 			return &response.InterceptResult{ShouldBlock: true}, nil
 		}
 		sm = SanitizeMap{}
 	}
-	if len(sm) == 0 && !hasReservedPlaceholder(req.ResponseBody) {
+	if len(sm) == 0 && !hasReservedPlaceholder(ctx, req.ResponseBody) {
 		return nil, nil
 	}
 
@@ -784,7 +796,7 @@ func (it *SanitizeRestoreInterceptor) InterceptNonStream(ctx context.Context, re
 			return &response.InterceptResult{ShouldBlock: true}, nil
 		}
 		if (mOK && mChanged) || (rOK && rChanged) {
-			if out, merr := json.Marshal(nativeRoot); merr == nil && !bytes.Contains(out, []byte("{SENSITIVE:")) {
+			if out, merr := json.Marshal(nativeRoot); merr == nil && !containsNonForeignMarker(ctx, out) {
 				return &response.InterceptResult{ModifiedBody: out, Action: "sanitize_restore",
 					Metadata: map[string]any{"sanitize_restored": true, "placeholder_count": len(sm)}}, nil
 			}
@@ -807,7 +819,7 @@ func (it *SanitizeRestoreInterceptor) InterceptNonStream(ctx context.Context, re
 	// error envelope into a gateway 502, so mask instead: known placeholders
 	// are restored, unknown ones become [REDACTED], and the client still gets
 	// a well-formed response.
-	if hasReservedPlaceholder(req.ResponseBody) {
+	if hasReservedPlaceholder(ctx, req.ResponseBody) {
 		if nativeRoot == nil {
 			// Truncated / malformed JSON body containing a marker.
 			it.logger.WarnContext(ctx, "sanitize_restore: malformed body carries reserved marker",
@@ -829,14 +841,14 @@ func (it *SanitizeRestoreInterceptor) InterceptNonStream(ctx context.Context, re
 		// No visible lane changed: either not a chat body at all (passthrough)
 		// or a recognized chat body whose marker sits outside the visible
 		// lanes (vendor field, media object). The latter must never leak.
-		if nativeRoot != nil && isChatChoicesShape(nativeRoot) && hasReservedPlaceholder(req.ResponseBody) {
+		if nativeRoot != nil && isChatChoicesShape(nativeRoot) && hasReservedPlaceholder(ctx, req.ResponseBody) {
 			it.logger.WarnContext(ctx, "sanitize_restore: residual marker in chat body outside visible lanes",
 				"session_id", req.SessionID)
 			return &response.InterceptResult{ShouldBlock: true}, nil
 		}
 		return nil, nil
 	}
-	if hasReservedPlaceholder(restored) {
+	if hasReservedPlaceholder(ctx, restored) {
 		// The choices restorer changed something yet a marker survived
 		// (unmapped placeholder forged as raw token, vendor field beside
 		// choices). Fail closed instead of emitting a half-restored body.
@@ -867,15 +879,20 @@ func (it *SanitizeRestoreInterceptor) InterceptStreamChunk(ctx context.Context, 
 	if it == nil || it.sanitizer == nil || len(chunk) == 0 {
 		return nil, nil
 	}
+	if meta != nil {
+		if foreign := foreignMarkerSetFromHop(meta.SanitizeHop); foreign != nil {
+			ctx = WithForeignMarkers(ctx, foreign)
+		}
+	}
 	localMap, _ := SanitizeMapFromContext(ctx)
 	if meta == nil || (meta.SessionID == "" && len(localMap) == 0) {
 		// A reserved gateway marker must never reach the client regardless of
 		// session bookkeeping; an ordinary frame without a session is opaque
 		// data and keeps its original framing (sse_restore.go probe rules).
-		if meta == nil && hasReservedPlaceholder(chunk) {
+		if meta == nil && hasReservedPlaceholder(ctx, chunk) {
 			return &response.ChunkResult{ShouldBlock: true}, nil
 		}
-		if meta != nil && meta.SessionID == "" && hasReservedPlaceholder(chunk) {
+		if meta != nil && meta.SessionID == "" && hasReservedPlaceholder(ctx, chunk) {
 			return &response.ChunkResult{ShouldBlock: true}, nil
 		}
 		return nil, nil
@@ -956,7 +973,7 @@ func (it *SanitizeRestoreInterceptor) maskUnrecognizedBody(ctx context.Context, 
 		return &response.InterceptResult{ShouldBlock: true}, nil
 	}
 	masked, marshalErr := json.Marshal(restored)
-	if marshalErr != nil || !changed || hasReservedPlaceholder(masked) {
+	if marshalErr != nil || !changed || hasReservedPlaceholder(ctx, masked) {
 		it.logger.WarnContext(ctx, "sanitize_restore: unrecognized body still carries marker after mask, blocking",
 			"session_id", req.SessionID)
 		return &response.InterceptResult{ShouldBlock: true}, nil
@@ -1363,22 +1380,34 @@ func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Conte
 		}
 	}
 
-	restoreMap := sm
+	resolve := sm.resolverFor()
+	encodeFailed := false
 	if strings.HasSuffix(lane, ".arguments") || strings.HasSuffix(lane, ".partial_json") || (strings.HasPrefix(lane, "anthropic.") && strings.HasSuffix(lane, ".input")) || strings.Contains(lane, "response.function_call_arguments.") {
-		restoreMap = make(SanitizeMap)
-		for _, token := range PlaceholderPattern.FindAllString(safe, -1) {
-			if original, ok := sm[token]; ok {
-				encoded, err := json.Marshal(original)
-				if err != nil {
-					return false, true
-				}
-				restoreMap[token] = string(encoded[1 : len(encoded)-1])
+		// Tool arguments are a JSON document, so a restored value has to be
+		// re-encoded as a JSON string literal before it is spliced in. Resolve
+		// through a JSON-escaping adapter rather than pre-building a token map:
+		// a re-spelled marker never appears as an exact token, so an exact-only
+		// index would silently miss it here.
+		resolve = func(typ SensitiveType, index int) (string, bool) {
+			original, ok := sm[(Placeholder{Type: typ, Index: index}).String()]
+			if !ok {
+				return "", false
 			}
+			encoded, err := json.Marshal(original)
+			if err != nil {
+				// A value that cannot be encoded cannot be spliced into a JSON
+				// document. Keep the pre-existing fail-closed answer rather than
+				// letting it fall through to masking, which would hand the tool
+				// a silently wrong value instead of an error.
+				encodeFailed = true
+				return "", false
+			}
+			return string(encoded[1 : len(encoded)-1]), true
 		}
 	}
-	restored, err := it.sanitizer.RestoreOutputOrMask(ctx, safe, restoreMap)
-	if err != nil {
-		return false, false
+	restored := it.sanitizer.restoreText(ctx, safe, resolve, looseMaskUnknown)
+	if encodeFailed {
+		return false, true
 	}
 	if previous != "" && tail == "" && restored == combined {
 		// The continuation made the buffered prefix syntactically invalid. A
@@ -1386,8 +1415,8 @@ func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Conte
 		// the continuation to preserve the response. Once the reserved marker
 		// prefix has started, redact this delta instead of either exposing a
 		// malformed internal token or aborting the whole client stream.
-		if strings.HasPrefix(previous, "{SENSITIVE:") {
-			object[field] = "[REDACTED]"
+		if reservedMarkerStarted(previous) {
+			object[field] = redactedMarker
 			return true, false
 		}
 		object[field] = combined
@@ -1422,42 +1451,14 @@ func incompletePlaceholderStart(text string) (int, bool) {
 	return start, true
 }
 
+// validPlaceholderPrefix accepts any prefix of the placeholder grammar, in the
+// spellings placeholder_loose.go tolerates. A streamed delta routinely cuts a
+// marker after the brace, after a space, or halfway through the marker word —
+// and a model that re-spelled the marker makes even the completed token look
+// different from the canonical form. Holding those bytes is what keeps a
+// mutated marker from reaching the client half-restored.
 func validPlaceholderPrefix(candidate string) bool {
-	const marker = "{SENSITIVE:"
-	if len(candidate) <= len(marker) {
-		return strings.HasPrefix(marker, candidate)
-	}
-	if !strings.HasPrefix(candidate, marker) || strings.Contains(candidate, "}") {
-		return false
-	}
-	rest := candidate[len(marker):]
-	colon := strings.IndexByte(rest, ':')
-	if colon < 0 {
-		if rest == "" {
-			return true
-		}
-		for _, r := range rest {
-			if !(r >= 'a' && r <= 'z') && r != '_' {
-				return false
-			}
-		}
-		return true
-	}
-	if colon == 0 {
-		return false
-	}
-	for _, r := range rest[:colon] {
-		if !(r >= 'a' && r <= 'z') && r != '_' {
-			return false
-		}
-	}
-	index := rest[colon+1:]
-	for _, r := range index {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
+	return validLoosePlaceholderPrefix(candidate)
 }
 
 // restoreStringField 把 m[field]（必须为 string）做占位符替换后写回。
@@ -1543,7 +1544,8 @@ func (it *SanitizeRestoreInterceptor) loadMap(ctx context.Context, sessionID str
 func (it *SanitizeRestoreInterceptor) validatePlaceholders(ctx context.Context, body []byte, sm SanitizeMap) []string {
 	var invalidPlaceholders []string
 
-	matches := PlaceholderPattern.FindAllString(string(body), -1)
+	text := string(body)
+	matches := PlaceholderPattern.FindAllString(text, -1)
 	seen := make(map[string]bool)
 
 	for _, match := range matches {
@@ -1552,10 +1554,37 @@ func (it *SanitizeRestoreInterceptor) validatePlaceholders(ctx context.Context, 
 		}
 		seen[match] = true
 
-		if _, ok := sm[match]; !ok {
-			// LLM 生成了不在映射表中的占位符
-			invalidPlaceholders = append(invalidPlaceholders, match)
+		if _, ok := sm[match]; ok {
+			continue
 		}
+		if foreignMarkersFromContext(ctx).isForeign(match) {
+			// 下游跳签发、本实例不还原：不是模型伪造。
+			continue
+		}
+		// LLM 生成了不在映射表中的占位符
+		invalidPlaceholders = append(invalidPlaceholders, match)
+	}
+
+	// 被改写过的标记同样计入篡改观测：归一化回规范形态后仍查不到本会话发出的
+	// 映射行，说明要么是模型漂移，要么是上游网关带了 token 进来。归一化后能
+	// 命中的不算篡改——那是容错还原正常工作的结果。
+	for _, span := range loosePlaceholderSpanPattern.FindAllStringIndex(text, -1) {
+		candidate := text[span[0]:span[1]]
+		if seen[candidate] || PlaceholderPattern.MatchString(candidate) {
+			continue
+		}
+		typ, index, ok := parseLoosePlaceholder(candidate)
+		if !ok || index < 0 {
+			continue
+		}
+		seen[candidate] = true
+		if _, hit := sm[(Placeholder{Type: typ, Index: index}).String()]; hit {
+			continue
+		}
+		if foreignMarkersFromContext(ctx).isForeignPlaceholder(typ, index) {
+			continue
+		}
+		invalidPlaceholders = append(invalidPlaceholders, candidate)
 	}
 
 	return invalidPlaceholders
@@ -1635,7 +1664,7 @@ func (it *SanitizeRestoreInterceptor) restoreResponseBody(ctx context.Context, b
 // 原值，未映射的 mask 成 [REDACTED]。仅当字段被改动时返回 true。
 func restoreLegacyTextField(ctx context.Context, s *Sanitizer, obj map[string]any, field string, sm SanitizeMap) bool {
 	value, ok := obj[field].(string)
-	if !ok || !PlaceholderPattern.MatchString(value) {
+	if !ok || !placeholderCandidate(value) {
 		return false
 	}
 	restored, err := s.RestoreOutputOrMask(ctx, value, sm)
@@ -1650,7 +1679,7 @@ func restoreLegacyTextField(ctx context.Context, s *Sanitizer, obj map[string]an
 // arguments 不是合法 JSON 对象时退化为普通字符串还原。
 func restoreLegacyFunctionArgs(ctx context.Context, s *Sanitizer, fn map[string]any, sm SanitizeMap) bool {
 	argsStr, ok := fn["arguments"].(string)
-	if !ok || !PlaceholderPattern.MatchString(argsStr) {
+	if !ok || !placeholderCandidate(argsStr) {
 		return false
 	}
 	decoder := json.NewDecoder(strings.NewReader(argsStr))
@@ -1708,7 +1737,7 @@ func restoreJSONRecursive(ctx context.Context, s *Sanitizer, m map[string]any, s
 	for k, v := range m {
 		switch vv := v.(type) {
 		case string:
-			if !PlaceholderPattern.MatchString(vv) {
+			if !placeholderCandidate(vv) {
 				continue
 			}
 			restored, err := s.RestoreOutputOrMask(ctx, vv, sm)
@@ -1724,7 +1753,7 @@ func restoreJSONRecursive(ctx context.Context, s *Sanitizer, m map[string]any, s
 			for i, item := range vv {
 				switch it := item.(type) {
 				case string:
-					if !PlaceholderPattern.MatchString(it) {
+					if !placeholderCandidate(it) {
 						continue
 					}
 					restored, err := s.RestoreOutputOrMask(ctx, it, sm)

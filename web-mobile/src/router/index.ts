@@ -651,10 +651,28 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'rp.title', requiresAuth: true },
   },
   {
+    path: '/self-check',
+    name: 'self-check',
+    component: () => import('@/views/SelfCheckView.vue'),
+    meta: { titleKey: 'sc.title', requiresAuth: true },
+  },
+  {
+    path: '/probe-queue',
+    name: 'probe-queue',
+    component: () => import('@/views/ProbeQueueView.vue'),
+    meta: { titleKey: 'pq.title', requiresAuth: true },
+  },
+  {
     path: '/work-types',
     name: 'work-types',
     component: () => import('@/views/WorkTypesView.vue'),
     meta: { titleKey: 'wt.title', requiresAuth: true },
+  },
+  {
+    path: '/connection-registry',
+    name: 'connection-registry',
+    component: () => import('@/views/ConnectionRegistryView.vue'),
+    meta: { titleKey: 'cr.title', requiresAuth: true },
   },
   {
     path: '/:pathMatch(.*)*',

@@ -233,3 +233,36 @@ git config core.hooksPath  # 应输出 .githooks
 | 版本 | 日期 | 变更 |
 |------|------|------|
 | v1.0 | 2026-06-25 | 初版：双仓库策略 + 49 规则扫描器 + filter-repo 历史重写 |
+| v1.1 | 2026-10-08 | 首次全量历史改写落地；镜像同步契约改为 sync-to-github.sh；镜像 refs 修剪为 main+tags |
+
+---
+
+## 9. 2026-10-08 起的同步契约：镜像历史已完成首次全量改写
+
+2026-10-08 起，公开镜像历史经 `scripts/sync-to-github.sh`（`git filter-repo`
++ 公开/私有替换表）完成首次全量改写并 force-push：
+
+- 镜像历史中已编目的敏感串（含 108dcd2da 引入的 admin 口令，出现于 5 个
+  历史提交与 CHANGELOG/审计文档）全部替换为 `__REDACTED_*__` 形态；镜像
+  main 的 commit SHA 与 codeup **从此分叉（设计如此）**。
+- 日常 `git push github main` 从此被拒（non-fast-forward）。镜像同步一律走：
+  ```bash
+  bash scripts/sync-to-github.sh --dry-run   # 先演练
+  bash scripts/sync-to-github.sh             # 确认后 force-push
+  ```
+  脚本从本地原始历史确定性重导出脱敏镜像，可重复执行；替换表不变时产物
+  SHA 稳定。
+- 镜像只发布 `refs/heads/main` + 发布形态 tags（`[vV]?整数点分段`，如
+  `1.0`/`V2.2.9`/`v2.4.1`；`backup/*`、`rollback/*`、`archive/*`、
+  `domain-refactor-phase-*` 等内部考古 tag 不发布——2026-10-08 新增
+  Step 4.5 修剪）；全量 refs 同步需显式 `SYNC_ALL_BRANCHES=1`，避免并行
+  会话的 WIP 分支名 spray 到公开仓库。
+- 改写覆盖面（2026-10-08 实测补齐）：blob 内容（含二进制——
+  `--replace-text` 会整体跳过非 UTF-8 blob，由生成的 `--blob-callback`
+  字节级兜底）、提交/标签消息（`--replace-message`）、树对象里的路径名
+  （`--filename-callback`）、作者/提交者 ident（`--commit-callback`）。
+  四类机制全部由同一对替换表程序化生成，缺一类就是一类泄漏（首轮
+  dry-run 批量验证门实测揪出 415 处残留）。
+- 已知残留：GitHub 对 force-push 后的不可达对象会保留一段时间（旧 SHA 的
+  raw URL 在 GC 前可能仍可访问）；如需立即清除请联系 GitHub Support。
+- 口令轮换建议不变：历史改写只解决"可发现性"，已泄露口令仍应轮换。

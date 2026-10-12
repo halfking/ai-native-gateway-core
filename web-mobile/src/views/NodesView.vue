@@ -165,12 +165,40 @@ function openDetail(c: CredentialMonitorSummary): void {
   void loadDecisions(c.id)
 }
 
+// 2026-10-08：原先只分支 down / degraded 两个值，其余**全部**落到末尾的
+// return 'success'。245 线上实测 65 条凭据的 availability_state 分布是
+//   ready 40 / auth_failed 20 / unreachable 2 / suspended 2 / cooling 1
+// ⇒ 25 条走 success 全绿，其中 10 条是明确 auth_failed 或 suspended ——
+// **正在鉴权失败的凭据被渲染成「一切正常」的绿点。**
+// 这是「枚举 == 分支」的缺口形态：枚举有 5 个在用成员，分支只认 2 个；
+// 日后新增任何一个状态都是静默全绿，而不是显式失败。
+//
+// 三条改法，缺一不可：
+//  1) 分支覆盖**线上实测到的每一个状态**，而不是只挑两个典型的；
+//  2) 收尾**不再是裸的 return 'success'**，而是一次白名单匹配 ——
+//     没列进 ready 的都不给绿。这把「新增枚举成员」从静默全绿变成
+//     自动落到 warning，是本条改动的核心（fail-closed）。
+//  3) broken_model_count 缺失时**不参与**判断：它是 65 条里缺 25 条的字段，
+//     `?? 0` 等于对没测过的凭据断言「没有 broken 模型」。
+//     与同文件 modelsLabel 同一原则：没被测量过就不能声称结论。
+//
+// 映射口径（auth_failed / unreachable 归 danger 的理由：它们是**正在失败**，
+// 与 down 同级；suspended 归 warning 而非 muted，因为 muted 留给
+// manual_disabled —— 那是用户主动停用，属于明示意图，不是健康信号。
 function healthTone(c: CredentialMonitorSummary): 'success' | 'warning' | 'danger' | 'muted' {
   if (c.manual_disabled) return 'muted'
-  if (c.availability_state === 'down' || c.health_status === 'down') return 'danger'
-  if (c.availability_state === 'degraded' || c.consecutive_failures > 0 || (c.broken_model_count ?? 0) > 0)
+  const av = c.availability_state
+  const hs = c.health_status
+  if (av === 'down' || hs === 'down') return 'danger'
+  if (av === 'auth_failed' || av === 'unreachable' || hs === 'unreachable') return 'danger'
+  if (av === 'degraded' || av === 'cooling' || av === 'rate_limited' || av === 'quota_exhausted')
     return 'warning'
-  return 'success'
+  if (av === 'suspended' || av === 'disabled') return 'warning'
+  if ((c.consecutive_failures ?? 0) > 0) return 'warning'
+  if (typeof c.broken_model_count === 'number' && c.broken_model_count > 0) return 'warning'
+  // 白名单收尾：只有明确是 ready/healthy 的才给绿。未列出的状态一律 warning。
+  if (av === 'ready' && hs !== 'unknown') return 'success'
+  return 'warning'
 }
 
 // 2026-10-06：model_available / model_total 对一部分凭据是**整个键不存在**
@@ -178,8 +206,10 @@ function healthTone(c: CredentialMonitorSummary): 'success' | 'warning' | 'dange
 // 原先无守卫插值，那几条直接渲染出字面量 "Models undefined/undefined"。
 //
 // 缺数据时**整段不渲染**，而不是回落成 "0/0" —— 对一个没被测量过的凭据断言
-// 「0 个可用 / 共 0 个」是句我们没有依据的话。桌面端 CredentialMonitorView.vue:105
-// 用的是 `?? 0`，两边口径不同；如需与桌面对齐请改这里。
+// 「0 个可用 / 共 0 个」是句我们没有依据的话。
+// 2026-10-07：桌面端 CredentialMonitorView 的 `?? 0` 已一并改掉，两端口径现在一致；
+// 桌面侧显示为「—」（同表「broken 模型」列对未测量值的处理），见
+// web/src/components/credential-monitor/CredentialMonitorTable.vue 的 modelsLabel。
 //
 // 这里返回整段文案而不是让模板插值：Vue 的类型检查器**不会**因为 v-if 上的
 // 另一个表达式去收窄 `c`，把收窄放进函数里才能让 vue-tsc 真正看到（实测：

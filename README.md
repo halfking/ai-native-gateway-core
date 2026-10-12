@@ -221,9 +221,32 @@ bash install.sh version     # what version you have + how to get updates
 |---------|---------|-------|
 | Source build | `bash install.sh --channel source` | `go build` from this tree; needs Go, no registry |
 | Go ecosystem | `go install github.com/kaixuan/llm-gateway-go/installer/cmd/llm-gw-installer@latest` | canonical Go install |
-| npm | `npm install -g @kaixuan/llm-gw-installer` | lowest friction on Windows |
+| npm (from source) | `npm install -g ./npm/llm-gw-installer` | from this source tree — no registry, no Go; needs Node ≥ 18 |
+| npm (registry) | `npm install -g @kaixuan/llm-gw-installer` | pending first publish; until then use the row above |
 | Release binary | `bash install.sh --channel binary` | uses the bundled `llm-gw-installer-<os>-<arch>` |
 | Official one-liner | `bash install.sh --channel maintain` | `curl … \| bash`, always the newest published artifact |
+
+#### Install from source with npm
+
+The npm channel is **source-tree first**: inside a cloned repository it installs
+the in-tree launcher package (`npm/llm-gw-installer`) and never touches the npm
+registry — no Go toolchain required, only Node ≥ 18:
+
+```bash
+cd llm-gateway-go   # the tree you cloned above
+
+# launcher from the in-tree package …
+npm install -g ./npm/llm-gw-installer
+
+# … or let the bootstrap do it (auto-prefers the local package in-tree)
+bash install.sh --channel npm --mode lite
+```
+
+Afterwards `llm-gw-installer install --mode lite|full` runs an installer binary
+already on this machine when there is one — e.g. the output of `bash install.sh
+build`, which lands in `~/llm-gateway/bin/` — and otherwise hands over to the
+official installer one-liner for your platform. `doctor` and `version` are
+answered by the launcher itself, offline, right after `npm i -g`.
 
 Non-interactive (CI / unattended):
 
@@ -521,6 +544,17 @@ See [ROADMAP.md](ROADMAP.md) for full details.
 ```bash
 git push              # → codeup (no extra checks)
 git push github       # → github (secret scan, blocked on BLOCK-level hit)
+```
+
+Since 2026-10-08 the mirror's history is **filter-repo scrubbed** (known
+sensitive strings replaced with `__REDACTED_*__` shapes), so the mirror's commit
+SHAs intentionally diverge from codeup and a plain `git push github main` is
+rejected as non-fast-forward. Sync the mirror through the full pipeline instead —
+it deterministically re-derives the scrubbed mirror from local history:
+
+```bash
+bash scripts/sync-to-github.sh --dry-run   # rehearse: scan → rewrite → verify
+bash scripts/sync-to-github.sh             # confirm, then force-push (main + tags)
 ```
 
 Sensitive-information protection: `.githooks/pre-push` automatically runs `scripts/scan-secrets.sh` (50 rules; default normal mode — BLOCK findings block, WARN findings warn; `STRICT_SCANNER=1` opts into strict) when pushing to GitHub. See the [mirror policy](docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md).

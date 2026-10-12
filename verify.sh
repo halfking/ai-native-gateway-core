@@ -32,6 +32,12 @@ done
 echo "[verify] db252 tunnel and sync shell contracts"
 bash tests/db252_tunnel_test.sh
 
+# 2026-10-07：部署脚本曾因裸 GNU `timeout` 在 macOS 上恒 127，导致 docker 探测整块
+# 被静默跳过（commit df69ef0be 修掉）。契约测试本身依赖共享 SSOT、跑不进 CI，
+# 因此单挂这道零外部依赖的聚焦门防同类回归。
+echo "[verify] deploy timeout portability contracts"
+bash tests/deploy_timeout_portability_test.sh
+
 echo "[verify] pre-commit checks"
 ./scripts/pre-commit-check.sh
 

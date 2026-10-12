@@ -43,6 +43,7 @@ export default {
       idPrefix: 'ID: ',
       manualPrefix: 'يدوي: ',
       effectivePrefix: 'فعّال: ',
+      modelsNotMeasured: 'لم تُرجع هذه بيانات الاعتماد أي أعداد للنماذج في هذه المرة (لم تُقاس) — وليست «0 متاحة»',
     },
     loading: 'جاري التحميل...', // نفس معنى common.feedback.loading
     empty: 'لا توجد بيانات اعتماد',

@@ -41,7 +41,7 @@ import (
 )
 
 // dsnDatabaseName 从 DSN 里取出库名。pgx 两种写法都要吃：
-// URL 形态（postgres://user:pw@host:5432/dbname?sslmode=disable）与
+// URL 形态（postgres://user:pass@host:5432/dbname?sslmode=disable）与
 // 关键字形态（host=… dbname=…）。取不到时返回 "" —— 宁可让下面的门
 // 拒绝，也不猜。
 //

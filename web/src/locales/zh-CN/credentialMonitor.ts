@@ -42,6 +42,7 @@ export default {
       idPrefix: 'ID: ',
       manualPrefix: '手动: ',
       effectivePrefix: '生效: ',
+      modelsNotMeasured: '该凭据本次未返回模型计数（未测量），不是「0 个可用」',
     },
     loading: '加载中...', // 与 common.feedback.loading 同义
     empty: '暂无凭据',

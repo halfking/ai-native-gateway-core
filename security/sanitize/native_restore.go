@@ -12,8 +12,12 @@ import (
 
 const maxNativeToolInputDepth = 256
 
-func hasReservedPlaceholder(body []byte) bool {
-	if bytes.Contains(body, []byte("{SENSITIVE:")) {
+// hasReservedPlaceholder reports whether body still carries a marker this
+// gateway owns. Markers minted by a downstream sanitize hop do not count — they
+// are resolved by the peer that issued them — so with an inbound set present the
+// check narrows to "a marker I am responsible for survives".
+func hasReservedPlaceholder(ctx context.Context, body []byte) bool {
+	if containsNonForeignMarker(ctx, body) {
 		return true
 	}
 	if !bytes.Contains(body, []byte("\\u")) {
@@ -23,33 +27,33 @@ func hasReservedPlaceholder(body []byte) bool {
 	if err := json.Unmarshal(body, &decoded); err == nil {
 		// Arguments can be JSON serialized inside an outer string; inspect
 		// those strings as well as ordinary JSON values.
-		return containsResidualPlaceholder(decoded, 0)
+		return containsResidualPlaceholder(ctx, decoded, 0)
 	}
-	return looksLikeUnparsedMarker(body)
+	return looksLikeUnparsedMarker(ctx, body)
 }
 
 // A recognized response may carry opaque vendor or media fields. We leave
 // those fields untouched, but never let an internal marker survive in the
 // final client response. Tool argument strings get one extra escape probe
 // because their JSON is itself embedded as a string in the outer response.
-func containsResidualPlaceholder(value any, depth int) bool {
+func containsResidualPlaceholder(ctx context.Context, value any, depth int) bool {
 	if depth > maxNativeToolInputDepth {
 		return true
 	}
 	switch typed := value.(type) {
 	case string:
-		return strings.Contains(typed, "{SENSITIVE:") || looksLikeUnparsedMarker([]byte(typed))
+		return containsNonForeignMarker(ctx, []byte(typed)) || looksLikeUnparsedMarker(ctx, []byte(typed))
 	case json.Number:
 		return false
 	case map[string]any:
 		for key, child := range typed {
-			if strings.Contains(key, "{SENSITIVE:") || containsResidualPlaceholder(child, depth+1) {
+			if containsNonForeignMarker(ctx, []byte(key)) || containsResidualPlaceholder(ctx, child, depth+1) {
 				return true
 			}
 		}
 	case []any:
 		for _, child := range typed {
-			if containsResidualPlaceholder(child, depth+1) {
+			if containsResidualPlaceholder(ctx, child, depth+1) {
 				return true
 			}
 		}
@@ -59,14 +63,14 @@ func containsResidualPlaceholder(value any, depth int) bool {
 
 func restoreNativeTextField(ctx context.Context, s *Sanitizer, object map[string]any, field string, sm SanitizeMap) (bool, error) {
 	value, ok := object[field].(string)
-	if !ok || !strings.Contains(value, "{SENSITIVE:") {
+	if !ok || !placeholderCandidate(value) {
 		return false, nil
 	}
 	restored, err := s.RestoreOutputOrMask(ctx, value, sm)
 	if err != nil {
 		return false, err
 	}
-	if strings.Contains(restored, "{SENSITIVE:") {
+	if containsNonForeignMarker(ctx, []byte(restored)) {
 		return false, fmt.Errorf("sanitize restore: incomplete placeholder in %s", field)
 	}
 	if restored == value {
@@ -289,7 +293,7 @@ func (it *SanitizeRestoreInterceptor) restoreNativeContentBlocks(ctx context.Con
 			}
 		case "thinking":
 			thinking, _ := block["thinking"].(string)
-			if signature, _ := block["signature"].(string); signature != "" && strings.Contains(thinking, "{SENSITIVE:") {
+			if signature, _ := block["signature"].(string); signature != "" && containsNonForeignMarker(ctx, []byte(thinking)) {
 				return false, errors.New("sanitize restore: signed thinking contains placeholder")
 			}
 			didChange, err := restoreNativeTextField(ctx, it.sanitizer, block, "thinking", sm)
@@ -327,7 +331,7 @@ func (it *SanitizeRestoreInterceptor) restoreNativeContentBlocks(ctx context.Con
 // Custom tool input may instead be freeform text, which is restored directly.
 func (it *SanitizeRestoreInterceptor) restoreNativeArgumentField(ctx context.Context, object map[string]any, field string, sm SanitizeMap, requireJSON bool) (bool, error) {
 	value, ok := object[field].(string)
-	if !ok || !hasReservedPlaceholder([]byte(value)) {
+	if !ok || !hasReservedPlaceholder(ctx, []byte(value)) {
 		return false, nil
 	}
 	decoder := json.NewDecoder(strings.NewReader(value))
@@ -365,14 +369,14 @@ func restoreNativeNestedValue(ctx context.Context, s *Sanitizer, value any, sm S
 	}
 	switch current := value.(type) {
 	case string:
-		if !strings.Contains(current, "{SENSITIVE:") {
+		if !placeholderCandidate(current) {
 			return current, false, nil
 		}
 		restored, err := s.RestoreOutputOrMask(ctx, current, sm)
 		if err != nil {
 			return nil, false, err
 		}
-		if strings.Contains(restored, "{SENSITIVE:") {
+		if containsNonForeignMarker(ctx, []byte(restored)) {
 			return nil, false, errors.New("sanitize restore: incomplete placeholder in tool input")
 		}
 		return restored, restored != current, nil
@@ -382,7 +386,7 @@ func restoreNativeNestedValue(ctx context.Context, s *Sanitizer, value any, sm S
 		}
 		changed := false
 		for key, child := range current {
-			if strings.Contains(key, "{SENSITIVE:") {
+			if containsNonForeignMarker(ctx, []byte(key)) {
 				return nil, false, errors.New("sanitize restore: placeholder in tool input key")
 			}
 			restored, didChange, err := restoreNativeNestedValue(ctx, s, child, sm, depth+1)

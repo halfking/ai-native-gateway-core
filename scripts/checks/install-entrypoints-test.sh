@@ -287,6 +287,23 @@ contains "maintain 通道转发 --mode" "$MAINTAIN_FN" '--mode "$MODE"'
 contains "maintain 通道转发 --yes" "$MAINTAIN_FN" '--yes'
 contains "maintain 转发用 bash -s --（stdin 脚本收参数）" "$MAINTAIN_FN" 'bash -s -- "$@"'
 
+# ── 6.55 npm 通道：源码树安装 + bin 路径解析（源形状门）──────────────
+# 旧实现只会 npm install -g @kaixuan/llm-gw-installer（registry 包未发布，
+# 必 404），且把二进制解析到 ${prefix}/llm-gw-installer —— unix 的 npm bin
+# 链接在 ${prefix}/bin/ 下、windows 的 shim 是 .cmd/.ps1/无后缀三件，两个
+# 平台都必然"装完就报二进制不存在"。
+NPM_FN="$(sed -n '/^install_via_npm()/,/^}/p' "$ROOT/install.sh")"
+contains "npm 通道优先装源码树内的包" "$NPM_FN" '$SCRIPT_DIR/npm/llm-gw-installer'
+contains "npm 通道树外回退 registry 包名" "$NPM_FN" '@kaixuan/llm-gw-installer'
+contains "npm 通道解析 prefix 的 bin/ 子目录下的链接" "$NPM_FN" '${prefix}/bin/llm-gw-installer'
+contains "npm 通道 windows 候选含 .cmd shim" "$NPM_FN" 'llm-gw-installer.cmd'
+# dry-run 契约："只打印将要执行的命令"。曾经 --channel npm --dry-run 死在
+# 存在性检查上（dry-run 什么都没装，二进制必然不存在），而存在性检查与
+# 安装向导都不让位于 dry-run 的话，dry-run 在 source 通道甚至会真启动向导。
+CMD_INSTALL_FN="$(sed -n '/^cmd_install()/,/^}/p' "$ROOT/install.sh")"
+contains "cmd_install 存在性检查让位于 dry-run" "$CMD_INSTALL_FN" '[[ "$DRY_RUN" != "1" ]]'
+contains "cmd_install dry-run 打印向导命令而不真跑" "$CMD_INSTALL_FN" '(dry-run) $RESOLVED_BINARY install'
+
 # install.ps1 的 -Yes 不能是死参数（与 install.sh 的 ASSUME_YES 同族坑：
 # param 里声明、Test-Interactive 不读 = 帮助承诺的「不再提问」从未兑现）。
 PS1_SRC="$(cat "$ROOT/install.ps1")"
@@ -310,6 +327,45 @@ if [[ "${OS:-}" == "Windows_NT" ]] && command -v powershell >/dev/null 2>&1; the
   contains "install.bat 真的调起了 install.ps1" "$BAT_OUT" "体检报告"
 else
   printf '[install-entry] skip: 非 Windows 或无 PowerShell，跳过 install.bat 实跑\n'
+fi
+
+# ── 7. npm 通道行为门：dry-run 全链路 + 源码树真装一次（全离线）────────
+# 源形状门只证明"长得对"，这里证明"跑得通"：npm install -g <树内包> 产出
+# 可用入口、dry-run 全链不写盘不报错。全部离线（装的是本地目录，不碰
+# registry），所以进默认门禁没有成本顾虑。
+NPM_DRY="$(NO_INTERACTIVE=1 bash "$ROOT/install.sh" --channel npm --dry-run --mode lite 2>&1)"
+check "npm 通道 dry-run 退出码" "$?" "0"
+contains "npm 通道 dry-run 选了源码树内的包" "$NPM_DRY" "npm/llm-gw-installer"
+# unix 的解析结果必带 bin/；windows 上若本机已有 .cmd shim，解析到 prefix 根
+# 也是正确行为，所以 windows 侧只断言解析出了启动器本身。
+case "$(uname -s)" in
+  Darwin*|Linux*) contains "npm 通道 dry-run 解析出 bin/ 下的入口" "$NPM_DRY" "bin/llm-gw-installer" ;;
+  *)              contains "npm 通道 dry-run 解析出了启动器" "$NPM_DRY" "llm-gw-installer" ;;
+esac
+contains "npm 通道 dry-run 只打印向导命令" "$NPM_DRY" "(dry-run)"
+absent "npm 通道 dry-run 没有误报二进制不存在" "$NPM_DRY" "二进制不存在"
+
+if command -v npm >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
+  NPM_PREFIX="$TESTDIR/npm-global"
+  if npm install --prefix "$NPM_PREFIX" -g "$ROOT/npm/llm-gw-installer" >/dev/null 2>&1; then
+    case "$(uname -s)" in
+      Darwin*|Linux*) NPM_LAUNCHER="$NPM_PREFIX/bin/llm-gw-installer" ;;
+      *)              NPM_LAUNCHER="$NPM_PREFIX/llm-gw-installer.cmd" ;;
+    esac
+    if [[ -f "$NPM_LAUNCHER" ]]; then
+      ok "npm 源码树安装产出入口"
+    else
+      bad "npm 源码树安装后找不到入口 $NPM_LAUNCHER"
+    fi
+    NLD="$(node "$NPM_LAUNCHER" doctor 2>&1)"
+    check "npm 装出的启动器 doctor 退出码" "$?" "0"
+    contains "npm 装出的启动器 doctor 报出平台" "$NLD" "platform"
+    contains "npm 装出的启动器 doctor 报出安装规模" "$NLD" "lite"
+  else
+    bad "npm install --prefix -g <树内包> 失败（源码树 npm 安装路径断了）"
+  fi
+else
+  printf '[install-entry] skip: 没有 npm/node，跳过 npm 通道行为门\n'
 fi
 
 printf '\n[install-entry] pass=%s fail=%s\n' "$PASS" "$FAIL"

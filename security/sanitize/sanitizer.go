@@ -8,6 +8,8 @@ import (
 	"math"
 	"sort"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 var (
@@ -158,6 +160,7 @@ func (s *Sanitizer) sanitizeInputStable(ctx context.Context, text string, offset
 			nextOffset[p.Type] = p.Index
 		}
 	}
+	reserveMutatedPlaceholders(text, nextOffset)
 	sanitizeMap := make(SanitizeMap, len(fragments))
 
 	// 检测器之间会互相重叠（18 位身份证的前 11 位同时命中手机号正则），
@@ -231,52 +234,88 @@ func allocateSensitivePlaceholder(typ SensitiveType, value string, offset map[Se
 	return token, nil
 }
 
+// restoreText 是两级还原的共同实现：精确阶段与容错阶段都走同一个 resolver。
+//
+// 两级共用 resolver 是关键，不是简化。精确阶段的 token 先被解析成
+// (type, index) 再查表，而不是拿整串 token 直接当 key——否则一个补零的
+// "{SENSITIVE:secret:01}" 在精确阶段查不到、会被立刻 mask，容错阶段就再也
+// 看不到它了。流式 tool arguments lane 需要把还原值按 JSON 字符串字面量重新
+// 编码，而容错阶段解析出的 (type, index) 正好就是 resolver 的入参。
+func (s *Sanitizer) restoreText(ctx context.Context, text string, resolve placeholderResolver, policy looseUnknownPolicy) string {
+	foreign := foreignMarkersFromContext(ctx)
+	result := PlaceholderPattern.ReplaceAllStringFunc(text, func(match string) string {
+		if parsed, ok := ParsePlaceholder(match); ok {
+			if resolve != nil {
+				if original, hit := resolve(parsed.Type, parsed.Index); hit {
+					return original
+				}
+			}
+			// The peer exemption is deliberately independent of resolve. An
+			// upstream hop typically holds no mapping of its own, so resolve is
+			// nil there; gating the exemption on it masked the very markers the
+			// passthrough exists to carry home.
+			if foreign.isForeign(match) {
+				// 下游签发、本实例不还原：原样带回，由那一跳复原。
+				return match
+			}
+			if resolve != nil {
+				s.logger.WarnContext(ctx, "sanitize: placeholder not found in map",
+					"placeholder", match)
+			}
+		}
+		if policy == looseMaskUnknown {
+			return redactedMarker
+		}
+		return match
+	})
+
+	stats := restoreLooseMarkers(ctx, result, resolve, foreign, policy)
+	if stats.recovered > 0 {
+		metrics.SanitizePlaceholderMutationTotal.WithLabelValues("recovered").Add(float64(stats.recovered))
+		// Debug, not Info: the streaming path calls this once per delta, and
+		// the metric is the aggregate signal an operator actually graphs.
+		s.logger.DebugContext(ctx, "sanitize: restored re-spelled placeholder", "restored", stats.recovered)
+	}
+	if stats.unresolved > 0 && policy == looseMaskUnknown {
+		metrics.SanitizePlaceholderMutationTotal.WithLabelValues("unresolved").Add(float64(stats.unresolved))
+		s.logger.WarnContext(ctx, "sanitize: re-spelled placeholder not found in map, masking",
+			"unresolved", stats.unresolved)
+	}
+	return stats.text
+}
+
 // RestoreOutput 将输出文本中的占位符还原为原始值。
 //
-// 只对完全匹配的占位符（{SENSITIVE:type:index}）进行还原。
-// 如果占位符在映射表中不存在，保留原样（不猜测不报错）。
-func (s *Sanitizer) RestoreOutput(_ context.Context, text string, sm SanitizeMap) (string, error) {
+// 还原两遍：先是完全匹配的 {SENSITIVE:type:index}，再是被模型改写过的
+// 变体（占位符文法见 placeholder_loose.go）。如果占位符在映射表中不存在，
+// 保留原样（不猜测不报错）。
+func (s *Sanitizer) RestoreOutput(ctx context.Context, text string, sm SanitizeMap) (string, error) {
 	if s == nil {
 		return "", ErrNilSanitizer
 	}
 	if len(sm) == 0 {
 		return text, nil
 	}
-
-	result := PlaceholderPattern.ReplaceAllStringFunc(text, func(match string) string {
-		if original, ok := sm[match]; ok {
-			return original
-		}
-		return match
-	})
-
-	return result, nil
+	return s.restoreText(ctx, text, sm.resolverFor(), looseKeepUnknown), nil
 }
 
 // RestoreOutputOrMask 还原输出，对无法还原的占位符做 mask 处理。
 //
 // 与 RestoreOutput 的区别：如果占位符在映射表中不存在，
 // 会用 [REDACTED] 替换而非保留原占位符文本（用于面向最终用户的场景）。
+// 该口径同样适用于被改写过的变体：客户端可见文本里不留任何内部标记。
+//
+// 网关套网关时有一条例外（见 hop.go）：请求里确实带着、由下游同款网关签发的
+// 占位符原样放行，由持有映射的那一跳去还原。判据是"入站观察到过"，不是
+// "本实例还原不了"——伪造的标记没入站过，仍然照常 mask。
 func (s *Sanitizer) RestoreOutputOrMask(ctx context.Context, text string, sm SanitizeMap) (string, error) {
 	if s == nil {
 		return "", ErrNilSanitizer
 	}
 	if len(sm) == 0 {
-		result := PlaceholderPattern.ReplaceAllString(text, "[REDACTED]")
-		return result, nil
+		return s.restoreText(ctx, text, nil, looseMaskUnknown), nil
 	}
-
-	result := PlaceholderPattern.ReplaceAllStringFunc(text, func(match string) string {
-		if original, ok := sm[match]; ok {
-			return original
-		}
-		s.logger.WarnContext(ctx, "sanitize: placeholder not found in map, masking",
-			"placeholder", match,
-		)
-		return "[REDACTED]"
-	})
-
-	return result, nil
+	return s.restoreText(ctx, text, sm.resolverFor(), looseMaskUnknown), nil
 }
 
 // NewNoopSanitizer 创建一个无操作的脱敏器（用于测试/降级）

@@ -156,6 +156,24 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.workTypes',
     requiresRole: 'super_admin',
   },
+  // 系统自检面。⚠️ 后端六条全是 `admin(...)`（admin/self_check_handlers.go:60-68），
+  //   **席本身不设 requiresRole**；但页面内部对**跨租户的三段**
+  //   （runs / stats / models —— self_check_runs 有 tenant_id 列却从不引用）
+  //   另按 super_admin 门控，settings 与 trigger/availability 保持 admin 档。
+  { key: 'self-check', to: '/self-check', icon: 'check', titleKey: 'nav.selfCheck' },
+  // 凭据探测三态队列。**admin 档**（admin/probe_dashboard.go:1907 的
+  //   `adminWrap(h.handleProbeTaskRoute)`）⇒ tenant_admin 可用 ⇒ **不设** requiresRole。
+  // ★ 该路由是**方法多路复用**（GET/POST/DELETE 同一条），本页只发 GET。
+  { key: 'probe-queue', to: '/probe-queue', icon: 'clock', titleKey: 'nav.probeQueue' },
+  // 流式连接注册台（live + 注销审计）。**admin 档**
+  // （admin/handler.go:1024-1025 两条都是 `admin(...)`）⇒ tenant_admin 可用
+  // ⇒ **不设** requiresRole。
+  // ⚠️ 桌面把这条路由标成 `requiresSuper: true`（web/src/router.ts:284）/
+  //   `super: true`（web/src/config/appNav.ts:195）—— **前端比后端严**，
+  //   按纪律以可执行的注册为准。
+  // ★ 数据源是**进程内**状态（domains/streaming.ConnectionRegistry），不是数据库
+  //   ⇒ 本族**没有跨租户查询**（对比批 104/106 那两个真正跨租户的族）。
+  { key: 'connection-registry', to: '/connection-registry', icon: 'server', titleKey: 'nav.connectionRegistry' },
   // MaaS 租户运维面。**superAdmin 档**（/api/admin/maas/tenants/** 全 superAdmin）⇒ 须设。
   {
     key: 'maas-tenant-ops',

@@ -13,6 +13,9 @@ export const zhCN = {
     maasAdminCatalog: 'MaaS 配置',
     tenants: '租户名录',
     workTypes: '工作类型',
+    probeQueue: '探测队列',
+    selfCheck: '系统自检',
+    connectionRegistry: '连接注册台',
     modelPolicies: '模型策略',
     modelPolicyAudit: '策略审计',
     approvalConfig: '审批配置',
@@ -3130,6 +3133,181 @@ sctx: {
     featuredTwoSources: '★ 上面是 /featured 的生效列表（恒数组），下面是 /featured-models 的用量榜；两者不是同一个东西，nil 编码还相反。',
     featuredEmpty: '★ 空列表：「没配精选模型」与「查不出来」在响应里同形，无法区分。',
   },
+  // ★ 第一百零七批：流式连接注册台。措辞逐条对应后端契约，改文案前先读
+  //   views/ConnectionRegistryView.vue 头部那七条。
+  cr: {
+    title: '连接注册台',
+    subtitle: '进程内流式连接注册表：活跃连接 + 注销审计。只读，不含请求/响应正文。',
+    load: '加载',
+    reload: '重新加载',
+    // ★ 503 = 没装配，与「装配了但当前没有连接」是两种不同的失败
+    notWired: '连接注册台未装配：本进程没有注入注册表实例，这两条端点不可用。',
+    // ★ capacity 恒 ≥ 4096 ⇒ 水位恒有意义
+    watermark: '活跃连接 {n} / 上限 {cap}',
+    journey: '打开请求旅程',
+    badge: {
+      // ★★★★ 竞态窗口：已被标记注销、但仍在活跃表里（还能按 id 查到）
+      closing: '正在注销',
+    },
+    no: {
+      // ★ 这四个都是 omitempty 条件键 ⇒ 缺失只是「注册时没带」，不是异常
+      protocol: '未标注协议',
+      client: '未标注客户端',
+      tenant: '未标注租户',
+      reason: '无注销原因',
+      number: '非数字',
+    },
+    unit: {
+      // ★ frames_written / bytes_written 是 uint64 无 omitempty ⇒ 键恒在，0 是真的 0
+      frames: '帧',
+      bytes: '字节',
+    },
+    lastFrame: {
+      // ★ last_frame_at 键恒在，但「从未发帧」时是 Go 零值时间
+      never: '从未发帧',
+    },
+    search: {
+      title: '按 request_id 查',
+      placeholder: 'request_id',
+      btn: '查询',
+      clear: '清除结果',
+      // ★★★ 404 与「id 不存在」「这行已注销」后端返回同一个响应 ⇒ 分不出，只能这样说
+      notFound: '查不到这一条。它可能已注销（详情端点只查活跃表），也可能从不存在——两者返回完全相同。',
+      closedNote: '注销历史里的条目不在活跃表内，按 id 查询一定失败；请直接看下方注销记录。',
+    },
+    filter: {
+      placeholder: '按 request_id / 协议 / 客户端 / 租户过滤',
+      count: '过滤后共 {n} 行',
+    },
+    live: {
+      title: '活跃连接',
+      // ★ live: [] 是正常形态（List() 恒返回非 nil 切片）
+      empty: '当前没有活跃连接。',
+      closing: '其中 {n} 行已被标记注销、仍在活跃表中（写帧超时的并发窗口）。',
+    },
+    closed: {
+      title: '注销记录',
+      // ★ closed 是 null（从无注销记录），不是 []
+      absent: '从无注销记录。',
+      empty: '没有匹配过滤条件的注销记录。',
+      // ★★★★ 不是「更早的已丢弃」：环形缓冲 256、端点只暴露 50 ⇒ 还有更早的没暴露
+      moreUnrevealed: '已暴露满 {limit} 条；注册台的注销环形缓冲里可能还有更早的记录未暴露。',
+    },
+    col: {
+      protocol: '协议',
+      client: '客户端',
+      tenant: '租户',
+      frames: '已写帧',
+      bytes: '已写字节',
+      registered: '注册于',
+      lastFrame: '最后一帧',
+      closeReason: '注销原因',
+    },
+  },
+  sc: {
+    title: '系统自检',
+    load: '加载',
+    reload: '重新加载',
+    yes: '是',
+    no: '否',
+    unknown: '未知码',
+    // ★★★★ 跨租户披露：self_check_runs 有 tenant_id 列但六个 handler 都不引用它
+    crossTenant: '★ 跨租户：自检记录表有 tenant_id 列，但所有查询都不按它过滤，这里是**全部租户**的数据。',
+    status: { running: '运行中', success: '成功', partial: '部分成功', failed: '失败', retrying: '重试中' },
+    // ★ 联合类型里有 'tested'，但 selfCheckUpstreamOutcome **从不返回它** ⇒ 不给文案
+    outcome: { not_tested: '未测上游', result_empty: '已测上游（结果为空）', result_present: '已测上游，有结果' },
+    runs: {
+      title: '运行记录',
+      allStatuses: '全部状态',
+      count: '本页 {n} 条 · 总数 {total}',
+      empty: '没有运行记录',
+      rounds: '轮次成功',
+      duration: '耗时',
+      avgLatency: '平均延迟',
+      tokens: '令牌',
+      credential: '凭据推导',
+      credentialDrift: 'credential_id 与 model_name 推导值不一致',
+      upstreamOutcome: '上游探测',
+      upstreamLatency: '上游延迟',
+      errorType: '错误类型',
+      upstreamError: '上游错误',
+    },
+    noLatency: '未记录上游延迟（0 毫秒会落成键缺失）',
+    credentialAbsent: '不是 cred-<正整数> 形态 ⇒ 后端不会给这个 run 写 credential_id',
+    stats: {
+      title: '统计',
+      echoedRange: '回显 range={r}；实际窗口按本地复刻是 {eff}',
+      rangeEchoInvalid: '★ 回显的 range 不是受支持的取值：后端对未知值**静默**回落，界面无法只凭回显判断窗口',
+      counts: '总数 {total}（成功 {s} / 部分 {p} / 失败 {f}，三项合计 {sub}）',
+      hasInFlight: '★ 三项合计小于总数：分母里含 running 与 retrying，统计只数三个状态',
+      rate: '成功率 {r}',
+      rateMeaningless: '★ 总数为 0 时成功率恒 0.0，与「全失败」同值，这个比值此刻无意义',
+      probeUnqueried: '★ 两个探测查询都失败时会算出「健康」：全零即绿灯，而探测管线可能已经死了',
+      noErrors: '★ 没有失败记录（查询失败时也是空数组，与真的没有同形）',
+      noTrend: '★ 没有趋势点（查询失败时也是空数组，与该窗口没跑过同形）',
+    },
+    models: {
+      title: '模型分布',
+      empty: '没有模型分布',
+      counts: '总数 {total} / 成功 {s} / 失败 {f}',
+      noPartial: '★ 这个端点**没有 partial 计数**：总数减成功失败剩下的残差拿不到归属',
+      allTime: '★ 这个端点是**全时段**统计，与上面 stats 的窗口口径不可直接比',
+    },
+    settings: {
+      title: '设置',
+      enabled: '启用',
+      normalInterval: '正常间隔',
+      faultInterval: '故障间隔',
+      modelSource: '模型来源',
+      maxModels: '最大模型数',
+    },
+    trigger: {
+      title: '触发可用性',
+      available: '可触发',
+      newProbeMode: '新探测模式',
+      mode: '模式',
+      reason: '不可触发原因：{code}{reason}',
+    },
+  },
+  pq: {
+    title: '探测队列',
+    legLabel: '队列分段',
+    leg: { pending: '待处理', in_flight: '在途', completed: '已完成' },
+    limit: '每页条数',
+    // ★★ count 是本页长度不是总数（probe_dashboard.go:1879 的 len(tasks)）
+    pageCount: '本页 {n} 条',
+    pageFull: '★ 本页取满（{n} 条 = 每页上限），可能还有下一页；count 只是本页长度，不是总数。',
+    pageComplete: '本页未取满，按本页条数即全部。',
+    empty: '「{leg}」段没有任务',
+    credential: '凭据',
+    command: '命令',
+    attempt: '尝试',
+    priority: '优先级',
+    source: '来源',
+    provider: '供应商',
+    // ★ 三键全缺 = 未知（不是空串、不是 null）
+    providerUnknown: '未知',
+    // ★ origin 由 source 推导，对不上就是契约漂移
+    originMismatch: 'origin 与 source 不一致（响应给的是 {got}，按 source 应为 {want}）',
+    nextRetry: '下次重试',
+    noNextRetry: '无退避时间',
+    nextRetryMismatch: 'next_retry_at_ms 只应出现在 pending 腿，这条是 {status}',
+    retriesExhausted: '重试已用尽且未进终态，这个任务不会再自己前进',
+    outcome: '结果',
+    outcomeNone: '无结果',
+    outcomeMismatch: 'outcome 只应出现在 completed 腿，这条是 {status}',
+    outcomeDetail: { success: '成功', failed: '失败', expired: '已过期', cancelled: '已取消' },
+    // ★★★ http_status / latency 的 0 是真值，绝不能显示成「未测出」
+    httpStatus: 'HTTP 状态码',
+    latency: '耗时',
+    noHttpStatus: '未测出状态码',
+    noLatency: '未记录耗时',
+    finishedAt: '完成于',
+    reason: '原因码',
+    echoMismatch: '★ 响应回显的 status 与请求的段不一致，这批数据不是这一段的',
+    rowMismatch: '★ 有行的 status 与当前段不一致，过滤疑似未按压缩值执行',
+  },
+
   wt: {
     title: '工作类型',
     statsTitle: '近 {h} 小时统计',

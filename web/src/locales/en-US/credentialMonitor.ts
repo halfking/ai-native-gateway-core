@@ -42,6 +42,7 @@ export default {
       idPrefix: 'ID: ',
       manualPrefix: 'Manual: ',
       effectivePrefix: 'Effective: ',
+      modelsNotMeasured: 'This credential returned no model counts this time (not measured) — not "0 available"',
     },
     loading: 'Loading...',
     empty: 'No credentials',

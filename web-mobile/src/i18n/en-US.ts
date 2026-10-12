@@ -13,6 +13,9 @@ export const enUS = {
     maasAdminCatalog: 'MaaS Settings',
     tenants: 'Tenants',
     workTypes: 'Work types',
+    probeQueue: 'Probe queue',
+    selfCheck: 'Self-check',
+    connectionRegistry: 'Connection registry',
     modelPolicies: 'Model policies',
     modelPolicyAudit: 'Policy audit',
     approvalConfig: 'Approval config',
@@ -3090,6 +3093,184 @@ sctx: {
     featuredTwoSources: '★ Above is the effective list from /featured (always an array); below is the usage ranking from /featured-models. They are not the same thing and their nil encodings are opposite.',
     featuredEmpty: '★ Empty list: "no featured models configured" and "could not query" look identical in the response.',
   },
+  // ★ Batch 107: streaming connection registry. Wording maps 1:1 onto the backend
+  //   contract — read the seven notes at the top of views/ConnectionRegistryView.vue first.
+  cr: {
+    title: 'Connection registry',
+    subtitle: 'In-process streaming connection registry: live connections plus close audit. Read-only, no request or response bodies.',
+    load: 'Load',
+    reload: 'Reload',
+    // ★ 503 means not wired, which is not the same as wired with zero connections
+    notWired: 'Connection registry not wired: this process injected no registry instance, so both endpoints are unavailable.',
+    // ★ capacity is always ≥ 4096, so utilization is always meaningful
+    watermark: 'Live connections {n} / cap {cap}',
+    journey: 'Open request journey',
+    badge: {
+      // ★★★★ The race window: already flagged closed but still in the live table
+      closing: 'Closing',
+    },
+    no: {
+      // ★ All four are omitempty keys, so absence only means nothing was supplied at registration
+      protocol: 'Protocol not recorded',
+      client: 'Client not recorded',
+      tenant: 'Tenant not recorded',
+      reason: 'No close reason',
+      number: 'Not a number',
+    },
+    unit: {
+      // ★ frames_written / bytes_written are uint64 without omitempty, so keys always exist and 0 is real
+      // ★★ Capitalized on purpose: the i18n parity gate flags en values equal to the
+      //   leaf key name ('frames' === leaf 'frames' ⇒ reported as untranslated).
+      frames: 'Frames',
+      bytes: 'Bytes',
+    },
+    lastFrame: {
+      // ★ last_frame_at always exists, but is Go's zero time when no frame was ever written
+      never: 'Never wrote a frame',
+    },
+    search: {
+      title: 'Look up by request_id',
+      placeholder: 'request_id',
+      btn: 'Look up',
+      clear: 'Clear result',
+      // ★★★ 404 is byte-identical for "does not exist" and "already closed"
+      notFound: 'Not found. It may already be closed (the detail endpoint only reads the live table), or it may never have existed — both return exactly the same response.',
+      closedNote: 'Closed-history entries are not in the live table, so looking them up by id always fails; read them from the close records below.',
+    },
+    filter: {
+      placeholder: 'Filter by request_id, protocol, client, or tenant',
+      count: '{n} rows after filtering',
+    },
+    live: {
+      title: 'Live connections',
+      // ★ live: [] is a normal shape, because List() always returns a non-nil slice
+      empty: 'No live connections right now.',
+      closing: '{n} of these are already flagged closed but still in the live table (a write-deadline race window).',
+    },
+    closed: {
+      title: 'Close records',
+      // ★ closed is null when there is no history, not []
+      absent: 'No close history yet.',
+      empty: 'No close records match the filter.',
+      // ★★★★ Not "older ones were dropped": the ring buffer holds 256, the endpoint exposes 50
+      moreUnrevealed: 'Exposed the full {limit} records; the registry close ring buffer may still hold older records that this endpoint does not expose.',
+    },
+    col: {
+      protocol: 'Protocol',
+      client: 'Client',
+      tenant: 'Tenant',
+      frames: 'Frames written',
+      bytes: 'Bytes written',
+      registered: 'Registered at',
+      lastFrame: 'Last frame',
+      closeReason: 'Close reason',
+    },
+  },
+  sc: {
+    title: 'Self-check',
+    load: 'Load',
+    reload: 'Reload',
+    // ★ 门禁「未翻译」口径：值 === 键名即判未翻译 ⇒ 这里不能用 'yes'/'no'
+    yes: 'Yes',
+    no: 'No',
+    unknown: 'unknown code',
+    // ★★★★ Cross-tenant: self_check_runs HAS a tenant_id column, but no handler filters on it
+    crossTenant: '★ Cross-tenant: the self-check table has a tenant_id column, but no query filters on it. This is ALL tenants data.',
+    status: { running: 'running', success: 'success', partial: 'partial', failed: 'failed', retrying: 'retrying' },
+    // ★ 'tested' is in the union but selfCheckUpstreamOutcome **never returns it**
+    outcome: { not_tested: 'upstream not tested', result_empty: 'upstream tested (empty result)', result_present: 'upstream tested, has result' },
+    runs: {
+      title: 'Runs',
+      allStatuses: 'All statuses',
+      count: '{n} on this page · total {total}',
+      empty: 'No runs',
+      rounds: 'Rounds succeeded',
+      duration: 'Duration',
+      avgLatency: 'Avg latency',
+      tokens: 'Tokens',
+      credential: 'Credential derived',
+      credentialDrift: 'credential_id disagrees with the value derived from model_name',
+      upstreamOutcome: 'Upstream probe',
+      upstreamLatency: 'Upstream latency',
+      errorType: 'Error type',
+      upstreamError: 'Upstream error',
+    },
+    noLatency: 'no upstream latency recorded (0 ms lands as a missing key)',
+    credentialAbsent: 'not of the cred-<positive integer> form, so the backend writes no credential_id for this run',
+    stats: {
+      title: 'Stats',
+      echoedRange: 'echoed range={r}; the effective window is, by local reimplementation, {eff}',
+      rangeEchoInvalid: '★ The echoed range is not a supported value: the backend **silently** falls back, so the echo alone cannot tell you the window.',
+      counts: 'total {total} (success {s} / partial {p} / failed {f}, sum {sub})',
+      hasInFlight: '★ The three counted statuses sum to less than the total: the denominator includes running and retrying, but only three statuses are counted.',
+      rate: 'success rate {r}',
+      rateMeaningless: '★ With total 0 the success rate is always 0.0, which is the same value as "all failed"; the ratio is meaningless right now.',
+      probeUnqueried: '★ When both probe queries fail the backend computes "healthy": all zeros reads as a green light while the probe pipeline may already be dead.',
+      noErrors: '★ No failure records (a failed query also yields an empty array, identical to genuinely none).',
+      noTrend: '★ No trend points (a failed query also yields an empty array, identical to never having run in this window).',
+    },
+    models: {
+      title: 'Model distribution',
+      empty: 'No model distribution',
+      counts: 'total {total} / success {s} / failed {f}',
+      noPartial: '★ This endpoint has **no partial count**: the residual left by total minus success minus failed cannot be attributed.',
+      allTime: '★ This endpoint is an **all-time** aggregate; its window differs from stats above and the two totals are not comparable.',
+    },
+    settings: {
+      title: 'Settings',
+      enabled: 'Enabled',
+      normalInterval: 'Normal interval',
+      faultInterval: 'Fault interval',
+      modelSource: 'Model source',
+      maxModels: 'Max models',
+    },
+    trigger: {
+      title: 'Trigger availability',
+      available: 'Available',
+      newProbeMode: 'New probe mode',
+      mode: 'Mode',
+      reason: 'Unavailable because: {code}{reason}',
+    },
+  },
+  pq: {
+    title: 'Probe queue',
+    legLabel: 'Queue leg',
+    leg: { pending: 'Pending', in_flight: 'In flight', completed: 'Completed' },
+    limit: 'Page size',
+    // ★★ count is the page length, not a total (len(tasks), probe_dashboard.go:1879)
+    pageCount: '{n} on this page',
+    pageFull: '★ This page is full ({n} = the per-page cap); there may be more pages. count is only the page length, not a total.',
+    pageComplete: 'This page is not full, so the page length is all of them.',
+    empty: 'No tasks in the "{leg}" leg',
+    credential: 'Credential',
+    command: 'Command',
+    attempt: 'Attempt',
+    priority: 'Priority',
+    source: 'Source',
+    provider: 'Provider',
+    // ★ All three keys absent = unknown (not an empty string, not null)
+    providerUnknown: 'unknown',
+    // ★ origin is derived from source; a mismatch is contract drift
+    originMismatch: 'origin disagrees with source (response says {got}, source implies {want})',
+    nextRetry: 'Next retry',
+    noNextRetry: 'no backoff time',
+    nextRetryMismatch: 'next_retry_at_ms should only appear on the pending leg, this one is {status}',
+    retriesExhausted: 'Retries exhausted without reaching a terminal state; this task will not advance on its own',
+    outcome: 'Outcome',
+    outcomeNone: 'no outcome',
+    outcomeMismatch: 'outcome should only appear on the completed leg, this one is {status}',
+    outcomeDetail: { success: 'success', failed: 'failed', expired: 'expired', cancelled: 'cancelled' },
+    // ★★★ 0 is a real value for http_status / latency and must never read as "not measured"
+    httpStatus: 'HTTP status',
+    latency: 'Latency',
+    noHttpStatus: 'no status measured',
+    noLatency: 'no latency recorded',
+    finishedAt: 'Finished at',
+    reason: 'Reason code',
+    echoMismatch: '★ The echoed status does not match the requested leg; this data is not from that leg.',
+    rowMismatch: '★ Some rows have a status outside the current leg; the filter looks like it did not run on the compressed value.',
+  },
+
   wt: {
     title: 'Work types',
     statsTitle: 'Stats for the last {h}h',
