@@ -50,6 +50,7 @@ export default {
     addBtn: "+ Ajouter un identifiant",
     table: {
       cred: "Identifiant",
+      routingScope: "Domaine de routage",
       status: "Statut",
       probe: "Vérification",
       defaultProbeModel: "Modèle de vérification par défaut",
@@ -185,6 +186,20 @@ export default {
       retired: "retired (retraité)"
     },
     drawerFieldPlanType: "Type de plan",
+    drawerTabInfo: "Infos",
+    drawerTabModels: "Modèles",
+    drawerFieldRoutingScope: "Domaine de routage",
+    routingScopeHint: "Les identifiants media_only ne sont pas choisis pour le chat/texte standard",
+    routingScopeFailed: "Échec de la définition de routing_scope",
+    manualPrefix: "Manuel ",
+    routingScopes: {
+      all: "all (général)",
+      chatOnly: "chat_only (texte seul)",
+      mediaOnly: "media_only (multimédia seul)",
+      allShort: "Général",
+      chatOnlyShort: "Texte",
+      mediaOnlyShort: "Média",
+    },
     planTypeUnset: "Non défini (traité comme token)",
     planTypeHint: "Utilisé par le routage ; cmb.billing_mode en est déduit",
     planTypes: {

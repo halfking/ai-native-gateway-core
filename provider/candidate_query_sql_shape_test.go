@@ -77,6 +77,11 @@ func TestCandidateQuerySQL_Shape(t *testing.T) {
 		"broken_confirmed",
 		"recent_success_rate(c.id, mo.raw_model_name, 50)",
 		"v.is_routable = TRUE",
+		// 845/848: media/chat routing_scope hard isolation (image joins audio/video)
+		"COALESCE(c.routing_scope, 'all') IN ('all', 'chat_only')",
+		"COALESCE(c.routing_scope, 'all') IN ('all', 'media_only')",
+		"$3 IN ('audio', 'video', 'image')",
+		"$3 = 'image' AND COALESCE(mc.modality, 'text') IN ('image', 'vision', 'multimodal')",
 	} {
 		if !strings.Contains(q, must) {
 			t.Errorf("rewrite dropped required fragment %q", must)

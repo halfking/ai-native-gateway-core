@@ -16,13 +16,17 @@ type TokenUsage struct {
 	ImageTokens      int
 	AudioTokens      int
 	VideoTokens      int
+	// AudioSeconds is wall-clock audio duration charged per-second
+	// (MiniMax ASR / Xiaomi usage.seconds). Independent of AudioTokens.
+	AudioSeconds float64
 }
 
-// Any reports whether any token counter is non-zero.
+// Any reports whether any token counter or audio-second usage is non-zero.
 func (t TokenUsage) Any() bool {
 	return t.PromptTokens > 0 || t.CompletionTokens > 0 ||
 		t.CacheReadTokens > 0 || t.CacheWriteTokens > 0 ||
-		t.ImageTokens > 0 || t.AudioTokens > 0 || t.VideoTokens > 0
+		t.ImageTokens > 0 || t.AudioTokens > 0 || t.VideoTokens > 0 ||
+		t.AudioSeconds > 0
 }
 
 // CalcCredits computes billable credits for a completed request.
@@ -85,10 +89,27 @@ func CalcCreditsMultimodalWithMultiplier(u TokenUsage, rates ModelRateValues, ra
 		float64(u.ImageTokens)*float64(imageRate) +
 		float64(u.AudioTokens)*float64(audioRate) +
 		float64(u.VideoTokens)*float64(videoRate)
-	if numer <= 0 {
-		return 0
+
+	var tokenCredits int64
+	if numer > 0 {
+		tokenCredits = int64(math.Ceil(numer * rateMultiplier / 1_000_000.0))
 	}
-	return int64(math.Ceil(numer * rateMultiplier / 1_000_000.0))
+
+	// 2026-10-08 Phase B: duration billing for ASR/TTS-style APIs.
+	// AudioSecond is credits-per-second (NOT per-1M). Fallback ≈ 1 credit/sec
+	// at the default base of 10_000 credits/1M input tokens.
+	var secondCredits int64
+	if u.AudioSeconds > 0 {
+		perSec := rates.AudioSecond
+		if perSec <= 0 {
+			perSec = rates.In / 10_000
+			if perSec <= 0 {
+				perSec = 1
+			}
+		}
+		secondCredits = int64(math.Ceil(u.AudioSeconds * float64(perSec) * rateMultiplier))
+	}
+	return tokenCredits + secondCredits
 }
 
 // InsufficientCreditsError is returned when a tenant cannot cover a charge.

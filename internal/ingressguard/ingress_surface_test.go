@@ -184,13 +184,37 @@ var registry = []surface{
 		// LLM 步骤环回 chat 面时带同一把调用方 key，那一跳已计一次 RPM
 		// ——此处再计即双计，默认 12/min 的周期任务会被打 429
 		// （TestTransformEndpointDoesNotConsumeRPM 钉住单计口径）。
-		Plane:       planeInference,
-		Routes:      []string{"/v1/audio/refine", "/v1/audio/analyze"},
-		HandlerVars: []string{"audioTransformHandler"},
-		File:        "../../domains/streaming/audio_transform.go",
-		Budget:      gateOwn,
-		RateLimit:   gateNone,
+		Plane:        planeInference,
+		Routes:       []string{"/v1/audio/refine", "/v1/audio/analyze"},
+		HandlerVars:  []string{"audioTransformHandler"},
+		File:         "../../domains/streaming/audio_transform.go",
+		Budget:       gateOwn,
+		RateLimit:    gateNone,
 		RateLimitWhy: "刻意单计：环回 chat 步带同一把调用方 key 已计一次 RPM，transform 端点自身不消耗（否则双计 429）；见 audio_transform.go 文件头与 TestTransformEndpointDoesNotConsumeRPM",
+	},
+	{
+		// 2026-10-08 Phase C（17cba14ee）补登：OpenAI 兼容图片生成面。
+		// 鉴权内自有两道闸：authenticate（images_generations.go:211
+		// checkGatewayRateLimit、:215 .CheckBudget），与音频面同构。
+		Plane:       planeInference,
+		Routes:      []string{"/v1/images/generations"},
+		HandlerVars: []string{"imagesGenerationsHandler"},
+		File:        "../../domains/streaming/images_generations.go",
+		Budget:      gateOwn,
+		RateLimit:   gateOwn,
+	},
+	{
+		// 2026-10-08 Phase C（17cba14ee）补登：视频生成骨架。它自己没有闸，
+		// 但 ServeHTTP 里构造 img := &ImagesGenerationsHandler{keyVerifier,
+		// rateLimiter} 后走 img.authenticate（videos_generations.go:73）
+		// ⇒ 两道闸都委派给 images 面的同一鉴权路径。
+		Plane:          planeInference,
+		Routes:         []string{"/v1/videos/generations"},
+		HandlerVars:    []string{"videosGenerationsHandler"},
+		File:           "../../domains/streaming/videos_generations.go",
+		Budget:         gateDelegated,
+		BudgetDelegate: "videos_generations.go:73 img := &ImagesGenerationsHandler{...} → img.authenticate ⇒ images_generations.go 的 checkGatewayRateLimit + .CheckBudget（同一把 keyVerifier/rateLimiter）",
+		RateLimit:      gateDelegated,
 	},
 	{
 		// Gemini：它自己的 ServeHTTP 里两道闸都没有，但它把 body 转成 OpenAI
@@ -457,8 +481,11 @@ func TestIngressSurfaceRegistryCoversEveryRoute(t *testing.T) {
 	// ⚠️ 第一版这里写的是 25 —— 那是**出现次数**不是**唯一路由数**，
 	//   于是判据在自己建起来当天就红。取下限必须先分清「量的是什么」，
 	//   并且按逐文件实测取值，不随手写整数（playbook §210）。
-	// 21 是**紧**的：掉一条唯一路由就红；新增一条则由下面的「未登记」分支接手。
-	const floorRoutes = 21
+	// 2026-10-08 复测（17cba14ee multimedia 落地后）：**25 条唯一路由、
+	//   注册行 29 行**（新增 images/videos generations 两面；v2 二次注册仍 4 行）
+	//   ⇒ 下限随测收紧到 25。
+	// 下限是**紧**的：掉一条唯一路由就红；新增一条则由下面的「未登记」分支接手。
+	const floorRoutes = 25
 	occurrences := 0
 	for _, ls := range routes {
 		occurrences += len(ls)

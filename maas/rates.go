@@ -81,6 +81,11 @@ type ModelRateValues struct {
 	Image    int64
 	Audio    int64
 	Video    int64
+	// AudioSecond is credits charged per audio second (ASR duration billing).
+	// Zero means CalcCredits uses the In/10000 fallback (~1 credit/sec at
+	// default base). Not yet a model_credit_rates column — reserved for
+	// settings/overrides once operators need per-model second rates.
+	AudioSecond int64
 }
 
 type storedModelRates struct {

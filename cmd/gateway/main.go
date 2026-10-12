@@ -875,6 +875,9 @@ func main() {
 	// 2026-10-06 ASR 多模型轮：refine/analyze 转写后处理二件套，与
 	// /v1/audio/* 共享 AudioService 鉴权；LLM 步骤走环回 chat 面。
 	var audioTransformHandler *streaming.AudioTransformHandler
+	// 2026-10-08 Phase C：OpenAI 兼容 /v1/images|/v1/videos generations 骨架。
+	var imagesGenerationsHandler *streaming.ImagesGenerationsHandler
+	var videosGenerationsHandler *streaming.VideosGenerationsHandler
 
 	// ── Tenant model policy (Round 48, 2026-06-21) ─────────────────
 	// Single Checkerr singleton shared by streaming.ChatHandler (hot
@@ -2432,6 +2435,11 @@ func main() {
 		transformSvc := streaming.NewAudioTransformService(audioService)
 		audioTransformHandler = streaming.NewAudioTransformHandler(transformSvc)
 		audioMCPHandler.SetTransformService(transformSvc)
+		// 2026-10-08 Phase C：图/视频统一出口骨架（media 路由域）。
+		imagesGenerationsHandler = streaming.NewImagesGenerationsHandler(providerClient, upClient)
+		imagesGenerationsHandler.SetAuth(keyVerifier, slidingRL)
+		videosGenerationsHandler = streaming.NewVideosGenerationsHandler(providerClient, upClient)
+		videosGenerationsHandler.SetAuth(keyVerifier, slidingRL)
 		slog.Info("API key authentication + RPM rate limiting enabled")
 	} else if cfg.SecretKey != "" {
 		// 2026-09-14 audit H-P0-1: DB verifier unavailable (lite mode /
@@ -2933,6 +2941,10 @@ func main() {
 	if dbConn != nil && dbConn.Enabled() {
 		maasSvc := maas.NewService(dbConn.Pool())
 		chatHandler.SetMaas(maasSvc)
+		if audioService != nil {
+			audioService.SetMaas(maasSvc)
+			audioService.SetUsageLogger(streaming.NewPGAudioUsageLogger(dbConn.Pool()))
+		}
 		slog.Info("maas credits billing enabled")
 
 		// 2026-07-13: backfill hourly credit consumption buckets so the
@@ -6571,6 +6583,13 @@ func main() {
 	if audioTransformHandler != nil {
 		mux.Handle("/v1/audio/refine", audioTransformHandler)
 		mux.Handle("/v1/audio/analyze", audioTransformHandler)
+	}
+	// 2026-10-08 Phase C：OpenAI 兼容图/视频生成出口。
+	if imagesGenerationsHandler != nil {
+		mux.Handle("/v1/images/generations", imagesGenerationsHandler)
+	}
+	if videosGenerationsHandler != nil {
+		mux.Handle("/v1/videos/generations", videosGenerationsHandler)
 	}
 	mux.Handle("/v1/models", modelsHandler)
 

@@ -247,6 +247,25 @@ const planTypes = computed(() => [
   { value: 'free', label: pd('creds.planTypes.free') },
 ])
 
+// 845: routing domain for media vs chat credential isolation.
+const routingScopes = computed(() => [
+  { value: 'all', label: pd('creds.routingScopes.all') },
+  { value: 'chat_only', label: pd('creds.routingScopes.chatOnly') },
+  { value: 'media_only', label: pd('creds.routingScopes.mediaOnly') },
+])
+
+function routingScopeBadge(scope?: string | null): string {
+  if (scope === 'media_only') return 'badge-amber'
+  if (scope === 'chat_only') return 'badge-green'
+  return 'badge-gray'
+}
+
+function routingScopeLabel(scope?: string | null): string {
+  if (scope === 'media_only') return pd('creds.routingScopes.mediaOnlyShort')
+  if (scope === 'chat_only') return pd('creds.routingScopes.chatOnlyShort')
+  return pd('creds.routingScopes.allShort')
+}
+
 function statusBadge(s: string, manualDisabled?: boolean) {
   if (manualDisabled) return 'badge-red'
   if (s === 'active') return 'badge-green'
@@ -500,6 +519,7 @@ async function saveSelected() {
       expires_at: c.expires_at,
       tags: c.tags,
       notes: c.notes || '',
+      routing_scope: c.routing_scope || 'all',
       // migration 701: '' (cleared input) → undefined = omitted from PATCH =
       // keep the current floor; a number is stored as-is and 0 clears it.
       balance_floor_usd: normalizeFloorInput(c.balance_floor_usd),
@@ -736,6 +756,20 @@ async function setPlanType(value: string) {
   }
 }
 
+async function setRoutingScope(value: string) {
+  const c = selected.value
+  if (!c) return
+  const newVal = value === '' ? 'all' : value
+  if ((c.routing_scope ?? 'all') === newVal) return
+  try {
+    await updateCredential(props.provider.id, c.id, { routing_scope: newVal })
+    c.routing_scope = newVal
+    emit('silentRefresh')
+  } catch (e: unknown) {
+    alert(e instanceof Error ? e.message : pd('creds.routingScopeFailed'))
+  }
+}
+
 async function resetAvailability() {
   const c = selected.value
   if (!c || !(await confirmDialog(pd('creds.resetAvailConfirm', { name: c.label })))) return
@@ -966,6 +1000,7 @@ function onTagsInput(ev: Event) {
         <thead>
           <tr>
             <th>{{ pd('creds.table.cred') }}</th>
+            <th>{{ pd('creds.table.routingScope') }}</th>
             <th>{{ pd('creds.table.status') }}</th>
             <th>{{ pd('creds.table.probe') }}</th>
             <th>{{ pd('creds.table.defaultProbeModel') }}</th>
@@ -974,7 +1009,7 @@ function onTagsInput(ev: Event) {
           </tr>
         </thead>
         <tbody>
-          <tr v-if="!credsByName.length"><td colspan="6">{{ pd('creds.empty') }}</td></tr>
+          <tr v-if="!credsByName.length"><td colspan="7">{{ pd('creds.empty') }}</td></tr>
           <tr
             v-for="c in credsByName"
             :key="c.id"
@@ -990,6 +1025,9 @@ function onTagsInput(ev: Event) {
                 {{ c.key_masked ?? (c.key_mask_error ? pd('creds.fingerprintUnparsed') : '—') }}
               </div>
               <div class="cred-meta">{{ pd('creds.rowMeta', { id: c.id, trust: c.trust_level }) }}</div>
+            </td>
+            <td>
+              <span class="badge" :class="routingScopeBadge(c.routing_scope)">{{ routingScopeLabel(c.routing_scope) }}</span>
             </td>
             <td>
               <CredentialStatusBar :credential="c" :labels="credentialStatusLabels" />
@@ -1026,9 +1064,14 @@ function onTagsInput(ev: Event) {
           <div>
             <h3 style="margin:0">{{ selected.label || pd('creds.drawerTitle', { id: selected.id }) }}</h3>
             <div class="drawer-sub">{{ pd('creds.rowMeta', { id: selected.id, trust: selected.trust_level }) }}</div>
+            <div class="drawer-header-meta" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+              <span class="badge" :class="routingScopeBadge(selected.routing_scope)">{{ routingScopeLabel(selected.routing_scope) }}</span>
+              <span class="badge" :class="healthBadge(selected.health_status)">{{ healthLabel(selected.health_status) }}</span>
+              <span class="cell-muted">{{ selected.lifecycle_status }}</span>
+            </div>
             <div class="drawer-tabs" style="margin-top:10px;display:flex;gap:6px">
-              <button type="button" class="btn btn-sm" :class="drawerTab === 'info' ? 'btn-primary' : 'btn-ghost'" @click="drawerTab = 'info'">信息</button>
-              <button type="button" class="btn btn-sm" :class="drawerTab === 'models' ? 'btn-primary' : 'btn-ghost'" @click="drawerTab = 'models'">模型</button>
+              <button type="button" class="btn btn-sm" :class="drawerTab === 'info' ? 'btn-primary' : 'btn-ghost'" @click="drawerTab = 'info'">{{ pd('creds.drawerTabInfo') }}</button>
+              <button type="button" class="btn btn-sm" :class="drawerTab === 'models' ? 'btn-primary' : 'btn-ghost'" @click="drawerTab = 'models'">{{ pd('creds.drawerTabModels') }}</button>
             </div>
           </div>
           <button type="button" class="btn btn-ghost btn-sm" @click="closeDrawer">{{ pd('creds.drawerClose') }}</button>
@@ -1120,9 +1163,21 @@ function onTagsInput(ev: Event) {
               </select>
               <div class="cell-sub">{{ pd('creds.planTypeHint') }}</div>
             </div>
+            <div style="margin-top:8px">
+              <label class="field-label">{{ pd('creds.drawerFieldRoutingScope') }}</label>
+              <select
+                :value="selected.routing_scope ?? 'all'"
+                class="field-input"
+                :disabled="!canManageCreds"
+                @change="(e: Event) => setRoutingScope((e.target as HTMLSelectElement).value)"
+              >
+                <option v-for="s in routingScopes" :key="s.value" :value="s.value">{{ s.label }}</option>
+              </select>
+              <div class="cell-sub">{{ pd('creds.routingScopeHint') }}</div>
+            </div>
             <label class="manual-toggle">
               <input type="checkbox" :checked="!!selected.manual_disabled" :disabled="!canManageCreds" @change="toggleManualDisabled" />
-              <span>手工{{ selected.manual_disabled ? pd('creds.manualDisabledSuffix') : pd('creds.manualEnabledSuffix') }} 🔒</span>
+              <span>{{ pd('creds.manualPrefix') }}{{ selected.manual_disabled ? pd('creds.manualDisabledSuffix') : pd('creds.manualEnabledSuffix') }}</span>
             </label>
             <div v-if="selected.state_reason_code" class="cell-sub" :title="selected.state_reason_detail || ''">
               {{ selected.state_reason_code }}
@@ -1204,8 +1259,8 @@ function onTagsInput(ev: Event) {
             </div>
           </div>
 
-          <div class="drawer-section">
-            <div class="drawer-section-title">{{ pd('creds.drawerSectionConcurrency') }}</div>
+          <details class="drawer-section drawer-section--collapsible" open>
+            <summary class="drawer-section-title">{{ pd('creds.drawerSectionConcurrency') }}</summary>
             <div class="field-grid">
               <div>
                 <label class="field-label">{{ pd('creds.drawerConcurrency') }}</label>
@@ -1283,7 +1338,7 @@ function onTagsInput(ev: Event) {
                 />
               </div>
             </div>
-          </div>
+          </details>
 
           <!-- 2026-09-13 migration 701: balance-floor guard. Floors default to
                NULL (disabled); the guard pulls a credential below any
@@ -1291,8 +1346,8 @@ function onTagsInput(ev: Event) {
                reason='balance_floor', never manual_disabled) and restores it
                once the quota clears the hysteresis band. PATCH contract:
                omitted field = no change, 0 = clear. -->
-          <div class="drawer-section">
-            <div class="drawer-section-title">{{ pd('creds.drawerSectionBalanceFloor') }}</div>
+          <details class="drawer-section drawer-section--collapsible">
+            <summary class="drawer-section-title">{{ pd('creds.drawerSectionBalanceFloor') }}</summary>
             <!-- migration 721: current balance + on-demand vendor probe (⟳),
                  same contract as the /providers drawer. ✏️ = manual entry
                  (auto probes skip it for 24h), 🛰 = API probe. -->
@@ -1365,16 +1420,16 @@ function onTagsInput(ev: Event) {
               </div>
             </div>
             <div class="cell-sub" style="margin-top:6px">{{ pd('creds.floorHint') }}</div>
-          </div>
+          </details>
 
-          <div class="drawer-section">
-            <div class="drawer-section-title">{{ pd('creds.drawerSectionUsage') }}</div>
+          <details class="drawer-section drawer-section--collapsible">
+            <summary class="drawer-section-title">{{ pd('creds.drawerSectionUsage') }}</summary>
             <div>{{ selected.total_requests }} {{ pd('creds.requestCountSuffix') }} · {{ money(selected.total_cost_usd) }}</div>
             <div class="cell-sub">{{ pd('creds.usageBalancePrefix') }} {{ money(selected.quota_summary?.remaining_usd ?? null) }}</div>
-          </div>
+          </details>
 
-          <div class="drawer-section">
-            <div class="drawer-section-title">{{ pd('creds.drawerSectionTags') }}</div>
+          <details class="drawer-section drawer-section--collapsible">
+            <summary class="drawer-section-title">{{ pd('creds.drawerSectionTags') }}</summary>
             <input
               :value="(selected.tags ?? []).join(', ')"
               class="field-input"
@@ -1382,7 +1437,7 @@ function onTagsInput(ev: Event) {
               :placeholder="pd('creds.drawerTagsPlaceholder')"
               @input="onTagsInput"
             />
-          </div>
+          </details>
 
           <div v-if="fpSlotStats" class="drawer-section">
             <div class="drawer-section-title">{{ pd('creds.drawerSectionFpSlots') }}</div>
@@ -1642,6 +1697,26 @@ function onTagsInput(ev: Event) {
 .drawer-section--danger {
   padding-top: 12px;
   border-top: 1px dashed var(--border);
+}
+.drawer-section--collapsible > summary.drawer-section-title {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+.drawer-section--collapsible > summary.drawer-section-title::-webkit-details-marker {
+  display: none;
+}
+.drawer-section--collapsible > summary.drawer-section-title::before {
+  content: '▸';
+  font-size: 11px;
+  color: var(--muted, #888);
+  transition: transform 0.15s ease;
+}
+.drawer-section--collapsible[open] > summary.drawer-section-title::before {
+  content: '▾';
 }
 .fp-slot-summary {
   display: none; /* Moved to FpSlotVisualizer */

@@ -292,6 +292,9 @@ export interface ProviderCredential {
   // /providers/{id} → creds drawer. NULL/empty means "no plan, behaves
   // like 'token'" for routing purposes.
   plan_type?: string | null
+  // 845: media/chat routing domain. media_only credentials are excluded
+  // from standard chat/text/embedding candidate selection.
+  routing_scope?: 'all' | 'chat_only' | 'media_only' | string | null
   // migration 701: per-credential balance floors (NULL = disabled; PATCH 0 =
   // clear). bg/balance_floor_guard pulls a credential below any configured
   // floor and auto-restores it past the hysteresis band.
@@ -355,6 +358,8 @@ export function updateCredential(providerId: number, credId: number, data: Parti
   balance_usd: number | null
   // v735: route-side plan. Empty string clears (DB NULL).
   plan_type: string | null
+  // 845: all | chat_only | media_only
+  routing_scope: string | null
   tags: string[]
   notes: string
   // migration 701: balance-floor guard floors. Omit = no change, 0 = clear.

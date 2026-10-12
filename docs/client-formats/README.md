@@ -24,6 +24,7 @@
 | [minimax-code.md](minimax-code.md) | MiniMax Code 编程 Agent（Anthropic 优先，三层识别链路） |
 | [deepseek-code.md](deepseek-code.md) | DeepSeek 编程客户端（OpenAI Chat + reasoning_content） |
 | [compatibility-matrix.md](compatibility-matrix.md) | 客户端 × 厂商格式兼容矩阵 |
+| [multimedia.md](multimedia.md) | 音频 / 图片 / 视频统一入口与凭据路由域约定 |
 
 ## 入站协议总览
 
@@ -32,6 +33,8 @@
 | OpenAI Chat Completions | `POST /v1/chat/completions` | OpenAI SDK、Cursor、Continue、AutoGen、CrewAI、LangChain OpenAIChat、Agent Zero、ZCode CLI、DeepSeek Code |
 | OpenAI Responses | `POST /v1/responses` | OpenAI Agents SDK（gpt-5） |
 | Anthropic Messages | `POST /v1/messages` | Anthropic SDK、Claude Code、MiniMax Code |
+| Audio Transcriptions / Speech | `POST /v1/audio/transcriptions`、`/v1/audio/speech` | OpenPocket STT、OpenAI Audio SDK、curl |
+| Images / Videos Generations | `POST /v1/images/generations`、`/v1/videos/generations` | OpenAI Images 兼容客户端、curl（骨架） |
 
 ## 客户端到网关到原厂的三跳路径
 

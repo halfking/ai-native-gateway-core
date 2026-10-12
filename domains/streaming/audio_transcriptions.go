@@ -82,6 +82,7 @@ func (h *AudioTranscriptionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 		writeAudioError(w, requestID, terr)
 		return
 	}
+	h.svc.chargeTranscription(r.Context(), req.TenantID, requestID, req.Model, res.DurationSeconds)
 	writeTranscriptionResult(w, requestID, req.Model, res, req.ResponseFormat)
 }
 
@@ -130,6 +131,7 @@ func (h *AudioTranscriptionsHandler) serveStream(w http.ResponseWriter, r *http.
 		flusher.Flush()
 		return
 	}
+	h.svc.chargeTranscription(r.Context(), req.TenantID, requestID, req.Model, res.DurationSeconds)
 	writeEvent("transcript.transport", map[string]string{"type": "transcript.transport", "transport": res.Transport})
 	// 同 P2-1：流式路径的响应头已随 WriteHeader(200) 发出，IgnoredParams
 	// 只能走事件（与 transport 同理）。未知事件名按 SSE 规范忽略。

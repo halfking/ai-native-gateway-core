@@ -48,6 +48,8 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 		FpSlotLimit      *int     `json:"fp_slot_limit"`
 		RPMLimit         *int     `json:"rpm_limit"`
 		PlanType         *string  `json:"plan_type"`
+		// 845: media/chat routing domain (all|chat_only|media_only).
+		RoutingScope *string `json:"routing_scope"`
 		// 479: 并发/限流模式与队列参数（见 docs/会话优化v2/57）。
 		ConcurrencyMode *string `json:"concurrency_mode"` // concurrency|rpm|tpm|disabled
 		TPMLimit        *int    `json:"tpm_limit"`
@@ -77,6 +79,14 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 			return
 		}
 		planType = *req.PlanType
+	}
+	routingScope := routingScopeAll
+	if req.RoutingScope != nil && *req.RoutingScope != "" {
+		if !isValidRoutingScope(*req.RoutingScope) {
+			writeError(w, http.StatusBadRequest, "invalid routing_scope; allowed: all, chat_only, media_only")
+			return
+		}
+		routingScope = normalizeRoutingScope(*req.RoutingScope)
 	}
 
 	encrypted, err := h.encryptCred([]byte(req.APIKey))
@@ -129,10 +139,10 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 	var id int
 	err = h.db.QueryRow(ctx, `
 		INSERT INTO credentials (provider_id, label, secret_ciphertext, status, concurrency_limit, fp_slot_limit, balance_usd, plan_type,
-			                         concurrency_mode, rpm_limit, tpm_limit, max_queue_depth, max_queue_wait_ms)
-			VALUES ($1, $2, $3, 'active', $4, $5, 1000.0, $6, $7, $8, $9, $10, $11)
+			                         routing_scope, concurrency_mode, rpm_limit, tpm_limit, max_queue_depth, max_queue_wait_ms)
+			VALUES ($1, $2, $3, 'active', $4, $5, 1000.0, $6, $7, $8, $9, $10, $11, $12)
 			RETURNING id
-		`, providerID, label, encrypted, concurrencyLimit, fpSlotLimit, planType,
+		`, providerID, label, encrypted, concurrencyLimit, fpSlotLimit, planType, routingScope,
 		concurrencyMode, req.RPMLimit, req.TPMLimit, req.MaxQueueDepth, req.MaxQueueWaitMS).Scan(&id)
 	if err != nil {
 		writeInternalErr(w, "create failed", err)
@@ -192,6 +202,7 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 		       c.balance_source,
 		       c.balance_error,
 		       COALESCE(c.plan_type,'per_token') AS plan_type,
+		       COALESCE(c.routing_scope,'all') AS routing_scope,
 		       COALESCE(c.circuit_state,'closed'),
 		       c.circuit_opened_at,
 		       COALESCE(c.consecutive_failures, 0),
@@ -260,6 +271,7 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 		BalanceSource            *string         `json:"balance_source"`
 		BalanceError             *string         `json:"balance_error"`
 		PlanType                 string          `json:"plan_type"`
+		RoutingScope             string          `json:"routing_scope"`
 		CircuitState             string          `json:"circuit_state"`
 		CircuitOpenedAt          *time.Time      `json:"circuit_opened_at"`
 		ConsecutiveFailures      int             `json:"consecutive_failures"`
@@ -329,6 +341,7 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 			&c.BalanceSource,
 			&c.BalanceError,
 			&c.PlanType,
+			&c.RoutingScope,
 			&c.CircuitState,
 			&c.CircuitOpenedAt,
 			&c.ConsecutiveFailures,
@@ -466,11 +479,13 @@ type updateCredentialRequest struct {
 	Notes            *string  `json:"notes"`
 	BalanceUSD       *float64 `json:"balance_usd"`
 	PlanType         *string  `json:"plan_type"`
-	ConcurrencyMode  *string  `json:"concurrency_mode"`
-	RPMLimit         *int     `json:"rpm_limit"`
-	TPMLimit         *int     `json:"tpm_limit"`
-	MaxQueueDepth    *int     `json:"max_queue_depth"`
-	MaxQueueWaitMS   *int     `json:"max_queue_wait_ms"`
+	// 845: media/chat routing domain. Empty string → treat as "all".
+	RoutingScope    *string `json:"routing_scope"`
+	ConcurrencyMode *string `json:"concurrency_mode"`
+	RPMLimit        *int    `json:"rpm_limit"`
+	TPMLimit        *int    `json:"tpm_limit"`
+	MaxQueueDepth   *int    `json:"max_queue_depth"`
+	MaxQueueWaitMS  *int    `json:"max_queue_wait_ms"`
 	// 2026-09-13 migration 701: 余额/套餐下限（NULL = 不启用）。显式传 0
 	// 表示清除下限（percent=0 若按字面解释会是"已用>=0 即摘出"，语义危险，
 	// 统一约定 0=清除）。bg/balance_floor_guard 周期评估，低于下限摘出路由
@@ -496,6 +511,10 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	}
 	if req.PlanType != nil && !isValidPlanType(*req.PlanType) {
 		writeError(w, http.StatusBadRequest, "invalid plan_type; allowed: token, token_plan, code_plan, agent_plan, monthly, free")
+		return
+	}
+	if req.RoutingScope != nil && *req.RoutingScope != "" && !isValidRoutingScope(*req.RoutingScope) {
+		writeError(w, http.StatusBadRequest, "invalid routing_scope; allowed: all, chat_only, media_only")
 		return
 	}
 	if req.RPMLimit != nil && *req.RPMLimit < 0 {
@@ -644,6 +663,10 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	}
 	if req.PlanType != nil {
 		sets = append(sets, "plan_type = "+arg(*req.PlanType), "plan_type_updated_at = NOW()")
+	}
+	if req.RoutingScope != nil {
+		scope := normalizeRoutingScope(*req.RoutingScope)
+		sets = append(sets, "routing_scope = "+arg(scope))
 	}
 	if req.ConcurrencyMode != nil {
 		sets = append(sets, "concurrency_mode = "+arg(*req.ConcurrencyMode))

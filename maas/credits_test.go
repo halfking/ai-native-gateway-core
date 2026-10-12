@@ -11,6 +11,27 @@ func TestCalcCredits_fourDimensions(t *testing.T) {
 	}
 }
 
+func TestCalcCredits_audioSeconds(t *testing.T) {
+	rates := ModelRateValues{In: 10000, Out: 10000, CacheIn: 10000, CacheOut: 10000, AudioSecond: 2}
+	got := CalcCreditsMultimodal(TokenUsage{AudioSeconds: 26.325}, rates)
+	// ceil(26.325 * 2) = 53
+	if got != 53 {
+		t.Fatalf("audio seconds charge got %d want 53", got)
+	}
+	// Fallback: In/10000 = 1 credit/sec when AudioSecond unset
+	rates2 := ModelRateValues{In: 10000}
+	got2 := CalcCreditsMultimodal(TokenUsage{AudioSeconds: 3.1}, rates2)
+	if got2 != 4 { // ceil(3.1 * 1)
+		t.Fatalf("fallback per-sec got %d want 4", got2)
+	}
+	// Seconds stack with token credits
+	got3 := CalcCreditsMultimodal(TokenUsage{PromptTokens: 1_000_000, AudioSeconds: 2}, rates)
+	// 1M * 10000 / 1M = 10000 token + ceil(2*2)=4 → 10004
+	if got3 != 10004 {
+		t.Fatalf("stacked got %d want 10004", got3)
+	}
+}
+
 func TestGlobalEffective_discount(t *testing.T) {
 	st := Settings{
 		BaseCreditsPer1M:    10000,

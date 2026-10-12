@@ -257,6 +257,16 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureApiKeyAutoProfileIdentity(migCtx); err != nil {
 		return err
 	}
+	// 2026-10-08 migration 847: credentials.routing_scope — media/chat 路由域
+	// 隔离。缺列时候选 SQL 的 COALESCE(c.routing_scope,'all') 仍可编译失败
+	// （列不存在 42703），必须在流量前补齐。
+	if err := db.ensureCredentialRoutingScope(migCtx); err != nil {
+		return err
+	}
+	// 2026-10-08 migration 848: cmb.billing_unit + request_logs.audio_seconds
+	if err := db.ensureBillingUnitAndAudioSeconds(migCtx); err != nil {
+		return err
+	}
 	// 2026-09-17 (087 自愈): provider_templates 健康反馈三列。freediscovery
 	// 扫描调度器的失败计数/自动禁用分支每周期读写，缺列即 42703 空转。
 	if err := db.ensureFreediscoveryTemplateHealth(migCtx); err != nil {
@@ -2971,6 +2981,113 @@ func (d *DB) ensureCredentialBalanceFloor(ctx context.Context) error {
 		return err
 	}
 	slog.Info("credential balance-floor schema ensured (migration 701)")
+	return nil
+}
+
+// ensureBillingUnitAndAudioSeconds mirrors sql/migrations/startup/848_billing_unit_and_audio_seconds.sql.
+func (d *DB) ensureBillingUnitAndAudioSeconds(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	cmbOK := d.columnsAllPresent(ctx, "credential_model_bindings", []string{"billing_unit"})
+	hotOK := d.columnsAllPresent(ctx, "request_logs_hot", []string{"audio_seconds"})
+	if cmbOK && hotOK {
+		if _, err := d.pool.Exec(ctx, `
+			INSERT INTO public.schema_migrations (version, description)
+			VALUES ('848', 'cmb.billing_unit + request_logs.audio_seconds for media duration billing')
+			ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+		`); err != nil {
+			return err
+		}
+		slog.Info("billing_unit + audio_seconds schema ensured (migration 848, catalog short-circuit)")
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		ALTER TABLE credential_model_bindings
+		    ADD COLUMN IF NOT EXISTS billing_unit text NOT NULL DEFAULT 'token';
+
+		DO $do$
+		BEGIN
+		    IF NOT EXISTS (
+		        SELECT 1 FROM pg_constraint
+		        WHERE conname = 'cmb_billing_unit_check'
+		          AND conrelid = 'public.credential_model_bindings'::regclass
+		    ) THEN
+		        ALTER TABLE credential_model_bindings
+		            ADD CONSTRAINT cmb_billing_unit_check
+		            CHECK (billing_unit = ANY (ARRAY[
+		                'token'::text, 'audio_second'::text, 'request'::text, 'image'::text
+		            ]));
+		    END IF;
+		END
+		$do$;
+
+		ALTER TABLE request_logs_hot
+		    ADD COLUMN IF NOT EXISTS audio_seconds double precision;
+
+		ALTER TABLE request_logs
+		    ADD COLUMN IF NOT EXISTS audio_seconds double precision;
+
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('848', 'cmb.billing_unit + request_logs.audio_seconds for media duration billing')
+		ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("billing_unit + audio_seconds schema ensured (migration 848)")
+	return nil
+}
+
+// ensureCredentialRoutingScope mirrors sql/migrations/startup/847_credential_routing_scope.sql.
+// 2026-10-08：多媒体特殊服务凭据路由域（all|chat_only|media_only）。
+// 候选 SQL 用 COALESCE(c.routing_scope,'all') 硬隔离标准 chat 与 media 面，
+// 缺列即 42703。幂等 ADD COLUMN + CHECK + 索引 + schema_migrations stamp。
+func (d *DB) ensureCredentialRoutingScope(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	if d.columnsAllPresent(ctx, "credentials", []string{"routing_scope"}) {
+		if _, err := d.pool.Exec(ctx, `
+			INSERT INTO public.schema_migrations (version, description)
+			VALUES ('847', 'credentials.routing_scope for media/chat credential isolation')
+			ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+		`); err != nil {
+			return err
+		}
+		slog.Info("credential routing_scope schema ensured (migration 847, catalog short-circuit)")
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		ALTER TABLE credentials
+		    ADD COLUMN IF NOT EXISTS routing_scope text NOT NULL DEFAULT 'all';
+
+		DO $do$
+		BEGIN
+		    IF NOT EXISTS (
+		        SELECT 1 FROM pg_constraint
+		        WHERE conname = 'credentials_routing_scope_check'
+		          AND conrelid = 'public.credentials'::regclass
+		    ) THEN
+		        ALTER TABLE credentials
+		            ADD CONSTRAINT credentials_routing_scope_check
+		            CHECK (routing_scope = ANY (ARRAY['all'::text, 'chat_only'::text, 'media_only'::text]));
+		    END IF;
+		END
+		$do$;
+
+		CREATE INDEX IF NOT EXISTS idx_credentials_routing_scope
+		    ON credentials (routing_scope)
+		    WHERE status <> 'deleted';
+
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('847', 'credentials.routing_scope for media/chat credential isolation')
+		ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("credential routing_scope schema ensured (migration 847)")
 	return nil
 }
 
