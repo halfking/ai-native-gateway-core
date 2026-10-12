@@ -307,12 +307,33 @@ func (m *CandidateFailureMonitor) checkAlerts(ctx context.Context) error {
 // the credential is flipped to availability_state='cooling' with
 // recover_at = now() + coolMinutes. The recovery worker (credential_recovery.go)
 // will restore 'ready' once recover_at passes — unless auto-cool fires again.
+//
+// 窗口契约（2026-10-13 252 审计轮）：本查询两条臂只读 hot 双写表，其语义
+// 等价性成立的前提是窗口字面量（'5 minutes'）≤ hot 保留期——
+// session_turns_hot / request_logs_hot / candidate_failure_logs_hot 的
+// promote retention 名义 8h（settings lifecycle.*，R16 fact 85），5 分钟窗内
+// 的行只可能存在于 hot 侧，canonical 视图的分区腿与 v1 腿反连接在窗内恒
+// 贡献空集（与 admin.slidingWindowHotQuery 的 ≤120min 闸门同一论证，R32
+// 定版）。视图形态在本轮 54h 窗实测 ×1,548 条慢查、饱和期 avg 3.5s
+// （auto-cool 每实例每 tick 都跑，是持续第一大自营慢查族）；hot 形态
+// EXPLAIN ANALYZE 1.16ms（~93×），且在 252 生产库对拍 EXCEPT 双向差集
+// 0/0（轮报告 §修复一）。⚠️ 若把窗口调大到保留期量级（≥8h），分区腿不再
+// 为空，必须退回 canonical 视图形态——否则 attempts/fails 会静默漏掉已晋升行。
 func (m *CandidateFailureMonitor) checkAutoCool(ctx context.Context) error {
 	// Pull recent candidate_failure_logs + the request-log attempt count
 	// for the same window. Two CTEs joined by credential.
 	// 2026-09-11: the 5-minute attempt window must read the current-month
 	// surface — on the bare parent (cold rows only) win was always empty, so
 	// auto-cool never saw current traffic and never fired.
+	// 2026-10-13 252 审计轮：再从 current-month 视图收窄到 hot 双写表
+	// ——视图三臂（turns_hot ∪ turns 分区 ∪ v1 反连接）对 5 分钟窗只有
+	// hot 臂有产出，分区臂的索引下降+反连接是纯税（见
+	// autoCoolWindowSQLContract 头注）。两处镜像必须与部署视图逐字对齐：
+	//   - session 腿的 request_status 派生 =
+	//     db/request_logs_view_schema.go sessionRequestStatusExpr（824 定版，
+	//     由 db/view_schema_v2_contract_test.go 钉住）；改动视图投影时同步这里。
+	//   - v1 腿的反连接 = 视图 v1 臂的 NOT EXISTS(session_turns*)；
+	//     窗口 ⊂ hot 保留期时对 turns_hot 反连接已足够（分区腿空集）。
 	rows, err := m.db.Query(ctx, `
 		WITH win AS (
 		    SELECT credential_id,
@@ -330,9 +351,23 @@ func (m *CandidateFailureMonitor) checkAutoCool(ctx context.Context) error {
 		                 AND COALESCE(error_kind, '') NOT LIKE 'probe_direct_%'
 		           ) AS fails,
 		           COUNT(*) AS attempts
-		    FROM request_logs_with_current_month
-		    WHERE ts >= now() - interval '5 minutes'
-		      AND credential_id IS NOT NULL
+		    FROM (
+		        SELECT (CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint END) AS credential_id,
+		               (CASE WHEN t.success IS NULL THEN NULL
+		                     WHEN t.success THEN 'success'
+		                     WHEN t.error_kind IN ('rate_limit_exceeded', 'key_throttled') THEN 'rate_limited'
+		                     WHEN t.status_code = 429 THEN 'rate_limited'
+		                     ELSE 'failure' END) AS request_status,
+		               t.error_kind
+		        FROM session_turns_hot t
+		        WHERE t.ts >= now() - interval '5 minutes'
+		        UNION ALL
+		        SELECT r.credential_id, r.request_status, r.error_kind
+		        FROM request_logs_hot r
+		        WHERE r.ts >= now() - interval '5 minutes'
+		          AND NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = r.request_id)
+		    ) cand
+		    WHERE credential_id IS NOT NULL
 		    GROUP BY credential_id
 		),
 		cfl AS (
@@ -340,7 +375,9 @@ func (m *CandidateFailureMonitor) checkAutoCool(ctx context.Context) error {
 		    -- 2026-09-12: current-month surface — the bare parent's 5-minute
 		    -- window was always empty (writer feeds the hot table), so
 		    -- recent_failures was pinned at 0.
-		    FROM candidate_failure_logs_with_current_month
+		    -- 2026-10-13: 直读 hot 表（promote 是「先拷贝后延迟删」，5 分钟窗
+		    -- 行只可能在 hot 侧；视图分区腿窗内恒空）。
+		    FROM candidate_failure_logs_hot
 		    WHERE ts >= now() - interval '5 minutes'
 		    GROUP BY credential_id
 		)
