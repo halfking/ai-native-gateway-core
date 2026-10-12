@@ -99,6 +99,7 @@ export const enUS = {
     error: 'Failed to load',
     networkError: 'Network connection failed. Check your connection and retry.',
     sessionExpired: 'Your session expired. Sign in again.',
+    sessionAliveUnauthorized: 'You are signed in, but this feature is unavailable (it may be disabled).',
     forbidden: 'Your account does not have permission for this operation.',
     notFoundOrDenied: 'The record is unavailable or you do not have access to it.',
     conflict: 'The data changed on the server. Refresh and try again.',

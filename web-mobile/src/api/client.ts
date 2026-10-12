@@ -86,12 +86,29 @@ export class ApiError extends Error {
    * 未携带 code 的后端错误一律为空串，旧调用点不受影响。
    */
   code: string
-  constructor(status: number, detail: string, code = '') {
+  /**
+   * 401 的**会话裁决结果**（`sessionReallyDead` 的探针结论）。
+   *
+   * 三态而不是布尔：
+   *   · `undefined` —— 本次没探（已在登录页 / 非 `/api/` / 单飞闩锁已占用）。
+   *     「没探」既可能是会话真的死了，也可能是压根不适用，**不可当成 false**。
+   *   · `true`  —— 探针 `/api/auth/me` 成功 ⇒ 会话是好的，这个 401 是**端点自己拒**
+   *     （典型：feature flag 关闭 ⇒ `/api/admin/*` 未注册，后端仍回 401）。
+   *   · `false` —— 探针也失败 ⇒ 会话确实死了。
+   *
+   * 为什么必须随错误传下去：`formatApiError` 原本把**任何** 401 说成
+   * 「登录状态已过期，请重新登录」—— 与本文件修复前的踢登录是**同一个错误假设**。
+   * 修完跳转后实测（2026-10-13，245）：用户确实不再被踢回登录页，但页面级
+   * 错误态仍在说「登录状态已过期」，而同一时刻探针刚返回 200 ⇒ 文案与事实相反。
+   */
+  sessionAlive?: boolean
+  constructor(status: number, detail: string, code = '', sessionAlive?: boolean) {
     super(detail)
     this.name = 'ApiError'
     this.status = status
     this.detail = detail
     this.code = code
+    if (sessionAlive !== undefined) this.sessionAlive = sessionAlive
   }
 }
 
@@ -255,6 +272,9 @@ export async function req<T>(method: string, path: string, body?: unknown, optio
   if (r.status === 401) {
     const raw = await r.text()
     const msg = errorMessage(r.statusText, raw)
+    // `undefined` = 本次没探（见 ApiError.sessionAlive 的三态说明）。
+    // 必须保持 undefined 而不是 false —— 「没探」不等于「探了说是死的」。
+    let sessionAlive: boolean | undefined
     if (
       !redirectStarted &&
       !isAuthProbePath(path) &&
@@ -266,12 +286,16 @@ export async function req<T>(method: string, path: string, body?: unknown, optio
       // ★ 先确认会话是否真的死了，再决定要不要把用户踢回登录页。
       //   详见 sessionReallyDead 的注释：后端把「端点未注册」也回成 401，
       //   与「未认证」逐字节相同；旧实现直接踢 ⇒ 有效会话被误杀。
-      if (await sessionReallyDead()) {
+      const dead = await sessionReallyDead()
+      // 探针结论随错误传下去，供 formatApiError 区分「会话有效但端点拒绝」
+      // 与「会话真的过期」—— 两者对用户是完全不同的下一步动作。
+      sessionAlive = !dead
+      if (dead) {
         redirectStarted = true
         unauthorizedHandler?.(window.location.pathname + window.location.search)
       }
     }
-    throw new ApiError(401, msg || 'Unauthorized', errorCode(raw))
+    throw new ApiError(401, msg || 'Unauthorized', errorCode(raw), sessionAlive)
   }
 
   if (!r.ok) {
