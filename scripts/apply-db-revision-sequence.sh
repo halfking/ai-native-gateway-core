@@ -1349,6 +1349,12 @@ files=(
   # 且它持有的长快照会让每个 REFRESH MATERIALIZED VIEW CONCURRENTLY 等它。
   # CREATE OR REPLACE FUNCTION 幂等；「从未分析过」那条判据不变。
   "$ROOT_DIR/sql/migrations/startup/857_analyze_columnar_staleness_gate.sql"
+  # 858（2026-10-13）：给「会话终态晋级」（claimSessionFinalSuccess）补
+  # is_final_success 存在性索引，缺口本体是 **hot 侧有、月度分区侧没有**，
+  # 而该语句要逐个探测 4 个月度分区 ⇒ 每次调用摸约 5.1 万索引条目且逐条回堆。
+  # 生产实测（62h 窗口）：mean 987.3 ms / 每次 114,159 buffer 页 /
+  # 占 llm_gateway 全库数据库时间 4.06%。无表依赖，可放链尾；CREATE INDEX IF NOT EXISTS 幂等。
+  "$ROOT_DIR/sql/migrations/startup/858_request_logs_final_success_gsid_idx.sql"
 )
 
 

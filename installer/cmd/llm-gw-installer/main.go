@@ -849,6 +849,9 @@ var usageLedgerTsCoverAggIdx856 []byte
 //go:embed embeddata/startup/857_analyze_columnar_staleness_gate.sql
 var analyzeColumnarStalenessGate857 []byte
 
+//go:embed embeddata/startup/858_request_logs_final_success_gsid_idx.sql
+var requestLogsFinalSuccessGsidIdx858 []byte
+
 //go:embed embeddata/startup/829_bodies_columnar_rollback.sql
 var bodiesColumnarRollback829 []byte
 
@@ -1118,6 +1121,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/855_session_analytics_time_window.sql":                                  sessionAnalyticsTimeWindow855,
 	"startup/856_usage_ledger_ts_cover_agg_idx.sql":                                  usageLedgerTsCoverAggIdx856,
 	"startup/857_analyze_columnar_staleness_gate.sql":                                analyzeColumnarStalenessGate857,
+	"startup/858_request_logs_final_success_gsid_idx.sql":                            requestLogsFinalSuccessGsidIdx858,
 	"startup/829_bodies_columnar_rollback.sql":                                       bodiesColumnarRollback829,
 	"startup/835_modality_verify_probe_ledger.sql":                                   modalityVerifyProbeLedger835,
 	"startup/834_supplier_errors_base_tables.sql":                                    supplierErrorsBaseTables834,

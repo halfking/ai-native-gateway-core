@@ -1027,6 +1027,14 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//    合并时改号为 857（两侧均未部署，改号无生产代价）。
 			// 必须排在 838 → 839 之后且为链尾：它是该函数应有的最终体。
 			"857_analyze_columnar_staleness_gate.sql",
+			// 858（2026-10-13）：给「会话终态晋级」写路径补 is_final_success 存在性索引。
+			// 见 runbook §10.110.16。缺口本体：hot 侧有同形状索引、5 个月度分区全没有，
+			// 而这条语句必须逐个探测分区 ⇒ 每次调用摸约 5.1 万个索引条目并逐条回堆
+			// （生产实测 mean 987.3 ms / 每次 114,159 页 / 4.06% 全库数据库时间）。
+			// 与 842 同款取舍：建在分区父表上由 PG 级联，不加 CONCURRENTLY
+			// （CONCURRENTLY 在分区父表上被拒）；窗口内写被阻塞、读不受影响。
+			// 非唯一：唯一性仍由 hot 侧的 uq_request_logs_hot_final_success_session 承担。
+			"858_request_logs_final_success_gsid_idx.sql",
 		},
 	}
 }
