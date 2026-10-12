@@ -199,6 +199,34 @@ func TestMatrix_Q1_UnknownCatalog_FailOpen(t *testing.T) {
 	mustHave(t, m, "relay_future_param", `7`)
 }
 
+// A1.6b catalog_code 为空串的中转（联界/智码等本地主力形态）：executor
+// 盖 paramreg.CatalogCodeUnknownRelay 哨兵（路由已定、厂商未知）→
+// fail-open。R2.D1 修复判据（修复前红）。注意与「路由前序列化点」的
+// TargetProvider 空串 fail-closed 契约相区分（见
+// serialize_openai_minimax_dialect_test.go 的 pre-routing 用例）。
+func TestMatrix_Q1_EmptyCatalog_FailOpen(t *testing.T) {
+	body := `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],` +
+		`"search_parameters":{"mode":"off"},` + // grok 方言私有
+		`"relay_future_param":7}`
+	req, err := ParseOpenAI([]byte(body))
+	if err != nil {
+		t.Fatalf("ParseOpenAI: %v", err)
+	}
+	req = ValidateAndFixRequest(req, "matrix-q1-empty-cat")
+	req.Model = "kimi-k3"
+	req.TargetProvider = "unknown-relay" // executor 对空 catalog 候选盖的哨兵
+	out, err := SerializeOpenAI(req)
+	if err != nil {
+		t.Fatalf("SerializeOpenAI: %v", err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("outbound not json: %v", err)
+	}
+	mustHave(t, m, "search_parameters", `{"mode":"off"}`)
+	mustHave(t, m, "relay_future_param", `7`)
+}
+
 // A1.7 数值保真：>2^53 整数在 IR 字段与 Extensions 两条路上都不变形。
 func TestMatrix_Q1_BigIntFidelity(t *testing.T) {
 	body := `{"model":"grok-4.6","messages":[{"role":"user","content":"hi"}],` +
