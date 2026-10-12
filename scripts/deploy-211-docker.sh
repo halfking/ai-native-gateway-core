@@ -90,11 +90,17 @@ if [[ -n "$VIA" ]]; then
   [[ "$MODE" == "deploy" ]] || die "--via 只支持默认 deploy 模式（--status/--stop 请 ssh 后本地跑）"
   log "同步仓库到 $VIA:$D211_TARGET_IP ..."
   ssh "$VIA" 'mkdir -p ~/llm-gateway-go-211'
-  # 用 tar over ssh 排除体积大/无用目录，避免 node_modules、.git 拖慢或撑爆磁盘
+  # 用 tar over ssh 排除体积大/无用目录，避免 node_modules、.git 拖慢或撑爆磁盘。
+  # .env* 必须排干净：Dockerfile 里是 `COPY . .`，而 .dockerignore 并不排除
+  # .env*，所以一旦把 .env.local 同步过去，它的 admin key / secret / 口令就会
+  # 进 docker build 上下文、留在镜像层里（docker history 就能翻出来）。
   tar -C "$D211_REPO_ROOT" \
       --exclude=.git --exclude=node_modules --exclude=dist --exclude=build \
-      --exclude='*.log' --exclude=.env --exclude=.env.local \
+      --exclude='*.log' --exclude='.env' --exclude='.env.*' \
       -cf - . | ssh "$VIA" "tar -C ~/llm-gateway-go-211 -xf -"
+  # 双保险：目标机上再扫一遍，真有残留就当场删掉，别留给下一次构建
+  ssh "$VIA" "find ~/llm-gateway-go-211 -maxdepth 2 -name '.env*' -type f -delete; \
+             echo '[211] 目标树残留 .env*: '\$(find ~/llm-gateway-go-211 -name '.env*' -type f | wc -l)"
   log "在 $VIA 上执行 deploy ..."
   ssh "$VIA" "cd ~/llm-gateway-go-211 && D211_STATE_DIR=$D211_STATE_DIR D211_REDIS_DB_START=$D211_REDIS_DB_START D211_REDIS_DB_END=$D211_REDIS_DB_END bash scripts/deploy-211-docker.sh $*"
   exit $?
@@ -449,14 +455,24 @@ if [[ ! -f "$D211_REPO_ROOT/Dockerfile" ]]; then
   die "未找到 Dockerfile：$D211_REPO_ROOT/Dockerfile（请用 --via 同步仓库或手动放置）"
 fi
 log "构建网关镜像 $D211_GW_IMAGE ..."
-(
-  cd "$D211_REPO_ROOT"
-  docker build \
-    --build-arg "BASE_REGISTRY=${D211_BASE_REGISTRY:-docker.io/library}" \
-    --build-arg "GO_BASE_IMAGE=${D211_GO_BASE_IMAGE:-golang:1.27.1-alpine}" \
-    --build-arg "RUNTIME_BASE_IMAGE=${D211_RUNTIME_BASE_IMAGE:-alpine:3.22}" \
-    -t "$D211_GW_IMAGE" -f Dockerfile .
-) || die "网关镜像构建失败"
+build_gateway_image() {
+  local net_flag="${1:-}"
+  (
+    cd "$D211_REPO_ROOT"
+    # shellcheck disable=SC2086
+    docker build $net_flag \
+      --build-arg "BASE_REGISTRY=${D211_BASE_REGISTRY:-docker.io/library}" \
+      --build-arg "GO_BASE_IMAGE=${D211_GO_BASE_IMAGE:-golang:1.27.1-alpine}" \
+      --build-arg "RUNTIME_BASE_IMAGE=${D211_RUNTIME_BASE_IMAGE:-alpine:3.22}" \
+      -t "$D211_GW_IMAGE" -f Dockerfile .
+  )
+}
+if ! build_gateway_image; then
+  # 内网/NAT 下 docker build 默认桥接网络常常拉不动基础镜像与 go module；
+  # 换宿主网络重试一次是这类环境的标准解法。
+  warn "首次构建失败，用 --network=host 重试一次（内网/NAT 常见原因）"
+  build_gateway_image "--network=host" || die "网关镜像构建失败（两种网络模式都试过了）"
+fi
 
 # =============================================================================
 # 启动网关容器
