@@ -84,6 +84,12 @@ if [[ "$RUN_WEB" == true ]]; then
   pm_run color:check web
   echo "[verify] frontend build"
   pm_run build web
+  echo "[verify] web-mobile install"
+  pm_install web-mobile
+  echo "[verify] web-mobile unit gates (contrast/token ratchets + view regressions)"
+  pm_run test web-mobile
+  echo "[verify] web-mobile static-gate selftests (node-only; layout-audit selftest 依 Chrome,保持手动)"
+  pm_run gate:selftest web-mobile
 fi
 
 if rg -n '^(<<<<<<<|>>>>>>>)' --glob '!vendor/**' --glob '!web/node_modules/**' .; then

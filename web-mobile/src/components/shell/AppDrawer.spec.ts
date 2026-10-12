@@ -113,6 +113,13 @@ describe('navItemsFor', () => {
     //   避免依赖 DRAWER_NAV 的书写顺序（顺序不是契约）。
     //   加新 superAdmin 档页面时这条会红 —— 那正是它该做的。
     expect(dropped.map((d) => d.key).sort()).toEqual([
+      // ★ 2026-10-08：自动路由读面（整条 auto-route 线由 handler.go:1381 / :1430
+      //   的 h.superAdmin 挂载）。注意形参名 `adminWrap` 是假名 ——
+      //   权限得读到调用处实际传的那个值。
+      'auto-route',
+      // ★ 2026-10-07 第四十九轮：凭据×模型实时状态（credential_state_handlers.go:175
+      //   `wrap := h.superAdmin`）—— 这一条**要** super_admin，与前几批 admin 档页面相反。
+      'credential-model-state',
       'flow',
       'funnel',
       'integrity',

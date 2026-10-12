@@ -121,7 +121,7 @@ var requestLogsReadInventory = map[string]int{
 	"admin/session_online.go":           1,
 	"admin/session_sanitize_matches.go": 2,
 	"admin/session_summary_v2.go":       1,
-	"admin/session_tenant.go":           2,
+	"admin/session_tenant.go":           4,
 	"admin/session_timeline_query.go":   1,
 	"admin/session_title.go":            1,
 	"admin/session_turns_tree.go":       1,

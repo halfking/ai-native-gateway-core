@@ -96,6 +96,14 @@ func TestMigration839_AutovacCurrentMonthHeapHandoff(t *testing.T) {
 		require.NotContains(t, downSQL,
 			"c.relam <> (SELECT oid FROM pg_am WHERE amname = 'heap')",
 			"down 里不该残留 839 的新判据")
+		// 函数存在性探测必须用 to_regprocedure：to_regclass 只解析关系名，
+		// 对函数名恒返回 NULL ⇒ 守卫永不成立 ⇒ 回滚静默跳过「交还 0.02」
+		// 这半个目标（2026-10-07 审计发现并订正）。
+		require.Contains(t, downSQL,
+			"to_regprocedure('public.apply_llm_gateway_current_month_analyze_scale_factor(numeric)')")
+		require.NotContains(t, downSQL,
+			"to_regclass('public.apply_llm_gateway_current_month_analyze_scale_factor'",
+			"down 不得再用 to_regclass 探测函数——恒 NULL，守卫永不成立")
 	})
 
 	t.Run("四处函数正本同步", func(t *testing.T) {
@@ -124,6 +132,26 @@ func TestMigration839_AutovacCurrentMonthHeapHandoff(t *testing.T) {
 				"AND c.relam <> (SELECT oid FROM pg_am WHERE amname = 'heap')",
 				f+" 缺少 839 的交接判据")
 		}
+	})
+
+	t.Run("第五份活副本(db.go)同步", func(t *testing.T) {
+		// db/db.go 的 ensurePartitionAutovacuumSchema 每次启动都
+		// CREATE OR REPLACE 自己的内联副本——它是唯一「每次启动都执行」的
+		// 一份，排在迁移之后，会覆盖迁移装进去的函数体。不同步 ⇒ 重启即
+		// 静默撤销 838/839（2026-10-07 审计发现的 P1，此处钉死防再漂移）。
+		// 上面的「四处函数正本同步」只覆盖静态 schema 镜像，抓不到这份。
+		b, err := os.ReadFile("../../../db/db.go")
+		require.NoError(t, err)
+		s := string(b)
+		require.Contains(t, s,
+			"NOT EXISTS (SELECT 1 FROM pg_statistic s WHERE s.starelid = c.oid)",
+			"db.go 内联 analyze 函数缺 838 的首次覆盖判据——旧体会每小时重分析冻结分区")
+		require.Contains(t, s,
+			"AND c.relam <> (SELECT oid FROM pg_am WHERE amname = 'heap')",
+			"db.go 内联 analyze 函数缺 839 的交接判据——旧体会把当月堆分区从 autovacuum 手里抢回来")
+		require.Contains(t, s,
+			"THEN '0.005' ELSE '0.02' END",
+			"db.go 分区 reloptions 守卫/SET 缺 839 的当月堆分区 scale_factor 月份感知——固定 0.02 期望会把 0.005 改回去")
 	})
 
 	t.Run("已接线到 installer 与台账", func(t *testing.T) {

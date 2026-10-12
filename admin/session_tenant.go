@@ -87,6 +87,69 @@ func assertTaskInTenant(ctx context.Context, db *pgxpool.Pool, taskID, tenantID 
 	return err == nil && exists
 }
 
+// taskTenantDB is the narrow slice of the pool the batch tenant gate needs
+// (errorsTrendDB 同款), so pgxmock can stand in for the regression test.
+type taskTenantDB interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// taskIDsInTenant 是 assertTaskInTenant 的批量版：一次往返返回 taskIDs 中
+// 属于 tenantID 的子集。表清单与 assertTaskInTenant 逐腿对齐（五腿并联，
+// 停写前后都至少有一条腿供数，理由见 assertTaskInTenant 的权限门注释）。
+// 2026-10-07 审计：titles/batch 曾对客户端提供的任意 task_id 无租户过滤
+// （session_titles 无 tenant_id 列），tenant_admin 可跨租户探测会话标题。
+//
+// FAIL-CLOSED：查询出错时返回 (nil, err)，调用方必须把空集当作「全部不在
+// 租户内」降级——这是标题富化通道，宁可少富化不可越权泄露。
+func taskIDsInTenant(ctx context.Context, db taskTenantDB, taskIDs []string, tenantID string) (map[string]bool, error) {
+	allowed := make(map[string]bool, len(taskIDs))
+	if db == nil || len(taskIDs) == 0 || tenantID == "" {
+		return allowed, nil
+	}
+	rows, err := db.Query(ctx, `
+		SELECT DISTINCT gw_task_id FROM (
+			SELECT gw_task_id FROM session_summaries
+			WHERE tenant_id = $1 AND gw_task_id = ANY($2)
+			UNION
+			SELECT gw_task_id FROM session_turn_details_hot
+			WHERE tenant_id = $1 AND gw_task_id = ANY($2)
+			UNION
+			SELECT gw_task_id FROM session_turn_details
+			WHERE tenant_id = $1 AND gw_task_id = ANY($2)
+			UNION
+			SELECT gw_task_id FROM request_logs_hot
+			WHERE tenant_id = $1 AND gw_task_id = ANY($2)
+			UNION
+			SELECT gw_task_id FROM request_logs
+			WHERE tenant_id = $1 AND gw_task_id = ANY($2)
+		) t
+	`, tenantID, taskIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		allowed[id] = true
+	}
+	return allowed, rows.Err()
+}
+
+// filterTaskPairsInTenant 按 taskIDsInTenant 的放行集过滤 (task_id, scoped)
+// 对；不在放行集内的 task_id 整对丢弃（同一 task 的其它 scoped 变体同权）。
+func filterTaskPairsInTenant(pairs [][2]string, allowed map[string]bool) [][2]string {
+	out := make([][2]string, 0, len(pairs))
+	for _, p := range pairs {
+		if allowed[p[0]] {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // ============================================================
 // Owner scope (2026-07-07 会话归属建模)
 //

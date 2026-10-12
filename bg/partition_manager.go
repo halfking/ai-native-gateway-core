@@ -2,6 +2,7 @@ package bg
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"log/slog"
@@ -1554,6 +1555,46 @@ func analyzeLockKey() int64 {
 	return int64(h.Sum64())
 }
 
+// analyzeThrottleTaskName is the row key in public.llm_gateway_task_state that
+// both gateway instances contend for (migration 840).
+//
+// ★ 为什么需要它而不是 §10.53 那把 advisory 锁：实测（runbook §10.107.6）那把锁
+// 一次都没拦住 —— 2026-10-07 今日 154 跑 15 趟 / 245 跑 16 趟，**0 次跳过**，
+// 2 次/小时原封不动。
+//
+// ⚠️ 「锁不生效」的**成因目前仍未解释**，不要照抄旧结论：
+// · 旧结论说「两台 tick 偏移 6 分 01 秒 ≫ 持有时长 ⇒ 永不争用」——**该数字是错的**。
+// 稳态逐小时实测偏移只有约 40 秒（−52s ~ +36s 来回摆），不是 6 分钟。
+// · 已排除：两台不是不同库（DSN 同为 172.16.2.210:5432/llm_gateway）；
+// 锁键也不含实例身份（analyzeLockKey() 是常量 fnv64a("llm-gateway:analyze:")）。
+// · 未排除两种可能：「单趟其实 < 40s 所以两趟不重叠」与「重叠了但锁没拦住」。
+// 本函数只记 "tables" 不记耗时，历史读数无法回溯 ⇒ 需 2s 采样
+// pg_stat_activity 判定，采样前不下结论。
+//
+// ⇒ 无论成因是哪一种，**跨实例共享的节流槽都是必需的**：它把「每小时跑两遍」压成
+// 「每小时跑一遍」，不依赖任何时序侥幸。两者正交、都留着：
+// 锁防「同时」，槽防「重复」。
+const analyzeThrottleTaskName = "analyze_llm_gateway_table_stats"
+
+// analyzeThrottleMinInterval is the throttle window. The goal is ONE pass per
+// hour, not "as often as possible": after migration 838/839 the per-table
+// statistics burden belongs to autovacuum (runbook §10.105), so this manual
+// pass does not need to be frequent. 50 minutes leaves 10 minutes of slack to
+// absorb clock drift and the single pass (838 落地后实测 51.3 秒，runbook §10.107.6；
+// 之前普遍是 94 秒，故这里的余量按更长的那个值留）。
+const analyzeThrottleMinInterval = 50 * time.Minute
+
+// isUndefinedTable reports whether err is a Postgres 42P01 (undefined_table).
+//
+// Used so the analyze path can DEGRADE rather than fail when migration 840 has
+// not been applied yet: without the throttle table the behaviour is exactly
+// what it was before (both instances run), which is the documented rollback
+// behaviour of 840's .down.sql.
+func isUndefinedTable(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "42P01"
+}
+
 func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 	if pm == nil || pm.db == nil {
 		return
@@ -1818,6 +1859,39 @@ func (pm *PartitionManager) analyzePartitionStats(ctx context.Context) {
 		slog.Debug("partition_manager: analyze skipped (peer holds lock)")
 		return
 	}
+
+	// 2026-10-07（runbook §10.107/§10.108，迁移 840）：节流槽。
+	//
+	// ★ 上面那把锁一次都不会命中（xact 级、只活 93.81 秒，而两台 tick 偏移
+	//   6 分 01 秒）⇒ 「两台各跑一遍」原封不动。这张共享表才是真正的节流：
+	//   claim_* 的 `INSERT … ON CONFLICT DO UPDATE … WHERE … RETURNING`
+	//   是单语句原子操作，两个实例并发时只有一个能拿到 true。
+	//
+	// ★ 缺表（迁移 840 未应用）时**降级为照常执行**，而不是跳过或报错：
+	//   这正是 840 的 .down.sql 回滚后的目标行为。
+	var slotClaimed bool
+	if err := tx.QueryRow(timeoutCtx,
+		"SELECT claim_llm_gateway_task_slot($1, $2::interval)",
+		analyzeThrottleTaskName, analyzeThrottleMinInterval.String(),
+	).Scan(&slotClaimed); err != nil {
+		if isUndefinedTable(err) {
+			slog.Warn("partition_manager: analyze throttle table missing (migration 840 not applied?) — running unthrottled")
+			slotClaimed = true
+		} else {
+			tx.Rollback(timeoutCtx)
+			slog.Warn("partition_manager: analyze slot claim failed", "error", err)
+			return
+		}
+	}
+	if !slotClaimed {
+		tx.Rollback(timeoutCtx)
+		// ★ 用 Info 而不是 Debug：数「实际执行次数」时看不到跳过会让人误判
+		//   「没跑」与「被跳过」是一回事（runbook §10.107.1）。
+		slog.Info("partition_manager: analyze skipped (peer holds shared throttle slot)",
+			"task", analyzeThrottleTaskName, "min_interval", analyzeThrottleMinInterval.String())
+		return
+	}
+
 	var n int64
 	err = tx.QueryRow(timeoutCtx,
 		"SELECT analyze_llm_gateway_table_stats($1)", 2,
@@ -1830,6 +1904,15 @@ func (pm *PartitionManager) analyzePartitionStats(ctx context.Context) {
 		slog.Warn("partition_manager: analyze stats failed", "error", err)
 		return
 	}
+
+	// 记录完成时刻。**必须在 commit 之后**——放在同一事务里会被上面的
+	// commit 一起处理，而 claim 已经把 last_started_at 写掉了，
+	// 所以即使这里失败，槽位也会在 min_interval 后自然过期。
+	if _, cerr := pm.db.Exec(timeoutCtx,
+		"SELECT complete_llm_gateway_task_slot($1)", analyzeThrottleTaskName); cerr != nil {
+		slog.Warn("partition_manager: analyze slot completion failed (non-fatal)", "error", cerr)
+	}
+
 	if n > 0 {
 		slog.Info("partition_manager: analyze stats", "tables", n)
 	}

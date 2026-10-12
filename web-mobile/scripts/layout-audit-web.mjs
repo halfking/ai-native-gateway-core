@@ -56,10 +56,51 @@ const ROUTES = arg('routes', '/,/models,/keys,/nodes,/usage,/alerts')
   .split(',').filter(Boolean).map((r) => BASE + r)
 
 // 宽×高。横屏三档是**形状**变化（矮视口下吸底栏与内容区争用关系不同），不是只加宽。
-const SIZES = arg('sizes', '320x800,360x800,390x844,412x915,600x800,768x1024,1024x768,1280x800,1440x900,914x411,740x360,1024x600')
+// ⚠️ 视口集合与 `docs/UI规范/15-真机验收与落地路线.md` §2.1 那张表**必须一致**，
+//   两者由 `src/composables/viewport-matrix.spec.ts` 双向对账（少一档即红）。
+//   568×320 是唯一「compact + 横屏 + 吸底栏」的档：横握手机的 CSS 宽度多在
+//   568~932，而移动端 medium 从 600 起 ⇒ 少了它就量不到吸底栏（10 §4.6.61）。
+const SIZES = arg('sizes', '320x800,360x800,390x844,412x915,568x320,600x800,740x360,840x673,768x1024,914x411,1024x600,1024x768,1194x834,1280x800,1440x900')
   .split(',').map((s) => { const [w, h] = s.split('x').map(Number); return { w, h } })
 
 const SETTLE_MS = Number(arg('settle', '25000'))
+// 横向 safe-area 注入（2026-10-08）：`--insets 30,30[,top,bottom]`
+// 为什么需要它：headless 的 env(safe-area-inset-*) 恒 0，而**视口宽高变化改变不了
+// inset 带的位置** ⇒ 横屏手势/刘海这一维在 12 档视口审计里结构性量不到。
+// 注入的是壳真正写的那两个自定义属性（Capacitor SystemBars.injectSafeAreaCSS，
+// 名字与写入位置都在 theme.css 注释里），只有**数值**是合成的；判据对数值无感。
+// ⚠️ 注入后必须**回读** `--app-safe-*`：读不回来就把这组标作废，
+//   否则「注不进去」和「量出来没问题」在报告里长得一模一样。
+const INSET_RAW = arg('insets', '')
+const INSETS = INSET_RAW ? INSET_RAW.split(',').map(Number) : null
+// `--overlay`：每组额外采一次「抽屉打开」状态。抽屉是 `Teleport to="body"` 的
+// fixed 浮层，默认永远关着 ⇒ 不专门驱动就量不到它。
+const OVERLAY = has('overlay')
+const INJECT_INSETS = INSETS ? `(() => { const s = document.documentElement.style;
+  s.setProperty('--safe-area-inset-left', '${INSETS[0]}px');
+  s.setProperty('--safe-area-inset-right', '${INSETS[1] ?? INSETS[0]}px');
+  s.setProperty('--safe-area-inset-top', '${INSETS[2] ?? 0}px');
+  s.setProperty('--safe-area-inset-bottom', '${INSETS[3] ?? 0}px');
+  return true })()` : null
+const READ_INSETS = `(() => { const cs = getComputedStyle(document.documentElement); const o = {};
+  for (const k of ['left','right','top','bottom']) o[k] = (cs.getPropertyValue('--app-safe-' + k) || '').trim();
+  return o })()`
+// 打开浮层：**只点起始侧的按钮**（`topbar__side` 非 end 侧 = 菜单/返回），
+// 点了等 700ms 再由调用方**观察**到底打开了哪个 ——
+// ⚠️ 第一版在同一个表达式里「点完立刻查 `.drawer`」，而 Vue 的 DOM 更新是异步的
+//   （nextTick 微任务）⇒ 同步查**永远**看不到抽屉，返回值恒为 null；
+//   更糟的是那个循环会把所有 topbar 按钮**都点一遍**（菜单 + 账户），
+//   于是抽屉与账户 Sheet 同时打开，凭空造出一对 tap-overlap。
+const OPEN_OVERLAY = `(() => {
+  const b = document.querySelector('.topbar__side:not(.topbar__side--end) .topbar__btn');
+  if (!b) return null; b.click(); return true })()`
+const WHICH_OVERLAY = `(() => {
+  if (document.querySelector('.drawer')) return 'drawer';
+  if (document.querySelector('.app-sheet, .focus-layer')) return 'sheet';
+  return null })()`
+const CLOSE_OVERLAY = `(() => { const s = document.querySelector('.drawer__scrim');
+  if (s) s.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+  return true })()`
 const PASS = process.env.LLM_GATEWAY_ADMIN_PASSWORD
 if (!PASS) { console.error('环境里没有 LLM_GATEWAY_ADMIN_PASSWORD（不要用 argv 传口令）'); process.exit(2) }
 
@@ -200,9 +241,41 @@ for (const route of ROUTES) {
     if (probe.errHit) { rows.push({ ...row, ...probe, invalid: 'error-page', head: probe.head }); continue }
 
     let rep = null
+    // 注入要在**判据跑之前**：自定义属性一改，下一次读 rect 就会重新布局。
+    let ins = null
+    if (INJECT_INSETS) {
+      await evaluate(INJECT_INSETS).catch((e) => ({ error: String(e) }))
+      ins = await evaluate(READ_INSETS).catch((e) => ({ error: String(e) }))
+      const wantL = `${INSETS[0]}px`
+      if (!ins || ins.error || ins.left !== wantL) {
+        rows.push({ ...row, invalid: 'inset-not-injected', got: JSON.stringify(ins) })
+        continue
+      }
+    }
     try { rep = await evaluate(`(${AUDIT_SRC})()`) } catch (e) { rep = { error: String(e) } }
     rows.push({ route, reqW: w, reqH: h, vw: probe.vw, vh: probe.vh, textLen: probe.len,
-                rescuedByRetry: rescued, settle, report: rep })
+                rescuedByRetry: rescued, settle, insets: ins, report: rep })
+
+    // 浮层状态：抽屉 / 账户 Sheet 默认关着，不驱动就量不到
+    if (OVERLAY) {
+      const clicked = await evaluate(OPEN_OVERLAY).catch((e) => `err:${e}`)
+      await sleep(700)
+      // 观察而不是假定：点到的可能是「返回」（showBack 路由），那就当没开成
+      const which = await evaluate(WHICH_OVERLAY).catch(() => null)
+      if (!which) {
+        rows.push({ ...row, invalid: 'overlay-not-opened', got: String(clicked) })
+      } else {
+        let orep = null
+        try { orep = await evaluate(`(${AUDIT_SRC})()`) } catch (e) { orep = { error: String(e) } }
+        rows.push({ route, reqW: w, reqH: h, vw: probe.vw, vh: probe.vh, textLen: probe.len,
+                    rescuedByRetry: rescued, settle, insets: ins, state: 'overlay:' + which, report: orep })
+        await evaluate(CLOSE_OVERLAY).catch(() => {})
+        await sleep(400)
+        // 量具自证：关不掉的话下一组的读数已经被浮层盖住了，必须报出来而不是继续
+        const closed = await evaluate(`!document.querySelector('.drawer, .app-sheet, .focus-layer')`).catch(() => false)
+        if (!closed) rows.push({ ...row, invalid: 'overlay-not-closed' })
+      }
+    }
   }
 }
 ws.close(); stop()
@@ -214,17 +287,20 @@ const byKind = {}
 for (const r of bad) for (const i of r.report.issues) (byKind[i.kind] ??= []).push({ route: r.route, size: `${r.reqW}x${r.reqH}`, sev: i.sev, detail: i.detail })
 
 const pad = (s, n) => String(s ?? '').padEnd(n)
-console.log(`\n${pad('route', 12)}${pad('尺寸', 10)}${pad('实测', 10)}${pad('文本', 7)}${pad('settle', 16)}${pad('问题', 6)}问题类型`)
-console.log('-'.repeat(112))
+console.log(`\n${pad('route', 12)}${pad('尺寸', 10)}${pad('实测', 10)}${pad('状态', 18)}${pad('文本', 7)}${pad('settle', 16)}${pad('问题', 6)}问题类型`)
+console.log('-'.repeat(130))
 for (const r of rows) {
   if (r.invalid) { console.log(`${pad(r.route, 12)}${pad(r.reqW + 'x' + r.reqH, 10)}作废 ${r.invalid} ${pad(r.got ?? '', 40)}`); continue }
   const k = r.report?.issues?.map((i) => i.kind).sort().join(',') || '（无）'
   console.log(pad(r.route, 12) + pad(`${r.reqW}x${r.reqH}`, 10) + pad(`${r.vw}x${r.vh}`, 10) +
-    pad(r.textLen, 7) + pad(r.settle?.state ?? '?', 16) + pad(r.report?.issues?.length ?? 0, 6) + k)
+    pad(r.state ?? 'base', 18) + pad(r.textLen, 7) + pad(r.settle?.state ?? '?', 16) +
+    pad(r.report?.issues?.length ?? 0, 6) + k)
 }
 
 console.log(`\n—— 量具自证 ——`)
 console.log(`目标 ${ORIGIN}  tag ${TAG}   路由 ${ROUTES.length} × 视口 ${SIZES.length} = ${rows.length} 组`)
+console.log(`inset 注入 ${INSETS ? `left=${INSETS[0]} right=${INSETS[1] ?? INSETS[0]} top=${INSETS[2] ?? 0} bottom=${INSETS[3] ?? 0}（每组回读 --app-safe-*，读不回即作废）` : '未注入（env() 在 headless 恒 0 ⇒ 横向 safe-area 本轮结构性不可见）'}`)
+console.log(`浮层状态 ${OVERLAY ? '已开（每组多采一次抽屉/Sheet）' : '未开（抽屉默认关着 ⇒ 本轮量不到）'}`)
 console.log(`作废 ${rows.filter((r) => r.invalid).length}（视口回读不符 / 无内容 / 错误页）`)
 console.log(`有效 ${valid.length}   ★ 有问题的组 ${bad.length}`)
 if (!bad.length) console.log('   （无问题）')

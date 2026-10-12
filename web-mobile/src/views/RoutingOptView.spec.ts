@@ -195,6 +195,11 @@ describe('入口与窗口控件', () => {
     expect(chips.length).toBe(2) // 准确率 + metrics 各一组
     await chips[0]!.trigger('click')
     await flushPromises()
+    // ★★ 单次 flushPromises 不保证第 2 次请求已发出：视图取数链要走两轮微任务，
+    //   机器负载高时 calls[1] 会短暂是 undefined（十连跑 run#8 实测偶发，2/3801）。
+    await vi.waitFor(() => {
+      expect(accMock.mock.calls.length).toBeGreaterThanOrEqual(2)
+    })
     expect(accMock.mock.calls[1]![0]).toEqual({ hours: 168 })
   })
 
@@ -203,6 +208,11 @@ describe('入口与窗口控件', () => {
     const chips = w.findAll('.ro__chip').filter((c) => c.text() === '720h')
     await chips[1]!.trigger('click')
     await flushPromises()
+    // ★★ 单次 flushPromises 不保证第 2 次请求已发出：视图取数链要走两轮微任务，
+    //   机器负载高时 calls[1] 会短暂是 undefined（十连跑 run#8 实测偶发，2/3801）。
+    await vi.waitFor(() => {
+      expect(metricsMock.mock.calls.length).toBeGreaterThanOrEqual(2)
+    })
     expect(metricsMock.mock.calls[1]![0]).toEqual({ hours: 720, taskType: undefined, provider: undefined })
   })
 
@@ -213,6 +223,11 @@ describe('入口与窗口控件', () => {
     await inputs[1]!.setValue('openai')
     await w.find('form').trigger('submit')
     await flushPromises()
+    // ★★ 单次 flushPromises 不保证第 2 次请求已发出：视图取数链要走两轮微任务，
+    //   机器负载高时 calls[1] 会短暂是 undefined（十连跑 run#8 实测偶发，2/3801）。
+    await vi.waitFor(() => {
+      expect(metricsMock.mock.calls.length).toBeGreaterThanOrEqual(2)
+    })
     expect(metricsMock.mock.calls[1]![0]).toEqual({ hours: 24, taskType: 'chat', provider: 'openai' })
   })
 })

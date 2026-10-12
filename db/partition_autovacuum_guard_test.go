@@ -55,9 +55,34 @@ func TestEnsurePartitionAutovacuumSchema_SkipsAlreadyConfigured(t *testing.T) {
 			t.Errorf("expected a reloptions guard in BOTH ALTER loops, found %d — "+
 				"fixing one loop leaves the other's exclusive locks in place", guards)
 		}
-		alters := strings.Count(fn, "ALTER TABLE %I SET (%s)")
-		if alters != 2 {
-			t.Errorf("expected two unguarded-shaped ALTER sites to guard, found %d", alters)
+		// The hot-table loop sets the fixed 404 option list; the partition
+		// loop is month-aware (839) and appends the per-row expected analyze
+		// scale factor. One ALTER site of each shape.
+		hotAlters := strings.Count(fn, "ALTER TABLE %I SET (%s)")
+		partitionAlters := strings.Count(fn, "ALTER TABLE %I SET (%s, autovacuum_analyze_scale_factor=%s)")
+		if hotAlters != 1 || partitionAlters != 1 {
+			t.Errorf("expected one fixed-shape and one month-aware ALTER site, found %d / %d", hotAlters, partitionAlters)
+		}
+	})
+
+	t.Run("partition_loop_honors_the_839_handoff", func(t *testing.T) {
+		// Migration 839 hands the CURRENT month's heap partitions back to
+		// autovacuum at analyze scale factor 0.005. A guard that expects
+		// 0.02 everywhere rewrites 0.005 back on the first boot, and a
+		// body that always sets 0.02 drops the handoff again at the next
+		// month rollover — both guard and SET must be month-aware.
+		if !strings.Contains(fn, "THEN '0.005' ELSE '0.02' END") {
+			t.Error("partition guard/SET must expect 0.005 on current-month heap partitions (839)")
+		}
+		// month CASE appears in both the SELECT list (SET value) and the
+		// reloptions guard; anything less means one half lost the
+		// month-awareness.
+		monthAware := strings.Count(fn, "to_char(date_trunc('month', now()), 'YYYY_MM')")
+		if monthAware < 2 {
+			t.Errorf("month-aware scale factor must appear in both the guard and the SET, found %d", monthAware)
+		}
+		if !strings.Contains(fn, "r.expect_sf") {
+			t.Error("partition ALTER must apply the per-row expected scale factor")
 		}
 	})
 
