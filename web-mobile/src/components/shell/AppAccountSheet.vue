@@ -12,9 +12,29 @@ import AppIcon from '@/components/common/AppIcon.vue'
 import AppSheet from '@/components/common/AppSheet.vue'
 import AppConfirm from '@/components/common/AppConfirm.vue'
 import { fetchMobileNodeDescriptor } from '@/api/mobileNode'
+import { GATEWAY_SITES, currentSite, isCurrentSite, siteLoginUrl, type GatewaySite } from '@/api/gatewaySites'
 
 const props = defineProps<{ modelValue: boolean }>()
 const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>()
+
+/** 当前所在站点；不在预置目录里（自建环境）时为 null ⇒ 不渲染该组。 */
+const site = currentSite()
+/** 除当前站点外的可切换站点。当前站点自己列在上面作为「你在哪」。 */
+const otherSites = computed(() => GATEWAY_SITES.filter(option => !isCurrentSite(option)))
+const switchingSite = ref<string | null>(null)
+
+/**
+ * 切到另一站点：整页跳到该站点的登录页。
+ *
+ * ⚠️ 为什么不先 logout：当前站点的 `llmgw_session` 是 cookie，跨 origin 不共享，
+ *   跳走后新站点读不到它；反过来调用 logout 会顺手清掉主题/语言/节点配置
+ *   这些**跨站点也该保留**的东西。换站点 ≠ 注销。
+ */
+function switchSite(target: GatewaySite): void {
+  if (switchingSite.value) return
+  switchingSite.value = target.id
+  window.location.replace(siteLoginUrl(target))
+}
 
 const auth = useAuthStore()
 const theme = useThemeStore()
@@ -149,6 +169,31 @@ async function showNodeQr(): Promise<void> {
           <div class="account__meta">{{ auth.userInfo?.email }}</div>
           <span class="badge badge--info">{{ roleLabel }}</span>
         </div>
+      </div>
+
+      <!-- 站点切换（2026-10-13）：与登录页同一份目录（api/gatewaySites.ts）。
+           切换 = 整页跳到目标站点的 /m/login，需重新登录该站点的账号。 -->
+      <div v-if="site" class="account__group">
+        <div class="account__group-label">{{ t('account.gatewaySite') }}</div>
+        <div class="account__current-site">
+          <span class="account__site-env" :data-env="site.env">{{ t(`login.siteEnv.${site.env}`) }}</span>
+          <span class="account__row-label">{{ site.name }}</span>
+          <code class="account__site-origin">{{ site.origin }}</code>
+        </div>
+        <button
+          v-for="option in otherSites"
+          :key="option.id"
+          type="button"
+          class="account__row"
+          :data-site-id="option.id"
+          :disabled="switchingSite !== null"
+          @click="switchSite(option)"
+        >
+          <span class="account__site-env" :data-env="option.env">{{ t(`login.siteEnv.${option.env}`) }}</span>
+          <span class="account__row-label">{{ option.name }}</span>
+          <span class="account__row-value">{{ switchingSite === option.id ? t('common.loading') : '' }}</span>
+          <AppIcon name="chevron" :size="16" class="account__chev" />
+        </button>
       </div>
 
       <div class="account__group">
@@ -337,6 +382,40 @@ async function showNodeQr(): Promise<void> {
 .account__row-value {
   color: var(--app-text-secondary);
   font-size: 0.8125rem;
+}
+
+/* 站点切换（2026-10-13） */
+.account__current-site {
+  display: flex;
+  align-items: center;
+  gap: var(--app-space-2);
+  min-height: 48px;
+  padding: 6px 0;
+  flex-wrap: wrap;
+}
+
+.account__site-origin {
+  flex: 1 0 100%;
+  color: var(--app-text-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.account__site-env {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border: 1px solid var(--app-border);
+  border-radius: 999px;
+  color: var(--app-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* 生产站点用 danger 醒目标记，避免在生产上误操作。 */
+.account__site-env[data-env='production'] {
+  border-color: var(--app-danger);
+  color: var(--app-danger);
 }
 
 .account__language-select {

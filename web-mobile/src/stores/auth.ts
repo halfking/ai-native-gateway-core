@@ -12,7 +12,7 @@ import { Hyper } from '@/hyper'
 //
 // ★ 「保持登录」（2026-10-10）把存储位置也变成了二选一：
 //
-//	勾选   → localStorage  —— 关掉 App / 浏览器后仍在（配 24h 持久 cookie）
+//	勾选   → localStorage  —— 关掉 App / 浏览器后仍在（配 7d 持久 cookie）
 //	不勾选 → sessionStorage —— 关掉即失效（配会话级 cookie）
 //
 // 为什么用两个 storage 而不是给 localStorage 加时间戳：后端 cookie 的
