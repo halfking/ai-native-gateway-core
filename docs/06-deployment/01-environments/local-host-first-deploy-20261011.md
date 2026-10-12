@@ -80,7 +80,14 @@ host 模式会在「psql is required」死掉（这正是 2026-10-11 修掉的�
 | DNS zone | `llm-itestu-zone`（domain `llm.itestu.cn`，All 组分发） |
 | A 记录 | `llm.itestu.cn → 100.106.169.63`（本机 peer `nb-macmini-29` 的 mesh IP），TTL 300 |
 | 解析验证 | `dig llm.itestu.cn @100.106.255.254` 与 macOS `dscacheutil` 均返回 100.106.169.63 |
-| mesh 入站 | 网关 `LLM_GATEWAY_LISTEN=:8782` 绑全接口；macOS 应用防火墙关闭；NetBird Default 策略（all/all）放行；LAN IP（192.168.31.29:8781）实测 200 佐证非回环入站可用 |
+| mesh 入站 | 网关 `LLM_GATEWAY_LISTEN=:8782` 绑全接口；macOS 应用防火墙关闭；NetBird Default 策略（all/all）放行。LAN 地址已由 `192.168.31.29` 更新为 `192.168.31.40`（同一 MacMini M6）；当前活动版本、`bin/current` 与运行进程均为 `2.5.8-ee565bb3-20261011-2545`，端口 8782，`/readyz` 返回 200 |
+
+> **2026-10-12 地址与部署复核：** `192.168.31.40` 是此前 `192.168.31.29`
+> 所指的同一主机。NetBird peer `nb-macmini-29` / `100.106.169.63` 未改变，252
+> 的 Nginx upstream 继续使用该 mesh IP 的 `8782` 主端口和 `8781` 备用端口。
+> 网关已部署 `2.5.8-ee565bb3-20261011-2545`；活动版本标记、`bin/current` 与运行
+> 进程一致，`/readyz` 返回 200。`.30` 经 `https://llm.itestu.cn/v1` 的模型列表与
+> 聊天请求均返回 200，确认入口已连通 `.40` 上的活动网关。
 
 > 本机自连 mesh IP（curl/ping 100.106.169.63）在 userspace 栈下不通属预期
 > 怪癖，不代表远端入站状态。**远端 peer 验证命令**（任一在线 peer 上执行）：
@@ -206,11 +213,12 @@ configured」（数据状态无法确认新鲜度），待管理员在设置里�
 | 自动安装 E2E（opt-in，真实构建） | `DL_AUTOINSTALL_TEST=1 bash tests/deploy_host_autoinstall_test.sh` | redis PING / PG17.x / pgcolumnar 扩展 / columnar AM / 列存 DDL+DML 1000 行全过 |
 | 迁移通道 | `bash scripts/apply-db-revision-sequence.sh`（host pg18） | rc=0 全量收敛（本轮补登 11 件前置迁移 + 680b 视图族重建 + 738/740/815/816/817/824 动态形态兼容） |
 | 全链路部署 | `bash scripts/deploy-local.sh deploy`（LLM_GATEWAY_ROOT=~/kaixuan/llm-gateway-go-v2） | **rc=0**：release `2.5.8.2522`，cutover 8782 active；`/healthz` ready:true、`/readyz` database+redis 双 connected（latency µs 级）、admin 登录冒烟通过（凭据扫描 WARN=no_credentials_to_scan，非阻断）、记录 `VERIFY_DATABASE=host VERIFY_REDIS=host` |
-| LAN 入站 | `curl http://192.168.31.29:8782/healthz` | 200（版本一致） |
+| LAN 入站（2026-10-11 历史地址） | `curl http://192.168.31.29:8782/healthz` | 200（当时使用的地址；同一主机现为 `192.168.31.40`，当前监听与健康状态见下方 2026-10-12 复核） |
 | DNS | `dig llm.itestu.cn @100.106.255.254` | 100.106.169.63 |
 | 远端 peer 回连（mesh） | `curl http://llm.itestu.cn:8782/healthz`（252 上执行，2026-10-11 上午） | **200**（修复 mihomo fake-ip 劫持后）；`https://llm.itestu.cn:8443`（mac Caddy 自签，-k）**200** |
 | 公网入口 | `curl --resolve llm.itestu.cn:443:115.29.212.252 https://llm.itestu.cn/healthz`（2026-10-11 上午） | **200，证书公网校验通过（免 -k）**；链路 252 stream 透传 → 9443 终结 → mesh 8782 |
 | netbird 客户端可恢复性 | `podman restart nb-252-host` 后复查三链路（2026-10-11 下午） | **身份/IP 保留**（100.106.190.139），wt0 闪断数秒后 mesh 域名 8782/8443 与公网 443 全部自愈 200 |
+| 地址与监听复核 | SSH `huangxt@192.168.31.40`；检查 `/readyz`、客户端 `/models` 与 252 NetBird upstream（2026-10-12） | 同一 MacMini、LAN 地址 `.40`、NetBird `100.106.169.63`；peer Connected；活动版本、`bin/current` 与运行进程均为 2545；`:8782/readyz` 200、DB/Redis connected；`.30` 经域名入口的模型列表和聊天请求均 200 |
 | 代理出口（252 mihomo） | `curl -m 15 -o /dev/null -w %{http_code} https://www.google.com`（2026-10-11 下午） | 改 efanyun provider 后 **200**（此前 114 死节点全 000）；Auto 组测速 101/101 存活 |
 
 ### 本轮迁移通道修复清单（host-first 库从「Go ensure 链从未启动」状态收敛）
