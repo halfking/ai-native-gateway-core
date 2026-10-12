@@ -511,7 +511,7 @@ func TestRestoreResponseBody_NonAssistantRole_UnknownPlaceholderMasked(t *testin
 		"已知占位符应还原（无论 role）")
 	assert.NotContains(t, msg.Content, "{SENSITIVE:email:99}",
 		"未知占位符必须被 mask，不能泄漏给客户端")
-	assert.Contains(t, msg.Content, "[REDACTED]",
+	assert.Contains(t, msg.Content, RedactionMarker(TypeEmail),
 		"未知占位符的 mask 文本")
 }
 
@@ -559,7 +559,7 @@ func TestRestoreResponseBody_UnknownPlaceholderMasked(t *testing.T) {
 	assert.Contains(t, content, "13800138000", "已知占位符应还原")
 	assert.NotContains(t, content, "{SENSITIVE:email:99}",
 		"未知占位符必须被 mask，不能透传")
-	assert.Contains(t, content, "[REDACTED]", "未知占位符的 mask 文本")
+	assert.Contains(t, content, RedactionMarker(TypeEmail), "未知占位符的 mask 文本")
 }
 
 func TestRestoreResponseBody_UnknownPlaceholderMaskedWhenSessionMapIsEmpty(t *testing.T) {
@@ -576,7 +576,7 @@ func TestRestoreResponseBody_UnknownPlaceholderMaskedWhenSessionMapIsEmpty(t *te
 	})
 	require.NoError(t, err)
 	require.NotNil(t, result, "empty mapping must not bypass placeholder validation")
-	assert.Contains(t, string(result.ModifiedBody), "[REDACTED]")
+	assert.Contains(t, string(result.ModifiedBody), RedactionMarker(TypePhone))
 	assert.NotContains(t, string(result.ModifiedBody), "{SENSITIVE:")
 }
 
@@ -598,7 +598,7 @@ func TestRestoreResponseBody_UnknownPlaceholderMaskedWhenRedisIsUnavailable(t *t
 	})
 	require.NoError(t, err)
 	require.NotNil(t, result, "Redis failure must not bypass placeholder validation")
-	assert.Contains(t, string(result.ModifiedBody), "[REDACTED]")
+	assert.Contains(t, string(result.ModifiedBody), RedactionMarker(TypePhone))
 	assert.NotContains(t, string(result.ModifiedBody), "{SENSITIVE:")
 }
 
@@ -926,7 +926,7 @@ func TestSanitizeRestoreInterceptor_StreamChunk_UnknownPlaceholderMasked(t *test
 	require.NotNil(t, result)
 	str := string(result.ModifiedChunk)
 	assert.Contains(t, str, "13800138000", "已知占位符必须还原")
-	assert.Contains(t, str, "[REDACTED]", "未知占位符必须 mask")
+	assert.Contains(t, str, RedactionMarker(TypePhone), "未知占位符必须 mask")
 	assert.NotContains(t, str, "{SENSITIVE:phone:99}", "raw 占位符文本必须消失")
 }
 
@@ -981,7 +981,7 @@ func TestSanitizeRestoreInterceptor_SplitUnknownPlaceholderMasksWithoutMap(t *te
 	gotSecond, err := it.InterceptStreamChunk(context.Background(), second, meta)
 	require.NoError(t, err)
 	require.NotNil(t, gotSecond)
-	assert.Contains(t, string(gotSecond.ModifiedChunk), "[REDACTED] after")
+	assert.Contains(t, string(gotSecond.ModifiedChunk), RedactionMarker(SensitiveType("forged"))+" after")
 	assert.NotContains(t, string(gotSecond.ModifiedChunk), "{SENSITIVE:")
 }
 

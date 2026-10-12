@@ -815,13 +815,6 @@ func (e *Executor) executeOpenAI(
 			if sid := params.R.Header.Get("X-Session-Id"); sid != "" {
 				req.Header.Set("X-Session-Id", sid)
 			}
-			// Declare this instance as a sanitize hop when it actually emitted
-			// placeholders, so an upstream instance of the same gateway hands those
-			// markers back instead of masking them. Read from the sanitize context,
-			// never from an inbound header: a client must not be able to forge this.
-			if nonce := sanitize.SanitizeHopForOutbound(params.R.Context()); nonce != "" {
-				req.Header.Set(sanitize.SanitizeHopHeader, nonce)
-			}
 			if fpLease != nil && fpLease.Egress != nil {
 				credentialfpslot.ApplyEgressHeaders(req.Header, fpLease.Egress)
 			} else {
@@ -846,6 +839,11 @@ func (e *Executor) executeOpenAI(
 						req.Header.Set(k, v)
 					}
 				}
+			}
+			// Stamp after client/header-profile transforms so they cannot erase
+			// the validated marker-ownership signal on a recursive gateway call.
+			if nonce := sanitize.SanitizeHopForOutbound(params.R.Context()); nonce != "" {
+				req.Header.Set(sanitize.SanitizeHopHeader, nonce)
 			}
 
 			// Apply disguise headers (User-Agent / Accept-Language).

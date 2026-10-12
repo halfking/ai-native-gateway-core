@@ -46,6 +46,12 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'keys.title', requiresAuth: true },
   },
   {
+    path: '/users/:id?',
+    name: 'user-usage',
+    component: () => import('@/views/UserUsageView.vue'),
+    meta: { titleKey: 'users.title', requiresAuth: true },
+  },
+  {
     path: '/alerts',
     name: 'alerts',
     component: () => import('@/views/AlertsView.vue'),
@@ -56,6 +62,12 @@ const routes: RouteRecordRaw[] = [
     name: 'usage',
     component: () => import('@/views/UsageView.vue'),
     meta: { titleKey: 'usage.title', requiresAuth: true },
+  },
+  {
+    path: '/reconciliation',
+    name: 'reconciliation',
+    component: () => import('@/views/CostReconciliationView.vue'),
+    meta: { titleKey: 'reconciliation.title', requiresAuth: true },
   },
   {
     path: '/logs',
@@ -673,6 +685,12 @@ const routes: RouteRecordRaw[] = [
     name: 'connection-registry',
     component: () => import('@/views/ConnectionRegistryView.vue'),
     meta: { titleKey: 'cr.title', requiresAuth: true },
+  },
+  {
+    path: '/usage-trend-series',
+    name: 'usage-trend-series',
+    component: () => import('@/views/UsageTrendSeriesView.vue'),
+    meta: { titleKey: 'uts.title', requiresAuth: true },
   },
   {
     path: '/:pathMatch(.*)*',

@@ -143,3 +143,16 @@ describe('HomeView 降级呈现', () => {
     expect(w.find('.home__degraded').exists()).toBe(false)
   })
 })
+
+it('does not start queue polling after the home page unmounts during initial loading', async () => {
+  let resolve!: (value: BoardPayload) => void
+  vi.mocked(fetchBoard).mockReturnValueOnce(new Promise((done) => { resolve = done }))
+  const interval = vi.spyOn(window, 'setInterval')
+  const pinia = createPinia(); setActivePinia(pinia)
+  const w = mount(HomeView, { global: { plugins: [pinia] } })
+  w.unmount()
+  resolve(board())
+  await flushPromises()
+  expect(interval).not.toHaveBeenCalled()
+  interval.mockRestore()
+})

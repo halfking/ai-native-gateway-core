@@ -87,6 +87,7 @@
   --app-bottomnav-height: 52px;
   --app-z-header: 10;
   --app-z-overlay: 1000;
+  --app-z-modal: 1020;
   --app-transition: 200ms cubic-bezier(0.2, 0, 0, 1);
 
   /* 窗口四档断点（多端适配 SSOT；CSS media query 无法引用 var()，此 token

@@ -81,7 +81,11 @@ func (it *OutputComplianceInterceptor) streamState(ctx context.Context, meta *re
 	}
 	state, _ := meta.State.GetOrCreate(key, func() any {
 		active := it.isEnabled()
-		state := &complianceStreamState{enabled: active, checkCtx: outputcompliance.WithRequestPolicyCache(ctx)}
+		// 2026-10-10: 挂一次已还原值集合，跨全部 chunk 复用。集合解析是
+		// 每响应一次（一次 Redis 读），绝不能按 chunk 解析。
+		checkCtx := it.withRestoredValues(
+			outputcompliance.WithRequestPolicyCache(ctx), meta.SessionID, meta.TenantID)
+		state := &complianceStreamState{enabled: active, checkCtx: checkCtx}
 		if active {
 			state.redact = it.shouldRedact(ctx, meta.CallerOwner, meta.SessionID, meta.TenantID)
 		}

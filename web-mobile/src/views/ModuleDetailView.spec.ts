@@ -11,6 +11,7 @@ import {
   type FeishuBotConfigSummary,
 } from '@/api/modules'
 import { setLocale, locale } from '@/i18n'
+import { createTopbarActionRegistry, TOPBAR_ACTIONS } from '@/components/shell/topbarActions'
 
 /**
  * ModuleDetailView 的不变量（2026-10-08）。
@@ -47,6 +48,7 @@ const summaryMock = fetchModuleConfig as unknown as ReturnType<typeof vi.fn>
 
 const ORIGIN_LOCALE = locale.value
 let mountedList: Array<{ unmount(): void }> = []
+let topbarRegistry = createTopbarActionRegistry()
 
 function mod(over: Record<string, unknown> = {}): ModuleWithStatus {
   return {
@@ -123,7 +125,11 @@ async function mountView(
   setActivePinia(pinia)
   routeMock.params = { key }
   setMocks(opts)
-  const w = mount(ModuleDetailView, { attachTo: document.body, global: { plugins: [pinia] } })
+  topbarRegistry = createTopbarActionRegistry()
+  const w = mount(ModuleDetailView, {
+    attachTo: document.body,
+    global: { plugins: [pinia], provide: { [TOPBAR_ACTIONS as symbol]: topbarRegistry } },
+  })
   mountedList.push(w)
   await flushPromises()
   await flushPromises()
@@ -278,7 +284,8 @@ describe('★★★★★★ /config 只有 feishu_bot 实现', () => {
   it('★★★★★ feishu_bot ⇒ 给出读取按钮', async () => {
     const w = await mountView('feishu_bot')
     expect(w.findAll('button.mdt__btn--summary')).toHaveLength(1)
-    expect(w.findAll('button.mdt__btn--refresh')).toHaveLength(1)
+    expect(w.findAll('button.mdt__btn--refresh')).toHaveLength(0)
+    expect(topbarRegistry.actions.value.map((action) => action.key)).toEqual(['refresh'])
     expect(summaryMock).not.toHaveBeenCalled()
   })
 
@@ -310,7 +317,7 @@ describe('★★★★★★ 抛错不许退化成空详情', () => {
     expect(w.findAll('.mdt__list').length).toBeGreaterThan(0)
 
     detailMock.mockRejectedValue(new Error('later boom'))
-    await w.find('button.mdt__btn--refresh').trigger('click')
+    await topbarRegistry.actions.value[0]!.onClick()
     await flushPromises()
     await flushPromises()
 

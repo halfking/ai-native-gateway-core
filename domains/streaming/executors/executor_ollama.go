@@ -21,6 +21,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
+	"github.com/kaixuan/llm-gateway-go/security/sanitize"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
@@ -1027,6 +1028,12 @@ func (e *Executor) executeOllama(
 	req.Header.Set("X-Request-Id", diagnosticRequestID(params))
 	if fpLease != nil && fpLease.Egress != nil {
 		credentialfpslot.ApplyEgressHeaders(req.Header, fpLease.Egress)
+	}
+	// Keep peer-owned placeholders marked across recursive gateway hops, even
+	// when this request did not emit a new placeholder itself. Stamp after
+	// configurable egress headers so they cannot erase the signal.
+	if nonce := sanitize.SanitizeHopForOutbound(params.R.Context()); nonce != "" {
+		req.Header.Set(sanitize.SanitizeHopHeader, nonce)
 	}
 
 	timeout := e.UpstreamTimeout

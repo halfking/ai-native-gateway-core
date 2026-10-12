@@ -32,6 +32,7 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { useHyperPage } from '@/hyper'
 import AppIcon from '@/components/common/AppIcon.vue'
+import DataTableFocus from '@/components/common/DataTableFocus.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import { t } from '@/i18n'
 import { fmtInt, fmtNum, fmtTime, relativeTime } from '@/utils/format'
@@ -325,6 +326,7 @@ onBeforeUnmount(() => {
           <span>{{ t('mt.echoNote') }}</span>
         </p>
 
+        <DataTableFocus :title="t('mt.summary')">
         <table class="mt__table">
           <thead>
             <tr>
@@ -344,6 +346,7 @@ onBeforeUnmount(() => {
             </tr>
           </tbody>
         </table>
+        </DataTableFocus>
         <p v-if="!summary.by_model.length" class="mt__msg">{{ t('mt.emptyModels') }}</p>
       </section>
 

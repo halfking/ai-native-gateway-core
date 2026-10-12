@@ -26,6 +26,43 @@
 
 set -uo pipefail
 
+# === 单实例闸门（2026-10-10 生产事故修复）================================
+# 起因：2026-10-10 252 现场，pg17-disk-watch.sh 堆到 310 份副本、149 个
+# `docker exec ... psql` 僵死，把 15G 内存吃到 swap 100% / load 300，
+# 反而把 PG 压到无法服务 154 网关（SQLSTATE 57P03、一小时 194 个 503）。
+# 根因是本目录**所有**巡检都缺同一道闸门：PG 半死（容器还在 listen、
+# 事务卡死）时 psql 会一直挂着，而 cron 的下一次触发照常发生 ——
+# 进程只增不减。⇒ 每 10 分钟一跑的巡检，在最需要它的时刻（PG 出问题）
+# 恰恰是最不能多跑的时刻。
+#
+# ★ 为什么 inline 而不是 source 一个公共 helper：
+#   本目录按**整文件覆盖**部署到 /opt/scripts/（见 etc.cron.d.pg17 头部
+#   「漏一条 = 删一条」）。helper 没跟着传上去，source 失败会让**整个目录**
+#   的巡检同时哑掉。本目录已经吃过一次这种耦合的亏，不再引入第二次。
+#
+# ★ 拿不到锁时**放行**（fail-open），不拒绝执行：
+#   闸门不可用时让监控整体静默，比重复采样更糟 —— 静默的监控不会被任何人
+#   发现已经坏了。下次采样行会记 gate=FAIL_OPEN，让 fail-open 本身可见。
+#
+# ★ 抢不到锁时退出 0 而不是 3：本轮确实没有新采样，但巡检**没有失效**
+#   （上一轮正在产出结论）。3 在本目录契约里是「量具不可用」，报它会
+#   触发一次假的「巡检失效」告警。
+LLMGW_LOCK_DIR=${LLMGW_LOCK_DIR:-/var/run/lock}
+_llmgw_lock_file="$LLMGW_LOCK_DIR/llmgw-$(basename "$0" .sh).lock"
+
+_llmgw_single_instance_guarded=false
+if [ -z "${LLMGW_NO_SINGLE_INSTANCE_LOCK:-}" ] \
+   && command -v flock >/dev/null 2>&1 \
+   && mkdir -p "$LLMGW_LOCK_DIR" 2>/dev/null \
+   && exec 9>"$_llmgw_lock_file" 2>/dev/null; then
+  if ! flock -n 9; then
+    echo "[$(date +%Y-%m-%dT%H:%M:%S%z)] skip: $(basename "$0") 上一轮仍在运行（lock=${_llmgw_lock_file}），本轮不重复执行" \
+      >> "${LLMGW_LOCK_SKIP_LOG:-/var/log/llmgw-single-instance-skip.log}" 2>/dev/null || true
+    exit 0
+  fi
+  _llmgw_single_instance_guarded=true
+fi
+
 # 空闲率超过此值算异常（%）。20% 是个保守线：低于它，即便 VACUUM FULL 也
 # 收不回多少字节，不值得停机。
 BLOAT_PCT=${BLOAT_PCT:-20}

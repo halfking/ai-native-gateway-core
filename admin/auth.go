@@ -25,6 +25,15 @@ var errPasswordChangeRequired = errors.New("password change required before acce
 type loginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+	// RememberMe 勾选「保持登录」时为 true：session cookie 带 Max-Age，
+	// 浏览器重启后仍然有效（默认 24h，见 auth_params.go CookieMaxAge）。
+	// false（不勾选）时下发**会话级** cookie——不带 Max-Age/Expires，
+	// 浏览器会话结束即失效。对应前端 auth store 只写 sessionStorage。
+	RememberMe bool `json:"remember_me"`
+	// CaptchaID / CaptchaCode 来自 GET /api/auth/captcha。
+	// 连续失败 CaptchaFailureThreshold 次后两者为必填（见 auth_captcha.go）。
+	CaptchaID   string `json:"captcha_id"`
+	CaptchaCode string `json:"captcha_code"`
 }
 
 type keyCreatedResponse struct {
@@ -54,7 +63,7 @@ func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	clearSessionCookie(w)
+	clearSessionCookie(w, r)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -185,6 +194,18 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ── 验证码闸门（2026-10-10）─────────────────────────────────────
+	// 刻意放在任何 DB 查询与 bcrypt 之前：验证码的判据是纯内存比较，
+	// 放这里可以让无效流量在碰数据库之前就被挡掉（bcrypt 一次约 100ms，
+	// 撞库者最想要的就是把这笔 CPU 账单转嫁给网关）。
+	//
+	// 未达失败阈值时验证码可选（自适应），达到则强制。失败**不**计入
+	// 连续失败计数——否则反复输错验证码就能把阈值刷爆，让正常用户
+	// 永久被强制验证（自我 DoS）。
+	if !h.verifyLoginCaptcha(w, clientIP, req.CaptchaID, req.CaptchaCode) {
+		return
+	}
+
 	// ── Try JWT auth (users table) first ──────────────────────────────
 	if req.Username != "" && req.Password != "" {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -211,6 +232,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 			// 用户存在，检查是否启用
 			if !u.Enabled {
 				h.auditLog(req.Username, "authentication.login_failed", "user", u.ID, fmt.Sprintf("method=jwt reason=user_disabled ip=%s", clientIP))
+				recordLoginFailure(clientIP)
 				writeError(w, http.StatusForbidden, "User account is disabled")
 				return
 			}
@@ -218,6 +240,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 			if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(req.Password)) != nil {
 				// 密码错误 — users 表存在则不回退 env LLM_GATEWAY_ADMIN_PASSWORD
 				h.auditLog(req.Username, "authentication.login_failed", "user", u.ID, fmt.Sprintf("method=jwt reason=invalid_password ip=%s", clientIP))
+				recordLoginFailure(clientIP)
 				writeError(w, http.StatusUnauthorized, "Invalid credentials: password does not match the users table record (env admin password is not used when this username exists)")
 				return
 			}
@@ -227,6 +250,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 				err := h.db.QueryRow(ctx, `SELECT status FROM tenants WHERE code = $1`, u.TenantID).Scan(&tenantStatus)
 				if err != nil || tenantStatus == "disabled" {
 					h.auditLog(req.Username, "authentication.login_failed", "user", u.ID, fmt.Sprintf("method=jwt reason=tenant_disabled tenant=%s ip=%s", u.TenantID, clientIP))
+					recordLoginFailure(clientIP)
 					writeError(w, http.StatusForbidden, "tenant is disabled, contact your administrator")
 					return
 				}
@@ -248,8 +272,10 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 			identity.RecordShadow("llm-gateway", u.ID, u.TenantID, u.DisplayName, u.Email)
 
 			h.auditLog(u.Username, "authentication.login", "user", u.ID, fmt.Sprintf("method=jwt role=%s tenant=%s ip=%s", u.Role, u.TenantID, r.RemoteAddr))
-			// Dual-write (rule 20 §6.1): set HttpOnly cookie AND return access_token
-			setSessionCookie(w, r, token, expiresAt)
+			clearLoginFailures(clientIP)
+			// Dual-write (rule 20 §6.1): set HttpOnly cookie AND return access_token。
+			// remember_me=false → 会话级 cookie（无 Max-Age/Expires，关掉即失效）。
+			setSessionCookieRemember(w, r, token, expiresAt, req.RememberMe)
 			writeJSON(w, http.StatusOK, map[string]any{
 				"access_token": token,
 				"token_type":   "Bearer",
@@ -273,6 +299,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// ── Fall back to legacy admin key auth ────────────────────────────
 	if subtle.ConstantTimeCompare([]byte(req.Username), []byte("admin")) != 1 ||
 		subtle.ConstantTimeCompare([]byte(req.Password), []byte(getAdminPassword())) != 1 {
+		recordLoginFailure(clientIP)
 		writeError(w, http.StatusUnauthorized, "Invalid credentials")
 		return
 	}
@@ -304,6 +331,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 			h.db.Exec(ctx, `UPDATE api_keys SET is_system = TRUE, remark = 'admin login: reused existing key' WHERE id = $1 AND (remark IS NULL OR remark = '')`, existingID)
 			prefix := decrypted[:12]
 			loginLimiter.Reset(clientIP)
+			clearLoginFailures(clientIP)
 			h.auditLog("admin", "authentication.login", "user", 0, fmt.Sprintf("method=legacy_key ip=%s", clientIP))
 			writeJSON(w, http.StatusOK, keyCreatedResponse{
 				APIKey:    decrypted,
@@ -315,6 +343,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	raw, keyHash, keyPrefix, keyCiphertext := h.generateAdminKey(h.secret)
+	clearLoginFailures(clientIP)
 	_, err = h.db.Exec(ctx, `
 		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, is_system, remark)
 		VALUES ($1, 'default', $2, $3, $4, 'admin', TRUE, TRUE, 'admin login: no usable existing key')

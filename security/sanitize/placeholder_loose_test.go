@@ -57,7 +57,18 @@ func TestParseLoosePlaceholder(t *testing.T) {
 		// output, and repairing them would fabricate a value.
 		{"plain json object", `{"a":1}`, "", 0, false},
 		{"markdown bold", "**hello**", "", 0, false},
-		{"missing index", "{SENSITIVE:secret}", "", 0, false},
+		// 2026-10-10: "missing index" moved from the negative table to its own
+		// case below. It used to be asserted as not-a-marker on the grounds
+		// that an index-less token cannot resolve to a real value and
+		// "rewriting it would fabricate one". Measured on 154 that reasoning
+		// hid a leak: minimax-m3 drops both the braces and the index and
+		// enumerates the types it was shown — "（SENSITIVE:phone,
+		// SENSITIVE:email, SENSITIVE:id_card）" — so 26 responses in 60
+		// minutes carried an internal token to the client. An index-less
+		// marker now parses with index -1: still marker syntax, never
+		// resolvable, therefore masked rather than passed through. That keeps
+		// the original no-fabrication guarantee intact — nothing is invented —
+		// while closing the leak. See TestParseLoosePlaceholderIndexlessIsMasked.
 		{"missing type", "{SENSITIVE::1}", "", 0, false},
 		{"non numeric index", "{SENSITIVE:secret:abc}", "", 0, false},
 		{"different marker word", "{SECRET:secret:1}", "", 0, false},
@@ -76,6 +87,35 @@ func TestParseLoosePlaceholder(t *testing.T) {
 			}
 			assert.Equal(t, tt.wantType, typ)
 			assert.Equal(t, tt.wantIndex, index)
+		})
+	}
+}
+
+// TestParseLoosePlaceholderIndexlessIsMasked carries the case that used to sit
+// in the negative table. An index-less marker must now be recognised as marker
+// syntax (so it cannot leak) while remaining unresolvable (so nothing is
+// fabricated): index -1 can never match a mapping row, which makes every
+// mask-mode caller redact it.
+func TestParseLoosePlaceholderIndexlessIsMasked(t *testing.T) {
+	forms := []string{
+		"{SENSITIVE:secret}",
+		"SENSITIVE:phone",
+		"SENSITIVE:id_card",
+		"{SENSITIVE: server_ip }",
+	}
+	for _, candidate := range forms {
+		t.Run(candidate, func(t *testing.T) {
+			typ, index, ok := parseLoosePlaceholder(candidate)
+			require.True(t, ok, "an index-less marker is still marker syntax")
+			assert.NotEmpty(t, typ, "the type is still parsed and can be reported")
+			assert.Equal(t, -1, index, "no index means unresolvable, never index 0 or 1")
+
+			sm := SanitizeMap{
+				"{SENSITIVE:secret:1}": "should-not-resolve",
+				"{SENSITIVE:phone:1}":  "should-not-resolve",
+			}
+			_, resolved := sm.resolverFor()(typ, index)
+			assert.False(t, resolved, "an index-less marker must never resolve to a value")
 		})
 	}
 }
@@ -144,7 +184,9 @@ func TestRestoreOutputOrMaskDoesNotFabricate(t *testing.T) {
 		t.Run("mask/"+forged, func(t *testing.T) {
 			got, err := s.RestoreOutputOrMask(context.Background(), forged, sm)
 			require.NoError(t, err)
-			assert.Equal(t, redactedMarker, got)
+			// Each forged span has its own type, so the marker is typed. Assert
+			// the shape and the absence of the secret rather than one literal.
+			assert.Regexp(t, `^\[REDACTED(:[a-z_]+)?\]$`, got)
 			assert.NotContains(t, got, "s3cr3t")
 		})
 	}
@@ -347,7 +389,7 @@ func TestPeerPassthroughWithoutOwnMap(t *testing.T) {
 	got, err := s.RestoreOutputOrMask(ctx,
 		"host {SENSITIVE:internal_ip:1} pwd {sensitive:secret:01} forged {SENSITIVE:secret:9}", SanitizeMap{})
 	require.NoError(t, err)
-	assert.Equal(t, "host {SENSITIVE:internal_ip:1} pwd {sensitive:secret:01} forged [REDACTED]", got,
+	assert.Equal(t, "host {SENSITIVE:internal_ip:1} pwd {sensitive:secret:01} forged "+RedactionMarker(TypeSecret), got,
 		"peer markers come back verbatim; anything else is still masked")
 
 	// The same holds for the non-masking mode, which must not invent a value.

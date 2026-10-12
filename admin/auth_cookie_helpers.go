@@ -33,19 +33,20 @@ func cookieSecure(r *http.Request) bool {
 }
 
 // clearSessionCookie expires the session cookie (MaxAge=-1) on the client.
-func clearSessionCookie(w http.ResponseWriter) {
+func clearSessionCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
-		Secure:   cookieSecure(nil),
+		Secure:   cookieSecure(r),
 		SameSite: http.SameSiteStrictMode,
 	})
 }
 
 // setSessionCookie writes the JWT as an HttpOnly+Secure+SameSite=Strict cookie.
+// Persistent variant: Max-Age follows the token expiry (default 24h).
 func setSessionCookie(w http.ResponseWriter, r *http.Request, token string, expiresAt time.Time) {
 	maxAge := int(CookieMaxAge.Seconds())
 	if !expiresAt.IsZero() {
@@ -56,9 +57,42 @@ func setSessionCookie(w http.ResponseWriter, r *http.Request, token string, expi
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
 		Value:    token,
-		Path:     "/",
+		Path:     CookiePath,
 		MaxAge:   maxAge,
 		Expires:  expiresAt,
+		HttpOnly: true,
+		Secure:   cookieSecure(r),
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+// setSessionCookieRemember is the login-path entry point honouring 「保持登录」
+// (2026-10-10).
+//
+//	remember=true  → 与 setSessionCookie 完全一致：持久 cookie，Max-Age 取 JWT 剩余时长。
+//	remember=false → **会话级** cookie：MaxAge=0 且不写 Expires，
+//	                 浏览器/WebView 会话一结束就丢弃。
+//
+// ⚠️ 这里刻意**不**缩短 JWT 本身的有效期。JWT 的 TTL 由 jwtExpiry() 统一管
+// （auth_params.go §5：改 cookie 时长不得与 JWT TTL 脱钩），而「保持登录」的语义
+// 是「关掉 App/浏览器后是否要保持登录态」，由 cookie 的存活期表达就足够了。
+// 若把未勾选时的 JWT 也签短，会与 rule 20 §5 的单一 TTL 事实源打架。
+//
+// ⚠️ 会话级 cookie 依赖 Go 的一个反直觉语义：Cookie.MaxAge==0 表示
+// 「不输出 Max-Age 属性」（MaxAge<0 才会输出 `Max-Age=0`，那是删除语义）。
+// 配合同样保持零值的 Expires，两者都不输出 = 会话级 cookie。
+// 见 TestSetSessionCookieRemember_FalseIsSessionScoped。
+func setSessionCookieRemember(w http.ResponseWriter, r *http.Request, token string, expiresAt time.Time, remember bool) {
+	if remember {
+		setSessionCookie(w, r, token, expiresAt)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     CookieName,
+		Value:    token,
+		Path:     CookiePath,
+		// MaxAge=0 → 不输出 Max-Age 属性；Expires 保持零值 → 不输出 Expires。
+		// 两者都没有 = 会话级 cookie，浏览器退出即失效。
 		HttpOnly: true,
 		Secure:   cookieSecure(r),
 		SameSite: http.SameSiteStrictMode,

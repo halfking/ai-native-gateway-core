@@ -1,5 +1,7 @@
+import { defineComponent, h } from 'vue'
+import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
-import { BREAKPOINT_EXPANDED_PX, BREAKPOINT_LARGE_PX, BREAKPOINT_MEDIUM_PX, currentWindowClass } from './useWindowClass'
+import { BREAKPOINT_EXPANDED_PX, BREAKPOINT_LARGE_PX, BREAKPOINT_MEDIUM_PX, currentWindowClass, useWindowClass } from './useWindowClass'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
@@ -18,6 +20,24 @@ describe('useWindowClass 断点双镜像', () => {
 
   it('无 window 回落 compact（SSR 安全）', () => {
     expect(currentWindowClass()).toBe('compact')
+  })
+
+  it('matchMedia 不可用时仍以 compact 渲染，不在 mounted 阶段报错', () => {
+    const original = Object.getOwnPropertyDescriptor(window, 'matchMedia')
+    Object.defineProperty(window, 'matchMedia', { configurable: true, writable: true, value: undefined })
+    try {
+      const wrapper = mount(defineComponent({
+        setup() {
+          const { windowClass } = useWindowClass()
+          return () => h('span', windowClass.value)
+        },
+      }))
+      expect(wrapper.text()).toBe('compact')
+      wrapper.unmount()
+    } finally {
+      if (original) Object.defineProperty(window, 'matchMedia', original)
+      else delete (window as Partial<Window>).matchMedia
+    }
   })
 })
 

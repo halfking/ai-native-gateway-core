@@ -23,13 +23,20 @@ func TestOutputSensitiveMasksNewValuesAndRestoresKnownValues(t *testing.T) {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 	body := string(result.ModifiedBody)
-	if !strings.Contains(body, "13800138000") || !strings.Contains(body, "[REDACTED]") {
+	if !strings.Contains(body, "13800138000") || !strings.Contains(body, RedactionMarker(TypeSecret)) {
 		t.Fatal("known restoration or new-value masking missing")
 	}
-	for _, secret := range []string{"FreshSecret!", "203.0.113.8", "username=ops"} {
+	// 2026-10-10: the address left this list with the rest of the redaction
+	// scope. Model-authored text mentioning a host is operational output, not
+	// a leak; the exfiltration risk lives in tool arguments and is guarded
+	// under ScopeEgress (Test154PublicIPToolCallStillBlocks).
+	for _, secret := range []string{"FreshSecret!", "username=ops"} {
 		if strings.Contains(body, secret) {
 			t.Error("new sensitive output leaked")
 		}
+	}
+	if !strings.Contains(body, "203.0.113.8") {
+		t.Error("address text must survive output redaction under ScopeRedact")
 	}
 }
 
@@ -83,8 +90,13 @@ func TestOutputSensitiveBlockAndDetectionFailure(t *testing.T) {
 func TestProviderErrorMessageIsSensitiveOutput(t *testing.T) {
 	s, _ := NewSanitizer(NewPatternDetector())
 	result, err := NewOutputSensitiveInterceptor(s, OutputMask).InterceptNonStream(context.Background(), &response.InterceptRequest{ResponseBody: []byte(`{"error":{"message":"connection password=NewSecret server=203.0.113.8","type":"provider_error"}}`)})
-	if err != nil || result == nil || result.ShouldBlock || strings.Contains(string(result.ModifiedBody), "NewSecret") || strings.Contains(string(result.ModifiedBody), "203.0.113.8") || !strings.Contains(string(result.ModifiedBody), "provider_error") {
+	if err != nil || result == nil || result.ShouldBlock || strings.Contains(string(result.ModifiedBody), "NewSecret") || !strings.Contains(string(result.ModifiedBody), "provider_error") {
 		t.Fatal("provider error sensitive text was not masked safely")
+	}
+	// The credential is masked; the host in the same message is not, for the
+	// same reason as TestOutputSensitiveMasksNewValuesAndRestoresKnownValues.
+	if !strings.Contains(string(result.ModifiedBody), "203.0.113.8") {
+		t.Fatal("provider error host must survive redaction under ScopeRedact")
 	}
 }
 

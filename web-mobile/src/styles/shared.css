@@ -19,6 +19,40 @@ body {
   padding: 0;
 }
 
+html[dir='rtl'],
+html[dir='rtl'] body {
+  direction: rtl;
+}
+
+html[dir='rtl'] input,
+html[dir='rtl'] select,
+html[dir='rtl'] textarea,
+html[dir='rtl'] button {
+  text-align: start;
+}
+
+html[dir='rtl'] code,
+html[dir='rtl'] pre,
+html[dir='rtl'] .num,
+html[dir='rtl'] .tabular-nums {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+html[dir='rtl'] .drawer__panel {
+  right: var(--app-safe-right);
+  left: auto;
+}
+
+html[dir='rtl'] .drawer-enter-from .drawer__panel,
+html[dir='rtl'] .drawer-leave-to .drawer__panel {
+  transform: translateX(70%);
+}
+
+html[dir='rtl'] .drawer__link {
+  text-align: right;
+}
+
 body {
   /* CJK 字体栈前置（nbjl-3 同源）：防 iOS tofu */
   font-family:

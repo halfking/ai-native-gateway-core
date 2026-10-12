@@ -25,6 +25,7 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { useHyperPage } from '@/hyper'
 import AppIcon from '@/components/common/AppIcon.vue'
+import DataTableFocus from '@/components/common/DataTableFocus.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import { t } from '@/i18n'
 import { fmtInt, fmtNum } from '@/utils/format'
@@ -249,6 +250,7 @@ onBeforeUnmount(() => {
           </p>
 
           <!-- ★★★ 逐维：生效价 + 手动标记 + 来源，三者一起看才不出错 -->
+          <DataTableFocus :title="r.display_name">
           <table class="ms__table">
             <thead>
               <tr>
@@ -275,6 +277,7 @@ onBeforeUnmount(() => {
               </tr>
             </tbody>
           </table>
+          </DataTableFocus>
 
           <!-- ★★★ 「改了但没启用」显式标出，否则看起来像自相矛盾 -->
           <p

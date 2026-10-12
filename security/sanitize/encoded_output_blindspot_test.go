@@ -103,7 +103,7 @@ func TestOutputGateSharesTheInputSidesEncodingBlindSpot(t *testing.T) {
 	// --- arm A: the control. If the gate does not redact a plaintext phone,
 	// every conclusion below is about a gate that was never working.
 	ctrlBody, _ := runOutputGate(t, "call "+phone)
-	if !strings.Contains(ctrlBody, "[REDACTED]") || strings.Contains(ctrlBody, phone) {
+	if !strings.Contains(ctrlBody, RedactionMarker(TypePhone)) || strings.Contains(ctrlBody, phone) {
 		t.Fatalf("判据失效（对照组没被遮蔽）：body=%s —— "+
 			"下面关于「编码形态没被遮蔽」的结论全部不成立，请先修夹具。", ctrlBody)
 	}
@@ -202,7 +202,7 @@ func TestOutputGateStreamSharesTheSameBlindSpot(t *testing.T) {
 		"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"138000\"}}]}\n\n",
 		"data: [DONE]\n\n",
 	})
-	if !strings.Contains(ctrl, "[REDACTED]") || strings.Contains(ctrl, phone) {
+	if !strings.Contains(ctrl, RedactionMarker(TypePhone)) || strings.Contains(ctrl, phone) {
 		t.Fatalf("判据失效（流式对照组没被遮蔽）：wire=%q —— "+
 			"下面关于「编码形态」的读数不成立，请先修夹具。", ctrl)
 	}

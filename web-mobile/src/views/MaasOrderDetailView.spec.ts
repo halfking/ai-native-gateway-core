@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import MaasOrderDetailView from './MaasOrderDetailView.vue'
 import { fetchMaasOrder, type MaasOrder } from '@/api/maas'
 import { setLocale, locale } from '@/i18n'
+import { createTopbarActionRegistry, TOPBAR_ACTIONS } from '@/components/shell/topbarActions'
 
 /**
  * MaasOrderDetailView 的不变量（2026-10-08）。
@@ -39,6 +40,7 @@ vi.mock('@/api/maas', async (importOriginal) => {
 const mMock = fetchMaasOrder as unknown as ReturnType<typeof vi.fn>
 const ORIGIN_LOCALE = locale.value
 let mountedList: Array<{ unmount(): void }> = []
+let topbarRegistry = createTopbarActionRegistry()
 
 /** ★ 详情端点返回的是**裸对象**（writeJSON(w,200,order)），带 enrich 字段。 */
 function order(over: Record<string, unknown> = {}): MaasOrder {
@@ -70,7 +72,11 @@ function order(over: Record<string, unknown> = {}): MaasOrder {
 async function mountView(): Promise<ReturnType<typeof mount>> {
   const pinia = createPinia()
   setActivePinia(pinia)
-  const w = mount(MaasOrderDetailView, { attachTo: document.body, global: { plugins: [pinia] } })
+  topbarRegistry = createTopbarActionRegistry()
+  const w = mount(MaasOrderDetailView, {
+    attachTo: document.body,
+    global: { plugins: [pinia], provide: { [TOPBAR_ACTIONS as symbol]: topbarRegistry } },
+  })
   mountedList.push(w)
   await flushPromises()
   await flushPromises()
@@ -81,7 +87,24 @@ beforeEach(() => {
   setLocale('zh-CN')
   vi.clearAllMocks()
   mMock.mockResolvedValue(order())
+  topbarRegistry = createTopbarActionRegistry()
   document.body.innerHTML = ''
+})
+
+describe('page-level refresh action', () => {
+  it('registers refresh in the topbar and removes the body action row', async () => {
+    const w = await mountView()
+    expect(topbarRegistry.actions.value).toHaveLength(1)
+    const refresh = topbarRegistry.actions.value[0]!
+    expect(refresh.key).toBe('refresh')
+    expect(typeof refresh.disabled).toBe('function')
+    if (typeof refresh.disabled === 'function') expect(refresh.disabled()).toBe(false)
+    expect(w.find('.mo__actions').text()).not.toContain('刷新')
+
+    await refresh.onClick()
+    await flushPromises()
+    expect(mMock).toHaveBeenCalledTimes(2)
+  })
 })
 afterEach(() => {
   for (const w of mountedList) w.unmount()

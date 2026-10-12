@@ -170,7 +170,7 @@ func TestRestoreOutputOrMask_UnknownPlaceholder(t *testing.T) {
 		t.Fatalf("RestoreOutputOrMask() error = %v", err)
 	}
 
-	expected := "未知[REDACTED]已被屏蔽"
+	expected := "未知" + RedactionMarker(TypeEmail) + "已被屏蔽"
 	if result != expected {
 		t.Errorf("RestoreOutputOrMask() = %q, want %q", result, expected)
 	}
@@ -206,7 +206,7 @@ func TestRestoreOutputOrMask_EmptyMap(t *testing.T) {
 		t.Fatalf("RestoreOutputOrMask() error = %v", err)
 	}
 
-	expected := "手机[REDACTED]被屏蔽"
+	expected := "手机" + RedactionMarker(TypePhone) + "被屏蔽"
 	if result != expected {
 		t.Errorf("RestoreOutputOrMask() = %q, want %q", result, expected)
 	}

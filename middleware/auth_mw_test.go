@@ -20,6 +20,10 @@ func TestAuthMiddleware_BypassesAPIAdminPaths(t *testing.T) {
 	cases := []string{
 		"/api/auth/token",
 		"/api/auth/logout",
+		// 登录验证码必须在**未登录**时就能取到（admin/auth_captcha.go）：
+		// 否则「连续失败 N 次后才要验证码」自相矛盾——用户被要求验证，
+		// 却因为没有登录态而拿不到验证码，永远登不进去。
+		"/api/auth/captcha",
 		"/api/auth/me",
 		"/api/auth/change-password",
 		"/api/users",

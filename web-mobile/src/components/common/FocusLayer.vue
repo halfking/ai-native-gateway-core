@@ -3,7 +3,7 @@
 // 单实例 Teleport：active=false 时内容原位渲染（disabled Teleport），active
 // 时移动到 body portal 并加载全屏 chrome；背景根 inert（旧 WebView 降级
 // aria-hidden + 指针屏蔽）；滚动锁引用计数配对。
-import { onBeforeUnmount, watch } from 'vue'
+import { onBeforeUnmount, ref, watch } from 'vue'
 import { FocusMachine, Hyper, lockScroll } from '@/hyper'
 import { t } from '@/i18n'
 import AppIcon from './AppIcon.vue'
@@ -18,12 +18,57 @@ const props = withDefaults(
 
 const emit = defineEmits<{ 'update:active': [value: boolean] }>()
 
+// WKWebView on iOS 15 can retain the inline Teleport node's former document
+// position when `disabled` flips to false. Keep the fullscreen geometry inline
+// so the moved layer is pinned to the visual viewport immediately.
+const focusLayerFrameStyle = {
+  position: 'fixed',
+  top: '0',
+  right: '0',
+  bottom: '0',
+  left: '0',
+  zIndex: '1010',
+  display: 'flex',
+  flexDirection: 'column',
+} as const
+
+let touchStart: { x: number; y: number; fromTable: boolean } | null = null
+
+function onTouchStart(event: TouchEvent): void {
+  const touch = event.changedTouches[0]
+  if (!touch) return
+  const target = event.target
+  touchStart = {
+    x: touch.clientX,
+    y: touch.clientY,
+    fromTable: target instanceof Element && target.closest('.table-scroll, table') !== null,
+  }
+}
+
+function onTouchEnd(event: TouchEvent): void {
+  const start = touchStart
+  touchStart = null
+  const touch = event.changedTouches[0]
+  if (!start || !touch || start.fromTable) return
+
+  const deltaX = touch.clientX - start.x
+  const deltaY = touch.clientY - start.y
+  if (deltaX < -90 && Math.abs(deltaX) > Math.abs(deltaY) * 1.3) emit('update:active', false)
+}
+
 const machine = new FocusMachine()
 
 let overlayId: string | null = null
 let releaseLocks: Array<() => void> = []
+let releaseFocusScroll: (() => void) | null = null
 let appRoot: HTMLElement | null = null
 let prevInert = false
+const focusBodyRef = ref<HTMLElement | null>(null)
+
+function clearFocusScrollHost(): void {
+  releaseFocusScroll?.()
+  releaseFocusScroll = null
+}
 
 function findAppRoot(): HTMLElement | null {
   if (typeof document === 'undefined') return null
@@ -50,6 +95,12 @@ watch(
     if (active) {
       void machine.enter(
         () => {
+          clearFocusScrollHost()
+          releaseFocusScroll = Hyper.scroll.register({
+            id: 'focus-layer',
+            axis: 'y',
+            getEl: () => focusBodyRef.value,
+          })
           // 登记为 focus 覆盖层（history 标记 + 标题 + BackDispatcher 可关）
           overlayId = `focus-${Math.random().toString(36).slice(2, 9)}`
           Hyper.presentOverlay({
@@ -65,6 +116,7 @@ watch(
           setBackgroundInert(true)
         },
         () => {
+          clearFocusScrollHost()
           if (overlayId) {
             Hyper.dismissOverlay(overlayId)
             overlayId = null
@@ -76,6 +128,7 @@ watch(
       )
     } else {
       void machine.exit(() => {
+        clearFocusScrollHost()
         if (overlayId) {
           Hyper.dismissOverlay(overlayId)
           overlayId = null
@@ -86,6 +139,7 @@ watch(
       })
     }
   },
+  { flush: 'post' },
 )
 
 onBeforeUnmount(() => {
@@ -93,6 +147,7 @@ onBeforeUnmount(() => {
     Hyper.dismissOverlay(overlayId)
     overlayId = null
   }
+  clearFocusScrollHost()
   for (const fn of releaseLocks) fn()
   releaseLocks = []
   setBackgroundInert(false)
@@ -102,27 +157,27 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="body" :disabled="!active">
-    <section
-      v-if="active"
-      class="focus-layer"
-      role="dialog"
-      aria-modal="true"
-      :aria-label="title"
+    <div
+      class="focus-inline"
+      :class="{ 'focus-layer': active }"
+      :style="active ? focusLayerFrameStyle : undefined"
+      :role="active ? 'dialog' : undefined"
+      :aria-modal="active ? 'true' : undefined"
+      :aria-label="active ? title : undefined"
+      @touchstart.passive="onTouchStart"
+      @touchend="onTouchEnd"
     >
-      <header class="focus-layer__header">
-        <button type="button" class="focus-layer__exit" @click="emit('update:active', false)">
-          <AppIcon name="back" :size="20" />
+      <header v-if="active" class="focus-layer__header">
+        <button id="focus-layer-close" type="button" class="focus-layer__exit" :aria-label="t('common.close')" @click="emit('update:active', false)">
+          <AppIcon name="close" :size="20" />
           <span>{{ t('common.exitFocus') }}</span>
         </button>
         <h2 class="focus-layer__title">{{ title }}</h2>
         <span class="focus-layer__spacer" />
       </header>
-      <div class="focus-layer__body">
+      <div ref="focusBodyRef" :class="active ? 'focus-layer__body' : 'focus-inline__body'">
         <slot />
       </div>
-    </section>
-    <div v-else class="focus-inline">
-      <slot />
     </div>
   </Teleport>
 </template>
@@ -146,8 +201,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: var(--app-space-2);
-  height: 48px;
-  padding-inline: var(--app-space-2);
+  min-height: 48px;
+  padding: var(--app-space-1) var(--app-space-2);
   border-bottom: 1px solid var(--app-border);
   background: var(--app-header-bg);
   backdrop-filter: blur(14px);
@@ -175,12 +230,12 @@ onBeforeUnmount(() => {
 
 .focus-layer__title {
   flex: 1;
+  min-width: 0;
   font-size: 0.9375rem;
   font-weight: 600;
+  line-height: 1.25;
   text-align: center;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .focus-layer__spacer {
@@ -198,6 +253,10 @@ onBeforeUnmount(() => {
 }
 
 .focus-inline {
+  display: contents;
+}
+
+.focus-inline__body {
   display: contents;
 }
 </style>

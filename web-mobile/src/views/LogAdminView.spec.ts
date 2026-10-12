@@ -13,6 +13,7 @@ import {
   type LogArchiveList,
 } from '@/api/logsAdmin'
 import { setLocale, locale } from '@/i18n'
+import { createTopbarActionRegistry, TOPBAR_ACTIONS } from '@/components/shell/topbarActions'
 
 /**
  * LogAdminView 的不变量（2026-10-08）。
@@ -50,6 +51,7 @@ const archMock = fetchLogArchiveList as unknown as ReturnType<typeof vi.fn>
 
 const ORIGIN_LOCALE = locale.value
 let mountedList: Array<{ unmount(): void }> = []
+let topbarRegistry = createTopbarActionRegistry()
 
 /** 抄自 `admin/logs_body_cache.go:139-146`。 */
 function cacheOf(over: Record<string, unknown> = {}): BodyCacheStats {
@@ -137,7 +139,11 @@ async function mountView(o: Opts = {}): Promise<ReturnType<typeof mount>> {
   const pinia = createPinia()
   setActivePinia(pinia)
   setAll(o)
-  const w = mount(LogAdminView, { attachTo: document.body, global: { plugins: [pinia] } })
+  topbarRegistry = createTopbarActionRegistry()
+  const w = mount(LogAdminView, {
+    attachTo: document.body,
+    global: { plugins: [pinia], provide: { [TOPBAR_ACTIONS as symbol]: topbarRegistry } },
+  })
   mountedList.push(w)
   await flushPromises()
   await flushPromises()
@@ -435,13 +441,13 @@ describe('★★★★★★ 读面只有重取，没有任何写控件', () => 
   it('★★★★★ 页面上没有任何归档/删除/改配置的控件', async () => {
     const w = await mountView()
     const labels = w.findAll('button').map((b) => b.text())
-    expect(labels).toHaveLength(1) // 只有刷新
-    expect(labels[0]).toContain('刷新')
+    expect(labels).toHaveLength(0) // 刷新在应用顶栏
+    expect(topbarRegistry.actions.value.map((action) => action.key)).toEqual(['refresh'])
     // ★ 全页 not.toContain('删除') / ('归档') 都会被**我自己写的 readOnlyNote** 判红
     //   （那句免责里就写着「归档、删除都是 superAdmin 档的写操作」）
     //   ⇒ 判据只能落在**可点元素**上：按钮数与按钮文案。
     const actionable = w.findAll('button, a, input, select')
-    expect(actionable.map((n) => n.text())).toEqual(['刷新'])
+    expect(actionable.map((n) => n.text())).toEqual([])
   })
 
   it('★★★★★ 页面明说三个 superAdmin 写操作都没碰', async () => {

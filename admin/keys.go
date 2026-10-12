@@ -127,6 +127,10 @@ const defaultApplicationTenant = "default"
 // getOrCreateApplication returns the applications.id for (code, default tenant),
 // auto-inserting a row when absent — mirrors Python _get_or_create_app().
 func (h *Handler) getOrCreateApplication(ctx context.Context, code, ownerUser string) (int, error) {
+	return h.getOrCreateApplicationForTenant(ctx, code, ownerUser, defaultApplicationTenant)
+}
+
+func (h *Handler) getOrCreateApplicationForTenant(ctx context.Context, code, ownerUser, tenantID string) (int, error) {
 	if code == "" {
 		code = "default"
 	}
@@ -137,7 +141,7 @@ func (h *Handler) getOrCreateApplication(ctx context.Context, code, ownerUser st
 	var appID int
 	err := h.db.QueryRow(ctx,
 		`SELECT id FROM applications WHERE code = $1 AND tenant_id = $2`,
-		code, defaultApplicationTenant,
+		code, tenantID,
 	).Scan(&appID)
 	if err == nil {
 		return appID, nil
@@ -149,8 +153,9 @@ func (h *Handler) getOrCreateApplication(ctx context.Context, code, ownerUser st
 	err = h.db.QueryRow(ctx, `
 		INSERT INTO applications (tenant_id, code, display_name, owner_user)
 		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (tenant_id, code) DO UPDATE SET code = EXCLUDED.code
 		RETURNING id
-	`, defaultApplicationTenant, code, code, ownerUser).Scan(&appID)
+	`, tenantID, code, code, ownerUser).Scan(&appID)
 	if err != nil {
 		return 0, err
 	}
@@ -182,6 +187,9 @@ func parseKeyActionRoute(remaining string) keyActionRoute {
 }
 
 func (h *Handler) handleKeys(w http.ResponseWriter, r *http.Request) {
+	if !requireUserManager(w, r) {
+		return
+	}
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
@@ -339,6 +347,9 @@ func (h *Handler) handleKeys(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleKeysRoot(w http.ResponseWriter, r *http.Request) {
+	if !requireUserManager(w, r) {
+		return
+	}
 	// 2026-08-06: 与 handleKeys(带尾斜杠) 保持一致。无尾斜杠根路由
 	// 此前缺少 nil-db 守卫，DB 不可用(no-DB 模式)时 listKeys 空指针 panic，
 	// 恢复中间件将其转成 {"code":"panic"} 500。
@@ -385,6 +396,14 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 		req.ApplicationCode = "default"
 	}
 	req.TenantID = resolveCreateKeyTenantID(r, req.TenantID)
+	if req.TenantID == "" {
+		writeError(w, http.StatusForbidden, "tenant scope unavailable")
+		return
+	}
+	if (req.BudgetUSD != nil && *req.BudgetUSD < 0) || (req.RateLimitRPM != nil && *req.RateLimitRPM < 0) {
+		writeError(w, http.StatusBadRequest, "budget and rate limit must be nonnegative")
+		return
+	}
 	// tenant_admin callers may only create keys for their own tenant.
 	if IsTenantAdmin(r) && req.TenantID != GetTenantID(r) {
 		writeError(w, http.StatusForbidden, "forbidden: cannot create key for another tenant")
@@ -398,7 +417,7 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 	if req.OwnerUser != nil && *req.OwnerUser != "" {
 		ownerUser = *req.OwnerUser
 	}
-	appID, err := h.getOrCreateApplication(ctx, req.ApplicationCode, ownerUser)
+	appID, err := h.getOrCreateApplicationForTenant(ctx, req.ApplicationCode, ownerUser, req.TenantID)
 	if err != nil {
 		slog.Error("createKey: getOrCreateApplication failed", "error", err, "code", req.ApplicationCode)
 		writeError(w, http.StatusInternalServerError, "query failed")

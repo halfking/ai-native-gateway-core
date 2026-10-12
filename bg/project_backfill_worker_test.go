@@ -102,6 +102,12 @@ func TestSessionProjectBackfillSQLContract(t *testing.T) {
 		"ss.gw_project_id IS NULL",
 		"sd.gw_session_id = ss.session_key",
 		"sd.tenant_id IS NOT DISTINCT FROM ss.tenant_id",
+		// R31 (2026-10-10, 迁移 850 同批): the 48h rolling window bounds the
+		// idle proof-of-absence scan. Resolvability is frozen at sd-row
+		// creation (all UPDATE sites touch status fields only), so rows older
+		// than the window could never have become candidates — the window
+		// sheds 128k permanently-unresolvable rows on 252 without losing one.
+		"ss.created_at >= (now() - interval '48 hours')",
 		"public.gw_resolve_project_ref(sd.project_id, sd.application_code) IS NOT NULL",
 		"ORDER BY ss.session_key",
 		"LIMIT $1",
@@ -131,6 +137,17 @@ func TestSessionProjectBackfillSQLWindowExcludesUnresolvable(t *testing.T) {
 		t.Errorf("resolvability guard at offset %d lands after LIMIT at %d; "+
 			"it must narrow the window, not post-filter the batch",
 			guard, limit)
+	}
+	// R31: same reasoning for the 48h recency window — placed after LIMIT it
+	// would not stop the full-reservoir walk it exists to prevent.
+	window := strings.Index(lower, "ss.created_at >= (now() - interval '48 hours')")
+	if window < 0 {
+		t.Fatal("batch SQL has no 48h recency window at all")
+	}
+	if window > limit {
+		t.Errorf("recency window at offset %d lands after LIMIT at %d; "+
+			"it must narrow the candidate set before LIMIT, not post-filter it",
+			window, limit)
 	}
 }
 

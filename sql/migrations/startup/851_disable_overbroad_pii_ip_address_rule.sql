@@ -1,0 +1,46 @@
+-- ===========================================================================
+-- File:          sql/migrations/startup/851_disable_overbroad_pii_ip_address_rule.sql
+-- Migration:     851
+-- Database:      llm_gateway
+-- Purpose:       停用 316 播种的 pii_patterns.ip_address 规则——它把**每一个**
+--                IPv4（含环回与公网）都当成 PII 在输出侧遮成 ***.*.*.*.*，
+--                于是「export https_proxy=http://127.0.0.1:7890」这类运维
+--                命令在客户端变成不可执行的坏命令。
+--
+-- Status:        active
+-- Idempotent:    YES (UPDATE ... WHERE，按行判据，无 DO/无新建对象)
+-- Dependencies:  316_output_compliance_monitoring.sql（pii_patterns 表与
+--                ip_address 种子行）
+--
+-- Background:
+--   2026-10-10 用户报告脱敏范围过宽。代码侧同批修复见
+--   security/sanitize 的 DetectionScope（ScopeRedact 不再匹配地址类规则）。
+--   本迁移处理**另一条独立链路**——domains/outputcompliance 的 DB 侧 PII 规则。
+--
+--   两条链路此前各自独立地遮蔽地址，只修代码侧会在 245 上看不到任何改善：
+--   实测部署 ce5e35ab 后复测，响应仍是
+--     export https_proxy=http://*********:7890 ...
+--   且遮蔽发生在模型 think 块内（模型从未见过真实 IP），证明是**入站**被遮，
+--   而非出站 compliance 的 redactOutput 所为——出站遮蔽不会回灌到模型的
+--   思考过程。追查 pii_patterns 命中 ip_address 行，根因定位于此。
+--
+--   为什么这条规则该停用而不是收窄：
+--   1. 它没有类型分级——`\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}` 连版本号
+--      （1.22.3 补零成 1.22.3.0 之类）与环回地址一并命中，误伤面不可控。
+--   2. 输出侧真正的风险是「模型把数据发往外传目的地」，那由
+--      security/sanitize 的 ScopeEgress 防外传守卫承担（tool 参数里的公网
+--      地址硬阻断），不在本表职责内。两处各管一件事才是干净的切分。
+--   3. 保留 enabled 但调低 severity 无效：redactOutput 只看
+--      policy.ActionOnX == "redact"，不看 severity，降级仍会遮。
+--
+--   未删除该行：保留行本身作为历史记录与回滚参照（运维可随时改回 enabled）。
+--   删除会让 316 的幂等重放重新播种，一条 UPDATE 不会——这是选 UPDATE
+--   而非 DELETE 的原因。
+--
+-- 上线代价：单表 UPDATE，命中 1 行，无锁表重建，秒级。
+-- 回滚：UPDATE pii_patterns SET enabled = true WHERE pattern_name='ip_address';
+-- ===========================================================================
+UPDATE public.pii_patterns
+   SET enabled = false
+ WHERE pattern_name = 'ip_address'
+   AND enabled IS DISTINCT FROM false;

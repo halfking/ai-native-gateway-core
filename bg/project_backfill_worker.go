@@ -68,6 +68,20 @@ const (
 // first_resolvable_rank(5746) > LIMIT(2000)；154 日志连续 10 次
 // backfilled=0（每次空烧 6~28s CPU），而窗口外还压着 141,797 行可回填。
 // 谓词把「注定改变不了自己的行」挡在窗口外，n==0 才重新等价于「已排空」。
+//
+// ★ 2026-10-10 增补 48h 滚动窗口（252 审计第 31 轮，迁移 850 同批）：
+// 谓词挡住了不可解析行被「选中」，但挡不住它们被「扫过」——积压清零后
+// 每 tick 仍要顺序走完整个 NULL 水库才能证明「无事可做」（252 实测
+// 128,699 行 NULL 全部结构性不可解析、可解析积压=0，单次空扫 40-117s、
+// ~6,700s/天 DB 墙钟，本库第一大慢查族）。窗口把扫描面裁到
+// `ss.created_at >= now() - interval '48 hours'`（252 实测 ≈1.3 万行，
+// 索引 850 (created_at, session_key) WHERE gw_project_id IS NULL 走范围扫描）。
+// 裁剪无损证明：gw_resolve_project_ref 是纯字符串推导（无查表），
+// 可解析性在 session_dim 行创建时冻结（全部 UPDATE 站点只写
+// status/closed_at/stop_reason/updated_at）；新会话由 762 触发器即时同步，
+// worker 只兜触发器失败的重试——候选存在窗口 = 分钟级，48h ≈ 300 倍边际。
+// ⚠️ 若未来出现修改历史 session_dim.project 字段的机制，可解析性不再
+// 冻结，本窗口必须随之重估。
 const sessionProjectBackfillSQL = `
 WITH targets AS (
     SELECT ss.session_key, ss.tenant_id, sd.project_id, sd.application_code
@@ -76,6 +90,7 @@ WITH targets AS (
       ON sd.gw_session_id = ss.session_key
      AND sd.tenant_id IS NOT DISTINCT FROM ss.tenant_id
     WHERE ss.gw_project_id IS NULL
+      AND ss.created_at >= (now() - interval '48 hours')
       AND public.gw_resolve_project_ref(sd.project_id, sd.application_code) IS NOT NULL
     ORDER BY ss.session_key
     LIMIT $1

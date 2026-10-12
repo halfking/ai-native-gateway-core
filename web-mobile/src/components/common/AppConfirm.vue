@@ -46,8 +46,8 @@ function onCancel(): void {
          放在 actions 之前 ⇒ 输入在按钮上方，符合移动端表单阅读顺序。 -->
     <slot />
     <div class="confirm__actions">
-      <button type="button" class="btn" @click="onCancel">{{ cancelLabel ?? t('common.cancel') }}</button>
-      <button type="button" class="btn" :class="danger ? 'btn--danger' : 'btn--primary'" @click="onConfirm">
+      <button id="app-confirm-cancel" type="button" class="btn" @click="onCancel">{{ cancelLabel ?? t('common.cancel') }}</button>
+      <button id="app-confirm-submit" type="button" class="btn" :class="danger ? 'btn--danger' : 'btn--primary'" @click="onConfirm">
         {{ confirmLabel ?? t('common.confirm') }}
       </button>
     </div>

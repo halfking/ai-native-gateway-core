@@ -18,6 +18,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useHyperPage } from '@/hyper'
+import { useTopbarAction } from '@/components/shell/topbarActions'
 import AppIcon from '@/components/common/AppIcon.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import { t } from '@/i18n'
@@ -108,6 +109,14 @@ function reload(): void {
   }
   void load(n)
 }
+
+useTopbarAction({
+  key: 'refresh',
+  label: () => t('common.refresh'),
+  icon: 'refresh',
+  disabled: () => loading.value,
+  onClick: reload,
+})
 
 function goBack(): void {
   void router.push('/maas-orders')
@@ -307,7 +316,6 @@ onBeforeUnmount(() => {
 
     <div class="mo__actions">
       <button type="button" class="mo__btn" @click="goBack">{{ t('mo.backToList') }}</button>
-      <button type="button" class="mo__btn mo__btn--primary" @click="reload">{{ t('common.refresh') }}</button>
     </div>
   </div>
 </template>
@@ -338,9 +346,8 @@ onBeforeUnmount(() => {
 .mo__amount-v { font-size: 22px; font-weight: 700; }
 .mo__amount-u { font-size: 12px; color: var(--app-text-muted); }
 
-/* ★ R1：新增交互控件 ≥48 CSS px */
 .mo__actions { display: flex; gap: 8px; }
 .mo__btn { flex: 1; min-height: 48px; font-size: 14px; border-radius: 8px;
   border: 1px solid var(--app-border); background: transparent; color: inherit; }
-.mo__btn--primary { border-color: var(--app-primary); color: var(--app-primary); font-weight: 600; }
+
 </style>

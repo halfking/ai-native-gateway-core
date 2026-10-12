@@ -50,6 +50,10 @@ export function useWindowClass(): UseWindowClass {
   const windowClass = ref<WindowClass>(currentWindowClass())
 
   onMounted(() => {
+    // WebViews support matchMedia, but lightweight DOM test environments may not.
+    // currentWindowClass() already falls back to compact for that case.
+    if (typeof window.matchMedia !== 'function') return
+
     const mqMedium = window.matchMedia(MEDIA_QUERY_MEDIUM)
     const mqExpanded = window.matchMedia(MEDIA_QUERY_EXPANDED)
     const mqLarge = window.matchMedia(MEDIA_QUERY_LARGE)

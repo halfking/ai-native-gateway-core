@@ -303,3 +303,17 @@ func TestCostReconciler_AggregateMonth(t *testing.T) {
 		}
 	})
 }
+
+func TestExplicitZeroProviderBill(t *testing.T) {
+	rec := &providerprofile.ReconciliationRecord{DataSource: "manual", GatewayTotalCost: 5, GatewayTotalTokens: 100}
+	if !rec.HasBill() {
+		t.Fatal("explicit zero bill treated as absent")
+	}
+	if alert, _ := providerprofile.DiffAlertReason(rec, providerprofile.DefaultDiffThresholds()); !alert {
+		t.Fatal("positive gateway usage against zero bill did not alert")
+	}
+	rec.DataSource = ""
+	if rec.HasBill() {
+		t.Fatal("unimported zero totals treated as a bill")
+	}
+}

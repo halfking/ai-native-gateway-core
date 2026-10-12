@@ -49,13 +49,22 @@ func TestReplayedAssistantAndToolSecretsDoNotLeaveGateway(t *testing.T) {
 	original := `{"messages":[{"role":"assistant","content":"13800138000","tool_calls":[{"id":"call_1","type":"function","function":{"name":"connect","arguments":"{\"host\":\"192.168.2.3\"}"}}]},{"role":"tool","tool_call_id":"call_1","content":"foo@example.com"}]}`
 	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		for _, secret := range []string{"13800138000", "192.168.2.3", "foo@example.com"} {
+		// 2026-10-10: 192.168.2.3 left this list on purpose. Address-shaped
+		// text is out of the redaction scope now (see DetectionScope), so it
+		// must NOT be masked — asserting its absence here would lock the
+		// over-redaction back in. What still has to hold is that real PII in
+		// every lane — assistant content, tool arguments, tool result — is
+		// replaced before the replayed body leaves the gateway.
+		for _, secret := range []string{"13800138000", "foo@example.com"} {
 			if strings.Contains(string(body), secret) {
 				t.Error("replayed sensitive history leaked")
 			}
 		}
 		if !strings.Contains(string(body), "call_1") {
 			t.Error("tool identity lost")
+		}
+		if !strings.Contains(string(body), "192.168.2.3") {
+			t.Error("address text must pass through unredacted under ScopeRedact")
 		}
 	}))
 	rec := httptest.NewRecorder()
@@ -242,7 +251,7 @@ func TestSummaryGeneratedSensitiveTextIsMaskedBeforeRetry(t *testing.T) {
 		sanitized, _ := io.ReadAll(r.Body)
 		rc := compression.NewRecoveryCoordinator(compression.RecoveryDeps{Summarizer: func(context.Context, []byte, string) (string, bool) { return "summary password=NewSummarySecret", true }})
 		result := rc.Recover(r.Context(), sanitized, "openai", 5000, "tenant-summary", "gw_summary01", 0)
-		if !result.ShouldRetry || result.Strategy != "smart_window_llm" || strings.Contains(string(result.NewBody), "NewSummarySecret") || !strings.Contains(string(result.NewBody), "[REDACTED]") {
+		if !result.ShouldRetry || result.Strategy != "smart_window_llm" || strings.Contains(string(result.NewBody), "NewSummarySecret") || !strings.Contains(string(result.NewBody), RedactionMarker(TypeSecret)) {
 			t.Fatalf("generated summary not guarded: %+v", result)
 		}
 	})).ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(string(body))))

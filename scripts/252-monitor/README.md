@@ -205,3 +205,69 @@ WEBHOOK_TYPE=feishu,dingtalk      # 暂不支持多 channel,需改 notify.sh
 ```
 
 或同时复制脚本 + 配置做多群发（每个 channel 各自一行 cron）。
+
+## 11. 2026-10-10 事故：巡检把被巡检对象压垮了
+
+### 现场
+
+154 网关持续返回 503，日志里刷满
+`SQLSTATE 57P03 (the database system is not yet accepting connections)`。
+顺着网关的 DSN 找到 252（`172.16.2.210`，正是 154 的 PG / Redis 落点）：
+
+| 指标 | 现场值 | 正常 |
+|---|---|---|
+| load average (4 核) | **278 ~ 304** | < 4 |
+| 进程总数 | **2915** | ~200 |
+| `pg17-disk-watch.sh` 副本 | **310 份**，最早一份挂了 6.7 小时 | 1 份，跑完即退 |
+| 僵死 `docker exec pg-252-pg17 psql` | **149 个** | 0 |
+| 内存 | 13.8G / 15G，**swap 4095/4095 全占** | swap 空闲 |
+| `du` 卡 D 状态 | 11 个 | 0 |
+| 154 一小时 503 | **194 个** | 0 |
+
+### 成因链
+
+1. PG「半死」：容器还在 `listen`，但事务卡死。
+2. `pg17-disk-watch.sh` 的 `de()` 直接 `docker exec ... psql`，
+   **既无 `statement_timeout` 也无 `connect_timeout`** ⇒ psql 一直挂着。
+   同一轮还跑 `du -s /var/lib/containers/storage/`（全量遍历容器存储）。
+3. `etc.cron.d.pg17` 里它是 `*/10 * * * *`。上一轮永远不会结束，
+   下一轮照常触发 ⇒ **进程只增不减**。
+4. 310 份副本 ×（1 个 docker exec + 1 次全量 du）⇒ 内存耗尽 + IO 风暴。
+5. PG 因此无法服务 ⇒ 154 网关 57P03 ⇒ 503。
+
+⇒ **每 10 分钟一跑的巡检，在最需要它的时刻（PG 出问题）恰恰是最不能多跑的时刻。**
+
+### 修复
+
+两道闸，缺一不可：
+
+| 闸 | 作用 | 没有它会怎样 |
+|---|---|---|
+| 单实例闸门（`flock -n`） | 最多一份副本在跑 | 副本只增不减（现场 310 份） |
+| 查询 / 连接 / exec 超时 | 一份副本**一定会结束** | 那唯一的一份挂成永久僵尸（现场 149 个僵死 exec） |
+
+只有闸门没有超时，等于把「310 份僵尸」缩成「1 份僵尸」——问题没解决。
+
+- 闸门 **inline** 在每个脚本里，不 source 公共 helper：本目录按
+  **整文件覆盖**部署到 `/opt/scripts/`，helper 没跟着传上去会让整个目录哑掉。
+- 闸门**非阻塞**（`flock -n`）：阻塞式 flock 会让 cron 每轮排队等锁，
+  每 10 分钟多一个等待进程——乱堆换成整齐地堆，一样会爆。
+- 闸门**不可用时 fail-open**：拿不到锁就放行。反过来做（失败退出）会让
+  监控整体静默，而静默的监控不会被任何人发现已经坏了。
+  `pg17-disk-watch.sh` 的采样行会记 `gate=guarded|FAIL_OPEN`，让 fail-open 本身可见。
+- `pg17-pg-availability-check.sh` 的闸门排在 **EXIT trap 之后**：
+  它的 trap 负责写 `pg-availability.lastrun`（「巡检还在跑吗」的判据），
+  抢锁失败直接 `exit 0` 会让 lastrun 不更新，运维会误判心跳已停。
+
+### 回归门
+
+```bash
+bash tests/monitor_single_instance_gate_test.sh
+```
+
+静态部分（任何 runner，含 macOS）：每个 cron 调度的脚本都有非阻塞闸门、
+闸门 fail-open、心跳闸门排在 trap 之后、disk-watch 带查询与连接超时。
+行为部分（需要 `flock`，即 Linux/252）：8 份并发恰好 1 份进入主体、
+被跳过的立即以 0 退出、上一轮结束后锁正常释放。
+
+已接入 `verify.sh`。

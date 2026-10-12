@@ -1,4 +1,5 @@
-import { onBeforeUnmount } from 'vue'
+import { computed, onBeforeUnmount } from 'vue'
+import type { ComputedRef } from 'vue'
 import type { Presentation } from './types'
 import { Hyper } from './singleton'
 import { nextHyperId } from './runtime'
@@ -16,6 +17,8 @@ export interface UseHyperOverlayOptions {
 }
 
 export interface UseHyperOverlay {
+  /** True only while this is the topmost active overlay. */
+  isTop: ComputedRef<boolean>
   present(): void
   close(): void
   setTitle(title: string): void
@@ -44,6 +47,7 @@ export function useHyperOverlay(opts: UseHyperOverlayOptions): UseHyperOverlay {
   })
 
   return {
+    isTop: computed(() => Hyper.topOverlay.value?.id === id),
     present() {
       if (presented) return
       presented = true

@@ -26,6 +26,7 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { useHyperPage } from '@/hyper'
 import AppIcon from '@/components/common/AppIcon.vue'
+import DataTableFocus from '@/components/common/DataTableFocus.vue'
 import { t } from '@/i18n'
 import { fmtInt, fmtNum } from '@/utils/format'
 import {
@@ -265,6 +266,7 @@ onBeforeUnmount(() => {
                 {{ t('mp.contextWindow') }}: {{ fmtInt(m.context_window) }}
               </template>
             </p>
+            <DataTableFocus :title="m.display_name">
             <table class="mp__table">
               <thead>
                 <tr>
@@ -279,6 +281,7 @@ onBeforeUnmount(() => {
                 </tr>
               </tbody>
             </table>
+            </DataTableFocus>
           </li>
         </ul>
       </section>

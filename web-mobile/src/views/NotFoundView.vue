@@ -10,7 +10,6 @@ function backHome(): void {
 
 <template>
   <div class="page nf">
-    <h1 class="nf__title">{{ t('common.notFound') }}</h1>
     <p class="nf__hint">{{ t('common.notFoundHint') }}</p>
     <button type="button" class="btn btn--primary" @click="backHome">{{ t('common.backHome') }}</button>
   </div>
@@ -24,11 +23,6 @@ function backHome(): void {
   justify-content: center;
   gap: var(--app-space-3);
   text-align: center;
-}
-
-.nf__title {
-  font-size: 1.125rem;
-  font-weight: 600;
 }
 
 .nf__hint {

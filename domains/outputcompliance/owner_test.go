@@ -1,6 +1,9 @@
 package outputcompliance
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // TestOwnerAllowsSensitive 覆盖 owner==caller 文本匹配规则的全部边界。
 // 规则（保守，与 admin/session_tenant.go requireSessionOwnerAccess 的 deny 语义一致）：
@@ -88,7 +91,7 @@ func TestRedactOutput_PositionAccurate(t *testing.T) {
 	checker := &Checker{} // 不需要 DB，redactOutput 纯函数
 	output := "用户邮箱是 alice@example.com 请联系"
 	policy := &Policy{AutoRedact: true}
-	// 构造一个 PII issue：email 在 output 的位置 7-26，mask 后为 a***@e***.com
+	// 构造一个 PII issue：email 在 output 的位置 7-26，遮蔽物为带类型标记
 	emailStart := len("用户邮箱是 ") // 7 (按字节)
 	emailEnd := emailStart + len("alice@example.com")
 	masked := checker.maskPII("alice@example.com", "email")
@@ -105,7 +108,7 @@ func TestRedactOutput_PositionAccurate(t *testing.T) {
 	_ = emailStart
 	_ = emailEnd
 
-	redacted := checker.redactOutput(output, issues, policy)
+	redacted := checker.redactOutput(context.Background(), output, issues, policy)
 	if redacted == output {
 		t.Fatalf("redactOutput did not change output (bug regression): %q", redacted)
 	}
@@ -125,7 +128,7 @@ func TestRedactOutput_NoOpWhenAutoRedactOff(t *testing.T) {
 	output := "test alice@example.com"
 	policy := &Policy{AutoRedact: false}
 	issues := []ComplianceIssue{{Type: "pii", Location: "char:5-24", Content: "a***@e***.com"}}
-	got := checker.redactOutput(output, issues, policy)
+	got := checker.redactOutput(context.Background(), output, issues, policy)
 	if got != output {
 		t.Errorf("expected no-op when AutoRedact off, got %q", got)
 	}
@@ -142,7 +145,7 @@ func TestRedactOutput_MultipleIssuesDescendingOrder(t *testing.T) {
 		{Type: "pii", Subtype: "email", Location: "char:19-26", Content: "[B]"},
 	}
 	policy := &Policy{AutoRedact: true}
-	got := checker.redactOutput(output, issues, policy)
+	got := checker.redactOutput(context.Background(), output, issues, policy)
 	if contains(got, "a@x.com") || contains(got, "b@y.com") {
 		t.Errorf("both emails should be redacted, got %q", got)
 	}

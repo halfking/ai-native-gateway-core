@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import TenantDetailView from './TenantDetailView.vue'
 import {
   fetchTenant,
+  updateTenantStatus,
   fetchTenantUsers,
   fetchTenantKeys,
   fetchTenantStats,
@@ -16,6 +17,7 @@ import {
   type TenantStats,
 } from '@/api/tenants'
 import { setLocale, locale } from '@/i18n'
+import { createTopbarActionRegistry, TOPBAR_ACTIONS } from '@/components/shell/topbarActions'
 
 /**
  * TenantDetailView 的不变量（2026-10-08）。
@@ -46,6 +48,7 @@ vi.mock('@/api/tenants', async (importOriginal) => {
   return {
     ...actual,
     fetchTenant: vi.fn(),
+    updateTenantStatus: vi.fn(),
     fetchTenantUsers: vi.fn(),
     fetchTenantKeys: vi.fn(),
     fetchTenantStats: vi.fn(),
@@ -59,6 +62,7 @@ const sMock = fetchTenantStats as unknown as ReturnType<typeof vi.fn>
 
 const ORIGIN_LOCALE = locale.value
 let mountedList: Array<{ unmount(): void }> = []
+let topbarRegistry = createTopbarActionRegistry()
 
 function tenant(over: Record<string, unknown> = {}): TenantInfo {
   return { code: 'acme', name: 'Acme Corp', status: 'active', description: '', contact_email: 'ops@acme.test', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-10-01T00:00:00Z', ...over } as TenantInfo
@@ -112,7 +116,11 @@ async function mountView(over: Over = {}): Promise<ReturnType<typeof mount>> {
   set(uMock, over.users, [user()])
   set(kMock, over.keys, [key()])
   set(sMock, over.stats, stats())
-  const w = mount(TenantDetailView, { attachTo: document.body, global: { plugins: [pinia] } })
+  topbarRegistry = createTopbarActionRegistry()
+  const w = mount(TenantDetailView, {
+    attachTo: document.body,
+    global: { plugins: [pinia], provide: { [TOPBAR_ACTIONS as symbol]: topbarRegistry } },
+  })
   mountedList.push(w)
   await flushPromises()
   await flushPromises()
@@ -123,7 +131,24 @@ beforeEach(() => {
   setLocale('zh-CN')
   vi.clearAllMocks()
   routeParams.code = 'acme'
+  topbarRegistry = createTopbarActionRegistry()
   document.body.innerHTML = ''
+})
+
+describe('page-level refresh action', () => {
+  it('registers refresh in the topbar and removes the body action row', async () => {
+    const w = await mountView()
+    expect(topbarRegistry.actions.value).toHaveLength(1)
+    const refresh = topbarRegistry.actions.value[0]!
+    expect(refresh.key).toBe('refresh')
+    expect(typeof refresh.disabled).toBe('function')
+    if (typeof refresh.disabled === 'function') expect(refresh.disabled()).toBe(false)
+    expect(w.find('.tnd__actions').text()).not.toContain('刷新')
+
+    await refresh.onClick()
+    await flushPromises()
+    expect(tMock).toHaveBeenCalledTimes(2)
+  })
 })
 afterEach(() => {
   for (const w of mountedList) w.unmount()
@@ -261,9 +286,18 @@ describe('★★ 用户安全指标 + 排序方向', () => {
     expect(w.text()).toContain('正序')
   })
 
-  it('★★ 明说本页只读', async () => {
+  it('requires confirmation before changing tenant status and reloads after success', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    vi.mocked(updateTenantStatus).mockResolvedValue(tenant({ status: 'disabled' }))
     const w = await mountView()
-    expect(w.text()).toContain('只读')
+    const button = w.findAll('.tnd__op').find((b) => b.text().includes('停用租户'))!
+    await button.trigger('click')
+    expect(updateTenantStatus).not.toHaveBeenCalled()
+    confirm.mockReturnValue(true)
+    await button.trigger('click'); await flushPromises()
+    expect(updateTenantStatus).toHaveBeenCalledWith('acme', 'disabled')
+    expect(tMock).toHaveBeenCalledTimes(2)
+    confirm.mockRestore()
   })
 
   it('★★★★★★ ★ 先查成功、再查失败 ⇒ **旧数据必须被清掉**', async () => {
@@ -273,7 +307,7 @@ describe('★★ 用户安全指标 + 排序方向', () => {
     expect(w.text()).toContain('Acme Admin')
 
     tMock.mockRejectedValue(new Error('boom'))
-    await w.findAll('.tnd__btn')[1]!.trigger('click') // 刷新
+    await topbarRegistry.actions.value[0]!.onClick()
     await flushPromises()
     await flushPromises()
     expect(w.text()).toContain('boom')

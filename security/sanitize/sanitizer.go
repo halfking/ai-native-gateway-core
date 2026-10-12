@@ -244,19 +244,20 @@ func allocateSensitivePlaceholder(typ SensitiveType, value string, offset map[Se
 func (s *Sanitizer) restoreText(ctx context.Context, text string, resolve placeholderResolver, policy looseUnknownPolicy) string {
 	foreign := foreignMarkersFromContext(ctx)
 	result := PlaceholderPattern.ReplaceAllStringFunc(text, func(match string) string {
+		var parsedType SensitiveType
 		if parsed, ok := ParsePlaceholder(match); ok {
+			// A token observed in the inbound body belongs to the downstream
+			// hop even when this gateway can also see the same session mapping
+			// (for example, when both instances share Redis). Keep it intact so
+			// only the issuer restores it at the end of the chain.
+			if foreign.isForeign(match) {
+				return match
+			}
+			parsedType = parsed.Type
 			if resolve != nil {
 				if original, hit := resolve(parsed.Type, parsed.Index); hit {
 					return original
 				}
-			}
-			// The peer exemption is deliberately independent of resolve. An
-			// upstream hop typically holds no mapping of its own, so resolve is
-			// nil there; gating the exemption on it masked the very markers the
-			// passthrough exists to carry home.
-			if foreign.isForeign(match) {
-				// 下游签发、本实例不还原：原样带回，由那一跳复原。
-				return match
 			}
 			if resolve != nil {
 				s.logger.WarnContext(ctx, "sanitize: placeholder not found in map",
@@ -264,7 +265,10 @@ func (s *Sanitizer) restoreText(ctx context.Context, text string, resolve placeh
 			}
 		}
 		if policy == looseMaskUnknown {
-			return redactedMarker
+			// The marker parsed, so its type is known and the mask can say so.
+			// A non-parsing match leaves parsedType empty and falls back to the
+			// bare form rather than guessing.
+			return RedactionMarker(parsedType)
 		}
 		return match
 	})

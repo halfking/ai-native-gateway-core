@@ -48,7 +48,7 @@ func TestChatNonStreamRestoresAllVisibleTextLanes(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(result.ModifiedBody, &got))
 	require.Equal(t, "answer 13800138000", got.Choices[0].Message.Content)
-	require.Equal(t, "unknown [REDACTED]", got.Choices[0].Message.Refusal)
+	require.Equal(t, "unknown "+RedactionMarker(TypePhone), got.Choices[0].Message.Refusal)
 	require.Equal(t, "think 13800138000", got.Choices[0].Message.ReasoningContent)
 	require.Equal(t, "completion 13800138000", got.Choices[1].Text)
 	for _, arguments := range []string{got.Choices[0].Message.FunctionCall.Arguments, got.Choices[0].Message.ToolCalls[0].Function.Arguments} {
@@ -108,6 +108,6 @@ func TestEncodedToolArgumentMarkerIsRestored(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, otherTenant)
 	require.False(t, otherTenant.ShouldBlock)
-	require.Contains(t, string(otherTenant.ModifiedBody), "[REDACTED]")
+	require.Contains(t, string(otherTenant.ModifiedBody), RedactionMarker(TypePhone))
 	require.NotContains(t, string(otherTenant.ModifiedBody), "13800138000")
 }

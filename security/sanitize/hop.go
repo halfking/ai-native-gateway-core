@@ -234,13 +234,23 @@ func AdoptSanitizeHop(ctx context.Context, header string, body []byte) context.C
 }
 
 // SanitizeHopForOutbound reports the hop header value this instance should
-// stamp on an upstream request, or "" when it did not sanitize anything and
-// therefore has nothing to declare.
+// stamp on an upstream request. The declaration is needed both when this
+// instance minted placeholders and when it is forwarding placeholders already
+// validated as belonging to a downstream hop. The latter keeps the exemption
+// alive through marker-only intermediate gateways.
 func SanitizeHopForOutbound(ctx context.Context) string {
-	if sm, ok := SanitizeMapFromContext(ctx); !ok || len(sm) == 0 {
-		return ""
+	if sm, ok := SanitizeMapFromContext(ctx); ok && len(sm) > 0 {
+		return sanitizeHopNonce
 	}
-	return sanitizeHopNonce
+	// Only AdoptSanitizeHop can put this state on a request context, and it
+	// requires both the peer header and markers actually present in the body.
+	// A caller-controlled header by itself therefore cannot propagate the
+	// declaration to another gateway.
+	hop := SanitizeHopFromContext(ctx)
+	if hop.Enabled && len(hop.Foreign) > 0 {
+		return sanitizeHopNonce
+	}
+	return ""
 }
 
 // containsNonForeignMarker reports whether payload still carries a reserved

@@ -3119,6 +3119,12 @@ func main() {
 			adminDB = dbConn.Pool()
 		}
 		adminHandler = admin.NewHandler(adminDB, cfg.SecretKey, fernetKey)
+		if mobileNodeService, mobileNodeErr := admin.NewMobileNodeDescriptorServiceFromEnv(); mobileNodeErr != nil {
+			slog.Warn("mobile node QR provisioning disabled; check node descriptor and NetBird configuration")
+		} else if mobileNodeService != nil && adminHandler != nil {
+			adminHandler.SetMobileNodeDescriptorService(mobileNodeService)
+			slog.Info("mobile node QR provisioning enabled")
+		}
 		if adminHandler != nil {
 			adminHandler.StartProxyRuntime()
 		}

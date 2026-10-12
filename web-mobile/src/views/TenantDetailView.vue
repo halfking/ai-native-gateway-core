@@ -24,20 +24,26 @@
 // (6) ★★★ `userInfo.last_login_at` 无 omitempty（键在值为 null = 从未登录），
 //     而 `tenantKeyInfo` 的 4 个指针**带** omitempty（键可不存在）。
 //
-// ★ 写操作一律不碰。
+// 状态操作需先确认；服务端成功后重新读取详情、用户和密钥状态。
 
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useHyperPage } from '@/hyper'
+import { useTopbarAction } from '@/components/shell/topbarActions'
 import AppIcon from '@/components/common/AppIcon.vue'
+import DataTableFocus from '@/components/common/DataTableFocus.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import { t } from '@/i18n'
-import { fmtInt, fmtNum, fmtTime, relativeTime } from '@/utils/format'
+import { fmtDate, fmtInt, fmtNum, fmtTime, relativeTime } from '@/utils/format'
+import { formatApiError } from '@/utils/errors'
+import { disableKey, enableKey } from '@/api/keys'
+import { setManagedUserEnabled } from '@/api/users'
 import {
   fetchTenant,
   fetchTenantUsers,
   fetchTenantKeys,
   fetchTenantStats,
+  updateTenantStatus,
   tenantStatsDaysClamped,
   tenantUsageMayBeDegraded,
   tenantUserNeverLoggedIn,
@@ -71,6 +77,11 @@ const stats = ref<TenantStats | null>(null)
 const error = ref<string | null>(null)
 const errorKind = ref<'none' | 'timeout' | 'notfound' | 'unconfigured' | 'other'>('none')
 const loading = ref(false)
+const operating = ref(false)
+const operationError = ref<string | null>(null)
+let disposed = false
+let aborter: AbortController | null = null
+function clearData(): void { tenant.value = null; users.value = null; keys.value = null; stats.value = null }
 
 /** ★ 1 / 7 / 30 / 90 / 365 —— 上界 365 是后端 clamp 点。 */
 const dayChoices = [1, 7, 30, 90, TENANT_STATS_DAYS_MAX] as const
@@ -84,21 +95,28 @@ const neverLoggedIn = computed(() => (users.value ?? []).filter(tenantUserNeverL
 const detailAggShaky = computed(() => (tenant.value ? tenantUsageMayBeDegraded(tenant.value) : false))
 
 async function load(c: string): Promise<void> {
+  if (disposed) return
+  aborter?.abort()
+  aborter = new AbortController()
+  const signal = aborter.signal
+  clearData()
   loading.value = true
   error.value = null
   errorKind.value = 'none'
   try {
     const [t1, u, k, s] = await Promise.all([
-      fetchTenant(c),
-      fetchTenantUsers(c),
-      fetchTenantKeys(c),
-      fetchTenantStats(c, { days: days.value }),
+      fetchTenant(c, { signal }),
+      fetchTenantUsers(c, { signal }),
+      fetchTenantKeys(c, { signal }),
+      fetchTenantStats(c, { days: days.value }, { signal }),
     ])
+    if (signal.aborted || disposed) return
     tenant.value = t1
     users.value = u
     keys.value = k
     stats.value = s
   } catch (e) {
+    if (signal.aborted || disposed) return
     tenant.value = null
     users.value = null
     keys.value = null
@@ -111,13 +129,51 @@ async function load(c: string): Promise<void> {
     else if (/tenant not found|404/i.test(msg)) errorKind.value = 'notfound'
     else errorKind.value = 'other'
   } finally {
-    loading.value = false
+    if (!signal.aborted && !disposed) loading.value = false
   }
+}
+
+async function runOperation(action: () => Promise<unknown>): Promise<void> {
+  if (operating.value || loading.value || disposed) return
+  const targetCode = code.value
+  operating.value = true
+  operationError.value = null
+  try {
+    await action()
+    if (!disposed && code.value === targetCode) await load(targetCode)
+  } catch (cause) {
+    if (!disposed && code.value === targetCode) operationError.value = formatApiError(cause)
+  } finally {
+    operating.value = false
+  }
+}
+
+async function toggleTenant(): Promise<void> {
+  if (!tenant.value || loading.value || operating.value) return
+  const targetCode = tenant.value.code
+  const status = tenant.value.status === 'disabled' ? 'active' : 'disabled'
+  if (!window.confirm(t(status === 'active' ? 'tnd.enableTenantConfirm' : 'tnd.disableTenantConfirm', { name: tenant.value.name }))) return
+  await runOperation(() => updateTenantStatus(targetCode, status))
+}
+
+async function toggleUser(user: TenantUser): Promise<void> {
+  if (loading.value || operating.value) return
+  const enabled = !user.enabled
+  if (!window.confirm(t(enabled ? 'tnd.enableUserConfirm' : 'tnd.disableUserConfirm', { name: user.display_name || user.username }))) return
+  await runOperation(() => setManagedUserEnabled(user.id, enabled))
+}
+
+async function toggleKey(key: TenantKey): Promise<void> {
+  if (loading.value || operating.value) return
+  const enabled = !key.enabled
+  if (!window.confirm(t(enabled ? 'tnd.enableKeyConfirm' : 'tnd.disableKeyConfirm', { name: key.key_alias || key.key_prefix }))) return
+  await runOperation(async () => { if (enabled) await enableKey(key.id); else await disableKey(key.id) })
 }
 
 function reload(): void {
   const c = code.value.trim()
   if (!c) {
+    aborter?.abort()
     tenant.value = null
     users.value = null
     keys.value = null
@@ -128,6 +184,14 @@ function reload(): void {
   }
   void load(c)
 }
+
+useTopbarAction({
+  key: 'refresh',
+  label: () => t('common.refresh'),
+  icon: 'refresh',
+  disabled: () => loading.value,
+  onClick: reload,
+})
 
 function goBack(): void {
   void router.push('/tenants')
@@ -151,6 +215,8 @@ watch(days, () => {
 })
 
 onBeforeUnmount(() => {
+  disposed = true
+  aborter?.abort()
   tenant.value = null
   users.value = null
   keys.value = null
@@ -162,6 +228,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="tnd">
+    <p v-if="operationError" class="tnd__msg tnd__msg--err" role="alert">{{ operationError }}</p>
     <!-- ══════ 错误 ══════ -->
     <section v-if="error" class="tnd__panel">
       <p class="tnd__msg tnd__msg--err">
@@ -194,6 +261,10 @@ onBeforeUnmount(() => {
           <span class="tnd__badge-t">{{ tenant.status }}</span>
         </span>
       </div>
+      <button v-if="code !== 'default'" type="button" class="tnd__op" :disabled="operating || loading" @click="toggleTenant">
+        {{ tenant.status === 'disabled' ? t('tnd.enableTenant') : t('tnd.disableTenant') }}
+      </button>
+      <p v-else class="tnd__note">{{ t('tnd.defaultTenantProtected') }}</p>
       <p class="tnd__meta">{{ tenant.code }}</p>
       <p v-if="tenant.contact_email" class="tnd__meta">{{ tenant.contact_email }}</p>
       <p class="tnd__meta">{{ t('tnd.created') }}: {{ fmtTime(tenant.created_at) }}</p>
@@ -290,10 +361,10 @@ onBeforeUnmount(() => {
         <span>{{ t('tnd.dailyComplete', { n: stats.daily.length }) }}</span>
       </p>
 
-      <!-- R49-E2：横向滚动包裹（UI规范 10 §4.6.26）——五列表在 375px 视口
-           必然溢出撑破容器；沿 web 侧收敛先例（TenantModelPolicyPanel）的包裹样式。 -->
-      <div style="overflow-x:auto">
-        <table class="tnd__table">
+      <!-- 五列表在窄屏可横向浏览，也能切到全屏查看完整列。 -->
+      <DataTableFocus :title="t('tnd.dailyTitle')">
+        <div style="overflow-x:auto">
+          <table class="tnd__table">
           <thead>
             <tr>
               <th>{{ t('tnd.date') }}</th>
@@ -305,15 +376,16 @@ onBeforeUnmount(() => {
           </thead>
           <tbody>
             <tr v-for="d in stats.daily" :key="d.date">
-              <td class="tnd__td-l">{{ d.date }}</td>
+              <td class="tnd__td-l">{{ fmtDate(d.date) }}</td>
               <td class="tnd__td-v">{{ fmtInt(d.requests) }}</td>
               <td class="tnd__td-v">{{ fmtInt(d.success) }}</td>
               <td class="tnd__td-v" :class="{ 'tnd__td-err': d.errors > 0 }">{{ fmtInt(d.errors) }}</td>
               <td class="tnd__td-v">{{ fmtInt(d.credits) }}</td>
             </tr>
           </tbody>
-        </table>
-      </div>
+          </table>
+        </div>
+      </DataTableFocus>
       <p v-if="!stats.by_model.length" class="tnd__msg">{{ t('tnd.emptyModels') }}</p>
     </section>
 
@@ -359,6 +431,9 @@ onBeforeUnmount(() => {
             <AppIcon name="alert" :size="13" />
             <span>{{ t('tnd.mustChangePwd') }}</span>
           </p>
+          <button type="button" class="tnd__op" :disabled="operating || loading" @click="toggleUser(u)">
+            {{ u.enabled ? t('tnd.disableUser') : t('tnd.enableUser') }}
+          </button>
         </li>
       </ul>
     </section>
@@ -393,19 +468,21 @@ onBeforeUnmount(() => {
           </p>
           <p v-if="tenantKeyNeverExpires(k)" class="tnd__meta">{{ t('tnd.neverExpires') }}</p>
           <p v-else class="tnd__meta">{{ t('tnd.expiresAt') }}: {{ fmtTime(k.expires_at) }}</p>
+          <button type="button" class="tnd__op" :disabled="operating || loading" @click="toggleKey(k)">
+            {{ k.enabled ? t('tnd.disableKey') : t('tnd.enableKey') }}
+          </button>
         </li>
       </ul>
     </section>
 
-    <div class="tnd__actions">
-      <button type="button" class="tnd__btn" @click="goBack">{{ t('tnd.backToList') }}</button>
-      <button type="button" class="tnd__btn tnd__btn--primary" @click="reload">{{ t('common.refresh') }}</button>
-    </div>
-
     <p class="tnd__note">
       <AppIcon name="key" :size="13" />
-      <span>{{ t('tnd.readOnlyNote') }}</span>
+      <span>{{ t('tnd.operationsNote') }}</span>
     </p>
+
+    <div class="tnd__actions">
+      <button type="button" class="tnd__btn" @click="goBack">{{ t('tnd.backToList') }}</button>
+    </div>
   </div>
 </template>
 
@@ -420,10 +497,10 @@ onBeforeUnmount(() => {
   border: 1px solid var(--app-border); background: transparent; color: inherit; }
 .tnd__seg-btn--on { border-color: var(--app-primary); color: var(--app-primary); font-weight: 600; }
 .tnd__actions { display: flex; gap: 8px; margin-bottom: 12px; }
+.tnd__op { min-height: 48px; margin-top: 8px; padding: 0 14px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); color: inherit; }
+.tnd__op:disabled { opacity: .55; }
 .tnd__btn { flex: 1; min-height: 48px; font-size: 14px; border-radius: 8px;
   border: 1px solid var(--app-border); background: transparent; color: inherit; }
-.tnd__btn--primary { border-color: var(--app-primary); color: var(--app-primary); font-weight: 600; }
-
 .tnd__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
 .tnd__msg--err { color: var(--app-danger); }
 .tnd__note { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; line-height: 1.5;

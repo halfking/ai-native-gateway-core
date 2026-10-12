@@ -144,6 +144,10 @@ onBeforeUnmount(() => overlay.release())
   display: flex;
   flex-direction: column;
   gap: 2px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .drawer__link {

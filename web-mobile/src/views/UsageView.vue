@@ -17,8 +17,7 @@ import {
 import { t } from '@/i18n'
 import AppStateView from '@/components/common/AppStateView.vue'
 import StatCard from '@/components/common/StatCard.vue'
-import FocusLayer from '@/components/common/FocusLayer.vue'
-import AppIcon from '@/components/common/AppIcon.vue'
+import DataTableFocus from '@/components/common/DataTableFocus.vue'
 import { fmtInt, fmtNum, fmtUsd } from '@/utils/format'
 
 useHyperPage({ title: () => t('usage.title') })
@@ -29,7 +28,6 @@ const modelItems = ref<ModelUsage[]>([])
 const degraded = ref(false)
 const loading = ref(true)
 const error = ref<string | null>(null)
-const focusActive = ref(false)
 
 let aborter: AbortController | null = null
 
@@ -153,13 +151,9 @@ async function onCostDimChange(d: CostTrendDimension): Promise<void> {
       <template v-else-if="tab === 'byModel'">
         <div class="usage__focus-head">
           <span v-if="degraded" class="badge badge--warning">{{ t('home.degraded') }}</span>
-          <button type="button" class="btn btn--sm" @click="focusActive = true">
-            <AppIcon name="expand" :size="16" />
-            {{ t('common.focusView') }}
-          </button>
         </div>
 
-        <FocusLayer v-model:active="focusActive" :title="t('usage.byModel')">
+        <DataTableFocus :title="t('usage.byModel')">
           <div class="table-scroll">
             <table class="table">
               <thead>
@@ -183,7 +177,7 @@ async function onCostDimChange(d: CostTrendDimension): Promise<void> {
               </tbody>
             </table>
           </div>
-        </FocusLayer>
+        </DataTableFocus>
       </template>
 
       <!-- 成本趋势：降级 / 真空 / 有数据 三态严格分开 -->
@@ -218,8 +212,9 @@ async function onCostDimChange(d: CostTrendDimension): Promise<void> {
             <p class="usage__cost-total">
               {{ t('usage.totalCostLabel') }} {{ fmtUsd(costTrend.totalCost) }}
             </p>
-            <div class="table-scroll">
-              <table class="table">
+            <DataTableFocus :title="t('usage.costTrend')">
+              <div class="table-scroll">
+                <table class="table">
                 <thead>
                   <tr>
                     <th>{{ t('usage.dimensionLabel') }}</th>
@@ -238,8 +233,9 @@ async function onCostDimChange(d: CostTrendDimension): Promise<void> {
                     <td class="num">{{ fmtNum(e.error_rate * 100, 1) }}%</td>
                   </tr>
                 </tbody>
-              </table>
-            </div>
+                </table>
+              </div>
+            </DataTableFocus>
           </template>
         </template>
       </template>

@@ -70,8 +70,6 @@ const KNOWN_ORPHANS: readonly string[] = [
   'subscriptionTiers',
   'turnsFilterOptions',
   'usageEnhanced',
-  'usageTrendSeries',
-  'userUsageStats',
   'v1DataHorizon',
 ]
 
@@ -248,6 +246,16 @@ describe('孤儿棘轮', () => {
     // ★ 这条负断言有牙的前提是上面那条 `toEqual([...KNOWN_ORPHANS])` 仍在把守：
     //   把本模块改回孤儿时集合会不等 ⇒ 那条先红 ⇒ 哨兵不是独自承担。
     expect(currentOrphans()).not.toContain('connectionRegistry')
+  })
+
+  it('★★ 已接线的哨兵：usageTrendSeries 不在孤儿里（第一百零八批）', () => {
+    // ★ 用量趋势线接上了抽屉席与路由 ⇒ 棘轮清单同步删掉那一行。
+    //   该族是 **admin 档**（admin/handler.go:1267 的 h.admin(h.HandleUsageAdmin)），
+    //   席**不设** requiresRole ⇒ AppDrawer.spec.ts 的白名单里不该出现 usage-trend-series。
+    // ★ 这一族的租户口径是本仓第四种且是**安全**的那种：statsTenantScope
+    //   （admin/stats.go:87-97）对非 super_admin 强制用 auth.TenantID 并忽略 tenant_id
+    //   ⇒ tenant_admin 天然隔离 ⇒ 视图内部**不需要**任何角色分支。
+    expect(currentOrphans()).not.toContain('usageTrendSeries')
   })
 
   it('★★★ 反向护栏：api 内部的互相引用不得凭空产生可达性', () => {

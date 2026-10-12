@@ -163,7 +163,7 @@ func TestHopDoesNotExemptForgedMarkers(t *testing.T) {
 	require.NoError(t, json.Unmarshal(result.ModifiedBody, &got))
 	content := got.Choices[0].Message.Content
 	assert.Contains(t, content, "{SENSITIVE:internal_ip:1}", "the peer's marker passes")
-	assert.Contains(t, content, "[REDACTED]")
+	assert.Contains(t, content, RedactionMarker(TypeSecret))
 	assert.NotContains(t, content, "SENSITIVE:secret:99", "a marker that never arrived is still redacted")
 	assert.NotContains(t, content, "SENSITIVE:phone:7")
 }
@@ -182,7 +182,7 @@ func TestHopWithoutPeerDeclarationIsUnchanged(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	assert.Contains(t, string(result.ModifiedBody), "[REDACTED]")
+	assert.Contains(t, string(result.ModifiedBody), RedactionMarker(TypeInternalIP))
 	assert.NotContains(t, string(result.ModifiedBody), "{SENSITIVE:internal_ip:1}")
 }
 
@@ -203,7 +203,7 @@ func TestHopDoesNotExemptExpiredOwnMapping(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	assert.Contains(t, string(result.ModifiedBody), "[REDACTED]",
+	assert.Contains(t, string(result.ModifiedBody), RedactionMarker(TypeSecret),
 		"an unresolvable marker of ours must still be masked")
 }
 
@@ -307,8 +307,11 @@ func TestTwoGatewayRoundTrip(t *testing.T) {
 	req.Header.Set("X-Gw-Tenant-Id", "tenant-two-hop")
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
-	require.Contains(t, string(forwarded), "{SENSITIVE:", "downstream must have sanitized")
-	require.NotContains(t, string(forwarded), hostIP)
+	require.Contains(t, string(forwarded), "{SENSITIVE:secret:", "downstream must have sanitized the credential")
+	// 2026-10-10: the host is no longer redacted input. This test is about
+	// gateway-hop plumbing, not redaction scope, so the address is asserted to
+	// survive while the password still must not.
+	require.Contains(t, string(forwarded), hostIP)
 	require.NotContains(t, string(forwarded), password)
 
 	downstreamMap, err := rdb.HGetAll(context.Background(),
@@ -374,17 +377,76 @@ func TestTwoGatewayRoundTrip(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(final.ModifiedBody, &got))
 	content := got.Choices[0].Message.Content
-	assert.Contains(t, content, hostIP, "the host address must survive the round trip")
+	// 2026-10-10: the host is no longer a placeholder, so it never enters the
+	// map and is never echoed back through the restore chain — it simply stays
+	// in the forwarded body verbatim. The password is the value that round-trips.
 	assert.Contains(t, content, password, "the password must survive the round trip")
 	assert.NotContains(t, content, "SENSITIVE:secret:77", "the forged marker stays redacted")
 }
 
-// TestSanitizeHopForOutboundRequiresRealSanitizing pins the security-relevant
-// half of the outbound signal: the hop header is derived from what this
-// instance actually sanitized, never from an inbound header. Otherwise a client
-// could put a peer-looking request in front of an upstream instance and collect
-// the passthrough exemption.
-func TestSanitizeHopForOutboundRequiresRealSanitizing(t *testing.T) {
+// TestSanitizeHopSurvivesMarkerOnlyIntermediate pins the recursive case that
+// a two-gateway round trip cannot cover: an intermediate gateway receives a
+// peer's markers, emits no markers of its own, and forwards the original body
+// to a third gateway. The hop declaration must follow those markers all the
+// way down the chain.
+func TestSanitizeHopSurvivesMarkerOnlyIntermediate(t *testing.T) {
+	// 2026-10-10: the origin request used to be a bare host address, which
+	// minted a marker because addresses redacted then. They do not any more, so
+	// the credential is what carries the marker. The hop-declaration contract
+	// under test — a marker-only intermediate propagating the inbound hop — is
+	// unchanged; only the thing that mints the marker moved.
+	const hostIP = "10.24.7.92"
+	const credential = "Sup3rS3cret!"
+	rdb := setupSaniGuardRedis(t)
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+
+	firstMW, err := NewSanitizeInputMiddleware(s, rdb, time.Minute)
+	require.NoError(t, err)
+	var firstBody []byte
+	var firstHop string
+	firstHandler := firstMW.Wrap(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		firstBody, _ = io.ReadAll(r.Body)
+		firstHop = SanitizeHopForOutbound(r.Context())
+	}))
+	firstReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
+		`{"messages":[{"role":"user","content":"connect to `+hostIP+`; password: `+credential+`"}]}`))
+	firstReq.Header.Set("X-Gw-Session-Id", "three-hop-origin")
+	firstHandler.ServeHTTP(httptest.NewRecorder(), firstReq)
+	require.Contains(t, string(firstBody), "{SENSITIVE:secret:")
+	require.NotContains(t, string(firstBody), credential)
+	require.NotEmpty(t, firstHop, "the gateway that minted the marker declares the hop")
+
+	middleMW, err := NewSanitizeInputMiddleware(s, rdb, time.Minute)
+	require.NoError(t, err)
+	var middleBody []byte
+	var middleHop string
+	middleHandler := middleMW.Wrap(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		middleBody, _ = io.ReadAll(r.Body)
+		middleHop = SanitizeHopForOutbound(r.Context())
+	}))
+	middleReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(firstBody))
+	middleReq.Header.Set("X-Gw-Session-Id", "three-hop-middle")
+	middleReq.Header.Set(SanitizeHopHeader, firstHop)
+	middleHandler.ServeHTTP(httptest.NewRecorder(), middleReq)
+	require.Equal(t, string(firstBody), string(middleBody),
+		"the intermediate gateway must not rewrite a peer's marker")
+
+	// The middle instance did not mint a placeholder, but it must still tell
+	// the next instance that the markers in this body belong to the prior hop.
+	require.NotEmpty(t, middleHop,
+		"a marker-only intermediate must propagate the validated inbound hop")
+	thirdHop := SanitizeHopFromRequest(middleHop, middleBody)
+	require.True(t, thirdHop.Enabled,
+		"the third gateway must adopt the original marker as foreign")
+	require.Equal(t, CollectForeignMarkers(firstBody), thirdHop.Foreign)
+}
+
+// TestSanitizeHopForOutboundRequiresOwnedMarkers pins the security-relevant
+// half of the outbound signal: the hop header is derived from markers this
+// instance minted or validated as belonging to a downstream peer, never from
+// an inbound header by itself.
+func TestSanitizeHopForOutboundRequiresOwnedMarkers(t *testing.T) {
 	assert.Empty(t, SanitizeHopForOutbound(context.Background()),
 		"no sanitize map means nothing to declare")
 
@@ -396,12 +458,21 @@ func TestSanitizeHopForOutboundRequiresRealSanitizing(t *testing.T) {
 	assert.NotEmpty(t, nonce)
 	assert.Equal(t, nonce, SanitizeHopNonce(), "the nonce is this process's stable label")
 
-	// A client-supplied hop header on the inbound request must not influence it.
+	// A client-supplied hop header on the inbound request must not replace this
+	// instance's own stable marker.
 	forged, err := http.NewRequestWithContext(sanitized, http.MethodPost, "/", nil)
 	require.NoError(t, err)
 	forged.Header.Set(SanitizeHopHeader, "attacker")
 	assert.Equal(t, nonce, SanitizeHopForOutbound(forged.Context()),
 		"the outbound signal comes from our own sanitizing, not from a request header")
+
+	forwarded := AdoptSanitizeHop(context.Background(), "peer",
+		[]byte(`{"m":"{SENSITIVE:secret:1}"}`))
+	assert.NotEmpty(t, SanitizeHopForOutbound(forwarded),
+		"a validated inbound hop must be propagated when this instance only forwards markers")
+	assert.Empty(t, SanitizeHopForOutbound(AdoptSanitizeHop(context.Background(), "",
+		[]byte(`{"m":"{SENSITIVE:secret:1}"}`))),
+		"markers without a validated peer declaration must not be propagated")
 }
 
 // TestAdoptSanitizeHopGate covers the inbound gate end to end at context level.
@@ -434,4 +505,26 @@ func TestHopMalformedMarkerStillFailsClosed(t *testing.T) {
 	assert.False(t, containsNonForeignMarker(ctx, []byte(`a {SENSITIVE:secret:1} b`)),
 		"the peer's own marker is not this gateway's residue")
 	assert.False(t, containsNonForeignMarker(ctx, []byte(`nothing here`)))
+}
+
+func TestForeignPlaceholderWinsOverSharedSessionMap(t *testing.T) {
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	const token = "{SENSITIVE:secret:1}"
+	sm := SanitizeMap{token: "intermediate-map-value"}
+	hop := hopFrom(`{"m":"` + token + `"}`)
+	ctx := WithSanitizeMap(hopCtx(hop), sm)
+
+	for _, value := range []string{
+		token,
+		"{SENSITIVE: secret : 01}",
+		"｛ＳＥＮＳＩＴＩＶＥ：ｓｅｃｒｅｔ：１｝",
+	} {
+		t.Run(value, func(t *testing.T) {
+			got, restoreErr := s.RestoreOutputOrMask(ctx, value, sm)
+			require.NoError(t, restoreErr)
+			require.Equal(t, value, got,
+				"a token observed on the inbound hop belongs to that peer even if this session map has the same key")
+		})
+	}
 }

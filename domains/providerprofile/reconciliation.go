@@ -11,7 +11,7 @@ import (
 //	(gateway - provider) / provider
 //
 // provider 为 0 时分母无意义，返回 0（调用方以“未定义差异”处理，
-// 不触发告警）。结果保留 4 位小数，与表的 numeric(5,4) 精度对齐。
+// 已导入零账单的绝对差异由 DiffAlertReason 单独判断）。结果保留 4 位小数。
 func ComputeDiffRate(gateway, provider float64) float64 {
 	if provider == 0 {
 		return 0
@@ -72,9 +72,9 @@ type ReconciliationRecord struct {
 	UpdatedAt            time.Time `json:"updated_at"`
 }
 
-// HasBill 报告该记录是否已有供应商账单数据（tokens 或 cost 任一非零）。
+// HasBill also recognizes an explicitly imported zero bill.
 func (r *ReconciliationRecord) HasBill() bool {
-	return r.ProviderTotalTokens != 0 || r.ProviderTotalCost != 0
+	return r.DataSource != "" || r.ProviderTotalTokens != 0 || r.ProviderTotalCost != 0
 }
 
 // GatewayUsageSource 网关侧月度用量数据源。
@@ -115,6 +115,9 @@ func DefaultDiffThresholds() DiffThresholds {
 // DiffAlertReason 判断记录的差异率是否超过阈值；超过时返回 true 及
 // 人类可读的原因描述。
 func DiffAlertReason(rec *ReconciliationRecord, th DiffThresholds) (bool, string) {
+	if rec.HasBill() && ((rec.ProviderTotalCost == 0 && rec.GatewayTotalCost > 0) || (rec.ProviderTotalTokens == 0 && rec.GatewayTotalTokens > 0)) {
+		return true, "gateway usage differs from an explicitly zero provider bill"
+	}
 	if cost := rec.CostDiffRate; cost > th.Cost || cost < -th.Cost {
 		return true, fmt.Sprintf("cost diff rate %.4f exceeds threshold %.4f (gateway %.4f vs provider %.4f)",
 			cost, th.Cost, rec.GatewayTotalCost, rec.ProviderTotalCost)

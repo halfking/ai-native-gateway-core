@@ -1,127 +1,10 @@
 import { req, type RequestOptions } from './client'
 
-/**
- * userUsageStats.ts — 账号维度用量汇总与单用户画像（2026-10-08，第八十八批）。
- *
- * GET /api/admin/users/usage-summary
- * GET /api/admin/users/{id}/stats
- *
- * - **注册**：`admin/handler.go:1104-1105`
- *   ```go
- *   mux.HandleFunc("/api/admin/users/usage-summary", admin(h.handleUserUsageSummary))
- *   mux.HandleFunc("/api/admin/users/",           admin(h.handleUserStatsDispatcher))
- *   ```
- *   ⇒ ★★ 两个都是 **`admin(...)` 档**（tenant_admin 可用，**不设** `requiresRole`）。
- *   ⇒ ★ `usage-summary` 是**精确路径**、`users/` 是**前缀** ⇒ Go 1.22+ ServeMux
- *     精确优先 ⇒ `usage-summary` 不会落进分发器。
- * - **实现**：`admin/user_usage_stats.go`（395 行）。
- * - 数据面是 `usage_facts`（与对账快照同源），owner 维度经 `api_keys.owner_user` 关联。
- *
- * ══════════════════════════════════════════════════════════════════════════
- * ## ★★★★★ 本族最要紧的十八件事
- * ══════════════════════════════════════════════════════════════════════════
- *
- * (1) ★★★★★ **`key_count` 查询失败只记日志、不报错**（`:217-222`）：
- *      ```go
- *      if err := h.db.QueryRow(...).Scan(&resp.KeyCount); err != nil {
- *          slog.Warn("user_stats: key count failed", …)
- *      }
- *      ```
- *      ⇒ ★★★ `key_count` 恒为数字，而 **0 是二义的**（真的 0 个密钥 / 查失败）
- *      ⇒ ★★ 这与批 80 的 `database.free_bytes`（作者**显式注释**说明是「测不到」位）
- *        **不同**：那里至少写明了语义，这里**没有任何注释**说明它可能不可信。
- *
- * (2) ★★★★★ **三个 Top 桶与 recent 列表都是「失败即降级」，但响应仍是 200**：
- *      - 桶**查询**失败 ⇒ `continue`（该桶保持**空数组**，`:328-331`）
- *      - 桶 **Scan** 失败 ⇒ 记日志 + `continue`（`:334-337`）
- *      - 桶 `rows.Err()` ⇒ **只记日志**（`:340-342`）⇒ **截断的 Top 列表被当完整数据返回**
- *      - `recent` 同理（`:358-373`）
- *      ⇒ ★★★ 客户端**无法区分**「这个用户没有数据」与「这一段查询失败了」。
- *      ⇒ ★★ 注释自陈动机（`:324-326`）：15s ctx 中途超时会把截断列表当完整数据，
- *        所以加了 `rows.Err()` 的**日志**—— 但**日志在服务端**，客户端看不到。
- *
- * (3) ★★★★★ **`usage-summary` 的 `rows.Scan` 失败是**裸 `continue`**（`:107-109`）——
- *      **没有** `slog`、没有 `warnRowSkip`、什么都没有
- *      ⇒ 与 (2) 的三个桶（至少记了 `slog.Warn`）**不一致**
- *      ⇒ ★★★ 这是本仓「静默跳行」最彻底的一处：列表可被静默截断且**无任何痕迹**。
- *      ⇒ ★ 对照：同文件的 `rows.Err()` **有**检查（`:112`）⇒ 迭代中断会 500。
- *
- * (4) ★★★★ **`days` 的上界两个端点不同**：
- *      - `usage-summary`：`days < 1 || days > 365` ⇒ 回落 30（`:63-65`）
- *      - `{id}/stats`：`days < 1 || days > 90` ⇒ 回落 30（`:176-178`）
- *      ⇒ ★★★ 同一个参数名、同一族、**上界差 4 倍**，且都是**静默回落不 400**。
- *
- * (5) ★★★★ **`daily` 与 `usage-summary` 的窗口口径不同**：
- *      - `usage-summary`：`now() - ($1 * INTERVAL '1 day')`（**UTC，无日切**，`:91`）
- *      - `{id}/stats` 的 `daily`：`generate_series(date_trunc('day', now()
- *        AT TIME ZONE 'Asia/Shanghai') …)` ⇒ **显式 Asia/Shanghai 日切 + 零填充**（`:250-273`）
- *      ⇒ ★★★ 且注释明说「对账页保持显式 UTC 日（结算口径，**有意分叉**）」
- *      ⇒ ⇒ 客户端**不能**跨这两个端点比较同一天的数字。
- *
- * (6) ★★★★ **`daily` 是零填充的**：用 `generate_series` 造出每一天，
- *      `LEFT JOIN agg` 后 `COALESCE(agg.requests, 0)` 等 ⇒
- *      **没有数据的那天也会出现（全 0）** ⇒ `daily.length === days` 恒成立。
- *
- * (7) ★★★★ **跨租户访问被掩蔽成 404**（`:199-205`）：
- *      ```go
- *      if myTenant != "" && myTenant != "default" && myTenant != tenantID {
- *          writeError(w, http.StatusNotFound, "user not found")
- *      ```
- *      注释自陈理由：先 403 会构成「跨租户用户 ID 存在性 oracle」
- *      ⇒ ★★★ 客户端**不能**用 403 判权限，也**不能**用 404 判「用户不存在」——
- *        两者返回**完全相同**的响应。
- *
- * (8) ★★★ **只有 `ErrNoRows` 映射 404，基础设施错误映射 500**
- *      （`:188-196`，注释自陈「不与『用户不存在』混淆」）⇒ 文案
- *      `user not found` / `lookup user failed` **可区分**。
- *
- * (9) ★★★★ **租户隔离在两个端点都被 `tenantID != "default"` 短路**：
- *      - `usage-summary`（`:73-79`）：`tenantID != "" && tenantID != "default"` 才加 where
- *      - `{id}/stats`（`:199`）：同样条件
- *      ⇒ ★★★ 租户键为 `"default"` 的那个租户，其 tenant_admin 会拿到**全平台**数据。
- *
- * (10) ★★★★ **405 检查排在 503 之前**（两个端点都是：`:53` vs `:57`、`:166` vs `:170`）
- *      ⇒ 与批 83（405 在前）一致、与批 84（503 在前）**相反**。
- *
- * (11) ★★★★ **503 文案是 `db not available`** —— 本仓**第五种**措辞：
- *      批 81/82/85/86 的 `database not configured`、批 84 的 `database not available`、
- *      本族的 **`db not available`**（少了 `atabase`）。
- *
- * (12) ★★★ `usage-summary` 的 `ORDER BY agg.requests DESC` **无 tiebreak**
- *      ⇒ 同请求数的行**顺序未定义**。
- *      三个 Top 桶的 `ORDER BY COUNT(*) DESC LIMIT 5` 同样**无 tiebreak**。
- *
- * (13) ★★★ **`usage-summary` 用 `JOIN users u ON u.username = agg.owner`**
- *      （`:95`）⇒ ★ **owner 不在 `users` 表里的账号整行消失**（内连接）。
- *
- * (14) ★★★ **`last_active_at` 是 `*time.Time` 且无 omitempty**（`:40`）
- *      ⇒ 无数据时是**裸 `null`**（「指针 + 无 omitempty」的一例）。
- *
- * (15) ★★★ **`recent` 的 `first_chunk_ms` / `total_ms` 是 `*int64` 且无 omitempty**
- *      （`:142-143`）⇒ 真会**裸 `null`**（这两列 DB 里可空）。
- *      ★ 而 `kpi.latency_p95_ms` 虽是 `*int64`，但 SQL 用
- *      `COALESCE(percentile_cont(0.95)…, 0)` ⇒ 实际路径**恒为数字**。
- *
- * (16) ★★★ **`kpi.error_rate` 只在 `requests > 0` 时计算**（`:242-244`），
- *      否则保持零值 ⇒ ★★ **`error_rate === 0` 是二义的**（真 0 或「无请求」）。
- *
- * (17) ★★★ 三个 Top 桶的 `name` 都有**占位符兜底**，且各不同：
- *      - `top_models`：`COALESCE(NULLIF(f.raw_model_name,''), '<unknown>')`
- *      - `top_apps`：`COALESCE(app.code, '<none>')`（**LEFT JOIN** ⇒ 可能是 `<none>`）
- *      - `top_keys`：`COALESCE(NULLIF(k.key_alias,''), COALESCE(NULLIF(k.key_prefix,''), '<unknown>'))`
- *      - `recent.model`：空 → **`'-'`**（不是 `<unknown>`！）
- *      - `recent.status`：空 → **`'unknown'`**
- *      ⇒ ★★ 五个占位符**各不相同**，且 `'-'` 与 `'unknown'` 只出现在 recent 里。
- *
- * (18) ★★★ **分发表是手工拆路径**（`:380-394`）：
- *      `TrimPrefix("/api/admin/users/")` → `TrimSuffix("/")` → `SplitN(…, 2)`，
- *      要求**恰好两段且第二段是 `stats`**，否则 **404 `not found`**；
- *      `{id}` 用 `Atoi`（**无 TrimSpace**）且 `id <= 0` ⇒ **400 `invalid user id`**。
- *
- * ★★ **本模块明确声明的校验边界**：解包器校验两个响应的**全部恒在键与类型**
- *   （usage-summary 2 + 行 5 键；stats 10 键 + kpi 6 + 桶 5 + recent 6 + daily 7），
- *   并为 (1)(2)(3)(5)(6)(7)(9)(12)(16) 各提供判据函数。
- *   ★ **不校验** `top_*` 与 `recent` 的**完整性**（后端自己都保证不了，见 (2)(3)）。
+/** User usage is attributed by owner username AND the user's tenant.
+ * Current servers return 500 for incomplete statistics; legacy servers may
+ * silently return empty auxiliary fields. Optional cost/request IDs retain
+ * compatibility with older gateways. Daily covers the full rolling window
+ * split by Asia/Shanghai calendar dates, including the first partial day.
  */
 
 // ── 常量（后端字面量） ───────────────────────────────────────────────────────
@@ -220,6 +103,7 @@ export interface UserUsageSummaryResponse {
 }
 
 export interface UserStatsKpi {
+  cost_usd?: number
   requests: number
   tokens: number
   credits: number
@@ -241,6 +125,7 @@ export interface UserStatsBucket {
 }
 
 export interface UserStatsRecentRequest {
+  request_id?: string
   /** `time.Time` ⇒ RFC3339Nano。 */
   ts: string
   /** ★ 空模型名回落成 `'-'`。见 (17)。 */
@@ -364,6 +249,7 @@ export function unwrapUserStats(resp: unknown): UserStatsResponse {
     throw new Error('kpi 的 latency_p95_ms 不是数字也不是 null')
   }
 
+  if (k['cost_usd'] != null && (typeof k['cost_usd'] !== 'number' || !Number.isFinite(k['cost_usd']))) throw new Error('Invalid usage cost')
   const daily = requireArray(d['daily'], '用户画像 的 daily')
   for (let i = 0; i < daily.length; i++) {
     const o = requireObject(daily[i], `用户画像 的 daily[${i}]`)

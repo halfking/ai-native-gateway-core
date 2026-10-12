@@ -45,7 +45,7 @@ func TestHandleKeysRoot_DBGuard(t *testing.T) {
 			req := httptest.NewRequest(method, "/api/keys", nil)
 			w := httptest.NewRecorder()
 
-			h.handleKeysRoot(w, req)
+			h.handleKeysRoot(w, SetAuthContext(req, &AuthContext{Role: "super_admin"}))
 
 			if w.Code != http.StatusServiceUnavailable {
 				t.Errorf("%s /api/keys with h.db=nil: want 503, got %d body=%s",

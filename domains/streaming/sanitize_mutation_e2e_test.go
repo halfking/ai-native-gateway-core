@@ -89,21 +89,25 @@ func TestSanitizeRoundTripSurvivesModelMutation(t *testing.T) {
 	require.NotNil(t, capture.params, "request never reached the provider boundary")
 	providerBody := string(capture.params.BodyBytes)
 	require.Contains(t, providerBody, "{SENSITIVE:", "provider body must carry placeholders")
-	for _, secret := range []string{hostIP, password, apiToken} {
+	for _, secret := range []string{password, apiToken} {
 		require.NotContains(t, providerBody, secret, "raw secret must not reach the provider")
 	}
+	require.Contains(t, providerBody, hostIP,
+		"address text must reach the provider verbatim under ScopeRedact")
 
 	// --- outbound leg: the model re-spells every marker it was shown ---
 	values, err := rdb.HGetAll(context.Background(),
 		sanitize.SanitizeRedisKey(sanitize.HashTenant(tenant), sessionID)).Result()
 	require.NoError(t, err)
 	require.NotEmpty(t, values, "no session map to restore from")
-	for _, secret := range []string{hostIP, password, apiToken} {
+	for _, secret := range []string{password, apiToken} {
 		require.Contains(t, strings.Join(mapValues(values), ","), secret, "session map lost a value")
 	}
 
+	// The host is no longer a placeholder (ScopeRedact skips addresses), so the
+	// model echoes it as plain text and only re-spells the two credentials.
 	modelReply := `{"choices":[{"message":{"role":"assistant","content":` +
-		`"To deploy, connect to {SENSITIVE:internal_ip:1} with password {SENSITIVE:secret:1}` +
+		`"To deploy, connect to ` + hostIP + ` with password {SENSITIVE:secret:1}` +
 		` and token {SENSITIVE:secret:2}"}}]}`
 	modelReply = mutateLikeAModel(modelReply, values)
 	for token := range values {
