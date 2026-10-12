@@ -15442,3 +15442,111 @@ AND COALESCE(
    并复看 §10.110.13 的三视图耗时是否从 144/81/3 s 下降。
 3. **若计划因此劣化**：`856_analyze_columnar_staleness_gate.down.sql` 可回滚，
    但会把数据库时间推回约 171 分钟/天——回滚前先看 `last_analyze` 的实际年龄分布。
+
+### §10.110.15 🔴 856 撞号改号 857 + 代付上游 856 的五点同步；以及队列空闲退避
+
+本节三件事，按发生顺序：merge 未完成 → 撞号 → 代付 → 队列退避。
+
+#### 一、merge 卡在未完成状态，且两边撞了同一个迁移号
+
+`git pull` 后仓库停在 3 处冲突（`installer/cmd/llm-gw-installer/main.go`、
+`installer/internal/dbinit/runner.go`、`sql/schema/installed_startup_migrations.tsv`），
+`MERGE_HEAD` = `8b30f87b5`（= `origin/main`）。三处冲突的形状完全一样：
+**双方在同一锚点各追加了一行登记**，本身保留双方即可。
+
+真正的问题不在冲突里，在编号上：
+
+| 编号 | 来源 | 状态 |
+|---|---|---|
+| `856_analyze_columnar_staleness_gate` | 本方（§10.110.14），本地 8 提交 | **未部署、未推送** |
+| `856_usage_ledger_ts_cover_agg_idx` | 上游，随本次 merge 进来 | **未部署** |
+
+⇒ **改号 856 → 857**，改的是本地独占的那一份，上游那份留在 `origin/main` 上不动。
+两侧都没进过生产，所以改号零生产代价。迁移**内容**与 `analyze_llm_gateway_table_stats`
+的五份活副本**一字未动**，只有编号变了。git 把它识别为 rename。
+
+改的面：文件 ×5（sql 正本 up/down、embeddata up/down、契约测试）
++ 引用 ×7（`runner.go` StartupFiles、`main.go` 的 go:embed var 与 `embeddedSQLFiles`、
+`installed_startup_migrations.tsv`、`apply-db-revision-sequence.sh` 的 `files` 数组
+与 `intentional_function_chains`）。
+
+> ⚠ **`installed_startup_migrations.tsv` 是生成物，不要手改**。判据
+> `installer/internal/dbinit/startup_manifest_test.go` 带 `-update` 标志，
+> 一条命令从 `StartupFiles` 重新生成整份清单。冲突时手改的两行会被它整份覆盖——
+> 这正是它该有的行为，但要知道。
+
+#### 二、代付上游 856 的五点同步 + 升级腿（归属上游）
+
+上游 `856_usage_ledger_ts_cover_agg_idx` 落了 main 却没做五点同步：
+embeddata 副本、go:embed var、`embeddedSQLFiles` map、`StartupFiles` 登记、
+`installed_startup_migrations.tsv` 全缺。补完 installer 登记后，通道腿门又报
+「有 installer 腿、无升级腿」。
+
+**判据的报错文案只说「补五点同步」，但不能照着做**——同族有 6 张豁免表
+（`psqlConcurrencyRequired` / `operatorGatedCleanup` / `sequenceChannelRepairs` /
+`goEnsureMirrored` / `supersededLedgerOnly` / `manualByDesign`），补错了就变成永久豁免。
+先例 **842** 是决定性的：
+
+| 维度 | 842 | 上游 856 |
+|---|---|---|
+| 显式 `BEGIN/COMMIT` | 有 | 有 |
+| 建在分区父表上 | 是 | 是 |
+| 是否已登记 StartupFiles | **是** | 否 |
+
+⇒ 显式事务对这一族**不是障碍**，正解是**登记**而不是豁免。
+
+⚠ 存量库同样需要这条索引——缺陷是 iPhone 6s 真机上 `/api/usage/summary` 与
+`/api/usage/by-model` **任何窗口都 500**（handler 5s 预算掐掉，空载
+`EXPLAIN ANALYZE` 已 2.28s）。现有索引只有 `(ts)`，服务过滤不服务取列 ⇒
+6.6 万行全部回堆。所以除了 installer 腿，还必须进通道 `files` 数组。
+
+**这笔账记在合并提交 `12204f488` 里，归属上游，不是本轮优化成果。**
+
+#### 三、队列空闲退避（本轮第二个优化，未部署）
+
+§10.110.8 的排序里，第一名是 `credential_probe_queue` 的取件：
+**410 万次取件 / 195 分钟（5.15%）**。定位到的循环是
+`bg/probe_queue_worker.go` 的 `run()`，`PollInterval = 250ms`（`cmd/gateway/main.go:4473`）
+的**固定 ticker**——队列空转时也照跑。61.7 小时窗口实测：
+
+| 语句 | 调用次数 | 实际改动的行 | 空转率 |
+|---|---|---|---|
+| `Claim` | 4,106,933 | 27,443 | **99.33%** |
+| `RequeueExpiredLeases` | 4,106,941 | 39 | 99.999% |
+
+两项合计 201.5 分钟 = `llm_gateway` 全库数据库时间的 **5.3%**。
+
+**改法**：空转时间隔翻倍（封顶 `IdlePollCap`，默认 30s），**一取到任务立刻复位**
+到 `PollInterval`。所以队列有活时仍是 250ms，延迟不变；只有「本来就没活」的那 99.33% 变慢。
+这是队列消费者的标准形态，不是「降频」，**不改任何调度语义**。
+
+决策抽成了纯函数 `nextIdlePoll(current, base, cap, claimed)`，
+判据分两层（缺一层就是假绿）：决策表覆盖「空转翻倍 / 封顶 / 取到活复位」，
+结构门钉住 `run()` 真的调用它、真的 `timer.Reset`、且没有退回 `time.NewTicker`。
+
+变异验证 5 条全部有效、全部精确变红、还原逐字节一致：
+
+| 变异 | 变红的判据 |
+|---|---|
+| M4 决策写反（`claimed>0` → `claimed<0`，永不复位） | 决策表 + 序列 |
+| M5 去掉封顶 | 决策表 + cap 边界 + 序列 |
+| M6 `run()` 删掉 `timer.Reset` | 结构门 |
+| M7 并行加回固定 ticker | 结构门 |
+| M8 `processBatch` 恒返回 `0` | 结构门 |
+
+> ⚠ **M7 第一次是无效变异**：我把它写成 `timer := time.NewTicker(...)`，
+> 结果 `timer.Reset` 编译不过，台子报的是 **build failed**。
+> build 失败**不是**「门有牙」的证据——它只证明变异写法坏了。
+> 重做成可编译形态（并行 `defer ticker.Stop()`）后门才精确报红。
+> 台子口径必须是「已判定数 / 声明的变异总数」，未落地要单列，不能混进通过率。
+
+#### 四、待拍板（部署 857 + 退避之前）
+
+1. **退避封顶 30s 意味着「新任务最坏等 30s 才被取走」**（改前 250ms）。
+   探针是后台健康检查，30s 量级应当无害，但这是**行为变更**，请确认没有下游
+   把「入队到取走」当成时效指标。若有，把 `IdlePollCap` 调小即可，无需改代码。
+2. **无 Redis 实例（252，`172.16.2.241`）的刷新去重语义**——§10.110.11 那个
+   「不走 leader 选举、每小时照刷」的问题，本轮仍未解。不能简单改成
+   「无 Redis 就跳过」，那会让单实例部署失去刷新。
+3. **`statement_timeout = 180s` 是否重定值**（§10.110.7：正在生产上被击杀）。
+4. **迁移 856/857 的部署授权**——本轮只到本地提交，未部署、未推送。
