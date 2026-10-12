@@ -141,6 +141,20 @@ else
   bad "网关 env 文件未 chmod 600"
 fi
 
+# docker --env-file 不剥 `export` 前缀：一行 `export FOO=bar` 会被当成 key 叫
+# "export FOO"，全部设不进去 → 网关拿不到 DATABASE_URL 直接起不来。
+# 且它不认 %q 的 shell 转义。实测踩过，所以钉死：容器必须走 -e argv。
+if grep -v '^[[:space:]]*#' "$SCRIPT" | grep -q -- '--env-file'; then
+  bad "用了 docker --env-file：export 前缀+%q 转义都会让网关拿不到配置"
+else
+  ok "网关容器用 -e 注入 env（不走 docker --env-file）"
+fi
+if grep -q 'GW_ENV=(' "$SCRIPT" && grep -q '"\${GW_ENV\[@\]}"' "$SCRIPT"; then
+  ok "GW_ENV 数组确实传给了 docker run"
+else
+  bad "GW_ENV 数组没有接到 docker run 上"
+fi
+
 echo
 printf '结果: %d 通过, %d 失败\n' "$pass" "$fail"
 (( fail == 0 )) || exit 1

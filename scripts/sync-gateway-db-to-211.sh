@@ -66,15 +66,20 @@ log "源库 ${D211_SRC_DB}@${D211_SRC_HOST}:${D211_SRC_PORT}  库大小=${SRC_SI
 remote_psql() { ssh "$D211_VIA" "docker exec -i $1 psql -X -U ${2:-postgres} -d ${3:-postgres} $*"; }
 
 # 从 211 上的 env 文件解析出目标容器/库/用户（由 deploy 脚本写）
+# 注意：deploy 写的是 shell 可 source 的 `export KEY=%q` 形态。早先这里用
+# grep/sed 正则去切 postgres:// URL，遇到 %q 的转义或引号就切错；改成在目标
+# 机上 source 后直接读变量——不引入任何二次解析。
 read_target() {
   local envf="/opt/llm-gateway-go-211/env/gateway.env"
-  ssh "$D211_VIA" "cat $envf" > "$TMP_ENV" 2>/dev/null || die "读不到 $D211_VIA:${envf}（先跑 deploy-211-docker.sh）"
+  ssh "$D211_VIA" "test -f $envf" 2>/dev/null \
+    || die "读不到 ${D211_VIA}:${envf}（先跑 deploy-211-docker.sh）"
+  TGT_URL="$(ssh "$D211_VIA" "set -a; . $envf; printf '%s' \"\$LLM_GATEWAY_DATABASE_URL\"")"
+  [[ -n "$TGT_URL" ]] || die "env 文件里没有 LLM_GATEWAY_DATABASE_URL"
   # postgres://user:pass@container:5432/db?sslmode=disable
-  local url; url="$(grep -oE 'postgres://[^ ]+' "$TMP_ENV" | head -1)"
-  [[ -n "$url" ]] || die "env 文件里没有 LLM_GATEWAY_DATABASE_URL"
-  TGT_CONTAINER="$(printf '%s' "$url" | sed -E 's#.*@([^:]+):.*#\1#')"
-  TGT_DB="$(printf '%s' "$url" | sed -E 's#.*/([^/?]+).*#\1#')"
-  TGT_PASS="$(printf '%s' "$url" | sed -E 's#.*://[^:]*:([^@]*)@.*#\1#')"
+  TGT_CONTAINER="$(printf '%s' "$TGT_URL" | sed -E 's#.*@([^:/?]+).*#\1#')"
+  TGT_DB="$(printf '%s' "$TGT_URL" | sed -E 's#.*/([^/?]+).*#\1#')"
+  TGT_PASS="$(printf '%s' "$TGT_URL" | sed -E 's#.*://[^:]*:([^@]*)@.*#\1#')"
+  [[ -n "$TGT_CONTAINER" && -n "$TGT_DB" ]] || die "无法从 URL 解析目标容器/库：${TGT_URL}"
   log "目标 211 容器=${TGT_CONTAINER} 库=${TGT_DB}"
 }
 

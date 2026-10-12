@@ -96,7 +96,7 @@ if [[ -n "$VIA" ]]; then
       --exclude='*.log' --exclude=.env --exclude=.env.local \
       -cf - . | ssh "$VIA" "tar -C ~/llm-gateway-go-211 -xf -"
   log "在 $VIA 上执行 deploy ..."
-  ssh -t "$VIA" "cd ~/llm-gateway-go-211 && D211_STATE_DIR=$D211_STATE_DIR D211_REDIS_DB_START=$D211_REDIS_DB_START D211_REDIS_DB_END=$D211_REDIS_DB_END bash scripts/deploy-211-docker.sh $*"
+  ssh "$VIA" "cd ~/llm-gateway-go-211 && D211_STATE_DIR=$D211_STATE_DIR D211_REDIS_DB_START=$D211_REDIS_DB_START D211_REDIS_DB_END=$D211_REDIS_DB_END bash scripts/deploy-211-docker.sh $*"
   exit $?
 fi
 
@@ -478,8 +478,15 @@ CORS_ORIGINS="${LLM_GATEWAY_CORS_ORIGINS:-*}"
 DB_URL="postgres://${D211_PG_USER}:${PG_PASS}@${PG_CONTAINER}:5432/${D211_PG_DB}?sslmode=disable"
 REDIS_URL="redis://${REDIS_CONTAINER}:6379/${REDIS_DB}"
 
+# 这个 env 文件是「shell 可 source」的**持久记录**（供运维查、同步脚本读），
+# 不是给 docker --env-file 用的：
+#   · docker 的 env-file 解析器不剥 `export` 前缀 —— 一行
+#     `export FOO=bar` 会被当成 key 叫 "export FOO" 的变量，全部设不进去；
+#   · 也不认 %q 的 shell 转义（\?、空格转义等），会把值改写坏。
+# 所以容器一律走 -e argv（引号由 bash 负责，不经任何二次解析）。
 {
   printf '# llm-gateway-go @ 192.168.31.211（由 deploy-211-docker.sh 生成，勿提交）\n'
+  printf '# shell 可 source；容器用 -e 注入，不走 docker 的 env 文件参数\n'
   printf 'export LLM_GATEWAY_STORAGE_MODE=full\n'
   printf 'export LLM_GATEWAY_DATABASE_URL=%q\n' "$DB_URL"
   printf 'export LLM_GATEWAY_REDIS_URL=%q\n' "$REDIS_URL"
@@ -488,11 +495,19 @@ REDIS_URL="redis://${REDIS_CONTAINER}:6379/${REDIS_DB}"
 } > "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 
+GW_ENV=(
+  -e "LLM_GATEWAY_STORAGE_MODE=full"
+  -e "LLM_GATEWAY_DATABASE_URL=${DB_URL}"
+  -e "LLM_GATEWAY_REDIS_URL=${REDIS_URL}"
+  -e "LLM_GATEWAY_SECRET_KEY=${SECRET_KEY}"
+  -e "LLM_GATEWAY_CORS_ORIGINS=${CORS_ORIGINS}"
+)
+
 docker rm -f "$D211_GW_CONTAINER" >/dev/null 2>&1 || true
 docker run -d --name "$D211_GW_CONTAINER" --restart unless-stopped \
   --network "$D211_NETWORK" \
   -p "${D211_GW_PORT}:8781" \
-  --env-file "$ENV_FILE" \
+  "${GW_ENV[@]}" \
   "$D211_GW_IMAGE" >/dev/null || die "网关容器启动失败"
 
 # =============================================================================
