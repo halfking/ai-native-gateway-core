@@ -15160,3 +15160,75 @@ W = `last_request_at >= now()-30 days`（855 之后形态）。
    ⚠ 属主拍板后才能动，因为它触碰可用性语义。
 3. **180 秒超时**（§10.110.7）：仍在真实击杀整轮，且 `max_exec_time` 显示
    三个视图的 max 都在 168~172 秒——**贴着上限**。与第 1 条一起处理更有意义。
+
+### §10.110.12 🔴 订正四：**§10.110.11 的「刷新耗时」类读数被并发的人工查询污染**，只有 WAL 与体量类读数干净
+
+> 本节在 §10.110.11 提交后约 15 分钟发现。§10.110.11 的**第 2 条（新的第一主体是
+> `routing_analytics_7d`，66.49 秒/轮）**据此降级为**不可用**，
+> 原文保留，判据见本节 §一/§三。
+
+#### 一、污染源：一个跑了 5 分钟以上的人工 psql
+
+`pg_stat_activity` 实测（04:15~04:19）：
+
+```
+ pid  | client_addr      | app  | state | xact_age_s | query
+ 993021| 172.16.2.241     | psql | active|   207~222  | SELECT COUNT(*), SUM(total_tokens), SUM(cost_usd),
+      |                   |      |       |           |   COUNT(DISTINCT api_key_id),
+      |                   |      |       |           |   COUNT(DISTINCT COALESCE(NULLIF(raw_model_name,''),canonical_id::text)),
+      |                   |      |       |           |   COUNT(DISTINCT application_id)
+      |                   |      |       |           | FROM usage_ledger_with_current_month
+      |                   |      |       |           | WHERE tenant_id='default' AND ts >= now() - interval '30 days'
+```
+
+采样器窗口内 `oldest_xact` **单调爬升**（每 4 秒一条，秒）：
+`116 120 124 128 132 137 141 145 150 155 159 163 167 172 176 181 185 189 194 198 202 206 210 215 219`
+⇒ 就是这条查询在变老，不是采样噪声。
+
+#### 二、为什么它能污染所有 MV 刷新
+
+`REFRESH MATERIALIZED VIEW CONCURRENTLY` 的**第二阶段必须等所有比它更老的快照结束**
+（`WaitForOlderSnapshots`）。⇒ **库里存在一个 200 秒级的事务时，每个刷新都至少多付 200 秒的等待**，
+而这段时间**完全不计入视图自己的查询成本**。
+
+★ 这正好解释了 §10.110.2 留下的那个 328 倍的矛盾：
+**视图查询热态只要 1.2~3 秒，刷新却报 57~166 秒**——差值不是「计算」，是「等快照」。
+
+#### 三、§10.110.11 哪些读数还站得住
+
+| 读数 | 是否受污染 | 理由 |
+|---|---|---|
+| 集群 WAL 差分 373.3 MB / 40.8 min | ✅ **干净** | 只读 SELECT **不产生 WAL** |
+| 三兄弟体量 169 MB → 3.43 MB（49×） | ✅ **干净** | 量的是 `pg_total_relation_size` |
+| 行数 878 / 1,367 / 2,871、唯一索引在位 | ✅ **干净** | 同上 |
+| 855 的「WAL 杠杆」结论 | ✅ **干净** | 依据是体量差分 |
+| `routing_analytics_7d` 66.49 秒/轮 = 第一主体 | ⛔ **作废** | `mean_exec_time` 里混了等快照的时间 |
+| 「三兄弟每小时语句时间约 106 秒」 | ⛔ **作废** | 同上 |
+
+⇒ **§10.106.33「这一刀砍的是 WAL」这个方向不受影响**（依据是干净的体量差分）；
+但**「谁是最贵的主体」这个问题必须换口径重测**，口径见 §四。
+
+#### 四、正确的重测口径（下轮执行，不许再省）
+
+1. **先确认窗口干净**：`max(EXTRACT(epoch FROM now()-xact_start))` 在
+   `pg_stat_activity`（**必须带 `datname='llm_gateway' AND backend_type='client backend'`**）
+   上 < 5 秒，持续 2 分钟。
+   ⚠ **我第一版这个探针没加过滤**，把 `parallel worker` 也算了进去，读数偏高——见 §五。
+2. 再取 `pg_stat_statements` 的**两快照差分**（窗口盖住至少一轮刷新）。
+3. 刷新语句**正在跑时**同时采 `wait_event`：出现 `Lock/*` 或长空档 ⇒ 等快照；
+   全程 `wait=-/-` 且 `run` 线性增长 ⇒ 真的在算。
+
+#### 五、顺带一个量具缺陷（本轮第二次栽在同一类上）
+
+`oldest_xact` 探针**第一版**写成
+`SELECT ... FROM pg_stat_activity WHERE xact_start IS NOT NULL`
+⇒ 把 **`parallel worker`** 也算进来（实测它们的 xact 最老 56 s）。
+加上 `datname`/`backend_type` 过滤后口径才干净。
+★ 通用式：**「最老事务」这类指标必须显式限定 population**，
+否则你量到的是后台进程，不是应用事务——两者数值可以差一个数量级。
+
+#### 六、给运维的一句话
+
+共享生产库上**一条人工 psql 就能让全库 MV 刷新的耗时读数失真**。
+⇒ 任何基于「刷新变慢了」的判断，先看 `oldest_xact` 与 `client_addr` 分布，
+再决定是查代码还是先叫停那条查询。
