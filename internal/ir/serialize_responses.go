@@ -530,7 +530,16 @@ func buildResponsesToolChoice(tc *ToolChoice) any {
 		return tc.Type
 	case "any":
 		return "required"
-	case "tool":
+	case "tool", "function":
+		// "function" 是 ParseOpenAI（chat 的 {type:"function",function:{name}}）
+		// 与 parseResponsesToolChoice（responses 原生 {type:"function",name}）
+		// 共同存下的命名强制形态。GAP-2（round 31, 2026-10-02）修了
+		// serialize_openai 与 serialize_anthropic 的同款缺口，此处漏网——
+		// 裸字符串 "function" 被 Responses API 400 拒绝（"Invalid value:
+		// 'function'. Supported values are: 'none', 'auto', and 'required'."
+		// 2026-10-13 gpt-5.6-sol 实测），且 ba1987a4d 的 proactive
+		// chat→responses 升级把带强制 tool_choice 的 chat 客户端引流到了
+		// 本转换器，缺口从休眠变成必踩。
 		return map[string]any{
 			"type": "function",
 			// E5: sanitize function name to match Responses API constraints.
