@@ -174,6 +174,15 @@ func SerializeOpenAI(req *InternalRequest) ([]byte, error) {
 	if req.RepetitionPenalty != nil {
 		out["repetition_penalty"] = *req.RepetitionPenalty
 	}
+	// top_k（2026-10-13 交叉格式矩阵 A6）：Anthropic/Gemini 入向会被 parser
+	// 消费进 IR.TopK，但此前序列化层从不发射、只记 loss —— 依据的
+	// 「top_k is Anthropic-only」已过时（paramreg spec 自身注明 GLM/Qwen/
+	// DeepSeek/vLLM/OpenRouter 等 openai 形态厂商支持 top_k），导致这两类
+	// 入向的 top_k 到所有 openai 形态上游必丢。现按 R52 方言门控发射；
+	// openai-chat 入向的 top_k 不进 IR（走 Extensions 恢复），两路无冲突。
+	if req.TopK != nil && paramreg.IRFieldAllowedForDialect("top_k", dstDialect) {
+		out["top_k"] = *req.TopK
+	}
 	if req.MaskSensitiveInfo != nil && paramreg.IRFieldAllowedForDialect("mask_sensitive_info", dstDialect) {
 		out["mask_sensitive_info"] = *req.MaskSensitiveInfo
 	}
@@ -958,17 +967,20 @@ func reportSerializeOpenAILosses(req *InternalRequest, thinkingRendered bool) {
 	}
 	src := req.SourceProtocol
 
-	// top_k: Anthropic-native field. Loss on cross-protocol. The only
-	// same-protocol skip is when source == OpenAI Chat or Responses (both
-	// accept the field via ExtensionsBag; round-trip is lossless).
-	if req.TopK != nil && src != ProtocolOpenAIChat && src != ProtocolOpenAIResponses {
+	// top_k: Anthropic/Gemini-native field. Emitted above whenever the
+	// target dialect accepts it (all OpenAI-shaped vendor dialects via
+	// BaseProtocol inheritance; the Responses dialect does not take it).
+	// The only same-protocol skip is when source == OpenAI Chat or Responses
+	// (both round-trip it losslessly via the Extensions bank).
+	if req.TopK != nil && src != ProtocolOpenAIChat && src != ProtocolOpenAIResponses &&
+		!paramreg.IRFieldAllowedForDialect("top_k", resolveTargetDialect(req, ProtocolOpenAIChat)) {
 		ReportProtocolLoss(
 			"unknown",
 			"top_k",
 			ifaceNonEmpty(src, ProtocolAnthropicMessages),
 			ProtocolOpenAIChat,
 			"loss",
-			"top_k is Anthropic-only; OpenAI Chat Completions has no equivalent",
+			"top_k has no equivalent on this target dialect",
 			map[string]any{"top_k_value": *req.TopK},
 		)
 	}
