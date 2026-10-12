@@ -13,6 +13,8 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
+
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
 
 const (
@@ -238,6 +240,30 @@ func (h *Handler) lookupControlledBody(ctx context.Context, requestID, tenantID 
 	`, requestID, tenantID).Scan(&occurredAt, &requestBody, &responseBody)
 	if err != nil {
 		return time.Time{}, nil, nil, err
+	}
+	// S4 停写交接（2026-10-13）：视图 session 分支的行 ts 与 v1 bodies 的
+	// ts 等值 JOIN 实测 99.85% 不等（§9.231），停写后的新请求经上面两腿
+	// 只会拿到空正文。此处按 request_id 单键补查 session_bodies（列合同
+	// 无 ts，恰是本兜底需要的形态）；旧请求 v1 腿已命中，本腿纯增量。
+	emptyBody := requestBody == nil || *requestBody == ""
+	emptyResp := responseBody == nil || *responseBody == ""
+	if emptyBody || emptyResp {
+		var srb, sob []byte
+		if sessErr := h.bodyDB.QueryRow(ctx, `
+			SELECT request_body::text, response_body::text
+			  FROM `+dbpkg.SessionFamilyBodiesSourceSQL()+`
+			 WHERE request_id = $1
+			 LIMIT 1
+		`, requestID).Scan(&srb, &sob); sessErr == nil {
+			if emptyBody && len(srb) > 0 {
+				s := string(srb)
+				requestBody = &s
+			}
+			if emptyResp && len(sob) > 0 {
+				s := string(sob)
+				responseBody = &s
+			}
+		}
 	}
 	return occurredAt, requestBody, responseBody, nil
 }

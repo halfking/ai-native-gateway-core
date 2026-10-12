@@ -2758,8 +2758,12 @@ func main() {
 			// 旧 350/358 触发器链路在部分环境缺失，这里以 Go 侧 best-effort
 			// UPSERT 兜底，/admin/turns 的项目→任务层级依赖该表。
 			sessionDimWriter := sessionv2mirror.NewSessionDimWriter(dbConn.Pool())
-			telemetryClient.AddOnRequestLogPersisted(sessionv2mirror.PersistHook(sessionV2Writer, sessionDimWriter))
-			slog.Info("session V2 shadow write hook registered (live feature-gated; public.sessions public.session_turns public.session_bodies public.session_turn_logs + session_dim)")
+			// S4 交接（2026-10-13）：session_summaries 聚合此前由
+			// request_logs_hot 触发器喂养，停写后断粮。summary 写入器接管
+			// 同样的聚合维护（v1 写入开启时自 no-op，翻转即交接、无双计数）。
+			sessionSummaryWriter := sessionv2mirror.NewSessionSummaryDimWriter(dbConn.Pool())
+			telemetryClient.AddOnRequestLogPersisted(sessionv2mirror.PersistHook(sessionV2Writer, sessionDimWriter, sessionSummaryWriter))
+			slog.Info("session V2 shadow write hook registered (live feature-gated; public.sessions public.session_turns public.session_bodies public.session_turn_logs + session_dim + session_summaries(S4 交接)")
 
 		}
 
