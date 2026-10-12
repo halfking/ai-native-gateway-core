@@ -116,3 +116,50 @@ func mustJSONKey(t *testing.T, m map[string]json.RawMessage, key string) {
 		t.Errorf("outbound lost %q", key)
 	}
 }
+
+// TestMatrix_DiagnoseParentheticalPluralParam 钉住缺陷③（2026-10-13
+// kimi-k3 六候选全灭的根因）：中转文案 "Validation: Unsupported
+// parameter(s): `web_search`" 的括号复数形态击穿了点名提取——param_rejected
+// 判得出来、参数名提不出来，剥参重试静默不触发。正则修复后必须能提出
+// web_search 并完成剥参。
+func TestMatrix_DiagnoseParentheticalPluralParam(t *testing.T) {
+	outbound := []byte(`{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"max_tokens":32,"web_search":false,"kimi_future_param":{"m":"a"}}`)
+	diag, ok := Diagnose(Input{
+		HTTPStatus:   400,
+		ErrorBody:    []byte(`{"error":{"message":"Validation: Unsupported parameter(s): ` + "`web_search`" + `","type":"invalid_request_error","param":"","code":400}}`),
+		OutboundBody: outbound,
+	})
+	if !ok || diag.Trigger != TriggerParamRejected {
+		t.Fatalf("Diagnose trigger = %q ok=%v, want param_rejected (reason=%s)", diag.Trigger, ok, diag.Reason)
+	}
+	if diag.Param != "web_search" {
+		t.Fatalf("Diagnose param = %q, want web_search —— 括号复数形态仍提不出参数名", diag.Param)
+	}
+	stripped, removed := StripParams(outbound, diag.Param)
+	if len(removed) == 0 || removed[0] != "web_search" {
+		t.Fatalf("StripParams removed = %v, want [web_search]", removed)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(stripped, &m); err != nil {
+		t.Fatalf("stripped body not json: %v", err)
+	}
+	if _, exists := m["web_search"]; exists {
+		t.Errorf("stripped body still has web_search")
+	}
+	mustJSONKey(t, m, "messages")
+	mustJSONKey(t, m, "max_tokens")
+}
+
+// TestMatrix_StripFallbackCoversWebSearch 未点名参数（"Extra inputs are
+// not permitted" 形态）时，uncommon 兜底清单必须覆盖 web_search——否则
+// 同一个 4xx 在无点名路径仍然无参可剥。
+func TestMatrix_StripFallbackCoversWebSearch(t *testing.T) {
+	outbound := []byte(`{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"web_search":true}`)
+	_, removed := StripParams(outbound, "")
+	for _, r := range removed {
+		if r == "web_search" {
+			return
+		}
+	}
+	t.Fatalf("unnamed-strip fallback did not cover web_search (removed=%v)", removed)
+}

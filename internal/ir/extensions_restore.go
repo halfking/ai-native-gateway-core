@@ -127,6 +127,14 @@ func restoreExtensions(out map[string]any, req *InternalRequest, targetProtocol 
 // fail-open 承诺。未登记就是没有立场替对方做兼容判断：维持
 // DialectUnknown（knownBy=true / rejects=false，最宽松），错误面交给
 // reqprobe 的 4xx 学习兜底。
+//
+// 注意 TargetProvider == ""（空串）**不走**上面的 fail-open：它同时承担
+// 「路由前序列化点」语义（会话恢复/预渲染，见
+// serialize_openai_minimax_dialect_test.go 的 pre-routing 契约），那里
+// fail-closed 是对的。路由已定但 catalog_code 为空串的中转（联界/智码
+// 等本地主力，2026-10-13 R2.D1 实测盲区）由 executor 盖
+// paramreg.CatalogCodeUnknownRelay 哨兵区分——非空且必然未登记，
+// 自然落到 DialectUnknown fail-open。
 func resolveTargetDialect(req *InternalRequest, targetProtocol string) paramreg.Dialect {
 	if req.TargetProvider != "" {
 		if d := paramreg.DialectForCatalogCode(req.TargetProvider); d != paramreg.DialectUnknown {

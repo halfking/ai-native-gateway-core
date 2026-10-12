@@ -42,6 +42,7 @@ var uncommonParams = []string{
 	"service_tier",
 	"parallel_tool_calls",
 	"prediction",
+	"web_search",
 	"web_search_options",
 	"response_format",
 	"metadata",
