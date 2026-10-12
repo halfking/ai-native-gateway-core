@@ -15550,3 +15550,114 @@ embeddata 副本、go:embed var、`embeddedSQLFiles` map、`StartupFiles` 登记
    「无 Redis 就跳过」，那会让单实例部署失去刷新。
 3. **`statement_timeout = 180s` 是否重定值**（§10.110.7：正在生产上被击杀）。
 4. **迁移 856/857 的部署授权**——本轮只到本地提交，未部署、未推送。
+
+### §10.110.16 会话终态晋级 UPDATE：每次摸 5.1 万索引条目 —— 迁移 858（4.06% 全库数据库时间）
+
+#### 一、怎么发现的：排行第五，但形态不对
+
+按 `dbid` 拆开后的 `llm_gateway` 前六名（窗口 62h，`stats_reset 2026-10-10 16:11`）：
+
+| 排名 | 语句 | 分钟 | calls | mean | 占比 |
+|---|---|---|---|---|---|
+| 1 | `credential_probe_queue` 取件 | 11,768 | 4,123,466 | 2.9 ms | 5.14% |
+| 2 | `REFRESH … routing_analytics_7d` | 10,592 | 392 | 27,019 ms | 4.62% |
+| 3 | `analyze_llm_gateway_table_stats` | 10,523 | 41 | 256,651 ms | 4.59% |
+| 4 | `WITH targets AS (SELECT ss.session_key…` | 9,464 | 375 | 25,237 ms | 4.13% |
+| 5 | **★ `UPDATE request_logs_hot SET is_final_success…`** | **9,305** | **9,439** | **987.3 ms** | **4.06%** |
+| 6 | `SELECT COALESCE(cmb.available…)` | 6,486 | 26,753 | 242 ms | 2.83% |
+
+> ⚠ 口径订正：本节之前把 `total_exec_time` 当「占墙钟的百分比」用，那会算出
+> **>100%** 的值。`total_exec_time` 是**各后端求和**，并发时本就超过墙钟。
+> 上表的 % 是**占该库 total_exec_time 总和的份额**，才是能横向比较的口径。
+
+第 5 名形态很反常：**同表同键**的 `UPDATE … SET trace_events WHERE request_id=$2`
+是 35.6 ms，多带两个谓词的这条是 **988 ms**（28 倍）。
+
+#### 二、被我推翻的两个假设（留档，别再重走）
+
+**假设 A：「988 ms 是等锁。」** 依据是耗时分布双峰（min 0.0 / mean 987.3 /
+**stddev 843.9** / max 5,232）。**推翻它的算术**：`shared_blks_read` 总共只有
+2,118（几乎零），说明 114,000 次命中全在缓存里，按 ~0.1 µs/次只值 **~20 ms**；
+同时同形状的 `SELECT` 交错 3 轮实测 **2.4 / 2.9 / 2.4 ms**。
+⇒ 执行侧最多 ~20 ms，剩下的是等待与其它开销。但**阻塞者本轮没抓到**（见 §四）。
+
+**假设 B：「冷分区上 `is_final_success` 没有索引，加一个就行。」** 我先写了迁移，
+再回头做证伪实验，结果**计划比预想的更糟**：即使把不等式写成**字面量**，
+PG 仍选 `request_logs_2026_10_tenant_id_gw_session_id_ts_idx`（cost 38,621）
+而不是形状正确的那条。这个假设的**方向**最后证明是对的，但**当时给不出理由**。
+
+#### 三、根因：hot 侧补过索引，月度分区侧漏了，而且补的那条对本查询不可用
+
+同一条反查（`EXPLAIN` 实测）：
+
+| 关系 | 索引 | 计划 |
+|---|---|---|
+| `request_logs_hot` | `uq_request_logs_hot_final_success_session`<br>= `(gw_session_id) WHERE is_final_success AND gw_session_id IS NOT NULL AND gw_session_id <> ''` | **Index Cond 命中，cost 2.50** |
+| `request_logs_2026_10` | **带 `is_final_success` 前导的索引数 = 0** | 见下 |
+
+2026_10 上另外两条都不对路：
+
+1. `(gw_session_id, ts DESC) WHERE gw_session_id IS NOT NULL AND gw_session_id <> ''`
+   —— 形状对，但**部分谓词含 `<> ''`（字面量）**，而生产查询写的是
+   `gw_session_id <> $12`（**参数**）。PG 能证明「参数不等式 ⇒ IS NOT NULL」，
+   **不能**证明它 ⇒「`<> ''` 这个字面量不等式」。⇒ **索引对本查询不可用**。
+   实测佐证：该索引 62 小时只有 **316** 次扫描，而同表另一条查询跑了 9,439 次。
+2. `(tenant_id, gw_session_id, ts) WHERE gw_session_id IS NOT NULL`
+   —— `tenant_id` 打头，本查询不约束它 ⇒ 退化成**整条索引扫描 + 逐条回堆**。
+
+**归因铁证**（`request_logs_2026_10_tenant_id_gw_session_id_ts_idx`）：
+
+| 指标 | 值 |
+|---|---|
+| `idx_scan` | 22,419 |
+| `idx_tup_read` | **1,142,281,845** |
+| `idx_tup_fetch` | **1,142,246,363**（几乎每一个索引条目都回堆） |
+| 每次调用 | 1,142,281,845 ÷ 9,439 = **121,277 条** |
+
+对照这条语句自己的 `shared_blks_hit` = 1,077,543,433（**每次 114,159 页**），
+两者差 6%。按 `shared_blks_hit` 排序，**全库没有第二个同量级候选**
+（第二名 1.38B 但只有 150 次调用）。
+
+⇒ **每次调用在这条分区上摸约 5.1 万个索引条目、且每个都回堆。**
+
+#### 四、迁移 858（已落地，未部署）
+
+在**分区父表**上建：
+
+```sql
+CREATE INDEX IF NOT EXISTS request_logs_final_success_gsid_idx
+    ON public.request_logs (gw_session_id)
+    WHERE is_final_success AND gw_session_id IS NOT NULL;
+```
+
+三个设计决定，每个都有理由：
+
+1. **部分谓词刻意不含 `gw_session_id <> ''`** —— 上面第 1 条已证明它会让索引不可用。
+   多存几个 `''` 行换索引可用，这笔交换在实测里是压倒性的。
+   ⚠ 这也是**判据要守的东西**：哪天有人「照 hot 那条补齐谓词」，索引会静默失效，
+   而 `CREATE INDEX IF NOT EXISTS` 不报错、测试也不报。
+2. **建父表、不加 CONCURRENTLY** —— 沿用 842 实测结论（CONCURRENTLY 在分区父表上被拒）。
+   窗口内写被阻塞、读不受影响；逐分区体量 2026_10 = 343 MB 且索引只存 9.5% 的行，窗口秒级。
+3. **非唯一** —— 唯一性仍由 hot 侧那条 UNIQUE 承担；跨分区全局唯一是产品语义变更，不在本迁移内。
+
+**判据（5 条）+ 变异验证（6/6 有效、全部精确变红、还原逐字节一致）**：
+其中 `Test858PartialPredicateStaysProvable` 是**反向判据**（守「不得加回 `<> ''`」）。
+
+> ⚠ 判据自身在这条上先假红过一次：它对**整份文件**做子串匹配，
+> 而 858 的注释正面讨论了 `CONCURRENTLY` 与 `<> ''` 这两个词（它们是设计理由）⇒ 被自己注释误伤。
+> 修法是剥掉 `--` 注释行、只对**可执行语句**断言（`stmt858`）。
+> **判据与被检对象不同粒度，就会产生这类假红/假绿。**
+
+#### 五、尚未证实 / 待部署后验收
+
+- **阻塞者仍未抓到**：60 秒锁采样 0 命中，但该语句全窗口才 9,439 次（1 次/24 秒），
+  **60 秒窗口期望仅 2~3 次，这个量具没有统计功效**，不能据此说「不存在」。
+- **真实计划形态未直接观测**：生产用参数（可能走 generic plan），
+  我用字面量 `EXPLAIN` 得到的是自定义计划；把外层关联换成常量的 `SELECT`
+  **保真度不足**，会得到比真实更便宜的计划。§二 假设 B 就是这么被自己推翻的。
+- **验收口径（部署后）**：`pg_stat_statements` 里这条 UPDATE 的
+  `mean_exec_time` 从 987.3 ms 降、`shared_blks_hit` 从 114,159/次 大幅下降；
+  `pg_stat_user_indexes` 里 `request_logs_2026_10_tenant_id_gw_session_id_ts_idx`
+  的 `idx_tup_read` **增速显著放缓**（它该退居次要路径）。
+  ⚠ 注意 `db/db.go` 之类「启动即 CREATE OR REPLACE」的机制不适用于索引，
+  索引只由迁移装上，所以**不会出现 857 那种「效果先于迁移生效」**。
