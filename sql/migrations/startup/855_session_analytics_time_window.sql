@@ -29,7 +29,36 @@
 -- 改窗口长度：改下面三处的 INTERVAL 字面量，再发一个迁移重建视图。
 -- （视图定义里的字面量是 MV 的定义的一部分，不能靠 UPDATE 改。）
 
+\set ON_ERROR_STOP on
 BEGIN;
+
+-- ⚠️ 2026-10-13 实测修的：首次部署 245 被服务端 30s statement_timeout 杀掉 ——
+--    `855_session_analytics_time_window.sql:68: ERROR: canceling statement due to
+--    statement timeout`，失败点是第一条 `CREATE MATERIALIZED VIEW session_client_stats`
+--    （psql 报的行号是那条语句**结尾**的 GROUP BY，不是出错的那一行）。
+--    根因：本文件**漏了**本目录的既定约定 —— 共享 PG 服务端强制 30s，
+--    长耗时迁移必须自带 `SET LOCAL statement_timeout`。
+--    同目录带这一句的是 649 与 689 两个，本文件是漏网的。
+--    （2026-10-13 订正：本文件初版注释写的是「649 / 689 / 727 / 728 / 749 都带」——
+--     逐个 grep 过，727 / 728 / 749 只是**注释里提到** 30s 这个上限，
+--     文件本身并没有 `SET LOCAL statement_timeout`。那三个是纯 DDL/索引文件。）
+--
+--    预算 10min 的定标依据（2026-10-13 在 245 实测，不是估的）：
+--      · session_summaries 693,385 行 / 631 MB，session_dim 635,237 行 / 327 MB
+--      · 没有任何以 last_request_at 打头的可用索引（idx_..._tenant_time 的
+--        前导列是 tenant_id，partial 索引的前导列是 archived_at），所以 30 天
+--        窗的 WHERE 只能走全表顺序扫 —— 这就是它超 30s 的原因。
+--      · 复刻视图 2（最重的一条：693K × 635K LEFT JOIN + GROUP BY）实测
+--        **65.2s**，输出 1,398 组（迁移前 104,299 组，-98.7%，与 154 同向）。
+--      ⇒ 30s 默认值差 2.2 倍不够；10min 对 65s 有 9 倍余量，且 CREATE MATERIALIZED
+--        VIEW 还要多算 SUM/AVG/array_agg 各列，比纯计数更重。
+--    附带一条：同一次排查里裸 `SELECT count(*) FROM session_summaries`
+--    （无 WHERE）也被 30s 杀掉 ⇒ 「这张表的全表扫就是 30s 级」这件事本身
+--    就足以说明默认值不够，不必等到迁移失败才发现。
+--    ⚠️ 这是**改已提交但从未成功应用过**的迁移：245 上它在事务内失败并回滚，
+--    迁移账本没有它的校验和，所以不存在「已应用却被改写」的历史不一致；
+--    若哪天账本里出现它的 checksum，说明别处应用过，就该改成新增 856 而不是改它。
+SET LOCAL statement_timeout = '10min';
 
 -- 30 天窗口：session 只要在窗口内有请求就计入（用 last_request_at，
 -- 不用 created_at —— 一条三月创建、四月还在用的会话应该被计入）。

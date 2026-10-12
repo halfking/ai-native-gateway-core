@@ -99,6 +99,7 @@ export const zhCN = {
     error: '加载失败',
     networkError: '网络连接失败，请检查网络后重试。',
     sessionExpired: '登录状态已过期，请重新登录。',
+    sessionAliveUnauthorized: '登录状态有效，但该功能当前不可用（可能未启用该功能）。',
     forbidden: '当前账号没有执行此操作的权限。',
     notFoundOrDenied: '记录不存在或当前账号无权查看。',
     conflict: '服务端数据已变化，请刷新后重试。',

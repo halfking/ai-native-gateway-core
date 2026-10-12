@@ -257,8 +257,17 @@
 7. 窗口外分支：远端 UNMERGED 剩 3 条承载独有内容的
    （`2026-07-25-realtime-routing-self-heal` 24 篇设计文档归档 +9536 行、
    `fix/w5-ml-ci-runbook` +327、`fix/w6-monitor-docs` +613），留置待维护者
-   决定合并或放弃；本地分支已清空；已删 5 远端（3 条 patch-id 等价于 main、
+   决定合并或放弃；已删 5 远端（3 条 patch-id 等价于 main、
    2 条 3 行过期 README 徽章同步）+ 2 本地已合并。
+   **2026-10-13 窗口分支清理**（[1h,48h] 活跃窗，全部核验已合并后删除）：
+   本地 4 条（`codex/client-setup-audit-20261012`、
+   `codex/itestuu-ui-deploy-2543-20261012`、`codex/itestuu-ui-deploy-20261012`、
+   `codex/backup-itestuu-pre-rebase-20261012`——其单提交 patch-id 等价于
+   main `8404a3af6`；对应 worktree 的脏改动经逐字节比对就是该备份提交的
+   rebase 前旧草稿，main 已演进超越，无独有内容）+ 连带移除 3 个残留
+   worktree；远端 3 条（前两条 + `fix/full-test-20261011`）。
+   `feat/deploy-211-docker` 最后提交 <1h（活跃，wt-deploy-211 在用）按窗口
+   条件未动。本地现剩 main + `feat/deploy-211-docker`。
 8. **批量操作量具坑（新增，判据纪律第 5 条）**：`node_probe_state` 被探针周期
    并发改写，READ COMMITTED 逐语句快照会在改写窗口读到半写状态（深夜轮第一批
    清退因此静默漏掉 cred 18/19 的 127 条——预览 234、执行 107，非数据变化）。
@@ -334,7 +343,9 @@
 
 ~~0. **陈旧分支清理（窗口外遗留，下轮顺手项）**~~ **已完成（2026-10-12 深夜轮）**：
 `fix/sanitize-mutation-tolerant-restore-v2` 与 `fix/sanitize-hop-passthrough`
-均已 `git branch -d` 删除（当时确认已合并），本地仅剩 main。
+均已 `git branch -d` 删除（当时确认已合并）；2026-10-13 轮又清掉 [1h,48h]
+窗内 4 本地 + 3 远端已合并分支（裁决详情见「下一轮提示词」第 7 条），
+本地仅剩 main 与活跃的 `feat/deploy-211-docker`。
 
 ### 任务 1 — 编译 / vet / gofmt / 单元测试
 

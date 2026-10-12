@@ -998,9 +998,35 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 全新安装的机器上这条规则都还开着。登记它是对「文件存在 ≠ 迁移会
 			// 运行」这一形态的修复，不是新增策略。
 			"851_disable_overbroad_pii_ip_address_rule.sql",
-			// 856（2026-10-13）：analyze_llm_gateway_table_stats 的列存分支加陈旧度闸门。
-			// 见 runbook §10.110.14；函数体另有四份副本，migration_856_test.go 把这件事钉成门。
-			"856_analyze_columnar_staleness_gate.sql",
+			// 855（2026-10-12，installer 五点同步 2026-10-13 补登记）：给
+			// session-analytics 三兄弟（session_client_stats / session_task_stats /
+			// session_client_task_matrix）加 30 天时间窗。deploy 的目录扫描会捡到
+			// 这个文件，安装器只跑 StartupFiles，所以全新安装此前建出来的是**没有
+			// 时间窗**的旧定义视图——三兄弟每轮重写约 169.3MB WAL、占集群 62~75%，
+			// task 维度输出 104,299 组长尾；带窗后 154 实测降到 1,832 组（-98.2%）。
+			// ⚠️ 口径变更：报表不再含 30 天以前的会话（owner 已知悉并拍板）。
+			//
+			// 放在 851 之后（链尾）而不是按编号插位：它读 session_summaries
+			// （655/560/677 一族）与 session_dim（805 收编、683 补列），必须排在这
+			// 两者定型之后；链尾是唯一无条件成立的位置。文件自带
+			// `SET LOCAL statement_timeout = '10min'`（245 首部署实测 65.2s，
+			// 服务端 30s 默认值会 57014），且是 DROP IF EXISTS + CREATE MATERIALIZED
+			// VIEW，重复应用零行为变化。
+			"855_session_analytics_time_window.sql",
+			// 856（2026-10-13，origin/main 引入时的五点同步缺口，本合并轮补登记）：
+			// 给 usage_ledger / usage_ledger_hot 建 (ts, tenant_id) INCLUDE(...) 覆盖索引，
+			// 让「用量」页的 /api/usage/summary 与 /api/usage/by-model 走 index-only scan。
+			// ⚠️ 补登记前必须先判「它该不该进 installer」——判据报错文案只说「补五点同步」，
+			//   但同族有 6 张豁免表。先例 842 是决定性的：**它同样带显式 BEGIN/COMMIT、
+			//   同样建在分区父表上、同样已登记在 StartupFiles** ⇒ 显式事务对这一族不是障碍，
+			//   正解是登记而不是豁免。两条 CREATE INDEX IF NOT EXISTS 均幂等。
+			"856_usage_ledger_ts_cover_agg_idx.sql",
+			// 857（2026-10-13）：analyze_llm_gateway_table_stats 的列存分支加陈旧度闸门。
+			// 见 runbook §10.110.14；函数体另有四份副本，migration_857_test.go 把这件事钉成门。
+			// ⚠️ 原拟编号 856，与 origin/main 的 856_usage_ledger_ts_cover_agg_idx.sql 撞号，
+			//    合并时改号为 857（两侧均未部署，改号无生产代价）。
+			// 必须排在 838 → 839 之后且为链尾：它是该函数应有的最终体。
+			"857_analyze_columnar_staleness_gate.sql",
 		},
 	}
 }

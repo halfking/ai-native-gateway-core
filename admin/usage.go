@@ -78,6 +78,38 @@ func (h *Handler) handleUsageSummary(w http.ResponseWriter, r *http.Request) {
 	h.usageSummary(w, r)
 }
 
+// usageAggregateTimeout 是本文件所有聚合读端点的查询预算。
+//
+// 为什么从 5s 放宽到 30s（2026-10-13，证据在下面，不是拍脑袋）：
+//
+//	真机 iPhone 6s / iOS 15.8.8 上「用量」整页报「加载失败 / summary query failed」。
+//	245 canary@8782 的 journalctl 里同一批：
+//	  "op":"summary query failed","caller":"usage.go:154",
+//	  "err":"timeout: context deadline exceeded"，duration_ms 恒为 5xxx。
+//
+//	线上库 pg_stat_statements（245，统计窗口内）：
+//	  SELECT ul.raw_model_name … GROUP BY ul.raw_model_name, p.code
+//	    calls=7  mean=1556.5ms  **max=4941.0ms**
+//	  SELECT p.id, COALESCE(p.display_name, p.code) …
+//	    calls=3  mean=2105.8ms  max=2527.5ms
+//	⇒ 均值就在 1.5–2.1s，**峰值贴着 5s 顶**，于是同一个接口
+//	  时而 200、时而 500 —— 手机上表现为「有时能看有时报错」。
+//
+//	★ 5s 这条线是数据量涨上来之后**没跟着调**的：账本已经从当初的万级
+//	  涨到 7 天 208,541 条（2026-10-13 实测 total_requests）。
+//	  预算不动、只读范围变大 ⇒ 必然跨界。
+//
+//	⚠️ 放宽预算**不等于**这条查询变快了：它只是把「报错」换成「慢」。
+//	  真正的提速是 856 迁移的覆盖索引（usage_ledger_ts_tenant_cover_agg_idx），
+//	  它把 summary 的 Execution Time 从 2.28s 压到 1s 上下。
+//	  两件事缺一不可：只有索引，峰值仍会撞 5s；只有预算，仍然慢到不可用。
+//
+//	为什么是 30s 而不是 5s 或 60s：同包已有先例 ——
+//	  admin/user_usage_stats.go 用 15s、admin/probe_history.go 用 5m，
+//	  都比 5s 长。30s 覆盖实测峰值（4.9s）的 6 倍余量，
+//	  又不至于让一个坏查询把连接占满整个池。
+const usageAggregateTimeout = 30 * time.Second
+
 func (h *Handler) usageSummary(w http.ResponseWriter, r *http.Request) {
 	days := queryInt(r, "days", 7)
 	if days < 1 {
@@ -86,7 +118,7 @@ func (h *Handler) usageSummary(w http.ResponseWriter, r *http.Request) {
 	if days > 90 {
 		days = 90
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), usageAggregateTimeout)
 	defer cancel()
 
 	var summary struct {
@@ -194,7 +226,7 @@ func (h *Handler) usageDashboard(w http.ResponseWriter, r *http.Request) {
 	if days > 365 {
 		days = 365
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), usageAggregateTimeout)
 	defer cancel()
 
 	tid := statsTenantScope(r)
@@ -334,7 +366,7 @@ func (h *Handler) usageHotKeys(w http.ResponseWriter, r *http.Request) {
 	if limit > 50 {
 		limit = 50
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), usageAggregateTimeout)
 	defer cancel()
 	tid := statsTenantScope(r)
 
@@ -448,7 +480,7 @@ func (h *Handler) usageByProvider(w http.ResponseWriter, r *http.Request) {
 	if limit > 200 {
 		limit = 200
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), usageAggregateTimeout)
 	defer cancel()
 	tid := EffectiveTenantIDAll(r)
 
@@ -554,7 +586,7 @@ func (h *Handler) usageByModel(w http.ResponseWriter, r *http.Request) {
 	if limit > 200 {
 		limit = 200
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), usageAggregateTimeout)
 	defer cancel()
 	tid := statsTenantScope(r)
 
@@ -657,7 +689,7 @@ func (h *Handler) usageByKey(w http.ResponseWriter, r *http.Request) {
 	if limit > 500 {
 		limit = 500
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), usageAggregateTimeout)
 	defer cancel()
 	tid := statsTenantScope(r)
 
@@ -768,7 +800,7 @@ func (h *Handler) usageKeyDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), usageAggregateTimeout)
 	defer cancel()
 
 	var keyPrefix string
@@ -866,7 +898,7 @@ func (h *Handler) usageKeyModels(w http.ResponseWriter, r *http.Request, keyID i
 	if limit > 500 {
 		limit = 500
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), usageAggregateTimeout)
 	defer cancel()
 
 	var keyExists int
@@ -1167,7 +1199,7 @@ func (h *Handler) usageByApplication(w http.ResponseWriter, r *http.Request) {
 	if days > 365 {
 		days = 365
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), usageAggregateTimeout)
 	defer cancel()
 	tid := EffectiveTenantID(r)
 
@@ -1222,7 +1254,7 @@ func (h *Handler) usageByApplication(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) usageKeyRemaining(w http.ResponseWriter, r *http.Request, keyID int) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), usageAggregateTimeout)
 	defer cancel()
 
 	days := queryInt(r, "days", 30)
@@ -1286,7 +1318,7 @@ func (h *Handler) usageByTenant(w http.ResponseWriter, r *http.Request) {
 		days = 365
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), usageAggregateTimeout)
 	defer cancel()
 
 	type tenantUsage struct {
@@ -1329,7 +1361,7 @@ func (h *Handler) listTenants(w http.ResponseWriter, r *http.Request) {
 	// tenant_admin: can only see their own tenant.
 	if IsTenantAdmin(r) {
 		tid := GetTenantID(r)
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(r.Context(), usageAggregateTimeout)
 		defer cancel()
 		rows, err := h.db.Query(ctx, `
 			SELECT
@@ -1370,7 +1402,7 @@ func (h *Handler) listTenants(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), usageAggregateTimeout)
 	defer cancel()
 
 	rows, err := h.db.Query(ctx, `

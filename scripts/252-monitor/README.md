@@ -20,24 +20,34 @@
 | # | 脚本 | 频率 | 行为 |
 |---|---|---|---|
 | 1 | `pg17-disk-watch.sh` | `*/10 * * * *` | 13 项指标 + 7 项告警阈值 + cooldown + webhook 推送 |
+| 1b | `pg17-pg-availability-check.sh` | `* * * * *` | PG 可用性心跳巡检（lastrun 判据，2026-10-05 新增） |
 | 2 | `pg17-proactive-empty-table-cleanup.sh` | 每日 02:00 | **预防性空表清理**：DROP n_live_tup=0 AND COUNT(*)=0 且 ≥100MB 的表（零风险，2026-09-06 新增） |
 | 3 | `pg17-emergency-cleanup.sh --auto` | `*/15 * * * *` | `disk >= 90%` 自动 L2（**中风险**：DROP 空表 + VACUUM FULL，已修复默认分区验证逻辑） |
 | 4 | `pg17-vacuum-bloat.sh` | 周日 03:15 | 周级 VACUUM FULL bloat > 30% / size > 256 MB 表 |
 | 5 | `pg17-drop-old-columnar-partitions.sh` | 每月 1 号 02:30 | DROP 老月分区 + VACUUM FULL 列存元数据 |
 | 5b | `pg17-index-bloat.sh` | 周日 04:15 | **索引死页**巡检（pgstatindex deleted_pages），`--report` 只读 + 超阈值告警；`--fix` 走 REINDEX CONCURRENTLY（2026-10-03 新增）|
+| 5c | `pg17-duplicate-index-check.sh` | 周日 05:10 | **重复索引**巡检（只报告，同时吃存储和写放大；2026-10-06 新增）|
+| 5d | `pg-table-bloat-check.sh` | 每日 05:07 | **全库表空洞**普查（空闲空间统计，2026-10-04 新增）|
+| 5e | `pg17-onconflict-constraint-check.sh` | 每小时 :29 | ON CONFLICT 推断列 vs 已部署唯一约束对账（2026-10-06 新增）|
 | 6 | `notify.sh` | 被动调用 | Feishu (HMAC-SHA256 签名) / DingTalk / Telegram / Generic |
 
 部署位置：
 
 ```
-/etc/cron.d/pg17                           # 5 个 cron + 注释
+/etc/cron.d/pg17                           # 12 条任务 + 注释
 /opt/scripts/notify.sh                     # webhook helper (含飞书签名)
 /opt/scripts/pg17-disk-watch.sh
+/opt/scripts/pg17-pg-availability-check.sh        # PG 可用性心跳 (2026-10-05 新增)
 /opt/scripts/pg17-proactive-empty-table-cleanup.sh  # 预防性清理 (2026-09-06 新增)
 /opt/scripts/pg17-drop-old-columnar-partitions.sh
 /opt/scripts/pg17-emergency-cleanup.sh
 /opt/scripts/pg17-vacuum-bloat.sh
 /opt/scripts/pg17-index-bloat.sh                  # 索引死页巡检 (2026-10-03 新增)
+/opt/scripts/pg17-duplicate-index-check.sh        # 重复索引巡检 (2026-10-06 新增)
+/opt/scripts/pg-table-bloat-check.sh              # 全库表空洞普查 (2026-10-04 新增)
+/opt/scripts/pg17-onconflict-constraint-check.sh  # ON CONFLICT 列对账 (2026-10-06 新增)
+/opt/scripts/ursm-snapshot-health.sh              # URSM 快照写入健康巡检
+/opt/scripts/ursm-snapshot-payload-bloat.sh       # URSM payload 膨胀巡检 (2026-10-04 新增)
 /usr/local/bin/llmgw-source                 # cron env 加载包装
 /etc/profile.d/llmgw-notify.sh             # 交互 shell env 加载
 /etc/llmgw/notify.conf                     # webhook 凭证 (mode 600)
@@ -45,6 +55,11 @@
 /var/log/pg17-disk-watch.alert.log         # 触发 alert log
 /var/log/pg17-proactive-cleanup.log        # 预防性清理日志 (2026-09-06 新增)
 /var/log/pg17-index-bloat.log            # 索引死页巡检日志 (2026-10-03 新增)
+/var/log/pg17-pg-availability.log         # 心跳巡检日志 (7 天轮换)
+/var/log/pg-table-bloat-check.log         # 表空洞普查日志 (14 天轮换)
+/var/log/pg17-onconflict-constraint.log   # ON CONFLICT 对账日志 (14 天轮换)
+/var/log/ursm-snapshot-health.log         # URSM 健康巡检日志 (7 天轮换)
+/var/log/ursm-snapshot-payload-bloat.log  # URSM 膨胀巡检日志 (7 天轮换)
 /var/log/llmgw-notify.log                  # 推送记录
 /var/tmp/pg17-disk-watch.cooldown          # cooldown 状态 (防噪声)
 /var/tmp/pg17-proactive-cleanup.cooldown   # 预防性清理 cooldown (2026-09-06 新增)
@@ -154,18 +169,22 @@ URL="${FEISHU_URL}?timestamp=${ts}&sign=${sign}"
 > （新增巡检脚本忘了在模板里注册）；「模板有、服务器没有」那一半抓不到，
 > 只能靠上面这条人工 diff。2026-10-03 与 2026-10-04 各违反过一次。
 
-当前 7 条任务（`## 7` 这段曾长期停留在 4 条的老版本，2026-10-04 才跟上）：
+当前 12 条任务（`## 7` 这段曾长期停留在 4 条的老版本，2026-10-04、2026-10-12 两轮跟上）：
 
 | 频率 | 任务 | 说明 |
 |---|---|---|
+| 每分钟 | `pg17-pg-availability-check.sh` | PG 可用性心跳（lastrun 判据，2026-10-05 新增） |
 | `*/10` | `pg17-disk-watch.sh` | 磁盘采样 + 告警推送 |
 | `*/15` | `pg17-emergency-cleanup.sh --auto` | disk≥90% 自动 L2 |
 | 周日 03:15 | `pg17-vacuum-bloat.sh` | VACUUM FULL 防 dead tuple 堆积 |
 | 周日 04:40 | `pg17-index-bloat.sh --report` | 索引死页只读巡检 |
+| 周日 05:10 | `pg17-duplicate-index-check.sh` | 重复索引只读巡检（2026-10-06 新增） |
 | 每月 1 号 02:30 | `pg17-drop-old-columnar-partitions.sh` | DROP 老列存分区 |
 | 每日 02:00 | `pg17-proactive-empty-table-cleanup.sh` | 预防性清空表 |
+| 每日 05:07 | `pg-table-bloat-check.sh` | 全库表空洞普查（2026-10-04 新增） |
 | 每小时 :17 | `ursm-snapshot-health.sh` | 快照写入健康三态判据（0/1/2/3） |
 | 每小时 :23 | `ursm-snapshot-payload-bloat.sh` | payload 膨胀，818 收益的回归防护（0/1/3） |
+| 每小时 :29 | `pg17-onconflict-constraint-check.sh` | ON CONFLICT 推断列 vs 唯一约束对账（2026-10-06 新增） |
 
 ★ 两条 URSM 巡检**不能**写成 `>/dev/null 2>&1`：它们靠退出码分级报警，
 全部丢弃等于没巡检。同理 `llmgw-source` 包装不能去掉（cron 不加载 `/etc/profile`）。
@@ -183,7 +202,7 @@ env -i PATH=/usr/bin:/bin /usr/local/bin/llmgw-source /opt/scripts/pg17-disk-wat
 # 4. emergency L1 测试
 /opt/scripts/pg17-emergency-cleanup.sh --level L1 --yes
 # 5. cron 注册
-crontab -l  # 应看到 llmgw-source * /opt/scripts/pg17-disk-watch.sh 等 4 行
+crontab -l  # 应看到 llmgw-source * /opt/scripts/pg17-disk-watch.sh 等 12 条调度行
 ```
 
 ## 9. 风险与已知盲区

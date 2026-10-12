@@ -21,7 +21,19 @@ case "$TARGET" in
 esac
 
 # Load envs
-ENVS_ROOT="${ENVS_ROOT:-${HOME}/workspace/ai-native-workspace/envs}"
+# ⚠️ 同 deploy-seamless.sh：默认值只有一个候选且无兜底，本机新布局下会指向死路径。
+# 这里与 _shared-lib.sh 保持一致的两个候选顺序。
+if [[ -z "${ENVS_ROOT:-}" ]]; then
+  for _envs_candidate in \
+    "${HOME}/workspace/ai-native-workspace/envs" \
+    "${HOME}/workspace/ai-native-tools/envs"; do
+    if [[ -f "$_envs_candidate/loader.sh" ]]; then
+      ENVS_ROOT="$_envs_candidate"
+      break
+    fi
+  done
+  ENVS_ROOT="${ENVS_ROOT:-${HOME}/workspace/ai-native-workspace/envs}"
+fi
 case "$TARGET" in
   245) ENV_SERVER="8.136.114.245" ;;
   154) ENV_SERVER="47.97.111.154" ;;

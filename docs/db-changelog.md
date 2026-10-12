@@ -8724,3 +8724,9 @@ git show origin/main:scripts/deploy-lib/db-changelog.sh
 | 853 | `853_credential_probe_queue_automatic.sql` | `aec09f5e4c689a0d7d24b3d9056b1eff577cf3263d6f0f764b2a806c42befc4a` | applied+verified |
 | 854 | `854_session_turns_advisory_lock_key.sql` | `fb88ad0b5ef2f554e39c74e506449fdfc25e9f57ba494cfbd1d150b0bae2f2e8` | applied+verified |
 
+## 2026-10-12T17:33:13Z — deploy 245 build_seq 2559 (92afbb06)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 855 | `855_session_analytics_time_window.sql` | `ce6d97b57ada2cd80636ef25666dae52d0866b106427355a1f8145c6313a7803` | applied+verified |
+

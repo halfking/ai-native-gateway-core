@@ -1,4 +1,4 @@
--- 856_analyze_columnar_staleness_gate.sql
+-- 857_analyze_columnar_staleness_gate.sql
 -- 2026-10-13: 给 analyze_llm_gateway_table_stats 的「当月列存分区」分支加**陈旧度闸门**。
 --
 -- 背景（runbook §10.110.14，2026-10-13 生产实测）：
@@ -32,7 +32,7 @@
 --   db/db.go                                                         每次启动 CREATE OR REPLACE
 --   sql/schema/01-schema.sql · deploy/sql/schemas/baseline/01-schema.sql
 --   installer/cmd/llm-gw-installer/embeddata/01-schema.sql
---   —— 已同步，改动必须四处一起改（migration_856_test.go 把这件事钉成门）。
+--   —— 已同步，改动必须四处一起改（migration_857_test.go 把这件事钉成门）。
 
 CREATE OR REPLACE FUNCTION public.analyze_llm_gateway_table_stats(p_recent_months integer DEFAULT 2)
     RETURNS integer
@@ -68,7 +68,7 @@ CREATE OR REPLACE FUNCTION public.analyze_llm_gateway_table_stats(p_recent_month
                        --    交回 autovacuum 就永远没人管（runbook §10.93.6 / §10.99）
                        m = 0
                        AND c.relam <> (SELECT oid FROM pg_am WHERE amname = 'heap')
-                         -- 856（2026-10-13）：「需要手工」不等于「每轮都做」。
+                         -- 857（2026-10-13）：「需要手工」不等于「每轮都做」。
                          --    实测三张当月列存分区 n_mod_since_analyze 全为 0，
                          --    却被每小时无差别重扫（request_logs_bodies_2026_10 单表
                          --    529 MB / 666,124 行），整趟 pass 已占数据库时间约 171 分钟/天；
