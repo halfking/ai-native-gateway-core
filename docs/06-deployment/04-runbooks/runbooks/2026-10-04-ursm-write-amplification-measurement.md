@@ -15328,3 +15328,117 @@ W = `last_request_at >= now()-30 days`（855 之后形态）。
 ★ **第 1 条是本轮最重要的一条**：前三顺位里有两条都只是它的下游表现。
 **在没拆开 `CONCURRENTLY` 的 143 秒之前，任何针对这三个视图的 SQL 优化
 都最多只能动那 1~3 秒的视图查询。**
+
+### §10.110.14 ★ 本轮真正的第一主体：`analyze_llm_gateway_table_stats` —— 171 分钟/天，迁移 856 已落地
+
+§10.110.13 的排序里第 1 位是「拆 CONCURRENTLY 的 143 秒」。
+本节顺着那条线索往上游走，撞到一个**比它大一个数量级**的东西。
+
+#### 一、实测：`oldest_xact` 里的「污染源」其实是系统自己的 hourly analyze
+
+§10.110.12 把一个 200+ 秒的事务判成「另一个会话的人工 psql」——
+**那个判断对当时的样本是对的**（确有一条 `usage_ledger_with_current_month` 的 psql）。
+但 04:52 之后 `oldest_xact` 又涨回 325 秒，再查却是一条完全不同的语句：
+
+```
+pid 1001739 | 172.16.2.209 | SELECT analyze_llm_gateway_table_stats( '2' )   ← 已跑 339 秒
+```
+
+⇒ **库里的常态就是有 200~580 秒级事务**，来源是这个 hourly analyze pass。
+⇒ 「有没有外部污染」不再是要问的问题；**默认就脏**。
+
+#### 二、它的真实代价（`pg_stat_statements`，stats_reset 2026-10-10 16:11）
+
+```
+SELECT analyze_llm_gateway_table_stats( $1 )
+calls=40   mean=256.82 s   max=582.30 s   累计 171.2 分钟
+```
+
+对照 §10.107.6（2026-10-07 实测单趟 **51.3 s**、2 次/小时 ⇒ ≈41 分钟/天）：
+
+| | 10-07 | 10-13 |
+|---|---|---|
+| 频率 | 2.0 次/小时 | **0.65 次/小时**（840 的节流槽生效了） |
+| 单趟 | 51.3 s | **256.82 s**（max 582.30 s） |
+| **每日数据库时间** | ≈41 分钟 | **≈171 分钟** |
+
+⇒ ★ **840 把频率降到了三分之一，单趟却贵了 5 倍，总代价涨到 4.2 倍。**
+⇒ 「节流」只减少重复，**没有触及「单趟为什么变贵」**。
+
+#### 三、贵在哪：第二段谓词不看统计是否新鲜，于是每轮无差别重扫列存分区
+
+函数体两段。第一段 ANALYZE 全部 `public.*_hot` 堆表——**实测这些表全都极小**
+（最大 `supplier_errors_hot` 2,376 kB，另有 6 张 0 字节），**不可能是 256 秒的来源**。
+
+第二段按 12 个表族选月分区，谓词是 838/839 两条：
+① `NOT EXISTS(pg_statistic)`（从未分析过）② `m=0 且非堆`（当月列存）。
+**② 完全不看统计是否已经新鲜** ⇒ 复现该谓词，选出的表是：
+
+| 表 | 存储 | 体量 | 行数 | has_stats |
+|---|---|---|---|---|
+| `request_logs_bodies_2026_10` | **columnar** | **529 MB** | 666,124 | t |
+| `routing_decision_log_2026_10` | columnar | 30 MB | 83,355 | t |
+| `credential_model_index_2026_10` | columnar | 19 MB | 97,427 | t |
+
+⚠⚠ 三张的 `n_mod_since_analyze` **全是 0**（距上次 analyze 4 小时内零改动），
+**却每小时被重扫一遍**。529 MB 列存表的 ANALYZE 本身就是大头。
+
+#### 四、放大效应：它同时是 MV 刷新的「快照闸门」
+
+`REFRESH MATERIALIZED VIEW CONCURRENTLY` 必须等所有更老的快照结束
+⇒ 这趟 pass 持有的 256~582 秒事务，**让每一个 MV 刷新都跟着等**。
+⇒ 这解释了 §10.110.13 那个矛盾的一半：视图查询热态 1.2 s，刷新却报 144 s。
+
+#### 五、迁移 856（已提交，**未部署**）：加陈旧度闸门
+
+```sql
+m = 0
+AND c.relam <> (SELECT oid FROM pg_am WHERE amname = 'heap')
+AND COALESCE(
+      (SELECT t.last_analyze FROM pg_stat_all_tables t WHERE t.relid = c.oid),
+      '-infinity'::timestamptz
+    ) < now() - interval '6 hours'          -- ← 新增
+```
+
+- **每日 4 次 vs 原每小时** ⇒ 这部分降约 75%；
+- ①「从未分析过」不受影响，新分区第一次仍必被 analyze；
+- 改的是**频率政策**，不是选表集合——语义不变，可随时 down；
+- ⚠ **判据刻意用 `last_analyze` 而不是 `n_mod_since_analyze`**：
+  后者在列存表上恒为 0，**无法区分「真没变」与「计数器没更新」**，没有独立证据；
+  `last_analyze` 由 analyze 自己写，确定可靠。
+
+**五份活副本已同步**（少一份就会被覆盖回旧体，§10.109 的教训）：
+`sql/objects/functions/…_integer.sql`（规范源）· `db/db.go`（每次启动 CREATE OR REPLACE）·
+`sql/schema/01-schema.sql` · `deploy/sql/schemas/baseline/01-schema.sql` ·
+`installer/.../embeddata/01-schema.sql`。
+
+**门与验证**：
+- `scripts/apply-db-revision-sequence_test.sh` **rc=0**（新增 channel files 登记 +
+  `intentional_function_chains` 链登记，缺任一条都会 exit 5）
+- `sql/migrations/startup/migration_856_test.go` **4 条契约门**：迁移里有门且挂在列存分支 /
+  down 真的拆门且保留 ① / **五份副本一份不漏** / embeddata 与 canonical 逐字节一致
+- **变异验证**：把 `db/db.go` 那份的阈值改成 `600 hours`
+  ⇒ `Test856GatePresentInEveryLiveCopy` 变红；还原后逐字节一致、门转绿
+- `go build ./...` rc=0 · `gofmt` 干净 · `installer` 模块除既存红外全绿
+
+#### 六、⚠ 顺带查出的**既存红**（不是本轮引入，归属 855）
+
+`installer` 的 `TestCanonicalStartupMigrationsAtOrAbove704AreRegistered` 报：
+**`855_session_analytics_time_window.sql` 未登记进 `dbinit.Runner.StartupFiles`**。
+`git show HEAD:installer/internal/dbinit/runner.go | grep -c 855` = **0** ⇒ 改动前就红。
+且 `embeddata/startup/855_*.sql` **副本根本不存在** ⇒ 缺的是完整五点同步，不是一行。
+⇒ **归属 855 的那次提交**；本轮不做（改了等于替别人补它的账，且它可能有自己的理由）。
+⚠ 本轮新增的 manifest 是因为加了 856 才需要重生成，
+`go test ./internal/dbinit/ -run TestStartupManifest -update` 已做。
+
+#### 七、上线前必须知道的三件事
+
+1. **部署 154 会自动应用 856**（已登记进 channel files，§10.106.43 的机制）；
+   未带新迁移的旧二进制重启时，`db/db.go` 的函数体**已经把新体装上了**——
+   ⚠ 这意味着 856 的效果**可能先于迁移生效**，读数时要认这一点。
+2. **验收读数**（部署后按顺序核对）：
+   `pg_stat_statements` 里该函数的 `calls` 降到 **每日约 4 次**、
+   `mean_exec_time` 从 256.82 s 降到「单趟 ANALYZE 三张列存表的真实耗时」；
+   并复看 §10.110.13 的三视图耗时是否从 144/81/3 s 下降。
+3. **若计划因此劣化**：`856_analyze_columnar_staleness_gate.down.sql` 可回滚，
+   但会把数据库时间推回约 171 分钟/天——回滚前先看 `last_analyze` 的实际年龄分布。

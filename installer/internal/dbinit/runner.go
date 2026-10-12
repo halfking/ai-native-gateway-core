@@ -998,6 +998,9 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 全新安装的机器上这条规则都还开着。登记它是对「文件存在 ≠ 迁移会
 			// 运行」这一形态的修复，不是新增策略。
 			"851_disable_overbroad_pii_ip_address_rule.sql",
+			// 856（2026-10-13）：analyze_llm_gateway_table_stats 的列存分支加陈旧度闸门。
+			// 见 runbook §10.110.14；函数体另有四份副本，migration_856_test.go 把这件事钉成门。
+			"856_analyze_columnar_staleness_gate.sql",
 		},
 	}
 }

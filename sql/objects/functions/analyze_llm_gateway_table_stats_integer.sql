@@ -34,6 +34,18 @@ CREATE FUNCTION public.analyze_llm_gateway_table_stats(p_recent_months integer D
                        --    交回 autovacuum 就永远没人管（runbook §10.93.6 / §10.99）
                        m = 0
                        AND c.relam <> (SELECT oid FROM pg_am WHERE amname = 'heap')
+                         -- 856（2026-10-13）：「需要手工」不等于「每轮都做」。
+                         --    实测三张当月列存分区 n_mod_since_analyze 全为 0，
+                         --    却被每小时无差别重扫（request_logs_bodies_2026_10 单表
+                         --    529 MB / 666,124 行），整趟 pass 已占数据库时间约 171 分钟/天；
+                         --    且它持有的快照会让每次 REFRESH MATERIALIZED VIEW CONCURRENTLY
+                         --    等它（runbook §10.110.14）。⇒ 改为「统计陈旧时才手工」：
+                         --    距上次 analyze 超过 6 小时才重跑（每日 4 次，较原每小时降 75%）。
+                         --    「从未分析过」由上面的 ① 单独兜住，不受本门影响。
+                         AND COALESCE(
+                               (SELECT t.last_analyze FROM pg_stat_all_tables t WHERE t.relid = c.oid),
+                               '-infinity'::timestamptz
+                             ) < now() - interval '6 hours'
                       )
                    )
 		        LOOP

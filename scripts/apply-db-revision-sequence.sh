@@ -1332,7 +1332,15 @@ files=(
   # fresh-install 链每 ~30s 重演同一报错（本机 host-first 1088 次实测）。
   # ADD COLUMN IF NOT EXISTS 幂等；部署链存量库早已应用，投递零行为变化。
   "$ROOT_DIR/sql/migrations/startup/486_credential_model_bindings_add_probe_revert_at.sql"
+  # 856（2026-10-13）：analyze_llm_gateway_table_stats 的「当月列存分区」分支
+  # 增加陈旧度闸门。原谓词只看「是不是列存」，不看统计是否新鲜，于是三张当月
+  # 列存分区（request_logs_bodies_2026_10 529 MB / 666,124 行等）每轮都被无差别
+  # 重扫：实测 40 次调用 mean 256.82 s / max 582.30 s ≈ 171 分钟/天，
+  # 且它持有的长快照会让每个 REFRESH MATERIALIZED VIEW CONCURRENTLY 等它。
+  # CREATE OR REPLACE FUNCTION 幂等；「从未分析过」那条判据不变。
+  "$ROOT_DIR/sql/migrations/startup/856_analyze_columnar_staleness_gate.sql"
 )
+
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的
 # 迁移文件内容被加固（幂等守卫重建、canonical 清单扩充等）而编号不变时，
@@ -1366,6 +1374,11 @@ legacy_content_replays=(
 # SQL line/block comments and dollar-quoted bodies, so prose or dynamic SQL
 # that merely mentions CREATE OR REPLACE cannot trigger it.
 intentional_function_chains=(
+  # 856 (2026-10-13) 重定义 analyze_llm_gateway_table_stats：给「当月列存分区」
+  # 分支加陈旧度闸门。链序必须是 838 → 839 → 856，且 **856 必须是最后一项**——
+  # 它是活库里应有的最终体。少这一行，部署会在应用任何文件之前 abort（exit 5），
+  # 因为一个函数被三个通道文件重定义而未登记为有意链。
+  'analyze_llm_gateway_table_stats|838_analyze_skip_frozen_month.sql|839_autovac_current_month_heap_handoff.sql|856_analyze_columnar_staleness_gate.sql|'
   # 829 (2026-10-05, Owner 拍板补登通道腿) 重定义
   # ensure_request_logs_bodies_partition 为**纯 heap**，去掉 765 引入的
   # citus_columnar/USING columnar 分支。链序必须是 694 → 765 → 829：

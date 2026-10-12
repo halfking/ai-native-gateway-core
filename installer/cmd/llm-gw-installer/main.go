@@ -840,6 +840,9 @@ var credentialProbeQueueAutomatic853 []byte
 //go:embed embeddata/startup/854_session_turns_advisory_lock_key.sql
 var sessionTurnsAdvisoryLockKey854 []byte
 
+//go:embed embeddata/startup/856_analyze_columnar_staleness_gate.sql
+var analyzeColumnarStalenessGate856 []byte
+
 //go:embed embeddata/startup/829_bodies_columnar_rollback.sql
 var bodiesColumnarRollback829 []byte
 
@@ -1106,6 +1109,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/853_credential_probe_queue_automatic.sql":                               credentialProbeQueueAutomatic853,
 	"startup/854_session_turns_advisory_lock_key.sql":                                sessionTurnsAdvisoryLockKey854,
+	"startup/856_analyze_columnar_staleness_gate.sql":                                analyzeColumnarStalenessGate856,
 	"startup/829_bodies_columnar_rollback.sql":                                       bodiesColumnarRollback829,
 	"startup/835_modality_verify_probe_ledger.sql":                                   modalityVerifyProbeLedger835,
 	"startup/834_supplier_errors_base_tables.sql":                                    supplierErrorsBaseTables834,
