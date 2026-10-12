@@ -249,3 +249,8 @@
 231	837_routing_mv_refresh_state.sql
 232	838_analyze_skip_frozen_month.sql
 233	839_autovac_current_month_heap_handoff.sql
+234	840_analyze_stats_throttle_slot.sql
+235	841_monthly_partition_retention.sql
+236	842_credential_model_index_latest_bucket_idx.sql
+237	843_candidate_failure_logs_ts_desc_idx.sql
+238	844_supplier_view_cache_baseline_columns.sql

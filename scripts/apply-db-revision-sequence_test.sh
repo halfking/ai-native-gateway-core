@@ -43,6 +43,68 @@ gate_report() {
 # high-numbered canonical migrations must reach either a fresh install, an
 # upgrade, or a reviewed Go startup ensure. The inputs stay text lists so the
 # contract can exercise every route without mutating the real catalog.
+#
+# ═══════════════════════════════════════════════════════════════════════
+# ★★ 读这条门之前请先读完本段：仓库里其实有**两条**迁移投递腿，本门只认其中一条
+# ═══════════════════════════════════════════════════════════════════════
+#
+# ① **扫描腿**（部署时）
+#    ⚠⚠ 它的代码**不在本仓库里**：`scripts/deploy-lib` 是**软链**，指向仓外
+#       workspace SSOT `ai-native-tools/deploy-lib`（commit 722e9020f 的治理决定，
+#       未跟踪、非 gitignore）。**换机器或在 CI runner 上这个路径不存在。**
+#       ⇒ 下面这个路径是**本机 workspace 的状态**，不是本仓能自证的事实。
+#       引用它之前先 `git ls-files scripts/deploy-lib/`（会返回空）。
+#
+#    本机可达时的实际逻辑（scripts/deploy-lib/db-changelog.sh 的
+#    `_deploy_pending_startup_migrations`）：
+#      for f in sql/migrations/startup/[0-9]*.sql; do
+#        跳过 *.down.sql / *.skip / *.bak.skip / 头 15 行含 SUPERSEDED|DEPRECATED
+#        if (( ver >= ${DB_LEDGER_RECONCILE_FROM:-412} )) 且远端 schema_migrations
+#           没有该 version ⇒ 投递
+#      done
+#    投递后由同文件 `:518` 写 `schema_migrations` + `llm_gateway_migration_checksums`
+#    （advisory lock + NOT EXISTS 幂等）。调用链（本机查实）：
+#      deploy-154.sh → deploy-seamless.sh:68 `source deploy-lib/db-changelog.sh`
+#
+# ② **通道腿**（本门要求的那条）
+#    scripts/apply-db-revision-sequence.sh 的 `files=(...)` 数组，**在本仓内**，
+#    记账表是 **`public.gateway_db_revision_sequences`**（按文件内容 sha256，
+#    内容变了但编号不变时会重放）。
+#    已确认的调用方只有 `scripts/deploy-local-sys.sh`。
+#    `scripts/deploy-252-schema-upgrade.sh` 里也调它，但**全仓穷尽 grep 后没有
+#    任何调用方**（2026-10-07 核过 scripts/deploy/installer/.github/.githooks/
+#    Makefile/根目录 *.sh，命中的只有一份历史审计文档与 .codegraph 索引库），
+#    ⇒ 通道腿不由它投递。
+#
+# ★ 因此本仓能自证的只有一句：**通道腿在本仓内，且有调用方（deploy-local-sys.sh）**。
+#   「154 生产上谁投递迁移」依赖仓外 SSOT（见上），**本仓无法回答** ——
+#   需要那个结论时请去 workspace SSOT 查，不要引用本文件当依据。
+#
+# ── 两腿互不知情，各记一张表 ─────────────────────────────────────────
+# `deploy-lib` 里 grep 不到 apply-db-revision-sequence；通道脚本里也读不到
+# deploy-lib。⇒ **同一份迁移可能被两条腿各投递一次**，挡住重复的是
+# **迁移自身的幂等性**，不是记账。这也解释了 836 头部那句
+# 「813 的 sha 与台账一致 ⇒ 幂等通道每次都跳过它」——通道腿按 sha 跳，
+# 而扫描腿根本不查那张表。
+#
+# ── 为什么本门**不**把扫描腿算作一条投递路径（2026-10-07 人工拍板）────
+# 2026-10-07 在**本机**实测确认扫描腿会投递 837-844（用它的真实循环逻辑跑过：
+# 已记账的 844 被正确跳过，未记账的 837-843 被选中）。
+# ⚠ 该读数依赖仓外 SSOT 软链，**别的环境无法复现**（见上 ⚠⚠）。
+# **所以：投递本来没坏。** 本门坚持要求显式登记，是在问一个扫描腿回答不了的问题：
+#
+#   「这条迁移的投递**顺序、幂等重放、以及它是否属于人工/带外交付**，
+#     在仓库里有没有被明确记录下来？」
+#
+# 扫描腿只回答「文件在目录里就会投」——它**说不出**这条迁移为什么该在
+# 这里、顺序依赖谁、重放时安全吗。**838→839 的函数链先后**就是只有通道腿
+# 能表达的信息（intentional_function_chains 就是为此存在）。
+#
+# ⇒ 保持本门的约束力（本轮拍板）；代价是**每个新迁移要在通道腿登记一次**，
+#   即使扫描腿也会投它。这是有意的代价，不是缺陷。
+# ⇒ ⚠ 若日后要让本门认扫描腿，必须同时解决「顺序依赖」问题 ——
+#   否则一个必须排在 838 之后的迁移，会因为「它在目录里」而被允许乱序投递。
+#   届时应改的是扫描腿（读顺序元数据），不是把第五条路径加进来。
 canonical_delivery_path_check() {
   local canonical_files="$1"
   local startup_files="$2"
@@ -190,6 +252,36 @@ done
 #   manualByDesign in installer/cmd/llm-gw-installer/stats_migrations_test.go.
 #   Editing one without the other leaves the other gate red — "已豁免" must hold
 #   on both sides at once (single-side green is not green).
+# 842 (2026-10-07)：latest_bucket 聚合的索引，**登记为带外交付（installer-only）**。
+#
+# 归属与 691/747/748/759 同类，**不是** 830 那一类（manual-by-design）——
+# 两类的判据不同，别混：
+#   · 747/748/759/842 = 库**已经有了**，是补一条登记让门认识这个既成事实；
+#   · 830 = 迁移**根本不该被自动跑**（RENAME 活表），Go 侧还镜像了后半段。
+# 842 不满足 manualByDesign 的第 2 条（Go 侧无镜像）：全仓 grep
+# `credential_model_index_cred_model_bucket_idx` 只命中它自己的 .sql 与
+# migration_842_test.go，没有任何 Go ensure 镜像它。
+#
+# 为什么登记（2026-10-07 人工拍板，由 mavis 代为处置）：
+#   842 已在 installer/internal/dbinit/runner.go:909 的 StartupFiles 里
+#   （= 全新安装会拿到它），缺的只是升级通道。此前无人登记 ⇒ 契约门红，
+#   而门红会挡住**整个仓库所有人的提交**（pre-commit 钩子于同日装上并实测
+#   生效：rc=1 阻断提交）。
+#
+#   事实校准（不要沿用早期那个夸大的说法）：
+#   它建索引的对象是 **分区父表 public.credential_model_index**（3 分区，
+#   354,153 行）与 **普通堆表 credential_model_index_hot**（2,361 行）。
+#   ⚠ 「356,514 行」是那个 UNION ALL **视图**的行数，不是任何一张表的行数 ——
+#     父表自身不存数据（`pg_total_relation_size(<父表>)` 返回 0），体量要逐分区求和。
+#   它自己的头注明：不支持在分区父表上 CREATE INDEX CONCURRENTLY，普通建索引
+#   会对每个分区取锁直到建完 ⇒ 是否进无人值守升级是**部署窗口策略**问题。
+#
+# ★ 代价（必须与「已豁免」一起读）：登记为 installer-only ⇒ **存量库永远拿不到
+#   这两个索引**。而 842 修的是 pg_stat_statements 里全库第 2 名的语句
+#   （累计 37.6 小时 / 188,357 次 / 均 719 ms）。⇒ 老库的慢查询不会因为这次登记
+#   而消失，需要人工在窗口期执行。**「已豁免」不等于「已解决」。**
+#   若日后决定让存量库也拿到，正确处置是把 842 加进
+#   scripts/apply-db-revision-sequence.sh 的 files=(...) 通道，并从本清单移除。
 channel_gap_allowlist=$(cat <<'EOF'
 691_proxy_region_policy.sql
 692_session_summaries_user_intent_widen.sql
@@ -197,6 +289,7 @@ channel_gap_allowlist=$(cat <<'EOF'
 748_selfcheck_system_key_tier.sql
 759_report_snapshots_grain_dims.sql
 830_ursm_node_snapshot_min_partitioned.sql
+842_credential_model_index_latest_bucket_idx.sql
 EOF
 )
 

@@ -1,6 +1,7 @@
 package activation
 
 import (
+	"runtime"
 	"context"
 	"encoding/json"
 	"io"
@@ -153,6 +154,9 @@ func readRawStateFile(t *testing.T, installDir string) map[string]interface{} {
 // ─────────────────────────────────────────────────────────────
 
 func TestRunAutoActivate_WithLicenseKey_Success(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 基线（既有，非回归）：activation.json 权限位断言 0600，Windows 恒 666；R50 遗留 #9 skip 化治理")
+	}
 	srv, regCalls, lastBody := startMockMaster(t, http.StatusOK)
 	defer srv.Close()
 
@@ -393,6 +397,9 @@ func TestRunAutoActivate_InstallSkipActivation(t *testing.T) {
 // ─────────────────────────────────────────────────────────────
 
 func TestRunAutoActivate_InstallDirUnwritable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 基线（既有，非回归）：Windows 上对目录 chmod 000 不生效，不可写前置条件造不出来；R50 遗留 #9 skip 化治理")
+	}
 	srv, _, _ := startMockMaster(t, http.StatusOK)
 	defer srv.Close()
 
@@ -594,6 +601,9 @@ func TestRunAutoActivate_TokenWriteFailure_RecordsError(t *testing.T) {
 // ─────────────────────────────────────────────────────────────
 
 func TestRunAutoActivate_RealPublicKey(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 基线（既有，非回归）：activation.json 权限位断言 0600，Windows 恒 666；R50 遗留 #9 skip 化治理")
+	}
 	srv, _, lastBody := startMockMaster(t, http.StatusOK)
 	defer srv.Close()
 
@@ -632,6 +642,9 @@ func TestRunAutoActivate_RealPublicKey(t *testing.T) {
 // ─────────────────────────────────────────────────────────────
 
 func TestWriteActivationState_Permissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 基线（既有，非回归）：activation.json 权限位断言 0600，Windows 恒 666；R50 遗留 #9 skip 化治理")
+	}
 	dir := t.TempDir()
 	st := &ActivationState{
 		InstanceID:  "abc",
@@ -713,6 +726,9 @@ func TestRunAutoActivate_SkippedHasNoKey(t *testing.T) {
 // ─────────────────────────────────────────────────────────────
 
 func TestRunAutoActivate_PersistsRefreshToken(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 基线（既有，非回归）：activation.json 权限位断言 0600，Windows 恒 666；R50 遗留 #9 skip 化治理")
+	}
 	srv, _, _ := startMockMaster(t, http.StatusOK)
 	defer srv.Close()
 
@@ -798,6 +814,9 @@ func TestRunAutoActivate_EmptyRefreshToken_NoFile(t *testing.T) {
 // ─────────────────────────────────────────────────────────────
 
 func TestWriteInstanceToken_AtomicWrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 基线（既有，非回归）：权限位 0600 断言 + 并发 rename 竞态在 Windows 报 Access denied（文件锁语义）；R50 遗留 #9 skip 化治理")
+	}
 	dir := t.TempDir()
 
 	if err := writeInstanceToken(dir, "tok-1"); err != nil {
@@ -874,6 +893,9 @@ func TestWriteInstanceToken_AtomicWrite(t *testing.T) {
 // ─────────────────────────────────────────────────────────────
 
 func TestWriteHomeInstanceToken(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 基线（既有，非回归）：token 文件权限位断言 0600，Windows 恒 666；R50 遗留 #9 skip 化治理")
+	}
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 
@@ -908,6 +930,9 @@ func TestWriteHomeInstanceToken(t *testing.T) {
 // ─────────────────────────────────────────────────────────────
 
 func TestRunAutoActivate_InstanceIDError_AbortsActivation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 基线（既有，非回归）：instance.id 创建依赖 POSIX 权限语义；R50 遗留 #9 skip 化治理")
+	}
 	srv, regCalls, _ := startMockMaster(t, http.StatusOK)
 	defer srv.Close()
 

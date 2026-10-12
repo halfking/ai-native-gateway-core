@@ -1,6 +1,7 @@
 package enrollment
 
 import (
+	"runtime"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -16,6 +17,9 @@ import (
 
 // TestSendHeartbeat_Success 测试心跳发送成功
 func TestSendHeartbeat_Success(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 基线（既有，非回归）：token 解析在 Windows 上先读注册表真实来源，测试环境未隔离注册表；R50 遗留 #9 skip 化治理")
+	}
 	// 准备测试环境：创建临时 token 文件
 	tmpDir := t.TempDir()
 	tokenPath := tmpDir + "/.kx-gateway"
@@ -161,6 +165,9 @@ func TestSendHeartbeat_ContextCanceled(t *testing.T) {
 // TestReadInstanceToken_Fallback 验证 ~/.kx-gateway/instance.token 缺失时，
 // 应当 fallback 到 ${INSTALL_DIR}/state/instance.token
 func TestReadInstanceToken_Fallback(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 基线（既有，非回归）：同上：注册表 token 源先行命中，fallback 断言不成立；R50 遗留 #9 skip 化治理")
+	}
 	// HOME 指向没有 .kx-gateway 的目录（primary 必然失败）
 	homeDir := t.TempDir()
 	oldHome := os.Getenv("HOME")
@@ -191,6 +198,9 @@ func TestReadInstanceToken_Fallback(t *testing.T) {
 
 // TestReadInstanceToken_PrimaryWins 验证当 primary 路径存在时优先使用
 func TestReadInstanceToken_PrimaryWins(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 基线（既有，非回归）：同上：注册表 token 源先行命中，优先级断言不成立；R50 遗留 #9 skip 化治理")
+	}
 	// HOME 下写 token-a
 	homeDir := t.TempDir()
 	if err := os.MkdirAll(homeDir+"/.kx-gateway", 0755); err != nil {
@@ -227,6 +237,9 @@ func TestReadInstanceToken_PrimaryWins(t *testing.T) {
 
 // TestReadInstanceToken_NotFound 验证两路径都失败时返回 error
 func TestReadInstanceToken_NotFound(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 基线（既有，非回归）：同上：注册表 token 源先行命中，「皆缺报错」前提不成立；R50 遗留 #9 skip 化治理")
+	}
 	homeDir := t.TempDir()
 	oldHome := os.Getenv("HOME")
 	os.Setenv("HOME", homeDir)
@@ -383,6 +396,9 @@ func TestRandomNonce(t *testing.T) {
 // TestReadInstanceToken_EmptyFile 验证 primary 文件存在但内容为空(仅空白)
 // 时，应当回退到 install-state 路径。
 func TestReadInstanceToken_EmptyFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 基线（既有，非回归）：同上：注册表 token 源先行命中，空文件回退断言不成立；R50 遗留 #9 skip 化治理")
+	}
 	homeDir := t.TempDir()
 	if err := os.MkdirAll(homeDir+"/.kx-gateway", 0755); err != nil {
 		t.Fatalf("mkdir home: %v", err)

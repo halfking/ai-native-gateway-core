@@ -6,6 +6,62 @@ _dl_die() { printf 'error: %s\n' "$*" >&2; return 1; }
 _dl_have() { command -v "$1" >/dev/null 2>&1; }
 _dl_bool() { [[ "${1:-}" == 1 || "${1:-}" == true || "${1:-}" == yes ]]; }
 
+# Run a command under a wall-clock cap, portably.
+#
+# ## 为什么不能直接用 GNU timeout
+#
+# `timeout` 是 coreutils 的可执行文件，**stock macOS 默认没有**（装了 coreutils
+# 之后命令名还叫 `gtimeout`）。此前本文件直接写 `timeout 5 docker info`，于是
+# 在 macOS 上：
+#
+#   1. 该命令以 127 失败（command not found）；
+#   2. `DL_DOCKER` 恒为 0；
+#   3. **整块 docker 探测被跳过**——即使 Docker Desktop 正在运行也不会走 docker
+#      路径，且没有任何报错。
+#
+# 讽刺的是这段守卫的注释写明它是给「macOS Docker Desktop 繁忙时 docker info 卡住」
+# 加的：防护为 macOS 而加，却在 macOS 上把功能整个关掉了。同一根因还让
+# tests/deploy_local_contract_test.sh、scripts/deploy-local-preflight_test.sh、
+# scripts/deploy-local-frontend_test.sh 三套测试在 macOS 上直接红。
+#
+# ## 回退顺序
+#
+# timeout → gtimeout（macOS coreutils）→ 纯 bash 轮询看门狗。
+# 最后一级**不能**退化成「直接跑」：调用方要的就是别被卡死的守护进程拖住。
+# 轮询每 0.2s 判一次 deadline，命中即 TERM；正常完成返回真实退出码，超时统一
+# 返回 124（GNU timeout 的约定）。本文件现有调用点只判零/非零，保留 124 是为
+# 后续调用方留出区分能力。
+#
+# 语义与 GNU timeout 一致：只对**直接子进程**发信号。若被限时的命令是个 shell
+# wrapper 且自己 fork 了长命子进程（典型 `bash -c 'sleep 30'`），wrapper 被杀后
+# 孙进程仍会跑完并持有继承来的 stdout —— 这不是回归，GNU timeout 同样如此。
+# 需要连子孙一起收的调用点应自行使用进程组（setsid / kill -- -pgid）。
+_dl_timeout() {
+  local deadline pid rc=0
+  deadline=$(( $(date +%s) + $1 ))
+  shift
+  if _dl_have timeout; then
+    timeout "$1" "${@:2}"
+    return $?
+  fi
+  if _dl_have gtimeout; then
+    gtimeout "$1" "${@:2}"
+    return $?
+  fi
+  "$@" &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    if (( $(date +%s) >= deadline )); then
+      kill -TERM "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      return 124
+    fi
+    sleep 0.2
+  done
+  wait "$pid" || rc=$?
+  return "$rc"
+}
+
 # Fail-closed guard for dl_wait_pg_isready (DL_PG_PREFLIGHT_REQUIRED=1) and
 # any other lib primitive that must TERMINATE the deploy, not merely return
 # nonzero — a bare return would fall through `|| true` callers and fail open.
@@ -144,9 +200,9 @@ dl_detect_resources() {
   # 2026-09-18: docker info 偶发卡住（macOS Docker Desktop 繁忙时可能超时），
   # 导致 deploy-local.sh status 15s+ 挂死。加 timeout 5s 防护，超时时跳过
   # Docker 路径但不失败（外部 DSN/Redis 模式仍可用）。
-  if _dl_have docker && timeout 5 docker info >/dev/null 2>&1; then
+  if _dl_have docker && _dl_timeout 5 docker info >/dev/null 2>&1; then
     DL_DOCKER=1
-    timeout 3 docker compose version >/dev/null 2>&1 && DL_COMPOSE=1 || true
+    _dl_timeout 3 docker compose version >/dev/null 2>&1 && DL_COMPOSE=1 || true
     for c in llm-gateway-pg postgres kx-citus; do
       if docker ps --format '{{.Names}}' 2>/dev/null | grep -Fxq "$c"; then DL_PG_CONTAINER=$c; break; fi
     done

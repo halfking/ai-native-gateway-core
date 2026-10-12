@@ -13487,3 +13487,650 @@ GET `/api/admin/task-profile/corrections/stats`
   10 次的 `Tests` 行**条数全程一致 = 6738**，无 `×` / `FAIL` 行。
   ⇒ `ComplianceHitsView.spec.ts` / `RoutingOptView.spec.ts` 两个历史 flaky 本批**未复现**
   ⇒ ★ 按连跑器自己的口径：**未复现 ≠ 已修复**，只是这次没抓到。
+## 11.136 把 API 模块接进 UI：孤儿棘轮门（第一百批，2026-10-08）
+
+### ★★★★★★★★ 本批是一次**方向修正**，不是一个新端点
+
+起因是 checkpoint 上的一次盘点：脚本枚举 `web-mobile/src/api/*.ts`，
+再在 `src/`（除 `src/api/` 自身）里找 `from '.../api/<模块名>'` 的引用，找不到的记为**孤儿**。
+
+结果：**93 个 api 模块里有 30 个是孤儿**，
+包括批 98 的 `taskProfile.ts` 与批 99 的 `taskTypeCorrectionStats.ts`
+—— 两个模块 128 + 214 条判据、87 条变异全有牙、文档 §11.134 / §11.135 写齐，
+**用户却点不到**。
+
+⇒ ⇒ ★★★★ **API 层做完 ≠ 功能复制到移动端。**
+⇒ ⇒ ★★★ 前几十批的「做完一个端点」口径有个隐含假设：
+**只要 API 模块存在，就算这个功能复制过来了。** 那个假设是错的。
+⇒ ★★ 本批起，口径改为：**一个端点算「复制完成」的条件是它有一条可达的 UI 入口**
+（抽屉席 + 路由 + 视图 + i18n 四件套齐备）。
+
+★ 与记忆里[[现状盘点类数字必然腐烂]]不冲突：那张说的是**把数字写进判据**。
+本批登记的是一个**集合**，且集合每次变化都要经过一次**显式 diff**——
+「变红」正是它的工作方式，不是它的缺陷。
+
+### 本批接线的内容
+
+| 端点 | 档位 | 席 | 路由 |
+|---|---|---|---|
+| `GET /api/admin/task-profile` | admin | 抽屉 `task-profile` | `/task-profile` |
+| `GET /api/admin/task-profile/corrections/stats` | admin | 同上 | 同上 |
+
+- **档位判定照旧**：`admin/handler.go:1413` 用 `admin` 挂载 `RegisterTaskProfileRoutes`
+  ⇒ **不设** `requiresRole`（与 `credential-model-state` 那一席相反，
+  那一席是 `h.superAdmin`）。⇒ 也**无需**同步 `AppDrawer.spec.ts` 的 superAdmin 白名单
+  （那一席只登记 `requiresRole === 'super_admin'` 的 key）。
+- **写端点一个不碰**：同族三个 POST（`apply-tier-config` / `reload` / `import`）都改后端状态。
+- 新增文件：`src/views/TaskProfileView.vue` + `.spec.ts`、`src/api/orphanLedger.spec.ts`；
+  改动：`src/config/appNav.ts`、`src/router/index.ts`、`src/i18n/zh-CN.ts`、`src/i18n/en-US.ts`。
+
+### ★★★★★ 判「孤儿」时必须排除 `src/api/` 自身的互相引用
+
+`taskTypeCorrectionStats.ts` 从 `./taskProfile` 导入 `unwrapCorrectionStat` /
+`unwrapTaskProfileSuggestion` —— 那是**同类型结构的模块间复用**（两者是同一个 Go struct 的 JSON），
+**不是「接上了 UI」**。
+
+⇒ ⇒ ★★★ 若把 `src/api/` 内部的引用也算进去，批 98 那个模块会被误判成已接线，
+**棘轮门就会给出一个虚假的绿灯**。
+⇒ ⇒ 判据实现里必须 `if (full === API_DIR) continue` 跳过 api 目录本身。
+
+### ★★★★★ 门禁自身要带两条作用面自证
+
+孤儿门与批 98 的「作用面自证」同族（[[量具先自证]]）：
+- `apiModules().length > 50` —— 目录塌缩到 0/1 时必须红，否则「0 个孤儿」是漂亮的假绿；
+- `uiSourceBlob().length > 10000` —— ★ **拼接失败时必须红**。
+  若 `src/api/` 被误跳过成整个 `src`，或 glob 写错导致拼出空串，
+  那么 `currentOrphans()` 会返回全部模块，第一条也会红——
+  ★ **两条自证必须都在**，否则「拼错路径」可能只表现为「孤儿变多」，
+  而那正好会被误读成「有人新增了模块」。
+
+### ★★★★★ 有牙验证：注入一个真孤儿
+
+判据写完立刻注入违规代码（`src/api/__teethProbe.ts`，内容一行 `export const x = 1`）：
+
+```
+FAIL … > ★ 当前孤儿集合与登记清单逐项相同
+AssertionError: expected [ '__teethProbe', …(30) ] to deeply equal [ 'boardOperational', …(29) ]
++   "__teethProbe",
+```
+
+⇒ 新增孤儿立刻红，且**名字直接出现在 diff 里**；移除探针后复跑回到 6/6 绿。
+
+★ 附带一条：棘轮是**双向**的 —— 接上一个孤儿也会红（清单多了一项），
+逼着人手工删那一行。这正是要的：**清单只能变小，每次变小都是一次有记录的收口。**
+
+### 接线过程中撞到的三件事
+
+1. ★★★ **`icon: 'list'` 不在 `IconName` 里。**
+   `AppIcon.vue:8-36` 只有 29 个取值，`list` / `display` / `flex-shrink` 都不在其中
+   ⇒ 抽屉席若写 `list`，`vue-tsc` 立刻报 `Type '"list"' is not assignable to type 'IconName'`。
+   ⇒ ★ 结论同[[用类型门探测非法枚举]]：**类型门不只是「能不能编译」**，
+   它也是「我以为存在的枚举值到底存不存在」的探测器。
+   ⇒ 最终选 `grid`（仓里已有的通用列表图标，已有 7 席在用）。
+2. ★★★★ **测试环境默认落到 `en-US` 词典，中文断言会全红。**
+   `i18n/index.ts:16-24` 的 `detectLocale()` 读 `navigator.language`，
+   jsdom 下不是 `zh` ⇒ 落到 `en-US`。
+   ⇒ 首跑 6 条红，其中 4 条纯粹是「我拿中文标签去断英文渲染」。
+   ⇒ 修法：spec 里 `beforeEach(() => setLocale('zh-CN'))`（`AnnotationsView.spec.ts:150` 是同一惯例）。
+   ⇒ ★★ **断言 i18n 文案之前必须先钉住 locale**，否则红的原因会被误读成「视图没接上」。
+3. ★★★ **视图漏渲染 `request_id`，而我在 spec 里断言了它。**
+   首跑那条红报的是「`req-8f21c0ab` 不在文本里」——
+   查下去是**视图根本没写这个字段**，不是断言写错。
+   ⇒ `request_id` 是把这条修正记录追回那条请求的连接键（本仓有 `/request-journey` 线），
+   **该渲染而不是删断言**。
+   ⇒ ★★★ 顺序很重要：先确认「被断言的东西有没有被实现」，再决定改断言还是改实现——
+   否则很容易把一个**真实缺陷**当成「断言太严」改掉。
+
+### 验证
+
+- 新增判据 **29 条**（`TaskProfileView.spec.ts` 23 + `orphanLedger.spec.ts` 6）全绿。
+- ★ 其中视图判据钉的是**真不变量**，不是快照：两个模块都真的被渲染、
+  空 `description` 走「未知类型」样式、`classifier_confidence` / `profile`
+  为 `null` 时不炸且**不把 `null` 渲染进 DOM**、`tier_source` 枚举外的值原样透出、
+  **单边失败不吞掉另一边**（`Promise.allSettled` 语义）、筛选只影响档案段。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6767 条（166 文件）** rc=0（较上批 6738 正好 +29）。- 十连跑 **10/10 全绿**（`/tmp/co100-stability.log`），终止标记 `总次数 10 · 失败次数 0 · 快照 0 份`，
+  10 次的 `Tests` 行**条数全程一致 = 6767**，无 `×` / `FAIL` 行。
+  ⇒ `ComplianceHitsView.spec.ts` / `RoutingOptView.spec.ts` 两个历史 flaky 本批**未复现**
+  ⇒ ★ 按连跑器自己的口径：**未复现 ≠ 已修复**，只是这次没抓到。
+## 11.137 路由策略配置面接进 UI：第一百零一批（2026-10-08）
+
+### 本批是 §11.136 那个口径修正的第一次执行
+
+孤儿清单里有两个模块正落在用户点名的那两条线上。本批先接 **`routingPolicy`**（路由检查线）。
+
+| 端点 | 档位 | 注册 | 行号 |
+|---|---|---|---|
+| `GET /api/routing/policy` | **superAdmin** | `h.superAdmin(...)` | `admin/handler.go:1200` |
+| `GET /api/routing/featured` | **superAdmin** | `h.superAdmin(...)` | `:1201` |
+| `GET /api/routing/scoring-weights` | **superAdmin** | `h.superAdmin(...)` | `:1215` |
+| `GET /api/routing/featured-models` | **admin** | `admin(...)` | `:1216` |
+
+⇒ ★ **同族三档一档**（本系列第 N 次出现，但这是第一次**同前缀内**三档一档）
+⇒ 抽屉席设 `requiresRole: 'super_admin'` 并同步 `AppDrawer.spec.ts` 的白名单。
+⇒ ★★ **后果**：第 4 个端点是 admin 档（tenant_admin 本可用），
+   在移动端被**顺带收严成 superAdmin**。这是刻意的取舍，
+   理由是「同一页混两档会让『谁能看哪块』不可解释」，已写进视图文件头备查。
+
+### ★★★★★ 本页最要紧的是三处「同形」绝不能渲染成确定结论
+
+前三批做 API 层时记下的契约（`api/routingPolicy.ts` 文件头 (2)(3)(6)），
+在 UI 上**必须**翻译成「说不准」的表达，否则等于凭空造事实：
+
+1. ★★★★★ **`policy` 返 `{}` 是三合一。**`routing.go:2533`
+   `if err != nil || raw == "" { writeJSON(w, 200, map[string]any{}); return }`
+   ⇒ 「没有这一行」「查询失败」「文本为空」**三种都回 HTTP 200 + `{}`**
+   ⇒ 模块层给 `null` ⇒ 视图只能渲染「**无法判定**」，
+   **绝不能写「策略未配置」**（判据里有一条专门断这句话不出现）。
+2. ★★★★★ **`scoring-weights` 的兜底值与真值完全同形。**`getScoringWeights`
+   （`:4026-4055`）在查询失败 / 解析失败 / 缺键三种情况下都返回同一份 `defaultWeights`，
+   响应里**没有任何标记** ⇒ 视图必须把 `note` 原文
+   （`these weights only affect … not live routing`）与兜底告警**常驻显示在数据旁边**。
+3. ★★★★ **`featured_models === []` 时「没配」与「查不出来」同形**（`:2594-2597`
+   只 `slog.Warn` 然后 `models = []`）。
+
+⇒ ⇒ ★★★ **这三条与批 99 的 (3)(8)(9) 是同一个形状**：
+**后端把「查不出来」编码成「什么都没有」**，
+客户端若把它渲染成「没有配置」，就把一个**查询失败**说成了**一个配置事实**。
+⇒ ★ 收进判据的方式也不同：不是校验响应，而是**断言页面里不出现那句错的话**。
+
+### ★★★★ 两个「精选」不是同一个东西，nil 编码还相反
+
+- `featured.featured_models` —— 恒为数组（`COALESCE(featured_models, ARRAY[]::TEXT[])`，`:2591`），
+  查询失败也回空数组；
+- `policy.featured_models` —— `row_to_json` 对可空列输出 **`null`**（`:2560` 附近的列定义）。
+
+⇒ ★★ 两者同名、语义相近（一个是生效列表，一个是原始列），
+**但 nil 编码相反**（`[]` vs `null`）—— 本系列第 N 次「同族不同端点 nil 编码相反」。
+⇒ ⇒ 若把两者混成一个「精选模型」列表，就会把「原始列没配」渲染成「生效列表为空」，
+**这两件事的可操作性完全不同**（一个是配置，一个是读数）。
+⇒ 视图因此分成两段，并加了一句提示把差别写在脸上。
+
+### ★★★ `standardized_name` 恒等于 `name`，只渲染一个
+
+`routing.go:4081-4082` 两个字段都取 `p.CanonicalName`
+⇒ 渲染两遍等于**凭空造出一个「标准化前后」的对照**。
+⇒ 判据用**出现次数**钉住：`w.text().split(name).length - 1 === 1`。
+
+### ★★★ `null` 与 `0` 必须显示成不同的东西
+
+`RoutingPolicyRow` 的 21 个键里 7 个 NOT NULL、14 个「键在但可为 null」。
+⇒ 把 `null` 渲染成 `0` 会**凭空造出「配置为 0」这个事实**
+（而 `local_bonus` 的合法值恰好就是 `0.000` ⇒ 两者会撞在一起）。
+⇒ 视图用 `fieldText()` 显式分三态：`null → 「（空）」`、`"" → 「（空串）」`、其余原样。
+⇒ 判据专门断 `local_bonus` 那一行：**含 `0`、不含「（空）」**。
+
+### 接线过程中撞到的四件事
+
+1. ★★★ **`icon: 'flex'` 又不在 `IconName` 里。**
+   第一百批刚犯过一次（`list`），本批又犯（`flex`）⇒ **`IconName` 那 29 个取值值得单列一张对照表**，
+   否则每次接新页都要靠类型门兜底。两次都被 `vue-tsc` 当场抓住，没有漏到运行时。
+2. ★★★★ **`fetchRoutingFeatured` 一开始是「未使用的 import」。**
+   类型门报 `TS6133` ⇒ 本来打算删。
+   ★★ 但复查后发现它**本来就该用**：`/featured` 是生效列表，`policy.featured_models` 是原始列，
+   两者是不同信息（见上一节）⇒ **该补的是视图，不是删 import。**
+   ⇒ ★★★ 与第一百批那条「`request_id` 缺失」同型：
+   **类型门报的「未使用」不总是「该删」，有时是「该用」。**
+3. ★★★ **两条判据红是因为断言找错了字段名。**
+   模板对两个 NOT NULL 列用的是 **i18n 标签**（`本地加权` / `粘性 TTL`），
+   对 14 个可空列用的是**原始字段名** ⇒ 我按 `local_bonus` 去找当然找不到。
+   ⇒ ★ 修法是**改断言按标签找**，不是改模板；
+   并顺手补了一条断「可空列确实用原始字段名」——
+   ★ 这条混合策略本身是**契约的一部分**（哪列可配、哪列固定），值得被钉住。
+4. ★★ 抽屉白名单是**排序后逐项列出**的 superAdmin 档 key，
+   加一席必须插到正确位置（`routing-audit` 与 `task-index` 之间），否则排序断言红。
+
+### 验证
+
+- 新增判据 **25 条**（`RoutingPolicyView.spec.ts` 24 + 棘轮新增哨兵 1）全绿。
+- ★ 棘轮清单同步删掉 `routingPolicy` 一行 ⇒ 当前孤儿 **30 → 29**。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6792 条（167 文件）** rc=0（较上批 6767 正好 +25）。- 十连跑 **10/10 全绿**（`/tmp/co101-stability.log`），终止标记 `总次数 10 · 失败次数 0 · 快照 0 份`，
+  10 次的 `Tests` 行**条数全程一致 = 6792**，无 `×` / `FAIL` 行。
+  ⇒ `ComplianceHitsView.spec.ts` / `RoutingOptView.spec.ts` 两个历史 flaky 本批**未复现**
+  ⇒ ★ 按连跑器自己的口径：**未复现 ≠ 已修复**，只是这次没抓到。
+## 11.138 两个模块讲同一个端点，而**孤儿那个才是对的**（第一百零二批，2026-10-08）
+
+### ★★★★★★★★ 本批是一次**查账**，不是接线；查出来的是一条线上缺陷
+
+原计划是接线 `nodeHealthTimeline`（孤儿清单里、且正落在用户点名的「节点状态」线上）。
+动手前按惯例先确认它是不是真孤儿 —— 结果发现：
+
+| | `src/api/nodeHealth.ts` | `src/api/nodeHealthTimeline.ts` |
+|---|---|---|
+| 体量 | 115 行 | **453 行** |
+| 导出 | 6 个 | **30+ 个** |
+| 判据文件 | ★ **没有** | `nodeHealthTimeline.test.ts`（27 KB） |
+| 取数方式 | `req<NodeRecoveryTimelineResponse>` **裸强转，零校验** | `req<unknown>` + **`unwrapNodeRecoveryTimeline`** |
+| 被谁引用 | **`NodeHealthView.vue`（线上在跑）** | **没人（孤儿）** |
+
+⇒ 两者打**同一个端点** `/api/admin/node-health/{id}/timeline`。
+⇒ ⇒ ★★★★ **孤儿那个才是对的，被用的那个是裸的。**
+⇒ ⇒ ★★★ 第七十三批那 27 KB 判据，一直挂在一个没人用的模块上。
+
+### ★★★★★ 查出来的线上缺陷：成功的**强制恢复**被渲染成失败徽章
+
+`admin/node_health.go:81-88` 的 `mapProbeRunToEvent` 只产生**三个**值：
+
+```go
+eventType := "failed"
+if row.Success {
+    eventType = "recovered"
+    if row.TriggerKind == "credential_recovery" { eventType = "reconnected" }
+}
+```
+
+⇒ `reconnected` 是 `row.Success` 的**子分支** ⇒ 它是**成功**事件，
+且**只在「强制恢复」触发时出现**（`trigger_kind = 'credential_recovery'`，模块头里的
+`NODE_TIMELINE_FORCE_RECOVERY_TRIGGER` 正是它）。
+
+而 `nodeHealth.ts` 旧实现写的是：
+
+```ts
+return e.event_type === 'recovered' || e.event_type === 'recovery' || e.event_type === 'healthy'
+```
+
+⇒ ★★★★ `recovery` / `healthy` **后端根本不产生**，而真正会出现的 `reconnected` **恰恰漏掉**。
+⇒ ★★★ 后果链：`NodeHealthView.vue:128` 直接 `badge--${eventTone(e)}` ⇒
+**一次成功的强制恢复显示成 warning / danger。**
+⇒ ★★ 为什么没被发现：**这个文件一个判据都没有。**
+
+### ★★★ 同一个错在第三个地方
+
+`credentialHeatmap.test.ts` 里也有 `eventTone` 的用例，用的是
+`'broke'` 与 `'probing'` —— 同样**后端不产生**。
+它们之所以能过，只是因为旧实现对**任意非恢复值**都落进同一分支。
+⇒ 类型门在收窄类型后当场把它们报出来（`TS2322`），改夹具为真值时补了一条 `reconnected` 护栏。
+
+⇒ ★★★★ **同一个端点的 `event_type` 值域，本仓一度有三份互相矛盾的写法**，
+而**被类型门抓住的是唯一没写过判据的那两处**。
+
+### 本批的处理：不是「接线」也不是「删一份」，而是**让薄的去调厚的**
+
+`nodeHealth.ts` 改写成薄适配器：
+- `fetchNodeHealthTimeline` = 本地 id 校验 + `req<unknown>` + **`unwrapNodeRecoveryTimeline`**；
+- `isRecoveryEvent` / `eventTone` 按后端三值重写；
+- 类型改为 re-export 厚的那个模块的；
+- 视图层便利函数（`buildSince` / `credentialIdOf` / 三个常量）**保留** ——
+  `NodeHealthView.vue` 按这些名字引，且厚的那个没有 1:1 对应物（`eventTone` 尤其没有）。
+
+⇒ ★★★ 于是两份**互相矛盾**的契约合并成一份，孤儿也顺带变成被引用者。
+
+### ★★★★ 改这个适配层时，判据当场抓到我自己写的一个错
+
+第一版把 id 转成字符串再传给校验函数：
+
+```ts
+const id = String(Math.trunc(credentialId ?? 0))
+const invalid = nodeTimelineCredentialIdInvalid(id)   // ← 该函数判的是 typeof id !== 'number'
+```
+
+⇒ ★★★★ **每次取数都被本地误拒**，`fetchNodeHealthTimeline(42)` 永远 reject。
+⇒ 是判据 `★ 完整响应被解出` 与另外 10 条当场抓到的。
+⇒ ★★★ 又一次：「复用一个模块的函数」不等于「复用了它的契约」——
+入参类型是契约的一部分，而**跨模块调用时它不会自己跳出来提醒你**。
+
+### ★★★★★ 棘轮门自己也有盲区，而且盲区恰好落在本批要修的那件事上
+
+§11.136 那道门的第一版口径是「**只看直接引用，并跳过整个 `src/api/`**」。
+本批正是靠 **API 层内部的委托**消解副本的 ⇒ 在那个口径下**计数一点不降**。
+
+⇒ ★★★★★ 改成**从 UI 出发的传递可达性**：
+种子 = 被 UI 文件直接 import 的模块，再沿 api 模块之间的 import 边做闭包。
+⇒ 这样 api 内部的互相引用**不会凭空产生可达性**（种子不从那里起，
+第九十九批那个假阳性仍然被挡住），而**真正的委托会被算进去** —— 两个问题一次性解决。
+
+★ 改完立刻发现**量具自己的第二个盲区**：`importsOf` 原来只认 `@/api/<name>`，
+而 **api 模块之间用的是 `./<name>` 相对形式** ⇒ 委托边完全不可见。
+补上相对形式之后，`transport`（经 `client.ts` ⇒ 每个 api 模块都依赖它）
+**一直就是可达的** —— 我第一版把它误报成了孤儿。
+⇒ ⇒ ★★★★ **量具的第一版口径同时有「太宽」和「太窄」两个方向的错**，
+而两者都不会让门变红，只会让它安静地给出错误的清单。
+⇒ 孤儿 **30 → 28**（`nodeHealthTimeline` 与 `transport` 两条修正）。
+
+★ 已加一条**反向护栏**：断言 `turnsFilterOptions` / `storageMigrationState` 仍在孤儿集合里 ——
+若有人把 api 内部互相 import 也当成种子，第九十九批的假阳性就会回来。
+
+### 关于那个跨租户缺陷：本批没有接线，所以**没有把它放到 tenant_admin 面前**
+
+`nodeHealthTimeline.ts` 文件头 (1) 记着：这条端点**完全没有租户过滤**
+（`admin/node_health.go:183-184` 只有 `credential_id` 与 `started_at` 两个条件），
+而注册是 `admin` 档 ⇒ **tenant_admin 能查任意 credential_id 的完整探测时间线**
+（含 `reason_code` 与 `note`）。
+
+⇒ ★★★ 本批把两个模块合并成一份，但**没有新增抽屉席**，
+所以**这个已知缺陷仍然完全未被移动端用户触及** —— 合并是净收益，不是新增暴露面。
+⇒ 若将来要接 UI，席应设 `requiresRole: 'super_admin'`（前端严于后端），
+并把这条限制写在界面上而不是只写在文件头。
+
+### 验证
+
+- 新增判据 **34 条**（`nodeHealth.test.ts`）全绿。
+- ★★★ **有牙验证**：把旧 bug 原样注入回去
+  （`return e.event_type === 'recovered'`），**恰好 3 条转红**且都是 `reconnected` 那三格；
+  还原后回绿。
+- ★★ 顺带把 `credentialHeatmap.test.ts` 的两处假值改成后端真值并补一条护栏。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0 · 全量 **6829 条（168 文件）** rc=0（较上批 6792 正好 +37）。- 十连跑 **10/10 全绿**（`/tmp/co102-stability.log`），终止标记 `总次数 10 · 失败次数 0 · 快照 0 份`，
+  10 次的 `Tests` 行**条数全程一致 = 6829**，无 `×` / `FAIL` 行。
+  ⇒ `ComplianceHitsView.spec.ts` / `RoutingOptView.spec.ts` 两个历史 flaky 本批**未复现**
+  ⇒ ★ 按连跑器自己的口径：**未复现 ≠ 已修复**，只是这次没抓到。
+
+## 11.139 工作类型配置面接进 UI；顺带**推翻本模块自己写的一条契约**（第一百零三批，2026-10-08）
+
+本批把 `api/workTypes.ts`（第九十一批做的，**935 行判据 / 19 条契约**）接进 UI。
+接线本身是机械的 —— 本批真正的产出是**复核时发现那条契约有一条是错的**，
+以及由此引出的第二次「把异常渲染成正常状态」。
+
+### 一、先说结论：被推翻的那条契约
+
+`api/workTypes.ts` 文件头第 (5) 条写着：
+
+> ★★★★★ `model_routes` 有**三态**：键**消失** / `null` / 数组。
+
+★ 复核 `admin/work_types.go` 后判定：**`null` 与 `[]` 后端都产生不出来，只有两态。**
+
+字段是 `json:"model_routes,omitempty"`，而 Go 的 `omitempty` 对 slice 的判定是
+**`len() == 0`** —— 它不区分 nil 与非 nil 的空切片，**空切片同样被省略**。
+两条装配路径都验过：
+
+| 端点 | 装配 | 零行时 | 编码结果 |
+|---|---|---|---|
+| `listWorkTypes` | `out[i].ModelRoutes = routeMap[key]`（`:573`） | `fetchRoutesForKeys` 只在 `rows.Next()` 里 append（`:961`），**没建过条目的 key 取出来是 nil slice** | 省略 |
+| `getWorkType` | `wt.ModelRoutes = routes` | `fetchRoutes` 返回 `make([]modelRoute, 0)`（`:912`），是**非 nil 的空切片** | 省略 |
+
+⇒ ⇒ 后端只有「**键消失**（无路由）/ **非空数组**（有路由）」两态。
+⇒ 那条注释列的三个 bullet **本身就在论证「键消失」**，却把结论写成了三态 ——
+**证据与结论自相矛盾，而结论那一行更有迷惑性，因为它看起来更完整。**
+
+⇒ 与批 90 的 `old_value`（SQL NULL ⇒ 键消失）**同型但成因不同**：
+那条是 NULL，这条是 omitempty 的 `len` 判定。同型意味着处置方式可复用（键存在才校验），
+不同意味着**不能把两条的成因一起记**。
+
+★ 处置：本模块**不改行为**。`:405` 的「存在且非 null 就必须是数组」是**防御**，
+`WorkTypeConfig.model_routes` 的 `| null` 也只为宽容而留；
+改的是**注释**——把「后端产生三态」改成「后端产生两态，另两态是防御性宽容」。
+
+### 二、于是视图里出了一个**真缺陷**：凭空造出两种配置状态
+
+我写的第一版视图照着那条错契约，把三种形态渲染成三种**听起来都很正常**的话：
+
+| 响应 | 第一版渲染 | 应渲染 |
+|---|---|---|
+| 键消失 | 未配置模型路由 | 未配置模型路由 ✅ |
+| 非空数组 | 路由名列表 | 路由名列表 ✅ |
+| `null` | 「配了但为 null」 | ★ **响应异常** |
+| `[]` | 「空数组」 | ★ **响应异常** |
+
+⇒ ★★★ 后两行是**把响应异常讲成了一个正常配置状态**。
+★ 更糟的是**方向反了**：真出现异常时，界面给的是一句平静的描述，没有任何告警。
+
+⇒ ⇒ 与批 101 的 `{}` 三合一、批 90 的兜底权重是**同一个家族**的第三次：
+**后端把「说不清」编码成「什么都没有」，UI 必须说「无法判定」/「异常」，不能替它编一个解释。**
+
+### 三、第二个缺陷：`by_work_type` 为空时给**每一行**都标了「不在统计里」
+
+第一版还有一处同家族缺陷：视图逐行比对 `by_work_type` 的键来标注
+「不在统计里」——而 `by_work_type` 为空时有**三种成因，响应里没有任何标记**：
+
+- `admin/work_types.go:298` 的 `if err == nil { … }` 把 `h.db.Query` 的错误**整个吞掉**，响应仍是 200；
+- 真的一条启用的工作类型都没有；
+- （`:373` 的 `_ = h.db.QueryRow(…).Scan(…)` 连错误变量都没接）
+
+⇒ 第一版在这种情况下给**每一行**标「不在 by_work_type 里」，
+把「**这次查不出来**」说成了「**这一行没有统计**」——
+★ 方向同样反了：异常被渲染成了对每一行的确定性否定结论。
+
+⇒ 修法：`byWorkTypeUnknown = stats !== null && Object.keys(by_work_type).length === 0`，
+命中时**整页给一条「无法判定」**，并且**不再逐行标注**。
+
+### 四、五处不变量与判据
+
+`WorkTypesView.spec.ts` **37 条**，逐条钉住：
+
+| # | 不变量 | 代表用例 |
+|---|---|---|
+| 1 | `model_routes` 两态 + 异常态，且**键缺失 ≠ 异常**（方向相反） | 「键消失**不得**被说成响应异常」/「有路由时**不得**出现未配置」 |
+| 2 | `count_24h` 是派生量，**不给合计** | 「24 小时 7（直接 7 · L1 代理 12）」/「24 小时 12（直接 0 · L1 代理 12）」 |
+| 3 | `by_work_type` 为空 ⇒ **无法判定**，且绝不给每行标 | 「为空时**绝不**给每行标『不在 by_work_type 里』」 |
+| 4 | `omitempty` 键缺失 ≠ 空值 | 「键整个不存在时不出现该提示」/「空 tags 数组不渲染成标签行」 |
+| 5 | 单边失败不吞另外两边 | 「configs 失败时 stats 与 L1 仍然渲染」 |
+
+★ 判据 (1) 与 (3) 的**区分格方向相反**（一个「有 vs 没有」、一个「空 vs 非空」），
+这是本系列的老规矩：**方向相同的两条会抢同一格**。
+
+★★ 另外注意 (3) 里还钉了一条**反向**边界：
+`stats` **整体失败**时**不出现**「无法判定」——
+「没有数据」与「有数据但说不清」是两件事，混起来就是把二义变成新的二义。
+
+### 五、权限：整族是 `h.superAdmin`，与批 90 同前缀邻域、档位相反
+
+`admin/handler.go:1433-1434`：
+
+```go
+wtH := NewWorkTypeHandlers(h.db)
+wtH.RegisterWorkTypeRoutes(mux, h.superAdmin)   // ← 不是 h.admin
+```
+
+⇒ 四条 GET 全挂这一个中间件 ⇒ **tenant_admin 直接 403**
+⇒ 抽屉席 `work-types` 设 `requiresRole: 'super_admin'`，
+并同步 `AppDrawer.spec.ts` 白名单（插在 `'tenants'` 之后）。
+
+★ ★★ **这正是「不能按前缀判权限」的第二例**：
+批 90 的 `platformSettings` 与本族**同前缀邻域**（都在 `/api/admin/` 下、都在 settings 面），
+却是 `h.admin` 档。照抄那一席会让 tenant_admin 点进去吃 403；
+反过来照抄本席去改 settings 则会把 admin 档页面误伤掉。
+⇒ 唯一可靠的依据是**可执行注册处传入的中间件**。
+
+★ 判据分两条把守，缺一不可：
+`AppDrawer.spec.ts` 白名单断言「被挡的恰好是这 27 项」，
+`orphanLedger.spec.ts` 哨兵断言「`workTypes` 已不在孤儿里」——
+**权限档位错**与**根本没接线**是两种不同的坏，只有两条都绿才算接对了。
+
+### 六、孤儿 28 → 27
+
+`workTypes` 接线后从 `orphanLedger.spec.ts` 的 `KNOWN_ORPHANS` 删掉一行，
+并加一条哨兵。⇒ 孤儿 **28 → 27**。
+
+★ 清单文件头里那句「30 个」是第一百批当时的实测记录，**没有去改** ——
+改它就把「那一刻真实是多少」这条信息抹掉了。改为加一节现况更正 + 一条逐项对拍断言。
+
+### 七、验证
+
+- 新增判据 **37 条**（`WorkTypesView.spec.ts`）全绿；`orphanLedger.spec.ts` 9 → 10 条。
+- ★★★ **变异 11/11 全有牙**（`/tmp/mut-co103.mjs`，报告 `/tmp/co103-mut-report.json`）：
+  每条带可 grep 标记 `CO103M1…M11`，还原用 `writeFileSync` 原始字节 +
+  **md5 前后逐字节一致**（`3d56a5d7…`），**未用 `git checkout --`**。
+  变异覆盖：null/空数组降级成正常状态、去掉 `byWorkTypeUnknown` 守卫、
+  `omitempty` 键无条件渲染、`allSettled` 换成 `all`、三态塌缩成一律未配置、删掉 null 分支。
+  ★ M7 与 M10 各转红 6 条（塌缩型变异会波及多格），属预期。
+- ★ `vue-tsc` 当场抓到两处**自写错误**：
+  ① 视图里写 `r.model` —— `ModelRoute` **没有** `model` 字段（真字段是 `canonical_name`）；
+  ② `'model_routes' in c` 对可选属性**不做收窄**（TS18048），
+     必须先读成局部量再判 `undefined`。
+  ⇒ ★★ **类型门第三次当探测器用**：前两批抓的是不存在的枚举值，这次抓的是**不存在的字段名**
+  与**无效的收窄写法**。
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0
+- 全量 **6867 条（169 文件）** rc=0（较上批 6829 正好 +38 = 37 新增 + 1 哨兵；文件 168 → 169）。
+- 十连跑 **10/10 全绿**（`/tmp/co103-stability.log`），终止标记 `总次数 10 · 失败次数 0 · 快照 0 份`，
+  10 次的 `Tests` 行**条数全程一致 = 6867**，`×` 与 `FAIL` 各 0 行。
+  ⇒ `ComplianceHitsView.spec.ts` / `RoutingOptView.spec.ts` 两个历史 flaky 本批**仍未复现**
+  ⇒ ★ 按连跑器自己的口径：**未复现 ≠ 已修复**，只是这次又没抓到。
+
+### 八、本批顺手分诊但**不合并**的那一个副本
+
+孤儿清单里还有一对同端点副本：**`boardOperational`（464 行 / 42 导出 / 有判据 / 键+类型都校验）**
+↔ **`dashboardBoard`（271 行 / 28 导出 / 有判据 / **只校键不校类型** / 还含 `error-drill` 端点）**。
+
+★ 两者响应键契约一致，孤儿那个只是更严。**本批仍然不合并**，理由与批 102 **方向相反**：
+
+- 批 102 是「孤儿那个更严、更全」⇒ 接上它**增加**覆盖，是净收益；
+- 本批若把更严的接到线上，会让**原本不抛错的路径开始抛错** ——
+  `dashboardBoard` 现在只校键，某个键类型异常的响应能渲染出来，
+  换成 `boardOperational` 就会抛 ⇒ **回归风险**。
+
+⇒ ★★★★ **「孤儿那个是对的」不能推广成「孤儿总是对的」。**
+处置是否正确，取决于**换过去会不会把原本能过的路径变成不能过**。
+⇒ 待办不是「合并」，而是**先查清楚 `dashboardBoard` 不校类型是因为不需要，还是因为漏了**。
+## 11.140 一次跨租户的数据泄漏，以及「恒真判据」第二次现形（第一百零四批，2026-10-08）
+
+本批的起点是上一批欠下的一个待查问题：孤儿模块 `boardOperational` 与在用模块
+`dashboardBoard` 打同一个端点，前者更严、后者在校验上有缺口，
+**该合并还是该删？** 查下去发现的不是「该不该合并」，而是**一条已经上线的跨租户泄漏**。
+
+### 一、待查问题的答案：`dashboardBoard` 不校类型，是**漏了**，而且漏得比想的具体
+
+`unwrapOperational` 原来只做四件事：顶层是裸对象、拒掉 dashboardapi 信封、
+四级 `k in` 查键、直接 `as` 强转返回。**一条类型校验都没有。**
+
+★ 而且漏的方式比「少写了校验」更糟 —— 三级子对象在 `k in x` **之前没有对象守卫**：
+
+```ts
+const bg = d.background_tasks as Record<string, unknown>
+const bgMissing = OPERATIONAL_BG_KEYS.filter((k) => !(k in bg))   // ← bg 是 null 时？
+```
+
+`'a' in null` 在 JS 里抛的是 `TypeError: Cannot use 'in' operator to search for 'a' in null`
+—— **不是本模块的契约错误**。⇒ 调用方拿到的是一个无法归因的栈，
+线上排查时连**是哪一层**坏的都定位不到，而消息里没有任何 `where`。
+
+⇒ 本批补 `requireObject(v, where)`，四级子对象（`background_tasks` / `discovery` /
+`selfcheck` / `probe_loop`）全部先过守卫，消息带层级名。
+
+★ 判据必须区分「抛出的是契约错误」与「抛出的是 TypeError」——
+**两者都叫「抛错了」**，只写 `expect(...).toThrow()` 等于没判。
+所以每条形状用例都先断言 `constructor.name !== 'TypeError'` 且 `message` 不含 `in operator`。
+
+### 二、真正的产出：跨租户泄漏，而且**已经上线**
+
+`operational` 整段的三个子查询**都不按调用方租户过滤**（逐条复核 `admin/dashboard_board_aux.go`）：
+
+| 子查询 | 过滤条件 | 出处 |
+|---|---|---|
+| `model_discovery_runs` | **硬编码 `tenant_id = 'default'`** | `:32` |
+| `credential_health_checks` | **完全没有 WHERE**（全租户合计） | `:52-56` |
+| `self_check_runs` | **只按时间，没有 tenant 条件** | `:83-89` |
+
+而注册是 `admin(...)` 档（`admin/handler.go:1068`）⇒ **tenant_admin 够得着**。
+移动端 `DashboardOpsView.vue` 确实渲染了这三个数字
+（`checks_last_10m` 那行的注释甚至已经写清了它的 Go 零值语义，却没写租户口径）：
+
+```html
+<dd>{{ operational.background_tasks.probe_loop.checks_last_10m }}</dd>
+```
+
+⇒ ⇒ 在多租户部署下，一个**非 default 租户**的 tenant_admin 打开移动端这一页，
+看到的是**别的租户**的 discovery 状态、**全租户合计**的凭据健康检查次数
+与 self-check 成功率。★ 而这一段**没有** `requiresRole`（整页是 admin 档）。
+
+★★ 这是本仓**第三次**「不按调用方隔离 + admin 档」的组合
+（第六十六批 data-lifecycle `metrics`、第七十三批 node-health、本条）。
+
+#### 知识为什么会在孤儿文件里
+
+★ 这条契约**只记在 `boardOperational.ts` 的文件头里** —— 那个没人调用的模块。
+在用的 `dashboardBoard.ts` 完全没有记。
+
+⇒ ⇒ ★★★★ **「严谨的那份恰恰是没人看的那份」是这类重复模块最隐蔽的代价**：
+两边的差异不只是「谁更全」，还包括**谁掌握了别人不知道的事实**。
+⇒ 本批把契约**搬进在用的模块**，并在孤儿文件头部加交叉引用，
+说明「知识已搬家」与「为何仍不合并」。
+
+### 三、前端处置：整段只给 `super_admin`，并常驻披露
+
+**门控**（两道断言钉住方向）：
+
+- `<section v-if="operationalVisible">` —— 段本身只对 `super_admin` 渲染；
+- `operationalVisible = auth.role === 'super_admin'` —— **role 为空（未 hydrate）按最严处理**。
+
+**披露**：`crossTenant` 一句**常驻**在段内，**加载前就在**。
+
+⇒ ★★★ 「常驻」是必须的：若把它放进 `v-if="operational"` 里，
+就变成「**有数据才提示跨租户**」—— 而用户恰恰是**因为看到数字**才会误以为那是自己的。
+⇒ 判据里专门有一条盯这个（`V4` 变异：把披露挪进数据块内 ⇒ 转红）。
+
+⚠️ ★★★ **这不是把后端修好了。** 后端该给三条查询加 tenant 条件。
+移动端能做的只是不替它兜底；**任何绕过前端直接调端点的调用方仍然拿得到全租户数据**。
+⇒ 这一条写进了模块文件头与 `load()` 上方的注释，不是只写在本节里。
+
+#### 只挡这一段，不一锅端
+
+其余八段（会话总览 / 趋势 / 健康度 / 活跃 / 模块统计 / 错误 / 性能 / 下钻）的租户口径
+与本段**不同**，不能连坐。
+⇒ 判据「admin 档页面不受影响」逐个点名八个标题。
+★ 对应变异 `V6`：把**页面根节点**也门控上 ⇒ 该条立刻转红。
+
+### 四、孤儿为什么不合并：理由**变了**
+
+上一批记的是「孤儿那个更严，接上去会更严 ⇒ 风险方向与批 102 相反」。
+
+★ 本批补齐类型校验与对象守卫后，**「更严」在能力上已不再是理由** ——
+两边现在都校键、都校类型、都过形状守卫。
+
+⇒ ⇒ 剩下的**唯一**理由是风险方向本身：
+换过去会改变在用路径的**失败行为**，而这需要先查清
+`boardOperational` 那 22 个独有判据与常量（`BOARD_OPERATIONAL_CACHE_TTL_MS`、
+`BOARD_OPERATIONAL_QUERY_TIMEOUT_MS`、`INCLUDE_OPERATIONAL_PARAM` 等）
+**是否仍然成立**。⇒ 这仍是一个**待查问题**，不是一次合并决定。
+
+### 五、★★ 「恒真判据」第二次现形：一道我亲手造的、永远绿的判据
+
+第一版我在 `load()` 里加了第二道取数屏障：
+
+```ts
+if (section === 'operational' && !operationalVisible.value) return
+```
+
+并配了一条判据：`expect(operationalMock).not.toHaveBeenCalled()`（tenant_admin 下）。
+
+**变异 `V2` 把它删掉 ⇒ 一条没红。**
+
+⇒ 查因：`load('operational')` 的**唯一**触发器是那一段里的加载按钮，
+按钮随 `v-if` 一起不存在了；本组件也**没有 `onMounted` 自动加载**（实测确认）。
+⇒ ⇒ ★★★★★★ **那个分支可证是死代码，那条判据可证是恒真的。**
+它绿不是因为有人在管，而是因为**没人能触发它**。
+
+⇒ ★★ 处置选择：**删掉死代码，不补用例去迁就它。**
+理由不是「少写点代码」，而是**留着它 + 留一条恒真判据，比没有更坏** ——
+它会让人以为这一段有第二道防线，将来有人把 `v-if` 改掉时会以为「反正还有 load 守卫」。
+
+⇒ 换成**结构性**判据：tenant_admin 下加载按钮恰好 **8** 个、super_admin 恰好 **9** 个。
+★ 必须两侧**不等**才构成约束 —— 只断「≤ 9」的话，把整段删掉也会绿。
+
+★★★ 换完立刻见效：新增变异 `V7`（`v-if` → `v-show`）把这条判据打红 ——
+`v-show` 下元素**仍在 DOM 里、按钮仍可点**，`v-if` 版本的「看不到」断言靠的是
+「元素不存在」，而这正是**数据落进内存的泄漏场景**。
+⇒ ⇒ **判别动作：把变异设计成「攻击者会用的那个近似写法」，而不是「随便改错」。**
+
+★ 同族：[[恒真判据]] · [[量具先自证]] · [[有牙也要验可达性]] · [[判据全绿 ≠ 夹具是真的]]。
+
+### 六、`V6` 的教训：我第一版把变异**写错了**，不是判据没牙
+
+`V6` 最初写成「撤掉 operational 那一段的 `v-if`」，却期待「整页不受影响」那条转红 ——
+它当然不会红，因为那条防的是**连坐**，而我只改了一段。
+
+★ ⇒ **打偏的变异与没牙的判据在读数上同形**（都表现为「预期用例没红」）。
+⇒ 判别动作：**先看这一条变异实际让哪几条红了**，再判断是工装问题还是判据问题。
+本例里另外两条 tenant_admin 用例确实红了 ⇒ 变异**生效了、只是打错了地方** ⇒ 改工装。
+
+### 七、验证
+
+- `dashboardBoard.test.ts` **27 → 42 条**（静态 `it(` 27 → 40，另有 1 条写在 `forEach` 里
+  展开成 3 个用例，故 vitest 报 42）；`DashboardOpsView.spec.ts` **40 → 49 条**
+  ⇒ 合计 **+24**，与全量读数 6867 → **6891** 对得上。
+- ★★★ **变异 13/13 全有牙**（`/tmp/mut-co104.mjs`，标记 `CO104V1/V3/V4/V5/V6/V7` 与
+  `CO104A1…A7`，还原 md5 逐字节一致，**未用 `git checkout --`**）。
+  其中 `V6`/`V7` 是**第二轮补的**（第一轮是 11/13，两条没打中）。
+- ★ `vue-tsc` 抓到判据里一处 `readonly` 元组传 `arrayContaining`（TS2345）
+- 三门 rc=0 · `vue-tsc` rc=0 · `build` rc=0
+- 全量 **6891 条（169 文件）** rc=0（较上批 6867 正好 +24，与上面两条判据文件的增量对得上）
+- 十连跑 **10/10 全绿**（`/tmp/co104-stability.log`），终止标记 `总次数 10 · 失败次数 0 · 快照 0 份`，
+  10 次的 `Tests` 行**条数全程一致 = 6891**。
+  ⇒ `ComplianceHitsView.spec.ts` / `RoutingOptView.spec.ts` 两个历史 flaky 本批**仍未复现**
+  ⇒ ★ 按连跑器自己的口径：**未复现 ≠ 已修复**。
+
+### 八、本批与用户目标的关系
+
+用户关注的是「各个凭据节点的检查、路由检查及节点状态的修改与强制恢复」。
+
+★ 本批收口的正是**凭据节点检查链路上的一环**：`credential_health_checks` 的计数
+是移动端已展示的凭据健康度信号，而它**数的是全租户**。
+⇒ 也就是说，在本批之前，移动端上那个「10 分钟检查数」**从来就不是本租户的数字**，
+而界面上没有任何提示。

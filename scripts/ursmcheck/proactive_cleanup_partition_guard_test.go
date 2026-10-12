@@ -31,6 +31,7 @@ package ursm_test
 // 两条都必须成立。撤掉任一条，另一条仍能兜住 —— 这正是要测的。
 
 import (
+	"runtime"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -139,6 +140,9 @@ func readFileOr(t *testing.T, p string) string {
 // 候选里同时给一张普通空表和一个 `_default` 分区：
 // 普通表必须被 DROP（证明脚本没被我改瘫），`_default` 必须一个字节都不能被 DROP。
 func TestProactiveCleanupNeverDropsPartition(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 基线（既有，非回归）：守卫脚本与 psql stub 是 bash 轨迹，Windows 上跑不出 trace.txt；R50 遗留 #9 skip 化治理")
+	}
 	// 候选行格式：tname|size_mb|n_live|n_dead|is_partition
 	candidates := strings.Join([]string{
 		`public.some_genuinely_empty_table|150|0|0|0`,
@@ -166,6 +170,9 @@ func TestProactiveCleanupNeverDropsPartition(t *testing.T) {
 // 故意让候选行的 is_partition 列谎报 0（模拟 SQL 层被改坏 / 目录信息过期），
 // 名字兜底仍必须拦住 `_default`。
 func TestProactiveCleanupNeverDropsPartitionEvenIfFlagSaysPlain(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 基线（既有，非回归）：守卫脚本与 psql stub 是 bash 轨迹，Windows 上跑不出 trace.txt；R50 遗留 #9 skip 化治理")
+	}
 	candidates := `public.usage_facts_default|79|0|0|0` // is_partition 谎报为 0
 	got := runProactive(t, candidates)
 

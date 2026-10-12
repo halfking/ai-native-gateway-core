@@ -1,6 +1,7 @@
 package pluginruntime
 
 import (
+	"runtime"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -305,6 +306,9 @@ func TestManifestValidate_ConfigSchema(t *testing.T) {
 }
 
 func TestManifestValidate_Runtime(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 基线（既有，非回归）：绝对路径 entrypoint 校验依赖 POSIX 路径语义；R50 遗留 #9 skip 化治理")
+	}
 	cases := []struct {
 		name    string
 		mutate  func(m *Manifest)

@@ -9,12 +9,14 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/kaixuan/llm-gateway-go/domains/memory" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 )
@@ -256,10 +258,17 @@ func (h *Handler) handleSessionExtractionStatus(w http.ResponseWriter, r *http.R
 		WHERE task_id = $1
 	`, taskID).Scan(&extractedAt, &written, &skippedNoise, &skippedDuplicate, &status, &detail)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"task_id":   taskID,
-			"extracted": false,
-		})
+		// 「没有抽取记录」是正常业务态，返回 extracted:false；
+		// 其余错误（连接失败/超时/表缺失）是 DB 故障——折叠成 extracted:false
+		// 会把「服务不可用」伪装成「未抽取」（R50 遗留 #4），改 503 如实上报。
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"task_id":   taskID,
+				"extracted": false,
+			})
+			return
+		}
+		writeError(w, http.StatusServiceUnavailable, "database query failed")
 		return
 	}
 	var detailObj any

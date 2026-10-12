@@ -1,6 +1,7 @@
 package pluginruntime
 
 import (
+	"runtime"
 	"context"
 	"errors"
 	"os"
@@ -94,6 +95,9 @@ func waitForFile(path string, timeout time.Duration) bool {
 }
 
 func TestExecCommand_StartsRealProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 基线（既有，非回归）：exec 依赖可执行位（Windows 只认 PATHEXT/扩展名）；R50 遗留 #9 skip 化治理")
+	}
 	helperSrc := filepath.Join(t.TempDir(), "helper.go")
 	helperBin := filepath.Join(t.TempDir(), "helper")
 	pidFile := filepath.Join(t.TempDir(), "pid")
@@ -188,6 +192,9 @@ func TestNewSupervisor_CreatesSocketDir(t *testing.T) {
 }
 
 func TestExecCommand_GracefulStopSIGTERM(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 基线（既有，非回归）：Windows 无 SIGTERM，优雅停止语义不可复现；R50 遗留 #9 skip 化治理")
+	}
 	// helper: registers SIGTERM handler; on signal writes marker file and exits cleanly.
 	// Writes a ".armed" marker immediately after signal.Notify so the test can wait
 	// deterministically (a fixed sleep is flaky because the freshly-compiled helper

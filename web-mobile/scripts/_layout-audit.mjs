@@ -429,6 +429,41 @@ const MIN_TAP_H = 48 // 本仓 R1：新增触控控件一律 ≥48 CSS px。与 
     s = s.replace(UNIT_RE, '')
     return /^\d+(\.\d+)?$/.test(s)
   }
+  // 真实可见内容：**逐字符取几何，看哪些字符真的被绘制**。
+  // 为什么不用「从第 0 个字符起能放几个」那种 LTR 算法：
+  //   名称列为了保住末尾的区分字符用了 `direction: rtl`（§4.6.76），
+  //   此时溢出边在**行首**，可见的是**后缀**。LTR 算法会量出一个从未显示过的串，
+  //   于是判据报出一个**已经不存在**的碰撞 —— 假阳性。
+  //   逐字符取 Range 矩形、落在盒子内的才算绘制、再按 (top,left) 排视觉顺序，
+  //   对 ltr / rtl / 换行都成立，**不预设方向**。
+  // 成本护栏：只对**已判定截断**的标识符量，且单条超过 CAP 个字符就不量。
+  const VISIBLE_CAP = 40
+  const visiblePrefix = (el) => {
+    const node = [...el.childNodes].find((n) => n.nodeType === 3 && n.textContent.trim())
+    if (!node) return null
+    const full = node.textContent
+    if (full.length > VISIBLE_CAP) return null
+    const box = el.getBoundingClientRect()
+    const cs = getComputedStyle(el)
+    const r = document.createRange()
+    const painted = []
+    for (let i = 0; i < full.length; i++) {
+      r.setStart(node, i); r.setEnd(node, i + 1)
+      const b = r.getBoundingClientRect()
+      if (b.width === 0 && b.height === 0) continue
+      if (b.right > box.left + 0.5 && b.left < box.right - 0.5 &&
+          b.bottom > box.top + 0.5 && b.top < box.bottom - 0.5) {
+        painted.push({ i, left: b.left, top: b.top })
+      }
+    }
+    if (!painted.length) return null
+    const ordered = painted.sort((a, b) => (a.top - b.top) || (a.left - b.left)).map((c) => full[c.i]).join('')
+    const cut = painted.length < full.trimEnd().length
+    const ell = cut && cs.textOverflow === 'ellipsis'
+    const shown = (ell && cs.direction === 'rtl' ? '…' : '') + ordered +
+                  (ell && cs.direction !== 'rtl' ? '…' : '')
+    return { full, shown }
+  }
   const truncated = []
   document.querySelectorAll('body *').forEach((el) => {
     if (el.children.length > 0) return          // 只看叶子，避免同一处截断被父子各报一次
@@ -445,7 +480,8 @@ const MIN_TAP_H = 48 // 本仓 R1：新增触控控件一律 ≥48 CSS px。与 
     const ratio = over / el.scrollWidth          // 被吃掉的比例
     truncated.push({ sel: path(el), text: txt.slice(0, 24), over, bucket,
                      ratio: +ratio.toFixed(2),
-                     clientW: el.clientWidth, scrollW: el.scrollWidth })
+                     clientW: el.clientWidth, scrollW: el.scrollWidth,
+                     visible: bucket === 'label' ? visiblePrefix(el) : null })
   })
   I.stats.textTruncated = truncated.length
   I.stats.textTruncatedMetric = truncated.filter((x) => x.bucket === 'metric').length
@@ -471,6 +507,43 @@ const MIN_TAP_H = 48 // 本仓 R1：新增触控控件一律 ≥48 CSS px。与 
               'px（吃掉 ' + Math.round(w.ratio * 100) + '%），槽宽 ' +
               w.clientW + 'px / 需要 ' + w.scrollW + 'px',
       items: labels.slice(0, 8) })
+  }
+
+  // ★★ 同一列表内**两个不同名字截断后显示成同一串** ⇒ 用户无法区分（§4.6.76）。
+  // 逐条判「可见不足一半」看不见这个失效：两个名字可以各自都可见过半，
+  // 却因为区分字符在**末尾**、被截断掉，而变成同一串。
+  // 分组键去掉 `:nth-of-type(n)` ⇒ 只在**同一个容器**内两两比较。
+  // 同名重复不算（`Set` 去重后长度为 1 ⇒ 那不是「无法区分」，是「确实一样」）。
+  const collide = []
+  {
+    const byContainer = new Map()
+    for (const x of labels) {
+      if (!x.visible) continue
+      const c = String(x.sel || '').replace(/:nth-of-type\(\d+\)/g, '')
+      if (!byContainer.has(c)) byContainer.set(c, [])
+      byContainer.get(c).push(x)
+    }
+    for (const [c, xs] of byContainer) {
+      const byShown = new Map()
+      for (const x of xs) {
+        const k = x.visible.shown
+        if (!byShown.has(k)) byShown.set(k, [])
+        byShown.get(k).push(x)
+      }
+      for (const [shown, ys] of byShown) {
+        const names = [...new Set(ys.map((y) => y.visible.full))]
+        if (ys.length > 1 && names.length > 1) collide.push({ shown, names, sel: ys[0].sel })
+      }
+    }
+  }
+  if (collide.length) {
+    const c = collide[0]
+    I.issues.push({ kind: 'text-truncated', sev: 'medium',
+      detail: collide.length + ' 组**标识符截断后显示为同一串**（原名不同 ⇒ 用户无法区分）：' +
+              '最重一组 ' + c.names.join(' / ') + ' 都显示为「' + c.shown + '」' +
+              '（区分字符在末尾、被截断掉；每一条单独看都还「可见过半」，' +
+              '所以逐条判可见比例的判据看不见它）',
+      items: collide.slice(0, 8).map((x) => ({ text: x.names.join(' / '), shown: x.shown, sel: x.sel })) })
   }
 
   // ── ⑧ 字体没加载出来（回退字形 = 版式整体偏移）────────────────

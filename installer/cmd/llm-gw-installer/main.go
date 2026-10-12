@@ -804,6 +804,9 @@ var credentialModelIndexLatestBucketIdx842 []byte
 //go:embed embeddata/startup/843_candidate_failure_logs_ts_desc_idx.sql
 var candidateFailureLogsTsDescIdx843 []byte
 
+//go:embed embeddata/startup/844_supplier_view_cache_baseline_columns.sql
+var supplierViewCacheBaselineColumns844 []byte
+
 //go:embed embeddata/startup/829_bodies_columnar_rollback.sql
 var bodiesColumnarRollback829 []byte
 
@@ -1058,6 +1061,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/841_monthly_partition_retention.sql":                                    monthlyPartitionRetention841,
 	"startup/842_credential_model_index_latest_bucket_idx.sql":                       credentialModelIndexLatestBucketIdx842,
 	"startup/843_candidate_failure_logs_ts_desc_idx.sql":                             candidateFailureLogsTsDescIdx843,
+	"startup/844_supplier_view_cache_baseline_columns.sql":                           supplierViewCacheBaselineColumns844,
 	"startup/829_bodies_columnar_rollback.sql":                                       bodiesColumnarRollback829,
 	"startup/835_modality_verify_probe_ledger.sql":                                   modalityVerifyProbeLedger835,
 	"startup/834_supplier_errors_base_tables.sql":                                    supplierErrorsBaseTables834,

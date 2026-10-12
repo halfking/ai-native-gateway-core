@@ -639,6 +639,24 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'cs.title', requiresAuth: true },
   },
   {
+    path: '/task-profile',
+    name: 'task-profile',
+    component: () => import('@/views/TaskProfileView.vue'),
+    meta: { titleKey: 'tp.title', requiresAuth: true },
+  },
+  {
+    path: '/routing-policy',
+    name: 'routing-policy',
+    component: () => import('@/views/RoutingPolicyView.vue'),
+    meta: { titleKey: 'rp.title', requiresAuth: true },
+  },
+  {
+    path: '/work-types',
+    name: 'work-types',
+    component: () => import('@/views/WorkTypesView.vue'),
+    meta: { titleKey: 'wt.title', requiresAuth: true },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),
