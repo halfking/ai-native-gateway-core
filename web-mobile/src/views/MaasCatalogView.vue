@@ -287,12 +287,12 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.mp__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.mp__panel { background: var(--app-surface); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .mp__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .mp__label { display: block; font-size: 12px; color: var(--app-text-muted); margin-bottom: 4px; }
 /* ★ R1：新增交互控件 ≥48 CSS px */
 .mp__input { width: 100%; min-height: 48px; padding: 0 12px; font-size: 14px;
-  border: 1px solid var(--border, #ddd); border-radius: 8px; background: transparent; color: inherit; }
+  border: 1px solid var(--app-border); border-radius: 8px; background: transparent; color: inherit; }
 
 .mp__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
 .mp__msg--err { color: var(--app-danger); }
@@ -305,7 +305,7 @@ onBeforeUnmount(() => {
 .mp__cell-v { font-size: 14px; font-weight: 600; }
 
 .mp__list { list-style: none; margin: 0; padding: 0; }
-.mp__item { padding: 10px 0; border-top: 1px solid var(--border, #eee); }
+.mp__item { padding: 10px 0; border-top: 1px solid var(--app-border); }
 .mp__item-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .mp__title { font-size: 14px; font-weight: 600; }
 .mp__id { font-size: 12px; color: var(--app-text-secondary); }
@@ -316,7 +316,7 @@ onBeforeUnmount(() => {
 
 .mp__table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
 .mp__table th { text-align: left; font-weight: 500; color: var(--app-text-muted); font-size: 11px;
-  border-bottom: 1px solid var(--border, #eee); padding: 4px 2px; }
+  border-bottom: 1px solid var(--app-border); padding: 4px 2px; }
 .mp__table td { padding: 4px 2px; vertical-align: middle; }
 .mp__td-l { color: var(--app-text-secondary); white-space: nowrap; }
 .mp__td-v { font-weight: 600; text-align: right; }

@@ -433,7 +433,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.mdt__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.mdt__panel { background: var(--app-surface); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .mdt__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .mdt__sub { display: block; font-size: 12px; font-weight: 600; color: var(--app-text-secondary); margin: 10px 0 4px; }
 .mdt__head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
@@ -452,9 +452,9 @@ onBeforeUnmount(() => {
 .mdt__cell-l { font-size: 11px; color: var(--app-text-muted); }
 .mdt__cell-v { font-size: 14px; font-weight: 600; word-break: break-all; }
 .mdt__list { list-style: none; margin: 0; padding: 0; }
-.mdt__row { display: flex; flex-direction: column; gap: 2px; padding: 8px 0; border-top: 1px solid var(--border, #eee); }
+.mdt__row { display: flex; flex-direction: column; gap: 2px; padding: 8px 0; border-top: 1px solid var(--app-border); }
 .mdt__tags { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
-.mdt__chip { font-size: 11px; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--border, #ddd);
+.mdt__chip { font-size: 11px; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--app-border);
   display: inline-block; }
 .mdt__chip--danger { color: var(--app-danger); border-color: var(--app-danger); }
 .mdt__chip--warning { color: var(--app-warning); border-color: var(--app-warning); }

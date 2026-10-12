@@ -1546,7 +1546,10 @@ func runCredentialDecisions(ctx context.Context, db pgxQueryer, p credentialDeci
 	args = append(args, p.Limit)
 
 	q := fmt.Sprintf(`
-		SELECT rdl.ts, rdl.request_id::text, rdl.model, rdl.tier, rdl.success,
+		-- request_id 规范化成 32-hex（与 request_logs / request_state_transitions 一致，
+		-- §4.6.66 D-RL-01）：uuid 列的 ::text 带连字符，消费侧按 text 精确匹配必然落空。
+		SELECT rdl.ts, replace(rdl.request_id::text, '-', '') AS request_id,
+		       rdl.model, rdl.tier, rdl.success,
 		       rdl.latency_ms, rdl.error_class, rdl.chosen_provider_id,
 		       rdl.client_model, rdl.outbound_model, rdl.sticky_hit
 		FROM routing_decision_log rdl

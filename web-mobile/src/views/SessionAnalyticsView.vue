@@ -328,7 +328,7 @@ void load()
 
 <style scoped>
 .sa__panel {
-  background: var(--surface, #fff);
+  background: var(--app-surface);
   border-radius: 12px;
   padding: 12px;
   margin-bottom: 12px;
@@ -361,14 +361,14 @@ void load()
   min-width: 48px;
   padding: 0 14px;
   border-radius: 8px;
-  border: 1px solid var(--border, #ddd);
+  border: 1px solid var(--app-border);
   background: transparent;
   font-size: 13px;
 }
-.sa__chip--on { background: var(--app-primary); color: #fff; border-color: transparent; }
+.sa__chip--on { background: var(--app-primary); color: var(--app-on-primary); border-color: transparent; }
 
 .sa__list { list-style: none; margin: 0; padding: 0; }
-.sa__item { padding: 10px 0; border-top: 1px solid var(--border, #eee); }
+.sa__item { padding: 10px 0; border-top: 1px solid var(--app-border); }
 .sa__item-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .sa__title { font-size: 12px; color: var(--app-text-muted); }
 .sa__id { font-size: 14px; font-weight: 600; word-break: break-all; }
@@ -391,7 +391,7 @@ void load()
   min-width: 64px;
   padding: 0 16px;
   border-radius: 8px;
-  border: 1px solid var(--border, #ddd);
+  border: 1px solid var(--app-border);
   background: transparent;
   font-size: 13px;
 }

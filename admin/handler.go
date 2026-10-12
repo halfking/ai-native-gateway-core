@@ -198,6 +198,9 @@ type Handler struct {
 	reportRollupWorker interface {
 		RollupDateDetached(day time.Time) (reportrollup.RollupStats, error)
 	}
+	// statsMinuteRebuilder 看板分钟统计表的历史回填 worker
+	// （/api/admin/dashboard/rollup/rebuild 用）。
+	statsMinuteRebuilder statsRebuildWorker
 	// memoraClient provides connectivity status for the admin UI.
 	// Structural interface avoids importing the memora package directly.
 	memoraClient interface {
@@ -1067,6 +1070,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/report-rollup/", h.superAdmin(h.handleReportRollup))
 	mux.HandleFunc("/api/admin/dashboard/operational", admin(h.handleDashboardOperational))
 	mux.HandleFunc("/api/admin/dashboard/board/error-drill", admin(h.handleDashboardBoardErrorDrill))
+	// superAdmin：重写全租户的分钟聚合存量（探测排除的历史回填）。
+	mux.HandleFunc("/api/admin/dashboard/rollup/rebuild", h.superAdmin(h.handleDashboardRollupRebuild))
 	mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))
 	mux.HandleFunc("/api/admin/security/ip-blocklist", h.superAdmin(h.handleIPBlocklistCollection))
 	mux.HandleFunc("/api/admin/security/ip-blocklist/reload", h.superAdmin(h.handleIPBlocklistReload))

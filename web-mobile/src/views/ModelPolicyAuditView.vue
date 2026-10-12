@@ -232,16 +232,16 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.mpa__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.mpa__panel { background: var(--app-surface); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .mpa__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .mpa__label { display: block; font-size: 12px; color: var(--app-text-muted); margin: 8px 0 4px; }
 
 /* ★ R1：新增交互控件 ≥48 CSS px */
 .mpa__input { width: 100%; min-height: 48px; padding: 0 12px; font-size: 14px;
-  border: 1px solid var(--border, #ddd); border-radius: 8px; background: transparent; color: inherit; }
+  border: 1px solid var(--app-border); border-radius: 8px; background: transparent; color: inherit; }
 .mpa__seg { display: flex; gap: 6px; margin-bottom: 8px; }
 .mpa__seg-btn { flex: 1; min-height: 48px; font-size: 13px; border-radius: 8px;
-  border: 1px solid var(--border, #ddd); background: transparent; color: inherit; }
+  border: 1px solid var(--app-border); background: transparent; color: inherit; }
 .mpa__seg-btn--on { border-color: var(--app-primary); color: var(--app-primary); font-weight: 600; }
 
 .mpa__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
@@ -250,7 +250,7 @@ onBeforeUnmount(() => {
   color: var(--app-text-secondary); margin: 6px 0; }
 .mpa__note--warn { color: var(--app-warning); }
 .mpa__list { list-style: none; margin: 0; padding: 0; }
-.mpa__item { padding: 10px 0; border-top: 1px solid var(--border, #eee); }
+.mpa__item { padding: 10px 0; border-top: 1px solid var(--app-border); }
 .mpa__item-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .mpa__title { font-size: 14px; font-weight: 600; }
 .mpa__badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }

@@ -25,6 +25,29 @@ var (
 		Help:    "V2 write latency",
 		Buckets: prometheus.ExponentialBuckets(0.001, 2, 12),
 	})
+	// SessionsV2SessionLockWait measures how long pg_advisory_xact_lock
+	// (the per tenant/session key) blocked before being granted.
+	//
+	// ★ Why it had to be added (runbook §10.106.16): SessionsV2WriteLatency
+	//   starts *after* the session lock is already held, so it excludes all
+	//   queueing. Measured on 2026-10-07: that one statement
+	//   (SELECT pg_advisory_xact_lock(session_turns_advisory_lock_key(...)))
+	//   is 83.9 hours of the gateway's 643.6 hours of database time — 13.0% —
+	//   at a mean of 99.7 ms per call, which for an advisory lock (microseconds
+	//   when uncontended) is almost entirely WAIT. None of it was visible in
+	//   any metric, which is why it survived 26 days of statistics.
+	//   ⇒ This histogram is the missing dial, not an optimisation.
+	SessionsV2SessionLockWait = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "sessions_v2_session_lock_wait_seconds",
+		Help:    "Blocking wait for the per tenant/session advisory lock (queueing, not work)",
+		Buckets: prometheus.ExponentialBuckets(0.0005, 2, 14),
+	})
+	// SessionsV2SessionLockAcquisitions counts lock acquisitions so the wait
+	// histogram can be read as "per acquisition" rather than in the void.
+	SessionsV2SessionLockAcquisitions = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "sessions_v2_session_lock_acquisitions_total",
+		Help: "Total acquisitions of the per tenant/session advisory lock",
+	})
 	SessionsV2CacheHit = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "sessions_v2_cache_hit_total",
 		Help: "L0/L1/L2 cache hits",

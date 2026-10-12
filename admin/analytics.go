@@ -792,6 +792,10 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 		           auto_decision, success, latency_ms
 		    FROM request_logs
 		    WHERE ts >= NOW() - INTERVAL '30 days'
+		      -- ⚠️ 这个 ::text 是 **text 列 → text 的空操作**，不是 uuid::text，
+		      --   所以**不需要**规范化（D-RL-01 只针对 uuid 列）。
+		      --   上一行的 request_logs_hot 分支甚至直接 request_id = ANY(...) 不加转换 ——
+		      --   两边等价，加了只是不一致的噪音。别把它"顺手修"成 replace(...)。
 		      AND request_id::text = ANY($1::text[])
 		) rl
 		WHERE true`+replayTenantFrag+`
@@ -1008,7 +1012,11 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		  AND NOT EXISTS (
 		    SELECT 1
 		    FROM routing_analytics_source probe
-		    WHERE probe.request_id = routing_decision_log.request_id::text
+		    -- ★ 这一条原本**永远不成立**，等于把「探针请求」的排除整个静默失效了：
+		    --   probe.request_id 来自 routing_analytics_source ← request_logs*.request_id::text
+		    --   （text 列，无连字符 32-hex）；右侧是 uuid 列的 ::text（带连字符 36 位）。
+		    --   两侧字符串恒不相等 ⇒ NOT EXISTS 恒为真 ⇒ 该过滤形同虚设。
+		    WHERE probe.request_id = replace(routing_decision_log.request_id::text, '-', '')
 		      AND NOT (` + businessRequestFilter("probe") + `)
 		  )` + rdlTenantWhere + `
 		`

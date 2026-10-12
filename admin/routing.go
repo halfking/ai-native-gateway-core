@@ -3269,7 +3269,7 @@ func (h *Handler) handleRoutingDecisions(w http.ResponseWriter, r *http.Request)
 	args = append(args, limit, offset)
 
 	q := fmt.Sprintf(`
-		SELECT rdl.ts, rdl.request_id::text AS request_id, rdl.idempotency_key,
+		SELECT rdl.ts, replace(rdl.request_id::text, '-', '') AS request_id, rdl.idempotency_key,
 		       rdl.tenant_id, rdl.api_key_id, rdl.model,
 		       rdl.chosen_credential_id, rdl.chosen_provider_id, rdl.tier,
 		       rdl.candidates_tried, rdl.latency_ms, rdl.success, rdl.error_class,

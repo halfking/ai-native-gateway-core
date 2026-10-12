@@ -475,21 +475,21 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.mt__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.mt__panel { background: var(--app-surface); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .mt__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .mt__label { display: block; font-size: 12px; color: var(--app-text-muted); margin: 8px 0 4px; }
 
 /* ★ R1：新增交互控件 ≥48 CSS px */
 .mt__input { width: 100%; min-height: 48px; padding: 0 12px; font-size: 14px;
-  border: 1px solid var(--border, #ddd); border-radius: 8px; background: transparent; color: inherit; }
+  border: 1px solid var(--app-border); border-radius: 8px; background: transparent; color: inherit; }
 .mt__seg { display: flex; gap: 6px; margin-bottom: 8px; }
 .mt__seg-btn { flex: 1; min-height: 48px; font-size: 14px; border-radius: 8px;
-  border: 1px solid var(--border, #ddd); background: transparent; color: inherit; }
+  border: 1px solid var(--app-border); background: transparent; color: inherit; }
 .mt__seg-btn--on { border-color: var(--app-primary); color: var(--app-primary); font-weight: 600; }
 /* ★ 7 = 换表边界，按钮上标出来 */
 .mt__seg-btn--hot { border-style: dashed; }
 .mt__btn { width: 100%; min-height: 48px; margin-top: 8px; font-size: 14px; border-radius: 8px;
-  border: 1px solid var(--border, #ddd); background: transparent; color: inherit; }
+  border: 1px solid var(--app-border); background: transparent; color: inherit; }
 .mt__btn--primary { border-color: var(--app-primary); color: var(--app-primary); font-weight: 600; }
 
 .mt__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
@@ -503,7 +503,7 @@ onBeforeUnmount(() => {
 .mt__cell-v { font-size: 14px; font-weight: 600; }
 
 .mt__list { list-style: none; margin: 0; padding: 0; }
-.mt__item { padding: 10px 0; border-top: 1px solid var(--border, #eee); }
+.mt__item { padding: 10px 0; border-top: 1px solid var(--app-border); }
 .mt__item-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .mt__title { font-size: 14px; font-weight: 600; }
 .mt__badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
@@ -516,7 +516,7 @@ onBeforeUnmount(() => {
 
 .mt__table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
 .mt__table th { text-align: left; font-weight: 500; color: var(--app-text-muted); font-size: 11px;
-  border-bottom: 1px solid var(--border, #eee); padding: 4px 2px; }
+  border-bottom: 1px solid var(--app-border); padding: 4px 2px; }
 .mt__table td { padding: 4px 2px; vertical-align: middle; }
 .mt__td-l { color: var(--app-text-secondary); }
 .mt__td-v { font-weight: 600; text-align: right; }

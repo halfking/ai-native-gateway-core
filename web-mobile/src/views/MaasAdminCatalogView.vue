@@ -252,7 +252,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.mac__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.mac__panel { background: var(--app-surface); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .mac__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .mac__panel-sub { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 4px; }
 
@@ -267,7 +267,7 @@ onBeforeUnmount(() => {
 .mac__cell-v { font-size: 14px; font-weight: 600; }
 
 .mac__list { list-style: none; margin: 0; padding: 0; }
-.mac__item { padding: 10px 0; border-top: 1px solid var(--border, #eee); }
+.mac__item { padding: 10px 0; border-top: 1px solid var(--app-border); }
 /* ★ 停用行整体压暗 */
 .mac__item--off { opacity: 0.6; }
 .mac__item-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
@@ -276,6 +276,6 @@ onBeforeUnmount(() => {
 .mac__meta { font-size: 12px; color: var(--app-text-secondary); margin: 4px 0 0; }
 .mac__sep { margin: 0 4px; opacity: 0.5; }
 .mac__unit { font-size: 11px; color: var(--app-text-muted); margin: 4px 0 0; }
-.mac__tag { font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--bg-2, #eee); margin-left: 4px; }
-.mac__tag--warn { background: var(--app-warning); color: #fff; }
+.mac__tag { font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--app-surface-muted); margin-left: 4px; }
+.mac__tag--warn { background: var(--app-warning); color: var(--app-on-warning); }
 </style>

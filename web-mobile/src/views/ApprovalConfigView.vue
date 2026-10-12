@@ -319,13 +319,13 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.acfg__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.acfg__panel { background: var(--app-surface); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .acfg__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .acfg__item-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 
 /* ★ R1：新增交互控件 ≥48 CSS px */
 .acfg__input { width: 100%; min-height: 48px; padding: 0 12px; font-size: 14px;
-  border: 1px solid var(--border, #ddd); border-radius: 8px; background: transparent; color: inherit; }
+  border: 1px solid var(--app-border); border-radius: 8px; background: transparent; color: inherit; }
 
 .acfg__msg { font-size: 13px; color: var(--app-text-secondary); padding: 8px 0; }
 .acfg__msg--err { color: var(--app-danger); }
@@ -341,5 +341,5 @@ onBeforeUnmount(() => {
 .acfg__badge-t { color: var(--app-text-secondary); }
 .acfg__list { list-style: none; margin: 0; padding: 0; }
 .acfg__row { display: flex; flex-direction: column; gap: 2px; padding: 8px 0;
-  border-top: 1px solid var(--border, #eee); }
+  border-top: 1px solid var(--app-border); }
 </style>

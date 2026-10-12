@@ -325,16 +325,16 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.rd__panel { background: var(--surface, #fff); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.rd__panel { background: var(--app-surface); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .rd__panel-title { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .rd__label { display: block; font-size: 12px; color: var(--app-text-muted); margin-bottom: 4px; }
 .rd__mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; word-break: break-all; }
 
 /* ★ R1：新增交互控件 ≥48 CSS px */
 .rd__input { width: 100%; min-height: 48px; padding: 0 12px; font-size: 14px;
-  border: 1px solid var(--border, #ddd); border-radius: 8px; background: transparent; color: inherit; }
+  border: 1px solid var(--app-border); border-radius: 8px; background: transparent; color: inherit; }
 .rd__btn { min-height: 48px; min-width: 96px; margin-top: 8px; margin-right: 8px; padding: 0 16px;
-  border-radius: 8px; border: 1px solid var(--border, #ddd); background: var(--app-primary); color: #fff; font-size: 13px; }
+  border-radius: 8px; border: 1px solid var(--app-border); background: var(--app-primary); color: var(--app-on-primary); font-size: 13px; }
 .rd__btn--ghost { background: transparent; color: inherit; }
 .rd__btn:disabled { opacity: 0.4; }
 
@@ -354,7 +354,7 @@ onBeforeUnmount(() => {
 .rd__body { margin-top: 10px; }
 .rd__body-l { font-size: 12px; color: var(--app-text-muted); }
 .rd__pre { margin: 4px 0 0; padding: 8px; font-size: 11px; line-height: 1.5; overflow-x: auto;
-  background: var(--bg-2, #f6f7f9); border-radius: 8px; }
+  background: var(--app-surface-muted); border-radius: 8px; }
 .rd__decision-link {
   color: var(--app-primary);
   text-decoration: underline;

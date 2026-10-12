@@ -107,6 +107,13 @@ func TestTurnWriter_WritesSessionsV2Metrics(t *testing.T) {
 		mock.ExpectExec("session_turns_advisory_lock_key").
 			WithArgs(rec.TenantID, "request:"+rec.RequestID).
 			WillReturnResult(pgconn.NewCommandTag("SELECT 1"))
+		// Hot arm first, partitioned parent only when hot answers "empty".
+		// AddRow(1) is "first turn of a new session" (COALESCE(MAX,0)+1 with
+		// zero rows), which is exactly the fallback case — so this stub must
+		// now expect BOTH arms, and the returned turn_no stays 1.
+		mock.ExpectQuery("MAX\\(turn_no\\).*FROM public\\.session_turns_hot").
+			WithArgs(rec.TenantID, rec.SessionID).
+			WillReturnRows(pgxmock.NewRows([]string{"next"}).AddRow(1))
 		mock.ExpectQuery("MAX\\(turn_no\\)").
 			WithArgs(rec.TenantID, rec.SessionID).
 			WillReturnRows(pgxmock.NewRows([]string{"next"}).AddRow(1))
