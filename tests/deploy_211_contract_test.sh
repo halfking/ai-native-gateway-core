@@ -113,15 +113,22 @@ echo "== 脚本静态契约 =="
 # $var 紧跟非 ASCII 字符（典型是中文全角括号）在 UTF-8 locale 下会被 bash
 # 并入变量名 → "unbound variable"。真实踩过两次：$idx（ 与 $envf（。
 # 这条门把两个 211 脚本一起扫掉。
-for f in "$SCRIPT" "$ROOT/scripts/sync-gateway-db-to-211.sh"; do
-  bad_n="$(python3 - "$f" <<'PY'
+#
+# 这道门是纵深防御，核心断言（库号分配逻辑）不依赖 python3。所以 python3 缺席
+# 时**跳过并显式说明**，绝不让整个 verify.sh（set -e）因缺解释器而红。
+if command -v python3 >/dev/null 2>&1; then
+  for f in "$SCRIPT" "$ROOT/scripts/sync-gateway-db-to-211.sh"; do
+    bad_n="$(python3 - "$f" <<'PY'
 import re, io, sys
 s = io.open(sys.argv[1], encoding="utf-8").read()
 print(len(re.findall(r'\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]', s)))
 PY
 )"
-  check "$(basename "$f") 无「\$var 紧跟全角标点」隐患" "0" "$bad_n"
-done
+    check "$(basename "$f") 无「\$var 紧跟全角标点」隐患" "0" "$bad_n"
+  done
+else
+  printf '  SKIP 全角标点隐患扫描（本机无 python3；核心断言不受影响）\n'
+fi
 # 复用判定必须同时含版本与 columnar 两维，否则会去抢别人的 PG16 实例
 if grep -q 'pg_is_17 "\$ver" && pg_has_columnar "\$am"' "$SCRIPT"; then
   ok "PG 复用同时校验 PG17 与 columnar"
