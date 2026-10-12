@@ -1,18 +1,18 @@
-import { ref, computed } from 'vue'
-import { localeRef } from '../i18n'
-import { formatDateTime } from '../utils/datetime'
+import installer from './clientConfigInstaller.py?raw'
+import { req } from '../api/_core'
 import { exportFile } from '../utils/exportFile'
 
-export type ToolId = 'zcode' | 'opencode' | 'cursor' | 'cherry_studio' | 'roocode'
+export type ToolId = 'zcode' | 'opencode' | 'minimax_code' | 'cursor' | 'cherry_studio' | 'roocode'
 export type OS = 'macos' | 'windows' | 'linux'
 export type ModelScope = 'featured' | 'all' | 'custom'
 
 export const TOOLS: { id: ToolId; name: string; icon: string; description: string }[] = [
-  { id: 'zcode', name: 'ZCode', icon: '🔮', description: '智谱 AI 编程 IDE，基于 OpenCode 配置 schema' },
-  { id: 'opencode', name: 'OpenCode', icon: '⚡', description: '终端 AI 编码 agent（opencode.ai）' },
+  { id: 'zcode', name: 'ZCode', icon: '🔮', description: 'OpenAI 兼容供应商；合并写入现有配置' },
+  { id: 'opencode', name: 'OpenCode v1', icon: '⚡', description: 'OpenCode v1 provider 配置；v2 需手动迁移' },
+  { id: 'minimax_code', name: 'MiniMax Code / CC Switch', icon: '🧠', description: '写入 MiniMax Code 自定义供应商；CC Switch 需在应用内导入并确认' },
   { id: 'cursor', name: 'Cursor', icon: '⌨️', description: 'AI-first 代码编辑器，支持 OpenAI 兼容 API' },
   { id: 'cherry_studio', name: 'Cherry Studio', icon: '🍒', description: '多模型桌面客户端，支持批量导入提供商' },
-  { id: 'roocode', name: 'Roo Code / VS Code', icon: '🧩', description: 'VS Code + Roo Code 扩展，配置 roo-cline' },
+  { id: 'roocode', name: 'Roo Code / VS Code', icon: '🧩', description: '在 Roo Code 设置面板选择 OpenAI Compatible' },
 ]
 
 export const OS_INFO: Record<OS, { label: string; paths: Record<ToolId, string> }> = {
@@ -20,44 +20,36 @@ export const OS_INFO: Record<OS, { label: string; paths: Record<ToolId, string> 
     label: 'macOS',
     paths: {
       zcode: '~/.zcode/v2/config.json',
-      opencode: '~/.config/opencode/config.json',
-      cursor: '~/.cursor/mcp.json（Models 设置）',
+      opencode: '~/.config/opencode/opencode.json',
+      minimax_code: '~/.minimax/config.yaml',
+      cursor: 'Cursor Settings → Models（应用内配置）',
       cherry_studio: '应用内手动导入（不支持脚本）',
-      roocode: '~/.vscode/settings.json（ROO_CLINE_* 设置）',
+      roocode: 'Roo Code 设置面板（应用内配置）',
     },
   },
   windows: {
     label: 'Windows',
     paths: {
       zcode: '%APPDATA%/zcode/v2/config.json',
-      opencode: '%APPDATA%/opencode/config.json',
-      cursor: '%APPDATA%/Cursor/User/mcp.json（Models 设置）',
+      opencode: '%USERPROFILE%/.config/opencode/opencode.json',
+      minimax_code: '%USERPROFILE%/.minimax/config.yaml',
+      cursor: 'Cursor Settings → Models（应用内配置）',
       cherry_studio: '应用内手动导入（不支持脚本）',
-      roocode: '%APPDATA%/Code/User/settings.json',
+      roocode: 'Roo Code 设置面板（应用内配置）',
     },
   },
   linux: {
     label: 'Linux',
     paths: {
       zcode: '~/.zcode/v2/config.json',
-      opencode: '~/.config/opencode/config.json',
-      cursor: '~/.config/Cursor/mcp.json（Models 设置）',
+      opencode: '~/.config/opencode/opencode.json',
+      minimax_code: '~/.minimax/config.yaml',
+      cursor: 'Cursor Settings → Models（应用内配置）',
       cherry_studio: '应用内手动导入（不支持脚本）',
-      roocode: '~/.config/Code/User/settings.json',
+      roocode: 'Roo Code 设置面板（应用内配置）',
     },
   },
 }
-
-export const FEATURED_MODELS = [
-  'glm-4-flash',
-  'glm-5.1',
-  'minimax-m3',
-  'claude-sonnet-4-6',
-  'deepseek-v4-pro',
-  'gpt-5.4',
-  'auto',
-  'minimax-m2.7-highspeed',
-]
 
 export interface ToolTemplate {
   providerUUID: string
@@ -67,11 +59,18 @@ export interface ToolTemplate {
   supportsScript: boolean
 }
 
+function newProviderUUID(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (token) => {
+    const random = Math.floor(Math.random() * 16)
+    return (token === 'x' ? random : (random & 0x3) | 0x8).toString(16)
+  })
+}
+
 export const TOOL_TEMPLATES: Record<ToolId, ToolTemplate> = {
   zcode: {
-    providerUUID: 'kx-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
-    providerName: 'kaixuan-gateway',
-    baseURL: 'https://llmgateway.internal.example.com/v1',
+    providerUUID: newProviderUUID(),
+    providerName: 'itestu',
+    baseURL: '',
     configPath: {
       macos: '~/.zcode/v2/config.json',
       windows: '%APPDATA%/zcode/v2/config.json',
@@ -80,20 +79,31 @@ export const TOOL_TEMPLATES: Record<ToolId, ToolTemplate> = {
     supportsScript: true,
   },
   opencode: {
-    providerUUID: 'kx-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
-    providerName: 'kaixuan-gateway',
-    baseURL: 'https://llmgateway.internal.example.com/v1',
+    providerUUID: newProviderUUID(),
+    providerName: 'itestu',
+    baseURL: '',
     configPath: {
-      macos: '~/.config/opencode/config.json',
-      windows: '%APPDATA%/opencode/config.json',
-      linux: '~/.config/opencode/config.json',
+      macos: '~/.config/opencode/opencode.json',
+      windows: '%USERPROFILE%/.config/opencode/opencode.json',
+      linux: '~/.config/opencode/opencode.json',
+    },
+    supportsScript: true,
+  },
+  minimax_code: {
+    providerUUID: '',
+    providerName: 'itestu',
+    baseURL: '',
+    configPath: {
+      macos: '~/.minimax/config.yaml',
+      windows: '%USERPROFILE%/.minimax/config.yaml',
+      linux: '~/.minimax/config.yaml',
     },
     supportsScript: true,
   },
   cursor: {
     providerUUID: '',
-    providerName: 'kaixuan-gateway',
-    baseURL: 'https://llmgateway.internal.example.com/v1',
+    providerName: 'itestu',
+    baseURL: '',
     configPath: {
       macos: 'Settings → Models → Add Custom Model',
       windows: 'Settings → Models → Add Custom Model',
@@ -103,25 +113,25 @@ export const TOOL_TEMPLATES: Record<ToolId, ToolTemplate> = {
   },
   cherry_studio: {
     providerUUID: '',
-    providerName: 'kaixuan-gateway',
-    baseURL: 'https://llmgateway.internal.example.com/v1',
+    providerName: 'itestu',
+    baseURL: '',
     configPath: {
-      macos: '设置 → 模型服务 → 添加自定义 → 导入 JSON',
-      windows: '设置 → 模型服务 → 添加自定义 → 导入 JSON',
-      linux: '设置 → 模型服务 → 添加自定义 → 导入 JSON',
+      macos: '设置 → 模型服务 → 添加自定义',
+      windows: '设置 → 模型服务 → 添加自定义',
+      linux: '设置 → 模型服务 → 添加自定义',
     },
     supportsScript: false,
   },
   roocode: {
     providerUUID: '',
-    providerName: 'kaixuan-gateway',
-    baseURL: 'https://llmgateway.internal.example.com/v1',
+    providerName: 'itestu',
+    baseURL: '',
     configPath: {
-      macos: '~/.vscode/settings.json',
-      windows: '%APPDATA%/Code/User/settings.json',
-      linux: '~/.config/Code/User/settings.json',
+      macos: 'Roo Code 设置面板',
+      windows: 'Roo Code 设置面板',
+      linux: 'Roo Code 设置面板',
     },
-    supportsScript: true,
+    supportsScript: false,
   },
 }
 
@@ -132,259 +142,168 @@ export interface ModelItem {
   outputLimit?: number
 }
 
-function buildZCodeOpenCodeModels(models: string[]): Record<string, any> {
-  const result: Record<string, any> = {}
+function buildZCodeOpenCodeModels(models: string[], modelInfo: ModelItem[] = [], completeLimit = false): Record<string, any> {
+  const result: Record<string, any> = Object.create(null)
+  const byId = new Map(modelInfo.map((item) => [item.id, item]))
   for (const m of models) {
+    const info = byId.get(m)
+    const limit: Record<string, number> = {}
+    if (info?.contextWindow && info.contextWindow > 0) limit.context = info.contextWindow
+    if (info?.outputLimit && info.outputLimit > 0) limit.output = info.outputLimit
     result[m] = {
       name: m,
-      limit: { context: 200000, output: 64000 },
+      ...((completeLimit ? limit.context && limit.output : Object.keys(limit).length > 0) ? { limit } : {}),
       modalities: { input: ['text'], output: ['text'] },
     }
   }
   return result
 }
 
-export function renderZCodeConfig(apiKey: string, models: string[]): any {
+export function renderZCodeConfig(apiKey: string, models: string[], baseURL: string, modelInfo: ModelItem[] = [], providerName = 'itestu'): any {
   const tpl = TOOL_TEMPLATES.zcode
   return {
     $schema: 'https://opencode.ai/config.json',
     provider: {
       [tpl.providerUUID]: {
-        name: tpl.providerName,
+        name: validateProviderName(providerName),
         kind: 'openai-compatible',
         options: {
           apiKey: apiKey,
-          baseURL: tpl.baseURL,
+          baseURL,
           apiKeyRequired: true,
         },
         source: 'custom',
-        models: buildZCodeOpenCodeModels(models),
+        models: buildZCodeOpenCodeModels(models, modelInfo),
       },
     },
   }
 }
 
-export function renderOpenCodeConfig(apiKey: string, models: string[]): any {
-  const tpl = TOOL_TEMPLATES.opencode
+export function renderOpenCodeConfig(apiKey: string, models: string[], baseURL: string, modelInfo: ModelItem[] = [], providerName = 'itestu'): any {
   return {
     $schema: 'https://opencode.ai/config.json',
     provider: {
-      [tpl.providerUUID]: {
-        name: tpl.providerName,
-        kind: 'openai-compatible',
+      [validateProviderName(providerName)]: {
+        name: validateProviderName(providerName),
+        npm: '@ai-sdk/openai-compatible',
         options: {
           apiKey: apiKey,
-          baseURL: tpl.baseURL,
-          apiKeyRequired: true,
+          baseURL,
         },
-        source: 'custom',
-        models: buildZCodeOpenCodeModels(models),
+        models: buildZCodeOpenCodeModels(models, modelInfo, true),
       },
     },
   }
 }
 
-export function renderCherryStudioConfig(apiKey: string, models: string[]): any {
-  return {
-    name: 'kaixuan-gateway',
-    api_base: 'https://llmgateway.internal.example.com/v1',
-    api_key: apiKey,
-    models: models.map(m => ({ name: m, label: m })),
-  }
+function yamlScalar(value: string): string {
+  // JSON double-quoted strings are valid YAML scalars and safely quote model IDs/keys.
+  return JSON.stringify(value)
 }
 
-export function renderRooCodeSettings(apiKey: string, baseURL: string): any {
-  return {
-    'roo-cline.openAiApiKey': apiKey,
-    'roo-cline.openAiBaseUrl': baseURL,
-    'roo-cline.openAiModelId': 'auto',
-  }
-}
-
-export function generateShellScript(
-  tool: ToolId,
-  os: OS,
-  configContent: string,
-  apiKey: string
-): string {
-  const tpl = TOOL_TEMPLATES[tool]
-  const path = tpl.configPath[os]
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-
-  if (tool === 'roocode') {
-    const settingsPath = os === 'macos'
-      ? '~/.vscode/settings.json'
-      : os === 'windows'
-        ? '$env:APPDATA\\Code\\User\\settings.json'
-        : '~/.config/Code/User/settings.json'
-    const isWin = os === 'windows'
-
-    if (isWin) {
-      return `:: Roo Code / VS Code 配置脚本 (Windows PowerShell)
-:: 生成时间: ${formatDateTime(new Date(), { locale: localeRef.value })}
-
-$SettingsPath = "$env:APPDATA\\Code\\User\\settings.json"
-$BackupPath = "$SettingsPath.backup.$(Get-Date -Format 'yyyyMMddHHmmss')"
-
-if (Test-Path $SettingsPath) {
-    Copy-Item $SettingsPath $BackupPath -Force
-    Write-Host "✅ 备份已创建: $BackupPath"
-}
-
-$Settings = @{}
-if (Test-Path $SettingsPath) {
-    $content = Get-Content $SettingsPath -Raw
-    if ($content) { $Settings = $content | ConvertFrom-Json -AsHashtable -ErrorAction SilentlyContinue @{} }
-}
-
-$Settings["roo-cline.openAiApiKey"] = "${apiKey}"
-$Settings["roo-cline.openAiBaseUrl"] = "https://llmgateway.internal.example.com/v1"
-$Settings["roo-cline.openAiModelId"] = "auto"
-
-$Settings | ConvertTo-Json -Depth 10 | Set-Content $SettingsPath -Encoding UTF8
-Write-Host "✅ 配置已写入: $SettingsPath"
-Write-Host "请重启 VS Code / Roo Code 使配置生效。"
-`
-    } else {
-      return `#!/bin/bash
-# Roo Code / VS Code 配置脚本 (macOS / Linux)
-# 生成时间: ${formatDateTime(new Date(), { locale: localeRef.value })}
-
-SETTINGS_PATH="${settingsPath}"
-BACKUP_PATH="${settingsPath}.backup.$(date +%Y%m%d%H%M%S)"
-
-if [ -f "$SETTINGS_PATH" ]; then
-    cp "$SETTINGS_PATH" "$BACKUP_PATH"
-    echo "✅ 备份已创建: $BACKUP_PATH"
-fi
-
-# 读取现有配置或创建空对象
-if [ -f "$SETTINGS_PATH" ]; then
-    SETTINGS=$(cat "$SETTINGS_PATH")
-else
-    SETTINGS="{}"
-fi
-
-# 追加/更新 roo-cline 配置（使用 Python 处理 JSON）
-python3 -c "
-import json, sys, os
-
-path = os.path.expanduser('${settingsPath}')
-settings = {}
-if os.path.exists(path):
-    with open(path) as f:
-        try: settings = json.load(f)
-        except: settings = {}
-
-settings['roo-cline.openAiApiKey'] = '${apiKey}'
-settings['roo-cline.openAiBaseUrl'] = 'https://llmgateway.internal.example.com/v1'
-settings['roo-cline.openAiModelId'] = 'auto'
-
-with open(path, 'w') as f:
-    json.dump(settings, f, indent=2, ensure_ascii=False)
-print('✅ 配置已写入:', path)
-"
-echo "请重启 VS Code / Roo Code 使配置生效。"
-`
+export function renderMiniMaxCodeProvider(apiKey: string, models: string[], baseURL: string, modelInfo: ModelItem[] = [], providerName = 'itestu'): string {
+  const byId = new Map(modelInfo.map((item) => [item.id, item]))
+  const modelBlocks = models.map((model) => {
+    const info = byId.get(model)
+    const lines = [
+      `    ${yamlScalar(model)}:`,
+      `      name: ${yamlScalar(model)}`,
+      '      enabled: true',
+      '      attachment: false',
+      '      modalities:',
+      '        input:',
+      '          - text',
+      '        output:',
+      '          - text',
+    ]
+    if (info?.contextWindow && info.contextWindow > 0) {
+      lines.push('      limit:', `        context: ${info.contextWindow}`)
     }
-  }
+    if (info?.outputLimit && info.outputLimit > 0) {
+      if (!lines.includes('      limit:')) lines.push('      limit:')
+      lines.push(`        output: ${info.outputLimit}`)
+    }
+    return lines.join('\n')
+  }).join('\n')
 
-  // ZCode / OpenCode shell script (macOS/Linux)
-  const configPath = path.replace('~/', '$HOME/').replace('%APPDATA%', '$APPDATA')
-  const isWin = os === 'windows'
-  const dirPart = isWin ? '%APPDATA%\\\\zcode\\\\v2' : '$HOME/.zcode/v2'
-  const filePart = isWin ? '%APPDATA%\\\\zcode\\\\v2\\\\config.json' : '$HOME/.zcode/v2/config.json'
-
-  if (isWin) {
-    return `:: ZCode / OpenCode 配置脚本 (Windows PowerShell)
-:: 生成时间: ${formatDateTime(new Date(), { locale: localeRef.value })}
-:: 路径: ${path}
-
-$CONFIG_DIR = "${dirPart.replace('\\\\', '\\\\\\\\')}"
-$CONFIG_FILE = "${filePart.replace('\\\\', '\\\\\\\\')}"
-$BACKUP_FILE = "$CONFIG_FILE.backup.$(Get-Date -Format 'yyyyMMddHHmmss')"
-
-New-Item -ItemType Directory -Force -Path $CONFIG_DIR | Out-Null
-
-if (Test-Path $CONFIG_FILE) {
-    Copy-Item $CONFIG_FILE $BACKUP_FILE -Force
-    Write-Host "✅ 备份已创建: $BACKUP_FILE"
+  return [
+    `${validateProviderName(providerName)}:`,
+    `  name: ${providerName}`,
+    '  kind: custom',
+    '  enabled: true',
+    '  api: openai-completions',
+    '  options:',
+    `    baseURL: ${yamlScalar(baseURL)}`,
+    '    authMode: api-key',
+    `    apiKey: ${yamlScalar(apiKey)}`,
+    '  models:',
+    modelBlocks,
+    '',
+  ].join('\n')
 }
 
-$CONFIG_CONTENT = @'
-${JSON.stringify(JSON.parse(configContent), null, 2)}
-'@
-
-$CONFIG_CONTENT | Set-Content $CONFIG_FILE -Encoding UTF8
-Write-Host "✅ 配置已写入: $CONFIG_FILE"
-Write-Host "请重启 ZCode 使配置生效。"
-`
-  } else {
-    return `#!/bin/bash
-# ZCode / OpenCode 配置脚本 (macOS / Linux)
-# 生成时间: ${formatDateTime(new Date(), { locale: localeRef.value })}
-# 路径: ${path}
-
-CONFIG_DIR="${path.replace('~/', '$HOME/').replace('/.zcode/', '/.zcode/v2/').split('/').slice(0, -1).join('/') || '$HOME/.zcode/v2'}"
-CONFIG_FILE="${path.replace('~/', '$HOME/')}"
-BACKUP_FILE="$CONFIG_FILE.backup.$(date +%Y%m%d%H%M%S)"
-
-mkdir -p "$CONFIG_DIR"
-
-if [ -f "$CONFIG_FILE" ]; then
-    cp "$CONFIG_FILE" "$BACKUP_FILE"
-    echo "✅ 备份已创建: $BACKUP_FILE"
-fi
-
-cat > "$CONFIG_FILE" << 'ZCODE_CONFIG'
-${JSON.stringify(JSON.parse(configContent), null, 2)}
-ZCODE_CONFIG
-
-echo "✅ 配置已写入: $CONFIG_FILE"
-echo "请重启 ZCode / OpenCode 使配置生效。"
-`
+export function generateShellScript(tool: ToolId, os: OS, configContent: string, _apiKey = '', _baseURL = ''): string {
+  if (!TOOL_TEMPLATES[tool].supportsScript) return '# 请按应用内配置步骤操作。\n'
+  // Hex encoding keeps user data out of Python syntax and shell/PowerShell delimiters.
+  const hex = Array.from(new TextEncoder().encode(configContent), byte => byte.toString(16).padStart(2, '0')).join('')
+  const python = `TOOL = ${JSON.stringify(tool)}\nCONFIG_HEX = '${hex}'\n${installer}`
+  if (os === 'windows') {
+    return `$ErrorActionPreference = 'Stop'\n$python = Get-Command python3 -ErrorAction SilentlyContinue\nif (-not $python) { $python = Get-Command python -ErrorAction SilentlyContinue }\nif (-not $python) { throw '需要 Python 3；MiniMax Code 还需要 PyYAML。' }\n@'\n${python}\n'@ | & $python.Source -\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n`
   }
+  return `#!/bin/sh\n# Python 3；MiniMax Code 还需要 PyYAML。关闭客户端配置编辑后执行。\npython3 - <<'PY'\n${python}\nPY\n`
 }
 
-export function getManualSteps(tool: ToolId, os: OS): string {
-  const baseURL = 'https://llmgateway.internal.example.com/v1'
+export function validateProviderName(value: string): string {
+  const name = value.trim()
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name)) throw new Error('供应商名称须为 1–64 个英文字母、数字、下划线或连字符。')
+  return name
+}
+
+export function normalizeGatewayURL(value: string): string {
+  const url = new URL(value.trim())
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw new Error('API 地址须为 HTTP(S)，且不能包含账号、查询参数或片段。')
+  }
+  return url.href.replace(/\/+$/, '')
+}
+
+export function getManualSteps(tool: ToolId, os: OS, baseURL: string, models: string[] = [], providerName = 'itestu'): string {
+  const modelList = models.map((model) => `   - ${model}`).join('\n') || '   - 先在网关数据库配置特色模型'
+  if (tool === 'zcode') {
+    return `ZCode 将在 ${OS_INFO[os].paths.zcode} 中增量添加 ${providerName} 供应商。脚本会备份原文件并保留其他供应商。\n\nAPI 地址：${baseURL}\n特色模型：\n${modelList}\n\n写入后重启 ZCode，在模型选择器中选择 ${providerName}。`
+  }
+  if (tool === 'minimax_code') {
+    return `MiniMax Code 将使用 OpenAI Chat Completions 兼容模式。脚本会备份并增量更新 ${OS_INFO[os].paths.minimax_code}，同时遵守 config.yaml.lock。\n\nAPI 地址：${baseURL}\n特色模型：\n${modelList}\n\n保存后在 MiniMax Code 的模型选择器中选择 ${providerName}。CC Switch：在 MiniMax Code 页面使用应用提供的导入/添加操作，并确认供应商、地址和模型列表。它有独立的供应商库，写入 YAML 不等于已导入。`
+  }
   if (tool === 'cursor') {
     return `Cursor 配置步骤：
 
 1. 打开 Cursor（Cmd/Ctrl+Shift+J）→ Settings → Models
-2. 找到「OpenAI API Key」填入你的 sk-* 密钥
-3. 开启「Override OpenAI Base URL」，填入：${baseURL}
-4. 点击「Verify」验证连通性
-5. 在「Add Custom Model」中添加以下模型 ID（按需选择）：
-   - glm-4-flash / glm-5.1 / minimax-m3 / claude-sonnet-4-6
-   - deepseek-v4-pro / gpt-5.4 / auto / minimax-m2.7-highspeed
-6. 可选 Header：X-Client-Profile: cursor`
+2. 在 OpenAI API Key 区域填入选定的网关 API Key，并启用 Use OpenAI API Key
+3. 启用 Override OpenAI Base URL，填入：${baseURL}
+4. 在 Add Custom Model 中逐个添加以下数据库特色模型 ID：
+${modelList}
+5. 选中一个模型，在本地 Chat 中发送最小请求验证；先用普通 Chat/Ask 模式确认 BYOK 连通，再检查 Agent 等模式。
+
+注意：Cursor 的 OpenAI Key 和 Base URL 是全局设置，不是独立 provider；自定义 Key 只支持标准聊天模型。Cursor 专用补全功能继续使用其内置模型。若模型名与 Cursor 内置项冲突，Cursor 会拒绝重复添加，需确认该内置项是否会使用此 OpenAI Base URL。详见 [Cursor API Keys 文档](https://docs.cursor.com/settings/api-keys)。`
+  }
+  if (tool === 'opencode') {
+    return `OpenCode 会在 ${OS_INFO[os].paths.opencode} 中增量添加 ${providerName} 供应商，并保留其他 provider。\n\nAPI 地址：${baseURL}\n特色模型：\n${modelList}\n\n此脚本面向 OpenCode v1。v2 使用 providers/package/settings 结构，请按官方迁移文档手动配置。写入后重启 OpenCode，并选择 ${providerName} 下的模型验证。`
   }
   if (tool === 'cherry_studio') {
     return `Cherry Studio 配置步骤：
 
 1. 打开 Cherry Studio → 设置 → 模型服务
 2. 点击「添加自定义服务商」
-3. 名称填「启圭WM网关」，类型选「OpenAI 兼容」
+3. 名称填「${providerName}」，类型选「OpenAI 兼容」
 4. API 地址填：${baseURL}
 5. API Key 填入你的 sk-* 密钥
 6. 模型列表填入（用英文逗号分隔）：
-   glm-4-flash, glm-5.1, minimax-m3, claude-sonnet-4-6, deepseek-v4-pro, auto
-7. 保存后在左侧模型列表找到「启圭WM网关」即可使用`
+${models.join(', ')}
+7. 保存后在左侧模型列表找到「${providerName}」即可使用`
   }
   if (tool === 'roocode') {
-    const path = OS_INFO[os].paths.roocode
-    return `Roo Code / VS Code 配置步骤：
-
-1. 打开 VS Code → 扩展 → 搜索安装「Roo Code」
-2. 打开 VS Code 设置（settings.json）
-3. 找到以下 3 个 key 填入对应值：
-   - roo-cline.openAiApiKey：你的 sk-* 密钥
-   - roo-cline.openAiBaseUrl：${baseURL}
-   - roo-cline.openAiModelId：auto（支持自动路由）
-4. 或者直接在 VS Code 中使用命令面板（Cmd+Shift+P）运行：
-   Roo Code: Open Settings 手动编辑 JSON
-5. 建议同时安装「Roo Cline」扩展以获得更好体验`
+    return `打开 Roo Code 设置面板 → API Provider 选择 OpenAI Compatible。\nBase URL：${baseURL}\nAPI Key：填入选定密钥。\nModel ID：选择下面的一个真实模型 ID（不要填写 auto）：\n${modelList}\n\n保存后验证普通请求和原生工具调用。详见 https://docs.roocode.com/providers/openai-compatible 。`
   }
   return ''
 }
@@ -411,10 +330,9 @@ export async function auditAction(params: {
   modelScope: string
 }) {
   try {
-    await fetch('/api/client-configs/audit', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
+    await req('POST', '/api/client-configs/audit', {
+      action: params.action, tool: params.tool, os: params.os,
+      key_id: params.keyId, model_count: params.modelCount, model_scope: params.modelScope,
     })
   } catch {
     // best-effort, non-blocking

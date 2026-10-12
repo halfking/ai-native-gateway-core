@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { getKeys, listModels, getFeatured, applyForKey, revealKey, type ApiKey, type ModelCanonical } from '../api'
+import { getKeys, listModels, getClientConfigFeatured, applyForKey, revealKey, type ApiKey, type ModelCanonical } from '../api'
 import {
   TOOLS, OS_INFO,
   type ToolId, type OS, type ModelScope,
+  type ModelItem,
   renderZCodeConfig, renderOpenCodeConfig,
-  renderCherryStudioConfig, renderRooCodeSettings,
-  generateShellScript, getManualSteps,
+  renderMiniMaxCodeProvider,
+  generateShellScript, getManualSteps, TOOL_TEMPLATES, detectOS, validateProviderName, normalizeGatewayURL,
   downloadFile, auditAction,
 } from '../composables/useClientConfig'
 
@@ -29,12 +30,11 @@ const applyForm = ref({ application_code: 'default-app', description: '' })
 async function loadKeys() {
   keysLoading.value = true
   try {
-    keys.value = await getKeys()
-    if (keys.value.length > 0 && !selectedKeyId.value) {
-      selectedKeyId.value = keys.value[0].id
-    }
+    keys.value = (await getKeys()).filter(key => key.enabled && key.status === 'active' && (!key.expires_at || Date.parse(key.expires_at) > Date.now()))
+    if (!keys.value.some(key => key.id === selectedKeyId.value)) selectedKeyId.value = keys.value[0]?.id ?? null
   } catch {
     keys.value = []
+    selectedKeyId.value = null
   } finally {
     keysLoading.value = false
   }
@@ -63,7 +63,15 @@ async function submitApply() {
 }
 
 // ── Step 2: OS selection ─────────────────────────────────────────────────────
-const selectedOS = ref<OS>('macos')
+const selectedOS = ref<OS>(detectOS())
+const providerName = ref('itestu')
+const baseURL = ref('')
+const generationError = ref('')
+
+function defaultGatewayBaseURL(): string {
+  const origin = typeof window !== 'undefined' ? window.location.origin : 'https://llm.itestu.cn'
+  return `${origin.replace(/\/+$/, '')}/v1`
+}
 
 // ── Step 3: Model scope + custom selection ──────────────────────────────────
 const selectedScope = ref<ModelScope>('featured')
@@ -73,45 +81,50 @@ const allModelsLoading = ref(false)
 const allModelsLoaded = ref(false)
 const featuredModels = ref<string[]>([])
 const featuredLoading = ref(false)
-const featuredLoaded = ref(false)
+const featuredInfo = ref<ModelItem[]>([])
+const modelLoadError = ref('')
+const allModelLoadError = ref('')
+let catalogRequest = 0
+let allCatalogRequest = 0
 const modelSearch = ref('')
 
 async function loadFeaturedModels() {
-  if (featuredLoaded.value) return
+  const request = ++catalogRequest
+  featuredModels.value = []
+  featuredInfo.value = []
+  if (!selectedKeyId.value || !props.open) return
   featuredLoading.value = true
+  modelLoadError.value = ''
   try {
-    const resp = await getFeatured()
-    featuredModels.value = resp.featured_models || []
-    featuredLoaded.value = true
-    if (selectedModels.value.length === 0 && featuredModels.value.length > 0) {
-      selectedModels.value = [...featuredModels.value]
-    }
+    const resp = await getClientConfigFeatured(selectedKeyId.value)
+    if (request !== catalogRequest || !props.open) return
+    featuredModels.value = [...new Set(resp.featured_models.map(id => id.trim()).filter(Boolean))]
+    featuredInfo.value = resp.models
   } catch {
-    featuredModels.value = []
+    if (request === catalogRequest) modelLoadError.value = '特色模型加载失败，请重试。'
   } finally {
-    featuredLoading.value = false
+    if (request === catalogRequest) featuredLoading.value = false
   }
 }
 
 async function loadAllModels() {
   if (allModelsLoaded.value) return
+  const request = ++allCatalogRequest
   allModelsLoading.value = true
+  allModelLoadError.value = ''
   try {
     const resp = await listModels({ status: 'active' })
+    if (request !== allCatalogRequest || !props.open) return
     allModels.value = resp.items.filter(m => m.status === 'active')
     allModelsLoaded.value = true
   } catch {
+    if (request !== allCatalogRequest) return
     allModels.value = []
+    allModelLoadError.value = '模型目录加载失败，请重试。'
   } finally {
-    allModelsLoading.value = false
+    if (request === allCatalogRequest) allModelsLoading.value = false
   }
 }
-
-watch(selectedScope, async (scope) => {
-  if (scope === 'all') {
-    await loadAllModels()
-  }
-})
 
 function toggleModel(modelId: string) {
   const idx = selectedModels.value.indexOf(modelId)
@@ -176,105 +189,152 @@ function toggleGroup(family: string) {
 const generatedFile = ref('')
 const generatedScript = ref('')
 const generatedManual = ref('')
+const generatedSecret = ref('')
+const filePreview = computed(() => generatedSecret.value
+  ? generatedFile.value.replaceAll(JSON.stringify(generatedSecret.value).slice(1, -1), '••••••••').replaceAll(generatedSecret.value, '••••••••')
+  : generatedFile.value)
 const hasGenerated = ref(false)
 const activeTab = ref<'file' | 'script' | 'manual'>('file')
 const generating = ref(false)
 
-watch(() => props.open, (val) => {
-  if (val) {
-    loadKeys()
-    loadFeaturedModels()
-    hasGenerated.value = false
-    generatedFile.value = ''
-    generatedScript.value = ''
-    activeTab.value = 'file'
+function clearGenerated() {
+  hasGenerated.value = false
+  generatedFile.value = ''
+  generatedScript.value = ''
+  generatedManual.value = ''
+  generatedSecret.value = ''
+}
+let generationRequest = 0
+watch(() => props.open, (open) => {
+  generationRequest++
+  catalogRequest++
+  allCatalogRequest++
+  featuredLoading.value = false
+  allModelsLoading.value = false
+  modelLoadError.value = ''
+  allModelLoadError.value = ''
+  clearGenerated()
+  featuredModels.value = []
+  featuredInfo.value = []
+  allModelsLoaded.value = false
+  allModels.value = []
+  selectedModels.value = []
+  selectedKeyId.value = null
+  generationError.value = ''
+  if (open) {
     selectedScope.value = 'featured'
-    selectedModels.value = []
-    selectedOS.value = 'macos'
+    selectedOS.value = detectOS()
+    baseURL.value = defaultGatewayBaseURL()
+    providerName.value = 'itestu'
+    modelSearch.value = ''
+    activeTab.value = 'file'
+    loadKeys()
   }
 }, { immediate: true })
-
-watch(selectedScope, async (scope) => {
-  if (scope === 'all') {
-    await loadAllModels()
-  } else if (scope === 'featured') {
-    await loadFeaturedModels()
-    if (featuredModels.value.length > 0) {
-      selectedModels.value = [...featuredModels.value]
-    }
-  }
-})
-
+watch(selectedKeyId, () => { generationRequest++; clearGenerated(); loadFeaturedModels() }, { flush: 'sync' })
+watch(selectedScope, (scope) => { generationRequest++; clearGenerated(); if (scope === 'all') loadAllModels() }, { flush: 'sync' })
+watch([baseURL, providerName, selectedOS, () => props.tool, () => [...selectedModels.value]], () => {
+  generationRequest++
+  clearGenerated()
+}, { flush: 'sync' })
+const configuredModelCount = ref(0)
 const selectedKey = computed(() => keys.value.find(k => k.id === selectedKeyId.value))
 
-const fileExt = computed(() => props.tool === 'cherry_studio' ? '.json' : '.json')
+const fileExt = computed(() => props.tool === 'minimax_code' ? '.yaml' : '.json')
 const scriptExt = computed(() => selectedOS.value === 'windows' ? '.ps1' : '.sh')
 
 async function generate() {
-  if (!selectedKey.value) return
+  if (!selectedKey.value || featuredLoading.value || (selectedScope.value === 'featured' && modelLoadError.value)) return
+  const request = ++generationRequest
+  clearGenerated()
   generating.value = true
   hasGenerated.value = false
+  generationError.value = ''
 
-  const key = selectedKey.value
-  const baseURL = 'https://llmgateway.internal.example.com/v1'
-  let models = selectedModels.value
-  if (selectedScope.value === 'featured') models = [...featuredModels.value]
+  try {
+    const key = selectedKey.value
+    const gatewayURL = normalizeGatewayURL(baseURL.value)
+    const name = validateProviderName(providerName.value)
+    const models = selectedScope.value === 'featured' ? [...featuredModels.value] : [...selectedModels.value]
+    if (models.length === 0) throw new Error('请至少选择一个模型；特色模型为空时请先到「路由策略」配置。')
+    if (selectedScope.value === 'all' && !allModelsLoaded.value) await loadAllModels()
+    const modelInfo: ModelItem[] = models.map((id) => {
+      const featured = featuredInfo.value.find(item => item.id === id)
+      const model = allModels.value.find((item) => item.canonical_name === id)
+      return {
+        id,
+        name: id,
+        contextWindow: featured?.contextWindow ?? model?.context_window ?? undefined,
+      }
+    })
 
-  // Pre-existing safety bug (caught by vue-tsc): the render helpers
-  // expect a string apiKey, but `key` is the full ApiKey object.
-  // The old code passed the object, which JSON.stringify would have
-  // serialized to a giant metadata blob — the generated config
-  // never worked because the consumer expected a string. Reveal the
-  // real key server-side, then pass the string.
-  const revealed = await revealKey(key.id)
-  const apiKey = revealed.api_key
+    // The selected API key is revealed only for the generated client artifact.
+    const manualOnly = ['cursor', 'cherry_studio', 'roocode'].includes(props.tool)
+    const apiKey = manualOnly ? '' : (await revealKey(key.id)).api_key
+    if (request !== generationRequest || !props.open) return
+    if (!manualOnly && !apiKey) throw new Error('所选密钥无法读取，请重新选择。')
+    generatedSecret.value = apiKey
 
-  let fileContent: any
-  if (props.tool === 'zcode') {
-    fileContent = renderZCodeConfig(apiKey, models)
-  } else if (props.tool === 'opencode') {
-    fileContent = renderOpenCodeConfig(apiKey, models)
-  } else if (props.tool === 'cherry_studio') {
-    fileContent = renderCherryStudioConfig(apiKey, models)
-  } else if (props.tool === 'roocode') {
-    fileContent = renderRooCodeSettings(apiKey, baseURL)
-  } else {
-    fileContent = { note: 'Cursor 不支持文件写入，请在 Settings UI 中手动配置' }
+    let fileContent: any
+    if (props.tool === 'zcode') {
+      fileContent = renderZCodeConfig(apiKey, models, gatewayURL, modelInfo, name)
+    } else if (props.tool === 'opencode') {
+      fileContent = renderOpenCodeConfig(apiKey, models, gatewayURL, modelInfo, name)
+    } else if (props.tool === 'minimax_code') {
+      const provider = renderMiniMaxCodeProvider(apiKey, models, gatewayURL, modelInfo, name)
+      fileContent = `custom_provider:\n${provider.split('\n').filter(Boolean).map(line => `  ${line}`).join('\n')}\n`
+    } else if (props.tool === 'cherry_studio') {
+      fileContent = { provider: name, baseURL: gatewayURL, models, note: '请在客户端设置面板填入所选密钥；此文件仅为参数清单。' }
+    } else if (props.tool === 'roocode') {
+      fileContent = { provider: name, baseURL: gatewayURL, models, note: '在 Roo Code 设置面板配置 OpenAI Compatible。' }
+    } else {
+      fileContent = { note: 'Cursor 不支持文件写入，请在 Settings UI 中手动配置' }
+    }
+
+    generatedFile.value = typeof fileContent === 'string'
+      ? fileContent
+      : JSON.stringify(fileContent, null, 2)
+    generatedScript.value = generateShellScript(props.tool, selectedOS.value, generatedFile.value, apiKey, gatewayURL)
+    generatedManual.value = getManualSteps(props.tool, selectedOS.value, gatewayURL, models, name)
+    configuredModelCount.value = models.length
+    hasGenerated.value = true
+
+    await auditAction({
+      action: 'generate',
+      tool: props.tool,
+      os: selectedOS.value,
+      keyId: key.id,
+      modelCount: models.length,
+      modelScope: selectedScope.value,
+    })
+  } catch (error: any) {
+    clearGenerated()
+    generationError.value = error?.message || '配置生成失败，请重试。'
+  } finally {
+    generating.value = false
   }
-
-  generatedFile.value = JSON.stringify(fileContent, null, 2)
-  generatedScript.value = generateShellScript(props.tool, selectedOS.value, generatedFile.value, apiKey)
-  generatedManual.value = getManualSteps(props.tool, selectedOS.value)
-  hasGenerated.value = true
-  generating.value = false
-
-  await auditAction({
-    action: 'generate',
-    tool: props.tool,
-    os: selectedOS.value,
-    keyId: key.id,
-    modelCount: models.length,
-    modelScope: selectedScope.value,
-  })
 }
 
-function copyFile() {
-  navigator.clipboard.writeText(generatedFile.value)
-  auditAction({ action: 'copy_config', tool: props.tool, os: selectedOS.value, keyId: selectedKeyId.value || 0, modelCount: selectedModels.value.length, modelScope: selectedScope.value })
+async function copyFile() {
+  try { await navigator.clipboard.writeText(generatedFile.value) }
+  catch { generationError.value = '复制失败，请下载文件。'; return }
+  auditAction({ action: 'copy_config', tool: props.tool, os: selectedOS.value, keyId: selectedKeyId.value || 0, modelCount: configuredModelCount.value, modelScope: selectedScope.value })
 }
 
 function downloadScript() {
   const filename = `${props.tool}-config${scriptExt.value}`
   downloadFile(generatedScript.value, filename, 'text/plain')
-  auditAction({ action: 'download_script', tool: props.tool, os: selectedOS.value, keyId: selectedKeyId.value || 0, modelCount: selectedModels.value.length, modelScope: selectedScope.value })
+  auditAction({ action: 'download_script', tool: props.tool, os: selectedOS.value, keyId: selectedKeyId.value || 0, modelCount: configuredModelCount.value, modelScope: selectedScope.value })
 }
 
 function downloadFileContent() {
   const filename = `${props.tool}-config${fileExt.value}`
-  downloadFile(generatedFile.value, filename, 'application/json')
+  downloadFile(generatedFile.value, filename, props.tool === 'minimax_code' ? 'application/yaml' : 'application/json')
 }
 
 function close() {
+  generationRequest++
+  clearGenerated()
   emit('close')
 }
 
@@ -300,7 +360,7 @@ function goManageFeatured() {
         <!-- Step 1: API Key -->
         <div class="step-section">
           <div class="step-label">
-            <span>① 选择 API Key（当前租户下所有密钥）</span>
+            <span>① 选择可用 API Key</span>
             <button class="btn btn-ghost btn-sm refresh-btn" :disabled="keysLoading" @click="loadKeys">
               {{ keysLoading ? '刷新中…' : '↻ 刷新' }}
             </button>
@@ -339,17 +399,29 @@ function goManageFeatured() {
             >{{ info.label }}</button>
           </div>
           <div class="path-hint">
-            配置文件路径：<code>{{ OS_INFO[selectedOS].paths[tool] }}</code>
+            配置入口：<code>{{ OS_INFO[selectedOS].paths[tool] }}</code>
           </div>
         </div>
 
-        <!-- Step 3: Model scope -->
+        <!-- Step 3: Gateway URL -->
         <div class="step-section">
-          <div class="step-label">③ 选择模型范围</div>
+          <div class="step-label">③ 网关 API 地址</div>
+          <input v-model="baseURL" class="select-field" type="url" placeholder="https://llm.itestu.cn/v1" />
+          <div class="path-hint">默认使用当前网关站点地址。配置中会包含所选 API Key，请妥善保管生成文件和脚本。</div>
+        </div>
+
+        <div class="step-section">
+          <div class="step-label">供应商名称</div>
+          <input v-model="providerName" class="select-field" maxlength="64" aria-label="供应商名称" />
+          <div class="path-hint">同名且同地址时更新原项。若地址不同，脚本会停止并提示改名。</div>
+        </div>
+        <!-- Step 4: Model scope -->
+        <div class="step-section">
+          <div class="step-label">④ 选择模型范围</div>
           <div class="scope-radios">
             <label class="radio-label">
               <input type="radio" value="featured" v-model="selectedScope" />
-              <span>热门模型（路由 featured 配置）</span>
+              <span>特色模型（所选密钥租户的路由配置）</span>
             </label>
             <label class="radio-label">
               <input type="radio" value="all" v-model="selectedScope" />
@@ -357,11 +429,17 @@ function goManageFeatured() {
             </label>
           </div>
 
+          <div v-if="selectedScope === 'featured' && modelLoadError" class="alert alert-danger">{{ modelLoadError }}
+            <button class="btn btn-ghost btn-sm" @click="loadFeaturedModels">重试</button>
+          </div>
+          <div v-if="selectedScope === 'all' && allModelLoadError" class="alert alert-danger">{{ allModelLoadError }}
+            <button class="btn btn-ghost btn-sm" @click="loadAllModels">重试</button>
+          </div>
           <!-- Featured preview -->
           <div v-if="selectedScope === 'featured'" class="model-preview">
             <div v-if="featuredLoading" class="models-loading">加载中…</div>
             <div v-else-if="featuredModels.length === 0" class="empty-mini-state">
-              <div class="empty-mini-title">路由中尚未配置热门模型</div>
+              <div class="empty-mini-title">所选租户尚未配置特色模型</div>
               <button class="btn btn-primary btn-sm" @click="goManageFeatured">
                 前往「路由策略」配置 →
               </button>
@@ -426,13 +504,14 @@ function goManageFeatured() {
 
         <!-- Sticky footer with primary action -->
         <div class="drawer-footer">
+          <div v-if="generationError" class="alert alert-danger">{{ generationError }}</div>
           <div class="footer-info" v-if="hasGenerated">
-            <span class="footer-hint">已生成 {{ selectedModels.length }} 个模型配置</span>
+            <span class="footer-hint">已生成 {{ configuredModelCount }} 个模型配置</span>
           </div>
           <button
             v-if="!hasGenerated"
             class="btn btn-primary footer-generate"
-            :disabled="!selectedKeyId || generating"
+            :disabled="!selectedKeyId || generating || featuredLoading || allModelsLoading"
             @click="generate"
           >
             {{ generating ? '生成中…' : '生成配置' }}
@@ -450,9 +529,9 @@ function goManageFeatured() {
         <!-- Results -->
         <div v-if="hasGenerated" class="results-section">
           <div class="result-tabs">
-            <button :class="['tab-btn', activeTab === 'file' ? 'active' : '']" @click="activeTab = 'file'">配置文件</button>
+            <button :class="['tab-btn', activeTab === 'file' ? 'active' : '']" @click="activeTab = 'file'">{{ tool === 'minimax_code' ? 'YAML 片段' : '配置文件' }}</button>
             <button
-              v-if="tool !== 'cherry_studio' && tool !== 'cursor'"
+              v-if="TOOL_TEMPLATES[tool].supportsScript"
               :class="['tab-btn', activeTab === 'script' ? 'active' : '']" @click="activeTab = 'script'"
             >配置脚本</button>
             <button :class="['tab-btn', activeTab === 'manual' ? 'active' : '']" @click="activeTab = 'manual'">手动步骤</button>
@@ -460,7 +539,7 @@ function goManageFeatured() {
 
           <!-- File Tab -->
           <div v-if="activeTab === 'file'" class="tab-content">
-            <pre class="code-preview">{{ generatedFile }}</pre>
+            <pre class="code-preview">{{ filePreview }}</pre>
             <div class="result-actions">
               <button class="btn btn-ghost btn-sm" @click="copyFile">复制内容</button>
               <button class="btn btn-ghost btn-sm" @click="downloadFileContent">下载文件</button>
@@ -469,10 +548,10 @@ function goManageFeatured() {
 
           <!-- Script Tab -->
           <div v-if="activeTab === 'script'" class="tab-content">
-            <pre class="code-preview script-code">{{ generatedScript }}</pre>
+            <pre class="code-preview script-code">{{ generatedScript ? '脚本包含密钥，请下载后在本机执行。生成的脚本不在页面展开。' : '' }}</pre>
             <div class="result-actions">
               <button class="btn btn-primary btn-sm" @click="downloadScript">下载脚本</button>
-              <span class="action-hint">脚本自动备份旧配置文件</span>
+              <span class="action-hint">脚本先备份旧配置，再合并 {{ providerName }}，保留其他供应商</span>
             </div>
           </div>
 
