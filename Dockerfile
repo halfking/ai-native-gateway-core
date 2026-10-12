@@ -28,6 +28,13 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 
+# 复制源代码前先删 macOS AppleDouble 元数据（`._foo` 与 `.DS_Store`），
+# 否则 `COPY . .` 会把它们带进镜像。go:embed 打到二进制里后 i18n 加载 `._ar.json`
+# 就会 panic: invalid character '\x00' looking for beginning of value。
+# 2026-10-13 真机部署第一轮翻车原因。同步脚本（deploy-211-docker.sh）侧 --exclude
+# 是第一道防线；这里是第二道，单源修复就该够。
+RUN find . -type f \( -name '._*' -o -name '.DS_Store' \) -delete
+
 # 复制源代码
 COPY . .
 

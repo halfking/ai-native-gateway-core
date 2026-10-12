@@ -30,6 +30,7 @@ D211_SRC_USER="${D211_SRC_USER:-$(id -un)}"
 D211_JOBS="${D211_JOBS:-4}"
 
 log()  { printf '[sync-211] %s\n' "$*" >&2; }
+warn() { printf '[sync-211] WARN: %s\n' "$*" >&2; }
 die()  { printf '[sync-211] FATAL: %s\n' "$*" >&2; exit 1; }
 
 MODE=preview
@@ -103,9 +104,14 @@ if [[ "$MODE" == "reset" ]]; then
   log "清空目标库（--reset）..."
   ssh "$D211_VIA" "docker exec -e PGPASSWORD='$TGT_PASS' $TGT_CONTAINER psql -X -U postgres -d postgres -c \
      \"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$TGT_DB';\"" >/dev/null 2>&1 || true
+  # DROP DATABASE 不能在事务块里跑，所以必须拆成两个独立 -c：
+  # 一条 -c 多个 `;` 会被 psql 包到隐式事务，触发 transaction block 报错。
+  # 2026-10-13 真机首跑报 "DROP DATABASE cannot run inside a transaction block" 即因此故。
   ssh "$D211_VIA" "docker exec -e PGPASSWORD='$TGT_PASS' $TGT_CONTAINER psql -X -U postgres -d postgres -c \
-     \"DROP DATABASE IF EXISTS \\\"$TGT_DB\\\"; CREATE DATABASE \\\"$TGT_DB\\\" OWNER \\\"llm_gateway\\\";\"" \
-     || die "重建目标库失败"
+     \"DROP DATABASE IF EXISTS \\\"$TGT_DB\\\";\"" >/dev/null 2>&1 || die "DROP 目标库失败"
+  ssh "$D211_VIA" "docker exec -e PGPASSWORD='$TGT_PASS' $TGT_CONTAINER psql -X -U postgres -d postgres -c \
+     \"CREATE DATABASE \\\"$TGT_DB\\\" OWNER \\\"llm_gateway\\\";\"" \
+     || die "CREATE 目标库失败"
 fi
 
 if [[ "$MODE" == "verify" ]]; then
@@ -120,22 +126,40 @@ fi
 
 # ── 真灌 ───────────────────────────────────────────────────────────────
 # 扩展先建好：pg_restore 遇到 CREATE EXTENSION 才建的话，顺序上会晚于表定义。
+# 列三个名字：citus 系装 citus_columnar、pgcolumnar 独立发行装 pgcolumnar、
+# columnar 老 Citus 直挂装 columnar——三选一即可（互斥），其它 contrib 普适。
 log "预建扩展 ..."
-for ext in btree_gist pg_stat_statements pg_trgm pgcrypto pgstattuple vector pgcolumnar; do
-  ssh "$D211_VIA" "docker exec -e PGPASSWORD='$TGT_PASS' $TGT_CONTAINER psql -X -U postgres -d $TGT_DB -c \
-     \"CREATE EXTENSION IF NOT EXISTS $ext;\"" >/dev/null 2>&1 \
-     && log "  ok   $ext" \
-     || warn "  跳过 ${ext}（目标 PG 装不上；恢复时可能报错）"
+for ext in btree_gist pg_stat_statements pg_trgm pgcrypto pgstattuple vector; do
+  if ssh "$D211_VIA" "docker exec -e PGPASSWORD='$TGT_PASS' $TGT_CONTAINER psql -X -U postgres -d $TGT_DB -tAc \
+       \"SELECT 1 FROM pg_available_extensions WHERE name='$ext';\"" 2>/dev/null | grep -q 1; then
+    ssh "$D211_VIA" "docker exec -e PGPASSWORD='$TGT_PASS' $TGT_CONTAINER psql -X -U postgres -d $TGT_DB -c \
+       \"CREATE EXTENSION IF NOT EXISTS $ext;\"" >/dev/null 2>&1 && log "  ok   ${ext}" || warn "  install ${ext} failed"
+  else
+    warn "  skip ${ext} (not available on target PG)"
+  fi
+done
+# columnar 三选一，互斥
+for col_ext in citus_columnar columnar pgcolumnar; do
+  if ssh "$D211_VIA" "docker exec -e PGPASSWORD='$TGT_PASS' $TGT_CONTAINER psql -X -U postgres -d $TGT_DB -tAc \
+       \"SELECT 1 FROM pg_available_extensions WHERE name='$col_ext';\"" 2>/dev/null | grep -q 1; then
+    ssh "$D211_VIA" "docker exec -e PGPASSWORD='$TGT_PASS' $TGT_CONTAINER psql -X -U postgres -d $TGT_DB -c \
+       \"CREATE EXTENSION IF NOT EXISTS $col_ext;\"" >/dev/null 2>&1 && log "  ok   $col_ext (columnar 接入)" && break
+  fi
 done
 
 log "pg_dump → pg_restore（${SRC_SIZE}，走 ssh 管道，不落盘）..."
 set +e
+# 源库 prereqs 留下的 CREATE EXTENSION pgcolumnar 在 211 acc-pg17（Citus 系）上
+# 找不到控制文件 → pg_restore --exit-on-error 直接 abort。
+# 修：dump 拷到容器内 → 容器内生成 TOC → 容器内 grep 滤掉 "EXTENSION (pg)columnar" /
+# citus_columnar（与目标已装的互斥） → 容器内 pg_restore -L 喂回 list。
+# 全部文件路径都在容器内，宿主机 /tmp 不被访问。
 pg_dump -h "$D211_SRC_HOST" -p "$D211_SRC_PORT" -U "$D211_SRC_USER" -d "$D211_SRC_DB" \
   --format=custom --compress=6 --no-owner --no-acl --jobs=1 \
 | ssh "$D211_VIA" "cat > /tmp/gw.dump && docker cp /tmp/gw.dump $TGT_CONTAINER:/tmp/gw.dump && \
-    docker exec -e PGPASSWORD='$TGT_PASS' $TGT_CONTAINER pg_restore -U postgres -d $TGT_DB \
-      --no-owner --no-acl --jobs=$D211_JOBS --exit-on-error /tmp/gw.dump; \
-    rc=\$?; docker exec $TGT_CONTAINER rm -f /tmp/gw.dump; exit \$rc"
+    docker exec $TGT_CONTAINER sh -c 'pg_restore -l /tmp/gw.dump | grep -v -E \"(EXTENSION - (pgcolumnar|columnar) |EXTENSION pgcolumnar |COMMENT - EXTENSION pgcolumnar|SCHEMA - pgcolumnar|ACCESS METHOD - columnar|TABLE DATA pgcolumnar|TABLE pgcolumnar|SEQUENCE pgcolumnar|VIEW pgcolumnar|FUNCTION pgcolumnar|COMMENT public.*pgcolumnar|auto_rotate_to_columnar|columnar_drift_report|columnar_heal|columnar_healthcheck|columnar_insert_only_parents|enforce_columnar_partition|fn_enforce_columnar_event_trigger)\" > /tmp/gw.toc && \
+      pg_restore -U postgres -d $TGT_DB -L /tmp/gw.toc --no-owner --no-acl --jobs=$D211_JOBS /tmp/gw.dump'; \
+    rc=\$?; docker exec $TGT_CONTAINER rm -f /tmp/gw.dump /tmp/gw.toc; exit \$rc"
 rc=$?
 set -e
 if (( rc != 0 )); then

@@ -71,11 +71,12 @@ VIA=""
 FORCE_REDIS_DB=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --status)   MODE=status; shift ;;
-    --stop)     MODE=stop; shift ;;
-    --redis-db) FORCE_REDIS_DB="${2:?--redis-db N}"; shift 2 ;;
-    --via)      VIA="${2:?--via HOST}"; shift 2 ;;
-    -h|--help)  usage; exit 0 ;;
+    --status)     MODE=status; shift ;;
+    --probe-only) MODE=probe-only; shift ;;
+    --stop)       MODE=stop; shift ;;
+    --redis-db)   FORCE_REDIS_DB="${2:?--redis-db N}"; shift 2 ;;
+    --via)        VIA="${2:?--via HOST}"; shift 2 ;;
+    -h|--help)    usage; exit 0 ;;
     *) die "unknown argument: $1 (see --help)" ;;
   esac
 done
@@ -89,18 +90,28 @@ ENV_FILE="$D211_STATE_DIR/env/gateway.env"
 if [[ -n "$VIA" ]]; then
   [[ "$MODE" == "deploy" ]] || die "--via 只支持默认 deploy 模式（--status/--stop 请 ssh 后本地跑）"
   log "同步仓库到 $VIA:$D211_TARGET_IP ..."
-  ssh "$VIA" 'mkdir -p ~/llm-gateway-go-211'
+  # 先在目标端把工作树整体清空——tar 解包不会删目标已有文件，旧部署残留的
+  # macOS `._*` 元数据 / .env* 会一直挂在那让 docker COPY 重新带进镜像。
+  # 2026-10-13 真机第三轮翻车根因：第一次同步带进去了 `._*`，加 --exclude 重跑也没用。
+  ssh "$VIA" 'rm -rf ~/llm-gateway-go-211 && mkdir -p ~/llm-gateway-go-211'
   # 用 tar over ssh 排除体积大/无用目录，避免 node_modules、.git 拖慢或撑爆磁盘。
   # .env* 必须排干净：Dockerfile 里是 `COPY . .`，而 .dockerignore 并不排除
   # .env*，所以一旦把 .env.local 同步过去，它的 admin key / secret / 口令就会
   # 进 docker build 上下文、留在镜像层里（docker history 就能翻出来）。
+  # ._* / .DS_Store 排除：macOS 同步到 Linux 时 AppleDouble 元数据会进 go:embed，
+  # i18n 加载 `._ar.json` 直接 panic invalid character '\x00'。见真机 2026-10-13 翻车。
   tar -C "$D211_REPO_ROOT" \
       --exclude=.git --exclude=node_modules --exclude=dist --exclude=build \
       --exclude='*.log' --exclude='.env' --exclude='.env.*' \
-      -cf - . | ssh "$VIA" "tar -C ~/llm-gateway-go-211 -xf -"
+      --exclude='._*' --exclude='.DS_Store' \
+      -cf - . | ssh "$VIA" "tar --no-xattrs -C ~/llm-gateway-go-211 -xf - && \
+        find ~/llm-gateway-go-211 -name '._*' -type f -delete && \
+        find ~/llm-gateway-go-211 -name '.DS_Store' -type f -delete && \
+        echo '[211] 同步后 ._* 残留: '\$(find ~/llm-gateway-go-211 -name '._*' -type f | wc -l)"
   # 双保险：目标机上再扫一遍，真有残留就当场删掉，别留给下一次构建
   ssh "$VIA" "find ~/llm-gateway-go-211 -maxdepth 2 -name '.env*' -type f -delete; \
-             echo '[211] 目标树残留 .env*: '\$(find ~/llm-gateway-go-211 -name '.env*' -type f | wc -l)"
+             echo '[211] 目标树残留 .env*: '\$(find ~/llm-gateway-go-211 -name '.env*' -type f | wc -l) \
+             ' ._*: '\$(find ~/llm-gateway-go-211 -name '._*' -type f | wc -l)"
   log "在 $VIA 上执行 deploy ..."
   ssh "$VIA" "cd ~/llm-gateway-go-211 && D211_STATE_DIR=$D211_STATE_DIR D211_REDIS_DB_START=$D211_REDIS_DB_START D211_REDIS_DB_END=$D211_REDIS_DB_END bash scripts/deploy-211-docker.sh $*"
   exit $?
@@ -122,34 +133,53 @@ log "Docker: $(docker --version)"
 # =============================================================================
 # 探测一：PostgreSQL 17 + columnar
 # =============================================================================
-# 探活单个候选容器，输出 "<server_version_num> <columnar_am_count>"；失败返回非 0。
-# postgres 官方镜像内 psql 走 unix socket 的 trust/peer，本地 exec 通常免密；
-# 复用别人起的实例时若强制密码，则依赖 LLM_GATEWAY_PG_PASSWORD / 容器 env。
+# 探活单个候选容器，输出 "<server_version_num> <columnar_flag> <vector_flag>"；失败返回非 0。
+# 关键变更：判定 columnar 不能查 pg_am —— pg_am 是「当前已建扩展的某库里」的访问方法表，
+# 复用别人起的容器时若目标库还没建 citus_columnar/pgcolumnar，pg_am 永远是空的。
+# 正确口径是查 pg_available_extensions（在 template1 上看安装能力），这才是「装了就能用」。
+# 三种实现均认：citus_columnar（Citus 系，acc-pg17 / kx-citus-pg17 就是这种）、
+# columnar（Citus 早版本/直挂）、pgcolumnar（独立发行版）。vector 也同时校验。
 pg_probe_container() {
   local c="$1" u pw out
-  # 候选超级用户：容器声明的 POSTGRES_USER 优先，其次 postgres
   u="$(docker exec "$c" printenv POSTGRES_USER 2>/dev/null || true)"
   u="${u:-postgres}"
   pw="$(docker exec "$c" printenv POSTGRES_PASSWORD 2>/dev/null || true)"
   pw="${pw:-${LLM_GATEWAY_PG_PASSWORD:-}}"
   for cu in "$u" postgres; do
+    # ⚠ 不能 `tr -d '[:space:]'`：三段以空格分隔，去掉空格后会被 read 当成一个字段。
+    # 这正是 2026-10-13 第一轮误判「acc-pg17 列不满足」的真因：把 "170010 1 1" 压成
+    # "17001011"，pg_is_17 判 17001011 ≥ 180000 直接 false → 走「新建」。
     out="$(docker exec -e PGPASSWORD="$pw" "$c" \
       psql -X -U "$cu" -d postgres -tAc \
-      "SELECT current_setting('server_version_num')::int,
-              (SELECT count(*) FROM pg_am WHERE amname IN ('columnar','pgcolumnar'));" \
-      2>/dev/null | tr -d '[:space:]')" || continue
+      "SELECT current_setting('server_version_num')::int
+            || ' ' || (CASE WHEN EXISTS (SELECT 1 FROM pg_available_extensions
+                                          WHERE name IN ('citus_columnar','columnar','pgcolumnar'))
+                            THEN 1 ELSE 0 END)
+            || ' ' || (CASE WHEN EXISTS (SELECT 1 FROM pg_available_extensions
+                                          WHERE name='vector')
+                            THEN 1 ELSE 0 END);" \
+      2>/dev/null | tr -d '\r' | head -1)" || continue
+    # 兼容 psql 在某些容器里多吐一个 "WARNING:" 头的情形——只取第一段三字段
+    out="$(printf '%s\n' "$out" | awk '{print $1, $2, $3}')"
     [[ -n "$out" ]] && { printf '%s\n' "$out"; return 0; }
   done
   return 1
 }
 
-pg_is_17()      { local v="$1"; (( v >= 170000 && v < 180000 )); }
-pg_has_columnar(){ (( "$1" > 0 )); }
+pg_is_17()         { local v="$1"; (( v >= 170000 && v < 180000 )); }
+pg_has_columnar() { (( "$1" > 0 )); }
+pg_has_vector()    { (( "$1" > 0 )); }
 
 # 在所有容器里找一个 pg17+columnar 的实例；找到输出容器名，否则返回非 0。
+#
+# ⚠ 2026-10-13 真机翻车：docker ps --format "{{.Names}}|{{.Image}}" 用 `|` 分隔，
+# 但默认 IFS=space+tab+newline，read -r name img 不会在 `|` 切分 → img 永远是空
+# → case 关键字匹配只走 lower_name（永远没 *citus* 之类）→ 所有候选全 continue
+# → 走「新建」路径 → codeload tarball 没 submodule → 构建炸。
+# 修：单行 IFS='|' read 强制按 | 切。
 find_pg_container() {
-  local c img name probe
-  while read -r name img; do
+  local name img lower_name lower_img probe
+  while IFS='|' read -r name img; do
     [[ -z "$name" ]] && continue
     # 容器状态必须是 running 才谈得上"能用"
     [[ "$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null || true)" == "running" ]] || continue
@@ -160,11 +190,13 @@ find_pg_container() {
       *) continue ;;
     esac
     if probe="$(pg_probe_container "$name")"; then
-      local ver="${probe%% *}" am="${probe##* }"
-      if pg_is_17 "$ver" && pg_has_columnar "$am"; then
+      # probe 形如 "<ver> <col> <vec>"，三段用 read 拆
+      local ver col vec
+      read -r ver col vec < <(printf '%s\n' "$probe")
+      if pg_is_17 "$ver" && pg_has_columnar "$col" && pg_has_vector "$vec"; then
         printf '%s\n' "$name"; return 0
       fi
-      log "  候选 $name: 版本 ${ver} columnar=${am} → 不满足(需 PG17+columnar)，继续找"
+      log "  候选 $name: 版本=${ver} columnar=${col} vector=${vec} → 不满足(需 PG17+columnar+vector)，继续找"
     else
       log "  候选 $name: psql 探活失败（可能不是 PG 或需密码），继续找"
     fi
@@ -186,15 +218,19 @@ create_pg_container() {
   mkdir -p "$build_dir"
   cat > "$build_dir/Dockerfile.pgcolumnar" <<EOF
 # 由 deploy-211-docker.sh 生成：PostgreSQL 17 + pgvector + pgcolumnar
+# 关键：pgcolumnar 仓库的 objstore/ 是 git submodule，codeload 的 tarball 不含它，
+# make 会在 objstore 步骤报 "No rule to make target 'all'"。改用 git clone
+# --recurse-submodules 才是正确拉法。同时补 pkg-config（pgcolumnar 用它解析
+# zlib/lz4/zstd 的 link flag，没有就 _inflateInit2_ undefined）。
 FROM ${D211_PG_BASE_IMAGE:-pgvector/pgvector:pg17}
 RUN apt-get update \
- && apt-get install -y --no-install-recommends build-essential libzstd-dev liblz4-dev curl ca-certificates \
- && curl -fsSL https://codeload.github.com/commandprompt/pgcolumnar/tar.gz/refs/tags/${D211_PGCOLUMNAR_VER} \
-      -o /tmp/pgcolumnar.tgz \
- && mkdir -p /tmp/pgc && tar -xzf /tmp/pgcolumnar.tgz -C /tmp/pgc --strip-components=1 \
- && cd /tmp/pgc && make PG_CONFIG=/usr/local/bin/pg_config LDFLAGS="-lz" \
- && make PG_CONFIG=/usr/local/bin/pg_config LDFLAGS="-lz" install \
- && rm -rf /tmp/pgc /tmp/pgcolumnar.tgz /var/lib/apt/lists/*
+ && apt-get install -y --no-install-recommends \
+      build-essential libzstd-dev liblz4-dev zlib1g-dev pkg-config git curl ca-certificates \
+ && git clone --recurse-submodules --depth 1 --branch ${D211_PGCOLUMNAR_VER} \
+      https://github.com/commandprompt/pgcolumnar /tmp/pgc \
+ && cd /tmp/pgc && make PG_CONFIG=/usr/local/bin/pg_config LDFLAGS="-Wl,--as-needed" \
+ && make PG_CONFIG=/usr/local/bin/pg_config LDFLAGS="-Wl,--as-needed" install \
+ && rm -rf /tmp/pgc /var/lib/apt/lists/*
 EOF
   log "构建 PG 镜像（含 pgcolumnar ${D211_PGCOLUMNAR_VER}），分钟级 ..."
   docker build -t "$D211_PG_IMAGE" -f "$build_dir/Dockerfile.pgcolumnar" "$build_dir" \
@@ -249,20 +285,89 @@ ensure_pg_database() {
     psql -X -U postgres -d postgres -c \
     "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='${D211_PG_USER}') THEN CREATE ROLE \"${D211_PG_USER}\" LOGIN PASSWORD '${LLM_GATEWAY_PG_PASSWORD:-}'; END IF; END \$\$;" \
     >/dev/null 2>&1 || warn "角色 $D211_PG_USER 创建告警"
-  # columnar 扩展（在目标库里启用）
+  # 兼容多种 columnar 发行：citus_columnar（Citus 系，acc-pg17 即此）/
+  # columnar / pgcolumnar / vector + 其他 contrib 扩展一并装上。
+  # 网关运行时 00-prereqs.sql 会再 idempotent 装一次，这里是兜底（即使 prereqs
+  # 没跑到也能让 USING columnar 立即可用）。
   docker exec -e PGPASSWORD="${LLM_GATEWAY_PG_PASSWORD:-}" "$c" \
-    psql -X -U "$D211_PG_USER" -d "$D211_PG_DB" -c "CREATE EXTENSION IF NOT EXISTS pgcolumnar;" \
-    >/dev/null 2>&1 || warn "CREATE EXTENSION pgcolumnar 告警（可能需要 superuser）"
+    psql -X -U postgres -d "$D211_PG_DB" -v ON_ERROR_STOP=0 -c "
+DO \$col\$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name='citus_columnar') THEN
+    BEGIN EXECUTE 'CREATE EXTENSION IF NOT EXISTS citus WITH SCHEMA pg_catalog'; EXCEPTION WHEN OTHERS THEN NULL; END;
+    EXECUTE 'CREATE EXTENSION IF NOT EXISTS citus_columnar WITH SCHEMA pg_catalog';
+  ELSIF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name='columnar') THEN
+    EXECUTE 'CREATE EXTENSION IF NOT EXISTS columnar';
+  ELSIF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name='pgcolumnar') THEN
+    EXECUTE 'CREATE EXTENSION IF NOT EXISTS pgcolumnar';
+  END IF;
+END\$col\$;
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+CREATE EXTENSION IF NOT EXISTS pgstattuple;
+" >/dev/null 2>&1 || warn "扩展预装告警（可能无权限/部分扩展不可用，由 00-prereqs.sql 接管）"
 }
 
 # =============================================================================
 # 探测二：Redis
 # =============================================================================
-# redis 认证参数：密码可能含空格/通配符，必须走数组而不是裸展开。
-# （早期版本写成 ${VAR:+-a "$VAR"}，在 set -u + 分词下会被拆成多个 argv。）
+# 复用别人起的 redis 容器时，密码可能既不在 env 也不在 REDISCLI_AUTH，而是埋在
+# `docker inspect ... Cmd` 的 --requirepass 参数里。所以探测期不能假定 LLM_GATEWAY_REDIS_PASSWORD
+# 已经设好——redis_cli 第一次先无密码 PING，不通再尝试从启动命令抽密码，再不通才放弃。
+# 全局缓存到 REDIS_PASSWORD 以供后续 redis_db_in_use / cluster 探测共用。
+
+redis_try_ping() {
+  # $1=container $2=password(可空)；输出 PONG/错误；返回 0/非 0
+  # ⚠ 2026-10-13 真机翻车：redis-cli 7 加 -a 时会在 PONG 之前多打一行
+  # "Warning: Using a password with '-a' ..."，[[ "$out" == "PONG" ]] 直接不等 → 探活
+  # 判失败 → 走「新建 Redis」分支 → 抢了别人的端口。修：再走一次 tail -1 拿 PONG。
+  local c="$1" pw="${2:-}"
+  local args=()
+  [[ -n "$pw" ]] && args=( -a "$pw" )
+  docker exec "$c" redis-cli "${args[@]}" PING 2>/dev/null | tail -n 1
+}
+
+redis_extract_password_from_cmd() {
+  # 从 `docker inspect ... Cmd` + Entrypoint 拼出的字符串里抓 --requirepass 下一个 token
+  local c="$1" args="" pw="" prev=""
+  args="$(docker inspect -f '{{range .Config.Cmd}}{{.}} {{end}}{{range .Config.Entrypoint}}{{.}} {{end}}' "$c" 2>/dev/null || true)"
+  for tok in $args; do
+    case "$prev" in
+      --requirepass) pw="$tok"; break ;;
+    esac
+    prev="$tok"
+  done
+  [[ -n "$pw" ]] && printf '%s' "$pw"
+}
+
+# 探活某容器是否可用：返回 0 表示 PING 通，并通过 stdout 末尾写密码（用 \x1f 分隔）。
+# 调用方拿到「name\x1fpw」，拆开就够。子 shell 改全局变量在 bash 里无效，
+# 所以走 stdout 通道回传更稳。调用方用 `printf '%s\n%s\n' name pw` 也能两行；
+# 但本函数只产密码片段即可，name 由调用方自己加。
+redis_probe_usable() {
+  local c="$1" pw="" out
+  pw="$(docker exec "$c" printenv REDISCLI_AUTH 2>/dev/null || true)"
+  pw="${pw:-${LLM_GATEWAY_REDIS_PASSWORD:-}}"
+  if [[ -z "$pw" ]]; then
+    pw="$(redis_extract_password_from_cmd "$c" || true)"
+  fi
+  out="$(redis_try_ping "$c" "$pw")"
+  if [[ "$out" == "PONG" ]]; then
+    # stdout 第一行写"PONG 密码"前缀分隔，调用方按行解析拿到 pw。
+    # 比「函数内改全局变量」更稳——bash 命令替换里子 shell 的全局赋值
+    # 对父 shell 不可见，这是 2026-10-13 真机第四轮翻车根因。
+    printf 'PONG\x1f%s\n' "$pw"
+    return 0
+  fi
+  return 1
+}
+
 redis_auth_args() {
-  if [[ -n "${LLM_GATEWAY_REDIS_PASSWORD:-}" ]]; then
-    REDIS_AUTH=( -a "$LLM_GATEWAY_REDIS_PASSWORD" )
+  if [[ -n "${REDIS_PASSWORD:-}" ]]; then
+    REDIS_AUTH=( -a "$REDIS_PASSWORD" )
   else
     REDIS_AUTH=()
   fi
@@ -282,21 +387,24 @@ redis_cluster_enabled() {
 }
 
 find_redis_container() {
-  local name img
-  while read -r name img; do
+  local name img ln li
+  while IFS='|' read -r name img; do
     [[ -z "$name" ]] && continue
     [[ "$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null || true)" == "running" ]] || continue
-    local ln li
     ln="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
     li="$(printf '%s' "$img" | tr '[:upper:]' '[:lower:]')"
     case "$ln$li" in
       *redis*) ;;
       *) continue ;;
     esac
-    if redis_ping "$name"; then
-      printf '%s\n' "$name"; return 0
+    # 探活：redis_probe_usable stdout 写 "PONG\x1f<pw>"，本函数读到后把
+    # 容器名 + 密码一并 printf 给调用方（两行，read 两次取）。
+    if probe_out="$(redis_probe_usable "$name")"; then
+      local rpw="${probe_out#*$'\x1f'}"
+      printf '%s\n%s\n' "$name" "$rpw"
+      return 0
     fi
-    log "  候选 $name: redis PING 失败，跳过"
+    log "  候选 $name: redis PING 失败（无密码+启动命令也抽不出），跳过"
   done < <(docker ps --format '{{.Names}}|{{.Image}}')
   return 1
 }
@@ -357,15 +465,25 @@ allocate_redis_db() {
 # 探测汇总 / status
 # =============================================================================
 PG_FOUND="$(find_pg_container || true)"
-REDIS_FOUND="$(find_redis_container || true)"
+# find_redis_container 返回两行：name\npassword。命令替换的 $() 在子 shell 里
+# 跑，把多行 stdout 截走——read 两次就拿到。
+REDIS_RAW="$(find_redis_container || true)"
+REDIS_FOUND=""
+REDIS_PASSWORD=""
+if [[ -n "$REDIS_RAW" ]]; then
+  REDIS_FOUND="$(printf '%s\n' "$REDIS_RAW" | head -1)"
+  REDIS_PASSWORD="$(printf '%s\n' "$REDIS_RAW" | tail -1)"
+fi
 
 show_status() {
   echo "=== 211 资源探测 ==="
   if [[ -n "$PG_FOUND" ]]; then
-    local p; p="$(pg_probe_container "$PG_FOUND" || echo '? ?')"
-    echo "PG   : 复用容器 $PG_FOUND  (版本 ${p%% *} / columnar=${p##* })"
+    local p ver col vec
+    p="$(pg_probe_container "$PG_FOUND" || echo '? 0 0')"
+    read -r ver col vec < <(printf '%s\n' "$p")
+    echo "PG   : 复用容器 $PG_FOUND  (版本=${ver} columnar=${col} vector=${vec})"
   else
-    echo "PG   : 无匹配的 pg17+columnar 实例（将新建 ${D211_PG_CONTAINER}）"
+    echo "PG   : 无匹配的 pg17+columnar+vector 实例（将新建 ${D211_PG_CONTAINER}）"
   fi
   if [[ -n "$REDIS_FOUND" ]]; then
     echo "Redis: 复用容器 $REDIS_FOUND"
@@ -386,6 +504,29 @@ if [[ "$MODE" == "status" ]]; then
   exit 0
 fi
 
+# --probe-only：探测 + show_status + 真伪密码验证，但不构建不启动
+if [[ "$MODE" == "probe-only" ]]; then
+  show_status
+  if [[ -n "$PG_FOUND" ]]; then
+    echo
+    echo "PG 复用细节:"
+    echo "  container     = $PG_FOUND"
+    echo "  POSTGRES_USER = $(docker exec "$PG_FOUND" printenv POSTGRES_USER 2>/dev/null || echo '?')"
+    echo "  POSTGRES_DB   = $(docker exec "$PG_FOUND" printenv POSTGRES_DB 2>/dev/null || echo '?')"
+  fi
+  if [[ -n "$REDIS_FOUND" ]]; then
+    echo
+    echo "Redis 复用细节:"
+    echo "  container  = $REDIS_FOUND"
+    echo "  password 长度 = ${#REDIS_PASSWORD}（空=trust 模式）"
+    docker exec "$REDIS_FOUND" redis-cli ${REDIS_PASSWORD:+-a "$REDIS_PASSWORD"} INFO server 2>/dev/null | grep -E "redis_version|cluster_enabled|tcp_port" | sed 's/^/    /'
+    # 端到端 PING 一次，确认捕获的密码真能通过
+    pong="$(docker exec "$REDIS_FOUND" redis-cli ${REDIS_PASSWORD:+-a "$REDIS_PASSWORD"} PING 2>/dev/null | tail -n 1)"
+    echo "  PING(end-to-end) = $pong"
+  fi
+  exit 0
+fi
+
 if [[ "$MODE" == "stop" ]]; then
   log "停止网关容器 ${D211_GW_CONTAINER}（不动 PG/Redis）"
   docker rm -f "$D211_GW_CONTAINER" >/dev/null 2>&1 || true
@@ -399,10 +540,15 @@ if [[ -n "$PG_FOUND" ]]; then
   log "复用已有 pg17+columnar 实例: $PG_FOUND"
   PG_CONTAINER="$PG_FOUND"
   PG_REUSED=1
+  PG_USER="${LLM_GATEWAY_PG_USER:-$(docker exec "$PG_CONTAINER" printenv POSTGRES_USER 2>/dev/null || true)}"
+  PG_USER="${PG_USER:-postgres}"
   PG_PASS="${LLM_GATEWAY_PG_PASSWORD:-}"
   if [[ -z "$PG_PASS" ]]; then
     PG_PASS="$(docker exec "$PG_CONTAINER" printenv POSTGRES_PASSWORD 2>/dev/null || true)"
   fi
+  # 复用 Citus 系容器时超级用户是 acc_super 而非 POSTGRES_USER；为避免误用，
+  # PG_USER 由后续 ensure_pg_database 内部用 postgres 走 DO 块建 role，与复用容器
+  # 的实际超级用户解耦——这里只用于 DSN。
   [[ -z "$PG_PASS" ]] && PG_PASS="unused"
 else
   create_pg_container
@@ -491,8 +637,23 @@ fi
 CORS_ORIGINS="${LLM_GATEWAY_CORS_ORIGINS:-*}"
 
 # 组装网关要用的连接串（走 docker 网络内的容器名）
-DB_URL="postgres://${D211_PG_USER}:${PG_PASS}@${PG_CONTAINER}:5432/${D211_PG_DB}?sslmode=disable"
-REDIS_URL="redis://${REDIS_CONTAINER}:6379/${REDIS_DB}"
+# 密码必须 URL-encode（`@` / `:` / `/` 会拆断 DSN；`unused` 表示 trust 模式可不带）
+url_encode() { printf '%s' "$1" | python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.stdin.read(), safe=''))" 2>/dev/null || printf '%s' "$1"; }
+PG_PASS_ENC="$(url_encode "$PG_PASS")"
+REDIS_PASS_ENC="$(url_encode "${REDIS_PASSWORD:-}")"
+# PG_USER 也得编码（acc-pg17 实际是 acc_super，正常无特殊字符，但保持一致）
+PG_USER_ENC="$(url_encode "$PG_USER")"
+# ⚠ 2026-10-13 真机第六轮翻车：网关 config.Redis 只认 ADDR/DB/PASSWORD 三段，
+# 不认 LLM_GATEWAY_REDIS_URL（v2 旧版协议已废弃）。按 config.RedisAddr / RedisDB /
+# RedisPassword 三个独立变量注入。env 文件里仍保留 LLM_GATEWAY_REDIS_URL 仅作
+# 运维查看用。
+REDIS_ADDR="${REDIS_CONTAINER}:6379"
+if [[ -n "${REDIS_PASSWORD:-}" ]]; then
+  REDIS_URL="redis://:${REDIS_PASS_ENC}@${REDIS_ADDR}/${REDIS_DB}"
+else
+  REDIS_URL="redis://${REDIS_ADDR}/${REDIS_DB}"
+fi
+DB_URL="postgres://${PG_USER_ENC}:${PG_PASS_ENC}@${PG_CONTAINER}:5432/${D211_PG_DB}?sslmode=disable"
 
 # 这个 env 文件是「shell 可 source」的**持久记录**（供运维查、同步脚本读），
 # 不是给 docker --env-file 用的：
@@ -505,6 +666,11 @@ REDIS_URL="redis://${REDIS_CONTAINER}:6379/${REDIS_DB}"
   printf '# shell 可 source；容器用 -e 注入，不走 docker 的 env 文件参数\n'
   printf 'export LLM_GATEWAY_STORAGE_MODE=full\n'
   printf 'export LLM_GATEWAY_DATABASE_URL=%q\n' "$DB_URL"
+  # 网关 config.Redis 解析三段独立变量：ADDR/DB/PASSWORD
+  printf 'export LLM_GATEWAY_REDIS_ADDR=%q\n' "$REDIS_ADDR"
+  printf 'export LLM_GATEWAY_REDIS_DB=%q\n' "$REDIS_DB"
+  printf 'export LLM_GATEWAY_REDIS_PASSWORD=%q\n' "${REDIS_PASSWORD:-}"
+  # 兼容老格式：运维人看 env 也能直接拿到完整 DSN
   printf 'export LLM_GATEWAY_REDIS_URL=%q\n' "$REDIS_URL"
   printf 'export LLM_GATEWAY_SECRET_KEY=%q\n' "$SECRET_KEY"
   printf 'export LLM_GATEWAY_CORS_ORIGINS=%q\n' "$CORS_ORIGINS"
@@ -514,7 +680,9 @@ chmod 600 "$ENV_FILE"
 GW_ENV=(
   -e "LLM_GATEWAY_STORAGE_MODE=full"
   -e "LLM_GATEWAY_DATABASE_URL=${DB_URL}"
-  -e "LLM_GATEWAY_REDIS_URL=${REDIS_URL}"
+  -e "LLM_GATEWAY_REDIS_ADDR=${REDIS_ADDR}"
+  -e "LLM_GATEWAY_REDIS_DB=${REDIS_DB}"
+  -e "LLM_GATEWAY_REDIS_PASSWORD=${REDIS_PASSWORD:-}"
   -e "LLM_GATEWAY_SECRET_KEY=${SECRET_KEY}"
   -e "LLM_GATEWAY_CORS_ORIGINS=${CORS_ORIGINS}"
 )

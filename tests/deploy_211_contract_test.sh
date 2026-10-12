@@ -129,11 +129,19 @@ PY
 else
   printf '  SKIP 全角标点隐患扫描（本机无 python3；核心断言不受影响）\n'
 fi
-# 复用判定必须同时含版本与 columnar 两维，否则会去抢别人的 PG16 实例
-if grep -q 'pg_is_17 "\$ver" && pg_has_columnar "\$am"' "$SCRIPT"; then
-  ok "PG 复用同时校验 PG17 与 columnar"
+# 复用判定必须同时含版本、columnar、vector 三维，否则会去抢别人的 PG16 实例
+# 历史上 pg_am 口径把 acc-pg17（Citus 系）误判为「没 columnar」→ 走了新建路径
+# → codeload tarball 无 git submodule → 整轮部署废掉。改查 pg_available_extensions
+# 是关键修复，必须钉死。
+if grep -q 'pg_is_17' "$SCRIPT" \
+   && grep -q 'pg_has_columnar' "$SCRIPT" \
+   && grep -q 'pg_has_vector' "$SCRIPT" \
+   && grep -q "pg_available_extensions" "$SCRIPT" \
+   && grep -q "'citus_columnar'" "$SCRIPT" \
+   && grep -q "'pgcolumnar'" "$SCRIPT"; then
+  ok "PG 复用判定认 columnar 三种发行 + vector（查 pg_available_extensions）"
 else
-  bad "PG 复用判定缺少版本/columnar 双条件"
+  bad "PG 复用判定缺少 columnar 三种发行 / vector / pg_available_extensions 任一"
 fi
 # Redis cluster 模式必须硬降级到 db0（cluster 不支持非 0 库）
 if grep -q 'redis_cluster_enabled' "$SCRIPT" && grep -q 'REDIS_DB=0' "$SCRIPT"; then
@@ -159,7 +167,97 @@ fi
 if grep -q 'GW_ENV=(' "$SCRIPT" && grep -q '"\${GW_ENV\[@\]}"' "$SCRIPT"; then
   ok "GW_ENV 数组确实传给了 docker run"
 else
-  bad "GW_ENV 数组没有接到 docker run 上"
+  bad "GW_ENV 数组未传给 docker run"
+fi
+# 复用别人启了 requirepass 的 redis（如 nbjl-redis）时，密码得能从启动命令抽出来
+# 否则 allocate_redis_db 的 DBSIZE 探测全 NOAUTH，库号倒排跑不起来
+if grep -q -- '--requirepass' "$SCRIPT" && grep -q 'redis_extract_password_from_cmd' "$SCRIPT"; then
+  ok "Redis 密码可从容器启动命令回抽（覆盖 nbjl-redis 这类启了 requirepass 的实例）"
+else
+  bad "Redis 抽密码逻辑缺失"
+fi
+# pgcolumnar 源码构建必须用 git clone --recurse-submodules（codeload tarball 不含 objstore 子模块）
+# —— 2026-10-13 真机部署第一轮就死在这条：objstore/ 空壳 → No rule to make target 'all'
+if grep -q 'git clone --recurse-submodules' "$SCRIPT" \
+   && grep -q 'pkg-config' "$SCRIPT"; then
+  ok "pgcolumnar 走 git clone --recurse-submodules + 装 pkg-config"
+else
+  bad "pgcolumnar 构建路径没用 git submodule / 没装 pkg-config"
+fi
+# DSN 密码必须 URL-encode（PG 系 acc-pg17 密码含 base64 数字但难保；其他容器的密码里出
+# @/: 会直接拆断 URL；写死明文拼字符串是历史坑）
+if grep -q 'url_encode' "$SCRIPT" && grep -q 'urllib.parse.quote' "$SCRIPT"; then
+  ok "DB/Redis DSN 密码 URL-encode（防 @ / : / / 拆断）"
+else
+  bad "DSN 密码未 URL-encode"
+fi
+# --probe-only 模式：探测期能立刻验证复用口径，且不触发分钟级构建
+if grep -q -- '--probe-only' "$SCRIPT" && grep -q 'MODE=probe-only' "$SCRIPT"; then
+  ok "提供 --probe-only：探测期快速验证复用口径，跳过构建"
+else
+  bad "缺 --probe-only 模式"
+fi
+# find_redis_container 必须把容器名 + 密码一并返回（用 \x1f 分隔），
+# 否则调用方拿到 REDIS_FOUND 但拿不到密码 → DSN 拼不出 auth 段。
+# 这条是 2026-10-13 真机第二次翻车的根因：函数内改 REDIS_PASSWORD 全局变量
+# 在子 shell 跑命令替换时不生效。用 literal grep 避免正则引号层叠。
+if grep -qF "printf 'PONG\\x1f%s\\n' \"\$pw\"" "$SCRIPT" \
+   && grep -qF "printf '%s\\n%s\\n' \"\$name\" \"\$rpw\"" "$SCRIPT" \
+   && grep -qF 'REDIS_FOUND="$(printf' "$SCRIPT" \
+   && grep -qF 'REDIS_PASSWORD="$(printf' "$SCRIPT"; then
+  ok "find_redis_container 通过 stdout 协议回传密码（避开子 shell 全局赋值失效）"
+else
+  bad "find_redis_container 未用 stdout 协议回传密码"
+fi
+# redis-cli -a 在密码模式下会先打一行 Warning 干扰 PONG 判定，必须取末行
+if grep -q 'tail -n 1' "$SCRIPT" && grep -q 'redis_try_ping' "$SCRIPT"; then
+  ok "redis PING 判定走末行（容忍 -a Warning 前缀）"
+else
+  bad "redis PING 未做 tail 防御 Warning 前缀"
+fi
+# 探测时 read docker ps --format 'NAME|IMAGE' 必须显式 IFS='|'：
+# 默认 IFS 是 space+tab+newline，read 不会在 | 切分 → img 永远空 → 关键字匹配
+# 只看 name 走不到 *citus*/*pg17*/*redis* → 走「新建」分支。2026-10-13 真机翻车证据。
+if grep -qE "while IFS='\|' read -r name img" "$SCRIPT"; then
+  ok "find_*_container 按 | 切分 docker ps 输出（IFS=|）"
+else
+  bad "find_*_container 未显式 IFS='|' 切分 docker ps 输出"
+fi
+# 211 接收端 tar 必须带 --no-xattrs / --no-mac-metadata：macOS BSD tar 写 archive
+# 时把 xattr（LIBARCHIVE.xattr.com.apple.provenance 警告）也写进去，Linux GNU tar
+# 默认会按 xattr 物化 `._foo` AppleDouble 文件——这正是 2026-10-13 真机第三轮翻车
+# 的根因：发送端 exclude 了 `._*` 路径，接收端 GNU tar 仍按 xattr 重新物化，
+# 工作树里冒出 23472 个 `._*`，COPY 进镜像 → i18n panic。
+if grep -q -- '--no-xattrs' "$SCRIPT"; then
+  ok "211 接收 tar 关闭 xattr（GNU tar 1.35 不支持 --no-mac-metadata，靠 find 兜底）"
+else
+  bad "211 接收 tar 未关闭 xattr"
+fi
+# sync 脚本的 --reset 必须把 DROP 与 CREATE 拆成两条独立 -c：
+# 同一条 -c 多个分号会被 psql 包到隐式事务，触发
+# "DROP DATABASE cannot run inside a transaction block"。2026-10-13 真机首跑即因此故。
+SYNC_SCRIPT="$ROOT/scripts/sync-gateway-db-to-211.sh"
+if [[ -f "$SYNC_SCRIPT" ]]; then
+  drop_line="$(grep -n 'DROP DATABASE IF EXISTS' "$SYNC_SCRIPT" | head -1 | cut -d: -f1)"
+  create_line="$(grep -n 'CREATE DATABASE' "$SYNC_SCRIPT" | head -1 | cut -d: -f1)"
+  if [[ -n "$drop_line" && -n "$create_line" && "$drop_line" != "$create_line" ]]; then
+    ok "sync --reset 拆 DROP 与 CREATE 为独立 -c（避开事务块）"
+  else
+    bad "sync --reset DROP 与 CREATE 同处一行（触发 transaction block 报错）"
+  fi
+  if grep -q '^warn()' "$SYNC_SCRIPT"; then
+    ok "sync 脚本定义 warn() 函数（预建扩展失败时不再 command not found 退出）"
+  else
+    bad "sync 脚本缺 warn() 定义"
+  fi
+else
+  bad "找不到 $SYNC_SCRIPT"
+fi
+# Dockerfile 侧必须再兜底一次清 ._*/.DS_Store：万一 tar 同步漏了，构建也不会带进去
+if grep -q "name '._\\*' -o -name '.DS_Store'" "$ROOT/Dockerfile"; then
+  ok "Dockerfile 复制源码前清理 macOS 元数据（第二道防线）"
+else
+  bad "Dockerfile 未在 COPY . 之前清理 macOS 元数据"
 fi
 
 echo
