@@ -4,19 +4,22 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker 全部缺失」的判断已被实测推翻，见下。
+> **2026-10-11 凌晨审计 pass**（会话在此 checkout 提交）：24h 窗口 63 提交逐条批判审计，
+> 三族真问题修复，见「已完成」第 6 条与 `docs/audit/2026-10-11-24h-audit-pass.md`。
 > 上下文：脱敏范围事故（地址被遮蔽成 `[REDACTED]`）的修复、245 部署验证与
 > 随后的批判性审计。
 
 ## 仓库快照
 
-- 路径：`/Users/niuer/workspace/ai-native-tools/llm-gateway/llm-gateway-go-cursor`
-  （本机为独立 checkout；`/Users/niuer/workspace/ai-native-tools/llm-gateway/llm-gateway-go`
-  是**另一份并发 checkout**，两边同时 deploy 会互相抢 245 的部署锁）
+- 路径：本仓在本机有**多份并发 checkout**（`llm-gateway-go`（本行提交所在）、
+  `llm-gateway-go-cursor`、`llm-gateway-go-5`）——本行写不出唯一真值，提交前以 `pwd` 为准；
+  两边同时 deploy 会互相抢 245 的部署锁（见下方「部署 245 的实操」）
 - 远端：codeup.aliyun.com（`origin/main`）
 - HEAD：见 `git log --oneline -1`。**不要照抄本文件的 commit 列表**——仓库多会话共享，
   本文件记录时点之后通常已有他人提交；以 `git log` 为准。
 - 分支：仅 `main`；提交前先 `git fetch && git status -sb`
-- Go 模块：见仓库根 `go.mod`
+- Go 模块：见仓库根 `go.mod`；**`installer/` 是独立 Go 模块**（有自己的 go.mod），
+  它的测试要在 `installer/` 目录内跑，从根模块用 `./installer/...` 会报 setup failed
 - 入口二进制：`cmd/gateway/main.go`（v1）、`cmd/gateway-v2/main.go`（v2，独立）
 
 ## 本机工具链（2026-10-11 实测，原「全部缺失」的结论已作废）
@@ -34,6 +37,23 @@
 > `builtins/psize.sh` 的 `mktemp` 会被沙箱 wrapper 污染，生成物 `pipesize.h`
 > 会混入 `mavis-trash:` 字样导致编译失败（`unknown type name 'mavis'`）。
 > 已把该脚本改为直接输出固定值 `PIPESIZE 65536`。重编时注意这一点。
+
+## host-first 本地部署（2026-10-11 落地，本仓 llm-gateway-go-2）
+
+- 方案文档（发现链/自动安装/域名/验证矩阵）：`docs/06-deployment/01-environments/local-host-first-deploy-20261011.md`
+- 部署：`LLM_GATEWAY_ROOT=~/kaixuan/llm-gateway-go-v2 PATH="$HOME/sdk/go/bin:$PATH" GOPROXY=https://goproxy.cn,direct GOMODCACHE="$HOME/sdk/gomodcache" GOCACHE="$HOME/sdk/gocache" bash scripts/deploy-local.sh deploy`（active 8782）
+- 发现链：caller 显式配置 → 主机原生服务（本机 pg18:54318 + redis:6379，含 PATH 注入）→ docker → 自动源码安装（PG17 最新小版本 + pgcolumnar v1.0-alpha4（Citus columnar 独立发行）+ Redis 7.4.2）
+- 密钥在仓库 `.env.local`（gitignored，含 admin 凭据）；缓存=host redis，数据=host pg18
+- 域名：`llm.itestu.cn` → NetBird DNS zone `llm-itestu-zone` A 记录 → 100.106.169.63:8782（本机 peer nb-macmini-29）。**两条入口并存**：mesh 内（NetBird zone，:8782/:8443）+ 公网（公网 DNS → 252 nginx 443 SNI 透传 → 9443 TLS 终结 → mesh 8782）；远端回连已于 2026-10-11 经 252 实测通过（公网证书免 -k 校验通过）。
+- **坑（2026-10-11 实测）**：
+  - **252 上 mihomo（tun+fake-ip，`dns-hijack any:53`）会劫持 mesh 域名解析**：252 按 `llm.itestu.cn` 访问网关超时而按 IP 正常。已修：`/etc/mihomo/config.yaml` 加 `fake-ip-filter: +.llm.itestu.cn` + `nameserver-policy +.llm.itestu.cn → 100.106.190.139`（252 netbird 解析器），API 热重载。**策略不可放宽到 `+.itestu.cn`**（netbird 上游转发同样被劫持，会弄坏兄弟 vhost）。详见 host-first 部署文档 §5.1。
+  - **252 的 netbird 客户端是 podman 容器 `nb-252-host`**（非宿主服务；二进制在镜像里，状态盘 bind-mount 在 `/opt/netbird/openpocket/nb-252-host-state`）。管理用 `netbird-252 status -d`（宿主封装=`podman exec`）；重启 `podman restart nb-252-host` 实测 peer 身份/IP 保留、三链路自愈。代理订阅已从陈旧内联快照改为 efanyun provider（与 mac network-switch 对齐，103 节点全活）。⚠️ 手工改 252 mihomo 组配置按 `^- ` 切块而非 `^- name:`（Auto/Cursor-Direct 首键是 `- interval:`）。
+  - `com.kaixuan.llm-gateway` launchd 代理已停用（备份 `~/kaixuan/llm-gateway-go-v2/backups/`）——KeepAlive 重生网关会跟 deploy-local 的 nohup+pid 生命周期互踩（抢 8781 候选端口）；
+  - **host-first 部署前必须先装前端依赖**（`web/`、`web-mobile/` 各自 `corepack pnpm install --frozen-lockfile`）：`web/node_modules` 缺失时 `build_frontend` 只 warn 不拒绝，会把**空 web/**（仅 version.json）staging 进发布包，网关静态探测回落源码 `web/` 发出未构建的 Vite 模板 → 浏览器白页（2026-10-11 下午 2538 轮事故，2539 修复）；建议后续给 deploy-local 补 refuse 门。另一紧邻缺陷已修码（r2540）：SPA 顶层路由（/dashboard 等）深链/刷新曾 401 `missing_key`——`AuthMiddleware` 现按 `Accept: text/html` 导航放行（/v1、/mock、/plugins 除外），见 middleware/auth_mw_test.go 三件套；详见部署文档 §5.2。
+  - 最新 macOS SDK（27.0）与 CLT 链接器不兼容（tapi error），`dl_resolve_sdkroot` 自动降级（当前 26.5）；裸 `go run`（cgo 形态）会 SIGSEGV，用 CGO_ENABLED=0 + SDKROOT 钉扎；
+  - PG 的 E'' 替换串里 `\1` 是八进制转义不是 backreference；视图族有冻结/动态交集两代合法形态，通道文件按形态探测分支。
+- 契约门：`bash tests/deploy_host_first_contract_test.sh`（verify.sh 已接）；自动安装端到端：`DL_AUTOINSTALL_TEST=1 bash tests/deploy_host_autoinstall_test.sh`（真实源码构建，分钟级，opt-in）
+- 迁移通道 host-first 收敛轮补登：532/392/631/407/536/540/510/513/516/542/361b + 新增 680b；738/740/815/816/817/824 兼容动态交集形态。
 
 ## 端口：必须现场确认，不要假设
 
@@ -162,7 +182,98 @@
   的门于是对外敞开。**r1017 已修**。排查这类问题记住：**中间件放行 ≠ 已鉴权**，
   凡是 `/v1/*` 路由都要确认对应 handler 自己调了校验器。
 
-## 本机工具链（2026-10-11 实测，原「全部缺失」的结论已作废）
+### 2026-10-11 午后批判式复核（收尾核验轮，提交 `3adc82dc7` 快进后）
+
+对「已声称完成」逐条实物复核，四项实测发现，三项改写结论：
+
+1. **生产已漂移到 `2533-3cac0431`，不再是本轮的 `2515-7dd0b4b67`**。
+   active 端口 8781，`/readyz`、`/healthz` 正常。2533 是**他人** 10-11 01:39 构建、
+   01:40 部署的（`deployment.json` verified_at=17:40:52Z），构建提交 `3cac0431`
+   **不存在于任何可访问仓库**（本仓全历史、`-cursor`、`-5`、154 `/opt/llm-gateway-go-source`
+   （旧快照 `565de1fe5`）、`/root/llm-gateway-go-session-v2`（HEAD `1e59ecf6`）均无），
+   谱系无法 git 级判定。**五修复在 2533 中的证据链**：release 的
+   `configs/sensitive_patterns.yaml` md5 `866c1064…` = `ce5e35ab3` 版 = 当前 HEAD 版
+   （含 audit 244 F2 中缀连字符规则与注释），而 `ce5e35ab3` 确认包含 `7dd0b4b67`，
+   且时间线上五修复（10-10 08:23）远早于 2533 构建（10-11 01:39）——**配置层确认在，
+   代码层时间线相容但无法直接核验**（构建提交无处可寻、二进制 stripped，无符号）。
+   已排除的疑似源：本仓全历史、`-cursor`、`-5` 两个并发 checkout、154
+   `/opt/llm-gateway-go-source`（旧快照）、`/root/llm-gateway-go-session-v2`
+   （yaml 是 7 月老形态 `20b17bb…`，不含五修复，排除）。
+2. ~~**r1016/r1017 未上生产是时间线事实**~~ —— **2026-10-11 21:00 实测推翻，已作废**。
+   本条写入时（2533，01:39）属实，但 16:34 的 2537/2539 部署（`37099db2`）已把
+   两者带上生产。**取证时踩了两个量具坑，都记在这里**：
+   - **245 的 release 二进制叫 `gateway`，不叫 `llm-gateway-go`**；按后者
+     `strings` 会报 No such file，看起来像「二进制不存在 / 被 strip」。本文件
+     早前「245 是 stripped ELF」的结论据此作废——它有完整符号表（`go1.` 命中 3）。
+   - **包级 `var` 不会留下 Go 符号名**（`egressHostFromBarePort`、
+     `egressHostFromPort` 均为 0），**`const` 更没有**（`barePortFollower` 为 0）。
+     拿符号名当指纹会得到假的「未包含」。可靠口径是 **rodata 里的正则字面量**
+     （stripped 二进制也读得到）：`\s+(\d{1,5})`、`a-z0-9._%+\-]+@`、
+     `0123456789>&|/` 三条在两台上均命中。
+   待下次部署授权。
+3. **`/tmp/154env.sh`（本机与 154）均已不存在**——E2E 测试台的网关凭据丢失，
+   `api_keys` 表只存 `key_hash` 无明文可回收。**下次跑 E2E 前需先找用户要 key**
+   （或用户侧重新签发）。数据库口径指标（851、ip_address、session_censors）不受
+   影响照常可查。
+4. **还原半程未生效的规模比此前记录大 48 倍**：`session_censors` 现有
+   **601,914 行**（此前记录 12,417 行），`original_encrypted` 仍 **0 非 NULL**。
+   `LLM_GATEWAY_SESSION_CENSOR_KEY` 仍未配置，且此前已确认配置它**不能**修复还原
+   （无解密读取方）。每一条脱敏记录的还原目标都只活在 Redis TTL 里。
+
+另：摘要挂账的三个历史后台任务（`bg_544e2535` / `bg_934c8bcd` / `bg_757367e1`）
+在本地任务注册表中已不存在（not found），无法回读其输出——按批判原则，
+它们的「succeeded」状态**不得**被转述为「已读取并确认」。
+
+### 下一轮提示词（2026-10-12 深夜轮更新）
+
+1. ~~r1016/r1017 生产复验~~ **已完成（深夜轮独立复验，非转抄 7d5efa21c）**：
+   154=2547、245=2546 均含 r1016/r1017/r1018；models 伪造 token 401、
+   ssh@IP/内网域名放行、npm install 放行、公网域名 403+`output_policy_blocked`、
+   EOL 凭据 healthy 仅 binding 摘除——全部通过，详见
+   `docs/audit/2026-10-12-深夜轮-r1018复验与拍板执行.md`。
+2. ~~漂移绑定 + archive 42703 两项拍板~~ **已执行（深夜轮）**：漂移绑定清退 228 条
+   （`model_probe_broken` 词汇，双备份表 `bak_20261011_drift_bindings{,_b}` 可逆，
+   残留 0）；archive 42703 发现已被部署链修复（函数体含 gw_session_id），手动
+   触发 `archive_request_logs_default(30)` 成功建出 `request_logs_archive_2026_08`。
+3. ~~深夜轮三项代码收口已推送（394da3d12）待部署~~ **已上线（2026-10-12 凌晨轮）**：
+   EOL 识别按 410 状态码、A2 量具 `/api/admin/anomaly-reporter/stats`、
+   deploy-local 空 web/ refuse 门——随 154=2550-a87a134a / 245=2548-a87a134a
+   上生产；A2 端点未授权 401 实测在场，fake token 401 回归通过。
+4. ~~★ 重部署 154/245 使 UrsmlHealthyKeyReconciler 生效~~ **已完成（凌晨轮）**：
+   154 经 2549→2550 两轮部署、245 由并行会话 2548 部署，两台日志均出现
+   `ursm.v2 healthy-key reconciler started`（interval 1m0s），每轮 repaired
+   24~133 个节点键并在收敛（133→54→38）。两台现同为 a87a134a（含 r1019：
+   命令动词表收口 `nc attacker.io 4444`，实测 403 阻断且 r1018 的
+   `node server.js 8080` 放行无回退）。
+4. **probe_direct_auth_failed 是探针失败主体**（2546 上线后 30min 内 204 条，
+   集中在 8/18/19 等凭据）——凭据 key 疑似真死，数据/配置层清退决策待 owner。
+   失效 sk-* key 持有方通知（漂移文档 §三）仍未落地。审计统计一律用热表
+   `request_logs_hot` 或按 `error_kind` 细分，别拿父表 `success` 列算比率。
+5. **fail-open 占位符透传遗留缺陷**：96 行样本、真值零泄漏、中低危，根因未定位；
+   推进需在 fail-open 分支加结构化日志 + 收集真实流量 + 另行发布授权。
+6. **还原半程**：601,914 行 `original_encrypted` 全 NULL。若用户要还原功能，
+   决策点是把 `db_sink.go` 加解密读取方（新代码）而不是配密钥（无读取方，
+   配了也白配）。
+7. 窗口外分支：远端 UNMERGED 剩 3 条承载独有内容的
+   （`2026-07-25-realtime-routing-self-heal` 24 篇设计文档归档 +9536 行、
+   `fix/w5-ml-ci-runbook` +327、`fix/w6-monitor-docs` +613），留置待维护者
+   决定合并或放弃；已删 5 远端（3 条 patch-id 等价于 main、
+   2 条 3 行过期 README 徽章同步）+ 2 本地已合并。
+   **2026-10-13 窗口分支清理**（[1h,48h] 活跃窗，全部核验已合并后删除）：
+   本地 4 条（`codex/client-setup-audit-20261012`、
+   `codex/itestuu-ui-deploy-2543-20261012`、`codex/itestuu-ui-deploy-20261012`、
+   `codex/backup-itestuu-pre-rebase-20261012`——其单提交 patch-id 等价于
+   main `8404a3af6`；对应 worktree 的脏改动经逐字节比对就是该备份提交的
+   rebase 前旧草稿，main 已演进超越，无独有内容）+ 连带移除 3 个残留
+   worktree；远端 3 条（前两条 + `fix/full-test-20261011`）。
+   `feat/deploy-211-docker` 最后提交 <1h（活跃，wt-deploy-211 在用）按窗口
+   条件未动。本地现剩 main + `feat/deploy-211-docker`。
+8. **批量操作量具坑（新增，判据纪律第 5 条）**：`node_probe_state` 被探针周期
+   并发改写，READ COMMITTED 逐语句快照会在改写窗口读到半写状态（深夜轮第一批
+   清退因此静默漏掉 cred 18/19 的 127 条——预览 234、执行 107，非数据变化）。
+   凡以它为源的批量操作一律 REPEATABLE READ 单快照 + 双时间点复验。
+
+## 已完成（已推送）
 
 1. `1127a3e3c`：合并主提交 + 冲突解决（`admin/dashboard_board_queries.go` 保留上游降级契约 + 探针排除积分源）
 2. `df69ef0be`：`scripts/deploy-local-lib.sh` macOS timeout 可移植性修复（`timeout → gtimeout → 纯 bash 轮询看门狗`，轮询实现避免子 shell sleep 孙进程变孤儿拖满时限）
@@ -228,12 +339,7 @@
      误当成「自己已上线」。
 
 
-> bash 5.2 若需重编：`~/sdk/bashbuild/bash-5.2`。构建时
-> `builtins/psize.sh` 的 `mktemp` 会被沙箱 wrapper 污染，生成物 `pipesize.h`
-> 会混入 `mavis-trash:` 字样导致编译失败（`unknown type name 'mavis'`）。
-> 已把该脚本改为直接输出固定值 `PIPESIZE 65536`。重编时注意这一点。
-
-## host-first 本地部署（2026-10-11 落地，本仓 llm-gateway-go-2）
+## 剩余任务（按依赖顺序）
 
 ~~0. **陈旧分支清理（窗口外遗留，下轮顺手项）**~~ **已完成（2026-10-12 深夜轮）**：
 `fix/sanitize-mutation-tolerant-restore-v2` 与 `fix/sanitize-hop-passthrough`
@@ -256,17 +362,25 @@ CGO_ENABLED=0 go test \
 
 > **注意**：原文档写的 `./domains-stats/...` 在本仓库**不存在**
 > （`lstat ./domains-stats/: no such file or directory`），别照抄。
+>（2026-10-11 审计核实：git 全历史无此路径，实为 `./domains/stats/...`，
+> 该包实测 ok；admin/bg 子集另见「已完成」第 6 条。）
 >
 > **`gofmt -l .` 有大量存量未格式化文件，这是上游长期状态，不是你的回归。**
 > 不要全量格式化——巨型 diff 会在多会话共享仓库里制造冲突面。
 >
 > **已知失败（与改动无关，先在 pristine `origin/main` 上复现再判定）**：
 > `admin` 的 `TestV1BodiesReadersAreAssessed`（维护者故意红的负向闸门，判据是
-> 「登记表覆盖全部 bodies 读方」）、`TestHandleUsersPasswordRoute_Rejects*`
-> （2 条）、`domains/hooks/handoff` 的 `Test244WideningRuleShrinksGap`。
-> 2026-10-11 在 pristine origin/main 上实测这 4 条**一模一样地红**。
+> 「登记表覆盖全部 bodies 读方」）、`domains/hooks/handoff` 的
+> `Test244WideningRuleShrinksGap`。~~`TestHandleUsersPasswordRoute_Rejects*`
+> （2 条）~~ **这两条已在 2026-10-11 审计 pass 修复**（4912b212b：根因是
+> 4b06bd50b 给 `handleUsers` 加路由级 authz-first 后漏改 2026-06-28 的旧断言，
+> 生产行为正确、测试过时；现改为「未授权 403 + 已授权 400/405」双断言）。
 > `verify.sh` 在 `set -e` 下无条件 `go test ./...`，因此主门长期为红是
 > 维护者策略，不要改 CI 或加白名单。
+>
+> **CGO 边界**：`CGO_ENABLED=0` 只适用于上面的子集。`./cmd/...`（含
+> cmd/gateway 的 lite 存储测试）与 `./db/...` 需要 **CGO 开启**（SQLite 驱动
+> 在 CGO_ENABLED=0 下报「lite 存储模式需 CGO 构建」），直接 `go test` 即可。
 
 **已验证绿的子集**（2026-10-11 审计实测，`CGO_ENABLED=0 go test`，rc=0）：
 
@@ -291,7 +405,8 @@ sanitize / streaming 这条线在当前 HEAD 是全绿的，可直接作为改�
 - `verify.sh` 在 `set -e` 下无条件 `go test ./...`；CI 上 `verify-ci.yml` 未对主作业
   加 `continue-on-error`。在故意红的负向闸门下，主门长期为红。这是**维护者策略**，
   不是回归，不要主动改 CI 或加白名单；任务 1 走的是上面那个子集，可在不上 CI 的
-  情况下给出「非负向闸门子集全绿」的事实。
+  情况下给出「非负向闸门子集全绿」的事实（2026-10-11 审计实测达成：admin/bg/
+  domains/stats/settings 子集仅负向闸门一红）。
 
 ### 任务 2 — lite 模式本地冒烟（最低门槛）
 
@@ -392,20 +507,6 @@ bash scripts/apply-db-revision-sequence_test.sh   # 通道腿 + installer 腿对
 cd installer && go test ./...                     # 五点同步对账 + 重新生成 TSV 用 -run TestStartupManifest -update
 ```
 
-## 新增迁移的同步纪律（2026-10-11 补记，845-851 八连红的教训）
-
-新 canonical 迁移（`sql/migrations/startup/NNN_*.sql`）落地时，**五点 installer 同步**
-（embeddata 副本、main.go go:embed 变量 + embeddedSQLFiles map、dbinit StartupFiles、
-豁免 parity map——见 `TestCanonicalStartupMigrationsAtOrAbove704AreRegistered` 的报错文案）
-**和通道腿登记**（`scripts/apply-db-revision-sequence.sh` 的 files 数组，除非明确落入
-该测试的某张豁免表）**缺一不可**。两类缺口的形态都出现过：只做 installer 漏 main.go
-（851，e47c1102b）、只做 installer 漏通道（845-848，8429b1524）。判别命令：
-
-```bash
-bash scripts/apply-db-revision-sequence_test.sh   # 通道腿 + installer 腿对账，rc=0
-cd installer && go test ./...                     # 五点同步对账 + 重新生成 TSV 用 -run TestStartupManifest -update
-```
-
 ## 已落地的回归门
 
 ```bash
@@ -414,7 +515,24 @@ bash scripts/apply-db-revision-sequence_test.sh      # rc=0；失败即迁移投
 cd installer && go test ./...                        # rc=0；失败即 installer 同步缺口
 ```
 
-期望 `rc=0`；失败即 deploy-lib 出现了裸 `timeout` 调用或未走 `_dl_timeout` 封装。
+## ⚠️ 部署脚本的 ENVS_ROOT 默认值已过时（2026-10-11 深夜实测踩到）
+
+`scripts/deploy-seamless.sh:163` 的默认值是
+`${HOME}/workspace/ai-native-workspace/envs`，而仓库已迁到
+`ai-native-tools/envs`，直接跑会失败：
+
+```
+✗ envs SSOT loader not found: /Users/niuer/workspace/ai-native-workspace/envs/loader.sh
+```
+
+绕过（**未改共享脚本**，那是部署基础设施 SSOT，改动应由其维护者裁决）：
+
+```bash
+ENVS_ROOT="$HOME/workspace/ai-native-tools/envs" bash scripts/deploy-seamless.sh deploy 245 --seq NNNN
+```
+
+`--seq` 也可能不被采纳（实测传 2538 到 154，release 落成 2547）——**以部署脚本
+回显的 `version=` 为准**，不要拿自己传的 seq 去核对产物目录名。
 
 ## 部署 245 的实操（2026-10-11 全程走通）
 

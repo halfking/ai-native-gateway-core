@@ -14479,3 +14479,266 @@ expect(mock).not.toHaveBeenCalled()          // 「非超管一次 fetch 都没�
 
 `selfCheck` 从 `KNOWN_ORPHANS` 删掉一行并加哨兵。
 清单文件头那句「30 个」仍是第一百批的实测记录，**没有去改**。
+## 11.143 连接注册台接进 UI：`live` 段里会出现 `closed: true` 的行，以及「50/256」被读反的那一格（第一百零七批，2026-10-10）
+
+### 一、接线
+
+- 新增 `web-mobile/src/views/ConnectionRegistryView.vue` + `.spec.ts`（**36 条**）
+- `src/config/appNav.ts`：抽屉席 `connection-registry`（**不设** requiresRole）
+- `src/router/index.ts`：`/connection-registry`
+- `src/i18n/zh-CN.ts` + `en-US.ts`：`nav.connectionRegistry` 与 `cr` 命名空间
+- `src/api/connectionRegistry.ts`：**三处契约缺陷修正**（见第四节）
+- `src/api/orphanLedger.spec.ts`：删 `connectionRegistry` + 加哨兵
+
+⚠️ 桌面把这条路由标成 `requiresSuper: true` / `super: true` / `hideForTenant`，
+而注册是 `admin(...)`（`admin/handler.go:1024-1025`）⇒ **前端比后端严**，
+按纪律**以可执行注册为准**。
+
+★ 与批 104 / 106 不同：**本族没有跨租户查询**。数据源是**进程内**的
+`domains/streaming.ConnectionRegistry`，不经数据库 ⇒ 不需要任何段落级门控。
+
+### 二、★★★★★★ 本族最要紧的一处：一个**真实**的竞态窗口
+
+`snapshot(false, "")`（`domains/streaming/connection_registry.go:476-491`）看着像
+「List 里 `closed` 恒 false」，但它内部有覆写分支：
+
+```go
+s := ConnectionSnapshot{ ..., Closed: closed /* false */, CloseReason: reason /* "" */ }
+if e.closed {            // ★ 会覆写上面两行
+    s.Closed = true
+    s.CloseReason = e.closeReason
+}
+```
+
+而 `WriteFrame` 的超时分支（`:417-441`）是**先标 closed、放开 entry 锁、再从 map 摘除**：
+
+```go
+entry.closed = true                 // :419  先标
+entry.closeReason = "write_deadline"
+entry.mu.Unlock()                   // :421  锁放开  ← 窗口在这里
+r.mu.Lock()
+cur, ok := r.entries[requestID]
+if ok && cur == entry { delete(r.entries, requestID) }   // :433  才摘除
+```
+
+⇒ 在 `:421` 与 `:433` 之间，`List()` / `Lookup()` 拿得到这个 entry
+⇒ **返回一行 `closed=true` + `close_reason="write_deadline"`，却出现在 `live` 段里。**
+
+推论三条，每条都改变了 UI：
+
+1. `live_count` 会把它算进去（`:56` 的 `len(live)`）
+   ⇒ ★★「`live_count === live.length`」恒真**不蕴含**「live 里都是活连接」。
+2. **不能**按 `closed` 字段把行从 live 段搬到 closed 段 ——
+   它还没进环形缓冲（`detach` 还没跑），搬走就是**凭空造出「已归档」**。
+3. `Lookup` 走同一份 `snapshot`、同一个窗口 ⇒ 同样可达
+   ⇒ ★★★ **`live` 段的行即便 `closed=true` 也仍能按 id 查到**，
+   而 `closed` **段**的行必然 404。
+   ⇒ 于是「能不能按 id 查」这件事**不能按 `closed` 布尔判断**，必须按**行来自哪一段**。
+
+★ 我第一眼把桌面 `ConnectionRegistryView.vue` 里的 `if (snap.closed)` 分支当成死代码
+（因为 `Lookup` 看起来只会返回 live 行）—— **它不是**，就是上面这个窗口。
+★ 这条纠正直接写进了模块注释，否则下一个读者会重犯。
+
+### 三、★★★★★ 「满 50 行」不是「历史被截断的证据」
+
+- 环形缓冲 `closedHistory = DefaultClosedHistoryDepth = **256**`（`:65` / `:254`，`:355-356` 裁剪）
+- 端点只取 `ClosedHistory(**50**)`（`admin/connection_registry.go:58`）
+
+⇒ **256 > 50，端点永远取不满缓冲区** ⇒ 看到 50 行时缓冲区里**至少还躺着另外 206 条**没暴露。
+
+⇒ ★★★ 所以「已暴露满 50」的准确含义是「**还有更早的没被端点暴露**」，
+**不是**「更早的已经被丢了」。UI 文案按前者写，并配判据
+**断言页面上不出现「已丢弃 / 已截断」**。
+
+★ 原模块函数 `registryClosedPossiblyTruncated` 的**行为是对的**
+（`rows.length >= 50` 确实成立），但**注释的措辞**写成了「可能被静默截断」，
+会让人以为 50 是历史上限。⇒ 改措辞，不改行为。
+
+### 四、本批修正的三处 API 层契约缺陷
+
+| 位置 | 原状 | 问题 | 处置 |
+|---|---|---|---|
+| `registryRowIsNotFetchableById` | 注释说「`closed` 里的条目必然 404」 | ★ **不完整**：它只看 `closed` 布尔，分不出「closed 段」（在环形缓冲里 ⇒ 404）与「live 段的竞态行」（**仍在活跃表里 ⇒ 查得到**） | 改注释写明盲区，并列出两行对照表；**视图改按段落判断，不依赖它** |
+| `registryClosedPossiblyTruncated` | 注释「可能被静默截断」 | 把**端点上限**说成**历史上限** | 改措辞 + 写明 256/50 两层 |
+| `registryUtilization` | `cap <= 0 → null` | 后端**恒 ≥ 4096**（`NewConnectionRegistry(0,0,0)` 的三个 0 都被兜底）⇒ 该分支不可达 | **保留**（防御形态：`requireKeys` 只查键存在、不查类型），**但不写判据**（能钉住它的夹具必须是后端发不出的值） |
+
+★ 文件头从七件事扩到**八件事**（新增第 (8) 条竞态窗口），并把第 (6) 条补成
+「**两段的顺序保证相反**」：`List()` 是 Go map 遍历序（无保证），
+`ClosedHistory` 是 `copy` + 显式 reverse（newest-first、稳定）
+⇒ 视图对 live **客户端排序**。
+
+### 五、判据钉的八组不变量
+
+① live 段的 `closed:true` 行必须可见标注，且**不被搬段**（含正控：正常行不得有标注）
+② live 客户端排序（后端给乱序时）
+③ `live: []` 与 `closed: null` 是**两种不同的空态**，文案必须不同
+④ 满 50 行的措辞（正断言「未暴露」，负断言不出现「已丢弃 / 已截断」）
+⑤ closed 段**不发**详情请求；live 段**要发**（含竞态行也能发）
+⑥ 404 的措辞只能说到「分不出」为止（后端对「不存在」「已注销」返回同一响应）
+⑦ 503 是「未装配」，**不是**「空列表」
+⑧ 四个 omitempty 条件键缺失 ⇒ 「未标注」；`frames_written`（uint64 无 omitempty）
+的 0 是**真的 0 帧**；`last_frame_at` 键恒在但「从未发帧」时是 Go 零值时间
+
+★ ⑤ 的正控写成了 `expect(mById).not.toHaveBeenCalled()` +
+`expect(旅程按钮存在).toBe(true)` —— 因为移动端的「打开请求旅程」是**本地跳转**，
+不是详情请求；详情请求只由查询框发起。这条如果照抄桌面的心智模型会写错。
+
+### 六、与桌面的两处刻意不同
+
+- **搜索结果不塞回列表**：桌面按 `snap.closed` 把命中结果分流进 live/closed 表，
+  而第二节证明 `closed=true` **两段都可能出现** ⇒ 按该字段分流会把 live 段的竞态行塞错段。
+  移动端改成**独立结果卡片**，列表不动。
+- **不做「距最后一帧 Ns」**：桌面那个依赖 1s tick 的墙上时钟
+  ⇒ ★ 断言会变成时间炸弹。移动端只显示绝对时间戳。
+
+★ 跳转的路由名与参数名**都**与桌面不同：桌面
+`{ name: 'request-journey-detail', params: { requestId } }`，
+移动端是 `{ name: 'journey-detail', params: { id } }`（`router/index.ts:96-99`）
+⇒ 照抄桌面会推一个不存在的路由。
+
+### 七、孤儿 23 → 22
+
+`connectionRegistry` 从 `KNOWN_ORPHANS` 删掉一行并加哨兵。
+哨兵注释写明：admin 档 ⇒ 席不设 requiresRole ⇒ `AppDrawer.spec.ts` 的白名单里
+**不该**出现 `connection-registry`。
+
+## 11.144 用量趋势线接进 UI：把空序列渲染成「没有用量」就是撒谎，以及一个腐烂了三批的计数（第一百零八批，2026-10-10）
+
+### 一、接线
+
+- 新增 `web-mobile/src/views/UsageTrendSeriesView.vue`（758 行）+ `.spec.ts`（**42 条**）
+- `src/config/appNav.ts`：抽屉席 `usage-trend-series`（**不设** requiresRole）
+- `src/router/index.ts`：`/usage-trend-series`
+- `src/i18n/zh-CN.ts` + `en-US.ts`：`nav.usageTrendSeries` 与 `uts` 命名空间
+- `src/api/orphanLedger.spec.ts`：删 `usageTrendSeries` + 加哨兵（孤儿 23 → 22）
+
+### 二、★★★ 本族的租户口径是**第四种，而且是唯一安全的那种**
+
+`statsTenantScope`（`admin/stats.go:87-97`）：角色不是 `super_admin` / `admin_key`
+就强制用 `auth.TenantID` 并**忽略 `tenant_id` 查询参数**
+⇒ **tenant_admin 天然隔离**。
+
+| 批次 | 表/数据源 | 租户列 | 查询引用？ | 档位 | tenant_admin 能看到 |
+|---|---|---|---|---|---|
+| 104 `dashboardBoard` | 聚合表 | 有 | **硬编码 `tenant_id='default'`**（另两条连 WHERE 都没有） | `admin` | 跨租户 |
+| 106 `selfCheck` | `self_check_runs` | **有** | **从不引用** | `admin` | 跨租户（含 `request_body`） |
+| **108 `usageTrendSeries`** | 明细/汇总表 | — | `statsTenantScope` 强制按 `auth.TenantID` | `admin` | **只有自己** |
+
+⇒ ★★ 所以本页**不做任何角色分支** —— 那会是多余的复杂度，
+而且会让人误以为这一族和前两族一样需要门控。
+
+### 三、★★★★★ 本族最要紧的一格：降级时 `series` 也是 `[]`
+
+```go
+// usage_trend_series.go:230-232
+if series == nil { series = []… }        // 空 ⇒ []
+// :207  降级分支同样给 []
+// :204-205 降级时 BucketMinutes / Top 仍填解析后的值
+```
+
+⇒ ★★★ 「`series: []`」**同时表示**「这段时间真的是零用量」与
+「数据读面没迁移、根本没算出来」⇒ **唯一区分是 `degraded` 那一个布尔**。
+
+⇒ ★★★★ **把空数组直接渲染成「这段时间没有用量」就是撒谎** ——
+它会凭空断言一个后端根本没测过的事实。
+⇒ 页面因此分成两条互斥的路径：`genuinelyEmpty`（真的零用量）/
+`emptyDegraded`（空但降级），并各配一条**正控**，
+否则「页面从不显示那句『确实没有用量』」也能满足「不得出现那句」的断言。
+
+### 四、判据钉的九组不变量
+
+① 降级 vs 零用量（★ 核心，含正控）② `start`/`end` 必须配对，否则**一次请求都不发**
+③ 自定义区间的响应 `end` 是**次日零点** ⇒ 显示的结束日**减一天**
+④ 自定义区间的响应 `start` 必须**逐字等于**本地复算值
+⑤ 非法/负数 ID（后端 `queryInt` 回落 0 ⇒ **静默换数据档**，响应看不出异常）
+⑥ 两处静默截断：`model` 多选超 **20** / `trend-models` 硬编码 `LIMIT 100`
+⑦ 传了 `model` 多选 ⇒ `trend-models` 被 `= ANY` 收敛 ⇒ **不是「可选清单」**
+⑧ 排序契约两条：`__others__` 末位 + 其余按 `total_requests` 非递增
+⑨ 后端 `hint` 与本地推算不一致 ⇒ 两端口径漂移
+
+★ ④ 那条对拍最初**恒红**：`toISOString()` 带毫秒而后端是 `time.RFC3339`（秒级）
+⇒ 不去掉 `.000` 它就永远不等。
+★ **一条恒红的判据比没有判据更坏**：它看起来在工作，实际只是噪声。
+
+### 五、★★★ 判据当场抓到的三个真实缺陷（都是我自己第一版写的）
+
+1. **过滤器形同虚设** —— 视图声明了 `provider_id` / `api_key_id` 输入框，
+   `currentQuery()` 却**根本没把它们放进查询对象**。
+   ⇒ 用户看到两个可填的输入框，填了之后后端收到的是「没过滤」。
+   ⇒ 判据「合法正整数 ⇒ 真的发出去」当场打红。
+
+2. **自定义模式静默换窗口** —— `loadSeries()` 没有守卫，
+   用户只填了起始日时 `currentQuery()` 落到 `else` 分支按 `days` 预设发请求
+   ⇒ 页面上明明写着「只给一个后端会 400，本页因此不发出请求」，
+   **行为与文案直接矛盾**，而且用户以为看的是自己填的区间。
+   ⇒ 守卫补上：`mode === 'custom' && !pairReady ⇒ 直接 return`。
+   ★ fallback 只允许发生在 preset 模式里（那里本来就该走 days）。
+
+3. **修一处、坏另一处** —— 为了堵住 (1)，我把 `idOf` 改成「无效值返回 undefined」，
+   而告警是从 `idOf` 的**结果**读的 ⇒ **告警随之整个消失**。
+   ⇒ 「被过滤掉」（要的是结果）与「需要提醒用户为什么被过滤」（要的是原因）
+     是**两个不同的量**，合成一个函数时两个都做不了。
+   ⇒ 拆成 `idOf`（进不进查询）+ `idWarn`（为什么不进），判据覆盖两侧。
+
+★ 这三条都做成了**变异**（S17 / S3 / S5），让「判据抓到了」变成可复现的证据，
+而不是一次性的运气。
+
+### 六、★★★ 一条变异无效，根因是**变异本身**无效
+
+S18 第一版写的是 `series.bucket_minutes || 60` ⇒ **NO_EFFECT**。
+
+★ 那**不是判据没牙**：`bucket_minutes` 后端恒发，解包器只放行 5/15/60
+⇒ 它**恒非零** ⇒ `x || 60` 在后端能发出的每一个取值上都等于 `x`
+⇒ 与本仓「**可证等价 ⇒ 删变异而不是补用例**」那条完全同型。
+
+⇒ 换成攻击者真会犯的错（**写死 60**，即搬桌面代码时把兜底改成常量）后立刻打红。
+⇒ ★★ 「一条没红」的第一问仍然是「**这条变异实际造成了差别吗**」，
+   只有确认它能造成差别之后，第二问才是「判据有没有牙」。
+
+### 七、孤儿 23 → 22
+
+`usageTrendSeries` 从 `KNOWN_ORPHANS` 删掉一行并加哨兵。
+
+### 八、★★★ 附带发现：一个**腐烂了三批**的计数（这条比本批任何功能改动都重要）
+
+批 107 收尾时，我顺手核对孤儿清单的真实项数，发现：
+
+| 提交 | 清单真实项数 | 文件头注释写的 |
+|---|---|---|
+| `2442eddf3`（第一百零三批） | **26** | **27** ← 错误从这里开始 |
+| `1c198d51a` / `1e7617002`（批 104） | 26 | 27 |
+| `9c4bcee7e`（第一百零五批） | 25 | 26 |
+| `74dead128`（第一百零六批） | 24 | 25 |
+
+⇒ ★★★★ 每一批都在做「上一批的数 −1」这个**推理**，**从来没重新数过**
+⇒ 第一次的手滑（批 103 我自己写错了 1）被逐批放大，
+而**没有任何判据会红**：`toEqual([...KNOWN_ORPHANS])` 只管集合内容，**不管长度**；
+注释里的数字**压根不是判据**。
+
+⇒ ★★★ 于是「有人读了这个数字」变成了「有人相信这个数字」——
+没有人读，就没有人发现它是错的；没有判据，就没有人在乎。
+⇒ 这也是为什么 §11.140 / §11.141 / §11.142 里那几句「孤儿 27 → 26」「26 → 25」
+**都是虚高 1 的**，真实链条是 27 → 26 → 25 → 24 → 23 → 22。
+
+★★ **处置不是把数字改对，是把数字删掉**：
+
+- 改对 = 把同一个错误推迟到下一批腐烂（而且下一个人又会照抄上一批的数字）；
+- 删掉 = 让 `KNOWN_ORPHANS` 这份清单成为**唯一**事实源，
+  想知道有几项就去数清单 / 跑 `currentOrphans()`，**不要引用散文里的数字**。
+
+⇒ 批 107 已经把那段「现况 N 项」注释删掉了，本批把纠错链条写进原处留证。
+⇒ 文件头那句「30 个」是**第一百批当时的实测记录**，它带时刻、属于历史陈述
+而非现状盘点，所以**保留** —— 引用它时要连时刻一起引用。
+
+### 九、验证
+
+- 新增 `UsageTrendSeriesView.spec.ts` **42 条**；`orphanLedger.spec.ts` 13 → 14 条
+- ★★★ **变异 18/18 全有牙**（`/tmp/mut-co108.mjs`，标记 `CO108S1…S18`，
+  还原 md5 逐字节一致，**未用** `git checkout --`；跑完复查文件里**零** `CO108S` 残留）
+  —— 其中 S5 / S17 正是本轮真犯过的错（见第五节）
+- 五门 rc=0（i18n parity 2742 → **2829 键** / 触控 R1 97 个 `.vue` / CSS / `vue-tsc` / `build`）
+- 全量 **7102 条 / 177 文件** rc=0
+- 十连跑 **10/10 全绿、每轮 7102 逐条一致**（`总次数 10 · 失败次数 0 · 快照 0 份`，
+  日志 `/tmp/co108-stability.log`）
+  ⇒ `ComplianceHitsView` / `RoutingOptView` 两个历史 flaky 本轮仍未复现 ——
+  按连跑器口径这**不是「已修复」**，只是没抓到。
