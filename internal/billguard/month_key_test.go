@@ -167,23 +167,37 @@ var monthBucketSites = []monthBucketCallSite{
 	{
 		// 写方：管理端导入账单。time.Parse("2006-01", "2026-07")
 		// 按定义返回该月 1 日零时刻 UTC ⇒ 已归一。
-		where:      "admin/provider_cost_reconciliation.go:81",
+		// ⚠️ 锚点随上游改动漂过两次，这里记着以免下次误判成"代码有缺陷"：
+		//   ① 8a6142263/915348584（strict JSON sweep）后曾位于 :81 → 实际漂到 :85；
+		//   ② 6043e5a02（harden tenant analytics）在 provider_id 校验后插入 4 行
+		//      非负校验，把该行再下移 4 行 ⇒ 现为 :85。
+		// 两次都是**上游新增行**造成的同向下移，逐字核对仍是同一处 time.Parse。
+		where:      "admin/provider_cost_reconciliation.go:85",
 		origin:     "time.Parse(2006-01)",
 		normalized: true,
 	},
 	{
-		// 读方：管理端查询，带 month 参数。time.Parse ⇒ 已归一。
-		where:      "admin/provider_cost_reconciliation.go:114",
+		// 读方：管理端查询，带 ?month= 参数。time.Parse ⇒ 已归一。
+		// 锚点历史同上（:110 → :114 → :118 → :128），每次都是同向下移。
+		where:      "admin/provider_cost_reconciliation.go:128",
 		origin:     "time.Parse(2006-01)",
 		normalized: true,
 	},
 	{
-		// ⚠️ 读方：管理端查询，**缺省 month 参数**。直接用 time.Now()，
-		// 未做任何归一 ⇒ 恒不匹配列里的月初值 ⇒ 静默返回 0 行。
-		// 这是 222 号的 P2 本体。
-		where:      "admin/provider_cost_reconciliation.go:112",
-		origin:     "time.Now() 裸传",
-		normalized: false,
+		// 读方：管理端查询，**缺省 month 参数**（本条即 222 号 P2 本体）。
+		//
+		// 历史：登记时这里是裸 `month := time.Now()`（normalized=false），
+		// 且 TestNoBareNowAsMonthKey 里有一条例外 `…go:112` 把这条已知缺陷挡住。
+		// 2026-10-11 收口轮：**缺陷已修，不再是已知缺陷**——
+		//   裸 time.Now() 会以「当前时刻」（如 2026-10-11 23:45）去比较 date 列里
+		//   存着的日历月首日 2026-10-01 ⇒ 端点 200 + count=0，**静默返回 0 行且不报错**。
+		// 现按写方（bg/cost_reconciliation_worker.go:91 CostReconciliationMonthsToAggregate）
+		// 逐字一致的形态构造月键 ⇒ 已归一。
+		// 例外 `…go:112` 随之**删除**（不是改键）：违规本身已不存在，
+		// 留着会变成"假装生效的豁免"，与 rowsguard 那条 stale 同类。
+		where:      "admin/provider_cost_reconciliation.go:126",
+		origin:     "time.Date(y, m, 1, ...)",
+		normalized: true,
 	},
 }
 
@@ -341,12 +355,11 @@ func TestNoBareNowAsMonthKey(t *testing.T) {
 	// 现在走与覆盖面门同一个 repoRootFromPackageDir，两条门共用一把尺子。
 	violations := scanBareNowMonthAssignments(repoRootFromPackageDir())
 
+	// 222 号曾在此处豁免 `admin/provider_cost_reconciliation.go:112`（裸 time.Now() 读端）。
+	// 2026-10-11 收口轮：该缺陷已在读端修掉（改为 time.Date(y,m,1,...) 月初键），
+	// 豁免**删除而非改键** —— 违规已不存在，留着就是"假装生效的豁免"。
+	// ⚠️ 若将来有人改回裸 time.Now()，这里必须转红（下面没有任何豁免分支）。
 	for _, v := range violations {
-		// 已登记为"已知缺陷"的那一处：222 号不擅自动手修（它改的是管理端
-		// 查询的默认行为，属对外可见契约）。登记豁免并指向待裁决项。
-		if v == "admin/provider_cost_reconciliation.go:112" {
-			continue
-		}
 		t.Errorf("未登记的裸 time.Now() 月份键：%s\n"+
 			"该值会作为 timestamptz 与 date 列的月初值比较 ⇒ 静默 0 行、不报错。\n"+
 			"若这是有意为之，请登记进 monthBucketSites 并写明理由。", v)

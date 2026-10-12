@@ -70,6 +70,21 @@ func TestProbeRetirementExposureAttributionGap(t *testing.T) {
 	var rows []row
 	scanned := 0
 
+	// 2026-10-11 性能修正（语义零变化）：读方清单**提到遍历之外**计算。
+	//
+	// 原先它在 filepath.WalkDir 的回调体内被调用，而它自身又经
+	// indirectSourceConsumers 再走一遍整仓 —— 于是「遍历 N 个文件 × 每个
+	// 文件触发一次全树扫描」= O(N²)，本用例单测 80.6s，是 admin 包撞满
+	// `go test ./... -timeout=300s` 的最大单项之一。
+	//
+	// 调用位置只用于对 rel 做集合成员判断，不依赖遍历状态（path/rel/入参均
+	// 与清单无关），因此提前求值结果完全相同；顺手把线性查找换成 map。
+	knownReaders := allKnownRequestLogsReaderFiles(t)
+	inInventorySet := make(map[string]bool, len(knownReaders))
+	for _, f := range knownReaders {
+		inInventorySet[f] = true
+	}
+
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -86,14 +101,7 @@ func TestProbeRetirementExposureAttributionGap(t *testing.T) {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		inInventory := false
-		for _, f := range allKnownRequestLogsReaderFiles(t) {
-			if f == rel {
-				inInventory = true
-				break
-			}
-		}
-		if !inInventory {
+		if !inInventorySet[rel] {
 			return nil
 		}
 		scanned++
@@ -161,9 +169,9 @@ func TestProbeRetirementExposureAttributionGap(t *testing.T) {
 			"这**不是**「漏归因为 0」的结论，是探针读错了对象。" +
 			"请先查 allKnownRequestLogsReaderFiles(t) / repoRootFromCaller。")
 	}
-	if len(allKnownRequestLogsReaderFiles(t)) < 50 {
+	if len(knownReaders) < 50 {
 		t.Fatalf("探针自检失败：读方清单只有 %d 个文件，低于 50 的地板 —— "+
-			"分母被悄悄换掉了", len(allKnownRequestLogsReaderFiles(t)))
+			"分母被悄悄换掉了", len(knownReaders))
 	}
 
 	filesA, pairsA, uniqA := 0, 0, map[string]bool{}

@@ -2,6 +2,7 @@ package sanitize
 
 import (
 	"net"
+	"path"
 	"regexp"
 	"strings"
 )
@@ -114,6 +115,86 @@ var nonPublicHostSuffixes = []string{
 	"example",
 }
 
+// netcatFamilyVerbs 是「裸主机 + 空格 + 端口」形态**确实指向网络目的地**的命令动词。
+//
+// 2026-10-12（r1019）：收口 r1018 刻意留下的 `nc attacker.io 4444` 残留缺口。
+//
+// 为什么这次可以用「动词表」而 r1017 的裸点分词不行——差别在于**锚定的是命令
+// 本身**，不是任意位置的一对 token：
+//
+//	r1017（已废）：任意位置「带点 token + 空格 + 数字」 → 主机+端口
+//	    → node server.js 8080 / python3 main.py 100 被打死（结构上不可区分）
+//	r1019（本条）：**命令行第一个字段**是 netcat 系动词，且其后出现
+//	    「主机样 token + 纯数字端口」 → 主机+端口
+//	    → node / python3 / ruby 这些动词压根不进这条分支，零误伤面
+//
+// 动词表是**封闭集**（这五个就是全部），与「哪些 token 可以出现」的白名单不同：
+// 它枚举的是命令，而不是靠给形态开洞。新增一个 netcat 变体才需要加一行。
+var netcatFamilyVerbs = map[string]bool{
+	"nc":     true,
+	"ncat":   true,
+	"netcat": true,
+	"telnet": true,
+	"socat":  true,
+}
+
+// bareHostPortFromNetcatCommand 从一行命令里认出 netcat 系的「主机 + 空格 + 端口」。
+//
+// 只认显式端口：`telnet attacker.io`（端口默认 23）不覆盖——实测那种写法在模型
+// 输出里罕见，而多认一形态就多一分与合法写法相撞的风险。残留如实记录。
+//
+// flag 一律跳过而不判断「哪些 flag 带值」：带值的 flag（如 `-w 3`）里那个数字
+// 不是端口，跟着它的主机样 token 才是。判据是**位置**而不是 flag 语义。
+func bareHostPortFromNetcatCommand(text string) (string, bool) {
+	fields := strings.Fields(text)
+	if len(fields) < 3 {
+		return "", false
+	}
+	verb := strings.Trim(strings.TrimSpace(path.Base(fields[0])), "\"'")
+	if !netcatFamilyVerbs[strings.ToLower(verb)] {
+		return "", false
+	}
+	for i := 1; i < len(fields)-1; i++ {
+		token := strings.Trim(fields[i], "\"'")
+		if token == "" || strings.HasPrefix(token, "-") {
+			continue // flag 跳过
+		}
+		port := strings.Trim(fields[i+1], "\"'")
+		if !allDigits(port) {
+			continue // 后面不是端口，它不是主机位
+		}
+		if !looksLikeHostToken(token) {
+			continue
+		}
+		return token, true
+	}
+	return "", false
+}
+
+func allDigits(s string) bool {
+	if s == "" || len(s) > 5 {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// looksLikeHostToken 只要求「像一个网络目标」：IP 字面量、单标签内网短名，或带点的
+// 域名。不判断它是不是可注册域名——那正是 isNonExfiltrationHost 的职责，两层分开。
+func looksLikeHostToken(tok string) bool {
+	if tok == "" || len(tok) > 253 {
+		return false
+	}
+	if strings.ContainsAny(tok, "/\\@$=<>|&;*?") {
+		return false
+	}
+	return strings.Contains(tok, ".") || net.ParseIP(tok) != nil || !strings.Contains(tok, ":")
+}
+
 // isNonExfiltrationDestinationHost 回答「这个 URL 主机能不能是外传目的地」。
 //
 // 形态上刻意与 isNonExfiltrationAddress 完全对称：IP 形式委托给 IP 判定，
@@ -168,6 +249,13 @@ func hasPublicHostDestination(text string) bool {
 	}
 	for _, m := range egressHostFromPort.FindAllStringSubmatch(text, -1) {
 		if !isNonExfiltrationDestinationHost(m[1]) {
+			return true
+		}
+	}
+	// netcat 系的「裸主机 + 空格 + 端口」：只有命令行首个字段是该族动词才进这条
+	// 分支，因此 node/python3/ruby 之类的调用天然不受影响。
+	if host, ok := bareHostPortFromNetcatCommand(text); ok {
+		if !isNonExfiltrationDestinationHost(host) {
 			return true
 		}
 	}

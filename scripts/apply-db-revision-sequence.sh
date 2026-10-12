@@ -143,6 +143,61 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/606_session_summaries_agent_expert_tags.sql"
   "$ROOT_DIR/sql/migrations/startup/563_session_summary_trigger_on_hot.sql"
   "$ROOT_DIR/sql/migrations/startup/564_session_summary_backfill_safe.sql"
+  # 2026-10-12 host-first PG/gateway log audit: 357/358 (session analytics
+  # aggregation MVs + session_ownership) and 394 (request_stats_minute family
+  # + the single rollup-cursor seed row) were never registered, so fresh
+  # host-first databases miss every MV in the refresh worker's list (logged
+  # hourly as "materialized view does not exist, skipping refresh") and the
+  # stats minute rollup dead-loops: the cursor table has no row, QueryRow
+  # returns ErrNoRows and the worker warns + returns every tick. All three
+  # are idempotent (CREATE MATERIALIZED VIEW IF NOT EXISTS / ON CONFLICT
+  # DO NOTHING); 357 precedes 358 (session_owner_stats reads its shapes).
+  "$ROOT_DIR/sql/migrations/startup/357_session_analytics_aggregation_views.sql"
+  "$ROOT_DIR/sql/migrations/startup/358_session_ownership.sql"
+  # 2026-10-12: 855 puts a 30-day window on the three session-analytics MVs.
+  # Measured on 154 production: the trio rewrites ~169.3 MB of WAL per cycle,
+  # 62%~75% of cluster-wide WAL, and the driver is output group count — the
+  # task dimension carries 104,299 long-tail historical task_ids while only
+  # 1,832 combinations saw activity in the last 30 days. Windowing collapses
+  # that to 1,832 (-98.2%) for ~8% CPU. Must run after 357 (creates the views)
+  # and 358 (session_dim, the join target); the views are dropped and rebuilt,
+  # so the unique indexes REFRESH CONCURRENTLY needs are recreated here too.
+  "$ROOT_DIR/sql/migrations/startup/855_session_analytics_time_window.sql"
+  "$ROOT_DIR/sql/migrations/startup/394_request_stats_minute.sql"
+  # 2026-10-12 host-first PG/gateway log audit: the candidate-binding scope
+  # revision chain (541 raw_model table → 569 canonical table + cmb triggers →
+  # 571 priority_hash → 578 filter-disabled reconciliation) was never
+  # registered. admin/routing.go queries both tables by name, so mirror-lineage
+  # databases logged 42P01 continuously (438 hits within minutes on the local
+  # host). 571/578 carry their own fail-fast guards requiring 569/541; all are
+  # idempotent (IF NOT EXISTS / DROP+CREATE TRIGGER / guarded DO blocks).
+  "$ROOT_DIR/sql/migrations/startup/541_candidate_binding_scope_revision.sql"
+  "$ROOT_DIR/sql/migrations/startup/569_candidate_binding_scope_revision_canonical.sql"
+  "$ROOT_DIR/sql/migrations/startup/571_candidate_binding_scope_revision_canonical_priority_hash.sql"
+  "$ROOT_DIR/sql/migrations/startup/578_candidate_binding_scope_filter_disabled.sql"
+  # 2026-10-12 host-first PG/gateway log audit: 543 (streaming observability's
+  # discard_events on request_logs{,_hot}, 4x IF NOT EXISTS) was never
+  # registered. Must precede 695: its promote column list selects
+  # discard_events, so every promote_request_logs_hot_to_partition cycle
+  # died with 42703 on hosts where 543 never ran.
+  "$ROOT_DIR/sql/migrations/startup/543_request_logs_discard_events.sql"
+  # 2026-10-12 host-first PG/gateway log audit: the provider-error aggregation
+  # chain was never registered. 617 aligns candidate_failure_logs{,_hot} with
+  # the writer's session_id/per_attempt_latency_ms columns (803's own header
+  # names it as a dependency; without it 627's unified view dies on 42703
+  # because 392's CREATE TABLE predates both columns). 622 seeds
+  # provider_error_aggregator_state (42P01 on every aggregator tick) plus the
+  # hot aggregation_id column and its sequence; 627 adds the parent column,
+  # creates the candidate_failure_logs_unified view the runtime actually reads
+  # (bg/provider_error_aggregator.go) and seeds the watermark; 628 rewrites
+  # the promote so partitioned rows carry real aggregation_ids. 617 must
+  # precede 627 (its view selects those columns); 627/628 must precede 644
+  # (its section D re-creates the same view when present) and 639/698/803,
+  # which also reference the view/column. All idempotent.
+  "$ROOT_DIR/sql/migrations/startup/617_candidate_failure_logs_hot_contract.sql"
+  "$ROOT_DIR/sql/migrations/startup/622_provider_error_aggregator_state.sql"
+  "$ROOT_DIR/sql/migrations/startup/627_candidate_failure_logs_aggregation_id_unified.sql"
+  "$ROOT_DIR/sql/migrations/startup/628_candidate_failure_logs_promote_atomic_v3.sql"
   "$ROOT_DIR/sql/migrations/startup/644_tuning_views_selfcheck_and_candidate_failure_cache.sql"
   "$ROOT_DIR/sql/migrations/startup/645_session_bodies_hot_request_unique_repair.sql"
   # 2026-10-10 host-first deploy: 650/656 ALTER public.auto_route_selections,
@@ -371,6 +426,34 @@ files=(
   # 纯 CREATE OR REPLACE VIEW（尾部追加列，无 DROP），幂等收敛，down 无。
   # 编号前已查生产双账本：696 在 gateway_db_revision_sequences 与
   # schema_migrations 均未被本库或其他项目占用。
+  # 2026-10-12 host-first PG/gateway log audit: the probe pipeline set was
+  # never registered, so the gateway logged errors continuously: 484
+  # (request_logs_hot.status_code — credential selfcheck's LATERAL reads it
+  # every 5min, 42703), 489/490 (credential_probe_queue + runtime columns —
+  # ProbeQueueWorker requeue ~4x/sec, 42P01) and 538 (extends the queue source
+  # CHECK with 'selfcheck', which the 489/490 shape lacks, and aligns
+  # node_probe_runs.trigger_kind). All four are idempotent; both 484 and 489
+  # carry headers recording the same error classes previously fixed on
+  # production 154. 489 precedes 490 then 538; the whole group must precede
+  # 835, which references the queue. (486 is registered once at the tail of
+  # the array — see its own comment there; deduped 2026-10-12.)
+  "$ROOT_DIR/sql/migrations/startup/484_request_logs_hot_add_status_code.sql"
+  "$ROOT_DIR/sql/migrations/startup/489_credential_probe_queue_startup_backfill.sql"
+  "$ROOT_DIR/sql/migrations/startup/490_credential_probe_queue_runtime_columns.sql"
+  # 2026-10-12 host-first PG/gateway log audit: 526's
+  # session_turns_advisory_lock_key is required by the sessionv2mirror shadow
+  # write, but 526 itself is un-registrable wholesale on mirror-lineage
+  # databases: its session_turns_with_current_month view definition predates
+  # the applied shape and CREATE OR REPLACE VIEW cannot drop columns
+  # (42603), the same reason 523 was reconciled as 804 instead of being
+  # registered. 854 reconciles the missing function alone (853 pattern).
+  "$ROOT_DIR/sql/migrations/startup/854_session_turns_advisory_lock_key.sql"
+  "$ROOT_DIR/sql/migrations/startup/538_node_probe_runs_trigger_kind_unified_queue.sql"
+  # 853 (2026-10-12): deploy-chain V360's automatic column on the queue, never
+  # mirrored into any startup/domain migration although bg/probe_queue.go's
+  # enqueue/claim reference it by name. Must follow 489/490 (table creator);
+  # see the file header for the full reconciliation rationale.
+  "$ROOT_DIR/sql/migrations/startup/853_credential_probe_queue_automatic.sql"
   # 2026-10-10 host-first deploy: 696 rebuilds the request_logs views to also
   # expose system_fingerprint, which 487 adds to request_logs / _hot. It was
   # never registered, so on a host where the Go ensure chain had not booted
@@ -1222,6 +1305,18 @@ files=(
   # pii_patterns 只有空表（316 不在 StartupFiles，是刻意的），兜底是
   # db.go 的 ensurePIIIPAddressRuleDisabled（重启即收敛）。
   "$ROOT_DIR/sql/migrations/startup/851_disable_overbroad_pii_ip_address_rule.sql"
+  # 852：models_canonical 列集收编——469 的 context_window 三列 + 478 的
+  # reasoning_caps（列/部分索引/列注释），全部 IF NOT EXISTS 幂等。两条迁移
+  # 都从未注册进 installer，fresh-install 链静默缺列，admin provider/credential
+  # 模型清单的三级覆盖链查询与能力列段 42703 → 500（2026-10-12 llm.itestu.cn
+  # 实测）。804 收编了 523 在 cmb 的同款缺口，本条补 models_canonical 半边；
+  # 部署链存量库 469/478 早已应用，投递零行为变化。
+  "$ROOT_DIR/sql/migrations/startup/852_models_canonical_column_set_reconcile.sql"
+  # 486（补登，2026-10-12）：credential_model_bindings.probe_revert_at——486 本身
+  # 就是 2026-08-13 为 154 同款 42703 而生的修复，却从未登记进任何通道，
+  # fresh-install 链每 ~30s 重演同一报错（本机 host-first 1088 次实测）。
+  # ADD COLUMN IF NOT EXISTS 幂等；部署链存量库早已应用，投递零行为变化。
+  "$ROOT_DIR/sql/migrations/startup/486_credential_model_bindings_add_probe_revert_at.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的
@@ -1285,7 +1380,30 @@ intentional_function_chains=(
   # 563 restores the hot trigger with the corrected unbounded-numeric ratio
   # body; 661 re-asserts the same fixed body AFTER 563 and validates the
   # function source. 572 must stay before 563; 661 must stay last.
-  'update_session_summary|572_session_summary_large_token_ratio.sql|563_session_summary_trigger_on_hot.sql|661_session_summary_token_ratio_reassert.sql|'
+  # 2026-10-12: 358 (channel-leg registration round) also redefines the
+  # trigger body between 563 and 661; the final body stays 661's, matching
+  # the scan-leg numeric order production received (572, 563, 358, 661).
+  'update_session_summary|572_session_summary_large_token_ratio.sql|563_session_summary_trigger_on_hot.sql|358_session_ownership.sql|661_session_summary_token_ratio_reassert.sql|'
+  # 2026-10-12 channel-leg registration: the candidate_failure_logs promote
+  # chain as sequenced here is 628 (v3, carries aggregation_id) → 392 (first
+  # partitioned promote) → 698 (Asia/Shanghai timezone pin, still carrying
+  # aggregation_id). 698 must stay last — it is the final body production's
+  # numeric-order scan leg ended with, same as this chain.
+  'promote_candidate_failure_logs_hot_to_partition|628_candidate_failure_logs_promote_atomic_v3.sql|392_candidate_failure_logs_monthly_partition.sql|698_promote_hot_partition_timezone_pin.sql|'
+  # 2026-10-12 channel-leg registration: 358 redefines 357's
+  # refresh_session_analytics_views when it takes over session ownership
+  # analytics; 358 stays last, matching production's numeric order.
+  'refresh_session_analytics_views|357_session_analytics_aggregation_views.sql|358_session_ownership.sql|'
+  # 2026-10-12 channel-leg registration: the candidate-binding scope revision
+  # trigger bodies are defined in 541/569, extended by 571, and reconciled by
+  # 578; 578 stays last on every chain, matching production's numeric order.
+  'bump_candidate_binding_scope_revision_insert|541_candidate_binding_scope_revision.sql|578_candidate_binding_scope_filter_disabled.sql|'
+  'bump_candidate_binding_scope_revision_update|541_candidate_binding_scope_revision.sql|578_candidate_binding_scope_filter_disabled.sql|'
+  'bump_candidate_binding_scope_revision_delete|541_candidate_binding_scope_revision.sql|578_candidate_binding_scope_filter_disabled.sql|'
+  'bump_candidate_binding_scope_revision_canonical_insert|569_candidate_binding_scope_revision_canonical.sql|571_candidate_binding_scope_revision_canonical_priority_hash.sql|578_candidate_binding_scope_filter_disabled.sql|'
+  'bump_candidate_binding_scope_revision_canonical_update|569_candidate_binding_scope_revision_canonical.sql|571_candidate_binding_scope_revision_canonical_priority_hash.sql|578_candidate_binding_scope_filter_disabled.sql|'
+  'bump_candidate_binding_scope_revision_canonical_delete|569_candidate_binding_scope_revision_canonical.sql|571_candidate_binding_scope_revision_canonical_priority_hash.sql|578_candidate_binding_scope_filter_disabled.sql|'
+  'bump_candidate_binding_scope_revision_canonical_pm_update|569_candidate_binding_scope_revision_canonical.sql|571_candidate_binding_scope_revision_canonical_priority_hash.sql|578_candidate_binding_scope_filter_disabled.sql|'
   # 654 supersedes 653's DELETE-based archive body with the columnar-safe
   # DETACH PARTITION + DROP path and must stay the later entry.
   'archive_credential_model_index|653_archive_credential_model_index_canonical_return.sql|654_archive_credential_model_index_detach_drop.sql|'

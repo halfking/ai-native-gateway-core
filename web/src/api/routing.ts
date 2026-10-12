@@ -457,3 +457,7 @@ export interface AuditEntry {
 export function getAudit(limit = 50) {
   return req<AuditEntry[]>('GET', `/api/routing/audit?limit=${limit}`)
 }
+
+export function getClientConfigFeatured(keyId: number) {
+  return req<{ featured_models: string[]; models: { id: string; name: string; contextWindow?: number }[] }>('GET', `/api/client-configs/featured?key_id=${keyId}`)
+}

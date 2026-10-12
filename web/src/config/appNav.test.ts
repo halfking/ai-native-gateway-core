@@ -139,6 +139,13 @@ describe('guide group migrated items', () => {
     expect(guide.items[0].path).toBe('/examples')
   })
 
+  it('links 自动配置 to the generator section on 接入示例', () => {
+    expect(guide.items[1]).toMatchObject({
+      path: '/examples#auto-config',
+      label: '自动配置',
+    })
+  })
+
   it('redirects guide 自动更新 to ACTIVATE_REDIRECT_PATH when not activated', () => {
     const autoUpdate = guide.items.find((i) => i.path === '/maintain/ops/autoupdate')!
     const resolved = resolveNavItemActivation(autoUpdate, { isActivated: false })

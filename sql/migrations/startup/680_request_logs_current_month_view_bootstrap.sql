@@ -39,8 +39,13 @@
 --   replay that caused the incident.
 --
 -- Safety Check:
---   - Healthy DB: canonical view exists → RETURN before any DDL.
---   - Purely additive; never drops or renames existing relations.
+--   - Healthy DB: canonical view exists with the 577/610 column shape
+--     → RETURN before any DDL.
+--   - Stale-shape repair only: DROP VIEW is reachable solely from the
+--     shape-mismatch branch below (CREATE OR REPLACE VIEW cannot add or drop
+--     view columns, so the column set can only move forward by rebuilding),
+--     is always IF EXISTS-guarded, and is followed by the rebuild in the same
+--     transaction. Never renames.
 --   - Single transaction.
 -- Rollback Script: 680_request_logs_current_month_view_bootstrap.down.sql
 -- ===========================================================================

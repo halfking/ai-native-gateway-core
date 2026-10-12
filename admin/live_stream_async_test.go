@@ -416,7 +416,31 @@ func blackholeListener(t *testing.T) string {
 // were genuinely queued (drainer still behind) rather than dropped.
 func TestPublishBroadcastNotBlockedByRedis(t *testing.T) {
 	addr := blackholeListener(t)
-	rdb := redis.NewClient(&redis.Options{Addr: addr})
+	// ReadTimeout MUST be pinned here, and this is not cosmetic.
+	//
+	// Measured on go-redis v9.20.0 against a server that accepts connections
+	// but never answers (exactly what blackholeListener is):
+	//
+	//	no ReadTimeout set, ctx budget 200ms → elapsed 3.005s
+	//	no ReadTimeout set, ctx budget 2s    → elapsed 3.002s
+	//	ReadTimeout=200ms,  ctx budget 200ms → elapsed 0.202s
+	//	ReadTimeout=200ms,  ctx budget 2s    → elapsed 0.215s
+	//
+	// go-redis does not shorten its own read timeout to the caller's ctx
+	// deadline: it reports "context deadline exceeded" but only after the full
+	// ReadTimeout (3s default) has elapsed. The 200ms per-record budget that
+	// liveStreamRecordWriteTimeout documents is therefore enforced by the
+	// CLIENT's ReadTimeout, not by the context — and the default client gives
+	// 3s, 15x the documented budget.
+	//
+	// Without this pin the drainer needs 30 x 3s = 90s to chew through the
+	// queue, Stop() waits out its 60s join budget, and this test alone burns a
+	// minute — which is most of why the admin package exceeded the
+	// `go test ./... -timeout=300s` budget.
+	rdb := redis.NewClient(&redis.Options{
+		Addr:        addr,
+		ReadTimeout: liveStreamRecordWriteTimeout,
+	})
 	t.Cleanup(func() { rdb.Close() })
 
 	hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{

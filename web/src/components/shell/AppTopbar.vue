@@ -314,6 +314,18 @@ function groupActive(id: string): boolean {
 .app-topbar {
   display: flex;
   align-items: center;
+  /* 2026-10-12 审计（2543 轮 GUI 验收实测，1280 视口）：主菜单 EN 文案总宽
+     ~922px，加品牌 126 + 操作区 425 + 内边距/间隙 ≈1569px 才放得下单行；
+     此前 nowrap 布局让 nav（flex:1, min-width:0, overflow:visible）从操作区
+     底下穿过——版本徽章盖住「Integration Guide / 运维中心」且拦截其点击
+     （实测重叠 273px）。wrap + 下面的 min-width: fit-content 让放不下时
+     nav 整体落到第二行，放得下时单行布局与改动前完全一致。 */
+  flex-wrap: wrap;
+  /* 100vh 纵向 flex（.app-layout）里内容超高时 flex-shrink 会把本栏压到
+     min-height——单行时代内容恰为 64px 看不出差别；换行后第二行会被压出
+     盒子叠到下方横幅上（2546 轮实测）。topbar 永远保持内容高，
+     溢出吸收交给内部滚动的 .main-content（flex:1 + overflow:hidden）。 */
+  flex-shrink: 0;
   gap: 16px;
   padding: 10px clamp(16px, 3vw, 32px);
   background: var(--kx-surface-soft, var(--sidebar));
@@ -367,7 +379,11 @@ function groupActive(id: string): boolean {
   align-items: center;
   gap: 4px;
   flex: 1;
-  min-width: 0;
+  /* fit-content（而非 0）：nav 的假定主尺寸 = 全部菜单内容宽，单行放不下时
+     flex 换行把它整体送到第二行，而不是缩进操作区底下（见 .app-topbar 处注释）。
+     二级下拉是 Teleport 到 body 的 position:fixed（syncDropdownPosition），
+     不受 nav 尺寸/换行影响。 */
+  min-width: fit-content;
   /* 禁止 overflow:auto — 会裁切绝对定位的二级下拉，导致菜单在窄条内滚动看不见 */
   overflow: visible;
 }
@@ -571,6 +587,9 @@ function groupActive(id: string): boolean {
     width: 100%;
     margin-top: 6px;
     flex-wrap: nowrap;
+    /* width:100% 语义下 fit-content 反向撑破容器；此处本来就该可缩（有 overflow-x:auto 兜底）。
+       （≥1024 由 isMobile 换汉堡接管，本块当前实际不渲染 nav，属防御性回置。） */
+    min-width: 0;
     overflow-x: auto;
     overflow-y: hidden;
     scrollbar-width: thin;

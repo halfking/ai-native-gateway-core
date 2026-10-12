@@ -53,13 +53,21 @@ func TestMigration838_AnalyzeSkipFrozenMonth(t *testing.T) {
 
 	// funcBody returns the text between the $function$ delimiters of the
 	// analyze_llm_gateway_table_stats definition, so assertions cannot be
-	// satisfied by the surrounding comments. Two anchors are accepted because
-	// the migrations use CREATE OR REPLACE while the canonical/baseline copies
-	// use CREATE FUNCTION public....
+	// satisfied by the surrounding comments. Four anchors are accepted because
+	// the CREATE verb and the schema qualification vary independently across
+	// the copies: the migrations use `CREATE OR REPLACE FUNCTION <name>` with no
+	// schema prefix, while the baseline/object copies are schema-qualified —
+	// and since commit 4f5ae1a82 (host-first deploy) sql/schema/01-schema.sql
+	// normalizes its functions to `CREATE OR REPLACE`, which is the
+	// OR-REPLACE + qualified combination. Enumerating only two of the four
+	// made funcBody report "function definition not found" on the canonical
+	// baseline and fail the mirror gate below without reading any body.
 	funcBody := func(t *testing.T, sql string) string {
 		t.Helper()
 		anchors := []string{
 			"CREATE OR REPLACE FUNCTION analyze_llm_gateway_table_stats",
+			"CREATE OR REPLACE FUNCTION public.analyze_llm_gateway_table_stats",
+			"CREATE FUNCTION analyze_llm_gateway_table_stats",
 			"CREATE FUNCTION public.analyze_llm_gateway_table_stats",
 		}
 		i := -1

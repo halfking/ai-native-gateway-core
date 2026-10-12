@@ -1,9 +1,6 @@
 package admin
 
-import (
-	"encoding/json"
-	"net/http"
-)
+import "net/http"
 
 type clientConfigAuditRequest struct {
 	Action     string `json:"action"`
@@ -15,12 +12,11 @@ type clientConfigAuditRequest struct {
 }
 
 func (h *Handler) handleClientConfigAudit(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	if !requireUserManager(w, r) {
 		return
 	}
-	if h.db == nil {
-		writeError(w, http.StatusServiceUnavailable, "database not configured")
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -30,38 +26,17 @@ func (h *Handler) handleClientConfigAudit(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	validActions := map[string]bool{
-		"generate":        true,
-		"download_script": true,
-		"copy_config":     true,
-		"manual_view":     true,
-	}
-	validTools := map[string]bool{
-		"zcode":         true,
-		"opencode":      true,
-		"cursor":        true,
-		"cherry_studio": true,
-		"roocode":       true,
-	}
-	validOS := map[string]bool{
-		"macos":   true,
-		"windows": true,
-		"linux":   true,
-	}
-
-	if !validActions[req.Action] {
-		writeError(w, http.StatusBadRequest, "invalid action")
+	if message := validateClientConfigAudit(req); message != "" {
+		writeError(w, http.StatusBadRequest, message)
 		return
 	}
-	if !validTools[req.Tool] {
-		writeError(w, http.StatusBadRequest, "invalid tool")
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
-	if !validOS[req.OS] {
-		writeError(w, http.StatusBadRequest, "invalid os")
+	if !h.assertKeyTenantScope(w, r, req.KeyID) {
 		return
 	}
-
 	details := map[string]any{
 		"tool":        req.Tool,
 		"os":          req.OS,
@@ -72,7 +47,25 @@ func (h *Handler) handleClientConfigAudit(w http.ResponseWriter, r *http.Request
 		"ip":          r.RemoteAddr,
 		"user_agent":  r.UserAgent(),
 	}
-	detailsJSON, _ := json.Marshal(details)
-	h.writeAuditLog(r, "client_config_"+req.Action, "client_config", 0, string(detailsJSON))
+	h.writeAuditLog(r, "client_config_"+req.Action, "client_config", 0, details)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func validateClientConfigAudit(entry clientConfigAuditRequest) string {
+	validActions := map[string]bool{"generate": true, "download_script": true, "copy_config": true, "manual_view": true}
+	validTools := map[string]bool{"zcode": true, "opencode": true, "minimax_code": true, "cursor": true, "cherry_studio": true, "roocode": true}
+	validOS := map[string]bool{"macos": true, "windows": true, "linux": true}
+	if !validActions[entry.Action] {
+		return "invalid action"
+	}
+	if !validTools[entry.Tool] {
+		return "invalid tool"
+	}
+	if !validOS[entry.OS] {
+		return "invalid os"
+	}
+	if entry.KeyID <= 0 || entry.ModelCount <= 0 || (entry.ModelScope != "featured" && entry.ModelScope != "all") {
+		return "invalid key or model scope"
+	}
+	return ""
 }

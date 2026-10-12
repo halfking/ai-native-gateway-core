@@ -117,6 +117,9 @@ var billingCancellationAuditMigration388 []byte
 //go:embed embeddata/startup/484_request_logs_hot_add_status_code.sql
 var requestLogsHotAddStatusCodeMigration484 []byte
 
+//go:embed embeddata/startup/486_credential_model_bindings_add_probe_revert_at.sql
+var credentialModelBindingsProbeRevertAt486 []byte
+
 //go:embed embeddata/startup/491_request_logs_queue_timestamps.sql
 var requestLogsQueueTimestampsMigration491 []byte
 
@@ -839,6 +842,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/487_request_logs_add_system_fingerprint.sql":                            requestLogsAddSystemFingerprintMigration487,
 	"startup/388_billing_cancellation_audit.sql":                                     billingCancellationAuditMigration388,
 	"startup/484_request_logs_hot_add_status_code.sql":                               requestLogsHotAddStatusCodeMigration484,
+	"startup/486_credential_model_bindings_add_probe_revert_at.sql":                  credentialModelBindingsProbeRevertAt486,
 	"startup/491_request_logs_queue_timestamps.sql":                                  requestLogsQueueTimestampsMigration491,
 	"startup/510_request_type.sql":                                                   requestTypeMigration510,
 	"startup/532_request_logs_final_success.sql":                                     requestLogsFinalSuccessMigration532,

@@ -1282,6 +1282,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/models/name-mapping", admin(h.handleModelNameMapping))
 	mux.HandleFunc("/api/models/name-mapping/", admin(h.handleModelNameMapping))
 	mux.HandleFunc("/api/client-configs/audit", admin(h.handleClientConfigAudit))
+	mux.HandleFunc("/api/client-configs/featured", admin(h.handleClientConfigFeatured))
 	mux.HandleFunc("/api/usage", admin(h.handleUsageSummary))
 	mux.HandleFunc("/api/usage/", admin(h.handleUsage))
 	// T1.4 用量成本增强端点 (2026-07-06)

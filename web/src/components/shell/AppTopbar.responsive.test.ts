@@ -35,6 +35,24 @@ describe('AppTopbar responsive navigation', () => {
     expect(source).toMatch(/<nav v-else class="app-topbar__nav"/)
   })
 
+  // 2026-10-12 审计（2543 轮 GUI 验收，1280 视口实测）：EN 菜单总宽 ~922px，
+  // 单行需 ~1569px；nowrap + min-width:0 让 nav 从操作区底下穿过，版本徽章
+  // 盖住「Integration Guide / 运维中心」并拦截点击（实测重叠 273px）。
+  // 修复 = 顶栏允许换行 + nav 以 fit-content 为最小宽：放不下整体落到第二行，
+  // 放得下单行布局不变（宽屏零回归）。
+  it('desktop nav wraps to its own row instead of sliding under the actions', () => {
+    // 只断言基础规则区（第一个 @media 之前）：≤768 块里本来就有一条
+    // .app-topbar { flex-wrap: wrap }，全文件搜索会拿它冒充基础规则（变异验证实录）。
+    const baseStyles = source.slice(0, source.indexOf('@media'))
+    expect(baseStyles).toMatch(/\.app-topbar\s*{[^}]*flex-wrap:\s*wrap/s)
+    expect(baseStyles).toMatch(/\.app-topbar\s*{[^}]*flex-shrink:\s*0/s)
+    expect(baseStyles).toMatch(/\.app-topbar__nav\s*{[^}]*min-width:\s*fit-content/s)
+    // ≤768 兜底块里 fit-content 会与 width:100% 打架（min-width 赢家导致横向撑破），
+    // 必须回置 min-width: 0（该块自带 overflow-x:auto 兜底）。
+    const mobileStyles = source.slice(source.indexOf('@media (max-width: 768px)'))
+    expect(mobileStyles).toMatch(/\.app-topbar__nav\s*{[^}]*min-width:\s*0/s)
+  })
+
   it('hamburger meets the 44px touch-target budget', () => {
     expect(source).toMatch(/\.app-topbar__hamburger\s*{[^}]*height:\s*40px/s)
     // responsive-base.css 在 <768 提供 min-height 兜底，桌面不受影响

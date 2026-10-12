@@ -549,7 +549,7 @@ fi
 # re-clobbered update_session_summary(). Every multi-file function chain must
 # stay registered in intentional_function_chains or deployment aborts.
 for chain in \
-  'update_session_summary|572_session_summary_large_token_ratio.sql|563_session_summary_trigger_on_hot.sql|661_session_summary_token_ratio_reassert.sql|' \
+  'update_session_summary|572_session_summary_large_token_ratio.sql|563_session_summary_trigger_on_hot.sql|358_session_ownership.sql|661_session_summary_token_ratio_reassert.sql|' \
   'archive_credential_model_index|653_archive_credential_model_index_canonical_return.sql|654_archive_credential_model_index_detach_drop.sql|' \
   'ensure_request_logs_bodies_partition|694_partition_ensure_timezone.sql|765_bodies_columnar_storage.sql|829_bodies_columnar_rollback.sql|'; do
   grep -qF -- "'$chain'" "$SCRIPT" || \

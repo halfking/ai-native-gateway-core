@@ -91,6 +91,21 @@ button {
   color: inherit;
 }
 
+/* ⚠️ 表单控件也必须继承正文字体（2026-10-12 实测修复：搜索框占位符全是豆腐块）。
+   原来只重置了 button，<input>/<select>/<textarea> 仍走 UA 默认字体。
+   UA 默认字体在 iOS 上解析成 San Francisco —— 没有 CJK 字形，而 fallback 链
+   里若没有真带中文字形的家族（见 body 的 font-family），placeholder 的汉字
+   就逐字渲染成豆腐块。
+   模拟器实测（iOS 26.3，nbjl-6s-size-263）：供应商列表搜索框的
+   「搜索名称 / code / 目录码」显示成「🔍 ? ? ? ? / code」，而同一页面
+   的正文「共 52 家」完全正常 —— 正文字体有 CJK、控件字体没有，就是这个分叉。 */
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
 /* 2026-10-11（UX5）：iOS WKWebView 弹键盘时把聚焦的输入框 scroll-into-view，
    默认会贴到 viewport 底沿被键盘压半截。给文本类输入加 scroll-margin，
    让浏览器自己留出键盘高度的空间。

@@ -39,6 +39,19 @@ watch(
   (open) => {
     if (open) {
       lastFocused = document.activeElement
+      // ⚠️ 打开弹层必须先把背景里还聚焦着的输入框**失焦**（2026-10-12 实测修复）。
+      //
+      // 供应商列表页顶部有个搜索框；点卡片打开详情弹层时它往往还保持 focus。
+      // 只要还有 input 处于 focus 状态，iOS 就会：
+      //   ① 让**自动填充条**（▲▼✓）一直浮在弹层上面不消失；
+      //   ② 把落在页面上的点按判成「长按文本」→ 弹出「粘贴 / 自动填充」上下文菜单，
+      //      这一下根本到不了 ✕ 按钮上。
+      // 实测现象：模拟器上连点 ✕ 三次都关不掉弹窗，坐标点按弹出的直接是
+      // 「Paste | AutoFill」浮层。**按钮本身没坏，是焦点没被弹层接管。**
+      //
+      // 只 blur 不 preventDefault：blur() 不阻止后续事件派发，
+      // 也不会影响下面针对 panelRef 的主动 focus。
+      if (lastFocused instanceof HTMLElement) lastFocused.blur()
       overlay.present()
       void nextTick(() => {
         if (window.matchMedia?.('(pointer: coarse)').matches || window.matchMedia?.('(hover: none)').matches) {
@@ -59,6 +72,7 @@ watch(
       }
     }
   },
+  { immediate: true },
 )
 
 onBeforeUnmount(() => {

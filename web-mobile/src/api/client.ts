@@ -115,18 +115,64 @@ function errorCode(text: string): string {
 
 let unauthorizedHandler: ((currentPath: string) => void) | null = null
 let redirectStarted = false
+/** 会话探针单飞：并发 401 只探一次 /api/auth/me（见 sessionReallyDead）。 */
+let sessionProbe: Promise<boolean> | null = null
 
 export function setUnauthorizedHandler(fn: (currentPath: string) => void): void {
   unauthorizedHandler = fn
 }
 
-/** 测试复位：401 bounce 单飞闩锁。 */
+/** 测试复位：401 bounce 单飞闩锁 + 会话探针单飞。 */
 export function resetUnauthorizedForTests(): void {
   redirectStarted = false
+  sessionProbe = null
 }
 
 function isAuthProbePath(path: string): boolean {
   return path === '/api/auth/me' || path === '/api/auth/token' || path === '/api/auth/logout'
+}
+
+/**
+ * ★ 401 **不等于**会话过期 —— 踢回登录页之前必须先确认（2026-10-12 实测）。
+ *
+ * 后端把「端点没注册」和「你没带 token」返回成**逐字节相同**的响应：
+ *   未注册 `/api/admin/*`（feature flag 关 ⇒ 路由不注册，落到 `mux.Handle("/api/admin/", e)`，
+ *   而 `e.Use(jwtMiddleware)` 是全局中间件、在路由之前跑）
+ *     → 401 `{"error":"authentication required"}` 36 字节
+ *   已注册端点无 token
+ *     → 401 `{"error":{"detail":"authentication required"}}` 47 字节
+ *   已注册端点无 token 打一个**明显不存在**的路径，得到的与第一条**完全一致**
+ *     ⇒ 「端点不存在」与「未认证」在响应上不可区分。
+ *
+ * 代价是实测到的：用户进「费用对账」页（flag 默认关闭 ⇒ 端点未注册），
+ * 那一个 401 就把**完全有效**的会话整页踢回登录页
+ * （同会话 9 秒前 `/api/auth/me` 与 `/api/admin/dashboard/board` 都是 200）。
+ *
+ * 所以这里在动 `unauthorizedHandler` 之前先探一次 `/api/auth/me`：
+ *   · 探针也 401/失败 ⇒ 会话确实死了 ⇒ 照旧踢登录（**保留吊销后的强制登出**）
+ *   · 探针成功     ⇒ 会话是好的，是这个端点自己拒 ⇒ **不踢**，按 ApiError(401) 走页面级错误态
+ * 探针走 `/api/auth/me`（isAuthProbePath 内）⇒ 不会递归回本函数。
+ * 探针单飞：并发 401 只多打一次探针。
+ *
+ * ⚠️ EpochError 不等于「会话死了」——它表示**另一处正在换 epoch**（登录/登出），
+ *   那种情况下主动导航本身就是错的，所以一律不踢。
+ */
+async function sessionReallyDead(): Promise<boolean> {
+  if (!sessionProbe) {
+    sessionProbe = (async () => {
+      try {
+        await req('GET', '/api/auth/me')
+        return false
+      } catch (err) {
+        if (isEpochError(err)) return false
+        return true
+      } finally {
+        // 结论只对这一轮有效：下一次 401 必须重新探，不能永久粘住。
+        sessionProbe = null
+      }
+    })()
+  }
+  return sessionProbe
 }
 
 function errorMessage(statusText: string, text: string): string {
@@ -217,8 +263,13 @@ export async function req<T>(method: string, path: string, body?: unknown, optio
       !window.location.pathname.startsWith('/m/login') &&
       !window.location.pathname.startsWith('/login')
     ) {
-      redirectStarted = true
-      unauthorizedHandler?.(window.location.pathname + window.location.search)
+      // ★ 先确认会话是否真的死了，再决定要不要把用户踢回登录页。
+      //   详见 sessionReallyDead 的注释：后端把「端点未注册」也回成 401，
+      //   与「未认证」逐字节相同；旧实现直接踢 ⇒ 有效会话被误杀。
+      if (await sessionReallyDead()) {
+        redirectStarted = true
+        unauthorizedHandler?.(window.location.pathname + window.location.search)
+      }
     }
     throw new ApiError(401, msg || 'Unauthorized', errorCode(raw))
   }

@@ -70,6 +70,57 @@ describe('api/client（17 §5 契约）', () => {
     expect(handler).not.toHaveBeenCalled()
   })
 
+  // ↓ 401 误杀会话（2026-10-12 实测修的缺陷）
+  //
+  // 后端把「端点没注册」和「你没带 token」返回成逐字节相同的 401，
+  // 所以「进费用对账页 → 整页踢回登录页」的真实原因是端点未注册（flag 关），
+  // 而**不是**会话过期。旧实现见 status 就跳 ⇒ 有效会话被误杀。
+  // 这三条钉住新行为：会话还活着时不踢；真的死了仍踢；探针单飞。
+
+  it('401：会话探针成功 ⇒ 不踢登录，只抛 ApiError（有效会话被误杀的回归门）', async () => {
+    const handler = vi.fn()
+    setUnauthorizedHandler(handler)
+    // 业务端点 401（flag 关 ⇒ 未注册），但 /api/auth/me 是 200
+    fetchMock.mockImplementation((url: string) =>
+      String(url).includes('/api/auth/me')
+        ? jsonResponse({ id: 1, username: 'admin' })
+        : new Response(JSON.stringify({ error: 'authentication required' }), { status: 401 }),
+    )
+    const err = await req('GET', '/api/admin/provider-cost-reconciliation?month=2026-10').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ApiError)
+    expect((err as ApiError).status).toBe(401)
+    // ★ 核心断言：会话还有效，不能把人踢回登录页
+    expect(handler).not.toHaveBeenCalled()
+    // 探针确实发出去了（否则这条断言会因为「压根没探」而假绿）
+    expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/api/auth/me'))).toBe(true)
+  })
+
+  it('401：会话探针也 401 ⇒ 仍踢登录（token 真被吊销的行为不能丢）', async () => {
+    const handler = vi.fn()
+    setUnauthorizedHandler(handler)
+    fetchMock.mockImplementation(() => new Response(JSON.stringify({ error: 'no session' }), { status: 401 }))
+    await expect(req('GET', '/api/keys')).rejects.toThrow(ApiError)
+    expect(handler).toHaveBeenCalledTimes(1)
+  })
+
+  it('并发 401 只探一次会话（探针单飞，不是每个 401 都打一轮）', async () => {
+    const handler = vi.fn()
+    setUnauthorizedHandler(handler)
+    fetchMock.mockImplementation((url: string) =>
+      String(url).includes('/api/auth/me')
+        ? jsonResponse({ id: 1, username: 'admin' })
+        : new Response(JSON.stringify({ error: 'authentication required' }), { status: 401 }),
+    )
+    await Promise.allSettled([
+      req('GET', '/api/admin/a'),
+      req('GET', '/api/admin/b'),
+      req('GET', '/api/admin/c'),
+    ])
+    const probes = fetchMock.mock.calls.filter(([u]) => String(u).includes('/api/auth/me')).length
+    expect(probes).toBe(1)
+    expect(handler).not.toHaveBeenCalled()
+  })
+
   it('sessionEpoch 变更 → 响应丢弃为 EpochError（17 §4-R2 验收用例 7）', async () => {
     const epochAtStart = currentSessionEpoch()
     let resolveFetch: (r: Response) => void = () => {}

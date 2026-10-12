@@ -113,7 +113,17 @@ func (h *ProviderCostReconciliationHandler) handleList(w http.ResponseWriter, r 
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	month := time.Now()
+	// 缺省 month 取「当前月的月初」，不是当前时刻。
+	//
+	// ⚠️ 这里是曾经的真实缺陷（静默失败，非报错）：reconciliation_month 列是
+	// date，读端 PGReconciliationStore.ListByMonth 以 `WHERE reconciliation_month = $1`
+	// 比较，列里存的是**日历月首日**；而裸 `month := time.Now()`（如 2026-10-11 23:45）
+	// 传进去与该列必然不等 ⇒ 端点返回 200 + count=0，不报错、不告警。
+	// 构造方式与写方逐字一致（bg/cost_reconciliation_worker.go:91 的
+	// CostReconciliationMonthsToAggregate），Location 也取 now.Location()，
+	// 使读端默认路径与写方落在同一日历月。
+	now := time.Now()
+	month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 	if v := r.URL.Query().Get("month"); v != "" {
 		parsed, err := time.Parse("2006-01", v)
 		if err != nil {

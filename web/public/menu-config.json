@@ -557,6 +557,13 @@
           "pluginScope": "*"
         },
         {
+          "path": "/examples#auto-config",
+          "label": "自动配置",
+          "icon": "🛠️",
+          "tenantScope": "*",
+          "pluginScope": "*"
+        },
+        {
           "path": "/maintain/ops/autoupdate",
           "label": "自动更新",
           "labelKey": "nav.item.opsAutoUpdate",
