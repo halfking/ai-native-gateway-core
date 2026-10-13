@@ -173,11 +173,23 @@ var bodiesUnaffectedJustification = map[string]string{
 		"（LoadV1Turns 缺 body 时 pgx.ErrNoRows 被 continue 吞掉、保留空默认，校验会报" +
 		"「v2 多出轮次」而不是崩）。它由人工触发、不在在线读写路径上，" +
 		"所以「不读正文内容」的退化不构成服务面影响。",
+	"admin/compression_sessions.go": "本文件的 bodies 触点**已在本轮（S3 波 4）改成双源**，所以「bodies 没有 session 兜底」这条前提对它不成立：" +
+		"顶层过滤器是跨族 EXISTS（compressionOutboundBodyPredicate：v1 腿 `request_logs_bodies_with_current_month` ∪ 会话腿 db.SessionFamilyBodiesSourceSQL()），" +
+		"LATERAL（compressionLatestOrigMsgsLATERAL）同样是两族并集——v1 腿保留 ts 等值只服务停写前历史，会话腿按 request_id 单键 JOIN session_bodies（§9.231 列合同无 ts）。" +
+		"真库实测回答本表要求的那一个问题「停写之后这个读点返回的东西会变吗」：**不会变少，只会变多**。" +
+		"24h 窗会话数 1,125 → 9,255（差额是被旧谓词整行滤掉的停写后会话）；" +
+		"estimated_original_msgs 在停写前 811 个已取值会话上**逐个同值**（same 811 / different 0 / 被并集变 NULL 的 0），另新增 11,646+7,412 个会话有值；" +
+		"仍为 NULL 的 msg_reduction 源自 outbound_msg_count/outbound_token_est 的**列填充率**（停写前 11.40% vs 停写后 28.34%，停写后更高），与 v1 无关。" +
+		"⚠ 本条在 2026-10-14 之前登记为 silently_degraded_content，且 Note 写「列表行仍返回」——**那是错的**：" +
+		"它只看了 LATERAL 的谓词，漏掉顶层 whereClause 里同族的 `rb.outbound_body IS NOT NULL`（LEFT JOIN + WHERE IS NOT NULL = 内连接），" +
+		"那一行才是把停写后会话整行滤掉的真凶。分类表的 Note 与真实行为不符时，门不会报错——**只有逐点复核会发现**。",
 	"admin/data_lifecycle_blobs.go": "读的是体量不是内容：唯一的 bodies 引用是 " +
 		"`COALESCE(pg_column_size(rb.request_body), 0)`，即「存量正文占多少字节、" +
 		"清理能省多少」。停写不改变存量字节数，也不改变待清理行数。" +
 		"注意 bodies 族是按正则识别的，会把 pg_column_size 也算成「读 bodies」，" +
-		"所以这条豁免不是可有可无的形式主义。",
+		"所以这条豁免不是可有可无的形式主义。" +
+		"⚠ 但 S3 波 4 复核时实测到它的**读腿覆盖不到停写后的新正文**（bodies 只来自 v1 ⇒ 新行字节数报 0、清理预览少算），" +
+		"已登记为下一分片的治理面扩展项；在那之前本条豁免只覆盖「存量字节数不变」这一半，不覆盖「新正文看不见」这一半。",
 }
 
 // requestLogsStopWriteClassification 覆盖 requestLogsReadInventory 的 104 个文件。
@@ -289,9 +301,19 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 			"所以这是读腿的退化，不是数据丢失。",
 	},
 	"admin/compression_sessions.go": {
-		Effect:   effectSilentlyDegradedContent,
-		Evidence: "AND rb2.outbound_body IS NOT NULL",
-		Note:     "列表行仍返回（compression_strategy 在 session 臂有真值），但 LATERAL 的 rb2.outbound_body IS NOT NULL(:147) 停写后恒假 ⇒ estimated_original_msgs 对每行都是 COALESCE(NULL,0)=0，且 outbound_msg_count / outbound_token_est 是补位 NULL ⇒ 200 OK、字段齐全、全零，**压缩效果的度量整体失去意义**。",
+		// ⚠ 2026-10-14 S3 波 4：本条**在停写状态下是错的，本轮已修**。
+		// 原文只看了 LATERAL 的 :147 谓词，写下「列表行仍返回」——
+		// 而顶层 whereClause（:89）里另有一条 `rb.outbound_body IS NOT NULL`，
+		// 它来自 `LEFT JOIN request_logs_bodies_with_current_month`，在 WHERE 里
+		// 等价于内连接，于是把**停写后的会话整行滤掉**。真库实测（本地库，
+		// 24h 窗）：旧谓词命中 1,125 个会话 / 新谓词 9,255；停写后的会话在旧
+		// 形态下 **100% 不可见**。本轮把该谓词改成跨族 EXISTS
+		// （compressionOutboundBodyPredicate）、LATERAL 改双源，并修掉一个
+		// 「LIMIT 排在 LATERAL 之后」的性能陷阱（同窗 9.9s → 0.32s，
+		// 旧形态已贴着本端点 10s 超时）。
+		Effect:   effectUnaffected,
+		Evidence: "JOIN request_logs_bodies_with_current_month rb2",
+		Note:     "S3 波 4 修复后逐项实测（本地库，翻转点 2026-10-13 07:01:04）：①行数：旧谓词 24h 窗命中 1,125 会话、新谓词 9,255，差额即停写后被滤掉的会话；②estimated_original_msgs：停写前 811 个已取值会话在新 LATERAL 下**逐个同值**（same 811 / different 0 / 因并集变 NULL 的 0），同时新增 11,646（停写前）+ 7,412（停写后）个会话有值；③残余的 msg_reduction 仍会为 NULL，是因为 outbound_msg_count/outbound_token_est 在**两侧都有空值**（710 视图实测填充率：停写前 11.40%、停写后 28.34%），属列填充率而非停写依赖——停写后反而更高。Evidence 锚在保留的 v1 腿上：它现在只服务**停写前的历史**，停写后的轮次走 session_bodies 单键 JOIN（§9.231 列合同无 ts，禁止等值）。⇒ 判 unaffected。",
 	},
 	"admin/logs_summary.go": {
 		Effect:   effectSilentlyDegradedContent,

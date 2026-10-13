@@ -4719,7 +4719,23 @@ live 分支只写了 `Reason` 忘了把 `Stale` 设回 `false` ⇒ 该字段**�
 | `errors_out` | 3 | 响亮失败，灰度立刻可见（**可接受**） |
 | `validator_dual_read` | 1 | §9.35 的新鲜度探针 |
 
-**⇒ 灰度前必须处理的静默档：**59** 条**（`silently_empty` + `silently_degraded_content` + `silently_frozen`；计数口径 = countSilentStopWriteEffects 的三档 switch，见下方 2026-10-13 订正）
+**⇒ 灰度前必须处理的静默档：**58** 条**（`silently_empty` + `silently_degraded_content` + `silently_frozen`；计数口径 = countSilentStopWriteEffects 的三档 switch，见下方 2026-10-14 订正）
+
+> ⚠ **S3 波 4 订正（2026-10-14，停写盲区修复片）：59 → 58。**
+> −1：`admin/compression_sessions.go` 由 `silently_degraded_content` 改判
+> `unaffected_by_stop_write`。改判理由**不是**"我修好了所以它没影响"——
+> 而是那条登记本身判错了一次：它只看了 LATERAL 的 `:147` 谓词，漏掉顶层
+> `whereClause` 里同族的 `rb.outbound_body IS NOT NULL`（LEFT JOIN + WHERE
+> IS NOT NULL = 内连接），而那一行才是把停写后会话**整行**滤掉的真凶。
+> 本轮把该过滤器改成跨族 EXISTS、LATERAL 改双源，真库实测停写后会话从
+> 0/7,412 恢复到 7,412/7,412，且在旧形态已有取值的 811 个会话上**逐个同值**
+> ⇒ 它确实不再受停写影响。明细见
+> `docs/audit/2026-10-14-s3-wave4-bodies-per-point-first-shard.md`。
+>
+> ★ 这一条值得单独记的是**分类表自身的错误不会被任何门发现**：
+> 登记表与真实行为不符时，Evidence 逐字校验、族一致性校验、覆盖率门
+> 全部照常通过——只有逐点复核才会撞上。上一片（波 3）的 61→59 是
+> "文件除名"这种门能看见的变化，这次是**判错**。
 
 > ⚠ **S3 波 3 订正（2026-10-13，停写切换读侧第二分片）：61 → 59。**
 > −1：admin/routing.go 除名——popularModelsHotSQL 改读会话族原生源

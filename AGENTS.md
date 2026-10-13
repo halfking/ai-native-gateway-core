@@ -1109,3 +1109,98 @@ probe body 形状断言）；工作区另有并行会话 r1023 的缩进级遗�
 - 211 Redis 库号 claim 不粘 + UrsmlHealthyKeyReconciler 在 211 容器未起
   （154/245 有 `ursm.v2 healthy-key reconciler started`，211 日志无此行），
   冷启动靠 emergency-repair——两件一起查。
+
+---
+
+# 追加：2026-10-14 S3 波 4 —— 存储可用性复核 + bodies 逐点评估第一片
+
+> 会话目标：完成 request_log 读写向 session_turns 的转换、停掉 request_logs
+> 相关写入、切换查询与 API、**确认数据在更改前后一致**。本片从
+> `TestV1BodiesReadersAreAssessed`（删除 `request_logs_bodies` 的唯一前置）
+> 切入。明细见 `docs/audit/2026-10-14-s3-wave4-bodies-per-point-first-shard.md`。
+
+## 存储可用性（目标原话的"确认数据的存储可用"，真库实测）
+
+本地库（host-first :8782，2.5.8.2620）翻转点 `2026-10-13 07:01:04`：
+
+- `request_logs_hot` / `request_logs_bodies_hot` **均为 0 行**（已 promote 排空）
+  ⇒ 直读 hot 的读面**当下就是空的**，不是"变少"。
+- `request_logs` 35,506 行、max(ts)=07:01:04 —— 与开关翻转**逐秒吻合**。
+- `session_turns_hot` 2,314 行、max(ts)=取数时刻；`session_turns` 17,967 行。
+- canonical 视图 44,079 = v1 臂 35,506 + 会话臂 8,573，**`dup_request_ids = 0`**。
+- `session_bodies` 17,967 行 = `session_turns` 全量 ⇒ **正文覆盖 100%**
+  （`bodies_missing_for_turns = 0`）。
+- 两个键：`storage.request_logs_write_enabled=false`、`storage.session_bodies_native_read=true`。
+
+⇒ 存储面可用性成立，读源迁移可以放心推进。
+
+## 本片修的缺陷：压缩会话页在停写后**整页归零**
+
+`GET /api/admin/compression/sessions`。真库实测 24h 窗：旧谓词命中 **1,125**
+会话、新谓词 **9,255**；停写后的会话在旧形态下 **100% 不可见**。
+
+**真凶不在 LATERAL，在顶层 `whereClause`**：`LEFT JOIN
+request_logs_bodies_with_current_month rb` + `WHERE rb.outbound_body IS NOT NULL`
+—— LEFT JOIN 的 IS NOT NULL 落在 WHERE 里等价于内连接，而 bodies 腿只指向 v1。
+
+★★ **分类表把这条判错过一次**（本轮最贵的发现）：
+`requestLogsStopWriteClassification` 里它的 Note 写"列表行仍返回"，只看了
+LATERAL 的 `:147` 谓词，**漏掉顶层那条**。⇒ **登记表与真实行为不符时没有任何
+门会报错**（Evidence 逐字校验、族一致性、覆盖率门全部照常过），只有逐点复核
+会撞上。已改判 `unaffected_by_stop_write` + `bodiesUnaffectedJustification` 具名论证，
+主审计文档静默档 59 → 58（`TestAuditDocSilentClaimMatchesRegistry` 钉住）。
+
+修法三处（缺一不可）：顶层过滤改**跨族 EXISTS**；LATERAL 改**双源**（v1 腿保留
+ts 等值服务历史，会话腿 `request_id` 单键 JOIN `session_bodies`）；**分页下推到
+LATERAL 之前**。
+
+- **为什么用 EXISTS 而不是 UNION 两族再 JOIN**：双写期同一 request_id 在两个
+  家族同时存在，本地实测 **11,711 个双生** ⇒ UNION 后一对多会虚增 `request_count`。
+- **性能陷阱**：LIMIT 排在 LATERAL 之后时，LATERAL 要对**全部分组会话**求值
+  才轮到 LIMIT（停写前候选千级看着够快，停写后 9,255 就顶不住）。同窗实测
+  **10.444s → 0.318s（33×）**，且两形态 200 行结果集 `diff` **完全一致**。
+
+## 判据纪律增量（第 9、10 条）
+
+**第 9 条：判据要钉性质，不是钉拼写。** ts 等值判据第一版钉
+`sb.ts = rl3.ts` 这一个别名拼法，换成 `session_turns.ts = sb.ts` 就完全绕过
+——而两者性质相同。⇒ 改钉 **ts 比较式的正则**。变异验证 M2 才从假绿转红。
+
+**第 10 条：SQL 注释是位置判据的伪装色。** 把源码 `LIMIT $` 改成 `-- LIMIT $`，
+拼出的字符串**仍含有** `"LIMIT $4 OFFSET $5"`，`strings.Index` 判据全绿，而
+数据库根本不执行。⇒ 位置判据必须作用在 `stripSQLComments()` 之后的文本上
+（本包已有引号感知实现）。变异验证 M3 由此从假绿转红。
+
+另记一条**判据自身写错**（不是实现错）：`…SQLHasNoBodiesJoin` 第一版对 mainSQL
+误报红，因为 LATERAL 里本来就该保留一条 v1 腿 —— 锚点选错，处置是把反向断言
+限定在 `LEFT JOIN LATERAL ( … ) latest ON true` 之外。
+
+判据 `admin/s3_wave4_compression_sessions_test.go`（同层驱动四段 SQL 文本；
+为此把两条 SQL 的组合从 handler 提到包级函数）。变异 **5/5 全红**，还原后全绿。
+
+## 剩余 bodies 读点（25 处字面量，本片盘点未做）
+
+- **A 已迁 13 处**（auto_title_generator / compression_stats / logs_summary /
+  memora_handlers / no_topic_session / session_compare / session_export /
+  session_sanitize_matches / session_title / passive_probe_listener /
+  goal-history_store / sessionforensics-export / sessionsummary×2）——退役时删 v1 臂即可。
+- **B 保留 v1 历史腿 + 已有会话兜底 6 处**（body_resolver 2 / logs 4 / unified_detail 2）
+  —— ⚠ 退役时若**删 v1 腿**而不是把会话腿**提为主路**，历史会话会从"有正文"
+  退化成"查得到会话、没正文"。
+- **C 需改指会话族**（下一片）：`data_lifecycle.go` 2（增长趋势低报压缩率）、
+  `data_lifecycle_blobs.go` 2（体量排行 + **清理预览少算可释放字节**，需双源去重，
+  该处 30s 预算敏感）、`session_bodies_batch.go` 2（⚠ 改写不许退化那条
+  `=ANY`→`unnest` 性能裁决）、`quality_correlations.go` 1（**死 JOIN，投影里
+  没有一个 rb 列**，真失效源是探针面族）、`cmd/scenario_driver` 2（断言的正是
+  被停掉的那条链路 ⇒ 恒 0）、`cmd/compression-bench` 1。
+- **D v1-only 是工作本身 3 处**（backfill_session_bodies / validate_sessions_v2 /
+  `db/request_logs_view_schema.go` 的切换层 v1 臂）——不改，只登记。
+
+总体从 **27 文件 / 39 处** 降到 **27 文件 / 38 处**（文件数不变：修掉 2 条死
+JOIN，跨族 EXISTS 新增 1 条 v1 字面量，LATERAL 保留 1 条 v1 腿服务历史）。
+
+## 门状态
+
+`go build` / `go vet` rc=0，改动文件 `gofmt -l` 零输出；`admin` 包唯一红 =
+`TestV1BodiesReadersAreAssessed`（**故意红的负向闸门**）。分类表两道门、
+静默档计数门、读库存门、本片 4 条形状判据全绿。

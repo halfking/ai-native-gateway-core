@@ -43,39 +43,39 @@ type retirementTieringEntry struct {
 }
 
 var v1ReaderRetirementTiering = map[string]retirementTieringEntry{
-	"admin/analytics.go":                        {Tier: "②", Reason: "对外 API：session-analytics 端点，响应直接含 v1 统计"},
-	"admin/attachments_routes.go":               {Tier: "②", Reason: "对外 API：附件归属校验，退役后仍要判归属"},
-	"admin/attempt_quality_api.go":              {Tier: "②", Reason: "对外 API：尝试质量指标（读 v1 臂视图，§9.260 补进来的）"},
-	"admin/auto_route.go":                       {Tier: "②", Reason: "对外 API：auto-route 决策/关联"},
-	"admin/auto_route_correlations.go":          {Tier: "③", Reason: "auto-route 关联分析：观测面"},
-	"admin/auto_route_outcome_freshness.go":     {Tier: "④", Reason: "auto-route 结果新鲜度 queryOutcomeFreshness：是结算正确性门（②）还是自检（③），取决于它卡不卡结算"},
-	"admin/auto_title_generator.go":             {Tier: "②", Reason: "对外功能：会话标题生成读 v1 首条成功轮次"},
-	"admin/body_resolver.go":                    {Tier: "②", Reason: "对外功能：请求体解析（bodies），退役后详情页仍要显示"},
-	"admin/compression_sessions.go":             {Tier: "②", Reason: "对外 API：压缩会话端点"},
-	"admin/compression_stats.go":                {Tier: "②", Reason: "对外 API：压缩统计端点"},
-	"admin/credential_monitor.go":               {Tier: "③", Reason: "凭证监控摘要（summaryCache + buildMonitorSummarySQL）：观测面，读 v1 是被观测对象"},
-	"admin/credential_monitor_heatmap.go":       {Tier: "③", Reason: "凭证健康热力图：同上，运维观测面"},
-	"admin/credential_success_rate.go":          {Tier: "②", Reason: "对外 API：凭证成功率。★ 注意：它同时是监控面，但走 HTTP 响应，退役后端点仍需有数"},
-	"admin/dashboard_board_queries.go":          {Tier: "②", Reason: "对外 API：看板首屏聚合（读 composer 建的 v1 臂视图）"},
-	"admin/data_lifecycle.go":                   {Tier: "②", Reason: "对外 API + **对 v1 有写**：数据生命周期清理/预览，退役后清理对象要改"},
-	"admin/data_lifecycle_attachments.go":       {Tier: "②", Reason: "对外 API：附件清理"},
-	"admin/data_lifecycle_blobs.go":             {Tier: "②", Reason: "对外 API + 对 v1 有写：blob 清理"},
-	"admin/data_lifecycle_metrics.go":           {Tier: "②", Reason: "对外 API：生命周期指标"},
-	"admin/diagnostics_credential.go":           {Tier: "③", Reason: "凭证诊断端点 handleCredentialDiagnostic：诊断面"},
-	"admin/live_stream_sse.go":                  {Tier: "④", Reason: "SSE 实时流 replay/terminalStatusesFromDB：退役后是否继续供流式详情，需属主定"},
-	"admin/logs.go":                             {Tier: "②", Reason: "对外 API：日志列表/详情/统计（读 v1 基表）"},
-	"admin/logs_summary.go":                     {Tier: "②", Reason: "对外功能：会话日志摘要（bodies 读方）"},
-	"admin/memora_handlers.go":                  {Tier: "②", Reason: "对外 API：memora 会话/上下文端点"},
-	"admin/model_routing_diagnostic.go":         {Tier: "③", Reason: "模型路由诊断端点：诊断面"},
-	"admin/model_status.go":                     {Tier: "②", Reason: "对外 API：模型状态"},
-	"admin/no_topic_session.go":                 {Tier: "②", Reason: "对外 API：无主题会话端点"},
-	"admin/probe_history.go":                    {Tier: "③", Reason: "probe-run 历史端点：这个读的**目的**就是看 v1 探针跑过什么"},
-	"admin/provider_diagnose.go":                {Tier: "③", Reason: "provider 诊断（从 provider_probe.go 拆出）：诊断面"},
-	"admin/provider_models.go":                  {Tier: "②", Reason: "对外 API：provider 下的模型与用量（§9.49 动态列盲区形态）"},
-	"admin/providers.go":                        {Tier: "②", Reason: "对外 API：provider 列表"},
-	"admin/quality_correlations.go":             {Tier: "③", Reason: "请求级质量关联分析：观测面"},
-	"admin/request_trace.go":                    {Tier: "②", Reason: "对外 API：请求链路"},
-	"admin/route_incidents.go":                  {Tier: "③", Reason: "路由事故（route_incidents）：观测面"},
+	"admin/analytics.go":                    {Tier: "②", Reason: "对外 API：session-analytics 端点，响应直接含 v1 统计"},
+	"admin/attachments_routes.go":           {Tier: "②", Reason: "对外 API：附件归属校验，退役后仍要判归属"},
+	"admin/attempt_quality_api.go":          {Tier: "②", Reason: "对外 API：尝试质量指标（读 v1 臂视图，§9.260 补进来的）"},
+	"admin/auto_route.go":                   {Tier: "②", Reason: "对外 API：auto-route 决策/关联"},
+	"admin/auto_route_correlations.go":      {Tier: "③", Reason: "auto-route 关联分析：观测面"},
+	"admin/auto_route_outcome_freshness.go": {Tier: "④", Reason: "auto-route 结果新鲜度 queryOutcomeFreshness：是结算正确性门（②）还是自检（③），取决于它卡不卡结算"},
+	"admin/auto_title_generator.go":         {Tier: "②", Reason: "对外功能：会话标题生成读 v1 首条成功轮次"},
+	"admin/body_resolver.go":                {Tier: "②", Reason: "对外功能：请求体解析（bodies），退役后详情页仍要显示"},
+	"admin/compression_sessions.go":         {Tier: "②", Reason: "对外 API：压缩会话端点"},
+	"admin/compression_stats.go":            {Tier: "②", Reason: "对外 API：压缩统计端点"},
+	"admin/credential_monitor.go":           {Tier: "③", Reason: "凭证监控摘要（summaryCache + buildMonitorSummarySQL）：观测面，读 v1 是被观测对象"},
+	"admin/credential_monitor_heatmap.go":   {Tier: "③", Reason: "凭证健康热力图：同上，运维观测面"},
+	"admin/credential_success_rate.go":      {Tier: "②", Reason: "对外 API：凭证成功率。★ 注意：它同时是监控面，但走 HTTP 响应，退役后端点仍需有数"},
+	"admin/dashboard_board_queries.go":      {Tier: "②", Reason: "对外 API：看板首屏聚合（读 composer 建的 v1 臂视图）"},
+	"admin/data_lifecycle.go":               {Tier: "②", Reason: "对外 API + **对 v1 有写**：数据生命周期清理/预览，退役后清理对象要改"},
+	"admin/data_lifecycle_attachments.go":   {Tier: "②", Reason: "对外 API：附件清理"},
+	"admin/data_lifecycle_blobs.go":         {Tier: "②", Reason: "对外 API + 对 v1 有写：blob 清理"},
+	"admin/data_lifecycle_metrics.go":       {Tier: "②", Reason: "对外 API：生命周期指标"},
+	"admin/diagnostics_credential.go":       {Tier: "③", Reason: "凭证诊断端点 handleCredentialDiagnostic：诊断面"},
+	"admin/live_stream_sse.go":              {Tier: "④", Reason: "SSE 实时流 replay/terminalStatusesFromDB：退役后是否继续供流式详情，需属主定"},
+	"admin/logs.go":                         {Tier: "②", Reason: "对外 API：日志列表/详情/统计（读 v1 基表）"},
+	"admin/logs_summary.go":                 {Tier: "②", Reason: "对外功能：会话日志摘要（bodies 读方）"},
+	"admin/memora_handlers.go":              {Tier: "②", Reason: "对外 API：memora 会话/上下文端点"},
+	"admin/model_routing_diagnostic.go":     {Tier: "③", Reason: "模型路由诊断端点：诊断面"},
+	"admin/model_status.go":                 {Tier: "②", Reason: "对外 API：模型状态"},
+	"admin/no_topic_session.go":             {Tier: "②", Reason: "对外 API：无主题会话端点"},
+	"admin/probe_history.go":                {Tier: "③", Reason: "probe-run 历史端点：这个读的**目的**就是看 v1 探针跑过什么"},
+	"admin/provider_diagnose.go":            {Tier: "③", Reason: "provider 诊断（从 provider_probe.go 拆出）：诊断面"},
+	"admin/provider_models.go":              {Tier: "②", Reason: "对外 API：provider 下的模型与用量（§9.49 动态列盲区形态）"},
+	"admin/providers.go":                    {Tier: "②", Reason: "对外 API：provider 列表"},
+	"admin/quality_correlations.go":         {Tier: "③", Reason: "请求级质量关联分析：观测面"},
+	"admin/request_trace.go":                {Tier: "②", Reason: "对外 API：请求链路"},
+	"admin/route_incidents.go":              {Tier: "③", Reason: "路由事故（route_incidents）：观测面"},
 	// admin/routing.go 于 2026-10-13（S3 波 3 停写切换）除名：唯一的 v1 读点
 	// popularModelsHotSQL 改读会话族原生源（SessionFamilyTurnsSourceSQL），
 	// 文件已无任何 v1 读点证据（字面量 106→105，分档域 114→113）。
@@ -210,7 +210,11 @@ var v1ArmLiteralBlindSpot = []string{
 	// （S4 停写交接）移出本桶：两处 bodies 读各加了 session 家族兜底腿
 	// （+dbpkg.SessionFamilyBodiesSourceSQL()+ 拼接点），拼接点工具从此
 	// 看得见它们 —— 按本门的口径迁入 v1ReaderIndirectPopulation。
-	"admin/compression_sessions.go",
+	// admin/compression_sessions.go 于 2026-10-14（S3 波 4 停写盲区修复片）
+	// 移出本桶：bodies 过滤器改跨族 EXISTS、含
+	// `+dbpkg.SessionFamilyBodiesSourceSQL()+` 拼接点，拼接点工具从此看得见
+	// —— 按本门口径迁入 v1ReaderIndirectPopulation。★ 注意**分档域不变**
+	// （仍是 Tier ② 对外 API）；变的只是「工具能不能看见」。
 	"admin/credential_monitor.go",
 	"admin/credential_monitor_heatmap.go",
 	"admin/credential_success_rate.go",
@@ -276,6 +280,10 @@ var v1ReaderIndirectPopulation = []string{
 	// 了 session 兜底拼接点（+dbpkg.SessionFamilyBodiesSourceSQL()+），
 	// 拼接点工具从此看得见。
 	"admin/body_resolver.go",
+	// 2026-10-14（S3 波 4 停写盲区修复片）自 v1ArmLiteralBlindSpot 迁入（同上）：
+	// 顶层 bodies 过滤器改跨族 EXISTS，带 dbpkg.SessionFamilyBodiesSourceSQL()
+	// 拼接点。
+	"admin/compression_sessions.go",
 	"admin/compression_stats.go",
 	"admin/dashboard_board_queries.go",
 	"admin/logs.go",
@@ -391,8 +399,14 @@ func TestV1ReaderTieringDomainIsBothPopulations(t *testing.T) {
 		// 2026-10-13（S4 停写交接）：body_resolver / unified_detail 因加了
 		// session 兜底拼接点自盲区桶迁入（+2）；两者同时仍是字面量读方
 		//（交集 14→16），并集不变。
-		{"间接总体", len(indirect), 24},
-		{"交集", inter, 16},
+		// 2026-10-14（S3 波 4 停写盲区修复片）：admin/compression_sessions.go
+		// 因顶层 bodies 过滤器改跨族 EXISTS（含 dbpkg.SessionFamilyBodiesSourceSQL()
+		// 拼接点）自盲区桶迁入间接总体（24→25）；它同时**仍是字面量读方**
+		//（v1 腿保留服务停写前历史），故交集 16→17、字面量总体 105 与并集
+		// 113 均不变。★ 这正是本门 ② 号断言存在的意义：只迁一个总体时，
+		// 并集不动，容易被读成「什么都没变」——而实际上覆盖面变好了一格。
+		{"间接总体", len(indirect), 25},
+		{"交集", inter, 17},
 		{"并集（域）", union, 113},
 	} {
 		if c.got != c.exp {
