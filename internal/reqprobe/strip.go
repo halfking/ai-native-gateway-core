@@ -5,7 +5,8 @@ import (
 	"strings"
 )
 
-// coreParams 是任何 OpenAI 形态请求的骨架参数，剔除逻辑永不触碰。
+// coreParams 是无名兜底剥参（未点名参数时的 uncommon 清单交集）永不触碰
+// 的参数面：核心采样/骨架参数一概不动，只有确属"不常见"的才拿掉。
 var coreParams = map[string]bool{
 	"model":                 true,
 	"messages":              true,
@@ -20,6 +21,29 @@ var coreParams = map[string]bool{
 	"stop":                  true,
 	// stream_options 控制流式 usage 回传，剔除会破坏 usage 采集；
 	// 它几乎不被上游拒绝（Groq/DeepSeek 等都接受 extra body），保守保留。
+	"stream_options": true,
+}
+
+// skeletonParams 是点名路径（上游 4xx 文案明确点出参数名）下仍受保护的
+// 结构骨架。比 coreParams 窄得多：
+//
+// 2026-10-13（Vapeur gpt-5.6-sol temperature 事故）：此前点名路径也复用
+// coreParams，temperature 被保护 → Vapeur /v1/responses 对推理家族明确
+// 回 400 "Unsupported parameter: 'temperature' is not supported with
+// this model."，诊断器点名成功、剥参却拿不出可剥清单 → 免费重试不触发，
+// 外层按 transient 把同一 body 原样重发三连 400 → 503。上游已经用错误
+// 文案背书"该参数发不得"，此时剥掉采样参数（temperature/top_p/stop/
+// max_tokens…）是正确的确定性修正：模型侧默认值兜底，请求语义不损。
+// 仍然不剥的只有会让请求无法成形（model/messages/input）、或静默改变
+// 传输与功能语义（stream 改传输形态、tools/tool_choice 关掉函数调用、
+// stream_options 破坏 usage 采集）的骨架——那些"成功"是假成功。
+var skeletonParams = map[string]bool{
+	"model":          true,
+	"messages":       true,
+	"input":          true,
+	"stream":         true,
+	"tools":          true,
+	"tool_choice":    true,
 	"stream_options": true,
 }
 
@@ -53,7 +77,7 @@ var uncommonParams = []string{
 
 // StrippableParams 返回出站体中存在且可剔除的参数名列表。
 // named 非空时只返回它（若存在）；否则返回 uncommon 清单与出站体的交集。
-// coreParams 永不返回。
+// named 路径只让开 skeletonParams（见其注释）；无名路径 coreParams 永不返回。
 func StrippableParams(outbound []byte, named string) []string {
 	obj := parseOutboundTopLevel(outbound)
 	if obj == nil {
@@ -62,7 +86,7 @@ func StrippableParams(outbound []byte, named string) []string {
 	if named != "" {
 		for _, n := range strings.Split(named, ",") {
 			n = strings.ToLower(strings.TrimSpace(n))
-			if n == "" || coreParams[n] {
+			if n == "" || skeletonParams[n] {
 				continue
 			}
 			if _, ok := obj[n]; ok {
@@ -91,7 +115,7 @@ func StripParams(body []byte, named string) ([]byte, []string) {
 	if named != "" {
 		for _, n := range strings.Split(named, ",") {
 			n = strings.ToLower(strings.TrimSpace(n))
-			if n == "" || coreParams[n] {
+			if n == "" || skeletonParams[n] {
 				continue
 			}
 			if _, ok := obj[n]; ok {

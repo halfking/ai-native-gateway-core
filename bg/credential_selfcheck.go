@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"log/slog"
 	"net/http"
 	"os"
@@ -788,7 +789,7 @@ func isSelfcheckRateLimit(status int, errType, detail string) bool {
 }
 
 func (w *CredentialSelfcheckWorker) doRequest(ctx context.Context, credentialID int, model string) credentialSelfcheckRound {
-	pingBody, _ := json.Marshal(map[string]any{"model": model, "messages": []map[string]string{{"role": "user", "content": "ping"}}, "max_tokens": 10})
+	pingBody, _ := json.Marshal(map[string]any{"model": model, "messages": []map[string]string{{"role": "user", "content": "ping"}}, "max_tokens": providercap.ProbePingMaxTokens})
 	r := w.doHTTP(ctx, credentialID, model, string(pingBody), false)
 	if !r.Success {
 		return r

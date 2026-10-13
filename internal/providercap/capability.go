@@ -37,6 +37,14 @@ type Descriptor struct {
 // compliant provider room to actually emit a minimal message.
 const ResponsesProbeMaxOutputTokens = 32
 
+// ProbePingMaxTokens is the max_tokens floor for ALL text probe ping bodies,
+// chat leg included. 2026-10-13（Vapeur deepseek-v4-pro 探针三连败事故）：
+// 聚合中转把 chat ping 在内部转成 Responses 形态转发，chat 腿的
+// max_tokens=10 撞上同一个 ≥16 下限（"Invalid 'max_output_tokens': must
+// be greater than or equal to 16, got 10"）→ 探针 3 连败 → 节点停 5 分钟
+// → 用户流量 db_empty 连坐。两条腿同一个中转、同一个下限，统一取 32。
+const ProbePingMaxTokens = ResponsesProbeMaxOutputTokens
+
 // responsesUnsupportedStatuses are the HTTP statuses under which a
 // /v1/responses rejection can carry the relay's "this model/vendor does not
 // support the Responses API" verdict. Observed in the wild (2026-09-28

@@ -1013,6 +1013,18 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 服务端 30s 默认值会 57014），且是 DROP IF EXISTS + CREATE MATERIALIZED
 			// VIEW，重复应用零行为变化。
 			"855_session_analytics_time_window.sql",
+			// 857（2026-10-13）：收窄 316 播种的 pii_patterns.phone_intl——
+			// `\+\d{1,3}[-\s]?\d{1,14}` 第二段只要求 1 位数字，算术式
+			// `23*47+100` 的 `+100` 会被当国际电话在输出侧遮成
+			// [REDACTED:phone]（agent 的 tool 参数被改坏，请求侧完好、
+			// 遮蔽全部在响应侧 write-time redact_body）。收窄为被叫号码
+			// ≥7 位（E.164 现实区间），与 851 同族：UPDATE 存活 316 幂等
+			// 重放，全新安装也必须应用，故登记 StartupFiles。
+			// 856（2026-10-13，b3cbd3462 提交但登记残缺，本轮补齐）：usage_ledger
+			// （+hot）按时间窗聚合覆盖索引——/api/usage/summary 与 by-model 的
+			// 5s 预算 500 修复。普通 CREATE INDEX（事务内），两腿均可跑。
+			"856_usage_ledger_ts_cover_agg_idx.sql",
+			"857_tighten_pii_phone_intl_regex.sql",
 		},
 	}
 }

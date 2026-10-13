@@ -1124,64 +1124,80 @@ func (e *Executor) executeOpenAI(
 			}
 
 			if uErr != nil && (resp == nil || resp.StatusCode >= 500) {
-				if resp != nil {
-					if switched, fallbackErr := tryUnsupportedResponsesFallback(resp.StatusCode, uErr.Body, uErr.Kind, resp.Header); switched {
-						if resp.Body != nil {
-							_ = resp.Body.Close()
+				// Vapeur 型流式包裹旁路修复（2026-10-13 gpt-5.6-sol temperature
+				// 事故第 4 环）：流式 5xx 时 e.Upstream.Do 返回 uErr，本分支对
+				// 不可重试 kind 直接 return——被中转包成 502 的内层 4xx 因此
+				// 到不了下方 1187 的 reqprobe 诊断/剥参块（事故现场：502 包着
+				// 400 temperature 拒绝，client_bug 直接上抛，剥参重试没机会）。
+				// 解包成功即把 resp 改写成内层 4xx（attemptLog 已先行记录真实
+				// 502），uErr 清空，落入常规 4xx 流程走诊断/剥参/模式回退。
+				if resp != nil && uErr.StatusCode >= 500 {
+					if st, embedded, ok := errorsx.UnwrapStreamWrapped4xx(uErr.Body); ok {
+						resp.StatusCode = st
+						resp.Body = io.NopCloser(bytes.NewReader(embedded))
+						uErr = nil
+					}
+				}
+				if uErr != nil {
+					if resp != nil {
+						if switched, fallbackErr := tryUnsupportedResponsesFallback(resp.StatusCode, uErr.Body, uErr.Kind, resp.Header); switched {
+							if resp.Body != nil {
+								_ = resp.Body.Close()
+							}
+							return nil, fallbackErr
 						}
-						return nil, fallbackErr
 					}
-				}
-				errKind := uErr.Kind
-				// 2026-08-08: a 5xx whose body says "overloaded / try again
-				// later" is a load signal, not a dead upstream. upstream.Do
-				// already classifies from the body, but this branch also runs
-				// when e.Upstream is nil (uErr built from doErr alone), so
-				// re-check the captured body here. StatusCode==0 (pure network
-				// error) can never yield KindUpstreamOverloaded, so the guard
-				// below is safe for the bodyless case.
-				if len(uErr.Body) > 0 {
-					if bodyKind := errorsx.ClassifyErrorWithBody(uErr.StatusCode, uErr.Body); bodyKind == errorsx.KindUpstreamOverloaded {
-						errKind = bodyKind
-						uErr.Kind = bodyKind
+					errKind := uErr.Kind
+					// 2026-08-08: a 5xx whose body says "overloaded / try again
+					// later" is a load signal, not a dead upstream. upstream.Do
+					// already classifies from the body, but this branch also runs
+					// when e.Upstream is nil (uErr built from doErr alone), so
+					// re-check the captured body here. StatusCode==0 (pure network
+					// error) can never yield KindUpstreamOverloaded, so the guard
+					// below is safe for the bodyless case.
+					if len(uErr.Body) > 0 {
+						if bodyKind := errorsx.ClassifyErrorWithBody(uErr.StatusCode, uErr.Body); bodyKind == errorsx.KindUpstreamOverloaded {
+							errKind = bodyKind
+							uErr.Kind = bodyKind
+						}
 					}
+					if errKind == errorsx.KindRateLimit {
+						e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
+					}
+					// Overload deliberately uses the ORDINARY retryable path.
+					//
+					// 2026-08-08: an earlier revision of this fix returned
+					// unwrapped here to force an immediate credential switch
+					// ("failover-first"), on the assumption that re-hitting a
+					// saturated relay was wasted effort. Production disproved it.
+					// gpt-5.6-luna routes to a single candidate, so there was
+					// nothing to fail over to: the candidate loop ran out and the
+					// client got an empty 200 (stream_chunks=0, success=false)
+					// where the previous build had recovered. In the 24h before
+					// that change, the same-credential retry rescued 8 of 8
+					// overloaded requests — it is the FASTEST recovery for this
+					// failure, not a waste.
+					//
+					// Cross-credential failover still happens, just in the right
+					// order: once the per-credential budget is spent this returns
+					// unwrapped (below), and KindUpstreamOverloaded is in the
+					// transient continue-list in executor.go, so the candidate
+					// loop advances to a sibling.
+					if errKind == errorsx.KindUpstreamOverloaded {
+						slog.Warn("upstream overloaded",
+							"credential_id", cand.CredentialID,
+							"provider_id", cand.ProviderID,
+							"upstream_status", uErr.StatusCode,
+							"retry_after_ms", uErr.RetryAfter.Milliseconds(),
+							"attempt", attempt,
+							"will_retry_same_credential", attempt < effectiveMaxRetries,
+						)
+					}
+					if !errorsx.IsRetryable(errKind) || attempt >= effectiveMaxRetries {
+						return nil, uErr
+					}
+					return nil, &retryableError{err: uErr}
 				}
-				if errKind == errorsx.KindRateLimit {
-					e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
-				}
-				// Overload deliberately uses the ORDINARY retryable path.
-				//
-				// 2026-08-08: an earlier revision of this fix returned
-				// unwrapped here to force an immediate credential switch
-				// ("failover-first"), on the assumption that re-hitting a
-				// saturated relay was wasted effort. Production disproved it.
-				// gpt-5.6-luna routes to a single candidate, so there was
-				// nothing to fail over to: the candidate loop ran out and the
-				// client got an empty 200 (stream_chunks=0, success=false)
-				// where the previous build had recovered. In the 24h before
-				// that change, the same-credential retry rescued 8 of 8
-				// overloaded requests — it is the FASTEST recovery for this
-				// failure, not a waste.
-				//
-				// Cross-credential failover still happens, just in the right
-				// order: once the per-credential budget is spent this returns
-				// unwrapped (below), and KindUpstreamOverloaded is in the
-				// transient continue-list in executor.go, so the candidate
-				// loop advances to a sibling.
-				if errKind == errorsx.KindUpstreamOverloaded {
-					slog.Warn("upstream overloaded",
-						"credential_id", cand.CredentialID,
-						"provider_id", cand.ProviderID,
-						"upstream_status", uErr.StatusCode,
-						"retry_after_ms", uErr.RetryAfter.Milliseconds(),
-						"attempt", attempt,
-						"will_retry_same_credential", attempt < effectiveMaxRetries,
-					)
-				}
-				if !errorsx.IsRetryable(errKind) || attempt >= effectiveMaxRetries {
-					return nil, uErr
-				}
-				return nil, &retryableError{err: uErr}
 			}
 
 			if resp != nil && resp.StatusCode >= 400 {
@@ -1275,10 +1291,21 @@ func (e *Executor) executeOpenAI(
 				// 执行——参数剔除/模式回退是确定性修正，先于盲目退避重试
 				// 触发才能省掉整个 5s 退避窗。各探测每请求一次，重试免费
 				// （probeRetry 抵消 attempt++ 且跳过退避）。
-				if e.RequestProbe != nil && resp.StatusCode >= 400 && resp.StatusCode < 500 {
+				//
+				// 2026-10-13（Vapeur gpt-5.6-sol temperature 事故第 3 环）：
+				// 聚合中转流式腿把上游 4xx 包成 5xx stream_error，诊断门按
+				// 解包后的状态/错误体走，剥参重试才能在流式路径触发（否则
+				// 502→upstream_down→节点 probe 3 连败停 5 分钟）。
+				probeStatus, probeBody := resp.StatusCode, body[:min(n, 1024)]
+				if probeStatus >= 500 {
+					if st, embedded, ok := errorsx.UnwrapStreamWrapped4xx(probeBody); ok {
+						probeStatus, probeBody = st, embedded
+					}
+				}
+				if e.RequestProbe != nil && probeStatus >= 400 && probeStatus < 500 {
 					probeIn := reqprobe.Input{
-						HTTPStatus:      resp.StatusCode,
-						ErrorBody:       body[:min(n, 1024)],
+						HTTPStatus:      probeStatus,
+						ErrorBody:       probeBody,
 						OutboundBody:    bodyBytes,
 						ErrorKind:       string(errKind),
 						Protocol:        cand.Protocol,
@@ -1562,10 +1589,18 @@ func (e *Executor) executeOpenAI(
 					// 点名参数不可剔），或探测重试后仍失败。probe.recorded
 					// 防多次记账；probe.active=true 表示探测重试过但最终仍
 					// 失败 → 记 recovered=false。
-					if e.RequestProbe != nil && resp.StatusCode >= 400 && resp.StatusCode < 500 && !probe.recorded {
+					// 同上（流式腿 5xx 包内层 4xx 的解包）：终态记账也按
+					// 解包后的状态/错误体诊断，learn 台账记真实成因。
+					terminalStatus, terminalBody := resp.StatusCode, body[:min(n, 1024)]
+					if terminalStatus >= 500 {
+						if st, embedded, ok := errorsx.UnwrapStreamWrapped4xx(terminalBody); ok {
+							terminalStatus, terminalBody = st, embedded
+						}
+					}
+					if e.RequestProbe != nil && terminalStatus >= 400 && terminalStatus < 500 && !probe.recorded {
 						probeIn := reqprobe.Input{
-							HTTPStatus:      resp.StatusCode,
-							ErrorBody:       body[:min(n, 1024)],
+							HTTPStatus:      terminalStatus,
+							ErrorBody:       terminalBody,
 							OutboundBody:    bodyBytes,
 							ErrorKind:       string(errKind),
 							Protocol:        cand.Protocol,

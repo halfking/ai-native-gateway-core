@@ -163,6 +163,14 @@ files=(
   # and 358 (session_dim, the join target); the views are dropped and rebuilt,
   # so the unique indexes REFRESH CONCURRENTLY needs are recreated here too.
   "$ROOT_DIR/sql/migrations/startup/855_session_analytics_time_window.sql"
+  # 857（2026-10-13 Vapeur 全量测试轮）：收窄 316 播种的 pii_patterns.phone_intl
+  # ——原正则把算术式 `+100` 当国际电话在输出侧遮成 [REDACTED:phone]（tool 参数
+  # 被改坏的实测现场：`（23*47[REDACTED:phone])/3`）。被叫号码下限 1 位 → 7 位
+  # （E.164 现实区间）。与 851 同族：UPDATE 存活幂等重放，全通道必须应用。
+  # 856（2026-10-13，b3cbd3462 提交时漏登记，本轮补齐五点同步的另一腿）：
+  # usage_ledger(+hot) 时间窗聚合覆盖索引（/api/usage/summary 5s 预算超时修复）。
+  "$ROOT_DIR/sql/migrations/startup/856_usage_ledger_ts_cover_agg_idx.sql"
+  "$ROOT_DIR/sql/migrations/startup/857_tighten_pii_phone_intl_regex.sql"
   "$ROOT_DIR/sql/migrations/startup/394_request_stats_minute.sql"
   # 2026-10-12 host-first PG/gateway log audit: the candidate-binding scope
   # revision chain (541 raw_model table → 569 canonical table + cmb triggers →

@@ -1,0 +1,52 @@
+-- ===========================================================================
+-- File:          sql/migrations/startup/852_tighten_pii_phone_intl_regex.sql
+-- Migration:     857
+-- Database:      llm_gateway
+-- Purpose:       收窄 316 播种的 pii_patterns.phone_intl 规则——
+--                `\+\d{1,3}[-\s]?\d{1,14}` 的第二段只要求 1 位数字，回溯
+--                后任意「加号+数字」（算术式 `23*47+100`、分数 `+100`、
+--                版本号 `+123`）都会被当成国际电话号码，响应侧遮成
+--                `[REDACTED:phone]`。
+--
+-- Status:        active
+-- Idempotent:    YES (UPDATE ... WHERE，按行判据，无 DO/无新建对象)
+-- Dependencies:  316_output_compliance_monitoring.sql（pii_patterns 表与
+--                phone_intl 种子行）
+--
+-- Background:
+--   2026-10-13 Vapeur 全量测试轮（gpt-5.6-sol tools 用例）实证：模型在
+--   tool 参数里回写表达式 `(23*47+100)/3`，客户端收到的流式增量帧里
+--   变成 `(23*47[REDACTED:phone])/3`——`+100` 被 phone_intl 命中（`\+`
+--   + `10` + 空分隔 + `0`，回溯拼出的两段数字组）。非流式 message.content
+--   同样命中。数字和消歧实验证明**请求侧完好**（模型能答出表达式数字和
+--   17），遮蔽全部发生在响应侧 write-time redact_body →
+--   outputcompliance.Checker → 本表 phone_intl 行。
+--
+--   对 agent 客户端这是实体故障而不只是观感问题：下游按 JSON 解析
+--   tool 参数并执行，`(23*47[REDACTED:phone])/3` 是被改坏的参数。
+--
+--   为什么收窄而不是停用（与 851 对 ip_address 的裁决不同）：
+--   1. 国际电话号码是真实 PII 类别，输出侧遮蔽有合规价值；ip_address
+--      是「每一个 IPv4 都命中」的不可分级规则，而本规则可以靠位数门槛
+--      精确切分「真实号码」与「算术/序号」。
+--   2. E.164 现实区间：国家码 1-3 位 + 被叫号码，被叫侧最短的现实
+--      号码 ≥6-7 位（最短的圣马力诺/法罗类也是 6 位以上）。把第二段
+--      下限从 1 位提到 7 位，`+<1~6 位数字>` 的算术/分数/版本号全部
+--      放行，`+8613812345678` / `+1 5551234567` / `+852-91234567`
+--      照遮。
+--   3. 误漏面（极少数 <7 位被叫号）代价低于误伤面（所有含 `+数字`
+--      的算术/代码/分数被改写）——redact 决策偏向宁少勿坏，中国手机号
+--      另有 phone_cn_mobile 专线兜底。
+--
+--   未删除该行（同 851 理由）：316 幂等重放会重新播种被删的行，
+--   UPDATE 则在重放下存活。
+--
+-- 上线代价：单表 UPDATE，命中 1 行，秒级。
+-- 回滚：UPDATE pii_patterns SET regex_pattern='\+\d{1,3}[-\s]?\d{1,14}'
+--       WHERE pattern_name='phone_intl';
+-- ===========================================================================
+UPDATE public.pii_patterns
+   SET regex_pattern = '\+\d{1,3}[-\s]?\d{7,14}',
+       description = '国际电话号码（E.164：国家码 1-3 位 + 被叫号码 ≥7 位；2026-10-13 852 收窄，防算术/分数误伤）'
+ WHERE pattern_name = 'phone_intl'
+   AND regex_pattern IS DISTINCT FROM '\+\d{1,3}[-\s]?\d{7,14}';

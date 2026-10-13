@@ -53,8 +53,17 @@ type Input struct {
 var namedParamPatterns = []*regexp.Regexp{
 	// "Invalid value for 'reasoning_effort': 'x-high' is not one of [...]"
 	regexp.MustCompile("(?:invalid|unsupported|unknown|unexpected)\\s+(?:value|type)\\s+for\\s+['\"`]([A-Za-z_][A-Za-z0-9_.\\-]{1,64})['\"`]"),
+	// 2026-10-13（Vapeur gpt-5.6-sol temperature 事故）：chat 腿的值拒绝是
+	// 冒号前缀形态 "Unsupported value: 'temperature' does not support 0.2
+	// with this model."——上面那条要 "for"，此处无 for，此前两条都断链。
+	regexp.MustCompile("(?:unsupported|invalid|unknown|unexpected)\\s+value\\s*[:：]\\s*['\"`]([A-Za-z_][A-Za-z0-9_.\\-]{1,64})['\"`]"),
 	regexp.MustCompile("(?:argument|parameter|param|field|input)s?(?:\\([a-z]+\\))?[\\s:]*['\"`]([A-Za-z_][A-Za-z0-9_.\\-]{1,64})['\"`]"),
-	regexp.MustCompile("['\"`]([A-Za-z_][A-Za-z0-9_.\\-]{1,64})['\"`]\\s+(?:is not one of|is not supported|is not a valid|is invalid|must be|does not exist|is not recognized|is not allowed|is unknown|is unsupported)"),
+	// 同上事故：动词补 "does not support"（"does not support 0.2 with this
+	// model" 的主语就是被点名的参数）。
+	// 2026-10-13（Vapeur claude 家族 temperature+thinking）：Anthropic 系
+	// 文案 "`temperature` may only be set to 1 when thinking is enabled"——
+	// 反引号参数名 + "may only be" 动词族，补进同一条。
+	regexp.MustCompile("['\"`]([A-Za-z_][A-Za-z0-9_.\\-]{1,64})['\"`]\\s+(?:is not one of|is not supported|is not a valid|is invalid|must be|does not exist|is not recognized|is not allowed|is unknown|is unsupported|does not support|may only be|can only be)"),
 	regexp.MustCompile("(?:unknown|unrecognized|unexpected|unsupported|invalid|extra|additional)\\s+(?:request\\s+)?(?:argument|parameter|field|input|property|key)s?(?:\\([a-z]+\\))?\\s*[:\\s]*['\"`]?([A-Za-z_][A-Za-z0-9_.\\-]{1,64})['\"`]?"),
 }
 
@@ -105,6 +114,9 @@ var paramRejectionHints = []string{
 	"invalid value for",
 	"is not one of",
 	"unsupported parameter",
+	// 2026-10-13（Vapeur chat 腿值拒绝形态）：message 前缀
+	// "Unsupported value: 'temperature' does not support ..."。
+	"unsupported value",
 	"unsupported_argument",
 	"unrecognized request argument",
 	"unexpected field",

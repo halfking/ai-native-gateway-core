@@ -831,6 +831,12 @@ var sessionSummariesProjectBackfillRecentIdx850 []byte
 //go:embed embeddata/startup/851_disable_overbroad_pii_ip_address_rule.sql
 var disableOverbroadPiiIpAddressRule851 []byte
 
+//go:embed embeddata/startup/856_usage_ledger_ts_cover_agg_idx.sql
+var usageLedgerTsCoverAggIdx856 []byte
+
+//go:embed embeddata/startup/857_tighten_pii_phone_intl_regex.sql
+var tightenPiiPhoneIntlRegex857 []byte
+
 //go:embed embeddata/startup/852_models_canonical_column_set_reconcile.sql
 var modelsCanonicalColumnSetReconcile852 []byte
 
@@ -1106,6 +1112,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/849_session_turns_req_status_backfill_cover_idx.sql":                    sessionTurnsReqStatusBackfillCoverIdx849,
 	"startup/850_session_summaries_project_backfill_recent_idx.sql":                  sessionSummariesProjectBackfillRecentIdx850,
 	"startup/851_disable_overbroad_pii_ip_address_rule.sql":                          disableOverbroadPiiIpAddressRule851,
+	"startup/856_usage_ledger_ts_cover_agg_idx.sql":                                  usageLedgerTsCoverAggIdx856,
+	"startup/857_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex857,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/853_credential_probe_queue_automatic.sql":                               credentialProbeQueueAutomatic853,
 	"startup/854_session_turns_advisory_lock_key.sql":                                sessionTurnsAdvisoryLockKey854,

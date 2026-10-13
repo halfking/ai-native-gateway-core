@@ -153,10 +153,53 @@ func TestStripParamsNamed(t *testing.T) {
 }
 
 func TestStripParamsNeverTouchCore(t *testing.T) {
+	// 2026-10-13 语义修正：点名路径只保护结构骨架（model/messages/input/
+	// stream/tools/tool_choice/stream_options）；max_tokens 不再是点名
+	// 保护的 —— 上游点名拒绝时剥掉是确定性修正（事故背景见
+	// skeletonParams 注释：Vapeur gpt-5.6-sol temperature 三连 400）。
 	body := []byte(`{"model":"m","messages":[],"max_tokens":100,"stream":true}`)
-	_, stripped := StripParams(body, "max_tokens")
+	_, stripped := StripParams(body, "stream")
 	if len(stripped) != 0 {
-		t.Fatalf("core param must never strip: %v", stripped)
+		t.Fatalf("skeleton param must never strip: %v", stripped)
+	}
+	_, stripped = StripParams(body, "model")
+	if len(stripped) != 0 {
+		t.Fatalf("skeleton param must never strip: %v", stripped)
+	}
+	out, stripped := StripParams(body, "max_tokens")
+	if len(stripped) != 1 || stripped[0] != "max_tokens" {
+		t.Fatalf("named sampling param must strip: %v", stripped)
+	}
+	if strings.Contains(string(out), "max_tokens") {
+		t.Fatal("max_tokens still present after named strip")
+	}
+}
+
+// TestStripParamsNamedTemperatureRecoversVapeurIncident 复现 2026-10-13
+// Vapeur gpt-5.6-sol 事故现场：出站体带 temperature，上游 400 点名拒绝，
+// 剥参必须拿得出 temperature（修复前 coreParams 保护它 → 免费重试不触发，
+// 同 body 三连 400 → 503）。
+func TestStripParamsNamedTemperatureRecoversVapeurIncident(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6-sol","input":[{"role":"user","content":"hi"}],"temperature":0.2,"tools":[],"reasoning":{"effort":"high"}}`)
+	out, stripped := StripParams(body, "temperature")
+	if len(stripped) != 1 || stripped[0] != "temperature" {
+		t.Fatalf("temperature must be strippable when explicitly named: %v", stripped)
+	}
+	if strings.Contains(string(out), "temperature") {
+		t.Fatal("temperature still present after strip")
+	}
+	for _, must := range []string{`"model"`, `"input"`, `"tools"`, `"reasoning"`} {
+		if !strings.Contains(string(out), must) {
+			t.Fatalf("skeleton/other params must survive: missing %s", must)
+		}
+	}
+	// 无名兜底路径不回归：temperature 不在 uncommon 清单，也不会被剥。
+	out2, stripped2 := StripParams(body, "")
+	if strings.Contains(strings.Join(stripped2, ","), "temperature") {
+		t.Fatal("unnamed fallback must not strip temperature")
+	}
+	if !strings.Contains(string(out2), `"temperature"`) {
+		t.Fatal("unnamed fallback must leave temperature in place")
 	}
 }
 
