@@ -21,8 +21,11 @@ func TestGrok46Config(t *testing.T) {
 		t.Error("grok-4.6 should be able to disable reasoning")
 	}
 
-	// Verify effort levels: low, medium, high, xhigh
-	expectedEfforts := []string{"low", "medium", "high", "xhigh"}
+	// 2026-10-13 审计轮订正：原断言 {low,medium,high,xhigh} 无实证，且与
+	// 生产上游明示集冲突（vapeur grok-4.6-1 400 报错原文："Supported
+	// values are: 'none', 'low', 'medium', and 'high'"，raw-logs
+	// 2026-10-13T19:36）。xhigh 放行曾致 paramguard 钳制空转、整请求 400。
+	expectedEfforts := []string{"none", "low", "medium", "high"}
 	if len(caps.Efforts) != len(expectedEfforts) {
 		t.Errorf("grok-4.6 efforts count = %d, want %d", len(caps.Efforts), len(expectedEfforts))
 	}

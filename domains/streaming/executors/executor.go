@@ -2617,17 +2617,7 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 	fpSlotDegraded := false
 	fpSlotKilled := !settings.IsEnabled("fp_slot")
 	if e.FpSlots != nil && e.FpSlots.Enabled() && !fpSlotKilled {
-		filtered := make([]provider.Candidate, 0, len(candidates))
-		for _, cand := range candidates {
-			if e.FpSlots.RoutingEligibleForTenant(params.R.Context(), cand.CredentialID, cand.FpSlotLimit, holder, fpSlotTenantID(params)) {
-				filtered = append(filtered, cand)
-			} else {
-				slog.Info("cred_fp_slot prefilter skip",
-					"credential_id", cand.CredentialID,
-					"provider_id", cand.ProviderID,
-				)
-			}
-		}
+		filtered := e.fpPrefilterCandidates(params, candidates, holder)
 		// Degradation (added 2026-06-23): if every candidate's fingerprint
 		// slot pool is saturated, fall back to the full pre-filter set
 		// rather than rejecting the request outright. The fp_slot layer is
@@ -2691,6 +2681,34 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 	}
 	return e.executeViaDispatch(params, candidates, holder, fpSlotDegraded, stickyCredID)
 
+}
+
+// fpPrefilterCandidates applies the fingerprint-slot prefilter: candidates
+// whose slot pool cannot serve this holder are dropped so routing spreads
+// distinct identities across slots. A pinned candidate is exempt — the
+// request's routing pin (probe X-LLM-Pin-Credential, admin
+// X-LLMGW-Preferred-Credential) demands attribution to that exact node, and
+// dispatchRoute hard-filters the planned set down to the pin afterwards.
+// Dropping the pinned cred here instead produced "all 0 candidates failed"
+// with zero upstream attempts the moment the pin's slot pool saturated
+// (2026-10-13 glm-5.3: cred 63 fp-skipped under batch pressure while every
+// single-candidate model degraded through fine). The dispatch Acquire loop is
+// the designed continuation for an ineligible pinned node: it logs
+// "dispatch fp slot saturated" and runs the request without a slot.
+func (e *Executor) fpPrefilterCandidates(params *ExecParams, candidates []provider.Candidate, holder string) []provider.Candidate {
+	filtered := make([]provider.Candidate, 0, len(candidates))
+	for _, cand := range candidates {
+		if (params.PinCredentialID != nil && cand.CredentialID == *params.PinCredentialID) ||
+			e.FpSlots.RoutingEligibleForTenant(params.R.Context(), cand.CredentialID, cand.FpSlotLimit, holder, fpSlotTenantID(params)) {
+			filtered = append(filtered, cand)
+		} else {
+			slog.Info("cred_fp_slot prefilter skip",
+				"credential_id", cand.CredentialID,
+				"provider_id", cand.ProviderID,
+			)
+		}
+	}
+	return filtered
 }
 
 // recordModelNotFound logs a single upstream model_not_found (or

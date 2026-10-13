@@ -19,6 +19,8 @@ func PlatformSpecs() []*Spec {
 	out = append(out, ErrorProbeSpecs()...)
 	// 2026-07-15: shadow-only routing state, probe, and capability coordinators.
 	out = append(out, RoutingStateSpecs()...)
+	// 2026-10-14: /v1/models discovery-surface controls (r1027).
+	out = append(out, ModelsSpecs()...)
 	out = append(out, LifecycleSpecs()...)
 	out = append(out, SessionAnalyticsSpecs()...)
 	out = append(out, DashboardSpecs()...)

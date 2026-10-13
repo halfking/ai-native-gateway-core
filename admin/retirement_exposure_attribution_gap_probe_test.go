@@ -56,6 +56,16 @@ var (
 )
 
 func TestProbeRetirementExposureAttributionGap(t *testing.T) {
+	if testing.Short() {
+		// 2026-10-13：本用例是**探针**（本文件头已写明「刻意永不判红」），
+		// 却要占 admin 包近 80s —— 两条探针合计 150.7s，
+		// 而 `make test-short` 给整个包的预算只有 120s
+		// ⇒ 实测 FAIL 121.0s，**余量为零**，任何一次抖动就红。
+		// 探针的用途是「量数」，只在审计时手工跑；
+		// 让它认 -short 既符合 test-short「跳过慢测试」的既定语义，
+		// 又**不丢任何覆盖**（它本来就不承担不变式）。
+		t.Skip("probe：审计时手工运行，不进短模式")
+	}
 	root := repoRootFromCaller(t)
 	cols := retirementListedColumns()
 	anchored := make([]*regexp.Regexp, len(cols))
@@ -260,6 +270,16 @@ var currentMonthViewRe = regexp.MustCompile(`\b[a-z_]*_with_current_month\b`)
 // 同族提醒：独立抄写是**量缺陷时**的手段，不是常态。
 // 缺陷修好之后，继续抄一份只会让两个量具各自漂移。
 func TestProbeRetirementExposureBlindSpotFiles(t *testing.T) {
+	if testing.Short() {
+		// 2026-10-13：本用例是**探针**（本文件头已写明「刻意永不判红」），
+		// 却要占 admin 包近 80s —— 两条探针合计 150.7s，
+		// 而 `make test-short` 给整个包的预算只有 120s
+		// ⇒ 实测 FAIL 121.0s，**余量为零**，任何一次抖动就红。
+		// 探针的用途是「量数」，只在审计时手工跑；
+		// 让它认 -short 既符合 test-short「跳过慢测试」的既定语义，
+		// 又**不丢任何覆盖**（它本来就不承担不变式）。
+		t.Skip("probe：审计时手工运行，不进短模式")
+	}
 	root := repoRootFromCaller(t)
 	ensureV1RelationMatchers(t)
 	scanned, referenced, blind := 0, 0, []string{}

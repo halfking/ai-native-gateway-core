@@ -70,13 +70,13 @@ gate_report() {
 #    scripts/apply-db-revision-sequence.sh 的 `files=(...)` 数组，**在本仓内**，
 #    记账表是 **`public.gateway_db_revision_sequences`**（按文件内容 sha256，
 #    内容变了但编号不变时会重放）。
-#    已确认的调用方只有 `scripts/deploy-local-sys.sh`。
-#    `scripts/deploy-252-schema-upgrade.sh` 里也调它，但**全仓穷尽 grep 后没有
-#    任何调用方**（2026-10-07 核过 scripts/deploy/installer/.github/.githooks/
-#    Makefile/根目录 *.sh，命中的只有一份历史审计文档与 .codegraph 索引库），
-#    ⇒ 通道腿不由它投递。
+#    在仓内的调用方是 `scripts/deploy-local.sh`（迁移腿，deploy 前应用 revision 轨道）。
+#    历史调用方 `scripts/deploy-local-sys.sh` / `scripts/deploy-252-schema-upgrade.sh`
+#    已随 2026-10-14 deploy 脚本清理轮删除（前者属已停用的 launchd 代际，
+#    后者是一次性 252 schema 追平工具且全仓穷尽 grep 后无调用方——2026-10-07 核过
+#    scripts/deploy/installer/.github/.githooks/Makefile/根目录 *.sh）。
 #
-# ★ 因此本仓能自证的只有一句：**通道腿在本仓内，且有调用方（deploy-local-sys.sh）**。
+# ★ 因此本仓能自证的只有一句：**通道腿在本仓内，且有调用方（deploy-local.sh）**。
 #   「154 生产上谁投递迁移」依赖仓外 SSOT（见上），**本仓无法回答** ——
 #   需要那个结论时请去 workspace SSOT 查，不要引用本文件当依据。
 #

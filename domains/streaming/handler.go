@@ -302,7 +302,10 @@ func nativeStreamPolicyFailureFrame(protocol string) []byte {
 	case "openai-responses":
 		return []byte("event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"}}}\n\n")
 	default:
-		return []byte("data: {\"error\":{\"type\":\"api_error\",\"message\":\"Response blocked by output policy\"}}\n\ndata: [DONE]\n\n")
+		// r1028: carry a machine-classifiable code — agent clients (ZCode)
+		// map unknown api_error shapes to "reason=unknown retryable=false";
+		// the code lets them distinguish policy blocks from provider faults.
+		return []byte("data: {\"error\":{\"type\":\"api_error\",\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"}}\n\ndata: [DONE]\n\n")
 	}
 }
 
@@ -4625,8 +4628,9 @@ func (h *ChatHandler) serveWithExecutor(
 		// run — the buffered gate guarantees only client-visible
 		// (committed) bytes ever reach it.
 		base := w
+		var survivalIntercepted *interceptingStreamWriter
 		if h.responseInterceptor != nil {
-			base = newInterceptingStreamWriter(w, h.responseInterceptor, r.Context(), response.StreamMeta{
+			survivalIntercepted = newInterceptingStreamWriter(w, h.responseInterceptor, r.Context(), response.StreamMeta{
 				SessionID:      gwSessionID,
 				RequestID:      requestID,
 				TenantID:       tenantID,
@@ -4635,11 +4639,27 @@ func (h *ChatHandler) serveWithExecutor(
 				SanitizeHop:    sanitize.SanitizeHopFromContext(r.Context()),
 				ClientModel:    clientModel,
 			})
-			defer base.(*interceptingStreamWriter).finish()
+			base = survivalIntercepted
+			defer survivalIntercepted.finish()
 		}
 		// SP-02: state machine — survival branch dispatches upstream.
 		rt.Emit(state.EventDispatching)
 		result, execErr = h.runSurvivalCoordinator(r, base, buildExecParams, tenantID, durableStream)
+		// r1028 (2026-10-14, 154 incident): run the interceptor's pending
+		// flush HERE — not only in the deferred finish — and stamp the
+		// governance terminal so the R25-V branch below emits the
+		// output_policy_blocked failure audit. Before this the survival
+		// branch never wired outputGovernanceTerminal (only the goal-retry
+		// loop did), so a stream-lane block was invisible end to end: the
+		// client saw an opaque mid-stream api_error, the audit row kept
+		// success=true and no log line named the request. finish() is
+		// idempotent; the deferred call above stays as panic-safety.
+		if survivalIntercepted != nil {
+			survivalIntercepted.finish()
+			if survivalIntercepted.OutputPolicyBlocked() {
+				outputGovernanceTerminal = "output_policy_blocked"
+			}
+		}
 		goto goalRetryLoopDone
 	}
 
@@ -5784,7 +5804,13 @@ goalRetryLoopDone:
 	// block). finish() already wrote the single protocol terminal frame to
 	// the wire; emit the attributed failure audit and skip success telemetry.
 	if outputGovernanceTerminal == "output_policy_blocked" {
-		p, c := intPtr(result.Candidate.ProviderID), intPtr(result.Candidate.CredentialID)
+		// r1028: nil-safe — the survival branch can stamp the terminal on a
+		// request whose executor result is nil (coordinator fail-closed after
+		// the block latched mid-stream).
+		var p, c *int
+		if result != nil {
+			p, c = intPtr(result.Candidate.ProviderID), intPtr(result.Candidate.CredentialID)
+		}
 		captureAndEmitFailure("output_policy_blocked", "Response blocked by output policy", p, c)
 		return
 	}

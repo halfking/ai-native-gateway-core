@@ -175,21 +175,21 @@ func TestV1BodiesReadPathsArePinned(t *testing.T) {
 		//   剥掉 SQL 注释后该文件不指名任何 v1 bodies 关系 ⇒ 属 switch_only。
 		"admin/session_title.go",
 		"bg/passive_probe_listener.go",
+		"admin/quality_correlations.go",
 		"domains/sessionforensics/export.go",
 		"domains/sessionsummary/summarizer.go",
 		"domains/sessionsummary/system_prompt_prefix.go",
 	}
 	wantLiteralOnly := []string{
 		"admin/body_resolver.go",
-		"admin/compression_sessions.go",
+		// 2026-10-13 S4 波 4 出列：整只端点会话族化（canonical turns 源 +
+		// SessionFamilyBodiesSourceSQL，见 s3_wave4_bodies_sources_test.go 钉桩）。
 		"admin/data_lifecycle.go",
-		"admin/data_lifecycle_blobs.go",
+		// data_lifecycle_blobs 于 2026-10-13（S4 波 4）出列：会话臂治理。
 		"admin/logs.go",
-		"admin/quality_correlations.go",
 		"admin/session_bodies_batch.go",
 		"admin/unified_detail.go",
 		"cmd/compression-bench/main.go",
-		"cmd/scenario_driver/main.go",
 		"cmd/tools/backfill_session_bodies/main.go",
 		"cmd/tools/validate_sessions_v2/loader.go",
 		"domains/hooks/goal/history_store.go",

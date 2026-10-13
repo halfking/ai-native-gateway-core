@@ -63,7 +63,34 @@ import (
 //
 // ⚠️ 改这个谓词前先读上面那张对照表：`= ANY` 长得就像半连接，能通过任何
 // 「不许有 JOIN」的文本判据。守形门见 session_bodies_pairing_test.go。
-const sessionBodiesByRequestIDSQL = `
+//
+// # S4 停写后的取数源（2026-10-13 复审计轮）
+
+// 本查询的消费方（session_compare）turns 腿读的就是会话族
+// （db.SessionFamilyTurnsForSessionSQL），bodies 腿必须同源：停写后新会话
+// 的正文只存在于 session_bodies（实测翻转后 request_logs_bodies 冻结、
+// session_only 行 300+），继续读 v1 视图会让这些轮次的正文静默为空。
+// 故**不走** db.SessionBodiesSourceSQL() 的运行时开关（其 v1 臂在停写后
+// 对会话族 turns 是错的源），直接固定会话族源。列形状差异
+// （request_delta 是消息数组、v1 request_body 是带 messages 键的完整对象）
+// 由消费方的解析器兼容（parseMessagesFromBody/parseResponseMessages 的
+// 数组臂，2026-10-13 同轮补齐）。
+var sessionBodiesByRequestIDSQL = `
+	SELECT rb.request_id,
+	       rb.request_body,
+	       rb.outbound_body,
+	       rb.response_body
+	FROM ` + dbpkg.SessionFamilyBodiesSourceSQL() + ` rb
+	WHERE rb.request_id IN (SELECT unnest($1::text[]))
+`
+
+// v1BodiesByRequestIDSQL 是上面会话族化之前的原文，保留给
+// session_summary_v2 的 **v1 回退路径**专用：那条路径的 turns 腿本来就是
+// v1 视图（session_turns 为空的遗留会话），bodies 腿必须同源——这些会话
+// 可能早于镜像开启、正文只在 v1。随 v1 表 DROP 一起退役（届时未镜像
+// 遗留会话的摘要语料消失，属已登记的可接受损失，删表前由 owner 复核
+// 生产库 with-header 未镜像行数）。
+const v1BodiesByRequestIDSQL = `
 	SELECT rb.request_id,
 	       rb.request_body,
 	       rb.outbound_body,
@@ -146,57 +173,35 @@ func acquireBodyFetchSlot(ctx context.Context) (func(), error) {
 	return nil, ErrBodyFetchSaturated
 }
 
-// sessionBodiesByRequestIDSessionSQL 是**会话族**腿（S4 停写轮新增）。
-//
-// # 为什么必须是双源而不是把 v1 腿换掉
-//
-// 切换层 `db.SessionBodiesSourceSQL()` 是**单臂开关**（开=会话族、关=v1），
-// 换掉 v1 腿会让**镜像启用之前的历史会话**（正文只在 request_logs_bodies）
-// 变成"查得到轮次、没正文"。实测这两族都各自有对方没有的 request_id：
-// v1 有 1,201 个会话侧没有（2026-10-12 单日口径）。⇒ 两腿都要，各查一次，
-// 在 Go 侧按 request_id 合并。
-//
-// # 谓词形态不变（这一条是承重的）
-//
-// 仍然是 `IN (SELECT unnest($1::text[]))` 半连接，**不是** `= ANY($1::text[])`。
-// 见文件头那段实测：`= ANY` 在列存分区上让规划器放弃主键探针，代价差 8~9 倍。
-// 本轮真库 EXPLAIN ANALYZE（200 个真实 request_id，2026-10-14）：
-// 两条腿都是 Index Scan / 分区裁剪，**Execution Time 0.943 ms**。
-//
-// # 那个 JSON 过滤是承重的，不是洁癖
-//
-// 会话族用 jsonb `null` 表示"这一列没有正文"（实测 request_delta 1,882 行、
-// outbound_body 11,420 行，SQL NULL 各 0 行）。而调用方把 map 里的缺项当成
-// "没有存正文"。若不把全空的会话行滤掉，它会**盖掉** v1 腿里同一
-// request_id 的真实正文（双写期本地实测 11,711 个双生 request_id）。
-// ⇒ 只让**至少有一列真有内容**的会话行进 map，v1 的内容因此得以保留。
-var sessionBodiesByRequestIDSessionSQL = `
-	SELECT rb.request_id,
-	       rb.request_body,
-	       rb.outbound_body,
-	       rb.response_body
-	FROM ` + dbpkg.SessionFamilyBodiesSourceSQL() + ` rb
-	WHERE rb.request_id IN (SELECT unnest($1::text[]))
-	  AND ((rb.request_body IS NOT NULL AND rb.request_body <> 'null'::jsonb)
-	    OR (rb.outbound_body IS NOT NULL AND rb.outbound_body <> 'null'::jsonb)
-	    OR (rb.response_body IS NOT NULL AND rb.response_body <> 'null'::jsonb))
-`
-
-// querySessionBodiesByRequestID pairs turns to bodies on request_id alone,
-// reading **both** families (S4 停写轮：v1 腿 + 会话族腿) and merging by
-// request_id.
-//
-// 合并规则（顺序即优先级）：v1 腿先填，会话族腿覆盖。配合上面那个 JSON 过滤，
-// 这条规则的三种情形都正确：
-//   - 只有 v1 有（镜像启用前的历史）→ v1 条目保留；
-//   - 只有会话族有（停写后的新流量）→ 会话族条目补上（**这是本轮修复的退化**：
-//     停写后这条腿对新会话恒 0 行，导出/对比/摘要会拿到"有轮次、无正文"）；
-//   - 双生且两侧都有内容 → 会话族覆盖（停写后的权威源）。
-var sessionBodiesByRequestIDV1SQL = sessionBodiesByRequestIDSQL
-
+// querySessionBodiesByRequestID pairs turns to bodies on request_id alone.
+// Unambiguous: no request_id carries more than one body row (measured: 0),
+// because every partition of request_logs_bodies has a UNIQUE (request_id, ts)
+// primary key and the hot table is disjoint from the monthly parent.
 func querySessionBodiesByRequestID(
 	ctx context.Context,
 	q sessionBodyQuerier,
+	requestIDs []string,
+) (map[string]sessionBody, error) {
+	return queryBodiesByRequestID(ctx, q, sessionBodiesByRequestIDSQL, requestIDs)
+}
+
+// queryV1BodiesByRequestID is the v1-view sibling for the summary fallback
+// path（turns 腿为 v1 视图的遗留会话）。见 v1BodiesByRequestIDSQL 注释。
+func queryV1BodiesByRequestID(
+	ctx context.Context,
+	q sessionBodyQuerier,
+	requestIDs []string,
+) (map[string]sessionBody, error) {
+	return queryBodiesByRequestID(ctx, q, v1BodiesByRequestIDSQL, requestIDs)
+}
+
+// queryBodiesByRequestID is the shared scanner behind both source variants.
+// The concurrency gate applies to both：正文取数是全仓最贵的单条查询，
+// 与取数源无关（见下方并发闸注释）。
+func queryBodiesByRequestID(
+	ctx context.Context,
+	q sessionBodyQuerier,
+	sqlText string,
 	requestIDs []string,
 ) (map[string]sessionBody, error) {
 	if len(requestIDs) == 0 {
@@ -208,48 +213,26 @@ func querySessionBodiesByRequestID(
 	}
 	defer release()
 
-	bodies := make(map[string]sessionBody, len(requestIDs))
-
-	// 腿 1：v1（停写前的历史，含镜像启用前的会话）。
-	if err := scanSessionBodies(ctx, q, sessionBodiesByRequestIDV1SQL, requestIDs, bodies); err != nil {
-		return nil, err
-	}
-	// 腿 2：会话族（停写后的新流量）。覆盖同键的 v1 条目。
-	if err := scanSessionBodies(ctx, q, sessionBodiesByRequestIDSessionSQL, requestIDs, bodies); err != nil {
-		return nil, err
-	}
-	return bodies, nil
-}
-
-// scanSessionBodies 跑一条批量正文查询并写进 dst（后跑的腿覆盖先跑的）。
-//
-// 拆出来是因为两条腿的 SQL 不同、扫描逻辑完全相同，而把扫描逻辑分别写在两个
-// 调用点会变成两段复制粘贴——那种形状的典型故障是**只改一段**。
-func scanSessionBodies(
-	ctx context.Context,
-	q sessionBodyQuerier,
-	sqlText string,
-	requestIDs []string,
-	dst map[string]sessionBody,
-) error {
 	rows, err := q.Query(ctx, sqlText, requestIDs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer rows.Close()
+
+	bodies := make(map[string]sessionBody, len(requestIDs))
 	for rows.Next() {
 		var requestID string
 		var reqRaw, outboundRaw, respRaw []byte
 		if err := rows.Scan(&requestID, &reqRaw, &outboundRaw, &respRaw); err != nil {
-			return err
+			return nil, err
 		}
-		dst[requestID] = sessionBody{
+		bodies[requestID] = sessionBody{
 			requestBody:  rawToStringPtr(reqRaw),
 			outboundBody: rawToStringPtr(outboundRaw),
 			responseBody: rawToStringPtr(respRaw),
 		}
 	}
-	return rows.Err()
+	return bodies, rows.Err()
 }
 
 // querySessionBodiesByRequestIDAndTS pairs on (request_id, ts) — the summary

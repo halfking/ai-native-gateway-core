@@ -580,6 +580,26 @@ func (e *Executor) executeOpenAI(
 				StatusCode: http.StatusNotImplemented,
 			}
 		}
+		// r1026b（2026-10-13 审计轮）：stream_options 是 openai-chat 线格式
+		// 专属参数，Responses 线格式无此字段。原生透传体保留客户端原文，
+		// responses 客户端误发时严格中转会 400 Unknown parameter（raw-logs
+		// 19:36 实证，vapeur/grok-4.6）。这是 extensions_restore 线格式守卫
+		// 之外的第三个 choke point——native 腿不经 IR 序列化；durable 快照
+		// 回放（snapshot.NormalizedBody）也走这里。
+		if bytes.Contains(sourceBody, []byte(`"stream_options"`)) {
+			sourceBody = transformation.StripStreamOptions(sourceBody)
+		}
+		// r1027（2026-10-14）：chat 风格顶层参数的线格式适配——
+		// reasoning_effort→reasoning.effort、response_format→text.format、
+		// max_completion_tokens→max_output_tokens、logprobs 系删除
+		// （raw-logs 01:03-01:05 四条实证，上游逐条点名 "moved to ..."）。
+		// native 透传腿此前不做任何适配，同语义在 IR 转换路径上本就正确。
+		if bytes.Contains(sourceBody, []byte(`"reasoning_effort"`)) ||
+			bytes.Contains(sourceBody, []byte(`"response_format"`)) ||
+			bytes.Contains(sourceBody, []byte(`"max_completion_tokens"`)) ||
+			bytes.Contains(sourceBody, []byte(`"logprobs"`)) {
+			sourceBody = transformation.AdaptChatParamsToResponsesWire(sourceBody)
+		}
 		contextWindow := 0
 		if cand.ContextWindow != nil {
 			contextWindow = *cand.ContextWindow
@@ -1433,7 +1453,13 @@ func (e *Executor) executeOpenAI(
 						len(params.ResponsesBodyBytes) > 0
 					var retryBody []byte
 					if responsesClient {
-						retryBody = append([]byte(nil), params.ResponsesBodyBytes...)
+						// r1026b：与 native 分支同源同治——ResponsesBodyBytes
+						// 是客户端原文，stream_options（chat 线格式专属）必须
+						// 在这里同样剔除，否则 reactive 重试腿绕过 native
+						// 分支的 strip choke point。r1027：chat 风格参数的
+						// 线格式适配同此。
+						retryBody = transformation.AdaptChatParamsToResponsesWire(
+							transformation.StripStreamOptions(append([]byte(nil), params.ResponsesBodyBytes...)))
 					} else if converted, convOK := chatBodyToResponsesBody(clientSourceBody, cand.RawModel); convOK {
 						retryBody = converted
 					}
@@ -1807,18 +1833,18 @@ func (e *Executor) executeOpenAI(
 						"chunk_count", streamOutcome.ChunkCount,
 					)
 					return &ExecuteResult{
-						Response:       resp,
-						Candidate:      cand,
-						LatencyMs:      latencyMs,
-						RequestBody:    append([]byte(nil), bodyBytes...),
-						InboundBody:    sourceBody,
-						RoutingTracker: params.RoutingTracker,
-					}, &streamInterruptedError{
-						reason:       streamOutcome.Reason,
-						credentialID: cand.CredentialID,
-						resumable:    false,
-						kind:         errorsx.KindCanceled,
-					}
+							Response:       resp,
+							Candidate:      cand,
+							LatencyMs:      latencyMs,
+							RequestBody:    append([]byte(nil), bodyBytes...),
+							InboundBody:    sourceBody,
+							RoutingTracker: params.RoutingTracker,
+						}, &streamInterruptedError{
+							reason:       streamOutcome.Reason,
+							credentialID: cand.CredentialID,
+							resumable:    false,
+							kind:         errorsx.KindCanceled,
+						}
 				}
 				if streamOutcome.Interrupted {
 					isResumable := streamOutcome.Resumable && streamOutcome.ChunkCount < e.StreamRetryThreshold
@@ -1906,23 +1932,23 @@ func (e *Executor) executeOpenAI(
 					}
 
 					return &ExecuteResult{
-						Response:    resp,
-						Candidate:   cand,
-						LatencyMs:   latencyMs,
-						RequestBody: append([]byte(nil), bodyBytes...),
-						// Phase D (2026-06-22): inbound body for audit logging
-						InboundBody: sourceBody,
-						// 2026-06-19 quality fix mode: capture any flags the
-						// stream reader observed before the interrupt fired.
-						QualityFlags:   streamQualityFlags,
-						QualityScore:   streamQualityScore,
-						RoutingTracker: params.RoutingTracker,
-					}, &streamInterruptedError{
-						reason: streamOutcome.Reason, credentialID: cand.CredentialID,
-						resumable: isResumable, kind: streamKind,
-						statusCode: resp.StatusCode, rawError: streamOutcome.Reason,
-						terminalRendered: streamOutcome.TerminalRendered,
-					}
+							Response:    resp,
+							Candidate:   cand,
+							LatencyMs:   latencyMs,
+							RequestBody: append([]byte(nil), bodyBytes...),
+							// Phase D (2026-06-22): inbound body for audit logging
+							InboundBody: sourceBody,
+							// 2026-06-19 quality fix mode: capture any flags the
+							// stream reader observed before the interrupt fired.
+							QualityFlags:   streamQualityFlags,
+							QualityScore:   streamQualityScore,
+							RoutingTracker: params.RoutingTracker,
+						}, &streamInterruptedError{
+							reason: streamOutcome.Reason, credentialID: cand.CredentialID,
+							resumable: isResumable, kind: streamKind,
+							statusCode: resp.StatusCode, rawError: streamOutcome.Reason,
+							terminalRendered: streamOutcome.TerminalRendered,
+						}
 				}
 				recordAttemptSuccess(streamOutcome.ChunkCount)
 				return &ExecuteResult{
