@@ -184,6 +184,10 @@ func (h *RequestTraceHandler) requestTraceState(ctx context.Context, requestID s
 	var traceEvents []byte
 	// 2026-07-20: 与 LoadFromPG 同步 — 同时查 hot + 分区表。
 	// 最近 7 天的请求只写在 request_logs_hot(参 migration 341 hot_table_independence)。
+	// 2026-10-13 S3 波 2（登记，不改）：trace_events 不在 canonical 118 列契约
+	// （镜像从不写它，视图刻意未投影），此查询只能留在 v1 双腿上——服务
+	// 停写前历史；新请求的 PG trace 兜底缺席，链路事件以 Redis（进行中/刚
+	// 完成）为唯一来源，trace 家族迁移属独立工作项。
 	err := h.db.QueryRow(ctx, `
 		SELECT COALESCE(request_status, ''), trace_events
 		FROM (
@@ -294,22 +298,16 @@ func (h *RequestTraceHandler) fetchRequestSummary(ctx context.Context, requestID
 		return requestSummary{RequestID: requestID}
 	}
 	// 2026-07-20: 与 requestTraceState 同步 — 同时查 hot + 分区表。
+	// 2026-10-13 S3 波 2（停写切换）：request_id 点查（B 形态）按守卫规则
+	// 用 canonical 视图作单一源（会话臂服务新流量；12 列全在 118 契约内，
+	// provider_id/client_model 会话臂依赖 734 details 层）。
 	row := h.db.QueryRow(ctx, `
 		SELECT ts, client_model, outbound_model, provider_id, credential_id,
 		       latency_ms, success, COALESCE(error_kind, ''), COALESCE(failure_stage, ''),
 		       COALESCE(auto_decision::text, ''),
 		       COALESCE(task_type, ''), COALESCE(task_type_chosen, '')
-		FROM (
-			SELECT ts, client_model, outbound_model, provider_id, credential_id,
-			       latency_ms, success, error_kind, failure_stage,
-			       auto_decision, task_type, task_type_chosen
-			FROM request_logs_hot WHERE request_id = $1
-			UNION ALL
-			SELECT ts, client_model, outbound_model, provider_id, credential_id,
-			       latency_ms, success, error_kind, failure_stage,
-			       auto_decision, task_type, task_type_chosen
-			FROM request_logs WHERE request_id = $1
-		) t
+		FROM request_logs_with_current_month
+		WHERE request_id = $1
 		ORDER BY ts DESC NULLS LAST
 		LIMIT 1
 	`, requestID)
@@ -595,14 +593,14 @@ func (h *RequestTraceHandler) buildProbeTrace(ctx context.Context, requestID str
 	origin := "direct"
 	if h.db != nil {
 		var chosen string
-		// 2026-07-20: 同时查 hot + 分区表
+		// 2026-10-13 S3 波 2：hot∪parent 双腿 → canonical 视图单源（列在
+		// 契约内）。注意 S4 停写后探针轮次按设计不进会话族——新探针请求
+		// 在宽表族无处落行，此处查不到即保持 "direct" 默认（探针面观测
+		// 对象迁移是独立的 owner 拍板项）。
 		_ = h.db.QueryRow(ctx, `
 			SELECT COALESCE(task_type_chosen, '')
-			FROM (
-				SELECT task_type_chosen, ts FROM request_logs_hot WHERE request_id = $1
-				UNION ALL
-				SELECT task_type_chosen, ts FROM request_logs WHERE request_id = $1
-			) t
+			FROM request_logs_with_current_month
+			WHERE request_id = $1
 		ORDER BY ts DESC NULLS LAST
 			LIMIT 1
 		`, requestID).Scan(&chosen)

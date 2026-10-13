@@ -629,6 +629,34 @@ func (c *Client) pgEnabled() bool {
 	return c != nil && (c.dbPool != nil || c.requestLogDB != nil)
 }
 
+// findRecentGatewaySessionSQL 是会话粘滞查找（请求热路径）。2026-10-13
+// S3 波 2（停写切换）：request_logs_hot 已停写，新流量的 gw_session_id 只落
+// session_turns_hot（api_key_id/identity_hash 由 707 S1a 加列，
+// idx_session_turns_hot_ts 供窗口过滤）。两族热表 UNION 单次往返；回滚写门
+// 后 v1 腿自动恢复供数。两腿窗口都 ≤ 热表保留期，不需要 parent 腿。
+// 提升为包级变量是给形状钉桩用的。
+var findRecentGatewaySessionSQL = `
+		SELECT session_id FROM (
+			SELECT t.session_id AS session_id, t.ts AS ts
+			FROM public.session_turns_hot t
+			WHERE t.tenant_id = $1
+			  AND t.api_key_id = $2::text
+			  AND t.identity_hash = $3
+			  AND t.session_id LIKE 'gw\_%'
+			  AND t.ts >= NOW() - ($4 * INTERVAL '1 second')
+			UNION ALL
+			SELECT r.gw_session_id AS session_id, r.ts AS ts
+			FROM public.request_logs_hot r
+			WHERE r.tenant_id = $1
+			  AND r.api_key_id = $2
+			  AND r.identity_hash = $3
+			  AND r.gw_session_id LIKE 'gw\_%'
+			  AND r.ts >= NOW() - ($4 * INTERVAL '1 second')
+		) recent_session
+		ORDER BY ts DESC
+		LIMIT 1
+	`
+
 func (c *Client) FindRecentGatewaySession(ctx context.Context, tenantID, identityHash string, apiKeyID int, since time.Duration) (string, error) {
 	if c == nil || c.dbPool == nil || tenantID == "" || identityHash == "" || apiKeyID <= 0 {
 		return "", nil
@@ -643,17 +671,7 @@ func (c *Client) FindRecentGatewaySession(ctx context.Context, tenantID, identit
 	// 2026-07-05 migration 341: 会话查找窗口（默认 5 分钟）落在 request_logs_hot
 	// 的 0-7 天热数据范围内，查询 _hot 表（独立 heap 表，性能最优）即可。
 	// 符合 docs/partition/partition-standards.md 查询规范。
-	err := c.dbPool.QueryRow(queryCtx, `
-		SELECT gw_session_id
-		FROM request_logs_hot
-		WHERE tenant_id = $1
-		  AND api_key_id = $2
-		  AND identity_hash = $3
-		  AND gw_session_id LIKE 'gw\_%'
-		  AND ts >= NOW() - ($4 * INTERVAL '1 second')
-		ORDER BY ts DESC
-		LIMIT 1
-	`, tenantID, apiKeyID, identityHash, int(since.Seconds())).Scan(&sessionID)
+	err := c.dbPool.QueryRow(queryCtx, findRecentGatewaySessionSQL, tenantID, apiKeyID, identityHash, int(since.Seconds())).Scan(&sessionID)
 	if err != nil {
 		if strings.Contains(err.Error(), "no rows") {
 			return "", nil
@@ -3941,6 +3959,25 @@ func lookupProviderName(ctx context.Context, tx pgx.Tx, providerID *int) string 
 	return code
 }
 
+// lookupTurnNoSessionSQL / lookupTurnNoV1FallbackSQL 是 outbox turn_no 的
+// 会话族权威读与 v1 回退（S3 波 2 停写切换，见 lookupTurnNumber 注释）。
+// 提升为包级变量是给形状钉桩用的。
+var lookupTurnNoSessionSQL = `
+		SELECT COALESCE(MAX(turn_no), 0)
+		FROM (
+			SELECT turn_no FROM public.session_turns_hot WHERE session_id = $1
+			UNION ALL
+			SELECT turn_no FROM public.session_turns WHERE session_id = $1
+		) session_turn_nos
+	`
+
+var lookupTurnNoV1FallbackSQL = `
+		SELECT COUNT(*)
+		FROM request_logs
+		WHERE gw_session_id = $1
+		  AND ts >= NOW() - INTERVAL '30 days'
+	`
+
 // lookupTurnNumber queries request_logs to count the turn number for this session.
 // Returns the next turn number (1-based). If sessionID is empty or query fails, returns 1.
 // Uses the same transaction tx to maintain consistency.
@@ -3960,13 +3997,18 @@ func lookupTurnNumber(ctx context.Context, tx pgx.Tx, sessionID string) int {
 	// partitions); sessions outliving it restart turn numbering, which is
 	// acceptable — real sessions are far shorter, and the session/v2
 	// aggregator owns the authoritative turn_no anyway.
+	// 2026-10-13 S3 波 2（停写切换）：S4 停写后新请求不再进 request_logs，
+	// v1 计数对新会话恒 0、outbox turn_no 恒 1。改为会话族权威读：turns
+	// 两腿 MAX(turn_no)（session_id 等值，idx_session_turns_session）；
+	// 0 时回退 v1 母表原查询（镜像前历史会话）。会话轮写与 outbox 发射
+	// 并发时本读可能少计在途一轮——该值本就是提示性载荷，权威 turn_no
+	// 归 session/v2 aggregator（见上）。
 	var count int
-	err := tx.QueryRow(ctx, `
-		SELECT COUNT(*)
-		FROM request_logs
-		WHERE gw_session_id = $1
-		  AND ts >= NOW() - INTERVAL '30 days'
-	`, sessionID).Scan(&count)
+	err := tx.QueryRow(ctx, lookupTurnNoSessionSQL, sessionID).Scan(&count)
+
+	if err == nil && count == 0 {
+		err = tx.QueryRow(ctx, lookupTurnNoV1FallbackSQL, sessionID).Scan(&count)
+	}
 
 	if err != nil {
 		// Non-fatal: log and fallback to 1

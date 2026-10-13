@@ -862,42 +862,52 @@ func TestLookupProviderName(t *testing.T) {
 }
 
 // TestLookupTurnNumber verifies turn number counting logic.
+//
+// 2026-10-13 S3 波 2（停写切换）：权威读改为会话族 MAX(turn_no)（两腿），
+// 0 时回退 v1 母表 30d 计数（镜像前历史会话）。
 func TestLookupTurnNumber(t *testing.T) {
-	t.Run("returns 1 for first turn in session", func(t *testing.T) {
+	const sessionQ = `SELECT COALESCE\(MAX\(turn_no\), 0\)[\s\S]*`
+	const v1Q = `SELECT COUNT\(\*\)[\s\S]*FROM request_logs[\s\S]*gw_session_id = \$1[\s\S]*`
+
+	t.Run("session family turn_no is authoritative", func(t *testing.T) {
 		mockDB, err := pgxmock.NewPool()
 		require.NoError(t, err)
 		defer mockDB.Close()
 
 		mockDB.ExpectBegin()
-		mockDB.ExpectQuery(`SELECT COUNT\(\*\) FROM request_logs WHERE gw_session_id = \$1`).
+		mockDB.ExpectQuery(sessionQ).
 			WithArgs("session-abc").
-			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
+			WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(7))
 
 		ctx := context.Background()
 		tx, err := mockDB.Begin(ctx)
 		require.NoError(t, err)
 
 		result := lookupTurnNumber(ctx, tx, "session-abc")
-		require.Equal(t, 1, result)
+		require.Equal(t, 7, result)
+		// 会话族已供数：不得再打 v1 回退查询。
 		require.NoError(t, mockDB.ExpectationsWereMet())
 	})
 
-	t.Run("returns 2 for second turn in session", func(t *testing.T) {
+	t.Run("falls back to v1 when session family has no rows", func(t *testing.T) {
 		mockDB, err := pgxmock.NewPool()
 		require.NoError(t, err)
 		defer mockDB.Close()
 
 		mockDB.ExpectBegin()
-		mockDB.ExpectQuery(`SELECT COUNT\(\*\) FROM request_logs WHERE gw_session_id = \$1`).
-			WithArgs("session-abc").
-			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
+		mockDB.ExpectQuery(sessionQ).
+			WithArgs("session-legacy").
+			WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(0))
+		mockDB.ExpectQuery(v1Q).
+			WithArgs("session-legacy").
+			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(4))
 
 		ctx := context.Background()
 		tx, err := mockDB.Begin(ctx)
 		require.NoError(t, err)
 
-		result := lookupTurnNumber(ctx, tx, "session-abc")
-		require.Equal(t, 2, result)
+		result := lookupTurnNumber(ctx, tx, "session-legacy")
+		require.Equal(t, 4, result)
 		require.NoError(t, mockDB.ExpectationsWereMet())
 	})
 
@@ -913,13 +923,13 @@ func TestLookupTurnNumber(t *testing.T) {
 		require.NoError(t, mockDB.ExpectationsWereMet())
 	})
 
-	t.Run("returns 1 when query fails", func(t *testing.T) {
+	t.Run("returns 1 when queries fail", func(t *testing.T) {
 		mockDB, err := pgxmock.NewPool()
 		require.NoError(t, err)
 		defer mockDB.Close()
 
 		mockDB.ExpectBegin()
-		mockDB.ExpectQuery(`SELECT COUNT\(\*\) FROM request_logs WHERE gw_session_id = \$1`).
+		mockDB.ExpectQuery(sessionQ).
 			WithArgs("session-xyz").
 			WillReturnError(pgx.ErrNoRows)
 
@@ -932,13 +942,16 @@ func TestLookupTurnNumber(t *testing.T) {
 		require.NoError(t, mockDB.ExpectationsWereMet())
 	})
 
-	t.Run("returns 1 when count is 0", func(t *testing.T) {
+	t.Run("returns 1 for brand-new session", func(t *testing.T) {
 		mockDB, err := pgxmock.NewPool()
 		require.NoError(t, err)
 		defer mockDB.Close()
 
 		mockDB.ExpectBegin()
-		mockDB.ExpectQuery(`SELECT COUNT\(\*\) FROM request_logs WHERE gw_session_id = \$1`).
+		mockDB.ExpectQuery(sessionQ).
+			WithArgs("session-new").
+			WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(0))
+		mockDB.ExpectQuery(v1Q).
 			WithArgs("session-new").
 			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
 
@@ -953,7 +966,7 @@ func TestLookupTurnNumber(t *testing.T) {
 
 	t.Run("handles multi-turn conversation", func(t *testing.T) {
 		testCases := []struct {
-			count        int
+			turnNo       int
 			expectedTurn int
 		}{
 			{1, 1},
@@ -968,9 +981,9 @@ func TestLookupTurnNumber(t *testing.T) {
 			require.NoError(t, err)
 
 			mockDB.ExpectBegin()
-			mockDB.ExpectQuery(`SELECT COUNT\(\*\) FROM request_logs WHERE gw_session_id = \$1`).
+			mockDB.ExpectQuery(sessionQ).
 				WithArgs("session-multi").
-				WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(tc.count))
+				WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(tc.turnNo))
 
 			ctx := context.Background()
 			tx, err := mockDB.Begin(ctx)

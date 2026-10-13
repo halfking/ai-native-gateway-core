@@ -75,6 +75,14 @@ var viewArmCutoverReaders = map[string]string{
 	"admin/session_timeline_query.go":      "**work_type + preview 列**：verdict=repoint-empty。会话抽取页按 work_type 过滤会空",
 	"domains/sessionforensics/export.go":   "**混合读方**（既经视图读又直读底表），两个桶都收它；verdict=repoint-empty。切换后取证导出会缺 work_type/attachments",
 	"domains/sessionsummary/summarizer.go": "verdict=repoint-gap-only ⚠ **后果最隐蔽**：摘要输入变空不会失败，会生成「看起来正常」的错摘要——比失败更难发现",
+	// 以下两条于 2026-10-13（S3 波 2 停写切换）登记：两文件本轮改读
+	// canonical 视图后进入「经视图读 v1 臂 + 读了会话族供不上的列」桶。
+	"admin/work_types.go": "**work_type 维度**：verdict=repoint-empty。会话侧 work_type 近乎恒空，" +
+		"v1 臂最终退役时 by_work_type 桶对新流量消失（task_type 桶 by_l1_task 不受影响）；" +
+		"停写切换期（本轮）session 臂已供数，非即时失效",
+	"db/db.go": "**契约缺口列名的定义者**（repoint-empty 口径）：routingAnalyticsMVSQL/recent_success_rate " +
+		"等运行时 SSOT 重建体经视图取数，列名单本身即 canonical 契约——它是投影定义者而非运营读方，" +
+		"切换时随视图体的最后一次重建一并处置",
 }
 
 // TestViewArmCutoverReadersRegistryIsConsistent gates the cutover manifest in

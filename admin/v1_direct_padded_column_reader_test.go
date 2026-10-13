@@ -344,11 +344,12 @@ func dedupeSorted(in []string) []string {
 // v1」。后者一旦 SQL 变了就自动失效（下面的自检会报红），所以它不会变成
 // 一个永不更新的占位。
 var unattributablePaddedRefExemptions = map[string]string{
-	"domains/streaming/model_alternatives.go:id": "手验（2026-10-02）：该文件里读 v1 的那条 " +
-		"字面量（`FROM request_logs_hot WHERE ts > … AND success AND canonical_model IS NOT NULL " +
-		"GROUP BY canonical_model`）只读 canonical_model / ts / success，**不读任何补位列**。" +
-		"被点名的裸 `id` 在另一条字面量里（`ORDER BY id` 与 models_canonical 侧），那条字面量" +
-		"虽因内嵌 CTE 而同时含 request_logs_hot，但 id 绑的是 models_canonical。",
+	// `domains/streaming/model_alternatives.go:id` 这条豁免为什么**被删掉**而不是被改写
+	// （2026-10-13，S3 波 2 停写切换）：它的形状是「一条同时含 request_logs_hot 与
+	// models_canonical 的字面量里，裸 `id` 不可归属」。S3 波 2 把 usage_7d 热面从
+	// request_logs_hot 换成会话族源拼接（SessionFamilyTurnsSourceSQL），v1 关系名
+	// 从该文件的一切字面量中消失 ⇒ 本门在那个文件里不再产生任何命中，豁免按
+	// 「失效即报红」的自检退出——与下方 bg/auto_route_settle_worker.go:id 的删除同先例。
 }
 
 // 关于 `bg/auto_route_settle_worker.go:id` 这条豁免为什么**被删掉**而不是被改写

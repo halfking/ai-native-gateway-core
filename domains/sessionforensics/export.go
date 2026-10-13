@@ -423,7 +423,11 @@ func (e *Exporter) ListRecentSessions(ctx context.Context, tenantID string, limi
 			MIN(ts::text) AS earliest_at,
 			MAX(ts::text) AS latest_at,
 			array_agg(DISTINCT client_model) FILTER (WHERE client_model IS NOT NULL) AS models
-		FROM request_logs
+		-- 2026-10-13 S3 波 2（停写切换）：原读 request_logs 母表（无 hot 腿——
+		-- 近 7 天行今天就漏），停写后新会话完全不出现在审计列表。改读
+		-- canonical 视图：全部列在 118 契约内，会话臂服务新流量、v1 臂服务
+		-- 历史，反连接去重保证轮数不双计。
+		FROM request_logs_with_current_month
 		WHERE tenant_id = $1
 		GROUP BY gw_session_id
 		ORDER BY latest_at DESC NULLS LAST

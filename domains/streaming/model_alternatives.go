@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
+	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // matches handler.go's existing import of the same package
 )
 
@@ -177,7 +178,10 @@ func (f *ModelAlternativesFinder) Find(
 //
 // The 7-day usage count is a LEFT JOIN so a freshly-added featured model with
 // no traffic still appears (at count 0) rather than being dropped.
-const alternativesSQL = `
+//
+// 2026-10-13 S3 波 2：usage_7d 热面由字面量常量改为拼接表达式（会话族原生
+// 源），const 随之降为 var——见 usage_7d CTE 内注释。
+var alternativesSQL = `
 WITH policy AS (
     SELECT COALESCE(featured_models, ARRAY[]::TEXT[]) AS featured
     FROM routing_policy
@@ -240,8 +244,15 @@ usage_7d AS (
     -- and returns in single-digit ms. Trade-off: the "popular" tier
     -- reflects the hot retention window (~8h of traffic) rather than a
     -- full 7 days.
+    -- 2026-10-13 S3 波 2（停写切换）：热面从 request_logs_hot 换到会话族
+    -- 原生源（db.SessionFamilyTurnsSourceSQL：hot ∪ parent 两腿、无反连接
+    -- probe）——S4 停写后新流量的 canonical_model 只落会话族，v1 hot 只会
+    -- 排空。无反连接，2026-09-25 的视图成本裁决不适用；顺带修复原实现的
+    -- 一个隐含缺陷（7 天窗只读 hot 表，promote 排空的行本来就数不到——
+    -- parent 腿补齐了 8h 之外的部分）。探针/内部回环轮次本就不进会话族，
+    -- 热度口径反而更干净。
     SELECT canonical_model, COUNT(*) AS cnt
-    FROM request_logs_hot
+    FROM ` + db.SessionFamilyTurnsSourceSQL() + `
     WHERE ts > now() - interval '7 days'
       AND success = TRUE
       AND canonical_model IS NOT NULL
