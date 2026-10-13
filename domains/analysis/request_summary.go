@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/db"
 )
 
 // RequestSummarizer 生成每一步请求/回复的摘要。
@@ -120,15 +122,27 @@ func (r *RequestSummarizer) llmRefine(ctx context.Context, row requestLogRow, re
 	return strings.TrimSpace(out)
 }
 
+// requestSummaryTurnsSource 是请求摘要的会话族源（S3 波 2 停写切换）。
+// 提升为包级变量是给形状钉桩用的。
+var requestSummaryTurnsSource = db.SessionFamilyTurnsForSessionSQL()
+
 // loadRequestLogs 读取某会话的所有请求（按时间排序）。
+//
+// 2026-10-13 S3 波 2（停写切换）：原实现只读 request_logs 母表——hot 表的
+// 近 7 天行今天就漏（promote 排水滞后），S4 停写后新会话更是恒空集。
+// gw_session_id 是会话内谓词（A 形态），按守卫规则可迁会话族原生源：
+// SessionFamilyTurnsForSessionSQL 把 session_id=$1 内推两腿、命中
+// idx_session_turns_session，13 个投影列全部在 113 列契约内（preview 三列
+// t.* 直映、tool_calls→t.tools、compression_strategy→t.compression_strategy）。
+// 注意会话族口径不含内部回环/探针轮次（镜像按设计排除），摘要总体更干净。
 func (r *RequestSummarizer) loadRequestLogs(ctx context.Context, tenantID, gwSessionID string) ([]requestLogRow, error) {
 	query := `
 		SELECT request_id, COALESCE(prompt_tokens,0), COALESCE(completion_tokens,0),
 		       COALESCE(cost_usd,0), COALESCE(latency_ms,0),
 		       request_preview, response_preview, transform_summary,
 		       tool_calls, compression_strategy
-		FROM request_logs
-		WHERE gw_session_id = $1`
+		FROM ` + requestSummaryTurnsSource + ` rl
+		WHERE rl.gw_session_id = $1`
 	args := []any{gwSessionID}
 	if tenantID != "" {
 		query += " AND tenant_id = $2"
