@@ -121,6 +121,15 @@ type responsesScaffold struct {
 	reasoningText strings.Builder
 	toolStates    map[int]*responsesToolTerminalState
 
+	// wireToolIndex memoizes upstream tool-call index (OpenAI tool_calls[].index
+	// or Anthropic content_block index) → Responses output_index. The
+	// pre-declared message item owns output_index 0, so tool items are assigned
+	// 1,2,… on first sight: the Responses contract keys every item by its
+	// position in the output array, and emitting a function_call at the
+	// message's index 0 collides two distinct items on the wire.
+	wireToolIndex   map[int]int
+	nextWireToolIdx int
+
 	// pc is the optional pending capturer so initial/final envelope events
 	// are still recorded when the client has already gone away (Track C C5).
 	pc *pendingCapturer
@@ -147,14 +156,16 @@ func newResponsesScaffold(w http.ResponseWriter, flusher http.Flusher, requestID
 		msgID += "no_request_id"
 	}
 	return &responsesScaffold{
-		w:           w,
-		flusher:     flusher,
-		requestID:   requestID,
-		clientModel: clientModel,
-		respID:      respID,
-		msgID:       msgID,
-		created:     time.Now().Unix(),
-		toolStates:  make(map[int]*responsesToolTerminalState),
+		w:               w,
+		flusher:         flusher,
+		requestID:       requestID,
+		clientModel:     clientModel,
+		respID:          respID,
+		msgID:           msgID,
+		created:         time.Now().Unix(),
+		toolStates:      make(map[int]*responsesToolTerminalState),
+		wireToolIndex:   make(map[int]int),
+		nextWireToolIdx: 1, // 0 belongs to the pre-declared message item
 	}
 
 }
@@ -198,6 +209,29 @@ func responsesDeltaFits(scaffold *responsesScaffold, fullText *strings.Builder, 
 		}
 	}
 	return true
+}
+
+// renumberToolOutputIndexes rewrites chunk.Delta.ToolCalls[i].Index from the
+// upstream tool-call index to the scaffold-assigned Responses output_index.
+// Call it before ANY scaffold state keyed by the index (fit check, hold,
+// toolCallIDs, toolStates) so every emission site — output_item.added,
+// function_call_arguments.delta/.done, output_item.done, the final envelope —
+// agrees on one numbering where tool items never collide with the message
+// item at output_index 0.
+func (s *responsesScaffold) renumberToolOutputIndexes(chunk *ir.StreamChunk) {
+	if s == nil || chunk == nil || chunk.Type != ir.ChunkTypeDelta || chunk.Delta == nil {
+		return
+	}
+	for i := range chunk.Delta.ToolCalls {
+		upstream := chunk.Delta.ToolCalls[i].Index
+		wire, ok := s.wireToolIndex[upstream]
+		if !ok {
+			wire = s.nextWireToolIdx
+			s.nextWireToolIdx++
+			s.wireToolIndex[upstream] = wire
+		}
+		chunk.Delta.ToolCalls[i].Index = wire
+	}
 }
 
 // writeSSEEvent writes a single Responses API SSE event. When pc is
@@ -352,9 +386,15 @@ func (s *responsesScaffold) writeFinalEvents(fullText, finishReason, incompleteR
 			continue
 		}
 		emittedToolItems++
+		// 2026-10-13 (r1023): the output_item.done EVENT's function_call item
+		// must carry the literal status "completed" — the AI-SDK / ZCode client
+		// validates this field with a Zod literal and hard-fails the stream on
+		// any other value (a length-truncated tool call therefore killed the
+		// whole response client-side). Truncation stays observable through the
+		// top-level status + incomplete_details on the final envelope.
 		item := map[string]any{
 			"type": "function_call", "id": state.ID, "call_id": state.ID,
-			"name": state.Name, "arguments": state.Arguments.String(), "status": status,
+			"name": state.Name, "arguments": state.Arguments.String(), "status": "completed",
 		}
 		emit("response.function_call_arguments.done", map[string]any{
 			"type": "response.function_call_arguments.done", "item_id": state.ID,
@@ -618,6 +658,9 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 			return
 		}
 		if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
+			// Anthropic content_block index → Responses output_index BEFORE any
+			// index-keyed scaffold state (see renumberToolOutputIndexes).
+			scaffold.renumberToolOutputIndexes(chunk)
 			if !responsesDeltaFits(scaffold, &fullText, chunk) {
 				conversionOverflow = true
 				return
@@ -1092,6 +1135,9 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 			return
 		}
 		if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
+			// OpenAI tool_calls[].index → Responses output_index BEFORE any
+			// index-keyed scaffold state (see renumberToolOutputIndexes).
+			scaffold.renumberToolOutputIndexes(chunk)
 			if !responsesDeltaFits(scaffold, &fullText, chunk) {
 				conversionOverflow = true
 				return
