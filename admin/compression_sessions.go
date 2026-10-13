@@ -125,6 +125,11 @@ func (h *Handler) handleCompressionSessions(w http.ResponseWriter, r *http.Reque
 	// 数组长度就是原始消息数；v1 时代的 request_body->'messages' 取键不再
 	// 适用。ts 等值配对已按 §5.9 实测口径删除（bodies.ts 是正文写入时间，
 	// 99.85% 不等于轮次时间）。
+	// ⚠ 形状守卫（2605 部署实测抓的缺陷）：request_delta 有四种形态——
+	// array / SQL NULL / **JSON 字面量 null / 其它标量**。JSON null 的 SQL
+	// 值非 NULL，COALESCE 救不了，jsonb_array_length 直接 22023
+	// 「cannot get array length of a scalar」（本地真库 outbound 非空行里
+	// JSON null 有 1,433 行）。必须 jsonb_typeof 判形，非 array 一律记 0。
 	mainSQL := `
 		SELECT
 			s.gw_session_id,
@@ -152,7 +157,9 @@ func (h *Handler) handleCompressionSessions(w http.ResponseWriter, r *http.Reque
 			GROUP BY rl.gw_session_id
 		) s
 		LEFT JOIN LATERAL (
-			SELECT jsonb_array_length(COALESCE(rb2.request_body::jsonb, '[]'::jsonb)) AS orig_msg_count
+			SELECT CASE WHEN jsonb_typeof(rb2.request_body) = 'array'
+			            THEN jsonb_array_length(rb2.request_body)
+			            ELSE 0 END AS orig_msg_count
 			FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl2
 			LEFT JOIN ` + dbpkg.SessionFamilyBodiesSourceSQL() + ` rb2
 			  ON rb2.request_id = rl2.request_id

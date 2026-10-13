@@ -98,10 +98,17 @@ func TestS3Wave4CompressionSessionsTargetsSessionFamily(t *testing.T) {
 		"request_logs_with_current_month",
 		"->'messages'",
 		"rb2.ts = rl2.ts",
+		// ⚠ 形状守卫禁入：裸 jsonb_array_length 对 JSON 字面量 null（SQL 值
+		// 非 NULL，COALESCE 不救）报 22023——2605 部署端点实测抓到的缺陷，
+		// 修复=必须经 jsonb_typeof 判形。
+		"jsonb_array_length(COALESCE(rb2.request_body",
 	} {
 		if strings.Contains(src, forbidden) {
 			t.Errorf("compression_sessions 活代码不得再出现 %q（旧 v1 形态回退）", forbidden)
 		}
+	}
+	if !strings.Contains(src, "jsonb_typeof(rb2.request_body)") {
+		t.Error("compression_sessions 的数组长度必须先 jsonb_typeof 判形（JSON 字面量 null 是标量，裸 jsonb_array_length 报 22023）")
 	}
 }
 

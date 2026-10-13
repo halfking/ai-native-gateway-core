@@ -56,6 +56,16 @@ request_body 即消息数组），`rb2.ts = rl2.ts` ts 等值配对按 §5.9 实
 canonical 投影内（真库验证会话侧有数据：strategy 14 行、msg_count 3,334 行）。
 对拍：48h 窗新旧 count distinct session 均 16,346。
 
+**2605 部署端点实测抓到并修复的形状缺陷（M5）**：request_delta 有四种形态
+——array / SQL NULL / **JSON 字面量 null / 其它标量**。JSON null 的 SQL 值
+非 NULL，`COALESCE` 救不了，裸 `jsonb_array_length` 直接 22023
+「cannot get array length of a scalar」（本地真库 outbound 非空行里 JSON null
+1,433+ 行）。修复：`CASE WHEN jsonb_typeof(rb2.request_body)='array' THEN
+jsonb_array_length(…) ELSE 0 END`，2606 上线后端点 200。判据补「禁裸
+COALESCE 形 + 必须在场 jsonb_typeof 守卫」双钉，变异 M5 红。
+（Go 侧解析器无此问题：`json.Unmarshal("null", &slice)` 返回 nil slice
+不报错，len=0。）
+
 ### 2.4 cmd/scenario_driver/main.go：落库断言改数会话族热表【活缺陷修复】
 
 停写后数 v1 表 delta 恒 0，s22-3/s23-3 永久 FAIL。bodies 计数改
@@ -123,7 +133,13 @@ M4 一处计数退回 request_logs_bodies_hot → 禁入红。（M1 的字面量
   **admin 全绿（含退役门首次转绿）**、bg/db/settings ok、manifest 工具复绿。
   cmd/gateway 的 lite 系列在 CGO_ENABLED=0 下不可运行（既有环境边界）。
 - 真库预验：§一 四象限 + §2.3 对拍 + LATERAL 表达式实测。
-- 变异 M1b/M2/M3/M4 全红在正确断言。
+- 变异 M1b/M2/M3/M4/**M5** 全红在正确断言。
+- **本地部署端点验证（2605→2606，8782）**：
+  - `/api/admin/session-compare`（跨冻结会话 gw_5f34a63f…）：70 turns，
+    冻结前 13/13、**冻结后 57/57 全部有正文**（修复前冻结后恒 0——旧 v1
+    源无这些行），original_msgs 6,406 条解析成功；
+  - `/api/admin/compression/sessions`：200，count 16,427，
+    LATERAL orig_msg_count 有真值（2605 曾 500=§2.3 的 22023，2606 修复）。
 
 ## 七、删表前置清单（DROP request_logs_bodies 之前的剩余工作）
 
