@@ -100,7 +100,7 @@ var requestLogsReadInventory = map[string]int{
 	"admin/provider_models.go":              2,
 	"admin/providers.go":                    1,
 	"admin/quality_correlations.go":         2,
-	"admin/request_trace.go":                6,
+	"admin/request_trace.go":                4,
 	"admin/route_incidents.go":              1,
 	"admin/routing.go":                      1,
 	// 2026-10-05：只 JOIN 不 FROM，此前对本门**完全不可见**（假零）。
@@ -194,31 +194,35 @@ var requestLogsReadInventory = map[string]int{
 	//      （`e387213b3` 把 SQL 抽成 `buildSessionRangeQuery`）之后就一直是 5。
 	//   3. 性质：这是**一次性迁移工具**（§9.256 待拍板项 4），
 	//      S4 停写后应**随 v1 一起退役**，不是要迁的读方。
-	"cmd/tools/validate_sessions_v2/loader.go":        5,
-	"cmd/traffic-replay/main.go":                      1,
-	"db/db.go":                                        3,
-	"db/probe_views_unified.go":                       3,
-	"discovery/discovery.go":                          1,
-	"domains/analysis/optimizer.go":                   3,
-	"domains/analysis/request_summary.go":             1,
+	"cmd/tools/validate_sessions_v2/loader.go": 5,
+	"cmd/traffic-replay/main.go":               1,
+	"db/db.go":                                 2,
+	"db/probe_views_unified.go":                3,
+	"discovery/discovery.go":                   1,
+	"domains/analysis/optimizer.go":            3,
+	// domains/analysis/request_summary.go 于 2026-10-13（S3 波 2 停写切换）
+	// 除名：loadRequestLogs 改读会话族原生源（SessionFamilyTurnsForSessionSQL），
+	// 与 request_logs 族再无任何关系引用——不再是本清单（request_logs 读方）的成员。
 	"domains/attachments/handler.go":                  1,
 	"domains/credentialstate/popularity_tracker.go":   1,
 	"domains/hooks/goal/history_store.go":             2,
-	"domains/hooks/observability/telemetry/client.go": 5,
+	"domains/hooks/observability/telemetry/client.go": 4,
 	"domains/providerprofile/adapters.go":             4,
 	"domains/routeincident/store.go":                  1,
 	"domains/sessionforensics/export.go":              3,
 	"domains/sessionsummary/summarizer.go":            3,
 	"domains/sessionsummary/system_prompt_prefix.go":  1,
 	"domains/streaming/anomaly_harvester.go":          1,
-	"domains/streaming/model_alternatives.go":         1,
-	"internal/collector/gateway_adapters.go":          3,
-	"internal/quality/minute_aggregator.go":           1,
-	"internal/summarystore/store.go":                  2,
-	"internal/trace/trace.go":                         2,
-	"storage/sqlite/request_log_store.go":             2,
-	"tests/session_audit/cmd/audit-test/main.go":      1,
-	"tests/test_popularity_tracker.go":                2,
+	// domains/streaming/model_alternatives.go 于 2026-10-13（S3 波 2 停写切换）
+	// 除名：usage_7d 热面改读会话族原生源（SessionFamilyTurnsSourceSQL），
+	// 同上，不再是 request_logs 读方。
+	"internal/collector/gateway_adapters.go":     3,
+	"internal/quality/minute_aggregator.go":      1,
+	"internal/summarystore/store.go":             1,
+	"internal/trace/trace.go":                    2,
+	"storage/sqlite/request_log_store.go":        2,
+	"tests/session_audit/cmd/audit-test/main.go": 1,
+	"tests/test_popularity_tracker.go":           2,
 }
 
 // TestRequestLogsReadInventoryIsComplete fails when the set of production files
