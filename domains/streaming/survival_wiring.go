@@ -366,6 +366,15 @@ func renderSurvivalTerminal(sw *SerializedStreamWriter, protocol ClientProtocol,
 	}
 	code := "gateway_survival_" + decision.Action.String()
 	message := "gateway request survival ended: " + decision.Reason
+	// P0-2 (2026-10-14): the deadline_exceeded verdict carries a readable
+	// summary (attempts / per-kind histogram / earliest recovery hint) in
+	// TaskDecision.Detail — without it the client only learned that the
+	// survival window ended, never why or for how long it fought. code /
+	// type / reason fields stay byte-identical (clients and dashboards
+	// pattern-match them); only the human message grows.
+	if decision.Detail != "" {
+		message += "; " + decision.Detail
+	}
 	reasonJSON, _ := json.Marshal(message)
 	actionJSON, _ := json.Marshal(code)
 	retryJSON, _ := json.Marshal(retryable)

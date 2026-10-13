@@ -129,7 +129,9 @@ type Config struct {
 	RequestSurvivalDurableEnabled bool `yaml:"request_survival_durable_enabled" env:"LLM_GATEWAY_REQUEST_SURVIVAL_DURABLE_ENABLED"`
 
 	// RequestSurvivalInteractiveDeadlineSeconds: max in-connection wait for
-	// ordinary streaming requests. Default 18000 (5h).
+	// ordinary streaming requests. Default 240 (P0-2, 2026-10-14); valid
+	// range (0, 18000]. Hot-reload override:
+	// settings_kv survival.interactive_deadline_seconds.
 	RequestSurvivalInteractiveDeadlineSeconds int `yaml:"request_survival_interactive_deadline_seconds" env:"LLM_GATEWAY_REQUEST_SURVIVAL_INTERACTIVE_DEADLINE_SECONDS"`
 
 	// RequestSurvivalRetryIntervalSeconds is the ordinary fixed recovery
@@ -371,8 +373,15 @@ func (cfg *Config) IsProduction() bool {
 // alone also enables the in-connection coordinator, which is its Phase 1
 // prerequisite.
 func (cfg *Config) NormalizeRequestSurvival() {
+	// P0-2 (2026-10-14): the interactive wait budget defaults to 240s. The
+	// historical 5h fallback let a wait_recovery loop keep a client hanging
+	// behind 200+keepalive essentially forever (154 incident: p99=889s,
+	// max 85min). Valid range stays (0, 18000]; out-of-range now falls back
+	// to 240 — 18000 remains legal for dedicated long-wait deployments.
+	// settings_kv survival.interactive_deadline_seconds (hot-reload) can
+	// override this per Run without a redeploy.
 	if cfg.RequestSurvivalInteractiveDeadlineSeconds <= 0 || cfg.RequestSurvivalInteractiveDeadlineSeconds > 5*60*60 {
-		cfg.RequestSurvivalInteractiveDeadlineSeconds = 5 * 60 * 60
+		cfg.RequestSurvivalInteractiveDeadlineSeconds = 240
 	}
 	if cfg.RequestSurvivalDurableDeadlineSeconds <= 0 {
 		cfg.RequestSurvivalDurableDeadlineSeconds = 86400
@@ -628,7 +637,7 @@ func Load() *Config {
 		// mutually exclusive with StreamRetryEnabled (startup check).
 		RequestSurvivalEnabled:                    false,
 		RequestSurvivalDurableEnabled:             false,
-		RequestSurvivalInteractiveDeadlineSeconds: 18000,
+		RequestSurvivalInteractiveDeadlineSeconds: 240, // P0-2: 5h → 240s (kill the 5h wait_recovery hang)
 		RequestSurvivalRetryIntervalSeconds:       30,
 		RequestSurvivalNightMaxAttempts:           600,
 		RequestSurvivalNightStartHour:             20,

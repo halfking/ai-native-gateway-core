@@ -859,6 +859,48 @@ func StripStreamOptions(body []byte) []byte {
 	return out
 }
 
+// StripTopLevelJSONFields removes the named top-level keys from a JSON
+// request body (P0-1 paramrefusal, 2026-10-14).
+//
+// Only TOP-LEVEL keys are removed: nested keys of the same name (e.g. a
+// `metadata` object inside a message part) are untouched. Byte-level JSON
+// round-trip via json.RawMessage preserves every other key's value verbatim.
+// No target key present / invalid JSON / empty field list → the original body
+// is returned unchanged (callers diff the result to detect an actual strip).
+//
+// Consumers: the paramrefusal memory legs in
+// domains/streaming/executors/executor_chat.go (native responses choke
+// point, chat-leg pre-send, reactive retry body). This is the general form of
+// StripStreamOptions above — the static one-parameter variant stays (it is
+// load-bearing in three r1026b call sites and reads clearer there).
+func StripTopLevelJSONFields(body []byte, fields []string) []byte {
+	if len(fields) == 0 {
+		return body
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil || obj == nil {
+		return body
+	}
+	removed := false
+	for _, f := range fields {
+		if f == "" {
+			continue
+		}
+		if _, ok := obj[f]; ok {
+			delete(obj, f)
+			removed = true
+		}
+	}
+	if !removed {
+		return body
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
 // chatParamToResponsesWireAdapters 把 chat 线格式的顶层参数适配到
 // Responses 线格式。键 = chat 形态参数名，值 = 目标键路径与语义。
 //

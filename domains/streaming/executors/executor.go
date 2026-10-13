@@ -41,6 +41,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/irconv"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/paramledger"
+	"github.com/kaixuan/llm-gateway-go/internal/paramrefusal"
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	vendorstrip "github.com/kaixuan/llm-gateway-go/internal/vendorstrip"
@@ -568,6 +569,12 @@ type Executor struct {
 	// 重试、native responses→chat 模式回退重试与结果记录（见
 	// reqprobe_integration.go）。nil 时全部行为关闭，仅影响探测特性。
 	RequestProbe *reqprobe.Coordinator
+
+	// ParamRefusal (2026-10-14, P0-1) 可选字段剔除记忆：上游 400/422 指名
+	// 可选参数 → 剔除后同候选重试一次 + (provider, model, wire) 记忆 24h
+	// （进程内，见 internal/paramrefusal）。nil 时回落 Default()（main.go
+	// 无需接线）；测试注入独立实例做隔离。
+	ParamRefusal *paramrefusal.Store
 
 	// ParamLedger (2026-09-22) 参数协商账本：paramguard/reqprobe 的出站
 	// 调整按 request_id 记账，native responses 回程把 reasoning.effort

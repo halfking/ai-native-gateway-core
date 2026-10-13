@@ -31,9 +31,12 @@ func TestApplyBackoffJitterBoundaries(t *testing.T) {
 }
 
 func TestSurvivalOptionsDeadlineDefaultFiveHours(t *testing.T) {
-	// Interactive recovery remains available for up to five hours by default.
+	// P0-2 (2026-10-14): the interactive deadline default is the 240s
+	// bounded budget (the historical 5h hung clients behind keepalives —
+	// 154 incident p99=889s, max 85min). Longer budgets remain available
+	// via config/env or settings_kv survival.interactive_deadline_seconds.
 	opts := SurvivalOptions{}.withDefaults()
-	assert.Equal(t, 5*time.Hour, opts.Deadline)
+	assert.Equal(t, 4*time.Minute, opts.Deadline)
 	// Explicit values still win (env/config override path).
 	opts = SurvivalOptions{Deadline: 42 * time.Minute}.withDefaults()
 	assert.Equal(t, 42*time.Minute, opts.Deadline)

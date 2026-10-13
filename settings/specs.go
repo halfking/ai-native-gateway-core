@@ -70,6 +70,12 @@ func PlatformSpecs() []*Spec {
 	// 2026-09-25: 对账报表每日聚合钟点（reports.daily_rollup.hour，
 	// 默认凌晨 02:00 UTC，HotReload）。
 	out = append(out, ReportRollupSpecs()...)
+	// 2026-10-14: P0-2 交互等待预算分级下调——生存协调器 deadline 的
+	// settings_kv 热加载覆盖（survival.interactive_deadline_seconds）。
+	out = append(out, SurvivalSpecs()...)
+	// 2026-10-14: P0-3 断流原地续问——上游 EOF 无终态标记时同候选
+	// assistant-prefill 续问一次并无缝拼接（survival.stream_continuation_enabled）。
+	out = append(out, StreamContinuationSpecs()...)
 	return out
 }
 
