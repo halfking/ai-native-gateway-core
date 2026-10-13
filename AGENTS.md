@@ -848,10 +848,20 @@ host-first 孤儿网关回收 + 517 形态探测 r2538、mobile UX 第二轮、2
 
 - `TestV1BodiesReadersAreAssessed` 仍故意红：27 文件/39 站点 bodies 读方逐点
   评估是删除 request_logs_bodies 的前置，不是停写前置。
-- `TestReaderPopulationGroundTruth` 红：bg/candidate_failure_monitor.go 未登记
-  （并行会话 3b7180abe/31d466e21 轮引入的读方，pristine HEAD 复跑同红）。
-- 其它 ~35 个 request_logs_hot 直读面（仪表盘/凭据健康/路由分析族）在 v1 行
-  被 promote 排空（8h/7d 窗）后逐窗变空——S3 波 2/3 的分波原生改造范围。
+- ~~`TestReaderPopulationGroundTruth` 红：bg/candidate_failure_monitor.go 未登记~~
+  **已修（2026-10-13 S3 波 2 轮）**：基线 48→49 补记成员资格（档位 ③ 早已在场）。
+- ~~其它 ~35 个 request_logs_hot 直读面~~ **S3 波 2 第一分片已完成（2026-10-13，
+  合并 87da7fade + 04801872b，本地部署 2587 验证通过）**：16 个生产读点按谓词
+  形态分派修复（A 形会话内读→ForSession 助手；B 形→canonical 视图；性能裁决
+  在案→会话族原生源拼接；热表点查→双热腿 UNION），含凭据健康核心
+  recent_success_rate 双热腿化与 routing_analytics_source 视图化（boot 自愈 +
+  陈旧判据，**量具坑：pg_get_viewdef 不内联嵌套视图**，按直接 FROM 引用判）。
+  审计网络全绿（唯一红 = bodies 故意负向闸门），明细见
+  `docs/audit/2026-10-13-s3-wave2-requestlogs-readsource-migration.md`。
+  **剩余**：tenants.go logsTable（R36-A1 性能裁决，需专门分片）、探针面族
+  （观测对象无处落表，属主拍板）、routing.go picker（有 live 腿兜底）、
+  trace_events 结构缺口、auto_index_refresher 名字匹配率核对、
+  data_lifecycle blob 治理会话臂扩展。
 - 视图 session 分支的列投影里 task_type 等列可为 NULL：非空扫描的读方可能
   还有漏网（auto_route 已修一处），发现一处修一处。
 
