@@ -179,8 +179,8 @@ generate_plan() {
 
 | # | 步骤 | 命令 |
 |---|------|------|
-| 8 | 标准部署 | \`./scripts/deploy.sh 252\` |
-| 9 | DB migration | \`./scripts/deploy.sh migrate 252\` |
+| 8 | 标准部署 | \`bash scripts/deploy-252-gateway.sh\` |
+| 9 | DB migration | 随部署脚本自动执行（apply-db-revision-sequence 轨道） |
 | 10 | 健康检查 | `curl http://115.29.212.252:30080/health` |
 | 11 | 部署后验证 | \`./deploy/verify.sh --env 252\` |
 
@@ -188,8 +188,8 @@ generate_plan() {
 
 | # | 步骤 | 命令 |
 |---|------|------|
-| 8b | 主机部署 | \`./scripts/deploy.sh 154\` |
-| 9b | DB migration | \`./scripts/deploy.sh migrate 154\` |
+| 8b | 主机部署 | \`bash scripts/deploy-154.sh\` |
+| 9b | DB migration | 随部署脚本自动执行（seamless 切换前迁移） |
 | 10b | 健康检查 | `curl http://47.97.111.154:8080/health` |
 | 11b | 部署后验证 | \`./deploy/verify.sh --env 154\` |
 

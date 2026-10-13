@@ -31,7 +31,7 @@ fi
 print_step "检查关键脚本权限"
 KEY_SCRIPTS=(
     "scripts/build/build-pipeline.sh"
-    "scripts/deploy/deploy-to-245.sh"
+    "scripts/deploy-245.sh"
     "scripts/upload/upload-to-cloudreve.sh"
     "scripts/install/install.sh"
 )
@@ -84,7 +84,7 @@ rm -rf "$TEST_BUILD_DIR"
 
 # 测试 3.4: 部署脚本dry-run
 print_step "测试部署脚本帮助/语法"
-if bash -n "$PROJECT_ROOT/scripts/deploy/deploy-to-245.sh" 2>/dev/null; then
+if bash -n "$PROJECT_ROOT/scripts/deploy-245.sh" 2>/dev/null; then
     record_test_result "部署脚本语法" "PASS" "0"
 else
     record_test_result "部署脚本语法" "FAIL" "0"

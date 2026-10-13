@@ -126,18 +126,15 @@ systemctl start llm-gateway-go.service
 使用提供的自动化脚本：
 
 ```bash
-./scripts/deploy-to-154-auto.sh
+bash scripts/deploy-154.sh
 ```
 
-脚本功能：
-- ✅ 自动拉取最新代码
-- ✅ 交叉编译后端
-- ✅ 构建前端资源
-- ✅ 自动备份现有部署
-- ✅ 上传并部署
-- ✅ 重启服务
-- ✅ 验证部署结果
-- ✅ 失败时自动回滚
+脚本功能（seamless 蓝绿部署，委托 deploy-seamless.sh）：
+- ✅ 前后端同时构建
+- ✅ 切换前 DB 迁移
+- ✅ 原子符号链接切换（候选 slot 预热 → nginx upstream 切换）
+- ✅ 部署后验证 + db-changelog 登记
+- ✅ 失败时自动回滚（_bluegreen_abort）
 
 ## 环境配置
 
