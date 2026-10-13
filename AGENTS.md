@@ -1350,3 +1350,32 @@ admin 全包绿（负向闸门 bodies 这道已功成身退；bodies 退役门�
   翻转无关；252 侧 netbird/mihomo 链路抖动，留观）。
 - 生产 158 条真损失行仍在 v1 可回填（DROP 前）；154 滴漏虽止，翻转后
   镜像是唯一记录，**write_timeout_ms=5000 需保留**。
+
+---
+
+# 追加：2026-10-14 r1027 —— /v1/models 只列真正可路由的模型
+
+> 用户指令：把「/v1/models 只列出真正有 provider 的模型」做掉。
+> 详见 `docs/audit/2026-10-14-models只列可路由模型-r1027.md`。
+
+1. **根因是两张活度表**：发现端点旧查询读 `model_offers.available`，而故障
+   阶梯只翻 `credential_model_bindings` / `credentials.availability_state /
+   quota_state`——死凭据的模型永远被 advertise。两层缝隙都实测抓到：
+   绑定门之后 grok-4.7 仍在列（五死凭据 67/68/69/70/72 的 binding 挂
+   available=t 且 lifecycle status='active'），补凭据级
+   `availability_state='ready'` + `quota_state != permanently_exhausted`
+   门（healthyCandidateSQL 同款）+ `node_probe_state.consecutive_failures=0`
+   防余额死凭据 binding 抖动闪烁。620 → 139。
+2. **逃生舱**：settings_kv 平台键 `models.list_only_routable`（默认 true，
+   热加载）；置 false 回 model_offers 旧语义。生产实测 138→617→138 往返。
+   判据 `domains/streaming/models_routable_test.go` 四件套；变异红；
+   spec 未注册时 GetPlatformBool 会静默回退默认值——键必须进
+   ModelsSpecs（有钉子）。
+3. 部署：154=2584（8782）、245=2586（8781）。E2E 直连/经 nginx 一致，
+   死模型出局、活模型保留。
+4. **部署量具坑（重要）**：`deploy-*.sh | grep | tail` 管道无 pipefail 时
+   会把构建锁失败吞成「成功」（2582/2583 两次假成功）；部署命令一律
+   `> log 2>&1; rc=$?`。共享构建锁 kx-llm-gateway-build.lock 是全机互斥
+   （本地 deploy-local 与生产 deploy-seamless 互抢），`shared build lock
+   held` = 有别的部署在跑，判 pid 存活后等待。pgxmock 的 Scan 不支持
+   **int 目的标，mock 夹具里可空列给 NULL。
