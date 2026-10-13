@@ -45,6 +45,7 @@
 - 发现链：caller 显式配置 → 主机原生服务（本机 pg18:54318 + redis:6379，含 PATH 注入）→ docker → 自动源码安装（PG17 最新小版本 + pgcolumnar v1.0-alpha4（Citus columnar 独立发行）+ Redis 7.4.2）
 - 密钥在仓库 `.env.local`（gitignored，含 admin 凭据）；缓存=host redis，数据=host pg18
 - 域名：`llm.itestu.cn` → NetBird DNS zone `llm-itestu-zone` A 记录 → 100.106.169.63:8782（本机 peer nb-macmini-29）。**两条入口并存**：mesh 内（NetBird zone，:8782/:8443）+ 公网（公网 DNS → 252 nginx 443 SNI 透传 → 9443 TLS 终结 → mesh 8782）；远端回连已于 2026-10-11 经 252 实测通过（公网证书免 -k 校验通过）。
+- **2026-10-13 增补：mesh 内 `https://llm.itestu.cn`（标准 443）曾断裂**（NetBird 解析到 mesh IP 但 mac 只听 8443 且自签证书）。已修：mac Caddy 加 `:443` 腿，服务**从 252 同步的 LE 公网证书**（`setup-caddy.sh DL_PUBLIC_TLS=1` + 新增 `scripts/sync-public-cert.sh`，mac mini crontab 每日 04:26 拉取变更才 reload）。内外网三路径（mesh 443 / LAN 192.168.31.40:443 / 公网 252 链）全绿，4 模型 API 实测通过；拓扑与坑（手启旧 caddy 无 pidfile 不被 --stop 清、BSD 多进程可共听同端口、macOS 非特权可绑 443）见部署文档 §5.3。
 - **坑（2026-10-11 实测）**：
   - **252 上 mihomo（tun+fake-ip，`dns-hijack any:53`）会劫持 mesh 域名解析**：252 按 `llm.itestu.cn` 访问网关超时而按 IP 正常。已修：`/etc/mihomo/config.yaml` 加 `fake-ip-filter: +.llm.itestu.cn` + `nameserver-policy +.llm.itestu.cn → 100.106.190.139`（252 netbird 解析器），API 热重载。**策略不可放宽到 `+.itestu.cn`**（netbird 上游转发同样被劫持，会弄坏兄弟 vhost）。详见 host-first 部署文档 §5.1。
   - **252 的 netbird 客户端是 podman 容器 `nb-252-host`**（非宿主服务；二进制在镜像里，状态盘 bind-mount 在 `/opt/netbird/openpocket/nb-252-host-state`）。管理用 `netbird-252 status -d`（宿主封装=`podman exec`）；重启 `podman restart nb-252-host` 实测 peer 身份/IP 保留、三链路自愈。代理订阅已从陈旧内联快照改为 efanyun provider（与 mac network-switch 对齐，103 节点全活）。⚠️ 手工改 252 mihomo 组配置按 `^- ` 切块而非 `^- name:`（Auto/Cursor-Direct 首键是 `- interval:`）。
@@ -1109,3 +1110,23 @@ probe body 形状断言）；工作区另有并行会话 r1023 的缩进级遗�
 - 211 Redis 库号 claim 不粘 + UrsmlHealthyKeyReconciler 在 211 容器未起
   （154/245 有 `ursm.v2 healthy-key reconciler started`，211 日志无此行），
   冷启动靠 emergency-repair——两件一起查。
+
+---
+
+# 追加：2026-10-13 r1025 —— Vapeur 复验轮 + 钉扎×fp_slot 预过滤缝隙修复
+
+> 复验 r1024+审计轮（2603）之后的 Vapeur 全量矩阵（10 模型 × T1/T1b/T2，
+> tools+thinking high/medium）。修复 P7：admin 钉扎（r1024 激活）与 fp_slot
+> 预过滤叠加时，钉扎凭据先被预过滤剔除、再被 dispatchRoute 硬 pin 过滤收窄
+> 成 0 候选（未触上游即 503）。修复=预过滤豁免钉扎候选（抽取
+> `Executor.fpPrefilterCandidates`），降级路径交给既有 dispatch Acquire 的
+> no-slot 继续。提交含判据
+> `TestFpPrefilterKeepsPinnedCandidateWhenSlotSaturated`（同层驱动 + 去 pin
+> 反例），变异红在正确断言。部署 2604 后 glm-5.3 全套件复绿。
+> **上游能力登记修正**：claude-haiku-5-5 在 Vapeur 流式两腿持续封锁
+> （chat 腿 400 Operation not allowed / responses 腿 502 不支持流式，直连
+> 证实，非「偶发过载」）；opus 流式正常。非流式不受影响。
+> 详见 `docs/audit/2026-10-13-Vapeur复验轮-r1024后全量矩阵与钉扎fp预过滤修复.md`。
+> 量具坑：部署重启后的候选预热空窗实测可达 **3 分钟**（kimi 15:34→15:37），
+> 批次测试首跑失败先重试再定罪；E2E 批次要带 ≥20s 间隔，上游 429 是节奏问题
+> 不是模型故障（grok/deepseek 重测即绿）。

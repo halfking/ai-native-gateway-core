@@ -64,15 +64,21 @@ func TestSessionBodyPairingKeysMatchTheirCallers(t *testing.T) {
 	// 那条约束在 turns 腿被改接成同源原生源之后反而有害：整条 fallback 路径
 	// 恒返回 0 轮，配对键选哪个都无关紧要（见缺陷 7）。所以它现在钉的是
 	// 拍板后的口径，而不是钉住一个已经失效的历史形状。
+	//
+	// 2026-10-13 S4 停写后：summary 回退路径的 turns 腿是 v1 视图（遗留会话），
+	// bodies 腿必须同源 ⇒ 取数器改为 v1 变体；会话族取数器（无参变体）
+	// 固定读 session_bodies，服务 session_compare 的会话族 turns。两个变体
+	// 都是 request_id 单键——本守卫钉的口径没变，钉的函数名变了。
 	summarySrc := readAdminSource(t, "session_summary_v2.go")
 	if strings.Contains(summarySrc, "querySessionBodiesByRequestIDAndTS(") {
 		t.Error("session_summary_v2.go must pair bodies by request_id; the (request_id, ts) " +
 			"tuple hits 11.2% of the time even against the v1 source, because " +
 			"request_logs_bodies.ts is the body-write time, not the turn time (audit §5.9)")
 	}
-	if !strings.Contains(summarySrc, "querySessionBodiesByRequestID(ctx, api.pool, requestIDs)") {
+	if !strings.Contains(summarySrc, "queryV1BodiesByRequestID(ctx, api.pool, requestIDs)") {
 		t.Error("session_summary_v2.go must fetch bodies with the request_id-keyed batch " +
-			"query; without it the summary runs on structurally empty turn text")
+			"query against the SAME source family as its v1 turns leg; without it the " +
+			"summary runs on structurally empty turn text")
 	}
 }
 
@@ -96,6 +102,7 @@ func TestSessionBodiesBatchSQLIsNotALefiJoin(t *testing.T) {
 	for name, sql := range map[string]string{
 		"byRequestID": sessionBodiesByRequestIDSQL,
 		"byIDAndTS":   sessionBodiesByRequestIDAndTSSQL,
+		"v1ByID":      v1BodiesByRequestIDSQL,
 	} {
 		for _, forbidden := range []string{"LEFT JOIN", "JOIN ", "= ANY("} {
 			if strings.Contains(sql, forbidden) {
@@ -108,9 +115,19 @@ func TestSessionBodiesBatchSQLIsNotALefiJoin(t *testing.T) {
 		if !strings.Contains(sql, "unnest(") {
 			t.Errorf("%s SQL must fetch in bulk through unnest(); got:\n%s", name, sql)
 		}
-		if !strings.Contains(sql, "request_logs_bodies_with_current_month") {
-			t.Errorf("%s SQL must read the bodies view, got:\n%s", name, sql)
-		}
+	}
+	// 取数源判据（2026-10-13 S4）：byRequestID 固定读会话族 hot∪父表——
+	// 判据纪律第 7 条：同构腿用 count==N 而非 Contains，「删一条留一条」
+	// 的静默回退（少一条腿 = 漏读一侧表）必须红。
+	if got := strings.Count(sessionBodiesByRequestIDSQL, "session_bodies"); got != 2 {
+		t.Errorf("byRequestID SQL must read BOTH session family legs (hot ∪ parent), got %d:\n%s", got, sessionBodiesByRequestIDSQL)
+	}
+	// v1 变体与元组变体钉住 v1 视图（随 v1 DROP 退役，届时本判据连同删除）。
+	if !strings.Contains(v1BodiesByRequestIDSQL, "request_logs_bodies_with_current_month") {
+		t.Errorf("v1ByID SQL must read the v1 bodies view, got:\n%s", v1BodiesByRequestIDSQL)
+	}
+	if !strings.Contains(sessionBodiesByRequestIDAndTSSQL, "request_logs_bodies_with_current_month") {
+		t.Errorf("byIDAndTS SQL must read the v1 bodies view, got:\n%s", sessionBodiesByRequestIDAndTSSQL)
 	}
 	// Two array/batch parameters maximum — an unbounded turn count must not be
 	// able to blow the 65535 parameter ceiling.
