@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -629,5 +630,89 @@ VALUES ($1,$1,$2,'active',NOW(),NOW(),NOW(),$3)`, ctKey, ctTenant, ctApp); err !
 		t.Errorf("statement_timeout leaked onto the connection after rollback: %q (was %q) — "+
 			"set_config's third argument must be true, or the raised budget outlives the batch",
 			after, before)
+	}
+}
+
+// TestBackfillBatchPlanHasNoParallelWorkers_RealDB（2026-10-13 252 审计轮）
+// 钉住 backfill 批的计划形态：在 backfillBatchTuningSQL 生效的事务里，
+// targets 选择查询的计划**不得含并行节点**。
+//
+// 为什么：本查询 72h pss 窗口 439 次 × mean 23.1s（252 生产），计划是
+// Gather Merge + 2 并行 worker——每 10 分钟 tick 分配一次 DSM 段，是 DSM
+// attach 失败复发（10-12 起）的需求侧来源之一；~1.7 万行 pkey probe 单线程
+// 足够。本测试只做 EXPLAIN（纯计划、零执行），不需要 fixture/scratch 守卫。
+//
+// 对照腿（不施调优应见 Gather）在本库表过小、不满足并行阈值时会空洞——
+// 此时 SKIP 并注明要在 252 生产规模复跑，不做假绿。
+func TestBackfillBatchPlanHasNoParallelWorkers_RealDB(t *testing.T) {
+	dsn := r33TestDSN(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Skipf("connect real db: %v", err)
+	}
+	defer conn.Close(ctx)
+
+	var exists bool
+	if err := conn.QueryRow(ctx,
+		`SELECT to_regclass('public.session_summaries') IS NOT NULL`).Scan(&exists); err != nil {
+		t.Fatalf("probe session_summaries: %v", err)
+	}
+	if !exists {
+		t.Skip("table session_summaries missing; scratch db not provisioned with 547/655 shape")
+	}
+
+	explainPlan := func(tuned bool) string {
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer tx.Rollback(ctx) //nolint:errcheck // EXPLAIN only, nothing to keep
+		if tuned {
+			if _, err := tx.Exec(ctx, backfillBatchTuningSQL,
+				fmt.Sprintf("%ds", batchTimeoutSec)); err != nil {
+				t.Fatalf("apply batch tuning: %v", err)
+			}
+		}
+		sql := strings.Replace(sessionProjectBackfillSQL, "$1",
+			fmt.Sprint(projectBackfillBatchSize), 1)
+		rows, err := tx.Query(ctx, "EXPLAIN (FORMAT JSON) "+sql)
+		if err != nil {
+			t.Fatalf("explain (tuned=%v): %v", tuned, err)
+		}
+		defer rows.Close()
+		var plan string
+		for rows.Next() {
+			var one string
+			if err := rows.Scan(&one); err != nil {
+				t.Fatalf("scan explain row: %v", err)
+			}
+			plan += one
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("explain rows: %v", err)
+		}
+		return plan
+	}
+
+	hasParallel := func(plan string) bool {
+		return strings.Contains(plan, `"Gather`) ||
+			strings.Contains(plan, `"Workers Planned": 1`) ||
+			strings.Contains(plan, `"Workers Planned": 2`) ||
+			strings.Contains(plan, `"Workers Planned": 3`) ||
+			strings.Contains(plan, `"Workers Planned": 4`)
+	}
+
+	if p := explainPlan(true); hasParallel(p) {
+		t.Errorf("调优后计划仍含并行节点——max_parallel_workers_per_gather=0 未生效，"+
+			"DSM 需求侧来源回归（每 10min tick 分配 DSM 段）。\n计划片段: %.800s", p)
+	}
+
+	plain := explainPlan(false)
+	if !hasParallel(plain) {
+		t.Skip("未调优计划在本库无并行节点（并行阈值未满足）——对照腿空洞，" +
+			"本环境断言无效；需在 252 生产规模复跑（其生产计划实测为 Gather Merge + 2 worker）")
 	}
 }

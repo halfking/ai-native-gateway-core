@@ -55,6 +55,13 @@ const (
 	batchTimeoutSec = 120
 )
 
+// backfillBatchTuningSQL 是每批事务开头的会话级调优（SET LOCAL 等价物）：
+// 抬高 statement_timeout + 关闭本批的并行 worker。worker 与真库计划断言
+// （project_backfill_worker_realdb_test.go TestBackfillBatchPlanHasNoParallel
+// Workers_RealDB）共用同一常量，保证「测的就是跑的」；静态钉子在
+// project_backfill_worker_test.go（改掉任何一半都会红）。
+const backfillBatchTuningSQL = `SELECT set_config('statement_timeout', $1, true), set_config('max_parallel_workers_per_gather', '0', true)`
+
 // sessionProjectBackfillSQL — one batch: pick NULL-project rows joinable to
 // session_dim, run the shared sync function per row inside a single
 // statement. ORDER BY session_key keeps batch boundaries deterministic.
@@ -193,7 +200,17 @@ func (w *SessionProjectBackfillWorker) BackfillOnce(ctx context.Context) (int64,
 		// PG 的 SET 语句**不接受参数**（`SET LOCAL x = $1` 直接语法错，实测
 		// SQLSTATE 42601，由 TestBackfillBatchRaisesStatementTimeoutAbove…_RealDB
 		// 抓出来）。set_config(…, true) 是 SET LOCAL 的参数化等价物。
-		if _, err := tx.Exec(ctx, `SELECT set_config('statement_timeout', $1, true)`,
+		//
+		// ★ 2026-10-13 252 审计轮：同时关掉本批的并行 worker
+		// （max_parallel_workers_per_gather=0）。targets 选择谓词的计划是
+		// Gather Merge + 2 并行 worker（252 实测 EXPLAIN），意味着**每 10 分钟
+		// tick 都要分配一次 DSM 段**——本库 10-12 起 DSM attach 失败复发
+		// （72h pss 窗口本查询 439 次 × mean 23.1s，与 DSM 失败时段吻合），
+		// 这是继 auto-cool hot 化（514a273e0）之后消掉的第二个并行需求侧
+		// 来源。窗口内 ~1.7 万行的 pkey probe（~6.5 万 buffers）单线程足够，
+		// 并行收益抵不过 DSM 分配开销与失败面上的不确定性。
+		// 真库计划断言：TestBackfillBatchPlanHasNoParallelWorkers_RealDB。
+		if _, err := tx.Exec(ctx, backfillBatchTuningSQL,
 			fmt.Sprintf("%ds", batchTimeoutSec)); err != nil {
 			tx.Rollback(ctx) //nolint:errcheck // best-effort
 			slog.Error("session project backfill: batch timeout setup failed",
