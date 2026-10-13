@@ -544,10 +544,10 @@ func recordDeclaredToolNames(root map[string]any, names *map[string]string) {
 			}
 		}
 	}
-	// responses：output_item.added / output_item.done 的 function_call 名字。
-	// 增量帧的 lane 是 responses.<item_id>.<output_index>.arguments；声明帧
-	// 的 item.id 与增量帧的 item_id 在标准协议里同值，两个都记（不同也无害，
-	// 查不到就退回裸标签 fail-closed）。
+	// responses：output_item.added / output_item.done / function_call_arguments.done
+	// 的 function_call 名字。增量帧的 lane 是 responses.<item_id>.<output_index>.
+	// .arguments；声明帧的 item.id 与增量帧的 item_id 在标准协议里同值，两个都记
+	//（不同也无害，查不到就退回裸标签 fail-closed）。
 	if typ == "response.output_item.added" || typ == "response.output_item.done" {
 		item, ok := root["item"].(map[string]any)
 		if !ok {
@@ -567,6 +567,14 @@ func recordDeclaredToolNames(root map[string]any, names *map[string]string) {
 			}
 			record(fmt.Sprintf("responses.%s.%s.arguments", declaredID, outputIndex), name)
 			record(fmt.Sprintf("responses.%s.%s.arguments", itemID, outputIndex), name)
+		}
+	}
+	// r1020：done 快照自带 item_id + name，是最可靠的名字声明点——即便
+	// added 帧因故没经过守卫（被上游 holder 批量释放等），这里也能补记。
+	if typ == "response.function_call_arguments.done" {
+		if name, _ := root["name"].(string); name != "" {
+			record(fmt.Sprintf("responses.%s.%s.arguments",
+				streamLaneComponent(root, "item_id", 0), streamLaneComponent(root, "output_index", 0)), name)
 		}
 	}
 }
