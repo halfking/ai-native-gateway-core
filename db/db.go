@@ -4210,6 +4210,16 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 					-- matching negative checks in the fast-path gate above).
 					AND POSITION('refreshed_at' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_7d'), true), '')) = 0
 					AND POSITION('refreshed_at' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_audit_summary_7d'), true), '')) = 0
+					-- S3 波 2（2026-10-13 停写切换）：source 重建体的 FROM 直接
+					-- 引用 canonical 视图；pre-S3波2 旧体 FROM 的是
+					-- request_logs_hot / request_logs 底表。⚠ 量具注意：
+					-- pg_get_viewdef **不内联**嵌套视图（实测本库），重建体的
+					-- 定义里只有 request_logs_with_current_month 这个关系名、
+					-- 不会出现 session_turns——按直接 FROM 引用判，别按展开体判。
+					-- 缺该引用 = 本轮视图化未应用 ⇒ 判陈旧走下方 CASCADE 重建
+					-- 路径（一次性代价：两只 MV 随依赖摘除后按新 source 重建，
+					-- refresh 机制回填，与 837 迁移同形）。
+					AND POSITION('request_logs_with_current_month' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0
 				)
 				WHEN to_regclass('public.routing_analytics_7d') IS NOT NULL
 				  OR to_regclass('public.routing_audit_summary_7d') IS NOT NULL
