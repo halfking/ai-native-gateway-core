@@ -1051,6 +1051,42 @@ func SessionFamilyBodiesSourceSQL() string {
 var sessionBodiesSourceProjection = "sb.request_id, sb.request_delta AS request_body, " +
 	"sb.response_delta AS response_body, sb.outbound_body"
 
+// SessionBodiesHasOutboundPredicate returns "this turn really carried an
+// outbound body" for a column alias fed by SessionFamilyBodiesSourceSQL.
+//
+// # 为什么不能只写 `outbound_body IS NOT NULL`（真库实测，2026-10-14）
+//
+// 会话族与 v1 对「没有这个正文」用了**两种不同的表达**：
+//
+//	v1 `request_logs_bodies*`	无正文 = SQL NULL（实测 outbound_body /
+//	                             request_body 的 jsonb-null 各 **0** 行）
+//	会话族 `session_bodies*`	    无正文 = jsonb `null`（实测 outbound_body
+//	                             11,420 行、request_delta 1,882 行，
+//	                             **SQL NULL 各 0 行**）
+//
+// ⇒ 对会话族写 `IS NOT NULL` 是**恒真**：20,643 行里 20,643 行通过，
+// 判据等于没写。而它的后果不是"少算"，是**多算**——实测同一张压缩统计表
+// （2026-10-12）v1 口径 5,405、会话族 `IS NOT NULL` 口径 9,129（**多 69%**），
+// 而多出来的那些轮次在 turns 行里 `outbound_msg_count` 是 NULL，
+// 独立证人否定了它们。
+//
+// # 加上 `<> 'null'::jsonb` 之后才是等价替换（同一张表实测）
+//
+//	v1 口径				5,405
+//	会话族忠实口径			4,204
+//	并集（跨族 OR）			**5,405** ← 与 v1 逐字相同
+//	（会话族 0 行是 v1 没有的；v1 多出的 1,201 行是 jsonb-null 行）
+//
+// ⇒ 跨族 OR 在**停写前的历史日**上逐字复现 v1 基线，同时补回停写后的流量。
+// 这正是"确保数据在更改前后一致"能被验证的形态：不是"新数看起来差不多"，
+// 是历史日的数字**完全相等**。
+//
+// ⚠ 同一条陷阱适用于 `request_body`（投影名 request_delta）：会话族的
+// "无请求体"同样是 jsonb null，用 `IS NOT NULL` 会把 1,892 行算成有正文。
+func SessionBodiesHasOutboundPredicate(alias string) string {
+	return alias + `.outbound_body IS NOT NULL AND ` + alias + `.outbound_body <> 'null'::jsonb`
+}
+
 // SessionBodiesSourceSQL returns the aliased bodies FROM-source for **any
 // package**, gated by the shared read-side switch.
 //

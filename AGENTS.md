@@ -1204,3 +1204,92 @@ JOIN，跨族 EXISTS 新增 1 条 v1 字面量，LATERAL 保留 1 条 v1 腿服�
 `go build` / `go vet` rc=0，改动文件 `gofmt -l` 零输出；`admin` 包唯一红 =
 `TestV1BodiesReadersAreAssessed`（**故意红的负向闸门**）。分类表两道门、
 静默档计数门、读库存门、本片 4 条形状判据全绿。
+
+---
+
+# 追加：2026-10-14 S3 波 4 第二片 —— 存储治理面 bodies 读源 + jsonb-null 系统性差异
+
+> 承接同日第一片（压缩会话页停写盲区）。本片处理第一片盘点出的 C 类站点中
+> 的两族：`admin/data_lifecycle*` + `admin/quality_correlations.go`。
+> 明细见 `docs/audit/2026-10-14-s3-wave4-lifecycle-governance-and-jsonbnull.md`。
+
+## ★★ 本轮最重要的发现（会影响任何"把 v1 判据照抄到会话族"的改动）
+
+**会话族与 v1 对「这一列没有正文」用了两种不同的表达**：v1 用 SQL `NULL`，
+会话族用 jsonb `null`。真库实测（2026-10-14）：
+
+| 列 | v1 SQL NULL | v1 jsonb null | 会话族 SQL NULL | 会话族 jsonb null |
+|---|---:|---:|---:|---:|
+| `outbound_body` | 28,430 | **0** | **0** | **11,420** |
+| `request_body`/`request_delta` | 36 | **0** | **0** | **1,882** |
+
+⇒ 对会话族写 `IS NOT NULL` 是**恒真**（20,643/20,643 行通过），判据等于没写。
+后果不是少算而是**多算**：存储增长趋势的 `compressed` 会等于当天全部 turn 数
+（实测 993 vs 真实 250）。多出来的那部分被独立证据否证——2026-10-12 的
+`session_only` 4,285 行里，turn 行 `outbound_msg_count` 非空占比 **0.0%**
+（而 `v1_only` 561 行是 97.0%）。
+
+**会话族没有任何列能表达这个信号**：`compression_strategy`/`tokens_saved`/
+`meta` 全表恒非空、`compression_applied` 恒 false、`details.outbound_msg_count`
+是 v1 的**真子集**（3,067 ⊂ 5,405）。
+
+⇒ 新增 `db.SessionBodiesHasOutboundPredicate(alias)`（`IS NOT NULL` **且**
+`<> 'null'::jsonb`），三处消费点统一走它：compression_sessions 顶层谓词 /
+其 LATERAL 会话腿 / data_lifecycle 带租户那支。
+
+## 「确保数据在更改前后一致」的可验证形态
+
+忠实判据下，跨族 OR 谓词在**停写前的历史日逐字复现 v1 基线**：
+
+- 2026-10-12（纯停写前）：v1 5,405 / 会话族 4,204 / **并集 5,405**，
+  且会话族独有 **0** 行（v1 独有 1,201）。
+- 2026-10-13（跨冻结点）：v1 段 **1,671 = 老口径全天值**，会话段 3,552，
+  合计 5,223。
+
+切分用 `db.V1FreezeCutoffSQL` 而不是只靠 `COUNT(DISTINCT request_id)`：
+后者能消双生，消不掉**跨午夜的日桶分裂**（镜像两侧 ts 差 ~15s）。
+
+## 逐点处置
+
+- **data_lifecycle.go**（趋势 `compressed`，修复前低报 68%：7,076 → 21,431）：
+  无租户那支改跨族 + 冻结点切分；带租户那支改**跨族 EXISTS**（存在性问题，
+  天然免疫 11,711 个双生）。★ **v1 那一腿保持裸 `IS NOT NULL`**——v1 的
+  jsonb-null 实测 0 行，加排除反而会少算那 1,201 行、并集就不再等于 v1。
+- **data_lifecycle_blobs.go**（清理预览修复前少报 86 MB 可释放字节）：
+  要 `pg_column_size` 列值 ⇒ 必须 JOIN ⇒ 撞双生 ⇒ `DISTINCT ON (request_id)`
+  收敛，三段排序键（先挑有 outbound → 再挑有 request → 再挑会话副本）。
+  **字节数与行数故意用不同判据**：字节数回答"省多少空间"（jsonb null 占 4
+  字节、置 NULL 确实省），行数回答"多少行正文会变 NULL"（jsonb null 本就已是
+  NULL，算进去与 v1 口径不等价）。预览：`43,577 / 10,886 / 101,454,339`
+  （老口径 `35,470 / 7,076 / 13,922,642`）。
+- **quality_correlations.go**：删掉 `LEFT JOIN request_logs_bodies rb`——
+  **投影里一个 rb 列都没用**（当前分桶是语言维度，正则读 `request_preview`），
+  上方 Ticket #11 的注释已过期、JOIN 成了孤儿。★ **纯死读点没有"退役后由什么
+  替代"可写，删掉本身就是评估结论**。等价性实测：7 天窗全部桶逐行对撞
+  （en 22,951 / zh 835）两侧**逐字相同**。本文件真正的停写失效源是
+  `FROM request_logs` 裸母表 + `is_auto_request`（探针面族，不迁，主拍板）。
+
+## 判据纪律增量（第 11 条）
+
+**判据要钉在「消费方实际发出的那一句」上，不是它依赖的那个源。**
+M5 实测：判据钉"字节源投影了 `has_request_body`"，把**预览的 FILTER**改回
+`request_body_bytes IS NOT NULL` 判据依然全绿——投影还在，只是没人用它。
+⇒ 这是第 9 条（钉性质不钉拼写）的新变体：**钉错了层**。为此把
+`dataLifecycleTrendSQL` 与 `dataLifecycleBlobCleanupPreviewSQL` 两条 SQL 的
+组合从 handler 提到包级。
+
+另两条本轮实证：
+- **M6「只让两条腿里一条说谎」仍是假绿**（与第一片"删一条腿"同镜像）：
+  `count(...) == 0` 不够，必须 `count == 2`。
+- **变异驱动必须区分 build failed 与断言失败**：第一轮 M1 的变异拼出的 Go
+  非法，测试报 `[build failed]`，脚本把它记成"变红"——那是**变异无效、
+  判据未被检验**。后续 6 条均已确认是断言失败。
+
+变异 6/6 全红、还原后全绿。`admin` 包唯一红 =
+`TestV1BodiesReadersAreAssessed`（故意红的负向闸门，总体
+27 文件/39 处 → **26 文件/36 处**；`quality_correlations.go` 已退出总体）。
+
+⚠ 量具登记：`data_lifecycle_blobs.go` 的字面量计数从 2 降到 1 —— 它现在
+"引用"字节源两处但**文本上只有 var 定义那一行**是字面量。这是 §9.230
+「扫描器按字面量行扫、看不见拼接点」那个盲点的又一次现身；文件仍在总体内
+（靠 var 定义那行），但计数不再等于消费点数，改它时别把这个数当覆盖面用。

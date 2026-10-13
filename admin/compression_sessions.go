@@ -46,7 +46,7 @@ import (
 var compressionOutboundBodyPredicate = `(EXISTS (SELECT 1 FROM request_logs_bodies_with_current_month v
 		      WHERE v.request_id = rl.request_id AND v.outbound_body IS NOT NULL)
 		 OR EXISTS (SELECT 1 FROM ` + dbpkg.SessionFamilyBodiesSourceSQL() + ` sb
-		      WHERE sb.request_id = rl.request_id AND sb.outbound_body IS NOT NULL))`
+		      WHERE sb.request_id = rl.request_id AND ` + dbpkg.SessionBodiesHasOutboundPredicate("sb") + `))`
 
 // compressionLatestOrigMsgsLATERAL 取该会话「最后一轮带出站正文」的原始消息数。
 //
@@ -86,7 +86,7 @@ var compressionLatestOrigMsgsLATERAL = `
 				SELECT session_id, ts, outbound_body, request_delta FROM public.session_bodies
 			  ) sb
 			 WHERE sb.session_id = s.gw_session_id
-			   AND sb.outbound_body IS NOT NULL
+			   AND ` + dbpkg.SessionBodiesHasOutboundPredicate("sb") + `
 		  ) c
 		 ORDER BY c.ts DESC, (c.request_body IS NOT NULL) DESC, c.fam DESC
 		 LIMIT 1`

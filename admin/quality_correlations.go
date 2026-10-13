@@ -214,10 +214,28 @@ func buildBreakdownQuery(by string) (string, error) {
 		return "", nil // unreachable: caller already validated
 	}
 
-	// 2026-07-21 Ticket #11: Modified to use LEFT JOIN with request_logs_bodies
-	// to access JSONB fields in request_body (moved to separate table in #10).
-	// This affects "tools", "images", and "code_block" dimensions which need
-	// to read the full request_body JSONB structure.
+	// ⚠ 2026-10-14（S3 波 4 bodies 逐点评估）删掉 `LEFT JOIN request_logs_bodies
+	// rb ON rb.request_id = rl.request_id`，并删掉上方那段"2026-07-21 Ticket #11
+	// 为了读 request_body 的 JSONB 结构而加 JOIN"的注释。
+	//
+	// **注释是过期的，JOIN 是它留下的孤儿**：当前这条查询的分桶是**语言维度**
+	// （`request_preview ~ '[一-鿿]'` 那一串正则，见 bucketExpr），投影里
+	// `COUNT/AVG(rl.*)` 也一个 rb 列都没用 ⇒ 该 JOIN 不参与任何计算。
+	// Ticket #11 当年服务的是 tools / images / code_block 维度，那些维度后来
+	// 换掉了，JOIN 没人删。
+	//
+	// 为什么现在删而不是登记：它是 v1 bodies 读方总体里的一处**纯字面量死读点**，
+	// 而 v1 bodies 的退役前置是逐点评估（TestV1BodiesReadersAreAssessed）——
+	// 一个什么都不做的读点没有"退役后由什么替代"可写，删掉才是评估结论本身。
+	//
+	// 等价性是实测的（本地库 2026-10-14，7 天窗全部桶逐行对撞）：
+	// 带 JOIN / 不带 JOIN 两侧逐字相同 ——
+	// en  22,951 行 success_rate 0.500501 avg_latency 4841 avg_cost 0.00000000
+	// zh     835 行 success_rate 0.947305 avg_latency 3163 avg_cost 0.00000000
+	//
+	// ⚠ 本文件真正的停写失效源**不是**这个 JOIN，而是 `FROM request_logs`
+	// 裸母表 + `is_auto_request = TRUE`：auto/探针流量按设计不进会话族，
+	// 属 S3 波 2 已登记的「探针面族」（不迁，主拍板项）。
 	return `
 		SELECT ` + bucketExpr + ` AS bucket,
 		       COUNT(*) AS samples,
@@ -226,8 +244,6 @@ func buildBreakdownQuery(by string) (string, error) {
 		       AVG(rl.quality_score) AS avg_quality,
 		       COALESCE(AVG(rl.cost_usd), 0) AS avg_cost
 		FROM request_logs rl
-		LEFT JOIN request_logs_bodies rb 
-		  ON rb.request_id = rl.request_id
 		WHERE rl.is_auto_request = TRUE
 		  AND rl.ts >= NOW() - INTERVAL '1 day' * $1
 		GROUP BY 1
