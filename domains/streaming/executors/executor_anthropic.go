@@ -1344,17 +1344,17 @@ func (e *Executor) executeAnthropicOnce(
 		outcome := ae.StreamResponse(streamReaderContext(params, resp), responseSink(params), resp)
 		if outcome.Interrupted && (outcome.Reason == "client_cancel" || outcome.Kind == errorsx.KindCanceled) {
 			return &ExecuteResult{
-				Response:    resp,
-				Candidate:   cand,
-				LatencyMs:   latencyMs,
-				RequestBody: append([]byte(nil), bodyBytes...),
-				InboundBody: sourceBody,
-			}, &streamInterruptedError{
-				reason:       outcome.Reason,
-				credentialID: cand.CredentialID,
-				resumable:    false,
-				kind:         errorsx.KindCanceled,
-			}
+					Response:    resp,
+					Candidate:   cand,
+					LatencyMs:   latencyMs,
+					RequestBody: append([]byte(nil), bodyBytes...),
+					InboundBody: sourceBody,
+				}, &streamInterruptedError{
+					reason:       outcome.Reason,
+					credentialID: cand.CredentialID,
+					resumable:    false,
+					kind:         errorsx.KindCanceled,
+				}
 		}
 		if outcome.Interrupted {
 			streamKind := outcome.Kind

@@ -24,14 +24,14 @@ func TestSerializeOllama_AllPrivateFieldsPassthrough(t *testing.T) {
 			{Role: "user", Content: []ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 		Extensions: map[string]json.RawMessage{
-			"ollama.format":             jsonRaw(`"json"`),
-			"ollama.keep_alive":         jsonRaw(`"5m"`),
-			"ollama.raw":                jsonRaw(`true`),
-			"ollama.options.num_ctx":    jsonRaw(`4096`),
-			"ollama.options.num_gpu":    jsonRaw(`1`),
-			"ollama.options.mirostat":   jsonRaw(`0`),
+			"ollama.format":               jsonRaw(`"json"`),
+			"ollama.keep_alive":           jsonRaw(`"5m"`),
+			"ollama.raw":                  jsonRaw(`true`),
+			"ollama.options.num_ctx":      jsonRaw(`4096`),
+			"ollama.options.num_gpu":      jsonRaw(`1`),
+			"ollama.options.mirostat":     jsonRaw(`0`),
 			"ollama.options.mirostat_eta": jsonRaw(`0.1`),
-			"ollama.options.tfs_z":      jsonRaw(`1.0`),
+			"ollama.options.tfs_z":        jsonRaw(`1.0`),
 		},
 	}
 	body, err := SerializeOllama(req)
@@ -58,15 +58,15 @@ func TestSerializeOllama_AllPrivateFieldsPassthrough(t *testing.T) {
 		t.Fatalf("options missing or not object: %v", got["options"])
 	}
 	wantOpts := map[string]any{
-		"temperature":    0.7,
-		"top_k":          float64(40),
-		"num_predict":    float64(512),
-		"stop":           []any{"\n"},
-		"num_ctx":        float64(4096),
-		"num_gpu":        float64(1),
-		"mirostat":       float64(0),
-		"mirostat_eta":   0.1,
-		"tfs_z":          1.0,
+		"temperature":  0.7,
+		"top_k":        float64(40),
+		"num_predict":  float64(512),
+		"stop":         []any{"\n"},
+		"num_ctx":      float64(4096),
+		"num_gpu":      float64(1),
+		"mirostat":     float64(0),
+		"mirostat_eta": 0.1,
+		"tfs_z":        1.0,
 	}
 	for k, want := range wantOpts {
 		if !reflect.DeepEqual(opts[k], want) {

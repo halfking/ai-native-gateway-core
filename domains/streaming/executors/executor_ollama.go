@@ -1236,18 +1236,18 @@ func (e *Executor) executeOllama(
 				"chunk_count", outcome.ChunkCount,
 			)
 			return applyPreTrimTelemetry(&ExecuteResult{
-				Response:       resp,
-				Candidate:      cand,
-				LatencyMs:      latencyMs,
-				RequestBody:    append([]byte(nil), bodyBytes...),
-				InboundBody:    originalBody,
-				RoutingTracker: params.RoutingTracker,
-			}), &streamInterruptedError{
-				reason:       outcome.Reason,
-				credentialID: cand.CredentialID,
-				resumable:    false,
-				kind:         errorsx.KindCanceled,
-			}
+					Response:       resp,
+					Candidate:      cand,
+					LatencyMs:      latencyMs,
+					RequestBody:    append([]byte(nil), bodyBytes...),
+					InboundBody:    originalBody,
+					RoutingTracker: params.RoutingTracker,
+				}), &streamInterruptedError{
+					reason:       outcome.Reason,
+					credentialID: cand.CredentialID,
+					resumable:    false,
+					kind:         errorsx.KindCanceled,
+				}
 		}
 		if outcome.Interrupted {
 			streamKind := outcome.Kind
@@ -1274,19 +1274,19 @@ func (e *Executor) executeOllama(
 				e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, streamKind, cand.BillingMode)
 			}
 			return applyPreTrimTelemetry(&ExecuteResult{
-				Response:       resp,
-				Candidate:      cand,
-				LatencyMs:      latencyMs,
-				RequestBody:    append([]byte(nil), bodyBytes...),
-				InboundBody:    originalBody,
-				RoutingTracker: params.RoutingTracker,
-			}), &streamInterruptedError{
-				reason:           outcome.Reason,
-				credentialID:     cand.CredentialID,
-				resumable:        isResumable,
-				kind:             streamKind,
-				terminalRendered: outcome.TerminalRendered,
-			}
+					Response:       resp,
+					Candidate:      cand,
+					LatencyMs:      latencyMs,
+					RequestBody:    append([]byte(nil), bodyBytes...),
+					InboundBody:    originalBody,
+					RoutingTracker: params.RoutingTracker,
+				}), &streamInterruptedError{
+					reason:           outcome.Reason,
+					credentialID:     cand.CredentialID,
+					resumable:        isResumable,
+					kind:             streamKind,
+					terminalRendered: outcome.TerminalRendered,
+				}
 		}
 		e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
 		return applyPreTrimTelemetry(&ExecuteResult{
