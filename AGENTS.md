@@ -1624,3 +1624,17 @@ streaming 全包 150s 绿。154 终验：拦截请求三件套全绿（终态带
 > session-audit/export rows 闭包内消费——旧形态连接带未关闭 rows 归还池
 > 即 conn busy），随 2626 部署验证全 200。**登记**：domain/ 手动迁移语料
 > （如 032 触发器体）仍指旧表名，860 后重放需同族改名清扫（下轮）。
+---
+
+# 追加：2026-10-14 供应商返回自动调策审计 + 「网关智能体」必要性裁决
+
+> 审计 r1020→r1028 八轮修复后确认：供应商返回→自动调策→记录复用链已由
+> 五层确定性引擎闭环（L0 paramguard/reasoncap → L1 paramreg/线格式适配 →
+> L2 errorsx 分类 → L3 reqprobe 反应+24h 学习 → L4 action_policy），
+> **热路径 LLM 智能体裁决为无必要**（+秒级延迟/计费/不可判据化 vs 毫秒级
+> 零成本全链判据化）；智能体正确位置=对格式错误表 upstream_error 桶做
+> **离线**模式挖掘（登记待 owner）。活网关实测：grok+thinking+enable_thinking
+> 一次 200（`applying learned param strips` 前置剥参实证），格式错误表
+> 32 条、#32 gpt-6.1-sol mode_mismatch 4/4 recovered（r1027 方向甄别活证据）。
+> 详见 `docs/audit/2026-10-14-供应商返回自动调策审计与网关智能体裁决.md`。
+> 注意：宽容上游（glm 收未知参数）不触发反应层是零成本正路，勿当缺陷。
