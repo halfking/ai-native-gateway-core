@@ -89,7 +89,7 @@ var requestLogsReadInventory = map[string]int{
 	"admin/data_lifecycle_metrics.go":       1,
 	"admin/diagnostics_credential.go":       1,
 	"admin/live_stream_sse.go":              2,
-	"admin/logs.go":                         5,
+	"admin/logs.go":                         4,
 	"admin/logs_summary.go":                 2,
 	"admin/memora_handlers.go":              4,
 	"admin/model_routing_diagnostic.go":     1,

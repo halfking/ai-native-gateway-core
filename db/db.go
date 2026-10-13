@@ -3958,6 +3958,16 @@ const routingAnalyticsMVSQL = `
 		-- CREATE OR REPLACE (not DROP+CREATE): the routing matviews depend on
 		-- this view, so a plain DROP fails with SQLSTATE 2BP01 whenever this
 		-- batch runs on the index-repair path (views current, ukey missing).
+		-- 2026-10-13 S3 波 2（停写切换）：源从 request_logs_hot UNION ALL
+		-- request_logs 换成 canonical 视图 request_logs_with_current_month。
+		-- 停写后新流量只落 session_turns(_hot)，裸 v1 双腿会让整套自动路由
+		-- 分析（matrix/flow/funnel 端点与 7d 物化视图）随热窗排空静默归零。
+		-- 15 列全部在 118 列契约内、列名/类型/次序与旧体逐位一致（CREATE
+		-- OR REPLACE 的列契约；auto_profile 仍居末位）。会话臂的
+		-- provider_id/auto_profile/client_model 依赖 734 details 特征层，
+		-- 覆盖率随 details 行走（已登记）；work_type 会话侧近乎恒空，
+		-- effective_work_type 维度对停写后流量退化为 unknown（既有口径）。
+		-- ⚠️ 注释里**不许出现反引号**：本段 SQL 在 Go raw string 里，反引号会提前终止字符串。
 		CREATE OR REPLACE VIEW routing_analytics_source AS
 		SELECT
 		  ts,
@@ -3975,29 +3985,7 @@ const routingAnalyticsMVSQL = `
 		  cost_usd::numeric AS cost_usd,
 		  origin_stage::text AS origin_stage,
 		  auto_profile::text AS auto_profile
-		FROM request_logs_hot
-		-- ⚠️ 本视图里两处 request_id::text 都是 **text 列 → text 的空操作**
-		--   （request_logs* 的 request_id 本来就是 text），与 uuid 列的 ::text 不是一回事。
-		--   不要为了「统一」把它们改成 replace(...,'-','')，那是在制造噪音。
-		--   ⚠️ 注释里**不许出现反引号**：本段 SQL 在 Go raw string 里，反引号会提前终止字符串。
-		UNION ALL
-		SELECT
-		  ts,
-		  task_type::text AS task_type,
-		  outbound_model::text AS outbound_model,
-		  client_model::text AS client_model,
-		  work_type::text AS work_type,
-		  provider_id::bigint AS provider_id,
-		  credential_id::bigint AS credential_id,
-		  is_auto_request::boolean AS is_auto_request,
-		  tenant_id::text AS tenant_id,
-		  request_id::text AS request_id,
-		  success::boolean AS success,
-		  latency_ms::numeric AS latency_ms,
-		  cost_usd::numeric AS cost_usd,
-		  origin_stage::text AS origin_stage,
-		  auto_profile::text AS auto_profile
-		FROM request_logs;
+		FROM request_logs_with_current_month;
 
 		CREATE MATERIALIZED VIEW IF NOT EXISTS routing_analytics_7d AS
 	SELECT
@@ -6870,7 +6858,30 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 			return err
 		}
 	}
-	_, err := d.pool.Exec(ctx, `
+	_, err := d.pool.Exec(ctx, recentSuccessRateEnsureSQL)
+	if err != nil {
+		return err
+	}
+	slog.Info("routing recent success-rate schema ensured (recent_success_rate fn + broken_confirmed backfill)")
+	return nil
+}
+
+// recentSuccessRateEnsureSQL 是 recent_success_rate 的运行时 SSOT（boot 时
+// CREATE OR REPLACE 自愈；428 迁移只负责首次播种，最终形状以这里的为准）。
+//
+// 2026-10-13 S3 波 2（停写切换）：双热腿取样。原体只读 request_logs_hot；
+// S4 停写后新流量只落 session_turns_hot，3 小时窗口滑过停写时刻后 samples
+// 恒 0、rate 恒 NULL——消费方把零读成「正常」，凭据健康体系的
+// BelowThreshold 恢复机制全体失灵（request_logs_stop_write_classification_test
+// 登记的主失效源）。改取两族热表并集内最新的 p_sample_n 条：写门开时两腿
+// 都供数（与原语义一致），停写后会话腿独供。会话腿口径：credential_id 是
+// TEXT（707 S1a），数字守卫 CAST 后比较；模型键 model/canonical_model 回退
+// 链对应 v1 的 outbound/client COALESCE（会话侧 outbound=t.model，值可能
+// 归一化，失配只损失样本量不产生错误样本）。探针排除谓词对会话腿是防御
+// 性的——探针轮次本就不镜像。
+//
+// ⚠ 注释里不许出现反引号：本段 SQL 在 Go raw string 里。
+const recentSuccessRateEnsureSQL = `
 		CREATE OR REPLACE FUNCTION recent_success_rate(p_credential_id BIGINT,
 		                                    p_raw_model     TEXT,
 		                                    p_sample_n      INT DEFAULT 50,
@@ -6880,7 +6891,7 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 		STABLE
 		AS $$
 			    WITH recent AS (
-			        SELECT success
+			        SELECT success, ts
 				    FROM request_logs_hot
 				    WHERE credential_id = p_credential_id
 				      AND lower(COALESCE(outbound_model, client_model)) = lower(p_raw_model)
@@ -6891,21 +6902,25 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 				      AND COALESCE(task_type, '') <> 'probe_triggered'
 				      AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health')
 				      AND request_id NOT LIKE 'probe-%'
-				    ORDER BY ts DESC
-				    LIMIT p_sample_n
+				    UNION ALL
+			        SELECT success, ts
+				    FROM public.session_turns_hot
+				    WHERE credential_id ~ '^[0-9]+$'
+				      AND credential_id::bigint = p_credential_id
+				      AND lower(COALESCE(model, canonical_model)) = lower(p_raw_model)
+				      AND ts > NOW() - (p_window_hours || ' hours')::interval
+				      AND COALESCE(task_type, '') <> 'probe_triggered'
+				      AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health')
+				      AND request_id NOT LIKE 'probe-%'
 			    )
 
 		    SELECT AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END)::double precision,
 		           COUNT(*)::int
-		    FROM recent;
+		    FROM (
+		        SELECT success FROM recent ORDER BY ts DESC LIMIT p_sample_n
+		    ) newest_samples;
 		$$;
-	`)
-	if err != nil {
-		return err
-	}
-	slog.Info("routing recent success-rate schema ensured (recent_success_rate fn + broken_confirmed backfill)")
-	return nil
-}
+	`
 
 // ensureUnavailableRecoverAtSchema mirrors db/migrations/292_unavailable_recover_at.sql.
 func (d *DB) ensureUnavailableRecoverAtSchema(ctx context.Context) error {
