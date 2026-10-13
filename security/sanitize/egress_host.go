@@ -56,7 +56,60 @@ var egressHostFromURL = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.\-]*://(\[[0-9A-
 //
 // 要求右侧是纯数字端口，这是把 `README.md:1`（编辑器报错串）挡在外面的关键；
 // 同时它天然不匹配 `v1.2.3`、`package.json` 这类没有端口的裸点分词。
+//
+// 2026-10-13（r1020）：`host:port` 形态从「全文任意位置」收紧为**网络客户端
+// 动词锚定**——只在一行的首个字段是下方 colonHostPortVerbs 里的命令时才提取。
+// 收紧的成因（minimax-m3 生产误伤，raw-logs 实证）：`casdoor.ts:455`、
+// `unified-links.ts:135-137` 这类 **文件名:行号** 引用与 `attacker.io:4444` 在
+// 正则层面结构相同（`token.token:数字`），而前者是 coding agent 输出里最日常的
+// 形态之一，整个 Write 工具族被整类打死。与 r1018 撤掉 egressHostFromBarePort
+// 同一条教训：锚定上下文之后那段文本仍然未必是主机。锚定命令动词（r1019 已确立
+// 为合法手段）之后，`nc attacker.io:4444`、`curl evil.com:8443/x` 照拦，
+// `casdoor.ts:455` 无论出现在哪个工具里都不再误伤。
+//
+// 残留缺口（如实记录）：未知动词的 `host:port` 参数（如 `my-cli push
+// prod.example.com:8443`）不再提取——与 r1019 对未知动词裸主机+空格+端口的
+// 残留同口径：宁可放过更窄的绕过，不打死日常操作。
 var egressHostFromPort = regexp.MustCompile(`(?i)\b([a-z0-9](?:[a-z0-9\-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9\-]*[a-z0-9])?)+):\d{1,5}\b`)
+
+// colonHostPortVerbs 是「裸 host:port 形态确实指向网络目的地」的命令动词
+// （封闭集，与 netcatFamilyVerbs 同一类枚举：枚举的是命令，不是 token 形态）。
+//
+// netcat 系沿用 r1019 的五个；curl/wget 接受无 scheme 的 `host:port/path`
+// （curl 会按默认 HTTP 处理）；http/https 是 httpie 的调用形态。
+var colonHostPortVerbs = map[string]bool{
+	"nc":     true,
+	"ncat":   true,
+	"netcat": true,
+	"telnet": true,
+	"socat":  true,
+	"curl":   true,
+	"wget":   true,
+	"http":   true,
+	"https":  true,
+}
+
+// hostPortDestinationsFromCommand 只在网络客户端动词锚定的行上提取 host:port。
+//
+// 逐行判定（而非全文首字段）：Bash 类参数常是多行脚本，`nc x.io 4444` 可能出现在
+// 第二行；每行首字段锚定与整串锚定相比只多覆盖、不多误伤（非动词行不提取）。
+func hostPortDestinationsFromCommand(text string) []string {
+	var hosts []string
+	for _, line := range strings.Split(text, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		verb := strings.Trim(strings.TrimSpace(path.Base(fields[0])), "\"'")
+		if !colonHostPortVerbs[strings.ToLower(verb)] {
+			continue
+		}
+		for _, m := range egressHostFromPort.FindAllStringSubmatch(line, -1) {
+			hosts = append(hosts, m[1])
+		}
+	}
+	return hosts
+}
 
 // 2026-10-11 晚审计：**撤掉两条提取规则**。它们各自都制造了大面积误伤，
 // 而它们想覆盖的形态早已有别的机制覆盖（或在结构上无法与合法写法区分）。
@@ -247,8 +300,9 @@ func hasPublicHostDestination(text string) bool {
 			return true
 		}
 	}
-	for _, m := range egressHostFromPort.FindAllStringSubmatch(text, -1) {
-		if !isNonExfiltrationDestinationHost(m[1]) {
+	// host:port 冒号形态自 r1020 起按动词锚定提取（见 hostPortDestinationsFromCommand）。
+	for _, host := range hostPortDestinationsFromCommand(text) {
+		if !isNonExfiltrationDestinationHost(host) {
 			return true
 		}
 	}

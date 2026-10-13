@@ -322,7 +322,19 @@ onMounted(() => { void load() })
 </template>
 
 <style scoped>
-.model-catalog { display: grid; gap: 12px; padding-bottom: var(--app-safe-bottom); }
+/* ⚠️ 2026-10-13 真机实测（同 UserUsageView 的缺陷，同一根因）：
+   根容器只有 `padding-bottom`，**缺横向内边距** ⇒「搜索」标签与模型卡片
+   直接贴屏幕边缘。像素实测（`.maestro/device/measure-insets.py`）：
+   本页左 1.0pt / 右 1.0pt，而正常页是 15.5~16pt。
+   ⚠️ 同一批测量里其余页面全是 15.5~16pt ⇒ 影响面**不是全站**，逐页量、逐页改。
+   ⚠️ 别改成 `.page` 类 —— 本视图不是滚动宿主（滚动宿主是 HyperList）。
+   ⚠️ 只补横向；`padding-bottom` 原来就有。 */
+.model-catalog {
+  display: grid;
+  gap: 12px;
+  padding-inline: var(--app-space-content-x);
+  padding-bottom: var(--app-safe-bottom);
+}
 .model-catalog__toolbar, .model-catalog__featured, .model-catalog__identity, .model-catalog__meta, .model-catalog__alias { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
 .model-catalog__tabs { display: flex; gap: 6px; overflow-x: auto; }
 .model-catalog__tabs button { min-height: 48px; padding: 0 14px; border: 1px solid var(--app-border); border-radius: 999px; background: var(--app-surface); color: var(--app-text); white-space: nowrap; }

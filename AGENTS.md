@@ -804,3 +804,82 @@ host-first 孤儿网关回收 + 517 形态探测 r2538、mobile UX 第二轮、2
 本就由 email/IP 规则 + r1017 的 isNonExfiltrationEmailFragment 兜住）。
 **本晚间审计轮批读 a3b65ba68 时未深审到这两个误伤面，属审计盲区，如实记录**。
 下一轮生产复验若见「装包/脚本调用不再被阻断」即 r1018 效果，非回归。
+
+---
+
+# 追加：2026-10-13 S4 停写切换已执行（本机 host-first 本地网关）
+
+> 会话轮：gpt-5.6-sol 无响应修复（134ee0cea）之后的存储切换轮。
+> **本节只描述本机本地网关（~/kaixuan/llm-gateway-go-v2，:8782）；生产
+> 154/245/252 未翻转，写路径仍是双写。**
+
+## 当前状态（settings_kv，热加载）
+
+- `storage.request_logs_write_enabled = false`（07:01 翻转）——request_logs_hot /
+  request_logs_bodies_hot 停写，行数冻结（8659 / 冻结点）。
+- `storage.session_bodies_native_read = true`——SessionBodiesSourceSQL() 消费面
+  （导出/对比/auto_title 等 13+ 站点）直读 session_bodies 家族。
+
+## 切换前置核验（已通过）
+
+- dual-read-drift 168h（7 天）：genuine_loss=0、coverage 100%、s4_ready=true
+  （internal_loopback 816 全部为 session_title 回环，按设计排除）。
+
+## 本次落地的交接/收尾（提交 6b377939b + 1d5cf0818，主体为并行收口）
+
+1. **session_summaries 交接写入器**（internal/sessionv2mirror/session_summary_dim.go）：
+   原来唯一喂方是 request_logs_hot 触发器（trg_update_session_summary +
+   trg_sync_session_task_id），停写即断粮、会话管理/分析面冻结。写入器挂
+   PersistHook dims，逐列对齐触发器语义；**v1 写入开启时自 no-op（双喂门，
+   翻转即交接/回切即交还）**；realdb 判据 + 变异验证（去掉门/首值改覆盖均红）。
+   有意差异：只计终态、不计内部回环、不计探针合成会话（比触发器口径干净）。
+2. **bodies 读兜底腿**：logs.go fetchRequestBodies/fetchRequestOutboundBody、
+   unified_detail loadOutboundBody、body_resolver lookupControlledBody 在 v1
+   双腿 miss 后按 request_id 兜底 session_bodies（纯增量，旧行为不变）。
+   body_resolver 的 ts 等值 JOIN 在 session 分支 99.85% 不命中（§9.231），
+   兜底按空正文补查。已知边界：非流式 chat 的 request_delta 本就是 jsonb-null
+   （翻转前即如此，终态 entry 不载请求体）——兜底只能给出 session 侧有的。
+3. **auto_route decisions task_type NULL 扫描修复**：停写后探针类 auto 请求
+   只走视图 session 分支，task_type NULL，原 string 扫描整页 500。
+4. **退役门钉子随迁**：body_resolver/unified_detail 移出 v1ArmLiteralBlindSpot
+   （39→37）入 v1ReaderIndirectPopulation（22→24、并集 116 不变）。
+
+## 剩余债务（未做，按门跟踪）
+
+- `TestV1BodiesReadersAreAssessed` 仍故意红：27 文件/39 站点 bodies 读方逐点
+  评估是删除 request_logs_bodies 的前置，不是停写前置。
+- `TestReaderPopulationGroundTruth` 红：bg/candidate_failure_monitor.go 未登记
+  （并行会话 3b7180abe/31d466e21 轮引入的读方，pristine HEAD 复跑同红）。
+- 其它 ~35 个 request_logs_hot 直读面（仪表盘/凭据健康/路由分析族）在 v1 行
+  被 promote 排空（8h/7d 窗）后逐窗变空——S3 波 2/3 的分波原生改造范围。
+- 视图 session 分支的列投影里 task_type 等列可为 NULL：非空扫描的读方可能
+  还有漏网（auto_route 已修一处），发现一处修一处。
+
+## 生产切换提示（owner 决策）
+
+生产 154/245/252 若要执行同一切换：重放本地这轮的代码（已在 main）+
+对生产 settings_kv 翻转两个键。前置：生产库跑 7 天 dual-read-drift 零漂移；
+**本地库的 update_session_summary 触发器 bug 版（DECIMAL(10,6)）在 252 镜像
+里也疑似存在，翻转前建议先应用 661 迁移**（幂等，本地已验证）。
+
+---
+
+# 追加：2026-10-13 r1020 —— minimax-m3「模型未返回任何数据」= 输出合规误伤 Write 工具
+
+> 用户报告：ZCode 经本地网关（:8782）请求 minimax-m3 频繁报「模型未返回任何数据」。
+> 根因：防外传守卫对 tool 参数里**每个字符串**做目的地检查，而 coding agent 的
+> 参数主体是 Write/Edit 写入的文件内容——源码引用公网 URL（`https://acc.kxpms.cn`）
+> 与 `casdoor.ts:455` 文件名:行号（被 egressHostFromPort 当成 host:port）都会把
+> 整条响应 `output_policy_blocked`（chunk_count 0，客户端零内容）。
+> 修复两层：① 惰性内容工具（Write/Edit 族封闭集）按载体能力豁免外传检查
+> （标签 `__tool_json@<工具名>`，凭据键检查不豁免，未收录名默认 fail-closed，
+> 流式跨帧名字经 complianceStreamState.toolNames 侧信道）；② host:port 冒号
+> 形态改为网络动词锚定（netcat 族+curl/wget/httpie），文件名:行号不再误伤。
+> 判据 `security/sanitize/r1020_inert_tool_content_test.go`（三协议流式形状 +
+> 前提在场配对 + 封闭性钉子），变异验证 M1/M2/M3 三方向红在正确断言。
+> **夹具坑三则**：帧构造先转义 `\` 再转义 `"`；手写 SSE 帧闭合括号数三层；
+> 终态帧的阻断信号在 ShouldBlock 不在 error。
+> 详见 `docs/audit/2026-10-13-minimax-m3输出合规误伤write工具-r1020.md`。
+> 遗留：本地网关需重部署生效（勿从含并行会话半成品的 checkout 部署）；
+> telemetry/streaming-alternatives 两处测试红是并行会话 S4 迁移半成品
+> （pristine + 其单文件即复现），与本修复无关。

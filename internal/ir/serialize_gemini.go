@@ -683,7 +683,9 @@ func buildGeminiToolChoice(tc *ToolChoice) map[string]any {
 		cfg["mode"] = "ANY"
 	case "none":
 		cfg["mode"] = "NONE"
-	case "tool":
+	case "tool", "function":
+		// "function"：chat/responses 入向的命名强制形态（GAP-2 家族，
+		// 2026-10-13 审计补齐——此前落到 default 变 AUTO，强制语义丢失）。
 		cfg["mode"] = "ANY"
 		if tc.Name != "" {
 			cfg["allowedFunctionNames"] = []string{tc.Name}

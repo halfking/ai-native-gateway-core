@@ -8730,3 +8730,9 @@ git show origin/main:scripts/deploy-lib/db-changelog.sh
 |-----------|------|---------|--------|
 | 855 | `855_session_analytics_time_window.sql` | `ce6d97b57ada2cd80636ef25666dae52d0866b106427355a1f8145c6313a7803` | applied+verified |
 
+## 2026-10-12T19:54:25Z — deploy 245 build_seq 2562 (b3cbd346)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 856 | `856_usage_ledger_ts_cover_agg_idx.sql` | `5ab420d0d9945e41a7011f5d2d9e843c4ec208a10ad20d1be8f508fed650410a` | applied+verified |
+

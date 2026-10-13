@@ -12,6 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
 )
 
@@ -1117,10 +1120,44 @@ func (h *Handler) fetchRequestOutboundBody(ctx context.Context, requestID string
 		 WHERE request_id = $1
 		 LIMIT 1
 	`, requestID).Scan(&raw)
+	if err == nil {
+		return json.RawMessage(raw), nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	// 阶段 3（S4 停写交接，2026-10-13）：session 家族兜底。停写后新请求
+	// 的正文只落 session_bodies（v1 双腿必然 miss）；旧请求在阶段 1/2 命中，
+	// 本腿不改变任何既有结果 —— 纯增量。request_id 单键、不涉 ts 等值
+	//（SessionFamilyBodiesSourceSQL 的列合同无 ts，见 db/request_logs_view_schema.go）。
+	if raw, err := fetchSessionOutboundBody(ctx, h.db, requestID); err == nil {
+		return raw, nil
+	}
+	return nil, sql.ErrNoRows
+}
+
+// fetchSessionOutboundBody 从 session_bodies（hot ∪ 父表）取单条 outbound_body。
+// 独立小函数便于三处兜底共用与单测；未命中返回 sql.ErrNoRows（pgx v5 的
+// ErrNoRows 与 database/sql 同一错误值）。
+func fetchSessionOutboundBody(ctx context.Context, q sessionBodyRowQuerier, requestID string) (json.RawMessage, error) {
+	sessCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var raw []byte
+	err := q.QueryRow(sessCtx, `
+		SELECT outbound_body::text
+		  FROM `+dbpkg.SessionFamilyBodiesSourceSQL()+`
+		 WHERE request_id = $1
+		 LIMIT 1
+	`, requestID).Scan(&raw)
 	if err != nil {
 		return nil, err
 	}
 	return json.RawMessage(raw), nil
+}
+
+// sessionBodyRowQuerier 是兜底腿共用的最小查询面（*pgxpool.Pool / pgx.Tx 均满足）。
+type sessionBodyRowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 func (h *Handler) fetchRequestBodies(ctx context.Context, requestID string) (requestBody, responseBody any, err error) {
@@ -1183,8 +1220,26 @@ func (h *Handler) fetchRequestBodies(ctx context.Context, requestID string) (req
 	`, requestID)
 	if scanErr := row.Scan(&rb, &ob); scanErr != nil {
 		elapsed := time.Since(start)
-		// 两端都没找到 → 缓存 sql.ErrNoRows sentinel（5min 内重复查询直接命中）
+		// 阶段 3（S4 停写交接，2026-10-13）：session 家族兜底 —— 停写后新
+		// 请求正文只在 session_bodies；旧请求在阶段 1/2 已命中，本腿纯增量。
 		if errors.Is(scanErr, sql.ErrNoRows) {
+			sessCtx, sessCancel := context.WithTimeout(ctx, 5*time.Second)
+			defer sessCancel()
+			var srb, sob []byte
+			if sessErr := h.db.QueryRow(sessCtx, `
+				SELECT request_body::text, response_body::text
+				  FROM `+dbpkg.SessionFamilyBodiesSourceSQL()+`
+				 WHERE request_id = $1
+				 LIMIT 1
+			`, requestID).Scan(&srb, &sob); sessErr == nil {
+				if err := validatePersistedBodySize(srb, sob); err != nil {
+					return nil, nil, err
+				}
+				body, resp := decodeStoredBodyForAdmin(srb), decodeStoredBodyForAdmin(sob)
+				h.bodyFetchCache.Put(requestID, body, resp)
+				return body, resp, nil
+			}
+			// 两端都没找到 → 缓存 sql.ErrNoRows sentinel（5min 内重复查询直接命中）
 			h.bodyFetchCache.Put(requestID, nil, nil)
 			slog.InfoContext(ctx, "admin fetchRequestBodies no body anywhere",
 				"request_id", requestID, "elapsed_ms", elapsed.Milliseconds())

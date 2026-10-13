@@ -34,17 +34,23 @@ const (
 	//   未设且非 loopback → true (production)。
 	// 审计命令: grep -n 'cookieSecure' admin/auth_cookie_helpers.go
 
-	// CookieMaxAge 与 JWT 默认 TTL 一致（24h, rule 20 §5）。
-	// JWT TTL 定义在: admin/jwt.go → jwtExpiry() → 24 * time.Hour
+	// CookieMaxAge 与 JWT 默认 TTL 一致（7d, rule 20 §5）。
+	// JWT TTL 定义在: admin/jwt.go → jwtExpiry() → 168 * time.Hour
 	//
 	// 此值决定:
 	//   1. Set-Cookie: Max-Age=<值>（秒）
 	//   2. 前端 cookie 持久化时长（浏览器自动管理）
 	//
-	// 修改时必须同步修改 jwtExpiry() 的默认返回值，否则 cookie 会在
-	// JWT 过期后仍被浏览器发送，导致 401。
-	// 审计命令: grep -n 'sessionCookieMaxAge\|24 \* time.Hour' admin/auth_cookie_helpers.go admin/jwt.go
-	CookieMaxAge = 24 * time.Hour
+	// ★ 2026-10-13 由 24h 改为 7d：移动端「保持登录」的实际有效期此前只有
+	// 一天，用户在真机上第二天就要重新登录。7d 与 Web 端的
+	// `remember_me` 语义对齐。
+	// ⚠️ 改动**必须**同步 jwtExpiry() 的默认返回值 —— 两处是同一份事实源
+	//   （否则 cookie 会在 JWT 过期后仍被发送，直接 401）。
+	// ⚠️ 也**必须**确认没有别的环节按 24h 硬编码：改之前 grep 过
+	//   `CookieMaxAge` / `JWTDefaultTTL` / `jwtExpiry`，引用点只有
+	//   auth_cookie_helpers.go 的 setSessionCookie 与 jwt.go 的兜底。
+	// 审计命令: grep -n 'CookieMaxAge\|JWTDefaultTTL\|168 \* time.Hour' admin/auth_params.go admin/jwt.go admin/auth_cookie_helpers.go
+	CookieMaxAge = 7 * 24 * time.Hour
 
 	// CookiePath 始终为 "/"，确保所有路径的 API 请求都携带 cookie。
 	CookiePath = "/"
@@ -77,8 +83,8 @@ const (
 const (
 	// JWTDefaultTTL 是 JWT 的默认有效期。变更时必须同步 CookieMaxAge
 	// 对应的 time.Duration 值，确保两者一致。
-	// 审计命令: grep '24 \* time.Hour' admin/jwt.go admin/auth_cookie_helpers.go
-	JWTDefaultTTL = 24 * time.Hour
+	// 审计命令: grep '168 \* time.Hour\|JWTDefaultTTL' admin/jwt.go admin/auth_params.go
+	JWTDefaultTTL = 7 * 24 * time.Hour
 
 	// JWTMaxBytes 是 JWT token 的体积上限（rule 20 §5）。
 	// 标准 JWT 约 290-320 字节（取决于 tenant_id/username 长度）。
