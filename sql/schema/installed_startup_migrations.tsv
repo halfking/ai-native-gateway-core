@@ -272,3 +272,4 @@
 254	859_tighten_pii_phone_intl_regex.sql
 255	860_rename_request_logs_family_pending_delete.sql
 256	861_candidate_failure_view_absorb_session_id.sql
+257	862_partition_family_leading_ts_idx.sql

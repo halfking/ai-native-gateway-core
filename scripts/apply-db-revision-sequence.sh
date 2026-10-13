@@ -178,6 +178,10 @@ files=(
   # 861（2026-10-14）：重建 candidate_failure_logs_with_current_month 吸收
   # session_id 列（SELECT * 视图不跟随后续 ALTER；42703 修复）。
   "$ROOT_DIR/sql/migrations/startup/861_candidate_failure_view_absorb_session_id.sql"
+  # 862（2026-10-14）：session_turns / _request_logs 两分区父表无谓词 (ts)
+  # 前导索引（canonical 视图窗口臂 + V1FreezeCutoffSQL 母表臂；842/846/858
+  # 普通父表级联先例）。request_logs 腿引用 860 后的 `_` 前缀名。
+  "$ROOT_DIR/sql/migrations/startup/862_partition_family_leading_ts_idx.sql"
   "$ROOT_DIR/sql/migrations/startup/394_request_stats_minute.sql"
   # 2026-10-12 host-first PG/gateway log audit: the candidate-binding scope
   # revision chain (541 raw_model table → 569 canonical table + cmb triggers →

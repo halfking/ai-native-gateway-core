@@ -840,6 +840,9 @@ var renameRequestLogsFamilyPendingDelete860 []byte
 //go:embed embeddata/startup/861_candidate_failure_view_absorb_session_id.sql
 var candidateFailureViewAbsorbSessionId861 []byte
 
+//go:embed embeddata/startup/862_partition_family_leading_ts_idx.sql
+var partitionFamilyLeadingTsIdx862 []byte
+
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
 
@@ -1127,6 +1130,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/856_usage_ledger_ts_cover_agg_idx.sql":                                  usageLedgerTsCoverAggIdx856,
 	"startup/860_rename_request_logs_family_pending_delete.sql":                      renameRequestLogsFamilyPendingDelete860,
 	"startup/861_candidate_failure_view_absorb_session_id.sql":                       candidateFailureViewAbsorbSessionId861,
+	"startup/862_partition_family_leading_ts_idx.sql":                                partitionFamilyLeadingTsIdx862,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/853_credential_probe_queue_automatic.sql":                               credentialProbeQueueAutomatic853,

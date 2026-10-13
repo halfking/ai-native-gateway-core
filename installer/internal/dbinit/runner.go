@@ -1053,6 +1053,11 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 让 SELECT * 快照吸收 617 后加的 session_id（否则该列在视图上
 			// 42703、/api/candidate-failures 恒 500）。861 = 纯视图重建。
 			"861_candidate_failure_view_absorb_session_id.sql",
+			// 862（2026-10-14）：session_turns / _request_logs 两分区父表
+			// 无谓词 (ts) 前导索引 —— canonical 视图窗口读臂与
+			// V1FreezeCutoffSQL 母表臂此前只能整条索引扫（252 实测
+			// rollup mean 7.4s、峰值 29.5s 贴 30s 击杀线）。
+			"862_partition_family_leading_ts_idx.sql",
 		},
 	}
 }
