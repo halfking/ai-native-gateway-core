@@ -12,14 +12,14 @@
 //     yields ~neutral and cannot separate a fast model from a slow one, which
 //     was the latent defect in the existing tuning_signals path (D2).
 //  2. Claim a batch of unsettled rows older than the settle delay.
-//  3. Join request_logs for success / latency / cost.
+//  3. Join _request_logs for success / latency / cost.
 //  4. Where the session has settled and this model served >=80% of it, fold in
 //     a routing-only session health component (see admin.RoutingHealthConfig:
 //     compliance/injection/PII/toxicity/abandonment are excluded because they
 //     are properties of the traffic, not of the model).
 //  5. Compute reward and stamp settled_at.
 //
-// Rows whose request never appears in request_logs (dropped telemetry, or a
+// Rows whose request never appears in _request_logs (dropped telemetry, or a
 // request that died before logging) are stamped settled with a NULL reward
 // after the abandon window, so the unsettled backlog cannot grow without bound.
 
@@ -44,7 +44,7 @@ const (
 	settleInterval = 5 * time.Minute
 
 	// settleDelay is how long to wait after the decision before settling, so
-	// request_logs has been written and the row is not settled prematurely.
+	// _request_logs has been written and the row is not settled prematurely.
 	settleDelay = 2 * time.Minute
 
 	// settleBatchSize bounds one sweep.
@@ -317,8 +317,8 @@ func (w *AutoRouteSettleWorker) sweep(ctx context.Context) {
 // abandon window now fits inside hot retention (see settleAbandonAfter) and
 // this worker only ever reads AND writes auto_route_selections_hot.
 //
-// All three queries here read request_logs_hot ONLY — DO NOT add
-// `UNION ALL request_logs`. The request_logs partitions use the citus
+// All three queries here read _request_logs_hot ONLY — DO NOT add
+// `UNION ALL _request_logs`. The _request_logs partitions use the citus
 // columnar access method, and a UNION ALL containing the partitioned PARENT
 // fails at plan time with:
 //     ERROR: invalid perminfoindex 0 in RTE with relid 0
@@ -348,7 +348,7 @@ func (w *AutoRouteSettleWorker) sweep(ctx context.Context) {
 //
 // **(a) 不能改成读 710 视图 `request_logs_with_current_month`。**
 // 它不是 drop-in。真库 EXPLAIN 实测：settleBatch 这条 LEFT JOIN 的计划里，
-// 该视图的 v1 臂（citus 父表 request_logs）被展开成 **7 个叶子分区 Seq Scan**
+// 该视图的 v1 臂（citus 父表 _request_logs）被展开成 **7 个叶子分区 Seq Scan**
 // （request_logs_2026_07 … request_logs_default）。本 worker 每 5 分钟跑一次、
 // 每次 500 行（settleInterval/settleBatchSize），扛不住。
 // 注意：上面那段注释描述的 `invalid perminfoindex` 报错在这条查询上**没有复现**
@@ -394,7 +394,7 @@ func (w *AutoRouteSettleWorker) sweep(ctx context.Context) {
 // autoRouteSettleBaselineCohortRows.
 func (w *AutoRouteSettleWorker) loadTaskBaselines(ctx context.Context) (map[string]taskBaseline, int, error) {
 	// GROUP BY task_type yields a NULL group for rows with NULL task_type
-	// (request_logs_hot.task_type is nullable). pgx v5 cannot scan NULL into
+	// (_request_logs_hot.task_type is nullable). pgx v5 cannot scan NULL into
 	// string and a scan failure is iteration-fatal, so the whole baseline
 	// map would be lost; COALESCE keeps the group scannable and the
 	// taskType != "" skip below drops it (245 2026-09-16 audit).
@@ -441,7 +441,7 @@ type pendingSelection struct {
 	canonicalID   *int64 // as written at decision time; nil on cache-reuse path
 	ts            time.Time
 
-	// From request_logs_hot; nil when the request was never logged.
+	// From _request_logs_hot; nil when the request was never logged.
 	success     *bool
 	latencyMs   *int
 	costUSD     *float64
@@ -449,7 +449,7 @@ type pendingSelection struct {
 
 	// rlCanonicalID / rlTenantID are the values the settle worker backfills
 	// onto auto_route_selections.canonical_id / tenant_id when the decision-time
-	// value is missing. Both are nullable in request_logs_hot (canonical_id) and
+	// value is missing. Both are nullable in _request_logs_hot (canonical_id) and
 	// left NULL by some legacy inserts (tenant_id).
 	rlCanonicalID *int64
 	rlTenantID    *string
@@ -566,9 +566,9 @@ func (w *AutoRouteSettleWorker) settleBatch(
 	// needed for attribution. LEFT JOINs throughout: a missing session or a
 	// not-yet-computed health score must not hide the row.
 	//
-	// Outcome comes from request_logs_hot only: both the 2-minute settle lag and
+	// Outcome comes from _request_logs_hot only: both the 2-minute settle lag and
 	// the 4h abandon horizon sit inside the hot window, and the columnar parent
-	// of request_logs cannot participate in a set operation (see the file-level
+	// of _request_logs cannot participate in a set operation (see the file-level
 	// requestLogSource comment + docs/HANDOFF_478_CRITICAL_FIXES.md).
 	//
 	// retry_count is the count of routing_attempts entries beyond the first —
@@ -620,7 +620,7 @@ func (w *AutoRouteSettleWorker) settleBatch(
 		// R38: skip synthetic actors (goal shadow rounds + internal loopbacks).
 		// These are real auto DECISIONS but not user-driven traffic. Filtering
 		// here (after the LEFT JOIN) preserves the abandon path for rows whose
-		// request_logs have not yet been written.
+		// _request_logs have not yet been written.
 		if p.originActor != nil && autoroute.IsSyntheticActor(*p.originActor) {
 			// Stamp settled with NULL reward so the row leaves the unsettled
 			// index and does not block future batches. No metrics increment —
@@ -767,7 +767,7 @@ func (w *AutoRouteSettleWorker) writeReward(
 ) error {
 	// COALESCE preserves any decision-time value (future Fix D path), so a
 	// later write from a non-null decision never gets overwritten by a NULL
-	// from request_logs_hot (e.g. legacy rows written before canonical_id was
+	// from _request_logs_hot (e.g. legacy rows written before canonical_id was
 	// a populated column).
 	//
 	// Hot-only by partition invariant (audit 2026-09-05 D-#1): settlement

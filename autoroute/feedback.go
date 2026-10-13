@@ -35,7 +35,7 @@ func DefaultFeedbackWeights() FeedbackWeights {
 }
 
 // FeedbackInput is the raw data needed to compute a feedback signal.
-// All fields are sourced from request_logs at request completion time.
+// All fields are sourced from _request_logs at request completion time.
 type FeedbackInput struct {
 	// Success is 1.0 for full success, 0.0 for failure, 0.5 for partial
 	// (e.g. stream interrupted before completion).

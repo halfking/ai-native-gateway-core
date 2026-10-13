@@ -10,7 +10,7 @@
 //   - client IP, user agent
 //   - session titles/identifiers
 //   - raw upstream error messages
-//   - request_logs.response_preview / request_preview / transform_summary
+//   - _request_logs.response_preview / request_preview / transform_summary
 //
 // What we DO publish:
 //   - error_kind (a short, normalized code — already redacted by the

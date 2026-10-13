@@ -1509,7 +1509,7 @@ func (r *CredentialRecovery) reconcileStaleNodeProbeStates(ctx context.Context) 
 // (credential, model) bindings that are currently degraded/offline
 // (cmb.available = FALSE with unavailable_recover_at elapsed or unset) but
 // have AT LEAST ONE successful request within the lookback window (default
-// 36h, configurable) in request_logs_hot or request_logs. Logged success is
+// 36h, configurable) in _request_logs_hot or request_logs. Logged success is
 // real traffic evidence that the upstream works, so for each candidate:
 //
 //  1. CLAIM the node_probe_state row cross-instance with the same
@@ -1709,8 +1709,8 @@ func (r *CredentialRecovery) runLookbackScan(ctx context.Context) {
 // availability_state='ready' (a credential in cooling/auth_failed is the
 // 30s tick's business, not this scan's).
 //
-// The 36h-success predicate searches request_logs_hot first (hot rows,
-// ~7d retention) and falls back to request_logs (archived/promoted rows).
+// The 36h-success predicate searches _request_logs_hot first (hot rows,
+// ~7d retention) and falls back to _request_logs (archived/promoted rows).
 // The success-model join mirrors passive_probe_listener.go:
 // COALESCE(outbound_model, client_model) = raw_model_name.
 func lookbackCandidateSQL() string {
@@ -1743,14 +1743,14 @@ func lookbackCandidateSQL() string {
 		  -- usage scans where R49 F4/R50 closed the loop.
 		  AND (
 		      EXISTS (
-		          SELECT 1 FROM request_logs_hot rl
+		          SELECT 1 FROM _request_logs_hot rl
 		          WHERE rl.credential_id = cmb.credential_id
 		            AND COALESCE(rl.outbound_model, rl.client_model) = pm.raw_model_name
 		            AND rl.success = TRUE
 		            AND rl.ts > now() - make_interval(hours => $1)
 		      )
 		      OR EXISTS (
-		          SELECT 1 FROM request_logs rl
+		          SELECT 1 FROM _request_logs rl
 		          WHERE rl.credential_id = cmb.credential_id
 		            AND COALESCE(rl.outbound_model, rl.client_model) = pm.raw_model_name
 		            AND rl.success = TRUE
@@ -1769,13 +1769,13 @@ const lookbackSkipS4StopWrite = "s4_stop_write"
 // lookbackComparability reports whether the 36h lookback question — "did this
 // binding demonstrably serve a success recently?" — is currently *decidable*.
 //
-// lookbackCandidateSQL answers it from request_logs_hot ∪ request_logs. Both are
-// INSIDE the request_logs wide family, i.e. exactly what
+// lookbackCandidateSQL answers it from _request_logs_hot ∪ request_logs. Both are
+// INSIDE the _request_logs wide family, i.e. exactly what
 // settings.KeyRequestLogsWriteEnabled gates. The scan did not consult the gate,
 // and the two other recovery sub-scans in this same file do not need to:
 // expiredCmbRecoverySQL and recoverFreshDegradedSQL both key off
 // credential_model_bindings / node_probe_state, which are not gated (their
-// NOT EXISTS reads node_probe_state, not request_logs).
+// NOT EXISTS reads node_probe_state, not _request_logs).
 //
 // So under S4 stop-write the failure is the mirror image of the ledger
 // reconciler's, and just as structural:
@@ -1928,8 +1928,8 @@ func (r *CredentialRecovery) scanLookbackRecoveries(ctx context.Context) {
 	scanCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 
-	// S4 停写门控（2026-10-02 审计）：本扫描的证据源 request_logs_hot ∪
-	// request_logs 整体在门内。停写生效后证据源冻结，"窗口内是否有成功"这个问题
+	// S4 停写门控（2026-10-02 审计）：本扫描的证据源 _request_logs_hot ∪
+	// _request_logs 整体在门内。停写生效后证据源冻结，"窗口内是否有成功"这个问题
 	// 从「可判定」变成「不可判定」——继续查只会得到一个恒空的候选集，把
 	// "不再具备判定能力" 读成 "没有需要恢复的绑定"。与 ledger_reconciliation 的
 	// usage_credit_mismatch 是同一个结构的两种方向（那边是假报机，这边是静默洞）。
@@ -1939,7 +1939,7 @@ func (r *CredentialRecovery) scanLookbackRecoveries(ctx context.Context) {
 		recoveryLookbackTriggers.WithLabelValues("skipped_" + reason).Inc()
 		slog.Info("credential_recovery: 36h lookback 扫描已跳过（本轮未执行，非「无候选」）",
 			"reason", reason,
-			"detail", "证据源 request_logs_hot/request_logs 已停写，窗口内不会有新行；"+
+			"detail", "证据源 _request_logs_hot/request_logs 已停写，窗口内不会有新行；"+
 				"继续扫描会让降级绑定在这条路径上永久失去恢复机会而不留痕迹")
 		return
 	}

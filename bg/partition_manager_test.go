@@ -204,21 +204,21 @@ func TestArchiveOldPartitionsDayWindow(t *testing.T) {
 	_ = now
 }
 
-// TestResolvePromoteConfigBodiesBatchSize pins the request_logs_bodies
+// TestResolvePromoteConfigBodiesBatchSize pins the _request_logs_bodies
 // promote default batch. Bodies rows are TOAST-heavy (~350 KB avg), so the
 // generic 5000-row batch moves ~1.7 GB per call and exceeded PG
 // statement_timeout=30s on the shared prod DB (2026-08-06 incident). The
 // default must stay small and be overridable via settings_kv.
 func TestResolvePromoteConfigBodiesBatchSize(t *testing.T) {
-	retention, batch := resolvePromoteConfig("request_logs_bodies")
+	retention, batch := resolvePromoteConfig("_request_logs_bodies")
 	if batch >= promoteBatchSize {
-		t.Fatalf("request_logs_bodies default batch = %d, want < %d", batch, promoteBatchSize)
+		t.Fatalf("_request_logs_bodies default batch = %d, want < %d", batch, promoteBatchSize)
 	}
 	if batch < 100 {
-		t.Fatalf("request_logs_bodies default batch = %d, want >= safety floor 100", batch)
+		t.Fatalf("_request_logs_bodies default batch = %d, want >= safety floor 100", batch)
 	}
 	if retention <= 0 || retention > 24*time.Hour {
-		t.Fatalf("request_logs_bodies retention = %v, want (0, 24h]", retention)
+		t.Fatalf("_request_logs_bodies retention = %v, want (0, 24h]", retention)
 	}
 }
 
@@ -247,7 +247,7 @@ func TestResolvePromoteConfigHandoffRetention(t *testing.T) {
 // Note: label equality is intentionally NOT asserted across the two
 // registries — bg labels feed metrics + advisory-lock keys while admin
 // labels are API table names, and they legitimately differ for three
-// legacy tables (request_logs_bodies[_hot], credit_ledger[_hot],
+// legacy tables (_request_logs_bodies[_hot], credit_ledger[_hot],
 // tool_usage_stats[_hot]). The fnName is what selects the SQL function,
 // so set equality on fnNames is the invariant that matters.
 func TestPromoteSpecsCoverAdminHotPromoteTableMap(t *testing.T) {
@@ -314,12 +314,12 @@ func TestResolvePromoteConfigAutoRouteSelectionsFloor(t *testing.T) {
 }
 
 func TestPromoteLockKeyDeterministic(t *testing.T) {
-	a := promoteLockKey("request_logs_bodies")
-	b := promoteLockKey("request_logs_bodies")
+	a := promoteLockKey("_request_logs_bodies")
+	b := promoteLockKey("_request_logs_bodies")
 	if a != b {
 		t.Fatalf("promoteLockKey not deterministic: %d != %d", a, b)
 	}
-	if a == promoteLockKey("request_logs_hot") {
+	if a == promoteLockKey("_request_logs_hot") {
 		t.Fatalf("promoteLockKey collision between distinct labels")
 	}
 }
@@ -377,10 +377,10 @@ func TestHotTableTSColumn(t *testing.T) {
 		want  string
 	}{
 		// 默认 ts
-		{"request_logs_hot", "ts"},
+		{"_request_logs_hot", "ts"},
 		{"usage_ledger_hot", "ts"},
 		{"routing_decision_log_hot", "ts"},
-		{"request_logs_bodies", "ts"}, // 表名 request_logs_bodies_hot
+		{"_request_logs_bodies", "ts"}, // 表名 _request_logs_bodies_hot
 		{"session_turns_hot", "ts"},
 		{"session_turn_details_hot", "ts"},
 		{"session_bodies_hot", "ts"},

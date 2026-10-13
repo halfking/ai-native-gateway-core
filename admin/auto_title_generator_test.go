@@ -452,7 +452,7 @@ func TestExtractMessagesForTitle_ExcludesSystem(t *testing.T) {
 // TestCallAutoTitleLLM_EmitsParentHeaders (2026-08-06) — verifies the
 // loopback request includes X-Gw-Parent-Request-Id + X-Gw-Source-Actor
 // so the handler entry can persist parent_request_id / origin_actor on the
-// resulting request_logs_hot row.
+// resulting _request_logs_hot row.
 func TestCallAutoTitleLLM_EmitsParentHeaders(t *testing.T) {
 	var (
 		gotHeaders http.Header

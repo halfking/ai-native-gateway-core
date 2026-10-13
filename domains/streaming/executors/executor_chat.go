@@ -561,7 +561,7 @@ func (e *Executor) executeOpenAI(
 	var bodyBytes []byte
 	// R34-A1: responses 专属压缩链的 provenance JSON（strategy + dropped
 	// indexes + AlignmentMap）。proactive 与 4xx recovery 两条路径写入，
-	// preTrimMeta 构建处统一合入 request_logs.compression_meta。
+	// preTrimMeta 构建处统一合入 _request_logs.compression_meta。
 	var responsesProvenance []byte
 	if nativeNonStream || nativeStream {
 		// R-vapeur4 (2026-10-12): prefer the proactively converted body over
@@ -606,7 +606,7 @@ func (e *Executor) executeOpenAI(
 		}
 		reserve := transformation.OutputTokenReserve(sourceBody, "openai-responses")
 		// R34-A1: responses 专属压缩链带 provenance（dropped indexes 等），
-		// 由 recordResponsesInputTrim 合入 request_logs.compression_meta。
+		// 由 recordResponsesInputTrim 合入 _request_logs.compression_meta。
 		var responsesTrimMeta *transformation.ResponsesInputTrimMeta
 		bodyBytes, responsesTrimMeta = transformation.CompressResponsesInputIfNeededWithMeta(sourceBody, contextWindow, reserve)
 		recordResponsesInputTrimMeta(&responsesProvenance, sourceBody, bodyBytes, responsesTrimMeta)
@@ -653,7 +653,7 @@ func (e *Executor) executeOpenAI(
 
 	// Round 47 compression v7 T-NEW-4: capture the pre-request trim
 	// delta (transformation.CompressMessagesIfNeeded inside finalize) so
-	// emitTelemetry writes compression_meta into request_logs even when
+	// emitTelemetry writes compression_meta into _request_logs even when
 	// no 4xx happened. Without this the pre-request trim runs silently
 	// and operators can't see how many bytes were saved.
 	preTrimMeta := buildPreRequestTrimMeta(len(sourceBody), len(bodyBytes), cand.ContextWindow)
@@ -1130,7 +1130,7 @@ func (e *Executor) executeOpenAI(
 				// carries the real classifier signal
 				// ("tool_call_id_mismatch" / "invalid_request_format" / …).
 				// Capture a 256-byte preview of the 4xx body so operators
-				// don't need tcpdump / request_logs excavation to figure
+				// don't need tcpdump / _request_logs excavation to figure
 				// out WHY the upstream rejected us. Goes after the
 				// attemptLog call (the resp.Body is still untouched at
 				// this point).
@@ -1668,7 +1668,7 @@ func (e *Executor) executeOpenAI(
 					// this, the same minimax-m3 tool_call_id_mismatch
 					// 4xx that surfaces as "client bug" on the inner
 					// branch (line 456) regresses to "transient" in
-					// request_logs.error_kind / circuit / sticky / URSM.
+					// _request_logs.error_kind / circuit / sticky / URSM.
 					return nil, &upstreampkg.Error{
 						Kind:       errKind,
 						Message:    fmt.Sprintf("upstream %d: %s", resp.StatusCode, string(body[:min(n, 200)])),
@@ -1967,7 +1967,7 @@ func (e *Executor) executeOpenAI(
 					// 2026-06-19 quality fix mode: relay/stream.go populated
 					// capture.QualityFlags as each chunk was processed.
 					// relay/handler.go emitTelemetry writes these into
-					// request_logs.quality_flags / quality_score.
+					// _request_logs.quality_flags / quality_score.
 					QualityFlags:   streamQualityFlags,
 					QualityScore:   streamQualityScore,
 					RoutingTracker: params.RoutingTracker,
@@ -2274,14 +2274,14 @@ func (e *Executor) executeOpenAI(
 				// Round 47 compression v7 T-NEW-2: surface the compression
 				// event captured by handleContextLengthRecovery so
 				// relay/handler.go emitTelemetry can write it to
-				// request_logs.compression_*.
+				// _request_logs.compression_*.
 				CompressionReason:   strPtrCompat(contextLenRecovery.lastReason),
 				CompressionStrategy: strPtrCompat(contextLenRecovery.lastStrategy),
 				CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, mergeCompressionMeta(responsesProvenance, preTrimMeta)),
 				// Round 47 compression v7 T-NEW-4: pre-request trim
 				// metadata merged in via mergeCompressionMeta above.
 				// 2026-06-19 quality fix mode: relay/handler.go emitTelemetry
-				// copies these into request_logs.quality_* columns.
+				// copies these into _request_logs.quality_* columns.
 				QualityFlags:      qualityFlags,
 				QualityFixActions: qualityActions,
 				QualityScore:      qualityScore,

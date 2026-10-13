@@ -4,7 +4,7 @@ package streaming
 // wire 契约门。
 //
 // 为什么要单独一道门：字段加在 autoroute.Decision 上**不等于**运维能看到。
-// 运维读的是 X-Gw-Auto-Decision 头 / request_logs.auto_decision，二者都由
+// 运维读的是 X-Gw-Auto-Decision 头 / _request_logs.auto_decision，二者都由
 // autoRouteDecision 序列化。少一次映射，字段就只活在内存里——而内存里的
 // 字段在生产上等于不存在。这道门钉住"Decision → wire → JSON"整条链。
 import (

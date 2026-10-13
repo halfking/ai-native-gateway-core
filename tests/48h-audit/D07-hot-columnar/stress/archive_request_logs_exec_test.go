@@ -1,17 +1,17 @@
-// Package stress - D07 压力测试：request_logs 归档链路的真实执行与真实成本。
+// Package stress - D07 压力测试：_request_logs 归档链路的真实执行与真实成本。
 //
 // S-01 首轮（2026-09-29，本机 PostgreSQL 17.10）在这个包里钉死了两类
 // 「静态形状门禁结构上抓不到」的缺陷：
 //
 //	S-01a TestStress_ArchiveRequestLogs_ExecutesOnBaselineShape
 //	      列名不存在（SQLSTATE 42703）。在一次性 scratch 库里，用**仓库自己的
-//	      基线 DDL** 建 request_logs、用**仓库自己的 754 迁移文件**建函数，
+//	      基线 DDL** 建 _request_logs、用**仓库自己的 754 迁移文件**建函数，
 //	      再调用 archive_request_logs_default()。投影里再出现一个不存在的列，
 //	      这里就拿到 42703。零手写列名，因此不会随真实 schema 漂移成假绿。
 //
 //	S-01b TestStress_ArchiveRequestLogs_BatchCursorIsIndexed
 //	      计划形状。754 的批游标是 `WHERE id > :last ORDER BY id LIMIT 1000`，
-//	      而 request_logs **没有任何以 id 为首列的索引**——首轮 EXPLAIN 实测，
+//	      而 _request_logs **没有任何以 id 为首列的索引**——首轮 EXPLAIN 实测，
 //	      这让每一批都退化成全分区并行顺序扫描（取 1000 行读了 531,262 个
 //	      缓冲块）。本门 EXPLAIN 真实的批次查询并断言走索引。
 //
@@ -60,8 +60,8 @@ const (
 	// cursor is 5 batches plus the terminating short batch.
 	scratchRequestLogsRows = 5000
 
-	partAug = "CREATE TABLE request_logs_2026_08 PARTITION OF request_logs FOR VALUES FROM ('2026-08-01 00:00:00+08') TO ('2026-09-01 00:00:00+08')"
-	partSep = "CREATE TABLE request_logs_2026_09 PARTITION OF request_logs FOR VALUES FROM ('2026-09-01 00:00:00+08') TO ('2026-10-01 00:00:00+08')"
+	partAug = "CREATE TABLE request_logs_2026_08 PARTITION OF _request_logs FOR VALUES FROM ('2026-08-01 00:00:00+08') TO ('2026-09-01 00:00:00+08')"
+	partSep = "CREATE TABLE request_logs_2026_09 PARTITION OF _request_logs FOR VALUES FROM ('2026-09-01 00:00:00+08') TO ('2026-10-01 00:00:00+08')"
 )
 
 func repoRoot(t testing.TB) string {
@@ -188,24 +188,24 @@ func withScratchDB(t *testing.T, timeout time.Duration, fn func(ctx context.Cont
 	fn(ctx, conn)
 }
 
-// baselineRequestLogsDDL extracts the verbatim CREATE TABLE for request_logs
+// baselineRequestLogsDDL extracts the verbatim CREATE TABLE for _request_logs
 // from the repository baseline. It is executed as-is — no column list is ever
 // restated here, which is the whole point: the gate cannot drift away from the
 // real schema the way a hand-written INSERT list would.
 func baselineRequestLogsDDL(t testing.TB) string {
 	t.Helper()
 	src := readRepoFile(t, baselineSchemaRel)
-	anchor := regexp.MustCompile(`CREATE TABLE (?:IF NOT EXISTS )?(?:public\.)?request_logs\s*\(`).FindStringIndex(src)
+	anchor := regexp.MustCompile(`CREATE TABLE (?:IF NOT EXISTS )?(?:public\.)?_request_logs\s*\(`).FindStringIndex(src)
 	if anchor == nil {
-		t.Fatalf("%s: no `CREATE TABLE ... request_logs (` found", baselineSchemaRel)
+		t.Fatalf("%s: no `CREATE TABLE ... _request_logs (` found", baselineSchemaRel)
 	}
 	// The statement opens at anchor[0] and ends at the first ";" that follows
-	// the column list — request_logs has no semicolon inside its column
+	// the column list — _request_logs has no semicolon inside its column
 	// defaults. The drift check below proves we stopped at the right place
 	// rather than running on into the views defined after the table.
 	relEnd := strings.Index(src[anchor[1]:], ";")
 	if relEnd < 0 {
-		t.Fatalf("%s: unterminated request_logs CREATE TABLE", baselineSchemaRel)
+		t.Fatalf("%s: unterminated _request_logs CREATE TABLE", baselineSchemaRel)
 	}
 	stmt := strings.TrimSpace(src[anchor[0] : anchor[1]+relEnd+1])
 	if !strings.Contains(stmt, "PARTITION BY RANGE (ts)") {
@@ -243,7 +243,7 @@ func truncate(s string, n int) string {
 	return s[:n] + "…"
 }
 
-// installBaseline builds the partitioned request_logs parent (plus the two
+// installBaseline builds the partitioned _request_logs parent (plus the two
 // month partitions the archive cares about) from the repository's own DDL.
 func installBaseline(t *testing.T, ctx context.Context, conn *pgx.Conn, withSepPartition bool) {
 	t.Helper()
@@ -310,7 +310,7 @@ func requiredSeedColumns(t *testing.T, ctx context.Context, conn *pgx.Conn) (col
 	rows.Close()
 	rows.Err()
 	if len(required) == 0 {
-		t.Fatal("request_logs has no NOT NULL-without-default columns — parsing or baseline drifted")
+		t.Fatal("_request_logs has no NOT NULL-without-default columns — parsing or baseline drifted")
 	}
 
 	for _, c := range required {
@@ -358,7 +358,7 @@ func TestStress_ArchiveRequestLogs_ExecutesOnBaselineShape(t *testing.T) {
 		mustExec(t, ctx, conn, fmt.Sprintf(
 			"INSERT INTO request_logs_2026_09 (ts,%s) SELECT TIMESTAMPTZ '2026-09-15 00:00:00+08' + g * INTERVAL '1 second',%s FROM generate_series(1,1000) g",
 			strings.Join(cols, ","), strings.Join(vals, ",")))
-		mustExec(t, ctx, conn, "ANALYZE request_logs")
+		mustExec(t, ctx, conn, "ANALYZE _request_logs")
 
 		ddl := executableSQL(t, migration754Rel)
 		for _, want := range []string{"CREATE OR REPLACE FUNCTION", "archive_request_logs_default"} {
@@ -374,7 +374,7 @@ func TestStress_ArchiveRequestLogs_ExecutesOnBaselineShape(t *testing.T) {
 		if err != nil {
 			t.Fatalf("archive_request_logs_default(7) failed — this is the exact call bg.archiveOldRequestLogs "+
 				"makes once a day; SQLSTATE 42703 here means a projected source column does not exist on "+
-				"request_logs: %v", err)
+				"_request_logs: %v", err)
 		}
 		type arch struct {
 			part string
@@ -427,7 +427,7 @@ func TestStress_ArchiveRequestLogs_ExecutesOnBaselineShape(t *testing.T) {
 // TestStress_ArchiveRequestLogs_BatchCursorIsIndexed is S-01b.
 //
 // 754 batches with `WHERE id > :last_id ORDER BY id LIMIT 1000` and its header
-// calls that a "主键游标". request_logs has no primary key and no index whose
+// calls that a "主键游标". _request_logs has no primary key and no index whose
 // leading column is `id` — its only unique index is (request_id, ts). Without
 // migration 756's index, that "cursor" is a full scan of the partition per
 // batch: measured on a 2,125,857-row month partition, one batch of 1,000 rows
@@ -444,7 +444,7 @@ func TestStress_ArchiveRequestLogs_BatchCursorIsIndexed(t *testing.T) {
 		mustExec(t, ctx, conn, fmt.Sprintf(
 			"INSERT INTO request_logs_2026_08 (ts,%s) SELECT TIMESTAMPTZ '2026-08-01 00:00:00+08' + g * INTERVAL '1 second',%s FROM generate_series(1,%d) g",
 			strings.Join(cols, ","), strings.Join(vals, ","), scratchRequestLogsRows))
-		mustExec(t, ctx, conn, "ANALYZE request_logs")
+		mustExec(t, ctx, conn, "ANALYZE _request_logs")
 
 		// Before applying 756, the plan must be a sequential scan. This is the
 		// control: it proves the assertion below discriminates rather than
@@ -507,7 +507,7 @@ func TestStress_ArchiveRequestLogs_RerunIsIdempotent(t *testing.T) {
 		mustExec(t, ctx, conn, fmt.Sprintf(
 			"INSERT INTO request_logs_2026_08 (id,request_id,ts,tenant_id,success,gw_session_id) SELECT g,'req-'||g,TIMESTAMPTZ '2026-08-01 00:00:00+08'+(g||' seconds')::interval,'default',true,'s-'||g FROM generate_series(1,%d) g",
 			scratchRequestLogsRows))
-		mustExec(t, ctx, conn, "ANALYZE request_logs")
+		mustExec(t, ctx, conn, "ANALYZE _request_logs")
 		mustExec(t, ctx, conn, executableSQL(t, migration754Rel))
 		mustExec(t, ctx, conn, executableSQL(t, migration756Rel))
 

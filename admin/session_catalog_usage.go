@@ -27,8 +27,8 @@ type catalogSearchHit struct {
 // ∪ session_turns（按月分区的母表）。键 session_id 命中
 // idx_session_turns_session (session_id, turn_no DESC)。
 //
-// 为什么不再读 request_logs（会话存储解耦 v3 S4）：
-// 门控 storage.request_logs_write_enabled 关停后，request_logs_hot / request_logs
+// 为什么不再读 _request_logs（会话存储解耦 v3 S4）：
+// 门控 storage.request_logs_write_enabled 关停后，_request_logs_hot / _request_logs
 // 只剩停写之前的历史行，新会话一条都查不到，聚合恒 0。而 overlayCatalogUsage
 // 只在字段为 0 时补齐 —— Redis 窗口命中的会话继续显示缓存里的旧值，未命中的
 // 显示 0。同一会话显示对还是错取决于 Redis 缓存是否命中，这是最难复现的

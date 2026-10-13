@@ -2,15 +2,15 @@
 //
 // # 这道门在防什么
 //
-// settle 基线 cohort 的读点表随 S4 写门在 `request_logs_hot` ⇄ `session_turns_hot`
+// settle 基线 cohort 的读点表随 S4 写门在 `_request_logs_hot` ⇄ `session_turns_hot`
 // 之间切换，而**两个表可用的探针标记列不同**：
 //
-//	request_logs_hot   有 origin_stage / task_type / origin_actor / quality_flags
+//	_request_logs_hot   有 origin_stage / task_type / origin_actor / quality_flags
 //	session_turns_hot  有 origin_stage / task_type / origin_actor，**没有 quality_flags**
 //
 // 迁移 707 给会话族补了 55 列（origin_stage:87、origin_actor:88、is_auto_request:55），
 // 但**没有**补 `quality_flags`；252 生产实测双向吻合（session_turns 104 列无
-// quality_flags，request_logs_hot 156 列四列俱全）。
+// quality_flags，_request_logs_hot 156 列四列俱全）。
 //
 // ⇒ 对会话族误用 v1 那条谓词，**每一次结算轮询都会 42703**。
 // 这不是理论风险：R50 记录的 admin 回归就是同一个坑（对视图用了物理谓词）。
@@ -143,7 +143,7 @@ func v1FamilyColumns(t *testing.T) map[string]bool {
 	ddl := readRepoFile(t, objectsRequestLogsHotDDL)
 	block := createTableColumnsRE.FindStringSubmatchIndex(ddl)
 	if block == nil {
-		t.Fatalf("%s 里找不到 `CREATE TABLE ... request_logs_hot ( ... );` 块（解析器坏了，不是文件坏了）。",
+		t.Fatalf("%s 里找不到 `CREATE TABLE ... _request_logs_hot ( ... );` 块（解析器坏了，不是文件坏了）。",
 			objectsRequestLogsHotDDL)
 	}
 	cols := map[string]bool{}

@@ -103,7 +103,7 @@ func TestPrepare_ClientResendFullHistory_DoesNotUndoCompression(t *testing.T) {
 // TestPrepare_FreshSession_OutboundBodyAlwaysPopulated pins the fix from
 // d7ed7890: before the fix, the handler only persisted OutboundBody when
 // CompressionStrategy != "". A fresh session has strategy="" so outbound_body
-// was never written to request_logs → the V2 mirror persisted NULL → turn 2
+// was never written to _request_logs → the V2 mirror persisted NULL → turn 2
 // had no prior snapshot → every turn was treated as a new session.
 //
 // This test asserts that Prepare's result always has enough information for

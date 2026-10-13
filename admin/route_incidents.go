@@ -656,7 +656,7 @@ func (h *RouteIncidentsHandler) findingsFor(ctx context.Context, inc *routeincid
 			SampleCount: len(b.ids),
 			IntervalSec: int(time.Since(inc.FirstFailureAt).Seconds()),
 			RequestIDs:  b.ids,
-			Note:        "Derived from terminal request_logs rows in the failure window. Sample ids are bounded; the dashboard does not re-aggregate to avoid drift.",
+			Note:        "Derived from terminal _request_logs rows in the failure window. Sample ids are bounded; the dashboard does not re-aggregate to avoid drift.",
 		})
 	}
 	return out

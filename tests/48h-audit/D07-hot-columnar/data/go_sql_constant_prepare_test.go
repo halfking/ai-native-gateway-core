@@ -244,7 +244,7 @@ var justifiedPrepareFailures = map[string]string{
 	// ── P1：origin_actor（同型两处，开关开与关都撞）──────────────────────────
 	// 视图 session_turns_with_current_month 的定值列清单（bootstrap / 640 同款体，
 	// 65 列）没有 origin_actor，而基表 session_turns 上它存在（attnum 99）。
-	// db/db.go:2990 只保证 request_logs_hot / request_logs 上有该列，
+	// db/db.go:2990 只保证 _request_logs_hot / _request_logs 上有该列，
 	// 全仓没有任何 SQL 把它投进 turns 视图。源码常量原文实跑：
 	//   ERROR: column t.origin_actor does not exist
 	//
@@ -256,7 +256,7 @@ var justifiedPrepareFailures = map[string]string{
 	//     · 开关 sessions_summary_per_turn_digest 开 → sessionTurnDigestQuery（digest）
 	//     · 开关关（默认）→ 逐字节委托 v2SessionBodiesBaseQuery（fallback）
 	//   **两条都引用 t.origin_actor，都失败。** 唯一可用配置是把
-	//   sessions_v2_compression_read 置 false 退回 V1 request_logs 源。
+	//   sessions_v2_compression_read 置 false 退回 V1 _request_logs 源。
 	// 消费面：会话摘要（GenerateSummary / GenerateRollingSummary）的输入读取。
 	// digest 测试也写明「source errors must reach the caller regardless of gate state」。
 	"domains/sessionsummary/message_source_v2.go:75::v2SessionBodiesBaseQuery::b19fb1b9":   "已修复待应用：迁移 757 给 session_turns_with_current_month 补 origin_actor 投影。修法已在真库事务内完整验证（53→55 列，两条 PREPARE 均通过后 ROLLBACK）。真库应用 757 后本条会变成「未登记的失败」⇒ 门红并提示删掉此登记",

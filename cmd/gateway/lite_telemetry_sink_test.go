@@ -1,7 +1,7 @@
 // Package main — lite_telemetry_sink_test.go
 //
 // 审计 B2 接线（2026-09-05）的回归测试：lite 模式下 telemetry 请求日志
-// 经 liteRequestLogSink 落盘到存储工厂（SQLite request_logs / sessions /
+// 经 liteRequestLogSink 落盘到存储工厂（SQLite _request_logs / sessions /
 // session_turns + FileBodies 原文文件），覆盖幂等 UPSERT、终态记轮门槛、
 // 重启后续排轮号与 Shutdown 落盘。
 package main
@@ -93,7 +93,7 @@ func liteTerminalEntry(requestID, sessionID string) *telemetry.RequestLogEntry {
 }
 
 // TestLiteRequestLogSink_PersistsFullJournal 验证终态条目落盘全链路：
-// request_logs 行、sessions 行、session_turns 元数据与 FileBodies 原文
+// _request_logs 行、sessions 行、session_turns 元数据与 FileBodies 原文
 // 文件均可读回。
 func TestLiteRequestLogSink_PersistsFullJournal(t *testing.T) {
 	rt, sink := newLiteSinkForTest(t)
@@ -106,7 +106,7 @@ func TestLiteRequestLogSink_PersistsFullJournal(t *testing.T) {
 		t.Fatalf("PersistRequestLog: %v", err)
 	}
 
-	// request_logs 行读回
+	// _request_logs 行读回
 	log, err := sink.logs.GetRequest(ctx, "req-001")
 	if err != nil {
 		t.Fatalf("GetRequest: %v", err)
@@ -150,7 +150,7 @@ func TestLiteRequestLogSink_IdempotentUpsert(t *testing.T) {
 	defer rt.Shutdown()
 	ctx := context.Background()
 
-	// in_progress 占位（无 body、非终态）→ 只写 request_logs 行，不记轮
+	// in_progress 占位（无 body、非终态）→ 只写 _request_logs 行，不记轮
 	inProgress := telemetry.RequestStatusInProgress
 	placeholder := &telemetry.RequestLogEntry{
 		RequestID:     "req-002",

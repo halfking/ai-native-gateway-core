@@ -45,7 +45,7 @@ func TestTenantStatsDaily_Live(t *testing.T) {
 	// ── 清场 + 种子 ──────────────────────────────────────
 	cleanup := func() {
 		//nolint:errcheck // 清场 best-effort
-		pool.Exec(ctx, `DELETE FROM request_logs_hot WHERE tenant_id = $1`, code)
+		pool.Exec(ctx, `DELETE FROM _request_logs_hot WHERE tenant_id = $1`, code)
 		//nolint:errcheck // 清场 best-effort
 		pool.Exec(ctx, `DELETE FROM tenants WHERE code = $1`, code)
 	}
@@ -59,13 +59,13 @@ func TestTenantStatsDaily_Live(t *testing.T) {
 	}
 	// 今日 2 行（1 成功 1 失败）、昨日 1 行；前日留空验证零填充。
 	seed := `
-		INSERT INTO request_logs_hot (request_id, ts, tenant_id, success, total_tokens, credits_charged, cost_usd)
+		INSERT INTO _request_logs_hot (request_id, ts, tenant_id, success, total_tokens, credits_charged, cost_usd)
 		VALUES
 		 ('zz-stats-daily-r1', now(),                        $1, true,  100, 10, 0.5),
 		 ('zz-stats-daily-r2', now(),                        $1, false,  50,  0, 0.0),
 		 ('zz-stats-daily-r3', now() - INTERVAL '1 day',     $1, true,   70,  7, 0.3)`
 	if _, err := pool.Exec(ctx, seed, code); err != nil {
-		t.Fatalf("seed request_logs_hot: %v", err)
+		t.Fatalf("seed _request_logs_hot: %v", err)
 	}
 
 	// ── 调用真实 handler ────────────────────────────────
@@ -126,7 +126,7 @@ func TestTenantStatsDaily_Live(t *testing.T) {
 	}
 
 	// ── days=30：R36-A1 回归（days>7 必须走并集视图，热尾不得为零）──
-	// 种子只落 request_logs_hot；修复前 days>7 读父表 request_logs，
+	// 种子只落 _request_logs_hot；修复前 days>7 读父表 _request_logs，
 	// 尚未晋升的热尾整段为零且与同响应 byModel/byApp 矛盾——本断言即
 	// 红/绿分界（2026-09-30 三十六轮补真库实证）。
 	rec30 := httptest.NewRecorder()

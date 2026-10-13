@@ -611,7 +611,7 @@ SELECT
 		// 下面这组数是 2026-10-06 在真库（127.0.0.1:5432，只读 SELECT）量到的，
 		// 它决定「先修哪一个」——而上面那个 129 个模型的清单回答不了这个问题。
 		//
-		// 口径：request_logs 近 30 天，**已派发**（credential_id NOT NULL）且
+		// 口径：_request_logs 近 30 天，**已派发**（credential_id NOT NULL）且
 		// **成功**且 **cost_usd IS NULL** 的请求，按 token（prompt+completion）加权。
 		// 「已派发且成功」这两个条件不能省：未派发成功的请求（562,548 条，其中
 		// 562,482 条有 error_kind：no_candidate / rate_limit / invalid_key …）
@@ -763,7 +763,7 @@ SELECT
 		// 第 14 条：已经记下来的**负成本**。
 		//
 		// 2026-10-06 真库实测（127.0.0.1:5432，全程只读）：
-		//   request_logs  cost_usd < 0            = 1,628 行，合计 -$4.79
+		//   _request_logs  cost_usd < 0            = 1,628 行，合计 -$4.79
 		//   usage_ledger  cost_usd < 0            = 1,299 行，合计 -$4.67
 		//   全部满足 cache_read_tokens > prompt_tokens；cache 占那批 token 的
 		//   96.2%（4,530,529 vs prompt 179,144）；全部来自 apiclaude
@@ -786,7 +786,7 @@ SELECT
 		// 定位信息抹掉。
 		//
 		// ★ 分组列是 **outbound_model**，不是 raw_model_name —— 这两个名字在
-		//   request_logs 里**都存在**（该表有 6 个 model 列：client_model /
+		//   _request_logs 里**都存在**（该表有 6 个 model 列：client_model /
 		//   raw_model_name / canonical_model / model_chosen / outbound_model /
 		//   provider_model），注释里写 "raw_model" 会把人引到错的那一列。
 		//   真库实测（2026-10-06 只读核过）：1628 条负成本行上
@@ -799,7 +799,7 @@ SELECT
 		//
 		// ★ 刻意**不 JOIN providers**：provider 名称只是好看，而它会给这条检查
 		//   添一个必须存在的表依赖。真库判据实测踩到过 —— 夹具只建
-		//   request_logs + credentials 时整条检查红在
+		//   _request_logs + credentials 时整条检查红在
 		//   `relation "public.providers" does not exist`，而那与本检查要问的
 		//   「有没有负成本」毫无关系。凭据 id + 模型名已经足够定位。
 		//   （entity_name 用 'credential#<id>:<model>'，人可读且不引依赖。）
@@ -815,7 +815,7 @@ WITH neg AS (
            count(*)::int      AS neg_rows,
            sum(r.cost_usd)    AS neg_usd,
            sum(COALESCE(r.cache_read_tokens, 0) - COALESCE(r.prompt_tokens, 0)) AS excess_cache
-      FROM public.request_logs r
+      FROM public._request_logs r
      WHERE r.cost_usd < 0
        AND r.ts > now() - interval '30 days'
      GROUP BY r.credential_id, r.outbound_model
@@ -913,7 +913,7 @@ SELECT 'facts_start_' || facts.oldest::text || '_vs_projection_' || proj.oldest:
 		//   **对称定价也可能是真的**，数据上无法区分。
 		//
 		// ⚠ 刻意**不**把金额影响（4,522 条 / $0.04）写进本 SQL：那条 30 天
-		//   request_logs 聚合实测 2.31s / 2.22s / 2.44s（2.08M 行，无可用索引），
+		//   _request_logs 聚合实测 2.31s / 2.22s / 2.44s（2.08M 行，无可用索引），
 		//   不能塞进一条高频检查。数字写在上面的注释里。
 		//   本 SQL 只读 model_offers（1,994 行），是廉价的那一半。
 		{CheckID: "offer_price_looks_like_placeholder", Severity: "warning", Optional: true, Query: `

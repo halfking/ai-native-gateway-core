@@ -467,7 +467,7 @@ verify_l4_business() {
       fi
       
       # 检查关键表
-      for table in providers credentials sessions request_logs_hot; do
+      for table in providers credentials sessions _request_logs_hot; do
         if docker exec llm-gateway-pg psql -U llm_gateway -d llm_gateway -t -c "SELECT to_regclass('public.$table');" 2>/dev/null | grep -q "$table"; then
           pass "关键表存在: $table"
         else

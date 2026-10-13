@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/compression-benchmark.sh — 245 生产日志压缩效果 benchmark 入口
 #
-# 数据依赖：需要能访问 245 生产 request_logs 的 PostgreSQL DSN（联系运维获取，注意脱敏）。
+# 数据依赖：需要能访问 245 生产 _request_logs 的 PostgreSQL DSN（联系运维获取，注意脱敏）。
 # 计算依赖：本仓库已内置真实 harness `cmd/compression-bench`（见其内部 processRow）。
 #
 # 本脚本是对 `cmd/compression-bench` 的薄封装。默认只读分析且不写本地报告；

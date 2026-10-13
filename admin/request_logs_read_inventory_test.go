@@ -12,23 +12,23 @@ import (
 )
 
 // requestLogsReadInventory is the **complete** list of production files that read
-// the request_logs family, with the number of read call sites in each.
+// the _request_logs family, with the number of read call sites in each.
 //
 // # 为什么要有这张表
 //
 // 审计 §5.5.5「会话域视图依赖的最终分类」覆盖 14 个文件，而实际读
-// `request_logs*` 的生产文件有 104 个、237 个调用点（2026-10-01 实测）。
+// `_request_logs*` 的生产文件有 104 个、237 个调用点（2026-10-01 实测）。
 // §5.5.8 的标题写的是「第一版表不完整，逐条补齐」——**但那张表从未覆盖到
 // 其余 90 个文件，且它自称补全过**。没有任何机制会在这个缺口扩大时报红。
 //
 // S4（`storage.request_logs_write_enabled=false`）会让这 237 处全部读到
 // 不再增长的数据。在逐点评估完成之前，**这张表的作用不是分类，是钉住覆盖面**：
-// 新增一个读 request_logs 的文件、或某个文件的读点数变了，这道门立刻变红，
+// 新增一个读 _request_logs 的文件、或某个文件的读点数变了，这道门立刻变红，
 // 逼迫做一次显式复核，而不是让清单在无人察觉的情况下继续漂移。
 //
 // # 口径（换正则就不是这个数，改这里之前先读审计 §8.5）
 //
-//	grep -rniE "(from|join)[[:space:]]+request_logs(_[a-z_]+)?\b" --include=*.go . \
+//	grep -rniE "(from|join)[[:space:]]+_request_logs(_[a-z_]+)?\b" --include=*.go . \
 //	  | grep -v "_test\.go" | grep -v "^\./docs"
 //
 //	2026-10-01 实测：**277 命中 − 40 条注释行 = 237 真实调用点 / 104 个文件**。
@@ -43,7 +43,7 @@ import (
 //
 // ★★ **§9.259：这张表**不是**读方全集，别拿它当退役工作量。**
 //
-// 它只按 `(from|join)\s+request_logs…` **行扫描**，所以**看不见走切换层的读方** ——
+// 它只按 `(from|join)\s+_request_logs…` **行扫描**，所以**看不见走切换层的读方** ——
 // 那些把表名当 Go 字符串返回的 `maas.requestLogsSource(days)`、
 // `db.SessionBodiesSourceSQL()`、`admin.logsSourceFromSQL()` 都在行扫描之外。
 //
@@ -104,7 +104,7 @@ var requestLogsReadInventory = map[string]int{
 	"admin/route_incidents.go": 1,
 	// admin/routing.go 于 2026-10-13（S3 波 3 停写切换）除名：唯一的 v1 读点
 	// popularModelsHotSQL 改读会话族原生源（SessionFamilyTurnsSourceSQL），
-	// 文件内已无 request_logs 家族引用（钉桩 routing_popular_models_test）。
+	// 文件内已无 _request_logs 家族引用（钉桩 routing_popular_models_test）。
 	// 2026-10-05：只 JOIN 不 FROM，此前对本门**完全不可见**（假零）。
 	// 会话对比 API 的 bodies 腿；turn 腿早已走会话族。
 	"admin/session_analytics_breakdown.go":  2,
@@ -131,26 +131,26 @@ var requestLogsReadInventory = map[string]int{
 	"admin/swim_lane_init.go":           1,
 	"admin/telemetry.go":                1,
 	// 2026-10-13 S3 波 3：4→8——logsTable 补两条会话腿后，双子排除的
-	// NOT EXISTS（request_logs_hot/request_logs 各 ×2）计入引用计数。
+	// NOT EXISTS（_request_logs_hot/request_logs 各 ×2）计入引用计数。
 	"admin/tenants.go":        8,
 	"admin/top_problems.go":   2,
 	"admin/unified_detail.go": 6,
 	"admin/usage.go":          3,
 	// 2026-10-02: usage trend-series detail 路径读当月视图（与 board fallback 同源）。
 	"admin/usage_trend_series.go": 2,
-	// 2026-10-03: usage_enhanced.go 读 request_logs 两处，但扫描器只数到 1 处 ——
+	// 2026-10-03: usage_enhanced.go 读 _request_logs 两处，但扫描器只数到 1 处 ——
 	//
-	//   ① usageCacheEconomics 的压缩请求数（"FROM request_logs rl"，SQL 字面量）
+	//   ① usageCacheEconomics 的压缩请求数（"FROM _request_logs rl"，SQL 字面量）
 	//   ② usageCostTrend 的 work_type / intent 基表（planCostTrend 里的
-	//      Go 字符串 BaseTable: "request_logs rl"）
+	//      Go 字符串 BaseTable: "_request_logs rl"）
 	//
-	// ② 不是 SQL 文本，requestLogsReadPattern 的 `from\s+request_logs` 看不见它。
+	// ② 不是 SQL 文本，requestLogsReadPattern 的 `from\s+_request_logs` 看不见它。
 	// 本表登记的是**扫描器测到的值** 1，不是真实调用点数 2 —— 别把它读成
 	// 「这里只读了一处」。
 	//
 	// ② 这条路径由另一道门从结构上覆盖：planCostTrend 的维度归属断言
 	// （TestPlanCostTrend_DimensionProvenance）直接断言 work_type/intent 的
-	// 基表就是 request_logs rl，比 grep 计数强。扫描器看不见 ≠ 没有覆盖。
+	// 基表就是 _request_logs rl，比 grep 计数强。扫描器看不见 ≠ 没有覆盖。
 	// 要把 ② 也数进来，得把模式扩到「裸表名字符串」，那会改动本表其余条目
 	// （审计 §8.5），留给需要它的那一轮单独评估。
 	"admin/usage_enhanced.go":           1,
@@ -178,7 +178,7 @@ var requestLogsReadInventory = map[string]int{
 	// （v1_hot_rows / v1_parent_rows 两处 FROM），不看列。
 	// 取源分层：它读的是「v1 还在不在写」这个事实本身 ⇒ 消费面属 ③。
 	"cmd/gateway/v1_write_liveness.go":         2,
-	"cmd/gateway/dual_read_validator.go":       6, // 4 + §9.235 的 2 处存在性探测（L428/L430 `EXISTS(… FROM request_logs_hot/request_logs WHERE ts >= h.b AND ts < h.b + interval '1 hour')`，只数「该小时有没有 v1」）；§9.235 漏登记，门当场转红但被当成基线混过去了
+	"cmd/gateway/dual_read_validator.go":       6, // 4 + §9.235 的 2 处存在性探测（L428/L430 `EXISTS(… FROM _request_logs_hot/request_logs WHERE ts >= h.b AND ts < h.b + interval '1 hour')`，只数「该小时有没有 v1」）；§9.235 漏登记，门当场转红但被当成基线混过去了
 	"cmd/gateway/main_v3_wiring.go":            1,
 	"cmd/gateway/output_compliance_control.go": 1,
 	"cmd/gateway/waterfall_by_request.go":      1,
@@ -188,7 +188,7 @@ var requestLogsReadInventory = map[string]int{
 	// 第 6 处 = HasV1RowsInRange（§R44/移交.1 端边界守门的实测探测，R45 轮加入）：
 	// LIMIT 1，家族过滤（tenant + 会话头）与同文件 LoadV1TimeRange 逐字一致——
 	// 探测必须对「窗口声称要比对的行」作答，母表腿是有意的。生命周期与该 loader
-	// 其余 5 处同面：S4 停写 request_logs 时 v1 校验器连同探测一起退役。
+	// 其余 5 处同面：S4 停写 _request_logs 时 v1 校验器连同探测一起退役。
 	// ★ §9.259：原写 6，**复核后改为 5**。
 	// 复核过程（这张表的用途是逼人复核，不是照抄实测改数）：
 	//   1. 逐行数该文件的非注释 v1 FROM/JOIN 命中 = 5（154/162/193/521/659）；
@@ -206,7 +206,7 @@ var requestLogsReadInventory = map[string]int{
 	"domains/analysis/optimizer.go":            3,
 	// domains/analysis/request_summary.go 于 2026-10-13（S3 波 2 停写切换）
 	// 除名：loadRequestLogs 改读会话族原生源（SessionFamilyTurnsForSessionSQL），
-	// 与 request_logs 族再无任何关系引用——不再是本清单（request_logs 读方）的成员。
+	// 与 _request_logs 族再无任何关系引用——不再是本清单（_request_logs 读方）的成员。
 	"domains/attachments/handler.go":                  1,
 	"domains/credentialstate/popularity_tracker.go":   1,
 	"domains/hooks/goal/history_store.go":             2,
@@ -219,7 +219,7 @@ var requestLogsReadInventory = map[string]int{
 	"domains/streaming/anomaly_harvester.go":          1,
 	// domains/streaming/model_alternatives.go 于 2026-10-13（S3 波 2 停写切换）
 	// 除名：usage_7d 热面改读会话族原生源（SessionFamilyTurnsSourceSQL），
-	// 同上，不再是 request_logs 读方。
+	// 同上，不再是 _request_logs 读方。
 	"internal/collector/gateway_adapters.go":     3,
 	"internal/quality/minute_aggregator.go":      1,
 	"internal/summarystore/store.go":             1,
@@ -230,7 +230,7 @@ var requestLogsReadInventory = map[string]int{
 }
 
 // TestRequestLogsReadInventoryIsComplete fails when the set of production files
-// reading request_logs drifts away from the table above.
+// reading _request_logs drifts away from the table above.
 //
 // It fails on BOTH directions, and that is the point:
 //
@@ -268,11 +268,11 @@ func TestRequestLogsReadInventoryIsComplete(t *testing.T) {
 	for _, n := range actual {
 		total += n
 	}
-	t.Logf("request_logs readers: %d files / %d call sites (table: %d files / %d call sites)",
+	t.Logf("_request_logs readers: %d files / %d call sites (table: %d files / %d call sites)",
 		len(actual), total, len(requestLogsReadInventory), sumInventory())
 
 	if len(missing) > 0 {
-		t.Errorf("%d production file(s) read request_logs but are absent from "+
+		t.Errorf("%d production file(s) read _request_logs but are absent from "+
 			"requestLogsReadInventory — S4 would silently stop feeding them:\n  %s\n"+
 			"Add them to the table with their call-site count and assess each one "+
 			"(audit §8.5); do not paper over this by widening the scan.",
@@ -298,7 +298,7 @@ func sumInventory() int {
 //
 // # 2026-10-05：`from` 独占 ⇒ 三个活着的 API 读方对本门**完全不可见**
 //
-// 原模式是 `from\s+request_logs(_[a-z_]+)?\b`，即**只有 FROM 算读点**。
+// 原模式是 `from\s+_request_logs(_[a-z_]+)?\b`，即**只有 FROM 算读点**。
 // 一段 SQL 只要不写 FROM、只写 JOIN，它在本门眼里就是**零读点** ——
 // 不是「少算了一个」，是「整个文件不进总体」。实测抓到 3 个：
 //
@@ -311,7 +311,7 @@ func sumInventory() int {
 // 它们的 turn 腿早已走会话族（`SessionFamilyTurnsForSessionSQL()`），
 // 剩下的 bodies 腿还是 `request_logs_bodies_with_current_month`。
 //
-// 方向：这是**假零**。它让「request_logs 有 106 个读方」这句话在退役清单上
+// 方向：这是**假零**。它让「_request_logs 有 106 个读方」这句话在退役清单上
 // 少了三个，而少的正好是退役时才会暴露的那类（§9.199「已 repoint 的读方」
 // 与「从未被分析的文件」混在一个 clean 桶里的同族，但成因在**扫描器**而不是分类器）。
 //
@@ -336,7 +336,9 @@ func sumInventory() int {
 //
 // 与 `bg/auto_route_settle_sql.go` 完全同形：那个文件同样因为关系名在 Go
 // 标识符里而不在本表，登记在间接表。⇒ 本表从 109 降到 107，**不是读方变少了**。
-var requestLogsReadPattern = regexp.MustCompile(`(?i)(from|join)\s+request_logs(_[a-z_]+)?\b`)
+// `_?` 前缀（迁移 860）：v1 底表物理名已带待删除标志前缀，源码字面量同步；
+// 后缀通配的既有语义不变（canonical 视图读方本来就经 `(_[a-z_]+)?` 计入）。
+var requestLogsReadPattern = regexp.MustCompile(`(?i)(from|join)\s+_?request_logs(_[a-z_]+)?\b`)
 
 func scanRequestLogsReaders(t *testing.T, root string) map[string]int {
 	t.Helper()

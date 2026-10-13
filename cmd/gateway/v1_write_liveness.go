@@ -33,8 +33,8 @@ import (
 //
 // ★ **必须读两个存储面**，这不是风格问题，是本轮在真库上量到的活的假阳性：
 //
-//	最近 30 分钟：request_logs_hot  91 行 / 落后 1 分钟
-//	             request_logs      0 行 / 落后 **491 分钟**
+//	最近 30 分钟：_request_logs_hot  91 行 / 落后 1 分钟
+//	             _request_logs      0 行 / 落后 **491 分钟**
 //
 // ⇒ 只读父表的信号**此刻就会报「v1 写腿已死」**，而它活得好好的。
 // 父表落后 hot 是**正常形态**（hot 只留最新窗口、父表按月分区并有晋级延迟），
@@ -48,8 +48,8 @@ import (
 // —— 这与 `dual_read_gate.go` 规则 2（「空扫描 = 什么都没证明」）同源。
 const v1WriteLivenessSQL = `
 SELECT
-  (SELECT COUNT(*) FROM request_logs_hot     WHERE ts >= $1) AS v1_hot_rows,
-  (SELECT COUNT(*) FROM request_logs         WHERE ts >= $1) AS v1_parent_rows,
+  (SELECT COUNT(*) FROM _request_logs_hot     WHERE ts >= $1) AS v1_hot_rows,
+  (SELECT COUNT(*) FROM _request_logs         WHERE ts >= $1) AS v1_parent_rows,
   (SELECT COUNT(*) FROM session_turns_hot   WHERE ts >= $1) AS turns_hot_rows,
   (SELECT COUNT(*) FROM session_turns       WHERE ts >= $1) AS turns_parent_rows`
 

@@ -3,7 +3,7 @@ package storage
 // consistency.go — 2026-09-05 审计闭环4：lite 模式跨资源一致性补偿。
 //
 // lite 模式下轮次数据横跨两种介质：
-//   - 元数据（SQLite session_turns / sessions / request_logs）
+//   - 元数据（SQLite session_turns / sessions / _request_logs）
 //   - 内容大对象（文件系统 bodies 目录，gzip JSON）
 //
 // 两者靠 (tenant_id, session_id, turn_no) 关联，没有跨介质事务：写入

@@ -29,7 +29,7 @@ type LLMCompleteClient interface {
 	Complete(ctx context.Context, model, prompt string) (string, error)
 }
 
-// requestLogRow 是 summarizer 需要的 request_logs 字段投影。
+// requestLogRow 是 summarizer 需要的 _request_logs 字段投影。
 type requestLogRow struct {
 	RequestID           string
 	PromptTokens        int
@@ -128,7 +128,7 @@ var requestSummaryTurnsSource = db.SessionFamilyTurnsForSessionSQL()
 
 // loadRequestLogs 读取某会话的所有请求（按时间排序）。
 //
-// 2026-10-13 S3 波 2（停写切换）：原实现只读 request_logs 母表——hot 表的
+// 2026-10-13 S3 波 2（停写切换）：原实现只读 _request_logs 母表——hot 表的
 // 近 7 天行今天就漏（promote 排水滞后），S4 停写后新会话更是恒空集。
 // gw_session_id 是会话内谓词（A 形态），按守卫规则可迁会话族原生源：
 // SessionFamilyTurnsForSessionSQL 把 session_id=$1 内推两腿、命中

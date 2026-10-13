@@ -32,8 +32,8 @@ func TestApplyMigrationsIncludesRequestLogsViewEnsure(t *testing.T) {
 		"request_logs_with_current_month",
 		"request_logs_with_current_month_without_request_class_due_at",
 		"request_logs_with_current_month_without_customer_id",
-		"public.request_logs_hot",
-		"public.request_logs",
+		"public._request_logs_hot",
+		"public._request_logs",
 		"customer_id",
 		"request_class",
 		"due_at",
@@ -135,7 +135,7 @@ func TestRequestLogsCurrentMonthViewEnsureRoundTrip(t *testing.T) {
 	// nothing real to probe (this schema predated 696 and made the live
 	// round-trip fail with 42703 on h.system_fingerprint).
 	schema := `
-		CREATE TABLE public.request_logs (
+		CREATE TABLE public._request_logs (
 			id bigserial PRIMARY KEY,
 			request_id text NOT NULL,
 			ts timestamptz NOT NULL DEFAULT now(),
@@ -150,7 +150,7 @@ func TestRequestLogsCurrentMonthViewEnsureRoundTrip(t *testing.T) {
 				CHECK ((request_class = 'immediate' AND due_at IS NULL)
 					OR (request_class = 'scheduled' AND due_at IS NOT NULL))
 		);
-		CREATE TABLE public.request_logs_hot (
+		CREATE TABLE public._request_logs_hot (
 			id bigserial PRIMARY KEY,
 			request_id text NOT NULL,
 			ts timestamptz NOT NULL DEFAULT now(),
@@ -166,9 +166,9 @@ func TestRequestLogsCurrentMonthViewEnsureRoundTrip(t *testing.T) {
 				CHECK ((request_class = 'immediate' AND due_at IS NULL)
 					OR (request_class = 'scheduled' AND due_at IS NOT NULL))
 		);
-		INSERT INTO public.request_logs_hot (request_id, ts, caller_id, customer_id, request_class, due_at, system_fingerprint, raw_model_name)
+		INSERT INTO public._request_logs_hot (request_id, ts, caller_id, customer_id, request_class, due_at, system_fingerprint, raw_model_name)
 		VALUES ('req-hot', now(), 'hot-only', 42, 'scheduled', now() + interval '1 hour', 'fp-hot-a', 'model-alpha');
-		INSERT INTO public.request_logs (request_id, ts, customer_id, request_class, due_at, system_fingerprint, raw_model_name)
+		INSERT INTO public._request_logs (request_id, ts, customer_id, request_class, due_at, system_fingerprint, raw_model_name)
 		VALUES ('req-parent', now(), 7, 'immediate', NULL, 'fp-parent-b', 'model-beta');
 	`
 	if _, err := pool.Exec(ctx, schema); err != nil {
@@ -194,8 +194,8 @@ func TestRequestLogsCurrentMonthViewEnsureRoundTrip(t *testing.T) {
 	}
 	if err := pool.QueryRow(ctx, `
 		SELECT count(DISTINCT h.attname) FROM pg_attribute h
-		JOIN pg_attribute p ON p.attrelid = 'public.request_logs'::regclass AND p.attname = h.attname
-		WHERE h.attrelid = 'public.request_logs_hot'::regclass
+		JOIN pg_attribute p ON p.attrelid = 'public._request_logs'::regclass AND p.attname = h.attname
+		WHERE h.attrelid = 'public._request_logs_hot'::regclass
 		  AND h.attnum > 0 AND NOT h.attisdropped
 		  AND p.attnum > 0 AND NOT p.attisdropped
 		  AND h.attname NOT IN ('customer_id', 'request_class', 'due_at')
@@ -274,9 +274,9 @@ func TestRequestLogsCurrentMonthViewEnsureRoundTrip(t *testing.T) {
 	}
 	if _, err := pool.Exec(ctx, `
 		CREATE VIEW public.request_logs_with_current_month_without_customer_id AS
-		SELECT id, request_id, ts, tenant_id, prompt_tokens FROM public.request_logs_hot
+		SELECT id, request_id, ts, tenant_id, prompt_tokens FROM public._request_logs_hot
 		UNION ALL
-		SELECT id, request_id, ts, tenant_id, prompt_tokens FROM public.request_logs
+		SELECT id, request_id, ts, tenant_id, prompt_tokens FROM public._request_logs
 	`); err != nil {
 		t.Fatalf("create stale pre-485 base wrapper: %v", err)
 	}
@@ -285,10 +285,10 @@ func TestRequestLogsCurrentMonthViewEnsureRoundTrip(t *testing.T) {
 		SELECT v.*, m.customer_id
 		FROM public.request_logs_with_current_month_without_customer_id v
 		LEFT JOIN LATERAL (
-			SELECT customer_id FROM public.request_logs_hot
+			SELECT customer_id FROM public._request_logs_hot
 			WHERE request_id = v.request_id AND ts = v.ts
 			UNION ALL
-			SELECT customer_id FROM public.request_logs
+			SELECT customer_id FROM public._request_logs
 			WHERE request_id = v.request_id AND ts = v.ts
 			LIMIT 1
 		) m ON true
@@ -352,8 +352,8 @@ func TestSessionFamilyTurnsForSessionSQLPushesPredicate(t *testing.T) {
 	if strings.Contains(SessionFamilyTurnsSourceSQL(), "WHERE t.session_id = $1") {
 		t.Fatal("SessionFamilyTurnsSourceSQL is the ts-window variant; it must stay predicate-free")
 	}
-	if strings.Contains(sql, "request_logs") {
-		t.Fatal("session-native source must not reference the retired request_logs family")
+	if strings.Contains(sql, "_request_logs") {
+		t.Fatal("session-native source must not reference the retired _request_logs family")
 	}
 }
 

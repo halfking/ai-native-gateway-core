@@ -665,7 +665,7 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 
 	// Top-level panic recovery so a panic during streaming (e.g. JSON parse
 	// failure, write to a closed connection) does not skip the deferred
-	// audit emit in the caller and lose the request_logs row entirely.
+	// audit emit in the caller and lose the _request_logs row entirely.
 	// Hoist gate above this defer so the recover closure can see it: a
 	// panic after the client already saw semantic output must not be
 	// classified as transparently resumable (would duplicate committed

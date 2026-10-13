@@ -24,14 +24,14 @@
 -- 例外：ts → event_at）。重放走 entryToProcessedRequest 同一桥接 +
 -- v2.Write（request_id 幂等）。
 --
--- 投影仅用 request_logs_hot 与 request_logs 父表的共有列（两表不同构：
+-- 投影仅用 _request_logs_hot 与 _request_logs 父表的共有列（两表不同构：
 -- hot 独有 status_code/caller_id/session_correlation_id，父表独有
 -- is_terminal/outbound_body/request_depth；hot.protocol_conversion 为 text
 -- 需显式 ::boolean，父表 agent_name/agent_type 为 varchar 显式 ::text）。
 -- project_id / namespace / submit_mode_header 为 mirror-only 字段，v1 无源，
 -- 回填行保持零值（entryToProcessedRequest 的 detector 走推断路径）。
 --
--- 结构注记：RLS 表（request_logs 父表 force RLS、session_turns(_hot) RLS）
+-- 结构注记：RLS 表（_request_logs 父表 force RLS、session_turns(_hot) RLS）
 -- 在多表组合查询中触发本机 PG 的 "invalid perminfoindex 0 in RTE with
 -- relid 0" planner 错误，故每张 RLS 表先单独物化到临时表（单表 SELECT 不
 -- 触发），join/反连接全部在临时表间进行。
@@ -81,7 +81,7 @@ SELECT request_id, ts, tenant_id, gw_session_id, is_final_success, success,
        origin_actor, attachments, outbound_msg_count,
        outbound_token_est, outbound_msg_hashes, quality_flags,
        quality_fix_actions, quality_score
-FROM public.request_logs_hot
+FROM public._request_logs_hot
 WHERE gw_session_id IS NOT NULL
   AND gw_session_id <> ''
   AND request_id IS NOT NULL
@@ -117,7 +117,7 @@ SELECT request_id, ts, tenant_id, gw_session_id, is_final_success, success,
        origin_actor, attachments, outbound_msg_count,
        outbound_token_est, outbound_msg_hashes, quality_flags,
        quality_fix_actions, quality_score
-FROM public.request_logs
+FROM public._request_logs
 WHERE gw_session_id IS NOT NULL
   AND gw_session_id <> ''
   AND request_id IS NOT NULL
@@ -127,10 +127,10 @@ WHERE gw_session_id IS NOT NULL
 \echo '== 3/5 物化 v1 bodies（hot∪父表，取最新） =='
 CREATE TEMP TABLE _g2_bodies_hot ON COMMIT DROP AS
 SELECT request_id, request_body, response_body, outbound_body, ts
-FROM public.request_logs_bodies_hot
+FROM public._request_logs_bodies_hot
 WHERE ts > now() - (:days + 1 || ' days')::interval;
 
--- 父表 request_logs_bodies 不物化：当月分区为 columnar 存储，全/窗扫描
+-- 父表 _request_logs_bodies 不物化：当月分区为 columnar 存储，全/窗扫描
 -- 分钟级且回填窗口（7 天）与 bodies_hot 热窗（0-7 天）基本重合；已 promote
 -- 的临界行缺正文可接受（G1/G2/G3 对账均不涉正文，session_bodies 缺口与
 -- 该行 turns 缺失同源）。

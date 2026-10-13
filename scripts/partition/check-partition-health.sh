@@ -368,8 +368,8 @@ done
 
 section "2. 分区附加状态（按表分组）"
 
-for parent_table in request_logs request_wal usage_ledger routing_decision_log \
-                     credential_model_index request_logs_bodies credit_ledger tool_usage_stats; do
+for parent_table in _request_logs request_wal usage_ledger routing_decision_log \
+                     credential_model_index _request_logs_bodies credit_ledger tool_usage_stats; do
   
   echo ""
   echo "--- $parent_table ---"
@@ -405,8 +405,8 @@ echo ""
 detached_count=0
 attached_count=0
 
-for parent_table in request_logs request_wal usage_ledger routing_decision_log \
-                     credential_model_index request_logs_bodies credit_ledger tool_usage_stats; do
+for parent_table in _request_logs request_wal usage_ledger routing_decision_log \
+                     credential_model_index _request_logs_bodies credit_ledger tool_usage_stats; do
   
   partition_name="${parent_table}_${current_month}"
   

@@ -103,7 +103,7 @@ func HandleCredentialSuccessRates(db *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
-// resetCredentialSuccessRateRows deletes stale failed request_logs_hot rows
+// resetCredentialSuccessRateRows deletes stale failed _request_logs_hot rows
 // for a (credential, model) pair inside a super-admin GUC transaction. The GUC
 // predicate in the DELETE only passes when app.current_role/app.current_tenant
 // were set in this transaction — on a bare pooled connection the predicate is
@@ -115,7 +115,7 @@ func resetCredentialSuccessRateRows(ctx context.Context, db txBeginner, credenti
 			return err
 		}
 		ct, err := tx.Exec(ctx, `
-			DELETE FROM request_logs_hot
+			DELETE FROM _request_logs_hot
 			WHERE credential_id = $1
 			  AND lower(COALESCE(outbound_model, client_model)) = lower($2)
 			  AND lower(COALESCE(request_status, '')) = 'failure'
@@ -160,7 +160,7 @@ func HandleResetCredentialSuccessRate(db *pgxpool.Pool) http.HandlerFunc {
 		}
 
 		// Delete failed requests older than 10 minutes to allow immediate recovery
-		// 2026-07-05 migration 341: DELETE targets request_logs_hot (独立热表).
+		// 2026-07-05 migration 341: DELETE targets _request_logs_hot (独立热表).
 		// 数据迁移到月度分区后无法再编辑（只读），但 _hot 表中 0-7 天数据
 		// 可被删除以重置失败凭据的评估状态。
 		//

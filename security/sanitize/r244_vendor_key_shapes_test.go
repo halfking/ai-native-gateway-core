@@ -11,7 +11,7 @@ import (
 // character class excludes `-`, so every real vendor key whose body carries
 // an infix hyphen (sk-proj-…, sk-ant-api03-…, sk-or-v1-…) was a silent miss.
 // A miss here is not a cosmetic gap — the plaintext key is forwarded to the
-// upstream provider and persisted in request_logs_bodies, which is exactly
+// upstream provider and persisted in _request_logs_bodies, which is exactly
 // the leak this package exists to prevent.
 //
 // The fix admits hyphen-joined segments. Two constraints keep the widened

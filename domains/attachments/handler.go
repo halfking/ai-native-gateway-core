@@ -132,7 +132,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // ListByRequest 处理 GET /api/logs/{request_id}/attachments。
 //
-// 从 request_logs.attachments 列读取该请求的附件元数据数组并返回 JSON。
+// 从 _request_logs.attachments 列读取该请求的附件元数据数组并返回 JSON。
 // 路径中的 request_id 由上层 mux 提取后传入。
 // R35 (2026-09-17 audit P1): tenantID 非空时（tenant_admin 调用方由 admin
 // 包装层传入）附加租户谓词——此前仅按 request_id 查询，租户管理员可枚举

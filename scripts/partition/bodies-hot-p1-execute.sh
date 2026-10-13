@@ -8,7 +8,7 @@
 #
 # 执行顺序（全部幂等/可回滚）：
 #   1) 自愈 SSH 隧道（localhost:15432 → 252）
-#   2) swap 重写 request_logs_bodies_hot（旧表保留 *_bloat_backup_<ts>，行数校验）
+#   2) swap 重写 _request_logs_bodies_hot（旧表保留 *_bloat_backup_<ts>，行数校验）
 #   3) 新活表 SET autovacuum reloptions（防复发；LIKE 不继承 reloptions，必须 swap 后做）
 #   4) to-252 索引补齐（handoff_logs_hot 2 个 btree，幂等）
 #   5) 后置诊断留档
@@ -61,7 +61,7 @@ bash scripts/partition/bodies-hot-repack.sh --env=252 --mode=swap \
 # ── 3) 新活表防复发 reloptions（swap 后新表不继承 reloptions） ───────────────
 echo; echo "──── [3] 新活表 reloptions ────"
 PGOPTIONS='-c statement_timeout=0 -c idle_in_transaction_session_timeout=0' PGPASSWORD="$PG_PASS" "$PG_PSQL_BIN" -X -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" -v ON_ERROR_STOP=1 -c "
-ALTER TABLE public.request_logs_bodies_hot SET (
+ALTER TABLE public._request_logs_bodies_hot SET (
   fillfactor = 90,
   autovacuum_enabled = true,
   autovacuum_vacuum_scale_factor = 0.02,

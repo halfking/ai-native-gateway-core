@@ -16,7 +16,7 @@ import (
 // # 它和已有那张表不是一回事
 //
 // `requestLogsReadInventory`（108 文件 / 256 调用点，R48-A10 订正）答的是「谁在文本上写了
-// `from request_logs…`」；`cmd/tools/sql_source_indirection_audit` 答的是
+// `from _request_logs…`」；`cmd/tools/sql_source_indirection_audit` 答的是
 // 「哪些读点的关系名是 Go 标识符拼进去的」。**两张表是两个总体，不是一张表的两半**
 // —— 这正是 §9.259 那句「114」踩的坑，下面 TestV1ReaderTieringDomainIsBothPopulations
 // 把两个总体各自的成员钉住，就是为了不让下一次再把它们当成一个数。
@@ -133,16 +133,16 @@ var v1ReaderRetirementTiering = map[string]retirementTieringEntry{
 	"cmd/gateway/waterfall_db.go":              {Tier: "②", Reason: "对外功能：waterfall DB 侧"},
 	// 2026-10-13 S4 波 4 出列：cmd/scenario_driver/main.go 断言改数会话族热表。
 	"cmd/tools/backfill_session_bodies/main.go": {Tier: "①", Reason: "一次性 bodies 回填工具：源就是 v1 bodies（matryoshka），V2 上线前置，跑完即退役"},
-	"cmd/tools/validate_sessions_v2/loader.go":  {Tier: "①", Reason: "一次性 v1↔v2 对账工具：LoadV1Turns 读 request_logs_bodies，工具跑完即退役（cmd/tools/validate_sessions_v2）"},
+	"cmd/tools/validate_sessions_v2/loader.go":  {Tier: "①", Reason: "一次性 v1↔v2 对账工具：LoadV1Turns 读 _request_logs_bodies，工具跑完即退役（cmd/tools/validate_sessions_v2）"},
 	"cmd/traffic-replay/main.go":                {Tier: "④", Reason: "scenario_driver / traffic-replay / compression-bench：压测与回放工具，读 v1 形态随工具定位"},
-	"db/db.go":                                  {Tier: "①", Reason: "v1 生命周期 DDL：12 处 CREATE/ALTER/DROP request_logs*，读的不是数据而是 v1 这张表本身（db/db.go）"},
+	"db/db.go":                                  {Tier: "①", Reason: "v1 生命周期 DDL：12 处 CREATE/ALTER/DROP _request_logs*，读的不是数据而是 v1 这张表本身（db/db.go）"},
 	"db/probe_views_unified.go":                 {Tier: "③", Reason: "节点状态派生 SSOT（SQL 片段）：探针/节点面"},
 	"discovery/discovery.go":                    {Tier: "②", Reason: "对外功能：模型自动发现"},
 	"domains/analysis/optimizer.go":             {Tier: "④", Reason: "优化建议器 loadStats 读 v1 统计：建议是「观测」还是「面向用户的产出」，两侧都讲得通"},
 	// domains/analysis/request_summary.go 与 domains/streaming/model_alternatives.go
 	// 于 2026-10-13（S3 波 2 停写切换）除名：两者读源已整体迁至会话族原生源
 	//（SessionFamilyTurnsForSessionSQL / SessionFamilyTurnsSourceSQL），
-	// 与 request_logs 族再无关系引用——不再是 v1 读方，分档域只收 v1 读方。
+	// 与 _request_logs 族再无关系引用——不再是 v1 读方，分档域只收 v1 读方。
 	"domains/attachments/handler.go":                  {Tier: "②", Reason: "对外功能：附件按请求列出（ListByRequest）"},
 	"domains/credentialstate/popularity_tracker.go":   {Tier: "②", Reason: "后台：模型热度统计"},
 	"domains/hooks/goal/history_store.go":             {Tier: "②", Reason: "对外功能：目标历史按会话取（FetchBySession）"},
@@ -168,13 +168,13 @@ var v1ReaderRetirementTiering = map[string]retirementTieringEntry{
 // v1ArmViewNames 是「体里含 v1 臂」的视图集合，**与运行时真库对过账**。
 //
 // 真库 `pg_class`（2026-10-06 实测，`llm-gateway-pg` / `llm_gateway`）里
-// `relkind='v' AND relname LIKE 'request_logs%'` 只有这 4 个，
+// `relkind='v' AND relname LIKE '_request_logs%'` 只有这 4 个，
 // 且 4 个**全部**引用 v1 基表：
 //
-//	request_logs_bodies_with_current_month                  → request_logs_bodies, request_logs_bodies_hot
-//	request_logs_with_current_month                          → request_logs, request_logs_hot, session_turns(_hot), session_turn_details(_hot)
-//	request_logs_with_current_month_without_customer_id      → request_logs, request_logs_hot
-//	request_logs_with_current_month_without_request_class_due_at → request_logs, request_logs_hot
+//	request_logs_bodies_with_current_month                  → _request_logs_bodies, _request_logs_bodies_hot
+//	request_logs_with_current_month                          → _request_logs, _request_logs_hot, session_turns(_hot), session_turn_details(_hot)
+//	request_logs_with_current_month_without_customer_id      → _request_logs, _request_logs_hot
+//	request_logs_with_current_month_without_request_class_due_at → _request_logs, _request_logs_hot
 //
 // ★ 「与运行时对账」不是形式：推导源是 `sql/objects/views/*.sql` +
 // `db/request_logs_view_schema.go`，而后面那两个 `…_without_*` **没有仓库 DDL 文件**
@@ -226,7 +226,10 @@ var v1ArmLiteralBlindSpot = []string{
 	"cmd/gateway/waterfall_db.go",
 	"db/db.go",
 	"internal/quality/minute_aggregator.go",
-	"admin/data_lifecycle.go",
+	// admin/data_lifecycle.go 于 2026-10-14（合并轮）移出本桶：趋势端点的
+	// bodies 计数改为跨族 + 冻结点切分（+dbpkg.V1FreezeCutoffSQL+ 与
+	// +dbpkg.SessionBodiesHasOutboundPredicate+ 拼接点），拼接点工具从此
+	// 看得见它 —— 按本门口径迁入 v1ReaderIndirectPopulation。
 	// data_lifecycle_blobs 于 2026-10-13（S4 波 4）迁出：会话臂治理。
 	"admin/live_stream_sse.go",
 	"admin/model_routing_diagnostic.go",
@@ -277,6 +280,9 @@ var v1ReaderIndirectPopulation = []string{
 	// 2026-10-13（S4 波 4）迁入：quality_correlations 改经 canonical+切换层拼接。
 	"admin/quality_correlations.go",
 	"admin/auto_title_generator.go",
+	// 2026-10-14（合并轮）自 v1ArmLiteralBlindSpot 迁入：趋势端点 bodies 计数
+	// 改跨族 + 冻结点切分（+dbpkg.V1FreezeCutoffSQL+ 拼接），工具可见。
+	"admin/data_lifecycle.go",
 	// 2026-10-13（S4 停写交接）自 v1ArmLiteralBlindSpot 迁入：bodies 读加
 	// 了 session 兜底拼接点（+dbpkg.SessionFamilyBodiesSourceSQL()+），
 	// 拼接点工具从此看得见。
@@ -389,7 +395,7 @@ func TestV1ReaderTieringDomainIsBothPopulations(t *testing.T) {
 		// 2026-10-13（S3 波 2 停写切换）：request_summary / model_alternatives
 		// 两文件读源整体迁会话族原生源，自字面量总体与分档域同步除名
 		//（106/24/16/114）；分档域只收 v1 读方，两个文件的退役负担随
-		// request_logs 族的边界一起消失。
+		// _request_logs 族的边界一起消失。
 		// 2026-10-13（S3 波 3，同日第二分片）：admin/routing.go 同款除名
 		//（popularModelsHotSQL → 会话族原生源；106→105、114→113）。
 		// 2026-10-13（S4 波 4）：compression_sessions / scenario_driver 整体
@@ -398,8 +404,10 @@ func TestV1ReaderTieringDomainIsBothPopulations(t *testing.T) {
 		// 2026-10-13（S4 停写交接）：body_resolver / unified_detail 因加了
 		// session 兜底拼接点自盲区桶迁入（+2）；两者同时仍是字面量读方
 		//（交集 14→16），并集不变。
-		{"间接总体", len(indirect), 25},
-		{"交集", inter, 16},
+		// 2026-10-14（合并轮）：data_lifecycle 趋势跨族化后同款迁入
+		//（间接 25→26、交集 16→17，并集不变——它本就在字面量总体里）。
+		{"间接总体", len(indirect), 26},
+		{"交集", inter, 17},
 		{"并集（域）", union, 110},
 	} {
 		if c.got != c.exp {
@@ -432,15 +440,15 @@ func TestV1ReaderTieringDomainIsBothPopulations(t *testing.T) {
 // 而它还留在表里被当成退役工作量。这里对每个文件独立取证：剥掉 Go 与 SQL 注释后，
 // 它必须仍然含 v1 关系的 `FROM/JOIN` 字面量，或含一个 v1 关系名字面量。
 //
-// ★ 带阴性对照：判据在注释里写 `FROM request_logs_hot` 时必须给 0。
+// ★ 带阴性对照：判据在注释里写 `FROM _request_logs_hot` 时必须给 0。
 // 没有对照的话，「剥注释」写错了也会一直绿。
 func TestV1ReaderTieringEveryFileProvenToReadV1(t *testing.T) {
 	root := repoRootFromCaller(t)
 
 	// 阴性 + 阳性对照（两条通路各一组）。没有对照，「剥注释没生效」
 	// 与「正则写窄了」都会表现为全体假绿，而假绿看起来和通过一模一样。
-	if l, _ := v1ReadEvidence("-- FROM request_logs_hot\n// FROM request_logs_bodies_hot\n"); l != 0 {
-		t.Errorf("阴性对照失败：注释里的 FROM request_logs 被判成 %d 个读点，期望 0 —— "+
+	if l, _ := v1ReadEvidence("-- FROM _request_logs_hot\n// FROM _request_logs_bodies_hot\n"); l != 0 {
+		t.Errorf("阴性对照失败：注释里的 FROM _request_logs 被判成 %d 个读点，期望 0 —— "+
 			"剥注释没生效，这道门会恒绿", l)
 	}
 	if l, sp := v1ReadEvidence("SELECT 1 FROM request_logs_with_current_month"); l == 0 || sp != 0 {
@@ -452,8 +460,8 @@ func TestV1ReaderTieringEveryFileProvenToReadV1(t *testing.T) {
 	}
 	// ★ 这条对照来自 domains/streaming/model_alternatives.go —— 那个文件里
 	// `-- request_logs_with_current_month …` 只在 SQL 注释中，真读点是
-	// `FROM request_logs_hot`。剥注释若不钻进原始字符串，它会被误判成臂视图读方。
-	if readsAnyV1ArmView("`\n-- request_logs_with_current_month is a UNION\nFROM request_logs_hot\n`") {
+	// `FROM _request_logs_hot`。剥注释若不钻进原始字符串，它会被误判成臂视图读方。
+	if readsAnyV1ArmView("`\n-- request_logs_with_current_month is a UNION\nFROM _request_logs_hot\n`") {
 		t.Errorf("对照失败：原始字符串里的 SQL 注释被判成 v1 臂视图读点 —— " +
 			"剥注释没有钻进字符串里（domains/streaming/model_alternatives.go 就是这个形状）")
 	}
@@ -762,7 +770,7 @@ func readFileForEvidence(path string) (string, error) {
 //
 // ★ 为什么捕获再判、而不是把 v1 表名直接写进正则：
 // Go 用的是 RE2，**不支持 lookahead**（`(?![a-z0-9_])` 编译不过），
-// 而 `\b` 在这里**不可用** —— `_` 是词字符，所以 `request_logs_bodies_hot`
+// 而 `\b` 在这里**不可用** —— `_` 是词字符，所以 `_request_logs_bodies_hot`
 // 会在 `_bodies` 之后要求一个词边界，而下一个字符是 `_` ⇒ 永不成立
 // ⇒ bodies 视图被漏判。首次对账时 4 个 v1 臂视图全部报「不含 v1 基表」，
 // 就是这个坑。所以改成「捕获标识符 → 用集合判定」。
@@ -775,14 +783,20 @@ var fromJoinV1RE = regexp.MustCompile(`(?i)\b(?:from|join)\s+(?:public\.)?([a-z_
 var splicedFromRE = regexp.MustCompile(`(?i)\b(?:from|join)\s+(?:` + "`" + `|"|[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*\s*\+)`)
 
 // quotedV1RelationRE 捕获字符串字面量的内容，用于切换层 / 结构体字段形态
-// （`TurnsTable: "request_logs_hot"`、`return "request_logs_with_current_month"`）。
+// （`TurnsTable: "_request_logs_hot"`、`return "request_logs_with_current_month"`）。
 var quotedV1RelationRE = regexp.MustCompile(`"([^"\n]*)"`)
 
 // v1RelationNames 是 v1 族关系的判定集合（**闭合**，不是通配）。
 func isV1Relation(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
+	// 两代物理名并存：迁移 860（2026-10-14）把 v1 底表改名为 `_` 前缀
+	// （待删除标志）。生产 Go 源码已随清扫只用前缀名，但 SQLite 侧
+	// （storage/sqlite/request_log_store.go，另一个存储面）与历史迁移
+	// 文本仍是旧名——分档域的「读 v1」证据对两代名字都要认得。
 	case "request_logs", "request_logs_hot", "request_logs_bodies",
-		"request_logs_bodies_hot", "request_logs_archive":
+		"request_logs_bodies_hot", "request_logs_archive",
+		"_request_logs", "_request_logs_hot", "_request_logs_bodies",
+		"_request_logs_bodies_hot", "_request_logs_archive":
 		return true
 	}
 	for _, v := range v1ArmViewNamesRuntimeChecked {
@@ -793,7 +807,7 @@ func isV1Relation(name string) bool {
 	return false
 }
 
-// firstRelationToken 取 `FROM request_logs_hot r` 里的第一个 token，
+// firstRelationToken 取 `FROM _request_logs_hot r` 里的第一个 token，
 // 并剥掉 `AS` 别名。`FROM x, y` 这种逗号列表不在本判据内（v1 读点不会这样写）。
 func firstRelationToken(rest string) string {
 	fields := strings.Fields(rest)
@@ -817,7 +831,7 @@ func firstRelationToken(rest string) string {
 //	        于是字符串**内部**的 SQL 注释活了下来 ——
 //	        `domains/streaming/model_alternatives.go` 的第 230 行
 //	        `-- request_logs_with_current_month is a UNION of …` 被当成真读点，
-//	        而它真正的读点是第 244 行的 `FROM request_logs_hot`（**基表**，不是臂视图）。
+//	        而它真正的读点是第 244 行的 `FROM _request_logs_hot`（**基表**，不是臂视图）。
 //	        那个文件正是 `request_logs_reader_population_test.go` 举的反例，
 //	        原因一字不差。
 //

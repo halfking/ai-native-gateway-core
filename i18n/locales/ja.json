@@ -20,6 +20,9 @@
   "SESSION_FORBIDDEN": {
     "other": "このセッションは該当 API キーの所有ではありません"
   },
+  "SESSION_STORE_UNAVAILABLE": {
+    "other": "セッションストアが一時的に利用できません。後でもう一度お試しください"
+  },
   "SESSION_ASSIGN_FAILED": {
     "other": "セッション ID の割り当てに失敗しました"
   },

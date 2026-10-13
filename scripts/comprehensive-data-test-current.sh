@@ -1,5 +1,5 @@
 #!/bin/bash
-# request_logs 完整数据验证 - 适配当前分区表架构
+# _request_logs 完整数据验证 - 适配当前分区表架构
 # 测试目标：验证当前分区表的 CRUD 操作，发现数据处理问题
 
 set -e
@@ -42,32 +42,32 @@ function check_environment() {
     
     log_info "检查目标数据库: $DB_HOST:$DB_PORT/$DB_NAME"
     
-    # 检查 request_logs 表
-    local table_exists=$(psql_exec "SELECT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'request_logs');" | xargs)
+    # 检查 _request_logs 表
+    local table_exists=$(psql_exec "SELECT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = '_request_logs');" | xargs)
     
     if [[ "$table_exists" == "t" ]]; then
-        log_info "✅ request_logs 表存在"
+        log_info "✅ _request_logs 表存在"
         ((PASSED_TESTS++))
     else
-        log_error "❌ request_logs 表不存在"
+        log_error "❌ _request_logs 表不存在"
         exit 1
     fi
     
     # 检查表类型
-    local is_partitioned=$(psql_exec "SELECT relkind = 'p' FROM pg_class WHERE relname = 'request_logs';" | xargs)
+    local is_partitioned=$(psql_exec "SELECT relkind = 'p' FROM pg_class WHERE relname = '_request_logs';" | xargs)
     
     if [[ "$is_partitioned" == "t" ]]; then
-        log_info "✅ request_logs 是分区表"
+        log_info "✅ _request_logs 是分区表"
         
         # 统计分区数量
-        local partition_count=$(psql_exec "SELECT COUNT(*) FROM pg_inherits i JOIN pg_class c ON i.inhrelid = c.oid WHERE i.inhparent = 'request_logs'::regclass;" | xargs)
+        local partition_count=$(psql_exec "SELECT COUNT(*) FROM pg_inherits i JOIN pg_class c ON i.inhrelid = c.oid WHERE i.inhparent = '_request_logs'::regclass;" | xargs)
         log_info "   分区数量: $partition_count"
         
         # 列出分区
         log_info "   分区列表:"
-        psql_exec "SELECT c.relname FROM pg_inherits i JOIN pg_class c ON i.inhrelid = c.oid WHERE i.inhparent = 'request_logs'::regclass ORDER BY c.relname;"
+        psql_exec "SELECT c.relname FROM pg_inherits i JOIN pg_class c ON i.inhrelid = c.oid WHERE i.inhparent = '_request_logs'::regclass ORDER BY c.relname;"
     else
-        log_warn "⚠️  request_logs 不是分区表（可能是普通表）"
+        log_warn "⚠️  _request_logs 不是分区表（可能是普通表）"
     fi
 }
 
@@ -77,8 +77,8 @@ function check_environment() {
 function cleanup_test_data() {
     log_section "步骤 1: 清理旧测试数据"
     
-    log_info "清理 request_logs 测试数据..."
-    local deleted=$(psql_exec "DELETE FROM request_logs WHERE request_id LIKE 'test-data-validation-%' RETURNING request_id;" | wc -l | xargs)
+    log_info "清理 _request_logs 测试数据..."
+    local deleted=$(psql_exec "DELETE FROM _request_logs WHERE request_id LIKE 'test-data-validation-%' RETURNING request_id;" | wc -l | xargs)
     log_info "清理了 $deleted 条旧测试数据"
 }
 
@@ -99,7 +99,7 @@ function generate_test_data() {
     log_info "场景 1: GPT-4 成功请求..."
     for i in {1..6}; do
         local req_id="test-data-validation-gpt4-${timestamp}-${i}"
-        if psql_exec "INSERT INTO request_logs (
+        if psql_exec "INSERT INTO _request_logs (
             request_id, ts, tenant_id, success, 
             client_model, outbound_model, 
             prompt_tokens, completion_tokens, total_tokens,
@@ -121,7 +121,7 @@ function generate_test_data() {
     log_info "场景 2: Claude 成功请求..."
     for i in {1..4}; do
         local req_id="test-data-validation-claude-${timestamp}-${i}"
-        if psql_exec "INSERT INTO request_logs (
+        if psql_exec "INSERT INTO _request_logs (
             request_id, ts, tenant_id, success,
             client_model, outbound_model,
             prompt_tokens, completion_tokens, total_tokens,
@@ -142,7 +142,7 @@ function generate_test_data() {
     log_info "场景 3: rate_limit 失败..."
     for i in {1..5}; do
         local req_id="test-data-validation-ratelimit-${timestamp}-${i}"
-        if psql_exec "INSERT INTO request_logs (
+        if psql_exec "INSERT INTO _request_logs (
             request_id, ts, tenant_id, success,
             client_model, error_kind,
             latency_ms
@@ -161,7 +161,7 @@ function generate_test_data() {
     log_info "场景 4: timeout 失败..."
     for i in {1..3}; do
         local req_id="test-data-validation-timeout-${timestamp}-${i}"
-        if psql_exec "INSERT INTO request_logs (
+        if psql_exec "INSERT INTO _request_logs (
             request_id, ts, tenant_id, success,
             client_model, error_kind,
             latency_ms
@@ -180,7 +180,7 @@ function generate_test_data() {
     log_info "场景 5: 流式响应..."
     for i in {1..4}; do
         local req_id="test-data-validation-stream-${timestamp}-${i}"
-        if psql_exec "INSERT INTO request_logs (
+        if psql_exec "INSERT INTO _request_logs (
             request_id, ts, tenant_id, success,
             client_model, outbound_model,
             prompt_tokens, completion_tokens,
@@ -203,7 +203,7 @@ function generate_test_data() {
     log_info "场景 6: 缓存命中..."
     for i in {1..3}; do
         local req_id="test-data-validation-cache-${timestamp}-${i}"
-        if psql_exec "INSERT INTO request_logs (
+        if psql_exec "INSERT INTO _request_logs (
             request_id, ts, tenant_id, success,
             client_model, cache_read_tokens,
             prompt_tokens, completion_tokens,
@@ -243,7 +243,7 @@ function verify_insert() {
     log_section "步骤 3: 验证数据插入"
     ((TOTAL_TESTS++))
     
-    local count=$(psql_exec "SELECT COUNT(*) FROM request_logs WHERE request_id LIKE 'test-data-validation-%';" | xargs)
+    local count=$(psql_exec "SELECT COUNT(*) FROM _request_logs WHERE request_id LIKE 'test-data-validation-%';" | xargs)
     
     log_info "当前测试数据数量: $count"
     
@@ -270,7 +270,7 @@ function verify_insert() {
                 ELSE '其他'
             END as scenario,
             COUNT(*) as count
-        FROM request_logs
+        FROM _request_logs
         WHERE request_id LIKE 'test-data-validation-%'
         GROUP BY scenario
         ORDER BY count DESC;
@@ -286,7 +286,7 @@ function test_update() {
     
     log_info "场景 A: 单条 UPDATE (模拟流式响应完成后更新 tokens)"
     
-    local test_id=$(psql_exec "SELECT request_id FROM request_logs WHERE request_id LIKE 'test-data-validation-gpt4%' LIMIT 1;" | xargs)
+    local test_id=$(psql_exec "SELECT request_id FROM _request_logs WHERE request_id LIKE 'test-data-validation-gpt4%' LIMIT 1;" | xargs)
     
     if [[ -z "$test_id" ]]; then
         log_error "❌ 找不到测试记录"
@@ -298,11 +298,11 @@ function test_update() {
     log_info "测试记录: $test_id"
     
     # 更新前
-    local before=$(psql_exec "SELECT prompt_tokens, completion_tokens FROM request_logs WHERE request_id = '$test_id';" | xargs)
+    local before=$(psql_exec "SELECT prompt_tokens, completion_tokens FROM _request_logs WHERE request_id = '$test_id';" | xargs)
     log_info "更新前: $before"
     
     # 执行 UPDATE
-    local update_result=$(psql_exec "UPDATE request_logs SET prompt_tokens = 999, completion_tokens = 888, total_tokens = 1887 WHERE request_id = '$test_id';" 2>&1)
+    local update_result=$(psql_exec "UPDATE _request_logs SET prompt_tokens = 999, completion_tokens = 888, total_tokens = 1887 WHERE request_id = '$test_id';" 2>&1)
     
     if echo "$update_result" | grep -qi "error"; then
         log_error "❌ UPDATE 执行出错: $update_result"
@@ -312,7 +312,7 @@ function test_update() {
     fi
     
     # 更新后
-    local after=$(psql_exec "SELECT prompt_tokens, completion_tokens, total_tokens FROM request_logs WHERE request_id = '$test_id';" | xargs)
+    local after=$(psql_exec "SELECT prompt_tokens, completion_tokens, total_tokens FROM _request_logs WHERE request_id = '$test_id';" | xargs)
     log_info "更新后: $after"
     
     if echo "$after" | grep -q "999.*888.*1887"; then
@@ -327,7 +327,7 @@ function test_update() {
     # 场景 B: 批量更新
     log_info "\n场景 B: 批量 UPDATE cost"
     
-    local updated_rows=$(psql_exec "UPDATE request_logs SET cost_usd = 0.888 WHERE request_id LIKE 'test-data-validation-gpt4%' OR request_id LIKE 'test-data-validation-claude%' RETURNING request_id;" 2>&1 | grep -c "test-data-validation" || echo "0")
+    local updated_rows=$(psql_exec "UPDATE _request_logs SET cost_usd = 0.888 WHERE request_id LIKE 'test-data-validation-gpt4%' OR request_id LIKE 'test-data-validation-claude%' RETURNING request_id;" 2>&1 | grep -c "test-data-validation" || echo "0")
     updated_rows=$(echo "$updated_rows" | xargs)
     
     log_info "批量更新了 $updated_rows 行"
@@ -354,7 +354,7 @@ function test_queries() {
             COUNT(*) as total,
             SUM(CASE WHEN success THEN 1 ELSE 0 END) as success_count,
             ROUND(100.0 * SUM(CASE WHEN success THEN 1 ELSE 0 END) / COUNT(*), 2) as success_rate
-        FROM request_logs
+        FROM _request_logs
         WHERE request_id LIKE 'test-data-validation-%'
         GROUP BY client_model
         ORDER BY total DESC;
@@ -365,7 +365,7 @@ function test_queries() {
         SELECT 
             error_kind,
             COUNT(*) as count
-        FROM request_logs
+        FROM _request_logs
         WHERE request_id LIKE 'test-data-validation-%' AND error_kind IS NOT NULL
         GROUP BY error_kind
         ORDER BY count DESC;
@@ -383,7 +383,7 @@ function test_queries() {
             END as latency_range,
             COUNT(*) as count,
             AVG(latency_ms)::int as avg_latency
-        FROM request_logs
+        FROM _request_logs
         WHERE request_id LIKE 'test-data-validation-%' AND latency_ms IS NOT NULL
         GROUP BY latency_range
         ORDER BY avg_latency;
@@ -401,13 +401,13 @@ function test_delete() {
     
     log_info "场景 A: 单条 DELETE"
     
-    local test_id=$(psql_exec "SELECT request_id FROM request_logs WHERE request_id LIKE 'test-data-validation-timeout%' LIMIT 1;" | xargs)
+    local test_id=$(psql_exec "SELECT request_id FROM _request_logs WHERE request_id LIKE 'test-data-validation-timeout%' LIMIT 1;" | xargs)
     
     if [[ -n "$test_id" ]]; then
         log_info "删除记录: $test_id"
-        psql_exec "DELETE FROM request_logs WHERE request_id = '$test_id';" > /dev/null 2>&1
+        psql_exec "DELETE FROM _request_logs WHERE request_id = '$test_id';" > /dev/null 2>&1
         
-        local exists=$(psql_exec "SELECT COUNT(*) FROM request_logs WHERE request_id = '$test_id';" | xargs)
+        local exists=$(psql_exec "SELECT COUNT(*) FROM _request_logs WHERE request_id = '$test_id';" | xargs)
         
         if [[ "$exists" -eq 0 ]]; then
             log_info "✅ 单条 DELETE 成功"
@@ -424,12 +424,12 @@ function test_delete() {
     
     log_info "\n场景 B: 批量 DELETE (清理所有测试数据)"
     
-    local before_count=$(psql_exec "SELECT COUNT(*) FROM request_logs WHERE request_id LIKE 'test-data-validation-%';" | xargs)
+    local before_count=$(psql_exec "SELECT COUNT(*) FROM _request_logs WHERE request_id LIKE 'test-data-validation-%';" | xargs)
     log_info "删除前: $before_count 条"
     
-    psql_exec "DELETE FROM request_logs WHERE request_id LIKE 'test-data-validation-%';" > /dev/null 2>&1
+    psql_exec "DELETE FROM _request_logs WHERE request_id LIKE 'test-data-validation-%';" > /dev/null 2>&1
     
-    local after_count=$(psql_exec "SELECT COUNT(*) FROM request_logs WHERE request_id LIKE 'test-data-validation-%';" | xargs)
+    local after_count=$(psql_exec "SELECT COUNT(*) FROM _request_logs WHERE request_id LIKE 'test-data-validation-%';" | xargs)
     log_info "删除后: $after_count 条"
     
     if [[ "$after_count" -eq 0 ]]; then
@@ -451,7 +451,7 @@ function check_data_integrity() {
     
     local null_count=$(psql_exec "
         SELECT COUNT(*) 
-        FROM request_logs 
+        FROM _request_logs 
         WHERE request_id IS NULL 
            OR ts IS NULL 
            OR tenant_id IS NULL
@@ -471,7 +471,7 @@ function check_data_integrity() {
     
     local inconsistent=$(psql_exec "
         SELECT COUNT(*) 
-        FROM request_logs 
+        FROM _request_logs 
         WHERE (success = true AND error_kind IS NOT NULL)
            OR (success = false AND error_kind IS NULL)
         LIMIT 100;
@@ -488,7 +488,7 @@ function check_data_integrity() {
     
     local wrong_total=$(psql_exec "
         SELECT COUNT(*) 
-        FROM request_logs 
+        FROM _request_logs 
         WHERE total_tokens IS NOT NULL 
           AND prompt_tokens IS NOT NULL 
           AND completion_tokens IS NOT NULL
@@ -516,10 +516,10 @@ function check_partitions() {
         SELECT 
             c.relname as partition_name,
             pg_size_pretty(pg_total_relation_size(c.oid)) as size,
-            (SELECT count(*) FROM ONLY request_logs WHERE tableoid = c.oid) as row_count
+            (SELECT count(*) FROM ONLY _request_logs WHERE tableoid = c.oid) as row_count
         FROM pg_inherits i
         JOIN pg_class c ON i.inhrelid = c.oid
-        WHERE i.inhparent = 'request_logs'::regclass
+        WHERE i.inhparent = '_request_logs'::regclass
         ORDER BY c.relname;
     "
     

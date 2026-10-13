@@ -1,5 +1,5 @@
 // bg/active_probe_emitter.go — translate a ProbeResult into a
-// request_logs row, so the probe shows up in the realtime request stream.
+// _request_logs row, so the probe shows up in the realtime request stream.
 //
 // Each emission:
 //  1. builds a telemetry.RequestLogEntry with task_type='probe_triggered'
@@ -9,10 +9,10 @@
 //  3. sets parent_request_id = the original failed business request_id
 //     so operators can correlate "client retry caused this probe" ↔ probe
 //  4. calls telemetryClient.EmitRequestLogInsert which both persists to
-//     request_logs_hot AND fires the onEmitted hook (live-stream SSE hub)
+//     _request_logs_hot AND fires the onEmitted hook (live-stream SSE hub)
 //     from the same goroutine — the dashboard sees the row immediately
 //
-// No new database table is introduced; we re-use request_logs + its
+// No new database table is introduced; we re-use _request_logs + its
 // auto-route observability columns (task_type, task_type_chosen, is_auto_request,
 // quality_flags, auto_decision JSONB).
 package bg
@@ -239,7 +239,7 @@ func (e *ActiveProbeEmitter) publishSink(
 		// (node_probe:<credID>:<model>) so the pending / in-flight / terminal
 		// transitions collapse into one SSE tile. The high-cardinality
 		// telemetry request_id stays separate (kept in auto_decision / the
-		// request_logs row) and is NOT used for the SSE key.
+		// _request_logs row) and is NOT used for the SSE key.
 		ID:           buildNodeProbeTaskID(credID, rawModel),
 		TaskType:     "node_probe",
 		Source:       probeSourceForOrigin(origin),
@@ -355,14 +355,14 @@ func buildProbeRequestLogEntry(
 		// can correlate the probe row with its trigger.
 		ParentRequestID: strPtrTelemetry(parentReqID),
 		ClientRequestID: strPtrTelemetry(parentReqID),
-		// 2026-07-14 fix: request_logs.chk_compression_parent_single is
+		// 2026-07-14 fix: _request_logs.chk_compression_parent_single is
 		// `parent_request_id IS NULL OR compression_reason IS NOT NULL`.
 		// The parent_request_id column was originally reserved for the
 		// compression parent-child chain; we reuse it here for probe→trigger
 		// correlation, so we MUST supply a non-NULL compression_reason to
 		// satisfy the CHECK constraint. Without this every probe INSERT was
 		// silently rejected with SQLSTATE 23514, the row never landed in
-		// request_logs_hot, and the live-stream tile (pushed via onEmitted)
+		// _request_logs_hot, and the live-stream tile (pushed via onEmitted)
 		// vanished on refresh / returned 404 on /api/logs/:id.
 		// "probe_correlation" makes the non-compression intent explicit and
 		// keeps the column self-documenting for operators reading the table.
@@ -382,7 +382,7 @@ func buildProbeRequestLogEntry(
 // Format: "probe-direct-c{cred}-m{model}-a{attempt}-{ok|fail}-{unix_nano}"
 //
 // The "probe-direct-" prefix matches the dashboard filter convention so
-// operators can grep request_logs by request_id LIKE 'probe-direct-%'.
+// operators can grep _request_logs by request_id LIKE 'probe-direct-%'.
 // All non-alphanumeric model characters are sanitised to '_' so the id
 // is safe to use in URLs, log fields, and the SSE JSON envelope.
 func buildProbeRequestID(credID int, model string, attempt int, success bool, ts time.Time) string {
@@ -394,7 +394,7 @@ func buildProbeRequestID(credID int, model string, attempt int, success bool, ts
 	return fmt.Sprintf("probe-direct-c%d-m%s-a%d-%s-%d", credID, safe, attempt, suffix, ts.UnixNano())
 }
 
-// buildProbeQualityFlags returns the array stored in request_logs.quality_flags.
+// buildProbeQualityFlags returns the array stored in _request_logs.quality_flags.
 // The dashboard uses these flags to:
 //
 //  1. recognise the row as a probe (presence of "probe")
@@ -454,7 +454,7 @@ func sanitizeModelForID(s string) string {
 func strPtrTelemetry(s string) *string { return &s }
 func boolPtrTelemetry(b bool) *bool    { return &b }
 
-// strPtrOrNil returns nil for the empty string so that request_logs
+// strPtrOrNil returns nil for the empty string so that _request_logs
 // columns like failure_stage stay NULL rather than being stored as "".
 func strPtrOrNil(s string) *string {
 	if s == "" {

@@ -39,7 +39,7 @@ const ResultPending = "pending"
 // compactForStorage drops candidate-pool placeholder entries (Result ==
 // ResultPending) once a real successful attempt exists.
 //
-// Why this matters beyond tidiness: request_logs.routing_attempts is consumed
+// Why this matters beyond tidiness: _request_logs.routing_attempts is consumed
 // arithmetically. bg/auto_route_settle_worker.go derives
 //
 //	retry_count = len(routing_attempts -> 'attempts') - 1
@@ -141,7 +141,7 @@ func (t *RoutingAttemptsTracker) FailedAttempts() []RoutingAttempt {
 // ToJSONBytes 序列化为 JSONB 字节
 // 优化：仅在多次尝试或失败时才返回数据，单次成功返回 nil 节省存储。
 // 序列化前会经过 compactForStorage 清理（见其注释）——候选池占位条目
-// 在成功后剔除，否则 request_logs.routing_attempts 的长度会污染
+// 在成功后剔除，否则 _request_logs.routing_attempts 的长度会污染
 // auto_route_settle_worker 的 retry_count 推导（长度-1 = 重试数）。
 func (t *RoutingAttemptsTracker) ToJSONBytes() ([]byte, error) {
 	if t == nil {

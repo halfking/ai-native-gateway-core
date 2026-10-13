@@ -20,7 +20,7 @@ package main
 // **那正是本门踩的坑之一**——先手工搭夹具、没先找现成 helper，教训见审计 §9.187.4。
 //
 // 本门**仍然**在共享库上跑、靠清理兜底，理由只有一个：
-// `ExecuteRepair` 需要**生产那套完整 schema**——`request_logs`、
+// `ExecuteRepair` 需要**生产那套完整 schema**——`_request_logs`、
 // `session_turns{,_hot}`、`session_bodies{,_hot}`、`sessions`、`session_turn_logs`、
 // 两个合并视图（`session_bodies_unified` / `session_turns_with_current_month`）、
 // 以及 `session_turns_advisory_lock_key` 函数。塞不进「最小内联 DDL」的形状。
@@ -111,7 +111,7 @@ func TestExecuteRepair_RealDB_BodiesLeaveNoRowOnEitherSurface(t *testing.T) {
 			"\n  本门在此跳过**不是通过**。同一条件下"+
 			"\n  admin.TestSessionFamilyTwoSurfaceUnionShapeIsExecutable 会**报红**"+
 			"（§9.184），环境缺陷在那里持续可见。\n"+
-			"  参见审计 §9.196：成因是 request_logs_bodies 的 RANGE 分区被 migration 765"+
+			"  参见审计 §9.196：成因是 _request_logs_bodies 的 RANGE 分区被 migration 765"+
 			"\n  转成了 Citus `columnar`，与 D25-a「重建库」的结论**相反**——重建不会让它复发。",
 			strings.Join(preErrs, " | "))
 	}
@@ -127,14 +127,14 @@ func TestExecuteRepair_RealDB_BodiesLeaveNoRowOnEitherSurface(t *testing.T) {
 		// 清理**不吞错误**：清不掉就报红。一个污染测试库的测试，
 		// 哪怕断言全绿也是负资产。
 		//
-		// 表清单里**不含** `request_logs_bodies{,_hot}`：这两张表
+		// 表清单里**不含** `_request_logs_bodies{,_hot}`：这两张表
 		// **没有 tenant_id 列**（第一版把它们列进来，清理直接报
 		// "column tenant_id does not exist"，同样被 `_, _ =` 吞掉）。
 		// 本测试不往那两张表写数据，故不列；真要写，得按 request_id 删。
 		for _, tbl := range []string{
 			"public.sessions", "public.session_bodies", "public.session_bodies_hot",
 			"public.session_turns", "public.session_turns_hot", "public.session_turn_logs",
-			"public.request_logs",
+			"public._request_logs",
 		} {
 			if _, err := pool.Exec(cctx,
 				fmt.Sprintf("DELETE FROM %s WHERE tenant_id = $1", tbl), tenant); err != nil {
@@ -144,24 +144,24 @@ func TestExecuteRepair_RealDB_BodiesLeaveNoRowOnEitherSurface(t *testing.T) {
 		// 池必须在清理**之后**才关：第一版写的是 `defer pool.Close()`，
 		// 而 Go 里 defer 在函数体返回时执行、**早于** t.Cleanup 回调
 		// ⇒ 清理时池已关闭，每条 DELETE 全部失败；我又用 `_, _ =` 吞掉
-		// ⇒ **测试绿着把夹具留在库里**（实测残留 request_logs=6 / bodies=6 /
+		// ⇒ **测试绿着把夹具留在库里**（实测残留 _request_logs=6 / bodies=6 /
 		// bodies_hot=1 / sessions=3 / turns=6，正好是三次运行的量）。
 		// 与 §9.184.4 同族：**失败被静默吞掉 ⇒ 门看起来是好的。**
 		pool.Close()
 	})
 
 	// ---- 夹具 1：V1 源（ExecuteRepair 的重建来源）----
-	// provider_id / credential_id 在 request_logs 里是 **bigint**
+	// provider_id / credential_id 在 _request_logs 里是 **bigint**
 	//（loader 里 `provider_id::text` 那个转换就是证据）——第一版夹具给了
 	// 字符串，PG 直接以 22P02 拒掉。**那是夹具写错，不是被测对象的问题。**
 	for i, rid := range []string{"rid-a-" + suffix, "rid-b-" + suffix} {
 		if _, err := pool.Exec(ctx, `
-			INSERT INTO public.request_logs
+			INSERT INTO public._request_logs
 				(request_id, ts, tenant_id, gw_session_id, success,
 				 client_model, provider_id, credential_id, prompt_tokens, completion_tokens, cost_usd)
 			VALUES ($1, $2, $3, $4, true, 'm-probe', 900001, 900002, 10, 20, 0.001)`,
 			rid, ts.Add(time.Duration(i)*time.Second), tenant, session); err != nil {
-			t.Fatalf("seed request_logs[%d]: %v", i, err)
+			t.Fatalf("seed _request_logs[%d]: %v", i, err)
 		}
 	}
 

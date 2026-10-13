@@ -1555,3 +1555,120 @@ streaming 全包 150s 绿。154 终验：拦截请求三件套全绿（终态带
    10-13 起 + python backfill + kswapd0），导致一次部署 DB 就绪失败自动
    回滚——ops 催办；outputcompliance DB 引擎补 CheckField（label 感知，
    避免整段回退丢工具上下文）登记不修。
+
+# 追加：2026-10-14 S4 退役改名轮 —— request_logs 族 `_` 前缀待删除标志（本地已上线）
+
+> 用户目标：审计双写转换收尾——写入关停核验、MV/API 读源核验、性能核验、
+> **request_logs 族改名为 `_` 前缀作为待删除标志**、SQL 变更进部署序列、
+> 本地重部署 + 指定 key 多轮模型请求 + 浏览器逐页验证（>2s 查慢因），提交推送。
+> 提交见本轮 git log；明细：`docs/audit/2026-10-14-s4-退役改名轮-request_logs族下划线前缀.md`。
+
+## 本轮之前的合并处置
+
+本地曾有 3 个未推送的 S3 波 4 提交，与远端并行会话的 S4 波 4 同域。
+合并 origin/main（52 提交）时**以远端为准**（生产已验证 + 已推进到生产翻转），
+本地仅保留 data_lifecycle.go 趋势端点的跨族 + 冻结点切分实现（远端版本 trend
+仍 v1-only；会话腿改 session_bodies_unified 单腿过两面门）。部署 2623 验证合并态。
+
+## 迁移 860（本轮核心交付，本地 2624 已应用）
+
+- **改名**：5 表（request_logs/_hot/_bodies/_bodies_hot/_archive）+ 序列 → `_` 前缀。
+  视图名**不动**（兼容读层，按 OID 自动跟随，`pg_get_viewdef` 已显示新名）；
+  分区子表/索引名不动（经父表继承删除标志）；函数名不动（Go 调度契约）。
+- **每条改名是 EXECUTE 字面量里的完整静态语句**——admin 侧 liveRelations 对
+  sql/migrations 做**文本重放**，动态 format('%I') 对它不可见（承重设计）。
+- **26 个 plpgsql 函数体**经 pg_get_functiondef 往返 + 词边界正则改写；
+  后置断言：改写后 public schema 零残留旧名引用（实测 0）。
+- **down 迁移**提供（仅在族 DROP 前有效）。五点 installer 同步 + 通道腿 + tsv
+  （255→256）+ db-changelog（SHA 已记）全数完成，`apply-db-revision-sequence_test` rc=0。
+- **不建兼容视图**（三明治方案否决）：改名的目的就是让漏网读方响亮失败。
+- **部署语义**：boot 先迁移后视图自愈，单部署原子；蓝绿窗内旧实例读会短暂
+  报错（写已停无竞争）。生产未应用——下次生产部署经启动序列自动带上。
+
+## 代码清扫（三轮 + 一次回退，全部真库/测试验证）
+
+1. 基表 token：`(?<![A-Za-z0-9_/])TOKEN(?![A-Za-z0-9_.])`——lookbehind 拒
+   函数名/路径串，lookahead 拒视图名/动态分区前缀/路径后缀；点号前置放行
+   （public. 限定）。295 非测试 + 228 测试 + 92 个 scripts/ 运维脚本。
+2. **列限定词补扫（真缺陷修复）**：第一轮的点号后置保护漏掉 SQL 列限定词
+   `request_logs_hot.列名`（telemetry client.go 41 处——UPDATE 目标已换新名而
+   WHERE 限定词还是旧名 = 运行时 missing FROM-clause entry）。130 文件 303 处，
+   扩展名白名单守卫（`.ts` 命中经查全是 SQL 列，无路径冲突）。
+3. **SQLite 平面回退**：bg/lite_retention_worker.go 与 cmd/gateway/
+   lite_telemetry_sink.go 是 lite 模式 SQLite 单文件库（表名不随 PG 860 改），
+   误扫后回退；判据侧本就把 SQLite 列为另一存储面。
+4. 判据/门同步 17 处（token 闭集与正则一律「两代物理名并存」）；顺手收口
+   origin 既存红 1 条（sqlreadguard 白名单 quality_correlations 滞留，
+   pristine worktree 实锤）。
+
+## partition_manager 生命周期挂停写门
+
+`v1LifecycleRetired()`（= !RequestLogsWriteEnabled()，热加载）：ensure/promote
+滤掉 v1 族四条、archiveOldRequestLogs 早退；**保留** retention DELETE
+（drop_old_request_logs_bodies_partitions——唯一真正缩小待删负载的作业）。
+判据 `TestV1LifecycleSpecsStandDownWhenWritesStopped`（count==N 双向），
+变异验证：门恒 false 时 4 断言红在正确位置。
+
+## 本地验证（2624，全部实测）
+
+- 迁移落地：5 表 + 序列全部前缀名、旧名 0 残留；canonical 视图 45,369 行
+  dup=0 照常；函数体残留 0。
+- **模型多轮**（用户指定 key）：glm-5.3-flash ×5 轮（含多轮会话）、minimax-m2.7、
+  deepseek-v4-flash 全通；session_turns_hot 2408 实时推进、最近 20 轮 20/20 有正文、
+  **_request_logs_hot 恒 0**。⚠ 该 key 行曾 enabled=false 且哈希属旧密钥世代
+  （本地库已重算 + 启用）。
+- **浏览器 34 页全测**：实际加载 100-300ms，无一超 2s；数据页（request-logs/
+  turns/compression/data-lifecycle/usage/probe-health/models 2896 个/keys 151 把）
+  均带真实数据渲染；/maintain 显示占位是设计内（独立 nginx SPA）。
+- **API 直测**：族内端点全部 200 且亚秒（sessions 9ms、compression 124ms、
+  data-lifecycle/stats 877ms、dashboard 2ms、turns 128ms）。
+
+## 量具与既存红登记
+
+- **openssl 输出格式坑**：新版 `openssl dgst` 不再打印 `(stdin)=` 前缀，
+  `awk '{print $2}'` 取到空串——LIKE '' 的假阳性骗过一次核对。哈希比对用
+  `$NF` 并对空值显式失败。
+- **cgo SIGSEGV / tapi 既存**（pristine 实锤）：SDK27 链接坏、SDK26.5 下
+  cmd/gateway cgo 段错误、lite-SQLite 子集需 CGO、scripts/ursmcheck 的
+  `date -Is`（252 目标脚本在 macOS 测试机不兼容）——四类环境红，登记不修。
+- 测试清扫误伤形态（本轮 6 处）：对「扫描器即测试」的文件做机械替换时，
+  **字符类/正则元字符邻接的 token 是盲区**（双前缀 `_?_request_logs`、
+  `(_request_logs[a-z...` 等）——清扫后必须跑全部门并逐条核对失败信息。
+
+## 遗留（下轮/owner）
+
+1. 生产 245/154/252/211 未应用 860；下次部署自动带上（生产蓝绿窗按维护窗执行）。
+2. `TestV1BodiesReadersAreAssessed` 总体从 27 文件/39 处降到 26 文件/36 处
+   （第二片口径）——DROP 前的 owner 四象限复核仍是前置。
+3. ensure_request_logs_partition 若因回滚写路径被重新启用，会建出旧命名的
+   新子表（功能正确，命名混杂，登记不修）。
+
+> **2026-10-14 补充验证轮（completion verifier 缺口收口，随 861 提交）**：
+> ① 浏览器累计 93 次访问覆盖全仓 ~85 条声明路由（含参数化详情页，真库 id），
+> 实际加载 100-300ms 零超时；豁免登记：/maintain（独立 nginx SPA）、
+> /customer/* 版本目录（需中心注册服务）、支付渠道页（外部）、approvals/1
+> （空表空态）。② 指定 7 模型 × 全部 5 条样例提示词（ping/say OK/合并推送/
+> 批判审计/磁盘清理）全部实测——4 个补测模型全 200 带内容；写路径终验
+> session_turns_hot 2,408→2,612、`_request_logs_hot` 恒 0、canonical 同步
+> +204。⚠ 本地 key 曾有 rate_limit_tpm=3 测试残留（真响应即 429 连坐），
+> 已清 NULL。③ 444 个注册 API 路由 GET 全扫：234×2xx/100×405/62×400/
+> 33×404/9×5xx；4 个 503 为设计内未配置态，其余 5 个里修掉三个真缺陷
+> （**迁移 861** candidate 视图显式列清单重建吸收 session_id——SELECT *
+> 视图不跟随后续 ALTER 且两表列序已分叉；user_profile NULL 属主过滤；
+> session-audit/export rows 闭包内消费——旧形态连接带未关闭 rows 归还池
+> 即 conn busy），随 2626 部署验证全 200。**登记**：domain/ 手动迁移语料
+> （如 032 触发器体）仍指旧表名，860 后重放需同族改名清扫（下轮）。
+---
+
+# 追加：2026-10-14 供应商返回自动调策审计 + 「网关智能体」必要性裁决
+
+> 审计 r1020→r1028 八轮修复后确认：供应商返回→自动调策→记录复用链已由
+> 五层确定性引擎闭环（L0 paramguard/reasoncap → L1 paramreg/线格式适配 →
+> L2 errorsx 分类 → L3 reqprobe 反应+24h 学习 → L4 action_policy），
+> **热路径 LLM 智能体裁决为无必要**（+秒级延迟/计费/不可判据化 vs 毫秒级
+> 零成本全链判据化）；智能体正确位置=对格式错误表 upstream_error 桶做
+> **离线**模式挖掘（登记待 owner）。活网关实测：grok+thinking+enable_thinking
+> 一次 200（`applying learned param strips` 前置剥参实证），格式错误表
+> 32 条、#32 gpt-6.1-sol mode_mismatch 4/4 recovered（r1027 方向甄别活证据）。
+> 详见 `docs/audit/2026-10-14-供应商返回自动调策审计与网关智能体裁决.md`。
+> 注意：宽容上游（glm 收未知参数）不触发反应层是零成本正路，勿当缺陷。

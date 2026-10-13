@@ -251,17 +251,17 @@ func (w *AutoRouteAffinityWorker) sweep(ctx context.Context) {
 // model's score down for reasons unrelated to model quality.
 //
 // R38 (R37 §四 #1 closing): synthetic rounds are excluded by an explicit
-// origin_actor predicate (LEFT JOIN request_logs_hot). The reward IS NOT NULL
+// origin_actor predicate (LEFT JOIN _request_logs_hot). The reward IS NOT NULL
 // guard alone was insufficient — a future write path that stamps a real
 // reward on a goal-* row (e.g. ad-hoc backfill, manual reconcile) would slip
 // through and pollute task_model_affinity. The view auto_route_selections_all
 // does not project origin_actor (selections carry only features + reward),
-// so the request_logs join is the only reliable way to enforce the
+// so the _request_logs join is the only reliable way to enforce the
 // synthetic-round gate at the aggregate face. NULL origin_actor is treated as
 // ordinary traffic (legacy inserts predate the column).
 //
 // R46 F4 (affinity 盲窗三选一裁决, R43 §五#2 顺延收口): the old LEFT JOIN hit
-// request_logs_hot only — settled rows older than the ~8h hot retention saw
+// _request_logs_hot only — settled rows older than the ~8h hot retention saw
 // NULL origin_actor and slipped past the gate. Ruling (measured on the live
 // DB, see docs/audit/2026-09-19-r46-48h-audit-round.md §四): NOT EXISTS probes
 // over hot ∪ parent = 110ms / 14d window; literal view JOIN =
@@ -293,19 +293,19 @@ func (w *AutoRouteAffinityWorker) aggregate(ctx context.Context) ([]affinityAggr
 		  AND s.canonical_id IS NOT NULL
 		  AND s.settled_at >= NOW() - $1::interval
 		  AND NOT EXISTS (
-		      SELECT 1 FROM request_logs_hot rl
+		      SELECT 1 FROM _request_logs_hot rl
 		      WHERE rl.request_id = s.request_id
 		        AND (COALESCE(rl.origin_actor, '') LIKE 'goal-%'
 		          OR COALESCE(rl.origin_actor, '') IN ('auto-title-generator','auto-summary-generator','session-summary')))
 		  AND NOT EXISTS (
-		      SELECT 1 FROM request_logs rl
+		      SELECT 1 FROM _request_logs rl
 		      WHERE rl.request_id = s.request_id
 		        AND (COALESCE(rl.origin_actor, '') LIKE 'goal-%'
 		          OR COALESCE(rl.origin_actor, '') IN ('auto-title-generator','auto-summary-generator','session-summary')))
 		  -- 2026-10-02 审计：第三条臂指向 session 族（SSOT，且不受 S4 停写门管）。
 		  --
-		  -- 前两条臂都在**门内**（request_logs_hot / request_logs 属
-		  -- settings.KeyRequestLogsWriteEnabled 声明的 request_logs 宽族），而本查询的
+		  -- 前两条臂都在**门内**（_request_logs_hot / _request_logs 属
+		  -- settings.KeyRequestLogsWriteEnabled 声明的 _request_logs 宽族），而本查询的
 		  -- 驱动表 auto_route_selections 由 domains/hooks/observability/telemetry/
 		  -- selection_writer.go 写入，**该写方不咨询该门**（实测 0 处调用）。
 		  -- 于是停写一旦生效：驱动表继续收新行，而这两条 NOT EXISTS 因证据表冻结而

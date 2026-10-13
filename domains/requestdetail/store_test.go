@@ -88,7 +88,7 @@ func TestLocatorMemoryThenDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	if d.Source != SourceRequestLogs || d.Bodies == nil {
-		t.Fatalf("expected request_logs with bodies, got %+v", d)
+		t.Fatalf("expected _request_logs with bodies, got %+v", d)
 	}
 
 	_, err = loc.Get(context.Background(), "req-missing00001", false)
@@ -129,7 +129,7 @@ func (f *fakeBodies) ReadSessionTurnsBodies(_ context.Context, requestID string,
 	return b, Meta{RequestID: requestID}, nil
 }
 
-// partialMetaBodies simulates the DB returning request_logs metadata when the
+// partialMetaBodies simulates the DB returning _request_logs metadata when the
 // body row is missing (TTL purge, partial persistence, historical migration).
 // requestLogsMeta records which ids still have metadata even though their
 // body row was dropped; requestLogs keeps ids that still have bodies.
@@ -166,7 +166,7 @@ func (f *partialMetaBodies) ReadSessionTurnsBodies(_ context.Context, requestID 
 	return b, Meta{RequestID: requestID}, nil
 }
 
-// TestLocatorRequestLogsMetadataFallback covers the case where request_logs
+// TestLocatorRequestLogsMetadataFallback covers the case where _request_logs
 // still has the metadata row but its body row is gone. The locator should:
 // 1) fall back to session_turns bodies if available, merging the metadata,
 // 2) otherwise return a metadata-only detail (not 404) with a Warning,
@@ -220,7 +220,7 @@ func TestLocatorRequestLogsMetadataFallback(t *testing.T) {
 			t.Fatal("expected metadata-only detail, got nil")
 		}
 		if d.Source != SourceRequestLogs {
-			t.Fatalf("expected request_logs source, got %s", d.Source)
+			t.Fatalf("expected _request_logs source, got %s", d.Source)
 		}
 		if d.Persistence != PersistencePersisted {
 			t.Fatalf("expected persisted, got %s", d.Persistence)
@@ -265,7 +265,7 @@ func TestLocatorRequestLogsMetadataFallback(t *testing.T) {
 			t.Fatalf("unexpected err: %v", err)
 		}
 		if d.Source != SourceRequestLogs {
-			t.Fatalf("expected request_logs, got %s", d.Source)
+			t.Fatalf("expected _request_logs, got %s", d.Source)
 		}
 		if d.Bodies != nil {
 			t.Fatalf("omit_body=true must not populate bodies, got %+v", d.Bodies)

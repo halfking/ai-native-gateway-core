@@ -146,7 +146,7 @@ SELECT
   COUNT(*) as total,
   COUNT(CASE WHEN model_category IS NULL OR model_category = '' THEN 1 END) as missing_category,
   COUNT(CASE WHEN provider_code IS NULL OR provider_code = '' THEN 1 END) as missing_provider
-FROM request_logs
+FROM _request_logs
 WHERE created_at > NOW() - INTERVAL '1 hour';
 " 2>/dev/null || echo "0|0|0")
 
@@ -187,7 +187,7 @@ SELECT
   COUNT(DISTINCT COALESCE(canonical_name, model)) as unique_models,
   COUNT(DISTINCT model_category) as unique_categories,
   COUNT(DISTINCT provider_code) as unique_providers
-FROM request_logs
+FROM _request_logs
 WHERE created_at > NOW() - INTERVAL '1 hour'
   AND (canonical_name IS NOT NULL OR model IS NOT NULL);
 " 2>/dev/null || echo "0|0|0")

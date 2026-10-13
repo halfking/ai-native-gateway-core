@@ -207,7 +207,7 @@ func v1FreezeNoticeFor(logsWriteEnabled bool, source ...string) (*V1FreezeNotice
 		return &V1FreezeNotice{
 			Frozen:  false,
 			Unknown: true,
-			Source:  "request_logs",
+			Source:  "_request_logs",
 			GateKey: settings.KeyRequestLogsWriteEnabled,
 			Effect:  "无法确认 v1 读源族的停写状态：该 gate 键在配置里没有显式取值，当前读到的值来自默认值回落。",
 			Silence: "两种可能都未经验证：写入可能仍在继续，也可能已经停写。请按 GateKey 显式配置该键，让下一次读取给出确定答案。",
@@ -216,7 +216,7 @@ func v1FreezeNoticeFor(logsWriteEnabled bool, source ...string) (*V1FreezeNotice
 	}
 	return &V1FreezeNotice{
 		Frozen:  true,
-		Source:  "request_logs",
+		Source:  "_request_logs",
 		GateKey: settings.KeyRequestLogsWriteEnabled,
 		Effect:  "本页及基于本页数据的判断只反映停写之前的流量；新请求不再进入这张表。",
 		Silence: "这一类读点没有任何错误信号：接口照常 200、结果集非空、字段齐全。接口没报错不代表数据是新的。",

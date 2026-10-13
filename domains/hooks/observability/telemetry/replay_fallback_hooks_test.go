@@ -55,18 +55,18 @@ func TestReplayFallbackFiresOnPersistedHooks(t *testing.T) {
 	for i := range requestArgs {
 		requestArgs[i] = pgxmock.AnyArg()
 	}
-	mockDB.ExpectExec(`INSERT INTO\s+request_logs_hot\s*\(`).
+	mockDB.ExpectExec(`INSERT INTO\s+_request_logs_hot\s*\(`).
 		WithArgs(requestArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	// bodies 行无条件写入（全 nil 时 NULLIF 置空，仍占 4 参）。
-	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+	mockDB.ExpectExec(`INSERT INTO _request_logs_bodies_hot`).
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 0))
 	// final-success claim（同事务 SAVEPOINT/UPDATE/RELEASE，
 	// 模式见 final_success_claim_test.go）。
 	mockDB.ExpectExec(`SAVEPOINT gw_final_success_claim`).
 		WillReturnResult(pgxmock.NewResult("SAVEPOINT", 0))
-	mockDB.ExpectExec(`UPDATE request_logs_hot\s+SET is_final_success = TRUE`).
+	mockDB.ExpectExec(`UPDATE _request_logs_hot\s+SET is_final_success = TRUE`).
 		WithArgs("req-replay-e6").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mockDB.ExpectExec(`RELEASE SAVEPOINT gw_final_success_claim`).
@@ -119,7 +119,7 @@ func TestReplayFallbackFiresOnPersistedHooks_UpdateOp(t *testing.T) {
 		defer mockDB.Close()
 
 		// updateRequestLog 事务链：usage_ledger（无 token 走 5 参分支）→
-		// request_logs_hot 主 UPDATE（$99 DueAt 收尾）→ bodies upsert（4 参）
+		// _request_logs_hot 主 UPDATE（$99 DueAt 收尾）→ bodies upsert（4 参）
 		// → final-success claim → commit。protocol metadata / fingerprint /
 		// api_keys 均为 nil 字段 no-op。
 		mockDB.ExpectBegin()
@@ -130,15 +130,15 @@ func TestReplayFallbackFiresOnPersistedHooks_UpdateOp(t *testing.T) {
 		for i := range updateArgs {
 			updateArgs[i] = pgxmock.AnyArg()
 		}
-		mockDB.ExpectExec(`UPDATE request_logs_hot\s+SET client_model`).
+		mockDB.ExpectExec(`UPDATE _request_logs_hot\s+SET client_model`).
 			WithArgs(updateArgs...).
 			WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-		mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+		mockDB.ExpectExec(`INSERT INTO _request_logs_bodies_hot`).
 			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 			WillReturnResult(pgxmock.NewResult("INSERT", 0))
 		mockDB.ExpectExec(`SAVEPOINT gw_final_success_claim`).
 			WillReturnResult(pgxmock.NewResult("SAVEPOINT", 0))
-		mockDB.ExpectExec(`UPDATE request_logs_hot\s+SET is_final_success = TRUE`).
+		mockDB.ExpectExec(`UPDATE _request_logs_hot\s+SET is_final_success = TRUE`).
 			WithArgs("req-replay-e6-update").
 			WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 		mockDB.ExpectExec(`RELEASE SAVEPOINT gw_final_success_claim`).

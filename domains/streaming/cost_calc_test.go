@@ -34,7 +34,7 @@ package streaming
 //
 // 真库（127.0.0.1:5432，全程只读）：
 //
-//	request_logs 里 cost_usd < 0 的行                    = 1,628
+//	_request_logs 里 cost_usd < 0 的行                    = 1,628
 //	其中满足 cache_read_tokens > prompt_tokens 的        = 1,628（全部）
 //	该口径的行数                                       = 11,837
 //	这批行里 cache 占 token 的比例                      = 96.2%

@@ -46,7 +46,7 @@ func TestRequestClassPGRoundTrip(t *testing.T) {
 	}
 
 	// Column presence on hot + parent + view exposure.
-	for _, table := range []string{"request_logs_hot", "request_logs", "request_logs_with_current_month"} {
+	for _, table := range []string{"_request_logs_hot", "_request_logs", "request_logs_with_current_month"} {
 		var n int
 		err := pool.QueryRow(ctx, `
 			SELECT count(*) FROM information_schema.columns
@@ -84,7 +84,7 @@ func TestRequestClassPGRoundTrip(t *testing.T) {
 	// The client writes asynchronously (worker goroutine); poll briefly.
 	for time.Now().Before(deadline) {
 		err = pool.QueryRow(ctx,
-			`SELECT request_class, due_at FROM request_logs_hot WHERE request_id = $1`, reqID,
+			`SELECT request_class, due_at FROM _request_logs_hot WHERE request_id = $1`, reqID,
 		).Scan(&gotClass, &gotDue)
 		if err == nil {
 			break
@@ -102,7 +102,7 @@ func TestRequestClassPGRoundTrip(t *testing.T) {
 	// follow-up entry omits it.
 	c.EmitRequestLogUpdate(&RequestLogEntry{RequestID: reqID, TenantID: "t608"})
 	err = pool.QueryRow(ctx,
-		`SELECT request_class, due_at FROM request_logs_hot WHERE request_id = $1`, reqID,
+		`SELECT request_class, due_at FROM _request_logs_hot WHERE request_id = $1`, reqID,
 	).Scan(&gotClass, &gotDue)
 	if err != nil {
 		t.Fatalf("select after update: %v", err)
@@ -113,14 +113,14 @@ func TestRequestClassPGRoundTrip(t *testing.T) {
 
 	// NULL-class insert falls back to the column default 'immediate'.
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO request_logs_hot (request_id, ts, tenant_id, success)
+		INSERT INTO _request_logs_hot (request_id, ts, tenant_id, success)
 		VALUES ('608-default', now(), 't608', TRUE)
 		ON CONFLICT (request_id) DO NOTHING`); err != nil {
 		t.Fatalf("default insert: %v", err)
 	}
 	var defClass string
 	if err := pool.QueryRow(ctx,
-		`SELECT request_class FROM request_logs_hot WHERE request_id = '608-default'`).Scan(&defClass); err != nil {
+		`SELECT request_class FROM _request_logs_hot WHERE request_id = '608-default'`).Scan(&defClass); err != nil {
 		t.Fatalf("default select: %v", err)
 	}
 	if defClass != "immediate" {
@@ -128,7 +128,7 @@ func TestRequestClassPGRoundTrip(t *testing.T) {
 	}
 
 	// Cleanup test rows.
-	_, _ = pool.Exec(ctx, `DELETE FROM request_logs_hot WHERE request_id LIKE '608-%'`)
+	_, _ = pool.Exec(ctx, `DELETE FROM _request_logs_hot WHERE request_id LIKE '608-%'`)
 }
 
 // 变量名按仓内契约取：scripts/audit/run-integration-gate.sh 只注入

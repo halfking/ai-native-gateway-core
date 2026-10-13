@@ -44,7 +44,7 @@ FAILED_CHECKS=0
 function test_hot_view_consistency() {
     log_section "测试 1: hot 表与视图数据一致性"
     
-    for table in "request_logs" "usage_ledger" "credit_ledger" "tool_usage_stats"; do
+    for table in "_request_logs" "usage_ledger" "credit_ledger" "tool_usage_stats"; do
         ((TOTAL_CHECKS++))
         
         local hot_table="${table}_hot"
@@ -100,7 +100,7 @@ function test_hot_view_consistency() {
 function test_indexes() {
     log_section "测试 2: 索引完整性检查"
     
-    for table in "request_logs" "usage_ledger" "credit_ledger" "tool_usage_stats"; do
+    for table in "_request_logs" "usage_ledger" "credit_ledger" "tool_usage_stats"; do
         local hot_table="${table}_hot"
         
         ((TOTAL_CHECKS++))
@@ -138,7 +138,7 @@ function test_code_queries() {
     
     log_info "检查 admin/logs.go 是否使用视图..."
     
-    local bad_queries=$(grep -n "FROM request_logs " admin/logs.go | grep -v "_hot" | grep -v "_with_current_month" | wc -l | xargs)
+    local bad_queries=$(grep -n "FROM _request_logs " admin/logs.go | grep -v "_hot" | grep -v "_with_current_month" | wc -l | xargs)
     
     if [ "$bad_queries" -eq 0 ]; then
         log_info "  ✓ admin/logs.go 所有查询都使用视图或 hot 表"
@@ -165,7 +165,7 @@ function test_insert_query() {
     
     # 插入测试数据到 hot 表
     ssh -p $SSH_PORT $SSH_HOST "PGPASSWORD='$DB_PASSWORD' psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -c \"
-        INSERT INTO request_logs_hot (
+        INSERT INTO _request_logs_hot (
             ts, request_id, success, client_model, latency_ms, prompt_tokens, completion_tokens, total_tokens
         ) VALUES (
             NOW(), '$test_request_id', true, 'test-model', 100, 10, 20, 30
@@ -187,7 +187,7 @@ function test_insert_query() {
     
     # 清理测试数据
     ssh -p $SSH_PORT $SSH_HOST "PGPASSWORD='$DB_PASSWORD' psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -c \"
-        DELETE FROM request_logs_hot WHERE request_id = '$test_request_id';
+        DELETE FROM _request_logs_hot WHERE request_id = '$test_request_id';
     \"" > /dev/null 2>&1
     
     echo ""

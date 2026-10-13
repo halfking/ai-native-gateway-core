@@ -83,7 +83,7 @@ func TestPartitionedTableConfig(t *testing.T) {
 	// Admin UI still needs to list the main monthly partitioned tables for
 	// manual cleanup, while only a subset still support archive_* helpers.
 	expected := map[string]string{
-		"request_logs":           "",
+		"_request_logs":          "",
 		"usage_ledger":           "",
 		"routing_decision_log":   "routing_decision_log_archive",
 		"credential_model_index": "credential_model_index_archive",

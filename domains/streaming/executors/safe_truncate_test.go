@@ -8,7 +8,7 @@ import (
 
 // Byte-slicing a string splits multi-byte runes and produces invalid UTF-8.
 // PostgreSQL rejects such values with SQLSTATE 22021 and drops the entire row —
-// incident 2026-06-11, which manifested as missing request_logs rows for
+// incident 2026-06-11, which manifested as missing _request_logs rows for
 // Chinese and emoji traffic.
 //
 // The limits swept below deliberately cross the real call-site caps (200, 320,

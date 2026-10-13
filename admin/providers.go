@@ -790,7 +790,7 @@ func (h *Handler) getProvider(w http.ResponseWriter, r *http.Request, id int) {
 		LEFT JOIN (SELECT c.provider_id, COUNT(*) cnt FROM model_offers mo JOIN credentials c ON c.id = mo.credential_id WHERE mo.available=true GROUP BY c.provider_id) am ON am.provider_id = p.id
 		LEFT JOIN (SELECT c.provider_id, COUNT(*) cnt FROM model_offers mo JOIN credentials c ON c.id = mo.credential_id WHERE mo.available=false GROUP BY c.provider_id) um ON um.provider_id = p.id
 		-- 2026-07-31 partition architecture: 24-hour window query read
-		-- request_logs_hot directly (migration 341 hot table).
+		-- _request_logs_hot directly (migration 341 hot table).
 		-- 2026-10-13 S3 波 2（停写切换）：hot 已停写、热窗排空后 error_rate_24h
 		-- 对新流量恒 0；改读 canonical 视图（会话臂 provider_id 依赖 734
 		-- details 特征层，缺 details 行的会话轮不进分子分母——已登记的覆盖缺口，
@@ -1192,7 +1192,7 @@ func (h *Handler) toggleProvider(w http.ResponseWriter, r *http.Request, id int)
 // 列表/详情/路由表都不再返回该供应商。
 //
 // 行保留在表里以维持 model_offers / credentials / credential_model_bindings
-// 的 FK 完整，并保留历史 request_logs 的可追溯性。后续如需硬删可单独
+// 的 FK 完整，并保留历史 _request_logs 的可追溯性。后续如需硬删可单独
 // 走清理任务（带 backup 窗口），不在本端点范围内。
 //
 // 副作用：

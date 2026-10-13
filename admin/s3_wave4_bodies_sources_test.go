@@ -37,7 +37,7 @@ func TestS3Wave4BatchFetcherFamilySplit(t *testing.T) {
 	if got := strings.Count(sessionBodiesByRequestIDSQL, "session_bodies"); got != 2 {
 		t.Errorf("主批量取数器必须读会话族 hot∪父表两腿（count==2），实测 %d：\n%s", got, sessionBodiesByRequestIDSQL)
 	}
-	if strings.Contains(sessionBodiesByRequestIDSQL, "request_logs_bodies") {
+	if strings.Contains(sessionBodiesByRequestIDSQL, "_request_logs_bodies") {
 		t.Errorf("主批量取数器不得再引用 v1 bodies（回退 v1 = 停写后新会话正文静默为空）：\n%s", sessionBodiesByRequestIDSQL)
 	}
 	if !strings.Contains(v1BodiesByRequestIDSQL, "request_logs_bodies_with_current_month") {
@@ -129,8 +129,8 @@ func TestS3Wave4BlobGovernanceTargetsSessionFamily(t *testing.T) {
 	for _, forbidden := range []string{
 		"request_logs_bodies_with_current_month",
 		"request_logs_with_current_month",
-		"request_logs_bodies_hot",
-		"request_logs_hot",
+		"_request_logs_bodies_hot",
+		"_request_logs_hot",
 	} {
 		if strings.Contains(src, forbidden) {
 			t.Errorf("blob 治理活代码不得再出现 %q（v1 形态回退）", forbidden)
@@ -177,7 +177,7 @@ func TestS3Wave4QualityCorrelationsTargetsSessionFamily(t *testing.T) {
 		if !strings.Contains(q, "LEFT JOIN "+dbpkg.SessionBodiesSourceSQL()+" rb") {
 			t.Errorf("[%s] bodies 腿必须以切换层输出为 FROM 源（rb 别名）", by)
 		}
-		if strings.Contains(q, "FROM request_logs ") || strings.Contains(q, "JOIN request_logs ") {
+		if strings.Contains(q, "FROM _request_logs ") || strings.Contains(q, "JOIN _request_logs ") {
 			t.Errorf("[%s] turns 腿不得回退 v1 基表", by)
 		}
 	}
@@ -216,7 +216,7 @@ func TestS3Wave4ScenarioDriverCountsSessionHot(t *testing.T) {
 			t.Errorf("scenario_driver 落库断言必须数 %s（S4 停写后 v1 表不再进新行）", want)
 		}
 	}
-	for _, forbidden := range []string{"request_logs_bodies_hot", "request_logs_hot"} {
+	for _, forbidden := range []string{"_request_logs_bodies_hot", "_request_logs_hot"} {
 		if strings.Contains(src, forbidden) {
 			t.Errorf("scenario_driver 活代码不得再数 %s（停写后 delta 恒 0 = 断言永久 FAIL）", forbidden)
 		}

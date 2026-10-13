@@ -202,13 +202,13 @@ func TestSessionSummaryV2FallbackBodiesStaysOnIndexPath(t *testing.T) {
 
 	// 锚点必须是**计划里真实出现的字面量**。Citus 列存的节点行长这样：
 	//
-	//	  ->  Custom Scan (ColumnarScan) on request_logs_bodies_2026_09 request_logs_bodies ...
+	//	  ->  Custom Scan (ColumnarScan) on request_logs_bodies_2026_09 _request_logs_bodies ...
 	//
-	// 原判据找的是 "ColumnarScan on request_logs_bodies"（无括号、无空格），
+	// 原判据找的是 "ColumnarScan on _request_logs_bodies"（无括号、无空格），
 	// 而真实文本是 "ColumnarScan) on ..."。**这个子串在计划里一次都不出现**，
 	// 所以这道门自诞生起就是恒绿的：它既不匹配任何东西，也无从变红。
 	// （用 grep 在它自己的计划输出里找那个子串，命中 0 次。）
-	const columnarNodeMarker = "ColumnarScan) on request_logs_bodies"
+	const columnarNodeMarker = "ColumnarScan) on _request_logs_bodies"
 	var columnarLines []string
 	// 索引路径的正向锚点。**必须有它**，否则这道门会退化成单边断言：
 	// 「没看到 ColumnarScan」在分区哪天变回 heap 时会静默成立，于是门永远绿

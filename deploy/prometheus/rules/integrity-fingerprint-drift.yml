@@ -66,7 +66,7 @@ groups:
 
             | 面 | 行数 | `system_fingerprint` 非空 |
             |---|---|---|
-            | `request_logs`（v1 全表） | 2,164,650 | **0** |
+            | `_request_logs`（v1 全表，迁移 860 改名前 216 万行冻结） | 2,164,650 | **0** |
             | `session_turns`（会话族全表） | 1,683,739 | **0** |
             | `model_integrity_events.context` JSONB | 7,081（2026-09-05 起） | **0** |
 
@@ -109,7 +109,7 @@ groups:
                （涨 = 被短路；不涨 = worker 本身没在跑，是另一个问题）
             2. 查上游是否开始返回 `X-System-Fingerprint`（这才是主因）：
 
-                   SELECT count(*), count(system_fingerprint) FROM request_logs_hot
+                   SELECT count(*), count(system_fingerprint) FROM _request_logs_hot
                     WHERE ts > NOW() - INTERVAL '1 hour';
 
                读法要分两种：`N > 0` 且 fingerprint 全空 ⇒ 与停写无关，就是

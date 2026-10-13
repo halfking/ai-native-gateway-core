@@ -16,7 +16,7 @@
 //
 // All endpoints are read-only and require the same admin auth as the rest
 // of /api/* (Bearer admin JWT or X-Admin-User header check). They use the
-// gateway's main DB pool, so they piggyback on the request_logs connection
+// gateway's main DB pool, so they piggyback on the _request_logs connection
 // (no separate pool).
 package admin
 
@@ -113,7 +113,7 @@ func (h *candidateFailureHandlers) withRLSBypassTx(ctx context.Context, sql stri
 //   - kind:     optional error_kind filter (e.g. "transient", "network")
 //   - retryable: optional "true"/"false" filter
 //   - session:  optional session_id filter (V358) — "同一次会话内的全部
-//     节点切换尝试"归集视图；同一会话仅最终成功体现在 request_logs。
+//     节点切换尝试"归集视图；同一会话仅最终成功体现在 _request_logs。
 //
 // id / session_id 为可空：startup 392 架构（hot + 月度分区）中 id 是无
 // 默认值的普通 bigint，新行 id 为 NULL 属设计内行为（应用层去重）。

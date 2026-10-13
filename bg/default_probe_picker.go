@@ -68,7 +68,7 @@ func (p *DefaultProbePicker) run(ctx context.Context) {
 
 // repickAll iterates active credentials and updates default_probe_model
 // using the 5-level priority implemented in PickProbeModelForCredential
-// (manual > request_logs > domestic_featured > domestic_random_fallback > skip).
+// (manual > _request_logs > domestic_featured > domestic_random_fallback > skip).
 func (p *DefaultProbePicker) repickAll(ctx context.Context) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()

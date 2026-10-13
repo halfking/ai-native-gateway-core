@@ -133,7 +133,7 @@ func credentialTwoProbeSuccessGateSQL(credIDExpr string) string {
 	)`
 }
 
-// probeTrafficExclusionPredicate matches request_logs rows that were NOT
+// probeTrafficExclusionPredicate matches _request_logs rows that were NOT
 // produced by the probe system itself. Two arms (R49 audit fix, 2026-09-20):
 //   - 'probe' quality flag — set on the SYNTHETIC direct-round rows written by
 //     active_probe_emitter;
@@ -143,13 +143,13 @@ func credentialTwoProbeSuccessGateSQL(credIDExpr string) string {
 //     counting as "usage" in every scanner (INV-3 was nominal only).
 //
 // BOTH arms reference origin_stage, so this predicate is only valid against
-// the physical request_logs tables (hot / parent / partitions) where migration
+// the physical _request_logs tables (hot / parent / partitions) where migration
 // 428 added the column and the X-LLM-Origin-Stage bridge populates it
 // (verified on the real DB: 11.6k node_probe rows stamped vs 3.1k business).
 // It must NOT be used against the canonical 113-column view — see
 // ProbeTrafficExclusionPredicateView below.
 //
-// Both format verbs take the same request_logs alias (pass it twice).
+// Both format verbs take the same _request_logs alias (pass it twice).
 // Every usage scan must exclude probe traffic, otherwise probes count as
 // usage and the scan keeps re-probing what only probes ever touched (INV-3).
 const probeTrafficExclusionPredicate = "(NOT COALESCE('probe' = ANY(%s.quality_flags), FALSE)" +
@@ -199,7 +199,7 @@ const ProbeTrafficExclusionPredicateView = "(NOT COALESCE('probe' = ANY(%s.quali
 //	迁移 707 给 session_turns / session_turns_hot 加了 origin_stage、origin_actor、
 //	is_auto_request 等 55 列，**没有** quality_flags；
 //	252 生产实测：session_turns 104 列，有 origin_stage / task_type / origin_actor，
-//	无 quality_flags（request_logs_hot 是 156 列，四列俱全）。
+//	无 quality_flags（_request_logs_hot 是 156 列，四列俱全）。
 //
 // ⇒ 对会话族用上面任何一条都会 42703，**每一次结算轮询都会失败**。
 // 这不是理论风险：R50 记录的 admin 回归就是同一个坑（`ExcludeSelfTest` 默认值
@@ -231,7 +231,7 @@ const probeTrafficExclusionPredicateSession = "(COALESCE(%s.origin_stage, 'busin
 // # 存在的理由
 //
 // settle worker 的三条腿都由 `settleSourceSpec` 驱动（§9.43），而**读点表随 S4
-// 写门在 request_logs_hot ⇄ session_turns_hot 之间切换**。谓词的可用列集
+// 写门在 _request_logs_hot ⇄ session_turns_hot 之间切换**。谓词的可用列集
 // 随表而变，所以「用哪条谓词」必须由**同一个**族标签决定，不能各调用点自己判断。
 //
 // 以前没有这个分派，是因为 cohort 那条 SQL **完全不看探针**（审计 §9.73.4：

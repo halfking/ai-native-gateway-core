@@ -68,8 +68,8 @@ func TestTenantStatsLogsTable_ServesSessionFamily(t *testing.T) {
 	// 双子排除：镜像 ts 是落库侧时刻（实测差 ~15s），翻转边界存在
 	// 「v1 双子 + 晚落镜像」行，没有 NOT EXISTS 会双计（真库实测 1 例）。
 	for _, probe := range []string{
-		"NOT EXISTS (SELECT 1 FROM request_logs_hot h WHERE h.request_id = t.request_id)",
-		"NOT EXISTS (SELECT 1 FROM request_logs p WHERE p.request_id = t.request_id)",
+		"NOT EXISTS (SELECT 1 FROM _request_logs_hot h WHERE h.request_id = t.request_id)",
+		"NOT EXISTS (SELECT 1 FROM _request_logs p WHERE p.request_id = t.request_id)",
 	} {
 		if strings.Count(sql, probe) != 2 {
 			t.Fatalf("logsTable must twin-exclude BOTH session legs with %q (found %d); got:\n%s",
@@ -91,7 +91,7 @@ func TestTenantStatsLogsTable_V1LegsUntouched(t *testing.T) {
 	// 的纯 SQL——内联的 sqlreadguard 注释文本本身含有「NOT EXISTS」字样，
 	// 不剥会误触。
 	v1Part := sql
-	if idx := strings.Index(v1Part, "FROM request_logs_hot\n"); idx > 0 {
+	if idx := strings.Index(v1Part, "FROM _request_logs_hot\n"); idx > 0 {
 		v1Part = v1Part[idx:]
 	}
 	var bare strings.Builder

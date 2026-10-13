@@ -1044,6 +1044,15 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// [REDACTED:phone]（agent 的 tool 参数被改坏）。收窄为被叫
 			// 号码 ≥7 位（E.164 现实区间）；UPDATE 存活 316 幂等重放。
 			"859_tighten_pii_phone_intl_regex.sql",
+			// 860（2026-10-14 S4 退役轮）：request_logs 族 `_` 前缀改名
+			// （待删除标志）+ 26 个 plpgsql 函数体同步改写。视图按 OID
+			// 自动跟随；分区/归档子表与索引名不动。回滚 = .down 迁移
+			// （仅在族被真正 DROP 前有效）。
+			"860_rename_request_logs_family_pending_delete.sql",
+			// 861（2026-10-14）：重建 candidate_failure_logs_with_current_month，
+			// 让 SELECT * 快照吸收 617 后加的 session_id（否则该列在视图上
+			// 42703、/api/candidate-failures 恒 500）。861 = 纯视图重建。
+			"861_candidate_failure_view_absorb_session_id.sql",
 		},
 	}
 }

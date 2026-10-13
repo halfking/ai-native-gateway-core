@@ -58,14 +58,14 @@ func ClampUsageLimit(limit int) int {
 }
 
 // requestLogsSource keeps usage queries working during upgrades where the
-// optional union view has not been created yet. request_logs_hot is an
+// optional union view has not been created yet. _request_logs_hot is an
 // independent seven-day table; request_logs_with_current_month unions hot
 // + partitioned archive without column-count drift between hot/parent.
 // The subquery MUST be aliased because PostgreSQL requires every FROM
 // subquery to have a name. The returned tuple is (FROM clause, alias).
 func requestLogsSource(days int) (string, string) {
 	if days <= 7 {
-		return "request_logs_hot AS r", "r"
+		return "_request_logs_hot AS r", "r"
 	}
 	return "request_logs_with_current_month AS r", "r"
 }

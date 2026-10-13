@@ -90,14 +90,14 @@ check_hot_tables() {
   log_info "检查 $env_name 的hot表..."
   
   local tables=(
-    "request_logs_hot"
+    "_request_logs_hot"
     "usage_ledger_hot"
     "request_wal_hot"
     "routing_decision_log_hot"
     "credential_model_index_hot"
     "credit_ledger_hot"
     "tool_usage_stats_hot"
-    "request_logs_bodies_hot"
+    "_request_logs_bodies_hot"
   )
   
   local missing_tables=()
@@ -211,12 +211,12 @@ check_hot_table_data() {
   
   local query="
     SELECT 
-      'request_logs_hot' as table_name,
+      '_request_logs_hot' as table_name,
       count(*) as row_count,
       COALESCE(min(ts), now()) as oldest,
       COALESCE(max(ts), now()) as newest,
-      pg_size_pretty(pg_total_relation_size('request_logs_hot')) as size
-    FROM request_logs_hot
+      pg_size_pretty(pg_total_relation_size('_request_logs_hot')) as size
+    FROM _request_logs_hot
     UNION ALL
     SELECT 'usage_ledger_hot', count(*), 
       COALESCE(min(ts), now()), COALESCE(max(ts), now()),

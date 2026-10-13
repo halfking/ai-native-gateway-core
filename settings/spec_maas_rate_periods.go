@@ -25,7 +25,7 @@ func MaasRatePeriodSpecs() []*Spec {
 			Category:        CategoryRateLimit,
 			Default:         DefaultMaasRatePeriodsJSON,
 			Description:     "峰谷计费时段表",
-			DescriptionLong: "JSON：{\"enabled\":bool, \"timezone\":\"Asia/Shanghai\", \"periods\":[{name,start,end,multiplier}]}。半开区间 [start,end)，start>end 视为跨午夜（如 23:00-07:00）；未命中时段 1x；enabled=false 全部 1x。倍率乘在计费总额上后按 1M 向上取整，usage_ledger.rate_multiplier / request_logs.credits_rate_multiplier 落本次倍率供对账。Go 与 SQL（maas_resolve_rate_multiplier）同源取档。",
+			DescriptionLong: "JSON：{\"enabled\":bool, \"timezone\":\"Asia/Shanghai\", \"periods\":[{name,start,end,multiplier}]}。半开区间 [start,end)，start>end 视为跨午夜（如 23:00-07:00）；未命中时段 1x；enabled=false 全部 1x。倍率乘在计费总额上后按 1M 向上取整，usage_ledger.rate_multiplier / _request_logs.credits_rate_multiplier 落本次倍率供对账。Go 与 SQL（maas_resolve_rate_multiplier）同源取档。",
 			Unit:            "",
 			DangerLevel:     Dangerous,
 			HotReload:       true,

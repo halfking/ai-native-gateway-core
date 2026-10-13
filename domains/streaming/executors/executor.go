@@ -393,7 +393,7 @@ type NodeProbeConfirmFunc func(ctx context.Context, credentialID int, rawModel s
 // StreamWrapperFunc is injected by the main.go wiring to handle streaming
 // responses. Receives the upstream resp and returns a StreamOutcome to let
 // Execute() decide failover. The fourth argument (capture) is the audit
-// StreamCapture that accumulates IR chunks for request_logs.response_summary.
+// StreamCapture that accumulates IR chunks for _request_logs.response_summary.
 type StreamWrapperFunc func(w http.ResponseWriter, resp *http.Response, norm NormalizerFunc, capture *audit.StreamCapture) StreamOutcome
 
 // AnthropicPassthroughFunc is the signature for the Q4 Anthropic SSE
@@ -773,7 +773,7 @@ type Executor struct {
 	// 2026-06-23 Phase 2 (P1): per-candidate failure logger. Writes one
 	// row to candidate_failure_logs per failed (request_id, credential,
 	// model, attempt_index) tuple so operators can see WHICH credentials
-	// are failing in a sequence (the request_logs row only carries the
+	// are failing in a sequence (the _request_logs row only carries the
 	// LAST candidate's error, leaving the others invisible). Nil disables
 	// the feature — the executor's failure log calls become no-ops.
 	FailureLogger *CandidateFailureWriter
@@ -1440,12 +1440,12 @@ type ExecParams struct {
 	// mode (legacy "default" tenant); the Memora user_id falls back to the
 	// pre-v7 "k:<api_key_id>:<task_id>" format so existing tests stay green.
 	TenantID string
-	// RequestID is the per-request id used in request_logs.request_id and
+	// RequestID is the per-request id used in _request_logs.request_id and
 	// surfaced on the dashboard swim lane. 2026-07-14: required so the
 	// no-candidates fallback can hand it to ActiveProbeWorker as the
 	// probe's parent_request_id — without this the live-stream probe row
 	// would have no way to correlate with the failed business request.
-	// The handler passes the same value it uses for request_logs insert;
+	// The handler passes the same value it uses for _request_logs insert;
 	// executor does not generate one itself.
 	RequestID string
 	// RequestJourney state is allocated by the protocol handler and shared with
@@ -1506,7 +1506,7 @@ type ExecParams struct {
 	// RoutingTracker (2026-07-19) records每次 upstream 尝试的详情，用于
 	// 解决用户困惑"为什么供应商泳道显示 A 但 upstream URL 显示 B"。
 	// 在 handler.go 中创建，在 executor_chat.go 中填充，在 telemetry
-	// 中写入 request_logs_hot.routing_attempts。可选，nil 表示不追踪。
+	// 中写入 _request_logs_hot.routing_attempts。可选，nil 表示不追踪。
 	RoutingTracker *RoutingAttemptsTracker
 
 	// 2026-07-28 §5.1: per-attempt correlation fields. Populated by
@@ -1753,7 +1753,7 @@ type ExecuteResult struct {
 	CachedReplay bool
 	// StickyHit records whether the chosen credential came from an existing
 	// sticky binding (L1/L2/L3) rather than a fresh routing decision.
-	// It is consumed by telemetry so request_logs / routing_decision_log can
+	// It is consumed by telemetry so _request_logs / routing_decision_log can
 	// answer whether cache-adjacent affinity was actually used.
 	StickyHit *bool
 	// RequestBody is the body sent to the upstream provider (may be
@@ -1776,7 +1776,7 @@ type ExecuteResult struct {
 	// the body (mechanical trim / memora L1 / LLM summary). nil otherwise.
 	//
 	// relay/handler.go emitTelemetry reads these fields and writes them
-	// into request_logs.compression_reason / compression_strategy /
+	// into _request_logs.compression_reason / compression_strategy /
 	// compression_meta so operators can SQL-trace the parent-child chain
 	// per v7 §6.
 	CompressionReason     *string
@@ -2380,7 +2380,7 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 			reason := c.UnavailableReason()
 			if reason == "" {
 				// 2026-07-19: Infer reason instead of defaulting to "unknown"
-				// to improve diagnostic clarity in request_logs
+				// to improve diagnostic clarity in _request_logs
 				if c.CredentialID == 0 {
 					reason = "no_credential"
 				} else if c.ProviderID == 0 {
@@ -2429,13 +2429,13 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 			})
 		}
 		// 2026-07-14: previously the no-candidates path stopped here with
-		// only a failed request_logs row to show for it. The realtime
+		// only a failed _request_logs row to show for it. The realtime
 		// dashboard would render the failure tile but no follow-up probe
 		// ever fired, leaving operators to investigate the outage from
-		// request_logs alone. We now fan the signal out to the
+		// _request_logs alone. We now fan the signal out to the
 		// credential-state manager which will trigger ActiveProbeWorker
 		// for each candidate with a real credential_id. Probes land in
-		// request_logs with task_type='probe_triggered' and show up in
+		// _request_logs with task_type='probe_triggered' and show up in
 		// the live stream alongside the failed request.
 		//
 		// We attach the original failed request_id as the probe's
@@ -2923,7 +2923,7 @@ func (e *Executor) recordTransientDispatchFailure(ctx context.Context, credentia
 //     disagree and a 3-streak silently re-picks a credential on the
 //     very next request.
 //   - Operators see "one normal / one failure" alternating in
-//     request_logs when this rule fires: sticky re-pick changes the
+//     _request_logs when this rule fires: sticky re-pick changes the
 //     egress identity (UA/TLS fingerprint slot), the new credential
 //     succeeds once, then model_not_found again, then re-pick again.
 //   - The circuit breaker (e.Circuit.Allow) and credential_availability

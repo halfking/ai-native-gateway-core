@@ -76,14 +76,14 @@ const autoIsAutoHeader = "X-Gw-Is-Auto"
 // autoParentRequestIDHeader (2026-08-06) carries the parent user request_id
 // for gateway-internal loopback calls (auto title / auto summary). Handler
 // entry reads it into logCtx.ParentRequestID, which flows into
-// request_logs_hot.parent_request_id so operators can SQL JOIN the loopback
+// _request_logs_hot.parent_request_id so operators can SQL JOIN the loopback
 // row back to the parent user request that triggered it.
 const autoParentRequestIDHeader = "X-Gw-Parent-Request-Id"
 
 // autoSourceActorHeader (2026-08-06) names the emitting component for a
 // gateway-internal loopback call (e.g. "auto-title-generator"). Handler
 // entry reads it into logCtx.OriginActor, which flows into
-// request_logs_hot.origin_actor so operators can SQL
+// _request_logs_hot.origin_actor so operators can SQL
 // `WHERE origin_actor = 'auto-title-generator'` to find every auto-title row.
 const autoSourceActorHeader = "X-Gw-Source-Actor"
 
@@ -94,7 +94,7 @@ const autoSourceActorHeader = "X-Gw-Source-Actor"
 const autoRequestMagic = "auto"
 
 // maxWireDecisionBytes caps the JSON-serialised decision we put in
-// both the X-Gw-Auto-Decision response header and request_logs.auto_decision.
+// both the X-Gw-Auto-Decision response header and _request_logs.auto_decision.
 // Without this cap, a cohort with many candidates could trigger a
 // multi-MB decision. 16 KiB is enough for top-3 candidates with full
 // per-dim scores.
@@ -623,7 +623,7 @@ func (h *ChatHandler) maybeResolveAuto(reqBody *chatRequestBody, rawBody []byte,
 		// Behaviour contract going forward:
 		//   1. Always emit ERROR (not WARN) — alerts can fire.
 		//   2. Return shouldFail=true so the handler emits 502 + a
-		//      transparent error_kind rather than writing a request_logs
+		//      transparent error_kind rather than writing a _request_logs
 		//      row that looks like a successful auto-route selection.
 		//
 		// The fallback model rewrite is no longer applied here. Clients
@@ -720,7 +720,7 @@ func buildAutoSelection(r *http.Request, sessionID string, wire *autoRouteDecisi
 		TaskKind:      wire.TaskKind,
 		RoutingSource: wire.RoutingSource,
 		// R52: 兜底层归属只进 wire JSON（X-Gw-Auto-Decision 头 +
-		// request_logs.auto_decision JSONB，查询用
+		// _request_logs.auto_decision JSONB，查询用
 		// auto_decision->>'role_fallback_layer'）。**刻意不进**
 		// telemetry.AutoSelection：那是 migration 731 建的选型学习分析表，
 		// 加列要新迁移 + 回填 + nullability 决策，而本字段是"这次选了
@@ -845,7 +845,7 @@ func writeAutoDecisionHeader(w http.ResponseWriter, wire *autoRouteDecision) {
 		return
 	}
 	// Vendor usage and estimated spend are internal audit data. Keep them in
-	// request_logs.auto_decision, but do not expose them in a client response.
+	// _request_logs.auto_decision, but do not expose them in a client response.
 	clientWire := *wire
 	clientWire.ClassifierUsage = nil
 	clientWire = *capDecisionSize(&clientWire)
@@ -954,7 +954,7 @@ func mockMarkerHeaders(w http.ResponseWriter, mode TestMode) {
 //
 // mockModel is the chosen model (post-decider). mode is the parsed TestMode.
 // requestID is propagated into the mock body id so a test can correlate
-// request_logs rows with the response.
+// _request_logs rows with the response.
 //
 // stream selects the SSE framing. A client that sent "stream": true is
 // holding an SSE connection open and will block until the stream is

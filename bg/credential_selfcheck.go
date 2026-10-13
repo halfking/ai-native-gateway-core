@@ -261,7 +261,7 @@ func (w *CredentialSelfcheckWorker) pickDueCredential(ctx context.Context) (int,
 		-- 即「补了臂但没接线」。改成 LEFT JOIN 后，硬前置由下面的 se 承担。
 		LEFT JOIN LATERAL (
 			SELECT MAX(rl.ts) AS last_error_at
-			FROM request_logs_hot rl
+			FROM _request_logs_hot rl
 			WHERE rl.credential_id = c.id
 			  AND rl.ts >= now() - interval '24 hours'
 			  -- R50 note: probe rows are deliberately INCLUDED here (no
@@ -275,7 +275,7 @@ func (w *CredentialSelfcheckWorker) pickDueCredential(ctx context.Context) (int,
 		-- 2026-10-02 审计：第二条错误证据臂指向 session 族（SSOT，不受 S4 停写门管）。
 		--
 		-- 上面那条臂是**硬过滤**（e.last_error_at IS NOT NULL），不是排序：停写生效 24h 后
-		-- request_logs_hot 不再产生新的失败行 ⇒ 没有任何凭据能通过 ⇒ 自检**自己静默**。
+		-- _request_logs_hot 不再产生新的失败行 ⇒ 没有任何凭据能通过 ⇒ 自检**自己静默**。
 		-- 这与 credential_recovery 的 lookbackCandidateSQL 同形（方向 ②：证据缺失）。
 		--
 		-- 真库实测（2026-10-02，24h 窗口，按凭据去重）：
@@ -599,7 +599,7 @@ func (w *CredentialSelfcheckWorker) recentInUsageWindow(ctx context.Context, cre
 func (w *CredentialSelfcheckWorker) recentUsageModels(ctx context.Context, credentialID int, tenant string) (map[string]struct{}, error) {
 	rows, err := w.db.Query(ctx, `
 		SELECT DISTINCT rl.client_model
-		FROM request_logs_hot rl
+		FROM _request_logs_hot rl
 		WHERE rl.credential_id = $1
 		  AND rl.tenant_id = $2
 		  AND rl.ts >= now() - `+probeUsageWindowInterval+`
@@ -643,7 +643,7 @@ func (w *CredentialSelfcheckWorker) selfcheckRecentFallback(ctx context.Context,
 		SELECT model, COUNT(*)::int AS count
 		FROM (
 			SELECT COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model) AS model
-			FROM request_logs_hot rl
+			FROM _request_logs_hot rl
 			LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
 			LEFT JOIN LATERAL (
 				SELECT canonical_id FROM model_aliases

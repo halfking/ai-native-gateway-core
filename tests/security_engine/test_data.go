@@ -253,6 +253,6 @@ func GetTestDataset() []SecurityTestCase {
 
 // GetRealRequestSamples 从真实请求中提取的样本（稍后从数据库填充）
 func GetRealRequestSamples() []SecurityTestCase {
-	// 这些将从 request_logs 表中动态生成
+	// 这些将从 _request_logs 表中动态生成
 	return []SecurityTestCase{}
 }

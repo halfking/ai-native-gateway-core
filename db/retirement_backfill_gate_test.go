@@ -15,7 +15,7 @@ import (
 // only fill by copying from v1 is still waiting for that copy.
 //
 // ⚠️ §9.223. The constraint "run backfill_final_success_marks.sql /
-// backfill_client_protocol.sql **before** request_logs is dropped" lived in a
+// backfill_client_protocol.sql **before** _request_logs is dropped" lived in a
 // SQL script's header comment, and on 252 both scripts had never been run —
 // `session_turns.is_final_success` and `client_protocol` were 100% NULL over
 // all 817,140 rows while the v1 side was 100% populated and 100% matchable.
@@ -49,9 +49,9 @@ func BackfillBlocksRetirement(col string, sourceExists bool, sessionNonNull, ses
 	pp := 100 * float64(sessionNonNull) / float64(sessionTotal)
 	if pp < thresholdPP {
 		return true, fmt.Sprintf(
-			"%s is %.4f%% filled on the session side (%d/%d rows) while request_logs still exists; "+
+			"%s is %.4f%% filled on the session side (%d/%d rows) while _request_logs still exists; "+
 				"its only source is the v1 copy, and the backfill is a one-shot repair that becomes "+
-				"impossible once request_logs is dropped. Run sql/scripts/backfill_%s before retiring v1.",
+				"impossible once _request_logs is dropped. Run sql/scripts/backfill_%s before retiring v1.",
 			col, pp, sessionNonNull, sessionTotal, backfillScriptFor(col))
 	}
 	return false, ""
@@ -211,7 +211,7 @@ func TestRetirementBlockedByUnrunBackfills(t *testing.T) {
 	var sourceExists bool
 	if err := pool.QueryRow(ctx,
 		`SELECT EXISTS (SELECT 1 FROM information_schema.tables
-		                WHERE table_schema='public' AND table_name='request_logs')`).
+		                WHERE table_schema='public' AND table_name='_request_logs')`).
 		Scan(&sourceExists); err != nil {
 		t.Fatalf("probe source table: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestRetirementBlockedByUnrunBackfills(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM session_turns`).Scan(&total); err != nil {
 		t.Fatalf("count session_turns: %v", err)
 	}
-	t.Logf("request_logs still present: %v   session_turns rows: %d", sourceExists, total)
+	t.Logf("_request_logs still present: %v   session_turns rows: %d", sourceExists, total)
 
 	var blocked []string
 	for _, col := range RetirementBackfilledColumns {
@@ -240,7 +240,7 @@ func TestRetirementBlockedByUnrunBackfills(t *testing.T) {
 	}
 
 	if len(blocked) > 0 {
-		t.Errorf("retiring request_logs is blocked by %d unrun backfill(s):\n  - %s\n"+
+		t.Errorf("retiring _request_logs is blocked by %d unrun backfill(s):\n  - %s\n"+
 			"Each of these columns is filled by copying from v1, the copy is a one-shot idempotent "+
 			"repair, and v1 is itself on a monthly DROP list (RETAIN_MONTHS=2 on 252). The coverage "+
 			"reachable shrinks every day: measured on 252 the two scripts together can reach only "+

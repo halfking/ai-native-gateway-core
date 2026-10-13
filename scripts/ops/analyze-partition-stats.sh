@@ -54,7 +54,7 @@ psql \"\$DB\" -v ON_ERROR_STOP=1 -c \"SELECT analyze_llm_gateway_table_stats($MO
 psql \"\$DB\" -c \"
 SELECT relname, last_analyze, last_autoanalyze, n_live_tup
 FROM pg_stat_user_tables
-WHERE relname ~ '^(credential_model_index|model_probe_runs|request_logs)_(202[0-9]_[0-9]{2}|hot)\$'
+WHERE relname ~ '^(credential_model_index|model_probe_runs|_request_logs)_(202[0-9]_[0-9]{2}|hot)\$'
 ORDER BY relname;
 \""
 

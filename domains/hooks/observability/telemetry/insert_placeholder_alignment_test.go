@@ -28,7 +28,7 @@ func TestInsertRequestLogPlaceholderAlignment(t *testing.T) {
 		t.Fatalf("insertRequestLog not found")
 	}
 
-	sqlStart := strings.Index(fn, "INSERT INTO request_logs_hot (")
+	sqlStart := strings.Index(fn, "INSERT INTO _request_logs_hot (")
 	sqlEnd := strings.Index(fn[sqlStart:], "`") + sqlStart
 	sql := fn[sqlStart:sqlEnd]
 
@@ -101,7 +101,7 @@ func TestUpdateRequestLogPlaceholderAlignment(t *testing.T) {
 		t.Fatalf("updateRequestLog not found")
 	}
 
-	sqlStart := strings.Index(fn, "UPDATE request_logs_hot")
+	sqlStart := strings.Index(fn, "UPDATE _request_logs_hot")
 	sqlEnd := strings.Index(fn[sqlStart:], "`") + sqlStart
 	sql := fn[sqlStart:sqlEnd]
 	setSec := sql[strings.Index(sql, "SET")+3 : strings.Index(sql, "WHERE request_id")]
@@ -256,7 +256,7 @@ func extractCallArgs(s string) []string {
 	return args
 }
 
-// expectedArgIdent maps a request_logs column to the Go identifier fragment
+// expectedArgIdent maps a _request_logs column to the Go identifier fragment
 // that must appear in the arg bound to it. Empty means "skip semantic check".
 func expectedArgIdent(col string) string {
 	aliases := map[string]string{

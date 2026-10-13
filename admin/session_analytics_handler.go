@@ -1,6 +1,6 @@
 // Package admin — Session Analytics Handler (重写为 net/http + pgxpool)
 //
-// 350 迁移修复后，session_summaries.session_key 的值 = request_logs.gw_session_id。
+// 350 迁移修复后，session_summaries.session_key 的值 = _request_logs.gw_session_id。
 // 所有查询统一使用 gw_session_id 作为对外标识。
 //
 // 路由（在 cmd/gateway/main.go 注册）：

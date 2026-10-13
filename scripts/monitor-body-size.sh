@@ -1,5 +1,5 @@
 #!/bin/bash
-# 监控 request_logs 表中 request_body/response_body 的实际大小分布
+# 监控 _request_logs 表中 request_body/response_body 的实际大小分布
 # 用于评估 512KB 限制是否合理
 #
 # 使用: ./monitor-body-size.sh [hours]
@@ -33,7 +33,7 @@ SELECT
     COUNT(*) AS count,
     ROUND(AVG(octet_length(request_body))/1024.0, 1) AS avg_kb,
     MAX(octet_length(request_body))/1024 AS max_kb
-FROM request_logs
+FROM _request_logs
 WHERE request_body IS NOT NULL
   AND created_at > now() - interval '${HOURS} hours'
 GROUP BY size_range
@@ -58,7 +58,7 @@ SELECT
     COUNT(*) AS count,
     ROUND(AVG(octet_length(response_body))/1024.0, 1) AS avg_kb,
     MAX(octet_length(response_body))/1024 AS max_kb
-FROM request_logs
+FROM _request_logs
 WHERE response_body IS NOT NULL
   AND created_at > now() - interval '${HOURS} hours'
 GROUP BY size_range
@@ -72,14 +72,14 @@ echo "3. 截断的请求体统计 (含 truncated 标记):"
 echo "-------------------------------------------"
 TRUNCATED=$(PGPASSWORD=llmgateway psql -h $DB_HOST -U $DB_USER -d $DB_NAME -t -c "
 SELECT COUNT(*)
-FROM request_logs
+FROM _request_logs
 WHERE request_body LIKE '%...[truncated%'
   AND created_at > now() - interval '${HOURS} hours';
 " 2>/dev/null | tr -d ' ')
 
 TOTAL=$(PGPASSWORD=llmgateway psql -h $DB_HOST -U $DB_USER -d $DB_NAME -t -c "
 SELECT COUNT(*)
-FROM request_logs
+FROM _request_logs
 WHERE request_body IS NOT NULL
   AND created_at > now() - interval '${HOURS} hours';
 " 2>/dev/null | tr -d ' ')
@@ -98,7 +98,7 @@ else
             request_id,
             octet_length(request_body)/1024 AS body_kb,
             SUBSTRING(request_body FROM 'original=\\d+bytes') AS marker
-        FROM request_logs
+        FROM _request_logs
         WHERE request_body LIKE '%...[truncated%'
           AND created_at > now() - interval '${HOURS} hours'
         ORDER BY created_at DESC

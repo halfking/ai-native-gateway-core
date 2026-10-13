@@ -2,7 +2,7 @@
 # hotzone-request-mirror-reconcile.sh — 热区请求侧 body 镜像 × PG 对账
 #
 # 用途：验证 storage/file.RequestMirror 落盘的 {HotZone.Dir}/requests/ 子树，
-#       与 PG request_logs_bodies_hot 的正文在**语义上一致**，并按已实证的三条
+#       与 PG _request_logs_bodies_hot 的正文在**语义上一致**，并按已实证的三条
 #       特殊口径容错（这三处是「不该判 FAIL」的真实差异，不是缺陷）。
 #
 # 依据（本脚本的每条规则都有部署级实证来源，不是推断）：
@@ -183,8 +183,8 @@ TENANT_ARG=""
 # 完整语义比对交由上层（逐条 gunzip 后比对），这里先做「PG 有正文但镜像无对应文件」的扫描。
 PG_QUERY="
 SELECT DISTINCT b.request_id
-  FROM request_logs_bodies_hot b
-  JOIN request_logs_hot rl ON rl.request_id = b.request_id
+  FROM _request_logs_bodies_hot b
+  JOIN _request_logs_hot rl ON rl.request_id = b.request_id
  WHERE 1=1 ${TENANT_ARG}
    AND (b.request_body IS NOT NULL AND b.request_body::text NOT IN ('null','{}'))
  ORDER BY b.request_id DESC

@@ -354,7 +354,7 @@ func TestBillingWideTableColumns_DetectorRejectsTheOriginalBug(t *testing.T) {
 	ok := []string{
 		"SELECT ul.cost_usd, ul.total_tokens FROM usage_ledger ul",
 		"SELECT ul.rate_multiplier FROM usage_ledger_with_current_month ul", // added by migration 736
-		"SELECT COUNT(DISTINCT l.gw_session_id) FROM request_logs l",        // right column, right table
+		"SELECT COUNT(DISTINCT l.gw_session_id) FROM _request_logs l",       // right column, right table
 	}
 	for _, frag := range ok {
 		if f := scanBillingSourcelessRefs(frag, known); len(f) != 0 {

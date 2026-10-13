@@ -1250,7 +1250,7 @@ do_deploy() {
   #
   # 2026-08-31: default bumped 30 -> 60s. On env 154 a fresh candidate takes
   # 35-40s to bind its listener while it walks schema ensures for 8+
-  # feature areas (request_logs, quality_fix_mode, provider/credential
+  # feature areas (_request_logs, quality_fix_mode, provider/credential
   # soft-delete, applications, fp_slot_limit, concurrency_mode,
   # credential_governor_revision, routing recent_success_rate,
   # unavailable_recover_at). With the prior 30s default the candidate

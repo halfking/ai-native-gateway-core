@@ -112,7 +112,7 @@ func StorageSpecs() []*Spec {
 			HotReload:       true,
 		},
 		{
-			// 存储优化方案 v2 S2（migration 710 轮）：request_logs 停写 gate。
+			// 存储优化方案 v2 S2（migration 710 轮）：_request_logs 停写 gate。
 			// S2 仅登记（默认 true = 继续双写）；S4 落 telemetry client 分支化
 			// 后由本开关一键停写/回切（plan §4 S2/S4 行、§7）。
 			Key:             "storage.request_logs_write_enabled",
@@ -120,8 +120,8 @@ func StorageSpecs() []*Spec {
 			Scope:           ScopePlatform,
 			Category:        CategoryStorage,
 			Default:         true,
-			Description:     "request_logs 主账本写入（S4 停写 gate）",
-			DescriptionLong: "存储优化方案 v2：开启时 telemetry/admin ingest 维持 request_logs(_hot) 与 bodies 双写（现状）；S4 落地写分支后关闭即停写，session 六表族成为唯一事实源。关闭前提：dual_read_validator 对账 7 天零漂移（plan §4 S2 退出条件）。回切即重新开启，热表结构不动、无数据丢失窗口。",
+			Description:     "_request_logs 主账本写入（S4 停写 gate）",
+			DescriptionLong: "存储优化方案 v2：开启时 telemetry/admin ingest 维持 _request_logs(_hot) 与 bodies 双写（现状）；S4 落地写分支后关闭即停写，session 六表族成为唯一事实源。关闭前提：dual_read_validator 对账 7 天零漂移（plan §4 S2 退出条件）。回切即重新开启，热表结构不动、无数据丢失窗口。",
 			DangerLevel:     Dangerous,
 			HotReload:       true,
 		},
@@ -130,7 +130,7 @@ func StorageSpecs() []*Spec {
 			// 开启后 admin 日志列表/详情（/api/logs、/api/logs/{id}）的 FROM
 			// 直读 session_turns 家族原生投影（复用 710 视图 session 分支的
 			// 113 列契约），不再经过视图 v1 分支与反连接；API 响应形状不变。
-			// 默认关闭走视图。镜像链启用前的 request_logs 历史行在原生模式
+			// 默认关闭走视图。镜像链启用前的 _request_logs 历史行在原生模式
 			// 下不可见，停写 + TTL 退役后边界消解（样板注释已登记）。
 			Key:             "storage.admin_logs_native_turns_read",
 			Type:            TypeBool,
@@ -138,7 +138,7 @@ func StorageSpecs() []*Spec {
 			Category:        CategoryStorage,
 			Default:         false,
 			Description:     "admin 日志读端原生 session_turns（S3 波1）",
-			DescriptionLong: "开启后 /api/logs 列表与详情直接读 session_turns(_hot) 的 710 会话分支投影（113 列与视图逐列同形），跳过视图的 v1 冻结分支 UNION ALL 与反连接开销。响应契约不变，可随时关闭回切视图。注意：镜像链启用前的 request_logs 历史窗口在原生模式下不可见。",
+			DescriptionLong: "开启后 /api/logs 列表与详情直接读 session_turns(_hot) 的 710 会话分支投影（113 列与视图逐列同形），跳过视图的 v1 冻结分支 UNION ALL 与反连接开销。响应契约不变，可随时关闭回切视图。注意：镜像链启用前的 _request_logs 历史窗口在原生模式下不可见。",
 			DangerLevel:     Warning,
 			HotReload:       true,
 		},

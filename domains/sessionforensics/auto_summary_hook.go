@@ -11,7 +11,7 @@ import (
 
 // AutoSummaryHook 在请求结束后异步触发摘要 + 标题生成。
 //
-// 用法（典型：handler.go executor 写入 request_logs 后调用）：
+// 用法（典型：handler.go executor 写入 _request_logs 后调用）：
 //
 //	go hook.Enqueue(ctx, "gw_xxxxx", firstMessage)
 //

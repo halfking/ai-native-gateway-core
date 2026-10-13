@@ -53,7 +53,12 @@ var viewRelationRe = regexp.MustCompile(
 // intended safety net: a new v1 table cannot be added without the gate having an
 // opinion about it.
 var v1BaseTableRe = regexp.MustCompile(
-	`(?i)\bfrom\s+(public\.)?request_logs(_hot|_bodies|_bodies_hot|_archive)?\b`)
+	`(?i)\bfrom\s+(public\.)?_?request_logs(_hot|_bodies|_bodies_hot|_archive)?\b`)
+
+// v1_pending_delete_rename（迁移 860，2026-10-14）：v1 底表物理上改名为
+// `_` 前缀（待删除标志）。上面的 `_?` 让分类器继续认得它们——**不是**
+// 宽容拼写，是承认迁移后的物理名。`\b` 的守卫语义不变：`_with_current_month`
+// 视图仍然落不进本族（后缀闭集 + 词边界）。
 
 // TestReaderPopulationGroundTruth (audit §9.172, settles D20-b).
 func TestReaderPopulationGroundTruth(t *testing.T) {
@@ -96,7 +101,7 @@ func TestReaderPopulationGroundTruth(t *testing.T) {
 			}
 			// SQL comments inside a string literal are not relations, in any
 			// language. domains/streaming/model_alternatives.go reads exactly one
-			// relation (`FROM request_logs_hot`) and only *mentions*
+			// relation (`FROM _request_logs_hot`) and only *mentions*
 			// `request_logs_with_current_month` in a `--` comment carried inside
 			// the SQL string; classifying that as a view read put a v1-only
 			// reader in the "兼读" bucket. Same class of error as §9.167's
@@ -150,7 +155,7 @@ func TestReaderPopulationGroundTruth(t *testing.T) {
 				// Not an instrument failure. A reader can legitimately read v1
 				// while naming **no** canonical column statically — the columns
 				// arrive in a runtime-assembled WHERE. `admin/provider_models.go`
-				// is the shape: `fmt.Sprintf("SELECT COUNT(*) FROM request_logs rl
+				// is the shape: `fmt.Sprintf("SELECT COUNT(*) FROM _request_logs rl
 				// WHERE %s", where)`. That is the §9.49 dynamic-column blind spot
 				// (D14-c), and calling it a failure would be inventing a defect to
 				// justify a red test.
@@ -335,7 +340,7 @@ var unjudgedBaseline = 46
 // A set, not a count: see the swap case in TestReaderPopulationGroundTruth.
 //
 // 47→48（2026-10-11 252 审计第 32 轮）：admin/credential_monitor.go 的抽屉
-// 回退查询新增 hot 快路径（session_turns_hot ∪ request_logs_hot 反连接），
+// 回退查询新增 hot 快路径（session_turns_hot ∪ _request_logs_hot 反连接），
 // 使该文件首次成为 v1 基表直读者——按设计读 v1（窗口 ≤ 120min 语义与
 // canonical 视图精确等价，252 EXCEPT 对拍双向差集 0），退役时随 v1 一并
 // 改指或退役，与 v1_write_liveness 的 ③ 类同档；完整退役判定待退役轮做。
@@ -415,7 +420,7 @@ func viewChainNames(t *testing.T) []string {
 		filepath.Join("db", "request_logs_view_schema.go"),
 		filepath.Join("sql", "schema", "01-schema.sql"),
 	}
-	re := regexp.MustCompile(`(?i)\bVIEW\s+(public\.)?(request_logs[a-z0-9_]*)`)
+	re := regexp.MustCompile(`(?i)\bVIEW\s+(public\.)?(_?request_logs[a-z0-9_]*)`)
 	seen := map[string]bool{}
 	for _, rel := range sources {
 		src, err := os.ReadFile(filepath.Join(root, rel))
@@ -459,9 +464,9 @@ func viewChainNames(t *testing.T) []string {
 }
 
 // v1BaseTableNames is the v1 family, read off pg_class.relkind in ('r','p') on
-// the local instance: request_logs and request_logs_bodies are partitioned
-// parents, request_logs_hot and request_logs_bodies_hot are plain tables.
-// request_logs_archive is a fifth parent and is here because a local catalog
+// the local instance: _request_logs and _request_logs_bodies are partitioned
+// parents, _request_logs_hot and _request_logs_bodies_hot are plain tables.
+// _request_logs_archive is a fifth parent and is here because a local catalog
 // query is what surfaced it — an inventory written from memory is how it would
 // have been missed. Kept explicit because these are tables, not views, and
 // nothing in the view schema names them as definitions.
@@ -471,9 +476,18 @@ var v1BaseTableNames = []string{
 	"request_logs_bodies",
 	"request_logs_bodies_hot",
 	"request_logs_hot",
+	// 迁移 860（2026-10-14）之后的**现行物理名**：`_` 前缀 = 待删除标志。
+	// 旧五名保留在表里：liveRelations 的迁移重放会在 860 之后把它们判死，
+	// 而本列表同时喂「源码字面量分类」（源码里现在只有前缀名）与
+	// 「族名分区检查」（两代名字都必须落进 v1 族、不得落进视图族）。
+	"_request_logs",
+	"_request_logs_archive",
+	"_request_logs_bodies",
+	"_request_logs_bodies_hot",
+	"_request_logs_hot",
 }
 
-// liveRelations replays forward migrations and returns which request_logs
+// liveRelations replays forward migrations and returns which _request_logs
 // relations still exist, last writer winning.
 //
 // "Any DROP removes the name" is wrong and fails loudly here: migrations 717,
@@ -508,8 +522,14 @@ func liveRelations(t *testing.T, root string) map[string]bool {
 	sort.Strings(files)
 
 	live := map[string]bool{}
-	drop := regexp.MustCompile(`(?i)DROP\s+(?:VIEW|TABLE)\s+(?:IF\s+EXISTS\s+)?(?:public\.)?(request_logs[a-z0-9_]*)`)
-	mk := regexp.MustCompile(`(?i)CREATE\s+(?:OR\s+REPLACE\s+)?(?:VIEW|TABLE)\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:public\.)?(request_logs[a-z0-9_]*)`)
+	drop := regexp.MustCompile(`(?i)DROP\s+(?:VIEW|TABLE)\s+(?:IF\s+EXISTS\s+)?(?:public\.)?(_?request_logs[a-z0-9_]*)`)
+	mk := regexp.MustCompile(`(?i)CREATE\s+(?:OR\s+REPLACE\s+)?(?:VIEW|TABLE)\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:public\.)?(_?request_logs[a-z0-9_]*)`)
+	// rename（迁移 860，2026-10-14）：`ALTER TABLE <old> RENAME TO <new>`——
+	// 旧名死、新名活。860 特意把每条改名写成 EXECUTE 字面量里的完整静态
+	// 语句（而不是 format('%I') 动态拼装），就是为了让本重放能看见。
+	// 通配标识符（而非 _request_logs 前缀专属）是为了将来别的待删族改名
+	// 也能走同一条路；无关表的 RENAME 在 live 里只会落一个无人查询的键。
+	rename := regexp.MustCompile(`(?i)ALTER\s+TABLE\s+(?:public\.)?([a-z_][a-z0-9_]*)\s+RENAME\s+TO\s+(?:public\.)?([a-z_][a-z0-9_]*)`)
 	for _, p := range files {
 		b, err := os.ReadFile(p)
 		if err != nil {
@@ -521,6 +541,10 @@ func liveRelations(t *testing.T, root string) map[string]bool {
 			}
 			if m := mk.FindStringSubmatch(line); m != nil {
 				live[strings.ToLower(m[1])] = true
+			}
+			if m := rename.FindStringSubmatch(line); m != nil {
+				live[strings.ToLower(m[1])] = false
+				live[strings.ToLower(m[2])] = true
 			}
 		}
 	}

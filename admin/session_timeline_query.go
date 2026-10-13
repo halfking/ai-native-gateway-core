@@ -14,7 +14,7 @@ import (
 //   - admin/session_analytics_handler.go  HandleSessionAnalyticsDetail
 //   - admin/session_panorama_handler.go   loadSessionDetailDataInTx
 //
-// 两份都直读 request_logs 物理表。S4 停写门控
+// 两份都直读 _request_logs 物理表。S4 停写门控
 // （storage.request_logs_write_enabled=false）关停后，新会话在这张表里一行都
 // 没有，timeline 恒空 —— 但同一响应里的 summary 仍来自 session_summaries 照常
 // 返回，接口还是 200。表现是「详情页时间线空白、统计数字却对」，同一响应内自相
@@ -25,7 +25,7 @@ import (
 // 拼装在内，停写后仍供数；镜像链启用之前的历史窗口仍由 v1 分支兜住。列契约经
 // 真库 information_schema 核验，15 个投影列 + gw_session_id/tenant_id 全部存在。
 //
-// S6（DROP request_logs 族）时视图本身会消失，届时需改走
+// S6（DROP _request_logs 族）时视图本身会消失，届时需改走
 // db.SessionFamilyTurnsSourceSQL() 原生源，并接受镜像链启用前的历史窗口不可见。
 // 这一点与 admin/logs_turns_source.go 登记的波1边界同源。
 const sessionTimelineQuery = `

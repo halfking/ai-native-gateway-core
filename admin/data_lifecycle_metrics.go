@@ -2,7 +2,7 @@ package admin
 
 // NOTE: data_lifecycle_metrics is a Prometheus aggregate endpoint that is
 // intentionally platform-wide. Tenant isolation does not apply here because
-// the metrics describe the whole request_logs table (total size, hot/warm/
+// the metrics describe the whole _request_logs table (total size, hot/warm/
 // cold/expired row counts). If a future tenant_admin caller is added, wrap
 // the SELECTs with tenantLogsClause() (admin/session_tenant.go) which
 // injects "AND tenant_id = $N" for tenant_admin callers on non-default
@@ -51,16 +51,16 @@ func (h *Handler) handleDataLifecycleMetrics(w http.ResponseWriter, r *http.Requ
 	err := h.db.QueryRow(ctx, `
 		SELECT 
 			COUNT(*) AS total_rows,
-			pg_total_relation_size('request_logs') AS total_size,
+			pg_total_relation_size('_request_logs') AS total_size,
 			COUNT(*) FILTER (WHERE ts > NOW() - INTERVAL '7 days') AS hot_rows,
-			(pg_total_relation_size('request_logs') * COUNT(*) FILTER (WHERE ts > NOW() - INTERVAL '7 days')::numeric / NULLIF(COUNT(*), 0))::bigint AS hot_size,
+			(pg_total_relation_size('_request_logs') * COUNT(*) FILTER (WHERE ts > NOW() - INTERVAL '7 days')::numeric / NULLIF(COUNT(*), 0))::bigint AS hot_size,
 			COUNT(*) FILTER (WHERE ts BETWEEN NOW() - INTERVAL '30 days' AND NOW() - INTERVAL '7 days') AS warm_rows,
-			(pg_total_relation_size('request_logs') * COUNT(*) FILTER (WHERE ts BETWEEN NOW() - INTERVAL '30 days' AND NOW() - INTERVAL '7 days')::numeric / NULLIF(COUNT(*), 0))::bigint AS warm_size,
+			(pg_total_relation_size('_request_logs') * COUNT(*) FILTER (WHERE ts BETWEEN NOW() - INTERVAL '30 days' AND NOW() - INTERVAL '7 days')::numeric / NULLIF(COUNT(*), 0))::bigint AS warm_size,
 			COUNT(*) FILTER (WHERE ts BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '30 days') AS cold_rows,
-			(pg_total_relation_size('request_logs') * COUNT(*) FILTER (WHERE ts BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '30 days')::numeric / NULLIF(COUNT(*), 0))::bigint AS cold_size,
+			(pg_total_relation_size('_request_logs') * COUNT(*) FILTER (WHERE ts BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '30 days')::numeric / NULLIF(COUNT(*), 0))::bigint AS cold_size,
 			COUNT(*) FILTER (WHERE ts < NOW() - INTERVAL '90 days') AS expired_rows,
-			(pg_total_relation_size('request_logs') * COUNT(*) FILTER (WHERE ts < NOW() - INTERVAL '90 days')::numeric / NULLIF(COUNT(*), 0))::bigint AS expired_size
-		FROM request_logs
+			(pg_total_relation_size('_request_logs') * COUNT(*) FILTER (WHERE ts < NOW() - INTERVAL '90 days')::numeric / NULLIF(COUNT(*), 0))::bigint AS expired_size
+		FROM _request_logs
 	`).Scan(
 		&metrics.TotalRows,
 		&metrics.TotalSizeBytes,

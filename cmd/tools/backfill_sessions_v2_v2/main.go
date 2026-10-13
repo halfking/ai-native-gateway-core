@@ -1,4 +1,4 @@
-// Command backfill_sessions_v2_v2 runs historical backfill from public.request_logs
+// Command backfill_sessions_v2_v2 runs historical backfill from public._request_logs
 // into public.session_turns for a single session, using the
 // backfill_session_v2_turns(tenant, session, batch) SQL function.
 //

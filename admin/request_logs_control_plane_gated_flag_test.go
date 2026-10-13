@@ -51,7 +51,7 @@ import (
 // ⚠ **还必须剥 SQL 注释，这是本门第一版漏掉的一层。** Go 层的 `//` 与 `/* */`
 // 正则**剥不掉 raw string 里 SQL 的 `--`**。实测命中：`bg/auto_route_affinity_worker.go`
 // 的 `aggregate()` 查询里有一段 SQL 注释在解释 S4 的影响
-// （`-- settings.KeyRequestLogsWriteEnabled 声明的 request_logs 宽族`），
+// （`-- settings.KeyRequestLogsWriteEnabled 声明的 _request_logs 宽族`），
 // 而那个文件**根本没有 Go 层护栏**。第一版门在它上面误报了 ——
 // **一个要求为不存在的护栏写豁免的门，等于逼人写假豁免。**
 //
@@ -94,7 +94,7 @@ var s4GateIdentifierRE = regexp.MustCompile(
 var gatedFlagExemption = map[string]string{
 	"internal/trace/trace.go": "文件里唯一的门控是 `if !settings.RequestLogsWriteEnabled()`（:473），" +
 		"但它在 **`FlushToPG`（:463-525）** 里，护的是 Redis→PG 的 **UPDATE 写入**（:495-496），" +
-		"**不是本条登记的读点**。登记的 Evidence `SELECT trace_events, ts FROM request_logs_hot WHERE request_id = $1` " +
+		"**不是本条登记的读点**。登记的 Evidence `SELECT trace_events, ts FROM _request_logs_hot WHERE request_id = $1` " +
 		"在 `LoadFromPG`（:601-）——**独立函数**，挂在 Recorder 上、不在 RedisRecorder 的写路径里，" +
 		":601 之前只有 `requestID == \"\"` / `db == nil` 两个 nil 检查。调用方 " +
 		"`admin/request_trace.go:148-156` 也无门控（:149 先试 Redis，miss 后直接进 LoadFromPG）。" +
@@ -103,7 +103,7 @@ var gatedFlagExemption = map[string]string{
 
 	"domains/hooks/observability/telemetry/client.go": "本文件**有**门控，但**全部在写路径**：" +
 		"`requestLogsWriteEnabled()`(:38-40) 的调用点是 :1140（mirrorRequestBodies）、:1284 与 :2067（写事务快照 " +
-		"logsWrite）、:2014（CorrectEstimatedUsage）、:2126（`if logsWrite` 包住 `UPDATE request_logs_hot`）。" +
+		"logsWrite）、:2014（CorrectEstimatedUsage）、:2126（`if logsWrite` 包住 `UPDATE _request_logs_hot`）。" +
 		"本条登记的**两个读点都不在其中**：① `FindRecentGatewaySession`（:593-625，SQL 在 :607，Evidence " +
 		"`AND gw_session_id LIKE 'gw\\_%'`）体内只有 `c == nil` / `dbPool == nil` / `since <= 0` 三组 nil 检查，**零门控**，" +
 		"调用方 `domains/streaming/session_assignment.go:177` 全文件亦无 S4 标识符（:160 的 Redis 索引是 miss 后" +

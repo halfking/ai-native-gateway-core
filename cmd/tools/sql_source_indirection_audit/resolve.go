@@ -43,13 +43,18 @@ const (
 // 这与本文件族系里反复出现的那个教训是同一条：admin 那道门早先也因为
 // 「门拿错误源与错误派生式互相校验」而一直绿着。⇒ 精确集合留下，其余删掉。
 var v1Tables = map[string]bool{
+	// 两代物理名并存（迁移 860，2026-10-14）：Go 源码/composer 用 `_` 前缀名；
+	// sql/objects/views/ 的 DDL dump 与历史迁移文本用旧名。v1 臂推导对两代
+	// 都要认，否则 DDL 来源的视图臂全部判丢（读方被误判 canonical）。
 	"request_logs": true, "request_logs_hot": true,
 	"request_logs_bodies": true, "request_logs_bodies_hot": true,
+	"_request_logs": true, "_request_logs_hot": true,
+	"_request_logs_bodies": true, "_request_logs_bodies_hot": true,
 }
 
 // fragmentTailRE 匹配「以 FROM/JOIN（+ 空白）结尾」的 SQL 片段。
 //
-// 只匹配结尾，不匹配中间：`FROM request_logs_hot` 是**完整**字面量，扫描器看得见；
+// 只匹配结尾，不匹配中间：`FROM _request_logs_hot` 是**完整**字面量，扫描器看得见；
 // 只有 `FROM ` 后面还要拼东西时，关系名才不可知。
 var fragmentTailRE = regexp.MustCompile(`(?i)\b(from|join)\s+$`)
 
@@ -59,10 +64,10 @@ var fragmentTailRE = regexp.MustCompile(`(?i)\b(from|join)\s+$`)
 // 而那个方向正是本工具自称的最坏失效方向（见 isV1Relation 的注释）。
 //
 // ⚠ §9.258：**schema 限定名必须在捕获范围内**（末尾那个 `(?:\.…)*`）。
-// 第一版只写 `[a-z_][a-z0-9_$]*`，于是 `FROM public.request_logs_bodies_hot`
+// 第一版只写 `[a-z_][a-z0-9_$]*`，于是 `FROM public._request_logs_bodies_hot`
 // 只捕获到 `public` —— 视图 DDL 里**每个**关系名都带 `public.` 前缀，
 // 于是「哪些视图含 v1 臂」一个都推不出来，第四桶恒为 0（实测卡在这里一轮）。
-// ⚠ 而这不只是推导器的问题：`FROM public.request_logs` 本来就是 v1 读点，
+// ⚠ 而这不只是推导器的问题：`FROM public._request_logs` 本来就是 v1 读点，
 // 旧口径把它当成一个叫「public」的非 v1 表 —— **漏报**，
 // 正是本文件头说的「最坏的失效方向」。
 var fromRelationRE = regexp.MustCompile(`(?i)\b(?:from|join)\s+("(?:[^"]|"")+"|[a-z_][a-z0-9_$]*(?:\.[a-z_][a-z0-9_$]*)*)`)
@@ -132,7 +137,7 @@ func isRelationFragmentTail(frag string) bool {
 // 留着它只有一个理由，且必须写明：它**只可能减少误报、不可能制造漏报**
 // （剥掉一段注释只会让可扫的关系名变少，而少的那部分本来就不是查询）。
 // 曾经为它写过一道门，夹具是
-// `-- 历史实现读 request_logs，已改`——**仓库里不存在这种注释**，
+// `-- 历史实现读 _request_logs，已改`——**仓库里不存在这种注释**，
 // 于是那道门在「删掉剥注释」这个变异下依然绿：一个为虚构场景写的判据，
 // 测不出任何东西。⇒ 门已删，只留这一行归一化，并把这个测量结果记在这里，
 // 免得下一个人再拿它当「必须有门」的理由。
@@ -176,7 +181,7 @@ func (s Site) Classification() Class {
 		switch {
 		case isV1Relation(r):
 			// ★ 基表命中**优先于** v1 臂视图（§9.258）：`maas/usage.go` 那些点位的
-			// 解析结果是「request_logs_hot | request_logs_with_current_month」——
+			// 解析结果是「_request_logs_hot | request_logs_with_current_month」——
 			// 两臂都中。它们必须留在最严重的 reads-v1 桶里，
 			// 降级成 v1 臂会**把「直接读基表」说成「读视图」**。
 			sawV1 = true
@@ -207,7 +212,7 @@ func (s Site) String() string {
 // isV1Relation 判断一个解析出的字符串是否指向 v1 宽族**基表**。
 //
 // 三个必须容忍的形态：
-//   - 带别名的 FROM 子句：切换层返回的是 "request_logs_hot AS r"，取第一个 token。
+//   - 带别名的 FROM 子句：切换层返回的是 "_request_logs_hot AS r"，取第一个 token。
 //   - 换行与缩进：拼接点后面常跟着另一个拼接的 alias。
 //   - **整个解析结果是一段子查询 / UNION**，关系名不止一个。
 //
@@ -215,9 +220,9 @@ func (s Site) String() string {
 //
 // `admin/tenants.go:770` 把 logsTable 定义成
 //
-//	(SELECT … FROM request_logs_hot
+//	(SELECT … FROM _request_logs_hot
 //	 UNION ALL
-//	 SELECT … FROM request_logs) -- sqlreadguard:allow …
+//	 SELECT … FROM _request_logs) -- sqlreadguard:allow …
 //
 // 然后 `FROM ` + logsTable + ` WHERE tenant_id = $1` 查租户统计。
 // 第一个 token 是 `(select` ⇒ 不在 v1Tables ⇒ 本函数返回 false ⇒
@@ -263,7 +268,7 @@ func isV1Relation(name string) bool {
 // firstRelationToken 从一段 SQL 片段里取出**第一个**关系名 token。
 //
 // 只取 token、不在这里判断它是不是关系名——判断留给调用方的集合查表。
-// 这样 `(SELECT …` 与 `"request_logs_hot"` 两种起手都落到同一处逻辑上。
+// 这样 `(SELECT …` 与 `"_request_logs_hot"` 两种起手都落到同一处逻辑上。
 func firstRelationToken(s string) string {
 	t := strings.TrimSpace(strings.ToLower(s))
 	if t == "" {
@@ -273,16 +278,16 @@ func firstRelationToken(s string) string {
 		t = t[:i]
 	}
 	t = strings.Trim(t, `"`)
-	// §9.258：剥掉 schema 限定。视图 DDL 写的是 `FROM public.request_logs_bodies_hot`，
+	// §9.258：剥掉 schema 限定。视图 DDL 写的是 `FROM public._request_logs_bodies_hot`，
 	// 而 fromRelationRE 只捕获到 `public` —— 剥之前 `viewsWithV1Arm` 一个视图也认不出，
 	// 第四桶恒为 0。
 	//
-	// ★ 这不只是为了让推导器工作：**带 schema 的 `FROM public.request_logs` 本来就是
+	// ★ 这不只是为了让推导器工作：**带 schema 的 `FROM public._request_logs` 本来就是
 	// v1 读点**，旧口径把它当成一个叫「public」的非 v1 表。方向是**漏报**，正是
 	// resolve.go 文件头说的「最坏的失效方向」那一类。
 	//
 	// ⚠ 只剥**最后一段之前**的限定，不动其余字符：`pg_temp.x` / `public.x` 都会变成 `x`，
-	// 而 `request_logs` 这种带 `_` 的名字不会被误剥。
+	// 而 `_request_logs` 这种带 `_` 的名字不会被误剥。
 	if i := strings.LastIndex(t, "."); i >= 0 && i+1 < len(t) {
 		t = t[i+1:]
 	}
@@ -307,7 +312,7 @@ func AuditRepo(root string) ([]Site, error) {
 		// 而是**测试文件会把断言消息当成关系名**（2026-10-05 实测）。
 		//
 		// `TestRequestLogsReadInventoryIsComplete` 的报错文本里有
-		// `"… read request_logs but are absent from …:\n  %s"`，它以
+		// `"… read _request_logs but are absent from …:\n  %s"`，它以
 		// `from ` 结尾、被 fragmentTailRE 认成拼接点，于是
 		// `操作数=*ast.BasicLit → requestLogsReadInventory — S4 would silently
 		// stop feeding them:` 进了**「退役安全」**桶。

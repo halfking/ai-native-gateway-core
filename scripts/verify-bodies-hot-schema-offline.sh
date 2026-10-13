@@ -1,5 +1,5 @@
 #!/bin/bash
-# Offline schema verification for request_logs_bodies_hot
+# Offline schema verification for _request_logs_bodies_hot
 # Validates schema definition by reading migration files
 # Part of Issue #9: Validate database schema and indexes
 
@@ -7,7 +7,7 @@ set -euo pipefail
 
 echo "======================================"
 echo "Offline Schema Verification"
-echo "request_logs_bodies_hot"
+echo "_request_logs_bodies_hot"
 echo "======================================"
 echo ""
 
@@ -23,7 +23,7 @@ echo ""
 
 # Check 1: Table creation
 echo "✓ Checking table definition..."
-if grep -q "CREATE TABLE IF NOT EXISTS request_logs_bodies_hot" "$MIGRATION_FILE"; then
+if grep -q "CREATE TABLE IF NOT EXISTS _request_logs_bodies_hot" "$MIGRATION_FILE"; then
     echo "  ✅ Table creation statement found"
 else
     echo "  ❌ FAIL: Table creation statement not found"
@@ -111,7 +111,7 @@ fi
 
 if grep -q 'request_logs_bodies_hot.*promote_request_logs_bodies_hot_to_partition' "$LIFECYCLE_FILE"; then
     echo "  ✅ Registered in $LIFECYCLE_FILE"
-    grep -A 0 'request_logs_bodies_hot' "$LIFECYCLE_FILE" | head -1 | sed 's/^/    /'
+    grep -A 0 '_request_logs_bodies_hot' "$LIFECYCLE_FILE" | head -1 | sed 's/^/    /'
 else
     echo "  ❌ FAIL: Not registered in $LIFECYCLE_FILE"
     exit 1
@@ -133,7 +133,7 @@ echo "✅ All offline schema checks passed!"
 echo "======================================"
 echo ""
 echo "Schema definition verified from migration files:"
-echo "  - Table: request_logs_bodies_hot"
+echo "  - Table: _request_logs_bodies_hot"
 echo "  - Columns: request_id, ts, request_body, outbound_body, response_body"
 echo "  - Indexes: UNIQUE (request_id, ts), ts DESC, request_id"
 echo "  - Promote function: promote_request_logs_bodies_hot_to_partition"

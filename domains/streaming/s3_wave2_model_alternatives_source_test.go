@@ -20,8 +20,8 @@ func TestS3Wave2ModelAlternativesUsageSource(t *testing.T) {
 		!strings.Contains(sql, "FROM public.session_turns ") {
 		t.Error("usage_7d 热面未切到会话族原生源（hot ∪ parent 两腿）——停写后热门度信号将随 v1 hot 排空消失")
 	}
-	if strings.Contains(sql, "FROM request_logs_hot") {
-		t.Error("usage_7d 仍在直读 request_logs_hot（停写后恒空）")
+	if strings.Contains(sql, "FROM _request_logs_hot") {
+		t.Error("usage_7d 仍在直读 _request_logs_hot（停写后恒空）")
 	}
 	// 2026-09-25 裁决（252 实测 151s）：失败路径禁读 canonical 视图。
 	// 用 FROM 形状 token——CTE 注释里提到视图名（裁决原文）不应误触发。

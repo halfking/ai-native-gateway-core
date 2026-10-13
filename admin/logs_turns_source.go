@@ -11,7 +11,7 @@ import (
 // 与 S1b 写侧灰度同构的读侧灰度开关：默认关闭走视图（v2 视图体本身已含
 // session 家族拼装 + v1 冻结分支 × 反连接）；打开后日志查询的 FROM 直接换成
 // 710 的 session 分支投影（hot ∪ parent，复用 db.SessionFamilyTurnsSourceSQL
-// 的同一份 113 列契约），不再触碰 request_logs / v1 分支 lateral / 反连接。
+// 的同一份 113 列契约），不再触碰 _request_logs / v1 分支 lateral / 反连接。
 // 列形状与视图逐列一致（投影表达式即视图 session 分支本体），外层
 // requestLogsListCols / requestLogsJoins / 行扫描零改动，API 契约保持。
 //
@@ -22,7 +22,7 @@ import (
 // 回切 = 关开关（HotReload，无 DDL）。
 //
 // 已知边界（登记为波1后续项，样板不覆盖）：
-//   - 正文仍走 request_logs_bodies（fetchRequestBodies/fetchRequestOutboundBody）；
+//   - 正文仍走 _request_logs_bodies（fetchRequestBodies/fetchRequestOutboundBody）；
 //     S4 停写后须改读 session_turns.request_delta/response_delta 与
 //     session_bodies final_full（新行），旧行回退 bodies 表。
 //   - 原生模式只输出 session 家族已有行。
@@ -31,7 +31,7 @@ import (
 //
 // 第一版（已作废，勿再引用）：曾写「sessions_v2.enabled=true、
 // shadow_write=true 前提下仍有 20,660 个会话 / 38,878 行只存在于
-// request_logs，且漏写持续发生（09-24 单日 8197 行）」。
+// _request_logs，且漏写持续发生（09-24 单日 8197 行）」。
 // 该结论经复核**是错的**：38,229 行里绝大多数是 hook 按设计不镜像的
 // 内部回环与非终态占位行（unexplained = 0），而「持续发生」是 35 天
 // 滚动窗口的采数假象——按天重算后当前进程为零漏写。真正的

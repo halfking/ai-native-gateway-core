@@ -153,14 +153,14 @@ func (h *Handler) resolveSessionTenant(ctx context.Context, r *http.Request, ses
 		}
 	}
 	// 租户归属判定（会话存储解耦 v3 S3 读端迁移）：先查 session 族唯一事实源，
-	// 再回落 v1 request_logs。
+	// 再回落 v1 _request_logs。
 	//
-	// 为什么不能只留 request_logs：S4 停写（storage.request_logs_write_enabled=false）
-	// 后新会话在 request_logs 里没有行，此处会落空并回退到调用方自己的
+	// 为什么不能只留 _request_logs：S4 停写（storage.request_logs_write_enabled=false）
+	// 后新会话在 _request_logs 里没有行，此处会落空并回退到调用方自己的
 	// callerTenant —— 下面的跨租户拒绝分支永不触发，租户 A 就能按 A 的口径
 	// 去脱敏/读取属于 B 的会话。先查 session 族让 S4 之后判定照常生效。
 	//
-	// 为什么保留 request_logs 回落：镜像链启用之前的历史窗口只在 v1 族里有行，
+	// 为什么保留 _request_logs 回落：镜像链启用之前的历史窗口只在 v1 族里有行，
 	// 直接切走会让那批会话改用 callerTenant 判定，同样是错的。
 	if h.db != nil {
 		if tenant := h.lookupSessionTenant(ctx, sessionID); tenant != "" {
@@ -180,13 +180,13 @@ func (h *Handler) resolveSessionTenant(ctx context.Context, r *http.Request, ses
 }
 
 // lookupSessionTenant 解析会话归属租户：先查 session 族唯一事实源，落空再回落
-// v1 request_logs。返回 "" 表示两个来源都没有该会话。
+// v1 _request_logs。返回 "" 表示两个来源都没有该会话。
 //
 // session_turns_hot 是独立堆表、session_turns 是按月分区的母表，只读单腿会漏掉
 // 尚未 promote 的近期行 —— 与 734 视图体的 hot ∪ parent 形态同构。
 // 命中 idx_session_turns_session (session_id, turn_no DESC)。
 //
-// RLS 姿态与原 request_logs 查询一致：两表都带 tenant_isolation +
+// RLS 姿态与原 _request_logs 查询一致：两表都带 tenant_isolation +
 // super_admin_bypass 策略（430/725），因此这里不改变可见性语义，只改变
 // 「哪张表提供事实」。
 func (h *Handler) lookupSessionTenant(ctx context.Context, sessionID string) string {
@@ -208,7 +208,7 @@ func (h *Handler) lookupSessionTenant(ctx context.Context, sessionID string) str
 	// 镜像链启用之前的历史窗口只在 v1 族里有行。
 	tenant = ""
 	if err := h.db.QueryRow(ctx, `
-		SELECT tenant_id FROM request_logs
+		SELECT tenant_id FROM _request_logs
 		 WHERE gw_session_id = $1
 		 ORDER BY created_at DESC
 		 LIMIT 1`, sessionID).Scan(&tenant); err != nil {

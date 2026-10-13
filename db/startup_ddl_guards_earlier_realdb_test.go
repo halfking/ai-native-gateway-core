@@ -28,12 +28,12 @@ func TestStartupDDLGuards_EarlierOnes_RealDB(t *testing.T) {
 		// 用 CREATE TABLE IF NOT EXISTS 建。夹具**不要**预建：预建会让
 		// IF NOT EXISTS 变成空操作，后续引用 base_credits_per_1m 等列时
 		// 报 42703 —— 那是夹具的锅，不是守卫的。
-		env.drop(t, "request_logs, maas_settings, maas_pricing, maas_price_rules, "+
+		env.drop(t, "_request_logs, maas_settings, maas_pricing, maas_price_rules, "+
 			"model_credit_rates, models_canonical")
 		// model_credit_rates 有 REFERENCES models_canonical(id)，这张表由
 		// 别的子系统建，夹具必须给个最小桩，否则 42P01。
 		exec(`CREATE TABLE public.models_canonical (id INT PRIMARY KEY);`)
-		exec(`CREATE TABLE public.request_logs (
+		exec(`CREATE TABLE public._request_logs (
 			id BIGSERIAL PRIMARY KEY, tenant_id TEXT, ts TIMESTAMPTZ NOT NULL DEFAULT now());`)
 
 		t.Run("A_守卫在缺列时必须返回false", func(t *testing.T) {
@@ -43,7 +43,7 @@ func TestStartupDDLGuards_EarlierOnes_RealDB(t *testing.T) {
 		})
 
 		t.Run("D_负控_无守卫时必须被并发读阻塞", func(t *testing.T) {
-			env.expectLocked(t, "request_logs", maasRequestLogsDDL)
+			env.expectLocked(t, "_request_logs", maasRequestLogsDDL)
 		})
 
 		t.Run("ensure_首次必须建出列与索引", func(t *testing.T) {
@@ -57,12 +57,12 @@ func TestStartupDDLGuards_EarlierOnes_RealDB(t *testing.T) {
 
 		t.Run("B_齐备后守卫必须返回true", func(t *testing.T) {
 			if !d.maasRequestLogsCurrent(env.ctx) {
-				t.Error("列与索引都已存在，守卫却返回 false ⇒ 每次启动仍白锁一次 request_logs")
+				t.Error("列与索引都已存在，守卫却返回 false ⇒ 每次启动仍白锁一次 _request_logs")
 			}
 		})
 
 		t.Run("C_决定性_守卫后并发读下ensure必须立即成功", func(t *testing.T) {
-			wait := env.holdAccessShare(t, "request_logs", guardHoldFor)
+			wait := env.holdAccessShare(t, "_request_logs", guardHoldFor)
 			defer wait()
 			if err := d.EnsureMaasSchema(env.ctx); err != nil {
 				t.Fatalf("守卫后仍被阻塞或报错: %v", err)
@@ -137,8 +137,8 @@ func TestStartupDDLGuards_EarlierOnes_RealDB(t *testing.T) {
 	})
 
 	t.Run("work_type_request_logs", func(t *testing.T) {
-		env.drop(t, "request_logs")
-		exec(`CREATE TABLE public.request_logs (
+		env.drop(t, "_request_logs")
+		exec(`CREATE TABLE public._request_logs (
 			id BIGSERIAL PRIMARY KEY, tenant_id TEXT, ts TIMESTAMPTZ NOT NULL DEFAULT now());`)
 
 		t.Run("A_守卫在缺列时必须返回false", func(t *testing.T) {
@@ -148,7 +148,7 @@ func TestStartupDDLGuards_EarlierOnes_RealDB(t *testing.T) {
 		})
 
 		t.Run("D_负控_无守卫时必须被并发读阻塞", func(t *testing.T) {
-			env.expectLocked(t, "request_logs", workTypeRequestLogsDDL)
+			env.expectLocked(t, "_request_logs", workTypeRequestLogsDDL)
 		})
 
 		t.Run("ensure_首次必须建出列与索引", func(t *testing.T) {
@@ -167,7 +167,7 @@ func TestStartupDDLGuards_EarlierOnes_RealDB(t *testing.T) {
 		})
 
 		t.Run("C_决定性_守卫后并发读下ensure必须立即成功", func(t *testing.T) {
-			wait := env.holdAccessShare(t, "request_logs", guardHoldFor)
+			wait := env.holdAccessShare(t, "_request_logs", guardHoldFor)
 			defer wait()
 			if err := d.ensureWorkTypeSchema(env.ctx); err != nil {
 				t.Fatalf("守卫后仍被阻塞或报错: %v", err)

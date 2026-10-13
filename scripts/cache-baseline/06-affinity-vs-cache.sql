@@ -1,7 +1,7 @@
 -- 缓存命中率基线诊断 - 粘性亲和性 vs 缓存命中率
 -- 文件: scripts/cache-baseline/06-affinity-vs-cache.sql
 -- 用途: 关联粘性命中与缓存命中（核心证据）
--- 数据源: request_logs
+-- 数据源: _request_logs
 -- 时间窗: 最近 7 天
 
 SELECT
@@ -16,7 +16,7 @@ SELECT
     )
     ELSE 0
   END AS hit_ratio
-FROM request_logs
+FROM _request_logs
 WHERE ts >= NOW() - INTERVAL '7 days' AND success = true
 GROUP BY affinity_hit;
 

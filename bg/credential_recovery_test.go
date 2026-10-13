@@ -785,8 +785,8 @@ func TestLookbackCandidateSQLGuards(t *testing.T) {
 		"COALESCE(c.manual_disabled, FALSE) = FALSE",
 		"c.availability_state = 'ready'",
 		// the 36h success window — on BOTH log tables
-		"FROM request_logs_hot rl",
-		"FROM request_logs rl",
+		"FROM _request_logs_hot rl",
+		"FROM _request_logs rl",
 		"rl.success = TRUE",
 		"rl.ts > now() - make_interval(hours => $1)",
 		"COALESCE(rl.outbound_model, rl.client_model) = pm.raw_model_name",

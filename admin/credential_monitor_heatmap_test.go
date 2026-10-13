@@ -33,7 +33,7 @@ func heatmapMockRows() *pgxmock.Rows {
 
 // Regression guard for the SQLSTATE 42803 incident (2026-09-07): the heatmap
 // SQL must not nest an aggregate inside jsonb_object_agg, must filter probe
-// rows on request_logs columns (the historical is_self_test column does not
+// rows on _request_logs columns (the historical is_self_test column does not
 // exist and probe rows may lack request_context_attrs rows), and must use
 // epoch-aligned buckets because date_trunc rejects '5 minutes'.
 func TestBuildHeatmapSQL_GuardsAgainst42803Regression(t *testing.T) {
@@ -52,12 +52,12 @@ func TestBuildHeatmapSQL_GuardsAgainst42803Regression(t *testing.T) {
 	if !strings.Contains(query, "jsonb_object_agg(error_kind, error_count)") {
 		t.Fatal("error distribution must aggregate pre-counted error_counts CTE")
 	}
-	// Probe exclusion uses request_logs-native markers.
+	// Probe exclusion uses _request_logs-native markers.
 	if !strings.Contains(query, "task_type, '') <> 'probe_triggered'") || !strings.Contains(query, "'probe' = ANY(rl.quality_flags)") {
-		t.Fatal("self-test exclusion must use task_type/quality_flags on request_logs")
+		t.Fatal("self-test exclusion must use task_type/quality_flags on _request_logs")
 	}
 	if strings.Contains(query, "is_self_test") {
-		t.Fatal("request_logs has no is_self_test column (SQLSTATE 42703)")
+		t.Fatal("_request_logs has no is_self_test column (SQLSTATE 42703)")
 	}
 	// Epoch-aligned bucketing, not date_trunc.
 	if !strings.Contains(query, "to_timestamp(floor(EXTRACT(EPOCH FROM rl.ts) / 300) * 300)") {

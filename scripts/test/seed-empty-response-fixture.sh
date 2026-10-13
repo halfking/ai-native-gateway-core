@@ -4,11 +4,11 @@
 # 灌入端到端测试数据，模拟 commit 2b2fc911 修复前的污染：
 #   - credential A 提供 claude-opus-4-8，被误标 unavailable (continuous_failure)
 #   - model_probe_state 中 opus-4-8 被误推 unavailable (empty_response)
-#   - request_logs 里有 5 条 zero_tokens_few_chunks 误判
+#   - _request_logs 里有 5 条 zero_tokens_few_chunks 误判
 #
 # 同时给一个对照组：
 #   - credential B 提供 claude-sonnet-4-6，无误判
-#   - request_logs 里 5 条正常成功
+#   - _request_logs 里 5 条正常成功
 #
 # 灌入后用 SELECT 验证；recover-empty-response-misclassification.sh 应只动
 # credential A 和 opus-4-8 的 probe 状态，不动 credential B / sonnet-4-6。
@@ -35,7 +35,7 @@ run_sql_file() {
 }
 
 # 抹掉上一次测试残留
-run_sql "TRUNCATE request_logs, credential_model_bindings, model_probe_state RESTART IDENTITY CASCADE;" >/dev/null
+run_sql "TRUNCATE _request_logs, credential_model_bindings, model_probe_state RESTART IDENTITY CASCADE;" >/dev/null
 run_sql "DELETE FROM credentials;" >/dev/null
 run_sql "DELETE FROM model_offers WHERE raw_model_name IN ('claude-opus-4-8', 'claude-sonnet-4-6');" >/dev/null
 run_sql "DELETE FROM provider_models WHERE raw_model_name IN ('claude-opus-4-8', 'claude-sonnet-4-6');" >/dev/null
@@ -100,9 +100,9 @@ SELECT c.id, 'claude-sonnet-4-6', 'available', 12, 12,
        NOW(), 100.00, 12
 FROM credentials c WHERE c.label = 'cred-B-sonnet';
 
--- 5) request_logs：5 条 opus-4-8 empty_response 误判 + 5 条 sonnet 正常成功
+-- 5) _request_logs：5 条 opus-4-8 empty_response 误判 + 5 条 sonnet 正常成功
 -- 用 generate_series 简化 ts
-INSERT INTO request_logs
+INSERT INTO _request_logs
     (request_id, ts, tenant_id, client_model, outbound_model, credential_id, provider_id,
      prompt_tokens, completion_tokens, success, error_kind, failure_stage, failure_detail_code,
      request_status, upstream_finish_reason, usage_source, request_mode, stream_chunk_count,
@@ -123,7 +123,7 @@ SELECT
 FROM credentials c, generate_series(1, 5) g
 WHERE c.label = 'cred-A-opus';
 
-INSERT INTO request_logs
+INSERT INTO _request_logs
     (request_id, ts, tenant_id, client_model, outbound_model, credential_id, provider_id,
      prompt_tokens, completion_tokens, success, request_status, upstream_finish_reason,
      usage_source, request_mode, stream_chunk_count, stream_done_received, response_preview,
@@ -147,7 +147,7 @@ SQL
 echo "─── fixture loaded ───"
 run_sql "SELECT 'cmb' AS t, count(*) FROM credential_model_bindings
          UNION ALL SELECT 'probe', count(*) FROM model_probe_state
-         UNION ALL SELECT 'request_logs', count(*) FROM request_logs
+         UNION ALL SELECT '_request_logs', count(*) FROM _request_logs
          UNION ALL SELECT 'credentials', count(*) FROM credentials;"
 echo
 echo "─── cmb (before recovery) ───"
@@ -160,7 +160,7 @@ run_sql "SELECT credential_id, raw_model_name, state, last_unavailable_reason, l
                 next_retry_at
          FROM model_probe_state ORDER BY credential_id, raw_model_name;"
 echo
-echo "─── request_logs (BEFORE — must remain unchanged after recovery) ───"
+echo "─── _request_logs (BEFORE — must remain unchanged after recovery) ───"
 run_sql "SELECT request_id, client_model, success, error_kind, failure_detail_code,
                 upstream_finish_reason
-         FROM request_logs ORDER BY ts DESC, request_id LIMIT 12;"
+         FROM _request_logs ORDER BY ts DESC, request_id LIMIT 12;"

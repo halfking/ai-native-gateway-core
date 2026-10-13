@@ -111,7 +111,7 @@ type AudioService struct {
 	failureLogger *executors.CandidateFailureWriter
 	// maas 可选：成功转写后按时长扣租户积分（2026-10-08 Phase B）。
 	maas audioMaasCharger
-	// usageLog 可选：把 audio_seconds / credits 写入 request_logs_hot。
+	// usageLog 可选：把 audio_seconds / credits 写入 _request_logs_hot。
 	usageLog AudioUsageLogger
 }
 

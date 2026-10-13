@@ -1,7 +1,7 @@
 // Package streaming — audio_usage_log.go
 //
 // 2026-10-08 Phase B：成功 ASR 后把 audio_seconds + credits_charged
-// 写入 request_logs_hot（轻量 INSERT，不走完整 telemetry 列对齐）。
+// 写入 _request_logs_hot（轻量 INSERT，不走完整 telemetry 列对齐）。
 // 缺列时 ensure 846 会补；写入失败只打日志，不影响客户端响应。
 package streaming
 
@@ -30,7 +30,7 @@ type pgAudioUsageLogger struct {
 	pool audioUsageExecDB
 }
 
-// NewPGAudioUsageLogger writes minimal request_logs_hot rows for audio calls.
+// NewPGAudioUsageLogger writes minimal _request_logs_hot rows for audio calls.
 func NewPGAudioUsageLogger(pool audioUsageExecDB) AudioUsageLogger {
 	if pool == nil {
 		return nil
@@ -45,7 +45,7 @@ func (l *pgAudioUsageLogger) LogAudioUsage(ctx context.Context, tenantID, reques
 	// S4 停写门控（storage.request_logs_write_enabled，2026-10-13 补挂）：
 	// 这是宽表家族最后一个未挂门的流量写点——音频计量行不经过 telemetry
 	// 持久化链（主 INSERT/bodies/trace 全在各自门内），此前停写后仍会向
-	// request_logs_hot 落新行，破坏「v1 冻结」不变式（并让以 max(ts) 为
+	// _request_logs_hot 落新行，破坏「v1 冻结」不变式（并让以 max(ts) 为
 	// 冻结点的读侧会话补丁腿失真）。处置与 internal/trace.FlushToPG 的 R52
 	// 语义一致：停写即丢弃（计费本身走 maas/usage_ledger，不受影响）。
 	// 已登记边界：音频秒数观测（dashboard audio 维度）停写后无会话族
@@ -59,7 +59,7 @@ func (l *pgAudioUsageLogger) LogAudioUsage(ctx context.Context, tenantID, reques
 	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	_, err := l.pool.Exec(cctx, `
-		INSERT INTO request_logs_hot (
+		INSERT INTO _request_logs_hot (
 			request_id, ts, tenant_id, client_model, success,
 			audio_seconds, credits_charged, work_type, request_mode, request_status
 		) VALUES (
@@ -74,7 +74,7 @@ func (l *pgAudioUsageLogger) LogAudioUsage(ctx context.Context, tenantID, reques
 	}
 }
 
-// SetUsageLogger wires optional request_logs_hot writer for ASR duration.
+// SetUsageLogger wires optional _request_logs_hot writer for ASR duration.
 func (s *AudioService) SetUsageLogger(l AudioUsageLogger) {
 	if s == nil {
 		return

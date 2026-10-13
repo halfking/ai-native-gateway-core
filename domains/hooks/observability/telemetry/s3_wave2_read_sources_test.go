@@ -13,7 +13,7 @@ import (
 func TestS3Wave2StopWriteReadSources(t *testing.T) {
 	t.Run("FindRecentGatewaySession 双热腿", func(t *testing.T) {
 		q := findRecentGatewaySessionSQL
-		for _, leg := range []string{"FROM public.session_turns_hot", "FROM public.request_logs_hot"} {
+		for _, leg := range []string{"FROM public.session_turns_hot", "FROM public._request_logs_hot"} {
 			if !strings.Contains(q, leg) {
 				t.Errorf("会话粘滞查找缺少 %q：停写后（或回滚后）的一侧将查不到会话", leg)
 			}
@@ -43,7 +43,7 @@ func TestS3Wave2StopWriteReadSources(t *testing.T) {
 			t.Error("turn_no 应读 MAX(turn_no)（序号权威在会话族，COUNT 会漏补写行）")
 		}
 		v := lookupTurnNoV1FallbackSQL
-		if !strings.Contains(v, "FROM request_logs") || !strings.Contains(v, "gw_session_id = $1") {
+		if !strings.Contains(v, "FROM _request_logs") || !strings.Contains(v, "gw_session_id = $1") {
 			t.Error("v1 回退腿丢失（镜像前历史会话的 outbox 序号会断供）")
 		}
 	})

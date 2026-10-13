@@ -143,7 +143,7 @@ type SessionAudit struct {
 	HasCompression    bool      `json:"has_compression"`  // 任何 turn 触发了 compression
 	CompressionHits   int       `json:"compression_hits"` // 触发 compression 的轮次
 	TotalTurns        int       `json:"total_turns"`
-	HasSessionID      bool      `json:"has_session_id"`      // false 表示 request_logs.gw_session_id 为 NULL
+	HasSessionID      bool      `json:"has_session_id"`      // false 表示 _request_logs.gw_session_id 为 NULL
 	MissingSessionIDs int       `json:"missing_session_ids"` // NULL 计数
 	HasTitle          bool      `json:"has_title"`
 	HasSummary        bool      `json:"has_summary"`

@@ -19,7 +19,7 @@ import (
 // ignored and that field is lost from every backfilled row — exactly the
 // silent-drift class the storage gate exists to catch.
 //
-// Known-good exceptions: the backfill projects request_logs.ts as
+// Known-good exceptions: the backfill projects _request_logs.ts as
 // 'event_at' (the entry has no ts tag). 'success' is a real tag and is
 // projected from the v1 success column — 2026-09-30 修订，此前它取自
 // is_final_success（语义是「本请求是否抢到本会话的最终成功标记」，不是
@@ -96,7 +96,7 @@ func TestBackfillScopeReachesTerminalNonFinalSuccessRows(t *testing.T) {
 	}
 	// Both v1 legs (hot + parent) must carry the terminal + session-header
 	// filter, or one leg silently contributes nothing.
-	for _, leg := range []string{"FROM public.request_logs_hot", "FROM public.request_logs\n"} {
+	for _, leg := range []string{"FROM public._request_logs_hot", "FROM public._request_logs\n"} {
 		if !strings.Contains(body, leg) {
 			t.Fatalf("expected both v1 legs to survive the scope change, missing %q", leg)
 		}
@@ -133,7 +133,7 @@ func TestBackfillScopeReachesTerminalNonFinalSuccessRows(t *testing.T) {
 // no-op.
 //
 // Derived by cross-checking every projected column against the live schema on
-// 2026-09-30 (request_logs / request_logs_hot × information_schema.data_type
+// 2026-09-30 (_request_logs / _request_logs_hot × information_schema.data_type
 // against the Go field type). auto_decision was the single mismatch:
 // jsonb in the database, *string in the struct, non-null on ~2.15M rows —
 // it would have dead-lettered essentially every backfilled row on a real
