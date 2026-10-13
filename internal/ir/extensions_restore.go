@@ -109,6 +109,31 @@ func restoreExtensions(out map[string]any, req *InternalRequest, targetProtocol 
 			}
 		}
 
+		// r1026（2026-10-13）：stream_options 是 openai-chat 线格式专属参数，
+		// Responses / Anthropic / Gemini 线格式均无此字段。chat 入向的
+		// stream_options.include_usage（AI-SDK 流式恒发）经 KindPortable 透传
+		// 进 openai-responses 出站体时，严格后端整流 400（vapeur 中转
+		// grok-4.6 实测："Unknown parameter: 'stream_options.include_usage'"，
+		// 单候选即整请求失败）。按**目标线格式**裁剪而非给注册表挂
+		// RejectedByUnknown：后者会连带 chat 形态的 unknown 中转（联界/
+		// 智码等本地主力）在 executor 再注入前丢掉客户端显式
+		// include_usage=false 的语义。Responses 流的 usage 恒随
+		// response.completed 返回，Anthropic/Gemini 各有原生 usage 事件，
+		// 裁剪零语义损失。
+		if key == "stream_options" {
+			switch targetProtocol {
+			case ProtocolOpenAIResponses, ProtocolAnthropicMessages, ProtocolGeminiGenerate:
+				ReportProtocolLoss("", key, req.SourceProtocol, targetProtocol,
+					"wire_format_scoped_field",
+					"stream_options dropped: parameter exists only on the openai-chat wire format",
+					map[string]any{
+						"source_dialect": string(src),
+						"target_dialect": string(dst),
+					})
+				continue
+			}
+		}
+
 		outKey, outVal, action, spec := paramreg.Apply(key, val, src, dst)
 
 		switch action {

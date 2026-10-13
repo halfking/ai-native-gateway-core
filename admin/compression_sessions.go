@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
 
 type compressionSessionItem struct {
@@ -103,7 +105,14 @@ func (h *Handler) handleCompressionSessions(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Count distinct sessions
-	countSQL := `SELECT COUNT(DISTINCT rl.gw_session_id) FROM request_logs_with_current_month rl LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id WHERE ` + whereClause
+	//
+	// 2026-10-13 S4 停写后读源会话族化：turns 腿换 canonical 会话族源
+	// （v1 列名投影，hot∪父表+details），bodies 腿换会话族 bodies 源。
+	// 原两腿读 v1 视图族（request_logs_with_current_month ×
+	// request_logs_bodies_with_current_month），停写后对新会话恒空。
+	// 压缩列（compression_strategy/outbound_msg_count/outbound_token_est）
+	// 在 canonical 投影内由 turns/details 层供值（真库实测会话侧已有数据）。
+	countSQL := `SELECT COUNT(DISTINCT rl.gw_session_id) FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl LEFT JOIN ` + dbpkg.SessionFamilyBodiesSourceSQL() + ` rb ON rb.request_id = rl.request_id WHERE ` + whereClause
 	var totalCount int
 	if err := h.db.QueryRow(ctx, countSQL, args...).Scan(&totalCount); err != nil {
 		slog.Warn("compression_sessions count query failed", "error", err)
@@ -111,7 +120,16 @@ func (h *Handler) handleCompressionSessions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Main query with LATERAL to get latest request's orig msg count
+	// Main query with LATERAL to get latest request's orig msg count.
+	// LATERAL 口径：会话族 request_body 即消息数组（request_delta 投影），
+	// 数组长度就是原始消息数；v1 时代的 request_body->'messages' 取键不再
+	// 适用。ts 等值配对已按 §5.9 实测口径删除（bodies.ts 是正文写入时间，
+	// 99.85% 不等于轮次时间）。
+	// ⚠ 形状守卫（2605 部署实测抓的缺陷）：request_delta 有四种形态——
+	// array / SQL NULL / **JSON 字面量 null / 其它标量**。JSON null 的 SQL
+	// 值非 NULL，COALESCE 救不了，jsonb_array_length 直接 22023
+	// 「cannot get array length of a scalar」（本地真库 outbound 非空行里
+	// JSON null 有 1,433 行）。必须 jsonb_typeof 判形，非 array 一律记 0。
 	mainSQL := `
 		SELECT
 			s.gw_session_id,
@@ -133,16 +151,18 @@ func (h *Handler) handleCompressionSessions(w http.ResponseWriter, r *http.Reque
 				MAX(rl.outbound_msg_count) AS outbound_msg_count,
 				MAX(rl.outbound_token_est) AS outbound_token_est,
 				MAX(rl.request_id) AS sample_request_id
-			FROM request_logs_with_current_month rl
-			LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
+			FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl
+			LEFT JOIN ` + dbpkg.SessionFamilyBodiesSourceSQL() + ` rb ON rb.request_id = rl.request_id
 			WHERE ` + whereClause + `
 			GROUP BY rl.gw_session_id
 		) s
 		LEFT JOIN LATERAL (
-			SELECT jsonb_array_length(COALESCE(rb2.request_body::jsonb->'messages', '[]'::jsonb)) AS orig_msg_count
-			FROM request_logs_with_current_month rl2
-			LEFT JOIN request_logs_bodies_with_current_month rb2
-			  ON rb2.request_id = rl2.request_id AND rb2.ts = rl2.ts
+			SELECT CASE WHEN jsonb_typeof(rb2.request_body) = 'array'
+			            THEN jsonb_array_length(rb2.request_body)
+			            ELSE 0 END AS orig_msg_count
+			FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl2
+			LEFT JOIN ` + dbpkg.SessionFamilyBodiesSourceSQL() + ` rb2
+			  ON rb2.request_id = rl2.request_id
 			WHERE rl2.gw_session_id = s.gw_session_id
 			  AND rb2.outbound_body IS NOT NULL
 			ORDER BY rl2.ts DESC

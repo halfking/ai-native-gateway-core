@@ -2,6 +2,7 @@ package paramguard
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
@@ -346,14 +347,78 @@ func TestApply_VendorSpecificInvariants(t *testing.T) {
 	}
 }
 
+// ⚠️ 2026-10-13 重写。旧版把结果 `_ = out` 丢弃，注释写着
+// 「just check it doesn't panic」—— 于是这条判据**断言了它自己名字里的那个属性
+// 以外的任何东西**：名字叫 NoOpForUnknownDialect，却从没比较过 out 与 body。
+// 与 `internal/trace` 的 backoff 阶梯同形（期望值建好但被丢弃），
+// 只是这次丢的是**被测值**。
+//
+// 实测（245/本机跑的探针，见提交说明）：DialectUnknown 下
+// Apply 输出与输入**逐字节相同**，ApplyReported 返回 0 条报告。
+// 下面把这两点钉住 —— 尤其第二条：temperature=1.2 越界**不能**被 clamp，
+// 这才是「unknown 方言不该动别人的参数」的实质。
 func TestApply_NoOpForUnknownDialect(t *testing.T) {
-	body := mustMarshal(map[string]any{
-		"temperature": 1.2,
+	in := mustMarshal(map[string]any{
+		"temperature": 1.2, // 越界值：Anthropic 路径会 cap，unknown 必须不碰
 		"stop":        []string{"END"},
 	})
-	out := Apply(body, paramreg.DialectUnknown)
-	// Only dialect-agnostic rules run; should be no-op here
-	_ = out // just check it doesn't panic
+
+	out := Apply(in, paramreg.DialectUnknown)
+
+	if string(out) != string(in) {
+		t.Fatalf("DialectUnknown 下 Apply 必须原样返回。\n 入 = %s\n出 = %s", in, out)
+	}
+
+	// 温度越界必须**不被**改写：这是「不认识就别动」的核心。
+	var got struct {
+		Temperature *float64 `json:"temperature"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("输出不是合法 JSON: %v", err)
+	}
+	if got.Temperature == nil {
+		t.Fatalf("temperature 字段被整个丢掉了: %s", out)
+	}
+	if *got.Temperature != 1.2 {
+		t.Fatalf("unknown 方言下 temperature 被改写: got %v, want 1.2", *got.Temperature)
+	}
+
+	// 并且不得声称做过任何语义调整。
+	if _, reports := ApplyReported(in, paramreg.DialectUnknown); len(reports) != 0 {
+		t.Fatalf("unknown 方言下不应产生任何调整报告，实际 %d 条: %+v", len(reports), reports)
+	}
+}
+
+// TestApply_NoOpForUnknownDialect_WithThinking 是上一条的高危孪生用例。
+//
+// 为什么单独一条：Anthropic 的 thinking 规则会**直接删掉** temperature
+// （removeSamplingIfThinking），而 temperature cap 只是**改值**。
+// ⇒ 同一个「守卫被放宽」的改动，在有 thinking 字段时造成的是
+// **字段整个消失**，比 clamp 严重得多。
+// 而未知方言的请求里出现 thinking 字段并不荒唐 ——
+// 新模型/新供应商先发请求、后补方言识别，是很现实的路径。
+//
+// 探针实测（2026-10-13）：把 guard.go 的
+// `if dialect == paramreg.DialectAnthropic` 放宽到含 DialectUnknown 后，
+// 本用例的入参被改成 {"max_tokens":4096,"thinking":{...}}，
+// temperature **整个没了**，原判据（不含 thinking）此时仍绿。
+func TestApply_NoOpForUnknownDialect_WithThinking(t *testing.T) {
+	in := mustMarshal(map[string]any{
+		"temperature": 1.2,
+		"max_tokens":  4096,
+		"thinking":    map[string]any{"type": "enabled", "budget_tokens": 1024},
+	})
+
+	out := Apply(in, paramreg.DialectUnknown)
+
+	if string(out) != string(in) {
+		t.Fatalf("DialectUnknown 下 Apply 必须原样返回（thinking 在场时尤其）。\n 入 = %s\n出 = %s", in, out)
+	}
+	for _, k := range []string{"temperature", "max_tokens", "thinking"} {
+		if !strings.Contains(string(out), `"`+k+`"`) {
+			t.Fatalf("字段 %q 被删除了（DialectUnknown 不该动它）。实际输出: %s", k, out)
+		}
+	}
 }
 
 func TestApply_EmptyBody(t *testing.T) {

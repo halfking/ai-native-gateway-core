@@ -386,6 +386,78 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"384/443 行 ForSessionSQL()。全是会话族。",
 		Consequence: "与 v1 无关。",
 	},
+	// ── S4 波 4（2026-10-13）新增的会话族拼接点 ──────────────────────────
+	// ── S4 波 4（2026-10-13）补登：波 2/波 3 引入但当时未进本清单的 8 文件 ──
+	// （pristine HEAD 本门已红 8 条；本轮补齐使其复绿。判定依据=逐文件读拼接点。）
+	"admin/body_resolver.go": {
+		Verdict:     verdictNonV1ByInspection,
+		Via:         ":254 lookupControlledBody 阶段3 会话族兜底腿 `FROM ` + dbpkg.SessionFamilyBodiesSourceSQL()（S4 停写交接加）。",
+		Consequence: "本拼接点与 v1 无关；阶段1/2 的 v1 字面腿由 bodies 退役门管辖。",
+	},
+	"admin/routing.go": {
+		Verdict:     verdictNonV1ByInspection,
+		Via:         ":2684 popularModelsHotSQL `FROM ` + db.SessionFamilyTurnsSourceSQL()（S3 波 3 会话族原生源）。",
+		Consequence: "与 v1 无关；模型列回退链 client→outbound→canonical。",
+	},
+	"admin/unified_detail.go": {
+		Verdict:     verdictNonV1ByInspection,
+		Via:         ":296 pgBodyReader.loadOutboundBody 阶段3 会话族兜底腿（S4 停写交接加）。",
+		Consequence: "本拼接点与 v1 无关；hot/view 字面腿由 bodies 退役门管辖。",
+	},
+	"cmd/gateway/main_v3_wiring.go": {
+		Verdict:     verdictNonV1ByInspection,
+		Via:         ":104-105 lastOutboundSessionSQL：SessionFamilyTurnsForSessionSQL() turns 腿 + SessionFamilyBodiesSourceSQL() bodies 腿（压缩缓存 L3 冷启动回退）。",
+		Consequence: "与 v1 无关（两会话族源直连）。",
+	},
+	"domains/analysis/request_summary.go": {
+		Verdict:     verdictNonV1ByInspection,
+		Via:         ":127 requestSummaryTurnsSource = db.SessionFamilyTurnsForSessionSQL()（包级变量，工具判 unresolved(tool)；S3 波 2 起整体脱离 v1 族）。",
+		Consequence: "与 v1 无关。",
+	},
+	"domains/hooks/goal/history_store.go": {
+		Verdict:     verdictNonV1ByInspection,
+		Via:         ":86-87 historySessionSQL：SessionFamilyTurnsForSessionSQL() + SessionFamilyBodiesSourceSQL()（主路径）。",
+		Consequence: "本拼接点与 v1 无关；historyV1SQL 回退臂（v1 字面量）由 bodies 退役门管辖，随 v1 退役删除。",
+	},
+	"domains/streaming/model_alternatives.go": {
+		Verdict:     verdictNonV1ByInspection,
+		Via:         ":255 `FROM ` + db.SessionFamilyTurnsSourceSQL()（S3 波 2 会话族化）。",
+		Consequence: "与 v1 无关。",
+	},
+	"internal/summarystore/store.go": {
+		Verdict:     verdictNonV1ByInspection,
+		Via:         ":262 countTurnsSessionSQL `FROM ` + db.SessionFamilyTurnsForSessionSQL()（S3 波 2 会话族化）。",
+		Consequence: "与 v1 无关。",
+	},
+	"admin/compression_sessions.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via: "countSQL + 主查询 + LATERAL 三段：SessionFamilyTurnsSourceSQL() ×3、" +
+			"SessionFamilyBodiesSourceSQL() ×3（2026-10-13 S4 波 4 会话族化，" +
+			"原 v1 视图两腿整体替换）。",
+		Consequence: "与 v1 无关。退役门登记见 admin/request_logs_bodies_retirement_gate_test.go" +
+			"（该文件已整体出列 v1 族）。",
+	},
+	// S4 波 4 补记（2026-10-13）：quality_correlations 重写后经切换层取 bodies。
+	"admin/quality_correlations.go": {
+		Verdict: verdictReadsV1Arm,
+		Via: "buildBreakdownQuery：`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb` ×5 个" +
+			"分桶查询（2026-10-13 S4 波 4 从 request_logs 基表字面量改来）；turns 腿是 " +
+			"SessionFamilyTurnsSourceSQL()（canonical，含 v1 臂）。工具判 reads-v1-arm。" +
+			"默认支 = 切换层 v1 臂（native_read=false 时）。",
+		Consequence: "DROP v1 后切换层删 v1 臂 ⇒ 分桶只由会话族供数；探针流量按 R51" +
+			"本就不在会话族（口径变更已拍板登记，退役门条目）。分桶读的是 " +
+			"rb.outbound_body（完整上游请求对象），列在四列合同内。",
+	},
+	"admin/session_bodies_batch.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via: "主批量取数器 sessionBodiesByRequestIDSQL = `FROM ` +" +
+			"dbpkg.SessionFamilyBodiesSourceSQL() + ` rb`（2026-10-13 S4 波 4，" +
+			"消费方 session_compare 的 turns 腿是会话族）。",
+		Consequence: "本拼接点与 v1 无关。⚠ 同文件的 v1BodiesByRequestIDSQL/" +
+			"sessionBodiesByRequestIDAndTSSQL 仍是 v1 视图**字面量**（summary 回退" +
+			"路径专用 + 无生产调用方的守形钉子），由 bodies 退役门与守形门管辖，" +
+			"随 v1 表 DROP 退役。",
+	},
 	"admin/session_export.go": {
 		Verdict: verdictReadsV1Arm,
 		Via: "227 行 `FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` rl`，会话族。" +
@@ -943,8 +1015,13 @@ type bucketSnapshot struct {
 // ⚠ 改这三个数字之前先读上面的注释：确认是「桶真的变了」而不是
 // 「扫描范围被改小/解析失败被吞」。`TestRepoAuditIsNotSilentlyVacuous`
 // 只挡总体为 0，挡不住**部分**文件解析失败后被 `continue` 静默跳过。
+// 2026-10-13（S4 波 4）更新：S3 波 2/波 3 的读方会话族化在本清单之外发生了
+// （那些轮次没跑本工具测试）：字面量改拼接 + 会话族新拼接点 ⇒ canonical 桶
+// 12/18 → 22/36、unresolved 9/16 → 10/17、总数 73 → 92。方向全部是
+// 「把看不见变成看得见」与「字面量 → 拼接」，无桶变小；v1 桶 6/12 一动不动
+// （★ 与 §9.256 结论一致：解析率再怎么变，v1 基表读方数不变）。
 var documentedSnapshot = bucketSnapshot{
-	TotalSites: 73,
+	TotalSites: 94,
 	V1Files:    6,
 	V1Sites:    12,
 	// ★ §9.258：第四桶是**退役工作量的主体**，而前两桶都不是。
@@ -958,12 +1035,12 @@ var documentedSnapshot = bucketSnapshot{
 	// ⇒ 读它们的读方被判成 canonical（把有风险的报成安全）。
 	// 真库 pg_class 里 4 个 request_logs*_with_current_month* 视图**全部含 v1 臂**。
 	// （2026-10-07 全量门首跑：V1ArmSites 26→27，方向=变大，同上注释。）
-	V1ArmFiles: 15,
-	V1ArmSites: 27,
-	CanonFiles: 12,
-	CanonSites: 18,
-	UnresFiles: 9,
-	UnresSites: 16,
+	V1ArmFiles: 16,
+	V1ArmSites: 28,
+	CanonFiles: 23,
+	CanonSites: 37,
+	UnresFiles: 10,
+	UnresSites: 17,
 }
 
 func TestDocumentedSnapshotMatchesMeasurement(t *testing.T) {

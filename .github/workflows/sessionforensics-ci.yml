@@ -268,3 +268,50 @@ jobs:
 
       - name: Run IR fuzz smoke
         run: go test ./internal/ir -run '^$' -fuzz '^FuzzIRParsersNeverPanic$' -fuzztime=5s -count=1
+
+  concurrency-race:
+    # 补上「13 条并发判据在任何流水线里都不可能失败」这个缺口（2026-10-13）。
+    #
+    # 背景：根模块在流水线里只有两个宽覆盖入口，都不带 -race ——
+    #   · make test-short  = go test ./... -short        （-short 还会静默 skip 一批）
+    #   · -tags=integration ./...                       （同样不带 -race）
+    # 而 -race 的真覆盖只有 identity-race / raw-sink-race / core-quality 三个 job，
+    # 只覆盖 ./admin(带 -run 过滤) 与 ./internal/ir ./domains/dispatch ./domains/streaming/...。
+    # 于是 13 条「Concurrent / 并发 / race-only」判据跑是跑、却永远不会红。
+    #   实测：internal/ctxpool 的 acquire 路径注入一处真实无锁共享写后，
+    #   流水线默认配置（-short，无 -race）绿灯，加 -race 才红。
+    #
+    # 为什么仍然收窄而不用全仓 -race：见 identity-race 的注释，
+    # 本仓有 DB/网络集成测试会在这个 job 里跑挂。
+    #
+    # ⚠️ admin 必须**单独收窄**：整包 `go test -race ./admin` 实测 608s，
+    #   超过 Go 默认 10m 测试超时直接 panic（而它单独跑只要 2.3s，
+    #   说明不是某条测试慢，是整包在 race 下太重）。
+    #   故 admin 只跑并发命名的判据，实测 6.6s。
+    name: Concurrency tests (race)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Run concurrency tests (race detector)
+        run: |
+          go test -race -count=1 -timeout 600s \
+            ./bg \
+            ./bg/systemmonitor \
+            ./domains/feishubot \
+            ./domains/hooks/compression/strategy \
+            ./domains/moduleexec \
+            ./domains/requestjourney \
+            ./domains/routing \
+            ./domains/sessionstate \
+            ./internal/ctxpool \
+            ./plugin-runtime \
+            ./routingopt
+          go test -race -count=1 -timeout 300s ./admin -run 'Concurrent|NoRace|Parallel'

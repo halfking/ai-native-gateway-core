@@ -329,7 +329,7 @@ func TestReaderPopulationGroundTruth(t *testing.T) {
 // 会话（3b7180abe/31d466e21）引入为 v1 基表新读方（候选失败监控，探针面），
 // 消费面分档已登记 Tier ③（request_logs_retirement_tiering_test.go「候选失败
 // 监控：探针面」），退役风险判定随档位走——本基线只补记成员资格，不改判档。
-var unjudgedBaseline = 49
+var unjudgedBaseline = 46
 
 // unjudgedBaselineFiles is the membership that goes with unjudgedBaseline.
 // A set, not a count: see the swap case in TestReaderPopulationGroundTruth.
@@ -348,36 +348,35 @@ var unjudgedBaselineFiles = map[string]bool{
 	// 2026-10-13 S3 波 2：db/db.go 自 retirementBreakers 移出（routing 源
 	// 视图重建后 v1 基表读字面量不再带契约缺口列名，breaker 判定自然消失），
 	// 回到未判定态——成员资格补记，档位仍是 ①（v1 生命周期 DDL，随 v1 退役）。
-	"db/db.go":                                      true,
-	"admin/body_resolver.go":                        true,
-	"admin/credential_monitor.go":                   true,
-	"admin/credential_success_rate.go":              true,
-	"admin/data_lifecycle.go":                       true,
-	"admin/data_lifecycle_blobs.go":                 true,
-	"admin/data_lifecycle_metrics.go":               true,
-	"admin/diagnostics_credential.go":               true,
-	"admin/provider_diagnose.go":                    true,
-	"admin/provider_models.go":                      true,
-	"admin/quality_correlations.go":                 true,
-	"admin/request_trace.go":                        true,
-	"admin/session_detail_v2.go":                    true,
-	"admin/session_sanitize_matches.go":             true,
-	"admin/session_tenant.go":                       true,
-	"admin/telemetry.go":                            true,
-	"admin/tenants.go":                              true,
-	"admin/unified_detail.go":                       true,
-	"autoroute/recommend_v2.go":                     true,
-	"bg/auto_route_affinity_worker.go":              true,
-	"bg/integrity_fingerprint_probe.go":             true,
-	"bg/ledger_reconciliation.go":                   true,
-	"bg/lite_retention_worker.go":                   true,
-	"bg/model_tier.go":                              true,
-	"cmd/compression-bench/main.go":                 true,
-	"cmd/gateway/main_v3_wiring.go":                 true,
-	"cmd/gateway/output_compliance_control.go":      true,
-	"cmd/gateway/waterfall_by_request.go":           true,
-	"cmd/gateway/waterfall_db.go":                   true,
-	"cmd/scenario_driver/main.go":                   true,
+	"db/db.go":                         true,
+	"admin/body_resolver.go":           true,
+	"admin/credential_monitor.go":      true,
+	"admin/credential_success_rate.go": true,
+	"admin/data_lifecycle.go":          true,
+	// data_lifecycle_blobs / quality_correlations 于 2026-10-13（S4 波 4）出列（48→46）。
+	"admin/data_lifecycle_metrics.go":          true,
+	"admin/diagnostics_credential.go":          true,
+	"admin/provider_diagnose.go":               true,
+	"admin/provider_models.go":                 true,
+	"admin/request_trace.go":                   true,
+	"admin/session_detail_v2.go":               true,
+	"admin/session_sanitize_matches.go":        true,
+	"admin/session_tenant.go":                  true,
+	"admin/telemetry.go":                       true,
+	"admin/tenants.go":                         true,
+	"admin/unified_detail.go":                  true,
+	"autoroute/recommend_v2.go":                true,
+	"bg/auto_route_affinity_worker.go":         true,
+	"bg/integrity_fingerprint_probe.go":        true,
+	"bg/ledger_reconciliation.go":              true,
+	"bg/lite_retention_worker.go":              true,
+	"bg/model_tier.go":                         true,
+	"cmd/compression-bench/main.go":            true,
+	"cmd/gateway/main_v3_wiring.go":            true,
+	"cmd/gateway/output_compliance_control.go": true,
+	"cmd/gateway/waterfall_by_request.go":      true,
+	"cmd/gateway/waterfall_db.go":              true,
+	// cmd/scenario_driver/main.go 于 2026-10-13（S4 波 4）出列（49→48）：断言改数会话族热表。
 	"cmd/tools/backfill_session_bodies/main.go":     true,
 	"cmd/tools/validate_sessions_v2/loader.go":      true,
 	"cmd/traffic-replay/main.go":                    true,

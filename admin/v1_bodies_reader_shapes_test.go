@@ -107,6 +107,13 @@ var v1BodiesReaderShapes = map[string]bodyReaderShape{
 		Shape:  shapeAlreadySwitched,
 		Reason: "§9.232 已迁（2 处）。",
 	},
+	"admin/quality_correlations.go": {
+		Shape: shapeAlreadySwitched,
+		Reason: "2026-10-13 S4 波 4 已迁（1 处）：turns=canonical、bodies=切换层读 " +
+			"outbound_body（非 request_body——会话臂那是增量数组、无 tools/messages 键，" +
+			"读它会静默塌桶）。原「口径变更」警告已显式拍板：探针流量出围" +
+			"（R51 不进会话族），业务 auto 流量为新分子；探针维度归 node_probe_runs（主拍板）。",
+	},
 	"admin/memora_handlers.go": {
 		Shape:  shapeAlreadySwitched,
 		Reason: "§9.232 已迁（1 处）。停写分级仍是 degraded_content，理由见该条 Note。",
@@ -170,14 +177,10 @@ var v1BodiesReaderShapes = map[string]bodyReaderShape{
 			"要先定「到底按 request_id 匹配还是按 (request_id, ts) 匹配」，" +
 			"不是 repoint。",
 	},
-	"admin/compression_sessions.go": {
-		Shape: shapeJoinsOnTs,
-		Reason: ":144 的 `LEFT JOIN request_logs_bodies_with_current_month rb2` 走 ts 等值" +
-			"（:106 的 countSQL 同形态）。压缩率统计按 (request_id, ts) 配对是" +
-			"**这个指标的语义本身**（压缩前后同一轮），不是随手写的 JOIN —— " +
-			"改成单键会把「同一轮的压缩率」算成「任意一轮的压缩率」。" +
-			"⇒ 换源之前必须先决定新口径，否则指标定义被悄悄改掉。",
-	},
+	// 2026-10-13 S4 波 4 出列：admin/compression_sessions.go 整只端点已
+	// 会话族化（canonical turns 源 + SessionFamilyBodiesSourceSQL，LATERAL
+	// 改 request_delta 数组长度、ts 等值配对删除——见 v1_bodies_reader_shapes
+	// 原条目自身的「换源前先定口径」警告，本轮已按 §5.9 拍板口径落地）。
 	"cmd/compression-bench/main.go": {
 		Shape: shapeJoinsOnTs,
 		Reason: ":237 `JOIN request_logs_bodies b ON b.request_id = rl.request_id AND b.ts = rl.ts`，" +
@@ -216,20 +219,11 @@ var v1BodiesReaderShapes = map[string]bodyReaderShape{
 			"两条线分叉且无错误信号），但它换的是**统计对象**不是 JOIN，" +
 			"和内容读方不是同一件事。",
 	},
-	"admin/data_lifecycle_blobs.go": {
-		Shape: shapeSizeNotContent,
-		Reason: "唯一的 bodies 引用是 `COALESCE(pg_column_size(rb.request_body), 0)`，" +
-			"即「存量正文占多少字节、清理能省多少」。不读正文内容。" +
-			"⚠ 它是 §9.226 建的 `bodiesUnaffectedJustification` 具名豁免之一，结论成立。",
-	},
-	"cmd/scenario_driver/main.go": {
-		Shape: shapeSizeNotContent,
-		Reason: ":115/:149 `SELECT count(*) FROM request_logs_bodies_hot WHERE ts > NOW() - INTERVAL '1 hour'`。" +
-			"这是**观察 v1 有没有流量**的探针（判 S4 是否生效），不是读内容。" +
-			"⇒ retire v1 时它的正确终态是**跟着 v1 一起退役**；" +
-			"留着它会在 v1 消失后恒返回 0，而「0」在这里**看起来像「v1 停了」**——" +
-			"正是本项目记过的「冻结本身就是信号」那一档。",
-	},
+	// admin/data_lifecycle_blobs.go 于 2026-10-13（S4 波 4）出列：会话臂治理
+	// （治理对象 session_bodies 族，execute 目标 session_bodies_hot）。
+	// 2026-10-13 S4 波 4 出列：cmd/scenario_driver/main.go 的落库断言已改数
+	// session_bodies_hot / session_turns_hot（原条目自身预告的终态——「数 v1
+	// 恒 0」在停写当天就成了活缺陷：s22-3/s23-3 永久 FAIL）。
 
 	// ── 工具：读 v1 就是它的工作本身 ─────────────────────────────────────
 	"cmd/tools/backfill_session_bodies/main.go": {
@@ -262,14 +256,11 @@ var v1BodiesReaderShapes = map[string]bodyReaderShape{
 			"⚠ 影响面比文件本身大：`sessionBodiesByRequestIDSQL` 的消费点有 " +
 			"admin/session_summary_v2.go 与 admin/session_compare.go，改它要连消费点一起数。",
 	},
-	"admin/quality_correlations.go": {
-		Shape: shapeHelperCompatible,
-		Reason: "`:229` `LEFT JOIN request_logs_bodies rb ON rb.request_id = rl.request_id`，无 ts。" +
-			"⚠ 它读的是**基表** `request_logs_bodies`（不经 view），且 `WHERE rl.is_auto_request = TRUE` —— " +
-			"**这 29,691 条探针流量正是 §9.229 判定「不进会话族、按设计」的那批**。" +
-			"⇒ 换源会**改变这个指标的口径**（从「探针流量」变成「会话流量」）。" +
-			"这不是空指针问题，是分子定义变了；必须显式决定。",
-	},
+	// 2026-10-13 S4 波 4：admin/quality_correlations.go 改判 already-switched——
+	// turns 腿 canonical、bodies 腿经切换层读 outbound_body（原条目警告的
+	// 「口径变更」（探针流量→业务 auto 流量）已显式拍板执行并登记在
+	// 退役门：探针维度归 node_probe_runs，主拍板项）。
+
 	"domains/hooks/goal/history_store.go": {
 		Shape:  shapeHelperCompatible,
 		Reason: "`:85` `LEFT JOIN request_logs_bodies rb`（基表），无 ts。",

@@ -189,15 +189,203 @@ func bodiesRelIsV1Bodies(t *testing.T, rel string) bool {
 
 // v1BodiesReaders 是**已复核**的 bodies 读方登记。
 //
-// ⚠ **本表是空的，而这是有意的。**
-// bodies 腿从未被逐点评估过：`TestRequestLogsRetirementExposure` 判它 clean，
-// 不是因为它安全，是因为合同里没有 bodies 列。空表 + 下面的双向门 =
-// **故意红**，直到有人逐条评估并登记。
-//
 // 登记一项要写清三件事，缺一不可（沿用 indirectReader 的形状）：
 // 读哪张 bodies 关系、退役后由什么替代、为什么那个替代够用。
 // 只写文件名不写替代来源的登记，等于把「已看过」和「没问题」混成一句话。
-var v1BodiesReaders = map[string]indirectReader{}
+//
+// # 2026-10-13 停写复审计轮：25 文件逐点评估完毕，本表首次填齐
+//
+// 评估依据（真库实测，本地 host-first 库，翻转点 2026-10-13 07:01:04）：
+//
+//	request_logs / request_logs_bodies        35,506 行（冻结）
+//	session_turns / session_bodies            12,011 行（翻转后持续承接）
+//	v1_only（bodies 只在 v1）                 23,795 行 = 探针观测 22,951
+//	                                          （无会话头，R51 设计不镜像）
+//	                                          + 回环/非终态 844
+//	带会话头而未镜像（drift 校验器口径的真损失候选）= 0
+//
+// ⇒ 会话族对「应镜像流量」的正文覆盖是完整的；DROP request_logs_bodies
+// 不丢任何用户可见正文。会丢的只有两类已登记可接受损失：探针观测正文
+// （其事实主存 node_probe_runs 族）与 title/summary 回环正文（生成器中间
+// 产物，非用户轮次）。生产删表前由 owner 在生产库复核同一口径计数。
+//
+// 详见 docs/audit/2026-10-13-s3-wave4-bodies-retirement-assessment.md。
+//
+// bodiesSwitchRetireNote 是「经切换层取 bodies」读方的共同退役理由；
+// 抽成常量避免十几份手抄漂移（判据纪律：理由与判据同源）。
+const bodiesSwitchRetireNote = "退役后替代：切换层 v1 臂删除，SessionFamilyBodiesSourceSQL（session_bodies hot∪父表，request_id/request_body/response_body/outbound_body 四列合同）转唯一来源。" +
+	"为什么够用：取源已走 db.SessionBodiesSourceSQL()（storage.session_bodies_native_read=true ⇒ 会话臂，非「改指切换层但停在 v1 臂」的假迁移）；" +
+	"2026-10-13 停写复审计实测带会话头未镜像行=844 全为回环/非终态（真损失 0），会话臂覆盖全部用户可见正文。"
+
+var v1BodiesReaders = map[string]indirectReader{
+	// ── 组 1：切换层消费点（间接读方，已开会话臂）────────────────────────
+	"admin/session_title.go": {
+		Family:     familyBodiesMixed,
+		ResolvesTo: "request_logs_bodies",
+		Reason:     "loadTaskLogsForTitle 手动会话标题语料。" + bodiesSwitchRetireNote,
+	},
+	"admin/memora_handlers.go": {
+		Family:     familyBodiesMixed,
+		ResolvesTo: "request_logs_bodies",
+		Reason:     "handleSessionMessages（/api/sessions/:id/messages 查看器）。" + bodiesSwitchRetireNote,
+	},
+	"admin/logs_summary.go": {
+		Family:     familyBodiesMixed,
+		ResolvesTo: "request_logs_bodies",
+		Reason:     "loadSessionLogsForSummary / loadSessionLogsBySessionID 摘要语料两站点。" + bodiesSwitchRetireNote,
+	},
+	"admin/no_topic_session.go": {
+		Family:     familyBodiesMixed,
+		ResolvesTo: "request_logs_bodies",
+		Reason:     "无主题会话消息查看器 + 标题语料两站点。" + bodiesSwitchRetireNote,
+	},
+	"admin/auto_title_generator.go": {
+		Family:     familyBodiesMixed,
+		ResolvesTo: "request_logs_bodies",
+		Reason:     "AutoTitleGenerator.loadSessionLogsForTitle 自动标题语料。" + bodiesSwitchRetireNote,
+	},
+	"admin/session_sanitize_matches.go": {
+		Family:     familyBodiesMixed,
+		ResolvesTo: "request_logs_bodies",
+		Reason:     "loadOutboundBodySnippet 敏感命中片段预览（outbound_body，fallback request_body）。" + bodiesSwitchRetireNote,
+	},
+	"admin/compression_stats.go": {
+		Family:     familyBodiesMixed,
+		ResolvesTo: "request_logs_bodies",
+		Reason:     "handleCompressionStats 三站点（估 token / 策略聚合 / 小时时序，outbound_body+request_body）。" + bodiesSwitchRetireNote,
+	},
+	"admin/session_export.go": {
+		Family:     familyBodiesMixed,
+		ResolvesTo: "request_logs_bodies",
+		Reason:     "sessionExportMessagesSQL 会话导出包消息（request_body/response_body）。" + bodiesSwitchRetireNote,
+	},
+	"admin/session_compare.go": {
+		Family:     familyBodies,
+		ResolvesTo: "request_logs_bodies",
+		Reason: "generateHandoffSummary（handoff 交接摘要）经切换层。" + bodiesSwitchRetireNote +
+			"对比主路径的批量正文（querySessionBodiesByRequestID）已于 2026-10-13 固定读会话族" +
+			"（消费方 turns 腿本就是会话族；停写后新会话正文只在 session_bodies），解析器已补" +
+			"request_delta/response_delta 数组形状臂（parseMessagesFromBody/parseResponseMessages）。",
+	},
+	"domains/sessionsummary/summarizer.go": {
+		Family:     familyBodiesMixed,
+		ResolvesTo: "request_logs_bodies",
+		Reason:     "getSessionMessagesQuery / GetMessagesSince 摘要 V1 消息源两站点。" + bodiesSwitchRetireNote,
+	},
+	"domains/sessionsummary/system_prompt_prefix.go": {
+		Family:     familyBodiesMixed,
+		ResolvesTo: "request_logs_bodies",
+		Reason:     "GetSystemPromptPrefix 摘要 system prompt 前缀（首轮请求体）。" + bodiesSwitchRetireNote,
+	},
+	"domains/sessionforensics/export.go": {
+		Family:     familyBodiesMixed,
+		ResolvesTo: "request_logs_bodies",
+		Reason:     "取证会话包导出两份 SQL（ExportFromTx / ExportSession，双字面量由 TestForensicsExportSQLVariantsStayInSync 钉同步）。" + bodiesSwitchRetireNote,
+	},
+	"bg/passive_probe_listener.go": {
+		Family:     familyBodiesMixed,
+		ResolvesTo: "request_logs_bodies",
+		Reason: "pollNewErrors 失败行 200 字符预览（response_body）。注意它读的是**业务失败行**正文——" +
+			"查询带 ProbeTrafficExclusionPredicateView 显式排除探针，不是探针观测读方；终态失败行" +
+			"按钩子语义会被镜像（response_delta 非空）。" + bodiesSwitchRetireNote +
+			"整只监听器的驱动读（v1 turns 面）冻结是另一张表的登记项，不属本门。",
+	},
+
+	// ── 组 2：字面 v1 腿 + 会话兜底腿并存的点查族（三阶段读取）──────────
+	"admin/logs.go": {
+		Family:     familyBodiesMixed,
+		ResolvesTo: "request_logs_bodies",
+		Reason: "getLog 两阶段 body 读取：v1 腿（fetchRequestOutboundBody/fetchRequestBodies 的 hot+view" +
+			"四处字面站点，request_id 单键）服务冻结历史；阶段3 已有会话族兜底（fetchSessionOutboundBody/" +
+			"fetchRequestBodies 尾腿经 SessionFamilyBodiesSourceSQL）。退役后替代：删 v1 两腿，会话腿转唯一" +
+			"（会话臂已覆盖全部镜像行，见 bodiesSwitchRetireNote 的覆盖实测；探针/回环请求_id 的点查返回" +
+			"空正文属已登记可接受损失）。",
+	},
+	"admin/body_resolver.go": {
+		Family:     familyBodiesMixed,
+		ResolvesTo: "request_logs_bodies",
+		Reason: "lookupControlledBody 受控正文点查：阶段1/2 为 v1 字面腿（hot+view，request_id+ts 等值——" +
+			"v1 家族内合法的消歧键），阶段3 会话族兜底（request_id 单键，S4 交接加）。退役后替代：删 v1 两腿，" +
+			"会话腿转唯一并改由 session_turns 取 occurredAt（ts 不在 bodies 源列合同内）。为什么够用：同上，" +
+			"会话臂覆盖全部镜像行；ts 等值消歧在会话族由 request_id 唯一性承担（session_bodies 无重 request_id 实测）。",
+	},
+	"admin/unified_detail.go": {
+		Family:     familyBodiesMixed,
+		ResolvesTo: "request_logs_bodies",
+		Reason: "pgBodyReader.loadOutboundBody 统一详情 outbound 三腿（hot+view 字面 + 会话兜底）。" +
+			"退役后替代：删 v1 两腿，会话腿转唯一。理由同 admin/logs.go 条目。",
+	},
+	"domains/hooks/goal/history_store.go": {
+		Family:     familyBodiesMixed,
+		ResolvesTo: "request_logs_bodies",
+		Reason: "FetchBySession 主路径已走切换层（historySessionSQL），v1 字面臂（historyV1SQL，request_id 单键）" +
+			"是刻意的回退。退役后替代：删 v1 回退臂，主路径转唯一。" + bodiesSwitchRetireNote,
+	},
+
+	// ── 组 3：v1 专属读方（替代方案 ≠ 切换层）────────────────────────────
+	"admin/session_bodies_batch.go": {
+		Family:     familyBodies,
+		ResolvesTo: "request_logs_bodies",
+		Reason: "两处字面站点，替代不同：① v1BodiesByRequestIDSQL——session_summary_v2 回退路径专用" +
+			"（其 turns 腿就是 v1 视图的遗留会话，bodies 腿必须同源），随 v1 表 DROP 退役，届时未镜像" +
+			"遗留会话（sessions_v2.enabled=false 时代）的摘要语料消失，属已登记可接受损失，删表前 owner" +
+			"在生产库复核该人群规模；② sessionBodiesByRequestIDAndTSSQL——无生产调用方（仅守形测试引用，" +
+			"§5.9 历史形状钉子），DROP 时直接删除。主批量取数器（sessionBodiesByRequestIDSQL）已于" +
+			"2026-10-13 固定读会话族（消费方 session_compare 的 turns 腿是会话族）。",
+	},
+	"admin/quality_correlations.go": {
+		Family:     familyBodiesMixed,
+		ResolvesTo: "request_logs_bodies",
+		Reason: "auto-route 质量相关性分桶。★ 2026-10-13 S4 波 4 **已落地**会话族重写：" +
+			"turns 腿改 canonical 源，bodies 腿经切换层读 **outbound_body**（完整上游请求对象，含 " +
+			"tools/messages 键——不能读 request_body：会话臂那是 request_delta 增量数组、没有这些键，" +
+			"机械沿用会静默塌桶）；tools 桶带 jsonb_typeof 守卫（22023 教训）。语义边界：无会话头" +
+			"探针行按设计不进会话族（R51），分桶样本自此只含业务 auto 流量（旧实现无探针排除谓词、" +
+			"探针行混入样本；本地实测 v1 auto 23,786 行里探针占 22,951）。探针维度分析若需保留，" +
+			"改读 node_probe_runs 族——仍属主拍板项。DROP 时随切换层删 v1 臂。",
+	},
+	"admin/data_lifecycle.go": {
+		Family:     familyBodiesMixed,
+		ResolvesTo: "request_logs_bodies",
+		Reason: "data-lifecycle/stats 看板两站点：其语义就是 **v1 存储体量治理**（pg_total_relation_size" +
+			"('request_logs') 等）。退役后替代：端点随 v1 存储退役；若要保留看板需另做会话族体量版" +
+			"（独立工作项，与 data_lifecycle blob 会话臂债同登记）。停写后 trend 两臂随窗口滑过冻结点归零" +
+			"是预期行为。",
+	},
+	// admin/data_lifecycle_blobs.go 于 2026-10-13（S4 波 4）出列：会话臂
+	// 扩展已落地（治理对象 session_bodies 族 outbound_body+双 attachments，
+	// execute 目标 session_bodies_hot，增量正文保留），文件脱离 v1 族。
+	"cmd/compression-bench/main.go": {
+		Family:     familyBodies,
+		ResolvesTo: "request_logs_bodies",
+		Reason: "CLI 压缩基准工具，(request_id,ts) 等值 JOIN 读 outbound_body（切换层不投影 ts，" +
+			"不能换切换层——db 注释点名的三个 ts 读方之一）。退役后替代：改读 session_bodies_hot∪" +
+			"session_bodies 原生列（request_id+ts+outbound_body 齐全，ts 为正文写入时刻，与 v1 同义）。" +
+			"冻结存量在 DROP 前仍可跑基准；属工具，不阻塞删表。",
+	},
+	"cmd/tools/backfill_session_bodies/main.go": {
+		Family:     familyBodies,
+		ResolvesTo: "request_logs_bodies",
+		Reason: "v1→v2 回填工具本体：输入（完整 request_body/response_body 载荷）按设计只存在于 v1，" +
+			"会话族没有等价物——它正是会话族这份数据的**来源**。退役后替代：无（工具使命随 v1 终结）。" +
+			"本地库已实测真损失 0（无需回填）；生产删表前由 owner 复核同口径。",
+	},
+	"cmd/tools/validate_sessions_v2/loader.go": {
+		Family:     familyBodiesMixed,
+		ResolvesTo: "request_logs_bodies",
+		Reason: "双写 parity 门的 **V1 真值臂**（hot 腿+母表腿）：它读 v1 是定义使然——把 V1 臂改读" +
+			"会话族会变成自己比自己。退役后替代：工具使命随 v1 终结（parity 证据只对冻结窗有效，" +
+			"WindowExceedsV1Data 已显式守窗）。",
+	},
+	"db/request_logs_view_schema.go": {
+		Family:     familyBodiesMixed,
+		ResolvesTo: "request_logs_bodies",
+		Reason: "bodies 读端灰度切换层**本体**（SessionBodiesSourceSQL 的 v1 臂字面量）。" +
+			"退役后替代：删除 v1 臂（返回值恒为 SessionFamilyBodiesSourceSQL），开关退化为 no-op 后移除。" +
+			"为什么够用：开关默认关（v1 臂）是灰度期的回滚设计；停写后 v1 臂对会话族 turns 是错源，" +
+			"会话臂是唯一正确形态，且组 1 的全部消费点已按「会话臂为常态」登记。",
+	},
+}
 
 // TestV1BodiesReadersAreAssessed 是 bodies 腿的双向门。
 //
