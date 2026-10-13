@@ -895,3 +895,10 @@ host-first 孤儿网关回收 + 517 形态探测 r2538、mobile UX 第二轮、2
 > 修复模型无关同时受益）；154/245 journal 零观测（无 coding-agent 流量形态）。
 > 遗留（未修，待 owner 拍板）：Bash 参数里版本号样四元组（17.0.20.1）与
 > 用户自有公网 IP（115.29.212.252）仍按 IP 字面量硬阻断（r1013 显式契约）。
+
+> **多会话提交纪律（2026-10-13 实录）**：共享 checkout 里并行会话可能已把
+> 文件 `git add` 进暂存区——你的 `git commit` 会消费**整个 index**，把对方
+> 半成品一并带入并推送（本轮 2be061b25 误带 6 个引用未提交符号的 s3_wave2
+> 测试，6 包在 origin/main 编译断裂，3ec7b5f7c 前向修复退出）。**提交前必看
+> `git diff --cached --stat` 只含你的文件**；误入后用 `git rm --cached` 前向
+> 退出 + `git show <commit>:<path> > <path>` 恢复盘上内容，不 force-push。
