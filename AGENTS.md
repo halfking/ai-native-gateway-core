@@ -1463,3 +1463,59 @@ admin 全包绿（负向闸门 bodies 这道已功成身退；bodies 退役门�
 > 全 recovered 可见。66/66 全绿、级联抑制实测。**多会话事故**：stash
 > push --staged 往返丢暂存——commit 前必须重验 `git diff --cached --stat`。
 > 详见 `docs/audit/2026-10-14-r1027-三模型形态甄别与格式错误表闭环.md`。
+
+---
+
+# 追加：2026-10-14 r1028 —— claude 流式轮次「reason=unknown」= 策略拦截静默吞流四连修
+
+> 用户报告 ZCode 经 154 访问 claude-sonnet-5-5「经常操作过程中中断」
+> （`Turn execution failed … reason=unknown retryable=false`）。
+> 提交 `74d9d8748`，随 **154=2600-74d9d874** 上线终验通过。
+> 明细与判据：`docs/audit/2026-10-14-r1028-流式策略拦截静默吞流四连修.md`。
+
+## 一句话根因
+
+output compliance 流式持帧后 lane 检查命中（r1013 契约：Bash 参数含公网
+IP 字面量）是**合法策略拦截**，但 survival 路径从未接线 R25-V 治理终态
+机制 + block 决策点零日志 + chat 终态帧无 code + 六处桥的 DrainPending
+死断言——四缺陷叠加让拦截呈现为「客户端 keepalive-only + 网关 success=true
++ 零日志」。154 真机 E2E 决定性复现（临时 api_keys 行 + HMAC 配方）。
+
+## 修复四件
+
+1. survival 分支显式 `finish()` + `OutputPolicyBlocked()` → `outputGovernanceTerminal`（R25-V 终于覆盖 survival；audit 改记
+    failure/output_policy_blocked；消费点 nil 安全）；
+2. stream_compliance 四处 block 决策点补 Warn（lane/event/comment/重写拒绝）；
+3. chat 终态帧补 `"code":"output_policy_blocked"`（responses 腿对齐）；
+4. `drainGateWriterPending`（Unwrap 循环）替换六处桥的死断言——R-vapeur3
+    的 [DONE] 排水在 survival 路径自上线起就是死代码（`w.(*GateWriter)` 在
+    wrapAttemptWriter 返回外层包装时恒失败）。
+
+判据 `r1028_swallowed_stream_repro_test.go`（7 用例）+ M-③/M-④ 变异红；
+streaming 全包 150s 绿。154 终验：拦截请求三件套全绿（终态带 code、日志
+带 lane 上下文、session_turns_hot 记 success=f），正常流 45KB 无回归。
+
+## 判据纪律第 10 条（新增）
+
+**流式 HTTP 夹具的「通过」可能是空洞的**：最终 wire 字符串无法区分「逐帧
+透传」与「持帧后终态一次性释放」——本缺陷复现两虚假绿，靠 writer 链中段
+加逐帧探针才现形。流式判据要么断言时序（分批读），要么链中加计数探针。
+
+## 登记不修（owner 拍板域）
+
+- r1013 契约本身：模型在 Bash 参数写公网 IP（含版本四元组、用户自有
+  服务器 IP 回显）仍整轮阻断——修复只让阻断可见可归类。若要「会话请求
+  侧出现过的 IP 豁免」（r1024 原理、来源改请求侧），动 guard 的 mandatory
+  语义，另立轮次。
+- chain.go:196 持帧者类型断言对装饰器不鲁棒（包装层会让释放载荷静默
+  丢弃，本地实证）；当前生产链无包装层，加装饰器前必读该注释。
+- 杂音：治理阻断时 slog 仍会打「audit: request completed success:true」
+  （audit hook sink 另一事件源）；权威判定以 session_turns_hot 为准。
+
+## 本轮实操注记
+
+- 154 真机 E2E 手法：临时 api_keys 行 + `HashAPIKey(SECRET_KEY, raw)` HMAC
+  配方（事后 DELETE）；vapeur 对 named tool_choice 返回 400（`tool_choice:
+  type "tool" and "any" are not supported`），复现夹具别用强制工具。
+- 编号撞车实录：并行会话同日已发布 r1027（参数形态甄别），本缺陷顺延
+  r1028——共享编号空间，提交前搜 audit 目录。
