@@ -1193,3 +1193,18 @@ admin 全包绿（负向闸门 bodies 这道已功成身退；bodies 退役门�
 我的未提交改动全部幸存；按 shared-checkout 纪律完成后立即原子提交推送。
 并行遗留（executor_anthropic/ollama 缩进级 + ir 测试空白行）经 `git diff -w`
 核实纯空白，不阻塞从本 checkout 部署。
+
+> **S4 波 4 下半场（同日，2607 上线）**：删表前置清单的两个实现项落地——
+> ① data_lifecycle_blobs 会话臂扩展（Top-N/preview 治理 session_bodies 族
+> outbound_body+双 attachments，execute 目标 session_bodies_hot 且**增量正文
+> 刻意保留**；端点实测 preview >50KB 命中 426 行/34.6MB）；② quality_
+> correlations 会话族重写（canonical turns + 切换层 outbound_body，tools 桶
+> jsonb_typeof 守卫；探针样本出围属拍板口径变更——本地 v1 auto 23,786 行里
+> 探针占 22,951，业务 auto 流量到达前分桶空是新口径的如实反映）。判据
+> M6/M7 变异红；登记表七张同步（静默档 58→57、tiering 101/25/110、
+> population 46、blobs 出列 + quality 改判 already-switched、manifest 94）。
+> 删 request_logs_bodies 的代码侧前置至此**全部完成**，余下两项属 owner
+> 动作：生产库四象限复核 + 确认 native_read=true（然后才可执行 DROP）。
+> 量具教训（第三次实证）：对 jsonb 列做运算前先 `jsonb_typeof` 判形——
+> JSON 字面量 null 的 SQL 值非 NULL，COALESCE 救不了（M5 的 22023 与
+> M7 的守卫同源）。
