@@ -25,10 +25,25 @@ import (
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
+// maxParamStrips 封顶单请求的剥参重试轮数：剥参重试不消耗 attempt 预算，
+// 但每轮仍是一次真实上游调用，N 个未知参数对应 N 轮，3 轮覆盖实测到的
+// 最坏形态（thinking + enable_thinking + 其一嵌套别名的混合方言客户端）。
+const maxParamStrips = 3
+
 // reqProbeRuntime 是单次 executeOpenAI 调用的探测状态（跨重试迭代保持）。
 type reqProbeRuntime struct {
-	paramTried bool
-	modeTried  bool
+	// paramStrips 是已执行的剥参轮次。2026-10-13（grok-4.6 thinking 事故）：
+	// OpenAI 系校验器一次只报一个未知参数（"Unknown parameter: 'enable_
+	// thinking'" 剥完再报 "'thinking'"），出站体带 N 个未知参数就需要 N 轮
+	// 「点名→剥→免费重试」——原一次性 paramTried 布尔在第二个参数上死局
+	// （客户端混合方言同时发 thinking+enable_thinking 的实测现场）。有界
+	// 上限见 maxParamStrips：剥参重试不耗预算，但上游调用次数仍需封顶。
+	paramStrips int
+	// strippedAccum 累计各轮剥掉的参数名：成功时随 diag.Param 一并学习
+	// （LearnedParams 按逗号拆分）——只学最后一个的话，同形态请求每个
+	// 都要再吃一轮 400 才能收敛。
+	strippedAccum []string
+	modeTried     bool
 	// active 表示至少做过一次剔除/回退尝试（结果待定：成功在
 	// recordAttemptSuccess 记 recovered，再次 4xx 在终端分支记未恢复）。
 	active   bool

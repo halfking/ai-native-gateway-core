@@ -1357,8 +1357,11 @@ func (e *Executor) executeOpenAI(
 							}
 						}
 						// 参数剔除：优先按错误点名参数，未点名则剔除全部
-						// 不常见参数。每请求一次。
-						if diag.Trigger == reqprobe.TriggerParamRejected && !probe.paramTried {
+						// 不常见参数。有界多轮（2026-10-13 grok-4.6 thinking
+						// 事故：OpenAI 系校验器一次只报一个未知参数，N 个未知
+						// 参数需要 N 轮点名→剥→重试，原「每请求一次」在第二个
+						// 参数上死局；上限 maxParamStrips 封顶免费重试次数）。
+						if diag.Trigger == reqprobe.TriggerParamRejected && probe.paramStrips < maxParamStrips {
 							if strippedBody, stripped := reqprobe.StripParams(bodyBytes, diag.Param); len(stripped) > 0 {
 								slog.Warn("reqprobe: upstream rejected request, retrying with params stripped",
 									"request_id", params.RequestID,
@@ -1368,10 +1371,14 @@ func (e *Executor) executeOpenAI(
 									"status", resp.StatusCode,
 									"stripped", strings.Join(stripped, ","),
 									"named_param", diag.Param,
+									"strip_round", probe.paramStrips+1,
 								)
 								bodyBytes = strippedBody
-								probe.paramTried = true
-								probe.diag.Param = strings.Join(stripped, ",")
+								probe.paramStrips++
+								probe.strippedAccum = append(probe.strippedAccum, stripped...)
+								// diag.Param 记累计清单（成功学习与台账都按它），
+								// LearnedParams 按逗号拆分原生支持多参数。
+								probe.diag.Param = strings.Join(probe.strippedAccum, ",")
 								probe.active = true
 								probeRetry = true
 								e.ledgerRecordProbe(params, cand, stripped, "", "")

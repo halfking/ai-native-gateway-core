@@ -410,14 +410,18 @@ var vendorResponsesStreamUnsupportedRe = regexp.MustCompile(
 	`(?i)(不支持\s*responses\s*api|responses\s*api\s*不支持|` +
 		`does not support (the )?responses api|responses api .*not supported)`)
 
-// operationNotAllowedRe matches Vapeur's bare policy refusal
-// {"message":"Operation not allowed"} (no type/code fields) — emitted for
-// geo/plan/model gates, e.g. claude family streaming via the chat endpoint
-// (2026-10-13). Treated as transient by default it burns three same-body
+// operationNotAllowedRe matches Vapeur's policy refusal "Operation not
+// allowed" — emitted for geo/plan/model gates, e.g. claude family streaming
+// via the chat endpoint (2026-10-13). Two observed shapes: bare
+// {"message":"Operation not allowed"} and double-nested
+// {"code":4006,"message":"{\"message\":\"Operation not allowed\"}"} — hence
+// phrase-level matching instead of JSON-anchored (this classifier only runs
+// on 4xx/403 error bodies, so a model's prose mentioning the phrase cannot
+// reach it). Treated as transient by default it burns three same-body
 // retries and parks a healthy node; it is request/permission-shaped and
 // permanent for the node in question.
 var operationNotAllowedRe = regexp.MustCompile(
-	`(?i)"message"\s*:\s*"(operation not allowed|操作不被允许)"`)
+	`(?i)(operation not allowed|operation is not allowed|操作不被允许|操作不允许)`)
 
 var unsupportedParamRe = regexp.MustCompile(
 	`(?i)((unsupported|unknown|unrecognized|unexpected)[_ -]?parameters?(\([a-z]+\))?\s*[:：]|` +
