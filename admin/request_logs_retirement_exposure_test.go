@@ -366,6 +366,51 @@ func extractV1ReadingLiterals(t *testing.T, path string) []v1ReadingLiteral {
 // 那是本轮实测打掉过的判据（审计 §9.193.3 的 v4）。
 func extractV1ReadingLiteralsScoped(t *testing.T, path string, fileScope bool) []v1ReadingLiteral {
 	t.Helper()
+	// 2026-10-13 记忆化：这一层原先**每处调用都重读+重解析文件**，
+	// 而它被 4 个文件、7 处循环调用（:527 / :803 / :938 /
+	// request_logs_reader_population_test.go:137 /
+	// request_logs_view_arm_cutover_test.go:157 /
+	// probe 测试的 :120/:317/:386），每次都对「总体里的每个文件」跑一遍
+	// ⇒ 同一条判据族在一次包里把整仓扫 N 遍。
+	// 实测（-json 时间线）：那几条是**串行**的，首尾相接约 171s，
+	// 而 make test-short 给整个 admin 包的预算只有 120s。
+	//
+	// ⚠️ 上层 measureV1ReadingExposure 的记忆化**不足以**解决这个问题：
+	//    它只挡住同一条判据的第二个调用方，而 TestRequestLogsRetirementExposure
+	//    走的是**另一条**未缓存的路径（实测它 41.05s，
+	//    随后 TestRequestLogsRetirementBreakersRegistryIsConsistent 仍要 43.50s）。
+	//    ⇒ 必须沉到**共用原语**这一层。
+	//
+	// 安全性：相关测试文件都不写磁盘（os.WriteFile 命中 0），
+	// 不存在「测到一半改源文件」让缓存失效的场景。
+	// 返回**副本**，避免调用方 append 改到共享底层数组。
+	key := path + "|" + strconv.FormatBool(fileScope)
+	v1LitsMu.Lock()
+	if c, ok := v1LitsCache[key]; ok {
+		v1LitsMu.Unlock()
+		out := make([]v1ReadingLiteral, len(c))
+		copy(out, c)
+		return out
+	}
+	v1LitsMu.Unlock()
+
+	out := computeV1ReadingLiteralsScoped(t, path, fileScope)
+
+	v1LitsMu.Lock()
+	v1LitsCache[key] = out
+	v1LitsMu.Unlock()
+	cp := make([]v1ReadingLiteral, len(out))
+	copy(cp, out)
+	return cp
+}
+
+var (
+	v1LitsMu    sync.Mutex
+	v1LitsCache = map[string][]v1ReadingLiteral{}
+)
+
+func computeV1ReadingLiteralsScoped(t *testing.T, path string, fileScope bool) []v1ReadingLiteral {
+	t.Helper()
 	// 匹配器必须在**入口**建好（见 ensureV1RelationMatchers 的注释）。
 	ensureV1RelationMatchers(t)
 	ensureSessionFamilyMatcher(t)
