@@ -192,8 +192,12 @@ M4 一处计数退回 request_logs_bodies_hot → 禁入红。（M1 的字面量
 | 读开关 | `storage.session_bodies_native_read` **未设置**（默认 false=切换层 v1 臂） | 翻转 runbook 第 3 步前置设置 |
 
 **生产翻转 runbook（顺序刚性）**：
-1. 修 154→共享 PG 写超时（252 PG 负载/网络路径），或给镜像写加大预算/重试——直至 168h 真损失=0（s4_ready 门转绿）；
-2. 定向回填现存 ~158 丢失行（从 v1 按 request_id，工具或一次性 SQL）；
+1. 修 154→共享 PG 写超时（252 PG 负载/网络路径）。可先试**免部署调参**：
+   settings_kv 调 `sessions_v2.write_timeout_ms`（默认 2000，运行时生效）——
+   直至 168h 真损失=0（s4_ready 门转绿）。245 零失败可作对照基线；
+2. 定向回填现存 ~158 丢失行（**只能从 v1 回填**：session_mirror_outbox 的
+   147 行全是 09-23 的旧探针死信（request_id='probe-direct'），与今日丢失
+   无关；镜像失败当下若重试入队也超时则落进程内 backlog，同样无着落）；
 3. settings_kv 置 `storage.session_bodies_native_read=true`（切换层 14 消费点转会话臂）；
 4. 置 `storage.request_logs_write_enabled=false`（停写），观察期；
 5. owner 最终授权后执行 v1 家族 DROP。
