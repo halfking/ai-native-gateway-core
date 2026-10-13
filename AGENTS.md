@@ -1129,3 +1129,66 @@ probe body 形状断言）；工作区另有并行会话 r1023 的缩进级遗�
 > 量具坑：部署重启后的候选预热空窗实测可达 **3 分钟**（kimi 15:34→15:37），
 > 批次测试首跑失败先重试再定罪；E2E 批次要带 ≥20s 间隔，上游 429 是节奏问题
 > 不是模型故障（grok/deepseek 重测即绿）。
+
+---
+
+# 追加：2026-10-13 S4 波 4 —— bodies 退役评估（25 文件登记转绿）+ 四处读方迁移
+
+> 用户目标：request_logs 及相关表按规划将删除、只留 session_*；对涉
+> request_logs 的查询/API 尽量切换，无法切换的修正内部实现，数据前后一致。
+> 提交 `afc44baac`（+ 后续守卫修复提交）。本地部署 2605→2606（8782）验证。
+> 明细与判据：`docs/audit/2026-10-13-s3-wave4-bodies-retirement-assessment.md`。
+
+## 数据一致性结论（删表前置的事实基础，本地真库实测）
+
+v1 冻结存量 35,506；v1_only 23,795 = **探针观测 22,951（无会话头，R51 设计
+不镜像）+ 回环/非终态 844；真损失 0**（带会话头未镜像行全为设计内跳过）。
+⇒ 删 request_logs_bodies 不丢用户可见正文。两个易踩口径坑：
+- `MirrorDriftClassSQL` 字面转录会把无会话头探针行判 genuine_loss——
+  drift 校验器的范围 SQL 在分类前就过滤 `gw_session_id IS NOT NULL`，
+  两者不矛盾；自己写分类查询必须带会话头过滤。
+- **JSON 字面量 null 是标量**：jsonb 列里 `typeof='null'` 的行 SQL 值非
+  NULL，COALESCE 救不了，裸 `jsonb_array_length` 直接 22023（2605 端点
+  实测抓到，本地 outbound 非空行 1,433+ 条）。凡对 jsonb 列做数组/对象
+  运算，先 `jsonb_typeof` 判形。
+
+## 本轮四处读方迁移（前两处是活缺陷修复）
+
+1. **session_bodies_batch 主取数器固定会话族源**：消费方 session_compare
+   turns 腿是会话族，bodies 腿却读 v1 视图——停写后新会话正文对对比/摘要
+   **静默为空**（跨冻结会话实证：24 轮 v1 源只见 13）。修复后端点实测
+   冻结后 57/57 全有正文。summary_v2 的 v1 回退路径保留**显式命名的 v1
+   变体**（turns 腿与 bodies 腿必须同族），随 v1 退役。
+2. **session_compare 解析器补 delta 数组臂**（request/response_delta 是
+   消息数组；v1 request_body 是带 messages 键的对象——两种形状都会到达，
+   双臂并存，数组臂在前互不误吞）。
+3. **compression_sessions 整端点会话族化**（canonical turns ×3 + bodies
+   源 ×3；LATERAL 改 jsonb_typeof 守卫的数组长度；ts 等值配对删除）。
+4. **scenario_driver 断言改数 session_bodies_hot/session_turns_hot**
+   （停写后数 v1 delta 恒 0，s22-3/s23-3 永久 FAIL——修掉）。
+
+## 退役门里程碑
+
+`v1BodiesReaders` 25 文件四组登记填齐，`TestV1BodiesReadersAreAssessed`
+**首次转绿**（按门自身定义：全绿=登记齐=才谈得上 request_logs_bodies 可删）。
+admin 全包绿（负向闸门 bodies 这道已功成身退；bodies 退役门余下的
+`TestV1BodiesReadersAreAssessed` 不再红）。审计网络 7 张登记表同步
+（静默档 59→58、tiering 105/113→103/111、population 49→48、盲区 44）；
+**manifest 工具测试清偿波 2/3 的 8 条旧账**（snapshot 73→92/canonical
+12/18→22/36）复绿——那道门自波 2 起一直红着没人跑。
+
+## 删 request_logs_bodies 前置清单（登记在退役门内，DROP 前必须完成）
+
+1. data_lifecycle_blobs 会话臂扩展（否则停写后新正文无容量治理）；
+2. quality_correlations 重写（业务 auto 行改**原生 outbound_body**——机械
+   换切换层会静默塌桶，request_delta 无 tools 键；探针维度归 node_probe_runs）；
+3. 生产 owner 复核同口径四象限 + 未镜像遗留会话（sessions_v2.enabled=false
+   时代）人群规模——它们的摘要回退随 v1 消失；
+4. 生产 settings_kv 确认 `storage.session_bodies_native_read=true`。
+
+## 多会话实录
+
+本轮工作区再次被并行会话在我编辑期间合并 r1025（HEAD db33818→9e2d77b），
+我的未提交改动全部幸存；按 shared-checkout 纪律完成后立即原子提交推送。
+并行遗留（executor_anthropic/ollama 缩进级 + ir 测试空白行）经 `git diff -w`
+核实纯空白，不阻塞从本 checkout 部署。
