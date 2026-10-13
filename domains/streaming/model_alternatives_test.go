@@ -334,9 +334,14 @@ func TestAlternativesSQL_UsesRoutableViewNotStaticCatalog(t *testing.T) {
 // from idx_request_logs_hot_canonical_model_ts in milliseconds; the ordering
 // signal tolerates the ~8h effective window.
 func TestAlternativesSQL_PopularityReadsHotNotCanonicalView(t *testing.T) {
-	if !strings.Contains(alternativesSQL, "FROM request_logs_hot") {
-		t.Error("popularity CTE no longer reads request_logs_hot; it would hit the " +
-			"canonical view's partition scans and anti-join probes again (84-151s on 252)")
+	if !strings.Contains(alternativesSQL, "FROM public.session_turns_hot") ||
+		!strings.Contains(alternativesSQL, "FROM public.session_turns ") {
+		t.Error("popularity CTE must read the native session-turn family (hot ∪ parent); " +
+			"the v1 hot table it replaced drains after the S4 stop-write")
+	}
+	if strings.Contains(alternativesSQL, "FROM request_logs_hot") {
+		t.Error("popularity CTE reads request_logs_hot; that table drains after the " +
+			"S4 stop-write and the popularity signal would silently go dark")
 	}
 	if strings.Contains(alternativesSQL, "FROM request_logs_with_current_month") {
 		t.Error("popularity CTE reads request_logs_with_current_month; that view costs " +

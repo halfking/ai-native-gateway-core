@@ -242,15 +242,22 @@ func TestListTopModelsSQL_TargetsHotTable(t *testing.T) {
 	}
 	handler := body[start : start+end+2]
 
-	// Source table must be the hot standalone table.
-	if !strings.Contains(handler, "FROM request_logs_hot rl") {
-		t.Fatalf("listTopModels must target request_logs_hot; full handler:\n%s", handler)
+	// 2026-10-13 S3 波 2（停写切换）：源从 request_logs_hot 换到会话族
+	// 原生源（SessionFamilyTurnsSourceSQL 拼接）。原来的 hot 钉桩理由
+	// （2026-08-26：视图拖列式分区）保持有效，所以**两个方向都禁**：
+	// 不得读会拖列式分区的 canonical 视图，也不得留在停写后会排空的
+	// v1 hot 表。
+	if !strings.Contains(handler, "SessionFamilyTurnsSourceSQL") {
+		t.Fatalf("listTopModels must read the native session-turn family (v1 hot drains after the S4 stop-write); full handler:\n%s", handler)
 	}
 	// Source must NOT be the partitioned view (columnar scan).
 	// Use the SQL-shaped token to ignore the historical comment that
 	// mentions the old view by name.
 	if strings.Contains(handler, "FROM request_logs_with_current_month rl") {
 		t.Fatalf("listTopModels must not scan the partitioned view; full handler:\n%s", handler)
+	}
+	if strings.Contains(handler, "FROM request_logs_hot rl") {
+		t.Fatalf("listTopModels must not read the draining v1 hot table; full handler:\n%s", handler)
 	}
 	// Must keep an explicit context timeout.
 	if !strings.Contains(handler, "context.WithTimeout") {

@@ -143,9 +143,13 @@ func buildCredentialDiagnostic(ctx context.Context, db *pgxpool.Pool, credID, mi
 	}
 
 	// 3. 最近失败记录
+	// 2026-10-13 S3 波 2（停写切换）：原实现只读 request_logs_hot，双重盲区
+	// ——停写后新失败不进 hot；窗口 >8h 时本就超出 hot 保留期。改读
+	// canonical 视图：request_status 在会话臂是派生表达式（success/error_kind
+	// 口径，'failure' 语义与 v1 对齐），其余列全在 118 列契约内。
 	frows, err := db.Query(ctx, `
 		SELECT request_id, client_model, ts, error_kind, COALESCE(request_status::text,''), provider_id
-		FROM request_logs_hot
+		FROM request_logs_with_current_month
 		WHERE credential_id = $1 AND lower(COALESCE(request_status, '')) = 'failure'
 		  AND ts > now() - ($2 || ' minutes')::interval
 		ORDER BY ts DESC LIMIT 20

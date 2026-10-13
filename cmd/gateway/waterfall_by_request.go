@@ -12,15 +12,11 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 )
 
-// queryWaterfallByRequestID loads one durable waterfall row by request_id.
-func queryWaterfallByRequestID(ctx context.Context, pool *pgxpool.Pool, requestID, tenantID string) (dispatch.WaterfallRequest, bool, error) {
-	if pool == nil || requestID == "" {
-		return dispatch.WaterfallRequest{}, false, nil
-	}
-	qctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-
-	const sql = `
+// waterfallByRequestSQL 是单请求瀑布点查（request_id，B 形态）。2026-10-13
+// S3 波 2：FROM request_logs_hot → canonical 视图（会话臂服务新流量、v1 臂
+// 服务历史、反连接去重；16 个表达式全在 118 列契约内，t0..t9 会话侧直映）。
+// 提升为包级常量是给形状钉桩用的：这段文本就是发给 PG 的文本。
+const waterfallByRequestSQL = `
 SELECT
   request_id,
   COALESCE(tenant_id, ''),
@@ -38,18 +34,26 @@ SELECT
   t7_forward_start_at,
   t8_response_start_at,
   t9_response_end_at
-FROM request_logs_hot
+FROM request_logs_with_current_month
 WHERE request_id = $1
   AND ($2 = '' OR tenant_id = $2)
   AND t0_arrived_at IS NOT NULL
 LIMIT 1`
+
+// queryWaterfallByRequestID loads one durable waterfall row by request_id.
+func queryWaterfallByRequestID(ctx context.Context, pool *pgxpool.Pool, requestID, tenantID string) (dispatch.WaterfallRequest, bool, error) {
+	if pool == nil || requestID == "" {
+		return dispatch.WaterfallRequest{}, false, nil
+	}
+	qctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
 
 	var (
 		reqID, tenant, sessionID, mdl, result  string
 		cred                                   int64
 		t0, t1, t2, t3, t4, t5, t6, t7, t8, t9 *time.Time
 	)
-	err := pool.QueryRow(qctx, sql, requestID, tenantID).Scan(
+	err := pool.QueryRow(qctx, waterfallByRequestSQL, requestID, tenantID).Scan(
 		&reqID, &tenant, &sessionID, &mdl, &cred, &result,
 		&t0, &t1, &t2, &t3, &t4, &t5, &t6, &t7, &t8, &t9,
 	)
