@@ -271,3 +271,4 @@
 253	858_request_logs_final_success_gsid_idx.sql
 254	859_tighten_pii_phone_intl_regex.sql
 255	860_rename_request_logs_family_pending_delete.sql
+256	861_candidate_failure_view_absorb_session_id.sql

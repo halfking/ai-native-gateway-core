@@ -175,3 +175,91 @@ BAD 匹配是限流配置数值 500 的正则误报。
 usage/tenants、routing/featured、routing/policy、sessions、compression/stats、
 anomaly-reporter/stats、dashboard/board、turns/sessions、data-lifecycle/stats
 全部 200，0.6ms-877ms。
+
+## 八、补充验证轮（completion verifier 指出的缺口，2026-10-14 04:4x-05:0x）
+
+### 8.1 浏览器剩余 59 条路由（累计 93 次访问，全仓 ~85 条声明路由全覆盖）
+
+含参数化详情页（用真库 id：request e7f99a40…、session gw_478a…、provider 1、
+credential 2、tenant default、key 2、work-type coding）。全部 <1.5s（含 1.1s
+固定等待），零 >2s。数据页均带真实数据渲染（agents 注册表、request-registry
+三态、reconciliation 13KB、journey 详情、connection-registry、prompt-injection、
+model-pricing 191KB、pricing 28KB、maas/models 232KB、keys/2 密钥统计、
+tenants/default、providers/1 等）。
+
+**复核后的豁免登记（设计内占位/外部依赖，非缺陷）**：
+- `/maintain`（含通配）：独立 nginx SPA（/maintain/ops/*），本地直连形态显示
+  MaintainUnavailableView 占位——router.ts:306 明示。
+- `/customer/*`（activate/agreement/license/site/update-activate）：五条路由
+  同归 update-activate 视图；页面内「版本目录加载失败」是**中心注册服务**
+  未在本地部署（页面文案自述「联网时将自动向中心注册」）。站点信息与
+  激活流程 UI 本身渲染正常。
+- `/admin/approvals/1`：approvals 表本地为空 → 80 字符空态（详情页对不存在
+  id 的正常表达）。
+- `/maas/pricing`、`/tenant/pricing`：支付渠道（支付宝/微信）为外部服务，
+  套餐展示正常。
+- `/nonexistent-page-xyz`：通配兜底重定向 dashboard ✓；`/forbidden` 渲染
+  403 视图 ✓；`/login` 已登录态重定向 `/` ✓。
+
+### 8.2 模型补测（4 模型 × 5 提示词，全部样例提示词实际发送）
+
+| 模型 | ping | say OK | 拉取合并推送 | 批判式审计 | 磁盘清理 |
+|---|---|---|---|---|---|
+| grok-4.6 | ✅ Pong | ✅ OK | ✅ 195B 方案 | ✅ 358B | ✅ 1653B |
+| claude-sonnet-5-5 | ✅ Pong! | ✅ OK. | ✅ 916B 步骤 | ✅ 889B | ✅ 1443B |
+| mimo-v2.6-flash | ✅ | ✅ | ✅ 1102B | ✅ 657B | ✅ 2449B |
+| gpt-5.6-luna | ✅ pong | ✅ OK | ✅ 420B | ✅ 521B | ✅ 1917B |
+
+模型对「操作本机 git/磁盘」类提示词合理婉拒并给出步骤说明——验证的是
+网关全链路（路由→上游→响应→写路径），模型无工具执行属预期行为。
+首轮 3 模型（glm-5.3-flash/minimax-m2.7/deepseek-v4-flash）已在 §七 登记。
+
+⚠ 量具注记：本地 key（id=2）`rate_limit_tpm=3`（测试残留值），真响应一
+触发即 429 连坐——首轮 429 全部源于此，清 NULL 后串行重跑全过。并发跑
+两个测试脚本会双倍消耗配额，教训同 r1024 判据纪律第 8 条（先证钉扎/先查
+配额再归因模型）。
+
+**写路径终验（补测后）**：session_turns_hot 2,408→2,612（+204），max_ts=
+取数时刻；04:45 后 127 轮 × 18 个不同模型；`_request_logs_hot` 恒 0；
+canonical 视图 45,369→45,573 同步增长。
+
+### 8.3 全量 API 扫描（444 个注册路由）与三个真缺陷修复
+
+从源码枚举全部注册路由（mux.HandleFunc + router 声明），替换路径参数为
+真库 id 后 GET 扫描（SSE/流式 6 条剔除——已由浏览器 Live 页覆盖）：
+**234×2xx、100×405（路由存在，POST-only）、62×400（缺必需参数，预期）、
+33×404（无数据的参数化子资源/已退役路径）、9×5xx**。
+
+9 个 5xx 逐一定因，其中 4 个为设计内 503（identity-pool / mobile-node /
+lite-sessions（full 模式）/ memora 未配置——可选子系统的诚实不可用态），
+**5 个里挖出三个真缺陷并全部修复（迁移 861 + 代码两处）**：
+
+1. **`/api/candidate-failures` 42703**：`candidate_failure_logs_with_current_month`
+   是 392 用 `SELECT *` 建的视图——PG 视图在建时快照列集，617 给两表后加的
+   `session_id` 永远进不了视图。且两表列**顺序**已分叉（aggregation_id 位置
+   不同），SELECT * 按位 UNION 本就是隐患。**迁移 861**：显式列清单重建视图
+   （五点同步 + 通道腿 + down 说明 861 自逆）。修复后 200（100 条记录）。
+2. **`/api/admin/session-analytics/users` NULL 扫描 500**：真库
+   session_owners 含 owner_user 为 NULL 的行，裸 string 扫描炸、且
+   pgx 的 rows.Err() 会携带该扫描错误让 writeAggRowsErr 抛 500。修复：
+   三层隔离全部 5 个分支统一 `so.owner_user IS NOT NULL`（与
+   COUNT(DISTINCT) 口径对齐）。修复后 200（4 个用户画像）。
+3. **`/api/admin/session-audit/export` conn busy 500**：rows 声明在
+   withTenantTx 闭包外、闭包返回即提交事务，连接带着未关闭 rows 归还池。
+   修复：消费与 Close 全部挪进闭包（list :167 的正确形态）。修复后 200 CSV。
+
+另：`/api/admin/session-audit`（列表）带 `?tenant_id=` 即 200（裸 GET 的
+"empty tenant_id" 是 RLS 门的要求）；`/api/admin/session-crosstalk` 的
+`session_tenant_binding` 缺表是本地库没重放 domain/032（手动域迁移目录
+不在部署序列内）——本地已应用表体；**登记**：domain/ 迁移语料含旧表名
+引用（032 的触发器体指 request_logs），860 后的重放需要同族改名清扫，
+属下轮工作。判据：`admin/api_sweep_fixes_test.go` 两条形状钉桩，
+变异验证（真历史形态 HEAD^ 版 session_audit.go 喂判据）双红、还原绿。
+
+**慢端点榜**（>1s，均达标无需修）：memora-sessions 7.1s（外部 memora
+服务）、data-lifecycle/degradation 2.8s、backups 2.7s、credential-success-
+rates 1.9s、monitor-summary 1.8s、data-lifecycle/stats 1.3s。
+
+**蓝绿窗实证**：日志中 20 条旧表名 42P01 全部落在 04:25:42–04:25:58
+（16 秒迁移-交接窗，旧实例后台 worker 撞已改名表，全部有回退路径的
+WARN），此后一小时零复发——改名清扫无漏网的运行时证据。
