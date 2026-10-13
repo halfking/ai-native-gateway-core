@@ -1274,3 +1274,22 @@ admin 全包绿（负向闸门 bodies 这道已功成身退；bodies 退役门�
 > 可从 v1 定向回填。探针观测 156,385 行（设计不镜像）维持 owner 拍板。
 > **翻转 runbook 五步（顺序刚性）**：修 154 超时→168h 零损失→回填 158 行→
 > native_read=true→停写→owner 授权后 DROP。详见波 4 审计文档 §九。
+
+> **r1026b（2026-10-13 晚，批判式审计轮，提交 af27bb7b4e + 6adf6b00f，
+> 随本地 2611→2614 上线）**：对 r1026 复审判据的探边抓到两真缺陷。
+> ① **D1 native Responses 透传腿第三泄漏口**：/v1/responses 客户端的
+> ResponsesBodyBytes 原文直发不经 IR 序列化，r1026 的 pass1/pass2 守卫
+> 均不可见 → stream_options 原样送达严格中转 400（response.failed
+> provider_unavailable）。修复=native 分支 choke point 调
+> transformation.StripStreamOptions + reactive 重试腿同源同治（2614）。
+> ② **D2 reasoncap 表 grok-4.6 行无实证登记 xhigh**：paramguard 钳制
+> 空转，ZCode 显式 reasoning_effort=xhigh → vapeur grok-4.6-1 后端 400
+> （上游明示支持集 none|low|medium|high）。按实证订正表行后钳到 high。
+> ③ 本地栈（网关/Redis/PG）19:21:09-10 被**协同停止**（来源未定位，
+> 登记），本轮手工恢复三件套。④ 判据纪律第 9 条（候选）：**变异脚本
+> 必须先验证变异落盘**（perl 未转义 `()` 是捕获组→变异无操作→绿被
+> 误读为判据无效）；**线格式泄漏检测必须解析 JSON 顶层键**（字符串
+> 包含会把正文讨论该参数的流量判成泄漏，raw-logs 复核 11 条全假）。
+> ⑤ 同轮登记不动：上游 400 外显为 model_not_found/transient/retryable
+> 的误导性包装（既有行为，动外显契约属维护者拍板）。
+> 详见 `docs/audit/2026-10-13-r1026-批判式审计轮.md`。
