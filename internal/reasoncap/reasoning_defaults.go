@@ -87,9 +87,15 @@ var reasoningRules = []reasoningRule{
 		CanDisable: false,
 	}},
 	{"grok-4.6", 0, Caps{
-		// grok-4.6 supports low, medium, high, xhigh reasoning levels
+		// 2026-10-13 审计轮订正：原注释声称 grok-4.6 支持 xhigh（无实证），
+		// paramguard 据此对 reasoning_effort=xhigh 放行 → vapeur 中转的
+		// grok-4.6-1 后端 400 "Supported values are: 'none', 'low',
+		// 'medium', and 'high'"（raw-logs 2026-10-13T19:36 三连，客户端
+		// ZCode 显式发 xhigh）。按上游明示的能力集登记；xhigh 移除后
+		// ClampEffort 自动就近钳到 high 并记 paramledger。若未来接入直连
+		// xAI 且实证支持 xhigh，用 Tier 1 DB 覆盖或在此恢复。
 		Supported: true, Dialect: DialectGrok,
-		Efforts:    []string{"low", "medium", "high", "xhigh"},
+		Efforts:    []string{"none", "low", "medium", "high"},
 		CanDisable: true,
 	}},
 
