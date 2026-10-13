@@ -834,8 +834,8 @@ var disableOverbroadPiiIpAddressRule851 []byte
 //go:embed embeddata/startup/856_usage_ledger_ts_cover_agg_idx.sql
 var usageLedgerTsCoverAggIdx856 []byte
 
-//go:embed embeddata/startup/857_tighten_pii_phone_intl_regex.sql
-var tightenPiiPhoneIntlRegex857 []byte
+//go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
+var tightenPiiPhoneIntlRegex859 []byte
 
 //go:embed embeddata/startup/852_models_canonical_column_set_reconcile.sql
 var modelsCanonicalColumnSetReconcile852 []byte
@@ -848,6 +848,15 @@ var sessionTurnsAdvisoryLockKey854 []byte
 
 //go:embed embeddata/startup/855_session_analytics_time_window.sql
 var sessionAnalyticsTimeWindow855 []byte
+
+//go:embed embeddata/startup/856_usage_ledger_ts_cover_agg_idx.sql
+var usageLedgerTsCoverAggIdx856 []byte
+
+//go:embed embeddata/startup/857_analyze_columnar_staleness_gate.sql
+var analyzeColumnarStalenessGate857 []byte
+
+//go:embed embeddata/startup/858_request_logs_final_success_gsid_idx.sql
+var requestLogsFinalSuccessGsidIdx858 []byte
 
 //go:embed embeddata/startup/829_bodies_columnar_rollback.sql
 var bodiesColumnarRollback829 []byte
@@ -1118,6 +1127,9 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/853_credential_probe_queue_automatic.sql":                               credentialProbeQueueAutomatic853,
 	"startup/854_session_turns_advisory_lock_key.sql":                                sessionTurnsAdvisoryLockKey854,
 	"startup/855_session_analytics_time_window.sql":                                  sessionAnalyticsTimeWindow855,
+	"startup/856_usage_ledger_ts_cover_agg_idx.sql":                                  usageLedgerTsCoverAggIdx856,
+	"startup/857_analyze_columnar_staleness_gate.sql":                                analyzeColumnarStalenessGate857,
+	"startup/858_request_logs_final_success_gsid_idx.sql":                            requestLogsFinalSuccessGsidIdx858,
 	"startup/829_bodies_columnar_rollback.sql":                                       bodiesColumnarRollback829,
 	"startup/835_modality_verify_probe_ledger.sql":                                   modalityVerifyProbeLedger835,
 	"startup/834_supplier_errors_base_tables.sql":                                    supplierErrorsBaseTables834,

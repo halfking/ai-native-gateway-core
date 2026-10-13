@@ -1,6 +1,6 @@
 -- ===========================================================================
 -- File:          sql/migrations/startup/852_tighten_pii_phone_intl_regex.sql
--- Migration:     857
+-- Migration:     859
 -- Database:      llm_gateway
 -- Purpose:       收窄 316 播种的 pii_patterns.phone_intl 规则——
 --                `\+\d{1,3}[-\s]?\d{1,14}` 的第二段只要求 1 位数字，回溯
