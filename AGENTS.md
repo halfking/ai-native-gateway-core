@@ -1109,3 +1109,23 @@ probe body 形状断言）；工作区另有并行会话 r1023 的缩进级遗�
 - 211 Redis 库号 claim 不粘 + UrsmlHealthyKeyReconciler 在 211 容器未起
   （154/245 有 `ursm.v2 healthy-key reconciler started`，211 日志无此行），
   冷启动靠 emergency-repair——两件一起查。
+
+---
+
+# 追加：2026-10-13 r1025 —— Vapeur 复验轮 + 钉扎×fp_slot 预过滤缝隙修复
+
+> 复验 r1024+审计轮（2603）之后的 Vapeur 全量矩阵（10 模型 × T1/T1b/T2，
+> tools+thinking high/medium）。修复 P7：admin 钉扎（r1024 激活）与 fp_slot
+> 预过滤叠加时，钉扎凭据先被预过滤剔除、再被 dispatchRoute 硬 pin 过滤收窄
+> 成 0 候选（未触上游即 503）。修复=预过滤豁免钉扎候选（抽取
+> `Executor.fpPrefilterCandidates`），降级路径交给既有 dispatch Acquire 的
+> no-slot 继续。提交含判据
+> `TestFpPrefilterKeepsPinnedCandidateWhenSlotSaturated`（同层驱动 + 去 pin
+> 反例），变异红在正确断言。部署 2604 后 glm-5.3 全套件复绿。
+> **上游能力登记修正**：claude-haiku-5-5 在 Vapeur 流式两腿持续封锁
+> （chat 腿 400 Operation not allowed / responses 腿 502 不支持流式，直连
+> 证实，非「偶发过载」）；opus 流式正常。非流式不受影响。
+> 详见 `docs/audit/2026-10-13-Vapeur复验轮-r1024后全量矩阵与钉扎fp预过滤修复.md`。
+> 量具坑：部署重启后的候选预热空窗实测可达 **3 分钟**（kimi 15:34→15:37），
+> 批次测试首跑失败先重试再定罪；E2E 批次要带 ≥20s 间隔，上游 429 是节奏问题
+> 不是模型故障（grok/deepseek 重测即绿）。
