@@ -1447,3 +1447,19 @@ admin 全包绿（负向闸门 bodies 这道已功成身退；bodies 退役门�
 4. 验证闭环：MacBook 解析/直连/四模型/公网链全绿；停 211 容器 → 直连自动
    回退 mac mini → 恢复自动回切。摘除 mac mini 无必须动作；211 整机宕的
    回切手册在 §5.5（改 netbird 记录指回 mac mini + 重启 management）。
+
+> **r1027（2026-10-14 凌晨，提交 b10903bb09+14f73d4d98+3a714469c2，随本地
+> 2619→2620 上线）**：三模型×两模式形态电池（66 形态位）+ raw-logs 逐条
+> 甄别——五个表面供应商错误实为网关侧问题：① Bedrock
+> `output_config.effort: Input should be`（reqprobe 词表三处断链：形态
+> 不认+无引号冒号前缀名+上游命名空间名≠线体键，补 hints/正则/
+> wireKeyAliases）；② gpt-6.1-sol tools+effort 的 suggest_mode 方向误判
+> （responses 指令句现优先于 chat 提及）；③④ native responses 透传腿
+> 不适配 chat 风格参数（`moved to reasoning.effort/text.format/
+> max_output_tokens`×3 + logprobs 系删——AdaptChatParamsToResponsesWire，
+> native+reactive 腿同治，显式目标形态不覆盖）；⑤ json-word 契约 400
+> 按 transient 冷却节点 → 一次客户端错级联数分钟 no_candidate（双分类器
+> 同臂归 client_bug）。格式错误表闭环：request-anomalies 新增 5 条记录
+> 全 recovered 可见。66/66 全绿、级联抑制实测。**多会话事故**：stash
+> push --staged 往返丢暂存——commit 前必须重验 `git diff --cached --stat`。
+> 详见 `docs/audit/2026-10-14-r1027-三模型形态甄别与格式错误表闭环.md`。
