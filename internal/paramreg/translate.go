@@ -1,6 +1,10 @@
 package paramreg
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/kaixuan/llm-gateway-go/internal/reasonnorm"
+)
 
 // translateRandomSeed 在 Mistral 的 random_seed 与通用 seed 之间转换。
 //
@@ -45,6 +49,27 @@ func translateRandomSeed(value json.RawMessage, src, dst Dialect) (string, json.
 //
 // 后续如果某个方言改 contract 再加白名单，在此函数追加分支即可。
 func translateThinking(value json.RawMessage, src, dst Dialect) (string, json.RawMessage, bool) {
+	// 2026-10-13（thinking 翻译轮，数据矩阵见 docs/audit/2026-10-13-
+	// Vapeur全量测试轮.md §七）：responses 与 grok 方言不收 thinking
+	// 对象但收 effort 形态——Vapeur 全模型实测：responses 腿
+	// reasoning{effort} 除 claude/gemini 后端（本就不走该腿）外全 200；
+	// grok chat 腿 reasoning_effort 200 且 reasoning_tokens=672 证明思考
+	// 真生效。r1021 的「裁剪」升级为「翻译」：思考意图不再静默丢失。
+	if dst == DialectResponses {
+		if effort, ok := thinkingToEffort(value); ok {
+			out, err := json.Marshal(map[string]any{"effort": effort})
+			if err == nil {
+				return "reasoning", out, true
+			}
+		}
+		return "", nil, false
+	}
+	if dst == DialectGrok {
+		if effort, ok := thinkingToEffort(value); ok {
+			return "reasoning_effort", json.RawMessage(`"` + effort + `"`), true
+		}
+		return "", nil, false
+	}
 	if dst != DialectMiniMax {
 		return "thinking", value, true
 	}
@@ -66,4 +91,58 @@ func translateThinking(value json.RawMessage, src, dst Dialect) (string, json.Ra
 		return "thinking", out, true
 	}
 	return "thinking", value, true
+}
+
+// thinkingToEffort 把 anthropic 形态的 thinking 值换算成 effort 档位。
+// 明确 disabled 返回 ok=false（不渲染——思考关）；budget→档位复用
+// reasonnorm.BudgetToEffort 的 LiteLLM 反向映射口径，"max" 就近降
+// "xhigh"（gpt 家族 effort 集无 max，r1014）。
+func thinkingToEffort(value json.RawMessage) (string, bool) {
+	var obj struct {
+		Type         string `json:"type"`
+		BudgetTokens int    `json:"budget_tokens"`
+	}
+	if err := json.Unmarshal(value, &obj); err != nil {
+		// 非对象形态：保守按默认档（上游侧 paramguard 仍会钳制）。
+		return "medium", true
+	}
+	switch obj.Type {
+	case "disabled":
+		return "", false
+	case "enabled", "adaptive", "":
+		// 继续换算档位。
+	default:
+		// 未知类型词：保守按默认档。
+	}
+	if obj.BudgetTokens <= 0 {
+		return "medium", true
+	}
+	effort := reasonnorm.BudgetToEffort(obj.BudgetTokens)
+	if effort == "none" || effort == "max" {
+		return "xhigh", true
+	}
+	return effort, true
+}
+
+// TranslateThinkingForProtocol 是 extensions_restore 对 DialectUnknown
+// 目标的协议感知入口（Decide 只有方言粒度，协议信息在 ir 层调用点）。
+// protocol 取 "responses" / "openai-chat"；非思考意图（disabled 等）
+// 返回 ok=false 由调用方走原有裁剪路径。
+func TranslateThinkingForProtocol(value json.RawMessage, protocol string) (string, json.RawMessage, bool) {
+	switch protocol {
+	case "responses":
+		if effort, ok := thinkingToEffort(value); ok {
+			out, err := json.Marshal(map[string]any{"effort": effort})
+			if err == nil {
+				return "reasoning", out, true
+			}
+		}
+		return "", nil, false
+	case "openai-chat":
+		if effort, ok := thinkingToEffort(value); ok {
+			return "reasoning_effort", json.RawMessage(`"` + effort + `"`), true
+		}
+		return "", nil, false
+	}
+	return "", nil, false
 }

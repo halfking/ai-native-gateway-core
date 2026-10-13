@@ -223,7 +223,13 @@ var specs = []FieldSpec{
 		// （TargetProvider 空串→协议回退，见 serialize_openai_thinking_
 		// dialect_test.go 场景 A），那里必须保字段；真 openai.com 上游的
 		// 拒收由 provider 级 strip / reqprobe 学习兜底。
-		RejectedBy: []Dialect{DialectResponses, DialectGrok, DialectMistral,
+		// 2026-10-13（thinking 翻译轮）：DialectResponses / DialectGrok 从
+		// 名单移出——translateThinking 现在把它们翻译成
+		// reasoning{effort} / reasoning_effort（Vapeur 全模型实测 200，
+		// grok reasoning_tokens=672 证明真生效），思考意图不再丢失；
+		// 仍不接受的方言（mistral/openrouter/vllm/ollama/gemini/qwen）
+		// 维持硬拒。
+		RejectedBy: []Dialect{DialectMistral,
 			DialectOpenRouter, DialectVLLM, DialectOllama, DialectGemini,
 			DialectQwen},
 		RejectedByUnknown: true,
@@ -234,7 +240,15 @@ var specs = []FieldSpec{
 	// P5 完成后将改为 KindIRHandled。
 	{Name: "enable_thinking", Kind: KindPortable,
 		Dialects: []Dialect{DialectQwen, DialectVLLM},
-		Note:     "Qwen 顶层布尔；开源权重模型带 thinking 时只能流式调用。P5 完成前须 Portable"},
+		// 2026-10-13（thinking 翻译轮）：Dialects 维持来源标注语义（注册表
+		// 既有设计，登记方言层无拒绝实证不收口）；unknown-relay 上 Vapeur
+		// responses 腿对 gpt-5.6-sol/gpt-6.1-sol/grok-4.6 三族实测
+		// 400「Unknown parameter: 'enable_thinking'」（redis 台账
+		// llmgw:reqanom 三条），拒绝理由同 r1021 的 thinking：qwen/vllm
+		// 专属旋钮不是未登记字段，不适用 fail-open。qwen 意图经
+		// thinking 翻译路径（extensions_restore 按协议提升）保留。
+		RejectedByUnknown: true,
+		Note:              "Qwen 顶层布尔；开源权重模型带 thinking 时只能流式调用。P5 完成前须 Portable"},
 	{Name: "thinking_budget", Kind: KindPortable,
 		Dialects: []Dialect{DialectQwen},
 		Note:     "Qwen 顶层整数，配合 enable_thinking。P5 完成前须 Portable"},
