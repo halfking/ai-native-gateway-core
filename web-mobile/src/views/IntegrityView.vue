@@ -30,7 +30,7 @@ const isSuperAdmin = computed(() => auth.role === 'super_admin')
 const PAGE_SIZE = 20
 /** 默认只看未处置的：运维默认关心「还没处理的」。 */
 const unresolvedOnly = ref(true)
-const total = ref(0)
+const total = ref<number | null>(null)
 const loadedIds = new Set<number>()
 
 const controller = new ContinuousListController<ModelIntegrityRecord>({
@@ -121,7 +121,7 @@ function severityLabel(s: string): string {
     >
       <template #header>
         <div class="integrity__bar">
-          <span class="integrity__total">{{ t('integrity.total', { n: total }) }}</span>
+          <span v-if="total !== null" class="integrity__total">{{ t('integrity.total', { n: total }) }}</span>
           <button type="button" class="btn btn--sm" @click="toggleUnresolved">
             <AppIcon name="check" :size="16" />
             {{ unresolvedOnly ? t('integrity.showAll') : t('integrity.showUnresolved') }}

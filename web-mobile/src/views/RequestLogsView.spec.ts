@@ -172,4 +172,39 @@ describe('RequestLogsView 请求日志', () => {
 
     expect(m.mock.calls.at(-1)?.[0]).toMatchObject({ request_status: 'failure' })
   })
+  /**
+   * ⚠️ 2026-10-13 真机发现：`total` 初值是 `ref(0)`，于是**首个响应回来之前**，
+   * 汇总行就在页面上写着「共 0 条」。
+   *
+   * 真机实测的时间线（iPhone 6s / iOS 15.8.8）：
+   *   t≈3s  「共 0 条」 + 6 行骨架屏
+   *   t≈10s 「共 0 条」 + 6 行骨架屏
+   *   t≈25s 「共 35325 条」+ 正常列表
+   *
+   * ⇒ 「共 0 条」在这里是一句**谎话**：用户会把「还没加载」读成「这段时间没有请求」，
+   *   而真实答案是 3.5 万条。页面在**还没问到**的时候就不该给出计数。
+   *
+   * 变异方式：把 `ref<number | null>(null)` 改回 `ref(0)`（或去掉模板上的 v-if）⇒ 转红。
+   */
+  it('首个响应回来之前不得渲染「共 N 条」', async () => {
+    const m = fetchRequestLogs as ReturnType<typeof vi.fn>
+    // 永不 resolve 的请求 = 精确模拟「还在加载」
+    m.mockReturnValue(new Promise(() => {}))
+    const w = await mountAs('default')
+    await flushPromises()
+
+    // 汇总行与页脚都不该出现任何计数
+    expect(w.text()).not.toContain('requests')
+    expect(w.text()).not.toContain('共')
+  })
+
+  it('拿到真实计数后必须渲染出来', async () => {
+    const m = fetchRequestLogs as ReturnType<typeof vi.fn>
+    m.mockResolvedValue({ items: [row(1)], count: 35325, aggregate: {} })
+    const w = await mountAs('default')
+    await settle()
+
+    // 测试 locale（en-US）不插千分位，渲染为 "35325 requests"
+    expect(w.text()).toContain('35325')
+  })
 })
