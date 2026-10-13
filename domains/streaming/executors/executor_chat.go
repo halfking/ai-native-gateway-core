@@ -1442,7 +1442,11 @@ func (e *Executor) executeOpenAI(
 						len(params.ResponsesBodyBytes) > 0
 					var retryBody []byte
 					if responsesClient {
-						retryBody = append([]byte(nil), params.ResponsesBodyBytes...)
+						// r1026b：与 native 分支同源同治——ResponsesBodyBytes
+						// 是客户端原文，stream_options（chat 线格式专属）必须
+						// 在这里同样剔除，否则 reactive 重试腿绕过 native
+						// 分支的 strip choke point。
+						retryBody = transformation.StripStreamOptions(append([]byte(nil), params.ResponsesBodyBytes...))
 					} else if converted, convOK := chatBodyToResponsesBody(clientSourceBody, cand.RawModel); convOK {
 						retryBody = converted
 					}
