@@ -1293,3 +1293,60 @@ admin 全包绿（负向闸门 bodies 这道已功成身退；bodies 退役门�
 > ⑤ 同轮登记不动：上游 400 外显为 model_not_found/transient/retryable
 > 的误导性包装（既有行为，动外显契约属维护者拍板）。
 > 详见 `docs/audit/2026-10-13-r1026-批判式审计轮.md`。
+
+---
+
+# 追加：2026-10-13 晚 —— 生产 245/154 + 211 停写翻转执行与三台验证
+
+> 用户指令：关闭 245/154 双写并测试验证；再关闭 211 双写，并确保 211 各
+> 服务目录与数据库文件在 docker 外（/opt/kaixuan 相关目录）。
+
+## 执行序（245/154，共享库 settings_kv 翻转一次覆盖两台）
+
+1. **先部署后翻转**（前置核查：部署态 2601/2602=r1024 含 wave2/3 读迁移、
+   缺 wave4——直接翻转会让 compare/compression 显示空正文/全零）：
+   部署 2612/2613-af27bb7b → 翻转中抓到两个**生产规模集成缺陷**并当日
+   修复重部署 2617/2618-d3ce08d8：
+   - **compression_sessions LATERAL 重跑 canonical 全源**（本地 12k 行测
+     不出，生产 925k turns × ~1k 会话把 10s 预算打满）→ 单趟 CTE +
+     DISTINCT ON（提交 e01ffed39，判据禁 LATERAL，M8 红）；
+   - **quality_correlations avg_quality 裸 AVG**（会话族 quality_score 可
+     全 NULL → Scan 崩）→ COALESCE（提交 d3ce08d86，M9 红）。
+2. `sessions_v2.write_timeout_ms=5000`（默认 2000）：**154 镜像滴漏止住**
+   （此前 5-54 次/小时；调参后归零——免部署调参先行的实证）。
+3. `storage.session_bodies_native_read=true` → `storage.request_logs_write_enabled=false`
+   （**20:18:27**，经 245 直连共享库写入）。
+4. 验证（两台）：request_logs_hot max_ts 冻结在 20:18:11；session_turns_hot
+   持续推进；post-flip 会话 compare 200 且**正文在场**（wave4 修复生产实证）；
+   端点清扫两台一致——sessions/compression/blobs/quality 全 200，
+   **data-lifecycle/stats 500@30s**（v1 存储语义端点的生产规模超时，
+   既存问题非翻转回归，登记随 v1 退役）。
+
+## 211（192.168.31.211，docker 形态）
+
+- **目录合规核查**（用户重点）：DB=acc-pg17 bind `/opt/kaixuan/data/pg/
+  acc-pg17` ✓、Redis=nbjl-redis bind `/opt/kaixuan/data/redis` ✓（该机
+  DEPLOY-STANDARDS 总纲「容器是空壳，数据在宿主 /opt/kaixuan/data」，
+  data-placement-report.sh 可复核）。**网关容器是唯一违规**（零挂载，
+  keystore/hotzone 等状态在容器层，每次部署 rm -f 即清空）→ 已迁移：
+  docker cp 导出 → `/opt/kaixuan/data/llm-gateway/{data,logs}`（uid 65532）
+  → **deploy-211-docker.sh 补 bind mount**（提交 562cc1e6d，后续部署保持）
+  → 重部署验证（容器内可见宿主状态、keystore 完整）。
+- **双写已是关闭态**（其库为本机库副本，继承翻转设置；实测行为吻合）；
+  补 write_timeout_ms=5000 对齐。**E2E 决定性验证**：建 key → 真实
+  glm-4.5-flash 请求（21:21:55）→ session_turns_hot 有该轮（内部 uuid
+  7d19f081）、bodies 窗口 31 行、**request_logs_hot 恒 0** ✓；管理面
+  4 端点 200（毫秒级）+ compare 有正文。
+- **新坑（登记）**：① 网关容器**重建后首启可能 DB 池判 no-DB 且不重试**
+  （重启即愈；根因未深查）——而 deploy 脚本就绪门只查 readyz 200，
+  **lite 回落也返 200**，门形同虚设；后续应断言 readyz 的 mode 字段。
+  ② 重部署后 redis 库号又漂（10→9，claim 不粘，既有登记项）。
+  ③ 211 的 ursm 降级理由是 SYSTEM_MONITOR_ENABLED（与 154/245 的
+  reconciler 差异，既有登记项）。
+
+## 量具与运维注记
+
+- llm.itestu.cn 从 252 访问曾超时（该入口指向**本机 mac 网关**，与生产
+  翻转无关；252 侧 netbird/mihomo 链路抖动，留观）。
+- 生产 158 条真损失行仍在 v1 可回填（DROP 前）；154 滴漏虽止，翻转后
+  镜像是唯一记录，**write_timeout_ms=5000 需保留**。
