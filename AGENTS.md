@@ -1638,3 +1638,17 @@ streaming 全包 150s 绿。154 终验：拦截请求三件套全绿（终态带
 > 32 条、#32 gpt-6.1-sol mode_mismatch 4/4 recovered（r1027 方向甄别活证据）。
 > 详见 `docs/audit/2026-10-14-供应商返回自动调策审计与网关智能体裁决.md`。
 > 注意：宽容上游（glm 收未知参数）不触发反应层是零成本正路，勿当缺陷。
+
+> **r1029（2026-10-14 凌晨，提交 725372743 + 审计文档 b20badb350，随本地
+> 2627 上线）**：日志例行扫描发现 `SESSION_FORBIDDEN`×4051 /
+> `auto_summary: transient error`×2040——ErrSessionExpired 落进
+> 「store fault → 503」分支且响应体误用 FORBIDDEN 文案，auto_summary
+> 内部回环（gs_/gt_ 分支会话 TTL 短）对确定性终态反复重试。修复=
+> `sessionAbsentErr`（NotFound‖Expired 同归 absent 家族，gw_ 认领/
+> 分支 id 保留）+ chat 腿 store-fault 503 改写 SESSION_STORE_UNAVAILABLE
+> （8 locale 新键）。**生产 wiring 实测**：getter 适配器不暴露
+> EnsureV2WithID，过期会话走 no-ensurer 分支换新系统 id——活体实验
+> （Redis 种 2h 前过期 hash + 异主 api_key_id）旧代码必 503、2627 实测
+> 200。判据 r1029_session_expired_test 三层协议全链；M1 首次变异是无操作
+> （perl 模式失配）——**变异后必须 sed 读回实际文件**，不能只看退出码。
+> 详见 `docs/audit/2026-10-14-r1029-会话过期误判store-fault与auto_summary重试循环.md`。
