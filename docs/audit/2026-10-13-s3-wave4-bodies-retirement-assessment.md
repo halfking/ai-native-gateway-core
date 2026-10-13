@@ -201,3 +201,24 @@ M4 一处计数退回 request_logs_bodies_hot → 禁入红。（M1 的字面量
 3. settings_kv 置 `storage.session_bodies_native_read=true`（切换层 14 消费点转会话臂）；
 4. 置 `storage.request_logs_write_enabled=false`（停写），观察期；
 5. owner 最终授权后执行 v1 家族 DROP。
+
+## 十、翻转执行记录（2026-10-13 晚，用户授权执行）
+
+**245/154（共享库）**：先部署 2612/2613（af27bb7b 含 wave4）→ 翻转验证期
+抓到并当日修复两个生产规模缺陷（compression LATERAL 10s 超时 → 单趟 CTE，
+e01ffed39；quality avg_quality NULL 崩 → COALESCE，d3ce08d86）→ 重部署
+2617/2618 → write_timeout_ms=5000（154 镜像滴漏 5-54/h → 0）→
+**20:18:27 执行 native_read=true + 停写**。验证：v1 hot 冻结于 20:18:11、
+会话族推进、post-flip 会话 compare 有正文、端点清扫两台 4/5 绿
+（stats=v1 存量端点超时，登记随 v1 退役）。
+
+**211**：DB/Redis 本就 bind 在 /opt/kaixuan（机器规范）；网关状态目录
+（keystore/hotzone/attachments/backups/model-quality/logs）迁出容器层到
+/opt/kaixuan/data/llm-gateway + deploy-211-docker.sh 补挂载（562cc1e6d）。
+双写为继承关闭态（库=本机副本）+ timeout 对齐。E2E：真实 glm-4.5-flash
+请求 → 仅落会话族（turns+bodies 在场、request_logs_hot 恒 0）；管理面
+全绿。新登记：容器重建首启 DB 池竞态（重启即愈，部署就绪门需断言 mode）、
+redis 库号再漂 10→9。
+
+158 条生产真损失仍在 v1 可回填；DROP 前余下动作不变（见 §九 runbook，
+第 1/3 步已完成）。
