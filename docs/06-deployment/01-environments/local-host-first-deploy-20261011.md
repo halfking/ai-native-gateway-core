@@ -257,6 +257,112 @@ DL_PUBLIC_TLS=1 bash ~/kaixuan/caddy/setup-caddy.sh   # 重建 Caddyfile(含443�
 - 证书同步方向是 **mac mini → 252 root SSH**（BatchMode，已互通）；若 252
   重装/换 IP，改 `sync-public-cert.sh` 顶部 `CERT_SRC_*` 三变量。
 
+### 5.4 切主 211（docker）——mac mini 降为边缘+热备（2026-10-14 凌晨）
+
+**目标拓扑**（用户拍板：服务放一块、mac mini 只作备用）：
+
+| 路径 | 链路 | 主/备 |
+|---|---|---|
+| mesh 内 | NetBird DNS → `100.106.169.63:443`（mac caddy，LE 证书）→ **mesh `100.106.67.198:8781`（211 容器）**；备 `127.0.0.1:8782`（mac 本机网关） | 211 主 / mac 备 |
+| 公网 | 252:443 SNI → 9443 → upstream `100.106.67.198:8000`（211 宿主 nginx 边缘）→ `127.0.0.1:8781` 主 / `100.106.169.63:8782` 备 | 211 主 / mac 备 |
+| 整机级兜底 | 252 upstream 的 backup=mac mini `:8782`（211 整机宕时） | — |
+
+**故障转移实测（2026-10-14 演练）**：停 211 容器 → mesh 首笔即回退 mac mini（`lb_retries`）
+→ 公网链同步回退 → 恢复容器 → ~30s（fail_duration + health_interval）自动回切主。
+两层 caddy 侧要点（都在 `setup-caddy.sh DL_FALLBACK_UPSTREAM` 模式里固化）：
+**`fail_duration` 是被动健康检查的开关，没有它 `lb_policy first` 永远选主直接 502**；
+请求内首笔回退靠 caddy 2.10+ 的 `lb_retries`/`lb_try_duration`（旧 `try_duration`
+已废弃，加了 caddy **静默**启动失败）。
+
+**数据与密码学血缘（切主的核心坑，全部实测）**：
+
+1. **api_keys.key_hash = HMAC-SHA256(实例 SECRET_KEY, key)**
+   （domains/authentication/verifier.go）。211 旧库是旧拷贝、且 SECRET_KEY 是
+   诱饵值（env 文件那份 64-hex）→ 恢复 mac mini 当前库后仍全量 invalid_key。
+   修法：pg_dump/restore 全量同步 + 211 容器以 **mac mini 进程的生产
+   SECRET_KEY** 重建（`/opt/llm-gateway-go-211/env/gateway.secret` 已更新为该值；
+   deploy-211-docker.sh 有血缘警示）。**换库必换对 SECRET，否则 key 全挂**。
+2. **restore 后必须 ANALYZE + 处理 MV 重复键**：无统计信息 boot 首查超 20s 预算
+   → `postgres disabled` → **静默降级 lite 模式**（readyz 看 `mode` 字段！
+   deploy 就绪门只查 200 会漏过）；`routing_analytics_7d` 的 ukey 在 boot 被
+   幂等重建，撞上 MV 内重复键（23505）同样直接杀掉 PG 路径——**分析视图的
+   数据缺陷会阻塞整库启动**。
+3. **重复键根因（上游缺陷，已登记待修）**：canonical 定义（db.go
+   `routingAnalyticsMVSQL` 与 632/837）GROUP BY 用裸 `is_auto_request`，安全性
+   依赖源视图 `routing_analytics_source` 不吐 NULL——当前源视图有 17,473 行
+   NULL（S3 波 2 视图化后不变量破了），NULL 与 false 分组在 COALESCE 显示下
+   重复。两库已用防御性定义（GROUP BY 对齐 `COALESCE(is_auto_request,false)`）
+   重建；**正式修法=修源视图不变量+db.go 常量+migration 三位一体**，单修
+   migration 会被 db.go 陈旧定义门下次重建时无声回退（该门只看源视图特征串，
+   不会动本防御形态，但源视图一变即整体重建）。`routing_audit_summary_7d`
+   同族暴露，本轮键位未撞上。
+4. **mac mini 侧 caddy 不能拨 LAN IP**：macOS「本地网络」隐私权限——SSH 启动
+   的 caddy 无授权，连 `192.168.31.211` 报 no route to host（curl 有授权所以
+   正常，极具迷惑性）。**utun（NetBird mesh IP）不受该权限约束**——caddy
+   上游用 `100.106.67.198:8781`。
+5. 211 容器镜像不含 `configs/`（sensitive_patterns.yaml 缺失→回落内置脱敏集，
+   与宿主机部署行为不一致）。修法：`deploy-211-docker.sh` 每次部署从仓库种子
+   configs 到 `/opt/kaixuan/data/llm-gateway/configs` 并只读挂载 `/app/configs`
+   （docker cp 进容器层则 rm -f 即丢）。
+
+**数据时效与回切 runbook**：cutover 后新写入只进 211 库；mac mini 库停在
+cutover 时刻（2026-10-14 00:29 dump）。**回切 mac mini 前必须反向重做一次
+dump/restore**（211 → mac mini pg18，注意版本向上 17→18 安全）+ 对齐 SECRET_KEY
+（本就是同一把生产钥）+ ANALYZE。旧 211 库保留为 `llm_gateway_pre_cutover_20261014`
+（可回查，确认无用后可 DROP）。mac mini 的 caddy/证书同步 cron 保持运行——
+它现在是 mesh 侧 TLS 边缘+热备，**不能停机**。
+
+### 5.5 mac-mini-removable 拓扑终态（2026-10-14 01 时轮）
+
+**目标**：mac mini 可整体下线而不断 `llm.itestu.cn` 任何路径。§5.4 的形态里
+mac mini 仍是 mesh DNS 锚点+TLS 边缘，本轮把这两个职责迁到 211。
+
+**终态拓扑**（全部不依赖 mac mini）：
+
+| 路径 | 链路 | 说明 |
+|---|---|---|
+| mesh/内网 | NetBird zone `llm-itestu-zone` A 记录 → **192.168.31.211** → 211 宿主 nginx `:443`（LE 证书）→ `ns_llm_gateway_upstream` | 离网 peer 经 lan-router-100 的 `192.168.31.0/24` 路由可达；LAN peer 直达 |
+| 公网 | 公网 DNS → 252:443 SNI → 9443 → `100.106.67.198:8000`（211 边缘）→ 容器 | 与 §5.4 相同 |
+| 容器级主备 | 211 nginx upstream：`127.0.0.1:8781` 主 + `100.106.169.63:8782` 备（mac mini 还在就自动兜底；摘除后 dead 条目被 max_fails 标 down，不致断） | |
+
+**落地的三件事**：
+
+1. **NetBird DNS 记录改指 211**：管理面自托管在 252 `/opt/netbird/`（sqlite
+   store：`/var/lib/containers/storage/volumes/netbird_netbird_mgmt/_data/store.db`，
+   `zones`/`records` 表）。记录值 `192.168.169... → 192.168.31.211`（并行会话
+   曾预改进 sqlite 但**未重启 management 不生效**——管理面内存才是权威，
+   直改 sqlite 必须 `docker restart netbird-management` 才加载）。客户端按
+   lazy-sync 节奏刷新（MacBook 实测 `netbird down && netbird up` 立即生效）。
+   **为什么选 LAN IP 而非 mesh IP**：MacBook→211 mesh IP 实测不通（lazy
+   peer 未建连）而 LAN IP 通；且 mesh 已有 `192.168.31.0/24` 路由
+   （lan-router-100）覆盖离网 peer。
+2. **211 宿主 nginx 增 `:443` TLS 腿**（`ns-gateway-211.conf`，备份
+   `bak-tls443-*`）：LE 证书落 `/opt/kaixuan/data/llm-gateway/certs/`，
+   代理设置镜像 `:8000` 块。
+3. **证书同步 211←252**：`sync-public-cert.sh` 参数化（`DL_PUB_CRT/DL_PUB_KEY/
+   RELOAD_HOOK` 可覆盖，211 用 `RELOAD_HOOK="nginx -t -q && nginx -s reload"`）；
+   211 root crontab 每日 04:33 拉取（幂等，变更才 reload）。SSH 信任为
+   211 root ed25519 → 252 authorized_keys，`restrict,no-pty,...` 前缀——
+   **注意 `restrict=...` 带等号是非法语法，整行会被 sshd 静默丢弃**。
+
+**验证（2026-10-14 实测全绿）**：MacBook 解析→192.168.31.211、直连
+211:443 LE 证书校验通过、四模型真实调用（deepseek 需给足思考预算）、
+停 211 容器 → 直连自动回退 mac mini（真实调用经备节点返回）→ 恢复自动
+回切主、公网链全程正常。
+
+**运维要点**：
+
+- **摘除 mac mini 的动作清单**：无必须项（两条 nginx backup 引用
+  `100.106.169.63:8782` 自动标 down）。可选：删 211 `ns_llm_gateway_upstream`
+  与 252 `llm_gateway_upstream` 里的 backup 行；在 NetBird 下线
+  nb-macmini-29 peer。
+- **211 整机宕 = 域名单点故障**（这是删第二节点的固有代价）。回切手册：
+  ① mac mini 侧确保 caddy 443 在跑（`DL_PUBLIC_TLS=1 setup-caddy.sh`）；
+  ② 252 上 `sqlite3 store.db UPDATE records SET content='100.106.169.63'
+  WHERE name='llm.itestu.cn'; docker restart netbird-management`；
+  ③ 客户端 `netbird down && up` 或等 lazy sync。
+- mac mini 的证书同步 cron（04:26）与 211 的（04:33）并存无冲突。
+
 ## 6. 验证矩阵
 
 | 层 | 命令 | 结果（2026-10-11） |

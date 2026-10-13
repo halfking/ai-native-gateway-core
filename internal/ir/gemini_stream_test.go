@@ -437,11 +437,11 @@ func TestSerializeGemini_StopReasonNativePassthrough(t *testing.T) {
 	// 区分两路径，本测试只覆盖 RECITATION/MALFORMED_FUNCTION_CALL 这两
 	// 个有损归一化项，证明 wire 是原生而非映射值。
 	cases := []struct {
-		name           string
-		stopReason     string
-		finishReason   string
+		name             string
+		stopReason       string
+		finishReason     string
 		wantFinishOnWire string // 原生值
-		forbiddenValue string   // 错误映射值，不应出现在 wire 上
+		forbiddenValue   string // 错误映射值，不应出现在 wire 上
 	}{
 		{"RECITATION_passthrough", "RECITATION", "content_filter", "RECITATION", "SAFETY"},
 		{"MALFORMED_FUNCTION_CALL_passthrough", "MALFORMED_FUNCTION_CALL", "tool_calls", "MALFORMED_FUNCTION_CALL", "STOP"},

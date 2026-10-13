@@ -125,7 +125,7 @@ func TestMatrix_ForcedToolChoice_GeminiAnyWithAllowedNames(t *testing.T) {
 	var m struct {
 		ToolConfig struct {
 			FunctionCallingConfig struct {
-				Mode                string   `json:"mode"`
+				Mode                 string   `json:"mode"`
 				AllowedFunctionNames []string `json:"allowedFunctionNames"`
 			} `json:"functionCallingConfig"`
 		} `json:"toolConfig"`
