@@ -8756,3 +8756,9 @@ git show origin/main:scripts/deploy-lib/db-changelog.sh
 |-----------|------|---------|--------|
 | 856 | `856_usage_ledger_ts_cover_agg_idx.sql` | `68f7ad879cb8d2cee84ad9b604884cc71725b20b76b60e97f0a3c07a6aa8d6b2` | 内容加固登记（非部署应用）：按 849/855 先例补 `SET LOCAL statement_timeout='10min'`（共享 PG 服务端 30s 会掐长索引构建，849 实录 57014）。原登记行（2026-10-12T19:54 deploy 2562）旧指纹 `5ab420d0…` **保留**，两指纹均合法（校验和门任一匹配即过，627 先例）。共享 PG 两索引已在场（deploy 目录扫描腿已应用），指纹通道下次运行按幂等重放收敛；未应用环境直接获得加固版 |
 
+
+## 2026-10-14T05:45:00Z — local (exhaustive API sweep fixes)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 861 | `861_candidate_failure_view_absorb_session_id.sql` | `4b58ab7a37c385a6adaf2425245f853c32d1f619e16ca2c823d95766da090217` | applied+verified (local 2626) |

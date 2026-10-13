@@ -175,6 +175,9 @@ files=(
   # 静态可解析的 EXECUTE 字面量改名（liveRelations 文本重放依赖此形态）+
   # 26 个 plpgsql 函数体改写 + 幂等守卫。视图按 OID 跟随，不需重建。
   "$ROOT_DIR/sql/migrations/startup/860_rename_request_logs_family_pending_delete.sql"
+  # 861（2026-10-14）：重建 candidate_failure_logs_with_current_month 吸收
+  # session_id 列（SELECT * 视图不跟随后续 ALTER；42703 修复）。
+  "$ROOT_DIR/sql/migrations/startup/861_candidate_failure_view_absorb_session_id.sql"
   "$ROOT_DIR/sql/migrations/startup/394_request_stats_minute.sql"
   # 2026-10-12 host-first PG/gateway log audit: the candidate-binding scope
   # revision chain (541 raw_model table → 569 canonical table + cmb triggers →

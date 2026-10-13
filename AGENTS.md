@@ -1608,3 +1608,19 @@ streaming 全包 150s 绿。154 终验：拦截请求三件套全绿（终态带
    （第二片口径）——DROP 前的 owner 四象限复核仍是前置。
 3. ensure_request_logs_partition 若因回滚写路径被重新启用，会建出旧命名的
    新子表（功能正确，命名混杂，登记不修）。
+
+> **2026-10-14 补充验证轮（completion verifier 缺口收口，随 861 提交）**：
+> ① 浏览器累计 93 次访问覆盖全仓 ~85 条声明路由（含参数化详情页，真库 id），
+> 实际加载 100-300ms 零超时；豁免登记：/maintain（独立 nginx SPA）、
+> /customer/* 版本目录（需中心注册服务）、支付渠道页（外部）、approvals/1
+> （空表空态）。② 指定 7 模型 × 全部 5 条样例提示词（ping/say OK/合并推送/
+> 批判审计/磁盘清理）全部实测——4 个补测模型全 200 带内容；写路径终验
+> session_turns_hot 2,408→2,612、`_request_logs_hot` 恒 0、canonical 同步
+> +204。⚠ 本地 key 曾有 rate_limit_tpm=3 测试残留（真响应即 429 连坐），
+> 已清 NULL。③ 444 个注册 API 路由 GET 全扫：234×2xx/100×405/62×400/
+> 33×404/9×5xx；4 个 503 为设计内未配置态，其余 5 个里修掉三个真缺陷
+> （**迁移 861** candidate 视图显式列清单重建吸收 session_id——SELECT *
+> 视图不跟随后续 ALTER 且两表列序已分叉；user_profile NULL 属主过滤；
+> session-audit/export rows 闭包内消费——旧形态连接带未关闭 rows 归还池
+> 即 conn busy），随 2626 部署验证全 200。**登记**：domain/ 手动迁移语料
+> （如 032 触发器体）仍指旧表名，860 后重放需同族改名清扫（下轮）。
