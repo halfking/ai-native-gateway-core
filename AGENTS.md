@@ -1686,3 +1686,44 @@ streaming 全包 150s 绿。154 终验：拦截请求三件套全绿（终态带
 > 200。判据 r1029_session_expired_test 三层协议全链；M1 首次变异是无操作
 > （perl 模式失配）——**变异后必须 sed 读回实际文件**，不能只看退出码。
 > 详见 `docs/audit/2026-10-14-r1029-会话过期误判store-fault与auto_summary重试循环.md`。
+
+---
+
+# 追加：2026-10-14 magpie P0 四项落地（提交 feb712b4b，本地 2608 E2E 全过）
+
+> 用户指令：按 `docs/research/2026-10-14-magpie对比与优化方案.md` 学习 magpie，
+> 4 并行子代理实现 P0-1~P0-4 → 提交推送（50df72e1e，含并行会话 8 提交 merge）
+> → 本地部署 2608 → E2E 验证。明细与判据矩阵：
+> `docs/audit/2026-10-14-magpie-p0四项落地与本地E2E验证.md`。
+
+1. **P0-1** 动态可选字段剔除记忆：errorsx.RefusedOptionalParam（400/422 指名
+   参数提取，pydantic loc/\\uXXXX 变体）+ internal/paramrefusal（(provider,
+   model, wire) 24h TTL 记忆 + 黑名单永不剔）+ executor 三 choke point 主动
+   剔除 + 同候选重试一次。**与 reqprobe 分工**：reqprobe 骨架字段（如
+   reasoning_effort）由 reqprobe 先抢，paramrefusal 兜词形/未知字段——E2E
+   用 pydantic 422 + service_tier 逼出本尊，`paramrefusal retry` 日志在场、
+   第二次执行 1 hit（记忆发前剔除）。
+2. **P0-2** survival 交互 deadline 5h→240s（config 三处 + coordinator），
+   settings_kv 热键 `survival.interactive_deadline_seconds`（每 Run 热读），
+   deadline 终端帧带 attempts/kinds/earliest_recovery 摘要（三协议，code/
+   reason 契约不变）。生产未部署，本地 survival 分支未启用（arm 行不打）。
+3. **P0-3** 断流原地续问：上游 chat SSE 无终态且已发正文 → 同候选 assistant
+   prefill 重发一次（GetBody 重绑防重放），帧无缝拼接（role 抑制、双预算、
+   kill 键 `survival.stream_continuation_enabled` 默认 true 热加载）。E2E：
+   mock 断流 → 61ms 后第二请求尾部=assistant "one two three" → 客户端完整
+   文本单终态。桥接腿（anthropic/responses 客户端协议）未接 hook（登记）。
+4. **P0-4** rest 分级：errorsx.ParseQuotaResetAt/GradeQuotaRest/IsCreditExhausted/
+   ModelScopedRejection + breaker.RecordFailureWithReset（对齐 resetsAt，
+   clamp 30s-2h）/RecordModelScopedFailure + **executor_nodehealth
+   EffectRecordCircuitFailure 臂接线**（主会话补，判据 executor_nodehealth_
+   p04_wiring_test.go，M-A/M-B 变异红）。E2E：429 quota 词形 → `circuit
+   quota cooling aligned`（599344ms 精确对齐）→ 冷却期 0.13s 快速失败零上游
+   命中。**rate 词形分类为 rate_limit 不对齐（设计内）**。
+5. **本地栈坑（新）**：~/sdk 工具链又被清（brew go1.27.1/bash5.3.9 替身已装）；
+   本地库账本 851 但 model_offers 视图缺 682 三列（候选查询炸，sync 型库
+   信列不信账本）；凭据密文必须按 `FernetKeyFromSecret(SECRET_KEY,
+   LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY)` 显式链加密（run/*.env 两者都在，
+   explicit 优先）；api_keys.application_id 必须真实存在（=0 被 keystore
+   JOIN 丢弃全员 401）；新插 key 要 touch last_used_at 才进 delta 同步窗。
+6. **本地 E2E mock 栈**：/tmp/p0_mock_server.py（五模式可控上游）+ DB provider
+   9010 seed（详见审计文档 §二），后续轮次可复用；API key id=2 存于 api_keys。
