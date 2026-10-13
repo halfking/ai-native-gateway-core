@@ -711,11 +711,7 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 	// assembly buffer — attempt end is the last chance to put it on the wire.
 	// No-op whenever the stream ended with complete frames (pending empty);
 	// a discarded attempt's gate refuses the frame, which is ignored here.
-	defer func() {
-		if gw, ok := w.(*GateWriter); ok {
-			_ = gw.DrainPending()
-		}
-	}()
+	defer drainGateWriterPending(w)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)

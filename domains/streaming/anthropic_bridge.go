@@ -777,11 +777,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 	// — an upstream that closes without the SSE blank-line terminator strands
 	// the final frame while the request is recorded as a clean outcome.
 	// See GateWriter.DrainPending.
-	defer func() {
-		if gw, ok := w.(*GateWriter); ok {
-			_ = gw.DrainPending()
-		}
-	}()
+	defer drainGateWriterPending(w)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
