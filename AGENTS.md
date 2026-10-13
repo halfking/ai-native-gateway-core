@@ -1353,6 +1353,33 @@ admin 全包绿（负向闸门 bodies 这道已功成身退；bodies 退役门�
 
 ---
 
+# 追加：2026-10-14 r1027 —— /v1/models 只列真正可路由的模型
+
+> 用户指令：把「/v1/models 只列出真正有 provider 的模型」做掉。
+> 详见 `docs/audit/2026-10-14-models只列可路由模型-r1027.md`。
+
+1. **根因是两张活度表**：发现端点旧查询读 `model_offers.available`，而故障
+   阶梯只翻 `credential_model_bindings` / `credentials.availability_state /
+   quota_state`——死凭据的模型永远被 advertise。两层缝隙都实测抓到：
+   绑定门之后 grok-4.7 仍在列（五死凭据 67/68/69/70/72 的 binding 挂
+   available=t 且 lifecycle status='active'），补凭据级
+   `availability_state='ready'` + `quota_state != permanently_exhausted`
+   门（healthyCandidateSQL 同款）+ `node_probe_state.consecutive_failures=0`
+   防余额死凭据 binding 抖动闪烁。620 → 139。
+2. **逃生舱**：settings_kv 平台键 `models.list_only_routable`（默认 true，
+   热加载）；置 false 回 model_offers 旧语义。生产实测 138→617→138 往返。
+   判据 `domains/streaming/models_routable_test.go` 四件套；变异红；
+   spec 未注册时 GetPlatformBool 会静默回退默认值——键必须进
+   ModelsSpecs（有钉子）。
+3. 部署：154=2584（8782）、245=2586（8781）。E2E 直连/经 nginx 一致，
+   死模型出局、活模型保留。
+4. **部署量具坑（重要）**：`deploy-*.sh | grep | tail` 管道无 pipefail 时
+   会把构建锁失败吞成「成功」（2582/2583 两次假成功）；部署命令一律
+   `> log 2>&1; rc=$?`。共享构建锁 kx-llm-gateway-build.lock 是全机互斥
+   （本地 deploy-local 与生产 deploy-seamless 互抢），`shared build lock
+   held` = 有别的部署在跑，判 pid 存活后等待。pgxmock 的 Scan 不支持
+   **int 目的标，mock 夹具里可空列给 NULL。
+
 # 追加：2026-10-14 凌晨 —— llm.itestu.cn 切主 211（docker），mac mini 降为边缘+热备
 
 > 用户拍板：服务放一块（211 是整合机），mac mini 只作备用。并行会话已在
@@ -1396,3 +1423,27 @@ admin 全包绿（负向闸门 bodies 这道已功成身退；bodies 退役门�
 - 211 库号漂移（claim 不粘）与 UrsmlHealthyKeyReconciler 未启动两登记项仍在。
 - 211 镜像未内嵌 configs（靠部署种子，重建镜像时留意）。
 - 回切 mac mini 前必须反向 dump/restore（见 §5.4 runbook）。
+
+---
+
+# 追加：2026-10-14 01 时轮 —— mac-mini-removable 拓扑终态
+
+> 用户要求：考虑 mac mini 整体下线的可能，完善 llm.itestu.cn 全链路。
+> 结果：**mac mini 已完全可摘除**（mesh DNS、TLS、证书、公网链零依赖），
+> 保留为容器级热备（在则自动兜底，摘则 dead backup 自动标 down）。
+> 拓扑/回切手册/坑详见部署文档 §5.5。
+
+1. **NetBird DNS 记录 → 192.168.31.211**（管理面在 252 `/opt/netbird/`，
+   sqlite `zones`/`records` 表直改 + **必须 `docker restart netbird-management`**
+   ——不重启则管理面内存仍是旧值、直改还会被下次持久化覆盖；并行会话曾
+   预改未重启，险些踩坑）。客户端 lazy-sync 刷新，急用 `netbird down && up`。
+   **选 LAN IP 不选 mesh IP**：MacBook→211 mesh IP 实测不通（lazy peer），
+   LAN IP 通；离网 peer 走既有 lan-router-100 的 192.168.31.0/24 路由。
+2. **211 nginx 增 :443 TLS 腿**（LE 证书，备份 bak-tls443-*）+ 每日 04:33
+   证书同步 cron（211→252 受限密钥信任）。**`restrict=...` 带等号是非法
+   authorized_keys 语法，整行被 sshd 静默丢弃**——必须 `restrict,...` 逗号式。
+3. sync-public-cert.sh 参数化：DL_PUB_CRT/DL_PUB_KEY/RELOAD_HOOK（211 用
+   nginx reload 钩子）。
+4. 验证闭环：MacBook 解析/直连/四模型/公网链全绿；停 211 容器 → 直连自动
+   回退 mac mini → 恢复自动回切。摘除 mac mini 无必须动作；211 整机宕的
+   回切手册在 §5.5（改 netbird 记录指回 mac mini + 重启 management）。

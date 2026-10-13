@@ -312,6 +312,57 @@ dump/restore**（211 → mac mini pg18，注意版本向上 17→18 安全）+ �
 （可回查，确认无用后可 DROP）。mac mini 的 caddy/证书同步 cron 保持运行——
 它现在是 mesh 侧 TLS 边缘+热备，**不能停机**。
 
+### 5.5 mac-mini-removable 拓扑终态（2026-10-14 01 时轮）
+
+**目标**：mac mini 可整体下线而不断 `llm.itestu.cn` 任何路径。§5.4 的形态里
+mac mini 仍是 mesh DNS 锚点+TLS 边缘，本轮把这两个职责迁到 211。
+
+**终态拓扑**（全部不依赖 mac mini）：
+
+| 路径 | 链路 | 说明 |
+|---|---|---|
+| mesh/内网 | NetBird zone `llm-itestu-zone` A 记录 → **192.168.31.211** → 211 宿主 nginx `:443`（LE 证书）→ `ns_llm_gateway_upstream` | 离网 peer 经 lan-router-100 的 `192.168.31.0/24` 路由可达；LAN peer 直达 |
+| 公网 | 公网 DNS → 252:443 SNI → 9443 → `100.106.67.198:8000`（211 边缘）→ 容器 | 与 §5.4 相同 |
+| 容器级主备 | 211 nginx upstream：`127.0.0.1:8781` 主 + `100.106.169.63:8782` 备（mac mini 还在就自动兜底；摘除后 dead 条目被 max_fails 标 down，不致断） | |
+
+**落地的三件事**：
+
+1. **NetBird DNS 记录改指 211**：管理面自托管在 252 `/opt/netbird/`（sqlite
+   store：`/var/lib/containers/storage/volumes/netbird_netbird_mgmt/_data/store.db`，
+   `zones`/`records` 表）。记录值 `192.168.169... → 192.168.31.211`（并行会话
+   曾预改进 sqlite 但**未重启 management 不生效**——管理面内存才是权威，
+   直改 sqlite 必须 `docker restart netbird-management` 才加载）。客户端按
+   lazy-sync 节奏刷新（MacBook 实测 `netbird down && netbird up` 立即生效）。
+   **为什么选 LAN IP 而非 mesh IP**：MacBook→211 mesh IP 实测不通（lazy
+   peer 未建连）而 LAN IP 通；且 mesh 已有 `192.168.31.0/24` 路由
+   （lan-router-100）覆盖离网 peer。
+2. **211 宿主 nginx 增 `:443` TLS 腿**（`ns-gateway-211.conf`，备份
+   `bak-tls443-*`）：LE 证书落 `/opt/kaixuan/data/llm-gateway/certs/`，
+   代理设置镜像 `:8000` 块。
+3. **证书同步 211←252**：`sync-public-cert.sh` 参数化（`DL_PUB_CRT/DL_PUB_KEY/
+   RELOAD_HOOK` 可覆盖，211 用 `RELOAD_HOOK="nginx -t -q && nginx -s reload"`）；
+   211 root crontab 每日 04:33 拉取（幂等，变更才 reload）。SSH 信任为
+   211 root ed25519 → 252 authorized_keys，`restrict,no-pty,...` 前缀——
+   **注意 `restrict=...` 带等号是非法语法，整行会被 sshd 静默丢弃**。
+
+**验证（2026-10-14 实测全绿）**：MacBook 解析→192.168.31.211、直连
+211:443 LE 证书校验通过、四模型真实调用（deepseek 需给足思考预算）、
+停 211 容器 → 直连自动回退 mac mini（真实调用经备节点返回）→ 恢复自动
+回切主、公网链全程正常。
+
+**运维要点**：
+
+- **摘除 mac mini 的动作清单**：无必须项（两条 nginx backup 引用
+  `100.106.169.63:8782` 自动标 down）。可选：删 211 `ns_llm_gateway_upstream`
+  与 252 `llm_gateway_upstream` 里的 backup 行；在 NetBird 下线
+  nb-macmini-29 peer。
+- **211 整机宕 = 域名单点故障**（这是删第二节点的固有代价）。回切手册：
+  ① mac mini 侧确保 caddy 443 在跑（`DL_PUBLIC_TLS=1 setup-caddy.sh`）；
+  ② 252 上 `sqlite3 store.db UPDATE records SET content='100.106.169.63'
+  WHERE name='llm.itestu.cn'; docker restart netbird-management`；
+  ③ 客户端 `netbird down && up` 或等 lazy sync。
+- mac mini 的证书同步 cron（04:26）与 211 的（04:33）并存无冲突。
+
 ## 6. 验证矩阵
 
 | 层 | 命令 | 结果（2026-10-11） |

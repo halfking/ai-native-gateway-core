@@ -39,8 +39,10 @@ DL_CADDY_ROOT="${DL_CADDY_ROOT:-$HOME/kaixuan/caddy}"
 DL_CADDY_HOME="${DL_CADDY_HOME:-$HOME/sdk/caddy}"
 DL_PKI_DIR="${DL_PKI_DIR:-$DL_CADDY_ROOT/pki}"
 DL_LOG_DIR="${DL_LOG_DIR:-$DL_CADDY_ROOT/logs}"
-DST_CRT="$DL_PKI_DIR/${DL_DOMAIN}.le.crt"
-DST_KEY="$DL_PKI_DIR/${DL_DOMAIN}.le.key"
+# 目标路径与重载钩子可覆盖（211 等非 caddy 边缘用 RELOAD_HOOK 换成 nginx）：
+DL_PUB_CRT="${DL_PUB_CRT:-$DL_PKI_DIR/${DL_DOMAIN}.le.crt}"
+DL_PUB_KEY="${DL_PUB_KEY:-$DL_PKI_DIR/${DL_DOMAIN}.le.key}"
+RELOAD_HOOK="${RELOAD_HOOK:-}"
 
 log() { printf '[sync-public-cert] %s\n' "$*"; }
 die() { printf '[sync-public-cert] error: %s\n' "$*" >&2; exit 1; }
@@ -86,18 +88,25 @@ if [[ "$CHECK_ONLY" == "1" ]]; then
   exit 0
 fi
 
-if [[ -f "$DST_CRT" && -f "$DST_KEY" ]] \
-  && cmp -s "$TMP_DIR/fullchain.pem" "$DST_CRT" \
-  && cmp -s "$TMP_DIR/privkey.pem" "$DST_KEY"; then
+if [[ -f "$DL_PUB_CRT" && -f "$DL_PUB_KEY" ]] \
+  && cmp -s "$TMP_DIR/fullchain.pem" "$DL_PUB_CRT" \
+  && cmp -s "$TMP_DIR/privkey.pem" "$DL_PUB_KEY"; then
   log "cert unchanged; nothing to do"
   exit 0
 fi
 
-install -m 0644 "$TMP_DIR/fullchain.pem" "$DST_CRT"
-install -m 0600 "$TMP_DIR/privkey.pem" "$DST_KEY"
-log "installed $DST_CRT (expiry: $(openssl x509 -in "$DST_CRT" -noout -enddate | cut -d= -f2))"
+install -m 0644 "$TMP_DIR/fullchain.pem" "$DL_PUB_CRT"
+install -m 0600 "$TMP_DIR/privkey.pem" "$DL_PUB_KEY"
+log "installed $DL_PUB_CRT (expiry: $(openssl x509 -in "$DL_PUB_CRT" -noout -enddate | cut -d= -f2))"
 
-if [[ -x "$DL_CADDY_HOME/caddy" ]] && pgrep -f "caddy run" >/dev/null 2>&1; then
+if [[ -n "$RELOAD_HOOK" ]]; then
+  # 边缘不是 caddy（如 211 宿主 nginx）时用 RELOAD_HOOK 覆盖默认重载动作
+  if bash -c "$RELOAD_HOOK"; then
+    log "reload hook ok: $RELOAD_HOOK"
+  else
+    die "reload hook failed — cert installed but runtime still serves the old one"
+  fi
+elif [[ -x "$DL_CADDY_HOME/caddy" ]] && pgrep -f "caddy run" >/dev/null 2>&1; then
   "$DL_CADDY_HOME/caddy" reload --config "$DL_CADDY_ROOT/Caddyfile" \
     && log "caddy reloaded" \
     || die "caddy reload failed — cert installed but runtime still serves the old one; fix Caddyfile (DL_PUBLIC_TLS=1 setup-caddy.sh) and restart"
