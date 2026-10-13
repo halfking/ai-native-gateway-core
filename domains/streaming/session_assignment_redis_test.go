@@ -36,7 +36,7 @@ func setRawIndexEntry(t *testing.T, mr *miniredis.Miniredis, apiKeyID int, entry
 
 // TestAssignGatewaySession_RedisIndexHitSkipsDBFinder pins the Wave4-D1
 // fast path: a fresh index entry for (api_key, device seed) resumes the
-// session without paying the request_logs_hot DB query.
+// session without paying the _request_logs_hot DB query.
 func TestAssignGatewaySession_RedisIndexHitSkipsDBFinder(t *testing.T) {
 	h := NewChatHandler(nil, nil, nil, nil, nil, nil)
 	idx, _ := newTestLastSystemSessionIndex(t)

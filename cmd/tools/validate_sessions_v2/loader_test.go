@@ -25,15 +25,15 @@ func TestLoadV1TurnsJoinsBodiesByRequestIDAndTimestampAcrossStores(t *testing.T)
 		"prompt_tokens", "completion_tokens", "cache_read_tokens", "cache_write_tokens", "cost_usd", "success",
 	}).AddRow("req_reused", firstTS, "gw_fixture", "tenant_fixture", "gpt-test", "provider-test", "credential-test", 1, 2, 0, 0, 0.01, true).
 		AddRow("req_reused", secondTS, "gw_fixture", "tenant_fixture", "gpt-test", "provider-test", "credential-test", 3, 4, 0, 0, 0.02, true)
-	mockDB.ExpectQuery("FROM request_logs").WithArgs("tenant_fixture", "gw_fixture").WillReturnRows(metaRows)
+	mockDB.ExpectQuery("FROM _request_logs").WithArgs("tenant_fixture", "gw_fixture").WillReturnRows(metaRows)
 
-	mockDB.ExpectQuery("request_logs_bodies").WithArgs("req_reused", firstTS).WillReturnRows(
+	mockDB.ExpectQuery("_request_logs_bodies").WithArgs("req_reused", firstTS).WillReturnRows(
 		mockDB.NewRows([]string{"request_body", "response_body"}).AddRow(
 			json.RawMessage(`{"messages":[{"role":"user","content":"hot body"}]}`),
 			json.RawMessage(`{"choices":[]}`),
 		),
 	)
-	mockDB.ExpectQuery("request_logs_bodies").WithArgs("req_reused", secondTS).WillReturnRows(
+	mockDB.ExpectQuery("_request_logs_bodies").WithArgs("req_reused", secondTS).WillReturnRows(
 		mockDB.NewRows([]string{"request_body", "response_body"}).AddRow(
 			json.RawMessage(`{"messages":[{"role":"user","content":"partition body"}]}`),
 			json.RawMessage(`{"choices":[]}`),

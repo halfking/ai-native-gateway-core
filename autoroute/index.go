@@ -30,7 +30,7 @@ type Index struct {
 	lastRefresh time.Time
 
 	// hotCanonicalCache caches the 48h hot Top 3 canonicals to reduce
-	// request_logs scans. Protected by hotCanonicalMu. TTL: 2 minutes.
+	// _request_logs scans. Protected by hotCanonicalMu. TTL: 2 minutes.
 	hotCanonicalMu   sync.RWMutex
 	hotCanonicals    []int
 	hotCanonicalsTS  time.Time

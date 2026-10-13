@@ -67,8 +67,8 @@ while IFS='|' read -r cls sid; do
       UNION SELECT request_id FROM public.session_turns WHERE session_id='$sid'),
     v1only AS (
       SELECT request_id, is_final_success, ts FROM (
-        SELECT request_id, is_final_success, ts FROM public.request_logs_hot WHERE gw_session_id='$sid'
-        UNION ALL SELECT request_id, is_final_success, ts FROM public.request_logs WHERE gw_session_id='$sid') a
+        SELECT request_id, is_final_success, ts FROM public._request_logs_hot WHERE gw_session_id='$sid'
+        UNION ALL SELECT request_id, is_final_success, ts FROM public._request_logs WHERE gw_session_id='$sid') a
       WHERE request_id IS NOT NULL AND request_id NOT IN (SELECT request_id FROM v2ids WHERE request_id IS NOT NULL)),
     v1ids AS (SELECT request_id, bool_or(is_final_success) AS f, max(ts) AS ts FROM v1only GROUP BY request_id),
     v2only AS (
@@ -76,8 +76,8 @@ while IFS='|' read -r cls sid; do
         SELECT request_id, ts FROM public.session_turns_hot WHERE session_id='$sid'
         UNION ALL SELECT request_id, ts FROM public.session_turns WHERE session_id='$sid') b
       WHERE request_id IS NOT NULL AND request_id NOT IN (SELECT request_id FROM (
-        SELECT request_id FROM public.request_logs_hot WHERE gw_session_id='$sid'
-        UNION SELECT request_id FROM public.request_logs WHERE gw_session_id='$sid') c WHERE request_id IS NOT NULL)
+        SELECT request_id FROM public._request_logs_hot WHERE gw_session_id='$sid'
+        UNION SELECT request_id FROM public._request_logs WHERE gw_session_id='$sid') c WHERE request_id IS NOT NULL)
       GROUP BY request_id)
     SELECT
       (SELECT count(*) FROM v1ids WHERE f IS TRUE),
@@ -108,8 +108,8 @@ rm -f /tmp/obs_round_sessions.$$
 # S4 停写 gate 在丢失归零（或 GAP-2 重放器补齐）前不可触发。
 G2G="$(psql_q "
 SELECT count(*) FROM (
-  SELECT request_id, is_final_success, ts FROM public.request_logs_hot
-  UNION ALL SELECT request_id, is_final_success, ts FROM public.request_logs
+  SELECT request_id, is_final_success, ts FROM public._request_logs_hot
+  UNION ALL SELECT request_id, is_final_success, ts FROM public._request_logs
 ) v1
 WHERE v1.is_final_success IS TRUE
   AND v1.request_id IS NOT NULL

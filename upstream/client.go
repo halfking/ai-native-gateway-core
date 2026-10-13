@@ -48,7 +48,7 @@ type Error struct {
 	Err     error
 	// 2026-06-23 P0 audit: capture upstream response body (capped at 4KB)
 	// so transient/5xx errors include the vendor's actual error message
-	// in request_logs.response_preview instead of being recorded as an
+	// in _request_logs.response_preview instead of being recorded as an
 	// empty preview. Without this, "error_kind=transient" rows are
 	// diagnostically useless — operators cannot tell whether the cause
 	// is vendor-side rate limiting, auth, or a network blip.

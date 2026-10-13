@@ -147,7 +147,7 @@ func TestModelTier_SQLReferencesActualColumns(t *testing.T) {
 	// The test fails if the developer accidentally references a missing column.
 	mustContain := []string{
 		"COALESCE(rl.outbound_model, rl.client_model)", // real model-name column
-		"FROM request_logs_hot rl",                     // table exists
+		"FROM _request_logs_hot rl",                    // table exists
 		"WHERE rl.success",                             // column exists
 		"WHERE tenant_id = $1",                         // tenant scope (audit #3)
 		"GROUP BY raw_model",                           // dedup (audit #11)
@@ -164,7 +164,7 @@ func TestModelTier_SQLReferencesActualColumns(t *testing.T) {
 	// it's not preceded by `raw_` or any column prefix.
 	notAllowed := regexp.MustCompile(`(?im)(?:select|where|group\s+by|order\s+by)\s+(?:\w+\.)?model\b`)
 	assert.False(t, notAllowed.MatchString(src),
-		"request_logs_hot has no `model` column; use COALESCE(outbound_model,client_model)")
+		"_request_logs_hot has no `model` column; use COALESCE(outbound_model,client_model)")
 
 	// Tier-aware priority must return the featured default when the global
 	// tier recognises the model. We restore the previous global state on exit.

@@ -86,7 +86,7 @@ var degradeMarkerOutOfScope = map[string]string{
 	"admin/aggregate_read_guard.go":     "内部读守卫，不直接产出页面载荷（writeAggRowsErr/writeLookupErr 写 503 + analytics_view_missing，不是 200+空）",
 	"admin/dashboard_board_aux.go":      "运维 chip 查询：三处 _= 已于 2026-10-03 改为记录错误并恒发 degraded；经 TestBoardOpsQueriesReportDegradation 把守",
 	"admin/dashboard_board_fallback.go": "饼图逐维度降级账本（boardPieDegradation），经 TestBoardPieDegradationLedger + TestBoardPiesDegradationReachesPayload 把守",
-	"admin/dashboard_board_queries.go":  "看板主查询：42P01 转 request_logs 回退，回退失败已于 2026-10-03 上抛/打标；见 TestBoardFallbackErrorsPropagate",
+	"admin/dashboard_board_queries.go":  "看板主查询：42P01 转 _request_logs 回退，回退失败已于 2026-10-03 上抛/打标；见 TestBoardFallbackErrorsPropagate",
 	// 注意：dashboard_board.go / dashboard_board_cache.go **不在**本表里，
 	// 因为它们自己没有 42P01 判定点——它们是载荷组装点。
 	// 首次登记时误加了两条，门立刻报「该表项是凭印象写的」（这正是双向检查的价值）。
@@ -1007,7 +1007,7 @@ func TestBoardPiesDegradationReachesPayload(t *testing.T) {
 // ## 背景
 //
 // 2026-10-03 之前 fallbackBoardSummary 里是 `_ = h.db.QueryRow(...).Scan(...)`：
-// minute 统计不可用 → 走 request_logs 回退 → 回退自己也失败（42P01）→
+// minute 统计不可用 → 走 _request_logs 回退 → 回退自己也失败（42P01）→
 // **整屏数字全是 0，且没有任何降级标记**。请求数 0、Token 0、费用 $0.00，
 // 页面上看起来就是「这个时段没有流量」。
 //

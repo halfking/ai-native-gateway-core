@@ -75,18 +75,18 @@ PSQL="PGPASSWORD=$DB_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NA
 # 功能: 分析数据量分布
 # ══════════════════════════════════════════════════════════════════════
 analyze_sizes() {
-  log_info "分析 request_logs 数据量分布..."
+  log_info "分析 _request_logs 数据量分布..."
   local sql="
-    SELECT '总行数' AS metric, count(*)::text FROM request_logs
-    UNION ALL SELECT '总大小', pg_size_pretty(pg_total_relation_size('request_logs'))
-    UNION ALL SELECT '主表', pg_size_pretty(pg_relation_size('request_logs'))
-    UNION ALL SELECT 'TOAST', pg_size_pretty(pg_total_relation_size('request_logs') - pg_relation_size('request_logs'))
-    UNION ALL SELECT '索引', pg_size_pretty(pg_indexes_size('request_logs'))
-    UNION ALL SELECT '今日', count(*)::text FROM request_logs WHERE created_at >= CURRENT_DATE
-    UNION ALL SELECT '近7天', count(*)::text FROM request_logs WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'
-    UNION ALL SELECT '近30天', count(*)::text FROM request_logs WHERE created_at >= CURRENT_DATE - INTERVAL '30 days'
-    UNION ALL SELECT '30-90天', count(*)::text FROM request_logs WHERE created_at >= CURRENT_DATE - INTERVAL '90 days' AND created_at < CURRENT_DATE - INTERVAL '30 days'
-    UNION ALL SELECT '>90天', count(*)::text FROM request_logs WHERE created_at < CURRENT_DATE - INTERVAL '90 days';
+    SELECT '总行数' AS metric, count(*)::text FROM _request_logs
+    UNION ALL SELECT '总大小', pg_size_pretty(pg_total_relation_size('_request_logs'))
+    UNION ALL SELECT '主表', pg_size_pretty(pg_relation_size('_request_logs'))
+    UNION ALL SELECT 'TOAST', pg_size_pretty(pg_total_relation_size('_request_logs') - pg_relation_size('_request_logs'))
+    UNION ALL SELECT '索引', pg_size_pretty(pg_indexes_size('_request_logs'))
+    UNION ALL SELECT '今日', count(*)::text FROM _request_logs WHERE created_at >= CURRENT_DATE
+    UNION ALL SELECT '近7天', count(*)::text FROM _request_logs WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'
+    UNION ALL SELECT '近30天', count(*)::text FROM _request_logs WHERE created_at >= CURRENT_DATE - INTERVAL '30 days'
+    UNION ALL SELECT '30-90天', count(*)::text FROM _request_logs WHERE created_at >= CURRENT_DATE - INTERVAL '90 days' AND created_at < CURRENT_DATE - INTERVAL '30 days'
+    UNION ALL SELECT '>90天', count(*)::text FROM _request_logs WHERE created_at < CURRENT_DATE - INTERVAL '90 days';
   "
   eval "$PSQL -c \"$sql\"" 2>/dev/null | while IFS='|' read -r metric value; do
     log_info "  $metric: $value"
@@ -113,7 +113,7 @@ archive_data() {
   fi
 
   local where="created_at >= '$date_from' AND created_at < '$date_to'"
-  local count_sql="SELECT count(*) FROM request_logs WHERE $where"
+  local count_sql="SELECT count(*) FROM _request_logs WHERE $where"
   local total
   total=$(eval "$PSQL -c \"$count_sql\"" 2>/dev/null | tr -d ' ')
 
@@ -128,7 +128,7 @@ archive_data() {
     return 0
   fi
 
-  eval "$PSQL -c \"\\copy (SELECT * FROM request_logs WHERE $where) TO PROGRAM 'gzip > $archive_file' WITH CSV HEADER;\"" 2>/dev/null && \
+  eval "$PSQL -c \"\\copy (SELECT * FROM _request_logs WHERE $where) TO PROGRAM 'gzip > $archive_file' WITH CSV HEADER;\"" 2>/dev/null && \
     log_success "归档完成: $(du -h "$archive_file" | cut -f1) ($total 行)" || \
     log_error "归档失败"
 }
@@ -140,7 +140,7 @@ delete_old_data() {
   local cutoff
   cutoff=$(date -d "-${DELETE_DAYS} days" +%Y-%m-%d)
 
-  local count_sql="SELECT count(*) FROM request_logs WHERE created_at < '$cutoff'"
+  local count_sql="SELECT count(*) FROM _request_logs WHERE created_at < '$cutoff'"
   local total
   total=$(eval "$PSQL -c \"$count_sql\"" 2>/dev/null | tr -d ' ')
 
@@ -160,7 +160,7 @@ delete_old_data() {
   local deleted=0
   while :; do
     local batch
-    batch=$(eval "$PSQL -c \"DELETE FROM request_logs WHERE created_at < '$cutoff' AND ctid IN (SELECT ctid FROM request_logs WHERE created_at < '$cutoff' LIMIT 10000);\"" 2>/dev/null | tr -d ' ')
+    batch=$(eval "$PSQL -c \"DELETE FROM _request_logs WHERE created_at < '$cutoff' AND ctid IN (SELECT ctid FROM _request_logs WHERE created_at < '$cutoff' LIMIT 10000);\"" 2>/dev/null | tr -d ' ')
     deleted=$((deleted + 10000))
     log_info "  已删除: $deleted 行"
     [[ "$batch" -lt 10000 ]] && break

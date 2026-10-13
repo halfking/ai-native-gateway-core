@@ -72,7 +72,7 @@ func responsesChatFallbackPing(ctx context.Context, client *http.Client, apiKey,
 
 // responsesUnsupportedDetail assembles the human-readable annotation shared
 // by the three probe stacks, so node_probe_runs / model_probe_runs /
-// request_logs all tell the same story for one incident.
+// _request_logs all tell the same story for one incident.
 //
 // 2026-09-29 (审计二十一轮): chatBody 是上游原始响应体片段，会进入
 // model_probe_runs.error_message / node_probe_runs 等 admin 可见面（可能

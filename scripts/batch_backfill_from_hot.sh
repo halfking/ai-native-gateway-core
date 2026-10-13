@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Batch backfill script for Session V2 validation
-# Backfills multiple sessions from request_logs_bodies_hot table
+# Backfills multiple sessions from _request_logs_bodies_hot table
 
 set -euo pipefail
 

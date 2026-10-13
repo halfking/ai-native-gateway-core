@@ -28,7 +28,7 @@ func TestUpsertRequestLogBodiesMatchesBodyTableSchema(t *testing.T) {
 		}
 	}
 	for _, required := range []string{
-		"INSERT INTO request_logs_bodies_hot (request_id, ts, request_body, response_body, outbound_body)",
+		"INSERT INTO _request_logs_bodies_hot (request_id, ts, request_body, response_body, outbound_body)",
 		"SELECT $1, rl.ts,",
 		"ON CONFLICT (request_id) DO UPDATE",
 	} {

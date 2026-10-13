@@ -9,7 +9,7 @@ package bg
 //
 // 2026-10-06 真库实测（127.0.0.1:5432，全程只读）发现：
 //
-//	request_logs  cost_usd < 0  = 1,628 行，合计 -$4.79（2026-09-03 → 10-04）
+//	_request_logs  cost_usd < 0  = 1,628 行，合计 -$4.79（2026-09-03 → 10-04）
 //	usage_ledger  cost_usd < 0  = 1,299 行，合计 -$4.67
 //	全部满足 cache_read_tokens > prompt_tokens
 //	cache 占那批 token 的 96.2%（4,530,529 vs prompt 179,144）
@@ -41,7 +41,7 @@ import (
 //
 // 依赖清单（与检查查询的 FROM / JOIN 一一对应）：
 //
-//	request_logs  读 cost_usd / prompt_tokens / cache_read_tokens / ts
+//	_request_logs  读 cost_usd / prompt_tokens / cache_read_tokens / ts
 //	credentials   读 provider_id（provider 只为显示名，取不到也不影响判定）
 //
 // ★ 为什么 credentials 用脚手架而不是对象 SSOT：credential_model_bindings
@@ -50,7 +50,7 @@ import (
 func negativeCostFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
 
-	tables := []string{"request_logs", "credentials"}
+	tables := []string{"_request_logs", "credentials"}
 	var existing int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.tables
 		WHERE table_schema='public' AND table_name = ANY($1)`, tables).Scan(&existing); err != nil {
@@ -64,14 +64,14 @@ func negativeCostFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) 
 	// 直接 SKIP，人看到的是「通过」，实际一次都没跑。
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.WithoutCancel(ctx), `
-			DROP TABLE IF EXISTS public.request_logs;
+			DROP TABLE IF EXISTS public._request_logs;
 			DROP TABLE IF EXISTS public.credentials;`)
 	})
 
 	if _, err := pool.Exec(ctx, `
 		CREATE TABLE public.credentials (
 		    id bigserial PRIMARY KEY, provider_id bigint, label text);
-		CREATE TABLE public.request_logs (
+		CREATE TABLE public._request_logs (
 		    id bigserial PRIMARY KEY,
 		    credential_id bigint NOT NULL,
 		    outbound_model text,
@@ -84,7 +84,7 @@ func negativeCostFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) 
 
 	// ★ 量具自证：缺这一步，「夹具没建出来」会伪装成「断言红」，症状是
 	// 42P01 出现在第一行，人排查的方向是错的。
-	for _, obj := range []string{"request_logs", "credentials"} {
+	for _, obj := range []string{"_request_logs", "credentials"} {
 		var n int
 		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_class c
 			JOIN pg_namespace ns ON ns.oid = c.relnamespace
@@ -130,7 +130,7 @@ func TestRecordedCostIsNegative_findsPlantedRows(t *testing.T) {
 	// （窗口边界必须真的生效，否则「30 天」只是文案）。
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO public.credentials (id, label) VALUES (901, 'c-1'), (903, 'c-3');
-		INSERT INTO public.request_logs
+		INSERT INTO public._request_logs
 			(credential_id, outbound_model, prompt_tokens, cache_read_tokens, cost_usd, ts)
 		VALUES
 			(901, 'claude-via-relay',   41, 41550, -0.5576, now() - interval '1 day'),
@@ -150,7 +150,7 @@ func TestRecordedCostIsNegative_findsPlantedRows(t *testing.T) {
 
 	def := healthCheckDefByID(t, "recorded_cost_is_negative")
 	if !def.Optional {
-		t.Error("this check must be Optional: request_logs may be absent in an environment " +
+		t.Error("this check must be Optional: _request_logs may be absent in an environment " +
 			"that has not applied the logging migrations yet, and a missing table must not abort the round")
 	}
 
@@ -278,7 +278,7 @@ func TestRecordedCostIsNegative_healthyTableReportsNothing(t *testing.T) {
 
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO public.credentials (id, label) VALUES (902, 'c-ok');
-		INSERT INTO public.request_logs
+		INSERT INTO public._request_logs
 			(credential_id, outbound_model, prompt_tokens, cache_read_tokens, cost_usd, ts)
 		VALUES
 			(902, 'm1', 1000000,     0,  3.0000, now()),

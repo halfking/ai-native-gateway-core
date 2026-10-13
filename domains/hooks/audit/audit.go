@@ -62,7 +62,7 @@ type Event struct {
 }
 
 // maxTextContentBytes caps the reconstructed stream text per request. The
-// reconstructed body is emitted into request_logs.response_body so downstream
+// reconstructed body is emitted into _request_logs.response_body so downstream
 // auditors/queries can inspect the full assistant message. 2 MiB is large
 // enough for very long completions (≈ 500K tokens ≈ 2 MB) and still keeps
 // per-request memory bounded under high concurrency (100 concurrent captures ≈ 200 MiB).
@@ -199,7 +199,7 @@ type StreamCapture struct {
 	// QualityFlags accumulates tool_call quality issues detected during
 	// the stream (empty names, duplicate ids). Populated by the
 	// stream-side quality processor in relay/stream.go; merged into
-	// request_logs.quality_flags by relay/handler.go emitTelemetry.
+	// _request_logs.quality_flags by relay/handler.go emitTelemetry.
 	// Empty when quality_fix_mode='off' for the chosen provider.
 	QualityFlags []string
 	// QualityFixActions is the JSON-encoded per-flag action summary
@@ -235,7 +235,7 @@ type StreamCapture struct {
 	// survival / stream-recovery / empty-gate pipelines observe. Each
 	// entry describes the buffered bytes the attempt dropped before a
 	// transparent retry. The field is JSON-encoded into
-	// request_logs_hot.discard_events by the audit upsert path so
+	// _request_logs_hot.discard_events by the audit upsert path so
 	// post-mortem can correlate "why was a partial response dropped"
 	// with the surrounding request_log row.
 	DiscardEvents []DiscardEvent
@@ -482,7 +482,7 @@ func (sc *StreamCapture) Snapshot() (chunkCount, ttfbMs int, done, interrupted b
 }
 
 // ChunkCountersSnapshot returns the chunksSent and chunkErrors
-// counters as a 2-tuple for the request_logs row. Distinct from
+// counters as a 2-tuple for the _request_logs row. Distinct from
 // Snapshot() (which carries chunkCount/ttfbMs/done/checksum) so the
 // request_log_pipeline call site stays compact.
 //
@@ -589,7 +589,7 @@ func (sc *StreamCapture) RecordChunkError() {
 //
 // The truncation is rune-aware: cutting in the middle of a multi-byte UTF-8
 // sequence (e.g. Chinese / emoji) would produce invalid bytes that PostgreSQL
-// rejects with SQLSTATE 22021, dropping the entire request_logs row.  See
+// rejects with SQLSTATE 22021, dropping the entire _request_logs row.  See
 // incident 2026-06-11.
 func (sc *StreamCapture) appendText(s string) {
 	if s == "" {
@@ -899,13 +899,13 @@ func (sc *StreamCapture) SummaryAsMap() map[string]any {
 		m["quality_score"] = *sc.QualityScore
 	}
 	// 2026-06-23: structured tool_calls from streaming (migration 042).
-	// Emit as JSONB-compatible array for persistence in request_logs.tool_calls.
+	// Emit as JSONB-compatible array for persistence in _request_logs.tool_calls.
 	if len(sc.ToolCalls) > 0 {
 		m["tool_calls"] = sc.ToolCalls
 	}
 	// 2026-08-19: surface every discard event the survival / recovery /
 	// empty-gate paths recorded. The audit upsert pipeline forwards this
-	// into request_logs_hot.discard_events JSONB so post-mortem SQL can
+	// into _request_logs_hot.discard_events JSONB so post-mortem SQL can
 	// answer "which attempts were dropped, and why" without joining the
 	// application log.
 	if len(sc.DiscardEvents) > 0 {

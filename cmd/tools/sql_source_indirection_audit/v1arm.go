@@ -53,7 +53,7 @@ var createViewRE = regexp.MustCompile(`(?i)CREATE\s+(?:OR\s+REPLACE\s+)?(?:MATER
 // ⚠ §9.260：**只看 `sql/objects/views/` 是不完整的。**
 // 那 54 个 DDL 文件里只有 `request_logs_with_current_month` 与
 // `request_logs_bodies_with_current_month`；而真库里 `pg_class` 有 **4 个**
-// `request_logs*_with_current_month*` 视图，**全部含 v1 臂**。
+// `_request_logs*_with_current_month*` 视图，**全部含 v1 臂**。
 // 缺的两个 —— `…_without_customer_id` 与 `…_without_request_class_due_at` ——
 // **没有仓库 DDL 文件**：它们由 composer 在**运行时**建
 // （`db/request_logs_view_schema.go:128` / `:140`），

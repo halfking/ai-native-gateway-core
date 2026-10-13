@@ -49,10 +49,10 @@ func TestRequestLogContext_SetAutoDecisionCanonicalizesTierFailoverModels(t *tes
 // the 2026-06-26 client-request-id propagation works end-to-end inside
 // the streaming package: a failure entry produced by EmitFailure must
 // carry the client-supplied id on telemetry.RequestLogEntry.ClientRequestID
-// so request_logs.client_request_id is populated when the row is persisted.
+// so _request_logs.client_request_id is populated when the row is persisted.
 //
 // Regression context: the original bug let a client retry 5× with the
-// same X-Request-Id and produce 5 rows in request_logs sharing one
+// same X-Request-Id and produce 5 rows in _request_logs sharing one
 // request_id. The fix introduces client_request_id as a separate
 // column for the client value; this test guards that propagation.
 func TestPreferCapturedBody_UsesContextSnapshotWhenPrimaryMissing(t *testing.T) {

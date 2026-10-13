@@ -187,7 +187,7 @@ func TestIsToolUseCapable(t *testing.T) {
 // makes Xiaomi MiMo (catalog_code="xiaomi", protocol="openai-completions")
 // work — without it the Go gateway would fold MiMo's prior tool history
 // into "[调用工具 ...]" text, breaking the 50+ turn audit tasks the
-// agent runs on this model (see request_logs id 27998 from 2026-06-10).
+// agent runs on this model (see _request_logs id 27998 from 2026-06-10).
 func TestIsToolUseCapable_ProtocolFallback(t *testing.T) {
 	cases := []struct {
 		catalog string

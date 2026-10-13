@@ -28,7 +28,7 @@ package admin
 // 我先写了个正则分类器，**它自己有盲区**，而且盲区正好落在最要紧的地方：
 //
 //	① 别名假设成 `rb` ⇒ `cmd/compression-bench/main.go` 的
-//	   `JOIN request_logs_bodies b ON b.request_id = rl.request_id AND b.ts = rl.ts`
+//	   `JOIN _request_logs_bodies b ON b.request_id = rl.request_id AND b.ts = rl.ts`
 //	   被判成「单键 JOIN」——而它是 B 类里最典型的那个。
 //	② 「两次顺序查询」只认 `WHERE request_id = $1` ⇒ 带 `rl.` 前缀的变体
 //	   （`admin/body_resolver.go`）被漏掉。
@@ -183,8 +183,8 @@ var v1BodiesReaderShapes = map[string]bodyReaderShape{
 	// 原条目自身的「换源前先定口径」警告，本轮已按 §5.9 拍板口径落地）。
 	"cmd/compression-bench/main.go": {
 		Shape: shapeJoinsOnTs,
-		Reason: ":237 `JOIN request_logs_bodies b ON b.request_id = rl.request_id AND b.ts = rl.ts`，" +
-			"且读的是**基表** `request_logs_bodies`（不经 view）。压测工具，" +
+		Reason: ":237 `JOIN _request_logs_bodies b ON b.request_id = rl.request_id AND b.ts = rl.ts`，" +
+			"且读的是**基表** `_request_logs_bodies`（不经 view）。压测工具，" +
 			"量的是 v1 自身的压缩行为；换源后它量的就不再是「v1 的压缩率」。" +
 			"⇒ 它是**基准工具**，retire v1 时应随 v1 一起退役或显式改口径。",
 	},
@@ -193,7 +193,7 @@ var v1BodiesReaderShapes = map[string]bodyReaderShape{
 	"admin/logs.go": {
 		Shape: shapeTwoStepHotThenView,
 		Reason: "`fetchRequestOutboundBody` / `fetchRequestBodies` 各自是**两次顺序查询**：" +
-			"先 `FROM request_logs_bodies_hot`（3s 超时，命中即返回），" +
+			"先 `FROM _request_logs_bodies_hot`（3s 超时，命中即返回），" +
 			"未命中再 `FROM request_logs_bodies_with_current_month`（20s）。" +
 			"文件注释明写这个分层是刻意的（“stage 2: columnar 月分区（可能慢，给 20s ctx）”）。" +
 			"⇒ 换成 helper 的 UNION 子查询会让**每条**请求都去扫分区父表，" +
@@ -263,19 +263,19 @@ var v1BodiesReaderShapes = map[string]bodyReaderShape{
 
 	"domains/hooks/goal/history_store.go": {
 		Shape:  shapeHelperCompatible,
-		Reason: "`:85` `LEFT JOIN request_logs_bodies rb`（基表），无 ts。",
+		Reason: "`:85` `LEFT JOIN _request_logs_bodies rb`（基表），无 ts。",
 	},
 }
 
-// bodiesAliasRE 从 `JOIN request_logs_bodies… <别名> ON` 里**解析出别名**。
+// bodiesAliasRE 从 `JOIN _request_logs_bodies… <别名> ON` 里**解析出别名**。
 //
 // ⚠ 别名不能假设成 `rb`：cmd/compression-bench/main.go 用的是 `b`。
 // 我第一版的分类器就死在这里 —— 它把一个 ts 等值 JOIN 判成了单键 JOIN。
 var (
-	// bodiesJoinAliasRE：`JOIN request_logs_bodies… <别名> ON …`
+	// bodiesJoinAliasRE：`JOIN _request_logs_bodies… <别名> ON …`
 	bodiesJoinAliasRE = regexp.MustCompile(
-		`(?i)\bJOIN\s+(?:\w+\.)?request_logs_bodies\w*\s+(\w+)\s+ON\b`)
-	// bodiesFromAliasRE：`FROM request_logs_bodies… <别名>`（**无** ON）。
+		`(?i)\bJOIN\s+(?:\w+\.)?_request_logs_bodies\w*\s+(\w+)\s+ON\b`)
+	// bodiesFromAliasRE：`FROM _request_logs_bodies… <别名>`（**无** ON）。
 	//
 	// ⚠ 第一版只有 JOIN 形态，于是 `admin/session_bodies_batch.go` 的
 	// `FROM request_logs_bodies_with_current_month rb` 解析不出别名 ——
@@ -283,10 +283,10 @@ var (
 	// 但让量具看不见一个真实读方比看见它更糟：看不见就永远不会被判。
 	// ⇒ 补上 FROM 形态。**不是放宽判据**，是让解析器覆盖另一种同样无歧义的写法。
 	//
-	// 排除关键字是承重的：没有它，`FROM request_logs_bodies_hot WHERE …`
+	// 排除关键字是承重的：没有它，`FROM _request_logs_bodies_hot WHERE …`
 	// 会把 `WHERE` 当成别名，于是后面每个 `WHERE.<col>` 都算成列引用。
 	bodiesFromAliasRE = regexp.MustCompile(
-		`(?i)\bFROM\s+(?:\w+\.)?request_logs_bodies\w*\s+(\w+)\b`)
+		`(?i)\bFROM\s+(?:\w+\.)?_request_logs_bodies\w*\s+(\w+)\b`)
 	sqlKeywordAlias = map[string]bool{
 		"where": true, "on": true, "join": true, "left": true, "right": true,
 		"inner": true, "outer": true, "full": true, "cross": true, "limit": true,
@@ -371,12 +371,12 @@ func measureBodiesShape(t *testing.T, root, rel string) (m measuredBodiesShape, 
 	sort.Strings(m.outsideOf)
 
 	// 两次顺序查询：同一文件里同时出现 hot 与 view 两个 bodies 源，各自带 WHERE。
-	hotLeg := regexp.MustCompile(`(?i)FROM\s+request_logs_bodies_hot\b`).MatchString(src)
+	hotLeg := regexp.MustCompile(`(?i)FROM\s+_request_logs_bodies_hot\b`).MatchString(src)
 	viewLeg := regexp.MustCompile(`(?i)FROM\s+request_logs_bodies_with_current_month\b`).MatchString(src)
 	m.twoStepHotView = hotLeg && viewLeg
 
 	m.sizeOnly = strings.Contains(src, "pg_column_size") ||
-		regexp.MustCompile(`(?i)count\(\*\)\s+FROM\s+request_logs_bodies`).MatchString(src) ||
+		regexp.MustCompile(`(?i)count\(\*\)\s+FROM\s+_request_logs_bodies`).MatchString(src) ||
 		regexp.MustCompile(`(?i)COUNT\(DISTINCT\s+request_id\)`).MatchString(src)
 	m.readsContent = false
 	for _, c := range []string{"request_body", "response_body", "outbound_body"} {
@@ -607,7 +607,7 @@ func TestV1BodiesScanIncludesSwitchConsumers(t *testing.T) {
 // 同一行的情形是它的子集，一并覆盖。
 //
 // 这道门防的是**部分迁移**：把一个文件加了 `db.SessionBodiesSourceSQL()` ，
-// 却忘了把另一处 `LEFT JOIN request_logs_bodies…` 换掉。
+// 却忘了把另一处 `LEFT JOIN _request_logs_bodies…` 换掉。
 //
 // 失败形态很具体：那个文件在**切换层**这条路上被算成读方（通过消费点并入），
 // 同时它的残留字面量让 `scanV1BodiesReaders` 也数到它 ⇒ 总体上「有它」，

@@ -103,7 +103,7 @@ func TestSlidingWindowBatch_Validation(t *testing.T) {
 }
 
 func TestSlidingWindowBatch_PerItemErrorsWithoutDB(t *testing.T) {
-	// No redis / no db: request_logs fallback fails for valid pairs; missing
+	// No redis / no db: _request_logs fallback fails for valid pairs; missing
 	// fields are rejected before load. Batch must still return 200 with
 	// per-item error strings (not a whole-batch 500).
 	m := &CredentialMonitorHandlers{h: &Handler{}}

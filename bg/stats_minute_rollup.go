@@ -166,11 +166,11 @@ func (w *StatsMinuteRollup) rollupWindow(ctx context.Context, since, until time.
 //   - keys that existed only because of probe traffic are no longer produced,
 //     and the probe-aware retire pass deletes them.
 //
-// It is derived data: request_logs remains the source of truth, so an
+// It is derived data: _request_logs remains the source of truth, so an
 // interrupted run is fixed by running it again.
 //
 // Day chunks are deliberate. A single pass over the whole retention window
-// scans months of request_logs and blows past the 2-minute rollup budget (the
+// scans months of _request_logs and blows past the 2-minute rollup budget (the
 // scheduled path would fail and retry forever); one day per pass keeps each
 // statement bounded and the run resumable.
 func (w *StatsMinuteRollup) RebuildRangeStats(ctx context.Context, from, to time.Time) error {
@@ -213,7 +213,7 @@ func (w *StatsMinuteRollup) RebuildRangeStatsDetached(from, to time.Time) error 
 }
 
 // rollupDimQueries drives rollupDims. client_ip（R57 B7）是真源客户端 IP 维度
-// （341 起落在 request_logs[_hot].client_ip，经 740 view 链投影）；virtual_ip
+// （341 起落在 _request_logs[_hot].client_ip，经 740 view 链投影）；virtual_ip
 // 是 identity 派生的假名 10.x，保留为遗留对照维度（同 client_profile/agent_name
 // 先例），看板已切到 client_ip。
 var rollupDimQueries = []struct {
@@ -223,7 +223,7 @@ var rollupDimQueries = []struct {
 	{"client_profile", `COALESCE(NULLIF(r.client_profile, ''), '__unknown__')`},
 	// 2026-09-03: aggregate by agent_name (the canonical client-type
 	// identifier written by telemetry.ExtractAgentName and persisted on
-	// request_logs_hot.agent_name). The dashboard 'clients' pie reads
+	// _request_logs_hot.agent_name). The dashboard 'clients' pie reads
 	// from this dim; client_profile is retained as a legacy dim for
 	// operators comparing old vs new tagging.
 	{"agent_name", `COALESCE(NULLIF(r.agent_name, ''), '__unknown__')`},
@@ -294,7 +294,7 @@ func (w *StatsMinuteRollup) rollupMain(ctx context.Context, since, until time.Ti
 	if err != nil {
 		return err
 	}
-	// 整键替换只盖住视图仍会产出的键。累加器按 request_logs.canonical_id
+	// 整键替换只盖住视图仍会产出的键。累加器按 _request_logs.canonical_id
 	// 写入的键，视图若改走 session_turns 的空 canonical，会留在同一闭分钟里
 	// 被英雄卡再加一次。闭分钟里视图不再产出的键这里删掉。
 	return w.retireClosedMain(ctx, since, until)

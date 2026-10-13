@@ -55,7 +55,7 @@ func autoCoolHotTablesPresent(t *testing.T, pool *pgxpool.Pool) bool {
 	var ok bool
 	if err := pool.QueryRow(context.Background(),
 		`SELECT to_regclass('public.session_turns_hot') IS NOT NULL
-		     AND to_regclass('public.request_logs_hot') IS NOT NULL
+		     AND to_regclass('public._request_logs_hot') IS NOT NULL
 		     AND to_regclass('public.candidate_failure_logs_hot') IS NOT NULL`,
 	).Scan(&ok); err != nil {
 		t.Fatalf("probe hot tables: %v", err)
@@ -86,7 +86,7 @@ func autoCoolWinHotSQL(window string) string {
 		        WHERE t.ts >= now() - interval '` + window + `'
 		        UNION ALL
 		        SELECT r.credential_id, r.request_status, r.error_kind
-		        FROM request_logs_hot r
+		        FROM _request_logs_hot r
 		        WHERE r.ts >= now() - interval '` + window + `'
 		          AND NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = r.request_id)
 		    ) cand
@@ -171,7 +171,7 @@ func TestAutoCoolHotWindow_RealDB(t *testing.T) {
 	if strings.Contains(plan, "with_current_month") {
 		t.Fatalf("auto-cool win 计划触碰 canonical 视图（应只读 hot 双写表）:\n%s", plan)
 	}
-	for _, tbl := range []string{"session_turns_hot", "request_logs_hot"} {
+	for _, tbl := range []string{"session_turns_hot", "_request_logs_hot"} {
 		if !strings.Contains(plan, tbl) {
 			t.Fatalf("auto-cool win 计划缺 %s 臂:\n%s", tbl, plan)
 		}

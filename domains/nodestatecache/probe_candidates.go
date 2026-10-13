@@ -3,7 +3,7 @@ package nodestatecache
 import "time"
 
 // RecentSuccessLookup 36h 成功回看接口（R4.4 恢复扫描复用
-// request_logs[_hot] 的查询，由集成者实现）。nil 视为条件满足。
+// _request_logs[_hot] 的查询，由集成者实现）。nil 视为条件满足。
 type RecentSuccessLookup interface {
 	HadSuccessWithin(ref NodeRef, window time.Duration, now time.Time) bool
 }

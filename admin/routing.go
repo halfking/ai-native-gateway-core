@@ -2667,7 +2667,7 @@ const defaultPopularModelsLookupWindow = 7 * 24 * time.Hour
 // scan is bounded by a ts index range rather than a `NOW() - INTERVAL`
 // predicate that cannot prune.
 //
-// 2026-10-13 S3 波 3（停写切换）：源从 request_logs_hot 换到会话族原生源
+// 2026-10-13 S3 波 3（停写切换）：源从 _request_logs_hot 换到会话族原生源
 // （db.SessionFamilyTurnsSourceSQL：hot ∪ parent 两腿、带 734 details 特征
 // 层）。S4 停写后 v1 hot 只会排空——usage 腿若留在那里，「凭据路由模型」
 // picker 的 7 天热度会在 7 天内静默退榜。2026-08-26 的视图禁令（canonical
@@ -2716,7 +2716,7 @@ LIMIT 10`
 // by cardinality desc, capped at topLivePopularLimit.
 //
 // This is the fast path that lets the dashboard's "凭据路由模型" picker
-// surface *what is being routed right now* without touching the request_logs
+// surface *what is being routed right now* without touching the _request_logs
 // tables at all. Best-effort: errors are swallowed and an empty slice
 // is returned so callers fall back to the SQL path.
 func livePopularModels(ctx context.Context, rdb *redis.Client, limit int) []popularModelEntry {

@@ -29,7 +29,7 @@ func TestTodaySuccessProbeCadenceIsBounded(t *testing.T) {
 func TestTodaySuccessProbeSQLRecoveryOnly(t *testing.T) {
 	sql := todaySuccessProbeSQL()
 	for _, marker := range []string{
-		"request_logs_hot",
+		"_request_logs_hot",
 		"now() - interval '24 hours'",
 		"rl.success = TRUE",
 		"NOT COALESCE('probe' = ANY(rl.quality_flags), FALSE)",

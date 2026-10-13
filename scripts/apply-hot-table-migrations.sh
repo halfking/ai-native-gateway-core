@@ -135,7 +135,7 @@ main() {
 
   check_db_connection
 
-  for entry in "348:tool_usage_stats" "349:credit_ledger" "350:request_logs_bodies"; do
+  for entry in "348:tool_usage_stats" "349:credit_ledger" "350:_request_logs_bodies"; do
     num="${entry%%:*}"
     tbl="${entry##*:}"
     echo ""
@@ -165,7 +165,7 @@ main() {
   echo "📊 摘要:"
   echo "  - tool_usage_stats → hot table 架构"
   echo "  - credit_ledger → hot table 架构"
-  echo "  - request_logs_bodies → hot table 架构"
+  echo "  - _request_logs_bodies → hot table 架构"
   echo ""
 }
 

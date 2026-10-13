@@ -5,11 +5,11 @@
 // 背景：migration 823 给 session_turns / session_turns_hot 加了 request_status
 // TEXT 列，写入路径（turn_writer / sessionv2mirror）已透传，所以**新增行 100%
 // 正确**。但迁移明确「不回填」，历史 1,688,629 行全部为 NULL。而这批标签的
-// 唯一真源是 v1 request_logs——它一旦退役，rate_limited（394,614 行）与
+// 唯一真源是 v1 _request_logs——它一旦退役，rate_limited（394,614 行）与
 // success/failure/in_progress 的区分就永久不可恢复（ResolveRequestStatus
 // 永远不会返回 rate_limited，无法从 success/error_kind 推导）。
 //
-// 本 job 做的事：把 request_logs.request_status 复制到
+// 本 job 做的事：把 _request_logs.request_status 复制到
 // session_turns.request_status。仅此一件事——不重算、不猜测、不改其他列。
 //
 // 为什么必须是后台 job 而不是迁移：
@@ -19,9 +19,9 @@
 //
 // join 键只用 request_id：
 //
-//	实测 request_logs.request_id 唯一（2,175,834 行 = 2,175,834 distinct），
+//	实测 _request_logs.request_id 唯一（2,175,834 行 = 2,175,834 distinct），
 //	所以 join 是 1:1。**不要**再加 ts 之类的冗余条件——那只会让本可命中的行
-//	落空。实测 1,520,630 / 1,688,629（90.04%）行在 request_logs 里有孪生行。
+//	落空。实测 1,520,630 / 1,688,629（90.04%）行在 _request_logs 里有孪生行。
 //
 // 剩下 ~167,999 行没有 v1 孪生（v1 停写窗口的产物；R41 审计 R-11 订正：
 // 早期注释写 168,106，与精确值差 107），结构性无法回填，只能靠前向写入
@@ -47,7 +47,7 @@
 //     `partition_date >= (now() - interval '7 days')::date`。可回填候选的
 //     存在窗口 = 「823 之后写入 + promote 保留期（8h）」——小时级；7 天是
 //     ~21 倍安全系数的滚动窗口。窗外行 = 823 之前的 v1 历史行（252 实测
-//     793,519 行，全部 partition_date ≤ 2026-09-30，且 request_logs 源行已
+//     793,519 行，全部 partition_date ≤ 2026-09-30，且 _request_logs 源行已
 //     被 TTL 清除——头注 26-29 行的「结构性无法回填」族），排除它们不改变
 //     可回填集合，却把「证明无候选」的空扫从 pkey 全程（79.3 万 NULL 行
 //     × JOIN 探测，30s rolconfig 必杀，252 实测 103 击杀/日）缩到当月分区
@@ -56,10 +56,10 @@
 //     gauge（不带窗口，度量全部可回填行）保持 >0，release gate 诚实卡住
 //     而不是静默放行——这正是期望的保守行为，窗口宽度以此为界是安全的。
 //
-// 退役终态（request_logs 被删）：
+// 退役终态（_request_logs 被删）：
 //
-//	request_logs 退役后本 job 无源可抄，属**正常终态**而非故障。probe 检测到
-//	to_regclass('public.request_logs') IS NULL 时，记一条 Info 日志 + 一个
+//	_request_logs 退役后本 job 无源可抄，属**正常终态**而非故障。probe 检测到
+//	to_regclass('public._request_logs') IS NULL 时，记一条 Info 日志 + 一个
 //	retired 计数，然后**退出 run 循环**——不再重试、不再每 tick 刷 ERROR。
 //	同理，823 未跑（session_turns 无该列）也安静退出。
 package v2
@@ -88,7 +88,7 @@ import (
 var requestStatusBackfillTotal = promauto.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "llmgw_session_turn_request_status_backfill_total",
-		Help: "Session turns whose NULL request_status was copied from the retired request_logs (label = outcome)",
+		Help: "Session turns whose NULL request_status was copied from the retired _request_logs (label = outcome)",
 	},
 	[]string{"result"},
 )
@@ -118,7 +118,7 @@ var requestStatusBackfillDuration = promauto.NewHistogram(
 var requestStatusBackfillRemaining = promauto.NewGauge(
 	prometheus.GaugeOpts{
 		Name: "llmgw_session_turn_request_status_backfill_remaining_rows",
-		Help: "Session turns still awaiting request_status backfill (NULL locally, joinable v1 twin with a non-NULL label). Sampled when a drain finds no candidates; -1 when the count query failed. Retirement precondition per decision sheet D9 clause 4: this must reach 0 (or an explicitly accepted floor) before request_logs is dropped.",
+		Help: "Session turns still awaiting request_status backfill (NULL locally, joinable v1 twin with a non-NULL label). Sampled when a drain finds no candidates; -1 when the count query failed. Retirement precondition per decision sheet D9 clause 4: this must reach 0 (or an explicitly accepted floor) before _request_logs is dropped.",
 	},
 )
 
@@ -142,7 +142,7 @@ const (
 	sessionRequestStatusBackfillMaxRate = 1000
 )
 
-// errRequestStatusSourceRetired marks the terminal state: request_logs is gone
+// errRequestStatusSourceRetired marks the terminal state: _request_logs is gone
 // (retirement landed) or session_turns lacks request_status (migration 823
 // absent). Neither is a retryable failure, so run() stops instead of looping.
 var errRequestStatusSourceRetired = errors.New("request_status backfill source retired")
@@ -161,7 +161,7 @@ type requestStatusBackfillDB interface {
 
 // requestStatusBackfillRow is one candidate turn: the id/partition_date pair
 // that addresses the row in the partitioned parent, plus the request_id whose
-// twin row in request_logs carries the authoritative label.
+// twin row in _request_logs carries the authoritative label.
 type requestStatusBackfillRow struct {
 	id            int64
 	partitionDate time.Time
@@ -337,7 +337,7 @@ func (b *sessionRequestStatusBackfill) run(ctx context.Context) {
 }
 
 // sourceAvailable reports whether there is still something to copy FROM and TO:
-// request_logs must exist and session_turns must carry request_status (823).
+// _request_logs must exist and session_turns must carry request_status (823).
 // A false return is the terminal retirement state; an error is retryable.
 func (b *sessionRequestStatusBackfill) sourceAvailable(ctx context.Context) (bool, error) {
 	tx, err := b.db.Begin(ctx)
@@ -399,7 +399,7 @@ func (b *sessionRequestStatusBackfill) sampleRemaining(ctx context.Context) {
 		return
 	}
 	// Same GUC prologue as the batch path. The count walks session_turns and
-	// request_logs — both RLS-protected today only because the gateway role is
+	// _request_logs — both RLS-protected today only because the gateway role is
 	// superuser/BYPASSRLS (§9.138). D9 clause 2 bundles retirement with
 	// tightening the app role, and a bare-pool count would then silently read
 	// 0 (= release-gate PASS) instead of failing loudly.
@@ -435,7 +435,7 @@ func (b *sessionRequestStatusBackfill) sampleRemaining(ctx context.Context) {
 	// the matview refresher's mvRefreshStatementTimeout pin; the third
 	// set_config argument keeps it transaction-local so nothing leaks back to
 	// the pool. The full-window reservoir scan (793k NULL rows × per-row
-	// request_logs partition probes on 252) needs the whole budget: 849's
+	// _request_logs partition probes on 252) needs the whole budget: 849's
 	// covering partial index trims the t side to index-only, and what remains
 	// is the JOIN probe count itself.
 	if _, err := tx.Exec(ctx,
@@ -476,7 +476,7 @@ func (b *sessionRequestStatusBackfill) sampleRemaining(ctx context.Context) {
 //
 // It covers BOTH storage surfaces on purpose. The session family has two
 // (domains/session/v2 writes only session_turns_hot; promote later rotates cold
-// rows into the partitioned parent), and this gauge answers "is request_logs
+// rows into the partitioned parent), and this gauge answers "is _request_logs
 // retirable yet?" — a question about **every row that will still exist after
 // retirement**, not just the ones that have already been rotated. A gauge scoped
 // to the parent alone reads 0 while session_turns_hot is full of NULL labels,
@@ -486,7 +486,7 @@ func (b *sessionRequestStatusBackfill) sampleRemaining(ctx context.Context) {
 //
 // R31 (2026-10-10, 252 审计): the exact window-less count is only affordable
 // if the physical plan is. On 252 it wasn't: 793k permanent-NULL rows ×
-// per-row request_logs partition probes blew past the role's 30s
+// per-row _request_logs partition probes blew past the role's 30s
 // statement_timeout ~3/h forever, the gauge sat at -1 and the release gate
 // was unmeasurable. 849 (covering partial index on (request_id)) plus the
 // sampleRemaining SET LOCAL budget lift make the same SQL completable —
@@ -498,12 +498,12 @@ func (b *sessionRequestStatusBackfill) sampleRemaining(ctx context.Context) {
 const sessionRequestStatusRemainingSQL = `
 	SELECT (SELECT count(*)
 	          FROM public.session_turns t
-	          JOIN public.request_logs l ON l.request_id = t.request_id
+	          JOIN public._request_logs l ON l.request_id = t.request_id
 	         WHERE t.request_status IS NULL
 	           AND l.request_status IS NOT NULL)
 	     + (SELECT count(*)
 	          FROM public.session_turns_hot t
-	          JOIN public.request_logs l ON l.request_id = t.request_id
+	          JOIN public._request_logs l ON l.request_id = t.request_id
 	         WHERE t.request_status IS NULL
 	           AND l.request_status IS NOT NULL)`
 
@@ -516,7 +516,7 @@ const sessionRequestStatusRemainingSQL = `
 // half-applied 823 (parent only) would make the gauge raise "column does not
 // exist" on every tick instead of degrading quietly.
 const sessionRequestStatusSourceProbeSQL = `
-	SELECT to_regclass('public.request_logs') IS NOT NULL,
+	SELECT to_regclass('public._request_logs') IS NOT NULL,
 	       EXISTS (SELECT 1 FROM pg_attribute
 	                WHERE attrelid = to_regclass('public.session_turns')
 	                  AND attname = 'request_status'
@@ -532,7 +532,7 @@ const sessionRequestStatusSourceProbeSQL = `
 // has no partial index. partition_date rides along so the UPDATE prunes to the
 // owning partition via session_turns_pkey.
 //
-// The join is on request_id ONLY — request_logs.request_id is unique (measured
+// The join is on request_id ONLY — _request_logs.request_id is unique (measured
 // 2,175,834 = 2,175,834 distinct), so the join cannot fan out. request_status
 // IS NOT NULL on the source side keeps the 46 NULL-label v1 rows out of the
 // candidate set (writing NULL would be a no-op that never satisfies the guard
@@ -569,7 +569,7 @@ const sessionRequestStatusSourceProbeSQL = `
 const sessionRequestStatusCandidateSQL = `
 	SELECT t.id, t.partition_date, t.tenant_id, t.request_id
 	FROM public.session_turns t
-	JOIN public.request_logs l ON l.request_id = t.request_id
+	JOIN public._request_logs l ON l.request_id = t.request_id
 	WHERE t.id > $1
 	  AND t.partition_date >= (now() - interval '7 days')::date
 	  AND t.request_status IS NULL
@@ -578,7 +578,7 @@ const sessionRequestStatusCandidateSQL = `
 	LIMIT $2`
 
 // processBatch claims up to batchSize joinable NULL turns in one transaction and
-// copies their request_status from request_logs in a single guarded UPDATE.
+// copies their request_status from _request_logs in a single guarded UPDATE.
 // The guard makes it idempotent under concurrent replicas and across restarts.
 func (b *sessionRequestStatusBackfill) processBatch(ctx context.Context) (int, error) {
 	tx, err := b.db.Begin(ctx)
@@ -711,7 +711,7 @@ func execRequestStatusUpdate(ctx context.Context, tx pgx.Tx, batch []requestStat
 // The FROM-VALUES list carries each row's (id, partition_date) so the
 // partitioned parent prunes to the owning partition's pkey
 // (session_turns_pkey = (id, partition_date)) instead of touching all six.
-// The label itself comes from request_logs (l.request_status), never from the
+// The label itself comes from _request_logs (l.request_status), never from the
 // VALUES tuple, so the copy has exactly one source of truth.
 func buildRequestStatusUpdateSQL(batch []requestStatusBackfillRow) (string, []any) {
 	var sb strings.Builder
@@ -726,7 +726,7 @@ func buildRequestStatusUpdateSQL(batch []requestStatusBackfillRow) (string, []an
 		args = append(args, r.id, r.partitionDate, r.requestID)
 	}
 	sb.WriteString(") AS v(id, partition_date, request_id) ")
-	sb.WriteString("JOIN public.request_logs l ON l.request_id = v.request_id ")
+	sb.WriteString("JOIN public._request_logs l ON l.request_id = v.request_id ")
 	sb.WriteString("WHERE t.id = v.id AND t.partition_date = v.partition_date ")
 	sb.WriteString("AND t.request_status IS NULL AND l.request_status IS NOT NULL")
 	return sb.String(), args

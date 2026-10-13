@@ -1,6 +1,6 @@
 // bg/passive_probe_listener.go — v6 (2026-06-22) Layer 5 passive observer
 //
-// Listens to request_logs.error_kind every 30s, applies the secondary
+// Listens to _request_logs.error_kind every 30s, applies the secondary
 // verification rule (consecutive >= 3 or error_rate >= 0.6 with total >= 5),
 // records findings in passive_probe_state, and after the 5-minute reviewing
 // window resolves the credential: if still failing → mark unreachable;
@@ -32,7 +32,7 @@ var transientErrorKinds = []string{
 	"transient", "timeout", "network", "concurrent", "stream_timeout", "upstream_down",
 }
 
-// PassiveProbeListener scans request_logs every pollInterval for new errors
+// PassiveProbeListener scans _request_logs every pollInterval for new errors
 // and applies the secondary-verification trigger.
 type PassiveProbeListener struct {
 	db           *pgxpool.Pool
@@ -114,7 +114,7 @@ func (l *PassiveProbeListener) resetCountersOnSuccess(ctx context.Context) {
 		SET consecutive_count = 0
 		FROM (
 			SELECT DISTINCT credential_id, COALESCE(outbound_model, client_model) AS raw_model_name
-			-- 2026-09-10 minimax-prod-v2 incident: the bare request_logs
+			-- 2026-09-10 minimax-prod-v2 incident: the bare _request_logs
 			-- parent only holds cold rows (max(ts) was a full day stale on
 			-- 154), so recent successes were invisible and "consecutive"
 			-- streaks never reset. pollNewErrors already reads the
@@ -138,7 +138,7 @@ func (l *PassiveProbeListener) resetCountersOnSuccess(ctx context.Context) {
 	}
 }
 
-// pollNewErrors scans request_logs for recent failures and updates
+// pollNewErrors scans _request_logs for recent failures and updates
 // passive_probe_state counters.
 //
 // Design: every poll cycle (30s), we count errors from the last 5 minutes
@@ -223,7 +223,7 @@ func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 		           COALESCE(outbound_model, client_model) AS raw_model_name,
 		           COUNT(*) AS total
 		    -- 2026-09-10: same cold-parent staleness as resetCountersOnSuccess —
-		    -- recent traffic lives in request_logs_hot, which only the
+		    -- recent traffic lives in _request_logs_hot, which only the
 		    -- current-month surface exposes.
 		    -- R50: probe traffic excluded so the error_rate denominator is
 		    -- business traffic only (consistent with Step 1 above).
@@ -389,11 +389,11 @@ func (l *PassiveProbeListener) reviewResolution(ctx context.Context) {
 	for _, p := range toResolve {
 		// Check if there was at least one success for this (credential, model)
 		// pair during the reviewing window. If so, the credential recovered.
-		// Use 6 minutes (not 5) to cover async telemetry lag — request_logs
+		// Use 6 minutes (not 5) to cover async telemetry lag — _request_logs
 		// rows may arrive a few seconds after the actual response.
 		// 2026-09-10 minimax-prod-v2 incident: the success check ran against
-		// the cold request_logs parent, so it saw ZERO successes for any
-		// recent window while request_logs_hot held 472 successes for
+		// the cold _request_logs parent, so it saw ZERO successes for any
+		// recent window while _request_logs_hot held 472 successes for
 		// (cred 21, MiniMax-M3) at 2026-09-10 12:57 — the review then marked
 		// a demonstrably healthy credential unreachable right after the
 		// operator force-enabled it. Read the current-month surface (the

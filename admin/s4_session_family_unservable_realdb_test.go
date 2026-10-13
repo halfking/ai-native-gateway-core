@@ -38,11 +38,11 @@ package admin
 // 真库 7 天实测（2026-10-04）：
 //
 //	session_turns ∪ session_turns_hot：31,274 轮，is_final_success 非空 **0**
-//	request_logs：                 73,264 行，is_final_success 非空 **9,614**
+//	_request_logs：                 73,264 行，is_final_success 非空 **9,614**
 //
 // 写侧已定位：`claimSessionFinalSuccess`
 // （domains/hooks/observability/telemetry/client.go:2711 起）只 UPDATE
-// `request_logs_hot`，session 族**没有任何等价写方**。读路已被
+// `_request_logs_hot`，session 族**没有任何等价写方**。读路已被
 // `session_final_success_readpath_realdb_test.go` 的阳性对照证明是好的。
 // ⇒ 这是**写侧缺口**，补它属生产行为改动（决策表 D28），本轮不改。
 
@@ -149,7 +149,7 @@ func TestS4SessionFamilyCanServeUnservableColumns(t *testing.T) {
 	t.Fatalf("S4 硬前置未达成：%s\n"+
 		"这些列在 session 臂上**一行都供不出**，而 v1 臂仍有值 —— 停写后读它们的\n"+
 		"读点会拿到「有行、该列为空」或直接查不到，且没有任何错误信号。\n"+
-		"已定位：is_final_success 的写侧只 UPDATE request_logs_hot，session 族无等价写方\n"+
+		"已定位：is_final_success 的写侧只 UPDATE _request_logs_hot，session 族无等价写方\n"+
 		"（读路已由 session_final_success_readpath_realdb_test.go 的阳性对照证明是好的）。\n"+
 		"处置属生产行为改动 —— 决策表 D28，本轮只刻画不改行为。",
 		strings.Join(unserved, "\n  "))

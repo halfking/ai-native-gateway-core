@@ -10,9 +10,9 @@
 //	     按 pack_id 拉取已导入的迁移包（供目标主机 manager/plugin 拉取）
 //
 // 设计要点：
-//   - 复用 request_logs + request_logs_bodies + 压缩链列（已天然落库）
+//   - 复用 _request_logs + _request_logs_bodies + 压缩链列（已天然落库）
 //   - 复用 session_summaries（自动聚合摘要）
-//   - 复用 request_logs.attachments（JSONB 附件元数据）
+//   - 复用 _request_logs.attachments（JSONB 附件元数据）
 //   - RLS 租户隔离（withTenantTx）
 //   - 附件走 CloudReve URL（files.itestu.cn）：导出时只放元数据 + path，
 //     由 Pocket 端上传 CloudReve 后回填 cloudreve_url（避免 gateway 依赖 CloudReve 凭据）
@@ -199,7 +199,7 @@ func (api *SessionExportAPI) handleExport(w http.ResponseWriter, r *http.Request
 	writeExportJSON(w, http.StatusOK, pack)
 }
 
-// buildExport JOIN request_logs + bodies + summaries + attachments，组装迁移包。
+// buildExport JOIN _request_logs + bodies + summaries + attachments，组装迁移包。
 //
 // sessionExportMessagesSQL is factored out so the integration gate can execute
 // this exact text against a real database. Two fatal defects lived in this

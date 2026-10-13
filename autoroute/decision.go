@@ -19,7 +19,7 @@ import (
 // relay/handler.go to:
 //  1. Substitute the model field with ChosenModel
 //  2. Add X-Gw-Auto-Decision header
-//  3. Persist auto_decision JSONB to request_logs
+//  3. Persist auto_decision JSONB to _request_logs
 type Decision struct {
 	// ChosenModel is the canonical_name of the winning credential's model.
 	// The relay substitutes this into the request body's "model" field
@@ -109,7 +109,7 @@ type Decision struct {
 	// 仅 AUTO_ROLE_ROUTING_ENABLED 开启时填充（无论是否命中提升）；
 	// flag-off / 无角色信息时保持零值 + omitempty，序列化字节与
 	// 特性加入前一致。经 decisionToWire 进 X-Gw-Auto-Decision 头与
-	// request_logs.auto_decision JSONB。
+	// _request_logs.auto_decision JSONB。
 	SessionRole string `json:"session_role,omitempty"`
 	TaskKind    string `json:"task_kind,omitempty"`
 }
@@ -458,7 +458,7 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 					// CacheReused，V2 自 0662c2ba9（2026-06-29）起置——两条路径
 					// 在同一个 commit 里分叉，V1 侧至今未补。后果不是"少个字段"：
 					// CacheReused 无 omitempty，经 autoRouteDecision 落进
-					// X-Gw-Auto-Decision 与 request_logs.auto_decision，
+					// X-Gw-Auto-Decision 与 _request_logs.auto_decision，
 					// **每一次 V1 缓存命中都被记成 cache_reused=false**，运维
 					// 与 cmd/autoroute-e2e-audit 会得出"会话缓存从未命中"的
 					// 相反结论。补齐后 V1/V2 审计口径一致。

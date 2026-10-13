@@ -83,7 +83,7 @@ func (m RecoveryMode) String() string {
 
 // StreamRecoveryState is the per-request FR-12 recovery bookkeeping (R12.3
 // struct verbatim). Not persisted to URSM; the caller mirrors the terminal
-// summary into request_logs/journey/TurnArtifactBlock attempt metadata.
+// summary into _request_logs/journey/TurnArtifactBlock attempt metadata.
 type StreamRecoveryState struct {
 	RecoveryNo         uint16
 	SameNodeRetries    uint8

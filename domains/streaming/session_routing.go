@@ -27,7 +27,7 @@ var SessionHeadersPriority = []string{
 // (e.g. ZCode's per-session bare-UUID x-session-id) send a STABLE id with no
 // gw_/gt_/gs_ prefix; the previous behaviour treated such ids as unknown and
 // minted a fresh gw_<uuid> per request via the CreateV2 fallback, so one
-// client conversation never grouped under a single request_logs.gw_session_id
+// client conversation never grouped under a single _request_logs.gw_session_id
 // and session_turns stayed at turn 1 forever. Deriving "gw_" + <client id>
 // keeps the gateway namespace canonical while making the mapping
 // deterministic: the derived id registers via the honored gw_ branch
@@ -235,7 +235,7 @@ func generateSystemSessionID() string {
 // /v1/responses 的"客户端已提供 id"分支与 chat 路径(handler.go)对齐 —
 // b02a5c385 的确定性映射 + 幂等注册此前只接了 chat:
 //  1. 非网关稳定身份(裸 UUID x-session-id)确定性映射 gw_<id>;否则异构
-//     命名空间直接落 request_logs.gw_session_id,session_turns 轮次聚合恒 1;
+//     命名空间直接落 _request_logs.gw_session_id,session_turns 轮次聚合恒 1;
 //  2. Redis 未知的受信 gw_ id(新会话首请求)幂等注册 EnsureV2WithID(异步、
 //     尽力而为、带 panic 防护)— 否则每次后续请求都重复 ErrSessionNotFound,
 //     Touch 与轮次状态永不生效。branch 命名空间(gt_/gs_)不注册,与 chat 一致。

@@ -16,8 +16,8 @@ func TestS3Wave2WaterfallSources(t *testing.T) {
 		if !strings.Contains(q, "FROM request_logs_with_current_month") {
 			t.Error("request_id 点查未走 canonical 视图（B 形态守卫规则的唯一完整源）")
 		}
-		if strings.Contains(q, "FROM request_logs_hot") {
-			t.Error("点查仍在直读 request_logs_hot（停写后排空）")
+		if strings.Contains(q, "FROM _request_logs_hot") {
+			t.Error("点查仍在直读 _request_logs_hot（停写后排空）")
 		}
 		// 调度计时 t0..t9 必须齐全——瀑布图的主体就是它们。
 		for _, col := range []string{
@@ -36,8 +36,8 @@ func TestS3Wave2WaterfallSources(t *testing.T) {
 		if !strings.Contains(q, "FROM request_logs_with_current_month") {
 			t.Error("瀑布列表未走 canonical 视图——停写后热窗排空面板恒空")
 		}
-		if strings.Contains(q, "FROM request_logs_hot") {
-			t.Error("瀑布列表仍在直读 request_logs_hot")
+		if strings.Contains(q, "FROM _request_logs_hot") {
+			t.Error("瀑布列表仍在直读 _request_logs_hot")
 		}
 		if !strings.Contains(q, "ORDER BY t0_arrived_at DESC") {
 			t.Error("列表按 t0 倒序的近期语义丢失")

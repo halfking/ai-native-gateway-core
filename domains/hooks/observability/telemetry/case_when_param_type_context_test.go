@@ -19,7 +19,7 @@ import (
 //
 //	ERROR: could not determine data type of parameter $98  (SQLSTATE 42P08)
 //
-// Measured 2026-10-02 against request_logs_hot, one PREPARE per shape, with
+// Measured 2026-10-02 against _request_logs_hot, one PREPARE per shape, with
 // **no** declared parameter types — which is exactly what pgx sends:
 //
 //	CASE WHEN $1     IS NULL THEN request_class ELSE $1      → ERROR

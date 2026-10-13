@@ -318,7 +318,7 @@ func (e *survivalTerminalError) Error() string {
 
 func (e *survivalTerminalError) Unwrap() error { return e.cause }
 
-// detailCode is the request_logs failure_detail_code / error_kind value.
+// detailCode is the _request_logs failure_detail_code / error_kind value.
 func (e *survivalTerminalError) detailCode() string {
 	return "gateway_survival_" + e.action.String()
 }

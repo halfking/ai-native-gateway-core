@@ -761,7 +761,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				"action", res.Decision.Action.String(),
 				"reason", res.Decision.Reason,
 			)...)
-			// Record the discard into the audit capture so request_logs_hot
+			// Record the discard into the audit capture so _request_logs_hot
 			// .discard_events JSONB column carries the buffer size and
 			// decision context for offline post-mortem.
 			if params.Capture != nil {

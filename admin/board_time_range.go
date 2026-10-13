@@ -99,7 +99,7 @@ func boardMinuteWhere(tr boardTimeRange, tenantID string, extraStartArg int) (wh
 }
 
 // boardLogsWhere is the single WHERE builder for every board read face that goes
-// through request_logs (fallbackBoardSummary, fallbackBoardTrends,
+// through _request_logs (fallbackBoardSummary, fallbackBoardTrends,
 // fallbackBoardPies/fallbackDimPie, fillOverviewCountsFromLogs).
 //
 // The probe exclusion is applied HERE, once, rather than at each call site: the
@@ -143,7 +143,7 @@ func boardPresetTimeRange(days int, now time.Time) boardTimeRange {
 
 // boardRequestLogsFromClause returns the cross-partition union view for dashboard queries.
 // 2026-08-31: switch to the _without_customer_id companion view. The full
-// view adds a LATERAL JOIN back to request_logs_hot/request_logs to expose
+// view adds a LATERAL JOIN back to _request_logs_hot/request_logs to expose
 // customer_id (added by migration 575), which turns every COUNT/SUM/AVG
 // over the August 2026 columnar partition (314K rows) into an 11s+ Seq Scan
 // + Nested Loop that exhausts the 8s dashboard fallback timeout. The

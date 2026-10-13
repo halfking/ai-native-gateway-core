@@ -489,7 +489,7 @@ type sessionDimBrief struct {
 	ModelSwitchCount int
 	// 租户级活跃会话数（可选填充）
 	TenantActiveCount int
-	// 突发/并发数（从 request_logs 短期统计；本接口不计算，返回 0 即可）
+	// 突发/并发数（从 _request_logs 短期统计；本接口不计算，返回 0 即可）
 	BurstCount      int
 	ConcurrentCount int
 }

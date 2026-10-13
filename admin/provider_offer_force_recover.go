@@ -1035,7 +1035,7 @@ func (h *Handler) setDefaultProbeModel(w http.ResponseWriter, r *http.Request, p
 }
 
 // pickDefaultProbeModel triggers an immediate auto-pick (skips daily cron)
-// Looks up via request_logs (7d most-used client_model) and falls back to
+// Looks up via _request_logs (7d most-used client_model) and falls back to
 // domestic provider random pick. Manual source is preserved.
 func (h *Handler) pickDefaultProbeModel(w http.ResponseWriter, r *http.Request, providerID, credID int) {
 	actor := forceRecoverActor(r)

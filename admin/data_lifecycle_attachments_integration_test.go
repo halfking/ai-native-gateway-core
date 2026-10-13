@@ -64,7 +64,7 @@ func attachFixtureReset(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
 	for _, stmt := range []string{
-		"TRUNCATE public.request_logs_hot",
+		"TRUNCATE public._request_logs_hot",
 		"TRUNCATE public.audit_attachments_cleanup",
 		"TRUNCATE public.audit_attachments_filesystem_cleanup",
 	} {
@@ -74,7 +74,7 @@ func attachFixtureReset(t *testing.T, pool *pgxpool.Pool) {
 	}
 }
 
-// seedRequestLogHot inserts one row into request_logs_hot with two
+// seedRequestLogHot inserts one row into _request_logs_hot with two
 // attachments: one with all identity fields present (so the audit
 // INSERT picks it up) and one with all identity fields absent (so
 // the malformed-hash predicate skips it).
@@ -86,7 +86,7 @@ func seedRequestLogHot(t *testing.T, pool *pgxpool.Pool, tenantID, requestID str
 		{"type":"file","content_type":"application/octet-stream","size":"bad","id":null,"url":null,"hash":null,"sha256":null}
 	]`)
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO public.request_logs_hot
+		INSERT INTO public._request_logs_hot
 		  (request_id, ts, tenant_id, success, attachments)
 		VALUES ($1, $2, $3, true, $4::jsonb)`,
 		requestID, ts, tenantID, attachments); err != nil {
@@ -146,11 +146,11 @@ func TestAttachmentCleanup_Execute_TenantAdmin_NoPlaceholderCollision(t *testing
 	// Verify the UPDATE actually NULLed attachments on the hot row
 	// (the old placeholder-collision bug aborted before UPDATE ran).
 	var atts interface{}
-	if err := pool.QueryRow(ctx, "SELECT attachments FROM public.request_logs_hot WHERE request_id=$1", "req_int_1").Scan(&atts); err != nil {
+	if err := pool.QueryRow(ctx, "SELECT attachments FROM public._request_logs_hot WHERE request_id=$1", "req_int_1").Scan(&atts); err != nil {
 		t.Fatalf("read hot: %v", err)
 	}
 	if atts != nil {
-		t.Errorf("request_logs_hot.attachments = %v, want NULL (UPDATE did not run)", atts)
+		t.Errorf("_request_logs_hot.attachments = %v, want NULL (UPDATE did not run)", atts)
 	}
 }
 

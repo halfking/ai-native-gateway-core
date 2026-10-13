@@ -118,7 +118,7 @@ func TestFeaturedCycleErrorGated(t *testing.T) {
 	for _, want := range []string{
 		`credentialFailureEvidenceSQL("c.id", probeFailureEvidenceWindowSQL)`,
 		`credentialTwoProbeSuccessGateSQL("c.id")`,
-		"SELECT 1 FROM request_logs_hot rl",
+		"SELECT 1 FROM _request_logs_hot rl",
 		"probeUsageWindowInterval",
 		`fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")`,
 	} {
@@ -220,7 +220,7 @@ func readSource(name string) (string, error) {
 // TestProbeExclusionPredicateCallSitesR50 pins the R50 closure of the probe
 // traffic exclusion — PER READ FACE (R49 自审轮勘误)：排除闭合按读面分治，
 // 不变量不是"都用物理双臂谓词"，而是"读面对象有什么列就用什么谓词"：
-//   - 物理表（request_logs_hot，428 起有 origin_stage 且网关探测轮落值）→
+//   - 物理表（_request_logs_hot，428 起有 origin_stage 且网关探测轮落值）→
 //     probeTrafficExclusionPredicate（flags + origin_stage='business'）；
 //   - canonical 冻结 113 列视图（request_logs_with_current_month，
 //     origin_stage 不在契约）→ ProbeTrafficExclusionPredicateView
@@ -230,7 +230,7 @@ func readSource(name string) (string, error) {
 func TestProbeExclusionPredicateCallSitesR50(t *testing.T) {
 	cases := []struct {
 		file     string
-		physical int // minimum physical-predicate (request_logs_hot) sites
+		physical int // minimum physical-predicate (_request_logs_hot) sites
 		view     int // minimum view-predicate (frozen 113-col contract) sites
 	}{
 		{"credential_selfcheck.go", 1, 0}, // selfcheckRecentFallback — hot

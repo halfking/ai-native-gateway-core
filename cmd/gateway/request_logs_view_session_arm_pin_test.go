@@ -2,7 +2,7 @@ package main
 
 // request_logs_view_session_arm_pin_test.go — 2026-10-02。
 //
-// 把「哪些 request_logs* 视图含 session 臂」这个事实钉在真库上。
+// 把「哪些 _request_logs* 视图含 session 臂」这个事实钉在真库上。
 //
 // 为什么必须钉：S4 停写的四族分类（admin/request_logs_stop_write_classification_test.go）
 // 用「读哪一族表」决定后果，而「710 视图仍由 session 臂供数」这条判断**不能**从
@@ -96,7 +96,7 @@ func TestRequestLogsViewSessionArmPinIsCurrent(t *testing.T) {
 		t.Fatalf("rows: %v", err)
 	}
 	if len(gotArm)+len(gotOnly) == 0 {
-		t.Fatal("未扫到任何 request_logs% 视图——扫描口径坏了，不是库里没有视图")
+		t.Fatal("未扫到任何 _request_logs% 视图——扫描口径坏了，不是库里没有视图")
 	}
 
 	// 双向比对：只报「登记与真库不符」，不做模糊匹配。

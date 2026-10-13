@@ -57,7 +57,7 @@ type Candidate struct {
 	// the sample column. They never contain PII.
 	ProviderResponseID string
 	SystemFingerprint  string
-	// UsageSource matches request_logs.usage_source. Recorded for
+	// UsageSource matches _request_logs.usage_source. Recorded for
 	// downstream debugging of token-arith failures.
 	UsageSource string
 	// IsStream true if this is a streaming response.

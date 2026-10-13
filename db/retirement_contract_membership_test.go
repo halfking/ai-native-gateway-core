@@ -13,7 +13,7 @@ import (
 
 // Contract-membership gate (audit §9.166).
 //
-// The gap this pins: `request_logs` carries 157 columns, the canonical view
+// The gap this pins: `_request_logs` carries 157 columns, the canonical view
 // projects 118. A reader may name a column that is real on the table being
 // retired and absent from the view meant to replace it. RetirementExposureClassify
 // used to fall through every branch to `baseline` for such a name, so
@@ -30,7 +30,7 @@ import (
 //	  go test ./db/ -run 'TestRetirement(ExposureRejects|V1ColumnsOutside)' -count=1 -v
 
 // v1ColumnsOutsideContractSample is a hand-picked sample of names that exist on
-// `request_logs` but not in the canonical view, measured on the local database
+// `_request_logs` but not in the canonical view, measured on the local database
 // 2026-10-04.
 //
 // It is a **sample, not the set** — the real-DB test enumerates the full set and
@@ -133,7 +133,7 @@ func TestRetirementV1ColumnsOutsideCanonicalContract(t *testing.T) {
 	var v1Total, viewTotal int
 	if err := pool.QueryRow(ctx, `
 		SELECT (SELECT count(*) FROM pg_attribute
-		         WHERE attrelid='public.request_logs'::regclass AND attnum>0 AND NOT attisdropped),
+		         WHERE attrelid='public._request_logs'::regclass AND attnum>0 AND NOT attisdropped),
 		       (SELECT count(*) FROM pg_attribute
 		        WHERE attrelid='public.request_logs_with_current_month'::regclass
 		          AND attnum>0 AND NOT attisdropped)`).Scan(&v1Total, &viewTotal); err != nil {
@@ -143,7 +143,7 @@ func TestRetirementV1ColumnsOutsideCanonicalContract(t *testing.T) {
 	rows, err := pool.Query(ctx, `
 		SELECT a.attname
 		FROM pg_attribute a
-		WHERE a.attrelid='public.request_logs'::regclass AND a.attnum>0 AND NOT a.attisdropped
+		WHERE a.attrelid='public._request_logs'::regclass AND a.attnum>0 AND NOT a.attisdropped
 		  AND a.attname NOT IN (SELECT attname FROM pg_attribute
 		        WHERE attrelid='public.request_logs_with_current_month'::regclass
 		          AND attnum>0 AND NOT attisdropped)
@@ -168,7 +168,7 @@ func TestRetirementV1ColumnsOutsideCanonicalContract(t *testing.T) {
 		t.Skipf("v1 table has %d columns and the view has %d — no out-of-contract names on this "+
 			"database, so this gate has nothing to measure here", v1Total, viewTotal)
 	}
-	t.Logf("request_logs=%d columns, canonical view=%d, outside contract=%d",
+	t.Logf("_request_logs=%d columns, canonical view=%d, outside contract=%d",
 		v1Total, viewTotal, len(outside))
 
 	// A name the Go contract does not carry must not be silently servable even if

@@ -62,14 +62,14 @@ func TestPGBodyReaderResolvesClientRequestIDToCanonicalID(t *testing.T) {
 	metaCols := []string{
 		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
 	}
-	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM request_logs_hot\s+WHERE request_id = \$1\s+LIMIT 1`).
+	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM _request_logs_hot\s+WHERE request_id = \$1\s+LIMIT 1`).
 		WithArgs("client-req-1").
 		WillReturnRows(pgxmock.NewRows(metaCols))
-	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM request_logs_hot\s+WHERE client_request_id = \$1\s+ORDER BY ts DESC\s+LIMIT 1`).
+	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM _request_logs_hot\s+WHERE client_request_id = \$1\s+ORDER BY ts DESC\s+LIMIT 1`).
 		WithArgs("client-req-1").
 		WillReturnRows(pgxmock.NewRows(metaCols).
 			AddRow("gateway-req-1", "tenant-a", nil, nil, "claude-test", "success", true, 12))
-	mock.ExpectQuery(`SELECT outbound_body::text\s+FROM request_logs_bodies_hot`).
+	mock.ExpectQuery(`SELECT outbound_body::text\s+FROM _request_logs_bodies_hot`).
 		WithArgs("gateway-req-1").
 		WillReturnRows(pgxmock.NewRows([]string{"outbound_body"}).AddRow(`{"messages":[]}`))
 
@@ -94,11 +94,11 @@ func TestPGBodyReaderFillsPartialBodiesFromSessionTurns(t *testing.T) {
 	metaCols := []string{
 		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
 	}
-	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM request_logs_hot\s+WHERE request_id = \$1\s+LIMIT 1`).
+	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM _request_logs_hot\s+WHERE request_id = \$1\s+LIMIT 1`).
 		WithArgs("req-partial").
 		WillReturnRows(pgxmock.NewRows(metaCols).
 			AddRow("req-partial", "default", "session-1", nil, "model", "success", true, 10))
-	mock.ExpectQuery(`SELECT outbound_body::text\s+FROM request_logs_bodies_hot`).
+	mock.ExpectQuery(`SELECT outbound_body::text\s+FROM _request_logs_bodies_hot`).
 		WithArgs("req-partial").
 		WillReturnRows(pgxmock.NewRows([]string{"outbound_body"}).AddRow(`{"messages":["from-logs"]}`))
 	mock.ExpectQuery(`(?s)SELECT t.session_id, t.turn_no,.*FROM public.session_turns_with_current_month t`).
@@ -126,7 +126,7 @@ func TestPGBodyReaderOmitBodySkipsBodyQueries(t *testing.T) {
 	metaCols := []string{
 		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
 	}
-	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM request_logs_hot\s+WHERE request_id = \$1\s+LIMIT 1`).
+	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM _request_logs_hot\s+WHERE request_id = \$1\s+LIMIT 1`).
 		WithArgs("req-meta-only").
 		WillReturnRows(pgxmock.NewRows(metaCols).
 			AddRow("req-meta-only", "default", "session-1", nil, "model", "success", true, 10))
@@ -427,12 +427,12 @@ func TestPGBodyReader_ClientRequestIDCollision_RespectsTenantScope(t *testing.T)
 	metaCols := []string{
 		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
 	}
-	// request_logs_hot: request_id lookup must include tenant_id predicate.
-	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM request_logs_hot\s+WHERE request_id = \$1 AND tenant_id = \$2\s+LIMIT 1`).
+	// _request_logs_hot: request_id lookup must include tenant_id predicate.
+	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM _request_logs_hot\s+WHERE request_id = \$1 AND tenant_id = \$2\s+LIMIT 1`).
 		WithArgs("client-req-collision", "tenant-a").
 		WillReturnRows(pgxmock.NewRows(metaCols))
 	// client_request_id fallback must also include tenant_id predicate.
-	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM request_logs_hot\s+WHERE client_request_id = \$1 AND tenant_id = \$2\s+ORDER BY ts DESC\s+LIMIT 1`).
+	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM _request_logs_hot\s+WHERE client_request_id = \$1 AND tenant_id = \$2\s+ORDER BY ts DESC\s+LIMIT 1`).
 		WithArgs("client-req-collision", "tenant-a").
 		WillReturnRows(pgxmock.NewRows(metaCols))
 	// partitioned request_id path is also constrained.
@@ -462,14 +462,14 @@ func TestPGBodyReader_ClientRequestIDCollision_AllowsOwnTenant(t *testing.T) {
 	metaCols := []string{
 		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
 	}
-	// request_logs_hot request_id lookup is constrained and returns tenant-a's row.
-	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM request_logs_hot\s+WHERE request_id = \$1 AND tenant_id = \$2\s+LIMIT 1`).
+	// _request_logs_hot request_id lookup is constrained and returns tenant-a's row.
+	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM _request_logs_hot\s+WHERE request_id = \$1 AND tenant_id = \$2\s+LIMIT 1`).
 		WithArgs("client-req-own", "tenant-a").
 		WillReturnRows(pgxmock.NewRows(metaCols).
 			AddRow("gateway-req-own", "tenant-a", nil, nil, "m", "success", true, 10))
 	// Body tables are keyed only by the canonical request ID; tenant scope was
 	// enforced while resolving that ID from request_logs_hot.
-	mock.ExpectQuery(`SELECT outbound_body::text\s+FROM request_logs_bodies_hot\s+WHERE request_id = \$1`).
+	mock.ExpectQuery(`SELECT outbound_body::text\s+FROM _request_logs_bodies_hot\s+WHERE request_id = \$1`).
 		WithArgs("gateway-req-own").
 		WillReturnRows(pgxmock.NewRows([]string{"outbound_body"}).AddRow(`{"o":1}`))
 
@@ -498,7 +498,7 @@ func TestPGBodyReader_DefenseInDepth_TenantMismatch(t *testing.T) {
 	metaCols := []string{
 		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
 	}
-	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM request_logs_hot\s+WHERE request_id = \$1 AND tenant_id = \$2\s+LIMIT 1`).
+	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM _request_logs_hot\s+WHERE request_id = \$1 AND tenant_id = \$2\s+LIMIT 1`).
 		WithArgs("client-req-defense", "tenant-a").
 		WillReturnRows(pgxmock.NewRows(metaCols).
 			AddRow("gateway-req-defense", "tenant-b", nil, nil, "m", "success", true, 10))
@@ -523,11 +523,11 @@ func TestPGBodyReader_SuperAdminSeesCrossTenant(t *testing.T) {
 		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
 	}
 	// No `AND tenant_id` predicate when scope is unrestricted.
-	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM request_logs_hot\s+WHERE request_id = \$1\s+LIMIT 1`).
+	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM _request_logs_hot\s+WHERE request_id = \$1\s+LIMIT 1`).
 		WithArgs("client-req-sa").
 		WillReturnRows(pgxmock.NewRows(metaCols).
 			AddRow("gateway-req-sa", "tenant-a", nil, nil, "m", "success", true, 10))
-	mock.ExpectQuery(`SELECT outbound_body::text\s+FROM request_logs_bodies_hot\s+WHERE request_id = \$1\s+LIMIT 1`).
+	mock.ExpectQuery(`SELECT outbound_body::text\s+FROM _request_logs_bodies_hot\s+WHERE request_id = \$1\s+LIMIT 1`).
 		WithArgs("gateway-req-sa").
 		WillReturnRows(pgxmock.NewRows([]string{"outbound_body"}).AddRow(`{}`))
 

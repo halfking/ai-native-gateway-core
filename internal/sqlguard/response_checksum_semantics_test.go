@@ -1,5 +1,5 @@
 // Guard for the `response_checksum` / `request_checksum` columns on
-// `session_turns` and `request_logs`.
+// `session_turns` and `_request_logs`.
 //
 // Why this guard exists (2026-10-03, audit round 228):
 //

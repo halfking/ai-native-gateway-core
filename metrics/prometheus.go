@@ -58,7 +58,7 @@ type PrometheusRecorder struct {
 	// ShadowWrite (P0-2)
 	//
 	// shadowWriteFailed  : best-effort hook (attachmentmirror / sessionv2mirror)
-	//                      that failed AFTER the primary request_logs INSERT
+	//                      that failed AFTER the primary _request_logs INSERT
 	//                      succeeded. Counter is monotonic — missing rows are
 	//                      observable through Prometheus rate().
 	//
@@ -396,7 +396,7 @@ func NewPrometheusRecorder() *PrometheusRecorder {
 		shadowWriteFailed: promauto.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "llm_gateway_shadow_write_failed_total",
-				Help: "Best-effort hook writes that failed AFTER the primary request_logs INSERT succeeded (label = hook kind)",
+				Help: "Best-effort hook writes that failed AFTER the primary _request_logs INSERT succeeded (label = hook kind)",
 			},
 			[]string{"kind"},
 		),

@@ -1,7 +1,7 @@
 // Package bg — integrity_fingerprint_drift.go
 //
 // 2026-07-28: per-(cred, model) system_fingerprint drift detector.
-// 2026-09-12: read surface switched from the bare request_logs parent to
+// 2026-09-12: read surface switched from the bare _request_logs parent to
 // request_logs_with_current_month (migration 696 appended system_fingerprint
 // to the view; until then the switch would 42703, see
 // bg/recent_surface_reads_test.go). The 7-day rolling window is a

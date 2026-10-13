@@ -25,7 +25,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
-// 2026-08-06: title-generator caller identity for request_logs.origin_actor.
+// 2026-08-06: title-generator caller identity for _request_logs.origin_actor.
 // Operators can SQL `WHERE origin_actor = 'auto-title-generator'` to find every
 // auto-title loopback request and its parent_request_id link.
 const autoTitleOriginActor = "auto-title-generator"
@@ -92,7 +92,7 @@ func readAutoGeneratorEnabled(envName string, fallback bool) bool {
 // extract the actual user message for title generation. requestPreview is the
 // 320-byte summary used as fallback.
 // parentRequestID (added 2026-08-06) is the user request's request_id; we
-// forward it as X-Gw-Parent-Request-Id so request_logs_hot.parent_request_id
+// forward it as X-Gw-Parent-Request-Id so _request_logs_hot.parent_request_id
 // makes the title loopback linkable back to its parent user request.
 // taskID (added 2026-08-06) is the session's gw_task_id from request_logs.
 // It is stored alongside the title so the request-logs list JOIN
@@ -373,7 +373,7 @@ func (g *AutoTitleGenerator) checkSessionHasTitle(ctx context.Context, tenantID,
 // generateTitleFromFirstRequest loads session logs and generates a title using LLM.
 // v4 (2026-08-05): Accept full requestBody to extract real user messages.
 // v5 (2026-08-06): Accept parentRequestID so callAutoTitleLLM can forward it
-// as X-Gw-Parent-Request-Id for request_logs_hot.parent_request_id linkage.
+// as X-Gw-Parent-Request-Id for _request_logs_hot.parent_request_id linkage.
 // The requestPreview (320-byte summary) is used as fallback only.
 // Returns (title, model, apiKeyID, error). On fallback-extract paths model is
 // "auto-extract" and apiKeyID is 0.
@@ -405,7 +405,7 @@ func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, 
 	}
 
 	// Step 2: Only query DB logs if we don't already have a corpus from the
-	// in-memory request body. The DB JOIN on request_logs_bodies is expensive
+	// in-memory request body. The DB JOIN on _request_logs_bodies is expensive
 	// (bodies can be megabytes) and unnecessary when we already have the body.
 	if corpus == "" {
 		if logs, err := g.loadSessionLogsForTitle(ctx, sessionID, tenantID); err == nil && len(logs) > 0 {
@@ -455,7 +455,7 @@ func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, 
 
 	// Title LLM call runs in an isolated context (no X-Gw-Session-Id so it
 	// gets its own gw_session_id and does NOT pollute the user's conversation).
-	// The parent_request_id is forwarded so request_logs_hot.parent_request_id
+	// The parent_request_id is forwarded so _request_logs_hot.parent_request_id
 	// makes the loopback linkable back to its parent user request.
 	llmRes, err := g.callAutoTitleLLM(ctx, apiKey, sessionID, parentRequestID, userContent)
 	if err != nil {
@@ -794,7 +794,7 @@ func (g *AutoTitleGenerator) extractUserPrompt(preview string) string {
 }
 
 // saveSessionTitle saves the auto-generated title to session_titles table.
-// taskID is the session's gw_task_id from request_logs so the request-logs
+// taskID is the session's gw_task_id from _request_logs so the request-logs
 // list JOIN (admin/logs.go requestLogsJoins) can match on
 // (task_id, scoped_session_id). taskID='auto' was the historical hardcoded
 // marker and never matched the request's real gw_task_id (typically 'default');
@@ -887,13 +887,13 @@ func (g *AutoTitleGenerator) resolveAutoTitleModel(ctx context.Context) string {
 //
 // v3 (2026-08-06):
 //   - forwards the parent user request_id as X-Gw-Parent-Request-Id so
-//     request_logs_hot.parent_request_id makes the loopback linkable back to
+//     _request_logs_hot.parent_request_id makes the loopback linkable back to
 //     its parent user request. Operators can SQL JOIN on parent_request_id to
 //     find "08aa2a8a → 3a03f7db" instantly.
-//   - sets X-Gw-Source-Actor: auto-title-generator so request_logs_hot.origin_actor
+//   - sets X-Gw-Source-Actor: auto-title-generator so _request_logs_hot.origin_actor
 //     is populated for all title requests.
 //   - sets X-Gw-Session-Id: gt_<session_id> (the "GT" branch namespace) so
-//     request_logs_hot.gw_session_id shows "gt_gw_<original>" instead of a
+//     _request_logs_hot.gw_session_id shows "gt_gw_<original>" instead of a
 //     fresh gw_<uuid>. Operators can SQL
 //     WHERE gw_session_id LIKE 'gt\_%' ESCAPE '\'
 //     to find every auto-title row. Pairs with the gs_ prefix used by
@@ -1033,7 +1033,7 @@ func (g *AutoTitleGenerator) doCallAutoTitleOnce(
 	// discoverable through the "auto-title:" prefix for triage.
 	req.Header.Set("X-Gw-Task-Id", "auto-title:"+sessionID)
 	// 2026-08-06 (GT prefix): tag the loopback's own session_id with the
-	// "gt_" branch namespace so request_logs_hot.gw_session_id shows
+	// "gt_" branch namespace so _request_logs_hot.gw_session_id shows
 	// "gt_gw_<original>" instead of a fresh gw_<uuid>. Operators can SQL
 	//   WHERE gw_session_id LIKE 'gt\_%' ESCAPE '\'
 	// to find every auto-title row and JOIN child.parent_request_id back to
@@ -1046,7 +1046,7 @@ func (g *AutoTitleGenerator) doCallAutoTitleOnce(
 	req.Header.Set("X-Gw-Session-Id", "gt_"+sessionID)
 	// 2026-08-06: parent request correlation — handler entry reads this header
 	// and stores it in logCtx.ParentRequestID, which then flows into
-	// request_logs_hot.parent_request_id. This is what makes the title loopback
+	// _request_logs_hot.parent_request_id. This is what makes the title loopback
 	// linkable back to its parent user request.
 	if parentRequestID != "" {
 		req.Header.Set(autoParentRequestIDHeader, parentRequestID)

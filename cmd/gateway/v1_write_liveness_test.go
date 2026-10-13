@@ -11,7 +11,7 @@ import (
 // TestV1WriteLivenessSQLReadsBothFaces 把「两面都要读」钉住。
 func TestV1WriteLivenessSQLReadsBothFaces(t *testing.T) {
 	for _, face := range []string{
-		"request_logs_hot", "request_logs",
+		"_request_logs_hot", "_request_logs",
 		"session_turns_hot", "session_turns",
 	} {
 		if !containsSub(v1WriteLivenessSQL, face) {
@@ -20,9 +20,9 @@ func TestV1WriteLivenessSQLReadsBothFaces(t *testing.T) {
 		}
 	}
 	// 阴性对照：判据必须能分辨单面与双面，否则上面四条会恒绿。
-	one := "SELECT 1 FROM request_logs WHERE 1=1"
-	if containsAllSub(one, []string{"request_logs_hot", "request_logs"}) {
-		t.Error("判据分不清单面与双面：一个只读 request_logs 的片段被判成双面")
+	one := "SELECT 1 FROM _request_logs WHERE 1=1"
+	if containsAllSub(one, []string{"_request_logs_hot", "_request_logs"}) {
+		t.Error("判据分不清单面与双面：一个只读 _request_logs 的片段被判成双面")
 	}
 }
 

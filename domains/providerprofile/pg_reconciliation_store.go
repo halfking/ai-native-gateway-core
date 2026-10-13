@@ -201,9 +201,9 @@ func scanReconciliationRows(rows interface {
 
 // PGGatewayMonthlyUsageSource 按 provider + 月份聚合网关侧用量。
 //
-// R28-B-1 (2026-09-30 round 30): 聚合源从 request_logs(_hot) 切换到计帐
+// R28-B-1 (2026-09-30 round 30): 聚合源从 _request_logs(_hot) 切换到计帐
 // 真相源 usage_ledger（经 usage_ledger_with_current_month 视图统一 hot 与
-// 月分区）。request_logs 受 S4 停写门控（storage.request_logs_write_enabled）
+// 月分区）。_request_logs 受 S4 停写门控（storage.request_logs_write_enabled）
 // ——S4 停写时旧查询让对帐的网关侧静默归零，而 usage_ledger 始终随计费
 // 落账。promote 窗口内 hot 与分区可能短暂同时持有同一 request_id，
 // DISTINCT ON 去重防双计（镜像旧查询形态）。

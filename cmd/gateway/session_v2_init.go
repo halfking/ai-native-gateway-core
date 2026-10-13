@@ -8,7 +8,7 @@
 //     AddOnRequestLogPersisted hook 实现 shadow write。
 //  2. Feature-flagged — 只有 sessions_v2.enabled && sessions_v2.shadow_write
 //     同时为 true 时才执行 V2 写入（hook 内部判断）。启动期不阻塞。
-//  3. Fail-safe — V2 写入失败只 log WARN 不阻塞主 request_logs INSERT。
+//  3. Fail-safe — V2 写入失败只 log WARN 不阻塞主 _request_logs INSERT。
 //  4. Schema 先决 — V2 表 (public.sessions / public.session_turns /
 //     public.session_bodies / public.session_turn_logs) 必须在 252 上已跑
 //     430_sessions_v2_schema.sql。init 不自动建表，启动期失败会 log WARN
@@ -202,7 +202,7 @@ func stopSessionDigestBackfill(job any) {
 // (migration 823 follow-up, 2026-10-04). Migration 823 added
 // session_turns.request_status and deliberately did NOT backfill it, so all
 // ~1.69M historical rows are NULL. The only authoritative source for those
-// labels is the retiring public.request_logs: once it is dropped the
+// labels is the retiring public._request_logs: once it is dropped the
 // rate_limited / success / failure / in_progress distinction is gone for good
 // (ResolveRequestStatus never emits rate_limited, so it cannot be re-derived).
 //
@@ -211,7 +211,7 @@ func stopSessionDigestBackfill(job any) {
 // backfill), which would wedge startup.
 //
 // Retirement is a terminal state, not a failure: when the job detects that
-// request_logs no longer exists it logs one Info line and stops — it does not
+// _request_logs no longer exists it logs one Info line and stops — it does not
 // retry or emit per-tick ERROR noise.
 //
 // Config (env, hot-reload not required for a bounded one-time drain):

@@ -161,7 +161,7 @@ func prefixBytesSecretMasked(text string) string {
 	return secretmask.MaskSecrets(text)
 }
 
-// --- V1 实现：request_logs + request_logs_bodies ---
+// --- V1 实现：_request_logs + _request_logs_bodies ---
 
 // GetSystemPromptPrefix 从该会话首个请求的请求体中提取系统提示词前缀。
 func (m *pgRequestLogsSource) GetSystemPromptPrefix(ctx context.Context, tenantID, sessionKey string) (string, error) {
@@ -170,7 +170,7 @@ func (m *pgRequestLogsSource) GetSystemPromptPrefix(ctx context.Context, tenantI
 	}
 	var raw []byte
 	// 2026-08-26: 读 _with_current_month 视图（hot ∪ parent）—— fresh 请求体
-	// 先落 request_logs_bodies_hot，直接读父表会错过（详见 summarizer.go
+	// 先落 _request_logs_bodies_hot，直接读父表会错过（详见 summarizer.go
 	// getSessionMessagesQuery 的同期注释）。
 	err := m.pool.QueryRow(ctx, `
 		SELECT rb.request_body::text

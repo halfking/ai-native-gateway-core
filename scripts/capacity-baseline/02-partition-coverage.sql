@@ -1,15 +1,15 @@
 -- 容量基线 2/3：已知分区家族的保留覆盖。
 -- 输出：每个分区子表的边界（pg_get_expr）、尺寸、行数估计；
 --       据此核对"热窗口边界是否随时间前移"（保留策略是否真实生效）。
--- 家族清单按仓库现状：request_logs / request_logs_hot / request_logs_bodies /
--- request_logs_archive / request_logs_bodies_archive / instance_heartbeats。
+-- 家族清单按仓库现状：_request_logs / _request_logs_hot / _request_logs_bodies /
+-- _request_logs_archive / request_logs_bodies_archive / instance_heartbeats。
 -- 用 to_regclass 防护：家族不存在时不报错。
 WITH families(family) AS (
   SELECT * FROM (VALUES
-    ('request_logs'),
-    ('request_logs_hot'),
-    ('request_logs_bodies'),
-    ('request_logs_archive'),
+    ('_request_logs'),
+    ('_request_logs_hot'),
+    ('_request_logs_bodies'),
+    ('_request_logs_archive'),
     ('request_logs_bodies_archive'),
     ('instance_heartbeats')
   ) AS t(name)

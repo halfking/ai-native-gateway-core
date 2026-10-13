@@ -1,6 +1,6 @@
 package admin
 
-// NOTE: All SELECTs on tenant-scoped tables (request_logs etc.) in this file
+// NOTE: All SELECTs on tenant-scoped tables (_request_logs etc.) in this file
 // use sessionLogsWhere() which embeds tenantLogsClause()
 // (admin/session_tenant.go) to inject "AND tenant_id = $N" for tenant_admin
 // callers on non-default tenants. Super-admin / legacy admin_key /
@@ -288,7 +288,7 @@ func (h *Handler) handleSessionExtractionStatus(w http.ResponseWriter, r *http.R
 func (h *Handler) sessionAPIKeyID(ctx context.Context, taskID string, sc sessionScope, r *http.Request) (int, error) {
 	where, args := sessionLogsWhere(taskID, sc, r)
 	var apiKeyID *int64
-	// 走 734 视图而非直读 request_logs：视图体 = session 族（hot ∪ 月分区）
+	// 走 734 视图而非直读 _request_logs：视图体 = session 族（hot ∪ 月分区）
 	// ∪ v1 冻结分支反连接。S4 停写（storage.request_logs_write_enabled=false）
 	// 后直读物理表对新会话恒空，这里会静默返回 0 且无告警。
 	err := h.db.QueryRow(ctx, `
@@ -311,7 +311,7 @@ func (h *Handler) sessionAPIKeyID(ctx context.Context, taskID string, sc session
 // this we'd risk cross-tenant fact leakage per docs/multi-tenant-standards.md
 // §3.2 Pattern A.
 //
-// S4 停写安全：读 734 视图（session 分支已拼装），不直读 request_logs 物理表 ——
+// S4 停写安全：读 734 视图（session 分支已拼装），不直读 _request_logs 物理表 ——
 // 直读在停写后对新会话恒空，会让这里回落成 legacy 单租户布局。
 func (h *Handler) sessionTenantID(ctx context.Context, taskID string, sc sessionScope, r *http.Request) string {
 	where, args := sessionLogsWhere(taskID, sc, r)

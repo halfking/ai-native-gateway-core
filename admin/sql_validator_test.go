@@ -13,11 +13,11 @@ func TestValidateOrderByColumn(t *testing.T) {
 		column    string
 		shouldErr bool
 	}{
-		{"合法列", "request_logs", "created_at", false},
-		{"大小写不敏感", "request_logs", "CREATED_AT", false},
+		{"合法列", "_request_logs", "created_at", false},
+		{"大小写不敏感", "_request_logs", "CREATED_AT", false},
 		{"不存在的表", "unknown_table", "id", true},
-		{"不在白名单的列", "request_logs", "password", true},
-		{"SQL注入尝试", "request_logs", "id; DROP TABLE users--", true},
+		{"不在白名单的列", "_request_logs", "password", true},
+		{"SQL注入尝试", "_request_logs", "id; DROP TABLE users--", true},
 	}
 
 	for _, tt := range tests {
@@ -50,7 +50,7 @@ func TestSQLInjectionVectors(t *testing.T) {
 
 	for _, v := range vectors {
 		t.Run(v.name, func(t *testing.T) {
-			err := ValidateOrderByColumn("request_logs", v.input)
+			err := ValidateOrderByColumn("_request_logs", v.input)
 			assert.Error(t, err, "向量应该被拒绝: %s", v.input)
 
 			isInjection := IsSQLInjectionAttempt(v.input)

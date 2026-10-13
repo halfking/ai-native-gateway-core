@@ -86,7 +86,7 @@ func promptBudgetExceeded(body []byte) (est int, over bool) {
 const defaultRequestBodyTimeout = 120 * time.Second
 
 // requestAttemptMeta captures request-side facts as early as possible so
-// request_logs rows stay useful even when auth or body read fails later.
+// _request_logs rows stay useful even when auth or body read fails later.
 //
 // 2026-07-15 (docs/会话优化v2/07-08):  扩展为客户端感知的统一提取载体。
 // fillAttemptMeta 现在一次性提取全部客户端感知字段（agent/ip/protocol/
@@ -223,7 +223,7 @@ func requestBodyTimeout() time.Duration {
 //
 // 2026-06-20 audit fix v2: When the body is buffered but has no "model"
 // field (e.g. /v1/messages client omitted model, or body is `{}`),
-// set client_model to "<unknown>" so request_logs never shows a blank
+// set client_model to "<unknown>" so _request_logs never shows a blank
 // client_model alongside a non-empty request_body. This distinguishes
 // "empty body" from "body present but no model field" — both look
 // the same otherwise, blocking the operator's diagnostic flow.
@@ -540,7 +540,7 @@ func enrichRequestLogFromMeta(reqLog *telemetryv1.RequestLogEntry, keyInfo *auth
 		return
 	}
 	// 2026-07-27: 把 meta 中的客户端感知字段透传到 reqLog。
-	// 之前只有侧表 request_context_attrs 拿到 agent_name,主表 request_logs_hot
+	// 之前只有侧表 request_context_attrs 拿到 agent_name,主表 _request_logs_hot
 	// 永远是 NULL,导致 GROUP BY agent_name 统计为 0。这里补齐主表写入。
 	if meta.AgentName != "" && reqLog.AgentName == nil {
 		reqLog.AgentName = strPtr(meta.AgentName)

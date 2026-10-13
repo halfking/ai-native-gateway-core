@@ -6,7 +6,7 @@
 //	GET /api/admin/auto-route/analytics/decision/{request_id}
 //	GET /api/admin/auto-route/analytics/funnel
 //
-// NOTE: All SELECTs on tenant-scoped tables (request_logs,
+// NOTE: All SELECTs on tenant-scoped tables (_request_logs,
 // routing_decision_log) in this file are wrapped with tenantLogsClause()
 // (admin/session_tenant.go) — adds "AND tenant_id = $N" for tenant_admin
 // callers on non-default tenants. Super-admin / legacy admin_key /
@@ -102,7 +102,7 @@ func parseAnalyticsMetric(raw string) (string, error) {
 //
 // 2026-06-24 fix: the explicit-model branch used `is_auto_request = FALSE`,
 // which excludes rows where is_auto_request IS NULL (PG three-valued
-// logic). Historical request_logs rows have is_auto_request IS NULL because
+// logic). Historical _request_logs rows have is_auto_request IS NULL because
 // the writer only learned to set TRUE/FALSE later. The query now uses
 // `is_auto_request IS NOT TRUE` so NULL rows are admitted alongside TRUE
 // auto requests.
@@ -767,13 +767,13 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 	// R46 F3/F9: 读面 hot∪母表（决策回放的主场景就是"刚出的坏决策"，裸母表
 	// 对最近 8h 仍在 hot 侧的请求 404）。不用 turns 优先的
 	// request_logs_with_current_month——它的 turns 段把 auto_profile 投影
-	// 为 NULL，决策回放要读的字段都在 request_logs 侧。
+	// 为 NULL，决策回放要读的字段都在 _request_logs 侧。
 	// request_id 匹配必须按腿进行：视图把 hot(TEXT)/母表(TEXT) 归并为
 	// text，但 ANY 的参数类型会被两支推成 uuid[]（数组字面量对探测 id 直接
 	// 22P02）——改为内联双腿：hot 腿 text 精确匹配（走 request_id 索引，
 	// 覆盖 hex32/dashed/探测 id 三形态）；母表腿 ::text 比较（request_id
 	// 同为 text 列，双形态匹配纯防御性），加 30d 界防跨全部分区扫描。
-	// （R47 实测注释更正：真库 request_logs(_hot).request_id 均为 text 且
+	// （R47 实测注释更正：真库 _request_logs(_hot).request_id 均为 text 且
 	// 母表存原始 hex32；真正 uuid 型的是 routing_decision_log.request_id，
 	// L2 腿的 dashed 形态候选对位的是那张表。）
 	err := h.db.QueryRow(ctx, `
@@ -784,17 +784,17 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 		    SELECT ts, task_type, auto_profile, auto_confidence,
 		           client_model, outbound_model, api_key_id, credential_id,
 		           auto_decision, success, latency_ms
-		    FROM request_logs_hot
+		    FROM _request_logs_hot
 		    WHERE request_id = ANY($1::text[])
 		    UNION ALL
 		    SELECT ts, task_type, auto_profile, auto_confidence,
 		           client_model, outbound_model, api_key_id, credential_id,
 		           auto_decision, success, latency_ms
-		    FROM request_logs
+		    FROM _request_logs
 		    WHERE ts >= NOW() - INTERVAL '30 days'
 		      -- ⚠️ 这个 ::text 是 **text 列 → text 的空操作**，不是 uuid::text，
 		      --   所以**不需要**规范化（D-RL-01 只针对 uuid 列）。
-		      --   上一行的 request_logs_hot 分支甚至直接 request_id = ANY(...) 不加转换 ——
+		      --   上一行的 _request_logs_hot 分支甚至直接 request_id = ANY(...) 不加转换 ——
 		      --   两边等价，加了只是不一致的噪音。别把它"顺手修"成 replace(...)。
 		      AND request_id::text = ANY($1::text[])
 		) rl
@@ -929,8 +929,8 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 // Statistics口径:
 //   - exact (routing_decision_log): sums decision_trace.planned_candidates / blocked_candidates
 //     per request; routable = planned − blocked; success = rows where success=true.
-//   - approximate (request_logs): used when no RDL rows match; planned≈requests×3, routable≈routed×2.
-//   - mixed: RDL has request count but empty traces; request_logs supplements stage totals.
+//   - approximate (_request_logs): used when no RDL rows match; planned≈requests×3, routable≈routed×2.
+//   - mixed: RDL has request count but empty traces; _request_logs supplements stage totals.
 //
 // Query params: model (required, canonical or raw alias), window=24h|7d
 func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request) {
@@ -1013,7 +1013,7 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		    SELECT 1
 		    FROM routing_analytics_source probe
 		    -- ★ 这一条原本**永远不成立**，等于把「探针请求」的排除整个静默失效了：
-		    --   probe.request_id 来自 routing_analytics_source ← request_logs*.request_id::text
+		    --   probe.request_id 来自 routing_analytics_source ← _request_logs*.request_id::text
 		    --   （text 列，无连字符 32-hex）；右侧是 uuid 列的 ::text（带连字符 36 位）。
 		    --   两侧字符串恒不相等 ⇒ NOT EXISTS 恒为真 ⇒ 该过滤形同虚设。
 		    WHERE probe.request_id = replace(routing_decision_log.request_id::text, '-', '')
@@ -1104,7 +1104,7 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 	}
 
 	confidence := "low"
-	confidenceHint := "样本不足或仅有 request_logs 近似估算"
+	confidenceHint := "样本不足或仅有 _request_logs 近似估算"
 	sampleN := fr.requests
 	traceRatio := 0.0
 	if fr.requests > 0 {
@@ -1119,7 +1119,7 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		confidenceHint = fmt.Sprintf("n=%d，trace 覆盖率 %.0f%%", fr.requests, traceRatio*100)
 	case dataSource == "mixed":
 		confidence = "medium"
-		confidenceHint = fmt.Sprintf("n=%d，RDL 与 request_logs 混合估算", fr.requests)
+		confidenceHint = fmt.Sprintf("n=%d，RDL 与 _request_logs 混合估算", fr.requests)
 	default:
 		if fr.requests > 0 {
 			confidenceHint = fmt.Sprintf("n=%d，数据为近似估算", fr.requests)

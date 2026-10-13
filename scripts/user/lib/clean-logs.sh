@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # clean-logs.sh — 请求日志定时清理（由 client-deploy.sh 的 cron/launchd 任务调用）。
 #
-# 网关的 request_logs 表随请求量增长，长期会膨胀磁盘。本脚本通过 PG 直接
+# 网关的 _request_logs 表随请求量增长，长期会膨胀磁盘。本脚本通过 PG 直接
 # 删除超过保留天数的冷数据（表结构与列名由网关 ApplyMigrations 保证）。
 # 失败必须退出非 0。
 #
@@ -36,10 +36,10 @@ psql_exec() {
     psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "$1"
 }
 
-# 网关请求日志表名：优先 request_logs（网关 ApplyMigrations 的热表），
-# 不存在则探测 request_logs_hot（部分部署使用冷热分表）。
-LOG_TABLE="$(psql_exec "SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('request_logs','request_logs_hot') LIMIT 1" 2>/dev/null | tr -d '[:space:]' || true)"
-[[ -n "$LOG_TABLE" ]] || { log "未找到 request_logs 表，跳过清理（首次部署或表名不同）"; exit 0; }
+# 网关请求日志表名：优先 _request_logs（网关 ApplyMigrations 的热表），
+# 不存在则探测 _request_logs_hot（部分部署使用冷热分表）。
+LOG_TABLE="$(psql_exec "SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('_request_logs','_request_logs_hot') LIMIT 1" 2>/dev/null | tr -d '[:space:]' || true)"
+[[ -n "$LOG_TABLE" ]] || { log "未找到 _request_logs 表，跳过清理（首次部署或表名不同）"; exit 0; }
 
 # 时间列：created_at（网关标准列）；缺失则跳过避免误删。
 COL="$(psql_exec "SELECT column_name FROM information_schema.columns WHERE table_name='${LOG_TABLE}' AND column_name IN ('created_at','requested_at','created_time') LIMIT 1" 2>/dev/null | tr -d '[:space:]' || true)"

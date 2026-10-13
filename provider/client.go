@@ -228,7 +228,7 @@ type Candidate struct {
 	// blank. Allowed values: "" (off), "off", "detect_only", "fix".
 	QualityFixMode string `json:"quality_fix_mode,omitempty"`
 	// RecentSuccessRate / RecentSamples are the live last-N success rate from
-	// request_logs (see recent_success_rate() in db/migrations/035). nil when
+	// _request_logs (see recent_success_rate() in db/migrations/035). nil when
 	// there are no recent samples; in that case the router falls back to the
 	// static SuccessRate. Used by router.loadScore as a soft quality signal so
 	// a failing-but-not-yet-excluded credential is de-prioritized before it
@@ -1787,7 +1787,7 @@ SELECT
 			-- (will be 'off' on next reconnect after the migration).
 			COALESCE(NULLIF(p.quality_fix_mode, ''), 'off') AS quality_fix_mode,
 			-- 2026-06-22 last-N success gate (035_routing_recent_success_rate.sql).
-			-- Live success rate over the most recent 50 request_logs rows for
+			-- Live success rate over the most recent 50 _request_logs rows for
 			-- this (credential, outbound_model). rsr.samples=0 when there are
 			-- no recent rows (cold start) — caller keeps the pair. rsr.rate is
 			-- used both for the hard-exclude filter below and (via the

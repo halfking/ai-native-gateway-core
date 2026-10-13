@@ -280,7 +280,7 @@ type monitorSummarySQLParams struct {
 // function (no DB, no globals) so unit tests can pin the core/detail branches
 // and the tenant guard without standing up a request.
 //
-// coreMode:  lightweight preload — drops request_logs/percentile_cont/credential_model_index
+// coreMode:  lightweight preload — drops _request_logs/percentile_cont/credential_model_index
 //
 //	joins so the dashboard settings path returns fast.
 //
@@ -614,7 +614,7 @@ type WindowStats struct {
 // refresh cheap.
 //
 // 2026-08-19: added mode=core for the dashboard settings/maintenance path —
-// skips request_logs/percentile_cont joins so a tab-open doesn't refetch the
+// skips _request_logs/percentile_cont joins so a tab-open doesn't refetch the
 // entire history. The default (mode absent or mode=detail) keeps the previous
 // contract. SQL building + row scanning live in buildMonitorSummarySQL /
 // runMonitorSummary so a pgxmock pool can drive them without exporting
@@ -699,8 +699,8 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 //
 // 2026-06-22: Redis is not configured on every environment, so when the
 // recorder is unavailable (or returns no data) we fall back to a direct
-// request_logs query. The response carries `source` ("redis" or
-// "request_logs") so the UI can show where the data came from.
+// _request_logs query. The response carries `source` ("redis" or
+// "_request_logs") so the UI can show where the data came from.
 func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -744,9 +744,9 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 		entries, _ = m.recorder.GetRecent(ctx, credentialID, model, since)
 	}
 
-	// ── Fallback: request_logs (when Redis is down or empty) ────────────
+	// ── Fallback: _request_logs (when Redis is down or empty) ────────────
 	if len(entries) == 0 {
-		source = "request_logs"
+		source = "_request_logs"
 		rlEntries, err := m.slidingWindowFromRequestLogs(ctx, credentialID, model, minutes, limit)
 		if err != nil {
 			writeInternalErr(w, "failed to get window", err)
@@ -788,7 +788,7 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 }
 
 // slidingWindowHotMaxMinutes 划分抽屉回退查询的两条路径：
-// ≤ 120 分钟走 hot 窗快路径（session_turns_hot / request_logs_hot，
+// ≤ 120 分钟走 hot 窗快路径（session_turns_hot / _request_logs_hot，
 // 252 实测 0.6ms vs canonical 视图 med 1.27s，~2,000×）；更长窗口保留
 // canonical 视图慢路径（视图三臂含全分区反连接，语义全域正确）。
 // 上界依据：hot 保留名义 8h（promote retention），水位滞后实测 ~12h
@@ -796,7 +796,7 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 // 1440min，超过阈值的窗口必须走视图，否则会静默截断历史。
 const slidingWindowHotMaxMinutes = 120
 
-// slidingWindowQuery 构造凭据监控抽屉的 request_logs 回退查询（长窗
+// slidingWindowQuery 构造凭据监控抽屉的 _request_logs 回退查询（长窗
 // 路径，> slidingWindowHotMaxMinutes 时使用）。2026-09-21 提取为函数：
 // 真库回归测试（sliding_window_realdb_test.go）复用同一文本，防测试与
 // 生产 SQL 漂移——bg/feature_stats_worker.go featureDistributionQuery
@@ -810,7 +810,7 @@ const slidingWindowHotMaxMinutes = 120
 // 下推（R8 fact 43 同款），252 实测单次 med 1.27s、事故期 ×3,283/h，
 // 观测负载反过来放大了宿主 OOM 事故。热路径语义在窗口内与视图精确
 // 等价（对拍 EXCEPT 双向差集 0）：窗口 ≤ hot 保留期时，与 request 行
-// 同生的 turn 必在 session_turns_hot，故分区臂与 request_logs 的
+// 同生的 turn 必在 session_turns_hot，故分区臂与 _request_logs 的
 // session_turns（全分区）反连接可安全省略。
 func slidingWindowQuery() string {
 	return `
@@ -818,7 +818,7 @@ func slidingWindowQuery() string {
 		       success, COALESCE(latency_ms, 0), COALESCE(error_kind, '')
 		FROM request_logs_with_current_month
 		WHERE credential_id = $1
-		  -- case-insensitive: request_logs.outbound_model can differ in case
+		  -- case-insensitive: _request_logs.outbound_model can differ in case
 		  -- from model_offers.raw_model_name (e.g. "MiniMax-M3" vs "minimax-m3"),
 		  -- so a plain = misses most rows.
 		  AND lower(COALESCE(outbound_model, client_model)) = lower($2)
@@ -833,7 +833,7 @@ func slidingWindowQuery() string {
 // slidingWindowQuery 头注；列投影与视图回退查询逐列一致，扫描面：
 //   - session_turns_hot 臂：idx_session_turns_hot_credential_ts
 //     ((CASE credential)::bigint, ts) 表达式索引伺服 credential+窗过滤；
-//   - request_logs_hot 臂：idx_request_logs_hot_credential_model_ts
+//   - _request_logs_hot 臂：idx_request_logs_hot_credential_model_ts
 //     (credential, lower(COALESCE(model)), ts) 表达式索引把模型过滤
 //     一并推入索引条件，反连接探测走
 //     idx_session_turns_hot_request 的 Index Only。
@@ -856,7 +856,7 @@ func slidingWindowHotQuery() string {
 		    UNION ALL
 		    SELECT r.request_id, r.ts, r.success, r.latency_ms, r.error_kind,
 		           r.outbound_model, r.client_model, r.credential_id
-		    FROM request_logs_hot r
+		    FROM _request_logs_hot r
 		    WHERE NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = r.request_id)
 		) cand
 		WHERE credential_id = $1
@@ -870,7 +870,7 @@ func slidingWindowHotQuery() string {
 }
 
 // slidingWindowFromRequestLogs builds CallEntry timeline data directly from
-// the request_logs tables. Used when the Redis recorder is unavailable or
+// the _request_logs tables. Used when the Redis recorder is unavailable or
 // returns no entries. Window-gated: ≤ slidingWindowHotMaxMinutes reads the
 // hot dual-write tables (index descent, ~sub-ms); longer windows read the
 // canonical view (slidingWindowQuery, 729-serviced) which sees full history.
@@ -1611,7 +1611,7 @@ func runCredentialDecisions(ctx context.Context, db pgxQueryer, p credentialDeci
 	args = append(args, p.Limit)
 
 	q := fmt.Sprintf(`
-		-- request_id 规范化成 32-hex（与 request_logs / request_state_transitions 一致，
+		-- request_id 规范化成 32-hex（与 _request_logs / request_state_transitions 一致，
 		-- §4.6.66 D-RL-01）：uuid 列的 ::text 带连字符，消费侧按 text 精确匹配必然落空。
 		SELECT rdl.ts, replace(rdl.request_id::text, '-', '') AS request_id,
 		       rdl.model, rdl.tier, rdl.success,

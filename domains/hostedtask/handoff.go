@@ -2,7 +2,7 @@
 //
 // 轻量路径不走 ACC v3 transfer 状态机、不动 ACC 权威状态：非终态任务由
 // RecallTask 在同事务内做 cancelled 终态抢占后快照。完整 P1 路径还含线层
-// 导出（request_logs turns 摘要）、续层指针（pi native session id 四元索引）
+// 导出（_request_logs turns 摘要）、续层指针（pi native session id 四元索引）
 // 与知层（Memora scope_chain + context-manifest + compress 引用）。
 package hostedtask
 

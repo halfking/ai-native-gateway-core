@@ -53,7 +53,7 @@ const (
 	AttachmentStatusStoreFailed   AttachmentStatus = "store_failed"
 )
 
-// AttachmentMetadata 描述单个附件的元数据，序列化后存入 request_logs.attachments。
+// AttachmentMetadata 描述单个附件的元数据，序列化后存入 _request_logs.attachments。
 type AttachmentMetadata struct {
 	// Type 附件类型：image | audio | video | file（由提取器按来源块
 	// 种类标注；DB 列 attachment_type 为自由字符串，无枚举约束）

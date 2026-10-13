@@ -138,7 +138,7 @@ func TestSessionModelNameSources(t *testing.T) {
 		)
 		SELECT count(*),
 		       count(*) FILTER (WHERE EXISTS (
-		           SELECT 1 FROM public.request_logs r WHERE r.request_id = samp.request_id))
+		           SELECT 1 FROM public._request_logs r WHERE r.request_id = samp.request_id))
 		FROM samp`).Scan(&sampTotal, &sampEligible); err != nil {
 		t.Logf("backfill eligibility not measurable (%v)", err)
 	} else if sampTotal == 0 {
@@ -148,7 +148,7 @@ func TestSessionModelNameSources(t *testing.T) {
 		t.Logf("backfill eligibility: measured %d rows of a 1/256 deterministic sample, so the "+
 			"parent rows lacking raw_model_name are estimated at %d. Of the measured rows, "+
 			"%d = %.1f%% have a v1 twin, so a reverse backfill of outbound_model from "+
-			"request_logs is feasible for about that share — the rest have no v1 source and are "+
+			"_request_logs is feasible for about that share — the rest have no v1 source and are "+
 			"a permanent historical gap, not a job that was missed",
 			sampTotal, sampTotal*256, sampEligible,
 			100*float64(sampEligible)/float64(sampTotal))

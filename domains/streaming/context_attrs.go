@@ -12,7 +12,7 @@ import (
 // telemetry.ContextAttrsEntry，供侧表 request_context_attrs 写入。
 //
 // 与 BuildFailureEntry/BuildSuccessEntry 同位，但**只构造侧表行**，不构造
-// request_logs 行。两个入口是独立的（侧表失败不阻塞主请求日志）。
+// _request_logs 行。两个入口是独立的（侧表失败不阻塞主请求日志）。
 //
 // 入参 ctx 用于桥接中间件后到达的兜底值（如 origin_mw 写入的 origin.client_ip
 // 在 fillAttemptMeta 之后才有，故通过 ApplyAttrsFromContext 兜底）。

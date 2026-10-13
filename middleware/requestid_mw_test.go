@@ -66,7 +66,7 @@ func TestRequestIDMiddleware_AlwaysGeneratesFreshServerID(t *testing.T) {
 // end-to-end shape of the original bug: 5 successive HTTP requests
 // carrying the same client X-Request-Id must come out the back end
 // as 5 different server ids. Without this fix, the 5 server ids were
-// identical and the request_logs rows collapsed into 5 entries with
+// identical and the _request_logs rows collapsed into 5 entries with
 // the same primary request_id (the source of the cross-request
 // pollution symptom).
 func TestRequestIDMiddleware_FiveRetriesProduceFiveDistinctIDs(t *testing.T) {

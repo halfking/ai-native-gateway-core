@@ -390,7 +390,7 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 
 	// Clone the REAL frozen contract: the live canonical view's column list
 	// minus the five appended names IS the frozen 108-column base contract;
-	// both request_logs tables keep exactly those shared columns (plus the
+	// both _request_logs tables keep exactly those shared columns (plus the
 	// appended five and hot-only extras), so the scratch is a faithful
 	// frozen-chain shape — the shape production (local + 252) runs today.
 	frozen, err := frozenContractColumnList(ctx, pool, dsn)
@@ -407,17 +407,17 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 		-- Pre-create the frozen-shape wrapper chain (no fp/raw in the base —
 		-- the ensure must reuse it and compose the 4-lateral v1 branch).
 		CREATE VIEW public.request_logs_with_current_month_without_customer_id AS
-		SELECT `+strings.Join(frozen, ", ")+` FROM public.request_logs_hot
+		SELECT `+strings.Join(frozen, ", ")+` FROM public._request_logs_hot
 		UNION ALL
-		SELECT `+strings.Join(frozen, ", ")+` FROM public.request_logs;
+		SELECT `+strings.Join(frozen, ", ")+` FROM public._request_logs;
 		CREATE VIEW public.request_logs_with_current_month_without_request_class_due_at AS
 		SELECT v.*, m.customer_id
 		FROM public.request_logs_with_current_month_without_customer_id v
 		LEFT JOIN LATERAL (
-			SELECT customer_id FROM public.request_logs_hot h
+			SELECT customer_id FROM public._request_logs_hot h
 			WHERE h.request_id = v.request_id AND h.ts = v.ts
 			UNION ALL
-			SELECT customer_id FROM public.request_logs p
+			SELECT customer_id FROM public._request_logs p
 			WHERE p.request_id = v.request_id AND p.ts = v.ts
 			LIMIT 1
 		) m ON true;
@@ -463,8 +463,8 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 		t.Fatalf("ensure (v2 cold build): %v", err)
 	}
 	var views int
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM pg_views WHERE schemaname='public' AND viewname LIKE 'request_logs%'`).Scan(&views)
-	t.Logf("request_logs%% views after ensure = %d", views)
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM pg_views WHERE schemaname='public' AND viewname LIKE '_request_logs%'`).Scan(&views)
+	t.Logf("_request_logs%% views after ensure = %d", views)
 	ensureViewdef := viewDefinition(t, ctx, pool)
 	if !strings.Contains(ensureViewdef, "session_turns") {
 		t.Fatal("ensure produced a non-v2 body on a session-family database")
@@ -533,17 +533,17 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 		DROP VIEW IF EXISTS public.request_logs_with_current_month_without_request_class_due_at CASCADE;
 		DROP VIEW IF EXISTS public.request_logs_with_current_month_without_customer_id CASCADE;
 		CREATE VIEW public.request_logs_with_current_month_without_customer_id AS
-		SELECT `+strings.Join(frozen, ", ")+` FROM public.request_logs_hot
+		SELECT `+strings.Join(frozen, ", ")+` FROM public._request_logs_hot
 		UNION ALL
-		SELECT `+strings.Join(frozen, ", ")+` FROM public.request_logs;
+		SELECT `+strings.Join(frozen, ", ")+` FROM public._request_logs;
 		CREATE VIEW public.request_logs_with_current_month_without_request_class_due_at AS
 		SELECT v.*, m.customer_id
 		FROM public.request_logs_with_current_month_without_customer_id v
 		LEFT JOIN LATERAL (
-			SELECT customer_id FROM public.request_logs_hot h
+			SELECT customer_id FROM public._request_logs_hot h
 			WHERE h.request_id = v.request_id AND h.ts = v.ts
 			UNION ALL
-			SELECT customer_id FROM public.request_logs p
+			SELECT customer_id FROM public._request_logs p
 			WHERE p.request_id = v.request_id AND p.ts = v.ts
 			LIMIT 1
 		) m ON true;
@@ -585,15 +585,15 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	// Data semantics: dedup + D4 NULL passthrough + details overlay + 740
 	// client_ip passthrough.
 	seed := `
-		-- ts 必须给：真库 request_logs.ts 是 NOT NULL，而 v1 分支的 lateral
+		-- ts 必须给：真库 _request_logs.ts 是 NOT NULL，而 v1 分支的 lateral
 		-- 以 h.ts = v.ts 关联。旧夹具不写 ts ⇒ lateral 恒不命中 ⇒ v1 分支的
 		-- request_class/due_at/fp/raw 全是 NULL，而**没有任何断言碰过这条腿**
 		-- （client_ip 走 v.client_ip 绕过了 lateral），所以这个缺陷一直藏着。
 		-- 815 的第一批断言是第一个读 lateral 的断言，当场把它挖了出来。
-		INSERT INTO public.request_logs_hot (id, request_id, gw_session_id, ts, prompt_tokens, completion_tokens, customer_id, request_class, raw_model_name, client_model, quality_flags, client_ip, origin_stage, token_band, client_forwarded_for)
+		INSERT INTO public._request_logs_hot (id, request_id, gw_session_id, ts, prompt_tokens, completion_tokens, customer_id, request_class, raw_model_name, client_model, quality_flags, client_ip, origin_stage, token_band, client_forwarded_for)
 		VALUES (900001, 'req-v1-only', 'sess-legacy', now(), 10, 5, 1, 'immediate', 'm-alpha', 'cli-alpha', '{}', '203.0.113.7', 'business', 'band-mid', '203.0.113.9')
 		     , (901001, 'req-dual', 'sess-dual', now(), 20, 8, 2, 'immediate', 'm-beta', 'cli-beta', '{}', NULL, 'business', 'band-dual-v1', '198.51.100.1');
-		INSERT INTO public.request_logs (request_id, gw_session_id, ts, prompt_tokens, completion_tokens, customer_id, request_class, raw_model_name)
+		INSERT INTO public._request_logs (request_id, gw_session_id, ts, prompt_tokens, completion_tokens, customer_id, request_class, raw_model_name)
 		VALUES ('req-parent-only', NULL, now(), 1, 2, 3, 'immediate', 'm-gamma');
 		INSERT INTO public.session_turns_hot (id, session_id, tenant_id, request_id, ts, turn_no, model, success, status_code, credits_charged, partition_date)
 		VALUES (910001, 'sess-dual', 'default', 'req-dual', now(), 1, 'm-beta-live', true, 200, 7, CURRENT_DATE)
@@ -739,12 +739,12 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	// 活库 viewdef 的三条臂（2026-10-02 按 pg_get_viewdef 行号实测）：
 	//   L1   SELECT NULL::bigint AS id  ← 臂 FROM session_turns_hot t（会话 hot）
 	//   L146 SELECT NULL::bigint AS id  ← 臂 FROM session_turns t     （会话 cold）
-	//   L291 SELECT rl.id,              ← v1 臂（rl = request_logs_hot）
+	//   L291 SELECT rl.id,              ← v1 臂（rl = _request_logs_hot）
 	//
 	// 所以「`id` 永不投影」只对**会话侧**成立。会话侧不能给 id，因为 v1 的
-	// request_logs.id 是请求行 id、session 侧的 id 是 turn id，1,515,984 组同
+	// _request_logs.id 是请求行 id、session 侧的 id 是 turn id，1,515,984 组同
 	// request_id 配对里两者相等 0 次。而 v1-only 的行**必须**带着它真实的
-	// request_logs.id 出去，否则只存在于 v1 的历史行会在视图里彻底失去主键。
+	// _request_logs.id 出去，否则只存在于 v1 的历史行会在视图里彻底失去主键。
 	// （我曾把这写成「两条臂都补 NULL、决策在两条臂上一致落地」——那是把 v1 臂
 	//   当成了会话臂；实测 L291 是真值透传。）
 	//
@@ -778,7 +778,7 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	}{
 		{"req-dual", "会话 hot 臂（反连接后由 session_turns_hot 供给；源 turn id=910001、v1 孪生 id=901001 均不应外泄）", true},
 		{"req-turn-parent", "会话 cold 臂（由 session_turns 供给；源 turn id=910003 不应外泄）", true},
-		{"req-v1-only", "v1 臂（必须透传真实 request_logs.id=900001）", false},
+		{"req-v1-only", "v1 臂（必须透传真实 _request_logs.id=900001）", false},
 	} {
 		var id *int64
 		if err := pool.QueryRow(ctx,
@@ -789,7 +789,7 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 		if tc.wantNil {
 			if id != nil {
 				t.Fatalf("%s（%s）的视图 id = %d，必须是 NULL。\n"+
-					"会话侧的 id 是 turn id，与 v1 的 request_logs.id 不是同一个东西"+
+					"会话侧的 id 是 turn id，与 v1 的 _request_logs.id 不是同一个东西"+
 					"（1,515,984 组同 request_id 配对里相等 0 次）。给一个有值的 id 比给 NULL "+
 					"更坏——读方不会报错，只会算出一个错的数。",
 					tc.requestID, tc.arm, *id)
@@ -800,7 +800,7 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 		// 太弱——turn id 也是非空的，而那正是本条要防的回归。
 		if id == nil {
 			t.Fatalf("%s（%s）的视图 id 是 NULL，但它必须透传源表的真值 900001。\n"+
-				"v1-only 的行只存在于 request_logs，视图若在这里也补 NULL，"+
+				"v1-only 的行只存在于 _request_logs，视图若在这里也补 NULL，"+
 				"这批历史行会在视图里彻底失去主键。", tc.requestID, tc.arm)
 		}
 		if *id != 900001 {
@@ -978,7 +978,7 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	if _, err := pool.Exec(ctx, string(down733)); err != nil {
 		t.Fatalf("apply 733 down: %v", err)
 	}
-	// 710 down then restores a v1 (request_logs-only) body.
+	// 710 down then restores a v1 (_request_logs-only) body.
 	downSQL, err := os.ReadFile(filepath.Join("..", "sql", "migrations", "startup",
 		"710_request_logs_view_session_family_v2.down.sql"))
 	if err != nil {
@@ -1057,7 +1057,7 @@ func frozenContractColumnList(ctx context.Context, scratch *pgxpool.Pool, liveDS
 	return names, nil
 }
 
-// cloneTablesFrozenDDL derives CREATE TABLE statements for the request_logs
+// cloneTablesFrozenDDL derives CREATE TABLE statements for the _request_logs
 // pair restricted to the frozen contract (the shared post-485 columns —
 // among them five hot/parent type-conflicting ones — are dropped from BOTH
 // sides), plus the session_turns pair cloned in full. The result is a
@@ -1077,7 +1077,7 @@ func cloneTablesFrozenDDL(ctx context.Context, liveDSN string, frozen []string) 
 	for _, name := range frozen {
 		keep[name] = true
 	}
-	// 815 的三列必须留在克隆里：迁移 815 对物理 request_logs(_hot) 有源守卫，
+	// 815 的三列必须留在克隆里：迁移 815 对物理 _request_logs(_hot) 有源守卫，
 	// 缺列即 notice 后 RETURN（不重建），于是列数停在 115 而末尾的 fail-closed
 	// 对账会报「rebuild did not converge」——一个指向「重建逻辑坏了」而真因是
 	// 「夹具少了一列」的失败信息。夹具要忠实反映 428/485 之后的物理表。
@@ -1102,7 +1102,7 @@ func cloneTablesFrozenDDL(ctx context.Context, liveDSN string, frozen []string) 
 	}
 
 	var b strings.Builder
-	for _, table := range []string{"request_logs", "request_logs_hot"} {
+	for _, table := range []string{"_request_logs", "_request_logs_hot"} {
 		cols, err := liveColumns(ctx, live, table)
 		if err != nil {
 			return "", err

@@ -22,9 +22,14 @@ var partitionParents = []string{
 	"instance_heartbeats",
 	"mock_probe_history",
 	"model_probe_runs",
+	// 两代物理名并存（迁移 860，2026-10-14 改名）：DDL/迁移文本里是旧名，
+	// Go 侧 DML 与线上库是新名 `_request_logs*`。守卫两向都要看得见。
 	"request_logs",
 	"request_logs_archive",
 	"request_logs_bodies",
+	"_request_logs",
+	"_request_logs_archive",
+	"_request_logs_bodies",
 	"request_wal",
 	"request_wal_archive",
 	"routing_decision_log",

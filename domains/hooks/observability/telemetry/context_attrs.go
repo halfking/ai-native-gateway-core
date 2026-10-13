@@ -19,12 +19,12 @@ const (
 // ContextAttrsEntry 是 request_context_attrs 侧表的一行。
 //
 // 字段命名严格对齐迁移 407 的列名。零值（nil/""）即不写入；pointer 字段
-// 保证 NULL 写入，与 request_logs 主表语义一致。
+// 保证 NULL 写入，与 _request_logs 主表语义一致。
 //
 // 写入语义：INSERT INTO request_context_attrs ON CONFLICT (request_id)
 // DO UPDATE SET ... — 幂等，支持 upsert 补全（同一 request_id 可多次 emit）。
 //
-// 与 RequestLogEntry 完全独立：本表写入失败不影响 request_logs 写入。
+// 与 RequestLogEntry 完全独立：本表写入失败不影响 _request_logs 写入。
 type ContextAttrsEntry struct {
 	Op          ContextAttrsOp `json:"op,omitempty"`
 	RequestID   string         `json:"request_id"`

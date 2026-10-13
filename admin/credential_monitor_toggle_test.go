@@ -68,7 +68,7 @@ func TestMonitorSummaryCoreModeSQLShape(t *testing.T) {
 		t.Fatal("could not locate a lightweight (core) SELECT fragment that joins model_offers/model_probe_state and gates on tenant_id")
 	}
 	if !detailFound {
-		t.Fatal("could not locate a detail SELECT fragment that touches the heavy aggregates (request_logs / recent_success_rate / percentile_cont)")
+		t.Fatal("could not locate a detail SELECT fragment that touches the heavy aggregates (_request_logs / recent_success_rate / percentile_cont)")
 	}
 }
 

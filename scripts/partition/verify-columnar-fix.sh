@@ -1,6 +1,6 @@
 #!/bin/bash
 # verify-columnar-fix.sh - 验证 columnar 分区修复是否生效
-# 测试 request_logs 和 usage_ledger 的 INSERT 和 UPDATE 是否正常工作
+# 测试 _request_logs 和 usage_ledger 的 INSERT 和 UPDATE 是否正常工作
 
 set -euo pipefail
 
@@ -86,10 +86,10 @@ else
     exit 1
 fi
 
-# 测试 request_logs INSERT
-log_info "测试 request_logs INSERT..."
+# 测试 _request_logs INSERT
+log_info "测试 _request_logs INSERT..."
 psql "$DB_URL" <<EOF
-INSERT INTO request_logs (
+INSERT INTO _request_logs (
     request_id, ts, tenant_id, application_id, api_key_id,
     end_user_id, client_model, outbound_model,
     credential_id, provider_id, canonical_id,
@@ -107,9 +107,9 @@ INSERT INTO request_logs (
 EOF
 
 if [ $? -eq 0 ]; then
-    log_success "request_logs INSERT 成功"
+    log_success "_request_logs INSERT 成功"
 else
-    log_error "request_logs INSERT 失败"
+    log_error "_request_logs INSERT 失败"
     exit 1
 fi
 
@@ -160,13 +160,13 @@ else
 fi
 
 # 验证 UPDATE 结果
-SUCCESS=$(psql "$DB_URL" -tAc "SELECT success FROM request_logs WHERE request_id = '$TEST_REQUEST_ID'")
-STATUS=$(psql "$DB_URL" -tAc "SELECT request_status FROM request_logs WHERE request_id = '$TEST_REQUEST_ID'")
+SUCCESS=$(psql "$DB_URL" -tAc "SELECT success FROM _request_logs WHERE request_id = '$TEST_REQUEST_ID'")
+STATUS=$(psql "$DB_URL" -tAc "SELECT request_status FROM _request_logs WHERE request_id = '$TEST_REQUEST_ID'")
 
 if [ "$SUCCESS" = "t" ] && [ "$STATUS" = "success" ]; then
-    log_success "request_logs UPDATE 数据验证成功 (success=true, status=success)"
+    log_success "_request_logs UPDATE 数据验证成功 (success=true, status=success)"
 else
-    log_error "request_logs UPDATE 数据验证失败 (success=$SUCCESS, status=$STATUS)"
+    log_error "_request_logs UPDATE 数据验证失败 (success=$SUCCESS, status=$STATUS)"
     exit 1
 fi
 
@@ -175,7 +175,7 @@ log_step "步骤 4: 清理测试数据"
 log_info "删除测试数据..."
 psql "$DB_URL" <<EOF
 DELETE FROM usage_ledger WHERE request_id = '$TEST_REQUEST_ID';
-DELETE FROM request_logs WHERE request_id = '$TEST_REQUEST_ID';
+DELETE FROM _request_logs WHERE request_id = '$TEST_REQUEST_ID';
 EOF
 
 log_success "测试数据已清理"
@@ -185,6 +185,6 @@ echo ""
 log_success "所有测试通过！columnar 分区修复已生效"
 log_info "修复内容："
 echo "  - UPDATE usage_ledger → UPDATE usage_ledger_default"
-echo "  - UPDATE request_logs → UPDATE request_logs_default"
+echo "  - UPDATE _request_logs → UPDATE request_logs_default"
 echo "  - 避免扫描 columnar 分区，防止 CTID 扫描错误"
 echo ""

@@ -1,7 +1,7 @@
 -- 缓存命中率基线诊断 - 按会话长度分组
 -- 文件: scripts/cache-baseline/04-by-session-length.sql
 -- 用途: 多轮对话 vs 单轮请求的缓存效果差异
--- 数据源: request_logs
+-- 数据源: _request_logs
 -- 时间窗: 最近 7 天
 
 WITH session_stats AS (
@@ -10,7 +10,7 @@ WITH session_stats AS (
     COUNT(*) AS turn_count,
     SUM(COALESCE(cache_read_tokens, 0)) AS cache_read,
     SUM(COALESCE(prompt_tokens, 0)) AS prompt
-  FROM request_logs
+  FROM _request_logs
   WHERE ts >= NOW() - INTERVAL '7 days'
     AND success = true
     AND session_id IS NOT NULL

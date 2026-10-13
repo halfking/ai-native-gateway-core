@@ -8,7 +8,7 @@ import (
 )
 
 // TestRebuildRangeStatsChunksByDay pins the chunking contract. A single pass
-// over the retention window scans months of request_logs and blows the 2-minute
+// over the retention window scans months of _request_logs and blows the 2-minute
 // rollup budget; one day per pass keeps each statement bounded.
 func TestRebuildRangeStatsRejectsEmptyRange(t *testing.T) {
 	w := &StatsMinuteRollup{}

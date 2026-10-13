@@ -64,7 +64,7 @@ var allowedParentDML = []struct {
 	{"domains/session/v2/session_aggregator.go", "sessions", 2,
 		"会话元数据状态机：CloseSession 置 status/closed_at，以及带 COALESCE 的字段合并更新（经 sessionAdvisoryLockSQL 串行）。"},
 	{"domains/session/v2/session_request_status_backfill.go", "session_turns", 1,
-		"request_status 回填的 UPDATE ... FROM (VALUES …) 批量回写（:667）。与同族 claim/状态机不同：它的**分母口径就是全量 turn**（候选集按 request_id join request_logs 母表统计，见 sqlreadguard 同批登记），按 hot 单窗回写会让「已回填比例」的分母与写入面错位 ⇒ 统计恒为 0。带 WHERE request_status IS NULL 幂等守卫。"},
+		"request_status 回填的 UPDATE ... FROM (VALUES …) 批量回写（:667）。与同族 claim/状态机不同：它的**分母口径就是全量 turn**（候选集按 request_id join _request_logs 母表统计，见 sqlreadguard 同批登记），按 hot 单窗回写会让「已回填比例」的分母与写入面错位 ⇒ 统计恒为 0。带 WHERE request_status IS NULL 幂等守卫。"},
 	{"domains/stats/event_writer.go", "stats_event_inbox", 1,
 		"inbox 行状态机：pending→processed 回写。注释记录本条曾留下 119 万行「processed_at 已置但状态仍 pending」的脏数据。"},
 	{"domains/stats/inbox_consumer.go", "stats_event_inbox", 4,
@@ -213,6 +213,28 @@ func TestParentsAreDeclaredInDDL(t *testing.T) {
 	if len(stmts) < 50 {
 		t.Fatalf("只扫到 %d 条 PARTITION BY 语句，扫描范围疑似失效（仓内应有近百条）", len(stmts))
 	}
+	// 迁移 860（2026-10-14）把 request_logs 族改名 `_` 前缀后，清单里的
+	// 前缀名在静态 DDL 里没有 PARTITION BY 声明——它们的声明经 RENAME 链
+	// 落在旧名上。与 admin 包 liveRelations 的迁移文本重放同一条路：
+	// `ALTER TABLE <old> RENAME TO <new>` 让 <new> 继承 <old> 的声明。
+	renamedTo := map[string]bool{}
+	ren := regexp.MustCompile(`(?i)ALTER\s+TABLE\s+(?:public\.)?([a-z_][a-z0-9_]*)\s+RENAME\s+TO\s+(?:public\.)?([a-z_][a-z0-9_]*)`)
+	err = filepath.Walk(filepath.Join(root, "sql", "migrations"), func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !(strings.HasSuffix(p, ".sql") && !strings.HasSuffix(p, ".down.sql")) {
+			return nil
+		}
+		b, rerr := os.ReadFile(p)
+		if rerr != nil {
+			return nil
+		}
+		for _, m := range ren.FindAllStringSubmatch(string(b), -1) {
+			renamedTo[strings.ToLower(m[2])] = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk migrations for renames: %v", err)
+	}
 	for _, name := range partitionParents {
 		re := regexp.MustCompile(`\b` + strings.ToUpper(name) + `\b`)
 		found := false
@@ -222,8 +244,11 @@ func TestParentsAreDeclaredInDDL(t *testing.T) {
 				break
 			}
 		}
+		if !found && renamedTo[strings.ToLower(name)] {
+			found = true
+		}
 		if !found {
-			t.Errorf("父表清单里的 %q 在仓内 DDL 中找不到 PARTITION BY 声明："+
+			t.Errorf("父表清单里的 %q 在仓内 DDL 中找不到 PARTITION BY 声明（含 RENAME 链）："+
 				"要么拼错，要么该表已改名/已下线——两种都要立刻改清单", name)
 		}
 	}

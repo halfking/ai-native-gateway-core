@@ -25,7 +25,7 @@ func TestClampUsageDays(t *testing.T) {
 
 func TestRequestLogsSource(t *testing.T) {
 	source, alias := requestLogsSource(7)
-	if source != "request_logs_hot AS r" || alias != "r" {
+	if source != "_request_logs_hot AS r" || alias != "r" {
 		t.Fatalf("requestLogsSource(7) = %q/%q", source, alias)
 	}
 	source, alias = requestLogsSource(30)

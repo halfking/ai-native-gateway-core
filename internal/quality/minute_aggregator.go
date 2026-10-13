@@ -11,8 +11,8 @@ import (
 var minuteLock sync.Mutex
 
 // minuteMetricsSQL 是分钟质量聚合的 INSERT..SELECT（写目标
-// provider_metrics_minute，非 request_logs 家族——停写门不管它）。
-// 2026-10-13 S3 波 2（停写切换）：源 request_logs_hot → canonical 视图。
+// provider_metrics_minute，非 _request_logs 家族——停写门不管它）。
+// 2026-10-13 S3 波 2（停写切换）：源 _request_logs_hot → canonical 视图。
 // 提升为包级变量是给形状钉桩用的。
 var minuteMetricsSQL = `
 INSERT INTO provider_metrics_minute (
@@ -47,7 +47,7 @@ SELECT
     SUM(COALESCE(prompt_tokens, 0))::BIGINT AS total_input_tokens,
     SUM(COALESCE(completion_tokens, 0))::BIGINT AS total_output_tokens,
     SUM(COALESCE(cost_usd, 0)) AS total_cost
--- 2026-10-13 S3 波 2（停写切换）：源 request_logs_hot → canonical 视图。
+-- 2026-10-13 S3 波 2（停写切换）：源 _request_logs_hot → canonical 视图。
 -- 停写后新流量只落 session_turns；视图会话臂 provider_id 依赖 734 details
 -- 特征层，缺 details 行的轮次被下方 provider_id IS NOT NULL 谓词排除
 -- （登记：分钟聚合对新流量的覆盖随 details 覆盖率走）。全部 12 个表达式

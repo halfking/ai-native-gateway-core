@@ -946,10 +946,10 @@ func main() {
 	var sessionDigestBackfillForShutdown any
 	// sessionRequestStatusBackfillForShutdown — request_status 存量回填
 	// (migration 823, 2026-10-04, 审计 §9.155/§9.156)：把
-	// request_logs.request_status 批量复制进 session_turns.request_status。
-	// 退役 request_logs 之后源表不复存在，存量标签就此定格，所以「回填
+	// _request_logs.request_status 批量复制进 session_turns.request_status。
+	// 退役 _request_logs 之后源表不复存在，存量标签就此定格，所以「回填
 	// 完成」是退役的前置条件（决策表 D9 第四条）。
-	// 作业在 request_logs 消失时安静停摆（不再重试、不刷 ERROR）。
+	// 作业在 _request_logs 消失时安静停摆（不再重试、不刷 ERROR）。
 	// 与 digest 同一生命周期：dbConn 就绪后启动，pools.CloseAll 前排空。
 	var sessionRequestStatusBackfillForShutdown any
 	// sessionMirrorOutboxReaperForShutdown — spec §12 GAP 2 closure (migration
@@ -2190,7 +2190,7 @@ func main() {
 		// 2026-06-23 Phase 2 (P1): per-candidate failure logger. Writes one
 		// row to candidate_failure_logs per failed (request, credential,
 		// model, attempt) tuple so operators can see WHICH credentials
-		// failed in a sequence (request_logs only records the LAST one).
+		// failed in a sequence (_request_logs only records the LAST one).
 		if dbConn != nil {
 			routingExec.FailureLogger = executors.NewCandidateFailureWriter(dbConn.Pool())
 			slog.Info("candidate_failure_logger initialized")
@@ -2487,12 +2487,12 @@ func main() {
 	// ── Telemetry ─────────────────────────────────────────────────────────
 	telemetryClient := telemetry.NewClient()
 	// audit-24h-20260829-r5 §5.5: classify success-but-empty-response-body
-	// on every persisted request_logs row. Wired at process start so the
+	// on every persisted _request_logs row. Wired at process start so the
 	// hook sees every INSERT/UPDATE that survives persistRequestLog.
 	telemetry.RegisterEmptyResponseGate(telemetryClient)
 	// 2026-09-05 审计 B2 接线：lite 模式（无 PG，telemetry Enabled 恒 false、
 	// 请求日志不落盘）把 telemetry 持久化管道桥接到存储工厂——SQLite
-	// request_logs/sessions/session_turns + FileBodies 原文文件。full/未启用
+	// _request_logs/sessions/session_turns + FileBodies 原文文件。full/未启用
 	// 模式不注册 sink，全部路径行为零变化（full 热区装配 P3 的 runtime 非 nil
 	// 但 liteMode()==false，必须走历史 PG 持久化，factory 亦为 nil）。
 	// lite 会话读面（R28-S-2）：lite 块先捕获 reader，admin handler 创建后
@@ -2500,7 +2500,7 @@ func main() {
 	var liteSessionsReader func(ctx context.Context, tenantID string, opts *storage.ListOptions) ([]*storage.Session, error)
 	if storageRt.liteMode() {
 		telemetryClient.SetRequestLogSink(storageRt.newLiteRequestLogSink())
-		slog.Info("storage lite mode: telemetry request log sink wired (SQLite request_logs + session journal + file bodies)")
+		slog.Info("storage lite mode: telemetry request log sink wired (SQLite _request_logs + session journal + file bodies)")
 		// R28-S-1/S-2 (2026-09-30 round 31): lite 模式的能力边界显式声明——
 		// 计费面（积分扣费/usage_ledger/对帐）不运行；cost_usd 依赖 PG 价表
 		// （model_offers/pricing_plans），lite 无 PG 时恒 NULL（价表进 lite
@@ -2607,7 +2607,7 @@ func main() {
 	}
 
 	// ── Live request stream SSE hub (2026-07-03) ───────────────────
-	// Fans out newly-persisted request_logs rows to dashboard clients
+	// Fans out newly-persisted _request_logs rows to dashboard clients
 	// at GET /api/admin/live-stream. Created here (not in admin) so
 	// we have access to the database pool and the telemetry client.
 	// Without a DB the hub still relays live broadcasts from
@@ -2732,7 +2732,7 @@ func main() {
 		slog.Info("request WAL enabled", "queue_size", 10000, "batch_size", 50)
 	}
 
-	// 2026-07-15: Mirror request_logs.attachments JSONB into the relational
+	// 2026-07-15: Mirror _request_logs.attachments JSONB into the relational
 	// public.request_attachments table (migration 401). Best-effort hook:
 	// any DB error is logged but never blocks the primary INSERT.
 	if telemetryClient != nil && dbConn != nil && dbConn.Enabled() {
@@ -2764,7 +2764,7 @@ func main() {
 			// UPSERT 兜底，/admin/turns 的项目→任务层级依赖该表。
 			sessionDimWriter := sessionv2mirror.NewSessionDimWriter(dbConn.Pool())
 			// S4 交接（2026-10-13）：session_summaries 聚合此前由
-			// request_logs_hot 触发器喂养，停写后断粮。summary 写入器接管
+			// _request_logs_hot 触发器喂养，停写后断粮。summary 写入器接管
 			// 同样的聚合维护（v1 写入开启时自 no-op，翻转即交接、无双计数）。
 			sessionSummaryWriter := sessionv2mirror.NewSessionSummaryDimWriter(dbConn.Pool())
 			telemetryClient.AddOnRequestLogPersisted(sessionv2mirror.PersistHook(sessionV2Writer, sessionDimWriter, sessionSummaryWriter))
@@ -2974,7 +2974,7 @@ func main() {
 		// 2026-07-13: backfill hourly credit consumption buckets so the
 		// admin dashboard "总积分消耗" KPI is ready immediately on startup.
 		// Idempotent: ON CONFLICT DO UPDATE SET credits = EXCLUDED
-		// converges to request_logs.credits_charged source-of-truth values.
+		// converges to _request_logs.credits_charged source-of-truth values.
 		// Errors are logged but not fatal — dashboard degrades to zero hint
 		// when the bucket table is empty.
 		go func() {
@@ -3383,7 +3383,7 @@ func main() {
 			// 2026-08-30: wire the Redis-backed live-stream detail cache
 			// into the admin handler before SetRequestDetailStore so the
 			// unified detail locator can answer swim-lane clicks
-			// immediately, before the eventual request_logs write.
+			// immediately, before the eventual _request_logs write.
 			if fpSlotRedis != nil {
 				liveStreamStore := admin.NewLiveStreamRedisStore(fpSlotRedis)
 				adminHandler.SetLiveStreamRedisStore(liveStreamStore)
@@ -3676,7 +3676,7 @@ func main() {
 				if systemMonitorSSE != nil {
 					slog.Info("system_monitor sse hub: started")
 				}
-				// 5min 自动跳过规则需要 request_logs 行触发 RecentSuccessHook；
+				// 5min 自动跳过规则需要 _request_logs 行触发 RecentSuccessHook；
 				// 挂到 telemetryClient.AddOnRequestLogPersisted。
 				if telemetryClient != nil {
 					hook := systemmonitor.NewRecentSuccessHook(sm.Dedup())
@@ -4068,7 +4068,7 @@ func main() {
 		probeRollback.Start(context.Background())
 		slog.Info("CHECKPOINT: probeRollback started")
 		// 2026-08-13 (常用模型分级自检): process-wide 常用模型 tier cache
-		// (routing_policy.featured_models ∪ request_logs_hot 用量 Top-N), 供
+		// (routing_policy.featured_models ∪ _request_logs_hot 用量 Top-N), 供
 		// model_probe featured cycle / node_probe priority / probe_service backoff
 		// 分级使用。
 		modelTier = bg.NewModelTier(dbConn.Pool(), bg.ModelTierConfig{RefreshInterval: 10 * time.Minute})
@@ -4390,7 +4390,7 @@ func main() {
 			// 从未被构造已删除（bg/model_probe_suspicious.go）。
 
 			// v6 (2026-06-22): Layer 5 passive probe observer.
-			// Scans request_logs every 30s for failures, promotes to
+			// Scans _request_logs every 30s for failures, promotes to
 			// reviewing, and after the 5-min observation window resolves:
 			// still-failing → mark unreachable; recovered → clear.
 			// stateWriter lets it write availability_state='unreachable'.
@@ -4399,7 +4399,7 @@ func main() {
 			passiveProbe.SetAvailabilityCache(modelAvailabilityCache)
 			slog.Info("CHECKPOINT: before passiveProbe.Start")
 			if useNewProbeMode() {
-				slog.Info("passiveProbe (legacy 30s request_logs scan) skipped: LLM_GATEWAY_USE_NEW_PROBE_MODE=true")
+				slog.Info("passiveProbe (legacy 30s _request_logs scan) skipped: LLM_GATEWAY_USE_NEW_PROBE_MODE=true")
 			} else {
 				passiveProbe.Start(context.Background())
 			}
@@ -4409,7 +4409,7 @@ func main() {
 
 		// 2026-07-13: 错误触发的主动探测 (active_probe)。
 		// 连续失败 ≥2 次 → 立即直连上游探测，按 5s → 30s → 2m → 5m → 15m backoff
-		// 多轮执行，每轮结果写 request_logs（task_type='probe_triggered'），
+		// 多轮执行，每轮结果写 _request_logs（task_type='probe_triggered'），
 		// 自动出现在实时请求流中。
 		if !bgDataPlaneOnly && dbConn != nil && dbConn.Enabled() {
 			slog.Info("CHECKPOINT: before NewActiveProbeWorker")
@@ -5103,7 +5103,7 @@ func main() {
 		stickyCleaner.Start(context.Background())
 		slog.Info("CHECKPOINT: after stickyCleaner.Start")
 
-		// Partition manager: auto-creates monthly request_logs partitions
+		// Partition manager: auto-creates monthly _request_logs partitions
 		// and archives 2+ months old data to columnar storage.
 		// 2026-06-26: Added per storage-optimization plan.
 		// 2026-10-06: LLM_GATEWAY_PARTITION_MANAGER_ENABLED=false 可关闭本节点
@@ -5128,7 +5128,7 @@ func main() {
 		ledgerReconciler.Start(context.Background())
 		slog.Info("CHECKPOINT: after ledgerReconciler.Start")
 
-		// 2026-08-30 审计修复 P1-7: VACUUM worker for request_logs_bodies
+		// 2026-08-30 审计修复 P1-7: VACUUM worker for _request_logs_bodies
 		// Runs VACUUM FULL weekly (default: Sunday 2am) to reclaim TOAST space.
 		vacuumWorker := bg.NewVacuumWorker(dbConn.Pool())
 		// Allow environment override for testing or custom schedules
@@ -5191,7 +5191,7 @@ func main() {
 		admin.StartIngester(dbConn.Pool())
 		admin.SetIngesterRedisClient(fpSlotRedis)
 		// 2026-10-01 F5：admin HTTP ingest（/api/telemetry/request-log）是
-		// request_logs_bodies_hot 的第三落库点（方案 §3-H3 只点了 telemetry
+		// _request_logs_bodies_hot 的第三落库点（方案 §3-H3 只点了 telemetry
 		// client 与 session v2），补接热区请求侧镜像。闭包与前两处同源
 		// （storageRt.bodyMirrorFn()，full 热区装配时才非 nil）；lite 模式 /
 		// 热区关闭 / request_mirror=false 时为 nil，ingester 保持纯落库。
@@ -5835,7 +5835,7 @@ func main() {
 			// by design, every instance persists its own selections/signals.
 			// v2.1: tuning_signals async writer. Wired with the same PG
 			// pool the rest of the system uses; runs an independent
-			// batching goroutine so request_logs is unaffected.
+			// batching goroutine so _request_logs is unaffected.
 			telemetry.Adapter.PoolExec = func(ctx context.Context, sql string, args ...any) (telemetry.PgxTag, error) {
 				return dbConn.Pool().Exec(ctx, sql, args...)
 			}
@@ -6925,7 +6925,7 @@ func main() {
 			adminHandler.RegisterSystemMonitorRoutes(mux, adminMw, superAdminMw)
 			slog.Info("self-check API registered")
 			// 存储优化方案 v2 S2：dual_read_validator 对账端点（plan §4 S2）。
-			// GET /api/admin/sessions/{id}/dual-read —— turns vs request_logs
+			// GET /api/admin/sessions/{id}/dual-read —— turns vs _request_logs
 			// 行级等值（§8-C 集合差 + §8-D 计费合计 + 字段漂移样本）。
 			NewDualReadValidator(dbConn.Pool()).RegisterRoutes(mux, adminMw)
 		}

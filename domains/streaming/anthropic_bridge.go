@@ -819,7 +819,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		outputTokens int
 		// 2026-09-09 audit round 3: carry Anthropic cache tokens through the
 		// bridge so the terminal synthesized usage chunk (and the capture it
-		// feeds) no longer loses them — request_logs cache columns were NULL
+		// feeds) no longer loses them — _request_logs cache columns were NULL
 		// for every Anthropic-upstream stream.
 		cacheReadTokens     int
 		cacheWriteTokens    int

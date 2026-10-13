@@ -65,8 +65,8 @@ import (
 //
 // Reasoning: VACUUM FULL holds ACCESS EXCLUSIVE on the target table,
 // which itself serializes per-table — but if replica-A is running
-// VACUUM FULL on request_logs_bodies AND replica-B fires VACUUM FULL
-// on request_logs (different table), both will proceed and contend on
+// VACUUM FULL on _request_logs_bodies AND replica-B fires VACUUM FULL
+// on _request_logs (different table), both will proceed and contend on
 // WAL / maintenance_work_mem / I/O bandwidth. A global mutex avoids
 // that cross-table contention too.
 //

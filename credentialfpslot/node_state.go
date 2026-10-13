@@ -37,7 +37,7 @@ const (
 	//
 	// ⚠️ 5s IS NOW CALIBRATED AGAINST A MEASURED DISTRIBUTION (2026-10-03).
 	// It was previously an engineering guess, and the audit called it the only
-	// uncalibrated parameter in the project. Measured on request_logs_hot
+	// uncalibrated parameter in the project. Measured on _request_logs_hot
 	// (168 rows with a full waterfall, window filtered on t0_arrived_at,
 	// 2026-10-02 21:19 → 2026-10-03 05:27), on the span that actually contains
 	// the router's MGET — T2 total-dequeued → T5 cred-enqueued, which brackets

@@ -57,7 +57,7 @@ function test_service_health() {
 # 测试 2: 通过 API 创建请求并验证数据保存
 # ============================================================
 function test_request_logs_via_api() {
-    log_info "测试 2: 验证 request_logs_hot 数据保存"
+    log_info "测试 2: 验证 _request_logs_hot 数据保存"
     ((TOTAL_TESTS++))
     
     local test_id="api-test-$(date +%s)"
@@ -84,14 +84,14 @@ function test_request_logs_via_api() {
     sleep 2
     
     # 查询最近的请求记录
-    local count=$(psql_exec "SELECT COUNT(*) FROM request_logs_hot WHERE ts > NOW() - INTERVAL '10 seconds';")
+    local count=$(psql_exec "SELECT COUNT(*) FROM _request_logs_hot WHERE ts > NOW() - INTERVAL '10 seconds';")
     count=$(echo "$count" | xargs)
     
     if [[ "$count" -gt 0 ]]; then
-        log_info "✓ request_logs_hot 有 $count 条最近记录"
+        log_info "✓ _request_logs_hot 有 $count 条最近记录"
         ((PASSED_TESTS++))
     else
-        log_error "✗ request_logs_hot 没有找到最近的记录"
+        log_error "✗ _request_logs_hot 没有找到最近的记录"
         ((FAILED_TESTS++))
     fi
 }
@@ -127,11 +127,11 @@ function test_view_aggregation() {
     ((TOTAL_TESTS++))
     
     # 查询 hot 表
-    local hot_count=$(psql_exec "SELECT COUNT(*) FROM request_logs_hot;")
+    local hot_count=$(psql_exec "SELECT COUNT(*) FROM _request_logs_hot;")
     hot_count=$(echo "$hot_count" | xargs)
     
     # 查询父表（分区）
-    local parent_count=$(psql_exec "SELECT COUNT(*) FROM request_logs;")
+    local parent_count=$(psql_exec "SELECT COUNT(*) FROM _request_logs;")
     parent_count=$(echo "$parent_count" | xargs)
     
     # 查询视图
@@ -198,13 +198,13 @@ function test_hot_tables_data_freshness() {
     log_info "测试 7: 验证 hot 表数据新鲜度"
     
     local tables=(
-        "request_logs_hot"
+        "_request_logs_hot"
         "usage_ledger_hot"
         "request_wal_hot"
         "routing_decision_log_hot"
         "tool_usage_stats_hot"
         "credit_ledger_hot"
-        "request_logs_bodies_hot"
+        "_request_logs_bodies_hot"
         "credential_model_index_hot"
     )
     

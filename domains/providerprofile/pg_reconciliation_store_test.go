@@ -109,8 +109,8 @@ func TestPGReconciliationStore_GatewayUpsertPreservesBill(t *testing.T) {
 
 // TestPGGatewayMonthlyUsageSource 验证从 usage_ledger（计帐真相源，R28-B-1）
 // 按 provider + 月度聚合，且 promote 重叠窗口的重复 request_id 只计一次。
-// S4 停写 request_logs 不再影响对帐网关侧（回归注释：旧实现读
-// request_logs(_hot)，S4 停写即归零）。
+// S4 停写 _request_logs 不再影响对帐网关侧（回归注释：旧实现读
+// _request_logs(_hot)，S4 停写即归零）。
 func TestPGGatewayMonthlyUsageSource(t *testing.T) {
 	pool := setupTestDB(t)
 	cleanupReconData(t)

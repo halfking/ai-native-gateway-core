@@ -91,7 +91,7 @@ func TestBoardFallbackPathsKeepTerminalStatusWhitelist(t *testing.T) {
 		}
 		code := stripGoCommentsKeepLines(string(raw))
 
-		// 找出所有直接查 request_logs 的函数（走明细表的那些）。
+		// 找出所有直接查 _request_logs 的函数（走明细表的那些）。
 		// 判据用「函数体里出现 boardLogsWhere」而不是罗列函数名：
 		// 新增一个走明细的取数函数时，这条判据自动把它纳入检查，
 		// 而名单式的写法会静默漏掉新函数 —— 那正是本轮反复遇到的
@@ -101,7 +101,7 @@ func TestBoardFallbackPathsKeepTerminalStatusWhitelist(t *testing.T) {
 				return
 			}
 			if !boardTerminalStatusRe.MatchString(body) {
-				t.Errorf("%s 的 %s 走 request_logs 明细但没有终态白名单 ——\n"+
+				t.Errorf("%s 的 %s 走 _request_logs 明细但没有终态白名单 ——\n"+
 					"进行中/状态未落的请求会被计入「已完成请求数」。\n"+
 					"白名单必须是 %s",
 					file, decl, boardTerminalStatusRe.String())
@@ -168,7 +168,7 @@ func TestBoardTenantFilterParity(t *testing.T) {
 
 	cases := []struct{ fn, why string }{
 		{"func boardMinuteWhere(", "minute 聚合路径"},
-		{"func boardLogsWhere(", "request_logs 明细路径"},
+		{"func boardLogsWhere(", "_request_logs 明细路径"},
 	}
 	for _, c := range cases {
 		body := goFuncBody(code, c.fn)

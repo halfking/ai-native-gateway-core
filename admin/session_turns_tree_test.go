@@ -8,7 +8,7 @@
 //
 // DB mock 用 pgxmock（现有 admin 测试基建，见 provider_cred_lifecycle_test.go）。
 //
-// TODO(12号口径): 归档轮次覆盖 —— session_turns 与 request_logs_hot 双源一致性
+// TODO(12号口径): 归档轮次覆盖 —— session_turns 与 _request_logs_hot 双源一致性
 // 尚未对齐（本端点以 request_logs_with_current_month 为单一事实源），双源合并
 // 一致性断言按 12 号文档"归档覆盖需补齐"口径留待后续任务，不阻塞本任务。
 package admin

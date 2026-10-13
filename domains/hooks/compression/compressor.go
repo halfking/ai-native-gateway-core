@@ -14,7 +14,7 @@
 // (that's rebuilder_openai.go / rebuilder_anthropic.go). It only decides:
 //   1. Should this body be compressed? (mode gate)
 //   2. Which path runs first? (mechanical → memora L1 → llm summary)
-//   3. What telemetry fields do we write to request_logs.compression_*?
+//   3. What telemetry fields do we write to _request_logs.compression_*?
 //
 // The actual three-tier decompression logic stays in routing/context_summarize.go
 // until T12 (v7 §7) refactors those helpers into this package. Until then,
@@ -141,7 +141,7 @@ func LoadMode() Mode {
 }
 
 // CompressionReason is the canonical value written to
-// request_logs.compression_reason (v7 §3.1 schema).
+// _request_logs.compression_reason (v7 §3.1 schema).
 type CompressionReason string
 
 const (
@@ -152,7 +152,7 @@ const (
 )
 
 // CompressionStrategy is the canonical value written to
-// request_logs.compression_strategy.
+// _request_logs.compression_strategy.
 type CompressionStrategy string
 
 const (
@@ -174,7 +174,7 @@ const (
 )
 
 // Meta is the compression telemetry payload written to
-// request_logs.compression_meta (JSONB column). v7 §3.2 schema.
+// _request_logs.compression_meta (JSONB column). v7 §3.2 schema.
 // Only the fields the dispatcher actually fills are populated; downstream
 // helpers (LLM summary call site) may add latency_ms / model_used.
 type Meta struct {
@@ -196,7 +196,7 @@ type Meta struct {
 }
 
 // Marshal serializes Meta to JSON bytes suitable for
-// request_logs.compression_meta (JSONB column).
+// _request_logs.compression_meta (JSONB column).
 func (m Meta) Marshal() []byte {
 	b, _ := json.Marshal(m)
 	return b
@@ -542,7 +542,7 @@ func (c *Compressor) NewManualSelectorFromSpec(spec string) (strategy.Selector, 
 //  2. For mode=1: gates on body size vs context window
 //  3. Returns the rewritten body (or original if no-op) plus the
 //     telemetry envelope (reason, strategy, meta) the caller writes
-//     to request_logs.compression_*.
+//     to _request_logs.compression_*.
 //
 // v7 §3.4 says the dispatcher orchestrates three tiers
 // (mechanical → memora L1 → llm summary). T8 lays the scaffolding for

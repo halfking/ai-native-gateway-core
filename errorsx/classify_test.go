@@ -745,7 +745,7 @@ func TestClassifyError_ProductionIncident_MinimaxM3_ToolCallIdMismatch(t *testin
 	got := ClassifyError(wrapped, nil)
 	if got != KindToolCallIdMismatch {
 		t.Fatalf("production regression: ClassifyError(MiniMax 2013 body wrapped in fmt.Errorf) = %q, want %q. "+
-			"This is the bug that polluted request_logs.error_kind with 'transient' for 325 of 326 transient rows in 24h.",
+			"This is the bug that polluted _request_logs.error_kind with 'transient' for 325 of 326 transient rows in 24h.",
 			got, KindToolCallIdMismatch)
 	}
 }

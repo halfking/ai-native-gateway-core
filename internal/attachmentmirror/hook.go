@@ -1,4 +1,4 @@
-// Package attachmentmirror mirrors request_logs.attachments JSONB
+// Package attachmentmirror mirrors _request_logs.attachments JSONB
 // (migration 325) into the relational public.request_attachments
 // table (migration 401).
 //
@@ -10,7 +10,7 @@
 //
 // Best-effort contract: the returned hook logs and continues on any
 // error; it never propagates failures up to telemetry. The primary
-// request_logs INSERT must always succeed.
+// _request_logs INSERT must always succeed.
 package attachmentmirror
 
 import (
@@ -25,7 +25,7 @@ import (
 )
 
 // PersistHook returns a telemetry "onPersisted" hook that mirrors the
-// request_logs.attachments JSONB column into public.request_attachments.
+// _request_logs.attachments JSONB column into public.request_attachments.
 //
 // The hook is a no-op when:
 //   - repo is nil (caller forgot to wire it),
@@ -62,7 +62,7 @@ func PersistHook(repo *attachments.Repository) func(entry *telemetry.RequestLogE
 				"error", err)
 			// P0-2 (audit §3.6 R-3.3): count this lost-row event so the
 			// Grafana rule in deploy/prometheus/alerts/shadow-write-failures.yaml
-			// can fire. The primary request_logs INSERT already succeeded
+			// can fire. The primary _request_logs INSERT already succeeded
 			// upstream — these rows are persisted in JSONB but the relational
 			// mirror is missing. No retry: best-effort contract per the
 			// package doc above.

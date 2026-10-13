@@ -295,7 +295,7 @@ func TestHandleAudit_PreservesFieldSet(t *testing.T) {
 // references is_auto_request inside a CASE branch (via the
 // effectiveTaskExpr) requires GROUP BY to also reference the same
 // expression — not just the raw task_type column. PostgreSQL would
-// otherwise fail with "column request_logs.is_auto_request must appear
+// otherwise fail with "column _request_logs.is_auto_request must appear
 // in the GROUP BY clause or be used in an aggregate function", and the
 // entire task_distribution field would silently disappear from the
 // response (since the handler swallowed rows err).
@@ -309,7 +309,7 @@ func TestBuildAuditTaskDistributionQuery_GroupByExpression(t *testing.T) {
 	taskExpr := fmt.Sprintf(`COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '%s' END)`, SpecifiedModelTaskKey)
 	q := fmt.Sprintf(`
 		SELECT %s AS task_type, COUNT(*)
-		FROM request_logs
+		FROM _request_logs
 		WHERE ts >= NOW() - INTERVAL '7 days'
 		  AND (
 		    is_auto_request = TRUE
@@ -333,7 +333,7 @@ func TestBuildAuditTaskDistributionQuery_GroupByExpression(t *testing.T) {
 
 // TestBuildMatrixQuery_AdmitsNullIsAutoRequest guards against the
 // 2026-06-24 bug where the analytics tab showed "暂无数据" even though
-// request_logs had hundreds of rows. Root cause: the explicit-model
+// _request_logs had hundreds of rows. Root cause: the explicit-model
 // branch used `is_auto_request = FALSE`, which is NULL for rows where
 // the bool column was never written (the writer sets TRUE/FALSE today
 // but historical rows are NULL). PostgreSQL three-valued logic excluded
@@ -350,7 +350,7 @@ func TestBuildMatrixQuery_AdmitsNullIsAutoRequest(t *testing.T) {
 	}
 	// Must NOT use `is_auto_request = FALSE` (the broken form).
 	if strings.Contains(q, "is_auto_request = FALSE") {
-		t.Fatalf("matrix query still uses NULL-unsafe `is_auto_request = FALSE`; historical request_logs rows have is_auto_request IS NULL and would be silently filtered out by PostgreSQL three-valued logic. Replace with `is_auto_request IS NOT TRUE`:\n%s", q)
+		t.Fatalf("matrix query still uses NULL-unsafe `is_auto_request = FALSE`; historical _request_logs rows have is_auto_request IS NULL and would be silently filtered out by PostgreSQL three-valued logic. Replace with `is_auto_request IS NOT TRUE`:\n%s", q)
 	}
 	// Must use NULL-safe form. Accept either of the two patterns:
 	//   `is_auto_request IS NOT TRUE` (preferred), or
@@ -445,7 +445,7 @@ func TestBuildAuditTaskDistributionQuery_AdmitsNullIsAutoRequest(t *testing.T) {
 	taskExpr := fmt.Sprintf(`COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '%s' END)`, SpecifiedModelTaskKey)
 	q := fmt.Sprintf(`
 		SELECT %s AS task_type, COUNT(*)
-		FROM request_logs
+		FROM _request_logs
 		WHERE ts >= NOW() - INTERVAL '7 days'
 		  AND (
 		    is_auto_request = TRUE

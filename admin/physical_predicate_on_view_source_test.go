@@ -31,7 +31,7 @@ import (
 // 已被移出 physicalOnlyRequestLogColumns（它确实在契约里了）。
 //
 // 为什么按「物理谓词常量名的引用 + 该文件是否声明视图源」判定，而不是做完整
-// 的 SQL 绑定分析：bg 包内 6 处物理谓词调用点全部合法地读 request_logs_hot
+// 的 SQL 绑定分析：bg 包内 6 处物理谓词调用点全部合法地读 _request_logs_hot
 // （2026-10-02 逐处手验），而这条禁令的判据是「视图源 vs 物理源」——同一文件
 // 里两者可以共存（拼接式 SQL），静态单文件判定会误报。真正可靠的判据是
 // 「这个文件里有没有任何地方引用了 canonical 视图」，有则该文件不得引用物理
@@ -43,11 +43,11 @@ func TestNoPhysicalPredicateOnViewSource(t *testing.T) {
 	// 整套测试的同一个失效模式。
 	const physicalPredicateMarker = "origin_stage, 'business') = 'business'"
 	// 例外：bg 包自身。物理表版谓词的定义与全部合法调用点都在那里，6 处调用
-	// 的 FROM 逐处核对均为 request_logs_hot（物理表），origin_stage 在那里是
+	// 的 FROM 逐处核对均为 _request_logs_hot（物理表），origin_stage 在那里是
 	// 权威标记。视图源不得跨包取用本谓词。
 	bgPkgRationale := "物理表版谓词的定义与全部合法调用点都在本包：model_probe / " +
 		"credential_selfcheck / today_success_probe / model_tier 共 6 处，2026-10-02 " +
-		"逐处核对 FROM 均为 request_logs_hot（物理表）。视图源不得跨包取用本谓词。"
+		"逐处核对 FROM 均为 _request_logs_hot（物理表）。视图源不得跨包取用本谓词。"
 
 	files, err := goFilesUnder("..")
 	if err != nil {

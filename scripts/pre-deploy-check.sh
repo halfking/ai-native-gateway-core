@@ -242,7 +242,7 @@ echo ""
 # 5.1 数据库查询性能
 check_start "数据库查询性能"
 START_TIME=$(date +%s%N)
-db_query "SELECT COUNT(*) FROM request_logs WHERE created_at > NOW() - INTERVAL '1 hour';" >/dev/null
+db_query "SELECT COUNT(*) FROM _request_logs WHERE created_at > NOW() - INTERVAL '1 hour';" >/dev/null
 END_TIME=$(date +%s%N)
 QUERY_TIME=$(( ($END_TIME - $START_TIME) / 1000000 ))  # 转换为毫秒
 
@@ -272,7 +272,7 @@ echo ""
 
 # 6.1 最近 1 小时请求数
 check_start "最近 1 小时请求数"
-REQUEST_COUNT=$(db_query "SELECT COUNT(*) FROM request_logs WHERE created_at > NOW() - INTERVAL '1 hour';")
+REQUEST_COUNT=$(db_query "SELECT COUNT(*) FROM _request_logs WHERE created_at > NOW() - INTERVAL '1 hour';")
 check_pass
 echo "  请求数: $REQUEST_COUNT"
 
@@ -284,7 +284,7 @@ SELECT ROUND(
     NULLIF(COUNT(*), 0) * 100, 
     2
 ) 
-FROM request_logs 
+FROM _request_logs 
 WHERE created_at > NOW() - INTERVAL '1 hour';
 ")
 
@@ -319,7 +319,7 @@ if [ "$CHECK_PARTITION_ARCHIVE" = "1" ]; then
     fi
   done
 
-  EXPECTED_TABLES=("request_logs_archive" "request_wal_archive" "routing_decision_log_archive" "credential_model_index_archive")
+  EXPECTED_TABLES=("_request_logs_archive" "request_wal_archive" "routing_decision_log_archive" "credential_model_index_archive")
   for tbl in "${EXPECTED_TABLES[@]}"; do
     check_start "归档表 $tbl"
     TABLE_COUNT=$(db_query "SELECT COUNT(*) FROM pg_class WHERE relname = '$tbl' AND relnamespace = 'public'::regnamespace;" 2>/dev/null || echo "0")

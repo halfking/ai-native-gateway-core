@@ -21,7 +21,7 @@ import (
 //
 // # 配对键：request_id 与 (request_id, ts) 都能命中，但含义完全不同
 //
-// `request_logs_bodies.ts` 是**正文写入时间**，不是轮次时间。实测（真库，
+// `_request_logs_bodies.ts` 是**正文写入时间**，不是轮次时间。实测（真库，
 // 2026-10-01）：同一个 request_id 在 session_turns 与 bodies 里的 ts
 // **99.85% 不相等**（809,892 / 811,128，通常差 8~16 秒）。
 //
@@ -68,7 +68,7 @@ import (
 
 // 本查询的消费方（session_compare）turns 腿读的就是会话族
 // （db.SessionFamilyTurnsForSessionSQL），bodies 腿必须同源：停写后新会话
-// 的正文只存在于 session_bodies（实测翻转后 request_logs_bodies 冻结、
+// 的正文只存在于 session_bodies（实测翻转后 _request_logs_bodies 冻结、
 // session_only 行 300+），继续读 v1 视图会让这些轮次的正文静默为空。
 // 故**不走** db.SessionBodiesSourceSQL() 的运行时开关（其 v1 臂在停写后
 // 对会话族 turns 是错的源），直接固定会话族源。列形状差异
@@ -175,7 +175,7 @@ func acquireBodyFetchSlot(ctx context.Context) (func(), error) {
 
 // querySessionBodiesByRequestID pairs turns to bodies on request_id alone.
 // Unambiguous: no request_id carries more than one body row (measured: 0),
-// because every partition of request_logs_bodies has a UNIQUE (request_id, ts)
+// because every partition of _request_logs_bodies has a UNIQUE (request_id, ts)
 // primary key and the hot table is disjoint from the monthly parent.
 func querySessionBodiesByRequestID(
 	ctx context.Context,

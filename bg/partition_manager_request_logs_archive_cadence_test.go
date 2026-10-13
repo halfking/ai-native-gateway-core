@@ -55,7 +55,7 @@ func TestShouldRunRequestLogsArchive_MinuteInsensitive(t *testing.T) {
 }
 
 // TestMigration754_NeverDeletesFromSource pins F-11. If anyone ever adds a
-// DELETE to the archive function, request_logs rows would disappear — and with
+// DELETE to the archive function, _request_logs rows would disappear — and with
 // R68 forbidding DROP of the parent's monthly partitions, that would be a data
 // -loss event no test elsewhere would catch.
 //
@@ -69,7 +69,7 @@ func TestMigration754_NeverDeletesFromSource(t *testing.T) {
 	}
 	code := stripLineComments(string(b))
 	if strings.Contains(strings.ToUpper(code), "DELETE") {
-		t.Error("754 must never DELETE from request_logs — it is summary extraction; the source partitions stay intact (R68 forbids dropping them)")
+		t.Error("754 must never DELETE from _request_logs — it is summary extraction; the source partitions stay intact (R68 forbids dropping them)")
 	}
 	if strings.Contains(strings.ToUpper(code), "TRUNCATE") {
 		t.Error("754 must never TRUNCATE — same invariant as the DELETE check")

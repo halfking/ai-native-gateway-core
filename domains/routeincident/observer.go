@@ -1,6 +1,6 @@
 // Package routeincident — observer.go
 //
-// Bounded asynchronous observer that consumes terminal request_logs
+// Bounded asynchronous observer that consumes terminal _request_logs
 // rows from the telemetry persistence hook and applies the state
 // machine. The observer never blocks the producer: it drops the
 // event when the queue is full (and increments a counter) and
@@ -154,7 +154,7 @@ func (o *Observer) Stop() {
 // telemetry.AddOnRequestLogPersisted. It is intentionally
 // non-blocking: if the queue is full, the event is dropped and a
 // counter is bumped. We accept drops here because the request is
-// already durable in request_logs — a recovery sweeper can
+// already durable in _request_logs — a recovery sweeper can
 // re-derive state if needed. Phase 1 does not implement the
 // sweeper but keeps the seam in place.
 func (o *Observer) OnPersisted(entry *telemetry.RequestLogEntry) {

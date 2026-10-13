@@ -4,7 +4,7 @@
 # Monthly columnar archive cron for K8s PG.
 #
 # Schedules:
-#   - day 1: request_logs, routing_decision_log
+#   - day 1: _request_logs, routing_decision_log
 #   - day 2: request_wal
 #   - day 3: credential_model_index (7d cutoff)
 #

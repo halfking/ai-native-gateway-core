@@ -153,7 +153,7 @@ type DailyProfile struct {
 
 // RateLimitMetrics 限流命中率（429）
 //
-// 数据来源：request_logs_hot.upstream_status_code，按 credential + 时间窗口
+// 数据来源：_request_logs_hot.upstream_status_code，按 credential + 时间窗口
 // 聚合得到。HitsRatio = RateLimitHits / TotalRequests（窗口内）。
 type RateLimitMetrics struct {
 	RateLimitHits int     // 窗口内 429 命中次数
@@ -178,7 +178,7 @@ type ConcurrencyCapacity struct {
 
 // AvailabilityWindow 不可用窗口（连续低成功率段）
 //
-// 从最近 N 小时的 request_logs_hot 按 5 分钟桶聚合成功率得到。
+// 从最近 N 小时的 _request_logs_hot 按 5 分钟桶聚合成功率得到。
 // DowntimeBucket = 成功率 < 90% 的桶；LongestRun = 单次连续低成功率的最长桶数。
 // 一个 5 分钟桶 ≈ 30 分钟连续不可用时 LongestRun=6。
 type AvailabilityWindow struct {

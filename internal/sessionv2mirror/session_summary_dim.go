@@ -17,12 +17,12 @@ import (
 //
 // session_summaries 的聚合列（request_count / success_count / total_cost_usd /
 // tokens / latency / models_used / primary_model …）此前**只**由
-// request_logs_hot 上的两个触发器喂养：
+// _request_logs_hot 上的两个触发器喂养：
 //
 //	trg_update_session_summary（563 建链、572/661 修 DECIMAL(10,6) 比值溢出）
 //	trg_sync_session_task_id（首值同步 gw_task_id）
 //
-// S4 停写（storage.request_logs_write_enabled=false）后 request_logs_hot 不再
+// S4 停写（storage.request_logs_write_enabled=false）后 _request_logs_hot 不再
 // 有 INSERT，两个触发器断粮 —— 而它下游是活的用户面：admin 会话列表/详情/
 // 相关会话（session_management_api.go）、会话分析（session_analytics_handler.go）、
 // usage_enhanced 的意图列。不接管，新会话在这些界面上**永远不出现**。

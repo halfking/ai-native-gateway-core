@@ -1,6 +1,6 @@
 package admin
 
-// NOTE: All SELECTs on tenant-scoped tables (request_logs etc.) in this file
+// NOTE: All SELECTs on tenant-scoped tables (_request_logs etc.) in this file
 // use sessionLogsWhere() / buildMemoraSessionsSQL() which embed
 // tenantLogsClause() (admin/session_tenant.go) to inject
 // "AND tenant_id = $N" for tenant_admin callers on non-default tenants.
@@ -240,7 +240,7 @@ type sessionRow struct {
 }
 
 // handleMemoraSessions lists recent task/session activity from
-// request_logs, grouped by gw_task_id. Includes both topic sessions
+// _request_logs, grouped by gw_task_id. Includes both topic sessions
 // (with gw_task_id) and no-topic sessions (aggregated by api_key + hour).
 func (h *Handler) handleMemoraSessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -632,7 +632,7 @@ func (h *Handler) handleMemoraContext(w http.ResponseWriter, r *http.Request) {
 		FROM request_logs_with_current_month `+where+`
 	`, whereArgs...).Scan(&requestCount, &latestModel)
 	if err != nil {
-		slog.ErrorContext(ctx, "memora_context: query request_logs failed",
+		slog.ErrorContext(ctx, "memora_context: query _request_logs failed",
 			"task_id", taskID, "error", err)
 		writeError(w, http.StatusNotFound, fmt.Sprintf("task not found: %s", taskID))
 		return
@@ -746,7 +746,7 @@ type requestMessageRow struct {
 	GwSessionID      *string
 }
 
-// handleSessionMessages returns the ordered list of request_logs entries
+// handleSessionMessages returns the ordered list of _request_logs entries
 // for a specific gw_task_id, suitable for rendering a conversation timeline.
 // Each entry includes direction (user/assistant), prompt/response previews,
 // token counts, latency, cost, and status.

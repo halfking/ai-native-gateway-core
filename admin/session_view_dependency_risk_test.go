@@ -5,7 +5,7 @@
 //
 // 背景（2026-09-30 实测，见 docs/audit/2026-09-30-session-request-data-re-audit.md
 // §5.5.3 / §5.5.5）：`db.SessionFamilyTurnsSourceSQL()` **不是**
-// request_logs 视图的等价替代。镜像欠账清零之后仍有 641,452 个 request_id
+// _request_logs 视图的等价替代。镜像欠账清零之后仍有 641,452 个 request_id
 // （2,321,464 的 27.6%）能在视图里查到、在原生源查不到 —— 它们是
 // 无会话头流量（探针/自检，IsProbeSyntheticSession 按设计排除）、in_progress
 // 占位行（hook.go:71 不镜像）、以及标题/摘要生成器内部回环

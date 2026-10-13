@@ -11,7 +11,7 @@ import (
 
 // TestGetLogDetail_TimestampMismatch verifies that request_body and response_body
 // can still be retrieved even when the ts field differs slightly between
-// request_logs_hot and request_logs_bodies_hot.
+// _request_logs_hot and request_logs_bodies_hot.
 //
 // Background: The current JOIN condition uses both request_id AND ts:
 //
@@ -49,21 +49,21 @@ func TestGetLogDetail_TimestampMismatch(t *testing.T) {
 	`, requestID, ts1)
 	require.NoError(t, err)
 
-	// Insert into request_logs_hot with ts1
+	// Insert into _request_logs_hot with ts1
 	_, err = tx.Exec(ctx, `
-		INSERT INTO request_logs_hot (
+		INSERT INTO _request_logs_hot (
 			request_id, ts, tenant_id, application_id, success,
 			client_model, outbound_model
 		) VALUES ($1, $2, 'test-tenant', 1, true, 'gpt-4', 'gpt-4')
 	`, requestID, ts1)
 	require.NoError(t, err)
 
-	// Insert into request_logs_bodies_hot with ts2 (slightly different!)
+	// Insert into _request_logs_bodies_hot with ts2 (slightly different!)
 	// R65 夹具适配：迁移 601/604（2026-08-25）已 DROP bodies 表的 tenant_id
-	// 残留列——bodies 只存 payload，租户经 request_id JOIN request_logs 解析
+	// 残留列——bodies 只存 payload，租户经 request_id JOIN _request_logs 解析
 	//（rule 22 §9.1）。修前夹具显式插入该列实锤 42703。
 	_, err = tx.Exec(ctx, `
-		INSERT INTO request_logs_bodies_hot (
+		INSERT INTO _request_logs_bodies_hot (
 			request_id, ts,
 			request_body, response_body
 		) VALUES ($1, $2,

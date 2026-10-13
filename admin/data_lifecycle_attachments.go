@@ -2,7 +2,7 @@
 //
 // 2026-07-01: 会话附件管理端点。
 //
-// 这些端点查询 request_logs.attachments JSONB 列（migration 325），
+// 这些端点查询 _request_logs.attachments JSONB 列（migration 325），
 // 提供附件列表、统计、清理预览/执行、单项查看能力。附件实体文件存储在
 // 文件系统（LLM_GATEWAY_ATTACHMENT_DIR），此处只管理数据库中的元数据引用。
 //
@@ -14,7 +14,7 @@
 //   POST /api/admin/attachments/cleanup/execute 清理过期附件元数据（super_admin）
 //   GET  /api/admin/attachments/{request_id}    查看某请求的附件详情
 //
-// 注意：本端点只清理 request_logs.attachments 列（置 NULL），
+// 注意：本端点只清理 _request_logs.attachments 列（置 NULL），
 // 不删除文件系统中的实体文件（文件由 hash 命名可去重，删除需额外确认）。
 //
 // audit-data-closure-2 (2026-08-31): all read endpoints now apply an
@@ -180,7 +180,7 @@ func (h *Handler) handleDataLifecycleAttachments(w http.ResponseWriter, r *http.
 	query := fmt.Sprintf(`
 		SELECT request_id, ts, tenant_id,
 		       COALESCE(client_model, ''), success, attachments::text
-		FROM request_logs
+		FROM _request_logs
 		%s
 		ORDER BY ts DESC
 		LIMIT $%d OFFSET $%d`,
@@ -235,8 +235,8 @@ func (h *Handler) handleDataLifecycleAttachmentStats(w http.ResponseWriter, r *h
 	defer cancel()
 
 	args := append([]any{}, tenantArgs...)
-	// 2026-09-14: request_logs.attachments can hold the JSON `null` scalar
-	// (18k+ rows in request_logs_hot); jsonb_array_elements raises
+	// 2026-09-14: _request_logs.attachments can hold the JSON `null` scalar
+	// (18k+ rows in _request_logs_hot); jsonb_array_elements raises
 	// `cannot extract elements from a scalar` on it, so gate the LATERAL on
 	// array-ness (jsonb_typeof is NULL for SQL NULL → also excluded here).
 	where := "WHERE attachments IS NOT NULL AND jsonb_typeof(attachments) = 'array'" + tenantPred
@@ -269,7 +269,7 @@ func (h *Handler) handleDataLifecycleAttachmentStats(w http.ResponseWriter, r *h
 		       COALESCE(SUM(CASE WHEN elem->>'size' ~ '^[0-9]+$'
 		                         THEN (elem->>'size')::bigint
 		                         ELSE 0 END), 0) AS total_bytes
-		FROM request_logs,
+		FROM _request_logs,
 		     LATERAL jsonb_array_elements(attachments) AS elem
 		%s
 		GROUP BY type, content_type
@@ -358,7 +358,7 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupPreview(w http.ResponseWri
 		       COALESCE(SUM(CASE WHEN elem->>'size' ~ '^[0-9]+$'
 		                         THEN (elem->>'size')::bigint
 		                         ELSE 0 END), 0)
-		FROM request_logs,
+		FROM _request_logs,
 		     LATERAL jsonb_array_elements(attachments) AS elem
 		WHERE attachments IS NOT NULL
 		  AND jsonb_typeof(attachments) = 'array'
@@ -486,7 +486,7 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupExecute(w http.ResponseWri
 			    SELECT r.tenant_id, r.request_id, r.ts,
 			           COALESCE(att->>'hash', att->>'sha256',
 			                    att->>'id', att->>'url') AS hash
-			    FROM request_logs_hot r,
+			    FROM _request_logs_hot r,
 			         LATERAL jsonb_array_elements(r.attachments) AS att
 			    WHERE r.attachments IS NOT NULL
 			      AND jsonb_typeof(r.attachments) = 'array'
@@ -513,7 +513,7 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupExecute(w http.ResponseWri
 		// parameter (daysIdx) is $1 when no tenant is in scope and $2 when
 		// tenant_id pre-occupies $1.
 		updateSQL := fmt.Sprintf(`
-			UPDATE request_logs_hot
+			UPDATE _request_logs_hot
 			SET attachments = NULL
 			WHERE attachments IS NOT NULL
 			  AND ts < NOW() - make_interval(days => $%d::int)
@@ -528,7 +528,7 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupExecute(w http.ResponseWri
 		// Skipped count: elements in the same window whose identity
 		// fields are all absent.
 		skipSQL := fmt.Sprintf(`
-			SELECT count(*) FROM request_logs_hot r,
+			SELECT count(*) FROM _request_logs_hot r,
 			    LATERAL jsonb_array_elements(r.attachments) AS att
 			WHERE r.attachments IS NOT NULL
 			  AND jsonb_typeof(r.attachments) = 'array'
@@ -627,7 +627,7 @@ func (h *Handler) handleDataLifecycleAttachmentItem(w http.ResponseWriter, r *ht
 	query := fmt.Sprintf(`
 		SELECT ts, tenant_id, COALESCE(client_model, ''), success,
 		       COALESCE(attachments::text, '[]')
-		FROM request_logs
+		FROM _request_logs
 		WHERE request_id = $1
 		  %s
 		ORDER BY ts DESC LIMIT 1`, tenantPred)

@@ -24,7 +24,7 @@ func TestResetCredentialSuccessRateRowsRunsInsideSuperAdminGUCTx(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectExec(`SELECT set_config\('app.bypass_rls', 'true', true\)`).
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
-	mock.ExpectExec(`DELETE FROM request_logs_hot`).
+	mock.ExpectExec(`DELETE FROM _request_logs_hot`).
 		WithArgs(int64(17), "claude-sonnet-4-6").
 		WillReturnResult(pgxmock.NewResult("DELETE", 3))
 	mock.ExpectCommit()
@@ -55,7 +55,7 @@ func TestResetCredentialSuccessRateRowsKeepsGUCGuardPredicate(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectExec(`set_config\('app.bypass_rls', 'true', true\)`).
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
-	mock.ExpectExec(`DELETE FROM request_logs_hot.*current_setting\('app.current_role', true\) = 'super_admin'.*tenant_id = current_setting\('app.current_tenant', true\)`).
+	mock.ExpectExec(`DELETE FROM _request_logs_hot.*current_setting\('app.current_role', true\) = 'super_admin'.*tenant_id = current_setting\('app.current_tenant', true\)`).
 		WithArgs(int64(1), "m").
 		WillReturnResult(pgxmock.NewResult("DELETE", 0))
 	mock.ExpectCommit()

@@ -18,7 +18,7 @@ import (
 
 // appendTimeseriesFilters appends the standard tenant + model + provider +
 // regular-user owner filters to a WHERE clause and returns the next arg index.
-// Filters are pinned to request_logs/owner_user against session_dim so RLS +
+// Filters are pinned to _request_logs/owner_user against session_dim so RLS +
 // application-layer filtering remain defense in depth.
 // timeseriesAlias 是三条趋势查询给数据源起的别名。必须显式传进
 // appendTimeseriesFilters —— 此前三处都传空串，拼出来的是
@@ -53,7 +53,7 @@ func appendTimeseriesFilters(r *http.Request, alias string, filters *timeseriesF
 		args = append(args, filters.model)
 		idx++
 	}
-	// provider 过滤：request_logs 物理表与 115 列契约都只有 provider_id，
+	// provider 过滤：_request_logs 物理表与 115 列契约都只有 provider_id，
 	// 没有 provider 文本列 —— 旧谓词 `%s.provider` 引用的是不存在的列，
 	// 该过滤从未生效过（叠加空 alias 语法错误）。改为按 provider_id 过滤，
 	// 与 breakdown 面板输出的 provider_id 对齐。查询参数仍是字符串数组，
@@ -257,7 +257,7 @@ func (h *Handler) HandleCostTrend(w http.ResponseWriter, r *http.Request) {
 			date_trunc($1, rl.ts)::date AS date,
 			-- 输入/输出成本拆分在 session 族 115 列契约内没有对应列（真库
 			-- information_schema 核验：视图无 input_cost_usd / output_cost_usd），
-			-- 且 request_logs 物理表上同样不存在这两个列 —— 也就是说本查询此前
+			-- 且 _request_logs 物理表上同样不存在这两个列 —— 也就是说本查询此前
 			-- 每次调用都必然 42703，该端点在迁移前是坏的，不存在可回退的历史行为。
 			-- 契约字段不能删（CostDataPoint 无 omitempty，删了会改 JSON 形状），
 			-- 故显式置 0 并在此登记；总成本与缓存 token 仍是真值。

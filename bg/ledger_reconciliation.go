@@ -17,12 +17,12 @@ package bg
 //     wallet writers outside the serialised write path, manual edits,
 //     partial replay).
 //  2. usage_credit_mismatch — per (tenant, request_id): credits charged on
-//     the request (request_logs_hot.credits_charged, the same value the
+//     the request (_request_logs_hot.credits_charged, the same value the
 //     maas backfill treats as source-of-truth) must equal the summed
 //     consume deductions in credit_ledger_hot with ref_type='request'.
 //     Adjudication note: the audit named "usage_ledger", but that table
 //     carries cost_usd only — the credit-side anchor of the usage family
-//     lives on request_logs_hot.credits_charged, so this check reconciles
+//     lives on _request_logs_hot.credits_charged, so this check reconciles
 //     the two halves that actually both speak credits.
 //
 // Bounded noise: rows newer than settleLag are excluded (a request's ledger
@@ -51,7 +51,7 @@ const (
 	// DefaultLedgerReconciliationInterval is the job cadence.
 	DefaultLedgerReconciliationInterval = time.Hour
 	// DefaultLedgerReconciliationWindow is the lookback both checks scan.
-	// Must stay within credit_ledger_hot / request_logs_hot retention.
+	// Must stay within credit_ledger_hot / _request_logs_hot retention.
 	DefaultLedgerReconciliationWindow = 24 * time.Hour
 	// ledgerSettleLag excludes the newest rows from both sides so a request
 	// straddling the window boundary (ledger charged, log not yet stamped —
@@ -209,7 +209,7 @@ func (r *LedgerReconciler) RunOnce(ctx context.Context) int {
 }
 
 // effectiveWindow clamps the configured lookback to the live *_hot retention
-// window. Both checks scan only request_logs_hot / credit_ledger_hot, so a
+// window. Both checks scan only _request_logs_hot / credit_ledger_hot, so a
 // lookback beyond lifecycle.hot_retention_hours silently covers less than
 // requested — the R56 audit: the 24h default against the 8h hot retention
 // meant the "24h" window actually reached only ~8h back, while the type
@@ -311,7 +311,7 @@ const usageCreditSkipS4StopWrite = "s4_stop_write"
 // currently *decidable*, and why not when it isn't.
 //
 // The comparison spans the S4 gate boundary: usageCreditSQL joins
-// request_logs_hot (INSIDE the request_logs wide family, i.e. what
+// _request_logs_hot (INSIDE the _request_logs wide family, i.e. what
 // storage.request_logs_write_enabled gates) against credit_ledger_hot (a
 // billing table that is not in that family and never will be). The reconciler
 // did not consult the gate at all, so the moment stop-write fires the two sides
@@ -338,7 +338,7 @@ func usageCreditComparability(logsWriteEnabled bool) (comparable bool, reason st
 	return true, ""
 }
 
-// usageCreditSQL compares per-request credit charges (request_logs_hot)
+// usageCreditSQL compares per-request credit charges (_request_logs_hot)
 // against ledger consume deductions (credit_ledger_hot). Extracted for the
 // SQL-shape regression test.
 //
@@ -349,7 +349,7 @@ func usageCreditSQL() string {
 	return `
 		WITH usage AS (
 		    SELECT tenant_id, request_id, SUM(credits_charged) AS charged
-		    FROM request_logs_hot
+		    FROM _request_logs_hot
 		    WHERE ts > now() - $1::interval
 		      AND ts < now() - $2::interval
 		      AND credits_charged IS NOT NULL AND credits_charged <> 0
@@ -374,7 +374,7 @@ func usageCreditSQL() string {
 	`
 }
 
-// checkUsageCredit compares per-request credit charges (request_logs_hot)
+// checkUsageCredit compares per-request credit charges (_request_logs_hot)
 // against ledger consume deductions (credit_ledger_hot).
 //
 // Gated on the S4 stop-write key: the two sides belong to different blast
@@ -386,7 +386,7 @@ func (r *LedgerReconciler) checkUsageCredit(ctx context.Context, window time.Dur
 		r.markSkipped(reason)
 		slog.Info("ledger reconciliation: usage↔credit 比对已跳过（本轮未执行，非「无差异」）",
 			"reason", reason,
-			"detail", "request_logs_hot 已停写而 credit_ledger_hot 继续增长，两侧不再同期；"+
+			"detail", "_request_logs_hot 已停写而 credit_ledger_hot 继续增长，两侧不再同期；"+
 				"继续比对会把停写本身记成账务差异")
 		return 0
 	}

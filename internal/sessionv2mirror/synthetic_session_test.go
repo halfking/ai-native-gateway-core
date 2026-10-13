@@ -135,7 +135,7 @@ func TestPersistHook_SynthesizesSystemSessionForNoSessionTraffic(t *testing.T) {
 }
 
 // R51 教训落地（R60 S2-F4）：无会话头的探针终态条目不进 mirror——写链、
-// session_dim 皆不触。探针事实留在 request_logs/v1 面（154 复审 §四.5：
+// session_dim 皆不触。探针事实留在 _request_logs/v1 面（154 复审 §四.5：
 // 该类合成会话曾贡献 ~115/min 的 mirror 失败噪声）。
 func TestPersistHook_SkipsProbeSyntheticSession(t *testing.T) {
 	called := 0

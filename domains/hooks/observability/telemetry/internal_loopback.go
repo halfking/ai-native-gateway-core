@@ -18,7 +18,7 @@ import "github.com/kaixuan/llm-gateway-go/internal/internaltraffic"
 //  1. sessionv2mirror excludes internal loopbacks from session_turns;
 //  2. shouldClaimFinalSuccess must NOT let an excluded row claim
 //     is_final_success — a claimed row without a mirrored turn permanently
-//     inflates the GLOBAL_G2 reconciliation counter (a request_logs row with
+//     inflates the GLOBAL_G2 reconciliation counter (a _request_logs row with
 //     is_final_success=TRUE but no session_turns row).
 //
 // ⚠ 2026-10-03（审计 §9.73）：三个 actor 名与两个 request_type 取值原先在本文件

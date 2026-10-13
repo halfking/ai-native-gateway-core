@@ -41,7 +41,7 @@ func TestPickProbeModelForCredential_ManualSource_PreservesAdminPin(t *testing.T
 }
 
 // TestPickProbeModelForCredential_RequestLog_TopHit verifies Priority 1:
-// the most-used client_model from request_logs (7d) wins when its binding
+// the most-used client_model from _request_logs (7d) wins when its binding
 // is still available.
 func TestPickProbeModelForCredential_RequestLog_TopHit(t *testing.T) {
 	mock, err := pgxmock.NewPool()
@@ -100,7 +100,7 @@ func TestPickProbeModelForCredential_DomesticFeatured_StandardizedNameHit(t *tes
 			"status", "lifecycle_status", "manual_disabled",
 		}).AddRow("", "", "active", "active", false))
 
-	// Priority 1: no request_logs hits.
+	// Priority 1: no _request_logs hits.
 	mock.ExpectQuery("SELECT client_model").
 		WithArgs(credID).
 		WillReturnError(errNoRows)

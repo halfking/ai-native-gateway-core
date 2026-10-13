@@ -29,7 +29,7 @@ const (
 
 // S4 gate measurement (audit §9.163).
 //
-// "Can S4 be opened?" is the first gate before request_logs can be retired, and
+// "Can S4 be opened?" is the first gate before _request_logs can be retired, and
 // until now the only way to answer it was to paste SQL by hand. This test makes
 // it one command, on any database — including 252, once a read-only grant
 // exists.
@@ -575,13 +575,13 @@ func TestS4GateMeasurement(t *testing.T) {
 		t.Logf("clean: no genuine loss in any measured window")
 	}
 
-	// ---- ⚠️ s4_ready is NECESSARY, NOT SUFFICIENT for dropping request_logs ---
+	// ---- ⚠️ s4_ready is NECESSARY, NOT SUFFICIENT for dropping _request_logs ---
 	//
 	// §9.224. Everything above measures ONE blocker: v1 rows that have no
 	// session twin. A second, entirely independent blocker is not in its
 	// vocabulary — `is_final_success` and `client_protocol` are filled on the
 	// session side **only by copying from v1**, by two one-shot idempotent
-	// scripts whose headers say "run it before request_logs is dropped".
+	// scripts whose headers say "run it before _request_logs is dropped".
 	//
 	// Measured read-only on 252 on 2026-10-05 (§9.223): both columns were
 	// 100% NULL across all 817,140 session_turns while v1 was 100% populated
@@ -603,13 +603,13 @@ func TestS4GateMeasurement(t *testing.T) {
 	var v1Present bool
 	if err := tx.QueryRow(ctx, `
 		SELECT EXISTS (SELECT 1 FROM information_schema.tables
-		                WHERE table_schema='public' AND table_name='request_logs')`).
+		                WHERE table_schema='public' AND table_name='_request_logs')`).
 		Scan(&v1Present); err != nil {
-		t.Logf("  (could not probe for request_logs: %v)", err)
+		t.Logf("  (could not probe for _request_logs: %v)", err)
 		return
 	}
 	if !v1Present {
-		t.Logf("RETIREMENT PREREQUISITE: request_logs is already absent — the backfill question " +
+		t.Logf("RETIREMENT PREREQUISITE: _request_logs is already absent — the backfill question " +
 			"is settled, one way or the other.")
 		return
 	}
@@ -634,7 +634,7 @@ func TestS4GateMeasurement(t *testing.T) {
 		t.Logf("RETIREMENT PREREQUISITE **NOT MET**: %d of 2 column(s) are still empty on the "+
 			"session side (%s, of %d session_turns) and are fillable **only** from v1, by a one-shot "+
 			"idempotent script. s4_ready=%v above says nothing about them: it measures drift, not "+
-			"copies. Dropping request_logs now makes these permanently unfillable.",
+			"copies. Dropping _request_logs now makes these permanently unfillable.",
 			// The defining window for s4_ready is the validator's own default (7d) —
 			// the same one the "s4_ready would be" line above uses. Reading 30d here
 			// would make the prerequisite line quote a different readiness than the
@@ -655,17 +655,17 @@ func TestS4GateMeasurement(t *testing.T) {
 	// still has a session twin to land on.
 	//
 	// ⚠ Two things this block must not do. It must not read the PARENT table
-	// only — request_logs_hot and session_turns_hot are separate, disjoint
+	// only — _request_logs_hot and session_turns_hot are separate, disjoint
 	// tables (§9.160.7), and the claims being counted mostly live in the hot
 	// side. And it must not join on v1's `id`: that is a bigint sequence, while
 	// the business key on both families is `request_id` (§9.238).
 	var v1Claims, claimsWithTwin, claimsNoTwin, v2AlreadyMarked int64
 	if err := tx.QueryRow(ctx, `
 		WITH v1claim AS (
-		  SELECT request_id FROM request_logs_hot
+		  SELECT request_id FROM _request_logs_hot
 		    WHERE is_final_success IS TRUE AND COALESCE(gw_session_id,'') <> ''
 		  UNION ALL
-		  SELECT request_id FROM request_logs
+		  SELECT request_id FROM _request_logs
 		    WHERE is_final_success IS TRUE AND COALESCE(gw_session_id,'') <> ''
 		), v2turn AS (
 		  SELECT request_id FROM session_turns_hot
@@ -695,9 +695,9 @@ func TestS4GateMeasurement(t *testing.T) {
 	var v2Turns, protoFillable, protoNoV1Row int64
 	if err := tx.QueryRow(ctx, `
 		WITH v1 AS (
-		  SELECT request_id, client_protocol FROM request_logs_hot
+		  SELECT request_id, client_protocol FROM _request_logs_hot
 		  UNION ALL
-		  SELECT request_id, client_protocol FROM request_logs
+		  SELECT request_id, client_protocol FROM _request_logs
 		), v2 AS (
 		  SELECT request_id FROM session_turns_hot
 		  UNION ALL
@@ -735,9 +735,9 @@ func TestS4GateMeasurement(t *testing.T) {
 	}
 	deadRows, err := tx.Query(ctx, `
 		WITH v1 AS (
-		  SELECT request_id FROM request_logs_hot
+		  SELECT request_id FROM _request_logs_hot
 		  UNION ALL
-		  SELECT request_id FROM request_logs
+		  SELECT request_id FROM _request_logs
 		), v2 AS (
 		  SELECT request_id, ts FROM session_turns_hot
 		  UNION ALL
@@ -863,12 +863,12 @@ func TestBlockerSkippedByFirstGate_PositiveAndNegative(t *testing.T) {
 const s4ScopeBody = `
 	SELECT request_id, gw_session_id, tenant_id, work_type, request_status, error_kind,
 	       is_auto_request, origin_actor, request_type, task_type, success, ts
-	FROM request_logs_hot
+	FROM _request_logs_hot
 	WHERE ts >= $2 AND gw_session_id IS NOT NULL AND gw_session_id <> ''
 	UNION ALL
 	SELECT request_id, gw_session_id, tenant_id, work_type, request_status, error_kind,
 	       is_auto_request, origin_actor, request_type, task_type, success, ts
-	FROM request_logs
+	FROM _request_logs
 	WHERE ts >= $2 AND gw_session_id IS NOT NULL AND gw_session_id <> ''`
 
 // TestS4GateSourceMatchesValidator pins the copied row-source against the
@@ -889,7 +889,7 @@ func TestS4GateSourceMatchesValidator(t *testing.T) {
 				"rl.%s — the copied scope and the production classifier have drifted apart", col, col)
 		}
 	}
-	for _, rel := range []string{"request_logs_hot", "request_logs"} {
+	for _, rel := range []string{"_request_logs_hot", "_request_logs"} {
 		if !containsIdentifier(s4ScopeBody, rel) {
 			t.Errorf("s4ScopeBody no longer reads %s; the two storage faces (hot ∪ parent) are "+
 				"what make the scope complete", rel)

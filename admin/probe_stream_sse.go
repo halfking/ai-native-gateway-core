@@ -44,7 +44,7 @@ import (
 //   - integrity:  task.DedupKey (preserved across retries)
 //   - selfcheck:  "selfcheck:<credID>:<unixnano>"  (daily run, distinct per run)
 //
-// The high-cardinality telemetry request_id (request_logs row) is unrelated
+// The high-cardinality telemetry request_id (_request_logs row) is unrelated
 // to this SSE key — it stays distinct and is recorded in auto_decision.
 type ProbeStreamTask struct {
 	ID           string `json:"id"`        // stable lifecycle id (see conventions above)

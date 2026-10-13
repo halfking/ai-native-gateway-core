@@ -51,7 +51,7 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 	if err := pool.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM information_schema.columns
-			WHERE table_name = 'request_logs_hot'
+			WHERE table_name = '_request_logs_hot'
 			  AND column_name = 'upstream_finish_reason'
 		)
 	`).Scan(&hasCol); err != nil {
@@ -168,29 +168,29 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 			return
 		}
 		defer conn.Close(cctx)
-		for _, table := range []string{"request_logs_bodies_hot", "request_logs_hot", "usage_ledger_hot"} {
+		for _, table := range []string{"_request_logs_bodies_hot", "_request_logs_hot", "usage_ledger_hot"} {
 			if _, derr := conn.Exec(cctx, `DELETE FROM `+table+` WHERE request_id = $1`, entry.RequestID); derr != nil {
 				t.Errorf("cleanup: delete %s: %v", table, derr)
 			}
 		}
 	})
 
-	// 「主表不得保留完整 body」这条不变式，在 bodies 面拆分（request_logs_bodies）
+	// 「主表不得保留完整 body」这条不变式，在 bodies 面拆分（_request_logs_bodies）
 	// 之后**已经变成结构保证**：`request_body` / `response_body` 两列
-	// 根本不在 request_logs_hot 上。所以不能再 SELECT 它们来「断言为 NULL」——
+	// 根本不在 _request_logs_hot 上。所以不能再 SELECT 它们来「断言为 NULL」——
 	// 那样这条不变式只是碰巧成立（列没了），一旦有人把列加回来就静默失效。
 	// 这里把不变式本身显式钉住：两列必须**不存在**于主表。
 	var bodyColsOnMain int
 	if err := pool.QueryRow(ctx, `
 		SELECT count(*) FROM information_schema.columns
-		WHERE table_name = 'request_logs_hot'
+		WHERE table_name = '_request_logs_hot'
 		  AND column_name IN ('request_body', 'response_body')
 	`).Scan(&bodyColsOnMain); err != nil {
 		t.Fatalf("body-column presence check: %v", err)
 	}
 	if bodyColsOnMain != 0 {
-		t.Fatalf("request_logs_hot 上有 %d 个完整 body 列（request_body/response_body）—— "+
-			"bodies 面拆分被回退了；完整正文必须留在 request_logs_bodies_hot", bodyColsOnMain)
+		t.Fatalf("_request_logs_hot 上有 %d 个完整 body 列（request_body/response_body）—— "+
+			"bodies 面拆分被回退了；完整正文必须留在 _request_logs_bodies_hot", bodyColsOnMain)
 	}
 
 	// 主表在拆分后承载的是**截断 preview**，不是完整正文。entry 里的
@@ -203,7 +203,7 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 	)
 	err = pool.QueryRow(ctx, `
 		SELECT upstream_finish_reason, request_preview, response_preview
-		FROM request_logs_hot
+		FROM _request_logs_hot
 		WHERE request_id = $1
 	`, entry.RequestID).Scan(&gotUpstream, &gotRequestPreview, &gotResponsePreview)
 	if err != nil {
@@ -239,7 +239,7 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 	}
 	err = pool.QueryRow(ctx, `
 		SELECT request_body::text, response_body::text
-		FROM request_logs_bodies_hot
+		FROM _request_logs_bodies_hot
 		WHERE request_id = $1
 	`, entry.RequestID).Scan(&gotBodies.RequestBody, &gotBodies.ResponseBody)
 	if err != nil {
@@ -251,8 +251,8 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 	var joinedRequestBody string
 	err = pool.QueryRow(ctx, `
 		SELECT rb.request_body::text
-		FROM request_logs_hot rl
-		JOIN request_logs_bodies_hot rb
+		FROM _request_logs_hot rl
+		JOIN _request_logs_bodies_hot rb
 		  ON rb.request_id = rl.request_id
 		WHERE rl.request_id = $1
 	`, entry.RequestID).Scan(&joinedRequestBody)
@@ -274,7 +274,7 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 	}
 	err = pool.QueryRow(ctx, `
 		SELECT request_body::text, response_body::text
-		FROM request_logs_bodies_hot
+		FROM _request_logs_bodies_hot
 		WHERE request_id = $1
 	`, entry.RequestID).Scan(&gotBodies.RequestBody, &gotBodies.ResponseBody)
 	if err != nil {
@@ -293,7 +293,7 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 	}
 	err = pool.QueryRow(ctx, `
 		SELECT request_body::text, response_body::text
-		FROM request_logs_bodies_hot
+		FROM _request_logs_bodies_hot
 		WHERE request_id = $1
 	`, entry.RequestID).Scan(&gotBodies.RequestBody, &gotBodies.ResponseBody)
 	if err != nil {
@@ -315,7 +315,7 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 	)
 	err = pool.QueryRow(ctx, `
 		SELECT quality_flags, quality_fix_actions::text, success
-		FROM request_logs_hot
+		FROM _request_logs_hot
 		WHERE request_id = $1
 	`, entry.RequestID).Scan(&gotFlags, &gotActions, &gotSuccess)
 	if err != nil {

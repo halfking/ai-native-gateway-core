@@ -48,7 +48,7 @@ func TestRequestLogsWriteEnabled_DefaultsTrue(t *testing.T) {
 }
 
 // TestInsertRequestLogStopWriteGate：Full 链路 INSERT 路径的 S4 停写门控。
-// 关停后 request_logs_hot 主行与 request_logs_bodies_hot 正文写入被整体
+// 关停后 _request_logs_hot 主行与 _request_logs_bodies_hot 正文写入被整体
 // 跳过，usage_ledger 计费行照常提交（pgxmock 对未预期的 Exec 直接报错，
 // 因此期望序列本身就是"宽表零写入"的行为断言）。
 func TestInsertRequestLogStopWriteGate(t *testing.T) {
@@ -73,10 +73,10 @@ func TestInsertRequestLogStopWriteGate(t *testing.T) {
 				WithArgs(anyArgs(19)...).
 				WillReturnResult(pgxmock.NewResult("INSERT", 1))
 			if tc.expectWide {
-				mock.ExpectExec("INSERT INTO request_logs_hot").
+				mock.ExpectExec("INSERT INTO _request_logs_hot").
 					WithArgs(anyArgs(103)...).
 					WillReturnResult(pgxmock.NewResult("INSERT", 1))
-				mock.ExpectExec("INSERT INTO request_logs_bodies_hot").
+				mock.ExpectExec("INSERT INTO _request_logs_bodies_hot").
 					WithArgs(anyArgs(4)...).
 					WillReturnResult(pgxmock.NewResult("INSERT", 1))
 			}
@@ -96,7 +96,7 @@ func TestInsertRequestLogStopWriteGate(t *testing.T) {
 }
 
 // TestUpdateRequestLogStopWriteGate：Full 链路 UPDATE（终态回填）路径的
-// S4 停写门控。关停后 request_logs_hot UPDATE（含 RowsAffected==0 的回落
+// S4 停写门控。关停后 _request_logs_hot UPDATE（含 RowsAffected==0 的回落
 // INSERT）、bodies 正文写入整体跳过；usage_ledger 终态刷新照常。
 func TestUpdateRequestLogStopWriteGate(t *testing.T) {
 	tests := []struct {
@@ -120,10 +120,10 @@ func TestUpdateRequestLogStopWriteGate(t *testing.T) {
 				WithArgs(anyArgs(5)...).
 				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 			if tc.expectWide {
-				mock.ExpectExec("UPDATE request_logs_hot").
+				mock.ExpectExec("UPDATE _request_logs_hot").
 					WithArgs(anyArgs(100)...).
 					WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-				mock.ExpectExec("INSERT INTO request_logs_bodies_hot").
+				mock.ExpectExec("INSERT INTO _request_logs_bodies_hot").
 					WithArgs(anyArgs(4)...).
 					WillReturnResult(pgxmock.NewResult("INSERT", 1))
 			}

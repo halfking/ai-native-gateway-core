@@ -226,7 +226,7 @@ func compareTurnsSQL() string {
 }
 
 func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, tenantID, sessionID string) (*SessionCompareData, error) {
-	// Query all request_logs for this session, ordered by time.
+	// Query all _request_logs for this session, ordered by time.
 	//
 	// 会话存储解耦 v3 审计（2026-09-30）：本查询曾迁到 session 族原生源
 	// （实测 3978ms → 8.7ms）又因「镜像链漏写 20,660 会话」被回退。§5.3.1
@@ -252,7 +252,7 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, ten
 	// 生效等价。
 	rows, err := q.Query(ctx, compareTurnsSQL(), sessionID, tenantID)
 	if err != nil {
-		return nil, fmt.Errorf("query request_logs: %w", err)
+		return nil, fmt.Errorf("query _request_logs: %w", err)
 	}
 	defer rows.Close()
 
@@ -298,11 +298,11 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, ten
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("query request_logs: %w", err)
+		return nil, fmt.Errorf("query _request_logs: %w", err)
 	}
 	// Pair on request_id alone, which is what this path has always done
 	// (`ON rb.request_id = rl.request_id`) and what the rest of the codebase
-	// does. `request_logs_bodies.ts` is the body-write timestamp, not the turn
+	// does. `_request_logs_bodies.ts` is the body-write timestamp, not the turn
 	// timestamp — the two disagree for 99.85% of turns — so tightening this to a
 	// (request_id, ts) tuple would silently drop every body. See
 	// session_bodies_batch.go and audit §5.9.
@@ -952,7 +952,7 @@ func (api *HandoffAPI) executeHandoff(ctx context.Context, req HandoffRequest) (
 
 func (api *HandoffAPI) generateHandoffSummary(ctx context.Context, sessionID, tenantID string) (string, error) {
 	// Get the last few messages for context (wrapped in tenant tx for RLS)
-	// 2026-07-21 Ticket #11: Modified to use LEFT JOIN with request_logs_bodies
+	// 2026-07-21 Ticket #11: Modified to use LEFT JOIN with _request_logs_bodies
 	// to retrieve full request_body and response_body (moved to separate table in #10).
 	var summaries []string
 	err := withTenantTx(ctx, api.db, tenantID, func(tx pgx.Tx) error {

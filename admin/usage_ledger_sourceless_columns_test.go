@@ -37,7 +37,7 @@ import (
 	"testing"
 )
 
-// sourcelessColumns 是 usage_ledger 没有、只有 request_logs 有的列。
+// sourcelessColumns 是 usage_ledger 没有、只有 _request_logs 有的列。
 // 实测来源：2026-10-03 information_schema.columns
 //
 //	usage_ledger(20) = request_id, ts, tenant_id, application_id, api_key_id,
@@ -94,7 +94,7 @@ func fragmentContaining(fragment, needle string) string {
 func TestPlanCostTrend_DimensionProvenance(t *testing.T) {
 	// 期望值来自实测，不是从实现里抄的：
 	//   model/provider/api_key 的列只在计费宽表侧被查询过（实测 200）；
-	//   work_type/intent 的列只在 request_logs 上（实测 ledger 侧 500）。
+	//   work_type/intent 的列只在 _request_logs 上（实测 ledger 侧 500）。
 	want := map[string]struct {
 		baseTable   string
 		baseAlias   string
@@ -103,7 +103,7 @@ func TestPlanCostTrend_DimensionProvenance(t *testing.T) {
 		"model":    {"usage_ledger_with_current_month ul", "ul", false},
 		"provider": {"usage_ledger_with_current_month ul", "ul", false},
 		"api_key":  {"usage_ledger_with_current_month ul", "ul", false},
-		// 39 轮（2026-10-03）：request 侧基表从裸 request_logs 换成双腿视图
+		// 39 轮（2026-10-03）：request 侧基表从裸 _request_logs 换成双腿视图
 		// —— 裸母表读不到 hot 腿未 promote 的最近 ≤8h（204/206 号同族盲区）。
 		"work_type": {"request_logs_with_current_month rl", "rl", true},
 		"intent":    {"request_logs_with_current_month rl", "rl", true},
@@ -199,7 +199,7 @@ func TestDetectorRejectsTheOriginalBug(t *testing.T) {
 
 	// 阳性对照：合法写法必须不报违规，否则检测器就是「怎么都红」，同样没有鉴别力。
 	legal := costTrendPlan{
-		GroupBy: "work_type", BaseTable: "request_logs rl", BaseAlias: "rl",
+		GroupBy: "work_type", BaseTable: "_request_logs rl", BaseAlias: "rl",
 		GroupColumn: "rl.work_type",
 	}
 	if bad := validateCostTrendPlan(legal); len(bad) > 0 {
@@ -348,7 +348,7 @@ func TestScannerIgnoresCommentsButCatchesCode(t *testing.T) {
 		},
 		{
 			name:    "合法写法不报",
-			src:     "q := `SELECT rl.work_type, rl.gw_session_id FROM request_logs rl`\n",
+			src:     "q := `SELECT rl.work_type, rl.gw_session_id FROM _request_logs rl`\n",
 			wantHit: false,
 		},
 	}
@@ -405,7 +405,7 @@ func TestPeriodStats_HasNoUniqueSessions(t *testing.T) {
 
 	// unique_sessions 必须已删除：它需要 COUNT(DISTINCT gw_session_id)，
 	// 而 usage_ledger 无 gw_session_id，换源后在交互预算内也算不出来
-	// （request_logs 实测 30 天窗口 72s）。无消费方 + 算不出来 + 返回 0
+	// （_request_logs 实测 30 天窗口 72s）。无消费方 + 算不出来 + 返回 0
 	// 会与「真的是 0」无法区分 —— 正是本轮要消灭的缺陷。
 	if seen["unique_sessions"] {
 		t.Error("PeriodStats.unique_sessions 回来了：它无法计算，全库无渲染点，" +

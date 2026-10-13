@@ -69,15 +69,15 @@ def wait_for_outbound_body(session, tries=20, delay=2.0):
     """轮询等待该会话「已落库且 outbound_body 非空」的请求行。
 
     两个独立的异步点都会造成假阴性：
-      1. request_logs_hot 的行本身滞后于响应（实测 3~5s）；
-      2. request_logs_bodies_hot 的 outbound_body 又滞后于第 1 步，且
+      1. _request_logs_hot 的行本身滞后于响应（实测 3~5s）；
+      2. _request_logs_bodies_hot 的 outbound_body 又滞后于第 1 步，且
          并非每个请求都存 body —— 只等第 1 点会拿到 outbound_body IS NULL
          的行，于是「有没有占位符」被判成 nobody（读作缺失而非否）。
-    必须查 _hot：request_logs 是分区父表，热数据只落在 request_logs_hot。
+    必须查 _hot：_request_logs 是分区父表，热数据只落在 _request_logs_hot。
     """
     for _ in range(tries):
-        rid = sql(f"select h.request_id from request_logs_hot h "
-                  f"join request_logs_bodies_hot b on b.request_id = h.request_id "
+        rid = sql(f"select h.request_id from _request_logs_hot h "
+                  f"join _request_logs_bodies_hot b on b.request_id = h.request_id "
                   f"where h.gw_session_id like 'gw_{session}' "
                   f"and b.outbound_body is not null "
                   f"order by h.ts desc limit 1")
@@ -85,7 +85,7 @@ def wait_for_outbound_body(session, tries=20, delay=2.0):
             return rid
         time.sleep(delay)
     # 退化：拿任意一行，好让调用方至少能报告"无出向正文"而非"无请求行"
-    return sql(f"select request_id from request_logs_hot "
+    return sql(f"select request_id from _request_logs_hot "
                f"where gw_session_id like 'gw_{session}' order by ts desc limit 1")
 
 
@@ -102,13 +102,13 @@ def probe(label, path, payload, expect_shapes, session=None):
     # 144/502）。那是「没存」而不是「没脱敏」，不能判失败 —— 此时退化为
     # 只用客户端侧断言，并把取证缺口如实标出来。
     has_body = sql(f"select coalesce((outbound_body is not null)::text,'false') "
-                   f"from request_logs_bodies_hot where request_id='{rid}'") == "true"
+                   f"from _request_logs_bodies_hot where request_id='{rid}'") == "true"
 
     def outbound_has(pat):
         if not has_body:
             return "n/a"
         return sql(f"select coalesce((outbound_body::text like '%{pat}%')::text,'nobody') "
-                   f"from request_logs_bodies_hot where request_id='{rid}'")
+                   f"from _request_logs_bodies_hot where request_id='{rid}'")
 
     pairs = [("phone", PHONE), ("email", EMAIL), ("idcard", IDCARD)]
     if KEY:
@@ -251,16 +251,16 @@ def case_tools_sanitized_args():
     rid = wait_for_outbound_body(session)
     has_body = bool(rid) and sql(
         f"select coalesce((outbound_body is not null)::text,'false') "
-        f"from request_logs_bodies_hot where request_id='{rid}'") == "true"
+        f"from _request_logs_bodies_hot where request_id='{rid}'") == "true"
 
     leaks, ph = [], "n/a"
     if rid and has_body:
         for name, val in (("phone", PHONE), ("email", EMAIL)):
             if sql(f"select coalesce((outbound_body::text like '%{val}%')::text,'nobody') "
-                   f"from request_logs_bodies_hot where request_id='{rid}'") == "true":
+                   f"from _request_logs_bodies_hot where request_id='{rid}'") == "true":
                 leaks.append(name)
         ph = sql(f"select coalesce((outbound_body::text like '%SENSITIVE%')::text,'nobody') "
-                 f"from request_logs_bodies_hot where request_id='{rid}'")
+                 f"from _request_logs_bodies_hot where request_id='{rid}'")
 
     body = json.dumps(resp, ensure_ascii=False)
     client_leak_ph = "SENSITIVE:" in body

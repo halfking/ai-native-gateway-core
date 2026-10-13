@@ -270,3 +270,4 @@
 252	857_analyze_columnar_staleness_gate.sql
 253	858_request_logs_final_success_gsid_idx.sql
 254	859_tighten_pii_phone_intl_regex.sql
+255	860_rename_request_logs_family_pending_delete.sql

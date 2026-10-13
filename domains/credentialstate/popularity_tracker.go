@@ -14,7 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// ModelPopularityTracker tracks model usage frequency from request_logs
+// ModelPopularityTracker tracks model usage frequency from _request_logs
 // to enable heat-based probe scheduling (Phase 2 feature).
 type ModelPopularityTracker struct {
 	db            *pgxpool.Pool
@@ -78,10 +78,10 @@ func (t *ModelPopularityTracker) refresh(ctx context.Context) error {
 	queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	// 2026-07-05 migration 341: 查询 request_logs_hot（1 小时窗口完全在热表范围内）
+	// 2026-07-05 migration 341: 查询 _request_logs_hot（1 小时窗口完全在热表范围内）
 	rows, err := t.db.Query(queryCtx, `
 		SELECT client_model, COUNT(*) AS request_count
-		FROM request_logs_hot
+		FROM _request_logs_hot
 		WHERE created_at > NOW() - INTERVAL '1 hour'
 		  AND client_model IS NOT NULL
 		  AND client_model != ''

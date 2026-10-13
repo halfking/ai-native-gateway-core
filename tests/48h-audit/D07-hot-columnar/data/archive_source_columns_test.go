@@ -1,4 +1,4 @@
-// Package data - D07 数据测试：request_logs 归档链路的列契约。
+// Package data - D07 数据测试：_request_logs 归档链路的列契约。
 //
 // S-01 首轮（2026-09-29 真库 PostgreSQL 17.10 实测）实测结论：
 // migration 754 的 archive_request_logs_default() 是动态 SQL（format('%I') +
@@ -9,13 +9,13 @@
 //	HINT:  Perhaps you meant to reference the column "request_logs_2026_08.gw_session_id".
 //
 // 即该函数自落地起从未成功执行过一次：bg.archiveOldRequestLogs 每天 03:xx
-// 只会打一条 "request_logs archive failed" 然后空手而归。
+// 只会打一条 "_request_logs archive failed" 然后空手而归。
 //
 // 本文件是不依赖数据库的守门人：从仓库自己的 baseline DDL
 // （installer/cmd/llm-gw-installer/embeddata/01-schema.sql）解析出
-// request_logs 的真实列集合，再解析 754 函数体里 candidates CTE 显式列出的
+// _request_logs 的真实列集合，再解析 754 函数体里 candidates CTE 显式列出的
 // 源列，逐一断言存在。任何后续改动若再次把列名写错（拼错、用了 session_* 族的
-// 列名、改了 request_logs 的列名而没同步 754），本守卫立即变红。
+// 列名、改了 _request_logs 的列名而没同步 754），本守卫立即变红。
 //
 // 跑测：
 //
@@ -67,8 +67,8 @@ func readRepoFile(t testing.TB, rel string) string {
 }
 
 var (
-	// request_logs 的 CREATE TABLE 头，取到第一个语句结束分号为止。
-	reReqLogsAnchor = regexp.MustCompile(`CREATE TABLE (?:IF NOT EXISTS )?(?:public\.)?request_logs\s*\(`)
+	// _request_logs 的 CREATE TABLE 头，取到第一个语句结束分号为止。
+	reReqLogsAnchor = regexp.MustCompile(`CREATE TABLE (?:IF NOT EXISTS )?(?:public\.)?_request_logs\s*\(`)
 	// DDL 里缩进 4 空格的列名（顶层列定义）。
 	reDDLColumn = regexp.MustCompile(`(?m)^\s{4}([a-z_][a-z0-9_]*)\s+[a-z]`)
 	// 归档函数的源投影：candidates AS ( SELECT <cols> FROM %I ...
@@ -85,13 +85,13 @@ func requestLogsColumnsFromBaseline(t testing.TB) map[string]bool {
 
 	loc := reReqLogsAnchor.FindStringIndex(src)
 	if loc == nil {
-		t.Fatalf("%s: no `CREATE TABLE ... request_logs (` found — baseline shape changed, "+
+		t.Fatalf("%s: no `CREATE TABLE ... _request_logs (` found — baseline shape changed, "+
 			"this guard must be updated to the new anchor before it can be trusted",
 			baselineSchemaRel)
 	}
 	end := strings.Index(src[loc[1]:], ";")
 	if end < 0 {
-		t.Fatalf("%s: unterminated CREATE TABLE request_logs body", baselineSchemaRel)
+		t.Fatalf("%s: unterminated CREATE TABLE _request_logs body", baselineSchemaRel)
 	}
 	body := src[loc[1] : loc[1]+end]
 
@@ -100,7 +100,7 @@ func requestLogsColumnsFromBaseline(t testing.TB) map[string]bool {
 		cols[m[1]] = true
 	}
 	if len(cols) < 50 {
-		t.Fatalf("%s: parsed only %d request_logs columns from baseline (real table has 137) — "+
+		t.Fatalf("%s: parsed only %d _request_logs columns from baseline (real table has 137) — "+
 			"the column regex stopped matching and the guard below would vacuously pass",
 			baselineSchemaRel, len(cols))
 	}
@@ -147,8 +147,8 @@ func TestData_ArchiveRequestLogs_SourceColumnsExist(t *testing.T) {
 	}
 	if len(missing) > 0 {
 		t.Fatalf("archive_request_logs_default projects %d column(s) that do not exist on "+
-			"request_logs per %s: %v.\n"+
-			"Real request_logs has no `session_id` (it is `gw_session_id`) and no `status_code` "+
+			"_request_logs per %s: %v.\n"+
+			"Real _request_logs has no `session_id` (it is `gw_session_id`) and no `status_code` "+
 			"(the integer HTTP status is `upstream_status_code`; `request_status` is text).\n"+
 			"These only surface at runtime as SQLSTATE 42703 because the body is dynamic SQL, so "+
 			"nothing in the installer or this test suite can fail until a partition is actually read.",
@@ -174,9 +174,9 @@ func TestData_ArchiveRequestLogs_ProjectionCountMatchesInsertColumns(t *testing.
 		t.Fatalf("archive INSERT lists %d columns but projects %d: %v vs %v",
 			len(target), len(projected), target, projected)
 	}
-	// The projected list must be the source columns with request_logs' two
+	// The projected list must be the source columns with _request_logs' two
 	// renamed columns mapped back — guard against a silent semantic swap.
-	// Archive table column name -> the request_logs column that feeds it.
+	// Archive table column name -> the _request_logs column that feeds it.
 	want := map[string]string{
 		"session_id":        "gw_session_id",
 		"status_code":       "upstream_status_code",
@@ -193,7 +193,7 @@ func TestData_ArchiveRequestLogs_ProjectionCountMatchesInsertColumns(t *testing.
 	for i, c := range target {
 		if mapped, ok := want[c]; ok && projected[i] != mapped {
 			t.Errorf("archive column %q is fed from source column %q; expected %q "+
-				"(the request_logs name for it)", c, projected[i], mapped)
+				"(the _request_logs name for it)", c, projected[i], mapped)
 		}
 	}
 }

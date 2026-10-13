@@ -10,7 +10,7 @@ import (
 //
 // Parameters:
 //   - tenantID: extracted from request context (required for tenant isolation)
-//   - sessionID: gw_session_id from request_logs (aggregate root)
+//   - sessionID: gw_session_id from _request_logs (aggregate root)
 //   - turnNo: turn number within the session (for aggregate_version)
 //   - requestID: unique request identifier (idempotency + correlation)
 //   - provider: canonical provider name (e.g. "anthropic", "openai")

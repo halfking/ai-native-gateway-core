@@ -86,7 +86,7 @@ func TestEmitTelemetry_AutoSuccessReportsOutcome(t *testing.T) {
 	require.NoError(t, err)
 	defer mockDB.Close()
 	mockDB.MatchExpectationsInOrder(false)
-	mockDB.ExpectExec(`INSERT INTO request_logs_hot`).
+	mockDB.ExpectExec(`INSERT INTO _request_logs_hot`).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mockDB.ExpectExec(`INSERT INTO routing_decision_log_hot`).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
@@ -114,7 +114,7 @@ func TestEmitTelemetry_PlainSuccessStaysSilent(t *testing.T) {
 	require.NoError(t, err)
 	defer mockDB.Close()
 	mockDB.MatchExpectationsInOrder(false)
-	mockDB.ExpectExec(`INSERT INTO request_logs_hot`).
+	mockDB.ExpectExec(`INSERT INTO _request_logs_hot`).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mockDB.ExpectExec(`INSERT INTO routing_decision_log_hot`).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))

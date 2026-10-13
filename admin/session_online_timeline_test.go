@@ -3,7 +3,7 @@
 // v4 T7（2026-08-18, migration 532）会话时间线单元测试：
 //
 //	UT-FS-03  timeline 读 hot + promoted 月度分区（request_logs_with_current_month
-//	          视图）而非仅 request_logs_hot；>7d 行不被截断；联合结果按 ts 排序；
+//	          视图）而非仅 _request_logs_hot；>7d 行不被截断；联合结果按 ts 排序；
 //	UT-FS-04  session 标识语义统一（文本 gw_session_id 主键 + 数值 sessions.id
 //	          解析/兜底），tenant 过滤参数形状；
 //	G10       is_final_success / outcome（final_success / superseded_success /

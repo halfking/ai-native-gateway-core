@@ -35,33 +35,33 @@ func main() {
 	fmt.Println("   ✓ 数据库连接成功")
 	fmt.Println()
 
-	// 检查 request_logs 表
-	fmt.Println("2. 检查 request_logs 表结构...")
+	// 检查 _request_logs 表
+	fmt.Println("2. 检查 _request_logs 表结构...")
 	var exists bool
 	err = pool.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT FROM information_schema.tables 
-			WHERE table_name = 'request_logs'
+			WHERE table_name = '_request_logs'
 		)
 	`).Scan(&exists)
 	if err != nil || !exists {
-		log.Fatalf("request_logs 表不存在: %v", err)
+		log.Fatalf("_request_logs 表不存在: %v", err)
 	}
-	fmt.Println("   ✓ request_logs 表存在")
+	fmt.Println("   ✓ _request_logs 表存在")
 
 	// 检查索引
 	var indexCount int
 	err = pool.QueryRow(ctx, `
 		SELECT COUNT(*) 
 		FROM pg_indexes 
-		WHERE tablename = 'request_logs' 
+		WHERE tablename = '_request_logs' 
 		  AND indexdef ILIKE '%created_at%'
 	`).Scan(&indexCount)
 	if err != nil {
 		log.Printf("   ⚠ 索引检查失败: %v", err)
 	} else if indexCount == 0 {
 		fmt.Println("   ⚠ 警告: 未找到 created_at 索引，查询可能较慢")
-		fmt.Println("   建议: CREATE INDEX idx_request_logs_created_at_model ON request_logs (created_at DESC, client_model);")
+		fmt.Println("   建议: CREATE INDEX idx_request_logs_created_at_model ON _request_logs (created_at DESC, client_model);")
 	} else {
 		fmt.Printf("   ✓ 找到 %d 个 created_at 相关索引\n", indexCount)
 	}
@@ -75,7 +75,7 @@ func main() {
 		  COUNT(*) as total_rows,
 		  COUNT(DISTINCT client_model) as distinct_models,
 		  COUNT(*) FILTER (WHERE client_model IS NOT NULL) as with_model
-		FROM request_logs 
+		FROM _request_logs 
 		WHERE created_at > NOW() - INTERVAL '1 hour'
 	`).Scan(&totalRows, &distinctModels, &withModel)
 	if err != nil {
@@ -100,7 +100,7 @@ func main() {
 	start = time.Now()
 	rows, err := pool.Query(ctx, `
 		SELECT client_model, COUNT(*) AS request_count
-		FROM request_logs
+		FROM _request_logs
 		WHERE created_at > NOW() - INTERVAL '1 hour'
 		  AND client_model IS NOT NULL
 		  AND client_model != ''
@@ -173,7 +173,7 @@ func main() {
 	fmt.Println("=== 测试完成 ===")
 	fmt.Println()
 	fmt.Println("部署建议：")
-	fmt.Println("1. 确保索引存在：CREATE INDEX idx_request_logs_created_at_model ON request_logs (created_at DESC, client_model);")
+	fmt.Println("1. 确保索引存在：CREATE INDEX idx_request_logs_created_at_model ON _request_logs (created_at DESC, client_model);")
 	fmt.Println("2. 启用热度追踪：export LLM_GATEWAY_ENABLE_POPULARITY_TRACKING=true")
 	fmt.Println("3. 监控查询耗时：观察日志中的 'popularity tracker: refreshed' 消息")
 }

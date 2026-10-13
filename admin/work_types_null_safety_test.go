@@ -26,7 +26,7 @@ func readWorkTypesSource(t *testing.T) string {
 // addressed the heatmap "暂无数据" bug on llmgateway.internal.example.com/routing-v2.
 // The work-types endpoint has the same anti-pattern in three places —
 // explicit-model branch `is_auto_request = FALSE` is NULL-unsafe and
-// silently drops every historical request_logs row where the writer
+// silently drops every historical _request_logs row where the writer
 // never set the bool column.
 //
 // These three queries live inline in handleStats. Rather than spin up
@@ -76,11 +76,11 @@ func TestHandleStats_NullSafeIsAutoFilter(t *testing.T) {
 
 // TestHandleStats_L1TaskGroupByExpression guards the 2026-06-24 bug
 // where `by_l1_task` silently came back as `{}` even though the
-// request_logs table had hundreds of rows. Root cause: the SELECT
+// _request_logs table had hundreds of rows. Root cause: the SELECT
 // expression references `is_auto_request` inside a CASE branch (via
 // the effectiveTaskExpr) but the GROUP BY referenced only the raw
 // `task_type` column. PostgreSQL rejects that combination with
-// "column request_logs.is_auto_request must appear in the GROUP BY
+// "column _request_logs.is_auto_request must appear in the GROUP BY
 // clause or be used in an aggregate function", and the handler
 // swallowed the rows error so the response shape looked valid with
 // an empty distribution. The fix is `GROUP BY (expr)` so PG accepts
