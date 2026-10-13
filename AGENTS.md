@@ -861,3 +861,25 @@ host-first 孤儿网关回收 + 517 形态探测 r2538、mobile UX 第二轮、2
 对生产 settings_kv 翻转两个键。前置：生产库跑 7 天 dual-read-drift 零漂移；
 **本地库的 update_session_summary 触发器 bug 版（DECIMAL(10,6)）在 252 镜像
 里也疑似存在，翻转前建议先应用 661 迁移**（幂等，本地已验证）。
+
+---
+
+# 追加：2026-10-13 r1020 —— minimax-m3「模型未返回任何数据」= 输出合规误伤 Write 工具
+
+> 用户报告：ZCode 经本地网关（:8782）请求 minimax-m3 频繁报「模型未返回任何数据」。
+> 根因：防外传守卫对 tool 参数里**每个字符串**做目的地检查，而 coding agent 的
+> 参数主体是 Write/Edit 写入的文件内容——源码引用公网 URL（`https://acc.kxpms.cn`）
+> 与 `casdoor.ts:455` 文件名:行号（被 egressHostFromPort 当成 host:port）都会把
+> 整条响应 `output_policy_blocked`（chunk_count 0，客户端零内容）。
+> 修复两层：① 惰性内容工具（Write/Edit 族封闭集）按载体能力豁免外传检查
+> （标签 `__tool_json@<工具名>`，凭据键检查不豁免，未收录名默认 fail-closed，
+> 流式跨帧名字经 complianceStreamState.toolNames 侧信道）；② host:port 冒号
+> 形态改为网络动词锚定（netcat 族+curl/wget/httpie），文件名:行号不再误伤。
+> 判据 `security/sanitize/r1020_inert_tool_content_test.go`（三协议流式形状 +
+> 前提在场配对 + 封闭性钉子），变异验证 M1/M2/M3 三方向红在正确断言。
+> **夹具坑三则**：帧构造先转义 `\` 再转义 `"`；手写 SSE 帧闭合括号数三层；
+> 终态帧的阻断信号在 ShouldBlock 不在 error。
+> 详见 `docs/audit/2026-10-13-minimax-m3输出合规误伤write工具-r1020.md`。
+> 遗留：本地网关需重部署生效（勿从含并行会话半成品的 checkout 部署）；
+> telemetry/streaming-alternatives 两处测试红是并行会话 S4 迁移半成品
+> （pristine + 其单文件即复现），与本修复无关。
