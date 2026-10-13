@@ -849,9 +849,6 @@ var sessionTurnsAdvisoryLockKey854 []byte
 //go:embed embeddata/startup/855_session_analytics_time_window.sql
 var sessionAnalyticsTimeWindow855 []byte
 
-//go:embed embeddata/startup/856_usage_ledger_ts_cover_agg_idx.sql
-var usageLedgerTsCoverAggIdx856 []byte
-
 //go:embed embeddata/startup/857_analyze_columnar_staleness_gate.sql
 var analyzeColumnarStalenessGate857 []byte
 
@@ -1122,12 +1119,11 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/850_session_summaries_project_backfill_recent_idx.sql":                  sessionSummariesProjectBackfillRecentIdx850,
 	"startup/851_disable_overbroad_pii_ip_address_rule.sql":                          disableOverbroadPiiIpAddressRule851,
 	"startup/856_usage_ledger_ts_cover_agg_idx.sql":                                  usageLedgerTsCoverAggIdx856,
-	"startup/857_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex857,
+	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/853_credential_probe_queue_automatic.sql":                               credentialProbeQueueAutomatic853,
 	"startup/854_session_turns_advisory_lock_key.sql":                                sessionTurnsAdvisoryLockKey854,
 	"startup/855_session_analytics_time_window.sql":                                  sessionAnalyticsTimeWindow855,
-	"startup/856_usage_ledger_ts_cover_agg_idx.sql":                                  usageLedgerTsCoverAggIdx856,
 	"startup/857_analyze_columnar_staleness_gate.sql":                                analyzeColumnarStalenessGate857,
 	"startup/858_request_logs_final_success_gsid_idx.sql":                            requestLogsFinalSuccessGsidIdx858,
 	"startup/829_bodies_columnar_rollback.sql":                                       bodiesColumnarRollback829,

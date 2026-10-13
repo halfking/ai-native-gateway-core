@@ -59,6 +59,16 @@ type FieldSpec struct {
 	// Mistral 的 additionalProperties:false 会拒绝任何未知键。
 	RejectedBy []Dialect
 
+	// RejectedByUnknown 声明「连未命名方言也硬拒该字段」（r1021）。
+	//
+	// DialectUnknown 的默认语义是最宽松（未登记 catalog 的中转不该因为没
+	// 登记就丢参数），rejects() 对 Unknown 一律 false。但个别**已登记的
+	// 方言私有字段**有跨厂商的硬 400 实证（如 thinking 对象发给
+	// openai-responses 线格式的严格中转：grok-4.6/vapeur 2026-10-13），
+	// 透传的代价是整条请求 400，裁剪的代价只是丢一个方言语义。对这类
+	// 字段显式声明本开关；默认 false，不动任何既有行为。
+	RejectedByUnknown bool
+
 	// IRPath 指向 IR 中的对应字段（KindIRHandled 时填），便于审计与排查。
 	IRPath string
 
@@ -94,7 +104,9 @@ func (s *FieldSpec) knownBy(d Dialect) bool {
 // rejects 报告目标方言是否明确拒绝该字段。
 func (s *FieldSpec) rejects(d Dialect) bool {
 	if d == DialectUnknown {
-		return false
+		// 默认最宽松；仅当字段显式声明 RejectedByUnknown（r1021，须有
+		// 跨厂商硬 400 实证）才对未命名方言也拒。
+		return s.RejectedByUnknown
 	}
 	for _, bad := range s.RejectedBy {
 		if bad == d {

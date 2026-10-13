@@ -399,8 +399,21 @@ func collectVisibleText(root map[string]any, stream bool) []visibleTextField {
 		add(root, "delta", responseSummaryLane+".reasoning_summary_text", false)
 	case "response.function_call_arguments.delta":
 		add(root, "delta", responseItemLane+".arguments", false)
+	case "response.function_call_arguments.done":
+		// r1020：done 快照带完整参数与工具名（name 在事件根上）。此前不挂
+		// 名字 → 裸 __tool_json 立即检查 → Write 写文件引用 URL 被误伤
+		// （真实桥接形状，2026-10-13 /v1/responses 复现实证）。
+		before := len(fields)
+		name, _ := root["name"].(string)
+		add(root, "arguments", responseItemLane+".arguments.snapshot", false)
+		nameAppendedToolJSONFields(fields, before, name)
 	case "response.custom_tool_call_input.delta":
 		add(root, "delta", responseItemLane+".custom_input", false)
+	case "response.custom_tool_call_input.done":
+		before := len(fields)
+		name, _ := root["name"].(string)
+		add(root, "input", responseItemLane+".custom_input.snapshot", false)
+		nameAppendedToolJSONFields(fields, before, name)
 	case "response.output_text.done":
 		add(root, "text", responseContentLane+".output_text.snapshot", false)
 	case "response.refusal.done":
@@ -410,10 +423,6 @@ func collectVisibleText(root map[string]any, stream bool) []visibleTextField {
 		add(root, "text", responseContentLane+".reasoning_text.snapshot", false)
 	case "response.reasoning_summary_text.done":
 		add(root, "text", responseSummaryLane+".reasoning_summary_text.snapshot", false)
-	case "response.function_call_arguments.done":
-		add(root, "arguments", responseItemLane+".arguments.snapshot", false)
-	case "response.custom_tool_call_input.done":
-		add(root, "input", responseItemLane+".custom_input.snapshot", false)
 	case "response.audio_transcript.done":
 		add(root, "transcript", responseContentLane+".audio_transcript.snapshot", false)
 		add(root, "text", responseContentLane+".audio_transcript.snapshot", false)

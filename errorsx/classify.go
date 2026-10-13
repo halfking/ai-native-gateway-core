@@ -338,6 +338,19 @@ var noAvailableChannelRe = regexp.MustCompile(
 	`(?i)no available channel[^\n]{0,160}(for model|for the model|to serve model|serving model)`,
 )
 
+// noEnterpriseProviderRe matches the relay verdict "No enterprise provider is
+// available for this request path" (2026-10-13 Vapeur claude-haiku streaming
+// incident: the chat leg forwards /v1/messages internally and the Claude
+// series has no enterprise backend on that path). Same family as
+// noAvailableChannelRe — no backend can serve this — but it arrives on 4xx,
+// where the channel regex is deliberately status-scoped to 5xx (see its
+// comment above). Dedicated narrow regex + dedicated gate (400/403/422/5xx)
+// in both classifiers: KindNoAvailableChannel means fail over to a sibling
+// credential/model, not blind same-node retries that park a healthy node.
+var noEnterpriseProviderRe = regexp.MustCompile(
+	`(?i)no [a-z ]{0,24}provider is available for (this request path|this model|model)`,
+)
+
 var unsupportedFeatureRe = regexp.MustCompile(
 	`(?i)((does not|doesn'?t) support (coding plan|tool|function|tools|function call)|` +
 		`(does not|doesn'?t) support (image|vision|image input|multimodal)|` +
@@ -1034,6 +1047,11 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		if status >= 500 && noAvailableChannelRe.Match(body) {
 			return KindNoAvailableChannel
 		}
+		// 4xx/5xx 上的「无后端可服务」（Vapeur 专属形态，见 noEnterpriseProviderRe）：
+		// 与 channel 同判——换兄弟节点，不盲重试。
+		if (status == 400 || status == 403 || status == 422 || status >= 500) && noEnterpriseProviderRe.Match(body) {
+			return KindNoAvailableChannel
+		}
 		if degradedFunctionRe.Match(body) {
 			return KindUpstreamDown
 		}
@@ -1408,6 +1426,11 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 		// chunks, relayed body capture) gets the same 5xx-gated treatment so
 		// the two classifiers cannot diverge on the same body.
 		if status >= 500 && noAvailableChannelRe.Match(body) {
+			return KindNoAvailableChannel
+		}
+		// 4xx/5xx 上的「无后端可服务」（Vapeur 专属形态，见 noEnterpriseProviderRe）：
+		// 与 channel 同判——换兄弟节点，不盲重试。
+		if (status == 400 || status == 403 || status == 422 || status >= 500) && noEnterpriseProviderRe.Match(body) {
 			return KindNoAvailableChannel
 		}
 		if degradedFunctionRe.Match(body) {

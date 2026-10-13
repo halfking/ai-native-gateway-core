@@ -129,14 +129,30 @@ func TestR1020ColonHostPortRequiresNetworkVerbVerbAnchor(t *testing.T) {
 // TestR1020ResponsesStreamCarriesToolNameAcrossDeltas 覆盖 responses 流式：
 // 参数增量帧不带名字，名字声明在 output_item.added；跨帧侧信道必须把名字
 // 带到终态合并检查，惰性豁免才能生效。
+//
+// 帧序列取自 2026-10-13 /v1/responses 真实捕获（openai_to_responses 桥接输出），
+// 含 function_call_arguments.done 快照帧——该帧带完整参数与 name，是首版修复
+// 漏掉的名字承载点（不挂名字 → 裸 __tool_json 立即检查 → 线上仍误伤）。
 func TestR1020ResponsesStreamCarriesToolNameAcrossDeltas(t *testing.T) {
+	doc := `{"file_path":"/repo/a.vue","content":"ref ` + "`https://acc.kxpms.cn`" + ` at casdoor.ts:455"}`
+	escaped := strings.ReplaceAll(doc, `"`, `\"`)
 	frames := func(toolName string) []string {
-		return []string{
-			`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","name":"` + toolName + `","arguments":""}}`,
-			`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"{\"file_path\":\"/repo/a.vue\",\"content\":\"ref ` + "`https://acc.kxpms.cn`" + ` "}`,
-			`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"\\n line at casdoor.ts:455\\n\"}"}`,
-			`data: {"type":"response.completed","response":{"id":"resp_1"}}`,
+		var out []string
+		for _, f := range []string{
+			`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"fc_1","name":"NAME","arguments":"","status":"in_progress"}}`,
+			`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"DOC_HEAD"}`,
+			`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"DOC_TAIL"}`,
+			`data: {"type":"response.function_call_arguments.done","item_id":"fc_1","call_id":"fc_1","output_index":0,"name":"NAME","arguments":"DOC"}`,
+			`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"fc_1","name":"NAME","arguments":"DOC","status":"completed"}}`,
+			`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[{"type":"function_call","id":"fc_1","name":"NAME","arguments":"DOC"}]}}`,
+		} {
+			f = strings.ReplaceAll(f, "NAME", toolName)
+			f = strings.ReplaceAll(f, "DOC_HEAD", escaped[:len(escaped)/2])
+			f = strings.ReplaceAll(f, "DOC_TAIL", escaped[len(escaped)/2:])
+			f = strings.ReplaceAll(f, "DOC", escaped)
+			out = append(out, f)
 		}
+		return out
 	}
 	run := func(toolName string) (blocked bool, wire string) {
 		s := productionConfiguredSanitizer(t)
@@ -147,7 +163,7 @@ func TestR1020ResponsesStreamCarriesToolNameAcrossDeltas(t *testing.T) {
 		for _, frame := range frames(toolName) {
 			res, err := chain.InterceptStreamChunk(context.Background(), []byte(frame+"\n\n"), meta)
 			if err != nil || (res != nil && res.ShouldBlock) {
-				return true, "stream blocked at terminal"
+				return true, "stream blocked"
 			}
 		}
 		out, ferr := chain.FlushStreamPending(context.Background(), meta)
@@ -159,9 +175,12 @@ func TestR1020ResponsesStreamCarriesToolNameAcrossDeltas(t *testing.T) {
 	if blocked, wire := run("Write"); blocked {
 		t.Errorf("responses 流式 Write 名字侧信道失效（惰性豁免未生效）: %s", wire)
 	}
-	// 前提在场：同一增量流，工具换成命令类名字必须仍被拦。
+	// 前提在场：同一帧流，工具换成命令类名字必须仍被拦。
 	if blocked, _ := run("connect"); !blocked {
 		t.Error("responses 流式命令类工具携带公网 URL 未被阻断：侧信道把豁免放宽到了所有工具")
+	}
+	if blocked, _ := run("Bash"); !blocked {
+		t.Error("responses 流式 Bash 携带公网 URL 未被阻断")
 	}
 }
 

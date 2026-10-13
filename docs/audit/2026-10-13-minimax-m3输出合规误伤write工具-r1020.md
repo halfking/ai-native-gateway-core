@@ -127,17 +127,53 @@
 - r1010/r1013/r1014/r1016/r1017/r1018/r1019 既有判据全绿——r1020 没有
   回退任何一条已确立的底线。
 
-## 六、部署提示
+## 六、部署与线上复验（2026-10-13 上午，用户指令「部署到本地再测试验证」）
 
-- 修复已推送 main（5bd47d20b）。本地网关（~/kaixuan/llm-gateway-go-v2，active
-  :8782）当前跑 2577（2026-10-13 08:03，git sha 97b62b7c + 并行会话未提交的
-  S4 读路径迁移内容）。
-- **不要为本次修复单独从干净 worktree 部署本地网关**：那会把并行会话已上线的
-  ~20 文件读路径改动（session_turns 族）一并回滚——S4 停写下旧读方读的是冻结
-  表，是真回归。也不 要从当前脏树手工构建（半成品 + 测试红）。
-- 正确路径：**修复随本 checkout 的下一次常规部署自动生效**（部署从工作树构建，
-  我的提交已在树上；并行会话本地部署频率约每小时数轮，2571→2577 即一小时）。
-  部署后验证：`grep 'output_policy_blocked' logs/gateway-8782.log` 中
-  minimax-m3/Write 形态的新增应归零；或直接在 ZCode 里重跑写文件任务。
-- 生产 154/245/252 同样受益（ZCode 类客户端的 Write/Edit 流量），随下次常规
-  部署带上即可，无 schema/配置变更。
+- **2579**（08:28，sha 58dc88b3，含 r1020 主修复）上线后线上复验：
+  - /v1/chat/completions + Write + URL → **放行** ✓
+  - /v1/responses + Write + URL → **仍拦** ✗（ZCode 真实 lane！）
+  - 同时段真实 minimax-m3 流量仍有 13 条被拦（08:30–08:37），其中 4 条为
+    Write+acc.kxpms.cn+casdoor.ts:455——与用户症状完全同形。
+- **缺口（r1020b，提交 80bf575d6）**：openai_to_responses 桥接器对每个工具
+  调用多发一帧 `response.function_call_arguments.done`（完整参数 + name 在
+  事件根上），`collectVisibleText` 对该快照帧的 arguments 字段**没挂工具名**
+  → 裸 `__tool_json` 立即检查 → 惰性豁免失效。首版判据夹具没造这帧（自建
+  帧序列与真实桥接输出不一致），假绿——判据纪律第 6 条的新实证。
+- **取证方法（可复用）**：用无害内容过真网关捕获 /v1/responses 的**真实线帧**
+  （mock 上游 + 临时 provider），再把有害内容替换进捕获帧回放单测链——
+  逐字节对齐，不再依赖手写协议形状。
+- **2581**（08:5x，sha 80bf575d6，从本 checkout 部署，deploy rc=0）上线后
+  线上三向复验全部通过：
+  | 用例 | 结果 |
+  |---|---|
+  | /v1/responses + Write + 公网URL + 文件:行号 | **放行**，URL 原样到达客户端 |
+  | /v1/responses + Bash + 同内容 | **仍拦**（output_policy_blocked，防外传底线在） |
+  | /v1/chat/completions + Write | 放行（无回归） |
+  - 切换后真实流量零新增拦截（对照 2579 上同名请求 13 拦）。
+- 测试资源已清理（临时 provider 92884/92885 软删、凭据级联、API key 撤销、
+  mock 上游停进程）。
+- 生产 154/245 同样受益（ZCode 类客户端），随下次常规部署带上即可。
+
+## 七、跨模型共性审计（「空返回可能多模型都有」——用户判断正确）
+
+数据面：本地网关全部日志（含轮转 gz）`executor: stream interrupted`，去重按
+request_id；生产 154/245 走 journald（文件日志已停更 10-01，stdout 接 journald）。
+
+| 网关 | 模型 | 唯一被拦请求数 | 时间窗 | 形态 |
+|---|---|---|---|---|
+| 本地 :8782 | minimax-m3 | **68** | 10-13 05:16–08:37 | chunk_count=0；raw-logs 实证 Write 工具引用公网 URL + 文件:行号 |
+| 本地 :8782 | glm-5.3 / glm-5.3-flash | **11** | 10-13 05:56–06:29 | 同签名（chunk_count=0、content_filter）；raw-logs 已轮转，内容不可解码；glm-5.3 在 2026-10-08 事故注释里有同族前科（minimax-m3/glm-5.3 fail-closed incident） |
+| 245 生产 | — | 0 | 10-11 起 journal | 流量无 coding-agent Write 形态 |
+| 154 生产 | — | 0 | 10-11 起 journal | 同上 |
+
+结论：
+1. **「空返回」在本地网关是单一根因的共性问题**——观测窗内全部 162 条
+   mid-stream 终止都是 output_policy_blocked（其它空流成因在本地无观测），
+   且跨模型（minimax-m3、glm-5.3 系）；r1020/r1020b 是模型无关的载体级
+   修复，两模型同时受益。
+2. 遗留的第二族误伤（本轮**未修**，如实登记）：被拦的 Bash 请求里有
+   「命令文本里出现版本号样四元组（17.0.20.1）或用户自有公网服务器 IP
+   （115.29.212.252）」——IP 字面量侧对公网地址保持硬阻断是 r1013 的
+   显式契约（fail-closed），版本号样四元组误伤与用户自有公网 IP 的豁免
+   是独立的策略决策，需 owner 拍板（豁免自有资产清单 vs 保持现状）。
+   判别方法同本轮：raw-logs 解码被拦请求的 tool 参数。

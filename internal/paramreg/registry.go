@@ -209,7 +209,25 @@ var specs = []FieldSpec{
 		Note: "OpenAI Responses {effort,summary,context,mode}；OpenRouter {effort,max_tokens,exclude,enabled}，其中 effort 与 max_tokens 互斥"},
 	{Name: "thinking", Kind: KindTranslatable, IRPath: "Thinking/Reasoning",
 		Translate: translateThinking,
-		Note: "取值分歧：Anthropic enabled|adaptive|disabled / DeepSeek·GLM·Kimi enabled|disabled / Ark 多 auto / MiniMax 仅 adaptive|disabled（无 enabled；2026-09 起上游拒收 enabled，硬 400）"},
+		// r1021（2026-10-13，grok-4.6/vapeur.ai 实测）：客户端带
+		// thinking{type:enabled} 的请求发到这些线格式/厂商时整条 400
+		// 「Unknown parameter: 'thinking'」。RejectedBy 是 Decide 的第一
+		// 优先级（硬拒防护），也覆盖 DialectUnknown——executor 对空 catalog
+		// 中转盖 unknown-relay 哨兵后 dst=Unknown，按方言注释「只裁剪明确
+		// RejectedBy 的字段」，这里的登记正是那个明确意见：thinking 是
+		// 已登记的方言私有字段，名单外的目标不该收到它。IR 侧
+		// applyThinkingToOpenAIChat 对 grok/mistral/未知方言本就不出
+		// thinking，两条路径同一政策。
+		//
+		// DialectOpenAIChat 不进名单：它承担「路由前序列化点」语义
+		// （TargetProvider 空串→协议回退，见 serialize_openai_thinking_
+		// dialect_test.go 场景 A），那里必须保字段；真 openai.com 上游的
+		// 拒收由 provider 级 strip / reqprobe 学习兜底。
+		RejectedBy: []Dialect{DialectResponses, DialectGrok, DialectMistral,
+			DialectOpenRouter, DialectVLLM, DialectOllama, DialectGemini,
+			DialectQwen},
+		RejectedByUnknown: true,
+		Note:              "取值分歧：Anthropic enabled|adaptive|disabled / DeepSeek·GLM·Kimi enabled|disabled / Ark 多 auto / MiniMax 仅 adaptive|disabled（无 enabled；2026-09 起上游拒收 enabled，硬 400）"},
 
 	// P5 之前：enable_thinking / thinking_budget / thinking_token_budget
 	// 是 KindPortable（IR 尚未统一处理，须靠 Extensions 透传）。
