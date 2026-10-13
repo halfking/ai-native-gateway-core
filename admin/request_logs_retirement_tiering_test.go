@@ -59,23 +59,23 @@ var v1ReaderRetirementTiering = map[string]retirementTieringEntry{
 	"admin/dashboard_board_queries.go":    {Tier: "②", Reason: "对外 API：看板首屏聚合（读 composer 建的 v1 臂视图）"},
 	"admin/data_lifecycle.go":             {Tier: "②", Reason: "对外 API + **对 v1 有写**：数据生命周期清理/预览，退役后清理对象要改"},
 	"admin/data_lifecycle_attachments.go": {Tier: "②", Reason: "对外 API：附件清理"},
-	"admin/data_lifecycle_blobs.go":       {Tier: "②", Reason: "对外 API + 对 v1 有写：blob 清理"},
-	"admin/data_lifecycle_metrics.go":     {Tier: "②", Reason: "对外 API：生命周期指标"},
-	"admin/diagnostics_credential.go":     {Tier: "③", Reason: "凭证诊断端点 handleCredentialDiagnostic：诊断面"},
-	"admin/live_stream_sse.go":            {Tier: "④", Reason: "SSE 实时流 replay/terminalStatusesFromDB：退役后是否继续供流式详情，需属主定"},
-	"admin/logs.go":                       {Tier: "②", Reason: "对外 API：日志列表/详情/统计（读 v1 基表）"},
-	"admin/logs_summary.go":               {Tier: "②", Reason: "对外功能：会话日志摘要（bodies 读方）"},
-	"admin/memora_handlers.go":            {Tier: "②", Reason: "对外 API：memora 会话/上下文端点"},
-	"admin/model_routing_diagnostic.go":   {Tier: "③", Reason: "模型路由诊断端点：诊断面"},
-	"admin/model_status.go":               {Tier: "②", Reason: "对外 API：模型状态"},
-	"admin/no_topic_session.go":           {Tier: "②", Reason: "对外 API：无主题会话端点"},
-	"admin/probe_history.go":              {Tier: "③", Reason: "probe-run 历史端点：这个读的**目的**就是看 v1 探针跑过什么"},
-	"admin/provider_diagnose.go":          {Tier: "③", Reason: "provider 诊断（从 provider_probe.go 拆出）：诊断面"},
-	"admin/provider_models.go":            {Tier: "②", Reason: "对外 API：provider 下的模型与用量（§9.49 动态列盲区形态）"},
-	"admin/providers.go":                  {Tier: "②", Reason: "对外 API：provider 列表"},
-	"admin/quality_correlations.go":       {Tier: "③", Reason: "请求级质量关联分析：观测面"},
-	"admin/request_trace.go":              {Tier: "②", Reason: "对外 API：请求链路"},
-	"admin/route_incidents.go":            {Tier: "③", Reason: "路由事故（route_incidents）：观测面"},
+	// data_lifecycle_blobs 于 2026-10-13（S4 波 4）出列：会话臂治理已落地。
+	"admin/data_lifecycle_metrics.go":   {Tier: "②", Reason: "对外 API：生命周期指标"},
+	"admin/diagnostics_credential.go":   {Tier: "③", Reason: "凭证诊断端点 handleCredentialDiagnostic：诊断面"},
+	"admin/live_stream_sse.go":          {Tier: "④", Reason: "SSE 实时流 replay/terminalStatusesFromDB：退役后是否继续供流式详情，需属主定"},
+	"admin/logs.go":                     {Tier: "②", Reason: "对外 API：日志列表/详情/统计（读 v1 基表）"},
+	"admin/logs_summary.go":             {Tier: "②", Reason: "对外功能：会话日志摘要（bodies 读方）"},
+	"admin/memora_handlers.go":          {Tier: "②", Reason: "对外 API：memora 会话/上下文端点"},
+	"admin/model_routing_diagnostic.go": {Tier: "③", Reason: "模型路由诊断端点：诊断面"},
+	"admin/model_status.go":             {Tier: "②", Reason: "对外 API：模型状态"},
+	"admin/no_topic_session.go":         {Tier: "②", Reason: "对外 API：无主题会话端点"},
+	"admin/probe_history.go":            {Tier: "③", Reason: "probe-run 历史端点：这个读的**目的**就是看 v1 探针跑过什么"},
+	"admin/provider_diagnose.go":        {Tier: "③", Reason: "provider 诊断（从 provider_probe.go 拆出）：诊断面"},
+	"admin/provider_models.go":          {Tier: "②", Reason: "对外 API：provider 下的模型与用量（§9.49 动态列盲区形态）"},
+	"admin/providers.go":                {Tier: "②", Reason: "对外 API：provider 列表"},
+	"admin/quality_correlations.go":     {Tier: "③", Reason: "请求级质量关联分析：观测面（2026-10-13 S4 波 4 起经 canonical+切换层读，v1 臂）"},
+	"admin/request_trace.go":            {Tier: "②", Reason: "对外 API：请求链路"},
+	"admin/route_incidents.go":          {Tier: "③", Reason: "路由事故（route_incidents）：观测面"},
 	// admin/routing.go 于 2026-10-13（S3 波 3 停写切换）除名：唯一的 v1 读点
 	// popularModelsHotSQL 改读会话族原生源（SessionFamilyTurnsSourceSQL），
 	// 文件已无任何 v1 读点证据（字面量 106→105，分档域 114→113）。
@@ -227,7 +227,7 @@ var v1ArmLiteralBlindSpot = []string{
 	"db/db.go",
 	"internal/quality/minute_aggregator.go",
 	"admin/data_lifecycle.go",
-	"admin/data_lifecycle_blobs.go",
+	// data_lifecycle_blobs 于 2026-10-13（S4 波 4）迁出：会话臂治理。
 	"admin/live_stream_sse.go",
 	"admin/model_routing_diagnostic.go",
 	"admin/model_status.go",
@@ -274,6 +274,8 @@ var v1ArmLiteralBlindSpot = []string{
 //
 // 实测：字面量 107 ∩ 间接 22 = 14，并集 = **115**。
 var v1ReaderIndirectPopulation = []string{
+	// 2026-10-13（S4 波 4）迁入：quality_correlations 改经 canonical+切换层拼接。
+	"admin/quality_correlations.go",
 	"admin/auto_title_generator.go",
 	// 2026-10-13（S4 停写交接）自 v1ArmLiteralBlindSpot 迁入：bodies 读加
 	// 了 session 兜底拼接点（+dbpkg.SessionFamilyBodiesSourceSQL()+），
@@ -392,13 +394,13 @@ func TestV1ReaderTieringDomainIsBothPopulations(t *testing.T) {
 		//（popularModelsHotSQL → 会话族原生源；106→105、114→113）。
 		// 2026-10-13（S4 波 4）：compression_sessions / scenario_driver 整体
 		//		出 v1 族（105→103；114→113→111）。
-		{"字面量总体", len(literal), 103},
+		{"字面量总体", len(literal), 101},
 		// 2026-10-13（S4 停写交接）：body_resolver / unified_detail 因加了
 		// session 兜底拼接点自盲区桶迁入（+2）；两者同时仍是字面量读方
 		//（交集 14→16），并集不变。
-		{"间接总体", len(indirect), 24},
+		{"间接总体", len(indirect), 25},
 		{"交集", inter, 16},
-		{"并集（域）", union, 111},
+		{"并集（域）", union, 110},
 	} {
 		if c.got != c.exp {
 			t.Errorf("%s = %d，期望 %d", c.name, c.got, c.exp)

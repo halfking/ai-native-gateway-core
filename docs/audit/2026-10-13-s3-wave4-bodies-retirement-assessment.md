@@ -133,21 +133,38 @@ M4 一处计数退回 request_logs_bodies_hot → 禁入红。（M1 的字面量
   **admin 全绿（含退役门首次转绿）**、bg/db/settings ok、manifest 工具复绿。
   cmd/gateway 的 lite 系列在 CGO_ENABLED=0 下不可运行（既有环境边界）。
 - 真库预验：§一 四象限 + §2.3 对拍 + LATERAL 表达式实测。
-- 变异 M1b/M2/M3/M4/**M5** 全红在正确断言。
-- **本地部署端点验证（2605→2606，8782）**：
+- 变异 M1b/M2/M3/M4/**M5/M6/M7** 全红在正确断言。
+- **本地部署端点验证（2605→2607，8782）**：
   - `/api/admin/session-compare`（跨冻结会话 gw_5f34a63f…）：70 turns，
     冻结前 13/13、**冻结后 57/57 全部有正文**（修复前冻结后恒 0——旧 v1
     源无这些行），original_msgs 6,406 条解析成功；
   - `/api/admin/compression/sessions`：200，count 16,427，
-    LATERAL orig_msg_count 有真值（2605 曾 500=§2.3 的 22023，2606 修复）。
+    LATERAL orig_msg_count 有真值（2605 曾 500=§2.3 的 22023，2606 修复）；
+  - `/api/admin/data-lifecycle/blobs/top|cleanup/preview`（2607，会话臂）：
+    Top-N 真实大对象行（minimax-m3 726KB 等），preview >50KB 命中
+    426 行 / 34.6MB 可清理；
+  - `/api/admin/auto-route/quality-correlations`（2607，会话族）：200，
+    分桶空 = 新口径如实反映（本地会话族 auto 行 0，业务 auto 流量
+    到达后自动有数）。
 
 ## 七、删表前置清单（DROP request_logs_bodies 之前的剩余工作）
 
-1. **data_lifecycle_blobs 会话臂扩展**（登记组 3 唯一的「必须先做」项）：
-   大字段治理改治 session_bodies 族（outbound_body + attachments 两列族），
-   execute 的 UPDATE 目标改 session_bodies_hot。
-2. **quality_correlations 重写**：业务 auto 行改原生 outbound_body；探针
-   维度是否保留归 owner（node_probe_runs 迁移）。
+1. ~~**data_lifecycle_blobs 会话臂扩展**~~ **已落地（2026-10-13 波 4 下半场）**：
+   Top-N/preview 改读 session_bodies 族（hot∪父表全列源），大对象口径 =
+   outbound_body + request_attachments/response_attachments；execute 的
+   UPDATE 目标改 session_bodies_hot，SET 三大对象列置 NULL、**增量正文
+   （request_delta/response_delta）刻意保留**（比 v1 语义多保对话内容）；
+   VACUUM 改 session_bodies_hot。端点实测（2607）：Top-N 返回真实大对象行
+   （maximamax-m3 726KB 等），preview >50KB 命中 426 行 / 34.6MB。
+   判据 `TestS3Wave4BlobGovernanceTargetsSessionFamily`（源双腿 count==2 +
+   v1 禁词 + SET 清单与增量列保留钉子），变异 M6 红。
+2. ~~**quality_correlations 重写**~~ **已落地（同轮）**：turns 腿 canonical、
+   bodies 腿经切换层读 **outbound_body**（tools 桶带 jsonb_typeof 守卫）；
+   语义边界显式拍板：探针流量出围（R51 不进会话族；本地实测 v1 auto
+   23,786 行里探针占 22,951）——业务 auto 流量到达前分桶为空是**新口径的
+   如实反映**。探针维度若需保留 → node_probe_runs（仍属主拍板项）。
+   判据 `TestS3Wave4QualityCorrelationsTargetsSessionFamily`（同层驱动
+   buildBreakdownQuery ×5 + rb.request_body 禁词 + 守卫在场），变异 M7 红。
 3. **生产 owner 复核**：生产库跑 §一 同口径四象限（with-header 未镜像 =
    0 才可删；未镜像遗留会话（sessions_v2.enabled=false 时代）人群规模
    需单列——它们的摘要回退路径随 v1 消失）。

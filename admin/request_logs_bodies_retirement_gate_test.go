@@ -336,11 +336,13 @@ var v1BodiesReaders = map[string]indirectReader{
 	"admin/quality_correlations.go": {
 		Family:     familyBodiesMixed,
 		ResolvesTo: "request_logs_bodies",
-		Reason: "auto-route 质量相关性分桶读 v1 完整 request_body（->tools/->messages）且**无探针排除谓词**" +
-			"（is_auto_request=TRUE 混入探针行）。退役后替代分两支：业务 auto 行改读会话族**原生 outbound_body**" +
-			"（完整上游请求对象，含 tools；注意不能机械换切换层——其 request_body 是 request_delta 增量数组，" +
-			"tools 桶会静默塌掉）；探针维度正文按设计不进会话族，改读 node_probe_runs 族（主拍板项）。" +
-			"停写后该端点样本已冻结趋零，重写属独立工作项，登记在案。",
+		Reason: "auto-route 质量相关性分桶。★ 2026-10-13 S4 波 4 **已落地**会话族重写：" +
+			"turns 腿改 canonical 源，bodies 腿经切换层读 **outbound_body**（完整上游请求对象，含 " +
+			"tools/messages 键——不能读 request_body：会话臂那是 request_delta 增量数组、没有这些键，" +
+			"机械沿用会静默塌桶）；tools 桶带 jsonb_typeof 守卫（22023 教训）。语义边界：无会话头" +
+			"探针行按设计不进会话族（R51），分桶样本自此只含业务 auto 流量（旧实现无探针排除谓词、" +
+			"探针行混入样本；本地实测 v1 auto 23,786 行里探针占 22,951）。探针维度分析若需保留，" +
+			"改读 node_probe_runs 族——仍属主拍板项。DROP 时随切换层删 v1 臂。",
 	},
 	"admin/data_lifecycle.go": {
 		Family:     familyBodiesMixed,
@@ -350,14 +352,9 @@ var v1BodiesReaders = map[string]indirectReader{
 			"（独立工作项，与 data_lifecycle blob 会话臂债同登记）。停写后 trend 两臂随窗口滑过冻结点归零" +
 			"是预期行为。",
 	},
-	"admin/data_lifecycle_blobs.go": {
-		Family:     familyBodiesMixed,
-		ResolvesTo: "request_logs_bodies",
-		Reason: "大字段治理（Top-N/preview/execute 置 NULL）。退役后替代：**会话臂扩展**——改治" +
-			"session_bodies 族（大对象真身 outbound_body + request_attachments/response_attachments；" +
-			"request_delta 按设计是小增量），execute 的 UPDATE 目标同步改 session_bodies_hot。" +
-			"这是 S3 波 2 登记的容量治理债：不做则停写后新正文无容量治理。DROP 前必须落地，登记在案。",
-	},
+	// admin/data_lifecycle_blobs.go 于 2026-10-13（S4 波 4）出列：会话臂
+	// 扩展已落地（治理对象 session_bodies 族 outbound_body+双 attachments，
+	// execute 目标 session_bodies_hot，增量正文保留），文件脱离 v1 族。
 	"cmd/compression-bench/main.go": {
 		Family:     familyBodies,
 		ResolvesTo: "request_logs_bodies",

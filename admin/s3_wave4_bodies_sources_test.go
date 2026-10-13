@@ -5,6 +5,8 @@ package admin
 import (
 	"strings"
 	"testing"
+
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
 
 // S3 波 4（2026-10-13 停写复审计轮）bodies 读侧迁移的形状钉桩。
@@ -109,6 +111,86 @@ func TestS3Wave4CompressionSessionsTargetsSessionFamily(t *testing.T) {
 	}
 	if !strings.Contains(src, "jsonb_typeof(rb2.request_body)") {
 		t.Error("compression_sessions 的数组长度必须先 jsonb_typeof 判形（JSON 字面量 null 是标量，裸 jsonb_array_length 报 22023）")
+	}
+}
+
+// TestS3Wave4BlobGovernanceTargetsSessionFamily 钉住 blob 治理的会话臂
+// （退役门登记的「DROP 前必须落地」项）。要点：读源 hot∪父表双腿、
+// execute 目标 session_bodies_hot、SET 清单**不得**含增量正文列
+// （request_delta/response_delta 是对话内容，清了就毁导出——v1 语义
+// 连对话一起丢，会话臂刻意保留更多）。
+func TestS3Wave4BlobGovernanceTargetsSessionFamily(t *testing.T) {
+	src := stripGoComments(s3Wave4ReadFile(t, "admin/data_lifecycle_blobs.go"))
+	if got := strings.Count(sessionBodiesGovernanceSource, "session_bodies"); got != 2 {
+		t.Errorf("治理读源必须含会话族 hot∪父表两腿（count==2），实测 %d：\n%s", got, sessionBodiesGovernanceSource)
+	}
+	for _, forbidden := range []string{
+		"request_logs_bodies_with_current_month",
+		"request_logs_with_current_month",
+		"request_logs_bodies_hot",
+		"request_logs_hot",
+	} {
+		if strings.Contains(src, forbidden) {
+			t.Errorf("blob 治理活代码不得再出现 %q（v1 形态回退）", forbidden)
+		}
+	}
+	if !strings.Contains(src, "UPDATE session_bodies_hot sb") {
+		t.Error("execute 的 UPDATE 目标必须是 session_bodies_hot")
+	}
+	for _, preserved := range []string{"SET outbound_body = NULL", "request_attachments = NULL", "response_attachments = NULL"} {
+		if !strings.Contains(src, preserved) {
+			t.Errorf("execute 的 SET 必须清理 %q（大对象三列）", preserved)
+		}
+	}
+	for _, delta := range []string{"request_delta = NULL", "response_delta = NULL"} {
+		if strings.Contains(src, delta) {
+			t.Errorf("execute 不得把增量正文置 NULL（%q）——对话内容对导出/对比必须保留", delta)
+		}
+	}
+	if !strings.Contains(src, "VACUUM (VERBOSE, ANALYZE) session_bodies_hot") {
+		t.Error("execute 后的 VACUUM 目标必须是 session_bodies_hot")
+	}
+}
+
+// TestS3Wave4QualityCorrelationsTargetsSessionFamily 钉住质量相关性分析的
+// 会话族重写。同层驱动 buildBreakdownQuery（判据纪律 #1：它就是发给 PG
+// 的文本）。tools 桶必须带 jsonb_typeof 守卫（22023 教训）；tools/images/
+// code_block 三桶必须读 outbound_body 而非 request_body（会话臂的
+// request_body 是 request_delta 增量数组，读它会静默塌桶）。
+func TestS3Wave4QualityCorrelationsTargetsSessionFamily(t *testing.T) {
+	for _, by := range []string{"prompt_length", "tools", "images", "code_block", "language"} {
+		q, err := buildBreakdownQuery(by)
+		if err != nil || q == "" {
+			t.Fatalf("buildBreakdownQuery(%q) 失败：%v", by, err)
+		}
+		// 判据按生成文本比对（canonical/切换源是运行时拼接，比对源码文本
+		// 测不到真发出去的 SQL——同层判据纪律）。
+		if !strings.Contains(q, dbpkg.SessionFamilyTurnsSourceSQL()) {
+			t.Errorf("[%s] turns 腿必须是 canonical 会话族源", by)
+		}
+		// bodies 腿经切换层：单元测试二进制里 settings 缺省 ⇒ 切换层返回
+		// v1 臂（request_logs_bodies_with_current_month 是切换层自己的输出，
+		// 不算本文件的 v1 字面量）；部署态 native_read=true ⇒ 会话臂。
+		// 判据因此断言「取源文本 == 切换层输出」而非对 bodies 名禁词。
+		if !strings.Contains(q, "LEFT JOIN "+dbpkg.SessionBodiesSourceSQL()+" rb") {
+			t.Errorf("[%s] bodies 腿必须以切换层输出为 FROM 源（rb 别名）", by)
+		}
+		if strings.Contains(q, "FROM request_logs ") || strings.Contains(q, "JOIN request_logs ") {
+			t.Errorf("[%s] turns 腿不得回退 v1 基表", by)
+		}
+	}
+	toolsQ, _ := buildBreakdownQuery("tools")
+	if !strings.Contains(toolsQ, "jsonb_typeof(COALESCE(rb.outbound_body->'tools'") {
+		t.Error("tools 桶必须有 jsonb_typeof 守卫（tools 为 JSON 字面量 null 时裸 jsonb_array_length 报 22023）")
+	}
+	for _, by := range []string{"tools", "images", "code_block"} {
+		q, _ := buildBreakdownQuery(by)
+		if strings.Contains(q, "rb.request_body") {
+			t.Errorf("[%s] 桶不得读 rb.request_body（会话臂=增量数组，无 tools/messages 键，静默塌桶）", by)
+		}
+		if !strings.Contains(q, "rb.outbound_body") {
+			t.Errorf("[%s] 桶必须读 rb.outbound_body（完整上游请求对象）", by)
+		}
 	}
 }
 
