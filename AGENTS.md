@@ -1396,3 +1396,27 @@ admin 全包绿（负向闸门 bodies 这道已功成身退；bodies 退役门�
 - 211 库号漂移（claim 不粘）与 UrsmlHealthyKeyReconciler 未启动两登记项仍在。
 - 211 镜像未内嵌 configs（靠部署种子，重建镜像时留意）。
 - 回切 mac mini 前必须反向 dump/restore（见 §5.4 runbook）。
+
+---
+
+# 追加：2026-10-14 01 时轮 —— mac-mini-removable 拓扑终态
+
+> 用户要求：考虑 mac mini 整体下线的可能，完善 llm.itestu.cn 全链路。
+> 结果：**mac mini 已完全可摘除**（mesh DNS、TLS、证书、公网链零依赖），
+> 保留为容器级热备（在则自动兜底，摘则 dead backup 自动标 down）。
+> 拓扑/回切手册/坑详见部署文档 §5.5。
+
+1. **NetBird DNS 记录 → 192.168.31.211**（管理面在 252 `/opt/netbird/`，
+   sqlite `zones`/`records` 表直改 + **必须 `docker restart netbird-management`**
+   ——不重启则管理面内存仍是旧值、直改还会被下次持久化覆盖；并行会话曾
+   预改未重启，险些踩坑）。客户端 lazy-sync 刷新，急用 `netbird down && up`。
+   **选 LAN IP 不选 mesh IP**：MacBook→211 mesh IP 实测不通（lazy peer），
+   LAN IP 通；离网 peer 走既有 lan-router-100 的 192.168.31.0/24 路由。
+2. **211 nginx 增 :443 TLS 腿**（LE 证书，备份 bak-tls443-*）+ 每日 04:33
+   证书同步 cron（211→252 受限密钥信任）。**`restrict=...` 带等号是非法
+   authorized_keys 语法，整行被 sshd 静默丢弃**——必须 `restrict,...` 逗号式。
+3. sync-public-cert.sh 参数化：DL_PUB_CRT/DL_PUB_KEY/RELOAD_HOOK（211 用
+   nginx reload 钩子）。
+4. 验证闭环：MacBook 解析/直连/四模型/公网链全绿；停 211 容器 → 直连自动
+   回退 mac mini → 恢复自动回切。摘除 mac mini 无必须动作；211 整机宕的
+   回切手册在 §5.5（改 netbird 记录指回 mac mini + 重启 management）。
