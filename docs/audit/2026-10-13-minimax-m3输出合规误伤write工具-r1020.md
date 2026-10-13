@@ -177,3 +177,32 @@ request_id；生产 154/245 走 journald（文件日志已停更 10-01，stdout 
    显式契约（fail-closed），版本号样四元组误伤与用户自有公网 IP 的豁免
    是独立的策略决策，需 owner 拍板（豁免自有资产清单 vs 保持现状）。
    判别方法同本轮：raw-logs 解码被拦请求的 tool 参数。
+
+## 八、r1021 —— grok-4.6「Turn execution failed reason=unknown」空响应（thinking 参数 400）
+
+> 用户同步报告的第二族空响应。与 r1020（输出合规误伤）不同根因。
+
+- **取证**：报错样例 request=6d92370a… 映射网关 0b88c24bc5（08:35，
+  2579 时代）——那是 r1020 的 Bash+版本号 IP 旧拦截（见 §七遗留）。
+  **当前**高频空响应（08:56/08:58，211–225 字节 200）是另一族：
+  ZCode 带 `thinking:{type:enabled}` + `enable_thinking:true` 请求
+  grok-4.6 → executor 对空 catalog 中转（vapeur）盖 unknown-relay 哨兵
+  → DialectUnknown fail-open → thinking 原样透传 → openai-responses
+  严格上游 400「Unknown parameter: 'thinking'」→ 两候选全灭 → 客户端
+  报 Turn execution failed。
+- **修复（提交 4d6bb3c27，随 2583 上线）**：注册表原生机制——thinking
+  增加 RejectedBy 名单（responses/grok/mistral/openrouter/vllm/ollama/
+  gemini/qwen）；新增 FieldSpec.RejectedByUnknown 显式开关（唯一允许对
+  DialectUnknown 也拒的途径，须跨厂商硬 400 实证，默认 false 零影响
+  既有教义）；DialectOpenAIChat 不进名单（保「路由前序列化点」契约，
+  ir 场景 A）。与 IR 侧 applyThinkingToOpenAIChat 对 grok/未知方言的
+  既有扣留政策对齐——两条路径一个政策。
+- **线上复验（2583，sha 4d6bb3c2）**：同形状请求（thinking+
+  enable_thinking → grok-4.6）200 + 正常内容；切换后 thinking-400 零
+  新增；minimax-m3 持续零失败（80/80 起）。
+- **判据**：TestTranslateThinkingDropsForNonAcceptingDialects（拦截侧 +
+  接受方言透传 + pre-routing 保字段三向）+ TestUnknownRelayBodyOmits
+  Thinking（哨兵形态）；变异 M5（撤开关）/M6（撤名单）各红 2。
+- **协作边界**：reqprobe 4xx 学习（并行会话在途工作流）是这类问题的
+  长期答案，本修复与其教义兼容（RejectedByUnknown 是注册表的「明确
+  意见」，非推翻 fail-open）。

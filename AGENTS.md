@@ -902,3 +902,11 @@ host-first 孤儿网关回收 + 517 形态探测 r2538、mobile UX 第二轮、2
 > 测试，6 包在 origin/main 编译断裂，3ec7b5f7c 前向修复退出）。**提交前必看
 > `git diff --cached --stat` 只含你的文件**；误入后用 `git rm --cached` 前向
 > 退出 + `git show <commit>:<path> > <path>` 恢复盘上内容，不 force-push。
+
+> **r1021（同日，提交 4d6bb3c27，随 2583 上线）**：grok-4.6 空响应 =
+> thinking 对象透传给 unknown-relay 中转（vapeur，openai-responses 严格
+> 线格式）整条 400。注册表修法：thinking 加 RejectedBy 名单 + 新增
+> FieldSpec.RejectedByUnknown 显式开关（唯一允许对 DialectUnknown 也拒的
+> 途径，须硬 400 实证；不动 A1.6 的 fail-open 教义）。教训：**IR 序列化
+> 路径与扩展还原路径对同一字段的方言政策必须一致**——两路径不一致时，
+> 一条修好了另一条还在漏。
