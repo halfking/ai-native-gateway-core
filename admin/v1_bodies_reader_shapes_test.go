@@ -170,14 +170,10 @@ var v1BodiesReaderShapes = map[string]bodyReaderShape{
 			"要先定「到底按 request_id 匹配还是按 (request_id, ts) 匹配」，" +
 			"不是 repoint。",
 	},
-	"admin/compression_sessions.go": {
-		Shape: shapeJoinsOnTs,
-		Reason: ":144 的 `LEFT JOIN request_logs_bodies_with_current_month rb2` 走 ts 等值" +
-			"（:106 的 countSQL 同形态）。压缩率统计按 (request_id, ts) 配对是" +
-			"**这个指标的语义本身**（压缩前后同一轮），不是随手写的 JOIN —— " +
-			"改成单键会把「同一轮的压缩率」算成「任意一轮的压缩率」。" +
-			"⇒ 换源之前必须先决定新口径，否则指标定义被悄悄改掉。",
-	},
+	// 2026-10-13 S4 波 4 出列：admin/compression_sessions.go 整只端点已
+	// 会话族化（canonical turns 源 + SessionFamilyBodiesSourceSQL，LATERAL
+	// 改 request_delta 数组长度、ts 等值配对删除——见 v1_bodies_reader_shapes
+	// 原条目自身的「换源前先定口径」警告，本轮已按 §5.9 拍板口径落地）。
 	"cmd/compression-bench/main.go": {
 		Shape: shapeJoinsOnTs,
 		Reason: ":237 `JOIN request_logs_bodies b ON b.request_id = rl.request_id AND b.ts = rl.ts`，" +
@@ -222,14 +218,9 @@ var v1BodiesReaderShapes = map[string]bodyReaderShape{
 			"即「存量正文占多少字节、清理能省多少」。不读正文内容。" +
 			"⚠ 它是 §9.226 建的 `bodiesUnaffectedJustification` 具名豁免之一，结论成立。",
 	},
-	"cmd/scenario_driver/main.go": {
-		Shape: shapeSizeNotContent,
-		Reason: ":115/:149 `SELECT count(*) FROM request_logs_bodies_hot WHERE ts > NOW() - INTERVAL '1 hour'`。" +
-			"这是**观察 v1 有没有流量**的探针（判 S4 是否生效），不是读内容。" +
-			"⇒ retire v1 时它的正确终态是**跟着 v1 一起退役**；" +
-			"留着它会在 v1 消失后恒返回 0，而「0」在这里**看起来像「v1 停了」**——" +
-			"正是本项目记过的「冻结本身就是信号」那一档。",
-	},
+	// 2026-10-13 S4 波 4 出列：cmd/scenario_driver/main.go 的落库断言已改数
+	// session_bodies_hot / session_turns_hot（原条目自身预告的终态——「数 v1
+	// 恒 0」在停写当天就成了活缺陷：s22-3/s23-3 永久 FAIL）。
 
 	// ── 工具：读 v1 就是它的工作本身 ─────────────────────────────────────
 	"cmd/tools/backfill_session_bodies/main.go": {

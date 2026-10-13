@@ -536,14 +536,8 @@ var requestLogsControlPlaneReaders = map[string]controlPlaneVerdict{
 		Note: "样本为空不 Fatal，只打日志 ⇒ 停写后基准结论静默变成「S4 之前」口径。" +
 			"不影响在线面，但会让离线基准失去可比性。",
 	},
-	"cmd/scenario_driver/main.go": {
-		Feeds:       "自造流量后测量 v1/bodies 增量",
-		Live:        false,
-		Gated:       false,
-		Evidence:    "SELECT count(*) FROM request_logs_bodies_hot",
-		BlastRadius: "（dormant：离线工具，无写入）",
-		Note:        "停写后必然测不到（delta=0）→ 硬失败 `Passed=false`，属「工具失效」而非服务退化。",
-	},
+	// 2026-10-13 S4 波 4 出列：cmd/scenario_driver/main.go 断言改数
+	// session_bodies_hot / session_turns_hot，脱离 v1 控制面。
 	"cmd/traffic-replay/main.go": {
 		Feeds:       "历史行 → 离线回放样本",
 		Live:        false,

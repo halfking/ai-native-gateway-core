@@ -181,7 +181,8 @@ func TestV1BodiesReadPathsArePinned(t *testing.T) {
 	}
 	wantLiteralOnly := []string{
 		"admin/body_resolver.go",
-		"admin/compression_sessions.go",
+		// 2026-10-13 S4 波 4 出列：整只端点会话族化（canonical turns 源 +
+		// SessionFamilyBodiesSourceSQL，见 s3_wave4_bodies_sources_test.go 钉桩）。
 		"admin/data_lifecycle.go",
 		"admin/data_lifecycle_blobs.go",
 		"admin/logs.go",
@@ -189,7 +190,6 @@ func TestV1BodiesReadPathsArePinned(t *testing.T) {
 		"admin/session_bodies_batch.go",
 		"admin/unified_detail.go",
 		"cmd/compression-bench/main.go",
-		"cmd/scenario_driver/main.go",
 		"cmd/tools/backfill_session_bodies/main.go",
 		"cmd/tools/validate_sessions_v2/loader.go",
 		"domains/hooks/goal/history_store.go",

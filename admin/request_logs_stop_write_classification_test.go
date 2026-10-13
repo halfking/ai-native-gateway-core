@@ -288,11 +288,9 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 			"附件数据本身在 request_attachments 表里未丢（domains/attachments/repository.go:183 已有读法），" +
 			"所以这是读腿的退化，不是数据丢失。",
 	},
-	"admin/compression_sessions.go": {
-		Effect:   effectSilentlyDegradedContent,
-		Evidence: "AND rb2.outbound_body IS NOT NULL",
-		Note:     "列表行仍返回（compression_strategy 在 session 臂有真值），但 LATERAL 的 rb2.outbound_body IS NOT NULL(:147) 停写后恒假 ⇒ estimated_original_msgs 对每行都是 COALESCE(NULL,0)=0，且 outbound_msg_count / outbound_token_est 是补位 NULL ⇒ 200 OK、字段齐全、全零，**压缩效果的度量整体失去意义**。",
-	},
+	// 2026-10-13 S4 波 4 出列：admin/compression_sessions.go 整只端点已
+	// 会话族化（原条目预告的「全零静默降级」当天就被修掉——turns/bodies
+	// 双源 + LATERAL 改 request_delta 数组长度），不再属 v1 停写面。
 	"admin/logs_summary.go": {
 		Effect:   effectSilentlyDegradedContent,
 		Evidence: "COALESCE(rb.request_body::text, '') AS request_body",
@@ -713,11 +711,9 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 		Evidence: "COALESCE(rb.request_body::text, '') AS request_body,",
 		Note:     "已核实 sessionLogsWhere(admin/session_scope.go:39) 主谓词是 gw_task_id = $1 AND ts > …，不是会话头；gw_task_id 由 session 臂的 details 层(d.gw_task_id)提供，故 loadTaskLogsForTitle 的行不会消失——但 bodies 腿硬失败使 request_body/response_body 变空串，buildSummaryCorpus 只能靠 request_preview/response_preview 兜底 ⇒ 标题照常 200 生成但语料从全文降级为预览片段；只有语料短到 40 rune 以下才显式 400。",
 	},
-	"cmd/scenario_driver/main.go": {
-		Effect:   effectErrorsOut,
-		Evidence: "SELECT count(*) FROM request_logs_bodies_hot WHERE ts > NOW() - INTERVAL '1 hour'",
-		Note:     "它自己造流量（POST {gateway}/v1/chat/completions 跑 60/20/80 轮）再量 v1 增量，所以停写后必然测不到：bodies 增量与 request_logs_hot success=false 增量双双为 0，Passed=false + Message: \"delta_bodies=0, expected >= 50\"，属立刻暴露的硬失败（离线工具，不影响在线面）。",
-	},
+	// 2026-10-13 S4 波 4 出列：cmd/scenario_driver/main.go 落库断言已改数
+	// session_bodies_hot / session_turns_hot（原条目预告的「delta 恒 0 硬失败」
+	// 修掉——数会话族热表恢复「造流量→量增量」的冒烟语义）。
 	"domains/hooks/observability/telemetry/client.go": {
 		// 2026-10-13 S3 波 2：FindRecentGatewaySession 改双热腿 UNION
 		//（session_turns_hot ∪ request_logs_hot），turn_no 改会话族

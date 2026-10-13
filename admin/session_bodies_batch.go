@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
 
 // 会话域正文批量取数（2026-10-01）。
@@ -61,7 +63,34 @@ import (
 //
 // ⚠️ 改这个谓词前先读上面那张对照表：`= ANY` 长得就像半连接，能通过任何
 // 「不许有 JOIN」的文本判据。守形门见 session_bodies_pairing_test.go。
-const sessionBodiesByRequestIDSQL = `
+//
+// # S4 停写后的取数源（2026-10-13 复审计轮）
+
+// 本查询的消费方（session_compare）turns 腿读的就是会话族
+// （db.SessionFamilyTurnsForSessionSQL），bodies 腿必须同源：停写后新会话
+// 的正文只存在于 session_bodies（实测翻转后 request_logs_bodies 冻结、
+// session_only 行 300+），继续读 v1 视图会让这些轮次的正文静默为空。
+// 故**不走** db.SessionBodiesSourceSQL() 的运行时开关（其 v1 臂在停写后
+// 对会话族 turns 是错的源），直接固定会话族源。列形状差异
+// （request_delta 是消息数组、v1 request_body 是带 messages 键的完整对象）
+// 由消费方的解析器兼容（parseMessagesFromBody/parseResponseMessages 的
+// 数组臂，2026-10-13 同轮补齐）。
+var sessionBodiesByRequestIDSQL = `
+	SELECT rb.request_id,
+	       rb.request_body,
+	       rb.outbound_body,
+	       rb.response_body
+	FROM ` + dbpkg.SessionFamilyBodiesSourceSQL() + ` rb
+	WHERE rb.request_id IN (SELECT unnest($1::text[]))
+`
+
+// v1BodiesByRequestIDSQL 是上面会话族化之前的原文，保留给
+// session_summary_v2 的 **v1 回退路径**专用：那条路径的 turns 腿本来就是
+// v1 视图（session_turns 为空的遗留会话），bodies 腿必须同源——这些会话
+// 可能早于镜像开启、正文只在 v1。随 v1 表 DROP 一起退役（届时未镜像
+// 遗留会话的摘要语料消失，属已登记的可接受损失，删表前由 owner 复核
+// 生产库 with-header 未镜像行数）。
+const v1BodiesByRequestIDSQL = `
 	SELECT rb.request_id,
 	       rb.request_body,
 	       rb.outbound_body,
@@ -153,6 +182,28 @@ func querySessionBodiesByRequestID(
 	q sessionBodyQuerier,
 	requestIDs []string,
 ) (map[string]sessionBody, error) {
+	return queryBodiesByRequestID(ctx, q, sessionBodiesByRequestIDSQL, requestIDs)
+}
+
+// queryV1BodiesByRequestID is the v1-view sibling for the summary fallback
+// path（turns 腿为 v1 视图的遗留会话）。见 v1BodiesByRequestIDSQL 注释。
+func queryV1BodiesByRequestID(
+	ctx context.Context,
+	q sessionBodyQuerier,
+	requestIDs []string,
+) (map[string]sessionBody, error) {
+	return queryBodiesByRequestID(ctx, q, v1BodiesByRequestIDSQL, requestIDs)
+}
+
+// queryBodiesByRequestID is the shared scanner behind both source variants.
+// The concurrency gate applies to both：正文取数是全仓最贵的单条查询，
+// 与取数源无关（见下方并发闸注释）。
+func queryBodiesByRequestID(
+	ctx context.Context,
+	q sessionBodyQuerier,
+	sqlText string,
+	requestIDs []string,
+) (map[string]sessionBody, error) {
 	if len(requestIDs) == 0 {
 		return nil, nil
 	}
@@ -162,7 +213,7 @@ func querySessionBodiesByRequestID(
 	}
 	defer release()
 
-	rows, err := q.Query(ctx, sessionBodiesByRequestIDSQL, requestIDs)
+	rows, err := q.Query(ctx, sqlText, requestIDs)
 	if err != nil {
 		return nil, err
 	}
