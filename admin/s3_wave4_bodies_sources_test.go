@@ -185,6 +185,17 @@ func TestS3Wave4QualityCorrelationsTargetsSessionFamily(t *testing.T) {
 	if !strings.Contains(toolsQ, "jsonb_typeof(COALESCE(rb.outbound_body->'tools'") {
 		t.Error("tools 桶必须有 jsonb_typeof 守卫（tools 为 JSON 字面量 null 时裸 jsonb_array_length 报 22023）")
 	}
+	// 2612 生产实测抓的第二个缺陷：会话族 quality_score 可全 NULL（镜像不
+	// 回填该列），裸 AVG 返 NULL 扫进 *float64 直接崩。四个聚合列里 latency/
+	// cost 原本就有 COALESCE，quality 漏了——统一钉住。
+	for _, by := range []string{"prompt_length", "tools", "images", "code_block", "language"} {
+		q, _ := buildBreakdownQuery(by)
+		for _, agg := range []string{"COALESCE(AVG(rl.quality_score), 0)", "COALESCE(AVG(rl.cost_usd), 0)", "COALESCE(AVG(rl.latency_ms), 0)"} {
+			if !strings.Contains(q, agg) {
+				t.Errorf("[%s] 聚合列必须 NULL 安全（缺 %s）——会话族列可全 NULL，裸 AVG 扫描崩", by, agg)
+			}
+		}
+	}
 	for _, by := range []string{"tools", "images", "code_block"} {
 		q, _ := buildBreakdownQuery(by)
 		if strings.Contains(q, "rb.request_body") {

@@ -239,7 +239,7 @@ func buildBreakdownQuery(by string) (string, error) {
 		       COUNT(*) AS samples,
 		       AVG(CASE WHEN rl.success THEN 1.0 ELSE 0.0 END) AS success_rate,
 		       COALESCE(AVG(rl.latency_ms), 0)::int AS avg_latency,
-		       AVG(rl.quality_score) AS avg_quality,
+		       COALESCE(AVG(rl.quality_score), 0) AS avg_quality,
 		       COALESCE(AVG(rl.cost_usd), 0) AS avg_cost
 		FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl
 		LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb
