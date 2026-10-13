@@ -113,7 +113,7 @@ if [[ -n "$VIA" ]]; then
              echo '[211] 目标树残留 .env*: '\$(find ~/llm-gateway-go-211 -name '.env*' -type f | wc -l) \
              ' ._*: '\$(find ~/llm-gateway-go-211 -name '._*' -type f | wc -l)"
   log "在 $VIA 上执行 deploy ..."
-  ssh "$VIA" "cd ~/llm-gateway-go-211 && D211_STATE_DIR=$D211_STATE_DIR D211_REDIS_DB_START=$D211_REDIS_DB_START D211_REDIS_DB_END=$D211_REDIS_DB_END bash scripts/deploy-211-docker.sh $*"
+  ssh "$VIA" "cd ~/llm-gateway-go-211 && D211_STATE_DIR=$D211_STATE_DIR D211_REDIS_DB_START=$D211_REDIS_DB_START D211_REDIS_DB_END=$D211_REDIS_DB_END LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY='${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}' bash scripts/deploy-211-docker.sh $*"
   exit $?
 fi
 
@@ -655,6 +655,20 @@ fi
 
 CORS_ORIGINS="${LLM_GATEWAY_CORS_ORIGINS:-*}"
 
+# 凭据密文解密密钥（r1024 部署轮补）：211 的库是生产数据副本，credentials
+# 密文按生产 keyring（kid=legacy）加密；不注入 CREDENTIAL_ENCRYPTION_KEY 时
+# 网关回落到 SECRET_KEY 派生钥，解不开信封（node_probe "cannot decrypt:
+# unknown format" + 路由全灭 key_decrypt_failed）。与 SECRET_KEY 同款持久化：
+# 环境变量优先，其次 gateway.credkey 文件；不自动生成（错钥只会静默全灭）。
+CRED_ENC_KEY="${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}"
+if [[ -z "$CRED_ENC_KEY" && -f "$D211_STATE_DIR/env/gateway.credkey" ]]; then
+  CRED_ENC_KEY="$(cut -d= -f2- "$D211_STATE_DIR/env/gateway.credkey")"
+fi
+if [[ -n "$CRED_ENC_KEY" ]]; then
+  printf 'LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=%s\n' "$CRED_ENC_KEY" > "$D211_STATE_DIR/env/gateway.credkey"
+  chmod 600 "$D211_STATE_DIR/env/gateway.credkey"
+fi
+
 # 组装网关要用的连接串（走 docker 网络内的容器名）
 # 密码必须 URL-encode（`@` / `:` / `/` 会拆断 DSN；`unused` 表示 trust 模式可不带）
 url_encode() { printf '%s' "$1" | python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.stdin.read(), safe=''))" 2>/dev/null || printf '%s' "$1"; }
@@ -693,6 +707,9 @@ DB_URL="postgres://${PG_USER_ENC}:${PG_PASS_ENC}@${PG_CONTAINER}:5432/${D211_PG_
   printf 'export LLM_GATEWAY_REDIS_URL=%q\n' "$REDIS_URL"
   printf 'export LLM_GATEWAY_SECRET_KEY=%q\n' "$SECRET_KEY"
   printf 'export LLM_GATEWAY_CORS_ORIGINS=%q\n' "$CORS_ORIGINS"
+  if [[ -n "$CRED_ENC_KEY" ]]; then
+    printf 'export LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=%q\n' "$CRED_ENC_KEY"
+  fi
 } > "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 
@@ -705,6 +722,9 @@ GW_ENV=(
   -e "LLM_GATEWAY_SECRET_KEY=${SECRET_KEY}"
   -e "LLM_GATEWAY_CORS_ORIGINS=${CORS_ORIGINS}"
 )
+if [[ -n "$CRED_ENC_KEY" ]]; then
+  GW_ENV+=( -e "LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=${CRED_ENC_KEY}" )
+fi
 
 docker rm -f "$D211_GW_CONTAINER" >/dev/null 2>&1 || true
 docker run -d --name "$D211_GW_CONTAINER" --restart unless-stopped \

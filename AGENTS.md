@@ -1017,3 +1017,95 @@ host-first 孤儿网关回收 + 517 形态探测 r2538、mobile UX 第二轮、2
 `bg/TestDirectProbeBodyUsesAnthropicMessagesShape`（HEAD 8c6aa6d584 即红，
 probe body 形状断言）；工作区另有并行会话 r1023 的缩进级遗留
 （executor_anthropic.go +4 个 ir 测试，无语义，未随本轮提交）。
+
+---
+
+# 追加：2026-10-13 r1024 —— 多轮 tool × 脱敏还原 E2E（三家供应商 × 四台部署）
+
+> 用户目标：特色模型（minimax / z.ai / vapeur ai）经网关逐模型发 ~5 轮带
+> tools 的请求（/goal 提示词=拉主分支合并 / 24h 审计两型），跟踪 log 修问题、
+> 部署再验证，直到全绿；重点是参数收发与转换——**脱敏介入后客户端必须拿到
+> tools 参数里可用的真实值（IP/用户/密码），拿到占位符=无法操作**。
+> 提交 `95640a655`（+ 后续 deploy-211 密钥透传），本地 2595→2600、
+> 245=2601、154=2602、211 docker 全部部署并 E2E 验证通过。
+> 明细与判据：`docs/audit/2026-10-13-r1024-多轮tool脱敏还原E2E.md`。
+
+## 七缺陷一句话清单（详见审计文档 §二）
+
+1. **身份字段硬阻断**：`username/account/login` 与密码族混在一个
+   `credentialField`，裸用户名结构性不可能成为占位符 → 任何带 username 的
+   SSH 类 tool 调用整流 `output_policy_blocked`。已拆
+   `secretCredentialField`（保留硬拦）vs `identityField`（放行，仍走检测器
+   +外传目的地检查）；**畸形形状（number/bool/map）仍全集 fail-closed**。
+2. **YAML account 漏检**：`ssh_user=/db_user=/user=` 形态不在 account 正则
+   → 用户名明文出网关。label 集补 `user(?:name|_name)?|[a-z0-9_]*_user`。
+3. **钉扎静默失效**：`ChatHandler.SetAdminAPIKey` 全仓无人调用 →
+   `X-LLMGW-Preferred-Credential` 恒被忽略（E2E 归因失真的元凶）。
+   main.go 已接线。
+4. **openai-responses 供应商 tool 历史被散文折叠**：`IsToolUseCapable`
+   协议启发式补 openai-responses（vapeur 折叠后模型用散文模仿工具调用，
+   客户端拿不到结构化 tool_calls）。
+5. **无 `event:` 行的 Responses SSE 终态误判**：事件名从 payload `type`
+   回填；此前 terminal 永不置位 → 完整响应后补发 response.failed +
+   探针 3 连败停节点（no_candidate 连坐）。
+6. **chat 嵌套形 tools 发 /v1/responses**：native 出站前
+   `NormalizeResponsesTools` 归一化平铺（转换而非拒绝；上游 400 会被当
+   transient 重试三次+连坐凭据）。
+7. **模型自造占位拼写**：`"password":"PLACEHOLDER"`/`"USE_DEPLOY_PASSWORD"`
+   三路判据放行（字面量集 + 值自指涉凭据关键词 + 模板包裹形）；
+   普通明文（hunter2 类）照拦。**模型自造公网 IP（1.2.3.4）仍拦——r1013
+   显式契约，不是误伤**。
+
+## E2E 覆盖（全部 PASS：客户端零占位符泄漏、参数 JSON 合法、真值逐字还原）
+
+- 本地 2600：3 供应商 × chat/responses 两腿 × merge/audit 两场景 ×
+  10+ 项目目录（gateway-2/memora/nbjjl/crm-go/GEOFlow/network-switch/
+  agent-companion/RedClaw/acc-toolkit/pocket-opencode/marketing/myvpn）。
+- 245=2601-95640a65（8782）：MiniMax chat + grok responses PASS（SSH 隧道）。
+- 154=2602-95640a65（8781）：glm chat + MiniMax responses + claude responses
+  PASS。
+- 211 docker（同代码，二进制含 changeme 指纹）：MiniMax/glm/grok/claude
+  全 PASS。harness：`/tmp/gwtool_e2e/tool_roundtrip_e2e.py`（判据 A-E 详见
+  审计文档 §一）。
+
+## 211 部署的三个新坑（本轮实测）
+
+1. **envs SSOT 本机又消失**（~/workspace 两处都没有 loader.sh）：
+   从 252 `/root/workspace/ai-native-tools/envs/` 拷回，且那是 252-root
+   专用 stub（密钥路径 /root/.ssh）——本机版 stub 要指向本机
+   ~/.ssh/id_ed25519。deploy-seamless 的 ENVS_ROOT 双候选兜底已进 main
+   （160 行段），但候选路径仍是那两处，SSOT 真身在 252。
+2. **211 的凭据密文解密钥匙**：库是生产副本，credentials 按
+   `CREDENTIAL_ENCRYPTION_KEY`（44 字符 base64url，.env.local 里 fL0ML 开头
+   那把，与 245 一致）加密；deploy-211 原先只注入 SECRET_KEY（随机生成）
+   → node_probe 全量 `cannot decrypt: unknown format` + 路由全灭
+   key_decrypt_failed。**deploy-211-docker.sh 已补透传**（环境变量 →
+   gateway.credkey 持久化 → -e 注入；--via 转发）。
+   ⚠ 本地部署根 .env 里的 CREDENTIAL_ENCRYPTION_KEY（9e7456 开头 64 字符）
+   解码失败会静默回落 SECRET_KEY 路径——本地能跑是靠 SECRET_KEY=生产值
+   的 SHA256 兜底；**别把它当真钥用**。
+3. **211 每 deploy 换 Redis 库号**（15→14→…→10，claim 不粘）：URSM 全新
+   冷启动 → grok/claude no_candidate。恢复：admin
+   `PATCH /api/routing/emergency-repair`（force_enable, cred 63）或等探针
+   回写。claim 不粘的根因未查（登记）。
+4. 211 无 LLM_GATEWAY_ADMIN_* env：users 表是生产副本，.env.local 的 admin
+   密码直接可用；`ssh 192.168.31.211`（需在 ~/.ssh/config 加
+   `Host 192.168.31.211 User root`，deploy-211 的 rsync 默认用本机用户名）。
+
+## 判据纪律增量（第 8 条）
+
+**供应商级结论先证钉扎**：「glm-5.3 会折叠 tool 历史」这个误判浪费了小半
+小时——真因是钉扎静默失效、请求被路由到 nvidia/vapeur。归因到供应商前必看
+`upstream_http_attempt` 的 provider_id/credential_id 是否是指定值。
+
+## 遗留登记
+
+- `password_restored`（还原后的真实密码）在 sanitize 守卫视角=非占位符凭据
+  值（现链序守卫在还原前，不触发）；若有人把守卫挪到还原后会打断闭环——
+  判据矩阵已有钉子。
+- 散文里带 JSON 转义的占位符还原兜底为遮蔽（折叠修复后出现率大降，留观）。
+- 模型自造公网 IP 的早产调用整流拦（r1013 契约保留）；「只丢单条 tool call
+  而非整流」需协议级手术，另立轮次。
+- 211 Redis 库号 claim 不粘 + UrsmlHealthyKeyReconciler 在 211 容器未起
+  （154/245 有 `ursm.v2 healthy-key reconciler started`，211 日志无此行），
+  冷启动靠 emergency-repair——两件一起查。
