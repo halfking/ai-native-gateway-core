@@ -47,7 +47,7 @@ pii:
       # 部署配置散文里的 `ssh_user=deploy` 漏检——用户名以明文出网关，模型回显
       # 时又撞上输出侧凭据键检查，整条 tool 调用被掐断。用户名进占位符闭环
       # （TypeAccount）后，出向是占位符、回程可还原。
-      regex: '(?i)(?:account|user(?:name|_name)?|[a-z0-9_]*_user|login|帐号|账号|账户|用户名)["'']?\s*[:=：]\s*("(?:\\.|[^"\\])*"|''[^'']*''|(?:\{SENSITIVE:[a-z_]+:[0-9]+\}|[^\s"'',;，；<>{}\]]+)+)'
+      regex: '(?i)(?:account|user(?:name|_name)?|[a-z0-9_]*_user|login|帐号|账号|账户|用户名)["'']?\s*[:=：]\s*("(?:\\.|[^"\\])*"|''[^'']*''|(?:\{SENSITIVE:[a-z_]+:[0-9]+\}|[^\s"'',;，；<>{}=\]][^\s"'',;，；<>{}\]]*)+)'
       group: 1
       description: "带标签的登录帐号"
     # 2026-10-10: server_ip / server_ipv6 不再进入脱敏范围。
@@ -101,8 +101,13 @@ secret:
       confidence: 0.9
       description: "API密钥"      
     # 密码字段
+    # 2026-10-14 (r1028): 未加引号的值首字符不得为 `=`——原字符类放行纯 `=` 串，
+    # `echo '=== pwd ==='`（bash 分节装饰）被解析成「pwd = 赋值 ==」，生产 154
+    # 实测把 1279 字节纯 git 检查命令整流 output_policy_blocked（request
+    # 5d9e1267），redact 侧同规则会把正文分节标题遮成 [REDACTED:secret]。
+    # 带引号的值（含 "="）走引号分支不受影响。
     password:
-      regex: '(?i)(?:password|passwd|pwd|secret|token|api_key|apikey|access_key|authorization|密码|口令)["'']?\s*[:=：]\s*("(?:\\.|[^"\\])*"|''[^'']*''|(?:\{SENSITIVE:[a-z_]+:[0-9]+\}|[^\s"'',;，；<>{}\]]+)+)'
+      regex: '(?i)(?:password|passwd|pwd|secret|token|api_key|apikey|access_key|authorization|密码|口令)["'']?\s*[:=：]\s*("(?:\\.|[^"\\])*"|''[^'']*''|(?:\{SENSITIVE:[a-z_]+:[0-9]+\}|[^\s"'',;，；<>{}=\]][^\s"'',;，；<>{}\]]*)+)'
       group: 1
       confidence: 0.8
       description: "密码字段"
