@@ -8736,3 +8736,11 @@ git show origin/main:scripts/deploy-lib/db-changelog.sh
 |-----------|------|---------|--------|
 | 856 | `856_usage_ledger_ts_cover_agg_idx.sql` | `5ab420d0d9945e41a7011f5d2d9e843c4ec208a10ad20d1be8f508fed650410a` | applied+verified |
 
+## 2026-10-13T00:57:48Z — deploy 245 build_seq 2571 (0537eadb)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 857 | `857_analyze_columnar_staleness_gate.sql` | `c5ad4cda6b4078a1e140356ec35f0057ee553ef18e3cea31fa3448bed36efc1a` | applied+verified |
+| 858 | `858_request_logs_final_success_gsid_idx.sql` | `1c0b788418a3f20c3dfa947c13ecc583df8a248baaf2a5b5e06b54d2f6a09936` | applied+verified |
+| 859 | `859_tighten_pii_phone_intl_regex.sql` | `0a808ff313cdc193fcde91b3b0a9cd5e5262c3ad9d8404ae05e1e15d57b64bc3` | applied+verified |
+
