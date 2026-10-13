@@ -1350,3 +1350,49 @@ admin 全包绿（负向闸门 bodies 这道已功成身退；bodies 退役门�
   翻转无关；252 侧 netbird/mihomo 链路抖动，留观）。
 - 生产 158 条真损失行仍在 v1 可回填（DROP 前）；154 滴漏虽止，翻转后
   镜像是唯一记录，**write_timeout_ms=5000 需保留**。
+
+---
+
+# 追加：2026-10-14 凌晨 —— llm.itestu.cn 切主 211（docker），mac mini 降为边缘+热备
+
+> 用户拍板：服务放一块（211 是整合机），mac mini 只作备用。并行会话已在
+> 10-13 17:01 把公网链切到 211 边缘（252 conf + 211 nginx ns_llm_gateway_upstream），
+> 但**数据没跟**：key 在 211 invalid、mesh 链仍指 mac mini——内外网脑裂。
+> 本轮完成收尾。拓扑/坑/runbook 详见部署文档 §5.4。
+
+## 完成的事（全部实测验证）
+
+1. **数据同步**：mac mini pg18 全量 dump(177MB Fc) → 211 acc-pg17 新库
+   （旧库改名 `llm_gateway_pre_cutover_20261014` 保留）。columnar 表落成 heap
+   （目标无 pgcolumnar，功能无损）；**restore 后必须 ANALYZE**（否则 boot 20s
+   预算超时→**静默降级 lite**，readyz 的 mode 字段是唯一肉眼判据）。
+2. **MV 重复键 boot 阻塞链**：boot 幂等重建 `routing_analytics_7d_ukey` 撞
+   23505 → postgres disabled → lite。根因=canonical GROUP BY 裸 `is_auto_request`
+   + 源视图 17,473 行 NULL（S3 波 2 后不变量破）。两库已防御性重建
+   （GROUP BY 对齐 COALESCE）；**正式修法（源视图+db.go 常量+migration
+   三位一体）已登记待办，单修 migration 会被陈旧定义门无声回退**。
+   `routing_audit_summary_7d` 同族暴露。
+3. **SECRET_KEY 血缘**：api_keys.key_hash=HMAC(实例 SECRET_KEY,key)。211 用
+   生产 SECRET_KEY 重建容器后 key 全绿；`gateway.secret` 持久化文件已更新；
+   deploy-211-docker.sh 加了血缘警示。**换库必换对 SECRET**。
+4. **configs 注入**：deploy-211-docker.sh 每次部署种子 configs/ 到宿主 bind
+   （只读挂载 /app/configs）；镜像不含 configs 时回落内置脱敏集的行为差异已消除。
+5. **mesh 链对齐**：mac caddy 443 上游=211(mesh IP):8781 主 + 本机 8782 备。
+   三个 caddy 坑：**fail_duration 缺省=0 时 lb_policy first 永选主直接 502**；
+   首笔回退要 `lb_retries`/`lb_try_duration`（caddy 2.10+；旧 try_duration
+   加了**静默**启动失败）；**macOS 本地网络隐私**禁止 SSH 启的 caddy 拨 LAN IP
+   （no route to host，curl 却正常）——必须走 mesh IP（utun 不受限）。
+6. **252 加固**：恢复 upstream 用法（211:8000 主 + mac mini:8782 backup），
+   211 整机宕时公网链仍有兜底。
+7. **演练闭环**：停 211 → mesh 首笔回退+公网回退（真实调用经 mac mini 返回）
+   → 恢复 → ~30s 自动回切主。四模型两链路 E2E 全绿。
+8. setup-caddy.sh 新增 `DL_FALLBACK_UPSTREAM`（主备有序故障转移+主动健康检查）。
+
+## 登记待办
+
+- ★ `routing_analytics_source` NULL is_auto_request 不变量修复（+db.go
+  `routingAnalyticsMVSQL` GROUP BY、migration、`routing_audit_summary_7d` 同查）
+  ——正式修法三位一体，别单修 migration。
+- 211 库号漂移（claim 不粘）与 UrsmlHealthyKeyReconciler 未启动两登记项仍在。
+- 211 镜像未内嵌 configs（靠部署种子，重建镜像时留意）。
+- 回切 mac mini 前必须反向 dump/restore（见 §5.4 runbook）。
