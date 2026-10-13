@@ -938,3 +938,21 @@ host-first 孤儿网关回收 + 517 形态探测 r2538、mobile UX 第二轮、2
 > 定位到参数字符串完整性上。遗留登记：Responses 桥 message/function_call
 > 同 output_index:0（规范违规、现 SDK 不炸）未动。
 > 详见 `docs/audit/2026-10-13-claude-sonnet-5-tools解析错误-r1022.md`。
+
+> **r1023（2026-10-13 下午，提交 1b370b13b，随本地 2593 上线）**：Responses 桥
+> 两条线协议契约修正（OpenAI→Responses / Anthropic→Responses 共 scaffold）。
+> ① output_index 唯一化：旧实现把上游 tool_calls[].index / content_block
+> index（几乎恒 0）直接当 output_index，与预声明 message item（0）线上冲突。
+> scaffold 新增 wire-index 分配器（message=0，工具按首次出现 1,2,…），两个
+> writeChunkIR 在任何索引键控状态（fit/hold/toolCallIDs/toolStates）之前统一
+> 重编号。② output_item.done 的 function_call item.status 必须是字面量
+> "completed"（AI-SDK Zod literal 硬契约，length 截断曾带 "incomplete" 使
+> 客户端整流解析失败）；截断语义只在终态 envelope（status+incomplete_details）。
+> 判据 `domains/streaming/r1023_responses_output_index_contract_test.go`（同层
+> 驱动两桥逐帧断言+前提在场），M1 撤重编号两方向红 / M2 状态回退红。
+> E2E（2593，claude-sonnet-5）：/v1/responses 并行双工具 output_index
+> {0,1,2} 且参数合法；/v1/messages 文本+工具块结构正确。
+> **登记未动**：截断流的事件名恒为 response.completed（终态判定器
+> attempt_commit_gate 按此 grep，改事件名需连带评估）；tool-only 流的
+> message item 预声明后不关（added 无 done）；AI-SDK 对 function_call
+> arguments.done/content_part.added 走 unknown_chunk 容忍分支不校验。
