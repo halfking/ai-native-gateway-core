@@ -159,6 +159,39 @@ click/fill 的 actionability 检查大面积超时（元素可见、enabled、el
 环境准备声明：被测网关由 §二 部署产出；admin 凭据取自 `.env.local`（gitignored）；
 无任何注入式预置状态；「高用量 API Key 排行」抽屉等中间态均由真实点击产生。
 
+## 五点五、追补（用户报障后续轮）：logo 破图 = 全局鉴权门 401 根级公共资产
+
+2547 上线后用户报告「网关的 logo 是破的」。取证结论：**不是图片文件损坏，
+是 `middleware/auth_mw.go` 全局 API-key 门把根级公共资产全部 401**。
+
+**证据链**（2547 实测）：
+- `/logo-icon.png` 无凭据 / 有效 `llmgw_session` cookie / 有效 Bearer JWT 三形态
+  **全部 401**（本门只认全局静态 key 与 `sk-*`，cookie 不读、JWT 判 invalid_key）
+  ——已登录用户同样是破图，与会话内所有 GUI 截图一致；
+- `/assets/` 哈希产物 200（应用壳正常，故此前从未立案）；
+- `.env.local` 配有 `LLM_GATEWAY_API_KEY` ⇒ 本地门活跃；154/245 同配置 ⇒ 线上同病。
+
+**爆炸半径**（`web/public` 根级、`index.html` 直接引用）：`/logo-icon.png`、
+`/logo-icon-dark.png`、`/favicon.png`、`/theme-init.js`（**暗色首帧白闪**）、
+`/entry-switch.js`（移动端入口切换断腿）、`/donation-qr.png`；
+`/user-agreement.html` 仅浏览器导航（text/html Accept 走 r2540 isSPANavigation）可达。
+
+**历史**：2026-07-10 `8ec9fcc341`（PNG logo 替换 SVG）落地时 bypass 仅
+`/healthz,/metrics,/` + `/api/`——彼时连 `/assets/` 都没有；8 月补 `/assets/`
+救活哈希产物后，根级公共文件自始至终无人登记。
+
+**修复**（方案 A，显式清单）：`BypassRule.ExactPaths` 增补 8 条——上列 6 文件 +
+`/index.html`（与 `/` 对称）+ `user-agreement.html`；附维护契约注释：今后往
+`web/public` 根新增文件必须同步登记或改放 `/assets/`，勿将敏感文件放进 public 根。
+`theme-init.js`/`entry-switch.js` 豁免前已过目全文：纯客户端主题初始化与
+UA 补充判断逻辑，无任何配置或敏感内容。
+
+**判据**：`auth_mw_test.go` 增 `TestAuthMiddleware_BypassesRootPublicAssets`
+（8 路径 × 无凭据 `Accept: */*`）+ `TestAuthMiddleware_RootAssetBypassDoesNotLeakNeighbors`
+（反向钉子：`.bak` 近似 / 尾巴路径 / 未登记文件 / public 子目录仍 401；
+查询串同路径按 ExactPaths 全等语义放行，属预期）。变异验证：删豁免清单 →
+正向判据精准变红；还原 → 复绿。middleware 包全量 ok、vet ok。
+
 ## 六、结论
 
 - 部署验证两轮全绿（2543 基线 + 2544 修复），零孤儿、契约门通过；
