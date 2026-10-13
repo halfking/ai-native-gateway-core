@@ -589,6 +589,17 @@ func (e *Executor) executeOpenAI(
 		if bytes.Contains(sourceBody, []byte(`"stream_options"`)) {
 			sourceBody = transformation.StripStreamOptions(sourceBody)
 		}
+		// r1027（2026-10-14）：chat 风格顶层参数的线格式适配——
+		// reasoning_effort→reasoning.effort、response_format→text.format、
+		// max_completion_tokens→max_output_tokens、logprobs 系删除
+		// （raw-logs 01:03-01:05 四条实证，上游逐条点名 "moved to ..."）。
+		// native 透传腿此前不做任何适配，同语义在 IR 转换路径上本就正确。
+		if bytes.Contains(sourceBody, []byte(`"reasoning_effort"`)) ||
+			bytes.Contains(sourceBody, []byte(`"response_format"`)) ||
+			bytes.Contains(sourceBody, []byte(`"max_completion_tokens"`)) ||
+			bytes.Contains(sourceBody, []byte(`"logprobs"`)) {
+			sourceBody = transformation.AdaptChatParamsToResponsesWire(sourceBody)
+		}
 		contextWindow := 0
 		if cand.ContextWindow != nil {
 			contextWindow = *cand.ContextWindow
@@ -1445,8 +1456,10 @@ func (e *Executor) executeOpenAI(
 						// r1026b：与 native 分支同源同治——ResponsesBodyBytes
 						// 是客户端原文，stream_options（chat 线格式专属）必须
 						// 在这里同样剔除，否则 reactive 重试腿绕过 native
-						// 分支的 strip choke point。
-						retryBody = transformation.StripStreamOptions(append([]byte(nil), params.ResponsesBodyBytes...))
+						// 分支的 strip choke point。r1027：chat 风格参数的
+						// 线格式适配同此。
+						retryBody = transformation.AdaptChatParamsToResponsesWire(
+							transformation.StripStreamOptions(append([]byte(nil), params.ResponsesBodyBytes...)))
 					} else if converted, convOK := chatBodyToResponsesBody(clientSourceBody, cand.RawModel); convOK {
 						retryBody = converted
 					}

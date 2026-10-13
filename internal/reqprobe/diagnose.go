@@ -65,6 +65,14 @@ var namedParamPatterns = []*regexp.Regexp{
 	// 反引号参数名 + "may only be" 动词族，补进同一条。
 	regexp.MustCompile("['\"`]([A-Za-z_][A-Za-z0-9_.\\-]{1,64})['\"`]\\s+(?:is not one of|is not supported|is not a valid|is invalid|must be|does not exist|is not recognized|is not allowed|is unknown|is unsupported|does not support|may only be|can only be)"),
 	regexp.MustCompile("(?:unknown|unrecognized|unexpected|unsupported|invalid|extra|additional)\\s+(?:request\\s+)?(?:argument|parameter|field|input|property|key)s?(?:\\([a-z]+\\))?\\s*[:\\s]*['\"`]?([A-Za-z_][A-Za-z0-9_.\\-]{1,64})['\"`]?"),
+	// 2026-10-14（Bedrock 后端 effort 值拒绝，claude-opus-5-5 经 vapeur）：
+	// "output_config.effort: Input should be 'low', 'medium', ..."——
+	// 参数名在冒号前、无引号包裹，上面五条全断链（诊断不出 → 不记录 →
+	// 不剥参重试 → 三候选连败整流 503）。
+	regexp.MustCompile("([a-z_][a-z0-9_.\\-]{1,64})\\s*[:：]\\s*(?:input|effort|value)\\s+(?:should be|must be|allowed)"),
+	// 同族：上游补救句点名参数（gpt-6.1-sol "set reasoning_effort to
+	// 'none'"）——正文陈述里的裸词提不出来，补救句里必带引号值。
+	regexp.MustCompile("set\\s+['\"`]?([A-Za-z_][A-Za-z0-9_.\\-]{1,64})['\"`]?\\s+to\\s+['\"`]"),
 }
 
 // modeMismatchHints：端点/形态不匹配的文案信号（小写子串匹配）。
@@ -104,6 +112,26 @@ var responsesOnlyHints = []string{
 	"must use the responses api",
 }
 
+// chatDirectiveHints：上游明确要求切回 Chat API 的**指令句**信号。
+//
+// 2026-10-14（gpt-6.1-sol tools+effort 事故）：上游文案同时包含
+// "… not supported … in /v1/chat/completions"（陈述语境，不是指令）与
+// "use /v1/responses"（指令）。旧逻辑 chat 检查在前，裸子串
+// "/v1/chat/completions" 命中陈述语境 → suggest_mode 误判为 chat。
+// 规则：responses 指令句命中且 chat 只命中"提及"级信号时，方向取
+// responses；chat 指令句（use/does not support responses 家族）命中则
+// 维持 chat——与既有全部文案族兼容。
+var chatDirectiveHints = []string{
+	"use /v1/chat/completions",
+	"use the chat completions",
+	"use chat/completions",
+	"does not support /v1/responses",
+	"responses api is not",
+	"不支持 responses api",
+	"does not support the responses api",
+	"responses api 不支持",
+}
+
 // paramRejectionHints：参数被拒的泛化信号（未点名参数时兜底）。
 var paramRejectionHints = []string{
 	"extra inputs are not permitted",
@@ -121,6 +149,11 @@ var paramRejectionHints = []string{
 	"unrecognized request argument",
 	"unexpected field",
 	"extra fields",
+	// 2026-10-14（Bedrock 后端 ValidationException，claude-opus-5-5 经
+	// vapeur 实测）："output_config.effort: Input should be 'low', ..."。
+	// 此前 hints 断链 → 整条 400 判不出 param_rejected → 不记录不剥参。
+	"input should be",
+	"allowed values",
 }
 
 // jsonErrorMessages 提取错误体里各家常见的 message 字段（error.message /
@@ -237,6 +270,21 @@ func Diagnose(in Input) (Diagnosis, bool) {
 			}, true
 		}
 	}
+	// 2026-10-14（方向甄别）：responses 指令句优先于 chat 的"提及"级
+	// 信号。上游文案常同时提到两个端点（"… not supported in
+	// /v1/chat/completions. … use /v1/responses …"），裸子串
+	// "/v1/chat/completions" 只是陈述语境；chat **指令句**（use/does
+	// not support responses 家族）与 responses 指令句同时命中时维持
+	// chat-first（与旧行为一致）。
+	respDirective := containsAny(blob, responsesOnlyHints)
+	chatDirective := containsAny(blob, chatDirectiveHints)
+	if respDirective && !chatDirective {
+		return Diagnosis{
+			Trigger:     TriggerModeMismatch,
+			SuggestMode: "responses",
+			Reason:      "upstream demands responses api",
+		}, true
+	}
 	if containsAny(blob, modeMismatchHints) {
 		// chat 形态打上 responses 端点等：建议切 chat（若已在 chat 则仅记录）。
 		return Diagnosis{
@@ -245,7 +293,7 @@ func Diagnose(in Input) (Diagnosis, bool) {
 			Reason:      "endpoint hint in error body",
 		}, true
 	}
-	if containsAny(blob, responsesOnlyHints) {
+	if respDirective {
 		return Diagnosis{
 			Trigger:     TriggerModeMismatch,
 			SuggestMode: "responses",
