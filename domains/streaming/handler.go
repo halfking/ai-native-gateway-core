@@ -2767,7 +2767,7 @@ func (h *ChatHandler) serveWithExecutor(
 				h.sessionGetter.Touch(touchCtx, sessionID)
 			}()
 			ctx = session.SessionFromContextWith(ctx, sessionInfo)
-		} else if err == session.ErrSessionNotFound && keyInfo != nil {
+		} else if sessionAbsentErr(err) && keyInfo != nil {
 			// 2026-08-15 (OBS-DV2 #4): auto-title/auto-summary loopback sessions
 			// carry an internal branch id (gt_/gs_) that is intentionally NOT a
 			// real user session. Do NOT auto-create a fresh gw_<uuid> for them —
@@ -2822,8 +2822,11 @@ func (h *ChatHandler) serveWithExecutor(
 						writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "session_error", i18n.MsgSessionForbidden, nil)
 						return
 					}
+					// r1029：store fault 的响应体不能用 SESSION_FORBIDDEN 文案
+					// ——那是所有权语义，会误导调用方与运维归因（实测
+					// auto_summary 把该 503 当所有权问题反复重试）。
 					captureAndEmitFailure("session_unavailable", "session store unavailable", nil, nil)
-					writeErrorJSONCtx(r.Context(), w, http.StatusServiceUnavailable, requestID, "session_error", i18n.MsgSessionForbidden, nil)
+					writeErrorJSONCtx(r.Context(), w, http.StatusServiceUnavailable, requestID, "session_error", i18n.MsgSessionStoreUnavailable, nil)
 					return
 				}
 				if claimed != nil {
@@ -2880,14 +2883,17 @@ func (h *ChatHandler) serveWithExecutor(
 					}
 				}
 			}
-		} else if err != nil && err != session.ErrSessionNotFound {
+		} else if err != nil && !sessionAbsentErr(err) {
 			// R25-W (V3-A02): a store fault is not a verdict on ownership.
 			// Continuing to dispatch would trust an unverified client-supplied
 			// session id while the store is degraded; surfacing 503 (not 403)
 			// keeps the blame on our side and tells the client to retry.
+			// r1029：ErrSessionExpired 不再进此分支（确定性终态，归 absent
+			// 家族按 not-found 路径认领/保留）；503 响应体改用 store 语义
+			// 文案，不再误标 SESSION_FORBIDDEN。
 			slog.Warn("session lookup failed", "error", err)
 			captureAndEmitFailure("session_unavailable", "session store unavailable", nil, nil)
-			writeErrorJSONCtx(r.Context(), w, http.StatusServiceUnavailable, requestID, "session_error", i18n.MsgSessionForbidden, nil)
+			writeErrorJSONCtx(r.Context(), w, http.StatusServiceUnavailable, requestID, "session_error", i18n.MsgSessionStoreUnavailable, nil)
 			return
 		}
 	}

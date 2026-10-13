@@ -254,6 +254,20 @@ var errClientSessionForbidden = errors.New("client session forbidden")
 // would 403 legitimate traffic during a Redis outage.
 var errClientSessionUnavailable = errors.New("client session store unavailable")
 
+// sessionAbsentErr reports whether a session Get error means "no such
+// session (anymore)" as opposed to "the store is degraded".
+//
+// r1029（2026-10-14）：ErrSessionExpired 此前被当成 store fault 走 503
+// 分支——但过期是**确定性终态**（Redis TTL 到期），同 body 重试必再败；
+// 实测 auto_summary 内部回环对该 503 反复重试（日志 2040 次 transient
+// retry / 4051 次 failed），且 503 响应体曾误用 SESSION_FORBIDDEN 文案
+// 把归因引向所有权。语义上过期 ≈ NotFound：id 保持原样重新登记/认领，
+// 会话在同一个 id 下重新开始。
+func sessionAbsentErr(err error) bool {
+	return errors.Is(err, session.ErrSessionNotFound) ||
+		errors.Is(err, session.ErrSessionExpired)
+}
+
 func normalizeAndRegisterClientSession(
 	r *http.Request,
 	sessionID string,
@@ -267,7 +281,7 @@ func normalizeAndRegisterClientSession(
 		return sessionID, nil, nil
 	}
 	si, getErr := getter.Get(r.Context(), sessionID)
-	if getErr != nil && !errors.Is(getErr, session.ErrSessionNotFound) {
+	if getErr != nil && !sessionAbsentErr(getErr) {
 		// R25-W (V3-A02, 2026-09-30 round 30): a store fault is not a
 		// verdict on ownership. Returning (id, nil, nil) here would let an
 		// unverified client-supplied session id flow into dispatch while
@@ -315,7 +329,7 @@ func normalizeAndRegisterClientSession(
 		}
 		return sessionID, si, nil
 	}
-	if errors.Is(getErr, session.ErrSessionNotFound) &&
+	if sessionAbsentErr(getErr) &&
 		strings.HasPrefix(sessionID, "gw_") && !isBranchSessionID(sessionID) {
 		regDeviceSeed := r.Header.Get("X-Device-Seed")
 		if regDeviceSeed == "" {

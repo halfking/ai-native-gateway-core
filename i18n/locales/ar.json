@@ -20,6 +20,9 @@
   "SESSION_FORBIDDEN": {
     "other": "هذه الجلسة لا تنتمي إلى مفتاح API هذا"
   },
+  "SESSION_STORE_UNAVAILABLE": {
+    "other": "مخزن الجلسات غير مت حالياً؛ يرجى المحاولة لاحقاً"
+  },
   "SESSION_ASSIGN_FAILED": {
     "other": "فشل تعيين معرّف الجلسة"
   },
