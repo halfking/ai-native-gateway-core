@@ -805,7 +805,7 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	                FROM session_turns_hot t
 	                WHERE t.ts > ` + db.V1FreezeCutoffSQL + `
 	                  AND NOT EXISTS (SELECT 1 FROM request_logs_hot h WHERE h.request_id = t.request_id)
-	                  AND NOT EXISTS (SELECT 1 FROM request_logs p WHERE p.request_id = t.request_id)
+	                  AND NOT EXISTS (SELECT 1 FROM request_logs p WHERE p.request_id = t.request_id) -- sqlreadguard:allow S3 波3 会话补丁腿：会话腿必须反连接 v1 母表，否则 promote 前后同一 request_id 会被两腿各计一次（脚注腿）
 	        UNION ALL
 	               SELECT t.tenant_id::text, t.ts,
 	                      (CASE WHEN t.application_id ~ '^[0-9]+$' THEN t.application_id::bigint END),
@@ -818,7 +818,7 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	               FROM session_turns t
 	               WHERE t.ts > ` + db.V1FreezeCutoffSQL + `
 	                 AND NOT EXISTS (SELECT 1 FROM request_logs_hot h WHERE h.request_id = t.request_id)
-	                 AND NOT EXISTS (SELECT 1 FROM request_logs p WHERE p.request_id = t.request_id)
+	                 AND NOT EXISTS (SELECT 1 FROM request_logs p WHERE p.request_id = t.request_id) -- sqlreadguard:allow 同上：v1 腿与会话腿共用同一套反连接去重，否则 v1 腿行数虚高
 	        UNION ALL
 	               SELECT tenant_id, ts, application_id, outbound_model, client_model,
 	                      success, total_tokens, prompt_tokens, completion_tokens,

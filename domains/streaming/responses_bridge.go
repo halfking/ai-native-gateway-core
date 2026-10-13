@@ -434,7 +434,22 @@ func (s *responsesScaffold) writeFinalEvents(fullText, finishReason, incompleteR
 		})
 	}
 
+	// ⚠️ 2026-10-13 12h 审计轮（P1）修正：终态信封的 output 必须与上面事件
+	// 宣告的 output_index **同序**。
+	//
+	// 此前是「工具在前、message 在后」：事件宣告 message=0、工具=1..N，
+	// 而信封里工具占了 0..N-1、message 落在末尾 ⇒ 按位置取项的客户端
+	// 在混合流上整体错位 N 格。
+	//
+	// 实测（r1023 复现，文本 + 2 个工具）：事件 message=0/call_a=1/call_b=2，
+	// 信封 output=[call_a, call_b, message] ⇒ 位置 0,1,2，message 落在 2。
 	output := make([]map[string]any, 0, len(indices)+1)
+	if hasMessage {
+		output = append(output, map[string]any{
+			"type": "message", "id": s.msgID, "status": status, "role": "assistant",
+			"content": []map[string]any{{"type": "output_text", "text": fullText, "annotations": []any{}}},
+		})
+	}
 	for _, index := range indices {
 		state := s.toolStates[index]
 		if state == nil {
@@ -448,12 +463,6 @@ func (s *responsesScaffold) writeFinalEvents(fullText, finishReason, incompleteR
 		output = append(output, map[string]any{
 			"type": "function_call", "id": state.ID, "call_id": state.ID,
 			"name": state.Name, "arguments": state.Arguments.String(), "status": status,
-		})
-	}
-	if hasMessage {
-		output = append(output, map[string]any{
-			"type": "message", "id": s.msgID, "status": status, "role": "assistant",
-			"content": []map[string]any{{"type": "output_text", "text": fullText, "annotations": []any{}}},
 		})
 	}
 	completed := map[string]any{

