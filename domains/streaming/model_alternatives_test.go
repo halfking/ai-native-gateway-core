@@ -326,17 +326,26 @@ func TestAlternativesSQL_UsesRoutableViewNotStaticCatalog(t *testing.T) {
 }
 
 // TestAlternativesSQL_PopularityReadsHotNotCanonicalView pins the 2026-09-25
-// audit fix: the popularity CTE must aggregate request_logs_hot, not the
-// canonical view request_logs_with_current_month. On 252 the view turned the
+// audit fix and its 2026-10-13 (S3 wave 2, stop-write cutover) successor: the
+// popularity CTE must aggregate the **native session-turn family**, not the
+// canonical view and not the draining v1 hot table. On 252 the view turned the
 // 7-day count into a 151s query (session_turns + request_logs union arms plus
 // nested anti-join probes) on the chat failure path — every caller cancelled
-// at its client timeout before a single row came back. The hot table answers
-// from idx_request_logs_hot_canonical_model_ts in milliseconds; the ordering
-// signal tolerates the ~8h effective window.
+// at its client timeout before a single row came back. The native family keeps
+// that cost profile (no anti-join; hot∪parent legs only) while continuing to
+// supply post-stop-write traffic that request_logs_hot no longer receives.
+// The FROM-shaped tokens keep SQL comments (which mention the view by name in
+// the 2026-09-25 rationale) from tripping the checks — the same reason
+// stripSQLComments exists in the admin gates.
 func TestAlternativesSQL_PopularityReadsHotNotCanonicalView(t *testing.T) {
-	if !strings.Contains(alternativesSQL, "FROM request_logs_hot") {
-		t.Error("popularity CTE no longer reads request_logs_hot; it would hit the " +
-			"canonical view's partition scans and anti-join probes again (84-151s on 252)")
+	if !strings.Contains(alternativesSQL, "FROM public.session_turns_hot") ||
+		!strings.Contains(alternativesSQL, "FROM public.session_turns ") {
+		t.Error("popularity CTE must read the native session-turn family (hot ∪ parent); " +
+			"the v1 hot table it replaced drains after the S4 stop-write")
+	}
+	if strings.Contains(alternativesSQL, "FROM request_logs_hot") {
+		t.Error("popularity CTE reads request_logs_hot; that table drains after the " +
+			"S4 stop-write and the popularity signal would silently go dark")
 	}
 	if strings.Contains(alternativesSQL, "FROM request_logs_with_current_month") {
 		t.Error("popularity CTE reads request_logs_with_current_month; that view costs " +
