@@ -78,10 +78,13 @@ var specs = []FieldSpec{
 	{Name: "truncation", Kind: KindIRHandled, IRPath: "Truncation"},
 	{Name: "previous_response_id", Kind: KindIRHandled, IRPath: "PreviousResponseID"},
 
-	// stream_options：IR 零处理（fields.go:8-13 事故），必须靠透传
+	// stream_options：IR 零处理（fields.go:8-13 事故），必须靠透传。
+	// 注意它是 openai-chat 线格式专属参数：目标线格式为 Responses/
+	// Anthropic/Gemini 时由 extensions_restore.go 的 r1026 协议级守卫裁剪
+	// （Responses 无此字段，严格中转会 400）。
 	{Name: "stream_options", Kind: KindPortable,
-		Dialects: []Dialect{DialectOpenAIChat, DialectResponses},
-		Note:     "IR 不 parse/serialize；executor.go:5089 事后注入兜底。OpenRouter 的 include_usage 已废弃为 no-op"},
+		Dialects: []Dialect{DialectOpenAIChat},
+		Note:     "仅 openai-chat 线格式存在；跨线格式由 extensions_restore r1026 裁剪。executor.go 事后注入兜底。OpenRouter 的 include_usage 已废弃为 no-op"},
 
 	{Name: "metadata", Kind: KindPortable,
 		Note: "Anthropic 仅保留 metadata.user_id（parse_anthropic.go:118-124）；Claude Code 发的是 JSON 编码字符串"},

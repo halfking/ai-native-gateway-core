@@ -1208,3 +1208,19 @@ admin 全包绿（负向闸门 bodies 这道已功成身退；bodies 退役门�
 > 量具教训（第三次实证）：对 jsonb 列做运算前先 `jsonb_typeof` 判形——
 > JSON 字面量 null 的 SQL 值非 NULL，COALESCE 救不了（M5 的 22023 与
 > M7 的守卫同源）。
+
+> **r1026（2026-10-13 下午，提交 50acf8ce5，随本地 2608 上线）**：grok-4.6
+> chat 流式整流 503 = `stream_options.include_usage`（AI-SDK 流式恒发）经
+> KindPortable 透传进 **openai-responses 出站体**（该线格式无此字段），
+> vapeur 严格中转 400 Unknown parameter、单候选即整流失败。修复是
+> **pass1/pass2 双层同形线格式守卫**（internal/ir/extensions_restore.go 与
+> domains/transformation/ir_converter.go）：目标线格式为 Responses/Anthropic/
+> Gemini 时裁剪并上报 loss，chat 线（含 unknown-relay）保持透传——刻意不用
+> RejectedByUnknown（会把 chat 形态中转的 include_usage=false 语义反转成
+> 注入的 true）。usage 契约由 R32 桥的 response.completed 提取兜底，实测
+> usage 帧仍回客户端。r1021「两路径政策必须一致」教训再次实证：只修 pass1
+> 时 pass2 会把字段从 Extensions 重新写回。判据用 raw-logs 真实失败请求
+> 回放 + 前提在场配对，M1/M2/M3 三变异红。详见
+> `docs/audit/2026-10-13-r1026-grok-chat流式stream_options泄漏进responses线体.md`。
+> 同轮登记不动：nvidia 系探针 503（egress 代理缺失，owner 拍板项）、
+> routing_analytics_7d 刷新 23505、ursm_node_snapshot_min 42P17（均非请求路径）。
