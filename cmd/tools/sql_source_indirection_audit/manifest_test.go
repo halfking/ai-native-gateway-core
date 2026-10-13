@@ -1021,7 +1021,10 @@ type bucketSnapshot struct {
 // 「把看不见变成看得见」与「字面量 → 拼接」，无桶变小；v1 桶 6/12 一动不动
 // （★ 与 §9.256 结论一致：解析率再怎么变，v1 基表读方数不变）。
 var documentedSnapshot = bucketSnapshot{
-	TotalSites: 94,
+	// 同日晚间二次：compression_sessions 的 LATERAL 性能修复消除 2 处拼接
+	//（LATERAL 体重跑 canonical 全源改单趟 CTE，e01ffed39）→ 94→92、
+	// canonical 37→35。文件集合不变，非扫描盲区。
+	TotalSites: 92,
 	V1Files:    6,
 	V1Sites:    12,
 	// ★ §9.258：第四桶是**退役工作量的主体**，而前两桶都不是。
@@ -1038,7 +1041,7 @@ var documentedSnapshot = bucketSnapshot{
 	V1ArmFiles: 16,
 	V1ArmSites: 28,
 	CanonFiles: 23,
-	CanonSites: 37,
+	CanonSites: 35,
 	UnresFiles: 10,
 	UnresSites: 17,
 }
