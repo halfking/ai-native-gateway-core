@@ -15,7 +15,7 @@ package admin
 //
 // # 为什么要单独立这一条
 //
-// §9.184 的发现：本机库上 `public.request_logs_bodies`（V1 body 存储，分区父表）
+// §9.184 的发现：本机库上 `public._request_logs_bodies`（V1 body 存储，分区父表）
 // 一旦出现在子查询内 UNION ALL 里就报
 // `invalid perminfoindex 0 in RTE with relid 0`，**12/12 确定性失败**，
 // `EXPLAIN` 阶段即失败（执行器初始化，不是执行）。
@@ -23,7 +23,7 @@ package admin
 // 在本机从来跑不起来。
 //
 // **这类故障不会被任何静态门发现**：代码是对的，是库坏了。
-// 而它对「退役 `request_logs`、只用 `session_*`」这条主线是直接相关的——
+// 而它对「退役 `_request_logs`、只用 `session_*`」这条主线是直接相关的——
 // V1 侧 body 存储读不出来，就无法用它做迁移源的交叉校验。
 //
 // # 口径
@@ -46,7 +46,7 @@ package admin
 //
 // # ⚠ 2026-10-04（审计 §9.196）：本门**仍然红**，但归因已定，处置已变
 //
-// 根因是 **Citus `columnar` 访问方法**：`request_logs_bodies` 的 RANGE 分区
+// 根因是 **Citus `columnar` 访问方法**：`_request_logs_bodies` 的 RANGE 分区
 // 被 migration `765_bodies_columnar_storage` 转成了列存，而列存分区一旦出现在
 // **未命名子查询**里参与 `UNION ALL`，执行器初始化就抛
 // `invalid perminfoindex 0 in RTE with relid 0`。
@@ -72,8 +72,8 @@ import (
 // sessionFamilySurfaces 是「父表 + _hot 孪生」的真实配对，逐条实测过存在性。
 // `sessions` 不在其中：它没有 hot 孪生面。
 var sessionFamilySurfaces = [][2]string{
-	{"public.request_logs_bodies", "public.request_logs_bodies_hot"},
-	{"public.request_logs", "public.request_logs_hot"},
+	{"public._request_logs_bodies", "public._request_logs_bodies_hot"},
+	{"public._request_logs", "public._request_logs_hot"},
 	{"public.session_turns", "public.session_turns_hot"},
 	{"public.session_turn_details", "public.session_turn_details_hot"},
 	{"public.session_bodies", "public.session_bodies_hot"},
@@ -142,7 +142,7 @@ func TestSessionFamilyTwoSurfaceUnionShapeIsExecutable(t *testing.T) {
 	}
 	if len(bad) > 0 {
 		t.Errorf("以下存储面**无法执行生产同款的子查询 UNION ALL 形状**（%d/%d 对）：\n%s\n\n"+
-			"根因（审计 §9.196，已在干净库上正面复现）：`request_logs_bodies` 的 RANGE 分区\n"+
+			"根因（审计 §9.196，已在干净库上正面复现）：`_request_logs_bodies` 的 RANGE 分区\n"+
 			"被 migration `765_bodies_columnar_storage` 转成了 **Citus `columnar`**，而列存分区\n"+
 			"出现在**未命名子查询**里参与 UNION ALL 会让执行器初始化抛 perminfoindex 错误。\n"+
 			"⚠ **不要**用「重建这个库」来消掉本门（决策表 D30-a）：重建得到的是全 heap 的库，\n"+

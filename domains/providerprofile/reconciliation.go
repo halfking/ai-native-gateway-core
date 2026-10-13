@@ -30,8 +30,8 @@ func roundTo(diff, provider float64) float64 {
 	return float64(int64(rate*prec-0.5)) / prec
 }
 
-// GatewayMonthlyUsage 网关侧某供应商单月用量聚合（来自 request_logs /
-// request_logs_hot，按 provider_id + 月份聚合）。
+// GatewayMonthlyUsage 网关侧某供应商单月用量聚合（来自 _request_logs /
+// _request_logs_hot，按 provider_id + 月份聚合）。
 type GatewayMonthlyUsage struct {
 	ProviderID   int64
 	InputTokens  int64

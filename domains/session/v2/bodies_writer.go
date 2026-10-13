@@ -26,7 +26,7 @@ type bodiesDB interface {
 // SessionBodiesWriter writes turn bodies to public.session_bodies
 //
 // It stores incremental message deltas to avoid the bloat problem
-// of storing full message history in every row (as request_logs does).
+// of storing full message history in every row (as _request_logs does).
 type SessionBodiesWriter struct {
 	db bodiesDB
 }
@@ -612,7 +612,7 @@ func (w *SessionBodiesWriter) ListAllBodies(ctx context.Context, tenantID, sessi
 // ReconstructFullHistory reconstructs full message history from incremental deltas
 //
 // This is useful for:
-//   - Data validation (comparing with request_logs)
+//   - Data validation (comparing with _request_logs)
 //   - Full context display
 //   - Export/backup
 func (w *SessionBodiesWriter) ReconstructFullHistory(ctx context.Context, tenantID, sessionID string) ([][]Message, error) {

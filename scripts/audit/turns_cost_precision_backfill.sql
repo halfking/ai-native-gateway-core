@@ -7,7 +7,7 @@
 -- 精度值——此前写入时被 numeric(12,6) 舍入（E5：0.00001870 → 0.000019）。
 -- SQL 侧 numeric 直拷，零浮点参与，精确对齐 v1。
 --
--- request_logs_hot 是独立热表（非分区成员，341），行经 promote 移入父表
+-- _request_logs_hot 是独立热表（非分区成员，341），行经 promote 移入父表
 -- 月分区；同一 request_id 理论上只存在一侧，DISTINCT ON 兜底防 promote 竞态。
 -- 幂等：差异才 UPDATE，可重复执行。
 -- 用法：psql "$LLM_GATEWAY_DSN" -f scripts/audit/turns_cost_precision_backfill.sql
@@ -15,10 +15,10 @@
 WITH v1cost AS (
     SELECT DISTINCT ON (request_id) request_id, cost_usd
     FROM (
-        SELECT request_id, cost_usd FROM public.request_logs_hot
+        SELECT request_id, cost_usd FROM public._request_logs_hot
         WHERE request_id IS NOT NULL AND cost_usd IS NOT NULL
         UNION ALL
-        SELECT request_id, cost_usd FROM public.request_logs
+        SELECT request_id, cost_usd FROM public._request_logs
         WHERE request_id IS NOT NULL AND cost_usd IS NOT NULL
     ) u
     ORDER BY request_id
@@ -40,10 +40,10 @@ FROM public.session_turns t
 JOIN (
     SELECT DISTINCT ON (request_id) request_id, cost_usd
     FROM (
-        SELECT request_id, cost_usd FROM public.request_logs_hot
+        SELECT request_id, cost_usd FROM public._request_logs_hot
         WHERE request_id IS NOT NULL AND cost_usd IS NOT NULL
         UNION ALL
-        SELECT request_id, cost_usd FROM public.request_logs
+        SELECT request_id, cost_usd FROM public._request_logs
         WHERE request_id IS NOT NULL AND cost_usd IS NOT NULL
     ) u
     ORDER BY request_id

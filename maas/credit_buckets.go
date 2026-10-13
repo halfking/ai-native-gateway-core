@@ -8,12 +8,12 @@ import (
 )
 
 // BackfillCreditConsumptionBuckets re-derives the hourly credit-consumption
-// counter table from request_logs.credits_charged over the lookback window
+// counter table from _request_logs.credits_charged over the lookback window
 // (typically 90 days, the longest window the dashboard supports).
 //
 // Idempotency: rows are overwritten (ON CONFLICT … DO UPDATE SET credits =
 // EXCLUDED.credits), so repeated runs in the same hour bucket converge to
-// the same total that request_logs reports. ChargeRequest's atomic upsert
+// the same total that _request_logs reports. ChargeRequest's atomic upsert
 // has already been writing the same hour bucket live; the only data that
 // could differ between the live counter and the backfill at run-time is
 // the request just committed between SELECT and INSERT — which lands in

@@ -112,7 +112,7 @@ type PrepareResult struct {
 	CompressionSourceBody []byte `json:"-"`
 
 	// MsgHashes is the per-message fingerprint array to persist in
-	// request_logs.outbound_msg_hashes.
+	// _request_logs.outbound_msg_hashes.
 	MsgHashes json.RawMessage
 
 	// MsgCount is the number of messages in OutboundBody (or clientBody
@@ -134,7 +134,7 @@ type PrepareResult struct {
 	CompressionReason string
 
 	// CompressionStrategy is the strategy that fired (or "" = no rewrite).
-	// Written to request_logs.compression_strategy.
+	// Written to _request_logs.compression_strategy.
 	CompressionStrategy string
 
 	// WindowTriggered is the window trigger reason (or "" = no trigger).
@@ -161,7 +161,7 @@ type PrepareResult struct {
 	//
 	//	LossinessNone   — no rewrite happened (delta-only or no-op)
 	//	LossinessTail   — only the tail was trimmed; the dropped middle is
-	//	                  recoverable from the SessionCache / request_logs
+	//	                  recoverable from the SessionCache / _request_logs
 	//	                  (mechanical strip / sliding-window trim)
 	//	LossinessWhole  — the history was replaced by an LLM summary; the
 	//	                  exact wording of dropped turns is NOT recoverable
@@ -1366,7 +1366,7 @@ func sha256Hash(data any) string { //nolint:unused
 // ─────────────────────────────────────────────────────────────
 
 // shouldUseV2 determines whether to read session state from the V2 store
-// (public.session_bodies) instead of V1 (request_logs LCS delta).
+// (public.session_bodies) instead of V1 (_request_logs LCS delta).
 //
 // Returns true when:
 //  1. V2 components (CacheV2 + Builder) are wired, AND

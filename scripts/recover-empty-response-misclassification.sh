@@ -6,7 +6,7 @@
 #
 # What the script does
 # --------------------
-# 1. Scan request_logs in [SINCE, UNTIL) for rows matching the bug fingerprint:
+# 1. Scan _request_logs in [SINCE, UNTIL) for rows matching the bug fingerprint:
 #      error_kind = 'empty_response'
 #      AND failure_detail_code = 'zero_tokens_few_chunks'
 #      AND upstream_finish_reason IS NULL
@@ -19,7 +19,7 @@
 #      b. model_probe_state: reset state from 'unavailable'/'suspicious'
 #         back to 'available' and clear last_unavailable_reason / last_err_code
 #         when last_err_code matches 'zero_tokens_few_chunks'.
-#      c. request_logs: NOT TOUCHED. Audit integrity is sacred.
+#      c. _request_logs: NOT TOUCHED. Audit integrity is sacred.
 #
 # 3. Every destructive change is preceded by a backup table
 #    (_backup_*_YYYYMMDDHHMMSS) and a row in recovery_audit.
@@ -44,7 +44,7 @@
 # -----------------
 #   - Default mode is --dry-run.
 #   - manual_disable / model_probe_broken / available=TRUE rows are never touched.
-#   - request_logs is read-only; we do not UPDATE it.
+#   - _request_logs is read-only; we do not UPDATE it.
 #   - Re-running is idempotent: after a successful run, no rows match.
 #   - Every write is recorded in recovery_audit with operator + ticket + reason.
 
@@ -129,7 +129,7 @@ if ! docker exec "$PG_CONTAINER" pg_isready -U "$PG_USER" -d "$PG_DB" >/dev/null
 fi
 
 # ── Schema sanity ──
-for t in request_logs credential_model_bindings model_probe_state; do
+for t in _request_logs credential_model_bindings model_probe_state; do
   if ! run_sql "SELECT 1 FROM information_schema.tables WHERE table_name='$t' AND table_schema='public';" | grep -q 1; then
     err "缺少表: public.$t — 请先跑 migrations"
     exit 1
@@ -147,7 +147,7 @@ SELECT
     COUNT(*) AS empty_hits,
     MIN(rl.ts) AS first_hit,
     MAX(rl.ts) AS last_hit
-FROM request_logs rl
+FROM _request_logs rl
 WHERE rl.error_kind = 'empty_response'
   AND rl.failure_detail_code = 'zero_tokens_few_chunks'
   AND rl.upstream_finish_reason IS NULL
@@ -179,7 +179,7 @@ SELECT id, credential_id, available, unavailable_reason, unavailable_at,
 FROM credential_model_bindings
 WHERE (credential_id, provider_model_id) IN (
     SELECT rl.credential_id, pm.id
-    FROM request_logs rl
+    FROM _request_logs rl
     JOIN provider_models pm ON pm.raw_model_name = rl.outbound_model
                              AND pm.provider_id = (SELECT provider_id FROM credentials WHERE id = rl.credential_id)
     WHERE rl.error_kind = 'empty_response'
@@ -206,7 +206,7 @@ SELECT credential_id, raw_model_name, state, last_unavailable_reason, last_err_c
 FROM model_probe_state
 WHERE (credential_id, raw_model_name) IN (
     SELECT rl.credential_id, rl.outbound_model
-    FROM request_logs rl
+    FROM _request_logs rl
     WHERE rl.error_kind = 'empty_response'
       AND rl.failure_detail_code = 'zero_tokens_few_chunks'
       AND rl.upstream_finish_reason IS NULL
@@ -225,7 +225,7 @@ echo "  → 将恢复 $PROBE_HITS 个 probe 行"
 echo
 
 if [[ "$CMB_HITS" -eq 0 && "$PROBE_HITS" -eq 0 ]]; then
-  ok "无 cmb/probe 行需要恢复（仅 request_logs 留有误判，审计不可改），结束"
+  ok "无 cmb/probe 行需要恢复（仅 _request_logs 留有误判，审计不可改），结束"
   exit 0
 fi
 
@@ -248,7 +248,7 @@ run_sql "CREATE TABLE public.${CMB_BACKUP} AS
          SELECT * FROM credential_model_bindings
          WHERE (credential_id, provider_model_id) IN (
              SELECT rl.credential_id, pm.id
-             FROM request_logs rl
+             FROM _request_logs rl
              JOIN provider_models pm ON pm.raw_model_name = rl.outbound_model
                                      AND pm.provider_id = (SELECT provider_id FROM credentials WHERE id = rl.credential_id)
              WHERE rl.error_kind = 'empty_response'
@@ -267,7 +267,7 @@ run_sql "CREATE TABLE public.${PROBE_BACKUP} AS
          SELECT * FROM model_probe_state
          WHERE (credential_id, raw_model_name) IN (
              SELECT rl.credential_id, rl.outbound_model
-             FROM request_logs rl
+             FROM _request_logs rl
              WHERE rl.error_kind = 'empty_response'
                AND rl.failure_detail_code = 'zero_tokens_few_chunks'
                AND rl.upstream_finish_reason IS NULL
@@ -303,7 +303,7 @@ info "step 4: 写 cmb + probe state"
 cat <<SQL | run_sql_file
 WITH affected AS (
     SELECT rl.credential_id, pm.id AS provider_model_id
-    FROM request_logs rl
+    FROM _request_logs rl
     JOIN provider_models pm ON pm.raw_model_name = rl.outbound_model
                             AND pm.provider_id = (SELECT provider_id FROM credentials WHERE id = rl.credential_id)
     WHERE rl.error_kind = 'empty_response'
@@ -335,7 +335,7 @@ ok "cmb updated: $CMB_UPDATED 行"
 cat <<SQL | run_sql_file
 WITH affected AS (
     SELECT rl.credential_id, rl.outbound_model
-    FROM request_logs rl
+    FROM _request_logs rl
     WHERE rl.error_kind = 'empty_response'
       AND rl.failure_detail_code = 'zero_tokens_few_chunks'
       AND rl.upstream_finish_reason IS NULL

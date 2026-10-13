@@ -5,7 +5,7 @@
 # P2-D from handoff 20260901_011500
 #
 # 用途：
-#   - 验证 routing_analytics_7d 与 request_logs 基础视图的一致性
+#   - 验证 routing_analytics_7d 与 _request_logs 基础视图的一致性
 #   - 检测数据漂移（drift > 5% 触发告警）
 #   - 可配置 cron 每日运行
 #

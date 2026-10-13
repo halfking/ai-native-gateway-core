@@ -13,8 +13,8 @@ import (
 
 // 读面纪律机制化（R46 §五#11 → R47 落地）：
 //
-// 生产读面对 request_logs 的裸引用（母表单腿读）对最近 8h 仍只在
-// request_logs_hot 的行全盲（hot 默认仅保留 8h）。R44/R45/R46 连续三轮
+// 生产读面对 _request_logs 的裸引用（母表单腿读）对最近 8h 仍只在
+// _request_logs_hot 的行全盲（hot 默认仅保留 8h）。R44/R45/R46 连续三轮
 // 在 admin 读面抓到同类缺陷后，本轮把纪律从"逐轮人工复核"升级为
 // grep 守卫测试。合法形态只有两种：
 //  1. hot∪母表双腿（显式 UNION ALL / 双 EXISTS / 双腿视图
@@ -35,7 +35,9 @@ import (
 // sql/objects/ 与 scripts/analysis/ 的 *.sql。DDL/迁移目录
 // （sql/migrations、deploy、installer）非读面，不扫。
 
-var bareRequestLogsRe = regexp.MustCompile(`(?i)\b(FROM|JOIN)\s+(public\.)?request_logs\b`)
+// `_?`（迁移 860，2026-10-14）：裸母表读两代物理名都要拦——Go 源码已随清扫
+// 用 `_request_logs`，SQL 对象定义体（sql/objects/**，不参与清扫）仍是旧名。
+var bareRequestLogsRe = regexp.MustCompile(`(?i)\b(FROM|JOIN)\s+(public\.)?_?request_logs\b`)
 
 var sqlReadGuardAllowFiles = map[string]string{
 	// ---- LEGIT：双腿之母表腿（有意读） ----
@@ -44,11 +46,12 @@ var sqlReadGuardAllowFiles = map[string]string{
 	"admin/session_tenant.go":          "LEGIT: assertTaskInTenant 跨租户权限门，session 族两腿 + v1 双 EXISTS 母表腿并联（S4 停写后不得只剩 v1）",
 	"admin/session_detail_v2.go":       "LEGIT: resolveSessionID 反向臂 hot∪母表双腿之母表腿（R71，hot 腿同查询内联）",
 	"internal/trace/trace.go":          "LEGIT: hot∪母表双腿",
+	"internal/summarystore/store.go":   "LEGIT: v1FallbackCountSQL 父表直读（2026-10-13 252 审计轮从视图收窄；只在会话族腿 0 行时执行，母表索引探测）。迁移 860 后物理名为 _request_logs，形态未变。",
 	"bg/auto_route_affinity_worker.go": "LEGIT: NOT EXISTS 探测之母表腿（R46 F4 裁决落地形态）",
 	"domains/session/v2/session_request_status_backfill.go": "LEGIT: request_status 回填的**候选集分母**（:457-467 的 remaining 量表、:521 源探针、:677 回写 VALUES 臂）。" +
 		"为什么母表单腿是对的：① 目标侧已经是双腿——`session_turns` 与 `session_turns_hot` 两臂在同一条 SQL 里相加，" +
 		"若只回填 hot 单窗，分母与写入面错位，「已回填比例」会恒为 0（这正是 R43 §R43/L1 修掉的同类假绿）；" +
-		"② 源侧 `request_logs` 只有母表有 `request_status`（823 只给 session_turns/_hot 落标签），母表腿不是可选项。" +
+		"② 源侧 `_request_logs` 只有母表有 `request_status`（823 只给 session_turns/_hot 落标签），母表腿不是可选项。" +
 		"③ 对最近 8h 的盲区在此**方向是保守的**：那批行由在线路径直接落标签、本就不该进回填集，漏读只会让 remaining 略被低估，不会虚报进度。",
 
 	// ---- LEGIT：引擎/DDL/维护/工具 ----
@@ -71,7 +74,7 @@ var sqlReadGuardAllowFiles = map[string]string{
 	// 2026-10-05（832/833 收口轮）两条：
 	"cmd/gateway/v1_write_liveness.go": "LEGIT: §9.264 写入腿存活信号——hot 与母表在同一查询内**并列计数**，" +
 		"对照本身就是查询目的（父表落后 hot 是正常形态，见其文件头 §9.160.7 第四/五次命中记录）；" +
-		"四腿（request_logs_hot/request_logs/session_turns_hot/session_turns）缺一不可",
+		"四腿（_request_logs_hot/request_logs/session_turns_hot/session_turns）缺一不可",
 	"bg/routing_health_checks.go": "DEBT(R47): recorded_cost_is_negative 巡检 30 天负成本审计单腿母表读——" +
 		"①为何暂不能双腿化：正确双腿必须走 request_logs_with_current_month 族视图并核对 promote 去重语义" +
 		"（§9.260 实测该族视图由 composer 运行时建、带 v1 臂，裸 UNION hot 会把 promote 前后重复行数两次，" +
@@ -90,7 +93,9 @@ var sqlReadGuardAllowFiles = map[string]string{
 	// session_list.go / usage.go / session_online.go 已在 R48 §5 双腿化为
 	// request_logs_with_current_month 视图（view 已在白名单 LEGIT），对应
 	// 白名单条目按 self-cleaning 守卫自动清除（TestSQLReadGuardWhitelistCurrent）。
-	"admin/quality_correlations.go":            "DEBT(R47): 裸母表",
+	// admin/quality_correlations.go 条目已于 2026-10-14 移除：S4 波 4 的
+	// 会话族重写后该文件已无裸母表读（FROM 经 SessionFamilyTurnsSourceSQL
+	// 拼接），本门自清洁报出。origin/main 上既存红，本轮顺手收口。
 	"admin/session_sanitize_matches.go":        "DEBT(R47): 裸母表",
 	"cmd/gateway/output_compliance_control.go": "DEBT(R47): 网关运行时读面裸母表",
 	"cmd/gateway/main_v3_wiring.go":            "DEBT(R47): 接线读面裸母表",
@@ -100,7 +105,7 @@ var sqlReadGuardAllowFiles = map[string]string{
 	//   admin/provider_models.go、domains/analysis/request_summary.go、
 	//   domains/sessionforensics/export.go —— 均由 TestSQLReadGuardWhitelistCurrent 报出。
 	// domains/providerprofile/pg_reconciliation_store.go 条目已按 R28-B-1（round 30）
-	// 聚合源切换移除：该文件现已只读计帐侧月分区，无 request_logs 裸读命中，
+	// 聚合源切换移除：该文件现已只读计帐侧月分区，无 _request_logs 裸读命中，
 	// 由 TestSQLReadGuardWhitelistCurrent 自清洁守卫报出。
 	"domains/hooks/goal/history_store.go":             "DEBT(R47): 裸母表",
 	"domains/hooks/observability/telemetry/client.go": "DEBT(R47): 裸母表",
@@ -172,7 +177,7 @@ func TestNoBareRequestLogsMotherReads(t *testing.T) {
 		reason, ok := sqlReadGuardAllowFiles[rel(path)]
 		if !ok {
 			for _, h := range hits {
-				violations = append(violations, rel(path)+":"+itoa(h)+" 裸 request_logs 读（双腿化、内联 "+
+				violations = append(violations, rel(path)+":"+itoa(h)+" 裸 _request_logs 读（双腿化、内联 "+
 					sqlReadGuardInlineMarker+" 或登记白名单）")
 			}
 			continue
@@ -196,7 +201,7 @@ func TestNoBareRequestLogsMotherReads(t *testing.T) {
 			if hits := sqlReadGuardMatches(t, path, "--"); len(hits) > 0 {
 				if _, ok := sqlReadGuardAllowSQLFiles[rel(path)]; !ok {
 					for _, h := range hits {
-						violations = append(violations, rel(path)+":"+itoa(h)+" 裸 request_logs 读")
+						violations = append(violations, rel(path)+":"+itoa(h)+" 裸 _request_logs 读")
 					}
 				}
 			}
@@ -208,7 +213,7 @@ func TestNoBareRequestLogsMotherReads(t *testing.T) {
 	}
 
 	if len(violations) > 0 {
-		t.Fatalf("生产读面出现 %d 处裸 request_logs 母表读（8h 盲区）：\n%s",
+		t.Fatalf("生产读面出现 %d 处裸 _request_logs 母表读（8h 盲区）：\n%s",
 			len(violations), strings.Join(violations, "\n"))
 	}
 }
@@ -217,7 +222,7 @@ func TestNoBareRequestLogsMotherReads(t *testing.T) {
 // 命中（被删除或已双腿化）时报错，强制从白名单移除——防止"白名单债务
 // 隐身"（conventions.md §3 的机制化延伸）。
 // debtBaseline 是 202 号登记的 DEBT(R47) 基线：白名单里当前**已登记**的
-// 裸 request_logs 母表读文件（Go 15 + SQL 7 = 22 条）。
+// 裸 _request_logs 母表读文件（Go 15 + SQL 7 = 22 条）。
 //
 // 为什么要有它：TestSQLReadGuardWhitelistCurrent 只实现了棘轮的**一半** ——
 // 它管住「条目不得比需要活得更久」（文件已双腿化就必须移除），但**管不住
@@ -284,7 +289,8 @@ func TestDebtRatchetDoesNotGrow(t *testing.T) {
 	// 覆盖面下限：先证「抽到东西了」。空集合同样满足「没有新增」，
 	// 抽取逻辑坏掉时这道门会安静通过（201 号 §102 的教训）。
 	//
-	// ⚠️ 2026-10-13（12h 审计轮）下限 20 → 18：**下限必须 ≤ 真实债条数**，
+	// ⚠️ 2026-10-14 下限 18 → 17：quality_correlations 白名单条目随 S4 波 4
+	// 会话族重写移除（自清洁报出，origin 既存红本轮收口）。**下限必须 ≤ 真实债条数**，
 	// 否则债务被真实偿还后这道门永远转绿不了（自清洁守卫要求删条目，
 	// 删条目又把计数压到下限以下 ⇒ 两道门互相锁死）。
 	// 本次下调的真实原因：S3 波2/波3 把 admin/provider_models.go、
@@ -293,8 +299,8 @@ func TestDebtRatchetDoesNotGrow(t *testing.T) {
 	// 报出后按其要求删除 ⇒ DEBT 由 21 降为 18。
 	// 这不是「把门放松」：该门的判据是**相对 debtBaseline 不得新增**，
 	// 下限只是抽取有效性的兜底；18 条仍远高于空集，抽取坏掉仍会红。
-	if len(debt) < 18 {
-		t.Fatalf("只从白名单里抽出 %d 条 DEBT 条目（下限 18）：DEBT 识别很可能已失效，"+
+	if len(debt) < 17 {
+		t.Fatalf("只从白名单里抽出 %d 条 DEBT 条目（下限 17）：DEBT 识别很可能已失效，"+
 			"此时「没有新增」会与「一条都没抽到」同步为真。抽到的：%v", len(debt), keysSorted(debt))
 	}
 
@@ -436,7 +442,7 @@ func TestSQLReadGuardWhitelistCurrent(t *testing.T) {
 	}
 }
 
-// sqlReadGuardMatches 返回文件中裸 request_logs 读的行号列表；lineComment
+// sqlReadGuardMatches 返回文件中裸 _request_logs 读的行号列表；lineComment
 // 为该文件类型的行注释前缀（Go="//"，SQL="--"），命中位置之前出现该前缀
 // 或整行为 SQL 注释时视为文档性提及，不计。
 func sqlReadGuardMatches(t *testing.T, path, lineComment string) []int {
@@ -489,12 +495,14 @@ func itoa(n int) string {
 // 「只落 hot」纯靠人工 code review，与域文档 §3#1 把它定为 P1 级纪律的
 // 期望不符：读面有门、写面没有，正是最容易悄悄漂移的不对称。
 //
-// 现实基线：全生产面直写 request_logs 母表的语句只有 1 处，且早已在读守卫
+// 现实基线：全生产面直写 _request_logs 母表的语句只有 1 处，且早已在读守卫
 // 白名单里登记为 LEGIT（SQLite 引擎 DELETE，? 占位，非 PG hot/mother 体系）。
 // 门本身因此很干净——这正是纪律在实践中生效的证据，而非「没什么可查」。
 
-// bareRequestLogsWriteRe 匹配对 request_logs 母表的直写（INSERT/UPDATE/DELETE）。
-var bareRequestLogsWriteRe = regexp.MustCompile(`(?i)\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(public\.)?request_logs\b`)
+// bareRequestLogsWriteRe 匹配对 _request_logs 母表的直写（INSERT/UPDATE/DELETE）。
+// `_?`（迁移 860）：写面两代物理名都要拦（Go 源码已用前缀名；SQLite 侧
+// bg/lite_retention_worker.go 是另一存储面、保留旧名且有 LEGIT 白名单）。
+var bareRequestLogsWriteRe = regexp.MustCompile(`(?i)\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(public\.)?_?request_logs\b`)
 
 // sqlWriteGuardAllowFiles 是写面 LEGIT 白名单，理由必须写清楚「为什么不是
 // 直写母表」，便于未来有人误以为它是待还债项。
@@ -537,7 +545,7 @@ func TestNoBareRequestLogsMotherWrites(t *testing.T) {
 			}
 			for _, line := range bareWriteLines(path) {
 				violations = append(violations, rel+":"+itoa(line)+
-					" 直写 request_logs 母表（应走 hot 分区；或登记 sqlWriteGuardAllowFiles 说明理由）")
+					" 直写 _request_logs 母表（应走 hot 分区；或登记 sqlWriteGuardAllowFiles 说明理由）")
 			}
 			return nil
 		})
@@ -547,7 +555,7 @@ func TestNoBareRequestLogsMotherWrites(t *testing.T) {
 	}
 
 	if len(violations) > 0 {
-		t.Fatalf("生产写面出现 %d 处直写 request_logs 母表（绕过 hot 分区）：\n%s",
+		t.Fatalf("生产写面出现 %d 处直写 _request_logs 母表（绕过 hot 分区）：\n%s",
 			len(violations), strings.Join(violations, "\n"))
 	}
 }
@@ -570,7 +578,7 @@ func TestSqlWriteGuardAllowlistCurrent(t *testing.T) {
 }
 
 // bareWriteLines returns 1-based line numbers of non-comment direct writes to
-// the request_logs mother table. Mirrors the read-side comment exemptions:
+// the _request_logs mother table. Mirrors the read-side comment exemptions:
 // Go line comments and SQL line comments inside raw strings are documentation.
 func bareWriteLines(path string) []int {
 	data, err := os.ReadFile(path)

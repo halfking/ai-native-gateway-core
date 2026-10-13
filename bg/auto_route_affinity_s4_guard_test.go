@@ -11,7 +11,7 @@ import (
 // affinity 聚合的驱动表是 auto_route_selections_all，由
 // domains/hooks/observability/telemetry/selection_writer.go 写入，
 // **该写方不咨询** settings.KeyRequestLogsWriteEnabled（实测 0 处调用）。
-// 而聚合里的两条合成流量排除臂（NOT EXISTS ... FROM request_logs_hot / request_logs）
+// 而聚合里的两条合成流量排除臂（NOT EXISTS ... FROM _request_logs_hot / _request_logs）
 // 整体在门内。
 //
 // 停写一旦生效：驱动表继续收新行，证据表冻结 ⇒ 两条 NOT EXISTS **恒真**
@@ -28,7 +28,7 @@ import (
 //	present_in_v1_hot   = 0    ← 热表臂覆盖 0 条
 //	present_in_v1_mother= 131  ← 母表臂覆盖全部
 //
-// 即：**今天唯一兜住过滤的是 request_logs 母表，而那正是本项目要删掉的表。**
+// 即：**今天唯一兜住过滤的是 _request_logs 母表，而那正是本项目要删掉的表。**
 // 停写后新合成流量不再有 v1 记录 ⇒ 母表臂也失效；v1 退役后该臂彻底消失。
 // 所以第三条（session 族）臂不是「防御性冗余」，它是终局下的承重臂。
 //
@@ -78,8 +78,8 @@ func TestAffinitySynthesisExclusionCoversSessionFamily(t *testing.T) {
 	}
 	// 原有的两条 v1 臂必须保留：双写期它们是主覆盖，删掉会立刻改变今天的聚合结果。
 	for _, want := range []string{
-		"FROM request_logs_hot rl",
-		"FROM request_logs rl",
+		"FROM _request_logs_hot rl",
+		"FROM _request_logs rl",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("v1 排除臂 %q 被删除了：双写期它是主覆盖（真库 131/131），"+

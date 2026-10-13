@@ -31,7 +31,7 @@ import (
 )
 
 const settleWorkerSchema = `
-CREATE TABLE request_logs_hot (
+CREATE TABLE _request_logs_hot (
 	request_id text,
 	success boolean,
 	latency_ms integer,
@@ -72,7 +72,7 @@ CREATE TABLE session_summaries (
 -- harness that could have run it could not even name the table. Column types
 -- mirror the real table where the settle SQL touches them (verified against
 -- the live DB: cost_usd is numeric(14,8) here but double precision in the
--- request_logs_hot fixture above, so the parity test also proves the SQL is
+-- _request_logs_hot fixture above, so the parity test also proves the SQL is
 -- insensitive to that difference).
 CREATE TABLE session_turns_hot (
 	session_id text NOT NULL,
@@ -103,14 +103,14 @@ func TestAutoRouteSettleBaselinesExcludeSyntheticActors(t *testing.T) {
 	// lands in this test's per-test schema, and the code under test reads these
 	// tables unqualified as well — measured 2026-10-02:
 	//
-	//	bg/auto_route_settle_worker.go   FROM request_logs_hot, JOIN request_logs_hot,
+	//	bg/auto_route_settle_worker.go   FROM _request_logs_hot, JOIN _request_logs_hot,
 	//	                                 FROM auto_route_selections_hot,
 	//	                                 UPDATE auto_route_selections_hot
-	//	bg/auto_route_affinity_worker.go FROM request_logs_hot, JOIN request_logs_hot
+	//	bg/auto_route_affinity_worker.go FROM _request_logs_hot, JOIN _request_logs_hot
 	//
 	// These statements used to say `public.…`, which sent them to the PRODUCTION
 	// table on the gate database instead of the fixture — measured as
-	// "null value in column "tenant_id" of relation "request_logs_hot"
+	// "null value in column "tenant_id" of relation "_request_logs_hot"
 	// violates not-null constraint" (23502), a constraint the fixture table does
 	// not have. De-qualifying is the fix, and it is NOT a vacuous one: the
 	// product queries resolve through search_path to the same per-test schema
@@ -129,7 +129,7 @@ func TestAutoRouteSettleBaselinesExcludeSyntheticActors(t *testing.T) {
 	// A real row with sane signals next to a synthetic row with extreme
 	// signals: if the origin_actor filter regresses, the p95/p75 cohort
 	// baselines jump to the synthetic values.
-	mustExec(`INSERT INTO request_logs_hot
+	mustExec(`INSERT INTO _request_logs_hot
 		(request_id, success, latency_ms, cost_usd, task_type, is_auto_request, origin_actor, ts)
 		VALUES
 		('req-real-b', TRUE, 1000, 1.0, 'code', TRUE, 'user-app', NOW()),
@@ -168,7 +168,7 @@ func TestAutoRouteSettleBatchMrLateralExcludesSyntheticActors(t *testing.T) {
 	// One settled selection whose session contains exactly two logged turns:
 	// the real one and a goal-audit shadow round sharing gw_session_id +
 	// canonical_id. The mr LATERAL must count only the real turn.
-	mustExec(`INSERT INTO request_logs_hot
+	mustExec(`INSERT INTO _request_logs_hot
 		(request_id, success, latency_ms, cost_usd, canonical_id, tenant_id, gw_session_id, task_type, is_auto_request, origin_actor, routing_attempts, ts)
 		VALUES
 		('req-sel', TRUE, 800, 0.5, 7, 't1', 'gs_sess1', 'code', TRUE, 'user-app', '[{"a":1}]', NOW()),
@@ -232,11 +232,11 @@ func TestAutoRouteSettleBatchSkipsSyntheticActorSelections(t *testing.T) {
 
 	// R38: synthetic actor selections (goal-*/auto-*-generator/session-summary)
 	// must not settle into rewards. The filter occurs AFTER the LEFT JOIN so
-	// that rows without request_logs yet can still reach the abandon path.
+	// that rows without _request_logs yet can still reach the abandon path.
 	//
 	// Insert three selections: one real user request, one goal shadow round,
 	// one internal loopback. Each has a logged request_log with success=TRUE.
-	mustExec(`INSERT INTO request_logs_hot
+	mustExec(`INSERT INTO _request_logs_hot
 		(request_id, success, latency_ms, cost_usd, canonical_id, tenant_id, task_type, is_auto_request, origin_actor, ts)
 		VALUES
 		('req-real', TRUE, 1000, 1.0, 42, 't1', 'chat', TRUE, '', NOW()),
@@ -370,7 +370,7 @@ func TestAutoRouteSettleSessionSourceMatchesV1OnIdenticalRows(t *testing.T) {
 	// ses-b: two real turns, so the LATERAL has something to aggregate. One
 	// selection carries no session at all, exercising the s.session_id IS NOT
 	// NULL guard.
-	mustExec(`INSERT INTO request_logs_hot
+	mustExec(`INSERT INTO _request_logs_hot
 		(request_id, success, latency_ms, cost_usd, canonical_id, tenant_id, gw_session_id, task_type, is_auto_request, origin_actor, routing_attempts, ts)
 		VALUES
 		('req-a1', TRUE,  800, 0.25, 7, 't1', 'ses-a', 'code', TRUE, 'user-app',  '{"attempts":[{"a":1},{"a":2}]}', NOW()),
@@ -555,7 +555,7 @@ func TestAutoRouteSettleMissingCohortIsCounted(t *testing.T) {
 	// request rows exist for the outcome join, but with task_type 'other' —
 	// so the cohort (GROUP BY task_type) has NO entry for the selections'
 	// task_type 'ghost'.
-	mustExec(`INSERT INTO request_logs_hot
+	mustExec(`INSERT INTO _request_logs_hot
 		(request_id, success, latency_ms, cost_usd, task_type, is_auto_request, origin_actor, ts)
 		VALUES ('req-g1', TRUE, 500, 0.1, 'other', TRUE, 'user-app', NOW())`)
 	mustExec(`INSERT INTO auto_route_selections_hot
@@ -635,7 +635,7 @@ func diffPtr[T comparable](a, b *T, show func(*T) string) string {
 // 审计 §四#2）。settleBatch 整查询失败此前只有 slog.Warn + 下轮重查同批——
 // llmgw_autoroute_settle_sweep_failures_total{reason="error"} 是
 // AutoRouteSettleSweepFailing 告警的唯一数据源，这条接线断了，告警就是装饰。
-// 空私有 schema 上跑一轮 sweep：settlePendingSQL 引用的 request_logs_hot
+// 空私有 schema 上跑一轮 sweep：settlePendingSQL 引用的 _request_logs_hot
 // 不存在 → 42P01 → error 臂必须 +1。（loadTaskBaselines 同样失败，但按设计
 // 它走中性回落不计数——那不是 sweep 失败，是降级，有 CohortEmpty 族盯着。）
 func TestAutoRouteSettleSweepFailureCounterWiresUp(t *testing.T) {

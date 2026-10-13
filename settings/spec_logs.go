@@ -98,7 +98,7 @@ func LogSpecs() []*Spec {
 			Max:             floatPtr(3650),
 			Default:         90,
 			Description:     "请求日志保留天数",
-			DescriptionLong: "request_logs 表中的请求记录超过此天数后将被归档并删除。影响审计日志和请求分析的可用历史深度。默认 90 天。",
+			DescriptionLong: "_request_logs 表中的请求记录超过此天数后将被归档并删除。影响审计日志和请求分析的可用历史深度。默认 90 天。",
 			Unit:            "天",
 			DangerLevel:     Warning,
 			HotReload:       false,

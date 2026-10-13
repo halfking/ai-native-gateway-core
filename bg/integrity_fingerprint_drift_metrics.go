@@ -28,7 +28,7 @@ import (
 // **真库实测否定了它**：
 //
 //	面                                    行数      system_fingerprint 非空
-//	request_logs（v1 全表）             2,164,650   0
+//	_request_logs（v1 全表）             2,164,650   0
 //	session_turns（会话族全表）         1,683,739   0
 //	model_integrity_events.context JSONB  7,081      0   （2026-09-05 起）
 //

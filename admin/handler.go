@@ -142,7 +142,7 @@ type Handler struct {
 	pendingStore  *pending.Store
 	settingsStore *settings.StoreDB // settings-management: DB-backed settings backend (Q1: B)
 	// liveStreamHub (2026-07-03) fans out newly-persisted
-	// request_logs rows to dashboard SSE clients at
+	// _request_logs rows to dashboard SSE clients at
 	// GET /api/admin/live-stream. nil disables the endpoint.
 	liveStreamHub *LiveStreamSSEHub
 	// requestTraceHandler (2026-07-17) exposes the per-request trace
@@ -555,7 +555,7 @@ func (h *Handler) SetLiveStreamSSE(hub *LiveStreamSSEHub) {
 
 // SetLiveStreamRedisStore wires the Redis-backed live-stream detail
 // cache so the unified request detail locator can answer swim-lane
-// clicks immediately, before the eventual request_logs write.
+// clicks immediately, before the eventual _request_logs write.
 // Pass nil to disable. It is safe to call before or after
 // SetRequestDetailStore; the existing retry policy is preserved when
 // the locator is rebuilt.
@@ -1065,7 +1065,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		h.requestTraceHandler.RegisterRoutes(mux, h.superAdmin)
 	}
 
-	// 2026-07-05: 泳道初始化数据接口（从request_logs查询最近N小时的请求）
+	// 2026-07-05: 泳道初始化数据接口（从_request_logs查询最近N小时的请求）
 	mux.HandleFunc("/api/admin/dashboard/swim-lane-init", admin(h.HandleSwimLaneInit))
 
 	// 2026-07-07: 首页会话统计概览接口
@@ -1289,7 +1289,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/usage/", h.admin(h.HandleUsageAdmin))
 	mux.HandleFunc("/api/logs", admin(h.handleLogsRoot))
 	mux.HandleFunc("/api/logs/", admin(h.handleLogs))
-	// 2026-08-25: unified request detail (memory/file → request_logs → session_turns)
+	// 2026-08-25: unified request detail (memory/file → _request_logs → session_turns)
 	mux.HandleFunc("/api/admin/request-detail/", admin(h.handleUnifiedRequestDetail))
 	// 2026-08-09: 跨会话轮次列表端点（复用 session_turns 表）
 	mux.HandleFunc("/api/admin/turns", admin(h.handleTurnsList))
@@ -1463,7 +1463,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 		// Credential monitor (2026-06-22): sliding window + manual promote/demote.
 		// Redis is optional: monitor-summary works from DB alone; sliding window
-		// degrades to request_logs fallback when Redis is unavailable.
+		// degrades to _request_logs fallback when Redis is unavailable.
 		// 2026-07-04: 改用 h.admin 中间件，允许 tenant_admin 访问凭据监控页面
 		var rc *redis.Client
 		if h.redisClient != nil {

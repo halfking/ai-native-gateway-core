@@ -57,7 +57,7 @@ import (
 // # 为什么 14 个不能靠补投影消解
 //
 // `id` 是本项目里少见的「session 侧有同名列但不是同一个东西」：v1 的
-// request_logs.id 是**请求行 id**，session_turns.id 是 **turn id**，真库
+// _request_logs.id 是**请求行 id**，session_turns.id 是 **turn id**，真库
 // 1,515,984 组同 request_id 配对里 `r.id = t.id` 命中 **0** 次。补投影等于给读方
 // 一个语义已变的同名列，比 NULL 更坏（NULL 至少看得见）。⇒ 这 14 个只能改读法。
 //
@@ -238,7 +238,7 @@ func TestNoUnregisteredVPaddedColumnReader(t *testing.T) {
 //
 // 为什么必须判归属（2026-10-02 修正，§9.28.6）：第一版只问
 // `len(findColumnRefs(body, col)) > 0`，把**整个字面量里任何位置**的该列名都算进来。
-// 于是一条 `FROM request_logs_hot rl JOIN providers p ON … WHERE p.provider_id = $1`
+// 于是一条 `FROM _request_logs_hot rl JOIN providers p ON … WHERE p.provider_id = $1`
 // 会因为 `provider_id` 出现过而命中——可那一列绑的是 `providers` 表，v1 根本没被读它。
 // 后果是登记表从 1 膨胀到 14，S4 判据第 2 条的分母被抬高 14 倍。
 //
@@ -280,8 +280,8 @@ func paddedColumnsReadFromV1Direct(path string) (cols map[string]bool, unattribu
 			alias := strings.ToLower(m[2])
 			if v1DirectTables[last] {
 				hasV1 = true
-				// 无 AS 别名时，SQL 允许用表自身名引用（FROM request_logs_hot
-				// 后写 request_logs_hot.id 合法）。有别名时表名不可再引用。
+				// 无 AS 别名时，SQL 允许用表自身名引用（FROM _request_logs_hot
+				// 后写 _request_logs_hot.id 合法）。有别名时表名不可再引用。
 				if alias != "" {
 					v1Aliases[alias] = true
 				} else {
@@ -345,9 +345,9 @@ func dedupeSorted(in []string) []string {
 // 一个永不更新的占位。
 var unattributablePaddedRefExemptions = map[string]string{
 	// `domains/streaming/model_alternatives.go:id` 这条豁免为什么**被删掉**而不是被改写
-	// （2026-10-13，S3 波 2 停写切换）：它的形状是「一条同时含 request_logs_hot 与
+	// （2026-10-13，S3 波 2 停写切换）：它的形状是「一条同时含 _request_logs_hot 与
 	// models_canonical 的字面量里，裸 `id` 不可归属」。S3 波 2 把 usage_7d 热面从
-	// request_logs_hot 换成会话族源拼接（SessionFamilyTurnsSourceSQL），v1 关系名
+	// _request_logs_hot 换成会话族源拼接（SessionFamilyTurnsSourceSQL），v1 关系名
 	// 从该文件的一切字面量中消失 ⇒ 本门在那个文件里不再产生任何命中，豁免按
 	// 「失效即报红」的自检退出——与下方 bg/auto_route_settle_worker.go:id 的删除同先例。
 }
@@ -369,7 +369,7 @@ var unattributablePaddedRefExemptions = map[string]string{
 //     干净」，而是「看不见」。这一点由 §9.45 记录：全仓共 48 处 SQL 关系名不是字面量，
 //     其中 `requestLogsSource` / `logsSourceFromSQL` / `requestLogsFromClause` /
 //     `boardRequestLogsFromClause` 这四个**切换层**在 `days <= 7` 时直接返回
-//     `request_logs_hot`，6 个调用点对本门不可见。
+//     `_request_logs_hot`，6 个调用点对本门不可见。
 //
 // 也就是说：本门今天的「0 个读方」结论**方向正确但不完整**——它是在一个漏掉
 // 拼接式 SQL 的测量面上得到的。settle worker 那两个读点另有更强的覆盖
@@ -380,7 +380,7 @@ var unattributablePaddedRefExemptions = map[string]string{
 // 四个切换层的 6 个调用点经手验**当前没有读补位列**（admin/usage_credits.go 与
 // maas/usage.go、maas/credit_buckets.go 对 6 个补位列零匹配；
 // maas/consumption_detail.go 的 `id` 全部限定在 maas_settings / providers /
-// credentials / models_canonical，不是 request_logs 的别名），所以这是**潜在**盲区
+// credentials / models_canonical，不是 _request_logs 的别名），所以这是**潜在**盲区
 // 而非现网漏网。复现工具见 cmd/tools/sql_source_indirection_audit。
 
 // checkUnattributablePaddedRefs 要求每个「不可归属」命中都在具名豁免表里且理由非空，

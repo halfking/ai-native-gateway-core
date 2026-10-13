@@ -7,7 +7,7 @@ import (
 
 // V6-W1.6 R8 / migration 610 parity: the FS persistence tier (requests
 // temporarily saved as files when PG is unavailable) must round-trip the
-// request class + due time exactly like request_logs_hot does.
+// request class + due time exactly like _request_logs_hot does.
 
 func TestRequestRecordClassRoundTrip(t *testing.T) {
 	s, _ := tempStore(t)

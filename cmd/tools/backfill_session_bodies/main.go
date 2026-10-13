@@ -1,11 +1,11 @@
 // Command backfill_session_bodies derives and writes per-turn message deltas into
 // public.session_bodies for one session, sourced from the accumulated
-// request_logs bodies (the matryoshka). It is part of the "full switch to
+// _request_logs bodies (the matryoshka). It is part of the "full switch to
 // Sessions V2" preparation: historical sessions that predate the V2 dual-write
 // have no session_bodies, so this tool backfills them so V2 can serve the detail
 // page and be validated against request_logs.
 //
-// The request_logs → session_turns metadata backfill (backfill_session_v2_turns
+// The _request_logs → session_turns metadata backfill (backfill_session_v2_turns
 // SQL function, see cmd/tools/backfill_sessions_v2_v2) should be run first so the
 // session_turns rows exist; session_bodies is written independently here.
 //
@@ -44,7 +44,7 @@ func main() {
 	tenant := flag.String("tenant", "", "tenant id (optional; empty = any)")
 	session := flag.String("session", "", "gw_session_id (required)")
 	dryRun := flag.Bool("dry-run", true, "when true, derive and report but do not write session_bodies")
-	useHot := flag.Bool("use-hot", false, "query from request_logs_bodies_hot instead of partitioned table")
+	useHot := flag.Bool("use-hot", false, "query from _request_logs_bodies_hot instead of partitioned table")
 	flag.Parse()
 
 	if *dsn == "" || *session == "" {
@@ -57,15 +57,15 @@ func main() {
 	}
 	defer pool.Close()
 
-	// Step 1: Query request_logs only (fast: ~15ms for 2 turns).
-	// Avoids slow LEFT JOIN on large request_logs_bodies partitions.
+	// Step 1: Query _request_logs only (fast: ~15ms for 2 turns).
+	// Avoids slow LEFT JOIN on large _request_logs_bodies partitions.
 	rows, err := pool.Query(context.Background(), `
 		SELECT request_id, tenant_id, ts
-		FROM request_logs
+		FROM _request_logs
 		WHERE gw_session_id = $1 AND ($2 = '' OR tenant_id = $2)
 		ORDER BY ts ASC, request_id ASC`, *session, *tenant)
 	if err != nil {
-		log.Fatalf("query request_logs: %v", err)
+		log.Fatalf("query _request_logs: %v", err)
 	}
 
 	var turnRows []turnRow
@@ -85,10 +85,10 @@ func main() {
 	rows.Close()
 
 	// Step 2: Fetch bodies individually (small queries, avoids partition scan).
-	// Use request_logs_bodies_hot if --use-hot is specified (for recent sessions)
-	bodiesTable := "request_logs_bodies"
+	// Use _request_logs_bodies_hot if --use-hot is specified (for recent sessions)
+	bodiesTable := "_request_logs_bodies"
 	if *useHot {
-		bodiesTable = "request_logs_bodies_hot"
+		bodiesTable = "_request_logs_bodies_hot"
 	}
 
 	var fullMsgs, respMsgs [][]Msg

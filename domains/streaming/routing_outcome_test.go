@@ -1,7 +1,7 @@
 package streaming
 
 // routing_outcome_test.go — 2026-09-08 audit (round 2, Track A): the
-// completion-path projection of terminal request_logs entries onto the
+// completion-path projection of terminal _request_logs entries onto the
 // autoroute outcome report must carry ids and settled metrics verbatim, and
 // tolerate absent (nil) metric pointers.
 

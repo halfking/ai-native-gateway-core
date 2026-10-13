@@ -466,7 +466,7 @@ func (e *Executor) executeViaDispatch(
 		// Exhausted branch (handler.go:3878) emits 503 + Retry-After (not
 		// 502) and goal-retry (isRetriableError) recognises the kind. A raw
 		// dispatch error would fall through to the generic 502 path.
-		// Still attach T0–T9 so failure request_logs rows keep queue latency.
+		// Still attach T0–T9 so failure _request_logs rows keep queue latency.
 		ee := dispatchErrToExecuteError(err)
 		copyDispatchAttemptMetadata(ee, qr)
 		copyQueueTimestampsToError(ee, qr)

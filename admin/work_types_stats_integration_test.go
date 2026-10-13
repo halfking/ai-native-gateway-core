@@ -26,7 +26,7 @@ import (
 )
 
 const workTypesStatsSchema = `
-CREATE TABLE public.request_logs_hot (
+CREATE TABLE public._request_logs_hot (
 	work_type text,
 	task_type text,
 	is_auto_request boolean,
@@ -96,7 +96,7 @@ func TestWorkTypesStatsExcludeSyntheticActors(t *testing.T) {
 
 	// One real auto turn and one goal-audit shadow turn with IDENTICAL
 	// business attributes: every stats surface must count exactly one.
-	seed := `INSERT INTO public.request_logs_hot
+	seed := `INSERT INTO public._request_logs_hot
 		(work_type, task_type, is_auto_request, client_model, outbound_model, origin_actor, ts)
 		VALUES
 		('code', 'code', TRUE, '', 'm1', 'user-app', NOW()),

@@ -16,7 +16,7 @@ import (
 )
 
 // F5（2026-10-01）：admin HTTP ingest（/api/telemetry/request-log）是
-// request_logs_bodies_hot 的第三落库点，此前未接热区请求侧镜像。本文件钉桩
+// _request_logs_bodies_hot 的第三落库点，此前未接热区请求侧镜像。本文件钉桩
 // 该接线的行为契约。
 //
 // 刻意**不**只测 mirrorRequestBodies 这个 helper：helper 存在不等于接上了。
@@ -72,7 +72,7 @@ func newMirroringIngester(t *testing.T, cap *mirrorCapture) *telemetryIngester {
 // 这是 2026-10-01 审计抓到的真实缺陷：F5 首版把镜像投递放在 persistRequestLog
 // 入口且**不接** storage.request_logs_write_enabled，而 telemetry client 侧
 // 明确 `if requestLogsWriteEnabled() { c.mirrorRequestBodies(entry) }`。
-// 后果：运维关停该键是为了止血 request_logs 家族的磁盘占用（F3 重复写、
+// 后果：运维关停该键是为了止血 _request_logs 家族的磁盘占用（F3 重复写、
 // 4.3GB/24k 行量级），而 admin ingest 镜像绕过该门继续把**同一批正文**写进
 // 热区 requests/ 子树——「停写却仍落盘」，两侧行为分裂。
 //
@@ -92,7 +92,7 @@ func TestF5AdminIngestMirrorHonorsStopWriteGate(t *testing.T) {
 			RequestBody:  strPtr(`{"messages":[{"role":"user","content":"hi"}]}`),
 			ResponseBody: strPtr(`{"content":"hello"}`),
 		})
-		require.Empty(t, cap.calls, "S4 停写时镜像必须同步停：镜像写的是 request_logs_bodies_hot 的同一批正文")
+		require.Empty(t, cap.calls, "S4 停写时镜像必须同步停：镜像写的是 _request_logs_bodies_hot 的同一批正文")
 	})
 
 	t.Run("gate on 照常投递", func(t *testing.T) {

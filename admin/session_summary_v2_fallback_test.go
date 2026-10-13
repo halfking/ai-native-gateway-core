@@ -81,7 +81,7 @@ func TestSessionSummaryV2RequestLogsFallbackReadsV1WithExclusion(t *testing.T) {
 	for _, forbidden := range []string{
 		"SessionFamilyTurnsForSessionSQL", // 缺陷 7 的形态：读与主腿同源的原生源
 		"<> 'genuine_loss'",               // 方向写反：留下内部调用、丢掉业务轮次
-		"FROM request_logs_hot rl",
+		"FROM _request_logs_hot rl",
 	} {
 		if strings.Contains(sql, forbidden) {
 			t.Fatalf("fallback SQL must not contain %q:\n%s", forbidden, sql)
@@ -108,7 +108,7 @@ func TestSessionSummaryV2FallbackPhase1CarriesNoBodyColumns(t *testing.T) {
 	// d（特征层），那是 734 的既定形状，不是被摘掉的正文腿。正文腿的身份是
 	// bodies 视图、正文列和 rb 别名三者。
 	for _, forbidden := range []string{
-		"request_logs_bodies",
+		"_request_logs_bodies",
 		"request_body",
 		"response_body",
 		"rb.",

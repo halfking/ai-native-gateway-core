@@ -38,7 +38,7 @@ func (m *CredentialMonitorHandlers) loadSlidingWindowEntries(
 	}
 
 	if len(entries) == 0 {
-		source = "request_logs"
+		source = "_request_logs"
 		if m.h == nil || m.h.db == nil {
 			return entries, source, fmt.Errorf("database not configured")
 		}

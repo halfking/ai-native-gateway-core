@@ -11,16 +11,16 @@ import (
 // records the OUTER state source (authoritative / fallback / canary / off)
 // via statesource.RecordRoutingStateSource for the global counter, but
 // that counter is aggregate — it cannot be attributed back to a single
-// request_logs row. This map is the bridge: PlanCandidatesWithContext
+// _request_logs row. This map is the bridge: PlanCandidatesWithContext
 // writes the source here keyed by requestID, and the streaming layer's
 // recordInitialRequestLog reads it (via RoutingSourceForRequest) so the
-// value lands in request_logs metadata (compression_meta JSONB until a
+// value lands in _request_logs metadata (compression_meta JSONB until a
 // dedicated routing_state_source column is migrated).
 //
 // Sizing: bounded to routingSourceMapCap entries with FIFO eviction so a
 // stuck/long-lived requestID cannot grow the map unbounded. The map is
 // best-effort — a missed read (entry evicted or never written) leaves
-// the request_logs row with empty routing metadata, which is the
+// the _request_logs row with empty routing metadata, which is the
 // pre-GAP-3 behaviour, never a request failure.
 const routingSourceMapCap = 20000
 
@@ -78,7 +78,7 @@ func RecordRoutingSourceForRequest(requestID string, source statesource.RoutingS
 // one. No production caller writes this field today, so in practice
 // conversionPath is always empty. Best-effort: a request whose routing
 // source was never recorded (entry absent) still gets a
-// conversion_path entry so the request_logs metadata captures the
+// conversion_path entry so the _request_logs metadata captures the
 // transport decision even on the off/no-v2 path.
 func RecordConversionPathForRequest(requestID, path string) {
 	if requestID == "" || path == "" {
@@ -102,7 +102,7 @@ func RecordConversionPathForRequest(requestID, path string) {
 // RoutingSourceForRequest returns the recorded routing_state_source and
 // conversion_path for a request. Empty values mean the entry was never
 // recorded or was evicted (best-effort contract). Read by the streaming
-// layer's recordInitialRequestLog so request_logs metadata carries the
+// layer's recordInitialRequestLog so _request_logs metadata carries the
 // routing decision.
 func RoutingSourceForRequest(requestID string) (source statesource.RoutingStateSource, conversionPath string) {
 	if requestID == "" {

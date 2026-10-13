@@ -126,12 +126,12 @@ section "1. 分区附加策略"
 info "验证当月分区（2026_07）是否正确 DETACHED..."
 
 PARTITIONED_TABLES=(
-  "request_logs"
+  "_request_logs"
   "request_wal"
   "usage_ledger"
   "routing_decision_log"
   "credential_model_index"
-  "request_logs_bodies"
+  "_request_logs_bodies"
   "credit_ledger"
   "tool_usage_stats"
 )

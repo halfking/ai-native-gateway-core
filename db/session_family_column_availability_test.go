@@ -17,7 +17,7 @@ import (
 // Retirement feasibility instrument (audit §9.161).
 //
 // The 118-column canonical contract is the whole surface that has to survive
-// `request_logs` being dropped. Every column already has a registered
+// `_request_logs` being dropped. Every column already has a registered
 // session-side expression (projectionExprByColumn) or a details-layer source
 // (detailsProjectionColumns), so "can the session family serve this column
 // after retirement?" is answerable **by measurement** rather than by reading
@@ -70,7 +70,7 @@ func isLiteralNullPlaceholder(expr string) bool {
 //     a real source was lost and nobody noticed) AND when one quietly gains a
 //     source (good news, but it must be recorded deliberately).
 var knownStructuralGaps = map[string]string{
-	"id":       "v1 request_logs.id is the request row id; session_turns.id is the turn id (r.id = t.id matched 0 times in 1,515,984 measured pairs)",
+	"id":       "v1 _request_logs.id is the request row id; session_turns.id is the turn id (r.id = t.id matched 0 times in 1,515,984 measured pairs)",
 	"test_col": "never written on either side",
 	// test_tab_indent and provider_model are spelled out rather than grouped,
 	// because a map whose values are identical strings hides the reason column
@@ -186,11 +186,11 @@ func TestSessionFamilyColumnAvailability_FillRates(t *testing.T) {
 	// fixture would only prove the expressions parse. Both families are
 	// populated here, which is the whole point.
 	var v1Rows int64
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM public.request_logs`).Scan(&v1Rows); err != nil {
-		t.Skipf("request_logs not readable (%v) — v1 already retired on this database", err)
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM public._request_logs`).Scan(&v1Rows); err != nil {
+		t.Skipf("_request_logs not readable (%v) — v1 already retired on this database", err)
 	}
 	if v1Rows == 0 {
-		t.Skip("request_logs is empty — nothing to compare against")
+		t.Skip("_request_logs is empty — nothing to compare against")
 	}
 
 	// ---- session side -------------------------------------------------------
@@ -259,7 +259,7 @@ func TestSessionFamilyColumnAvailability_FillRates(t *testing.T) {
 	// ---- v1 side ------------------------------------------------------------
 	//
 	// Only the columns the base table actually has. The 738/740 columns were
-	// appended to the wrapper chain, not to request_logs, so including them
+	// appended to the wrapper chain, not to _request_logs, so including them
 	// would fail the whole statement and lose the rest of the measurement.
 	v1Names := existingV1Columns(ctx, pool, canonicalColumnOrderV2)
 	v1NonNull := map[string]int64{}
@@ -268,7 +268,7 @@ func TestSessionFamilyColumnAvailability_FillRates(t *testing.T) {
 		for _, n := range v1Names {
 			parts = append(parts, "count("+quoteIdentLocal(n)+")")
 		}
-		v1rows, err := pool.Query(ctx, `SELECT `+strings.Join(parts, ", ")+` FROM public.request_logs`)
+		v1rows, err := pool.Query(ctx, `SELECT `+strings.Join(parts, ", ")+` FROM public._request_logs`)
 		if err != nil {
 			t.Fatalf("v1 aggregate: %v", err)
 		}
@@ -296,7 +296,7 @@ func TestSessionFamilyColumnAvailability_FillRates(t *testing.T) {
 	// measured is the per-column rate map the SSOT check compares against.
 	measured := map[string]ColumnFill{}
 	var goEmpty, muchEmptier, structural []string
-	t.Logf("session faces: %d rows total; v1 request_logs: %d rows; %d canonical columns",
+	t.Logf("session faces: %d rows total; v1 _request_logs: %d rows; %d canonical columns",
 		sessTotal, v1Rows, len(canonicalColumnOrderV2))
 	t.Logf("%-28s %11s %11s  %s", "column", "session%", "v1%", "note")
 	for i, name := range canonicalColumnOrderV2 {
@@ -723,7 +723,7 @@ func existingV1Columns(ctx context.Context, pool *pgxpool.Pool, names []string) 
 		var exists bool
 		err := pool.QueryRow(ctx,
 			`SELECT EXISTS (SELECT 1 FROM information_schema.columns
-			                WHERE table_schema='public' AND table_name='request_logs' AND column_name=$1)`,
+			                WHERE table_schema='public' AND table_name='_request_logs' AND column_name=$1)`,
 			n).Scan(&exists)
 		if err != nil || !exists {
 			continue

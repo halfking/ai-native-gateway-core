@@ -576,7 +576,7 @@ func TestManager_TieredReprobeUsesBackoff(t *testing.T) {
 //  4. An explicit cap is respected when configured.
 //  5. parentReqID / tenantID are propagated as-is so the probe
 
-// row in request_logs carries the right correlation ids.
+// row in _request_logs carries the right correlation ids.
 func TestManager_OnNoCandidates_FansOutActiveProbe(t *testing.T) {
 	m := NewManager(nil, nil)
 	m.Start(context.Background())

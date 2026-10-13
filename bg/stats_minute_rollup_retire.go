@@ -9,7 +9,7 @@ import (
 // retireClosedMainMinuteSQL 删除扫描窗里已经结束的分钟中，视图不再产出的键。
 //
 // 上界是 date_trunc(until) 的开区间。当前这一分钟仍由 minute_flush 按
-// request_logs.canonical_id 累加；视图在已有 session_turns 时用 turn 的
+// _request_logs.canonical_id 累加；视图在已有 session_turns 时用 turn 的
 // canonical（经常仍是 NULL）和另一套 ts。删掉当前分钟会把尚未被 turn
 // 覆盖的累加行清掉。
 //

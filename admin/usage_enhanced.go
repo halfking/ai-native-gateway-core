@@ -69,19 +69,19 @@ type costTrendPlan struct {
 
 // planCostTrend 返回某个 group_by 的取数方案；维度未知时 ok=false。
 //
-// work_type / intent 是「请求侧」维度：原生归属是 request_logs。usage_ledger
+// work_type / intent 是「请求侧」维度：原生归属是 _request_logs。usage_ledger
 // 是计费宽表，只有 20 列（2026-10-03 实测 information_schema），从未投影
 // work_type / gw_session_id —— 在它上面引用必然 42703。
 //
 // 两个都不可接受的旧修法：
 //
-//	A. 从 ledger LEFT JOIN request_logs 补列 —— 2M×2M 嵌套循环，30 天窗口
+//	A. 从 ledger LEFT JOIN _request_logs 补列 —— 2M×2M 嵌套循环，30 天窗口
 //	   实测 28s，超过本端点 15s 预算，且随窗口线性劣化；
 //	B. 继续报错让 IsSchemaBehindError 降级 —— 得到 200 + 全 0，而 intent 是
 //	   UsageCost.vue 下拉框里的可选项，用户一点就中招。
 //
 // 采用：这两个维度以 request_logs_with_current_month 双腿视图为基表（39 轮
-// 2026-10-03 改，原为裸 request_logs）。裸母表读不到 hot 腿里尚未 promote 的
+// 2026-10-03 改，原为裸 _request_logs）。裸母表读不到 hot 腿里尚未 promote 的
 // 最近 ≤8h 行——与 memora_context（206 号）/probe_history（204 号）同族的
 // 「近期流量盲区」。换视图后两条腿都吃同一条 ts 谓词，月分区剪枝不变
 // （204 号已验证同形换法）；视图列含 work_type / gw_session_id（两腿均有）。
@@ -104,7 +104,7 @@ func planCostTrend(groupBy string) (costTrendPlan, bool) {
 		joinClause  string
 	}{
 		// 只有 intent 需要连 session_summaries 取 user_intent；work_type 是
-		// request_logs 自己的列，连一次 34 万行的表纯属白花 1.7s。
+		// _request_logs 自己的列，连一次 34 万行的表纯属白花 1.7s。
 		"work_type": {"rl.work_type", ""},
 		"intent":    {"ss.user_intent", " LEFT JOIN session_summaries ss ON ss.session_key = rl.gw_session_id"},
 	}
@@ -298,11 +298,11 @@ type PeriodStats struct {
 	UniqueModels  int     `json:"unique_models"`    // 使用的模型数
 	// UniqueSessions 曾在这里。它已于 2026-10-03 移除，理由三条，缺一不可：
 	//
-	//  1. usage_ledger 没有 gw_session_id（会话维度是 request_logs 的属性，
+	//  1. usage_ledger 没有 gw_session_id（会话维度是 _request_logs 的属性，
 	//     从未投影进这张计费宽表）。原实现 COUNT(DISTINCT ul.gw_session_id)
 	//     必然 42703，被 IsSchemaBehindError 吞掉 —— 于是 period-compare 整个
 	//     查询失败却返回 200 + 全 0，把「本月花了 1139 美元」显示成「本月没花钱」。
-	//  2. 换源修复它也救不回来：COUNT(DISTINCT gw_session_id) 在 request_logs
+	//  2. 换源修复它也救不回来：COUNT(DISTINCT gw_session_id) 在 _request_logs
 	//     上实测 30 天窗口 72s，经 ledger join 174s。交互式页面给不出这个预算。
 	//  3. 它没有任何消费方（web/src 全库无渲染点；dashboard.ts 的同名字段是
 	//     另一个结构）。
@@ -496,7 +496,7 @@ func (h *Handler) queryPeriodStats(ctx context.Context, tenantID string, start, 
 	`, whereClause)
 
 	// 只 SELECT 四个真实可算的指标。usage_ledger 是计费宽表，不含任何会话维度
-	// 列（gw_session_id 只在 request_logs 上）；在这里引用它会让整条查询 42703，
+	// 列（gw_session_id 只在 _request_logs 上）；在这里引用它会让整条查询 42703，
 	// 而 IsSchemaBehindError 会把失败降级成 200 + 全 0 —— 那不是降级，那是撒谎。
 	// usage_ledger_sourceless_columns_test.go 把这条约束钉成回归门。
 	err := h.db.QueryRow(ctx, query, args...).Scan(
@@ -640,7 +640,7 @@ func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 主聚合只碰 usage_ledger 真实拥有的四列。
-	// 压缩请求数不在这里算：compression_strategy 只存在于 request_logs，
+	// 压缩请求数不在这里算：compression_strategy 只存在于 _request_logs，
 	// 在这里 FILTER 它必然 42703 → 整条查询失败 → IsSchemaBehindError 降级成
 	// 200 + 全 0，而 UsageCost.vue 的缓存经济卡片 6 个指标全渲染 0。
 	// 拿不到就降级整页，比拿错数字更糟：用户看到的是「本月没花钱」。
@@ -654,11 +654,11 @@ func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 		%s
 	`, whereClause)
 
-	// compression_strategy 的原生归属是 request_logs。走 request_logs 而不是
-	// join 回 ledger：ledger→request_logs 是 2M×2M 嵌套循环，30 天窗口实测 28s，
+	// compression_strategy 的原生归属是 _request_logs。走 _request_logs 而不是
+	// join 回 ledger：ledger→_request_logs 是 2M×2M 嵌套循环，30 天窗口实测 28s，
 	// 而按 ts 过滤的单表读同窗口实测 1.7s（2026-10-03 实测）。两表 cost 口径经
 	// 核对一致（同窗口均 150.15 美元），因此这里只是换张表，不引入新的计费口径。
-	// 读的是 hot∪母表双腿视图而非裸母表：最近 8h 的行只在 request_logs_hot
+	// 读的是 hot∪母表双腿视图而非裸母表：最近 8h 的行只在 _request_logs_hot
 	//（hot 默认仅保留 8h），裸母表读对当月面板是真实盲区（sqlreadguard 读面
 	// 纪律）；视图两腿都吃 ts 谓词下推，剪枝收益不丢。
 	compressedQuery := `

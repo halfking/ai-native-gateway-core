@@ -30,7 +30,7 @@ func newStatusBackfillMock(t *testing.T) pgxmock.PgxPoolIface {
 // probe + ROLLBACK (the probe never writes).
 func expectStatusProbe(mock pgxmock.PgxPoolIface, hasSource, hasTarget bool) {
 	mock.ExpectBegin()
-	mock.ExpectQuery("to_regclass\\('public.request_logs'\\)").
+	mock.ExpectQuery("to_regclass\\('public._request_logs'\\)").
 		WillReturnRows(pgxmock.NewRows([]string{"has_source", "has_target"}).
 			AddRow(hasSource, hasTarget))
 	mock.ExpectRollback()
@@ -51,7 +51,7 @@ func expectStatusTxPrefix(mock pgxmock.PgxPoolIface, cursor int64, batchSize int
 }
 
 // statusCandidateRows returns one representative candidate: an id/partition_date
-// pair plus the request_id whose request_logs twin carries the label.
+// pair plus the request_id whose _request_logs twin carries the label.
 func statusCandidateRows() *pgxmock.Rows {
 	rows := pgxmock.NewRows([]string{"id", "partition_date", "tenant_id", "request_id"})
 	rows.AddRow(int64(42), statusFixedDate(), "tenant_a", "req_42")
@@ -71,7 +71,7 @@ func statusCounterDelta(t *testing.T, result string, fn func()) float64 {
 
 // TestSessionRequestStatusBackfill_FillsBatch pins the happy path: the batched
 // UPDATE must carry the guarded `request_status IS NULL` predicate, join
-// request_logs on request_id ONLY, and address the row by id + partition_date
+// _request_logs on request_id ONLY, and address the row by id + partition_date
 // so the partitioned parent prunes.
 func TestSessionRequestStatusBackfill_FillsBatch(t *testing.T) {
 	mock := newStatusBackfillMock(t)
@@ -116,7 +116,7 @@ func TestSessionRequestStatusBackfill_UpdateSQLContract(t *testing.T) {
 				"FROM (VALUES",
 				"AS v(id, partition_date, request_id)",
 				// join must be request_id ONLY — no ts, no tenant, no created_at
-				"JOIN public.request_logs l ON l.request_id = v.request_id",
+				"JOIN public._request_logs l ON l.request_id = v.request_id",
 				// idempotence guard
 				"AND t.request_status IS NULL",
 				// partition pruning via pkey (id, partition_date)
@@ -325,7 +325,7 @@ func TestSessionRequestStatusBackfill_DrainResetsCursorPerDrain(t *testing.T) {
 // ── Retirement (hard requirement #2) ────────────────────────────────────────
 
 // TestSessionRequestStatusBackfill_SourceProbeDetectsRetirement verifies the
-// probe itself distinguishes "request_logs still there" from "retired" without
+// probe itself distinguishes "_request_logs still there" from "retired" without
 // raising — to_regclass yields NULL, it does not error.
 func TestSessionRequestStatusBackfill_SourceProbeDetectsRetirement(t *testing.T) {
 	for _, tc := range []struct {
@@ -355,14 +355,14 @@ func TestSessionRequestStatusBackfill_SourceProbeDetectsRetirement(t *testing.T)
 }
 
 // TestSessionRequestStatusBackfill_RetiredStopsWithoutErrorNoise is the core
-// retirement guarantee: once request_logs is gone the job increments `retired`
+// retirement guarantee: once _request_logs is gone the job increments `retired`
 // exactly once and RETURNS — no drain attempt, no per-tick ERROR spam.
 func TestSessionRequestStatusBackfill_RetiredStopsWithoutErrorNoise(t *testing.T) {
 	mock := newStatusBackfillMock(t)
 	// The startup gauge sample fires BEFORE the first probe, so it sees the
 	// retired world too: its count fails (relation gone) and the gauge takes
 	// the -1 sentinel — honest "unmeasurable", never 0.
-	expectStatusRemainingErr(mock, errors.New(`relation "public.request_logs" does not exist`))
+	expectStatusRemainingErr(mock, errors.New(`relation "public._request_logs" does not exist`))
 	expectStatusProbe(mock, false, true) // retired
 	// NOTE: no batch ExpectBegin/SELECT/UPDATE programmed. pgxmock fails the
 	// test on any UNEXPECTED call, so if the job tried to drain, this goes red.
@@ -384,7 +384,7 @@ func TestSessionRequestStatusBackfill_RetiredStopsWithoutErrorNoise(t *testing.T
 }
 
 // TestSessionRequestStatusBackfill_SelectFailureAfterRetirementIsTerminal
-// covers the race where request_logs is dropped between the probe and the
+// covers the race where _request_logs is dropped between the probe and the
 // candidate SELECT: the job must classify it as retirement (retired counter),
 // never as a retryable error.
 func TestSessionRequestStatusBackfill_SelectFailureAfterRetirementIsTerminal(t *testing.T) {
@@ -396,7 +396,7 @@ func TestSessionRequestStatusBackfill_SelectFailureAfterRetirementIsTerminal(t *
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectQuery("WHERE t\\.id > \\$1").
 		WithArgs(int64(0), 100).
-		WillReturnError(assertAnError(`relation "public.request_logs" does not exist`))
+		WillReturnError(assertAnError(`relation "public._request_logs" does not exist`))
 	// The re-probe runs INSIDE processBatch, i.e. before this tx's deferred
 	// Rollback. pgxmock matches expectations in order, so the probe must be
 	// programmed before the batch rollback.
@@ -496,12 +496,12 @@ func TestSessionRequestStatusBackfill_DefaultConstants(t *testing.T) {
 }
 
 // TestSessionRequestStatusBackfill_CandidateSQLJoinIsRequestIDOnly pins the
-// measured facts the join relies on: request_logs.request_id is unique, so no
+// measured facts the join relies on: _request_logs.request_id is unique, so no
 // extra predicate may be added "for safety" — it would only drop matchable rows.
 func TestSessionRequestStatusBackfill_CandidateSQLJoinIsRequestIDOnly(t *testing.T) {
 	sql := sessionRequestStatusCandidateSQL
 	for _, want := range []string{
-		"JOIN public.request_logs l ON l.request_id = t.request_id",
+		"JOIN public._request_logs l ON l.request_id = t.request_id",
 		"t.request_status IS NULL",
 		"l.request_status IS NOT NULL",
 		"ORDER BY t.id",
@@ -524,8 +524,8 @@ func TestSessionRequestStatusBackfill_SourceProbeSQLUsesToRegclass(t *testing.T)
 	if strings.Contains(sessionRequestStatusSourceProbeSQL, "::regclass") {
 		t.Error("probe SQL must use to_regclass (NULL on absent table), not ::regclass (raises)")
 	}
-	if !strings.Contains(sessionRequestStatusSourceProbeSQL, "to_regclass('public.request_logs')") {
-		t.Error("probe SQL must probe request_logs by to_regclass")
+	if !strings.Contains(sessionRequestStatusSourceProbeSQL, "to_regclass('public._request_logs')") {
+		t.Error("probe SQL must probe _request_logs by to_regclass")
 	}
 }
 
@@ -571,7 +571,7 @@ func statusBackfillFixtureDB(t *testing.T, adminDSN string) (*pgxpool.Pool, stri
 }
 
 // TestSessionRequestStatusBackfill_RealDB is the real-library gate: it builds a
-// miniature request_logs + RANGE-partitioned session_turns in a throwaway
+// miniature _request_logs + RANGE-partitioned session_turns in a throwaway
 // database, runs the job's batches, and asserts
 //
 //	(a) only joinable NULL rows were updated,
@@ -634,7 +634,7 @@ func TestSessionRequestStatusBackfill_RealDB(t *testing.T) {
 	defer pool.Close() // runs BEFORE the admin-drop defer (LIFO) ⇒ pools closed first
 
 	if _, err := pool.Exec(ctx, `
-CREATE TABLE public.request_logs (
+CREATE TABLE public._request_logs (
 	request_id      TEXT PRIMARY KEY,
 	request_status  TEXT
 );
@@ -651,7 +651,7 @@ CREATE TABLE public.session_turns_2026_10
 	PARTITION OF public.session_turns FOR VALUES FROM ('2026-10-01') TO ('2026-11-01');
 CREATE TABLE public.session_turns_default PARTITION OF public.session_turns DEFAULT;
 CREATE UNIQUE INDEX ON public.session_turns (id, partition_date);
-INSERT INTO public.request_logs (request_id, request_status) VALUES
+INSERT INTO public._request_logs (request_id, request_status) VALUES
 	('req_1','success'), ('req_2','rate_limited'), ('req_3','failure'),
 	('req_4','in_progress'), ('req_6',NULL), ('req_8','success');
 INSERT INTO public.session_turns (id, partition_date, tenant_id, request_id, request_status) VALUES
@@ -713,17 +713,17 @@ INSERT INTO public.session_turns (id, partition_date, tenant_id, request_id, req
 	assertStatus(5, nil, "rerun must not invent a label")
 	assertStatus(7, "success", "rerun must not overwrite an existing label")
 
-	// Retirement on a live database: drop request_logs and prove the job stops
+	// Retirement on a live database: drop _request_logs and prove the job stops
 	// quietly (retired, no error) instead of spinning on a missing relation.
-	if _, err := pool.Exec(ctx, "DROP TABLE public.request_logs"); err != nil {
-		t.Fatalf("drop fixture request_logs: %v", err)
+	if _, err := pool.Exec(ctx, "DROP TABLE public._request_logs"); err != nil {
+		t.Fatalf("drop fixture _request_logs: %v", err)
 	}
 	available, err := b.sourceAvailable(ctx)
 	if err != nil {
 		t.Fatalf("sourceAvailable after retirement: %v", err)
 	}
 	if available {
-		t.Error("sourceAvailable = true after request_logs was dropped, want false")
+		t.Error("sourceAvailable = true after _request_logs was dropped, want false")
 	}
 	retiredDelta := statusCounterDelta(t, "retired", func() {})
 	if _, err := b.drain(ctx); err != nil && err != errRequestStatusSourceRetired {
@@ -745,7 +745,7 @@ INSERT INTO public.session_turns (id, partition_date, tenant_id, request_id, req
 
 // ── D9 clause 4: the remaining-rows gauge ────────────────────────────────────
 //
-// The release precondition for retiring request_logs is "the backfill is
+// The release precondition for retiring _request_logs is "the backfill is
 // done" (decision sheet D9 clause 4, audit §9.156/§9.158.9). A counter of how
 // many rows THIS process filled cannot answer that — restarts and multiple
 // replicas break the arithmetic, and nothing distinguishes "0 filled because
@@ -805,7 +805,7 @@ func expectStatusRemaining(mock pgxmock.PgxPoolIface, n int64) {
 	mock.ExpectExec("SELECT set_config\\('statement_timeout', \\$1, true\\)").
 		WithArgs(remainingTimeoutArg()).
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
-	mock.ExpectQuery("JOIN public\\.request_logs l ON l\\.request_id").
+	mock.ExpectQuery("JOIN public\\._request_logs l ON l\\.request_id").
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(n))
 	mock.ExpectRollback()
 }
@@ -820,7 +820,7 @@ func expectStatusRemainingErr(mock pgxmock.PgxPoolIface, err error) {
 	mock.ExpectExec("SELECT set_config\\('statement_timeout', \\$1, true\\)").
 		WithArgs(remainingTimeoutArg()).
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
-	mock.ExpectQuery("JOIN public\\.request_logs l ON l\\.request_id").
+	mock.ExpectQuery("JOIN public\\._request_logs l ON l\\.request_id").
 		WillReturnError(err)
 	mock.ExpectRollback()
 }
@@ -950,7 +950,7 @@ func TestSessionRequestStatusBackfill_RemainingSQLContract(t *testing.T) {
 	q := sessionRequestStatusRemainingSQL
 	for _, want := range []string{
 		"FROM public.session_turns t",
-		"JOIN public.request_logs l ON l.request_id = t.request_id",
+		"JOIN public._request_logs l ON l.request_id = t.request_id",
 		"t.request_status IS NULL",
 		"l.request_status IS NOT NULL",
 	} {
@@ -993,7 +993,7 @@ func TestSessionRequestStatusBackfill_RemainingSQLCoversBothSurfaces(t *testing.
 	if n := strings.Count(q, "l.request_status IS NOT NULL"); n != 2 {
 		t.Errorf("remaining SQL: expected the v1-side NOT NULL guard on both surfaces, found %d", n)
 	}
-	if n := strings.Count(q, "JOIN public.request_logs l ON l.request_id = t.request_id"); n != 2 {
+	if n := strings.Count(q, "JOIN public._request_logs l ON l.request_id = t.request_id"); n != 2 {
 		t.Errorf("remaining SQL: expected the request_id join on both surfaces, found %d", n)
 	}
 	// The two halves are summed, not UNION-ed. A UNION ALL would emit two rows

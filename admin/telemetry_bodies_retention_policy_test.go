@@ -18,7 +18,7 @@ import (
 //
 // 「成功行也落全量正文」这一行为**已由** telemetry_ingest_stop_write_gate_test.go
 // 的 TestTelemetryIngestRequestLogStopWriteGate 钉住（Success:true + 门开 →
-// 期望 request_logs_bodies_hot 的三段写入）。此处**不重复**该行为门，只补
+// 期望 _request_logs_bodies_hot 的三段写入）。此处**不重复**该行为门，只补
 // 它覆盖不到的一面：死代码本身不得复现。
 //
 // 为什么不钉「函数不存在」而钉 env 旋钮：死代码的危害不在于多一个函数，

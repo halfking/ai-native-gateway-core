@@ -12,7 +12,7 @@ package bg
 // 本判据钉的是兑现的**那一半**：VerifyOnce 每做一次核实尝试，就在
 // system_probe_runs 留一行。没有它，「多模态核实有没有在跑」这个问题在运维侧
 // 只能翻日志，而日志活不过一次重启 —— 语义探针经 internal/upstreamurl 直连
-// 上游，不产生 request_logs，进程内 m.attempts 也随重启清零。
+// 上游，不产生 _request_logs，进程内 m.attempts 也随重启清零。
 //
 // # 为什么观测的是 system_probe_runs 而不是返回值
 //

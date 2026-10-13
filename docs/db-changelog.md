@@ -8744,3 +8744,9 @@ git show origin/main:scripts/deploy-lib/db-changelog.sh
 | 858 | `858_request_logs_final_success_gsid_idx.sql` | `1c0b788418a3f20c3dfa947c13ecc583df8a248baaf2a5b5e06b54d2f6a09936` | applied+verified |
 | 859 | `859_tighten_pii_phone_intl_regex.sql` | `0a808ff313cdc193fcde91b3b0a9cd5e5262c3ad9d8404ae05e1e15d57b64bc3` | applied+verified |
 
+
+## 2026-10-14T04:20:00Z — local (S4 retirement rename wave)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 860 | `860_rename_request_logs_family_pending_delete.sql` | `91383c46282490bc53a6aba925857b38b8a00c65c040ad9c46cfa35887430c68` | pending-first-apply (local deploy next) |

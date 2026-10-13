@@ -246,7 +246,7 @@ func TestCatalogModelIQ_ByProbeKind(t *testing.T) {
 }
 
 // TestGatewayModelInvoker_SetsOriginHeaders 验证经网关的 IQ 测试请求带了
-// X-LLM-Origin-Stage=self_check 和 X-LLM-Origin-Actor 头，这样网关侧 request_logs
+// X-LLM-Origin-Stage=self_check 和 X-LLM-Origin-Actor 头，这样网关侧 _request_logs
 // 才能把 IQ 测试请求归到自检（而非 business）。
 func TestGatewayModelInvoker_SetsOriginHeaders(t *testing.T) {
 	var gotStage, gotActor string

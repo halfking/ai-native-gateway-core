@@ -47,7 +47,7 @@ type DecisionHints struct {
 	// FilterNotes, when non-nil, collects the human-readable reasons for
 	// candidates excluded by hard gates (RT-1 MinStandardIQ today). The
 	// decider copies them into Decision.FilterReasons so they surface in
-	// request_logs.auto_decision for audit. nil ⇒ notes are discarded.
+	// _request_logs.auto_decision for audit. nil ⇒ notes are discarded.
 	FilterNotes *[]string
 }
 
@@ -396,7 +396,7 @@ func loadCorrectionScores(ctx context.Context, pool *pgxpool.Pool, sessionID str
 			COALESCE(NULLIF(model_chosen, ''), NULLIF(client_model, ''), '') AS last_model,
 			success,
 			COALESCE(latency_ms, 0) AS last_latency_ms
-		FROM request_logs
+		FROM _request_logs
 		WHERE gw_session_id = $1
 		  AND is_auto_request = TRUE
 		ORDER BY ts DESC
@@ -519,7 +519,7 @@ func availabilityKey(credentialID int64, canonicalName string) string {
 }
 
 // getHotTop3Canonicals queries the top 3 canonical models by successful
-// 48-hour request volume. Uses a 2-minute TTL cache to reduce request_logs scans.
+// 48-hour request volume. Uses a 2-minute TTL cache to reduce _request_logs scans.
 func (idx *Index) getHotTop3Canonicals(ctx context.Context) []int {
 	// Check cache first
 	idx.hotCanonicalMu.RLock()
@@ -543,7 +543,7 @@ func (idx *Index) getHotTop3Canonicals(ctx context.Context) []int {
 
 	rows, err := pool.Query(ctx, `
 		SELECT canonical_id, count(*) as usage_count
-		FROM request_logs
+		FROM _request_logs
 		WHERE ts > NOW() - INTERVAL '48 hours'
 		  AND success = TRUE
 		  AND canonical_id IS NOT NULL

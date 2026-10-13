@@ -395,7 +395,7 @@ func (e *Exporter) ExportSession(ctx context.Context, sessionID, tenantID string
 	return pack, nil
 }
 
-// ErrSessionNotFound 表示 request_logs 中无此 session 的轮次。
+// ErrSessionNotFound 表示 _request_logs 中无此 session 的轮次。
 var ErrSessionNotFound = errors.New("sessionforensics: session not found")
 
 // ListRecentSessions 拉取最近活跃的 session_id 列表（运维平台列表展示用）。
@@ -423,7 +423,7 @@ func (e *Exporter) ListRecentSessions(ctx context.Context, tenantID string, limi
 			MIN(ts::text) AS earliest_at,
 			MAX(ts::text) AS latest_at,
 			array_agg(DISTINCT client_model) FILTER (WHERE client_model IS NOT NULL) AS models
-		-- 2026-10-13 S3 波 2（停写切换）：原读 request_logs 母表（无 hot 腿——
+		-- 2026-10-13 S3 波 2（停写切换）：原读 _request_logs 母表（无 hot 腿——
 		-- 近 7 天行今天就漏），停写后新会话完全不出现在审计列表。改读
 		-- canonical 视图：全部列在 118 契约内，会话臂服务新流量、v1 臂服务
 		-- 历史，反连接去重保证轮数不双计。
@@ -497,7 +497,7 @@ func (e *Exporter) ListRecentSessions(ctx context.Context, tenantID string, limi
 // 这里只写 session_summaries，不动 session_titles（后者由 admin 异步触发）。
 //
 // 不修改聚合字段（first_request_at / last_request_at / total_cost_usd 等），
-// 这些字段由 request_logs 触发器自动维护；只覆盖用户语义相关的 title/summary
+// 这些字段由 _request_logs 触发器自动维护；只覆盖用户语义相关的 title/summary
 // / key_topics/user_intent。
 func (e *Exporter) UpsertSummary(ctx context.Context, sessionID, tenantID string, result SummaryResult) error {
 	if e == nil || e.store == nil {

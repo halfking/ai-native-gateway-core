@@ -19,7 +19,7 @@ const (
 	TierSanitized                  // 3: 脱敏后（after security/sanitize smart_sani_guard）
 )
 
-// Name 把 Tier 映射为可读字符串，与 request_logs.compression_strategy 标签对齐。
+// Name 把 Tier 映射为可读字符串，与 _request_logs.compression_strategy 标签对齐。
 func (t Tier) Name() string {
 	switch t {
 	case TierRaw:

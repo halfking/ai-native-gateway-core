@@ -78,7 +78,7 @@ DISK_CRIT_PCT=${DISK_CRIT_PCT:-75}
 DISK_AVAIL_GB_WARN=${DISK_AVAIL_GB_WARN:-30}
 DB_WARN_GB=${DB_WARN_GB:-20}
 DB_CRIT_GB=${DB_CRIT_GB:-28}
-HOT_REQUEST_LOGS_MB=${HOT_REQUEST_LOGS_MB:-2048}     # request_logs_hot 2 GB 警告（JSONB TOAST 单表风险高）
+HOT_REQUEST_LOGS_MB=${HOT_REQUEST_LOGS_MB:-2048}     # _request_logs_hot 2 GB 警告（JSONB TOAST 单表风险高）
 HOT_REQUEST_LOGS_CRIT_MB=${HOT_REQUEST_LOGS_CRIT_MB:-3072}
 HOT_MODEL_PROBE_MB=${HOT_MODEL_PROBE_MB:-500}        # 14 天 TTL 满约 1 GB
 COLUMNAR_CHUNK_GB=${COLUMNAR_CHUNK_GB:-15}
@@ -188,7 +188,7 @@ db_size_bytes=$(de psql -U "$PG_USER" -d "$PG_DB" -tAc "SELECT pg_database_size(
 db_size_gb=$(awk -v b="$db_size_bytes" 'BEGIN {printf "%.2f", b/1024/1024/1024}')
 db_all_gb=$(de psql -U "$PG_USER" -d postgres -tAc "SELECT round(sum(pg_database_size(datname))/1024.0/1024.0/1024.0, 2) FROM pg_database WHERE datistemplate=false" || echo 0)
 
-req_logs_hot_size=$(de psql -U "$PG_USER" -d "$PG_DB" -tAc "SELECT pg_total_relation_size('public.request_logs_hot')/1024/1024")
+req_logs_hot_size=$(de psql -U "$PG_USER" -d "$PG_DB" -tAc "SELECT pg_total_relation_size('public._request_logs_hot')/1024/1024")
 mp_hot_size=$(de psql -U "$PG_USER" -d "$PG_DB" -tAc "SELECT pg_total_relation_size('public.model_probe_runs_hot')/1024/1024")
 handoff_size=$(de psql -U "$PG_USER" -d "$PG_DB" -tAc "SELECT pg_total_relation_size('public.handoff_logs')/1024/1024")
 columnar_chunk_bytes=$(de psql -U "$PG_USER" -d "$PG_DB" -tAc "SELECT pg_total_relation_size('columnar_internal.chunk')")
@@ -219,7 +219,7 @@ awk_gt()  { awk -v a="$1" -v b="$2" 'BEGIN {print (a+0>b+0)?1:0}'; }
 [ "$(awk_gte "$db_size_gb" "$DB_CRIT_GB")" = "1" ] && \
   alerts+=("🔴llm_gateway DB critical: ${db_size_gb}GB, 阈值 ${DB_CRIT_GB}GB")
 [ "$(awk_gte "$req_logs_hot_size" "$HOT_REQUEST_LOGS_CRIT_MB")" = "1" ] && \
-  alerts+=("🔴request_logs_hot critical: ${req_logs_hot_size}MB, 阈值 ${HOT_REQUEST_LOGS_CRIT_MB}MB")
+  alerts+=("🔴_request_logs_hot critical: ${req_logs_hot_size}MB, 阈值 ${HOT_REQUEST_LOGS_CRIT_MB}MB")
 
 # warning
 [ "$used_pct" -ge "$DISK_WARN_PCT" ] && [ "$used_pct" -lt "$DISK_CRIT_PCT" ] && \
@@ -231,7 +231,7 @@ avail_floor=$(awk_floor "$avail_gb")
 [ "$avail_floor" -le "$DISK_AVAIL_GB_WARN" ] && \
   alerts+=("🟡磁盘可用空间 warning: ${avail_gb}GB ≤ ${DISK_AVAIL_GB_WARN}GB")
 [ "$(awk_gte "$req_logs_hot_size" "$HOT_REQUEST_LOGS_MB")" = "1" ] && [ "$(awk_gt "$HOT_REQUEST_LOGS_CRIT_MB" "$req_logs_hot_size")" = "1" ] && \
-  alerts+=("🟡request_logs_hot warning: ${req_logs_hot_size}MB, 阈值 ${HOT_REQUEST_LOGS_MB}MB")
+  alerts+=("🟡_request_logs_hot warning: ${req_logs_hot_size}MB, 阈值 ${HOT_REQUEST_LOGS_MB}MB")
 [ "$(awk_gte "$mp_hot_size" "$HOT_MODEL_PROBE_MB")" = "1" ] && \
   alerts+=("🟡model_probe_runs_hot warning: ${mp_hot_size}MB, 阈值 ${HOT_MODEL_PROBE_MB}MB (TTL 14天,如异常涨需排查)")
 [ "$(awk_gte "$columnar_chunk_gb" "$COLUMNAR_CHUNK_GB")" = "1" ] && \
@@ -294,7 +294,7 @@ if [ "$level" != "ok" ]; then
   msg+=$'\n'""
   msg+=$'\n'"disk=${used_pct}% avail=${avail_gb}GB"
   msg+=$'\n'"llm_gateway=${db_size_gb}GB total=${db_all_gb}GB"
-  msg+=$'\n'"request_logs_hot=${req_logs_hot_size}MB model_probe_runs_hot=${mp_hot_size}MB"
+  msg+=$'\n'"_request_logs_hot=${req_logs_hot_size}MB model_probe_runs_hot=${mp_hot_size}MB"
   msg+=$'\n'"columnar_chunk=${columnar_chunk_gb}GB wal=${pg_wal_gb}GB"
   msg+=$'\n'""
   msg+=$'\n'"📊 top5 tables: $top_tables"

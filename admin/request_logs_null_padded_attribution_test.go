@@ -105,7 +105,7 @@ func TestNullPaddedAttributionPinsKnownCases(t *testing.T) {
 		{
 			file: "bg/candidate_failure_monitor.go", inFam: false,
 			// 防整文件口径。它的 `WHERE id = $2`(:397) 落在
-			// candidate_failure_logs 腿上，是另一张表；两个 request_logs 读点
+			// candidate_failure_logs 腿上，是另一张表；两个 _request_logs 读点
 			// （:206 staleness、:333 auto-cool）所在的函数里没有任何补位列。
 			because: "`id` 属于 candidate_failure_logs，不是 710 视图的列",
 		},

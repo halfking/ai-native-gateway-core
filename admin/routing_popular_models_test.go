@@ -22,7 +22,7 @@ func TestPopularModelsHotSQL_TargetsHotTable(t *testing.T) {
 	if !strings.Contains(popularModelsHotSQL, "FROM public.session_turns_hot t") {
 		t.Fatalf("popularModelsHotSQL must read the native session-turn family (v1 hot drains after the S4 stop-write); got:\n%s", popularModelsHotSQL)
 	}
-	if strings.Contains(popularModelsHotSQL, "FROM request_logs_hot rl") {
+	if strings.Contains(popularModelsHotSQL, "FROM _request_logs_hot rl") {
 		t.Fatalf("popularModelsHotSQL must not read the draining v1 hot table:\n%s", popularModelsHotSQL)
 	}
 	if strings.Contains(popularModelsHotSQL, "request_logs_with_current_month") {
@@ -72,7 +72,7 @@ func TestQueryPopularModels_SeparatesFeaturedFromUsageLimit(t *testing.T) {
 
 // TestRecentlyUsedPopularModels_ReadsZSET verifies the dedicated Redis
 // ZSET fast path: writes from the request hot path become visible to
-// the admin dashboard immediately, without touching the request_logs
+// the admin dashboard immediately, without touching the _request_logs
 // tables. Uses miniredis to validate the round trip end-to-end.
 func TestRecentlyUsedPopularModels_ReadsZSET(t *testing.T) {
 	mr := miniredis.RunT(t)
@@ -247,7 +247,7 @@ func TestListTopModelsSQL_TargetsHotTable(t *testing.T) {
 	}
 	handler := body[start : start+end+2]
 
-	// 2026-10-13 S3 波 2（停写切换）：源从 request_logs_hot 换到会话族
+	// 2026-10-13 S3 波 2（停写切换）：源从 _request_logs_hot 换到会话族
 	// 原生源（SessionFamilyTurnsSourceSQL 拼接）。原来的 hot 钉桩理由
 	// （2026-08-26：视图拖列式分区）保持有效，所以**两个方向都禁**：
 	// 不得读会拖列式分区的 canonical 视图，也不得留在停写后会排空的
@@ -261,7 +261,7 @@ func TestListTopModelsSQL_TargetsHotTable(t *testing.T) {
 	if strings.Contains(handler, "FROM request_logs_with_current_month rl") {
 		t.Fatalf("listTopModels must not scan the partitioned view; full handler:\n%s", handler)
 	}
-	if strings.Contains(handler, "FROM request_logs_hot rl") {
+	if strings.Contains(handler, "FROM _request_logs_hot rl") {
 		t.Fatalf("listTopModels must not read the draining v1 hot table; full handler:\n%s", handler)
 	}
 	// Must keep an explicit context timeout.

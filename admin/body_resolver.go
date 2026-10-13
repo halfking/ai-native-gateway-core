@@ -212,8 +212,8 @@ func (h *Handler) lookupControlledBody(ctx context.Context, requestID, tenantID 
 		SELECT rl.ts,
 		       COALESCE(rb.request_body::text, ''),
 		       COALESCE(rb.response_body::text, '')
-		  FROM request_logs_hot rl
-		  LEFT JOIN request_logs_bodies_hot rb
+		  FROM _request_logs_hot rl
+		  LEFT JOIN _request_logs_bodies_hot rb
 		    ON rb.request_id = rl.request_id AND rb.ts = rl.ts
 		 WHERE rl.request_id = $1
 		   AND rl.tenant_id = $2

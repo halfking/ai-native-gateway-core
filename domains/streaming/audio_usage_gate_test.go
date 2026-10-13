@@ -4,7 +4,7 @@ package streaming
 //
 // LogAudioUsage 是宽表家族最后一个未挂门的流量写点（不走 telemetry 持久化
 // 链）。本判据钉两件事：
-//  1. 停写（storage.request_logs_write_enabled=false）时对 request_logs_hot
+//  1. 停写（storage.request_logs_write_enabled=false）时对 _request_logs_hot
 //     **零写入**——pgxmock 对未预期的 Exec 直接报错，因此「不设任何期望」
 //     本身就是行为断言（与 telemetry 的 TestInsertRequestLogStopWriteGate
 //     同一手法）；
@@ -43,7 +43,7 @@ func withAudioGateSettings(t *testing.T, writeEnabled bool) {
 }
 
 func TestLogAudioUsageStopWriteGate(t *testing.T) {
-	t.Run("gate closed drops the request_logs_hot insert", func(t *testing.T) {
+	t.Run("gate closed drops the _request_logs_hot insert", func(t *testing.T) {
 		withAudioGateSettings(t, false)
 		pool, err := pgxmock.NewPool()
 		require.NoError(t, err)
@@ -59,7 +59,7 @@ func TestLogAudioUsageStopWriteGate(t *testing.T) {
 		pool, err := pgxmock.NewPool()
 		require.NoError(t, err)
 		defer pool.Close()
-		pool.ExpectExec(`INSERT INTO request_logs_hot`).
+		pool.ExpectExec(`INSERT INTO _request_logs_hot`).
 			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 			WillReturnResult(pgxmock.NewResult("INSERT", 1))
 		logger := NewPGAudioUsageLogger(pool)

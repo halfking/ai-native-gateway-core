@@ -1,8 +1,8 @@
 // bg/vacuum_worker.go — 2026-08-29
 //
-// 审计修复 (2026-08-29)：P1-7 - request_logs_bodies VACUUM自动化
+// 审计修复 (2026-08-29)：P1-7 - _request_logs_bodies VACUUM自动化
 //
-// 2026-09-17 审计修订：request_logs_bodies 已改为按月分区（叶子表由
+// 2026-09-17 审计修订：_request_logs_bodies 已改为按月分区（叶子表由
 // drop_old_request_logs_bodies_partitions 负责回收，分区 DROP 即归还空间），
 // 对分区父表执行 VACUUM FULL 无存储可重写、只会空耗全集群
 // VacuumFullMutex 窗口，故移除；本 worker 保留对 hot 表的普通 VACUUM。
@@ -20,7 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// VacuumWorker 定期对 request_logs_bodies 的 hot 表执行普通 VACUUM。
+// VacuumWorker 定期对 _request_logs_bodies 的 hot 表执行普通 VACUUM。
 type VacuumWorker struct {
 	db *pgxpool.Pool
 
@@ -143,7 +143,7 @@ func (w *VacuumWorker) vacuum(ctx context.Context) {
 
 	start := time.Now()
 
-	// 2026-09-17 audit: request_logs_bodies is a RANGE-partitioned parent
+	// 2026-09-17 audit: _request_logs_bodies is a RANGE-partitioned parent
 	// (monthly leaves, reclaimed by drop_old_request_logs_bodies_partitions).
 	// VACUUM FULL against a partitioned parent either errors or no-ops —
 	// there is no storage on the parent to rewrite — so the weekly job only
@@ -153,7 +153,7 @@ func (w *VacuumWorker) vacuum(ctx context.Context) {
 	hotCtx, hotCancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer hotCancel()
 
-	_, hotErr := w.db.Exec(hotCtx, "VACUUM (ANALYZE) request_logs_bodies_hot")
+	_, hotErr := w.db.Exec(hotCtx, "VACUUM (ANALYZE) _request_logs_bodies_hot")
 	elapsed := time.Since(start)
 	if hotErr != nil {
 		slog.Warn("vacuum worker: VACUUM on hot table failed",

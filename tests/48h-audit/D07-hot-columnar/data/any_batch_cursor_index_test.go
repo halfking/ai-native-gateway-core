@@ -22,7 +22,7 @@
 //   - 本机真库 schema_migrations 只到 V359，331 从未在此库应用过；
 //   - `archive_request_wal` 因此**仍然存在于真库**，只是全仓 .go 侧零调用方。
 //
-// 这把 R79 登记的 P3（父表 `request_logs_archive` 未被 331 删除、0 分区）
+// 这把 R79 登记的 P3（父表 `_request_logs_archive` 未被 331 删除、0 分区）
 // 从「表」扩到了「函数」：**331 整条通道缺席，它声明要删的对象一个都没删。**
 //
 // ## ctid 游标为什么不是缺陷
@@ -350,7 +350,7 @@ func TestData_AnyBatchCursor_IndexedOrUnindexable(t *testing.T) {
 		t.Errorf("%d REFERENCED batch pager(s) neither have a leading-column index nor order by a "+
 			"system column:\n  %s\n"+
 			"Each batch re-sorts the whole source, making the loop O(rows² / batch). Measured "+
-			"precedent: request_logs archived this way exceeded a 30-minute statement_timeout at "+
+			"precedent: _request_logs archived this way exceeded a 30-minute statement_timeout at "+
 			"2.1M rows. Add CREATE INDEX <table> (<cursor column>) or record a measured waiver.",
 			len(defects), strings.Join(defects, "\n  "))
 	}
@@ -362,8 +362,8 @@ func TestData_AnyBatchCursor_IndexedOrUnindexable(t *testing.T) {
 // indistinguishable from an unexamined waiver.
 var dynamicSourceTables = map[string]string{
 	"archive_request_logs_default": "src_part is whatever pg_inherits hands the function: a " +
-		"request_logs monthly partition. R79 (this round's first half) added migration 756, " +
-		"CREATE INDEX idx_request_logs_id ON request_logs(id) on the PARTITIONED PARENT, which " +
+		"_request_logs monthly partition. R79 (this round's first half) added migration 756, " +
+		"CREATE INDEX idx_request_logs_id ON _request_logs(id) on the PARTITIONED PARENT, which " +
 		"PostgreSQL cascades to every existing and future partition. Before 756 the cursor was " +
 		"unindexed and 2.1M rows took >30min and rolled back. 756 is not applied to this local DB " +
 		"yet, which is exactly why a static check here cannot verify it.",

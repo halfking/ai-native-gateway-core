@@ -9,7 +9,7 @@ import (
 // The active probe workflow fires a direct-to-provider HTTP probe when a
 // (credential, model) pair accumulates N consecutive failures, and follows
 // a configurable backoff chain for retry attempts. Each probe result is
-// written to request_logs (task_type='probe_triggered') so it appears in
+// written to _request_logs (task_type='probe_triggered') so it appears in
 // the realtime request stream alongside normal business requests.
 const CategoryErrorProbe Category = "error_probe"
 

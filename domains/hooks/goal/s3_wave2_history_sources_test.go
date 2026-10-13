@@ -9,7 +9,7 @@ import (
 
 // TestS3Wave2HistorySources（2026-10-13 S3 波 2）钉住会话历史重建的双源
 // 形状。停写后新会话正文只在 session_bodies；镜像前历史只在
-// request_logs_bodies。判据同层：断言驱动包级 SQL 变量——它们就是
+// _request_logs_bodies。判据同层：断言驱动包级 SQL 变量——它们就是
 // FetchBySession 实际发给 PostgreSQL 的文本。
 func TestS3Wave2HistorySources(t *testing.T) {
 	s := historySessionSQL
@@ -30,7 +30,7 @@ func TestS3Wave2HistorySources(t *testing.T) {
 		}
 	}
 	v := historyV1SQL
-	for _, frag := range []string{"FROM request_logs rl", "request_logs_bodies rb", "rl.gw_session_id = $1"} {
+	for _, frag := range []string{"FROM _request_logs rl", "_request_logs_bodies rb", "rl.gw_session_id = $1"} {
 		if !strings.Contains(v, frag) {
 			t.Errorf("v1 回退腿缺少 %q（镜像前历史会话的正文会断供）", frag)
 		}

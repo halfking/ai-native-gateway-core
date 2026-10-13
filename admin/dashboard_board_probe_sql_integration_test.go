@@ -52,7 +52,7 @@ func boardProbePool(t *testing.T) *pgxpool.Pool {
 // TestDashboardBoardPredicateColumnsExistOnBoardView 反向校验：看板实际读的那张
 // 视图必须真的有谓词引用的三列。
 //
-// 这三张源表（request_logs_hot / request_logs）在 sql/schema/01-schema.sql 里
+// 这三张源表（_request_logs_hot / _request_logs）在 sql/schema/01-schema.sql 里
 // 都声明了这些列，而 request_logs_with_current_month_without_customer_id 是
 // 二者按 hot 列序求交集派生（db/request_logs_view_schema.go:103-131）——
 // 但那是「按仓内 schema 文件推断」。真库可能因迁移顺序/回滚/自愈重建链而与之

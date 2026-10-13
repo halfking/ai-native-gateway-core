@@ -35,9 +35,9 @@ const ProtocolOpenAI = "openai"
 //
 // 注意：探测请求实际打的是网关自身 mux 的 /mock/v1/* 端点（经
 // internal/auth.MockProbeBypass 旁路 + auth.MockEndpoint 守卫，不走
-// OriginMiddleware、不进 streaming pipeline、不写 request_logs——见 R63
+// OriginMiddleware、不进 streaming pipeline、不写 _request_logs——见 R63
 // 结论），因此本打标当前是防御性/语义自洽性质的：一旦未来探测改走网关
-// 数据面或 mock 路径接入 request_logs，来源归属即已就位。
+// 数据面或 mock 路径接入 _request_logs，来源归属即已就位。
 const (
 	OriginStageSelfCheck       = "self_check"
 	OriginActorMockProbeClient = "mock-probe-client"

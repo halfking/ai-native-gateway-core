@@ -310,13 +310,13 @@ func recordCacheMiss() {
 //
 // 诉求"低价不可用要退主流"（R52 修复）本身是**静默的**：轻量池整层掉线时
 // 请求照常成功，只是静默升档到重量模型。审计字段 Decision.RoleFallbackLayer
-// 已经落进 request_logs.auto_decision（JSONB），但那是"事后翻库"的观测面，
+// 已经落进 _request_logs.auto_decision（JSONB），但那是"事后翻库"的观测面，
 // 没有任何主动告警。本指标把同一个值送进 Prometheus，让"轻量池整层掉线"
 // 成为可被告警的事件。
 //
 // 为什么需要这个指标，而不能直接对 SQL 写告警：
 //
-//	request_logs.auto_decision->>'role_fallback_layer' 在父开关
+//	_request_logs.auto_decision->>'role_fallback_layer' 在父开关
 //	AUTO_ROLE_ROUTING_ENABLED 关闭时**恒为 NULL**——Decision.RoleFallbackLayer
 //	带 omitempty，flag-off 时 rolePrefs 为空、字段根本不进序列化。所以一条
 //	"比例 = N/N" 的 SQL 告警在 flag-off 部署上返回 NULL，与"开关开着但从

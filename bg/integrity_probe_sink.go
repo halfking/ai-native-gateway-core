@@ -102,7 +102,7 @@ func (s *PostgresIntegrityProbeResultSink) Record(parent context.Context, task P
 	// the upstream's model name) to avoid duplicating it with the
 	// outbound_model column. probeSample is the in-helper that prefers
 	// the upstream URL so operators can pivot from the integrity event
-	// back to the request_logs row.
+	// back to the _request_logs row.
 	sample := probeSample(result)
 	if len(sample) > 256 {
 		sample = sample[:256]
@@ -169,7 +169,7 @@ func probeSample(result *ProbeResult) string {
 	}
 	// The sample column is PII-safe metadata only. Prefer the request URL
 	// so operators can pivot from a model_integrity_events row back to
-	// the originating request_logs row via task ID / RequestURL. Fall back
+	// the originating _request_logs row via task ID / RequestURL. Fall back
 	// to the structured error code; never store the model output here.
 	if result.RequestURL != "" {
 		return truncateProbeText(result.RequestURL, 256)

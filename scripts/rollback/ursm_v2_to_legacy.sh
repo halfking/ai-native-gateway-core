@@ -28,7 +28,7 @@
 # 验证（rule 03 §6.0）：
 #   L1: /healthz 200
 #   L2: DB / Redis 可达（DB 即可，URSM v2 Redis 不必）
-#   L3: 一次 chat 请求成功落 request_logs
+#   L3: 一次 chat 请求成功落 _request_logs
 #   L4: 真实凭据可调用关键 API，credentialstate state 走 legacy 路径
 #
 # 注意：

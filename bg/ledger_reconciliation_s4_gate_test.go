@@ -14,9 +14,9 @@ import (
 // 结构事实（真库 + 源码双向核实）：
 //
 //	settings.KeyRequestLogsWriteEnabled 的声明范围 =
-//	    request_logs 宽族（request_logs_hot 主行 + request_logs_bodies_hot 正文）
+//	    _request_logs 宽族（_request_logs_hot 主行 + _request_logs_bodies_hot 正文）
 //	usageCreditSQL() 的两侧 =
-//	    request_logs_hot.credits_charged   ← 族内，门管得到
+//	    _request_logs_hot.credits_charged   ← 族内，门管得到
 //	    credit_ledger_hot（consume/ref_type='request'）  ← 族外，永不停写
 //
 // 而对账器此前**完全不咨询该门**。所以停写一旦生效，两侧就不再描述同一段时间：

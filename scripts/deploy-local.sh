@@ -942,10 +942,10 @@ apply_schema_if_empty() {
   # pg_stat_statements views) while the 01-schema.sql snapshot was never
   # applied. Counting every object then reported "not empty", skipped the
   # snapshot, and the migration leg immediately failed on missing base tables
-  # such as request_logs_hot — with no schema ever installed.
+  # such as _request_logs_hot — with no schema ever installed.
   # Probe a handful of core tables that 01-schema.sql always creates. Any one
   # of them present means the snapshot was applied and this step is a no-op.
-  count=$(psql_query "SELECT count(*) FROM pg_class WHERE relnamespace='public'::regnamespace AND relkind IN ('r','p') AND relname IN ('users','request_logs','credentials','api_keys','agents');") || die 'cannot inspect PostgreSQL schema'
+  count=$(psql_query "SELECT count(*) FROM pg_class WHERE relnamespace='public'::regnamespace AND relkind IN ('r','p') AND relname IN ('users','_request_logs','credentials','api_keys','agents');") || die 'cannot inspect PostgreSQL schema'
   [[ "$count" == 0 ]] || return 0
   log 'core tables absent; applying schema snapshot once'
   local f log_file

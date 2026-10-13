@@ -47,7 +47,7 @@ func anyArgs(n int) []interface{} {
 // hot 侧 NOT EXISTS（排除自身）。2026-08-25: promoted 分区守卫 (跨 7 天窗口)
 // 改为动态拼装 (列存安全), 默认 nil 分支 (单测无 Client 注册) 不含该子句.
 // 集成测试覆盖 promoted guard 拼接: TestClaimSessionFinalSuccess_HeapPartitionsGuard。
-const claimSQLPattern = `UPDATE request_logs_hot\s+SET is_final_success = TRUE\s+WHERE request_id = \$1\s+AND success = TRUE\s+AND request_status = 'success'\s+AND COALESCE\(gw_session_id, ''\) <> ''\s+AND NOT EXISTS[\s\S]*FROM request_logs_hot other[\s\S]*other\.request_id <> request_logs_hot\.request_id`
+const claimSQLPattern = `UPDATE _request_logs_hot\s+SET is_final_success = TRUE\s+WHERE request_id = \$1\s+AND success = TRUE\s+AND request_status = 'success'\s+AND COALESCE\(gw_session_id, ''\) <> ''\s+AND NOT EXISTS[\s\S]*FROM _request_logs_hot other[\s\S]*other\.request_id <> _request_logs_hot\.request_id`
 
 func claimTestEntry(requestID, sessionID string) *RequestLogEntry {
 	sid := sessionID
@@ -108,7 +108,7 @@ func TestClaimSessionFinalSuccess_UniqueViolationDegradesToNormalSuccess(t *test
 
 	mock.ExpectExec(`SAVEPOINT gw_final_success_claim`).
 		WillReturnResult(pgxmock.NewResult("SAVEPOINT", 0))
-	mock.ExpectExec(`UPDATE request_logs_hot`).
+	mock.ExpectExec(`UPDATE _request_logs_hot`).
 		WithArgs("req-claim-loser").
 		WillReturnError(&pgconn.PgError{
 			Code:    "23505",
@@ -124,17 +124,17 @@ func TestClaimSessionFinalSuccess_UniqueViolationDegradesToNormalSuccess(t *test
 }
 
 // 滚动发布窗口（migration 532 未应用，列不存在 42703）等其它错误同样降级，
-// 不阻塞 request_logs 主写路径。
+// 不阻塞 _request_logs 主写路径。
 func TestClaimSessionFinalSuccess_OtherErrorsDegrade(t *testing.T) {
 	mock, tx := newClaimMock(t)
 
 	mock.ExpectExec(`SAVEPOINT gw_final_success_claim`).
 		WillReturnResult(pgxmock.NewResult("SAVEPOINT", 0))
-	mock.ExpectExec(`UPDATE request_logs_hot`).
+	mock.ExpectExec(`UPDATE _request_logs_hot`).
 		WithArgs("req-claim-42703").
 		WillReturnError(&pgconn.PgError{
 			Code:    "42703",
-			Message: "column \"is_final_success\" of relation \"request_logs_hot\" does not exist",
+			Message: "column \"is_final_success\" of relation \"_request_logs_hot\" does not exist",
 		})
 	mock.ExpectExec(`ROLLBACK TO SAVEPOINT gw_final_success_claim`).
 		WillReturnResult(pgxmock.NewResult("ROLLBACK", 0))
@@ -213,7 +213,7 @@ func TestShouldClaimFinalSuccess_ExcludesInternalLoopbacks(t *testing.T) {
 
 // UT-FS-02（写路径回归）：updateRequestLog 在成功终态事务内恰好追加一次
 // claim（SAVEPOINT → claim UPDATE → RELEASE），且不改变既有语句集合
-// （usage_ledger → request_logs_hot 终态 UPDATE → bodies upsert）。
+// （usage_ledger → _request_logs_hot 终态 UPDATE → bodies upsert）。
 func TestUpdateRequestLog_AppendsFinalSuccessClaimOnTerminalSuccess(t *testing.T) {
 	mock, err := pgxmock.NewConn()
 	require.NoError(t, err)
@@ -234,12 +234,12 @@ func TestUpdateRequestLog_AppendsFinalSuccessClaimOnTerminalSuccess(t *testing.T
 	mock.ExpectExec(`UPDATE usage_ledger_hot`).
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	// request_logs_hot 终态 UPDATE（RETURNING ts，99 个绑定参数；含 t0..t9 与 608 的 request_class/due_at）
-	mock.ExpectExec(`UPDATE request_logs_hot`).
+	// _request_logs_hot 终态 UPDATE（RETURNING ts，99 个绑定参数；含 t0..t9 与 608 的 request_class/due_at）
+	mock.ExpectExec(`UPDATE _request_logs_hot`).
 		WithArgs(anyArgs(100)...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	// bodies 侧表 upsert
-	mock.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+	mock.ExpectExec(`INSERT INTO _request_logs_bodies_hot`).
 		WithArgs(anyArgs(4)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	// v4 T7 claim（同事务）。2026-09-12 起 Client 直传非 nil，claim 先查
@@ -284,10 +284,10 @@ func TestUpdateRequestLog_FailurePathSkipsClaim(t *testing.T) {
 	mock.ExpectExec(`UPDATE usage_ledger_hot`).
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mock.ExpectExec(`UPDATE request_logs_hot`).
+	mock.ExpectExec(`UPDATE _request_logs_hot`).
 		WithArgs(anyArgs(100)...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mock.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+	mock.ExpectExec(`INSERT INTO _request_logs_bodies_hot`).
 		WithArgs(anyArgs(4)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectCommit()
@@ -302,7 +302,7 @@ func TestUpdateRequestLog_FailurePathSkipsClaim(t *testing.T) {
 // TestClaimSessionFinalSuccess_HeapPartitionsGuard 验证 2026-08-25 columnar 安全修复:
 // 当 Client 携带非空 heap 月度分区列表, claim 语句必须拼装 promoted guard
 // (UNION ALL 多个 heap 月度分区, 排除 columnar 月份). 这覆盖生产路径, 避免
-// `FROM request_logs promoted` 触发 SQLSTATE 0A000.
+// `FROM _request_logs promoted` 触发 SQLSTATE 0A000.
 //
 // 2026-09-12: Client 由调用方直传 (2026-08-26 merge d2cbaf88b 丢失 main.go
 // SetClaimClient 接线 → 生产 promoted 守卫从未生效 → 23505 卡死 promote,
@@ -328,7 +328,7 @@ func TestClaimSessionFinalSuccess_HeapPartitionsGuard(t *testing.T) {
 	// 且投影不得含 is_final_success (列不在索引里会强制回表破掉 index-only)。
 	// 2026-09-27 审计 R69: 热表臂同款补齐两谓词 (uq_request_logs_hot_final_
 	// success_session 谓词形状相同), 一并钉住。
-	expectedGuard := `UPDATE request_logs_hot[\s\S]*other\.gw_session_id IS NOT NULL AND other\.gw_session_id <> ''` +
+	expectedGuard := `UPDATE _request_logs_hot[\s\S]*other\.gw_session_id IS NOT NULL AND other\.gw_session_id <> ''` +
 		`[\s\S]*` +
 		`SELECT gw_session_id FROM ONLY .request_logs_2026_08. WHERE is_final_success AND gw_session_id IS NOT NULL AND gw_session_id <> ''` +
 		`[\s\S]*` +

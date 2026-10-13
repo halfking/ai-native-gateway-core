@@ -3,7 +3,7 @@ package admin
 // auto_route_correlations.go — P7.2: admin endpoint for auto-route
 // correlation analysis.
 //
-// Reads the promoted columns on request_logs (task_type_chosen,
+// Reads the promoted columns on _request_logs (task_type_chosen,
 // confidence_num, model_chosen, strategy_used) to answer questions
 // like:
 //   - For a given (task_type, strategy), which models had the
@@ -26,7 +26,7 @@ package admin
 //   - byModelTask: per-(model, task_type) detail (catches outliers)
 //   - verdict: top-3 models by composite score per task type
 //
-// NOTE: All SELECTs on request_logs in this file are wrapped with
+// NOTE: All SELECTs on _request_logs in this file are wrapped with
 // tenantLogsClause() (admin/session_tenant.go) — adds
 // "AND tenant_id = $N" for tenant_admin callers on non-default tenants.
 // Super-admin / legacy admin_key / default-tenant callers see all rows.
@@ -116,7 +116,7 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 
 	// ── By model ─────────────────────────────────────────────
 	// R46 F3: 读面 request_logs_with_current_month_without_request_class_due_at
-	// （request_logs 侧 hot∪母表）。裸母表对最近 8h 仍在 hot 侧的 auto 流量
+	// （_request_logs 侧 hot∪母表）。裸母表对最近 8h 仍在 hot 侧的 auto 流量
 	// 全盲；不能换 turns 优先的 request_logs_with_current_month——turns 段把
 	// model_chosen/strategy_used 投影为 NULL，本文件全部查询依赖这些列。
 	byModelQuery := `

@@ -8,7 +8,7 @@ import (
 )
 
 // TestS3Wave2RequestSummarySource（2026-10-13 S3 波 2）钉住请求摘要读源的
-// 会话族形状。原实现只读 request_logs 母表（hot 行今天就漏、停写后恒空集）。
+// 会话族形状。原实现只读 _request_logs 母表（hot 行今天就漏、停写后恒空集）。
 // 判据同层：requestSummaryTurnsSource 就是 loadRequestLogs 实际拼进 SQL 的源。
 func TestS3Wave2RequestSummarySource(t *testing.T) {
 	src := requestSummaryTurnsSource
@@ -23,7 +23,7 @@ func TestS3Wave2RequestSummarySource(t *testing.T) {
 		t.Error("源投影缺 gw_session_id（调用点谓词会 42703）")
 	}
 	// v1 底表不得回流：摘要读者是 A 形会话内读，v1 腿是回退腿的事。
-	if strings.Contains(src, "request_logs_hot") || strings.Contains(src, "request_logs ") {
+	if strings.Contains(src, "_request_logs_hot") || strings.Contains(src, "_request_logs ") {
 		t.Error("会话族源里混入了 v1 底表（守卫规则的 A/B 分界被破坏）")
 	}
 }

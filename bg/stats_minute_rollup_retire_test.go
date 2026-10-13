@@ -60,7 +60,7 @@ func TestRetireScanFloorKeepsGraceLookback(t *testing.T) {
 }
 
 // 本地 8782 库上的 2026-09-26 10:37+08 / provider 314。
-// request_logs.canonical_id 仍是 887407，视图因 session_turns.canonical_id
+// _request_logs.canonical_id 仍是 887407，视图因 session_turns.canonical_id
 // 为空而把同一分钟记在 canonical 0。事务内重算并退役闭分钟多余键，然后回滚。
 func TestRetireClosedMinuteDropsFlushCanonicalNotInView(t *testing.T) {
 	dsn := os.Getenv("LLM_GATEWAY_ROLLUP_TEST_DSN")

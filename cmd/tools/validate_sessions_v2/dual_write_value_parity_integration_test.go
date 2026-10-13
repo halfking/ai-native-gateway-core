@@ -107,16 +107,16 @@ func TestDualWriteValueParity(t *testing.T) {
 	v AS (
 		SELECT request_id, success, upstream_status_code, latency_ms,
 		       prompt_tokens, completion_tokens, outbound_model
-		FROM public.request_logs
+		FROM public._request_logs
 		WHERE request_id NOT LIKE 'probe-%'
 		UNION ALL
-		-- §9.59：v1 侧也必须读 _hot。request_logs_hot **不是** request_logs 的分区
-		-- （pg_inherits 实测：request_logs 只有 4 个月度分区，_hot 是独立存储面），
+		-- §9.59：v1 侧也必须读 _hot。_request_logs_hot **不是** _request_logs 的分区
+		-- （pg_inherits 实测：_request_logs 只有 4 个月度分区，_hot 是独立存储面），
 		-- 所以只读父表会整面漏掉写方的最新数据。252 实测漏 2,121 对（占全部配对的 16.6%），
 		-- 而漏掉的恰好是**最新**的那批——双写回归最先出现在那里。
 		SELECT request_id, success, upstream_status_code, latency_ms,
 		       prompt_tokens, completion_tokens, outbound_model
-		FROM public.request_logs_hot
+		FROM public._request_logs_hot
 		WHERE request_id NOT LIKE 'probe-%'
 	)
 	SELECT count(*)::bigint,
@@ -193,8 +193,8 @@ func TestDualWriteValueParity(t *testing.T) {
 	rows, err := pool.Query(ctx, `
 		WITH s AS (SELECT request_id, model FROM public.session_turns
 		           UNION ALL SELECT request_id, model FROM public.session_turns_hot),
-		     v AS (SELECT request_id, outbound_model FROM public.request_logs
-		           UNION ALL SELECT request_id, outbound_model FROM public.request_logs_hot)
+		     v AS (SELECT request_id, outbound_model FROM public._request_logs
+		           UNION ALL SELECT request_id, outbound_model FROM public._request_logs_hot)
 		SELECT v.outbound_model, s.model
 		FROM v JOIN s ON s.request_id = v.request_id
 		WHERE v.request_id NOT LIKE 'probe-%' AND s.request_id NOT LIKE 'probe-%'
@@ -281,10 +281,10 @@ func TestDualWriteParityCoverageReport(t *testing.T) {
 	const q = `
 	WITH v AS (
 		SELECT request_id, is_auto_request, origin_actor, request_status, 'parent'::text AS src
-		FROM public.request_logs WHERE request_id NOT LIKE 'probe-%'
+		FROM public._request_logs WHERE request_id NOT LIKE 'probe-%'
 		UNION ALL
 		SELECT request_id, is_auto_request, origin_actor, request_status, 'hot'::text AS src
-		FROM public.request_logs_hot WHERE request_id NOT LIKE 'probe-%'
+		FROM public._request_logs_hot WHERE request_id NOT LIKE 'probe-%'
 	),
 	-- 两个存储面各自去重后再并，最后按 request_id 归并成一个**无重复**集合：
 	-- 同一个 request_id 若在两面都出现（冷热重叠），不能让它把 v1 行放大成 2 行。
@@ -317,7 +317,7 @@ func TestDualWriteParityCoverageReport(t *testing.T) {
 		                  AND NOT (is_auto_request IS TRUE)
 		                  AND coalesce(nullif(request_status, ''), '') NOT IN ('success', 'failure', 'rate_limited'))::bigint,
 		-- ★下面两个数按面分开数，纯粹为了**证明全集真的读了两个存储面**。
-		-- 这是本门唯一一条会判红的自检：若有人再把 request_logs_hot 从 v 里删掉，
+		-- 这是本门唯一一条会判红的自检：若有人再把 _request_logs_hot 从 v 里删掉，
 		-- 上面所有比率判据都不会红（样本少 20% 不越线），而这一条会。
 		-- 没有它，§9.59 那个取样洞会被静默重新打开，而所有门仍然全绿。
 		count(*) FILTER (WHERE src = 'parent')::bigint,
@@ -341,7 +341,7 @@ func TestDualWriteParityCoverageReport(t *testing.T) {
 	// 的洞恰是 _hot 面被漏（只读父表时 hotFace 恒 0，当场红）。
 	if hotFace <= 0 {
 		t.Errorf("_hot 面贡献 0 行（父表 %d）—— **取样面被改窄了**。\n"+
-			"request_logs 与 request_logs_hot 是两个独立存储面（不是分区父子），\n"+
+			"_request_logs 与 _request_logs_hot 是两个独立存储面（不是分区父子），\n"+
 			"只读其一会整面漏掉写方的最新数据；§9.59 实测漏掉的恰是最新那批。\n"+
 			"若确信本库 _hot 合法为空（>8h 无 v1 流量且 promote 已清空），请先查\n"+
 			"promote 运行状态再下结论——本门按 fail-closed 处理空面。",

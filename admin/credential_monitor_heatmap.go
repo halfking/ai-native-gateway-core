@@ -287,7 +287,7 @@ func buildHeatmapSQL(p heatmapQueryParams) (string, []any) {
 	if p.ExcludeSelfTest {
 		// Probe/self-test exclusion — the read face here is
 		// request_logs_with_current_month (see the FROM below), i.e. the
-		// canonical view, NOT the physical request_logs tables. That
+		// canonical view, NOT the physical _request_logs tables. That
 		// distinction is load-bearing in both directions:
 		//
 		//  1. The predicate must be spelled in the VIEW's column vocabulary.
@@ -297,7 +297,7 @@ func buildHeatmapSQL(p heatmapQueryParams) (string, []any) {
 		//     at the time was origin_stage, which was outside the view
 		//     contract back then; **that is no longer true** (see the
 		//     2026-10-02 correction below), but the *rule* survives: a
-		//     column that is in request_logs / _hot is not thereby in the
+		//     column that is in _request_logs / _hot is not thereby in the
 		//     view. Verify against the live view before inlining anything.
 		//  2. The old hand-rolled second arm `NOT ('probe' = ANY(quality_flags))`
 		//     has no COALESCE: for the NULL flags the session arm is

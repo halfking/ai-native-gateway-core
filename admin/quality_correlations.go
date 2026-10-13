@@ -22,7 +22,7 @@ package admin
 // The response also includes an "insights" section that ranks
 // each predictor by absolute Pearson correlation with quality_score.
 //
-// NOTE: All SELECTs on request_logs in this file use buildBreakdownQuery()
+// NOTE: All SELECTs on _request_logs in this file use buildBreakdownQuery()
 // which is wrapped by the handler to inject tenantLogsClause() (see
 // admin/session_tenant.go) — adds "AND tenant_id = $N" for tenant_admin
 // callers on non-default tenants. Super-admin / legacy admin_key /

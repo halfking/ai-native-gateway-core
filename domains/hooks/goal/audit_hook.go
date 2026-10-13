@@ -345,7 +345,7 @@ func (a *AuditHook) InterceptNonStreamMultiRound(ctx context.Context, req *respo
 // performAudit executes the actual audit using LLM.
 //
 // When a HistoryStore is wired, the audit is based on the full conversation
-// transcript (reconstructed from request_logs by gw_session_id) so the auditor
+// transcript (reconstructed from _request_logs by gw_session_id) so the auditor
 // can judge the complete task execution, not just the final reply. Without a
 // store it falls back to auditing only the last response body.
 //

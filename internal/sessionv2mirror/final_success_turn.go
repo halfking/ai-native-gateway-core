@@ -8,7 +8,7 @@ package sessionv2mirror
 // `session_turns.is_final_success` was **never written by anything**. Measured
 // on llm-gateway-pg / llm_gateway (2026-10-05):
 //
-//	v1 request_logs_hot (7d):  463 rows with is_final_success = TRUE / 4,532
+//	v1 _request_logs_hot (7d):  463 rows with is_final_success = TRUE / 4,532
 //	v2 session_turns (all):       0 rows with is_final_success NOT NULL / 1,689,308
 //
 // Not-null count 0 (not just true-count 0) — the column is never written at

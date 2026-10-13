@@ -341,7 +341,7 @@ func ExtractAgentName(r *http.Request) string {
 
 // normalizeAgentName 收敛客户端可控的 X-Agent-Name 自由字符串（R52）：
 // 去首尾空白 + 剥控制字符（日志/维度注入卫生）+ 截断到 255 rune
-// （request_logs.agent_name 为 VARCHAR(255)，超长即 22001 使整行 INSERT
+// （_request_logs.agent_name 为 VARCHAR(255)，超长即 22001 使整行 INSERT
 // 失败）。刻意不过 clienttype.Normalize 白名单——自定义 agent 名是合法
 // 用法，白名单会把它们全部塌缩成 unknown；维度基数治理登记为后续专项。
 func normalizeAgentName(v string) string {
@@ -381,7 +381,7 @@ func normalizeAgentName(v string) string {
 // weak UA-derived name as before.
 //
 // R52：X-Agent-Name 是客户端可控自由字符串，返回前过 clienttype.Normalize
-// 白名单收敛 + 截断——此前原样透传，超 255 字节即 22001 使 request_logs
+// 白名单收敛 + 截断——此前原样透传，超 255 字节即 22001 使 _request_logs
 // 整行 INSERT 失败，且任意值会撑大 stats_minute_rollup 的 agent 维度基数。
 //
 // 2026-09-21 audit (P1: client detection parity for domestic coding agents).

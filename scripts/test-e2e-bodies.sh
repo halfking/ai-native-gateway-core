@@ -72,29 +72,29 @@ test_e2e_001() {
     
     # Only a paired row validates that application dual-write has occurred.
     info "查询最近的双写请求记录..."
-    REQUEST_ID=$(psql_query "SELECT rl.request_id FROM request_logs_hot rl JOIN request_logs_bodies_hot rb ON rb.request_id = rl.request_id AND rb.ts = rl.ts WHERE rb.request_body IS NOT NULL OR rb.response_body IS NOT NULL ORDER BY rl.ts DESC LIMIT 1;")
+    REQUEST_ID=$(psql_query "SELECT rl.request_id FROM _request_logs_hot rl JOIN _request_logs_bodies_hot rb ON rb.request_id = rl.request_id AND rb.ts = rl.ts WHERE rb.request_body IS NOT NULL OR rb.response_body IS NOT NULL ORDER BY rl.ts DESC LIMIT 1;")
     
     if [ -z "$REQUEST_ID" ]; then
-        test_fail "未找到 request_logs_hot 与 request_logs_bodies_hot 的双写记录"
+        test_fail "未找到 _request_logs_hot 与 _request_logs_bodies_hot 的双写记录"
     fi
     
     info "使用 request_id: $REQUEST_ID"
     
     # 2. 验证双写
     info "验证双写记录..."
-    META_COUNT=$(psql_query "SELECT COUNT(*) FROM request_logs_hot WHERE request_id = '$REQUEST_ID';")
-    BODIES_COUNT=$(psql_query "SELECT COUNT(*) FROM request_logs_bodies_hot WHERE request_id = '$REQUEST_ID';")
+    META_COUNT=$(psql_query "SELECT COUNT(*) FROM _request_logs_hot WHERE request_id = '$REQUEST_ID';")
+    BODIES_COUNT=$(psql_query "SELECT COUNT(*) FROM _request_logs_bodies_hot WHERE request_id = '$REQUEST_ID';")
     
     if [ "$META_COUNT" -eq 1 ]; then
-        test_pass "request_logs_hot 有记录"
+        test_pass "_request_logs_hot 有记录"
     else
-        test_fail "request_logs_hot 记录数异常: $META_COUNT"
+        test_fail "_request_logs_hot 记录数异常: $META_COUNT"
     fi
     
     if [ "$BODIES_COUNT" -eq 1 ]; then
-        test_pass "request_logs_bodies_hot 有配对记录"
+        test_pass "_request_logs_bodies_hot 有配对记录"
     else
-        test_fail "request_logs_bodies_hot 记录数异常: $BODIES_COUNT"
+        test_fail "_request_logs_bodies_hot 记录数异常: $BODIES_COUNT"
     fi
     
     # 3. 调用 Admin API 查询详情
@@ -112,7 +112,7 @@ test_e2e_002() {
     test_start "TC-E2E-002: Null Bodies 场景"
     
     info "查询 sibling bodies 均为 null 的记录..."
-    NULL_REQUEST_ID=$(psql_query "SELECT rl.request_id FROM request_logs_hot rl LEFT JOIN request_logs_bodies_hot rb ON rb.request_id = rl.request_id AND rb.ts = rl.ts WHERE rb.request_id IS NULL OR (rb.request_body IS NULL AND rb.response_body IS NULL) ORDER BY rl.ts DESC LIMIT 1;")
+    NULL_REQUEST_ID=$(psql_query "SELECT rl.request_id FROM _request_logs_hot rl LEFT JOIN _request_logs_bodies_hot rb ON rb.request_id = rl.request_id AND rb.ts = rl.ts WHERE rb.request_id IS NULL OR (rb.request_body IS NULL AND rb.response_body IS NULL) ORDER BY rl.ts DESC LIMIT 1;")
     
     if [ -z "$NULL_REQUEST_ID" ]; then
         warn "没有找到 null bodies 记录，跳过此测试"
@@ -122,13 +122,13 @@ test_e2e_002() {
     info "使用 request_id: $NULL_REQUEST_ID"
     
     # 验证 bodies 表中无记录或为 null
-    BODIES_COUNT=$(psql_query "SELECT COUNT(*) FROM request_logs_bodies_hot WHERE request_id = '$NULL_REQUEST_ID';")
+    BODIES_COUNT=$(psql_query "SELECT COUNT(*) FROM _request_logs_bodies_hot WHERE request_id = '$NULL_REQUEST_ID';")
     
     if [ "$BODIES_COUNT" -eq 0 ]; then
         test_pass "Null bodies 场景：bodies 表无记录"
     else
         info "Bodies 表有记录，检查是否为 null..."
-        BODY_NULL=$(psql_query "SELECT request_body IS NULL AND response_body IS NULL FROM request_logs_bodies_hot WHERE request_id = '$NULL_REQUEST_ID';")
+        BODY_NULL=$(psql_query "SELECT request_body IS NULL AND response_body IS NULL FROM _request_logs_bodies_hot WHERE request_id = '$NULL_REQUEST_ID';")
         if [ "$BODY_NULL" = "t" ]; then
             test_pass "Null bodies 场景：bodies 为 null"
         else
@@ -140,8 +140,8 @@ test_e2e_002() {
 test_e2e_003() {
     test_start "TC-E2E-003: 向后兼容（旧记录）"
     
-    info "查询 Migration 353 之前的记录（request_logs_hot 有 request_body）..."
-    OLD_REQUEST_ID=$(psql_query "SELECT request_id FROM request_logs_hot WHERE request_body IS NOT NULL ORDER BY ts ASC LIMIT 1;")
+    info "查询 Migration 353 之前的记录（_request_logs_hot 有 request_body）..."
+    OLD_REQUEST_ID=$(psql_query "SELECT request_id FROM _request_logs_hot WHERE request_body IS NOT NULL ORDER BY ts ASC LIMIT 1;")
     
     if [ -z "$OLD_REQUEST_ID" ]; then
         warn "没有找到旧记录，跳过此测试"
@@ -151,11 +151,11 @@ test_e2e_003() {
     info "使用 request_id: $OLD_REQUEST_ID"
     
     # 检查 bodies 表是否有记录
-    BODIES_COUNT=$(psql_query "SELECT COUNT(*) FROM request_logs_bodies_hot WHERE request_id = '$OLD_REQUEST_ID';")
+    BODIES_COUNT=$(psql_query "SELECT COUNT(*) FROM _request_logs_bodies_hot WHERE request_id = '$OLD_REQUEST_ID';")
     
     if [ "$BODIES_COUNT" -eq 0 ]; then
         info "旧记录未迁移到 bodies 表（预期行为）"
-        test_pass "向后兼容：可以从 request_logs_hot 读取"
+        test_pass "向后兼容：可以从 _request_logs_hot 读取"
     else
         info "旧记录已迁移到 bodies 表"
         test_pass "向后兼容：bodies 表有数据"
@@ -167,7 +167,7 @@ test_perf_001() {
     test_start "TC-PERF-001: 查询性能（有 bodies）"
     
     info "EXPLAIN ANALYZE 查询..."
-    REQUEST_ID=$(psql_query "SELECT request_id FROM request_logs_bodies_hot ORDER BY ts DESC LIMIT 1;")
+    REQUEST_ID=$(psql_query "SELECT request_id FROM _request_logs_bodies_hot ORDER BY ts DESC LIMIT 1;")
     
     if [ -z "$REQUEST_ID" ]; then
         warn "没有找到 bodies 记录，跳过性能测试"
@@ -180,8 +180,8 @@ SELECT
     rl.*,
     rlb.request_body,
     rlb.response_body
-FROM request_logs_hot rl
-LEFT JOIN request_logs_bodies_hot rlb 
+FROM _request_logs_hot rl
+LEFT JOIN _request_logs_bodies_hot rlb 
     ON rl.request_id = rlb.request_id 
     AND rl.ts = rlb.ts
 WHERE rl.request_id = '$REQUEST_ID';
@@ -213,12 +213,12 @@ test_disk_001() {
     info "查询表大小..."
     TABLE_SIZES=$(PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" <<EOSQL
 SELECT 
-    'request_logs_hot' AS table_name,
-    pg_size_pretty(pg_total_relation_size('request_logs_hot')) AS size
+    '_request_logs_hot' AS table_name,
+    pg_size_pretty(pg_total_relation_size('_request_logs_hot')) AS size
 UNION ALL
 SELECT 
-    'request_logs_bodies_hot',
-    pg_size_pretty(pg_total_relation_size('request_logs_bodies_hot'));
+    '_request_logs_bodies_hot',
+    pg_size_pretty(pg_total_relation_size('_request_logs_bodies_hot'));
 EOSQL
 )
     

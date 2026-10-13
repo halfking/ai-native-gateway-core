@@ -18,8 +18,8 @@ import (
 // operators can react.
 //
 // Audit basis (2026-07-02):
-//   - request_logs / request_wal / usage_ledger: UPDATE-heavy + (in
-//     request_logs' case) large JSONB that overflows Citus columnar
+//   - _request_logs / request_wal / usage_ledger: UPDATE-heavy + (in
+//     _request_logs' case) large JSONB that overflows Citus columnar
 //     1 GB serialization buffer. Stay heap until / unless the
 //     body-table split (migration 328a/b) frees them up.
 //   - routing_decision_log / credential_model_index: INSERT-only in

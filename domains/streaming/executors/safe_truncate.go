@@ -7,7 +7,7 @@ import "unicode/utf8"
 // Slicing a string at an arbitrary byte offset can split a multi-byte rune and
 // produce invalid UTF-8. When such a value is written to a PostgreSQL UTF8
 // column the INSERT fails with SQLSTATE 22021 and the whole row is lost — see
-// incident 2026-06-11, where s[:limit] silently dropped request_logs rows for
+// incident 2026-06-11, where s[:limit] silently dropped _request_logs rows for
 // glm-5.1 / minimax / doubao traffic (Chinese and emoji content).
 //
 // Callers that want a visible marker should append their own suffix to the

@@ -451,9 +451,9 @@ var unsupportedParamRe = regexp.MustCompile(
 //
 // Matched vendor phrasings (both legs observed in raw-logs 2026-10-14):
 //   - chat:      "'messages' must contain the word 'json' in some form, to
-//                use 'response_format' of type 'json_object'."
+//     use 'response_format' of type 'json_object'."
 //   - responses: "Response input messages must contain the word 'json' in
-//                some form to use 'text.format' of type 'json_object'."
+//     some form to use 'text.format' of type 'json_object'."
 var jsonModeWordRequiredRe = regexp.MustCompile(
 	`(?i)must contain the word ['"]?json['"]? in some form`,
 )
@@ -946,7 +946,7 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 		// collapsed into err.Error() and ClassifyError(err, nil) was
 		// returning KindTransient for these cases. That broke the
 		// IsClientBug / IsRetryable / writeCredentialStateOnError
-		// branches downstream and polluted request_logs.error_kind
+		// branches downstream and polluted _request_logs.error_kind
 		// with "transient" for what is actually a client-side bug.
 		//
 		// Running the same regexes on the err.Error() string closes

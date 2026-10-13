@@ -1,5 +1,5 @@
 #!/bin/bash
-# request_logs 分表架构完整数据验证
+# _request_logs 分表架构完整数据验证
 # 目标：生成多样化数据，验证 CRUD 操作，发现潜在问题
 
 set -e
@@ -43,13 +43,13 @@ function check_environment() {
     log_info "检查目标数据库: $DB_HOST:$DB_PORT/$DB_NAME"
     
     # 检查 hot 表是否存在
-    local hot_exists=$(psql_exec "SELECT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'request_logs_hot');" | xargs)
+    local hot_exists=$(psql_exec "SELECT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = '_request_logs_hot');" | xargs)
     
     if [[ "$hot_exists" == "t" ]]; then
-        log_info "✅ request_logs_hot 表存在"
+        log_info "✅ _request_logs_hot 表存在"
         ((PASSED_TESTS++))
     else
-        log_error "❌ request_logs_hot 表不存在"
+        log_error "❌ _request_logs_hot 表不存在"
         log_error "当前数据库不是 hot 表架构，无法继续测试"
         log_error "请切换到正确的环境（例如 252/154 服务器）"
         exit 1
@@ -57,7 +57,7 @@ function check_environment() {
     
     # 检查表结构
     log_info "检查表结构..."
-    psql_exec "\d request_logs_hot" > /tmp/request_logs_hot_schema.txt 2>&1
+    psql_exec "\d _request_logs_hot" > /tmp/request_logs_hot_schema.txt 2>&1
     
     if grep -q "request_id" /tmp/request_logs_hot_schema.txt; then
         log_info "✅ 表结构正常"
@@ -74,8 +74,8 @@ function check_environment() {
 function cleanup_test_data() {
     log_section "步骤 1: 清理旧测试数据"
     
-    log_info "清理 request_logs_hot 测试数据..."
-    psql_exec "DELETE FROM request_logs_hot WHERE request_id LIKE 'test-%';" > /dev/null 2>&1
+    log_info "清理 _request_logs_hot 测试数据..."
+    psql_exec "DELETE FROM _request_logs_hot WHERE request_id LIKE 'test-%';" > /dev/null 2>&1
     
     log_info "✅ 清理完成"
 }
@@ -95,7 +95,7 @@ function generate_test_data() {
     # 场景 1: 成功请求 - gpt-4 (5条)
     for i in {1..5}; do
         local req_id="test-success-gpt4-${timestamp}-${i}"
-        psql_exec "INSERT INTO request_logs_hot (
+        psql_exec "INSERT INTO _request_logs_hot (
             request_id, ts, tenant_id, success, 
             client_model, outbound_model, 
             prompt_tokens, completion_tokens, total_tokens,
@@ -111,7 +111,7 @@ function generate_test_data() {
     # 场景 2: 成功请求 - claude (3条)
     for i in {1..3}; do
         local req_id="test-success-claude-${timestamp}-${i}"
-        psql_exec "INSERT INTO request_logs_hot (
+        psql_exec "INSERT INTO _request_logs_hot (
             request_id, ts, tenant_id, success,
             client_model, outbound_model,
             prompt_tokens, completion_tokens, total_tokens,
@@ -127,7 +127,7 @@ function generate_test_data() {
     # 场景 3: 失败请求 - rate_limit (4条)
     for i in {1..4}; do
         local req_id="test-fail-ratelimit-${timestamp}-${i}"
-        psql_exec "INSERT INTO request_logs_hot (
+        psql_exec "INSERT INTO _request_logs_hot (
             request_id, ts, tenant_id, success,
             client_model, error_kind,
             prompt_tokens, completion_tokens, latency_ms
@@ -141,7 +141,7 @@ function generate_test_data() {
     # 场景 4: 失败请求 - timeout (3条)
     for i in {1..3}; do
         local req_id="test-fail-timeout-${timestamp}-${i}"
-        psql_exec "INSERT INTO request_logs_hot (
+        psql_exec "INSERT INTO _request_logs_hot (
             request_id, ts, tenant_id, success,
             client_model, error_kind,
             latency_ms
@@ -155,7 +155,7 @@ function generate_test_data() {
     # 场景 5: 流式响应 (3条)
     for i in {1..3}; do
         local req_id="test-stream-${timestamp}-${i}"
-        psql_exec "INSERT INTO request_logs_hot (
+        psql_exec "INSERT INTO _request_logs_hot (
             request_id, ts, tenant_id, success,
             client_model, outbound_model,
             prompt_tokens, completion_tokens,
@@ -173,7 +173,7 @@ function generate_test_data() {
     # 场景 6: 缓存命中 (2条)
     for i in {1..2}; do
         local req_id="test-cache-${timestamp}-${i}"
-        psql_exec "INSERT INTO request_logs_hot (
+        psql_exec "INSERT INTO _request_logs_hot (
             request_id, ts, tenant_id, success,
             client_model, cache_read_tokens,
             prompt_tokens, completion_tokens,
@@ -204,7 +204,7 @@ function verify_insert() {
     log_section "步骤 3: 验证数据插入"
     ((TOTAL_TESTS++))
     
-    local count=$(psql_exec "SELECT COUNT(*) FROM request_logs_hot WHERE request_id LIKE 'test-%';" | xargs)
+    local count=$(psql_exec "SELECT COUNT(*) FROM _request_logs_hot WHERE request_id LIKE 'test-%';" | xargs)
     
     log_info "当前测试数据数量: $count"
     
@@ -231,7 +231,7 @@ function verify_insert() {
                 ELSE '其他'
             END as scenario,
             COUNT(*) as count
-        FROM request_logs_hot
+        FROM _request_logs_hot
         WHERE request_id LIKE 'test-%'
         GROUP BY scenario
         ORDER BY count DESC;
@@ -248,7 +248,7 @@ function test_update() {
     log_info "场景 A: 更新 tokens (模拟流式响应完成后更新)"
     
     # 获取一条测试记录
-    local test_id=$(psql_exec "SELECT request_id FROM request_logs_hot WHERE request_id LIKE 'test-success-gpt4%' LIMIT 1;" | xargs)
+    local test_id=$(psql_exec "SELECT request_id FROM _request_logs_hot WHERE request_id LIKE 'test-success-gpt4%' LIMIT 1;" | xargs)
     
     if [[ -z "$test_id" ]]; then
         log_error "❌ 找不到测试记录"
@@ -260,14 +260,14 @@ function test_update() {
     log_info "测试记录: $test_id"
     
     # 更新前的值
-    local before=$(psql_exec "SELECT prompt_tokens, completion_tokens FROM request_logs_hot WHERE request_id = '$test_id';" | xargs)
+    local before=$(psql_exec "SELECT prompt_tokens, completion_tokens FROM _request_logs_hot WHERE request_id = '$test_id';" | xargs)
     log_info "更新前: $before"
     
     # 执行 UPDATE
-    psql_exec "UPDATE request_logs_hot SET prompt_tokens = 999, completion_tokens = 888, total_tokens = 1887 WHERE request_id = '$test_id';" > /dev/null 2>&1
+    psql_exec "UPDATE _request_logs_hot SET prompt_tokens = 999, completion_tokens = 888, total_tokens = 1887 WHERE request_id = '$test_id';" > /dev/null 2>&1
     
     # 更新后的值
-    local after=$(psql_exec "SELECT prompt_tokens, completion_tokens, total_tokens FROM request_logs_hot WHERE request_id = '$test_id';" | xargs)
+    local after=$(psql_exec "SELECT prompt_tokens, completion_tokens, total_tokens FROM _request_logs_hot WHERE request_id = '$test_id';" | xargs)
     log_info "更新后: $after"
     
     if echo "$after" | grep -q "999.*888.*1887"; then
@@ -282,7 +282,7 @@ function test_update() {
     # 场景 B: 批量更新
     log_info "\n场景 B: 批量更新 cost"
     
-    local updated_rows=$(psql_exec "UPDATE request_logs_hot SET cost_usd = 0.999 WHERE request_id LIKE 'test-success%' RETURNING request_id;" | wc -l)
+    local updated_rows=$(psql_exec "UPDATE _request_logs_hot SET cost_usd = 0.999 WHERE request_id LIKE 'test-success%' RETURNING request_id;" | wc -l)
     updated_rows=$(echo "$updated_rows" | xargs)
     
     log_info "批量更新了 $updated_rows 行"
@@ -309,7 +309,7 @@ function test_queries() {
             COUNT(*) as total,
             SUM(CASE WHEN success THEN 1 ELSE 0 END) as success_count,
             ROUND(100.0 * SUM(CASE WHEN success THEN 1 ELSE 0 END) / COUNT(*), 2) as success_rate
-        FROM request_logs_hot
+        FROM _request_logs_hot
         WHERE request_id LIKE 'test-%'
         GROUP BY client_model
         ORDER BY total DESC;
@@ -320,7 +320,7 @@ function test_queries() {
         SELECT 
             error_kind,
             COUNT(*) as count
-        FROM request_logs_hot
+        FROM _request_logs_hot
         WHERE request_id LIKE 'test-%' AND error_kind IS NOT NULL
         GROUP BY error_kind
         ORDER BY count DESC;
@@ -338,7 +338,7 @@ function test_queries() {
             END as latency_range,
             COUNT(*) as count,
             AVG(latency_ms) as avg_latency
-        FROM request_logs_hot
+        FROM _request_logs_hot
         WHERE request_id LIKE 'test-%' AND latency_ms IS NOT NULL
         GROUP BY latency_range
         ORDER BY avg_latency;
@@ -354,8 +354,8 @@ function test_view_aggregation() {
     log_section "步骤 6: 测试视图聚合"
     ((TOTAL_TESTS++))
     
-    local hot_count=$(psql_exec "SELECT COUNT(*) FROM request_logs_hot WHERE request_id LIKE 'test-%';" | xargs)
-    local parent_count=$(psql_exec "SELECT COUNT(*) FROM request_logs WHERE request_id LIKE 'test-%';" | xargs)
+    local hot_count=$(psql_exec "SELECT COUNT(*) FROM _request_logs_hot WHERE request_id LIKE 'test-%';" | xargs)
+    local parent_count=$(psql_exec "SELECT COUNT(*) FROM _request_logs WHERE request_id LIKE 'test-%';" | xargs)
     local view_count=$(psql_exec "SELECT COUNT(*) FROM request_logs_with_current_month WHERE request_id LIKE 'test-%';" | xargs)
     
     log_info "hot 表: $hot_count 条测试数据"
@@ -383,13 +383,13 @@ function test_delete() {
     
     log_info "场景 A: 单条删除"
     
-    local test_id=$(psql_exec "SELECT request_id FROM request_logs_hot WHERE request_id LIKE 'test-fail-timeout%' LIMIT 1;" | xargs)
+    local test_id=$(psql_exec "SELECT request_id FROM _request_logs_hot WHERE request_id LIKE 'test-fail-timeout%' LIMIT 1;" | xargs)
     
     if [[ -n "$test_id" ]]; then
         log_info "删除记录: $test_id"
-        psql_exec "DELETE FROM request_logs_hot WHERE request_id = '$test_id';" > /dev/null 2>&1
+        psql_exec "DELETE FROM _request_logs_hot WHERE request_id = '$test_id';" > /dev/null 2>&1
         
-        local exists=$(psql_exec "SELECT COUNT(*) FROM request_logs_hot WHERE request_id = '$test_id';" | xargs)
+        local exists=$(psql_exec "SELECT COUNT(*) FROM _request_logs_hot WHERE request_id = '$test_id';" | xargs)
         
         if [[ "$exists" -eq 0 ]]; then
             log_info "✅ 单条 DELETE 成功"
@@ -406,12 +406,12 @@ function test_delete() {
     
     log_info "\n场景 B: 批量删除（清理所有测试数据）"
     
-    local before_count=$(psql_exec "SELECT COUNT(*) FROM request_logs_hot WHERE request_id LIKE 'test-%';" | xargs)
+    local before_count=$(psql_exec "SELECT COUNT(*) FROM _request_logs_hot WHERE request_id LIKE 'test-%';" | xargs)
     log_info "删除前: $before_count 条"
     
-    psql_exec "DELETE FROM request_logs_hot WHERE request_id LIKE 'test-%';" > /dev/null 2>&1
+    psql_exec "DELETE FROM _request_logs_hot WHERE request_id LIKE 'test-%';" > /dev/null 2>&1
     
-    local after_count=$(psql_exec "SELECT COUNT(*) FROM request_logs_hot WHERE request_id LIKE 'test-%';" | xargs)
+    local after_count=$(psql_exec "SELECT COUNT(*) FROM _request_logs_hot WHERE request_id LIKE 'test-%';" | xargs)
     log_info "删除后: $after_count 条"
     
     if [[ "$after_count" -eq 0 ]]; then
@@ -433,7 +433,7 @@ function check_data_integrity() {
     
     local null_count=$(psql_exec "
         SELECT COUNT(*) 
-        FROM request_logs_hot 
+        FROM _request_logs_hot 
         WHERE request_id IS NULL 
            OR ts IS NULL 
            OR tenant_id IS NULL;
@@ -452,7 +452,7 @@ function check_data_integrity() {
     
     local inconsistent=$(psql_exec "
         SELECT COUNT(*) 
-        FROM request_logs_hot 
+        FROM _request_logs_hot 
         WHERE (success = true AND error_kind IS NOT NULL)
            OR (success = false AND error_kind IS NULL);
     " | xargs)
@@ -468,7 +468,7 @@ function check_data_integrity() {
     
     local wrong_total=$(psql_exec "
         SELECT COUNT(*) 
-        FROM request_logs_hot 
+        FROM _request_logs_hot 
         WHERE total_tokens IS NOT NULL 
           AND prompt_tokens IS NOT NULL 
           AND completion_tokens IS NOT NULL
@@ -495,7 +495,7 @@ function test_performance() {
     
     for i in {1..100}; do
         local req_id="perf-test-$(date +%s)-$i"
-        psql_exec "INSERT INTO request_logs_hot (request_id, ts, tenant_id, success, client_model) VALUES ('$req_id', NOW(), 'default', true, 'gpt-3.5-turbo');" > /dev/null 2>&1
+        psql_exec "INSERT INTO _request_logs_hot (request_id, ts, tenant_id, success, client_model) VALUES ('$req_id', NOW(), 'default', true, 'gpt-3.5-turbo');" > /dev/null 2>&1
     done
     
     local end_time=$(date +%s%3N)
@@ -511,7 +511,7 @@ function test_performance() {
     fi
     
     # 清理性能测试数据
-    psql_exec "DELETE FROM request_logs_hot WHERE request_id LIKE 'perf-test-%';" > /dev/null 2>&1
+    psql_exec "DELETE FROM _request_logs_hot WHERE request_id LIKE 'perf-test-%';" > /dev/null 2>&1
 }
 
 # ============================================================

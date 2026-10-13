@@ -14,7 +14,7 @@ import (
 // goal-continue / goal-model-switch / goal-audit) are the gateway auditing
 // its own conversations, and the internal loopbacks
 // (auto-title-generator / auto-summary-generator / session-summary) are the
-// title/summary self-calls. Both stay in request_logs / session_turns for
+// title/summary self-calls. Both stay in _request_logs / session_turns for
 // auditability (doc 18: 打标不排除，过滤权在查询侧) — only the aggregate
 // faces skip them.
 
@@ -47,7 +47,7 @@ func SQLExcludeSyntheticActors(alias string) string {
 	// R39 note: the SQL predicates deliberately do NOT BTRIM. The Go side
 	// (IsSyntheticActor) trims first, so a value with surrounding whitespace
 	// would diverge between the two — this is safe only because BOTH write
-	// entries TrimSpace before the value lands in request_logs_hot:
+	// entries TrimSpace before the value lands in _request_logs_hot:
 	// middleware/origin_mw.go (X-LLM-Origin-Actor, user traffic) and
 	// domains/streaming/request_log_pipeline.go (X-Gw-Source-Actor,
 	// loopback/goal chain, R42 correction — the R39 text claimed a sole

@@ -11,7 +11,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/events"
 )
 
-// Terminal status strings, mirroring request_logs.request_status.
+// Terminal status strings, mirroring _request_logs.request_status.
 const (
 	TerminalSuccess = "success"
 	TerminalFailure = "failure"
@@ -21,7 +21,7 @@ const (
 // five pieces in the spec, with provider/credential optional because
 // the upstream may not have been resolved when the request failed.
 //
-// tenant_id is the LLM-Gateway tenant id (matches request_logs.tenant_id).
+// tenant_id is the LLM-Gateway tenant id (matches _request_logs.tenant_id).
 // protocol is the egress protocol identifier (e.g. "openai_chat_completions",
 // "anthropic_messages"); empty when the request never reached routing.
 // model is the canonical_name when known, else outbound_model, else

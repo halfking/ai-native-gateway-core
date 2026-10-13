@@ -422,7 +422,7 @@ func (r *ModelProbeRunner) nonfeaturedWatchdogTick(ctx context.Context) {
 			    SELECT lower(raw_model) AS raw_model FROM (
 			        SELECT COALESCE(rl.outbound_model, rl.client_model) AS raw_model,
 			               count(*) AS calls
-			        FROM request_logs_hot rl
+			        FROM _request_logs_hot rl
 			        WHERE rl.success
 			          AND rl.ts > now() - make_interval(hours => $2)
 			          -- R50: dual-arm probe exclusion — watchdog backoff is a
@@ -514,7 +514,7 @@ func (r *ModelProbeRunner) demoteAgedHealthyBindings(ctx context.Context) {
 			  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 			  AND lower(mps.raw_model_name) NOT IN (SELECT model FROM static)
 			  AND NOT EXISTS (
-			      SELECT 1 FROM request_logs_hot rl
+			      SELECT 1 FROM _request_logs_hot rl
 			      WHERE rl.credential_id = mps.credential_id
 			        AND COALESCE(rl.outbound_model, rl.client_model) = mps.raw_model_name
 			        AND rl.success
@@ -902,7 +902,7 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 		  -- 2026-09-20 INV-3: the model must have real (non-probe) traffic on
 		  -- THIS credential within the 3-day probe scope window.
 		  AND EXISTS (
-			SELECT 1 FROM request_logs_hot rl
+			SELECT 1 FROM _request_logs_hot rl
 			WHERE rl.credential_id = cmb.credential_id
 			  AND rl.ts >= now() - `+probeUsageWindowInterval+`
 			  AND `+fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")+`

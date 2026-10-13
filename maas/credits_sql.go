@@ -1,6 +1,6 @@
 package maas
 
-// RequestLogCreditsSQL returns a per-row credits expression for request_logs
+// RequestLogCreditsSQL returns a per-row credits expression for _request_logs
 // queries. It prefers persisted credits_charged and falls back to a
 // maas_settings-based token estimate when charging did not persist.
 //

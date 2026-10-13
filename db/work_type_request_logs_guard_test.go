@@ -13,12 +13,12 @@ import (
 // lock. PostgreSQL must take ACCESS EXCLUSIVE on the parent table and on every
 // partition before it can check whether the column exists, so a column that has
 // been in place for months still costs a full exclusive pass on every boot.
-// Measured at up to 109,456 ms on production against request_logs — the
+// Measured at up to 109,456 ms on production against _request_logs — the
 // busiest table in the database, with 5 monthly partitions there (6 relations
 // locked) for a statement that changes nothing.
 //
 // ensureRequestLogSchema already short-circuits its own 31 columns this way.
-// This test guards the one remaining unguarded request_logs DDL on the startup
+// This test guards the one remaining unguarded _request_logs DDL on the startup
 // path.
 func TestEnsureWorkTypeSchema_ShortCircuitsRequestLogsDDL(t *testing.T) {
 	src, err := os.ReadFile("db.go")
@@ -42,8 +42,8 @@ func TestEnsureWorkTypeSchema_ShortCircuitsRequestLogsDDL(t *testing.T) {
 		if end := strings.Index(schemaSQL, "\n`"); end > 0 {
 			schemaSQL = schemaSQL[:end]
 		}
-		if strings.Contains(schemaSQL, "ALTER TABLE request_logs") {
-			t.Error("workTypeSchemaSQL must not still touch request_logs — " +
+		if strings.Contains(schemaSQL, "ALTER TABLE _request_logs") {
+			t.Error("workTypeSchemaSQL must not still touch _request_logs — " +
 				"that statement is what takes the exclusive lock")
 		}
 		// And the guard's own SQL must not reintroduce the ALTER.
@@ -55,7 +55,7 @@ func TestEnsureWorkTypeSchema_ShortCircuitsRequestLogsDDL(t *testing.T) {
 		if end := strings.Index(probe, "\n}\n"); end > 0 {
 			probe = probe[:end]
 		}
-		if strings.Contains(probe, "ALTER TABLE request_logs") {
+		if strings.Contains(probe, "ALTER TABLE _request_logs") {
 			t.Error("the catalog probe must read the catalog, not run DDL")
 		}
 	})

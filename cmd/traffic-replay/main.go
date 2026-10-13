@@ -1,4 +1,4 @@
-// Command traffic-replay replays historical request_logs through
+// Command traffic-replay replays historical _request_logs through
 // the REAL auto-route pipeline (HeuristicClassifier + Score + Decider),
 // surfacing "what would have happened" if the new pattern /
 // weight / override were live during the historical window.
@@ -44,7 +44,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 )
 
-// requestRow is one row from request_logs that we replay.
+// requestRow is one row from _request_logs that we replay.
 type requestRow struct {
 	RequestID      string
 	TaskType       string
@@ -97,7 +97,7 @@ func main() {
 	if len(rows) == 0 {
 		log.Fatal("no historical rows match the filter")
 	}
-	log.Printf("loaded %d historical request_logs rows", len(rows))
+	log.Printf("loaded %d historical _request_logs rows", len(rows))
 
 	// Build the live pipeline (real Decider + tuning store + overrides).
 	decider, overrideStore := buildPipeline(ctx, db, *withLLM)
@@ -130,7 +130,7 @@ func loadHistoricalRows(ctx context.Context, db *sql.DB, days int, taskType stri
 		    COALESCE(prompt_tokens, 0)::int,
 		    COALESCE(request_body, '{}'::jsonb)::text::bytea AS body,
 		    COALESCE(request_preview, '') AS preview
-		FROM request_logs
+		FROM _request_logs
 		WHERE is_auto_request = TRUE
 		  AND ts >= NOW() - INTERVAL '1 day' * $1
 		  AND ($2 = '' OR COALESCE(task_type_chosen, task_type) = $2)

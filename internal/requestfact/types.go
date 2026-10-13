@@ -141,7 +141,7 @@ func (m Metadata) IsZero() bool {
 }
 
 // CanonicalRequestFact is the once-built terminal request fact. It is a
-// versioned domain document, not a request_logs or session_v2 table model.
+// versioned domain document, not a _request_logs or session_v2 table model.
 type CanonicalRequestFact struct {
 	Identity    Identity            `json:"identity"`
 	Lifecycle   Lifecycle           `json:"lifecycle"`

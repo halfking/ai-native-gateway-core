@@ -102,7 +102,7 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 		// before the /v1/messages handler — whose extractBearerToken has
 		// honored x-api-key since 2026-06-26 — ever sees the request
 		// (observed 2026-09-21: claude-cli 401s on 154, zero rows in
-		// request_logs_hot). Precedence matches extractBearerToken:
+		// _request_logs_hot). Precedence matches extractBearerToken:
 		// Authorization Bearer first, x-api-key only as fallback.
 		provided := ""
 		if auth := r.Header.Get("Authorization"); len(auth) >= 7 && auth[:7] == "Bearer " {

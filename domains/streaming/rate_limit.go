@@ -76,7 +76,7 @@ func checkGatewayRateLimit(ctx context.Context, keyInfo *authentication.KeyInfo,
 		// to 2 minutes (maxMinuteBucketWait) while the request context only
 		// carries the upstream timeout (LLM_GATEWAY_UPSTREAM_TIMEOUT=60s on
 		// 154/245). Any queue wait longer than the remaining budget produced
-		// a mid-flight "context canceled" 502 with no request_logs row — the
+		// a mid-flight "context canceled" 502 with no _request_logs row — the
 		// kimi-k3 "always fails" incident. When the limiter supports
 		// budgeted admission, reject fast with a 429 + Retry-After instead.
 		maxQueueWait, hasDeadline := rateLimitQueueBudget(ctx)

@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// V1Turn represents a turn from request_logs (V1 schema)
+// V1Turn represents a turn from _request_logs (V1 schema)
 type V1Turn struct {
 	RequestID    string
 	Ts           time.Time
@@ -20,7 +20,7 @@ type V1Turn struct {
 	ProviderID   string
 	CredentialID string
 
-	// Usage is stored as JSONB in request_logs
+	// Usage is stored as JSONB in _request_logs
 	Usage   json.RawMessage
 	CostUSD float64
 
@@ -117,7 +117,7 @@ type sessionDB interface {
 //
 // # 为什么必须改（审计 §9.196，因果已确证）
 //
-// migration 765 `bodies_columnar_storage` 把 `request_logs_bodies` 的
+// migration 765 `bodies_columnar_storage` 把 `_request_logs_bodies` 的
 // RANGE 分区转成了 **Citus `columnar`** 访问方法。**只要**该分区出现在
 // 一个**未命名子查询**（relid=0 的 RTE）里并参与 `UNION ALL`，
 // 执行器初始化就抛：
@@ -127,8 +127,8 @@ type sessionDB interface {
 // 复现（干净库上，**0 行的分区**即可，审计 §9.196.4）：
 //
 //	ALTER TABLE request_logs_bodies_2026_11 SET ACCESS METHOD columnar;
-//	SELECT count(*) FROM (SELECT request_id FROM request_logs_bodies_hot
-//	                      UNION ALL SELECT request_id FROM request_logs_bodies) x;
+//	SELECT count(*) FROM (SELECT request_id FROM _request_logs_bodies_hot
+//	                      UNION ALL SELECT request_id FROM _request_logs_bodies) x;
 //	⇒ ERROR: invalid perminfoindex 0 in RTE with relid 0
 //
 // 它与行数、数据内容、统计信息、DDL 全部无关（已逐项实测排除）。
@@ -151,7 +151,7 @@ type sessionDB interface {
 // 因此这里**不**使用 `FROM ( ... UNION ALL ... )`。
 const v1BodyQuery = `
 	SELECT COALESCE(request_body, '{}'::jsonb), COALESCE(response_body, '{}'::jsonb)
-	FROM request_logs_bodies_hot
+	FROM _request_logs_bodies_hot
 	WHERE request_id = $1 AND ts = $2
 	LIMIT 1
 `
@@ -159,7 +159,7 @@ const v1BodyQuery = `
 // v1BodyQueryParent 是 hot 未命中时的兜底腿（原 source_priority=1）。
 const v1BodyQueryParent = `
 	SELECT COALESCE(request_body, '{}'::jsonb), COALESCE(response_body, '{}'::jsonb)
-	FROM request_logs_bodies
+	FROM _request_logs_bodies
 	WHERE request_id = $1 AND ts = $2
 	LIMIT 1
 `
@@ -169,10 +169,10 @@ func NewSessionLoader(db sessionDB) *SessionLoader {
 	return &SessionLoader{db: db}
 }
 
-// LoadV1Turns loads all turns for a session from request_logs
-// Uses two-step query to avoid JOIN timeout with request_logs_bodies
+// LoadV1Turns loads all turns for a session from _request_logs
+// Uses two-step query to avoid JOIN timeout with _request_logs_bodies
 func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID string) ([]V1Turn, error) {
-	// Step 1: Query request_logs for metadata
+	// Step 1: Query _request_logs for metadata
 	// Note: staging schema doesn't have 'usage' or 'compression_meta' columns
 	// Token counts are stored as separate columns (prompt_tokens, completion_tokens, etc.)
 	metaQuery := `
@@ -190,14 +190,14 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 			COALESCE(cache_write_tokens, 0) as cache_write_tokens,
 			COALESCE(cost_usd, 0) as cost_usd,
 			COALESCE(success, false) as success
-		FROM request_logs
+		FROM _request_logs
 		WHERE tenant_id = $1 AND gw_session_id = $2
 		ORDER BY ts ASC
 	`
 
 	rows, err := l.db.Query(ctx, metaQuery, tenantID, sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("query request_logs: %w", err)
+		return nil, fmt.Errorf("query _request_logs: %w", err)
 	}
 	defer rows.Close()
 
@@ -221,7 +221,7 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 			&turn.Success,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("scan request_logs row: %w", err)
+			return nil, fmt.Errorf("scan _request_logs row: %w", err)
 		}
 
 		// Reconstruct usage JSON from separate columns
@@ -243,7 +243,7 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate request_logs: %w", err)
+		return nil, fmt.Errorf("iterate _request_logs: %w", err)
 	}
 
 	// Step 2: Query the independent body store using the request log's identity.
@@ -252,7 +252,7 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 	// receiving another turn's body.
 	//
 	// 两条腿**顺序**执行（审计 §9.196）：原来那条「子查询内 UNION ALL」的查询在
-	// `request_logs_bodies` 的 RANGE 分区是 Citus `columnar` 时会让执行器初始化
+	// `_request_logs_bodies` 的 RANGE 分区是 Citus `columnar` 时会让执行器初始化
 	// 直接失败（invalid perminfoindex 0 in RTE with relid 0），而 migration 765
 	// `bodies_columnar_storage` 正是干这件事的。拆成两条后语义不变：hot 优先、
 	// 母表兜底，与原 `ORDER BY source_priority LIMIT 1` 一致。
@@ -268,7 +268,7 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 			continue
 		}
 		if err != nil {
-			return nil, fmt.Errorf("query request_logs_bodies for request_id=%s: %w", turns[i].RequestID, err)
+			return nil, fmt.Errorf("query _request_logs_bodies for request_id=%s: %w", turns[i].RequestID, err)
 		}
 		turns[i].RequestBody = requestBody
 		turns[i].ResponseBody = responseBody
@@ -502,9 +502,9 @@ type V1TimeRange struct {
 // LoadV1TimeRange reports the real span of v1 data for a tenant.
 //
 // §9.222: batch validation is advertised as "compare v1 against v2 over a
-// window", but request_logs is **not** a permanent store. On 252 the monthly
+// window", but _request_logs is **not** a permanent store. On 252 the monthly
 // job `pg17-drop-old-columnar-partitions.sh` (RETAIN_MONTHS=2) DETACHes and
-// DROPs every request_logs partition older than two months, while
+// DROPs every _request_logs partition older than two months, while
 // session_turns is on no rotation list at all. So a window wider than two
 // months does not come back empty and does not error — it comes back
 // **silently truncated**, and a parity report over a truncated window reads
@@ -518,7 +518,7 @@ func (l *SessionLoader) LoadV1TimeRange(ctx context.Context, tenantID string) (V
 	var r V1TimeRange
 	err := l.db.QueryRow(ctx, `
 		SELECT min(ts), max(ts), count(*)
-		FROM request_logs
+		FROM _request_logs
 		WHERE tenant_id = $1
 		  AND gw_session_id IS NOT NULL
 		  AND gw_session_id <> ''
@@ -618,7 +618,7 @@ func (l *SessionLoader) LoadSessionsInRange(ctx context.Context, tenantID string
 	}
 	settleThreshold := time.Now().Add(-settleWindow)
 
-	// For batch mode, we select from request_logs and filter by settle window
+	// For batch mode, we select from _request_logs and filter by settle window
 	// We'll additionally filter by updated_at from sessions table if it exists
 	query, args := buildSessionRangeQuery(tenantID, startDate, endDate, settleThreshold, maxSessions)
 	rows, err := l.db.Query(ctx, query, args...)
@@ -656,7 +656,7 @@ func (l *SessionLoader) LoadSessionsInRange(ctx context.Context, tenantID string
 func buildSessionRangeQuery(tenantID string, startDate, endDate, settleThreshold time.Time, maxSessions int) (string, []any) {
 	const query = `
 			SELECT gw_session_id
-			FROM request_logs
+			FROM _request_logs
 			WHERE tenant_id = $1
 			  AND ts >= $2
 			  AND ts < $3

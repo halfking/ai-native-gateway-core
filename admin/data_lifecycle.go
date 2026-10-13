@@ -156,8 +156,8 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 	query := `
 		SELECT 
 			COUNT(*) AS total_rows,
-			pg_total_relation_size('request_logs') AS total_size,
-			pg_size_pretty(pg_total_relation_size('request_logs')) AS total_size_human
+			pg_total_relation_size('_request_logs') AS total_size,
+			pg_size_pretty(pg_total_relation_size('_request_logs')) AS total_size_human
 		FROM request_logs_with_current_month
 		WHERE 1=1` + tenantFilter
 	err := h.db.QueryRow(ctx, query).Scan(&stats.TotalRows, &totalSize, &totalSizeStr)
@@ -185,32 +185,32 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 			SELECT 
 				'hot' AS segment,
 				COUNT(*) AS rows,
-				(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint AS size_bytes,
-				pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint) AS size_human
+				(pg_total_relation_size('_request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint AS size_bytes,
+				pg_size_pretty((pg_total_relation_size('_request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint) AS size_human
 			FROM request_logs_with_current_month
 			WHERE ts > NOW() - INTERVAL '7 days'` + tenantFilter + `
 			UNION ALL
 			SELECT 
 				'warm',
 				COUNT(*),
-				(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint,
-				pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint)
+				(pg_total_relation_size('_request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint,
+				pg_size_pretty((pg_total_relation_size('_request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint)
 			FROM request_logs_with_current_month
 			WHERE ts BETWEEN NOW() - INTERVAL '30 days' AND NOW() - INTERVAL '7 days'` + tenantFilter + `
 			UNION ALL
 			SELECT 
 				'cold',
 				COUNT(*),
-				(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint,
-				pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint)
+				(pg_total_relation_size('_request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint,
+				pg_size_pretty((pg_total_relation_size('_request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint)
 			FROM request_logs_with_current_month
 			WHERE ts BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '30 days'` + tenantFilter + `
 			UNION ALL
 			SELECT 
 				'expired',
 				COUNT(*),
-				(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint,
-				pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint)
+				(pg_total_relation_size('_request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint,
+				pg_size_pretty((pg_total_relation_size('_request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint)
 			FROM request_logs_with_current_month
 			WHERE ts < NOW() - INTERVAL '90 days'` + tenantFilter + `
 		)
@@ -269,8 +269,8 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 		SELECT 
 			COALESCE(tenant_id, 'default') AS tenant,
 			COUNT(*) AS rows,
-			(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM request_logs_with_current_month WHERE 1=1` + tenantFilter + `), 0))::bigint AS size_bytes,
-			pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM request_logs_with_current_month WHERE 1=1` + tenantFilter + `), 0))::bigint) AS size_human
+			(pg_total_relation_size('_request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM request_logs_with_current_month WHERE 1=1` + tenantFilter + `), 0))::bigint AS size_bytes,
+			pg_size_pretty((pg_total_relation_size('_request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM request_logs_with_current_month WHERE 1=1` + tenantFilter + `), 0))::bigint) AS size_human
 		FROM request_logs_with_current_month
 		WHERE 1=1` + tenantFilter + `
 		GROUP BY tenant_id
@@ -304,7 +304,7 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 	// bodies view has no tenant_id, so: tenant-scoped callers take the
 	// row-by-row LEFT JOIN (correct but heavy, guarded by the request
 	// timeout); the unscoped path pre-aggregates both sides by day first —
-	// a per-row join over a week of request_logs × bodies blows the admin
+	// a per-row join over a week of _request_logs × bodies blows the admin
 	// time budget (measured 30s timeout on the local 100k-row dataset).
 	trendQuery := dataLifecycleTrendSQL(tenantFilter)
 	trendRows, err := h.db.Query(ctx, trendQuery)
@@ -404,8 +404,8 @@ func (h *Handler) handleDataLifecycleCleanupPreview(w http.ResponseWriter, r *ht
 	err := h.db.QueryRow(ctx, `
 		SELECT 
 			COUNT(*) AS affected_rows,
-			(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM request_logs), 0))::bigint AS freed_bytes,
-			pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM request_logs), 0))::bigint) AS freed_human
+			(pg_total_relation_size('_request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM _request_logs), 0))::bigint AS freed_bytes,
+			pg_size_pretty((pg_total_relation_size('_request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM _request_logs), 0))::bigint) AS freed_human
 		FROM request_logs_with_current_month
 		`+whereClause, args...).Scan(&resp.AffectedRows, &resp.EstimatedFreedBytes, &resp.EstimatedFreedHuman)
 

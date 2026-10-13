@@ -48,8 +48,8 @@ echo -e "${YELLOW}2. 检查关键表存在性...${NC}"
 TABLES=(
     "routing_decision_log"
     "routing_decision_log_hot"
-    "request_logs"
-    "request_logs_hot"
+    "_request_logs"
+    "_request_logs_hot"
     "users"
     "credentials"
     "providers"
@@ -130,7 +130,7 @@ echo ""
 echo -e "${YELLOW}5. 数据量统计...${NC}"
 
 if [ "$SCHEMA_MIGRATIONS_EXISTS" = "t" ]; then
-    for table in "routing_decision_log_hot" "request_logs_hot"; do
+    for table in "routing_decision_log_hot" "_request_logs_hot"; do
         EXISTS=$(psql "$DATABASE_URL" -t -c "
         SELECT EXISTS (
             SELECT 1 FROM pg_tables 

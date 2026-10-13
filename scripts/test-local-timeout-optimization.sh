@@ -97,8 +97,8 @@ if [ $SKIP_DB -eq 0 ]; then
         "psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -t -c \"SELECT COUNT(*) FROM system_settings WHERE category='timeout'\"" \
         "^[[:space:]]*[1-9]"
     
-    test_case "检查request_logs新字段" \
-        "psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -t -c \"SELECT column_name FROM information_schema.columns WHERE table_name='request_logs' AND column_name='effective_timeout_seconds'\"" \
+    test_case "检查_request_logs新字段" \
+        "psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -t -c \"SELECT column_name FROM information_schema.columns WHERE table_name='_request_logs' AND column_name='effective_timeout_seconds'\"" \
         "effective_timeout_seconds"
     
     test_case "检查session_last_requests表" \

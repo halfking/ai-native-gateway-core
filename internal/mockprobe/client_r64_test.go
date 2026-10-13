@@ -11,7 +11,7 @@ import (
 )
 
 // R64（2026-09-25）：探测请求必须自标来源（X-LLM-Origin-Stage/Actor）。
-// 探测走网关自身 /mock/v1/* 端点（不写 request_logs，见 R63），本打标是
+// 探测走网关自身 /mock/v1/* 端点（不写 _request_logs，见 R63），本打标是
 // 防御性/语义自洽性质；本测试锁定头的存在与取值，防未来回归。
 func TestClientProbeSendsOriginHeaders(t *testing.T) {
 	var gotStage, gotActor, gotAuth string

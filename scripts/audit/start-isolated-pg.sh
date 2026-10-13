@@ -29,7 +29,7 @@ set -euo pipefail
 
 CONTAINER_NAME="kx-citus"
 # Must use a Citus-enabled image; sql/schema/01-schema.sql creates columnar
-# partitions (USING columnar) for request_logs / usage_ledger /
+# partitions (USING columnar) for _request_logs / usage_ledger /
 # routing_decision_log / credential_model_index archives. The image
 # `kx-citus-pg17:offline-arm64` is the same one the installer and the local
 # 252-aligned llm-gateway-pg use.

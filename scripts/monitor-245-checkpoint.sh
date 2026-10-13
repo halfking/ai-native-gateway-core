@@ -55,21 +55,21 @@ echo "   运行时长: ${SERVICE_UPTIME:-N/A}"
 
 echo ""
 echo "2. 查询请求统计（最近 12 小时）..."
-REQUEST_STATS=$(remote_psql "SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE success = true) AS success, COUNT(*) FILTER (WHERE success = false) AS failed, COALESCE(ROUND(100.0 * COUNT(*) FILTER (WHERE success = true) / NULLIF(COUNT(*), 0), 2), 0) AS rate FROM request_logs_hot WHERE ts >= NOW() - INTERVAL '12 hours';")
+REQUEST_STATS=$(remote_psql "SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE success = true) AS success, COUNT(*) FILTER (WHERE success = false) AS failed, COALESCE(ROUND(100.0 * COUNT(*) FILTER (WHERE success = true) / NULLIF(COUNT(*), 0), 2), 0) AS rate FROM _request_logs_hot WHERE ts >= NOW() - INTERVAL '12 hours';")
 echo "   ${REQUEST_STATS}"
 
 echo ""
 echo "3. 检查 malformed_sse_frame 错误..."
-MALFORMED_COUNT=$(remote_psql "SELECT COUNT(*) FROM request_logs_hot WHERE ts >= NOW() - INTERVAL '12 hours' AND error_kind = 'malformed_sse_frame';")
+MALFORMED_COUNT=$(remote_psql "SELECT COUNT(*) FROM _request_logs_hot WHERE ts >= NOW() - INTERVAL '12 hours' AND error_kind = 'malformed_sse_frame';")
 echo "   malformed_sse_frame: ${MALFORMED_COUNT}"
 
 echo ""
 echo "4. 检查失败错误 Top 5..."
-remote_psql "SELECT error_kind, COUNT(*) AS count FROM request_logs_hot WHERE ts >= NOW() - INTERVAL '12 hours' AND success = false GROUP BY error_kind ORDER BY count DESC LIMIT 5;"
+remote_psql "SELECT error_kind, COUNT(*) AS count FROM _request_logs_hot WHERE ts >= NOW() - INTERVAL '12 hours' AND success = false GROUP BY error_kind ORDER BY count DESC LIMIT 5;"
 
 echo ""
 echo "5. 检查 MiniMax 模型调用..."
-remote_psql "SELECT COALESCE(outbound_model, client_model) AS model, COUNT(*) AS requests, COUNT(*) FILTER (WHERE success = true) AS success FROM request_logs_hot WHERE ts >= NOW() - INTERVAL '12 hours' AND (outbound_model LIKE '%minimax%' OR client_model LIKE '%minimax%') GROUP BY COALESCE(outbound_model, client_model) ORDER BY requests DESC;"
+remote_psql "SELECT COALESCE(outbound_model, client_model) AS model, COUNT(*) AS requests, COUNT(*) FILTER (WHERE success = true) AS success FROM _request_logs_hot WHERE ts >= NOW() - INTERVAL '12 hours' AND (outbound_model LIKE '%minimax%' OR client_model LIKE '%minimax%') GROUP BY COALESCE(outbound_model, client_model) ORDER BY requests DESC;"
 
 echo ""
 echo "6. 内存使用情况..."

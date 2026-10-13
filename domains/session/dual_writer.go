@@ -9,7 +9,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/session/v2"
 )
 
-// DualWriter writes to both V1 (request_logs) and V2 (sessions) in parallel
+// DualWriter writes to both V1 (_request_logs) and V2 (sessions) in parallel
 //
 // This is the bridge that enables zero-downtime migration:
 //   - V1 write is PRIMARY: failure means request fails
@@ -21,7 +21,7 @@ import (
 //	writer := NewDualWriter(v1Writer, v2Writer, flags, metrics)
 //	err := writer.Write(ctx, req)
 type DualWriter struct {
-	v1Writer RequestLogWriter         // Legacy writer (request_logs)
+	v1Writer RequestLogWriter         // Legacy writer (_request_logs)
 	v2Writer SessionWriterV2Interface // V2 writer (sessions tables)
 
 	flags   FeatureFlags
@@ -33,7 +33,7 @@ type SessionWriterV2Interface interface {
 	Write(ctx context.Context, req *v2.ProcessedRequest) error
 }
 
-// RequestLogWriter is the interface for legacy request_logs writer
+// RequestLogWriter is the interface for legacy _request_logs writer
 type RequestLogWriter interface {
 	Write(ctx context.Context, req *ProcessedRequest) error
 }
@@ -156,7 +156,7 @@ type ProcessedRequest struct {
 //   - V1 write failure → request fails (backward compatible)
 //   - V2 write failure → logged but doesn't fail request (safe rollout)
 func (w *DualWriter) Write(ctx context.Context, req *ProcessedRequest) error {
-	// 1. PRIMARY WRITE: V1 (request_logs)
+	// 1. PRIMARY WRITE: V1 (_request_logs)
 	// This MUST succeed or the entire request fails
 	startV1 := time.Now()
 	err := w.v1Writer.Write(ctx, req)

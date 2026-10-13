@@ -4,7 +4,7 @@ package admin
 //
 // # 这道门测的是什么
 //
-// §9.196 定位到 `request_logs_bodies` 的读法失败，根因是 Citus `columnar`。
+// §9.196 定位到 `_request_logs_bodies` 的读法失败，根因是 Citus `columnar`。
 // 本门把那个结论从**一张表**推广到**整个列存面**，并补上 §9.196 没测的第二种故障。
 //
 // 本轮在真库上实测出来的三条事实（全部可复现，见审计 §9.197.2）：
@@ -21,9 +21,9 @@ package admin
 //
 //  2. **故障与具体表无关，是 columnar 的性质**。
 //     6 个「列存分区 + `_hot` 孪生」的母表**全部**失败：
-//     `request_logs_bodies` / `routing_decision_log` / `supplier_errors` /
+//     `_request_logs_bodies` / `routing_decision_log` / `supplier_errors` /
 //     `usage_ledger` / `request_wal` / `handoff_logs` / `credential_model_index`（7 个）；
-//     而同样是两面的 `request_logs`（全 heap）**通过**，返回 2,184,300 行。
+//     而同样是两面的 `_request_logs`（全 heap）**通过**，返回 2,184,300 行。
 //     ⇒ 「只有 bodies 有问题」是错的。§9.196 的门
 //     `TestSessionFamilyTwoSurfaceUnionShapeIsExecutable` 只列了 5 对 session 族，
 //     看不到上面这 5 个族；本门从**库里的 catalog** 推导全集，不再手写名单。
@@ -231,12 +231,12 @@ func TestColumnarUniverseFromCatalog(t *testing.T) {
 	// 认不得 ⇒ 查询漏了「母表」这一跳，正是造成假零的那一跳。
 	var sawBodies bool
 	for _, r := range rels {
-		if r == "public.request_logs_bodies" {
+		if r == "public._request_logs_bodies" {
 			sawBodies = true
 		}
 	}
 	if !sawBodies {
-		t.Errorf("列存全集里没有 public.request_logs_bodies —— " +
+		t.Errorf("列存全集里没有 public._request_logs_bodies —— " +
 			"全集推导漏了母表这一跳，下游子测试会得到**假零**而不是真结论")
 	}
 }
@@ -316,7 +316,7 @@ func TestColumnarParentTwoSurfaceSetopShape_RealDB(t *testing.T) {
 		t.Errorf("以下列存母表**无法执行生产同款的两腿 UNION ALL 形状**（%d/%d 个带孪生的列存母表）：\n%s\n\n"+
 			"根因（§9.196 已在干净库正面复现）：Citus `columnar` 关系出现在**未命名子查询**里\n"+
 			"参与 `UNION ALL` ⇒ 计划期就抛 invalid perminfoindex。\n"+
-			"⚠ 这**不是 request_logs_bodies 独有的**——全 heap 的 `request_logs` 在同一形状下\n"+
+			"⚠ 这**不是 _request_logs_bodies 独有的**——全 heap 的 `_request_logs` 在同一形状下\n"+
 			"正常返回 2,184,300 行，所以它是 columnar 的性质，不是某张表的毛病。\n"+
 			"⚠ 也**不是「子查询不能包列存表」**：顶层 UNION ALL、CTE、普通/嵌套子查询、\n"+
 			"子查询内 JOIN、子查询内 UNION（去重）/EXCEPT 全部实测通过（审计 §9.197.2）。\n"+
@@ -438,16 +438,16 @@ func TestColumnarSetopSubqueryIsTheNarrowTrigger_RealDB(t *testing.T) {
 	universe := loadColumnarUniverse(ctx, t, pool)
 	parent := ""
 	for _, r := range universe {
-		if r == "public.request_logs_bodies" {
+		if r == "public._request_logs_bodies" {
 			parent = r
 		}
 	}
 	if parent == "" {
-		t.Skipf("列存全集里没有 request_logs_bodies（本机库形态与生产不符），形状边界门未运行（非通过）")
+		t.Skipf("列存全集里没有 _request_logs_bodies（本机库形态与生产不符），形状边界门未运行（非通过）")
 	}
 	hot := hotTwinName(t, pool, parent)
 	if hot == "" {
-		t.Fatalf("request_logs_bodies 没有 _hot 孪生，无法构造两腿形状")
+		t.Fatalf("_request_logs_bodies 没有 _hot 孪生，无法构造两腿形状")
 	}
 
 	safe := []struct {
@@ -460,7 +460,7 @@ func TestColumnarSetopSubqueryIsTheNarrowTrigger_RealDB(t *testing.T) {
 			`SELECT count(*) FROM (SELECT * FROM public.request_logs_bodies_with_current_month LIMIT 1) z`},
 		{"顶层 UNION ALL 三关系（列存夹在中间）",
 			fmt.Sprintf(`SELECT count(*) FROM %s UNION ALL SELECT count(*) FROM %s UNION ALL SELECT count(*) FROM %s`,
-				"public.request_logs", parent, hot)},
+				"public._request_logs", parent, hot)},
 		{"普通子查询（无集合算子）",
 			fmt.Sprintf(`SELECT count(*) FROM (SELECT 1 FROM %s) s`, parent)},
 		{"嵌套子查询",
@@ -483,7 +483,7 @@ func TestColumnarSetopSubqueryIsTheNarrowTrigger_RealDB(t *testing.T) {
 		{"子查询 + 顶层集合算子",
 			fmt.Sprintf(`SELECT count(*) FROM (SELECT 1 FROM %s) s UNION ALL SELECT count(*) FROM %s`, parent, hot)},
 		{"heap 对照：两腿 UNION ALL 放进子查询",
-			fmt.Sprintf(`SELECT count(*) FROM (SELECT 1 FROM public.request_logs_hot UNION ALL SELECT 1 FROM public.request_logs) s`)},
+			fmt.Sprintf(`SELECT count(*) FROM (SELECT 1 FROM public._request_logs_hot UNION ALL SELECT 1 FROM public._request_logs) s`)},
 	}
 
 	var bad []string
@@ -675,7 +675,7 @@ func sqlParamToNull(s string) string { return sqlParamRe.ReplaceAllString(s, "NU
 
 // mentionsAnyRelation 判断 SQL 文本里有没有以**独立词**形式提到任一关系名。
 // isIdentByte 复用 admin 包里既有的那个（见 view_source_column_contract_test.go）——
-// 它把 `.` 排除在标识符之外，所以 `public.request_logs_bodies` 里的裸名能匹配上。
+// 它把 `.` 排除在标识符之外，所以 `public._request_logs_bodies` 里的裸名能匹配上。
 func mentionsAnyRelation(sql string, names []string) bool {
 	lower := strings.ToLower(sql)
 	for _, n := range names {

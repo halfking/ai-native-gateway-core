@@ -1160,7 +1160,7 @@ func startAnalysisLoopIfConfigured(deps *v2DispatchDeps) {
 		//
 		// 三个前置条件同时满足才挂载：
 		//   1. settings.GetPlatformBool("project_attribution.enabled")=true（默认 false）
-		//   2. PG pool 可用（推断需要查 session_dim / project_dim / request_logs）
+		//   2. PG pool 可用（推断需要查 session_dim / project_dim / _request_logs）
 		//   3. resolver 非 nil（依赖 deps.ProjectAttrResolver；由 main.go 装配）
 		//
 		// 任一条件不满足都静默跳过——本轮目标是默认关闭、显式开启，而不是

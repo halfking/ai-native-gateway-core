@@ -3,11 +3,11 @@
 // 存储优化方案 v2 §3-D4：无会话流量落点 = 合成系统会话。
 //
 // gw_session_id 仅约 40% 填充——探针/系统/无会话头流量占多数，S4 停写
-// request_logs 后这类流量必须有落点。本文件把它们统一映射为
+// _request_logs 后这类流量必须有落点。本文件把它们统一映射为
 // client_type='system' 的合成会话（按日聚合，plan 原文形如
 // sys:probe:cred123:20260914），随 session_turns 走同一条单事实管道；
 // 分析侧按 client_type 过滤。不新建平行请求表（否则等于换名重建
-// request_logs，违背弃用初衷）。
+// _request_logs，违背弃用初衷）。
 //
 // 兼容视图（migration 710）对 'sys:%' 会话输出 gw_session_id=NULL，保真 v1
 // 无会话头行在 request_logs_with_current_month 上的 NULL 语义——消费者零

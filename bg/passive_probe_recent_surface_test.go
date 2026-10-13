@@ -10,8 +10,8 @@ import (
 // 2026-09-10 minimax-prod-v2 incident fix: every recent-window read in the
 // passive probe listener must go through request_logs_with_current_month.
 //
-// Production evidence (154): the bare request_logs parent only holds cold
-// rows — its max(ts) was a full day stale — while request_logs_hot held 472
+// Production evidence (154): the bare _request_logs parent only holds cold
+// rows — its max(ts) was a full day stale — while _request_logs_hot held 472
 // successes for (cred 21, MiniMax-M3) in the review window. The listener's
 // success reset, window_total_count refresh, and reviewResolution success
 // check all read the bare parent, so "consecutive transient errors with no
@@ -24,13 +24,13 @@ func TestPassiveProbeRecentWindowReadsUseCurrentMonthSurface(t *testing.T) {
 	}
 	src := string(contents)
 
-	// Any "FROM request_logs<suffix>" read must target the current-month
-	// surface. A bare "FROM request_logs" (suffix empty) is the cold parent
+	// Any "FROM _request_logs<suffix>" read must target the current-month
+	// surface. A bare "FROM _request_logs" (suffix empty) is the cold parent
 	// and is blind to request_logs_hot.
-	re := regexp.MustCompile(`(?i)FROM\s+request_logs(\w*)`)
+	re := regexp.MustCompile(`(?i)FROM\s+_?request_logs(\w*)`)
 	matches := re.FindAllStringSubmatch(src, -1)
 	if len(matches) == 0 {
-		t.Fatalf("no request_logs reads found in passive_probe_listener.go — query surface moved?")
+		t.Fatalf("no _request_logs reads found in passive_probe_listener.go — query surface moved?")
 	}
 	for _, m := range matches {
 		if m[1] != "_with_current_month" {

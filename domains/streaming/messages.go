@@ -92,7 +92,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 	defer r.Body.Close()
 
 	// ── requestAttempt safety-net: every Anthropic /v1/messages
-	//    request must produce exactly one request_logs row.  See
+	//    request must produce exactly one _request_logs row.  See
 	//    ChatHandler.ServeHTTP for the rationale.  attemptLogged
 	//    and the attempt-state fields are shared with the inner
 	//    blocks via Go's closure capture (pointer-typed for slices
@@ -150,7 +150,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		// this is a no-op.
 		applyProvisionalGatewaySessionHeader(r, provisionalSessionID)
 		// Panic recovery: catch any panic from the inner pipeline and
-		// emit a safety-net request_logs row before bubbling up.
+		// emit a safety-net _request_logs row before bubbling up.
 		if rec := recover(); rec != nil {
 			slog.Error("messages handler panic", "panic", rec, "request_id", requestID)
 			attemptErrCode = "internal_panic"
@@ -182,7 +182,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		attemptErrCode = "method_not_allowed"
 		attemptErrMsg = "method not allowed"
 		// 2026-06-20 audit fix: capture the body + model so the
-		// request_logs row records what the client actually sent
+		// _request_logs row records what the client actually sent
 		// (not just "method not allowed"). The deferred safety
 		// net at the top of ServeHTTP will read these closure
 		// variables and emit a fully-populated row when the
@@ -387,7 +387,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		// this canonical name" without paying for an upstream call.
 		//
 		// recordMockRequestLog (not a bare *attemptLogged = true) so the
-		// request still produces its one request_logs row; see the chat
+		// request still produces its one _request_logs row; see the chat
 		// path for the full rationale.
 		if testMode.IsMockMode() {
 			chosen := modelname.CanonicalizeClientModel(ApplyAliasPrefix(reqBody.Model))
@@ -1004,7 +1004,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 	// logging, not RequestBody (which may be protocol-converted for upstream).
 	// 2026-10-13（交叉格式矩阵 B6 观测缺口）：chat 入向在 serveWithExecutor
 	// 里经 applyActualOutboundBody 把 executor 实发字节落进
-	// request_logs_bodies_hot.outbound_body，anthropic 入向此前没有对应
+	// _request_logs_bodies_hot.outbound_body，anthropic 入向此前没有对应
 	// 调用——/v1/messages 请求的出站体永远 NULL，Q2/Q4 的扩展字段保留
 	// 无法在存档层核验。与 chat 路径同款兜底（nil/空体安全）。
 	applyActualOutboundBody(logCtx, result)

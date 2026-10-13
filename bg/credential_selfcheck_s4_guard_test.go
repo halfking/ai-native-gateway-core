@@ -8,7 +8,7 @@ import (
 // S4 停写：凭据自检的错误证据臂（2026-10-02 审计，§9.26）。
 //
 // pickDueCredential 的 v1 臂不是排序，是**硬过滤**（原为 INNER JOIN
-// `e.last_error_at IS NOT NULL`）。停写生效 24h 后 request_logs_hot 不再产生新的
+// `e.last_error_at IS NOT NULL`）。停写生效 24h 后 _request_logs_hot 不再产生新的
 // 失败行 ⇒ 没有任何凭据能通过 ⇒ 自检**自己静默**。与 credential_recovery 的
 // lookbackCandidateSQL 同形（方向 ②：证据缺失）。
 //
@@ -56,8 +56,8 @@ func TestSelfcheckErrorArmCoversSessionFamily(t *testing.T) {
 			"**补了臂但没接线**是最容易自我欺骗的一种假修复（看起来做了，实际零效果）。\n" +
 			"当前 join 关键字：" + armJoinKeyword(eArm))
 	}
-	if !strings.Contains(eArm, "FROM request_logs_hot rl") {
-		t.Error("v1 臂的证据源不再读 request_logs_hot —— 请确认这是有意改动并同步本门")
+	if !strings.Contains(eArm, "FROM _request_logs_hot rl") {
+		t.Error("v1 臂的证据源不再读 _request_logs_hot —— 请确认这是有意改动并同步本门")
 	}
 
 	// ---- 臂 se（session 族）：必须存在，且类型转换必须显式 ----

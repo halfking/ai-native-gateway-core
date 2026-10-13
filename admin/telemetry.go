@@ -119,7 +119,7 @@ type telemetryIngester struct {
 	// 2026-08-26: optional Redis client wired by SetIngesterRedisClient.
 	// When non-nil, persistRequestLog bumps the canonical model name into
 	// the recently-used ZSET so the admin "凭据路由模型" picker has a
-	// Redis fast path that mirrors the request_logs_hot SQL aggregate.
+	// Redis fast path that mirrors the _request_logs_hot SQL aggregate.
 	// Nil-safe: persistRequestLog skips the bump without affecting the
 	// existing ingest contract.
 	//
@@ -140,7 +140,7 @@ type telemetryIngester struct {
 
 	// 2026-10-01 F5：热区请求侧 body 镜像的投递缝（2026-09-24 方案 H3）。
 	// admin HTTP ingest（/api/telemetry/request-log）是
-	// request_logs_bodies_hot 的**第三落库点**——方案 §3-H3 只点了 telemetry
+	// _request_logs_bodies_hot 的**第三落库点**——方案 §3-H3 只点了 telemetry
 	// client 与 session v2 两处，本路径同样调 upsertRequestLogBodies，此前未接
 	// 镜像，灾备取数会漏掉这批正文。
 	//
@@ -205,10 +205,10 @@ func (t *telemetryIngester) mirrorRequestBodies(e *requestLogInput) {
 	if mirror == nil || e == nil || e.RequestID == "" {
 		return
 	}
-	// tenant 与同事务内 request_logs_hot 行的 tenant_id 严格同源（同一个
+	// tenant 与同事务内 _request_logs_hot 行的 tenant_id 严格同源（同一个
 	// nonEmptyDefault 归一），镜像目录与 PG 行租户不可能分裂。
 	tenant := nonEmptyDefault(e.TenantID)
-	// request_logs_hot.ts 由 INSERT 侧 now() 生成、bodies_hot 复制该 ts；本
+	// _request_logs_hot.ts 由 INSERT 侧 now() 生成、bodies_hot 复制该 ts；本
 	// 路径无 EventAt 盖章（requestLogInput 不带时间戳字段），用投递时刻近似，
 	// 日目录粒度下与 PG 侧同属一日。
 	at := time.Now()
@@ -349,8 +349,8 @@ func (t *telemetryIngester) persistDecisionLog(ctx context.Context, e *decisionL
 	}
 }
 
-// requestLogsWriteEnabled 报告 request_logs 宽表家族（request_logs_hot 主行 +
-// request_logs_bodies_hot 正文）当前是否允许写入 —— S4 停写 gate，键
+// requestLogsWriteEnabled 报告 _request_logs 宽表家族（_request_logs_hot 主行 +
+// _request_logs_bodies_hot 正文）当前是否允许写入 —— S4 停写 gate，键
 // storage.request_logs_write_enabled（默认 true = 维持现状双写，HotReload
 // 即时生效）。与 telemetry 包的 requestLogsWriteEnabled()、Lite sink 同一键、
 // 同一默认。
@@ -377,7 +377,7 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	rawModel := firstNonEmptyStr(e.OutboundModel, e.ClientModel)
 	search := buildSearchText(e)
 
-	// 2026-10-01 F5：本路径是 request_logs_bodies_hot 的第三落库点
+	// 2026-10-01 F5：本路径是 _request_logs_bodies_hot 的第三落库点
 	// （方案 §3-H3 只点了 telemetry client 与 session v2），此前未接热区镜像。
 	// 投递点选在入口（Begin 之前）：与 telemetry client.persistRequestLog 顶部
 	// 同一边界语义——入口即投递，PG 停机/degraded 早退都不会让这批正文失去
@@ -386,15 +386,15 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	//
 	// S4 停写门必须同键同门（2026-10-01 审计修正，见 requestLogsWriteEnabled
 	// 与 storage/file/request_mirror.go 头注「S4 停写门同键同门」）：镜像写的是
-	// request_logs_bodies_hot 的同一批正文，运维关停该键的目的是止血磁盘，
+	// _request_logs_bodies_hot 的同一批正文，运维关停该键的目的是止血磁盘，
 	// 若镜像绕过该门就是「停写却仍落盘」，且镜像与 PG 两侧行为分裂。
 	if requestLogsWriteEnabled() {
 		t.mirrorRequestBodies(e)
 	}
 
 	// 2026-07-21: Implement proper two-table separation (Ticket #10, Issue #8)
-	// - request_logs_hot: stores metadata + preview fields (first ~500 chars)
-	// - request_logs_bodies_hot: stores complete request/response/outbound bodies
+	// - _request_logs_hot: stores metadata + preview fields (first ~500 chars)
+	// - _request_logs_bodies_hot: stores complete request/response/outbound bodies
 	//
 	// Phase 1 routes outbound_body to the dedicated body table as well, so the
 	// wide metadata table does not duplicate TOAST-heavy payloads.
@@ -449,18 +449,18 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 
 	// S4 停写门控（storage.request_logs_write_enabled，与 telemetry client /
 	// Lite sink 同门）：关停后本路径只保留上方 usage_ledger 计费行，跳过
-	// request_logs_hot 主行与 request_logs_bodies_hot 正文（session 六表族是
+	// _request_logs_hot 主行与 _request_logs_bodies_hot 正文（session 六表族是
 	// 唯一事实源）；提交逻辑不变。
 	if requestLogsWriteEnabled() {
-		// 2026-07-05 migration 341: INSERT directly targets request_logs_hot
+		// 2026-07-05 migration 341: INSERT directly targets _request_logs_hot
 		// (独立热表，0-7 天数据窗口)。所有 INSERT/UPDATE/DELETE 统一写入 _hot 表，
 		// 后台 partition_manager 会定期将冷数据（>7 天）迁移到月度分区。
 		//
 		// 2026-07-21 Ticket #10: Modified to NOT include request_body/response_body.
-		// These are now written to request_logs_bodies_hot (see below).
+		// These are now written to _request_logs_bodies_hot (see below).
 		// Only preview fields remain in the metadata table.
 		_, err = tx.Exec(ctx, `
-			INSERT INTO request_logs_hot (
+			INSERT INTO _request_logs_hot (
 				request_id, ts, tenant_id, application_id, api_key_id,
 				end_user_id, client_model, outbound_model,
 				credential_id, provider_id, canonical_id,
@@ -514,8 +514,8 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 			e.UpstreamFinishReason,
 		)
 		if err != nil {
-			t.classifyAndCount("request_logs_hot", e.RequestID, err)
-			slog.Warn("telemetry ingest request_logs failed", "request_id", e.RequestID, "error", err)
+			t.classifyAndCount("_request_logs_hot", e.RequestID, err)
+			slog.Warn("telemetry ingest _request_logs failed", "request_id", e.RequestID, "error", err)
 			return
 		}
 
@@ -534,17 +534,17 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 		err = upsertRequestLogBodies(ctx, tx, e.RequestID, e.RequestBody, e.ResponseBody)
 
 		if err != nil {
-			t.classifyAndCount("request_logs_bodies_hot", e.RequestID, err)
+			t.classifyAndCount("_request_logs_bodies_hot", e.RequestID, err)
 			slog.Warn("telemetry ingest bodies failed", "request_id", e.RequestID, "error", err)
 			return
 		}
 
 		// 2026-08-26: bump the recently-used ZSET so the admin "凭据路由模型"
-		// picker has a Redis fast path mirroring the request_logs_hot aggregate.
+		// picker has a Redis fast path mirroring the _request_logs_hot aggregate.
 		// Fires only on successful user requests (probes do not write here) and
 		// only when the row actually persisted. Best-effort: Redis errors are
 		// swallowed so the ingest contract is unchanged. ClientModel is the
-		// canonical name the gateway resolves before writing request_logs_hot
+		// canonical name the gateway resolves before writing _request_logs_hot
 		// (the request_log_ingest schema does not carry a separate canonical
 		// field — ClientModel is the lower-cased canonical form on this path).
 		if rc := t.redisClient.Load(); rc != nil && e.Success {
@@ -559,7 +559,7 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 
 func upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestID string, requestBody, responseBody *string) error {
 	_, err := tx.Exec(ctx, `
-		UPDATE request_logs_bodies_hot
+		UPDATE _request_logs_bodies_hot
 		   SET request_body = COALESCE($2::jsonb, request_body),
 		       response_body = COALESCE($3::jsonb, response_body)
 		 WHERE request_id = $1
@@ -569,11 +569,11 @@ func upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestID string, re
 	}
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO request_logs_bodies_hot (
+		INSERT INTO _request_logs_bodies_hot (
 			request_id, ts, request_body, response_body
 		)
 		SELECT $1, rl.ts, $2::jsonb, $3::jsonb
-		  FROM request_logs_hot rl
+		  FROM _request_logs_hot rl
 		 WHERE rl.request_id = $1
 		ON CONFLICT DO NOTHING
 	`, requestID, requestBody, responseBody)
@@ -582,7 +582,7 @@ func upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestID string, re
 	}
 
 	_, err = tx.Exec(ctx, `
-		UPDATE request_logs_bodies_hot
+		UPDATE _request_logs_bodies_hot
 		   SET request_body = COALESCE($2::jsonb, request_body),
 		       response_body = COALESCE($3::jsonb, response_body)
 		 WHERE request_id = $1

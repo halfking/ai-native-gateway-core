@@ -20,7 +20,7 @@ package admin
 //
 //	直读底表（DROP 之前必须改） vs 经视图读（DROP **那一刻**才出问题）
 //
-// 触发条件是 `request_logs_with_current_month` 的 v1 臂随 `DROP request_logs` 消失
+// 触发条件是 `request_logs_with_current_month` 的 v1 臂随 `DROP _request_logs` 消失
 // ⇒ 这些文件**不是报错，而是静默返回空结果**。典型的 work_type 在 session 臂上是 0%，
 // 页面变空、接口 200、错误日志什么都不留。
 //
@@ -53,7 +53,7 @@ import (
 // ⚠ 这里**只放真正的读方**。`db/db.go`（canonical 投影的定义者）与
 // `domains/hooks/observability/telemetry/client.go`（v1 **写方**）同样出现在
 // view-arm 扫描里——因为它们**提到了那些关系名**——但它们的角色不是「读方」：
-// 前者退役 request_logs = 换掉整个投影体，后者 = 停止写入。
+// 前者退役 _request_logs = 换掉整个投影体，后者 = 停止写入。
 // 两者的**处置时点与读方不同**（读方是切换那一刻才降级，这两者是切换之前就要动），
 // 所以它们留在 retirementBreakers，不在这里重复登记。
 //

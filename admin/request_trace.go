@@ -7,7 +7,7 @@
 //
 // 数据来源:
 //   - 优先: Redis (request:trace:{request_id}, 进行中或刚完成的请求)
-//   - 兜底: PostgreSQL (request_logs.trace_events, 已 flush 的历史)
+//   - 兜底: PostgreSQL (_request_logs.trace_events, 已 flush 的历史)
 //
 // 设计参考 docs/design/request-trace-system.md, 复用 route_incidents.go
 // 的"store + handler"分层与注册风格(参见 admin/route_incidents.go)。
@@ -183,7 +183,7 @@ func (h *RequestTraceHandler) requestTraceState(ctx context.Context, requestID s
 	var status string
 	var traceEvents []byte
 	// 2026-07-20: 与 LoadFromPG 同步 — 同时查 hot + 分区表。
-	// 最近 7 天的请求只写在 request_logs_hot(参 migration 341 hot_table_independence)。
+	// 最近 7 天的请求只写在 _request_logs_hot(参 migration 341 hot_table_independence)。
 	// 2026-10-13 S3 波 2（登记，不改）：trace_events 不在 canonical 118 列契约
 	// （镜像从不写它，视图刻意未投影），此查询只能留在 v1 双腿上——服务
 	// 停写前历史；新请求的 PG trace 兜底缺席，链路事件以 Redis（进行中/刚
@@ -191,9 +191,9 @@ func (h *RequestTraceHandler) requestTraceState(ctx context.Context, requestID s
 	err := h.db.QueryRow(ctx, `
 		SELECT COALESCE(request_status, ''), trace_events
 		FROM (
-			SELECT request_status, trace_events, ts FROM request_logs_hot WHERE request_id = $1
+			SELECT request_status, trace_events, ts FROM _request_logs_hot WHERE request_id = $1
 			UNION ALL
-			SELECT request_status, trace_events, ts FROM request_logs WHERE request_id = $1
+			SELECT request_status, trace_events, ts FROM _request_logs WHERE request_id = $1
 		) t
 		ORDER BY ts DESC NULLS LAST
 		LIMIT 1
@@ -255,7 +255,7 @@ func (h *RequestTraceHandler) handleAIPrompt(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// 拉取 request_logs 中的基本信息(模型 / 状态 / 错误)
+	// 拉取 _request_logs 中的基本信息(模型 / 状态 / 错误)
 	reqSummary := h.fetchRequestSummary(ctx, requestID)
 
 	prompt := buildAIPrompt(reqSummary, trace, req.UserQuestion)
@@ -281,7 +281,7 @@ type requestSummary struct {
 	FailureStage  string `json:"failure_stage,omitempty"`
 	Ts            string `json:"ts"`
 
-	// 2026-07-17: probe 行的真实诊断元信息。request_logs 对 probe 行
+	// 2026-07-17: probe 行的真实诊断元信息。_request_logs 对 probe 行
 	// 的 failure_stage / token 是占位值, 真正的失败原因在 auto_decision
 	// JSONB 里。这里解析出来供 buildAIPrompt 的"探测详情"段展示。
 	IsProbe       bool   `json:"-"`
@@ -420,7 +420,7 @@ func buildAIPrompt(s requestSummary, t *gwtrace.RequestTrace, userQuestion strin
 	}
 	sb.WriteString("\n")
 
-	// 探测详情段(仅 probe 行): request_logs 对 probe 行的 token/failure_stage
+	// 探测详情段(仅 probe 行): _request_logs 对 probe 行的 token/failure_stage
 	// 是占位值, 这里把 auto_decision JSONB 里的真实诊断(err_code/http_status/
 	// via_proxy/origin)显式列出, 让 LLM 拿到真实根因而非误导性的"probe failed"。
 	if s.IsProbe {
@@ -549,7 +549,7 @@ func traceTruncate(s string, max int) string {
 
 // ─── probe 行 trace 合成 (2026-07-17) ─────────────────────────────────────────
 //
-// probe 行(emitter 写入)在 request_logs.trace_events 永远是 NULL, 导致
+// probe 行(emitter 写入)在 _request_logs.trace_events 永远是 NULL, 导致
 // /trace 与 /ai-prompt 对 probe 请求 404。真实诊断数据其实已记录在
 // node_probe_runs 表(request_url / request_body / response_body /
 // direct_err_code / via_proxy), 这里从该表合成一条 RequestTrace, 让运维
@@ -570,7 +570,7 @@ func isProbeRequestID(requestID string) bool {
 // 2026-07-17 (audit fix):
 //   - 匹配 sanitized model 段(m[2]), 防止同一 credential 在 ±2 分钟内对多个
 //     model 各跑 probe 时, 最近邻查询返回无关 model 的行(张冠李戴)。
-//   - 读取 request_logs.auto_decision.probe_origin, 据此渲染 direct 或
+//   - 读取 _request_logs.auto_decision.probe_origin, 据此渲染 direct 或
 //     gateway 轮的列。request_id 前缀不区分 origin(都拼成 probe-direct-...),
 //     所以必须从该行自身的元信息判断它属于哪一轮。
 func (h *RequestTraceHandler) buildProbeTrace(ctx context.Context, requestID string) *gwtrace.RequestTrace {
@@ -586,7 +586,7 @@ func (h *RequestTraceHandler) buildProbeTrace(ctx context.Context, requestID str
 		ts = time.Now()
 	}
 
-	// Determine which round this request_id represents. request_logs writes
+	// Determine which round this request_id represents. _request_logs writes
 	// task_type_chosen='probe_direct'|'probe_gateway' into auto_decision; the
 	// request_id prefix is identical for both rounds, so the id alone can't
 	// tell us. Default to "direct" when the lookup fails (legacy rows).

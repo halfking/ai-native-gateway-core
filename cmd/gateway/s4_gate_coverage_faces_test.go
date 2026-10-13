@@ -11,7 +11,7 @@ import "testing"
 // correctly called that window void (`insufficient_v1_coverage_in_window`).
 //
 // The danger is that a *wrong* void looks exactly like that true one. Reading
-// only the parent `request_logs` — §9.160.7's trap, hit three times already in
+// only the parent `_request_logs` — §9.160.7's trap, hit three times already in
 // this section — drops the newest hours and drives V1CoveragePP to ~0 while v1
 // is in fact writing normally. Both land on the same reason string, so the
 // verdict cannot tell them apart, and the obvious "fix" (lowering
@@ -19,16 +19,16 @@ import "testing"
 //
 // The four relations are asymmetric on purpose and are all load-bearing:
 //
-//   - `request_logs_hot` — the pre-promote window; without it the most recent
+//   - `_request_logs_hot` — the pre-promote window; without it the most recent
 //     hours vanish from the numerator.
-//   - `request_logs` — the promoted partitions; without it every historical
+//   - `_request_logs` — the promoted partitions; without it every historical
 //     hour vanishes.
 //   - `session_turns_hot` / `session_turns` — the denominator is "hours with
 //     traffic on EITHER side". Losing the session side would shrink the
 //     denominator instead, inflating the ratio toward a false Ready.
 func TestS4GateCoverageSQLReadsBothFaces(t *testing.T) {
 	for _, rel := range []string{
-		"request_logs_hot", "request_logs",
+		"_request_logs_hot", "_request_logs",
 		"session_turns_hot", "session_turns",
 	} {
 		if !containsIdentifier(v1CoverageHoursSQL, rel) {
@@ -41,8 +41,8 @@ func TestS4GateCoverageSQLReadsBothFaces(t *testing.T) {
 }
 
 var coverageFaceLossConsequence = map[string]string{
-	"request_logs_hot":  "丢的是最新若干小时（预提升窗口）",
-	"request_logs":      "丢的是全部历史小时（已提升分区）",
+	"_request_logs_hot": "丢的是最新若干小时（预提升窗口）",
+	"_request_logs":     "丢的是全部历史小时（已提升分区）",
 	"session_turns_hot": "分母丢掉最近若干小时 ⇒ 比例被抬高",
 	"session_turns":     "分母丢掉全部历史小时 ⇒ 比例被抬高",
 }

@@ -3,7 +3,7 @@ package main
 // validate_sessions_v2: Data validation tool for Sessions V2 storage
 //
 // Purpose:
-//   Compare data between request_logs (V1) and sessions V2 tables to verify
+//   Compare data between _request_logs (V1) and sessions V2 tables to verify
 //   dual-write integrity and identify discrepancies.
 //
 // Usage:
@@ -220,9 +220,9 @@ func validateBatch(
 
 	// §9.222 — refuse to validate a window wider than the data that exists.
 	//
-	// request_logs is not a permanent store: on 252 the monthly job
+	// _request_logs is not a permanent store: on 252 the monthly job
 	// pg17-drop-old-columnar-partitions.sh (RETAIN_MONTHS=2) DROPs every
-	// request_logs partition older than two months, and session_turns is on no
+	// _request_logs partition older than two months, and session_turns is on no
 	// rotation list. A window wider than that does not error and does not come
 	// back empty — it comes back **truncated**, and ≥100 sessions can still
 	// load from the surviving part, so the gate would report parity over a
@@ -260,7 +260,7 @@ func validateBatch(
 		requested.Format(time.RFC3339), endDate.Format(time.RFC3339))
 	if truncated {
 		log.Printf("FATAL: refusing to validate this window: %s. "+
-			"request_logs is not a permanent store — on 252 the monthly "+
+			"_request_logs is not a permanent store — on 252 the monthly "+
 			"pg17-drop-old-columnar-partitions.sh drops partitions older than 2 months, "+
 			"while session_turns is on no rotation list. A parity report over a window that "+
 			"does not match the data that exists is indistinguishable from one that does, "+

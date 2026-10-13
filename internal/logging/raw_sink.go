@@ -264,7 +264,7 @@ func makeRawEntry(direction, requestID, protocol string, body []byte, headers ma
 
 // makeOverflowStub 构建缓冲/队列满时的 overflow stub 条目（Async/Buffered
 // 共用）：direction 固定为 "overflow"，Error 携带 "raw_log_queue_full:<direction>"，
-// 原始 payload 丢弃但信封保留，供外部端点与 request_logs 关联去重。
+// 原始 payload 丢弃但信封保留，供外部端点与 _request_logs 关联去重。
 func makeOverflowStub(direction, requestID, protocol, conversionStep string, env RawCorrelationEnvelope) RawDataEntry {
 	return RawDataEntry{
 		Timestamp:        time.Now(),

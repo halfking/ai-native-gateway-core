@@ -6,7 +6,7 @@
 // ----------------------------
 // 三张表记的是**同一个** request id，但列类型不同：
 //
-//	request_logs.request_id                 text NOT NULL   → 32-hex（无连字符）
+//	_request_logs.request_id                 text NOT NULL   → 32-hex（无连字符）
 //	request_state_transitions.request_id     text            → 32-hex（无连字符）
 //	routing_decision_log.request_id         uuid NOT NULL   → 36 位带连字符
 //
@@ -64,12 +64,12 @@ var normalizedRe = regexp.MustCompile(`replace\(\s*[\w.]*request_id::text\s*,\s*
 // 登记它们不是为了放行，而是为了让「白名单项消失了/变了」也能被发现。
 // ⚠️ key 是 `<相对本包路径>:<行内特征>`，行内特征必须仍能在该文件里 grep 到。
 var noopTextCasts = map[string]string{
-	"analytics.go:request_id::text = ANY($1::text[])": "request_logs 是 text 列；上一段 request_logs_hot 分支连 ::text 都不加，两边等价。别改成 replace(...)",
+	"analytics.go:request_id::text = ANY($1::text[])": "_request_logs 是 text 列；上一段 _request_logs_hot 分支连 ::text 都不加，两边等价。别改成 replace(...)",
 }
 
 // noopTextCastsDB 同上，但在 db 包。
 var noopTextCastsDB = map[string]string{
-	"db.go:request_id::text AS request_id": "routing_analytics_source 从 request_logs_hot / request_logs 取数，两张表 request_id 都是 text ⇒ 空操作",
+	"db.go:request_id::text AS request_id": "routing_analytics_source 从 _request_logs_hot / _request_logs 取数，两张表 request_id 都是 text ⇒ 空操作",
 }
 
 func readSource(t *testing.T, path string) string {
@@ -96,7 +96,7 @@ func TestCrossTableRequestIDRepresentation(t *testing.T) {
 		}
 		if !strings.Contains(s, "request_id text NOT NULL,") {
 			t.Error("schema 里已找不到 `request_id text NOT NULL,`：" +
-				"request_logs 侧的列类型变了，请复核跨表表示一致性")
+				"_request_logs 侧的列类型变了，请复核跨表表示一致性")
 		}
 	})
 
@@ -172,10 +172,10 @@ func TestCrossTableRequestIDRepresentation(t *testing.T) {
 				t.Errorf("db 包白名单项 %q 已不存在：请删除或更新（否则恒绿）", key)
 			}
 		}
-		// db 包的 routing_analytics_source 从 request_logs* 取数，两张表都是 text 列
+		// db 包的 routing_analytics_source 从 _request_logs* 取数，两张表都是 text 列
 		// ⇒ 这里的 ::text 是空操作。**只登记，不禁止** —— 真正的禁止在 admin 包那个子测试里。
-		if !strings.Contains(body, "FROM request_logs_hot") {
-			t.Error("db.go 里已找不到 `FROM request_logs_hot`：" +
+		if !strings.Contains(body, "FROM _request_logs_hot") {
+			t.Error("db.go 里已找不到 `FROM _request_logs_hot`：" +
 				"routing_analytics_source 的数据来源变了，请复核 db 包的空操作判断")
 		}
 	})

@@ -126,7 +126,7 @@ func TestLedgerReconciler_RunOnce_RealDB(t *testing.T) {
 	tenant := fmt.Sprintf("recon_it_%d", time.Now().UnixNano())
 	defer func() {
 		_, _ = pool.Exec(ctx, `DELETE FROM credit_ledger_hot WHERE tenant_id = $1`, tenant)
-		_, _ = pool.Exec(ctx, `DELETE FROM request_logs_hot WHERE tenant_id = $1`, tenant)
+		_, _ = pool.Exec(ctx, `DELETE FROM _request_logs_hot WHERE tenant_id = $1`, tenant)
 		_, _ = pool.Exec(ctx, `DELETE FROM maas_reconciliation_findings WHERE tenant_id = $1`, tenant)
 	}()
 
@@ -170,7 +170,7 @@ func TestLedgerReconciler_RunOnce_RealDB(t *testing.T) {
 	//
 	// 该 consume 行同时参与余额链，故 balance_after 取 126 = 151-25 保持自洽。
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO request_logs_hot (request_id, ts, tenant_id, credits_charged, total_tokens, success)
+		INSERT INTO _request_logs_hot (request_id, ts, tenant_id, credits_charged, total_tokens, success)
 		VALUES ('recon_it_req', now() - interval '1 hour', $1, 30, 10, TRUE)
 	`, tenant); err != nil {
 		t.Fatalf("seed usage: %v", err)

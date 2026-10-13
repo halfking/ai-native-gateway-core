@@ -13,7 +13,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 )
 
-// classCase is one request_logs row shape fed to BOTH classifiers: the SQL
+// classCase is one _request_logs row shape fed to BOTH classifiers: the SQL
 // expression in mirrorDriftClassSQL and the Go predicate in
 // telemetry.IsInternalAutoEntry. The two must agree on the loopback arm —
 // that agreement is the whole point of the test.

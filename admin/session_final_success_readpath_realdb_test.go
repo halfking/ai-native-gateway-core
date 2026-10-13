@@ -12,7 +12,7 @@ package admin
 // 真库实测（7 天窗口）：
 //
 //	session_turns ∪ session_turns_hot：31,274 轮，is_final_success 非空 **0**
-//	request_logs：                 73,264 行，is_final_success 非空 **9,614**
+//	_request_logs：                 73,264 行，is_final_success 非空 **9,614**
 //
 // 而 `admin/session_online.go:446` 的 `querySessionTimeline` 直读 session 族
 // 原生表并取 `COALESCE(rl.is_final_success, FALSE)` ⇒ 该值**恒为 FALSE**。
@@ -23,7 +23,7 @@ package admin
 // 断言它是 TRUE；再种一行 FALSE，断言读回 FALSE。
 //
 // ⇒ 阳性对照为绿 ⇒ 「0」不是读路缺陷造成的，**缺陷在写侧**
-// （`claimSessionFinalSuccess` 只 UPDATE `request_logs_hot`，session 族无等价写方）。
+// （`claimSessionFinalSuccess` 只 UPDATE `_request_logs_hot`，session 族无等价写方）。
 // 这一条把「读路坏了」与「写路没写」分开，是本轮唯一不可省略的判别动作。
 //
 // # 为什么不直接修

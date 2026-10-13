@@ -22,7 +22,7 @@ WITH active_sessions AS (
     COUNT(*) as turn_count,
     MIN(ts) as first_ts,
     MAX(ts) as last_ts
-  FROM request_logs
+  FROM _request_logs
   WHERE ts > NOW() - INTERVAL '30 days'
     AND gw_session_id IS NOT NULL
     AND gw_session_id != ''
@@ -46,7 +46,7 @@ session_requests AS (
     r.compression_strategy,
     r.compression_meta,
     ROW_NUMBER() OVER (PARTITION BY r.gw_session_id ORDER BY r.ts) as turn_number
-  FROM request_logs r
+  FROM _request_logs r
   INNER JOIN active_sessions s ON r.gw_session_id = s.gw_session_id AND r.tenant_id = s.tenant_id
   WHERE r.success = true
     AND r.request_body IS NOT NULL

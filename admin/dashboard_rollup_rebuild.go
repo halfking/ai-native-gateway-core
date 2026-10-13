@@ -14,7 +14,7 @@ package admin
 // 语义：from/to 都是 YYYY-MM-DD（UTC，**闭区间**），内部按 [from 00:00, to+1 00:00)
 // 重算。缺省 = 最近 7 天（与 statsRetentionDays=90 相比保守，且覆盖看板 7d 页签）。
 //
-// 幂等且可中断后重跑：request_logs 才是事实源，聚合表是派生数据。
+// 幂等且可中断后重跑：_request_logs 才是事实源，聚合表是派生数据。
 //
 // Redis 侧不需要在这里清缓存：boardcache 每 15 分钟无条件 RebuildScope 回读
 // PG（domains/stats/boardcache/rebuild.go:44），回填完成后最多 15 分钟看板
