@@ -920,3 +920,21 @@ host-first 孤儿网关回收 + 517 形态探测 r2538、mobile UX 第二轮、2
 > 途径，须硬 400 实证；不动 A1.6 的 fail-open 教义）。教训：**IR 序列化
 > 路径与扩展还原路径对同一字段的方言政策必须一致**——两路径不一致时，
 > 一条修好了另一条还在漏。
+
+> **r1022（2026-10-13，提交 25eca54fa，随本地 2591 上线）**：claude-sonnet-5
+> 「返回有 tools 但没有成功执行」= 流式还原毒分支整帧吞掉工具参数 JSON
+> 结构字符。/v1/responses 的 function_call_arguments.delta 里出现 marker
+> 家族文本（模型自造 `{sensitive_*}` 或回显请求侧遮蔽 marker）且分片边界
+> 落在 marker 尾与 `\"`/`}`/`&&` 之间时，restoreStreamStringField 两个
+> 整帧遮蔽分支把结构字符一并换成 `[REDACTED]`，客户端拼接参数 JSON.parse
+> 失败→工具不执行→模型重发死循环。修复：JSON 参数 lane（三协议共用）改
+> 跨度级遮蔽（分支 A 透传 restored，分支 B `redactedMarker + value`），
+> 散文 lane 保持 r244 整段契约。判据同层驱动 + 真实捕获分片回放 + 前提
+> 在场配对，M1/M2 单分支变异红。**踩坑**：`reservedMarkerStarted` 要求
+> 扣住前缀含完整 `{sensitive` 词——短前缀 `{sens` 的续帧走的是 verbatim
+> 释放路径，第一版判据因此假绿；变异不红时先用探针找准分支触发条件。
+> **取证方法论**：解包 ZCode（AI-SDK）确认工具 input 取自
+> output_item.done 的 arguments 并被 JSON.parse，才把「客户端解析错误」
+> 定位到参数字符串完整性上。遗留登记：Responses 桥 message/function_call
+> 同 output_index:0（规范违规、现 SDK 不炸）未动。
+> 详见 `docs/audit/2026-10-13-claude-sonnet-5-tools解析错误-r1022.md`。
