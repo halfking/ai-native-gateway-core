@@ -223,7 +223,19 @@ end
 
 local current_priority = tonumber(redis.call("HGET", node_key, "source_priority") or "0") or 0
 if current_priority > 10 then
-  redis.call("EXPIRE", node_key, node_ttl)
+  -- Probe/admin-priority keys own their TTL floor (probeWriteTTLFloor, 7h).
+  -- EXPIRE node_ttl here SHRINKS that floor to the traffic TTL on every
+  -- request: a busy-then-idle pair expires minutes after its last request,
+  -- the URSM v2 T4 read contract then fails the view closed, and the next
+  -- request stalls in sync_no_candidate_probe (154 2026-10-13 grok-4.6
+  -- "unreliable": every resume after an idle gap paid the ~9s rescue, and
+  -- each rescue re-entered the tentative-restore revert loop). Extend-only:
+  -- refresh a key that is about to lapse, never shorten one that already
+  -- outlives the traffic TTL. TTL = -1 (persistent) is left untouched.
+  local existing_ttl = redis.call("TTL", node_key)
+  if existing_ttl >= 0 and existing_ttl < node_ttl then
+    redis.call("EXPIRE", node_key, node_ttl)
+  end
   return {"applied", "0", "0"}
 end
 

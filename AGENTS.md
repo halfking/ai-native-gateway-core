@@ -1133,6 +1133,46 @@ probe body 形状断言）；工作区另有并行会话 r1023 的缩进级遗�
 
 ---
 
+# 追加：2026-10-13 r1026 —— grok-4.6「不可靠」双根因：URSM 键 TTL 被流量砍缩 + tentative restore 必然回环
+
+> 用户报告：经 llm.kxpms.cn 调 grok-4.6 不可靠/总失败，怀疑「供应商模式没生效」。
+> **模式没问题**（proactive chat→responses 升级在生产生效，实测出站 URL=
+> `api.vapeur.ai/v1/responses`）；真根因是可用性层两缺陷，修复已部署。
+> 详见 `docs/audit/2026-10-13-grok46不可靠根因-ursm键ttl砍缩与tentative回环-r1026.md`。
+
+1. **record_request.lua(+dual) prio>10 分支砍缩 TTL**：probe 键 7h 地板
+   （probeWriteTTLFloor）被每条流量遥测 `EXPIRE node_ttl`(15min) 砍回；
+   稀疏流量模型（grok-4.6 48h 27 行）每次空闲>15min 键过期 → 视图红 →
+   唯一候选被滤 → 9s sync probe 挂起（实测冷请求 15.8s vs 热 7-9s）。
+   修复=extend-only（只延不砍，TTL=-1 不动，prio≤10 原语义不变）。
+   判据 `TestRecordRequestProbePriorityKeyTTLNeverShrinks`（3 子用例），
+   变异红在正确断言。脚本长度钉子 13089/11579 随更。
+2. **ProbeSync tentative restore 回环**：2026-08-24 盖章
+   `probe_revert_at=+15min` 依赖「下一次确认探测」，2026-09-20 park 政策
+   使确认结构性永不到来 → ProbeRollback 每 15min 必然翻红 5min
+   （实测锚点：16:23:11 盖章 → **16:38:08** `probe_revert_timeout` 翻红），
+   翻红窗内请求再触发救援再盖章 = 自持循环；且翻红期间 reconciler 的
+   `cmb.available=TRUE` 谓词把该对排除在修复外——两根因互相放大。
+   修复=删盖章调用（恢复为最终态；`MarkTentativeRestore`/ProbeRollback
+   机制保留消化滚动部署期存量盖章行）。判据改写为
+   `TestProbeSyncRestoreIsFinalWithoutTentativeStamp`（反契约 + R-vapeur2
+   两条竞态不变量保留），变异红。
+3. 部署：154=**2576-9e2d77b9**（17:14 切流，active_port=8782；本 checkout
+   的 seq 计数器独立，2576<2602 是正常现象，以回显 version= 为准），
+   二进制指纹：`Extend-only`×2 + `revert loop` 在场、
+   `tentative restore stamp failed` 消失；154 同时补齐了 r1025。
+   245 同构建并行部署。**本次部署从 llm-gateway-go-4 checkout 以脏工作区
+   构建（用户流程=先部署验证后提交），发布 sha 显示 HEAD 提交号但产物含
+   本轮修复，用 strings 指纹判定。**
+4. 开放项（登记不修）：① reconciler 盲区——键过期后 14+ tick 未修、
+   `repaired≈36/tick` 恒定轮转未解释（修复①后用户面影响缩小，灾难恢复
+   场景仍需单独根修）；② fp_slot 新实例启动即 ratio=1（指纹槽跨重启
+   残留，降级放行正常）；③ persist collect 30s SCAN 仍超时（既有）；
+   ④ 死凭据 72/68 的 expired-binding 恢复队列空转待 owner 清退。
+5. 量具坑：epoch 毫秒心算连环错（必须 `date +%s%3N` 同框比对）；
+   strings 找注释短语先确认短语真在源里（`existing_ttl` 这类新标识符
+   是可靠 marker）；共享 db2 禁用 `--scan` 全库（挂死 ssh，两次实证）。
+
 # 追加：2026-10-13 S4 波 4 —— bodies 退役评估（25 文件登记转绿）+ 四处读方迁移
 
 > 用户目标：request_logs 及相关表按规划将删除、只留 session_*；对涉
