@@ -554,7 +554,13 @@ func (c *Checker) detectSecrets(output string, policy *Policy) []ComplianceIssue
 	}{
 		{"api_key", `(sk|ak)-[a-zA-Z0-9]{16,}`, 8, "检测到 API Key"},
 		{"jwt", `eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*`, 7, "检测到 JWT Token"},
-		{"password", `(?i)(password|passwd|pwd)\s*[:=]\s*\S+`, 7, "检测到密码/凭证"},
+		// r1028（2026-10-14）：值首字符不得为 `=`。`\S+` 放行纯 `=` 串，于是
+		// `echo '=== pwd ==='`（bash 分节装饰）命中「pwd = 赋值 ==」——生产 154
+		// 实测把 1279 字节纯 git 检查命令整流 output_policy_blocked（request
+		// 5d9e1267，raw_data 帧重建取证；本引擎无 CheckField，共享拦截器对整段
+		// 文本回退 Check，工具 lane 改写保护把 redact 升级成 block）。真实口令
+		// 不以未加引号的 `=` 开头；带引号的值（含 "="）由 `"` 首字符照常命中。
+		{"password", `(?i)(password|passwd|pwd)\s*[:=]\s*("[^"]*"|'[^']*'|[^=\s'"][^\s]*)`, 7, "检测到密码/凭证"},
 		{"private_key", `-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----`, 9, "检测到私钥"},
 	}
 

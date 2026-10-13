@@ -4,8 +4,15 @@ import "regexp"
 
 // Value capture keeps credential labels and tool JSON syntax intact. Literal
 // reserved markers are excluded by PatternDetector before becoming fragments.
-const credentialValuePattern = `(?i)(?:password|passwd|pwd|secret|token|api_key|apikey|access_key|authorization|密码|口令)["']?\s*[:=：]\s*("(?:\\.|[^"\\])*"|'[^']*'|(?:\{SENSITIVE:[a-z_]+:[0-9]+\}|[^\s"',;，；<>{}\]]+)+)`
-const accountValuePattern = `(?i)(?:account|username|user_name|login|帐号|账号|账户|用户名)["']?\s*[:=：]\s*("(?:\\.|[^"\\])*"|'[^']*'|(?:\{SENSITIVE:[a-z_]+:[0-9]+\}|[^\s"',;，；<>{}\]]+)+)`
+//
+// r1028（2026-10-14）：未加引号的值首字符不得为 `=`。原字符类放行纯 `=` 串，
+// `echo '=== pwd ==='`（bash 分节装饰）于是被解析成「pwd = 赋值 ==」——生产
+// 154 实测把一条 1279 字节的纯 git 检查命令整流 output_policy_blocked
+// （request 5d9e1267，raw_data 帧重建取证），同日 03:44 另一会话同型误伤；
+// 红act 侧同一规则会把正文里的分节标题遮成 [REDACTED:secret]。真实口令不会
+// 以未加引号的 `=` 开头；带引号的值（含 "="）走引号分支不受影响。
+const credentialValuePattern = `(?i)(?:password|passwd|pwd|secret|token|api_key|apikey|access_key|authorization|密码|口令)["']?\s*[:=：]\s*("(?:\\.|[^"\\])*"|'[^']*'|(?:\{SENSITIVE:[a-z_]+:[0-9]+\}|[^\s"',;，；<>{}=\]][^\s"',;，；<>{}\]]*)+)`
+const accountValuePattern = `(?i)(?:account|username|user_name|login|帐号|账号|账户|用户名)["']?\s*[:=：]\s*("(?:\\.|[^"\\])*"|'[^']*'|(?:\{SENSITIVE:[a-z_]+:[0-9]+\}|[^\s"',;，；<>{}=\]][^\s"',;，；<>{}\]]*)+)`
 
 func operationalPatternEntries() []patternEntry {
 	return []patternEntry{

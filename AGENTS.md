@@ -1522,6 +1522,40 @@ streaming 全包 150s 绿。154 终验：拦截请求三件套全绿（终态带
 
 ---
 
+# 追加：2026-10-14 r1028 —— `=== pwd ===` 分节装饰误触发密钥规则（三份正则副本同修）
+
+> 用户报告：grok-4.6 工具调用 `output_policy_blocked reason=unknown`。
+> 取证：raw_data（LLM_GATEWAY_RAW_LOG_DIR=/var/log/llm-gateway-go/raw_data）
+> 帧重建——被拦的是 1279 字节**纯 git 检查命令**，触发行 `echo '=== pwd ==='`。
+> 详见 `docs/audit/2026-10-14-models只列可路由模型-r1027.md` 追加节。
+
+1. **同一误伤家族、三份正则副本、两条拦截路径**：①
+   `configs/sensitive_patterns.yaml` secret.password + ② Go fallback
+   `operational_patterns.go` credentialValuePattern/accountValuePattern ——
+   值字符类放行纯 `=` 串，`pwd ===` → 「pwd = 赋值 ==」→ ScopeEgress 流式
+   lane 硬拦（issues=0）；③ `domains/outputcompliance/checker.go`
+   detectSecrets（第二套 DB 合规引擎，无 CheckField，共享拦截器整段回退
+   Check）`\S+` 吃掉 `==` → 工具 lane 改写保护把 redact 升级成整流
+   block（403 主拦截者）。修复=三处统一「未加引号的值首字符不得为 `=`，
+   引号值走引号分支」（DB 引擎为 `("[^"]*"|'[^']*'|[^=\s'"][^\s]*)`——
+   第一版只排 `=` 时 `pwd ='` 尾引号仍命中，判据抓到后补齐）。
+2. 判据：`security/sanitize/r1028_secret_value_equals_decoration_test.go`
+   （生产 1279B 原文夹具 + sanitize 双副本正则断言 + redact 侧配对）+
+   `domains/outputcompliance/r1028_dbengine_pwd_decoration_test.go`。
+   变异三方向（yaml/Go/DB 引擎各自回退）全部红在正确断言。
+3. 部署：154=**2606**、245=**2607**。线上探针：装饰形态 PASS 逐字透传
+   （修复前 403）；真实口令按租户策略脱敏；公网 IP 契约不变。
+4. 量具坑：**被 compliance 拦下的 lane 不落 session_bodies**——被拦内容唯一
+   取证源是 raw_data 三段帧（client_request/upstream_request/
+   upstream_response，base64）；`grep -a` 替代 strings（CJK 断行漏报）；
+   进程真实 yaml 路径=systemd WorkingDirectory 下的 configs/（与 release
+   内副本是两份，都要 md5）；共享构建锁被本地 deploy 占用时生产 deploy
+   报 `shared build lock held` 直接失败（判 pid 等待）。
+5. **开放项**：252 宿主 load 33+（跑飞的 `grep -rl cutover-backup` 自
+   10-13 起 + python backfill + kswapd0），导致一次部署 DB 就绪失败自动
+   回滚——ops 催办；outputcompliance DB 引擎补 CheckField（label 感知，
+   避免整段回退丢工具上下文）登记不修。
+
 # 追加：2026-10-14 S4 退役改名轮 —— request_logs 族 `_` 前缀待删除标志（本地已上线）
 
 > 用户目标：审计双写转换收尾——写入关停核验、MV/API 读源核验、性能核验、
@@ -1624,3 +1658,31 @@ streaming 全包 150s 绿。154 终验：拦截请求三件套全绿（终态带
 > session-audit/export rows 闭包内消费——旧形态连接带未关闭 rows 归还池
 > 即 conn busy），随 2626 部署验证全 200。**登记**：domain/ 手动迁移语料
 > （如 032 触发器体）仍指旧表名，860 后重放需同族改名清扫（下轮）。
+---
+
+# 追加：2026-10-14 供应商返回自动调策审计 + 「网关智能体」必要性裁决
+
+> 审计 r1020→r1028 八轮修复后确认：供应商返回→自动调策→记录复用链已由
+> 五层确定性引擎闭环（L0 paramguard/reasoncap → L1 paramreg/线格式适配 →
+> L2 errorsx 分类 → L3 reqprobe 反应+24h 学习 → L4 action_policy），
+> **热路径 LLM 智能体裁决为无必要**（+秒级延迟/计费/不可判据化 vs 毫秒级
+> 零成本全链判据化）；智能体正确位置=对格式错误表 upstream_error 桶做
+> **离线**模式挖掘（登记待 owner）。活网关实测：grok+thinking+enable_thinking
+> 一次 200（`applying learned param strips` 前置剥参实证），格式错误表
+> 32 条、#32 gpt-6.1-sol mode_mismatch 4/4 recovered（r1027 方向甄别活证据）。
+> 详见 `docs/audit/2026-10-14-供应商返回自动调策审计与网关智能体裁决.md`。
+> 注意：宽容上游（glm 收未知参数）不触发反应层是零成本正路，勿当缺陷。
+
+> **r1029（2026-10-14 凌晨，提交 725372743 + 审计文档 b20badb350，随本地
+> 2627 上线）**：日志例行扫描发现 `SESSION_FORBIDDEN`×4051 /
+> `auto_summary: transient error`×2040——ErrSessionExpired 落进
+> 「store fault → 503」分支且响应体误用 FORBIDDEN 文案，auto_summary
+> 内部回环（gs_/gt_ 分支会话 TTL 短）对确定性终态反复重试。修复=
+> `sessionAbsentErr`（NotFound‖Expired 同归 absent 家族，gw_ 认领/
+> 分支 id 保留）+ chat 腿 store-fault 503 改写 SESSION_STORE_UNAVAILABLE
+> （8 locale 新键）。**生产 wiring 实测**：getter 适配器不暴露
+> EnsureV2WithID，过期会话走 no-ensurer 分支换新系统 id——活体实验
+> （Redis 种 2h 前过期 hash + 异主 api_key_id）旧代码必 503、2627 实测
+> 200。判据 r1029_session_expired_test 三层协议全链；M1 首次变异是无操作
+> （perl 模式失配）——**变异后必须 sed 读回实际文件**，不能只看退出码。
+> 详见 `docs/audit/2026-10-14-r1029-会话过期误判store-fault与auto_summary重试循环.md`。
