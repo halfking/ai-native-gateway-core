@@ -12,9 +12,9 @@ import (
 // refactor cannot quietly revert any of them.
 func TestPromotedFieldsAreKindIRHandled(t *testing.T) {
 	want := map[string]Dialect{
-		"repetition_penalty": DialectVLLM,        // P1-1
-		"mask_sensitive_info": DialectMiniMax,    // P2-3
-		"bot_setting":        DialectMiniMax,     // P2-4
+		"repetition_penalty":  DialectVLLM,    // P1-1
+		"mask_sensitive_info": DialectMiniMax, // P2-3
+		"bot_setting":         DialectMiniMax, // P2-4
 	}
 
 	for field, probeDialect := range want {
