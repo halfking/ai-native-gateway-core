@@ -956,3 +956,64 @@ host-first 孤儿网关回收 + 517 形态探测 r2538、mobile UX 第二轮、2
 > attempt_commit_gate 按此 grep，改事件名需连带评估）；tool-only 流的
 > message item 预声明后不关（added 无 done）；AI-SDK 对 function_call
 > arguments.done/content_part.added 走 unknown_chunk 容忍分支不校验。
+
+---
+
+# 追加：2026-10-13 S3 波 3 —— 停写收尾（最后一处漏网写点）+ 读侧第二分片
+
+> 会话目标：继续完成 request_logs 读写向 session_turns 的转换、停掉
+> request_logs 相关写入。提交 `f61f24bd1`，本地部署 2594（8782）验证通过。
+> 明细见 `docs/audit/2026-10-13-s3-wave3-stopsweep-and-readsource-next-shard.md`。
+
+## 写侧（全仓盘点后：唯一漏网写点已收口）
+
+- 全仓扫描（非测试）request_logs 家族写语句逐一核对：telemetry client /
+  admin ingest / lite sink / trace.FlushToPG 均在 S4 门内；promote/archive/
+  data_lifecycle/credential reset 属存量生命周期或运维语义（保留）。
+- **`domains/streaming/audio_usage_log.go` 是最后一个未挂门的流量写点**
+  （音频计量行不走 telemetry 链），已按 R52 trace 语义挂门：停写即丢弃
+  （计费走 maas 不受影响）。音频秒数观测无会话族落点——与探针行同桶
+  （主拍板项）。判据 `audio_usage_gate_test.go`（零期望 pgxmock = 停写
+  行为断言 + 门开前提在场），反转门变异红。
+- 本地实证：翻转（07:01:04）后 request_logs_hot/bodies_hot 零新行，
+  2594 部署后仍零（门保持）。
+
+## 读侧（波 2 §5 登记的三项下片债清偿）
+
+1. **tenants.go logsTable 四臂化**（R36-A1 性能裁决读面）：两条会话腿
+  （冻结点守卫 + 双子排除）+ 两条 v1 腿原样（零反连接，30s 裁决保持）。
+   新原语 `db.V1FreezeCutoffSQL`（v1 两表 max(ts)；max 必须同盖 hot∪母表，
+   只看母表会把冻结点定在数小时前）。**实测教训：镜像行 ts ≠ v1 行 ts**
+  （差 ~15s，落库侧时刻），冻结点单独用会在翻转边界双计（真库实测 1 例）
+   ⇒ 消费方必须同时在会话腿带 NOT EXISTS v1 双子。
+2. **popularModelsHotSQL → 会话族原生源**（listTopModels 同款回退链）；
+   文件脱离 v1 族，四登记表除名（tiering 114→113、静默档 61→59，审计
+   文档已订正）。
+3. **auto_index_refresher 双源化**：前置实测坐实 audit 的担忧——会话侧
+   raw_model_name 是**剥 provider 前缀的归一化名**，精确等值只 54%；
+   alias 链（lower(t.model)→model_aliases→canonical→offers）恢复 96.5%
+  （v1 侧 96.7%）。**half-1 与 half-2 反连接必须同迁**，否则停写后
+   cold-start 基线每 5 分钟经 ON CONFLICT 覆盖真实指标。model_task_index
+   **登记不迁**（auto 请求不进会话族：实测 3,420 vs 0）。
+4. 在线验证（2594）：tenant stats 今日 10,224 条含翻转后流量；picker
+   usage 源真实计数；refresher 新桶 7-11 行真实指标；readyz ready。
+
+## 判据纪律增量（第 7 条）
+
+**形状钉桩对「N 条同构腿」必须 count==N 而非 Contains**：只查在场时，
+「删一条腿」的变异仍绿——而那正是最危险的静默回退（half-2 抑制腿被删 =
+基线覆盖真实指标）。本轮两处判据（tenants 冻结点×2、refresher 会话腿×2）
+都经历了「第一版 0 红 → 加强 count==N → 红」。
+
+## 本轮自伤事故（量具教训复刻）
+
+变异验证脚本里 `git checkout -- admin/tenants.go` 想恢复被变异的文件，
+把**自己未提交的工作全部洗掉**（共享 checkout 清洗风险的自己动手版，
+与 memory「shared-checkout-wipe-hazard」同源）。重做后改为 `cp` 备份恢复。
+变异恢复一律不用 git 命令。
+
+## 既存红（pristine 同红，非本轮引入）
+
+`bg/TestDirectProbeBodyUsesAnthropicMessagesShape`（HEAD 8c6aa6d584 即红，
+probe body 形状断言）；工作区另有并行会话 r1023 的缩进级遗留
+（executor_anthropic.go +4 个 ir 测试，无语义，未随本轮提交）。
