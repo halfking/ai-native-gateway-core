@@ -179,3 +179,21 @@ M4 一处计数退回 request_logs_bodies_hot → 禁入红。（M1 的字面量
   同桶（主拍板项），probe 面族读方迁移是独立轮次。
 - 工作区并行会话遗留（executor_anthropic.go 等 r1025 相关脏文件）与本轮
   无关，未纳入提交。
+
+## 九、生产删表前置确认（2026-10-13 19:25 经 245 直连 172.16.2.210 实测，只读）
+
+| 检查项 | 结果 | 判定 |
+|---|---|---|
+| 生产写态 | `storage.request_logs_write_enabled=true`，request_logs_hot / session 侧 max_ts=now | 双写仍在（未翻转，符合预期） |
+| 四象限-存量 | request_logs 327,039 / bodies 317,360（gap 9,679 行无 bodies，存量保留策略）；session_turns 925,038 / session_bodies 130,538（含早于 v1 现存量的深历史） | 会话族独立于 v1 有完整历史 |
+| 四象限-真损失 | 带会话头未镜像：全量 34,927（回环 32,532 + 非终态 2,243 + **真损失 158**）；168h 窗内真损失 147 | **≠0，翻转未就绪** |
+| 真损失成因 | 154 网关日志实证：`sessionv2mirror: V2 shadow write failed`（outbox 入队/turn 插入 `context deadline exceeded`），今日 5-54 次/小时持续滴漏；**245 零失败**；session_mirror_outbox pending=0（reaper 在消化，但入队本身超时的行不进 outbox、不可重放） | 154→共享 PG 写超时（基础设施争用），非代码缺口；丢失行可从 v1 定向回填 |
+| 探针量 | 无会话头探针行 156,385（设计不镜像，事实主存 node_probe_runs） | owner 拍板项维持 |
+| 读开关 | `storage.session_bodies_native_read` **未设置**（默认 false=切换层 v1 臂） | 翻转 runbook 第 3 步前置设置 |
+
+**生产翻转 runbook（顺序刚性）**：
+1. 修 154→共享 PG 写超时（252 PG 负载/网络路径），或给镜像写加大预算/重试——直至 168h 真损失=0（s4_ready 门转绿）；
+2. 定向回填现存 ~158 丢失行（从 v1 按 request_id，工具或一次性 SQL）；
+3. settings_kv 置 `storage.session_bodies_native_read=true`（切换层 14 消费点转会话臂）；
+4. 置 `storage.request_logs_write_enabled=false`（停写），观察期；
+5. owner 最终授权后执行 v1 家族 DROP。

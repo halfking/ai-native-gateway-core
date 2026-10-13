@@ -1264,3 +1264,13 @@ admin 全包绿（负向闸门 bodies 这道已功成身退；bodies 退役门�
 > `docs/audit/2026-10-13-r1026-grok-chat流式stream_options泄漏进responses线体.md`。
 > 同轮登记不动：nvidia 系探针 503（egress 代理缺失，owner 拍板项）、
 > routing_analytics_7d 刷新 23505、ursm_node_snapshot_min 42P17（均非请求路径）。
+
+> **生产删表前置确认（2026-10-13 晚，S4 波 4 收尾，只读经 245 直连）**：
+> 生产双写仍在（write_enabled=true）、`storage.session_bodies_native_read`
+> **未设置**（默认 v1 臂）。**带会话头真损失 158 条（168h 窗 147）≠0 ⇒
+> 生产翻转未就绪**：根因是 154 的镜像写对共享 PG 超时（日志实证
+> `sessionv2mirror: V2 shadow write failed`，今日 5-54 次/小时持续；245 零
+> 失败；outbox reaper 正常但入队超时的行不进 outbox、不可重放）。丢失行
+> 可从 v1 定向回填。探针观测 156,385 行（设计不镜像）维持 owner 拍板。
+> **翻转 runbook 五步（顺序刚性）**：修 154 超时→168h 零损失→回填 158 行→
+> native_read=true→停写→owner 授权后 DROP。详见波 4 审计文档 §九。
