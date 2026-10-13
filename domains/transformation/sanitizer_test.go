@@ -199,6 +199,11 @@ func TestIsToolUseCapable_ProtocolFallback(t *testing.T) {
 		{"volcengine", "openai-completions", true},
 		{"deepseek", "openai-completions", true},
 		{"custom-anything", "anthropic-messages", true},
+		// r1024: openai-responses（如 vapeur，catalog_code 为空）原生携带
+		// 工具块，不得折叠——折叠后模型用散文模仿工具调用，客户端拿不到
+		// 结构化 tool_calls，多轮工具流直接失效。
+		{"vapeur", "openai-responses", true},
+		{"", "openai-responses", true},
 		// Other protocols keep the old behaviour.
 		{"volcengine", "ollama-native", false},
 		{"volcengine", "gemini-generate", false},

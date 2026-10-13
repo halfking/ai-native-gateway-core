@@ -591,6 +591,10 @@ func (e *Executor) executeOpenAI(
 		bodyBytes, responsesTrimMeta = transformation.CompressResponsesInputIfNeededWithMeta(sourceBody, contextWindow, reserve)
 		recordResponsesInputTrimMeta(&responsesProvenance, sourceBody, bodyBytes, responsesTrimMeta)
 		bodyBytes = transformation.RewriteResponsesModel(bodyBytes, cand.RawModel)
+		// r1024：客户端把 chat 嵌套形 tools 发到 /v1/responses 时归一化为
+		// 平铺形（两种形状语义等价；透传畸形会让上游以 400 拒绝并触发
+		// 无意义重试与凭据连坐）。
+		bodyBytes = transformation.NormalizeResponsesTools(bodyBytes)
 		// paramledger (2026-09-22): native responses 分支不经过
 		// finalizeOpenAIUpstreamBody，paramguard（嵌套 reasoning.effort 的
 		// 归一/能力降档）在此显式执行并记账。

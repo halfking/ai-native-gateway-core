@@ -153,7 +153,11 @@ func (c *outputSensitiveChecker) CheckField(ctx context.Context, tenant, label, 
 		}
 		return &outputcompliance.ComplianceResult{Compliant: true, RedactedOutput: text}, nil
 	}
-	if label != "" && credentialField(label) && text != "" && !isMarker {
+	// r1024：只有密码族字段触发凭据硬阻断。身份族（username/account 等）
+	// 的值是登录身份不是机密，且裸用户名永远不可能以占位符形态出现，
+	// 按 credentialField 一律阻断等于结构性掐断一切带用户名的工具调用。
+	// r1024b：模型自造的占位拼写同理放行（见 placeholderCredentialValues）。
+	if label != "" && secretCredentialField(label) && text != "" && !isMarker && !isPlaceholderCredentialValue(label, text) {
 		marker := RedactionMarker(TypeSecret)
 		return &outputcompliance.ComplianceResult{Blocked: true, RedactedOutput: marker, Issues: []outputcompliance.ComplianceIssue{{Type: "sensitive", Subtype: "credential", Content: marker, Severity: 8}}}, nil
 	}
@@ -164,15 +168,18 @@ func (c *outputSensitiveChecker) CheckField(ctx context.Context, tenant, label, 
 //
 // toolName（可空）是本次调用的工具名，来自协议提取现场的 function.name
 // （r1020）。惰性内容工具（isInertContentTool）的参数不触网，跳过外传目的地
-// 检查——但凭据键检查（credentialField）对任何工具都保留：写文件写出的明文
-// 凭据与触网无关，属另一条底线。
+// 检查——但密码族凭据键检查（secretCredentialField）对任何工具都保留：写文件
+// 写出的明文凭据与触网无关，属另一条底线。身份族字段（r1024）不在此列。
 func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any, label string, depth int, toolName string) (bool, error) {
 	if depth > maxNativeToolInputDepth {
 		return false, errors.New("output tool input depth exceeded")
 	}
 	switch value := value.(type) {
 	case string:
-		if _, marker := ParsePlaceholder(value); credentialField(label) && value != "" && !marker {
+		// r1024b：模型自造的占位拼写（"PLACEHOLDER"/"TODO"/"<...>"）不是
+		// 泄漏的真值，不触发密码族明文阻断——否则并行工具调用里一个早产
+		// 的占位值会把同轮全部合法调用一并掐断。
+		if _, marker := ParsePlaceholder(value); secretCredentialField(label) && value != "" && !marker && !isPlaceholderCredentialValue(label, value) {
 			return true, nil
 		}
 		document := bytes.TrimSpace([]byte(value))
@@ -219,6 +226,8 @@ func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any,
 		}
 		return false, nil
 	case map[string]any:
+		// r1024：身份族与密码族都保持「非字符串形状 fail-closed」（畸形形状是
+		// 绕过手法，与值是否机密无关）；只有字符串明文按族分流（见上）。
 		if credentialField(label) {
 			return true, nil
 		}
