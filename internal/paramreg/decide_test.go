@@ -398,13 +398,24 @@ func TestIRHandledWithDialects_WhitelistAndDecide(t *testing.T) {
 // TestTranslateThinkingDropsForNonAcceptingDialects 钉 r1021：thinking 对象
 // 只放行已知接受的方言（RejectedBy 硬拒）。2026-10-13 grok-4.6/vapeur 实测
 // ——透传给严格上游 = 整条 400「Unknown parameter: 'thinking'」。
+// 2026-10-13 thinking 翻译轮策略演进：DialectResponses / DialectGrok 从
+// 裁剪名单移出——translateThinking 翻译成 reasoning{effort}/reasoning_effort
+// （Vapeur 全模型实测 200 + grok reasoning_tokens=672 真生效，见
+// docs/audit/2026-10-13-Vapeur全量测试轮.md §七），判据随策略更新。
 func TestTranslateThinkingDropsForNonAcceptingDialects(t *testing.T) {
 	enabled := json.RawMessage(`{"type":"enabled"}`)
-	for _, dst := range []Dialect{DialectResponses, DialectGrok, DialectMistral, DialectVLLM, DialectUnknown} {
+	for _, dst := range []Dialect{DialectMistral, DialectVLLM, DialectUnknown} {
 		key, out, action, _ := Apply("thinking", enabled, DialectOpenAIChat, dst)
 		if action != ActionDrop || key != "" || out != nil {
 			t.Errorf("thinking 应被裁剪（dst=%s）：action=%v key=%q out=%v", dst, action, key, out)
 		}
+	}
+	// 翻译轮新增：responses/grok 从裁剪升级为 effort 翻译。
+	if key, out, action, _ := Apply("thinking", enabled, DialectOpenAIChat, DialectResponses); action != ActionTranslate || key != "reasoning" {
+		t.Errorf("responses 应翻译成 reasoning：action=%v key=%q out=%s", action, key, out)
+	}
+	if key, out, action, _ := Apply("thinking", enabled, DialectOpenAIChat, DialectGrok); action != ActionTranslate || key != "reasoning_effort" {
+		t.Errorf("grok 应翻译成 reasoning_effort：action=%v key=%q out=%s", action, key, out)
 	}
 	// 前提在场一：接受的方言照常透传/改写。
 	for _, dst := range []Dialect{DialectDeepSeek, DialectGLM, DialectKimi, DialectArk, DialectAnthropic} {

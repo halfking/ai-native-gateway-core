@@ -157,9 +157,23 @@ func (w *ProbeQueueWorker) run(ctx context.Context) {
 		base = 250 * time.Millisecond
 	}
 	maxIdle := w.cfg.IdlePollCap
+	if maxIdle <= 0 {
+		// 未配置 ⇒ 取默认封顶。
+		//
+		// ⚠️ 2026-10-13 12h 审计轮（P1）修正：此前这里写的是
+		//   if maxIdle < base { maxIdle = base }
+		// 而**生产装配点从未给 IdlePollCap 赋值**（cmd/gateway/main.go 的
+		// NewProbeQueueWorker 只设了 PollInterval: 250ms），于是 maxIdle=0
+		// → 被抬成 base(250ms) → nextIdlePoll 的封顶恒等于 base
+		// ⇒ 退避幅度恒为 0，行为与改前逐字相同。
+		// 字段注释承诺的「≤0 时取 ProbeQueueIdlePollCapDefault」在代码里
+		// **根本不存在** —— 这正是该缺陷能通过评审的原因，也是它藏住的
+		// 原因：注释说有，代码没做。
+		maxIdle = ProbeQueueIdlePollCapDefault
+	}
 	if maxIdle < base {
-		// IdlePollCap 未配置（0）或配得比 base 还小 ⇒ 退避无处可退，
-		// 退化成改前的固定间隔，而不是产生一个比 base 更慢的间隔。
+		// 配得比 base 还小 ⇒ 退避无处可退，退化成改前的固定间隔，
+		// 而不是产生一个比 base 更慢的间隔。
 		maxIdle = base
 	}
 	wait := base

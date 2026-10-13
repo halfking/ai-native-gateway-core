@@ -802,6 +802,11 @@ func main() {
 	pools := pool.NewPoolManager(upClient.Proxy().ProxyFunc())
 
 	chatHandler := streaming.NewChatHandler(cm, lim, matrix, pools, resolver, auditSink)
+	// X-LLMGW-Preferred-Credential 钉扎的操作员闸门键。r1024（2026-10-13）：
+	// SetAdminAPIKey 此前从未被调用，adminAPIKey 恒空导致该路由覆盖在 v1
+	// 数据面静默失效（QA 钉扎请求被自由路由，E2E 归因失真）。键来自
+	// LLM_GATEWAY_ADMIN_API_KEY，与 /metrics 的 AdminTokenMiddleware 同源。
+	chatHandler.SetAdminAPIKey(cfg.AdminAPIKey)
 	if len(cfg.SessionIDBodyKeys) > 0 {
 		streaming.SetSessionIDBodyKeys(cfg.SessionIDBodyKeys)
 	}

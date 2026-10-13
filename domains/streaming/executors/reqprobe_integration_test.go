@@ -40,6 +40,16 @@ func newReqProbeExecutor(store reqprobe.Store) (*Executor, *reqprobe.Coordinator
 	return exec, coord
 }
 
+// reqProbeUnknownRelayCandidate 复刻 Vapeur #36 形态：catalog_code 未登记
+// （resolveTargetDialect → DialectUnknown fail-open），客户端带的 thinking 族
+// 参数全部原样还原出站（2026-10-13 grok-4.6 thinking 事故现场）。
+func reqProbeUnknownRelayCandidate(baseURL string) provider.Candidate {
+	c := reqProbeTestCandidate(baseURL)
+	c.CatalogCode = "vapeur-test-relay"
+	c.Protocol = "openai-responses"
+	return c
+}
+
 func reqProbeTestCandidate(baseURL string) provider.Candidate {
 	return provider.Candidate{
 		CredentialID: 101, ProviderID: 7, Tier: 1,
@@ -117,6 +127,74 @@ func TestExecuteOpenAIReqProbeParamStripRecovers(t *testing.T) {
 	}
 	if rec.ProviderCode != "xai" || rec.OutboundModel != "grok-4.6" || rec.HTTPStatus != 400 {
 		t.Fatalf("record meta = %+v", rec)
+	}
+}
+
+// Case 1b（2026-10-13 grok-4.6 thinking 事故）: OpenAI 系校验器一次只报
+// 一个未知参数——出站体带 thinking + enable_thinking 时，第一轮 400 点名
+// enable_thinking、剥后第二轮 400 点名 thinking。原一次性 paramTried 在
+// 第二个参数上死局（实测 503）；有界多轮剥参 + 累计学习后三跳收敛。
+func TestExecuteOpenAIReqProbeMultiRoundStripRecovers(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		s := string(body)
+		switch {
+		case strings.Contains(s, "enable_thinking"):
+			// enable_thinking 不应再出现在出站体（RejectedByUnknown 主动裁剪）——
+			// 出现即策略回归，按原报错拒绝让测试红得可读。
+			t.Errorf("enable_thinking should be proactively dropped for unknown relay, body: %s", s)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"Unknown parameter: 'enable_thinking'.","type":"invalid_request_error","param":"enable_thinking","code":"unknown_parameter"}}`))
+		case strings.Contains(s, "kimi_future_param"):
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"Unknown parameter: 'kimi_future_param'.","type":"invalid_request_error","param":"kimi_future_param","code":"unknown_parameter"}}`))
+		case strings.Contains(s, "relay_future_param"):
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"Unknown parameter: 'relay_future_param'.","type":"invalid_request_error","param":"relay_future_param","code":"unknown_parameter"}}`))
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","model":"grok-4.6","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+		}
+	}))
+	defer upstream.Close()
+
+	store := reqprobe.NewMemoryStore()
+	exec, coord := newReqProbeExecutor(store)
+	defer coord.Close()
+
+	_, err := exec.executeOpenAI(&ExecParams{
+		W: httptest.NewRecorder(),
+		R: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+		// 2026-10-13 thinking 翻译轮更新：enable_thinking 已被
+		// RejectedByUnknown 主动裁剪（不再走反应层），多轮剥参的判据
+		// 改用两个纯未知参数（fail-open 无条件还原 → 逐个 400）。
+		BodyBytes:   []byte(`{"model":"grok-4.6","messages":[{"role":"user","content":"hi"}],"kimi_future_param":{"a":1},"relay_future_param":{"b":2}}`),
+		ClientModel: "grok-4.6", ClientProtocol: "openai-completions",
+	}, reqProbeUnknownRelayCandidate(upstream.URL), 0, time.Now(), nil)
+	if err != nil {
+		t.Fatalf("executeOpenAI: %v", err)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("upstream calls = %d, want 3 (reject kimi_future_param + reject relay_future_param + success)", got)
+	}
+	recs := waitForReqProbeRecord(t, store, 1)
+	rec := recs[0]
+	if rec.Trigger != reqprobe.TriggerParamRejected {
+		t.Fatalf("trigger = %v", rec.Trigger)
+	}
+	// 累计学习：两个参数都必须进台账（只学最后一个的话同形态请求还要
+	// 再吃一轮 400 才收敛）。
+	got := strings.Split(rec.Param, ",")
+	if len(got) != 2 || got[0] != "kimi_future_param" || got[1] != "relay_future_param" {
+		t.Fatalf("learned param = %q, want kimi_future_param,relay_future_param", rec.Param)
+	}
+	if rec.RecoveredCount != 1 {
+		t.Fatalf("recoveredCount = %d, want 1", rec.RecoveredCount)
 	}
 }
 

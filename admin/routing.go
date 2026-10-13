@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/catalog"
+	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"     //nolint:depguard // emergency-repair state recovery (2026-08-15)
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -2655,33 +2656,39 @@ type popularModelEntry struct {
 	Count         *int   `json:"count,omitempty"`
 }
 
-// defaultPopularModelsLookupWindow is how far back we look in request_logs_hot
-// for "popular models" suggestions unless the environment overrides it.
-// request_logs_hot is the hot standalone
-// table (rule 33 / migration 341) — older rows are migrated nightly into
-// the monthly partitioned request_logs table by promote_request_logs_hot_to_partition.
-// Querying request_logs_hot directly avoids the columnar monthly partitions
-// that the previous request_logs_with_current_month UNION dragged in.
+// defaultPopularModelsLookupWindow is how far back we look for "popular
+// models" suggestions unless the environment overrides it.
 const defaultPopularModelsLookupWindow = 7 * 24 * time.Hour
 
-// popularModelsHotSQL returns up to 10 (model_key, count) rows from
-// request_logs_hot covering the configured lookup window.
+// popularModelsHotSQL returns up to 10 (model_key, count) rows covering the
+// configured lookup window.
 //
 // The cutoff is passed as a plan-time literal ($1) computed in Go so the
-// hot-table scan is bounded by an index range on (ts) rather than the
-// previous `NOW() - INTERVAL '7 days'` predicate that could not prune
-// against the partitioned parent view.
-const popularModelsHotSQL = `
+// scan is bounded by a ts index range rather than a `NOW() - INTERVAL`
+// predicate that cannot prune.
+//
+// 2026-10-13 S3 波 3（停写切换）：源从 request_logs_hot 换到会话族原生源
+// （db.SessionFamilyTurnsSourceSQL：hot ∪ parent 两腿、带 734 details 特征
+// 层）。S4 停写后 v1 hot 只会排空——usage 腿若留在那里，「凭据路由模型」
+// picker 的 7 天热度会在 7 天内静默退榜。2026-08-26 的视图禁令（canonical
+// 视图拖列式分区）对本读点仍然成立，故走无视图原生源；listTopModels
+// （S3 波 2）同款改法。模型列回退链 client→outbound→canonical：会话臂
+// client_model 依赖 details 层，单臂判据会让缺 details 行的整轮消失；
+// alias JOIN 键同步加 outbound/canonical 臂。R50 探针排除谓词保留——
+// 会话族本就不镜像探针，它们退化为防御性 no-op，但形状与 v1 时代一致。
+var popularModelsHotSQL = `
 SELECT model_key, cnt FROM (
     SELECT
-        COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model) AS model_key,
+        COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model, rl.outbound_model) AS model_key,
         COUNT(*) AS cnt
-    FROM request_logs_hot rl
+    FROM ` + db.SessionFamilyTurnsSourceSQL() + ` rl
     LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
     LEFT JOIN LATERAL (
         SELECT canonical_id
         FROM model_aliases
-        WHERE raw_name = lower(rl.client_model)
+        WHERE (raw_name = lower(rl.client_model)
+            OR raw_name = lower(rl.outbound_model)
+            OR raw_name = lower(rl.canonical_model))
           AND status = 'active'
         LIMIT 1
     ) ma ON TRUE
@@ -2695,7 +2702,7 @@ SELECT model_key, cnt FROM (
       AND NOT COALESCE('probe' = ANY(rl.quality_flags), FALSE)
       AND COALESCE(rl.origin_stage, 'business') = 'business'
       AND ($2 = '' OR rl.tenant_id = $2)
-      AND rl.client_model IS NOT NULL AND rl.client_model != ''
+      AND COALESCE(NULLIF(rl.client_model, ''), NULLIF(rl.outbound_model, ''), NULLIF(rl.canonical_model, '')) IS NOT NULL
     GROUP BY model_key
 ) u
 ORDER BY cnt DESC

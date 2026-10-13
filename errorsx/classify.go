@@ -410,14 +410,31 @@ var vendorResponsesStreamUnsupportedRe = regexp.MustCompile(
 	`(?i)(不支持\s*responses\s*api|responses\s*api\s*不支持|` +
 		`does not support (the )?responses api|responses api .*not supported)`)
 
-// operationNotAllowedRe matches Vapeur's bare policy refusal
-// {"message":"Operation not allowed"} (no type/code fields) — emitted for
-// geo/plan/model gates, e.g. claude family streaming via the chat endpoint
-// (2026-10-13). Treated as transient by default it burns three same-body
+// operationNotAllowedRe matches Vapeur's policy refusal "Operation not
+// allowed" — emitted for geo/plan/model gates, e.g. claude family streaming
+// via the chat endpoint (2026-10-13). Two observed shapes: bare
+// {"message":"Operation not allowed"} and double-nested
+// {"code":4006,"message":"{\"message\":\"Operation not allowed\"}"} — hence
+// phrase-level matching instead of JSON-anchored (this classifier only runs
+// on 4xx/403 error bodies, so a model's prose mentioning the phrase cannot
+// reach it). Treated as transient by default it burns three same-body
 // retries and parks a healthy node; it is request/permission-shaped and
 // permanent for the node in question.
 var operationNotAllowedRe = regexp.MustCompile(
-	`(?i)"message"\s*:\s*"(operation not allowed|操作不被允许)"`)
+	`(?i)(operation not allowed|operation is not allowed|操作不被允许|操作不允许)`)
+
+// toolCallPairingRe matches MiniMax's 2013 tool-call pairing rejections
+// (2026-10-13 /v1/responses E2E: a client request carrying a dangling
+// function_call with no function_call_output gets
+// "invalid params, tool call and result not match (2013)"; the sibling
+// wording "tool call result does not follow tool call (2013)" comes from the
+// earlier split-parallel-call incident). Both are request-shaped: the same
+// body can never succeed on retry, yet transient classification burned three
+// blind upstream calls, opened the credential circuit (parking the node for
+// real traffic), and surfaced a misleading "provider_unavailable" to the
+// client. KindClientBug: fail fast, no same-body retries, no cooling.
+var toolCallPairingRe = regexp.MustCompile(
+	`(?i)(tool call and result[^(]*\(2013\)|tool call result does not follow tool call|invalid params, tool call[^"]*\(?2013\)?)`)
 
 var unsupportedParamRe = regexp.MustCompile(
 	`(?i)((unsupported|unknown|unrecognized|unexpected)[_ -]?parameters?(\([a-z]+\))?\s*[:：]|` +
@@ -1145,6 +1162,11 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		if (status == 400 || status == 422) && unsupportedParamRe.Match(body) {
 			return KindClientBug
 		}
+		// MiniMax 2013 工具调用配对缺失（悬空 function_call 等）——请求侧
+		// 结构问题，重试同 body 必再败；见 toolCallPairingRe 注释。
+		if (status == 400 || status == 422) && toolCallPairingRe.Match(body) {
+			return KindClientBug
+		}
 		// 供应商能力裁决（Responses 流式不支持）与 Vapeur 裸策略拒绝：
 		// 永久形态，快速失败让故障转移说话，不冷却节点。
 		if (status == 400 || status == 403 || status == 422 || status >= 500) &&
@@ -1501,6 +1523,10 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 		}
 		// 参数本身不被支持——同上，与 ClassifyErrorWithBody 同判。
 		if (status == 400 || status == 422) && unsupportedParamRe.Match(body) {
+			return KindClientBug
+		}
+		// MiniMax 2013 工具调用配对缺失——与 ClassifyErrorWithBody 同判。
+		if (status == 400 || status == 422) && toolCallPairingRe.Match(body) {
 			return KindClientBug
 		}
 		// 能力裁决/策略拒绝——与 ClassifyErrorWithBody 同判。

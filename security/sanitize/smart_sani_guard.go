@@ -1445,7 +1445,8 @@ func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Conte
 
 	resolve := sm.resolverFor()
 	encodeFailed := false
-	if strings.HasSuffix(lane, ".arguments") || strings.HasSuffix(lane, ".partial_json") || (strings.HasPrefix(lane, "anthropic.") && strings.HasSuffix(lane, ".input")) || strings.Contains(lane, "response.function_call_arguments.") {
+	jsonArgLane := strings.HasSuffix(lane, ".arguments") || strings.HasSuffix(lane, ".partial_json") || (strings.HasPrefix(lane, "anthropic.") && strings.HasSuffix(lane, ".input")) || strings.Contains(lane, "response.function_call_arguments.")
+	if jsonArgLane {
 		// Tool arguments are a JSON document, so a restored value has to be
 		// re-encoded as a JSON string literal before it is spliced in. Resolve
 		// through a JSON-escaping adapter rather than pre-building a token map:
@@ -1487,6 +1488,18 @@ func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Conte
 	// restore working — that path resolves and must pass through untouched.
 	if previous != "" && tail == "" && reservedMarkerStarted(previous) &&
 		strings.Contains(restored, redactedMarker) {
+		// 2026-10-13 (r1022): on a tool-argument lane the delta is a fragment of
+		// a JSON document that the client reassembles and JSON.parse()s. The
+		// whole-field `[REDACTED]` here swallowed the fragment's non-marker
+		// remainder — quotes, braces, `&&` — and corrupted the accumulated
+		// arguments (client-side "tool args parse error", the tool never ran).
+		// restoreText already masked only the marker span, so forward its
+		// span-correct output instead. Prose lanes keep the historical
+		// whole-delta redaction.
+		if jsonArgLane {
+			object[field] = restored
+			return true, false
+		}
 		object[field] = redactedMarker
 		return true, false
 	}
@@ -1497,6 +1510,15 @@ func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Conte
 		// prefix has started, redact this delta instead of either exposing a
 		// malformed internal token or aborting the whole client stream.
 		if reservedMarkerStarted(previous) {
+			// r1022: same JSON-fragment constraint as above — the held prefix is
+			// the only reserved-looking span, so redact exactly it and re-emit
+			// this delta's own bytes verbatim. Dropping `value` here corrupted
+			// the arguments whenever the fragment boundary landed inside a
+			// marker-like token.
+			if jsonArgLane {
+				object[field] = redactedMarker + value
+				return true, false
+			}
 			object[field] = redactedMarker
 			return true, false
 		}

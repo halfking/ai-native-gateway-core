@@ -76,7 +76,9 @@ var v1ReaderRetirementTiering = map[string]retirementTieringEntry{
 	"admin/quality_correlations.go":             {Tier: "③", Reason: "请求级质量关联分析：观测面"},
 	"admin/request_trace.go":                    {Tier: "②", Reason: "对外 API：请求链路"},
 	"admin/route_incidents.go":                  {Tier: "③", Reason: "路由事故（route_incidents）：观测面"},
-	"admin/routing.go":                          {Tier: "②", Reason: "对外 API：路由管理（含诊断路由）"},
+	// admin/routing.go 于 2026-10-13（S3 波 3 停写切换）除名：唯一的 v1 读点
+	// popularModelsHotSQL 改读会话族原生源（SessionFamilyTurnsSourceSQL），
+	// 文件已无任何 v1 读点证据（字面量 106→105，分档域 114→113）。
 	"admin/session_analytics_breakdown.go":      {Tier: "②", Reason: "对外 API：会话分析分组"},
 	"admin/session_analytics_timeseries.go":     {Tier: "②", Reason: "对外 API：会话分析时序"},
 	"admin/session_bodies_batch.go":             {Tier: "②", Reason: "对外功能：bodies 批量读（经切换层 SessionBodiesSourceSQL）"},
@@ -383,13 +385,15 @@ func TestV1ReaderTieringDomainIsBothPopulations(t *testing.T) {
 		// 两文件读源整体迁会话族原生源，自字面量总体与分档域同步除名
 		//（106/24/16/114）；分档域只收 v1 读方，两个文件的退役负担随
 		// request_logs 族的边界一起消失。
-		{"字面量总体", len(literal), 106},
+		// 2026-10-13（S3 波 3，同日第二分片）：admin/routing.go 同款除名
+		//（popularModelsHotSQL → 会话族原生源；106→105、114→113）。
+		{"字面量总体", len(literal), 105},
 		// 2026-10-13（S4 停写交接）：body_resolver / unified_detail 因加了
 		// session 兜底拼接点自盲区桶迁入（+2）；两者同时仍是字面量读方
 		//（交集 14→16），并集不变。
 		{"间接总体", len(indirect), 24},
 		{"交集", inter, 16},
-		{"并集（域）", union, 114},
+		{"并集（域）", union, 113},
 	} {
 		if c.got != c.exp {
 			t.Errorf("%s = %d，期望 %d", c.name, c.got, c.exp)

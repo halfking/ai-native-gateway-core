@@ -52,10 +52,18 @@ var sqlReadGuardAllowFiles = map[string]string{
 		"③ 对最近 8h 的盲区在此**方向是保守的**：那批行由在线路径直接落标签、本就不该进回填集，漏读只会让 remaining 略被低估，不会虚报进度。",
 
 	// ---- LEGIT：引擎/DDL/维护/工具 ----
-	"bg/lite_retention_worker.go":         "LEGIT: SQLite 引擎 DELETE（? 占位，非 PG hot/mother 体系）",
-	"cmd/gateway/dual_read_validator.go":  "LEGIT: 专职双腿一致性校验器",
-	"db/db.go":                            "LEGIT: routing_analytics_source DDL 体",
-	"db/request_logs_view_schema.go":      "LEGIT: 视图 DDL 体",
+	"bg/lite_retention_worker.go":        "LEGIT: SQLite 引擎 DELETE（? 占位，非 PG hot/mother 体系）",
+	"cmd/gateway/dual_read_validator.go": "LEGIT: 专职双腿一致性校验器",
+	// db/db.go 条目已于 2026-10-13 12h 审计轮移除（自清洁）：
+	//   routing_analytics_source 已视图化（182a08928），该文件不再有裸读命中，
+	//   由 TestSQLReadGuardWhitelistCurrent 报出。
+	"db/request_logs_view_schema.go": "LEGIT: 视图 DDL 体",
+	// 2026-10-13 12h 审计轮登记：该文件是 **v1 冻结点常量本身**的定义处
+	// （V1FreezeCutoffSQL = max(ts) 取 hot ∪ 母表两腿）。
+	// 它不是「漏迁的读面」——冻结点的定义在语义上就**必须**读母表：
+	// promote 只搬 8h 前的旧行，只看 hot 会把冻结点定在数小时前，
+	// 双写期行将被两腿各计一次。改用会话族源反而无法界定 v1 臂边界。
+	"db/v1_freeze_cutoff.go":              "LEGIT: v1 冻结点常量定义本身（max(ts) 必须取 hot ∪ 母表两腿；见该文件头）",
 	"admin/data_lifecycle.go":             "LEGIT: 存储生命周期维护面（全历史体积/清理属设计语义）",
 	"admin/data_lifecycle_attachments.go": "LEGIT: 存储生命周期维护面",
 	"admin/data_lifecycle_metrics.go":     "LEGIT: 存储生命周期维护面",
@@ -83,14 +91,14 @@ var sqlReadGuardAllowFiles = map[string]string{
 	// request_logs_with_current_month 视图（view 已在白名单 LEGIT），对应
 	// 白名单条目按 self-cleaning 守卫自动清除（TestSQLReadGuardWhitelistCurrent）。
 	"admin/quality_correlations.go":            "DEBT(R47): 裸母表",
-	"admin/provider_models.go":                 "DEBT(R47): 裸母表",
 	"admin/session_sanitize_matches.go":        "DEBT(R47): 裸母表",
 	"cmd/gateway/output_compliance_control.go": "DEBT(R47): 网关运行时读面裸母表",
 	"cmd/gateway/main_v3_wiring.go":            "DEBT(R47): 接线读面裸母表",
 	"domains/analysis/optimizer.go":            "DEBT(R47): 裸母表",
-	"domains/analysis/request_summary.go":      "DEBT(R47): 裸母表",
 	"domains/analysis/projectattr/store.go":    "DEBT(R47): 裸母表",
-	"domains/sessionforensics/export.go":       "DEBT(R47): 裸母表",
+	// 下列三条已于 2026-10-13 12h 审计轮移除（S3 波2/波3 迁移后已无裸读命中）：
+	//   admin/provider_models.go、domains/analysis/request_summary.go、
+	//   domains/sessionforensics/export.go —— 均由 TestSQLReadGuardWhitelistCurrent 报出。
 	// domains/providerprofile/pg_reconciliation_store.go 条目已按 R28-B-1（round 30）
 	// 聚合源切换移除：该文件现已只读计帐侧月分区，无 request_logs 裸读命中，
 	// 由 TestSQLReadGuardWhitelistCurrent 自清洁守卫报出。
@@ -275,8 +283,18 @@ func TestDebtRatchetDoesNotGrow(t *testing.T) {
 
 	// 覆盖面下限：先证「抽到东西了」。空集合同样满足「没有新增」，
 	// 抽取逻辑坏掉时这道门会安静通过（201 号 §102 的教训）。
-	if len(debt) < 20 {
-		t.Fatalf("只从白名单里抽出 %d 条 DEBT 条目（下限 20）：DEBT 识别很可能已失效，"+
+	//
+	// ⚠️ 2026-10-13（12h 审计轮）下限 20 → 18：**下限必须 ≤ 真实债条数**，
+	// 否则债务被真实偿还后这道门永远转绿不了（自清洁守卫要求删条目，
+	// 删条目又把计数压到下限以下 ⇒ 两道门互相锁死）。
+	// 本次下调的真实原因：S3 波2/波3 把 admin/provider_models.go、
+	// domains/analysis/request_summary.go、domains/sessionforensics/export.go
+	// 三条 DEBT 迁到了会话族源/canonical 视图，TestSQLReadGuardWhitelistCurrent
+	// 报出后按其要求删除 ⇒ DEBT 由 21 降为 18。
+	// 这不是「把门放松」：该门的判据是**相对 debtBaseline 不得新增**，
+	// 下限只是抽取有效性的兜底；18 条仍远高于空集，抽取坏掉仍会红。
+	if len(debt) < 18 {
+		t.Fatalf("只从白名单里抽出 %d 条 DEBT 条目（下限 18）：DEBT 识别很可能已失效，"+
 			"此时「没有新增」会与「一条都没抽到」同步为真。抽到的：%v", len(debt), keysSorted(debt))
 	}
 

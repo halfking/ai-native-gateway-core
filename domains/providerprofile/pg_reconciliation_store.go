@@ -3,6 +3,7 @@ package providerprofile
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -245,10 +246,40 @@ func (s *PGGatewayMonthlyUsageSource) MonthlyUsageByProvider(ctx context.Context
 	defer conn.Release()
 
 	// 9 分钟 < 调用方给的 10 分钟：让语句超时先触发，错误才带出处。
-	if _, err := conn.Exec(ctx, "SET statement_timeout = $1", reconciliationStatementTimeout.Milliseconds()); err != nil {
+	//
+	// ⚠️ 2026-10-13 12h 审计轮（P1）修正：此前写的是
+	//   SET statement_timeout = $1
+	// 而 PostgreSQL 的 SET 是 **utility 语句，不接受绑定参数**。
+	// pgx 在带参数时走扩展协议（Parse/Bind/Execute），服务端直接回
+	//   ERROR: syntax error at or near "$1" (SQLSTATE 42601)
+	// 实测（pgx v5.9.2 = go.mod 锁定版本，psql \bind 扩展协议对拍复现）：
+	//   SET + 绑定参数        → 42601
+	//   SELECT set_config(…)  → OK
+	//   SET + 字面量          → OK
+	// ⇒ 该行**恒失败**，MonthlyUsageByProvider 在第一条查询之前就返回错误：
+	//   worker 每轮记 "set statement_timeout: syntax error"，
+	//   网关用量永不写入，费用对账页恒空 —— 它替换掉的那个 57014 超时
+	//   反而更难排查。
+	//
+	// 为什么线上验证明明是绿的：覆盖测试 pg_reconciliation_store_test.go:147
+	// 确实调用本函数，但 pg_store_test.go:19 在没有 TEST_DATABASE_URL 时
+	// 整包 skip ⇒ 本地/CI 永远跑不到这一行。
+	//
+	// 写法与本仓既有正解一致（domains/session/v2/session_request_status_backfill.go:442
+	// 用 set_config(…, $1, true)；db/db.go:4192 用无参字面量）。
+	if _, err := conn.Exec(ctx,
+		"SELECT set_config('statement_timeout', $1, false)",
+		strconv.FormatInt(reconciliationStatementTimeout.Milliseconds(), 10),
+	); err != nil {
 		return nil, fmt.Errorf("set statement_timeout: %w", err)
 	}
-	defer func() { _, _ = conn.Exec(context.WithoutCancel(ctx), "RESET statement_timeout") }()
+	// F13：RESET 不能继承调用方的 ctx（它此刻可能已取消），但也不该无期限
+	// 挂住 —— 卡死会把 conn.Release() 一起拖住，连接池逐步耗尽。
+	defer func() {
+		rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = conn.Exec(rctx, "RESET statement_timeout")
+	}()
 
 	rows, err := conn.Query(ctx, `
 		WITH deduped AS (

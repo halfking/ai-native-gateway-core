@@ -28,15 +28,19 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 
-# 复制源代码前先删 macOS AppleDouble 元数据（`._foo` 与 `.DS_Store`），
-# 否则 `COPY . .` 会把它们带进镜像。go:embed 打到二进制里后 i18n 加载 `._ar.json`
-# 就会 panic: invalid character '\x00' looking for beginning of value。
-# 2026-10-13 真机部署第一轮翻车原因。同步脚本（deploy-211-docker.sh）侧 --exclude
-# 是第一道防线；这里是第二道，单源修复就该够。
-RUN find . -type f \( -name '._*' -o -name '.DS_Store' \) -delete
-
 # 复制源代码
 COPY . .
+
+# 删除 macOS AppleDouble 元数据（`._foo` 与 `.DS_Store`），否则 go:embed 打到
+# 二进制里后 i18n 加载 `._ar.json` 就会 panic: invalid character '\x00' looking
+# for beginning of value。2026-10-13 真机部署第一轮翻车原因。
+#
+# ⚠️ 2026-10-13 12h 审计轮（P1）修正：本行此前**排在 `COPY . .` 之前**，那时镜像里
+# 只有 go.mod/go.sum，`find` 什么也没删；紧接着的 COPY 又把 `._*` 原样带了进来
+# ⇒ 这一层等于没写。必须排在 COPY 之后才成立。
+# 同步脚本（deploy-211-docker.sh）的 --exclude 是第一道防线，这里是第二道；
+# 但真正的兜底应是 .dockerignore（它与构建上下文怎么来的无关）。
+RUN find . -type f \( -name '._*' -o -name '.DS_Store' \) -delete
 
 # 编译
 # 2026-09-05: 双模式存储架构引入 mattn/go-sqlite3（CGO 包，lite 模式必需）。

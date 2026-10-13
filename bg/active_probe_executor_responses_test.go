@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 )
 
 func TestBuildEndpoint_ResponsesProtocol(t *testing.T) {
@@ -63,7 +65,20 @@ func TestBuildProbePingBody_ResponsesProtocol(t *testing.T) {
 	}
 }
 
-func TestBuildProbePingBody_ChatProtocolUnchanged(t *testing.T) {
+// TestBuildProbePingBody_ChatProtocolCarriesProbeFloor
+//
+// 原名 TestBuildProbePingBody_ChatProtocolUnchanged —— 它钉的是「responses 腿
+// 迁移不得改动 chat 腿报文」（当时 chat 腿是 max_tokens=1）。
+// 2026-10-13 12h 审计轮：chat 腿被**有意**改成 providercap.ProbePingMaxTokens
+// ——该常量存在的理由正是 chat 腿的 max_tokens 撞聚合中转的 ≥16 下限，
+// 造成「探针三连败 → 节点停 5 分钟 → 用户流量 db_empty 连坐」。
+// 而 91136746b 只迁了 node_probe/selfcheck/credential 三族，漏了本文件
+// （active_probe_executor）这一处，字段注释宣称的「ALL text probe ping bodies」
+// 在代码里当时并不成立。
+//
+// 故：本断言从「不得漂移」改为「必须等于那个契约常量」，并保留 temperature
+// 的形状钉桩。改成引用常量而非字面量，下次再统一抬高时不会又变成半迁移。
+func TestBuildProbePingBody_ChatProtocolCarriesProbeFloor(t *testing.T) {
 	desc := probeDescriptorFor("openai-completions")
 	body, err := buildProbePingBody("m-1", desc)
 	if err != nil {
@@ -73,7 +88,7 @@ func TestBuildProbePingBody_ChatProtocolUnchanged(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &payload); err != nil {
 		t.Fatalf("body not JSON: %v", err)
 	}
-	if payload["max_tokens"] != float64(1) || payload["temperature"] != float64(0) {
+	if payload["max_tokens"] != float64(providercap.ProbePingMaxTokens) || payload["temperature"] != float64(0) {
 		t.Fatalf("chat ping payload drifted: %s", body)
 	}
 }

@@ -591,6 +591,10 @@ func (e *Executor) executeOpenAI(
 		bodyBytes, responsesTrimMeta = transformation.CompressResponsesInputIfNeededWithMeta(sourceBody, contextWindow, reserve)
 		recordResponsesInputTrimMeta(&responsesProvenance, sourceBody, bodyBytes, responsesTrimMeta)
 		bodyBytes = transformation.RewriteResponsesModel(bodyBytes, cand.RawModel)
+		// r1024：客户端把 chat 嵌套形 tools 发到 /v1/responses 时归一化为
+		// 平铺形（两种形状语义等价；透传畸形会让上游以 400 拒绝并触发
+		// 无意义重试与凭据连坐）。
+		bodyBytes = transformation.NormalizeResponsesTools(bodyBytes)
 		// paramledger (2026-09-22): native responses 分支不经过
 		// finalizeOpenAIUpstreamBody，paramguard（嵌套 reasoning.effort 的
 		// 归一/能力降档）在此显式执行并记账。
@@ -1357,8 +1361,11 @@ func (e *Executor) executeOpenAI(
 							}
 						}
 						// 参数剔除：优先按错误点名参数，未点名则剔除全部
-						// 不常见参数。每请求一次。
-						if diag.Trigger == reqprobe.TriggerParamRejected && !probe.paramTried {
+						// 不常见参数。有界多轮（2026-10-13 grok-4.6 thinking
+						// 事故：OpenAI 系校验器一次只报一个未知参数，N 个未知
+						// 参数需要 N 轮点名→剥→重试，原「每请求一次」在第二个
+						// 参数上死局；上限 maxParamStrips 封顶免费重试次数）。
+						if diag.Trigger == reqprobe.TriggerParamRejected && probe.paramStrips < maxParamStrips {
 							if strippedBody, stripped := reqprobe.StripParams(bodyBytes, diag.Param); len(stripped) > 0 {
 								slog.Warn("reqprobe: upstream rejected request, retrying with params stripped",
 									"request_id", params.RequestID,
@@ -1368,10 +1375,14 @@ func (e *Executor) executeOpenAI(
 									"status", resp.StatusCode,
 									"stripped", strings.Join(stripped, ","),
 									"named_param", diag.Param,
+									"strip_round", probe.paramStrips+1,
 								)
 								bodyBytes = strippedBody
-								probe.paramTried = true
-								probe.diag.Param = strings.Join(stripped, ",")
+								probe.paramStrips++
+								probe.strippedAccum = append(probe.strippedAccum, stripped...)
+								// diag.Param 记累计清单（成功学习与台账都按它），
+								// LearnedParams 按逗号拆分原生支持多参数。
+								probe.diag.Param = strings.Join(probe.strippedAccum, ",")
 								probe.active = true
 								probeRetry = true
 								e.ledgerRecordProbe(params, cand, stripped, "", "")
@@ -1796,18 +1807,18 @@ func (e *Executor) executeOpenAI(
 						"chunk_count", streamOutcome.ChunkCount,
 					)
 					return &ExecuteResult{
-							Response:       resp,
-							Candidate:      cand,
-							LatencyMs:      latencyMs,
-							RequestBody:    append([]byte(nil), bodyBytes...),
-							InboundBody:    sourceBody,
-							RoutingTracker: params.RoutingTracker,
-						}, &streamInterruptedError{
-							reason:       streamOutcome.Reason,
-							credentialID: cand.CredentialID,
-							resumable:    false,
-							kind:         errorsx.KindCanceled,
-						}
+						Response:       resp,
+						Candidate:      cand,
+						LatencyMs:      latencyMs,
+						RequestBody:    append([]byte(nil), bodyBytes...),
+						InboundBody:    sourceBody,
+						RoutingTracker: params.RoutingTracker,
+					}, &streamInterruptedError{
+						reason:       streamOutcome.Reason,
+						credentialID: cand.CredentialID,
+						resumable:    false,
+						kind:         errorsx.KindCanceled,
+					}
 				}
 				if streamOutcome.Interrupted {
 					isResumable := streamOutcome.Resumable && streamOutcome.ChunkCount < e.StreamRetryThreshold
@@ -1895,23 +1906,23 @@ func (e *Executor) executeOpenAI(
 					}
 
 					return &ExecuteResult{
-							Response:    resp,
-							Candidate:   cand,
-							LatencyMs:   latencyMs,
-							RequestBody: append([]byte(nil), bodyBytes...),
-							// Phase D (2026-06-22): inbound body for audit logging
-							InboundBody: sourceBody,
-							// 2026-06-19 quality fix mode: capture any flags the
-							// stream reader observed before the interrupt fired.
-							QualityFlags:   streamQualityFlags,
-							QualityScore:   streamQualityScore,
-							RoutingTracker: params.RoutingTracker,
-						}, &streamInterruptedError{
-							reason: streamOutcome.Reason, credentialID: cand.CredentialID,
-							resumable: isResumable, kind: streamKind,
-							statusCode: resp.StatusCode, rawError: streamOutcome.Reason,
-							terminalRendered: streamOutcome.TerminalRendered,
-						}
+						Response:    resp,
+						Candidate:   cand,
+						LatencyMs:   latencyMs,
+						RequestBody: append([]byte(nil), bodyBytes...),
+						// Phase D (2026-06-22): inbound body for audit logging
+						InboundBody: sourceBody,
+						// 2026-06-19 quality fix mode: capture any flags the
+						// stream reader observed before the interrupt fired.
+						QualityFlags:   streamQualityFlags,
+						QualityScore:   streamQualityScore,
+						RoutingTracker: params.RoutingTracker,
+					}, &streamInterruptedError{
+						reason: streamOutcome.Reason, credentialID: cand.CredentialID,
+						resumable: isResumable, kind: streamKind,
+						statusCode: resp.StatusCode, rawError: streamOutcome.Reason,
+						terminalRendered: streamOutcome.TerminalRendered,
+					}
 				}
 				recordAttemptSuccess(streamOutcome.ChunkCount)
 				return &ExecuteResult{
@@ -2526,7 +2537,17 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 				irReq2 = ir.ValidateAndFixRequest(irReq2, params.RequestID)
 				irReq2.Model = resolveOutboundModel(params, cand)
 				// 同上（2026-09-18）: 断路器兜底路径同样需要方言感知。
-				irReq2.TargetProvider = cand.CatalogCode
+				// 2026-10-13 12h 审计轮（P2-5）：本处此前是裸赋值，
+				// 漏了 :2396 / :2482 两处同族站点的 unknown-relay 哨兵 ——
+				// catalog_code 为空的中转（联界/智码等）走到这里会塌成空串，
+				// 于是 resolveTargetDialect 走 DialectForProtocol 分支，
+				// 把「厂商未知」误判成「厂商=目标协议」⇒ fail-closed 裁掉扩展字段，
+				// 正是 31d466e21 要消灭的那种行为，只是换了一条路径复发。
+				if cand.CatalogCode != "" {
+					irReq2.TargetProvider = cand.CatalogCode
+				} else {
+					irReq2.TargetProvider = paramreg.CatalogCodeUnknownRelay
+				}
 				// R45: 断路器兜底路径同样恢复 context 携带的入向推理意图。
 				irReq2 = ir.RestoreSourceReasoning(irReq2, params.R.Context())
 				// R61 S2-F3 续：断路器兜底路径同样 stamp。

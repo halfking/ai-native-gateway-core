@@ -86,7 +86,14 @@ func TestFinalizeOpenAIUpstreamBody_TargetProviderWiring_LegacyWithIR(t *testing
 		assertUpstreamThinking(t, body, "adaptive", true)
 	})
 
-	t.Run("empty catalog passes through verbatim", func(t *testing.T) {
+	// 2026-10-13（thinking 翻译轮更新）：空 catalog 的「逐字透传」期望在两轮
+	// 已提交策略下过时——①交叉矩阵轮对「路由已定但 catalog 为空」盖
+	// unknown-relay 哨兵（不再是路由前序列化点语义）；②r1021 对
+	// RejectedByUnknown 的 thinking 裁剪 + 本轮按协议翻译。当前语义：
+	// 空 catalog 候选的 thinking 意图翻译成 effort 形态（chat 协议 →
+	// reasoning_effort），不再原样透传 thinking 对象。该子用例此前已红
+	//（stash 对照证明先于翻译轮），此处对齐现状。
+	t.Run("empty catalog translates thinking to effort form", func(t *testing.T) {
 		cand := provider.Candidate{
 			ProviderID:   1,
 			CredentialID: 1,
@@ -98,7 +105,16 @@ func TestFinalizeOpenAIUpstreamBody_TargetProviderWiring_LegacyWithIR(t *testing
 		if err != nil {
 			t.Fatalf("finalizeOpenAIUpstreamBody: %v", err)
 		}
-		assertUpstreamThinking(t, body, "enabled", false)
+		var m map[string]any
+		if err := json.Unmarshal(body, &m); err != nil {
+			t.Fatalf("body invalid: %v", err)
+		}
+		if _, has := m["thinking"]; has {
+			t.Errorf("thinking 对象不得原样透传给 unknown-relay：%s", body)
+		}
+		if _, has := m["reasoning_effort"]; !has {
+			t.Errorf("思考意图应翻译成 reasoning_effort：%s", body)
+		}
 	})
 }
 

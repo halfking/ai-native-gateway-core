@@ -79,6 +79,12 @@ func TestClassify_StreamWrapped5xxVendorVerdictIsUnsupportedFeature(t *testing.T
 }
 
 func TestClassify_OperationNotAllowedIsUnsupportedFeature(t *testing.T) {
+	// 双层嵌套形态（2026-10-13 claude-haiku 流式实测）：
+	// {"code":4006,"message":"{\"message\":\"Operation not allowed\"}"}
+	nested := []byte(`{"code":4006,"message":"{\"message\":\"Operation not allowed\"}","data":null}`)
+	if got := ClassifyErrorWithBody(400, nested); got != KindUnsupportedFeature {
+		t.Fatalf("nested operation not allowed: got %s, want unsupported_feature", got)
+	}
 	body := []byte(`{"message":"Operation not allowed"}`)
 	if got := ClassifyErrorWithBody(400, body); got != KindUnsupportedFeature {
 		t.Fatalf("operation not allowed: got %s, want unsupported_feature", got)

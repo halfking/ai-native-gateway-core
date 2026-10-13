@@ -113,7 +113,7 @@ if [[ -n "$VIA" ]]; then
              echo '[211] 目标树残留 .env*: '\$(find ~/llm-gateway-go-211 -name '.env*' -type f | wc -l) \
              ' ._*: '\$(find ~/llm-gateway-go-211 -name '._*' -type f | wc -l)"
   log "在 $VIA 上执行 deploy ..."
-  ssh "$VIA" "cd ~/llm-gateway-go-211 && D211_STATE_DIR=$D211_STATE_DIR D211_REDIS_DB_START=$D211_REDIS_DB_START D211_REDIS_DB_END=$D211_REDIS_DB_END bash scripts/deploy-211-docker.sh $*"
+  ssh "$VIA" "cd ~/llm-gateway-go-211 && D211_STATE_DIR=$D211_STATE_DIR D211_REDIS_DB_START=$D211_REDIS_DB_START D211_REDIS_DB_END=$D211_REDIS_DB_END LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY='${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}' bash scripts/deploy-211-docker.sh $*"
   exit $?
 fi
 
@@ -397,11 +397,27 @@ find_redis_container() {
       *redis*) ;;
       *) continue ;;
     esac
-    # 探活：redis_probe_usable stdout 写 "PONG\x1f<pw>"，本函数读到后把
-    # 容器名 + 密码一并 printf 给调用方（两行，read 两次取）。
+    # 探活：redis_probe_usable stdout 写 "PONG\x1f<pw>"。
+    #
+    # ⚠️ 2026-10-13 12h 审计轮（P1）修正：此前本函数无条件 printf 两行
+    # `name\n<pw>`，调用方用 tail -1 取密码。**无密码（trust 模式）时 pw 是空串**，
+    # 输出 "name\n\n" 而命令替换的 $() **会剥掉尾部换行** ⇒ tail -1 取回的是
+    # 容器名自己。实测 REDIS_PASSWORD=[my-redis]（应为空）。
+    # 后果链：redis_auth_args 造出 `-a my-redis`；redis_db_in_use 的 DBSIZE 回包
+    # 非数字，撞 `|| return 0`（读不出→保守当占用）⇒ 16 个库全被判占用 ⇒
+    # allocate_redis_db die "db15..db0 全被占用"。侥幸存活也会把容器名当密码
+    # 写进 env/gateway.env。
+    #
+    # 改法：**只在确有密码时才输出第二行**，调用方按行数判别。
+    # 空密码 → 1 行；有密码 → 2 行。两种情形在 $() 剥尾换行后都无歧义。
+    # （不能改成全局变量：REDIS_RAW="$(…)" 在子 shell 里跑，全局赋值传不回来。）
     if probe_out="$(redis_probe_usable "$name")"; then
       local rpw="${probe_out#*$'\x1f'}"
-      printf '%s\n%s\n' "$name" "$rpw"
+      if [[ -n "$rpw" ]]; then
+        printf '%s\n%s\n' "$name" "$rpw"
+      else
+        printf '%s\n' "$name"          # trust 模式：只有容器名
+      fi
       return 0
     fi
     log "  候选 $name: redis PING 失败（无密码+启动命令也抽不出），跳过"
@@ -465,14 +481,17 @@ allocate_redis_db() {
 # 探测汇总 / status
 # =============================================================================
 PG_FOUND="$(find_pg_container || true)"
-# find_redis_container 返回两行：name\npassword。命令替换的 $() 在子 shell 里
-# 跑，把多行 stdout 截走——read 两次就拿到。
+# find_redis_container：**1 行** = 只有容器名（trust 模式，密码为空）；
+# **2 行** = 容器名 + 密码。命令替换的 $() 会剥掉尾部换行，故无密码时
+# 绝不能多打一个空行——否则 tail -1 会取回容器名自己（见函数内 P1 注释）。
 REDIS_RAW="$(find_redis_container || true)"
 REDIS_FOUND=""
 REDIS_PASSWORD=""
 if [[ -n "$REDIS_RAW" ]]; then
   REDIS_FOUND="$(printf '%s\n' "$REDIS_RAW" | head -1)"
-  REDIS_PASSWORD="$(printf '%s\n' "$REDIS_RAW" | tail -1)"
+  if [[ "$(printf '%s\n' "$REDIS_RAW" | wc -l | tr -d ' ')" -ge 2 ]]; then
+    REDIS_PASSWORD="$(printf '%s\n' "$REDIS_RAW" | tail -1)"
+  fi
 fi
 
 show_status() {
@@ -636,6 +655,20 @@ fi
 
 CORS_ORIGINS="${LLM_GATEWAY_CORS_ORIGINS:-*}"
 
+# 凭据密文解密密钥（r1024 部署轮补）：211 的库是生产数据副本，credentials
+# 密文按生产 keyring（kid=legacy）加密；不注入 CREDENTIAL_ENCRYPTION_KEY 时
+# 网关回落到 SECRET_KEY 派生钥，解不开信封（node_probe "cannot decrypt:
+# unknown format" + 路由全灭 key_decrypt_failed）。与 SECRET_KEY 同款持久化：
+# 环境变量优先，其次 gateway.credkey 文件；不自动生成（错钥只会静默全灭）。
+CRED_ENC_KEY="${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}"
+if [[ -z "$CRED_ENC_KEY" && -f "$D211_STATE_DIR/env/gateway.credkey" ]]; then
+  CRED_ENC_KEY="$(cut -d= -f2- "$D211_STATE_DIR/env/gateway.credkey")"
+fi
+if [[ -n "$CRED_ENC_KEY" ]]; then
+  printf 'LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=%s\n' "$CRED_ENC_KEY" > "$D211_STATE_DIR/env/gateway.credkey"
+  chmod 600 "$D211_STATE_DIR/env/gateway.credkey"
+fi
+
 # 组装网关要用的连接串（走 docker 网络内的容器名）
 # 密码必须 URL-encode（`@` / `:` / `/` 会拆断 DSN；`unused` 表示 trust 模式可不带）
 url_encode() { printf '%s' "$1" | python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.stdin.read(), safe=''))" 2>/dev/null || printf '%s' "$1"; }
@@ -674,6 +707,9 @@ DB_URL="postgres://${PG_USER_ENC}:${PG_PASS_ENC}@${PG_CONTAINER}:5432/${D211_PG_
   printf 'export LLM_GATEWAY_REDIS_URL=%q\n' "$REDIS_URL"
   printf 'export LLM_GATEWAY_SECRET_KEY=%q\n' "$SECRET_KEY"
   printf 'export LLM_GATEWAY_CORS_ORIGINS=%q\n' "$CORS_ORIGINS"
+  if [[ -n "$CRED_ENC_KEY" ]]; then
+    printf 'export LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=%q\n' "$CRED_ENC_KEY"
+  fi
 } > "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 
@@ -686,6 +722,9 @@ GW_ENV=(
   -e "LLM_GATEWAY_SECRET_KEY=${SECRET_KEY}"
   -e "LLM_GATEWAY_CORS_ORIGINS=${CORS_ORIGINS}"
 )
+if [[ -n "$CRED_ENC_KEY" ]]; then
+  GW_ENV+=( -e "LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=${CRED_ENC_KEY}" )
+fi
 
 docker rm -f "$D211_GW_CONTAINER" >/dev/null 2>&1 || true
 docker run -d --name "$D211_GW_CONTAINER" --restart unless-stopped \
