@@ -83,34 +83,36 @@ func TestS3Wave4CompareParsersAcceptDeltaShapes(t *testing.T) {
 }
 
 // TestS3Wave4CompressionSessionsTargetsSessionFamily 钉住 compression_sessions
-// 的双源会话族化：turns 源×3（countSQL+主查询+LATERAL）、bodies 源×3，且
-// v1 字面量、旧 ->'messages' 取键、ts 等值配对三个旧形态在**活代码**里
-// 不再出现（注释里解释历史的文字不算，判据剥离注释——与 read inventory
-// 同一处置）。
+// 的双源会话族化与**单趟形态**：turns 源×2（countSQL+window_turns CTE）、
+// bodies 源×2；v1 字面量、旧 ->'messages' 取键、ts 等值配对、**LEFT JOIN
+// LATERAL** 四个旧形态在活代码里不得出现（LATERAL 体会对每个 GROUP 行
+// 重跑 canonical 全源——2612 生产实测 925k turns 规模把 10s 预算打满；
+// 单趟 CTE + DISTINCT ON 才是正确形态）。注释里解释历史的文字不算，
+// 判据剥离注释——与 read inventory 同一处置。
 func TestS3Wave4CompressionSessionsTargetsSessionFamily(t *testing.T) {
 	src := stripGoComments(s3Wave4ReadFile(t, "admin/compression_sessions.go"))
-	if got := strings.Count(src, "SessionFamilyTurnsSourceSQL()"); got != 3 {
-		t.Errorf("compression_sessions 的 turns 源必须出现 3 次（countSQL+主查询+LATERAL），实测 %d", got)
+	if got := strings.Count(src, "SessionFamilyTurnsSourceSQL()"); got != 2 {
+		t.Errorf("compression_sessions 的 turns 源必须出现 2 次（countSQL+window_turns），实测 %d", got)
 	}
-	if got := strings.Count(src, "SessionFamilyBodiesSourceSQL()"); got != 3 {
-		t.Errorf("compression_sessions 的 bodies 源必须出现 3 次（countSQL+主查询+LATERAL），实测 %d", got)
+	if got := strings.Count(src, "SessionFamilyBodiesSourceSQL()"); got != 2 {
+		t.Errorf("compression_sessions 的 bodies 源必须出现 2 次（countSQL+window_turns），实测 %d", got)
 	}
 	for _, forbidden := range []string{
 		"request_logs_bodies_with_current_month",
 		"request_logs_with_current_month",
 		"->'messages'",
 		"rb2.ts = rl2.ts",
-		// ⚠ 形状守卫禁入：裸 jsonb_array_length 对 JSON 字面量 null（SQL 值
-		// 非 NULL，COALESCE 不救）报 22023——2605 部署端点实测抓到的缺陷，
-		// 修复=必须经 jsonb_typeof 判形。
-		"jsonb_array_length(COALESCE(rb2.request_body",
+		"LEFT JOIN LATERAL",
 	} {
 		if strings.Contains(src, forbidden) {
-			t.Errorf("compression_sessions 活代码不得再出现 %q（旧 v1 形态回退）", forbidden)
+			t.Errorf("compression_sessions 活代码不得再出现 %q（旧 v1/LATERAL 形态回退）", forbidden)
 		}
 	}
-	if !strings.Contains(src, "jsonb_typeof(rb2.request_body)") {
+	if !strings.Contains(src, "jsonb_typeof(rb2.request_body)") && !strings.Contains(src, "jsonb_typeof(request_body)") {
 		t.Error("compression_sessions 的数组长度必须先 jsonb_typeof 判形（JSON 字面量 null 是标量，裸 jsonb_array_length 报 22023）")
+	}
+	if !strings.Contains(src, "DISTINCT ON (gw_session_id)") {
+		t.Error("每会话最新轮必须用 DISTINCT ON 单趟取（LATERAL 重跑全源是生产规模性能缺陷）")
 	}
 }
 
