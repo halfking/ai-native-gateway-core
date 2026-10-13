@@ -4719,7 +4719,15 @@ live 分支只写了 `Reason` 忘了把 `Stale` 设回 `false` ⇒ 该字段**�
 | `errors_out` | 3 | 响亮失败，灰度立刻可见（**可接受**） |
 | `validator_dual_read` | 1 | §9.35 的新鲜度探针 |
 
-**⇒ 灰度前必须处理的静默档：**61** 条**（`silently_empty` + `silently_degraded_content` + `silently_frozen` + `silently_degraded_aggregate`；见下方 2026-10-13 订正）
+**⇒ 灰度前必须处理的静默档：**59** 条**（`silently_empty` + `silently_degraded_content` + `silently_frozen`；计数口径 = countSilentStopWriteEffects 的三档 switch，见下方 2026-10-13 订正）
+
+> ⚠ **S3 波 3 订正（2026-10-13，停写切换读侧第二分片）：61 → 59。**
+> −1：admin/routing.go 除名——popularModelsHotSQL 改读会话族原生源
+> （SessionFamilyTurnsSourceSQL），文件脱离 v1 族（silently_frozen 少一条）。
+> −1：admin/tenants.go 由 silently_empty 改判 silently_degraded_aggregate——
+> logsTable 补冻结点守卫的会话腿后 credits/byModel/byApp/daily 对新流量
+> 继续供数；degraded_aggregate 不在「必须处理」三档计数内（它是
+> 「继续供数、口径降级」的可接受稳态）。
 
 > ⚠ **S3 波 2 订正（2026-10-13，停写切换轮）：这一句是 69，本轮改为 61。**
 >

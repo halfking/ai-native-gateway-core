@@ -12,13 +12,18 @@ import (
 )
 
 // TestPopularModelsHotSQL_TargetsHotTable pins the SQL constant to the
-// correct source table. Regression guard for the 2026-08-26 fix that
-// switched the "凭据路由模型" picker away from
-// request_logs_with_current_month (which dragged every ATTACHED columnar
-// partition into the scan) to request_logs_hot (heap, ~7d retention).
+// correct source. Regression guard for the 2026-08-26 fix that switched
+// the "凭据路由模型" picker away from request_logs_with_current_month
+// (which dragged every ATTACHED columnar partition into the scan), and
+// for the 2026-10-13 S3 波 3 migration off the draining v1 hot table to
+// the native session-turn family: both the columnar view AND the v1 hot
+// table are forbidden sources now.
 func TestPopularModelsHotSQL_TargetsHotTable(t *testing.T) {
-	if !strings.Contains(popularModelsHotSQL, "FROM request_logs_hot rl") {
-		t.Fatalf("popularModelsHotSQL must target request_logs_hot; got:\n%s", popularModelsHotSQL)
+	if !strings.Contains(popularModelsHotSQL, "FROM public.session_turns_hot t") {
+		t.Fatalf("popularModelsHotSQL must read the native session-turn family (v1 hot drains after the S4 stop-write); got:\n%s", popularModelsHotSQL)
+	}
+	if strings.Contains(popularModelsHotSQL, "FROM request_logs_hot rl") {
+		t.Fatalf("popularModelsHotSQL must not read the draining v1 hot table:\n%s", popularModelsHotSQL)
 	}
 	if strings.Contains(popularModelsHotSQL, "request_logs_with_current_month") {
 		t.Fatalf("popularModelsHotSQL must not scan the partitioned view (slow columnar scan):\n%s", popularModelsHotSQL)

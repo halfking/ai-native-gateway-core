@@ -102,7 +102,9 @@ var requestLogsReadInventory = map[string]int{
 	"admin/quality_correlations.go":         2,
 	"admin/request_trace.go":                4,
 	"admin/route_incidents.go":              1,
-	"admin/routing.go":                      1,
+	// admin/routing.go 于 2026-10-13（S3 波 3 停写切换）除名：唯一的 v1 读点
+	// popularModelsHotSQL 改读会话族原生源（SessionFamilyTurnsSourceSQL），
+	// 文件内已无 request_logs 家族引用（钉桩 routing_popular_models_test）。
 	// 2026-10-05：只 JOIN 不 FROM，此前对本门**完全不可见**（假零）。
 	// 会话对比 API 的 bodies 腿；turn 腿早已走会话族。
 	"admin/session_analytics_breakdown.go":  2,
@@ -128,7 +130,9 @@ var requestLogsReadInventory = map[string]int{
 	"admin/session_turns_unified.go":    1,
 	"admin/swim_lane_init.go":           1,
 	"admin/telemetry.go":                1,
-	"admin/tenants.go":                  4,
+	// 2026-10-13 S3 波 3：4→8——logsTable 补两条会话腿后，双子排除的
+	// NOT EXISTS（request_logs_hot/request_logs 各 ×2）计入引用计数。
+	"admin/tenants.go":                  8,
 	"admin/top_problems.go":             2,
 	"admin/unified_detail.go":           6,
 	"admin/usage.go":                    3,
