@@ -636,6 +636,23 @@ else
   fi
 fi
 
+# URSM 专用 Redis db（与网关会话库隔离，避免 persist SCAN 扫会话键）。
+# 允许调用方用 URSM_V2_REDIS_DB 覆盖；默认优先 14，跳过 REDIS_DB，找空库。
+URSM_REDIS_DB="${URSM_V2_REDIS_DB:-}"
+if [[ -z "$URSM_REDIS_DB" ]]; then
+  for _cand in 14 13 12 11 10 9 8 7 6 5 4 3 2 1 0; do
+    if [[ "$_cand" == "$REDIS_DB" ]]; then
+      continue
+    fi
+    if ! redis_db_in_use "$REDIS_CONTAINER" "$_cand"; then
+      URSM_REDIS_DB="$_cand"
+      break
+    fi
+  done
+fi
+[[ -n "$URSM_REDIS_DB" ]] || die "无法为 URSM 分配独立 Redis db（与会话库 db${REDIS_DB} 冲突且无空库）"
+log "URSM 专用 Redis 库号 db${URSM_REDIS_DB}（会话库 db${REDIS_DB}）"
+
 # =============================================================================
 # 网络：把网关与复用的 PG/Redis 接到同一个网络，按容器名互访
 # =============================================================================
@@ -748,6 +765,10 @@ DB_URL="postgres://${PG_USER_ENC}:${PG_PASS_ENC}@${PG_CONTAINER}:5432/${D211_PG_
   if [[ -n "$CRED_ENC_KEY" ]]; then
     printf 'export LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=%q\n' "$CRED_ENC_KEY"
   fi
+  # 2026-10-14：解 URSM ModeOff（SYSTEM_MONITOR 未设）+ persist SCAN 与会话键隔离。
+  # URSM 专用 db 优先 14，且不得与网关会话 REDIS_DB 撞车；已被占用则降序找空库。
+  printf 'export LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true\n'
+  printf 'export URSM_V2_REDIS_DB=%q\n' "$URSM_REDIS_DB"
 } > "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 
@@ -759,6 +780,8 @@ GW_ENV=(
   -e "LLM_GATEWAY_REDIS_PASSWORD=${REDIS_PASSWORD:-}"
   -e "LLM_GATEWAY_SECRET_KEY=${SECRET_KEY}"
   -e "LLM_GATEWAY_CORS_ORIGINS=${CORS_ORIGINS}"
+  -e "LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true"
+  -e "URSM_V2_REDIS_DB=${URSM_REDIS_DB}"
 )
 if [[ -n "$CRED_ENC_KEY" ]]; then
   GW_ENV+=( -e "LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=${CRED_ENC_KEY}" )
