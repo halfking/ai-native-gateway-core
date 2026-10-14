@@ -8762,3 +8762,10 @@ git show origin/main:scripts/deploy-lib/db-changelog.sh
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 861 | `861_candidate_failure_view_absorb_session_id.sql` | `4b58ab7a37c385a6adaf2425245f853c32d1f619e16ca2c823d95766da090217` | applied+verified (local 2626) |
+
+## 2026-10-14T12:38:00Z — r1030 audit round (862 guard/annotation defect + ledger backfill)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 862 | `862_partition_family_leading_ts_idx.sql` | `aca31a92fa1f47887136bb7914f2fc1f93f99982673882f3b44abc473bee5b78` | r1030 修正版（**当前正典**）：建腿本就由 `to_regclass` 守卫，但文件末尾两条 `COMMENT ON INDEX` 是无条件的——该族缺席的环境（860 之前的旧名形态／已 DROP 的族／未建该族的新装库）整文件在 COMMIT 之后以 `relation "idx_request_logs_ts" does not exist` 非零退出。dbinit applySQL 走 `psql -v ON_ERROR_STOP=1` 且只按退出码记账，故该迁移永不 applied、每次 boot 重放同样失败（索引其实早已 IF NOT EXISTS 命中而在场）。修正：两条 COMMENT 与各自建腿同守卫（to_regclass 判定后再下 COMMENT） |
+| 862 | `862_partition_family_leading_ts_idx.sql` | `57add569df0a5b3673c3848ef96f3ead0bf010a41c6a095f5a7e8dfafc58c7c6` | 修正前指纹（2026-10-14 f43501d16 引入）。**保留**：252 已按 736 先例手动预应用双索引且不占台账，但任何**该族在场**的环境（预应用成功的部署目录扫描腿）会把旧字节自记账进 `schema_migrations`，校验和门需两指纹均合法（627/856 先例，任一匹配即过） |
