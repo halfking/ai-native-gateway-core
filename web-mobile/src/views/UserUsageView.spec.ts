@@ -6,6 +6,7 @@ import UserUsageView from './UserUsageView.vue'
 import { fetchManagedUsers } from '@/api/users'
 import { fetchUserStats, fetchUserUsageSummary } from '@/api/userUsageStats'
 import { createKey } from '@/api/keys'
+import { fetchTenants, fetchTenantStats, fetchTenantUsers } from '@/api/tenants'
 import { useAuthStore } from '@/stores/auth'
 import { t } from '@/i18n'
 
@@ -45,6 +46,13 @@ vi.mock('@/api/userUsageStats', async (importOriginal) => {
 vi.mock('@/api/keys', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/keys')>()
   return { ...actual, createKey: vi.fn() }
+})
+
+// 2026-10-13：默认窗口 30→7 的判据要能走到「租户列表 + 展开租户」那条路，
+// 而 mountView() 落在 /users/:id（详情页）不经过 tenants.ts ⇒ 这里单独 mock。
+vi.mock('@/api/tenants', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/tenants')>()
+  return { ...actual, fetchTenants: vi.fn(), fetchTenantStats: vi.fn(), fetchTenantUsers: vi.fn() }
 })
 
 const MANAGED_USERS = [
@@ -225,5 +233,75 @@ describe('UserUsageView audit regressions', () => {
     await w.findAll('button.btn--primary').find((b) => b.text().includes(t('keys.create')))!.trigger('click')
     await flushPromises()
     expect(document.body.textContent).not.toContain('sk-late-secret')
+  })
+})
+
+/**
+ * 默认统计窗口必须是 7 天（2026-10-13 实测修正的缺陷判据）。
+ *
+ * 缺陷本体：`days` 初始值是 30，而 30 天窗在真库上**确定性**失败——
+ *   GET /api/admin/tenants/default/stats?days=30 → 504 / 10.09s / 10.10s
+ *   GET …?days=7                                  → 200 / 2.74s / 4.27s
+ * ⇒ 移动端「用户用量」页一进来展开任一租户，就得到一条红色超时提示，
+ *   租户级 KPI（请求/Token/上游成本/积分）全部拿不到。
+ *
+ * 权威依据有三处，缺一不可：
+ *   · 后端自身缺省 7（admin/tenants.go `days < 1 ⇒ 7`）
+ *   · Web 端 TenantDetailView.statsDays = ref(7)
+ *   · 端点能力边界：30/90 超预算后走既有 504 契约，提示「缩短统计天数后重试」
+ *
+ * ★ 钉住什么：默认档位是 7；展开租户时**真的**带着 days:7 去请求。
+ * ★ 钉不住什么：钉不住「7 天一定快」——那取决于库上的数据量，
+ *   所以另有端到端读数（见上）作第二重判据。单测不能替代它。
+ */
+describe('UserUsageView 默认统计窗口 = 7 天', () => {
+  const TENANTS = [
+    { code: 'default', name: '默认租户', status: 'active', description: '', contact_email: '', created_at: '', updated_at: '', user_count: 15 },
+  ]
+
+  async function mountList() {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/users', component: { template: '<div/>' } }],
+    })
+    await router.push('/users')
+    await router.isReady()
+    useAuthStore().userInfo = {
+      id: 1, tenant_id: 'default', username: 'admin', display_name: 'A',
+      email: 'a@x', role: 'super_admin', enabled: true,
+    }
+    vi.mocked(fetchTenants).mockResolvedValue(TENANTS as never)
+    vi.mocked(fetchTenantStats).mockResolvedValue({
+      days: 7, total_requests: 5, total_tokens: 500, total_credits: 3, total_cost_usd: 1.5,
+      unique_keys: 1, unique_models: 1, unique_apps: 1, input_tokens: 1, output_tokens: 2,
+      cache_read_tokens: 0, cache_write_tokens: 0, avg_latency_ms: 10,
+      by_model: [], by_application: [], daily: [],
+    } as never)
+    vi.mocked(fetchTenantUsers).mockResolvedValue([] as never)
+    const w = mount(UserUsageView, { attachTo: document.body, global: { plugins: [pinia, router] } })
+    mounted.push(w)
+    await flushPromises()
+    await flushPromises()
+    return w
+  }
+
+  it('下拉框落在 7，而不是 30', async () => {
+    const w = await mountList()
+    const sel = w.find('select').element as HTMLSelectElement
+    expect(sel.value, '默认统计窗口应为 7').toBe('7')
+    // 防「只改了 value 没真绑上 v-model」：7 必须在选项表里存在
+    expect([...sel.options].map((o) => o.value)).toContain('7')
+  })
+
+  it('展开租户时请求必须带 days=7', async () => {
+    const w = await mountList()
+    const head = w.find('.user-usage__tenant-head')
+    expect(head.exists(), '租户分组应渲染').toBe(true)
+    await head.trigger('click')
+    await flushPromises()
+    expect(vi.mocked(fetchTenantStats)).toHaveBeenCalled()
+    expect(vi.mocked(fetchTenantStats).mock.calls[0]?.[1]).toEqual({ days: 7 })
   })
 })
