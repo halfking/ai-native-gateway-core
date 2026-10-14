@@ -57,75 +57,59 @@ func DecideFailover(status int, body []byte, retryAfterHeader string, clientOrig
 		return decision
 	}
 
+	// P0-C：Scope / Fuse / Permanent 一律来自 PenaltyOf（归责矩阵 SSOT）。
+	// EnqueueProbe / RetryAfter / ReasonCode 仍按 kind 细分（探针策略与归责正交）。
+	pen := PenaltyOf(kind)
+	decision.Scope = FailoverScopeOf(pen)
+	decision.Fuse = pen.Fuse
+	decision.Permanent = pen.Permanent
+
 	switch kind {
 	case KindAuth, KindAuthRevoked:
-		decision.Scope = ScopeCredential
-		decision.Fuse = true
-		decision.Permanent = true
 		decision.EnqueueProbe = false
 		decision.ReasonCode = "credential_auth_failed"
 	case KindQuotaPermanent, KindQuotaPeriodic, KindQuotaBalance, KindQuota:
-		decision.Scope = ScopeCredential
-		decision.Fuse = true
-		decision.Permanent = kind != KindQuotaPeriodic
 		decision.EnqueueProbe = false
 		decision.ReasonCode = "credential_quota_exhausted"
 	case KindRateLimit:
-		decision.Scope = ScopeModel
 		decision.RetryAfter = parseRetryAfter(retryAfterHeader, DefaultRateLimitCooldown)
 		decision.EnqueueProbe = true
 		decision.ProbeFanout = 1
 		decision.ReasonCode = "credential_rate_limited"
 	case KindConcurrent:
-		decision.Scope = ScopeModel
 		decision.RetryAfter = 5 * time.Second
 		decision.EnqueueProbe = true
 		decision.ProbeFanout = DefaultProbeFanout
 		decision.ReasonCode = "provider_concurrent_overload"
 	case KindUpstreamOverloaded:
-		// A relay-side overload is recoverable capacity pressure. Delay the
-		// next attempt, keep the binding routable, and enqueue a probe so the
-		// node is re-checked instead of staying unmarked while shedding load.
-		decision.Scope = ScopeModel
 		decision.RetryAfter = parseRetryAfter(retryAfterHeader, DefaultOverloadRetryDelay)
 		decision.EnqueueProbe = true
 		decision.ProbeFanout = 1
 		decision.ReasonCode = "provider_upstream_overloaded"
 	case KindNoAvailableChannel:
-		// 2026-08-09: OneAPI/new-api distributor "no available channel for
-		// model X under group Y" (5xx). Per-(credential,model) gap, recoverable
-		// once the group's channel returns, sibling credentials can serve the
-		// model. 15-minute cooling gives the distributor time to restore the
-		// channel while the credentialstate active_probe (consecutive>=2)
-		// flips the binding back as soon as it is healthy.
-		decision.Scope = ScopeModel
 		decision.RetryAfter = 15 * time.Minute
 		decision.EnqueueProbe = true
 		decision.ProbeFanout = 1
 		decision.FrontendWait = 0
 		decision.ReasonCode = "no_available_channel"
 	case KindTransient, KindTimeout, KindNetwork, KindUpstreamDown, KindStreamTimeout:
-		decision.Scope = ScopeModel
 		decision.EnqueueProbe = true
 		decision.ProbeFanout = DefaultProbeFanout
 		decision.ReasonCode = "upstream_transient_failure"
 	case KindModelNotFound, KindModelDeprecated, KindUnsupportedFeature, KindContextLength, KindContentFilter, KindToolCallIdMismatch, KindClientBug:
-		// 2026-09-18 audit (R42 merged the formerly separate KindClientBug
-		// case — identical field-for-field): a request-shape 400 (invalid
-		// params / MiniMax invalid thinking.type 2013 / invalid_request_format
-		// / Zhipu 1214) fails on EVERY credential — a follow-up probe with a
-		// well-formed ping would succeed and prove nothing about the failing
-		// traffic, only burn an upstream request. UpdateOnFailure already
-		// skips client bugs, so no recovery probe is needed to un-cool
-		// anything.
-		decision.Scope = ScopeModel
+		// P0-C：client_bug / shape 族 PenaltyNone → ScopeNone（不再 ScopeModel）。
+		// 探针仍不入队（同 2026-09-18 flap 修复）。
 		decision.EnqueueProbe = false
 		decision.FrontendWait = 0
 		decision.ReasonCode = "model_or_request_not_eligible"
 	default:
-		decision.Scope = ScopeModel
-		decision.EnqueueProbe = true
-		decision.ProbeFanout = DefaultProbeFanout
+		if pen.Target == PenaltyNone {
+			decision.EnqueueProbe = false
+			decision.FrontendWait = 0
+		} else {
+			decision.EnqueueProbe = true
+			decision.ProbeFanout = DefaultProbeFanout
+		}
 	}
 	return decision
 }

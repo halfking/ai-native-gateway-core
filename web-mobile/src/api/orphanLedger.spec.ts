@@ -47,15 +47,69 @@ import { join } from 'node:path'
  */
 
 /** 当前已登记的孤儿模块（**只能减少**）。接线一个就删一行。 */
-const KNOWN_ORPHANS: readonly string[] = [
+/**
+ * ★★★★★★ **第二类登记：重复件**（2026-10-14，第一百二十批新增）。
+ *
+ * ## 为什么要有这一类
+ *
+ * 本清单一直隐含一个前提：**孤儿 = 「做完了但用户点不到」的功能缺口**。
+ * ⇒ 棘轮逼着人接线，接完减一。
+ *
+ * ★★★ 但第一百二十批撞上一个前提**不成立**的条目：`boardOperational`。
+ *   逐字核过的事实：
+ *   · `boardOperational.ts` 与 `dashboardBoard.ts` 打的是**同一个端点**
+ *     `GET /api/admin/dashboard/operational`；
+ *   · `DashboardOpsView.vue` 从 **`@/api/dashboardBoard`** 导入 `fetchDashboardOperational`
+ *     并已经在展示那两个芯片 ⇒ **功能早已可达**；
+ *   · 两模块的导出**零交集**（前者 42 个、后者 28 个，各自全独有）
+ *     ⇒ 它不是「少写了几行」，而是**同一契约的两套并行实现**。
+ *
+ * ⇒ 照老规矩给它新开一页 = **同一份数据两个页面**，那是装饰面，不是复制功能。
+ * ⇒ 而直接合并（把 42 个独有导出并入在用模块）又会**改变在用路径的失败行为**
+ *   （前者校验更严，畸形响应会从「能显示」变成「抛错」）——
+ *   第一百零四批正是为此**明确推迟**过的。
+ *
+ * ## 这一类是**登记**，不是**免罪**
+ *
+ * ★★★ 登记成重复件**必须自证**，否则例外条款会变成万能借口
+ *   （「我觉得它重复」就能把任何孤儿永久挂起）。所以下面两条判据：
+ *   ① 它**确实仍在**孤儿集合里（不许悄悄变成可达）；
+ *   ② 它**确实与某个已可达模块打同一个端点**（`duplicateIsProven`）。
+ * ⇒ 两条任一不成立，那条登记立刻红。
+ */
+const KNOWN_DUPLICATES: readonly string[] = [
+  // 与 `dashboardBoard.ts` 同端点（`/api/admin/dashboard/operational`），
+  // 而后者已被 `DashboardOpsView.vue` 消费 ⇒ 功能已可达，本项是**重复件**不是缺口。
+  // 消解条件（写下来是为了为了让「什么时候能删」有答案）：
+  // 把这 42 个独有判据/常量逐条核实后并入 `dashboardBoard.ts`，删掉本模块。
   'boardOperational',
+]
+
+/**
+ * 某项登记为重复件的**自证**：它打的端点 URL 与某个**已从 UI 可达**的模块相同。
+ *
+ * ★ 判别口径必须是「**已可达**的模块」，而不是「另一个孤儿」——
+ *   两个都没人点的模块打同一个端点，那是两个缺口，不是一个重复件。
+ */
+function duplicateIsProven(name: string): boolean {
+  const src = moduleSource(name)
+  const urls = [...src.matchAll(/['`]\/api\/[a-z0-9/_{}$.-]+['`]/g)].map((m) => m[0].slice(1, -1))
+  if (urls.length === 0) return false
+  const seen = reachableFromUi()
+  for (const other of seen) {
+    if (other === name) continue
+    const otherSrc = moduleSource(other)
+    for (const u of urls) if (otherSrc.includes(`'${u}'`) || otherSrc.includes('`' + u + '`')) return true
+  }
+  return false
+}
+
+const KNOWN_ORPHANS: readonly string[] = [
   'dataLifecycleStorage',
   'nativeTransport',
-  'platformSettings',
   'sessionAnalyticsFilterOptions',
   'storageAndLogConfig',
   'storageMigrationState',
-  'subscriptionTiers',
   'turnsFilterOptions',
   'usageEnhanced',
 ]
@@ -173,8 +227,28 @@ describe('孤儿棘轮', () => {
     expect(uiSourceBlob().length).toBeGreaterThan(10000)
   })
 
-  it('★ 当前孤儿集合与登记清单逐项相同', () => {
-    expect(currentOrphans()).toEqual([...KNOWN_ORPHANS])
+  it('★ 当前孤儿集合 = 真缺口 ∪ 重复件（第二类登记，见 KNOWN_DUPLICATES）', () => {
+    // ★ 两份清单都排进数组再比 —— 两边都已在源码里按字母序书写。
+    expect([...currentOrphans()].sort()).toEqual([...KNOWN_ORPHANS, ...KNOWN_DUPLICATES].sort())
+  })
+
+  it('★★ 每一项登记的重复件**确实与某个已可达模块打同一个端点**（否则例外条款是免罪）', () => {
+    // ★★★ 这条是第二类登记的**承重判据**：没有它，「重复件」就成了万能借口。
+    expect(KNOWN_DUPLICATES.length).toBeGreaterThan(0)
+    for (const name of KNOWN_DUPLICATES) {
+      expect(currentOrphans(), `${name} 已不在孤儿集合里 ⇒ 这条登记该删了`).toContain(name)
+      expect(duplicateIsProven(name), `${name} 没有已可达模块与它同端点 ⇒ 它是功能缺口，不是重复件`).toBe(true)
+    }
+  })
+
+  it('★★ 重复件**不进**真缺口清单（两份清单不得重叠）', () => {
+    for (const name of KNOWN_DUPLICATES) expect(KNOWN_ORPHANS).not.toContain(name)
+  })
+
+  it('★★ 已消解的重复件要**移出**登记（boardOperational 被合并后这条会红）', () => {
+    // ★ 消解条件写在 KNOWN_DUPLICATES 的注释里；这条逼着人手工删那一行 ——
+    //   与「接线一个孤儿就删一行」同一套纪律，只是对象换了。
+    for (const name of KNOWN_DUPLICATES) expect(reachableFromUi().has(name)).toBe(false)
   })
 
   it('★ 登记清单本身无重复（防止清单写错掩盖变化）', () => {

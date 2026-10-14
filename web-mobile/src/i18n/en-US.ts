@@ -90,7 +90,97 @@ export const enUS = {
     injection: 'Prompt injection',
     injectionConfig: 'Injection config',
     nodeHealth: 'Health timeline',
+    subscriptionTiers: 'Subscription tiers',
+    platformSettings: 'Platform settings',
     account: 'Me',
+  },
+  // ★ Subscription tiers (2026-10-14, batch 120). Prefix: sts.
+  //   ⚠️ The two "invisible" dimensions have to be stated in the copy, otherwise
+  //   users read "listed here" as "this tier is enabled" — the endpoint never
+  //   SELECTs the `enabled` column at all.
+  sts: {
+    title: 'Subscription tiers',
+    nope: {
+      msg: 'Only super admins can view subscription tiers.',
+      // ★ This page blocks before sending anything; the server-side
+      //   `requireSuperAdmin` middleware is the actual gate.
+      why: 'Even if this page were bypassed, the server middleware answers 403.',
+    },
+    load: {
+      title: 'Fetch',
+      btn: 'Refresh tiers',
+    },
+    scope: {
+      note: 'Tiers are global configuration and are not tenant-isolated.',
+      enabledNote: 'Note: enabled is not exposed, so disabled tiers are listed here too.',
+    },
+    check: {
+      title: 'Self-check',
+      orderBad: 'Tier order does not follow sort_order ascending; the payload was swapped.',
+      dupKeys: '{n} tiers have duplicate entries in module_keys.',
+      dupCodes: '{n} tiers share a duplicated code.',
+      enabledLeak: '{n} tiers carry enabled, which this endpoint never returns.',
+      maxFeaturesLeak: '{n} tiers carry max_features, which this endpoint never returns.',
+      emptyModules: '{n} tiers configure no modules at all.',
+      emptyDescription: '{n} tiers have no description.',
+    },
+    list: {
+      title: 'Tiers',
+      empty: 'No subscription tier has been created yet.',
+    },
+    field: {
+      code: 'Code',
+      price: 'Price (cents)',
+      modules: 'Modules',
+      // ★ Must not be the literal "none" — that equals the key name and the
+      //   i18n gate rejects value === key (the most natural English wording).
+      noModules: '(none)',
+      keys: '{n} fields on every tier.',
+    },
+  },
+  // ★ Platform settings (2026-10-14, batch 121). Prefix: ps.
+  //   ⚠️ Unlike batches 116/120, the server has **no role gate at all** on these
+  //   three GET endpoints ⇒ this page is currently the only thing standing
+  //   between a tenant_admin and other operators' identities.
+  ps: {
+    title: 'Platform settings',
+    nope: {
+      msg: 'Only super admins can view platform settings and their change history.',
+      why: 'The change history is a cross-tenant global record including other operators’ usernames, roles and source IPs.',
+    },
+    load: {
+      title: 'Fetch',
+      btn: 'Refresh settings',
+    },
+    scope: {
+      note: 'Platform settings are not tenant-isolated: one change affects every tenant.',
+      warn: 'Writing a setting at danger_level dangerous or breaking requires a super admin.',
+    },
+    check: {
+      scopeBad: '{n} items have a value that does not match their scope.',
+      sourceBad: '{n} tenant-scoped items do not have an empty source.',
+      maybeIncomplete: 'The list may be incomplete: items whose value fails to resolve are silently skipped, so its length is not the registry size.',
+      gated: '{n} settings require a super admin to write.',
+      historyOrderBad: 'History order does not follow created_at descending.',
+      historyLimitBad: 'History holds more entries than the server’s hard-coded limit of 50.',
+      historyCrossTenant: 'This history spans every tenant; it is not “this tenant’s change log”.',
+      operators: '{n} entries in this history carry an operator identity.',
+    },
+    list: {
+      title: 'Settings',
+      // ★ Must not equal the key name.
+      historyBtn: 'View change history',
+    },
+    history: {
+      title: 'Change history · {key}',
+      empty: 'No changes recorded in the last 7 days.',
+    },
+    field: {
+      scope: 'Scope',
+      source: 'Value source',
+      operator: 'Operator',
+      role: 'Role',
+    },
   },
   common: {
     loading: 'Loading…',

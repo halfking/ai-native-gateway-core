@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -166,6 +167,9 @@ func (h *ChatHandler) runSurvivalCoordinator(
 			if blocker, ok := w.(interface{ OutputPolicyBlocked() bool }); ok && blocker.OutputPolicyBlocked() {
 				return
 			}
+			// P0-A+：非流式（或头尚未刷出）时写 Retry-After；流式已 200
+			// 时 Header.Set 无害但客户端看不到——终态帧字段是那时的契约。
+			applySurvivalRetryAfterHeader(w, decision)
 			renderSurvivalTerminal(sw, protocol, decision, committed)
 		},
 	}
@@ -375,6 +379,11 @@ func renderSurvivalTerminal(sw *SerializedStreamWriter, protocol ClientProtocol,
 	if decision.Detail != "" {
 		message += "; " + decision.Detail
 	}
+	// P0-A+（2026-10-14）：终态帧补机器可读 retry_after_seconds + attempts
+	//（从 Detail 解析；retry_after 缺省 30）。流式已发 200 时无法再写
+	// Retry-After 头，字段进 error 体是那时的契约。
+	retryAfterSec := survivalRetryAfterSeconds(decision)
+	attempts := survivalAttemptsFromDetail(decision)
 	reasonJSON, _ := json.Marshal(message)
 	actionJSON, _ := json.Marshal(code)
 	retryJSON, _ := json.Marshal(retryable)
@@ -383,18 +392,73 @@ func renderSurvivalTerminal(sw *SerializedStreamWriter, protocol ClientProtocol,
 	switch protocol {
 	case ProtocolAnthropic:
 		frames = fmt.Sprintf(
-			"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":%s,\"reason\":%s,\"retryable\":%s,\"code\":%s}}\n\n",
-			reasonJSON, reasonCodeJSON, retryJSON, actionJSON)
+			"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":%s,\"reason\":%s,\"retryable\":%s,\"code\":%s,\"retry_after_seconds\":%d,\"attempts\":%d}}\n\n",
+			reasonJSON, reasonCodeJSON, retryJSON, actionJSON, retryAfterSec, attempts)
 	case ProtocolOpenAIResponses:
 		frames = fmt.Sprintf(
-			"event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":%s,\"message\":%s,\"reason\":%s,\"retryable\":%s}}}\n\n",
-			actionJSON, reasonJSON, reasonCodeJSON, retryJSON)
+			"event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":%s,\"message\":%s,\"reason\":%s,\"retryable\":%s,\"retry_after_seconds\":%d,\"attempts\":%d}}}\n\n",
+			actionJSON, reasonJSON, reasonCodeJSON, retryJSON, retryAfterSec, attempts)
 	default: // OpenAI Chat
 		frames = fmt.Sprintf(
-			"data: {\"error\":{\"message\":%s,\"type\":\"server_error\",\"code\":%s,\"reason\":%s,\"retryable\":%s}}\n\ndata: [DONE]\n\n",
-			reasonJSON, actionJSON, reasonCodeJSON, retryJSON)
+			"data: {\"error\":{\"message\":%s,\"type\":\"server_error\",\"code\":%s,\"reason\":%s,\"retryable\":%s,\"retry_after_seconds\":%d,\"attempts\":%d}}\n\ndata: [DONE]\n\n",
+			reasonJSON, actionJSON, reasonCodeJSON, retryJSON, retryAfterSec, attempts)
 	}
 	if _, err := sw.Write([]byte(frames)); err == nil {
 		sw.Flush()
 	}
+}
+
+// applySurvivalRetryAfterHeader 在头尚未刷出时写入 Retry-After。生产
+// Terminal 回调与单测同走此函数——禁止测里手写 Header.Set（那是假绿）。
+func applySurvivalRetryAfterHeader(w http.ResponseWriter, decision TaskDecision) {
+	if w == nil {
+		return
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(survivalRetryAfterSeconds(decision)))
+}
+
+// survivalDetailInt 从 Detail 解析 key=N；缺省/非法返回 fallback（fallback<0 表示 0）。
+func survivalDetailInt(detail, key string, fallback int) int {
+	idx := strings.Index(detail, key)
+	if idx < 0 {
+		if fallback < 0 {
+			return 0
+		}
+		return fallback
+	}
+	rest := detail[idx+len(key):]
+	end := 0
+	for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		if fallback < 0 {
+			return 0
+		}
+		return fallback
+	}
+	n, err := strconv.Atoi(rest[:end])
+	if err != nil || n < 0 {
+		if fallback < 0 {
+			return 0
+		}
+		return fallback
+	}
+	return n
+}
+
+// survivalRetryAfterSeconds 从 TaskDecision.Detail 解析 earliest_recovery_sec；
+// 缺省 30（与 P0-A 规划「无值时取 30」一致）。非法/非正数同样回落 30。
+func survivalRetryAfterSeconds(decision TaskDecision) int {
+	n := survivalDetailInt(decision.Detail, "earliest_recovery_sec=", 30)
+	if n <= 0 {
+		return 30
+	}
+	return n
+}
+
+// survivalAttemptsFromDetail 解析 attempts=N；缺席/非法 → 0（字段仍在场，
+// 避免客户端把缺字段当「未知协议」）。
+func survivalAttemptsFromDetail(decision TaskDecision) int {
+	return survivalDetailInt(decision.Detail, "attempts=", -1)
 }

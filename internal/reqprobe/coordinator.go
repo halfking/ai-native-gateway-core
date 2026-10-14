@@ -100,9 +100,23 @@ func (c *Coordinator) Record(rec Record) {
 // RecordTerminal 是 executor 终态 4xx 的便捷入口。
 // recovered 表示"已做剔除/切换尝试且重试成功"；未尝试或尝试失败的终端
 // 错误传 recovered=false，并把最终上游错误体放进 errorSample。
+//
+// P0-B（2026-10-14）：对 optionalLearnFamily 内、且该线格式非骨架的字段，
+// 即使 recovered=false 也把 RecoveredCount 置 1——「拒绝即学习」，与 magpie
+// unfit 对齐。chat 线 stream_options 等骨架字段仍不学（LearnOnRefusal=false）。
 func (c *Coordinator) RecordTerminal(in Input, d Diagnosis, meta TerminalMeta, recovered bool) {
 	if d.Trigger == "" {
 		d.Trigger = TriggerUpstreamError
+	}
+	recoveredCount := boolToInt(recovered)
+	if !recovered && d.Trigger == TriggerParamRejected && d.Param != "" {
+		for _, p := range strings.Split(d.Param, ",") {
+			p = strings.TrimSpace(p)
+			if LearnOnRefusal(p, in.Protocol) {
+				recoveredCount = 1
+				break
+			}
+		}
 	}
 	c.Record(Record{
 		ProviderID:     meta.ProviderID,
@@ -117,7 +131,7 @@ func (c *Coordinator) RecordTerminal(in Input, d Diagnosis, meta TerminalMeta, r
 		ErrorKind:      in.ErrorKind,
 		ErrorSample:    string(in.ErrorBody),
 		LastRequestID:  meta.RequestID,
-		RecoveredCount: boolToInt(recovered),
+		RecoveredCount: recoveredCount,
 	})
 }
 

@@ -49,6 +49,17 @@ type fakeSnapshotRetentionDB struct {
 	dropped       []string
 	dropErr       error
 	setLocalCalls int
+
+	// 留存互斥（2026-10-14）。刻意用「拒绝」而不是「可得」命名：
+	// 零值 false = 锁可得，于是所有既有 DROP 用例**不需要为新机制改一行**，
+	// 而它们本来就不测锁。反过来命名会让零值变成「锁被拒」，
+	// 把十几个用例一次性变成红的 —— 那是在惩罚没改过的东西。
+	lockDenied bool
+	lockCalls  int
+
+	// dropSQLState 非空时，DROP 返回该 SQLSTATE 的 PgError
+	//（用来模拟 42P01：分区在对端/运维手里已经不存在了）。
+	dropSQLState string
 }
 
 // fakeRetentionRows 是最小 pgx.Rows：按目标指针类型逐列赋值。
@@ -136,10 +147,12 @@ type fakeSnapshotRetentionTx struct {
 	db *fakeSnapshotRetentionDB
 }
 
-// fakeRow is a minimal pgx.Row: Scan fills (deleted int64, nextFloor *time.Time).
+// fakeRow is a minimal pgx.Row: Scan fills (deleted int64, nextFloor *time.Time,
+// lock bool).
 type fakeRow struct {
 	deleted   int64
 	nextFloor *time.Time
+	lock      bool
 	err       error
 }
 
@@ -153,6 +166,8 @@ func (r fakeRow) Scan(dest ...any) error {
 			*p = r.deleted
 		case **time.Time:
 			*p = r.nextFloor
+		case *bool:
+			*p = r.lock
 		}
 	}
 	return nil
@@ -171,6 +186,10 @@ func (tx *fakeSnapshotRetentionTx) QueryRow(ctx context.Context, sql string, arg
 	//   于是第一个 DELETE 批的 idx 已经不是 0 —— pick() 会静默跳到
 	//   batchResults 的最后一项，测试照样"通过"但断的根本不是它想断的东西。
 	//   这就是量具自己造的噪声：错的是夹具，不是被测代码。
+	if strings.Contains(sql, "pg_try_advisory_xact_lock") {
+		tx.db.lockCalls++
+		return fakeRow{lock: !tx.db.lockDenied}
+	}
 	if !strings.Contains(sql, "DELETE FROM") {
 		return fakeRow{}
 	}
@@ -214,6 +233,9 @@ func (tx *fakeSnapshotRetentionTx) Exec(ctx context.Context, sql string, args ..
 		return pgconn.CommandTag{}, nil
 	}
 	if strings.HasPrefix(sql, "DROP TABLE") {
+		if tx.db.dropSQLState != "" {
+			return pgconn.CommandTag{}, &pgconn.PgError{Code: tx.db.dropSQLState}
+		}
 		if tx.db.dropErr != nil {
 			return pgconn.CommandTag{}, tx.db.dropErr
 		}
@@ -286,8 +308,14 @@ func TestSnapshotRetentionBatchLoopStopsOnPartialBatch(t *testing.T) {
 	if len(db.execArgs[0]) != 3 {
 		t.Fatalf("exec args = %v, want (interval, batch size, floor)", db.execArgs[0])
 	}
-	if interval, ok := db.execArgs[0][0].(string); !ok || !strings.HasPrefix(interval, "720h") {
-		t.Fatalf("retention arg = %v, want 30d duration string (720h...)", db.execArgs[0][0])
+	// ★ 断言「$1 是当前配置的留存窗口」而不是硬编码 "720h"（30 天）。
+	//   本用例的意图是**批次边界**（删了多少行、开了几个事务、参数位次），
+	//   留存值只是附带；把它写死会让每一次有意的档位决策都把这个用例顶红。
+	//   换成对着配置取值后，「$1 没带上 / 带错位置 / 带成别的值」依然会红。
+	wantInterval := DefaultSnapshotRetentionConfig().Retention.String()
+	if interval, ok := db.execArgs[0][0].(string); !ok || interval != wantInterval {
+		t.Fatalf("retention arg = %v, want the configured retention interval %s",
+			db.execArgs[0][0], wantInterval)
 	}
 	if size, ok := db.execArgs[0][1].(int); !ok || size != 5000 {
 		t.Fatalf("batch size arg = %v, want 5000", db.execArgs[0][1])
@@ -414,8 +442,8 @@ func TestSnapshotRetentionStopWithoutStartReturnsImmediately(t *testing.T) {
 func TestSnapshotRetentionConfigFromEnv(t *testing.T) {
 	t.Run("default when unset", func(t *testing.T) {
 		cfg := SnapshotRetentionConfigFromEnv()
-		if cfg.Retention != 30*24*time.Hour {
-			t.Fatalf("retention = %s, want default 30d", cfg.Retention)
+		if cfg.Retention != 7*24*time.Hour {
+			t.Fatalf("retention = %s, want default 7d", cfg.Retention)
 		}
 	})
 	t.Run("explicit override", func(t *testing.T) {
@@ -432,8 +460,8 @@ func TestSnapshotRetentionConfigFromEnv(t *testing.T) {
 	})
 	t.Run("invalid ignored", func(t *testing.T) {
 		t.Setenv("URSM_SNAPSHOT_RETENTION_DAYS", "not-a-number")
-		if cfg := SnapshotRetentionConfigFromEnv(); cfg.Retention != 30*24*time.Hour {
-			t.Fatalf("retention = %s, want default 30d on invalid input", cfg.Retention)
+		if cfg := SnapshotRetentionConfigFromEnv(); cfg.Retention != 7*24*time.Hour {
+			t.Fatalf("retention = %s, want default 7d on invalid input", cfg.Retention)
 		}
 	})
 }

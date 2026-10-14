@@ -1680,7 +1680,12 @@ func (e *Executor) executeOpenAI(
 						// 参数需要 N 轮点名→剥→重试，原「每请求一次」在第二个
 						// 参数上死局；上限 maxParamStrips 封顶免费重试次数）。
 						if diag.Trigger == reqprobe.TriggerParamRejected && probe.paramStrips < maxParamStrips {
-							if strippedBody, stripped := reqprobe.StripParams(bodyBytes, diag.Param); len(stripped) > 0 {
+							// P0-B：骨架按线格式（native responses 用 responses 线）。
+							stripWire := cand.Protocol
+							if nativeNonStream || nativeStream {
+								stripWire = providercatalog.ProtocolOpenAIResponses
+							}
+							if strippedBody, stripped := reqprobe.StripParamsForWire(bodyBytes, diag.Param, stripWire); len(stripped) > 0 {
 								slog.Warn("reqprobe: upstream rejected request, retrying with params stripped",
 									"request_id", params.RequestID,
 									"provider_id", cand.ProviderID,
@@ -1714,46 +1719,56 @@ func (e *Executor) executeOpenAI(
 					}
 				}
 
-				// P0-1 paramrefusal（2026-10-14）：上游 400/422 指名可选参数 →
-				// 剔除后同候选免费重试一次 + 记忆（(provider, model, wire) 键，
-				// 24h TTL）。放在 reqprobe 之后 = 第二道兜底：reqprobe 骨架集
-				// 保护住的字段（stream_options 等）、RequestProbe 未接线、或
-				// reqprobe 词表未覆盖的词形（pydantic loc 数组 / \uXXXX 转义体）
-				// 在此处理；reqprobe 已触发剔除重试时到不了这里（其 return
-				// retryableError 先行）。黑名单字段（messages/model 等）由
-				// paramrefusal.Strippable 拒绝——不重试、不记忆。probeStatus/
-				// probeBody 取解包后的值（流式 5xx 包内层 4xx 场景同 reqprobe）。
+				// P0-B（原 P0-1 paramrefusal 兜底）：reqprobe 词表未覆盖的
+				// 词形（pydantic loc / \uXXXX）走 RefusedOptionalParam →
+				// StripCandidates；真剥仍按线格式骨架（StripParamsForWire）。
+				// 拒绝即学习写入 RequestProbe（SSOT）；进程内 paramrefusal
+				// Store 仍双写一版，过渡期兼容未接线 RequestProbe 的装配。
+				// chat 线 stream_options 不再经此路径剔除（与 reqprobe 骨架对齐）。
 				if !paramRefusalTried &&
 					(probeStatus == http.StatusBadRequest || probeStatus == http.StatusUnprocessableEntity) {
 					if field, refused := errorsx.RefusedOptionalParam(probeBody); refused {
-						if keys := paramrefusal.StripCandidates(field); len(keys) > 0 {
-							// 前提在场：首发出站体确实带着被拒字段（否则是
-							// 提取误报或字段来自别的层，重试同 body 无意义）。
+						if keys := reqprobe.StripCandidates(field); len(keys) > 0 {
+							wire := paramRefusalWireKey(cand, nativeNonStream || nativeStream)
 							if present := paramRefusalPresentKeys(bodyBytes, keys); len(present) > 0 {
-								wire := paramRefusalWireKey(cand, nativeNonStream || nativeStream)
-								slog.Warn("paramrefusal retry",
-									"request_id", params.RequestID,
-									"provider_id", cand.ProviderID,
-									"credential_id", cand.CredentialID,
-									"raw_model", cand.RawModel,
-									"status", probeStatus,
-									"named_param", field,
-									"stripped", strings.Join(present, ","),
-									"wire", wire,
-								)
-								e.paramRefusalStore().Remember(cand.ProviderID, cand.RawModel, wire, present...)
-								bodyBytes = transformation.StripTopLevelJSONFields(bodyBytes, present)
-								paramRefusalTried = true
-								probeRetry = true
-								// R51-F15 同型：剔除重试是准入内的第二次上游调用。
-								meterExtraUpstreamCall(params)
-								return nil, &retryableError{err: &upstreampkg.Error{
-									Kind:       errKind,
-									Message:    fmt.Sprintf("upstream %d (paramrefusal strip retry: %s)", probeStatus, strings.Join(present, ",")),
-									Body:       append([]byte(nil), probeBody...),
-									StatusCode: probeStatus,
-									RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
-								}}
+								if strippedBody, stripped := reqprobe.StripParamsForWire(bodyBytes, strings.Join(present, ","), wire); len(stripped) > 0 {
+									slog.Warn("paramrefusal retry",
+										"request_id", params.RequestID,
+										"provider_id", cand.ProviderID,
+										"credential_id", cand.CredentialID,
+										"raw_model", cand.RawModel,
+										"status", probeStatus,
+										"named_param", field,
+										"stripped", strings.Join(stripped, ","),
+										"wire", wire,
+									)
+									e.paramRefusalStore().Remember(cand.ProviderID, cand.RawModel, wire, stripped...)
+									if e.RequestProbe != nil {
+										e.RequestProbe.RecordTerminal(
+											reqprobe.Input{HTTPStatus: probeStatus, ErrorBody: probeBody, Protocol: wire},
+											reqprobe.Diagnosis{Trigger: reqprobe.TriggerParamRejected, Param: strings.Join(stripped, ",")},
+											reqprobe.TerminalMeta{
+												RequestID:     params.RequestID,
+												ProviderID:    cand.ProviderID,
+												ProviderCode:  cand.CatalogCode,
+												ClientModel:   params.Model,
+												OutboundModel: cand.RawModel,
+											},
+											false, // 拒绝即学习
+										)
+									}
+									bodyBytes = strippedBody
+									paramRefusalTried = true
+									probeRetry = true
+									meterExtraUpstreamCall(params)
+									return nil, &retryableError{err: &upstreampkg.Error{
+										Kind:       errKind,
+										Message:    fmt.Sprintf("upstream %d (paramrefusal strip retry: %s)", probeStatus, strings.Join(stripped, ",")),
+										Body:       append([]byte(nil), probeBody...),
+										StatusCode: probeStatus,
+										RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
+									}}
+								}
 							}
 						}
 					}

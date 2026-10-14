@@ -535,6 +535,41 @@ export const DRAWER_NAV: readonly NavItem[] = [
   //   ⇒ 过度限制的判据是「载荷里有没有别人的东西」，不是「有没有 tenant 条件」。
   // ⇒ 且**不得**进 `AppDrawer.spec.ts` 的 superAdmin 白名单 —— 加进去那条立刻红。
   { key: 'v1-data-horizon', to: '/v1-data-horizon', icon: 'clock', titleKey: 'nav.v1DataHorizon' },
+  // ★ 订阅档（2026-10-14 第一百二十批）——
+  //   ★★★★ 权限档**第四类**，与前三席都不同：
+  //   它**同样没有租户维度**（读全局 `subscription_tiers`），
+  //   **但**中间件 `requireSuperAdmin`（`main_jwt_middleware.go:65-73`）逐字
+  //   `if role != "super_admin" { 403 }` ⇒ **真门**。
+  // ⇒ 前四席的超管限制分别是「后端不一致/载荷含别人的数据/全局事实」三种理由，
+  //   本席的理由是「**服务端自己就是那道门**」⇒ 不必再为它补第四种过度限制论证。
+  // ⚠️ 第三种注册机制：它在 echo group 上（`main.go:7027` → `licensing.RegisterModuleRoutes`），
+  //   **不在** `admin/handler.go` 的 mux 里 ⇒ 只 grep mux 会误判成死端点。
+  {
+    key: 'subscription-tiers',
+    to: '/subscription-tiers',
+    icon: 'grid',
+    titleKey: 'nav.subscriptionTiers',
+    requiresRole: 'super_admin',
+  },
+  // ★ 平台设置（2026-10-14 第一百二十一批）——
+  //   ★★★★ 第三类（过度限制），但**理由与批 115/117/118 三席都不同**，且更硬：
+  //   ① 那三席是「载荷含别人的数据」；本族**注册处包的是一个 router**，
+  //      `h.admin` 只是 `AdminMiddleware`（handler.go:894 → auth.go:85，只认证不检 role），
+  //      `settingsGet` / `settingsHistory` **全文零 role 检查**
+  //      ⇒ 按注册处读会读出「admin 档」，那是**错的**（模块头 (1) 已订正）。
+  //   ② 过度限制的**两条独立理由**：
+  //      · history 传 `tid=""` 且 `operator_user`/`operator_role` 是恒在键
+  //        ⇒ tenant_admin 能读到**别的操作者**的身份；
+  //      · `POST {key}/rollback` **完全没有 DangerLevel 门**，而 PUT 有
+  //        ⇒ 能 PUT 不了的档能直接 rollback（**后端缺陷，本批不动后端**）。
+  // ⇒ 前端严于后端是**兜底不是修复**：真正该补的是服务端那道门。
+  {
+    key: 'platform-settings',
+    to: '/platform-settings',
+    icon: 'grid',
+    titleKey: 'nav.platformSettings',
+    requiresRole: 'super_admin',
+  },
   // ★ 加这一席**必须**同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
   {
     key: 'routing-policy',

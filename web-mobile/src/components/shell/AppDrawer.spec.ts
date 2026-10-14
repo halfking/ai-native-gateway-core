@@ -177,6 +177,14 @@ describe('navItemsFor', () => {
       // ⚠️ 字母序：model-policy-audit < ops-overview < overrides
       'ops-overview',
       'overrides',
+      // ★★★★ 2026-10-14 第一百二十一批：平台设置
+      //   （`admin/settings.go:24` `mux.HandleFunc("/api/admin/settings/", h.admin(h.settingsRouter))`）
+      //   ★★ 注意它包的是**一个会再分发到四个 handler 的 router** ——
+      //   `h.admin` = `AdminMiddleware` 只认证不检 role，`settingsGet`/`settingsHistory`
+      //   **全文零 role 检查**，而 history 传 `tid=""` 且审计项恒带
+      //   `operator_user`/`operator_role` ⇒ tenant_admin 本可读到跨租户的操作者身份。
+      //   ★ 这条「按注册处读会读成 admin 档」的坑已把模块头 (1) 订正过。
+      'platform-settings',
       'proposals',
       'reconciliation',
       // ★ 2026-10-14 第一百一十一批：对账报表（admin/handler.go:1086 h.superAdmin）
@@ -204,6 +212,15 @@ describe('navItemsFor', () => {
       //   而它是**全局唯一**主键 ⇒ 任何通过认证的主体报出别的租户的
       //   credential_id 就能读到它的逐次调用明细 ⇒ 连 tenant_admin 都必须挡。
       'sliding-window',
+      // ★★ 2026-10-14 第一百二十批：订阅档
+      //   （`licensing/module_api.go:22`，走 **echo group**：`main.go:7027`
+      //   `adminGroup := e.Group("/api/admin", requireSuperAdmin)`）
+      //   ★★★★ **权限档第四类**：前三席的超管限制各有各的理由
+      //   （后端不一致 / 载荷含别人的数据 / 全局平台事实），
+      //   本席的理由是**服务端中间件本身就是那道门**
+      //   （`main_jwt_middleware.go:65-73` 逐字 `if role != "super_admin" { 403 }`），
+      //   所以它**同样没有**租户维度，却**不是**第三类那三种理由中的任何一种。
+      'subscription-tiers',
       'task-index',
       'tenants',
       // ★ 2026-10-08 第一百零三批：工作类型配置面。`admin/handler.go:1434`
