@@ -102,6 +102,7 @@ if [[ -n "$VIA" ]]; then
   # i18n 加载 `._ar.json` 直接 panic invalid character '\x00'。见真机 2026-10-13 翻车。
   tar -C "$D211_REPO_ROOT" \
       --exclude=.git --exclude=node_modules --exclude=dist --exclude=build \
+      --exclude=.build-local \
       --exclude='*.log' --exclude='.env' --exclude='.env.*' \
       --exclude='._*' --exclude='.DS_Store' \
       -cf - . | ssh "$VIA" "tar --no-xattrs -C ~/llm-gateway-go-211 -xf - && \
