@@ -34,6 +34,19 @@ export const DRAWER_NAV: readonly NavItem[] = [
   { key: 'usage', to: '/usage', icon: 'chart', titleKey: 'nav.usage' },
   { key: 'users', to: '/users', icon: 'user', titleKey: 'nav.users', requiresRole: 'admin' },
   { key: 'reconciliation', to: '/reconciliation', icon: 'chart', titleKey: 'nav.reconciliation', requiresRole: 'super_admin' },
+  // ★ 2026-10-14 第一百一十一批：对账报表（区间多维汇总 + 筛选栏候选）。
+  //   `admin/handler.go:1086` `h.superAdmin(h.handleReportRollup)` ⇒ **要** super_admin。
+  //   ⚠️ ★★ 与上面那张 `reconciliation` 席是**两个不同功能**，标题必须能区分：
+  //     · reconciliation → CostReconciliationView → @/api/costReconciliation（费用对账）
+  //     · report-rollup  → ReportRollupView       → @/api/reportRollup（对账报表）
+  //     两张席都叫「对账」⇒ 靠 nav 标题区分，接线时别接错模块。
+  {
+    key: 'report-rollup',
+    to: '/report-rollup',
+    icon: 'chart',
+    titleKey: 'nav.reportRollup',
+    requiresRole: 'super_admin',
+  },
   // 2026-10-06：路由检查（只读 explain）从 desktopOnly 收进移动端，抽屉席位。
   // 不占底栏（02 §4 底栏 ≤5 席已满），与「告警/用量」同级。admin 档。
   { key: 'routing', to: '/routing', icon: 'search', titleKey: 'nav.routing' },

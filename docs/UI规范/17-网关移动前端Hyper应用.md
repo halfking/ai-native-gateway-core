@@ -15095,3 +15095,176 @@ const API_DIR = join(ROOT, 'api')
   CSS 107 files / `vue-tsc` / `comment:check`）
 - 全量 **7312 条 / 199 文件** rc=0（1 skipped）
 - 十连跑 **10/10 全绿**（日志 `/tmp/co110-stability.log`）
+
+---
+
+## 11.147 第一百一十一批：对账报表面接进 UI，以及「变异加个前缀就想让它恒真」被运算符优先级吃掉
+
+### 一、批次目标与接线
+
+把 `src/api/reportRollup.ts`（第八十四批做的 API 层，191 条判据）接成可达 UI 入口。
+
+- 视图 `web-mobile/src/views/ReportRollupView.vue`
+- 判据 `ReportRollupView.spec.ts` **48 条**
+- 抽屉席 `report-rollup`（`to: '/report-rollup'`，**superAdmin 档**）
+- 路由 `/report-rollup`，`meta: { titleKey: 'rr.title', requiresAuth: true }`
+- 两侧 i18n 新增 `rr` 块 + `nav.reportRollup`（3155 → **3214 键**）
+- 孤儿 **19 → 18**
+
+四路取证：注册 `admin/handler.go:1086`
+`mux.HandleFunc("/api/admin/report-rollup/", h.superAdmin(h.handleReportRollup))`
+⇒ **整个前缀（带尾斜杠）都是 superAdmin 档**；分发 `admin/report_rollup.go:94-118`
+（**`strings.HasSuffix`** 而非路径段精确匹配）；桌面调用方
+`web/src/views/admin/ReconciliationReport.vue` + `useReconciliationPage.ts`；
+移动端无任何引用 ⇒ 孤儿成立。
+
+### 二、★★★ 命名陷阱：两张席都叫「对账」
+
+移动端**已经有**一张 `reconciliation` 席（`/reconciliation` →
+`CostReconciliationView.vue` → `@/api/costReconciliation`），讲的是**费用对账**。
+本席讲的是**对账报表**（区间多维汇总 + 筛选栏候选），走 `@/api/reportRollup`。
+
+⇒ 两张席的 nav 标题、路由、视图、API 模块全不相同，**只有中文名相近**。
+⇒ 接错模块，**孤儿棘轮的判据与抽屉白名单都不会红**（它们只看席与路由是否存在）。
+所以处置写在两处：抽屉席注释 + 棘轮哨兵注释里显式列出两个模块路径。
+
+⇒ ★ 这是「完成口径 = 可达 UI 入口」的一个**新失效模式**：
+前面的批次里，孤儿棘轮足以保证「接上了」，因为一个模块名 ↔ 一个功能；
+本族**一个中文名 ↔ 两个模块**，棘轮的「存在性」判据就不足了。
+
+### 三、★★★ 本批补齐了两条**派生列**判据（API 层原先没有）
+
+`domains/reportrollup/report.go:210-231` 的 `finalize()` 一次性补齐四个派生列：
+
+```go
+t.ErrorCount = t.RequestCount - t.SuccessCount
+if t.RequestCount > 0 {
+    t.ErrorRate = float64(t.ErrorCount) / float64(t.RequestCount)
+}
+t.TotalTokens = t.InputTokens + t.OutputTokens + t.CacheReadTokens + t.CacheWriteTokens
+denom := t.InputTokens + t.CacheReadTokens
+if denom > 0 { r := …; t.CacheHitRatio = &r }
+```
+
+★ 原先 API 层只覆盖了 `error_count`（无条件）与 `cache_hit_ratio`（裸 null）两条，
+**接 UI 时逐行核出另外两条**，一并补进模块：
+
+1. `reportTotalsTotalTokensMatches` — **`total_tokens` 把 `cache_read` / `cache_write`
+   也算进去** ⇒ 「total = input + output」这种直觉写法在本族**恒不成立**。
+2. `reportTotalsErrorRateIsZeroWhenNoRequests` — ★★ **派生发生在 `if` 之外，
+   分母的守卫只包住除法**；而 `ErrorRate` 是值类型 `float64`（无 omitempty）
+   ⇒ 零请求时它保持零值 **`0`** 并照常出现。
+   ⇒ 客户端自己拿 `error_count / request_count` 重算会得到 **`NaN`**，
+   而服务端给的是 `0`。两种「0% 失败率」读数一样，**只能靠 `request_count` 本身是 0 区分**。
+
+### 四、`reportRollupIsDegraded` 必须是**类型守卫**（vue-tsc 抓出来的）
+
+降级与正常是**互斥的两种形状**（`report_rollup.go:317-319` 的
+`{"degraded": true, "error_code": "REPORT_SNAPSHOTS_NOT_MIGRATED"}`，主键整个消失），
+而调用方天然写成 `if (isDegraded(body)) {…} else { body.report }`。
+原签名返回 `boolean` ⇒ **`else` 分支不被收窄** ⇒
+`vue-tsc` 报 `TS2339: Property 'report' does not exist on type '{degraded:true; error_code:string}'`。
+
+⇒ 处置是**改签名**成 `body is ReportRollupDegradedResponse`，
+**不是**在视图里加 `as any` —— 后者会把「两种形状互斥」这个契约信息从类型里抹掉。
+
+★ 同族：`detected_at`/`request_id` 等「指针 vs 值」的判别，在 TS 里同样只能靠类型承载；
+一旦用 `as any` 绕过，判据就再也看不出「这两件事不一样」了。
+
+### 五、视图的取舍
+
+- **不提供 xlsx 导出**：那个端点返回 `…spreadsheetml.sheet` 二进制（不是 JSON），
+  而移动端 WebView 里落盘/分享 xlsx 需要原生能力 ⇒ 做了就是半成品。
+  理由写进视图文件头，不是「忘了做」。
+- **单日窗口要提供**：`report_rollup.go:143-145` 判的是 `end.Sub(start) > 366*24h`
+  ⇒ `start === end` 合法，而单日对账是常用看法 ⇒ 档位 `[1, 7, 30, 90, 366]`。
+- **不提供「今天」**：聚合是 **T+1** 的（`reportRange` 的 `end = 昨日`，注释自陈
+  「今日快照尚不存在」）⇒ 区间一律不含今日，并在页面上显式说明。
+- **`coverage` 的两个数组按三态渲染**：键缺失 / **裸 `null`** / 有长度
+  ⇒ 合并成「0」就是撒谎（`[]string` 无 omitempty 且为 nil slice 时是裸 `null`）。
+- **`filter` 恒不回显**（`GrainFilter` 标着 `json:"-"`）⇒ 页面显式说明「查不到」，
+  **不假装**能显示「当前过滤：…」。
+
+### 六、★★★ 判据自身翻了三次车（三次都是判据错，后端与实现都对）
+
+1. **★ 我把 Go 的 `switch` 顺序读反了。** 断言「`grain_dates` 非空 + `legacy_dates` 空
+   ⇒ 派生 `legacy`」，实得 `grain`。
+   `grainreport.go:945-951` 的第二个 case 要求的是 **`LegacyDates > 0`**，
+   不是 `GrainDates > 0` ⇒ legacy_dates 为空时两个 case 都不匹配 ⇒ 落 `default` ⇒ `grain`。
+   ⇒ ★★ 这正是契约头 (14)「推论一」的来源：**`source === "grain"` 连 `grain_dates` 非空
+   都不蕴含**。第一版的断言比后端**更乐观**。
+2. **负断言又放到整行。** 判「coverage 有值时显示长度」时对整行断
+   `not.toContain('裸 null')`，而同一行的 `legacy_dates` 在那个夹具里**就是 null**
+   ⇒ 「裸 null」是**正确**呈现。⇒ 收窄成断 grain 那一半的 `grain_dates 2 项`
+   并显式断言 `legacy_dates 裸 null`。（承批 109/110，同一条第三次。）
+3. **断言了一个视图并不提供的档位。** 「不得提供超出 366 天的窗口」顺手写成
+   `expect(Math.min(...ws)).toBe(1)`，而档位里本来没有 1
+   ⇒ ★ 处置不是删断言，而是**把 1 补进 `WINDOW_CHOICES`**
+   （单日本来就合法、且是常用看法）⇒ 断言变真、且比原来更有用。
+
+### 七、★★★ 变异台 17/17 全有牙，而**头三条白跑了**
+
+`/tmp/mut-co111.mjs`，还原走 `writeFileSync` 原始字节 + 逐字节比对，**未用** `git checkout --`。
+
+★ **本批最值钱的一条**：第一版把三条变异写成「在表达式里插一个前缀让它恒真」：
+
+```js
+// 想让它恒真
+const coverageAscending = computed(() => // CO111S5
+  true ||   …原来的 : 三元表达式…)
+```
+
+结果 **两条 NO_EFFECT + 一条语法错**。原因：
+
+```js
+true || r ? A : B   // 实际是 (true || r) ? A : B  ≡  r ? A : B
+```
+
+★★ **JS 里 `?:` 的优先级低于 `||`** ⇒ 这个「变异」在每一个取值上都与原式**完全相同**。
+（第三条更隐蔽：`false || (` + 原表达式 ⇒ 原表达式尾部那个 `computed(x,)` 的逗号被吞进
+括号 ⇒ `(expr,)` 是**带尾逗号的 SequenceExpression** ⇒ 语法错 ⇒ 整套件 0 条跑成
+⇒ 被判 `MUTATION_INVALID`，**工装问题不是判据没牙**。）
+
+⇒ ★★★ **处置不是「再想想怎么写变异」，而是整段替换** `computed(() => true)` / `(…) => false`。
+⇒ ★ **「在表达式里插前缀」是变异台的一类**系统性**陷阱**：
+  优先级、结合性、短路，会让变异**在语义上等于没改**，而台子只报 `NO_EFFECT`，
+  很容易被误读成「这条判据没牙」。**判别动作：一条 NO_EFFECT 的第一问仍然是
+  「这条变异实际造成了差别吗」。**
+
+### 八、告警类判据的四个方向（本批每条都配了正控）
+
+| 判据 | 破坏要报 | 正常不报 |
+|---|---|---|
+| `error_count` 等式 | ②-2 | ②-1 |
+| `total_tokens` 求和 | ②-5 | ②-3 / ②-4 |
+| 零请求 ⇒ `error_rate === 0` | ②-7 | ②-6 / **②-8（条件不得误触发）** |
+| `source` ⇔ `coverage` | ③-2 | ③-1 / ③-3 / ③-4 / ③-5 |
+| `coverage` 升序 | ④-5 | ④-4 |
+
+★ 其中 ②-8 是「**条件的正控**」：把 `request_count === 0` 那个 `if` 拆掉后，
+`request_count=10 且 error_rate=0.3` 这种**正常载荷**就会被判成零请求违例
+⇒ 变异 S3 当场转红。
+
+### 九、孤儿 19 → 18
+
+`reportRollup` 从 `KNOWN_ORPHANS` 删掉一行并加哨兵。
+哨兵注释写明 superAdmin 档 ⇒ 席**要** requiresRole ⇒ `AppDrawer.spec.ts` 的白名单里
+**必须**出现 `report-rollup`；并把「两张席都叫对账」这个接错陷阱写进注释
+（★ 因为接错模块这两条判据都不会红）。
+
+剩余 18 项：`boardOperational`、`dataLifecycleStorage`、`dispatchJournal`、`errorsTrend`、
+`modelHistory`、`modelIQ`、`nativeTransport`、`opsOverview`、`platformSettings`、
+`requestActions`、`sessionAnalyticsFilterOptions`、`slidingWindow`、`storageAndLogConfig`、
+`storageMigrationState`、`subscriptionTiers`、`turnsFilterOptions`、`usageEnhanced`、
+`v1DataHorizon`。
+
+### 十、验证
+
+- 新增 `ReportRollupView.spec.ts` **48 条**；`orphanLedger.spec.ts` 16 → **17 条**
+- ★★★ 变异 **17/17 全有牙**（`/tmp/mut-co111.mjs`；还原逐字节一致，**未用** `git checkout --`；
+  跑完复查零 `CO111S` 残留且字节一致）
+- 五门 rc=0（i18n parity 3155 → **3214 键** / 触控 R1 104 → **105 个 `.vue`** /
+  CSS 108 files / `vue-tsc` / `comment:check` 438 文件 0 命中）
+- 全量 **7361 条 / 200 文件** rc=0（1 skipped）
+  （= 批 110 基线 7312 + 本批 48 条视图判据 + 1 条哨兵 = 7361，分毫不差）
+- 十连跑 **10/10 全绿**（日志 `/tmp/co111-stability.log`）

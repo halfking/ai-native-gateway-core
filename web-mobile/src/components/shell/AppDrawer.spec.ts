@@ -141,6 +141,9 @@ describe('navItemsFor', () => {
       'overrides',
       'proposals',
       'reconciliation',
+      // ★ 2026-10-14 第一百一十一批：对账报表（admin/handler.go:1086 h.superAdmin）
+      //   ⇒ **要** super_admin。⚠️ 与上面 reconciliation 是两个不同功能，别接错。
+      'report-rollup',
       'request-anomalies',
       'routing-audit',
       // ★ 2026-10-08 第一百零一批：路由策略配置面（`admin/handler.go:1200 :1201 :1215`

@@ -606,7 +606,16 @@ function requireKeys(obj: object, keys: readonly string[], where: string): void 
 // ── (1) 降级 ──
 
 /** 见 (1)：这次响应是不是「表没迁移」的降级信封。 */
-export function reportRollupIsDegraded(body: ReportRollupSummaryBody | ReportRollupDimensionsBody): boolean {
+export function reportRollupIsDegraded(
+  body: ReportRollupSummaryBody | ReportRollupDimensionsBody,
+): body is ReportRollupDegradedResponse {
+  // ★★ 这条**必须是类型守卫**（`body is ReportRollupDegradedResponse`）而不只是 `boolean`：
+  //   降级与正常是**互斥的两种形状**（见 (1)），而调用方天然写成
+  //   `if (isDegraded(body)) { …degraded 两键… } else { body.report }`。
+  //   返回 `boolean` 时 `else` 分支**不会被收窄** ⇒ 直接 TS2339
+  //   「Property 'report' does not exist on type '{degraded:true; error_code:string}'」。
+  //   ⇒ 第一百一十一批接 UI 时被 vue-tsc 抓出来的就是这个；
+  //     修法是改**签名**，不是在视图里加 `as any`（那会把互斥关系抹掉）。
   return (body as ReportRollupDegradedResponse).degraded === true
 }
 
@@ -682,6 +691,47 @@ export function reportRollupFilterIsNeverEchoed(body: ReportRollupSummaryBody): 
 /** 见 (13)：`error_count === request_count − success_count`（注释自陈的语义）。 */
 export function reportTotalsErrorCountMatches(t: ReportTotals): boolean {
   return t.error_count === t.request_count - t.success_count
+}
+
+/**
+ * ★★★ `total_tokens` 是**可自算的派生列**（`report.go:216`）：
+ *
+ * ```go
+ * t.TotalTokens = t.InputTokens + t.OutputTokens + t.CacheReadTokens + t.CacheWriteTokens
+ * ```
+ *
+ * ⇒ 这是四个分量的和，**不是**独立的读数 ⇒ 它与四个分量不可能自由组合。
+ * ⚠️ 注意它把 `cache_read` / `cache_write` **也算进去**
+ * ⇒ 「total = input + output」这种直觉写法在本族**恒不成立**。
+ *
+ * ★ 这条在 API 层原先**没有**判据（模块只覆盖了 `error_count` 与 `cache_hit_ratio`
+ *   两个派生列），是接 UI 时从 `finalize()` 里逐行核出来的第四个。
+ */
+export function reportTotalsTotalTokensMatches(t: ReportTotals): boolean {
+  return t.total_tokens === t.input_tokens + t.output_tokens + t.cache_read_tokens + t.cache_write_tokens
+}
+
+/**
+ * ★★★★ `request_count === 0` ⇒ **`error_rate` 是 0，不是 `null`、也不是 `NaN`。**
+ *
+ * `report.go:212-215`：
+ *
+ * ```go
+ * t.ErrorCount = t.RequestCount - t.SuccessCount
+ * if t.RequestCount > 0 {
+ *     t.ErrorRate = float64(t.ErrorCount) / float64(t.RequestCount)
+ * }
+ * ```
+ *
+ * ⇒ ★★ **派生发生在 `if` 之外，分母的守卫只包住除法**：
+ *   `ErrorRate` 是**值类型** `float64`（无 omitempty）⇒ 零请求时它保持零值 `0` 并**照常出现**。
+ * ⇒ ⇒ 客户端拿 `error_count / request_count` 去「重算」这个字段会得到 `NaN`；
+ *   而**服务端给的是 0**。所以「0% 失败率」在这两种情况下读数一样、
+ *   **只能靠 `request_count` 本身是 0 来区分**。
+ */
+export function reportTotalsErrorRateIsZeroWhenNoRequests(t: ReportTotals): boolean {
+  if (t.request_count !== 0) return false
+  return t.error_rate === 0
 }
 
 /** 见 (12)：命中率分母为 0 ⇒ `cache_hit_ratio` 是**裸 `null`**。 */

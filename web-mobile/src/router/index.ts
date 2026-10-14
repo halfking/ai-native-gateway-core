@@ -705,6 +705,13 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'mid.title', requiresAuth: true },
   },
   {
+    // ★ 后端前缀**带尾斜杠**（`/api/admin/report-rollup/`）⇒ 客户端必须自己拼对尾段
+    path: '/report-rollup',
+    name: 'report-rollup',
+    component: () => import('@/views/ReportRollupView.vue'),
+    meta: { titleKey: 'rr.title', requiresAuth: true },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),

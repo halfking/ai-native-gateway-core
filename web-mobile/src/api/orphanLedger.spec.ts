@@ -57,7 +57,6 @@ const KNOWN_ORPHANS: readonly string[] = [
   'nativeTransport',
   'opsOverview',
   'platformSettings',
-  'reportRollup',
   'requestActions',
   'sessionAnalyticsFilterOptions',
   'slidingWindow',
@@ -274,6 +273,18 @@ describe('孤儿棘轮', () => {
     //   与本席共用 `/api/admin/model-integrity/` 前缀却是**两张席** ——
     //   所以权限判据必须落到可执行注册处，不能按前缀判。
     expect(currentOrphans()).not.toContain('modelIntegrityDrift')
+  })
+
+  it('★★ 已接线的哨兵：reportRollup 不在孤儿里（第一百一十一批）', () => {
+    // ★ 对账报表接上了抽屉席与路由 ⇒ 棘轮清单同步删掉那一行。
+    //   该族是 **superAdmin 档**（admin/handler.go:1086，整个 `/api/admin/report-rollup/`
+    //   前缀带尾斜杠都是 h.superAdmin）⇒ 席**要** requiresRole，
+    //   所以 `AppDrawer.spec.ts` 的排序白名单里**必须**出现 report-rollup。
+    //   ⇒ 两条判据合起来才覆盖「接上了」+「档位挂对了」。
+    // ★⚠️ 另记一条**命名陷阱**：`reconciliation` 席走的是 `costReconciliation`
+    //   （费用对账），本席走 `reportRollup`（对账报表）——两张席都叫「对账」，
+    //   接错模块这两条判据**都不会红** ⇒ 靠的是 nav 标题与哨兵注释里的显式区分。
+    expect(currentOrphans()).not.toContain('reportRollup')
   })
 
   it('★★★ 反向护栏：api 内部的互相引用不得凭空产生可达性', () => {
