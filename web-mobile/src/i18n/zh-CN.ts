@@ -18,6 +18,7 @@ export const zhCN = {
     connectionRegistry: '连接注册台',
     usageTrendSeries: '用量趋势线',
     formatAnomalies: '格式异常',
+    modelIntegrityDrift: '指纹漂移',
     modelPolicies: '模型策略',
     modelPolicyAudit: '策略审计',
     approvalConfig: '审批配置',
@@ -3566,6 +3567,71 @@ sctx: {
     unit: {
       bytes: '字节',
       tokens: '词元',
+    },
+  },
+  mid: {
+    title: '指纹漂移',
+    load: '加载',
+    reload: '重新加载',
+    list: {
+      title: '漂移事件',
+      // ★★ count 恒等于**本页行数**（后端写的是 len(items)），不是窗口内总数
+      count: '本页共 {len} 行（响应 count={n}）',
+      countViolation: '载荷异常：count={n} 与实际行数 {len} 不一致。',
+      // ★★ 回显的是**生效窗口**，不是请求值
+      daysEcho: '后端生效窗口：{h} 天',
+      daysRewritten: '请求的 {want} 天被后端改写（越界或非法一律回落成 {max} 天的缺省值，不报错）。',
+      // ★★ 响应不回显 limit ⇒ 拿满请求上限只能判「可能截断」
+      atCap: '本页已拿满请求上限 {lim} 行，更早的漂移可能被截断、无法证明。',
+      orderBad: '排序不是按检出时间降序，与后端契约不符。',
+      foreignTenants: '本页包含带租户标记的记录 —— 该读路径跨全部租户。',
+      noTenantTags: '本页所有记录都没有租户标记。',
+      empty: '当前窗口内没有漂移事件。',
+    },
+    filter: {
+      days: '窗口（天）',
+      // ★ 后端 days 上限是 30，越界静默回落 ⇒ 这里只给发得出去的档位
+      limit: '每页上限',
+    },
+    row: {
+      // ★ 条件键缺失 = DB 里是 NULL
+      absent: '未提供（键缺失）',
+      emptyString: '空串',
+      // ★★ 键缺**不能**证明「没有上下文」：jsoncol.Decode 的三条路都让键消失
+      contextUnknown: '无法判定（键缺失：可能是 NULL、JSON null，或解码失败）',
+      contextEmpty: '存在但为空',
+      contextPresent: '存在',
+      requestIdEmpty: '空串（该行没有请求 ID）',
+      // ★ 指针为 NULL ⇒ 键被省略；0 是真的 0
+      nullValue: '无数据（键缺失）',
+      idSuffix: '（ID）',
+      unresolved: '未解决',
+      fullTrace: '已解决（处置痕迹齐全）',
+      partialTrace: '有处置痕迹（标记与痕迹不一致）',
+      traceMismatch: '标记已解决但没有处置痕迹',
+    },
+    sev: {
+      // ★★ 本表 DEFAULT 'low'，另一张表（response_format_anomalies）是 'medium'
+      default: '（表级缺省）',
+      // ★ 四值域只存在于注释里，表上没有 CHECK ⇒ 未知取值要标出来但不是错误
+      unknown: '四值域外',
+    },
+    col: {
+      detectedAt: '检出时间',
+      requestId: '请求 ID',
+      provider: '供应商代码',
+      providerId: '供应商 ID',
+      credentialId: '凭据 ID',
+      clientModel: '入站模型',
+      outboundModel: '出站模型',
+      rawModel: '原始模型名',
+      expected: '期望值',
+      actual: '实际值',
+      sample: '样本',
+      context: '上下文',
+      tenant: '租户',
+      resolvedAt: '处置时间',
+      notes: '处置备注',
     },
   },
   sc: {

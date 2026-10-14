@@ -14875,3 +14875,223 @@ JSON 里键缺解包后**就是** `undefined`
   日志 `/tmp/co109-stability.log`；1 skipped 是仓内既有跳过，不是本批引入）
   ⇒ `ComplianceHitsView` / `RoutingOptView` 两个历史 flaky 本轮仍未复现 ——
   按连跑器口径这**不是「已修复」**，只是没抓到。
+---
+
+## 11.146 第一百一十批：指纹漂移接进 UI，附带挖出「一段未闭合的注释吞掉两行代码，而每道门都绿」
+
+### 一、批次目标与接线
+
+把 `src/api/modelIntegrityDrift.ts`（第一百零一批做的 API 层）接成可达 UI 入口。
+
+- 视图 `web-mobile/src/views/ModelIntegrityDriftView.vue`
+- 判据 `ModelIntegrityDriftView.spec.ts` **51 条**
+- 抽屉席 `model-integrity-drift`（`to: '/model-integrity-drift'`，**superAdmin 档**）
+- 路由 `/model-integrity-drift`，`meta: { titleKey: 'mid.title', requiresAuth: true }`
+- 两侧 i18n 新增 `mid` 块 + `nav.modelIntegrityDrift`（3110 → **3155 键**）
+- 孤儿 **20 → 19**
+
+四路取证结论：注册 `admin/handler.go:942-943` 两条都是 `h.superAdmin`；
+分发 `admin/model_integrity.go:62-84` 的 switch（`summary` / `events` / `events/{id}/resolve` /
+`fingerprint-drift`，未命中 ⇒ `http.NotFound`）；实现 `admin/model_integrity.go:314-388`；
+桌面调用方 `web/src/api/integrity.ts:96-102` + 视图 `web/src/views/ModelIntegrityView.vue`
+的 `drift` 标签页（1070 行）。
+
+★ 移动端既有 `IntegrityView.vue`（抽屉席 `integrity`）用的是 `@/api/modelIntegrity`
+的 summary/events/resolve，**零** drift 引用 ⇒ 本族确属独立孤儿，值得单独一席。
+
+⚠️ 权限不得按前缀判：同一个 `/api/admin/model-integrity/` 前缀上，
+`integrity` 席与本席是**两张席**（前者管 summary/events/resolve）。登记在
+`AppDrawer.spec.ts` 与视图文件头。
+
+### 二、★★★ 附带发现：一段未闭合的文件头注释吞掉两行代码，而**每道门都绿**
+
+这才是本批最值钱的一条，与漂移功能本身无关。
+
+**现象**：`src/api/orphanLedger.spec.ts` 里 `grep -c '^const ROOT'` 返回 **2**，
+但 TypeScript 全程不报 `TS2451`（重复块级变量），vitest 15 条断言全绿。
+
+**根因**：文件头 `/**` 从第 5 行开启后，第 28 行起的一整段**丢了行首的 ` * ` 前缀**
+（`「孤儿」= …` / `★ 第一版只查…` / `⇒ ⇒ ★★★ **正确口径是传递可达性**…` 全部变成顶格裸行），
+于是注释**一直没闭合** —— 直到第 51 行那个本该独立成段的 `/** … */` 的 `*/`
+才把文件头注释关掉。**中间那两行是真的代码，被整段吞进了注释：**
+
+```ts
+const ROOT = join(process.cwd(), 'src')
+const API_DIR = join(ROOT, 'api')
+```
+
+真正的声明还在文件后半段活着（今天的第 104-105 行，是当初复制时留下的另一份）。
+
+⇒ ★★★ **于是产生了本仓最隐蔽的一种读数：每道门都绿，而那两行是死文本。**
+逐条实测（损伤态，真实文件）：
+
+| 门 | 读数 |
+|---|---|
+| `orphanLedger.spec.ts` 15 条断言 | **全绿** |
+| `vue-tsc --noEmit`（含该文件） | **EXIT=0** |
+| esbuild / vitest | 不报错（那两行不是代码） |
+| 新增的 `verify-comment-boundaries.mjs` | **EXIT=1，准确报出 48 / 49 行** |
+
+★★ **为什么 `vue-tsc` 看不见 —— 这是本条最要紧的一半**：
+`TS2451` 恰恰是**对这类缺陷结构性不可见**的那道检查 ——
+注释已经把那两行从 program 里摘掉了，binder 眼里**根本不存在第二个 `ROOT`**。
+⇒ 也就是说：**恰恰因为它是重复的，它才被伪装成无害。**
+如果那两行不是重复的，这道门会在「一切正常」的读数下**静默失效**，
+而**没有任何一道现有门会红**。
+
+★★ 顺带对照本仓已有的那条教训（「块注释不嵌套 ⇒ 提前闭合、报错位置与错因相距很远」）：
+那次是**提前闭合**，这次是**迟迟不闭合** —— 同一个手误的**两个方向**，
+而这一次**连报错都没有**，所以更难发现。
+
+**处置**：把第 28-46 段的 ` * ` 前缀补回去、在段落末尾显式闭合注释、删掉被吞的两行。
+改完 `ROOT`/`API_DIR` 只剩一处声明，15 条断言与类型门复跑仍全绿。
+
+**影响面**：写了个扫描器量全仓 `src/**` 的 `.ts` / `.vue`（**434 个文件**），
+命中**只有这 2 行、只有这 1 个文件** ⇒ 是孤立事件，不是系统性写法问题。
+
+**新增门**：`scripts/verify-comment-boundaries.mjs` —— 判据是「块注释内部不得出现顶格的代码行」，
+并入 `build` 前置链与 `gate:selftest`；自测 `verify-comment-boundaries.selftest.mjs` **15/15**。
+读数：**436 个文件，块注释里没有藏代码**。
+
+⇒ 这道门与 `TS2451` 是**互补**而非重复：一个管「同一份代码里声明两次」，
+一个管「第二次声明被注释吞了」，后者对前者**永远不可见**。
+
+### 三、后端契约（十四条要点）
+
+1. **权限**：`handler.go:942-943` 两条都是 `h.superAdmin`，**整个前缀**都是这一档。
+2. **租户口径**：`:328` 用 `withAllTenantReadOnlyTx`，SQL **选了** `tenant_id` 扫进
+   `item.TenantID`，但 WHERE 只有 `anomaly_type = 'fingerprint_drift'` 与时间窗，
+   **没有任何租户条件** ⇒ 与 operational / selfCheck / routing / formatAnomalies 同族。
+   ★★ **处置与批 104 / 批 106 相反**：那两族是 admin 档 + 不隔离 ⇒ 必须视图内按段落门控；
+   本族 superAdmin 档 ⇒ **档位本身就是那道门** ⇒ 抽屉席设 `requiresRole` 即完整处置，
+   **视图里不应有任何角色分支**。
+   ⚠️ 注释里**故意不写「第几次不隔离」**：`modelIntegrityDrift.ts` 头写「第五次」而
+   批 109 写「第六次」，谁都复核不了 ⇒ 要指认就**按名字列**。
+3. **`days` / `limit` 是静默回落，不是 400**：`days <= 0 || days > 30 ⇒ 7`，
+   `limit <= 0 || limit > 500 ⇒ 200`，且 `queryInt` 解析失败直接取缺省
+   ⇒ `days=31` / `days=0` / `days=abc` **三种写法都拿到 7 天的数据**。
+4. ★★ **桌面那个 1..90 是真 bug**：`web/src/views/ModelIntegrityView.vue:597` 的
+   days 输入框 `min="1" max="90"`，而后端上限是 30 ⇒ 桌面选 31..90 时
+   **静默回落成 7 天**，界面上却显示用户选的值。移动端**只给 1..30**（变异 S3/S4 把这条钉死）。
+5. `days` 回显的是**生效窗口**（`"days": days`），不是请求值
+   ⇒ 与批 76 `errors/trend` 回显**请求值**正好相反，同仓两种口径必须逐端点读。
+6. `count` **恒等于** `events.length`（`:385` 写的是 `len(items)`），且 `events` 恒数组
+   （`:322` 的 `make(…, 0)`）⇒ 零行是 `[]` 不是 `null`。
+7. ★★ 响应**不回显 limit**（只回显 `days`）⇒ 截断只能靠「拿满请求上限」反推。
+8. `anomaly_type` 是 SQL 里的**硬编码常量** ⇒ 每行必然是 `fingerprint_drift`
+   ⇒ 本族**唯一**可严格校验取值的字符串键。
+9. `severity` 四值域（`low`/`medium`/`high`/`critical`）**只存在于注释里**，
+   建表与 baseline 都**没有 CHECK**。
+10. ★★ 本表 `severity DEFAULT 'low'`（`462_model_integrity_events.sql:52`），
+    而批 109 的 `response_format_anomalies` 是 `DEFAULT 'medium'`
+    ⇒ **同族、同超级管理员、同开放域，缺省值不同** ⇒ 缺省这件事绝不能跨表照抄。
+11. **十九个键里十四个是指针 + omitempty**：5 恒在（`id` / `detected_at` /
+    `anomaly_type` / `severity` / `resolved`）+ 14 条件。
+12. ★★★ 指针 + omitempty ⇒ `provider_id` / `credential_id` **键在时值可能是真实的 0**
+    （与批 108 `content_size_bytes` 的「值类型 omitempty 吃掉 0」方向相反）
+    ⇒ 真值判断会把 0 误判成「没有值」。
+13. ★★★★ **`context` 键缺失不能证明「没有上下文」**：`jsoncol.Decode`
+    （`internal/jsoncol/jsoncol.go:57-79`）有**三条路**让键消失 ——
+    列是 NULL、列是 JSON `null`、**列里的 JSON 解析失败**（只留 Warn、dst 一个字节不动）
+    ⇒ 页面只能说「无法判定」。
+14. 排序 `ORDER BY ts DESC` ⇒ `detected_at` 非增（**含相等**，同一毫秒两行是合法的）。
+
+**错误信封三条**：405 `method not allowed`（`:316-318`）、
+503 `database not configured`（**dispatcher 层** `:56-59`，在子路径分发之前
+⇒ `summary` / `events` / `fingerprint-drift` 共享它）、
+500 `drift query failed`（`:379-382`）。
+
+### 四、视图的取舍
+
+- **越界档位一律不给**：后端是静默回落（不报错），给了等于让用户以为「我查的是 45 天」
+  而实际拿到 7 天的数据 ⇒ 只给 `days ∈ {1, 7, 14, 30}`、`limit ∈ {50, 200, 500}`。
+- **`context` 键缺说「无法判定」**，键在且空才说「存在但为空」。
+- **`request_id` 键缺与空串用两句不同措辞**（NULL vs 存了 `''` 是两件事）。
+- **处置痕迹分四档**而不是两档（见下）。
+- **不渲染空行**：`resolved_at` / `resolution_notes` 缺键时那两个行整行不出现。
+
+### 五、判据十三组
+
+① 档位与错误信封 · ② 越界档位不得出现在页面上 · ③ `days` 回显生效值 ·
+④ `count` 恒等于本页行数（**含 `>` 方向**）· ⑤ 拿满上限=可能截断（含正控）·
+⑥ 指针型数字键的 0 · ⑦ `context` 的三条消失路径 · ⑧ 处置痕迹四档 ·
+⑨ `severity` 表缺省是 `low` · ⑩ 条件键「缺失」与「空值」· ⑪ 排序/空窗口/跨租户 ·
+⑫ **无角色分支** · ⑬ 触控目标。
+
+★★ ⑫ 比批 109 那条强一个量级：批 109 量的是**文案**
+（`expect(w.text()).not.toContain('跨租户')`），可写文案的人照样能加一个 `v-if`。
+本批分两层：
+
+- **结构层**：断言视图源码（**剥掉注释后**）不含 `@/stores/auth` / `useAuthStore` /
+  `super_admin` / `tenant_admin` ⇒ 压根没拿身份，渲染不可能随身份变。
+- **行为层**：同一份载荷下换角色重挂两次 ⇒ 渲染**逐字节相同**。
+
+### 六、★★★ 判据自身翻了六次车（五次是判据错，一次是被测物错）
+
+1. **负断言范围过宽**（批 109 踩过的同一条，我照抄了模板又踩了一次）：
+   ⑩-2 断的是整张卡片 `not.toContain('未提供（键缺失）')`，而同一行里
+   `provider_code` / `client_model` / … 确实都缺键、**正确地**渲染成那句话 ⇒ 必然误报。
+   ⇒ 收窄到 `request_id` 那一格（并给它补了 testid）。
+2. **断言假设了一个不存在的参数**：`toHaveBeenCalledWith({ days: 30 }, expect.anything())`
+   —— 视图只传一个参数 ⇒ 报的是「参数个数不符」，而我真正要量的是「days 落在请求里」。
+3. **角色断言匹配到了注释**：视图文件头就写着「抽屉席须设 `requiresRole: 'super_admin'`」
+   ⇒ 第一版对**原文**匹配 `super_admin` 当场自曝 ⇒ 角色断言必须先剥注释。
+4. **触控正则吃掉了自己的合法值**：`not.toMatch(/min-height:\s*(?:0|[1-4]?\d)px/)`
+   里 `[1-4]?\d` 会吃掉**两位数**（`'4' + '8' + 'px'`）⇒ 连 `48px` 自己都被判违规
+   ⇒ 改成把数值**解析出来**再比大小（既不误伤，也挡得住真值 47）。
+5. **`import.meta.url` 在 vitest 里不是 `file:` scheme** ⇒ 两条读源码的判据一起崩。
+6. ★★ **唯一一次是「被测物错」，判据是对的**：⑧-2（`resolved=true` 且两个痕迹键都缺）
+   期望「标记已解决但没有处置痕迹」，实得「有处置痕迹（标记与痕迹不一致）」。
+   根因是我用了模块的**并集**判据 `driftHasResolutionTrace`
+   （`resolved === true || 'resolved_at' in row`）⇒ 它对 `resolved === true` 单独成立，
+   于是「什么都没留下」被算成「有痕迹」。
+   ⇒ 修**实现**成四档，把三个状态分开；并把这个缺陷**固定成变异 S10**，
+   免得以后重构又合并回去。
+
+### 七、变异台 17/17 全有牙
+
+`/tmp/mut-co110.mjs`（标记 `CO110S1…S18`），还原走 `writeFileSync` 原始字节 +
+逐字节比对，**未用** `git checkout --`，跑完复查零残留。
+
+- **S10**：把第六次翻车那个缺陷**原样注回去** ⇒ 1 条转红。
+- **S11**：★ `countViolation` 从 `!countMatches` 改成 `count < len`
+  ⇒ 只剩「小于」一个方向 ⇒ **「count 比本页多」这种最普通的载荷不再报违规**，
+  而判据 ④-3 立刻转红。这就是批 109 那条「告警类判据必须配正控」的**再次验证**。
+- ★★ **S1 / S2 第一版被判成 `MUTATION_INVALID`**：我把行内标记 `// CO110S1` 塞进了
+  **模板属性**（`@click="days = dp; load()"` → `@click="days = dp" // CO110S1`），
+  Vue 模板表达式编译失败 ⇒ **整套件 0 条跑成**。
+  ⇒ 这是**工装问题不是判据没牙**；处置是模板类变异不带行内标记，
+  残留改由 `restore()` 的逐字节比对 + 末尾 grep 复查把守。
+- ★★★ **S6 按纪律删除，而不是补用例**：把「值为 0」的分支去掉之后落穿到
+  `` `${v} ${suffix}` ``，而 `v === 0` 时它与 `` `0 ${suffix}` `` **逐字相同**
+  ⇒ **可证等价** ⇒ 删变异。判据 ⑥-1 本身不需要加强。
+- ★ 收尾的**零残留复查自己先崩了**：写的是 `leftover.equals(orig)`，
+  而 `readFileSync(path, 'utf8')` 返回的是**字符串** ⇒ 字符串没有 `.equals`。
+  ⇒ 「收尾检查崩掉」这件事最容易被当成「跑过了」——
+  **收尾检查必须先自己跑通再当证据用。**
+
+### 八、孤儿 20 → 19
+
+`modelIntegrityDrift` 从 `KNOWN_ORPHANS` 删掉一行并加哨兵。
+哨兵注释写明 superAdmin 档 ⇒ 席**要** requiresRole ⇒ `AppDrawer.spec.ts` 的白名单里
+**必须**出现 `model-integrity-drift`；**只加抽屉席不改正那份白名单，
+「tenant_admin 少掉的只有这些」那条立刻红**。
+
+剩余 19 项：`boardOperational`、`dataLifecycleStorage`、`dispatchJournal`、`errorsTrend`、
+`modelHistory`、`modelIQ`、`nativeTransport`、`opsOverview`、`platformSettings`、
+`reportRollup`、`requestActions`、`sessionAnalyticsFilterOptions`、`slidingWindow`、
+`storageAndLogConfig`、`storageMigrationState`、`subscriptionTiers`、`turnsFilterOptions`、
+`usageEnhanced`、`v1DataHorizon`。
+
+### 九、验证
+
+- 新增 `ModelIntegrityDriftView.spec.ts` **51 条**；`orphanLedger.spec.ts` 15 → **16 条**；
+  `AppDrawer.spec.ts` 白名单同步
+- ★★★ 变异 **17/17 全有牙**（`/tmp/mut-co110.mjs`，S6 按「可证等价」删除，
+  还原逐字节一致，**未用** `git checkout --`；跑完复查零 `CO110S` 残留且字节一致）
+- ★★ 新增门 `verify-comment-boundaries.mjs` **436 文件 0 命中**；
+  自测 **15/15**；`gate:selftest` 四门合计 **64 条**（11 + 11 + 27 + 15）
+- 五门 rc=0（i18n parity 3110 → **3155 键** / 触控 R1 103 → **104 个 `.vue`** /
+  CSS 107 files / `vue-tsc` / `comment:check`）
+- 全量 **7312 条 / 199 文件** rc=0（1 skipped）
+- 十连跑 **10/10 全绿**（日志 `/tmp/co110-stability.log`）

@@ -132,6 +132,10 @@ describe('navItemsFor', () => {
       'maas-rates',
       'maas-tenant-ops',
       'matrix',
+      // ★ 2026-10-14 第一百一十批：指纹漂移
+      //   （admin/handler.go:942-943 两条都是 h.superAdmin）⇒ 这一条**要** super_admin。
+      //   ★ 与批 109 的 format-anomalies 同档 ⇒ 两条合起来把 superAdmin 档的席钉死。
+      'model-integrity-drift',
       'model-policies',
       'model-policy-audit',
       'overrides',

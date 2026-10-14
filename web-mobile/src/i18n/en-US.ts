@@ -18,6 +18,7 @@ export const enUS = {
     connectionRegistry: 'Connection registry',
     usageTrendSeries: 'Usage trends',
     formatAnomalies: 'Format anomalies',
+    modelIntegrityDrift: 'Fingerprint drift',
     modelPolicies: 'Model policies',
     modelPolicyAudit: 'Policy audit',
     approvalConfig: 'Approval config',
@@ -3529,6 +3530,68 @@ sctx: {
       // ★ i18n parity 门的未翻译口径是「值 === 键名」⇒ 单位名恰好等于键名会被判未翻译
       bytes: 'B',
       tokens: 'tok',
+    },
+  },
+  mid: {
+    title: 'Fingerprint drift',
+    load: 'Load',
+    reload: 'Reload',
+    list: {
+      title: 'Drift events',
+      // ★★ count always equals the **page length** (backend writes len(items))
+      count: '{len} rows on this page (response count={n})',
+      countViolation: 'Malformed payload: count={n} does not match the {len} rows on this page.',
+      // ★★ the echo is the **effective window**, not the requested value
+      daysEcho: 'Effective window: {h} days',
+      daysRewritten: 'The requested {want} days were rewritten by the backend (out-of-range or invalid falls back to the {max}-day default without an error).',
+      atCap: 'This page already holds the requested cap of {lim} rows; earlier drift may be truncated and cannot be proven.',
+      orderBad: 'Rows are not ordered by detection time descending, which contradicts the backend contract.',
+      foreignTenants: 'Rows on this page carry tenant tags — this read path spans all tenants.',
+      noTenantTags: 'No row on this page carries a tenant tag.',
+      empty: 'No drift events in the current window.',
+    },
+    filter: {
+      // ★ backend caps days at 30 and silently falls back ⇒ only sendable steps are offered
+      days: 'Window (days)',
+      limit: 'Page cap',
+    },
+    row: {
+      absent: 'not provided (key absent)',
+      emptyString: 'empty string',
+      // ★★ a missing key does **not** prove "no context": three paths drop the key
+      contextUnknown: 'undeterminable (key absent: NULL, JSON null, or a decode failure)',
+      contextEmpty: 'present but empty',
+      contextPresent: 'present',
+      requestIdEmpty: 'empty string (this row has no request ID)',
+      nullValue: 'no data (key absent)',
+      idSuffix: '(ID)',
+      // ★★ 键名 leaf 就是 'unresolved'，值也写 'unresolved' 会被 i18n 门判为「未翻译」
+      unresolved: 'not resolved',
+      fullTrace: 'resolved (trace complete)',
+      partialTrace: 'has a trace (flag and trace disagree)',
+      traceMismatch: 'flagged resolved but no resolution trace',
+    },
+    sev: {
+      // ★★ this table DEFAULTS to 'low'; response_format_anomalies defaults to 'medium'
+      default: '(table default)',
+      unknown: 'outside the four-value domain',
+    },
+    col: {
+      detectedAt: 'Detected at',
+      requestId: 'Request ID',
+      provider: 'Provider code',
+      providerId: 'Provider ID',
+      credentialId: 'Credential ID',
+      clientModel: 'Client model',
+      outboundModel: 'Outbound model',
+      rawModel: 'Raw model name',
+      expected: 'Expected',
+      actual: 'Actual',
+      sample: 'Sample',
+      context: 'Context',
+      tenant: 'Tenant',
+      resolvedAt: 'Resolved at',
+      notes: 'Resolution notes',
     },
   },
   sc: {
