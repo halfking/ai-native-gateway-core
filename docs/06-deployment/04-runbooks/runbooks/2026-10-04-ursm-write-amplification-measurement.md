@@ -15961,3 +15961,62 @@ MV 本身：普通 **heap**（非列存，实测 `access_method=heap`）、4 个
 （claim calls 10,453、idx_scan 1,647 全未变）——该语句依赖会话终结，
 **这段时间生产侧根本没触发**。⇒ **9 分钟窗口不足以取差分，且低峰期更是取不到。**
 ⇒ 需要跨小时级窗口（或高流量时段）才能拿到纯部署后的语句级差分。
+
+### §10.110.20 🔴🔴 前提被抽走：request_logs 已在 **2026-10-13 20:18 停写**（S4 退役），本节推翻 §10.110.19 的因果
+
+#### 一、我差点报了一个假事故
+
+**观察**：`request_logs_2026_10` 最新行 = **2026-10-13 20:18:11**，之后 17.5 小时零写入；
+`_request_logs_hot`（59 MB）与 `_request_logs_bodies_hot`（291 MB）**行数为 0**。
+第一反应：**这是生产事故**。
+
+**证伪链**（逐条都有据）：
+1. 系统是活的：`request_wal_hot` **最近 1 小时 651 行**、最新 13:47:50；
+   `node_probe_state` 最新 13:48:31。⇒ 请求在进来。
+2. 两台网关 `/readyz` 均为 200、进程在跑。
+3. 迁移 **860 `860_rename_request_logs_family_pending_delete.sql`** 正文写着：
+   > 「What moves: `request_logs → _request_logs`、`request_logs_hot → _request_logs_hot` …
+   >  这是 **S4 retirement 的 pending-delete 标记**。
+   > **「Writes are already gated off (`storage.request_logs_write_enabled=false`),
+   > so no writes race the rename.」**
+4. `settings_kv` 实测：
+   ```
+   storage.request_logs_write_enabled = false   updated_at = 2026-10-13 20:18:27.656301+08
+   ```
+   **开关翻转比最后一条数据行只晚 16 秒。**
+
+⇒ **不是事故，是执行干净的退役**：`cmd/gateway/lite_telemetry_sink.go` 与
+`settings/key_request_logs_write_enabled.go` 都有对应门控，
+注释原文「关停后 Lite 仅保留会话族」「停写之后管理面对 request_logs 既不写也不读」。
+
+#### 二、这条事实抽掉了 §10.110.19 的因果前提
+
+`routing_analytics_source` 只有两个臂：`{_request_logs, _request_logs_hot}`。
+后者**空**；前者的分区 `request_logs_2026_10` **冻结在 20:18**。
+
+⇒ **MV 的输入是冻结的。** 但 §10.110.19 实测「每轮刷新删 2,412 + 插 2,412 行」。
+⇒ **输入冻结却仍在重写 54% —— 两者矛盾。**
+
+我依次排除了三种「输入在变」的解释，**全部被数据否掉**：
+
+| 假设 | 实测 | 结论 |
+|---|---|---|
+| `credentials` 变了导致 `effective_provider_id` 漂移 | `provider_id IS NULL` 的 **97,331 行**里，能由 credentials 解析出值的 = **0 行**（对应 credential 自身 provider_id 也是 NULL）⇒ 子查询**恒返回 NULL** | ✗ 键稳定 |
+| 7 天窗口滑动 | 未来 10 分钟会滑出的分组 = **16 个**（非 2,412） | ✗ 差 150 倍 |
+| 源表仍在写入 | 所有臂 max(ts) 冻结在 20:18 | ✗ |
+
+⇒ **三条排除之后仍有 2,412 的硬矛盾。**
+⇒ **按纪律，此处停止推断**：不编机制，把它记成**未解释读数**，
+　 下一步是 P0/P1/P2 三点重测（刷新前 / 边界瞬间 / +90s），
+　 用「刷新瞬间 vs 之后漂移」把 `n_tup_ins/del` 的来源分开。
+　 若刷新瞬间不涨、之后才涨 ⇒ 那 2,412 就**不是刷新干的**，要找别的东西。
+　 ⚠ **这正是本轮第一条纪律「模型与读数冲突时先怀疑读数」的应用**：
+　 我已经写出「重写 54% 是真成本」的结论，现在必须把它降级为**待重测的观察**。
+
+#### 三、连带修正
+
+- **858（终态晋级索引）的目标语句已停跑**：claim UPDATE 挂在 `request_logs_hot` 上，
+  该表已空且不再写入 ⇒ 858 现在**处于休眠**。索引本身无害，
+  也是 S4 回滚路径需要的；只是**它现在不再是活跃成本项**。
+- §10.110.19 里「每 10 分钟重写 54%」若是误读，则「降频到 30min」的收益估算
+  也要跟着作废。**在 P0/P1/P2 结论出来前，不要基于它做任何决策。**
