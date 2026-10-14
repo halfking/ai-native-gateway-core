@@ -388,6 +388,20 @@ CGO_ENABLED=0 go test \
 > **CGO 边界**：`CGO_ENABLED=0` 只适用于上面的子集。`./cmd/...`（含
 > cmd/gateway 的 lite 存储测试）与 `./db/...` 需要 **CGO 开启**（SQLite 驱动
 > 在 CGO_ENABLED=0 下报「lite 存储模式需 CGO 构建」），直接 `go test` 即可。
+>
+> **2026-10-14 已把口径钉进 `verify.sh`**：文件顶部按**宿主**划界——
+> `if [[ "$(uname -s)" == "Darwin" ]]; then export CGO_ENABLED="${VERIFY_CGO_ENABLED:-0}"; fi`
+> （macOS 强制 cgo=0；Linux/CI 上一个字节都不改——cgo=0 会让那 6 个 lite/sqlite
+> 包的用例整片红，`driver_nocgo.go` 是按设计 panic 的；macOS 上要强制 cgo 用
+> `VERIFY_CGO_ENABLED=1`）。实测依据：同一 commit、同一台机，`go build ./...`
+> → RC=1（121 行 `tapi error: malformed file`），`CGO_ENABLED=0 go build ./...`
+> → RC=0，`CGO_ENABLED=0 go vet ./...` → RC=0。cgo=0 下必然红的 6 个包（依赖闭包
+> 实测）：`bg`、`cmd/gateway`、`storage`、`storage/factory`、`storage/sqlite`、
+> `tests/integration`——**verify.sh 不剔除它们**（AGENTS 既有策略：主门长期为红是
+> 维护者决定，不要加白名单），真实覆盖由 CI 的 cgo=1 承担。回归门
+> `tests/verify_cgo_convention_test.sh`（已接入 verify.sh 首块）钉住：Darwin 划界
+> 还在（并**行为**验 Linux 上不被钉、覆盖口真能用）、注释里的实测证据不被删、
+> `go test ./...` 没被缩小、编译结果不过管道、sqlite 双形态驱动都在、6 包名单不漂移。
 
 **已验证绿的子集**（2026-10-11 审计实测，`CGO_ENABLED=0 go test`，rc=0）：
 
@@ -1825,19 +1839,43 @@ streaming 全包 150s 绿。154 终验：拦截请求三件套全绿（终态带
 
 ## 下一轮提示词（2026-10-14 r1030 轮更新）
 
-1. **D1 待部署授权**：修复需一次部署才能真正消掉生产面的迁移卡点。前提是该族在目标
-   环境**在场**——252 已按 736 先例预应用、不受影响的概率高；真正命中的是「族缺席」的
-   环境。部署前先在目标机确认 `to_regclass('public._request_logs')`。
-2. **`-2` 的 4 条已合并本地分支 + 2 个 worktree**（`wt-deploy-211`、
-   `/private/tmp/lggw-s3wave-wt`）**需 owner 一句话授权**再清理——零独有内容，但摘
-   worktree 会打断可能在用它们的会话。
+1. ~~**D1 待部署授权**~~ **部署前取证已完成（2026-10-14 15:2x，只读实测）**：
+   `to_regclass('public._request_logs')` 在**每一个可达环境**都非 NULL——
+   154 / 245 / 252 共用的生产库（`172.16.2.210:5432/llm_gateway`，其实跑在 252 的
+   podman 容器里）、211 的 PG17（`acc-pg17`）、本机 host-first（54318）全部
+   `prefixed=_request_logs | idx=idx_request_logs_ts | turns=session_turns`。
+   生产库台账已有 `860/861/862`（applied_at 2026-10-14 13:15:31~32，两台同库故同戳）。
+   **按 S4 §6.6「非 NULL 则该环境本来就不受影响」的口径：这 5 个环境都不会被 D1 的
+   缺陷咬到**——862 的无守卫 COMMENT 腿在族在场时必然有索引可注释，缺陷不触发。
+   两台生产当前活跃 release 为 **154 = `2631-ec9d2f3f`（:8781）、
+   245 = `2630-ec9d2f3f`（:8782）**，构建提交 `ec9d2f3f` 是 D1 修复 `50eb3bb88`
+   的父提交 ⇒ **修复未上线**。结论：这次部署不再为「消生产迁移卡点」而做（卡点
+   在可达环境里不存在），只为让新二进制带上修复，覆盖的是未来的 fresh install 与
+   尚未应用 860 的环境。是否部署仍待 owner 一句话（发布授权）。
+2. **待 owner 一句话授权**：`-2`（`/Users/huangxt/workspace/llm-gateway-go-2`，独立
+   clone，HEAD `8468f482a`）的 4 条已合并本地分支 + 2 个 linked worktree
+   （`~/workspace/wt-deploy-211`、`/private/tmp/lggw-s3wave-wt`）。**2026-10-14
+   15:2x 只读取证**（未碰、未提交、未删）：
+   - `-2` 唯一的未提交内容 = 未跟踪目录 `tmp_mint_jwt/`（单个 296B `main.go`，
+     内容是一次性 admin JWT 铸造器，密钥走 argv 无硬编码），mtime
+     **2026-10-13 15:30:38 ≈ 24h 未动** ⇒ 严格讲「零独有内容」不成立，删掉即销毁它；
+   - `wt-deploy-211`（`feat/deploy-211-docker`）工作区干净、与远端同步；
+   - `/private/tmp/lggw-s3wave-wt`（`tmp-sync`）落后 origin/main 106，仅多一个未跟踪
+     `web/node_modules`。
+   摘 worktree 会打断可能在用它们的会话，故等授权。
 3. **远端 3 条九月未合并分支**（`2026-07-25-realtime-routing-self-heal` 24 篇设计归档 /
    `fix/w5-ml-ci-runbook` / `fix/w6-monitor-docs`）维持留置，待维护者裁决。
-4. **`go build ./...`（cgo 形态）在本机结构上不可用**（macOS SDK 27.0 × CLT linker，
-   `tapi error`）。所有验证一律 `CGO_ENABLED=0`。建议把这条口径写进 verify 脚本。
-5. **隔离 PG 实例仍在跑**：`127.0.0.1:54999`（`/tmp/pg862audit.9vybj2`，socket+TCP 均可），
-   下轮真库判据可直接复用：
+4. ~~**`go build ./...`（cgo 形态）在本机结构上不可用**~~ **已落地（2026-10-14）**：
+   `verify.sh` 顶部 `export CGO_ENABLED="${VERIFY_CGO_ENABLED:-0}"` + 回归门
+   `tests/verify_cgo_convention_test.sh`（变异 7 条全红在正确断言：注释掉 export /
+   加白名单 / 编译过管道 / 拆 nocgo 双形态 / 登记名单漂移 / 命令替换缩小验证面）。
+   详见「任务 1」的 CGO 边界一节。
+5. **隔离 PG 实例仍在跑且已复用**（2026-10-14 15:3x 实测 rc=0）：`127.0.0.1:54999`
+   （`/tmp/pg862audit.9vybj2`，socket+TCP 均可），下轮真库判据直接复用：
    `TEST_PG_URL=postgres://audit@127.0.0.1:54999/postgres?sslmode=disable`。
+   本轮用它复跑 D1 真库判据 2/2 绿：
+   `TEST_PG_URL=… CGO_ENABLED=0 go test -tags=integration ./sql/migrations/startup
+   -run TestMigration862 -v -count=1`。
 6. **登记待续**（上轮转来的）：`probe_direct_auth_failed` 探针失败主体与失效 sk-* key
    持有方通知；fail-open 占位符透传（96 行样本，根因未定位，需结构化日志+真实流量+发布
    授权）；601,914 行 `session_censors.original_encrypted` 全 NULL 的还原半程（要还原得给
