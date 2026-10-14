@@ -57,6 +57,17 @@ var migrationsDirs = []string{
 	"../../sql/migrations/manual",
 }
 
+// migrationNumPrefix 界定「什么算一个编号迁移」。
+//
+// ⚠️ 2026-10-14（12h 审计轮 D-F2）：必须是**恰好三位**数字前缀，而不能是
+// `strconv.Atoi(prefix)` 对任意数字前缀都成立。后者会把 manual/ 下的日期
+// 文件（20260719_*.sql）解析成编号 20260719，把窗口锚点顶飞到
+// [20260700, 20260719]，让整个 8xx 段脱离检查。
+// 与台账侧 rowRe 的 `[0-9]+_` 对齐：台账能登记的必须是 `NNN_*.sql` 形态，
+// 所以磁盘侧也只认同一形态，两侧口径一致才不会出现「磁盘有、台账正则认不出」
+// 的单向盲区。
+var migrationNumPrefix = regexp.MustCompile(`^[0-9]{3}_`)
+
 // readMigration 按 basename 在各迁移目录里找文件并返回其内容。
 // 同名存在时优先 startup/（与脚本的目录顺序一致）。
 func readMigration(name string) ([]byte, error) {
@@ -94,6 +105,11 @@ var knownUnregistered = map[string]string{
 	// SELECT，用于排障定位；后者是给火山引擎提供商补 glm-5.2 模型的一次性数据
 	// 订正。docs/db-changelog.md 是 schema 迁移的 sha 台账，把它们登记进去
 	// 会让「有登记 = 有待部署的 schema 变更」这个含义失效。
+	//
+	// ⚠️ 2026-10-14（D-F2）：这两条豁免现已**不在窗口作用域内**——编号解析
+	// 收窄为 `^[0-9]{3}_` 后，它们不再是「编号迁移」，根本不会被扫描，
+	// 因此豁免分支不会被命中。保留条目仅为记录「它们确实没有登记行」这一
+	// 历史事实与不登记的理由；若将来放宽编号口径，这两条豁免即刻重新生效。
 	"20260719_add_volcano_glm52.sql": "非 schema 迁移：火山引擎 glm-5.2 的一次性数据订正脚本（2026-07-19），刻意不进台账。",
 	"20260719_verify_config.sql":     "非 schema 迁移：智谱/火山引擎配置的只读排障验证脚本（2026-07-19），刻意不进台账。",
 }
@@ -128,10 +144,24 @@ func TestMigrationRegistryStaysContinuous(t *testing.T) {
 	rowRe := regexp.MustCompile(`(?m)^\|\s+[0-9]+\s+\|\s+\x60([0-9]+_[a-zA-Z0-9_]+\.sql)\x60\s+\|\s+\x60([0-9a-f]{64})\x60\s+\|`)
 
 	// 磁盘上的编号迁移（排除 .down.sql 与非数字前缀）
+	//
+	// ⚠️ 2026-10-14（12h 审计轮 D-F2）：编号解析必须限定**三位迁移号**。
+	// 原实现是 `strconv.Atoi(strings.SplitN(name,"_",2)[0])`，对
+	// manual/ 下的日期前缀文件（20260719_add_volcano_glm52.sql、
+	// 20260719_verify_config.sql）会解析出 20260719，
+	// 于是「磁盘最大编号」锚点被顶到 20260719，窗口坍缩成
+	// [20260700, 20260719] —— **整个 8xx 段脱离检查**。
+	// 后果：863 漏登记台账时这道门保持绿（实测 UNREGISTERED IN WINDOW: 0）。
+	// 这正是本文件 NC-D 负控想消灭的那类自指失效，只是从锚点另一侧进来的：
+	// 一个非迁移文件就能把整段检查顶飞。仓库规范是三位迁移号（NNN_*.sql），
+	// 按此限定即可。
 	var migs []migFile
 	for _, f := range files {
 		if f.IsDir() || !strings.HasSuffix(f.Name(), ".sql") ||
 			strings.HasSuffix(f.Name(), ".down.sql") {
+			continue
+		}
+		if !migrationNumPrefix.MatchString(f.Name()) {
 			continue
 		}
 		n, err := strconv.Atoi(strings.SplitN(f.Name(), "_", 2)[0])

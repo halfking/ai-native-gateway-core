@@ -78,10 +78,20 @@ const modelsRoutableSQL = `
 		WHERE cmb.available = TRUE
 		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
 		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		  -- 模型级死活（2026-10-14 审计补齐）：provider_models 自身的
+		  -- available / unavailable_reason 是模型级下线开关，路由侧
+		  -- recommend_v2.go 与 v_routable_credential_models 视图都有，
+		  -- 漏掉会让运维的下线对发现列表完全无效。
+		  AND pm.available = TRUE
+		  AND COALESCE(pm.unavailable_reason, '') NOT LIKE 'manual%'
 		  AND COALESCE(c.status, 'active') = 'active'
 		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
 		  AND COALESCE(c.availability_state, 'ready') = 'ready'
-		  AND COALESCE(c.quota_state, 'ok') NOT IN ('permanently_exhausted')
+		  -- quota_state 有三个耗尽态（凭据级），availability_state='ready'
+		  -- 并不蕴含 quota_state 非耗尽——两列各有独立 CHECK 约束，路由
+		  -- 视图正是因此同时检查两者。原实现只排除了其中 1/3。
+		  AND COALESCE(c.quota_state, 'ok') <> ALL (ARRAY['permanently_exhausted','balance_exhausted','periodic_exhausted'])
+		  AND COALESCE(c.health_status, 'unknown') IN ('healthy', 'unknown')
 		  AND COALESCE(c.trust_level, '') NOT IN ('quarantine')
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(p.enabled, TRUE) = TRUE

@@ -115,6 +115,26 @@ func Test862CommentsAreGuardedLikeTheirCreateLegs(t *testing.T) {
 	}
 }
 
+// Test862SetsStatementTimeout —— 12h 审计轮补的 P1 反向钉。
+//
+// 862 是 850–863 区间唯一「建索引却不设 statement_timeout」的迁移。
+// 共享 PG 服务端 statement_timeout=30s（849/855/856 都为此各补过一次
+// SET LOCAL，实录 57014），而本迁移的 session_turns 腿建在**活写**分区
+// 父表上并级联到每个分区，252 审计轮实测 idx_session_turns_ts 单条 94.2s
+// （2026_09 79.8 万 + 2026_10 12.8 万行）——远超 30s。
+//
+// 后果与守卫击穿同族：两条 CREATE INDEX 同处一个事务，57014 后整体回滚、
+// 不留部分状态，但 psql_file 只按退出码记账 ⇒ 永不 applied，每次部署
+// 重放、每次同样失败 = 永久迁移卡点，且只会在数据量已达百万级的存量库上
+// 炸（全新安装 session_turns 为空，反而看不出问题）。
+func Test862SetsStatementTimeout(t *testing.T) {
+	up := stmt862(t, idx862File)
+	if !strings.Contains(up, "SET LOCAL statement_timeout") {
+		t.Errorf("862 缺少 SET LOCAL statement_timeout：共享 PG 服务端 30s 会掐断 94.2s 的 " +
+			"idx_session_turns_ts 构建，dbinit/部署链只按退出码记账 ⇒ 永久迁移卡点（849/855/856 同形先例）")
+	}
+}
+
 // Test862EmbeddedCopyMatchesCanonical —— 双点同步钉（installer embed 与
 // canonical 字节必须一致）。只改一处会让 CI 构建出的安装器带着与正典不同
 // 的 SQL 上门，是 849/850/851 漏同步那一族的通用护栏。

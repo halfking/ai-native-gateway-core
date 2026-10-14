@@ -436,12 +436,22 @@ func (pm *PartitionManager) ensureNextMonthPartitions(ctx context.Context) {
 // 态，Info 跳过而不是每 24h 报 42P17。to_regclass 而非 ::regclass：表本身
 // 可能不存在（部分供给的库），裸 cast 会 raise。探测失败按保守方向跳过
 // （本轮不促升，下轮重试）。
+//
+// ⚠️ 2026-10-14（12h 审计轮 D-F3）：本探测必须自带超时，不能直接用裸 ctx。
+// 它是本文件**唯一**一处没有派生的 WithTimeout 的 DB 调用，而它位于
+// ensureNextMonthPartitions 头部、且在启动期先于 close(pm.ready) 执行
+// ⇒ 探测挂起会同时卡住 run()（分区 ensure/归档/residue 全停）与 runPromote()
+// （等 <-pm.ready，促升与 ANALYZE 全停）。Stop() 的 cancel() 能解开，所以不是
+// 永久死锁，但会让分区维护**静默失效**且无任何日志。与同函数下游的 30s 口径
+// （见调用方 ensure 的 WithTimeout）对齐。
 func (pm *PartitionManager) ensureSpecEligible(ctx context.Context, s archiveSpec) bool {
 	if s.parentTable == "" {
 		return true
 	}
+	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	var partitioned bool
-	if err := pm.db.QueryRow(ctx, `
+	if err := pm.db.QueryRow(probeCtx, `
 		SELECT EXISTS (
 		           SELECT 1 FROM pg_class c
 		            WHERE c.oid = to_regclass('public.' || $1)

@@ -38,6 +38,17 @@
 
 BEGIN;
 
+-- ⚠ 共享 PG 服务端 statement_timeout=30s（runner.go 与 856 头注均有实测：
+--   245 首部署 65.2s、849/855 均在部署链上 57014）。本迁移的
+--   session_turns 腿在**活写**分区父表上建无谓词 (ts) 索引并级联到每个
+--   分区，252 审计轮实测 idx_session_turns_ts 单条就 94.2s（2026_09
+--   79.8 万行 + 2026_10 12.8 万行）——**远超 30s，不加 SET LOCAL 必得
+--   57014**。两条 CREATE INDEX 同处本事务，失败整体回滚不留部分状态，
+--   但 psql_file 只按退出码记账 ⇒ 该迁移永远不被记为 applied，每次部署
+--   重放、每次同样失败（与 50eb3bb88 修掉的 COMMENT 守卫击穿同族的永久
+--   卡点形态）。858 同为无 statement_timeout 的建索引迁移，但建在 S4
+--   起已停写的 request_logs 族上，代价可忽略，不构成本例。
+SET LOCAL statement_timeout = '10min';
 SET LOCAL lock_timeout = '60s';
 
 CREATE INDEX IF NOT EXISTS idx_session_turns_ts
