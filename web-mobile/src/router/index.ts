@@ -846,6 +846,19 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'v1h.title', requiresAuth: true },
   },
   {
+    // ★ 订阅档（2026-10-14，第一百二十批）。
+    //   ★★★★ 权限档**第四类**：与批 115/117/118 的第三类相反，也不是批 119 的 admin 档。
+    //   `cmd/gateway/main_jwt_middleware.go:65-73` 的 `requireSuperAdmin` 逐字
+    //   `if role != "super_admin" { 403 }` ⇒ **真门**，所以抽屉席设 requiresRole 即完整处置。
+    //   ⚠️ meta.requiresRole 目前全仓无人消费（hyper-wiring 的 beforeEach 只查
+    //   requiresAuth 与 auth.isAuthenticated）⇒ 深链照样能打开这一页，
+    //   兜底在视图内「不发请求」，不是靠这一行。
+    path: '/subscription-tiers',
+    name: 'subscription-tiers',
+    component: () => import('@/views/SubscriptionTiersView.vue'),
+    meta: { titleKey: 'sts.title', requiresAuth: true, requiresRole: 'super_admin' },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),

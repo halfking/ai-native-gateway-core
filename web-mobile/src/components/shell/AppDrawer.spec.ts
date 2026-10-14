@@ -204,6 +204,15 @@ describe('navItemsFor', () => {
       //   而它是**全局唯一**主键 ⇒ 任何通过认证的主体报出别的租户的
       //   credential_id 就能读到它的逐次调用明细 ⇒ 连 tenant_admin 都必须挡。
       'sliding-window',
+      // ★★ 2026-10-14 第一百二十批：订阅档
+      //   （`licensing/module_api.go:22`，走 **echo group**：`main.go:7027`
+      //   `adminGroup := e.Group("/api/admin", requireSuperAdmin)`）
+      //   ★★★★ **权限档第四类**：前三席的超管限制各有各的理由
+      //   （后端不一致 / 载荷含别人的数据 / 全局平台事实），
+      //   本席的理由是**服务端中间件本身就是那道门**
+      //   （`main_jwt_middleware.go:65-73` 逐字 `if role != "super_admin" { 403 }`），
+      //   所以它**同样没有**租户维度，却**不是**第三类那三种理由中的任何一种。
+      'subscription-tiers',
       'task-index',
       'tenants',
       // ★ 2026-10-08 第一百零三批：工作类型配置面。`admin/handler.go:1434`

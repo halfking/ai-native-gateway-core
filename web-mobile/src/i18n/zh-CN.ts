@@ -90,7 +90,48 @@ export const zhCN = {
     injection: '提示词注入',
     injectionConfig: '注入配置',
     nodeHealth: '健康时间线',
+    subscriptionTiers: '订阅档',
     account: '我的',
+  },
+  // ★ 订阅档（2026-10-14，第一百二十批）。前缀 sts。
+  //   ⚠️ 两个「不可见」的维度必须写进文案，否则用户会把「出现在列表里」
+  //   读成「该档已启用」—— 端点压根没 SELECT `enabled` 那一列。
+  sts: {
+    title: '订阅档',
+    nope: {
+      msg: '仅超级管理员可查看订阅档。',
+      // ★ 兜的是「不发请求」，而服务端 `requireSuperAdmin` 才是真门。
+      why: '即使绕过这一页直接请求，服务端中间件也会返回 403。',
+    },
+    load: {
+      title: '取数',
+      btn: '刷新订阅档',
+    },
+    scope: {
+      note: '订阅档是全局配置，不按租户隔离。',
+      enabledNote: '注意：enabled 不可见，被停用的档同样会出现在下面。',
+    },
+    check: {
+      title: '自检',
+      orderBad: '档位顺序与 sort_order 升序不符，说明载荷被换过。',
+      dupKeys: '{n} 个档的 module_keys 里有重复元素。',
+      dupCodes: '{n} 个档的 code 重复。',
+      enabledLeak: '{n} 个档带出了 enabled —— 端点不该返回它。',
+      maxFeaturesLeak: '{n} 个档带出了 max_features —— 端点不该返回它。',
+      emptyModules: '{n} 个档没有配置任何模块。',
+      emptyDescription: '{n} 个档没有写描述。',
+    },
+    list: {
+      title: '档位',
+      empty: '还没有任何订阅档。',
+    },
+    field: {
+      code: '标识',
+      price: '价格（分）',
+      modules: '包含模块',
+      noModules: '（无）',
+      keys: '每档恒定 {n} 个字段。',
+    },
   },
   common: {
     loading: '正在加载…',
