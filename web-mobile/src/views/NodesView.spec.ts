@@ -829,3 +829,54 @@ describe('NodesView 路由阻塞诊断区', () => {
     expect(text).not.toContain('reason not provided by the server')
   })
 })
+
+/**
+ * 供应商过滤下拉的**选项必须真的在 DOM 里**（2026-10-14 真机取证）。
+ *
+ * 现场：iPhone 17 Pro / iOS 26.3 实测，点开「供应商」下拉，
+ * 弹层里**只有「✓ 全部供应商」一项**，可下方分组明明渲染了 4 个供应商
+ * （火山方舟 普通版 / 火山方舟 TokenPlan / 家用 CLI 桥 / 联昇）
+ * ⇒ 目标要求的「根据供应商过滤节点」实际**不可用**。
+ *
+ * 这条判据的作用是把「数据没算出来」与「数据算出来了但原生控件不显示」
+ * 分开：前者是 computed 的问题，后者是 WKWebView `<select>` 的问题
+ * （iOS 原生菜单会在**首次呈现时**快照 options，之后 Vue 再改 `<option>`
+ * 不刷新已展开的菜单 ⇒ 需要 `:key` 强制 remount）。
+ *
+ * ★ 钉得住：DOM 里 option 的数量与文案。
+ * ★ 钉不住：iOS 原生弹层是否照着 DOM 渲染 —— jsdom 里没有原生菜单，
+ *   那一半只能靠真机 flow（16-nodes-provider-filter）钉。
+ */
+describe('NodesView 供应商/模型过滤下拉的选项', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('供应商下拉列出了每个供应商，而不只是「全部」', async () => {
+    const w = await mountView()
+    const providerSelect = w.findAll('select')[0]
+    const options = providerSelect.findAll('option').map((o) => o.text())
+    expect(options.length, `供应商下拉应含「全部」+ 每个供应商，实际=${JSON.stringify(options)}`)
+      .toBeGreaterThan(1)
+    // 分组头出现过的供应商名，必须也在下拉里（两者同源：cache / provider_name）
+    const groups = w.findAll('.provider-group__header h2').map((h) => h.text())
+    expect(groups.length).toBeGreaterThan(0)
+    for (const g of groups) {
+      expect(options, `分组「${g}」应能在供应商下拉里选中`).toContain(g)
+    }
+  })
+
+  it('选中某个供应商后，列表只剩该供应商的分组', async () => {
+    const w = await mountView()
+    const select = w.findAll('select')[0].element as HTMLSelectElement
+    const options = [...select.options].map((o) => o.text)
+    const target = options[1]
+    expect(target, '需要至少一个真实供应商可选').toBeTruthy()
+    select.value = [...select.options][1].value
+    select.dispatchEvent(new Event('change'))
+    await flushPromises()
+    await flushPromises()
+    const groups = w.findAll('.provider-group__header h2').map((h) => h.text())
+    expect(groups).toEqual([target])
+  })
+})
