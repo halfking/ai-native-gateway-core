@@ -20,6 +20,7 @@ export const zhCN = {
     formatAnomalies: '格式异常',
     reportRollup: '对账报表',
     dispatchJournal: '调度轨迹',
+    errorsTrend: '错误趋势',
     modelIntegrityDrift: '指纹漂移',
     modelPolicies: '模型策略',
     modelPolicyAudit: '策略审计',
@@ -3914,5 +3915,82 @@ sctx: {
     loadConfigsFailed: '工作类型清单加载失败：',
     loadStatsFailed: '工作类型统计加载失败：',
     loadL1Failed: 'L1 任务类型加载失败：',
+  },
+  // ★★ 供应商错误趋势（2026-10-14，第一百一十三批）。
+  et: {
+    title: '错误趋势',
+    load: '查询',
+    reload: '重新查询',
+    nope: '当前角色无权访问本页。',
+    query: {
+      title: '查询条件',
+      hours: '时间窗（小时）',
+      granularity: '粒度',
+      auto: '自动（{g}）',
+      supplier: '供应商',
+      errorType: '错误类型',
+      credentialId: '凭据 ID',
+      paramsBad: 'hours 只接受 1 / 24 / 168；粒度只接受 minute / hour / day；凭据 ID 必须是正整数。',
+    },
+    filter: {
+      wildcard: '（不过滤）',
+      unfiltered: '（不过滤）',
+      note: '供应商与错误类型留空或填 all 都表示不过滤；凭据 ID 一旦填写就一定是过滤条件。',
+    },
+    scope: {
+      // ★★ 口径图例**另起一条**，不与 {scope} 同句 ——
+      //   同句时模板串里就带着 `own` / `all` 字面量，
+      //   于是 `toContain('own')` 这种断言**恒真**，判据看着有牙其实没有
+      //   （批 113 变异 S4 当场把它顶出来）。
+      note: '本批数字的租户口径：{scope}。这不是权限门，后端仍可能返回跨租户数据。',
+      legend: '口径取值：all = 全租户；own = 仅本租户；unexpected = 非预期角色（后端会按全租户返回）。',
+    },
+    meta: {
+      title: '响应元信息',
+      sourceSet: '来源取值：{list}。',
+      fallback: '来源为 fallback：预聚合表在这个粒度上没有行 —— 这不等于「没有错误」。',
+      genuinelyEmpty: '来源为 fallback 且序列为空：明细表也没有行，可以确定窗口内确实没有错误。',
+      granEchoBad: '回显的粒度与「未显式指定时按 hours 推导」的结果不一致。',
+    },
+    summary: {
+      title: '汇总',
+      uniqueNote: '（各桶相加，非去重，是一个上界）',
+      mismatch: '总错误数与序列逐桶求和不一致。',
+      uniqueNotUpper: '去重请求数小于序列逐桶求和 —— 它本应是上界。',
+      truncated: '错误类型或供应商榜单已截到 {n} 条，被丢掉的条目数量未知。',
+      emptyTypes: '错误类型榜单为空（该字段恒为数组，不会是 null）。',
+      emptySuppliers: '供应商榜单为空（该字段恒为数组，不会是 null）。',
+    },
+    series: {
+      title: '时间序列',
+      notAscending: '序列未按时间升序排列。',
+      zeroRows: '来源不是 fallback 却一行都没有 —— 这可能是「0 行」这个被文档化的失败模式，不能当作「没有错误」。',
+      empty: '本窗口没有返回任何时间桶。',
+    },
+    applied: {
+      title: '已生效的过滤条件',
+    },
+    dim: {
+      absent: '（该键被省略：空 map 不会出现在响应里）',
+    },
+    col: {
+      source: '来源',
+      granularity: '粒度',
+      hours: '时间窗',
+      since: '起始',
+      until: '结束',
+      totalErrors: '总错误数',
+      uniqueRequests: '去重请求数',
+      affectedCredentials: '受影响凭据数',
+      errorType: '错误类型',
+      count: '次数',
+      supplier: '供应商',
+      timestamp: '时间桶',
+      errorCount: '错误数',
+      affectedUsers: '受影响用户数',
+      bySupplier: '按供应商',
+      byErrorType: '按错误类型',
+      credentialId: '凭据 ID',
+    },
   },
 } as const

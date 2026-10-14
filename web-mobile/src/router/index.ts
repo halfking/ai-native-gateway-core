@@ -719,6 +719,23 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'dj.title', requiresAuth: true },
   },
   {
+    // ★★ 供应商错误趋势（2026-10-14 第一百一十三批）。
+    //   注册 `admin/handler.go:1270` `admin(h.errorsTrendHandlers.getErrorsTrend)`
+    //   ⇒ **admin 档**（`AdminMiddleware` 只认证不检 role），tenant_admin 可用。
+    // ⚠️⚠️ 但 `requiresRole` 这里设的是 **`'admin'` 而不是缺省**，与本文件其余
+    //   admin 档路由**相反** —— 推导见 `api/errorsTrend.ts` 文件头与 `AppDrawer.spec.ts`。
+    //   根因：`getErrorsTrend` 不检 role，而 `EffectiveTenantIDAll` 对
+    //   **非 tenant_admin 一律返空串** ⇒ effective role 为 `user` 的主体
+    //   （`admin/shared_principal.go:42` 的 roleRank 允许，且本地角色更高时不下调）
+    //   会读到**全租户**数据。
+    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（`hyper-wiring.ts` 的守卫只查登录态）
+    //   ⇒ 这一行是**为将来的守卫预留的**，不是生效中的拦截。
+    path: '/errors-trend',
+    name: 'errors-trend',
+    component: () => import('@/views/ErrorsTrendView.vue'),
+    meta: { titleKey: 'et.title', requiresAuth: true, requiresRole: 'admin' },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),

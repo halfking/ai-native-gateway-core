@@ -15443,3 +15443,197 @@ if !privileged && callerTenant != tenantID     { writeRequestJourneyError(w, 404
 - 全量 **7401 条 / 201 文件** rc=0（1 skipped）
   （= 批 111 基线 7361 + 本批 39 条视图判据 + 1 条哨兵 = 7401，分毫不差）
 - 十连跑 **10/10 全绿**（日志 `/tmp/co112-stability.log`）
+## 11.149 供应商错误趋势接进 UI —— 权限档第一次因为「生效角色不是 tenant_admin」而**不能**留空（第一百一十三批）
+
+### 一、这批做了什么
+
+把 `errorsTrend`（第 79 批建的 API 模块，**一直是孤儿**）接进移动端：
+
+| 项 | 值 |
+|---|---|
+| 视图 | `web-mobile/src/views/ErrorsTrendView.vue` |
+| 判据 | `web-mobile/src/views/ErrorsTrendView.spec.ts` **55 条** |
+| 路由 | `/errors-trend`，`meta.requiresRole: 'admin'` |
+| 抽屉席 | `errors-trend`，**`requiresRole: 'admin'`** |
+| i18n | 前缀 `et` + `nav.errorsTrend` |
+| 孤儿 | 17 → **16** |
+
+★ 本批与批 109/110/111/112 最大的不同：**不是**「admin 档 ⇒ 不设 requiresRole」，
+也不是「superAdmin 档 ⇒ 须设 requiresRole」，而是**第三种处置**，且它是被四步读码逼出来的。
+
+### 二、★★★★★★ 为什么是 `requiresRole: 'admin'`
+
+本仓既有口径只有两档（缺省 / `super_admin`）。本族落在两档之间，四步链条全部当场读码核过：
+
+1. **注册处**：`admin/handler.go:1270`
+   ```go
+   mux.HandleFunc("/api/errors/trend", admin(h.errorsTrendHandlers.getErrorsTrend))
+   ```
+   全仓 grep 只有这一行 ⇒ 无第四种注册形态。包装是 `admin(...)` ⇒ `admin.AdminMiddleware`。
+
+2. **`AdminMiddleware` 不检查 role**（`admin/auth.go:85-138`）。它只做三件事：
+   query-string token 提升 → JWT 校验 → 撤销 / 改密闸门，然后 `next(w, authReq)`。
+   ★★ 这**不是疏漏，是显式设计** —— `admin/users.go:307-309` 的注释原话：
+   > `// requireUserManager prevents ordinary user principals from reaching the account`
+   > `// directory and write surface. AdminMiddleware authenticates but intentionally`
+   > `// does not enforce an administrative role.`
+   也就是说：**凡是不自己写角色门控的 admin 端点，「admin 档」都只是「登录即可」**。
+
+3. **`getErrorsTrend` 自己也不检查 role**（`admin/errors_trend.go:75-146`）：
+   入口只有 `h == nil || h.db == nil`、`parseVendorErrorHours`、`granularity` 三档校验、
+   `credential_id > 0` 四样，然后直接取 `EffectiveTenantIDAll(r)`。
+
+4. ★★★★★ **`EffectiveTenantIDAll` 对非 `tenant_admin` 一律返回空串**（`admin/context.go:69-74`）：
+   ```go
+   func EffectiveTenantIDAll(r *http.Request) string {
+       if IsTenantAdmin(r) { return GetTenantID(r) }
+       return "" // empty string means query all tenants
+   }
+   ```
+   而空串在三处 SQL 里都命中 `AND ($7 = '' OR …)` ⇒ **查全租户**。
+
+⇒★ 所以「admin 档」在本族**不等于**「管理员可用」。差一步就跨租户。
+
+#### 那一步是怎么跨过去的：effective role 可以是 `user`
+
+`users` 表的 `role` 列被 `admin/users.go:406` 限定为 `super_admin` / `tenant_admin` 两值 ——
+**但那管的是存进去的值，不是最终生效的角色**。生效角色由 `admin/shared_principal.go` 推导：
+
+```go
+roleRank := map[string]int{"user": 1, "tenant_admin": 2, "super_admin": 3}
+if roleRank[localRole] == 0 || roleRank[verified.Role] == 0 { return nil, identity.ErrInvalidToken }
+if roleRank[localRole] < roleRank[verified.Role] {
+    resolved.Role = localRole
+}
+```
+
+★★★ 注意第二条：**只在本地角色更低时下调**。于是
+「本地 super_admin 账号 + 外来 token 带 `user` 角色」⇒ rank 3 > 1 ⇒ **不下调**
+⇒ 最终角色留在 `user` ⇒ 通过 `AdminMiddleware`（不检 role）⇒
+`IsTenantAdmin` 为 false ⇒ 租户键空串 ⇒ **读到全租户错误趋势**。
+
+#### 三个候选，为什么只有 `'admin'` 对
+
+| 候选 | 后果 |
+|---|---|
+| **缺省** | `navItemsFor`（`config/appNav.ts`）的默认分支是 `return true` ⇒ 对 `role === 'user'` **也显示** ⇒ 等于把跨租户口子做成一键入口 |
+| **`'super_admin'`** | `tenant_admin` 本该看**自己租户**的数据（后端 R49-C1 正是为此加的收口），挡掉是**拿功能换安全** |
+| **`'admin'`** | `isAdmin = isSuper \|\| role === 'tenant_admin' \|\| role === 'admin_key'` ⇒ 恰好挡住 `user`，且不牺牲 `tenant_admin` 的既有能力 |
+
+⇒ 这是本仓**第二个** `'admin'` 档席（第一个是 `users`）。
+`AppDrawer.spec.ts` 补了 5 条判据把这一档钉死，其中一条是**反向钉法**：
+`errors-trend` 席必须声明 `requiresRole: 'admin'`，否则**没有任何判据会红**，
+而后端那条口子会重新变成一键可达。
+
+### 三、★★★★ 抽屉隐藏 ≠ 路由拦截（顺带挖出的结构事实）
+
+`src/hyper-wiring.ts:34-45` 的 `router.beforeEach` **只查登录态**：
+
+```ts
+router.beforeEach((to) => {
+  if (to.meta.requiresAuth === false) return true
+  ...
+  if (!auth.isAuthenticated) return { path: '/login', query: { redirect: to.fullPath } }
+  return true
+})
+```
+
+★ 全仓 grep：**没有任何代码读 `meta.requiresRole`** —— 它在 `router/index.ts` 里被声明
+（批 109/110/111/112 都写了），但**一直是装饰**。
+⇒ 抽屉席只是「不给入口」，深链 `/#/errors-trend` 照样打开页面。
+
+⇒★ 所以本视图**自己再兜一层**：`allowed = !errorsTrendRoleIsAdminTier(role)`，
+不允许时**连请求都不发**（判据 ①-5 钉的就是「不发」，不是「藏起来」）。
+
+> ★★★ **前端严于后端是兜底，不是修复。** 后端那条路本来就开着，
+> 前端挡的只是「一键可达」。这一句写在模块文件头与视图注释里。
+> **真正的修复在后端**（见第六节）。
+
+### 四、R49-C1 的租户收口是真的做了 —— 这是「读路径不隔离」一族唯一修好的一处
+
+模块文件头原先只写了「读路径绕过 RLS」，**漏了另一半**：WHERE 里做了补偿收口。
+
+- `loadFromStats`（`admin/errors_trend.go:222-224`）：
+  ```sql
+  AND ($7 = '' OR credential_id IN (SELECT id FROM credentials WHERE tenant_id = $7))
+  ```
+  （`supplier_error_stats` **没有 tenant_id 列**，聚合键不含租户，只能借 `credentials` 子查询落实）
+- 明细腿直接用 `supplier_errors_unified.tenant_id`
+
+⇒★ 租户隔离靠 **WHERE 参数**兜，不靠 RLS。文件头这一节已补全。
+
+### 五、本族的数据语义（页面上逐条落地）
+
+1. **两个数据源**：`stats`（预聚合 `supplier_error_stats`，分钟桶由后台聚合器每 5 分钟 UPSERT）
+   | `fallback`（stats 零行时对明细 `supplier_errors_unified` 聚合）。
+   ⇒ **`fallback` 只说明「预聚合表在这个粒度上没有行」**，可能是粒度不匹配，**不等于**「没有错误」。
+   ⇒ 但 `fallback` + `time_series` 空是**确定的**：明细也没有 ⇒ 窗口内确实没错误。
+2. **`summary.unique_requests` 是各桶相加，不是去重** ⇒ 它是**上界**。
+   判据 ③-4 就是这条的**正控**（方向反着取：偏大不报）。
+3. **`by_supplier` / `by_error_type` 是 map + `omitempty`** ⇒ 空时**整个键省略**
+   （不是 `{}`、不是 `null`）。本仓第**九**种 nil 编码、**第一次出现 map 类型**。
+4. **`top_error_types` / `top_suppliers` 显式初始化成 `[]`** ⇒ **恒数组，永不为 null**
+   —— 与第 3 条恰好相反，**同一个响应里两种编码并存**。两者都截到 **10 条**且不回显丢弃数。
+5. **`hours` 是严格三值枚举** `1/24/168`，其余（含 0、负数、`abc`）⇒ **400** `invalid_hours`；
+   `granularity` 缺省由 hours 推导（`≤1 minute` / `≤24 hour` / else `day`），显式传则严格校验。
+6. **错误信封是嵌套的**：`{"error":{"code":"…","detail":"…"}}`（`writeErrorWithCode`），
+   六个 code，其中 `db_not_configured` 的措辞是 `database is not configured`
+   —— **与别处的 `database not configured` 不同**。
+7. **`''` 与 `'all'` 都是「不过滤」**；但 `credential_id` 一旦传就**一定是过滤**
+   （后端要求 `> 0`，`0` 只在 SQL 内部当哨兵）。
+
+### 六、★ 待办（超本批范围，未动后端）
+
+**后端给 `/api/errors/trend` 加角色门控**（或在 `getErrorsTrend` 里对
+`effective role == 'user'` 的主体按 `EffectiveTenantIDAll` 之外的口径收口）。
+这是「读路径不隔离」一族里**第一次被测出来能跨到 `user` 角色**，
+比此前记录的 operational / selfCheck / routing 三条更明确 ——
+那三条是「tenant_admin 可读全租户」，这一条是「**连 tenant_admin 都挡得住的接口，
+一个 `user` 也能读全租户**」。
+
+同族仍然敞着的（沿用既有结论，本批未改）：
+`operational` 三条子查询、`selfCheck` 六个 handler（run 详情泄漏 `request_body` /
+`response_preview`，比本族更重）、`routing` 三条、`format_anomalies` /
+`model_integrity_events`（109/110 两族是 superAdmin 档，已被 `requiresRole` 挡住入口）。
+
+### 七、★ 本批修掉的一个判据缺陷（图例喂出来的恒真断言）
+
+★ **首轮变异 S4 就把它顶出来了**：`scopeLabel` 一律改成 `'all'` 时，
+判据 ①-8 竟然**不红** —— 因为中文文案写的是
+「租户口径：{scope}（all = 全租户，own = 仅本租户）」，
+**模板串本身就含 `own` / `all` 字面量**，`toContain('own')` 成了**恒真断言**。
+
+⇒★★ 判别动作（比「断言写对」更值钱）：
+　**断言某个被替换进去的值时，不要用裸子串去 `toContain`** ——
+　i18n 模板串里很可能**本来就写着**那个词的图例/枚举。
+　要么断言**替换后紧邻的那一段**（`toContain('：own。')`），
+　要么把图例**拆到另一条文案里**（本批两者都做了）。
+
+⇒ 这与「恒真判据一律不提供」是同一族，但入口不同：
+　那一族的恒真是**逻辑上**恒真（`x === x`），
+　这一族的恒真是**被上下文喂出来的** —— 代码逻辑没问题，是**断言的观察面太宽**。
+
+### 八、验证
+
+- 新增 `ErrorsTrendView.spec.ts` **55 条**；`AppDrawer.spec.ts` 补 **5 条**
+- 全量 **7461 条 / 202 文件** rc=0（1 skipped）
+  （= 批 112 基线 7401 + 55 条视图判据 + 5 条抽屉判据 = 7461，分毫不差）
+- ★★★ 变异 **17/17 全有牙**（`/tmp/mut-co113.mjs`；
+  还原逐字节一致，**未用** `git checkout --`；跑完对**视图与导航两个文件**都做零残留复查）
+  - ★ 本台的 Go 源码（`admin/auth.go` / `context.go` / `errors_trend.go` /
+    `shared_principal.go`）**一条都不许变异** —— 它们是**被审计对象**，
+    改了等于把结论也改了，而 ⑪ 组判据的意义恰恰是「结论写在注释里会腐烂」。
+  - ★ 工装教训两则：① 变异项的 `target` 写错（`view` 写成 `nav`）会让**锚点明明唯一却报 0 次** ——
+    锚点唯一性检查是对**指定文件**做的，target 写错就等于在别的文件里找；
+    ② `expect` 是对**用例 fullName 的子串匹配**，而 8 条 PARTIAL 全部是子串没对上 fullName，
+    不是判据没牙 —— 「红了但没命中」和「没红」必须分开看。
+- 五门 rc=0（i18n parity 3268 → **3321 键**（zh-CN / en-US 各 3321，键集一致、无未翻译）/
+  触控 R1 106 → **107 个 `.vue`** / CSS 109 → **110 files** /
+  `vue-tsc` / `comment:check` 440 → **442 文件**）；门自测 `gate:selftest` **64 条**全绿
+- `npm run build` rc=0
+- ★ 全量首跑时 `src/styles/theme.spec.ts` 红过一次：视图里写了
+  `var(--app-accent, var(--app-border))`，而**本仓没有 `--app-accent` 这个 token**
+  —— 未定义 token 棘轮拦住的正是这种「`var(--x, 回落)` 永远不会报错」的静默退化。
+  已改用本仓既有定式 `--app-primary`（对齐 `ComplianceHitsView` 的 `.ch__chip--on`）。
+- ★ 顺带订正 `api/errorsTrend.ts` 模块头的**漂移行号**（`:1249` → `:1270`），
+  并写明「行号只是**定位提示**，判据不得依赖它」。

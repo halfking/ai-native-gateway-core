@@ -169,11 +169,68 @@ describe('navItemsFor', () => {
     }
   })
 
-  it('role 为空（未 hydrate 完成）也照样只挡 superAdmin 档', () => {
-    // 登录前 role 是 ''，此时不该因为「读不到角色」就把 admin 档页面全藏起来
+  // ★★★★★★ `'admin'` 档（2026-10-14 第一百一十三批新增，此前全仓只有 `users` 一席）。
+  //
+  //   为什么需要这一档：`navItemsFor` 的默认分支是 `return true`，
+  //   所以**不设 requiresRole** 等于「对任何登录角色都显示」。
+  //   `/errors-trend` 不能那样 —— `AdminMiddleware` 不检 role，
+  //   `getErrorsTrend` 自己也不检，而 `EffectiveTenantIDAll` 对
+  //   **非 tenant_admin 一律返空串**（= 查全租户）
+  //   ⇒ effective role 为 `user` 的主体点进去会看到**全租户**的错误趋势。
+  //
+  // ★★ 同时也不能用 `'super_admin'`：`tenant_admin` 本该看**自己租户**的数据
+  //   （后端 R49-C1 就是为此加的收口），过度限制是拿功能换安全。
+  it("★ `'admin'` 档：effective role 为 user 的主体看不到 errors-trend", async () => {
+    await mountDrawerAs('user')
+    const hrefs = Array.from(document.body.querySelectorAll('.drawer__link'))
+      .map((a) => a.getAttribute('href') ?? '')
+    expect(hrefs.some((h) => h.includes('/errors-trend'))).toBe(false)
+  })
+
+  it("★ `'admin'` 档不误伤 tenant_admin（它本该看自己租户的数据）", async () => {
+    await mountDrawerAs('tenant_admin')
+    const hrefs = Array.from(document.body.querySelectorAll('.drawer__link'))
+      .map((a) => a.getAttribute('href') ?? '')
+    expect(hrefs.some((h) => h.includes('/errors-trend'))).toBe(true)
+  })
+
+  it("★ `'admin'` 档对 super_admin / admin_key 同样可见", () => {
+    for (const r of ['super_admin', 'admin_key']) {
+      expect(navItemsFor(DRAWER_NAV, r).some((i) => i.key === 'errors-trend')).toBe(true)
+    }
+  })
+
+  // ★★★ 把「这一席必须带 'admin'」钉死 —— 否则将来有人按本文件上方
+  //   「admin 档 ⇒ 不设 requiresRole」的旧口径改回去，**没有任何判据会红**，
+  //   而后端那条跨租户的口子会重新变成一键可达。
+  it("★ errors-trend 席必须声明 requiresRole:'admin'（不能是缺省）", () => {
+    const seat = DRAWER_NAV.find((i) => i.key === 'errors-trend')
+    expect(seat).toBeDefined()
+    expect(seat!.requiresRole).toBe('admin')
+  })
+
+  // ★★★ 白名单式：role='user' 时被挡掉的**必须**恰好是
+  //   `requiresRole` 非缺省的那些（'admin' 与 'super_admin' 两档）。
+  //   只断言「挡了 errors-trend」会漏掉反向错误 —— 比如有人把某个
+  //   缺省席误标成 'super_admin'，对 tenant_admin 消失而 user 挡不掉。
+  it("★ role='user' 被挡掉的恰好是全部声明了 requiresRole 的席", () => {
+    const filtered = navItemsFor(DRAWER_NAV, 'user')
+    const dropped = DRAWER_NAV.filter((i) => !filtered.some((f) => f.key === i.key))
+    const expected = DRAWER_NAV.filter((i) => i.requiresRole !== undefined)
+    expect(dropped.map((d) => d.key).sort()).toEqual(expected.map((d) => d.key).sort())
+    expect(dropped.map((d) => d.key)).toContain('errors-trend')
+  })
+
+  // ★★ 标题原来写「只挡 superAdmin 档」—— 那是 `'admin'` 档出现**之前**的说法，
+  //   现在名不副实：role 读不到时 `isAdmin` 为 false，**两档都会被挡**（fail closed）。
+  it('role 为空（未 hydrate 完成）时：缺省席仍在，两档受限席都挡住', () => {
+    // 登录前 role 是 ''，此时不该因为「读不到角色」就把**缺省**席全藏起来
     const filtered = navItemsFor(DRAWER_NAV, '')
     expect(filtered.some((f) => f.key === 'logs')).toBe(true)
     expect(filtered.some((f) => f.key === 'integrity')).toBe(false)
+    // ★ 读不到角色时同样挡掉 `'admin'` 档 —— 那是刻意的 fail closed，
+    //   因为这一档的席（如 errors-trend）背后的后端口子是**跨租户**的。
+    expect(filtered.some((f) => f.key === 'errors-trend')).toBe(false)
   })
 
   it('底栏当前无 superAdmin 档，过滤前后一致（防将来加错）', () => {

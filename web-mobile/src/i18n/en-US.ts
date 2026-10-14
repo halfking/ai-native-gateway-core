@@ -20,6 +20,7 @@ export const enUS = {
     formatAnomalies: 'Format anomalies',
     reportRollup: 'Reconciliation report',
     dispatchJournal: 'Dispatch journal',
+    errorsTrend: 'Error trend',
     modelIntegrityDrift: 'Fingerprint drift',
     modelPolicies: 'Model policies',
     modelPolicyAudit: 'Policy audit',
@@ -3868,5 +3869,82 @@ sctx: {
     loadConfigsFailed: 'Failed to load work types: ',
     loadStatsFailed: 'Failed to load work type stats: ',
     loadL1Failed: 'Failed to load L1 task types: ',
+  },
+  // ★★ Supplier error trend (2026-10-14, batch 113).
+  et: {
+    title: 'Error trend',
+    load: 'Query',
+    reload: 'Query again',
+    nope: 'Your role cannot access this page.',
+    query: {
+      title: 'Query parameters',
+      hours: 'Window (hours)',
+      granularity: 'Granularity',
+      auto: 'Auto ({g})',
+      supplier: 'Supplier',
+      errorType: 'Error type',
+      credentialId: 'Credential ID',
+      paramsBad: 'hours accepts only 1 / 24 / 168; granularity accepts only minute / hour / day; credential ID must be a positive integer.',
+    },
+    filter: {
+      wildcard: '(no filter)',
+      unfiltered: '(no filter)',
+      note: 'Leaving supplier or error type empty, or typing "all", means no filter; once credential ID is filled it is always a filter.',
+    },
+    scope: {
+      // ★★ Legend lives on its own line, NOT in the same sentence as {scope} —
+      //   otherwise the template string itself contains the literals `own`/`all`
+      //   and a `toContain('own')` assertion becomes **tautological**
+      //   (caught by batch 113 mutation S4).
+      note: 'Tenant scope of this batch: {scope}. This is not a permission gate; the backend may still return cross-tenant data.',
+      legend: 'Scope values: all = every tenant; own = this tenant only; unexpected = an unanticipated role (the backend returns every tenant for it).',
+    },
+    meta: {
+      title: 'Response metadata',
+      sourceSet: 'Possible sources: {list}.',
+      fallback: 'Source is fallback: the pre-aggregated table has no rows at this granularity — that does not mean "no errors".',
+      genuinelyEmpty: 'Source is fallback and the series is empty: the detail table has no rows either, so the window genuinely has no errors.',
+      granEchoBad: 'The echoed granularity does not match the value derived from hours when none is sent explicitly.',
+    },
+    summary: {
+      title: 'Summary',
+      uniqueNote: '(sum of buckets, not deduplicated — an upper bound)',
+      mismatch: 'Total errors does not equal the sum over the series.',
+      uniqueNotUpper: 'Unique requests is below the sum over the series — it should be an upper bound.',
+      truncated: 'The error-type or supplier ranking is cut to {n} entries; how many were dropped is unknown.',
+      emptyTypes: 'The error-type ranking is empty (this field is always an array, never null).',
+      emptySuppliers: 'The supplier ranking is empty (this field is always an array, never null).',
+    },
+    series: {
+      title: 'Time series',
+      notAscending: 'The series is not sorted ascending by time.',
+      zeroRows: 'Source is not fallback yet there are no rows — that may be the documented "0 rows" failure mode, not "no errors".',
+      empty: 'No time buckets were returned for this window.',
+    },
+    applied: {
+      title: 'Filters in effect',
+    },
+    dim: {
+      absent: '(key omitted: an empty map never appears in the response)',
+    },
+    col: {
+      source: 'Source',
+      granularity: 'Granularity',
+      hours: 'Window',
+      since: 'Since',
+      until: 'Until',
+      totalErrors: 'Total errors',
+      uniqueRequests: 'Unique requests',
+      affectedCredentials: 'Affected credentials',
+      errorType: 'Error type',
+      count: 'Count',
+      supplier: 'Supplier',
+      timestamp: 'Bucket',
+      errorCount: 'Errors',
+      affectedUsers: 'Affected users',
+      bySupplier: 'By supplier',
+      byErrorType: 'By error type',
+      credentialId: 'Credential ID',
+    },
   },
 } as const

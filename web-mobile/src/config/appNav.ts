@@ -429,6 +429,24 @@ export const DRAWER_NAV: readonly NavItem[] = [
   //   而 `:1216` 的 featured-models 是 admin）⇒ 席设 super_admin。
   // ⇒ ★ 后果：featured-models 在移动端被顺带收严成 superAdmin（前端严于后端）。
   //   这是刻意的取舍 —— 同一页混档会让「谁能看哪块」不可解释。记在视图文件头。
+  // ★★ 供应商错误趋势（2026-10-14 第一百一十三批）——
+  //   注册 `admin/handler.go:1270` `admin(h.errorsTrendHandlers.getErrorsTrend)`
+  //   ⇒ 是 **admin 档**，`tenant_admin` 本该可用（后端 R49-C1 已把它收口到本租户）。
+  // ⚠️⚠️ 但本席要设 **`requiresRole: 'admin'`**，不是缺省 —— 这是本仓**第二个**
+  //   该档席（第一个是 `users`），推导见 `api/errorsTrend.ts` 文件头：
+  //   `AdminMiddleware` 不检 role + `getErrorsTrend` 自己也不检 +
+  //   `EffectiveTenantIDAll` 对**非 tenant_admin 一律返空串**（= 查全租户）
+  //   ⇒ effective role 为 `user` 的主体能读到**全租户**。
+  //   ⇒ 缺省会命中 `navItemsFor` 的默认分支 `return true`，等于把那个口子做成一键入口。
+  //   ⇒ `'super_admin'` 也**不行**：那会连 `tenant_admin` 的本租户数据一起挡掉。
+  // ⚠️ 它**不得**进 `AppDrawer.spec.ts` 的 superAdmin 白名单（那是 tenant_admin 掉的那批）。
+  {
+    key: 'errors-trend',
+    to: '/errors-trend',
+    icon: 'chart',
+    titleKey: 'nav.errorsTrend',
+    requiresRole: 'admin',
+  },
   // ★ 加这一席**必须**同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
   {
     key: 'routing-policy',
