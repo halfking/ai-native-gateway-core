@@ -16172,3 +16172,480 @@ AssertionError: expected '<script setup lang="ts">…' not to contain '/model-iq
 >    但它对本族最关键的区分点（秒 / 纳秒）**根本没有判别力**。
 >
 > ③ 与批 115 那处（`'_request_logs'`）是**同一个病的第三个面**。
+
+## 11.153 运维总览接进 UI —— 权限档第五次登场，归**第三类**：「服务端一个租户键都没有」；顺带订正模块头三处漂移，其中一处是**权限结论反了**（第一百一十七批）
+
+### 一、这批做了什么
+
+把 `opsOverview`（第 83 批建的 API 模块，**一直是孤儿**）接进移动端，孤儿 13 → **12**：
+
+| 项 | 值 |
+|---|---|
+| 视图 | `web-mobile/src/views/OpsOverviewView.vue` |
+| 判据 | `OpsOverviewView.spec.ts` **66 条**（API 层本批 109 → **126 条**） |
+| 路由 | `/ops-overview`，`meta.requiresRole: 'super_admin'` |
+| 抽屉席 | `ops-overview`，**`requiresRole: 'super_admin'`** ⇒ **进** superAdmin 白名单 |
+| i18n | 前缀 `ops` + `nav.opsOverview`（zh-CN / en-US 各 +86 键） |
+
+页面九段：**采集完整性**、**平台概览**、**数据面表计数**、**区域分布**、
+**部署节点**、**故障**、**升级记录**、**离线激活请求**、**运行时指标**。
+一个端点一次读取（后端把 11 个子查询并发跑合进一个 `map[string]any`）。
+
+### 二、★★★★★★ 权限档第五次登场，形态与前四次都不同：**第三类**
+
+四问逐字核过，结论是「服务端**完全没有租户维度**」：
+
+1. 注册处 `admin/handler.go:1091`
+   `mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))`
+   —— `admin` 是 `h.admin`（`handler.go:894-896`）→ `AdminMiddleware`。
+2. `AdminMiddleware`（`admin/auth.go:85-140`）**只认证不检 role**：
+   中间体里没有 `claims.Role`（对比 `SuperAdminMiddleware` `auth.go:376-409`
+   那里是逐字 `if claims.Role != "super_admin"`）。
+3. `handleOpsOverview` 自己既不读 `AuthContext` 也不看 `Role`。
+4. ★★ **取租户键的代码根本不存在** —— 11 条子查询全是全局表
+   （`gateway_instances` / `licenses` / `fault_events` / `upgrade_logs` /
+   `download_events` / `offline_activation_requests` / `runtime_metrics` …）。
+   ⇒ `grep tenant` 打不到**不是遗漏，是设计上就没有**。
+
+⇒ 与前四类的对照：
+
+| 批次 | 服务端形态 | 处置 |
+|---|---|---|
+| 113 / 114 | 有租户维度，租户键**可能返空串** | `requiresRole: 'admin'` |
+| 116 | `SuperAdminMiddleware` 逐字比 role，**档位自带门** | `requiresRole: 'super_admin'` |
+| **117** | **一个租户键都没有** | **`requiresRole: 'super_admin'`（过度限制）** |
+
+⚠️ 前端严于后端是**兜底不是修复**：后端这一族**没有门可修**。
+
+### 三、★★★★ 为什么连 tenant_admin 都不该看（不是洁癖）
+
+`offline_requests` 每一行带 `license_key` / `hardware_hash` / `activation_code`
+（`ops_overview.go:299-337`）—— 那是**别的租户的**凭据与硬件指纹；
+`deployment_nodes` / `runtime_metrics_summary` 是**全平台机队**的 IP、版本与用量。
+这三列就是「必须过度限制」的**具体依据**，不是「没有隔离所以保守一点」。
+
+### 四、★★★★★ 订正模块头三处漂移 —— 其中一处是**权限结论反了**
+
+| 位置 | 原文 | 实况 |
+|---|---|---|
+| `api/opsOverview.ts:8`、`:322` | 注册处 `handler.go:1070` | **`:1091`**（漂移 21 行） |
+| `api/opsOverview.ts:13-14` | 「**10 个**查询函数」 | **11 个**（且与同文件 (1)「十一个子查询」自相矛盾） |
+| `api/opsOverview.ts:9` | 「admin 档 ⇒ 抽屉席**不设** `requiresRole`」 | **要设 `'super_admin'`** |
+
+★ 第三处最重：它与**同一文件末尾**那句「本端点不按租户隔离」**直接矛盾** ——
+按原文接线，等于把全平台机队拓扑与别人的许可证密钥递给 tenant_admin。
+⇒ **事实**没变（注册处仍是 admin 档），变的是**前端要不要更严**。
+
+⇒ ★★★★ 与批 116 那处漂移同族，但形态更大：那里是**行号**漂 22 行，
+这里是**结论**漂。⇒ 处置也升级：**不只改散文，把它们钉成判据**（spec ①-3 / ①-4 / ①-5 / ①-6）。
+
+### 五、★★★★ 「零调用方」在这族**不是缺陷，而是唯一入口**
+
+grep 全仓：`fetchOpsOverview` **零调用方**。但这一族与批 116 的两个零调用函数相反 ——
+桌面把 `/ops` 页面 `externalMaintainRedirect` 到独立 maintain 服务，
+而 `ops` **不在** `cmd/gateway/maintain_proxy.go:37-54` 的 `maintainCompatPrefixes` 里
+⇒ **这个 API 仍由本进程的 admin mux 提供**。
+⇒ 移动端这一页是**唯一**能读到它的 UI，「没有桌面调用方」不构成不做的理由。
+
+### 六、★★★★★★ 判据自己踩的三个坑（三个都是本批当场顶出来的）
+
+#### 6.1 ★★★★★★ 注释与代码矛盾 —— 判据直接把我自己的注释顶红
+
+新写的 `opsListSectionTotalsMatchLengths` 注释写「键缺失时返回 `false`
+（不是 `true`）：没取到不该被算成自洽」，而实现是**逐个存在才校验**
+⇒ 两个容器都缺时返回 `true` ⇒ **注释与代码直接矛盾**，用例当场红。
+
+⇒ 查清是**代码对、注释错**：两种语义各有各的用处，取决于**谁调它** ——
+· 给 UI 当红线开关用 ⇒ 缺键**不能**报红（子查询只是失败了，容器压根不存在）；
+· 给判据当不变式用 ⇒ 缺键**不构成违规**（空真）。
+
+⇒ 处置：**拆成两条**（布尔「有无违规」+ 清单「**是哪一段**不对」）。
+⇒ ★★★ 一般式：**别用「否定式布尔」同时表达「没取到」与「取到了但不对」**。
+这与批 116 那处 `full-width` 的教训同族：**注释与代码必须成对审**。
+
+#### 6.2 ★★★★★ 一条判据**恒真**，是变异台的 RED_NOT_MATCHED 顶出来的
+
+把 `totalsBad` 恒置真（S25）后，**只有** ⑦-5 转红，而我认为该转红的
+「两个容器都缺 ⇒ 不报」那条（⑦-7）**没红**。查因：
+
+★ 那条红线当时嵌在 `<template v-if="recentFaults">` 里
+⇒ 两个容器都缺时故障段整段不渲染 ⇒ **⑦-7 恒真**。
+
+⇒ 处置：把红线**搬到「采集完整性」段**（它是**响应级**不变式，与某一段取没取到无关），
+并补一条**阳性孪生** ⑦-7b：「故障段整段缺席、但升级段对不上 ⇒ 红线**必须**渲染」。
+若有人再把它嵌回去，⑦-7b 立刻红，而 ⑦-7 不会。
+
+⇒ ★★★★ **「红了但没命中」不能只当锚点写错**：这一条是**恒真判据**的唯一信号。
+判别动作：先问「**它为什么没红**」，再问「锚点写对了吗」。
+
+#### 6.3 ★★★★ 一条变异判 `NO_EFFECT`：守卫是**构造性死代码**
+
+删掉 `load()` 里的 `if (!allowed.value) return` ⇒ 毫无影响。
+查因：本页**不自动加载**，取数按钮又在 `v-else` 分支里
+⇒ 非超管时 `load()` **不可达** ⇒ 守卫是构造性死代码（防的是将来加 `onMounted`）。
+
+⇒ 按批 116 S4 的同一条纪律：**删变异，不补用例**（不为不可达输入写判据/变异），
+守卫本身保留作纵深防御；换成真正能咬的变异（把兜底段的 `v-if` 取反）。
+
+### 七、★★★ 本批的两个**真缺陷**（都当场修掉）
+
+1. ★★★★★ 模板里写 `rows!.generated_at` / `rows!.license_total` ——
+   `!` 只是**编译期**非空断言，运行时首屏 `rows` 就是 `null`
+   ⇒ `Cannot read properties of null` ⇒ **48 条用例整片红**。
+   ⇒ 处置：凡要**按存在与否分支**的顶层键，一律搬进 `<script setup>` 的受守卫 computed。
+   （与批 116 在 `NodesView.vue` 上踩的模板自动解包是**同一个区域**的两种翻车。）
+2. ★★★ `i18n:check` 抓到 `en-US ops.fresh.none = none` ——
+   **值 === 键名**，运行时显示裸键。⇒ 改成 `'(none)'`。
+
+### 八、★★★ 判据钉住的可证不变式（每条都有变异对着）
+
+| 组 | 不变式 |
+|---|---|
+| ② | 键数恒在 **2..12**；`generated_at` 恒秒精度（带小数点才是异常） |
+| ③ | `data_plane_tables` **恒在且六项齐全**（错误被吞成 `-1`）；哨兵 ≠ 缺键 |
+| ④ | 三个 `COUNT FILTER` 互斥 ⇒ 和 ≤ `total_instances`（**小于**也合法） |
+| ⑤ | 前三行恒是 `local`/`245`/`154`；占位行恒四 0；额外行不得**穿插**在前三行 |
+| ⑦ | `recent_faults.total ≤ open_events`；每行 `status === 'new'`；`total === events.length` |
+| ⑧⑨⑩ | `version` 可能是**空串**；`timestamp === created_at`；裸 `null` vs 键缺失**两种 nil 编码** |
+
+### 九、变异台：28 / 28 有牙
+
+其中 2 条是**语义等价改写**，必须**保持绿**（证明门不是恒红）：
+`0 === sectionCount.value` 换序、`row.created_at === row.timestamp` 换序。
+
+首轮 28 条里另有 6 条不是「判据没牙」，处置各不相同：
+· 5 条 `ANCHOR_NOT_UNIQUE` = **我的锚点字符串空格/换行没对上**（工装问题，不是判据问题）；
+· 1 条 `RED_NOT_MATCHED` = §6.2 那条**恒真判据**。
+
+### 十、验证
+
+| 项 | 结果 |
+|---|---|
+| 类型门 `vue-tsc -b` | rc=0（**先删 `tsbuildinfo` 再读数**） |
+| `css:check` / `touch:check` / `i18n:check` / `comment:check` | 四门 rc=0 |
+| `gate:selftest` | 5/5 |
+| `npm run build` | rc=0（`OpsOverviewView` 独立 chunk 23.13 kB / gzip 5.42 kB） |
+| 全量 | **7740 passed / 207 files**（1 skipped；基线 7656 / 206） |
+| 变异台 | **28 / 28 有牙**，被改文件逐字节还原 OK |
+| 十连跑 | **10 / 10 全绿**（每轮 7740 passed / 1 skipped） |
+
+> ⚠️ 十连跑全绿**不等于**此前记录的 flaky 已修复
+> （`ComplianceHitsView.spec.ts` / `RoutingOptView.spec.ts` 根因仍未查明）——
+> 本次**未复现**，只说明没抓到。
+
+### 十一、本批确认的一条纪律
+
+> ★★★★ **权限分档的依据是「服务端有没有租户维度」，不是「注册处挂了哪个中间件」。**
+>
+> 本族注册处挂着 `admin(...)`、中间件是真门（认证），
+> 但**门后面那道租户隔离压根不存在** ——
+> 若照「注册处是 admin 档 ⇒ 不设 requiresRole」的机械读法接线，
+> 就会把全平台机队与别人的许可证密钥递给 tenant_admin。
+> ⇒ 与批 116 那条「权限必须逐端点读 handler，不能按注册处/前缀/形参名推」是**同一条**，
+> 本批把它推到了终点：**连「服务端没有任何隔离代码」也要当成一种可读的形态**。
+
+## 11.154 请求动作时间线接进 UI —— 权限档第六次登场，仍归**第三类**；本批找到了**「同一份数据、一边过滤一边不过滤」的硬证据**（第一百一十八批）
+
+### 一、这批做了什么
+
+把 `requestActions`（第 74 批建的 API 模块，**一直是孤儿**）接进移动端，孤儿 12 → **11**：
+
+| 项 | 值 |
+|---|---|
+| 视图 | `web-mobile/src/views/RequestActionsView.vue` |
+| 判据 | `RequestActionsView.spec.ts` **47 条**（API 层本批 71 → **77 条**） |
+| 路由 | `/request-actions`，`meta.requiresRole: 'super_admin'` |
+| 抽屉席 | `request-actions`，**`requiresRole: 'super_admin'`** ⇒ **进** superAdmin 白名单 |
+| i18n | 前缀 `ra` + `nav.requestActions` |
+
+页面三段：**读取**（填 request_id）、**响应自检**、**动作序列**。
+
+### 二、★★★★★★ 权限档第六次登场：仍是**第三类**，但证据比前两批硬得多
+
+四问逐字核过：
+
+1. 注册处 `admin/handler.go:1045`
+   `mux.HandleFunc("/api/admin/requests/{id}/actions", admin(h.handleRequestActions))`
+   —— **注册处确实是 admin 档**（`AdminMiddleware` 只认证不检 role ⇒ tenant_admin 后端**能**读）。
+2. `admin/request_actions.go` 全文**没有** `AuthContext` / `claims.Role` / `IsTenantAdmin`。
+3. ★ 唯一的过滤是 `:62` 的 `ev.RequestID != requestID`（**精确比较**），
+   而 `request_id` 来自 **URL 路径段**（`:35` `r.PathValue("id")`）。
+4. ★★ 那个 `request_id` 由 `middleware/requestid_mw.go:83-89` 生成 ——
+   **16 字节 crypto/rand 的 hex**，32 字符、全局唯一、**不含任何租户信息**。
+
+⇒ 归第三类（服务端**没有租户维度**）⇒ 过度限制到 `super_admin`，
+与批 115 `sliding-window`、批 117 `opsOverview` **同形态**：
+两边都是「拿到那个**全局唯一**标识就能读到明细」（一个是 `credential_id` 主键、
+一个是 `request_id` 随机 id）。
+
+### 三、★★★★★★★ 本批最硬的一条证据：**同一份数据，一边过滤一边不过滤**
+
+这是本批真正的新东西，也是权限判定从「保守推断」升级成「有对照的结论」的地方。
+
+★ `/api/admin/live-stream`（`handler.go:1033`）与本端点：
+
+| | 注册包装 | 数据源 | 租户维度 |
+|---|---|---|---|
+| `/api/admin/live-stream` | **同一个** `admin(...)` | **同一个** `llmgw:live:actions` | ★★ **有** |
+| `/api/admin/requests/{id}/actions` | **同一个** `admin(...)` | **同一个** `llmgw:live:actions` | ★★ **没有** |
+
+SSE 那一侧逐字核过：
+· `live_stream_sse.go:2263-2268`：`if IsTenantAdmin(r) { tenantID = GetTenantID(r); isSuper = false }`；
+· `:1875-1882`：非超管客户端**只在** `env.Request.TenantID == c.tenantID` 时才收帧。
+
+⇒ ★★★★ 所以这**不是「设计上就是全局的」**，而是**后端不一致**：
+同一个 Redis store、同一个注册包装，SSE 做了租户过滤而 REST 回退没做。
+⇒ ⇒ 处置也因此更明确：前端设 `super_admin` 只是**兜底**，
+真修复在后端（给本端点加租户条件，或把它并进 SSE 已有的作用域逻辑）。
+⚠️ 「前端严于后端是兜底不是修复」这句在批 117 只是**原则**，本批它有了一个具体实例。
+
+### 四、★★★★★ 订正 API 模块头 4 处漂移，其中一处是**权限结论反了**
+
+| 位置 | 原文 | 实况 |
+|---|---|---|
+| `api/requestActions.ts:8` | 注册处 `handler.go:1026` | **`:1045`**（漂 19 行） |
+| 同文件 (5) | `LRange(...)` 在 `:56` | **`:48`** |
+| 同文件 (6) 错误表 | Redis 读失败在 `:52-56` | **`:49-53`** |
+| 同文件 (6) / 常量 | 超时常量在 `:29` | **`:31`** |
+| 同文件 `:9` | 「admin 档 ⇒ 抽屉席**不设** `requiresRole`」 | **要设 `'super_admin'`** |
+
+⇒ 与批 117 同处置：**不只改散文，把它们钉成判据**（spec ①-3/①-4/①-5/①-6）。
+
+### 五、★★★★ 本批订正的**第二个**结论：一条「伪需求」
+
+原模块头写着「`flattenActionEvent` 序列化失败会返回 `map[string]any{}`
+⇒ 客户端要能识别空对象而不是当成正常条目」。
+
+★ 逐字核上游后判定这条**在本端点是伪需求**：
+每行进 `flatten` 之前已过了 `decodeStoredAction`（能 `json.Unmarshal` 成 struct ⇒
+它是合法 JSON object），而对一个**已成功反序列化的 struct** 再 `Marshal` +
+`Unmarshal` 成 map **不会失败** ⇒ 空对象行**不可达**。
+⇒ 处置不是加识别逻辑，而是把结论写进注释 **+ 钉一条判据**：
+空对象行出现时解包器**就该抛错**（缺 4 个恒在键），**不许**放宽成「当作空条目」。
+（那个 `{}` 兜底是为 **SSE** 准备的 —— 那边的帧来自内存、没有预先 decode。）
+
+### 六、★★★★★ 本批新增的两条可证不变式（都补了此前判据的**缺口**）
+
+1. ★★★★ `requestActionsRowsEchoRequestId` —— **逐行**的 `request_id` 必须回显成
+   响应顶层那个。既有判据 `requestActionsMatchesRequest` 只查「**顶层 vs 我请求的**」那一半；
+   只查一半的话，一个「顶层照抄正确、但**所有行**都换成别的 id」的响应能蒙混过关。
+   ⇒ 判据 ②-3 特意构造「顶层是对的、只有中间一行错」来咬住它。
+2. ★ `requestActionsRoleIsAllowed` —— 视图兜底要用（与批 115/117 同款）。
+
+### 七、★★★ 本批的三个工装事故（都当场处置）
+
+1. ★★★ **锚点撞车**：`} from '@/api/requestActions'` 在既有测试里出现**两次**
+   （值导入块 + 那行 `import type {...} from` 也含同样片段）⇒ 首版 `count==1` 断言失败。
+   ⇒ 处置：**先换 type import**，再换值导入块。
+2. ★★★ **我自己的判据写错**：②-3 里写了
+   `mFetch.mock.results[0].value` 当成已解包的响应 —— 而 `mockResolvedValue`
+   存的是 **Promise** ⇒ 断言打在 `undefined.every` 上。
+3. ★★ **i18n 门的同一个坑第二次踩到**：`en-US ra.check.none = none`
+   —— **值 === 键名**，运行时显示裸键。批 117 刚踩过（`ops.fresh.none`）。
+   ⇒ ★★★ 这已经是**连续两批复发**，说明「英文空值最自然的写法恰好就是键名」这条该记住。
+
+### 八、★★★ 类型门顶出的模板窄化问题（批 117 那个坑的**变体**）
+
+`vue-tsc` 报 `__VLS_ctx.data is possibly null`：`v-if="hasData"` **不会**让 TS 收窄 `data`
+⇒ 模板里不能直接摸 `data.count` / `data.request_id`。
+⇒ 处置：与批 117 的「`rows!.x` 运行时崩」同源，统一走**受守卫的 computed**
+（`echoedId` / `actionCount`）。
+⇒ ★★★ 两批两个面：一个是 `!` 骗过了编译期**导致运行时崩**，
+一个是 `v-if` **根本没被当收窄**。同一个区域的两种翻法。
+
+### 九、变异台：24 / 24 有牙
+
+含 2 条**语义等价改写**必须保持绿：`every(map→every)`、`count` 比较换成三元式
+⇒ 证明门不是恒红。**首轮 24 条全部 HAS_TEETH**，无 PARTIAL / NO_EFFECT / RED_NOT_MATCHED，
+被改文件逐字节还原 OK。
+
+### 十、验证
+
+| 项 | 结果 |
+|---|---|
+| 类型门 `vue-tsc -b` | rc=0（**先删 `tsbuildinfo` 再读数**） |
+| `css:check` / `touch:check` / `i18n:check` / `comment:check` | 四门 rc=0 |
+| `gate:selftest` | 5/5 |
+| `npm run build` | rc=0 |
+| 全量 | **7794 passed / 208 files**（1 skipped；基线 7740 / 207） |
+| 变异台 | **24 / 24 有牙** |
+| 十连跑 | **10 / 10 全绿**（每轮 7794 passed / 1 skipped） |
+
+> ⚠️ 十连跑全绿**不等于**此前记录的 flaky 已修复
+> （`ComplianceHitsView.spec.ts` / `RoutingOptView.spec.ts` 根因仍未查明）——
+> 本次**未复现**，只说明没抓到。
+
+### 十一、本批确认的一条纪律
+
+> ★★★★ **要判「这一族该不该按租户隔离」，先找它的**姊妹端点**做对照。**
+>
+> 本批之前，判第三类靠的是「grep 不到租户条件」——那是**否证**，
+> 无法区分「设计上就是全局的」与「**忘了做**」。
+> 本批找到 `/api/admin/live-stream`：**同一个 store、同一个注册包装，它过滤了**
+> ⇒ 否证升级成**对照**，`super_admin` 这道门才从「保守」变成「有依据」。
+>
+> ⇒ 推广：批 113/114/115/117 那几族的处置**都值得回头做一次同款对照** ——
+> 尤其批 115 `sliding-window` 与批 117 `opsOverview`：
+> 若也存在「同一个数据源、一边过滤一边不过滤」的姊妹端点，
+> 那就不是「前端过度限制」，而是**又一处后端不一致**，该进后端待办。
+
+## 11.155 v1 数据地平线接进 UI —— 权限档**第七次**登场：它给「第三类（过度限制）」划了边界；顺带逮到一个**恒绿的互证判据**（第一百一十九批）
+
+### 一、这批做了什么
+
+把 `v1DataHorizon`（第 86 批建的 API 模块，**一直是孤儿**）接进移动端，孤儿 11 → **10**：
+
+| 项 | 值 |
+|---|---|
+| 视图 | `web-mobile/src/views/V1DataHorizonView.vue` |
+| 判据 | `V1DataHorizonView.spec.ts` **33 条**（API 层本批 92 → **94 条**：删 1 条恒真、加 3 条） |
+| 路由 | `/v1-data-horizon`，`meta` **不设** `requiresRole` |
+| 抽屉席 | `v1-data-horizon`，**不设** `requiresRole` ⇒ **不得**进 superAdmin 白名单 |
+| i18n | 前缀 `v1h` + `nav.v1DataHorizon` |
+
+页面两段：**读取** + **当前状态**（三态卡 + 自检红线）。
+
+### 二、★★★★★★ 权限档第七次登场：它给「第三类」划了**边界**
+
+注册处 `admin/handler.go:1109` 的 `admin(...)` = `AdminMiddleware`
+（`auth.go:85-140`，**只认证不检 role**）⇒ tenant_admin 后端**能**读。
+
+★ 本族**同样没有租户维度** —— `admin/v1_freeze_notice.go` 全文没有 `tenant`，
+七个键（`frozen` / `unknown` / `source` / `gate_key` / `effect` / `silence` / `affects`）
+里**没有一个**是租户相关的。
+⇒ 按前几批的机械读法（没有租户维度 ⇒ 第三类 ⇒ 过度限制）应该设 `super_admin`。
+⇒ ★★★★★ **但那会错，而且错得有后果。**
+
+| | 批 115 / 117 / 118 | 本批 |
+|---|---|---|
+| 有租户维度？ | 没有 | 也没有 |
+| 载荷里有**别人的**东西？ | ★★ **有**（别人的凭据明细 / 机队拓扑 / 动作时间线） | ★ **没有**（平台级全局事实） |
+| 处置 | `super_admin`（过度限制） | **admin 档，不设 requiresRole** |
+
+⇒ ⇒ ★★★★ **过度限制的正当性来自「载荷里有没有别人的东西」，
+不是来自「有没有 tenant 条件」本身。** 这是本批把前六次散落的处置**收成一条规则**的地方。
+
+★ 而且这里**必须**让 tenant_admin 看到 —— 告示的 `silence` 字段自己写着：
+> 「这一类读点没有任何错误信号：接口照常 200、结果集非空、字段齐全。
+> **接口没报错不代表数据是新的。**」
+
+把它挡在 tenant_admin 之外，等于让他们把停更数据读成新鲜数据 ——
+**过度限制在这里不是保守，是有害。**
+
+### 三、★★★★★★★ 本批逮到一个**恒绿的互证判据**（与批 116 那条同族）
+
+`api/v1DataHorizon.ts` 里有个常量：
+
+```ts
+export const V1_HORIZON_READ_SOURCE = 'request_logs'   // ← 错的
+```
+
+而 Go 侧**两处**字面量都是：
+
+```go
+Source:  "_request_logs",     // v1_freeze_notice.go:210（unknown 分支）
+Source:  "_request_logs",     // v1_freeze_notice.go:219（frozen 分支）
+```
+
+**漏了一个下划线前缀**（那是表名）。
+
+★★★★ 而它之所以能活下来，是因为既有判据长这样：
+
+```ts
+it('★ V1_HORIZON_READ_SOURCE === 两处硬编码的读源族名', () => {
+  expect(V1_HORIZON_READ_SOURCE).toBe('request_logs')
+})
+```
+
+⇒ ★★★ **常量与判据从同一个错误来源写出** ⇒ 互证恒绿 ⇒ 错得「有据可依」。
+⇒ 而且这条判据**与模块自己的声明直接冲突**：模块第 309-311 行明写
+「本模块**不提供校验它取值的判据**……不写 `expect(...).toBe(...)` 的判据」——
+而测试里偏偏写了一条。
+
+⇒ ★★★ 处置**不是把判据改对**（那只是把错误值搬个地方），
+而是**换成有判别力的形态**：
+
+```ts
+const go = readFileSync(join(process.cwd(), '..', 'admin/v1_freeze_notice.go'), 'utf8')
+const found = [...go.matchAll(/Source:\s*"([^"]+)"/g)].map((m) => m[1]!)
+expect(found.length, '没抽到 Source 字面量').toBe(2)   // ← 先确认正则没失配
+expect(V1_HORIZON_READ_SOURCE).toBe(found[0])
+```
+
+⇒ 它**不可能**再与常量同源；并且先断言「抽到了两处」，否则正则失配时这条会恒绿。
+另加一条反向护栏把「漏前缀」这个具体形态钉死：
+`expect(V1_HORIZON_READ_SOURCE).not.toBe('request_logs')`。
+
+★ 这与批 116 那条「模块头与测试文件头互抄、两边一起漂 22 行」是**同一个病的第二面**：
+上一面是**行号**互抄，这一面是**字面量**互抄 —— 而后者的后果更直接（运行时比错值）。
+
+### 四、★★★ 判据自己顶出的两个缺口（都是当场处置）
+
+1. ★★★ **变异台 S6 `RED_NOT_MATCHED` 暴露了视图层的一条缺口。**
+   把 `v1HorizonIsFrozen` 的 `&& n.unknown === false` 去掉后，
+   「两标志皆 true」那条用例**没红** —— 因为 state 机**先**判 `IsFrozen`，
+   两标志皆真时它直接返回 `'frozen'`，于是「形状异常」那一支**根本走不到**，
+   而 `flag-bad` 是另一条独立判据，照常报红。
+   ⇒ 处置是**补断言**（不是改判据）：把「两标志皆真 ⇒ 走形状异常那一支」直接钉住。
+2. ★★★ **变异台 S17 是我自己设计错的变异**（在函数开头插 `void body` ——
+   纯语句，**什么行为都没改**）。判它 `NO_EFFECT` 是**工装问题不是判据问题**
+   ⇒ 按纪律**删掉那条变异**，换成真会改变行为的一条。
+⇒ ★ 这两条合起来是同一句提醒：
+   **`RED_NOT_MATCHED` 要先查红因，`NO_EFFECT` 要先查变异有效性。**
+
+### 五、★★★ 自检门顶红了自己的阈值
+
+⑨-5 那条「用例标题里有 U+FFFD ⇒ 失败」的门，把**它自己**顶红了：
+我写的下限是 40，而本文件实际只有 38 行 ⇒ `expected 38 to be greater than 40`。
+⇒ 它是自检门按设计工作的一次实例：阈值应当**低于**真实行数，
+否则它既不报真问题也不解释问题。⇒ 改成 30 并把这段写进注释。
+
+### 六、★★★ i18n 门的同一个陷阱**第三次**复发
+
+`en-US v1h.state.frozen = frozen` —— **值 === 键名**，运行时显示裸键。
+（批 117 `ops.fresh.none`、批 118 `ra.check.none`，三次都是英文里最自然的写法恰好撞门。）
+⇒ 已写进 Agent 记忆：写完 i18n 块**立刻**跑一次 `i18n:check`。
+
+### 七、★★★ 订正 API 模块头漂移
+
+| 位置 | 原文 | 实况 |
+|---|---|---|
+| `api/v1DataHorizon.ts:8` | 注册处 `handler.go:1088` | **`:1109`**（漂 21 行） |
+
+（其余行号 —— `v1GateState` `:147-155`、`applyV1FreezeNotice` `:236-248`、
+两分支 `:207-215` / `:217-224`、gate key `settings/key_request_logs_write_enabled.go:19`
+—— 逐字核过，**全部正确**。这与批 117/118 不同，那两批各有 4 处漂。）
+
+### 八、变异台：17 / 17 有牙
+
+含 2 条**语义等价改写**必须保持绿：`null === x` 换序、`a !== b` 换成布尔展开式
+⇒ 证明门不是恒红。被改文件逐字节还原 OK。
+
+### 九、验证
+
+| 项 | 结果 |
+|---|---|
+| 类型门 `vue-tsc -b` | rc=0（**先删 `tsbuildinfo` 再读数**） |
+| `css:check` / `touch:check` / `i18n:check` / `comment:check` | 四门 rc=0 |
+| `gate:selftest` | 5/5 |
+| `npm run build` | rc=0 |
+| 全量 | **7830 passed / 209 files**（1 skipped；基线 7794 / 208） |
+| 变异台 | **17 / 17 有牙** |
+| 十连跑 | **10 / 10 全绿**（每轮 7830 passed / 1 skipped） |
+
+> ⚠️ 十连跑全绿**不等于**此前记录的 flaky 已修复
+> （`ComplianceHitsView.spec.ts` / `RoutingOptView.spec.ts` 根因仍未查明）——
+> 本次**未复现**，只说明没抓到。
+
+### 十、本批确认的一条纪律
+
+> ★★★★★ **判据要钉「事实侧」，而不是把被测常量抄一份再比一次。**
+>
+> 同一个错误来源可以同时产出「实现」和「判据」，两边互相对得上，
+> 于是**任何数量**的自证判据都会绿 —— 加到 100 条也不会红。
+> ⇒ 打破办法只有一个：**判据自己读事实侧**（Go 源码），
+> 且**先确认它真的读到了东西**（`expect(found.length).toBe(2)`），
+> 否则「读失败」与「没读到」会长得一模一样。
+>
+> ⇒ 与批 116 那条「互证不等于正确；唯一能打破闭环的是对着事实侧核」**完全同源**，
+> 那一批治的是**行号**互抄，这一批治的是**字面量**互抄。

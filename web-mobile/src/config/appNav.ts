@@ -496,6 +496,45 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.modelIQ',
     requiresRole: 'super_admin',
   },
+  // ★ 运维总览（2026-10-14 第一百一十七批）——
+  //   注册 `admin/handler.go:1091` 的 `admin(...)`，而 `AdminMiddleware`
+  //   （`admin/auth.go:85-140`）**只认证不检 role** ⇒ 后端 tenant_admin **能**读。
+  // ★★★★ 但 `handleOpsOverview` 自己不检 role，而 11 条子查询**全是全局表**
+  //   （取租户键的代码不存在）⇒ 归第三类：**完全没有租户维度** ⇒ 过度限制。
+  // ⇒ 本席**必须**设 `requiresRole: 'super_admin'`，并同步
+  //   `src/components/shell/AppDrawer.spec.ts` 的排序白名单。
+  // ⚠️ 这一族与批 113/114 那两席（'admin' 档）的**成因相反**：那一族服务端**有**租户维度，
+  //   只是租户键可能返空串；本族是**一个租户键都没有**。
+  // ⚠️ 前端严于后端是兜底不是修复：后端这一族**没有门**。
+  {
+    key: 'ops-overview',
+    to: '/ops-overview',
+    icon: 'cpu',
+    titleKey: 'nav.opsOverview',
+    requiresRole: 'super_admin',
+  },
+  // ★ 请求动作时间线（2026-10-14 第一百一十八批）——
+  //   注册 `admin/handler.go:1045` 的 `admin(...)` ⇒ 后端 tenant_admin **能**读，
+  //   但该端点**完全没有租户维度**（只按 URL 里的 `request_id` 精确匹配），
+  //   而读**同一个** store 的 `/api/admin/live-stream` **有**租户过滤
+  //   ⇒ 后端不一致 ⇒ 归第三类，只能**过度限制**到 super_admin。
+  // ⇒ 本席**必须**设 `requiresRole: 'super_admin'` 并同步 `AppDrawer.spec.ts` 的排序白名单。
+  // ⚠️ 与批 115 `sliding-window` 同形态：`credential_id` 是全局主键、`request_id` 是
+  //   全局随机 id，两边都是「拿到那个标识就能读到明细」。
+  {
+    key: 'request-actions',
+    to: '/request-actions',
+    icon: 'search',
+    titleKey: 'nav.requestActions',
+    requiresRole: 'super_admin',
+  },
+  // ★ v1 数据地平线（2026-10-14 第一百一十九批）——
+  //   注册 `admin/handler.go:1109` 的 `admin(...)` ⇒ **admin 档**（不设 requiresRole）。
+  // ⚠️ 与批 115/117/118 三席**相反**，而它们并没错：本族没有租户维度，
+  //   但载荷是**平台级全局事实**（七个键无一带租户）
+  //   ⇒ 过度限制的判据是「载荷里有没有别人的东西」，不是「有没有 tenant 条件」。
+  // ⇒ 且**不得**进 `AppDrawer.spec.ts` 的 superAdmin 白名单 —— 加进去那条立刻红。
+  { key: 'v1-data-horizon', to: '/v1-data-horizon', icon: 'clock', titleKey: 'nav.v1DataHorizon' },
   // ★ 加这一席**必须**同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
   {
     key: 'routing-policy',

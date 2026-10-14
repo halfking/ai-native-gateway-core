@@ -793,6 +793,59 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'miq.title', requiresAuth: true, requiresRole: 'super_admin' },
   },
   {
+    // ★ 运维总览（2026-10-14 第一百一十七批）。
+    //   注册 `admin/handler.go:1091` `mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))`
+    //   —— 注册处**确实**是 admin 档（`AdminMiddleware`，`admin/auth.go:85-140` **只认证不检 role**），
+    //   而 `handleOpsOverview` 自己既不读 AuthContext 也不看 role。
+    // ★★★★ 但**归第三类**：本族**完全没有租户维度** —— 11 条子查询全是全局表，
+    //   取租户键的代码**根本不存在**（`grep tenant` 打不到不是遗漏，是设计上就没有）。
+    //   ⇒ 与批 115/116 同处置：**过度限制**到 'super_admin'。
+    //   理由不是洁癖：`offline_requests` 每行带别人的 `license_key` / `hardware_hash` /
+    //   `activation_code`，`deployment_nodes` 是全平台机队的 IP 与版本。
+    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（守卫只查 requiresAuth 与登录态）
+    //   ⇒ 这一行是为将来的守卫预留的，不是生效中的拦截；
+    //   视图内另有一层兜底（`OpsOverviewView.vue` 的 `opsv-nope` 段，兜的是「不发请求」）。
+    // ⚠️ 前端严于后端是**兜底不是修复** —— 后端这一族**没有门**可修。
+    path: '/ops-overview',
+    name: 'ops-overview',
+    component: () => import('@/views/OpsOverviewView.vue'),
+    meta: { titleKey: 'ops.title', requiresAuth: true, requiresRole: 'super_admin' },
+  },
+  {
+    // ★ 请求动作时间线（2026-10-14 第一百一十八批）。
+    //   注册 `admin/handler.go:1045` `admin(h.handleRequestActions)` —— **注册处确实是 admin 档**
+    //   （`AdminMiddleware`，`admin/auth.go:85-140`，**只认证不检 role**）⇒ tenant_admin 后端能读。
+    // ★★★★ 但它**完全没有租户维度**：`admin/request_actions.go` 全文不读 AuthContext、不检 role，
+    //   唯一的过滤是 `:62` 的 `ev.RequestID != requestID`，而那个 `request_id` 来自 **URL 路径段**，
+    //   由 `middleware/requestid_mw.go:83-89` 生成（16 字节 crypto/rand hex，**不含租户信息**）。
+    // ★★★ 决定性对照：读**同一个** `llmgw:live:actions` store 的 `/api/admin/live-stream`
+    //   在 hub 内**算了租户作用域**（`live_stream_sse.go:2263-2268`）并逐帧过滤（`:1875-1882`）
+    //   ⇒ 同一份数据、同一个注册包装，**一边过滤一边不过滤** ⇒ 这是**后端不一致**，不是设计。
+    // ⇒ 归第三类 ⇒ **过度限制**到 'super_admin'（与批 115 / 117 同处置）。
+    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（守卫只查 requiresAuth 与登录态）
+    //   ⇒ 这一行是为将来的守卫预留的；视图内另有一层兜底（`ra-nope` 段，兜的是「不发请求」）。
+    // ⚠️ 前端严于后端是**兜底不是修复** —— 真修复在服务端。
+    path: '/request-actions',
+    name: 'request-actions',
+    component: () => import('@/views/RequestActionsView.vue'),
+    meta: { titleKey: 'ra.title', requiresAuth: true, requiresRole: 'super_admin' },
+  },
+  {
+    // ★ v1 数据地平线（2026-10-14 第一百一十九批）。
+    //   注册 `admin/handler.go:1109` 的 `admin(...)` ⇒ **admin 档**（不设 requiresRole）。
+    // ★★★★★ 本族是**第三类（过度限制）的边界**，与批 115/117/118 **相反**且它们并没错：
+    //   过度限制的正当性来自「载荷里有**别人的东西**」，不是来自「没有租户维度」本身。
+    //   本族没有租户维度，但它答的是**平台级全局事实**（`_request_logs` 写门是否停更），
+    //   七键里无一带租户 ⇒ **不需要**过度限制，tenant_admin 可用。
+    // ★★★ 而且**必须**对 tenant_admin 可见：`silence` 那句自陈
+    //   「接口照常 200、结果集非空、字段齐全，接口没报错不代表数据是新的」——
+    //   挡掉它等于让租户把停更数据读成新鲜数据。
+    path: '/v1-data-horizon',
+    name: 'v1-data-horizon',
+    component: () => import('@/views/V1DataHorizonView.vue'),
+    meta: { titleKey: 'v1h.title', requiresAuth: true },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),

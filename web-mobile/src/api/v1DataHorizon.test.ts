@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   fetchV1DataHorizon,
   unwrapV1DataHorizon,
@@ -39,6 +41,13 @@ import {
  * ⚠️ 全部用例标题**字面量**写（不用 `it.each`）—— 变异 harness 靠标题取锚点。
  */
 
+/** ★ 读 Go 源码前先让路径写错**硬失败**，否则 expect 落在别处很难查。 */
+function goSrc(rel: string): string {
+  const p = join(process.cwd(), '..', rel)
+  expect(existsSync(p), `源码路径不存在：${rel}`).toBe(true)
+  return readFileSync(p, 'utf8')
+}
+
 const fetchMock = vi.fn()
 beforeEach(() => {
   fetchMock.mockReset()
@@ -66,7 +75,7 @@ function frozenNotice(): V1DataHorizonNotice {
   return {
     frozen: true,
     unknown: false,
-    source: 'request_logs',
+    source: '_request_logs',
     gate_key: 'storage.request_logs_write_enabled',
     effect: '本页及基于本页数据的判断只反映停写之前的流量；新请求不再进入这张表。',
     silence: '这一类读点没有任何错误信号：接口照常 200、结果集非空、字段齐全。接口没报错不代表数据是新的。',
@@ -79,7 +88,7 @@ function unknownNotice(): V1DataHorizonNotice {
   return {
     frozen: false,
     unknown: true,
-    source: 'request_logs',
+    source: '_request_logs',
     gate_key: 'storage.request_logs_write_enabled',
     effect: '无法确认 v1 读源族的停写状态：该 gate 键在配置里没有显式取值，当前读到的值来自默认值回落。',
     silence:
@@ -550,8 +559,36 @@ describe('常量取值', () => {
     expect(V1_HORIZON_GATE_KEY).toBe('storage.request_logs_write_enabled')
   })
 
-  it('★ V1_HORIZON_READ_SOURCE === 两处硬编码的读源族名', () => {
-    expect(V1_HORIZON_READ_SOURCE).toBe('request_logs')
+  // ★★★★ 第一百一十九批的核心发现：这条断言**原本存在**、而且一直是**绿的** ——
+  //   但它写的是 `expect(V1_HORIZON_READ_SOURCE).toBe('request_logs')`，
+  //   而 Go 侧两处字面量是 `"_request_logs"`（表名带下划线前缀）。
+  //   ⇒ ★★★ 常量与判据**从同一个错误来源写出** ⇒ 互证恒绿 ⇒ 错得「有据可依」。
+  //   ⇒ 处置不是把判据改对，而是**换成有判别力的形态**：
+  //     从 Go 源码里**抽取**字面量再比常量 ⇒ 它不可能与常量同源。
+  it('★★★★★ V1_HORIZON_READ_SOURCE === 从 Go 源码抽取的字面量（不是抄一份）', () => {
+    const go = goSrc('admin/v1_freeze_notice.go')
+    const found = [...go.matchAll(/Source:\s*"([^"]+)"/g)].map((m) => m[1]!)
+    // ★ 必须先确认**真的抽到了**，否则正则失配时这条会恒绿。
+    expect(found.length, '没抽到 Source 字面量').toBe(2)
+    expect(found[0]).toBe(found[1])
+    expect(V1_HORIZON_READ_SOURCE).toBe(found[0])
+  })
+
+  it('★★★★★ 那两个字面量带 `_` 前缀（钉住本批修掉的那个 bug）', () => {
+    expect(goSrc('admin/v1_freeze_notice.go')).toContain('Source:  "_request_logs"')
+    // ★★★ 反向护栏：把「漏前缀」这个具体形态钉死 —— 它正是本批的错误。
+    expect(V1_HORIZON_READ_SOURCE).not.toBe('request_logs')
+  })
+
+  it('★ 注册处是 admin(...)（admin 档，不是 superAdmin）', () => {
+    const handler = goSrc('admin/handler.go')
+    const m = handler.match(
+      /mux\.HandleFunc\("\/api\/admin\/v1-data-horizon", (admin|h\.superAdmin)\(h\.handleV1DataHorizon\)\)/,
+    )
+    // ★ 必须先确认**真的匹配到了**，否则正则失配时这条会恒绿。
+    expect(m, '没找到注册行').toBeTruthy()
+    // ★ 本族**不**过度限制：无租户维度但载荷是**全局平台事实**（详见模块头）。
+    expect(m![1]).toBe('admin')
   })
 
   it('★ V1_FREEZE_HEADER === v1_freeze_notice.go:71 的头名', () => {

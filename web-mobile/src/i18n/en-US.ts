@@ -23,6 +23,9 @@ export const enUS = {
     errorsTrend: 'Error trend',
     modelHistory: 'Model state history',
     modelIQ: 'Model IQ',
+    opsOverview: 'Ops overview',
+    requestActions: 'Action timeline',
+    v1DataHorizon: 'v1 data horizon',
     slidingWindow: 'Sliding-window calls',
     modelIntegrityDrift: 'Fingerprint drift',
     modelPolicies: 'Model policies',
@@ -4151,6 +4154,229 @@ sctx: {
       ok: 'Result',
       okYes: 'OK',
       okNo: 'Failed',
+    },
+  },
+  // ★ 运维总览（2026-10-14 batch 117）。
+  //   注册处 admin/handler.go:1091 是 `admin(...)` ⇒ **后端 tenant_admin 可读**，
+  //   但本族**完全没有租户维度**（11 条子查询全是全局表）⇒ 抽屉席钉 super_admin。
+  ops: {
+    title: 'Ops overview',
+    load: {
+      title: 'Read',
+      btn: 'Read ops overview',
+    },
+    scope: {
+      note: 'One bundled read: the backend runs 11 sub-queries concurrently and merges them into one response. A failed sub-query drops its section while the response stays 200.',
+    },
+    nope: {
+      msg: 'Your role cannot open this page.',
+      why: 'This family is neither tenant-scoped nor role-checked on the server; the request is blocked here before it is sent. Hiding a drawer seat is not route interception.',
+    },
+    err: {
+      dbNotConfigured: 'Server has no database configured (503).',
+    },
+    fresh: {
+      title: 'Collection completeness',
+      empty: 'Not read yet.',
+      generatedAt: 'Collected at',
+      sections: 'Successful sub-queries: {n}/{total}.',
+      missing: 'Missing sections: {list}',
+      // ★ 门会拦「值 === 键名」，所以这里不能写 'none'（那正是键名）。
+      none: '(none)',
+      keyCount: 'Response keys: {n}',
+      precisionBad: 'Collection timestamp is not a second-precision UTC string (expected e.g. 2026-10-14T02:00:00Z, no fraction).',
+      keyCountBad: 'Response key count is out of range: legal range is 2..12 (1 always-present key plus at most 11 sub-queries).',
+      degraded: 'All 11 sub-queries failed — the backend answers 500 in that case, so this 200 response is not normal.',
+    },
+    summary: {
+      title: 'Platform summary',
+      empty: 'This section was not returned.',
+      online: 'Online',
+      offline: 'Offline',
+      degraded: 'Degraded',
+      downloads: 'Downloads',
+      today: 'Today',
+      week: 'Last 7 days',
+      supporters: 'Holders',
+      licenseTotal: 'Active licenses: {n}',
+      centerBad: 'Online + offline + degraded exceeds the instance total, which contradicts the mutually exclusive counters on the server.',
+    },
+    dataPlane: {
+      title: 'Data-plane table counts',
+      absent: 'This section was not returned.',
+      unavailable: '{n} lookups failed and show as -1 (a failure sentinel, not a count).',
+      bad: 'The six counts are incomplete — this section is always present, so a missing item means the response did not come from this endpoint.',
+    },
+    region: {
+      title: 'Regions',
+      absent: 'This section was not returned.',
+      missingTag: 'no rows',
+      placeholder: '{n} region(s) have no rows in the database (placeholders, all four counts are 0).',
+      placeholderBad: '{n} placeholder row(s) carry non-zero counts.',
+      preambleBad: 'The first three rows must be local / 245 / 154 in that fixed order.',
+      extraBad: 'Regions outside the hard-coded three appear more than once.',
+    },
+    nodes: {
+      title: 'Deployment nodes',
+      absent: 'This section was not returned.',
+      empty: 'No node rows.',
+    },
+    fault: {
+      title: 'Faults',
+      absent: 'This section was not returned.',
+      empty: 'No new fault events.',
+      rangeBad: 'New faults exceed the open-fault total — the recent list only takes new while the stat counts three states, so it must be smaller.',
+      statusBad: 'Some event has a status other than new — the backend hard-codes status = new in SQL.',
+      totalsBad: 'Counts do not match the list lengths: {list}',
+    },
+    upgrade: {
+      title: 'Upgrades',
+      absent: 'This section was not returned.',
+      empty: 'No upgrade records.',
+      version: 'Target version',
+      versionEmpty: '(empty: the backend coalesces to an empty string when both versions are blank)',
+    },
+    offline: {
+      title: 'Offline activation requests',
+      note: 'This section carries other tenants license keys and hardware fingerprints, so it is super-admin only.',
+      absent: 'This section was not returned.',
+      empty: 'No offline activation requests.',
+      approved: '{n} approved.',
+      mirrorBad: '{n} row(s) have a timestamp different from created_at — the backend writes the same value twice.',
+    },
+    runtime: {
+      title: 'Runtime metrics',
+      absent: 'This section was not returned.',
+      empty: 'No runtime metrics.',
+      cpu: 'CPU avg %',
+      mem: 'Memory avg %',
+      tps: 'TPS avg',
+      p99: 'P99 max',
+      lastUpdate: 'Metrics at',
+      withMetrics: 'Rows with metrics: {n}',
+      nullUpdate: 'Rows with an empty metrics timestamp: {n} (this is a null encoding, not a missing key)',
+      zeroAmbiguous: '{n} row(s) have all three averages at 0 — a real 0 and no metrics in 24h are ambiguous.',
+      offlineRows: '{n} row(s) are offline instances: an offline instance still appears when it has metrics from the last 24h, so appearing here does not mean online.',
+    },
+    field: {
+      instances: 'Instances',
+      ip: 'IP',
+      region: 'Region',
+      build: 'Build',
+      lastHeartbeat: 'Last heartbeat',
+      rule: 'Rule',
+      source: 'Source',
+      detectedAt: 'Detected at',
+      startedAt: 'Started at',
+      completedAt: 'Completed at',
+      createdAt: 'Created at',
+      approvedAt: 'Approved at',
+      licenseKey: 'License key',
+      hardwareHash: 'Hardware hash',
+      requestId: 'Request ID',
+      activationCode: 'Activation code',
+      absent: '(none)',
+    },
+  },
+  // ★ Request action timeline (2026-10-14 batch 118).
+  //   Registration admin/handler.go:1045 is `admin(...)` so a tenant_admin can read it,
+  //   but the endpoint has **no tenant dimension at all** (it only matches the
+  //   request_id from the URL), while /api/admin/live-stream — reading the very
+  //   same store — does filter by tenant => backend inconsistency, third class,
+  //   so the drawer seat is pinned to super_admin.
+  ra: {
+    title: 'Request action timeline',
+    load: {
+      title: 'Read',
+      btn: 'Read timeline',
+    },
+    scope: {
+      note: 'This is the REST fallback for the live action stream: it is what replays a request after a page refresh or once the request has finished.',
+      replay: 'Data comes from a bounded queue (LPUSH + LTRIM 5000), so older events are already dropped — this is not history.',
+      paramsBad: 'Request ID is empty and the server would answer 400 — fill it in first.',
+      empty: 'Not read yet.',
+    },
+    nope: {
+      msg: 'Your role cannot open this page.',
+      why: 'This family is neither tenant-scoped nor role-checked on the server; the request is blocked here before it is sent. Hiding a drawer seat is not route interception.',
+    },
+    err: {
+      notWired: 'The server has no action store wired (503).',
+      storeUnavailable: 'Action store unavailable (502 Bad Gateway: the upstream Redis read failed).',
+      missingId: 'Missing request ID (400).',
+    },
+    check: {
+      title: 'Response self-check',
+      echoBad: 'The echoed request ID does not match the one you asked for.',
+      rowEchoBad: 'Some action row carries a request ID different from the response top level.',
+      countBad: 'count does not match the number of actions.',
+      detailBad: 'A detail key showed up in an action row — the server flattens it to the top level, so seeing it means the contract drifted.',
+      credentialLabelBad: 'credential_label showed up — that field belongs to the live stream, not to this endpoint.',
+      orderBad: 'Order does not match the server contract (should be ascending by ts, then by seq).',
+      seqBad: 'seq has duplicates — the server deduplicates by seq.',
+      unknownActions: '{n} action(s) use values the server has not registered yet (not an error; they are still displayed).',
+      zeroTs: '{n} action(s) carry the zero-value timestamp, so they sort to the front.',
+      extraKeys: 'Extra keys flattened in: {list}',
+      // ★ 门会拦「值 === 键名」，而英文里最自然的空值写法恰恰就是这个 —— 别写 'none'。
+      none: '(none)',
+    },
+    timeline: {
+      title: 'Action sequence',
+      empty: 'No actions recorded for this request (it may have fallen outside the replay window).',
+      unknownTag: 'unknown value',
+    },
+    field: {
+      requestId: 'Request ID',
+      echo: 'Echoed request ID',
+      model: 'Model',
+      credentialId: 'Credential ID',
+      errorKind: 'Error kind',
+      retrySeq: 'Retry seq',
+    },
+  },
+  // ★ v1 data horizon notice (2026-10-14 batch 119).
+  //   Registration admin/handler.go:1109 is `admin(...)` => **admin tier**, the seat sets
+  //   NO requiresRole. This is the opposite of batches 115/117/118 and none of them was
+  //   wrong: no tenant dimension does not imply over-restriction. The test is whether the
+  //   payload contains *someone else's* data — here it is a platform-wide fact.
+  v1h: {
+    title: 'v1 data horizon',
+    load: {
+      title: 'Read',
+      btn: 'Read notice',
+    },
+    scope: {
+      note: 'This page answers one platform-wide question: has the v1 traffic read source been frozen? It is tenant-independent, so it is open to every role.',
+      headerNote: 'The server also carries the same fact in a response header, but the mobile request layer only reads the body, so this page judges from the body alone.',
+      empty: 'Not read yet.',
+    },
+    state: {
+      title: 'Current state',
+      live: 'still writing',
+      // ★ 门会拦「值 === 键名」——这已经是同一类陷阱**第三次**（none/none 两次、frozen/frozen 一次）。
+      frozen: 'frozen (gate closed)',
+      unknown: 'cannot confirm',
+      'unknown-shape': 'malformed',
+      note: {
+        live: 'The write gate is explicitly on; this read source has not been frozen.',
+        frozen: 'The write gate is explicitly closed: the endpoint still returns 200 with non-empty results, but the content stops at the moment writing stopped.',
+        unknown: 'The config key controlling this read source has no explicit value and what we read came from the default fallback — we can neither say it stopped nor that it is still writing.',
+        'unknown-shape': 'The response is neither "not frozen" nor one of the two notice shapes.',
+      },
+    },
+    check: {
+      flagBad: 'In the notice object, frozen and unknown are not exactly one true — the server never produces that shape.',
+      affectsBad: 'affects contains a value the server does not list.',
+      affectsCountBad: 'affects does not have the fixed three entries.',
+      sourceBad: 'source is not that table name (expected _request_logs, leading underscore included; it is not the config source).',
+      gateKeyBad: 'gate_key does not match the controlling key on the server — operators need to know what to change.',
+      shapeBad: 'A notice object exists but matches neither the frozen nor the cannot-confirm shape.',
+      envelope: 'The response body shape for this state ({state}) has been checked.',
+    },
+    field: {
+      source: 'Read source',
+      gateKey: 'Gate key',
+      affects: 'Affected tiers',
     },
   },
 } as const
