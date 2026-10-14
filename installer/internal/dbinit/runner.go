@@ -1062,6 +1062,11 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 自适应——挂对父表即合法（columnar 只是优化）；无 pgcolumnar
 			// 环境（restore 血缘）建 heap 分区。211 日志审计轮。
 			"863_handoff_partition_am_aware.sql",
+			// 864（2026-10-15）：model_aliases 裸列 (raw_name, canonical_id)
+			// WHERE active 部分索引 —— S3 波 3 alias 链在全部生产读点用裸列
+			// 等值，现有 lower(raw_name) 表达式索引与 uq 第二列均不服务，
+			// CMI rollup 68/h 被击杀（252 审计轮实测）。
+			"864_model_aliases_bare_raw_name_active_idx.sql",
 		},
 	}
 }
