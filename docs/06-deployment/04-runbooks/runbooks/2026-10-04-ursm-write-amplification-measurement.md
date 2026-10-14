@@ -17264,6 +17264,17 @@ CREATE UNIQUE INDEX mv_b_uk ON mvtest.mv_b (同样 7 列键);
 
 #### 二、`_legacy` 的内容证实了它是「分区化之前的历史」
 
+> 🔴 **本节正文的「它是 DEFAULT 分区」已被 §10.110.32 订正为错**
+> （本节标题里的「证实」二字也随之作废）。生产实测：
+> `_legacy` 的 `relkind='r'`、`pg_inherits` parent 数 = **0**
+> ⇒ 它是**独立堆表**，不是任何表的分区。
+> 根因是查了 `pg_class.relpartbound` 却**没查 `pg_inherits`**，
+> 而全库 407 张普通表的 `relpartbound` 也是 NULL ⇒
+> **「bound 为空」只说明「不是分区」，不说明「是 DEFAULT 分区」。**
+> ⇒ 本节随后的推理**反而更硬**：正因为它是**孤儿**，
+> 父表上的留存逻辑**压根够不到它** ⇒ 852 MB 与 retention 天数完全无关。
+
+
 | 项 | 读数 |
 |---|---|
 | `min(snapshot_ts)` | 2026-10-06 15:50:09 |
@@ -17279,6 +17290,11 @@ CREATE UNIQUE INDEX mv_b_uk ON mvtest.mv_b (同样 7 列键);
 　 我当时把「无人读」当成了「可回收」，**这是我漏掉的一环**。
 
 #### 三、⚠ 顺带查出一个真实缺陷：`Test830StillDeclaresNoDefaultPartition` 抓不到生产实况
+
+> 🔴 **本节整条作废（§10.110.32）。**
+> 生产实测 DEFAULT 分区数 = **0** ⇒ 那条门是**对的**，不变量在生产**成立**。
+> ⇒ 我把一个未验证的推断当成了缺陷。**「门抓不到」是我的推测，不是事实。**
+
 
 `bg/partition_830_contract_test.go:219` 断言该表**刻意不建 DEFAULT 分区**，
 理由原文：「本表无 DEFAULT 分区，所以『今天的分区不存在』= **全量写入失败**」——
@@ -17335,3 +17351,86 @@ CREATE UNIQUE INDEX mv_b_uk ON mvtest.mv_b (同样 7 列键);
 　 我用「`idx_scan = 0`」就跳到了「可回收」，**这是把阴性证据当成了许可**。
 ★ 同族：[[阴性结论要当缺陷一样复核]] · [[写死的名单/数字从没被核实过]] ·
 [[判据抓错了对象]] · [[隔离/丢弃前先追三跳来源]]。
+
+---
+
+### §10.110.32 🔴🔴 **再订正 §10.110.31 的两处，并补上真正缺的那道门**
+
+§10.110.31 查 `_legacy` 时**只查了 `pg_class.relpartbound`、没查 `pg_inherits`**，
+把「非分区关系 ⇒ `relpartbound` 为 NULL ⇒ 读出空串」当成了「DEFAULT 分区」。
+本节订正两处，并给出那道本该有的门。
+
+#### 一、★ 错在哪：**「空 bound」不是 DEFAULT 分区的特征**
+
+生产实测（`pg_inherits` 口径）：
+
+| 问 | 实测 |
+|---|---|
+| `ursm_node_snapshot_min` 挂在父表下的分区数 | **9** |
+| 其中 `pg_get_expr(relpartbound,oid) = 'DEFAULT'` 的 | **0** |
+| `ursm_node_snapshot_min_legacy` 的 `relkind` | **`r`（普通堆表）** |
+| 它的 `pg_inherits` parent 数量 | **0（不属于任何父表）** |
+| 全库 `relkind='r'` 且 `relpartbound IS NULL` 的关系数 | **407** |
+
+⇒ ★★★★ **第 5 行就是我的错的根源**：407 张普通表的 `relpartbound` 也是 NULL。
+　 ⇒ **「bound 为空」只说明「它不是分区」，不说明「它是 DEFAULT 分区」。**
+　 判「是不是子分区」必须查 **`pg_inherits`**，不是查 `relpartbound`。
+　 ⇒ ⚠ 这条**在我自己的记忆里就写着**（`ursm-storage-partition` 主题：
+　 「`_hot` 是独立表，不是分区父表的分区 —— 查父表必然得出假结论」），
+　 **我还是照着同一个坑掉了一次**。
+
+#### 二、订正 §10.110.31 的两处
+
+| §31 的说法 | 判定 | 实际 |
+|---|---|---|
+| §三「生产恰恰有一个 DEFAULT 分区，`Test830StillDeclaresNoDefaultPartition` 抓不到」 | 🔴 **整条作废** | **DEFAULT 分区为 0，那条门是对的，不变量在生产成立** |
+| §二「`_legacy` 是 DEFAULT 分区，PG 不允许 DROP 非空 DEFAULT」 | 🔴 **机制错** | 它是**独立堆表**，`parent_count = 0` |
+| §一「`_legacy` 是 830 的唯一回滚路径，不可删」 | ✅ **仍成立** | 三跳来源追溯（`.skip:91` / `.down.sql:84`）不变 |
+| §四「retention 的 SQL 只作用于父表，永远碰不到它」 | ✅ **成立且更强** | 正因为它是**孤儿**（不是分区），父表上的留存逻辑压根够不到它 |
+
+⇒ ★★ **净结论不变，而且更硬**：`_legacy` 852 MB 与 retention 天数**完全无关**，
+　 retention 天数从 7 天改成 1 天，它**一点都不会少**。
+
+#### 三、★★ 真正该有的门（本轮已补，并做了变异验证）
+
+**判据必须与被测对象同层**：`Test830StillDeclaresNoDefaultPartition` 断言的是
+**迁移文件的 DDL 文本**，而「生产有没有多出 DEFAULT 分区」是**运行中 catalog** 的事。
+文本与实况是两个对象 ⇒ 补一条查 catalog 的门才是同层的。
+
+新增 `bg/ursm_snapshot_orphan_realdb_test.go`，三条门，**全部只读**：
+
+| 门 | 断言 | 2026-10-14 生产实测 |
+|---|---|---|
+| `TestURSMSnapshotCatalogHasNoDefaultPartition` | 分区父表**不得有 DEFAULT 分区** | ✅ 通过（0 个） |
+| `TestURSMSnapshotCatalogHasNoUnregisteredOrphan` | 名字挂 `ursm_node_snapshot_min%` 却**不在父表分区集合里**的关系，只允许出现在**封闭登记表**内 | ✅ 通过（`_legacy` 已登记，打印其体积与行数） |
+| `TestURSMSnapshotParentChildSetMatchesCatalog` | 分区父表**至少挂一个分区**（防 830 往返留下零分区的静默致命态） | ✅ 通过（9 个） |
+
+**设计要点**：
+
+- ★ **故意不复用 `destructiveGate`**：同目录 `ursm_830_realdb_test.go` 会 DROP 表，
+  那道门正是为了防止有人拿 `TEST_DATABASE_URL` 指向 245 而加的；
+  **而本文件全是 SELECT，恰恰必须在生产上能跑才有意义**。
+  理由写进文件头，免得下一个会话以为漏了。
+- ★ **用「封闭登记表」而不是「必须零个」**：已登记的 `_legacy` 放行并**打印体积行数**
+  （不是让它隐身）；**新增**孤儿才红 ⇒ 门守的是「不许悄悄多一个」，不是「不许推进」。
+- ★ 门控沿用 `TEST_DATABASE_URL` → `TEST_DB_URL` → **干净 skip**，
+  且 skip 文案明写「**skip 不构成「检查通过」的证据**」。
+
+**变异验证（当场，已做）**：
+
+| 步 | 动作 | 结果 |
+|---|---|---|
+| 1 | 无 DSN | 3 条全 SKIP，`ok` |
+| 2 | 指向本地真库（该表尚未分区化） | 2 条 SKIP（标注「本条不适用」）、孤儿条 PASS |
+| 3 | **造孤儿** `ursm_node_snapshot_min_probe_orphan` | ★ **FAIL**，点名该关系并说明「retention 作用不到，等于体积无限期占用」 |
+| 4 | 删掉孤儿 | **ok** 回绿 |
+
+⇒ ★★★ **门有牙，且红因是指名道姓的断言，不是编译失败或连接失败。**
+
+#### 四、本节之后仍未变的结论
+
+`§10.110.29`（只写不读、4,921 MB、留存档位路径表）与
+`§10.110.30`（863 受控实测：churn 归零、耗时 -12%）**均不受本节影响**。
+
+★ 同族：[[判据抓错了对象]] · [[量具的第一职责是可信]] ·
+[[阴性结论要当缺陷一样复核]] · [[一��只存在于文档里的规范等于没有规范]]。
