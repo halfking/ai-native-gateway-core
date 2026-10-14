@@ -758,6 +758,27 @@ for _cfg in sensitive_patterns.yaml sensitive_words.json; do
   fi
 done
 chown -R 65532:65532 "$D211_GW_DATA_ROOT/configs" 2>/dev/null || true
+
+# ── 迁移腿（2026-10-14 r1030）：网关容器启动前重放 DB 修订序列 ──────────
+# deploy-seamless（245/154）自带 deploy_apply_pending_migrations；本脚本原先
+# 缺这一腿——从别机 dump 恢复的库（如 acc-pg17 ← mac pg18 dump）停在旧迁移
+# 位（实测 schema_migrations 止于 851），新网关 boot 探测 `_request_logs_hot`
+# （迁移 860 改名后的家族名）失败 → 静默降级 lite（readyz 的 mode 字段是唯
+# 一肉眼判据）。序列幂等（already applied 无操作、健康路径零 DDL），故每次
+# 部署无脑重放是安全默认。
+REVISION_SEQ="$(cd "$(dirname "$0")" && pwd)/apply-db-revision-sequence.sh"
+if [[ -f "$REVISION_SEQ" ]]; then
+  log "重放 DB 修订序列（幂等）→ ${PG_CONTAINER}/${D211_PG_DB}"
+  DATABASE_URL="$DB_URL" \
+  LLM_GATEWAY_PG_CONTAINER="$PG_CONTAINER" \
+  LLM_GATEWAY_PG_USER="${LLM_GATEWAY_PG_USER:-$PG_USER}" \
+  LLM_GATEWAY_PG_PASSWORD="$PG_PASS" \
+  LLM_GATEWAY_PG_DATABASE="$D211_PG_DB" \
+    bash "$REVISION_SEQ" || die "DB 修订序列失败——直接启动会降级 lite，先修库再部署"
+else
+  echo "warning: apply-db-revision-sequence.sh 不在场，跳过迁移重放" >&2
+fi
+
 docker run -d --name "$D211_GW_CONTAINER" --restart unless-stopped \
   --network "$D211_NETWORK" \
   -p "${D211_GW_PORT}:8781" \

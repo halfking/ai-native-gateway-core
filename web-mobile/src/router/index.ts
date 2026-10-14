@@ -693,6 +693,106 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'uts.title', requiresAuth: true },
   },
   {
+    path: '/format-anomalies',
+    name: 'format-anomalies',
+    component: () => import('@/views/FormatAnomaliesView.vue'),
+    meta: { titleKey: 'fa.title', requiresAuth: true },
+  },
+  {
+    path: '/model-integrity-drift',
+    name: 'model-integrity-drift',
+    component: () => import('@/views/ModelIntegrityDriftView.vue'),
+    meta: { titleKey: 'mid.title', requiresAuth: true },
+  },
+  {
+    // ★ 后端前缀**带尾斜杠**（`/api/admin/report-rollup/`）⇒ 客户端必须自己拼对尾段
+    path: '/report-rollup',
+    name: 'report-rollup',
+    component: () => import('@/views/ReportRollupView.vue'),
+    meta: { titleKey: 'rr.title', requiresAuth: true },
+  },
+  {
+    // ★ 路径形如 /{tenant}/{request_id}（**恰好两段**），段要 encodeURIComponent
+    path: '/dispatch-journal',
+    name: 'dispatch-journal',
+    component: () => import('@/views/DispatchJournalView.vue'),
+    meta: { titleKey: 'dj.title', requiresAuth: true },
+  },
+  {
+    // ★★ 供应商错误趋势（2026-10-14 第一百一十三批）。
+    //   注册 `admin/handler.go:1270` `admin(h.errorsTrendHandlers.getErrorsTrend)`
+    //   ⇒ **admin 档**（`AdminMiddleware` 只认证不检 role），tenant_admin 可用。
+    // ⚠️⚠️ 但 `requiresRole` 这里设的是 **`'admin'` 而不是缺省**，与本文件其余
+    //   admin 档路由**相反** —— 推导见 `api/errorsTrend.ts` 文件头与 `AppDrawer.spec.ts`。
+    //   根因：`getErrorsTrend` 不检 role，而 `EffectiveTenantIDAll` 对
+    //   **非 tenant_admin 一律返空串** ⇒ effective role 为 `user` 的主体
+    //   （`admin/shared_principal.go:42` 的 roleRank 允许，且本地角色更高时不下调）
+    //   会读到**全租户**数据。
+    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（`hyper-wiring.ts` 的守卫只查登录态）
+    //   ⇒ 这一行是**为将来的守卫预留的**，不是生效中的拦截。
+    path: '/errors-trend',
+    name: 'errors-trend',
+    component: () => import('@/views/ErrorsTrendView.vue'),
+    meta: { titleKey: 'et.title', requiresAuth: true, requiresRole: 'admin' },
+  },
+  {
+    // ★★ 凭据模型状态变更历史（2026-10-14 第一百一十四批）。
+    //   挂载 `admin/handler.go:1475` `monitorH.RegisterMonitorRoutes(mux, h.admin)`
+    //   ⇒ **admin 档**，tenant_admin 本该可用。
+    // ⚠️⚠️ 但 `requiresRole` 设的是 **`'admin'` 而不是缺省**，与「admin 档 ⇒ 不设」
+    //   的旧口径相反。根因（`api/modelHistory.ts` 文件头 (1b)）：
+    //   `RegisterMonitorRoutes` 包的是 `AdminMiddleware`（不检 role），
+    //   `handleModelHistory` 自己也不检，而租户键是**手写内联**的
+    //   ```go
+    //   tenantID := ""
+    //   if IsTenantAdmin(r) { tenantID = GetTenantID(r) }
+    //   ```
+    //   ⇒ 与 `EffectiveTenantIDAll` 语义相同但**不叫那个名字** ⇒ grep 不到
+    //   ⇒ 非 tenant_admin 一律空串 ⇒ 两段 SQL 的 `$4 = ''` 放行 ⇒ **全租户**。
+    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（守卫只查登录态）
+    //   ⇒ 这一行是为将来的守卫预留的，不是生效中的拦截。
+    path: '/model-history',
+    name: 'model-history',
+    component: () => import('@/views/ModelHistoryView.vue'),
+    meta: { titleKey: 'mh.title', requiresAuth: true, requiresRole: 'admin' },
+  },
+  {
+    // ★★ 凭据模型滑窗调用明细（2026-10-14 第一百一十五批）。
+    //   注册 `admin/handler.go:1475` `monitorH.RegisterMonitorRoutes(mux, h.admin)`
+    //   ⇒ 是 **admin 档**，与批 113/114 那两族同注册处。
+    // ⚠️⚠️ 但 `requiresRole` 是 **`'super_admin'`**，与那两族**相反** ——
+    //   因为本族**连租户维度都没有**：`handleSlidingWindow`
+    //   （admin/credential_monitor.go:704-782）里既没有 `tenantID` 变量、
+    //   也没有任何 `IsTenantAdmin`，两条数据腿（Redis 与 _request_logs 回退）
+    //   的 WHERE 都只有 `credential_id = $1 AND lower(...) = lower($2)`。
+    //   而 `credential_id` 是**全局唯一**主键 ⇒ 任何通过认证的主体报出别的
+    //   租户的 credential_id 就能读到它的逐次调用明细。
+    //   ⇒ `'admin'` 档在这里会给出**虚假的安全感**（按钮写着「我的租户」，
+    //     后端根本不理这句）⇒ 必须过度限制。
+    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（守卫只查登录态）
+    //   ⇒ 这一行是为将来的守卫预留的，不是生效中的拦截。
+    path: '/sliding-window',
+    name: 'sliding-window',
+    component: () => import('@/views/SlidingWindowView.vue'),
+    meta: { titleKey: 'sw.title', requiresAuth: true, requiresRole: 'super_admin' },
+  },
+  {
+    // ★ 模型智商（2026-10-14 第一百一十六批）。
+    //   注册 `admin/handler.go:1492-1495` —— **四条全部** `h.superAdmin(...)`。
+    // ★★★★ 本族是本仓第四档权限里**唯一「档位自带 role 检查」**的一档：
+    //   逐字读过 `SuperAdminMiddleware`（admin/auth.go:376-409）——
+    //   `if claims.Role != "super_admin" { 403 }`。
+    //   ⇒ 与批 113/114 走 `AdminMiddleware`（**只认证不检 role**）**形态相反**，
+    //     那两族才被迫用 `requiresRole: 'admin'`。
+    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（守卫只查登录态）
+    //   ⇒ 这一行是为将来的守卫预留的，不是生效中的拦截；
+    //   视图内另有一层兜底（`ModelIQView.vue` 的 `miq-nope` 段）。
+    path: '/model-iq',
+    name: 'model-iq',
+    component: () => import('@/views/ModelIQView.vue'),
+    meta: { titleKey: 'miq.title', requiresAuth: true, requiresRole: 'super_admin' },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),

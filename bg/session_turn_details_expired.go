@@ -39,7 +39,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -92,7 +91,7 @@ var (
 // order. Equality is only meaningful on shared columns; unlike migration
 // 759 (which hard-fails on shape drift because it writes), this
 // classification degrades to the intersection.
-func sessionTurnDetailsSharedColumns(ctx context.Context, db *pgxpool.Pool) ([]string, error) {
+func sessionTurnDetailsSharedColumns(ctx context.Context, db partitionDB) ([]string, error) {
 	const q = `
 		SELECT a.attname
 		  FROM pg_attribute a
@@ -126,7 +125,7 @@ func sessionTurnDetailsSharedColumns(ctx context.Context, db *pgxpool.Pool) ([]s
 // category (see the file comment for the definitions). The equality probe
 // mirrors 759's v_equal shape: hot NULL matches anything, otherwise a
 // typed IS NOT DISTINCT FROM per shared column.
-func QuerySessionTurnDetailsExpiredHotRows(ctx context.Context, db *pgxpool.Pool, retention time.Duration) (SessionTurnDetailsExpiredHotStats, error) {
+func QuerySessionTurnDetailsExpiredHotRows(ctx context.Context, db partitionDB, retention time.Duration) (SessionTurnDetailsExpiredHotStats, error) {
 	var s SessionTurnDetailsExpiredHotStats
 	cols, err := sessionTurnDetailsSharedColumns(ctx, db)
 	if err != nil {

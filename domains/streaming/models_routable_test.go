@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -89,7 +91,18 @@ func TestModelsRoutableSQLGatePredicates(t *testing.T) {
 		"COALESCE(c.status, 'active') = 'active'",
 		"COALESCE(c.lifecycle_status, 'active') = 'active'",
 		"COALESCE(c.availability_state, 'ready') = 'ready'",
-		"COALESCE(c.quota_state, 'ok') NOT IN ('permanently_exhausted')",
+		// quota_state 有三个耗尽态，只排 1/3 就是把 balance_exhausted /
+		// periodic_exhausted 的凭据重新挂回发现列表（这三态在 Go 里都有
+		// 活跃写入路径，不是纸面枚举）。availability_state='ready' 不蕴含
+		// quota_state 非耗尽——两列各有独立 CHECK 约束。
+		"COALESCE(c.quota_state, 'ok') <> ALL (ARRAY['permanently_exhausted','balance_exhausted','periodic_exhausted'])",
+		// health_status 的 CHECK 允许 4 值，其中 warning / unreachable
+		// 均被判不可路由（视图的 unavailable_reason 有 recent_probe_unreachable 分支）。
+		"COALESCE(c.health_status, 'unknown') IN ('healthy', 'unknown')",
+		// 模型级下线开关：pm.available / pm.unavailable_reason 在路由侧
+		// 与视图侧都有，发现侧漏掉会让运维的模型级下线对 /v1/models 失效。
+		"pm.available = TRUE",
+		"COALESCE(pm.unavailable_reason, '') NOT LIKE 'manual%'",
 		"COALESCE(p.enabled, TRUE) = TRUE",
 		"NOT LIKE 'manual%'",
 		"COALESCE(cmb.admin_protected, FALSE) = FALSE",
@@ -111,6 +124,60 @@ func TestModelsRoutableSQLGatePredicates(t *testing.T) {
 	if !strings.Contains(l, "model_offers mo ON mo.canonical_id = mc.id") ||
 		!strings.Contains(l, "mo.available = TRUE") {
 		t.Fatal("modelsLegacySQL lost the legacy model_offers semantics")
+	}
+}
+
+// routableViewGate holds the credential/model-level liveness gates that both
+// the router's SSOT view (v_routable_credential_models) and the discovery
+// endpoint must agree on. Each entry is [viewFragment, discoveryFragment]:
+// the two sides spell the same predicate differently (SQL-standard vs Go
+// idiom, different COALESCE defaults) but must not disagree semantically.
+var routableViewGate = [][2]string{
+	{"c.quota_state <> ALL (ARRAY['permanently_exhausted'::text, 'balance_exhausted'::text, 'periodic_exhausted'::text])",
+		"COALESCE(c.quota_state, 'ok') <> ALL (ARRAY['permanently_exhausted','balance_exhausted','periodic_exhausted'])"},
+	{"COALESCE(c.health_status, 'unknown'::text) = ANY (ARRAY['healthy'::text, 'unknown'::text])",
+		"COALESCE(c.health_status, 'unknown') IN ('healthy', 'unknown')"},
+	{"pm.available = true", "pm.available = TRUE"},
+	{"c.availability_state = 'ready'::text", "COALESCE(c.availability_state, 'ready') = 'ready'"},
+	{"c.lifecycle_status = 'active'::text", "COALESCE(c.lifecycle_status, 'active') = 'active'"},
+	{"cmb.available = true", "cmb.available = TRUE"},
+	{"c.manual_disabled, false) = false", "COALESCE(c.manual_disabled, FALSE) = FALSE"},
+}
+
+// TestModelsRoutableAgreesWithRoutableView is the structural gate that was
+// missing when pm.available / two of three quota states / health_status were
+// all missing from modelsRoutableSQL while the string pins above still went
+// green — those pins only assert "the query has the predicates we remembered
+// to write", never "the predicates match the router". This compares against
+// the view the router itself documents as its SSOT, so a gate added to one
+// side and forgotten on the other turns the suite red.
+//
+// The router-side inline SQL in autoroute/recommend_v2.go is not exported, so
+// the view file on disk is used as the comparison anchor; the two are kept in
+// sync by the view's own migration history (460).
+func TestModelsRoutableAgreesWithRoutableView(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "sql", "objects", "views", "v_routable_credential_models.sql"))
+	if err != nil {
+		t.Fatalf("read routable view SSOT: %v", err)
+	}
+	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	view := norm(string(raw))
+	discovery := norm(modelsRoutableSQL)
+
+	for _, g := range routableViewGate {
+		if !strings.Contains(view, g[0]) {
+			t.Fatalf("anchor drifted: view no longer contains %q — update routableViewGate to match the new SSOT spelling before trusting this gate", g[0])
+		}
+		if !strings.Contains(discovery, g[1]) {
+			t.Fatalf("discovery/router drift: modelsRoutableSQL lacks the gate %q that v_routable_credential_models enforces; /v1/models would advertise models the router refuses to serve", g[1])
+		}
+	}
+	// The view's own unavailable_reason CASE enumerates the reason each gate
+	// produces; if a new gate appears there it must have a discovery-side peer.
+	for _, reason := range []string{"quota_", "recent_probe_unreachable", "model_unavailable"} {
+		if strings.Contains(view, reason) && !strings.Contains(discovery, "quota_state") && reason == "quota_" {
+			t.Fatalf("view enumerates %q but discovery dropped its quota_state gate", reason)
+		}
 	}
 }
 

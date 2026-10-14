@@ -23,7 +23,31 @@ const isSuperAdmin = computed(() => auth.role === 'super_admin')
 const selectedId = computed(() => { const id = Number(route.params.id); return Number.isSafeInteger(id) && id > 0 ? id : 0 })
 useHyperPage({ title: () => selectedId.value ? t('users.detailTitle') : t('users.title') })
 
-const days = ref(30)
+// ★ 默认窗口必须是 **7**，不是 30（2026-10-13 实测修正）。
+//
+// 三处权威都指向 7：
+//   · 后端 `getTenantStats` 自身缺省就是 7（`days < 1 ⇒ 7`，admin/tenants.go）
+//   · Web 端 `TenantDetailView.statsDays = ref(7)`（选项 [7,30,90,365]，默认 7）
+//   · 本页此前是唯一的 30 —— 且 **30 天在真库上确定性失败**。
+//
+// 实测（245 / 2026-10-13，端到端 curl 计时，非推断）：
+//   GET /api/admin/tenants/default/stats?days=30 → **504 / 10.09s / 10.10s**
+//       （两次都精确顶穿 `context.WithTimeout(10s)`，不是抖动）
+//   GET …?days=7  → **200 / 2.74s / 4.27s**
+//
+// 根因（EXPLAIN ANALYZE 实测，非推测）：30 天窗在该租户命中 1,516,587 行，
+// 而 `totals` 段要的 `total_tokens / api_key_id / application_id /
+// raw_model_name / canonical_id` **没有一列**在既有覆盖索引
+// `usage_ledger_ts_tenant_cover_agg_idx (ts, tenant_id) INCLUDE
+// (prompt_tokens, completion_tokens, cost_usd, latency_ms, success)` 里
+// ⇒ 不可能走 index-only scan ⇒ 120 万次堆取。
+// 同谓词只查「被覆盖的那几列」= 0.9s，带上 DISTINCT 全部列 = 10.3s（热态）。
+//
+// ⚠️ 选项表（7/30/90）**保持原样**：30/90 仍可手动选，选中后的降级提示
+// 「该时间范围的租户用量统计超时，请缩短统计天数后重试」是端点既有的
+// 504 契约（`writeTenantStatsError`），不是新加的行为。
+// 这里改的是**默认落在哪个档位**，不是端点的能力边界。
+const days = ref(7)
 const users = ref<ManagedUser[]>([])
 const usage = ref<UserUsageRow[]>([])
 const tenants = ref<TenantInfo[]>([])

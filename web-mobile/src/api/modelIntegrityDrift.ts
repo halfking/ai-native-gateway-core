@@ -126,6 +126,15 @@ export const DRIFT_ANOMALY_TYPE = 'fingerprint_drift'
  */
 export const DRIFT_SEVERITIES = ['low', 'medium', 'high', 'critical'] as const
 
+/**
+ * ★ 建表里的**表级缺省**：`sql/migrations/startup/462_model_integrity_events.sql:52`
+ *   的 `severity TEXT NOT NULL DEFAULT 'low'`。
+ *   ★★ 与第一百零九批的 `response_format_anomalies`（`severity DEFAULT 'medium'`）
+ *     是**同族不同口径**：两张表都由后台探针写入、都声明四值域、都**没有 CHECK**，
+ *     但缺省值不同 ⇒ 判 i18n 文档里的「缺省」时**绝不能跨表照抄**。
+ */
+export const DRIFT_SEVERITY_TABLE_DEFAULT = 'low'
+
 /** 五个恒在键。 */
 export const DRIFT_RECORD_ALWAYS_KEYS = [
   'id',

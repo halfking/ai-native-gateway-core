@@ -99,7 +99,11 @@ func TestProviderErrorAggregatorIntegration(t *testing.T) {
 
 // TestPartitionManagerIncludesErrorAggregator 验证 PartitionManager 包含错误聚合器
 func TestPartitionManagerIncludesErrorAggregator(t *testing.T) {
-	pm := NewPartitionManager(nil, 24*time.Hour)
+	// 863 起 NewPartitionManager 接受窄接口 partitionDB；聚合器仅对
+	// *pgxpool.Pool 真身构造（pgxmock 注入的判据路径不 Start，nil 无害）。
+	// 本门用 typed-nil pool 保持旧契约：真池路径必须装备聚合器。
+	var pool *pgxpool.Pool
+	pm := NewPartitionManager(pool, 24*time.Hour)
 
 	if pm.errorAggregator == nil {
 		t.Error("expected PartitionManager to have non-nil errorAggregator")
