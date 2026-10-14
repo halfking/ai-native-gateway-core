@@ -102,6 +102,30 @@ describe('AppDrawer 权限门控', () => {
 })
 
 describe('navItemsFor', () => {
+  // ★★ 2026-10-14 第一百一十四批补上：**这个 describe 原本没有 body 清理**，
+  //   而下面四条判据用 `mountDrawerAs` 挂到 `document.body`
+  //   ⇒ 抽屉会**跨用例累积** ⇒ `document.querySelectorAll('.drawer__link')`
+  //   会扫到**上一个用例**留下的链接。
+  // ⇒ ★★★ 后果：批 113 的「role=user 看不到 errors-trend」**是靠测试顺序才绿的**
+  //   —— 它恰好是这个 describe 里第一个挂载用例，前面积分是空的；
+  //   批 114 在它后面再加一条 user 断言，那条立刻被前一个 tenant_admin 挂载顶红。
+  // ⇒ **这不是新用例的 bug，是既有判据的阴性结论不可信**（同族：阴性结论要当缺陷一样复核）。
+  beforeEach(() => {
+    for (const w of mounted) {
+      try { w.unmount() } catch { /* ignore */ }
+    }
+    mounted = []
+    document.body.innerHTML = ''
+    vi.resetAllMocks()
+  })
+  afterEach(() => {
+    for (const w of mounted) {
+      try { w.unmount() } catch { /* ignore */ }
+    }
+    mounted = []
+    document.body.innerHTML = ''
+  })
+
   it('super_admin 看到全部', () => {
     expect(navItemsFor(DRAWER_NAV, 'super_admin').length).toBe(DRAWER_NAV.length)
   })
@@ -213,12 +237,37 @@ describe('navItemsFor', () => {
   //   `requiresRole` 非缺省的那些（'admin' 与 'super_admin' 两档）。
   //   只断言「挡了 errors-trend」会漏掉反向错误 —— 比如有人把某个
   //   缺省席误标成 'super_admin'，对 tenant_admin 消失而 user 挡不掉。
+  // ★★ model-history（2026-10-14 第一百一十四批）—— 与 errors-trend **同档同处置**，
+  //   但成因**变形**了：这一族的租户键是**手写内联**的
+  //   `tenantID := ""; if IsTenantAdmin(r) { … }`
+  //   （admin/credential_monitor.go:1532-1535），
+  //   语义与 `EffectiveTenantIDAll` 一模一样却**不调那个函数**
+  //   ⇒ ★★ grep `EffectiveTenantID` 找不到这一处，判别动作会整个漏掉这个家族。
+  it("★ 第二席：model-history 也必须是 'admin' 档，role=user 看不到", async () => {
+    const seat = DRAWER_NAV.find((i) => i.key === 'model-history')
+    expect(seat).toBeDefined()
+    expect(seat!.requiresRole).toBe('admin')
+    await mountDrawerAs('user')
+    const hrefs = Array.from(document.body.querySelectorAll('.drawer__link'))
+      .map((a) => a.getAttribute('href') ?? '')
+    expect(hrefs.some((h) => h.includes('/model-history'))).toBe(false)
+  })
+
+  it("★ 第二席不误伤 tenant_admin（它本该看自己租户的模型状态历史）", async () => {
+    await mountDrawerAs('tenant_admin')
+    const hrefs = Array.from(document.body.querySelectorAll('.drawer__link'))
+      .map((a) => a.getAttribute('href') ?? '')
+    expect(hrefs.some((h) => h.includes('/model-history'))).toBe(true)
+  })
+
   it("★ role='user' 被挡掉的恰好是全部声明了 requiresRole 的席", () => {
     const filtered = navItemsFor(DRAWER_NAV, 'user')
     const dropped = DRAWER_NAV.filter((i) => !filtered.some((f) => f.key === i.key))
     const expected = DRAWER_NAV.filter((i) => i.requiresRole !== undefined)
     expect(dropped.map((d) => d.key).sort()).toEqual(expected.map((d) => d.key).sort())
     expect(dropped.map((d) => d.key)).toContain('errors-trend')
+    // ★ 第二席同样必须被挡住 —— 白名单式断言会自动纳入，这里显式点名防回归
+    expect(dropped.map((d) => d.key)).toContain('model-history')
   })
 
   // ★★ 标题原来写「只挡 superAdmin 档」—— 那是 `'admin'` 档出现**之前**的说法，

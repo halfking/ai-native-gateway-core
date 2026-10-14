@@ -21,6 +21,7 @@ export const enUS = {
     reportRollup: 'Reconciliation report',
     dispatchJournal: 'Dispatch journal',
     errorsTrend: 'Error trend',
+    modelHistory: 'Model state history',
     modelIntegrityDrift: 'Fingerprint drift',
     modelPolicies: 'Model policies',
     modelPolicyAudit: 'Policy audit',
@@ -3945,6 +3946,57 @@ sctx: {
       bySupplier: 'By supplier',
       byErrorType: 'By error type',
       credentialId: 'Credential ID',
+    },
+  },
+
+  // ★★ Credential model state-change history (2026-10-14, batch 114).
+  mh: {
+    title: 'Model state history',
+    load: 'Query',
+    reload: 'Query again',
+    nope: 'Your role cannot access this page.',
+    query: {
+      title: 'Query parameters',
+      credentialId: 'Credential ID',
+      rawModelName: 'Model name (raw_model_name)',
+      limit: 'Row limit ({min}-{max}, default {def})',
+      note: 'A credential ID of 0 is rejected; an out-of-range limit is rejected. But a non-numeric value for either falls back to the default silently instead of erroring.',
+      paramsBad: 'Credential ID must not be 0, and the limit must fall in {min}-{max}.',
+    },
+    scope: {
+      // ★★ Legend on its own line, NOT in the same sentence as {scope} — otherwise the
+      //   template string carries those literals and any assertion on {scope} turns
+      //   tautological (caught by batch 113 mutation S4).
+      note: 'Tenant scope of this batch: {scope}. This is not a permission gate; the backend still returns cross-tenant data to an unprivileged caller.',
+      legend: 'Scope values: all = every tenant; own = this tenant only; unexpected = an unanticipated role (the backend returns every tenant for it).',
+    },
+    meta: {
+      title: 'Response metadata',
+      lenNote: '(the backend takes the array length directly)',
+      echoBad: 'The echoed values do not match the query parameters.',
+      countMismatch: 'count does not match the actual number of events.',
+      countRelation: 'count = {count}, event array length = {len}.',
+      incomplete: 'This batch may be incomplete: rows that fail to scan are skipped silently, and nothing in the response reveals that.',
+      orderNote: 'The backend returns rows newest first, but there is no tiebreaker, so equal timestamps have an undefined relative order.',
+      orderBad: 'The sequence is not sorted newest first.',
+      sourceSet: 'Possible sources: {list}.',
+      eventSet: 'Event values depend on the source: auto = {auto}; manual = {manual}.',
+    },
+    events: {
+      title: 'Events',
+      empty: 'This credential/model pair has no state-change events (an empty array, not a missing field).',
+      shapeBad: 'The field shape of this row does not match its source (auto should have two fields always absent, manual five).',
+      kindBad: 'The event value of this row does not belong to its source.',
+      nullsFilled: 'Fields always absent on this row: {keys}',
+    },
+    field: {
+      null: 'not provided',
+      emptyString: '(empty string — not the same as "not provided")',
+    },
+    col: {
+      count: 'Rows',
+      ts: 'Time',
+      source: 'Source',
     },
   },
 } as const

@@ -15637,3 +15637,149 @@ router.beforeEach((to) => {
   已改用本仓既有定式 `--app-primary`（对齐 `ComplianceHitsView` 的 `.ch__chip--on`）。
 - ★ 顺带订正 `api/errorsTrend.ts` 模块头的**漂移行号**（`:1249` → `:1270`），
   并写明「行号只是**定位提示**，判据不得依赖它」。
+## 11.150 凭据模型状态变更历史接进 UI —— 批 113 那个坑的**变形实例**：`grep EffectiveTenantID` 找不到这一处（第一百一十四批）
+
+### 一、这批做了什么
+
+把 `modelHistory`（第 92 批建的 API 模块，**一直是孤儿**）接进移动端：
+
+| 项 | 值 |
+|---|---|
+| 视图 | `web-mobile/src/views/ModelHistoryView.vue` |
+| 判据 | `web-mobile/src/views/ModelHistoryView.spec.ts` **55 条** |
+| 路由 | `/model-history`，`meta.requiresRole: 'admin'` |
+| 抽屉席 | `model-history`，**`requiresRole: 'admin'`**（本仓第三个该档席） |
+| i18n | 前缀 `mh` + `nav.modelHistory` |
+| 孤儿 | 16 → **15** |
+
+★ API 层原本已有 **77 条**判据（`modelHistory.test.ts`，10 组）⇒ 本批**没有重做**它，
+只补了角色/参数两组 helper，并写了视图层。
+
+### 二、★★★★★★ 核心：批 113 的判别动作在这个家族上**会整个漏掉**
+
+§11.149 的判别动作是「顺着 `EffectiveTenantID*(r)` 读到底」。本族**照做会失手**：
+
+```go
+// admin/credential_monitor.go:1532-1535
+tenantID := ""
+if IsTenantAdmin(r) {
+    tenantID = GetTenantID(r)
+}
+```
+
+★ 这段与 `EffectiveTenantIDAll`（`admin/context.go:69-74`）**语义一模一样** ——
+非 `tenant_admin` 一律拿空串，而空串在两段 SQL 里都命中 `AND ($4 = '' OR …)`
+⇒ **查全租户**。★ 但它是**手写内联**的，**没有调用那个函数** ⇒
+`grep -rn 'EffectiveTenantID' --include=*.go .` **打不到这一处**。
+
+⇒★★ 升级后的判别动作（四问，顺序不能换）：
+1. 注册处传的**是哪个函数**（`h.admin` / `h.superAdmin` / 别的）？
+2. `h.admin` 包的是不是 `AdminMiddleware`？它**检不检 role**？
+3. handler **自己**检不检 role？
+4. ★★ **它取租户键的那段代码，逐字读** —— **不要按函数名 grep**，
+   因为「同一语义」完全可能是手写内联的。
+
+⇒ 批 113 与批 114 合起来是**同一个风险的两副面孔**：
+113 是「读了 `EffectiveTenantIDAll` 才发现空串=全租户」，
+114 是「**连 grep 都找不到**，只能靠逐字读」。
+
+### 三、处置与批 113 完全相同
+
+- 挂载 `admin/handler.go:1475` `monitorH.RegisterMonitorRoutes(mux, h.admin)`
+  ⇒ 整族 14 个端点同档（`credential_monitor.go:154-172`）
+- ⇒ 抽屉席 `requiresRole: 'admin'`；视图内再兜一层（`meta.requiresRole` 全仓无人读，深链照样打开）
+- ⚠️ **兜底不是修复**：后端对越权返 **200 + 全租户数据**，**根本没有 403**
+
+### 四、★ 本批挖出并修掉的两处「既有东西不可信」
+
+#### 4.1 批 113 的抽屉判据**是靠测试顺序才绿的**
+
+新增一条 `role=user` 断言时立刻打红。根因：`AppDrawer.spec.ts` 的
+`describe('navItemsFor')` **没有 `beforeEach`/`afterEach` 清理**，
+而它下面几条判据用 `mountDrawerAs` 挂到 `document.body`
+⇒ 抽屉**跨用例累积**，`document.querySelectorAll('.drawer__link')` 会扫到
+**上一个用例**留下的链接。
+
+⇒ ★★★ 批 113 的「role=user 看不到 errors-trend」当时**恰好是这个 describe 里
+第一个挂载用例**，前面是空的，所以它绿了 —— **阴性结论不可信**
+（同族：阴性结论要当缺陷一样复核）。已补上清理块。
+
+⇒ ★ 判别动作：**任何用 `attachTo: document.body` 的挂载式判据，
+先确认它所在的 `describe` 有没有 body 清理**。没有的话，
+「某条断言没红」可能只是被**前一个用例的残留**挡住了。
+
+#### 4.2 `w.html()` **会把模板注释一起序列化**
+
+判据 ⑥-2 断言「页面不会对用户说『键不存在』」却打红了 ——
+因为本视图的解释性注释里**逐字写着**「键不存在」这四个字
+（`<!-- ★★ (2) 键恒在，可为裸 null ⇒ 一律显示「未提供」而不是「键不存在」 -->`），
+而 `wrapper.html()` 会把注释原样序列化。
+
+⇒ 处置：断言面改取 **`w.text()`**（渲染出的文字），并在判据里写明原因。
+⇒ ★ 这是「注释里引用的字会把债钉死」的又一例，**而且是注释伤到**否定断言**：
+　注释写得越清楚，负断言越容易被打红。
+
+### 五、★ 变异 NO_EFFECT 当场顶出一个空缺分支
+
+首轮变异 **S20**（把 `modelEchoBad` 关掉）**NO_EFFECT** ——
+**没有任何判据覆盖 `raw_model_name` 的回显不匹配** ⇒ 那一支是死代码，
+整个删掉整套件照样全绿。
+
+⇒ 补判据 ⑪-3（回显 `raw_model_name` 对不上要报）+ ⑪-4（两个回显各自独立，
+只错一个不误报另一个）。补完 S20 有牙。
+
+⇒ ★ 与批 112 的 S16 同族但**成因相反**：那一轮是「只钉了『不该报』没钉『该出现的』」；
+　这一轮是「**两支回显只测了一支**」⇒ 判别动作：
+　**列出所有 `xxxBad` 告警，逐个问「它被哪条判据钉着」**，
+　别让它们成对出现时就默认两边都有覆盖。
+
+### 六、本族的数据语义（页面上逐条落地）
+
+1. **十个键全部恒在，其中六个可为裸 `null`** ——
+   `ModelHistoryEvent`（`credential_monitor.go:1369-1378`）**一个 `omitempty` 都没有**
+   ⇒ ★★★ `'probe_status' in ev` **永远为真**；判「有没有值」必须判 `!== null`。
+   ⇒ 页面一律显示「未提供」，**绝不**说「键不存在」。
+   ⇒ 桌面把这六个声明成 `?: string | null`（`web/src/api/credential-monitor.ts:330-337`）
+   ⇒ **桌面比现实宽松**。
+2. **auto 与 manual 的 null 分布恰好互补** ⇒ 本族最强的自验判据：
+   auto 行恒 2 个 `null`（`actor` / `reason`），
+   manual 行恒 5 个 `null`（`triggered_by` / `probe_status` / `http_status` /
+   `error_code` / `error_message`）。页面把每一行恒为 `null` 的键**逐条列出来**。
+3. **`reason` 的空被折叠成 `null`，而 `actor` 的空串原样保留**
+   （`:1416-1418` 的 `reason.Valid && reason.String != ""`）⇒
+   `actor` **可以是空串**，`reason` **不可能是空串** ⇒ 页面上两者显示得不一样。
+   ★ 「reason 永不为空串」是**恒真判据** ⇒ API 层**刻意不提供**，由注释承担契约。
+4. **`ORDER BY ts DESC` 无 tiebreak** ⇒ 只能断言「非升序」，
+   **不能**断言严格降序；**同时间戳并列不误报**是这条的正控。
+5. **scan 失败被 `continue` 静默跳过**（`:1405-1408`，只有 `slog.Warn`）
+   ⇒ 响应里**没有** `scan_failures` 字段 ⇒ 用户与客户端都看不出这批数据是否完整
+   ⇒ 页面**无条件**显示不完整性提示（这条判据**没有反面**）。
+6. **`queryInt` 解析失败静默回落默认值**（`handler.go:1534-1544`）
+   ⇒ `credential_id=abc` 回落 0 ⇒ 400，文案却说 **`credential_id required`**（像是「没传」）
+   ⇒ ⇒ 客户端**不能假设「400 就是参数非法」**；
+   页面据此在发请求前就拦掉非数字，并配了变异 S7 钉住这个守卫。
+7. **`credential_id == 0` 判 400，不是 `< 1`** ⇒ **负数能过后端那一关**
+   ⇒ 前端**刻意不拦负数**（拦了就是替后端加一条它没有的规则），
+   并用变异 **S8** 反向钉住「不许拦」。
+8. **`events` 是 `make([]ModelHistoryEvent, 0)`** ⇒ 空时是 `[]` 不是 `null`；
+   `count` 就是 `len(events)` ⇒ 页面把两个数都渲染出来。
+
+### 七、验证
+
+- 新增 `ModelHistoryView.spec.ts` **55 条**；`AppDrawer.spec.ts` 补 **2 条**
+  （另一处是在既有白名单断言里加了一句点名，防回归）
+- 全量 **7518 条 / 203 文件** rc=0（1 skipped）
+  （= 批 113 基线 7461 + 55 条视图判据 + 2 条抽屉判据 = 7518，分毫不差）
+- ★★★ 变异 **21/21 全有牙**（`/tmp/mut-co114.mjs`）
+  - 还原逐字节一致，**未用** `git checkout --`
+  - 收尾对**视图 / 导航 / API 模块三个文件**都做零残留复查
+  - ★ Go 源码**一条都不变异** —— 它们是被审计对象，改了等于把结论也改了
+  - ★ 本台同时变异 `src/api/modelHistory.ts`（那是**被测代码**，可以变异），
+    但**不跑**该模块自己的 77 条判据 ⇒ 度量的是「视图判据对 API helper 有没有牙」
+- 五门 rc=0（i18n parity 3321 → **3354 键** / 触控 R1 107 → **108 个 `.vue`** /
+  CSS 110 → **111 files** / `vue-tsc` / `comment:check` 442 → **444 文件**）
+  + `gate:selftest` **64 条** + `npm run build` rc=0
+- ★ 顺带订正 `api/modelHistory.ts` 模块头的**漂移行号**（挂载点 `:1453` → `:1475`），
+  并写明「行号只是**定位提示**，判据不得依赖它」；
+  同时订正第 (1)(11) 两条**漏了 `user` 角色**的租户结论（原第 (1) 条写的是
+  「不设 `requiresRole`」，第 (11) 条写的是「tenant_admin 只看自己租户；super_admin 看全部」）。

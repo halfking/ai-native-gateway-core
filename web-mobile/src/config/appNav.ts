@@ -447,6 +447,22 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.errorsTrend',
     requiresRole: 'admin',
   },
+  // ★★ 凭据模型状态变更历史（2026-10-14 第一百一十四批）——
+  //   挂载 `admin/handler.go:1475` `monitorH.RegisterMonitorRoutes(mux, h.admin)`
+  //   ⇒ 是 **admin 档**，与上面 errors-trend **同档同处置**。
+  // ⚠️ 同样要设 `requiresRole: 'admin'` 而不是缺省：这一族的租户键是
+  //   **手写内联**的 `tenantID := ""; if IsTenantAdmin(r) { … }`
+  //   （admin/credential_monitor.go:1532-1535），与 `EffectiveTenantIDAll` 语义相同
+  //   但**不叫那个名字** ⇒ ★★ grep `EffectiveTenantID` 找不到这一处。
+  // ⇒ 缺省会让 effective role 为 `user` 的主体读到全租户模型状态历史。
+  // ⚠️ 它**不得**进 `AppDrawer.spec.ts` 的 superAdmin 白名单（tenant_admin 要能看到）。
+  {
+    key: 'model-history',
+    to: '/model-history',
+    icon: 'server',
+    titleKey: 'nav.modelHistory',
+    requiresRole: 'admin',
+  },
   // ★ 加这一席**必须**同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
   {
     key: 'routing-policy',

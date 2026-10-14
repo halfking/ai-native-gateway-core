@@ -736,6 +736,27 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'et.title', requiresAuth: true, requiresRole: 'admin' },
   },
   {
+    // ★★ 凭据模型状态变更历史（2026-10-14 第一百一十四批）。
+    //   挂载 `admin/handler.go:1475` `monitorH.RegisterMonitorRoutes(mux, h.admin)`
+    //   ⇒ **admin 档**，tenant_admin 本该可用。
+    // ⚠️⚠️ 但 `requiresRole` 设的是 **`'admin'` 而不是缺省**，与「admin 档 ⇒ 不设」
+    //   的旧口径相反。根因（`api/modelHistory.ts` 文件头 (1b)）：
+    //   `RegisterMonitorRoutes` 包的是 `AdminMiddleware`（不检 role），
+    //   `handleModelHistory` 自己也不检，而租户键是**手写内联**的
+    //   ```go
+    //   tenantID := ""
+    //   if IsTenantAdmin(r) { tenantID = GetTenantID(r) }
+    //   ```
+    //   ⇒ 与 `EffectiveTenantIDAll` 语义相同但**不叫那个名字** ⇒ grep 不到
+    //   ⇒ 非 tenant_admin 一律空串 ⇒ 两段 SQL 的 `$4 = ''` 放行 ⇒ **全租户**。
+    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（守卫只查登录态）
+    //   ⇒ 这一行是为将来的守卫预留的，不是生效中的拦截。
+    path: '/model-history',
+    name: 'model-history',
+    component: () => import('@/views/ModelHistoryView.vue'),
+    meta: { titleKey: 'mh.title', requiresAuth: true, requiresRole: 'admin' },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),

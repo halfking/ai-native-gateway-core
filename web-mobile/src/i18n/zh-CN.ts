@@ -21,6 +21,7 @@ export const zhCN = {
     reportRollup: '对账报表',
     dispatchJournal: '调度轨迹',
     errorsTrend: '错误趋势',
+    modelHistory: '模型状态历史',
     modelIntegrityDrift: '指纹漂移',
     modelPolicies: '模型策略',
     modelPolicyAudit: '策略审计',
@@ -3991,6 +3992,56 @@ sctx: {
       bySupplier: '按供应商',
       byErrorType: '按错误类型',
       credentialId: '凭据 ID',
+    },
+  },
+
+  // ★★ 凭据模型状态变更历史（2026-10-14，第一百一十四批）。
+  mh: {
+    title: '模型状态历史',
+    load: '查询',
+    reload: '重新查询',
+    nope: '当前角色无权访问本页。',
+    query: {
+      title: '查询条件',
+      credentialId: '凭据 ID',
+      rawModelName: '模型名（raw_model_name）',
+      limit: '条数上限（{min}–{max}，默认 {def}）',
+      note: '凭据 ID 为 0 会被后端拒；条数超范围会被拒。但这两个值填非数字时后端会静默回落到默认值，不会报错。',
+      paramsBad: '凭据 ID 不能是 0，条数必须落在 {min}–{max}。',
+    },
+    scope: {
+      // ★★ 图例另起一条，不与 {scope} 同句 —— 同句时模板串自带这些字面量，
+      //   会让针对 {scope} 的断言恒真（批 113 变异 S4 顶出来过）。
+      note: '本批数据的租户口径：{scope}。这不是权限门，后端对越权仍会返回全租户数据。',
+      legend: '口径取值：all = 全租户；own = 仅本租户；unexpected = 非预期角色（后端按全租户返回）。',
+    },
+    meta: {
+      title: '响应元信息',
+      lenNote: '（后端直接取数组长度）',
+      echoBad: '回显与查询条件不一致。',
+      countMismatch: 'count 与 events 的实际条数不一致。',
+      countRelation: 'count = {count}，事件数组长度 = {len}。',
+      incomplete: '这批数据可能不完整：个别行解析失败会被静默跳过，响应里没有任何提示。',
+      orderNote: '后端按时间倒序返回，但同一条时间戳内没有次级排序，所以并列项的先后不保证。',
+      orderBad: '序列未按时间倒序排列。',
+      sourceSet: '来源取值：{list}。',
+      eventSet: '事件取值随来源变化：auto = {auto}；manual = {manual}。',
+    },
+    events: {
+      title: '事件',
+      empty: '该凭据与模型名下没有任何状态变更事件（空数组，不是缺失）。',
+      shapeBad: '这一行的字段形状与它的来源对不上（auto 应有两个字段恒为未提供，manual 应有五个）。',
+      kindBad: '这一行的事件取值不属于它的来源。',
+      nullsFilled: '本行恒为未提供的字段：{keys}',
+    },
+    field: {
+      null: '未提供',
+      emptyString: '（空串，与「未提供」不是一回事）',
+    },
+    col: {
+      count: '条数',
+      ts: '时间',
+      source: '来源',
     },
   },
 } as const
