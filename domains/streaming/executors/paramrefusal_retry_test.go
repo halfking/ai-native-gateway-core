@@ -13,11 +13,10 @@ package executors
 //   - 预算：每请求 1 次，第二次指名不再剥。
 //
 // 与 reqprobe_integration_test.go 的分工：那边测 reqprobe 通道；这边测
-// paramrefusal 通道（RequestProbe 故意不接线 = 隔离变量；stream_options 在
+// paramrefusal 通道（RequestProbe 故意不接线 = 隔离变量；service_tier 在
 // reqprobe 骨架保护集里，另一个用例专门验证两机制并存的生产行为）。
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -46,7 +45,7 @@ func paramRefusalChatCandidate(baseURL string) provider.Candidate {
 	}
 }
 
-const paramRefusalStreamOptionsBody = `{"model":"grok-4.6","messages":[{"role":"user","content":"hi"}],"stream":false,"stream_options":{"include_usage":true}}`
+const paramRefusalOptionalBody = `{"model":"grok-4.6","messages":[{"role":"user","content":"hi"}],"stream":false,"service_tier":"default"}`
 
 const paramRefusalChatOK = `{"id":"c1","object":"chat.completion","model":"grok-4.6","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`
 
@@ -84,11 +83,11 @@ func TestParamRefusalStripRetryRecovers(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		rec.record(r)
-		// 前提在场之一：首发（带 stream_options）被 400 点名拒绝。
-		if strings.Contains(rec.snapshot()[rec.len()-1], `"stream_options"`) {
+		// 前提在场之一：首发（带 service_tier）被 400 点名拒绝。
+		if strings.Contains(rec.snapshot()[rec.len()-1], `"service_tier"`) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"error":{"message":"Unknown parameter: 'stream_options'.","type":"invalid_request_error","param":"stream_options","code":"unknown_parameter"}}`))
+			_, _ = w.Write([]byte(`{"error":{"message":"Unknown parameter: 'service_tier'.","type":"invalid_request_error","param":"service_tier","code":"unknown_parameter"}}`))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -105,7 +104,7 @@ func TestParamRefusalStripRetryRecovers(t *testing.T) {
 	_, err := exec.executeOpenAI(&ExecParams{
 		W:                 httptest.NewRecorder(),
 		R:                 httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
-		BodyBytes:         []byte(paramRefusalStreamOptionsBody),
+		BodyBytes:         []byte(paramRefusalOptionalBody),
 		ClientModel:       "grok-4.6",
 		ClientProtocol:    "openai-completions",
 		ClientID:          identity.ClientIdentity{IdentityHash: "paramrefusal-retry"},
@@ -120,12 +119,12 @@ func TestParamRefusalStripRetryRecovers(t *testing.T) {
 	}
 	bodies := rec.snapshot()
 	// 前提在场之二：第 1 个请求体确实带了被拒字段。
-	if !strings.Contains(bodies[0], `"stream_options"`) {
-		t.Fatalf("premise missing: first upstream body lacks stream_options: %s", bodies[0])
+	if !strings.Contains(bodies[0], `"service_tier"`) {
+		t.Fatalf("premise missing: first upstream body lacks service_tier: %s", bodies[0])
 	}
 	// 剔除后重试体不再携带。
-	if strings.Contains(bodies[1], `"stream_options"`) {
-		t.Fatalf("retry body still carries stream_options: %s", bodies[1])
+	if strings.Contains(bodies[1], `"service_tier"`) {
+		t.Fatalf("retry body still carries service_tier: %s", bodies[1])
 	}
 	if !strings.Contains(bodies[1], `"messages"`) {
 		t.Fatalf("retry body lost messages (over-strip): %s", bodies[1])
@@ -135,8 +134,8 @@ func TestParamRefusalStripRetryRecovers(t *testing.T) {
 		t.Fatalf("extra-call meter = %d, want 1", got)
 	}
 	// 记忆已写入 (provider, model, wire) 键。
-	if got := store.StrippableFields(88, "grok-4.6", "openai-completions"); len(got) != 1 || got[0] != "stream_options" {
-		t.Fatalf("memory = %v, want [stream_options]", got)
+	if got := store.StrippableFields(88, "grok-4.6", "openai-completions"); len(got) != 1 || got[0] != "service_tier" {
+		t.Fatalf("memory = %v, want [service_tier]", got)
 	}
 }
 
@@ -146,10 +145,10 @@ func TestParamRefusalMemoryAppliedOnSecondExecution(t *testing.T) {
 	rec := &paramRefusalRecorder{}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec.record(r)
-		if strings.Contains(rec.snapshot()[rec.len()-1], `"stream_options"`) {
+		if strings.Contains(rec.snapshot()[rec.len()-1], `"service_tier"`) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"error":{"message":"Unknown parameter: 'stream_options'.","type":"invalid_request_error","code":"unknown_parameter"}}`))
+			_, _ = w.Write([]byte(`{"error":{"message":"Unknown parameter: 'service_tier'.","type":"invalid_request_error","code":"unknown_parameter"}}`))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -163,7 +162,7 @@ func TestParamRefusalMemoryAppliedOnSecondExecution(t *testing.T) {
 		return &ExecParams{
 			W:              httptest.NewRecorder(),
 			R:              httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
-			BodyBytes:      []byte(paramRefusalStreamOptionsBody),
+			BodyBytes:      []byte(paramRefusalOptionalBody),
 			ClientModel:    "grok-4.6",
 			ClientProtocol: "openai-completions",
 			ClientID:       identity.ClientIdentity{IdentityHash: "paramrefusal-mem"},
@@ -190,8 +189,8 @@ func TestParamRefusalMemoryAppliedOnSecondExecution(t *testing.T) {
 		t.Fatalf("second round total calls = %d, want 3 (memory → single clean call)", rec.len())
 	}
 	third := rec.snapshot()[2]
-	if strings.Contains(third, `"stream_options"`) {
-		t.Fatalf("memory not applied: third request still carries stream_options: %s", third)
+	if strings.Contains(third, `"service_tier"`) {
+		t.Fatalf("memory not applied: third request still carries service_tier: %s", third)
 	}
 }
 
@@ -449,17 +448,17 @@ func TestParamRefusalReactiveRetryBodyAppliesMemory(t *testing.T) {
 	}
 }
 
-// ── 用例 7：与 reqprobe 并存（stream_options 在 reqprobe 骨架保护集里，
-// 生产 v2 装配下只有 paramrefusal 能救——2026-10-13 三案的真实形态） ────
+// ── 用例 7（P0-B）：RequestProbe 与 paramrefusal 并存时，非骨架可选字段
+// （service_tier）仍能剥参重试；学习写入 RequestProbe（拒绝即学习）。────
 
 func TestParamRefusalCoexistsWithReqprobeSkeletonField(t *testing.T) {
 	rec := &paramRefusalRecorder{}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec.record(r)
-		if strings.Contains(rec.snapshot()[rec.len()-1], `"stream_options"`) {
+		if strings.Contains(rec.snapshot()[rec.len()-1], `"service_tier"`) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"error":{"message":"Unknown parameter: 'stream_options'.","type":"invalid_request_error","param":"stream_options","code":"unknown_parameter"}}`))
+			_, _ = w.Write([]byte(`{"error":{"message":"Unknown parameter: 'service_tier'.","type":"invalid_request_error","param":"service_tier","code":"unknown_parameter"}}`))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -467,8 +466,6 @@ func TestParamRefusalCoexistsWithReqprobeSkeletonField(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	// 生产形态装配：RequestProbe（MemoryStore + Coordinator）与 paramrefusal
-	// 同时在场。
 	exec := newOverloadTestExecutor()
 	coord := reqprobe.NewCoordinator(reqprobe.NewMemoryStore())
 	defer coord.Close()
@@ -479,7 +476,7 @@ func TestParamRefusalCoexistsWithReqprobeSkeletonField(t *testing.T) {
 	_, err := exec.executeOpenAI(&ExecParams{
 		W:              httptest.NewRecorder(),
 		R:              httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
-		BodyBytes:      []byte(paramRefusalStreamOptionsBody),
+		BodyBytes:      []byte(paramRefusalOptionalBody),
 		ClientModel:    "grok-4.6",
 		ClientProtocol: "openai-completions",
 		ClientID:       identity.ClientIdentity{IdentityHash: "paramrefusal-coexist"},
@@ -489,32 +486,23 @@ func TestParamRefusalCoexistsWithReqprobeSkeletonField(t *testing.T) {
 	}
 	bodies := rec.snapshot()
 	if len(bodies) != 2 {
-		t.Fatalf("calls = %d, want 2 (reqprobe declines skeleton field; paramrefusal strips + retries)", len(bodies))
+		t.Fatalf("calls = %d, want 2 (named optional strip + retry)", len(bodies))
 	}
-	if strings.Contains(bodies[1], `"stream_options"`) {
-		t.Fatalf("retry body still carries stream_options: %s", bodies[1])
-	}
-	if got := store.StrippableFields(88, "grok-4.6", "openai-completions"); len(got) != 1 || got[0] != "stream_options" {
-		t.Fatalf("memory = %v, want [stream_options]", got)
+	if strings.Contains(bodies[1], `"service_tier"`) {
+		t.Fatalf("retry body still carries service_tier: %s", bodies[1])
 	}
 }
 
-// ── 用例 8：流式 chat 腿（executor 注入的 stream_options 被拒 → 剥除重试
-// 后 SSE 正常回传——r1026 家族在 chat 腿的生产行为） ────────────────────
+// ── 用例 8（P0-B）：chat 线注入的 stream_options 被拒时不再剥参重试
+// （usage 契约骨架保护）。前提：首发确实带 stream_options。──────────────
 
 func TestParamRefusalStreamingChatStripRetry(t *testing.T) {
 	rec := &paramRefusalRecorder{}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec.record(r)
-		if strings.Contains(rec.snapshot()[rec.len()-1], `"stream_options"`) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"error":{"message":"Unknown parameter: 'stream_options'.","type":"invalid_request_error","code":"unknown_parameter"}}`))
-			return
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
-		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"Unknown parameter: 'stream_options'.","type":"invalid_request_error","code":"unknown_parameter"}}`))
 	}))
 	defer upstream.Close()
 
@@ -532,23 +520,25 @@ func TestParamRefusalStreamingChatStripRetry(t *testing.T) {
 		ClientProtocol: "openai-completions",
 		ClientID:       identity.ClientIdentity{IdentityHash: "paramrefusal-stream"},
 	}, paramRefusalChatCandidate(upstream.URL), 0, time.Now(), nil)
-	if err != nil {
-		t.Fatalf("executeOpenAI: %v", err)
-	}
+	_ = err
 	bodies := rec.snapshot()
-	if len(bodies) != 2 {
-		t.Fatalf("calls = %d, want 2 (stream injection rejected once, then stripped)", len(bodies))
+	if len(bodies) < 1 {
+		t.Fatal("expected at least one upstream call")
 	}
-	// 前提在场：首发带 stream_options（本用例里它来自 executor 注入，
-	// 客户端没发——r1026 家族的真实形态）。
+	// 前提在场：executor 注入了 stream_options。
 	if !strings.Contains(bodies[0], `"stream_options"`) {
 		t.Fatalf("premise missing: first body lacks injected stream_options: %s", bodies[0])
 	}
-	if strings.Contains(bodies[1], `"stream_options"`) {
-		t.Fatalf("retry body still carries stream_options: %s", bodies[1])
+	// P0-B：chat 线不剥 stream_options → 不应出现第二轮「已剥」请求。
+	for i, b := range bodies {
+		if i == 0 {
+			continue
+		}
+		if !strings.Contains(b, `"stream_options"`) {
+			t.Fatalf("call %d stripped stream_options on chat wire (P0-B forbids): %s", i+1, b)
+		}
 	}
-	// 客户端拿到正常 SSE 流。
-	if !strings.Contains(clientRec.Body.String(), "[DONE]") {
-		t.Fatalf("client did not receive the SSE stream: %q", clientRec.Body.String())
+	if got := store.StrippableFields(88, "grok-4.6", "openai-completions"); len(got) != 0 {
+		t.Fatalf("chat wire must not remember stream_options, got %v", got)
 	}
 }

@@ -56,7 +56,14 @@ func (m *MemoryStore) Upsert(_ context.Context, rec Record) (Record, error) {
 		existing := el.Value.(*memEntry)
 		e := &existing.rec
 		e.Occurrences += rec.Occurrences
-		e.RecoveredCount += rec.RecoveredCount
+		// P0-B：RecoveredCount 取 max 而非累加。拒绝即学习会在每次
+		// recovered=false 的点名拒绝上再带 RecoveredCount=1；累加会把
+		// 「学过一次」抬成 N，混淆「剔除成功次数」观测，且破坏
+		// TestMemoryStoreRoundTrip 的「二次失败 recovered 保持 1」契约。
+		// LearnedParams 只看 >0，max 语义足够。
+		if rec.RecoveredCount > e.RecoveredCount {
+			e.RecoveredCount = rec.RecoveredCount
+		}
 		e.LastSeen = rec.LastSeen
 		if rec.LastRequestID != "" {
 			e.LastRequestID = rec.LastRequestID

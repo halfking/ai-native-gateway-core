@@ -162,6 +162,10 @@ func (w *Writer) SetCredentialUnavailable(ctx context.Context, credentialID int,
 	if !w.Enabled() {
 		return ErrNoDatabase
 	}
+	// P0-C：PenaltyNone（client_bug / shape / content_filter…）永不冷却凭据。
+	if errorsx.PenaltyOf(failure.Kind).Target == errorsx.PenaltyNone {
+		return nil
+	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	recoverAt := time.Now().UTC().Add(coolingDuration(failure.Kind, failure.RetryAfter))
@@ -221,6 +225,10 @@ func (w *Writer) SetCredentialUnavailable(ctx context.Context, credentialID int,
 func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel string, failure Failure) error {
 	if !w.Enabled() {
 		return ErrNoDatabase
+	}
+	// P0-C：归责 none 的失败不写冷却/配额态（避免形状 400 级联摘节点）。
+	if errorsx.PenaltyOf(failure.Kind).Target == errorsx.PenaltyNone {
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -594,6 +602,10 @@ func (w *Writer) writeModelNotFoundTiered(
 const maxCoolingDuration = 24 * time.Hour
 
 func coolingDuration(kind errorsx.ErrorKind, retryAfter time.Duration) time.Duration {
+	// P0-C：PenaltyNone 冷却时长为 0（调用方仍应先用 PenaltyOf 短路）。
+	if errorsx.PenaltyOf(kind).Target == errorsx.PenaltyNone {
+		return 0
+	}
 	if retryAfter > 0 {
 		if retryAfter > maxCoolingDuration {
 			return maxCoolingDuration
@@ -705,64 +717,13 @@ func inferQuotaRecoverAtNow(detail string, nowArg time.Time) time.Time {
 	return midnightUTC(now.AddDate(0, 0, 1))
 }
 
-// parseQuotaResetTimestamp scans the body for a YYYY-MM-DD HH:MM:SS
-// timestamp and returns it. Returns false when no parseable timestamp
-// is found or when the timestamp is already in the past (caller falls
-// back to day-based heuristic).
+// parseQuotaResetTimestamp 是 errorsx.ParseQuotaResetAt 的薄包装（P0-C：
+// 单一重置解析器）。旧实现只扫 YYYY-MM-DD HH:MM:SS 且一律按 UTC 解释，
+// 会把「北京时间」文案算错；新解析器覆盖相对时长 / 中英文 / \uXXXX /
+// 时区提示。无命中时返回 false，由 inferQuotaRecoverAtNow 走日界启发式。
 func parseQuotaResetTimestamp(detail string) (time.Time, bool) {
-	lower := strings.ToLower(detail)
-	for _, layout := range []string{
-		"2006-01-02 15:04:05",
-		"2006-01-02T15:04:05",
-		"2006/01/02 15:04:05",
-		"2006/01/02T15:04:05",
-	} {
-		const window = 19
-		if len(lower) < window {
-			continue
-		}
-		for i := 0; i+window <= len(lower); i++ {
-			candidate := lower[i : i+window]
-			if !looksLikeTimestamp(candidate, layout) {
-				continue
-			}
-			t, err := time.ParseInLocation(layout, candidate, time.UTC)
-			if err != nil {
-				continue
-			}
-			if t.Before(time.Now().Add(-1 * time.Minute)) {
-				return time.Time{}, false
-			}
-			return t, true
-		}
-	}
-	return time.Time{}, false
+	return errorsx.ParseQuotaResetAt([]byte(detail), time.Now())
 }
-
-func looksLikeTimestamp(s, layout string) bool {
-	if len(s) != len(layout) {
-		return false
-	}
-	for i, r := range layout {
-		switch r {
-		case '2', '1', '0', '6', '5', '4':
-			if !isDigit(s[i]) {
-				return false
-			}
-		default:
-			if r == ' ' {
-				if s[i] != ' ' && s[i] != 'T' && s[i] != 't' {
-					return false
-				}
-			} else if byte(s[i]) != byte(r) {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func isDigit(b byte) bool { return b >= '0' && b <= '9' }
 
 func midnightUTC(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)

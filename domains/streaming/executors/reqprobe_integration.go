@@ -55,6 +55,9 @@ type reqProbeRuntime struct {
 
 // reqprobeApplyLearned 在首次出站前应用已学习的参数剔除规则。
 // 返回（可能被修改的）body。
+//
+// P0-B：按 cand.Protocol（线格式）做骨架判定——responses 线可剥
+// stream_options，chat 线仍保护。
 func (e *Executor) reqprobeApplyLearned(body []byte, cand provider.Candidate, requestID string) []byte {
 	if e.RequestProbe == nil {
 		return body
@@ -63,7 +66,7 @@ func (e *Executor) reqprobeApplyLearned(body []byte, cand provider.Candidate, re
 	if len(learned) == 0 {
 		return body
 	}
-	out, stripped := reqprobe.StripParams(body, strings.Join(learned, ","))
+	out, stripped := reqprobe.StripParamsForWire(body, strings.Join(learned, ","), cand.Protocol)
 	if len(stripped) == 0 {
 		return body
 	}
@@ -71,6 +74,7 @@ func (e *Executor) reqprobeApplyLearned(body []byte, cand provider.Candidate, re
 		"request_id", requestID,
 		"provider_id", cand.ProviderID,
 		"raw_model", cand.RawModel,
+		"wire", cand.Protocol,
 		"stripped", strings.Join(stripped, ","),
 	)
 	return out

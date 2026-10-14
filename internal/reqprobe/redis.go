@@ -71,7 +71,11 @@ func (s *RedisStore) Upsert(ctx context.Context, rec Record) (Record, error) {
 			rec.ID = old.ID
 			// Coordinator 每次事件记 Occurrences=1，合并语义 = 旧值+1。
 			rec.Occurrences += old.Occurrences
-			rec.RecoveredCount += old.RecoveredCount
+			// P0-B：与 MemoryStore 对齐，RecoveredCount 取 max（拒绝即学习
+			// 反复带 1 时不累加抬高）。
+			if old.RecoveredCount > rec.RecoveredCount {
+				rec.RecoveredCount = old.RecoveredCount
+			}
 			rec.FirstSeen = old.FirstSeen
 			if old.Resolved && !rec.Resolved {
 				// 已解决的指纹再次出现：重新翻开（未解决），运维需要

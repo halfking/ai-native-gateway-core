@@ -716,7 +716,16 @@ func (e *Executor) finalizeAnthropicRequestBody(params *ExecParams, cand provide
 	} else if params != nil && len(runnerMeta) > 0 {
 		params.CompressionRunnerMeta = runnerMeta
 	}
-	return e.applyParamguardLedger(params, bodyBytes, paramreg.DialectAnthropic)
+	bodyBytes = e.applyParamguardLedger(params, bodyBytes, paramreg.DialectAnthropic)
+	// P0-B：Anthropic 出站腿接入同一 reqprobe 学后剔除 choke point。
+	// 剥参重试仍不在本执行器自动尝试（Q4 直传体中途改写会破坏字节契约，
+	// 见下方 RecordTerminal 注释）——但「已学字段」必须在首发前剥掉，
+	// 否则 chat 腿学到的可选字段在 anthropic 腿仍每请求吃一次 400。
+	requestID := ""
+	if params != nil {
+		requestID = params.RequestID
+	}
+	return e.reqprobeApplyLearned(bodyBytes, cand, requestID)
 }
 
 // executeAnthropic is the Q3/Q4 (anthropic-messages upstream) path of
@@ -1344,17 +1353,17 @@ func (e *Executor) executeAnthropicOnce(
 		outcome := ae.StreamResponse(streamReaderContext(params, resp), responseSink(params), resp)
 		if outcome.Interrupted && (outcome.Reason == "client_cancel" || outcome.Kind == errorsx.KindCanceled) {
 			return &ExecuteResult{
-					Response:    resp,
-					Candidate:   cand,
-					LatencyMs:   latencyMs,
-					RequestBody: append([]byte(nil), bodyBytes...),
-					InboundBody: sourceBody,
-				}, &streamInterruptedError{
-					reason:       outcome.Reason,
-					credentialID: cand.CredentialID,
-					resumable:    false,
-					kind:         errorsx.KindCanceled,
-				}
+				Response:    resp,
+				Candidate:   cand,
+				LatencyMs:   latencyMs,
+				RequestBody: append([]byte(nil), bodyBytes...),
+				InboundBody: sourceBody,
+			}, &streamInterruptedError{
+				reason:       outcome.Reason,
+				credentialID: cand.CredentialID,
+				resumable:    false,
+				kind:         errorsx.KindCanceled,
+			}
 		}
 		if outcome.Interrupted {
 			streamKind := outcome.Kind

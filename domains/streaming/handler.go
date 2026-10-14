@@ -5259,6 +5259,13 @@ goalRetryLoopDone:
 					"attempts":          execErrTyped.Attempts,
 				}
 				w.Header().Set("X-Gateway-Last-Kind", string(execErrTyped.LastKind))
+				// P0-D quotaHeld：Tried=0 + quota 族 = 未打上游的全额度耗尽。
+				if status, retryAfter, ok := quotaHeldClientSurface(execErrTyped.Tried, execErrTyped.LastKind); ok {
+					credHTTPStatus = status
+					w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+					debugInfo["retry_after"] = retryAfter
+					debugInfo["quota_held"] = true
+				}
 				if preStreamPrepared {
 					writePrewarmedStreamError(w, i18n.T(r.Context(), credI18nKey), credErrType, credCode)
 					return
@@ -9088,6 +9095,27 @@ func classifyUpstreamCredentialFailure(kind errorsx.ErrorKind, upstreamStatus in
 		return "upstream_quota_generic", i18n.MsgUpstreamQuotaGeneric, http.StatusBadGateway, "insufficient_quota"
 	}
 	return "", "", 0, ""
+}
+
+// isQuotaHeldKind reports whether kind is the quota/balance family that
+// P0-D quotaHeld may surface with Tried=0 (no upstream probe). Auth
+// revocations are excluded — those stay 502.
+func isQuotaHeldKind(kind errorsx.ErrorKind) bool {
+	switch kind {
+	case errorsx.KindQuota, errorsx.KindQuotaBalance, errorsx.KindQuotaPeriodic, errorsx.KindQuotaPermanent:
+		return true
+	default:
+		return false
+	}
+}
+
+// quotaHeldClientSurface maps P0-D quotaHeld（Tried=0 + quota 族）到
+// 429 + Retry-After。真上游 402（Tried>0）不改写，仍走 classify 的 502。
+func quotaHeldClientSurface(tried int, kind errorsx.ErrorKind) (status, retryAfter int, ok bool) {
+	if tried != 0 || !isQuotaHeldKind(kind) {
+		return 0, 0, false
+	}
+	return http.StatusTooManyRequests, 30, true
 }
 
 // defaultOverloadRetryAfterSeconds is the client-facing wait advertised when
