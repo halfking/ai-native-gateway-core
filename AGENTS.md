@@ -1902,3 +1902,28 @@ streaming 全包 150s 绿。154 终验：拦截请求三件套全绿（终态带
 3. 隔离 PG（127.0.0.1:54999，上轮并行会话留的）若还在可直接复用真库判据。
 4. 上轮遗留继续跟踪：probe_direct_auth_failed 主体、fail-open 占位符
    透传根因、601,914 行还原半程（读取方代码）。
+
+> **r1030b（2026-10-14，提交 ec9d2f3f0，随本地 2629 / 245=2630 / 154=2631 /
+> 211 docker 上线）**：多模型 tool×脱敏还原 E2E 战役（MiniMax-M3/glm-5.3/
+> grok-4.6/claude-sonnet-5 × chat/responses × merge/audit × 11 目录 × 2 轮）。
+> 两网关缺陷修复：① **引号包裹 marker 还原**——模型把占位符加引号回显
+> （`\"{\\\"SENSITIVE:secret:1\\\"}\"`）时 loose 文法不接受内侧引号 → 还原
+> miss → 输出合规整流 output_policy_blocked；修复=span 解析容忍**首尾同现**
+> 一层引号（双边条件保 r1022 单侧尾引号契约——normalizePlaceholder 丢空格
+> 会让无引号形态解析成垃圾类型，这是隐藏耦合）+ 前缀扣留左右独立 Trim +
+> 超长释放阀。② **Responses 同轮合并**——parse_responses 把相邻
+> [message, function_call] 拆成两条 assistant，MiniMax 读史错乱停止发 tool
+> call；修复=并入前条 assistant（chat 线标准历史形状）。
+> **部署运维缺口收口**：deploy-211-docker.sh 原缺迁移腿（deploy-seamless 有
+> deploy_apply_pending_migrations）——211 库从 mac dump 恢复止于 851，新二进制
+> 探测 `_request_logs_hot`（860 改名后）失败**静默降级 lite 且重启不自愈**；
+> 已在脚本网关启动前加幂等序列重放（fail 硬门）。
+> **判据纪律增量（承 r1030 系列）**：手写帧序列若形态走不到被测分支=假绿（释放阀第一版测试
+> 普通长文本立即否定前缀、永远到不了超长分支；重写为引号跑列才红）。
+> **E2E 结论**：本地有效 32/32；四台部署各自 PASS（245 MiniMax chat+grok
+> responses、154 glm chat+MiniMax/claude responses、211 全模型 responses+chat，
+> SSH 参数 host/username/password 真值逐字还原）。grok-4.6 chat 在 211 的
+> 编造凭据残留属模型行为（r1013 契约阻断正确）。铸 key 路径：生产 admin
+> 登录=`/api/auth/token`、建 key=`/api/keys`+显式 key_alias、245/154 共享
+> SECRET_KEY 一个 key 两台通用。
+> 详见 `docs/audit/2026-10-14-r1030b-多模型tool脱敏还原E2E战役.md`。
