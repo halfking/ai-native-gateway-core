@@ -133,7 +133,7 @@ V2 调度、项目归属、网关准入、代理、阈值表、节点故障转�
 | MNF 连败冷却 | settings/spec_thresholds.go | 见 SPECS 表 |
 | 压缩/compaction 家族 | settings/spec_compression.go + 内部 | 大部分入 SPECS 表 |
 | URSM v2 | domains/ursm/v2/config.go | **无前缀**；off/shadow/canary/authoritative |
-| 保留窗口 / vacuum | URSM_SNAPSHOT_RETENTION_DAYS 等 | 默认 30d / 7d |
+| 保留窗口 / vacuum | URSM_SNAPSHOT_RETENTION_DAYS 等 | 快照默认 **7d**（2026-10-14 由 30d 改，见 runbook §10.110.34）/ 其余 7d |
 | Hotzone / 请求归档 / 原始日志 / 完整性采集 | internal/requestarchive 等 | 默认关 |
 | 调度 / pending / 幂等 | dispatch 族 | 队列后端与 governor 可换 |
 | 路由评分权重 / 压力感知曲线 | routing w_* / pressure α·β·knee·γ | 多目标打分与压力拐点 |

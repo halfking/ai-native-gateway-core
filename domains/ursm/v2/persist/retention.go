@@ -30,23 +30,38 @@ import (
 // SnapshotRetentionConfig 控制快照保留行为。Retention <= 0 表示禁用
 // （Start 变为 no-op），用于运维显式关闭清理。
 type SnapshotRetentionConfig struct {
-	Retention        time.Duration // 保留窗口，默认 30 天（URSM_SNAPSHOT_RETENTION_DAYS）
+	Retention        time.Duration // 保留窗口，默认 7 天（URSM_SNAPSHOT_RETENTION_DAYS）
 	BatchSize        int           // 单批删除行数，默认 5000
 	MaxCleanupWindow time.Duration // 单轮清理的墙钟上限，默认 10 分钟
 }
 
-// DefaultSnapshotRetentionConfig 返回默认配置。30 天审计窗口与容量基线
-// 报告的建议一致（快照仅用于 URSM v2 cutover 前后的状态审计/比对）。
+// DefaultSnapshotRetentionConfig 返回默认配置。
+//
+// ★ 默认值由 30 天改为 **7 天**（2026-10-14）。理由不是「7 天更省」，而是
+//
+//	**默认值必须等于生产实际生效的值**，否则默认值就成了一个静默的定时炸弹。
+//
+//	实测（§10.110.33 §四）：245 与 154 共用同一张表，生效窗口取两者的 min
+//	⇒ min(7, 30) = 7。也就是说 30 天这个默认值**今天完全没在起作用**，
+//	它只在「env 丢失」那一刻接管 —— 而那一刻的后果是分区 8 → 31、体积
+//	4~7 GB → 13~19 GB（设计文档 2026-10-04-ursm-snapshot-partitioning-design.md
+//	§9 Finding E，本轮独立推导得 ~17 GB，两路收敛）。
+//
+//	改成 7 天后：env 丢失 ⇒ 仍是 7 天 ⇒ 与今天一致。**生产行为零变化。**
+//	而「245 掉线导致回落 30 天」这个悬崖被拆掉了。
+//
+//	保留期是**可配置**的（URSM_SNAPSHOT_RETENTION_DAYS），要 30 天审计窗口
+//	显式设 30 即可 —— 但请先读 §10.110.33 §五：那是 17 GB 量级。
 func DefaultSnapshotRetentionConfig() SnapshotRetentionConfig {
 	return SnapshotRetentionConfig{
-		Retention:        30 * 24 * time.Hour,
+		Retention:        7 * 24 * time.Hour,
 		BatchSize:        5000,
 		MaxCleanupWindow: 10 * time.Minute,
 	}
 }
 
 // SnapshotRetentionConfigFromEnv 读取 URSM_SNAPSHOT_RETENTION_DAYS。
-// 未设置时用默认 30 天；显式设置 0 或负数禁用清理；非法值忽略（保持默认）。
+// 未设置时用默认 7 天；显式设置 0 或负数禁用清理；非法值忽略（保持默认）。
 func SnapshotRetentionConfigFromEnv() SnapshotRetentionConfig {
 	cfg := DefaultSnapshotRetentionConfig()
 	if v := os.Getenv("URSM_SNAPSHOT_RETENTION_DAYS"); v != "" {
@@ -220,7 +235,7 @@ func (w *SnapshotRetentionWorker) CleanupOnce(ctx context.Context) {
 	default:
 		slog.Info("ursm.v2: snapshot retention ran; nothing reclaimed",
 			"mode", res.Mode, "retention", w.cfg.Retention.String(),
-			"degraded", res.Degraded)
+			"degraded", res.Degraded, "yielded", res.YieldedToPeer)
 	}
 }
 

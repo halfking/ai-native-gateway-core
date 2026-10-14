@@ -182,6 +182,23 @@ func (s *outboxWriterStub) Write(ctx context.Context, env outbox.EventEnvelope) 
 	return nil // no-op
 }
 
+// retentionSource 标出快照留存窗口是**显式配置来的**还是**兜底来的**。
+//
+// 留存档位漂移最隐蔽的一种形态就是回落：URSM_SNAPSHOT_RETENTION_DAYS 一旦
+// 丢失或被清空，进程不会报错、不会告警，只会安静地换一个更宽的窗口
+// （历史上是 30 天 ⇒ 分区 8→31、4~7 GB→13~19 GB）。
+// 而多实例下两台的兜底值与显式值可能不同，事后只看「生效窗口」分不清
+// 「我配的就是这样」与「我根本没配上」。这行 source 就是为了分开这两种。
+func retentionSource(cfg persist.SnapshotRetentionConfig) string {
+	if v := strings.TrimSpace(os.Getenv("URSM_SNAPSHOT_RETENTION_DAYS")); v != "" {
+		if _, err := strconv.Atoi(v); err == nil {
+			return "env"
+		}
+		return "env-invalid-fell-back-to-default"
+	}
+	return "unset-fell-back-to-default"
+}
+
 func main() {
 	// migrate subcommand: connect DB, run migrations, exit.
 	// Used by launcher to run forward-compatible migrations while old
@@ -1368,8 +1385,17 @@ func main() {
 	// shadow 未开 double-write 时 persist 不落盘，但历史残留行仍需回收，
 	// 且清理本身不依赖 Redis（容量基线 §5 门禁项 1 的解除条件）。
 	if dbConn != nil && dbConn.Enabled() {
-		snapshotRetentionWorker = persist.NewSnapshotRetentionWorker(dbConn.Pool(), persist.SnapshotRetentionConfigFromEnv())
+		retentionCfg := persist.SnapshotRetentionConfigFromEnv()
+		snapshotRetentionWorker = persist.NewSnapshotRetentionWorker(dbConn.Pool(), retentionCfg)
 		if !snapshotRetentionWorker.Disabled() {
+			// ★ 打实际生效的 Retention，而不只是「启用了」。
+			//   留存档位漂移的真实触发路径是「env 丢失/被清空 ⇒ 静默回落默认值」，
+			//   只在启动时留一行，就能在事后分辨当前窗口是配置来的还是兜底来的
+			//   （设计文档 2026-10-04-ursm-snapshot-partitioning-design.md §9 Finding E 建议）。
+			slog.Info("ursm.v2: snapshot retention worker starting",
+				"retention", retentionCfg.Retention.String(), "batch_size", retentionCfg.BatchSize,
+				"cleanup_window", retentionCfg.MaxCleanupWindow.String(),
+				"source", retentionSource(retentionCfg))
 			snapshotRetentionWorker.Start()
 		} else {
 			slog.Info("ursm.v2: snapshot retention disabled (URSM_SNAPSHOT_RETENTION_DAYS<=0)")
