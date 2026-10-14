@@ -16489,3 +16489,109 @@ count(*) FILTER (WHERE (last_request_at >= (now() - …)) ← now() 驱动的窗
    - ⇒ **先停/降频（一处配置）优于先写迁移 863（五点同步 + 重建 MV + 三机部署）**，
      这个排序到本节为止没有被任何新证据推翻。
    - ⇒ session 三族**不要动**：它们的高 churn 是数据在动的价格，不是缺陷。
+
+---
+
+### §10.110.24 🔴 **最终订正 §10.110.21 §八**：补齐缺失项后，结论是**什么都不做，等它自愈**
+
+§八 建议「先停/降频（一处配置）优于先写迁移 863」。本节补齐了三项 §八 没查的量，
+**其中两项改变了结论**。§八 的「优先停/降频」**作废**。
+
+#### 一、§八 漏掉的项 1：**物化路径不是纯读 MV，它每次都把源表重新聚合一遍**
+
+`pg_stat_statements` 里调用量最高的那条（623 次 / 94 小时 ≈ 6.6 次/小时）原文是：
+
+```sql
+WITH mv_data AS (
+  SELECT effective_task_type, effective_model, SUM(request_count)::bigint AS mv_count
+  FROM routing_analytics_7d WHERE effective_model IS NOT NULL GROUP BY 1,2
+), base_data AS (
+  SELECT …, COUNT(*)::bigint AS base_count
+  FROM routing_analytics_source          -- ★ 又扫了一遍 195,412 行源表
+  WHERE ts >= NOW() - INTERVAL $6 AND <与视图同一套过滤>
+  GROUP BY 1,2
+)
+SELECT … ABS(mv_count - base_count) AS abs_diff, … diff_pct
+FROM mv_data mv FULL OUTER JOIN base_data base ON …
+WHERE ABS(COALESCE(mv.mv_count,0) - COALESCE(base.base_count,0)) > 0
+ORDER BY abs_diff DESC LIMIT $40
+```
+
+⇒ 这是 `bg/mv_consistency.go` 的**漂移自检**，**每次刷新后必跟一次**
+　 （`bg/materialized_view_refresher.go:388` 与 `:404` 两个调用点），
+　 且跑在**与刷新同一条 180s 预算**的固定连接上（`checkConsistency`，:552）。
+　 ⇒ **停掉刷新会连带停掉这个自检**，这是 §八 没算进去的代价。
+
+#### 二、§八 漏掉的项 2：**「降频」不是免费配置 —— 新鲜度闸门只有 15 分钟**
+
+`admin/analytics_materialized.go`：
+
+```go
+const mvFreshnessBudget = 15 * time.Minute      // :32
+const sessionMvFreshnessBudget = 90 * time.Minute // :87
+```
+
+闸门读 `routing_mv_refresh_state.refreshed_at`（837 起），`useMaterializedView`（:122）
+只在 `windowLabel == "7d"` 且戳在预算内才走 MV，否则**静默回落基础视图**。
+
+⇒ ★★ **降频到 1 小时 ⇒ 戳永远 60 分钟旧 ⇒ 闸门永久失败 ⇒ 7d 分析端点长期走基础视图。**
+　 「降频」不是一个无副作用的旋钮，**它是一个功能开关**。
+
+（顺带核过：session 三族在 `routing_mv_refresh_state` 里的龄是 ~21 分钟，
+按 **90 分钟**预算算闸门是**开**的。我第一次查时硬编码了 15 分钟而误报 `gate=f`，
+**那是我的阈值写错，不是缺陷** —— 记在这里以免下一轮重犯。）
+
+#### 三、★ 但漂移自检的**当代成本只有毫秒级**，比代码注释里写的小四个数量级
+
+`bg/materialized_view_refresher.go:545-548` 的注释写着：
+
+> 漂移核查重扫 7 天 routing_analytics_source，在 252 当前负载下 **med 21s / max 29.4s**，
+> 被角色级 statement_timeout=30s **击杀**（45min 窗口 ×14 …）
+
+**当代实测（`stats_reset` 后 94 小时）**：
+
+| 漂移自检语句 | calls | 加权均值 | 累计耗时 | 折算占墙钟 |
+|---|---|---|---|---|
+| `routingAnalyticsConsistencySQL`（含 mv_data × base_data） | 623 | **2.2 ms** | 1,384 s | 0.43% |
+| `routingAuditSummaryConsistencySQL` | 617 | **1.2 ms** | 728 s | 0.23% |
+
+⇒ ⚠ 那条 21s/29.4s 是 **2026-09-24 在 252 上、按当时数据量**的观测，
+　 **不能当成今天的成本**。当代是**毫秒级**。
+　 ⇒ **停掉刷新能省下的，比 §八 从注释里推断的少得多。**
+
+#### 四、⇒ 完整周期账目（routing 族，每 10 分钟一轮）
+
+| 组成 | 成本（当代实测） |
+|---|---|
+| `REFRESH routing_analytics_7d` | **33.24 s**（p50，n=133；mean 41.52 s，max 169.91 s） |
+| 漂移自检 ×1 | 2.2 ms |
+| `REFRESH routing_audit_summary_7d` | **1.20 s**（p50，n=131） |
+| **一轮合计** | **≈ 34.44 s** |
+
+⇒ **34.44 s × 6 轮/时 = 206.7 s/时 = 4,961 s/天 = 1.38 小时/天 ≈ 全库墙钟的 5.74%。**
+
+#### 五、⇒ 最终结论：**不做任何改动**
+
+| 方案 | 省下 | 代价 | 判定 |
+|---|---|---|---|
+| 停/降频 routing 刷新 | **5.74% 墙钟** | 7d 分析端点**永久回落**基础视图（闸门 15 min）+ **漂移自检永久失效** | ✗ 功能开关，不是免费旋钮 |
+| 迁移 863（键去可空） | ≈ 692k 行版本/天的写放大 | 五点同步 + 重建 MV + 三机部署 | ✗ 对 33 s 延迟**预期影响≈0**（§10.110.21 §五） |
+| **什么都不做，等 S4 退役** | 0 | 6.2 天里付 5.74% 墙钟 | ★ **到 2026-10-20 20:18:11 自动归零** |
+
+⇒ ★★★ **理由是账，不是偏好**：两项工程动作各自都要付出
+　 （一次跨三机的部署）或（一次永久性的功能降级），
+　 去换 **6.2 天**里的 **5.74%** 数据库墙钟 —— 这笔账不划算。
+
+⇒ ★★ **真正值得跟进的是把 S4 退役做完整**，而不是给一个正在退役的视图做性能微调：
+　 `request_logs` 家族、`routing_analytics_7d`、`routing_audit_summary_7d`
+　 及其 admin 消费者应当在同一个 S4 计划里一起清掉。
+　 ⇒ 这属于**产品/架构决策**，本轮只把账摆出来，**不擅自动手**。
+
+#### 六、本节对前文的效力
+
+| 章节 | 状态 |
+|---|---|
+| §10.110.21 §三（机制）、§四（耗时分布）、§五（订正 -30s） | **仍成立** |
+| §10.110.22 §三（四张 MV 都只删插）、§三表（session 三族是正经工作量） | **仍成立** |
+| **§10.110.21 §八「先停/降频优于先写 863」** | 🔴 **本节作废**（漏算闸门与漂移自检两项代价） |
+| §10.110.21 §六（7h20m 空窗）、§七（`last_autoanalyze` 假警报） | 仍成立 |
