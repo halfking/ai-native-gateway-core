@@ -634,6 +634,11 @@ files=(
   # 714 钉扎体（deploy exit 5）。
   "$ROOT_DIR/sql/migrations/startup/534_handoff_logs_hot_columnar.sql"
   "$ROOT_DIR/sql/migrations/startup/714_partition_timezone_pin_remaining.sql"
+  # 863（2026-10-14 211 日志审计轮）：ensure_handoff_logs_partition 存储形态
+  # 自适应——挂对父表即合法（columnar 只是优化）；无 pgcolumnar 环境
+  # （restore 血统，211 acc-pg17）建 heap 分区。位置硬约束：必须在 714
+  # 之后（clobber chain 终态项），否则 714 钉扎体覆盖 863 自适应体。
+  "$ROOT_DIR/sql/migrations/startup/863_handoff_partition_am_aware.sql"
   # 2026-09-17 R33 审计（通道登记补齐）：715 route_incidents pending state。
   # bba08b922 引入 StatePending、6f3d03073 接线 Go-ensure（ensure 的 CHECK/
   # 索引重建幂等），但 sql/migrations/startup/715_*.sql 未登记任何投递通道，
@@ -1424,9 +1429,11 @@ intentional_function_chains=(
   'ensure_request_logs_bodies_partition|694_partition_ensure_timezone.sql|765_bodies_columnar_storage.sql|829_bodies_columnar_rollback.sql|'
   # 534 (24h 审计第二十八轮 canonical 收编) 引入 ensure_handoff_logs_partition
   # 的 columnar 体；714 的 handoff_logs 腿是同一函数的 Asia/Shanghai 时区钉扎版
-  # （DECLARE 初始化器移入函数体）。714 必须保持为后项——与 699/703 的
-  # V371-track 同型：钉扎版必须是活库里的最终体。
-  'ensure_handoff_logs_partition|534_handoff_logs_hot_columnar.sql|714_partition_timezone_pin_remaining.sql|'
+  # （DECLARE 初始化器移入函数体）。863（2026-10-14 211 日志审计轮）在 714
+  # 之上做存储形态自适应：挂对父表即合法（columnar 只是优化）、无 pgcolumnar
+  # 环境（restore 血统，如 211 acc-pg17）建 heap 分区；714 的时区钉扎语义
+  # 原样保留。863 必须保持为最后一项——它是活库里应有的最终体。
+  'ensure_handoff_logs_partition|534_handoff_logs_hot_columnar.sql|714_partition_timezone_pin_remaining.sql|863_handoff_partition_am_aware.sql|'
   # 2026-10-10 host-first deploy: 640 was registered for 713's client_protocol
   # prerequisite. It also redefines promote_session_turns_hot_to_partition, and
   # 640 is sequenced AFTER 707 — which the block comment above names as the

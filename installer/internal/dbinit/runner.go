@@ -1058,6 +1058,10 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// V1FreezeCutoffSQL 母表臂此前只能整条索引扫（252 实测
 			// rollup mean 7.4s、峰值 29.5s 贴 30s 击杀线）。
 			"862_partition_family_leading_ts_idx.sql",
+			// 863（2026-10-14）：ensure_handoff_logs_partition 存储形态
+			// 自适应——挂对父表即合法（columnar 只是优化）；无 pgcolumnar
+			// 环境（restore 血缘）建 heap 分区。211 日志审计轮。
+			"863_handoff_partition_am_aware.sql",
 		},
 	}
 }

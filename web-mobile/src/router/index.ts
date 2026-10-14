@@ -693,6 +693,49 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'uts.title', requiresAuth: true },
   },
   {
+    path: '/format-anomalies',
+    name: 'format-anomalies',
+    component: () => import('@/views/FormatAnomaliesView.vue'),
+    meta: { titleKey: 'fa.title', requiresAuth: true },
+  },
+  {
+    path: '/model-integrity-drift',
+    name: 'model-integrity-drift',
+    component: () => import('@/views/ModelIntegrityDriftView.vue'),
+    meta: { titleKey: 'mid.title', requiresAuth: true },
+  },
+  {
+    // ★ 后端前缀**带尾斜杠**（`/api/admin/report-rollup/`）⇒ 客户端必须自己拼对尾段
+    path: '/report-rollup',
+    name: 'report-rollup',
+    component: () => import('@/views/ReportRollupView.vue'),
+    meta: { titleKey: 'rr.title', requiresAuth: true },
+  },
+  {
+    // ★ 路径形如 /{tenant}/{request_id}（**恰好两段**），段要 encodeURIComponent
+    path: '/dispatch-journal',
+    name: 'dispatch-journal',
+    component: () => import('@/views/DispatchJournalView.vue'),
+    meta: { titleKey: 'dj.title', requiresAuth: true },
+  },
+  {
+    // ★★ 供应商错误趋势（2026-10-14 第一百一十三批）。
+    //   注册 `admin/handler.go:1270` `admin(h.errorsTrendHandlers.getErrorsTrend)`
+    //   ⇒ **admin 档**（`AdminMiddleware` 只认证不检 role），tenant_admin 可用。
+    // ⚠️⚠️ 但 `requiresRole` 这里设的是 **`'admin'` 而不是缺省**，与本文件其余
+    //   admin 档路由**相反** —— 推导见 `api/errorsTrend.ts` 文件头与 `AppDrawer.spec.ts`。
+    //   根因：`getErrorsTrend` 不检 role，而 `EffectiveTenantIDAll` 对
+    //   **非 tenant_admin 一律返空串** ⇒ effective role 为 `user` 的主体
+    //   （`admin/shared_principal.go:42` 的 roleRank 允许，且本地角色更高时不下调）
+    //   会读到**全租户**数据。
+    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（`hyper-wiring.ts` 的守卫只查登录态）
+    //   ⇒ 这一行是**为将来的守卫预留的**，不是生效中的拦截。
+    path: '/errors-trend',
+    name: 'errors-trend',
+    component: () => import('@/views/ErrorsTrendView.vue'),
+    meta: { titleKey: 'et.title', requiresAuth: true, requiresRole: 'admin' },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),

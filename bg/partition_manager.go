@@ -92,11 +92,22 @@ const requestLogsBodiesPromoteBatchSize = 500
 //
 // Usage:
 //
-//	pm := bg.NewPartitionManager(dbConn.Pool(), 24*time.Hour)
-//	pm.Start(context.Background())
-//	defer pm.Stop()
+// partitionDB 是 PartitionManager 对 *pgxpool.Pool 的窄接口视图：生产代码
+// 传 pgxpool（构造签名不变），863 判据（parent-shape 门）传 pgxmock。方法
+// 集就是本文件实际用到的全部池操作，勿为测试便利扩面。
+type partitionDB interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Begin(ctx context.Context) (pgx.Tx, error)
+	BeginTx(ctx context.Context, txOptions pgx.TxOptions) (pgx.Tx, error)
+}
+
+// pm := bg.NewPartitionManager(dbConn.Pool(), 24*time.Hour)
+// pm.Start(context.Background())
+// defer pm.Stop()
 type PartitionManager struct {
-	db              *pgxpool.Pool
+	db              partitionDB
 	interval        time.Duration
 	promoteInterval time.Duration
 	errorAggregator *ProviderErrorAggregator      // 2026-08-29: provider error aggregation
@@ -146,18 +157,35 @@ type archiveSpec struct {
 	// 0, offset) (daily partitions, R68 迁移 750 usage_facts 按日分区接入）。
 	// pgx still receives time.Time; argExpr controls the cast to ::date.
 	partitionUnit string
+
+	// parentTable gates the 24h-tick call on the parent table actually being
+	// a partitioned table (relkind 'p'). 2026-10-14（本轮 211 日志审计）：
+	// db.go 的 boot ensure 对 830 家族先探形状再决定调用，但本 tick 直接
+	// 调函数——在 830 未应用（或已回滚、或 restore 后丢失分区性）的环境
+	// 上每 24h 报一条 42P17「is not partitioned」。两条路径的契约必须
+	// 一致（r1021 教训同族）：声明了 parentTable 的 spec 先探形状，
+	// 非 'p' 则按 db.go 的口径 Info 跳过，而不是反复报错。
+	parentTable string
 }
 
-func NewPartitionManager(db *pgxpool.Pool, interval time.Duration) *PartitionManager {
+func NewPartitionManager(db partitionDB, interval time.Duration) *PartitionManager {
 	if interval <= 0 {
 		interval = 24 * time.Hour
+	}
+	// 聚合器要 *pgxpool.Pool 真身（后台 goroutine 自起生命周期）；
+	// 判据注入 pgxmock 时不构造（不会 Start，nil 无害）。
+	var errorAggregator *ProviderErrorAggregator
+	var supplierStats *SupplierErrorStatsAggregator
+	if pool, ok := db.(*pgxpool.Pool); ok {
+		errorAggregator = NewProviderErrorAggregator(pool, 10*time.Minute)
+		supplierStats = NewSupplierErrorStatsAggregator(pool, 5*time.Minute)
 	}
 	return &PartitionManager{
 		db:              db,
 		interval:        interval,
 		promoteInterval: DefaultPromoteInterval,
-		errorAggregator: NewProviderErrorAggregator(db, 10*time.Minute),
-		supplierStats:   NewSupplierErrorStatsAggregator(db, 5*time.Minute),
+		errorAggregator: errorAggregator,
+		supplierStats:   supplierStats,
 		done:            make(chan struct{}),
 		promoteDone:     make(chan struct{}),
 		cleanupDone:     make(chan struct{}),
@@ -355,8 +383,11 @@ func (pm *PartitionManager) runCleanup(ctx context.Context) {
 // 自然适用，UTC 会话在 +08 0-8h 同样不会把次日误建为今日。
 func (pm *PartitionManager) ensureNextMonthPartitions(ctx context.Context) {
 	specs := ensureSpecs()
-	for offset := 0; offset <= 1; offset++ {
-		for _, s := range specs {
+	for _, s := range specs {
+		if !pm.ensureSpecEligible(ctx, s) {
+			continue
+		}
+		for offset := 0; offset <= 1; offset++ {
 			unit := s.partitionUnit
 			if unit == "" {
 				unit = "month"
@@ -397,6 +428,45 @@ func (pm *PartitionManager) ensureNextMonthPartitions(ctx context.Context) {
 				"unit", unit, "date", dateLabel)
 		}
 	}
+}
+
+// ensureSpecEligible 报告本 tick 是否应对该 spec 调 ensure。声明了
+// parentTable 的 spec 先探父表形状（与 db.go boot ensure 的 0) 探测同序同
+// 口径）：非分区父表 = 迁移未应用/已回滚/restore 丢失分区性，属合法世界
+// 态，Info 跳过而不是每 24h 报 42P17。to_regclass 而非 ::regclass：表本身
+// 可能不存在（部分供给的库），裸 cast 会 raise。探测失败按保守方向跳过
+// （本轮不促升，下轮重试）。
+//
+// ⚠️ 2026-10-14（12h 审计轮 D-F3）：本探测必须自带超时，不能直接用裸 ctx。
+// 它是本文件**唯一**一处没有派生的 WithTimeout 的 DB 调用，而它位于
+// ensureNextMonthPartitions 头部、且在启动期先于 close(pm.ready) 执行
+// ⇒ 探测挂起会同时卡住 run()（分区 ensure/归档/residue 全停）与 runPromote()
+// （等 <-pm.ready，促升与 ANALYZE 全停）。Stop() 的 cancel() 能解开，所以不是
+// 永久死锁，但会让分区维护**静默失效**且无任何日志。与同函数下游的 30s 口径
+// （见调用方 ensure 的 WithTimeout）对齐。
+func (pm *PartitionManager) ensureSpecEligible(ctx context.Context, s archiveSpec) bool {
+	if s.parentTable == "" {
+		return true
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	var partitioned bool
+	if err := pm.db.QueryRow(probeCtx, `
+		SELECT EXISTS (
+		           SELECT 1 FROM pg_class c
+		            WHERE c.oid = to_regclass('public.' || $1)
+		              AND c.relkind = 'p')`,
+		s.parentTable).Scan(&partitioned); err != nil {
+		slog.Error("partition_manager: probe parent shape failed",
+			"fn", s.fnName, "parent", s.parentTable, "error", err)
+		return false
+	}
+	if !partitioned {
+		slog.Info("partition_manager: parent is not a partitioned table — migration not applied (or rolled back); skipping partition ensure",
+			"fn", s.fnName, "parent", s.parentTable)
+		return false
+	}
+	return true
 }
 
 // checkDefaultPartitionResidue surfaces rows stranded in a `*_default`
@@ -476,11 +546,11 @@ func (pm *PartitionManager) checkDefaultPartitionResidue(ctx context.Context) {
 //
 // Kept separate from the counting loop so the selector itself can be tested
 // against a real catalog (bg/default_residue_realdb_test.go).
-func defaultResidueTargets(ctx context.Context, db *pgxpool.Pool) ([]string, error) {
+func defaultResidueTargets(ctx context.Context, db partitionDB) ([]string, error) {
 	return defaultResidueTargetsInSchema(ctx, db, "public")
 }
 
-func defaultResidueTargetsInSchema(ctx context.Context, db *pgxpool.Pool, schema string) ([]string, error) {
+func defaultResidueTargetsInSchema(ctx context.Context, db partitionDB, schema string) ([]string, error) {
 	rows, err := db.Query(ctx, `
 		SELECT d.relname
 		FROM pg_class d
@@ -1453,7 +1523,7 @@ func ensureSpecs() []archiveSpec {
 		// 执行前会一直不存在。ensureNextMonthPartitions 的错误处理是
 		// slog.Error + continue（每 24h 记一条，不打断进程），与 db.go 的
 		// boot ensure 容忍缺失一致 ⇒ 两个步骤的先后顺序无关。
-		{fnName: "ensure_ursm_node_snapshot_min_daily_partition", label: "ursm_node_snapshot_min (daily)", argExpr: "$1::date", partitionUnit: "day"}, // Migration 830
+		{fnName: "ensure_ursm_node_snapshot_min_daily_partition", label: "ursm_node_snapshot_min (daily)", argExpr: "$1::date", partitionUnit: "day", parentTable: "ursm_node_snapshot_min"}, // Migration 830
 	}
 	return filterRetiredV1Lifecycle(specs)
 }
