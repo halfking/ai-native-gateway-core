@@ -7,16 +7,28 @@ import { req, type RequestOptions } from './client'
  *
  * - ★★★★★ **注册机制与本仓绝大多数端点不同**：它**不在** `admin/handler.go` 的
  *   `mux.HandleFunc` 里，而是在 **echo 的 group** 上：
- *   `cmd/gateway/main.go:6964`  `adminGroup := e.Group("/api/admin", requireSuperAdmin)`
- *   → `cmd/gateway/main.go:6966`  `licensing.RegisterModuleRoutes(adminGroup, licensingStore)`
- *   → `licensing/admin_api.go:33-36` `mh.RegisterRoutes(g)`
+ *   `cmd/gateway/main.go:7027`  `adminGroup := e.Group("/api/admin", requireSuperAdmin)`
+ *   → `cmd/gateway/main.go:7029`  `licensing.RegisterModuleRoutes(adminGroup, licensingStore)`
+ *   → `licensing/admin_api.go:33`  `func RegisterModuleRoutes(g *echo.Group, store Store)`
  *   → `licensing/module_api.go:22` `g.GET("/tiers", h.ListTiers)`
  *   ⇒ ★★★ **这是本仓第三种注册机制**（前两种：`admin/handler.go` 的 mux、
  *     `cmd/gateway/main.go:7070` 附近的 requestJourney 一族）。
  *     查端点时**只 grep mux 会把「已注册」误判成「死端点」** —— 本批差点就这么判。
+ *   ⚠️ **行号订正（2026-10-14，第一百二十批）**：本段原先写 `:6964` / `:6966`，
+ *     实况是 `:7027` / `:7029`，**漂了 63 行**。
+ *     `:6966` 不是 `adminGroup` 那行，而是**上一句**
+ *     `requireSuperAdmin := newRequireSuperAdminMiddleware()`。
  *   ⇒ ★★ 中间件是 `requireSuperAdmin` ⇒ **superAdmin 档**
  *     （tenant_admin 403）⇒ 抽屉席须设 `requiresRole: 'super_admin'`
  *     并同步 `src/components/shell/AppDrawer.spec.ts` 白名单。
+ *     ⚠️ `requireSuperAdmin` 是**局部变量名**；真正的定义在
+ *     `cmd/gateway/main_jwt_middleware.go:65` `func newRequireSuperAdminMiddleware()`，
+ *     函数体 `:68` 逐字 `if role, _ := c.Get("role").(string); role != "super_admin"`
+ *     ⇒ `:69` `http.StatusForbidden`。
+ *     ⇒ ★★★ **按变量名去那个文件里找定义是找不到的**（那里只出现函数名）——
+ *       本批的判据首轮就栽在这上面，红得很有价值。
+ *     ⇒ ★★ `role` 由 `newJWTMiddleware` 注入（`:56` `c.Set("role", claims.Role)`），
+ *       所以这一族是**真门**，权限由服务端给出，不靠前端推断。
  * - **实现**：`licensing/module_api.go:64-98`；类型 `licensing/types.go:149-155`；
  *   查询 `licensing/store_pgx.go:686-691` / `:708-711`。
  *
