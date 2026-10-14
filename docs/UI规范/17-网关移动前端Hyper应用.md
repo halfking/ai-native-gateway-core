@@ -16343,3 +16343,148 @@ grep 全仓：`fetchOpsOverview` **零调用方**。但这一族与批 116 的�
 > 就会把全平台机队与别人的许可证密钥递给 tenant_admin。
 > ⇒ 与批 116 那条「权限必须逐端点读 handler，不能按注册处/前缀/形参名推」是**同一条**，
 > 本批把它推到了终点：**连「服务端没有任何隔离代码」也要当成一种可读的形态**。
+
+## 11.154 请求动作时间线接进 UI —— 权限档第六次登场，仍归**第三类**；本批找到了**「同一份数据、一边过滤一边不过滤」的硬证据**（第一百一十八批）
+
+### 一、这批做了什么
+
+把 `requestActions`（第 74 批建的 API 模块，**一直是孤儿**）接进移动端，孤儿 12 → **11**：
+
+| 项 | 值 |
+|---|---|
+| 视图 | `web-mobile/src/views/RequestActionsView.vue` |
+| 判据 | `RequestActionsView.spec.ts` **47 条**（API 层本批 71 → **77 条**） |
+| 路由 | `/request-actions`，`meta.requiresRole: 'super_admin'` |
+| 抽屉席 | `request-actions`，**`requiresRole: 'super_admin'`** ⇒ **进** superAdmin 白名单 |
+| i18n | 前缀 `ra` + `nav.requestActions` |
+
+页面三段：**读取**（填 request_id）、**响应自检**、**动作序列**。
+
+### 二、★★★★★★ 权限档第六次登场：仍是**第三类**，但证据比前两批硬得多
+
+四问逐字核过：
+
+1. 注册处 `admin/handler.go:1045`
+   `mux.HandleFunc("/api/admin/requests/{id}/actions", admin(h.handleRequestActions))`
+   —— **注册处确实是 admin 档**（`AdminMiddleware` 只认证不检 role ⇒ tenant_admin 后端**能**读）。
+2. `admin/request_actions.go` 全文**没有** `AuthContext` / `claims.Role` / `IsTenantAdmin`。
+3. ★ 唯一的过滤是 `:62` 的 `ev.RequestID != requestID`（**精确比较**），
+   而 `request_id` 来自 **URL 路径段**（`:35` `r.PathValue("id")`）。
+4. ★★ 那个 `request_id` 由 `middleware/requestid_mw.go:83-89` 生成 ——
+   **16 字节 crypto/rand 的 hex**，32 字符、全局唯一、**不含任何租户信息**。
+
+⇒ 归第三类（服务端**没有租户维度**）⇒ 过度限制到 `super_admin`，
+与批 115 `sliding-window`、批 117 `opsOverview` **同形态**：
+两边都是「拿到那个**全局唯一**标识就能读到明细」（一个是 `credential_id` 主键、
+一个是 `request_id` 随机 id）。
+
+### 三、★★★★★★★ 本批最硬的一条证据：**同一份数据，一边过滤一边不过滤**
+
+这是本批真正的新东西，也是权限判定从「保守推断」升级成「有对照的结论」的地方。
+
+★ `/api/admin/live-stream`（`handler.go:1033`）与本端点：
+
+| | 注册包装 | 数据源 | 租户维度 |
+|---|---|---|---|
+| `/api/admin/live-stream` | **同一个** `admin(...)` | **同一个** `llmgw:live:actions` | ★★ **有** |
+| `/api/admin/requests/{id}/actions` | **同一个** `admin(...)` | **同一个** `llmgw:live:actions` | ★★ **没有** |
+
+SSE 那一侧逐字核过：
+· `live_stream_sse.go:2263-2268`：`if IsTenantAdmin(r) { tenantID = GetTenantID(r); isSuper = false }`；
+· `:1875-1882`：非超管客户端**只在** `env.Request.TenantID == c.tenantID` 时才收帧。
+
+⇒ ★★★★ 所以这**不是「设计上就是全局的」**，而是**后端不一致**：
+同一个 Redis store、同一个注册包装，SSE 做了租户过滤而 REST 回退没做。
+⇒ ⇒ 处置也因此更明确：前端设 `super_admin` 只是**兜底**，
+真修复在后端（给本端点加租户条件，或把它并进 SSE 已有的作用域逻辑）。
+⚠️ 「前端严于后端是兜底不是修复」这句在批 117 只是**原则**，本批它有了一个具体实例。
+
+### 四、★★★★★ 订正 API 模块头 4 处漂移，其中一处是**权限结论反了**
+
+| 位置 | 原文 | 实况 |
+|---|---|---|
+| `api/requestActions.ts:8` | 注册处 `handler.go:1026` | **`:1045`**（漂 19 行） |
+| 同文件 (5) | `LRange(...)` 在 `:56` | **`:48`** |
+| 同文件 (6) 错误表 | Redis 读失败在 `:52-56` | **`:49-53`** |
+| 同文件 (6) / 常量 | 超时常量在 `:29` | **`:31`** |
+| 同文件 `:9` | 「admin 档 ⇒ 抽屉席**不设** `requiresRole`」 | **要设 `'super_admin'`** |
+
+⇒ 与批 117 同处置：**不只改散文，把它们钉成判据**（spec ①-3/①-4/①-5/①-6）。
+
+### 五、★★★★ 本批订正的**第二个**结论：一条「伪需求」
+
+原模块头写着「`flattenActionEvent` 序列化失败会返回 `map[string]any{}`
+⇒ 客户端要能识别空对象而不是当成正常条目」。
+
+★ 逐字核上游后判定这条**在本端点是伪需求**：
+每行进 `flatten` 之前已过了 `decodeStoredAction`（能 `json.Unmarshal` 成 struct ⇒
+它是合法 JSON object），而对一个**已成功反序列化的 struct** 再 `Marshal` +
+`Unmarshal` 成 map **不会失败** ⇒ 空对象行**不可达**。
+⇒ 处置不是加识别逻辑，而是把结论写进注释 **+ 钉一条判据**：
+空对象行出现时解包器**就该抛错**（缺 4 个恒在键），**不许**放宽成「当作空条目」。
+（那个 `{}` 兜底是为 **SSE** 准备的 —— 那边的帧来自内存、没有预先 decode。）
+
+### 六、★★★★★ 本批新增的两条可证不变式（都补了此前判据的**缺口**）
+
+1. ★★★★ `requestActionsRowsEchoRequestId` —— **逐行**的 `request_id` 必须回显成
+   响应顶层那个。既有判据 `requestActionsMatchesRequest` 只查「**顶层 vs 我请求的**」那一半；
+   只查一半的话，一个「顶层照抄正确、但**所有行**都换成别的 id」的响应能蒙混过关。
+   ⇒ 判据 ②-3 特意构造「顶层是对的、只有中间一行错」来咬住它。
+2. ★ `requestActionsRoleIsAllowed` —— 视图兜底要用（与批 115/117 同款）。
+
+### 七、★★★ 本批的三个工装事故（都当场处置）
+
+1. ★★★ **锚点撞车**：`} from '@/api/requestActions'` 在既有测试里出现**两次**
+   （值导入块 + 那行 `import type {...} from` 也含同样片段）⇒ 首版 `count==1` 断言失败。
+   ⇒ 处置：**先换 type import**，再换值导入块。
+2. ★★★ **我自己的判据写错**：②-3 里写了
+   `mFetch.mock.results[0].value` 当成已解包的响应 —— 而 `mockResolvedValue`
+   存的是 **Promise** ⇒ 断言打在 `undefined.every` 上。
+3. ★★ **i18n 门的同一个坑第二次踩到**：`en-US ra.check.none = none`
+   —— **值 === 键名**，运行时显示裸键。批 117 刚踩过（`ops.fresh.none`）。
+   ⇒ ★★★ 这已经是**连续两批复发**，说明「英文空值最自然的写法恰好就是键名」这条该记住。
+
+### 八、★★★ 类型门顶出的模板窄化问题（批 117 那个坑的**变体**）
+
+`vue-tsc` 报 `__VLS_ctx.data is possibly null`：`v-if="hasData"` **不会**让 TS 收窄 `data`
+⇒ 模板里不能直接摸 `data.count` / `data.request_id`。
+⇒ 处置：与批 117 的「`rows!.x` 运行时崩」同源，统一走**受守卫的 computed**
+（`echoedId` / `actionCount`）。
+⇒ ★★★ 两批两个面：一个是 `!` 骗过了编译期**导致运行时崩**，
+一个是 `v-if` **根本没被当收窄**。同一个区域的两种翻法。
+
+### 九、变异台：24 / 24 有牙
+
+含 2 条**语义等价改写**必须保持绿：`every(map→every)`、`count` 比较换成三元式
+⇒ 证明门不是恒红。**首轮 24 条全部 HAS_TEETH**，无 PARTIAL / NO_EFFECT / RED_NOT_MATCHED，
+被改文件逐字节还原 OK。
+
+### 十、验证
+
+| 项 | 结果 |
+|---|---|
+| 类型门 `vue-tsc -b` | rc=0（**先删 `tsbuildinfo` 再读数**） |
+| `css:check` / `touch:check` / `i18n:check` / `comment:check` | 四门 rc=0 |
+| `gate:selftest` | 5/5 |
+| `npm run build` | rc=0 |
+| 全量 | **7794 passed / 208 files**（1 skipped；基线 7740 / 207） |
+| 变异台 | **24 / 24 有牙** |
+| 十连跑 | **10 / 10 全绿**（每轮 7794 passed / 1 skipped） |
+
+> ⚠️ 十连跑全绿**不等于**此前记录的 flaky 已修复
+> （`ComplianceHitsView.spec.ts` / `RoutingOptView.spec.ts` 根因仍未查明）——
+> 本次**未复现**，只说明没抓到。
+
+### 十一、本批确认的一条纪律
+
+> ★★★★ **要判「这一族该不该按租户隔离」，先找它的**姊妹端点**做对照。**
+>
+> 本批之前，判第三类靠的是「grep 不到租户条件」——那是**否证**，
+> 无法区分「设计上就是全局的」与「**忘了做**」。
+> 本批找到 `/api/admin/live-stream`：**同一个 store、同一个注册包装，它过滤了**
+> ⇒ 否证升级成**对照**，`super_admin` 这道门才从「保守」变成「有依据」。
+>
+> ⇒ 推广：批 113/114/115/117 那几族的处置**都值得回头做一次同款对照** ——
+> 尤其批 115 `sliding-window` 与批 117 `opsOverview`：
+> 若也存在「同一个数据源、一边过滤一边不过滤」的姊妹端点，
+> 那就不是「前端过度限制」，而是**又一处后端不一致**，该进后端待办。

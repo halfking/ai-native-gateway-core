@@ -182,6 +182,15 @@ describe('navItemsFor', () => {
       // ★ 2026-10-14 第一百一十一批：对账报表（admin/handler.go:1086 h.superAdmin）
       //   ⇒ **要** super_admin。⚠️ 与上面 reconciliation 是两个不同功能，别接错。
       'report-rollup',
+      // ★ 2026-10-14 第一百一十八批：请求动作时间线
+      //   （`admin/handler.go:1045` 的 `admin(...)` ⇒ **后端 tenant_admin 可读**，
+      //   但该端点**完全没有租户维度**：只按 URL 里的 `request_id` 精确匹配，
+      //   而那个 id 由 crypto/rand 生成、**不含租户信息**。
+      //   ★★ 决定性对照：读同一个 store 的 /api/admin/live-stream **有**租户过滤
+      //   ⇒ 同一份数据、同一个注册包装，一边过滤一边不过滤 ⇒ **后端不一致**。
+      // ⇒ 归第三类，只能**过度限制**到 super_admin。
+      // ⚠️ 字母序：report-rollup < request-actions < request-anomalies
+      'request-actions',
       'request-anomalies',
       'routing-audit',
       // ★ 2026-10-08 第一百零一批：路由策略配置面（`admin/handler.go:1200 :1201 :1215`

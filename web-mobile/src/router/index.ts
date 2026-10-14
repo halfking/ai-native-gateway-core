@@ -812,6 +812,25 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'ops.title', requiresAuth: true, requiresRole: 'super_admin' },
   },
   {
+    // ★ 请求动作时间线（2026-10-14 第一百一十八批）。
+    //   注册 `admin/handler.go:1045` `admin(h.handleRequestActions)` —— **注册处确实是 admin 档**
+    //   （`AdminMiddleware`，`admin/auth.go:85-140`，**只认证不检 role**）⇒ tenant_admin 后端能读。
+    // ★★★★ 但它**完全没有租户维度**：`admin/request_actions.go` 全文不读 AuthContext、不检 role，
+    //   唯一的过滤是 `:62` 的 `ev.RequestID != requestID`，而那个 `request_id` 来自 **URL 路径段**，
+    //   由 `middleware/requestid_mw.go:83-89` 生成（16 字节 crypto/rand hex，**不含租户信息**）。
+    // ★★★ 决定性对照：读**同一个** `llmgw:live:actions` store 的 `/api/admin/live-stream`
+    //   在 hub 内**算了租户作用域**（`live_stream_sse.go:2263-2268`）并逐帧过滤（`:1875-1882`）
+    //   ⇒ 同一份数据、同一个注册包装，**一边过滤一边不过滤** ⇒ 这是**后端不一致**，不是设计。
+    // ⇒ 归第三类 ⇒ **过度限制**到 'super_admin'（与批 115 / 117 同处置）。
+    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（守卫只查 requiresAuth 与登录态）
+    //   ⇒ 这一行是为将来的守卫预留的；视图内另有一层兜底（`ra-nope` 段，兜的是「不发请求」）。
+    // ⚠️ 前端严于后端是**兜底不是修复** —— 真修复在服务端。
+    path: '/request-actions',
+    name: 'request-actions',
+    component: () => import('@/views/RequestActionsView.vue'),
+    meta: { titleKey: 'ra.title', requiresAuth: true, requiresRole: 'super_admin' },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),

@@ -5,8 +5,13 @@ import { req, type RequestOptions } from './client'
  *
  * GET /api/admin/requests/{id}/actions
  *
- * 注册在 `admin/handler.go:1026` 的 `admin(...)` ⇒ **admin 档**，tenant_admin 可用
- * ⇒ 抽屉席**不设** `requiresRole`。
+ * 注册在 `admin/handler.go:1045` 的 `admin(...)` ⇒ **注册处确实是 admin 档**
+ * （`AdminMiddleware` 只认证不检 role ⇒ tenant_admin 后端**能**读）。
+ * ★★ 2026-10-14 第一百一十八批订正两件事：
+ *   ① 这一行原先写的是 `handler.go:1026`（**漂移 19 行**）；
+ *   ② 结论「抽屉席**不设** `requiresRole`」**反了** —— 理由见新增的第 (8) 条：
+ *      本端点**完全没有租户维度**，而它读的那个 store 的**姊妹端点有**。
+ *   ⇒ 抽屉席改设 **`requiresRole: 'super_admin'`**（第三类，与批 115/117 同处置）。
  *
  * ★ 名字里有 "actions"，但**它本身是只读端点**（只有 GET、只 `LRange` 读 Redis），
  *   与本仓一律不碰的写操作端点不是一回事。
@@ -60,7 +65,7 @@ import { req, type RequestOptions } from './client'
  *        （LIST 头 = 最新优先扫描顺序）⇒ 保留的是**较新**的那条。
  *
  * (5) ★★★★ **这是短期回放，不是历史。**
- *      源码 `:56` 的 `LRange(ctx, RedisKey, 0, RedisMaxLen-1)` 扫**整个**有界队列，
+ *      源码 `:48` 的 `LRange(ctx, RedisKey, 0, RedisMaxLen-1)` 扫**整个**有界队列，
  *      而队列是 `LPUSH` + `LTRIM 5000`（`internal/liveactions/liveactions.go:115-117`）
  *      ⇒ **更老的事件已经被 LTRIM 掉**。
  *      `:23-24` 的注释自陈：「Long-term history stays in request journey
@@ -71,15 +76,34 @@ import { req, type RequestOptions } from './client'
  *      |---|---|---|
  *      | `id` 为空（`:36-38`） | **400** | `missing request id` |
  *      | Redis 未装配（`:41-44`） | **503** | `live actions store not wired` |
- *      | Redis 读失败（`:52-56`） | **502** | `live actions store unavailable` |
+ *      | Redis 读失败（`:49-53`） | **502** | `live actions store unavailable` |
  *      ★★ **502 Bad Gateway** 在本仓其它地方基本不用 ⇒ 客户端的「网关错误」分类
  *        必须显式容纳它，否则会被当成「未知错误」。
- *      ★ 读 Redis 的超时只有 **2 秒**（`:29` `requestActionsScanTimeout`）。
+ *      ★ 读 Redis 的超时只有 **2 秒**（`:31` `requestActionsScanTimeout`）。
  *
  * (7) ★★★ **`credential_label` 在本端点永远不出现。**
  *      `flattenActionEvent` 支持注入 `labels`（`:115-123`），但本端点调用时传的是
  *      **`nil`**（`request_actions.go:69` `flattenActionEvent(ev, nil)`）
  *      ⇒ 那是 SSE 那条路才有的字段 ⇒ 按 SSE 契约去等它会永远等不到。
+ *
+ * (8) ★★★★★★ **服务端**完全没有租户维度，而读**同一个 Redis store** 的姊妹端点有。
+ *      这是本批权限判定的**决定性证据**，逐字核过两侧：
+ *      · ★ 本端点（`request_actions.go:34-82`）：**不读 `AuthContext`、不检 role、
+ *        不过滤租户**，唯一的过滤是 `:62` 的 `ev.RequestID != requestID`
+ *        —— 而 `request_id` 来自 **URL 路径段**（`:35` `r.PathValue("id")`）。
+ *      · ★★ 那个 `request_id` 由 `middleware/requestid_mw.go:83-89` 生成：
+ *        **16 字节 crypto/rand 的 hex**（32 字符、全局唯一）⇒ **不含任何租户信息**。
+ *      · ★★★ 姊妹端点 `GET /api/admin/live-stream`（`handler.go:1033`，**同一个**
+ *        `admin(...)` 包装、**同一个** `llmgw:live:actions` store）在 hub 内部算租户作用域
+ *        （`live_stream_sse.go:2263-2268`：`IsTenantAdmin` ⇒ `tenantID = GetTenantID(r)`、
+ *        `isSuper = false`），并在扇出时逐帧过滤（`:1875-1882`：
+ *        非超管客户端只在 `env.Request.TenantID == c.tenantID` 时才收帧）。
+ *      ⇒ ★★★★ 结论：**同一份数据、同一个注册包装，一边过滤一边不过滤** ——
+ *        这不是「设计上就是全局的」，而是**后端不一致**。
+ *      ⇒ 前端按**第三类**（无租户维度 ⇒ 过度限制）设 `requiresRole: 'super_admin'`，
+ *        视图内再兜一层「不发请求」。⚠️ **前端严于后端是兜底不是修复**。
+ *      ⇒ ★ 与批 115 `sliding-window` **同形态**：`credential_id` 是全局主键 /
+ *        `request_id` 是全局随机 id，两边都是「拿到那个标识就能读到明细」。
  *
  * ## 另注
  *
@@ -93,8 +117,13 @@ import { req, type RequestOptions } from './client'
  * · `request_id` 是**原样回显**（`:78` 用 `r.PathValue("id")`，不 trim 不规范化），
  *   且过滤是**精确比较**（`:62`）⇒ 大小写敏感、前后空格也不匹配。
  * · `actions` 恒为数组（`make([]map[string]any, 0, 16)`，`:58`）。
- * · `flattenActionEvent` 序列化失败时返回 **`map[string]any{}`**（`:100`/`:105`）
- *   ⇒ 理论上可能出现一条**空对象**，客户端要能识别而不是当成正常条目。
+ * ★★ `flattenActionEvent` 序列化失败时返回 **`map[string]any{}`**（`:100`/`:105`）——
+ *   但**在本端点这条路它不可达**：每行进 `flatten` 之前已过了 `decodeStoredAction`
+ *   （能 `json.Unmarshal` 成 struct ⇒ 它是合法 JSON object），
+ *   而对一个**已成功反序列化的 struct** 再 `Marshal` + `Unmarshal` 成 `map` 不会失败
+ *   ⇒ ★★★ 所以「客户端要能识别空对象」这条**在本端点是伪需求**：
+ *   真出现时的表现是**解包抛错**（缺 4 个恒在键），而那正是正确行为，**不该**放宽。
+ *   （那个 `{}` 兜底是为 **SSE** 那条路准备的 —— 那边的帧来自内存，没有预先 decode。）
  * · 坏行被静默丢弃：`decodeStoredAction` 对 JSON 解析失败（`:87-89`）与
  *   `action` 为空（`:90-92`）都 `continue` ⇒ 响应里看不出丢过东西。
  */
@@ -114,7 +143,7 @@ export const LIVE_ACTIONS_UNAVAILABLE_MESSAGE = 'live actions store unavailable'
 export const LIVE_ACTIONS_REDIS_KEY = 'llmgw:live:actions'
 /** :117 `RedisMaxLen = 5000` —— `LRange` 扫的整个队列上界。 */
 export const LIVE_ACTIONS_REDIS_MAX_LEN = 5000
-/** admin/request_actions.go:29 `requestActionsScanTimeout = 2 * time.Second`。 */
+/** admin/request_actions.go:31 `requestActionsScanTimeout = 2 * time.Second`。 */
 export const LIVE_ACTIONS_SCAN_TIMEOUT_MS = 2000
 
 /**
@@ -364,6 +393,54 @@ export function requestActionsUnavailableReason(
 /** ★ 400 的 message 原文（供客户端区分「路径段空」）。 */
 export function requestActionsIsMissingId(status: number, message: string): boolean {
   return status === 400 && message === MISSING_REQUEST_ID_MESSAGE
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 第一百一十八批新增：权限判定 + 两条可证不变式
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * ★★★★★★ 权限档（第一百一十八批逐字核过四处 + 一处**对照**）：
+ *   ① 注册处 `admin/handler.go:1045` 传 `admin(...)` = `h.admin` → `AdminMiddleware`
+ *      （`admin/auth.go:85-140`，**只认证不检 role**）；
+ *   ② `admin/request_actions.go` 全文**没有** `AuthContext` / `claims.Role` / `IsTenantAdmin`；
+ *   ③ 唯一的过滤是 `:62` 的 `request_id` 精确比较，而它来自 URL 路径段
+ *      —— `middleware/requestid_mw.go:83-89` 的 crypto/rand 16 字节 hex，**不含租户信息**；
+ *   ④ ★★ **对照**（决定性的一条）：读**同一个** `llmgw:live:actions` store 的
+ *      `/api/admin/live-stream` 在 hub 内**算了租户作用域**并逐帧过滤
+ *      （`live_stream_sse.go:2263-2268` 与 `:1875-1882`）。
+ *      ⇒ 同一份数据、同一个注册包装，**一边过滤一边不过滤** ⇒ 后端不一致，不是设计。
+ * ⇒ 归第三类：服务端**没有租户维度** ⇒ 过度限制到 `super_admin`（与批 115/117 同处置）。
+ * ⚠️ 与批 113/114 那两席（`'admin'` 档）成因相反：那一族服务端**有**租户维度。
+ */
+export function requestActionsRoleIsAllowed(role: string): boolean {
+  return role === 'super_admin'
+}
+
+/**
+ * ★★★★★ 每一行的 `request_id` 都必须回显成响应的那个 id。
+ *
+ * ★★ 依据：handler 用 `ev.RequestID != requestID` **精确比较**来筛选（`:62`），
+ *   且响应顶层把路径段**原样回显**（`:78`）⇒ 每一行的 `request_id` 与顶层**必然相等**。
+ * ⚠️ 注意它与「顶层回显是否等于我请求的那个」是**两条不同的判据**：
+ *   `requestActionsMatchesRequest` 查前者中「顶层 vs 请求」这一半；
+ *   本函数查「行 vs 顶层」。两半都要查 —— 只查一半的话，
+ *   一个把**所有**行都换成别的 id、但顶层照抄的响应能蒙混过关。
+ */
+export function requestActionsRowsEchoRequestId(r: RequestActionsResponse): boolean {
+  return r.actions.every((a) => a.request_id === r.request_id)
+}
+
+/**
+ * ★★★ `flattenActionEvent` 的 `{}` 兜底在本端点**不可达**（见文件头「另注」）。
+ *   ⇒ 本函数**故意**返回「不可达」而不是去识别它：
+ *   真出现时解包器已经抛错（缺 4 个恒在键），那是对的，不该放宽成「当作空条目」。
+ *   ⚠️ 写这个函数时先核过上游：`decodeStoredAction`（`:85-94`）已经把每行
+ *   `json.Unmarshal` 成 struct 过了，而对一个已成功反序列化的 struct 再
+ *   `Marshal` + `Unmarshal` 成 map 不会失败 ⇒ 兜底不可达。
+ */
+export function requestActionsEmptyRowIsUnreachable(): boolean {
+  return true
 }
 
 /* ── 内部工具 ────────────────────────────────────────────────────────────── */

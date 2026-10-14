@@ -24,6 +24,7 @@ export const zhCN = {
     modelHistory: '模型状态历史',
     modelIQ: '模型智商',
     opsOverview: '运维总览',
+    requestActions: '动作时间线',
     slidingWindow: '滑窗调用明细',
     modelIntegrityDrift: '指纹漂移',
     modelPolicies: '模型策略',
@@ -4317,6 +4318,60 @@ sctx: {
       requestId: '请求 ID',
       activationCode: '激活码',
       absent: '（无）',
+    },
+  },
+  // ★ 请求动作时间线（2026-10-14 第一百一十八批）。
+  //   注册处 admin/handler.go:1045 的 admin(...) ⇒ 后端 tenant_admin 可读，
+  //   但该端点**完全没有租户维度**（只按 URL 里的 request_id 精确匹配），
+  //   而读同一个 store 的 /api/admin/live-stream **有**租户过滤 ⇒ 后端不一致
+  //   ⇒ 归第三类，抽屉席钉 super_admin。
+  ra: {
+    title: '请求动作时间线',
+    load: {
+      title: '读取',
+      btn: '读取时间线',
+    },
+    scope: {
+      note: '这是实时动作流的 REST 回退：刷新页面或请求已结束时靠它回放。',
+      replay: '数据来自有界队列（LPUSH + LTRIM 5000）⇒ 更老的事件已被丢弃，这不是历史记录。',
+      paramsBad: '请求 ID 为空，后端会返回 400 —— 请先填写。',
+      empty: '尚未读取。',
+    },
+    nope: {
+      msg: '当前角色无权访问本页。',
+      why: '服务端这一族不按租户隔离，也没有角色校验；这里在发出请求之前就挡住。抽屉隐藏不等于路由拦截。',
+    },
+    err: {
+      notWired: '服务端未装配动作存储（503）。',
+      storeUnavailable: '动作存储不可用（502 Bad Gateway：上游 Redis 读失败）。',
+      missingId: '缺少请求 ID（400）。',
+    },
+    check: {
+      title: '响应自检',
+      echoBad: '回显的请求 ID 与你请求的不一致。',
+      rowEchoBad: '有动作行的请求 ID 与响应顶层不一致。',
+      countBad: 'count 与动作条数对不上。',
+      detailBad: '动作行里出现了 detail 键 —— 后端已把它摊平到顶层，出现即为契约漂移。',
+      credentialLabelBad: '出现了 credential_label —— 那是实时流的字段，本端点不该有。',
+      orderBad: '顺序与后端口径不符（应按 ts、再按 seq 升序）。',
+      seqBad: 'seq 有重复 —— 后端已按 seq 去重。',
+      unknownActions: '有 {n} 条动作是后端尚未登记的取值（不是异常，照样显示）。',
+      zeroTs: '有 {n} 条动作的时间戳是零值，它们会排在最前面。',
+      extraKeys: '摊平上来的额外键：{list}',
+      none: '无',
+    },
+    timeline: {
+      title: '动作序列',
+      empty: '这条请求没有动作记录（可能已超出回放窗口）。',
+      unknownTag: '未知取值',
+    },
+    field: {
+      requestId: '请求 ID',
+      echo: '回显的请求 ID',
+      model: '模型',
+      credentialId: '凭据 ID',
+      errorKind: '错误类型',
+      retrySeq: '重试序号',
     },
   },
 } as const

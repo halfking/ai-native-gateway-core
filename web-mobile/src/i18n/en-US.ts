@@ -24,6 +24,7 @@ export const enUS = {
     modelHistory: 'Model state history',
     modelIQ: 'Model IQ',
     opsOverview: 'Ops overview',
+    requestActions: 'Action timeline',
     slidingWindow: 'Sliding-window calls',
     modelIntegrityDrift: 'Fingerprint drift',
     modelPolicies: 'Model policies',
@@ -4274,6 +4275,62 @@ sctx: {
       requestId: 'Request ID',
       activationCode: 'Activation code',
       absent: '(none)',
+    },
+  },
+  // ★ Request action timeline (2026-10-14 batch 118).
+  //   Registration admin/handler.go:1045 is `admin(...)` so a tenant_admin can read it,
+  //   but the endpoint has **no tenant dimension at all** (it only matches the
+  //   request_id from the URL), while /api/admin/live-stream — reading the very
+  //   same store — does filter by tenant => backend inconsistency, third class,
+  //   so the drawer seat is pinned to super_admin.
+  ra: {
+    title: 'Request action timeline',
+    load: {
+      title: 'Read',
+      btn: 'Read timeline',
+    },
+    scope: {
+      note: 'This is the REST fallback for the live action stream: it is what replays a request after a page refresh or once the request has finished.',
+      replay: 'Data comes from a bounded queue (LPUSH + LTRIM 5000), so older events are already dropped — this is not history.',
+      paramsBad: 'Request ID is empty and the server would answer 400 — fill it in first.',
+      empty: 'Not read yet.',
+    },
+    nope: {
+      msg: 'Your role cannot open this page.',
+      why: 'This family is neither tenant-scoped nor role-checked on the server; the request is blocked here before it is sent. Hiding a drawer seat is not route interception.',
+    },
+    err: {
+      notWired: 'The server has no action store wired (503).',
+      storeUnavailable: 'Action store unavailable (502 Bad Gateway: the upstream Redis read failed).',
+      missingId: 'Missing request ID (400).',
+    },
+    check: {
+      title: 'Response self-check',
+      echoBad: 'The echoed request ID does not match the one you asked for.',
+      rowEchoBad: 'Some action row carries a request ID different from the response top level.',
+      countBad: 'count does not match the number of actions.',
+      detailBad: 'A detail key showed up in an action row — the server flattens it to the top level, so seeing it means the contract drifted.',
+      credentialLabelBad: 'credential_label showed up — that field belongs to the live stream, not to this endpoint.',
+      orderBad: 'Order does not match the server contract (should be ascending by ts, then by seq).',
+      seqBad: 'seq has duplicates — the server deduplicates by seq.',
+      unknownActions: '{n} action(s) use values the server has not registered yet (not an error; they are still displayed).',
+      zeroTs: '{n} action(s) carry the zero-value timestamp, so they sort to the front.',
+      extraKeys: 'Extra keys flattened in: {list}',
+      // ★ 门会拦「值 === 键名」，而英文里最自然的空值写法恰恰就是这个 —— 别写 'none'。
+      none: '(none)',
+    },
+    timeline: {
+      title: 'Action sequence',
+      empty: 'No actions recorded for this request (it may have fallen outside the replay window).',
+      unknownTag: 'unknown value',
+    },
+    field: {
+      requestId: 'Request ID',
+      echo: 'Echoed request ID',
+      model: 'Model',
+      credentialId: 'Credential ID',
+      errorKind: 'Error kind',
+      retrySeq: 'Retry seq',
     },
   },
 } as const

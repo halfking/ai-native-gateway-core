@@ -513,6 +513,21 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.opsOverview',
     requiresRole: 'super_admin',
   },
+  // ★ 请求动作时间线（2026-10-14 第一百一十八批）——
+  //   注册 `admin/handler.go:1045` 的 `admin(...)` ⇒ 后端 tenant_admin **能**读，
+  //   但该端点**完全没有租户维度**（只按 URL 里的 `request_id` 精确匹配），
+  //   而读**同一个** store 的 `/api/admin/live-stream` **有**租户过滤
+  //   ⇒ 后端不一致 ⇒ 归第三类，只能**过度限制**到 super_admin。
+  // ⇒ 本席**必须**设 `requiresRole: 'super_admin'` 并同步 `AppDrawer.spec.ts` 的排序白名单。
+  // ⚠️ 与批 115 `sliding-window` 同形态：`credential_id` 是全局主键、`request_id` 是
+  //   全局随机 id，两边都是「拿到那个标识就能读到明细」。
+  {
+    key: 'request-actions',
+    to: '/request-actions',
+    icon: 'search',
+    titleKey: 'nav.requestActions',
+    requiresRole: 'super_admin',
+  },
   // ★ 加这一席**必须**同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
   {
     key: 'routing-policy',

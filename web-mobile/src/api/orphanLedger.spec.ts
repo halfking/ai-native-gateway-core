@@ -52,7 +52,6 @@ const KNOWN_ORPHANS: readonly string[] = [
   'dataLifecycleStorage',
   'nativeTransport',
   'platformSettings',
-  'requestActions',
   'sessionAnalyticsFilterOptions',
   'storageAndLogConfig',
   'storageMigrationState',
@@ -300,6 +299,19 @@ describe('孤儿棘轮', () => {
     // ⇒ 两条判据合起来才覆盖「接上了」+「档位挂对了」；
     //   只加抽屉席不改正那份白名单，「tenant_admin 少掉的只有这些」那条立刻红。
     expect(currentOrphans()).not.toContain('opsOverview')
+  })
+
+  it('★★ 已接线的哨兵：requestActions 不在孤儿里（第一百一十八批）', () => {
+    // ★ 请求动作时间线接上了抽屉席与路由 ⇒ 棘轮清单同步删掉那一行。
+    //   该族归**第三类**：注册处 `admin/handler.go:1045` 是 `admin(...)`
+    //   （`AdminMiddleware` 只认证不检 role ⇒ 后端 tenant_admin **可读**），
+    //   但 `handleRequestActions` **完全不按租户隔离** —— 唯一过滤是 URL 里的
+    //   `request_id`，而它由 crypto/rand 生成、**不含租户信息**；
+    //   读同一个 store 的 `/api/admin/live-stream` 却**有**租户过滤
+    //   ⇒ 后端不一致 ⇒ 只能过度限制成 `requiresRole: 'super_admin'`，
+    //   所以 `AppDrawer.spec.ts` 的排序白名单里**必须**出现 request-actions。
+    // ⇒ 两条判据合起来才覆盖「接上了」+「档位挂对了」。
+    expect(currentOrphans()).not.toContain('requestActions')
   })
 
   it('★★★ 反向护栏：api 内部的互相引用不得凭空产生可达性', () => {
