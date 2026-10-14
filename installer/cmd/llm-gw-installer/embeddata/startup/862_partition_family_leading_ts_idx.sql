@@ -55,8 +55,21 @@ $build_request_logs_ts$;
 
 COMMIT;
 
-COMMENT ON INDEX idx_session_turns_ts IS
-    '862: session_turns 分区父表无谓词 (ts) 前导索引 —— canonical 视图窗口读臂与任何 ts 窗查询的承重索引；复合前导 (tenant_id, ts) 与部分索引 (ts,id) WHERE digest IS NULL 均不服务无租户约束的窗口形态。';
-
-COMMENT ON INDEX idx_request_logs_ts IS
-    '862: request_logs 族（860 后 _request_logs）分区父表无谓词 (ts) 前导索引 —— V1FreezeCutoffSQL 母表臂 max(ts) 与 canonical 视图窗口读臂专用；替代全索引扫描。族 DROP 时随之消失。';
+-- ⚠ COMMENT 必须与上面的创建腿**同守卫**（r1030 实测）：守卫掉的表如果
+--   仍留一条无条件 COMMENT，整条脚本会在 COMMIT 之后以
+--   `relation "idx_request_logs_ts" does not exist` 非零退出 —— 索引其实
+--   已经建好，但运行器只认退出码，于是该迁移永远不被记为 applied，
+--   每次 boot 重放、每次同样失败。凡「可能不存在的对象」都在此按
+--   to_regclass 判定后再下 COMMENT。
+DO $comment_862_indexes$
+BEGIN
+  IF to_regclass('public.idx_session_turns_ts') IS NOT NULL THEN
+    COMMENT ON INDEX idx_session_turns_ts IS
+      '862: session_turns 分区父表无谓词 (ts) 前导索引 —— canonical 视图窗口读臂与任何 ts 窗查询的承重索引；复合前导 (tenant_id, ts) 与部分索引 (ts,id) WHERE digest IS NULL 均不服务无租户约束的窗口形态。';
+  END IF;
+  IF to_regclass('public.idx_request_logs_ts') IS NOT NULL THEN
+    COMMENT ON INDEX idx_request_logs_ts IS
+      '862: request_logs 族（860 后 _request_logs）分区父表无谓词 (ts) 前导索引 —— V1FreezeCutoffSQL 母表臂 max(ts) 与 canonical 视图窗口读臂专用；替代全索引扫描。族 DROP 时随之消失。';
+  END IF;
+END
+$comment_862_indexes$;

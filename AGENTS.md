@@ -1727,3 +1727,112 @@ streaming 全包 150s 绿。154 终验：拦截请求三件套全绿（终态带
    JOIN 丢弃全员 401）；新插 key 要 touch last_used_at 才进 delta 同步窗。
 6. **本地 E2E mock 栈**：/tmp/p0_mock_server.py（五模式可控上游）+ DB provider
    9010 seed（详见审计文档 §二），后续轮次可复用；API key id=2 存于 api_keys。
+
+---
+
+# 追加：2026-10-14 r1030 —— 24h 修正任务审计与完善轮
+
+> 审计明细：`docs/audit/2026-10-14-r1030-24h修正任务审计与完善.md`。
+> 本轮**未部署**（无授权）；结论来自本机编译、判据、隔离 PG18 实测。
+> 24h 内 main 约 80 提交，编译与核心包单测全绿。命中 **2 真缺陷 + 2 缺门**，
+> 全部当场修复、补判据、做过变异验证；另 2 条审计线结论为**干净**（负面结论也记，
+> 免得下轮重复取证）。
+
+## 四项发现与修复
+
+1. **D1（真缺陷）迁移 862 的守卫腿被无守卫 COMMENT 击穿**。建腿有
+   `to_regclass('public._request_logs')` 守卫，末尾两条 `COMMENT ON INDEX` 是顶格无条件的。
+   隔离 PG18 实测：该族缺席时整文件在 **COMMIT 之后**以
+   `ERROR: relation "idx_request_logs_ts" does not exist`（42P01）**退出码 3** 收场。
+   `installer/internal/dbinit/runner.go` 的 `applySQL` 走
+   `psql -v ON_ERROR_STOP=1` 且**只按退出码记账** ⇒ 该迁移永不 applied、每次启动重放
+   同样失败（永久迁移卡点）；又因 `IF NOT EXISTS` 已命中，重放不重复建索引、不改坏库——
+   **这正是它能长期潜伏的原因：索引在、账不在**。命中人群是迁移注释自己点名的
+   「736 预应用（旧名）环境」与该族从未建起的新装库。修法：两条 COMMENT 与创建腿同守卫。
+2. **D2（台账缺口）862 未登记 `docs/db-changelog.md`**（861 及 855–860 都有）。按
+   **627/856 先例补新旧双指纹**：任一匹配即过，兼容已把旧字节自记账的环境。
+3. **D3（缺门）installer embed 的字节门只有 627-630/635 五条显式 cases**——正是
+   「已完成」第 6 条那族复发源（851 半同步、849/850 全漏、845-851 通道腿整段漏登）。
+   新建通用门：embed×canonical **逐字节**全量比对（实测 357 件）+ **849 起每条
+   canonical 必须有 embed 副本**（14 条）。反方向只对 849 起设门，因为 embeddata 是
+   精选子集（660 嵌 359），全量「必须嵌」会误报。
+4. **D4（缺门）`web/public` 根资产豁免只有注释里的维护契约**。12e94a240 补了 7 个
+   public 根资产 + `/index.html`，提交信息里写「今后新增必须同步登记」——**没有任何门
+   盯着目录与清单一致**，而它修的正是这个缺陷本身，且从 2026-07-10 起三个月没人记。
+   新建三腿门：① index.html 运行期引用的 public 根文件必须匿名可达（正向，3 条）；
+   ② public 根每个文件必须**有名字地**被处置——进 `ExactPaths` 或登记为构建期产物并写
+   理由（反向，当前仅 `menu-config.json`/`version.json`，二者浏览器运行期**均不请求**，
+   已 grep 全仓确认，加进豁免反是不必要的暴露面）；③ 登记为构建期产物的文件一旦被
+   index.html 真引用，必须挪进 `ExactPaths`。清单直接从
+   `NewAuthMiddleware("test-key").bypass.ExactPaths` 取，**不在测试里再抄一份**。
+
+## 判据与变异验证
+
+- D1：静态 `Test862CommentsAreGuardedLikeTheirCreateLegs`（顶格 COMMENT 即红）+
+  `Test862EmbeddedCopyMatchesCanonical`；**真库**判据
+  `TestMigration862AbsentRequestLogsFamilyStillApplies` /
+  `TestMigration862BothFamiliesBuildsAndCommentsBothLegs`
+  （`-tags=integration` + `TEST_PG_URL`，自建一次性库，执行口径对齐 applySQL）。
+  **M1**（改回顶格 COMMENT）→ 静态双红 + 真库红在 42P01，**与原缺陷同一错误码**。
+- D3：**M2**（只改 embed 副本）→ 单条判据与通用门双红。
+- D4：**M3**（摘掉 `/favicon.png`）→ 正向腿红 status=401 + 反向腿红；**M4**（往 public
+  根丢未表态文件）→ 反向腿红并点名；**M5**（index.html 真引用 menu-config.json）→
+  构建期表失效检查红。三个变异精准命中，探针文件已回收站。
+
+## 两条干净线（负面结论，防重复取证）
+
+- **deploy 脚本清理（ecbebfa55 删 33 件）**：全仓扫描存活引用，命中全在文档/CHANGELOG
+  历史叙述；唯一 4 处疑似活引用逐条核实为**注释或无关字符串**
+  （`apply-db-revision-sequence_test.sh:74` 注释里点名的历史调用方；
+  `deploy_rollback_test.sh:301` 是 `missing-version rollback` 子串；
+  `db252_tunnel_test.sh:166` 指向仍存在的 `scripts/partition/bodies-hot-repack-rollback.sh`；
+  `deploy_sops_test.sh:54` 提到 `deploy_cli_test.sh:55` 这个**行号**）。**零残留。**
+- **S4 改名（570b6d026，676 文件）**：Go 侧裸表名引用逐处核过——非测试代码只剩
+  SQLite 存储（`storage/sqlite/`、`bg/lite_retention_worker.go`，与 PG 改名无关），
+  其余全是历史迁移测试夹具与两份 admin 停写分类台账（引的是 canonical 视图，
+  按 860 设计不改名）。**读侧无残留裸引用。**
+
+## 判据纪律第 11 条（新增）
+
+**别让管道把编译/测试的失败吞成成功**：`go build ./... | tail -30; echo "BUILD_RC=$?"`
+打印的是 `tail` 的退出码（恒 0）——本轮首次即踩到：输出满屏 clang 报错，`BUILD_RC=0`
+照样打出来，差点误判为「编译通过」。判定编译结果**不得经管道**：先重定向到文件再看
+`$?`，或 `set -o pipefail`；`go test | tail` 同理要读 `${PIPESTATUS[0]}`。
+
+## 并行会话纪律（本轮实证）
+
+`-2` checkout 出现未提交 WIP（`internal/ir/parse_responses.go`、
+`security/sanitize/{placeholder_loose,smart_sani_guard}.go` + 两个 `r1030_*_test.go`），
+**mtime 距当时仅数分钟** ⇒ 正在被别的会话写。处置：**只读取证（查 mtime/diffstat），
+不碰不提交不删**；随后该会话自行提交推送为 `ec9d2f3f0`。自己的改动集与它**零文件
+重叠**（`git diff --name-only` 核过），故可带着未提交改动安全 `merge --ff-only`。
+分支清理只删**远端已合并陈旧分支**，**不摘本地 worktree**。
+
+## 分支面（两种窗口口径都报）
+
+- 严格 24h 窗口、≥1h 未活动：**0 条**（窗口内除 main 无任何分支）。
+- 宽窗口（沿用上轮 [1h,48h]）：远端 `feat/deploy-211-docker`（68b1de396）、
+  `s3-wave2-readsource`（4abbe24e6）——删前逐条 `merge-base --is-ancestor` 确认已并入
+  main，`git push --delete` **已执行**。
+- `-2` 的 4 条本地分支全部已并入 main（`ahead=0`）但**本轮不动**（两条挂在 worktree 上，
+  且该 checkout 有活跃并行会话）。远端 3 条九月未合并分支维持留置（窗口外、独有内容）。
+
+## 下一轮提示词（2026-10-14 r1030 轮更新）
+
+1. **D1 待部署授权**：修复需一次部署才能真正消掉生产面的迁移卡点。前提是该族在目标
+   环境**在场**——252 已按 736 先例预应用、不受影响的概率高；真正命中的是「族缺席」的
+   环境。部署前先在目标机确认 `to_regclass('public._request_logs')`。
+2. **`-2` 的 4 条已合并本地分支 + 2 个 worktree**（`wt-deploy-211`、
+   `/private/tmp/lggw-s3wave-wt`）**需 owner 一句话授权**再清理——零独有内容，但摘
+   worktree 会打断可能在用它们的会话。
+3. **远端 3 条九月未合并分支**（`2026-07-25-realtime-routing-self-heal` 24 篇设计归档 /
+   `fix/w5-ml-ci-runbook` / `fix/w6-monitor-docs`）维持留置，待维护者裁决。
+4. **`go build ./...`（cgo 形态）在本机结构上不可用**（macOS SDK 27.0 × CLT linker，
+   `tapi error`）。所有验证一律 `CGO_ENABLED=0`。建议把这条口径写进 verify 脚本。
+5. **隔离 PG 实例仍在跑**：`127.0.0.1:54999`（`/tmp/pg862audit.9vybj2`，socket+TCP 均可），
+   下轮真库判据可直接复用：
+   `TEST_PG_URL=postgres://audit@127.0.0.1:54999/postgres?sslmode=disable`。
+6. **登记待续**（上轮转来的）：`probe_direct_auth_failed` 探针失败主体与失效 sk-* key
+   持有方通知；fail-open 占位符透传（96 行样本，根因未定位，需结构化日志+真实流量+发布
+   授权）；601,914 行 `session_censors.original_encrypted` 全 NULL 的还原半程（要还原得给
+   `db_sink.go` 加解密读取方，配密钥无用）。

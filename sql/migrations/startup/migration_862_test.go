@@ -83,3 +83,45 @@ func Test862DownDropsBothIndexes(t *testing.T) {
 		}
 	}
 }
+
+// Test862CommentsAreGuardedLikeTheirCreateLegs —— r1030 真库实测：
+// request_logs 腿的创建被 to_regclass 守卫，可脚本末尾两条
+// `COMMENT ON INDEX` 是无条件的。在该族缺席的环境（860 之前的旧名形态、
+// 或已 DROP 的族——**正是这条守卫存在的理由所覆盖的场景**），
+// 整文件在 COMMIT 之后以
+//
+//	ERROR: relation "idx_request_logs_ts" does not exist
+//
+// 非零退出。dbinit 的 applySQL 用 `psql -v ON_ERROR_STOP=1` 执行并只按
+// 退出码记账，于是该迁移永远不被记为 applied，每次 boot 重放、每次同样
+// 失败（索引其实早已建好，IF NOT EXISTS 命中）——一个永久的迁移卡点。
+//
+// 静态钉法：本文件里所有顶层语句都顶格（DO 块体内的语句一律缩进）。
+// 因此「顶格的 COMMENT ON INDEX」就是无守卫的 COMMENT。
+func Test862CommentsAreGuardedLikeTheirCreateLegs(t *testing.T) {
+	up := stmt862(t, idx862File)
+	for i, ln := range strings.Split(up, "\n") {
+		if strings.HasPrefix(ln, "COMMENT ON INDEX") {
+			t.Errorf("862 第 %d 行是无守卫的顶层 COMMENT ON INDEX：%s\n"+
+				"守卫掉的对象不能留无条件 COMMENT（r1030 真库实测 exit=3，"+
+				"迁移永不记账）。请与创建腿同守卫：放进 to_regclass 判定的 DO 块。", i+1, ln)
+		}
+	}
+	// 正向钉子：两条注释都必须在守卫块内真的写着。
+	if !strings.Contains(up, "to_regclass('public.idx_request_logs_ts')") ||
+		!strings.Contains(up, "to_regclass('public.idx_session_turns_ts')") {
+		t.Errorf("862 的两条 COMMENT 必须各自先经 to_regclass 判定；守卫被删掉后 " +
+			"缺席族环境会重新变回 exit=3 的迁移卡点")
+	}
+}
+
+// Test862EmbeddedCopyMatchesCanonical —— 双点同步钉（installer embed 与
+// canonical 字节必须一致）。只改一处会让 CI 构建出的安装器带着与正典不同
+// 的 SQL 上门，是 849/850/851 漏同步那一族的通用护栏。
+func Test862EmbeddedCopyMatchesCanonical(t *testing.T) {
+	canonical := repoFile(t, "sql/migrations/startup/"+idx862File)
+	embed := repoFile(t, "installer/cmd/llm-gw-installer/embeddata/startup/"+idx862File)
+	if embed != canonical {
+		t.Errorf("862 embed 漂移：installer/cmd/llm-gw-installer/embeddata/startup/%s 与 canonical SQL 不一致", idx862File)
+	}
+}
