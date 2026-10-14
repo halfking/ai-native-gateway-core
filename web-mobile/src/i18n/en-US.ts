@@ -92,6 +92,7 @@ export const enUS = {
     nodeHealth: 'Health timeline',
     subscriptionTiers: 'Subscription tiers',
     platformSettings: 'Platform settings',
+    usageEnhanced: 'Usage & cost',
     account: 'Me',
   },
   // ★ Subscription tiers (2026-10-14, batch 120). Prefix: sts.
@@ -180,6 +181,52 @@ export const enUS = {
       source: 'Value source',
       operator: 'Operator',
       role: 'Role',
+    },
+  },
+  // ★ Usage & cost (2026-10-14, batch 122). Prefix: ue.
+  ue: {
+    title: 'Usage & cost',
+    nope: {
+      msg: 'Only admins can view usage and cost data.',
+      // ★★ Unlike the families where the server middleware is a real gate, these
+      //   three endpoints DO filter by tenant — but `h.admin` has **no role floor**,
+      //   so the server hands all-tenant totals to a plain user. This page blocks first.
+      why: 'The server sets no role floor on these endpoints, so a plain account would receive every tenant’s costs.',
+    },
+    load: {
+      title: 'Fetch',
+      btn: 'Refresh usage & cost',
+    },
+    scope: {
+      allTenants: 'You are viewing costs for **all tenants** (super-admin scope).',
+      ownTenant: 'You are viewing costs for **your own tenant**.',
+    },
+    estimate: {
+      note: 'The three savings figures below are **estimates** derived from hard-coded assumptions, not billing data.',
+      badge: 'est.',
+    },
+    cache: {
+      title: 'Cache & compression economics',
+      ok: 'Server confirmed: not degraded',
+      degraded: 'Server degraded: the figures below are all zero and do not mean nothing was spent.',
+    },
+    compare: {
+      title: 'Period comparison',
+      degraded: 'Period comparison is degraded.',
+    },
+    check: {
+      hitRatioMeaningless: 'A 0% hit ratio only means the denominator is zero, not that nothing hit.',
+      compressedSuspect: 'The compressed-request count may have failed to load (the server only logs a warning).',
+      compressionUnreliable: 'Compression savings are unreliable: their only input may have failed to load.',
+      periodMeaningless: 'A 0% period change means both periods are empty, not that nothing changed.',
+      threshold: 'Significant change threshold: {pct}%.',
+    },
+    field: {
+      totalRequests: 'Total requests',
+      cacheReadTokens: 'Cache-read tokens',
+      dollars_saved: 'Cache savings',
+      compression_saved: 'Compression savings',
+      total_saved: 'Total savings',
     },
   },
   common: {

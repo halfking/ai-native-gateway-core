@@ -872,6 +872,21 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'ps.title', requiresAuth: true, requiresRole: 'super_admin' },
   },
   {
+    // ★ 用量成本增强（2026-10-14，第一百二十二批）。
+    //   ★★★★★ 权限档**第一类（有租户维度）**，但本族是**第一个「服务端缺角色下限」的**：
+    //   三个端点**确实**按租户隔离（EffectiveTenantIDAll + AND tenant_id = $N），
+    //   可 `h.admin` = AdminMiddleware **没有任何角色下限**，
+    //   而 pkg/identity 的 `supportedRole` **接受 "user"**
+    //   ⇒ EffectiveTenantIDAll 对 user 返回 "" = 查全部租户
+    //   ⇒ ★★★ 普通 user 能读到跨租户成本数据。
+    //   ⇒ 故设 'admin' 档（不是 super_admin）：挡 user，放行 admin 三档。
+    //   ⚠️ 前端是兜底不是修复；该补的是后端那道角色下限。
+    path: '/usage-enhanced',
+    name: 'usage-enhanced',
+    component: () => import('@/views/UsageEnhancedView.vue'),
+    meta: { titleKey: 'ue.title', requiresAuth: true, requiresRole: 'admin' },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),

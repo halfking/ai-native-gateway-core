@@ -16953,3 +16953,130 @@ S3（把 `scopeMismatch` 的取负去掉）首轮判成 **`RED_NOT_MATCHED`**，
 它在当前后端下**恒为 `true`**，★ **恒真函数等于假门** ——
 它看起来像一道闸，实际什么都挡不住，比没有更危险。
 ⇒ 承重判据写在 spec 里（读 Go 源码），不放在运行时 helper 里。
+
+
+## 11.158 用量成本接进 UI —— 权限档**第十次**登场：**第一个「有租户维度、但服务端缺角色下限」的家族**；订正「三个端点都有租户过滤 ⇒ 不设 requiresRole」的错误推论（第一百二十二批）
+
+### 一、这批做了什么
+
+把 `usageEnhanced`（第七十批建的 API 模块，**一直是孤儿**）接进移动端，孤儿 8 → **7**：
+
+| 项 | 值 |
+|---|---|
+| 视图 | `web-mobile/src/views/UsageEnhancedView.vue` |
+| 判据 | `UsageEnhancedView.spec.ts` **32 条**；API 层 59 → **62 条**（新增 3 条权限 helper）|
+| 路由 | `/usage-enhanced`，`meta.requiresRole: 'admin'` |
+| 抽屉席 | `usage-enhanced`，`requiresRole: 'admin'` ⇒ **不得**进 superAdmin 白名单 |
+| i18n | 前缀 `ue` + `nav.usageEnhanced`（zh-CN / en-US 各 3682 键）|
+| 变异台 | **14/14 有牙**，还原后逐字节零残留 |
+
+### 二、★★★★★★ 权限档第十次：缺的不是租户过滤，是**角色下限**
+
+★ **这三条端点确实都按租户过滤** —— 这一点先钉住，因为本批的全部结论都建立在它之上：
+
+| handler | 取租户键 | SQL 条件 |
+|---|---|---|
+| `usageCostTrend`（`usage_enhanced.go:128`）| `EffectiveTenantIDAll(r)` | `AND %s.tenant_id = $3` |
+| `usagePeriodCompare`（`:347`）| 同上 | **委托**给 `queryPeriodStats`(`:476`) / `queryDimensionChanges`(`:522`)，条件写在**助手**里 |
+| `usageCacheEconomics`（`:616`）| 同上 | `AND ul.tenant_id = $3` |
+
+⇒ 各租户互相隔离 ⇒ ★ **所以本族不是第三类**（没有「载荷含别人的东西」的判定权）。
+
+★★★ **但缺的是另一头：谁能进来。** 逐字链：
+
+1. 注册 `admin/handler.go:1289`
+   `mux.HandleFunc("/api/admin/usage/", h.admin(h.HandleUsageAdmin))`
+   （★ **第五种注册形态**：前缀子路由。与批 121 的 `settingsRouter` 同型。）
+2. `h.admin` = `AdminMiddleware`（`handler.go:894` → `auth.go:85-140`）
+   —— 全文**只有**「验 JWT」+「强制改密码」，**没有任何角色下限**。
+3. ★★★ `pkg/identity/verifier.go` 的 `supportedRole`：
+   ```go
+   case "user", "tenant_admin", "super_admin":
+       return true
+   ```
+   ⇒ 它校验「角色**是已知的**」，**不是**「角色**够高**」。
+4. `EffectiveTenantIDAll`（`admin/context.go`）：
+   ```go
+   if IsTenantAdmin(r) { return GetTenantID(r) }
+   return "" // empty string means query all tenants
+   ```
+
+⇒ ⇒ ★★★★★ **普通 `user` 拿合法 JWT 就能进这三个端点；`IsTenantAdmin(user)` 为假 ⇒ 拿到空串
+⇒ 空串意味着「**不拼** tenant_id 条件」⇒ 读到跨全部租户的成本与用量数据。**
+
+⇒ 本仓至今**第一个**「有租户维度、但服务端缺角色下限」的家族：
+前九次判定里第一类成员挡的都是**租户_admin 之间**的隔离，而这里要挡的是
+**比 tenant_admin 更低的 `user`**。
+
+⇒ 处置：`requiresRole: 'admin'`（**不是** `super_admin`，那会误伤 `tenant_admin`）。
+`navItemsFor` 的 `'admin'` 档放行 `super_admin` / `tenant_admin` / `admin_key`、挡掉 `user`
+⇒ 在后端补上门之前，**这是唯一挡住普通 `user` 的东西**。
+⚠️ 前端严于后端是**兜底不是修复**。
+
+★★ 与已登记的后端待办②（`/api/errors/trend` 与 `/api/credentials/model-history`
+「effective role=user 可读跨租户」）是**同一类缺陷的第三个实例**，
+而本族落在**成本**数据上，比 errors trend 更敏感。
+
+### 三、★★★ 订正模块头的两处错
+
+| | 原文 | 实况 |
+|---|---|---|
+| 注册行号 | `handler.go:1267` | ★ **`:1289`**（漂 22 行；`:1267` 其实是 `if h.errorsTrendHandlers == nil {`）|
+| 权限推论 | 「tenant_admin 可用 ⇒ 抽屉席**不设** `requiresRole`」| ★ **必须设 `'admin'`** |
+
+★ 「tenant_admin 可用」这半句**是对的**；错的是从它推出「所以不需要 `requiresRole`」
+—— **它漏了第三类主体**。
+⇒ 与批 121 同型但更隐蔽：批 121 是「注册处包的是 router」，
+这里是「**注册处与 handler 都读了，唯独没读中间件那一层**」。
+
+### 四、★★★ 判据钉的是**链条的每一环**，不是结论
+
+①-4 / ①-5 / ①-6 各钉一环，缺一不可：
+
+```ts
+expect(body, '中间件里出现了角色判定 ⇒ 权限结论要重判').not.toMatch(/IsSuperAdminOrLegacy|IsTenantAdmin|RequireSuperAdminForWrite/)
+expect(goFunc(src, 'supportedRole')).toMatch(/case "user", "tenant_admin", "super_admin":\s*\n\s*return true/)
+expect(goFunc(src, 'EffectiveTenantIDAll')).toMatch(/return "" \/\/ empty string means query all tenants/)
+```
+
+★ **没有 ①-5 那条，「中间件不检 role」只是缺一道门**；有了它才证明**普通用户真的进得来**。
+⇒ ①-7 反向钉「隔离机制**存在**」：哪天某条链不再把 `tid` 带到 SQL，这条会红
+—— 那就从「缺角色下限」**升级**成「跨租户」了。
+
+### 五、★★★ 三处量具自身的问题（本批踩得比前几批深）
+
+1. **`goFunc` 不能「遇到第一个 `func ` 就停」。**
+   `usagePeriodCompare`（`:347`）的区间里夹着 `func parsePeriod(`（`:465`）等**别的顶层函数**
+   ⇒ 一停就只拿到函数体前半截，里面的租户条件被切掉 ⇒ ①-7 **假性失败**。
+   ⇒ 修法：**带接收者时只停在「下一个同接收者的方法」**。
+2. **用 Go 解析器读 TypeScript。** ①-3 拿 `goFunc` 去读 `appNav.ts`
+   ⇒ 红在「没找到 `navItemsFor` 定义」⇒ ★ **红色来自解析器用错语言**，改成行为断言 + 读 TS 文本。
+3. **判据钉了字典、没钉页面。** ③-1 初版只断言 `t('ue.estimate.badge')` 非空 ——
+   那是**字典里有这个键**，与页面**有没有渲染**毫无关系
+   ⇒ 变异台 S9 把徽标从模板里删掉，**全绿**。
+   ⇒ 修法：给徽标加 `data-testid`，并断言**页面上真的出现了 3 个**
+   （且数量必须等于节省字段数 —— 少一个就有一个值被当成账单数）。
+
+★ 另有一处**结构假设错误**：`usagePeriodCompare` **自己不拼 SQL 条件**，它委托给两个助手
+⇒ 我按「handler 内联拼条件」写断言，红了。★ **红色来自我假设了错误的结构**，
+不是被测物有问题 —— 委托是它的真实形态，判据要照委托写。
+
+### 六、读数
+
+- `vue-tsc -b` rc=0（**先删 `*.tsbuildinfo`**）；css / touch / i18n / comment 四门 rc=0
+- `i18n:check` ⇒ zh-CN / en-US 各 **3682** 键，键集一致，无未翻译项
+- `gate:selftest` 5/5；`npm run build` rc=0
+- 全量：**212 files / 7936 passed**（基线 211 / 7904），1 skipped
+- 变异台 **14/14 有牙**，零 `RED_NOT_MATCHED` / `NO_EFFECT` / `MUTATION_INVALID`
+- 十连跑 **10/10 全绿**
+- 文档 §11.158（**58** 节）
+
+### 七、★ 本批新增的后端待办（超范围，历来不动后端）
+
+③ **`/api/admin/usage/{cost-trend,period-compare,cache-economics}` 缺角色下限。**
+`h.admin` 不检 role，而 `supportedRole` 接受 `"user"`
+⇒ effective role=`user` 可读到跨全部租户的成本与用量数据。
+可执行判据已在 `UsageEnhancedView.spec.ts` ①-4 / ①-5 / ①-6
+（三条合起来构成完整链条，缺任何一条都会让结论失去证据）。
+★ 这是待办②那一类缺陷的**第三个实例**，而本族落在**成本**上 ——
+建议与 ② 一并处理，别只修那两个端点。

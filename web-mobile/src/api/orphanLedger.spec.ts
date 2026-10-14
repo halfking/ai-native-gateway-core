@@ -111,7 +111,6 @@ const KNOWN_ORPHANS: readonly string[] = [
   'storageAndLogConfig',
   'storageMigrationState',
   'turnsFilterOptions',
-  'usageEnhanced',
 ]
 
 /**

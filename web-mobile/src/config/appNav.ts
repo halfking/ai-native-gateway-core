@@ -570,6 +570,21 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.platformSettings',
     requiresRole: 'super_admin',
   },
+  // ★ 用量成本增强（2026-10-14 第一百二十二批）——
+  //   ★★★★ 权限档**第一类**（有租户维度）：三个端点都按租户过滤
+  //   ⇒ 各租户互相隔离，不是过度限制。
+  //   ★ 但**必须**设 `requiresRole: 'admin'`（不能像同族的 trend-series 那样不设）：
+  //   `h.admin` 无角色下限 + `supportedRole` 接受 `user`
+  //   ⇒ 服务端会把「全部租户的合计」发给普通 user。
+  //   ⇒ `navItemsFor` 的 'admin' 档放行 admin 三档、挡掉 user
+  //   ⇒ ★★ 在后端补上门之前，**这是唯一挡住普通 user 的东西**。
+  {
+    key: 'usage-enhanced',
+    to: '/usage-enhanced',
+    icon: 'chart',
+    titleKey: 'nav.usageEnhanced',
+    requiresRole: 'admin',
+  },
   // ★ 加这一席**必须**同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
   {
     key: 'routing-policy',

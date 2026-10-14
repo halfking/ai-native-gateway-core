@@ -92,6 +92,7 @@ export const zhCN = {
     nodeHealth: '健康时间线',
     subscriptionTiers: '订阅档',
     platformSettings: '平台设置',
+    usageEnhanced: '用量成本',
     account: '我的',
   },
   // ★ 订阅档（2026-10-14，第一百二十批）。前缀 sts。
@@ -174,6 +175,51 @@ export const zhCN = {
       source: '取值来源',
       operator: '操作者',
       role: '角色',
+    },
+  },
+  // ★ 用量成本（2026-10-14，第一百二十二批）。前缀 ue。
+  ue: {
+    title: '用量成本',
+    nope: {
+      msg: '仅管理员可查看用量与成本数据。',
+      // ★★★ 本族与服务端中间件是「真门」那一类不同：三个端点**确实按租户隔离**，
+      //   但 `h.admin` **没有角色下限** ⇒ 服务端会把「查全部租户」的结果发给普通 user。
+      why: '服务端这三个端点没有角色下限，普通账号会读到全部租户的成本，所以本页提前挡住。',
+    },
+    load: {
+      title: '取数',
+      btn: '刷新用量与成本',
+    },
+    scope: {
+      allTenants: '你正在查看**全部租户**的成本合计（超管视角）。',
+      ownTenant: '你正在查看**本租户**的成本。',
+    },
+    estimate: {
+      note: '下面三个「节省」数字是按写死的假设推算出来的**估算值**，不是账单。',
+      badge: '估算',
+    },
+    cache: {
+      title: '缓存与压缩经济性',
+      ok: '服务端确认未降级',
+      degraded: '服务端已降级：下面的数字是全 0，不代表真的没花钱。',
+    },
+    compare: {
+      title: '环比',
+      degraded: '环比已降级。',
+    },
+    check: {
+      hitRatioMeaningless: '命中率为 0% 只是因为分母为 0，不代表「一条都没命中」。',
+      compressedSuspect: '压缩请求数可能取数失败（服务端只记了一条 warn 日志）。',
+      compressionUnreliable: '压缩节省额不可信：它的唯一输入（压缩请求数）可能取数失败。',
+      periodMeaningless: '环比变化为 0 是因为两个周期都没有数据，不是「持平」。',
+      threshold: '显著变化的阈值是 {pct}%。',
+    },
+    field: {
+      totalRequests: '总请求数',
+      cacheReadTokens: '缓存命中 token',
+      dollars_saved: '缓存节省额',
+      compression_saved: '压缩节省额',
+      total_saved: '合计节省',
     },
   },
   common: {

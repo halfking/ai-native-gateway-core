@@ -3,13 +3,59 @@ import { req, type RequestOptions } from './client'
 /**
  * usageEnhanced.ts — 用量成本增强面的三条**只读**端点（2026-10-08，第七十批）。
  *
- * GET /api/admin/usage/cost-trend       （handler.go:1267 `h.admin` 子路由）
+ * GET /api/admin/usage/cost-trend       （handler.go:1289 `h.admin` 前缀子路由）
  * GET /api/admin/usage/period-compare
  * GET /api/admin/usage/cache-economics
  *
- * ★ 三条都挂在 `h.admin(h.HandleUsageAdmin)`（`admin/usage.go:49-68`）
- *   这个**前缀子路由**上 ⇒ tenant_admin 可用 ⇒ 抽屉席**不设** `requiresRole`。
- *   （同族的 `trend-series` / `trend-models` 也是 admin 档，留待下一批。）
+ * ⚠️⚠️⚠️ ★★★★★★ **本条已于 2026-10-14（第一百二十二批）整体订正。**
+ *
+ *   **原文（两处错）**：
+ *   ① 行号写 `handler.go:1267` ⇒ **实为 `:1289`**（漂 22 行；
+ *      `:1267` 其实是 `if h.errorsTrendHandlers == nil {`，与本族毫无关系）；
+ *   ② 「三条都挂在 `h.admin(h.HandleUsageAdmin)` 这个前缀子路由上
+ *      ⇒ tenant_admin 可用 ⇒ **抽屉席不设 `requiresRole`**」。
+ *
+ *   **订正后的权限结论：抽屉席必须设 `requiresRole: 'admin'`。**
+ *
+ *   **② 错在哪**：「tenant_admin 可用」这半句**是对的**，
+ *   错的是从它推出「所以不需要 `requiresRole`」—— 因为**它漏了第三类主体**。
+ *
+ *   ★★★★ **`h.admin` 没有任何角色下限。** 逐字链：
+ *     `h.admin` = `AdminMiddleware`（`admin/handler.go:894` → `admin/auth.go:85-140`）
+ *     —— 全文**只有**「验 JWT」+「强制改密码」两件事，
+ *     **没有任何 `IsSuperAdminOrLegacy` / `IsTenantAdmin` / 角色比较**；
+ *     而 `identity.Verify`（`pkg/identity/verifier.go:111`）里的 `supportedRole`
+ *     —— ★★★ **`supportedRole("user")` 返回 `true`**（`:supportedRole` 的
+ *     `case "user", "tenant_admin", "super_admin": return true`）
+ *     ⇒ 它校验的是「角色**是已知的**」，**不是**「角色**够高**」。
+ *
+ *   ⇒ ⇒ ★★★★★ 结论：一个 **普通 `user`** 拿合法 JWT 就能调这三个端点。
+ *     而 `EffectiveTenantIDAll`（`admin/context.go`）是：
+ *     ```go
+ *     if IsTenantAdmin(r) { return GetTenantID(r) }
+ *     return "" // empty string means query all tenants
+ *     ```
+ *     `IsTenantAdmin` 只认 `tenant_admin` ⇒ ★★ **`user` 拿到的是空串**，
+ *     而空串在三个 handler 里意味着「**不加** `AND ... tenant_id = $N`」：
+ *     - `usageCostTrend`     （`usage_enhanced.go:128`）`tid := EffectiveTenantIDAll(r)` + `AND %s.tenant_id = $3`
+ *     - `usagePeriodCompare` （`:347`）同款
+ *     - `usageCacheEconomics`（`:616`）同款
+ *     ⇒ ⇒ ★★★★★ **普通 user 可读到跨全部租户的成本与用量数据。**
+ *
+ *   ★★★ **这一族是本仓至今第一个「有租户维度、但服务端缺角色下限」的家族**
+ *     —— 前七次权限判定里，第一类（有租户维度 ⇒ 按角色档挡）的成员都是
+ *     「租户_admin 之间的隔离」，而这里要挡的是**比 tenant_admin 更低的 `user`**。
+ *   ⇒ 前端因此**必须**设 `requiresRole: 'admin'`：
+ *     `navItemsFor` 的 `'admin'` 档放行 `super_admin` / `tenant_admin` / `admin_key`
+ *     而挡掉 `user` ⇒ 在服务端补上门之前，**这是唯一挡住普通 user 的东西**。
+ *   ⚠️ 前端严于后端是**兜底不是修复** —— 该补的是后端那道角色下限。
+ *   ⇒ ★★ 与已登记的后端待办②（`/api/errors/trend` 与 `/api/credentials/model-history`
+ *     「effective role=user 可读跨租户」）是**同一类缺陷的第三个实例**，
+ *     而本族落在**成本**数据上，比 errors trend 更敏感。
+ *
+ *   ★★ 三条端点本身**都有**租户过滤（这一点模块头没写错，只是没说透），
+ *     所以它们**不是**第三类（没有「载荷含别人的东西」的判定权：各租户只能看到自己），
+ *     **但**由于缺角色下限，`user` 看到的是**所有人的**。
  *
  * ## ★★★★★ 本族最要紧的五件事
  *
@@ -518,4 +564,47 @@ function requireKeys(obj: object, keys: readonly string[], where: string): void 
 function requireArray(v: unknown, where: string): unknown[] {
   if (!Array.isArray(v)) throw new Error(`${where} 不是数组`)
   return v
+}
+// ═══════════════════════════════════════════════════════════════════════════
+// 权限档（2026-10-14，第一百二十二批新增）
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * ★★★★ 「拿不到租户键 ⇒ 等于查全部租户」这件事，**只有这些角色是正当的**。
+ *
+ * 与 `EffectiveTenantIDAll`（`admin/context.go`）逐字对齐：
+ * ```go
+ * if IsTenantAdmin(r) { return GetTenantID(r) }
+ * return "" // empty string means query all tenants
+ * ```
+ * ⇒ `tenant_admin` 拿到自己的 tid（**正确隔离**）；
+ *   ★★ **其余一切角色都拿到 `""`**，而 `""` 在三个 handler 里意味着
+ *   「**不拼** `AND ... tenant_id = $N`」。
+ *
+ * ⇒ 对 `super_admin` / `admin_key`，`""` 是**设计意图**（本来就该看全局）；
+ *   ★ 但对普通 `user`，`""` 就是**跨租户泄漏** —— 因为 `h.admin`
+ *   （`AdminMiddleware`）**没有任何角色下限**，而 `supportedRole` 接受 `"user"`。
+ *
+ * ⇒ 本族抽屉席因此设 `requiresRole: 'admin'`：挡住 `user`，放行 admin 三档。
+ */
+export const USAGE_ALL_TENANT_ROLES = ['super_admin', 'admin_key'] as const
+
+/** ★★★★ 「以『查全部租户』的身份读成本数据」是否正当。见上。 */
+export function usageAllTenantsScopeIsLegitimate(role: string | null | undefined): boolean {
+  return role === 'super_admin' || role === 'admin_key'
+}
+
+/**
+ * ★★★★★ **本族真正要挡的不是 tenant_admin，而是普通 `user`。**
+ *
+ * ⇒ 这是本仓第一个「有租户维度、但服务端缺角色下限」的家族：
+ *   前七次权限判定里第一类成员挡的都是「租户_admin 之间的隔离」，
+ *   而这里 `user` 拿到的租户键是 `""` ⇒ 看到**所有人的**成本。
+ *
+ * ★ 这条**不是**恒真：它随 role 变，且 `admin` 三档任一都返回 false。
+ */
+export function usageRoleNeedsAdminGate(role: string | null | undefined): boolean {
+  if (role === 'super_admin' || role === 'admin_key') return false
+  if (role === 'tenant_admin') return false
+  return true
 }
