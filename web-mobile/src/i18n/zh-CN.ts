@@ -17,6 +17,7 @@ export const zhCN = {
     selfCheck: '系统自检',
     connectionRegistry: '连接注册台',
     usageTrendSeries: '用量趋势线',
+    formatAnomalies: '格式异常',
     modelPolicies: '模型策略',
     modelPolicyAudit: '策略审计',
     approvalConfig: '审批配置',
@@ -3485,6 +3486,86 @@ sctx: {
       credits: '总 credits',
       cost: '总费用 USD',
       points: '数据点',
+    },
+  },
+  // ★ 第一百零九批：响应格式异常。措辞逐条对应后端契约，改文案前先读
+  //   views/FormatAnomaliesView.vue 头部那十条。
+  fa: {
+    title: '响应格式异常',
+    load: '加载',
+    reload: '重新加载',
+    loadSummary: '加载汇总',
+    list: {
+      title: '异常明细',
+      // ★★★ count 是**全表命中数**，本页只是切片 —— 与 summary 的 count 语义相反
+      count: '全表命中 {total} 条，本页 {page} 条',
+      countViolation: '载荷异常：全表命中数 {total} 小于本页 {page} 条。',
+      window: '后端生效窗口：limit={limit} · offset={offset}',
+      prev: '上一页',
+      next: '下一页',
+      hasMore: '还有下一页。',
+      lastPage: '已是末页。',
+      empty: '当前窗口内没有异常记录。',
+    },
+    filter: {
+      limit: '每页',
+      provider: '供应商代码',
+      model: '模型',
+      anomalyType: '异常类型（开放域，可填任意值）',
+      unresolvedOnly: '只看未解决',
+      reset: '重置过滤',
+    },
+    row: {
+      // ★★ COALESCE 为 NULL ⇒ 该行不可能是 provider 过滤的结果（NULL=x 求值为 NULL）
+      providerUnmatchable: '键缺失（不可能匹配任何供应商过滤）',
+      providerAbsent: '未提供',
+      requestIdEmpty: '空串（该行没有请求 ID）',
+      absent: '未提供',
+      // ★ 指针为 NULL ⇒ 键被省略；0 是真的 0
+      nullValue: '无数据（键缺失）',
+      avgAbsent: '无法判定（AVG 返回 NULL）',
+      resolved: '已解决',
+      unresolved: '未解决',
+    },
+    sev: {
+      // ★ 本表 DEFAULT 'medium'，另一张表（model_integrity_events）是 'low'
+      default: '（表级缺省）',
+    },
+    summary: {
+      title: '按小时汇总',
+      hours: '窗口',
+      // ★★ 这里的 count 是**本页行数**，与明细段的 count 语义相反
+      count: '本页共 {n} 行',
+      countBad: '载荷异常：count={n} 与实际行数 {len} 不一致。',
+      hoursEcho: '后端生效窗口：{h} 小时',
+      hoursRewritten: '请求的 {want} 小时被后端改写（≤0 取 24，>720 取 720）。',
+      // ★★★ 硬编码在 SQL 里的 LIMIT 200，响应无字段可证
+      atCap: '已达服务端硬上限 {cap} 行，更早的桶可能被截断、无法证明。',
+      hourOrderBad: '排序不是按小时降序，与后端契约不符。',
+      countOrderBad: '同一小时内计数不是非递增的，与后端契约不符。',
+      affectedBad: '去重数超过总数',
+      resolvedBad: '已解决数超过总数',
+      empty: '这段时间没有异常汇总。',
+    },
+    col: {
+      detectedAt: '检出时间',
+      requestId: '请求 ID',
+      provider: '供应商',
+      clientModel: '入站模型',
+      outboundModel: '出站模型',
+      contentSize: '内容大小',
+      expectedTokens: '预期 tokens',
+      actualTokens: '实际 tokens',
+      anomalyCount: '异常数',
+      affected: '受影响请求',
+      resolvedCount: '已解决',
+      avgContentSize: '平均内容大小',
+      avgExpectedTokens: '平均预期 tokens',
+      avgActualTokens: '平均实际 tokens',
+    },
+    unit: {
+      bytes: '字节',
+      tokens: '词元',
     },
   },
   sc: {

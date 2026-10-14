@@ -121,6 +121,10 @@ describe('navItemsFor', () => {
       //   `wrap := h.superAdmin`）—— 这一条**要** super_admin，与前几批 admin 档页面相反。
       'credential-model-state',
       'flow',
+      // ★ 2026-10-14 第一百零九批：响应格式异常
+      //   （admin/handler.go:913-914 两条都是 h.superAdmin）⇒ 这一条**要** super_admin。
+      //   ★ 本族虽是第六次「不隔离」，但档位本身就是那道门 ⇒ 视图内无需段落级门控。
+      'format-anomalies',
       'funnel',
       'integrity',
       'maas-admin-catalog',

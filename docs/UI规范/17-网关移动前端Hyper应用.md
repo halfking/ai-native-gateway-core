@@ -14742,3 +14742,136 @@ S18 第一版写的是 `series.bucket_minutes || 60` ⇒ **NO_EFFECT**。
   日志 `/tmp/co108-stability.log`）
   ⇒ `ComplianceHitsView` / `RoutingOptView` 两个历史 flaky 本轮仍未复现 ——
   按连跑器口径这**不是「已修复」**，只是没抓到。
+## 11.145 响应格式异常接进 UI：第六次「不隔离」，但这次**档位本身就是门**（第一百零九批，2026-10-14）
+
+### 一、接线
+
+- 新增 `web-mobile/src/views/FormatAnomaliesView.vue` + `.spec.ts`（**46 条**）
+- `src/config/appNav.ts`：抽屉席 `format-anomalies`，**须设** `requiresRole: 'super_admin'`
+- `src/router/index.ts`：`/format-anomalies`
+- `src/i18n/zh-CN.ts` + `en-US.ts`：`nav.formatAnomalies` 与 `fa` 命名空间
+- `src/components/shell/AppDrawer.spec.ts`：排序白名单加 `format-anomalies`
+- `src/api/orphanLedger.spec.ts`：删 `formatAnomalies` + 加哨兵（孤儿 21 → 20）
+
+### 二、★★★ 本族是**第六次「不隔离」，但处置与批 104 / 106 相反**
+
+`withAllTenantReadOnlyTx`（`admin/format_anomalies.go:106`/`:143`/`:213`）：
+`response_format_anomalies` 与 `model_integrity_events` 两张表**都有** `tenant_id` 列、
+list 会 SELECT 出来，但 WHERE **从不过滤**。
+
+★ 但把三族并排看，才能看清**决定处置的是档位而不是「隔不隔离」**：
+
+| 批次 | 隔离 | 档位 | tenant_admin 能读到跨租户？ | 处置 |
+|---|---|---|---|---|
+| 104 `dashboardBoard` | 无 | `admin` | **能** | 抽屉席不设 requiresRole + **视图内按段落门控** |
+| 106 `selfCheck` | 无（有列不引用） | `admin` | **能**（含 `request_body`） | 同上 |
+| **109 `formatAnomalies`** | **无** | **`superAdmin`** | **不能** | **抽屉席设 `requiresRole` 即完整处置** |
+
+⇒ ★★ 所以本页**没有任何角色分支**，而那**不是漏写**：
+档位本身就是那道门，视图内再加一层只会是重复。
+⇒ 判据专门钉这一条（`expect(w.text()).not.toContain('跨租户')`），
+**免得下一个读者按批 104 的模板补一段多余的门控**。
+
+⚠️ 代价要说清：**这不是把后端修好了**。绕过前端直接调端点，super_admin 本来就能看全量；
+这一族没有「tenant_admin 越权」风险，但**审计口径上仍然是第六次不隔离**。
+
+### 三、★★★★★ 本族最要紧的一格：**同名字段 `count` 在两个端点里语义相反**
+
+| 端点 | `count` 的来源 | 恒成立的不变式 |
+|---|---|---|
+| `/format-anomalies`（`:100-111` + `:186-191`） | **独立的** `SELECT COUNT(*)` = **全表命中数** | `count >= anomalies.length` |
+| `/format-anomaly-summary`（`:231` 后） | **`len(summaries)`** = 本页行数 | `count === summaries.length` |
+
+⇒ ★★★ 两处的 `count` 读法**正好相反**，而字段名、类型、所在响应都一样。
+⇒ 与批 78（`count == tasks.length`）、批 81（`count == events.length`）比，
+**在 list 上又恰好相反** ⇒ ★★ 判据与 UI 文案都**不能跨族照抄**。
+⇒ 处置：页面上两处**分开措辞**（明细「全表命中 N 条，本页 M 条」/ 汇总「本页共 N 行」），
+并各配一条违规告警。
+
+### 四、判据钉的十一组不变量（摘要）
+
+① 两个 `count` 语义相反 ② `count < len` ⇒ 违规告警，且 **`count > len` ⇒ 不得误报**（见第七节）
+③ `limit`/`offset` **都回显** ⇒ 分页能精确判定（⚠️ 与批 79/80/81 只回显 days 相反）
+④ `provider_code` 键缺失 ⇒ 「不可能匹配任何 provider 过滤」——
+   因为展示与过滤用**同一个** `COALESCE`（`:119`/`:81`），而 `NULL = 'x'` 求值为 NULL、WHERE 不放行
+⑤ `request_id` 恒在但**可空串**（`text NOT NULL` ≠ 非空串）
+⑥ `response_structure` 是 map + omitempty ⇒ **键在就意味着非空** ⇒ 「结构为空」是恒真判据，**不提供**
+⑦ summary 三个 `AVG(...)` 是 `*float64` + omitempty ⇒ **`AVG` 返回 NULL 时键被省略**（不是 0、不是 null）
+⑧ `COUNT(DISTINCT request_id)` ⇒ `affected_requests <= anomaly_count`；`resolved_count <= anomaly_count`
+⑨ summary 的 `LIMIT 200` **硬编码在 SQL 里**（`:231`），不可调、不回显 ⇒ 只能靠 `count >= 200` 反推
+⑩ 排序是 `ORDER BY hour DESC, anomaly_count DESC` ⇒ **整表不按计数降序**，
+只能断言「**同一 hour 内**按 `anomaly_count` 非增」—— 这是本族最容易被误用的不变量
+⑪ `anomaly_type`/`severity` 是**开放域**（写入入口接受任意字符串、建表无 CHECK）
+⇒ 未知值要标出来但**不是错误**；且本表 `severity` 缺省是 `medium`，
+`model_integrity_events` 是 `low` ⇒ 跨表比较不能想当然
+
+★ 另：`unresolved_only` 用 `queryBool`（`handler.go:1546-1549`），
+只有 `true`/`TRUE`/`1` 为真，**`yes`/`on`/`t` 都为假** ⇒ 不报错、不回落成缺省，
+**无法区分「没传」与「传了假值」** ⇒ 页面因此**恒发**这个参数。
+
+### 五、★ 视图里三处「我自己写错、按名字猜签名」的坑
+
+1. `formatNumericValueIsZero` 我按名字当成 `(v: number) => boolean`，
+   实际是 **`(row, key)`**；`formatSummaryAvgIsAbsent` 同理。
+   ⇒ vue-tsc 的 TS2554 当场打出来。**凭函数名猜签名必被类型门抓住** ——
+   但前提是**真的跑了类型门**。
+2. ★★ 键名 `content_size_bytes` 与 Go 字段名 `ContentSize` 不一致，
+   我先写了个 `r as Record<string, unknown>` 的索引取值，
+   vue-tsc 报 **TS2352**（该类型没有索引签名，转 `Record` 不安全）。
+   ⇒ **接口里那个字段名本来就是对的**，直接 `r.content_size_bytes` 即可，
+   索引技巧纯属绕远路。
+3. `.fa__chip-btn` 里我连写了两行 `border`，第一行还把 `--app-radius-sm` 当颜色用。
+
+### 六、★★★ 本批的判据自身出了五处问题（**都不是被测物的错**）
+
+★ 与批 106–108 的「判据抓到产品缺陷」相反，这一批**判据自己**翻车了五次，
+而每一次都是变异或类型门揭出来的：
+
+| # | 判据的问题 | 症状 | 揭穿者 |
+|---|---|---|---|
+| 1 | ★ **整行 `not.toContain('无数据')` 范围过宽** | 夹具只让两格键缺、第三格是 0 ⇒ 那一格**正确地**显示「无数据」⇒ 断言必红 | 首跑 |
+| 2 | 断言按 `zh-CN` 渲染，却写了 **en-US 的单位值** | `0 词元` vs `0 tok` | 首跑 |
+| 3 | i18n parity 判「未翻译」的口径是 **值 === 键名** | `fa.unit.bytes = bytes` 两侧都被抓 | i18n 门 |
+| 4 | ★★ **恒真判据**：`offset` 初始就是默认 0 ⇒ 换档前后都是 0 | 无论有没有 `offset = 0` 都通过 | **变异 S17** |
+| 5 | ★★★ **缺失一个方向的正控**：只钉了 `count == len` 不报错，**没钉 `count > len` 不报错** | 把「`count < len` 才违规」改成「`!= len` 就违规」，**最正常的分页**整页染红却没人拦 | **变异 S1** |
+
+⇒ ★★★ 第 5 条是本批最值钱的：「违规告警」的判据天然只写「什么时候该报」，
+**几乎不会写「什么时候不该报」** ——
+而**误报方向**恰好是正常业务路径占的那一半。
+⇒ 补法固定：每加一条 `xxx ⇒ 报`，就配一条 `yyy ⇒ 不报`，且 `yyy` 要是**正常**取值。
+
+### 七、可证等价 ⇒ 删变异、简化实现（第 6 处）
+
+变异 S8 第一版是「把 `!(key in row)` 换成 `row[key] === undefined`」⇒ **NO_EFFECT**。
+
+★ 不是判据没牙：TS 里字段是可选的（`expected_tokens?: number`），
+JSON 里键缺解包后**就是** `undefined`
+⇒ 两个判断在**每一个后端可达的取值上**完全一致（含「指针指向 0」那一格，
+两边都判「不是键缺」）。
+
+⇒ 与批 108 的 `bucket_minutes || 60` 同型：**可证等价 ⇒ 删变异，而不是补用例**。
+⇒ 顺带把**实现**里那句多余的 `key in row` 也简化掉了
+（`=== undefined` 更直白，且 46 条判据一条没红 ⇒ 证明它确实是多余的）。
+
+★ 脚本最终 **17 条**（删掉 S8 后），**17/17 全有牙**，还原 md5 逐字节一致、
+未用 `git checkout --`，跑完复查零 `CO109S` 残留。
+
+### 八、孤儿 21 → 20
+
+`formatAnomalies` 从 `KNOWN_ORPHANS` 删掉一行并加哨兵。
+哨兵注释写明：该族是 superAdmin 档 ⇒ 席**要** requiresRole
+⇒ `AppDrawer.spec.ts` 的白名单里**必须**出现 `format-anomalies`；
+**只加抽屉席不改正那份白名单，「tenant_admin 少掉的只有这些」那条立刻红** ——
+这正是它该做的。
+
+### 九、验证
+
+- 新增 `FormatAnomaliesView.spec.ts` **46 条**；`orphanLedger.spec.ts` 13 → 14 条
+- ★★★ 变异 **17/17 全有牙**（`/tmp/mut-co109.mjs`，标记 `CO109S1…S18`（S8 已删），
+  还原 md5 逐字节一致，**未用** `git checkout --`；跑完复查文件里**零** `CO109S` 残留）
+- 五门 rc=0（i18n parity 2829 → **3110 键** / 触控 R1 103 个 `.vue` / CSS / `vue-tsc` / `build`）
+- 全量 **7260 条 / 198 文件** rc=0（1 skipped）
+- 十连跑 **10/10 全绿、每轮 7260 逐条一致**（`总次数 10 · 失败次数 0 · 快照 0 份`，
+  日志 `/tmp/co109-stability.log`；1 skipped 是仓内既有跳过，不是本批引入）
+  ⇒ `ComplianceHitsView` / `RoutingOptView` 两个历史 flaky 本轮仍未复现 ——
+  按连跑器口径这**不是「已修复」**，只是没抓到。

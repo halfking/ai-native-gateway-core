@@ -17,6 +17,7 @@ export const enUS = {
     selfCheck: 'Self-check',
     connectionRegistry: 'Connection registry',
     usageTrendSeries: 'Usage trends',
+    formatAnomalies: 'Format anomalies',
     modelPolicies: 'Model policies',
     modelPolicyAudit: 'Policy audit',
     approvalConfig: 'Approval config',
@@ -3447,6 +3448,87 @@ sctx: {
       credits: 'Total credits',
       cost: 'Total cost USD',
       points: 'Data points',
+    },
+  },
+  // ★ Batch 109: response format anomalies. Wording maps 1:1 onto the backend contract —
+  //   read the ten notes at the top of views/FormatAnomaliesView.vue first.
+  fa: {
+    title: 'Response format anomalies',
+    load: 'Load',
+    reload: 'Reload',
+    loadSummary: 'Load summary',
+    list: {
+      title: 'Anomaly detail',
+      // ★★★ count is the **whole-table match count**; this page is only a slice
+      count: '{total} matches table-wide, {page} on this page',
+      countViolation: 'Malformed payload: whole-table count {total} is below the {page} rows on this page.',
+      window: 'Effective window: limit={limit}, offset={offset}',
+      prev: 'Previous',
+      next: 'Next',
+      hasMore: 'More pages remain.',
+      lastPage: 'This is the last page.',
+      empty: 'No anomaly records in the current window.',
+    },
+    filter: {
+      limit: 'Page size',
+      provider: 'Provider code',
+      model: 'Model',
+      anomalyType: 'Anomaly type (open domain, any value accepted)',
+      unresolvedOnly: 'Unresolved only',
+      reset: 'Reset filters',
+    },
+    row: {
+      // ★★ A NULL COALESCE means this row cannot be a provider-filter match
+      providerUnmatchable: 'Key absent (cannot match any provider filter)',
+      providerAbsent: 'Not supplied',
+      requestIdEmpty: 'Empty string (this row has no request id)',
+      absent: 'Not supplied',
+      // ★ A NULL pointer means the key is omitted; 0 is a real 0
+      nullValue: 'No data (key absent)',
+      avgAbsent: 'Cannot be determined (AVG returned NULL)',
+      resolved: 'Resolved',
+      unresolved: 'Unresolved',
+    },
+    sev: {
+      // ★ DEFAULT 'medium' on this table; model_integrity_events defaults to 'low'
+      default: '(table default)',
+    },
+    summary: {
+      title: 'Hourly summary',
+      hours: 'Window',
+      // ★★ This count is the **row count of this page**, opposite to the detail count
+      count: '{n} rows on this page',
+      countBad: 'Malformed payload: count={n} does not match the {len} rows returned.',
+      hoursEcho: 'Effective window: {h} hours',
+      hoursRewritten: 'The requested {want} hours were rewritten by the server (non-positive becomes 24, above 720 becomes 720).',
+      // ★★★ LIMIT 200 is hardcoded in SQL; no response field can prove truncation
+      atCap: 'The server hard limit of {cap} rows is reached; older buckets may have been truncated and this cannot be proven.',
+      hourOrderBad: 'Rows are not ordered by hour descending, contradicting the backend contract.',
+      countOrderBad: 'Counts are not non-increasing within the same hour, contradicting the backend contract.',
+      affectedBad: 'Distinct requests exceed the total',
+      resolvedBad: 'Resolved count exceeds the total',
+      empty: 'No anomaly summary for this window.',
+    },
+    col: {
+      detectedAt: 'Detected at',
+      requestId: 'Request ID',
+      provider: 'Provider',
+      clientModel: 'Client model',
+      outboundModel: 'Outbound model',
+      contentSize: 'Content size',
+      expectedTokens: 'Expected tokens',
+      actualTokens: 'Actual tokens',
+      anomalyCount: 'Anomalies',
+      affected: 'Affected requests',
+      resolvedCount: 'Resolved',
+      avgContentSize: 'Avg content size',
+      avgExpectedTokens: 'Avg expected tokens',
+      avgActualTokens: 'Avg actual tokens',
+    },
+    unit: {
+      // ★ i18n parity 门的未翻译口径是「值 === 键名」⇒ 单位名恰好等于键名会被判未翻译
+      bytes: 'B',
+      tokens: 'tok',
     },
   },
   sc: {

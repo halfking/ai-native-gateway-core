@@ -54,7 +54,6 @@ const KNOWN_ORPHANS: readonly string[] = [
   'dataLifecycleStorage',
   'dispatchJournal',
   'errorsTrend',
-  'formatAnomalies',
   'modelHistory',
   'modelIQ',
   'modelIntegrityDrift',
@@ -256,6 +255,15 @@ describe('孤儿棘轮', () => {
     //   （admin/stats.go:87-97）对非 super_admin 强制用 auth.TenantID 并忽略 tenant_id
     //   ⇒ tenant_admin 天然隔离 ⇒ 视图内部**不需要**任何角色分支。
     expect(currentOrphans()).not.toContain('usageTrendSeries')
+  })
+
+  it('★★ 已接线的哨兵：formatAnomalies 不在孤儿里（第一百零九批）', () => {
+    // ★ 响应格式异常接上了抽屉席与路由 ⇒ 棘轮清单同步删掉那一行。
+    //   该族是 **superAdmin 档**（admin/handler.go:913-914）⇒ 席**要** requiresRole，
+    //   所以 `AppDrawer.spec.ts` 的排序白名单里**必须**出现 format-anomalies。
+    //   ⇒ 两条判据合起来才覆盖「接上了」+「档位挂对了」；
+    //     只加抽屉席不改正那份白名单，「tenant_admin 少掉的只有这些」那条立刻红。
+    expect(currentOrphans()).not.toContain('formatAnomalies')
   })
 
   it('★★★ 反向护栏：api 内部的互相引用不得凭空产生可达性', () => {

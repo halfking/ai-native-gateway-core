@@ -693,6 +693,12 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'uts.title', requiresAuth: true },
   },
   {
+    path: '/format-anomalies',
+    name: 'format-anomalies',
+    component: () => import('@/views/FormatAnomaliesView.vue'),
+    meta: { titleKey: 'fa.title', requiresAuth: true },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),

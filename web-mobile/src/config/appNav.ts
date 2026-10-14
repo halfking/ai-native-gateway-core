@@ -182,6 +182,16 @@ export const DRAWER_NAV: readonly NavItem[] = [
   //   super_admin 强制用 auth.TenantID 并**忽略 tenant_id 参数** ⇒ tenant_admin 天然隔离，
   //   与批 104（硬编码 tenant）与批 106（有列不接线）相反 ⇒ 不需要段落级门控。
   { key: 'usage-trend-series', to: '/usage-trend-series', icon: 'chart', titleKey: 'nav.usageTrendSeries' },
+  // 响应格式异常（明细 + 按小时汇总）。★★ **superAdmin 档**
+  //   （admin/handler.go:913-914 两条都是 `h.superAdmin`）⇒ 抽屉席**须设** requiresRole，
+  //   并同步 `src/components/shell/AppDrawer.spec.ts` 的排序白名单。
+  // ★★ 本族是本仓第六次「不隔离」（withAllTenantReadOnlyTx，
+  //   admin/format_anomalies.go:106/:143/:213）：两张表都有 tenant_id 列、
+  //   list 会 SELECT 出来，但 WHERE 从不过滤。
+  //   ★ 与批 104/106 的处置**相反**：那两族是 admin 档 + 不隔离
+  //     ⇒ tenant_admin 能读到跨租户 ⇒ 必须在视图内按段落门控；
+  //     本族是 superAdmin 档 ⇒ **档位本身就挡住了** ⇒ 无需任何段落级门控。
+  { key: 'format-anomalies', to: '/format-anomalies', icon: 'alert', titleKey: 'nav.formatAnomalies', requiresRole: 'super_admin' },
   // MaaS 租户运维面。**superAdmin 档**（/api/admin/maas/tenants/** 全 superAdmin）⇒ 须设。
   {
     key: 'maas-tenant-ops',
