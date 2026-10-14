@@ -259,6 +259,16 @@ if grep -q "name '._\\*' -o -name '.DS_Store'" "$ROOT/Dockerfile"; then
 else
   bad "Dockerfile 未在 COPY . 之前清理 macOS 元数据"
 fi
+# --via 必须把三个基础镜像 build-arg 变量转发到远端：211 的构建腿吃本地
+# /opt/kaixuan/base-images 的离线镜像（kx-base/golang 等）全靠这几个变量；
+# 漏转发时远端静默回落 docker.io 默认值，外网一断构建就死（2026-10-14 轮）。
+for _v in D211_GO_BASE_IMAGE D211_RUNTIME_BASE_IMAGE D211_BASE_REGISTRY; do
+  if grep -q "${_v}='" "$SCRIPT"; then
+    ok "--via 转发基础镜像变量 ${_v}（离线构建路径）"
+  else
+    bad "--via 未转发 ${_v}，远端将回落 docker.io 默认基础镜像"
+  fi
+done
 
 echo
 printf '结果: %d 通过, %d 失败\n' "$pass" "$fail"

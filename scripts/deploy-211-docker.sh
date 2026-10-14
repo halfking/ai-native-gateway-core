@@ -112,8 +112,11 @@ if [[ -n "$VIA" ]]; then
   ssh "$VIA" "find ~/llm-gateway-go-211 -maxdepth 2 -name '.env*' -type f -delete; \
              echo '[211] 目标树残留 .env*: '\$(find ~/llm-gateway-go-211 -name '.env*' -type f | wc -l) \
              ' ._*: '\$(find ~/llm-gateway-go-211 -name '._*' -type f | wc -l)"
+  # 基础镜像 build-arg 变量一并转发：211 的 /opt/kaixuan/base-images 存有
+  # 离线基础镜像（kx-base/golang:1.27-alpine-amd64 等），daemon 的 mirror 不
+  # 保证每次可达，构建腿应优先吃本地已 load 的镜像。空值 = 远端走脚本默认。
   log "在 $VIA 上执行 deploy ..."
-  ssh "$VIA" "cd ~/llm-gateway-go-211 && D211_STATE_DIR=$D211_STATE_DIR D211_REDIS_DB_START=$D211_REDIS_DB_START D211_REDIS_DB_END=$D211_REDIS_DB_END LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY='${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}' bash scripts/deploy-211-docker.sh $*"
+  ssh "$VIA" "cd ~/llm-gateway-go-211 && D211_STATE_DIR=$D211_STATE_DIR D211_REDIS_DB_START=$D211_REDIS_DB_START D211_REDIS_DB_END=$D211_REDIS_DB_END LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY='${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}' D211_GO_BASE_IMAGE='${D211_GO_BASE_IMAGE:-}' D211_RUNTIME_BASE_IMAGE='${D211_RUNTIME_BASE_IMAGE:-}' D211_BASE_REGISTRY='${D211_BASE_REGISTRY:-}' bash scripts/deploy-211-docker.sh $*"
   exit $?
 fi
 
