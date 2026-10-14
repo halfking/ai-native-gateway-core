@@ -16811,3 +16811,145 @@ export function subscriptionTierModuleKeysAreUnique(rows: SubscriptionTierRow[])
 ★ 记一条工装教训：批 116~119 的变异台脚本都放在 `/tmp/co119-mut/` 这类**临时目录**里，
 本批开工时**全部消失**（共享机器会清理 `/tmp`）。⇒ 长跑产物（账本、对比基线、日志）
 应放**仓内已 gitignore 的 scratch 目录**，而不是 `/tmp`。
+
+
+## 11.157 平台设置接进 UI —— 权限档**第九次**登场，第三类，但**理由与前三席都不同**：注册处包的是一个 **router**，按注册处读会读出「admin 档」（第一百二十一批）
+
+### 一、这批做了什么
+
+把 `platformSettings`（第九十批建的 API 模块，**一直是孤儿**）接进移动端，孤儿 9 → **8**：
+
+| 项 | 值 |
+|---|---|
+| 视图 | `web-mobile/src/views/PlatformSettingsView.vue` |
+| 判据 | `PlatformSettingsView.spec.ts` **35 条**；API 层 94 → **97 条** |
+| 路由 | `/platform-settings`，`meta.requiresRole: 'super_admin'` |
+| 抽屉席 | `platform-settings`，`requiresRole: 'super_admin'`（白名单字母序：`overrides` 与 `proposals` 之间）|
+| i18n | 前缀 `ps` + `nav.platformSettings`（zh-CN / en-US 各 3657 键）|
+| 变异台 | **14/14 有牙**，还原后逐字节零残留 |
+
+### 二、★★★★★★ 本批的核心：订正一个**错的权限结论**
+
+`api/platformSettings.ts` 的 (1) 原先写着：
+
+> 「三个端点的权限档位是同一个：都是 `h.admin(...)` ⇒ **admin 档**（tenant_admin 可用，
+> 抽屉席**不设** `requiresRole`）」
+
+★ 错在**只读了注册处那一行**。而注册处是：
+
+```go
+// admin/settings.go:24
+mux.HandleFunc("/api/admin/settings/", h.admin(h.settingsRouter))
+```
+
+★★★ 它包的是**一个会再分发到四个 handler 的 router**，不是叶子 handler。
+逐字读完 `settingsRouter`（`settings.go:96-114`）与四个 handler：
+
+| 子端点 | 分发 | handler 里的 role 检查 |
+|---|---|---|
+| `GET {key}` | `:104` | ★★ **零**（`settingsGet` 全文无任何 role 判定）|
+| `PUT {key}` | `:106` | ★ `settings.go:236` **仅当** `sp.DangerLevel >= settings.Dangerous` |
+| `GET {key}/history` | `:108` | ★★ **零**（`settingsHistory` 全文无任何 role 判定）|
+| `POST {key}/rollback` | `:110` | ★★★ **零**（连那道 `DangerLevel` 门都没有）|
+
+`h.admin` = `AdminMiddleware`（`handler.go:894` → `auth.go:85`）**只认证不检 role**
+—— 它函数体内唯一的 403 是**强制改密码**（`errPasswordChangeRequired`）。
+
+⇒ ⇒ 「三个 GET 后端零 role 门」这半句**是对的**；
+★ **错的是「所以抽屉席不设 `requiresRole`」这个推论。**
+
+⇒ ★★★★ **方法论**（比批 117 那次「权限结论反了」更隐蔽一层）：
+批 117 是**注册处包的 handler 自己检了 role**；这里注册处包的是**一个会再分发的 router**
+⇒ ★★ **`mux.HandleFunc(prefix, h.admin(h.someRouter))` 这种形态，权限必须逐个子端点读**，
+`h.admin` 与 URL 前缀**都推不出来**。
+
+### 三、★★★★ 过度限制的两条**独立**理由（都不是「有没有 tenant 条件」）
+
+沿用批 119 钉下的边界：过度限制的正当性来自「**载荷里有没有别人的东西**」。
+本族三个 GET **都没有租户维度**（`tenant` 实参恒 `false`、`tid` 恒 `""`），**但**：
+
+1. **载荷含别人的身份数据**：history 传 `tid=""`（跨全部租户），而
+   `AuditEntry` 的 `operator_user` / `operator_role` 是**无 `omitempty` 的恒在键**
+   ⇒ tenant_admin 能读到**别的操作者**的用户名与角色（`client_ip` 另见模块 (8)）。
+2. **写路径提权**：`POST {key}/rollback` **完全没有 `DangerLevel` 门**，
+   而 `PUT {key}` 有 ⇒ 一个 tenant_admin **PUT 不了**的 `Dangerous`/`Breaking` 档，
+   **能直接 rollback 它** ⇒ **回滚路径比写入路径权限更大**。
+
+⇒ ⇒ 处置：`requiresRole: 'super_admin'`。
+★★ 而这一层与批 116/120 **性质不同**：那两族的服务端中间件是**真门**（越权请求被 403 挡住），
+本族在服务端补门之前，**前端这一层就是**唯一挡在 tenant_admin 与别人身份数据之间的东西。
+
+⇒ ★★ **两条都是后端缺陷，本批不动后端**（见 §11.157 末尾台账）。
+「前端严于后端是兜底不是修复」这句在这里的分量，比前几批都重。
+
+### 四、★★★ 判据要钉的是**形态**，不是「结论」
+
+①-2 把注册处的**形状**本身钉住：
+
+```ts
+const m = src.match(/mux\.HandleFunc\("\/api\/admin\/settings\/", h\.admin\(h\.settingsRouter\)\)/)
+expect(m, '注册处形状变了；权限结论必须重判').toBeTruthy()
+```
+
+并逐个断言 `settingsRouter` 仍分发四个子端点 ⇒ 哪天后端把它改成叶子 handler，
+或删掉某个分支，这条立刻红，**提示权限结论要重判**——而不是让旧结论悄悄失效。
+
+①-3 / ①-4 则直接读 Go 函数体：
+
+```ts
+expect(goFunc(src, 'settingsGet')).not.toMatch(/IsSuperAdminOrLegacy|IsTenantAdmin|super_admin/)
+expect(goFunc(src, 'settingsRollback')).not.toMatch(/IsSuperAdminOrLegacy|IsTenantAdmin|super_admin/)
+```
+
+★ 这里踩到一个**工具自身的 bug**：`goFunc` 起初只认方法形态 `func (h *Handler) x(`，
+而 `AdminMiddleware` 是普通函数 `func x(` ⇒ 首轮红在「没找到 AdminMiddleware 的定义」。
+**红色来自锚点形态，不是被测物** —— 修工具，不放宽断言。
+
+### 五、★★★ 变异台顶出一条**没有判别力的判据**
+
+S3（把 `scopeMismatch` 的取负去掉）首轮判成 **`RED_NOT_MATCHED`**，而它**确实红了**。
+逐字查红因才发现：夹具里两类违规**各只放一条**，而反转取负恰好把「哪一条被标记」对调
+（原来标记 `[a]`，反转后标记 `[b]`）⇒ **计数一模一样，断言照样绿**。
+
+⇒ ★★★ **计数相同的对称夹具测不出极性。** 修法不是删变异，是把夹具改成
+**非对称计数**（scope 违规 2 条、source 违规 1 条）⇒ 极性立刻可辨 ⇒ 14/14。
+
+★ 这与批 120 那条「布尔与清单必须拆开」同源：
+**只断言「有几条违规」不够，还要让「是哪几条」在断言里可辨。**
+
+### 六、另两处自我纠错（都记下来，因为它们都是「量具」问题）
+
+1. **接线时一度把批 120 的 `sts` i18n 块整个删掉** —— 用整块替换改 `zh-CN.ts` 时，
+   把 `sts` 一并吃掉了，靠 `i18n:check` 抓到（键数从 3633 变 3657 但 sts 消失）。
+   ⇒ 已补回，并为此加了一条**前车之鉴判据** ⑦-6：
+   改 i18n 前先钉住**上一批的前缀还在**，给下一个接线批次立规矩。
+2. **`items: null` 一度被当成异常** —— 模块 (5) 说历史无行时是 `null` 而不是 `[]`，
+   这是**合法形态**。我先写了一条 `historyNullItems` 红线去报它，
+   而它依赖的那个 helper **恒真** ⇒ 红线会常亮。★ 处置是**删掉红线**、改成空态分支，
+   不去补用例。**恒真的东西删掉，不装作门。**
+
+### 七、读数
+
+- `vue-tsc -b` rc=0（**先删 `*.tsbuildinfo`**）；css / touch / i18n / comment 四门 rc=0
+- `i18n:check` ⇒ zh-CN / en-US 各 **3657** 键，键集一致，无未翻译项
+- `gate:selftest` 5/5；`npm run build` rc=0
+- 全量：**211 files / 7904 passed**（基线 210 / 7869），1 skipped
+- 变异台 **14/14 有牙**，零 `RED_NOT_MATCHED` / `NO_EFFECT` / `MUTATION_INVALID`
+- 十连跑 **10/10 全绿**
+- 文档 §11.157（**57** 节）
+
+### 八、★ 本批新增的两条后端待办（超范围，历来不动后端）
+
+① **（读侧）** `GET /api/admin/settings/{key}/history` 零 role 检查且 `tid=""`
+⇒ 任何 tenant_admin 可读到**跨全部租户**的 `operator_user` / `operator_role` / `client_ip`。
+可执行判据已在 `PlatformSettingsView.spec.ts` ①-3（读 Go 函数体断言无 role 判定）。
+
+② **（写侧，权限提权）** `POST /api/admin/settings/{key}/rollback` **完全没有
+`DangerLevel` 门**，而 `PUT {key}` 有（`settings.go:236`）
+⇒ 能 PUT 不了的 `Dangerous`/`Breaking` 档能直接 rollback。
+可执行判据已在 ①-4。
+
+★ **刻意不提供** `settingsRollbackNeedsSuperAdmin()` 这类 helper：
+它在当前后端下**恒为 `true`**，★ **恒真函数等于假门** ——
+它看起来像一道闸，实际什么都挡不住，比没有更危险。
+⇒ 承重判据写在 spec 里（读 Go 源码），不放在运行时 helper 里。

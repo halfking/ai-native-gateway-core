@@ -91,6 +91,7 @@ export const zhCN = {
     injectionConfig: '注入配置',
     nodeHealth: '健康时间线',
     subscriptionTiers: '订阅档',
+    platformSettings: '平台设置',
     account: '我的',
   },
   // ★ 订阅档（2026-10-14，第一百二十批）。前缀 sts。
@@ -131,6 +132,48 @@ export const zhCN = {
       modules: '包含模块',
       noModules: '（无）',
       keys: '每档恒定 {n} 个字段。',
+    },
+  },
+  // ★ 平台设置（2026-10-14，第一百二十一批）。前缀 ps。
+  ps: {
+    title: '平台设置',
+    nope: {
+      msg: '仅超级管理员可查看平台设置与变更历史。',
+      // ★★ 本族与批 116/120 不同：**服务端对这三个 GET 端点根本没有 role 门**，
+      //   所以这一层不是体验兜底，而是当下唯一挡在别人身份数据前面的东西。
+      why: '变更历史是跨租户的全局名录，含其他操作者的用户名、角色与来源 IP。',
+    },
+    load: {
+      title: '取数',
+      btn: '刷新设置清单',
+    },
+    scope: {
+      note: '平台设置不按租户隔离：一处改动影响全部租户。',
+      warn: 'danger_level 为 dangerous / breaking 的档，写入需要超级管理员。',
+    },
+    check: {
+      scopeBad: '{n} 个条目的 value 与 scope 对不上。',
+      sourceBad: '{n} 个租户作用域条目的 source 不是空串。',
+      maybeIncomplete: '清单可能不完整：取值失败的条目会被静默跳过，长度不等于注册表规模。',
+      gated: '{n} 个档在写入时需要超级管理员。',
+      historyOrderBad: '历史顺序与 created_at 降序不符。',
+      historyLimitBad: '历史条数超过后端写死的 50 条上限。',
+      historyCrossTenant: '这份历史是跨全部租户的，不是「我的租户的变更史」。',
+      operators: '本条历史里有 {n} 项带着操作者身份。',
+    },
+    list: {
+      title: '设置项',
+      historyBtn: '查看变更历史',
+    },
+    history: {
+      title: '变更历史 · {key}',
+      empty: '最近 7 天没有变更记录。',
+    },
+    field: {
+      scope: '作用域',
+      source: '取值来源',
+      operator: '操作者',
+      role: '角色',
     },
   },
   common: {

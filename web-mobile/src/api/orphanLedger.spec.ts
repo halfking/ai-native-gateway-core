@@ -107,7 +107,6 @@ function duplicateIsProven(name: string): boolean {
 const KNOWN_ORPHANS: readonly string[] = [
   'dataLifecycleStorage',
   'nativeTransport',
-  'platformSettings',
   'sessionAnalyticsFilterOptions',
   'storageAndLogConfig',
   'storageMigrationState',

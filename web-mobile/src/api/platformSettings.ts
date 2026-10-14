@@ -29,11 +29,49 @@ import { req, type RequestOptions } from './client'
  * ## ★★★★★ 本族最要紧的十五件事
  * ══════════════════════════════════════════════════════════════════════════
  *
- * (1) ★★★★★ **三个端点的权限档位是同一个：都是 `h.admin(...)` ⇒ admin 档**
- *     （tenant_admin 可用，抽屉席**不设** `requiresRole`）
- *     ⇒ ★★ 但 **`Dangerous` 档的设置在 PUT 上有 super_admin 闸**（`settings.go:236-239`）
- *     ⇒ ⇒ **读不设闸、写才设** ⇒ 移动端抽屉席不进 `requiresRole`，
- *       但**写按钮必须按 `danger_level` 隐藏**，否则用户点了就吃 403。
+ * (1) ⚠️⚠️⚠️ ★★★★★★ **本条已于 2026-10-14（第一百二十一批）整体订正。**
+ *
+ *     **原文（错）**：「三个端点的权限档位是同一个：都是 `h.admin(...)` ⇒ admin 档
+ *     （tenant_admin 可用，抽屉席**不设** `requiresRole`）」。
+ *     ★ 错在**只读了注册处那一行**，没读注册处包着的那个**子路由分发器**里的四个 handler。
+ *
+ *     **订正后的事实**（逐字读过 `admin/settings.go:96-114` 的 `settingsRouter` 全文）——
+ *     同一行注册处底下，**四个子端点的权限两样都不止**：
+ *
+ *     | 子端点 | 分发条件 | handler 里的 role 检查 |
+ *     |---|---|---|
+ *     | `GET {key}` | `settings.go:104` | ★★ **零**（`settingsGet` 全文无任何 role 判定）|
+ *     | `PUT {key}` | `settings.go:106` | ★ `settings.go:236` **仅当** `sp.DangerLevel >= Dangerous` |
+ *     | `GET {key}/history` | `settings.go:108` | ★★ **零**（`settingsHistory` 全文无任何 role 判定）|
+ *     | `POST {key}/rollback` | `settings.go:110` | ★★★ **零**（连 `settingsPut` 那道 DangerLevel 门都没有）|
+ *
+ *     ⇒ ★★★★★ **`h.admin` = `AdminMiddleware`（`handler.go:894` → `auth.go:85`）只认证、
+ *       不检 role** —— 它的函数体内唯一的 403 是强制改密码
+ *       （`auth.go` 的 `errPasswordChangeRequired`），**没有任何 `super_admin` 比对**。
+ *     ⇒ ⇒ ★★★★★ **三个 GET 端点后端确实零 role 门**，所以「admin 档」这半句对 GET 是对的；
+ *       **错的是「所以抽屉席不设 requiresRole」这个推论。**
+ *
+ *     **为什么必须过度限制到 `super_admin`** —— 按第一百一十九批钉下的那条边界：
+ *     过度限制的正当性来自「**载荷里有没有别人的东西**」，不是来自「有没有 tenant 条件」。
+ *     ⇒ ★★★★ 本族三个 GET 都**没有租户维度**（`tenant` 实参恒为 `false`、`tid` 恒为 `""`），
+ *       **但 history 的载荷里就有别人的东西**：
+ *       `AuditEntry` 的 `operator_user` / `operator_role` / `client_ip`
+ *       是**无 omitempty 的恒在键**（`SETTINGS_AUDIT_REQUIRED_KEYS` 含前两个，
+ *       `client_ip` 见 (8)），而 `settingsHistory` 传的是 `tid=""`
+ *       ⇒ 任何 tenant_admin 都能读到**跨全部租户**的变更审计，含**别的操作者的用户名、
+ *         角色与来源 IP**。
+ *     ⇒ ⇒ 所以抽屉席**必须**设 `requiresRole: 'super_admin'`。
+ *       ★★ 另有第二个理由（与上面那条**独立**）：`POST {key}/rollback`
+ *       **完全没有 DangerLevel 门**，而 `PUT {key}` 有
+ *       ⇒ 一个 tenant_admin **PUT 不了**的 `Dangerous`/`Breaking` 档，**能直接 rollback 它**
+ *       ⇒ 回滚路径比写入路径权限更大。**这两条都是后端缺陷，已登记为待办，本批不动后端。**
+ *       ★ 移动端这一层是**兜底不是修复**：真正堵住它的是服务端该补的那道门。
+ *
+ *     ★★★ **方法论**：本条的教训与批 117 那次「权限结论反了」同型，但更隐蔽一层 ——
+ *       批 117 是**注册处包的 handler 自己检了 role**，而这里注册处包的是
+ *       **一个会再分发到四个 handler 的 router** ⇒ 「读注册处」天然不充分。
+ *       ⇒ ★★ **`mux.HandleFunc(prefix, h.admin(h.someRouter))` 这种形态，
+ *       权限必须逐个子端点读**，`h.admin` 与前缀都推不出来。
  *
  * (2) ★★★★★ **503 有两种文案、两种前置条件**：
  *     - `settings registry not initialised`（`:156` / `:200`）—— 查 `settings.Global == nil`
@@ -524,7 +562,21 @@ export function settingsAuditIsPlatformScoped(entry: SettingsAuditEntry): boolea
 
 // ── (1) 写权限闸（读端点没有） ──
 
-/** ★★★★ 见 (1)：`danger_level >= 2` ⇒ PUT 需要 super_admin ⇒ **写按钮该隐藏**。 */
+/**
+ * ★★★★ 见 (1)：`danger_level >= 2` ⇒ PUT 需要 super_admin ⇒ **写按钮该隐藏**。
+ *
+ * ⚠️⚠️⚠️ **这条只对 `PUT` 成立，`POST {key}/rollback` 不适用。**
+ * 见 (1) 订正：后端 `settingsRollback`（`settings.go:~250` 起）**全文零 role 检查**，
+ * 连这道 `DangerLevel` 门都没有 ⇒ 一个 tenant_admin **PUT 不了**的
+ * `Dangerous`/`Breaking` 档，**能直接 rollback 它**。
+ * ⇒ ★★ 客户端**绝不能**拿本函数去决定「这一档能不能回滚」——那是**错的**。
+ * ★ 这里**刻意不提供** `settingsRollbackNeedsSuperAdmin()` 这样的函数：
+ *   它在当前后端下恒为 `true`，**恒真函数等于假门** ——
+ *   它看起来像一道闸，实际什么都挡不住，比没有更危险。
+ *   ⇒ 真门在后端补上之前，回滚对任何档都不可信；
+ *     **可执行的护栏写在 `PlatformSettingsView.spec.ts`**（它直接读 Go 源码，
+ *     断言 `settingsRollback` 函数体里没有 `IsSuperAdminOrLegacy` 调用）。
+ */
 export function settingsWriteNeedsSuperAdmin(dangerLevel: number): boolean {
   return dangerLevel >= SETTINGS_DANGER_SUPER_ADMIN_THRESHOLD
 }
@@ -532,6 +584,44 @@ export function settingsWriteNeedsSuperAdmin(dangerLevel: number): boolean {
 /** ★★★ 见 (1)：`danger_level` 的四个档位名（数值 0..3）。 */
 export function settingsDangerLevelName(dangerLevel: number): string {
   return SETTINGS_DANGER_LEVELS[dangerLevel] ?? 'unknown'
+}
+
+// ── (1') 订正后新增：为什么本族必须过度限制到 super_admin ──
+
+/**
+ * ★★★★★★ 见 (1) 订正：`AuditEntry` 里恒在的**操作者身份键**。
+ *
+ * ★ `operator_user` / `operator_role` 无 `omitempty` ⇒ 恒在；
+ *   `client_ip` 是 `omitempty`（见 (8)）⇒ 可能在。
+ * ⇒ ★★★ 这三个键就是「载荷里有别人的东西」的**具体所指**：
+ *   一个 tenant_admin 读 `/history` 会读到**别的操作者**的用户名、角色与来源 IP。
+ */
+export const SETTINGS_AUDIT_OPERATOR_KEYS = ['operator_user', 'operator_role', 'client_ip'] as const
+
+/**
+ * ★★★★★ 见 (1) 订正：**恒在**的操作者身份键（`client_ip` 不在内，它是可选的）。
+ *
+ * ⇒ ★ 这条是「载荷含别人的身份数据」的**最小充分证据**，比逐条数键更抗漂移：
+ *   哪天 `operator_role` 改名或去掉，这条立刻红，提示权限档要重判。
+ */
+export function settingsAuditCarriesOperatorIdentity(entry: SettingsAuditEntry): boolean {
+  const d = entry as unknown as Record<string, unknown>
+  return typeof d['operator_user'] === 'string' && typeof d['operator_role'] === 'string'
+}
+
+/**
+ * ★★★★★ 见 (1) 订正：history 是**跨租户**的（`settingsHistory` 传 `tid=""`）
+ * —— 响应里**没有任何租户维度**，且恒在键里**没有 `tenant_id`**。
+ *
+ * ⇒ ★★ 客户端因此**不能**把这一页读成「我的租户的设置变更史」。
+ *   这是把抽屉席挡在 `super_admin` 档的**第二个**独立理由（第一个是上一条）。
+ *
+ * ★ `items` **可以是 `null`**（见 (5)：`settings.ListAudit` 无行时保持 nil）
+ *   ⇒ 这里**必须**先判空，否则对一个合法响应直接抛 `TypeError`。
+ */
+export function settingsHistoryIsCrossTenant(r: SettingsHistoryResponse): boolean {
+  if (r.items === null || r.items === undefined) return true
+  return !r.items.some((e) => e.tenant_id !== undefined && e.tenant_id !== '')
 }
 
 // ── (3)(14) 404 与路由形状 ──

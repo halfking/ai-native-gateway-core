@@ -551,6 +551,25 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.subscriptionTiers',
     requiresRole: 'super_admin',
   },
+  // ★ 平台设置（2026-10-14 第一百二十一批）——
+  //   ★★★★ 第三类（过度限制），但**理由与批 115/117/118 三席都不同**，且更硬：
+  //   ① 那三席是「载荷含别人的数据」；本族**注册处包的是一个 router**，
+  //      `h.admin` 只是 `AdminMiddleware`（handler.go:894 → auth.go:85，只认证不检 role），
+  //      `settingsGet` / `settingsHistory` **全文零 role 检查**
+  //      ⇒ 按注册处读会读出「admin 档」，那是**错的**（模块头 (1) 已订正）。
+  //   ② 过度限制的**两条独立理由**：
+  //      · history 传 `tid=""` 且 `operator_user`/`operator_role` 是恒在键
+  //        ⇒ tenant_admin 能读到**别的操作者**的身份；
+  //      · `POST {key}/rollback` **完全没有 DangerLevel 门**，而 PUT 有
+  //        ⇒ 能 PUT 不了的档能直接 rollback（**后端缺陷，本批不动后端**）。
+  // ⇒ 前端严于后端是**兜底不是修复**：真正该补的是服务端那道门。
+  {
+    key: 'platform-settings',
+    to: '/platform-settings',
+    icon: 'grid',
+    titleKey: 'nav.platformSettings',
+    requiresRole: 'super_admin',
+  },
   // ★ 加这一席**必须**同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
   {
     key: 'routing-policy',

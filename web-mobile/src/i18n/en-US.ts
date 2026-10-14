@@ -91,6 +91,7 @@ export const enUS = {
     injectionConfig: 'Injection config',
     nodeHealth: 'Health timeline',
     subscriptionTiers: 'Subscription tiers',
+    platformSettings: 'Platform settings',
     account: 'Me',
   },
   // ★ Subscription tiers (2026-10-14, batch 120). Prefix: sts.
@@ -135,6 +136,50 @@ export const enUS = {
       //   i18n gate rejects value === key (the most natural English wording).
       noModules: '(none)',
       keys: '{n} fields on every tier.',
+    },
+  },
+  // ★ Platform settings (2026-10-14, batch 121). Prefix: ps.
+  //   ⚠️ Unlike batches 116/120, the server has **no role gate at all** on these
+  //   three GET endpoints ⇒ this page is currently the only thing standing
+  //   between a tenant_admin and other operators' identities.
+  ps: {
+    title: 'Platform settings',
+    nope: {
+      msg: 'Only super admins can view platform settings and their change history.',
+      why: 'The change history is a cross-tenant global record including other operators’ usernames, roles and source IPs.',
+    },
+    load: {
+      title: 'Fetch',
+      btn: 'Refresh settings',
+    },
+    scope: {
+      note: 'Platform settings are not tenant-isolated: one change affects every tenant.',
+      warn: 'Writing a setting at danger_level dangerous or breaking requires a super admin.',
+    },
+    check: {
+      scopeBad: '{n} items have a value that does not match their scope.',
+      sourceBad: '{n} tenant-scoped items do not have an empty source.',
+      maybeIncomplete: 'The list may be incomplete: items whose value fails to resolve are silently skipped, so its length is not the registry size.',
+      gated: '{n} settings require a super admin to write.',
+      historyOrderBad: 'History order does not follow created_at descending.',
+      historyLimitBad: 'History holds more entries than the server’s hard-coded limit of 50.',
+      historyCrossTenant: 'This history spans every tenant; it is not “this tenant’s change log”.',
+      operators: '{n} entries in this history carry an operator identity.',
+    },
+    list: {
+      title: 'Settings',
+      // ★ Must not equal the key name.
+      historyBtn: 'View change history',
+    },
+    history: {
+      title: 'Change history · {key}',
+      empty: 'No changes recorded in the last 7 days.',
+    },
+    field: {
+      scope: 'Scope',
+      source: 'Value source',
+      operator: 'Operator',
+      role: 'Role',
     },
   },
   common: {

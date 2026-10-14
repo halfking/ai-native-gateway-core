@@ -177,6 +177,14 @@ describe('navItemsFor', () => {
       // ⚠️ 字母序：model-policy-audit < ops-overview < overrides
       'ops-overview',
       'overrides',
+      // ★★★★ 2026-10-14 第一百二十一批：平台设置
+      //   （`admin/settings.go:24` `mux.HandleFunc("/api/admin/settings/", h.admin(h.settingsRouter))`）
+      //   ★★ 注意它包的是**一个会再分发到四个 handler 的 router** ——
+      //   `h.admin` = `AdminMiddleware` 只认证不检 role，`settingsGet`/`settingsHistory`
+      //   **全文零 role 检查**，而 history 传 `tid=""` 且审计项恒带
+      //   `operator_user`/`operator_role` ⇒ tenant_admin 本可读到跨租户的操作者身份。
+      //   ★ 这条「按注册处读会读成 admin 档」的坑已把模块头 (1) 订正过。
+      'platform-settings',
       'proposals',
       'reconciliation',
       // ★ 2026-10-14 第一百一十一批：对账报表（admin/handler.go:1086 h.superAdmin）
