@@ -2008,3 +2008,72 @@ streaming 全包 150s 绿。154 终验：拦截请求三件套全绿（终态带
 4. nvidia gateway-mode probe 502/503（direct OK）与 mac mini backup 死腿：owner
    拍板。
 5. 窗口外 3 条九月远端分支留置；`-2` worktree 清分支仍待授权。
+
+---
+
+# 追加：2026-10-14 r1031 —— 三域批判审计（脱敏 / 压缩缓存 / 会话存储转发）
+
+> 用户目标：核对敏感信息处理、压缩与缓存、会话存储转发的完成情况，批判式审计、
+> 修问题、更新文档、提交推送。基线 `origin/main 5ec4f0f43`。
+> 明细：`docs/audit/2026-10-14-三域批判审计-脱敏压缩缓存会话存储转发-r1031.md`。
+
+## 核查结论（三域主链路真实在场，非声明态）
+
+- **脱敏三契约成立**（逐行证据）：强制输出 gate 用 `mandatory ||` 短路
+  `output_compliance.enabled` 与 owner 豁免（interceptor.go:96/:230、
+  stream_compliance.go:370）；未知/残缺占位符流式+非流式均 mask-or-block；
+  128MiB/413、1MiB SSE 上限在场；censor sink 经 `dbConn.Stdlib()` 接线。
+- **压缩 V2 主路径自洽**：`loadV2CompressionState` 构造的 state 不带
+  LastOutboundHash，diff.go:118 空 hash 跳过——无形状失配问题。
+- **存储转发停写后完整**：停写门只拦宽表 SQL，`firePersistedHooks` 无条件执行
+  → sessionv2mirror 持续写；旧 L3 `LastOutboundForSession` 已会话族化
+  （main_v3_wiring.go:121，`_request_logs` 兜底服务镜像前历史）。
+
+## 本轮修复（F1=P2 真 defect）
+
+- **F1 压缩缓存 V1 回退复水 hash 形状失配**：CommitFinal 存 envelope hash，
+  L2 复水经 turnReader 收下 messages-only body（`turnReader != nil ||` 短路校验，
+  注释自认形状不可比）但**没改 state 残留 hash** → diff.go:118 lineage 守卫
+  （09-03 d6a027169）拒绝配对 → 判新会话 → 全量重发+压缩血统重置。
+  08-04 复水路径先在、09-03 守卫后加未适配形状差（「两路径政策必须一致」再犯）。
+  触发面=V2 读失败窗口 × L1 逐出/重启，一轮全量重发后自愈——缓存有效性缺陷非安全问题。
+  修：收 body 时校验 `st.MsgCount == countMessages(body)` 后重 derive hash
+  （计数不一致=真不同轮次内容，仍落保守 mismatch 分支）。
+  判据同层驱动 `BuildOutboundMessages`（非 IsNewSess、3=2+1 合并）+ 前提配对
+  （计数失配不采纳、hash 不被洗写）；M1 保留旧 hash→红 / M2 去计数守卫→红。
+  **顺带 `SetTurnReader` 收窄为 `TurnReaderSource` 接口**（两方法，
+  *v2.TurnReader 天然满足，生产调用点不变）——此前该分支只有从未在 CI 跑过的
+  真库集成测试覆盖。
+- **F2 非法 `LLM_GATEWAY_SANITIZE_OUTPUT_ACTION` 静默回落 mask 补 Warn**
+  （唯一消费点 goal_control.go；回落语义不变）。
+
+## 测试门
+
+build/vet/gofmt 绿；compression 全家 + session/v2 + mirror + sanitize +
+outputcompliance/response/cache + streaming（150s）+ cmd/gateway（Sanitize/Goal/
+LiteSink 抽测）全绿。**既有红**：`TestLiteRequestLogSink_*` 8 条在 CGO=0 下
+（SQLite 驱动），pristine 5ec4f0f43 同红，CGO=1 通过。
+
+## 判据纪律增量（第 11 条）
+
+**「从未运行的判据等于没有判据」**：三域 1404 测试函数盘点出 76 个带环境门，
+其中约 20-40 个在任何 CI 入口都不会真实执行（SESSION_AUDIT_REDIS_ADDR 从未在
+CI 设置、replay 语料被 gitignore、`!integration`×TEST_DATABASE_URL 双重落空、
+v2 三个无条件 t.Skip 死测试）。`TestStorageAuditObserveV2MetadataBodyMismatch`
+恰是 F1 的观测器——存在、会红、从未被跑。审计「声称完成」要连判据的
+「是否真的在跑」一起核。
+
+## 登记不修
+
+GeneratedTextGuard 硬编码 mask（block 若扩到摘要回写通道会打断压缩闭环，
+owner 拍板）；session_censors 可逆还原无读取方（配密钥+读取端点两件一起做）；
+惰性工具白名单无膨胀审计；v2 死测试三件。
+
+## 下一轮提示词（r1031 轮）
+
+1. ★ **部署 r1031**（154/245/211 随下次窗口）：F1 使 V2 抖动期的会话压缩
+   不再静默退化为全量重发。
+2. **审计测试盲区收口**（判据纪律 11 的落实）：把 `SESSION_AUDIT_REDIS_ADDR`
+   门纳入一个 CI 入口或 cron；处置 v2 三个无条件 skip 死测试（删或修）。
+3. 上一轮遗留不变：D1/D2 部署、URSM persist collect 迁独立 db、
+   GeneratedTextGuard 双语义拍板、session_censors 可逆化两件套。
