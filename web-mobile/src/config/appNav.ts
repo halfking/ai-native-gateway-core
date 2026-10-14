@@ -463,6 +463,23 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.modelHistory',
     requiresRole: 'admin',
   },
+  // ★★ 凭据模型滑窗调用明细（2026-10-14 第一百一十五批）——
+  //   与 errors-trend / model-history **同注册处**，但**处置相反**。
+  // ⚠️⚠️ 这里要设 **`requiresRole: 'super_admin'`** 而不是 `'admin'`：
+  //   `handleSlidingWindow`（admin/credential_monitor.go:704-782）里
+  //   **既没有 `tenantID` 变量也没有 `IsTenantAdmin`** ⇒ Redis 与
+  //   `_request_logs` 回退两条腿的 WHERE 都**只有 credential_id**，
+  //   而 `credential_id` 是**全局唯一**主键
+  //   ⇒ 任何通过认证的主体报出别的租户的 credential_id 就能读到它的逐次调用明细。
+  //   ⇒ `'admin'` 档会给出「按钮写着我的租户、后端根本不理这句」的**虚假安全感**。
+  // ⇒ ★ 所以它**必须**进 `AppDrawer.spec.ts` 的 superAdmin 白名单（与上面两席相反）。
+  {
+    key: 'sliding-window',
+    to: '/sliding-window',
+    icon: 'chart',
+    titleKey: 'nav.slidingWindow',
+    requiresRole: 'super_admin',
+  },
   // ★ 加这一席**必须**同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
   {
     key: 'routing-policy',

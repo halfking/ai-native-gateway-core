@@ -56,7 +56,6 @@ const KNOWN_ORPHANS: readonly string[] = [
   'platformSettings',
   'requestActions',
   'sessionAnalyticsFilterOptions',
-  'slidingWindow',
   'storageAndLogConfig',
   'storageMigrationState',
   'subscriptionTiers',

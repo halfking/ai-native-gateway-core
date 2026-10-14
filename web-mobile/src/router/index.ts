@@ -757,6 +757,26 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'mh.title', requiresAuth: true, requiresRole: 'admin' },
   },
   {
+    // ★★ 凭据模型滑窗调用明细（2026-10-14 第一百一十五批）。
+    //   注册 `admin/handler.go:1475` `monitorH.RegisterMonitorRoutes(mux, h.admin)`
+    //   ⇒ 是 **admin 档**，与批 113/114 那两族同注册处。
+    // ⚠️⚠️ 但 `requiresRole` 是 **`'super_admin'`**，与那两族**相反** ——
+    //   因为本族**连租户维度都没有**：`handleSlidingWindow`
+    //   （admin/credential_monitor.go:704-782）里既没有 `tenantID` 变量、
+    //   也没有任何 `IsTenantAdmin`，两条数据腿（Redis 与 _request_logs 回退）
+    //   的 WHERE 都只有 `credential_id = $1 AND lower(...) = lower($2)`。
+    //   而 `credential_id` 是**全局唯一**主键 ⇒ 任何通过认证的主体报出别的
+    //   租户的 credential_id 就能读到它的逐次调用明细。
+    //   ⇒ `'admin'` 档在这里会给出**虚假的安全感**（按钮写着「我的租户」，
+    //     后端根本不理这句）⇒ 必须过度限制。
+    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（守卫只查登录态）
+    //   ⇒ 这一行是为将来的守卫预留的，不是生效中的拦截。
+    path: '/sliding-window',
+    name: 'sliding-window',
+    component: () => import('@/views/SlidingWindowView.vue'),
+    meta: { titleKey: 'sw.title', requiresAuth: true, requiresRole: 'super_admin' },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),

@@ -22,6 +22,7 @@ export const enUS = {
     dispatchJournal: 'Dispatch journal',
     errorsTrend: 'Error trend',
     modelHistory: 'Model state history',
+    slidingWindow: 'Sliding-window calls',
     modelIntegrityDrift: 'Fingerprint drift',
     modelPolicies: 'Model policies',
     modelPolicyAudit: 'Policy audit',
@@ -3997,6 +3998,80 @@ sctx: {
       count: 'Rows',
       ts: 'Time',
       source: 'Source',
+    },
+  },
+
+  // ★★ Credential sliding-window call detail (2026-10-14, batch 115).
+  sw: {
+    title: 'Sliding-window calls',
+    load: 'Query',
+    reload: 'Query again',
+    nope: {
+      msg: 'Your role cannot access this page.',
+      why: 'This endpoint has **no tenant dimension** server-side; it locates data by a globally unique credential ID. Letting non-super-admins in would only create a false sense of isolation.',
+    },
+    query: {
+      title: 'Query parameters',
+      credentialId: 'Credential ID',
+      model: 'Model name',
+      minutes: 'Window in minutes (not validated server-side, default {def})',
+      limit: 'Row limit ({min}-{max}, default {def})',
+      note: 'The credential ID and the row limit are rejected server-side, but the window in minutes is **not validated at all** — any value reaches the query. Also, a non-numeric value for any of them silently falls back to the default instead of erroring.',
+      paramsBad: 'Credential ID must not be 0, and the row limit must fall in {min}-{max}.',
+    },
+    scope: {
+      // ★★ Legend on its own line, NOT in the same sentence as {scope} — otherwise the
+      //   template string carries those literals and any assertion on {scope} turns
+      //   tautological (caught by batch 113 mutation S4).
+      note: 'Tenant scope of this batch: {scope}. This is not a permission gate; the server returns by credential ID to any authenticated caller.',
+      legend: 'Scope values: all = every tenant (and there is no tenant dimension at all); unexpected = an unanticipated role (never isolated for it).',
+    },
+    meta: {
+      title: 'Response metadata',
+      echoBad: 'The echoed credential ID does not match the query parameter.',
+      modelEchoBad: 'The echoed model name does not match the query parameter — note it is echoed verbatim, not the normalized value that actually matched.',
+      sourceSet: 'Possible sources: {list}.',
+      redisNote: 'When the server cannot read Redis it silently falls back to the log table; the response does not reveal whether Redis was at fault.',
+      fallbackData: 'Source is the fallback table with data: that means either Redis was unavailable or Redis simply had no rows in the window — the two cannot be told apart.',
+      redisEmptyBad: 'Source is redis yet there are no rows — zero rows always trigger the fallback, so this violates a backend invariant.',
+    },
+    stats: {
+      title: 'Statistics',
+      totalBad: 'total_returned does not match the number of entries.',
+      statsTotalBad: 'stats.total does not match the number of entries.',
+      sumBad: 'success + failed does not add up to the total.',
+      kindsBad: 'The error-kind sum is greater than the failure count.',
+      kindsIncomplete: 'Some failed entries are missing from the error-kind breakdown — that is not an error; those failures had an empty error description.',
+      rateBad: 'The failure rate does not match failed / total.',
+      kindsEmpty: 'The error-kind breakdown is empty (no failed entry carried a non-empty error description).',
+    },
+    entries: {
+      title: 'Call entries',
+      empty: 'No calls in the window (an empty array, not a missing field).',
+      orderBad: 'The sequence is not sorted newest first.',
+      orderNote: 'The server returns rows newest first, but there is no tiebreaker within the same millisecond, so equal timestamps have an undefined relative order.',
+    },
+    field: {
+      noError: '(successful entry: this field is absent)',
+      blankError: '(failed entry: the field is present but its content is empty)',
+      blankRid: '(empty string — the source recorded no request ID)',
+    },
+    col: {
+      windowMinutes: 'Window (min)',
+      limit: 'Row limit',
+      source: 'Source',
+      totalReturned: 'Rows returned',
+      total: 'Total',
+      success: 'Success',
+      failed: 'Failed',
+      failureRate: 'Failure rate',
+      errorKindsSum: 'Error-kind sum',
+      errorKind: 'Error kind',
+      count: 'Count',
+      ts: 'Timestamp (unix ms)',
+      ok: 'Result',
+      okYes: 'OK',
+      okNo: 'Failed',
     },
   },
 } as const

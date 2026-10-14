@@ -174,6 +174,13 @@ describe('navItemsFor', () => {
       //   是 h.superAdmin）。同族的 `featured-models`（`:1216`）其实是 admin 档，
       //   但这一席整体按 superAdmin 挡 —— 混档会让「谁能看哪块」不可解释。
       'routing-policy',
+      // ★★ 2026-10-14 第一百一十五批：滑窗调用明细
+      //   （`admin/credential_monitor.go:704-782`）—— **与前两席相反**！
+      //   `handleSlidingWindow` 里既没有 `tenantID` 变量也没有 `IsTenantAdmin`，
+      //   Redis 与 `_request_logs` 回退两条腿的 WHERE 都**只有 credential_id**，
+      //   而它是**全局唯一**主键 ⇒ 任何通过认证的主体报出别的租户的
+      //   credential_id 就能读到它的逐次调用明细 ⇒ 连 tenant_admin 都必须挡。
+      'sliding-window',
       'task-index',
       'tenants',
       // ★ 2026-10-08 第一百零三批：工作类型配置面。`admin/handler.go:1434`
@@ -268,6 +275,18 @@ describe('navItemsFor', () => {
     expect(dropped.map((d) => d.key)).toContain('errors-trend')
     // ★ 第二席同样必须被挡住 —— 白名单式断言会自动纳入，这里显式点名防回归
     expect(dropped.map((d) => d.key)).toContain('model-history')
+  })
+
+  it("★ ★★ 第三席反过来：sliding-window 是 superAdmin 档，tenant_admin 看不到", async () => {
+    // ★★★ 与 errors-trend / model-history 恰好相反 ——
+    //   那两席是 'admin' 档（tenant_admin 该看到），本席**必须**挡掉 tenant_admin。
+    // ⇒ 这个反转会红 ⇒ 说明有人把它误标成了 'admin' 档（那才是「虚假的安全感」）。
+    await mountDrawerAs('tenant_admin')
+    const hrefs = Array.from(document.body.querySelectorAll('.drawer__link'))
+      .map((a) => a.getAttribute('href') ?? '')
+    expect(hrefs.some((h) => h.includes('/sliding-window'))).toBe(false)
+    expect(hrefs.some((h) => h.includes('/errors-trend'))).toBe(true)
+    expect(hrefs.some((h) => h.includes('/model-history'))).toBe(true)
   })
 
   // ★★ 标题原来写「只挡 superAdmin 档」—— 那是 `'admin'` 档出现**之前**的说法，

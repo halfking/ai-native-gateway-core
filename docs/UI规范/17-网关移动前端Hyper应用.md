@@ -15783,3 +15783,164 @@ if IsTenantAdmin(r) {
   并写明「行号只是**定位提示**，判据不得依赖它」；
   同时订正第 (1)(11) 两条**漏了 `user` 角色**的租户结论（原第 (1) 条写的是
   「不设 `requiresRole`」，第 (11) 条写的是「tenant_admin 只看自己租户；super_admin 看全部」）。
+## 11.151 凭据模型滑窗调用明细接进 UI —— 权限档**第三次**改口：这一族连租户维度都没有，只能过度限制（第一百一十五批）
+
+### 一、这批做了什么
+
+把 `slidingWindow`（第 94 批建的 API 模块，**一直是孤儿**）接进移动端，孤儿 15 → **14**：
+
+| 项 | 值 |
+|---|---|
+| 视图 | `web-mobile/src/views/SlidingWindowView.vue` |
+| 判据 | `SlidingWindowView.spec.ts` **53 条**（API 层另有 84 条，本批补了 4 条） |
+| 路由 | `/sliding-window`，`meta.requiresRole: 'super_admin'` |
+| 抽屉席 | `sliding-window`，**`requiresRole: 'super_admin'`** ⇒ **进** superAdmin 白名单 |
+| i18n | 前缀 `sw` + `nav.slidingWindow` |
+
+⚠️★ **它与批 113 / 114 同注册处**（`admin/handler.go:1475`
+`monitorH.RegisterMonitorRoutes(mux, h.admin)`），
+**但权限档的处理与那两批相反**。这是连续三批里第三次改口，值得逐字记住。
+
+### 二、★★★★★★ 为什么这一族要**过度限制**
+
+批 113（`errors/trend`）与批 114（`model-history`）的结论是
+**`requiresRole: 'admin'`**。这一族不能照抄，因为：
+
+★ **`handleSlidingWindow`（`admin/credential_monitor.go:704-782`）里既没有
+`tenantID` 变量，也没有任何 `IsTenantAdmin`。** 两条数据腿**都**没有租户维度：
+
+| 腿 | 取数 | 键 / WHERE |
+|---|---|---|
+| Redis（主） | `m.recorder.GetRecent(ctx, credentialID, model, since)` | 只有 `(credentialID, model)` |
+| `_request_logs`（回退） | `slidingWindowQuery()` / `slidingWindowHotQuery()` | `WHERE credential_id = $1 AND lower(…) = lower($2) AND ts > …` |
+
+⇒ 而 `credential_id` 是 credentials 表主键、**全局唯一**，不是租户内唯一
+⇒ ⇒★★ **任何通过认证的主体，只要报出一个别的租户的 `credential_id`，
+就能读到那个凭据的逐次调用明细** —— request_id、成功与否、延时、错误类别全在里面。
+
+⇒⇒ `'admin'` 档在这里会给出**虚假的安全感**：按钮写着「我的租户」，后端根本不理这句。
+⇒⇒★ 所以必须**只给 `super_admin` / legacy `admin_key`**。
+
+> ★★★ **这是一个新的处置类别，值得单列**：
+> 批 113 的问题是不设 `requiresRole`（默认 `true` ⇒ 对 `user` 也显示），
+> 批 114 的问题是**少一个档**（要 `'admin'` 才能挡住 `user`），
+> **批 115 是问题在服务端本身**（没有任何租户维度 ⇒ 前端怎么挡都只是兜底）。
+> ⇒ 判别动作：拿一个端点问 **「服务端有没有租户维度？」** ——
+> 有 ⇒ 按角色档挡；**没有 ⇒ 只能过度限制，并把理由写进页面文案**。
+
+#### ★★ 一个连 `grep tenant_id` 都会骗过你的细节
+
+`slidingWindowHotQuery()` 里**确实出现** `tenant_id`，但它在
+`LEFT JOIN session_turn_details_hot d ON d.tenant_id::text = t.tenant_id::text`
+—— 那是**在同一租户内**把两张表对上，**不是访问控制**。
+WHERE 子句里一条 tenant 条件都没有，也没有任何按租户的绑定参数。
+
+⇒ ★★ **naive `grep tenant_id` 会得出「这里有租户处理」的错误结论。**
+⇒ 判据因此只看**子查询合流之后的 WHERE 段**
+（`hBody.slice(hBody.indexOf(') cand'))`），并额外断言
+`tenant_id = $N` 这类绑定条件不存在。
+
+### 三、★★★★★ 本批修掉一个真缺陷：**判据把 bug 钉成了规范**
+
+`source` 的回退取值被写成 **`'request_logs'`**，而后端发的是
+**`'_request_logs'`**（`credential_monitor.go:749`，
+`source = "_request_logs"`；那张表本名就带下划线，全仓一致）。
+
+⇒ 后果不是文案笔误，而是**行为坏掉**：
+```ts
+export function slidingWindowFallbackSourceStillHasEntries(r) {
+  if (r.source !== 'request_logs') return false   // ← 对真实响应永远不相等
+  return r.entries.length > 0
+}
+```
+⇒ 页面上「Redis 不可用、已回退且有数据」这个信号**永远不会亮**。
+
+⇒ ★★★ **为什么整族判据（84 条）全绿却没发现**：
+模块头第 (6) 条**把 Go 那行抄漏了**（写成 `source = "request_logs"`），
+而常量、判据实现、3 条既有用例**全部照着这份错抄写**
+⇒ ★★ 注释 / 常量 / 判据**三方互相印证**、整套件全绿，
+却与后端真值**三方一致地错**。
+
+⇒★★ **判别动作（本批最值钱的一条）**：
+**当「注释 / 常量 / 判据」三者互相印证时，反而要问
+「它们是从同一份错误来源抄来的吗？」**
+⇒ **互证不等于正确** —— 一份错抄能让三者同时自洽。
+⇒ 唯一能打破闭环的是**对着事实侧（可执行代码）核**。
+
+⇒ 处置：修常量 + 实现 + 5 处用例字面量，并**新增判据组 (15)**
+「字面量必须对着 Go 源码钉」—— 4 条，其中 `(15)-1` **从 Go 源码里抽字面量**
+（`matchAll(/source\s*:?=\s*"([^"]*)"/g)`）而不是硬写期望值，
+外加一条负向钉法（`hits` 里不得出现无下划线的那个）。
+该组已当场验过有牙：把常量改回错值 ⇒ 2 条红。
+
+### 四、★ 变异 NO_EFFECT 又顶出一个恒真断言（同一族，一天内第二次）
+
+首轮变异 **S18**（让成功条目也说「键不存在」）**NO_EFFECT**。
+原因和批 113 的 S4、批 114 的 `w.html()` 是同一个族：
+
+> `sw.field.blankError` 的文案是「（空串，与「键不存在」不是一回事）」
+> —— ★★ 它为了说清区别，**逐字写着**「键不存在」四个字。
+
+⇒ 于是 `toContain('键不存在')` 对**两种情况都成立** ⇒ 判据恒真。
+
+⇒ 处置两条同时做：
+① **改文案去掉互引**（「（成功条目：没有这个字段）」/「（失败条目：字段在，但内容是空串）」）
+⇒ 从根上断掉这个观察面污染；
+② **判据改成按文案身份比对**（`expect(txt).toBe(t('sw.field.blankError'))`
+且 `not.toBe(t('sw.field.noError'))`），不再用裸子串。
+
+### 五、本族的数据语义（页面上逐条落地）
+
+1. **四个数字完全互锁**：`total_returned === entries.length === stats.total`，
+   且 `success + failed === total`（后端是**先截断再统计**，任一个错都会被另外三个抓住）。
+2. **`error_kinds` 求和「≤」`failed` 而不是相等** —— 失败条目若 `err` 是空串
+   就完全不进 `error_kinds` ⇒ 求和小于失败数**不是 bug**，页面只说明、不报警。
+3. **`failure_rate` 是派生的，`total === 0` 时恒为 0**（不是 NaN、不是 null）。
+4. **`source === 'redis'` ⟹ 必有行**；`'_request_logs'` 是**二义的**
+   （Redis 不可用 / Redis 窗口内无数据，同形）。
+5. **Redis 的错误被整个丢弃**（`entries, _ = …`）⇒ Redis 挂了静默回退，
+   响应里看不出 Redis 故障 ⇒ 页面无条件说明这一句。
+6. **`err` 是唯一带 `omitempty` 的键** ⇒ 成功条目里**键根本不存在**；
+   `rid` 恒在但**可能为空串**（`COALESCE(request_id,'')`）；
+   `ts` 是 **unix 毫秒**不是 ISO 串。★ 这三种「没有值」页面上显示得**各不相同**。
+7. **`minutes` 后端完全不校验**（`limit` 有 1–500 的 400）⇒
+   客户端**没有「会被 400」那一格可挡**，所以守卫里刻意不含 `minutes`，
+   页面改成把「我问了什么 / 后端认了什么」并排显示。
+   ⇒ 配变异 **S6 反向**钉住「不许替后端加规则」。
+8. **`credential_id == 0` 才 400，不是 `< 1`** ⇒ 负数能过后端那一关
+   ⇒ 前端**只拦 0**，并用变异 **S8** 反向钉住「不许拦负数」。
+9. **`model` 是 `lower()` 大小写不敏感匹配，但回显是原样传进去的那个**
+   ⇒ ★ 回显可能与实际命中的 `outbound_model` 大小写不同，页面照实报「不一致」。
+10. **回退查询 `ORDER BY ts DESC` 无 tiebreak** ⇒ 只能断言非升序，
+    **同毫秒并列不误报**是它的正控。
+
+### 六、验证
+
+- 新增 `SlidingWindowView.spec.ts` **53 条**；`api/slidingWindow.test.ts` 补
+  **`(15)` 组 4 条**（共 84）；`AppDrawer.spec.ts` 补 **2 条**（含白名单里点名的 `sliding-window`）
+- 全量 **7587 条 / 205 文件** rc=0（1 skipped）
+- ★★★ 变异 **23/23 全有牙**（`/tmp/mut-co115.mjs`）
+  - 还原逐字节一致，**未用** `git checkout --`；收尾对**视图 / 导航 / API 模块**
+    三个文件都做零残留复查
+  - ★ Go 源码**一条都不变异** —— 它们是**被审计对象**，改了等于把结论也改了
+  - ★ 其中 **S2 是反向钉法**：把抽屉席误标成 `'admin'` ⇒ 立刻红
+    （那正是本族最容易被下一个人「按批 113/114 的口径」改回去的方向）
+- 五门 rc=0（i18n parity 3354 → **3406 键** / 触控 R1 108 → **109 个 `.vue`** /
+  CSS 111 → **112 files** / `vue-tsc -b` / `comment:check` 444 → **447 文件**）
+  + `gate:selftest` **64 条** + `npm run build` rc=0
+  （★ 全部在**删掉 `tsbuildinfo` 之后**跑的冷读数 —— 批 114 实测过增量缓存能让
+  `build` 在破损代码上报绿）
+- ★ 顺带订正 `api/slidingWindow.ts` 模块头的**漂移行号**（挂载点 `:1453` → `:1475`），
+  并把它原先那句「抽屉席**不设** `requiresRole`」整条替换成上面的四步推导。
+
+### 七、★ 本族之后，「读路径不隔离」的台账更新为
+
+| 端点 | 注册档 | 租户维度 | 处置 |
+|---|---|---|---|
+| `/api/errors/trend` | admin | `EffectiveTenantIDAll`（WHERE 补偿） | `requiresRole: 'admin'` |
+| `/api/credentials/model-history` | admin | **手写内联** `tenantID`（grep 打不到） | `requiresRole: 'admin'` |
+| ★ `/api/credentials/sliding-window` | admin | ★★ **两条腿都没有** | ★★ **`super_admin`（过度限制）** |
+| operational / selfCheck×2 / routing×3 / formatAnomalies / modelIntegrityDrift | 各异 | 无 | 视图内门控 / superAdmin 档 |
+
+⇒ 三条同注册处（`RegisterMonitorRoutes`）的端点，**处置已经两样** ——
+再次说明**权限必须逐端点读 handler，不能按注册处或前缀推**。
