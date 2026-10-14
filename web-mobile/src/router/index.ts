@@ -712,6 +712,13 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'rr.title', requiresAuth: true },
   },
   {
+    // ★ 路径形如 /{tenant}/{request_id}（**恰好两段**），段要 encodeURIComponent
+    path: '/dispatch-journal',
+    name: 'dispatch-journal',
+    component: () => import('@/views/DispatchJournalView.vue'),
+    meta: { titleKey: 'dj.title', requiresAuth: true },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),

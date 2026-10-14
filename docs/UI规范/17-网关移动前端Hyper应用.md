@@ -15268,3 +15268,178 @@ true || r ? A : B   // 实际是 (true || r) ? A : B  ≡  r ? A : B
 - 全量 **7361 条 / 200 文件** rc=0（1 skipped）
   （= 批 110 基线 7312 + 本批 48 条视图判据 + 1 条哨兵 = 7361，分毫不差）
 - 十连跑 **10/10 全绿**（日志 `/tmp/co111-stability.log`）
+---
+
+## 11.148 第一百一十二批：调度轨迹接进 UI —— 本仓**第一个真做租户鉴权的读端点**
+
+### 一、批次目标与接线
+
+把 `src/api/dispatchJournal.ts`（第八十九批做的 API 层，100 条判据）接成可达 UI 入口。
+
+- 视图 `web-mobile/src/views/DispatchJournalView.vue`
+- 判据 `DispatchJournalView.spec.ts` **39 条**
+- 抽屉席 `dispatch-journal`（`to: '/dispatch-journal'`，**admin 档，不设 requiresRole**）
+- 路由 `/dispatch-journal`，`meta: { titleKey: 'dj.title', requiresAuth: true }`
+- 两侧 i18n 新增 `dj` 块 + `nav.dispatchJournal`（3214 → **3268 键**）
+- 孤儿 **18 → 17**
+- ★ 顺手订正模块头里漂移的行号（`:7070`/`:7074-7075` → `:7135-7136`/`:7143-7144`）
+
+### 二、★★★ 四路取证里差点被两个陷阱吃掉
+
+**陷阱一：只 grep `mux.HandleFunc` 会判成「死端点」。**
+本族是**第四种注册形态**：既不在 `admin/handler.go` 的 mux 清单里，也不在
+`cmd/gateway/main.go:7135-7136` 的 requestJourney 直挂清单里，而是现构造 API 对象、
+现调 `RegisterRoutes`：
+
+```go
+// cmd/gateway/main.go:7143-7144
+journalSnapshotAPI := admin.NewJournalSnapshotAPI(journalSnapshotStore)
+journalSnapshotAPI.RegisterRoutes(mux, requestJourneyWrapAdmin)
+```
+
+⇒ `admin/journal_handlers.go:30-35` 才真正 `mux.HandleFunc`。
+★ 这是「判端点是否存在必须查六处」的又一个实例，而且是最贵的一个：
+**只看 `mux.HandleFunc` 会得出「这端点没了」的相反结论。**
+
+**陷阱二：注释里的「端点已被移除」是真的，但指的是**另一个**端点。**
+`domains/dispatch/pipeline.go:1780`：
+
+> ship the per-request attempt journal to the optional JournalSink so post-hoc ops/CS
+> diagnosis can see the trace **after the global `/api/admin/dispatch/journal` endpoint
+> was removed in ff18dc3b6**
+
+⇒ 被移除的是**全局无租户版**；**带租户的 `{tenant}/{request_id}` 版仍在服役**。
+⇒ ★ 若只读到这句注释就下结论「这族没有端点了」，会直接错杀一个可接线的功能。
+**处置**：两处都核（注册点 + 移除注释的上下文），并在视图文件头把两者关系写明。
+
+### 三、★★★★ 本族是本仓**第一个真正做租户鉴权**的读端点
+
+`admin/journal_handlers.go:59-67`：
+
+```go
+privileged := auth.Role == "super_admin" || auth.Role == "admin_key"
+if !privileged && auth.Role != "tenant_admin" { writeRequestJourneyError(w, 404, "not found"); return }
+if !privileged && callerTenant != tenantID     { writeRequestJourneyError(w, 404, "not found"); return }
+```
+
+⇒ ★★★ 与批 75/76/77/104/106/109/110 的「读路径不隔离」**完全相反**。
+⇒ 权限是**「角色 × 路径里的租户」二维**的：`super_admin` / `admin_key` 可读任意租户，
+`tenant_admin` **只能读本租户**（且租户键取自 **JWT**，不是 URL）。
+⇒ ★★ 越权返 **404 而不是 403** —— 连普通用户都是 404（`AdminMiddleware` 只验 JWT
+有效性、**不检查 role**）⇒ **本族根本没有 403 这条路**，客户端不能用「没报权限错」推断
+「有权限」；`404` 有七种成因、文案**完全相同**。
+
+⇒ 前端**不需要**段落级门控，但**理由与批 104/106 不同**：
+不是「档位挡住了跨租户」，而是「**后端自己按调用方租户挡了**」。
+
+### 四、抽屉席是 **admin 档** —— 与批 109/110/111 连续三批相反
+
+可执行注册处传的是 `requestJourneyWrapAdmin` → `newWrapAdmin`
+（`cmd/gateway/main_admin_wrappers.go:26-30`）→ `admin.AdminMiddleware`。
+⇒ 席**不设** `requiresRole`，且**不得**进 `AppDrawer.spec.ts` 的 superAdmin 白名单
+（加进去「tenant_admin 少掉的只有这些」那条立刻红）。
+
+★ 判据 ①-3 特意对**剥掉注释后的源码**断言「不含角色字面量」——
+视图文件头**大量**写着 `super_admin` / `tenant_admin` 作为**契约说明**，
+不断言剥注释就会把**文档当成行为**（批 110 踩过同一条）。
+
+### 五、★★★ 「空」与「完整」这两件事在本族各有一个陷阱
+
+1. ★★★★★ **`truncated === false` 不等于「轨迹完整」** —— 截断是**两段式**的，
+   而只有第二段被报告：
+   - 第一段（每请求环形缓冲，上限 **128**，`journal.go:137-140`）满了从**头部**丢最旧的，
+     **这个丢弃没有任何标记**；
+   - 第二段（快照窗口，上限 **50**，`pipeline.go:1874-1879`）保留最近 50 条，
+     `truncated = true`、`truncated_count = 原长度 − 50`。
+   ⇒ ★★ 唯一能看到第一段丢弃的线索是**首条 `seq` 不为 1**（`seq` 从 1 开始连续自增，
+   `journal.go:118-119`）⇒ 页面把这条做成常驻提示。
+2. ★★★★ **`entries` 为空是二义的**（`dispatchJournalEmptyEntriesAreAmbiguous`）：
+   「这个请求没有重试或切换」与「快照已被 LRU 淘汰 / 进程重启冲掉了」返回**同一个 200**。
+   ⇒ 页面必须说「无法区分」，**不能**说「这个请求很干净」。
+   ⇒ 附带：快照是进程内 LRU（`NewInMemoryJournalStore(10000)`），且
+   **`ConsumeSnapshot` 会 `moveToFrontLocked` ⇒ 读操作有副作用**（续命）。
+
+### 六、八条可自验不变式（每条都配正控）
+
+| 不变式 | 来源 |
+|---|---|
+| 首条 `seq === 1` | `journal.go:118-119` |
+| 相邻 `seq` 差 1（保留下来的窗口内无空洞） | 同上；截断只砍**头部窗口** |
+| 末条 `action ∈ {completed, failed, canceled}` | `pipeline.go:1784` 只在终态路径发射 |
+| `snapshot_version === 末条 seq` | `pipeline.go:1880` |
+| `attempt` 非递减 | 该事件之后的累计 AttemptCount |
+| `counts` 逐条非递减、末条即总量 | `journal.go:118-135` 折叠后快照 |
+| `truncated ⇒ entries.length === 50` | `pipeline.go:1876-1879` 精确切片 |
+| `truncated_count === 0 ⟺ !truncated` | 同上 |
+
+★ 其中「末条是终态」与截断**互不干扰**：截断从**头部**丢，终态条目恒在最末。
+
+### 七、★★ 12 个可选键都是「值类型 + 无指针 + omitempty」
+
+`domains/dispatch/journal.go:25-55`：
+`CredentialID int json:"credential_id,omitempty"` ⇒ **值为 0 时键不存在** ⇒
+★ 「`credential_id` 是 0」与「`credential_id` 不存在」**在响应里不可区分**。
+⇒ 与批 110 的指针族（**键在时值可能是真实的 0**）**方向完全相反**。
+⇒ 页面一律说「未提供（键缺失或值为 0，二者不可区分）」，**既不说 0 也不说没有**。
+
+### 八、★★★ 判据自身翻了两次车
+
+1. **mock 顺序写错**：⑨-1 在 `lookup`（第一次查询）**之前**就 `mockRejectedValueOnce`
+   ⇒ 那次拒绝被第一次查询吃掉了、快照根本没渲染 ⇒ 后面 `dj-s-entries` 断言必然红。
+   ⇒ 「先渲出旧数据，再让它失败」这个场景，mock 必须**按调用次序**排。
+2. **i18n 命名空间放错**：视图用 `dj.col.entries`，我把它写成了 `dj.snap.entries`
+   ⇒ **i18n 门当场抓出**（承批 111 同一条）。
+
+### 九、★★★★ 判据自身**主动删掉一条**（自造判据）
+
+原本有一条 ⑦-3「值真的是 0 时也不许渲染成 0」。核到 Go 源码
+（`journal.go:26` 是值类型 `int` + `omitempty`）后确认：
+**「键在且值为 0」是后端不可达的载荷** ⇒ 为不可达输入加防御分支 = **自造判据**
+（承批 105「一条自己造的恒真判据」）⇒ **删掉**，并把理由写进判据文件。
+
+⇒ ★★ 同一件事的另一个面：**变异 S14（把存在判断换成真值判断）因此也是可证等价的**
+⇒ 按「可证等价 ⇒ 删变异而不是补用例」**删掉 S14**。
+⇒ 「不为不可达输入写判据」与「不为不可达输入写变异」是**同一个决定的两个面**。
+
+★ 同理，变异 **S16 第一版是 NO_EFFECT**：判据 ③-5 只钉了「终态**不该**报告警」，
+**没有一条钉「终态标记要出现」** ⇒ 砍掉标记照样绿 ⇒ 补 ③-10（必须出现）+
+③-11（非终态不得出现）之后才有牙。
+⇒ ★ **「配了正控」不等于「钉住了内容」**：正控钉的是「不该报错的分支」，
+而这类变异砍的是「该出现的内容」⇒ **两个方向都要钉。**
+
+### 十、变异台 16/16 全有牙
+
+`/tmp/mut-co112.mjs`（S14 按可证等价删除），还原走 `writeFileSync` 原始字节 +
+逐字节比对，**未用** `git checkout --`。
+
+- ★ 本批重点：**九条告警判据里八条是「不等就报」**，所以变异分两半 ——
+  ① 把 `!X` 改成 `X`（**反面**：正常载荷被误报）② 把告警整个关掉（`false`）。
+  **两半都必须有牙**，否则「配了正控」只是说说。
+- ★★ 变异台的一个工装细节：`expect` 是对**用例 fullName 的子串匹配**，
+  而判据标题里带 markdown `**` ⇒ 期望值写成「必须带「（终态）」标记」而标题是
+  「那一格`**必须**`带…」时会**明明红了却报 PARTIAL** ⇒ 期望值必须取
+  **判据标题里确实存在**的连续子串。
+
+### 十一、孤儿 18 → 17
+
+`dispatchJournal` 从 `KNOWN_ORPHANS` 删掉一行并加哨兵。
+哨兵注释写明 **admin 档** ⇒ 席**不设** requiresRole ⇒
+`AppDrawer.spec.ts` 的 superAdmin 白名单里**不该**出现 `dispatch-journal`
+（与 `probe-queue` / `connection-registry` 同一条纪律）。
+
+剩余 17 项：`boardOperational`、`dataLifecycleStorage`、`errorsTrend`、`modelHistory`、
+`modelIQ`、`nativeTransport`、`opsOverview`、`platformSettings`、`requestActions`、
+`sessionAnalyticsFilterOptions`、`slidingWindow`、`storageAndLogConfig`、
+`storageMigrationState`、`subscriptionTiers`、`turnsFilterOptions`、`usageEnhanced`、
+`v1DataHorizon`。
+
+### 十二、验证
+
+- 新增 `DispatchJournalView.spec.ts` **39 条**；`orphanLedger.spec.ts` 17 → **18 条**
+- ★★★ 变异 **16/16 全有牙**（`/tmp/mut-co112.mjs`；S14 按可证等价删除；
+  还原逐字节一致，**未用** `git checkout --`；跑完复查零 `CO112S` 残留且字节一致）
+- 五门 rc=0（i18n parity 3214 → **3268 键** / 触控 R1 105 → **106 个 `.vue`** /
+  CSS 109 files / `vue-tsc` / `comment:check` 440 文件 0 命中）
+- 全量 **7401 条 / 201 文件** rc=0（1 skipped）
+  （= 批 111 基线 7361 + 本批 39 条视图判据 + 1 条哨兵 = 7401，分毫不差）
+- 十连跑 **10/10 全绿**（日志 `/tmp/co112-stability.log`）

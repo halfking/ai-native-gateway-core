@@ -50,7 +50,6 @@ import { join } from 'node:path'
 const KNOWN_ORPHANS: readonly string[] = [
   'boardOperational',
   'dataLifecycleStorage',
-  'dispatchJournal',
   'errorsTrend',
   'modelHistory',
   'modelIQ',
@@ -285,6 +284,15 @@ describe('孤儿棘轮', () => {
     //   （费用对账），本席走 `reportRollup`（对账报表）——两张席都叫「对账」，
     //   接错模块这两条判据**都不会红** ⇒ 靠的是 nav 标题与哨兵注释里的显式区分。
     expect(currentOrphans()).not.toContain('reportRollup')
+  })
+
+  it('★★ 已接线的哨兵：dispatchJournal 不在孤儿里（第一百一十二批）', () => {
+    // ★ 单请求调度轨迹接上了抽屉席与路由 ⇒ 棘轮清单同步删掉那一行。
+    //   该族是 **admin 档**（可执行注册处 cmd/gateway/main.go:7143-7144 传的是
+    //   `requestJourneyWrapAdmin` → `admin.AdminMiddleware`，**不检查 role**）
+    //   ⇒ 席**不设** requiresRole ⇒ `AppDrawer.spec.ts` 的 superAdmin 白名单里
+    //   **不该**出现 dispatch-journal（与 probe-queue / connection-registry 同一条纪律）。
+    expect(currentOrphans()).not.toContain('dispatchJournal')
   })
 
   it('★★★ 反向护栏：api 内部的互相引用不得凭空产生可达性', () => {

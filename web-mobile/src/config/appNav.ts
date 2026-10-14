@@ -47,6 +47,15 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.reportRollup',
     requiresRole: 'super_admin',
   },
+  // ★ 2026-10-14 第一百一十二批：单请求调度轨迹。
+  //   ★★ **admin 档，不是 superAdmin**（可执行注册处 `cmd/gateway/main.go:7143-7144`
+  //   传的是 `requestJourneyWrapAdmin` → `admin.AdminMiddleware`，后者**不检查 role**）
+  //   ⇒ **不设** `requiresRole`（tenant_admin 也够用）
+  //   ⇒ 且**不得**进 `AppDrawer.spec.ts` 的 superAdmin 白名单 —— 加进去那条立刻红。
+  //   ⚠️ 这与批 109/110/111 连续三批相反，接线时别照抄那一套。
+  //   ★ 但**租户隔离是真做了**的（`admin/journal_handlers.go:59-67`：
+  //   「角色 × 路径租户」二维，越权返 **404 而非 403**）⇒ 前端无需段落级门控。
+  { key: 'dispatch-journal', to: '/dispatch-journal', icon: 'search', titleKey: 'nav.dispatchJournal' },
   // 2026-10-06：路由检查（只读 explain）从 desktopOnly 收进移动端，抽屉席位。
   // 不占底栏（02 §4 底栏 ≤5 席已满），与「告警/用量」同级。admin 档。
   { key: 'routing', to: '/routing', icon: 'search', titleKey: 'nav.routing' },
