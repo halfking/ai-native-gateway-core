@@ -25,6 +25,7 @@ export const zhCN = {
     modelIQ: '模型智商',
     opsOverview: '运维总览',
     requestActions: '动作时间线',
+    v1DataHorizon: 'v1 数据地平线',
     slidingWindow: '滑窗调用明细',
     modelIntegrityDrift: '指纹漂移',
     modelPolicies: '模型策略',
@@ -4372,6 +4373,49 @@ sctx: {
       credentialId: '凭据 ID',
       errorKind: '错误类型',
       retrySeq: '重试序号',
+    },
+  },
+  // ★ v1 数据地平线告示（2026-10-14 第一百一十九批）。
+  //   注册处 admin/handler.go:1109 的 admin(...) ⇒ **admin 档**，抽屉席**不设** requiresRole。
+  // ★★ 本族与批 115/117/118 **相反**且它们并没错：没有租户维度 ≠ 就要过度限制，
+  //   判据是「载荷里有没有别人的东西」—— 本族是**平台级全局事实**，七个键无一带租户。
+  v1h: {
+    title: 'v1 数据地平线',
+    load: {
+      title: '读取',
+      btn: '读取告示',
+    },
+    scope: {
+      note: '本页回答一个平台级问题：v1 流量读源是否已停更。它与租户无关，所以对所有角色开放。',
+      headerNote: '服务端还有一个响应头承载同一件事，但移动端的请求层只取响应体，本页只用响应体判定。',
+      empty: '尚未读取。',
+    },
+    state: {
+      title: '当前状态',
+      live: '正常写入',
+      frozen: '已停更',
+      unknown: '无法确认',
+      'unknown-shape': '形状异常',
+      note: {
+        live: '写门明确开着，这一类读源没有停更。',
+        frozen: '明确读到写门已关闭：接口照常返回、结果集非空，但内容停在停写前一刻。',
+        unknown: '控制这个读源的配置键没有显式取值，当前读到的值来自默认值回落 —— 既不能说它停更，也不能说它还在写。',
+        'unknown-shape': '响应既不是「未停更」，也不符合「停更」或「无法确认」这两种形态之一。',
+      },
+    },
+    check: {
+      flagBad: '告示对象里 frozen 与 unknown 没有恰好一个为 true —— 后端不产出这种形态。',
+      affectsBad: 'affects 里有后端没有列出的取值。',
+      affectsCountBad: 'affects 的项数不是后端固定的那三个。',
+      sourceBad: 'source 不是那张表的表名（应为 _request_logs，注意开头的下划线；它不是配置来源）。',
+      gateKeyBad: 'gate_key 与后端那个控制键不符 —— 运维要知道改哪里。',
+      shapeBad: '有告示对象但不符合停更/无法确认两种形态之一。',
+      envelope: '本状态（{state}）对应的响应体形态已核对。',
+    },
+    field: {
+      source: '读源族',
+      gateKey: '控制键',
+      affects: '受影响档位',
     },
   },
 } as const

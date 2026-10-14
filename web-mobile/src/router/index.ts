@@ -831,6 +831,21 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'ra.title', requiresAuth: true, requiresRole: 'super_admin' },
   },
   {
+    // ★ v1 数据地平线（2026-10-14 第一百一十九批）。
+    //   注册 `admin/handler.go:1109` 的 `admin(...)` ⇒ **admin 档**（不设 requiresRole）。
+    // ★★★★★ 本族是**第三类（过度限制）的边界**，与批 115/117/118 **相反**且它们并没错：
+    //   过度限制的正当性来自「载荷里有**别人的东西**」，不是来自「没有租户维度」本身。
+    //   本族没有租户维度，但它答的是**平台级全局事实**（`_request_logs` 写门是否停更），
+    //   七键里无一带租户 ⇒ **不需要**过度限制，tenant_admin 可用。
+    // ★★★ 而且**必须**对 tenant_admin 可见：`silence` 那句自陈
+    //   「接口照常 200、结果集非空、字段齐全，接口没报错不代表数据是新的」——
+    //   挡掉它等于让租户把停更数据读成新鲜数据。
+    path: '/v1-data-horizon',
+    name: 'v1-data-horizon',
+    component: () => import('@/views/V1DataHorizonView.vue'),
+    meta: { titleKey: 'v1h.title', requiresAuth: true },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),

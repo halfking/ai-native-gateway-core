@@ -58,7 +58,6 @@ const KNOWN_ORPHANS: readonly string[] = [
   'subscriptionTiers',
   'turnsFilterOptions',
   'usageEnhanced',
-  'v1DataHorizon',
 ]
 
 /**
@@ -312,6 +311,18 @@ describe('孤儿棘轮', () => {
     //   所以 `AppDrawer.spec.ts` 的排序白名单里**必须**出现 request-actions。
     // ⇒ 两条判据合起来才覆盖「接上了」+「档位挂对了」。
     expect(currentOrphans()).not.toContain('requestActions')
+  })
+
+  it('★★ 已接线的哨兵：v1DataHorizon 不在孤儿里（第一百一十九批）', () => {
+    // ★ v1 数据地平线接上了抽屉席与路由 ⇒ 棘轮清单同步删掉那一行。
+    //   该族是 **admin 档**（`admin/handler.go:1109` 的 `admin(...)`，AdminMiddleware
+    //   只认证不检 role ⇒ 后端 tenant_admin 可读）
+    //   ⇒ 席**不设** requiresRole ⇒ `AppDrawer.spec.ts` 的 superAdmin 白名单里
+    //   **不该**出现 v1-data-horizon（与 probe-queue / connection-registry 同一条纪律）。
+    // ★★ 与批 115/117/118 三族**相反**而那三族并没错：本族虽无租户维度，
+    //   但载荷是**平台级全局事实**（七个键无一带租户）⇒ 过度限制**不适用**。
+    //   ⇒ 两条判据合起来才覆盖「接上了」+「档位挂对了」。
+    expect(currentOrphans()).not.toContain('v1DataHorizon')
   })
 
   it('★★★ 反向护栏：api 内部的互相引用不得凭空产生可达性', () => {

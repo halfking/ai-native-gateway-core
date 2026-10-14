@@ -25,6 +25,7 @@ export const enUS = {
     modelIQ: 'Model IQ',
     opsOverview: 'Ops overview',
     requestActions: 'Action timeline',
+    v1DataHorizon: 'v1 data horizon',
     slidingWindow: 'Sliding-window calls',
     modelIntegrityDrift: 'Fingerprint drift',
     modelPolicies: 'Model policies',
@@ -4331,6 +4332,51 @@ sctx: {
       credentialId: 'Credential ID',
       errorKind: 'Error kind',
       retrySeq: 'Retry seq',
+    },
+  },
+  // ★ v1 data horizon notice (2026-10-14 batch 119).
+  //   Registration admin/handler.go:1109 is `admin(...)` => **admin tier**, the seat sets
+  //   NO requiresRole. This is the opposite of batches 115/117/118 and none of them was
+  //   wrong: no tenant dimension does not imply over-restriction. The test is whether the
+  //   payload contains *someone else's* data — here it is a platform-wide fact.
+  v1h: {
+    title: 'v1 data horizon',
+    load: {
+      title: 'Read',
+      btn: 'Read notice',
+    },
+    scope: {
+      note: 'This page answers one platform-wide question: has the v1 traffic read source been frozen? It is tenant-independent, so it is open to every role.',
+      headerNote: 'The server also carries the same fact in a response header, but the mobile request layer only reads the body, so this page judges from the body alone.',
+      empty: 'Not read yet.',
+    },
+    state: {
+      title: 'Current state',
+      live: 'still writing',
+      // ★ 门会拦「值 === 键名」——这已经是同一类陷阱**第三次**（none/none 两次、frozen/frozen 一次）。
+      frozen: 'frozen (gate closed)',
+      unknown: 'cannot confirm',
+      'unknown-shape': 'malformed',
+      note: {
+        live: 'The write gate is explicitly on; this read source has not been frozen.',
+        frozen: 'The write gate is explicitly closed: the endpoint still returns 200 with non-empty results, but the content stops at the moment writing stopped.',
+        unknown: 'The config key controlling this read source has no explicit value and what we read came from the default fallback — we can neither say it stopped nor that it is still writing.',
+        'unknown-shape': 'The response is neither "not frozen" nor one of the two notice shapes.',
+      },
+    },
+    check: {
+      flagBad: 'In the notice object, frozen and unknown are not exactly one true — the server never produces that shape.',
+      affectsBad: 'affects contains a value the server does not list.',
+      affectsCountBad: 'affects does not have the fixed three entries.',
+      sourceBad: 'source is not that table name (expected _request_logs, leading underscore included; it is not the config source).',
+      gateKeyBad: 'gate_key does not match the controlling key on the server — operators need to know what to change.',
+      shapeBad: 'A notice object exists but matches neither the frozen nor the cannot-confirm shape.',
+      envelope: 'The response body shape for this state ({state}) has been checked.',
+    },
+    field: {
+      source: 'Read source',
+      gateKey: 'Gate key',
+      affects: 'Affected tiers',
     },
   },
 } as const
