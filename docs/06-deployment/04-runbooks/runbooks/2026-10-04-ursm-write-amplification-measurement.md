@@ -16313,3 +16313,118 @@ routing_analytics_7d_ukey (time_bucket, effective_task_type, effective_model,
    建议与 §八 一起决策是否把 `mvRefreshStatementTimeout` 重定值。
 3. §四 的 48 倍离散度只做了**归因到「环境竞争」**，未进一步分离
    CPU 抢占 / IO / autovacuum 三者各自占比。
+
+---
+
+### §10.110.22 全物化视图族都在「只删插、从不 UPDATE」；同时**作废一个不可信的 WAL 仪器**
+
+本节由 §10.110.21 的 WAL 两点差分引出。差分本身是干净的，但顺着它去查
+「每轮刷新花多少 WAL」时，**量具先垮了** —— 留档，因为这正是它能救回一次误报的地方。
+
+---
+
+#### 一、WAL 两点差分（干净，第三次精确对上 churn 量）
+
+跨 **12 分 01 秒**（14:04:48.85 → 14:16:49.42，窗内正好一轮刷新）：
+
+| 指标 | T0 | T1 | Δ |
+|---|---|---|---|
+| `routing_analytics_7d.n_tup_ins` | 1,571,523 | 1,573,931 | **+2,408** |
+| `routing_analytics_7d.n_tup_del` | 1,571,414 | 1,573,830 | **+2,416** |
+| `routing_analytics_7d.n_tup_upd` | 0 | 0 | **0** |
+| `pg_stat_wal.wal_bytes` | 54,128,452,877 | 54,177,811,399 | +49,358,522（47.1 MB） |
+| `pg_stat_wal.wal_records` | 212,708,402 | 212,990,253 | +281,851 |
+| 全库 `wal_bytes` 累计 | — | — | 50.57 GB（`stats_reset` = 2026-10-10 16:12） |
+
+⇒ **Δ = +2,408 / +2,416，与前两轮（+2,412/+2,416、+2,408/+2,415）完全同量**。
+　 三次独立取点全部落在 2,408~2,416，而唯一键 NULL 行是 **2,405** ⇒ 机制第三次闭合。
+
+#### 二、🔴 **作废 `pg_stat_statements.wal_bytes` 作为「每轮刷新 WAL 成本」的仪器**
+
+`pg_stat_statements` 对七条 `REFRESH MATERIALIZED VIEW CONCURRENTLY` 的读数
+（`stats_reset` 后约 94 小时）：
+
+| 语句 | calls | total_exec_s | wal_total | **wal_bytes / calls** |
+|---|---|---|---|---|
+| `session_client_task_matrix` | 129 | 3,064 | 4,081 MB | **32 MB** |
+| `session_task_stats` | 117 | 5,164 | 3,620 MB | **31 MB** |
+| `routing_analytics_7d` | 622 | 17,572 | 1,063 MB | **1,750 B** |
+| `tuning_signals_5m` | 2,300 | 1,090 | 104 MB | 46 B |
+| `tuning_signals_daily` | 2,300 | 277 | 84 MB | 38 B |
+| `session_client_stats` | 117 | 6,653 | 81 MB | **706 kB** |
+| `routing_audit_summary_7d` | 616 | 890 | 20 MB | 33 kB |
+
+**第一眼**：`session` 两族每次 32/31 MB、四天合计 7.7 GB ≈ **全库 WAL 的 15%**，
+而 `routing_analytics_7d` 每次只有 1,750 字节 ⇒ 优先级整个翻转。
+
+**这个读数是错的，两个理由**：
+
+1. **算术上不可能**：`routing_analytics_7d` 每轮实测 **2,408 插 + 2,416 删 = 4,824 次行操作**，
+   再加 4 个索引的维护，**总量 1,750 字节 ⇒ 0.36 字节/次行操作**。
+   ⇒ **`wal_bytes` 对这类语句是严重少计的**，方向是**低估**。
+2. **样本太少、方差未知**：session 两族 `calls` 只有 117~129，
+   `wal_bytes/calls` 是**几十个样本上的均值**，**一次异常贵的调用**就能把均值拉成 32 MB。
+   而同一批里 `session_client_stats`（117 次调用、**exec 时间最长的 56.8 s/次**）
+   却只有 706 kB/次 —— **exec 时间与 WAL 呈反向**，这本身就不自洽。
+
+⇒ ★★★ **所以「session 族占 15% WAL」这个结论本节不写。**
+　 它只是一个**待证的候选热点**，而 §四 给出了**可用的替代仪器**。
+
+⇒ ★ **量具纪律新增**：`pg_stat_statements.wal_bytes` 对
+　 `REFRESH MATERIALIZED VIEW CONCURRENTLY` **不可直接用作单轮成本**——
+　 与 `pg_stat_user_tables` 的行 churn 量**差三个数量级**。
+　 自检动作：**任何「每次调用产生 N 字节」的读数，先用
+　 「N ÷ 该调用的实测行操作数」验一下量纲**；算出小于 1 字节/行操作 ⇒ 量具坏了。
+
+#### 三、★★ 真正的发现（两个独立仪器交叉验证）：**四张 MV 全部只删插、从不 UPDATE**
+
+`pg_stat_user_tables`（行 churn 仪器）与 `pg_stat_statements.calls`（调用次数仪器）
+互不依赖，**两者算出的每轮 churn 百分比一致**：
+
+| MV | 唯一键 | n_tup_ins | n_live_tup | calls | **每轮删插 / 行数** | n_tup_upd |
+|---|---|---|---|---|---|---|
+| `routing_analytics_7d` | 7 列（含可空的 `effective_provider_id`） | 1,573,931 | 4,422 | 622 | 2,530 / 4,422 = **57%** | **0** |
+| `session_client_task_matrix` | (tenant_id, client_id, task_id) | 198,054 | 2,380 | 129 | 1,535 / 2,380 = **64%** | **0** |
+| `session_task_stats` | (tenant_id, task_id) | 85,176 | 875 | 117 | 728 / 875 = **83%** | **0** |
+| `session_client_stats` | (tenant_id, client_id) | 59,820 | 879 | 117 | 511 / 879 = **58%** | **0** |
+
+⇒ ★★★ **四张 MV 的 `n_tup_upd` 全部为 0，而每轮重写掉 57%~83% 的内容。**
+　 「从不 UPDATE、每轮大规模删插」**不是 `routing_analytics_7d` 一张的毛病，是全族的**。
+
+⇒ ★ **区分两类成因，别混为一谈**：
+   - `routing_analytics_7d` 的成因**已定位**：唯一键含可空列（`effective_provider_id`，2,405 行），
+     `NULL = NULL` 配不上 ⇒ 每轮必删插。**键本身是稳定的**（除老化掉边界桶），
+     所以「本该配对上的行却在动」是**纯浪费**。
+   - `session_client_task_matrix` / `session_task_stats` 的键**未见可空列**，
+     却同样 64% / 83% 每轮重写 ⇒ **成因尚未查清**，不能套用前者的结论。
+     （它们的键可能因源数据本身在变而确实需要改写，也可能是同样的 NULL 配对问题——
+     **查法相同：逐列数 `pg_stats` 里的 NULL 行数**，本轮未做。）
+
+⇒ ⇒ **因此 §10.110.21 §八 的排序结论不变、且范围要扩**：
+　 真正该先做的是**停掉/降频**这一族（输入已冻结 ⇒ 输出几乎不变），
+　 而不是先给 `routing_analytics_7d` 单独写 863。
+　 **扩到 session 三族之前，先按上表把每族的「键是否可空」查清楚**，
+　 否则会把两类成因当成一类去修。
+
+#### 四、顺带排除的两个假警报（都是「量具/归属没查就下结论」）
+
+1. **「14:10 那一轮刷新丢了」——错，245 的日志自己写着**：
+   ```
+   2026-10-14T14:10:00  materialized view refresh skipped, redis token held by another instance
+   ```
+   ⇒ leader 当时在 154。**单看一台的日志不足以判断刷新有没有发生。**
+   （§10.110.21 §六 的 7h20m 空窗结论**同时核过 245 与 154**，故不受影响。）
+2. **「有 advisory 排他锁卡住刷新」——错，锁属于别的作业**：
+   持锁 pid `1124753` 在跑 `SELECT promote_session_bodies_hot_to_partition(...)`
+   （来自 172.16.2.241 的分区提升作业），**两把锁的 objid 与刷新锁无关**。
+   ⇒ 排他锁本身也查过了：`mvRefreshDistLockTTL = 6min` 且 **auto-renews at ttl/3**，
+   advisory 侧是 `pg_try_advisory_lock`（**非阻塞，失败即跳过**）
+   ⇒ **token 过期导致双实例并发刷新这个风险不成立**，不需要为它做任何改动。
+
+#### 五、本节遗留
+
+1. `session_client_task_matrix` / `session_task_stats` 每轮 64%/83% 重写的**成因未查**
+   （判法：逐列数唯一键的 NULL 行数，与 §10.110.21 §三 同法）。
+2. 若要给出可信的**单轮 WAL 成本**，需要 `EXPLAIN (ANALYZE, WAL)` 手工刷一次
+   —— **那是写操作，需授权**，且会真的重建 MV。
+3. §10.110.21 §九 的因子实验仍待串行重跑。
