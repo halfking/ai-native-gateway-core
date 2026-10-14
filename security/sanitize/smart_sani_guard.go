@@ -1433,10 +1433,21 @@ func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Conte
 	if partial {
 		candidate := combined[start:]
 		if len(candidate) > maxPlaceholderTailBytes {
-			// Over-length tail: the marker never completed, so no type was ever
-			// parsed out of it. Bare marker — naming a type here would be a
-			// guess about bytes nobody resolved.
-			safe = combined[:start] + redactedMarker
+			if reservedMarkerStarted(candidate) {
+				// Over-length tail: the marker never completed, so no type was ever
+				// parsed out of it. Bare marker — naming a type here would be a
+				// guess about bytes nobody resolved.
+				safe = combined[:start] + redactedMarker
+			} else {
+				// r1030 release valve: the held prefix never started the marker
+				// word — it is a `{"`-style quote-wrap candidate that kept
+				// growing as ordinary JSON (a long string value without a
+				// closing brace, common in Write-tool arguments). Redacting it
+				// would corrupt innocent arguments; release verbatim instead.
+				// A real marker still fails closed the moment its word starts
+				// (branch above) or once its span completes (restore pass).
+				safe = combined
+			}
 		} else {
 			safe = combined[:start]
 			tail = candidate

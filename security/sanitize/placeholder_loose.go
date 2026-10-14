@@ -233,6 +233,38 @@ func normalizePlaceholder(text string) string {
 	return b.String()
 }
 
+// trimSpanQuoteWrap strips a wrapping layer of quote characters — `"`, `'` and
+// the JSON-escaped `\"` — from the inside of a brace-delimited marker span.
+//
+// 2026-10-14 (r1030): MiniMax-M3 was observed emitting tool-call arguments
+// whose password field carried the marker re-quoted as
+// `"password": "{\"SENSITIVE:secret:1\"}"`. The model tried to echo the
+// placeholder but wrapped it in an extra quote layer inside the JSON string;
+// the grammar rejected the quote bytes, the restore pass missed, and the
+// output-compliance layer then correctly refused the whole stream for an
+// unmapped credential-looking value. Tolerating exactly one wrapping quote
+// layer lets the real value reach the client; the grammar still gates
+// everything after the trim, so ordinary JSON such as `{"a":1}` cannot parse.
+//
+// The trim is BOTH-EDGES-ONLY: a quote at one end alone (r1022's
+// `{sensitive xyz stuff"}` — model prose about a marker, ending in a quote)
+// must keep failing the grammar. normalizePlaceholder already drops spaces,
+// so `{sensitive xyz stuff}` parses as a garbage-type marker and is masked
+// whole-span; the lone trailing quote is what keeps its quoted sibling OUT of
+// that path, and trimming it would swallow the span's non-marker tail.
+const spanQuoteWrapCutset = "\\\"'"
+
+func trimSpanQuoteWrap(inner string) string {
+	if len(inner) < 2 {
+		return inner
+	}
+	isQ := func(b byte) bool { return b == '"' || b == '\'' || b == '\\' }
+	if isQ(inner[0]) && isQ(inner[len(inner)-1]) {
+		return strings.Trim(inner, spanQuoteWrapCutset)
+	}
+	return inner
+}
+
 // parseLoosePlaceholder validates one candidate span and returns the type and
 // index it denotes. It is strict about shape and never repairs a near miss.
 //
@@ -243,6 +275,7 @@ func normalizePlaceholder(text string) string {
 func parseLoosePlaceholder(candidate string) (SensitiveType, int, bool) {
 	normalized := strings.TrimPrefix(normalizePlaceholder(candidate), "{")
 	normalized = strings.TrimSuffix(normalized, "}")
+	normalized = trimSpanQuoteWrap(normalized)
 	match := loosePlaceholderGrammar.FindStringSubmatch(normalized)
 	if match == nil {
 		return "", 0, false
@@ -275,6 +308,7 @@ func placeholderCandidate(text string) bool {
 // merely happens to contain the word inside braces.
 func looksLikeMarkerSpan(candidate string) bool {
 	normalized := strings.TrimSuffix(strings.TrimPrefix(normalizePlaceholder(candidate), "{"), "}")
+	normalized = trimSpanQuoteWrap(normalized)
 	if !strings.HasPrefix(normalized, placeholderMarkerWord) {
 		return false
 	}
@@ -435,7 +469,19 @@ func validLoosePlaceholderPrefix(candidate string) bool {
 	if strings.ContainsRune(normalized, '}') {
 		return false
 	}
-	rest := normalized[1:]
+	// Arriving prefixes trim quotes from EITHER edge independently: the tail
+	// `{\"SENSITIVE:secret:` has a leading quote layer with no closing quote
+	// yet, and `{\"SENSITIVE:secret:1\"` carries its closing quote before the
+	// brace arrives. Both must keep holding. (Completion always re-parses the
+	// full span, where the both-edges trim above governs.)
+	rest := strings.TrimRight(strings.TrimLeft(normalized[1:], spanQuoteWrapCutset), spanQuoteWrapCutset)
+	if rest == "" {
+		// `{"` / `{\"` at the very end: a quote-wrapped marker (r1030
+		// re-quoted echo) may still be arriving. Hold the bytes; the
+		// over-length release valve in restoreStreamStringField keeps a
+		// long ordinary JSON string from being redacted by this hold.
+		return true
+	}
 	if len(rest) >= len(placeholderMarkerWord) {
 		if rest[:len(placeholderMarkerWord)] != placeholderMarkerWord {
 			return false
@@ -476,7 +522,9 @@ func allPlaceholderDigits(text string) bool {
 // the bytes verbatim and redacting them: once the marker word has begun, a
 // released prefix would put an internal token on the wire.
 func reservedMarkerStarted(held string) bool {
-	return strings.HasPrefix(normalizePlaceholder(held), "{"+placeholderMarkerWord)
+	normalized := normalizePlaceholder(held)
+	return strings.HasPrefix(normalized, "{"+placeholderMarkerWord) ||
+		strings.HasPrefix(strings.TrimLeft(strings.TrimPrefix(normalized, "{"), spanQuoteWrapCutset), placeholderMarkerWord)
 }
 
 // reserveMutatedPlaceholders lifts the high-water mark past any re-spelled
