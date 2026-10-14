@@ -16020,3 +16020,67 @@ MV 本身：普通 **heap**（非列存，实测 `access_method=heap`）、4 个
   也是 S4 回滚路径需要的；只是**它现在不再是活跃成本项**。
 - §10.110.19 里「每 10 分钟重写 54%」若是误读，则「降频到 30min」的收益估算
   也要跟着作废。**在 P0/P1/P2 结论出来前，不要基于它做任何决策。**
+
+#### 四、🔴 根因找到了：**MV 唯一键里有可空列 ⇒ 每轮刷新把 54% 的行删+插**
+
+**观测复现**（三次独立取点，跨越两个刷新边界）：
+
+| 时刻 | n_tup_ins | n_tup_del |
+|---|---|---|
+| 13:33:24 | 1,564,298 | 1,564,175 |
+| 13:40:37 | 1,566,710 | 1,566,591 （Δ **+2,412 / +2,416**） |
+| 13:56:43 | 1,569,118 | 1,569,006 （Δ **+2,408 / +2,415**） |
+
+**对上号的数**：MV 中 `effective_provider_id IS NULL` 的行 = **2,406 行 / 54.27%**，
+而每轮实测删插 = **2,408~2,416**。**差 0.5% 以内。**
+
+**机制**：PostgreSQL 的 `REFRESH MATERIALIZED VIEW CONCURRENTLY` 用
+`FULL JOIN … USING(键列)` 把新算出的临时表与旧 MV 对齐。
+**`NULL = NULL` 在该连接里不是匹配** ⇒ **任何键列含 NULL 的行**
+每轮都被判成「旧行消失（DELETE）+ 新行出现（INSERT）」——
+**哪怕数据逐字相同**。
+⇒ 这同时解释了为什么 **`n_tup_upd` 恒为 0**：PG 根本走不到 UPDATE 那一步。
+
+唯一键（7 列）：
+```
+routing_analytics_7d_ukey (time_bucket, effective_task_type, effective_model,
+                           effective_work_type, effective_provider_id,
+                           is_auto_request, tenant_id)
+                              ^^^^^^^^^^^^^^^^^^^^^^^ 唯一可空的一列
+```
+（实测：`tenant_id` / `effective_model` / `effective_task_type` 的 NULL 行数**都是 0**，
+唯一可空的就是 `effective_provider_id`。）
+
+**⇒ 这就是「查询 1.4 s、刷新 30 s」的答案**：时间不在计算、不在等锁、不在落盘，
+而在**每 10 分钟无条件重写 2,406 行**（删 2,406 + 插 2,406），每次还要维护
+4 个索引（含那条 7 列唯一索引）。
+
+#### 五、修复设计（已论证行为等价，**待授权实施**）
+
+把派生键从可空改成**全函数**（不可空）：
+```sql
+COALESCE(provider_id, (SELECT cr.provider_id FROM credentials cr WHERE cr.id = credential_id LIMIT 1), -1)
+  AS effective_provider_id
+```
+`-1` 作哨兵（provider id 来自序列，恒为正 ⇒ 不会撞）。
+
+**行为等价性已核**：唯一消费者 `admin/analytics_materialized.go` 的
+`buildFlowL23QueryMaterialized()` 是
+```sql
+LEFT JOIN providers p ON p.id = mv.effective_provider_id
+… COALESCE(p.display_name, 'unknown') AS dst
+```
+- 现状 `NULL` ⇒ LEFT JOIN 无匹配 ⇒ `p.display_name` 为 NULL ⇒ `'unknown'`
+- 改后 `-1` ⇒ LEFT JOIN 无匹配 ⇒ `p.display_name` 仍为 NULL ⇒ `'unknown'`
+⇒ **走同一条路，输出逐字相同。**
+
+**收益**：键列全非空 ⇒ PG 能正常配对 ⇒ 那 2,406 行从「每轮删+插」变为
+「无变化不动 / 有变化走 UPDATE」。刷新成本应从 ~30 s 掉到个位数秒级
+（4.62% 这一项的量级），且**不改变任何语义**。
+
+⚠ **实施面**：该表达式在多处有副本（`db/db.go`、`sql/schema/01-schema.sql`、
+`deploy/sql/schemas/baseline/01-schema.sql`、`installer/.../embeddata/01-schema.sql`、
+以及 649/837 两份历史迁移的 embeddata 副本）⇒ 必须五点同步 + 重建 MV + 契约门，
+**且必须带「改动后仍与基线路径逐字等价」的判据**。
+⇒ 另需拍板：**哨兵值取 -1 还是 0**（-1 更安全，但若将来存在 id=-1 的 provider
+  就会撞；我倾向前者）。
