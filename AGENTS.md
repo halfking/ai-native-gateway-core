@@ -1971,3 +1971,40 @@ streaming 全包 150s 绿。154 终验：拦截请求三件套全绿（终态带
 > 登录=`/api/auth/token`、建 key=`/api/keys`+显式 key_alias、245/154 共享
 > SECRET_KEY 一个 key 两台通用。
 > 详见 `docs/audit/2026-10-14-r1030b-多模型tool脱敏还原E2E战役.md`。
+
+---
+
+# 追加：2026-10-14 晚间 24h 审计轮 —— 标题 `$2` 错位 + liveness 停写误报
+
+> 本 checkout `llm-gateway-go-4`。合并 `origin/main`（落后 23 + 本地 docs 领先 17）
+> 后批判运行日志。明细：
+> `docs/audit/2026-10-14-24h审计-标题task错位与liveness停写误报.md`。
+
+## 本轮落地
+
+1. **D1 `resolveSessionTitleTaskID`**：`SessionFamilyTurnsForSessionSQL` 只绑 `$1`，
+   调用方传了 `tenantID` 却未挂 `t.tenant_id = $2` → pgx `unused argument: 1` →
+   auto_summary 摘要已落库、标题 scope 同步永久失败（154 同会话连续 ERROR）。
+   修=补 `$2` 谓词；判据源码 count==1 + 负控制。
+2. **D2 `v1_write_liveness`**：S4 停写后行存在性 dead 是预期态，信号层仍每 5m
+   ERROR（consecutive_dead_ticks>90）+ 端点 503。分类器三值契约不动；worker
+   在 `!RequestLogsWriteEnabled()` 时映射为快照 `retired`（首 tick INFO、HTTP
+   200）。门 4b 配对：写开着同形状仍 ERROR。
+
+## 分支 / 编译
+
+- 窗口（24h~1h）未合并子分支 **0**；远端 prune 清掉已删引用。
+- `CGO_ENABLED=0 go build/vet` + security/middleware/bg/settings + installer +
+  通道门全绿；本轮两包判据绿。
+
+## 下一轮提示词（2026-10-14 晚间轮）
+
+1. ★ **部署本轮 D1/D2**（154/245/211）：修标题同步 + 停 liveness 误报噪声。
+   154 现 `2631-ec9d2f3f`、245 `2632-80315e0f`——均尚本轮修复。
+2. **URSM persist collect/flush timeout**（154 持续）：共享 Redis db2 SCAN 预算，
+   迁独立 `URSM_V2_REDIS_DB`（代码已支持，需维护者窗口 + 重启）。
+3. **252 load≈22 + analyze_llm_gateway_table_stats mean≈170s**：产品作业，不改
+   调度；data-lifecycle `pg_total_relation_size` 族 mean≈616s 随 v1 退役。
+4. nvidia gateway-mode probe 502/503（direct OK）与 mac mini backup 死腿：owner
+   拍板。
+5. 窗口外 3 条九月远端分支留置；`-2` worktree 清分支仍待授权。

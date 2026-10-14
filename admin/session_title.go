@@ -318,10 +318,15 @@ func (h *Handler) resolveSessionTitleTaskID(ctx context.Context, sessionID, tena
 		return "", fmt.Errorf("database not configured")
 	}
 	var taskID string
+	// SessionFamilyTurnsForSessionSQL 契约：会话谓词已内推为 $1；
+	// 租户过滤必须由调用方显式挂 $2（见 db/request_logs_view_schema.go）。
+	// 此前传了 tenantID 却未挂 $2 → pgx「unused argument: 1」，摘要已落库
+	// 但标题 scope 同步永远失败（154 同会话连续 ERROR 实测）。
 	err := h.db.QueryRow(ctx, `
 		SELECT COALESCE(NULLIF(TRIM(t.gw_task_id), ''), 'auto')
 		FROM `+dbpkg.SessionFamilyTurnsForSessionSQL()+` t
 		WHERE 1 = 1
+		  AND t.tenant_id = $2
 		  AND t.success = TRUE
 		  AND COALESCE(t.is_auto_request, FALSE) = FALSE
 		  AND COALESCE(t.origin_actor, '') NOT LIKE 'goal-%'

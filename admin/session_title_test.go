@@ -1,6 +1,9 @@
 package admin
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -73,4 +76,66 @@ func TestSessionTitleMapKey(t *testing.T) {
 	if sessionTitleMapKey("default", "") != "default\x00" {
 		t.Fatalf("empty scoped session should still key")
 	}
+}
+
+// TestResolveSessionTitleTaskIDBindsTenantAsDollar2 钉住 2026-10-14 生产
+// `unused argument: 1`：SessionFamilyTurnsForSessionSQL 只消费 $1，调用方
+// 必须显式挂 `t.tenant_id = $2` 才能传 tenantID，否则标题 scope 同步永久失败。
+// 前提在场：源码里 resolve 函数体同时含助手调用与 $2 谓词（count==1）。
+func TestResolveSessionTitleTaskIDBindsTenantAsDollar2(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	src, err := os.ReadFile(filepath.Join(filepath.Dir(thisFile), "session_title.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := extractGoFuncBody(string(src), "resolveSessionTitleTaskID")
+	if body == "" {
+		t.Fatal("未能抽出 resolveSessionTitleTaskID 函数体")
+	}
+	if !strings.Contains(body, "SessionFamilyTurnsForSessionSQL()") {
+		t.Fatal("resolve 必须走 SessionFamilyTurnsForSessionSQL（读源契约）")
+	}
+	if n := strings.Count(body, "t.tenant_id = $2"); n != 1 {
+		t.Fatalf("tenant 谓词 count=%d，期望 1——漏挂 $2 会触发 pgx unused argument: 1", n)
+	}
+	// 负控制：去掉 $2 谓词后 count 必须变 0，证明判据看见的是真字符串。
+	mutated := strings.Replace(body, "t.tenant_id = $2", "/* removed */", 1)
+	if n := strings.Count(mutated, "t.tenant_id = $2"); n != 0 {
+		t.Fatal("变异负控制失败：替换后仍能匹配到 $2")
+	}
+	// 参数表仍传 sessionID, tenantID 两个（与 $1/$2 对齐）。
+	if !strings.Contains(body, "sessionID, tenantID") {
+		t.Fatal("QueryRow 必须同时绑定 sessionID 与 tenantID")
+	}
+}
+
+// extractGoFuncBody 是本文件私有的轻量抽取：从 `func (recv) name(` 起
+// 数花括号到闭合。与 goFuncBodyStrict 同形，避免再引入跨包 helper 重名。
+func extractGoFuncBody(src, name string) string {
+	needle := "func (h *Handler) " + name + "("
+	i := strings.Index(src, needle)
+	if i < 0 {
+		return ""
+	}
+	rest := src[i:]
+	brace := strings.IndexByte(rest, '{')
+	if brace < 0 {
+		return ""
+	}
+	depth := 0
+	for j := brace; j < len(rest); j++ {
+		switch rest[j] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return rest[brace : j+1]
+			}
+		}
+	}
+	return ""
 }

@@ -18,7 +18,37 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
+
+// v1StopWriteFakeKV mirrors bg/partition_manager_v1_retirement_test.go：
+// platform scope 对停写键返回固定值，供本包 worker 热读。
+type v1StopWriteFakeKV struct{ enabled string }
+
+func (f *v1StopWriteFakeKV) Get(scope settings.Scope, key string) ([]byte, error) {
+	if scope == settings.ScopePlatform && key == settings.KeyRequestLogsWriteEnabled {
+		return []byte(f.enabled), nil
+	}
+	return nil, nil
+}
+func (f *v1StopWriteFakeKV) Set(settings.Scope, string, any) ([]byte, error) { return nil, nil }
+func (f *v1StopWriteFakeKV) GetTenant(string, string) ([]byte, error)        { return nil, nil }
+func (f *v1StopWriteFakeKV) SetTenant(string, string, any) ([]byte, error)   { return nil, nil }
+
+func withV1WriteEnabled(t *testing.T, enabled string) {
+	t.Helper()
+	prev := settings.Global
+	t.Cleanup(func() { settings.Global = prev })
+	registry := settings.NewRegistry()
+	registry.RegisterBackend(settings.ScopePlatform, &v1StopWriteFakeKV{enabled: enabled})
+	for _, spec := range settings.StorageSpecs() {
+		if err := registry.RegisterSpec(spec); err != nil {
+			t.Fatalf("register spec %s: %v", spec.Key, err)
+		}
+	}
+	settings.Global = registry
+}
 
 // newTestWorker 返回接了假 probe 的 worker 和捕获日志的 buffer。
 func newTestWorker(t *testing.T, verdicts func(int) (v1WriteLivenessInput, string, error)) (*V1WriteLivenessWorker, *bytes.Buffer) {
@@ -46,6 +76,7 @@ func countLevel(buf *bytes.Buffer, level string) int {
 // 门 1：dead 期间**每 tick** 一条 ERROR。这是对 §9.238「5 天零信号」的
 // 直接否定——只响一次的信号在长停机里和没响过一样。
 func TestV1WriteLivenessWorker_DeadSignalsEveryTick(t *testing.T) {
+	withV1WriteEnabled(t, "true")
 	w, buf := newTestWorker(t, func(int) (v1WriteLivenessInput, string, error) {
 		return v1WriteLivenessInput{TurnsHotRows: 5}, livenessDead, nil
 	})
@@ -66,6 +97,7 @@ func TestV1WriteLivenessWorker_DeadSignalsEveryTick(t *testing.T) {
 
 // 门 2：恢复只在离开 dead 的那一 tick 响一次 WARN；steady alive 静默。
 func TestV1WriteLivenessWorker_RecoverySignalsOnceThenSilent(t *testing.T) {
+	withV1WriteEnabled(t, "true")
 	w, buf := newTestWorker(t, func(tick int) (v1WriteLivenessInput, string, error) {
 		if tick <= 2 {
 			return v1WriteLivenessInput{TurnsHotRows: 5}, livenessDead, nil
@@ -126,9 +158,50 @@ func TestV1WriteLivenessWorker_MeasurementFailureIsUnknownAndWarned(t *testing.T
 	}
 }
 
+// 门 4b：S4 故意停写下 dead 降为 retired——零 ERROR、首 tick 一条 INFO、
+// 端点 200（不能 503，否则 curl -f 把 intentional stand-down 当故障）。
+// 写开着时同形状仍 ERROR（前提在场配对，防「门恒 retired」假绿）。
+func TestV1WriteLivenessWorker_RetiredWhenWritesStopped(t *testing.T) {
+	withV1WriteEnabled(t, "false")
+	w, buf := newTestWorker(t, func(int) (v1WriteLivenessInput, string, error) {
+		return v1WriteLivenessInput{TurnsHotRows: 736}, livenessDead, nil
+	})
+	w.tick(context.Background())
+	w.tick(context.Background())
+	w.tick(context.Background())
+	if got := countLevel(buf, "ERROR"); got != 0 {
+		t.Fatalf("停写下 dead 不得 ERROR（实为 retired），得到 %d。日志：\n%s", got, buf.String())
+	}
+	if got := countLevel(buf, "INFO"); got != 1 {
+		t.Fatalf("retired 首 tick 应恰一条 INFO，得到 %d。日志：\n%s", got, buf.String())
+	}
+	if !strings.Contains(buf.String(), "retired") {
+		t.Fatalf("INFO 应含 retired，日志：\n%s", buf.String())
+	}
+	if snap := w.Snapshot(); snap.Verdict != livenessRetired || snap.ConsecutiveDead != 0 {
+		t.Fatalf("快照应 retired 且不计 consecutive_dead，得到 %+v", snap)
+	}
+	rec := httptest.NewRecorder()
+	NewV1WriteLivenessHandler(w).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("retired 端点应 200，得到 %d", rec.Code)
+	}
+
+	// 前提在场：写开着 → 同形状仍走 DEAD ERROR 路径。
+	withV1WriteEnabled(t, "true")
+	w2, buf2 := newTestWorker(t, func(int) (v1WriteLivenessInput, string, error) {
+		return v1WriteLivenessInput{TurnsHotRows: 736}, livenessDead, nil
+	})
+	w2.tick(context.Background())
+	if got := countLevel(buf2, "ERROR"); got != 1 {
+		t.Fatalf("写开着时 dead 必须 ERROR，得到 %d。日志：\n%s", got, buf2.String())
+	}
+}
+
 // 门 5：端点状态码——dead→503（curl -f 族零解析告警），alive/quiet/unknown→200，
 // 非 GET→405。body 恒为 JSON 快照。
 func TestV1WriteLivenessHandler_StatusByVerdict(t *testing.T) {
+	withV1WriteEnabled(t, "true") // 钉死写开着，避免与门 4b 交叉污染
 	cases := []struct {
 		verdict string
 		want    int
