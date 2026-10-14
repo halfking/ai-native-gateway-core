@@ -16428,3 +16428,64 @@ routing_analytics_7d_ukey (time_bucket, effective_task_type, effective_model,
 2. 若要给出可信的**单轮 WAL 成本**，需要 `EXPLAIN (ANALYZE, WAL)` 手工刷一次
    —— **那是写操作，需授权**，且会真的重建 MV。
 3. §10.110.21 §九 的因子实验仍待串行重跑。
+
+---
+
+### §10.110.23 结案：四张 MV 的 churn **只有一张是浪费**，其余三张是正经工作量
+
+§10.110.22 留了个问题：session 三族键**未见可空列**却仍每轮重写 58~83%，
+成因未查。本节用**与破解 `routing_analytics_7d` 完全相同的判据**查了，**结论是反的**。
+
+#### 一、可空键假设在 session 三族上被**证伪**
+
+逐键列 NULL 计数（2026-10-14 14:2x）：
+
+| MV | 唯一键 | 总行数 | 各键列 NULL | **any_null** | 每轮 churn | churn 占比 |
+|---|---|---|---|---|---|---|
+| `session_client_task_matrix` | (tenant_id, client_id, task_id) | 2,380 | 0 / 0 / 0 | **0** | 1,535 | 64% |
+| `session_task_stats` | (tenant_id, task_id) | 875 | 0 / 0 | **0** | 728 | 83% |
+| `session_client_stats` | (tenant_id, client_id) | 879 | 0 / 0 | **0** | 511 | 58% |
+
+⇒ 键列**全非空** ⇒ `CONCURRENTLY` 的配对**能成功** ⇒
+　 **「可空键导致白删插」这个成因在它们身上不成立。**
+　 ⇒ **不能把 `routing_analytics_7d` 的修复方案套到它们身上。**
+
+#### 二、真正的成因：源数据本来就在动，而且键本身会**整体换掉**
+
+源表 `session_summaries` 实测：
+
+| 项 | 读数 |
+|---|---|
+| 总行数 | 712,777 |
+| `max(created_at)` | 2026-10-14 14:20:16 |
+| **最新行的年龄** | **21.7 秒** |
+| 过去一小时新增 | **215 行** |
+
+而三张 MV 的定义里有两处让输出**每轮必然变**的结构：
+
+```sql
+-- session_client_stats / session_task_stats / session_client_task_matrix 的定义头部
+COALESCE(client_models[1], 'unknown') AS client_id     ← 数组下标：会话追加模型后键会整体换掉
+count(*) FILTER (WHERE (last_request_at >= (now() - …)) ← now() 驱动的窗口：每轮都在滑动
+```
+
+⇒ ★★ 一个会话在 5 分钟粒度里被追加了新模型 ⇒ 它的 `client_id` 从模型 A 变成模型 B
+　 ⇒ **旧键真的消失、新键真的出现** ⇒ 这是**合法的** DELETE + INSERT，不是浪费。
+　 再叠上 `now()` 窗口每轮滑动 ⇒ 每轮重写 58~83% **有相当一部分是真实变化**。
+
+#### 三、⇒ 结论收窄到**唯一一个**对象
+
+| MV | 源是否冻结 | 内容是否可能不变 | 每轮 churn | 判定 |
+|---|---|---|---|---|
+| `routing_analytics_7d` | **已冻结 17.8 h** | **只能因老化而缩小** | 57% | ★ **纯浪费**（键可空导致配不上，§10.110.21 §三） |
+| `session_client_task_matrix` | 在长（+215 行/时） | 键会随数组追加换掉 | 64% | 正经工作量 |
+| `session_task_stats` | 在长 | 同上 | 83% | 正经工作量 |
+| `session_client_stats` | 在长 | 同上 | 58% | 正经工作量 |
+
+⇒ ★★★ **因此优化范围就是 `routing_analytics_7d` 一张，不要扩大。**
+　 - 它是**唯一**「输入冻结 + 键可空 ⇒ 每轮白删插」的组合；
+   - 而且它的输入会**在 2026-10-20 20:18:11 自行滑出 7 天窗口**，
+     届时刷新扫到 0 行、churn 归零 ⇒ **只剩 6.2 天**；
+   - ⇒ **先停/降频（一处配置）优于先写迁移 863（五点同步 + 重建 MV + 三机部署）**，
+     这个排序到本节为止没有被任何新证据推翻。
+   - ⇒ session 三族**不要动**：它们的高 churn 是数据在动的价格，不是缺陷。
