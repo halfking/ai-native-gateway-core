@@ -160,6 +160,13 @@ describe('navItemsFor', () => {
       //   （admin/handler.go:942-943 两条都是 h.superAdmin）⇒ 这一条**要** super_admin。
       //   ★ 与批 109 的 format-anomalies 同档 ⇒ 两条合起来把 superAdmin 档的席钉死。
       'model-integrity-drift',
+      // ★ 2026-10-14 第一百一十六批：模型智商
+      //   （admin/handler.go:1492-1495 四条全部 h.superAdmin）
+      //   ⇒ **要** super_admin。与批 113/114 那两席**相反**：
+      //   那两族走 AdminMiddleware（只认证不检 role）所以用 `'admin'`；
+      //   本族走 SuperAdminMiddleware（auth.go:376-409 逐字比 claims.Role）⇒ 真门。
+      //   ⚠️ 字母序：model-integrity-drift < model-iq < model-policies
+      'model-iq',
       'model-policies',
       'model-policy-audit',
       'overrides',

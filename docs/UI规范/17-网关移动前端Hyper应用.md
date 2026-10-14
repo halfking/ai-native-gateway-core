@@ -15944,3 +15944,231 @@ export function slidingWindowFallbackSourceStillHasEntries(r) {
 
 ⇒ 三条同注册处（`RegisterMonitorRoutes`）的端点，**处置已经两样** ——
 再次说明**权限必须逐端点读 handler，不能按注册处或前缀推**。
+
+## 11.152 模型智商接进 UI —— 权限档第四次登场，却是本仓**唯一「档位自带 role 检查」**的一档；顺带订正一处漂移 22 行的模块头（第一百一十六批）
+
+### 一、这批做了什么
+
+把 `modelIQ`（第 85 批建的 API 模块，**一直是孤儿**）接进移动端，孤儿 14 → **13**：
+
+| 项 | 值 |
+|---|---|
+| 视图 | `web-mobile/src/views/ModelIQView.vue` |
+| 判据 | `ModelIQView.spec.ts` **61 条**（API 层本批 142 → **150 条**） |
+| 路由 | `/model-iq`，`meta.requiresRole: 'super_admin'` |
+| 抽屉席 | `model-iq`，**`requiresRole: 'super_admin'`** ⇒ **进** superAdmin 白名单 |
+| i18n | 前缀 `miq` + `nav.modelIQ`（zh-CN / en-US 各 3463 键） |
+
+页面三段：**模型智商目录**（catalog）、**节点智商**（node-latest）、
+**单节点历史**（history，点节点行即可填参并加载）。
+
+### 二、★★★★★★ 权限档第四次登场，形态却与前三批都不同
+
+| 批次 | 族 | 注册处 | 中间件 | 检 role？ | 抽屉档 |
+|---|---|---|---|---|---|
+| 113 | `errors/trend` | `h.admin` | `AdminMiddleware` | **不检** | `'admin'`（本仓第一档该档席） |
+| 114 | `model-history` | `h.admin` | `AdminMiddleware` | **不检** | `'admin'` |
+| 115 | `sliding-window` | `h.admin` | `AdminMiddleware` | **不检** | `'super_admin'`（**过度限制**） |
+| **116** | **`model-iq`** | **`h.superAdmin`** | **`SuperAdminMiddleware`** | **逐字比对** | `'super_admin'`（**档位本身**） |
+
+⇒★ 本族是第四档里**唯一服务端真门自足**的一档。逐字读过
+`SuperAdminMiddleware`（`admin/auth.go:376-409`）：
+
+```go
+if claims.Role != "super_admin" {
+    writeError(w, http.StatusForbidden, "super_admin role required for this endpoint")
+    return
+}
+```
+
+⇒ 与批 113/114 走 `AdminMiddleware`（`auth.go:85-138`，**只认证不检 role**，
+`users.go:307-309` 注释自陈是显式设计）**形态相反** ——
+后两族才被迫推出 `'admin'` 这一档。注册处 `admin/handler.go:1492-1495`
+**四条全部**是 `h.superAdmin(...)`。
+
+⇒★★ **附带一条与 `AdminMiddleware` 的结构差别**：`SuperAdminMiddleware`
+**只有 JWT 分支、没有 admin key 分支** ⇒ 持 `admin_key` 的调用方连认证都过不了
+（落到末尾 `401 authentication required`）。判据 `①-1` 钉死了这一点。
+
+### 三、★★ 与批 109「superAdmin 档不需要视图内兜底」的关系：两边都对，但要分清层面
+
+批 109 的 `FormatAnomaliesView.vue` 写着「抽屉席设 `requiresRole` 即是完整处置，
+**不需要**任何段落级门控」，**本批逐字核过 `hyper-wiring.ts` 的 `beforeEach`**：
+
+```ts
+router.beforeEach((to) => {
+  if (to.meta.requiresAuth === false) return true
+  // …只查 auth.isAuthenticated…
+})
+```
+
+⇒ `meta.requiresRole` 确实**全仓无人消费**（`appNav.ts:517` 的 `navItemsFor` 读的是
+`DRAWER_NAV` 的字段，不是路由 meta）。于是两句话要分层说：
+
+| | 批 109 的说法 | 本批的处置 |
+|---|---|---|
+| **安全** | ✅ 对 —— 服务端中间件是真门，前端兜不兜都不改变「谁能看到数据」 | 抽屉席 + 路由 meta 已是完整处置 |
+| **体验** | ❌ 有坑 —— 深链照样打开，tenant_admin 会看见一个**必然每个请求都 403** 的壳 | 加一层兜底，**兜的是「不发请求」** |
+
+⇒ ★★★ **判权限时不要把这两档的兜底当成同一件事**：
+`'admin'` 档的视图内兜底是**唯一**挡在 tenant_admin 与跨租户数据之间的东西；
+`super_admin` 档的视图内兜底是**体验层**的。
+⇒ ⚠️ `FormatAnomaliesView.vue` / `ModelIntegrityDriftView.vue` 两个 superAdmin 席
+**至今没有**这层兜底（本批未改，记为待办）。
+
+### 四、★★★★★ 桌面端两个读端点是死代码 —— 本批的**功能增量**就在这里
+
+`web/src/api/model-iq.ts` 导出 4 个函数，全仓 grep 调用点只有
+`web/src/components/model/ModelOfferExtrasPanel.vue` 用了
+`getModelIQHistory` + `triggerModelIQTest`。
+**`getCatalogIQ` 与 `getNodeIQLatest` 零调用方** ——
+连绕过封装的直接 URL 调用都没有（`model-iq/catalog` 与 `model-iq/node-latest`
+这两个 URL 串在全仓只出现在封装文件自己里）。
+
+⇒ ★★ 那份 API 的文件头自称 “Backs the provider model list (standard IQ + node IQ
+columns)” —— **那是注释，不是事实**。与批 115「模块头第 (6) 条抄漏 Go 那行」
+同族的另一个面：**注释可以描述一个不存在的调用方**。
+
+⇒ ⇒ ★★★ 本页把 catalog 与 node-latest 也做进 UI
+⇒ **移动端覆盖面第一次大于桌面端**，这就是本批的功能增量。
+
+### 五、★★★ 订正一处漂移 22 行的模块头（与批 115 那处同族但形态更大）
+
+`api/modelIQ.ts` 与 `api/modelIQ.test.ts` 的文件头都写着
+**`admin/handler.go:1470-1472`，三个都是 `h.superAdmin(...)`**。
+对着实文件 `grep -n` 核完，真实值是 **`:1492-1495`，四条**。
+
+| | 批 115 那处 | 本批这处 |
+|---|---|---|
+| 错法 | 抄漏**一个字**（`'_request_logs'` → `'request_logs'`） | 抄漏**一整段 + 少算一条** |
+| 后果 | 判据恒 false，但**方向是「少报」** | 行号定位错了 22 行，且让人以为 trigger 不在这一档 |
+
+⇒ ★★★ **行号只是定位提示，不是契约**。注释里引的每一处行号都要对着事实侧核，
+核出来的差值**当场改掉**，不要写「行号仅供参考」了事。
+
+### 六、★★★★★ 本族最锐利的一条：两个端点的 `tested_at` 长得一样，机制完全不同
+
+| 端点 | SELECT 里的写法 | Go 字段 | 精度 | 可为 null？ |
+|---|---|---|---|---|
+| `node-latest` | `to_char(n.tested_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')` | `*string` | **秒**（丢亚秒） | **能** |
+| `history` | `COALESCE(tested_at, created_at)` | `time.Time` | **纳秒**（RFC3339Nano） | **不能**（`created_at` NOT NULL） |
+
+⇒ ★★★ `node-latest` 那个 `"Z"` 是**格式串里的带引号字面量**，不是时区标记，
+它无条件被追加，与 `AT TIME ZONE 'UTC'` 的计算**无关**。
+两条路都能产出**合法 RFC3339** ⇒ **从响应里无法区分是哪条路**。
+
+⇒★★★★ **连既有的 `modelIQHistoryTestedAtIsRfc3339` 都不是判别式**：
+它只查 `includes('T') && length > 10`，而 `to_char` 产物（恒 20 字符、含 `T`）
+**同样满足** ⇒ 拿它当「格式对不对」的判据是**恒真**。
+
+⇒ 本批新增 `modelIQNodeTestedAtIsSecondPrecision`（查**有没有亚秒小数点**），
+并补了 (15) 组 8 条判据，其中一条是**阴性对照**：
+证伪「旧 helper 能判别」这个假设 —— 只有它红不了，新 helper 才不是多余的。
+
+### 七、排序：三条都是**可证**的不变式，不只是「提示」
+
+| 端点 | ORDER BY | 性质 |
+|---|---|---|
+| `node-latest` | `n.overall_score DESC NULLS LAST, credential_id` | ★★★ **NULLS LAST 与响应侧的 COALESCE 恰好互相抵消** ⇒ 响应里的 `overall_score` **保证非增** |
+| `catalog` | `COALESCE(mc.standard_iq, agg.node_avg) DESC NULLS LAST` | ★★★★ 由 WHERE `(standard_iq IS NOT NULL OR node_cnt > 0)` + 「`node_cnt > 0` ⇒ `node_avg_iq` 非 null」⇒ **不可能出现 NULL 键** |
+| `history` | `tested_at DESC LIMIT $3` | 无 tiebreak ⇒ 只判非增 |
+
+⇒ `catalog` 排序键是 **COALESCE 后的值**，不是 `standard_iq` 本身 ——
+`standard_iq` 为 null 的行是**按 `node_avg_iq` 排的**。变异 S12 专门打这一点。
+
+### 八、★★★★ 本批自己的两个工装事故（都是**真缺陷**，都当场修掉）
+
+#### 8.1 ★★★★★★ 断言否定某个词，而**我自己的注释里就写着那个词**
+
+首跑两条判据当场红：
+
+```
+AssertionError: expected '<script setup lang="ts">…' not to contain '--app-accent'
+AssertionError: expected '<script setup lang="ts">…' not to contain '/model-iq/trigger'
+```
+
+⇒ 原因是视图的注释里写着「本仓**没有** --app-accent」与「trigger **不接**」
+—— 那两句话恰恰是**这两条判据要保护的结论**。
+
+⇒★★★ 这是「判据读到了注释里的字」的又一次实例，而且发生在**本批自己新写的判据**上。
+修法是**把断言改成正向形态**，不是删注释：
+- `not.toContain('--app-accent')` → `not.toMatch(/var\(--app-accent/)`
+  （问「没有任何 CSS 规则**引用**这个 token」）
+- `not.toContain('/model-iq/trigger')` → `not.toMatch(/import\s*\{[^}]*Trigger/)`
+  + 一条**正向**判据「只导入三条读端点的 fetch」
+
+⇒ ★★ **一般式**：要否定的应该是**代码形态**，不是**词**。
+词可以合法地出现在解释这件事的注释里。
+
+#### 8.2 ★★★★★★ 写文件时混进 3 处 U+FFFD 与 1 个 NUL 字节
+
+变异台有 4 条集体「红了但没命中」—— 用例标题里的「时间戳」变成了
+`时␦␦␦戳`。因为**变异台的 `expect` 是对 fullName 做子串匹配**，
+标题被污染 ⇒ 断言看不出区别 ⇒ 只会让人怀疑判据。
+
+⇒ ★★★ 与此同时，新增的编码门**当场抓到一个真缺陷**：
+`ModelIQView.vue` 的 `nodeKey()` 里混进了一个 **NUL 字节**
+（本意是空格）⇒ 已改成 `::` 分隔符。
+
+⇒ 判据 `⑪-6` / `⑪-7` 已把这条**落成门**：三个源文件不得含 U+FFFD / NUL，
+且用例标题行单独再查一遍。
+
+### 九、变异台：29 条全部有牙
+
+| 分组 | 条数 | 代表 |
+|---|---|---|
+| ① 权限档 | 7 | S1 恒真放行 / S2 放行 `admin_key` / S5-S6 抽屉席误标 / S7 路由 meta 误标 |
+| ②–⑤ catalog | 5 | S8 抹掉充要关系 / S11 排序恒真 / S12 排序键退化 |
+| ⑥ 节点段（(15)） | 6 | **S13 秒精度恒真** / S14 只查长度不查小数点 / S17 过滤预检恒真 |
+| ⑦–⑨ 历史段 | 6 | **S19 status 自洽恒真** / **S20 反推顺序颠倒** / S23 limit 恒采纳 |
+| ⑩ 错误归因 | 2 | S25 403 不归因 / S26 503 判断失效 |
+| ⑪ 触控与接线 | 3 | S27 触控掉到 40px / S28 用不存在的 `--app-accent` |
+
+⇒ 两条首轮判成 PARTIAL / NO_EFFECT 的，都查到了根因并**换掉了变异**，
+不是改判据去迁就：
+
+1. **S4 NO_EFFECT**：挂在 `loadCatalog` 的 `if (!allowed.value) return` 上 ——
+   但本页**不自动加载**，取数按钮都在 `v-else` 里 ⇒ 非超管时那些函数**不可达**
+   ⇒ 那个守卫当前是**构造性死代码**。
+   ⇒ 按「不为不可达输入写变异」的口径删掉那条，换成
+   **摘掉 `<template v-else>`** —— 那条真能咬住「深链下按钮还在不在」，
+   并因此逼出了判据 `①-6b` / `①-6c`（原来那条「挂载时没发请求」是**恒真**的半个判据）。
+2. **S14 PARTIAL**：秒精度判据放松成 `length >= 20` 后视图那条判据不红 ——
+   因为视图夹具是 30 字符带小数点的串，30 ≥ 20。
+   ⇒ **不是判据没牙，是变异台的覆盖面小于判据面**（首版只跑视图 spec）。
+   ⇒ 本台改为**视图 spec + API spec 两个文件一起跑**（基线 211 条），S14 立刻有牙。
+
+⇒ ★★★ 与批 115 一致的纪律：**红了但没命中 ≠ 没红**，要分开看，
+且**先问变异覆盖面够不够，再问判据有没有牙**。
+
+### 十、验证
+
+| 项 | 结果 |
+|---|---|
+| 类型门 `vue-tsc -b` | rc=0（**先删 `tsbuildinfo` 再读数**） |
+| `css:check` | rc=0，113 files |
+| `touch:check` | rc=0，110 个 `.vue` |
+| `i18n:check` | rc=0，zh-CN / en-US 各 **3463 键**，3050 个字面量键全在 |
+| `comment:check` | rc=0，449 文件 |
+| `gate:selftest` | 5/5 |
+| `npm run build` | rc=0 |
+| 全量 | **7656 passed / 206 files**（1 skipped；基线 7587 / 205） |
+| 变异台 | **29 / 29 有牙**，四个被改文件零残留 |
+| 十连跑 | **10 / 10 全绿** |
+
+> ⚠️ 十连跑全绿**不等于**此前记录的 flaky 已修复
+> （`ComplianceHitsView.spec.ts` / `RoutingOptView.spec.ts` 根因仍未查明）——
+> 本次**未复现**，只说明没抓到。
+
+### 十一、本批再次确认的一条纪律
+
+> ★★★ **注释 / 常量 / 判据三者互相印证时，要问「它们是从同一份错误来源抄来的吗」。**
+> 互证不等于正确；唯一能打破闭环的是**对着事实侧（可执行代码）核**。
+>
+> 本批三个实例：
+> ① 模块头的 `:1470-1472` 与测试文件头**互抄**，两边一起漂了 22 行；
+> ② 桌面 API 的文件头声称两个函数在用，而**全仓零调用**；
+> ③ 既有 helper `modelIQHistoryTestedAtIsRfc3339` 与它的用例**互证**，
+>    但它对本族最关键的区分点（秒 / 纳秒）**根本没有判别力**。
+>
+> ③ 与批 115 那处（`'_request_logs'`）是**同一个病的第三个面**。

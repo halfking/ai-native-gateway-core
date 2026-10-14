@@ -480,6 +480,22 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.slidingWindow',
     requiresRole: 'super_admin',
   },
+  // ★ 模型智商（2026-10-14 第一百一十六批）——
+  //   注册 `admin/handler.go:1492-1495`，**四条全部** `h.superAdmin(...)`。
+  // ⇒ 本族**必须**设 `requiresRole: 'super_admin'`，
+  //   并同步 `src/components/shell/AppDrawer.spec.ts` 的排序白名单。
+  // ⚠️ 与批 113/114 那两族**相反**：那两族走 `AdminMiddleware` 只认证不检 role，
+  //   所以用 `'admin'`；本族走 `SuperAdminMiddleware`（auth.go:376-409）
+  //   **逐字比对 claims.Role** ⇒ 档位本身是真门。
+  // ★★ 但「抽屉隐藏 ≠ 路由拦截」：`meta.requiresRole` 全仓无人消费，
+  //   守卫只查 `requiresAuth` 与登录态 ⇒ 深链照样打开 ⇒ 视图内还要兜一层。
+  {
+    key: 'model-iq',
+    to: '/model-iq',
+    icon: 'chart',
+    titleKey: 'nav.modelIQ',
+    requiresRole: 'super_admin',
+  },
   // ★ 加这一席**必须**同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
   {
     key: 'routing-policy',

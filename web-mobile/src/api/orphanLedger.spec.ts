@@ -50,7 +50,6 @@ import { join } from 'node:path'
 const KNOWN_ORPHANS: readonly string[] = [
   'boardOperational',
   'dataLifecycleStorage',
-  'modelIQ',
   'nativeTransport',
   'opsOverview',
   'platformSettings',

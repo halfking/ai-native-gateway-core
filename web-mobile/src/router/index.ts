@@ -777,6 +777,22 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'sw.title', requiresAuth: true, requiresRole: 'super_admin' },
   },
   {
+    // ★ 模型智商（2026-10-14 第一百一十六批）。
+    //   注册 `admin/handler.go:1492-1495` —— **四条全部** `h.superAdmin(...)`。
+    // ★★★★ 本族是本仓第四档权限里**唯一「档位自带 role 检查」**的一档：
+    //   逐字读过 `SuperAdminMiddleware`（admin/auth.go:376-409）——
+    //   `if claims.Role != "super_admin" { 403 }`。
+    //   ⇒ 与批 113/114 走 `AdminMiddleware`（**只认证不检 role**）**形态相反**，
+    //     那两族才被迫用 `requiresRole: 'admin'`。
+    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（守卫只查登录态）
+    //   ⇒ 这一行是为将来的守卫预留的，不是生效中的拦截；
+    //   视图内另有一层兜底（`ModelIQView.vue` 的 `miq-nope` 段）。
+    path: '/model-iq',
+    name: 'model-iq',
+    component: () => import('@/views/ModelIQView.vue'),
+    meta: { titleKey: 'miq.title', requiresAuth: true, requiresRole: 'super_admin' },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),

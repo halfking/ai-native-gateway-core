@@ -17,6 +17,7 @@ import {
   modelIQNodeHasProvider,
   modelIQNodeTestedAtIsNull,
   modelIQNodeTestedAtIsString,
+  modelIQNodeTestedAtIsSecondPrecision,
   modelIQHistoryLimitIsAccepted,
   modelIQHistoryEffectiveLimit,
   modelIQHistoryStabilityIsZero,
@@ -44,10 +45,14 @@ import {
 /**
  * 节点智商三端点的契约测试（2026-10-08，第八十五批）。
  *
- * 后端：`admin/handler.go:1470-1472`（三个都 `h.superAdmin(...)`）
+ * 后端：`admin/handler.go:1492-1495`（四条都 `h.superAdmin(...)`）
  * → `admin/model_iq.go`；status/写入域在 `domains/modelquality/dbstorage.go`。
  *
- * 重点是源文件头写明的十四件事 (1)…(14)。带 ★ 的自校验判据都能被变异打掉。
+ * ⚠️ **2026-10-14 第一百一十六批订正**：原先这里写的是 `:1470-1472` 且说
+ *   「三个」—— **漂了 22 行，且少算一条**（trigger 也是同一档）。
+ *   已对着 `admin/handler.go` 实文件 `grep -n` 核过并改正。
+ *
+ * 重点是源文件头写明的十五件事 (1)…(15)。带 ★ 的自校验判据都能被变异打掉。
  * ⚠️ 全部用例标题**字面量**写（不用 `it.each`）—— 变异 harness 靠标题取锚点。
  */
 
@@ -886,5 +891,55 @@ describe('常量取值', () => {
 
   it('★ ★ MODEL_IQ_NODE_LATEST_KEYS 里**不含** filter（后端没这概念）', () => {
     expect(MODEL_IQ_NODE_LATEST_KEYS as readonly string[]).not.toContain('filter')
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════
+// (15) 同族两端的 tested_at：两种「长得一样、机制完全不同」的串
+// ══════════════════════════════════════════════════════════════════════════
+
+describe('(15) node-latest 与 history 的 tested_at 不是同一种串', () => {
+  // ★★ 本组的**核心是一条证伪**：证伪「`modelIQHistoryTestedAtIsRfc3339`
+  // 能判出格式对不对」这个假设。只有它红不了，后面新增 helper 才不是多余的。
+  it('★★ 阴性对照：`modelIQHistoryTestedAtIsRfc3339` 对 node-latest 的 to_char 串**也返 true**', () => {
+    // 这不是缺陷，是**记录既有 helper 的判别力边界**：
+    // 它只查 includes('T') && length>10，而 to_char 产物（恒 20 字符、含 T）同样满足。
+    expect(modelIQHistoryTestedAtIsRfc3339(node() as unknown as ModelIQHistoryPoint)).toBe(true)
+  })
+
+  it('★★ 同一个 helper 对 history 自己的 RFC3339Nano 串也是 true ⇒ **两路不可区分**', () => {
+    expect(modelIQHistoryTestedAtIsRfc3339(point())).toBe(true)
+  })
+
+  it('★★★ modelIQNodeTestedAtIsSecondPrecision：node-latest 的 to_char 产物 ⇒ true', () => {
+    expect(modelIQNodeTestedAtIsSecondPrecision(node())).toBe(true)
+  })
+
+  it('★★★ modelIQNodeTestedAtIsSecondPrecision：history 的纳秒串 ⇒ **false**（这才叫判别）', () => {
+    // ★ 与上一条构成**同格负断言**：同一个输入形状喂给两个 helper，
+    //   结果必须不同 —— 否则新 helper 就是恒真。
+    expect(modelIQNodeTestedAtIsSecondPrecision(point() as unknown as ModelIQNodeLatest)).toBe(false)
+  })
+
+  it('★★ modelIQNodeTestedAtIsSecondPrecision：tested_at 是 null ⇒ false', () => {
+    // ★ null 不该被判成「秒精度」——那是「没有值」，不是「有个整秒的值」。
+    expect(modelIQNodeTestedAtIsSecondPrecision(node({ tested_at: null }))).toBe(false)
+    expect(modelIQNodeTestedAtIsString(node({ tested_at: null }))).toBe(false)
+  })
+
+  it('★★ 带小数点的 20 字符串 ⇒ false（长度对但精度不对）', () => {
+    // ★ 拆开两个条件分别打：只看 length 会漏掉这一条。
+    expect(modelIQNodeTestedAtIsSecondPrecision(node({ tested_at: '2026-10-07T12:00:00.5' }))).toBe(false)
+  })
+
+  it('★★ 无小数点但长度不对 ⇒ false', () => {
+    expect(modelIQNodeTestedAtIsSecondPrecision(node({ tested_at: '2026-10-07' }))).toBe(false)
+  })
+
+  it('★★★ node-latest 的 tested_at 可为 null，history 的**恒不为**（结构差异）', () => {
+    // ★ 两个端点的 Go 字段类型不同（`*string` vs `time.Time`），
+    //   所以「可为 null」这条只对 node-latest 成立。
+    expect(modelIQNodeTestedAtIsNull(node({ tested_at: null }))).toBe(true)
+    expect(point().tested_at).not.toBeNull()
   })
 })
