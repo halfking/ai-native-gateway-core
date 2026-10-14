@@ -109,6 +109,13 @@ echo "[verify] full Go tests"
 # 该名单的漂移报警在 tests/verify_cgo_convention_test.sh。
 go test ./... -count=1 -timeout=300s
 
+# 2026-10-14（r1031 §五-3 / 判据纪律 #11）：TestStorageAudit* 集成审计是三域存储
+# 契约（冷读一致性/跨实例一致性/V2 元数据配对）的唯一观测器，带 -tags=integration
+# 且需要一次性回环 Redis+PG——上面的 `go test ./...` 从不编译它们，此前无任何入口
+# 真实执行；首次执行即抓到真缺陷（F3）。docker 可用时必跑，否则显式 SKIP。
+echo "[verify] session storage audit integration suite (docker-gated)"
+bash tests/session_storage_audit_gate.sh
+
 echo "[verify] privacy compliance tests"
 ./scripts/verify-privacy-compliance.sh
 

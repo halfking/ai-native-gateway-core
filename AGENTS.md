@@ -2067,13 +2067,43 @@ v2 三个无条件 t.Skip 死测试）。`TestStorageAuditObserveV2MetadataBodyM
 
 GeneratedTextGuard 硬编码 mask（block 若扩到摘要回写通道会打断压缩闭环，
 owner 拍板）；session_censors 可逆还原无读取方（配密钥+读取端点两件一起做）；
-惰性工具白名单无膨胀审计；v2 死测试三件。
+惰性工具白名单无膨胀审计；~~v2 死测试三件~~（同日续轮收口，见下）。
+
+## r1031 同日续轮（§五-3/§五-4 收口 + F1 续缺陷修复）
+
+明细：审计文档同文件「续轮」节。要点：
+
+1. **判据纪律 11 的即时实证**：审计套件首次真实执行（本机 docker 29.8 已可用，
+   10-11 的「docker 缺失」记录过时）立刻红 `TestStorageAuditObserveV2MetadataBodyMismatch`
+   ——r1031 上午给「计数失配」钉的保守钉子（body 保持空）与 10-02 从未运行的
+   集成契约（body 必须非空）**同场景相反**。修复：L2 复水 default 分支 legacy
+   兜底失败后**整体采纳 L3 自洽配对**（不混绑、反洗写原则保留、Redis-only
+   字段不存活）；改写判据 `TestSessionCache_L2CountMismatchDropsStaleRedisMetadata`
+   （同层 + BuildOutboundMessages 增量断言），M1/M2 变异红。修复后该集成测试连
+   `--require-coherence` 强断言都过。
+2. **门**：`tests/session_storage_audit_gate.sh` 接入 verify.sh（docker daemon+
+   postgres:17-alpine/redis:7.4.11-alpine 在场即跑，否则显式 SKIP）。门有牙实证=
+   强模式红在跨实例一致性 OBSERVATION（真实遗留：warm 实例旧 generation、双写
+   回调丢更新——登记待裁决）。**跑 verify.sh 的机器从此这批判据自动在场。**
+3. **死测试三件收口**：EmptySession 的 skip 理由与实现不符（`&TurnReader{}` 零值
+   短路返回空，去 skip 即过）；SetGet/CacheMiss 场景并入审计套件
+   `TestStorageAuditGovernanceSetGetDeleteMiss`，死版本删除。
+4. **32 个落空 realdb 测试精确对账并登记**：v2 包 setupTestDB 门 34 个，CI
+   `Sessions V2 integration` job（sessionforensics-ci.yml，子串正则
+   `_RealDB|_RoundTrip`）覆盖 2 个中缀命名者，余 32 个零入口。一次性 PG 只应用
+   430+431 实证不够（`session_bodies_hot` 614 等演进层缺失全灭）——这批测试要
+   全链迁移库。收口=owner 扩宽 CI job 过滤器+补 CI 库迁移，勿在本仓 runner 里
+   重建迁移执行器。
+5. 判据纪律 12（候选）：**冻结现状当契约前先搜反向判据**——「保守」经常只是
+   「现状」，r1031 的钉子与 10-02 的集成契约矛盾共存两周，只因两份判据从未同场
+   执行。
 
 ## 下一轮提示词（r1031 轮）
 
-1. ★ **部署 r1031**（154/245/211 随下次窗口）：F1 使 V2 抖动期的会话压缩
-   不再静默退化为全量重发。
-2. **审计测试盲区收口**（判据纪律 11 的落实）：把 `SESSION_AUDIT_REDIS_ADDR`
-   门纳入一个 CI 入口或 cron；处置 v2 三个无条件 skip 死测试（删或修）。
+1. ★ **部署 r1031**（154/245/211 随下次窗口）：F1+F1 续（同文件两修）使 V2 抖动期
+   的会话压缩不再静默退化为全量重发、计数失配期不再缓存不配对组合进 L1。
+2. ~~**审计测试盲区收口**~~ **同日续轮已完成**（门 + 死测试三件 + 32 个对账登记，
+   见上节）；新增遗留=跨实例一致性 OBSERVATION 的两项真实缺口（warm 旧 generation/
+   双写丢更新）待裁决。
 3. 上一轮遗留不变：D1/D2 部署、URSM persist collect 迁独立 db、
    GeneratedTextGuard 双语义拍板、session_censors 可逆化两件套。

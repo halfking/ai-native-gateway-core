@@ -79,11 +79,23 @@ func TestSessionCache_L2RehydrateFromV2KeepsDeltaLineage(t *testing.T) {
 	}
 }
 
-// TestSessionCache_L2RehydrateRejectsCountMismatchedV2Body is the
-// premise-pair guard: a V2 body whose message count disagrees with the Redis
-// state (genuinely different turn content, not the wrap-shape difference)
-// must NOT be adopted — the conservative reset stays in force.
-func TestSessionCache_L2RehydrateRejectsCountMismatchedV2Body(t *testing.T) {
+// TestSessionCache_L2CountMismatchDropsStaleRedisMetadata pins the
+// genuinely-different-turns contract. When the V2 body's message count
+// disagrees with the Redis state, that body must never be bound to the stale
+// metadata (no laundering) — but the reader must not collapse to an empty
+// body either: an empty body makes diff.go's lineage guard reset the session
+// to a full client resend and caches an incoherent pair in L1. The
+// self-consistent L3 pair replaces both wholesale, Redis-only fields from the
+// abandoned turn included.
+//
+// History: the 2026-10-02 integration audit
+// (TestStorageAuditObserveV2MetadataBodyMismatch, storage_audit_integration_
+// test.go) specified this contract first but never ran — no CI entry wires
+// SESSION_AUDIT_REDIS_ADDR — so r1031 pinned the opposite ("body stays
+// empty") without knowing. First-ever execution of the audit suite on
+// 2026-10-14 exposed the contradiction; this test now pins the corrected
+// contract at the same layer as the unit suite.
+func TestSessionCache_L2CountMismatchDropsStaleRedisMetadata(t *testing.T) {
 	ctx := context.Background()
 	redis := newRehydrateRedis()
 
@@ -94,6 +106,7 @@ func TestSessionCache_L2RehydrateRejectsCountMismatchedV2Body(t *testing.T) {
 		LastOutboundHash: sha256Hex(envelope),
 		MsgCount:         1,
 		TokenEstimate:    4,
+		SummaryMarker:    "smm_v1:stale",
 	}
 	if err := writer.Set(ctx, "tenant-1", "session-1", state, envelope); err != nil {
 		t.Fatal(err)
@@ -109,12 +122,31 @@ func TestSessionCache_L2RehydrateRejectsCountMismatchedV2Body(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(gotBody) != 0 {
-		t.Fatalf("count-mismatched V2 body was adopted (%d bytes); want rejected pairing", len(gotBody))
+	if len(gotBody) == 0 {
+		t.Fatal("stale Redis metadata collapsed the rehydrate to an empty body: lineage would reset to full resend")
 	}
-	// The un-rehydrated Redis state must keep its original hash — the fix
-	// must not launder an unverifiable body into the state.
-	if gotState != nil && gotState.LastOutboundHash != sha256Hex(envelope) {
-		t.Fatalf("state hash was rewritten without an adopted body: %s", gotState.LastOutboundHash)
+	if gotState == nil || gotState.LastOutboundHash != sha256Hex(gotBody) {
+		t.Fatalf("adopted pair is not self-consistent: state=%v bodyLen=%d", gotState, len(gotBody))
+	}
+	if gotState.MsgCount != 2 {
+		t.Fatalf("adopted state msg count = %d, want 2 (the L3 pair's count)", gotState.MsgCount)
+	}
+	// The stale metadata is dropped wholesale, not merged: Redis-only fields
+	// from the abandoned turn must not survive onto the adopted pair.
+	if gotState.SummaryMarker != "" {
+		t.Fatalf("stale summary marker %q laundered onto the adopted L3 pair", gotState.SummaryMarker)
+	}
+
+	// Same-layer consumer: the adopted pair carries this session's lineage.
+	clientBody := []byte(`{"model":"gpt-test","messages":[{"role":"user","content":"new"},{"role":"assistant","content":"different-turn"},{"role":"user","content":"next"}]}`)
+	res, err := BuildOutboundMessages(clientBody, gotState, gotBody, "openai-chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsNewSess {
+		t.Fatal("lineage guard rejected the adopted L3 pair: session reset to full resend")
+	}
+	if res.MsgCount != 3 {
+		t.Fatalf("merged outbound message count = %d, want 3 (prior 2 + delta 1)", res.MsgCount)
 	}
 }
