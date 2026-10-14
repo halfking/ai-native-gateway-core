@@ -16919,3 +16919,97 @@ MV 只有 4,430 行、4 个索引 ⇒ 建索引是**毫秒级**，不可能吃�
 
 ⇒ ★ 同族：[[变异量出的是覆盖不是存在]] · [[0 命中的第一嫌疑永远是量具坏了]] ·
 [[一条没红先问变异真能造成差别吗]] · [[共享预热型环境的读数要连测三次]]。
+
+---
+
+### §10.110.28 核验一条**已经过期的旧纪律**，并转入存储侧盘点
+
+#### 一、⚠ 先核一条记忆里的纪律——**它对 routing 路径不成立，差点让我撤回一个正确结论**
+
+`llm-gateway-go4-ursm-storage-partition` 主题（2026-10-13 写下）记着：
+
+> ① 日志 `elapsed` **含 advisory 锁等待**，不能当语句耗时
+
+**回代码逐行核验（`bg/materialized_view_refresher.go`）**：
+
+| 行 | 内容 | 含义 |
+|---|---|---|
+| **375** | `start := time.Now()` | 计时起点 |
+| 376 | `r.refreshView(ctx, "routing_analytics_7d", useAdvisoryLock)` | 下一行就进去了 |
+| 386 | `slog.Info("refreshed routing_analytics_7d", "elapsed", time.Since(start))` | 计时终点 |
+| **681** | `SELECT pg_try_advisory_lock($1), mvRefreshLockKey).Scan(&locked)` | ★ **`pg_try_advisory_lock` 是非阻塞 try** |
+
+⇒ ★★★ **routing 路径里，锁只贡献一次「立即返回」的往返（毫秒级）**，
+　 失败时该视图被记为 **skipped** 而不是 "refreshed"，根本不会进这条日志。
+　 ⇒ **`elapsed` ≈ 语句耗时 + ~1 ms，本轮 §21/§24/§26/§27 用的 33.2 s 站得住。**
+
+⇒ ★★ **session 路径不同**：`SessionViewLockRetryBudget = 4min` + `:733 / :739` 的
+　 「gave up waiting / contended, retrying」说明它**确有真实等锁**，
+　 且 `start`（:479）在重试循环**内**、按次计时。
+　 ⇒ 那条纪律**只对 session 路径成立**，写得过宽了。
+
+⇒ ⇒ ★★★ **这一条本身值得记**：记忆里 2026-10-13 写的纪律**过宽**，
+　 若不核代码就套用，会把 §26 刚钉死的「REFRESH 是唯一显著成本」直接撤回。
+　 ⇒ ★ **纪律也要有保质期：引用记忆里的判据前，先回代码核一遍适用范围。**
+　 （记忆是线索，不是判决。）
+
+#### 二、★★★ 转入**存储侧**——目标写的是「存储与效率**综合**最优」，而这一侧本轮还没碰过
+
+| 项 | 读数 |
+|---|---|
+| **全库** | **22 GB**（`public` 表合计 21 GB） |
+
+**TOP 族（按月分区名归并）**：
+
+| 族 | 关系数 | 体积 | 约行数 |
+|---|---|---|---|
+| ★ **`ursm_node_snapshot_min`** | 10 | **4,068 MB（18% of DB）** | **13,541,727** |
+| `session_turns_2026_09` | 1 | 2,727 MB | 798,278 |
+| `session_bodies_2026_10` | 1 | 1,758 MB | 133,041 |
+| `request_logs_2026_10` | 1 | 1,015 MB | 334,669 |
+| `route_incident_events` | 1 | 938 MB | 1,467,298 |
+| `ursm_node_snapshot_min_legacy` | 1 | 852 MB | 2,614,886 |
+| `usage_ledger_2026_09` | 1 | 799 MB | 1,416,772 |
+| `session_summaries` | 1 | 692 MB | 693,385 |
+
+#### 三、★★★ 头号存储对象是**「每凭据每分钟一行、54 列」**——这正是目标说的可拆分对象
+
+`ursm_node_snapshot_min_20261014` 的 54 列可**按变化速率分成三族**：
+
+| 族 | 列举例 | 变化速率 |
+|---|---|---|
+| **身份/定价（几乎不变）** | `credential_id, provider_id, raw_model_name, canonical_name, tenant_id, price_in_per_1m, price_out_per_1m, billing_mode, trust_level, source_priority, baseurl_latency_ms, manual_reason, manual_actor, disabled_reason, cool_reason` | **天/周级** |
+| **慢变运行态** | `recovery_epoch, generation, event_seq, disabled, last_direct_ok, manual_hold` | **事件级** |
+| **快变仪表** | `available, health_status, fail_streak, cool_until, sr_1m/5m/30m, samples_1m/5m/30m, lat_p50_ms, lat_p95_ms, lat_ewma_ms, score, conc_used/limit, fp_used/limit, success_count, failure_count, disable_count, empty_response_rate_1m/30m, last_probe_*, last_attempt_ms, last_ok_ms, last_request_*, last_err` | **分钟级** |
+
+⇒ ★★★ **每分钟把「几乎不变」的那 15 列也整行重写一遍，是纯粹的存储浪费。**
+　 今天的分区 1,086,016 行 / total 339 MB（**堆 248 MB + 索引 91 MB**）
+　 ⇒ **堆 239 B/行 + 索引 88 B/行**（行列式计算复核过）。
+　 若把身份+定价族拆成维表（每凭据 1 行），
+　 分钟级历史只留快变仪表 ⇒ **可望把 4 GB 降到 1 GB 量级**。
+
+⚠ **本轮只做盘点与量化，不动手**：这是结构性重构，
+　 触及 writer / reader / 回填 / admin 端点，且
+　 交接档已记录该族「每分钟一行」的语义边界与 `payload` 瘦身史（818）——
+　 **必须先确认哪些列被哪些消费者按行取**，否则会破坏运行。
+
+#### 四、★ 另有一项**低风险、可直接回收**的：`ursm_node_snapshot_min_legacy`
+
+| 项 | 读数 |
+|---|---|
+| 体积 | **852 MB**（堆 592 MB + `_pkey` 260 MB） |
+| 行数 | 2,614,886 |
+| **主键索引 95 小时扫描次数** | **0**（其余日分区 PK 为 431~439，最热的当日 PK 为 3,519,655） |
+| 分区边界 | `bound_expr` 为空 ⇒ **DEFAULT 分区，无时间上界** |
+
+⇒ ★★ 交接档明写：「**第 7 天 DROP `_legacy` 的责任人**」自 **2026-10-07** 起就是未决项，
+　 而分区化已落地（父表 `relkind='p'`，日分区边界全部对齐：
+　 `_20261007`~`_20261015` 各为 `[当日 00:00, 次日 00:00)`）
+　 ⇒ **该 DROP 现在技术上可执行，且已积累了 7 天以上的滞留**。
+　 ⇒ **这是本轮唯一一个「有既定设计文档背书 + 零功能代价」的回收项。**
+
+#### 五、本节遗留
+
+1. 54 列的**逐列消费者**清单未做（拆分的前置条件）——需扫代码里对该表的列引用。
+2. `_legacy` 的 DROP **需授权**（写操作），且要与「保留期 7 天」的设计契约对齐。
+3. `session_turns_2026_09`（2,727 MB，占 12.7%）为何整月留存未查。
