@@ -1836,3 +1836,69 @@ streaming 全包 150s 绿。154 终验：拦截请求三件套全绿（终态带
    持有方通知；fail-open 占位符透传（96 行样本，根因未定位，需结构化日志+真实流量+发布
    授权）；601,914 行 `session_censors.original_encrypted` 全 NULL 的还原半程（要还原得给
    `db_sink.go` 加解密读取方，配密钥无用）。
+
+---
+
+# 追加：2026-10-14 24h 审计轮 —— 迁移 863 分区形态自适应 + 211 日志轮 + 拓扑漂移登记
+
+> 合并 `c4c93365e→ec9d2f3f0`（50 提交）+ 本轮 `9faea142a`。明细：
+> `docs/audit/2026-10-14-24h审计-863分区形态自适应与211日志轮.md`。
+
+## 本轮落地
+
+1. **迁移 863**：`ensure_handoff_logs_partition` 存储形态自适应——211 的
+   acc-pg17 是 mac mini dump→restore 血缘、无 pgcolumnar，handoff 分区以
+   heap 挂载（写入无损），714 体 `am='columnar'` 硬要求使 211 每 boot 报
+   P0001、未来月份 `CREATE USING columnar` 必败、promote 连带不促升
+   （hot 现网 0 行，潜伏非实害；promote 的 INSERT/DELETE 单语句原子已复核，
+   失败不丢数据）。863：挂对父表即合法（错父表仍 raise）、创建按
+   `pg_am` 探测决定 columnar/heap、714 时区钉扎保留、文件尾自证 DO、
+   down 还原 714 体。五点同步 + 通道腿（**位置必须在 714 之后**，
+   intentional chain `534→714→863` 终态项）。
+2. **bg tick 父表形状探测**：`ursm_node_snapshot_min` 42P17 的根因是
+   **db.go boot 路径有 shape-first 探测、bg 24h tick 没有**（r1021 两路径
+   政策一致同族）。`archiveSpec.parentTable` + `ensureSpecEligible`
+   （relkind='p' 才促升，非分区 Info 跳过）。`NewPartitionManager` 窄接口化
+   `partitionDB`——聚合器仅对 `*pgxpool.Pool` 真身构造，pgxmock 判据路径
+   nil 无害（`TestPartitionManagerIncludesErrorAggregator` 改 typed-nil
+   pool 保旧契约）。判据四件 + M1/M2 变异红 + 252 临时库真库电池
+   （P0001 复现→863 修复→down 还原 t→幂等重放）。
+3. **211 acc-pg17 慢 SQL 观测**（运维，reload-only）：
+   `log_min_duration_statement=500ms`，`pg_sleep(0.6)` 探针 602ms 命中
+   日志实测。pg_stat_statements 未 preload（启用需重启，不动）。
+   252 共享 PG 24h 零慢 SQL 零错误（网关流量已迁 211，符合预期）。
+
+## 拓扑漂移登记（本轮新发现，未修）
+
+- **mac mini 本地栈整体消失**：`~/kaixuan/llm-gateway-go*`、网关进程、
+  caddy、8781/8782/54318/6379 全不在（部署清理轮 02:56 还实测过 local
+  readyz ready；移除发生在其后、无仓库记录）。**252 公网 upstream 的
+  backup 腿（mac mini mesh IP:8782）已成死节点**——211 整机故障时公网无
+  活兜底。owner 裁决：恢复本地栈或摘 backup 腿。本地 E2E 需重新走
+  host-first 全量部署。
+- **211 部署滞后**：容器 02:54 CST 启动（≈2598 代），r1028b/r1029/
+  magpie P0/856-863/r1030/auth-mw 资产修复均未上线；迁移 860 在 211 自有
+  库与 252 共享库都未跑（首次部署执行，旧二进制读改名表窗口已在 860
+  deploy note 声明）。
+- **URSM v2 在 211 降级 ModeOff**（`LLM_GATEWAY_SYSTEM_MONITOR_ENABLED`
+  未设）——与 reconciler 未启动同族，下次 211 部署一并注入（owner 决策）。
+
+## 判据纪律增量（第 10 条）
+
+**迁移文件 `BEGIN;` 后必须显式 `COMMIT;`**——裸 psql 执行到 EOF 隐式回滚，
+本轮第一版 down 验证因此假绿（还原因回滚未生效、探测值恒为 863 体）。
+另两条量具坑：pgxmock v4 `Times(0)` 受 `fulfilled()=max(planned,1)` 限制
+永不满足（「不调用」方向要换层钉）；无 `WithArgs` 期望的参数数必须与实际
+调用相等（带参 Exec 需显式 `AnyArg()`）。
+
+## 下一轮提示词（2026-10-14 轮更新）
+
+1. ★ **211 部署积压**：r1028b→863→r1030 全部未上线（含并行会话的
+   50eb3bb88 台账修复）。部署时注意：迁移 860 首跑会改 request_logs 族名
+   （211 自有库独立执行；154/245 共享 252 库先部署方执行、另一方旧二进制
+   读改名表短暂报错——deploy note 已声明，两台应尽快同窗部署）。
+   同时注入 `LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true` 解 URSM 降级。
+2. 252 公网链 backup 腿（死 mac mini）与本地栈恢复：owner 拍板后执行。
+3. 隔离 PG（127.0.0.1:54999，上轮并行会话留的）若还在可直接复用真库判据。
+4. 上轮遗留继续跟踪：probe_direct_auth_failed 主体、fail-open 占位符
+   透传根因、601,914 行还原半程（读取方代码）。
