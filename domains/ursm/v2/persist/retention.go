@@ -183,8 +183,24 @@ func (w *SnapshotRetentionWorker) run() {
 // 日志按模式分流：DROP 型留存报分区数与字节数，DELETE 型报行数。
 // ★ 注意本仓**没有**对应的 Prometheus 指标（全仓 grep 无）——
 //
-//	留存可观测性目前只靠这一行 slog，所以 mode 字段必须带上：
+//	留存可观测性目前只靠这几行 slog，所以 mode 字段必须带上：
 //	它是事后从日志反查"当时走的是哪条路径"的唯一线索。
+//
+// ★★ default 分支不是可有可无的兜底（2026-10-14 补）。worker 每小时跑一次，
+//
+//	而稳态下**绝大多数轮次没有任何东西过期** —— 删到了才打日志，
+//	等于把"活着但无事可做"与"根本没在跑"渲染成同一种沉默，
+//	而这正是 2026-10-14 那次无法判定留存是否运行的原因
+//	（生产全量日志 0 命中，量具本身有效：同文件有 29 万条 INFO）。
+//
+//	实测当时并非缺陷：245 的 7 天档位下过期分区数确为 0。
+//	但"这次恰好没错"不能替代可观测性 —— 下一轮没人能再区分这两种状态。
+//
+//	retention 字段是漂移的现场证据：两台共用同一个库，档位不同，
+//	各自主张什么由日志说了算，不必 SSH 上去翻 env。
+//
+//	注意 candidates 故意不进这行：它在分区目录下有确切含义，
+//	在行删路径下却是「未测量」的零值，同名不同义会毁掉这个字段。
 func (w *SnapshotRetentionWorker) CleanupOnce(ctx context.Context) {
 	if w.Disabled() || w.db == nil {
 		return
@@ -201,6 +217,10 @@ func (w *SnapshotRetentionWorker) CleanupOnce(ctx context.Context) {
 	case res.RowsDeleted > 0:
 		slog.Info("ursm.v2: snapshot retention removed expired snapshots",
 			"mode", res.Mode, "deleted", res.RowsDeleted, "retention", w.cfg.Retention.String())
+	default:
+		slog.Info("ursm.v2: snapshot retention ran; nothing reclaimed",
+			"mode", res.Mode, "retention", w.cfg.Retention.String(),
+			"degraded", res.Degraded)
 	}
 }
 
