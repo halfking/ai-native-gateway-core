@@ -192,6 +192,20 @@ export const DRAWER_NAV: readonly NavItem[] = [
   //     ⇒ tenant_admin 能读到跨租户 ⇒ 必须在视图内按段落门控；
   //     本族是 superAdmin 档 ⇒ **档位本身就挡住了** ⇒ 无需任何段落级门控。
   { key: 'format-anomalies', to: '/format-anomalies', icon: 'alert', titleKey: 'nav.formatAnomalies', requiresRole: 'super_admin' },
+  // ★ 2026-10-14 第一百一十批：指纹漂移。`admin/handler.go:942-943` 两条都是
+  //   `h.superAdmin`（整个 `/api/admin/model-integrity/` 前缀都是 superAdmin 档）
+  //   ⇒ 这一席**要** `requiresRole: 'super_admin'`。
+  //   ★ 本族读路径跨全部租户（`admin/model_integrity.go:328` 的 `withAllTenantReadOnlyTx`
+  //     且 WHERE 无租户条件），但**档位本身就是那道门** ⇒ 视图内无需段落级门控。
+  //   ⚠️ 与 `integrity`（同前缀的 summary/events/resolve 那一面）是**两张席**：
+  //     同一个前缀上既有 admin 面也有 superAdmin 面 ⇒ 权限**不得**按前缀判。
+  {
+    key: 'model-integrity-drift',
+    to: '/model-integrity-drift',
+    icon: 'alert',
+    titleKey: 'nav.modelIntegrityDrift',
+    requiresRole: 'super_admin',
+  },
   // MaaS 租户运维面。**superAdmin 档**（/api/admin/maas/tenants/** 全 superAdmin）⇒ 须设。
   {
     key: 'maas-tenant-ops',

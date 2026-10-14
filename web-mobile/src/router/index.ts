@@ -699,6 +699,12 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'fa.title', requiresAuth: true },
   },
   {
+    path: '/model-integrity-drift',
+    name: 'model-integrity-drift',
+    component: () => import('@/views/ModelIntegrityDriftView.vue'),
+    meta: { titleKey: 'mid.title', requiresAuth: true },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),
