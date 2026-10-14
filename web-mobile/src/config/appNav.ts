@@ -496,6 +496,23 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.modelIQ',
     requiresRole: 'super_admin',
   },
+  // ★ 运维总览（2026-10-14 第一百一十七批）——
+  //   注册 `admin/handler.go:1091` 的 `admin(...)`，而 `AdminMiddleware`
+  //   （`admin/auth.go:85-140`）**只认证不检 role** ⇒ 后端 tenant_admin **能**读。
+  // ★★★★ 但 `handleOpsOverview` 自己不检 role，而 11 条子查询**全是全局表**
+  //   （取租户键的代码不存在）⇒ 归第三类：**完全没有租户维度** ⇒ 过度限制。
+  // ⇒ 本席**必须**设 `requiresRole: 'super_admin'`，并同步
+  //   `src/components/shell/AppDrawer.spec.ts` 的排序白名单。
+  // ⚠️ 这一族与批 113/114 那两席（'admin' 档）的**成因相反**：那一族服务端**有**租户维度，
+  //   只是租户键可能返空串；本族是**一个租户键都没有**。
+  // ⚠️ 前端严于后端是兜底不是修复：后端这一族**没有门**。
+  {
+    key: 'ops-overview',
+    to: '/ops-overview',
+    icon: 'cpu',
+    titleKey: 'nav.opsOverview',
+    requiresRole: 'super_admin',
+  },
   // ★ 加这一席**必须**同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
   {
     key: 'routing-policy',

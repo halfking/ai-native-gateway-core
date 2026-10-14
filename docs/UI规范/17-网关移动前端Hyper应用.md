@@ -16172,3 +16172,174 @@ AssertionError: expected '<script setup lang="ts">…' not to contain '/model-iq
 >    但它对本族最关键的区分点（秒 / 纳秒）**根本没有判别力**。
 >
 > ③ 与批 115 那处（`'_request_logs'`）是**同一个病的第三个面**。
+
+## 11.153 运维总览接进 UI —— 权限档第五次登场，归**第三类**：「服务端一个租户键都没有」；顺带订正模块头三处漂移，其中一处是**权限结论反了**（第一百一十七批）
+
+### 一、这批做了什么
+
+把 `opsOverview`（第 83 批建的 API 模块，**一直是孤儿**）接进移动端，孤儿 13 → **12**：
+
+| 项 | 值 |
+|---|---|
+| 视图 | `web-mobile/src/views/OpsOverviewView.vue` |
+| 判据 | `OpsOverviewView.spec.ts` **66 条**（API 层本批 109 → **126 条**） |
+| 路由 | `/ops-overview`，`meta.requiresRole: 'super_admin'` |
+| 抽屉席 | `ops-overview`，**`requiresRole: 'super_admin'`** ⇒ **进** superAdmin 白名单 |
+| i18n | 前缀 `ops` + `nav.opsOverview`（zh-CN / en-US 各 +86 键） |
+
+页面九段：**采集完整性**、**平台概览**、**数据面表计数**、**区域分布**、
+**部署节点**、**故障**、**升级记录**、**离线激活请求**、**运行时指标**。
+一个端点一次读取（后端把 11 个子查询并发跑合进一个 `map[string]any`）。
+
+### 二、★★★★★★ 权限档第五次登场，形态与前四次都不同：**第三类**
+
+四问逐字核过，结论是「服务端**完全没有租户维度**」：
+
+1. 注册处 `admin/handler.go:1091`
+   `mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))`
+   —— `admin` 是 `h.admin`（`handler.go:894-896`）→ `AdminMiddleware`。
+2. `AdminMiddleware`（`admin/auth.go:85-140`）**只认证不检 role**：
+   中间体里没有 `claims.Role`（对比 `SuperAdminMiddleware` `auth.go:376-409`
+   那里是逐字 `if claims.Role != "super_admin"`）。
+3. `handleOpsOverview` 自己既不读 `AuthContext` 也不看 `Role`。
+4. ★★ **取租户键的代码根本不存在** —— 11 条子查询全是全局表
+   （`gateway_instances` / `licenses` / `fault_events` / `upgrade_logs` /
+   `download_events` / `offline_activation_requests` / `runtime_metrics` …）。
+   ⇒ `grep tenant` 打不到**不是遗漏，是设计上就没有**。
+
+⇒ 与前四类的对照：
+
+| 批次 | 服务端形态 | 处置 |
+|---|---|---|
+| 113 / 114 | 有租户维度，租户键**可能返空串** | `requiresRole: 'admin'` |
+| 116 | `SuperAdminMiddleware` 逐字比 role，**档位自带门** | `requiresRole: 'super_admin'` |
+| **117** | **一个租户键都没有** | **`requiresRole: 'super_admin'`（过度限制）** |
+
+⚠️ 前端严于后端是**兜底不是修复**：后端这一族**没有门可修**。
+
+### 三、★★★★ 为什么连 tenant_admin 都不该看（不是洁癖）
+
+`offline_requests` 每一行带 `license_key` / `hardware_hash` / `activation_code`
+（`ops_overview.go:299-337`）—— 那是**别的租户的**凭据与硬件指纹；
+`deployment_nodes` / `runtime_metrics_summary` 是**全平台机队**的 IP、版本与用量。
+这三列就是「必须过度限制」的**具体依据**，不是「没有隔离所以保守一点」。
+
+### 四、★★★★★ 订正模块头三处漂移 —— 其中一处是**权限结论反了**
+
+| 位置 | 原文 | 实况 |
+|---|---|---|
+| `api/opsOverview.ts:8`、`:322` | 注册处 `handler.go:1070` | **`:1091`**（漂移 21 行） |
+| `api/opsOverview.ts:13-14` | 「**10 个**查询函数」 | **11 个**（且与同文件 (1)「十一个子查询」自相矛盾） |
+| `api/opsOverview.ts:9` | 「admin 档 ⇒ 抽屉席**不设** `requiresRole`」 | **要设 `'super_admin'`** |
+
+★ 第三处最重：它与**同一文件末尾**那句「本端点不按租户隔离」**直接矛盾** ——
+按原文接线，等于把全平台机队拓扑与别人的许可证密钥递给 tenant_admin。
+⇒ **事实**没变（注册处仍是 admin 档），变的是**前端要不要更严**。
+
+⇒ ★★★★ 与批 116 那处漂移同族，但形态更大：那里是**行号**漂 22 行，
+这里是**结论**漂。⇒ 处置也升级：**不只改散文，把它们钉成判据**（spec ①-3 / ①-4 / ①-5 / ①-6）。
+
+### 五、★★★★ 「零调用方」在这族**不是缺陷，而是唯一入口**
+
+grep 全仓：`fetchOpsOverview` **零调用方**。但这一族与批 116 的两个零调用函数相反 ——
+桌面把 `/ops` 页面 `externalMaintainRedirect` 到独立 maintain 服务，
+而 `ops` **不在** `cmd/gateway/maintain_proxy.go:37-54` 的 `maintainCompatPrefixes` 里
+⇒ **这个 API 仍由本进程的 admin mux 提供**。
+⇒ 移动端这一页是**唯一**能读到它的 UI，「没有桌面调用方」不构成不做的理由。
+
+### 六、★★★★★★ 判据自己踩的三个坑（三个都是本批当场顶出来的）
+
+#### 6.1 ★★★★★★ 注释与代码矛盾 —— 判据直接把我自己的注释顶红
+
+新写的 `opsListSectionTotalsMatchLengths` 注释写「键缺失时返回 `false`
+（不是 `true`）：没取到不该被算成自洽」，而实现是**逐个存在才校验**
+⇒ 两个容器都缺时返回 `true` ⇒ **注释与代码直接矛盾**，用例当场红。
+
+⇒ 查清是**代码对、注释错**：两种语义各有各的用处，取决于**谁调它** ——
+· 给 UI 当红线开关用 ⇒ 缺键**不能**报红（子查询只是失败了，容器压根不存在）；
+· 给判据当不变式用 ⇒ 缺键**不构成违规**（空真）。
+
+⇒ 处置：**拆成两条**（布尔「有无违规」+ 清单「**是哪一段**不对」）。
+⇒ ★★★ 一般式：**别用「否定式布尔」同时表达「没取到」与「取到了但不对」**。
+这与批 116 那处 `full-width` 的教训同族：**注释与代码必须成对审**。
+
+#### 6.2 ★★★★★ 一条判据**恒真**，是变异台的 RED_NOT_MATCHED 顶出来的
+
+把 `totalsBad` 恒置真（S25）后，**只有** ⑦-5 转红，而我认为该转红的
+「两个容器都缺 ⇒ 不报」那条（⑦-7）**没红**。查因：
+
+★ 那条红线当时嵌在 `<template v-if="recentFaults">` 里
+⇒ 两个容器都缺时故障段整段不渲染 ⇒ **⑦-7 恒真**。
+
+⇒ 处置：把红线**搬到「采集完整性」段**（它是**响应级**不变式，与某一段取没取到无关），
+并补一条**阳性孪生** ⑦-7b：「故障段整段缺席、但升级段对不上 ⇒ 红线**必须**渲染」。
+若有人再把它嵌回去，⑦-7b 立刻红，而 ⑦-7 不会。
+
+⇒ ★★★★ **「红了但没命中」不能只当锚点写错**：这一条是**恒真判据**的唯一信号。
+判别动作：先问「**它为什么没红**」，再问「锚点写对了吗」。
+
+#### 6.3 ★★★★ 一条变异判 `NO_EFFECT`：守卫是**构造性死代码**
+
+删掉 `load()` 里的 `if (!allowed.value) return` ⇒ 毫无影响。
+查因：本页**不自动加载**，取数按钮又在 `v-else` 分支里
+⇒ 非超管时 `load()` **不可达** ⇒ 守卫是构造性死代码（防的是将来加 `onMounted`）。
+
+⇒ 按批 116 S4 的同一条纪律：**删变异，不补用例**（不为不可达输入写判据/变异），
+守卫本身保留作纵深防御；换成真正能咬的变异（把兜底段的 `v-if` 取反）。
+
+### 七、★★★ 本批的两个**真缺陷**（都当场修掉）
+
+1. ★★★★★ 模板里写 `rows!.generated_at` / `rows!.license_total` ——
+   `!` 只是**编译期**非空断言，运行时首屏 `rows` 就是 `null`
+   ⇒ `Cannot read properties of null` ⇒ **48 条用例整片红**。
+   ⇒ 处置：凡要**按存在与否分支**的顶层键，一律搬进 `<script setup>` 的受守卫 computed。
+   （与批 116 在 `NodesView.vue` 上踩的模板自动解包是**同一个区域**的两种翻车。）
+2. ★★★ `i18n:check` 抓到 `en-US ops.fresh.none = none` ——
+   **值 === 键名**，运行时显示裸键。⇒ 改成 `'(none)'`。
+
+### 八、★★★ 判据钉住的可证不变式（每条都有变异对着）
+
+| 组 | 不变式 |
+|---|---|
+| ② | 键数恒在 **2..12**；`generated_at` 恒秒精度（带小数点才是异常） |
+| ③ | `data_plane_tables` **恒在且六项齐全**（错误被吞成 `-1`）；哨兵 ≠ 缺键 |
+| ④ | 三个 `COUNT FILTER` 互斥 ⇒ 和 ≤ `total_instances`（**小于**也合法） |
+| ⑤ | 前三行恒是 `local`/`245`/`154`；占位行恒四 0；额外行不得**穿插**在前三行 |
+| ⑦ | `recent_faults.total ≤ open_events`；每行 `status === 'new'`；`total === events.length` |
+| ⑧⑨⑩ | `version` 可能是**空串**；`timestamp === created_at`；裸 `null` vs 键缺失**两种 nil 编码** |
+
+### 九、变异台：28 / 28 有牙
+
+其中 2 条是**语义等价改写**，必须**保持绿**（证明门不是恒红）：
+`0 === sectionCount.value` 换序、`row.created_at === row.timestamp` 换序。
+
+首轮 28 条里另有 6 条不是「判据没牙」，处置各不相同：
+· 5 条 `ANCHOR_NOT_UNIQUE` = **我的锚点字符串空格/换行没对上**（工装问题，不是判据问题）；
+· 1 条 `RED_NOT_MATCHED` = §6.2 那条**恒真判据**。
+
+### 十、验证
+
+| 项 | 结果 |
+|---|---|
+| 类型门 `vue-tsc -b` | rc=0（**先删 `tsbuildinfo` 再读数**） |
+| `css:check` / `touch:check` / `i18n:check` / `comment:check` | 四门 rc=0 |
+| `gate:selftest` | 5/5 |
+| `npm run build` | rc=0（`OpsOverviewView` 独立 chunk 23.13 kB / gzip 5.42 kB） |
+| 全量 | **7740 passed / 207 files**（1 skipped；基线 7656 / 206） |
+| 变异台 | **28 / 28 有牙**，被改文件逐字节还原 OK |
+| 十连跑 | **10 / 10 全绿**（每轮 7740 passed / 1 skipped） |
+
+> ⚠️ 十连跑全绿**不等于**此前记录的 flaky 已修复
+> （`ComplianceHitsView.spec.ts` / `RoutingOptView.spec.ts` 根因仍未查明）——
+> 本次**未复现**，只说明没抓到。
+
+### 十一、本批确认的一条纪律
+
+> ★★★★ **权限分档的依据是「服务端有没有租户维度」，不是「注册处挂了哪个中间件」。**
+>
+> 本族注册处挂着 `admin(...)`、中间件是真门（认证），
+> 但**门后面那道租户隔离压根不存在** ——
+> 若照「注册处是 admin 档 ⇒ 不设 requiresRole」的机械读法接线，
+> 就会把全平台机队与别人的许可证密钥递给 tenant_admin。
+> ⇒ 与批 116 那条「权限必须逐端点读 handler，不能按注册处/前缀/形参名推」是**同一条**，
+> 本批把它推到了终点：**连「服务端没有任何隔离代码」也要当成一种可读的形态**。

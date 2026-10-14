@@ -169,6 +169,13 @@ describe('navItemsFor', () => {
       'model-iq',
       'model-policies',
       'model-policy-audit',
+      // ★ 2026-10-14 第一百一十七批：运维总览
+      //   （`admin/handler.go:1091` 的 `admin(...)` = `AdminMiddleware`，**只认证不检 role**）
+      //   ⇒ 后端 tenant_admin 可读，但 11 条子查询**全是全局表**、**没有任何租户维度**
+      //   ⇒ 归第三类，只能**过度限制**到 super_admin（理由：那段会带出别人的
+      //   `license_key` / `hardware_hash` / `activation_code`）。
+      // ⚠️ 字母序：model-policy-audit < ops-overview < overrides
+      'ops-overview',
       'overrides',
       'proposals',
       'reconciliation',

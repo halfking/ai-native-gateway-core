@@ -793,6 +793,25 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'miq.title', requiresAuth: true, requiresRole: 'super_admin' },
   },
   {
+    // ★ 运维总览（2026-10-14 第一百一十七批）。
+    //   注册 `admin/handler.go:1091` `mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))`
+    //   —— 注册处**确实**是 admin 档（`AdminMiddleware`，`admin/auth.go:85-140` **只认证不检 role**），
+    //   而 `handleOpsOverview` 自己既不读 AuthContext 也不看 role。
+    // ★★★★ 但**归第三类**：本族**完全没有租户维度** —— 11 条子查询全是全局表，
+    //   取租户键的代码**根本不存在**（`grep tenant` 打不到不是遗漏，是设计上就没有）。
+    //   ⇒ 与批 115/116 同处置：**过度限制**到 'super_admin'。
+    //   理由不是洁癖：`offline_requests` 每行带别人的 `license_key` / `hardware_hash` /
+    //   `activation_code`，`deployment_nodes` 是全平台机队的 IP 与版本。
+    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（守卫只查 requiresAuth 与登录态）
+    //   ⇒ 这一行是为将来的守卫预留的，不是生效中的拦截；
+    //   视图内另有一层兜底（`OpsOverviewView.vue` 的 `opsv-nope` 段，兜的是「不发请求」）。
+    // ⚠️ 前端严于后端是**兜底不是修复** —— 后端这一族**没有门**可修。
+    path: '/ops-overview',
+    name: 'ops-overview',
+    component: () => import('@/views/OpsOverviewView.vue'),
+    meta: { titleKey: 'ops.title', requiresAuth: true, requiresRole: 'super_admin' },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),

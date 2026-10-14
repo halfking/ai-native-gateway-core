@@ -51,7 +51,6 @@ const KNOWN_ORPHANS: readonly string[] = [
   'boardOperational',
   'dataLifecycleStorage',
   'nativeTransport',
-  'opsOverview',
   'platformSettings',
   'requestActions',
   'sessionAnalyticsFilterOptions',
@@ -289,6 +288,18 @@ describe('孤儿棘轮', () => {
     //   ⇒ 席**不设** requiresRole ⇒ `AppDrawer.spec.ts` 的 superAdmin 白名单里
     //   **不该**出现 dispatch-journal（与 probe-queue / connection-registry 同一条纪律）。
     expect(currentOrphans()).not.toContain('dispatchJournal')
+  })
+
+  it('★★ 已接线的哨兵：opsOverview 不在孤儿里（第一百一十七批）', () => {
+    // ★ 运维总览接上了抽屉席与路由 ⇒ 棘轮清单同步删掉那一行。
+    //   权限成因是**第三类**：注册处 `admin/handler.go:1091` 是 `admin(...)`
+    //   （`AdminMiddleware` 只认证不检 role ⇒ 后端 tenant_admin **可读**），
+    //   但 `handleOpsOverview` 自己不检 role、11 条子查询**全是全局表**
+    //   ⇒ 服务端**完全没有租户维度** ⇒ 只能过度限制成 `requiresRole: 'super_admin'`，
+    //   所以 `AppDrawer.spec.ts` 的排序白名单里**必须**出现 ops-overview。
+    // ⇒ 两条判据合起来才覆盖「接上了」+「档位挂对了」；
+    //   只加抽屉席不改正那份白名单，「tenant_admin 少掉的只有这些」那条立刻红。
+    expect(currentOrphans()).not.toContain('opsOverview')
   })
 
   it('★★★ 反向护栏：api 内部的互相引用不得凭空产生可达性', () => {
