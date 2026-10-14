@@ -96,18 +96,18 @@ describe('ModelsView 模型目录双 tab', () => {
     const w = await mountView()
     const tabs = w.findAll('[role="tab"]')
     expect(tabs.length).toBe(2)
-    expect(tabs[0].text()).toContain(t('models.allModels'))
-    expect(tabs[1].text()).toContain('★')
-    expect(tabs[1].text()).toContain(String(1)) // featured_models 长度
+    expect(tabs[0]!.text()).toContain(t('models.allModels'))
+    expect(tabs[1]!.text()).toContain('★')
+    expect(tabs[1]!.text()).toContain(String(1)) // featured_models 长度
   })
 
   it('切到★推荐只列精选模型，切回全部又都回来', async () => {
     const w = await mountView()
-    await w.findAll('[role="tab"]')[1].trigger('click')
+    await w.findAll('[role="tab"]')[1]!.trigger('click')
     await flushPromises()
     expect(w.findAll('.model-catalog__card').length).toBe(1)
     expect(w.text()).toContain('fable-5-1')
-    await w.findAll('[role="tab"]')[0].trigger('click')
+    await w.findAll('[role="tab"]')[0]!.trigger('click')
     await flushPromises()
     expect(w.findAll('.model-catalog__card').length).toBe(2)
   })
@@ -117,7 +117,7 @@ describe('ModelsView 特色模型管理（canManage 分档）', () => {
   it('super_admin 看得到星标开关与保存按钮', async () => {
     const w = await mountView('super_admin')
     expect(w.findAll('.model-catalog__star').length).toBe(2)
-    await w.findAll('[role="tab"]')[1].trigger('click')
+    await w.findAll('[role="tab"]')[1]!.trigger('click')
     await flushPromises()
     expect(w.find('.model-catalog__save, .btn--primary').exists()).toBe(true)
   })
@@ -125,7 +125,7 @@ describe('ModelsView 特色模型管理（canManage 分档）', () => {
   it('非 super_admin 看不到星标开关与保存按钮', async () => {
     const w = await mountView('admin')
     expect(w.findAll('.model-catalog__star').length).toBe(0)
-    await w.findAll('[role="tab"]')[1].trigger('click')
+    await w.findAll('[role="tab"]')[1]!.trigger('click')
     await flushPromises()
     expect(w.find('.model-catalog__save').exists()).toBe(false)
   })
@@ -133,13 +133,13 @@ describe('ModelsView 特色模型管理（canManage 分档）', () => {
   it('★ 改一颗星后保存按钮才可用；保存要带上完整的精选列表', async () => {
     vi.mocked(saveFeaturedModels).mockResolvedValue({ status: 'ok' } as never)
     const w = await mountView('super_admin')
-    await w.findAll('[role="tab"]')[1].trigger('click')
+    await w.findAll('[role="tab"]')[1]!.trigger('click')
     await flushPromises()
     const saveBtn = () => w.findAll('button').find((b) => b.text() === t('models.saveFeatured'))
     // 未改动 ⇒ 禁用
     expect(saveBtn()?.attributes('disabled')).toBeDefined()
 
-    await w.findAll('.model-catalog__star')[0].trigger('click')   // 取消 fable-5-1
+    await w.findAll('.model-catalog__star')[0]!.trigger('click')   // 取消 fable-5-1
     await flushPromises()
     expect(saveBtn()?.attributes('disabled')).toBeUndefined()
 
