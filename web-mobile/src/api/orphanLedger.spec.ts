@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 
 /**
  * ★★★★★★ **孤儿棘轮门**（2026-10-08，第一百批）。
@@ -349,6 +349,56 @@ function currentOrphans(): string[] {
   const seen = reachableFromUi()
   return apiModules().filter((m) => !seen.has(m))
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// ★★★ 第一百三十三批：给「孤儿」这个量具本身加自证。
+//
+// 本判据把「可达」定义为 **import 可达**（UI 侧 import 图的传递闭包）。
+// 而流水线的完成口径是「**可达 UI 入口**」—— 这两者**不是一回事**，
+// 差别只有一处：**uiSourceBlob 把 src 下所有文件都当种子**，
+// 所以一个 api 模块只要被**任何**文件 import 就算「可达」，
+// **哪怕那个文件自己从没被任何视图或壳层挂载**（死面板）。
+//
+// ⇒ 这个代理口径目前是**对的**，但它是**碰巧对**的 ——
+//   和第 132 批 `router/index.ts` 上 `stripComments` 空操作一个味道。
+// ⇒ 下面三条把它钉住，让它从「碰巧对」变成「被看着」。
+// ══════════════════════════════════════════════════════════════════════════
+
+/**
+ * ★ 第一百三十二批修好的剥离顺序：**先按行删 `//`，再删块注释**。
+ *   顺序反了的话，`appNav.ts` 行注释里的 URL（`/api/maas/**`）会被当成
+ *   块注释起点，把大段真实代码当注释删掉。
+ */
+function stripComments(src: string): string {
+  return src.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')
+}
+
+/** 剥掉注释后的 UI 源码拼块（用于「注释不得伪造可达性」那一条）。 */
+function uiSourceBlobStripped(): string {
+  return stripComments(uiSourceBlob())
+}
+
+/** 直接从 UI 引到某个 api 模块的那些文件（相对 src）。 */
+function uiImportersOf(name: string): string[] {
+  const out: string[] = []
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        if (full === API_DIR) continue
+        walk(full)
+        continue
+      }
+      if (!/\.(ts|vue)$/.test(entry.name)) continue
+      if (entry.name.endsWith('.spec.ts')) continue
+      if (importsOf(readFileSync(full, 'utf8')).includes(name)) out.push(relative(ROOT, full))
+    }
+  }
+  walk(ROOT)
+  return out
+}
+
+
 
 
 describe('孤儿棘轮', () => {
@@ -731,5 +781,115 @@ describe('孤儿棘轮', () => {
         `${name} 是实际孤儿却没被登记`,
       ).toContain(name)
     }
+  })
+
+  // ══════════════════════════════════════════════════════════════════════
+  // ⑥ ★★★ 第 133 批：给「孤儿」这个**量具本身**加自证。
+  //   本判据把「可达」当成 import 可达（UI 侧 import 图的传递闭包），
+  //   而完成口径是「可达 UI 入口」。差别只有一处：
+  //   uiSourceBlob 把 src 下**所有**文件都当种子 ⇒ 一个死面板被删到没人引用，
+  //   但只要它自己还在树里、还 import 着那个 api 模块，判据就仍判「已接」。
+  //   下面三条把「碰巧对」变成「被看着」。
+  // ══════════════════════════════════════════════════════════════════════
+
+  it('⑥-1 ★★★★★ 剥掉注释后可达性不得改变（★ 注释不得伪造可达性）', () => {
+    // 判据扫的是原始源码（含注释）。若某个 UI 文件在**注释**里写了
+    // `from '@/api/xxx'`，那个模块会被算成「已接」而其实没人 import。
+    // ⇒ 用批 132 修好的剥离顺序再跑一遍，两边孤儿集合必须**完全一致**。
+    const raw = currentOrphans().sort()
+    const strippedAll = apiModules()
+    const strippedOrphans: string[] = []
+    const strippedSeen = new Set<string>()
+    const all = new Set(apiModules())
+    const queue = importsOf(uiSourceBlobStripped()).filter((n) => all.has(n))
+    while (queue.length > 0) {
+      const n = queue.shift() as string
+      if (strippedSeen.has(n)) continue
+      strippedSeen.add(n)
+      for (const dep of importsOf(stripComments(moduleSource(n)))) {
+        if (all.has(dep) && !strippedSeen.has(dep)) queue.push(dep)
+      }
+    }
+    for (const m of strippedAll) if (!strippedSeen.has(m)) strippedOrphans.push(m)
+    strippedOrphans.sort()
+
+    expect(strippedOrphans, '注释里出现了 `from "@/api/x"` 形态的假 import ⇒ 某个真孤儿被藏起来了').toEqual(raw)
+    expect(raw.length, '一条孤儿都没扫到 ⇒ 量具塌缩了').toBeGreaterThan(0)
+  })
+
+  it('⑥-2 ★★★★★ 「可达但无 views 直接引用」的模块必须逐个点名', () => {
+    // 这 5 个都是**有正当理由**的例外，必须逐个写下来：
+    //   · credentialWriteOps / mobileNode / nodeAudit —— 由共用面板引入
+    //     （⑥-3 会验这些面板**确实被挂载**）
+    //   · nodeHealthTimeline —— api→api 委托（nodeHealth 转发）
+    //   · transport —— api→api 委托
+    // ⚠️ 若有人新接了「经由面板/委托」而没进这张表，这条会红 ——
+    //   那正是它该做的：例外必须被登记，不能悄悄存在。
+    const seen = reachableFromUi()
+    const EXPECTED = ['credentialWriteOps', 'mobileNode', 'nodeAudit', 'nodeHealthTimeline', 'transport']
+    const actual = apiModules()
+      .filter((m) => seen.has(m))
+      .filter((m) => uiImportersOf(m).every((f) => !f.startsWith('views/')))
+      .sort()
+    expect(actual, '这些模块没有任何视图直接引用（须逐个登记理由，或改成有视图入口）').toEqual(EXPECTED)
+  })
+
+  it('⑥-3 ★★★★★ 非视图引用方**确实被挂载**（死面板不得伪装成 UI 入口）', () => {
+    // ★ 这是本组的关键一条：⑥-2 只保证「例外被点名」，
+    //   而 ⑥-3 保证这些例外**真的能被人点到** ——
+    //   即引用它们的那个面板/组件自己**不是死文件**（至少被一个非 spec 文件引用）。
+    const seen = reachableFromUi()
+    const noViewDirect = apiModules()
+      .filter((m) => seen.has(m))
+      .filter((m) => uiImportersOf(m).every((f) => !f.startsWith('views/')))
+
+    expect(noViewDirect.length, '一组都没扫到 ⇒ 判据量具坏了').toBeGreaterThan(0)
+
+    const dead: string[] = []
+    for (const m of noViewDirect) {
+      for (const importer of uiImportersOf(m)) {
+        const base = importer.replace(/\.(ts|vue)$/, '')
+        const stem = base.split('/').pop() as string
+        // 谁引用了这个引用方？至少要被一个**非 spec** 文件提到。
+        // ⚠️⚠️ 挂载方式**不只一种**，第一版只认 `import … from` ⇒ 误判：
+        //   这三个面板都是通过**组件标签**被用的（Options API 的 components
+        //   注册 / 模板里的 `<XxxSheet />`），没有对应的 import 语句。
+        //   ⇒ 只按 import 判「有没有被引用」，会把**活着的**面板判成死的。
+        const mounted =
+          // ① import 语句（跨行 ⇒ 必须在整块上做多行正则）
+          new RegExp(`import[\\s\\S]{0,300}?from\\s+['"][^'"]*${stem}['"]`).test(uiSourceBlobStripped()) ||
+          // ② 模板里的组件标签 <XxxSheet …>
+          new RegExp(`<\\s*${stem}[\\s/>]`).test(uiSourceBlobStripped()) ||
+          // ③ Options API 的 `components: { XxxSheet }` 注册
+          new RegExp(`components\\s*:\\s*\\{[^}]*\\b${stem}\\b`).test(uiSourceBlobStripped())
+        if (!mounted) dead.push(`${m} ← ${importer}（这个引用方自己没人引用）`)
+      }
+    }
+    expect(dead, `这些引用方是**死文件** ⇒ 判据把它们算成「已接 UI」，实际用户点不到：\n  ${dead.join('\n  ')}`).toEqual([])
+  })
+
+  it('⑥-4 ★★★★ 钉住 ⑥-1 / ⑥-2 的**集合比对形态**（★ 治「更弱但仍为真」的变异）', () => {
+    // ★★★★ 变异台 Q02 / Q04 把两条的断言**换成更弱但当前仍为真**的表达式：
+    //   ⑥-1  toEqual(raw)          → strippedOrphans.length >= raw.length
+    //   ⑥-2  toEqual(EXPECTED)     → actual.length <= EXPECTED.length
+    //   两条在当前数据上**都仍然为真** ⇒ 变异台判 NO_RED。
+    //
+    // ⇒ 这是第 129 批定下的那一族：**判据被削弱时无法察觉自己被削弱**。
+    //   治法只有一个：**从源码把「强形态」钉住** —— 否则哪天有人顺手把它改成
+    //   「长度不小于」，没人会看见，而集合比对（本次唯一的承重件）就没了。
+    //
+    // ⚠️ 本条的形状与本文件里已有的「钉判据自身」那几条同族，属**僵尸断言**：
+    //   只在「自己被改」时才红。它的价值在于把「别悄悄削弱它」写成门。
+    const self = readFileSync(join(API_DIR, 'orphanLedger.spec.ts'), 'utf8')
+    // ⑥-1：必须是**集合**相等，不是长度比较
+    expect(
+      self,
+      '⑥-1 的集合比对被削弱了 ⇒ 注释伪造可达性又会被放过',
+    ).toMatch(/expect\(strippedOrphans,[^\n]*\)\.toEqual\(raw\)/)
+    // ⑥-2：登记表必须**逐个相等**，不是长度上界
+    expect(
+      self,
+      '⑥-2 的登记表比对被削弱了 ⇒ 例外可以名存实亡',
+    ).toMatch(/expect\(actual,[^\n]*\)\.toEqual\(EXPECTED\)/)
   })
 })
