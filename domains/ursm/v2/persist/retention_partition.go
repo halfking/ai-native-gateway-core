@@ -220,6 +220,14 @@ func (w *SnapshotRetentionWorker) dropPartition(ctx context.Context, name string
 	}
 
 	// 事务级互斥：同一时刻全网只有一台实例能进 DROP 分支。
+	// pg_try_advisory_xact_lock 本身是非阻塞的（try 模式），但它仍然遵守
+	// SET LOCAL lock_timeout：若沿用 5min，advisory 拿不到锁时本端会等满 5min
+	// 才返回 false——这是浪费（try 语义本应立即失败）。把 lock_timeout 临时设
+	// 为 0 让 advisory 立刻返回，advisory 拿回后再恢复 5min 保护后续 DROP TABLE
+	// 的表锁等待。
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '0'`); err != nil {
+		return fmt.Errorf("set lock_timeout=0 for advisory lock: %w", err)
+	}
 	var gotLock bool
 	if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock($1)`, snapshotRetentionLockKey).
 		Scan(&gotLock); err != nil {
@@ -227,6 +235,10 @@ func (w *SnapshotRetentionWorker) dropPartition(ctx context.Context, name string
 	}
 	if !gotLock {
 		return fmt.Errorf("%s: %w", name, errPartitionHeldByPeer)
+	}
+	// 恢复 lock_timeout=5min 保护后续 DROP TABLE 的 ACCESS SHARE 锁等待。
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '5min'`); err != nil {
+		return fmt.Errorf("restore lock_timeout=5min for drop: %w", err)
 	}
 
 	stmt := `DROP TABLE ` + pgx.Identifier{"public", name}.Sanitize()

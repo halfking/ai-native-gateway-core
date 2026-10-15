@@ -3,6 +3,7 @@ package credential
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -164,6 +165,10 @@ func (w *Writer) SetCredentialUnavailable(ctx context.Context, credentialID int,
 	}
 	// P0-C：PenaltyNone（client_bug / shape / content_filter…）永不冷却凭据。
 	if errorsx.PenaltyOf(failure.Kind).Target == errorsx.PenaltyNone {
+		// 防归责矩阵被改导致静默失效：留下 debug 级轨迹，便于事后
+		// grep 凭据冷却缺位的根因（按口径应是 client-side 错误）。
+		slog.Debug("credential/writer: skipping cool for PenaltyNone",
+			"kind", failure.Kind, "credential_id", credentialID)
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -228,6 +233,10 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 	}
 	// P0-C：归责 none 的失败不写冷却/配额态（避免形状 400 级联摘节点）。
 	if errorsx.PenaltyOf(failure.Kind).Target == errorsx.PenaltyNone {
+		// 与 SetCredentialUnavailable 同样的防静默失效轨迹：
+		// 万一 errorsx.PenaltyOf 误判 kind 归 none，本路径不会被日志暴露。
+		slog.Debug("credential/writer: skipping WriteOnError cool for PenaltyNone",
+			"kind", failure.Kind, "credential_id", credentialID, "raw_model", rawModel)
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
