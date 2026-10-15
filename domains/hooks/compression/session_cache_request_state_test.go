@@ -3,6 +3,7 @@ package compression
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/stretchr/testify/require"
 	"strings"
 	"sync"
@@ -131,3 +132,94 @@ func TestGoReviewRecoveryUsesOneStateBodyPair(t *testing.T) {
 // Both writes must decide inheritance from the pair held by Update. An earlier
 // rejected snapshot must neither resurrect unsafe lineage nor erase a newer
 // safe writer's metadata.
+func TestCacheWriteRechecksCurrentGuardPair(t *testing.T) {
+	for _, shared := range []bool{false, true} {
+		for _, final := range []bool{false, true} {
+			for _, safeCurrent := range []bool{false, true} {
+				name := fmt.Sprintf("shared=%v/final=%v/safe_current=%v", shared, final, safeCurrent)
+				t.Run(name, func(t *testing.T) {
+					var backend SessionCacheBackend
+					if shared {
+						backend = newSharedTestRedis(t)
+					}
+					cache := NewSessionCache(backend, nil)
+					ctx := WithGeneratedTextGuard(context.Background(), func(_ context.Context, text string) (string, error) {
+						return strings.ReplaceAll(text, "UncheckedSecret", "redacted"), nil
+					})
+					unsafe := []byte(`{"messages":[{"role":"user","content":"UncheckedSecret"}]}`)
+					currentBody := unsafe
+					if safeCurrent {
+						currentBody = []byte(`{"messages":[{"role":"user","content":"safe current"}]}`)
+					}
+					current := sharedState(currentBody, "")
+					current.HasCutMarker = true
+					current.CutIndex = 7
+					current.CutStrategy = "current-strategy"
+					current.AuditScore = 8
+					current.CompletedTasks = 5
+					require.NoError(t, cache.Set(ctx, "shared-tenant", "gw_shared001", current, currentBody))
+					body := []byte(`{"messages":[{"role":"user","content":"safe request"}]}`)
+					sc := NewSessionCompressor(SessionCompressorDeps{Cache: cache})
+					res := &PrepareResult{MsgCount: 1}
+					if final {
+						require.NoError(t, sc.CommitFinal(ctx, "shared-tenant", "gw_shared001", body, res))
+					} else {
+						sc.updateCache(ctx, "shared-tenant", "gw_shared001", sharedState(unsafe, ""), body, res, false, false)
+					}
+					got, _, err := cache.GetOrLoad(ctx, "shared-tenant", "gw_shared001")
+					require.NoError(t, err)
+					require.NotNil(t, got)
+					if safeCurrent {
+						require.True(t, got.HasCutMarker)
+						require.Equal(t, 7, got.CutIndex)
+						require.Equal(t, 8, got.AuditScore)
+						require.Equal(t, 5, got.CompletedTasks)
+					} else {
+						require.False(t, got.HasCutMarker)
+						require.Zero(t, got.CutIndex)
+						require.Empty(t, got.CutStrategy)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestToolsHashDeltaSurvivesFinalBodyRestoration(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_COMPRESSION_MODE", "3")
+	cache := NewSessionCache(newSharedTestRedis(t), nil)
+	ctx := context.Background()
+	a := []byte(`{"messages":[{"role":"user","content":"seed"}],"tools":[{"type":"function","function":{"name":"A"}}]}`)
+	b := []byte(`{"messages":[{"role":"user","content":"seed"}],"tools":[{"type":"function","function":{"name":"B"}}]}`)
+	state := sharedState(a, "")
+	var top map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(a, &top))
+	hashA := sha256Hex(top["tools"])
+	state.ToolsHash = hashA
+	require.NoError(t, cache.Set(ctx, "shared-tenant", "gw_shared001", state, a))
+	sc := NewSessionCompressor(SessionCompressorDeps{Cache: cache})
+	request := []byte(`{"messages":[{"role":"user","content":"seed"},{"role":"user","content":"next"}],"tools":[{"type":"function","function":{"name":"A"}}]}`)
+	res := sc.Prepare(ctx, request, "shared-tenant", "gw_shared001", "openai", 128000, false)
+	require.NoError(t, json.Unmarshal(res.OutboundBody, &top))
+	require.NotEmpty(t, top["_tools_cached"], "cached-tools premise must be exercised")
+	latest := sharedState(b, "")
+	require.NoError(t, json.Unmarshal(b, &top))
+	latest.ToolsHash = sha256Hex(top["tools"])
+	latest.AuditScore = 9
+	latest.CompletedTasks = 7
+	require.NoError(t, cache.Set(ctx, "shared-tenant", "gw_shared001", latest, b))
+	require.NoError(t, sc.CommitFinal(ctx, "shared-tenant", "gw_shared001", a, res))
+	got, body, err := cache.GetOrLoad(ctx, "shared-tenant", "gw_shared001")
+	require.NoError(t, err)
+	require.Equal(t, hashA, got.ToolsHash)
+	require.Equal(t, 9, got.AuditScore)
+	require.Equal(t, 7, got.CompletedTasks)
+	require.Equal(t, string(a), string(body))
+	// Requests with no tools must not overwrite a newer tools decision with a
+	// stale snapshot; the replacement concerns only fields this request carries.
+	plain := []byte(`{"messages":[{"role":"user","content":"no tools"}]}`)
+	require.NoError(t, sc.CommitFinal(ctx, "shared-tenant", "gw_shared001", plain, &PrepareResult{}))
+	got, _, err = cache.GetOrLoad(ctx, "shared-tenant", "gw_shared001")
+	require.NoError(t, err)
+	require.Equal(t, hashA, got.ToolsHash)
+}
