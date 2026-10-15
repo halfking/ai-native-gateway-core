@@ -100,12 +100,13 @@ if [[ -n "$VIA" ]]; then
   # 进 docker build 上下文、留在镜像层里（docker history 就能翻出来）。
   # ._* / .DS_Store 排除：macOS 同步到 Linux 时 AppleDouble 元数据会进 go:embed，
   # i18n 加载 `._ar.json` 直接 panic invalid character '\x00'。见真机 2026-10-13 翻车。
-  # ⚠ dist 只排顶层 ./dist：`--exclude=dist`（无斜杠）按 basename 匹配任意
-  # 层级，会把 web/dist、web-mobile/dist 一并排掉——网关 root 的 admin SPA 与
-  # /m 移动端随之消失，llm.itestu.cn 打开只剩版本 JSON（2026-10-15 实测）。
-  # 前端 dist 由部署机预构建后随 tar 上树（见下方 web 种子段）。
+  # ⚠ 不要排除任何形态的 dist：macOS bsdtar 的 exclude 对无通配模式也按
+  # 「任意尾部路径段」语义匹配（实测 --exclude=dist 与 --exclude=./dist 都会
+  # 命中 web/dist），root 的 admin SPA 与 /m 移动端就没了——llm.itestu.cn
+  # 打开只剩版本 JSON（2026-10-15 两轮实测）。目标树每次同步前整体 rm -rf
+  # 重建，陈旧 dist 残留不成立；前端 dist 由部署机预构建后随树上树。
   tar -C "$D211_REPO_ROOT" \
-      --exclude=.git --exclude=node_modules --exclude=./dist --exclude=build \
+      --exclude=.git --exclude=node_modules --exclude=build \
       --exclude=.build-local \
       --exclude='*.log' --exclude='.env' --exclude='.env.*' \
       --exclude='._*' --exclude='.DS_Store' \

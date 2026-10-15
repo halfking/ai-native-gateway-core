@@ -282,16 +282,15 @@ for _v in D211_GO_BASE_IMAGE D211_RUNTIME_BASE_IMAGE D211_BASE_REGISTRY; do
   fi
 done
 # ── Web 前端腿（2026-10-15）：root SPA / /m 移动端 / 版本元数据 ─────────
-# 形态钉桩：tar 排除必须收窄到顶层 ./dist（裸 --exclude=dist 按 basename
-# 匹配会把 web/dist、web-mobile/dist 一并排掉，root 只剩版本 JSON——
-# llm.itestu.cn 打不开管理页的根因）；种子+挂载+env 三件必须成套。
-# 判据剥掉注释行再匹配：脚本的警告注释里会引用裸 --exclude=dist 字样作说明
+# 形态钉桩：tar 同步**不得**带任何形态的 dist 排除——macOS bsdtar 的 exclude
+# 对无通配模式也按「任意尾部路径段」语义匹配（--exclude=dist 与
+# --exclude=./dist 实测都命中 web/dist），root 只剩版本 JSON——这是
+# llm.itestu.cn 打不开管理页的根因；种子+挂载+env 三件必须成套。
 _nocomment="$(grep -vE '^[[:space:]]*#' "$SCRIPT")"
-if printf '%s' "$_nocomment" | grep -q -- "--exclude=\./dist" \
-   && ! printf '%s' "$_nocomment" | grep -q -- "--exclude=dist"; then
-  ok "tar 同步排除收窄为顶层 ./dist（web/dist、web-mobile/dist 随树上树）"
+if printf '%s' "$_nocomment" | grep -qE -- "--exclude=(\./)?dist"; then
+  bad "tar 同步仍带 dist 排除（bsdtar 尾段语义会排掉 web/dist，root SPA 缺失根因）"
 else
-  bad "tar 排除未收窄：裸 --exclude=dist 会排掉 web/dist（root SPA 缺失根因）"
+  ok "tar 同步不带任何 dist 排除（web/dist、web-mobile/dist 随树上树）"
 fi
 for _pat in 'LLM_GATEWAY_STATIC_DIR=/app/web/dist' 'MOBILE_WEB_DIST=/app/web-mobile/dist' '/app/version.json:ro'; do
   if grep -qF "$_pat" "$SCRIPT"; then
