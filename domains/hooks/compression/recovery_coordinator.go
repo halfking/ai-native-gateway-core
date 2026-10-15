@@ -133,15 +133,12 @@ func (rc *RecoveryCoordinator) Recover(
 		}
 	}
 	if attempt == 0 && rc.deps.Cache != nil && gwSessionID != "" {
-		if state, _, _ := rc.deps.Cache.GetOrLoad(ctx, tenantID, gwSessionID); state != nil && state.HasCutMarker && sanitizeGenerationMatches(ctx, state.SanitizeMapGeneration) {
+		if state, cachedBody, _ := rc.deps.Cache.GetOrLoad(ctx, tenantID, gwSessionID); state != nil && state.HasCutMarker && sanitizeGenerationMatches(ctx, state.SanitizeMapGeneration) {
 			marker := state.ToCutMarker("")
 			if marker != nil && !marker.IsExpired(sessionCacheRedisTTL()) {
-				// The summary text is in L1 only; try to get it from cache.
-				_, l1Body, _ := rc.deps.Cache.GetOrLoad(ctx, tenantID, gwSessionID)
-				if l1Body != nil {
-					// Extract summary from the cached L1 body (the first
-					// non-system user message with smartWindowSummaryPrefix).
-					marker.SummaryText = extractSummaryFromCachedBody(l1Body)
+				// The marker and summary must come from the same confirmed pair.
+				if cachedBody != nil {
+					marker.SummaryText = extractSummaryFromCachedBody(cachedBody)
 				}
 				var rebuilt []byte
 				var ok bool

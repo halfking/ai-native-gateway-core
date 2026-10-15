@@ -186,6 +186,9 @@ type PrepareResult struct {
 	cacheStripMsgs           int
 	cacheStripTokens         int
 	cacheCompletedTasksDelta int
+	// Replacement metadata for this request, retained through CommitFinal's
+	// tools restoration. Unlike counters, assigning it again is idempotent.
+	cacheToolsHash string
 
 	// compressionExecuted (2026-10-01 第十八轮审计) marks that THIS call ran a
 	// compressor (mechanical trim / LLM summary / sliding-window rewrite), as
@@ -396,6 +399,7 @@ func (sc *SessionCompressor) Prepare(
 	var memoInputForStore []byte
 
 	// ── Phase 3: Tools caching ────────────────────────────────────────────
+	res.cacheToolsHash = toolsHashFromBody(outboundBody)
 	var toolsCached bool
 	if state != nil {
 		outboundBody, toolsCached = applyToolsCaching(outboundBody, state)
@@ -944,8 +948,8 @@ func (sc *SessionCompressor) updateCache(
 	if sc.deps.Cache == nil {
 		return
 	}
-	if err := sc.deps.Cache.Update(ctx, tenantID, gwSessionID, func(current *SessionState, _ []byte) (*SessionState, []byte, error) {
-		if current != nil && !sanitizeGenerationMatches(ctx, current.SanitizeMapGeneration) {
+	if err := sc.deps.Cache.Update(ctx, tenantID, gwSessionID, func(current *SessionState, currentBody []byte) (*SessionState, []byte, error) {
+		if current != nil && (!sanitizeGenerationMatches(ctx, current.SanitizeMapGeneration) || !cachedBodyPassesGuard(ctx, currentBody)) {
 			current = nil
 		}
 		newState := buildSessionState(current, outboundBody, res, didCompress, time.Now().Unix())
@@ -1005,6 +1009,9 @@ func (sc *SessionCompressor) CommitFinal(
 	if err := ValidateSessionID(gwSessionID); err != nil {
 		return fmt.Errorf("commit final session cache failed: %w (session_id=%s)", err, gwSessionID)
 	}
+	if toolsHash := toolsHashFromBody(finalBody); toolsHash != "" {
+		res.cacheToolsHash = toolsHash
+	}
 	res.OutboundBody = append(res.OutboundBody[:0], finalBody...)
 	res.MsgCount = countMessages(finalBody)
 	res.TokenEst = estimateBodyTokens(finalBody)
@@ -1013,8 +1020,8 @@ func (sc *SessionCompressor) CommitFinal(
 	if _, report, err := prefix.Stabilize(finalBody, prefix.Options{TailTurns: 1}); err == nil && report != nil {
 		res.CompressedPrefixHash = report.PrefixHash
 	}
-	if err := sc.deps.Cache.Update(ctx, tenantID, gwSessionID, func(current *SessionState, _ []byte) (*SessionState, []byte, error) {
-		if current != nil && !sanitizeGenerationMatches(ctx, current.SanitizeMapGeneration) {
+	if err := sc.deps.Cache.Update(ctx, tenantID, gwSessionID, func(current *SessionState, currentBody []byte) (*SessionState, []byte, error) {
+		if current != nil && (!sanitizeGenerationMatches(ctx, current.SanitizeMapGeneration) || !cachedBodyPassesGuard(ctx, currentBody)) {
 			current = nil
 		}
 		state := buildSessionState(current, finalBody, res, res.SummaryMarker != "", time.Now().Unix())
@@ -1041,6 +1048,9 @@ func buildSessionState(prevState *SessionState, outboundBody []byte, res *Prepar
 		state.TokensAfterStrip = res.cacheStripTokens
 	}
 	state.CompletedTasks += res.cacheCompletedTasksDelta
+	if res.cacheToolsHash != "" {
+		state.ToolsHash = res.cacheToolsHash
+	}
 	state.SchemaVersion = schemaVersion
 	state.LastOutboundHash = sha256Hex(outboundBody)
 	state.MsgCount = res.MsgCount
@@ -1335,6 +1345,16 @@ func marshalHashes(hashes []MsgHash) json.RawMessage {
 	}
 	b, _ := json.Marshal(hashes)
 	return b
+}
+
+// toolsHashFromBody returns a delta only when this exact request carries tools.
+// An absent field leaves a concurrent writer's tools metadata untouched.
+func toolsHashFromBody(body []byte) string {
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal(body, &envelope) != nil || len(envelope["tools"]) == 0 {
+		return ""
+	}
+	return sha256Hex(envelope["tools"])
 }
 
 // applyToolsCaching checks if tools array has changed since last request.
