@@ -48,8 +48,12 @@ package admin
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"net/http"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // DataHorizonHeader 携带告示的响应头（仅 data-horizon 端点自身）。
@@ -121,12 +125,32 @@ func dataHorizonNoticeForUnknown() (*DataHorizonNotice, bool) {
 	}, true
 }
 
-// sessionTurnsHotMaxTS 读会话族热表的最大时刻。热表带 ts 索引（798），
+// horizonQueryRower 是 sessionTurnsHotMaxTS 的最小查询面——*pgxpool.Pool 与
+// pgxmock 池都满足它，让空表 NULL 扫描路径可以在单测里逐格驱动。
+type horizonQueryRower interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// sessionTurnsHotMaxTSFrom 读会话族热表的最大时刻。热表带 ts 索引（798），
 // MAX 走索引尾扫。表缺失（未迁移/lite）归 unknown 分支，不是 stale。
+//
+// ⚠ 空表时 MAX 返回 SQL NULL——必须扫进可空类型再归一为零值；直接扫
+// time.Time 会报 "cannot scan NULL" → 空库被误报成 unknown（本地 2646
+// 首测抓到）。零值由纯函数按「有流量但无记录 = 断流」裁决。
+func sessionTurnsHotMaxTSFrom(ctx context.Context, q horizonQueryRower) (time.Time, error) {
+	var maxTS sql.NullTime
+	err := q.QueryRow(ctx, `SELECT MAX(ts) FROM public.session_turns_hot`).Scan(&maxTS)
+	if err != nil || !maxTS.Valid {
+		return time.Time{}, err
+	}
+	return maxTS.Time.UTC(), nil
+}
+
 func (h *Handler) sessionTurnsHotMaxTS(ctx context.Context) (time.Time, error) {
-	var maxTS time.Time
-	err := h.db.QueryRow(ctx, `SELECT MAX(ts) FROM public.session_turns_hot`).Scan(&maxTS)
-	return maxTS.UTC(), err
+	if h.db == nil {
+		return time.Time{}, errors.New("no database pool")
+	}
+	return sessionTurnsHotMaxTSFrom(ctx, h.db)
 }
 
 // dataHorizonNotice 是接线层：读两个真信号，交给纯函数裁决。

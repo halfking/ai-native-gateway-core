@@ -17,6 +17,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"os"
@@ -24,6 +25,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pashagolub/pgxmock/v4"
 )
 
 // readAdminSourceFile 按文件名读 admin 包源码（形状钉子用）。
@@ -227,6 +230,52 @@ func TestHubTrafficSignalCountsBusinessOnly(t *testing.T) {
 	}
 }
 
+// TestSessionTurnsHotMaxTSHandlesNULL —— 空表的 NULL 扫描钉子。
+//
+// 本地 2646 首测抓到的实现 bug：MAX(ts) 在空表上返回 SQL NULL，直接扫进
+// time.Time 报 "cannot scan NULL" → 空库被误报成 unknown。修法是扫
+// sql.NullTime 并归一为零值（零值由纯函数按「有流量但无记录 = 断流」
+// 裁决，而不是当成「读不到」）。
+func TestSessionTurnsHotMaxTSHandlesNULL(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock: %v", err)
+	}
+	defer mock.Close()
+
+	t.Run("空表 NULL ⇒ 零值且无错", func(t *testing.T) {
+		mock.ExpectQuery(`SELECT MAX\(ts\) FROM public\.session_turns_hot`).
+			WillReturnRows(pgxmock.NewRows([]string{"max"}).AddRow(nil))
+		ts, err := sessionTurnsHotMaxTSFrom(context.Background(), mock)
+		if err != nil {
+			t.Fatalf("空表 MAX(NULL) 不应报错（那会把空库误报成 unknown）：%v", err)
+		}
+		if !ts.IsZero() {
+			t.Errorf("空表 MAX 应归一为零值，got %v", ts)
+		}
+	})
+
+	t.Run("有值 ⇒ 原样返回", func(t *testing.T) {
+		want := time.Date(2026, 10, 15, 5, 51, 53, 0, time.UTC)
+		mock.ExpectQuery(`SELECT MAX\(ts\) FROM public\.session_turns_hot`).
+			WillReturnRows(pgxmock.NewRows([]string{"max"}).AddRow(want))
+		ts, err := sessionTurnsHotMaxTSFrom(context.Background(), mock)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !ts.Equal(want) {
+			t.Errorf("got %v, want %v", ts, want)
+		}
+	})
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("pgxmock expectations: %v", err)
+	}
+}
+//
+// 板上所有 fallback 查询（summary/trends/pies/drill/overview counts）走
+// boardRequestLogsFromClause；本门钉住它 FROM 会话族两腿（hot ∪ parent），
+// 且不再是纯 v1 的 without_customer_id 包装视图。
 // TestBoardFallbackSourceIsSessionFamily —— 看板 fallback 换源的形状钉子。
 //
 // 板上所有 fallback 查询（summary/trends/pies/drill/overview counts）走
