@@ -816,8 +816,161 @@ onBeforeUnmount(() => {
             /><button class="btn" :disabled="busy" @click="applyAdvanced">
               {{ t("sanitizeRules.applyJson") }}
             </button>
-          </details> </template
-        >
+          </details>
+          <div class="publish card">
+            <span v-if="linked.length"
+              >{{ t("sanitizeRules.linked") }}: {{ linked.join(", ") }}</span
+            >
+            <p v-if="linked.length" class="muted">
+              {{ t(editingMatched ? "sanitizeRules.editMatchedHint" : "sanitizeRules.scopedHint") }}
+            </p>
+            <label
+              >{{ t("sanitizeRules.comment")
+              }}<input
+                v-model="comment"
+                data-test="publish-comment"
+                maxlength="2000"
+                :disabled="busy"
+            /></label>
+            <div class="toolbar">
+              <button
+                class="btn"
+                data-test="validate"
+                :disabled="busy || !draft.rules.length"
+                @click="validate"
+              >
+                {{ t("sanitizeRules.validate") }}</button
+              ><span v-if="valid">{{ t("sanitizeRules.valid") }}</span
+              ><button
+                class="btn btn-primary"
+                data-test="publish"
+                :disabled="
+                  busy ||
+                  !valid ||
+                  head.version === 0 ||
+                  conflict ||
+                  advancedDirty
+                "
+                @click="publish"
+              >
+                {{
+                  busy ? t("sanitizeRules.busy") : t("sanitizeRules.publish")
+                }}
+              </button>
+            </div>
+          </div> </template
+        ><button v-else class="btn" @click="loadCurrent(true)">
+          {{ t("sanitizeRules.retry") }}
+        </button>
+      </section>
+      <section v-if="tab === 'events'" :aria-busy="eventLoading">
+        <p class="muted">{{ t("sanitizeRules.reviewOnly") }}</p>
+        <form class="toolbar" @submit.prevent="loadEvents">
+          <label
+            >{{ t("sanitizeRules.status")
+            }}<select v-model="statusFilter">
+              <option value="">{{ t("sanitizeRules.all") }}</option>
+              <option
+                v-for="status in [
+                  'pending',
+                  'confirmed_sensitive',
+                  'false_positive',
+                  'ignored',
+                ]"
+                :key="status"
+                :value="status"
+              >
+                {{ labels[status] }}
+              </option>
+            </select></label
+          ><label
+            >{{ t("sanitizeRules.action")
+            }}<select v-model="actionFilter">
+              <option value="">{{ t("sanitizeRules.all") }}</option>
+              <option
+                v-for="action in [
+                  'mask',
+                  'block',
+                  'log',
+                  'exempted',
+                  'pending',
+                ]"
+                :key="action"
+              >
+                {{ action }}
+              </option>
+            </select></label
+          ><button class="btn" :disabled="eventLoading">
+            {{ t("sanitizeRules.filter") }}
+          </button>
+        </form>
+        <p v-if="eventError" role="alert" class="error-banner">
+          {{ eventError }}
+        </p>
+        <p v-if="eventLoading">{{ t("sanitizeRules.loading") }}</p>
+        <p v-else-if="!events.length && !eventError">
+          {{ t("sanitizeRules.empty") }}
+        </p>
+        <article v-for="event in events" :key="event.id" class="card event">
+          <div class="toolbar">
+            <strong>#{{ event.id }} · {{ event.rule_id }}</strong
+            ><span
+              >{{ event.tenant_id }} · v{{ event.version }} ·
+              {{ event.phase }} / {{ event.action }}</span
+            ><span>{{ labels[event.status] }}</span
+            ><span>×{{ event.count }}</span>
+          </div>
+          <code>{{ event.sample_masked }}</code
+          ><small
+            >{{ date(event.first_seen) }} → {{ date(event.last_seen) }}</small
+          >
+          <p v-if="event.resolved_version">
+            {{ t("sanitizeRules.linked") }}: v{{ event.resolved_version }}
+          </p>
+          <label
+            >{{ t("sanitizeRules.reviewComment")
+            }}<input
+              v-model="reviewComments[event.id]"
+              :data-test="'review-comment-' + event.id"
+              maxlength="2000"
+              :disabled="reviewBusy !== null"
+          /></label>
+          <div class="toolbar">
+            <button
+              v-for="status in [
+                'confirmed_sensitive',
+                'false_positive',
+                'ignored',
+              ] as const"
+              :key="status"
+              class="btn"
+              :data-test="'review-' + status + '-' + event.id"
+              :disabled="reviewBusy !== null"
+              @click="review(event, status)"
+            >
+              {{ labels[status] }}</button
+            ><button
+              v-if="superAdmin && event.status !== 'pending'"
+              class="btn"
+              :data-test="'edit-event-' + event.id"
+              :disabled="busy || !head"
+              @click="draftEvent(event, true)"
+            >
+              {{ t("sanitizeRules.editMatched") }}
+            </button><button
+              v-if="superAdmin && event.status !== 'pending'"
+              class="btn"
+              :data-test="'draft-event-' + event.id"
+              :disabled="busy || !head"
+              @click="draftEvent(event)"
+            >
+              {{ t("sanitizeRules.draftEvent") }}
+            </button>
+          </div>
+          <small v-if="event.reviewer"
+            >{{ event.reviewer }} · {{ event.review_comment }}</small
+          >
+        </article>
       </section>
     </template>
   </main>
