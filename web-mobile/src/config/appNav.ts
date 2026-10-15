@@ -627,6 +627,24 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.storageMigrationState',
     requiresRole: 'admin',
   },
+  // ★ 轮次列表的筛选候选值（2026-10-15 第一百二十七批）——
+  //   `admin/handler.go:1299` 的 `admin(...)` ⇒ **服务端没有角色下限**
+  //   （`admin := h.admin` → AdminMiddleware，supportedRole 接受 "user"）。
+  //   ★ 'admin' 档两条独立理由：
+  //     （甲）需要：载荷是**租户级聚合清单**（全租户用过的模型/供应商/客户端/负责人/标签），
+  //           不是某个用户自己的数据；
+  //     （乙）不过度限制：每个维度都拼了 tenantWhere ⇒ 租户内数据。
+  //   ★★ 模块头原写「admin 档 ⇒ 抽屉席不设 requiresRole」——**第四个**写下这句错的模块
+  //     （批 121/122/123 已因同一句话返工）。
+  //   ⚠️ 'admin' 档**不得**进 AppDrawer.spec.ts 的 superAdmin 白名单。
+  {
+    key: 'turns-filter-options',
+    to: '/turns-filter-options',
+    // ★ IconName 里**没有** `filter`（类型门会红）⇒ 用 `search`（筛选语义最贴）。
+    icon: 'search',
+    titleKey: 'nav.turnsFilterOptions',
+    requiresRole: 'admin',
+  },
   // ★ 加这一席**必须**同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
   {
     key: 'routing-policy',

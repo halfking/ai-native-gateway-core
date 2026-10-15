@@ -217,7 +217,6 @@ function shellNotInstalledGiven(
 
 const KNOWN_ORPHANS: readonly string[] = [
   'sessionAnalyticsFilterOptions',
-  'turnsFilterOptions',
 ]
 
 /**
@@ -374,8 +373,10 @@ describe('孤儿棘轮', () => {
     expect(shellNotInstalledGiven({ vue: '3', pinia: '3' }, { vitest: '4' }, '')).toBe(true)
     // 负控⑤：`infrastructureIsProven` 对**有端点**的模块必须返回 false
     //   （这条让 S3「判据恒真」这类变异有牙：恒真会让它对任何模块都返回 true）
+    // ★ 第二条负控的取样模块在第一百二十七批换掉了：`turnsFilterOptions`
+    //   已被接线（不再有资格当「有端点但不可达」的样本）⇒ 换成仍不可达的那一个。
+    //   ⇒ ★ 两处负控取样**必须**是「现在仍然成立」的样本，否则它们会变成僵尸断言。
     expect(infrastructureIsProven('sessionAnalyticsFilterOptions')).toBe(false)
-    expect(infrastructureIsProven('turnsFilterOptions')).toBe(false)
   })
 
   it('★★★★ 「零端点 + 不可达」那条**能分辨**而不是恒成立（负控）', () => {
@@ -621,6 +622,8 @@ describe('孤儿棘轮', () => {
     //   第九十九批那个假阳性就会回来（taskTypeCorrectionStats 从 ./taskProfile 导入
     //   unwrapCorrectionStat 会被当成「taskProfile 已接上」）。
     const orphans = currentOrphans()
-    expect(orphans).toContain('turnsFilterOptions')
+    // ★ 第一百二十七批订正：`turnsFilterOptions` 已接线并移出清单
+    //   ⇒ 换成仍不可达的 `sessionAnalyticsFilterOptions`（同一个 api 内部引用问题）。
+    expect(orphans).toContain('sessionAnalyticsFilterOptions')
   })
 })

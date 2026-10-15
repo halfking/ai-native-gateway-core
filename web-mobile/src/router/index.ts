@@ -922,6 +922,17 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'sms.title', requiresAuth: true, requiresRole: 'admin' },
   },
   {
+    // ★ 轮次列表的筛选候选值（2026-10-15，第一百二十七批）。
+    //   ⚠️⚠️ 与**上一条路由**同一个 `admin(...)` 档 ⇒ 服务端**没有**角色下限
+    //     （`admin := h.admin` → AdminMiddleware，supportedRole 接受 "user"）
+    //     ⇒ `meta.requiresRole: 'admin'` 这一层**是唯一的门**，不是体验兜底。
+    //   ★ 模块头原写「admin 档 ⇒ 不设 requiresRole」——本批订正（第四个写下这句错的模块）。
+    path: '/turns-filter-options',
+    name: 'turns-filter-options',
+    component: () => import('@/views/TurnsFilterOptionsView.vue'),
+    meta: { titleKey: 'tfo.title', requiresAuth: true, requiresRole: 'admin' },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),
