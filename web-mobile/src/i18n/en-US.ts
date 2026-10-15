@@ -96,6 +96,7 @@ export const enUS = {
     dataLifecycleStorage: 'Storage overview',
     storageAndLogConfig: 'Storage & log config',
     storageMigrationState: 'Attachment migration',
+    turnsFilterOptions: 'Filter options',
     account: 'Me',
   },
   // ★ Subscription tiers (2026-10-14, batch 120). Prefix: sts.
@@ -280,6 +281,45 @@ export const enUS = {
       purge: 'Old directory',
       filesDeleted: 'Files deleted',
     },
+  },
+  // ★ Turns filter option values (2026-10-15, batch 127). Prefix tfo.
+  tfo: {
+    title: 'Filter options',
+    nope: {
+      msg: 'Administrators only.',
+      // ★★★ Same direction as slc/sms: the backend has **no** role floor here.
+      why: 'This layer is the only gate outside the backend: that endpoint only checks login, not role, so a plain account could read every option in its tenant.',
+    },
+    gate: { note: 'This page is the only thing stopping plain accounts in this family (the backend checks login, not role).' },
+    readonly: { note: 'Read-only: the filter itself is executed by the turns list endpoint; this page only supplies the values.' },
+    load: { title: 'Fetch', btn: 'Refresh options' },
+    state: { title: 'Option values' },
+    badge: { nonEmpty: 'Has values' },
+    empty: 'This gateway has no filterable dimension yet (not a failure).',
+    emptyDims: 'No values for: {list}',
+    dim: {
+      models: 'Models',
+      providers: 'Providers',
+      statusCodes: 'Status codes',
+      projects: 'Projects',
+      tasks: 'Tasks',
+      owners: 'Owners',
+      clients: 'Clients',
+      tags: 'Tags',
+      empty: '(no values)',
+    },
+    note: {
+      windowed: 'Constrained to the last {n} days.',
+      allTime: '★ NOT time-windowed: these are the most recently active values across all history.',
+      clients: '★ NOT time-windowed (most recently active across all history); it also mixes two sources, so do not assume it is only a client id.',
+      tags: '★ NOT time-windowed (most recently active across all history); empty strings inside the array show up here verbatim.',
+    },
+    windowNote: '★ Only 3 dimensions are limited to the last {days} days (models / providers / status codes); the other 5 are most-recently-active across all history.',
+    clientsNote: 'The "Clients" dimension is the union of client_id and {sources}.',
+    noApiKeys: '★ The response has no api_keys key, so this page renders no "API Key" filter (the desktop dropdown is always empty).',
+    tenant: { scoped: 'Only values scoped to your own tenant are shown here.' },
+    truncated: 'At the {n}-value limit; there may be more',
+    badStatus: '★ These are not valid status codes and will be ignored when filtering: {list}',
   },
   // ★ Usage & cost (2026-10-14, batch 122). Prefix: ue.
   ue: {

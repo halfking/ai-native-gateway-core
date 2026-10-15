@@ -96,6 +96,7 @@ export const zhCN = {
     dataLifecycleStorage: '存储总览',
     storageAndLogConfig: '存储与日志',
     storageMigrationState: '附件目录迁移',
+    turnsFilterOptions: '筛选候选值',
     account: '我的',
   },
   // ★ 订阅档（2026-10-14，第一百二十批）。前缀 sts。
@@ -274,6 +275,45 @@ export const zhCN = {
       purge: '旧目录',
       filesDeleted: '已删文件数',
     },
+  },
+  // ★ 轮次筛选候选值（2026-10-15，第一百二十七批）。前缀 tfo。
+  tfo: {
+    title: '筛选候选值',
+    nope: {
+      msg: '仅管理员可查看筛选项候选值。',
+      // ★★ 与 slc/sms 的 nope 文案方向一致：这一族服务端**没有**角色下限。
+      why: '这一层是服务端之外唯一的门：后端这个端点只校验登录、不校验角色，普通账号本来也能读到本租户的全部候选值。',
+    },
+    gate: { note: '本页是这一族里唯一挡普通账号的地方（后端只校验登录，不校验角色）。' },
+    readonly: { note: '本页只读：筛选本身由轮次列表端点执行，这里只取候选值。' },
+    load: { title: '取数', btn: '刷新候选值' },
+    state: { title: '候选值' },
+    badge: { nonEmpty: '有候选值' },
+    empty: '这台网关还没有任何可筛选的维度（不是故障）。',
+    emptyDims: '以下维度暂无候选值：{list}',
+    dim: {
+      models: '模型',
+      providers: '供应商',
+      statusCodes: '状态码',
+      projects: '项目',
+      tasks: '任务',
+      owners: '负责人',
+      clients: '客户端',
+      tags: '标签',
+      empty: '（暂无可选值）',
+    },
+    note: {
+      windowed: '受「近 {n} 天」窗口约束。',
+      allTime: '★ 不受时间窗口约束：取的是全历史里最近活跃的值。',
+      clients: '★ 不受时间窗口约束（取全历史最近活跃）；且这一列混着两种来源，不能假定它只是客户端 ID。',
+      tags: '★ 不受时间窗口约束（取全历史最近活跃）；数组里的空串会原样出现在这里。',
+    },
+    windowNote: '★ 后端只有 3 个维度受近 {days} 天窗口约束（模型 / 供应商 / 状态码），其余 5 个是全历史最近活跃。',
+    clientsNote: '「客户端」这一维度是 client_id ∪ {sources} 的并集。',
+    noApiKeys: '★ 响应里没有 api_keys 这个键，所以本页不渲染「API Key」筛选（桌面那把下拉永远是空的）。',
+    tenant: { scoped: '本页只展示本租户范围内的候选值。' },
+    truncated: '已达 {n} 条上限，可能还有更多',
+    badStatus: '★ 这些值不是合法状态码，回传筛选条件时会被忽略：{list}',
   },
   // ★ 用量成本（2026-10-14，第一百二十二批）。前缀 ue。
   ue: {
