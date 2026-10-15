@@ -118,9 +118,8 @@ var requestLogsReadInventory = map[string]int{
 	// （admin/session_bodies_source.go）。
 	"admin/session_extract.go":        3,
 	"admin/session_management_api.go": 1,
-	// 同上：`JOIN request_logs_with_current_month rl ON rl.id = slr.last_request_id`，
-	// 为在线会话列表补 tenant_id —— 走的是 canonical 视图的 v1 臂。
-	"admin/session_online.go":           1,
+	// admin/session_online.go 于 2026-10-15 出列：在线列表改读 session_summaries
+	// （旧 JOIN request_logs_with_current_month 生产 52s/0 行）。
 	"admin/session_sanitize_matches.go": 2,
 	"admin/session_summary_v2.go":       1,
 	"admin/session_tenant.go":           4,

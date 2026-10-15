@@ -1,0 +1,26 @@
+{
+  "captured_at": "2026-10-14T23:13:00+08:00",
+  "host": "154",
+  "release": "2636-f280c9dc",
+  "active_port": 8782,
+  "bin": "/opt/llm-gateway-go/current/llm-gateway-go",
+  "note": "pre-deploy baseline; WIP P0-B/C/D not on this release. Binary name is llm-gateway-go (not gateway).",
+  "fingerprints": {
+    "probeOne single-flight": false,
+    "llmgw:probe_one:": false,
+    "anthropicSameCandidateStripRetry=false": false,
+    "retry_after_seconds": true,
+    "executor: quotaHeld": true
+  },
+  "canary_unit": "llm-gateway-go-canary@8782.service",
+  "canary_log": "/opt/llm-gateway-go/logs/gateway-canary-8782.log",
+  "counts": {
+    "ProbeSync": 0,
+    "probeOne single-flight": 0,
+    "quotaHeld": 0,
+    "client_bug": 0,
+    "paramrefusal": 0,
+    "survival": 166
+  },
+  "counts_note": "file greps on canary log since 22:48 restart; journal unit llm-gateway-go (bare) is dead — use canary@port"
+}

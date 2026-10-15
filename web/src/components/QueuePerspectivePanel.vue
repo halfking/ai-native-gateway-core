@@ -26,6 +26,8 @@ import {
   queueRef,
   nodesRef,
   liveStreamState,
+  connectionRef,
+  lastEventAtRef,
   snapshotRef,
   getNodesForModel,
   getRequestsForCredential,
@@ -156,6 +158,14 @@ const congestionHint = computed(() => {
 })
 
 const hasData = computed(() => queue.value !== null && queue.value.wired)
+
+// streamAwaitingData（2026-10-15 r1032c）：连接未建立，或已建立但还没收到
+// 任何一帧。这段窗口里「队列数据未接入」是**抢跑的误报**——queue envelope
+// 只是还没到达，不是 dispatch 没接线（本地实测：建连 <0.4s、首帧 ~2s，
+// 中间约 1.5s 空态区写着误导性文案且无任何加载标记）。
+const streamAwaitingData = computed(
+  () => connectionRef.value !== 'open' || lastEventAtRef.value === 0,
+)
 const isIdle = computed(() => hasData.value && totalDepth.value === 0)
 
 // ── 队列深度分区：默认折叠，拥堵时自动展开 ─────────────────────────────────
@@ -409,23 +419,36 @@ async function loadModelScope() {
 // featured/top-models 请求可能整体失败（scope 为空且 loading 已复位），
 // 面板此前只剩"切走再切回（重挂载）"这一条恢复路径。3s 后对空 scope 补
 // 一次重试，消除对重挂载的依赖；scope 已有数据则零开销跳过。
-const FIRST_SCOPE_RETRY_MS = 3000
-let firstScopeRetryTimer: ReturnType<typeof setTimeout> | null = null
+// 2026-10-15 扩为有界多次重试：生产 top-models 在 MV REFRESH 争用下会
+// 10s 打满 500（f1b027645 的 EXPLAIN：旧 JOIN 52s/0 行），单次 3s 重试仍
+// 撞在同一争用窗口上，重挂载又成了唯一恢复路径。改为 3s/9s/20s 三次
+// 递进（总窗口 ~32s，避开 10s 预算端点的失败节奏），次数有界，不对慢
+// 端点形成循环压测。
+const SCOPE_RETRY_DELAYS_MS = [3_000, 9_000, 20_000]
+let scopeRetryIndex = 0
+let scopeRetryTimer: ReturnType<typeof setTimeout> | null = null
+
+function scheduleNextScopeRetry() {
+  if (scopeRetryIndex >= SCOPE_RETRY_DELAYS_MS.length) return
+  const delay = SCOPE_RETRY_DELAYS_MS[scopeRetryIndex]
+  scopeRetryIndex += 1
+  scopeRetryTimer = setTimeout(() => {
+    scopeRetryTimer = null
+    if (modelScopeMeta.value.size > 0) return
+    if (!modelScopeLoading.value) void loadModelScope()
+    scheduleNextScopeRetry()
+  }, delay)
+}
 
 onMounted(() => {
   void loadModelScope()
   startStatsPoll()
-  firstScopeRetryTimer = setTimeout(() => {
-    firstScopeRetryTimer = null
-    if (modelScopeMeta.value.size === 0 && !modelScopeLoading.value) {
-      void loadModelScope()
-    }
-  }, FIRST_SCOPE_RETRY_MS)
+  scheduleNextScopeRetry()
 })
 onUnmounted(() => {
-  if (firstScopeRetryTimer) {
-    clearTimeout(firstScopeRetryTimer)
-    firstScopeRetryTimer = null
+  if (scopeRetryTimer) {
+    clearTimeout(scopeRetryTimer)
+    scopeRetryTimer = null
   }
   modelScopeAbort?.abort()
   stopStatsPoll()
@@ -1218,9 +1241,15 @@ function requestTitleTooltip(request: LiveRequest): string {
 
     <!-- 空态：只声明队列链路未接入。下方模型分组/请求轨迹分区独立渲染，
          不再被 hasData 整体吞掉（2026-09-22 总览页首开无数据修复：
-         dispatch 未接线时「按处理队列」视图此前整屏只剩这一行空态） -->
+         dispatch 未接线时「按处理队列」视图此前整屏只剩这一行空态）。
+         2026-10-15 r1032c：实时流尚未交付任何一帧时，这里显示加载标记而
+         不是「未接入」——queue envelope 只是还没到，不是 dispatch 没接线。 -->
     <div v-if="!hasData" class="qp-empty">
-      <span class="qp-empty-text">队列数据未接入（dispatch 未启用或未 wired）</span>
+      <span v-if="streamAwaitingData" class="qp-empty-text qp-empty-text--loading">
+        <i class="qp-loading-dot" aria-hidden="true" />
+        {{ t('requestJourneys.queueAwaitingStream') }}
+      </span>
+      <span v-else class="qp-empty-text">队列数据未接入（dispatch 未启用或未 wired）</span>
     </div>
 
     <!-- 紧凑指标条：调度链路（BE3 缺省隐藏对应项）+ 节点健康度 一行看完 -->
@@ -1496,6 +1525,26 @@ function requestTitleTooltip(request: LiveRequest): string {
 .qp-empty {
   padding: 16px;
   text-align: center;
+}
+/* r1032c：等待实时流交付的加载态——脉冲点 + 文案，动画只用 opacity。 */
+.qp-empty-text--loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.qp-loading-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--kx-primary, var(--kx-accent, currentColor));
+  animation: qp-loading-pulse 1.4s ease-in-out infinite;
+}
+@keyframes qp-loading-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .qp-loading-dot { animation: none; }
 }
 .qp-empty-text {
   color: var(--kx-text-secondary);

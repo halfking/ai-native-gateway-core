@@ -65,13 +65,7 @@ var viewArmCutoverReaders = map[string]string{
 	"admin/memora_handlers.go":    "**work_type + request_preview/response_preview**：verdict=repoint-empty。preview 在 session 臂约 39%，切换后摘要输入变「有轮次、无预览」",
 	"admin/no_topic_session.go":   "**work_type + preview 列**：verdict=repoint-empty。preview 在 session 臂约 39%",
 	"admin/session_extract.go":    "**依赖面最窄的一个**（6 列）但含 work_type：verdict=repoint-empty",
-	"admin/session_online.go": "verdict=repoint-gap-only：依赖 `id` 与 `tenant_id`。" +
-		"经 `JOIN request_logs_with_current_month rl ON rl.id = slr.last_request_id` " +
-		"把 `session_last_requests.last_request_id` 解回 v1 那一行只为拿 tenant_id。" +
-		"⚠ **这一条是 §9.226.2 扩 from|join 之后才进清单的**：它只 JOIN 不 FROM，" +
-		"在旧扫描器下对 inventory 完全不可见。切换后若 v1 臂消失，这个 JOIN 取不到 id，" +
-		"在线会话列表会**整页为空**（不是缺一列，是连不上行）——" +
-		"比 repoint-empty 更靠前一步的失效。",
+	// admin/session_online.go 于 2026-10-15 出列：改读 session_summaries，不再 JOIN 视图。
 	"admin/session_timeline_query.go":      "**work_type + preview 列**：verdict=repoint-empty。会话抽取页按 work_type 过滤会空",
 	"domains/sessionforensics/export.go":   "**混合读方**（既经视图读又直读底表），两个桶都收它；verdict=repoint-empty。切换后取证导出会缺 work_type/attachments",
 	"domains/sessionsummary/summarizer.go": "verdict=repoint-gap-only ⚠ **后果最隐蔽**：摘要输入变空不会失败，会生成「看起来正常」的错摘要——比失败更难发现",

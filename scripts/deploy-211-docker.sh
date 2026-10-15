@@ -84,11 +84,44 @@ done
 CLAIM_FILE="$D211_STATE_DIR/redis-db.claim"
 ENV_FILE="$D211_STATE_DIR/env/gateway.env"
 
+# ── 执行位置守卫（2026-10-15）────────────────────────────────────────
+# 无参模式 = 「在 211 本机以 root 执行」：状态目录 /opt/llm-gateway-go-211、
+# 本机 docker 容器探测、docker build、127.0.0.1:8781 就绪探测全是目标机
+# 语境。在部署机（macOS）上裸跑会在 mkdir /opt/llm-gateway-go-211 处报
+# Permission denied——那不是权限配置问题，是执行位置不对；而且就算 sudo
+# 建出目录，后面操作的也是 Mac 自己的 docker 而不是 211 的。远程部署一律
+# 走 --via（tar 同步仓库 → ssh 到目标机以 root 重跑本脚本）。
+if [[ -z "$VIA" && "$(uname -s)" == "Darwin" ]]; then
+  die "检测到在 macOS 上以本机模式运行。本脚本无参模式必须在 211 本机以 root 执行（状态目录 ${D211_STATE_DIR} 是 Linux 路径）；从部署机远程部署请用：bash $0 --via ${D211_TARGET_IP}（基础镜像可用 D211_GO_BASE_IMAGE/D211_RUNTIME_BASE_IMAGE 指向本地离线包）"
+fi
+
 # =============================================================================
 # --via：把当前仓库同步到目标机并在目标机上执行本脚本
 # =============================================================================
 if [[ -n "$VIA" ]]; then
   [[ "$MODE" == "deploy" ]] || die "--via 只支持默认 deploy 模式（--status/--stop 请 ssh 后本地跑）"
+  # ── 部署锁（deploy-lib lock.sh，与 deploy-seamless 同一族 SSOT）────────
+  # --via 全程是部署机侧的连续 ssh 步骤（rm → tar 同步 → 清理 → 远端执行），
+  # 锁必须在部署机侧包住全程：两个并发 --via 会在 rm -rf vs tar 解包处互相
+  # 炸（2026-10-14/15 三次实测 "Directory not empty"/"Cannot mkdir"）。
+  # 锁不在场（如 211 本机模式无 deploy-lib）时 warn 跳过，行为同旧版。
+  _d211_lib_resolve="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deploy-lib-resolve.sh"
+  if [[ -f "$_d211_lib_resolve" ]]; then
+    # shellcheck source=deploy-lib-resolve.sh
+    source "$_d211_lib_resolve"
+  fi
+  if [[ -n "${AIAN_DEPLOY_LIB:-}" && -f "$AIAN_DEPLOY_LIB/lock.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "$AIAN_DEPLOY_LIB/lock.sh"
+    LOCK_LOCAL_TARGET=211
+    if ! lock_acquire_local; then
+      die "另一个 211 部署正在本机进行（锁：${LOCK_LOCAL_DIR}）。并发会话请等待其完成；确认无存活部署进程后可 rm -rf 该锁目录重试（勿在对方运行时硬抢）"
+    fi
+    trap 'lock_release_local' EXIT
+    log "已取得 211 部署锁: ${LOCK_LOCAL_DIR}"
+  else
+    warn "deploy-lib lock.sh 不在场，本次无部署锁（并发部署可能互相踩）"
+  fi
   log "同步仓库到 $VIA:$D211_TARGET_IP ..."
   # 先在目标端把工作树整体清空——tar 解包不会删目标已有文件，旧部署残留的
   # macOS `._*` 元数据 / .env* 会一直挂在那让 docker COPY 重新带进镜像。
@@ -100,12 +133,30 @@ if [[ -n "$VIA" ]]; then
   # 进 docker build 上下文、留在镜像层里（docker history 就能翻出来）。
   # ._* / .DS_Store 排除：macOS 同步到 Linux 时 AppleDouble 元数据会进 go:embed，
   # i18n 加载 `._ar.json` 直接 panic invalid character '\x00'。见真机 2026-10-13 翻车。
-  tar -C "$D211_REPO_ROOT" \
-      --exclude=.git --exclude=node_modules --exclude=dist --exclude=build \
-      --exclude=.build-local \
-      --exclude='*.log' --exclude='.env' --exclude='.env.*' \
-      --exclude='._*' --exclude='.DS_Store' \
-      -cf - . | ssh "$VIA" "tar --no-xattrs -C ~/llm-gateway-go-211 -xf - && \
+  # ⚠ 不要排除任何形态的 dist：macOS bsdtar 的 exclude 对无通配模式也按
+  # 「任意尾部路径段」语义匹配（实测 --exclude=dist 与 --exclude=./dist 都会
+  # 命中 web/dist），root 的 admin SPA 与 /m 移动端就没了——llm.itestu.cn
+  # 打开只剩版本 JSON（2026-10-15 两轮实测）。目标树每次同步前整体 rm -rf
+  # 重建，陈旧 dist 残留不成立；前端 dist 由部署机预构建后随树上树。
+  # ⚠ 同样不要 --exclude=build：会误伤 vendor/.../api/types/build/*.go
+  # （2026-10-15 12h 审计 P2）。仓库根无 build/ 目录；大缓存用 .build-local。
+  # macOS bsdtar 默认把 quarantine/provenance xattr 打进 archive，GNU tar 刷屏
+  # Ignoring unknown extended header；偶发半截同步 → 远端缺 scripts/（RC=127）。
+  # COPYFILE_DISABLE + --no-xattrs/--no-mac-metadata（有则用）关掉资源叉/xattr。
+  _tar_create=(tar -C "$D211_REPO_ROOT")
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    export COPYFILE_DISABLE=1
+    _tar_create+=(--no-xattrs)
+    tar --help 2>&1 | grep -q -- '--no-mac-metadata' && _tar_create+=(--no-mac-metadata)
+  fi
+  _tar_create+=(
+    --exclude=.git --exclude=node_modules
+    --exclude=.build-local
+    --exclude='*.log' --exclude='.env' --exclude='.env.*'
+    --exclude='._*' --exclude='.DS_Store'
+    -cf - .
+  )
+  "${_tar_create[@]}" | ssh "$VIA" "tar --no-xattrs -C ~/llm-gateway-go-211 -xf - && \
         find ~/llm-gateway-go-211 -name '._*' -type f -delete && \
         find ~/llm-gateway-go-211 -name '.DS_Store' -type f -delete && \
         echo '[211] 同步后 ._* 残留: '\$(find ~/llm-gateway-go-211 -name '._*' -type f | wc -l)"
@@ -113,11 +164,14 @@ if [[ -n "$VIA" ]]; then
   ssh "$VIA" "find ~/llm-gateway-go-211 -maxdepth 2 -name '.env*' -type f -delete; \
              echo '[211] 目标树残留 .env*: '\$(find ~/llm-gateway-go-211 -name '.env*' -type f | wc -l) \
              ' ._*: '\$(find ~/llm-gateway-go-211 -name '._*' -type f | wc -l)"
+  # 半截同步硬门：缺入口脚本就别往下跑（否则 bash 报 No such file → RC=127）
+  ssh "$VIA" "test -f ~/llm-gateway-go-211/scripts/deploy-211-docker.sh" \
+    || die "同步后远端缺少 scripts/deploy-211-docker.sh（半截 tar？）；拒跑部署"
   # 基础镜像 build-arg 变量一并转发：211 的 /opt/kaixuan/base-images 存有
   # 离线基础镜像（kx-base/golang:1.27-alpine-amd64 等），daemon 的 mirror 不
   # 保证每次可达，构建腿应优先吃本地已 load 的镜像。空值 = 远端走脚本默认。
   log "在 $VIA 上执行 deploy ..."
-  ssh "$VIA" "cd ~/llm-gateway-go-211 && D211_STATE_DIR=$D211_STATE_DIR D211_REDIS_DB_START=$D211_REDIS_DB_START D211_REDIS_DB_END=$D211_REDIS_DB_END LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY='${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}' D211_GO_BASE_IMAGE='${D211_GO_BASE_IMAGE:-}' D211_RUNTIME_BASE_IMAGE='${D211_RUNTIME_BASE_IMAGE:-}' D211_BASE_REGISTRY='${D211_BASE_REGISTRY:-}' bash scripts/deploy-211-docker.sh $*"
+  ssh "$VIA" "cd ~/llm-gateway-go-211 && D211_STATE_DIR=$D211_STATE_DIR D211_REDIS_DB_START=$D211_REDIS_DB_START D211_REDIS_DB_END=$D211_REDIS_DB_END LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY='${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}' D211_GO_BASE_IMAGE='${D211_GO_BASE_IMAGE:-}' D211_RUNTIME_BASE_IMAGE='${D211_RUNTIME_BASE_IMAGE:-}' D211_BASE_REGISTRY='${D211_BASE_REGISTRY:-}' PROBE_TIMEOUT_SECS='${PROBE_TIMEOUT_SECS:-}' bash scripts/deploy-211-docker.sh $*"
   exit $?
 fi
 
@@ -636,6 +690,23 @@ else
   fi
 fi
 
+# URSM 专用 Redis db（与网关会话库隔离，避免 persist SCAN 扫会话键）。
+# 允许调用方用 URSM_V2_REDIS_DB 覆盖；默认优先 14，跳过 REDIS_DB，找空库。
+URSM_REDIS_DB="${URSM_V2_REDIS_DB:-}"
+if [[ -z "$URSM_REDIS_DB" ]]; then
+  for _cand in 14 13 12 11 10 9 8 7 6 5 4 3 2 1 0; do
+    if [[ "$_cand" == "$REDIS_DB" ]]; then
+      continue
+    fi
+    if ! redis_db_in_use "$REDIS_CONTAINER" "$_cand"; then
+      URSM_REDIS_DB="$_cand"
+      break
+    fi
+  done
+fi
+[[ -n "$URSM_REDIS_DB" ]] || die "无法为 URSM 分配独立 Redis db（与会话库 db${REDIS_DB} 冲突且无空库）"
+log "URSM 专用 Redis 库号 db${URSM_REDIS_DB}（会话库 db${REDIS_DB}）"
+
 # =============================================================================
 # 网络：把网关与复用的 PG/Redis 接到同一个网络，按容器名互访
 # =============================================================================
@@ -748,6 +819,10 @@ DB_URL="postgres://${PG_USER_ENC}:${PG_PASS_ENC}@${PG_CONTAINER}:5432/${D211_PG_
   if [[ -n "$CRED_ENC_KEY" ]]; then
     printf 'export LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=%q\n' "$CRED_ENC_KEY"
   fi
+  # 2026-10-14：解 URSM ModeOff（SYSTEM_MONITOR 未设）+ persist SCAN 与会话键隔离。
+  # URSM 专用 db 优先 14，且不得与网关会话 REDIS_DB 撞车；已被占用则降序找空库。
+  printf 'export LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true\n'
+  printf 'export URSM_V2_REDIS_DB=%q\n' "$URSM_REDIS_DB"
 } > "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 
@@ -759,6 +834,8 @@ GW_ENV=(
   -e "LLM_GATEWAY_REDIS_PASSWORD=${REDIS_PASSWORD:-}"
   -e "LLM_GATEWAY_SECRET_KEY=${SECRET_KEY}"
   -e "LLM_GATEWAY_CORS_ORIGINS=${CORS_ORIGINS}"
+  -e "LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true"
+  -e "URSM_V2_REDIS_DB=${URSM_REDIS_DB}"
 )
 if [[ -n "$CRED_ENC_KEY" ]]; then
   GW_ENV+=( -e "LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=${CRED_ENC_KEY}" )
@@ -781,7 +858,9 @@ chown -R 65532:65532 "$D211_GW_DATA_ROOT" 2>/dev/null || true
 # 镜像不含 configs/（sensitive_patterns.yaml 缺失时网关回落内置脱敏集，
 # 与宿主机部署行为不一致）；docker cp 进容器层则 docker rm -f 即丢。
 # 改为宿主 bind（只读），每次部署以仓库文件为准覆盖种子。
-D211_CONFIGS_SRC="${D211_CONFIGS_SRC:-$(cd "$(dirname "$0")/.." && pwd)/configs}"
+# 用 D211_REPO_ROOT（脚本顶部已解析），禁止再 $(cd "$(dirname "$0")/..")——
+# docker build 段可能已 cd 走 cwd，相对 scripts/.. 会 No such file（2026-10-15 实测）。
+D211_CONFIGS_SRC="${D211_CONFIGS_SRC:-$D211_REPO_ROOT/configs}"
 mkdir -p "$D211_GW_DATA_ROOT/configs"
 for _cfg in sensitive_patterns.yaml sensitive_words.json; do
   if [[ -f "$D211_CONFIGS_SRC/$_cfg" ]]; then
@@ -791,6 +870,96 @@ for _cfg in sensitive_patterns.yaml sensitive_words.json; do
   fi
 done
 chown -R 65532:65532 "$D211_GW_DATA_ROOT/configs" 2>/dev/null || true
+
+# ── Web 前端随部署种子（2026-10-15）：root SPA + /m 移动端 + 版本元数据 ──
+# 网关从 cfg.StaticDir（env LLM_GATEWAY_STATIC_DIR，默认探 cwd 下的
+# web/dist/index.html）挂 admin SPA，从 MOBILE_WEB_DIST 挂 /m 移动端，
+# 从 version.json 读版本元数据——三者镜像里都没有，root 只会回落版本 JSON。
+# 与 configs 同款治理：宿主 bind 只读，每次部署以仓库（部署机预构建）为准
+# 覆盖种子。
+#
+# 2026-10-15 审计 P1 收口：本段原先只 warn 不拒绝，搬运链路通了但「产物是新的 /
+# 构建成功 / 缺失要失败」三件事一条没闭环，于是——
+#   ① dist 缺失时 rm -rf 不执行，上一版 SPA 继续被挂载 = **无声前端回滚**；
+#   ② dist 陈旧时照样种子化，部署照样绿；
+#   ③ 就绪只探 /readyz 与 /healthz、不探 /，以上两类都不会让部署失败。
+# deploy-local.sh 对同一形态是硬失败（2026-10-11 2538 白页事故收口）。此处对齐
+# 同一口径，同时保留「纯 API 形态」逃生舱：D211_ALLOW_STALE_WEB=1。
+D211_WEB_DIST_SRC="${D211_WEB_DIST_SRC:-$D211_REPO_ROOT/web/dist}"
+D211_MOBILE_DIST_SRC="${D211_MOBILE_DIST_SRC:-$D211_REPO_ROOT/web-mobile/dist}"
+D211_ALLOW_STALE_WEB="${D211_ALLOW_STALE_WEB:-0}"
+
+# seed_web_dist <dist 目录> <源码目录> <标签>
+# 种子前判新鲜度：dist/index.html 必须不早于源码树里最新的一个文件。
+# 用 -newer 做「有没有更新过的源码」判定，不依赖固定构建序号。
+seed_web_dist() {
+  local _dist="$1" _src="$2" _label="$3"
+  if [[ ! -f "$_dist/index.html" ]]; then
+    # 上一轮种子仍在 ⇒ 沿用等于**无声前端回滚**：线上跑着旧 UI，运维以为刚发过版。
+    # 这一档没有逃生舱——纯 API 形态的前提是「压根没有前端」，不是「前端是旧的」。
+    if [[ -f "$D211_GW_DATA_ROOT/${_label}/dist/index.html" ]]; then
+      die "缺少 ${_dist}，但上一轮种子仍在 ${D211_GW_DATA_ROOT}/${_label}/dist —— 直接沿用等于无声前端回滚。请构建前端（corepack pnpm install --frozen-lockfile && pnpm build）后再部署"
+    fi
+    if [[ "$D211_ALLOW_STALE_WEB" == "1" ]]; then
+      warn "$_dist 缺失，按纯 API 形态继续（$D211_ALLOW_STALE_WEB=1）：管理页不可用"
+      return 1
+    fi
+    die "缺少 $_dist/index.html，拒绝部署空前端（2026-10-11 2538 白页事故口径）。构建前端，或显式 D211_ALLOW_STALE_WEB=1 走纯 API 形态"
+  fi
+  if [[ "$D211_ALLOW_STALE_WEB" != "1" && -d "$_src" ]]; then
+    local _newer
+    # 只盯会影响 Vite 产物的源码：*.test/spec 不进 bundle，mtime 漂移不该拦部署
+    # （2026-10-15：LiveRequestStreamV2.queueStreamNotice.test.ts 误杀整次 211 部署）。
+    _newer="$(find "$_src" -type f \
+      ! -name '*.test.ts' ! -name '*.test.tsx' ! -name '*.test.js' ! -name '*.test.jsx' \
+      ! -name '*.spec.ts' ! -name '*.spec.tsx' ! -name '*.spec.js' ! -name '*.spec.jsx' \
+      -newer "$_dist/index.html" -print -quit 2>/dev/null || true)"
+    if [[ -n "$_newer" ]]; then
+      die "$_dist 陈旧：$_newer 晚于 $_dist/index.html，拒绝部署陈旧前端（否则线上是旧 SPA 而部署显示成功）。重新构建前端，或显式 D211_ALLOW_STALE_WEB=1 走纯 API 形态"
+    fi
+  elif [[ "$D211_ALLOW_STALE_WEB" == "1" ]]; then
+    warn "$_dist 存在但未通过新鲜度校验，按纯 API 形态继续（$D211_ALLOW_STALE_WEB=1）"
+  fi
+  return 0
+}
+
+seed_web_dist "$D211_WEB_DIST_SRC" "$D211_REPO_ROOT/web/src" "web" && GW_WEB_DIST_OK=1 || GW_WEB_DIST_OK=0
+seed_web_dist "$D211_MOBILE_DIST_SRC" "$D211_REPO_ROOT/web-mobile/src" "web-mobile" && GW_MOBILE_DIST_OK=1 || GW_MOBILE_DIST_OK=0
+
+mkdir -p "$D211_GW_DATA_ROOT/web" "$D211_GW_DATA_ROOT/web-mobile"
+GW_MOUNTS=(
+  -v "${D211_GW_DATA_ROOT}/data:/app/data"
+  -v "${D211_GW_DATA_ROOT}/logs:/app/logs"
+  -v "${D211_GW_DATA_ROOT}/configs:/app/configs:ro"
+)
+GW_WEB_ENV=()
+if [[ "$GW_WEB_DIST_OK" == "1" ]]; then
+  rm -rf "$D211_GW_DATA_ROOT/web/dist"
+  cp -R "$D211_WEB_DIST_SRC" "$D211_GW_DATA_ROOT/web/dist"
+  chown -R 65532:65532 "$D211_GW_DATA_ROOT/web" 2>/dev/null || true
+  GW_MOUNTS+=( -v "${D211_GW_DATA_ROOT}/web/dist:/app/web/dist:ro" )
+  GW_WEB_ENV+=( -e "LLM_GATEWAY_STATIC_DIR=/app/web/dist" )
+  log "admin SPA 种子: web/dist → ${D211_GW_DATA_ROOT}/web/dist"
+fi
+if [[ "$GW_MOBILE_DIST_OK" == "1" ]]; then
+  rm -rf "$D211_GW_DATA_ROOT/web-mobile/dist"
+  cp -R "$D211_MOBILE_DIST_SRC" "$D211_GW_DATA_ROOT/web-mobile/dist"
+  chown -R 65532:65532 "$D211_GW_DATA_ROOT/web-mobile" 2>/dev/null || true
+  GW_MOUNTS+=( -v "${D211_GW_DATA_ROOT}/web-mobile/dist:/app/web-mobile/dist:ro" )
+  GW_WEB_ENV+=( -e "MOBILE_WEB_DIST=/app/web-mobile/dist" )
+  log "移动端 SPA 种子: web-mobile/dist → ${D211_GW_DATA_ROOT}/web-mobile/dist"
+fi
+if [[ -f "$D211_REPO_ROOT/version.json" ]]; then
+  cp -f "$D211_REPO_ROOT/version.json" "$D211_GW_DATA_ROOT/version.json"
+  chown 65532:65532 "$D211_GW_DATA_ROOT/version.json" 2>/dev/null || true
+  GW_MOUNTS+=( -v "${D211_GW_DATA_ROOT}/version.json:/app/version.json:ro" )
+  log "版本元数据种子: version.json（$(python3 -c "import json;print(json.load(open('$D211_GW_DATA_ROOT/version.json')).get('version','?'))" 2>/dev/null || echo '?')）"
+else
+  echo "warning: $D211_REPO_ROOT/version.json 缺失，/version 将显示 dev/unknown" >&2
+fi
+# ${arr[@]+…} 惯用法：GW_WEB_ENV 可能为空（dist 全缺），bash 3.2 在 set -u 下
+# 直接 "${空数组[@]}" 会报 unbound variable
+GW_ENV+=( ${GW_WEB_ENV[@]+"${GW_WEB_ENV[@]}"} )
 
 # ── 迁移腿（2026-10-14 r1030）：网关容器启动前重放 DB 修订序列 ──────────
 # deploy-seamless（245/154）自带 deploy_apply_pending_migrations；本脚本原先
@@ -815,9 +984,7 @@ fi
 docker run -d --name "$D211_GW_CONTAINER" --restart unless-stopped \
   --network "$D211_NETWORK" \
   -p "${D211_GW_PORT}:8781" \
-  -v "${D211_GW_DATA_ROOT}/data:/app/data" \
-  -v "${D211_GW_DATA_ROOT}/logs:/app/logs" \
-  -v "${D211_GW_DATA_ROOT}/configs:/app/configs:ro" \
+  "${GW_MOUNTS[@]}" \
   "${GW_ENV[@]}" \
   "$D211_GW_IMAGE" >/dev/null || die "网关容器启动失败"
 
@@ -825,8 +992,13 @@ docker run -d --name "$D211_GW_CONTAINER" --restart unless-stopped \
 # 就绪验证
 # =============================================================================
 log "等待网关就绪 ..."
+# PROBE_TIMEOUT_SECS 与 deploy-154/245 同一族标准（deploy-211.sh 入口默认
+# export 120）。⚠ 必须带 :- 兜底：ssh 远端执行时该变量不一定穿过（bash 4.4+
+# 的 set -u 会让未绑定变量进算术直接炸——2026-10-15 实测翻车点）；
+# 2s 步进，轮次=超时/2，下限 1 防呆。
 ready=0
-for i in $(seq 1 60); do
+probe_rounds=$(( ${PROBE_TIMEOUT_SECS:-120} / 2 )); (( probe_rounds >= 1 )) || probe_rounds=1
+for i in $(seq 1 "$probe_rounds"); do
   if curl -fsS "http://127.0.0.1:${D211_GW_PORT}/readyz" >/dev/null 2>&1 \
      || curl -fsS "http://127.0.0.1:${D211_GW_PORT}/healthz" >/dev/null 2>&1; then
     ready=1; break

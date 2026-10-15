@@ -203,6 +203,19 @@ func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any,
 			return false, err
 		}
 		for _, fragment := range fragments {
+			// r1032d（2026-10-15）：account（用户名形状）片段不是外传目的地，
+			// 不参与 tool 参数的 unsafe 判定。detectEgress 的 ScopeEgress 不过
+			// 滤规则类型，r1024 拓宽后的 YAML account 规则会命中普通 shell
+			// 命令里的 `USER=$USER` / `USER=$(whoami)`（label 集含
+			// user(?:name|_name)? 与 *_user），而用户名 token 既不可路由也不在
+			// isNonExfiltrationFragment 的豁免表里 → 整条 tool lane 以零 issues
+			// 阻断（grok-4.6 chat 腿第 2+ 轮实测：上游参数完整、客户端只收到
+			// 工具名）。与 r1024 的身份/密码族拆分同一条原理：身份不是机密。
+			// 其余非地址片段（email/secret 等）保持原有阻断契约
+			// （r1017 公网 user@host / r1028 真实凭据样值）。
+			if fragment.Type == TypeAccount {
+				continue
+			}
 			if isNonExfiltrationFragment(fragment) {
 				// 2026-10-08 minimax-m3/glm-5.3 fail-closed incident: the
 				// server_ip pattern matches any IPv4, and dev tooling echoes

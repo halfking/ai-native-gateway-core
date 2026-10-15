@@ -281,6 +281,123 @@ for _v in D211_GO_BASE_IMAGE D211_RUNTIME_BASE_IMAGE D211_BASE_REGISTRY; do
     bad "--via 未转发 ${_v}，远端将回落 docker.io 默认基础镜像"
   fi
 done
+# ── Web 前端腿（2026-10-15）：root SPA / /m 移动端 / 版本元数据 ─────────
+# 形态钉桩：tar 同步**不得**带任何形态的 dist 排除——macOS bsdtar 的 exclude
+# 对无通配模式也按「任意尾部路径段」语义匹配（--exclude=dist 与
+# --exclude=./dist 实测都命中 web/dist），root 只剩版本 JSON——这是
+# llm.itestu.cn 打不开管理页的根因；种子+挂载+env 三件必须成套。
+_nocomment="$(grep -vE '^[[:space:]]*#' "$SCRIPT")"
+if printf '%s' "$_nocomment" | grep -qE -- "--exclude=(\./)?dist"; then
+  bad "tar 同步仍带 dist 排除（bsdtar 尾段语义会排掉 web/dist，root SPA 缺失根因）"
+else
+  ok "tar 同步不带任何 dist 排除（web/dist、web-mobile/dist 随树上树）"
+fi
+# 同族：--exclude=build 会误伤 vendor/.../api/types/build/*.go（2026-10-15 12h 审计 P2）
+if printf '%s' "$_nocomment" | grep -qE -- "--exclude=(\./)?build([[:space:]]|$)"; then
+  bad "tar 同步仍带 build 排除（bsdtar 尾段语义会排掉 vendor/.../types/build）"
+else
+  ok "tar 同步不带裸 build 排除（vendor docker types/build 随树上树）"
+fi
+# configs 种子必须钉 D211_REPO_ROOT，禁止再 $(cd "$(dirname "$0")/..")——相对 $0
+# 依赖 cwd，docker build 后/非仓库 cwd 会报 cd: scripts/..: No such file（2026-10-15）。
+if printf '%s' "$_nocomment" | grep -qE 'D211_CONFIGS_SRC=.*\$D211_REPO_ROOT/configs'; then
+  ok "configs 种子路径钉 D211_REPO_ROOT（不依赖 cwd/\$0）"
+else
+  bad "configs 种子仍用 dirname \$0 相对 cd，非仓库 cwd 会 No such file"
+fi
+if printf '%s' "$_nocomment" | grep -qE 'D211_CONFIGS_SRC=.*dirname "\$0"'; then
+  bad "configs 种子仍含 dirname \"\$0\" 相对路径（cwd 漂移即炸）"
+fi
+# ── 前端产物新鲜度闭环（2026-10-15 审计 P1）────────────────────────────
+# 搬运链通了不等于闭环了：原实现缺 dist 时只 warn，且 rm -rf 写在 if 内，
+# 于是「上一版 SPA 被继续挂载」= 无声前端回滚；陈旧 dist 照样种子化；而
+# 就绪只探 /readyz 与 /healthz 不探 /，三类问题都不会让部署失败。相对
+# deploy-local.sh 的硬失败（2538 白页事故收口）属方向性回退。
+# 下面几条一律扫 $_nocomment：注释里出现字符串不算数（否则整段被删、
+# 只留注释里的字面量，门照样绿——这正是本门此前能漏掉该缺陷的原因）。
+if printf '%s' "$_nocomment" | grep -qE '^[[:space:]]*seed_web_dist\(\)'; then
+  ok "211 定义 seed_web_dist 前端产物闸门"
+else
+  bad "211 缺少 seed_web_dist 前端产物闸门（缺失/陈旧 dist 只会 warn，部署照样绿）"
+fi
+if printf '%s' "$_nocomment" | grep -qE -- '-newer .*index\.html'; then
+  ok "211 前端闸门按源码新鲜度判定（-newer），不靠构建序号"
+else
+  bad "211 前端闸门没有新鲜度判定：陈旧 dist 会被照旧种子化，线上是旧 SPA 而部署显示成功"
+fi
+if printf '%s' "$_nocomment" | grep -qE "!\ -name '\*\.test\.ts'|!\ -name \"\*\.test\.ts\"|! -name '\\*\\.test\\.ts'"; then
+  ok "211 前端新鲜度排除 *.test.ts（测试文件不进 bundle）"
+elif printf '%s' "$_nocomment" | grep -qF "! -name '*.test.ts'"; then
+  ok "211 前端新鲜度排除 *.test.ts（测试文件不进 bundle）"
+else
+  bad "211 前端新鲜度未排除 *.test.ts，测试文件 mtime 会误杀部署"
+fi
+if printf '%s' "$_nocomment" | grep -qE 'D211_ALLOW_STALE_WEB'; then
+  ok "211 保留纯 API 形态逃生舱 D211_ALLOW_STALE_WEB"
+else
+  bad "211 硬拒绝后没有逃生舱，纯 API 部署形态被堵死"
+fi
+# 无声回滚（缺 dist 但上一轮种子还在）必须 die，且**不受逃生舱豁免**：
+# 纯 API 的前提是「压根没有前端」，不是「前端是旧的」。
+if printf '%s' "$_nocomment" | grep -qE 'GW_WEB_DIST_OK=1|GW_MOBILE_DIST_OK=1'; then
+  ok "211 种子化以闸门结论为准（GW_*_DIST_OK），缺 dist 时不挂载"
+else
+  bad "211 种子化仍直接判 index.html 存在与否，未走闸门结论"
+fi
+for _pat in 'LLM_GATEWAY_STATIC_DIR=/app/web/dist' 'MOBILE_WEB_DIST=/app/web-mobile/dist' '/app/version.json:ro'; do
+  if grep -qF "$_pat" "$SCRIPT"; then
+    ok "web 腿契约在场: $_pat"
+  else
+    bad "web 腿契约缺失: $_pat（SPA/移动端/版本元数据将回落或不可用）"
+  fi
+done
+# 执行位置守卫：macOS 裸跑（无 --via）必须立刻给出 --via 指引，而不是让
+# mkdir /opt/llm-gateway-go-211 甩出无上下文的 Permission denied（2026-10-15 用户实测踩到）
+if grep -q 'uname -s.*==.*Darwin.*||' "$SCRIPT" || grep -qE '\[\[ -z "\$VIA" && "\$\(uname -s\)" == "Darwin" \]\]' "$SCRIPT"; then
+  ok "macOS 裸跑守卫在场（误用即报并指路 --via）"
+else
+  bad "缺 macOS 裸跑守卫：部署机误以本机模式执行只会看到 mkdir Permission denied"
+fi
+# deploy-211.sh 必须是 deploy-154/245 同一族入口标准：同一骨架（SSHPASS 卫生、
+# deploy-lib 解析、parse-wrapper-flags 的 --force 族解析、--dry-run 合同、
+# PROBE_TIMEOUT_SECS 默认）、exec 委托引擎而不是自创接口。缺任一块就是家族
+# 标准漂移（2026-10-15 owner 要求统一标准）。
+WRAPPER="$ROOT/scripts/deploy-211.sh"
+wmiss=0
+[[ -f "$WRAPPER" ]] || { bad "deploy-211.sh 入口缺失"; wmiss=1; }
+if (( wmiss == 0 )); then
+  for _sig in 'unset SSHPASS' 'source "$SCRIPT_DIR/deploy-lib-resolve.sh"' \
+              'parse-wrapper-flags.sh' 'extract_force_unlock' \
+              "' --dry-run '" 'PROBE_TIMEOUT_SECS' \
+              'deploy-211-docker.sh" --via "$D211_TARGET"'; do
+    if grep -qF -- "$_sig" "$WRAPPER"; then
+      ok "deploy-211.sh 家族骨架: $_sig"
+    else
+      bad "deploy-211.sh 缺家族骨架块: $_sig"
+    fi
+  done
+fi
+# 引擎必须消费 PROBE_TIMEOUT_SECS（否则入口的家族标准超时是摆设）
+if grep -q 'PROBE_TIMEOUT_SECS' "$SCRIPT"; then
+  ok "引擎就绪等待消费 PROBE_TIMEOUT_SECS（与 154/245 同语义）"
+else
+  bad "引擎未消费 PROBE_TIMEOUT_SECS，入口的探针超时默认不生效"
+fi
+# ⚠ 且消费点必须带 :- 兜底：ssh 远端执行时该变量不一定穿过（bash 4.4+ 的
+# set -u 让未绑定变量进算术直接炸——2026-10-15 用户实测「一大堆错误」的根因）
+if grep -qE '\$\{PROBE_TIMEOUT_SECS:-' "$SCRIPT"; then
+  ok "引擎 PROBE_TIMEOUT_SECS 带 :- 兜底（远端未传不炸）"
+else
+  bad "引擎 PROBE_TIMEOUT_SECS 无 :- 兜底（远端执行必炸 unbound variable）"
+fi
+# --via 段必须先拿 deploy-lib 家族锁再碰目标树（锁行号 < rm -rf 行号）
+lock_line="$(grep -n 'lock_acquire_local' "$SCRIPT" | head -1 | cut -d: -f1)"
+rm_line="$(grep -n 'rm -rf ~/llm-gateway-go-211' "$SCRIPT" | head -1 | cut -d: -f1)"
+if [[ -n "$lock_line" && -n "$rm_line" && "$lock_line" -lt "$rm_line" ]]; then
+  ok "引擎 --via 先取家族部署锁（deploy-lib lock.sh）再动目标树（${lock_line} < ${rm_line}）"
+else
+  bad "--via 无锁或锁在破坏性步骤之后（并发部署会在 rm vs tar 处互炸）"
+fi
 
 echo
 printf '结果: %d 通过, %d 失败\n' "$pass" "$fail"

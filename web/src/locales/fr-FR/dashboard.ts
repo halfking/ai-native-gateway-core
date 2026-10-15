@@ -276,6 +276,7 @@ v2: {
     empty: "Aucune requête en temps réel",
 
     emptyWaiting: 'En attente des données du flux de requêtes en direct…',
+    emptyConnecting: 'Connexion au flux en direct en cours, chargement automatique une fois connecté…',
     groupByCredential: 'Par identifiant', groupByVendor: 'Par fournisseur', groupByProvider: 'Par fournisseur', groupByModel: 'Par modèle',
     modeSmall: 'Petit',
     modeLarge: 'Grand',
@@ -292,6 +293,10 @@ v2: {
     dimensionCredential: 'Identifiant', dimensionVendor: 'Fournisseur', dimensionProvider: 'Fournisseur', dimensionModel: 'Modèle',
     statusOpen: 'Connecté', statusConnecting: 'Connexion en cours', statusReconnecting: 'Reconnexion',
     statusUnsupported: 'Non pris en charge', statusClosed: 'Déconnecté',
+    queueStreamConnecting: 'Connexion au flux en direct en cours — cette zone se rafraîchira automatiquement une fois connectée…',
+    queueStreamClosed: 'Flux en direct déconnecté, reconnexion automatique en cours…',
+    queueStreamUnsupported: 'Ce navigateur ne prend pas en charge les flux en direct (EventSource) ; cette zone ne peut pas recevoir de données en temps réel.',
+    queueStreamAwaiting: 'Flux en direct connecté, réception des premières données…',
     sseDetailTitle: 'Détails de connexion SSE', sseStatusLabel: 'État de connexion', sseUrlLabel: 'URL SSE',
     editUrl: 'Modifier', editUrlPlaceholder: 'Entrer l\'URL SSE', save: 'Enregistrer', resetDefault: 'Par défaut',
     cancel: 'Annuler', testConnection: 'Tester la connexion', close: 'Fermer',

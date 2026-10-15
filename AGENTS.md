@@ -70,9 +70,14 @@
 - 2026-10-10 实测：154 与 245 均在 `:8782`。
 - 2026-10-11 实测：**245 的活跃端口漂到了 `:8782`**（deploy handoff 输出
   `active_port=8782`），`:8781` 无监听。部署期间发生过与另一份 checkout 的并发部署。
+- 2026-10-15 17:5x 实测：**两台又对调了**——154 在 `:8782`（`2651-6dc0ad45`）、
+  245 在 `:8781`（`2650-6dc0ad45`），与 2026-10-11 那次正好相反。**端口是蓝绿切流的
+  副产物，每天都可能再变**，任何「154 在 8781」的记忆都当过期处理。
 
 探活一律两个端口都试：`curl -s http://127.0.0.1:{8781,8782}/readyz`。
 直连 8781 得到 connection refused **不代表故障**，只代表端口没在用。
+真要确认「当前谁在服务」，读 `run/active-port` + `readlink -f /opt/llm-gateway-go/current`，
+两者 + `version.json` 的 `build_seq` 三处对齐才算证据。
 
 ## SSH：必须走别名，不能用裸 IP
 
@@ -1805,47 +1810,67 @@ streaming 全包 150s 绿。154 终验：拦截请求三件套全绿（终态带
 
 ## 下一轮提示词（2026-10-14 r1030 轮更新）
 
-1. ~~**D1 待部署授权**~~ **部署前取证已完成（2026-10-14 15:2x，只读实测）**：
-   `to_regclass('public._request_logs')` 在**每一个可达环境**都非 NULL——
-   154 / 245 / 252 共用的生产库（`172.16.2.210:5432/llm_gateway`，其实跑在 252 的
-   podman 容器里）、211 的 PG17（`acc-pg17`）、本机 host-first（54318）全部
-   `prefixed=_request_logs | idx=idx_request_logs_ts | turns=session_turns`。
+1. ~~**D1 待部署授权**~~ **已上线，三环境皆含修复（2026-10-15 17:5x 核验）**：
+   先做的部署前取证（2026-10-14 15:2x，只读）：`to_regclass('public._request_logs')`
+   在**每一个可达环境**都非 NULL——154 / 245 / 252 共用的生产库（`172.16.2.210:5432/
+   llm_gateway`，其实跑在 252 的 podman 容器里）、211 的 PG17（`acc-pg17`）、本机
+   host-first（54318）全部 `prefixed=_request_logs | idx=idx_request_logs_ts`；
    生产库台账已有 `860/861/862`（applied_at 2026-10-14 13:15:31~32，两台同库故同戳）。
-   **按 S4 §6.6「非 NULL 则该环境本来就不受影响」的口径：这 5 个环境都不会被 D1 的
-   缺陷咬到**——862 的无守卫 COMMENT 腿在族在场时必然有索引可注释，缺陷不触发。
-   两台生产当前活跃 release 为 **154 = `2631-ec9d2f3f`（:8781）、
-   245 = `2630-ec9d2f3f`（:8782）**，构建提交 `ec9d2f3f` 是 D1 修复 `50eb3bb88`
-   的父提交 ⇒ **修复未上线**。结论：这次部署不再为「消生产迁移卡点」而做（卡点
-   在可达环境里不存在），只为让新二进制带上修复，覆盖的是未来的 fresh install 与
-   尚未应用 860 的环境。是否部署仍待 owner 一句话（发布授权）。
-2. **待 owner 一句话授权**：`-2`（`/Users/huangxt/workspace/llm-gateway-go-2`，独立
-   clone，HEAD `8468f482a`）的 4 条已合并本地分支 + 2 个 linked worktree
-   （`~/workspace/wt-deploy-211`、`/private/tmp/lggw-s3wave-wt`）。**2026-10-14
-   15:2x 只读取证**（未碰、未提交、未删）：
-   - `-2` 唯一的未提交内容 = 未跟踪目录 `tmp_mint_jwt/`（单个 296B `main.go`，
-     内容是一次性 admin JWT 铸造器，密钥走 argv 无硬编码），mtime
-     **2026-10-13 15:30:38 ≈ 24h 未动** ⇒ 严格讲「零独有内容」不成立，删掉即销毁它；
-   - `wt-deploy-211`（`feat/deploy-211-docker`）工作区干净、与远端同步；
-   - `/private/tmp/lggw-s3wave-wt`（`tmp-sync`）落后 origin/main 106，仅多一个未跟踪
-     `web/node_modules`。
-   摘 worktree 会打断可能在用它们的会话，故等授权。
-3. **远端 3 条九月未合并分支**（`2026-07-25-realtime-routing-self-heal` 24 篇设计归档 /
-   `fix/w5-ml-ci-runbook` / `fix/w6-monitor-docs`）维持留置，待维护者裁决。
-4. ~~**`go build ./...`（cgo 形态）在本机结构上不可用**~~ **已落地（2026-10-14）**：
-   `verify.sh` 顶部 `export CGO_ENABLED="${VERIFY_CGO_ENABLED:-0}"` + 回归门
-   `tests/verify_cgo_convention_test.sh`（变异 7 条全红在正确断言：注释掉 export /
-   加白名单 / 编译过管道 / 拆 nocgo 双形态 / 登记名单漂移 / 命令替换缩小验证面）。
+   按 S4 §6.6 的口径，这 5 个环境都不会被 D1 的缺陷咬到——862 的无守卫 COMMENT 腿
+   在族在场时必然有索引可注释。
+   **当前生产实况**（`version.json` + `readlink current` + readyz 三处对齐）：
+   - 154 = `2.5.8-6dc0ad45-20261015-2651`，活跃端口 **8782**（已从 8781 漂过来），readyz 200
+   - 245 = `2.5.8-6dc0ad45-20261015-2650`，活跃端口 **8781**（已从 8782 漂过来），readyz 200
+   - 211 = `2.5.8-f280c9dc-20261014-2636`（docker），readyz 200，`to_regclass=_request_logs`
+   `git merge-base --is-ancestor 50eb3bb88 <构建提交>` 对三个构建提交**全部为真**
+   ⇒ D1 修复已在三台生产二进制里。**本轮未执行任何部署**（详见下方教训）。
+   ★ **新教训（授权会过期，执行前必须以当前状态复核前提）**：owner 批准「部署
+   154+245+211」之后，会话间隔一天多，期间**并行会话已把三台都部署到含修复的提交**。
+   若照单执行，就是拿健康服务做一次无收益的重启 + 抢部署锁。判据：任何部署/清理
+   授权在**真正动手的那一刻**都要重新核一次「要做的这件事现在还需要做吗」——
+   授权的是**目标状态**，不是某个动作。
+2. ~~**`-2` 待授权清理**~~ **已按授权全清（2026-10-15 17:5x）**：`-2`
+   （`/Users/huangxt/workspace/llm-gateway-go-2`，独立 clone，执行时 HEAD 已是
+   `0c8696cc6`、与 origin/main 同步）。动手前重新取证与昨日的**出入**：
+   - 昨日那份「唯一未提交内容 = `tmp_mint_jwt/`」**已过时**——今天多出 4 个已跟踪
+     文件的未提交改动（`VERSION`、`version.json`、`web/public/menu-config.json`、
+     `web/public/version.json`），四个 mtime 全是 **2026-10-15 14:06:03**，与
+     `/tmp/seamless-release-154-2647` 同刻 ⇒ 是**一次部署生成的版本号 bump**，不是
+     手写 WIP。按纪律**不碰**（也不在授权范围内），留在原地；
+   - `/private/tmp/lggw-s3wave-wt` 目录**已被人删掉**，只剩登记（`git worktree
+     list` 标 `prunable`）→ 只 `worktree prune`；
+   - `~/workspace/wt-deploy-211` 目录 mtime 停在 **2026-10-13 04:25**，两天半无任何
+     改动、无进程占用 → 判定不在用。
+   执行：回收站删 `wt-deploy-211` 与 `tmp_mint_jwt/`（mavis-trash，**可恢复**）→
+   `worktree prune` → 逐条验合并后 `git branch -d` 删 4 条
+   （`feat/deploy-211-docker` `merge-main-211` `s3-wave2-readsource` `tmp-sync`）。
+   清理后 `-2` 只剩 `main`，未提交内容仅剩那 4 个版本 bump。
+3. ~~**远端分支收敛**~~ **已执行（2026-10-15 17:5x）**：删前对每条**在删除瞬间**
+   重验 `merge-base --is-ancestor origin/<b> origin/main`（90/90 全真，0 条未合并），
+   分 5 批 `git push origin --delete`，**90/90 确认 ` - [deleted]`**，无失败。
+   远端现存 8 条：`main` + 4 条受保护特殊名（`llm-gateway-go-5`、
+   `main-final-20260827`、`main-merge`、`main-merge-provenance-20260903`）
+   + 3 条九月未合并留置项。留置项维持原判（`2026-07-25-realtime-routing-self-heal`
+   24 篇设计归档 / `fix/w5-ml-ci-runbook` / `fix/w6-monitor-docs`），待维护者裁决。
+4. ~~**`go build ./...`（cgo 形态）在本机结构上不可用**~~ **已落地并上线
+   （提交 `80315e0fc`，2026-10-15 实测已在 154/245 生产二进制内）**：
    详见「任务 1」的 CGO 边界一节。
-5. **隔离 PG 实例仍在跑且已复用**（2026-10-14 15:3x 实测 rc=0）：`127.0.0.1:54999`
-   （`/tmp/pg862audit.9vybj2`，socket+TCP 均可），下轮真库判据直接复用：
-   `TEST_PG_URL=postgres://audit@127.0.0.1:54999/postgres?sslmode=disable`。
-   本轮用它复跑 D1 真库判据 2/2 绿：
-   `TEST_PG_URL=… CGO_ENABLED=0 go test -tags=integration ./sql/migrations/startup
-   -run TestMigration862 -v -count=1`。
+5. ~~**隔离 PG 实例**~~ **已回收（2026-10-15 17:5x 实测：54999 已无监听）**。
+   2026-10-14 15:3x 曾用它复跑 D1 真库判据 2/2 绿：
+   `TEST_PG_URL=postgres://audit@127.0.0.1:54999/postgres?sslmode=disable CGO_ENABLED=0
+   go test -tags=integration ./sql/migrations/startup -run TestMigration862 -v -count=1`。
+   下轮要真库判据请按 migration_862_integration_test.go 的口径**新起**一个一次性实例
+   （`initdb` + `pg_ctl -o "-p <port> -k <dir> -c listen_addresses=''"`），别去找 54999。
 6. **登记待续**（上轮转来的）：`probe_direct_auth_failed` 探针失败主体与失效 sk-* key
    持有方通知；fail-open 占位符透传（96 行样本，根因未定位，需结构化日志+真实流量+发布
    授权）；601,914 行 `session_censors.original_encrypted` 全 NULL 的还原半程（要还原得给
    `db_sink.go` 加解密读取方，配密钥无用）。
+7. **本机 host-first 实例**：执行时跑的是 `2.5.8.2639`（`~/kaixuan/llm-gateway-go-v2/bin`），
+   活跃端口 8782。本轮未动它。
+8. **211 的迁移台账与别处不同**：`schema_migrations` 里 **860+ 一条都没有**
+   （`max(version)=851, count=61`），但库里 `_request_logs`、`idx_request_logs_ts`
+   都在——即该库走了另一条记账路径。**下轮若要在 211 上判迁移，别拿 `schema_migrations`
+   当真值**，先确认它用的是哪本账。
 
 ---
 
@@ -2073,3 +2098,35 @@ owner 拍板）；session_censors 可逆还原无读取方（配密钥+读取端
    双写丢更新）待裁决。
 3. 上一轮遗留不变：D1/D2 部署、URSM persist collect 迁独立 db、
    GeneratedTextGuard 双语义拍板、session_censors 可逆化两件套。
+
+---
+
+# 追加：2026-10-15 24h 审计 —— magpie P0 收口合入 + admin 慢查询根修
+
+> 明细：`docs/audit/2026-10-15-24h审计-magpie收口与admin慢查询.md`。
+> HEAD 推送后以 `git log -1` 为准（约 `ccec7c543` 一带）。
+
+## 落地
+
+1. **magpie P0-B/C/D**（`cursor/magpie-p0-closeout`）合入 main 并删远程分支；判据/
+   观测脚本一并入库。
+2. **D1** probeOne 进程级 MemoryFlight 跨测试串味 → per-Executor 惰性 memory。
+3. **D2** `/api/admin/sessions/online`：旧 JOIN 停写视图 EXPLAIN **52s/0 行** →
+   改读 `session_summaries`（近窗 **0.76ms**）。
+4. **D3** `/api/logs/top-models`：≤8d 窗只用 `SessionFamilyTurnsHotSourceSQL`。
+5. 本地已合并陈旧分支 10 条删除；24h 窗内不活跃未合并远程分支 **0**；
+   `r43-fresh-install*` 窗口外留置（含删 704/705 的危险 diff）。
+
+## 下一轮提示词（2026-10-15 部署收口后）
+
+> 明细追加：`docs/audit/2026-10-15-24h审计-magpie收口与admin慢查询.md` §七。
+> 生产：245=`2650-6dc0ad45`(:8781) / 154=`2651-6dc0ad45`(:8782) / 211=`2645-6dc0ad45`；
+> online/top-models 亚秒复验过；magpie 四指纹 OK。工作区 MV/cursor/r43/211 改动**未提交**。
+
+1. ★ **owner 授权后 commit + push**（MV 30m/45m、cursor SECRET 回落、r43 三门、
+   deploy-211 硬化）；勿带 VERSION/version.json 等部署产物。
+2. **deploy-211 续优化**：可选注入 `LLM_GATEWAY_ADMIN_*`；observe 补 `TARGET=211`；
+   claim/URSM 冷启动是否仍要 emergency-repair 留观。
+3. **MV 争用**：用 pg_stat_statements 核 `routing_analytics_7d` 总耗时是否随 30m 降频下降。
+4. model alternatives 超时、fp_slot、nvidia probe：owner。
+5. `r43-fresh-install*` / 九月远端三分支：留置。

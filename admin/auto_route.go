@@ -1064,7 +1064,8 @@ func (h *AutoRouteHandlers) handleModelCost(w http.ResponseWriter, r *http.Reque
 // writeJSONOk serialises v as JSON and writes 200. Errors are swallowed.
 // 薄委托 internal/httpx（2026-09-04 writeJSON 收敛）。
 func writeJSONOk(w http.ResponseWriter, v interface{}) {
-	applyV1FreezeNotice(w) // v1 停写告示（见 v1_freeze_notice.go）
+	// 2026-10-15（r1033）：中央 v1 停写告示头退役（新判据查 DB，见
+	// admin/data_horizon.go）；头只在 /api/admin/data-horizon 端点自身携带。
 	//nolint:errcheck // best-effort, matches previous streaming helper
 	httpx.WriteJSON(w, http.StatusOK, "application/json", v)
 }

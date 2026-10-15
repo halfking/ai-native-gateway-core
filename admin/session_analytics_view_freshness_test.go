@@ -89,6 +89,40 @@ func TestRequireFreshSessionViews_NoDBFailsClosed(t *testing.T) {
 // 用来把下面的算术钉在真实数值上，而不是拍一个「余量」。
 const sessionMeasuredRefreshSeconds = 64 * time.Second
 
+// routingMeasuredRefreshSeconds 取 pg_stat_statements / 252 日志里
+// routing_analytics_7d CONCURRENTLY 均值上沿（~26s），留一点余量。
+const routingMeasuredRefreshSeconds = 30 * time.Second
+
+// TestRoutingMvFreshnessBudget_Arithmetic 钉住 2026-10-15 降频契约：
+// RefreshInterval=30m ↔ mvFreshnessBudget=45m。两侧夹住同 session 族：
+// 稳定态必须放行，漏一整轮必须降级。
+func TestRoutingMvFreshnessBudget_Arithmetic(t *testing.T) {
+	interval := bg.RefreshInterval
+	if interval != 30*time.Minute {
+		t.Fatalf("期望 RefreshInterval=30m（降频契约），实际 %s", interval)
+	}
+	if mvFreshnessBudget != 45*time.Minute {
+		t.Fatalf("期望 mvFreshnessBudget=45m，实际 %s", mvFreshnessBudget)
+	}
+
+	steadyState := interval + routingMeasuredRefreshSeconds
+	if mvFreshnessBudget <= steadyState {
+		t.Fatalf("routing 陈旧度预算 %s 必须大于稳定态最坏年龄（间隔 %s + 实测一轮 %s = %s）",
+			mvFreshnessBudget, interval, routingMeasuredRefreshSeconds, steadyState)
+	}
+
+	oneMissedCycle := 2*interval + routingMeasuredRefreshSeconds
+	if mvFreshnessBudget >= oneMissedCycle {
+		t.Fatalf("routing 陈旧度预算 %s 不得达到漏一轮后的年龄（%s）",
+			mvFreshnessBudget, oneMissedCycle)
+	}
+
+	if bg.RefreshTimeout >= bg.RefreshInterval {
+		t.Fatalf("超时 %s 必须小于间隔 %s，否则刷新周期会堆积",
+			bg.RefreshTimeout, bg.RefreshInterval)
+	}
+}
+
 // TestSessionMvFreshnessBudget_Arithmetic：预算不是「比间隔大一点」就够，也不是
 // 越大越好。它被两侧夹住，两侧都来自算术：
 //

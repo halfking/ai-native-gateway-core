@@ -93,6 +93,9 @@ export const zhCN = {
     subscriptionTiers: '订阅档',
     platformSettings: '平台设置',
     usageEnhanced: '用量成本',
+    dataLifecycleStorage: '存储总览',
+    storageAndLogConfig: '存储与日志',
+    storageMigrationState: '附件目录迁移',
     account: '我的',
   },
   // ★ 订阅档（2026-10-14，第一百二十批）。前缀 sts。
@@ -175,6 +178,101 @@ export const zhCN = {
       source: '取值来源',
       operator: '操作者',
       role: '角色',
+    },
+  },
+  // ★ 存储总览（2026-10-14，第一百二十三批）。前缀 dls。
+  dls: {
+    title: '存储总览',
+    nope: {
+      msg: '仅管理员可查看存储总览。',
+      why: '服务端这两个端点没有角色下限，普通账号也能读到本机磁盘与数据库的用量。',
+    },
+    load: { title: '取数', btn: '刷新存储总览' },
+    scope: { note: '这是全平台合计的用量，不按租户拆分。' },
+    warn: { title: '诊断' },
+    db: { title: '数据库', ok: '服务端确认查询成功' },
+    tables: { title: '表级大小', limit: '最多列出 {n} 张表。' },
+    check: {
+      dbFailed: '数据库大小查询失败：下面这一块全是 0，不代表库里真的没有数据。',
+      freeUnmeasurable: '注意：剩余空间测不到（连接只能看到客户端视角），空值不是「空闲 0 字节」。',
+      noTenant: '这份数据里没有租户维度，是全平台合计。',
+    },
+    field: { total: '总大小', tables: '表', indexes: '索引', free: '剩余' },
+  },
+  // ★ 存储与日志配置（2026-10-14，第一百二十四批）。前缀 slc。
+  slc: {
+    title: '存储与日志配置',
+    nope: {
+      msg: '仅超级管理员可查看。',
+      why: '服务端中间件会返回 403；这一页只是让你不必看到那一屏错误。',
+    },
+    load: { title: '取数', btn: '刷新配置' },
+    readonly: { note: '本页只读：桌面端有写入入口，移动端不提供。' },
+    storage: { title: '存储配置', types: '常见取值：{list}（实际取值不被这个列表限制）。' },
+    logs: { title: '日志轮转', synced: '与运行时一致' },
+    masked: { count: '{n} 个密钥已配置（值不回显）' },
+    check: {
+      sourceMisused: '注意：config_source 只描述某一个键的来源，不能当成整份配置的来源。',
+      sourceUnknown: 'config_source 不在 default / env / db 三值域内。',
+      typeUnknown: 'storage_type 不在常见取值列表里——它可以被设置成任意字符串。',
+      needsRestart: '配置已改动但尚未生效，需要重启。',
+      logPendingReload: '配置的日志路径与运行时实际路径不同：改动尚未热加载。',
+    },
+    // ★★ 这里必须**一键一行**：i18n 门的键展平器解析不了「一行多对」的写法
+    //   （首版把 11 个键压成 4 行 ⇒ 门报「slc.field.* 两侧一致地缺」，
+    //     而同一块的 slc.check.* 却全部解析成功 ⇒ 分界正是「一行多对」）。
+    field: {
+      storageType: '存储类型',
+      effectiveDir: '生效目录',
+      configSource: '来源',
+      downloadPrefix: '下载前缀',
+      masked: '密钥',
+      filePath: '配置路径',
+      logFile: '运行时路径',
+      maxSize: '单文件上限',
+      maxBackups: '保留份数',
+      deleteDays: '保留天数',
+      enabledSource: '开关来源',
+    },
+  },
+  // ★ 附件目录迁移进度（2026-10-15，第一百二十五批）。前缀 sms。
+  sms: {
+    title: '附件目录迁移',
+    nope: {
+      msg: '仅管理员可查看迁移进度。',
+      // ★★★ 与 slc 的 nope 文案**方向相反**：slc 说「服务端会 403」（体验兜底），
+      //   本族必须说「后端不挡、我们挡」—— 因为 `admin(...)` = AdminMiddleware
+      //   没有任何角色下限，supportedRole 还接受 "user"。
+      why: '这一层是服务端之外唯一的门：后端这个端点只校验登录、不校验角色，普通账号本来也能读。',
+    },
+    gate: { note: '本页是这一族里唯一挡普通账号的地方（后端只校验登录，不校验角色）。' },
+    readonly: { note: '本页只读：启动或取消迁移属于存储配置的写入入口，不在本页。' },
+    load: { title: '取数', btn: '刷新状态' },
+    state: { title: '迁移状态' },
+    tenant: { none: '本页不含任何租户维度：迁移进度是这台网关自己的事，所以不是超级管理员专享。' },
+    empty: '这台网关还没有发生过附件目录迁移。',
+    status: { running: '迁移中', terminal: '已结束' },
+    polling: { on: '轮询中', timeout: '状态长时间没有变化，已停止自动刷新（后端没有「卡住」信号，请检查服务端日志）。' },
+    purge: {
+      yes: '旧目录已删除',
+      no: '旧目录未删除',
+      note: '是否已清理只认 old_dir_purged；files_deleted 是计数，可能为 0 却其实删过。',
+    },
+    failed: {
+      title: '迁移失败',
+      note: '多数失败只有 message、没有结构化 errors（后端只在少数路径收集 errors）。',
+    },
+    // ★★ 一键一行（i18n 门的键展平器解析不了「一行多对」）。
+    field: {
+      status: '状态',
+      runId: '迁移 ID',
+      from: '源目录',
+      to: '目标目录',
+      startedAt: '开始时间',
+      fileProgress: '文件进度',
+      byteProgress: '字节进度',
+      purge: '旧目录',
+      filesDeleted: '已删文件数',
     },
   },
   // ★ 用量成本（2026-10-14，第一百二十二批）。前缀 ue。

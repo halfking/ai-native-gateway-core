@@ -237,12 +237,14 @@ func classifyResponsesFrame(frame string) FrameClass {
 	case "response.function_call_arguments.delta":
 		return FrameClassToolCall
 	case "response.created", "response.in_progress",
-		"response.output_item.added", "response.content_part.added",
+		"response.content_part.added",
 		"response.output_text.annotation.added",
 		"response.reasoning_summary_part.added",
 		"response.reasoning_summary_part.done",
 		"response.reasoning_item.added":
 		return FrameClassAttemptMetadata
+	case "response.output_item.added":
+		return classifyResponsesItemAdded(frame)
 	case "response.output_text.done", "response.reasoning_text.done",
 		"response.reasoning_summary_text.done", "response.refusal.done",
 		"response.audio.done", "response.audio_transcript.done",
@@ -254,6 +256,38 @@ func classifyResponsesFrame(frame string) FrameClass {
 		return FrameClassError
 	default:
 		return FrameClassUnknown
+	}
+}
+
+// classifyResponsesItemAdded distinguishes message/reasoning item opens
+// (structural metadata, droppable until commit) from tool-shaped item opens
+// (semantic tool output), mirroring classifyAnthropicContentBlockStart and
+// the chat dialect's tool_calls-delta rule: the item-add is the moment the
+// model commits to a tool call and must force the gate commit.
+//
+// r1032 (2026-10-15): a tool-only Responses stream whose argument deltas are
+// all empty (claude-sonnet-5 via vapeur chat upstream, raw-logs
+// 279e4627a757…) previously never wrote a semantic-class frame, so the
+// buffered attempt gate never committed and the client received ZERO frames
+// on a 200 whose upstream carried a complete tool call.
+func classifyResponsesItemAdded(frame string) FrameClass {
+	payload, ok := sseDataPayload(frame)
+	if !ok {
+		return FrameClassUnknown
+	}
+	var f struct {
+		Item struct {
+			Type string `json:"type"`
+		} `json:"item"`
+	}
+	if err := json.Unmarshal([]byte(payload), &f); err != nil {
+		return FrameClassUnknown
+	}
+	switch f.Item.Type {
+	case "function_call", "custom_tool_call", "local_shell_call":
+		return FrameClassToolCall
+	default:
+		return FrameClassAttemptMetadata
 	}
 }
 

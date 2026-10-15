@@ -60,6 +60,19 @@ bash tests/db252_tunnel_test.sh
 echo "[verify] deploy timeout portability contracts"
 bash tests/deploy_timeout_portability_test.sh
 
+# 2026-10-14：magpie P0 观测脚本曾因 154 二进制名 llm-gateway-go≠gateway、
+# 裸 journal unit、pipefail+grep 零命中中途死 → 授权后观测假 FAIL。
+# 零外部依赖门锁住双名解析 / canary 日志 / 反假绿量具 / 部署硬门。
+echo "[verify] magpie P0 observe contracts"
+bash tests/observe_magpie_p0_contract_test.sh
+
+# 2026-10-10：资源探测改为「主机优先」（host → docker → 自动安装）。
+# 旧顺序先扫 docker，扫到就把 mode 定成 docker，主机上真跑着的 pg/redis 被跳过；
+# 而 docker-less 机器会直接 die 在 "Docker Compose is unavailable"。
+# 这道门零外部依赖（mock 二进制即可跑），锁住：探测顺序、docker 不得覆写主机
+# 已认领的槽位、维护库探活（应用库还没建时也要认领）、以及自动安装先于 docker 失败。
+echo "[verify] deploy host-first resource contracts"
+bash tests/deploy_host_first_contract_test.sh
 # 2026-10-10：252 上 pg17-disk-watch.sh 堆到 310 份副本、149 个僵死
 # `docker exec ... psql`，把 15G 内存吃到 swap 100% / load 300，PG 因此
 # 无法服务 154 网关（SQLSTATE 57P03、一小时 194 个 HTTP 503）。

@@ -88,6 +88,7 @@ const i18n = createI18n({
   locale: 'zh-CN',
   messages: { 'zh-CN': { requestJourneys: {
     modelScopeLoading: '正在加载特色模型和近 3 天热门模型…',
+    queueAwaitingStream: '正在连接实时流，连接后本区数据自动加载…',
     refreshScope: '刷新范围',
     modelGroupLayerTitle: '按模型分组的可用节点',
     modelGroupCount: '{count} 个模型',
@@ -145,6 +146,11 @@ describe('QueuePerspectivePanel', () => {
     liveStreamState.requests = []
     liveStreamState.nodes = []
     liveStreamState.snapshot = null
+    // r1032c 基线：默认置为「流已交付」（open + 至少一帧）——本文件既有用例
+    // 的空态断言（队列数据未接入）只在流交付后成立；等待流的窗口显示的是
+    // 加载标记（见 queue-empty awaiting 用例）。
+    liveStreamState.connection = 'open'
+    liveStreamState.lastEventAt = 1
     getFeatured.mockReset().mockResolvedValue({ featured_models: ['gpt-4o', 'claude-sonnet', 'm-1'] })
     resolveRouting.mockReset().mockResolvedValue({ raw_models: [], candidates: [] })
     reorderCandidateBindings.mockReset().mockResolvedValue({ message: 'updated', items: [] })
@@ -1404,6 +1410,38 @@ describe('QueuePerspectivePanel', () => {
     expect(wrapper.text()).toContain('最近请求处理轨迹')
   })
 
+  it('★ queue-empty shows a loading marker (not 未接入) while the live stream has not delivered a frame', async () => {
+    // r1032c：本地实测复现的窗口——SSE 建连 <0.4s、首帧（queue/node 心跳）
+    // ~2s，中间约 1.5s 里 hasData=false 的空态区写着「队列数据未接入
+    // （dispatch 未启用或未 wired）」：那是**抢跑的误报**，queue envelope
+    // 只是还没到。等待流的窗口必须显示加载标记。变异防护：把
+    // streamAwaitingData 改成恒 false（删掉等待分支）→ 本用例红在
+    // 「误报文案仍在」。
+    liveStreamState.queue = null
+    liveStreamState.nodes = []
+    // 等待流的两格：连接未建立；已建立但首帧未到。
+    for (const [conn, lastEvent] of [['connecting', 0], ['open', 0]] as const) {
+      liveStreamState.connection = conn
+      liveStreamState.lastEventAt = lastEvent
+      const wrapper = mountPanel()
+      await flushPromises()
+      expect(wrapper.find('.qp-empty-text--loading').exists(),
+        `conn=${conn} 时空态区必须有加载标记`).toBe(true)
+      expect(wrapper.text()).toContain('正在连接实时流')
+      expect(wrapper.text(), `conn=${conn} 时不得抢跑「未接入」误报`).not.toContain('队列数据未接入')
+      wrapper.unmount()
+    }
+
+    // 首帧到达后回到既有口径：hasData 仍为 false（dispatch 真没接线）→
+    // 「队列数据未接入」如实显示，加载标记退场。
+    liveStreamState.connection = 'open'
+    liveStreamState.lastEventAt = 1
+    const delivered = mountPanel()
+    await flushPromises()
+    expect(delivered.text()).toContain('队列数据未接入')
+    expect(delivered.find('.qp-empty-text--loading').exists()).toBe(false)
+  })
+
   it('retries the model-scope load once when the first attempt landed empty (first-open fix)', async () => {
     // 首开竞态：挂载早于登录态就绪，featured/top-models 首轮整体失败 →
     // scope 为空。修复前面板只能靠"切走再切回（重挂载）"恢复；现在 3s 后
@@ -1467,6 +1505,45 @@ describe('QueuePerspectivePanel', () => {
       }
       expect(wrapper.text()).toContain('m-1')
       expect(wrapper.text()).not.toContain('模型范围暂不可用')
+      // 2026-10-15 有界重试：scope 已非空后，后续重试档（9s/20s）必须全部
+      // 停火——有数据还继续请求就是白打。推进完整重试窗口后调用数不变。
+      await vi.advanceTimersByTimeAsync(30_000)
+      for (let i = 0; i < 5 && getFeatured.mock.calls.length < 3; i++) {
+        await vi.advanceTimersByTimeAsync(0)
+      }
+      expect(getFeatured).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops after the bounded retry schedule when the scope stays empty (no request hammering)', async () => {
+    // 2026-10-15：单次重试扩为 3s/9s/20s 三档后，必须证明档位**有界**——
+    // 生产 top-models 是 10s 预算端点，无界重试会把它压成循环 500。
+    // 变异防护点：把 SCOPE_RETRY_DELAYS_MS 改长/改多或去掉 index 上限，
+    // 本用例在「推进 60s 仍是 4 次调用」处变红。
+    vi.useFakeTimers()
+    try {
+      getFeatured.mockReset().mockResolvedValue({ featured_models: [] })
+      vi.mocked(getRequestLogTopModels).mockReset().mockResolvedValue({ items: [] })
+      resolveRouting.mockReset().mockResolvedValue({ raw_models: [], candidates: [] })
+      liveStreamState.nodes = [
+        { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+      ]
+
+      mountPanel()
+
+      // 3s/9s/20s 三档全部走完 + 60s 额外空转：调用数恒为 1（初始）+3（重试）。
+      await vi.advanceTimersByTimeAsync(3_000)
+      for (let i = 0; i < 5 && getFeatured.mock.calls.length < 2; i++) await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(9_000)
+      for (let i = 0; i < 5 && getFeatured.mock.calls.length < 3; i++) await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(20_000)
+      for (let i = 0; i < 5 && getFeatured.mock.calls.length < 4; i++) await vi.advanceTimersByTimeAsync(0)
+      expect(getFeatured).toHaveBeenCalledTimes(4)
+      await vi.advanceTimersByTimeAsync(60_000)
+      for (let i = 0; i < 5 && getFeatured.mock.calls.length < 5; i++) await vi.advanceTimersByTimeAsync(0)
+      expect(getFeatured).toHaveBeenCalledTimes(4)
     } finally {
       vi.useRealTimers()
     }

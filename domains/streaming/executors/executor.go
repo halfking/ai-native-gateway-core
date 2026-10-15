@@ -580,6 +580,15 @@ type Executor struct {
 	// （magpie probeOne）。nil = 默认 true；测试可显式 false 回退扇出。
 	ProbeOneEnabled *bool
 
+	// ProbeOneFlight (P0-D) model-scoped SET NX 单飞。nil = 本 Executor
+	// 惰性 memory（见 probeOneMem）；生产注入 NewRedisProbeOneFlight。
+	// 锁未拿到则本请求跳过 ProbeSync。
+	ProbeOneFlight ProbeOneFlight
+	// probeOneMemOnce/probeOneMem：ProbeOneFlight==nil 时的 per-Executor
+	// 回落。禁止进程级单例——holdTimeout TTL 会跨测试串味。
+	probeOneMemOnce sync.Once
+	probeOneMem     *MemoryProbeOneFlight
+
 	// ParamLedger (2026-09-22) 参数协商账本：paramguard/reqprobe 的出站
 	// 调整按 request_id 记账，native responses 回程把 reasoning.effort
 	// 回显还原为客户端原值（见 paramledger_integration.go）。nil 时全部
@@ -1851,6 +1860,10 @@ type ExecuteError struct {
 	Attempts  []AttemptRecord
 	LastKind  errorsx.ErrorKind
 
+	// RetryAfterSeconds (P0-D quotaHeld) is the client-facing wait derived from
+	// earliest candidate CoolUntil/resetAt. 0 → handler falls back to 30s.
+	RetryAfterSeconds int
+
 	// V3.1 dispatch queue timestamps when the failure went through Pipeline.Submit.
 	// Handler copies these onto RequestLogContext so failure rows also persist T0–T9.
 	T0ArrivedAt       *time.Time
@@ -2513,37 +2526,28 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 			// 收 402/429，放大比无收益）——立即以 KindQuota 出口，handler
 			// 映射 429+Retry-After（Tried=0 标记「未打上游的全灭」）。
 			if quotaHeldAll(probeCandidates) {
+				retryAfter := retryAfterSecondsFrom(
+					earliestCoolUntil(probeCandidates, e.enrichCandidateCoolUntil),
+					time.Now(),
+				)
 				slog.Info("executor: quotaHeld — skip ProbeSync (all candidates quota/balance exhausted)",
 					"model", params.ClientModel,
 					"request_id", params.RequestID,
 					"candidates", len(probeCandidates),
+					"retry_after_seconds", retryAfter,
 				)
 				if params.AuditBuilder != nil {
 					params.AuditBuilder.DecisionTrace(trace)
 				}
 				return nil, &ExecuteError{
-					Tried:     0,
-					Exhausted: true,
-					Trace:     trace,
-					LastKind:  errorsx.KindQuota,
-					LastErr:   fmt.Errorf("quotaHeld: all %d candidates quota/balance exhausted", len(probeCandidates)),
+					Tried:             0,
+					Exhausted:         true,
+					Trace:             trace,
+					LastKind:          errorsx.KindQuota,
+					LastErr:           fmt.Errorf("quotaHeld: all %d candidates quota/balance exhausted", len(probeCandidates)),
+					RetryAfterSeconds: retryAfter,
 				}
-			} else if syncNoCands := func() []credentialstate.NoCandidatesCandidate {
-				raw := make([]credentialstate.NoCandidatesCandidate, 0, len(probeCandidates))
-				for _, c := range probeCandidates {
-					if c.CredentialID == 0 {
-						continue
-					}
-					raw = append(raw, credentialstate.NoCandidatesCandidate{
-						CredentialID: c.CredentialID,
-						ProviderID:   c.ProviderID,
-						RawModel:     candidateRawModel(c),
-						BillingMode:  c.BillingMode,
-					})
-				}
-				// P0-D probeOne：每请求最多半开探测一个。
-				return selectProbeOne(raw, e.probeOneEnabled())
-			}(); len(syncNoCands) > 0 {
+			} else if syncNoCands := e.toNoCandidatesProbeSlice(probeCandidates); len(syncNoCands) > 0 {
 				if params.OnPreStreamKeepalivePause != nil {
 					params.OnPreStreamKeepalivePause()
 				}
@@ -2556,7 +2560,17 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 				}
 				holdCtx, holdCancel := context.WithTimeout(params.R.Context(), holdTimeout)
 				holdStart := time.Now()
-				recovered := e.ProbeSync(holdCtx, syncNoCands, params.TenantID, params.RequestID)
+				// P0-D 单飞：同 model 并发请求只让一个跑 ProbeSync（上游调用≤1）。
+				recovered := false
+				if e.probeOneFlight().TryAcquire(holdCtx, params.ClientModel, holdTimeout) {
+					recovered = e.ProbeSync(holdCtx, syncNoCands, params.TenantID, params.RequestID)
+				} else {
+					slog.Info("executor: probeOne single-flight busy — skip ProbeSync",
+						"model", params.ClientModel,
+						"request_id", params.RequestID,
+						"probe_one_cred", syncNoCands[0].CredentialID,
+					)
+				}
 				holdCancel()
 				if params.OnProbeHoldEnd != nil {
 					params.OnProbeHoldEnd(recovered)

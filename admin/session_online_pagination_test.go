@@ -49,14 +49,33 @@ func TestCursorHMACSignature(t *testing.T) {
 
 func TestCursorRequiresSecret(t *testing.T) {
 	t.Setenv("CURSOR_HMAC_SECRET", "")
+	t.Setenv("LLM_GATEWAY_SECRET_KEY", "")
 	now := time.Now()
 	if _, err := encodeOnlineSessionCursor(now, ""); err == nil {
-		t.Fatal("encodeOnlineSessionCursor should fail without a configured secret")
+		t.Fatal("encodeOnlineSessionCursor should fail without CURSOR_HMAC_SECRET and LLM_GATEWAY_SECRET_KEY")
+	}
+}
+
+func TestCursorFallsBackToGatewaySecretKey(t *testing.T) {
+	t.Setenv("CURSOR_HMAC_SECRET", "")
+	t.Setenv("LLM_GATEWAY_SECRET_KEY", "gateway-secret-key-0123456789012345")
+	now := time.Now()
+	cursor, err := encodeOnlineSessionCursor(now, "sess-1")
+	if err != nil {
+		t.Fatalf("encode should fall back to LLM_GATEWAY_SECRET_KEY: %v", err)
+	}
+	got, err := parseOnlineSessionCursor(cursor)
+	if err != nil {
+		t.Fatalf("parse with fallback secret: %v", err)
+	}
+	if got.SessionID != "sess-1" {
+		t.Errorf("session_id = %q, want sess-1", got.SessionID)
 	}
 }
 
 func TestCursorRejectsShortSecret(t *testing.T) {
 	t.Setenv("CURSOR_HMAC_SECRET", "too-short")
+	t.Setenv("LLM_GATEWAY_SECRET_KEY", "")
 	if _, err := encodeOnlineSessionCursor(time.Now(), ""); err == nil {
 		t.Fatal("encodeOnlineSessionCursor should reject a short secret")
 	}

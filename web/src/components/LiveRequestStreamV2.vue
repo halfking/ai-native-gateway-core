@@ -6,7 +6,7 @@
 // 2026-07-13: 转发泳道诊断事件，承载 RouteIncidentDrawer
 // 2026-08-14 V3.2: 添加"按处理队列"维度，显示队列透视 + 节点矩阵面板
 
-import { ref, computed } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useLiveStream, type LiveStatus, type LiveModelCategory } from '../composables/useLiveStream'
 import { useSwimLane } from '../composables/useSwimLane'
@@ -48,9 +48,13 @@ const {
 })
 
 // 解构出 reconnect —— 保存新 URL 后立即用新地址重连，不再只是 localStorage 默默记住
+// lastEventAt（2026-10-15 r1032c）：「连接已建立」≠「数据已到达」——本地实测
+// 建连 <0.4s、首批 SSE 帧 ~2s，中间这段空窗（r1032 只覆盖到建连）此前
+// 数据区没有任何加载标记。
 const {
   snapshot: liveSnapshot,
   connection,
+  lastEventAt,
   paused,
   togglePause,
   reconnect: reconnectStream,
@@ -166,6 +170,82 @@ const connectionLabel = computed(() => {
   return t('dashboard.liveStream.statusClosed')
 })
 
+// ── 2026-10-15：按处理队列首开反馈 + closed 态自动重连 ──────────────────────
+//
+// 用户报告：第一次打开总览页的「按处理队列」视图时看不到任何连接动作，
+// 需要切到其它维度再切回来数据才出现。groupBy 的默认值就是 'queue'
+// （liveStreamPreferences defaults），所以每个新会话首开都落在这个视图。
+// 两个结构性缺口：
+//
+//   ① 队列视图自身没有任何连接状态反馈——工具栏药丸在页面顶部，队列区
+//      里「正在连接/已断开」是看不见的，SSE 建连窗口 + 模型范围加载窗口
+//      叠加时整个视图看起来就是死的；
+//   ② EventSource 因 HTTP 层错误（401/403/404/上游 5xx）进入 readyState=2
+//      后，浏览器不会再自动重连（自动重连只覆盖网络层瞬断）。liveStreamStore
+//      把它记为 'closed'，此前唯一的恢复路径是卸载/重挂本组件——用户发现
+//      的「切维度再切回」正是一次重挂载。
+//
+// 修法：① 在队列面板区顶部渲染连接状态条（见模板 v32-queue-panels）；
+// ② 对 'closed' 做有界指数退避的自动重连（5s 起、×2、封顶 30s，'open'
+// 即复位计数）。'connecting'/'reconnecting' 是浏览器自身的重连窗口，
+// 不额外触发，避免双重重连互相打架。
+const AUTO_RECONNECT_BASE_MS = 5_000
+const AUTO_RECONNECT_MAX_MS = 30_000
+let autoReconnectTimer: ReturnType<typeof setTimeout> | null = null
+let autoReconnectAttempt = 0
+
+function clearAutoReconnect() {
+  if (autoReconnectTimer) {
+    clearTimeout(autoReconnectTimer)
+    autoReconnectTimer = null
+  }
+}
+
+// awaitingFirstData（r1032c）：连接未建立，或已建立但还没收到任何一帧
+// （lastEventAt===0；服务端 queue/node/keepalive 心跳 ≤2s 内必到）。
+// 这段窗口里数据区必须挂着加载标记——否则看起来就是「死页面」，
+// 且队列面板会抢跑出误导性的「队列数据未接入」空态（见 QueuePerspectivePanel）。
+const awaitingFirstData = computed(
+  () => connection.value !== 'open' || lastEventAt.value === 0,
+)
+
+const queueStreamNotice = computed<{ tone: 'connecting' | 'closed' | 'unsupported'; text: string } | null>(() => {
+  switch (connection.value) {
+    case 'closed':
+      return { tone: 'closed', text: t('dashboard.liveStream.queueStreamClosed') }
+    case 'unsupported':
+      return { tone: 'unsupported', text: t('dashboard.liveStream.queueStreamUnsupported') }
+  }
+  if (awaitingFirstData.value) {
+    // 已连接但首帧未到：文案如实区分「连接中」与「接收首批数据中」。
+    return connection.value === 'open'
+      ? { tone: 'connecting', text: t('dashboard.liveStream.queueStreamAwaiting') }
+      : { tone: 'connecting', text: t('dashboard.liveStream.queueStreamConnecting') }
+  }
+  return null
+})
+
+watch(connection, (state) => {
+  // 任何状态迁移先撤掉已排定的自动重连：closed→connecting 说明有人
+  // （本 watcher、URL 保存或浏览器）已经动手了，旧的排定只会叠加重连。
+  clearAutoReconnect()
+  if (state === 'open') {
+    autoReconnectAttempt = 0
+    return
+  }
+  if (state !== 'closed') return
+  const delay = Math.min(AUTO_RECONNECT_BASE_MS * 2 ** autoReconnectAttempt, AUTO_RECONNECT_MAX_MS)
+  autoReconnectAttempt += 1
+  autoReconnectTimer = setTimeout(() => {
+    autoReconnectTimer = null
+    // reconnectStream 内部 close+open；refCount>0（本组件仍挂载）才真正开连，
+    // 卸载竞态下这里是 no-op，不会凭空拉起一条无人消费的连接。
+    reconnectStream()
+  }, delay)
+})
+
+onBeforeUnmount(clearAutoReconnect)
+
 const connectionClass = computed(() => {
   return connection.value === 'open' ? 'status--ok' : 'status--warn'
 })
@@ -197,6 +277,15 @@ function handleToggleLegend(key: string) {
 // 2026-07-13 修正：只有 filteredLanes 也为空时才显示空态（避免有泳道显示时仍显示"暂无请求数据"）
 const isColdStart = computed(() => {
   return lanes.value.length === 0 && filteredLanes.value.length === 0
+})
+
+// r1032c：冷启动空态按连接状态区分文案——连接中/未连接说「正在连接」，
+// 已连接才说「等待请求」。混用一句会把建连窗口读成「没有数据」。
+const coldStartText = computed(() => {
+  if (connection.value === 'open' && lastEventAt.value > 0) {
+    return t('dashboard.liveStream.emptyWaiting')
+  }
+  return t('dashboard.liveStream.emptyConnecting')
 })
 
 // 2026-08-06: 保留 UI label 辅助函数（i18n 翻译）
@@ -493,6 +582,18 @@ function vendorOptionLabel(v: string) {
     <!-- 2026-08-14 V3.2: 按处理队列维度时显示队列透视 + 节点矩阵面板 -->
     <!-- 2026-08-28: 传递上层筛选条件到 QueuePerspectivePanel -->
     <div v-if="groupBy === 'queue'" class="v32-queue-panels">
+      <!-- 2026-10-15: 队列视图自身的连接反馈——首开/断连时在数据区直接看见
+           「正在连接实时流」，不再需要从工具栏药丸或「切维度重挂载」来确认。 -->
+      <div
+        v-if="queueStreamNotice"
+        class="live-queue-connect"
+        :class="`live-queue-connect--${queueStreamNotice.tone}`"
+        role="status"
+        aria-live="polite"
+      >
+        <span class="live-queue-connect__dot" aria-hidden="true" />
+        <span class="live-queue-connect__text">{{ queueStreamNotice.text }}</span>
+      </div>
       <QueuePerspectivePanel
         :model-filter="modelFilter"
         :provider-filter="providerFilter"
@@ -522,7 +623,7 @@ function vendorOptionLabel(v: string) {
            "仅探测"过滤为空时不显示（已有泳道只是被过滤，按钮文字已说明） -->
       <div v-if="isColdStart" class="swim-lanes__empty">
         <span class="swim-lanes__empty-icon">⏳</span>
-        <span class="swim-lanes__empty-text">{{ t('dashboard.liveStream.emptyWaiting') }}</span>
+        <span class="swim-lanes__empty-text">{{ coldStartText }}</span>
       </div>
     </div>
 
@@ -1161,6 +1262,62 @@ function vendorOptionLabel(v: string) {
   flex-direction: column;
   gap: 12px;
   margin-top: 12px;
+}
+
+/* 2026-10-15: 队列视图连接状态条。色调用既有语义令牌（--warning/--danger），
+   与 Redis 健康警告条同一视觉家族；动画只用 opacity（rule：禁 layout 动画）。 */
+.live-queue-connect {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+}
+
+.live-queue-connect--closed {
+  background: color-mix(in srgb, var(--warning) 10%, var(--bg-subtle));
+  border-color: color-mix(in srgb, var(--warning) 40%, var(--border));
+  color: var(--text);
+}
+
+.live-queue-connect--unsupported {
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-subtle));
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+  color: var(--text);
+}
+
+.live-queue-connect__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--muted);
+  animation: live-queue-connect-pulse 1.4s ease-in-out infinite;
+}
+
+.live-queue-connect--closed .live-queue-connect__dot {
+  background: var(--warning);
+}
+
+.live-queue-connect--unsupported .live-queue-connect__dot {
+  background: var(--danger);
+  animation: none;
+}
+
+@keyframes live-queue-connect-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-queue-connect__dot {
+    animation: none;
+  }
 }
 
 .swim-lanes {

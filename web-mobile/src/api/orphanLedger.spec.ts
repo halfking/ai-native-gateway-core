@@ -104,12 +104,119 @@ function duplicateIsProven(name: string): boolean {
   return false
 }
 
-const KNOWN_ORPHANS: readonly string[] = [
-  'dataLifecycleStorage',
+/**
+ * ★★★★★★ **第三类登记：非页面型基础设施**（2026-10-15，第一百二十六批新增）。
+ *
+ * ## 为什么需要第三类
+ *
+ * 前两类隐含同一个前提：**孤儿 = 「做完了但用户点不到」的功能缺口**。
+ * ⇒ 第一百二十六批撞上一个**前提不成立**的条目：`nativeTransport`。
+ *
+ * ### 逐字核过的事实
+ *
+ * ① **它自己没有任何端点。** 全文件 `'/api/'` 字面量计数 = **0**
+ *    （导出是 `createNativeTransport` / `installNativeTransport` /
+ *      `probeNativeTransport` / `reasonPhrase` / `NativeTransportError`，
+ *      **没有一个是取数函数**）⇒ 它**不承载任何网关功能**。
+ * ② ⇒ ★★ **「给它开一页」这个动作本身不成立** ——
+ *    没有端点就没有数据，没有数据就没有可展示的面。
+ *    开出来的页只能是装饰，而装饰面不是「把功能复制到移动端」。
+ * ③ **它的能力在当前产品状态下不可能被执行**（自撤销的条件，见下面的自证）：
+ *    - `web-mobile/package.json` 的依赖只有 `pinia` / `qrcode` / `vue` / `vue-router`
+ *      ⇒ **连 `@capacitor/*` 都没装**，而五道门第 ① 道要的就是 `window.Capacitor`
+ *      ⇒ 门① **恒不通过**；
+ *    - 无 `capacitor.config.*`、无 `android/`、无 `ios/`；
+ *    - `setGatewayBaseUrl` 在**生产代码里零调用**（只在 `nativeTransport.test.ts` 里调）
+ *      ⇒ `gatewayBase` 恒为 `undefined` ⇒ 门⑤ **恒不通过**。
+ * ④ **全仓无生产调用点** —— `installNativeTransport` / `probeNativeTransport` /
+ *    `createNativeTransport` 在 `src/` 里除本文件与自己的测试外**零引用**。
+ *
+ * ### 与「重复件」的区别
+ *
+ * 重复件是**功能已可达、只是有两套实现**；本类是**功能压根不存在**。
+ * ⇒ 两者都需要「登记 + 自证」，但登记时要说清消解条件不同。
+ *
+ * ## 这一类是**登记 + 自撤销**，不是**永久免罪**
+ *
+ * ★★★ 下面 `infrastructureIsProven()` 的两条腿**任一不成立，这条登记立刻红** ——
+ *   也就是说：**一旦有人把壳装上、或在生产代码里注入了基址、或给它加了端点**，
+ *   这条登记就会自己作废，逼着人重新决策（那时该做的是**接线**，不是继续挂起）。
+ * ⇒ ★★ 这正是它与「万能借口」的区别：登记的前提被钉死在**可观测的事实**上，
+ *   而不是钉在某个人的判断上。
+ *
+ * ### 消解条件
+ *
+ * 壳安装 + 在 bootstrap 里 `setGatewayBaseUrl(...)` + `void installNativeTransport()`
+ * 之后，本模块**传递可达**（`main.ts` → 本模块），这一行就该从本清单删掉。
+ */
+const KNOWN_INFRASTRUCTURE: readonly string[] = [
+  // UI规范 04 §7.2 ④「壳内 `CapacitorHttp` 反代」的前端侧安装器。
+  // 零端点 + 零生产调用点 + 壳未安装 ⇒ **没有可复制的功能，也没有可开的页**。
   'nativeTransport',
+]
+
+/**
+ * 某项登记为「非页面型基础设施」的**自证**：两条腿都要成立。
+ *
+ * **腿①（没有端点 ⇒ 没有 UI 入口可言）**：全文件 `'/api/'` 字面量计数 = 0。
+ * **腿②（能力当前跑不起来）**：壳未安装 —— 即
+ *   `package.json` 无任何 `@capacitor/*` 依赖，且 `setGatewayBaseUrl`
+ *   在 `src/` 的**非测试**代码里零调用。
+ *
+ * ★ 腿②之所以要单独钉，而不是只看腿①：
+ *   一个「零端点但已在别处被消费」的模块（`transport.ts` / `system.ts` / `gatewaySites.ts`
+ *   都是这种）是**可达**的，本来就不在孤儿清单里 ——
+ *   ⇒ 两条腿合起来才**唯一**命中 `nativeTransport`。
+ */
+function infrastructureIsProven(name: string): boolean {
+  const src = moduleSource(name)
+  const endpointCount = (src.match(/['`]\/api\//g) ?? []).length
+  if (endpointCount !== 0) return false // 腿①：有端点 ⇒ 是功能缺口，该开页
+  return shellIsNotInstalled()
+}
+
+/**
+ * 壳是否**未安装** —— 腿②的判别式。
+ *
+ * ★ 判别条件是**可观测的仓库事实**（依赖清单 / 配置文件 / 基址注入调用点），
+ *   不是「我记得还没装」⇒ 壳装上的那一刻它自动变 false ⇒ 登记作废。
+ */
+function shellIsNotInstalled(): boolean {
+  const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
+    dependencies?: Record<string, string>
+    devDependencies?: Record<string, string>
+  }
+  return shellNotInstalledGiven(pkg.dependencies ?? {}, pkg.devDependencies ?? {}, currentProdBlob())
+}
+
+function currentProdBlob(): string {
+  return uiSourceBlob() + readFileSync(join(API_DIR, 'client.ts'), 'utf8')
+}
+
+/**
+ * ★★★ 判别式**取参数**，而不是自己去读仓库。
+ *
+ * ⇒ ★★★ 这不是洁癖：本批的变异台查出「把依赖判据里的
+ *   `devDependencies` 去掉」**不会让任何判据变红** ——
+ *   因为今天两个分支里都没有 `@capacitor/*`，所以**两条腿都还成立**。
+ *   ⇒ ★★ 「削弱断言」型变异天生无法被同一批判据抓住，
+ *     **唯一的治法是给判据配负控**：喂它一个**反例输入**，要求它返回 `false`。
+ *   ⇒ 参数化是负控的前提（不然喂不进去）。
+ */
+function shellNotInstalledGiven(
+  dependencies: Record<string, string>,
+  devDependencies: Record<string, string>,
+  prod: string,
+): boolean {
+  const deps = { ...dependencies, ...devDependencies }
+  if (Object.keys(deps).some((k) => k.startsWith('@capacitor/'))) return false
+  // ④ 的门⑤要 `gatewayBase`，而它只能由 setGatewayBaseUrl 注入。
+  // ⇒ 只要生产代码里还没人注入它，门⑤ 就恒不通过。
+  return !/setGatewayBaseUrl\(/.test(prod)
+}
+
+const KNOWN_ORPHANS: readonly string[] = [
   'sessionAnalyticsFilterOptions',
-  'storageAndLogConfig',
-  'storageMigrationState',
   'turnsFilterOptions',
 ]
 
@@ -217,6 +324,7 @@ function currentOrphans(): string[] {
   return apiModules().filter((m) => !seen.has(m))
 }
 
+
 describe('孤儿棘轮', () => {
   it('★ 作用面自证：扫描到的 api 模块数不为 0（塌缩到 0 或 1 必须红）', () => {
     expect(apiModules().length).toBeGreaterThan(50)
@@ -226,9 +334,119 @@ describe('孤儿棘轮', () => {
     expect(uiSourceBlob().length).toBeGreaterThan(10000)
   })
 
-  it('★ 当前孤儿集合 = 真缺口 ∪ 重复件（第二类登记，见 KNOWN_DUPLICATES）', () => {
-    // ★ 两份清单都排进数组再比 —— 两边都已在源码里按字母序书写。
-    expect([...currentOrphans()].sort()).toEqual([...KNOWN_ORPHANS, ...KNOWN_DUPLICATES].sort())
+  it('★ 当前孤儿集合 = 真缺口 ∪ 重复件 ∪ 非页面型基础设施（三类登记）', () => {
+    // ★★★ 三份清单都排进数组再比 —— 两边都已在源码里按字母序书写。
+    //   ★ 第三类（第一百二十六批新增）不是为了给清单减项，
+    //     而是登记一类**「没有可复制的功能」**的条目（`nativeTransport` 零端点）。
+    //   ⇒ 它必须与「真缺口」严格区分：真缺口要开页，本类开了也不成立。
+    expect([...currentOrphans()].sort()).toEqual(
+      [...KNOWN_ORPHANS, ...KNOWN_DUPLICATES, ...KNOWN_INFRASTRUCTURE].sort(),
+    )
+  })
+
+  it('★★★ 非页面型基础设施**确实零端点**（否则它就是功能缺口，该开页而不是登记）', () => {
+    // ★★★ 这是第三类登记的**承重判据**，没有它，「非页面型」就成了万能借口。
+    expect(KNOWN_INFRASTRUCTURE.length).toBeGreaterThan(0)
+    for (const name of KNOWN_INFRASTRUCTURE) {
+      expect(currentOrphans(), `${name} 已不在孤儿集合里 ⇒ 这条登记该删了`).toContain(name)
+      const urls = [...moduleSource(name).matchAll(/['`]\/api\//g)]
+      // ★ `toHaveLength` 只能用在有 `.length` 的对象上；这里是数字 ⇒ 用 `toBe(0)`
+      expect(urls.length, `${name} 有 /api/ 端点 ⇒ 它是功能缺口，不该登记为基础设施`).toBe(0)
+      expect(
+        infrastructureIsProven(name),
+        `${name} 的登记前提不成立了（要么有了端点，要么壳已安装/基址已注入）⇒ 重新决策`,
+      ).toBe(true)
+    }
+  })
+
+  it('★★★★ 自证判据的**负控**：喂反例输入必须返回 false（否则它是恒真的）', () => {
+    // ★★★★ 本批变异台的核心发现：「削弱断言」型变异不会被同一批判据抓住
+    //   （把精确判据换成宽松判据，事实仍为真 ⇒ 全绿）。
+    //   ⇒ 唯一治法是**负控**：构造反例输入，要求判据说「不成立」。
+    //
+    // 负控①：壳装了（依赖里出现 @capacitor/*）⇒ 必须不成立
+    expect(shellNotInstalledGiven({ '@capacitor/core': '8' }, {}, '')).toBe(false)
+    // 负控②：壳装成 **devDependency** 也必须被发现（这条正是 S10 变异删掉的那半）
+    expect(shellNotInstalledGiven({}, { '@capacitor/android': '8' }, '')).toBe(false)
+    // 负控③：基址已注入 ⇒ 必须不成立
+    expect(shellNotInstalledGiven({}, {}, 'setGatewayBaseUrl("https://gw")')).toBe(false)
+    // 负控④：普通依赖不得被误判成壳
+    expect(shellNotInstalledGiven({ vue: '3', pinia: '3' }, { vitest: '4' }, '')).toBe(true)
+    // 负控⑤：`infrastructureIsProven` 对**有端点**的模块必须返回 false
+    //   （这条让 S3「判据恒真」这类变异有牙：恒真会让它对任何模块都返回 true）
+    expect(infrastructureIsProven('sessionAnalyticsFilterOptions')).toBe(false)
+    expect(infrastructureIsProven('turnsFilterOptions')).toBe(false)
+  })
+
+  it('★★★★ 「零端点 + 不可达」那条**能分辨**而不是恒成立（负控）', () => {
+    // ★ 与「削弱断言」型变异对抗：断言一个**故意写错**的集合必须不匹配。
+    const seen = reachableFromUi()
+    const zeroEndpointOrphans = apiModules().filter(
+      (m) => (moduleSource(m).match(/['`]\/api\//g) ?? []).length === 0 && !seen.has(m),
+    )
+    expect(zeroEndpointOrphans.sort()).not.toEqual([...KNOWN_INFRASTRUCTURE, 'transport'].sort())
+    expect(zeroEndpointOrphans.sort()).not.toEqual([...KNOWN_INFRASTRUCTURE, 'system'].sort())
+    expect(zeroEndpointOrphans.sort()).not.toEqual([])
+  })
+
+  it('★★★★ 负控必须**钉住真判据的源码形态**，不能只复算（变异 S7 的教训）', () => {
+    // ★★★★ 本条是本批最贵的教训：
+    //   S7 把真判据里那行 `toEqual([...KNOWN_INFRASTRUCTURE].sort())`
+    //   换成 `toBeGreaterThanOrEqual(1)` ⇒ **事实仍为真** ⇒ 全绿，
+    //   而上面那条负控（它自己重新算了一遍集合）**照常通过**
+    //   ⇒ 负控与真判据成了**两份断言**，真判据被削弱时无人报警。
+    //
+    // ⇒ ★★★★ **钉子必须写成「带转义的正则字面量」** —— 这是本批最贵的一课：
+    //   我先后试过三种钉法，**每一种都被自己的自指打败**：
+    //   ① `expect(真判据源码).toContain('那一行的字面量')`
+    //      ⇒ 负控自己把那个字面量写成期望值 ⇒ 恒绿；
+    //   ② 「裁到本测试之前」
+    //      ⇒ 真判据可能写在本测试**之后** ⇒ 连真判据一起切掉 ⇒ 恒红；
+    //   ③ 「挖掉本测试那一段」
+    //      ⇒ **裁切锚点字符串本身就在 helper 里** ⇒ `indexOf` 先命中 helper 自己
+    //        ⇒ 挖掉的是 helper，测试正文原封不动 ⇒ 又恒绿（这一层最隐蔽）。
+    // ⇒ ✅ **正解：用 `/…/` 正则字面量做钉** ——
+    //   它的文本形态带反斜杠转义，**在物理上不可能与被搜的那一行逐字相同**，
+    //   于是「自己命中自己」这件事消失了，也就不需要任何裁切。
+    // ⇒ ★★ 通用式：**源码形态负控的钉子要写成正则字面量，不要写成字符串。**
+    const self = readFileSync(join(process.cwd(), 'src/api/orphanLedger.spec.ts'), 'utf8')
+    expect(
+      self,
+      '真判据里的「零端点 + 不可达 = 已登记集合」被削弱成了更松的断言',
+    ).toMatch(
+      /expect\(zeroEndpointOrphans\.sort\(\)\)\.toEqual\(\[\.\.\.KNOWN_INFRASTRUCTURE\]\.sort\(\)\)/,
+    )
+  })
+
+  it('★★★ 第三类登记是**自撤销**的：壳一旦装上 / 基址一旦注入，这条立刻红', () => {
+    // ★★ 这条是本类与「永久免罪」的分界线。
+    //   两个前提都可观测、可变化 ⇒ 前提一变，登记自动作废。
+    expect(shellIsNotInstalled(), '壳已安装或基址已注入 ⇒ nativeTransport 的登记该作废了').toBe(true)
+    // ⇒ 反向自证：判别式本身是活的（不是恒真）
+    const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
+      dependencies?: Record<string, string>
+    }
+    const deps = Object.keys(pkg.dependencies ?? {})
+    expect(deps.some((k) => k.startsWith('@capacitor/')), '判别式的输入已经变了，判据要重判').toBe(false)
+  })
+
+  it('★★ 三份清单**互不重叠**（同一模块不得登记成两类）', () => {
+    for (const name of KNOWN_DUPLICATES) {
+      expect(KNOWN_ORPHANS).not.toContain(name)
+      expect(KNOWN_INFRASTRUCTURE).not.toContain(name)
+    }
+    for (const name of KNOWN_INFRASTRUCTURE) expect(KNOWN_ORPHANS).not.toContain(name)
+  })
+
+  it('★★★ 「零端点 + UI 不可达」在全仓**唯一**命中已登记的模块', () => {
+    // ★★ 这条把「为什么偏偏是它」钉成可复算的读数，而不是一句话断言。
+    //   全仓另有三个零端点模块（transport / system / gatewaySites），
+    //   但它们都**可达** ⇒ 「零端点」单独并不够，两条腿合起来才唯一。
+    const seen = reachableFromUi()
+    const zeroEndpoint = apiModules().filter((m) => (moduleSource(m).match(/['`]\/api\//g) ?? []).length === 0)
+    const zeroEndpointOrphans = zeroEndpoint.filter((m) => !seen.has(m))
+    expect(zeroEndpoint.length).toBeGreaterThan(1)
+    expect(zeroEndpointOrphans.sort()).toEqual([...KNOWN_INFRASTRUCTURE].sort())
   })
 
   it('★★ 每一项登记的重复件**确实与某个已可达模块打同一个端点**（否则例外条款是免罪）', () => {
@@ -404,6 +622,5 @@ describe('孤儿棘轮', () => {
     //   unwrapCorrectionStat 会被当成「taskProfile 已接上」）。
     const orphans = currentOrphans()
     expect(orphans).toContain('turnsFilterOptions')
-    expect(orphans).toContain('storageMigrationState')
   })
 })

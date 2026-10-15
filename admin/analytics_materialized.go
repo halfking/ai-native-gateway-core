@@ -9,7 +9,7 @@
 // Migration 632 pre-aggregates those rows into routing_analytics_7d
 // (hourly buckets × task × model × provider × tenant) and
 // routing_audit_summary_7d (per-tenant totals); bg.MaterializedViewRefresher
-// keeps them current every 10 minutes.
+// keeps them current every 30 minutes.
 //
 // Fallback contract: when the materialized view is missing, empty, or stale
 // (refresher down / disabled), every helper here reports "not usable" and
@@ -26,10 +26,10 @@ import (
 )
 
 // mvFreshnessBudget is the maximum staleness we tolerate before falling
-// back to the base view. The refresher runs every 10 minutes, so 15 minutes
-// gives one missed cycle of headroom; anything older means the refresher is
-// down and stale numbers must not be served.
-const mvFreshnessBudget = 15 * time.Minute
+// back to the base view. The refresher runs every 30 minutes (2026-10-15
+// 降频)；45 minutes = 1.5×间隔，稳定态（间隔+一轮刷新）仍放行，漏一整轮
+// 后降级回基础视图。算术钉子见 TestRoutingMvFreshnessBudget_Arithmetic。
+const mvFreshnessBudget = 45 * time.Minute
 
 // mvFreshWithin reports whether the named materialized view exists and was
 // refreshed within mvFreshnessBudget. A missing view, a query error, or a
@@ -61,9 +61,8 @@ func mvFreshWithin(ctx context.Context, db *pgxpool.Pool, view string) bool {
 
 // sessionMvFreshnessBudget 是 357 会话分析视图族的陈旧度预算（2026-10-07）。
 // 它的刷新间隔是 SessionViewsInterval=60min（实测一轮 40-70s，源表 919MB），
-// 而 routing 族是 10min —— 沿用 15min 预算会让 session 视图**几乎永远**被判为
-// 陈旧（刷新间隔比预算还长 4 倍）。沿用 routing 同一个「预算 > 间隔，留一轮
-// 漏刷余量」的原则：60min 间隔 ⇒ 90min 预算。
+// 而 routing 族现为 30min/45min 预算 —— 不可把 session 的 90min 照搬到 routing，
+// 也不可把 routing 预算套到 session。两族各自有算术钉子。
 //
 // 为什么需要这道门：357 建完视图时刷新过一次，之后**没有任何刷新排程**
 // （245 实测 2026-10-07 06:31:36 填的，16:07 端点仍在返回它，陈旧 9h37m，
@@ -81,9 +80,8 @@ func mvFreshWithin(ctx context.Context, db *pgxpool.Pool, view string) bool {
 // 自愈），期间不再把「两小时前的数字」当成结论发出去 —— 而两小时前的数字
 // 对一个看板已经没什么参考价值了。
 //
-// routing 族是 10min 间隔 + ~17s 刷新 vs 15min 预算 ⇒ 漏一轮后 11min < 15min
-// 仍放行，**它才是真的留了一轮余量**。两族数值不可互相照搬：
-// 照搬「预算 = 间隔 + 一个间隔」会得到 120min，而那会让两小时前的数据照发。
+// routing 族（30min 间隔 + ~26s 刷新 vs 45min 预算）漏一轮后 ~60min > 45min
+// ⇒ 降级；稳定态 ~30.5min < 45min ⇒ 放行。session 族刻意更紧（漏一轮即 503）。
 const sessionMvFreshnessBudget = 90 * time.Minute
 
 // mvFreshWithinBudget reports whether the named materialized view exists and

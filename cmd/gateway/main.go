@@ -1725,6 +1725,11 @@ func main() {
 			auditSink,
 		)
 		routingExec.RequestProbe = reqProbeCoord
+		// P0-D：probeOne 跨实例单飞（同 model SET NX）。无 Redis 时 executor
+		// 回落进程内 memory（多实例最多各探一次，规划可接受）。
+		if fpSlotRedis != nil {
+			routingExec.ProbeOneFlight = executors.NewRedisProbeOneFlight(fpSlotRedis, "")
+		}
 		routingExec.ParamLedger = paramLedger
 		routingExec.XMLCoerceNonStream = streaming.CoerceXMLToolCallsInChatResponse
 		routingExec.QualityProcessNonStream = streaming.WrapQualityProcessNonStream()

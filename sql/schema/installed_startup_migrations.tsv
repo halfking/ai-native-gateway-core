@@ -274,3 +274,4 @@
 256	861_candidate_failure_view_absorb_session_id.sql
 257	862_partition_family_leading_ts_idx.sql
 258	863_handoff_partition_am_aware.sql
+259	864_model_aliases_bare_raw_name_active_idx.sql

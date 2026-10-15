@@ -276,6 +276,7 @@ v2: {
     empty: "Keine Live-Anfragen",
 
     emptyWaiting: 'Warten auf Live-Anfragestream-Daten…',
+    emptyConnecting: 'Verbindung zum Live-Stream wird aufgebaut, nach dem Verbinden wird automatisch geladen…',
     groupByCredential: 'Nach Zugangsdaten', groupByVendor: 'Nach Anbieter', groupByProvider: 'Nach Provider', groupByModel: 'Nach Modell',
     modeSmall: 'Klein',
     modeLarge: 'Groß',
@@ -292,6 +293,10 @@ v2: {
     dimensionCredential: 'Zugangsdaten', dimensionVendor: 'Anbieter', dimensionProvider: 'Provider', dimensionModel: 'Modell',
     statusOpen: 'Verbunden', statusConnecting: 'Verbinden', statusReconnecting: 'Wiederverbinden',
     statusUnsupported: 'Nicht unterstützt', statusClosed: 'Nicht verbunden',
+    queueStreamConnecting: 'Verbindung zum Live-Stream wird aufgebaut — dieser Bereich aktualisiert sich nach dem Verbinden automatisch…',
+    queueStreamClosed: 'Live-Stream getrennt, automatische Neuverbindung läuft…',
+    queueStreamUnsupported: 'Dieser Browser unterstützt keine Live-Streams (EventSource); dieser Bereich kann keine Echtzeitdaten empfangen.',
+    queueStreamAwaiting: 'Live-Stream verbunden, erste Daten werden empfangen…',
     sseDetailTitle: 'SSE-Verbindungsdetails', sseStatusLabel: 'Verbindungsstatus', sseUrlLabel: 'SSE-URL',
     editUrl: 'Bearbeiten', editUrlPlaceholder: 'SSE-URL eingeben', save: 'Speichern', resetDefault: 'Standard',
     cancel: 'Abbrechen', testConnection: 'Verbindung testen', close: 'Schließen',

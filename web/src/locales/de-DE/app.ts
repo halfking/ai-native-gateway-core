@@ -48,12 +48,10 @@ export default {
     lightTitle: 'Light mode',
     darkTitle: 'Dark mode',
   },
-  v1DataFrozen: {
-    title: 'Traffic-Daten werden nicht mehr aktualisiert: Die Zahlen auf dieser Seite entsprechen nur dem Zeitraum vor dem Schreibstopp',
-    titleUnconfirmed: 'Abschreibeschalter ist nicht explizit konfiguriert: Ob diese Zahlen veraltet sind, lässt sich nicht feststellen',
+  dataHorizon: {
+    title: 'Traffic-Daten fallen zurück: das Gateway verarbeitet Anfragen, aber session_turns kommt nicht hinterher',
     titleUnavailable: 'Status der Traffic-Daten nicht feststellbar: Die Zahlen auf dieser Seite könnten veraltet sein',
-    affects: 'Betroffene Lesepunkt-Klassen',
-    gateKey: 'Steuernde Einstellung',
+    hintLabel: 'Untersuchen',
     retry: 'Erneut prüfen',
     failedHint: 'Der Datenstatus konnte nicht gelesen werden. Ein unbestätigter Status ist kein gesunder Status — die Zahlen auf dieser Seite können veraltet sein.',
   },

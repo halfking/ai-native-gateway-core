@@ -276,6 +276,7 @@ v2: {
     empty: "لا توجد طلبات مباشرة",
 
     emptyWaiting: 'في انتظار بيانات البث المباشر للطلبات…',
+    emptyConnecting: 'جارٍ الاتصال بالبث المباشر، سيتم التحميل تلقائيًا بعد الاتصال…',
     groupByCredential: 'حسب بيانات الاعتماد', groupByVendor: 'حسب المورّد', groupByProvider: 'حسب المزوّد', groupByModel: 'حسب النموذج',
     modeSmall: 'صغير',
     modeLarge: 'كبير',
@@ -292,6 +293,10 @@ v2: {
     dimensionCredential: 'بيانات الاعتماد', dimensionVendor: 'المورّد', dimensionProvider: 'المزوّد', dimensionModel: 'النموذج',
     statusOpen: 'متصل', statusConnecting: 'جارٍ الاتصال', statusReconnecting: 'جارٍ إعادة الاتصال',
     statusUnsupported: 'غير مدعوم', statusClosed: 'غير متصل',
+    queueStreamConnecting: 'جارٍ الاتصال بالبث المباشر — ستتحدث بيانات هذه المنطقة تلقائيًا بعد الاتصال…',
+    queueStreamClosed: 'انقطع اتصال البث المباشر، تجري إعادة الاتصال تلقائيًا…',
+    queueStreamUnsupported: 'هذا المتصفح لا يدعم البث المباشر (EventSource)؛ لا يمكن لهذه المنطقة استقبال البيانات في الوقت الفعلي.',
+    queueStreamAwaiting: 'تم الاتصال بالبث المباشر، جارٍ استقبال أول البيانات…',
     sseDetailTitle: 'تفاصيل اتصال SSE', sseStatusLabel: 'حالة الاتصال', sseUrlLabel: 'عنوان SSE',
     editUrl: 'تحرير', editUrlPlaceholder: 'أدخل عنوان SSE', save: 'حفظ', resetDefault: 'افتراضي',
     cancel: 'إلغاء', testConnection: 'اختبار الاتصال', close: 'إغلاق',

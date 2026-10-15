@@ -887,6 +887,41 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'ue.title', requiresAuth: true, requiresRole: 'admin' },
   },
   {
+    // ★ 存储总览（2026-10-14，第一百二十三批）。
+    //   ★★★ 'admin' 档，**两条独立理由**：
+    //   （甲）**不过度限制到 super_admin**：载荷是纯平台基础设施事实
+    //         （data_lifecycle_storage.go 整个文件零 tenant 命中）⇒ 不含任何租户数据；
+    //   （乙）**但需要 admin**：`admin(...)` 是 handler.go:925 的局部别名 `admin := h.admin`，
+    //         而 h.admin = AdminMiddleware **无角色下限** + supportedRole 接受 "user"
+    //         ⇒ 任何已认证的普通用户都能调 ⇒ 客户端要补的正是**角色下限**。
+    path: '/data-lifecycle-storage',
+    name: 'data-lifecycle-storage',
+    component: () => import('@/views/DataLifecycleStorageView.vue'),
+    meta: { titleKey: 'dls.title', requiresAuth: true, requiresRole: 'admin' },
+  },
+  {
+    // ★ 存储与日志配置（2026-10-14，第一百二十四批）。
+    //   ★★★ 服务端是**真门**（第二类）：h.superAdmin → SuperAdminMiddleware
+    //   （admin/auth.go:376）逐字 `if claims.Role != "super_admin" { 403 }`
+    //   ⇒ 视图内那一层兜的是**体验**（不发请求），**不是**安全边界。
+    //   ⚠️ 与批 122/123 性质不同：那两族服务端**没有**角色下限。
+    path: '/storage-log-config',
+    name: 'storage-log-config',
+    component: () => import('@/views/StorageAndLogConfigView.vue'),
+    meta: { titleKey: 'slc.title', requiresAuth: true, requiresRole: 'super_admin' },
+  },
+  {
+    // ★ 附件目录迁移进度（2026-10-15，第一百二十五批）。
+    //   ⚠️⚠️ 与**上一条路由**档位相反且只隔一行：
+    //     `:1129` storage/config 是 `h.superAdmin`（服务端是真门）；
+    //     `:1132` storage/migration-state 是 `admin(...)` ⇒ **服务端没有角色下限**
+    //     ⇒ `meta.requiresRole: 'admin'` 这一层**是唯一的门**，不是体验兜底。
+    path: '/storage-migration-state',
+    name: 'storage-migration-state',
+    component: () => import('@/views/StorageMigrationStateView.vue'),
+    meta: { titleKey: 'sms.title', requiresAuth: true, requiresRole: 'admin' },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),

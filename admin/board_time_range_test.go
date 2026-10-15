@@ -39,12 +39,28 @@ func TestBoardPresetTimeRange(t *testing.T) {
 }
 
 func TestBoardRequestLogsFromClause(t *testing.T) {
+	// 2026-10-15（r1033）：看板 fallback 换到会话族原生源
+	// （session_turns hot ∪ parent，115 列 v1 形状投影）。旧断言钉的是
+	// 纯 v1 包装视图 request_logs_with_current_month_without_customer_id
+	// ——S4 停写后该腿冻结，已弃用。
 	from, alias := boardRequestLogsFromClause()
-	if from != "request_logs_with_current_month_without_customer_id AS r" {
-		t.Fatalf("from = %q", from)
-	}
 	if alias != "r" {
 		t.Fatalf("alias = %q", alias)
+	}
+	for _, needle := range []string{
+		"FROM public.session_turns_hot t",
+		"FROM public.session_turns t",
+		"session_turn_details_hot d",
+		"LEFT JOIN public.session_turn_details d",
+		"AS request_status", // 投影按 v1 列名供给（board SQL 按名字引用）
+		") AS r",
+	} {
+		if !containsFold(from, needle) {
+			t.Fatalf("from 缺 %q（会话族两腿投影不完整）", needle)
+		}
+	}
+	if containsFold(from, "without_customer_id") {
+		t.Fatalf("from 仍是纯 v1 包装视图：%q", from)
 	}
 }
 

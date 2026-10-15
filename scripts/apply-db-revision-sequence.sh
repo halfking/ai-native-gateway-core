@@ -182,6 +182,11 @@ files=(
   # 前导索引（canonical 视图窗口臂 + V1FreezeCutoffSQL 母表臂；842/846/858
   # 普通父表级联先例）。request_logs 腿引用 860 后的 `_` 前缀名。
   "$ROOT_DIR/sql/migrations/startup/862_partition_family_leading_ts_idx.sql"
+  # 864（2026-10-15）：model_aliases 裸列 (raw_name, canonical_id) WHERE active
+  # 部分索引 —— S3 波 3 alias 链（raw_name = lower(外列)）在全部生产读点
+  # 无法用 lower(raw_name) 表达式索引与 uq 第二列，CMI rollup 68/h 被 30s
+  # 击杀（2026-10-15 252 审计轮实测）。2,744 行构建毫秒级。
+  "$ROOT_DIR/sql/migrations/startup/864_model_aliases_bare_raw_name_active_idx.sql"
   "$ROOT_DIR/sql/migrations/startup/394_request_stats_minute.sql"
   # 2026-10-12 host-first PG/gateway log audit: the candidate-binding scope
   # revision chain (541 raw_model table → 569 canonical table + cmb triggers →

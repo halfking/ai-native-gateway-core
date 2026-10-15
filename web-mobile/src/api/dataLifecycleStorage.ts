@@ -5,11 +5,45 @@ import { STORAGE_TABLES_LIMIT_DEFAULT, STORAGE_TABLES_LIMIT_MAX } from './dataLi
  * dataLifecycleStorage.ts — 存储总览 + 表级大小（2026-10-08，第八十批）。
  *
  * - **注册**（`admin/handler.go`）：
- *   - `:982` `admin(h.handleDataLifecycleStorage)` ⇒ GET `/api/admin/data-lifecycle/storage`
- *   - `:983` `admin(h.handleDataLifecycleTableSizes)` ⇒ GET `/api/admin/data-lifecycle/storage/tables`
- *   ⇒ 两个都是 **admin 档**（tenant_admin 可用）⇒ 抽屉席**不设** `requiresRole`。
- *   ⇒ ★ 同族 `:986-992` 的 vacuum / vacuum-full / reindex（六个）**全是 `h.superAdmin`**
- *     且**全是写操作**（锁表风险）⇒ 本模块**一条都不碰**。
+ *   - `:1001` `admin(h.handleDataLifecycleStorage)` ⇒ GET `/api/admin/data-lifecycle/storage`
+ *   - `:1002` `admin(h.handleDataLifecycleTableSizes)` ⇒ GET `/api/admin/data-lifecycle/storage/tables`
+ *   ⇒ ⚠️⚠️ **行号订正（2026-10-14，第一百二十三批）**：本段原写 `:982` / `:983`，
+ *     实况 `:1001` / `:1002`，**整块漂了 19 行**；同族 vacuum/reindex 的范围
+ *     原写 `:986-992`，实为 `:1005-:1011`（同样是 19 行）。
+ *
+ *   ⚠️⚠️⚠️ **「抽屉席不设 `requiresRole`」已于 2026-10-14（第一百二十三批）订正
+ *     ⇒ 本族必须设 `requiresRole: 'admin'`。**
+ *
+ *   ★★ **「admin 档」这三个字被误读了。** `admin(...)` 是 `admin/handler.go:925`
+ *   的**局部别名** `admin := h.admin`，而 `h.admin` = `AdminMiddleware`
+ *   —— 它**没有任何角色下限** ⇒ **「admin 档」在注册行里的真实含义是
+ *   「已认证」，不是「管理员」。**
+ *
+ *   ⇒ ★★★★★ **同一个错已经连续出现三批**（第一百二十一 / 一百二十二 / 一百二十三批），
+ *     根因是同一个：那批（第七十/八十/九十批）写模块头时机械地写了
+ *     「`admin(...)` ⇒ admin 档 ⇒ 不设 requiresRole」，而「admin 档」这个标签
+ *     **掩盖了服务端根本没有角色下限**这件事。
+ *
+ *   **本族为什么最终是 `'admin'` 而不是 `'super_admin'`（也不是不设）** ——
+ *   两条判据分开看：
+ *   - ★ **不过度限制到 super_admin**：载荷是**纯平台基础设施事实**
+ *     （`admin/data_lifecycle_storage.go` **整个文件零 `tenant` 命中**）：
+ *     全库字节数、本机磁盘用量、日志目录大小。★ 它**不含任何租户的数据**，
+ *     按第一百一十九批钉下的边界（「过度限制的正当性来自载荷里有没有别人的东西」）
+ *     ⇒ **没有**理由挡到 super_admin。
+ *   - ★★ **但必须设 `'admin'`**：按第一百二十二批的实证，
+ *     `AdminMiddleware` 无角色下限 + `pkg/identity` 的 `supportedRole` **接受 `"user"`**
+ *     ⇒ 任何已认证的普通用户都能调这两个端点。
+ *     而「本机磁盘用了 92%」「日志目录超过 5GB」这类信息**没有任何理由要给普通用户看**
+ *     ⇒ 客户端这一层要补的正是**角色下限**，不是数据隔离。
+ *
+ *   ⇒ 处置：`requiresRole: 'admin'`（放行 `super_admin`/`tenant_admin`/`admin_key`，
+ *     挡掉 `user`）。⚠️ 前端严于后端是**兜底不是修复**。
+ *   ⇒ ★ 与批 119（v1 数据地平线，不设 requiresRole）的差别在于**那份告示必须让所有人看见**，
+ *     而本族没有这个理由 —— 「没有理由给普通用户看」本身就是一道门。
+ *
+ *   ⇒ ★★ 同族 `:1005-:1011` 的 vacuum / vacuum-full / reindex（六个）
+ *     **全是 `h.superAdmin`** 且**全是写操作**（锁表风险）⇒ 本模块**一条都不碰**。
  * - **实现**：`admin/data_lifecycle_storage.go`（`:131-229` 两个 handler，`:232-561` helpers）。
  * - **桌面调用方**：`web/src/api/tuning.ts:447`（overview）与 `:470`（tables）。
  *   ★ 桌面 `TableSizeInfo`（`tuning.ts:456-468`）**漏了后端的 `toast_human`**
@@ -767,4 +801,40 @@ function requireKeys(obj: object, keys: readonly string[], where: string): void 
   if (missing.length > 0) {
     throw new Error(`${where} 缺 ${missing.length} 个键（${missing.join(', ')}）`)
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 权限档（2026-10-14，第一百二十三批新增）
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * ★★★★ 本族设 `'admin'` 的**两条独立理由**（缺一不可，别只留一条）：
+ *
+ * **（甲）不需要 `'super_admin'`** —— 载荷是纯平台基础设施事实。
+ * `admin/data_lifecycle_storage.go` 整个文件**零 `tenant` 命中**
+ * ⇒ 没有「载荷含别人的东西」这个判定权 ⇒ 按批 119 的边界**不过度限制**。
+ *
+ * **（乙）但需要 `'admin'`** —— 服务端**没有角色下限**。
+ * `admin(...)` 是 `admin/handler.go:925` 的局部别名 `admin := h.admin`，
+ * 而 `h.admin` = `AdminMiddleware`（无任何角色判定）+
+ * `pkg/identity` 的 `supportedRole` 接受 `"user"`
+ * ⇒ 任何已认证的普通用户都能调这两个端点，而「本机磁盘用量」没理由给普通用户看。
+ *
+ * ★ 这条**不是**恒真：它随 role 变。
+ */
+export function storageOverviewRoleNeedsAdminGate(role: string | null | undefined): boolean {
+  if (role === 'super_admin' || role === 'tenant_admin' || role === 'admin_key') return false
+  return true
+}
+
+/**
+ * ★★★★ 载荷里**不含任何租户维度** —— 这是「不过度限制到 super_admin」的**依据**。
+ *
+ * ⇒ ★ 判别条件是**整份响应里没有租户键**，而不是「某个值恰好为空」。
+ *   哪天后端给 `storageOverview` 加上 per-tenant 拆分，这条会红
+ *   ⇒ 提示权限档要重判（那时就该考虑 super_admin 了）。
+ */
+export function storageOverviewCarriesNoTenantDimension(resp: unknown): boolean {
+  const s = JSON.stringify(resp ?? null).toLowerCase()
+  return !s.includes('tenant')
 }

@@ -4,12 +4,14 @@
 //
 // Routes (registered in RegisterRoutes):
 //
-//	GET /api/admin/sessions/online              在线会话列表（Redis SCAN + session_last_requests 丰富）
+//	GET /api/admin/sessions/online              在线会话列表（session_summaries 近窗）
 //	GET /api/admin/sessions/{id}/timeline       会话多轮次时间线（主请求 + 扩展请求子树）
 //
 // 数据源：
-//   - 在线状态：Redis session:{id} Hash（domains/session Manager）
-//   - 最后请求：session_last_requests（migrations/timeout-optimization/003）
+//   - 在线列表（2026-10-15 24h 审计）：session_summaries（last_request_at 近窗）
+//     旧链 session_last_requests ⋈ request_logs_with_current_month 在 S4 停写后
+//     生产实测 EXPLAIN 52s / 0 行（视图臂 id 对 session 行为 NULL，且 slr 表空）；
+//     summaries + idx_session_summaries_tenant_time 同窗 0.76ms / 180 行。
 //   - 多轮次：session 族原生源（db.SessionFamilyTurnsForSessionSQL，
 //     谓词下推 t.session_id = $1 走 idx_session_turns_session）按
 //     gw_session_id 归属 + parent_request_id 主从关联，并标注会话级唯一
@@ -103,29 +105,37 @@ func (h *Handler) handleSessionsOnline(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// 查询 session_last_requests，按 updated_at 倒序（最新的在前）
-	// cursor 分页：updated_at < cursorTime（首次请求 cursorTime 为 zero，不限制）
+	// session_summaries：近 1h 有 last_request_at 的会话视为「在线」。
+	// cursor 分页：last_request_at 倒序（键字段仍叫 UpdatedAt，兼容既有 cursor）。
+	const onlineWindow = time.Hour
+	onlineSince := time.Now().UTC().Add(-onlineWindow)
 	query := `
-		SELECT slr.session_id, slr.last_request_status, COALESCE(slr.last_model,''),
-		       slr.last_provider_id, slr.last_latency_ms, slr.updated_at, rl.tenant_id
-		FROM session_last_requests slr
-		JOIN request_logs_with_current_month rl ON rl.id = slr.last_request_id
-		WHERE 1 = 1`
-	args := []interface{}{}
+		SELECT ss.session_key,
+		       COALESCE(ss.session_status, ''),
+		       COALESCE(ss.primary_model, ''),
+		       NULL::int AS last_provider_id,
+		       CASE WHEN ss.avg_latency_ms IS NULL THEN NULL ELSE ROUND(ss.avg_latency_ms)::int END,
+		       ss.last_request_at,
+		       COALESCE(ss.tenant_id, 'default'),
+		       COALESCE(ss.title, '')
+		FROM session_summaries ss
+		WHERE ss.last_request_at IS NOT NULL
+		  AND ss.last_request_at >= $1`
+	args := []interface{}{onlineSince}
 	if !IsSuperAdminOrLegacy(r) {
-		query += ` AND rl.tenant_id = $1`
+		query += ` AND ss.tenant_id = $2`
 		args = append(args, tenantID)
 	}
 	if !pageCursor.UpdatedAt.IsZero() {
 		if pageCursor.SessionID == "" {
-			query += fmt.Sprintf(` AND slr.updated_at < $%d`, len(args)+1)
+			query += fmt.Sprintf(` AND ss.last_request_at < $%d`, len(args)+1)
 			args = append(args, pageCursor.UpdatedAt)
 		} else {
-			query += fmt.Sprintf(` AND (slr.updated_at, slr.session_id) < ($%d, $%d)`, len(args)+1, len(args)+2)
+			query += fmt.Sprintf(` AND (ss.last_request_at, ss.session_key) < ($%d, $%d)`, len(args)+1, len(args)+2)
 			args = append(args, pageCursor.UpdatedAt, pageCursor.SessionID)
 		}
 	}
-	query += ` ORDER BY slr.updated_at DESC, slr.session_id DESC LIMIT $` + strconv.Itoa(len(args)+1)
+	query += ` ORDER BY ss.last_request_at DESC, ss.session_key DESC LIMIT $` + strconv.Itoa(len(args)+1)
 	args = append(args, params.Limit+1)
 
 	rows, err := h.db.Query(ctx, query, args...)
@@ -140,12 +150,12 @@ func (h *Handler) handleSessionsOnline(w http.ResponseWriter, r *http.Request) {
 	pageKeys := make([]onlineSessionCursor, 0, params.Limit+1)
 
 	for rows.Next() {
-		var sid, status, model string
+		var sid, status, model, title string
 		var providerID, latency *int
 		var updatedAt time.Time
 		var dbTenantID string
 
-		if err := rows.Scan(&sid, &status, &model, &providerID, &latency, &updatedAt, &dbTenantID); err != nil {
+		if err := rows.Scan(&sid, &status, &model, &providerID, &latency, &updatedAt, &dbTenantID, &title); err != nil {
 			writeError(w, http.StatusInternalServerError, "read online session failed")
 			return
 		}
@@ -160,6 +170,7 @@ func (h *Handler) handleSessionsOnline(w http.ResponseWriter, r *http.Request) {
 
 		os := OnlineSession{
 			SessionID:         sid,
+			Title:             title,
 			LastRequestStatus: status,
 			LastModel:         model,
 			LastProviderID:    providerID,

@@ -514,11 +514,22 @@ func (b *Breaker) RecordModelScopedFailure(kind ErrorKind, model string) {
 }
 
 // RecordFailure records a failure and transitions the circuit state.
+// CoolingUntil returns when the current OPEN/QUARANTINE cooling ends.
+// Zero when not cooling. Used by P0-D probeOne CoolUntil enrichment.
+func (b *Breaker) CoolingUntil() time.Time {
+	if b == nil {
+		return time.Time{}
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.coolingExpires
+}
+
 func (b *Breaker) RecordFailure(kind ErrorKind) {
-	// 2026-07-03 P0 fix: client bugs (tool_call_id_mismatch, invalid_request_format,
-	// etc.) should not trigger circuit breaker state changes. These are client-side
-	// issues, not credential/upstream health problems.
-	if errorsx.IsClientBug(errorsx.ErrorKind(kind)) {
+	// P0-C：PenaltyOf 是 breaker 前置——PenaltyNone（client_bug / shape /
+	// context_length / content_filter / …）永不冷却节点。取代仅 IsClientBug
+	// 的窄集，与 Writer 短路同矩阵。
+	if errorsx.PenaltyOf(errorsx.ErrorKind(kind)).Target == errorsx.PenaltyNone {
 		return
 	}
 

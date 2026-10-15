@@ -58,9 +58,10 @@ import (
 
 const (
 	// RefreshInterval is how often we refresh the materialized views.
-	// 10 minutes balances freshness against database load; consumers
-	// tolerate up to 15 minutes of staleness (admin.mvFreshnessBudget).
-	RefreshInterval = 10 * time.Minute
+	// 2026-10-15：10m→30m。墙钟对齐 + Redis/advisory 已把多实例放大收敛为
+	// 每窗口一次；剩余成本是单次 CONCURRENTLY ~26s（pg_stat_statements 冠军）。
+	// 降频直接砍 PG 负载约 3×。消费者预算见 admin.mvFreshnessBudget=45m。
+	RefreshInterval = 30 * time.Minute
 
 	// RefreshTimeout bounds a single refresh cycle. Must stay below
 	// RefreshInterval so cycles cannot pile up.

@@ -276,6 +276,7 @@ v2: {
     empty: "Sin solicitudes en vivo",
 
     emptyWaiting: 'Esperando datos del flujo de solicitudes en vivo…',
+    emptyConnecting: 'Conectando al flujo en vivo, se cargará automáticamente al conectarse…',
     groupByCredential: 'Por credencial', groupByVendor: 'Por proveedor', groupByProvider: 'Por proveedor', groupByModel: 'Por modelo',
     modeSmall: 'Pequeño',
     modeLarge: 'Grande',
@@ -292,6 +293,10 @@ v2: {
     dimensionCredential: 'Credencial', dimensionVendor: 'Proveedor', dimensionProvider: 'Proveedor', dimensionModel: 'Modelo',
     statusOpen: 'Conectado', statusConnecting: 'Conectando', statusReconnecting: 'Reconectando',
     statusUnsupported: 'No compatible', statusClosed: 'Desconectado',
+    queueStreamConnecting: 'Conectando al flujo en vivo; este panel se actualizará automáticamente al conectarse…',
+    queueStreamClosed: 'Flujo en vivo desconectado, reconectando automáticamente…',
+    queueStreamUnsupported: 'Este navegador no admite flujos en vivo (EventSource); este panel no puede recibir datos en tiempo real.',
+    queueStreamAwaiting: 'Flujo en vivo conectado, recibiendo los primeros datos…',
     sseDetailTitle: 'Detalles de conexión SSE', sseStatusLabel: 'Estado de conexión', sseUrlLabel: 'URL SSE',
     editUrl: 'Editar', editUrlPlaceholder: 'Ingrese URL SSE', save: 'Guardar', resetDefault: 'Predeterminado',
     cancel: 'Cancelar', testConnection: 'Probar conexión', close: 'Cerrar',

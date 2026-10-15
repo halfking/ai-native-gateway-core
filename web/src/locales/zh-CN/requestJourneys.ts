@@ -31,6 +31,7 @@ export default {
   noModelNodes: '当前特色/热门模型没有实时节点绑定。',
   modelScopeError: '模型范围暂不可用，未展示模型节点。',
   modelScopeLoading: '正在加载特色模型和近 3 天热门模型…',
+  queueAwaitingStream: '正在连接实时流，连接后本区数据自动加载…',
   refreshScope: '刷新范围',
   modelGroupLayerTitle: '按模型分组的可用节点',
   modelGroupCount: '{count} 个模型',

@@ -8,8 +8,9 @@ package errorsx
 //
 // DecideFailover 的 Scope/Fuse/Permanent 已接线 PenaltyOf；credential.Writer
 // 的 WriteOnError / SetCredentialUnavailable / coolingDuration 对
-// PenaltyNone 短路（不写冷却）。breaker 仍按 per-kind 策略（P0-4 rest
-// 分级），未把 Target 映射成熔断键——登记为后续债，勿声称「唯一前置」。
+// PenaltyNone 短路（不写冷却）；Breaker.RecordFailure 同样以 PenaltyNone
+// 为前置短路（json-word / context_length 等不冷却）。P0-4 rest 分级
+// （RecordFailureWithReset）仍按 per-kind 冷却时长策略。
 // 本文件闭集登记全部 ErrorKind（见 AllErrorKinds），未登记即测试红。
 
 // PenaltyTarget 是归责对象。

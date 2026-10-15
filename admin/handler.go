@@ -1101,12 +1101,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		swH.RegisterRoutes(mux, h.admin)
 	}
 
-	// 2026-10-03（审计 §9.73.7）：v1 读源族停更告示。
+	// 2026-10-15（r1033）：流量数据地平线告示（前一代 v1-data-horizon 已退役）。
 	//
-	// 挂在 admin 认证之后（`admin(...)`），因为它报告的是平台级状态；
-	// 挂在**中央** JSON 出口（writeJSON / writeJSONOk），所以新增端点
-	// 自动被覆盖 —— 逐端点挂载会漏，而漏掉的那个恰恰是新的那个。
-	mux.HandleFunc("/api/admin/v1-data-horizon", admin(h.handleV1DataHorizon))
+	// 判据基于 session_turns 新鲜度 × hub 流量信号（admin/data_horizon.go），
+	// 彻底不再读 v1 停写门。因判据要查 DB，中央 JSON 出口不再挂告示头
+	// （旧版设置读取足够便宜才挂中央），头只在本端点自身携带。
+	mux.HandleFunc("/api/admin/data-horizon", admin(h.handleDataHorizon))
 
 	// 2026-07-07: P2会话分析 - 客户端/任务维度分析
 	mux.HandleFunc("/api/admin/session-analytics/clients", admin(h.handleClientAnalyticsList))
@@ -1501,8 +1501,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 // writeJSON 写 JSON 响应；marshal 失败时记日志并返回 500 兜底体。
 // 薄委托 internal/httpx（2026-09-04 writeJSON 收敛），错误分支语义保留在本地。
 func writeJSON(w http.ResponseWriter, status int, v any) {
-	// v1 停更告示挂在**中央出口**而不是逐端点（v1_freeze_notice.go 文件头）。
-	applyV1FreezeNotice(w)
+	// 2026-10-15（r1033）：v1 停更告示头已从中央出口退役——新判据
+	// （admin/data_horizon.go）要查 DB，不能挂在每个 JSON 响应上；头只在
+	// /api/admin/data-horizon 端点自身携带。
 	if err := httpx.WriteJSON(w, status, "application/json", v); err != nil {
 		slog.Error("json marshal failed", "error", err)
 		w.Header().Set("Content-Type", "application/json")

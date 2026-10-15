@@ -585,6 +585,48 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.usageEnhanced',
     requiresRole: 'admin',
   },
+  // ★ 存储总览（2026-10-14 第一百二十三批）——
+  //   ★★★ 'admin' 档，**两条独立理由**（与批 122 同源但结论不同）：
+  //   （甲）**不过度限制**：载荷是**纯平台基础设施事实**（零 tenant 命中）⇒ 无理由上 super_admin；
+  //   （乙）**但需要 admin**：服务端**没有角色下限**（`admin := h.admin` → AdminMiddleware
+  //         + supportedRole 接受 "user"）⇒ 本机磁盘用量没理由给普通用户看。
+  //   ★ 连续三批（121/122/123）都栽在同一句「admin 档 ⇒ 不设 requiresRole」上，
+  //     根因是同一个：「admin 档」这个标签**掩盖了服务端没有角色下限**。
+  {
+    key: 'data-lifecycle-storage',
+    to: '/data-lifecycle-storage',
+    icon: 'grid',
+    titleKey: 'nav.dataLifecycleStorage',
+    requiresRole: 'admin',
+  },
+  // ★ 存储与日志配置（2026-10-14 第一百二十四批）——
+  //   `h.superAdmin` ⇒ 服务端**真门** ⇒ 抽屉席必须设 super_admin 并进 AppDrawer 白名单。
+  //   ★ 第九十三批写这个模块时，模块头**一开始就把权限结论写对了**
+  //     （它顺手看了相邻那一行 `storage/migration-state` 是 admin 档，
+  //     并写下「绝不能按 /api/admin/storage/ 前缀推权限」）——
+  //     本批要改的只是那几处**漂了 21 行的行号**，
+  //     结论一个字都不用改（这在九批里是第一次）。
+  {
+    key: 'storage-log-config',
+    to: '/storage-log-config',
+    icon: 'grid',
+    titleKey: 'nav.storageAndLogConfig',
+    requiresRole: 'super_admin',
+  },
+  // ★ 附件目录迁移进度（2026-10-15 第一百二十五批）——
+  //   `admin/handler.go:1132` 的 `admin(...)` ⇒ **服务端没有角色下限**
+  //   （`admin := h.admin` → AdminMiddleware，`pkg/identity` 的 supportedRole 接受 "user"）
+  //   ⇒ 与**上一席只隔一行**的 `storage-log-config`（`:1129` h.superAdmin，真门）
+  //      **档位正好相反** ⇒ 绝不能按 `/api/admin/storage/` 前缀推权限。
+  //   ★ 'admin' 档的两条独立理由：零租户维度（不过度限制）＋ 需要角色下限（不挡 user）。
+  //   ⚠️ 'admin' 档**不得**进 AppDrawer.spec.ts 的 superAdmin 白名单（那是 tenant_admin 掉的）。
+  {
+    key: 'storage-migration-state',
+    to: '/storage-migration-state',
+    icon: 'grid',
+    titleKey: 'nav.storageMigrationState',
+    requiresRole: 'admin',
+  },
   // ★ 加这一席**必须**同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
   {
     key: 'routing-policy',

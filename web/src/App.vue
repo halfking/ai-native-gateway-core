@@ -11,11 +11,11 @@ import UserInfoDialog from './components/UserInfoDialog.vue'
 import LanguageSelector from './components/LanguageSelector.vue'
 import ThemeToggle from './components/ThemeToggle.vue'
 import AppTopbar from './components/shell/AppTopbar.vue'
-// 2026-10-03 审计 §9.73.7（③-4 裁决「接受冻结 + UI 标注」）：
-// silently_frozen 读点没有任何错误信号，所以告示必须是全局的，
-// 且取不到时也要显示（见 composable 的三态说明）。
-import V1DataFrozenBanner from './components/shell/V1DataFrozenBanner.vue'
-import { refreshV1DataHorizon } from './composables/useV1DataHorizon'
+// 2026-10-15 r1033：流量数据地平线告示（前一代 v1 停更横幅已退役）——
+// 判据基于 session_turns 新鲜度 × hub 流量信号，全局横幅，且取不到时
+// 也要显示（见 composable 的三态说明）。
+import DataHorizonBanner from './components/shell/DataHorizonBanner.vue'
+import { refreshDataHorizon } from './composables/useDataHorizon'
 // 2026-10-05 部署序号更新提示（docs/UI规范/18 §4 / §10.3 步骤 4）：
 // 桌面侧只接 deploy-seq 检查 + 非阻塞提示条，不接 SW。
 import DeploySeqUpdateBanner from './components/shell/DeploySeqUpdateBanner.vue'
@@ -90,9 +90,9 @@ onMounted(async () => {
   // 影响仅是桌面下仍会记录导航条目（sessionStorage），不改变任何可见行为。
   watch(isCompact, () => { void install() })
 
-  // 拉一次「v1 数据地平线」告示。失败**不**阻塞挂载：横幅自己会显示
+  // 拉一次「流量数据地平线」告示。失败**不**阻塞挂载：横幅自己会显示
   // 「无法确认状态」而不是消失 —— 未确认不等于正常。
-  void refreshV1DataHorizon()
+  void refreshDataHorizon()
   // 部署序号检查（UI规范 18 §4）：首查延迟晚于首屏落地，检查失败不打断页面。
   // 三态（登录/游客/hydrating）都检查——停在登录页的设备也该收到更新提示。
   deploySeqUpdate.start()
@@ -269,7 +269,7 @@ async function handleChangePasswordSuccess() {
       @change-password="openChangePassword"
       @logout="logout"
     />
-    <V1DataFrozenBanner />
+    <DataHorizonBanner />
     <main class="main-content">
       <div v-if="passwordSuccessMessage" class="main-banner">
         <div class="alert alert-success header-alert">{{ passwordSuccessMessage }}</div>

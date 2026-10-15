@@ -267,6 +267,7 @@ tabs: {
     empty: "リアルタイムリクエストがありません",
 
     emptyWaiting: 'リアルタイムリクエストストリームデータを待機中…',
+    emptyConnecting: 'ライブストリームに接続中です。接続後に自動的に読み込まれます…',
     groupByCredential: '認証情報別', groupByVendor: 'ベンダー別', groupByProvider: 'プロバイダー別', groupByModel: 'モデル別',
     modeSmall: '小',
     modeLarge: '大',
@@ -283,6 +284,10 @@ tabs: {
     dimensionCredential: '認証情報', dimensionVendor: 'ベンダー', dimensionProvider: 'プロバイダー', dimensionModel: 'モデル',
     statusOpen: '接続済み', statusConnecting: '接続中', statusReconnecting: '再接続中',
     statusUnsupported: '未対応', statusClosed: '未接続',
+    queueStreamConnecting: 'ライブストリームに接続中です。接続後、このエリアのデータは自動的に更新されます…',
+    queueStreamClosed: 'ライブストリームが切断されました。自動的に再接続しています…',
+    queueStreamUnsupported: 'このブラウザはライブストリーム（EventSource）に対応していません。このエリアでリアルタイムデータを受信できません。',
+    queueStreamAwaiting: 'ライブストリームに接続済み、最初のデータを受信しています…',
     sseDetailTitle: 'SSE 接続詳細', sseStatusLabel: '接続状態', sseUrlLabel: 'SSE URL',
     editUrl: '編集', editUrlPlaceholder: 'SSE URL を入力', save: '保存', resetDefault: 'デフォルト',
     cancel: 'キャンセル', testConnection: '接続テスト', close: '閉じる',

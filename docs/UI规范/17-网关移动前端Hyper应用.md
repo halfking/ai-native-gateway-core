@@ -17080,3 +17080,502 @@ expect(goFunc(src, 'EffectiveTenantIDAll')).toMatch(/return "" \/\/ empty string
 （三条合起来构成完整链条，缺任何一条都会让结论失去证据）。
 ★ 这是待办②那一类缺陷的**第三个实例**，而本族落在**成本**上 ——
 建议与 ② 一并处理，别只修那两个端点。
+
+
+## 11.159 存储总览接进 UI —— 权限档**第十一次**：**同一个错连续第三批**；根因是「admin 档」这个标签**掩盖了服务端根本没有角色下限**（第一百二十三批）
+
+### 一、这批做了什么
+
+把 `dataLifecycleStorage`（第八十批建的 API 模块，**一直是孤儿**）接进移动端，孤儿 7 → **6**：
+
+| 项 | 值 |
+|---|---|
+| 视图 | `web-mobile/src/views/DataLifecycleStorageView.vue` |
+| 判据 | `DataLifecycleStorageView.spec.ts` **28 条**；API 层 165 → **170 条**（新增 5 条权限/租户维度判据）|
+| 路由 | `/data-lifecycle-storage`，`meta.requiresRole: 'admin'` |
+| 抽屉席 | `data-lifecycle-storage`，`requiresRole: 'admin'` ⇒ **不得**进 superAdmin 白名单 |
+| i18n | 前缀 `dls` + `nav.dataLifecycleStorage`（zh-CN / en-US 各 3701 键）|
+| 变异台 | **15/15 有牙**，还原后逐字节零残留 |
+
+### 二、★★★★★★ 同一个错**连续第三批**出现，根因终于被钉住
+
+| 批 | 族 | 模块头原写 |
+|---|---|---|
+| 一百二十一 | `platformSettings` | 「都是 `h.admin(...)` ⇒ admin 档 ⇒ 抽屉席不设 `requiresRole`」|
+| 一百二十二 | `usageEnhanced` | 「挂在 `h.admin(...)` 上 ⇒ tenant_admin 可用 ⇒ 抽屉席不设 `requiresRole`」|
+| **一百二十三** | **`dataLifecycleStorage`** | 「两个都是 **admin 档**（tenant_admin 可用）⇒ 抽屉席**不设** `requiresRole`」|
+
+⇒ ⇒ ★★★★★ **三批的根因是同一句话，而那句话本身是错的**：
+
+```go
+// admin/handler.go:925
+admin := h.admin          // ★ 局部别名
+```
+
+`admin(...)` 与 `h.admin(...)` **是同一个东西**，而 `h.admin` = `AdminMiddleware`
+（`handler.go:894` → `auth.go:85-140`）—— 全文**只有**「验 JWT」+「强制改密码」，
+**没有任何角色下限**。
+
+⇒ ★★★★★ **「admin 档」在注册行里的真实含义是「已认证」，不是「管理员」。**
+⇒ 而这个标签**掩盖了服务端根本没有角色下限**这件事 ——
+叠加批 122 的实证（`pkg/identity` 的 `supportedRole` 接受 `"user"`）
+⇒ 任何已认证的普通用户都能调这些 `/api/admin/` 端点。
+
+★ 判据 ①-5 把**这个别名本身**钉住了：
+```ts
+const line = h.split('\n').find((l) => /^\s*admin := h\.admin\s*$/.test(l))
+expect(line, '没找到 `admin := h.admin` 别名（三批同源错误的根）').toBeTruthy()
+```
+—— 哪天这个别名被改掉或删掉，那三批的推导前提就全变了，这条会红。
+
+### 三、★★★ 最终是 `'admin'`：**不是 `super_admin`，也不是不设**
+
+★ 两条判据必须**分开**看，缺一不可 —— 这正是「一个标签掩盖两件事」的代价：
+
+**（甲）不过度限制到 `super_admin`**
+`admin/data_lifecycle_storage.go` **整个文件零 `tenant` 命中**
+⇒ 载荷是**纯平台基础设施事实**：全库字节数、列存统计、本机磁盘、日志目录大小。
+★ 它**不含任何租户的数据** ⇒ 按批 119 钉下的边界
+（「过度限制的正当性来自『载荷里有没有别人的东西』」）⇒ **没有**理由挡到 super_admin。
+
+**（乙）但需要 `'admin'`**
+服务端无角色下限 ⇒ 普通 `user` 够得着；
+而「本机磁盘已用 ≥ 90%」「日志目录超过 5GB」**没有任何理由给普通用户看**
+⇒ 客户端这一层要补的正是**角色下限**，不是数据隔离。
+
+⇒ ★★ 与批 119（v1 数据地平线，**不设** `requiresRole`）的差别只在一句：
+**那份告示必须让所有人看见**（「接口没报错不代表数据是新的」），
+本族**没有**这个理由 ⇒ ★「**没理由给普通用户看**」本身就是一道门。
+
+⇒ ①-3 用一条**可执行、可变异**的判据钉住理由甲：
+```ts
+expect(storageOverviewCarriesNoTenantDimension(ov())).toBe(true)
+// ★ 反向：一旦后端加了 per-tenant 拆分，这条会红 ⇒ 提示权限档要重判
+expect(storageOverviewCarriesNoTenantDimension({ ...ov(), tenant: 'acme' })).toBe(false)
+```
+①-6 则从事实侧钉「两个 handler 全文**无 `tenant`**」。
+
+### 四、★★★ 行号订正：整块漂 19 行
+
+| | 模块头原写 | 实况 |
+|---|---|---|
+| storage | `:982` | **`:1001`** |
+| storage/tables | `:983` | **`:1002`** |
+| 同族 vacuum/reindex 六个 | `:986-992` | **`:1005-:1011`** |
+
+★ 抽查其余引用（`:107` / `:140` / `:152` / `:242` / `:54`）**全部准确**
+⇒ 这个模块头的行号是**局部漂**而不是整体过期，订正时不要顺手改别的。
+
+### 五、★★★ 本族的载荷陷阱：**失败留下「全零整块」，而不是缺键**
+
+`handleDataLifecycleStorage` 里：
+```go
+if dbErr != nil { resp.Warnings = append(resp.Warnings, "数据库大小查询失败: "+dbErr.Error()) }
+else             { resp.Database = *dbInfo }
+```
+`storageOverview.Database` 是**值类型**（无 omitempty）⇒ **失败时键照常存在**，
+八个键全 0 / 全 `""`，而 `server_version` 因 omitempty **被省略**。
+
+⇒ ★★ 「失败」的完整形状是**两半**：判据说「`database_human` 为空」，
+而「整块塌成零」是另一半 —— ③-2 用「只塌一半」的夹具钉住「**两半缺一不可**」
+（变异 S7 正是去掉第二半，咬的就是这条）。
+
+★★ 而 `columnar` 用 `note` 说明原因，与 database 的表达**不同构** ⇒
+③-5 特别钉住「`note` 存在**不代表** database 查询失败」。
+
+★★★ 另有一条「第十种 nil 编码」：`free_bytes` 恒为 0、`free_human` 恒为 `""`
+—— 不是「空闲 0 字节」，是**测不到**（连接只能看到客户端视角）。
+⇒ ④ 两条判据：空串时提示必须出现**且渲染成占位符**；非空时不提示（阴性对照）。
+
+### 六、读数
+
+- `vue-tsc -b` rc=0（**先删 `*.tsbuildinfo`**）；css / touch / i18n / comment 四门 rc=0
+- `i18n:check` ⇒ zh-CN / en-US 各 **3701** 键，键集一致，无未翻译项
+- `gate:selftest` 5/5；`npm run build` rc=0
+- 全量：**213 files / 7964 passed**（基线 212 / 7936），1 skipped
+- 变异台 **15/15 有牙**
+- 十连跑 **10/10 全绿**
+- 文档 §11.159（**59** 节）
+
+### 七、★ 本批的两条记录
+
+1. **判据里不要臆造 API 名。** 本批写视图时**一次性臆造了三个导出**
+   （`databaseHumanIsEmpty` / `columnarNoteIsPresent` / `STORAGE_TABLES_LIMIT_DEFAULT`），
+   外加两个字段名（`tables_human` / `indexes_human`）——
+   真名是 `storageDatabaseQueryFailed` / `columnar.note` / `STORAGE_TABLES_LIMIT_FALLBACK`
+   与**数字**字段 `tables_bytes` / `indexes_bytes`。
+   ⇒ ★ 写视图**先列真实导出**（`grep '^export'`），再写。
+   ⇒ ★ 判据侧同理：夹具必须照**真实接口形状**写。批 122 的 ④-4 就因为照着
+   顶层字段编了个不存在的夹具形状而假性失败（真判据是 `previous.total_cost_usd`）。
+2. **变异表里写错期望标题 ≠ 判据没牙。** S7 首轮判 `RED_NOT_MATCHED`，
+   逐字查红因才发现它咬的是 **③-2**（我初版写的是 ③-1）。
+   ⇒ ★ 这是「红了但没命中」的**第四种**成因：**台子写错，不是对象不行**。
+   ⇒ 处理顺序：先看**实际红了哪些**（台子的输出里就有），再决定改台子还是改判据。
+
+## 11.160 存储配置 + 日志轮转配置接进 UI —— 权限档**第二类「真门」**的正控样本：相邻两行却是两种档位；判据侧三个**自指陷阱**与变异台查出的**死代码 + 夹具缺口**（第一百二十四批）
+
+### 一、这批做了什么
+
+把 `storageAndLogConfig`（第九十三批建的 API 模块，**一直是孤儿**）接进移动端，孤儿 6 → **5**：
+
+| 项 | 值 |
+|---|---|
+| 视图 | `web-mobile/src/views/StorageAndLogConfigView.vue` |
+| 判据 | `StorageAndLogConfigView.spec.ts` **31 条**（新写）；API 层 43 条（第九十三批原样，本批未动）|
+| 路由 | `/storage-log-config`，`meta.requiresRole: 'super_admin'` |
+| 抽屉席 | `storage-log-config`，`requiresRole: 'super_admin'` ⇒ 进 `AppDrawer.spec.ts` 的 superAdmin 白名单（字母序 `sliding-window` 之后、`subscription-tiers` 之前）|
+| i18n | 前缀 `slc` + `nav.storageAndLogConfig`（zh-CN / en-US 各 3729 键）|
+| 变异台 | **24/25 有牙 + 1 条判死代码**，还原后逐字节零残留 |
+| 读数 | `214 files / 7995 passed`（批 123 基线 213 / 7964）|
+
+### 二、★★★★★★ 这是**第二类「真门」**的正控样本，且它紧挨着一个反例
+
+注册处**逐字**（`admin/handler.go`）：
+
+```
+:1129  h.superAdmin(h.handleStorageConfig)     ← GET /api/admin/storage/config
+:1130  ...
+:1132  admin(h.handleStorageMigrationState)    ← GET /api/admin/storage/migration-state
+:1135  h.superAdmin(h.handleLogConfig)         ← GET /api/admin/logs/config
+```
+
+⇒ ★★★★★ **`/api/admin/storage/` 这一个前缀下面，第 1129 行与第 1132 行是两种档位。**
+⇒ 「super_admin 档」的来源是 `h.superAdmin` → `SuperAdminMiddleware`
+（`admin/auth.go:376`）逐字 `if claims.Role != "super_admin" { 403 }`。
+⇒ **这与批 122 / 123 结论相反**：那两族是 `admin := h.admin`（`AdminMiddleware`
+**只认证、没有角色下限**），前端那一层是唯一的门；**本族服务端自己就挡**。
+
+⇒ ★★★ 所以「抽屉席 + 视图内兜底」在这里是**体验层**，不是安全边界 ——
+`nope` 页必须把这句话说给用户听（判据 ⑤-2 钉住文案里含 `403`）。
+
+★ 三条判据把这个区别**变成可执行的**，而不是停在注释里：
+- ①-5：`storageConfigServerIsRealGate('h.superAdmin') === true`，
+  而 `'admin(...)'` / `'h.admin'` 都是 `false` ⇒ **哪天注册处被换掉，这条立刻红**。
+- ①-6：读 Go 源码断言 `:1129` 与 `:1132` 相邻且档位不同 ⇒ 「不能按前缀推」钉在**事实侧**。
+- ①-2：打**行为面**——同一份 `DRAWER_NAV` 换四种 role 跑 `navItemsFor`，
+  `super_admin` 可见、`tenant_admin` / `admin_key` / `operator_user` 不可见。
+  ★ 只断言「`DRAWER_NAV` 里有这条数据」只证明**写进去了**，不证明**过滤器按档位挡了**。
+
+★★ 顺带一条行号订正：模块头原写 `:1108` / `:1109` / `:1111` / `:1114`，
+实况 `:1129` / `:1130` / `:1132` / `:1135`（**整块漂 21 行**），判据 ①-7 钉住。
+
+### 三、★★★★ 本族唯一有区分力的语义判据：`file_path` ≠ `log_file`
+
+| 键 | 含义 | 变的是谁 |
+|---|---|---|
+| `file_path` | **配置期望值** | PUT 改它（`log_management.go:174-177`）|
+| `log_file` | **运行时真值** | 热加载后由服务自身写 |
+
+⇒ ★★ DB 覆盖了但**尚未热加载**时两者**必然不等** ⇒ 这是唯一能回答
+「要不要提示用户等热加载」的判据，也是本族唯一一条**真查表**
+（`logConfigPathMatchesRuntime` 不同输入给不同输出）。
+
+⇒ ★ 判据分两面钉：④-1 不等 ⇒ 报红线；④-2 **相等 ⇒ 不报且「已同步」徽标出现**
+（**该出现的一面**）。⇒ 只钉红线的话，变异把 `===` 改成恒真也只会让红线消失，
+徽标恒在 ⇒ 那时红与不红都「看起来对」。
+
+### 四、★★★ 三个**自指陷阱**：判据设计的失败面，全部是本批当场踩到的
+
+1. **否定断言否的是「词」，而那个词合法地出现在「结论本身」的注释里。**
+   判据 ③-2 断言「模块里不得有 `configSourceDescribesWholeResponse`」——
+   而模块头**正在**用那段注释讲「我删过它」⇒ 断言立刻红自己的注释。
+   ⇒ ★★ 通用解法：**剥掉注释再扫否定断言**，肯定断言（那句纪律本身）扫全文。
+   ⇒ ★ 通用式：**否定断言遇到「被否的那个东西本身要写在注释里」时，
+   正确解法是剥注释后扫，而不是把正则写得更长去绕开。**
+
+2. **「假门」会从判据的视线之外长出来。** ③-2 只扫 API 模块，
+   而我在**视图**里留了 `const showSourceMisuseNote = computed(() => true)` ——
+   同一个毛病的视图侧版本，**因为不在扫描面里而一直绿**。
+   ⇒ ★★★ 处置：删掉它，并让 ③-2 **同时扫两侧**；
+   再加一条**反变异 S25**：「把那个恒真 computed 塞回去」必须让 ③-2 变红
+   ⇒ 判据自己也要被变异过一次，才知道它是不是空头承诺。
+
+3. ★ **在 doc 注释里贴出「块注释的结束符」字面量，会提前闭合本注释。**
+   `stripComments` 的说明里写了块注释的起止符 ⇒ 解析器在**下一行**报错
+   （指向 `expect(existsSync…)`，与真正的病因隔了 6 行），
+   看上去像「有个函数少了个分号」⇒ 报错的行与病因的行**不同**。
+   ⇒ ★ 只说「行注释 / 块注释」，不贴字面结束符。
+
+### 五、★★★ 变异台查出的两条：**死代码**与**夹具缺口**，都不是「判据没牙」
+
+首轮 25 条里有 2 条 `NO_EFFECT`，逐条查根因后**都不是同一个东西**：
+
+| # | 变异 | 首轮 | 真因 | 处置 |
+|---|---|---|---|---|
+| S5 | 摘掉 `load()` 里的 `if (!allowed.value) return` | `NO_EFFECT` | ★ **死代码**：`slc-load` 按钮在 `<template v-else>` 内，而 `v-else` 的条件就是 `allowed` ⇒ 非超管拿不到按钮。**「不发请求」的真正保证是结构那条**，且 ⑤-1 已经钉住 `expect(hasId(w, 'slc-load')).toBe(false)` | 守卫**保留**（若将来加 `onMounted(load)` 自动取数就需要它），注释写明「当前不可达 + 保住它是为了将来」，台子判 `DEAD_CODE` 而**不是** `NO_EFFECT` |
+| S6 | catch 里不再清空 `storage` | `NO_EFFECT` | ★★ **夹具缺口**：⑤-3 只造了「两个端点一起失败」⇒ `storage` **从未被赋值** ⇒ 「清不清空」在那个夹具下**不可观测** | 补判据 **⑤-5**（`storage` 成功 + `logs` 失败 ⇒ **半份响应**不渲染）⇒ S6 随即咬住 |
+
+⇒ ⇒ ★★★★ **「半份」比「全无」难得多**：全失败时 `storage` 本来就是 `null`，
+清不清空无差别；**难的是「storage 已到手、logs 崩了」** ⇒ 若不整块清掉，
+用户会看到一份**过期半真**的配置。
+⇒ ★★★ 通用式：**判「失败路径清干净了没」时，夹具必须造出「部分成功」** ——
+全失败的夹具会让「清空」这个动作**测不出任何东西**。
+⇒ ★ 这也是 ①-2 那个「打行为面」判据的同源道理：**静态断言只证明写进去了，
+变异台查的才是它到底起没起作用。**
+
+### 六、只读面与掩码
+
+- ★★ 桌面端**有 PUT**（`web/src/api/tuning.ts:802` / `:934`），
+  而本模块**只导出两个 GET** ⇒ 移动端**不提供任何写入入口**，页面必须写明
+  「只读」（判据 ②-1）。
+- ★ `STORAGE_MASKED_KEYS` 两个键**只报个数、绝不回显值**（判据 ③-5，
+  两条变异分别咬「清单」与「模板」两个面）。
+- ★ GET 返回 `delete_days` 而 PUT 收 **`archive_delete_days`**
+  （`log_management.go:199` vs `:47`）⇒ 照 GET 键名写回去会被**静默忽略**
+  （`DeleteDays` 是 `*int` + omitempty，`nil` = 不改）。已有真查表
+  `logConfigPutKeyFor`，S23 钉住。
+
+### 七、本批口头禅的第四次落地
+
+**「恒定返回的函数就是假门」**（批 121 删 `settingsRollbackNeedsSuperAdmin()`）
+在本批出现**第三次**：模块里的、视图里的、以及**判据自己视野之外的**那一处。
+⇒ ★★ 每加一条否定断言，都要问一句：**它的扫描面覆盖了全部产地吗？**
+
+## 11.161 附件目录迁移进度接进 UI —— 权限档**第十二次**：与上一批**结论相反、只隔一行**的 `'admin'` 档；变异台当场补出「路由 meta 是第二道门却没人钉」的缺口（第一百二十五批）
+
+### 一、这批做了什么
+
+把 `storageMigrationState`（第九十五批建的 API 模块，**一直是孤儿**）接进移动端，孤儿 5 → **4**：
+
+| 项 | 值 |
+|---|---|
+| 视图 | `web-mobile/src/views/StorageMigrationStateView.vue` |
+| 判据 | `StorageMigrationStateView.spec.ts` **42 条**（新写）；API 层 88 条（第九十五批原样，本批只**追加**两个权限 helper 与两个轮询常量）|
+| 路由 | `/storage-migration-state`，`meta.requiresRole: 'admin'` |
+| 抽屉席 | `storage-migration-state`，`requiresRole: 'admin'` ⇒ **不得**进 superAdmin 白名单 |
+| i18n | 前缀 `sms` + `nav.storageMigrationState`（zh-CN / en-US 各 3758 键）|
+| 变异台 | **25/25 有牙**，还原后逐字节零残留 |
+| 读数 | `215 files / 8037 passed`（批 124 基线 214 / 7995）|
+
+### 二、★★★★★★ 这是九批以来第一次：**同一族两个模块，档位由那一行决定，而结论正好相反**
+
+| 行 | 端点 | 注册处 | 档位 | 前端那一层是什么 |
+|---|---|---|---|---|
+| `:1129` | `storage/config`（**批 124**）| `h.superAdmin(...)` | **服务端是真门** | **体验兜底** |
+| `:1132` | `storage/migration-state`（**本族**）| `admin(...)` | **服务端没有门** | **唯一的门** |
+
+⇒ ★★★ 两行**只隔着 3 行**（`:1130` 是 test-path，`:1131` 是空行），
+前缀完全相同 `/api/admin/storage/`，而档位**完全相反**。
+⇒ ★★ 在批 124，「相邻两行两种档位」还只是一句**警示**；
+   在本族，它是**本族结论的直接依据**。
+
+⇒ **`'admin'` 档的两条独立理由（缺一不可）**：
+
+- **（甲）不过度限制到 `super_admin`** —— 载荷是纯平台基础设施事实：
+  `admin/storage_migration.go` 整个文件 **`grep -c tenant` = 0**（判据 ①-8 把这个数字钉住）
+  ⇒ 迁移进度是**本机单例**（`h.getMigrationState()` 一把互斥锁保护的全局状态）
+  ⇒ 载荷里没有「别人的东西」⇒ 按批 119 的边界不过度限制。
+- **（乙）但需要 `admin`** —— 服务端**没有角色下限**：
+  `admin(...)` 是 `admin/handler.go:925` 的局部别名 `admin := h.admin`
+  ⇒ `h.admin` = `AdminMiddleware`（`admin/auth.go:85` 起，**全文无任何 `claims.Role` 比对**）
+  + `pkg/identity/verifier.go` 的 `supportedRole` **接受 `"user"`**
+  ⇒ 任何已认证的普通用户都能调到这个端点。
+
+⇒ 判据把「乙条理由」钉成**可执行的**：①-4 断言 `AdminMiddleware` 的函数体里
+**不存在** `claims.Role ==/!=` 这种比对形态（否的是**代码形态**而不是某个词，
+因为 `Role: p.Role` 这种赋值是合法存在的），并断言 `supportedRole` 的 `case "user"` 在。
+⇒ ★★ 若哪天后端给 `AdminMiddleware` 加了角色下限，这条会红 ⇒ 提示「前端不再是唯一的门」。
+
+⇒ ★★ 文案方向也必须跟着反过来：
+
+| 批次 | nope 页面说什么 | 因为 |
+|---|---|---|
+| 批 124（`slc`）| 「**服务端会 403**，这一页只是让你不必看到那一屏错误」| 服务端是真门 ⇒ 这是**体验兜底** |
+| **本族（`sms`）** | 「这一层是服务端之外**唯一的门**：后端只校验登录、不校验角色」| 服务端没有门 ⇒ 这是**唯一的一道** |
+
+⇒ 变异 **S8** 专门把 `sms.nope.why` 改成批 124 那句 ⇒ 判据 ⑥-2 立刻咬住。
+★★ **文案方向搞反是最危险的一种漂移**：功能上仍然「挡得住」，
+只有把两批的文案摆在一起才看得出谁在说谎。
+
+### 三、★★★ 轮询：上限不是装饰，是**协议缺口的唯一补丁**
+
+模块头 (10) 已钉死「**心跳停更在本响应里查不出来**」——
+迁移 goroutine 卡死时 `status` 仍是 `running`、计数不再变，**没有「卡住」信号**
+⇒ `shouldPollMigration` 会**永远返回 true**。
+
+⇒ ★★★★ 所以 `MIGRATION_POLL_MAX = 60`（3 分钟）不是「防手滑」，
+是让「迁移卡死」这个真实故障**不至于表现成手机永远转圈 + 永久后台请求**。
+桌面端的对应补丁是 `MAX_POLLS = 900`（30 分钟，`StorageConfig.vue:45`），
+本族按移动端能接受的等待时间收得更紧。
+
+⇒ 判据把「三种必须停」逐条钉住，并各自配一条变异：
+① 从未迁移过（两槽位都空）⑤-1 / S14 · ② 终态 ⑤-2 · ③ 次数打满 ⑤-4 / S15。
+⇒ ⑤-5 钉**卸载必须清定时器**（S16 把 `onUnmounted(stopPolling)` 换成空函数即红）。
+⇒ ⑤-6 钉一件容易做错的事：**轮询途中的一次失败不得抹掉已有状态** ——
+否则一次网络抖动会把「正在迁移」显示成空态，用户以为迁移凭空消失（S17）。
+
+### 四、★★★ 模块头 (9) 与 (7)：两个「看起来像判据、其实是坑」的地方
+
+- **(9) 进度比必须处理除零**：空目录迁移是**「成功但零进度」的合法形状**
+  （`files_total === 0`、`files_copied` 从未赋值、终态 `succeeded`）
+  ⇒ `0/0 = NaN` 喂给进度条会渲染成空白或 `NaN%`。
+  ⇒ ③-1 断言的不只是文案 `0%`，还包括 `style` 里**不含 `NaN`/`Infinity`**、
+  整页 `html()` **不含 `NaN`**（S11 / S12 各去掉一处除零即红）。
+- **(7) `old_dir_purged` 才是权威**：空目录 + 迁移期间有新写入 ⇒ 跳过删除
+  ⇒ `files_total === 0`、`files_deleted === 0`、`old_dir_purged === false`
+  ⇒ ★★★ **`0 === 0` 成立但目录没删。**
+  ⇒ 变异 **S13** 专门把权威换成 `files_deleted === files_total`
+  ⇒ ④-1 当场咬住。★ 这是本批**最毒**的一条变异：
+  它替换掉的正是「客户端最自然会写的那段代码」。
+
+### 五、★★★ 变异台当场补出的缺口：**路由 meta 是与抽屉席相互独立的第二道门**
+
+首轮 25 条里有 **S6 `NO_EFFECT`**：把路由的 `meta.requiresRole: 'admin'` 整条摘掉，**全绿**。
+⇒ 根因不是判据写得不够严，是初版 ⑥-8 **只断言了 `path` 与 `name`**。
+
+⇒ ★★★★ 通用式（本批新增，写进纪律）：
+**「配了某个字段」与「配在哪个载体上」要分别钉。**
+本族同一个 `requiresRole: 'admin'` 写在**两个地方**——
+抽屉席（`appNav.ts`）与路由 meta（`router/index.ts`）——
+它们是**两道相互独立的门**（壳层的 `beforeEach` 与抽屉的过滤器互不相干），
+少钉一份就等于**没配**。
+
+⇒ 补法：⑥-8 现在取**该路由自己的那一行 meta**（从 `name:` 往后找第一个含 `meta:` 的行）
+逐字断言 `requiresRole: 'admin'` + `requiresAuth: true`
+⇒ ★ 取「那一行」而不是全文 `toMatch`，否则**别处的** `requiresRole: 'admin'`
+会让这条判据恒绿。
+
+### 六、两条 `NO_EFFECT` / `RED_NOT_MATCHED` 的分类（本批两种都撞上了）
+
+| # | 变异 | 首轮 | 真因 | 处置 |
+|---|---|---|---|---|
+| S6 | 摘掉路由 `meta.requiresRole` | `NO_EFFECT` | ★★ **判据缺口**：初版只钉 `path`/`name`，没钉 meta | 补 ⑥-8（逐字取 meta 那一行）⇒ 重跑有牙 |
+| S19 | 藏掉 `errors` 列表 | `RED_NOT_MATCHED` | ★ 台子**写错期望标题**：它咬的是 ⑥-6（「`errors` 有内容时逐条列出」），我写的是 ⑥-5（「`errors` 缺失时不渲染」——那条在该变异下本来就成立）| 改期望为 ⑥-6；**判据一个字没动** |
+
+⇒ ★★★ 「红了但没命中」的**第五种**成因确认：**台子写错**，不是判据没牙。
+⇒ ★★ S19 特别值得记：⑥-5 与 ⑥-6 看着是「同一条判据的正反两面」，
+但它们**互不覆盖**——只有 ⑥-6 能咬住「该显示时不显示」。
+
+### 七、写入侧的两个坑（本批又各踩一次）
+
+1. **判据里写被查的那个字节本身。** ⑥-13 检查「源码不得含 U+FFFD」，
+   而判据里为了查它**真的躺着一个 U+FFFD 字面量** ⇒ 这条判据自己把自己判红。
+   ⇒ 一律用 `String.fromCharCode(0xfffd)` 构造。
+   （与批 124 的「否定断言否的是词，而那个词在结论的注释里」同源，
+   **同一个毛病的第三个形态**。）
+2. **判据押了一种语言。** ⑥-2 首版写 `expect(t('sms.nope.why')).toMatch(/后端|服务端/)`，
+   而 `t()` 取的是**当前 locale**（默认 en）⇒ 首跑就红。
+   ⇒ ★★ 正确写法：**两个语种各查各的关键词**，
+   而「不得出现 `403`」这条**核心断言对两侧都成立**。
+   ⇒ ★ 通用式：**断言文案时，「各语言各自的事实」与「跨语言都必须成立的事实」要分开写。**
+
+## 11.162 孤儿棘轮**第三类登记**：不是每个孤儿都该开页 —— `nativeTransport` 零端点，且 ④ 传输**从未被接线**；判据侧的教训是「**削弱断言型变异抓不到 ⇒ 必须配负控，而负控自己会被自指打败三次**」（第一百二十六批）
+
+### 一、这批做了什么
+
+**孤儿清单 4 → 3（真缺口 3 → 2）**，但**这一项没有开页**，而是新增了**第三类登记**。
+
+| 项 | 值 |
+|---|---|
+| 处理对象 | `nativeTransport`（UI规范 04 §7.2 ④「壳内 `CapacitorHttp` 反代」前端侧安装器）|
+| 改动 | `src/api/orphanLedger.spec.ts`（新增第三类 + 自证 + 4 条判据）、**新增** `src/api/nativeTransport.wiring.spec.ts`（11 条）|
+| 孤儿清单 | 真缺口 2（`sessionAnalyticsFilterOptions` / `turnsFilterOptions`）+ 重复件 1（`boardOperational`）+ **基础设施 1（`nativeTransport`）** |
+| 变异台 | **13/13 有牙**，还原后逐字节零残留 |
+| 读数 | `216 files / 8055 passed`（批 125 基线 215 / 8037）|
+
+### 二、★★★★★★ 逐字核过的事实：这个孤儿**没有可复制的功能**
+
+| # | 事实 | 判别方式 |
+|---|---|---|
+| ① | **零端点** —— 全文件 `'/api/'` 字面量计数 = **0** | 导出是 `createNativeTransport` / `installNativeTransport` / `probeNativeTransport` / `reasonPhrase` / `NativeTransportError`，**没有一个是取数函数** |
+| ② | **全仓无生产调用点** | `installNativeTransport` / `probeNativeTransport` / `createNativeTransport` 在 `src/` 里除本模块与自己的测试外**零引用**（连 `client.ts` 都没 import 它 —— 它是靠 `setTransport()` **注册**，不是 import）|
+| ③ | **壳未安装** | `package.json` 依赖只有 `pinia`/`qrcode`/`vue`/`vue-router` ⇒ **连 `@capacitor/*` 都没装**；无 `capacitor.config.*`、无 `android/`、无 `ios/` |
+| ④ | **基址从未注入** | `setGatewayBaseUrl(...)` 在**生产代码**里零调用 ⇒ `gatewayBase` 恒 `undefined` |
+
+⇒ ★★ 由 ③ + ④：五道门里 **门①（bridge）与门⑤（base_url）同时恒不通过**，
+而 `installNativeTransport` 是「门全过才安装」⇒ **今天调用它也只会拿到 `installed: false`**。
+
+⇒ ⇒ ★★★★ **「给它开一页」这个动作本身不成立**：
+没有端点就没有数据，没有数据就没有可展示的面。
+开出来的页只能是装饰，而装饰面**不是**「把功能复制到移动端」。
+
+### 三、★★★ 「零端点」单独并不够 —— 两条腿合起来才**唯一**命中
+
+全仓有**四个**零端点模块，但只有一个在孤儿清单里：
+
+| 模块 | 端点数 | UI 可达 |
+|---|---|---|
+| `transport.ts` | 0 | ✅（`client.ts` import 它）|
+| `system.ts` | 0 | ✅ |
+| `gatewaySites.ts` | 0 | ✅ |
+| **`nativeTransport`** | **0** | ❌ |
+
+⇒ ★★★ 所以「零端点」**不是**充分条件（另外三个零端点模块都可达、本来就不在清单里）
+⇒ 判据把两条腿都钉上，并且**要求这个组合在全仓唯一命中已登记集合**
+（负控另外钉了 `transport` / `system` / 空集三种错误期望都不匹配）。
+
+### 四、★★★ 这一类是**登记 + 自撤销**，不是永久免罪
+
+自证的两个前提都钉在**可观测的仓库事实**上：
+
+| 前提 | 变化后会发生什么 |
+|---|---|
+| 依赖清单里出现 `@capacitor/*` | `shellNotInstalled()` ⇒ false ⇒ 登记**当场作废** |
+| 生产代码里出现 `setGatewayBaseUrl(` | 同上 |
+| 模块里出现 `'/api/'` 端点 | 「非页面型」**当场不成立** ⇒ 它变成真缺口，该开页 |
+| 模块变得 UI 可达 | 棘轮自己算出来它不在孤儿集合 ⇒ 该从本清单删掉 |
+
+⇒ ★★ **消解条件**：壳安装 + bootstrap 里 `setGatewayBaseUrl(...)` +
+`void installNativeTransport()` ⇒ 本模块**传递可达**（`main.ts` → 本模块）⇒ 这一行就该删。
+⇒ ⇒ ★★★ **「壳什么时候装、基址从哪来」是产品决策，本批不动后端也不动壳** ——
+但这两个前提一旦成立，**判据会自己把这条登记推翻**，逼人重新决策。
+
+### 五、★★★★★ 判据侧：本批最贵的教训 —— 「**削弱断言型变异抓不到**」
+
+首轮 13 条变异里有 **5 条 `NO_EFFECT`**，它们的共同形态是：
+**把精确判据换成宽松判据，事实仍然为真 ⇒ 门照样绿。**
+
+| # | 变异 | 为什么抓不到 |
+|---|---|---|
+| S3 | 自证函数改成恒 `true` | 正向检查只会问「登记的那一项过不过」⇒ 恒真也过 |
+| S5 | 删掉 `@capacitor` 那一支 | 另一支（基址）还成立 ⇒ 结论不变 |
+| S7 | 把「= 已登记集合」换成 `length >= 1` | 集合本来就是非空 ⇒ 更松也过 |
+| S10 | 依赖判据只看 `dependencies` | 今天两个分支里都没有 `@capacitor/*` ⇒ 两支都还成立 |
+| S11 | 门① 的逐字形态放松成 `fail('bridge'` | 那个形态仍然匹配 ⇒ 更松也过 |
+
+⇒ ★★★★ **这类变异天生无法被同一批判据抓住** —— 因为被削弱的是判据自己。
+⇒ ★★★ **唯一的治法是给判据配负控（negative control）**：
+构造**反例输入**，要求判据说「不成立」。
+⇒ ⇒ ★★★★ **然后负控自己也被自指打败了三次**，三次形态依次是：
+
+1. **负控复算** —— 负控在本文件里**重新算一遍**判别式 ⇒ 与真判据成了**两份实现**
+   ⇒ 真判据（③）被削弱时，负控（⑧b）照常通过 ⇒ **负控白测**。
+2. **`toContain('那一行的字面量')`** —— 负控**自己**把那个字面量写成期望值
+   ⇒ `源码.toContain(字面量)` **必然为真** ⇒ 恒绿。
+3. **「裁到本测试之前」/「挖掉本测试那一段」** —— 前者把**写在本测试之后**的真判据一起切掉
+   ⇒ 恒红；后者的**裁切锚点字符串本身就在 helper 里** ⇒ `indexOf` 先命中 helper 自己
+   ⇒ 挖掉的是 helper、测试正文原封不动 ⇒ **又恒绿**（这一层最隐蔽，我连栽了两次）。
+
+⇒ ⇒ ★★★★★ **正解（现在用的）**：
+**（甲）钉子写成 `/…/` 正则字面量** —— 它的文本带反斜杠转义，
+**物理上不可能与被搜的那一行逐字相同** ⇒ 「自己命中自己」这件事消失了，也就不需要任何裁切；
+**（乙）钉子带位置约束** —— 只钉「这个形态存在」不够，
+因为**同文件另一个测试里也有同一形态**（⑧ 里就写着同一行 `const deps = { ...p.dependencies, ...p.devDependencies }`）
+⇒ 必须钉成 `…deps }\s*\n\s*const capDeps = Object.keys(deps)` 这种**相邻关系**。
+
+⇒ ★★ 通用式（本批新增）：
+**源码形态负控的钉子要写成正则字面量，并且要钉「哪一条」，不是钉「文件里有没有」。**
+
+★ 顺带一个更小的坑：变量**不能叫 `self`** ——
+jsdom 环境下 `self` 是全局 Window 对象，漏了局部声明时 `toMatch()` 收到的是 object 而不是 string，
+报出来的是 `TypeError` 而不是「断言不成立」。
+
+### 六、★★★ 五道门逐字钉住（因为本批全部结论都挂在其中两道上）
+
+判据把门清单本身钉死，并逐字点出**当前恒不通过**的那两道：
+
+```ts
+expect(src).toMatch(/const c = capacitorGlobal\(\)\s*\n\s*if \(!c\) return fail\('bridge'/)
+expect(src).toMatch(/const base = gatewayBaseUrl\(\)/)
+```
+
+⇒ S11（放松门① 形态）与 S12（把门⑤ 改成「有 probePath 就行」）当场被咬住。
+⇒ 另有一条说明「**今天调用安装器也无害**」：安装器是「门不过就返回 `installed:false`」，
+**返回而不抛** ⇒ 网页形态下调用它是安全的 no-op。
+
+### 七、遗留（**不**在本批范围）
+
+- **④ 这条能力整体未接线**：缺**两个**调用点（`setGatewayBaseUrl` 与 `installNativeTransport`），
+  且在壳安装前**无法验证** ⇒ 现在补写就是「写一段永远跑不到、也验不了的代码」，
+  与本仓「恒真判据 = 假门」的纪律同源 ⇒ **不写**，登记 + 自撤销即可。
+- 下一批：`sessionAnalyticsFilterOptions` / `turnsFilterOptions` 两个真缺口。

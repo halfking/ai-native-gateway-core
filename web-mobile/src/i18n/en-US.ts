@@ -93,6 +93,9 @@ export const enUS = {
     subscriptionTiers: 'Subscription tiers',
     platformSettings: 'Platform settings',
     usageEnhanced: 'Usage & cost',
+    dataLifecycleStorage: 'Storage overview',
+    storageAndLogConfig: 'Storage & log config',
+    storageMigrationState: 'Attachment migration',
     account: 'Me',
   },
   // ★ Subscription tiers (2026-10-14, batch 120). Prefix: sts.
@@ -181,6 +184,101 @@ export const enUS = {
       source: 'Value source',
       operator: 'Operator',
       role: 'Role',
+    },
+  },
+  // ★ Storage overview (2026-10-14, batch 123). Prefix: dls.
+  dls: {
+    title: 'Storage overview',
+    nope: {
+      msg: 'Only admins can view the storage overview.',
+      why: 'The server sets no role floor on these endpoints, so a plain account can read local disk and database usage.',
+    },
+    load: { title: 'Fetch', btn: 'Refresh storage overview' },
+    scope: { note: 'These are platform-wide totals; they are not split per tenant.' },
+    warn: { title: 'Diagnostics' },
+    db: { title: 'Database', ok: 'Server confirmed the query succeeded' },
+    tables: { title: 'Table sizes', limit: 'At most {n} tables are listed.' },
+    check: {
+      dbFailed: 'Database size query failed: the whole block below is zero; it does not mean the database is empty.',
+      freeUnmeasurable: 'Note: free space is unmeasurable (the connection only sees the client side); a blank value is not “0 bytes free”.',
+      noTenant: 'This payload carries no tenant dimension; it is a platform-wide total.',
+    },
+    field: { total: 'Total size', tables: 'Tables', indexes: 'Indexes', free: 'Free' },
+  },
+  // ★ Storage & log config (2026-10-14, batch 124). Prefix: slc.
+  slc: {
+    title: 'Storage & log config',
+    nope: {
+      msg: 'Only super admins can view this.',
+      why: 'The server middleware answers 403; this page just saves you the error screen.',
+    },
+    load: { title: 'Fetch', btn: 'Refresh config' },
+    readonly: { note: 'Read-only here: the desktop app can write, mobile does not.' },
+    storage: { title: 'Storage config', types: 'Common values: {list} (the real value is not limited to this list).' },
+    logs: { title: 'Log rotation', synced: 'Matches runtime' },
+    masked: { count: '{n} secret(s) configured (values are not shown)' },
+    check: {
+      sourceMisused: 'Note: config_source describes the source of one single key, not of the whole configuration.',
+      sourceUnknown: 'config_source is outside the default / env / db domain.',
+      typeUnknown: 'storage_type is not in the common list — it can be set to any string.',
+      needsRestart: 'Configuration changed but is not in effect yet; a restart is required.',
+      logPendingReload: 'Configured log path differs from the runtime path: the change has not hot-reloaded.',
+    },
+    // ★★ One key per line on purpose: the i18n gate's key flattener cannot parse
+    //   several `key: value` pairs on a single line (see the zh-CN block for details).
+    field: {
+      storageType: 'Storage type',
+      effectiveDir: 'Effective dir',
+      configSource: 'Source',
+      downloadPrefix: 'Download prefix',
+      masked: 'Secrets',
+      filePath: 'Configured path',
+      logFile: 'Runtime path',
+      maxSize: 'Max file size',
+      maxBackups: 'Max backups',
+      deleteDays: 'Retention days',
+      enabledSource: 'Toggle source',
+    },
+  },
+  // ★ Attachment directory migration (2026-10-15, batch 125). Prefix sms.
+  sms: {
+    title: 'Attachment dir migration',
+    nope: {
+      msg: 'Administrators only.',
+      // ★★★ The opposite of slc's wording: slc says "the server returns 403"
+      //   (an experience-level fallback); this family must say "the backend does
+      //   not block, we do" — because `admin(...)` = AdminMiddleware has no role
+      //   floor and supportedRole still accepts "user".
+      why: 'This layer is the only gate outside the backend: that endpoint only checks login, not role, so a plain account could read it too.',
+    },
+    gate: { note: 'This page is the only thing stopping plain accounts in this family (the backend checks login, not role).' },
+    readonly: { note: 'Read-only: starting or cancelling a migration belongs to the storage-config write surface, not here.' },
+    load: { title: 'Fetch', btn: 'Refresh status' },
+    state: { title: 'Migration status' },
+    tenant: { none: 'This page carries no tenant dimension — the migration belongs to this gateway itself, so it is not super-admin only.' },
+    empty: 'This gateway has never migrated its attachment directory.',
+    status: { running: 'Running', terminal: 'Finished' },
+    polling: { on: 'Polling', timeout: 'The status has not changed for a while, so auto-refresh was stopped (the backend has no "stuck" signal — check the server log).' },
+    purge: {
+      yes: 'Old directory purged',
+      no: 'Old directory not purged',
+      note: 'Only old_dir_purged is authoritative; files_deleted is a counter and may be 0 even after a purge.',
+    },
+    failed: {
+      title: 'Migration failed',
+      note: 'Most failures carry only a message, with no structured errors (the backend collects errors on just a few paths).',
+    },
+    // ★★ One key per line (the i18n gate flattener cannot parse several pairs on one line).
+    field: {
+      status: 'Status',
+      runId: 'Run ID',
+      from: 'From',
+      to: 'To',
+      startedAt: 'Started at',
+      fileProgress: 'File progress',
+      byteProgress: 'Byte progress',
+      purge: 'Old directory',
+      filesDeleted: 'Files deleted',
     },
   },
   // ★ Usage & cost (2026-10-14, batch 122). Prefix: ue.

@@ -21,6 +21,7 @@ package credentialstate
 
 import (
 	"context"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
@@ -60,6 +61,11 @@ type NoCandidatesCandidate struct {
 	ProviderID   int
 	RawModel     string
 	BillingMode  string // "free" | "per_token" | "" — used for soft/hard demote semantics
+	// CoolUntil is when this candidate's rest/cooling ends (P0-D probeOne
+	// sorts by earliest). Zero means unknown — sorted last so known soonest
+	// half-open probes win. Populated from RoutedNodeState.DisabledUntil
+	// and/or circuit coolingExpires at the no-candidate hold path.
+	CoolUntil time.Time
 }
 
 // StateObserver is the write-side contract: producers of state-change
