@@ -1,12 +1,15 @@
 package compression
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -140,4 +143,140 @@ func TestSessionCacheSharedDoesNotLaunderSameCountOldDBBody(t *testing.T) {
 	reader.SetTurnReader(&fakeTurnReader{latest: nil})
 	requireSharedPair(t, reader, finalBody, "final")
 	require.Zero(t, db.calls, "acknowledged shared pair must not consult lagging L3")
+}
+
+func TestSessionCacheSharedUpdateSerializesCallbacksOnce(t *testing.T) {
+	r := newSharedTestRedis(t)
+	a, b := NewSessionCache(r, nil), NewSessionCache(r, nil)
+	body := []byte(`{"messages":[{"role":"user","content":"body"}]}`)
+	require.NoError(t, a.Set(context.Background(), "shared-tenant", "gw_shared001", sharedState(body, "base"), body))
+	enteredA, releaseA, enteredB := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	results := make(chan error, 2)
+	var callsA, callsB atomic.Int32
+	go func() {
+		results <- a.Update(context.Background(), "shared-tenant", "gw_shared001", func(st *SessionState, b []byte) (*SessionState, []byte, error) {
+			callsA.Add(1)
+			close(enteredA)
+			<-releaseA
+			st.StripsApplied++
+			return st, b, nil
+		})
+	}()
+	select {
+	case <-enteredA:
+	case <-time.After(time.Second):
+		t.Fatal("first callback did not start")
+	}
+	contended := r.observeContention()
+	go func() {
+		results <- b.Update(context.Background(), "shared-tenant", "gw_shared001", func(st *SessionState, b []byte) (*SessionState, []byte, error) {
+			callsB.Add(1)
+			close(enteredB)
+			st.StripsApplied++
+			return st, b, nil
+		})
+	}()
+	select {
+	case <-contended:
+	case <-time.After(time.Second):
+		close(releaseA)
+		t.Fatal("B never reached shared lease contention")
+	}
+	early := false
+	select {
+	case <-enteredB:
+		early = true
+	case <-time.After(40 * time.Millisecond):
+	}
+	close(releaseA)
+	for range 2 {
+		select {
+		case err := <-results:
+			require.NoError(t, err)
+		case <-time.After(2 * time.Second):
+			t.Fatal("serialized updates did not finish")
+		}
+	}
+	require.False(t, early, "second callback must wait until first commit")
+	require.EqualValues(t, 1, callsA.Load())
+	require.EqualValues(t, 1, callsB.Load())
+	st := requireSharedPair(t, NewSessionCache(r, nil), body, "base")
+	require.Equal(t, 2, st.StripsApplied)
+}
+
+func TestSessionCacheSharedSetReplacesOptionalZeroFields(t *testing.T) {
+	r := newSharedTestRedis(t)
+	c := NewSessionCache(r, nil)
+	body := []byte(`{"messages":[{"role":"user","content":"body"}]}`)
+	st := sharedState(body, "old")
+	st.ToolsHash = "tools"
+	st.SystemPrompt = "system"
+	st.FullSessionHash = "full"
+	st.LastStripAt = 1
+	st.StripsApplied = 2
+	st.CompletedTasks = 3
+	st.CompressionMode = "smart"
+	st.MessagesAfterStrip = 4
+	st.TokensAfterStrip = 5
+	require.NoError(t, c.Set(context.Background(), "shared-tenant", "gw_shared001", st, body))
+	require.NoError(t, c.Set(context.Background(), "shared-tenant", "gw_shared001", sharedState(body, "new"), body))
+	got := requireSharedPair(t, NewSessionCache(r, nil), body, "new")
+	require.Empty(t, got.ToolsHash)
+	require.Empty(t, got.SystemPrompt)
+	require.Empty(t, got.FullSessionHash)
+	require.Zero(t, got.LastStripAt)
+	require.Zero(t, got.StripsApplied)
+	require.Zero(t, got.CompletedTasks)
+	require.Empty(t, got.CompressionMode)
+	require.Zero(t, got.MessagesAfterStrip)
+	require.Zero(t, got.TokensAfterStrip)
+}
+
+func TestSessionCacheSharedErrorsNeverPublishL1(t *testing.T) {
+	for _, op := range []string{"write", "ttl"} {
+		t.Run(op, func(t *testing.T) {
+			r := newSharedTestRedis(t)
+			c := NewSessionCache(r, nil)
+			body := []byte(`{"messages":[{"role":"user","content":"old"}]}`)
+			require.NoError(t, c.Set(context.Background(), "shared-tenant", "gw_shared001", sharedState(body, "old"), body))
+			sentinel := errors.New("injected shared " + op + " failure")
+			r.mu.Lock()
+			if op == "write" {
+				r.writeErr = sentinel
+			} else {
+				r.ttlErr = sentinel
+			}
+			r.mu.Unlock()
+			next := bytes.ReplaceAll(body, []byte("old"), []byte("new"))
+			err := c.Set(context.Background(), "shared-tenant", "gw_shared001", sharedState(next, "new"), next)
+			require.ErrorIs(t, err, sentinel, "nil means shared commit was acknowledged")
+			r.mu.Lock()
+			r.writeErr = nil
+			r.ttlErr = nil
+			r.mu.Unlock()
+			requireSharedPair(t, c, body, "old")
+			requireSharedPair(t, NewSessionCache(r, nil), body, "old")
+		})
+	}
+	t.Run("read_does_not_return_old_L1", func(t *testing.T) {
+		r := newSharedTestRedis(t)
+		c := NewSessionCache(r, nil)
+		body := []byte("body")
+		require.NoError(t, c.Set(context.Background(), "shared-tenant", "gw_shared001", sharedState(body, "base"), body))
+		sentinel := errors.New("injected shared read failure")
+		r.mu.Lock()
+		r.readErr = sentinel
+		r.mu.Unlock()
+		st, got, err := c.GetOrLoad(context.Background(), "shared-tenant", "gw_shared001")
+		require.ErrorIs(t, err, sentinel)
+		require.Nil(t, st)
+		require.Nil(t, got)
+	})
+	t.Run("wrong_type", func(t *testing.T) {
+		r := newSharedTestRedis(t)
+		r.server.Set(redisKey("shared-tenant", "gw_shared001"), "wrong-type")
+		_, _, err := NewSessionCache(r, nil).GetOrLoad(context.Background(), "shared-tenant", "gw_shared001")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "WRONGTYPE")
+	})
 }
