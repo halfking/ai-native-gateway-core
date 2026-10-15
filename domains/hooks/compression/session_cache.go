@@ -430,130 +430,27 @@ func (c *SessionCache) GetOrLoad(ctx context.Context, tenantID, gwSessionID stri
 	return c.getLocal(ctx, tenantID, gwSessionID)
 }
 
-func (c *SessionCache) getLocal(ctx context.Context, tenantID, gwSessionID string) (state *SessionState, lastOutboundBody []byte, err error) {
-	if gwSessionID == "" {
-		return nil, nil, nil
-	}
-	if !settings.IsEnabled("session_cache") {
-		return nil, nil, nil
-	}
+func (c *SessionCache) getLocal(ctx context.Context, tenantID, gwSessionID string) (*SessionState, []byte, error) {
 	key := l1Key(tenantID, gwSessionID)
-
-	// L1 hit.
 	c.mu.Lock()
 	if e, ok := c.l1[key]; ok {
-		c.ll.MoveToFront(e.elem) // O(1) LRU promote.
-		st := cloneSessionState(e.state)
-		body := append([]byte(nil), e.body...)
+		c.ll.MoveToFront(e.elem)
+		st, body := cloneSessionState(e.state), append([]byte(nil), e.body...)
 		c.mu.Unlock()
 		return st, body, nil
 	}
 	c.mu.Unlock()
-
-	// L2: Redis. Redis intentionally stores metadata only, so a metadata hit
-	// must rehydrate the last outbound body from L3 before returning. Without
-	// this step an L1 eviction/process switch would look like a brand-new
-	// session and undo the previously compressed history.
-	if c.redis != nil {
-		st, body, rerr := c.loadFromRedis(ctx, tenantID, gwSessionID)
-		if rerr != nil {
-			slog.Warn("session_cache: redis load error", "session", gwSessionID, "error", rerr)
-		} else if st != nil {
-			if len(body) == 0 && (c.turnReader != nil || c.db != nil) {
-				persistedState, persistedBody, derr := c.loadFromDB(ctx, tenantID, gwSessionID)
-				if derr != nil {
-					slog.Warn("session_cache: l2 body rehydrate failed", "session", gwSessionID, "error", derr)
-				} else if len(persistedBody) > 0 {
-					// V2 stores the message array rather than the full provider
-					// request envelope, so its serialized hash cannot be compared
-					// directly with the legacy full-body hash.
-					persistedHash := sha256Hex(persistedBody)
-					switch {
-					case st.LastOutboundHash == "" || persistedHash == st.LastOutboundHash:
-						body = persistedBody
-					case c.turnReader != nil && (st.MsgCount <= 0 || st.MsgCount == countMessages(persistedBody)):
-						// The mismatch here is the envelope-vs-array wrap shape
-						// (see loadFromDB), not a foreign body: the L3 query is
-						// session-scoped and the message count still agrees with
-						// the Redis state. Adopt the pair and re-derive the hash
-						// so the state+body entry cached into L1 is
-						// self-consistent. Leaving the envelope hash in place
-						// made diff.go's lineage guard reject this pairing and
-						// silently reset every L1-evicted session to a full
-						// resend on the V1 fallback path. A count mismatch
-						// (genuinely different turn content) falls through to
-						// the mismatch handling below.
-						body = persistedBody
-						// st is the exclusive object returned by loadFromRedis
-						// (a fresh `var st SessionState` on its stack), so writing
-						// st.LastOutboundHash here only mutates this call's local
-						// copy. setL1 below will cloneSessionState again before
-						// storing, so neither the Redis metadata pool nor any
-						// existing L1 entry is touched by this assignment.
-						st.LastOutboundHash = persistedHash
-					default:
-						adopted := false
-						if c.turnReader != nil {
-							// The Redis metadata may predate the V2 tables; the
-							// body its hash describes can only live in legacy
-							// _request_logs. When turnReader is nil loadFromDB
-							// already IS the legacy source, so the retry only
-							// helps here.
-							slog.Warn("session_cache: l3 body hash mismatch, trying legacy source",
-								"session", gwSessionID)
-							_, legacyBody, legacyErr := c.loadFromLegacyDB(ctx, tenantID, gwSessionID)
-							if legacyErr != nil {
-								slog.Warn("session_cache: legacy body rehydrate failed",
-									"session", gwSessionID, "error", legacyErr)
-							} else if len(legacyBody) > 0 &&
-								(st.LastOutboundHash == "" || sha256Hex(legacyBody) == st.LastOutboundHash) {
-								body, adopted = legacyBody, true
-							}
-						}
-						if !adopted && persistedState != nil {
-							// No source reproduces the body the Redis metadata
-							// was hashed against: the metadata is stale relative
-							// to the session's persisted history (failed Redis
-							// write-back, mirror lag, or a multi-instance race).
-							// Returning the stale state with an empty body is
-							// not the conservative outcome it looks like — the
-							// empty body makes diff.go's lineage guard treat the
-							// next request as a brand-new session (full resend +
-							// compression lineage reset), and setL1 below would
-							// cache the knowingly-incoherent pair. The L3 reader
-							// produced a self-consistent state+body pair for
-							// this exact session; adopt it wholesale instead of
-							// mixing the new body into the stale metadata.
-							slog.Warn("session_cache: adopting self-consistent l3 pair, redis metadata stale",
-								"session", gwSessionID,
-								"redis_msg_count", st.MsgCount, "l3_msg_count", persistedState.MsgCount)
-							st, body = persistedState, persistedBody
-						}
-					}
-				}
-			}
-			c.setL1(key, st, body)
-			return st, body, nil
-		}
-	}
-
-	// L3: DB cold-start.
 	if c.turnReader != nil || c.db != nil {
-		st, body, derr := c.loadFromDB(ctx, tenantID, gwSessionID)
-		if derr != nil {
-			slog.Warn("session_cache: db load error", "session", gwSessionID, "error", derr)
-		} else if st != nil {
+		st, body, err := c.loadFromDB(ctx, tenantID, gwSessionID)
+		if err != nil {
+			slog.Warn("session_cache: db load error", "session", gwSessionID, "error", err)
+			return nil, nil, nil
+		}
+		if st != nil {
 			c.setL1(key, st, body)
-			// Back-fill L2 so subsequent requests are fast.
-			if c.redis != nil {
-				if werr := c.saveToRedis(ctx, tenantID, gwSessionID, st); werr != nil {
-					slog.Warn("session_cache: redis backfill failed", "session", gwSessionID, "error", werr)
-				}
-			}
 			return st, body, nil
 		}
 	}
-
 	return nil, nil, nil
 }
 
