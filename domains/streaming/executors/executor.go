@@ -700,8 +700,10 @@ type Executor struct {
 	// 签名：func(body []byte, sessionID, tenantID string) []byte
 	// Wired from main.go via streaming.BuildRedactBodyFn.
 	RedactBodyFn func([]byte, string, string) []byte
-	Auditor      audit.Sink
-	State        *credential.Writer
+	// RedactBodyWithContextFn takes precedence and preserves request policy/tenant context.
+	RedactBodyWithContextFn func(context.Context, []byte, string, string) []byte
+	Auditor                 audit.Sink
+	State                   *credential.Writer
 	// NodeOutcomeReducer is the dispatch-attempt node-health authority. Main may
 	// inject a process-shared reducer; when nil, the executor constructs one
 	// lazily on first dispatch attempt. NodeHealthAdapter is optional; when nil,
@@ -1193,13 +1195,24 @@ func safeUpstreamBodyDigest(body []byte) string {
 }
 
 func (e *Executor) redactClientResponse(params *ExecParams, body []byte) []byte {
-	if e == nil || e.RedactBodyFn == nil || len(body) == 0 {
+	if e == nil || len(body) == 0 {
 		return body
 	}
-	if params == nil {
-		return e.RedactBodyFn(body, "", "")
+	ctx := context.Background()
+	var session, tenant string
+	if params != nil {
+		session, tenant = params.SessionID, params.TenantID
+		if params.R != nil {
+			ctx = params.R.Context()
+		}
 	}
-	return e.RedactBodyFn(body, params.SessionID, params.TenantID)
+	if e.RedactBodyWithContextFn != nil {
+		return e.RedactBodyWithContextFn(ctx, body, session, tenant)
+	}
+	if e.RedactBodyFn != nil {
+		return e.RedactBodyFn(body, session, tenant)
+	}
+	return body
 }
 
 func (e *Executor) logClientResponse(params *ExecParams, protocol string, body []byte) {
