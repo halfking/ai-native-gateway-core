@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestReviewInvalidateDoesNotReimportRetiredLegacyState(t *testing.T) {
@@ -157,4 +158,135 @@ func (r *pausedInvalidateBackend) Del(ctx context.Context, key string) error {
 		}
 	}
 	return r.sharedTestRedis.Del(ctx, key)
+}
+func TestInvalidateExpiredOwnerPreservesSuccessorPairAndLock(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	base := newSharedTestRedis(t)
+	body := []byte("old body")
+	require.NoError(t, NewSessionCache(base, nil).Set(ctx, "shared-tenant", "gw_shared001", sharedState(body, "old"), body))
+	a := &pausedInvalidateBackend{sharedTestRedis: base, marker: "session-cache-invalidate", entered: make(chan struct{}), resume: make(chan struct{})}
+	defer a.release()
+	aDone := make(chan struct{})
+	go func() { NewSessionCache(a, nil).Invalidate(ctx, "shared-tenant", "gw_shared001"); close(aDone) }()
+	select {
+	case <-a.entered:
+	case <-ctx.Done():
+		t.Fatal("invalidate never reached mutation")
+	}
+	base.server.FastForward(time.Minute)
+	b := &pausedInvalidateBackend{sharedTestRedis: base, marker: "session-cache-release", entered: make(chan struct{}), resume: make(chan struct{})}
+	defer b.release()
+	bDone := make(chan error, 1)
+	newBody := []byte("successor body")
+	go func() {
+		bDone <- NewSessionCache(b, nil).Set(ctx, "shared-tenant", "gw_shared001", sharedState(newBody, "successor"), newBody)
+	}()
+	select {
+	case <-b.entered:
+	case <-ctx.Done():
+		t.Fatal("successor did not commit")
+	}
+	lockKey := redisKey("shared-tenant", "gw_shared001") + ":lease"
+	token, err := base.client.Get(ctx, lockKey).Result()
+	require.NoError(t, err)
+	require.NotEmpty(t, token)
+	a.release()
+	select {
+	case <-aDone:
+	case <-ctx.Done():
+		t.Fatal("expired invalidation did not return")
+	}
+	after, err := base.client.Get(ctx, lockKey).Result()
+	require.NoError(t, err)
+	require.Equal(t, token, after, "expired owner's cleanup must not delete successor lock")
+	state, gotBody, _, err := NewSessionCache(base, nil).readShared(ctx, "shared-tenant", "gw_shared001")
+	require.NoError(t, err)
+	require.NotNil(t, state, "expired invalidation must not delete successor pair")
+	require.Equal(t, "successor", state.SanitizeMapGeneration)
+	require.Equal(t, string(newBody), string(gotBody))
+	b.release()
+	select {
+	case err := <-bDone:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatal("successor cleanup did not finish")
+	}
+}
+
+func TestInvalidateSerializesWithUpdateAndBackfill(t *testing.T) {
+	for _, kind := range []string{"update", "backfill"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			base := newSharedTestRedis(t)
+			body := []byte("body")
+			entered, resume := make(chan struct{}), make(chan struct{})
+			var release sync.Once
+			defer release.Do(func() { close(resume) })
+			doneA := make(chan error, 1)
+			if kind == "update" {
+				cache := NewSessionCache(base, nil)
+				require.NoError(t, cache.Set(ctx, "shared-tenant", "gw_shared001", sharedState(body, "base"), body))
+				go func() {
+					doneA <- cache.Update(ctx, "shared-tenant", "gw_shared001", func(st *SessionState, b []byte) (*SessionState, []byte, error) {
+						close(entered)
+						select {
+						case <-resume:
+						case <-ctx.Done():
+							return nil, nil, ctx.Err()
+						}
+						return st, b, nil
+					})
+				}()
+			} else {
+				db := &blockingSharedDB{entered: entered, resume: resume, row: &LastOutboundRow{OutboundBody: body}}
+				go func() {
+					_, _, err := NewSessionCache(base, db).GetOrLoad(ctx, "shared-tenant", "gw_shared001")
+					doneA <- err
+				}()
+			}
+			select {
+			case <-entered:
+			case <-ctx.Done():
+				t.Fatal("first operation did not hold the lease")
+			}
+			contended := base.observeContention()
+			doneB := make(chan struct{})
+			go func() { NewSessionCache(base, nil).Invalidate(ctx, "shared-tenant", "gw_shared001"); close(doneB) }()
+			early := false
+			select {
+			case <-contended:
+			case <-doneB:
+				early = true
+			case <-ctx.Done():
+				t.Fatal("invalidate neither completed nor attempted shared lease")
+			}
+			release.Do(func() { close(resume) })
+			select {
+			case err := <-doneA:
+				require.NoError(t, err)
+			case <-ctx.Done():
+				t.Fatal("first operation did not finish")
+			}
+			if !early {
+				select {
+				case <-doneB:
+				case <-ctx.Done():
+					t.Fatal("invalidate did not finish")
+				}
+			}
+			require.False(t, early, "invalidation must wait for an in-flight shared writer/backfill")
+			fields, err := base.HGetAll(ctx, redisKey("shared-tenant", "gw_shared001"))
+			require.NoError(t, err)
+			require.Empty(t, fields, "older backfill must not republish after invalidation")
+		})
+	}
+}
+
+func TestInvalidateScriptRequiresACLCheckCapability(t *testing.T) {
+	r := newSharedTestRedis(t)
+	r.skipACLShim = true
+	_, err := r.Eval(context.Background(), sharedInvalidateScript, []string{"old", "new", "lease"}, "token")
+	require.ErrorContains(t, err, "requires Redis 7.0")
 }
