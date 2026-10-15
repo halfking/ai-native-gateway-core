@@ -303,7 +303,15 @@ type SessionCache struct {
 
 	redis      SessionCacheBackend // nil = L2 disabled (tests / no Redis)
 	db         SessionCacheDB      // nil = L3 disabled (tests / no DB)
-	turnReader *v2.TurnReader      // V2-P2.5: L3 reads session_bodies when wired
+	turnReader TurnReaderSource    // V2-P2.5: L3 reads session_bodies when wired
+}
+
+// TurnReaderSource is the subset of *v2.TurnReader the L3 read path uses.
+// Declared as an interface so the rehydrate behavior is unit-testable
+// without a live PostgreSQL; production wires v2.NewTurnReader(pool).
+type TurnReaderSource interface {
+	LoadLatestOutbound(ctx context.Context, tenantID, sessionID string) ([]v2.Message, error)
+	LoadChain(ctx context.Context, tenantID, sessionID string, lastN int) ([]v2.Message, error)
 }
 
 // NewSessionCache creates a SessionCache. redis and db are optional.
@@ -319,7 +327,7 @@ func NewSessionCache(redis SessionCacheBackend, db SessionCacheDB) *SessionCache
 // SetTurnReader wires the Sessions V2 body reader used by the L3 cold-start
 // path. It is optional: when V2 tables are unavailable, loadFromDB falls back
 // to the legacy _request_logs reader.
-func (c *SessionCache) SetTurnReader(reader *v2.TurnReader) {
+func (c *SessionCache) SetTurnReader(reader TurnReaderSource) {
 	if c == nil {
 		return
 	}
@@ -405,25 +413,68 @@ func (c *SessionCache) GetOrLoad(ctx context.Context, tenantID, gwSessionID stri
 			slog.Warn("session_cache: redis load error", "session", gwSessionID, "error", rerr)
 		} else if st != nil {
 			if len(body) == 0 && (c.turnReader != nil || c.db != nil) {
-				_, persistedBody, derr := c.loadFromDB(ctx, tenantID, gwSessionID)
+				persistedState, persistedBody, derr := c.loadFromDB(ctx, tenantID, gwSessionID)
 				if derr != nil {
 					slog.Warn("session_cache: l2 body rehydrate failed", "session", gwSessionID, "error", derr)
 				} else if len(persistedBody) > 0 {
 					// V2 stores the message array rather than the full provider
 					// request envelope, so its serialized hash cannot be compared
 					// directly with the legacy full-body hash.
-					if c.turnReader != nil || st.LastOutboundHash == "" || sha256Hex(persistedBody) == st.LastOutboundHash {
+					persistedHash := sha256Hex(persistedBody)
+					switch {
+					case st.LastOutboundHash == "" || persistedHash == st.LastOutboundHash:
 						body = persistedBody
-					} else {
-						slog.Warn("session_cache: l3 body hash mismatch, trying legacy source",
-							"session", gwSessionID)
-						_, legacyBody, legacyErr := c.loadFromLegacyDB(ctx, tenantID, gwSessionID)
-						if legacyErr != nil {
-							slog.Warn("session_cache: legacy body rehydrate failed",
-								"session", gwSessionID, "error", legacyErr)
-						} else if len(legacyBody) > 0 &&
-							(st.LastOutboundHash == "" || sha256Hex(legacyBody) == st.LastOutboundHash) {
-							body = legacyBody
+					case c.turnReader != nil && (st.MsgCount <= 0 || st.MsgCount == countMessages(persistedBody)):
+						// The mismatch here is the envelope-vs-array wrap shape
+						// (see loadFromDB), not a foreign body: the L3 query is
+						// session-scoped and the message count still agrees with
+						// the Redis state. Adopt the pair and re-derive the hash
+						// so the state+body entry cached into L1 is
+						// self-consistent. Leaving the envelope hash in place
+						// made diff.go's lineage guard reject this pairing and
+						// silently reset every L1-evicted session to a full
+						// resend on the V1 fallback path. A count mismatch
+						// (genuinely different turn content) falls through to
+						// the mismatch handling below.
+						body = persistedBody
+						st.LastOutboundHash = persistedHash
+					default:
+						adopted := false
+						if c.turnReader != nil {
+							// The Redis metadata may predate the V2 tables; the
+							// body its hash describes can only live in legacy
+							// _request_logs. When turnReader is nil loadFromDB
+							// already IS the legacy source, so the retry only
+							// helps here.
+							slog.Warn("session_cache: l3 body hash mismatch, trying legacy source",
+								"session", gwSessionID)
+							_, legacyBody, legacyErr := c.loadFromLegacyDB(ctx, tenantID, gwSessionID)
+							if legacyErr != nil {
+								slog.Warn("session_cache: legacy body rehydrate failed",
+									"session", gwSessionID, "error", legacyErr)
+							} else if len(legacyBody) > 0 &&
+								(st.LastOutboundHash == "" || sha256Hex(legacyBody) == st.LastOutboundHash) {
+								body, adopted = legacyBody, true
+							}
+						}
+						if !adopted && persistedState != nil {
+							// No source reproduces the body the Redis metadata
+							// was hashed against: the metadata is stale relative
+							// to the session's persisted history (failed Redis
+							// write-back, mirror lag, or a multi-instance race).
+							// Returning the stale state with an empty body is
+							// not the conservative outcome it looks like — the
+							// empty body makes diff.go's lineage guard treat the
+							// next request as a brand-new session (full resend +
+							// compression lineage reset), and setL1 below would
+							// cache the knowingly-incoherent pair. The L3 reader
+							// produced a self-consistent state+body pair for
+							// this exact session; adopt it wholesale instead of
+							// mixing the new body into the stale metadata.
+							slog.Warn("session_cache: adopting self-consistent l3 pair, redis metadata stale",
+								"session", gwSessionID,
+								"redis_msg_count", st.MsgCount, "l3_msg_count", persistedState.MsgCount)
+							st, body = persistedState, persistedBody
 						}
 					}
 				}

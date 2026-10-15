@@ -194,6 +194,54 @@ func jsonErrorMessages(body []byte) []string {
 	return out
 }
 
+// extractPydanticForbiddenField 从 FastAPI/pydantic 422 体提取被拒字段名。
+// 形态：{"detail":[{"type":"extra_forbidden","loc":["body","service_tier"],...}]}
+// loc 末段字符串为字段名；优先返回出站体顶层确实存在的键。
+func extractPydanticForbiddenField(body []byte, outbound map[string]json.RawMessage) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var parsed struct {
+		Detail []struct {
+			Type string `json:"type"`
+			Loc  []any  `json:"loc"`
+		} `json:"detail"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil || len(parsed.Detail) == 0 {
+		return ""
+	}
+	var first string
+	for _, item := range parsed.Detail {
+		typ := strings.ToLower(strings.TrimSpace(item.Type))
+		if typ != "" && typ != "extra_forbidden" && typ != "unexpected_keyword_argument" {
+			continue
+		}
+		field := ""
+		for i := len(item.Loc) - 1; i >= 0; i-- {
+			if s, ok := item.Loc[i].(string); ok {
+				s = strings.TrimSpace(s)
+				if s == "" || s == "body" || s == "query" || s == "path" {
+					continue
+				}
+				field = strings.ToLower(s)
+				break
+			}
+		}
+		if field == "" {
+			continue
+		}
+		if outbound != nil {
+			if _, ok := outbound[field]; ok {
+				return field
+			}
+		}
+		if first == "" {
+			first = field
+		}
+	}
+	return first
+}
+
 // extractNamedParam 从文案提取参数名，并优先返回确实存在于出站体顶层
 // 的那个（防止把 "x-high" 这类值当参数名）。
 func extractNamedParam(messages []string, outbound map[string]json.RawMessage) string {
@@ -246,12 +294,24 @@ func Diagnose(in Input) (Diagnosis, bool) {
 		return Diagnosis{}, false
 	}
 
+	outbound := parseOutboundTopLevel(in.OutboundBody)
+
+	// 0) Pydantic / FastAPI detail[].loc（P0-B）：文案可能只有
+	// "Extra inputs are not permitted"，参数名在 loc 数组——必须先于
+	// messages 空检查，否则整段 detail 数组被 walk 成零消息后直接放弃。
+	if param := extractPydanticForbiddenField(in.ErrorBody, outbound); param != "" {
+		return Diagnosis{
+			Trigger: TriggerParamRejected,
+			Param:   param,
+			Reason:  "pydantic loc extra_forbidden",
+		}, true
+	}
+
 	messages := jsonErrorMessages(in.ErrorBody)
 	if len(messages) == 0 {
 		return Diagnosis{}, false
 	}
 	blob := strings.ToLower(strings.Join(messages, " \n "))
-	outbound := parseOutboundTopLevel(in.OutboundBody)
 
 	// 1) 形态不匹配优先：端点级 404/405，或文案明确指向端点/形态。
 	if in.HTTPStatus == 404 || in.HTTPStatus == 405 {

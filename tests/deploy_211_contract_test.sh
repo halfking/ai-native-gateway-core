@@ -50,11 +50,14 @@ fi
 
 echo "== Redis 库号倒排分配 =="
 run_alloc() {
-  # $1 = 占用集合（空格分隔的库号），$2 = 预置的 claim 库号（可空）
+  # $1 = 占用集合（空格分隔的库号），$2 = 预置的 claim 库号（可空），
+  # $3 = 「自占」集合（库里有键且键是网关前缀，可空）
   local occupied="$1"; shift
   local claim="$TMP/claim"
   : > "$claim"
-  if [[ -n "${1:-}" ]]; then printf '%s\n' "$1" > "$claim"; fi
+  local claim_db=""
+  if [[ -n "${1:-}" ]]; then claim_db="$1"; shift; printf '%s\n' "$claim_db" > "$claim"; fi
+  local self_occ="${1:-}"
   # 注入 redis_db_in_use 的替身。
   # 注意签名：被测代码以 redis_db_in_use "$container" "$idx" 调用，
   # 库号是 $2 —— 早先写成 $1 时替身恒判"未占用"，断言全被架空。
@@ -64,6 +67,7 @@ run_alloc() {
     D211_REDIS_DB_START=15
     D211_REDIS_DB_END=0
     redis_db_in_use() { [[ " $occupied " == *" $2 "* ]]; }
+    redis_db_has_gateway_keys() { [[ " $self_occ " == *" $2 "* ]]; }
     die() { printf 'DIED:%s\n' "$*"; exit 9; }
     log() { :; }; warn() { :; }
     source "$TMP/alloc.sh"
@@ -102,6 +106,14 @@ check "claim 库被占后向下重新分配" "11" "$(run_alloc '12 13 14 15' 12)
   allocate_redis_db "c" >/dev/null
 ) 2>/dev/null
 check "分配结果写回 claim 文件" "13" "$(cat "$TMP/claim2")"
+# 9) 自占复用：claim 库非空，但采样键全是网关前缀（llmgw:/session:/ursm:/
+#    requestjourney:）→ 是网关自己上一轮部署的持久化残留，必须复用而不是漂移。
+#    2026-10-14 实测根因：nbjl-redis 开 AOF，容器重建后 db6 留 8138 个自占键，
+#    旧逻辑只看 DBSIZE>0 → 每次部署下移一号（15→…→5）。
+#    判据形状钉桩：只断言「不复用 6」测不出漂移方向，必须 count 精确等于 6。
+check "claim 库全为网关自占键 → 复用不漂移" "6" "$(run_alloc '6' 6 '6')"
+# 10) 外来键：claim 库非空且非网关键（自占集合不含它）→ 放弃 claim 重新分配
+check "claim 库为外来键占用 → 放弃 claim 重新分配" "11" "$(run_alloc '12 13 14 15' 12 '')"
 
 echo "== PG 17 版本判定 =="
 run_pg17() { ( set -uo pipefail; source "$TMP/pg17.sh"; pg_is_17 "$1" && echo yes || echo no ); }
@@ -259,6 +271,16 @@ if grep -q "name '._\\*' -o -name '.DS_Store'" "$ROOT/Dockerfile"; then
 else
   bad "Dockerfile 未在 COPY . 之前清理 macOS 元数据"
 fi
+# --via 必须把三个基础镜像 build-arg 变量转发到远端：211 的构建腿吃本地
+# /opt/kaixuan/base-images 的离线镜像（kx-base/golang 等）全靠这几个变量；
+# 漏转发时远端静默回落 docker.io 默认值，外网一断构建就死（2026-10-14 轮）。
+for _v in D211_GO_BASE_IMAGE D211_RUNTIME_BASE_IMAGE D211_BASE_REGISTRY; do
+  if grep -q "${_v}='" "$SCRIPT"; then
+    ok "--via 转发基础镜像变量 ${_v}（离线构建路径）"
+  else
+    bad "--via 未转发 ${_v}，远端将回落 docker.io 默认基础镜像"
+  fi
+done
 
 echo
 printf '结果: %d 通过, %d 失败\n' "$pass" "$fail"

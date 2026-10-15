@@ -29,6 +29,28 @@ for arg in "$@"; do
   esac
 done
 
+# ── 本机 go 验证口径（2026-10-14 登记）─────────────────────────────────
+#
+# 本机 macOS SDK 27.0 与 CLT linker 不兼容：任何**走 cgo 的形态**——`go build`
+# 的链接步、以及编进 SQLite 驱动的测试二进制——一律死在 clang 的
+# `tapi error: malformed file` / `unknown architecture arm64e.x1-macos`。
+# 2026-10-14 实测（同一 commit、同一台机）：
+#     go build ./...              → RC=1（121 行 tapi/clang 报错，仅链接步失败）
+#     CGO_ENABLED=0 go build ./... → RC=0
+# 这是宿主工具链的结构性缺口，不是代码回归——因此**在 macOS 上**一切 go 验证钉
+# cgo=0。作用域刻意按宿主划：Linux/CI 上 cgo 本来可用，cgo=0 会让 6 个 lite/sqlite
+# 包的用例整片红（driver_nocgo.go 按设计 panic），所以那边一个字节都不改。
+# 需要在 macOS 上强制 cgo 时用 VERIFY_CGO_ENABLED=1。
+#
+# 判据：tests/verify_cgo_convention_test.sh（已接入本文件下方）
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  export CGO_ENABLED="${VERIFY_CGO_ENABLED:-0}"
+fi
+echo "[verify] CGO_ENABLED=${CGO_ENABLED:-<unset: 宿主默认 cgo>}"
+
+echo "[verify] cgo convention contracts"
+bash tests/verify_cgo_convention_test.sh
+
 echo "[verify] db252 tunnel and sync shell contracts"
 bash tests/db252_tunnel_test.sh
 
@@ -71,7 +93,21 @@ echo "[verify] migration checksums (sql/migrations/startup vs docs/db-changelog.
 ./scripts/verify-migration-checksums.sh --quiet
 
 echo "[verify] full Go tests"
+# 目标集保持 `./...`，**不做任何剔除/白名单**：AGENTS.md 的既有策略是「主门在本机
+# 长期为红是维护者决定，不要加白名单」——加剔除等于替维护者决定哪些失败可以不看。
+# 本机 cgo=0 下 SQLite 真实驱动不编入（driver_cgo.go ↔ driver_nocgo.go 双形态，
+# nocgo 分支按设计 panic「lite 存储模式需 CGO 构建」），下列 6 个包在本宿主必然红，
+# 它们的真实覆盖在 CI 的 cgo=1 上：
+#   bg / cmd/gateway / storage / storage/factory / storage/sqlite / tests/integration
+# 该名单的漂移报警在 tests/verify_cgo_convention_test.sh。
 go test ./... -count=1 -timeout=300s
+
+# 2026-10-14（r1031 §五-3 / 判据纪律 #11）：TestStorageAudit* 集成审计是三域存储
+# 契约（冷读一致性/跨实例一致性/V2 元数据配对）的唯一观测器，带 -tags=integration
+# 且需要一次性回环 Redis+PG——上面的 `go test ./...` 从不编译它们，此前无任何入口
+# 真实执行；首次执行即抓到真缺陷（F3）。docker 可用时必跑，否则显式 SKIP。
+echo "[verify] session storage audit integration suite (docker-gated)"
+bash tests/session_storage_audit_gate.sh
 
 echo "[verify] privacy compliance tests"
 ./scripts/verify-privacy-compliance.sh

@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   fetchSlidingWindow,
   unwrapSlidingWindow,
@@ -400,21 +402,21 @@ describe('(6) source 的语义与二义', () => {
   })
 
   it('★ source 是 request_logs ⇒ 放行（该方向不断言）', () => {
-    expect(slidingWindowRedisSourceImpliesEntries(respOf([entryOf()], { source: 'request_logs' }))).toBe(true)
+    expect(slidingWindowRedisSourceImpliesEntries(respOf([entryOf()], { source: '_request_logs' }))).toBe(true)
   })
 
   // ★★ 这条是「去掉 source 守卫」那条变异的**唯一区分格**：
   //   非 redis **且** entries 为空 ⇒ 原版放行（该方向不断言），守卫被去掉后就不放行。
   it('★ ★★ source 是 request_logs 而 entries 为空 ⇒ 仍放行（★ 非 redis 的行不参与断言）', () => {
-    expect(slidingWindowRedisSourceImpliesEntries(respOf([], { source: 'request_logs' }))).toBe(true)
+    expect(slidingWindowRedisSourceImpliesEntries(respOf([], { source: '_request_logs' }))).toBe(true)
   })
 
   it('★ ★★★ source 是 request_logs 却有数据 ⇒ 判为「仍可有数据」（★ 二义那一格）', () => {
-    expect(slidingWindowFallbackSourceStillHasEntries(respOf([entryOf()], { source: 'request_logs' }))).toBe(true)
+    expect(slidingWindowFallbackSourceStillHasEntries(respOf([entryOf()], { source: '_request_logs' }))).toBe(true)
   })
 
   it('★ ★ source 是 request_logs 且空 ⇒ 不成立', () => {
-    expect(slidingWindowFallbackSourceStillHasEntries(respOf([], { source: 'request_logs' }))).toBe(false)
+    expect(slidingWindowFallbackSourceStillHasEntries(respOf([], { source: '_request_logs' }))).toBe(false)
   })
 
   it('★ source 是 redis ⇒ 不算回退（反向）', () => {
@@ -563,7 +565,7 @@ describe('常量取值', () => {
   })
 
   it('★ ★★ source 两值', () => {
-    expect([...SLIDING_WINDOW_SOURCES]).toEqual(['redis', 'request_logs'])
+    expect([...SLIDING_WINDOW_SOURCES]).toEqual(['redis', '_request_logs'])
   })
 
   it('★ ★★ envelope 八键（★ 桌面类型只声明了 6 个）', () => {
@@ -581,5 +583,72 @@ describe('常量取值', () => {
 
   it('★ ★ stats 五键', () => {
     expect([...WINDOW_STATS_KEYS]).toEqual(['total', 'success', 'failed', 'failure_rate', 'error_kinds'])
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// (15) ★★★★★★ 字面量必须对着 Go 源码钉，不许只对着注释钉
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * ★★★★★★ 2026-10-14 第一百一十五批补上 —— 这组判据**是因为真出了缺陷才加的**。
+ *
+ * ## 出了什么
+ *
+ * 本文件原先把 `source` 的回退取值写成 **`'request_logs'`**（少一个前导下划线），
+ * 而 `admin/credential_monitor.go:749` 发的是 **`'_request_logs'`**。
+ * ⇒ `slidingWindowFallbackSourceStillHasEntries` 对**真实回退响应**恒返回 false
+ * ⇒ 页面上「Redis 不可用、已回退且有数据」这个信号**永远不会亮**。
+ *
+ * ## ★★★ 为什么三条判据 + 一份注释 + 一个常量**全都绿**
+ *
+ * 因为模块头第 (6) 条**把 Go 那行抄漏了**（写成 `source = "request_logs"`），
+ * 而常量、判据实现、3 条既有用例**全部照着这份错抄写**
+ * ⇒ ★★ 注释、代码、用例**三方互相印证**、整套件全绿，
+ *   却与后端真值**三方一致地错**。
+ *
+ * ⇒ ★★★ **判别动作（本条的核心）**：
+ *   当「注释 / 常量 / 判据」三者互相印证时，反而要问
+ *   **「它们是从同一份错误来源抄来的吗？」**
+ *   ⇒ **互证不等于正确** —— 一份错抄能让三者同时自洽。
+ *   ⇒ 唯一能打破闭环的是**对着事实侧（可执行代码）核**。
+ */
+describe('(15) source 字面量对着 Go 源码钉', () => {
+  const ROOT = join(process.cwd(), '..')
+  function goSrc(rel: string): string {
+    const p = join(ROOT, rel)
+    expect(existsSync(p), `找不到 ${rel}（判据路径写错会让本组全部空转）`).toBe(true)
+    return readFileSync(p, 'utf8')
+  }
+
+  it("(15)-1 ★★★★★★ Go 里发出来的**就是** '_request_logs'（带下划线）", () => {
+    const src = goSrc('admin/credential_monitor.go')
+    // ★ 从代码里**抽**字面量，而不是把期望值硬写在这里 —— 这样后端改了它会红。
+    const hits = [...src.matchAll(/source\s*:?=\s*"([^"]*)"/g)].map((m) => m[1])
+    expect(hits.length).toBeGreaterThan(0)
+    expect(hits).toContain('_request_logs')
+    // ★★ 负向钉法：`'request_logs'`（无下划线）**不得**出现在赋值位上。
+    //    它作为 `_request_logs_hot` 之类的前缀出现是正常的，所以只查赋值。
+    expect(hits).not.toContain('request_logs')
+  })
+
+  it('(15)-2 ★★★★★★ 常量与 Go 的字面量**逐字一致**', () => {
+    const src = goSrc('admin/credential_monitor.go')
+    const hits = [...src.matchAll(/source\s*:?=\s*"([^"]*)"/g)].map((m) => m[1])
+    const fromGo = hits.filter((h) => h === '_request_logs' || h === 'redis')
+    expect(new Set([...SLIDING_WINDOW_SOURCES])).toEqual(new Set(fromGo))
+  })
+
+  it('(15)-3 ★★★★ 判据实现里比较的字面量与常量一致', () => {
+    // ★ 这一条是**行为门**：如果实现里又写回 `'request_logs'`，
+    //   即使常量对了，回退信号仍然不会亮 ⇒ 页面照样坏。
+    const r = respOf([entryOf()], { source: '_request_logs' })
+    expect(slidingWindowFallbackSourceStillHasEntries(r)).toBe(true)
+    const empty = respOf([], { source: '_request_logs' })
+    expect(slidingWindowFallbackSourceStillHasEntries(empty)).toBe(false)
+  })
+
+  it('(15)-4 ★★ 负控：redis 源不算回退', () => {
+    expect(slidingWindowFallbackSourceStillHasEntries(respOf([entryOf()]))).toBe(false)
   })
 })

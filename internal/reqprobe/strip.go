@@ -24,28 +24,62 @@ var coreParams = map[string]bool{
 	"stream_options": true,
 }
 
-// skeletonParams 是点名路径（上游 4xx 文案明确点出参数名）下仍受保护的
-// 结构骨架。比 coreParams 窄得多：
+// skeletonAlways 是点名路径下**所有线格式**都保护的结构骨架。
 //
 // 2026-10-13（Vapeur gpt-5.6-sol temperature 事故）：此前点名路径也复用
-// coreParams，temperature 被保护 → Vapeur /v1/responses 对推理家族明确
-// 回 400 "Unsupported parameter: 'temperature' is not supported with
-// this model."，诊断器点名成功、剥参却拿不出可剥清单 → 免费重试不触发，
-// 外层按 transient 把同一 body 原样重发三连 400 → 503。上游已经用错误
-// 文案背书"该参数发不得"，此时剥掉采样参数（temperature/top_p/stop/
-// max_tokens…）是正确的确定性修正：模型侧默认值兜底，请求语义不损。
-// 仍然不剥的只有会让请求无法成形（model/messages/input）、或静默改变
-// 传输与功能语义（stream 改传输形态、tools/tool_choice 关掉函数调用、
-// stream_options 破坏 usage 采集）的骨架——那些"成功"是假成功。
-var skeletonParams = map[string]bool{
-	"model":          true,
-	"messages":       true,
-	"input":          true,
-	"stream":         true,
-	"tools":          true,
-	"tool_choice":    true,
+// coreParams，temperature 被保护 → 诊断器点名成功、剥参空手 → 三连 400。
+// 上游已用文案背书「该参数发不得」时，剥掉采样参数是正确修正。仍不剥的
+// 只有会让请求无法成形或静默改传输/功能语义的骨架。
+//
+// P0-B（2026-10-14 magpie 对标）：stream_options 从「全局骨架」拆到
+// skeletonChatOnly——openai-chat 线保护（usage 回传契约），responses /
+// anthropic / gemini 线可剥（那些线格式根本没有该字段；r1026 三腿泄漏
+// 的根因就是全局保护挡住了 reqprobe，逼出平行的 paramrefusal 记忆）。
+var skeletonAlways = map[string]bool{
+	"model":       true,
+	"messages":    true,
+	"input":       true,
+	"stream":      true,
+	"tools":       true,
+	"tool_choice": true,
+}
+
+// skeletonChatOnly 仅 openai-chat（及未指名线格式的保守默认）保护。
+var skeletonChatOnly = map[string]bool{
 	"stream_options": true,
 }
+
+// isSkeleton 按线格式判定点名路径下是否仍保护该键。
+// wire 空 / openai-chat / openai-completions → chat 族（含 stream_options）；
+// openai-responses / anthropic-messages / gemini* → 仅 skeletonAlways。
+func isSkeleton(key, wire string) bool {
+	if skeletonAlways[key] {
+		return true
+	}
+	if !skeletonChatOnly[key] {
+		return false
+	}
+	w := strings.ToLower(strings.TrimSpace(wire))
+	switch {
+	case w == "" || w == "openai-chat" || w == "openai-completions" || w == "openai":
+		return true
+	default:
+		return false
+	}
+}
+
+// skeletonParams 保留给既有测试/注释引用：等价于 chat 线骨架（最保守）。
+// 新代码请用 isSkeleton(key, wire)。
+var skeletonParams = func() map[string]bool {
+	m := map[string]bool{}
+	for k := range skeletonAlways {
+		m[k] = true
+	}
+	for k := range skeletonChatOnly {
+		m[k] = true
+	}
+	return m
+}()
 
 // uncommonParams 是"不确定就先拿掉再试"的候选清单，按常见度粗排：
 // 推理控制最常出问题（各家方言互不兼容），其次是采样微调与平台特有键。
@@ -98,10 +132,13 @@ func resolveWireKeys(named string) []string {
 	return keys
 }
 
-// StrippableParams 返回出站体中存在且可剔除的参数名列表。
-// named 非空时只返回它（若存在）；否则返回 uncommon 清单与出站体的交集。
-// named 路径只让开 skeletonParams（见其注释）；无名路径 coreParams 永不返回。
+// StrippableParams 返回出站体中存在且可剔除的参数名列表（wire 空 = chat 保守骨架）。
 func StrippableParams(outbound []byte, named string) []string {
+	return StrippableParamsForWire(outbound, named, "")
+}
+
+// StrippableParamsForWire 同 StrippableParams，骨架按线格式判定（P0-B）。
+func StrippableParamsForWire(outbound []byte, named, wire string) []string {
 	obj := parseOutboundTopLevel(outbound)
 	if obj == nil {
 		return nil
@@ -109,7 +146,7 @@ func StrippableParams(outbound []byte, named string) []string {
 	if named != "" {
 		for _, n := range strings.Split(named, ",") {
 			for _, k := range resolveWireKeys(n) {
-				if k == "" || skeletonParams[k] {
+				if k == "" || isSkeleton(k, wire) {
 					continue
 				}
 				if _, ok := obj[k]; ok {
@@ -128,9 +165,13 @@ func StrippableParams(outbound []byte, named string) []string {
 	return out
 }
 
-// StripParams 从出站体剔除参数并返回新 body 与实际剔除清单。
-// body 无效/没有可剔除参数时返回原 body 与 nil。
+// StripParams 从出站体剔除参数（wire 空 = chat 保守骨架）。
 func StripParams(body []byte, named string) ([]byte, []string) {
+	return StripParamsForWire(body, named, "")
+}
+
+// StripParamsForWire 同 StripParams，骨架按线格式判定（P0-B）。
+func StripParamsForWire(body []byte, named, wire string) ([]byte, []string) {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(body, &obj); err != nil || obj == nil {
 		return body, nil
@@ -139,7 +180,7 @@ func StripParams(body []byte, named string) ([]byte, []string) {
 	if named != "" {
 		for _, n := range strings.Split(named, ",") {
 			for _, k := range resolveWireKeys(n) {
-				if k == "" || skeletonParams[k] {
+				if k == "" || isSkeleton(k, wire) {
 					continue
 				}
 				if _, ok := obj[k]; ok {

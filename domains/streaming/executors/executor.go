@@ -576,6 +576,10 @@ type Executor struct {
 	// 无需接线）；测试注入独立实例做隔离。
 	ParamRefusal *paramrefusal.Store
 
+	// ProbeOneEnabled (P0-D, 2026-10-14) 全灭同步探测是否收窄为单候选
+	// （magpie probeOne）。nil = 默认 true；测试可显式 false 回退扇出。
+	ProbeOneEnabled *bool
+
 	// ParamLedger (2026-09-22) 参数协商账本：paramguard/reqprobe 的出站
 	// 调整按 request_id 记账，native responses 回程把 reasoning.effort
 	// 回显还原为客户端原值（见 paramledger_integration.go）。nil 时全部
@@ -2505,19 +2509,41 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 		// 候选节点的供应商直连；首个直连成功 → 网关路由测试 → 重发用户请求。
 		// 所有探测都失败 / 5s 超时 → fall through 到下方 503 返回。
 		if e.SyncNoCandidateProbe && e.ProbeSync != nil && params.R != nil && !params.SurvivalAttempt {
-			syncNoCands := make([]credentialstate.NoCandidatesCandidate, 0, len(probeCandidates))
-			for _, c := range probeCandidates {
-				if c.CredentialID == 0 {
-					continue
+			// P0-D quotaHeld：全员额度/余额耗尽时不 ProbeSync（打上游只会再
+			// 收 402/429，放大比无收益）——立即以 KindQuota 出口，handler
+			// 映射 429+Retry-After（Tried=0 标记「未打上游的全灭」）。
+			if quotaHeldAll(probeCandidates) {
+				slog.Info("executor: quotaHeld — skip ProbeSync (all candidates quota/balance exhausted)",
+					"model", params.ClientModel,
+					"request_id", params.RequestID,
+					"candidates", len(probeCandidates),
+				)
+				if params.AuditBuilder != nil {
+					params.AuditBuilder.DecisionTrace(trace)
 				}
-				syncNoCands = append(syncNoCands, credentialstate.NoCandidatesCandidate{
-					CredentialID: c.CredentialID,
-					ProviderID:   c.ProviderID,
-					RawModel:     candidateRawModel(c),
-					BillingMode:  c.BillingMode,
-				})
-			}
-			if len(syncNoCands) > 0 {
+				return nil, &ExecuteError{
+					Tried:     0,
+					Exhausted: true,
+					Trace:     trace,
+					LastKind:  errorsx.KindQuota,
+					LastErr:   fmt.Errorf("quotaHeld: all %d candidates quota/balance exhausted", len(probeCandidates)),
+				}
+			} else if syncNoCands := func() []credentialstate.NoCandidatesCandidate {
+				raw := make([]credentialstate.NoCandidatesCandidate, 0, len(probeCandidates))
+				for _, c := range probeCandidates {
+					if c.CredentialID == 0 {
+						continue
+					}
+					raw = append(raw, credentialstate.NoCandidatesCandidate{
+						CredentialID: c.CredentialID,
+						ProviderID:   c.ProviderID,
+						RawModel:     candidateRawModel(c),
+						BillingMode:  c.BillingMode,
+					})
+				}
+				// P0-D probeOne：每请求最多半开探测一个。
+				return selectProbeOne(raw, e.probeOneEnabled())
+			}(); len(syncNoCands) > 0 {
 				if params.OnPreStreamKeepalivePause != nil {
 					params.OnPreStreamKeepalivePause()
 				}

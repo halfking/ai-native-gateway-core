@@ -9,6 +9,12 @@
 > 上下文：脱敏范围事故（地址被遮蔽成 `[REDACTED]`）的修复、245 部署验证与
 > 随后的批判性审计。
 
+## 经验反馈闭环（vibe-coding Rule 66）
+
+- 开始工作前阅读根目录 `LESSONS.md`、`.agents/rules/66-skill-evolution.md` 和本次改动涉及的模块规则；收尾时只记录可复用的返工、遗漏、验证盲区或风险。
+- 每条经验包含根因、防复发检查、实际证据及任务/提交溯源。同一模式跨三个不同工作日复现后，晋级为项目规则、清单或技能；经证据确认的安全、隐私、数据丢失或生产事故可立即晋级。
+- 代码审查结论绑定精确 `reviewed SHA`；审查后 diff 有变化，必须对最终 SHA 重审。未运行的验证明确标记原因。
+
 ## 仓库快照
 
 - 路径：本仓在本机有**多份并发 checkout**（`llm-gateway-go`（本行提交所在）、
@@ -382,6 +388,20 @@ CGO_ENABLED=0 go test \
 > **CGO 边界**：`CGO_ENABLED=0` 只适用于上面的子集。`./cmd/...`（含
 > cmd/gateway 的 lite 存储测试）与 `./db/...` 需要 **CGO 开启**（SQLite 驱动
 > 在 CGO_ENABLED=0 下报「lite 存储模式需 CGO 构建」），直接 `go test` 即可。
+>
+> **2026-10-14 已把口径钉进 `verify.sh`**：文件顶部按**宿主**划界——
+> `if [[ "$(uname -s)" == "Darwin" ]]; then export CGO_ENABLED="${VERIFY_CGO_ENABLED:-0}"; fi`
+> （macOS 强制 cgo=0；Linux/CI 上一个字节都不改——cgo=0 会让那 6 个 lite/sqlite
+> 包的用例整片红，`driver_nocgo.go` 是按设计 panic 的；macOS 上要强制 cgo 用
+> `VERIFY_CGO_ENABLED=1`）。实测依据：同一 commit、同一台机，`go build ./...`
+> → RC=1（121 行 `tapi error: malformed file`），`CGO_ENABLED=0 go build ./...`
+> → RC=0，`CGO_ENABLED=0 go vet ./...` → RC=0。cgo=0 下必然红的 6 个包（依赖闭包
+> 实测）：`bg`、`cmd/gateway`、`storage`、`storage/factory`、`storage/sqlite`、
+> `tests/integration`——**verify.sh 不剔除它们**（AGENTS 既有策略：主门长期为红是
+> 维护者决定，不要加白名单），真实覆盖由 CI 的 cgo=1 承担。回归门
+> `tests/verify_cgo_convention_test.sh`（已接入 verify.sh 首块）钉住：Darwin 划界
+> 还在（并**行为**验 Linux 上不被钉、覆盖口真能用）、注释里的实测证据不被删、
+> `go test ./...` 没被缩小、编译结果不过管道、sqlite 双形态驱动都在、6 包名单不漂移。
 
 **已验证绿的子集**（2026-10-11 审计实测，`CGO_ENABLED=0 go test`，rc=0）：
 
@@ -1785,19 +1805,43 @@ streaming 全包 150s 绿。154 终验：拦截请求三件套全绿（终态带
 
 ## 下一轮提示词（2026-10-14 r1030 轮更新）
 
-1. **D1 待部署授权**：修复需一次部署才能真正消掉生产面的迁移卡点。前提是该族在目标
-   环境**在场**——252 已按 736 先例预应用、不受影响的概率高；真正命中的是「族缺席」的
-   环境。部署前先在目标机确认 `to_regclass('public._request_logs')`。
-2. **`-2` 的 4 条已合并本地分支 + 2 个 worktree**（`wt-deploy-211`、
-   `/private/tmp/lggw-s3wave-wt`）**需 owner 一句话授权**再清理——零独有内容，但摘
-   worktree 会打断可能在用它们的会话。
+1. ~~**D1 待部署授权**~~ **部署前取证已完成（2026-10-14 15:2x，只读实测）**：
+   `to_regclass('public._request_logs')` 在**每一个可达环境**都非 NULL——
+   154 / 245 / 252 共用的生产库（`172.16.2.210:5432/llm_gateway`，其实跑在 252 的
+   podman 容器里）、211 的 PG17（`acc-pg17`）、本机 host-first（54318）全部
+   `prefixed=_request_logs | idx=idx_request_logs_ts | turns=session_turns`。
+   生产库台账已有 `860/861/862`（applied_at 2026-10-14 13:15:31~32，两台同库故同戳）。
+   **按 S4 §6.6「非 NULL 则该环境本来就不受影响」的口径：这 5 个环境都不会被 D1 的
+   缺陷咬到**——862 的无守卫 COMMENT 腿在族在场时必然有索引可注释，缺陷不触发。
+   两台生产当前活跃 release 为 **154 = `2631-ec9d2f3f`（:8781）、
+   245 = `2630-ec9d2f3f`（:8782）**，构建提交 `ec9d2f3f` 是 D1 修复 `50eb3bb88`
+   的父提交 ⇒ **修复未上线**。结论：这次部署不再为「消生产迁移卡点」而做（卡点
+   在可达环境里不存在），只为让新二进制带上修复，覆盖的是未来的 fresh install 与
+   尚未应用 860 的环境。是否部署仍待 owner 一句话（发布授权）。
+2. **待 owner 一句话授权**：`-2`（`/Users/huangxt/workspace/llm-gateway-go-2`，独立
+   clone，HEAD `8468f482a`）的 4 条已合并本地分支 + 2 个 linked worktree
+   （`~/workspace/wt-deploy-211`、`/private/tmp/lggw-s3wave-wt`）。**2026-10-14
+   15:2x 只读取证**（未碰、未提交、未删）：
+   - `-2` 唯一的未提交内容 = 未跟踪目录 `tmp_mint_jwt/`（单个 296B `main.go`，
+     内容是一次性 admin JWT 铸造器，密钥走 argv 无硬编码），mtime
+     **2026-10-13 15:30:38 ≈ 24h 未动** ⇒ 严格讲「零独有内容」不成立，删掉即销毁它；
+   - `wt-deploy-211`（`feat/deploy-211-docker`）工作区干净、与远端同步；
+   - `/private/tmp/lggw-s3wave-wt`（`tmp-sync`）落后 origin/main 106，仅多一个未跟踪
+     `web/node_modules`。
+   摘 worktree 会打断可能在用它们的会话，故等授权。
 3. **远端 3 条九月未合并分支**（`2026-07-25-realtime-routing-self-heal` 24 篇设计归档 /
    `fix/w5-ml-ci-runbook` / `fix/w6-monitor-docs`）维持留置，待维护者裁决。
-4. **`go build ./...`（cgo 形态）在本机结构上不可用**（macOS SDK 27.0 × CLT linker，
-   `tapi error`）。所有验证一律 `CGO_ENABLED=0`。建议把这条口径写进 verify 脚本。
-5. **隔离 PG 实例仍在跑**：`127.0.0.1:54999`（`/tmp/pg862audit.9vybj2`，socket+TCP 均可），
-   下轮真库判据可直接复用：
+4. ~~**`go build ./...`（cgo 形态）在本机结构上不可用**~~ **已落地（2026-10-14）**：
+   `verify.sh` 顶部 `export CGO_ENABLED="${VERIFY_CGO_ENABLED:-0}"` + 回归门
+   `tests/verify_cgo_convention_test.sh`（变异 7 条全红在正确断言：注释掉 export /
+   加白名单 / 编译过管道 / 拆 nocgo 双形态 / 登记名单漂移 / 命令替换缩小验证面）。
+   详见「任务 1」的 CGO 边界一节。
+5. **隔离 PG 实例仍在跑且已复用**（2026-10-14 15:3x 实测 rc=0）：`127.0.0.1:54999`
+   （`/tmp/pg862audit.9vybj2`，socket+TCP 均可），下轮真库判据直接复用：
    `TEST_PG_URL=postgres://audit@127.0.0.1:54999/postgres?sslmode=disable`。
+   本轮用它复跑 D1 真库判据 2/2 绿：
+   `TEST_PG_URL=… CGO_ENABLED=0 go test -tags=integration ./sql/migrations/startup
+   -run TestMigration862 -v -count=1`。
 6. **登记待续**（上轮转来的）：`probe_direct_auth_failed` 探针失败主体与失效 sk-* key
    持有方通知；fail-open 占位符透传（96 行样本，根因未定位，需结构化日志+真实流量+发布
    授权）；601,914 行 `session_censors.original_encrypted` 全 NULL 的还原半程（要还原得给
@@ -1893,3 +1937,139 @@ streaming 全包 150s 绿。154 终验：拦截请求三件套全绿（终态带
 > 登录=`/api/auth/token`、建 key=`/api/keys`+显式 key_alias、245/154 共享
 > SECRET_KEY 一个 key 两台通用。
 > 详见 `docs/audit/2026-10-14-r1030b-多模型tool脱敏还原E2E战役.md`。
+
+---
+
+# 追加：2026-10-14 晚间 24h 审计轮 —— 标题 `$2` 错位 + liveness 停写误报
+
+> 本 checkout `llm-gateway-go-4`。合并 `origin/main`（落后 23 + 本地 docs 领先 17）
+> 后批判运行日志。明细：
+> `docs/audit/2026-10-14-24h审计-标题task错位与liveness停写误报.md`。
+
+## 本轮落地
+
+1. **D1 `resolveSessionTitleTaskID`**：`SessionFamilyTurnsForSessionSQL` 只绑 `$1`，
+   调用方传了 `tenantID` 却未挂 `t.tenant_id = $2` → pgx `unused argument: 1` →
+   auto_summary 摘要已落库、标题 scope 同步永久失败（154 同会话连续 ERROR）。
+   修=补 `$2` 谓词；判据源码 count==1 + 负控制。
+2. **D2 `v1_write_liveness`**：S4 停写后行存在性 dead 是预期态，信号层仍每 5m
+   ERROR（consecutive_dead_ticks>90）+ 端点 503。分类器三值契约不动；worker
+   在 `!RequestLogsWriteEnabled()` 时映射为快照 `retired`（首 tick INFO、HTTP
+   200）。门 4b 配对：写开着同形状仍 ERROR。
+
+## 分支 / 编译
+
+- 窗口（24h~1h）未合并子分支 **0**；远端 prune 清掉已删引用。
+- `CGO_ENABLED=0 go build/vet` + security/middleware/bg/settings + installer +
+  通道门全绿；本轮两包判据绿。
+
+## 下一轮提示词（2026-10-14 晚间轮）
+
+1. ★ **部署本轮 D1/D2**（154/245/211）：修标题同步 + 停 liveness 误报噪声。
+   154 现 `2631-ec9d2f3f`、245 `2632-80315e0f`——均尚本轮修复。
+2. **URSM persist collect/flush timeout**（154 持续）：共享 Redis db2 SCAN 预算，
+   迁独立 `URSM_V2_REDIS_DB`（代码已支持，需维护者窗口 + 重启）。
+3. **252 load≈22 + analyze_llm_gateway_table_stats mean≈170s**：产品作业，不改
+   调度；data-lifecycle `pg_total_relation_size` 族 mean≈616s 随 v1 退役。
+4. nvidia gateway-mode probe 502/503（direct OK）与 mac mini backup 死腿：owner
+   拍板。
+5. 窗口外 3 条九月远端分支留置；`-2` worktree 清分支仍待授权。
+
+---
+
+# 追加：2026-10-14 r1031 —— 三域批判审计（脱敏 / 压缩缓存 / 会话存储转发）
+
+> 用户目标：核对敏感信息处理、压缩与缓存、会话存储转发的完成情况，批判式审计、
+> 修问题、更新文档、提交推送。基线 `origin/main 5ec4f0f43`。
+> 明细：`docs/audit/2026-10-14-三域批判审计-脱敏压缩缓存会话存储转发-r1031.md`。
+
+## 核查结论（三域主链路真实在场，非声明态）
+
+- **脱敏三契约成立**（逐行证据）：强制输出 gate 用 `mandatory ||` 短路
+  `output_compliance.enabled` 与 owner 豁免（interceptor.go:96/:230、
+  stream_compliance.go:370）；未知/残缺占位符流式+非流式均 mask-or-block；
+  128MiB/413、1MiB SSE 上限在场；censor sink 经 `dbConn.Stdlib()` 接线。
+- **压缩 V2 主路径自洽**：`loadV2CompressionState` 构造的 state 不带
+  LastOutboundHash，diff.go:118 空 hash 跳过——无形状失配问题。
+- **存储转发停写后完整**：停写门只拦宽表 SQL，`firePersistedHooks` 无条件执行
+  → sessionv2mirror 持续写；旧 L3 `LastOutboundForSession` 已会话族化
+  （main_v3_wiring.go:121，`_request_logs` 兜底服务镜像前历史）。
+
+## 本轮修复（F1=P2 真 defect）
+
+- **F1 压缩缓存 V1 回退复水 hash 形状失配**：CommitFinal 存 envelope hash，
+  L2 复水经 turnReader 收下 messages-only body（`turnReader != nil ||` 短路校验，
+  注释自认形状不可比）但**没改 state 残留 hash** → diff.go:118 lineage 守卫
+  （09-03 d6a027169）拒绝配对 → 判新会话 → 全量重发+压缩血统重置。
+  08-04 复水路径先在、09-03 守卫后加未适配形状差（「两路径政策必须一致」再犯）。
+  触发面=V2 读失败窗口 × L1 逐出/重启，一轮全量重发后自愈——缓存有效性缺陷非安全问题。
+  修：收 body 时校验 `st.MsgCount == countMessages(body)` 后重 derive hash
+  （计数不一致=真不同轮次内容，仍落保守 mismatch 分支）。
+  判据同层驱动 `BuildOutboundMessages`（非 IsNewSess、3=2+1 合并）+ 前提配对
+  （计数失配不采纳、hash 不被洗写）；M1 保留旧 hash→红 / M2 去计数守卫→红。
+  **顺带 `SetTurnReader` 收窄为 `TurnReaderSource` 接口**（两方法，
+  *v2.TurnReader 天然满足，生产调用点不变）——此前该分支只有从未在 CI 跑过的
+  真库集成测试覆盖。
+- **F2 非法 `LLM_GATEWAY_SANITIZE_OUTPUT_ACTION` 静默回落 mask 补 Warn**
+  （唯一消费点 goal_control.go；回落语义不变）。
+
+## 测试门
+
+build/vet/gofmt 绿；compression 全家 + session/v2 + mirror + sanitize +
+outputcompliance/response/cache + streaming（150s）+ cmd/gateway（Sanitize/Goal/
+LiteSink 抽测）全绿。**既有红**：`TestLiteRequestLogSink_*` 8 条在 CGO=0 下
+（SQLite 驱动），pristine 5ec4f0f43 同红，CGO=1 通过。
+
+## 判据纪律增量（第 11 条）
+
+**「从未运行的判据等于没有判据」**：三域 1404 测试函数盘点出 76 个带环境门，
+其中约 20-40 个在任何 CI 入口都不会真实执行（SESSION_AUDIT_REDIS_ADDR 从未在
+CI 设置、replay 语料被 gitignore、`!integration`×TEST_DATABASE_URL 双重落空、
+v2 三个无条件 t.Skip 死测试）。`TestStorageAuditObserveV2MetadataBodyMismatch`
+恰是 F1 的观测器——存在、会红、从未被跑。审计「声称完成」要连判据的
+「是否真的在跑」一起核。
+
+## 登记不修
+
+GeneratedTextGuard 硬编码 mask（block 若扩到摘要回写通道会打断压缩闭环，
+owner 拍板）；session_censors 可逆还原无读取方（配密钥+读取端点两件一起做）；
+惰性工具白名单无膨胀审计；~~v2 死测试三件~~（同日续轮收口，见下）。
+
+## r1031 同日续轮（§五-3/§五-4 收口 + F1 续缺陷修复）
+
+明细：审计文档同文件「续轮」节。要点：
+
+1. **判据纪律 11 的即时实证**：审计套件首次真实执行（本机 docker 29.8 已可用，
+   10-11 的「docker 缺失」记录过时）立刻红 `TestStorageAuditObserveV2MetadataBodyMismatch`
+   ——r1031 上午给「计数失配」钉的保守钉子（body 保持空）与 10-02 从未运行的
+   集成契约（body 必须非空）**同场景相反**。修复：L2 复水 default 分支 legacy
+   兜底失败后**整体采纳 L3 自洽配对**（不混绑、反洗写原则保留、Redis-only
+   字段不存活）；改写判据 `TestSessionCache_L2CountMismatchDropsStaleRedisMetadata`
+   （同层 + BuildOutboundMessages 增量断言），M1/M2 变异红。修复后该集成测试连
+   `--require-coherence` 强断言都过。
+2. **门**：`tests/session_storage_audit_gate.sh` 接入 verify.sh（docker daemon+
+   postgres:17-alpine/redis:7.4.11-alpine 在场即跑，否则显式 SKIP）。门有牙实证=
+   强模式红在跨实例一致性 OBSERVATION（真实遗留：warm 实例旧 generation、双写
+   回调丢更新——登记待裁决）。**跑 verify.sh 的机器从此这批判据自动在场。**
+3. **死测试三件收口**：EmptySession 的 skip 理由与实现不符（`&TurnReader{}` 零值
+   短路返回空，去 skip 即过）；SetGet/CacheMiss 场景并入审计套件
+   `TestStorageAuditGovernanceSetGetDeleteMiss`，死版本删除。
+4. **32 个落空 realdb 测试精确对账并登记**：v2 包 setupTestDB 门 34 个，CI
+   `Sessions V2 integration` job（sessionforensics-ci.yml，子串正则
+   `_RealDB|_RoundTrip`）覆盖 2 个中缀命名者，余 32 个零入口。一次性 PG 只应用
+   430+431 实证不够（`session_bodies_hot` 614 等演进层缺失全灭）——这批测试要
+   全链迁移库。收口=owner 扩宽 CI job 过滤器+补 CI 库迁移，勿在本仓 runner 里
+   重建迁移执行器。
+5. 判据纪律 12（候选）：**冻结现状当契约前先搜反向判据**——「保守」经常只是
+   「现状」，r1031 的钉子与 10-02 的集成契约矛盾共存两周，只因两份判据从未同场
+   执行。
+
+## 下一轮提示词（r1031 轮）
+
+1. ★ **部署 r1031**（154/245/211 随下次窗口）：F1+F1 续（同文件两修）使 V2 抖动期
+   的会话压缩不再静默退化为全量重发、计数失配期不再缓存不配对组合进 L1。
+2. ~~**审计测试盲区收口**~~ **同日续轮已完成**（门 + 死测试三件 + 32 个对账登记，
+   见上节）；新增遗留=跨实例一致性 OBSERVATION 的两项真实缺口（warm 旧 generation/
+   双写丢更新）待裁决。
+3. 上一轮遗留不变：D1/D2 部署、URSM persist collect 迁独立 db、
+   GeneratedTextGuard 双语义拍板、session_censors 可逆化两件套。

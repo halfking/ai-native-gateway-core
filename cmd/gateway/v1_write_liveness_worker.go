@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // livenessUnknown 是快照层的第 4 个值：**测量本身失败**。
@@ -41,6 +42,12 @@ import (
 // （alive/dead/quiet，见 v1_write_liveness.go）是判决层的契约；
 // unknown 只出现在 worker 快照里，表示「这一 tick 什么都没量到」。
 const livenessUnknown = "unknown"
+
+// livenessRetired 是快照层的第 5 个值：**S4 故意停写后的预期态**。
+// 分类器仍回 dead（行存在性契约不变，§9.238「开关读数无关」），
+// 但信号层必须挂停：否则停写后每个 5m tick 都会 ERROR，把 intentional
+// stand-down 伪装成事故（154 实测 consecutive_dead_ticks 已破 90）。
+const livenessRetired = "retired"
 
 // V1WriteLivenessInterval / Window 的默认值。窗口 30m 沿用 §9.264 的选择
 // （该文档已声明「未论证」）；interval 必须显著小于窗口——5m/30m 意味着
@@ -181,6 +188,14 @@ func (w *V1WriteLivenessWorker) tick(ctx context.Context) {
 		snap.LastError = err.Error()
 		w.logger.Warn("v1_write_liveness: measurement failed (verdict unknown)",
 			"error", err)
+	case verdict == livenessDead && !settings.RequestLogsWriteEnabled():
+		// 故意停写：行存在性仍是 dead，信号降为 retired（不 ERROR、不 503）。
+		snap.Verdict = livenessRetired
+		if w.prev != livenessRetired {
+			w.logger.Info("v1_write_liveness: retired — request_logs writes stopped; dead is expected",
+				"window_minutes", snap.WindowMinutes,
+				"turns_hot_rows", snap.TurnsHotRows)
+		}
 	case verdict == livenessDead:
 		// prev 在 err 分支不参与：测量失败期间保持的「曾经 dead」计数
 		// 由 ConsecutiveDead=0 如实清零——快照量的是本 tick 观察到的事实。
@@ -197,11 +212,11 @@ func (w *V1WriteLivenessWorker) tick(ctx context.Context) {
 			"turns_hot_rows", snap.TurnsHotRows,
 			"turns_parent_rows", snap.TurnsParentRows,
 			"consecutive_dead_ticks", snap.ConsecutiveDead)
-	case w.prev == livenessDead:
-		// 恢复只在离开 dead 的那一 tick 响一次；steady 态静默。
+	case w.prev == livenessDead || w.prev == livenessRetired:
+		// 恢复只在离开 dead/retired 的那一 tick 响一次；steady 态静默。
 		snap.Verdict = verdict
 		w.logger.Warn("v1_write_liveness: recovered from dead",
-			"verdict", verdict)
+			"verdict", verdict, "prev", w.prev)
 	default:
 		snap.Verdict = verdict
 	}
@@ -210,9 +225,10 @@ func (w *V1WriteLivenessWorker) tick(ctx context.Context) {
 }
 
 // NewV1WriteLivenessHandler 返回 admin 拉取面。verdict=dead → 503
-// （供 curl -f 族零解析告警）；alive/quiet/unknown → 200（unknown 的
+// （供 curl -f 族零解析告警）；alive/quiet/unknown/retired → 200（unknown 的
 // 「测量坏了」由 body 的 last_error 说明，不用 5xx 二次编码——那会让
-// 「PG 挂了」和「这条腿挂了」在无 body 消费方看来不可区分）。
+// 「PG 挂了」和「这条腿挂了」在无 body 消费方看来不可区分；retired 是
+// 故意停写的预期态，不能 503）。
 func NewV1WriteLivenessHandler(w *V1WriteLivenessWorker) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

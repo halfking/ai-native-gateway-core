@@ -5,9 +5,20 @@ import { req, type RequestOptions } from './client'
  *
  * GET /api/admin/v1-data-horizon
  *
- * - **注册**：`admin/handler.go:1088`
+ * - **注册**：`admin/handler.go:1109`
  *   `mux.HandleFunc("/api/admin/v1-data-horizon", admin(h.handleV1DataHorizon))`
- *   ⇒ ★ **admin 档**（tenant_admin 可用）⇒ 抽屉席**不设** `requiresRole`。
+ *   ⇒ ★ **admin 档**（`AdminMiddleware` 只认证不检 role ⇒ tenant_admin 可用）
+ *     ⇒ 抽屉席**不设** `requiresRole`。
+ * ★★★★★ 第一百一十九批把这条结论**升级成明确规则**，因为它与批 115/117/118 的处置
+ *   **相反**，而原因不是「它们错了」：
+ *     过度限制（`'super_admin'`）的**正当性来自「跨租户数据」**，不是来自「没有租户维度」本身。
+ *   本族没有租户维度，但载荷是**平台级全局事实**（`_request_logs` 写门是否停更），
+ *   七个键里**没有一丁点租户相关**。
+ *   ⇒ ★★★ 而且**必须**让 tenant_admin 看到：这份告示是**读懂自己数据的必要前提** ——
+ *     `Silence` 自己写着「接口照常 200、结果集非空、字段齐全，接口没报错不代表数据是新的」。
+ *     把告示挡在 tenant_admin 之外，等于让他们把停更数据读成新鲜数据。
+ *   ⇒ 这就是**第三类（过度限制）的边界**：判据是「载荷里有没有别人的东西」，
+ *     不是「有没有 tenant 条件」。
  *   ⇒ 不在 `maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
  * - **实现**：`admin/v1_freeze_notice.go`（决策纯函数 `v1GateState` 在 `:147-155`）。
  *
@@ -56,7 +67,7 @@ import { req, type RequestOptions } from './client'
  *      ⇒ ★★ 头与 body 是**两套独立表达**，客户端可以用它交叉验证。
  *
  * (7) ★★★★ **`source` 这个名字在本响应里指两件不同的事**（命名陷阱）：
- *      - `notice.source` = **硬编码字面量** `"request_logs"`（被冻结的读源族，`:210/:219`）
+ *      - `notice.source` = **硬编码字面量** `"_request_logs"`（被冻结的读源族，`:210/:219`）
  *      - gate 的 source = `{db, env, default}`（`spec.go:283`），**不出现**在响应里
  *      ⇒ ★★ 客户端不要把 `notice.source` 当成「配置来源」。
  *
@@ -84,8 +95,17 @@ export const V1_FREEZE_HEADER = 'X-LLM-Gateway-V1-Data-Frozen'
 /** `settings/key_request_logs_write_enabled.go:19`。见 (8)。 */
 export const V1_HORIZON_GATE_KEY = 'storage.request_logs_write_enabled'
 
-/** `:210` / `:219` 硬编码的「被冻结的读源族」。见 (7)。 */
-export const V1_HORIZON_READ_SOURCE = 'request_logs'
+/**
+ * `:210` / `:219` 硬编码的「被冻结的读源族」。见 (7)。
+ *
+ * ★★★ 第一百一十九批订正：**漏了下划线前缀**，原先写的是 `'request_logs'`，
+ *   而 Go 侧两处字面量都是 `"_request_logs"`（表名带前缀）。
+ *   ⚠️ 这个错**之所以能活下来**，是因为旧判据是
+ *   `expect(V1_HORIZON_READ_SOURCE).toBe('request_logs')` ——
+ *   常量与判据**从同一个错误来源写出**，互证恒绿 ⇒ 典型的「互证不等于正确」。
+ *   ⇒ 处置：**删掉那条恒真断言**，换成**从 Go 源码抽取字面量再比对**的判据。
+ */
+export const V1_HORIZON_READ_SOURCE = '_request_logs'
 
 /** `spec.go:283` `EffectiveValue` 的 source 域。见 (4)(5)。 */
 export const V1_GATE_SOURCES = ['db', 'env', 'default'] as const
@@ -125,7 +145,7 @@ export interface V1DataHorizonNotice {
   frozen: boolean
   /** ★ true = 读点没给出可信答案（配置键没有显式取值，值来自回落）。见 (4)。 */
   unknown: boolean
-  /** ★ 恒为 `"request_logs"`；**不是**配置来源。见 (7)。 */
+  /** ★ 恒为 `"_request_logs"`；**不是**配置来源。见 (7)。 */
   source: string
   gate_key: string
   /** ★ 展示文案；两个分支各一套，不要用它判状态。见 (10)。 */
@@ -306,9 +326,10 @@ export function v1FreezeHeaderMatchesBody(
 // ── (7)(9) 取值域 ──
 
 /**
- * ★★★ 见 (7)：`notice.source` **恒为** `"request_logs"` —— 但本模块
- * **不提供校验它取值的判据**：那是硬编码常量，校验它是恒真判据。
- * ⇒ 只在文档里标注（`V1_HORIZON_READ_SOURCE`），不写 `expect(...).toBe(...)` 的判据。
+ * ★★★ 见 (7)：`notice.source` **恒为** `"_request_logs"`。
+ * ⚠️ 本模块**不在这里**校验它取值（那是硬编码常量，在本文件里校验是恒真判据）；
+ *   真正有判别力的那一条在 `v1DataHorizon.test.ts`：**从 Go 源码抽取字面量**再比对
+ *   —— 第一百一十九批就是靠它发现这个常量原本漏了 `_` 前缀。
  */
 export function v1HorizonAffectsAreKnown(notice: V1DataHorizonNotice): boolean {
   return notice.affects.every((a) => (V1_HORIZON_AFFECTS as readonly string[]).includes(a))

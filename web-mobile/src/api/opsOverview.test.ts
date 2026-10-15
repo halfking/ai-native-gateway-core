@@ -26,6 +26,14 @@ import {
   opsRuntimeRowMayBeOffline,
   opsRuntimeZeroIsAmbiguous,
   opsRuntimeHasMetrics,
+  opsOverviewRoleIsAllowed,
+  opsOverviewDbNotConfiguredMessage,
+  opsDataPlaneKeysAreComplete,
+  opsResponseKeyCountIsInRange,
+  opsCenterStatusCountsFitTotal,
+  opsListSectionTotalsMatchLengths,
+  opsListSectionMismatchKinds,
+  type OpsCenterStats,
   OPS_OVERVIEW_CACHE_TTL_SECONDS,
   OPS_OVERVIEW_ALWAYS_KEY,
   OPS_OVERVIEW_SECTION_KEYS,
@@ -50,6 +58,13 @@ import {
  *
  * 重点是源文件头写明的十七件事 (1)…(17)。带 ★ 的自校验判据都能被变异打掉。
  * ⚠️ 全部用例标题**字面量**写（不用 `it.each`）—— 变异 harness 靠标题取锚点。
+ *
+ * ★ 第一百一十七批：随视图接线新增五个导出（`opsOverviewRoleIsAllowed` 等），
+ *   并订正模块头三处漂移（注册处 `:1070` → **`:1091`**；「10 个查询函数」→ **11 个**；
+ *   以及权限结论「不设 requiresRole」→ **super_admin**）。
+ *   ★★ 这三处全是**读出来的**事实漂移，不是笔误：文件头是散文，没有判据把守，
+ *   漂了 21 行也没人红 —— 与孤儿棘轮那条「数字不该写进散文」同源。
+ *   ⇒ 本批把其中最要紧的一条（注册处行号 + 权限档）**钉成判据**，见 spec ① 组。
  */
 
 const fetchMock = vi.fn()
@@ -871,5 +886,118 @@ describe('fetch 端到端', () => {
     const r = await fetchOpsOverview()
     expect(opsIsFullyDegraded(r)).toBe(true)
     expect(r.generated_at).toBe('2026-10-08T02:00:00Z')
+  })
+})
+// ═════════════════════════════════════════════════════════════════════════════
+// 第一百一十七批：权限判定 + 四条可证不变式
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe('权限判定（第一百一十七批）', () => {
+  it('★ 只有 super_admin 能进（第三类：服务端完全没有租户维度）', () => {
+    expect(opsOverviewRoleIsAllowed('super_admin')).toBe(true)
+    expect(opsOverviewRoleIsAllowed('tenant_admin')).toBe(false)
+    expect(opsOverviewRoleIsAllowed('user')).toBe(false)
+    expect(opsOverviewRoleIsAllowed('')).toBe(false)
+  })
+
+  it('★★ 503 文案逐字（database not configured）', () => {
+    expect(opsOverviewDbNotConfiguredMessage('database not configured')).toBe(true)
+    expect(opsOverviewDbNotConfiguredMessage('  database not configured\n')).toBe(true)
+    expect(opsOverviewDbNotConfiguredMessage('internal error (see server logs)')).toBe(false)
+  })
+})
+
+describe('第一百一十七批新增的四条可证不变式', () => {
+  it('data_plane_tables 六项齐全（该子查询从不返回 error ⇒ 恒存在且齐全）', () => {
+    expect(opsDataPlaneKeysAreComplete(full().data_plane_tables!)).toBe(true)
+  })
+
+  it('data_plane_tables 缺一项 ⇒ 不齐（值可以是 -1 哨兵，但键不能在）', () => {
+    const d = { ...full().data_plane_tables! }
+    delete (d as Record<string, unknown>)['license_devices']
+    expect(opsDataPlaneKeysAreComplete(d)).toBe(false)
+  })
+
+  it('data_plane_tables 六项全是 -1 哨兵仍然算齐全（哨兵不是缺键）', () => {
+    // ★ 从满配那份 spread 出来再全打成 -1 —— 比 `{} as Record<string, number>` 强类型友好，
+    //   而且顺带证明「哨兵不改变键集合」。
+    const d = { ...full().data_plane_tables! }
+    for (const k of OPS_DATA_PLANE_KEYS) d[k] = OPS_DATA_PLANE_UNAVAILABLE
+    expect(opsDataPlaneKeysAreComplete(d)).toBe(true)
+  })
+
+  it('键数 12（满配）在范围内', () => {
+    expect(opsResponseKeyCountIsInRange(full())).toBe(true)
+    expect(Object.keys(full()).length).toBe(12)
+  })
+
+  it('键数 2（generated_at + 一个子查询）在范围内，1 不在', () => {
+    expect(opsResponseKeyCountIsInRange({ generated_at: 'x', center_stats: full().center_stats })).toBe(true)
+    expect(opsResponseKeyCountIsInRange({ generated_at: 'x' })).toBe(false)
+  })
+
+  it('★ 键数 13 ⇒ 越界（响应不是这个端点发的）', () => {
+    const d = { ...full(), nope_extra: 1 } as unknown as OpsOverviewResponse
+    expect(opsResponseKeyCountIsInRange(d)).toBe(false)
+  })
+
+  it('center_stats 三态之和 <= total（三个 COUNT FILTER 互斥）', () => {
+    expect(opsCenterStatusCountsFitTotal(full().center_stats!)).toBe(true)
+    const c: OpsCenterStats = {
+      total_instances: 1,
+      online_instances: 1,
+      offline_instances: 1,
+      degraded_instances: 0,
+    }
+    expect(opsCenterStatusCountsFitTotal(c)).toBe(false)
+  })
+
+  it('center_stats 三态之和小于 total 也合法（存在第四种状态）', () => {
+    const c: OpsCenterStats = {
+      total_instances: 5,
+      online_instances: 2,
+      offline_instances: 1,
+      degraded_instances: 0,
+    }
+    expect(opsCenterStatusCountsFitTotal(c)).toBe(true)
+  })
+
+  it('两个列表的 total 与容器长度一致（events 与 items 键名不同）', () => {
+    expect(opsListSectionTotalsMatchLengths(full())).toBe(true)
+  })
+
+  it('★ recent_faults.total 与 events 长度不符 ⇒ 不自洽', () => {
+    const r = full({ recent_faults: { events: [], total: 3 } })
+    expect(opsListSectionTotalsMatchLengths(r)).toBe(false)
+  })
+
+  it('★ recent_upgrades.total 与 items 长度不符 ⇒ 不自洽', () => {
+    const r = full({ recent_upgrades: { items: [upgrade()], total: 0 } })
+    expect(opsListSectionTotalsMatchLengths(r)).toBe(false)
+  })
+
+  // ★★★ 这条是本批**当场**顶出来的：首版注释写「缺键判 false」，实现却是空真 ⇒ 矛盾。
+  //   处置是**改注释不改代码**（缺键不构成违规），但顺手把「是谁不对」也暴露出来。
+  it('★ 两个容器都缺时**不判违规**（缺键是没取到，不是对不上）', () => {
+    const r = { generated_at: '2026-10-08T02:00:00Z' } as OpsOverviewResponse
+    expect(opsListSectionTotalsMatchLengths(r)).toBe(true)
+    // ★ 关键：违规清单必须**为空**，不能拿布尔冒充证据。
+    expect(opsListSectionMismatchKinds(r)).toEqual([])
+  })
+
+  it('★ 只缺一个容器时，那一个不进清单（半份响应不误报）', () => {
+    const r = full({ recent_upgrades: undefined })
+    expect(opsListSectionMismatchKinds(r)).toEqual([])
+    expect(opsListSectionTotalsMatchLengths(r)).toBe(true)
+  })
+
+  it('★ 违规清单报出**是哪一段**（不是只给一个布尔）', () => {
+    const r = full({ recent_faults: { events: [], total: 9 }, recent_upgrades: { items: [], total: 4 } })
+    expect(opsListSectionMismatchKinds(r)).toEqual(['recent_faults', 'recent_upgrades'])
+  })
+
+  it('★ 只违规一段时，清单里**只有**那一段', () => {
+    const r = full({ recent_faults: { events: [], total: 9 } })
+    expect(opsListSectionMismatchKinds(r)).toEqual(['recent_faults'])
   })
 })

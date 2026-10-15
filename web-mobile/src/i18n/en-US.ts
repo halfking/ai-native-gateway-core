@@ -20,6 +20,13 @@ export const enUS = {
     formatAnomalies: 'Format anomalies',
     reportRollup: 'Reconciliation report',
     dispatchJournal: 'Dispatch journal',
+    errorsTrend: 'Error trend',
+    modelHistory: 'Model state history',
+    modelIQ: 'Model IQ',
+    opsOverview: 'Ops overview',
+    requestActions: 'Action timeline',
+    v1DataHorizon: 'v1 data horizon',
+    slidingWindow: 'Sliding-window calls',
     modelIntegrityDrift: 'Fingerprint drift',
     modelPolicies: 'Model policies',
     modelPolicyAudit: 'Policy audit',
@@ -83,7 +90,144 @@ export const enUS = {
     injection: 'Prompt injection',
     injectionConfig: 'Injection config',
     nodeHealth: 'Health timeline',
+    subscriptionTiers: 'Subscription tiers',
+    platformSettings: 'Platform settings',
+    usageEnhanced: 'Usage & cost',
     account: 'Me',
+  },
+  // ★ Subscription tiers (2026-10-14, batch 120). Prefix: sts.
+  //   ⚠️ The two "invisible" dimensions have to be stated in the copy, otherwise
+  //   users read "listed here" as "this tier is enabled" — the endpoint never
+  //   SELECTs the `enabled` column at all.
+  sts: {
+    title: 'Subscription tiers',
+    nope: {
+      msg: 'Only super admins can view subscription tiers.',
+      // ★ This page blocks before sending anything; the server-side
+      //   `requireSuperAdmin` middleware is the actual gate.
+      why: 'Even if this page were bypassed, the server middleware answers 403.',
+    },
+    load: {
+      title: 'Fetch',
+      btn: 'Refresh tiers',
+    },
+    scope: {
+      note: 'Tiers are global configuration and are not tenant-isolated.',
+      enabledNote: 'Note: enabled is not exposed, so disabled tiers are listed here too.',
+    },
+    check: {
+      title: 'Self-check',
+      orderBad: 'Tier order does not follow sort_order ascending; the payload was swapped.',
+      dupKeys: '{n} tiers have duplicate entries in module_keys.',
+      dupCodes: '{n} tiers share a duplicated code.',
+      enabledLeak: '{n} tiers carry enabled, which this endpoint never returns.',
+      maxFeaturesLeak: '{n} tiers carry max_features, which this endpoint never returns.',
+      emptyModules: '{n} tiers configure no modules at all.',
+      emptyDescription: '{n} tiers have no description.',
+    },
+    list: {
+      title: 'Tiers',
+      empty: 'No subscription tier has been created yet.',
+    },
+    field: {
+      code: 'Code',
+      price: 'Price (cents)',
+      modules: 'Modules',
+      // ★ Must not be the literal "none" — that equals the key name and the
+      //   i18n gate rejects value === key (the most natural English wording).
+      noModules: '(none)',
+      keys: '{n} fields on every tier.',
+    },
+  },
+  // ★ Platform settings (2026-10-14, batch 121). Prefix: ps.
+  //   ⚠️ Unlike batches 116/120, the server has **no role gate at all** on these
+  //   three GET endpoints ⇒ this page is currently the only thing standing
+  //   between a tenant_admin and other operators' identities.
+  ps: {
+    title: 'Platform settings',
+    nope: {
+      msg: 'Only super admins can view platform settings and their change history.',
+      why: 'The change history is a cross-tenant global record including other operators’ usernames, roles and source IPs.',
+    },
+    load: {
+      title: 'Fetch',
+      btn: 'Refresh settings',
+    },
+    scope: {
+      note: 'Platform settings are not tenant-isolated: one change affects every tenant.',
+      warn: 'Writing a setting at danger_level dangerous or breaking requires a super admin.',
+    },
+    check: {
+      scopeBad: '{n} items have a value that does not match their scope.',
+      sourceBad: '{n} tenant-scoped items do not have an empty source.',
+      maybeIncomplete: 'The list may be incomplete: items whose value fails to resolve are silently skipped, so its length is not the registry size.',
+      gated: '{n} settings require a super admin to write.',
+      historyOrderBad: 'History order does not follow created_at descending.',
+      historyLimitBad: 'History holds more entries than the server’s hard-coded limit of 50.',
+      historyCrossTenant: 'This history spans every tenant; it is not “this tenant’s change log”.',
+      operators: '{n} entries in this history carry an operator identity.',
+    },
+    list: {
+      title: 'Settings',
+      // ★ Must not equal the key name.
+      historyBtn: 'View change history',
+    },
+    history: {
+      title: 'Change history · {key}',
+      empty: 'No changes recorded in the last 7 days.',
+    },
+    field: {
+      scope: 'Scope',
+      source: 'Value source',
+      operator: 'Operator',
+      role: 'Role',
+    },
+  },
+  // ★ Usage & cost (2026-10-14, batch 122). Prefix: ue.
+  ue: {
+    title: 'Usage & cost',
+    nope: {
+      msg: 'Only admins can view usage and cost data.',
+      // ★★ Unlike the families where the server middleware is a real gate, these
+      //   three endpoints DO filter by tenant — but `h.admin` has **no role floor**,
+      //   so the server hands all-tenant totals to a plain user. This page blocks first.
+      why: 'The server sets no role floor on these endpoints, so a plain account would receive every tenant’s costs.',
+    },
+    load: {
+      title: 'Fetch',
+      btn: 'Refresh usage & cost',
+    },
+    scope: {
+      allTenants: 'You are viewing costs for **all tenants** (super-admin scope).',
+      ownTenant: 'You are viewing costs for **your own tenant**.',
+    },
+    estimate: {
+      note: 'The three savings figures below are **estimates** derived from hard-coded assumptions, not billing data.',
+      badge: 'est.',
+    },
+    cache: {
+      title: 'Cache & compression economics',
+      ok: 'Server confirmed: not degraded',
+      degraded: 'Server degraded: the figures below are all zero and do not mean nothing was spent.',
+    },
+    compare: {
+      title: 'Period comparison',
+      degraded: 'Period comparison is degraded.',
+    },
+    check: {
+      hitRatioMeaningless: 'A 0% hit ratio only means the denominator is zero, not that nothing hit.',
+      compressedSuspect: 'The compressed-request count may have failed to load (the server only logs a warning).',
+      compressionUnreliable: 'Compression savings are unreliable: their only input may have failed to load.',
+      periodMeaningless: 'A 0% period change means both periods are empty, not that nothing changed.',
+      threshold: 'Significant change threshold: {pct}%.',
+    },
+    field: {
+      totalRequests: 'Total requests',
+      cacheReadTokens: 'Cache-read tokens',
+      dollars_saved: 'Cache savings',
+      compression_saved: 'Compression savings',
+      total_saved: 'Total savings',
+    },
   },
   common: {
     loading: 'Loading…',
@@ -3868,5 +4012,508 @@ sctx: {
     loadConfigsFailed: 'Failed to load work types: ',
     loadStatsFailed: 'Failed to load work type stats: ',
     loadL1Failed: 'Failed to load L1 task types: ',
+  },
+  // ★★ Supplier error trend (2026-10-14, batch 113).
+  et: {
+    title: 'Error trend',
+    load: 'Query',
+    reload: 'Query again',
+    nope: 'Your role cannot access this page.',
+    query: {
+      title: 'Query parameters',
+      hours: 'Window (hours)',
+      granularity: 'Granularity',
+      auto: 'Auto ({g})',
+      supplier: 'Supplier',
+      errorType: 'Error type',
+      credentialId: 'Credential ID',
+      paramsBad: 'hours accepts only 1 / 24 / 168; granularity accepts only minute / hour / day; credential ID must be a positive integer.',
+    },
+    filter: {
+      wildcard: '(no filter)',
+      unfiltered: '(no filter)',
+      note: 'Leaving supplier or error type empty, or typing "all", means no filter; once credential ID is filled it is always a filter.',
+    },
+    scope: {
+      // ★★ Legend lives on its own line, NOT in the same sentence as {scope} —
+      //   otherwise the template string itself contains the literals `own`/`all`
+      //   and a `toContain('own')` assertion becomes **tautological**
+      //   (caught by batch 113 mutation S4).
+      note: 'Tenant scope of this batch: {scope}. This is not a permission gate; the backend may still return cross-tenant data.',
+      legend: 'Scope values: all = every tenant; own = this tenant only; unexpected = an unanticipated role (the backend returns every tenant for it).',
+    },
+    meta: {
+      title: 'Response metadata',
+      sourceSet: 'Possible sources: {list}.',
+      fallback: 'Source is fallback: the pre-aggregated table has no rows at this granularity — that does not mean "no errors".',
+      genuinelyEmpty: 'Source is fallback and the series is empty: the detail table has no rows either, so the window genuinely has no errors.',
+      granEchoBad: 'The echoed granularity does not match the value derived from hours when none is sent explicitly.',
+    },
+    summary: {
+      title: 'Summary',
+      uniqueNote: '(sum of buckets, not deduplicated — an upper bound)',
+      mismatch: 'Total errors does not equal the sum over the series.',
+      uniqueNotUpper: 'Unique requests is below the sum over the series — it should be an upper bound.',
+      truncated: 'The error-type or supplier ranking is cut to {n} entries; how many were dropped is unknown.',
+      emptyTypes: 'The error-type ranking is empty (this field is always an array, never null).',
+      emptySuppliers: 'The supplier ranking is empty (this field is always an array, never null).',
+    },
+    series: {
+      title: 'Time series',
+      notAscending: 'The series is not sorted ascending by time.',
+      zeroRows: 'Source is not fallback yet there are no rows — that may be the documented "0 rows" failure mode, not "no errors".',
+      empty: 'No time buckets were returned for this window.',
+    },
+    applied: {
+      title: 'Filters in effect',
+    },
+    dim: {
+      absent: '(key omitted: an empty map never appears in the response)',
+    },
+    col: {
+      source: 'Source',
+      granularity: 'Granularity',
+      hours: 'Window',
+      since: 'Since',
+      until: 'Until',
+      totalErrors: 'Total errors',
+      uniqueRequests: 'Unique requests',
+      affectedCredentials: 'Affected credentials',
+      errorType: 'Error type',
+      count: 'Count',
+      supplier: 'Supplier',
+      timestamp: 'Bucket',
+      errorCount: 'Errors',
+      affectedUsers: 'Affected users',
+      bySupplier: 'By supplier',
+      byErrorType: 'By error type',
+      credentialId: 'Credential ID',
+    },
+  },
+
+  // ★★ Credential model state-change history (2026-10-14, batch 114).
+  mh: {
+    title: 'Model state history',
+    load: 'Query',
+    reload: 'Query again',
+    nope: 'Your role cannot access this page.',
+    query: {
+      title: 'Query parameters',
+      credentialId: 'Credential ID',
+      rawModelName: 'Model name (raw_model_name)',
+      limit: 'Row limit ({min}-{max}, default {def})',
+      note: 'A credential ID of 0 is rejected; an out-of-range limit is rejected. But a non-numeric value for either falls back to the default silently instead of erroring.',
+      paramsBad: 'Credential ID must not be 0, and the limit must fall in {min}-{max}.',
+    },
+    scope: {
+      // ★★ Legend on its own line, NOT in the same sentence as {scope} — otherwise the
+      //   template string carries those literals and any assertion on {scope} turns
+      //   tautological (caught by batch 113 mutation S4).
+      note: 'Tenant scope of this batch: {scope}. This is not a permission gate; the backend still returns cross-tenant data to an unprivileged caller.',
+      legend: 'Scope values: all = every tenant; own = this tenant only; unexpected = an unanticipated role (the backend returns every tenant for it).',
+    },
+    meta: {
+      title: 'Response metadata',
+      lenNote: '(the backend takes the array length directly)',
+      echoBad: 'The echoed values do not match the query parameters.',
+      countMismatch: 'count does not match the actual number of events.',
+      countRelation: 'count = {count}, event array length = {len}.',
+      incomplete: 'This batch may be incomplete: rows that fail to scan are skipped silently, and nothing in the response reveals that.',
+      orderNote: 'The backend returns rows newest first, but there is no tiebreaker, so equal timestamps have an undefined relative order.',
+      orderBad: 'The sequence is not sorted newest first.',
+      sourceSet: 'Possible sources: {list}.',
+      eventSet: 'Event values depend on the source: auto = {auto}; manual = {manual}.',
+    },
+    events: {
+      title: 'Events',
+      empty: 'This credential/model pair has no state-change events (an empty array, not a missing field).',
+      shapeBad: 'The field shape of this row does not match its source (auto should have two fields always absent, manual five).',
+      kindBad: 'The event value of this row does not belong to its source.',
+      nullsFilled: 'Fields always absent on this row: {keys}',
+    },
+    field: {
+      null: 'not provided',
+      emptyString: '(empty string — not the same as "not provided")',
+    },
+    col: {
+      count: 'Rows',
+      ts: 'Time',
+      source: 'Source',
+    },
+  },
+
+  // ★★ Credential sliding-window call detail (2026-10-14, batch 115).
+  miq: {
+    title: 'Model IQ',
+    load: {
+      title: 'Load',
+      btn: 'Load catalog & nodes',
+    },
+    scope: {
+      note: 'All three are read-only endpoints on the super-admin tier. "Test now" is a side-effecting write and is not offered here.',
+    },
+    nope: {
+      msg: 'Your role cannot access this page.',
+      why: 'The server compares the role literally and returns 403 for anyone but super admin; hiding the drawer item is not a route guard, so this stops before any request is sent.',
+    },
+    err: {
+      forbidden: 'Not permitted: the server requires super admin.',
+      dbNotConfigured: 'The server has no database configured (503).',
+      'invalid-provider': 'Invalid provider ID: it must be a positive integer.',
+      'invalid-canonical': 'Invalid canonical ID: it must be a positive integer.',
+      'credential-required': 'Credential ID is required.',
+      'model-required': 'Model name is required.',
+    },
+    catalog: {
+      title: 'Model IQ catalog',
+      emptyNote: 'A dash means the value is empty in the database, not zero; a row with nodes showing a dash has an empty aggregate.',
+      empty: 'The catalog is empty.',
+      aggMismatch: '{n} row(s) have aggregates that disagree with the node count.',
+      bothEmpty: '{n} row(s) have neither a standard IQ nor any node, which contradicts the server-side filter.',
+      orderBad: 'Ordering does not match the server (larger of standard IQ and node average, descending).',
+      standardNull: '{n} row(s) have no standard IQ and are ordered by node average.',
+    },
+    nodes: {
+      title: 'Node IQ',
+      btn: 'Query',
+      filterNote: 'Both filters are optional; non-positive integers are rejected by the server (400), so they are blocked here first.',
+      filterBad: 'Provider ID and canonical ID must be positive integers, or left empty.',
+      empty: 'No matching nodes.',
+      unbound: 'No provider',
+      never: 'Never tested',
+      noProvider: '{n} node(s) are not bound to a provider (their ID shows as 0).',
+      neverTested: '{n} node(s) have never been tested (no timestamp).',
+      badPrecision: '{n} node(s) have a timestamp that is not second-precision, which does not match the server.',
+      orderBad: 'Ordering does not match the server (overall score, descending).',
+    },
+    history: {
+      title: 'Node history',
+      btn: 'Query',
+      paramNote: 'Credential ID and model name are both required. An out-of-range limit is not rejected — the server silently falls back to {def}.',
+      effective: 'Limit actually in effect: {n}.',
+      paramsBad: 'Credential ID cannot be 0 or empty, and the model name cannot be empty.',
+      empty: 'This node has no history.',
+      statusMismatch: '{n} row(s) have a status that disagrees with accuracy and stability.',
+      statusUnknown: '{n} row(s) have a status outside the known value set.',
+      zeroStability: '{n} row(s) have stability 0 — a real zero cannot be told apart from an empty value.',
+      orderBad: 'Ordering does not match the server (test time, descending).',
+    },
+    field: {
+      canonical: 'Canonical',
+      family: 'Family',
+      nodes: 'Nodes',
+      nodeAvg: 'Node average',
+      nodeRange: 'Node min / max',
+      source: 'Standard source',
+      model: 'Model',
+      provider: 'Provider',
+      providerId: 'Provider ID (optional)',
+      canonicalId: 'Canonical ID (optional)',
+      credentialId: 'Credential ID',
+      range: 'Min / avg / max',
+      samples: 'Samples',
+      grade: 'Grade',
+      testedAt: 'Tested at',
+      accuracy: 'Accuracy',
+      stability: 'Stability',
+      latency: 'P95 latency',
+      probe: 'Probe',
+      trigger: 'Trigger',
+    },
+  },
+  sw: {
+    title: 'Sliding-window calls',
+    load: 'Query',
+    reload: 'Query again',
+    nope: {
+      msg: 'Your role cannot access this page.',
+      why: 'This endpoint has **no tenant dimension** server-side; it locates data by a globally unique credential ID. Letting non-super-admins in would only create a false sense of isolation.',
+    },
+    query: {
+      title: 'Query parameters',
+      credentialId: 'Credential ID',
+      model: 'Model name',
+      minutes: 'Window in minutes (not validated server-side, default {def})',
+      limit: 'Row limit ({min}-{max}, default {def})',
+      note: 'The credential ID and the row limit are rejected server-side, but the window in minutes is **not validated at all** — any value reaches the query. Also, a non-numeric value for any of them silently falls back to the default instead of erroring.',
+      paramsBad: 'Credential ID must not be 0, and the row limit must fall in {min}-{max}.',
+    },
+    scope: {
+      // ★★ Legend on its own line, NOT in the same sentence as {scope} — otherwise the
+      //   template string carries those literals and any assertion on {scope} turns
+      //   tautological (caught by batch 113 mutation S4).
+      note: 'Tenant scope of this batch: {scope}. This is not a permission gate; the server returns by credential ID to any authenticated caller.',
+      legend: 'Scope values: all = every tenant (and there is no tenant dimension at all); unexpected = an unanticipated role (never isolated for it).',
+    },
+    meta: {
+      title: 'Response metadata',
+      echoBad: 'The echoed credential ID does not match the query parameter.',
+      modelEchoBad: 'The echoed model name does not match the query parameter — note it is echoed verbatim, not the normalized value that actually matched.',
+      sourceSet: 'Possible sources: {list}.',
+      redisNote: 'When the server cannot read Redis it silently falls back to the log table; the response does not reveal whether Redis was at fault.',
+      fallbackData: 'Source is the fallback table with data: that means either Redis was unavailable or Redis simply had no rows in the window — the two cannot be told apart.',
+      redisEmptyBad: 'Source is redis yet there are no rows — zero rows always trigger the fallback, so this violates a backend invariant.',
+    },
+    stats: {
+      title: 'Statistics',
+      totalBad: 'total_returned does not match the number of entries.',
+      statsTotalBad: 'stats.total does not match the number of entries.',
+      sumBad: 'success + failed does not add up to the total.',
+      kindsBad: 'The error-kind sum is greater than the failure count.',
+      kindsIncomplete: 'Some failed entries are missing from the error-kind breakdown — that is not an error; those failures had an empty error description.',
+      rateBad: 'The failure rate does not match failed / total.',
+      kindsEmpty: 'The error-kind breakdown is empty (no failed entry carried a non-empty error description).',
+    },
+    entries: {
+      title: 'Call entries',
+      empty: 'No calls in the window (an empty array, not a missing field).',
+      orderBad: 'The sequence is not sorted newest first.',
+      orderNote: 'The server returns rows newest first, but there is no tiebreaker within the same millisecond, so equal timestamps have an undefined relative order.',
+    },
+    field: {
+      noError: '(successful entry: this field is absent)',
+      blankError: '(failed entry: the field is present but its content is empty)',
+      blankRid: '(empty string — the source recorded no request ID)',
+    },
+    col: {
+      windowMinutes: 'Window (min)',
+      limit: 'Row limit',
+      source: 'Source',
+      totalReturned: 'Rows returned',
+      total: 'Total',
+      success: 'Success',
+      failed: 'Failed',
+      failureRate: 'Failure rate',
+      errorKindsSum: 'Error-kind sum',
+      errorKind: 'Error kind',
+      count: 'Count',
+      ts: 'Timestamp (unix ms)',
+      ok: 'Result',
+      okYes: 'OK',
+      okNo: 'Failed',
+    },
+  },
+  // ★ 运维总览（2026-10-14 batch 117）。
+  //   注册处 admin/handler.go:1091 是 `admin(...)` ⇒ **后端 tenant_admin 可读**，
+  //   但本族**完全没有租户维度**（11 条子查询全是全局表）⇒ 抽屉席钉 super_admin。
+  ops: {
+    title: 'Ops overview',
+    load: {
+      title: 'Read',
+      btn: 'Read ops overview',
+    },
+    scope: {
+      note: 'One bundled read: the backend runs 11 sub-queries concurrently and merges them into one response. A failed sub-query drops its section while the response stays 200.',
+    },
+    nope: {
+      msg: 'Your role cannot open this page.',
+      why: 'This family is neither tenant-scoped nor role-checked on the server; the request is blocked here before it is sent. Hiding a drawer seat is not route interception.',
+    },
+    err: {
+      dbNotConfigured: 'Server has no database configured (503).',
+    },
+    fresh: {
+      title: 'Collection completeness',
+      empty: 'Not read yet.',
+      generatedAt: 'Collected at',
+      sections: 'Successful sub-queries: {n}/{total}.',
+      missing: 'Missing sections: {list}',
+      // ★ 门会拦「值 === 键名」，所以这里不能写 'none'（那正是键名）。
+      none: '(none)',
+      keyCount: 'Response keys: {n}',
+      precisionBad: 'Collection timestamp is not a second-precision UTC string (expected e.g. 2026-10-14T02:00:00Z, no fraction).',
+      keyCountBad: 'Response key count is out of range: legal range is 2..12 (1 always-present key plus at most 11 sub-queries).',
+      degraded: 'All 11 sub-queries failed — the backend answers 500 in that case, so this 200 response is not normal.',
+    },
+    summary: {
+      title: 'Platform summary',
+      empty: 'This section was not returned.',
+      online: 'Online',
+      offline: 'Offline',
+      degraded: 'Degraded',
+      downloads: 'Downloads',
+      today: 'Today',
+      week: 'Last 7 days',
+      supporters: 'Holders',
+      licenseTotal: 'Active licenses: {n}',
+      centerBad: 'Online + offline + degraded exceeds the instance total, which contradicts the mutually exclusive counters on the server.',
+    },
+    dataPlane: {
+      title: 'Data-plane table counts',
+      absent: 'This section was not returned.',
+      unavailable: '{n} lookups failed and show as -1 (a failure sentinel, not a count).',
+      bad: 'The six counts are incomplete — this section is always present, so a missing item means the response did not come from this endpoint.',
+    },
+    region: {
+      title: 'Regions',
+      absent: 'This section was not returned.',
+      missingTag: 'no rows',
+      placeholder: '{n} region(s) have no rows in the database (placeholders, all four counts are 0).',
+      placeholderBad: '{n} placeholder row(s) carry non-zero counts.',
+      preambleBad: 'The first three rows must be local / 245 / 154 in that fixed order.',
+      extraBad: 'Regions outside the hard-coded three appear more than once.',
+    },
+    nodes: {
+      title: 'Deployment nodes',
+      absent: 'This section was not returned.',
+      empty: 'No node rows.',
+    },
+    fault: {
+      title: 'Faults',
+      absent: 'This section was not returned.',
+      empty: 'No new fault events.',
+      rangeBad: 'New faults exceed the open-fault total — the recent list only takes new while the stat counts three states, so it must be smaller.',
+      statusBad: 'Some event has a status other than new — the backend hard-codes status = new in SQL.',
+      totalsBad: 'Counts do not match the list lengths: {list}',
+    },
+    upgrade: {
+      title: 'Upgrades',
+      absent: 'This section was not returned.',
+      empty: 'No upgrade records.',
+      version: 'Target version',
+      versionEmpty: '(empty: the backend coalesces to an empty string when both versions are blank)',
+    },
+    offline: {
+      title: 'Offline activation requests',
+      note: 'This section carries other tenants license keys and hardware fingerprints, so it is super-admin only.',
+      absent: 'This section was not returned.',
+      empty: 'No offline activation requests.',
+      approved: '{n} approved.',
+      mirrorBad: '{n} row(s) have a timestamp different from created_at — the backend writes the same value twice.',
+    },
+    runtime: {
+      title: 'Runtime metrics',
+      absent: 'This section was not returned.',
+      empty: 'No runtime metrics.',
+      cpu: 'CPU avg %',
+      mem: 'Memory avg %',
+      tps: 'TPS avg',
+      p99: 'P99 max',
+      lastUpdate: 'Metrics at',
+      withMetrics: 'Rows with metrics: {n}',
+      nullUpdate: 'Rows with an empty metrics timestamp: {n} (this is a null encoding, not a missing key)',
+      zeroAmbiguous: '{n} row(s) have all three averages at 0 — a real 0 and no metrics in 24h are ambiguous.',
+      offlineRows: '{n} row(s) are offline instances: an offline instance still appears when it has metrics from the last 24h, so appearing here does not mean online.',
+    },
+    field: {
+      instances: 'Instances',
+      ip: 'IP',
+      region: 'Region',
+      build: 'Build',
+      lastHeartbeat: 'Last heartbeat',
+      rule: 'Rule',
+      source: 'Source',
+      detectedAt: 'Detected at',
+      startedAt: 'Started at',
+      completedAt: 'Completed at',
+      createdAt: 'Created at',
+      approvedAt: 'Approved at',
+      licenseKey: 'License key',
+      hardwareHash: 'Hardware hash',
+      requestId: 'Request ID',
+      activationCode: 'Activation code',
+      absent: '(none)',
+    },
+  },
+  // ★ Request action timeline (2026-10-14 batch 118).
+  //   Registration admin/handler.go:1045 is `admin(...)` so a tenant_admin can read it,
+  //   but the endpoint has **no tenant dimension at all** (it only matches the
+  //   request_id from the URL), while /api/admin/live-stream — reading the very
+  //   same store — does filter by tenant => backend inconsistency, third class,
+  //   so the drawer seat is pinned to super_admin.
+  ra: {
+    title: 'Request action timeline',
+    load: {
+      title: 'Read',
+      btn: 'Read timeline',
+    },
+    scope: {
+      note: 'This is the REST fallback for the live action stream: it is what replays a request after a page refresh or once the request has finished.',
+      replay: 'Data comes from a bounded queue (LPUSH + LTRIM 5000), so older events are already dropped — this is not history.',
+      paramsBad: 'Request ID is empty and the server would answer 400 — fill it in first.',
+      empty: 'Not read yet.',
+    },
+    nope: {
+      msg: 'Your role cannot open this page.',
+      why: 'This family is neither tenant-scoped nor role-checked on the server; the request is blocked here before it is sent. Hiding a drawer seat is not route interception.',
+    },
+    err: {
+      notWired: 'The server has no action store wired (503).',
+      storeUnavailable: 'Action store unavailable (502 Bad Gateway: the upstream Redis read failed).',
+      missingId: 'Missing request ID (400).',
+    },
+    check: {
+      title: 'Response self-check',
+      echoBad: 'The echoed request ID does not match the one you asked for.',
+      rowEchoBad: 'Some action row carries a request ID different from the response top level.',
+      countBad: 'count does not match the number of actions.',
+      detailBad: 'A detail key showed up in an action row — the server flattens it to the top level, so seeing it means the contract drifted.',
+      credentialLabelBad: 'credential_label showed up — that field belongs to the live stream, not to this endpoint.',
+      orderBad: 'Order does not match the server contract (should be ascending by ts, then by seq).',
+      seqBad: 'seq has duplicates — the server deduplicates by seq.',
+      unknownActions: '{n} action(s) use values the server has not registered yet (not an error; they are still displayed).',
+      zeroTs: '{n} action(s) carry the zero-value timestamp, so they sort to the front.',
+      extraKeys: 'Extra keys flattened in: {list}',
+      // ★ 门会拦「值 === 键名」，而英文里最自然的空值写法恰恰就是这个 —— 别写 'none'。
+      none: '(none)',
+    },
+    timeline: {
+      title: 'Action sequence',
+      empty: 'No actions recorded for this request (it may have fallen outside the replay window).',
+      unknownTag: 'unknown value',
+    },
+    field: {
+      requestId: 'Request ID',
+      echo: 'Echoed request ID',
+      model: 'Model',
+      credentialId: 'Credential ID',
+      errorKind: 'Error kind',
+      retrySeq: 'Retry seq',
+    },
+  },
+  // ★ v1 data horizon notice (2026-10-14 batch 119).
+  //   Registration admin/handler.go:1109 is `admin(...)` => **admin tier**, the seat sets
+  //   NO requiresRole. This is the opposite of batches 115/117/118 and none of them was
+  //   wrong: no tenant dimension does not imply over-restriction. The test is whether the
+  //   payload contains *someone else's* data — here it is a platform-wide fact.
+  v1h: {
+    title: 'v1 data horizon',
+    load: {
+      title: 'Read',
+      btn: 'Read notice',
+    },
+    scope: {
+      note: 'This page answers one platform-wide question: has the v1 traffic read source been frozen? It is tenant-independent, so it is open to every role.',
+      headerNote: 'The server also carries the same fact in a response header, but the mobile request layer only reads the body, so this page judges from the body alone.',
+      empty: 'Not read yet.',
+    },
+    state: {
+      title: 'Current state',
+      live: 'still writing',
+      // ★ 门会拦「值 === 键名」——这已经是同一类陷阱**第三次**（none/none 两次、frozen/frozen 一次）。
+      frozen: 'frozen (gate closed)',
+      unknown: 'cannot confirm',
+      'unknown-shape': 'malformed',
+      note: {
+        live: 'The write gate is explicitly on; this read source has not been frozen.',
+        frozen: 'The write gate is explicitly closed: the endpoint still returns 200 with non-empty results, but the content stops at the moment writing stopped.',
+        unknown: 'The config key controlling this read source has no explicit value and what we read came from the default fallback — we can neither say it stopped nor that it is still writing.',
+        'unknown-shape': 'The response is neither "not frozen" nor one of the two notice shapes.',
+      },
+    },
+    check: {
+      flagBad: 'In the notice object, frozen and unknown are not exactly one true — the server never produces that shape.',
+      affectsBad: 'affects contains a value the server does not list.',
+      affectsCountBad: 'affects does not have the fixed three entries.',
+      sourceBad: 'source is not that table name (expected _request_logs, leading underscore included; it is not the config source).',
+      gateKeyBad: 'gate_key does not match the controlling key on the server — operators need to know what to change.',
+      shapeBad: 'A notice object exists but matches neither the frozen nor the cannot-confirm shape.',
+      envelope: 'The response body shape for this state ({state}) has been checked.',
+    },
+    field: {
+      source: 'Read source',
+      gateKey: 'Gate key',
+      affects: 'Affected tiers',
+    },
   },
 } as const

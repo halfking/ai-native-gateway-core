@@ -80,6 +80,25 @@ const controller = new ContinuousListController<ProviderGroup>({
   scopeKey: 'nodes',
 })
 
+/**
+ * 下拉刷新。
+ *
+ * ★★ 2026-10-14（第一百一十四批顺手修的真运行时缺陷）：这段此前**内联在模板里**
+ *   ```html
+ *   :on-refresh="async () => { cache.value = await fetchMonitorSummary(); controller.loadFirst('requery') }"
+ *   ```
+ *   但 `<script setup>` 的模板访问里 **ref 是被自动解包的** ——
+ *   模板里的 `cache` 是**数组本身**，不是那个 Ref ⇒ `cache.value` 运行时是
+ *   `undefined.value` ⇒ ★★ 用户一点刷新就抛 TypeError（列表不刷新）。
+ *   ⇒ `vue-tsc` 能静态看见这个（TS2551），但**vitest 全绿**
+ *     （没有一条用例去点这个刷新回调）⇒ 只有类型门拦得住。
+ *   ⇒ 修法：把回调搬进 `<script setup>`，那里 `cache` 是 Ref，`.value` 成立。
+ */
+async function requery(): Promise<void> {
+  cache.value = await fetchMonitorSummary()
+  controller.loadFirst('requery')
+}
+
 function filtered(): CredentialMonitorSummary[] {
   const q = query.value.trim().toLowerCase()
   return cache.value.filter((c) => {
@@ -474,7 +493,7 @@ function describeError(err: unknown): string {
   <HyperList
     :controller="controller"
     :item-key="(group: ProviderGroup) => `provider-${group.providerId}`"
-    :on-refresh="async () => { cache.value = await fetchMonitorSummary(); controller.loadFirst('requery') }"
+    :on-refresh="requery"
     :empty-hint="t('common.empty')"
   >
     <template #header>

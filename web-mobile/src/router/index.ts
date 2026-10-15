@@ -719,6 +719,174 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'dj.title', requiresAuth: true },
   },
   {
+    // ★★ 供应商错误趋势（2026-10-14 第一百一十三批）。
+    //   注册 `admin/handler.go:1270` `admin(h.errorsTrendHandlers.getErrorsTrend)`
+    //   ⇒ **admin 档**（`AdminMiddleware` 只认证不检 role），tenant_admin 可用。
+    // ⚠️⚠️ 但 `requiresRole` 这里设的是 **`'admin'` 而不是缺省**，与本文件其余
+    //   admin 档路由**相反** —— 推导见 `api/errorsTrend.ts` 文件头与 `AppDrawer.spec.ts`。
+    //   根因：`getErrorsTrend` 不检 role，而 `EffectiveTenantIDAll` 对
+    //   **非 tenant_admin 一律返空串** ⇒ effective role 为 `user` 的主体
+    //   （`admin/shared_principal.go:42` 的 roleRank 允许，且本地角色更高时不下调）
+    //   会读到**全租户**数据。
+    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（`hyper-wiring.ts` 的守卫只查登录态）
+    //   ⇒ 这一行是**为将来的守卫预留的**，不是生效中的拦截。
+    path: '/errors-trend',
+    name: 'errors-trend',
+    component: () => import('@/views/ErrorsTrendView.vue'),
+    meta: { titleKey: 'et.title', requiresAuth: true, requiresRole: 'admin' },
+  },
+  {
+    // ★★ 凭据模型状态变更历史（2026-10-14 第一百一十四批）。
+    //   挂载 `admin/handler.go:1475` `monitorH.RegisterMonitorRoutes(mux, h.admin)`
+    //   ⇒ **admin 档**，tenant_admin 本该可用。
+    // ⚠️⚠️ 但 `requiresRole` 设的是 **`'admin'` 而不是缺省**，与「admin 档 ⇒ 不设」
+    //   的旧口径相反。根因（`api/modelHistory.ts` 文件头 (1b)）：
+    //   `RegisterMonitorRoutes` 包的是 `AdminMiddleware`（不检 role），
+    //   `handleModelHistory` 自己也不检，而租户键是**手写内联**的
+    //   ```go
+    //   tenantID := ""
+    //   if IsTenantAdmin(r) { tenantID = GetTenantID(r) }
+    //   ```
+    //   ⇒ 与 `EffectiveTenantIDAll` 语义相同但**不叫那个名字** ⇒ grep 不到
+    //   ⇒ 非 tenant_admin 一律空串 ⇒ 两段 SQL 的 `$4 = ''` 放行 ⇒ **全租户**。
+    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（守卫只查登录态）
+    //   ⇒ 这一行是为将来的守卫预留的，不是生效中的拦截。
+    path: '/model-history',
+    name: 'model-history',
+    component: () => import('@/views/ModelHistoryView.vue'),
+    meta: { titleKey: 'mh.title', requiresAuth: true, requiresRole: 'admin' },
+  },
+  {
+    // ★★ 凭据模型滑窗调用明细（2026-10-14 第一百一十五批）。
+    //   注册 `admin/handler.go:1475` `monitorH.RegisterMonitorRoutes(mux, h.admin)`
+    //   ⇒ 是 **admin 档**，与批 113/114 那两族同注册处。
+    // ⚠️⚠️ 但 `requiresRole` 是 **`'super_admin'`**，与那两族**相反** ——
+    //   因为本族**连租户维度都没有**：`handleSlidingWindow`
+    //   （admin/credential_monitor.go:704-782）里既没有 `tenantID` 变量、
+    //   也没有任何 `IsTenantAdmin`，两条数据腿（Redis 与 _request_logs 回退）
+    //   的 WHERE 都只有 `credential_id = $1 AND lower(...) = lower($2)`。
+    //   而 `credential_id` 是**全局唯一**主键 ⇒ 任何通过认证的主体报出别的
+    //   租户的 credential_id 就能读到它的逐次调用明细。
+    //   ⇒ `'admin'` 档在这里会给出**虚假的安全感**（按钮写着「我的租户」，
+    //     后端根本不理这句）⇒ 必须过度限制。
+    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（守卫只查登录态）
+    //   ⇒ 这一行是为将来的守卫预留的，不是生效中的拦截。
+    path: '/sliding-window',
+    name: 'sliding-window',
+    component: () => import('@/views/SlidingWindowView.vue'),
+    meta: { titleKey: 'sw.title', requiresAuth: true, requiresRole: 'super_admin' },
+  },
+  {
+    // ★ 模型智商（2026-10-14 第一百一十六批）。
+    //   注册 `admin/handler.go:1492-1495` —— **四条全部** `h.superAdmin(...)`。
+    // ★★★★ 本族是本仓第四档权限里**唯一「档位自带 role 检查」**的一档：
+    //   逐字读过 `SuperAdminMiddleware`（admin/auth.go:376-409）——
+    //   `if claims.Role != "super_admin" { 403 }`。
+    //   ⇒ 与批 113/114 走 `AdminMiddleware`（**只认证不检 role**）**形态相反**，
+    //     那两族才被迫用 `requiresRole: 'admin'`。
+    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（守卫只查登录态）
+    //   ⇒ 这一行是为将来的守卫预留的，不是生效中的拦截；
+    //   视图内另有一层兜底（`ModelIQView.vue` 的 `miq-nope` 段）。
+    path: '/model-iq',
+    name: 'model-iq',
+    component: () => import('@/views/ModelIQView.vue'),
+    meta: { titleKey: 'miq.title', requiresAuth: true, requiresRole: 'super_admin' },
+  },
+  {
+    // ★ 运维总览（2026-10-14 第一百一十七批）。
+    //   注册 `admin/handler.go:1091` `mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))`
+    //   —— 注册处**确实**是 admin 档（`AdminMiddleware`，`admin/auth.go:85-140` **只认证不检 role**），
+    //   而 `handleOpsOverview` 自己既不读 AuthContext 也不看 role。
+    // ★★★★ 但**归第三类**：本族**完全没有租户维度** —— 11 条子查询全是全局表，
+    //   取租户键的代码**根本不存在**（`grep tenant` 打不到不是遗漏，是设计上就没有）。
+    //   ⇒ 与批 115/116 同处置：**过度限制**到 'super_admin'。
+    //   理由不是洁癖：`offline_requests` 每行带别人的 `license_key` / `hardware_hash` /
+    //   `activation_code`，`deployment_nodes` 是全平台机队的 IP 与版本。
+    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（守卫只查 requiresAuth 与登录态）
+    //   ⇒ 这一行是为将来的守卫预留的，不是生效中的拦截；
+    //   视图内另有一层兜底（`OpsOverviewView.vue` 的 `opsv-nope` 段，兜的是「不发请求」）。
+    // ⚠️ 前端严于后端是**兜底不是修复** —— 后端这一族**没有门**可修。
+    path: '/ops-overview',
+    name: 'ops-overview',
+    component: () => import('@/views/OpsOverviewView.vue'),
+    meta: { titleKey: 'ops.title', requiresAuth: true, requiresRole: 'super_admin' },
+  },
+  {
+    // ★ 请求动作时间线（2026-10-14 第一百一十八批）。
+    //   注册 `admin/handler.go:1045` `admin(h.handleRequestActions)` —— **注册处确实是 admin 档**
+    //   （`AdminMiddleware`，`admin/auth.go:85-140`，**只认证不检 role**）⇒ tenant_admin 后端能读。
+    // ★★★★ 但它**完全没有租户维度**：`admin/request_actions.go` 全文不读 AuthContext、不检 role，
+    //   唯一的过滤是 `:62` 的 `ev.RequestID != requestID`，而那个 `request_id` 来自 **URL 路径段**，
+    //   由 `middleware/requestid_mw.go:83-89` 生成（16 字节 crypto/rand hex，**不含租户信息**）。
+    // ★★★ 决定性对照：读**同一个** `llmgw:live:actions` store 的 `/api/admin/live-stream`
+    //   在 hub 内**算了租户作用域**（`live_stream_sse.go:2263-2268`）并逐帧过滤（`:1875-1882`）
+    //   ⇒ 同一份数据、同一个注册包装，**一边过滤一边不过滤** ⇒ 这是**后端不一致**，不是设计。
+    // ⇒ 归第三类 ⇒ **过度限制**到 'super_admin'（与批 115 / 117 同处置）。
+    // ⚠️ `meta.requiresRole` 目前**全仓无人消费**（守卫只查 requiresAuth 与登录态）
+    //   ⇒ 这一行是为将来的守卫预留的；视图内另有一层兜底（`ra-nope` 段，兜的是「不发请求」）。
+    // ⚠️ 前端严于后端是**兜底不是修复** —— 真修复在服务端。
+    path: '/request-actions',
+    name: 'request-actions',
+    component: () => import('@/views/RequestActionsView.vue'),
+    meta: { titleKey: 'ra.title', requiresAuth: true, requiresRole: 'super_admin' },
+  },
+  {
+    // ★ v1 数据地平线（2026-10-14 第一百一十九批）。
+    //   注册 `admin/handler.go:1109` 的 `admin(...)` ⇒ **admin 档**（不设 requiresRole）。
+    // ★★★★★ 本族是**第三类（过度限制）的边界**，与批 115/117/118 **相反**且它们并没错：
+    //   过度限制的正当性来自「载荷里有**别人的东西**」，不是来自「没有租户维度」本身。
+    //   本族没有租户维度，但它答的是**平台级全局事实**（`_request_logs` 写门是否停更），
+    //   七键里无一带租户 ⇒ **不需要**过度限制，tenant_admin 可用。
+    // ★★★ 而且**必须**对 tenant_admin 可见：`silence` 那句自陈
+    //   「接口照常 200、结果集非空、字段齐全，接口没报错不代表数据是新的」——
+    //   挡掉它等于让租户把停更数据读成新鲜数据。
+    path: '/v1-data-horizon',
+    name: 'v1-data-horizon',
+    component: () => import('@/views/V1DataHorizonView.vue'),
+    meta: { titleKey: 'v1h.title', requiresAuth: true },
+  },
+  {
+    // ★ 订阅档（2026-10-14，第一百二十批）。
+    //   ★★★★ 权限档**第四类**：与批 115/117/118 的第三类相反，也不是批 119 的 admin 档。
+    //   `cmd/gateway/main_jwt_middleware.go:65-73` 的 `requireSuperAdmin` 逐字
+    //   `if role != "super_admin" { 403 }` ⇒ **真门**，所以抽屉席设 requiresRole 即完整处置。
+    //   ⚠️ meta.requiresRole 目前全仓无人消费（hyper-wiring 的 beforeEach 只查
+    //   requiresAuth 与 auth.isAuthenticated）⇒ 深链照样能打开这一页，
+    //   兜底在视图内「不发请求」，不是靠这一行。
+    path: '/subscription-tiers',
+    name: 'subscription-tiers',
+    component: () => import('@/views/SubscriptionTiersView.vue'),
+    meta: { titleKey: 'sts.title', requiresAuth: true, requiresRole: 'super_admin' },
+  },
+  {
+    // ★ 平台设置（2026-10-14，第一百二十一批）。
+    //   ★★★★ 权限档**第三类（过度限制）**，且**这一席的过度限制比前三席都硬**：
+    //   服务端对 GET /api/admin/settings/{key}/history **零 role 门**
+    //   （admin/settings.go:24 的 h.admin = AdminMiddleware 只认证不检 role，
+    //    settingsHistory 全文无任何 role 判定），而 history 传 tid=""
+    //   ⇒ tenant_admin 本可读到**跨租户**的 operator_user / operator_role / client_ip。
+    //   ⚠️ meta.requiresRole 仍无人消费 ⇒ 兜底在视图内「不发请求」。
+    path: '/platform-settings',
+    name: 'platform-settings',
+    component: () => import('@/views/PlatformSettingsView.vue'),
+    meta: { titleKey: 'ps.title', requiresAuth: true, requiresRole: 'super_admin' },
+  },
+  {
+    // ★ 用量成本增强（2026-10-14，第一百二十二批）。
+    //   ★★★★★ 权限档**第一类（有租户维度）**，但本族是**第一个「服务端缺角色下限」的**：
+    //   三个端点**确实**按租户隔离（EffectiveTenantIDAll + AND tenant_id = $N），
+    //   可 `h.admin` = AdminMiddleware **没有任何角色下限**，
+    //   而 pkg/identity 的 `supportedRole` **接受 "user"**
+    //   ⇒ EffectiveTenantIDAll 对 user 返回 "" = 查全部租户
+    //   ⇒ ★★★ 普通 user 能读到跨租户成本数据。
+    //   ⇒ 故设 'admin' 档（不是 super_admin）：挡 user，放行 admin 三档。
+    //   ⚠️ 前端是兜底不是修复；该补的是后端那道角色下限。
+    path: '/usage-enhanced',
+    name: 'usage-enhanced',
+    component: () => import('@/views/UsageEnhancedView.vue'),
+    meta: { titleKey: 'ue.title', requiresAuth: true, requiresRole: 'admin' },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),

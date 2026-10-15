@@ -7,11 +7,13 @@ import { req, type RequestOptions } from './client'
  *
  * - **注册**：**第五种注册形态**，`mux.HandleFunc` 在**另一个文件的方法**里
  *   （`admin/credential_monitor.go:156` 的 `RegisterMonitorRoutes`），
- *   由 `admin/handler.go:1453` 现构造并挂载：
+ *   由 `admin/handler.go:1475` 现构造并挂载：
  *   ```go
  *   monitorH.RegisterMonitorRoutes(mux, h.admin)   // ★ admin 档
  *   ```
  *   ⇒ ★ 与批 92 的 model-history **同一注册处、同一档位**。
+ * ★★ **行号订正（2026-10-14，第一百一十五批）**：挂载点原先写 `:1453`，**已过期**。
+ *   ⇒ 行号只是**定位提示**，判据不得依赖它。
  * - **实现**：`admin/credential_monitor.go:697-788`（handler）·
  *   `:790-809`（回退查询 `slidingWindowQuery`）· `credentialhealth/recorder.go:16-22`
  *   （`CallEntry`）· `:155-177`（`ComputeStats`）。
@@ -23,8 +25,32 @@ import { req, type RequestOptions } from './client'
  * ## ★★★★★ 本族最要紧的十四件事
  * ══════════════════════════════════════════════════════════════════════════
  *
- * (1) ★★★★★ **整族是 `h.admin` 档**（`handler.go:1453`）⇒ tenant_admin **可用**
- *     ⇒ 抽屉席**不设** `requiresRole`（与批 91 的 `work-types` 相反）。
+ * (1) ⚠️⚠️⚠️⚠️ **权限档是 `requiresRole: 'super_admin'`，不是缺省、也不是 `'admin'`**
+ *     —— 与批 92/113/114 **完全相反**。
+ *
+ *     注册处确实是 `h.admin` 档（`handler.go:1475` 传 `h.admin`），
+ *     但**「admin 档」在本族连「管理员隔离」都做不到**：
+ *     ★★★★★ **`handleSlidingWindow`（`credential_monitor.go:704-782`）里
+ *     **根本没有 `tenantID` 变量，也没有任何 `IsTenantAdmin` 判断**。**
+ *     两条数据腿**都**没有租户维度：
+ *     - Redis 腿：`m.recorder.GetRecent(ctx, credentialID, model, since)` —— 键只有
+ *       `(credentialID, model)`；
+ *     - 回退腿：`slidingWindowQuery()` / `slidingWindowHotQuery()` 里
+ *       `WHERE credential_id = $1 AND lower(…) = lower($2) AND ts > …`，
+ *       **一条 tenant 条件都没有**。
+ *     ⇒ ★★★ 而 `credential_id` 是 credentials 表主键、**全局唯一**，
+ *       不是租户内唯一的 ⇒ ★★★ **任何通过认证的主体，只要报出一个别的租户的
+ *       `credential_id`，就能读到那个凭据的逐次调用明细**（含 request_id、
+ *       成功与否、延时、错误类别）。
+ *     ⇒ ⇒ 连 `tenant_admin` 的隔离都不存在 ⇒ **`'admin'` 档会给出虚假的安全感**：
+ *       按钮写着「我的租户」，后端根本不理这句。
+ *     ⇒ ⇒★ 因此这里**必须过度限制**：只有 `super_admin` / legacy `admin_key` 能进。
+ *       （批 113/114 的「不设 / `'admin'`」两档都不适用，理由与它们**相反**。）
+ *     ⚠️ ⚠️ **前端严于后端是兜底不是修复** —— 后端那条路本来就开着。
+ *     ⚠️ 抽屉隐藏 ≠ 路由拦截（`meta.requiresRole` 全仓无人读）⇒ 视图内还要兜一层。
+ *
+ *     ★★ 本条取代了本模块头原先那句「抽屉席**不设** `requiresRole`」
+ *     —— 那句话是照抄批 92 的结论，**没有逐字读 handler**。
  *
  * (2) ★★★★★ **响应是 `map[string]any` 手写的，恒有 **8 个键**
  *     （`:769-779`），★ **桌面类型只声明了 6 个** —— 漏掉 `limit` 与 `total_returned`
@@ -59,14 +85,16 @@ import { req, type RequestOptions } from './client'
  *     source := "redis"
  *     entries := make([]CallEntry, 0)
  *     if m.recorder != nil && m.recorder.Enabled() { entries, _ = m.recorder.GetRecent(…) }
- *     if len(entries) == 0 { source = "request_logs"; … }     // ← 空必回退
+ *     if len(entries) == 0 { source = "_request_logs"; … }    // :749 ← 空必回退
+ *     ⚠️⚠️ **带前导下划线**。本行原先抄成 `"request_logs"`，并连带把常量、
+ *       判据实现、3 条用例一起带歪 —— 见 `SLIDING_WINDOW_SOURCES` 处的说明。
  *     ```
  *     ⇒ ⇒ **`source === 'redis'` ⟹ `entries.length > 0`**（这是一条可断言的不变式）
- *     ⇒ ⇒ ★★ **`source === 'request_logs'` 是二义的**：Redis recorder 不可用
+ *     ⇒ ⇒ ★★ **`source === '_request_logs'` 是二义的**：Redis recorder 不可用
  *       **或** Redis 可用但窗口内无数据，**两种成因同形**。
  *
  * (7) ★★★★★ **Redis 的错误被整个丢弃**：`entries, _ = m.recorder.GetRecent(…)`（`:741`）
- *     ⇒ ★★★ Redis 挂掉 ⇒ 静默回退 request_logs ⇒ **响应里看不出 Redis 故障**。
+ *     ⇒ ★★★ Redis 挂掉 ⇒ 静默回退 `_request_logs` ⇒ **响应里看不出 Redis 故障**。
  *     ⇒ ★ 与批 93 的 `enabled_source`（`default` 永不可达）、批 91 的 `count` 全 0
  *       同族：**「降级/兜底」的成因在响应里查不到。**
  *
@@ -96,7 +124,7 @@ import { req, type RequestOptions } from './client'
  *     `credentialhealth.NewRecorder(client, 2*time.Hour, 100)`），
  *     回退源 `request_logs_with_current_month` 是**当月视图**（`:797`，
  *     注释称「视图冻结不可改投影（R37 定案）」）
- *     ⇒ ⇒ 切到 `request_logs` 后能看到的范围**突然变大**，不是「补齐了缺失的数据」。
+ *     ⇒ ⇒ 切到 `_request_logs` 后能看到的范围**突然变大**，不是「补齐了缺失的数据」。
  *
  * (13) ★★★★ **`CallEntry` 的 json tag 是缩写，与 Go 字段名完全不同**：
  *     `RequestID→rid`、`Timestamp→ts`、`Success→ok`、`LatencyMs→lat`、`ErrorKind→err`
@@ -122,8 +150,23 @@ export const SLIDING_WINDOW_DEFAULT_LIMIT = 50
 export const SLIDING_WINDOW_LIMIT_MIN = 1
 export const SLIDING_WINDOW_LIMIT_MAX = 500
 
-/** ★★ (6) 两个取值；★ 注意 `request_logs` 那一侧是**二义的**。 */
-export const SLIDING_WINDOW_SOURCES = ['redis', 'request_logs'] as const
+/**
+ * ★★ (6) 两个取值；★ `'_request_logs'` 那一侧是**二义的**。
+ *
+ * ⚠️⚠️⚠️ **2026-10-14 第一百一十五批订正**：本常量原先写的是
+ *   `['redis', 'request_logs']` —— **漏了前导下划线**，而后端发的是
+ *   **`'_request_logs'`**（`admin/credential_monitor.go:749`
+ *   `source = "_request_logs"`；那张表的本名就带下划线，全仓一致）。
+ * ⇒ ★★★ 后果：这不是「文案笔误」而是**行为坏掉** ——
+ *   `slidingWindowFallbackSourceStillHasEntries` 拿 `'request_logs'` 去比，
+ *   对**真实回退响应**永远不相等 ⇒ **恒返回 false**
+ *   ⇒ 页面上「Redis 不可用、已回退且有数据」这个信号**永远不会亮**。
+ * ⇒ ★★ 为什么一直没被发现：**模块头第 (6) 条把 Go 那行抄漏了**，
+ *   常量、判据实现、3 条既有用例**全部照着这份错抄写**，
+ *   三者互相印证、整套件全绿 ⇒ 与后端真值**三方一致地错**。
+ * ⇒ 判别动作：见文件末尾「(15) 常量必须对着 Go 源码钉」的判据。
+ */
+export const SLIDING_WINDOW_SOURCES = ['redis', '_request_logs'] as const
 
 /** ★★ (2) `writeJSON` 手写的 8 个键 —— ★ 桌面类型只声明了 6 个。 */
 export const SLIDING_WINDOW_KEYS = [
@@ -178,7 +221,7 @@ export interface SlidingWindowResponse {
   window_minutes: number
   /** ★★ (2) 桌面类型漏了这个键。 */
   limit: number
-  /** ★★ (6)(7) `request_logs` 那一侧是**二义的**。 */
+  /** ★★ (6)(7) `'_request_logs'` 那一侧是**二义的**。 */
   source: string
   /** ★★★ (3) 恒等于 `entries.length` 与 `stats.total`。★ 桌面类型漏了这个键。 */
   total_returned: number
@@ -337,7 +380,7 @@ export function slidingWindowFailureRateMatches(s: WindowStats): boolean {
 
 /**
  * ★★★★ (6) **`source === 'redis'` ⟹ `entries.length > 0`** ——
- * 因为 `len(entries) == 0` 会触发回退并把 `source` 改成 `request_logs`（`:743-746`）。
+ * 因为 `len(entries) == 0` 会触发回退并把 `source` 改成 `'_request_logs'`（`:748-750`）。
  * ⇒ ★★ 这是 `source` 唯一**可以断言**的方向。
  */
 export function slidingWindowRedisSourceImpliesEntries(r: SlidingWindowResponse): boolean {
@@ -346,12 +389,14 @@ export function slidingWindowRedisSourceImpliesEntries(r: SlidingWindowResponse)
 }
 
 /**
- * ★★★★ (6) 的反面：**`source === 'request_logs'` 不代表「entries 为空」** ——
- * Redis 窗口内无数据、但 request_logs 有数据时，source 也是 `request_logs`。
+ * ★★★★ (6) 的反面：**`source === '_request_logs'` 不代表「entries 为空」** ——
+ * Redis 窗口内无数据、但 `_request_logs` 有数据时，source 也是 `'_request_logs'`。
  * ⇒ ★★★ 客户端**不能**用 `source` 推断「是不是降级失败了」。
  */
 export function slidingWindowFallbackSourceStillHasEntries(r: SlidingWindowResponse): boolean {
-  if (r.source !== 'request_logs') return false
+  // ★★ 字面量必须是 `'_request_logs'`（带下划线）—— 那是 `credential_monitor.go:749`
+  //   发出来的原样。写 `'request_logs'` 会让本函数对**真实回退响应**恒返回 false。
+  if (r.source !== '_request_logs') return false
   return r.entries.length > 0
 }
 
@@ -382,4 +427,60 @@ export function slidingWindowLimitIsInRange(limit: number): boolean {
 /** ★★ (10) `credential_id == 0` 才 400（不是 `< 1`）⇒ 负数能过这一关。 */
 export function slidingWindowCredentialIdIsRejected(credentialId: number): boolean {
   return credentialId === 0
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 角色档（2026-10-14，第一百一十五批；口径与批 113/114 的两族**都不同**）
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * ★★★ (1) 本族**没有「仅本租户」这个口径** —— 两条数据腿都没有租户维度，
+ * 而 `credential_id` 是全局唯一的主键 ⇒ 任何角色报出凭据 id 都能读到它。
+ * ⇒ 因此这里只有「全租户」与「非预期」两值，`own` **不存在**。
+ */
+export const SLIDING_WINDOW_GLOBAL_ROLES = ['super_admin', 'admin_key'] as const
+
+/**
+ * ★★★★ 该角色能否访问本页。
+ *
+ * ⚠️⚠️ 与 `errorsTrend` / `modelHistory` 的同名 helper **语义相反**：
+ * 那两族里 `tenant_admin` 够用（后端把它们收口到本租户）；
+ * ★★ 本族**连租户维度都没有**，所以 `tenant_admin` **必须被挡** ——
+ * 让它进来只会造成「以为自己被隔离了」的错觉。
+ */
+export function slidingWindowRoleIsPrivileged(role: string): boolean {
+  return (SLIDING_WINDOW_GLOBAL_ROLES as readonly string[]).includes(role)
+}
+
+/**
+ * ★★ 租户口径 —— ★★ **只有两值，没有 `own`**（见 `SLIDING_WINDOW_GLOBAL_ROLES` 的说明）。
+ * `unexpected` 表示「本族根本没有为这个角色做过隔离」。
+ */
+export function slidingWindowTenantScopeLabel(role: string): 'all' | 'unexpected' {
+  return slidingWindowRoleIsPrivileged(role) ? 'all' : 'unexpected'
+}
+
+/**
+ * ★★★★ 三个参数是否值得发。
+ *
+ * - `credential_id`：**只拦 0**（后端 `:719-722` 判的是 `=== 0` 而不是 `< 1`
+ *   ⇒ 负数能过后端那一关，**前端不替它加规则**）；
+ *   非数字必须拦 —— `queryInt` 解析失败会**静默回落成 0** ⇒ 400 文案说
+ *   `credential_id required`，与真实原因不符。
+ * - `model`：后端只判非空。
+ * - `limit`：必须落在 1–500。
+ * - ★ **`minutes` 刻意不在这里** —— 后端**根本不校验它**（(9)），
+ *   任何值都放行，所以客户端**没有「会被 400」这一格可挡**；
+ *   页面只能把「我问了什么」与「后端认了什么」并排显示。
+ */
+export function slidingWindowParamsAreAcceptable(p: {
+  credentialId: number
+  model: string
+  limit: number
+}): boolean {
+  if (!Number.isFinite(p.credentialId)) return false
+  if (slidingWindowCredentialIdIsRejected(p.credentialId)) return false
+  if (p.model === '') return false
+  if (!Number.isFinite(p.limit)) return false
+  return slidingWindowLimitIsInRange(p.limit)
 }

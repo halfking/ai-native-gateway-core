@@ -429,6 +429,162 @@ export const DRAWER_NAV: readonly NavItem[] = [
   //   而 `:1216` 的 featured-models 是 admin）⇒ 席设 super_admin。
   // ⇒ ★ 后果：featured-models 在移动端被顺带收严成 superAdmin（前端严于后端）。
   //   这是刻意的取舍 —— 同一页混档会让「谁能看哪块」不可解释。记在视图文件头。
+  // ★★ 供应商错误趋势（2026-10-14 第一百一十三批）——
+  //   注册 `admin/handler.go:1270` `admin(h.errorsTrendHandlers.getErrorsTrend)`
+  //   ⇒ 是 **admin 档**，`tenant_admin` 本该可用（后端 R49-C1 已把它收口到本租户）。
+  // ⚠️⚠️ 但本席要设 **`requiresRole: 'admin'`**，不是缺省 —— 这是本仓**第二个**
+  //   该档席（第一个是 `users`），推导见 `api/errorsTrend.ts` 文件头：
+  //   `AdminMiddleware` 不检 role + `getErrorsTrend` 自己也不检 +
+  //   `EffectiveTenantIDAll` 对**非 tenant_admin 一律返空串**（= 查全租户）
+  //   ⇒ effective role 为 `user` 的主体能读到**全租户**。
+  //   ⇒ 缺省会命中 `navItemsFor` 的默认分支 `return true`，等于把那个口子做成一键入口。
+  //   ⇒ `'super_admin'` 也**不行**：那会连 `tenant_admin` 的本租户数据一起挡掉。
+  // ⚠️ 它**不得**进 `AppDrawer.spec.ts` 的 superAdmin 白名单（那是 tenant_admin 掉的那批）。
+  {
+    key: 'errors-trend',
+    to: '/errors-trend',
+    icon: 'chart',
+    titleKey: 'nav.errorsTrend',
+    requiresRole: 'admin',
+  },
+  // ★★ 凭据模型状态变更历史（2026-10-14 第一百一十四批）——
+  //   挂载 `admin/handler.go:1475` `monitorH.RegisterMonitorRoutes(mux, h.admin)`
+  //   ⇒ 是 **admin 档**，与上面 errors-trend **同档同处置**。
+  // ⚠️ 同样要设 `requiresRole: 'admin'` 而不是缺省：这一族的租户键是
+  //   **手写内联**的 `tenantID := ""; if IsTenantAdmin(r) { … }`
+  //   （admin/credential_monitor.go:1532-1535），与 `EffectiveTenantIDAll` 语义相同
+  //   但**不叫那个名字** ⇒ ★★ grep `EffectiveTenantID` 找不到这一处。
+  // ⇒ 缺省会让 effective role 为 `user` 的主体读到全租户模型状态历史。
+  // ⚠️ 它**不得**进 `AppDrawer.spec.ts` 的 superAdmin 白名单（tenant_admin 要能看到）。
+  {
+    key: 'model-history',
+    to: '/model-history',
+    icon: 'server',
+    titleKey: 'nav.modelHistory',
+    requiresRole: 'admin',
+  },
+  // ★★ 凭据模型滑窗调用明细（2026-10-14 第一百一十五批）——
+  //   与 errors-trend / model-history **同注册处**，但**处置相反**。
+  // ⚠️⚠️ 这里要设 **`requiresRole: 'super_admin'`** 而不是 `'admin'`：
+  //   `handleSlidingWindow`（admin/credential_monitor.go:704-782）里
+  //   **既没有 `tenantID` 变量也没有 `IsTenantAdmin`** ⇒ Redis 与
+  //   `_request_logs` 回退两条腿的 WHERE 都**只有 credential_id**，
+  //   而 `credential_id` 是**全局唯一**主键
+  //   ⇒ 任何通过认证的主体报出别的租户的 credential_id 就能读到它的逐次调用明细。
+  //   ⇒ `'admin'` 档会给出「按钮写着我的租户、后端根本不理这句」的**虚假安全感**。
+  // ⇒ ★ 所以它**必须**进 `AppDrawer.spec.ts` 的 superAdmin 白名单（与上面两席相反）。
+  {
+    key: 'sliding-window',
+    to: '/sliding-window',
+    icon: 'chart',
+    titleKey: 'nav.slidingWindow',
+    requiresRole: 'super_admin',
+  },
+  // ★ 模型智商（2026-10-14 第一百一十六批）——
+  //   注册 `admin/handler.go:1492-1495`，**四条全部** `h.superAdmin(...)`。
+  // ⇒ 本族**必须**设 `requiresRole: 'super_admin'`，
+  //   并同步 `src/components/shell/AppDrawer.spec.ts` 的排序白名单。
+  // ⚠️ 与批 113/114 那两族**相反**：那两族走 `AdminMiddleware` 只认证不检 role，
+  //   所以用 `'admin'`；本族走 `SuperAdminMiddleware`（auth.go:376-409）
+  //   **逐字比对 claims.Role** ⇒ 档位本身是真门。
+  // ★★ 但「抽屉隐藏 ≠ 路由拦截」：`meta.requiresRole` 全仓无人消费，
+  //   守卫只查 `requiresAuth` 与登录态 ⇒ 深链照样打开 ⇒ 视图内还要兜一层。
+  {
+    key: 'model-iq',
+    to: '/model-iq',
+    icon: 'chart',
+    titleKey: 'nav.modelIQ',
+    requiresRole: 'super_admin',
+  },
+  // ★ 运维总览（2026-10-14 第一百一十七批）——
+  //   注册 `admin/handler.go:1091` 的 `admin(...)`，而 `AdminMiddleware`
+  //   （`admin/auth.go:85-140`）**只认证不检 role** ⇒ 后端 tenant_admin **能**读。
+  // ★★★★ 但 `handleOpsOverview` 自己不检 role，而 11 条子查询**全是全局表**
+  //   （取租户键的代码不存在）⇒ 归第三类：**完全没有租户维度** ⇒ 过度限制。
+  // ⇒ 本席**必须**设 `requiresRole: 'super_admin'`，并同步
+  //   `src/components/shell/AppDrawer.spec.ts` 的排序白名单。
+  // ⚠️ 这一族与批 113/114 那两席（'admin' 档）的**成因相反**：那一族服务端**有**租户维度，
+  //   只是租户键可能返空串；本族是**一个租户键都没有**。
+  // ⚠️ 前端严于后端是兜底不是修复：后端这一族**没有门**。
+  {
+    key: 'ops-overview',
+    to: '/ops-overview',
+    icon: 'cpu',
+    titleKey: 'nav.opsOverview',
+    requiresRole: 'super_admin',
+  },
+  // ★ 请求动作时间线（2026-10-14 第一百一十八批）——
+  //   注册 `admin/handler.go:1045` 的 `admin(...)` ⇒ 后端 tenant_admin **能**读，
+  //   但该端点**完全没有租户维度**（只按 URL 里的 `request_id` 精确匹配），
+  //   而读**同一个** store 的 `/api/admin/live-stream` **有**租户过滤
+  //   ⇒ 后端不一致 ⇒ 归第三类，只能**过度限制**到 super_admin。
+  // ⇒ 本席**必须**设 `requiresRole: 'super_admin'` 并同步 `AppDrawer.spec.ts` 的排序白名单。
+  // ⚠️ 与批 115 `sliding-window` 同形态：`credential_id` 是全局主键、`request_id` 是
+  //   全局随机 id，两边都是「拿到那个标识就能读到明细」。
+  {
+    key: 'request-actions',
+    to: '/request-actions',
+    icon: 'search',
+    titleKey: 'nav.requestActions',
+    requiresRole: 'super_admin',
+  },
+  // ★ v1 数据地平线（2026-10-14 第一百一十九批）——
+  //   注册 `admin/handler.go:1109` 的 `admin(...)` ⇒ **admin 档**（不设 requiresRole）。
+  // ⚠️ 与批 115/117/118 三席**相反**，而它们并没错：本族没有租户维度，
+  //   但载荷是**平台级全局事实**（七个键无一带租户）
+  //   ⇒ 过度限制的判据是「载荷里有没有别人的东西」，不是「有没有 tenant 条件」。
+  // ⇒ 且**不得**进 `AppDrawer.spec.ts` 的 superAdmin 白名单 —— 加进去那条立刻红。
+  { key: 'v1-data-horizon', to: '/v1-data-horizon', icon: 'clock', titleKey: 'nav.v1DataHorizon' },
+  // ★ 订阅档（2026-10-14 第一百二十批）——
+  //   ★★★★ 权限档**第四类**，与前三席都不同：
+  //   它**同样没有租户维度**（读全局 `subscription_tiers`），
+  //   **但**中间件 `requireSuperAdmin`（`main_jwt_middleware.go:65-73`）逐字
+  //   `if role != "super_admin" { 403 }` ⇒ **真门**。
+  // ⇒ 前四席的超管限制分别是「后端不一致/载荷含别人的数据/全局事实」三种理由，
+  //   本席的理由是「**服务端自己就是那道门**」⇒ 不必再为它补第四种过度限制论证。
+  // ⚠️ 第三种注册机制：它在 echo group 上（`main.go:7027` → `licensing.RegisterModuleRoutes`），
+  //   **不在** `admin/handler.go` 的 mux 里 ⇒ 只 grep mux 会误判成死端点。
+  {
+    key: 'subscription-tiers',
+    to: '/subscription-tiers',
+    icon: 'grid',
+    titleKey: 'nav.subscriptionTiers',
+    requiresRole: 'super_admin',
+  },
+  // ★ 平台设置（2026-10-14 第一百二十一批）——
+  //   ★★★★ 第三类（过度限制），但**理由与批 115/117/118 三席都不同**，且更硬：
+  //   ① 那三席是「载荷含别人的数据」；本族**注册处包的是一个 router**，
+  //      `h.admin` 只是 `AdminMiddleware`（handler.go:894 → auth.go:85，只认证不检 role），
+  //      `settingsGet` / `settingsHistory` **全文零 role 检查**
+  //      ⇒ 按注册处读会读出「admin 档」，那是**错的**（模块头 (1) 已订正）。
+  //   ② 过度限制的**两条独立理由**：
+  //      · history 传 `tid=""` 且 `operator_user`/`operator_role` 是恒在键
+  //        ⇒ tenant_admin 能读到**别的操作者**的身份；
+  //      · `POST {key}/rollback` **完全没有 DangerLevel 门**，而 PUT 有
+  //        ⇒ 能 PUT 不了的档能直接 rollback（**后端缺陷，本批不动后端**）。
+  // ⇒ 前端严于后端是**兜底不是修复**：真正该补的是服务端那道门。
+  {
+    key: 'platform-settings',
+    to: '/platform-settings',
+    icon: 'grid',
+    titleKey: 'nav.platformSettings',
+    requiresRole: 'super_admin',
+  },
+  // ★ 用量成本增强（2026-10-14 第一百二十二批）——
+  //   ★★★★ 权限档**第一类**（有租户维度）：三个端点都按租户过滤
+  //   ⇒ 各租户互相隔离，不是过度限制。
+  //   ★ 但**必须**设 `requiresRole: 'admin'`（不能像同族的 trend-series 那样不设）：
+  //   `h.admin` 无角色下限 + `supportedRole` 接受 `user`
+  //   ⇒ 服务端会把「全部租户的合计」发给普通 user。
+  //   ⇒ `navItemsFor` 的 'admin' 档放行 admin 三档、挡掉 user
+  //   ⇒ ★★ 在后端补上门之前，**这是唯一挡住普通 user 的东西**。
+  {
+    key: 'usage-enhanced',
+    to: '/usage-enhanced',
+    icon: 'chart',
+    titleKey: 'nav.usageEnhanced',
+    requiresRole: 'admin',
+  },
   // ★ 加这一席**必须**同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
   {
     key: 'routing-policy',

@@ -102,6 +102,30 @@ describe('AppDrawer 权限门控', () => {
 })
 
 describe('navItemsFor', () => {
+  // ★★ 2026-10-14 第一百一十四批补上：**这个 describe 原本没有 body 清理**，
+  //   而下面四条判据用 `mountDrawerAs` 挂到 `document.body`
+  //   ⇒ 抽屉会**跨用例累积** ⇒ `document.querySelectorAll('.drawer__link')`
+  //   会扫到**上一个用例**留下的链接。
+  // ⇒ ★★★ 后果：批 113 的「role=user 看不到 errors-trend」**是靠测试顺序才绿的**
+  //   —— 它恰好是这个 describe 里第一个挂载用例，前面积分是空的；
+  //   批 114 在它后面再加一条 user 断言，那条立刻被前一个 tenant_admin 挂载顶红。
+  // ⇒ **这不是新用例的 bug，是既有判据的阴性结论不可信**（同族：阴性结论要当缺陷一样复核）。
+  beforeEach(() => {
+    for (const w of mounted) {
+      try { w.unmount() } catch { /* ignore */ }
+    }
+    mounted = []
+    document.body.innerHTML = ''
+    vi.resetAllMocks()
+  })
+  afterEach(() => {
+    for (const w of mounted) {
+      try { w.unmount() } catch { /* ignore */ }
+    }
+    mounted = []
+    document.body.innerHTML = ''
+  })
+
   it('super_admin 看到全部', () => {
     expect(navItemsFor(DRAWER_NAV, 'super_admin').length).toBe(DRAWER_NAV.length)
   })
@@ -136,20 +160,67 @@ describe('navItemsFor', () => {
       //   （admin/handler.go:942-943 两条都是 h.superAdmin）⇒ 这一条**要** super_admin。
       //   ★ 与批 109 的 format-anomalies 同档 ⇒ 两条合起来把 superAdmin 档的席钉死。
       'model-integrity-drift',
+      // ★ 2026-10-14 第一百一十六批：模型智商
+      //   （admin/handler.go:1492-1495 四条全部 h.superAdmin）
+      //   ⇒ **要** super_admin。与批 113/114 那两席**相反**：
+      //   那两族走 AdminMiddleware（只认证不检 role）所以用 `'admin'`；
+      //   本族走 SuperAdminMiddleware（auth.go:376-409 逐字比 claims.Role）⇒ 真门。
+      //   ⚠️ 字母序：model-integrity-drift < model-iq < model-policies
+      'model-iq',
       'model-policies',
       'model-policy-audit',
+      // ★ 2026-10-14 第一百一十七批：运维总览
+      //   （`admin/handler.go:1091` 的 `admin(...)` = `AdminMiddleware`，**只认证不检 role**）
+      //   ⇒ 后端 tenant_admin 可读，但 11 条子查询**全是全局表**、**没有任何租户维度**
+      //   ⇒ 归第三类，只能**过度限制**到 super_admin（理由：那段会带出别人的
+      //   `license_key` / `hardware_hash` / `activation_code`）。
+      // ⚠️ 字母序：model-policy-audit < ops-overview < overrides
+      'ops-overview',
       'overrides',
+      // ★★★★ 2026-10-14 第一百二十一批：平台设置
+      //   （`admin/settings.go:24` `mux.HandleFunc("/api/admin/settings/", h.admin(h.settingsRouter))`）
+      //   ★★ 注意它包的是**一个会再分发到四个 handler 的 router** ——
+      //   `h.admin` = `AdminMiddleware` 只认证不检 role，`settingsGet`/`settingsHistory`
+      //   **全文零 role 检查**，而 history 传 `tid=""` 且审计项恒带
+      //   `operator_user`/`operator_role` ⇒ tenant_admin 本可读到跨租户的操作者身份。
+      //   ★ 这条「按注册处读会读成 admin 档」的坑已把模块头 (1) 订正过。
+      'platform-settings',
       'proposals',
       'reconciliation',
       // ★ 2026-10-14 第一百一十一批：对账报表（admin/handler.go:1086 h.superAdmin）
       //   ⇒ **要** super_admin。⚠️ 与上面 reconciliation 是两个不同功能，别接错。
       'report-rollup',
+      // ★ 2026-10-14 第一百一十八批：请求动作时间线
+      //   （`admin/handler.go:1045` 的 `admin(...)` ⇒ **后端 tenant_admin 可读**，
+      //   但该端点**完全没有租户维度**：只按 URL 里的 `request_id` 精确匹配，
+      //   而那个 id 由 crypto/rand 生成、**不含租户信息**。
+      //   ★★ 决定性对照：读同一个 store 的 /api/admin/live-stream **有**租户过滤
+      //   ⇒ 同一份数据、同一个注册包装，一边过滤一边不过滤 ⇒ **后端不一致**。
+      // ⇒ 归第三类，只能**过度限制**到 super_admin。
+      // ⚠️ 字母序：report-rollup < request-actions < request-anomalies
+      'request-actions',
       'request-anomalies',
       'routing-audit',
       // ★ 2026-10-08 第一百零一批：路由策略配置面（`admin/handler.go:1200 :1201 :1215`
       //   是 h.superAdmin）。同族的 `featured-models`（`:1216`）其实是 admin 档，
       //   但这一席整体按 superAdmin 挡 —— 混档会让「谁能看哪块」不可解释。
       'routing-policy',
+      // ★★ 2026-10-14 第一百一十五批：滑窗调用明细
+      //   （`admin/credential_monitor.go:704-782`）—— **与前两席相反**！
+      //   `handleSlidingWindow` 里既没有 `tenantID` 变量也没有 `IsTenantAdmin`，
+      //   Redis 与 `_request_logs` 回退两条腿的 WHERE 都**只有 credential_id**，
+      //   而它是**全局唯一**主键 ⇒ 任何通过认证的主体报出别的租户的
+      //   credential_id 就能读到它的逐次调用明细 ⇒ 连 tenant_admin 都必须挡。
+      'sliding-window',
+      // ★★ 2026-10-14 第一百二十批：订阅档
+      //   （`licensing/module_api.go:22`，走 **echo group**：`main.go:7027`
+      //   `adminGroup := e.Group("/api/admin", requireSuperAdmin)`）
+      //   ★★★★ **权限档第四类**：前三席的超管限制各有各的理由
+      //   （后端不一致 / 载荷含别人的数据 / 全局平台事实），
+      //   本席的理由是**服务端中间件本身就是那道门**
+      //   （`main_jwt_middleware.go:65-73` 逐字 `if role != "super_admin" { 403 }`），
+      //   所以它**同样没有**租户维度，却**不是**第三类那三种理由中的任何一种。
+      'subscription-tiers',
       'task-index',
       'tenants',
       // ★ 2026-10-08 第一百零三批：工作类型配置面。`admin/handler.go:1434`
@@ -169,11 +240,105 @@ describe('navItemsFor', () => {
     }
   })
 
-  it('role 为空（未 hydrate 完成）也照样只挡 superAdmin 档', () => {
-    // 登录前 role 是 ''，此时不该因为「读不到角色」就把 admin 档页面全藏起来
+  // ★★★★★★ `'admin'` 档（2026-10-14 第一百一十三批新增，此前全仓只有 `users` 一席）。
+  //
+  //   为什么需要这一档：`navItemsFor` 的默认分支是 `return true`，
+  //   所以**不设 requiresRole** 等于「对任何登录角色都显示」。
+  //   `/errors-trend` 不能那样 —— `AdminMiddleware` 不检 role，
+  //   `getErrorsTrend` 自己也不检，而 `EffectiveTenantIDAll` 对
+  //   **非 tenant_admin 一律返空串**（= 查全租户）
+  //   ⇒ effective role 为 `user` 的主体点进去会看到**全租户**的错误趋势。
+  //
+  // ★★ 同时也不能用 `'super_admin'`：`tenant_admin` 本该看**自己租户**的数据
+  //   （后端 R49-C1 就是为此加的收口），过度限制是拿功能换安全。
+  it("★ `'admin'` 档：effective role 为 user 的主体看不到 errors-trend", async () => {
+    await mountDrawerAs('user')
+    const hrefs = Array.from(document.body.querySelectorAll('.drawer__link'))
+      .map((a) => a.getAttribute('href') ?? '')
+    expect(hrefs.some((h) => h.includes('/errors-trend'))).toBe(false)
+  })
+
+  it("★ `'admin'` 档不误伤 tenant_admin（它本该看自己租户的数据）", async () => {
+    await mountDrawerAs('tenant_admin')
+    const hrefs = Array.from(document.body.querySelectorAll('.drawer__link'))
+      .map((a) => a.getAttribute('href') ?? '')
+    expect(hrefs.some((h) => h.includes('/errors-trend'))).toBe(true)
+  })
+
+  it("★ `'admin'` 档对 super_admin / admin_key 同样可见", () => {
+    for (const r of ['super_admin', 'admin_key']) {
+      expect(navItemsFor(DRAWER_NAV, r).some((i) => i.key === 'errors-trend')).toBe(true)
+    }
+  })
+
+  // ★★★ 把「这一席必须带 'admin'」钉死 —— 否则将来有人按本文件上方
+  //   「admin 档 ⇒ 不设 requiresRole」的旧口径改回去，**没有任何判据会红**，
+  //   而后端那条跨租户的口子会重新变成一键可达。
+  it("★ errors-trend 席必须声明 requiresRole:'admin'（不能是缺省）", () => {
+    const seat = DRAWER_NAV.find((i) => i.key === 'errors-trend')
+    expect(seat).toBeDefined()
+    expect(seat!.requiresRole).toBe('admin')
+  })
+
+  // ★★★ 白名单式：role='user' 时被挡掉的**必须**恰好是
+  //   `requiresRole` 非缺省的那些（'admin' 与 'super_admin' 两档）。
+  //   只断言「挡了 errors-trend」会漏掉反向错误 —— 比如有人把某个
+  //   缺省席误标成 'super_admin'，对 tenant_admin 消失而 user 挡不掉。
+  // ★★ model-history（2026-10-14 第一百一十四批）—— 与 errors-trend **同档同处置**，
+  //   但成因**变形**了：这一族的租户键是**手写内联**的
+  //   `tenantID := ""; if IsTenantAdmin(r) { … }`
+  //   （admin/credential_monitor.go:1532-1535），
+  //   语义与 `EffectiveTenantIDAll` 一模一样却**不调那个函数**
+  //   ⇒ ★★ grep `EffectiveTenantID` 找不到这一处，判别动作会整个漏掉这个家族。
+  it("★ 第二席：model-history 也必须是 'admin' 档，role=user 看不到", async () => {
+    const seat = DRAWER_NAV.find((i) => i.key === 'model-history')
+    expect(seat).toBeDefined()
+    expect(seat!.requiresRole).toBe('admin')
+    await mountDrawerAs('user')
+    const hrefs = Array.from(document.body.querySelectorAll('.drawer__link'))
+      .map((a) => a.getAttribute('href') ?? '')
+    expect(hrefs.some((h) => h.includes('/model-history'))).toBe(false)
+  })
+
+  it("★ 第二席不误伤 tenant_admin（它本该看自己租户的模型状态历史）", async () => {
+    await mountDrawerAs('tenant_admin')
+    const hrefs = Array.from(document.body.querySelectorAll('.drawer__link'))
+      .map((a) => a.getAttribute('href') ?? '')
+    expect(hrefs.some((h) => h.includes('/model-history'))).toBe(true)
+  })
+
+  it("★ role='user' 被挡掉的恰好是全部声明了 requiresRole 的席", () => {
+    const filtered = navItemsFor(DRAWER_NAV, 'user')
+    const dropped = DRAWER_NAV.filter((i) => !filtered.some((f) => f.key === i.key))
+    const expected = DRAWER_NAV.filter((i) => i.requiresRole !== undefined)
+    expect(dropped.map((d) => d.key).sort()).toEqual(expected.map((d) => d.key).sort())
+    expect(dropped.map((d) => d.key)).toContain('errors-trend')
+    // ★ 第二席同样必须被挡住 —— 白名单式断言会自动纳入，这里显式点名防回归
+    expect(dropped.map((d) => d.key)).toContain('model-history')
+  })
+
+  it("★ ★★ 第三席反过来：sliding-window 是 superAdmin 档，tenant_admin 看不到", async () => {
+    // ★★★ 与 errors-trend / model-history 恰好相反 ——
+    //   那两席是 'admin' 档（tenant_admin 该看到），本席**必须**挡掉 tenant_admin。
+    // ⇒ 这个反转会红 ⇒ 说明有人把它误标成了 'admin' 档（那才是「虚假的安全感」）。
+    await mountDrawerAs('tenant_admin')
+    const hrefs = Array.from(document.body.querySelectorAll('.drawer__link'))
+      .map((a) => a.getAttribute('href') ?? '')
+    expect(hrefs.some((h) => h.includes('/sliding-window'))).toBe(false)
+    expect(hrefs.some((h) => h.includes('/errors-trend'))).toBe(true)
+    expect(hrefs.some((h) => h.includes('/model-history'))).toBe(true)
+  })
+
+  // ★★ 标题原来写「只挡 superAdmin 档」—— 那是 `'admin'` 档出现**之前**的说法，
+  //   现在名不副实：role 读不到时 `isAdmin` 为 false，**两档都会被挡**（fail closed）。
+  it('role 为空（未 hydrate 完成）时：缺省席仍在，两档受限席都挡住', () => {
+    // 登录前 role 是 ''，此时不该因为「读不到角色」就把**缺省**席全藏起来
     const filtered = navItemsFor(DRAWER_NAV, '')
     expect(filtered.some((f) => f.key === 'logs')).toBe(true)
     expect(filtered.some((f) => f.key === 'integrity')).toBe(false)
+    // ★ 读不到角色时同样挡掉 `'admin'` 档 —— 那是刻意的 fail closed，
+    //   因为这一档的席（如 errors-trend）背后的后端口子是**跨租户**的。
+    expect(filtered.some((f) => f.key === 'errors-trend')).toBe(false)
   })
 
   it('底栏当前无 superAdmin 档，过滤前后一致（防将来加错）', () => {

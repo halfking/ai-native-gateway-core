@@ -5,10 +5,12 @@ import (
 	"testing"
 )
 
-// TestOutboundBuilder_BuildFromDeltas_EmptySession 测试空会话
-// 注意：此测试需要数据库连接，在没有 TEST_DB_URL 时跳过
+// TestOutboundBuilder_BuildFromDeltas_EmptySession 测试空会话。
+// 零值 TurnReader（nil db）在 LoadChain/LoadLatestOutbound 里短路返回空，
+// 构建器应给出空消息列表与零值 meta 而不是错误——本测试不需要数据库。
+// （2026-10-14：此前顶部挂着无条件 t.Skip，是三域审计盘点的死测试之一；
+// 该 skip 的理由「需要数据库连接」与实现不符。）
 func TestOutboundBuilder_BuildFromDeltas_EmptySession(t *testing.T) {
-	t.Skip("Skipping test that requires database connection")
 
 	reader := &TurnReader{} // nil db, will return empty
 	builder := NewOutboundBuilder(reader)

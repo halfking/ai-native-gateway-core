@@ -102,6 +102,7 @@ if [[ -n "$VIA" ]]; then
   # i18n 加载 `._ar.json` 直接 panic invalid character '\x00'。见真机 2026-10-13 翻车。
   tar -C "$D211_REPO_ROOT" \
       --exclude=.git --exclude=node_modules --exclude=dist --exclude=build \
+      --exclude=.build-local \
       --exclude='*.log' --exclude='.env' --exclude='.env.*' \
       --exclude='._*' --exclude='.DS_Store' \
       -cf - . | ssh "$VIA" "tar --no-xattrs -C ~/llm-gateway-go-211 -xf - && \
@@ -112,8 +113,11 @@ if [[ -n "$VIA" ]]; then
   ssh "$VIA" "find ~/llm-gateway-go-211 -maxdepth 2 -name '.env*' -type f -delete; \
              echo '[211] 目标树残留 .env*: '\$(find ~/llm-gateway-go-211 -name '.env*' -type f | wc -l) \
              ' ._*: '\$(find ~/llm-gateway-go-211 -name '._*' -type f | wc -l)"
+  # 基础镜像 build-arg 变量一并转发：211 的 /opt/kaixuan/base-images 存有
+  # 离线基础镜像（kx-base/golang:1.27-alpine-amd64 等），daemon 的 mirror 不
+  # 保证每次可达，构建腿应优先吃本地已 load 的镜像。空值 = 远端走脚本默认。
   log "在 $VIA 上执行 deploy ..."
-  ssh "$VIA" "cd ~/llm-gateway-go-211 && D211_STATE_DIR=$D211_STATE_DIR D211_REDIS_DB_START=$D211_REDIS_DB_START D211_REDIS_DB_END=$D211_REDIS_DB_END LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY='${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}' bash scripts/deploy-211-docker.sh $*"
+  ssh "$VIA" "cd ~/llm-gateway-go-211 && D211_STATE_DIR=$D211_STATE_DIR D211_REDIS_DB_START=$D211_REDIS_DB_START D211_REDIS_DB_END=$D211_REDIS_DB_END LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY='${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}' D211_GO_BASE_IMAGE='${D211_GO_BASE_IMAGE:-}' D211_RUNTIME_BASE_IMAGE='${D211_RUNTIME_BASE_IMAGE:-}' D211_BASE_REGISTRY='${D211_BASE_REGISTRY:-}' bash scripts/deploy-211-docker.sh $*"
   exit $?
 fi
 
@@ -434,6 +438,27 @@ redis_db_in_use() {
   (( n > 0 ))
 }
 
+# ── 网关自占命名空间（封闭集，2026-10-14）────────────────────────────
+# claim 复用判定的「自占」识别依据：网关的 Redis 键持久化在复用的实例里
+# （nbjl-redis 开 AOF），容器重建后旧库的键还在。此前 allocate 只看 DBSIZE>0，
+# 网关自己昨天留下的键让自己永远「占用」自己的库 → 每次 deploy 都下移一号
+# （211 实测 15→14→…→5，即挂账的「claim 不粘」根因）。
+# ⚠ 新增网关 Redis 键前缀时必须同步本集合，否则漂移复发。
+GATEWAY_KEY_PREFIXES=("llmgw:" "session:" "requestjourney:" "ursm:")
+
+# claim 库的采样里是否出现网关自己的键前缀（出现即视为自占，可安全复用）
+redis_db_has_gateway_keys() {
+  local c="$1" idx="$2" k p
+  redis_auth_args
+  while IFS= read -r k; do
+    [[ -z "$k" ]] && continue
+    for p in "${GATEWAY_KEY_PREFIXES[@]}"; do
+      case "$k" in "$p"*) return 0 ;; esac
+    done
+  done < <(docker exec "$c" redis-cli "${REDIS_AUTH[@]}" -n "$idx" --scan 2>/dev/null | head -50)
+  return 1
+}
+
 create_redis_container() {
   log "未找到可用的 Redis 实例，开始新建 ..."
   docker pull "$D211_REDIS_IMAGE" >/dev/null 2>&1 || warn "拉取 $D211_REDIS_IMAGE 失败，使用本地镜像"
@@ -458,15 +483,23 @@ create_redis_container() {
 #   2. 否则从 START(15) 递减到 END(0) 找第一个空闲库
 #   3. 全被占 → 报错，不抢别人已用的库
 allocate_redis_db() {
-  local c="$1" claimed idx
+  local c="$1" claimed
   if [[ -f "$CLAIM_FILE" ]]; then
     claimed="$(cat "$CLAIM_FILE" 2>/dev/null || true)"
-    if [[ "$claimed" =~ ^[0-9]+$ ]] && ! redis_db_in_use "$c" "$claimed"; then
-      log "复用已分配的 Redis 库号 db${claimed}（claim 文件持久化，避免重跑漂移）"
-      printf '%s\n' "$claimed"; return 0
+    if [[ "$claimed" =~ ^[0-9]+$ ]]; then
+      if ! redis_db_in_use "$c" "$claimed"; then
+        log "复用已分配的 Redis 库号 db${claimed}（claim 文件持久化，避免重跑漂移）"
+        printf '%s\n' "$claimed"; return 0
+      fi
+      if redis_db_has_gateway_keys "$c" "$claimed"; then
+        # 库非空但采样全是网关自己的键（部署间隙的持久化残留）→ 自占，复用不漂移
+        log "复用已分配的 Redis 库号 db${claimed}（库内为网关自身残留键，非他人占用）"
+        printf '%s\n' "$claimed"; return 0
+      fi
+      warn "claim 里的 db${claimed} 被其它服务的键占用，重新分配"
     fi
-    warn "claim 里的 db${claimed} 已被占用，重新分配"
   fi
+  local idx
   for (( idx = D211_REDIS_DB_START; idx >= D211_REDIS_DB_END; idx-- )); do
     if ! redis_db_in_use "$c" "$idx"; then
       printf '%s\n' "$idx" > "$CLAIM_FILE"

@@ -584,8 +584,16 @@ func installSmartSaniGuard(chatHandler *streaming.ChatHandler, redisClient *redi
 	wireRestoredValueSource(ordered, restoredValues)
 	s, _ := sanitize.NewSanitizer(detector)
 	action := sanitize.OutputMask
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("LLM_GATEWAY_SANITIZE_OUTPUT_ACTION")), "block") {
-		action = sanitize.OutputBlock
+	if raw := strings.TrimSpace(os.Getenv("LLM_GATEWAY_SANITIZE_OUTPUT_ACTION")); raw != "" {
+		if strings.EqualFold(raw, "block") {
+			action = sanitize.OutputBlock
+		} else {
+			// 非法值此前静默回落 mask：运维把 block 拼错（Block/true/deny）
+			// 会无声降级成遮蔽，排障时无从发现。这里补唯一消费点上的
+			// 启动告警，回落语义本身不变。
+			slog.Warn("smart_sani_guard: unrecognized LLM_GATEWAY_SANITIZE_OUTPUT_ACTION, falling back to mask",
+				"value", raw, "accepted", "block")
+		}
 	}
 	guard := sanitize.NewOutputSensitiveInterceptor(s, action)
 	for index, interceptor := range ordered {

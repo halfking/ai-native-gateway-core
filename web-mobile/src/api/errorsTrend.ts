@@ -5,10 +5,59 @@ import { req, type RequestOptions } from './client'
  *
  * GET /api/errors/trend
  *
- * - **注册**：`admin/handler.go:1249` 的 `admin(h.errorsTrendHandlers.getErrorsTrend)`
- *   ⇒ **admin 档**，tenant_admin 可用 ⇒ 抽屉席**不设** `requiresRole`。
+ * - **注册**：`admin/handler.go:1270` 的 `admin(h.errorsTrendHandlers.getErrorsTrend)`
+ *   ⇒ **admin 档**，且是本仓**唯一**一处注册该路径（`grep` 全仓只有这一行）。
  * - **实现**：`admin/errors_trend.go`（350 行）。
- * - **桌面调用方**：`web/src/api/*.ts` 的 errors trend 面板。
+ * - **桌面调用方**：`web/src/api/errors-trend.ts:45`。
+ *
+ * ★★ **行号订正（2026-10-14，第一百一十三批）**：本条原先写 `:1249`，**已过期**。
+ *   ⇒ 行号只是**定位提示**，判据不得依赖它（与批 112 订正 dispatchJournal 时同因）。
+ *
+ * ## ★★★★★★ 权限档：**`requiresRole: 'admin'`**，不是「不设」，也不是 `'super_admin'`
+ *
+ * ⚠️⚠️ **这一条推翻了本文件头原先的「不设 requiresRole」结论，必须逐字读：**
+ *
+ * - `admin.AdminMiddleware`（`admin/auth.go:85-138`）**只做认证，不检查 role**。
+ *   `admin/users.go:307-309` 的注释把这件事写成了显式设计：
+ *   > // requireUserManager prevents ordinary user principals from reaching …
+ *   > // AdminMiddleware authenticates but intentionally does not enforce an administrative role.
+ * - `getErrorsTrend`（`admin/errors_trend.go:75-146`）自己**也不检查 role**：
+ *   它只查 `h == nil || h.db == nil`、`hours`、`granularity`、`credential_id`。
+ * - 租户范围取 `EffectiveTenantIDAll(r)`（`:112`），而
+ *   `admin/context.go:69-74` 的实现是
+ *   `IsTenantAdmin(r) ? GetTenantID(r) : ""` —— **非 tenant_admin 一律拿空串**，
+ *   而空串在三处 SQL 里都命中 `AND ($7 = '' OR …)` ⇒ **查全租户**。
+ * - ⇒★ 于是「admin 档」在本族**不等于**「管理员可用」。**effective role 既不是
+ *   `super_admin` 也不是 `tenant_admin` 的主体（典型是 `user`）会读到全租户数据。**
+ *   这个角色是**可达的**：`admin/shared_principal.go:42` 的
+ *   `roleRank := map[string]int{"user": 1, "tenant_admin": 2, "super_admin": 3}`
+ *   允许 `user`，且 `:46-48` **只在本地角色更低时下调**
+ *   （`if roleRank[localRole] < roleRank[verified.Role] { resolved.Role = localRole }`）
+ *   ⇒ 本地是 super_admin/tenant_admin、外来 token 是 `user` 时，
+ *   **最终角色留在 `user`** ⇒ 通过 `AdminMiddleware` ⇒ 读到全租户。
+ *   （本地账号本身的 `role` 列被 `admin/users.go:406` 限定为两值，
+ *   但**生效角色**由上面那段推导得出，不受该校验约束。）
+ *
+ * ⇒★★ **处置：抽屉席设 `requiresRole: 'admin'`。**
+ *   - **不设**（原先结论）⇒ `navItemsFor`（`config/appNav.ts`）的默认分支是
+ *     `return true` ⇒ 对 `role === 'user'` **也显示**，等于把跨租户口子做成一键入口。
+ *   - **`'super_admin'`** ⇒ 过度限制：`tenant_admin` 本该看**自己租户**的数据
+ *     （R49-C1 正是为此加的），把它挡掉是拿功能换安全。
+ *   - **`'admin'`** ⇒ `isAdmin = isSuper || role === 'tenant_admin' || role === 'admin_key'`
+ *     ⇒ 恰好挡住 `user`，且不牺牲 `tenant_admin` 的既有能力。
+ *   ⚠️ 本仓此前只有 `users` 一席用 `'admin'`；这是第二个。
+ * ⚠️⚠️ **抽屉隐藏 ≠ 路由拦截**：`router.beforeEach`（`src/hyper-wiring.ts:34-45`）
+ *   **只查登录态**，`meta.requiresRole` **全仓无人读取** ⇒ 深链仍能打开页面。
+ *   ⇒ 所以视图内**必须**再兜一层（前端严于后端是兜底，不是修复）。
+ *
+ * ⇒★ **R49-C1 的租户收口是真的做了，但只在 SQL 的 WHERE 里**（文件头第 (2) 条只写了
+ *   RLS 旁路，漏了这一半）：`loadFromStats`（`:222-224`）用
+ *   `credential_id IN (SELECT id FROM credentials WHERE tenant_id = $7)` 子查询落实
+ *   （因为 `supplier_error_stats` **没有 tenant_id 列**），明细腿则直接用
+ *   `supplier_errors_unified.tenant_id`。
+ *   ⇒ 这是「读路径不隔离」一族里**唯一被真正修好的一处**；
+ *     其余 operational / selfCheck×2 / routing×3 / formatAnomalies /
+ *     modelIntegrityDrift **仍然敞着**。
  *
  * ## ★★★★★ 本族最要紧的八件事
  *
@@ -218,7 +267,8 @@ export interface ErrorsTrendParams {
   hours?: number
   granularity?: string
   supplier?: string
-  credentialId?: number
+  /** ★ `null` 与 `undefined` 都表示「不过滤」；一旦是数字就**一定是**过滤（后端要求 > 0）。 */
+  credentialId?: number | null
   errorType?: string
 }
 
@@ -341,6 +391,23 @@ export function errorsTrendGranularityIsDefault(
 }
 
 /**
+ * ★★★ 回显的粒度**是否与客户端的认知一致** —— 页面用它决定要不要报「对不上」。
+ *
+ * ★★ **显式传了 granularity 时这条恒真（真空，不是恒真判据）**：
+ *   后端不再推导，回显什么都是对的，拿它报错是**假告警**。
+ *   ⚠️ 区别于 `errorsTrendGranularityIsDefault` —— 那个问的是
+ *   「这个值是不是缺省推导出来的」（显式指定时答 false 是**正确**的），
+ *   这个问的是「有没有对不上」。两者方向相反，别混用。
+ */
+export function errorsTrendGranularityEchoIsConsistent(
+  r: ErrorsTrendResponse,
+  granularityWasSent: boolean,
+): boolean {
+  if (granularityWasSent) return true
+  return r.granularity === errorsTrendDefaultGranularity(r.hours)
+}
+
+/**
  * ★★ `source === 'fallback'` 只说明「预聚合表在这个粒度上没有行」，
  * 既可能是真的没错误，也可能是**粒度不匹配**（聚合器只写了别的粒度）。
  */
@@ -403,6 +470,80 @@ export function errorsTrendSeriesIsAscending(r: ErrorsTrendResponse): boolean {
     if (Date.parse(r.time_series[i]!.timestamp) < Date.parse(r.time_series[i - 1]!.timestamp)) {
       return false
     }
+  }
+  return true
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 角色档（客户端复刻，判据与视图共用）
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * ★★★ `EffectiveTenantIDAll`（`admin/context.go:69-74`）里
+ * `IsTenantAdmin(r)` 为真的那个角色 —— 只有它拿到**自己**的 tenant_id。
+ */
+export const ERRORS_TREND_TENANT_ROLE = 'tenant_admin'
+
+/**
+ * ★★★ 拿到**空串**（= 查全租户）的两个角色。
+ * 后端 `IsSuperAdminOrLegacy`（`admin/context.go:50-57`）判的正是这两个字面量。
+ */
+export const ERRORS_TREND_GLOBAL_ROLES = ['super_admin', 'admin_key'] as const
+
+/**
+ * ★★★★ 该角色能否**看全租户**数据。
+ * 这两个角色让 `EffectiveTenantIDAll` 返回 `""`，而 `""` 在三处 SQL 里
+ * 都命中 `AND ($7 = '' OR …)` ⇒ 全表。
+ */
+export function errorsTrendRoleSeesAllTenants(role: string): boolean {
+  return (ERRORS_TREND_GLOBAL_ROLES as readonly string[]).includes(role)
+}
+
+/**
+ * ★★★★ 该角色是否被允许**访问本页**（抽屉席 `requiresRole: 'admin'`
+ * 与视图内兜底用的就是它）。
+ *
+ * ★★ **不是 `errorsTrendRoleSeesAllTenants`** —— 两个集合**不同**：
+ * `tenant_admin` 够用访问，但只看得到**自己**租户；
+ * 而**任何不在下面这组里的角色**（典型 `user`）不仅不该访问，
+ * 而且**一旦访问就会读到全租户**（见文件头「权限档」一节）。
+ */
+export function errorsTrendRoleIsAdminTier(role: string): boolean {
+  return errorsTrendRoleSeesAllTenants(role) || role === ERRORS_TREND_TENANT_ROLE
+}
+
+/**
+ * ★★ 该角色拿到的是**全租户**还是**本租户** —— 只用于页面据实说明口径，
+ * **不是**安全门（后端仍然不返回 403，越权一律表现为「数据看起来是全的」）。
+ */
+export function errorsTrendTenantScopeLabel(role: string): 'all' | 'own' | 'unexpected' {
+  if (errorsTrendRoleSeesAllTenants(role)) return 'all'
+  if (role === ERRORS_TREND_TENANT_ROLE) return 'own'
+  return 'unexpected'
+}
+
+/**
+ * ★★★ 请求参数是否值得发。
+ * `hours` 只接受 `1/24/168`（`parseVendorErrorHours`），
+ * `granularity` 只接受三档 —— 两者越界都必然 400 且**没有任何好处**。
+ * `credentialId` 一旦给出就**必须是正整数**：后端 `:97-103` 要求 `> 0`，
+ * 而 `0` 只在 SQL 内部表示「不过滤」。
+ */
+export function errorsTrendParamsAreAcceptable(p: {
+  hours?: number
+  granularity?: string
+  credentialId?: number | null
+}): boolean {
+  if (p.hours !== undefined) {
+    if (!(ERRORS_TREND_HOURS as readonly number[]).includes(p.hours)) return false
+  }
+  if (p.granularity !== undefined && p.granularity !== '') {
+    if (!(ERRORS_TREND_GRANULARITIES as readonly string[]).includes(p.granularity)) {
+      return false
+    }
+  }
+  if (p.credentialId !== undefined && p.credentialId !== null) {
+    if (!Number.isInteger(p.credentialId) || p.credentialId <= 0) return false
   }
   return true
 }

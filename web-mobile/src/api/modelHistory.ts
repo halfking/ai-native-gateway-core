@@ -7,13 +7,17 @@ import { req, type RequestOptions } from './client'
  *
  * - **注册**：**第五种注册形态**，`mux.HandleFunc` 在**另一个文件的方法**里
  *   （`admin/credential_monitor.go:153-163` 的 `RegisterMonitorRoutes`），
- *   由 `admin/handler.go:1453` 现构造并挂载：
+ *   由 `admin/handler.go:1475` 现构造并挂载：
  *   ```go
  *   monitorH.RegisterMonitorRoutes(mux, h.admin)   // ★ admin 档，不是 superAdmin
  *   ```
  *   ★ 与批 91 的 `work-types`（`h.superAdmin`）同属 `admin` 包、两种档位。
- * - **实现**：`admin/credential_monitor.go:1433-1478`（handler）
- *   + `:1304-1318`（`ModelHistoryEvent`）+ `:1329-1430`（`runModelHistory` 的 SQL）。
+ *
+ * ★★ **行号订正（2026-10-14，第一百一十四批）**：挂载点原先写 `:1453`，**已过期**；
+ *   而 `admin/credential_monitor.go:163` 那句 `mux.HandleFunc` 仍然准确。
+ *   ⇒ 行号只是**定位提示**，判据不得依赖它（同批 113 在 errorsTrend 上栽过一次）。
+ * - **实现**：`admin/credential_monitor.go:1502-1545`（handler）
+ *   + `:1329-1367`（`runModelHistory` 的 SQL）+ `:1369-1378`（`ModelHistoryEvent`）。
  * - **桌面调用方**：`web/src/api/credential-monitor.ts:347-358` —— `req<ModelHistoryResponse>`
  *   直接强转，**不做任何校验** ⇒ 全部校验由本模块补上。
  * - **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes` ⇒ 本进程提供。
@@ -22,9 +26,41 @@ import { req, type RequestOptions } from './client'
  * ## ★★★★★ 本族最要紧的十四件事
  * ══════════════════════════════════════════════════════════════════════════
  *
- * (1) ★★★★★ **整族是 `h.admin` 档**（`handler.go:1453` 传 `h.admin`）
- *     ⇒ tenant_admin **可用** ⇒ 移动端抽屉席**不设** `requiresRole`。
- *     ⇒ ★ 与批 91 的 `work-types`（`h.superAdmin`）正好相反，两族都在 admin 包里。
+ * (1) ★★★★★ **整族是 `h.admin` 档**（`handler.go:1475` 传 `h.admin`）
+ *     ⇒ tenant_admin **可用**。
+ *     ⇒★★ **但抽屉席要设 `requiresRole: 'admin'`，不是缺省** ——
+ *       这与本条原先写的「不设 requiresRole」相反，推导见下面 (1b)。
+ *       ⇒ 与批 91 的 `work-types`（`h.superAdmin`）正好相反，两族都在 admin 包里。
+ *
+ * (1b) ⚠️⚠️⚠️⚠️ **「admin 档」在本族不等于「管理员可用」**（2026-10-14 第一百一十四批
+ *     用批 113 的四步链条重推了一遍，结论与批 113 逐字相同）：
+ *     1. `RegisterMonitorRoutes(mux, h.admin)` ⇒ 包的是 `admin.AdminMiddleware`
+ *        （`admin/auth.go:85-138`），它**只认证、不检 role** ——
+ *        而且这是**显式设计**，`users.go:307-309` 的注释原话：
+ *        「AdminMiddleware authenticates but intentionally does not enforce an
+ *        administrative role.」
+ *     2. `handleModelHistory`（`credential_monitor.go:1502-1545`）自己**也不检 role**：
+ *        入口只有 method / db / 三个参数三段校验。
+ *     3. ★★ 租户键是**手写内联**的同一模式（`:1532-1535`）：
+ *        ```go
+ *        tenantID := ""
+ *        if IsTenantAdmin(r) { tenantID = GetTenantID(r) }
+ *        ```
+ *        ⇒ 与 `EffectiveTenantIDAll`（`context.go:69-74`）**语义完全一样**，
+ *          但它**不叫那个名字**，所以 grep `EffectiveTenantID` **找不到这一处**。
+ *     4. ⇒★★ **非 tenant_admin 一律拿到空串**，而空串在两段 SQL 里都命中
+ *        `AND ($4 = '' OR …)` ⇒ **查全租户**。
+ *
+ *     ⇒★ 而「生效角色不是 super_admin 也不是 tenant_admin」是**可达**的：
+ *     `admin/shared_principal.go:42` 的 `roleRank` 含 `"user"`，且 `:46-48`
+ *     **只在本地角色更低时下调** ⇒ 本地 super_admin + 外来 `user` token
+ *     ⇒ 生效角色留在 `user` ⇒ 通过中间件 ⇒ **读到全租户的模型状态历史**。
+ *
+ *     ⇒ 三个候选里只有 **`'admin'`** 对：
+ *     - **缺省** ⇒ `navItemsFor` 默认分支 `return true` ⇒ 对 `user` 也显示；
+ *     - **`'super_admin'`** ⇒ 把 `tenant_admin` 的本租户数据一起挡掉（拿功能换安全）；
+ *     - **`'admin'`** ⇒ `super_admin / tenant_admin / admin_key` 放行，挡 `user`。
+ *     ⚠️ 抽屉隐藏 ≠ 路由拦截（`meta.requiresRole` 全仓无人读）⇒ **视图内要再兜一层**。
  *
  * (2) ★★★★★ **事件对象是「十个键全部恒在，其中六个可为裸 `null`」的形状**。
  *     `ModelHistoryEvent`（`:1307-1318`）**十个字段一个 `omitempty` 都没有**：
@@ -113,9 +149,12 @@ import { req, type RequestOptions } from './client'
  * (11) ★★★★ **租户过滤是两段各自做的，但形状一致**：
  *      auto 侧 `AND ($4 = '' OR mpr.tenant_id = $4)`（`:1343`）、
  *      manual 侧 `AND ($4 = '' OR al.tenant_id = $4)`（`:1369`）⇒ **两侧都过滤**。
- *      `tenantID` 只在 `IsTenantAdmin(r)` 时取 `GetTenantID(r)`（`:1464-1467`），
- *      否则是 `""` ⇒ 那个 `$4 = ''` 分支放行全部租户。
- *      ⇒ ⇒ **tenant_admin 只看自己租户；super_admin 看全部**。
+ *      ★★★ 而 `tenantID` 只在 `IsTenantAdmin(r)` 时取 `GetTenantID(r)`（`:1532-1535`），
+ *      否则是 `""` ⇒ 那个 `$4 = ''` 分支**放行全部租户**。
+ *      ⇒ ⇒ tenant_admin 只看自己租户；super_admin / admin_key 看全部；
+ *        ★★ **其余角色（含 `user`）也看全部** —— 见 (1b)，本条原先漏了这个角色。
+ *      ⇒ ★ 顺带：这与 `EffectiveTenantIDAll` 语义相同但**写法是手写内联**，
+ *        所以 grep `EffectiveTenantID` 找不到这一处 —— 见 (1b) 第 3 步。
  *
  * (12) ★★★ **超时 5s**（`:1461` `context.WithTimeout(r.Context(), 5*time.Second)`）。
  *
@@ -398,4 +437,83 @@ export function modelHistoryLimitIsInRange(limit: number): boolean {
  */
 export function modelHistoryCredentialIdIsRejected(credentialId: number): boolean {
   return credentialId === 0
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 角色档（客户端复刻，判据与视图共用）
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * ★★★ (1b) 第 3 步里唯一拿到**自己** tenant_id 的那个角色。
+ * 与 `EffectiveTenantIDAll` 的 `IsTenantAdmin` 判的是**同一个字面量**
+ * （`admin/context.go:45-48`）。
+ */
+export const MODEL_HISTORY_TENANT_ROLE = 'tenant_admin'
+
+/**
+ * ★★★ (1b) `IsSuperAdminOrLegacy`（`admin/context.go:50-57`）认的两个字面量 ——
+ * 它们让租户键保持空串。
+ */
+export const MODEL_HISTORY_GLOBAL_ROLES = ['super_admin', 'admin_key'] as const
+
+/**
+ * ★★★★ 该角色能否**看全租户**数据。
+ *
+ * ⚠️⚠️ **注意这不等于「有权访问」** —— 本族把这两件事分给了两档，
+ *   原因见文件头 (1b)：能访问的角色有三个，而**不该访问**的角色一旦访问，
+ *   后端会返回**全租户**数据（因为空串放行），不是返回 403。
+ */
+export function modelHistoryRoleSeesAllTenants(role: string): boolean {
+  return (MODEL_HISTORY_GLOBAL_ROLES as readonly string[]).includes(role)
+}
+
+/**
+ * ★★★★ 该角色是否被允许**访问本页**（抽屉席 `requiresRole: 'admin'` 与
+ * 视图内兜底都用它）。
+ *
+ * ★★ 与 `modelHistoryRoleSeesAllTenants` **不是同一个集合**：
+ * `tenant_admin` 够用访问，但只看得到**自己**租户；
+ * 而**任何不在下面这组里的角色**（典型 `user`）既不该访问，
+ * 而且一旦访问就会拿到**全租户**数据 —— 所以必须挡在抽屉与视图两层。
+ */
+export function modelHistoryRoleIsAdminTier(role: string): boolean {
+  return modelHistoryRoleSeesAllTenants(role) || role === MODEL_HISTORY_TENANT_ROLE
+}
+
+/**
+ * ★★ 租户口径三值 —— 只用于页面**据实说明**，**不是安全门**：
+ * 后端对越权一律返回 200 + 全租户数据，没有 403 这条路。
+ */
+export function modelHistoryTenantScopeLabel(role: string): 'all' | 'own' | 'unexpected' {
+  if (modelHistoryRoleSeesAllTenants(role)) return 'all'
+  if (role === MODEL_HISTORY_TENANT_ROLE) return 'own'
+  return 'unexpected'
+}
+
+/**
+ * ★★★★ 三个参数是否值得发。
+ *
+ * - `credential_id`：必须是**有限数字**且**不为 0**。
+ *   ★★ 两件事分开：后端（`credential_monitor.go:1511`）判的是
+ *   **`credentialID == 0` 而不是 `< 1`** ⇒ **负数能过后端那一关**，
+ *   所以这里**只拦 0**（拦负数就是替后端加一条它没有的规则）；
+ *   而**非数字**必须拦 —— 因为 `queryInt`（(9)）解析失败会**静默回落成 0**，
+ *   于是 400 的文案说的是 `credential_id required`（像是「没传」），
+ *   而实际上是「传了但是非数字」。★ 页面据此在发请求前就挡住，
+ *   免得用户看到一条与真实原因不符的错误。
+ * - `raw_model_name`：后端只判非空（`:1515-1518`），**不做 trim**
+ *   ⇒ 空串被拒，纯空格会过。
+ * - `limit`：必须在 1–200；非数字同样被 `queryInt` 静默回落成 50（(9)），
+ *   所以这里也拦非有限值。
+ */
+export function modelHistoryParamsAreAcceptable(p: {
+  credentialId: number
+  rawModelName: string
+  limit: number
+}): boolean {
+  if (!Number.isFinite(p.credentialId)) return false
+  if (modelHistoryCredentialIdIsRejected(p.credentialId)) return false
+  if (p.rawModelName === '') return false
+  if (!Number.isFinite(p.limit)) return false
+  return modelHistoryLimitIsInRange(p.limit)
 }

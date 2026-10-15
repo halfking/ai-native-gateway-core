@@ -5,13 +5,19 @@ import { req, type RequestOptions } from './client'
  *
  * GET /api/admin/ops/overview
  *
- * - **注册**：`admin/handler.go:1070` `mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))`
- *   ⇒ **admin 档**（tenant_admin 可用）⇒ 抽屉席**不设** `requiresRole`。
+ * - **注册**：`admin/handler.go:1091` `mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))`
+ *   ⇒ **admin 档**（`AdminMiddleware` 只认证不检 role ⇒ tenant_admin 后端**能**读）。
+ * ★★ 2026-10-14 第一百一十七批订正：这一行原先写的是 `handler.go:1070`（**漂移 21 行**），
+ *   且结论「抽屉席**不设** `requiresRole`」与同文件末尾那句「不按租户隔离」**自相矛盾** ——
+ *   不隔离还放行给 tenant_admin，等于把全平台机队拓扑与别人的
+ *   `license_key` / `hardware_hash` / `activation_code` 递出去。
+ *   ⇒ 抽屉席改设 **`requiresRole: 'super_admin'`**（第三类：服务端完全没有租户维度 ⇒ 过度限制，
+ *     与批 115/116 同处置）。**事实**没变（注册处仍是 admin 档），变的是**前端要不要更严**。
  * - ★ `ops` **不在** `cmd/gateway/maintain_proxy.go` 的 `maintainCompatPrefixes`（`:37-54`）里
  *   ⇒ 尽管桌面把 `/ops` 页面 `externalMaintainRedirect` 到独立 maintain 服务，
  *   **这个 API 仍由本进程的 admin mux 提供**。别被前端的重定向误导。
  * - **实现**：`admin/ops_overview.go`（532 行，handler `:48-76` + payload builder `:78-130`
- *   + 10 个查询函数 `:132-531`）。
+ *   + **11 个**查询函数 `:132-531`）。
  *
  * ══════════════════════════════════════════════════════════════════════════
  * ## ★★★★★ 本族最要紧的十七件事
@@ -116,6 +122,18 @@ import { req, type RequestOptions } from './client'
  * ★ 注意本端点**不按租户隔离**：11 个查询里没有任何租户条件
  *   （`gateway_instances` / `licenses` / `fault_events` / `upgrade_logs` / `download_events`
  *   都是全局表）⇒ admin 档的 tenant_admin 看到的是**全平台运维数据**。
+ *
+ * ★★★★ 更具体地说，`offline_requests` 每一行带 `license_key` / `hardware_hash` /
+ *   `activation_code`（`:299-337`）—— 那是**别的租户的**凭据与硬件指纹；
+ *   `deployment_nodes` / `runtime_metrics_summary` 是**全平台机队**的 IP、版本与用量。
+ *   ⇒ 第一百一十七批把抽屉席钉成 `super_admin`。⚠️ 前端严于后端是**兜底不是修复**：
+ *   真门在服务端，而这一族服务端**没有**门（`AdminMiddleware` 不检 role，handler 也不检）。
+ *
+ * ★★ 第(6) 条还有个可证推论（第一百一十七批补判据）：`queryOpsDataPlaneTables` 把错误
+ *   吞成 `-1` 而**从不返回 error** ⇒ 它**是 11 个键里唯一恒存在**的
+ *   ⇒ `data_plane_tables` 一旦**缺键**，只有一种解释：这个子查询整体没跑。
+ *   而那件事后端保证不了（键可能因并发收集竞态而不落）⇒ 客户端必须能查，见
+ *   `opsDataPlaneKeysAreComplete`。
  */
 
 // ── 常量 ─────────────────────────────────────────────────────────────────────
@@ -319,7 +337,7 @@ export interface OpsOverviewResponse {
 
 // ── fetch ───────────────────────────────────────────────────────────────────
 
-/** GET `/api/admin/ops/overview`（`handler.go:1070`，**admin 档**）。无参数。 */
+/** GET `/api/admin/ops/overview`（`handler.go:1091`，**admin 档** ⇒ 后端 tenant_admin 可读）。无参数。 */
 export function fetchOpsOverview(options?: RequestOptions): Promise<OpsOverviewResponse> {
   return req<unknown>('GET', '/api/admin/ops/overview', undefined, options).then(unwrapOpsOverview)
 }
@@ -588,4 +606,92 @@ export function opsRuntimeZeroIsAmbiguous(row: OpsRuntimeMetric): boolean {
 /** 见 (14)：有指标（`last_update` 非 null）时，`0` 才可能是真实值。 */
 export function opsRuntimeHasMetrics(row: OpsRuntimeMetric): boolean {
   return row.last_update !== null
+}
+// ═══════════════════════════════════════════════════════════════════════════
+// 第一百一十七批新增：权限判定 + 四条可证不变式
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * ★★★★★★ 权限档（第一百一十七批逐字核过四处）：
+ *   ① 注册处 `admin/handler.go:1091` 传的是 `admin(...)` = `h.admin`（`handler.go:894`）
+ *      → `AdminMiddleware`（`admin/auth.go:85-140`）—— **只认证，不检 role**；
+ *   ② 该中间件全文**没有** `claims.Role` 比较（对比 `SuperAdminMiddleware` `auth.go:376-409`）；
+ *   ③ `admin/ops_overview.go` 全文**没有** `AuthContext` / `IsTenantAdmin` / `Role`；
+ *   ④ **取租户键的代码根本不存在** —— 11 条子查询全是全局表，`grep tenant` 打不到不是遗漏，
+ *      是**设计上就没有**。
+ * ⇒ 归第三类：服务端**完全没有租户维度** ⇒ 过度限制到 `super_admin`。
+ * ⚠️ 与批 113/114 那两席（`requiresRole: 'admin'`）成因相反：那一族服务端**有**租户维度，
+ *   只是返回键可能为空串。
+ */
+export function opsOverviewRoleIsAllowed(role: string): boolean {
+  return role === 'super_admin'
+}
+
+/** ★★ 503：`h.db == nil` 时三个分支共用 `database not configured`（`ops_overview.go:54`）。 */
+export function opsOverviewDbNotConfiguredMessage(msg: string): boolean {
+  return msg.trim() === 'database not configured'
+}
+
+/**
+ * ★★★★★ 见 (6) 的推论：`queryOpsDataPlaneTables`（`:272-295`）把每个查询的错误
+ *   **吞成 `-1`** 而 `return out, nil` ⇒ 它**从不返回 error** ⇒ 该键**恒存在**且**六项齐全**。
+ *   ⇒ 一旦缺键 ⇒ 响应不是这个端点发的（或是并发收集竞态漏掉了整个键）。
+ */
+export function opsDataPlaneKeysAreComplete(d: OpsDataPlaneCount): boolean {
+  return OPS_DATA_PLANE_KEYS.every((k) => k in d)
+}
+
+/**
+ * ★★★★ 见 (2)：键数恒在 **2..12**（1 个恒在键 + 0..11 个成功的子查询）。
+ *   ⇒ 越界只有一种解释：响应不是这个端点发的。
+ */
+export function opsResponseKeyCountIsInRange(r: OpsOverviewResponse): boolean {
+  const n = Object.keys(r).length
+  return n >= 2 && n <= OPS_OVERVIEW_SECTION_KEYS.length + 1
+}
+
+/**
+ * ★★★★ `center_stats`（`:132-151`）四个数是同一张表的四个 `COUNT`，
+ *   其中三个是 `COUNT(*) FILTER (WHERE status = …)` ⇒ **三值互斥且互斥于其它状态**
+ *   ⇒ 它们的和**必然 ≤ `total_instances`**。
+ *   ⚠️ 注意 `center_stats` **没有** `missing`/`unknown` 键可对账，
+ *   所以这是单向判据（和 ≤ total 成立，和 < total 也合法 ⇒ 有第四种状态）。
+ */
+export function opsCenterStatusCountsFitTotal(c: OpsCenterStats): boolean {
+  return c.online_instances + c.offline_instances + c.degraded_instances <= c.total_instances
+}
+
+/**
+ * ★★★★ 两个「最近列表」的 `total` 都是 `len(容器)`（`:394` / `:437` 同一次构造）
+ *   ⇒ 与 `recent_faults.total <= fault_stats.open_events`（(10)）**方向相反**：
+ *   那条是跨子查询的**上界**，这条是**容器内的自洽**。
+ *   ⇒ 两个列表键名不同（(11)），所以一条判据要同时钉住**两个**容器名。
+ *
+ * ★★★★ **缺键的语义（本批第一版写错、被判据当场顶红的那条）**：
+ *   本函数首版注释写「键缺失时返回 `false`（不是 `true`）：没取到不算自洽」，
+ *   而实现是**逐个存在才校验** ⇒ 两个容器都缺时返回 `true` ⇒ **注释与代码直接矛盾**。
+ *   ⇒ 结论是**代码对、注释错**：两种语义各有各的用处，取决于**谁调它**——
+ *     · 给 UI 当红线开关用 ⇒ 缺键**不能**报红（那个子查询只是失败了，容器压根不存在），
+ *       否则一份 `{generated_at, center_stats}` 的正常响应会被标成「不自洽」；
+ *     · 给判据当不变式用 ⇒ 缺键**不构成违规**（空真），返回 `true` 才对。
+ *   ⇒ 所以拆成两条：**本函数**（无违规 = true，UI 直接拿它当红线开关）+
+ *     `opsListSectionMismatchKinds`（**具体是哪一段**对不上，UI 要报给用户看）。
+ *   ⚠️ 反面纪律：别用「否定式布尔」同时表达「没取到」与「取到了但不对」两种状态。
+ */
+export function opsListSectionTotalsMatchLengths(r: OpsOverviewResponse): boolean {
+  return opsListSectionMismatchKinds(r).length === 0
+}
+
+/**
+ * ★★★ 返回**存在且 `total` 与容器长度不符**的段名（`:394` 的 `events` / `:437` 的 `items`）。
+ *   段不存在则**不进清单**（那是「没取到」，不是「不对」）。
+ *   ⚠️ 返回段名而不只是布尔：只报布尔的话，用户看不出是哪一段的计数对不上。
+ */
+export function opsListSectionMismatchKinds(r: OpsOverviewResponse): Array<'recent_faults' | 'recent_upgrades'> {
+  const bad: Array<'recent_faults' | 'recent_upgrades'> = []
+  const faults = r.recent_faults
+  if (faults !== undefined && faults.total !== faults.events.length) bad.push('recent_faults')
+  const ups = r.recent_upgrades
+  if (ups !== undefined && ups.total !== ups.items.length) bad.push('recent_upgrades')
+  return bad
 }

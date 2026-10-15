@@ -27,11 +27,13 @@ package persist
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const (
@@ -74,6 +76,36 @@ const (
 	RetentionModeDisabled      = "disabled"
 )
 
+// snapshotRetentionLockKey 是守住 DROP 型留存跨实例互斥的 advisory lock 键。
+// 任意常量，只要与本仓其它 advisory lock 不撞即可（MV 刷新用的是 632_2026_08_31）。
+//
+// ★ 用**事务级**（pg_try_advisory_xact_lock）而不是会话级：本包的 DB 抽象
+//
+//	走的是连接池，会话级锁绑在哪条连接上并不可靠（下次 Query 可能就换连接），
+//	而事务级锁随 COMMIT/ROLLBACK 自动释放，天然不漏锁、不误放。
+//
+//	有了它，"两台实例同时删同一个分区" 才从「静默双记」变成「一方显式让位」。
+const snapshotRetentionLockKey int64 = 632_2026_10_14
+
+var (
+	// errPartitionHeldByPeer：另一实例正持有留存锁，本分区留到下一轮。
+	errPartitionHeldByPeer = errors.New("snapshot retention lock held by another instance")
+
+	// errPartitionGoneAlready：分区在我们列完目录、拿到锁之前就已经不存在了
+	//（典型来源是对端实例刚删完，或运维手工 DROP）。**这不是错误。**
+	errPartitionGoneAlready = errors.New("snapshot partition already absent before drop")
+)
+
+// isUndefinedTable 判 PG 的 42P01（对象不存在）。
+//
+// 去掉 IF EXISTS 之后，这一码是「已经被别人删掉了」的唯一可靠信号，
+// 而它**必须**被归类为「跳过」而不是「错误」——
+// 否则运维手工删过一个分区就会触发整轮降级去批删行（§10.110.33 §九 的取舍）。
+func isUndefinedTable(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "42P01"
+}
+
 // RetentionResult 描述一轮清理的结果。
 //
 // 两种模式的"量纲"不同：DELETE 模式能精确数出删了多少行，但拿不到归还字节数
@@ -89,6 +121,11 @@ type RetentionResult struct {
 	Candidates int
 	// Degraded 表示「本轮原打算走 DROP 但失败，已退回批 DELETE」。
 	Degraded bool
+	// YieldedToPeer 表示「本轮主动让位给持有留存锁的另一实例」。
+	// 它与 Degraded 相反：Degraded 是降级（仍在干活），YieldedToPeer 是
+	// 干脆没干（下一个 tick 再说）。两者都必须可观测 —— 分母不同，
+	// 混在一起会让"这一轮到底发生了什么"无法事后重建。
+	YieldedToPeer bool
 }
 
 // snapshotPartition 是列表查询的一行。
@@ -152,10 +189,25 @@ func (w *SnapshotRetentionWorker) listExpiredPartitions(ctx context.Context, cut
 	return out, rows.Err()
 }
 
-// dropPartition 在独立事务里 SET LOCAL lock_timeout 后 DROP。
+// dropPartition 在独立事务里拿留存锁后 DROP。
 //
 // PG 会隐式把分区从父表摘掉，一步到位（不走 DETACH + DROP 两步，失败面小一半）。
 // 分区名虽来自系统目录，仍经 pgx.Identifier 转义后拼接，不做裸字符串互拼。
+//
+// ★ 三种结局，缺一不可（2026-10-34 / §10.110.33 §九）：
+//
+//  1. 拿到锁、DROP 成功        ⇒ 真删了，调用方**可以**累加 bytes_reclaimed
+//  2. 锁被别人持有            ⇒ 本轮让位（errPartitionHeldByPeer），不计数、不报错
+//  3. DROP 时对象已不存在     ⇒ 42P01（errPartitionGoneAlready），不计数、不报错
+//
+// 第 2 步是**互斥**，第 3 步是**诚实**：早先用 `DROP TABLE IF EXISTS`，
+// 对端删完的那个分区在我们这里同样「成功」，于是两台各报一次
+// bytes_reclaimed —— 而那个字段是留存唯一成功日志里的数字，累计口径被虚增。
+// 去掉 IF EXISTS 后，对端已删变成一条可分类的错误，计数也就只属于真正删掉它的那台。
+//
+// ⚠️ 代价与补偿：去掉 IF EXISTS 会让「运维手工删过某个分区」从静默容忍变成 42P01。
+// 正因为第 3 步把它归类为跳过，这个代价被完全补偿 —— 净行为与旧版一致，
+// 唯一变化是**不再虚报**。
 func (w *SnapshotRetentionWorker) dropPartition(ctx context.Context, name string) error {
 	tx, err := w.db.Begin(ctx)
 	if err != nil {
@@ -166,8 +218,22 @@ func (w *SnapshotRetentionWorker) dropPartition(ctx context.Context, name string
 	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '5min'`); err != nil {
 		return fmt.Errorf("set lock_timeout for dropping %s: %w", name, err)
 	}
-	stmt := `DROP TABLE IF EXISTS ` + pgx.Identifier{"public", name}.Sanitize()
+
+	// 事务级互斥：同一时刻全网只有一台实例能进 DROP 分支。
+	var gotLock bool
+	if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock($1)`, snapshotRetentionLockKey).
+		Scan(&gotLock); err != nil {
+		return fmt.Errorf("acquire snapshot retention lock for %s: %w", name, err)
+	}
+	if !gotLock {
+		return fmt.Errorf("%s: %w", name, errPartitionHeldByPeer)
+	}
+
+	stmt := `DROP TABLE ` + pgx.Identifier{"public", name}.Sanitize()
 	if _, err := tx.Exec(ctx, stmt); err != nil {
+		if isUndefinedTable(err) {
+			return fmt.Errorf("%s: %w", name, errPartitionGoneAlready)
+		}
 		return fmt.Errorf("drop partition %s: %w", name, err)
 	}
 	return tx.Commit(ctx)
@@ -178,6 +244,11 @@ func (w *SnapshotRetentionWorker) dropPartition(ctx context.Context, name string
 // 单轮仍受 MaxCleanupWindow 墙钟上限约束：单个 DROP 很快，但分区数可能因
 // 长期停机堆积，保留上限把剩余量留给下一个 tick。DROP 型留存没有"批"的概念，
 // BatchSize 在此模式下不参与判定（仍用于回退的 DELETE 路径）。
+//
+// ★ 两种良性竞态在这里被「跳过」而不是「上抛」（见 dropPartition 的三种结局）：
+// 把它们当成错误返回，会让调用方 CleanupWithStats 以为 DROP 整体失败，
+// 进而**降级去对整张表批删行** —— 为了 0 个字节的差异付出百万行的写放大。
+// 代价只是这个分区晚一小时被删，而留存的语义本身就是「小时级」。
 func (w *SnapshotRetentionWorker) cleanupPartitioned(ctx context.Context) (RetentionResult, error) {
 	res := RetentionResult{Mode: RetentionModePartitionDrop}
 	now := w.nowTime()
@@ -196,7 +267,22 @@ func (w *SnapshotRetentionWorker) cleanupPartitioned(ctx context.Context) (Reten
 				"partitions_dropped", res.PartitionsDropped, "candidates", res.Candidates)
 			break
 		}
-		if err := w.dropPartition(ctx, p.name); err != nil {
+		err := w.dropPartition(ctx, p.name)
+		switch {
+		case errors.Is(err, errPartitionHeldByPeer):
+			// 另一实例正在删 ⇒ 本轮整体让位。剩下的候选留到下一轮，
+			// 提前 break 是有意的：锁是全局的，继续往下试也只是徒劳。
+			res.YieldedToPeer = true
+			slog.Info("ursm.v2: snapshot retention yielded this round to another instance",
+				"mode", res.Mode, "partitions_dropped", res.PartitionsDropped,
+				"candidates", res.Candidates, "partition", p.name)
+			return res, nil
+		case errors.Is(err, errPartitionGoneAlready):
+			// 已经不在了（对端或运维删的）⇒ 我们没删成，**不计数**。
+			slog.Info("ursm.v2: snapshot partition already absent; not counted as reclaimed",
+				"mode", res.Mode, "partition", p.name)
+			continue
+		case err != nil:
 			// 已删的计数保留在返回值里（上面循环已逐个累加），
 			// 错误交由调用方决定是否回退。★ 这里绝不能再补加 ——
 			// 补加会把同一批分区数两遍。

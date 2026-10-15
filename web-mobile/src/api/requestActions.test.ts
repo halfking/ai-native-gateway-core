@@ -32,8 +32,14 @@ import {
   requestActionsIsShortLivedReplay,
   requestActionsUnavailableReason,
   requestActionsIsMissingId,
+  requestActionsRoleIsAllowed,
+  requestActionsRowsEchoRequestId,
+  requestActionsEmptyRowIsUnreachable,
 } from '@/api/requestActions'
-import type { RequestActionsResponse } from '@/api/requestActions'
+import type {
+  RequestActionsResponse,
+  RequestActionEntry,
+} from '@/api/requestActions'
 
 /**
  * 请求动作时间线的不变量（2026-10-07，第七十四批）。
@@ -640,5 +646,74 @@ describe('fetch 打到正确 URL', () => {
   it('fetch 会过计数一致性检查', async () => {
     ok(actionsOk([], { count: 5 }))
     await expect(fetchRequestActions('req-abc')).rejects.toThrow(/不一致/)
+  })
+})
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 第一百一十八批：权限判定 + 两条可证不变式
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/** 造一条**已解包形态**的行（供新判据直接构造 `RequestActionsResponse`）。 */
+function row(seq: number, action: string, ts: string, over: Partial<RequestActionEntry> = {}): RequestActionEntry {
+  return { request_id: 'req-abc', seq, action, ts, ...over }
+}
+
+/** 一份自洽的响应：三行、`ts` 升序、`seq` 唯一、`count` 等于长度。 */
+function resp(over: Partial<RequestActionsResponse> = {}): RequestActionsResponse {
+  const actions = [
+    row(1, 'arrive', '2026-10-14T01:00:00Z'),
+    row(2, 'route_resolved', '2026-10-14T01:00:01Z'),
+    row(3, 'upstream_request', '2026-10-14T01:00:02Z'),
+  ]
+  return { request_id: 'req-abc', actions, count: actions.length, ...over }
+}
+
+describe('权限判定（第一百一十八批：第三类，服务端没有租户维度）', () => {
+  it('★ 只有 super_admin 能进', () => {
+    expect(requestActionsRoleIsAllowed('super_admin')).toBe(true)
+    expect(requestActionsRoleIsAllowed('tenant_admin')).toBe(false)
+    expect(requestActionsRoleIsAllowed('user')).toBe(false)
+    expect(requestActionsRoleIsAllowed('')).toBe(false)
+  })
+})
+
+describe('第一百一十八批新增的两条可证不变式', () => {
+  it('★ 每行的 request_id 都回显成响应那个 id', () => {
+    expect(requestActionsRowsEchoRequestId(resp())).toBe(true)
+  })
+
+  it('★ 空 actions 时也成立（空真，不是「没验到」）', () => {
+    expect(requestActionsRowsEchoRequestId(resp({ actions: [], count: 0 }))).toBe(true)
+  })
+
+  it('★★ 有**一行**回显成别的 id ⇒ 不成立', () => {
+    // ★★ 必须逐行查，只看首行的话这条判据会恒绿。
+    const actions = [
+      row(1, 'arrive', '2026-10-14T01:00:00Z'),
+      row(2, 'route_resolved', '2026-10-14T01:00:01Z', { request_id: 'req-OTHER' }),
+    ]
+    expect(requestActionsRowsEchoRequestId(resp({ actions, count: 2 }))).toBe(false)
+  })
+
+  it('★ 顶层 id 照抄、但**所有**行都换成别的 id ⇒ 仍判不成立（两半都要查）', () => {
+    // ★★★ 这条是「顶层 vs 请求」那一半（`requestActionsMatchesRequest`）查不出来的：
+    //   顶层 `request_id` 原样回显，是**对的**；只有行被整体换掉。
+    const actions = [
+      row(1, 'arrive', '2026-10-14T01:00:00Z', { request_id: 'req-X' }),
+      row(2, 'route_resolved', '2026-10-14T01:00:01Z', { request_id: 'req-X' }),
+    ]
+    const r = resp({ actions, count: 2 })
+    // 顶层照抄 ⇒ 老那条判据放行……
+    expect(r.request_id).toBe('req-abc')
+    // ……但逐行那条必须咬住。
+    expect(requestActionsRowsEchoRequestId(r)).toBe(false)
+  })
+
+  it('★ `{}` 空对象行在本端点**不可达**，且真出现时解包就该抛错', async () => {
+    expect(requestActionsEmptyRowIsUnreachable()).toBe(true)
+    // ★★ 判据不许放宽：空对象行缺 4 个恒在键 ⇒ **抛错**才是正确行为。
+    //   （那个 `{}` 兜底是为 SSE 准备的，那边的帧来自内存、没有预先 decode。）
+    ok(actionsOk([entry(1, 'arrive', '2026-10-14T01:00:00Z'), entryRaw({})]))
+    await expect(fetchRequestActions('req-abc')).rejects.toThrow(/恒在键/)
   })
 })

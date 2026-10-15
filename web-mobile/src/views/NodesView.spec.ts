@@ -854,7 +854,7 @@ describe('NodesView 供应商/模型过滤下拉的选项', () => {
 
   it('供应商下拉列出了每个供应商，而不只是「全部」', async () => {
     const w = await mountView()
-    const providerSelect = w.findAll('select')[0]
+    const providerSelect = w.findAll('select')[0]!
     const options = providerSelect.findAll('option').map((o) => o.text())
     expect(options.length, `供应商下拉应含「全部」+ 每个供应商，实际=${JSON.stringify(options)}`)
       .toBeGreaterThan(1)
@@ -868,11 +868,11 @@ describe('NodesView 供应商/模型过滤下拉的选项', () => {
 
   it('选中某个供应商后，列表只剩该供应商的分组', async () => {
     const w = await mountView()
-    const select = w.findAll('select')[0].element as HTMLSelectElement
+    const select = w.findAll('select')[0]!.element as HTMLSelectElement
     const options = [...select.options].map((o) => o.text)
     const target = options[1]
     expect(target, '需要至少一个真实供应商可选').toBeTruthy()
-    select.value = [...select.options][1].value
+    select.value = [...select.options][1]!.value
     select.dispatchEvent(new Event('change'))
     await flushPromises()
     await flushPromises()
