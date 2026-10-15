@@ -27,6 +27,10 @@ import { execFileSync } from 'node:child_process'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const GATE = join(HERE, 'verify-i18n-parity.mjs')
+// ★ 第一百四十一批：门现在 import `i18nDictScanner.mjs`，自测仓库**必须一起复制**。
+//   少复制一个 ⇒ 门在临时仓库里 ENOENT ⇒ 每一组都因为「与被测行为无关的原因」失败。
+//   （同一个坑：自测样本的前提必须与被测物的前提一致。）
+const SCANNER = join(HERE, 'i18nDictScanner.mjs')
 
 let pass = 0
 let fail = 0
@@ -58,6 +62,7 @@ function makeRepo({ zh, en, omitZh = false, omitEn = false, views, omitViews = f
   if (!omitZh) writeFileSync(join(root, 'src/i18n/zh-CN.ts'), zh ?? "export const zhCN = {\n  a: {\n    b: '值',\n  },\n} as const\n")
   if (!omitEn) writeFileSync(join(root, 'src/i18n/en-US.ts'), en ?? "export const enUS = {\n  a: {\n    b: 'value',\n  },\n} as const\n")
   writeFileSync(join(root, 'scripts/verify-i18n-parity.mjs'), execFileSync('cat', [GATE]))
+  writeFileSync(join(root, 'scripts/i18nDictScanner.mjs'), execFileSync('cat', [SCANNER]))
   return root
 }
 
@@ -247,5 +252,75 @@ const doc = (body) => `export const D = {\n${body}\n} as const\n`
  check('★ 单列出动态键前缀', /动态键前缀/.test(r.out) && /a[.]/.test(r.out), r.out)
 }
 
+// ── 第九组：第一百四十批新增 —— **带引号的键名**（第一批的洞）──────────────
+// ★ 这组用例存在的理由：parseDict 初版只认裸标识符，于是词典里
+//   `'unexpected-shape': '形状异常'` / `'6h': '每 6 小时'` 这类键被**整段静默丢弃**。
+//   丢弃的后果不是误报，是判据 1/2/3 对这些键**根本不生效**。
+//   而「键集一致」在一侧少写这种键时，本该拦下 —— 初版不会拦。
+{
+  const zhQ = "export const zhCN = {\n  a: {\n    'b-b': '值',\n  },\n} as const\n"
+  const enQ = "export const enUS = {\n  a: {\n    'b-b': 'value',\n  },\n} as const\n"
+  const r = runGate(makeRepo({ zh: zhQ, en: enQ }))
+  check('带引号的键名两侧都有 → 放行', r.code === 0, r.out)
+}
+{
+  // ★ 正控：en 侧**漏掉**这个带引号的键 ⇒ 必须拦下（初版看不见它）
+  const zhQ = "export const zhCN = {\n  a: {\n    'b-b': '值',\n  },\n} as const\n"
+  const enQ = "export const enUS = {\n  a: {\n    other: 'value',\n  },\n} as const\n"
+  const r = runGate(makeRepo({ zh: zhQ, en: enQ }))
+  check('en 少了带引号的键 → 拦下', r.code === 1, r.out)
+  check('报出了具体键名 a.b-b', r.out.includes('a.b-b'), r.out)
+}
+{
+  // ★ 负控：「值 === 键名」这条判据对带引号的键也要生效
+  const zhQ = "export const zhCN = {\n  a: {\n    'b-b': 'b-b',\n  },\n} as const\n"
+  const enQ = "export const enUS = {\n  a: {\n    'b-b': 'b-b',\n  },\n} as const\n"
+  const r = runGate(makeRepo({ zh: zhQ, en: enQ }))
+  check('带引号的键未翻译 → 拦下', r.code === 1, r.out)
+  check('报出未翻译', r.out.includes('未翻译'), r.out)
+}
+
+// ── 第十组：第一百四十一批新增 —— **一行多键** 与 **值里含逗号/冒号** ─────────
+// ★ 这两种形态是旧解析器（按行 + 正则）栽掉的最后两处：
+//   一行多键（`jan: '1 月', feb: '2 月', …`）旧版整行匹配不上 ⇒ **静默丢 12 个键**；
+//   值里含逗号冒号旧版会在值内部误切 ⇒ **凭空造键 / 吞键**。
+//   后果都不是误报，而是判据 1/2/3 对那些键**根本不生效**。
+{
+  const zhMulti = "export const zhCN = {\n  a: {\n    month: {\n      jan: '1 月', feb: '2 月', mar: '3 月',\n      apr: '4 月', may: '5 月', jun: '6 月',\n    },\n  },\n} as const\n"
+  const enMulti = "export const zhCN = {}\nexport const enUS = {\n  a: {\n    month: {\n      jan: 'Jan', feb: 'Feb', mar: 'Mar',\n      apr: 'Apr', may: 'May', jun: 'Jun',\n    },\n  },\n} as const\n"
+  const r = runGate(makeRepo({ zh: zhMulti, en: enMulti }))
+  check('一行多键两侧一致 → 放行', r.code === 0, r.out)
+}
+{
+  // ★ 正控：en 侧在**一行多键**里少一个 ⇒ 必须拦下（旧版看不见这一行）
+  const zhMulti = "export const zhCN = {\n  a: {\n    month: {\n      jan: '1 月', feb: '2 月',\n    },\n  },\n} as const\n"
+  const enMulti = "export const enUS = {\n  a: {\n    month: {\n      jan: 'Jan',\n    },\n  },\n} as const\n"
+  const r = runGate(makeRepo({ zh: zhMulti, en: enMulti }))
+  check('en 在一行多键里少一个 → 拦下', r.code === 1, r.out)
+  check('报出了 a.month.feb', r.out.includes('a.month.feb'), r.out)
+}
+{
+  // ★ 负控：值里含逗号与冒号 ⇒ **不得**被切成两个键
+  //   旧正则会在 `'a, b: c'` 的逗号处切开，凭空造出 `b` 这个键。
+  const zhTrick = "export const zhCN = {\n  a: {\n    note: 'x, y: z',\n    other: 'ok',\n  },\n} as const\n"
+  const enTrick = "export const enUS = {\n  a: {\n    note: 'x, y: z',\n    other: 'ok',\n  },\n} as const\n"
+  const r = runGate(makeRepo({ zh: zhTrick, en: enTrick }))
+  check('值里含逗号冒号 → 放行（不许凭空造键）', r.code === 0, r.out)
+  check('没有报出 a.b 这个凭空键', !r.out.includes('a.b'), r.out)
+}
+{
+  // ★ 同上，但把那个「被切开就会漏」的键真的漏掉 ⇒ 必须拦下
+  const zhTrick = "export const zhCN = {\n  a: {\n    note: 'x, y: z',\n  },\n} as const\n"
+  const enTrick = "export const enUS = {\n  a: {\n    note: 'x, y: z',\n  },\n  y: 'leak',\n} as const\n"
+  const r = runGate(makeRepo({ zh: zhTrick, en: enTrick }))
+  check('en 多出真实键 → 拦下（证明造键/漏键这条方向有牙）', r.code === 1, r.out)
+  check('报出了 y', /\by\b/.test(r.out), r.out)
+}
+
+// ★★ 汇总必须打在**所有组之后**。
+//   第一百四十批插入第九组时把汇总留在原位，于是汇总行算的是「第九组之前」的计数 ——
+//   报表连续两批少报 10 条。退出码仍是对的（process.exit 在最后），
+//   但「报表少报」与该文件头自己警告的「报表主动隐藏真缺口」是同一类。
+//   ⇒ 以后加组时，汇总与 process.exit 必须**一起**留在文件末尾。
 console.log('' + NL + 'i18n-parity selftest: ' + pass + ' passed, ' + fail + ' failed')
 process.exit(fail === 0 ? 0 : 1)

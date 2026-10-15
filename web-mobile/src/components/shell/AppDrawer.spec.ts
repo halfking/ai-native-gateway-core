@@ -261,7 +261,7 @@ describe('navItemsFor', () => {
       'ops-overview',
       'overrides',
       // ★★★★ 2026-10-14 第一百二十一批：平台设置
-      //   （`admin/settings.go:24` `mux.HandleFunc("/api/admin/settings/", h.admin(h.settingsRouter))`）
+      //   （`admin/settings.go:25` `mux.HandleFunc("/api/admin/settings/", h.admin(h.settingsRouter))`）
       //   ★★ 注意它包的是**一个会再分发到四个 handler 的 router** ——
       //   `h.admin` = `AdminMiddleware` 只认证不检 role，`settingsGet`/`settingsHistory`
       //   **全文零 role 检查**，而 history 传 `tid=""` 且审计项恒带

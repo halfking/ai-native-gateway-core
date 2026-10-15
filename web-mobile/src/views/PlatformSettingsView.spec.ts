@@ -32,7 +32,7 @@ import {
  *   （tenant_admin 可用，抽屉席**不设** `requiresRole`）」。
  *
  *   ★ 错在**只读了注册处那一行**。而注册处是：
- *     `admin/settings.go:24` `mux.HandleFunc("/api/admin/settings/", h.admin(h.settingsRouter))`
+ *     `admin/settings.go:25` `mux.HandleFunc("/api/admin/settings/", h.admin(h.settingsRouter))`
  *     —— 它包的是**一个会再分发到四个 handler 的 router**，不是叶子 handler。
  *
  *   ⇒ ★★★★ `mux.HandleFunc(prefix, h.admin(h.someRouter))` 这种形态，

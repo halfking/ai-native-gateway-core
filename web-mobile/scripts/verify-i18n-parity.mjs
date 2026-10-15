@@ -27,6 +27,7 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { join, dirname, resolve, sep as SEP } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { parseDictSource } from './i18nDictScanner.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const ZH = join(ROOT, 'src/i18n/zh-CN.ts')
@@ -39,84 +40,13 @@ for (const p of [ZH, EN]) {
   }
 }
 
-/**
- * 从词典源里抽出「键路径 → 字面值」。
- *
- * 刻意**不做 import**：那会依赖 tsx/编译链，而这个门要在 build 前置里跑。
- * 代价是要手写一小段解析，但词典文件是 SSOT、格式稳定，值都是单行字符串字面量。
- */
+// ★ 第一百四十一批：解析器搬去 `scripts/i18nDictScanner.mjs`（逐字符状态机）。
+//   搬出去有两个理由：
+//   ① 那里有完整的形态说明与自测意图，便于单测 —— 门里的私有函数没人能验；
+//   ② `src/i18n/dictParserParity.spec.ts` 要 **import 它**，与真实对象逐键对账。
+//   ⇒ 这道门从此不再是「一份没人验证的手写代码」。
 function parseDict(path) {
-  const src = readFileSync(path, 'utf8')
-  /** @type {Map<string, string>} */
-  const out = new Map()
-  /** @type {Map<string, number>} */  // 键路径 → 首次出现的行号（1-based）
-  const firstSeen = new Map()
-  /** @type {string[]} */
-  const duplicates = []
-  const stack = []
-  const lines = src.split('\n')
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-    // 开对象： `  foo: {` （排除数组/函数/字符串）
-    const open = line.match(/^(\s*)([A-Za-z_$][\w$]*):\s*\{\s*$/)
-    if (open) {
-      stack.push(open[2])
-      continue
-    }
-    // ★ 单行对象字面量：`  tab: { overview: '概览', credentials: '凭据' },`
-    //   2026-10-11 后补。初版只认「对象另起一行」，而 zh-CN.ts / en-US.ts 里
-    //   有 9 处这种写法，于是它们**整段被静默丢弃**：视图一旦引用其中任何一个
-    //   键（例如 `providers.tab.credentials`），本门就报「词典里不存在」——
-    //   而那个键明明就在词典里。
-    //   这正是「量具失灵比没量具更危险」的形态：门给的是**假红**，会让人去
-    //   改调用方或加重复键，而真问题在量具本身。
-    //   放在 open 之后、leaf 之前：open 形态是本正则的子集，顺序不能反。
-    const inlineObj = line.match(/^(\s*)([A-Za-z_$][\w$]*):\s*\{(.+)\}\s*,?\s*$/)
-    if (inlineObj && stack.length > 0) {
-      const parent = inlineObj[2]
-      // 叶子键允许带引号（`'5m'` 这种），值仍是单行字符串字面量。
-      const inner = inlineObj[3].matchAll(
-        /(?:^|,)\s*(?:'([^']+)'|([A-Za-z_$][\w$]*))\s*:\s*'((?:[^'\\]|\\.)*)'\s*(?=,|$)/g,
-      )
-      let hits = 0
-      for (const m of inner) {
-        hits++
-        const name = m[1] ?? m[2]
-        const keyPath = [...stack, parent, name].join('.')
-        if (firstSeen.has(keyPath)) {
-          duplicates.push(`${keyPath}（第 ${firstSeen.get(keyPath)} 行与第 ${i + 1} 行）`)
-        } else {
-          firstSeen.set(keyPath, i + 1)
-          out.set(keyPath, m[3])
-        }
-      }
-      // 没解析出任何叶子 ⇒ 这行不是本门认识的单行对象（宁可放过也不误报）。
-      if (hits > 0) continue
-    }
-    // 叶子： `  key: 'value',` 或 `  key: 'value'`
-    const leaf = line.match(/^(\s*)([A-Za-z_$][\w$]*):\s*'((?:[^'\\]|\\.)*)'\s*,?\s*$/)
-    if (leaf && stack.length > 0) {
-      const keyPath = [...stack, leaf[2]].join('.')
-      // ★ 重复键检测：Map.set 会静默覆盖，必须在覆盖前记下来。
-      //   同一段内重复（两行之间没有开/闭对象）才是真重复；
-      //   不同段里同名（如两个词典各自都有 `title`）是正常的，按完整路径区分。
-      if (firstSeen.has(keyPath)) {
-        duplicates.push(`${keyPath}（第 ${firstSeen.get(keyPath)} 行与第 ${i + 1} 行）`)
-      } else {
-        firstSeen.set(keyPath, i + 1)
-        out.set(keyPath, leaf[3])
-      }
-      continue
-    }
-    // 闭对象： `  },` / `  }` / **`} as const`**（本仓真实文件末尾就是后者，
-    // 见 zh-CN.ts / en-US.ts 末行 `} as const`）。
-    // ★ 初版只匹配前两种 ⇒ 栈永不弹空。真实文件因为恰好有 348 个叶子键所以
-    //   「看起来能用」，但自测样本（末行纯 `}`）立刻解析出 0 键 ⇒ 门失效。
-    //   这正是「门对真实样本恰好成立、对稍变样本就静默失效」的典型。
-    if (/^\s*\},?\s*(as const)?\s*$/.test(line) && stack.length > 0) stack.pop()
-  }
-  return { out, duplicates }
+  return parseDictSource(readFileSync(path, 'utf8'))
 }
 
 const zhRes = parseDict(ZH)

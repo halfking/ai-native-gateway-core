@@ -22,6 +22,14 @@ import {
   COMPLIANCE_THRESHOLD_FIELDS,
   COMPLIANCE_FEEDBACK_TYPES,
 } from '@/api/outputCompliance'
+// —— 第一百四十批新增：26 处拼接前缀的取值来源（见下方 DYNAMIC_KEYS ② 区）
+import { APPROVAL_STATUSES } from '@/api/approvals'
+import { INJECTION_SEVERITY_LEVELS } from '@/api/promptInjection'
+import { JOURNEY_LIFECYCLE_STATES } from '@/api/requestJourney'
+import { PROBE_TASK_STATUSES, PROBE_TASK_OUTCOMES } from '@/api/probeTriStateTasks'
+import { SELF_CHECK_RUN_STATUSES } from '@/api/selfCheck'
+import { REQUEST_DETAIL_BODY_STATUSES, REQUEST_DETAIL_BODY_STATUS_UNKNOWN } from '@/api/requestDetail'
+import { sourceBlob, concatPrefixes, prefixHits, isRealPrefix, flattenDict, PREFIX_FORM_NAMES } from './keyScan'
 
 /**
  * 动态 i18n 键的落地校验（2026-10-07）。
@@ -93,13 +101,65 @@ const DYNAMIC_KEYS: Array<[prefix: string, suffixes: readonly string[]]> = [
   // ★★★ MaaS 租户面（**admin 档**）**只有 4 维** ——
   //   登记它才能让「多画一维」这条判据在 i18n 侧也有一道网。
   ['mp.dim_', MAAS_PUBLIC_DIMS],
+
+  // ══ ② 第一百四十批新增 26 处 ══════════════════════════════════════════
+  // ★ 这 26 处在本批之前**从未登记** ⇒ 它们拼出来的键，词典里删一个都没人发现
+  //   （`verify-i18n-parity.mjs` 第 4 条只抽**字面量**键，抽不到拼接出来的）。
+  //   每条后面的注释写明**取值来源**，可从代码里对回去。
+  ['approvalQueue.status.', APPROVAL_STATUSES], // api/approvals.ts:104
+  ['autoRoute.accuracy.granularity.', ['5m', 'daily']], // autoRouteRead.ts:488 的返回联合
+  ['autoRoute.audit.block.', ['task_distribution', 'profile_distribution', 'top_chosen_models']], // AutoRouteView.vue:279 内联
+  ['autoRoute.outcome.', ['live', 'no_rows', 'stale', 'absent', 'query_failed', 'unknown']], // AutoRouteView.vue:162 词表 + 兜底
+  ['cache.state.', ['healthy', 'healthy_confirmed', 'available', 'suspicious', 'probing', 'failing', 'broken_confirmed', 'unavailable', 'unknown']], // probeTimelineCache.ts:292 词表 + 兜底
+  ['compressionView.band.', ['below', 'preliminary', 'forced']], // CompressionView.vue:206
+  ['compressionView.granularity.', ['hour', '6h', 'day']], // compression.ts:287 seriesGranularityOf 三个分支
+  ['dataFlow.segment.', ['hot_data', 'warm_data', 'cold_data', 'expired_data']], // dataLifecycleStats.ts:138 SEGMENT_KEYS（**不是** DATA_SEGMENT_KEYS —— 那个是度量名）
+  // ★ 后端驱动的**开放集**（见 OPEN_PREFIXES）：只登记已知值。
+  //   已知值本身是从词典里读出来的，不是从后端枚举抄的 —— 后端加一个状态，这儿不会红。
+  ['heatmap.state_', ['healthy_confirmed', 'broken_confirmed', 'suspicious', 'probing', 'unknown', 'unprobed']],
+  ['dh.state.', ['live', 'stale', 'unknown', 'unexpected-shape']], // DataHorizonView.vue:65 state computed
+  ['dh.state.note.', ['live', 'stale', 'unknown', 'unexpected-shape']], // 同上
+  ['injectionConfig.level_', INJECTION_SEVERITY_LEVELS], // promptInjection.ts:109
+  // ★ `journey.` 的后缀**不是**生命周期原值：视图把 `in_flight` 映射成 `inFlight`
+  ['journey.', JOURNEY_LIFECYCLE_STATES.map((s) => (s === 'in_flight' ? 'inFlight' : s))], // RequestJourneyView.vue:150
+  ['login.siteEnv.', ['production', 'staging', 'internal']], // gatewaySites.ts:26 Site.env
+  ['miq.err.', ['invalid-provider', 'invalid-canonical', 'credential-required', 'model-required']], // modelIQ.ts:644 的**四个分支**（不含 'unknown' —— 视图先判掉）
+  ['pq.leg.', PROBE_TASK_STATUSES], // probeTriStateTasks.ts:89
+  ['pq.outcomeDetail.', PROBE_TASK_OUTCOMES], // probeTriStateTasks.ts:93
+  ['probeModel.health.', ['critical', 'warning', 'degraded', 'healthy', 'unknown']], // probeModelHealth.ts:152 词表 + 兜底
+  ['providers.tab.', ['overview', 'credentials', 'models']], // ProviderDetailSheet.vue:145 内联 as const
+  ['rd.b_', ['request_body', 'response_body', 'outbound_body']], // RequestDetailView.vue:316 内联 as const
+  ['rd.bstatus_', [...REQUEST_DETAIL_BODY_STATUSES, REQUEST_DETAIL_BODY_STATUS_UNKNOWN]], // requestDetail.ts:93/97（**开放集**，见 OPEN_PREFIXES）
+  ['sa.dim_', ['clients', 'tasks']], // SessionAnalyticsView.vue:56 视图内 type Dimension
+  // ★★★ `sc.outcome.` 的联合里有 `'tested'`，但 selfCheckUpstreamOutcome **从不返回它**
+  //   （selfCheck.ts:818 三个分支都没有）⇒ 词典里**有意不给**这个键，
+  //   zh-CN.ts / en-US.ts 里都写了注释说明。这里登记的也只是实际分支。
+  ['sc.outcome.', ['not_tested', 'result_empty', 'result_present']],
+  ['sc.status.', SELF_CHECK_RUN_STATUSES], // SelfCheckView.vue:91 RUN_STATUS_FILTERS 的非空部分
+  ['ue.field.', ['dollars_saved', 'compression_saved', 'total_saved']], // UsageEnhancedView.vue:139
+  ['usage.dim.', ['model', 'provider', 'key', 'application', 'tenant']], // UsageView.vue:71 COST_DIMS
+  // ── ② 区结束 ──────────────────────────────────────────────────────────
 ]
 
-describe('动态 i18n 键在两侧词典里都存在', () => {
-  it('★ 至少覆盖 20 处动态前缀（少于这个数说明下面的清单没跟上代码）', () => {
-    expect(DYNAMIC_KEYS.length).toBeGreaterThanOrEqual(20)
-  })
+/**
+ * ★ 后缀来自**后端自由字符串**的前缀 —— 它们是**开放集**，
+ *   登记只能覆盖「已知值」，不能证明「后端不会发别的」。
+ *   列出来是为了让这道门的**边界**写在代码里，而不是让人以为它已经闭合。
+ *   （本批实测：`heatmap.state_` 的 6 个已知值就是从词典里抄的，
+ *     若后端新增一个状态 ⇒ 用户看到裸键，而**没有任何门会红**。）
+ */
+const OPEN_PREFIXES: readonly string[] = [
+  'heatmap.state_', // CredentialHeatmapView.vue:123 t(`heatmap.state_${s}`)，s = m.node_status.state
+  'rd.bstatus_', // requestDetail.ts:208 bodyStatusOf 直接回传后端原串
+]
 
+/**
+ * ★ 生成键总数（本批钉死）。改了 DYNAMIC_KEYS 的后缀集就会动它 ⇒ ⑥-6 会红。
+ * ⚠️ 红了不许直接改数字：先重量一遍，确认是真的增减。
+ */
+const GENERATED_KEY_TOTAL = 185 // 本批实测：46 个前缀 × 各自后缀数
+
+describe('动态 i18n 键在两侧词典里都存在', () => {
   for (const [prefix, suffixes] of DYNAMIC_KEYS) {
     for (const suffix of suffixes) {
       const key = prefix + suffix
@@ -116,6 +176,58 @@ describe('动态 i18n 键在两侧词典里都存在', () => {
       })
     }
   }
+})
+
+describe('★★★ 第六组：拼接前缀的**覆盖**门（本批新增）', () => {
+  const { blob } = sourceBlob()
+  const KEY_LIST: string[] = flattenDict(zh)
+  const REAL = [...concatPrefixes(blob)].filter((p) => isRealPrefix(p, KEY_LIST)).sort()
+  const REGISTERED = new Set(DYNAMIC_KEYS.map(([p]) => p))
+
+  it('⑥-1 ★★★★★ 源码里每一个拼接前缀都必须登记在 DYNAMIC_KEYS 里', () => {
+    const missing = REAL.filter((p) => !REGISTERED.has(p))
+    expect(
+      missing,
+      '这些前缀在代码里被拼接使用，但没登记 ⇒ 它们生成的键删掉了没有任何门会发现' +
+        '（verify-i18n-parity 第 4 条只抽字面量键）：\n  ' +
+        missing.join('\n  '),
+    ).toEqual([])
+  })
+
+  it('⑥-2 ★★★★ 三种拼接形态各至少抓到 1 个前缀（删掉任一正则会先红）', () => {
+    const hits = prefixHits(blob)
+    console.log(`[⑥-2] 拼接形态命中：${JSON.stringify(PREFIX_FORM_NAMES.map((n, i) => [n, hits[i]]))}`)
+    for (let i = 0; i < hits.length; i++) {
+      expect(hits[i], `${PREFIX_FORM_NAMES[i]} 一个都没抓到 ⇒ 覆盖面退化了`).toBeGreaterThan(0)
+    }
+  })
+
+  it('⑥-3 ★★★ 开放集前缀必须显式列在 OPEN_PREFIXES 里（不许悄悄当成闭合的）', () => {
+    // ★ 后缀来自后端自由字符串的前缀，登记只能覆盖「已知值」。
+    //   若有人把某个开放集前缀当成闭合的，删一条就不再有任何提示。
+    expect([...OPEN_PREFIXES].sort()).toEqual(['heatmap.state_', 'rd.bstatus_'])
+  })
+
+  it('⑥-4 ★★★ DYNAMIC_KEYS 里不得有重复前缀', () => {
+    const ps = DYNAMIC_KEYS.map(([p]) => p)
+    expect(ps.filter((p, i) => ps.indexOf(p) !== i)).toEqual([])
+  })
+
+  it('⑥-5 ★★ 至少覆盖 45 处动态前缀（少于这个数说明下面的清单没跟上代码）', () => {
+    expect(DYNAMIC_KEYS.length).toBeGreaterThanOrEqual(45)
+  })
+
+  it('⑥-6 ★★★★★ 生成的动态键**总数**钉死（后缀集被改窄必须看得见）', () => {
+    // ★★★ 批 140 变异 K11 实测出的洞：**用例是从 DYNAMIC_KEYS 的后缀集生成的**，
+    //   所以把某个后缀从清单里删掉 ⇒ 那条用例根本不存在 ⇒ 全绿。
+    //   这与批 139 的 J11 同族：**一份数据同时决定「测什么」与「覆盖多少」时，
+    //   它无法发现自己的收缩。**
+    //   ⇒ 钉总数。红了不许直接改数字：先重量一遍，确认是真的增减
+    //     （新增前缀 / 新增枚举值会顶高，删一条后缀会顶低）。
+    const total = DYNAMIC_KEYS.reduce((n, [, ss]) => n + ss.length, 0)
+    console.log(`[⑥-6] 动态前缀 ${DYNAMIC_KEYS.length} 个 · 生成键 ${total} 个`)
+    expect(total).toBe(GENERATED_KEY_TOTAL)
+  })
 })
 
 describe('★ 动态键不能是「字面量键集合的漏网」', () => {
