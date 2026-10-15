@@ -5,6 +5,7 @@ export const enUS = {
     subtitle: 'Mobile Ops',
   },
   nav: {
+    sanitizeRules: 'Sanitize rules',
     maasRates: 'MaaS credit rates',
     maasOrders: 'MaaS Orders',
     maasCatalog: 'MaaS Catalog',
@@ -4707,5 +4708,19 @@ sctx: {
     source: {
       note: 'This page only **relays** the server-side verdict; it does not recompute it: the server must align two signals — the MAX(ts) of session_turns and the in-process lastActivity ({source}) — before concluding anything.',
     },
+  },
+  sr: {
+    title: 'Sanitize rules', denied: 'Access requires super admin, a legacy admin key, or a tenant admin with a tenant.',
+    readonly: 'Read only: inspect rules, events, versions and instances. Use desktop for editing, publishing, rollback and review.',
+    events: 'Rule events', rules: 'Current rules', versions: 'Published versions', instances: 'Instance versions', refresh: 'Load',
+    allTenants: 'Scope: all tenants', ownTenant: 'Scope: current tenant; enforced by the server.',
+    action: 'Action', status: 'Review status', limit: 'Row limit (1–1000)', all: 'All',
+    notLoaded: 'Not loaded. Select Load to fetch current data.', empty: 'No records in this response.',
+    tenant: 'Tenant', count: 'Occurrences', sample: 'Masked summary', lastSeen: 'Last seen',
+    fallback: 'Version 0 is the local fallback, not a published database version.',
+    enabled: 'Enabled', disabled: 'Disabled', priority: 'Priority', details: 'Full structure', localInstance: 'Local instance status',
+    rollbackOf: 'Rollback source', target: 'Database target version', sameVersion: 'Version numbers match', versionDiffers: 'Version numbers differ',
+    lastRefresh: 'Last refresh', instanceNote: 'Matching version numbers do not prove instance health. Check the digest, last-seen time and errors. This page does not poll.',
+    invalidResponse: 'Unexpected response structure. Previously displayed data was retained.', invalidFilter: 'Invalid filters. Check action, status and the integer row limit.', requestFailed: 'Load failed. Try again.',
   },
 } as const

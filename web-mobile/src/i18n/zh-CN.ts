@@ -5,6 +5,7 @@ export const zhCN = {
     subtitle: '移动运维',
   },
   nav: {
+    sanitizeRules: '脱敏规则',
     maasRates: 'MaaS 积分价',
     maasOrders: 'MaaS 订单',
     maasCatalog: 'MaaS 目录',
@@ -4737,5 +4738,19 @@ sctx: {
     source: {
       note: '本页只**如实转述**服务端判定，不在前端重算：后端要比对 session_turns 的 MAX(ts) 与网关进程内的 lastActivity 两个信号（{source}）才能下结论。',
     },
+  },
+  sr: {
+    title: '脱敏规则', denied: '仅超级管理员、legacy 管理密钥和有租户的租户管理员可访问。',
+    readonly: '本页只读：查看规则、命中事件、版本与实例。编辑、发布、回滚和人工复核请使用桌面端。',
+    events: '命中事件', rules: '当前规则', versions: '发布历史', instances: '实例版本', refresh: '读取',
+    allTenants: '范围：全部租户', ownTenant: '范围：当前租户；由服务端强制过滤。',
+    action: '处理动作', status: '复核状态', limit: '读取上限（1–1000）', all: '全部',
+    notLoaded: '尚未读取。点击读取获取当前数据。', empty: '本次读取没有记录。',
+    tenant: '租户', count: '聚合次数', sample: '脱敏摘要', lastSeen: '最后上报',
+    fallback: '版本 0 为本机回退规则，不代表已有已发布的数据库版本。',
+    enabled: '启用', disabled: '停用', priority: '优先级', details: '查看完整结构', localInstance: '本机状态',
+    rollbackOf: '回滚来源', target: '数据库目标版本', sameVersion: '版本号一致', versionDiffers: '版本号不同',
+    lastRefresh: '最后刷新', instanceNote: '版本号一致不等于实例健康；请同时核对摘要、最后上报时间与错误。本页不自动轮询。',
+    invalidResponse: '服务端响应结构异常，未替换已显示数据。', invalidFilter: '筛选参数无效，请核对动作、状态和整数上限。', requestFailed: '读取失败，请重试。',
   },
 } as const

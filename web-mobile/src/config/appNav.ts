@@ -670,6 +670,8 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.sessionAnalyticsFilterOptions',
     requiresRole: 'admin',
   },
+  // 脱敏规则：租户管理员可读本租户事件；其余三区在视图内按服务端档位挡。
+  { key: 'sanitize-rules', to: '/sanitize-rules', icon: 'check', titleKey: 'nav.sanitizeRules', requiresRole: 'admin' },
   // ★ 加这一席**必须**同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
   {
     key: 'routing-policy',

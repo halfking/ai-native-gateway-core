@@ -20508,3 +20508,47 @@ build rc=0 · 全量 **226 文件 / 8358 passed + 1 skipped** · 变异台 **11 
 - 检查产物：`/tmp/co130-doc/mut143-final-results.json`、`*-143-final.json`、`tc143-final.log`、四门日志、`selftest143-final.log`、`build143-final.log`、`full143-final.log`、`stab143-final.log`。临时日志可能被系统回收，因此最终读数与限制已在本文登记。
 
 提交推送仍需精确SHA的最终只读审查与远端包含关系确认；本节记录检查读数，不代替那些操作。前文账本普查闭合、旧9有牙+2有意和“所有加法式天然有牙”均不恢复为结论。
+
+## 11.181 第一百四十四批：脱敏规则管理四 GET 只读面接入移动端
+
+### 一、交付边界与真实权限
+
+本批复制当前规则、事件、发布历史、实例状态四个只读入口，不代表脱敏规则全功能完成。编辑、验证、发布、回滚、事件复核和参数写侧仍留后续；API 没有导出无人调用的写接口。抽屉新增 sanitize-rules，深链 /sanitize-rules 懒加载 SanitizeRulesView，底栏不加席，两语种 nav.sanitizeRules / sr 词典同步。
+
+服务端 h.admin 只认证，真正角色门在 admin/sanitize_rules_handler.go:32–38：super_admin / admin_key 可四区；tenant_admin 且 TenantID 非空只读事件；普通 user 与未知角色拒绝。事件 f.TenantID 在 :182–185 从认证上下文强制取，不信客户端租户。本批抽屉和路由用 admin 档，视图再用同一 API helper 细分，并挡请求和标题；这不替代服务端鉴权，也不改变壳层 requiresRole 的拒绝导航语义。
+
+### 二、响应与移动交互
+
+sanitizeRules.ts 经真实 req→transport→JSON.parse 校验四个响应。三种列表的真实 Store 空结果是 []，null 属坏形状；Compile 要求至少一条 rule，不归一化空/null rules。optional 字段缺键合法，存在时含 null 必须验；事件 type/field 等结构展示字符串不冒充筛选枚举。数字需 JS 安全整数：这是精度保护，不能宣称接受所有 Go int64。version 0 可表示本机 fallback/未发布/未刷新，实例版本相等不等于健康。
+
+四区均由 ≥48px 按钮手动取数，不自动轮询，独立 AbortSignal；失败保留原内容。role/id/tenant 变更清空全部旧数据、取消全部在途请求，generation+aborted+disposed 防迟到结果回填。展示规则 JSON、版本详情和实例时间/摘要/错误；租户只显示本租户事件范围提示，无客户端 tenant_id 参数。
+
+### 三、判据、返工与有限证据
+
+API 188条，页面23条，受限页/标题普查扩15→16席；历史15席过程读数不机械改成新事实。页面通过真实 setTransport 验四 GET 按钮可达、无自动取数、过滤参数、空态/错误保留、身份切换、卸载、四区并发隔离以及恢复权限不露旧数据。四GET均动态模拟新身份响应先成功、旧响应迟到不得覆盖；迟到失败错误态和实际浏览器深链 document.title 时序尚无专门动态端到端证据。
+
+返工：草稿把 TransportRequest.path 写成 url，已按真实接缝修正；首轮224条6失败均因未固定语言，测试改为显式zh-CN并还原原locale后通过。M10初轮确实红但预期fullName未命中：只看降级后隐藏无法证明数据已清除；补恢复manager仍无旧规则后完整台重跑。规则空态分支不可达，已删。
+
+严格变异14/14 RED_HIT：角色恒放行、缺租户放行、响应校验删除、安全整数降成普通整数、optional放行、数组不逐行验、limit上界撤除、live恒真、取消撤除、清空撤除、同区重复守卫撤除、事件丢行、current串路径、manager区误给tenant。原始基线211/0失败；每条JSON读取numTotalTests/numFailedTests/fullName，零用例单列无效，红而未命中不冒充成功。try/finally与writeFileSync逐字节恢复两个源码，Go零修改；有限14种退化不等于所有退化都可检出。
+
+类型缓存实际由tsconfig指到共享node_modules/.tmp；广域glob未覆盖 symlink 不能证明缓存不存在，因此早先类型读数不称冷跑。最终改用vue-tsc -b --force强制重建，不删除并发主树共享缓存。
+
+独立只读审查未发现阻塞，并以实际TS实现/req桩做44项内存探测通过；不是live HTTP或完整transport测试。追加审查核读补充竞态测试与JSON，未独立复跑变异。client.ts跨realm DOMException AbortError可能被归network_error，未在本批修复；页面通过signal/代次忽略旧响应，不依赖该错误分类。
+
+### 四、最终读数与未覆盖事项
+
+最终 npx vue-tsc -b --force 强制重建、css/touch/i18n/comment、gate:selftest、build、全量、十连跑顺序链 rc=0；自测分项11+11+39+15+5=81。全量227文件 / 8563 passed + 1 skipped（基线批143为8352+1，新增188+23=211条）。最终代码十连跑10/10：每轮8563 passed + 1 skipped、失败次数0、快照0份；期间本worktree不修改产品文件、不并发测试或变异。两语种各3869键。日志/变异台保存在独立worktree .audit144，未纳入产品提交；临时工作树可被清理，本节保存可复核读数与限制。
+
+收尾fetch曾连续两次443连接失败，此前成功fetch的origin/main为3a79bf9cb；不得将缓存tip冒充当前远端。最终推送结果仍须实测，不将检查通过写成已上线。
+
+后端既有跨租户/角色风险、壳层拒绝去向与孤儿导出/键决策不在本批范围。历史ComplianceHitsView/ RoutingOptView flaky未复现不等于已修复；未验证live HTTP、真实浏览器/原生壳。提交收口仍需最终SHA只读审查及远端包含关系确认。
+
+### 五、网络恢复后的 rebase 复验（基线 `ffd801820`）
+
+2026-10-16 04:56 fetch恢复，远端从3a79bf9cb推进四个Go探针/路由提交到ffd8018206170f14628b763ad68d1fa28a4845ff；批144独立工作树无冲突rebase。十个移动端产品文件与旧56071df9逐字相同；远端新增Go改动不归本批，本批相对新父的差异仍只限十个移动文件和本文追加。
+
+旧基线读数保留为历史，不代替rebase后接受证据。第一次rebase复验14/14变异、四spec231、类型强制重建/四门/selftest/build及全量8563+1均通过，但十连跑第1轮orphanLedger.spec.ts⑥-3超时20000ms；已完成第2–4轮通过，随后主动停止该批（不是10/10绿）。保留stability-rebase.log与test-stability-snapshots/run-01.txt。超时没有dead集合断言差异，不能说发现死面板，也不能直接归为环境问题。
+
+源码可证热点：⑥-3按每个可达API调用uiImportersOf，重复全树readFileSync；每个importer最多又三次读/拼/剥注释。新增页面增加扫描工作量，但无前后性能对照，未证明是唯一超时原因。附带修复仅orphanLedger.spec.ts：uiSources取每次新快照、uiImporterIndex逐文件一次解析，⑥-3复用局部索引和stripped；无全局缓存，不调超时、范围和引用口径保持原样。新增实际逐模块直接过滤等价及合成正负控，37条单跑通过；共享importsOf意味着不证明解析器完备。⑥-2仍有重复扫描，未发现超时，不泛化为全部性能已解决。
+
+扩展严格变异到17条（原14+索引返空/错配模块/伪造文件），原始基线248/0失败，17/17 RED_HIT，三份源码finally逐字节还原。最终含扫描优化的五spec268、vue-tsc -b --force、四门/selftest81/build、全量227文件8564 passed+1 skipped、十连跑顺序链rc0。最终十连跑10/10，每轮8564+1，失败0、快照0；本worktree期间不改产品文件、不并发测试/变异。相对批143新增188+23+1=212条；旧超时已保留，有限十轮未复现不证明所有负载下不再超时。产品API/页面10文件保持冻结哈希；最终提交范围扩为11个移动文件+文档共12文件，Go不归本批。本节不恢复冷类型/写侧完成/live HTTP/原生壳等未经证明声明。

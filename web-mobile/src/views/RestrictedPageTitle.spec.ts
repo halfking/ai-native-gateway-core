@@ -32,8 +32,9 @@ import { enUS } from '@/i18n/en-US'
  *   ⇒ 本批用**视图层**堵掉它，不去改壳层的导航语义（那是口径决策，另议）。
  */
 
-/** 全族：15 条带 `requiresRole` 的路由 → 视图 → 标题键。 */
+/** 当前全族：16 条带 `requiresRole` 的路由 → 视图 → 标题键（批144扩一席）。 */
 const FAMILY: ReadonlyArray<{ path: string; view: string; key: string }> = [
+  { path: '/sanitize-rules', view: 'SanitizeRulesView', key: 'sr.title' },
   { path: '/request-anomalies', view: 'RequestAnomaliesView', key: 'anomalies.title' },
   { path: '/errors-trend', view: 'ErrorsTrendView', key: 'et.title' },
   { path: '/model-history', view: 'ModelHistoryView', key: 'mh.title' },
@@ -90,7 +91,7 @@ describe('⑦ ★★★★★★ titleResolver 优先级链：实测契约', () 
 
 // ── 全族普查 ───────────────────────────────────────────────────────────────
 
-describe('⑧ ★★★★★★ 15 个受限视图的标题必须随 `allowed` 切换', () => {
+describe('⑧ ★★★★★★ 16 个受限视图的标题必须随 `allowed` 切换', () => {
   it('⑧-1 ★★★★★★ 逐条核对（★ 本批真正的产出）', () => {
     // ★ 先断言真的扫到了东西 —— 否则下面的循环是恒真的
     expect(FAMILY.length).toBeGreaterThan(10)

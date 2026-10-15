@@ -18,6 +18,7 @@ import StorageAndLogConfigView from './StorageAndLogConfigView.vue'
 import StorageMigrationStateView from './StorageMigrationStateView.vue'
 import TurnsFilterOptionsView from './TurnsFilterOptionsView.vue'
 import SessionAnalyticsFilterOptionsView from './SessionAnalyticsFilterOptionsView.vue'
+import SanitizeRulesView from './SanitizeRulesView.vue'
 
 import { setTransport, resetTransport } from '@/api/transport'
 import { zhCN } from '@/i18n/zh-CN'
@@ -55,7 +56,7 @@ import { zhCN } from '@/i18n/zh-CN'
  *   ① ★★★★★★ 召回自证：路由里带 `requiresRole` 的声明**逐条**与本文件
  *     的表配对（**不是只比数量** —— 第一百三十一批实测过数量对账能让
  *     3 条串线的普查绿掉）。
- *   ② ★★★★★★ 请求层：错角色挂载 15 个视图，**零请求**。
+ *   ② ★★★★★★ 请求层：错角色挂载当前 16 个视图，**零请求**（批144扩一席）。
  *   ③ ★★★★★★★★ 正控（探针有牙）：放行角色下点取数按钮，**必须**发请求。
  *   ④ ★★★★★★ 结构层：错角色时取数按钮**不在 DOM**。
  *   ⑤ ★★★★ DOM 层：不露出裸 i18n 键。
@@ -104,6 +105,7 @@ vi.mock('@/stores/auth', () => ({ useAuthStore: () => A }))
  *     ⇒ 正控必须先把参数填成合法值，否则量到的是「按钮禁用」而不是「兜底失效」。
  */
 const TABLE = [
+  { path: '/sanitize-rules', comp: SanitizeRulesView, file: 'SanitizeRulesView.vue', gate: 'sanitizeRulesCanReadEvents', tier: 'admin', okRole: 'super_admin', nope: 'sr-nope', trigger: 'sr-load', fill: [] },
   { path: '/request-anomalies', comp: RequestAnomaliesView, file: 'RequestAnomaliesView.vue', gate: 'anomalyRoleIsSuperAdmin', tier: 'super_admin', okRole: 'super_admin', nope: 'ra-nope', trigger: null, fill: [] },
   { path: '/errors-trend', comp: ErrorsTrendView, file: 'ErrorsTrendView.vue', gate: 'errorsTrendRoleIsAdminTier', tier: 'admin', okRole: 'tenant_admin', nope: 'et-nope', trigger: 'et-load', fill: [] },
   { path: '/model-history', comp: ModelHistoryView, file: 'ModelHistoryView.vue', gate: 'modelHistoryRoleIsAdminTier', tier: 'admin', okRole: 'tenant_admin', nope: 'mh-nope', trigger: 'mh-load', fill: [['mh-credentialId', '1'], ['mh-rawModel', 'gpt-4']] },
@@ -279,7 +281,7 @@ describe('① ★★★★★★ 召回自证：本表与路由里的 requiresRo
         found.map((f) => `${f.path}:${f.role}`).join('  '),
     )
     expect(found.length, '路由里的 requiresRole 条数变了，本表没跟上').toBe(TABLE.length)
-    expect(TABLE.length).toBe(15)
+    expect(TABLE.length).toBe(16)
   })
 
   it('①-2 ★★★★★★★ 逐条配对：path / 档位 / 组件文件三项全对', () => {
@@ -306,7 +308,7 @@ describe('① ★★★★★★ 召回自证：本表与路由里的 requiresRo
 // ── ② 请求层兜底（挂载阶段） ─────────────────────────────────────────────────
 
 describe('② ★★★★★★ 错角色深链：挂载阶段一个请求都不发', () => {
-  it('②-1 ★★★★★★★★ 15 个受限视图、user 角色（对全部档位都无权）', async () => {
+  it('②-1 ★★★★★★★★ 16 个受限视图、user 角色（对全部档位都无权）', async () => {
     const report: string[] = []
     const bad: string[] = []
     for (const row of TABLE) {
@@ -318,15 +320,15 @@ describe('② ★★★★★★ 错角色深链：挂载阶段一个请求都�
     }
     console.log(`[②-1] user 角色 · 挂载阶段：\n  ${report.join('\n  ')}`)
     expect(bad, '挂载阶段就发请求了：\n' + bad.join('\n')).toEqual([])
-    // ★ 覆盖面证据：确实量到了 15 个视图，而不是量到 3 个。
-    expect(report).toHaveLength(15)
+    // ★ 覆盖面证据：确实量到了 16 个视图，而不是量到 3 个。
+    expect(report).toHaveLength(16)
   })
 })
 
 // ── ③ 正控：探针有牙 ─────────────────────────────────────────────────────────
 
 describe('③ ★★★★★★★★ 正控：放行角色下点取数按钮必须发请求', () => {
-  it('③-1 ★★★★★★★★ 15/15 放行角色点按钮都发出了请求 ⇒ ② 的「零」是兜底挡的', async () => {
+  it('③-1 ★★★★★★★★ 16/16 放行角色点按钮都发出了请求 ⇒ ② 的「零」是兜底挡的', async () => {
     const report: string[] = []
     const silent: string[] = []
     let autoFire = 0
@@ -352,16 +354,16 @@ describe('③ ★★★★★★★★ 正控：放行角色下点取数按钮�
       if (calls.length === 0) silent.push(`${row.path} 点了按钮也没发请求 ⇒ ② 的 0 说明不了任何事`)
     }
     console.log(
-      `[③-1] 放行角色 · 点取数按钮：\n  ${report.join('\n  ')}\n  ★ 挂载即取数的席位：${autoFire}/15`,
+      `[③-1] 放行角色 · 点取数按钮：\n  ${report.join('\n  ')}\n  ★ 挂载即取数的席位：${autoFire}/${TABLE.length}`,
     )
     // ★★★ 这是**整份文件承重的一条**：v1 版本它在**挂载**阶段跑，14/15 失败
     //   —— 正是它揭穿了「零请求」是空门。删掉它，② 就退化成装饰。
     expect(silent, '正控失败：\n' + silent.join('\n')).toEqual([])
-    expect(report).toHaveLength(15)
+    expect(report).toHaveLength(16)
     expect(autoFire, '实测自动取数席位变了，本文件的风险面要重测').toBe(1)
   })
 
-  it('③-2 ★★★★ 读数留档：15 席里只有 request-anomalies 挂载即取数', async () => {
+  it('③-2 ★★★★ 读数留档：16 席里只有 request-anomalies 挂载即取数', async () => {
     // 从实际挂载请求量风险面；按固定表项筛选会漏掉新增的自动取数行为。
     const auto: string[] = []
     for (const row of TABLE) {
@@ -377,7 +379,7 @@ describe('③ ★★★★★★★★ 正控：放行角色下点取数按钮�
 // ── ④ 结构层：按钮压根不在 DOM ───────────────────────────────────────────────
 
 describe('④ ★★★★★★ 无权限时取数按钮不在 DOM（结构上无法触发）', () => {
-  it('④-1 ★★★★★★ 错角色时 15/15 都找不到那一席的取数按钮', async () => {
+  it('④-1 ★★★★★★ 错角色时 16/16 都找不到那一席的取数按钮', async () => {
     const report: string[] = []
     const bad: string[] = []
     for (const row of TABLE) {
@@ -420,7 +422,7 @@ describe('⑤ ★★★★ 错角色时不露出裸 i18n 键', () => {
     return [...new Set([...known, ...cand])]
   }
 
-  it('⑤-1 ★★★★ 15/15 的 nope 区走的是真字典', async () => {
+  it('⑤-1 ★★★★ 16/16 的 nope 区走的是真字典', async () => {
     const bad: string[] = []
     for (const row of TABLE) {
       const w = await mountAs(row, 'user')

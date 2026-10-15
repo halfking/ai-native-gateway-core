@@ -966,6 +966,12 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'saf.title', requiresAuth: true, requiresRole: 'admin' },
   },
   {
+    path: '/sanitize-rules',
+    name: 'sanitize-rules',
+    component: () => import('@/views/SanitizeRulesView.vue'),
+    meta: { titleKey: 'sr.title', requiresAuth: true, requiresRole: 'admin' },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),
