@@ -176,6 +176,204 @@ async function loadVersions() {
     if (!disposed) versionLoading.value = false;
   }
 }
+async function loadInstances() {
+  if (!superAdmin.value || instanceLoading.value || document.hidden || disposed)
+    return;
+  const request = new AbortController();
+  instanceController = request;
+  instanceLoading.value = true;
+  try {
+    const value = await listSanitizeRuleInstances({ signal: request.signal });
+    if (!disposed && !request.signal.aborted) {
+      instances.value = value.instances ?? [];
+      targetVersion.value = value.target_version;
+      instanceError.value = "";
+    }
+  } catch (e) {
+    if (!disposed && !request.signal.aborted) instanceError.value = message(e);
+  } finally {
+    if (instanceController === request) {
+      instanceController = null;
+      if (!disposed) instanceLoading.value = false;
+    }
+  }
+}
+async function loadParams() {
+  if (!superAdmin.value || paramsLoading.value || paramsBusy.value) return;
+  paramsLoading.value = true;
+  paramsLoaded.value = false;
+  parameterError.value = "";
+  try {
+    const values = await Promise.all(keys.map((key) => getSetting(key)));
+    if (!disposed) {
+      params.value = {
+        refresh: Number(values[0].value),
+        audit: Boolean(values[1].value),
+        limit: Number(values[2].value),
+      };
+      paramsLoaded.value = true;
+    }
+  } catch (e) {
+    if (!disposed) parameterError.value = message(e);
+  } finally {
+    if (!disposed) paramsLoading.value = false;
+  }
+}
+function schedulePoll() {
+  clearTimeout(pollTimer);
+  if (disposed || !superAdmin.value || document.hidden) return;
+  pollTimer = setTimeout(async () => {
+    await loadInstances();
+    schedulePoll();
+  }, 5000);
+}
+function visibility() {
+  if (document.hidden) {
+    clearTimeout(pollTimer);
+    instanceController?.abort();
+    instanceController = null;
+    instanceLoading.value = false;
+    return;
+  }
+  void loadInstances();
+  schedulePoll();
+}
+function chooseTab(value: string) {
+  tab.value = value;
+  if (value === "events") void loadEvents();
+  if (value === "versions") void loadVersions();
+  if (value === "instances") void loadInstances();
+}
+function addRule() {
+  const id = "custom." + Date.now().toString(36);
+  draft.value.rules.push({
+    id,
+    name: t("sanitizeRules.add"),
+    type: "custom",
+    kind: "pattern",
+    pattern: "example-secret",
+    group: 0,
+    scopes: ["input"],
+    action: "mask",
+    enabled: true,
+    priority: 0,
+    samples: [],
+    exemptions: [],
+  });
+  selected.value = draft.value.rules.length - 1;
+}
+function removeRule() {
+  draft.value.rules.splice(selected.value, 1);
+  selected.value = -1;
+}
+function setList(key: "tools" | "fields", event: Event) {
+  if (activeRule.value)
+    activeRule.value[key] = (event.target as HTMLInputElement).value
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean);
+}
+function openAdvanced() {
+  if (!advancedDirty.value)
+    advanced.value = JSON.stringify(draft.value, null, 2);
+}
+function applyAdvanced() {
+  try {
+    const parsed: unknown = JSON.parse(advanced.value);
+    if (!isRuleConfig(parsed)) throw new Error();
+    draft.value = parsed;
+    for (const rule of draft.value.rules) {
+      rule.samples ??= [];
+      rule.exemptions ??= [];
+    }
+    selected.value = -1;
+    advancedDirty.value = false;
+    advanced.value = JSON.stringify(draft.value, null, 2);
+    error.value = "";
+  } catch {
+    error.value = t("sanitizeRules.invalidJson");
+  }
+}
+async function validate() {
+  if (busy.value) return;
+  if (advancedDirty.value) {
+    applyAdvanced();
+    if (advancedDirty.value) return;
+  }
+  busy.value = true;
+  error.value = "";
+  try {
+    const requestConfig = clone(draft.value);
+    const requestSerialized = JSON.stringify(requestConfig);
+    const result = await validateSanitizeRules(requestConfig);
+    if (result.valid) {
+      validated.value = requestSerialized;
+      validatedDigest.value = result.config_digest;
+      notice.value = valid.value ? t("sanitizeRules.valid") : "";
+    }
+  } catch (e) {
+    error.value = message(e);
+  } finally {
+    busy.value = false;
+  }
+}
+async function publish() {
+  if (busy.value || !head.value) return;
+  if (!comment.value.trim()) {
+    error.value = t("sanitizeRules.commentRequired");
+    return;
+  }
+  if (!valid.value) {
+    error.value = t("sanitizeRules.validationRequired");
+    return;
+  }
+  busy.value = true;
+  error.value = "";
+  try {
+    const result = await publishSanitizeRules({
+      base_version: head.value.version,
+      config: clone(draft.value),
+      comment: comment.value.trim(),
+      ...(linked.value.length ? { review_event_ids: [...linked.value] } : {}),
+    });
+    applyHead({
+      version: result.id,
+      config: result.config,
+      config_digest: validatedDigest.value,
+      status: head.value.status,
+    });
+    notice.value = t("sanitizeRules.published");
+    void loadInstances();
+    void loadVersions();
+    void loadEvents();
+  } catch (e) {
+    conflict.value =
+      !!e && typeof e === "object" && "status" in e && e.status === 409;
+    error.value = conflict.value ? t("sanitizeRules.conflict") : message(e);
+  } finally {
+    busy.value = false;
+  }
+}
+async function review(
+  event: RuleEvent,
+  status: Exclude<ReviewStatus, "pending">,
+) {
+  if (reviewBusy.value !== null) return;
+  reviewBusy.value = event.id;
+  eventError.value = "";
+  try {
+    await reviewSanitizeRuleEvent(event.id, {
+      status,
+      comment: reviewComments.value[event.id] ?? "",
+    });
+    event.status = status;
+    notice.value = t("sanitizeRules.reviewed");
+  } catch (e) {
+    eventError.value = message(e);
+  } finally {
+    reviewBusy.value = null;
+  }
+}
 </script>
 <template>
 
