@@ -374,8 +374,194 @@ async function review(
     reviewBusy.value = null;
   }
 }
+function draftEvent(event: RuleEvent, original = false) {
+  const rule = head.value?.config.rules.find((r) => r.id === event.rule_id);
+  if (!rule) {
+    eventError.value = t("sanitizeRules.missingRule");
+    return;
+  }
+  const targetID = original ? rule.id : rule.id.slice(0, 100) + ".review." + event.id;
+  let index = draft.value.rules.findIndex((r) => r.id === targetID);
+  if (index < 0 && !original) {
+    const copy = clone(rule);
+    copy.id = targetID;
+    copy.name = rule.name + " · " + event.id;
+    copy.tenant_id = event.tenant_id;
+    copy.scopes = [event.phase];
+    if (event.phase !== "egress") copy.exemptions = [];
+    draft.value.rules.push(copy);
+    index = draft.value.rules.length - 1;
+  }
+  if (index < 0) {
+    eventError.value = t("sanitizeRules.missingRule");
+    return;
+  }
+  selected.value = index;
+  editingMatched.value = original;
+  linked.value = [...new Set([...linked.value, event.id])];
+  tab.value = "rules";
+  notice.value = t(original ? "sanitizeRules.editMatchedHint" : "sanitizeRules.scopedHint");
+}
+function comparableRule(rule: SensitiveRule) {
+  // The editor fills omitted lists for v-model. Compare policy values rather
+  // than JSON property order or optional empty-list serialization.
+  return JSON.stringify([
+    rule.id, rule.name, rule.type, rule.kind, rule.pattern, rule.group,
+    rule.scopes, rule.action, rule.enabled, rule.priority,
+    rule.tenant_id ?? "", rule.tools ?? [], rule.fields ?? [],
+    rule.samples ?? [], rule.exemptions ?? [],
+  ]);
+}
+const versionDiff = computed(() => {
+  if (!chosenVersion.value || !head.value) return [];
+  const before = new Map(head.value.config.rules.map((r) => [r.id, r])),
+    after = new Map(chosenVersion.value.config.rules.map((r) => [r.id, r]));
+  const rows: { id: string; change: string }[] = [];
+  for (const [id, rule] of after) {
+    if (!before.has(id)) rows.push({ id, change: "added" });
+    else if (comparableRule(before.get(id)!) !== comparableRule(rule))
+      rows.push({ id, change: "changed" });
+  }
+  for (const id of before.keys())
+    if (!after.has(id)) rows.push({ id, change: "removed" });
+  return rows;
+});
+async function rollback() {
+  if (busy.value || !head.value || !chosenVersion.value) return;
+  if (!rollbackComment.value.trim()) {
+    versionError.value = t("sanitizeRules.commentRequired");
+    return;
+  }
+  busy.value = true;
+  versionError.value = "";
+  try {
+    const result = await rollbackSanitizeRules({
+      base_version: head.value.version,
+      target_version: chosenVersion.value.id,
+      comment: rollbackComment.value.trim(),
+    });
+    applyHead({
+      version: result.id,
+      config: result.config,
+      config_digest: "",
+      status: head.value.status,
+    });
+    rollbackOpen.value = false;
+    rollbackComment.value = "";
+    notice.value = t("sanitizeRules.published");
+    void loadVersions();
+    void loadInstances();
+  } catch (e) {
+    versionError.value = message(e);
+  } finally {
+    busy.value = false;
+  }
+}
+async function saveParams() {
+  if (paramsBusy.value || paramsLoading.value || !paramsLoaded.value) return;
+  paramsBusy.value = true;
+  parameterError.value = "";
+  const values = [params.value.refresh, params.value.audit, params.value.limit];
+  const result = await Promise.allSettled(
+    keys.map((key, index) => updateSetting(key, { value: values[index] })),
+  );
+  if (result.some((x) => x.status === "rejected"))
+    parameterError.value = t("sanitizeRules.parametersPartial");
+  else notice.value = t("sanitizeRules.parametersSaved");
+  paramsBusy.value = false;
+}
+const date = (value: string) =>
+  !value || value.startsWith("0001-")
+    ? t("sanitizeRules.never")
+    : fmtDateTime24h(value);
+const stale = (instance: RuleInstance) =>
+  !instance.last_seen ||
+  Date.now() - Date.parse(instance.last_seen) >
+    Math.max(30000, params.value.refresh * 3000);
+onMounted(() => {
+  if (superAdmin.value) {
+    void loadCurrent(true);
+    void loadVersions();
+    void loadInstances();
+    void loadParams();
+    schedulePoll();
+  }
+  void loadEvents();
+  document.addEventListener("visibilitychange", visibility);
+});
+onBeforeUnmount(() => {
+  disposed = true;
+  clearTimeout(pollTimer);
+  controller.abort();
+  instanceController?.abort();
+  document.removeEventListener("visibilitychange", visibility);
+});
 </script>
 <template>
-
+  <main class="sanitize-rules-view">
+    <PageHeader
+      :title="t('sanitizeRules.title')"
+      :subtitle="t('sanitizeRules.subtitle')"
+      ><template #actions
+        ><RouterLink to="/admin/modules" class="btn">{{
+          t("sanitizeRules.settingsLink")
+        }}</RouterLink
+        ><button
+          v-if="superAdmin"
+          class="btn"
+          :disabled="loading || busy"
+          @click="loadCurrent()"
+        >
+          {{ t("sanitizeRules.refresh") }}
+        </button></template
+      ></PageHeader
+    >
+    <p v-if="!allowed" role="alert" class="error-banner">
+      {{ t("sanitizeRules.permission") }}
+    </p>
+    <template v-else>
+      <div v-if="head" class="provenance">
+        <span
+          >{{ t("sanitizeRules.base") }}
+          <strong>{{ head.version }}</strong></span
+        ><span
+          >{{ t("sanitizeRules.target") }}
+          <strong>{{ targetVersion }}</strong></span
+        ><span v-if="head.version === 0" class="warning">{{
+          t("sanitizeRules.fallback")
+        }}</span
+        ><small :title="head.config_digest"
+          >{{ t("sanitizeRules.digest") }}
+          <code>{{ head.config_digest.slice(0, 16) || "—" }}</code></small
+        >
+      </div>
+      <p v-if="notice" role="status" class="notice">{{ notice }}</p>
+      <p v-if="error" role="alert" class="error-banner">{{ error }}</p>
+      <p v-if="instanceError" role="alert" class="error-banner">
+        {{ t("sanitizeRules.instances") }}: {{ instanceError }}
+      </p>
+      <nav class="tabs" :aria-label="t('sanitizeRules.title')">
+        <button
+          v-for="key in superAdmin
+            ? ['rules', 'events', 'versions', 'instances', 'parameters']
+            : ['events']"
+          :key="key"
+          class="tab"
+          :class="{ active: tab === key }"
+          :data-test="'tab-' + key"
+          :aria-current="tab === key ? 'page' : undefined"
+          @click="chooseTab(key)"
+        >
+          {{ labels[key] }}
+        </button>
+      </nav>
+      <section v-if="tab === 'rules' && superAdmin" :aria-busy="loading">
+        <p v-if="loading">{{ t("sanitizeRules.loading") }}</p>
+        <template v-else-if="head">
+           </template
+        >
+      </section>
+    </template>
+  </main>
 </template>
 <style scoped></style>
