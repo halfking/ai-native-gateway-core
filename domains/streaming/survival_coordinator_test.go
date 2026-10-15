@@ -3,6 +3,8 @@ package streaming
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -294,6 +296,89 @@ func TestSurvivalCoordinatorClientCancelStopsLoop(t *testing.T) {
 	}
 	if len(h.terminals) != 0 {
 		t.Fatal("client is gone — no terminal render")
+	}
+}
+
+type blockingDeadlineExecutor struct {
+	started chan struct{}
+	done    chan error
+}
+
+func (e *blockingDeadlineExecutor) Execute(params *executors.ExecParams) (*executors.ExecuteResult, error) {
+	close(e.started)
+	<-params.R.Context().Done()
+	err := params.R.Context().Err()
+	e.done <- err
+	return nil, &executors.ExecuteError{LastErr: err, LastKind: errorsx.KindTimeout}
+}
+
+func TestSurvivalCoordinatorDeadlineCancelsBlockingAttemptAtWallClockBudget(t *testing.T) {
+	exec := &blockingDeadlineExecutor{started: make(chan struct{}), done: make(chan error, 1)}
+	flusher := &trackingFlusher{}
+	var terminals []TaskDecision
+	c := &SurvivalCoordinator{
+		Exec:     exec,
+		Protocol: ProtocolOpenAIChat,
+		Options: SurvivalOptions{
+			Deadline:   40 * time.Millisecond,
+			RetryBase:  time.Second,
+			MaxRetries: 1,
+		},
+		Terminal: func(decision TaskDecision, _ bool) {
+			terminals = append(terminals, decision)
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	startedAt := time.Now()
+	res := c.Run(req.Context(), NewSerializedStreamWriter(flusher), &executors.ExecParams{R: req, IsStream: true})
+	elapsed := time.Since(startedAt)
+
+	if res.Decision.Reason != "deadline_exceeded" {
+		t.Fatalf("decision = %+v, want survival deadline_exceeded", res.Decision)
+	}
+	if elapsed < 20*time.Millisecond || elapsed > 500*time.Millisecond {
+		t.Fatalf("blocking attempt returned after %v, want near the 40ms wall-clock budget", elapsed)
+	}
+	select {
+	case err := <-exec.done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("attempt context error = %v, want context.DeadlineExceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocking executor did not observe the survival deadline")
+	}
+	if len(terminals) != 1 || terminals[0].Reason != "deadline_exceeded" {
+		t.Fatalf("terminals = %+v, want one synthetic survival deadline terminal", terminals)
+	}
+}
+
+func TestSurvivalCoordinatorParentDeadlineWinsWithoutSyntheticTerminal(t *testing.T) {
+	exec := &blockingDeadlineExecutor{started: make(chan struct{}), done: make(chan error, 1)}
+	var terminals []TaskDecision
+	c := &SurvivalCoordinator{
+		Exec:     exec,
+		Protocol: ProtocolOpenAIChat,
+		Options:  SurvivalOptions{Deadline: 10 * time.Second},
+		Now: func() time.Time {
+			return time.Now().Add(-time.Hour)
+		},
+		Terminal: func(decision TaskDecision, _ bool) {
+			terminals = append(terminals, decision)
+		},
+	}
+	parent, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(parent)
+	res := c.Run(parent, NewSerializedStreamWriter(&trackingFlusher{}), &executors.ExecParams{R: req, IsStream: true})
+
+	if res.Decision.Reason != "deadline_exceeded" {
+		t.Fatalf("decision = %+v, want stable parent deadline_exceeded reason", res.Decision)
+	}
+	if res.Decision.Detail != "" {
+		t.Fatalf("parent deadline must not fabricate a survival summary: %+v", res.Decision)
+	}
+	if len(terminals) != 0 {
+		t.Fatalf("parent deadline must not render a synthetic survival terminal: %+v", terminals)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
@@ -127,6 +128,7 @@ func foldCandidateOutcomes(err error, requestID string, tracker *executors.Routi
 			ProviderID:   a.ProviderID,
 			Kind:         a.Kind,
 			Err:          execErr.LastErr,
+			RetryAfter:   retryAfterDuration(execErr.RetryAfterSeconds),
 			RequestID:    requestID,
 			AttemptSeq:   i + 1,
 			Supplier:     a.Supplier,
@@ -159,6 +161,7 @@ func foldCandidateOutcomes(err error, requestID string, tracker *executors.Routi
 				ProviderID:   int(fa.ProviderID),
 				Kind:         kind,
 				Err:          execErr.LastErr,
+				RetryAfter:   retryAfterDuration(fa.RetryAfterSeconds),
 				RequestID:    requestID,
 				AttemptSeq:   fa.Seq,
 				Supplier:     fa.ProviderName,
@@ -200,10 +203,16 @@ func foldCandidateOutcomes(err error, requestID string, tracker *executors.Routi
 		}
 		slog.Warn("fold_candidate_outcomes_no_attempts", logAttrs...)
 
-		return []CandidateOutcome{{Kind: kind, Err: execErr.LastErr, RequestID: requestID}}
+		return []CandidateOutcome{{
+			Kind:       kind,
+			Err:        execErr.LastErr,
+			RetryAfter: retryAfterDuration(execErr.RetryAfterSeconds),
+			RequestID:  requestID,
+		}}
 	}
 
 	// Log the complete candidate outcome fold for debugging
+
 	logAttrs := []any{
 		"attempt_count", len(execErr.Attempts),
 		"outcome_count", len(outcomes),
@@ -220,6 +229,13 @@ func foldCandidateOutcomes(err error, requestID string, tracker *executors.Routi
 
 // classifyRoutingAttemptKind 从追踪器记录的 result / http_status 推导
 // errorsx kind（tracker 条目没有显式 kind 时的兜底分类）。
+func retryAfterDuration(seconds int) time.Duration {
+	if seconds <= 0 {
+		return 0
+	}
+	return time.Duration(seconds) * time.Second
+}
+
 func classifyRoutingAttemptKind(a executors.RoutingAttempt) errorsx.ErrorKind {
 	switch a.Result {
 	case "timeout":
