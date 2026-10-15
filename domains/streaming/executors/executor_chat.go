@@ -3436,10 +3436,31 @@ func proactiveChatToResponsesUpgrade(cand provider.Candidate, params *ExecParams
 		if err != nil {
 			return nil, false
 		}
-		sourceBody, err = ir.SerializeOpenAI(parsed)
-		if err != nil {
-			return nil, false
+		if model := strings.TrimSpace(cand.RawModel); model != "" {
+			parsed.Model = model
 		}
+		parsed.TargetProvider = cand.CatalogCode
+		// An explicit effort remains authoritative over the thinking budget,
+		// matching ParseOpenAI's precedence on the previous Chat intermediate.
+		var explicitEffort string
+		if json.Unmarshal(parsed.Extensions["reasoning_effort"], &explicitEffort) == nil && explicitEffort != "" {
+			parsed.Reasoning = &ir.ReasoningConfig{Effort: explicitEffort}
+		}
+		// Preserve the existing Responses thinking translation without passing
+		// through the Chat dialect, which cannot carry Anthropic thinking.
+		if parsed.Thinking != nil && parsed.Reasoning == nil {
+			raw, _ := json.Marshal(parsed.Thinking)
+			if _, translated, ok := paramreg.TranslateThinkingForProtocol(raw, "responses"); ok {
+				var reason struct {
+					Effort string `json:"effort"`
+				}
+				if json.Unmarshal(translated, &reason) == nil {
+					parsed.Reasoning = &ir.ReasoningConfig{Effort: reason.Effort}
+				}
+			}
+		}
+		converted, err := ir.SerializeResponsesRequest(parsed)
+		return converted, err == nil && len(converted) > 0
 	}
 	converted, ok := chatBodyToResponsesBody(sourceBody, cand.RawModel)
 	if !ok {
