@@ -18363,3 +18363,167 @@ expect(selfCode).toMatch(/not\.toContain\(dead\)/)
 ⇒ i18n 键数 **3809 → 3809**（删掉的 affects/gateKey 字段与新增的 hint/时间窗正好抵平）。
 
 - **至此，孤儿清零 + 全量全绿。** 后续批次的起点从「接孤儿」变成「按需扩展」。
+
+## 11.167 全族普查揪出最后一张漏网席：`/request-anomalies` 补 superAdmin 档兜底 —— 以及「普查类判据」的两条方法论（第一百三十批）
+
+孤儿真缺口在第 128 批已归零，所以本批**不是接孤儿**，而是换一个动作：
+**把「按席补视图内兜底」这件事本身当成普查来做**，看还有哪一席漏了。
+
+### 一、怎么想到要普查的
+
+第 121~129 批的兜底都是**按需补**的：接一席、补一席、补一条判据。
+这种做法有一个内建的盲区 —— **没人会想到去数「还剩几席没补」**。
+补过的席位在自己的判据里永远是绿的，于是漏网的那一席能一直绿下去。
+
+⇒ 本批的动作就一句话：**把全仓每一条带 `requiresRole` 的路由逐条核过去。**
+
+### 二、普查结果：15 条路由，唯一缺口是 `/request-anomalies`
+
+| 指标 | 读数 |
+|---|---|
+| `router/index.ts` 里 `requiresRole:` 出现次数 | **20** |
+| 其中**注释散文**里的（解释「为什么这一席没服务端角色下限」） | **5** |
+| ⇒ 真实路由声明（**strip 注释后**） | **15** |
+| 15 条里**视图没有兜底**的 | **1**（`/request-anomalies`） |
+
+⚠️ **「20」这个数如果直接当读数就会错。** 那 5 处全在注释里，例如
+`// ⇒ meta.requiresRole: 'admin' 这一层是唯一的门` —— 按词统计会把它们算成真声明。
+⇒ **纪律：普查必须先 `stripComments` 再数。**
+
+### 三、权限档：这一族是 superAdmin 档，且**服务端是真门**
+
+逐字读过（不是按注册处 / 形参名推的）：
+
+```go
+// admin/handler.go:936-937 —— 两条注册都挂 h.superAdmin
+mux.HandleFunc("/api/admin/request-anomalies",  h.superAdmin(h.handleRequestAnomalies))
+mux.HandleFunc("/api/admin/request-anomalies/", h.superAdmin(h.handleRequestAnomalySubrouter))
+
+// admin/handler.go:900-902
+func (h *Handler) superAdmin(fn http.HandlerFunc) http.HandlerFunc {
+	return SuperAdminMiddleware(fn, h.db, h.secret)
+}
+
+// admin/auth.go:383-384 —— ★★★ 逐字比 role，这就是「真门」
+if claims.Role != "super_admin" {
+	writeError(w, http.StatusForbidden, "super_admin role required for this endpoint")
+}
+```
+
+⇒ ★★ **所以本席的视图内兜底兜的是「体验层」，不是「安全层」。**
+这与第 121~128 批那一族**方向相反**：那边 `AdminMiddleware` **只认证不检 role**，
+前端那一层是**唯一的门**；这边服务端逐字检，前端只是**别让用户看见一坨 403 JSON**。
+
+⇒ ⚠️ `admin_key` **进不来**。第 129 批 `v1DataHorizon` 时代 `admin_key` 与
+`super_admin` 同档，照抄那边的判据会把它错放进来。判据 ①-3 专门钉死这一条。
+
+⇒ 抽屉席**早已接好**（`AppDrawer.spec.ts:202` 的白名单里就有 `'request-anomalies'`），
+缺口**只在视图内**。这也说明「接线齐了 ≠ 页面有兜底」是两件事。
+
+### 四、判据四组（`views/RequestAnomaliesGuard.spec.ts`，17 条）
+
+拆成**独立文件**而不是并进既有的 `RequestAnomaliesView.spec.ts`（31 条）：
+后者用真实 pinia 预置角色、主题是业务不变量；把权限塞进去会互相拖红。
+
+| 组 | 条数 | 钉什么 |
+|---|---|---|
+| ① | 5 | 服务端是真门（读 Go 源码）+ 本层兜的是体验层 + 接线档位 |
+| ② | 5 | 深链兜底：**不发请求**、不渲染业务区、有权限时正常取数、两道早退的**位置** |
+| ③ | 3 | ★★ 全族普查 + **召回自证** |
+| ④ | 4 | nope 文案两语种 / 编码门 / 抽屉席可见性 |
+
+⇒ ★★ **③ 组是本批真正的产出。**
+
+### 五、★★ 方法论一：普查类判据必须自带**召回自证**
+
+③-1 只证明「**扫到的**都有兜底」，**不证明**「**没漏扫**」。
+而漏扫恰恰是普查类判据最常见的失效方式：将来有人把某条路由的 `component`
+写成变量、或把 `meta` 拆行，正则会**静默少匹配一条**，③-1 照样全绿
+—— **缺口就此漏网且无人知晓**。
+
+⇒ 解法是把两个数**直接对账**（③-2）：
+
+```ts
+const declared = [...router.matchAll(/requiresRole:\s*'([^']+)'/g)]  // 声明总数
+const matched  = [...router.matchAll(ROUTE_DECL)]                     // 正则命中数
+expect(matched.length).toBe(declared.length)
+```
+
+⇒ 变异台 **M18** 造了一条「正则扫不到的 `requiresRole` 路由」专门打它 ⇒ 红。
+
+#### ⚠️★ 探针本身也踩过一次「变异无效」
+
+第一版探针我写成 `titleKey: 'x'.repeat(450)` 想着撑开正则的 400 字符窗口 ——
+**错的**：正则量的是**源码字符数**，而 `.repeat(450)` 在源码里只有十几个字符。
+结果探针照样被匹配到，`NO_RED`。
+
+⇒ ★ **`NO_RED` 的第一嫌疑永远是「变异无效」，不是「判据没牙」。**
+判别动作只有一个：**手工把变异应用上去，看一眼它到底改成了什么。**
+
+### 六、★★ 方法论二：判据读的标识符，先确认它不会被**更长的那个**顶替
+
+变异台 **M10**：把视图里的 `computed(() => auth.role)` 换成写死的
+`computed(() => 'super_admin')`。功能上「看起来还对」（角色恰好是对的），
+但它**再也不读 auth store**了 —— 兜底变成了装饰。
+
+③-1 当时**没有红**。两条子句各踩一次：
+
+1. 子句含 `RoleIsSuperAdmin` ⇒ 本视图 import 的 helper 就叫
+   **`anomalyRoleIsSuperAdmin`**，`RoleIsSuperAdmin` 被它当**子串顶替** ⇒ 绿。
+2. 改成只要求 `useAuthStore` ⇒ 变异后 `import` 与 `useAuthStore()` 调用
+   **都还在**，只是不读 `.role` ⇒ 还是绿。
+
+⇒ ⭐⭐ **「调用了 auth store」不等于「读了角色」。**
+钉角色来源只能钉**属性读**（`/\.role\b/`），钉调用点是钉不住的。
+⇒ 收窄后复核过：全族 15 个视图实测都写 `auth.role`，**仍然全过** ——
+不是为这一席放宽。
+
+⇒ ★ 与第 129 批那条「锚点必须不可被兄弟顶替」同源，
+只是这次顶替的不是**兄弟判据**，而是**被测文件里更长的那个标识符**。
+
+### 七、两条判据自己写错的地方（如实记）
+
+第一轮有两条红，**都不是代码坏，是判据写错**：
+
+| 判据 | 我写的 | 实测 | 修法 |
+|---|---|---|---|
+| ①-4 | `not.toMatch(/本页是唯一的一?道?门/)` | 自爆 —— 那个词恰好合法地出现在注释里那句「写出『本页是唯一的门』这种**事实相反**的话」中 | **删掉**反向断言，只正向钉三句话 |
+| ②-2 | `not.toContain('anomalies.')` | 误报 —— 英文文案本身就写着 "request anomalies." | 锚**具体键名** `anomalies\.(counts\|unresolved\|…)\b` |
+
+⇒ ★ 第一条印证了老结论：**否定断言要否可执行代码（先 `stripComments`）而非词**。
+而这里更狠 —— 那句话**只存在于注释里**，剥完注释再否就变成恒真的假门。
+⇒ **所以此处只能正向钉**。这类断言不是「补一下就行」，是**写不出来**。
+
+### 八、读数
+
+| 环节 | 结果 |
+|---|---|
+| `vue-tsc -b`（先删 tsbuildinfo） | RC=0 |
+| css / touch / i18n / comment 四门 | 全 RC=0（i18n 两语种各 **3811** 键） |
+| `gate:selftest` | 5/5 |
+| `npm run build` | RC=0 |
+| **全量** | **219 files / 8062 passed / 1 skipped / 0 failed（RC=0）**（基线 218/8045 ⇒ +1 文件 +17 条） |
+| **变异台** | **18/18 全部有牙、0 NO_RED、0 红了没命中** |
+| 十连跑 | 10/10 |
+
+⚠️ **变异台覆盖不到的两条**：①-1 / ①-2 是**读 Go 源码**的，
+而 Go 源码是被审计对象、按纪律**一条都不许变异** ⇒ 这两条在本台无法证明有牙。
+如实记录，不假装覆盖。
+
+### 九、★ 变更清单（6 个文件）
+
+| 类别 | 文件 |
+|---|---|
+| API 层 helper | `api/requestAnomalies.ts`（追加 `anomalyRoleIsSuperAdmin`） |
+| 视图 | `views/RequestAnomaliesView.vue`（两道早退 + nope 区 + 方向注释） |
+| i18n | `i18n/zh-CN.ts`、`i18n/en-US.ts`（`anomalies.nope.{msg,why}`） |
+| 新判据 | `views/RequestAnomaliesGuard.spec.ts`（17 条，新建） |
+| 既有判据装配 | `views/RequestAnomaliesView.spec.ts`（**只改装配**：挂载前预置 `super_admin`） |
+| 文档 | 本节 |
+
+⇒ ⚠️ **既有 spec 只改装配、不动那 31 条判据。**
+新增的 `allowed` 早退会让 jsdom 里 `role === ''` ⇒ 31 条判据**整片**变红，
+且报出来的是「断言找不到业务文案」，极易被误判成「这批改坏了页面」。
+⇒ 主题是**业务不变量**的判据，默认按有权限装配；权限自己的判据另立文件。
+
+- **至此，`requiresRole` 路由的视图内兜底覆盖 15/15，且这道覆盖有普查门 + 召回自证守着。**
