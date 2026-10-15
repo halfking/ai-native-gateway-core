@@ -155,7 +155,7 @@ func TestSessionListV2_ResponseIDKindAnnotation(t *testing.T) {
 	defer mock.Close()
 
 	// sessionforensics.ListRecentSessions 用 _request_logs 表（gw_session_id 聚合）。
-	mock.ExpectQuery(`FROM _request_logs`).
+	mock.ExpectQuery(`FROM request_logs_with_current_month`).
 		WithArgs("default", 50).
 		WillReturnRows(sessionListV2ContractRow("gw_abc"))
 
@@ -231,7 +231,7 @@ func TestSessionListV2_TenantPinnedToAuthContext(t *testing.T) {
 	defer mock.Close()
 
 	// 传入 ?tenant=other（他人租户），但查询参数必须是 auth 租户 tenant-a。
-	mock.ExpectQuery(`FROM _request_logs`).
+	mock.ExpectQuery(`FROM request_logs_with_current_month`).
 		WithArgs("tenant-a", 50).
 		WillReturnRows(sessionListV2ContractRow("gw_abc"))
 
@@ -565,7 +565,7 @@ func TestSessionListV2_QueryFailureDoesNotLeakInternalError(t *testing.T) {
 	defer mock.Close()
 
 	secret := "pq: relation \"request_logs_partition_missing\" does not exist tenant-a"
-	mock.ExpectQuery(`FROM _request_logs`).
+	mock.ExpectQuery(`FROM request_logs_with_current_month`).
 		WithArgs("tenant-a", 50).
 		WillReturnError(errors.New(secret))
 

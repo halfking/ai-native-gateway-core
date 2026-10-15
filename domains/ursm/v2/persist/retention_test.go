@@ -595,8 +595,22 @@ func TestSnapshotRetentionDropsExpiredPartitionsNotRows(t *testing.T) {
 	if !strings.Contains(got[0], `"public"."ursm_node_snapshot_min_20260926"`) {
 		t.Fatalf("DROP must use a qualified quoted identifier, got:\n%s", got[0])
 	}
-	if db.setLocalCalls != 2 {
-		t.Fatalf("SET LOCAL lock_timeout = %d calls, want 2 (one per DROP transaction)", db.setLocalCalls)
+	if db.setLocalCalls != 6 {
+		t.Fatalf("SET LOCAL lock_timeout = %d calls, want 6 (5min/0/5min per DROP transaction)", db.setLocalCalls)
+	}
+	// The advisory-lock phase must restore the DROP timeout before touching
+	// the table. A raw SET count alone would miss a lost or reordered restore.
+	statements := db.statements()
+	for i, stmt := range statements {
+		if !strings.HasPrefix(stmt, "DROP TABLE") {
+			continue
+		}
+		if i < 4 || statements[i-4] != `SET LOCAL lock_timeout = '5min'` ||
+			statements[i-3] != `SET LOCAL lock_timeout = '0'` ||
+			!strings.Contains(statements[i-2], "pg_try_advisory_xact_lock") ||
+			statements[i-1] != `SET LOCAL lock_timeout = '5min'` {
+			t.Fatalf("DROP must follow the bounded lock sequence, statements: %v", statements)
+		}
 	}
 }
 

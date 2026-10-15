@@ -67,8 +67,8 @@ func readRepoFile(t testing.TB, rel string) string {
 }
 
 var (
-	// _request_logs 的 CREATE TABLE 头，取到第一个语句结束分号为止。
-	reReqLogsAnchor = regexp.MustCompile(`CREATE TABLE (?:IF NOT EXISTS )?(?:public\.)?_request_logs\s*\(`)
+	// request_logs 的 baseline CREATE TABLE（860 改名为 _request_logs），取到分号。
+	reReqLogsAnchor = regexp.MustCompile(`CREATE TABLE (?:IF NOT EXISTS )?(?:public\.)?request_logs\s*\(`)
 	// DDL 里缩进 4 空格的列名（顶层列定义）。
 	reDDLColumn = regexp.MustCompile(`(?m)^\s{4}([a-z_][a-z0-9_]*)\s+[a-z]`)
 	// 归档函数的源投影：candidates AS ( SELECT <cols> FROM %I ...
@@ -82,10 +82,17 @@ var (
 func requestLogsColumnsFromBaseline(t testing.TB) map[string]bool {
 	t.Helper()
 	src := readRepoFile(t, baselineSchemaRel)
+	// The installer baseline predates migration 860: request_logs is renamed
+	// to _request_logs without changing its columns. Pin that identity bridge
+	// instead of searching the baseline for a name introduced afterwards.
+	rename := readRepoFile(t, "sql/migrations/startup/860_rename_request_logs_family_pending_delete.sql")
+	if !strings.Contains(rename, "ALTER TABLE public.request_logs RENAME TO _request_logs") {
+		t.Fatal("migration 860 no longer preserves the baseline table identity; re-audit the archive source")
+	}
 
 	loc := reReqLogsAnchor.FindStringIndex(src)
 	if loc == nil {
-		t.Fatalf("%s: no `CREATE TABLE ... _request_logs (` found — baseline shape changed, "+
+		t.Fatalf("%s: no `CREATE TABLE ... request_logs (` found — baseline shape changed, "+
 			"this guard must be updated to the new anchor before it can be trusted",
 			baselineSchemaRel)
 	}

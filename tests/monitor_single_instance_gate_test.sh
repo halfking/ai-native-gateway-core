@@ -396,13 +396,23 @@ pass "伪容器下报 gauge_unavailable + 退出码 3（查不到 ≠ 没问题�
 if [ -f "$tmp/gate.txt" ]; then
   wd_fn=$(awk '/^_llmgw_run_bounded\(\) \{/,/^\}/' "$dw")
   if [ -n "$wd_fn" ]; then
+    export WD_CHILD_PIDS="$tmp/watchdog-child-pids"
+    : > "$WD_CHILD_PIDS"
+    cleanup_watchdog_children() {
+      while IFS= read -r child_pid; do
+        kill -9 "$child_pid" 2>/dev/null || true
+      done < "$WD_CHILD_PIDS"
+    }
+    trap 'cleanup_watchdog_children; rm -rf "$tmp"' EXIT
     {
       printf '%s\n' '#!/usr/bin/env bash' 'set -uo pipefail'
       printf '%s\n' "$wd_fn"
       # 注意不能用 `|| true`：那会把看门狗的 124 吞成 0，自证就永远失败。
       # 这里显式把函数的返回码作为脚本退出码传出去。
-      printf '%s\n' '_llmgw_run_bounded 2 bash -c "sleep 45; date > /dev/null"'
-      printf '%s\n' 'exit $?'
+      cat <<'WATCHDOG'
+_llmgw_run_bounded 2 bash -c 'sleep 45 & child_pid=$!; printf "%s\n" "$child_pid" >> "$WD_CHILD_PIDS"; wait "$child_pid"'
+exit $?
+WATCHDOG
     } > "$tmp/wd_run.sh"
     chmod +x "$tmp/wd_run.sh"
 
@@ -417,13 +427,27 @@ if [ -f "$tmp/gate.txt" ]; then
      必须先证明探针会跑，结论才有意义。"
     [ $((probe_e - probe_s)) -le 8 ] \
       || fail "看门狗探针耗时 $((probe_e - probe_s))s，说明超时上界没生效"
+    [ "$(wc -l < "$WD_CHILD_PIDS" | tr -d ' ')" -eq 1 ] \
+      || fail "看门狗探针没有记录恰好 1 个真实孙进程，后续零孤儿结论无前提"
 
-    base_sleep=$(pgrep -x sleep 2>/dev/null | wc -l | tr -d ' ')
-    for _ in 1 2 3; do bash "$tmp/wd_run.sh" >/dev/null 2>&1; done
+    for _ in 1 2 3; do
+      bash "$tmp/wd_run.sh" >/dev/null 2>&1
+      [ "$?" -eq 124 ] || fail "看门狗连续探针未按超时返回 124"
+    done
     sleep 2
-    after_sleep=$(pgrep -x sleep 2>/dev/null | wc -l | tr -d ' ')
-    leak=$((after_sleep - base_sleep))
-    [ "$leak" -le 0 ] \
+    [ "$(sort -u "$WD_CHILD_PIDS" | wc -l | tr -d ' ')" -eq 4 ] \
+      || fail "自证与连续探针应记录 4 个独立孙进程，不能用缺失前提证明零孤儿"
+    # Count only descendants created by these probes. Other tests may start
+    # or finish arbitrary sleep processes on the same host during this gate.
+    leak=0
+    while IFS= read -r child_pid; do
+      child_state=$(ps -o stat= -p "$child_pid" 2>/dev/null | tr -d ' ')
+      case "$child_state" in
+        ''|Z*) ;; # Exited or awaiting reaping: no live orphan remains.
+        *) leak=$((leak + 1)) ;;
+      esac
+    done < "$WD_CHILD_PIDS"
+    [ "$leak" -eq 0 ] \
       || fail "看门狗超时后留下 $leak 个孙进程（期望 0）。
    ★ 只 kill 直接子进程会漏掉 \`bash -c 'sleep …'\` 的 sleep。
      事故当天「进程只增不减」就是这个形态：超时闸自己漏进程。"

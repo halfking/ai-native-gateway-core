@@ -21,7 +21,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 const availabilityScript = "../252-monitor/pg17-pg-availability-check.sh"
@@ -46,7 +45,12 @@ case "$1" in
       *) exit 0 ;;
     esac ;;
   exec)
-    [ -n "$FAKE_PSQL_SLEEP" ] && sleep "$FAKE_PSQL_SLEEP"
+    if [ -n "$FAKE_PSQL_SLEEP" ]; then
+      # The marker lives in the delayed child too: terminating only this
+      # runtime shell must not hide a query child that ran to completion.
+      sh -c 'sleep "$FAKE_PSQL_SLEEP"; [ -n "$FAKE_PSQL_COMPLETED" ] && : > "$FAKE_PSQL_COMPLETED"'
+    fi
+    [ -n "$FAKE_PSQL_COMPLETED" ] && : > "$FAKE_PSQL_COMPLETED"
     [ -n "$FAKE_PSQL_OUT" ] && printf '%s\n' "$FAKE_PSQL_OUT"
     exit "${FAKE_PSQL_RC:-0}" ;;
 esac
@@ -82,6 +86,7 @@ exit "$rc"
 `
 
 const fakeNotifyBody = `#!/bin/sh
+[ -n "$FAKE_NOTIFY_SLEEP" ] && sleep "$FAKE_NOTIFY_SLEEP"
 # 一次调用记一**行**：把 body 里的换行折成字面 \n。
 # ★ 告警 body 是多行的（"本次没有关于 PG 好坏的信息 / <消息> / ★ …"），
 #   而读取侧按行切分 ⇒ 不折叠的话，一条告警会被数成三条，
@@ -189,11 +194,15 @@ func (e *availEnv) stateLine(t *testing.T) []string {
 
 func TestAvailabilityReportsHealthyOnlyWhenQueryProvesIt(t *testing.T) {
 	e := newAvailEnv(t)
+	completed := filepath.Join(e.bin, "psql-completed")
 	// 「容器 running」本身**不是**证据 —— 必须真有一条查询成功。
 	// FAKE_STATE=running 配上查询输出 0|off，才是完整的健康证据。
-	r := e.run(t, "FAKE_STATE=running", "FAKE_PSQL_OUT=0|off")
+	r := e.run(t, "FAKE_STATE=running", "FAKE_PSQL_OUT=0|off", "FAKE_PSQL_COMPLETED="+completed)
 	if r.rc != 0 {
 		t.Fatalf("期望 rc=0（PG 活着），实得 %d。\n输出:\n%s", r.rc, r.out)
+	}
+	if _, err := os.Stat(completed); err != nil {
+		t.Fatalf("自然完成的查询必须写入对照标记：%v", err)
 	}
 	if len(r.notify) != 0 {
 		t.Errorf("健康时不该推任何告警，实推 %d 条:\n%v", len(r.notify), r.notify)
@@ -253,14 +262,16 @@ func TestAvailabilityDoesNotReAlertEveryMinute(t *testing.T) {
 // 半开：容器在跑，但事务卡死。处置动作与「拒连」不同，消息必须能分开。
 func TestAvailabilitySeparatesTimeoutFromRefusal(t *testing.T) {
 	e := newAvailEnv(t)
-	start := time.Now()
-	r := e.run(t, "FAKE_STATE=running", "FAKE_PSQL_SLEEP=5", "PG17_QUERY_TIMEOUT=1")
+	completed := filepath.Join(e.bin, "psql-completed")
+	// A slow notification is outside the query timeout. Observe whether the
+	// query completed, so scheduler/notification time cannot mimic a lost timer.
+	r := e.run(t, "FAKE_STATE=running", "FAKE_PSQL_SLEEP=5", "PG17_QUERY_TIMEOUT=1",
+		"FAKE_PSQL_COMPLETED="+completed, "FAKE_NOTIFY_SLEEP=4")
 	if r.rc != 1 {
 		t.Fatalf("查询超时期望 rc=1，实得 %d。\n输出:\n%s", r.rc, r.out)
 	}
-	if el := time.Since(start); el > 4*time.Second {
-		t.Errorf("脚本耗时 %v，未被 PG17_QUERY_TIMEOUT=1 截断。\n★ 超时没接线的话，"+
-			"PG 半死不活时 psql 会一直挂着，cron 下一轮再叠一个。", el)
+	if _, err := os.Stat(completed); !os.IsNotExist(err) {
+		t.Errorf("超时查询不应自然完成，完成标记检查结果=%v；PG17_QUERY_TIMEOUT=1 未截断延迟查询", err)
 	}
 	if !strings.Contains(r.out, "卡死") {
 		t.Errorf("超时消息应说明是「卡死」而不是「拒连」，实得:\n%s", r.out)
