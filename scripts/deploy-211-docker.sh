@@ -947,8 +947,11 @@ docker run -d --name "$D211_GW_CONTAINER" --restart unless-stopped \
 # 就绪验证
 # =============================================================================
 log "等待网关就绪 ..."
+# PROBE_TIMEOUT_SECS 与 deploy-154/245 同一族标准（deploy-211.sh 入口默认
+# export 120）；2s 步进，轮次=超时/2，下限 1 防呆。
 ready=0
-for i in $(seq 1 60); do
+probe_rounds=$(( PROBE_TIMEOUT_SECS / 2 )); (( probe_rounds >= 1 )) || probe_rounds=1
+for i in $(seq 1 "$probe_rounds"); do
   if curl -fsS "http://127.0.0.1:${D211_GW_PORT}/readyz" >/dev/null 2>&1 \
      || curl -fsS "http://127.0.0.1:${D211_GW_PORT}/healthz" >/dev/null 2>&1; then
     ready=1; break

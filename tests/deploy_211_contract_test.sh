@@ -335,15 +335,30 @@ if grep -q 'uname -s.*==.*Darwin.*||' "$SCRIPT" || grep -qE '\[\[ -z "\$VIA" && 
 else
   bad "缺 macOS 裸跑守卫：部署机误以本机模式执行只会看到 mkdir Permission denied"
 fi
-# deploy-211.sh 薄包装（deploy-154 风格一条命令）：必须指向真脚本并内定 --via，
-# 包装断了用户就会退回裸跑真脚本踩 macOS 守卫
+# deploy-211.sh 必须是 deploy-154/245 同一族入口标准：同一骨架（SSHPASS 卫生、
+# deploy-lib 解析、parse-wrapper-flags 的 --force 族解析、--dry-run 合同、
+# PROBE_TIMEOUT_SECS 默认）、exec 委托引擎而不是自创接口。缺任一块就是家族
+# 标准漂移（2026-10-15 owner 要求统一标准）。
 WRAPPER="$ROOT/scripts/deploy-211.sh"
-if [[ -f "$WRAPPER" ]] \
-   && grep -q "deploy-211-docker.sh" "$WRAPPER" \
-   && grep -q -- '--via "$D211_WRAPPER_HOST"' "$WRAPPER"; then
-  ok "deploy-211.sh 薄包装在场（内定 --via，转发真脚本）"
+wmiss=0
+[[ -f "$WRAPPER" ]] || { bad "deploy-211.sh 入口缺失"; wmiss=1; }
+if (( wmiss == 0 )); then
+  for _sig in 'unset SSHPASS' 'source "$SCRIPT_DIR/deploy-lib-resolve.sh"' \
+              'parse-wrapper-flags.sh' 'extract_force_unlock' \
+              "' --dry-run '" 'PROBE_TIMEOUT_SECS' \
+              'deploy-211-docker.sh" --via "$D211_TARGET"'; do
+    if grep -qF -- "$_sig" "$WRAPPER"; then
+      ok "deploy-211.sh 家族骨架: $_sig"
+    else
+      bad "deploy-211.sh 缺家族骨架块: $_sig"
+    fi
+  done
+fi
+# 引擎必须消费 PROBE_TIMEOUT_SECS（否则入口的家族标准超时是摆设）
+if grep -q 'PROBE_TIMEOUT_SECS' "$SCRIPT"; then
+  ok "引擎就绪等待消费 PROBE_TIMEOUT_SECS（与 154/245 同语义）"
 else
-  bad "deploy-211.sh 薄包装缺失或未正确转发 deploy-211-docker.sh --via"
+  bad "引擎未消费 PROBE_TIMEOUT_SECS，入口的探针超时默认不生效"
 fi
 
 echo
