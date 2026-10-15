@@ -933,6 +933,35 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'tfo.title', requiresAuth: true, requiresRole: 'admin' },
   },
   {
+    // ★ 会话分析筛选项（2026-10-15，第一百二十八批）。
+    //   GET /api/admin/session-analytics/filter-options
+    //
+    //   ⚠️ 注册形态是**第六种：前缀 catch-all + 方法内分发器**
+    //     （`cmd/gateway/main.go:7286` → `admin/session_analytics_handler.go:728-729`）
+    //     ⇒ 只查 `admin/handler.go` 的 `mux.HandleFunc` 会判「端点不存在」。
+    //
+    //   权限 `requiresRole: 'admin'`：
+    //     `wrapSessionAnalytics`（`cmd/gateway/main_admin_wrappers.go:42`）是**双模式**的，
+    //     而**两条分支都不给浏览器用户设角色下限** ——
+    //     （甲）session-service JWT 未启用 ⇒ `AdminMiddleware`（`admin/auth.go:85` 起，
+    //          **全文无 `claims.Role` 比对**）；
+    //     （乙）已启用 ⇒ `SessionAnalyticsMiddleware`（`admin/session_service_auth.go:18`）
+    //          **确实**逐字检了 `hasScope(claims.Scope, "session:read")`，
+    //          ★★ 但它把主体强制成 `Role: "tenant_admin"`，是**服务间调用**的门，
+    //          **浏览器用户走不到那条分支**。
+    //     ⇒ 需要 admin：载荷是租户级聚合清单。
+    //     ⇒ 不过度限制到 super_admin：除 super_admin 外两条查询都拼了 `tenant_id = $1`
+    //          （`session_analytics_top.go:206-209`、`:219-222`）⇒ 租户内。
+    //     ⇒ ★★ 注意方向与兄弟端点(tfo)**相反**：`effectiveScopeTenant`
+    //          （`admin/session_tenant.go:189`）对 super_admin 返回**空串**
+    //          ⇒ super_admin 看的是**全部租户**的聚合。
+    //   ⇒ `meta.requiresRole: 'admin'` 这一层**是唯一的门**，不是体验兜底。
+    path: '/session-analytics-filter-options',
+    name: 'session-analytics-filter-options',
+    component: () => import('@/views/SessionAnalyticsFilterOptionsView.vue'),
+    meta: { titleKey: 'saf.title', requiresAuth: true, requiresRole: 'admin' },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),

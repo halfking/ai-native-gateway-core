@@ -97,6 +97,7 @@ export const enUS = {
     storageAndLogConfig: 'Storage & log config',
     storageMigrationState: 'Attachment migration',
     turnsFilterOptions: 'Filter options',
+    sessionAnalyticsFilterOptions: 'Session filter options',
     account: 'Me',
   },
   // ★ Subscription tiers (2026-10-14, batch 120). Prefix: sts.
@@ -320,6 +321,47 @@ export const enUS = {
     tenant: { scoped: 'Only values scoped to your own tenant are shown here.' },
     truncated: 'At the {n}-value limit; there may be more',
     badStatus: '★ These are not valid status codes and will be ignored when filtering: {list}',
+  },
+  // ★ Session analytics filter options (2026-10-15, batch 128). Prefix: saf.
+  // ⚠️ The wording runs **opposite** to the sibling tfo block and must not be copied:
+  //   only 2 dimensions here, the backend sends null (not []) when empty,
+  //   and super_admin sees the aggregate across ALL tenants.
+  saf: {
+    title: 'Session filter options',
+    nope: {
+      msg: 'Only administrators can view session filter options.',
+      // ★★ Same class as the sibling (tfo): no role floor on the server side, but
+      //   with one extra layer — auth is dual-mode and the other branch DOES check
+      //   the `session:read` scope, though that is the service-to-service door,
+      //   which browser users never reach.
+      why: 'This layer is the only door outside the server: for browser users the backend only checks that you are logged in, never your role, so an ordinary account could read this tenant’s full model and provider list.',
+    },
+    gate: { note: 'This page is the only thing blocking ordinary accounts (the backend only checks login, not role).' },
+    readonly: { note: 'Read-only: the filtering itself is done by the session analytics list endpoint; this page only fetches the candidate values.' },
+    load: { title: 'Fetch', btn: 'Refresh options' },
+    state: { title: 'Filter options' },
+    badge: { nonEmpty: 'Has options' },
+    empty: 'This gateway has not seen any session in the last 30 days (not a failure).',
+    // ★★ Half-empty only: exactly one of the two lists has no value. The sibling has no such state.
+    halfEmpty: '★ Only half of the filter options have values, the other half is empty: {list}. This is a normal state here (the models column and the providers column of a session summary can have values independently).',
+    emptyDims: 'No candidate values for: {list}',
+    dim: {
+      models: 'Models',
+      providers: 'Providers',
+      empty: '(no values)',
+      // ★★ (2) The backend sends null when there is no data, not [] — say which one it is.
+      nullEmpty: '(backend returned null: nothing in this dimension over the last 30 days, not a failure)',
+    },
+    // ★ (9) Order and de-duplication are observable in the response, so show them instead of assuming.
+    sortedUnique: 'Ascending·unique',
+    dimNote: 'Aggregated from session_summaries.{column}, last {days} days.',
+    // ★★ BOTH dimensions are windowed here (the sibling has only 3 of 8) — do not copy that wording.
+    windowNote: '★ This page has only {n} dimensions, and **all** of them are limited to the last {days} days.',
+    // ★★ (4) The super_admin case sees the aggregate across ALL tenants, with no way to narrow it.
+    crossTenant: {
+      note: '★ You are viewing this as a super administrator: these are the models and providers aggregated across **all** tenants over the last 30 days, and this endpoint has **no** parameter to narrow by tenant.',
+    },
+    tenant: { agnostic: 'This page shows an aggregate candidate list (it carries no tenant identifier field).' },
   },
   // ★ Usage & cost (2026-10-14, batch 122). Prefix: ue.
   ue: {

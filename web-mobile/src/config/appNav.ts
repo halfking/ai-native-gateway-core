@@ -645,6 +645,30 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.turnsFilterOptions',
     requiresRole: 'admin',
   },
+  // ★ 会话分析筛选项（2026-10-15，第一百二十八批）。
+  //   GET /api/admin/session-analytics/filter-options
+  // ⚠️ 与兄弟席 `turns-filter-options` **可见范围方向相反**，两席不能互相套用：
+  //   · 兄弟：super_admin 也只看**自己租户**（永远拼 tenantWhere）；
+  //   · 本席：`effectiveScopeTenant`（`admin/session_tenant.go:189`）对 super_admin
+  //     返回**空串** ⇒ `if tenantID != ""` 不成立 ⇒ ★★ **super_admin 看的是全部租户的聚合**，
+  //     且这个端点**没有** `?tenant=` 收窄手段。
+  //   ⇒ 视图里对这一档必须显式写明，否则用户会以为「这就是我这个租户的清单」。
+  //
+  // 权限 `requiresRole: 'admin'`：
+  //   （甲）需要 admin：载荷是租户级聚合清单（这个租户所有人跑过的模型/提供商）。
+  //   （乙）不过度限制：除 super_admin 外两条查询都拼了 `AND tenant_id = $1`
+  //        （`session_analytics_top.go:206-209`、`:219-222`）⇒ 租户内数据。
+  // ⚠️ 'admin' 档**不得**进 AppDrawer.spec.ts 的 superAdmin 白名单。
+  {
+    key: 'session-analytics-filter-options',
+    to: '/session-analytics-filter-options',
+    // ★ IconName 里**没有** `funnel`（`AppIcon.vue:8-36` 全名单 27 个，
+    //   `funnel` 只是 AppDrawer.spec.ts:152 里的一个普通字符串字面量，不是图标名）
+    //   ⇒ 用 `search`（筛选语义最贴，与兄弟席一致）。
+    icon: 'search',
+    titleKey: 'nav.sessionAnalyticsFilterOptions',
+    requiresRole: 'admin',
+  },
   // ★ 加这一席**必须**同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
   {
     key: 'routing-policy',

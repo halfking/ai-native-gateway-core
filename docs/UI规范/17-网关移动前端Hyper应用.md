@@ -17881,3 +17881,223 @@ expect(group, '没找到 echo group 声明（正则失配会让这条恒绿）')
   取证已完成：注册 `main.go:7286` 前缀 catch-all + `session_analytics_handler.go:728-729` 分发器
   （第六种注册形态）；权限档 = **`admin`**（`AdminMiddleware` 只认证不检 role；
   `effectiveScopeTenant` 让 `super_admin` 看全部租户）；模块头 7 处行号漂移本批一并订正。
+
+## 11.165 会话分析筛选项接进 UI —— **真缺口归零**；变异台首轮 28/31，三条 NO_RED 指向三种不同的病（第一百二十八批）
+
+### 一、这批做了什么
+
+`sessionAnalyticsFilterOptions`（会话分析页的模型/提供商筛选项）接进移动端。
+视图 `SessionAnalyticsFilterOptionsView.vue` + 判据 29 条；路由
+`/session-analytics-filter-options` + 抽屉席 `session-analytics-filter-options`
+（`requiresRole: 'admin'`）+ i18n 前缀 `saf`（zh-CN/en-US 各 **3811** 键）。
+
+⇒ ★★★ **`KNOWN_ORPHANS`（真缺口）清空：2 → 0。**
+孤儿棘轮里现在只剩两类登记，且都不是真缺口：
+
+| 类别 | 成员 | 为什么不是真缺口 |
+|---|---|---|
+| `KNOWN_DUPLICATES` | `boardOperational` | 与 `dashboardBoard` 打**同一端点**，已消解 |
+| `KNOWN_INFRASTRUCTURE` | `nativeTransport` | **零端点**的非页面型基础设施（批 126） |
+
+### 二、★★★ 与兄弟端点八处方向相反 —— 这是本批最大的坑
+
+兄弟是批 127 刚接的 `turnsFilterOptions`（`/api/admin/turns/sessions/filter-options`）。
+**叶名相同、语义相反**，抄错就是全错：
+
+| 维度 | 本族（session-analytics） | 兄弟（turns/sessions） |
+|---|---|---|
+| 维度个数 | **2** | 8 |
+| 无数据编码 | ★★★★★ **`null`** | ★★★★★ `[]` |
+| **半空形状** | ★★★★★ **可达且合法** | ★★★★★ **不可达** |
+| 租户可见范围 | ★★★★★ **super_admin 看全部租户** | ★★★★★ 永远租户内 |
+| `?tenant=` 收窄 | ★★★★★ **不能** | 能 |
+| 无 DB 时 | ★★★★ **404（整棵树不注册）** | 503（恒注册） |
+| scan 失败 | ★★★★ 静默跳过该行 | 500 |
+| 超时 | 10s | 12s |
+
+**机制上的根**只有一处，但后果铺满全表：
+
+```go
+func effectiveScopeTenant(r *http.Request) string {   // admin/session_tenant.go:189
+    if IsSuperAdminOrLegacy(r) { return "" }         // ★ super_admin / admin_key ⇒ 空串
+    return GetTenantID(r)                             // ★ GetTenantID 兜底 "default" ⇒ 恒非空
+}
+```
+
+配合 handler 里 `if tenantID != ""` 的拼接 ⇒
+**super_admin 拿到的 SQL 里根本没有租户条件**，且**没有 `?tenant=` 手段收窄**
+（`effectiveScopeTenant` 不读查询参数，对照 `tenantFromQueryOrContext` 会读）。
+
+⇒ ★ 所以视图里对这一档**必须显式写明**「这是全部租户的聚合」，
+   否则用户会以为「这就是我这个租户的清单」。
+
+### 三、★★★ 权限档：`admin`，但依据比兄弟面**多一层**（双模式鉴权）
+
+注册链是**第六种注册形态 —— 前缀 catch-all + 方法内分发器**：
+
+```go
+// cmd/gateway/main.go:7286
+mux.HandleFunc("/api/admin/session-analytics/", wrapSessionAnalytics(adminHandler.RouteSessionAnalytics))
+//   ↓ admin/session_analytics_handler.go:728-729
+case parts[0] == "filter-options" && len(parts) == 1:
+    h.HandleFilterOptions(w, r)
+```
+
+⇒ ★★ 只查 `admin/handler.go` 的 `mux.HandleFunc` 会判「端点不存在」。
+
+`wrapSessionAnalytics` = `newWrapSessionAnalytics`（`cmd/gateway/main_admin_wrappers.go:42`），
+**双模式**，而 ★★ **两条分支都不给浏览器用户设角色下限**：
+
+| 分支 | 中间件 | 检不检 role |
+|---|---|---|
+| （甲）session-service JWT 未启用 | `admin.AdminMiddleware` | ★★ **全文无任何 `claims.Role` 比对**（与批 127 同一事实） |
+| （乙）已启用且验签通过 | `admin.SessionAnalyticsMiddleware`（`admin/session_service_auth.go:18`） | ★ **确实**逐字检了 `hasScope(claims.Scope, "session:read")` + `TenantID != ""` |
+
+⇒ ★★★ **最容易犯的错：因为（乙）检了，就断言「服务端有门」。**
+   但（乙）把主体强制成 `Role: "tenant_admin"`，那是**服务间调用**的门 ——
+   **浏览器用户走不到那条分支** ⇒ 对浏览器用户而言**零角色下限**。
+
+⇒ 结论仍是 `requiresRole: 'admin'`，两条独立理由：
+（甲）载荷是**租户级聚合清单**（这个租户所有人跑过的模型/提供商）；
+（乙）**不过度限制到 super_admin**（除 super_admin 外两条查询都拼了
+`AND tenant_id = $1`，`session_analytics_top.go:206-209`、`:219-222`）。
+
+### 四、★★★ 半空形状：本族真正反常的那一档
+
+`models_used text[] DEFAULT '{}' NOT NULL` 而 `providers text[]` **可空**，
+`UNNEST` 空数组/NULL 都只产生零行而不是报错 ⇒
+
+```
+{models: [...], providers: null}   与它的镜像都合法且可达
+```
+
+⇒ ★★★ 而 `IsEmpty` / `HasAnyValue` **覆盖不到它**：
+   它会被 `HasAnyValue` 判成「有数据」，页面于是正常渲染，
+   **用户看不到任何「还缺一边」的提示** —— 而另一边其实一个值都没有。
+
+⇒ 这就是本批新增 `sessionAnalyticsFilterOptionsIsHalfEmpty` 的理由：
+   `(models 为空) !== (providers 为空)`。
+   ★ **兄弟端点不需要这个函数**：那边 8 个维度共用一个 `[]`，半空不可达。
+
+### 五、★★★ 变异台：三条 NO_RED，三条**病因完全不同**
+
+首轮 **28/31** 命中。三条没红的，**没有一条是同一个原因** ——
+处置也各不相同（补判据 / 换变异 / 补「负控的负控」）：
+
+#### (1) M02 `NO_RED` —— 判据有**盲区**（补判据，不是换变异）
+
+变异删掉 `load()` 里的 `if (!allowed.value) return`，全绿。
+⇒ 因为判据只验了「**挂载时**没发请求」，而挂载路径**本来就不调** `load()`。
+
+```ts
+await w.find('[data-testid="saf-load"]').trigger('click')   // ← 这条走不通
+```
+
+⇒ ★★ 而且「点按钮验证」这条路**本身也不通**：无权限时整块内容区（含按钮）
+`v-if` 都不渲染，`w.find()` 返回空 wrapper ⇒ 只能**钉源码形态**：
+
+```ts
+expect(code).toMatch(/async function load\(\)[\s\S]{0,200}?if \(!allowed\.value\) return/)
+```
+
+⇒ ★★ **教训：深链兜底是「不发请求」而不是「藏起来」** ——
+   所以判据必须同时钉住**渲染层**（不显示）与**取数层**（不发请求），
+   而取数层那半只能钉源码形态。
+
+#### (2) M17 `NO_RED` —— 变异**本身无效**（换变异，不是补判据）
+
+```ts
+// 把 requiresRole: 'super_admin' 插在 to: 之后
+```
+
+⇒ ★ 看着像越权收窄，实际**什么都没改**：本席原有的 `requiresRole: 'admin'`
+在**后面**，对象字面量**后者覆盖前者** ⇒ 席压根没变。
+
+⇒ 改成**替换**原值（以及反向的「删掉 requiresRole」）之后，两条都红。
+
+⇒ ★★★ **通用式：`NO_RED` 的第一嫌疑是变异无效，不是判据没牙。**
+   判别动作：手工把变异应用上去，**读一眼被改后的代码是不是真的变了**。
+   ★ 对象字面量的**重复键**是个隐蔽陷阱 —— 它让「看起来越权」的变异静默无效。
+
+#### (3) M23 `NO_RED` —— 「削弱断言」型变异的**第二层**
+
+把承重判据换成恒真式：
+
+```ts
+- expect([...currentOrphans()].sort()).toEqual([...KNOWN_ORPHANS, ...].sort())
++ expect([...currentOrphans()].sort().length).toBeGreaterThanOrEqual(0)
+```
+
+⇒ **事实仍为真**（真孤儿确实 ≥0 个）⇒ 全绿。
+
+⇒ ★★★ 这是「削弱断言」型变异的**第二层**：
+   上一批（批 126）为此配的负控只覆盖了
+   **「判据函数返回错值」**，**没覆盖「判据被换成恒真表达式」**。
+   ⇒ 治法是**钉源码形态**：承重那条必须逐字含 `toEqual(` + 三份清单的展开。
+
+⇒ ⚠️ 而这条新负控自己连踩两次坑，都值得记：
+
+| 坑 | 现象 | 治法 |
+|---|---|---|
+| 窗口按固定字符数切 | 把**下一条**用例的 `toBeGreaterThan(0)` 也扫进来 ⇒ 自指误红 | 停在**本用例闭合**处（`\n  })`），不按字符数 |
+| 三清单跨两行 | 只看命中 `toEqual(` 的那一行 ⇒ 找不到 `KNOWN_ORPHANS` | 连取 3 行 |
+
+#### (4) M24 判 RED_MISS —— 是我**期望标签写错**，不是没牙
+
+`infrastructureIsProvenGiven` 改成恒真，**确实红了**，红在
+「自证判据的\*\*负控\*\*」那条 —— 那正是它该抓的地方。
+⇒ ★ **「红了没命中」的第一嫌疑是期望标签写错**，别急着改判据。
+   ★★ 顺带一条：`fullName` 里带 markdown 星号，匹配时要按**纯文字**子串写期望值。
+
+### 六、★★★ 顺带修掉一个真缺陷：`--app-text-dim` 未定义
+
+全量跑出**第 6 条红**（与 `v1DataHorizon` 那族无关）：
+
+```
+FAIL src/styles/theme.spec.ts > 没有「本门未登记」的未定义 token
+AssertionError: 源码引用了未定义的 token：--app-text-dim
+```
+
+⇒ 视图初版写了 `var(--app-text-dim, #666)`。
+⇒ ★★ 那个**兜底值**让它在浏览器里看着正常（回退到 `#666`），
+   **只有静态棘轮抓得到** —— ⇒ ★ **带 fallback 的 `var()` 会躲过运行时，只在静态检查里现形。**
+⇒ 改用 `--app-text-secondary`（`theme.css` 亮/暗两套都已定义，与兄弟视图一致）。
+
+⇒ ★ 附带一条判据自身的教训（同一个 spec 里）：
+初版的 FFFD 判据写成 `buf.includes(0xef) || buf.includes(0xbf)` ——
+那会**把每一行正常中文都判成污染**（`0xef`/`0xbf` 是 UTF-8 前导/后续字节）。
+正确做法是按**完整三字节序列** `EF BF BD` 匹配。
+⇒ ★★ 而更讽刺的是：判据正文里 ``expect(line.includes('<U+FFFD 字面量>'))`` 那个**字面替换字符**，
+本身就是它自己要查的 U+FFFD ⇒ **自己给自己种了一个待查字节**，判据永远红。
+必须用码点转义 `'\uFFFD'` 表达同一个字符 —— 这条已写进代码注释。
+
+### 七、★ 附带订正：模块头 7 处漂移行号
+
+| 模块头原写 | 实测 |
+|---|---|
+| `cmd/gateway/main.go:7186` | **7286** |
+| `admin/session_tenant.go:126-131` | **189-195** |
+| 其余 5 处（`:728-729`、`:190-272`、`:47-51`、wrappers `:42-64`） | 准确 |
+
+⇒ 这批漂移**不是**本次 rebase 引入的：起点 `d0d3d1f92` 上就已经漂
+（那次 rebase 进来的 `c708260d0` 根本没碰 `main.go` / `session_tenant.go`）。
+⇒ 与批 127 记录的文档债同族：全仓约 12 个模块头的 `main.go` 行号都漂了，
+**但没有一条判据因此变红** —— 因为读源码判据**一律锚内容正则、不钉死行号**。
+
+### 八、读数
+
+| 环节 | 结果 |
+|---|---|
+| `vue-tsc -b`（先删 tsbuildinfo） | rc=0 |
+| css / touch / i18n / comment 四门 | 全 rc=0 |
+| `gate:selftest` | 5/5 |
+| `build` | rc=0 |
+| 视图判据 | 29/29 |
+| 孤儿棘轮 | 32/32 |
+| 全量 | 218 files / **8119 passed** / 1 skipped + 5 failed（RC=1） |
+| 变异台 | **31/31 有牙、0 条 NO_RED**（首轮 28/31；三条 NO_RED 分别补了判据 / 换了变异 / 补了「负控的负控」） |
+| 文档 | 纯追加本节，五项校验通过 |
+
+那 5 条 failed 仍是 `v1DataHorizon` 断裂那族既有红（本批零红），根因与归属见批 127 记录。
+
+- **孤儿真缺口已归零。** 后续批次不再是「接孤儿」，而是「按需扩展既有页面」。

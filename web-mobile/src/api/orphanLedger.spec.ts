@@ -169,10 +169,24 @@ const KNOWN_INFRASTRUCTURE: readonly string[] = [
  *   ⇒ 两条腿合起来才**唯一**命中 `nativeTransport`。
  */
 function infrastructureIsProven(name: string): boolean {
-  const src = moduleSource(name)
+  return infrastructureIsProvenGiven(moduleSource(name), shellIsNotInstalled())
+}
+
+/**
+ * ★★★ 与 `shellNotInstalledGiven` 同理**取参数**（第一百二十八批）。
+ *
+ * ⇒ 起因：负控⑤原先拿 `sessionAnalyticsFilterOptions` 当「有端点但不可达」的样本，
+ *   而那个模块在本批被接线 ⇒ 样本**当场失效**（负控会变成僵尸断言，全绿但没测任何东西）。
+ *   ⇒ ★★ 与 `boardOperational` 那类仓库里的活样本相比，
+ *   **喂字符串**的样本不会随接线腐烂，也不会让下一个人再换一轮名字。
+ *
+ * @param src      被检模块的源码（腿①：数 `/api/` 端点数）
+ * @param noShell  壳是否未安装（腿②，由调用方从依赖清单现读）
+ */
+function infrastructureIsProvenGiven(src: string, noShell: boolean): boolean {
   const endpointCount = (src.match(/['`]\/api\//g) ?? []).length
   if (endpointCount !== 0) return false // 腿①：有端点 ⇒ 是功能缺口，该开页
-  return shellIsNotInstalled()
+  return noShell
 }
 
 /**
@@ -215,8 +229,21 @@ function shellNotInstalledGiven(
   return !/setGatewayBaseUrl\(/.test(prod)
 }
 
+// ★★★ 第一百二十八批：`KNOWN_ORPHANS`（真缺口）**已清空** —— 真缺口 2 → 0。
+//
+//   最后一项 `sessionAnalyticsFilterOptions` 在本批接进 UI（视图
+//   `SessionAnalyticsFilterOptionsView.vue` + 路由 `/session-analytics-filter-options`
+//   + 抽屉席 `session-analytics-filter-options`）。
+//
+//   ⚠️ 空清单不是「可以删掉这个门」：这条判据（当前孤儿集合 = 三类登记的并）
+//   是**承重**的 —— 它逐个核对**全部**孤儿。清单空了，它照样守着：
+//   任何一个 api 模块只要还没接进 UI，就既不在清单里、又出现在 `currentOrphans()` 里
+//   ⇒ 这条立刻红。⇒ ★ 所以**留一个空数组**，不要删变量，也不要改成「无孤儿则跳过」。
 const KNOWN_ORPHANS: readonly string[] = [
-  'sessionAnalyticsFilterOptions',
+  // ★ 故意为空：当前没有「有 UI 入口才能算完成」的真缺口。
+  //   （`boardOperational` 在 KNOWN_DUPLICATES —— 它与 dashboardBoard 打同一端点，
+  //     已消解，是重复件不是真缺口；`nativeTransport` 在 KNOWN_INFRASTRUCTURE
+  //     —— 零端点的非页面型基础设施。）
 ]
 
 /**
@@ -373,10 +400,21 @@ describe('孤儿棘轮', () => {
     expect(shellNotInstalledGiven({ vue: '3', pinia: '3' }, { vitest: '4' }, '')).toBe(true)
     // 负控⑤：`infrastructureIsProven` 对**有端点**的模块必须返回 false
     //   （这条让 S3「判据恒真」这类变异有牙：恒真会让它对任何模块都返回 true）
-    // ★ 第二条负控的取样模块在第一百二十七批换掉了：`turnsFilterOptions`
-    //   已被接线（不再有资格当「有端点但不可达」的样本）⇒ 换成仍不可达的那一个。
-    //   ⇒ ★ 两处负控取样**必须**是「现在仍然成立」的样本，否则它们会变成僵尸断言。
-    expect(infrastructureIsProven('sessionAnalyticsFilterOptions')).toBe(false)
+    // ★ 第一百二十八批：原先这里喂 `sessionAnalyticsFilterOptions`，
+    //   而它在本批被接线 ⇒ 样本当场失效。改为**直接喂字符串**，
+    //   样本不再依赖仓库里「恰好仍未接线」的模块。
+    expect(infrastructureIsProvenGiven("const P = '/api/admin/x'", false)).toBe(false)
+    // ★ 同一函数的正控：零端点 + 壳未安装 ⇒ 必须成立（否则负控⑤就是恒假）
+    expect(infrastructureIsProvenGiven('const N = 1', true)).toBe(true)
+    // ★ 腿②的反向护栏：零端点但壳已安装 ⇒ 必须不成立
+    expect(infrastructureIsProvenGiven('const N = 1', false)).toBe(false)
+    // ★ 与仓库现状的一致性（防止参数化把真实调用链改坏）：
+    //   对每个**真实**的基础设施条目，两种算法必须给出同一个答案。
+    for (const name of KNOWN_INFRASTRUCTURE) {
+      expect(infrastructureIsProvenGiven(moduleSource(name), shellIsNotInstalled())).toBe(
+        infrastructureIsProven(name),
+      )
+    }
   })
 
   it('★★★★ 「零端点 + 不可达」那条**能分辨**而不是恒成立（负控）', () => {
@@ -388,6 +426,51 @@ describe('孤儿棘轮', () => {
     expect(zeroEndpointOrphans.sort()).not.toEqual([...KNOWN_INFRASTRUCTURE, 'transport'].sort())
     expect(zeroEndpointOrphans.sort()).not.toEqual([...KNOWN_INFRASTRUCTURE, 'system'].sort())
     expect(zeroEndpointOrphans.sort()).not.toEqual([])
+  })
+
+  it('★★★★★ 负控：承重那条判据**必须逐字含集合相等断言**（专打 M23，负控的负控）', () => {
+    // ★★★★★ 第一百二十八批变异台：M23 把
+    //   `expect([...currentOrphans()].sort()).toEqual([...KNOWN_ORPHANS, ...].sort())`
+    //   换成 `expect([...currentOrphans()].sort().length).toBeGreaterThanOrEqual(0)`
+    //   ⇒ **事实仍为真**（真孤儿确实 ≥0 个）⇒ 整条**全绿**。
+    //   ⇒ 与 M23 同型的还有「上一条能分辨负控」：它复算的是
+    //   `reachableFromUi()`，**没有**检查承重判据本身有没有被换成恒真式。
+    //
+    // ⇒ ★★ 「削弱断言」型变异的第二层：上一批的负控只覆盖了
+    //   「判据函数返回错值」，**没覆盖「判据被换成恒真表达式」**。
+    //   ⇒ 治法是**钉源码形态**：承重那条必须逐字出现 `toEqual(` + 三份清单的展开。
+    const self = readFileSync(join(__dirname, 'orphanLedger.spec.ts'), 'utf8')
+    // ★★ 三份清单是**跨两行**书写的（`toEqual(` 后面换行才展开），
+    //   所以要连着取 3 行，不能只看命中 `toEqual(` 的那一行。
+    const lines = self.split('\n')
+    const at = lines.findIndex((l) => l.includes('currentOrphans()') && l.includes('toEqual('))
+    expect(at, '承重判据里的集合相等断言不见了 ⇒ 它可能被换成了恒真式').toBeGreaterThan(-1)
+    const snippet = lines.slice(at, at + 3).join('\n')
+    expect(snippet).toContain('currentOrphans()')
+    expect(snippet).toContain('toEqual(')
+    // ★★ 三份清单必须**都**出现（少一份就等于少覆盖一类登记）
+    for (const name of ['KNOWN_ORPHANS', 'KNOWN_DUPLICATES', 'KNOWN_INFRASTRUCTURE']) {
+      expect(snippet, `承重判据少了一类登记：${name}`).toContain(name)
+    }
+    // ★ 反向护栏：承重那条**不得**退化成「长度恒真」这类形式。
+    // ⚠️⚠️ 只扫**断言行**（以 expect 开头），不能扫整段 ——
+    //   这段文字里就包含「toBeGreaterThan(0)」这个字面量，
+    //   扫全文会**自指误红**（本批真踩到了）。
+    // ⚠️ 窗口必须停在**本用例闭合**处，不能按固定字符数切 ——
+    //   固定 900 字符会把**下一条**用例的断言也扫进来，
+    //   而下一条正好有 `toBeGreaterThan(0)` ⇒ 自指误红（本批真踩到了）。
+    const start = self.indexOf('当前孤儿集合 = 真缺口')
+    const end = self.indexOf('\n  })', start)
+    expect(end, '没找到承重用例的闭合位置').toBeGreaterThan(start)
+    const weightLines = self
+      .slice(start, end)
+      .split('\n')
+      .filter((l) => l.trim().startsWith('expect('))
+    expect(weightLines.length, '没扫到承重判据的断言行').toBeGreaterThan(0)
+    for (const l of weightLines) {
+      expect(l, '承重判据里出现了恒真式断言').not.toMatch(/toBeGreaterThan(?:OrEqual)?\(0\)/)
+      expect(l, '承重判据里出现了只比长度、不比集合的断言').not.toMatch(/\.length\)\.toBe/)
+    }
   })
 
   it('★★★★ 负控必须**钉住真判据的源码形态**，不能只复算（变异 S7 的教训）', () => {
@@ -623,7 +706,23 @@ describe('孤儿棘轮', () => {
     //   unwrapCorrectionStat 会被当成「taskProfile 已接上」）。
     const orphans = currentOrphans()
     // ★ 第一百二十七批订正：`turnsFilterOptions` 已接线并移出清单
-    //   ⇒ 换成仍不可达的 `sessionAnalyticsFilterOptions`（同一个 api 内部引用问题）。
-    expect(orphans).toContain('sessionAnalyticsFilterOptions')
+    //   ⇒ 换成当时仍不可达的 `sessionAnalyticsFilterOptions`。
+    // ★ 第一百二十八批：**它也接线了**（最后一个真缺口归零）⇒ 改用 `boardOperational`。
+    //   ⇒ ★★★ 这已经是这条取样**第三次**要换名字，而每次都是同一个原因：
+    //     孤儿被接进 UI ⇒ 样本失效。这不是巧合，是**取样方式错了** ——
+    //     断言「仓库里恰好有一个未接线的模块」必然随流水线推进而腐烂。
+    //   ⇒ 那条「登记与实际必须一致」的判据（★ 当前孤儿集合 = …）才是承重的：
+    //     它对**全部**孤儿逐个核对，抽样的失效不会让它变绿。
+    //   ⇒ 这里退一步只断言一个**结构性**事实：孤儿集合**非空**。
+    //     真归零时（三个清单都空）这条自然也要改 —— 那时它该断言 `toHaveLength(0)`，
+    //     而**不是**回头去找一个假孤儿来凑数。
+    expect(orphans.length).toBeGreaterThan(0)
+    // ★ 承重的那一条单独再钉一次：孤儿集合里的每一项都必须落在三个清单之内。
+    for (const name of orphans) {
+      expect(
+        [...KNOWN_ORPHANS, ...KNOWN_DUPLICATES, ...KNOWN_INFRASTRUCTURE],
+        `${name} 是实际孤儿却没被登记`,
+      ).toContain(name)
+    }
   })
 })
