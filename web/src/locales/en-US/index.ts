@@ -59,6 +59,7 @@ import formatAnomaliesView from './formatAnomaliesView'
 import modelIntegrityView from './modelIntegrityView'
 import agentRegistryView from './agentRegistryView'
 import outputCompliance from './outputCompliance'
+import sanitizeRules from './sanitizeRules'
 import ops from './ops'
 import qualityCorrelations from './qualityCorrelations'
 import routingAudit from './routingAudit'
@@ -142,6 +143,7 @@ export default {
   modelIntegrityView,
   agentRegistryView,
   outputCompliance,
+  sanitizeRules,
   ops,
   qualityCorrelations,
   routingAudit,
