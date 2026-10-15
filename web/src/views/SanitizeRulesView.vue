@@ -972,6 +972,200 @@ onBeforeUnmount(() => {
           >
         </article>
       </section>
+      <section v-if="tab === 'versions'" :aria-busy="versionLoading">
+        <button class="btn" :disabled="versionLoading" @click="loadVersions">
+          {{ t("sanitizeRules.refresh") }}
+        </button>
+        <p v-if="versionError" role="alert" class="error-banner">
+          {{ versionError }}
+        </p>
+        <p v-if="versionLoading">{{ t("sanitizeRules.loading") }}</p>
+        <p v-else-if="!versions.length && !versionError">
+          {{ t("sanitizeRules.empty") }}
+        </p>
+        <div class="history-layout">
+          <div>
+            <button
+              v-for="version in versions"
+              :key="version.id"
+              class="version-row"
+              @click="
+                chosenVersion = version;
+                rollbackOpen = false;
+              "
+            >
+              <strong>v{{ version.id }}</strong> · {{ version.actor }} ·
+              {{ date(version.created_at) }}<small>{{ version.comment }}</small
+              ><small
+                >{{ t("sanitizeRules.parent") }}: {{ version.parent_id }}
+                <span v-if="version.rollback_of"
+                  >· {{ t("sanitizeRules.rollbackOf") }}:
+                  {{ version.rollback_of }}</span
+                ></small
+              >
+            </button>
+          </div>
+          <article v-if="chosenVersion" class="card">
+            <h3>{{ t("sanitizeRules.selected") }} {{ chosenVersion.id }}</h3>
+            <p>{{ t("sanitizeRules.compare") }}</p>
+            <ul v-if="versionDiff.length">
+              <li v-for="row in versionDiff" :key="row.id">
+                <code>{{ row.id }}</code
+                >: {{ labels[row.change] }}
+              </li>
+            </ul>
+            <p v-else>{{ t("sanitizeRules.noChanges") }}</p>
+            <details>
+              <summary>{{ t("sanitizeRules.versionDetail") }}</summary>
+              <pre>{{ JSON.stringify(chosenVersion.config, null, 2) }}</pre>
+            </details>
+            <button
+              class="btn danger"
+              :disabled="busy || !head || chosenVersion.id === head.version"
+              data-test="open-rollback"
+              @click="rollbackOpen = true"
+            >
+              {{ t("sanitizeRules.rollback") }}
+            </button>
+            <div
+              v-if="rollbackOpen"
+              class="rollback-confirm"
+              role="group"
+              :aria-label="t('sanitizeRules.rollbackConfirm')"
+            >
+              <p>{{ t("sanitizeRules.rollbackConfirm") }}</p>
+              <label
+                >{{ t("sanitizeRules.comment")
+                }}<input
+                  v-model="rollbackComment"
+                  data-test="rollback-comment"
+                  maxlength="2000"
+                  :disabled="busy" /></label
+              ><button
+                class="btn danger"
+                :disabled="busy || !rollbackComment.trim()"
+                data-test="confirm-rollback"
+                @click="rollback"
+              >
+                {{ t("sanitizeRules.confirm") }}</button
+              ><button
+                class="btn"
+                :disabled="busy"
+                @click="rollbackOpen = false"
+              >
+                {{ t("sanitizeRules.cancel") }}
+              </button>
+            </div>
+          </article>
+        </div>
+      </section>
+      <section v-if="tab === 'instances'" :aria-busy="instanceLoading">
+        <div class="toolbar">
+          <strong>{{ t("sanitizeRules.target") }} {{ targetVersion }}</strong
+          ><button
+            class="btn"
+            :disabled="instanceLoading"
+            @click="loadInstances"
+          >
+            {{ t("sanitizeRules.refresh") }}
+          </button>
+        </div>
+        <p v-if="!instances.length && !instanceError">
+          {{ t("sanitizeRules.noInstances") }}
+        </p>
+        <article
+          v-for="instance in instances"
+          :key="instance.instance_id"
+          class="card"
+        >
+          <div class="toolbar">
+            <code>{{ instance.instance_id }}</code
+            ><strong>v{{ instance.version }}</strong
+            ><span v-if="instance.version === 0">{{
+              t("sanitizeRules.fallback")
+            }}</span
+            ><span v-else>{{
+              t(
+                instance.version === targetVersion
+                  ? "sanitizeRules.applied"
+                  : "sanitizeRules.waiting",
+              )
+            }}</span
+            ><strong v-if="stale(instance)" class="warning">{{
+              t("sanitizeRules.stale")
+            }}</strong>
+          </div>
+          <p>
+            <small
+              >{{ t("sanitizeRules.digest") }}:
+              <code>{{ instance.config_digest }}</code></small
+            >
+          </p>
+          <p>
+            {{ t("sanitizeRules.lastSeen") }}: {{ date(instance.last_seen) }}
+          </p>
+          <p>
+            {{ t("sanitizeRules.lastRefresh") }}:
+            {{ date(instance.last_refresh) }}
+          </p>
+          <p v-if="instance.error" role="alert" class="error-banner">
+            {{ t("sanitizeRules.lastError") }}: {{ instance.error }}
+          </p>
+        </article>
+      </section>
+      <section v-if="tab === 'parameters'" class="card">
+        <p v-if="parameterError" role="alert" class="error-banner">
+          {{ parameterError }}
+        </p>
+        <form class="parameter-form" @submit.prevent="saveParams">
+          <label
+            >{{ t("sanitizeRules.refreshSeconds")
+            }}<input
+              v-model.number="params.refresh"
+              data-test="parameter-refresh"
+              type="number"
+              min="1"
+              max="300"
+              required
+              :disabled="paramsBusy || paramsLoading || !paramsLoaded" /></label
+          ><label class="check"
+            ><input
+              v-model="params.audit"
+              data-test="parameter-audit"
+              type="checkbox"
+              :disabled="paramsBusy || paramsLoading || !paramsLoaded"
+            />{{ t("sanitizeRules.auditEnabled") }}</label
+          >
+          <label
+            >{{ t("sanitizeRules.eventLimit")
+            }}<input
+              v-model.number="params.limit"
+              data-test="parameter-limit"
+              type="number"
+              min="100"
+              max="100000"
+              required
+              :disabled="paramsBusy || paramsLoading || !paramsLoaded"
+          /></label>
+          <div class="toolbar">
+            <button
+              class="btn btn-primary"
+              :disabled="
+                paramsBusy || paramsLoading || !paramsLoaded || !!parameterError
+              "
+            >
+              {{ t("sanitizeRules.saveParameters") }}</button
+            ><button
+              type="button"
+              class="btn"
+              :disabled="paramsBusy || paramsLoading"
+              @click="loadParams"
+            >
+              {{ t("sanitizeRules.refresh") }}
+            </button>
+          </div>
+        </form>
+      </section>
     </template>
   </main>
 </template>
