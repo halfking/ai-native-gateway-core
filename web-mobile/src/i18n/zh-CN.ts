@@ -95,6 +95,7 @@ export const zhCN = {
     usageEnhanced: '用量成本',
     dataLifecycleStorage: '存储总览',
     storageAndLogConfig: '存储与日志',
+    storageMigrationState: '附件目录迁移',
     account: '我的',
   },
   // ★ 订阅档（2026-10-14，第一百二十批）。前缀 sts。
@@ -232,6 +233,46 @@ export const zhCN = {
       maxBackups: '保留份数',
       deleteDays: '保留天数',
       enabledSource: '开关来源',
+    },
+  },
+  // ★ 附件目录迁移进度（2026-10-15，第一百二十五批）。前缀 sms。
+  sms: {
+    title: '附件目录迁移',
+    nope: {
+      msg: '仅管理员可查看迁移进度。',
+      // ★★★ 与 slc 的 nope 文案**方向相反**：slc 说「服务端会 403」（体验兜底），
+      //   本族必须说「后端不挡、我们挡」—— 因为 `admin(...)` = AdminMiddleware
+      //   没有任何角色下限，supportedRole 还接受 "user"。
+      why: '这一层是服务端之外唯一的门：后端这个端点只校验登录、不校验角色，普通账号本来也能读。',
+    },
+    gate: { note: '本页是这一族里唯一挡普通账号的地方（后端只校验登录，不校验角色）。' },
+    readonly: { note: '本页只读：启动或取消迁移属于存储配置的写入入口，不在本页。' },
+    load: { title: '取数', btn: '刷新状态' },
+    state: { title: '迁移状态' },
+    tenant: { none: '本页不含任何租户维度：迁移进度是这台网关自己的事，所以不是超级管理员专享。' },
+    empty: '这台网关还没有发生过附件目录迁移。',
+    status: { running: '迁移中', terminal: '已结束' },
+    polling: { on: '轮询中', timeout: '状态长时间没有变化，已停止自动刷新（后端没有「卡住」信号，请检查服务端日志）。' },
+    purge: {
+      yes: '旧目录已删除',
+      no: '旧目录未删除',
+      note: '是否已清理只认 old_dir_purged；files_deleted 是计数，可能为 0 却其实删过。',
+    },
+    failed: {
+      title: '迁移失败',
+      note: '多数失败只有 message、没有结构化 errors（后端只在少数路径收集 errors）。',
+    },
+    // ★★ 一键一行（i18n 门的键展平器解析不了「一行多对」）。
+    field: {
+      status: '状态',
+      runId: '迁移 ID',
+      from: '源目录',
+      to: '目标目录',
+      startedAt: '开始时间',
+      fileProgress: '文件进度',
+      byteProgress: '字节进度',
+      purge: '旧目录',
+      filesDeleted: '已删文件数',
     },
   },
   // ★ 用量成本（2026-10-14，第一百二十二批）。前缀 ue。

@@ -613,6 +613,20 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.storageAndLogConfig',
     requiresRole: 'super_admin',
   },
+  // ★ 附件目录迁移进度（2026-10-15 第一百二十五批）——
+  //   `admin/handler.go:1132` 的 `admin(...)` ⇒ **服务端没有角色下限**
+  //   （`admin := h.admin` → AdminMiddleware，`pkg/identity` 的 supportedRole 接受 "user"）
+  //   ⇒ 与**上一席只隔一行**的 `storage-log-config`（`:1129` h.superAdmin，真门）
+  //      **档位正好相反** ⇒ 绝不能按 `/api/admin/storage/` 前缀推权限。
+  //   ★ 'admin' 档的两条独立理由：零租户维度（不过度限制）＋ 需要角色下限（不挡 user）。
+  //   ⚠️ 'admin' 档**不得**进 AppDrawer.spec.ts 的 superAdmin 白名单（那是 tenant_admin 掉的）。
+  {
+    key: 'storage-migration-state',
+    to: '/storage-migration-state',
+    icon: 'grid',
+    titleKey: 'nav.storageMigrationState',
+    requiresRole: 'admin',
+  },
   // ★ 加这一席**必须**同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
   {
     key: 'routing-policy',

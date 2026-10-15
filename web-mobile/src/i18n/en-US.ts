@@ -95,6 +95,7 @@ export const enUS = {
     usageEnhanced: 'Usage & cost',
     dataLifecycleStorage: 'Storage overview',
     storageAndLogConfig: 'Storage & log config',
+    storageMigrationState: 'Attachment migration',
     account: 'Me',
   },
   // ★ Subscription tiers (2026-10-14, batch 120). Prefix: sts.
@@ -237,6 +238,47 @@ export const enUS = {
       maxBackups: 'Max backups',
       deleteDays: 'Retention days',
       enabledSource: 'Toggle source',
+    },
+  },
+  // ★ Attachment directory migration (2026-10-15, batch 125). Prefix sms.
+  sms: {
+    title: 'Attachment dir migration',
+    nope: {
+      msg: 'Administrators only.',
+      // ★★★ The opposite of slc's wording: slc says "the server returns 403"
+      //   (an experience-level fallback); this family must say "the backend does
+      //   not block, we do" — because `admin(...)` = AdminMiddleware has no role
+      //   floor and supportedRole still accepts "user".
+      why: 'This layer is the only gate outside the backend: that endpoint only checks login, not role, so a plain account could read it too.',
+    },
+    gate: { note: 'This page is the only thing stopping plain accounts in this family (the backend checks login, not role).' },
+    readonly: { note: 'Read-only: starting or cancelling a migration belongs to the storage-config write surface, not here.' },
+    load: { title: 'Fetch', btn: 'Refresh status' },
+    state: { title: 'Migration status' },
+    tenant: { none: 'This page carries no tenant dimension — the migration belongs to this gateway itself, so it is not super-admin only.' },
+    empty: 'This gateway has never migrated its attachment directory.',
+    status: { running: 'Running', terminal: 'Finished' },
+    polling: { on: 'Polling', timeout: 'The status has not changed for a while, so auto-refresh was stopped (the backend has no "stuck" signal — check the server log).' },
+    purge: {
+      yes: 'Old directory purged',
+      no: 'Old directory not purged',
+      note: 'Only old_dir_purged is authoritative; files_deleted is a counter and may be 0 even after a purge.',
+    },
+    failed: {
+      title: 'Migration failed',
+      note: 'Most failures carry only a message, with no structured errors (the backend collects errors on just a few paths).',
+    },
+    // ★★ One key per line (the i18n gate flattener cannot parse several pairs on one line).
+    field: {
+      status: 'Status',
+      runId: 'Run ID',
+      from: 'From',
+      to: 'To',
+      startedAt: 'Started at',
+      fileProgress: 'File progress',
+      byteProgress: 'Byte progress',
+      purge: 'Old directory',
+      filesDeleted: 'Files deleted',
     },
   },
   // ★ Usage & cost (2026-10-14, batch 122). Prefix: ue.

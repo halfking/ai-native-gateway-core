@@ -359,3 +359,77 @@ export function migrationRunHasErrorDetail(run: MigrationRun): boolean {
 export function migrationStateContainsRunId(s: MigrationStateResponse, runId: string): boolean {
   return effectiveMigrationRun(s)?.run_id === runId
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 权限档（2026-10-15，第一百二十五批新增）
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * ★★★★ 本族设 `'admin'` 的**两条独立理由**（缺一不可，别只留一条）：
+ *
+ * **（甲）不需要 `'super_admin'`** —— 载荷是纯平台基础设施事实。
+ * `admin/storage_migration.go` 整个文件 **`grep -c tenant` = 0**（逐字核过）
+ * ⇒ 附件目录迁移进度是**本机单例**（`h.getMigrationState()` 一把互斥锁保护的全局状态）
+ * ⇒ 载荷里没有「别人的东西」⇒ 按批 119 的边界**不过度限制**。
+ *
+ * **（乙）但需要 `'admin'`** —— 服务端**没有角色下限**。
+ * 注册行 `admin/handler.go:1132` 的 `admin(...)` 是 `admin/handler.go:925` 的
+ * 局部别名 `admin := h.admin`，而 `h.admin` = `AdminMiddleware`
+ * （`admin/auth.go:85` 起，全文**无任何 `claims.Role` 比对**）
+ * + `pkg/identity/verifier.go` 的 `supportedRole` **接受 `"user"`**
+ * ⇒ ★★★ 任何已认证的普通用户都能调到这个端点，
+ *   而「本机附件目录正从 A 搬到 B」**没理由给普通用户看**。
+ *
+ * ⚠️★★ 与第一百二十四批（`storageAndLogConfig`）**结论相反且只隔一行**：
+ *   `:1129`（storage/config）是 `h.superAdmin` ⇒ **服务端是真门**；
+ *   `:1132`（本族）是 `admin(...)` ⇒ **服务端没有门**。
+ * ⇒ ★★ 前端这一层在批 124 是**体验兜底**，在本族**是唯一的门**。
+ *   前端严于后端是**兜底不是修复**。
+ *
+ * ★ 这条**不是恒真**：它随 role 变（`super_admin`/`tenant_admin`/`admin_key` ⇒ false）。
+ */
+export function migrationStateRoleNeedsAdminGate(role: string | null | undefined): boolean {
+  if (role === 'super_admin' || role === 'tenant_admin' || role === 'admin_key') return false
+  return true
+}
+
+/**
+ * ★★★★ 载荷里**不含任何租户维度** —— 这是「不过度限制到 `super_admin`」的**依据**。
+ *
+ * ⇒ ★ 判别条件是**整份响应里没有租户键**，而不是「某个值恰好为空」。
+ *   哪天后端给迁移状态加上 per-tenant 拆分（例如每租户一个附件目录），
+ *   这条会红 ⇒ 提示权限档要重判（那时就该考虑 `super_admin` 了）。
+ *
+ * ⚠️ `from_dir` / `to_dir` 是**用户可配的绝对路径**，路径里含 `tenant` 字样时
+ *   会**误报成有租户维度** ⇒ 这个方向是**保守的**（宁可红，不可漏）⇒ 可接受。
+ */
+export function migrationStateCarriesNoTenantDimension(resp: unknown): boolean {
+  const s = JSON.stringify(resp ?? null).toLowerCase()
+  return !s.includes('tenant')
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 轮询参数（2026-10-15，第一百二十五批新增）
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * ★★ 移动端轮询间隔：3 秒。
+ * ★ 桌面端是 `2000`（`web/src/views/data-lifecycle/StorageConfig.vue:190`），
+ *   本族**刻意不抄**：移动端常年挂在后台、耗电敏感，间隔放宽一档。
+ */
+export const MIGRATION_POLL_INTERVAL_MS = 3000
+
+/**
+ * ★★★★ 轮询次数上限：**60 次 = 3 分钟**。
+ *
+ * ⇒ ★★★ 这不是「防手滑」的装饰，而是**协议缺口的唯一补丁**：
+ *   模块头 (10) 已经钉死「**心跳停更在本响应里查不出来**」——
+ *   迁移 goroutine 卡死时 `status` 仍是 `running`、计数不再变，
+ *   **没有「卡住」信号** ⇒ `shouldPollMigration` 会**永远返回 true**。
+ * ⇒ ⇒ 所以轮询**必须有上限**，否则「迁移卡死」这个真实故障
+ *   会表现成手机**永远转圈 + 永久后台请求**。
+ * ⇒ 桌面端的对应补丁是 `MAX_POLLS = 900`（30 分钟，`:45`），
+ *   本族按移动端能接受的等待时间收得更紧（3 分钟）——
+ *   宁可不刷新，也不要让一台手机烧半小时。
+ */
+export const MIGRATION_POLL_MAX = 60

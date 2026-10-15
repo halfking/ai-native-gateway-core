@@ -107,7 +107,6 @@ function duplicateIsProven(name: string): boolean {
 const KNOWN_ORPHANS: readonly string[] = [
   'nativeTransport',
   'sessionAnalyticsFilterOptions',
-  'storageMigrationState',
   'turnsFilterOptions',
 ]
 
@@ -402,6 +401,5 @@ describe('孤儿棘轮', () => {
     //   unwrapCorrectionStat 会被当成「taskProfile 已接上」）。
     const orphans = currentOrphans()
     expect(orphans).toContain('turnsFilterOptions')
-    expect(orphans).toContain('storageMigrationState')
   })
 })

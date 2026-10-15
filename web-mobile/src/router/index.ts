@@ -911,6 +911,17 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'slc.title', requiresAuth: true, requiresRole: 'super_admin' },
   },
   {
+    // ★ 附件目录迁移进度（2026-10-15，第一百二十五批）。
+    //   ⚠️⚠️ 与**上一条路由**档位相反且只隔一行：
+    //     `:1129` storage/config 是 `h.superAdmin`（服务端是真门）；
+    //     `:1132` storage/migration-state 是 `admin(...)` ⇒ **服务端没有角色下限**
+    //     ⇒ `meta.requiresRole: 'admin'` 这一层**是唯一的门**，不是体验兜底。
+    path: '/storage-migration-state',
+    name: 'storage-migration-state',
+    component: () => import('@/views/StorageMigrationStateView.vue'),
+    meta: { titleKey: 'sms.title', requiresAuth: true, requiresRole: 'admin' },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),
