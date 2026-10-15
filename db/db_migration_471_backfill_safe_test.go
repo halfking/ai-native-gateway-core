@@ -24,6 +24,11 @@ func TestEnsureSessionSummariesArchivalLockSafe(t *testing.T) {
 		"SET LOCAL lock_timeout = '2s'",
 		"ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMPTZ",
 		"ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ",
+		// 2026-10-16 252 审计轮：稳态库（两列已在）整段跳过 DDL——IF NOT EXISTS
+		// 的 ALTER 仍需瞬间 ACCESS EXCLUSIVE，部署窗口实测每窗口 40-70 条
+		// 55P03 lock_timeout（252 ctr.log r1015/r1016），等待中的 AEL 还卡队列。
+		"information_schema.columns",
+		"skipColumnsDDL",
 		// backfill: PK-watermark chunk with DB-collation boundary + bounded slice
 		"sessionSummariesBackfillBatch",
 		"sessionSummariesBackfillSlice",
