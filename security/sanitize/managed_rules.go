@@ -192,3 +192,33 @@ func ruleType(s *sanitizerules.Snapshot, id string) string {
 	}
 	return "custom"
 }
+func ruleKind(s *sanitizerules.Snapshot, id string, ctx context.Context) string {
+	if f, ok := ctx.Value(ruleFieldKey{}).(ruleField); ok && f.field != "" {
+		return f.field
+	}
+	for _, r := range s.Rules {
+		if r.ID == id {
+			return r.Kind
+		}
+	}
+	return "pattern"
+}
+func (c *outputSensitiveChecker) managed() bool {
+	d, ok := c.sanitizer.detector.(*PatternDetector)
+	return ok && d.RuleManager() != nil
+}
+
+func (d *PatternDetector) observeCombination(ctx context.Context, id string, version int64, value string) {
+	shape := "pair_other"
+	switch {
+	case strings.ContainsAny(value, "/／"):
+		shape = "pair_slash"
+	case strings.ContainsAny(value, "|｜"):
+		shape = "pair_pipe"
+	case strings.Contains(value, ":"):
+		shape = "pair_colon"
+	}
+	if m := d.RuleManager(); m != nil {
+		m.Record(ctx, sanitizerules.Event{TenantID: authenticatedTenant(ctx), RuleID: id, Version: version, Phase: "input", Action: "pending", Type: "custom", Field: shape})
+	}
+}
