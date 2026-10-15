@@ -280,3 +280,154 @@ func TestSessionCacheSharedErrorsNeverPublishL1(t *testing.T) {
 		require.Contains(t, err.Error(), "WRONGTYPE")
 	})
 }
+
+func TestSessionCacheSharedCallbackErrorAndNilLeavePair(t *testing.T) {
+	r := newSharedTestRedis(t)
+	c := NewSessionCache(r, nil)
+	body := []byte("body")
+	require.NoError(t, c.Set(context.Background(), "shared-tenant", "gw_shared001", sharedState(body, "base"), body))
+	sentinel := errors.New("callback rejected")
+	err := c.Update(context.Background(), "shared-tenant", "gw_shared001", func(st *SessionState, b []byte) (*SessionState, []byte, error) {
+		st.SanitizeMapGeneration = "rejected"
+		return st, []byte("bad"), sentinel
+	})
+	require.ErrorIs(t, err, sentinel)
+	requireSharedPair(t, NewSessionCache(r, nil), body, "base")
+	require.NoError(t, c.Update(context.Background(), "shared-tenant", "gw_shared001", func(st *SessionState, b []byte) (*SessionState, []byte, error) {
+		st.SanitizeMapGeneration = "nil"
+		return nil, []byte("bad"), nil
+	}))
+	requireSharedPair(t, NewSessionCache(r, nil), body, "base")
+}
+
+func TestSessionCacheSharedCancellationBeforeAndAfterCallback(t *testing.T) {
+	for _, when := range []string{"before", "after"} {
+		t.Run(when, func(t *testing.T) {
+			r := newSharedTestRedis(t)
+			c := NewSessionCache(r, nil)
+			body := []byte("body")
+			require.NoError(t, c.Set(context.Background(), "shared-tenant", "gw_shared001", sharedState(body, "base"), body))
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if when == "before" {
+				cancel()
+			}
+			var calls int
+			err := c.Update(ctx, "shared-tenant", "gw_shared001", func(st *SessionState, b []byte) (*SessionState, []byte, error) {
+				calls++
+				cancel()
+				st.SanitizeMapGeneration = "cancelled"
+				return st, b, nil
+			})
+			require.ErrorIs(t, err, context.Canceled)
+			if when == "before" {
+				require.Zero(t, calls)
+			} else {
+				require.Equal(t, 1, calls)
+			}
+			requireSharedPair(t, c, body, "base")
+			requireSharedPair(t, NewSessionCache(r, nil), body, "base")
+		})
+	}
+}
+
+func TestSessionCacheSharedExpiredOwnerCannotCommitOrReleaseSuccessor(t *testing.T) {
+	r := newSharedTestRedis(t)
+	a, b, c := NewSessionCache(r, nil), NewSessionCache(r, nil), NewSessionCache(r, nil)
+	body := []byte("body")
+	require.NoError(t, a.Set(context.Background(), "shared-tenant", "gw_shared001", sharedState(body, "base"), body))
+	enteredA, enteredB, releaseA, releaseB := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+	doneA, doneB := make(chan error, 1), make(chan error, 1)
+	var callsA, callsB atomic.Int32
+	go func() {
+		doneA <- a.Update(context.Background(), "shared-tenant", "gw_shared001", func(st *SessionState, b []byte) (*SessionState, []byte, error) {
+			callsA.Add(1)
+			close(enteredA)
+			<-releaseA
+			st.SanitizeMapGeneration = "expired-A"
+			return st, b, nil
+		})
+	}()
+	select {
+	case <-enteredA:
+	case <-time.After(time.Second):
+		t.Fatal("A callback did not start")
+	}
+	r.server.FastForward(time.Minute)
+	go func() {
+		doneB <- b.Update(context.Background(), "shared-tenant", "gw_shared001", func(st *SessionState, b []byte) (*SessionState, []byte, error) {
+			callsB.Add(1)
+			close(enteredB)
+			<-releaseB
+			st.SanitizeMapGeneration = "successor-B"
+			return st, b, nil
+		})
+	}()
+	select {
+	case <-enteredB:
+	case <-time.After(time.Second):
+		close(releaseA)
+		close(releaseB)
+		t.Fatal("B did not acquire expired lease")
+	}
+	close(releaseA)
+	var errA error
+	select {
+	case errA = <-doneA:
+	case <-time.After(time.Second):
+		close(releaseB)
+		t.Fatal("expired owner did not return")
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	var callsC int
+	errC := c.Update(waitCtx, "shared-tenant", "gw_shared001", func(st *SessionState, b []byte) (*SessionState, []byte, error) { callsC++; return st, b, nil })
+	cancel()
+	close(releaseB)
+	var errB error
+	select {
+	case errB = <-doneB:
+	case <-time.After(time.Second):
+		t.Fatal("successor did not finish")
+	}
+	require.Error(t, errA, "lost lease must reject A commit")
+	require.ErrorIs(t, errC, context.DeadlineExceeded, "A cleanup must not delete B's lease")
+	require.Zero(t, callsC)
+	require.NoError(t, errB)
+	require.EqualValues(t, 1, callsA.Load())
+	require.EqualValues(t, 1, callsB.Load())
+	requireSharedPair(t, NewSessionCache(r, nil), body, "successor-B")
+}
+
+func TestSessionCacheSharedCancelWhileWaitingDoesNotCallCallback(t *testing.T) {
+	r := newSharedTestRedis(t)
+	a, b := NewSessionCache(r, nil), NewSessionCache(r, nil)
+	body := []byte("body")
+	require.NoError(t, a.Set(context.Background(), "shared-tenant", "gw_shared001", sharedState(body, "base"), body))
+	entered, release := make(chan struct{}), make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- a.Update(context.Background(), "shared-tenant", "gw_shared001", func(st *SessionState, b []byte) (*SessionState, []byte, error) {
+			close(entered)
+			<-release
+			return st, b, nil
+		})
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("owner did not enter callback")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	var calls int
+	err := b.Update(ctx, "shared-tenant", "gw_shared001", func(st *SessionState, b []byte) (*SessionState, []byte, error) { calls++; return st, b, nil })
+	close(release)
+	select {
+	case ownerErr := <-done:
+		require.NoError(t, ownerErr)
+	case <-time.After(time.Second):
+		t.Fatal("owner did not finish")
+	}
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Zero(t, calls)
+}
