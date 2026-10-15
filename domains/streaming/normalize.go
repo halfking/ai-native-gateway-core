@@ -3,11 +3,14 @@ package streaming
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/internal/ir"
 )
 
 type Normalizer struct {
 	FinishReasonMap map[string]string
 	UsageEnabled    bool
+	toolFinish      *toolFinishStreamState // request-owned; the production Normalizer is shared
 }
 
 func NewNormalizer() *Normalizer {
@@ -70,14 +73,16 @@ func (n *Normalizer) normalizeNonStream(body []byte) []byte {
 	modified := false
 	for i, choice := range choicesArr {
 		frRaw, ok := choice["finish_reason"]
-		if !ok {
+		hasTool := hasNamedChatTool(choice["message"])
+		if !ok && !hasTool {
 			continue
 		}
 		var fr string
-		if err := json.Unmarshal(frRaw, &fr); err != nil {
+		if ok && json.Unmarshal(frRaw, &fr) != nil {
 			continue
 		}
 		normalized := n.NormalizeFinishReason(fr)
+		normalized = ir.ToolCallFinishReason(normalized, hasTool)
 		if normalized != fr {
 			choicesArr[i]["finish_reason"], _ = json.Marshal(normalized)
 			modified = true
@@ -104,14 +109,17 @@ func (n *Normalizer) normalizeStreamChunk(data []byte) []byte {
 	}
 
 	line := string(data)
-	if !strings.HasPrefix(line, "data: ") {
+	if !strings.HasPrefix(line, "data:") {
 		return data
 	}
 
-	payload := strings.TrimPrefix(line, "data: ")
-	payload = strings.TrimRight(payload, "\n\r")
+	payload := strings.TrimPrefix(line, "data:")
+	payload = strings.TrimSpace(payload)
 
 	if payload == "[DONE]" {
+		if n.toolFinish != nil {
+			return n.toolFinish.finish(data)
+		}
 		return data
 	}
 
@@ -132,6 +140,13 @@ func (n *Normalizer) normalizeStreamChunk(data []byte) []byte {
 
 	modified := false
 	for i, choice := range choicesArr {
+		choiceIndex := i
+		if raw, ok := choice["index"]; ok {
+			_ = json.Unmarshal(raw, &choiceIndex)
+		}
+		if n.toolFinish != nil && hasNamedChatTool(choice["delta"]) {
+			n.toolFinish.named[choiceIndex] = true
+		}
 		frRaw, ok := choice["finish_reason"]
 		if !ok {
 			continue
@@ -163,9 +178,20 @@ func (n *Normalizer) normalizeStreamChunk(data []byte) []byte {
 			continue
 		}
 		normalized := n.NormalizeFinishReason(frStr)
+		if n.toolFinish != nil {
+			normalized = ir.ToolCallFinishReason(normalized, n.toolFinish.named[choiceIndex])
+			n.toolFinish.ended[choiceIndex] = true
+		}
 		if normalized != frStr {
 			choicesArr[i]["finish_reason"], _ = json.Marshal(normalized)
 			modified = true
+		}
+	}
+	if n.toolFinish != nil {
+		for _, key := range []string{"id", "model", "created"} {
+			if raw, ok := obj[key]; ok {
+				n.toolFinish.header[key] = raw
+			}
 		}
 	}
 
