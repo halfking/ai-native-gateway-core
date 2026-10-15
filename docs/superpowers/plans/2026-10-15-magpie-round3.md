@@ -48,38 +48,44 @@
 
 **Files:** `domains/session/v2/`的BodiesWriter/迁移兼容，`internal/sessionv2mirror/`，必要的启动迁移/installer/embed/通道，以及本地部署有效写门；实际路径由诊断证据定位后记录于审计。
 
-- [ ] 用只读本地PG与日志证明失败事务、outbox状态、有效开关及canonical schema的实际形状；对比启动迁移和独立installer登记。
-- [ ] 将缺kind列/写门实际缺陷复现为真实PG回归或完整hook测试；修复后同事务turn/body均存在，迁移双路径幂等。
-- [ ] 修复必须兼容既有数据和回滚；如需DDL，使用新编号幂等迁移，不改已执行迁移内容；同步installer嵌入及台账/通道。
-- [ ] 对过渡期失败outbox先预览/备份再只重试本轮测试记录，不无界重放全部历史任务。
-- [ ] 以本地真实Chat/Responses/Messages请求、唯一session ID验证写入与告示，包含无显式session ID的正常请求语义；不能靠放宽告示窗口通过。
-- [ ] 去掉schema/接线修复的变异使对应断言红；完成后审查、rule17及checkpoint。
+- [x] 用只读本地PG与日志证明失败事务、outbox状态、有效开关及canonical schema的实际形状；对比启动迁移和独立installer登记。
+- [x] 将缺kind列/写门实际缺陷复现为真实PG回归或完整hook测试；修复后同事务turn/body均存在，迁移双路径幂等。
+- [x] 修复必须兼容既有数据和回滚；如需DDL，使用新编号幂等迁移，不改已执行迁移内容；同步installer嵌入及台账/通道。
+- [x] 对过渡期失败outbox先预览/备份再只重试本轮测试记录，不无界重放全部历史任务。
+- [x] 以本地真实Chat/Responses/Messages请求、唯一session ID验证写入与告示，包含无显式session ID的正常请求语义；不能靠放宽告示窗口通过。
+- [x] 去掉schema/接线修复的变异使对应断言红；完成后审查、rule17及checkpoint。
 
 ## Task 3：完整配对及跨实例缓存一致性
 
 **Files:** `domains/hooks/compression/session_cache.go`、独立共享Redis原子适配文件、`session_compressor.go`、`recovery_coordinator.go`、`approval_resume.go`；相关测试；`scripts/audit/run-session-storage-stream.sh`与`tests/session_storage_audit_gate.sh`。
 
-- [ ] 先运行旧strict门保留真实红；把callback内双到场barrier改成首callback挂起、第二实例等待锁、释放后观察顺序，避免正确串行化导致测试死锁。
-- [ ] 使用带随机token的Redis租约，获取等待响应ctx；提交Lua同时校验token、写完整state/body+revision/TTL；release compare-token，独立短cleanup ctx。
-- [ ] callback每调用至多一次；租约丢失返回显式错误，不重放callback；无Redis保持对象内stripe契约。
-- [ ] 原子保存确切body与state，保留hash和完整字段清零语义；检查现有隐私/大小约束，不用相同MsgCount替代配对证明。
-- [ ] 有Redis时共享状态权威；L1只复用相同revision对应body；DB backfill持同锁重读避免覆盖新写；错误不得返回旧L1成功。
-- [ ] 把压缩updateCache/CommitFinal、recovery、approval的RMW收敛到Update；callback外副作用保持一次，审批更新保留body。
-- [ ] 覆盖warm/cold、并发计数、同计数异body、租约过期A/B、取消三时点、错误、零值清理、回填竞态与业务RMW。
-- [ ] 强门默认要求coherence；显式require-coherence缺依赖必须非零，不能SKIP RC0；验证脚本失败传播的正反控。
-- [ ] 命令：`GOTOOLCHAIN=go1.27.2 SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk bash tests/session_storage_audit_gate.sh --require-coherence --race`，及完整compression/sessionaudit/streaming包测试。
-- [ ] 撤共享刷新/锁/token校验、吞错误/先L1、旧body替换等隔离变异必须对应变红；严格门与review通过后checkpoint。
+- [x] 先运行旧strict门保留真实红；把callback内双到场barrier改成首callback挂起、第二实例等待锁、释放后观察顺序，避免正确串行化导致测试死锁。
+- [x] 使用带随机token的Redis租约，获取等待响应ctx；提交Lua同时校验token、写完整state/body+revision/TTL；release compare-token，独立短cleanup ctx。
+- [x] callback每调用至多一次；租约丢失返回显式错误，不重放callback；无Redis保持对象内stripe契约。
+- [x] 原子保存确切body与state，保留hash和完整字段清零语义；检查现有隐私/大小约束，不用相同MsgCount替代配对证明。
+- [x] 有Redis时共享状态权威；L1只复用相同revision对应body；DB backfill持同锁重读避免覆盖新写；错误不得返回旧L1成功。
+- [x] 把压缩updateCache/CommitFinal、recovery、approval的RMW收敛到Update；callback外副作用保持一次，审批更新保留body。
+- [x] 覆盖warm/cold、并发计数、同计数异body、租约过期A/B、取消三时点、错误、零值清理、回填竞态与业务RMW。
+- [x] 强门默认要求coherence；显式require-coherence缺依赖必须非零，不能SKIP RC0；验证脚本失败传播的正反控。
+- [x] 命令：`GOTOOLCHAIN=go1.27.2 SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk bash tests/session_storage_audit_gate.sh --require-coherence --race`，及完整compression/sessionaudit/streaming包测试。
+- [x] 撤共享刷新/锁/token校验、吞错误/先L1、旧body替换等隔离变异必须对应变红；严格门与review通过后checkpoint。
 
 ## Task 4：最终发布验收与研究更新
 
-- [ ] 更新`docs/research/2026-10-14-magpie对比与优化方案.md`及本轮审计，记录已落地/未覆盖/后续项，不把历史证据当新结果。
-- [ ] Go1.27.2+SDK26.5+cgo1运行`verify.sh --web`；installer单独测试；真实严格存储门与新黄金门均通过。
-- [ ] 各slice由spec与code/Go reviewer审查精确SHA；涉及UI时由TS reviewer及browser-use实际操作验证。
-- [ ] 保存全量变更Task Stop Summary并校验，commit→merge --no-ff main→push，冲突后重验。
-- [ ] `AIAN_DEPLOY_LIB=$HOME/workspace/ai-native-tools/deploy-lib GOTOOLCHAIN=go1.27.2 /opt/homebrew/bin/bash scripts/deploy-local.sh deploy --root $HOME/kaixuan/llm-gateway-go`，完整重建两前端。
-- [ ] 核active-port/current/version/compiler/readyz/healthz；实际协议请求、唯一会话落库与浏览器告示；清理临时资源。
-- [ ] 回滚：同环境运行`deploy-local.sh rollback --root $HOME/kaixuan/llm-gateway-go`；代码revert本轮merge，不改生产。
-- [ ] 最终main与remote一致、工作区clean，删除已合并工作树/分支，给充分总结及后续优先级。
+- [x] 更新`docs/research/2026-10-14-magpie对比与优化方案.md`及本轮审计，记录已落地/未覆盖/后续项，不把历史证据当新结果。
+- [x] Go1.27.2+SDK26.5+cgo1运行`verify.sh --web`；installer单独测试；真实严格存储门与新黄金门均通过。
+- [x] 各slice由spec与code/Go reviewer审查精确SHA；涉及UI时由TS reviewer及browser-use实际操作验证。
+- [x] 保存全量变更Task Stop Summary并校验，commit→merge --no-ff main→push，冲突后重验。
+- [x] `AIAN_DEPLOY_LIB=$HOME/workspace/ai-native-tools/deploy-lib GOTOOLCHAIN=go1.27.2 /opt/homebrew/bin/bash scripts/deploy-local.sh deploy --root $HOME/kaixuan/llm-gateway-go`，完整重建两前端。
+- [x] 核active-port/current/version/compiler/readyz/healthz；实际协议请求、唯一会话落库与浏览器告示；清理临时资源。
+- [x] 回滚：同环境运行`deploy-local.sh rollback --root $HOME/kaixuan/llm-gateway-go`；代码revert本轮merge，不改生产。
+- [x] 保存精确源码、回滚及验收证据，按finish流程核对main/remote和全量变更，推送后清理专用工作树/分支；最终状态由Task Stop Summary记录。
+
+## 执行结果
+
+冻结发布源`76e185e71cebe87611746d03cea56bbc352a4d7b`；源码合并`2a6bb99bf`已推送。
+本地2661/8782、Go1.27.2，完整发布门RC0；HTTP18/18、canonical17/17、旧12补偿和真实浏览器均通过。
+具体审查SHA、异步验收边界、回滚、已清理资源及未覆盖范围见[审计记录](../../audit/2026-10-15-magpie第三轮字节与会话一致性.md)。
 
 ## 会话约束
 
