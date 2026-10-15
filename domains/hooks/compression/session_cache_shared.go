@@ -1,14 +1,19 @@
 package compression
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -126,4 +131,153 @@ func (c *SessionCache) withSharedLease(ctx context.Context, tenantID, sessionID 
 		return err
 	}
 	return work(token)
+}
+
+func (c *SessionCache) readShared(ctx context.Context, tenantID, sessionID string) (*SessionState, []byte, string, error) {
+	fields, err := c.redis.HGetAll(ctx, redisKey(tenantID, sessionID))
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("read session cache: %w", err)
+	}
+	if len(fields) == 0 {
+		return nil, nil, "", nil
+	}
+	fail := func(reason string) (*SessionState, []byte, string, error) {
+		return nil, nil, "", fmt.Errorf("invalid shared session cache pair: %s", reason)
+	}
+	if fields["pair_v"] != "2" || len(fields["revision"]) != 32 {
+		return fail("version or revision")
+	}
+	if _, err := hex.DecodeString(fields["revision"]); err != nil {
+		return fail("revision encoding")
+	}
+	stateLimit, err := sharedLimit("LLM_GATEWAY_SESSION_CACHE_MAX_STATE_BYTES", sharedStateLimit)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	stateJSON := fields["state"]
+	if len(stateJSON) > stateLimit {
+		return fail("state exceeds limit")
+	}
+	if sha256Hex([]byte(stateJSON)) != fields["state_hash"] {
+		return fail("state hash")
+	}
+	var state SessionState
+	if err := json.Unmarshal([]byte(stateJSON), &state); err != nil {
+		return fail("state JSON")
+	}
+	if state.SchemaVersion != schemaVersion {
+		return fail("state schema")
+	}
+	bodyLimit, err := sharedLimit("LLM_GATEWAY_SESSION_CACHE_MAX_BODY_BYTES", sharedBodyLimit)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	size, err := strconv.ParseInt(fields["body_size"], 10, 64)
+	if err != nil || size < 0 || size > int64(bodyLimit) {
+		return fail("body size")
+	}
+	if len(fields["body"]) > bodyLimit {
+		return fail("encoded body exceeds limit")
+	}
+	var body []byte
+	switch fields["body_codec"] {
+	case "raw":
+		body = []byte(fields["body"])
+	case "gzip":
+		reader, err := gzip.NewReader(strings.NewReader(fields["body"]))
+		if err != nil {
+			return fail("gzip header")
+		}
+		body, err = io.ReadAll(io.LimitReader(reader, int64(bodyLimit)+1))
+		closeErr := reader.Close()
+		if err != nil || closeErr != nil {
+			return fail("gzip payload")
+		}
+	default:
+		return fail("body codec")
+	}
+	if len(body) > bodyLimit || int64(len(body)) != size {
+		return fail("decoded body size")
+	}
+	hash := sha256Hex(body)
+	if hash != fields["body_hash"] || state.LastOutboundHash != hash {
+		return fail("body hash")
+	}
+	if len(body) == 0 {
+		body = nil
+	}
+	return &state, body, fields["revision"], nil
+}
+
+func (c *SessionCache) commitShared(ctx context.Context, tenantID, sessionID, token string, state *SessionState, body []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	bodyLimit, err := sharedLimit("LLM_GATEWAY_SESSION_CACHE_MAX_BODY_BYTES", sharedBodyLimit)
+	if err != nil {
+		return err
+	}
+	if len(body) > bodyLimit {
+		return fmt.Errorf("session cache body exceeds %d bytes", bodyLimit)
+	}
+	state = cloneSessionState(state)
+	if state.SchemaVersion == 0 {
+		state.SchemaVersion = schemaVersion
+	}
+	if state.SchemaVersion != schemaVersion {
+		return fmt.Errorf("unsupported session cache state schema: %d", state.SchemaVersion)
+	}
+	state.LastOutboundHash = sha256Hex(body)
+	stateJSON, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("encode session cache state: %w", err)
+	}
+	stateLimit, err := sharedLimit("LLM_GATEWAY_SESSION_CACHE_MAX_STATE_BYTES", sharedStateLimit)
+	if err != nil {
+		return err
+	}
+	if len(stateJSON) > stateLimit {
+		return fmt.Errorf("session cache state exceeds %d bytes", stateLimit)
+	}
+	encoded, codec := body, "raw"
+	if len(body) > 1024 {
+		var buf bytes.Buffer
+		writer := gzip.NewWriter(&buf)
+		if _, err := writer.Write(body); err != nil {
+			return fmt.Errorf("compress session cache body: %w", err)
+		}
+		if err := writer.Close(); err != nil {
+			return fmt.Errorf("compress session cache body: %w", err)
+		}
+		if buf.Len() < len(body) {
+			encoded, codec = buf.Bytes(), "gzip"
+		}
+	}
+	revision, err := sharedToken()
+	if err != nil {
+		return err
+	}
+	backend, err := c.scriptBackend()
+	if err != nil {
+		return err
+	}
+	runThreeTierCheck(ctx, tenantID, sessionID, state)
+	args := []any{token, sessionCacheRedisTTL().Milliseconds(), "pair_v", "2", "revision", revision,
+		"state", string(stateJSON), "state_hash", sha256Hex(stateJSON), "body", string(encoded),
+		"body_codec", codec, "body_size", strconv.Itoa(len(body)), "body_hash", state.LastOutboundHash}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	result, err := backend.Eval(ctx, sharedCommitScript, []string{redisKey(tenantID, sessionID), redisKey(tenantID, sessionID) + ":lease"}, args...)
+	if err != nil {
+		return fmt.Errorf("commit session cache pair: %w", err)
+	}
+	if result == int64(0) {
+		return ErrSessionCacheLeaseLost
+	}
+	if result != int64(1) {
+		return fmt.Errorf("invalid session cache commit result: %T", result)
+	}
+	c.setL1Revision(l1Key(tenantID, sessionID), state, body, revision)
+	return nil
 }
