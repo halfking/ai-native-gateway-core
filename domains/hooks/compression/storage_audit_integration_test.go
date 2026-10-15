@@ -227,7 +227,58 @@ func TestStorageAuditObserveV2MetadataBodyMismatch(t *testing.T) {
 	require.NotEmpty(t, body)
 	coherent := state.LastOutboundHash == sha256Hex(body) && state.MsgCount == countMessages(body)
 	t.Logf("OBSERVATION redis_msg_count=%d pg_msg_count=%d old_hash_with_new_body=%v coherent=%v", state.MsgCount, countMessages(body), !bytes.Equal(body, oldBody) && state.LastOutboundHash == sha256Hex(oldBody), coherent)
-	if os.Getenv("SESSION_AUDIT_REQUIRE_COHERENCE") == "1" {
-		require.True(t, coherent, "must not bind unrelated V2 body to Redis metadata")
+	require.True(t, coherent, "must not bind unrelated V2 body to Redis metadata")
+	require.Equal(t, string(oldBody), string(body), "acknowledged Redis body must win over newer/older PG until a new shared commit")
+	require.Equal(t, "old-marker", state.SummaryMarker)
+}
+
+func TestStorageAuditTTLFailureLeavesPriorPairAndTTL(t *testing.T) {
+	for _, denied := range []string{"pexpire", "hset", "del"} {
+		t.Run(denied, func(t *testing.T) {
+			r, _ := auditStorage(t)
+			ctx := context.Background()
+			tenant, id := "audit-ttl", fmt.Sprintf("audit-%d", time.Now().UnixNano())
+			user := fmt.Sprintf("audit-cache-%d", time.Now().UnixNano())
+			require.NoError(t, r.Do(ctx, "ACL", "SETUSER", user, "on", ">"+user, "~*", "+@all", "-"+denied).Err())
+			t.Cleanup(func() {
+				r.Do(ctx, "ACL", "DELUSER", user)
+				r.Del(ctx, redisKey(tenant, id), redisKey(tenant, id)+":lease")
+			})
+			oldBody, newBody := []byte("old-body"), []byte("new-body")
+			require.NoError(t, NewSessionCache(auditRedisBackend{r}, nil).Set(ctx, tenant, id, sharedState(oldBody, "old"), oldBody))
+			before, err := r.HGetAll(ctx, redisKey(tenant, id)).Result()
+			require.NoError(t, err)
+			expiresBefore, err := r.Do(ctx, "PEXPIRETIME", redisKey(tenant, id)).Int64()
+			require.NoError(t, err)
+			require.Positive(t, expiresBefore)
+			limited := redis.NewClient(&redis.Options{Addr: r.Options().Addr, Username: user, Password: user, MaxRetries: -1})
+			t.Cleanup(func() { _ = limited.Close() })
+			require.NoError(t, limited.Ping(ctx).Err())
+			who, err := limited.Do(ctx, "ACL", "WHOAMI").Text()
+			require.NoError(t, err)
+			require.Equal(t, user, who, "limited ACL identity must actually be in use")
+			args := []any{"EVAL", `return redis.acl_check_cmd(ARGV[1],KEYS[1],unpack(ARGV,2)) and 1 or 0`, 1, "audit:acl-denial-premise", denied}
+			if denied == "pexpire" {
+				args = append(args, "1000")
+			} else if denied == "hset" {
+				args = append(args, "field", "value")
+			}
+			allowed, err := limited.Do(ctx, args...).Int64()
+			require.NoError(t, err)
+			require.Zero(t, allowed, "denied command premise must be present")
+			err = NewSessionCache(auditRedisBackend{limited}, nil).Set(ctx, tenant, id, sharedState(newBody, "new"), newBody)
+			require.Error(t, err, "denied mutation must not acknowledge shared commit")
+			after, err := r.HGetAll(ctx, redisKey(tenant, id)).Result()
+			require.NoError(t, err)
+			require.Equal(t, before, after, "rejected commit must leave all prior payload/revision fields unchanged")
+			expiresAfter, err := r.Do(ctx, "PEXPIRETIME", redisKey(tenant, id)).Int64()
+			require.NoError(t, err)
+			require.Equal(t, expiresBefore, expiresAfter, "rejected commit must not remove or refresh prior TTL")
+			st, body, err := NewSessionCache(auditRedisBackend{r}, nil).GetOrLoad(ctx, tenant, id)
+			require.NoError(t, err)
+			require.NotNil(t, st)
+			require.Equal(t, "old", st.SanitizeMapGeneration)
+			require.Equal(t, string(oldBody), string(body))
+		})
 	}
 }
