@@ -203,6 +203,7 @@ export const NAV_GROUPS: NavGroup[] = [
     label: '数据运维',
     labelKey: 'nav.group.dataOps',
     items: [
+      { path: '/admin/sanitize-rules', label: 'Sensitive information rules', labelKey: 'sanitizeRules.title', icon: '🔒' },
       { path: '/admin/settings', label: '系统设置', labelKey: 'nav.item.settings', icon: '⚙️', super: true, hideForTenant: true },
       { path: '/admin/proxy', label: '代理管理', labelKey: 'nav.item.proxy', icon: '🌐', super: true, hideForTenant: true },
       { path: '/admin/data-lifecycle', label: '数据生命周期', labelKey: 'nav.item.dataLifecycle', icon: '💾', platformOps: true, hideForTenant: true },

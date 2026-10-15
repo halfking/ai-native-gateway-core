@@ -155,3 +155,46 @@ export const listSanitizeRuleInstances = (options?: RequestOptions) =>
     undefined,
     options,
   );
+
+/** Validate editor JSON shapes before rendering it; RE2/sample semantics stay on the server. */
+export function isRuleConfig(value: unknown): value is RuleConfig {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !("rules" in value) ||
+    !Array.isArray(value.rules)
+  )
+    return false;
+  return value.rules.every((r: unknown) => {
+    if (!r || typeof r !== "object") return false;
+    const rule = r as Record<string, unknown>;
+    return (
+      ["id", "name", "pattern", "type", "kind", "action"].every(
+        (key) => typeof rule[key] === "string",
+      ) &&
+      typeof rule.enabled === "boolean" &&
+      typeof rule.group === "number" &&
+      typeof rule.priority === "number" &&
+      Array.isArray(rule.scopes) &&
+      rule.scopes.every((x) =>
+        ["input", "output", "egress"].includes(String(x)),
+      ) &&
+      ["tools", "fields", "exemptions"].every(
+        (key) =>
+          rule[key] === undefined ||
+          (Array.isArray(rule[key]) &&
+            rule[key].every((x) => typeof x === "string")),
+      ) &&
+      (rule.tenant_id === undefined || typeof rule.tenant_id === "string") &&
+      (rule.samples === undefined ||
+        (Array.isArray(rule.samples) &&
+          rule.samples.every(
+            (x) =>
+              x &&
+              typeof x === "object" &&
+              typeof x.text === "string" &&
+              typeof x.match === "boolean",
+          )))
+    );
+  });
+}
