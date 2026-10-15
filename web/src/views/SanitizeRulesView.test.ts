@@ -269,4 +269,186 @@ describe("editor and polling boundaries", () => {
     expect(w.text()).toContain(messages.invalidJson);
     expect(w.findAll('[data-test="rule-row"]')).toHaveLength(1);
   });
+  it("saves the three real module parameter keys", async () => {
+    const w = open();
+    await flushPromises();
+    await w.get('[data-test="tab-parameters"]').trigger("click");
+    await w.get('[data-test="parameter-refresh"]').setValue(17);
+    await w.get('[data-test="parameter-audit"]').setValue(false);
+    await w.get('[data-test="parameter-limit"]').setValue(345);
+    await w.get("form.parameter-form").trigger("submit");
+    await flushPromises();
+    expect(mocks.updateSetting.mock.calls).toEqual([
+      ["sanitize.rules.refresh_interval_seconds", { value: 17 }],
+      ["sanitize.rules.audit_enabled", { value: false }],
+      ["sanitize.rules.event_limit", { value: 345 }],
+    ]);
+    expect(w.text()).toContain(messages.parametersSaved);
+  });
+  it("requires rollback confirmation and a reason before creating a new version", async () => {
+    mocks.current.mockResolvedValue({ ...structuredClone(head), version: 3 });
+    mocks.versions.mockResolvedValue({
+      versions: [
+        {
+          id: 1,
+          parent_id: 0,
+          config: head.config,
+          actor: "admin",
+          comment: "initial",
+          created_at: "2026-10-15T00:00:00Z",
+        },
+      ],
+    });
+    mocks.rollback.mockResolvedValue({ id: 4, config: head.config });
+    const w = open();
+    await flushPromises();
+    await w.get('[data-test="tab-versions"]').trigger("click");
+    await flushPromises();
+    await w.get("button.version-row").trigger("click");
+    // Loading the editor materializes optional empty lists; that is not a policy change.
+    expect(w.text()).toContain(messages.noChanges);
+    await w.get('[data-test="open-rollback"]').trigger("click");
+    expect(mocks.rollback).not.toHaveBeenCalled();
+    expect(
+      w.get('[data-test="confirm-rollback"]').attributes("disabled"),
+    ).toBeDefined();
+    await w
+      .get('[data-test="rollback-comment"]')
+      .setValue("restore verified rules");
+    await w.get('[data-test="confirm-rollback"]').trigger("click");
+    await flushPromises();
+    expect(mocks.rollback).toHaveBeenCalledWith({
+      base_version: 3,
+      target_version: 1,
+      comment: "restore verified rules",
+    });
+  });
+  it("edits the actual matched rule without changing its global scope", async () => {
+    mocks.events.mockResolvedValue({ events: [{
+      id: 8, tenant_id: "tenant-a", rule_id: "secret", version: 1,
+      phase: "input", action: "mask", status: "false_positive",
+      sample_masked: "[REDACTED:secret]", count: 1,
+      first_seen: "", last_seen: "",
+    }] });
+    const w = open();
+    await flushPromises();
+    await w.get('[data-test="tab-events"]').trigger("click");
+    await flushPromises();
+    await w.get('[data-test="edit-event-8"]').trigger("click");
+    expect(w.text()).toContain(messages.editMatchedHint);
+    expect(w.findAll('[data-test="rule-row"]')).toHaveLength(1);
+    expect(w.get('[data-test="rule-tenant"]').element).toHaveProperty("value", "");
+    await w.get('[data-test="validate"]').trigger("click");
+    await flushPromises();
+    await w.get('[data-test="publish-comment"]').setValue("fix actual rule");
+    await w.get('[data-test="publish"]').trigger("click");
+    await flushPromises();
+    expect(mocks.publish).toHaveBeenCalledWith(expect.objectContaining({
+      review_event_ids: [8], config: { rules: [expect.objectContaining({
+        id: "secret", scopes: ["input"],
+      })] },
+    }));
+  });
+  it("still reports real rule changes when optional lists are normalized", async () => {
+    mocks.versions.mockResolvedValue({ versions: [{
+      id: 1, parent_id: 0, actor: "admin", comment: "old", created_at: "",
+      config: { rules: [{ ...rule, pattern: "different-pattern" }] },
+    }] });
+    const w = open();
+    await flushPromises();
+    await w.get('[data-test="tab-versions"]').trigger("click");
+    await flushPromises();
+    await w.get("button.version-row").trigger("click");
+    expect(w.text()).toContain(messages.changed);
+    expect(w.text()).not.toContain(messages.noChanges);
+  });
+  it("keeps unapplied JSON text when the user cancels reloading", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const w = open();
+    await flushPromises();
+    const json = w.get("textarea.json-editor");
+    const pending = '{"rules":[]}';
+    await json.setValue(pending);
+    await w.get(".app-page-header button").trigger("click");
+    await flushPromises();
+    expect(confirm).toHaveBeenCalledWith(messages.discard);
+    expect(mocks.current).toHaveBeenCalledTimes(1);
+    expect(json.element).toHaveProperty("value", pending);
+  });
+  it("serializes deferred parameter loads and disables editing until the active load finishes", async () => {
+    const pending: {
+      key: string;
+      resolve: (value: { value: number | boolean }) => void;
+    }[] = [];
+    mocks.getSetting.mockImplementation(
+      (key: string) => new Promise((resolve) => pending.push({ key, resolve })),
+    );
+    const w = open();
+    await flushPromises();
+    await w.get('[data-test="tab-parameters"]').trigger("click");
+    const reload = w.get('form.parameter-form button[type="button"]');
+    expect(reload.attributes("disabled")).toBeDefined();
+    expect(
+      w.get('[data-test="parameter-refresh"]').attributes("disabled"),
+    ).toBeDefined();
+    await reload.trigger("click");
+    expect(mocks.getSetting).toHaveBeenCalledTimes(3);
+    for (const request of pending.splice(0)) {
+      request.resolve({
+        value: request.key.endsWith("audit_enabled")
+          ? true
+          : request.key.endsWith("event_limit")
+            ? 10000
+            : 5,
+      });
+    }
+    await flushPromises();
+    await reload.trigger("click");
+    await reload.trigger("click");
+    expect(mocks.getSetting).toHaveBeenCalledTimes(6);
+    expect(
+      w.get('[data-test="parameter-refresh"]').attributes("disabled"),
+    ).toBeDefined();
+    for (const request of pending.splice(0)) {
+      request.resolve({
+        value: request.key.endsWith("audit_enabled")
+          ? false
+          : request.key.endsWith("event_limit")
+            ? 321
+            : 17,
+      });
+    }
+    await flushPromises();
+    expect(w.get('[data-test="parameter-refresh"]').element).toHaveProperty(
+      "value",
+      "17",
+    );
+    expect(reload.attributes("disabled")).toBeUndefined();
+  });
+  it("validates the request snapshot and never certifies a draft changed while the request is in flight", async () => {
+    let resolve!: (value: { valid: boolean; config_digest: string }) => void;
+    mocks.validate.mockImplementation(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    const w = open();
+    await flushPromises();
+    await w.get('[data-test="edit-rule"]').trigger("click");
+    await w.get('[data-test="validate"]').trigger("click");
+    const input = w.get('[data-test="rule-name"]').element as HTMLInputElement;
+    input.value = "Changed by another editor entry";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await flushPromises();
+    resolve({ valid: true, config_digest: "old-draft" });
+    await flushPromises();
+    expect(mocks.validate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rules: [expect.objectContaining({ name: "Secret rule" })],
+      }),
+    );
+    expect(w.get('[data-test="publish"]').attributes("disabled")).toBeDefined();
+    expect(w.text()).not.toContain(messages.valid);
+  });
 });
