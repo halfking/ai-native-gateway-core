@@ -226,6 +226,14 @@ type resolveCandidate struct {
 	CompositeScore                float64 `json:"composite_score"`
 	BillingMode                   string  `json:"billing_mode"`
 	BillingRound                  int     `json:"billing_round"`
+
+	// dbCircuitState / dbCoolingUntil mirror credentials.circuit_state /
+	// cooling_until. They are unexported because the exported CircuitState /
+	// CoolingUntil pair is owned by the URSM v2 overlay; the credential-level
+	// breaker mirror is applied on top by applyCredentialCircuitGate so the
+	// resolve surface gates the same way production dispatch does.
+	dbCircuitState string
+	dbCoolingUntil *string
 }
 
 func sortResolveCandidatesStable(candidates []resolveCandidate) {
@@ -342,6 +350,15 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				v.canonical_id AS canonical_id,
 				COALESCE(mo.unit_price_in_per_1m, 0) AS quota_cap_usd,
 				COALESCE(mo.unit_price_out_per_1m, 0) AS quota_used_usd,
+				-- 2026-10-16: credentials.circuit_state / cooling_until are the
+				-- credential-level breaker mirror that production dispatch gates
+				-- on (provider.Candidate.CircuitState → UnavailableReason() →
+				-- IsAvailable() → dispatchCandidateAllowed). They are read here
+				-- ONLY so the resolve surface can mirror that decision; they must
+				-- NOT enter the v_routable_credential_models.is_routable
+				-- conjunction (internal/routeguard forbids exactly that).
+				COALESCE(c.circuit_state, 'closed') AS circuit_state,
+				c.cooling_until::text AS cooling_until,
 				v.is_routable,
 				v.unavailable_reason
 			FROM v_routable_credential_models v
@@ -399,11 +416,16 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		var c resolveCandidate
 		var isRoutable bool
 		var unavailableReason *string
+		var circuitState string
+		var coolingUntil *string
 
-		// Slimmed scan (2026-07-24): circuit_state / cooling_until /
-		// cmb.available / consecutive_failures / success_rate / p95_latency_ms
-		// are no longer in the SELECT — they're owned by URSM v2 and
-		// back-filled below if the manager is ready.
+		// Slimmed scan (2026-07-24): cmb.available / consecutive_failures /
+		// success_rate / p95_latency_ms are no longer in the SELECT — they are
+		// owned by URSM v2 and back-filled below if the manager is ready.
+		// circuit_state / cooling_until came back on 2026-10-16: unlike the
+		// URSM-owned fields they are ALSO a live production gate (see the
+		// SELECT comment), so dropping them here made resolve claim
+		// "routable" for nodes dispatch drops.
 		if err := rows.Scan(
 			&c.ProviderID, &c.ProviderName, &c.CatalogCode, &c.Protocol, &c.BaseURL,
 			&c.ProviderEnabled, &c.CredentialID, &c.TenantID, &c.CredentialLabel, &c.CredentialStatus,
@@ -415,11 +437,18 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			&c.UnitPriceInPer1M, &c.UnitPriceOutPer1M, &c.Currency,
 			&c.ModelName, &c.StandardizedName, &c.CanonicalID,
 			&c.QuotaCapUSD, &c.QuotaUsedUSD,
+			&circuitState, &coolingUntil,
 			&isRoutable, &unavailableReason,
 		); err != nil {
 			warnRowSkip("routing.resolve", err)
 			continue
 		}
+		// Stash the credential-level breaker mirror on the unexported fields.
+		// The exported CircuitState/CoolingUntil are (re)written from the URSM
+		// NodeView by resolveRuntimeDefaults/applyURSMOverlay, so the
+		// credential gate re-applies these afterwards (applyCredentialCircuitGate).
+		c.dbCircuitState = circuitState
+		c.dbCoolingUntil = coolingUntil
 		// Keep database eligibility separate from the authoritative runtime
 		// decision. The resolve endpoint is diagnostic and must not imply that
 		// a SQL-routable row is request-routable when URSM has no node view.
@@ -530,6 +559,13 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			applyURSMOverlay(candidates, views, time.Now())
 		}
 	}
+
+	// 2026-10-16: safety net for the branches above that never call
+	// applyURSMOverlay (URSM off / not-ready / query failed), which apply their
+	// runtime state through applyResolveDefaults + markResolveRuntimeUnknown and
+	// therefore do not get the credential gate from that function. The overlay
+	// branch already applied it (idempotent). See applyCredentialCircuitGate.
+	applyCredentialCircuitGate(candidates)
 
 	// Keep the persisted manual order authoritative on this page. Composite
 	// score remains a deterministic tie-breaker for candidates that share a
@@ -5595,6 +5631,14 @@ func markResolveRuntimeUnknown(candidates []resolveCandidate, reason string) {
 // Redis/mirror misses are explicitly marked as missing so the diagnostic
 // surface agrees with authoritative request routing.
 func applyURSMOverlay(candidates []resolveCandidate, views []api.NodeView, now time.Time) {
+	// The credential-level circuit gate is applied at the END of this function,
+	// not by the caller. resolveRuntimeDefaults() above resets CircuitState to
+	// "closed" on every row, so a gate invoked BEFORE the overlay would be
+	// silently undone by it — a misordering that reads as a working fix and
+	// reproduces the original "resolve says routable, dispatch drops it" bug.
+	// Folding it in here makes the ordering a property of the function rather
+	// than of a call site nobody re-checks when the overlay grows.
+	defer applyCredentialCircuitGate(candidates)
 	viewByKey := make(map[string]api.NodeView, len(views))
 	for _, v := range views {
 		viewByKey[ursmViewKey(v.CredentialID, v.RawModel)] = v
@@ -5661,6 +5705,67 @@ func applyURSMOverlay(candidates []resolveCandidate, views []api.NodeView, now t
 			}
 			continue
 		}
+	}
+}
+
+// applyCredentialCircuitGate folds the credential-level circuit breaker
+// mirror (credentials.circuit_state) into the resolve verdict.
+//
+// ## Why this exists (2026-10-16, grok-4.6 "no available candidate nodes")
+//
+// Production dispatch gates on TWO independent availability signals:
+//
+//	provider/client.go  COALESCE(c.circuit_state,'closed') → Candidate.CircuitState
+//	provider/client.go  UnavailableReason(): CircuitState=="open" ⇒ "circuit:open"
+//	provider/client.go  IsAvailable() := UnavailableReason()==""
+//	executors/executor_dispatch.go  dispatchCandidateAllowed() drops !IsAvailable()
+//
+// Resolve used to derive CircuitState/CoolingUntil **only** from the URSM v2
+// NodeView (applyURSMOverlay) and, when URSM was off/unknown, defaulted them to
+// "closed" (resolveRuntimeDefaults). credentials.circuit_state had been dropped
+// from the SELECT in the 2026-07-24 "slimmed scan" on the assumption that URSM
+// v2 owns those columns — true for *display*, but NOT for *production gating*.
+//
+// On 211, the initial DB snapshot showed credential 63 healthy/ready but
+// circuit_state='open'. Replaying that shape with an available URSM view
+// demonstrates the resolve/dispatch disagreement. The actual URSM view and an
+// authenticated failing request were not captured: the supplied gateway key
+// returned invalid_key. This is a proven diagnostic divergence, not proof that
+// every reported request failed solely because of this gate. A successful Ping
+// of a different model also does not establish this binding's availability.
+//
+// ## Invariant preserved
+//
+// This ANDs the circuit state into the **resolve response**, never into the
+// `v_routable_credential_models.is_routable` SQL conjunction — the latter is
+// explicitly forbidden by internal/routeguard (ForbiddenColumns), because the
+// DB mirror is an async, lossy, last-writer-wins signal. Mirroring the live
+// gate in a diagnostic surface is safe; letting an approximate value decide
+// DB-level routing eligibility is not.
+//
+// ## Why there is no cooling_until deadline check
+//
+// provider.Candidate.UnavailableReason() gates on `circuit_state == "open"`
+// alone — no deadline. Mirroring it exactly (rather than "helpfully" treating
+// an elapsed cooling_until as closed) keeps resolve honest about the same
+// window the recovery ticker has not yet closed.
+func applyCredentialCircuitGate(candidates []resolveCandidate) {
+	for i := range candidates {
+		c := &candidates[i]
+		if c.dbCircuitState != "open" {
+			continue
+		}
+		// Surface the real reason, not a defaulted one.
+		c.CircuitState = "open"
+		c.CoolingUntil = c.dbCoolingUntil
+		if !c.Routable && !c.RuntimeRoutable {
+			// Already blocked by the SQL view or the URSM overlay; keep the
+			// more specific existing reason rather than overwriting it.
+			continue
+		}
+		c.Routable = false
+		c.RuntimeRoutable = false
+		c.BlockReason = "circuit_open"
 	}
 }
 

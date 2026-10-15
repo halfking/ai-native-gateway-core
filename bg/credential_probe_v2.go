@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1101,7 +1102,7 @@ func (c *CredentialProbeV2) miniChat(ctx context.Context, httpClient *http.Clien
 		return true, ""
 	}
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		return false, fmt.Sprintf("401/403: %s", truncateBody(body))
+		return false, fmt.Sprintf("chat status %d: %s", resp.StatusCode, truncateBody(body))
 	}
 	if resp.StatusCode == 429 {
 		return false, "429 rate limited"
@@ -1153,7 +1154,7 @@ func (c *CredentialProbeV2) miniResponses(ctx context.Context, httpClient *http.
 		return true, "", resp.StatusCode, preview
 	}
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		return false, fmt.Sprintf("401/403: %s", preview), resp.StatusCode, preview
+		return false, fmt.Sprintf("responses status %d: %s", resp.StatusCode, preview), resp.StatusCode, preview
 	}
 	if resp.StatusCode == 429 {
 		return false, "429 rate limited", resp.StatusCode, preview
@@ -1201,7 +1202,7 @@ func (c *CredentialProbeV2) miniAnthropic(ctx context.Context, httpClient *http.
 		return true, ""
 	}
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		return false, fmt.Sprintf("401/403: %s", truncateBody(respBody))
+		return false, fmt.Sprintf("messages status %d: %s", resp.StatusCode, truncateBody(respBody))
 	}
 	if resp.StatusCode == 429 {
 		return false, "429 rate limited"
@@ -1243,7 +1244,8 @@ func authProbeBackoffRecoverAt(n int) time.Time {
 func classifyProbeFailure(errMsg string) probeResult {
 	pr := probeResult{HealthSource: "probe"}
 	switch {
-	case strings.Contains(errMsg, "401") || strings.Contains(errMsg, "403"):
+	case (strings.Contains(errMsg, "401") || strings.Contains(errMsg, "403")) &&
+		!isProbeQuotaFailure(errMsg) && !isPerModelChatFailure(errMsg):
 		pr.HealthStatus = "unreachable"
 		pr.AvailabilityState = "auth_failed"
 		pr.HealthError = errMsg
@@ -1255,7 +1257,7 @@ func classifyProbeFailure(errMsg string) probeResult {
 		pr.AvailabilityRecoverAt = &recover
 		pr.HealthError = errMsg
 		pr.StateReasonCode = "rate_limited"
-	case strings.Contains(errMsg, "402") || strings.Contains(errMsg, "balance"):
+	case isProbeQuotaFailure(errMsg) || strings.Contains(errMsg, "402") || strings.Contains(errMsg, "balance"):
 		pr.HealthStatus = "warning"
 		pr.AvailabilityState = "ready"
 		pr.QuotaState = "periodic_exhausted"
@@ -1309,16 +1311,29 @@ func classifyProbeFailure(errMsg string) probeResult {
 	return pr
 }
 
-// isPerModelChatFailure returns true when the errMsg describes a
-// failure that applies only to the probed model — the credential may
-// still be healthy. Currently recognises chat-level 404 "model not
-// found" and 410 "model deprecated" responses emitted by upstream
-// vendors that have removed the model from their catalog.
-//
-// Note: 402 "payment required" / 401 / 403 / 429 are explicitly NOT in
-// this set — those are credential-wide and must keep the original
-// availability handling. endpoint_id_required has its own branch and
-// pre-empts the 404 check above.
+// probeKeyFailureRe prevents quota/model prose from exempting an explicit
+// invalid/revoked key verdict. Unknown 403s retain the auth-failure default.
+var probeKeyFailureRe = regexp.MustCompile(`(?i)(invalid[_ -]?(api[_ -]?)?key|(?:api[_ -]?)?key.{0,20}(?:invalid|revoked|expired)|invalid[_ -]?token|authentication[_ -]?(?:failed|error)|unauthorized)`)
+
+func isProbeQuotaFailure(errMsg string) bool {
+	status, ok := extractStatusCode(errMsg)
+	if !ok || (status != 402 && status != 403) || probeKeyFailureRe.MatchString(errMsg) {
+		return false
+	}
+	kind := errorsx.ClassifyErrorWithBody(status, []byte(errMsg))
+	return kind == errorsx.KindQuotaPeriodic || kind == errorsx.KindQuotaPermanent ||
+		kind == errorsx.KindQuotaBalance || kind == errorsx.KindQuota
+}
+
+// Require a model as the subject and an explicit model access/region verdict;
+// account region restrictions and generic permission-denied are NOT binding-only.
+var probeModelAccessFailureRe = regexp.MustCompile(`(?i)\b(?:this\s+model|model\s+['"\x60]?[a-z0-9._\-/:]+['"\x60]?)\s+(?:is\s+not\s+available\s+in\s+your\s+region|(?:is\s+)?not\s+available\s+in\s+your\s+region|access\s+(?:is\s+)?denied)|\b(?:do\s+not\s+have|don't\s+have|does\s+not\s+have)\s+(?:access|permission)\s+to\s+(?:this\s+model|(?:the\s+)?model\s+['"\x60]?[a-z0-9._\-/:]+)`)
+
+// isPerModelChatFailure recognises model-scoped 403 access/region failures,
+// 404 model-not-found and 410 Gone on generation endpoints only. 401, quota
+// failures and ambiguous 403s retain credential-wide handling. The legacy
+// combined 401/403 prefix cannot prove a 403 and is deliberately not exempted.
+// endpoint_id_required has its own branch and pre-empts the 404 check above.
 //
 // The chat-level prefix requirement (`chat status 404` or
 // `messages status 404`) keeps the same upstream message from the
@@ -1336,6 +1351,9 @@ func classifyProbeFailure(errMsg string) probeResult {
 // 与模型下线在报文上同形），保留措辞信号作为门槛。
 func isPerModelChatFailure(errMsg string) bool {
 	switch chatProbeStatusCode(errMsg) {
+	case 403:
+		return !probeKeyFailureRe.MatchString(errMsg) && !isProbeQuotaFailure(errMsg) &&
+			probeModelAccessFailureRe.MatchString(errMsg)
 	case 410:
 		// chat/messages 通道上的 410 Gone：探针模型已被上游永久移除。
 		// 状态码是标准信号，厂商换措辞不影响判定；/v1/models 通道的
@@ -1344,10 +1362,12 @@ func isPerModelChatFailure(errMsg string) bool {
 	case 404:
 		// 404 有歧义：探针路径配置错与模型下线在报文上同形，保留
 		// 措辞门槛（该清单现在只守 404，不再守 410）。
-		return strings.Contains(errMsg, "model not found") ||
-			strings.Contains(errMsg, "model has been deprecated") ||
-			strings.Contains(errMsg, "end of life") ||
-			strings.Contains(errMsg, "no longer available")
+		_, namedModel := errorsx.ModelScopedRejection([]byte(errMsg))
+		lower := strings.ToLower(errMsg)
+		return namedModel || strings.Contains(lower, "model not found") ||
+			strings.Contains(lower, "model has been deprecated") ||
+			strings.Contains(lower, "end of life") ||
+			strings.Contains(lower, "no longer available")
 	}
 	return false
 }
@@ -1361,7 +1381,7 @@ func isPerModelChatFailure(errMsg string) bool {
 // /v1/models channel's "models endpoint unreachable" prefix, which
 // must stay credential-scoped).
 func chatProbeStatusCode(errMsg string) int {
-	for _, prefix := range []string{"chat status ", "messages status "} {
+	for _, prefix := range []string{"chat status ", "messages status ", "responses status "} {
 		i := strings.Index(errMsg, prefix)
 		if i < 0 {
 			continue
