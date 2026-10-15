@@ -292,6 +292,35 @@ if printf '%s' "$_nocomment" | grep -qE -- "--exclude=(\./)?dist"; then
 else
   ok "tar 同步不带任何 dist 排除（web/dist、web-mobile/dist 随树上树）"
 fi
+# ── 前端产物新鲜度闭环（2026-10-15 审计 P1）────────────────────────────
+# 搬运链通了不等于闭环了：原实现缺 dist 时只 warn，且 rm -rf 写在 if 内，
+# 于是「上一版 SPA 被继续挂载」= 无声前端回滚；陈旧 dist 照样种子化；而
+# 就绪只探 /readyz 与 /healthz 不探 /，三类问题都不会让部署失败。相对
+# deploy-local.sh 的硬失败（2538 白页事故收口）属方向性回退。
+# 下面几条一律扫 $_nocomment：注释里出现字符串不算数（否则整段被删、
+# 只留注释里的字面量，门照样绿——这正是本门此前能漏掉该缺陷的原因）。
+if printf '%s' "$_nocomment" | grep -qE '^[[:space:]]*seed_web_dist\(\)'; then
+  ok "211 定义 seed_web_dist 前端产物闸门"
+else
+  bad "211 缺少 seed_web_dist 前端产物闸门（缺失/陈旧 dist 只会 warn，部署照样绿）"
+fi
+if printf '%s' "$_nocomment" | grep -qE -- '-newer .*index\.html'; then
+  ok "211 前端闸门按源码新鲜度判定（-newer），不靠构建序号"
+else
+  bad "211 前端闸门没有新鲜度判定：陈旧 dist 会被照旧种子化，线上是旧 SPA 而部署显示成功"
+fi
+if printf '%s' "$_nocomment" | grep -qE 'D211_ALLOW_STALE_WEB'; then
+  ok "211 保留纯 API 形态逃生舱 D211_ALLOW_STALE_WEB"
+else
+  bad "211 硬拒绝后没有逃生舱，纯 API 部署形态被堵死"
+fi
+# 无声回滚（缺 dist 但上一轮种子还在）必须 die，且**不受逃生舱豁免**：
+# 纯 API 的前提是「压根没有前端」，不是「前端是旧的」。
+if printf '%s' "$_nocomment" | grep -qE 'GW_WEB_DIST_OK=1|GW_MOBILE_DIST_OK=1'; then
+  ok "211 种子化以闸门结论为准（GW_*_DIST_OK），缺 dist 时不挂载"
+else
+  bad "211 种子化仍直接判 index.html 存在与否，未走闸门结论"
+fi
 for _pat in 'LLM_GATEWAY_STATIC_DIR=/app/web/dist' 'MOBILE_WEB_DIST=/app/web-mobile/dist' '/app/version.json:ro'; do
   if grep -qF "$_pat" "$SCRIPT"; then
     ok "web 腿契约在场: $_pat"

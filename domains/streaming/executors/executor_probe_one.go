@@ -32,6 +32,11 @@ func (e *Executor) probeOneEnabled() bool {
 // HoldTimeout TTL left "minimax-m3" locked and skipped later ProbeSync).
 func (e *Executor) probeOneFlight() ProbeOneFlight {
 	if e == nil {
+		// 无 Executor 可挂状态 ⇒ 每次返回一把**全新的**空锁，TryAcquire 恒为
+		// true，即单飞被静默关闭。此为刻意的 fail-open（与 RedisProbeOneFlight
+		// 遇错 fail-open 同一姿态）：宁可多探一次，也不冻结 no-candidate 恢复。
+		// 唯一调用点是 Executor.Execute（executor.go 的 hold 分支），e 非 nil；
+		// 该臂是防御性的，不可达。
 		return NewMemoryProbeOneFlight()
 	}
 	if e.ProbeOneFlight != nil {

@@ -825,9 +825,51 @@ chown -R 65532:65532 "$D211_GW_DATA_ROOT/configs" 2>/dev/null || true
 # web/dist/index.html）挂 admin SPA，从 MOBILE_WEB_DIST 挂 /m 移动端，
 # 从 version.json 读版本元数据——三者镜像里都没有，root 只会回落版本 JSON。
 # 与 configs 同款治理：宿主 bind 只读，每次部署以仓库（部署机预构建）为准
-# 覆盖种子。缺失时 warn 不拒绝（纯 API 形态仍可用），但要把后果说破。
+# 覆盖种子。
+#
+# 2026-10-15 审计 P1 收口：本段原先只 warn 不拒绝，搬运链路通了但「产物是新的 /
+# 构建成功 / 缺失要失败」三件事一条没闭环，于是——
+#   ① dist 缺失时 rm -rf 不执行，上一版 SPA 继续被挂载 = **无声前端回滚**；
+#   ② dist 陈旧时照样种子化，部署照样绿；
+#   ③ 就绪只探 /readyz 与 /healthz、不探 /，以上两类都不会让部署失败。
+# deploy-local.sh 对同一形态是硬失败（2026-10-11 2538 白页事故收口）。此处对齐
+# 同一口径，同时保留「纯 API 形态」逃生舱：D211_ALLOW_STALE_WEB=1。
 D211_WEB_DIST_SRC="${D211_WEB_DIST_SRC:-$D211_REPO_ROOT/web/dist}"
 D211_MOBILE_DIST_SRC="${D211_MOBILE_DIST_SRC:-$D211_REPO_ROOT/web-mobile/dist}"
+D211_ALLOW_STALE_WEB="${D211_ALLOW_STALE_WEB:-0}"
+
+# seed_web_dist <dist 目录> <源码目录> <标签>
+# 种子前判新鲜度：dist/index.html 必须不早于源码树里最新的一个文件。
+# 用 -newer 做「有没有更新过的源码」判定，不依赖固定构建序号。
+seed_web_dist() {
+  local _dist="$1" _src="$2" _label="$3"
+  if [[ ! -f "$_dist/index.html" ]]; then
+    # 上一轮种子仍在 ⇒ 沿用等于**无声前端回滚**：线上跑着旧 UI，运维以为刚发过版。
+    # 这一档没有逃生舱——纯 API 形态的前提是「压根没有前端」，不是「前端是旧的」。
+    if [[ -f "$D211_GW_DATA_ROOT/${_label}/dist/index.html" ]]; then
+      die "缺少 ${_dist}，但上一轮种子仍在 ${D211_GW_DATA_ROOT}/${_label}/dist —— 直接沿用等于无声前端回滚。请构建前端（corepack pnpm install --frozen-lockfile && pnpm build）后再部署"
+    fi
+    if [[ "$D211_ALLOW_STALE_WEB" == "1" ]]; then
+      warn "$_dist 缺失，按纯 API 形态继续（$D211_ALLOW_STALE_WEB=1）：管理页不可用"
+      return 1
+    fi
+    die "缺少 $_dist/index.html，拒绝部署空前端（2026-10-11 2538 白页事故口径）。构建前端，或显式 D211_ALLOW_STALE_WEB=1 走纯 API 形态"
+  fi
+  if [[ "$D211_ALLOW_STALE_WEB" != "1" && -d "$_src" ]]; then
+    local _newer
+    _newer="$(find "$_src" -type f -newer "$_dist/index.html" -print -quit 2>/dev/null || true)"
+    if [[ -n "$_newer" ]]; then
+      die "$_dist 陈旧：$_newer 晚于 $_dist/index.html，拒绝部署陈旧前端（否则线上是旧 SPA 而部署显示成功）。重新构建前端，或显式 D211_ALLOW_STALE_WEB=1 走纯 API 形态"
+    fi
+  elif [[ "$D211_ALLOW_STALE_WEB" == "1" ]]; then
+    warn "$_dist 存在但未通过新鲜度校验，按纯 API 形态继续（$D211_ALLOW_STALE_WEB=1）"
+  fi
+  return 0
+}
+
+seed_web_dist "$D211_WEB_DIST_SRC" "$D211_REPO_ROOT/web/src" "web" && GW_WEB_DIST_OK=1 || GW_WEB_DIST_OK=0
+seed_web_dist "$D211_MOBILE_DIST_SRC" "$D211_REPO_ROOT/web-mobile/src" "web-mobile" && GW_MOBILE_DIST_OK=1 || GW_MOBILE_DIST_OK=0
+
 mkdir -p "$D211_GW_DATA_ROOT/web" "$D211_GW_DATA_ROOT/web-mobile"
 GW_MOUNTS=(
   -v "${D211_GW_DATA_ROOT}/data:/app/data"
@@ -835,25 +877,21 @@ GW_MOUNTS=(
   -v "${D211_GW_DATA_ROOT}/configs:/app/configs:ro"
 )
 GW_WEB_ENV=()
-if [[ -f "$D211_WEB_DIST_SRC/index.html" ]]; then
+if [[ "$GW_WEB_DIST_OK" == "1" ]]; then
   rm -rf "$D211_GW_DATA_ROOT/web/dist"
   cp -R "$D211_WEB_DIST_SRC" "$D211_GW_DATA_ROOT/web/dist"
   chown -R 65532:65532 "$D211_GW_DATA_ROOT/web" 2>/dev/null || true
   GW_MOUNTS+=( -v "${D211_GW_DATA_ROOT}/web/dist:/app/web/dist:ro" )
   GW_WEB_ENV+=( -e "LLM_GATEWAY_STATIC_DIR=/app/web/dist" )
   log "admin SPA 种子: web/dist → ${D211_GW_DATA_ROOT}/web/dist"
-else
-  echo "warning: $D211_WEB_DIST_SRC 缺失（部署机未构建前端？），root 将回落版本 JSON 而非管理页" >&2
 fi
-if [[ -f "$D211_MOBILE_DIST_SRC/index.html" ]]; then
+if [[ "$GW_MOBILE_DIST_OK" == "1" ]]; then
   rm -rf "$D211_GW_DATA_ROOT/web-mobile/dist"
   cp -R "$D211_MOBILE_DIST_SRC" "$D211_GW_DATA_ROOT/web-mobile/dist"
   chown -R 65532:65532 "$D211_GW_DATA_ROOT/web-mobile" 2>/dev/null || true
   GW_MOUNTS+=( -v "${D211_GW_DATA_ROOT}/web-mobile/dist:/app/web-mobile/dist:ro" )
   GW_WEB_ENV+=( -e "MOBILE_WEB_DIST=/app/web-mobile/dist" )
   log "移动端 SPA 种子: web-mobile/dist → ${D211_GW_DATA_ROOT}/web-mobile/dist"
-else
-  echo "warning: $D211_MOBILE_DIST_SRC 缺失，/m 移动端将不可用" >&2
 fi
 if [[ -f "$D211_REPO_ROOT/version.json" ]]; then
   cp -f "$D211_REPO_ROOT/version.json" "$D211_GW_DATA_ROOT/version.json"

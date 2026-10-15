@@ -46,7 +46,18 @@ func (m *MemoryProbeOneFlight) TryAcquire(_ context.Context, model string, ttl t
 	now := time.Now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if exp, ok := m.held[model]; ok && exp.After(now) {
+	// 2026-10-15 审计：held 的键是 params.ClientModel —— 客户端可控字符串，
+	// 而原实现只覆写不删除，于是 Redis 缺席（fpSlotRedis==nil → main.go 不
+	// 注入 RedisProbeOneFlight）时这条进程内回落会随不同 model 串单调增长，
+	// 构成无界内存增长。现惰性剪枝：只删已过期项，代价 O(过期数)，
+	// 且全部在持锁期间完成，不引入新的竞态窗口。
+	for k, exp := range m.held {
+		if !exp.After(now) {
+			delete(m.held, k)
+		}
+	}
+	if _, ok := m.held[model]; ok {
+		// 剪枝后仍在表内 ⇒ 未过期 ⇒ 已有持有者。
 		return false
 	}
 	m.held[model] = now.Add(ttl)

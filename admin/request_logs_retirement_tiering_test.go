@@ -87,7 +87,13 @@ var v1ReaderRetirementTiering = map[string]retirementTieringEntry{
 	"admin/session_export.go":                  {Tier: "②", Reason: "对外 API：会话导出（★ FROM 读会话族 LEFT JOIN bodies，退役总体是 session_turns 不是 v1）"},
 	"admin/session_extract.go":                 {Tier: "②", Reason: "对外 API：会话抽取"},
 	"admin/session_management_api.go":          {Tier: "②", Reason: "对外 API：会话管理"},
-	"admin/session_online.go":                  {Tier: "②", Reason: "对外 API：timeline 仍读会话族；online 列表已改 session_summaries（2026-10-15）"},
+	// 2026-10-15 审计：admin/session_online.go 已自 v1 族**整体**退出——
+	// online 列表改读 session_summaries（24h 审计，旧链 S4 停写后生产 52s/0 行），
+	// timeline 走会话族原生源（SessionFamilyTurnsForSessionSQL）。两条腿都不碰
+	// _request_logs，文件里剩下的 _request_logs 字样全在注释中。
+	// 因此按 S3 波 2/3、S4 波 4 的同款定式自分档域除名：分档域只收 v1 读方，
+	// 该文件的退役负担随 _request_logs 族的边界一起消失。
+	// （f1b027645 只把它从字面量总体摘掉，漏了分档域这一侧 ⇒ 门红。）
 	"admin/session_sanitize_matches.go":        {Tier: "②", Reason: "对外功能：脱敏匹配（bodies 读方）"},
 	"admin/session_summary_v2.go":              {Tier: "②", Reason: "对外功能：会话摘要 v2（含 v1 回退查询）"},
 	"admin/session_tenant.go":                  {Tier: "②", Reason: "对外功能：会话租户判定"},
@@ -400,7 +406,10 @@ func TestV1ReaderTieringDomainIsBothPopulations(t *testing.T) {
 		//（popularModelsHotSQL → 会话族原生源；106→105、114→113）。
 		// 2026-10-13（S4 波 4）：compression_sessions / scenario_driver 整体
 		//		出 v1 族（105→103；114→113→111）。
-		{"字面量总体", len(literal), 101},
+		// 2026-10-15（24h 审计）：admin/session_online.go 两条腿都出 v1
+		//		（online → session_summaries；timeline → 会话族原生源），
+		//		同款除名（字面量 101→100、域 110→109）。
+		{"字面量总体", len(literal), 100},
 		// 2026-10-13（S4 停写交接）：body_resolver / unified_detail 因加了
 		// session 兜底拼接点自盲区桶迁入（+2）；两者同时仍是字面量读方
 		//（交集 14→16），并集不变。
@@ -408,7 +417,7 @@ func TestV1ReaderTieringDomainIsBothPopulations(t *testing.T) {
 		//（间接 25→26、交集 16→17，并集不变——它本就在字面量总体里）。
 		{"间接总体", len(indirect), 26},
 		{"交集", inter, 17},
-		{"并集（域）", union, 110},
+		{"并集（域）", union, 109},
 	} {
 		if c.got != c.exp {
 			t.Errorf("%s = %d，期望 %d", c.name, c.got, c.exp)
