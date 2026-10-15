@@ -100,6 +100,28 @@ fi
 # =============================================================================
 if [[ -n "$VIA" ]]; then
   [[ "$MODE" == "deploy" ]] || die "--via 只支持默认 deploy 模式（--status/--stop 请 ssh 后本地跑）"
+  # ── 部署锁（deploy-lib lock.sh，与 deploy-seamless 同一族 SSOT）────────
+  # --via 全程是部署机侧的连续 ssh 步骤（rm → tar 同步 → 清理 → 远端执行），
+  # 锁必须在部署机侧包住全程：两个并发 --via 会在 rm -rf vs tar 解包处互相
+  # 炸（2026-10-14/15 三次实测 "Directory not empty"/"Cannot mkdir"）。
+  # 锁不在场（如 211 本机模式无 deploy-lib）时 warn 跳过，行为同旧版。
+  _d211_lib_resolve="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deploy-lib-resolve.sh"
+  if [[ -f "$_d211_lib_resolve" ]]; then
+    # shellcheck source=deploy-lib-resolve.sh
+    source "$_d211_lib_resolve"
+  fi
+  if [[ -n "${AIAN_DEPLOY_LIB:-}" && -f "$AIAN_DEPLOY_LIB/lock.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "$AIAN_DEPLOY_LIB/lock.sh"
+    LOCK_LOCAL_TARGET=211
+    if ! lock_acquire_local; then
+      die "另一个 211 部署正在本机进行（锁：${LOCK_LOCAL_DIR}）。并发会话请等待其完成；确认无存活部署进程后可 rm -rf 该锁目录重试（勿在对方运行时硬抢）"
+    fi
+    trap 'lock_release_local' EXIT
+    log "已取得 211 部署锁: ${LOCK_LOCAL_DIR}"
+  else
+    warn "deploy-lib lock.sh 不在场，本次无部署锁（并发部署可能互相踩）"
+  fi
   log "同步仓库到 $VIA:$D211_TARGET_IP ..."
   # 先在目标端把工作树整体清空——tar 解包不会删目标已有文件，旧部署残留的
   # macOS `._*` 元数据 / .env* 会一直挂在那让 docker COPY 重新带进镜像。
@@ -133,7 +155,7 @@ if [[ -n "$VIA" ]]; then
   # 离线基础镜像（kx-base/golang:1.27-alpine-amd64 等），daemon 的 mirror 不
   # 保证每次可达，构建腿应优先吃本地已 load 的镜像。空值 = 远端走脚本默认。
   log "在 $VIA 上执行 deploy ..."
-  ssh "$VIA" "cd ~/llm-gateway-go-211 && D211_STATE_DIR=$D211_STATE_DIR D211_REDIS_DB_START=$D211_REDIS_DB_START D211_REDIS_DB_END=$D211_REDIS_DB_END LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY='${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}' D211_GO_BASE_IMAGE='${D211_GO_BASE_IMAGE:-}' D211_RUNTIME_BASE_IMAGE='${D211_RUNTIME_BASE_IMAGE:-}' D211_BASE_REGISTRY='${D211_BASE_REGISTRY:-}' bash scripts/deploy-211-docker.sh $*"
+  ssh "$VIA" "cd ~/llm-gateway-go-211 && D211_STATE_DIR=$D211_STATE_DIR D211_REDIS_DB_START=$D211_REDIS_DB_START D211_REDIS_DB_END=$D211_REDIS_DB_END LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY='${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}' D211_GO_BASE_IMAGE='${D211_GO_BASE_IMAGE:-}' D211_RUNTIME_BASE_IMAGE='${D211_RUNTIME_BASE_IMAGE:-}' D211_BASE_REGISTRY='${D211_BASE_REGISTRY:-}' PROBE_TIMEOUT_SECS='${PROBE_TIMEOUT_SECS:-}' bash scripts/deploy-211-docker.sh $*"
   exit $?
 fi
 
@@ -948,9 +970,11 @@ docker run -d --name "$D211_GW_CONTAINER" --restart unless-stopped \
 # =============================================================================
 log "等待网关就绪 ..."
 # PROBE_TIMEOUT_SECS 与 deploy-154/245 同一族标准（deploy-211.sh 入口默认
-# export 120）；2s 步进，轮次=超时/2，下限 1 防呆。
+# export 120）。⚠ 必须带 :- 兜底：ssh 远端执行时该变量不一定穿过（bash 4.4+
+# 的 set -u 会让未绑定变量进算术直接炸——2026-10-15 实测翻车点）；
+# 2s 步进，轮次=超时/2，下限 1 防呆。
 ready=0
-probe_rounds=$(( PROBE_TIMEOUT_SECS / 2 )); (( probe_rounds >= 1 )) || probe_rounds=1
+probe_rounds=$(( ${PROBE_TIMEOUT_SECS:-120} / 2 )); (( probe_rounds >= 1 )) || probe_rounds=1
 for i in $(seq 1 "$probe_rounds"); do
   if curl -fsS "http://127.0.0.1:${D211_GW_PORT}/readyz" >/dev/null 2>&1 \
      || curl -fsS "http://127.0.0.1:${D211_GW_PORT}/healthz" >/dev/null 2>&1; then

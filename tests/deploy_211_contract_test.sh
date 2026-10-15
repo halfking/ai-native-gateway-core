@@ -360,6 +360,21 @@ if grep -q 'PROBE_TIMEOUT_SECS' "$SCRIPT"; then
 else
   bad "引擎未消费 PROBE_TIMEOUT_SECS，入口的探针超时默认不生效"
 fi
+# ⚠ 且消费点必须带 :- 兜底：ssh 远端执行时该变量不一定穿过（bash 4.4+ 的
+# set -u 让未绑定变量进算术直接炸——2026-10-15 用户实测「一大堆错误」的根因）
+if grep -qE '\$\{PROBE_TIMEOUT_SECS:-' "$SCRIPT"; then
+  ok "引擎 PROBE_TIMEOUT_SECS 带 :- 兜底（远端未传不炸）"
+else
+  bad "引擎 PROBE_TIMEOUT_SECS 无 :- 兜底（远端执行必炸 unbound variable）"
+fi
+# --via 段必须先拿 deploy-lib 家族锁再碰目标树（锁行号 < rm -rf 行号）
+lock_line="$(grep -n 'lock_acquire_local' "$SCRIPT" | head -1 | cut -d: -f1)"
+rm_line="$(grep -n 'rm -rf ~/llm-gateway-go-211' "$SCRIPT" | head -1 | cut -d: -f1)"
+if [[ -n "$lock_line" && -n "$rm_line" && "$lock_line" -lt "$rm_line" ]]; then
+  ok "引擎 --via 先取家族部署锁（deploy-lib lock.sh）再动目标树（${lock_line} < ${rm_line}）"
+else
+  bad "--via 无锁或锁在破坏性步骤之后（并发部署会在 rm vs tar 处互炸）"
+fi
 
 echo
 printf '结果: %d 通过, %d 失败\n' "$pass" "$fail"
