@@ -53,7 +53,7 @@ import {
  *
  * 后端逐条对应：
  *   admin/handler.go:998-1008        六条全是 admin(...)，同前缀下混着两条 superAdmin
- *   admin/handler.go:1006            /api/admin/attachments/ → item 端点（admin 档）
+ *   admin/handler.go:1021            /api/admin/attachments/ → item 端点（admin 档）
  *   admin/data_lifecycle_attachments.go:51-58   attachmentRow（attachments 是 json.RawMessage）
  *   admin/data_lifecycle_attachments.go:154-155 limit/offset 走 clampInt
  *   admin/data_lifecycle_attachments.go:170      list  只要 attachments IS NOT NULL

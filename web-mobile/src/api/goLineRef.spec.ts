@@ -254,18 +254,39 @@ const KNOWN_FALSE_POSITIVE: { key: string; note: string }[] = [
   { key: 'api/turnsFilterOptions.ts:317 admin/turns_filter_options.go:61-73', note: '61-73 就是注释里**逐字引用的那段**租户判断；token 是函数名（定义在 :49）' },
   { key: 'api/usageEnhanced.ts:27 pkg/identity/verifier.go:111', note: '111 行是 `Verify` 的定义；token `supportedRole` 在它函数体内（:120 附近）' },
   { key: 'api/usageTrendSeries.ts:265 admin/usage_trend_series.go:407', note: '407 行是 SQL 读面的 FROM 子句；token `source` 是**对外字段名**' },
+  // —— 以下 14 条为第一百三十九批新增（把棘轮扩到 views/ 与测试文件后暴露的）
+  { key: 'api/sessionContext.test.ts:34 admin/handler.go:1318', note: '★ token 字面写的是 `/api/system/...`（**带省略号**）⇒ 永远不可能在源码里逐字命中；引用本身本批已订正为真实的 `:1318`' },
+  { key: 'router/index.ts:765 admin/credential_monitor.go:704-782', note: '★★ **否定式断言**：该行声称的是「这一段里**没有** `tenantID` 变量」⇒ token 不出现**正是它要断言的事实**。这类断言结构上就判不出对错，只能登记' },
+  { key: 'router/index.ts:855 cmd/gateway/main_jwt_middleware.go:65-73', note: '★ `:65` 逐字就是 `func newRequireSuperAdminMiddleware()`；token 是 `main.go:7002` 那个**局部变量**的名字 —— 定义处/调用点/绑定点三者分离' },
+  { key: 'router/index.ts:948 cmd/gateway/main_admin_wrappers.go:42', note: '★ `:42` 逐字就是 `func newWrapSessionAnalytics(...)`；同上，token 是调用点的变量名' },
+  { key: 'views/SubscriptionTiersView.spec.ts:31 cmd/gateway/main_jwt_middleware.go:65-73', note: '与 `router/index.ts:855` 同一条引用（工厂函数定义行）' },
+  { key: 'views/SubscriptionTiersView.vue:14 cmd/gateway/main_jwt_middleware.go:65-74', note: '同上；范围 65-74 比 65-73 多一行，仍完整覆盖该函数' },
+  { key: 'views/ModuleDetailView.spec.ts:72 admin/modules.go:836-839', note: '引用的是该端点**响应结构**的 `writeJSON(map...)` 段；token 是请求路径，不是 JSON 键' },
+  { key: 'views/WorkTypesView.spec.ts:22 admin/work_types.go:298', note: '引用的是 SQL 的 `AND (...)` 片段；token 是**列名** `by_work_type`，不出现在片段的起始行' },
+  { key: 'views/WorkTypesView.vue:66 admin/work_types.go:518', note: '518 行是 struct 定义里的一个字段；token `model_routes` 是**另一个** JSON 键' },
+  { key: 'views/ComplianceHitsView.vue:21 admin/output_compliance_handler.go:712', note: '与 `api/outputCompliance.ts` 那条同一引用；712 行是 `writeJSON(...{"feedback": items...})`，token 是函数名' },
+  { key: 'views/DispatchJournalView.vue:12 admin/journal_handlers.go:30-35', note: '与 `api/dispatchJournal.ts` 那条同一引用；token `requiresRole` 是**前端概念**，Go 里没有这个词' },
+  { key: 'views/FormatAnomaliesView.vue:12 admin/format_anomalies.go:106', note: '引用的是 `withAllTenantReadOnlyTx(...)` 那一行；token `tenant_id` 是**拼进 SQL 的列名**，不在该行' },
+  { key: 'views/UsageTrendSeriesView.vue:8 admin/usage.go:60-64', note: 'token `requiresRole` 是**前端概念**（路由 meta），Go 里没有这个词；引用本身正确' },
+  { key: 'api/attachments.test.ts:56 admin/handler.go:1021', note: '本批已订正到 `:1021`；但 token `/api/admin/attachments/` 带**尾斜杠**，而 `:1021` 注册写的是 `"/api/admin/attachments"`（无尾斜杠）⇒ 结构上判不出' },
 ]
 
 const REGISTERED: string[] = [...KNOWN_DRIFT, ...KNOWN_FALSE_POSITIVE.map((f) => f.key)]
+
+// ★★★ 批 139 的 J11 变异实测出这个洞：把 ② 的取数改回 `allRefs()` 而 ③ 不动 ⇒ **全绿**。
+//   根因是「棘轮的两侧各自独立取数」—— 于是**只改一侧**是谁也看不见的退化方向
+//   （② 扫得窄只会让债变少，方向上只会更绿；③ 扫得宽窄又与债无关）。
+//   ⇒ 两侧都把自己**实际扫到的条数**记在这里，由 ④-4 核对它们确实都等于全范围。
+const RATCHET_SEEN: number[] = []
 
 // ── ① 普查与召回自证 ────────────────────────────────────────────────────────
 
 describe('① Go 行号引用普查：读数 + 召回自证 + 阳性对照', () => {
   it('①-1 ★★★★★ 读数：分母必须写在这里，不许只报「对不上的几条」', () => {
-    const refs = allRefs()
+    const refs = allRefsWide()
     const { counts, bad } = classify(refs)
     console.log(
-      `[①-1] api 模块 ${apiModules().length} 个；引用 ${refs.length} 处；` +
+      `[①-1] 全范围（${wideFiles().length} 个文件）；引用 ${refs.length} 处；` +
         `路径不唯一 ${counts['路径不唯一']} · 无可核 token ${counts['无可核 token']} · ` +
         `行号越界/区间反向 ${counts['行号越界或区间反向']} · ` +
         `可判定 ${counts['可判定']}（其中对不上 ${counts['可判定但对不上']}）`,
@@ -315,8 +336,10 @@ describe('① Go 行号引用普查：读数 + 召回自证 + 阳性对照', () 
 // ── ② 棘轮：不许新欠债 ───────────────────────────────────────────────────────
 
 describe('② ★★ 未登记的漂移一律红', () => {
-  it('②-1 ★★★ 对不上的引用必须全部在 KNOWN_DRIFT 里', () => {
-    const { bad } = classify(allRefs())
+  it('②-1 ★★★★★ 对不上的引用必须全部已登记（★ 本批起覆盖**全范围**）', () => {
+    const refs = allRefsWide()
+    RATCHET_SEEN.push(refs.length)
+    const { bad } = classify(refs)
     const unknown = bad.map(key).filter((k) => !REGISTERED.includes(k))
     expect(
       unknown,
@@ -329,8 +352,10 @@ describe('② ★★ 未登记的漂移一律红', () => {
 // ── ③ 棘轮反向：登记项不许悄悄变好 ──────────────────────────────────────────
 
 describe('③ ★★★ 登记项必须仍然对不上（修好了就要删登记）', () => {
-  it('③-1 ★★★★ KNOWN_DRIFT 里每一条都仍然判为对不上', () => {
-    const { bad } = classify(allRefs())
+  it('③-1 ★★★★★ 登记项每一条都仍然判为对不上（修好了就要删登记）', () => {
+    const refs = allRefsWide()
+    RATCHET_SEEN.push(refs.length)
+    const { bad } = classify(refs)
     const present = new Set(bad.map(key))
     const fixed = REGISTERED.filter((k) => !present.has(k))
     expect(
@@ -353,13 +378,20 @@ describe('④ 名单规模', () => {
     expect(KNOWN_DRIFT).toHaveLength(0)
   })
 
-  it('④-1b ★★★ KNOWN_FALSE_POSITIVE 恰好 15 条（逐条定性过，不是债）', () => {
-    expect(KNOWN_FALSE_POSITIVE).toHaveLength(15)
+  it('④-1b ★★★★ KNOWN_FALSE_POSITIVE 恰好 29 条（逐条定性过，不是债）', () => {
+    expect(KNOWN_FALSE_POSITIVE).toHaveLength(29)
   })
 
   it('④-2 ★★ 名单里每一条的 Go 文件都得真实存在（否则是笔误不是债）', () => {
     const ghost = REGISTERED.map((k) => k.split(' ')[1]?.split(':')[0] ?? '').filter((g) => !GO_FILES.has(g))
     expect(ghost, `名单里有不存在的 Go 文件：${ghost.join(', ')}`).toEqual([])
+  })
+
+  it('④-4 ★★★★★ 棘轮两侧（②/③）实际扫到的范围必须**都**等于全范围', () => {
+    // ⚠️ 没有这条时，J11（只把 ② 改回 allRefs()）实测全绿 —— 见 RATCHET_SEEN 的注释。
+    const wide = allRefsWide().length
+    expect(RATCHET_SEEN, '②/③ 没有上报实际扫描范围（判据自身被改坏了？）').toHaveLength(2)
+    expect(RATCHET_SEEN, '棘轮某一侧被改窄了。★ 这是 ③ 的反向断言也抓不到的退化方向').toEqual([wide, wide])
   })
 
   it('④-3 ★★ 判据自身不得依赖未纳入仓库的路径', () => {
@@ -371,19 +403,23 @@ describe('④ 名单规模', () => {
 // ── ⑤ 扩范围读数锁 ───────────────────────────────────────────────────────────
 
 /**
- * ★★★ **⑤ 是读数锁，不是质量门** —— 它不做任何「对/错」判定，只把
- *   **现行棘轮覆盖不到的那部分范围**的数量钉住，理由是批 137~138 实测到的两件事：
- *   ① 批 136 建门时只扫 `api/**` 非测试文件，于是批 137 一订正就发现
- *      **16 处同源残留**散落在 `views/` 与 `*.test.ts` 里；
- *   ② 批 138 把范围量开：可判定引用从 **69 → 145**，对不上从 **15 → 48**。
- *   ⇒ 「不判」不等于「干净」，这个差价必须一直看得见。
+ * ★★★ **⑤ 是读数报告，不是棘轮** —— 它不做任何「对/错」判定，只把普查的
+ *   分母与分类打印出来，并守住两条不变式（分类对账 + 扫描范围只多不少）。
  *
- * ⚠️★ **它红的时候不许直接改数字**：先重新量一遍、确认是**真的新增/减少**了，
+ * ⚠️ 本组在第一百三十六~一百三十八批里曾承担「**扩范围读数锁**」的职责，
+ *   因为那时 ②/③ 只覆盖 `api/**` 非测试文件，全范围只能靠这里的**精确值**
+ *   钉住可见。演进过程：
+ *   ① 批 136 建门只扫 `api/**` 非测试文件 ⇒ 批 137 一订正就发现 **16 处同源残留**
+ *      散落在 `views/` 与 `*.test.ts` 里；
+ *   ② 批 138 把范围量开：可判定 **69 → 131**、对不上 **15 → 34**；
+ *   ③ 批 139 把 ②/③ **直接扩到全范围**，本组相应**退回读数报告**，`⑤-2`
+ *      由精确值退回下界断言（下界结构上抓不到新增 —— 批 138 的 J01 就是
+ *      这么全绿的；那个教训已经由 ② 在全范围上兑现）。
+ *
+ * ⚠️★ **它红的时候不许直接改数字**：先重新量一遍、确认是**真的**新增/减少了，
  *   再决定是「有新债要订正」还是「旧债被订正了」。盲改数字就把这道门废了。
- * ⚠️★ 对不上的那批**尚未逐条定性**（只有本批定位出的 2 条真错已修），
- *   定性与棘轮扩展留给下一批 —— 这里**不假装**它们已被处理。
  */
-describe('⑤ ★★★ 扩范围读数锁：棘轮覆盖不到的那部分，引用有多少', () => {
+describe('⑤ ★★★ 全范围读数报告（棘轮已在本批扩到全范围，这里只报数 + 两条不变式）', () => {
   it('⑤-1 ★★★ 全 src（.ts+.vue，含测试，排除本判据自身）的引用计数', () => {
     const wide = allRefsWide()
     const { counts } = classify(wide)
@@ -403,14 +439,14 @@ describe('⑤ ★★★ 扩范围读数锁：棘轮覆盖不到的那部分，�
     expect(counts['可判定']).toBeGreaterThanOrEqual(covered.counts['可判定'])
   })
 
-  it('⑤-2 ★★★ 扩范围的对不上**不参与棘轮**，但必须看得见（打印 + 断言非零是已知的）', () => {
+  it('⑤-2 ★★★ 全范围对不上的那批**已逐条定性**（本批起），这里只保留可见性下界', () => {
     const { bad } = classify(allRefsWide())
     console.log(`[⑤-2] 扩范围对不上 ${bad.length} 处，抽样：\n  ` + bad.slice(0, 5).map((r) => `${r.file}:${r.line} ${r.raw}`).join('\n  '))
-    // ★★★ 断言**精确值**而不是下界 —— 第一版写的是 `>= 30`，实测变异 J01
-    //   （把本批刚订正的一处改回旧的错行号）**全绿**：下界结构上就抓不到「新增」。
-    //   ⇒ 与 ④-1b 同一形态：**订正一条就把数字顶下去并同步改这里**，
-    //     这样这道读数锁才能同时当棘轮用。
-    // ⚠️ 红了不许直接改数字：先重量一遍，确认是**真的**新增/减少（见 ⑤ 的注释）。
-    expect(bad.length).toBe(34)
+    // ⚠️ 本条在第一百三十九批起**退回可见性下界**：全范围的棘轮已由 ②/③ 承担，
+    //   这里只负责「把数量一直印出来」，不再重复当棘轮用。
+    //   （下界结构上抓不到新增 —— 批 138 的 J01 就是这么全绿的；那个教训已由 ② 兑现。）
+    // ⚠️ 29 = 14 条批 137 登记的 + 15 条本批新增的**假阳性**，全部逐条注明了
+    //   「为何结构上判不出」。真错 KNOWN_DRIFT 已在批 137 清零。
+    expect(bad.length).toBeGreaterThanOrEqual(20)
   })
 })
