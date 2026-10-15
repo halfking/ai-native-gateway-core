@@ -4,12 +4,24 @@ package dashboardapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/sync/errgroup"
 )
+
+// dashboardStatsStageError carries which parallel stats stage failed so the
+// error answer keeps the per-stage detail of the pre-parallel serial pipeline
+// (same shape as admin.statsStageError in tenants.go).
+type dashboardStatsStageError struct {
+	stage string
+	err   error
+}
+
+func (e dashboardStatsStageError) Error() string { return e.stage + ": " + e.err.Error() }
 
 // SessionOverviewHandler 会话总览 Handler
 type SessionOverviewHandler struct {
@@ -174,74 +186,98 @@ func (h *SessionOverviewHandler) HandleSessionOverview(w http.ResponseWriter, r 
 	ctx, cancel := GetRequestContext(r, 30*time.Second)
 	defer cancel()
 
-	// 1. 查询总会话数和活跃会话数
-	totalStats, err := h.queryTotalStats(ctx, params)
-	if err != nil {
+	// ── 九段聚合并行（2026-10-15 可靠性轮，与 admin/tenants.go 同模式）──
+	// 修前：9 段串行共用 30s ctx，session_summaries 73 万行 seq scan，
+	// 每段 0.6~2.5s ⇒ 串行 4~12s，负载高时 30s 顶穿报 500。
+	// 九段互相独立（各读各的字段/分组）⇒ errgroup 并行，墙钟 = max(段)。
+	// 错误语义保持：哪段死都带段名报 500（dashboardStatsStageError，
+	// 类型定义在包级，见 SessionOverviewHandler 前）。
+	var (
+		totalStats *totalStatsInternal
+		healthDist *HealthDistribution
+		compliance *ComplianceStats
+		costStats  *CostStats
+		modelUsage []ModelUsageItem
+		topClients []ClientRankItem
+		topTasks   []TaskRankItem
+		costTrend  []CostTrendPoint
+		sessTrend  []SessionTrendPoint
+	)
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		var err error
+		if totalStats, err = h.queryTotalStats(gctx, params); err != nil {
+			return dashboardStatsStageError{"total stats", err}
+		}
+		return nil
+	})
+	g.Go(func() error {
+		var err error
+		if healthDist, err = h.queryHealthDistribution(gctx, params); err != nil {
+			return dashboardStatsStageError{"health distribution", err}
+		}
+		return nil
+	})
+	g.Go(func() error {
+		var err error
+		if compliance, err = h.queryComplianceStats(gctx, params); err != nil {
+			return dashboardStatsStageError{"compliance stats", err}
+		}
+		return nil
+	})
+	g.Go(func() error {
+		var err error
+		if costStats, err = h.queryCostStats(gctx, params); err != nil {
+			return dashboardStatsStageError{"cost stats", err}
+		}
+		return nil
+	})
+	g.Go(func() error {
+		var err error
+		if modelUsage, err = h.queryModelUsage(gctx, params); err != nil {
+			return dashboardStatsStageError{"model usage", err}
+		}
+		return nil
+	})
+	g.Go(func() error {
+		var err error
+		if topClients, err = h.queryTopClients(gctx, params, 5); err != nil {
+			return dashboardStatsStageError{"top clients", err}
+		}
+		return nil
+	})
+	g.Go(func() error {
+		var err error
+		if topTasks, err = h.queryTopTasks(gctx, params, 5); err != nil {
+			return dashboardStatsStageError{"top tasks", err}
+		}
+		return nil
+	})
+	g.Go(func() error {
+		var err error
+		if costTrend, err = h.queryCostTrend(gctx, params); err != nil {
+			return dashboardStatsStageError{"cost trend", err}
+		}
+		return nil
+	})
+	g.Go(func() error {
+		var err error
+		if sessTrend, err = h.querySessionTrend(gctx, params); err != nil {
+			return dashboardStatsStageError{"session trend", err}
+		}
+		return nil
+	})
+	if err := g.Wait(); err != nil {
 		apiStatus = "error"
-		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query total stats", err.Error())
+		var se dashboardStatsStageError
+		if errors.As(err, &se) {
+			writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query "+se.stage, se.err.Error())
+			return
+		}
+		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query session overview", err.Error())
 		return
 	}
-
-	// 2. 查询健康度分布
-	healthDist, err := h.queryHealthDistribution(ctx, params)
-	if err != nil {
-		apiStatus = "error"
-		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query health distribution", err.Error())
-		return
-	}
-
-	// 3. 查询合规统计
-	compliance, err := h.queryComplianceStats(ctx, params)
-	if err != nil {
-		apiStatus = "error"
-		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query compliance stats", err.Error())
-		return
-	}
-
-	// 4. 查询成本统计
-	costStats, err := h.queryCostStats(ctx, params)
-	if err != nil {
-		apiStatus = "error"
-		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query cost stats", err.Error())
-		return
-	}
-
-	// 5. 查询模型使用
-	modelUsage, err := h.queryModelUsage(ctx, params)
-	if err != nil {
-		apiStatus = "error"
-		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query model usage", err.Error())
-		return
-	}
-
-	// 6. 查询 Top 客户端和任务
-	topClients, err := h.queryTopClients(ctx, params, 5)
-	if err != nil {
-		apiStatus = "error"
-		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query top clients", err.Error())
-		return
-	}
-
-	topTasks, err := h.queryTopTasks(ctx, params, 5)
-	if err != nil {
-		apiStatus = "error"
-		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query top tasks", err.Error())
-		return
-	}
-
-	// 7. 查询趋势数据
-	costTrend, err := h.queryCostTrend(ctx, params)
-	if err != nil {
-		apiStatus = "error"
-		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query cost trend", err.Error())
-		return
-	}
-
-	sessionTrend, err := h.querySessionTrend(ctx, params)
-	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query session trend", err.Error())
-		return
-	}
+	sessionTrend := sessTrend
 
 	// 构建响应
 	now := time.Now()

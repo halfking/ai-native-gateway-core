@@ -101,6 +101,89 @@ describe('AppDrawer 权限门控', () => {
   })
 })
 
+
+describe('AppDrawer 搜索（2026-10-15：85 席无搜索是可达性硬伤）', () => {
+  beforeEach(() => {
+    for (const w of mounted) {
+      try { w.unmount() } catch { /* ignore */ }
+    }
+    mounted = []
+    document.body.innerHTML = ''
+    vi.resetAllMocks()
+  })
+  afterEach(() => {
+    for (const w of mounted) {
+      try { w.unmount() } catch { /* ignore */ }
+    }
+    mounted = []
+  })
+
+  async function drawerLinks(): Promise<string[]> {
+    return Array.from(document.body.querySelectorAll('nav.drawer__nav .drawer__link'))
+      .map((a) => a.getAttribute('href') ?? '')
+  }
+
+  // 抽屉 Teleport 到 body ⇒ w.find 看不见输入框；直接在 document 上改值
+  // 并派发 input 事件（v-model 监听的就是它）。
+  async function typeSearch(text: string): Promise<void> {
+    const input = document.body.querySelector('input.drawer__search-input') as HTMLInputElement | null
+    if (!input) throw new Error('drawer search input not found in body')
+    input.value = text
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    await flushPromises()
+  }
+
+  it('★ 子串过滤：输入 compress 只剩 compression 家族的席，且远小于全量', async () => {
+    const w = await mountDrawerAs('super_admin')
+    const before = await drawerLinks()
+    expect(before.length).toBeGreaterThan(20) // 85 席基线在场，否则本用例失去判别力
+    // 测试环境 locale 是 en-US：匹配面 = 标题 + key + 路径（组件对三者都做
+    // 小写子串匹配；中文标题匹配在真机 zh 环境下同一代码路径，spec 钉形状）。
+    await typeSearch('compress')
+    const after = await drawerLinks()
+    expect(after.some((h) => h.includes('/compression'))).toBe(true)
+    expect(after.length).toBeGreaterThan(0)
+    expect(after.length).toBeLessThan(before.length / 4)
+    // 被筛掉的席确实不在 DOM 里（不是被 CSS 藏）
+    expect(after.some((h) => h === '/logs')).toBe(false)
+  })
+
+  it('★ 标题匹配面：按本地化标题子串（session）也能筛出会话家族', async () => {
+    await mountDrawerAs('super_admin')
+    await typeSearch('session')
+    const links = await drawerLinks()
+    expect(links.some((h) => h.includes('/sessions'))).toBe(true)
+    expect(links.some((h) => h === '/logs')).toBe(false)
+  })
+
+  it('★ 空串 = 不过滤：清空搜索后席数回到角色全量', async () => {
+    const w = await mountDrawerAs('super_admin')
+    const full = (await drawerLinks()).length
+    await typeSearch('compress')
+    const filtered = (await drawerLinks()).length
+    expect(filtered).toBeLessThan(full)
+    await typeSearch('')
+    expect((await drawerLinks()).length).toBe(full)
+  })
+
+  it('★ 权限门控先于搜索：tenant_admin 搜 integrity 搜不出越权入口', async () => {
+    const w = await mountDrawerAs('tenant_admin')
+    await typeSearch('integrity')
+    const links = await drawerLinks()
+    expect(links.some((h) => h.includes('/integrity'))).toBe(false)
+  })
+
+  it('★ 无结果提示在场：搜不存在的词给可行动提示，而不是空白面板', async () => {
+    const w = await mountDrawerAs('super_admin')
+    await typeSearch('zzz-no-such-page')
+    expect((await drawerLinks()).length).toBe(0)
+    const empty = document.body.querySelector('.drawer__search-empty')
+    // 测试环境 locale=en-US；zh 文案同 key（nav.searchNoResults）
+    expect(empty?.textContent).toContain('No matching pages')
+  })
+})
+
 describe('navItemsFor', () => {
   // ★★ 2026-10-14 第一百一十四批补上：**这个 describe 原本没有 body 清理**，
   //   而下面四条判据用 `mountDrawerAs` 挂到 `document.body`

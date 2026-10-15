@@ -23,6 +23,25 @@ const panelRef = ref<HTMLElement | null>(null)
  */
 const drawerItems = computed(() => navItemsFor(DRAWER_NAV, auth.role))
 
+/**
+ * ★ 2026-10-15：抽屉搜索。DRAWER_NAV 已 85 席（还会继续涨），深页要滚
+ *   4~5 屏才能点到 —— 真机验收轮实测这是可达性硬伤（且自动化的滚动精度
+ *   模型在底缘橡皮筋下不可达，见 client 仓 CURRENT-STATE 31.8）。
+ *   匹配面：本地化标题（t(titleKey)，中文/英文输入都生效）+ key + 路径。
+ *   大小写不敏感子串；空串 = 不过滤（与改前行为逐项一致）。
+ *   权限门控在 drawerItems 层已收口，搜索只在**可见席**里筛 ——
+ *   tenant_admin 搜 "integrity" 依然搜不出越权入口（spec 钉了这条）。
+ */
+const searchQuery = ref('')
+const filteredItems = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q) return drawerItems.value
+  return drawerItems.value.filter((item) => {
+    const title = t(item.titleKey).toLowerCase()
+    return title.includes(q) || item.key.toLowerCase().includes(q) || item.to.toLowerCase().includes(q)
+  })
+})
+
 const overlay = useHyperOverlay({
   presentation: 'modal',
   title: () => t('nav.more'),
@@ -33,6 +52,7 @@ watch(
   () => props.modelValue,
   (open) => {
     if (open) {
+      searchQuery.value = 
       overlay.present()
       void nextTick(() => {
         panelRef.value?.querySelector<HTMLElement>('a, button')?.focus()
@@ -89,9 +109,27 @@ onBeforeUnmount(() => overlay.release())
             <span class="drawer__sub">{{ t('app.subtitle') }}</span>
           </div>
 
+          <div class="drawer__search">
+            <input
+              v-model="searchQuery"
+              type="search"
+              class="drawer__search-input"
+              :placeholder="t('nav.searchPlaceholder')"
+              :aria-label="t('nav.searchPlaceholder')"
+              autocomplete="off"
+              autocapitalize="none"
+              autocorrect="off"
+              spellcheck="false"
+              enterkeyhint="search"
+            >
+          </div>
+
           <nav class="drawer__nav">
+            <p v-if="filteredItems.length === 0" class="drawer__search-empty">
+              {{ t('nav.searchNoResults') }}
+            </p>
             <RouterLink
-              v-for="item in drawerItems"
+              v-for="item in filteredItems"
               :key="item.key"
               :to="item.to"
               class="drawer__link"
@@ -162,6 +200,35 @@ onBeforeUnmount(() => overlay.release())
 
 .drawer__sub {
   font-size: 0.75rem;
+  color: var(--app-text-muted);
+}
+
+.drawer__search {
+  padding: 0 var(--app-space-1) var(--app-space-2);
+}
+
+.drawer__search-input {
+  width: 100%;
+  min-height: 48px; /* 触控目标门：≥48px（与 .drawer__link 同标准） */
+  padding: 0 var(--app-space-2);
+  border: 1px solid var(--app-border-subtle);
+  border-radius: var(--app-radius);
+  background: var(--app-surface-muted, transparent);
+  color: var(--app-text);
+  font-size: 0.9375rem;
+  /* type=search 自带的原生清除钮在 iOS 上样式不可控，标题足够表意 */
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.drawer__search-input:focus-visible {
+  outline: 2px solid var(--kx-primary);
+  outline-offset: 1px;
+}
+
+.drawer__search-empty {
+  margin: var(--app-space-3) var(--app-space-2);
+  font-size: 0.875rem;
   color: var(--app-text-muted);
 }
 

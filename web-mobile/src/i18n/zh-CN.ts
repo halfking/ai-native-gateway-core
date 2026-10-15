@@ -51,6 +51,8 @@ export const zhCN = {
     nodes: '节点',
     models: '模型',
     keys: '密钥',
+    searchPlaceholder: '搜索功能页…',
+    searchNoResults: '没有匹配的功能页',
     more: '更多',
     alerts: '告警',
     usage: '用量',

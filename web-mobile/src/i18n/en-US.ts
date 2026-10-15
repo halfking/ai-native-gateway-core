@@ -51,6 +51,8 @@ export const enUS = {
     nodes: 'Nodes',
     models: 'Models',
     keys: 'Keys',
+    searchPlaceholder: 'Search pages…',
+    searchNoResults: 'No matching pages',
     more: 'More',
     alerts: 'Alerts',
     usage: 'Usage',
