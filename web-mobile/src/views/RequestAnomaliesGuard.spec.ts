@@ -34,7 +34,9 @@ import { DRAWER_NAV, navItemsFor } from '@/config/appNav'
  * 判据分四组：
  *  ① ★★★★★★ 服务端是真门（读 Go 源码）+ 本层兜的是体验层。
  *  ② ★★★★★★ 深链兜底：无权限时**不发请求**，且只渲染 nope 区。
- *  ③ ★★★★★★★ 全族普查 + **召回自证** —— 这条才是本批真正的产出。
+ *  ③ ★★★★★★★ 全族普查 + **召回自证**（③-2，只比数量）
+ *     + **配对自证**（③-3，逐条比对；第一百三十一批补）——
+ *     ★★ 数量对账 ≠ 配对正确，详见 ③-3 注释里实测到的那 3 条串线。
  *  ④ ★★★★ nope 文案两语种 + 编码门 + 抽屉席可见性。
  *
  * ⚠️ 本文件**不碰**既有 31 条业务判据（那些在 RequestAnomaliesView.spec.ts，
@@ -242,9 +244,28 @@ describe('② ★★★★★★ 深链兜底：不发请求且只渲染 nope �
 
 // ── ③ ★★ 全族普查：本批真正的产出 ──────────────────────────────────────────
 
-/** ★ 路由声明的匹配式：`path` → `component` → `requiresRole` 三者同属一条路由。 */
+/**
+ * ★★ 路由声明的匹配式：`path` → `component` → `requiresRole` 三者同属一条路由。
+ *
+ * ⚠️⚠️⚠️ 第一百三十一批修掉的**真缺陷**：原来两段窗口用的是裸 `[\s\S]{0,N}?`，
+ * 它**不阻止跨越路由边界**。实测：
+ *
+ *   // `/pending-responses` 这条**没有** requiresRole，
+ *   // 但它的 `path:` 后面 400 字符内就撞上了**下一条**路由的 component/requiresRole
+ *   ⇒ 配出 ('/pending-responses', RequestAnomaliesView.vue, super_admin)
+ *   ⇒ 而这一对**真正属于** '/request-anomalies'
+ *
+ * 15 条里**串了 3 条**（/pending-responses、/dispatch-journal、/data-horizon）。
+ *
+ * ★★ 而且这个错**恰好是 `stripComments` 引进来的**：剥掉注释后行距变短，
+ * 原本够不着 400 字符的跨界匹配**够得着了** ⇒ 批 130 为了修「20 vs 15」
+ * 而加的 stripComments，反过来制造了配对错误。
+ *
+ * ⇒ 修法：窗口里**不得再出现另一个 `path:`**（否定前瞻）。
+ *   修后与「按块切分取真值」的独立实现**逐条完全一致**（见 ③-4）。
+ */
 const ROUTE_DECL =
-  /path:\s*'([^']+)',[\s\S]{0,400}?component:\s*\(\)\s*=>\s*import\('@\/views\/([^']+)'\),[\s\S]{0,200}?requiresRole:\s*'([^']+)'/g
+  /path:\s*'([^']+)',(?:(?!path:)[\s\S]){0,400}?component:\s*\(\)\s*=>\s*import\('@\/views\/([^']+)'\),(?:(?!path:)[\s\S]){0,200}?requiresRole:\s*'([^']+)'/g
 
 describe('③ ★★★★★★★ 全族普查：每一条 requiresRole 路由的视图都必须有兜底', () => {
   it('③-1 ★★★★★★★★ 逐条核对（★ 这条是本批真正的产出）', () => {
@@ -305,7 +326,45 @@ describe('③ ★★★★★★★ 全族普查：每一条 requiresRole 路由
     ).toBe(declared.length)
   })
 
-  it('③-3 ★★★★ 普查判据对**改动前的这一席**确实会红（负控结论留档）', () => {
+  it('③-3 ★★★★★★★★ ★★ 配对自证：逐条比对，而不是只比数量（第一百三十一批）', () => {
+    // ★★★★★★ **这条是 ③-2 抓不到的那一面。**
+    //
+    // ③-2 只对账**数量**（matched.length === declared.length）。而实测过的那个
+    // 缺陷是**配对错**：path 来自上一条、component/requiresRole 来自下一条。
+    // ⇒ 数量照样是 15===15，③-2 **照样绿**，而 ③-1 报出来的路径是错的 ——
+    //   将来真有一席缺兜底，会把下一个人**指到错的路由**上。
+    //
+    // ⇒ 解法：换一个**独立实现**（按 `{ path:` 块切分，块内取 component/role），
+    //   与正则结果**逐条**比对（比较集合，不只比长度）。
+    const router = stripComments(readFileSync(join(process.cwd(), 'src/router/index.ts'), 'utf8'))
+
+    // ── 独立实现：按「一条路由 = 一个 `{ path: … }` 对象块」切分 ──
+    const truth: Array<[string, string, string]> = []
+    for (const m of router.matchAll(/\{\s*path:\s*'([^']+)'([\s\S]{0,600}?)\n  \},/g)) {
+      const comp = m[2]!.match(/component:\s*\(\)\s*=>\s*import\('@\/views\/([^']+)'\)/)
+      const role = m[2]!.match(/requiresRole:\s*'([^']+)'/)
+      if (role && comp) truth.push([m[1]!, comp[1]!, role[1]!])
+    }
+
+    const viaRegex = [...router.matchAll(ROUTE_DECL)].map((m): [string, string, string] => [m[1]!, m[2]!, m[3]!])
+
+    expect(truth.length, '独立实现一条都没切出来 ⇒ 两边都坏了').toBeGreaterThan(10)
+
+    const truthSet = new Set(truth.map((t) => t.join('|')))
+    const regexSet = new Set(viaRegex.map((t) => t.join('|')))
+    const wrongPairing = [...regexSet].filter((k) => !truthSet.has(k))
+    const missed = [...truthSet].filter((k) => !regexSet.has(k))
+
+    expect(
+      wrongPairing,
+      `这些 (path, 视图, 档位) 三元组是**串出来的**（path 与 component/role 不属于同一条路由）：\n  ${wrongPairing.join('\n  ')}`,
+    ).toEqual([])
+    expect(missed, `这些真实路由声明正则一条都没匹配到：\n  ${missed.join('\n  ')}`).toEqual([])
+    // ★ 与 ③-2 的差别就在这：③-2 只断言 length 相等，这里断言**集合相等**。
+    expect(regexSet.size).toBe(truthSet.size)
+  })
+
+  it('③-4 ★★★★ 普查判据对**改动前的这一席**确实会红（负控结论留档）', () => {
     // 这条留的是**结论**而不是行为：把普查判据的两条正则原样跑在本批
     // 改动之前的视图源码上（HEAD 版本由 §11.167 的负控实测给出），
     // 必须判成「无兜底」—— 否则 ③-1 只是一条恰好为真的装饰。
