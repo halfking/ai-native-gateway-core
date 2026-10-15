@@ -2107,3 +2107,29 @@ owner 拍板）；session_censors 可逆还原无读取方（配密钥+读取端
    双写丢更新）待裁决。
 3. 上一轮遗留不变：D1/D2 部署、URSM persist collect 迁独立 db、
    GeneratedTextGuard 双语义拍板、session_censors 可逆化两件套。
+
+---
+
+# 追加：2026-10-15 24h 审计 —— magpie P0 收口合入 + admin 慢查询根修
+
+> 明细：`docs/audit/2026-10-15-24h审计-magpie收口与admin慢查询.md`。
+> HEAD 推送后以 `git log -1` 为准（约 `ccec7c543` 一带）。
+
+## 落地
+
+1. **magpie P0-B/C/D**（`cursor/magpie-p0-closeout`）合入 main 并删远程分支；判据/
+   观测脚本一并入库。
+2. **D1** probeOne 进程级 MemoryFlight 跨测试串味 → per-Executor 惰性 memory。
+3. **D2** `/api/admin/sessions/online`：旧 JOIN 停写视图 EXPLAIN **52s/0 行** →
+   改读 `session_summaries`（近窗 **0.76ms**）。
+4. **D3** `/api/logs/top-models`：≤8d 窗只用 `SessionFamilyTurnsHotSourceSQL`。
+5. 本地已合并陈旧分支 10 条删除；24h 窗内不活跃未合并远程分支 **0**；
+   `r43-fresh-install*` 窗口外留置（含删 704/705 的危险 diff）。
+
+## 下一轮提示词（2026-10-15 24h 审计）
+
+1. ★ **部署本轮**（154/245/211）：复验 sessions/online 与 top-models 亚秒、dashboard 无 500；
+   magpie 指纹/观测脚本按 `observe-magpie-p0-postdeploy.sh`。
+2. **MV REFRESH 争用**：`routing_analytics_7d` 仍是 pg_stat_statements 总耗时第一。
+3. **r43** 是否拣有用门文件（禁带删 704/705）。
+4. model alternatives 超时、fp_slot、nvidia probe：owner。
