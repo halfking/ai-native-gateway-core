@@ -704,6 +704,15 @@ type Executor struct {
 	RedactBodyWithContextFn func(context.Context, []byte, string, string) []byte
 	Auditor                 audit.Sink
 	State                   *credential.Writer
+	// NodeHealthState is the narrow write seam for node-health effects. nil
+	// delegates to State, preserving production wiring while making adapter
+	// scope contracts observable without a real PostgreSQL pool.
+	NodeHealthState interface {
+		Enabled() bool
+		RestoreOnSuccess(context.Context, int, string) error
+		WriteOnError(context.Context, int, string, credential.Failure) error
+		SetCredentialUnavailable(context.Context, int, credential.Failure) error
+	}
 	// NodeOutcomeReducer is the dispatch-attempt node-health authority. Main may
 	// inject a process-shared reducer; when nil, the executor constructs one
 	// lazily on first dispatch attempt. NodeHealthAdapter is optional; when nil,
@@ -2534,8 +2543,9 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 		// ── 2026-07-17 同步探测 hold: 把客户端请求暂停，并行探测同模型所有
 		// 候选节点的供应商直连；首个直连成功 → 网关路由测试 → 重发用户请求。
 		// 所有探测都失败 / 5s 超时 → fall through 到下方 503 返回。
-		if e.SyncNoCandidateProbe && e.ProbeSync != nil && params.R != nil && !params.SurvivalAttempt {
+		if e.SyncNoCandidateProbe && e.ProbeSync != nil && params.R != nil {
 			// P0-D quotaHeld：全员额度/余额耗尽时不 ProbeSync（打上游只会再
+
 			// 收 402/429，放大比无收益）——立即以 KindQuota 出口，handler
 			// 映射 429+Retry-After（Tried=0 标记「未打上游的全灭」）。
 			if quotaHeldAll(probeCandidates) {
@@ -2589,11 +2599,28 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 					params.OnProbeHoldEnd(recovered)
 				}
 				if recovered {
+					// Survival owns retries. It is still allowed the bounded, single
+					// probe recovery attempt above, but must return its aggregateable
+					// failure to the coordinator rather than recursively Execute here.
+					// The coordinator refreshes candidates before its next attempt.
+					if params.SurvivalAttempt {
+						if params.AuditBuilder != nil {
+							params.AuditBuilder.DecisionTrace(trace)
+						}
+						return nil, &ExecuteError{
+							Tried:     0,
+							Exhausted: true,
+							Trace:     trace,
+							LastKind:  errorsx.KindTransient,
+							LastErr:   fmt.Errorf("probeOne recovered candidate; survival coordinator must refresh and retry"),
+						}
+					}
 					// The initial candidate slice is a point-in-time snapshot and may
 					// still carry Routable=false after the probe restored the node.
 					// Reload candidates so the retry is based on the persisted/cache
 					// state rather than re-filtering stale request data.
 					retryCandidates := e.refreshedCandidatesAfterProbe(params)
+
 					if len(retryCandidates) == 0 {
 						retryCandidates = params.Candidates
 					}
