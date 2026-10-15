@@ -100,7 +100,7 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 
 	extensions := make(map[string]json.RawMessage)
 	for key, val := range rawMap {
-		if !knownFields[key] && len(val) > 0 && string(val) != "null" {
+		if !knownFields[key] && len(val) > 0 {
 			extensions[key] = val
 			// Step 4.10 (2026-07-28): record unknown-field anomaly once
 			// per (request_id, source_protocol, field_path). Dedup is

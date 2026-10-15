@@ -2154,8 +2154,14 @@ func (e *Executor) executeOpenAI(
 						// 审计 R3 #2 (2026-09-09): params.BodyBytes 此时仍是客户端原始
 						// Anthropic 体(上游体在 bodyBytes 中另行转换),以其估算
 						// message_start.usage.input_tokens,替代恒 0。
+						bridgeResp := resp
+						if nativeStream && upgradedFromChat {
+							copy := *resp
+							copy.Body = responsesToChatStream(streamReaderContext(params, resp), resp.Body, outboundModel)
+							bridgeResp = &copy
+						}
 						streamOutcome = e.OpenAIToAnthropicStream(
-							streamReaderContext(params, resp), streamSink, resp,
+							streamReaderContext(params, resp), streamSink, bridgeResp,
 							params.ClientModel, outboundModel,
 							diagnosticRequestID(params),
 							params.Capture, nil,
@@ -3422,7 +3428,20 @@ func proactiveChatToResponsesUpgrade(cand provider.Candidate, params *ExecParams
 	if len(params.BodyBytes) == 0 {
 		return nil, false
 	}
-	converted, ok := chatBodyToResponsesBody(params.BodyBytes, cand.RawModel)
+	sourceBody := params.BodyBytes
+	// Messages handlers retain the original Anthropic body. Parse its actual
+	// dialect before the shared Responses conversion so system/tools survive.
+	if params.ClientProtocol == providercatalog.ProtocolAnthropicMessages {
+		parsed, err := ir.ParseAnthropic(sourceBody)
+		if err != nil {
+			return nil, false
+		}
+		sourceBody, err = ir.SerializeOpenAI(parsed)
+		if err != nil {
+			return nil, false
+		}
+	}
+	converted, ok := chatBodyToResponsesBody(sourceBody, cand.RawModel)
 	if !ok {
 		return nil, false
 	}

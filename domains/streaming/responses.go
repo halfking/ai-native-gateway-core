@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1091,7 +1092,7 @@ func convertResponsesToChatBody(req *responsesRequestBody) map[string]any {
 	}
 
 	for key, raw := range req.Extra {
-		if len(raw) == 0 || string(raw) == "null" {
+		if len(raw) == 0 {
 			continue
 		}
 		// reasoning 已按 chat 线型翻译为 reasoning_effort，对象本体不再透传。
@@ -1099,7 +1100,9 @@ func convertResponsesToChatBody(req *responsesRequestBody) map[string]any {
 			continue
 		}
 		var value any
-		if err := json.Unmarshal(raw, &value); err != nil {
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		if err := decoder.Decode(&value); err != nil {
 			continue
 		}
 		if key == "tools" {
