@@ -480,6 +480,8 @@ onMounted(() => {
           </div>
         </div>
 
+        <button v-if="selectedModule.key === 'output_compliance'" class="btn" @click="router.push('/admin/sanitize-rules')">{{ t('sanitizeRules.title') }}</button>
+
         <!-- Legacy dependency banner removed: backend now supplies dependencies + blocked_reason. -->
 
         <!-- Tabs -->

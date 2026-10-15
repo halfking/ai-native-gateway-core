@@ -56,6 +56,7 @@ const PromptInjectionSettingsView = () => import('./views/PromptInjectionSetting
 const ApprovalConfigView = () => import('./views/ApprovalConfigView.vue')
 const ApprovalListView = () => import('./views/ApprovalListView.vue')
 const ApprovalDetailView = () => import('./views/ApprovalDetailView.vue')
+const SanitizeRulesView = () => import('./views/SanitizeRulesView.vue')
 const OutputComplianceView = () => import('./views/OutputComplianceView.vue')
 const UsageCostView = () => import('./views/admin/UsageCost.vue')
 const UsageTrendExplorerView = () => import('./views/admin/UsageTrendExplorer.vue')
@@ -276,6 +277,7 @@ export const router = createRouter({
     { path: '/admin/approval-config', component: ApprovalConfigView, meta: { requiresSuper: true } },
     { path: '/admin/approvals',    component: ApprovalListView, meta: { requiresSuper: true } },
     { path: '/admin/approvals/:id', component: ApprovalDetailView, meta: { requiresSuper: true } },
+    { path: '/admin/sanitize-rules', component: SanitizeRulesView, meta: { requiresAuth: true } },
     { path: '/admin/output-compliance', component: OutputComplianceView, meta: { requiresSuper: true } },
     { path: '/admin/usage',        component: UsageCostView, meta: { requiresSuper: true } }, // 用量成本视图 (T2.4)；R34: 与相邻 admin 路由对齐补权限 meta
     { path: '/admin/usage-trends', component: UsageTrendExplorerView, meta: { requiresAuth: true, fillViewport: true } }, // 全屏用量趋势（2026-10-02：铺满主区；模型用 ModelPicker）

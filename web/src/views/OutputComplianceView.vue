@@ -311,6 +311,7 @@ onMounted(() => {
     <div class="view-header">
       <h2>{{ t('outputCompliance.title') }}</h2>
       <p class="view-subtitle">{{ t('outputCompliance.subtitle') }}</p>
+      <RouterLink to="/admin/sanitize-rules" class="btn">{{ t('sanitizeRules.title') }}</RouterLink>
     </div>
 
     <!-- 标签页 -->
