@@ -76,10 +76,36 @@ function dictLookup(root: unknown, path: string): unknown {
 /**
  * ★★★ 剥掉注释，只留代码。
  *   普查必须看**可执行代码**而非词 —— `requiresRole` 这个串在路由注释里
- *   出现了 5 次（都在解释「为什么这一席是 admin 档」），按词统计会虚增。
+ *   出现过（都在解释「为什么这一席没服务端角色下限」），按词统计会虚增。
+ *
+ * ⚠️⚠️⚠️ 第一百三十二批修掉的**量具缺陷**：**剥离顺序不能反**。
+ *
+ *   旧写法（先块后行）：
+ *     src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+ *
+ *   块注释正则**不知道自己在不在注释里**。而 `config/appNav.ts` 的
+ *   **行注释里写着 URL**，URL 里有块注释起点：
+ *     // MaaS 租户运维面。**superAdmin 档**（/api/admin/maas/tenants/** 全 superAdmin）
+ *     // MaaS 租户目录与价目。**admin 档**（/api/maas/** 是 h.admin(...)）
+ *     // 不碰 /api/v1/approvals/* 的 approve/reject/resume
+ *   ⇒ 三个 `/api/**` 各贡献一个块注释起点，块正则把它们当**块注释开头**，
+ *     去找最近的**星号斜杠闭合标记**（在 685 行）⇒ **231~685 行的真实代码被整段删掉**：
+ *     appNav.ts 30924 字节 → **6118 字节（只剩 19.8%）**，
+ *     `'request-anomalies'` 从 2 次变成 **0 次** ⇒ 席位普查报「一个席都没有」。
+ *
+ *   ⇒ 修法：**先按行删 `//`，再删块注释**。行注释删完之后，
+ *     剩下的块注释起点才都是真的，两类标记自然配平。
+ *   实测：appNav.ts 30924 → 11698（37.8%），且先删行注释后
+ *   块注释起点 5 个 / 闭合 5 个**配平**；`'request-anomalies'` 保持 2 次。
+ *
+ * ⚠️⚠️ 而 `router/index.ts` 之所以一直没被咬到，是**运气**：
+ *   它里面块注释起点有 6 处（也在行注释的 URL 里），但**闭合标记一个都没有**
+ *   ⇒ 块替换找不到闭合 ⇒ 空操作 ⇒ 幸存。
+ *   ⇒ ★ **当前已发布的普查判据（③ 组）本身没被影响，但它不是「设计正确」，
+ *     而是「碰巧没踩」。** 顺序必须按上面对的方式钉死。
  */
 function stripComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  return src.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')
 }
 
 function goSrc(rel: string): string {
@@ -425,5 +451,128 @@ describe('④ ★★★★ nope 文案、编码门与抽屉席', () => {
         `${r} 看得见这一席`,
       ).not.toContain('request-anomalies')
     }
+  })
+})
+
+
+// ── ⑤ ★★ 席档位 vs 视图兜底档位：逐条对账（第一百三十二批）──────────────────
+
+/**
+ * ★★★ 判据自身的前提：`stripComments` **不许毁掉真实代码**。
+ *
+ *   起因见上面 `stripComments` 的注释：`config/appNav.ts` 的行注释里写着
+ *   `/api/admin/maas/tenants/**` 这种 URL，URL 里的 `/*` 被块注释正则当成
+ *   块注释开头 ⇒ 231~685 行被整段删掉 ⇒ 席位普查报「一个席都没有」。
+ *
+ *   ⚠️ 这类错误**不报错、不红**，它只是**安安静静地给出「全都没有」的答案** ——
+ *   而「全都没有」看起来像个正常结论。所以必须有一条判据盯住**剥离本身**。
+ */
+describe('⑤ ★★★★★★ 剥注释不许毁代码；席档位与视图兜底档位逐条一致', () => {
+  const WEB = process.cwd()
+
+  function seatEntries(navCode: string): Map<string, { key: string; role: string | null }> {
+    const seg = navCode.slice(navCode.indexOf('export const DRAWER_NAV'))
+    const out = new Map<string, { key: string; role: string | null }>()
+    for (const m of seg.matchAll(/\{\s*key:\s*'([^']+)',([\s\S]{0,320}?)\n?\s*\}/g)) {
+      const to = m[2]!.match(/to:\s*'([^']+)'/)
+      if (!to) continue
+      const rr = m[2]!.match(/requiresRole:\s*'([^']+)'/)
+      out.set(to[1]!, { key: m[1]!, role: rr ? rr[1]! : null })
+    }
+    return out
+  }
+
+  it('⑤-1 ★★★★★★ 剥离前后，appNav.ts 的席 key 一个都不能少', () => {
+    const raw = readFileSync(join(WEB, 'src/config/appNav.ts'), 'utf8')
+    const stripped = stripComments(raw)
+    const rawKeys = [...raw.matchAll(/\bkey:\s*'([^']+)'/g)].map((m) => m[1]!)
+    expect(rawKeys.length, '连一个 key 都没扫到 ⇒ 判据量具坏了').toBeGreaterThan(40)
+    const lost = [...new Set(rawKeys)].filter((k) => !stripped.includes(`key: '${k}'`))
+    expect(
+      lost,
+      `剥注释后丢了 ${lost.length} 个席（说明 stripComments 把真实代码当注释删了）：\n  ${lost.join('\n  ')}`,
+    ).toEqual([])
+    // ★★ 再钉一条量级：剥完至少得保住三成以上。
+    //   旧的「先块后行」写法在 appNav.ts 上只剩 **19.8%**，必然踩线。
+    //
+    // ⚠️⚠️ 但要如实说清：**这条不是抓住那个缺陷的那条**。变异台 P04 实测 ——
+    //   把这个下限从 0.3 放宽到 0.05，在「剥离已改坏」的情况下 ⑤-1 **照样红**，
+    //   因为上面那条「席 key 一个都不能少」先抓住了。
+    // ⇒ 所以它防的是**另一种**失效（代码被删但恰好没删到任何 key），属次要防线，
+    //   **不要把它当成 ⑤-1 的主牙**。主牙是上面那条逐 key 比对。
+    expect(stripped.length / raw.length, '剥注释后剩下的代码量过少').toBeGreaterThan(0.3)
+  })
+
+  it('⑤-2 ★★★★★★ 席档位与路由 meta 的 requiresRole 必须一致', () => {
+    const nav = stripComments(readFileSync(join(WEB, 'src/config/appNav.ts'), 'utf8'))
+    const seats = seatEntries(nav)
+    expect(seats.size, '一个席都没解析出来 ⇒ 量具坏了（先看 ⑤-1）').toBeGreaterThan(40)
+
+    const router = stripComments(readFileSync(join(WEB, 'src/router/index.ts'), 'utf8'))
+    const routes = [...router.matchAll(ROUTE_DECL)].map((m) => ({ path: m[1]!, role: m[3]! }))
+    expect(routes.length).toBeGreaterThan(10)
+
+    const problems: string[] = []
+    for (const r of routes) {
+      const seat = seats.get(r.path)
+      if (!seat) {
+        problems.push(`${r.path}：路由声明了 requiresRole:'${r.role}'，但抽屉里没有这一席`)
+        continue
+      }
+      if ((seat.role ?? null) !== r.role) {
+        problems.push(`${r.path}：路由 requiresRole='${r.role}' vs 抽屉席 requiresRole='${seat.role ?? '(缺省)'}（席 key=${seat.key}）`)
+      }
+    }
+    expect(problems, `席与路由 meta 的档位对不上：\n  ${problems.join('\n  ')}`).toEqual([])
+  })
+
+  it('⑤-3 ★★★★★ ★★ 已知分歧：/sliding-window 的席比视图**严一档**（待属主拍板）', () => {
+    // ⚠️⚠️ 这一条**不是**「已确认的 bug」，而是**登记在案的待决分歧**。
+    //
+    //   席：  config/appNav.ts        requiresRole: 'super_admin'
+    //   视图：slidingWindowRoleIsPrivileged = ['super_admin','admin_key']
+    //   服务端：admin/handler.go:1475 `monitorH.RegisterMonitorRoutes(mux, h.admin)`
+    //          ⇒ h.admin = AdminMiddleware，**只认证不检 role** ⇒ 服务端**没有下限**
+    //
+    // ⇒ 所以 `admin_key` 深链进来时**服务端会放行**，页面**能用**，只是抽屉里没有入口。
+    //   这不是「深链裸奔」，而是**三处口径互不相同**。
+    //
+    // ⇒ ★★ 而抽屉席那条的**立档理由**写的是：
+    //   「任何通过认证的主体报出别的租户的 credential_id 就能读到逐次调用明细
+    //     ⇒ 连 tenant_admin 都必须挡」
+    //   按这句话的逻辑，`admin_key` 也**应该**被挡。
+    // ⇒ ★★⇒ **这是口径决策，不是技术修复**：要么席放宽到 admin 档，
+    //   要么视图收紧到只认 super_admin。**该由属主拍板，不该由本批偷偷改任一侧。**
+    //   ⇒ 在此之前，本条把它**显式登记**为已知分歧（而不是让它悄悄存在）。
+    //
+    // ★ 登记的方式是「钉住现状 + 钉住理由」：
+    //   下一个人想动它时，会先看到这段说明，而不是以为自己在修 bug。
+    const nav = stripComments(readFileSync(join(WEB, 'src/config/appNav.ts'), 'utf8'))
+    expect(seatEntries(nav).get('/sliding-window')?.role, '这一席的档位若已改，本条要重新拍板').toBe('super_admin')
+
+    const viewSrc = stripComments(readFileSync(join(WEB, 'src/views/SlidingWindowView.vue'), 'utf8'))
+    expect(
+      viewSrc,
+      '视图兜底若已改成只认 super_admin（口径已拍板），请连同本说明一起更新',
+    ).toMatch(/\bslidingWindowRoleIsPrivileged\(/)
+
+    // ★★★★★★★ **分歧的本体就在这里**，必须钉住角色集本身。
+    // ⚠️ 第一版只钉了上面那句「视图调用了 helper」，**结果登记是假的**：
+    //   变异台 P02 把 SLIDING_WINDOW_GLOBAL_ROLES 收紧成 ['super_admin']
+    //   （也就是真去把这个分歧解决掉），⑤-3 **一声不吭地绿了** ——
+    //   因为「视图还在调用那个 helper」在两种情况下都成立。
+    // ⇒ ⇒ **钉「分歧存在」要钉分歧的那一处值，不能钉调用点。**
+    const apiSrc = stripComments(readFileSync(join(WEB, 'src/api/slidingWindow.ts'), 'utf8'))
+    const set = apiSrc.match(/SLIDING_WINDOW_GLOBAL_ROLES\s*=\s*\[([^\]]*)\]/)?.[1] ?? ''
+    expect(
+      set,
+      '若 SLIDING_WINDOW_GLOBAL_ROLES 不再含 admin_key（分歧已解决），请连同本说明一起更新',
+    ).toContain('admin_key')
+
+    const h = goSrc('admin/handler.go')
+    expect(
+      h.match(/monitorH\.RegisterMonitorRoutes\(mux, h\.admin\)/),
+      '若注册处已不是 h.admin，「服务端无下限」这个前提失效，本条要重判',
+    ).toBeTruthy()
   })
 })
