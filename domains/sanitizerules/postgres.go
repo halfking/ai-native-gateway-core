@@ -118,7 +118,9 @@ func (s *PostgresStore) Publish(ctx context.Context, base int64, cfg Config, act
 	if links == nil {
 		encodedLinks = []byte("[]")
 	}
-	v, err := scanVersion(tx.QueryRowContext(ctx, `INSERT INTO sanitize_rule_versions(parent_id,rollback_of,config,actor,comment,review_links) VALUES($1,$2,$3,$4,$5,$6) RETURNING `+versionColumns, current, rollback, data, actor, comment, encodedLinks))
+	// Production uses pgx SimpleProtocol: []byte binds as bytea, not JSONB.
+	// String bindings also preserve JSON correctly under the extended protocol.
+	v, err := scanVersion(tx.QueryRowContext(ctx, `INSERT INTO sanitize_rule_versions(parent_id,rollback_of,config,actor,comment,review_links) VALUES($1,$2,$3,$4,$5,$6) RETURNING `+versionColumns, current, rollback, string(data), actor, comment, string(encodedLinks)))
 	if err != nil {
 		return Version{}, err
 	}

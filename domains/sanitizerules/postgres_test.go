@@ -2,7 +2,7 @@ package sanitizerules
 
 import (
 	"context"
-	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -12,7 +12,8 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 func TestPostgresDoesNotRunDDLAndSanitizesErrors(t *testing.T) {
@@ -32,15 +33,20 @@ func TestPostgresDoesNotRunDDLAndSanitizesErrors(t *testing.T) {
 	}
 }
 func integrationStore(t *testing.T) *PostgresStore {
+	return integrationStoreMode(t, pgx.QueryExecModeSimpleProtocol)
+}
+func integrationStoreMode(t *testing.T, mode pgx.QueryExecMode) *PostgresStore {
 	t.Helper()
 	dsn := os.Getenv("SANITIZE_RULES_TEST_DSN")
 	if dsn == "" {
 		t.Skip("SANITIZE_RULES_TEST_DSN unset; isolated PostgreSQL required")
 	}
-	db, err := sql.Open("pgx", dsn)
+	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg.DefaultQueryExecMode = mode
+	db := stdlib.OpenDB(*cfg)
 	t.Cleanup(func() { _ = db.Close() })
 	// This opt-in DSN MUST point to a disposable test database.
 	if _, err = db.Exec(`DROP TABLE IF EXISTS sanitize_rule_instances,sanitize_rule_events,sanitize_rule_head,sanitize_rule_versions CASCADE; DROP FUNCTION IF EXISTS sanitize_rule_immutable_version()`); err != nil {
@@ -50,6 +56,47 @@ func integrationStore(t *testing.T) *PostgresStore {
 		t.Fatal(err)
 	}
 	return NewPostgresStore(db)
+}
+func TestPostgresJSONVersionsAcrossQueryModes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mode pgx.QueryExecMode
+	}{{"production_simple", pgx.QueryExecModeSimpleProtocol}, {"extended", pgx.QueryExecModeCacheStatement}} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := integrationStoreMode(t, tc.mode)
+			cfg := testConfig()
+			cfg.Rules[0].Name = "规则 O'Reilly \\ JSON 中文"
+			m, err := NewManager(s, cfg, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := context.Background()
+			if err = m.Refresh(ctx); err != nil {
+				t.Fatal("baseline publication:", err)
+			}
+			initial := m.Current().Version
+			if initial < 1 {
+				t.Fatal("baseline not persisted")
+			}
+			next, err := s.Publish(ctx, initial, cfg, "admin", "query mode round trip", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rolled, err := m.Rollback(ctx, next.ID, initial, "admin", "restore baseline")
+			if err != nil {
+				t.Fatal(err)
+			}
+			current, err := s.Current(ctx)
+			if err != nil || current.ID != rolled.ID || current.RollbackOf != initial {
+				t.Fatal("rollback version:", current, err)
+			}
+			want, _ := json.Marshal(cfg)
+			got, _ := json.Marshal(current.Config)
+			if string(want) != string(got) {
+				t.Fatal("JSON policy changed across persistence")
+			}
+		})
+	}
 }
 func TestPostgresIntegrationVersionEventsAndManagers(t *testing.T) {
 	s := integrationStore(t)
