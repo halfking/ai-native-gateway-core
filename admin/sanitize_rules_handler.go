@@ -171,3 +171,132 @@ func (h *Handler) publishSanitizeRules(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, v)
 }
+func (h *Handler) listSanitizeRuleEvents(w http.ResponseWriter, r *http.Request) {
+	if !sanitizeRuleMethod(w, r, http.MethodGet) {
+		return
+	}
+	limit, ok := sanitizeRuleLimit(w, r)
+	if !ok {
+		return
+	}
+	f := sanitizerules.EventFilter{Status: r.URL.Query().Get("status"), Action: r.URL.Query().Get("action"), Limit: limit}
+	if IsTenantAdmin(r) {
+		f.TenantID = GetAuthContext(r).TenantID
+	}
+	if f.Status != "" && f.Status != "pending" && f.Status != "confirmed_sensitive" && f.Status != "false_positive" && f.Status != "ignored" {
+		writeError(w, 400, "invalid event status filter")
+		return
+	}
+	if f.Action != "" && f.Action != "mask" && f.Action != "block" && f.Action != "log" && f.Action != "exempted" && f.Action != "pending" {
+		writeError(w, 400, "invalid event action filter")
+		return
+	}
+	events, err := h.sanitizeRuleManager.Store().ListEvents(r.Context(), f)
+	if err != nil {
+		writeSanitizeRuleError(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"events": events})
+}
+func (h *Handler) reviewSanitizeRuleEvent(w http.ResponseWriter, r *http.Request) {
+	if !sanitizeRuleMethod(w, r, http.MethodPost) {
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, sanitizeRulesPath+"/events/")
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 || parts[1] != "review" {
+		writeError(w, 404, "sanitize rule endpoint not found")
+		return
+	}
+	id, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || id < 1 {
+		writeError(w, 400, "invalid event ID")
+		return
+	}
+	var req struct {
+		Status  string `json:"status"`
+		Comment string `json:"comment"`
+	}
+	if !decodeSanitizeRuleBody(w, r, &req) {
+		return
+	}
+	auth := GetAuthContext(r)
+	tenant := auth.TenantID
+	if IsSuperAdminOrLegacy(r) {
+		e, err := h.sanitizeRuleManager.Store().GetEvent(r.Context(), id)
+		if err != nil {
+			writeSanitizeRuleError(w, err)
+			return
+		}
+		tenant = e.TenantID
+	}
+	event, err := h.sanitizeRuleManager.Store().ReviewEvent(r.Context(), tenant, id, req.Status, sanitizeRuleActor(auth), req.Comment)
+	if err != nil {
+		writeSanitizeRuleError(w, err)
+		return
+	}
+	writeJSON(w, 200, event)
+}
+func sanitizeRuleActor(auth *AuthContext) string {
+	if auth.Username != "" {
+		return auth.Username
+	}
+	if auth.CanonicalUserID != "" {
+		return auth.CanonicalUserID
+	}
+	if auth.UserID > 0 {
+		return "user:" + strconv.Itoa(auth.UserID)
+	}
+	return "admin_key"
+}
+func sanitizeRuleMethod(w http.ResponseWriter, r *http.Request, method string) bool {
+	if r.Method == method {
+		return true
+	}
+	w.Header().Set("Allow", method)
+	writeError(w, 405, "method not allowed")
+	return false
+}
+func sanitizeRuleLimit(w http.ResponseWriter, r *http.Request) (int, bool) {
+	value := r.URL.Query().Get("limit")
+	if value == "" {
+		return 100, true
+	}
+	limit, err := strconv.Atoi(value)
+	if err != nil || limit < 1 || limit > 1000 {
+		writeError(w, 400, "limit must be within 1..1000")
+		return 0, false
+	}
+	return limit, true
+}
+func writeSanitizeRuleError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, sanitizerules.ErrInvalid):
+		writeError(w, 400, err.Error())
+	case errors.Is(err, sanitizerules.ErrConflict):
+		writeError(w, 409, "sanitize rule version changed; reload the current version")
+	case errors.Is(err, sanitizerules.ErrNotFound):
+		writeError(w, 404, "sanitize rule record not found")
+	default:
+		writeError(w, 503, "sanitize rule storage unavailable")
+	}
+}
+func decodeSanitizeRuleBody(w http.ResponseWriter, r *http.Request, dst any) bool {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 2<<20))
+	if err != nil || len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		writeError(w, 400, "invalid rule request body (maximum 2 MiB)")
+		return false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err = decoder.Decode(dst); err != nil {
+		writeError(w, 400, "invalid rule request body")
+		return false
+	}
+	var extra any
+	if err = decoder.Decode(&extra); err != io.EOF {
+		writeError(w, 400, "request must contain one JSON object")
+		return false
+	}
+	return true
+}
