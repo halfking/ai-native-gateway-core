@@ -217,7 +217,7 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 		if err != nil || result == nil {
 			return nil, fmt.Errorf("check stream lane %q: %w", lane, errOrMissingResult(err))
 		}
-		if result.Blocked {
+		if result.Blocked || state.redact && result.ToolShapeRedactionRequired {
 			metrics.OutputGateDecisionsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateActionBlock, metrics.OutputGatePathStreamLane).Inc()
 			// r1028 (2026-10-14, 154 incident): the lane block used to be
 			// completely silent — no log named the request, so every hit
@@ -225,6 +225,10 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 			// with the joined-lane shape; the payload preview stays off the
 			// log on purpose (blocked text may carry the very bytes the
 			// policy refuses to emit).
+			reasons := make([]string, 0, len(result.Issues))
+			for _, issue := range result.Issues {
+				reasons = append(reasons, issue.Subtype)
+			}
 			slog.Warn("output_compliance: blocked stream lane",
 				"request_id", meta.RequestID,
 				"session_id", meta.SessionID,
@@ -233,6 +237,7 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 				"label", label,
 				"lane_bytes", len(original),
 				"issues", len(result.Issues),
+				"reason_codes", reasons,
 			)
 			return nil, errors.New("output policy blocked stream lane")
 		}
@@ -483,7 +488,7 @@ func (it *OutputComplianceInterceptor) inspectSSEFrame(ctx context.Context, fram
 		if err != nil || result == nil {
 			return nil, errOrMissingResult(err)
 		}
-		if result.Blocked {
+		if result.Blocked || shouldRedact && result.ToolShapeRedactionRequired {
 			metrics.OutputGateDecisionsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateActionBlock, metrics.OutputGatePathStreamEvent).Inc()
 			slog.Warn("output_compliance: blocked stream event",
 				"request_id", meta.RequestID,

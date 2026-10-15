@@ -135,7 +135,7 @@ func sensitiveTypeForPattern(category, name string) SensitiveType {
 		return TypeEmail
 	case "bank_card":
 		return TypeCreditCard
-	case "account":
+	case "account", "credential_pair_account":
 		return TypeAccount
 	case "server_ip", "server_ipv6":
 		return TypeServerIP

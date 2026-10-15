@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/internal/credentialtext"
 )
 
 // Checker 输出合规检查器
@@ -113,6 +115,9 @@ type ComplianceResult struct {
 	Issues         []ComplianceIssue `json:"issues"`
 	RedactedOutput string            `json:"redacted_output"`
 	Blocked        bool              `json:"blocked"`
+	// ToolShapeRedactionRequired means redaction would change a JSON key/type.
+	// The hook blocks it only when caller/owner policy actually requires redaction.
+	ToolShapeRedactionRequired bool `json:"-"`
 }
 
 // ComplianceIssue 合规问题
@@ -569,7 +574,11 @@ func (c *Checker) detectSecrets(output string, policy *Policy) []ComplianceIssue
 		if err != nil {
 			continue
 		}
-		matches := re.FindAllStringIndex(output, -1)
+		scan := output
+		if p.patternType == "password" {
+			scan = credentialtext.DetectionText(output)
+		}
+		matches := re.FindAllStringIndex(scan, -1)
 		for _, match := range matches {
 			start, end := match[0], match[1]
 			issues = append(issues, ComplianceIssue{
