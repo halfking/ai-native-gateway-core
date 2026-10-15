@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-10-15T10:38:47.714Z",
+  "exported_at": "2026-10-15T16:35:35.464Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -320,6 +320,14 @@
       "label": "数据运维",
       "labelKey": "nav.group.dataOps",
       "items": [
+        {
+          "path": "/admin/sanitize-rules",
+          "label": "Sensitive information rules",
+          "labelKey": "sanitizeRules.title",
+          "icon": "🔒",
+          "tenantScope": "*",
+          "pluginScope": "*"
+        },
         {
           "path": "/admin/settings",
           "label": "系统设置",
