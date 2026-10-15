@@ -36,6 +36,17 @@ func TestDurableSnapshotV1RoundTripAndSensitiveFieldsExcluded(t *testing.T) {
 	}
 }
 
+func TestDurableSnapshotV1LegacyPayloadDefaultsToNonStream(t *testing.T) {
+	legacy := `{"version":1,"endpoint":"/v1/chat/completions","client_protocol":"openai-chat","client_model":"gpt-x","normalized_body":{"model":"gpt-x"},"request_hash":"hash","api_key_id":7,"tenant_id":"tenant-a","application_id":3,"session_id":"sess-a","session_source":"real","client_identity_hash":"client-hash","policy_version":"p1","request_id":"req-a","task_correlation_id":"task-a"}`
+	got, err := UnmarshalDurableSnapshotV1([]byte(legacy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Stream {
+		t.Fatal("legacy snapshot without stream must remain non-stream")
+	}
+}
+
 func TestDurableSnapshotV1RejectsUnknownVersionAndMissingRequired(t *testing.T) {
 	cases := []DurableRequestSnapshotV1{
 		func() DurableRequestSnapshotV1 { s := validSnapshot(); s.Version = 2; return s }(),

@@ -217,6 +217,7 @@ type resolveCandidate struct {
 	BlockReason           string   `json:"block_reason,omitempty"`
 	ManualPriority        int      `json:"manual_priority"`
 	Priority              bool     `json:"priority"`
+	StreamMode            string   `json:"stream_mode"`
 	ActiveSessions        int      `json:"active_sessions"`
 	// R7 fix: 前端将基于这个字段判断 show 重置计数按钮，
 	// 而 resolve 操作的是 credentials.consecutive_failures。
@@ -340,6 +341,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				COALESCE(cmb.weight, 100) AS weight,
 				COALESCE(cmb.manual_priority, 99) AS manual_priority,
 				COALESCE(cmb.priority, FALSE) AS priority,
+				COALESCE(cmb.stream_mode, 'both') AS stream_mode,
 				COALESCE(cmb.active_sessions, 0) AS active_sessions,
 				COALESCE(cmb.billing_mode, 'per_token') AS billing_mode,
 				mo.unit_price_in_per_1m,
@@ -433,7 +435,8 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			&c.QuotaState, &c.QuotaRecoverAt, &c.ConcurrencyLimit, &c.EffectiveConcurrency,
 			&c.EffectiveAt, &c.ExpiresAt, &c.CredentialInEffect, &c.BalanceUSD,
 			&c.Tier, &c.Weight,
-			&c.ManualPriority, &c.Priority, &c.ActiveSessions, &c.BillingMode,
+			&c.ManualPriority, &c.Priority, &c.StreamMode, &c.ActiveSessions, &c.BillingMode,
+
 			&c.UnitPriceInPer1M, &c.UnitPriceOutPer1M, &c.Currency,
 			&c.ModelName, &c.StandardizedName, &c.CanonicalID,
 			&c.QuotaCapUSD, &c.QuotaUsedUSD,
@@ -781,17 +784,18 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 	}
 
 	var req struct {
-		ManualPriority *int  `json:"manual_priority"`
-		RoutingTier    *int  `json:"routing_tier"`
-		Weight         *int  `json:"weight"`
-		Priority       *bool `json:"priority"`
+		ManualPriority *int    `json:"manual_priority"`
+		RoutingTier    *int    `json:"routing_tier"`
+		Weight         *int    `json:"weight"`
+		Priority       *bool   `json:"priority"`
+		StreamMode     *string `json:"stream_mode"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if req.ManualPriority == nil && req.RoutingTier == nil && req.Weight == nil && req.Priority == nil {
-		writeError(w, http.StatusBadRequest, "at least one of manual_priority / routing_tier / weight / priority required")
+	if req.ManualPriority == nil && req.RoutingTier == nil && req.Weight == nil && req.Priority == nil && req.StreamMode == nil {
+		writeError(w, http.StatusBadRequest, "at least one of manual_priority / routing_tier / weight / priority / stream_mode required")
 		return
 	}
 	if req.RoutingTier != nil && (*req.RoutingTier < 0 || *req.RoutingTier > 9) {
@@ -805,6 +809,14 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 	if req.ManualPriority != nil && (*req.ManualPriority < 0 || *req.ManualPriority > 99) {
 		writeError(w, http.StatusBadRequest, "manual_priority must be in [0,99]")
 		return
+	}
+	if req.StreamMode != nil {
+		mode, err := provider.ParseStreamMode(*req.StreamMode)
+		if err != nil || *req.StreamMode == "" || string(mode) != *req.StreamMode {
+			writeError(w, http.StatusBadRequest, "stream_mode must be one of both, stream_only, non_stream_only")
+			return
+		}
+		*req.StreamMode = string(mode)
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -841,9 +853,10 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 			routing_tier    = COALESCE($2::int, routing_tier),
 			weight          = COALESCE($3::int, weight),
 			priority        = COALESCE($4::boolean, priority),
+			stream_mode     = COALESCE($5::text, stream_mode),
 			updated_at      = NOW()
-		WHERE id = $5
-	`, req.ManualPriority, req.RoutingTier, req.Weight, req.Priority, bindingID); err != nil {
+		WHERE id = $6
+	`, req.ManualPriority, req.RoutingTier, req.Weight, req.Priority, req.StreamMode, bindingID); err != nil {
 		writeInternalErr(w, "update failed", err)
 		return
 	}
@@ -890,6 +903,7 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 		"routing_tier":    req.RoutingTier,
 		"weight":          req.Weight,
 		"priority":        req.Priority,
+		"stream_mode":     req.StreamMode,
 	}
 	h.logAudit(r, "routing_candidate_binding_update", beforeAfter)
 

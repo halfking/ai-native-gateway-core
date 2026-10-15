@@ -1074,8 +1074,12 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 867（2026-10-16）：session_summaries (last_request_at DESC,
 			// session_key DESC) 部分索引 —— 在线会话超管路径无租户前导，
 			// tenant_time 只能整扫（252 冷缓存 >5s）。已建则整段跳过、不拿锁。
-			"867_session_summaries_last_request_at_idx.sql",
-		},
+				"867_session_summaries_last_request_at_idx.sql",
+				// 868: binding-scoped client transport policy; existing bindings
+				// default to both, while Vapeur Claude is non-stream-only.
+				"868_credential_model_stream_mode.sql",
+			},
+
 	}
 }
 

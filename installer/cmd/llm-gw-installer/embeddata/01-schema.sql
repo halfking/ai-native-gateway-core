@@ -6179,7 +6179,9 @@ CREATE TABLE public.credential_model_bindings (
     plan_type_origin text,
     plan_type_updated_at timestamp with time zone,
     context_window_override integer,
-    priority boolean DEFAULT false NOT NULL
+    priority boolean DEFAULT false NOT NULL,
+    stream_mode text DEFAULT 'both'::text NOT NULL,
+    CONSTRAINT credential_model_bindings_stream_mode_check CHECK ((stream_mode = ANY (ARRAY['both'::text, 'stream_only'::text, 'non_stream_only'::text])))
 );
 
 
