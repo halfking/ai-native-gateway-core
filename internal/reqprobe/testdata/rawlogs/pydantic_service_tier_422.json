@@ -1,0 +1,17 @@
+{
+  "source_raw_log": "raw_data_20261013_222345.441381000_1791930225441381000.jsonl",
+  "request_id": "89b4a272c7d4ba6b299b16e179b50c64",
+  "direction": "upstream_response",
+  "protocol": "openai-completions",
+  "body": {
+    "error": {
+      "message": "Validation error",
+      "type": "pydantic",
+      "code": "extra_forbidden",
+      "loc": [
+        "body",
+        "service_tier"
+      ]
+    }
+  }
+}

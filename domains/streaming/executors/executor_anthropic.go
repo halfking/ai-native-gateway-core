@@ -718,14 +718,41 @@ func (e *Executor) finalizeAnthropicRequestBody(params *ExecParams, cand provide
 	}
 	bodyBytes = e.applyParamguardLedger(params, bodyBytes, paramreg.DialectAnthropic)
 	// P0-B：Anthropic 出站腿接入同一 reqprobe 学后剔除 choke point。
-	// 剥参重试仍不在本执行器自动尝试（Q4 直传体中途改写会破坏字节契约，
-	// 见下方 RecordTerminal 注释）——但「已学字段」必须在首发前剥掉，
-	// 否则 chat 腿学到的可选字段在 anthropic 腿仍每请求吃一次 400。
+	// 同候选剥参重试刻意关闭（见 anthropicSameCandidateStripRetry）——但
+	// 「已学字段」必须在首发前剥掉，否则 chat 腿学到的可选字段在 anthropic
+	// 腿仍每请求吃一次 400。
 	requestID := ""
 	if params != nil {
 		requestID = params.RequestID
 	}
 	return e.reqprobeApplyLearned(bodyBytes, cand, requestID)
+}
+
+// anthropicSameCandidateStripRetry 是 P0-B 写死契约：Anthropic 执行器
+// **不做**同候选剥参重试。Q4 直传体中途改写会破坏字节契约（client→upstream
+// 原样转发）；学习仍经 finalizeAnthropicRequestBody → reqprobeApplyLearned
+// 在首发前生效。Chat/OpenAI 腿保留剥参重试。改此常量必须同步审计差额表。
+const anthropicSameCandidateStripRetry = false
+
+// anthropicStripRetryFingerprint 钉进 rodata，供部署后指纹扫描
+// （scripts/observe-magpie-p0-postdeploy.sh）。const 标识符本身不进二进制。
+const anthropicStripRetryFingerprint = "anthropicSameCandidateStripRetry=false"
+
+// anthropicStripRetryFingerprintLive is assigned in init so the linker cannot
+// DCE the fingerprint string (a discarded `_ = marker()` call is optimized away).
+var anthropicStripRetryFingerprintLive string
+
+func init() {
+	if anthropicSameCandidateStripRetry {
+		anthropicStripRetryFingerprintLive = "anthropicSameCandidateStripRetry=true"
+		return
+	}
+	anthropicStripRetryFingerprintLive = anthropicStripRetryFingerprint
+}
+
+// anthropicStripRetryContractMarker exposes the live fingerprint for tests.
+func anthropicStripRetryContractMarker() string {
+	return anthropicStripRetryFingerprintLive
 }
 
 // executeAnthropic is the Q3/Q4 (anthropic-messages upstream) path of

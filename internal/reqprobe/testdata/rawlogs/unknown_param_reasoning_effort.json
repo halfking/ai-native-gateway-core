@@ -1,0 +1,12 @@
+{
+  "source_raw_log": "raw_data_20261013_222345.441381000_1791930225441381000.jsonl",
+  "request_id": "20c3ea93ca25bf10cb54073200b4a88d",
+  "direction": "upstream_response",
+  "protocol": "openai-completions",
+  "body": {
+    "error": {
+      "message": "Unknown parameter: 'reasoning_effort'.",
+      "type": "invalid_request_error"
+    }
+  }
+}

@@ -195,25 +195,45 @@ func jsonErrorMessages(body []byte) []string {
 }
 
 // extractPydanticForbiddenField 从 FastAPI/pydantic 422 体提取被拒字段名。
-// 形态：{"detail":[{"type":"extra_forbidden","loc":["body","service_tier"],...}]}
-// loc 末段字符串为字段名；优先返回出站体顶层确实存在的键。
+// 两形态（raw-logs 实证）：
+//  1. {"detail":[{"type":"extra_forbidden","loc":["body","service_tier"],...}]}
+//  2. {"error":{"type":"pydantic","code":"extra_forbidden","loc":["body","service_tier"],...}}
+//     （本仓 mock-p0 / 部分中转把 detail 收成 error 对象——2026-10-14 raw-logs
+//     rid=89b4a272… 实测）。loc 末段字符串为字段名；优先返回出站体顶层键。
 func extractPydanticForbiddenField(body []byte, outbound map[string]json.RawMessage) string {
 	if len(body) == 0 {
 		return ""
 	}
-	var parsed struct {
-		Detail []struct {
-			Type string `json:"type"`
-			Loc  []any  `json:"loc"`
-		} `json:"detail"`
+	type locItem struct {
+		Type string `json:"type"`
+		Code string `json:"code"`
+		Loc  []any  `json:"loc"`
 	}
-	if err := json.Unmarshal(body, &parsed); err != nil || len(parsed.Detail) == 0 {
+	var parsed struct {
+		Detail []locItem `json:"detail"`
+		Error  *locItem  `json:"error"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return ""
+	}
+	items := parsed.Detail
+	if parsed.Error != nil {
+		items = append(items, *parsed.Error)
+	}
+	if len(items) == 0 {
 		return ""
 	}
 	var first string
-	for _, item := range parsed.Detail {
+	for _, item := range items {
 		typ := strings.ToLower(strings.TrimSpace(item.Type))
-		if typ != "" && typ != "extra_forbidden" && typ != "unexpected_keyword_argument" {
+		code := strings.ToLower(strings.TrimSpace(item.Code))
+		// detail[] 用 type=extra_forbidden；error 对象常用 type=pydantic + code=extra_forbidden。
+		okType := typ == "" || typ == "extra_forbidden" || typ == "unexpected_keyword_argument" || typ == "pydantic"
+		okCode := code == "" || code == "extra_forbidden" || code == "unexpected_keyword_argument"
+		if !okType || !okCode {
+			continue
+		}
+		if typ == "pydantic" && code != "extra_forbidden" && code != "unexpected_keyword_argument" && code != "" {
 			continue
 		}
 		field := ""

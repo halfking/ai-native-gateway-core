@@ -1,0 +1,33 @@
+{
+  "captured_at": "2026-10-14T23:28:30+08:00",
+  "host": "154",
+  "release": "2637-6db2d18e",
+  "active_port": 8781,
+  "bin": "/opt/llm-gateway-go/current/llm-gateway-go",
+  "note": "post-deploy after MAGPIE_P0_DEPLOY_AUTH=1; dirty-tree build (WIP P0-B/C/D in binary; version SHA=origin/main HEAD). Do NOT claim W2/E2 全绿 — quiet window.",
+  "fingerprints": {
+    "probeOne single-flight": true,
+    "llmgw:probe_one:": true,
+    "anthropicSameCandidateStripRetry=false": true,
+    "retry_after_seconds": true,
+    "applyQuotaHeldHTTPHeaders": true,
+    "executor: quotaHeld": true
+  },
+  "canary_unit": "llm-gateway-go-canary@8781.service",
+  "canary_log": "/opt/llm-gateway-go/logs/gateway-canary-8781.log",
+  "counts_window_note": "fresh canary-8781 log after cutover; ProbeSync/quotaHeld/client_bug=0 (no outage traffic yet)",
+  "counts": {
+    "ProbeSync": 0,
+    "probeOne single-flight": 0,
+    "quotaHeld": 0,
+    "client_bug": 0,
+    "retry_after_seconds": 0,
+    "paramrefusal_or_learned_strips": 322
+  },
+  "baseline_compare": {
+    "probeOne single-flight": "CHANGED false→true",
+    "llmgw:probe_one:": "CHANGED false→true",
+    "anthropicSameCandidateStripRetry=false": "CHANGED false→true"
+  },
+  "manual_still_required": ["W2 full-outage ratio", "E2 json-word breaker", "survival terminal frame e2e"]
+}
