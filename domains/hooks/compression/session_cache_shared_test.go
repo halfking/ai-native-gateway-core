@@ -4,15 +4,16 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/alicebob/miniredis/v2"
-	"github.com/redis/go-redis/v9"
-	"github.com/stretchr/testify/require"
 	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
 )
 
 // sharedTestRedis runs the actual Lua against miniredis. Its fault controls
