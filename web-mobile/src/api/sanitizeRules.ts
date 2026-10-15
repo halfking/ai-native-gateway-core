@@ -4,6 +4,8 @@ import { req, type RequestOptions } from './client'
 // 权限依据：admin/sanitize_rules_handler.go:32-38；验证仅管理员，tenant_admin 有租户时可读/复核事件。
 // 验证依据：admin/sanitize_rules_handler.go:54-67、284-301；RE2/规则语义交给服务端 Compile。
 // 复核依据：admin/sanitize_rules_handler.go:201-238、284-301；tenant/reviewer 由服务端决定，禁止透传。
+// 发布/回滚依据：admin/sanitize_rules_handler.go:68-91、131-173、260-270；manager.go:164-199；仅 super_admin/admin_key。
+// publish: base_version>0、comment非空≤2000字节、review_event_ids正整数且≤100去重；rollback: target>0、comment非空≤2000字节。
 // 两种 Store 的列表均初始化为 []；Compile 拒绝 nil/empty rules，不能把坏响应伪装成空集。
 // current/实例可能仍用本地 fallback 的版本 0，历史记录的 id 则必须为正值。
 
@@ -54,6 +56,7 @@ export interface SanitizeRuleVersion {
   comment: string
   created_at: string
   review_links?: { id: number; tenant_id: string }[]
+  config_digest?: string
 }
 
 export interface SanitizeRuleEvent {
@@ -214,6 +217,68 @@ export async function validateSanitizeRules(
   if (!object(value) || value.valid !== true || typeof value.config_digest !== 'string'
     || value.config_digest.length !== 64 || !/^[0-9a-f]{64}$/.test(value.config_digest)) throw new Error('sanitizeRules.invalidResponse')
   return value as { valid: true; config_digest: string }
+}
+
+// 仅 publish/rollback 请求体严格限定 JSON 键；GET 响应的扩展字段行为保持不变。
+// domains/sanitizerules/types.go:18-41、manager.go:164-199
+const isString: Check = (value) => typeof value === 'string'
+const isComment: Check = (value) => isString(value) && (value as string).trim() !== '' && new TextEncoder().encode(value as string).length <= 2000
+const isPublishBody: Check = (value) => {
+  if (!object(value)) return false
+  const row = value as Row
+  if (!positive(row.base_version) || !isDraft(row.config) || !isComment(row.comment)) return false
+  if (Object.prototype.hasOwnProperty.call(row, 'review_event_ids') && !isReviewEvents(row.review_event_ids)) return false
+  if (!onlyKeys(row, ['base_version', 'config', 'comment', 'review_event_ids'])) return false
+  return true
+}
+const isRollbackBody: Check = (value) => {
+  if (!object(value)) return false
+  const row = value as Row
+  if (!positive(row.base_version) || !positive(row.target_version) || !isComment(row.comment)) return false
+  return onlyKeys(row, ['base_version', 'target_version', 'comment'])
+}
+const isReviewEvents: Check = (value) => {
+  if (!Array.isArray(value) || value.length > 100) return false
+  const seen = new Set<number>()
+  for (const id of value) {
+    if (!positive(id) || seen.has(id)) return false
+    seen.add(id)
+  }
+  return true
+}
+
+async function writeVersion(path: string, body: unknown, check: (value: unknown) => boolean, options?: RequestOptions): Promise<SanitizeRuleVersion> {
+  let snapshot: unknown
+  try {
+    if (!check(body)) throw new Error('invalid publish body')
+    snapshot = JSON.parse(JSON.stringify(body))
+    if (!check(snapshot)) throw new Error('invalid serialized body')
+  } catch {
+    throw new Error('sanitizeRules.invalidPublish')
+  }
+  let value: unknown
+  try {
+    value = await req<unknown>('POST', path, snapshot, options)
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new Error('sanitizeRules.invalidResponse')
+    throw error
+  }
+  if (!isVersion(value) || !object(value) || !nonnegative((value as Row).parent_id)) throw new Error('sanitizeRules.invalidResponse')
+  return value as unknown as SanitizeRuleVersion
+}
+
+export function publishSanitizeRules(
+  body: { base_version: number; config: SanitizeRuleConfig; comment: string; review_event_ids?: number[] },
+  options?: RequestOptions,
+): Promise<SanitizeRuleVersion> {
+  return writeVersion(`${root}/publish`, body, isPublishBody as Check, options)
+}
+
+export function rollbackSanitizeRules(
+  body: { base_version: number; target_version: number; comment: string },
+  options?: RequestOptions,
+): Promise<SanitizeRuleVersion> {
+  return writeVersion(`${root}/rollback`, body, isRollbackBody as Check, options)
 }
 
 export async function reviewSanitizeRuleEvent(

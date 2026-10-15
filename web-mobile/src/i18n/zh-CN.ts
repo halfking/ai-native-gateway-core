@@ -4745,6 +4745,8 @@ sctx: {
     readonlyManager: '本页可查看规则、命中事件、版本与实例，复核事件并编辑验证规则草稿。发布和回滚请使用桌面端。',
     draftTitle: '规则草稿', draftNote: 'JSON草稿只保存在当前页面，离开或切换身份会丢弃。验证会发送到服务端，但不会发布规则。RE2正则与样本语义以服务端校验为准。',
     copyCurrent: '复制当前规则', draftJson: '草稿JSON', validateDraft: '服务端验证', clearDraft: '清空草稿', invalidDraft: '草稿JSON、字段结构或大小无效（请求最多2MiB）。', draftValidated: '此份草稿已通过服务端验证，尚未发布：',
+    publishDraft: '发布草稿', publishComment: '发布说明（必填，最多2000 UTF-8字节）', publishConfirmNote: '确认将以下说明作为新版本提交：当前 base', invalidPublishComment: '发布说明不能为空，且不能超过2000 UTF-8字节。', invalidPublish: '发布请求无效（参数、版本冲突或服务端校验未通过）。', publishSaved: '已发布；当前规则已切换到新版本，草稿已清空。',
+    rollback: '回滚到此版本', rollbackComment: '回滚说明（必填，最多2000 UTF-8字节）', rollbackConfirmNote: '确认把以下说明作为从当前 base 回滚到 v', rollbackSaved: '已回滚；当前规则已切换到回滚目标版本。',
     review: '复核事件', reviewComment: '复核评论（最多2000 UTF-8字节）', reviewNote: '请选择复核结论。评论会持久保存，请勿填写密钥或敏感原文。',
     confirmedSensitive: '确认敏感', falsePositive: '误报', ignored: '忽略', reviewConfirm: '确认保存此事件的复核结论：',
     invalidReview: '复核状态无效，或评论超过2000 UTF-8字节。', reviewSaved: '复核已保存；当前列表保留该事件，重新读取后应用筛选条件。',

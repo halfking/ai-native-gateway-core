@@ -20604,3 +20604,27 @@ sanitizeRules.ts 新增 validateSanitizeRules，仅 POST {config}。运行时 is
 最终顺序链 rc0：6 spec 507、npx vue-tsc -b --force 强制重建、CSS/touch/i18n/comment 四门（两语种各 3887 键，键集一致且非空）、gate:selftest 11+11+39+15+5=81、build、全量、十连跑。每轮全量与十连跑读数、失败/快照数、变异 JSON 与结果摘要均落在 .audit146，未纳入产品提交。七产品文件无 U+FFFD/NUL，Go 差异为空。共享依赖缓存不删除，不称冷类型检查。
 
 历史 ComplianceHitsView/ RoutingOptView flaky 未复现不等于已修复；live HTTP、真实浏览器/原生壳或深链标题端到端未单独验证。client 跨 realm DOMException AbortError 仍按 network_error 处理，页面靠 signal/generation 隔离。提交推送仍需精确最终 SHA 独立审查、最新 fetch 及远端包含关系，本节检查通过不代表上线。
+
+## 11.184 第一百四十七批：脱敏规则发布与回滚写侧接入移动端
+
+### 一、交付与权限边界
+
+本批在已有 /sanitize-rules 抽屉下复制发布（POST /api/admin/sanitize-rules/publish）与回滚（POST /api/admin/sanitize-rules/rollback）两个写侧。批146提交 4598563b465f950722ee2227acc39093666fdac3 已推送，fetch 后 origin/main 仍为该提交，本批从该父节点建立独立 /tmp/co147-wt。事件复核、四 GET、草稿验证在批144/145/146已完成；参数写侧仍未复制，不称全功能完成。
+
+逐端点取证：admin/sanitize_rules_handler.go:32-38 仅 super_admin/admin_key；:68-91 回滚；:131-173 发布；:260-270 limit；:284-301 body 上限 2MiB、严格一个 JSON、拒绝未知字段。domains/sanitizerules/manager.go:164-199 Publish/Rollback 同样要求 base>0、Compile 通过、actor 取自认证上下文。SanitizeRuleVersion JSON 形状唯一真值仍是 types.go:18-41。前端不导出私有的「已验证草稿→发布」 helper，发布与回滚是两条独立公开 API。
+
+### 二、API 与可达交互
+
+sanitizeRules.ts 新增 publishSanitizeRules、rollbackSanitizeRules。运行时 isPublishBody 严格限定 base>0 安全整数、config 通过 isDraft（同草稿验证）、comment 经 isComment 拒绝空/全空格且 UTF-8 字节 ≤2000、review_event_ids 仅在 hasOwnProperty 时通过 isReviewEvents（去重且 ≤100 正整数）；isRollbackBody 严格限定 base>0/target>0 安全整数与 isComment。共享 writeVersion 在调用前后两次结构检查，确保自定义 toJSON 不能绕过；序列化独立 snapshot，传输中脱离调用方。响应需 isVersion 完整形状，SyntaxError 映射 invalidResponse，4xx/5xx 沿用 client。
+
+视图 draft 卡下方加发布卡：必须已通过验证且评论非空→prepare 进入 confirm 锁定输入→submit POST，写 current.value 为新版本、清空草稿与表单。版本卡加回滚卡：选择 target_version→prepare 锁定→submit POST，写 current.value 为目标版本、成功后清表单保留 success。回滚成功后 success 显示在卡外（避免重开时被外层 v-if 隐藏）。发布与回滚期间禁用互相按钮、禁用四 GET 刷新、禁用角色/账号/租户切换以外的写侧；身份或卸载变化立即 abort 在途请求，乐观守卫让迟到成功不污染新身份。
+
+### 三、判据、返工与限制
+
+新增发布/回滚 API 测试 47+27 共 74 条，视图写侧 30 条；批146的 508 条保持不变，9 spec 653 通过。API 覆盖请求白名单与 options/快照/合法字段与调用方可变不改变 payload/未知键拒绝/显式 undefined/review_event_ids 去重且 ≤100/UTF-8 2MiB 边界/响应 version 完整与 id/parent_id 不一致/HTTP/取消/非法 JSON。视图覆盖三权限可达、复制与确认隔离、确认冻结、UTF-8 字节拒绝、失败保留评论与草稿/版本、回滚目标必须已发布、并发锁、刷新隔离、四种身份/卸载变化取消。5/5 严格变异 RED_HIT：config 校验、review_event_ids 校验、isReviewEvents 恒真、base_version 校验、坏响应拦截。
+
+最终顺序链 rc0：9 spec 653、npx vue-tsc -b --force 强制重建、CSS/touch/i18n/comment 四门（两语种各 3897 键，键集一致且非空）、gate:selftest 11+11+39+15+5=81、build、全量、十连跑。每轮全量与十连跑读数、失败/快照数、变异 JSON 与结果摘要均落在 .audit147，未纳入产品提交。八产品文件无 U+FFFD/NUL，Go 差异为空。共享依赖缓存不删除，不称冷类型检查。
+
+多轮变异 M05–M07 0 红：视图守卫"未验证草稿不能发布"被乐观守卫（trim 已能挡空评论）和 UI 按钮 disabled 一起承担，绕开 isComment 字节检查后仍被 prepare 拦截；M05 在 API 侧把 isVersion 调用改写为 if (false) 后 18 条"坏响应"测试全红，证明版本校验守卫能击中。有限 5 种变异命中不证明所有退化都可检出。
+
+历史 ComplianceHitsView/ RoutingOptView flaky 未复现不等于已修复；live HTTP、真实浏览器/原生壳或深链标题端到端未单独验证。client 跨 realm DOMException AbortError 仍按 network_error 处理，页面靠 signal/generation 隔离。提交推送仍需精确最终 SHA 独立审查、最新 fetch 及远端包含关系，本节检查通过不代表上线。

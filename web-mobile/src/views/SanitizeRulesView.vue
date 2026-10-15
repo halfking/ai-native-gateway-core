@@ -7,7 +7,7 @@ import { t } from '@/i18n'
 import { useAuthStore } from '@/stores/auth'
 import {
   fetchSanitizeRulesCurrent, fetchSanitizeRuleEvents, fetchSanitizeRuleVersions, fetchSanitizeRuleInstances,
-  sanitizeRulesCanManage, sanitizeRulesCanReadEvents, reviewSanitizeRuleEvent, validateSanitizeRules,
+  sanitizeRulesCanManage, sanitizeRulesCanReadEvents, reviewSanitizeRuleEvent, validateSanitizeRules, publishSanitizeRules, rollbackSanitizeRules,
   type SanitizeRuleCurrent, type SanitizeRuleEvent, type SanitizeRuleVersion, type SanitizeRuleInstance, type SanitizeRuleConfig,
 } from '@/api/sanitizeRules'
 
@@ -57,6 +57,80 @@ async function validateDraft() {
     }
   } finally { if (live()) { validating.value = false; validateRequest = null } }
 }
+
+const publishComment = ref(''), publishConfirm = ref(false), publishing = ref(false), publishError = ref(''), publishSuccess = ref('')
+let publishRequest: AbortController | null = null
+const rollbackTargetID = ref<number | null>(null), rollbackComment = ref(''), rollbackConfirm = ref(false), rollingBack = ref(false), rollbackError = ref(''), rollbackSuccess = ref('')
+let rollbackRequest: AbortController | null = null
+function resetPublish() { publishRequest?.abort(); publishRequest = null; publishComment.value = ''; publishConfirm.value = false; publishing.value = false; publishError.value = ''; publishSuccess.value = '' }
+function resetRollback() { rollbackRequest?.abort(); rollbackRequest = null; rollbackTargetID.value = null; rollbackComment.value = ''; rollbackConfirm.value = false; rollingBack.value = false; rollbackError.value = ''; rollbackSuccess.value = '' }
+function openRollback(id: number) {
+  if (!manager.value || rollingBack.value || publishing.value || !versions.value?.some(v => v.id === id)) return
+  resetRollback(); rollbackTargetID.value = id
+}
+function cancelRollback() { resetRollback() }
+function preparePublish() {
+  if (!manager.value || !current.value || publishing.value || rollingBack.value || !draftValid.value) return
+  publishError.value = ''
+  if (new TextEncoder().encode(publishComment.value.trim()).length === 0 || new TextEncoder().encode(publishComment.value).length > 2000) {
+    publishError.value = t('sr.invalidPublishComment'); return
+  }
+  publishConfirm.value = true
+}
+function prepareRollback() {
+  if (!manager.value || rollingBack.value || publishing.value || rollbackTargetID.value === null || !current.value) return
+  rollbackError.value = ''
+  if (new TextEncoder().encode(rollbackComment.value.trim()).length === 0 || new TextEncoder().encode(rollbackComment.value).length > 2000) {
+    rollbackError.value = t('sr.invalidPublishComment'); return
+  }
+  rollbackConfirm.value = true
+}
+async function submitPublish() {
+  if (!manager.value || !publishConfirm.value || publishing.value || !current.value) return
+  const epoch = generation, request = new AbortController(); publishRequest = request; publishing.value = true; publishError.value = ''; publishSuccess.value = ''
+  const text = draft.value, digest = validatedDigest.value
+  const live = () => !disposed && epoch === generation && draft.value === text && validatedDigest.value === digest && !request.signal.aborted
+  try {
+    let config: SanitizeRuleConfig
+    try { config = JSON.parse(text) } catch { if (live()) publishError.value = t('sr.invalidDraft'); return }
+    const result = await publishSanitizeRules({ base_version: current.value.version, config, comment: publishComment.value }, { signal: request.signal })
+    if (live()) {
+      current.value = { version: result.id, config: result.config, config_digest: digest, status: current.value.status }
+      resetPublish(); clearDraft(); publishSuccess.value = t('sr.publishSaved')
+      void load('versions'); void load('instances'); void load('events')
+    }
+  } catch (e) {
+    if (live()) {
+      const message = e instanceof Error ? e.message : ''
+      publishError.value = message === 'sanitizeRules.invalidPublish' ? t('sr.invalidPublish') : message === 'sanitizeRules.invalidResponse' ? t('sr.invalidResponse') : message || t('sr.requestFailed')
+      publishConfirm.value = false
+    }
+  } finally { if (live()) { publishing.value = false; publishRequest = null } }
+}
+async function submitRollback() {
+  if (!manager.value || !rollbackConfirm.value || rollingBack.value || rollbackTargetID.value === null || !current.value) return
+  const epoch = generation, request = new AbortController(); rollbackRequest = request; rollingBack.value = true; rollbackError.value = ''; rollbackSuccess.value = ''
+  const id = rollbackTargetID.value, base = current.value.version
+  const live = () => !disposed && epoch === generation && current.value?.version === base && !request.signal.aborted
+  try {
+    const result = await rollbackSanitizeRules({ base_version: base, target_version: id, comment: rollbackComment.value }, { signal: request.signal })
+    if (live()) {
+      current.value = { version: result.id, config: result.config, config_digest: result.config_digest ?? current.value.config_digest, status: current.value.status }
+      rollbackComment.value = ''; rollbackConfirm.value = false
+      rollbackRequest?.abort(); rollbackRequest = null
+      rollingBack.value = false
+      rollbackTargetID.value = null
+      rollbackSuccess.value = t('sr.rollbackSaved')
+      void load('versions'); void load('instances'); void load('events')
+    }
+  } catch (e) {
+    if (live()) {
+      const message = e instanceof Error ? e.message : ''
+      rollbackError.value = message === 'sanitizeRules.invalidPublish' ? t('sr.invalidPublish') : message === 'sanitizeRules.invalidResponse' ? t('sr.invalidResponse') : message || t('sr.requestFailed')
+      rollbackConfirm.value = false
+    }
+  } finally { if (live()) { rollingBack.value = false; rollbackRequest = null } }
+}
 const reviewID = ref<number | null>(null), reviewStatus = ref('confirmed_sensitive'), reviewComment = ref('')
 const reviewing = ref(false), reviewConfirm = ref(false), reviewError = ref(''), reviewSuccess = ref('')
 let reviewRequest: AbortController | null = null
@@ -99,6 +173,8 @@ async function submitReview() {
   }
 }
 function clear() {
+  resetPublish()
+  resetRollback()
   clearDraft()
   resetReview()
   generation++
@@ -111,7 +187,7 @@ function clear() {
 watch(() => [auth.role, auth.userInfo?.id, auth.userInfo?.tenant_id], clear)
 onUnmounted(() => { disposed = true; clear() })
 async function load(section: Section) {
-  if (!allowed.value || (section !== 'events' && !manager.value) || loading.value[section] || (section === 'events' && reviewing.value)) return
+  if (!allowed.value || (section !== 'events' && !manager.value) || loading.value[section] || (section === 'events' && reviewing.value) || publishing.value || rollingBack.value) return
   if (section === 'events') resetReview()
   const epoch = generation, request = new AbortController()
   requests.set(section, request); loading.value[section] = true; errors.value[section] = ''
@@ -194,11 +270,26 @@ async function load(section: Section) {
           <button class="sr__btn" data-testid="sr-draft-clear" @click="clearDraft">{{ t('sr.clearDraft') }}</button>
           <p v-if="draftError" class="sr__error" role="alert" data-testid="sr-draft-error">{{ draftError }}</p>
           <p v-if="draftValid" role="status" data-testid="sr-draft-valid">{{ t('sr.draftValidated') }} <span class="sr__mono">{{ validatedDigest }}</span></p>
+          <div data-testid="sr-publish-form">
+            <label>{{ t('sr.publishComment') }}<textarea v-model="publishComment" data-testid="sr-publish-comment" :disabled="publishConfirm || publishing" /></label>
+            <p v-if="publishError" class="sr__error" role="alert" data-testid="sr-publish-error">{{ publishError }}</p>
+            <p v-if="publishSuccess" role="status" data-testid="sr-publish-success">{{ publishSuccess }}</p>
+            <template v-if="publishConfirm"><p data-testid="sr-publish-confirm-note">{{ t('sr.publishConfirmNote') }} {{ current?.version ?? '?' }} → {{ publishComment }}</p><button class="sr__btn" data-testid="sr-publish-submit" :disabled="publishing" @click="submitPublish">{{ publishing ? t('common.loading') : t('common.confirm') }}</button><button class="sr__btn" data-testid="sr-publish-back" :disabled="publishing" @click="publishConfirm = false">{{ t('common.cancel') }}</button></template>
+            <template v-else><button class="sr__btn" data-testid="sr-publish-prepare" :disabled="!draftValid || publishing" @click="preparePublish">{{ t('sr.publishDraft') }}</button></template>
+          </div>
         </section>
         <section class="sr__card" data-testid="sr-versions-section">
           <header><h2>{{ t('sr.versions') }}</h2><button class="sr__btn" data-testid="sr-versions-load" :disabled="loading.versions" @click="load('versions')">{{ loading.versions ? t('common.loading') : t('sr.refresh') }}</button></header>
           <p v-if="errors.versions" class="sr__error" role="alert">{{ errors.versions }}</p><p v-if="versions === null">{{ t('sr.notLoaded') }}</p><p v-else-if="versions.length === 0">{{ t('sr.empty') }}</p>
-          <article v-for="version in versions ?? []" :key="version.id" class="sr__row" data-testid="sr-version"><strong>v{{ version.id }} ← v{{ version.parent_id }}</strong><p>{{ version.actor }} · {{ version.created_at }}</p><p>{{ version.comment }}</p><p v-if="version.rollback_of">{{ t('sr.rollbackOf') }} v{{ version.rollback_of }}</p><details><summary>{{ t('sr.details') }}</summary><pre>{{ JSON.stringify(version, null, 2) }}</pre></details></article>
+          <article v-for="version in versions ?? []" :key="version.id" class="sr__row" data-testid="sr-version"><strong>v{{ version.id }} ← v{{ version.parent_id }}</strong><p>{{ version.actor }} · {{ version.created_at }}</p><p>{{ version.comment }}</p><p v-if="version.rollback_of">{{ t('sr.rollbackOf') }} v{{ version.rollback_of }}</p><button class="sr__btn" data-testid="sr-rollback-open" :disabled="rollingBack || publishing" @click="openRollback(version.id)">{{ t('sr.rollback') }}</button>
+            <div v-if="rollbackTargetID === version.id" data-testid="sr-rollback-form">
+              <label>{{ t('sr.rollbackComment') }}<textarea v-model="rollbackComment" data-testid="sr-rollback-comment" :disabled="rollbackConfirm || rollingBack" /></label>
+              <p v-if="rollbackError" class="sr__error" role="alert" data-testid="sr-rollback-error">{{ rollbackError }}</p>
+              <template v-if="rollbackConfirm"><p data-testid="sr-rollback-confirm-note">{{ t('sr.rollbackConfirmNote') }} v{{ version.id }} → v{{ current?.version ?? '?' }} · {{ rollbackComment }}</p><button class="sr__btn" data-testid="sr-rollback-submit" :disabled="rollingBack" @click="submitRollback">{{ rollingBack ? t('common.loading') : t('common.confirm') }}</button><button class="sr__btn" data-testid="sr-rollback-back" :disabled="rollingBack" @click="rollbackConfirm = false">{{ t('common.cancel') }}</button></template>
+              <template v-else><button class="sr__btn" data-testid="sr-rollback-prepare" :disabled="rollingBack" @click="prepareRollback">{{ t('sr.rollback') }}</button><button class="sr__btn" data-testid="sr-rollback-cancel" :disabled="rollingBack" @click="cancelRollback">{{ t('common.cancel') }}</button></template>
+            </div>
+          </article>
+          <p v-if="rollbackSuccess" role="status" data-testid="sr-rollback-success">{{ rollbackSuccess }}</p>
         </section>
         <section class="sr__card" data-testid="sr-instances-section">
           <header><h2>{{ t('sr.instances') }}</h2><button class="sr__btn" data-testid="sr-instances-load" :disabled="loading.instances" @click="load('instances')">{{ loading.instances ? t('common.loading') : t('sr.refresh') }}</button></header>
