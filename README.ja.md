@@ -78,7 +78,7 @@ graph TB
         CP["Control plane<br/>Admin API + embedded Vue SPA"]
         BGW["Background workers (~80 goroutines)<br/>probe / cleanup / stats / partitions"]
     end
-    GW --> PG[("PostgreSQL 15+<br/>durable facts · RLS 38+ tables · partitions")]
+    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 38+ tables · partitions")]
     GW --> RD[("Redis 7+<br/>URSM state · limits · sticky · session hot state")]
     DP -->|"IR conversion + vendor field strip"| P["LLM Providers<br/>OpenAI / Anthropic / Gemini / domestic"]
     CP -.->|"signed outbox events"| ASM["ai-session-manager<br/>session projection / analytics"]
@@ -106,10 +106,11 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `cmd/gateway/` | コンポジションルート —— シングルバイナリの本番エントリ（データ + コントロールプレーン） |
 | `domains/` | 67 の DDD ドメイン —— `streaming`、`dispatch`、`credential`、`session`(+v2)、`ursm`、hooks、security など |
 | `admin/` + `web/` | 管理 REST API + Vue 3 + TypeScript SPA（Element Plus、ECharts） |
+| `web-mobile/` | モバイルフロントエンド（Vue 3 + TypeScript）——第 2 の本番 UI。デプロイは `dist/` ビルドなしでは実行されない |
 | `bg/` | バックグラウンドワーカー —— プロービング、ライフサイクルクリーンアップ、統計集計、パーティションメンテナンス |
 | `storage/` | デュアルモードストレージファクトリ（`full`：PG+Redis / `lite`：SQLite+ファイル+インプロセス KV） |
 | `internal/` | 横断インフラ —— IR、ベンダーフィールド除去、セッションミラー、outbox、テレメトリなど |
-| `sql/migrations/` + `db/migrations/` | 冪等マイグレーション（起動シリーズは現在 863） |
+| `sql/migrations/` + `db/migrations/` | 冪等マイグレーション（起動シリーズは現在 864） |
 | `installer/` | スタンドアロンのクロスプラットフォームインストーラ / アップグレーダーモジュール |
 | `scripts/`、`deploy/` | ビルド、デプロイ、ミラー、検証ツール |
 
@@ -166,7 +167,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 ### クレデンシャルモニター — マルチソース × マルチクレデンシャルの健全性
 
 ![クレデンシャルモニター](docs/assets/screenshots/credential-monitor.png)
-*2 次元の可用性マトリクス（本番環境で 19 クレデンシャル × 18 モデル）で、どのクレデンシャルがどのモデルを壊しているか一目で把握。クレデンシャルごとの P95 レイテンシ、直近 1 時間のスライディングウィンドウ成功率、同時実行スロット使用率。フィンガープリントプール（50+ User-Agent · 35 種 Accept-Language · 11 種 uTLS プロファイル）+ 適応型プロービングが上流のリスクコントロールを自動回避 —— 障害はブレーカーが遮断し、人の介入は不要*
+*2 次元の可用性マトリクス（本番環境で 19 クレデンシャル × 18 モデル）で、どのクレデンシャルがどのモデルを壊しているか一目で把握。クレデンシャルごとの P95 レイテンシ、直近 1 時間のスライディングウィンドウ成功率、同時実行スロット使用率。フィンガープリントプール（42 種 User-Agent · 35 種 Accept-Language）+ 適応型プロービングが上流のリスクコントロールを自動回避 —— 障害はブレーカーが遮断し、人の介入は不要*
 
 ### ワークタイプ設定 — タスク自動分類
 
@@ -362,7 +363,7 @@ GOOS=windows GOARCH=arm64  go build -o dist/llm-gw-installer-windows-arm64.exe .
 | **データレジデンシー** | データが組織の境界外に出る | すべてのデータが自社インフラ内に留まる |
 | **課金** | 従量課金（USD） | プラン + クレジット + ブースターパック —— 中国 SMB 向け、Alipay 対応 |
 | **上流モデル** | 一部の大手ベンダー | 幅広いモデル + 中国国産モデル + ローカルモデル |
-| **クレデンシャルフィンガープリントプール** | 基本的 | 50+ User-Agent · 35 種 Accept-Language · 11 種 uTLS プロファイル |
+| **クレデンシャルフィンガープリントプール** | 基本的 | 42 種 User-Agent · 35 種 Accept-Language |
 | **セッションガバナンス** | リクエスト単位のログ | スティッキーセッション + 全文リプレイ + 圧縮 + 4 層データライフサイクル |
 | **MCP ツールゲートウェイ** | 一部 | 2026 Q3 フル提供予定 |
 | **中国語フレンドリー** | 限定的 | 完全中国語 UI + 国産モデル + Alipay |
@@ -468,7 +469,7 @@ git push github       # → github (secret scan, blocked on BLOCK-level hit)
 
 ## ✅ CI とゲート（2026-09-14 以降）
 
-- **正式ゲート = ローカルの `./verify.sh`**：コミット/デプロイ前に必ず実行（`go test ./...` フル、マイグレーション checksum 突き合わせ、プライバシーコンプライアンス、vet、build、フロントエンドビルド）。main への merge とリリースはこれを基準とします。
+- **正式ゲート = ローカルの `./verify.sh`**：コミット/デプロイ前に必ず実行（`go test ./...` フル、マイグレーション checksum 突き合わせ、プライバシーコンプライアンス、vet、build。フロントエンドビルドは `--web` 指定時のみ）。main への merge とリリースはこれを基準とします。
 - **codeup Flow 軽量ゲート**：リモートは codeup のみで、`.github/workflows/` は codeup では実行されません；`.workflow/main-verify.yml` がパイプライン・アズ・コード設定（build + `go vet ./autoroute/...` + 60 例の auto マッチングオフラインスイート）を提供し、codeup リポジトリの「流水线」ページで一度インポートすれば、以降 push/PR で自動トリガーされます。
 - auto マッチングオフライン回帰は単独で再実行可能：`go test ./autoroute/ -run 'TestAutoMatchingSuiteHeuristic|TestPromptClassificationMatrix'`（完全オフライン、ネットワーク不要）。
 

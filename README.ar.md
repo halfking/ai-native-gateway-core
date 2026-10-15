@@ -78,7 +78,7 @@ graph TB
         CP["Control plane<br/>Admin API + embedded Vue SPA"]
         BGW["Background workers (~80 goroutines)<br/>probe / cleanup / stats / partitions"]
     end
-    GW --> PG[("PostgreSQL 15+<br/>durable facts · RLS 38+ tables · partitions")]
+    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 38+ tables · partitions")]
     GW --> RD[("Redis 7+<br/>URSM state · limits · sticky · session hot state")]
     DP -->|"IR conversion + vendor field strip"| P["LLM Providers<br/>OpenAI / Anthropic / Gemini / domestic"]
     CP -.->|"signed outbox events"| ASM["ai-session-manager<br/>session projection / analytics"]
@@ -106,10 +106,11 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `cmd/gateway/` | جذر التركيب — مدخل الإنتاج بثنائي واحد (مستوى البيانات + مستوى التحكم) |
 | `domains/` | 67 نطاقًا بأسلوب DDD — `streaming`، `dispatch`، `credential`، `session`(+v2)، `ursm`، hooks، security… |
 | `admin/` + `web/` | واجهة REST للإدارة + Vue 3 + TypeScript SPA (Element Plus، ECharts) |
+| `web-mobile/` | واجهة الجوال (Vue 3 + TypeScript) — واجهة الإنتاج الثانية؛ يرفض النشر العمل دون بناء `dist/` |
 | `bg/` | عمال الخلفية — السبر، تنظيف دورة الحياة، تجميع الإحصاءات، صيانة الأقسام |
 | `storage/` | مصنع تخزين ثنائي الوضع (`full`: PG+Redis / `lite`: SQLite+ملفات+KV داخلي) |
 | `internal/` | بنية تحتية عرضية — IR، إزالة حقول المزوّدين، مرآة الجلسات، outbox، القياس عن بعد… |
-| `sql/migrations/` + `db/migrations/` | ترحيلات idempotent (سلسلة بدء التشغيل حاليًا عند 863) |
+| `sql/migrations/` + `db/migrations/` | ترحيلات idempotent (سلسلة بدء التشغيل حاليًا عند 864) |
 | `installer/` | وحدة تثبيت/ترقية مستقلة متعددة المنصات |
 | `scripts/`، `deploy/` | أدوات البناء والنشر والمرايا والتحقق |
 
@@ -166,7 +167,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 ### مراقب الاعتمادات — صحة متعددة المصادر × متعددة الاعتمادات
 
 ![Credential Monitor](docs/assets/screenshots/credential-monitor.png)
-*مصفوفة توافر ثنائية الأبعاد حية (19 اعتمادًا × 18 نموذجًا في الإنتاج) تُظهر بنظرة واحدة أي اعتماد يُعطّل أي نموذج. زمن استجابة P95 لكل اعتماد، ومعدل نجاح بنافذة منزلقة لساعة واحدة، واستخدام فتحات التزامن. مجمع البصمات (أكثر من 50 User-Agent، و35 تنويعًا لـ Accept-Language، و11 ملف تعريف uTLS) + سبر تكيّفي يتحايلان على ضوابط المخاطر في المصدر تلقائيًا — الفشل يُفعّل القاطع، بلا تدخل بشري*
+*مصفوفة توافر ثنائية الأبعاد حية (19 اعتمادًا × 18 نموذجًا في الإنتاج) تُظهر بنظرة واحدة أي اعتماد يُعطّل أي نموذج. زمن استجابة P95 لكل اعتماد، ومعدل نجاح بنافذة منزلقة لساعة واحدة، واستخدام فتحات التزامن. مجمع البصمات (42 User-Agent، و35 تنويعًا لـ Accept-Language) + سبر تكيّفي يتحايلان على ضوابط المخاطر في المصدر تلقائيًا — الفشل يُفعّل القاطع، بلا تدخل بشري*
 
 ### إعداد أنواع العمل — التصنيف التلقائي للمهام
 
@@ -362,7 +363,7 @@ GOOS=windows GOARCH=arm64  go build -o dist/llm-gw-installer-windows-arm64.exe .
 | **إقامة البيانات** | البيانات تغادر محيطك | كل البيانات تبقى داخل بنيتك التحتية |
 | **الفوترة** | حسب الاستخدام (USD) | خطط + نقاط + حزم معززات — مبنية للشركات الصغيرة والمتوسطة في الصين، جاهزة لـ Alipay |
 | **نماذج المصدر** | قلة من المزوّدين الكبار | تغطية واسعة للنماذج + النماذج الصينية المحلية + النماذج المحلية |
-| **مجمع بصمات الاعتمادات** | أساسي | أكثر من 50 User-Agent · 35 Accept-Language · 11 ملف تعريف uTLS |
+| **مجمع بصمات الاعتمادات** | أساسي | 42 User-Agent · 35 Accept-Language |
 | **حوكمة الجلسة** | سجلات على مستوى الطلب | جلسات مثبتة + إعادة تشغيل كاملة المحتوى + ضغط + دورة حياة رباعية المستويات |
 | **بوابة أدوات MCP** | جزئي | تسليم كامل مستهدف في الربع الثالث 2026 |
 | **الملاءمة للسوق الصيني** | محدودة | واجهة صينية كاملة + نماذج محلية + Alipay |
@@ -468,7 +469,7 @@ git push github       # → github (secret scan, blocked on BLOCK-level hit)
 
 ## ✅ CI والبوابات (منذ 2026-09-14)
 
-- **البوابة الرسمية = `./verify.sh` المحلي**: يجب تشغيله قبل كل إرسال/نشر (`go test ./...` كاملًا، ومطابقة checksum الترحيلات، وامتثال الخصوصية، وvet، وbuild، وبناء الواجهة الأمامية). الدمج إلى main والإصدارات تُعتمد عليه.
+- **البوابة الرسمية = `./verify.sh` المحلي**: يجب تشغيله قبل كل إرسال/نشر (`go test ./...` كاملًا، ومطابقة checksum الترحيلات، وامتثال الخصوصية، وvet، وbuild؛ وبناء الواجهة الأمامية فقط مع `--web`). الدمج إلى main والإصدارات تُعتمد عليه.
 - **بوابة codeup Flow الخفيفة**: المستودع البعيد هو codeup فقط، و`.github/workflows/` لا تُنفَّذ على codeup؛ يوفّر `.workflow/main-verify.yml` إعداد «خط أنابيب ككود» (build + `go vet ./autoroute/...` + مجموعة offline من 60 حالة لمطابقة auto)، ويلزم استيراده مرة واحدة من صفحة «خطوط الأنابيب» في مستودع codeup ليعمل تلقائيًا مع كل push/PR.
 - يمكن إعادة تشغيل اختبارات الانحدار offline لمطابقة auto وحدها: `go test ./autoroute/ -run 'TestAutoMatchingSuiteHeuristic|TestPromptClassificationMatrix'` (offline بالكامل، بلا شبكة).
 

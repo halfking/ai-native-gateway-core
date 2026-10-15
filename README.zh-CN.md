@@ -78,7 +78,7 @@ graph TB
         CP["Control plane<br/>Admin API + embedded Vue SPA"]
         BGW["Background workers (~80 goroutines)<br/>probe / cleanup / stats / partitions"]
     end
-    GW --> PG[("PostgreSQL 15+<br/>durable facts · RLS 38+ tables · partitions")]
+    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 38+ tables · partitions")]
     GW --> RD[("Redis 7+<br/>URSM state · limits · sticky · session hot state")]
     DP -->|"IR conversion + vendor field strip"| P["LLM Providers<br/>OpenAI / Anthropic / Gemini / domestic"]
     CP -.->|"signed outbox events"| ASM["ai-session-manager<br/>session projection / analytics"]
@@ -106,10 +106,11 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `cmd/gateway/` | 组合根 —— 单二进制生产入口（数据面 + 控制面） |
 | `domains/` | 67 个 DDD 领域 —— `streaming`、`dispatch`、`credential`、`session`(+v2)、`ursm`、hooks、security… |
 | `admin/` + `web/` | 管理 REST API + Vue 3 + TypeScript SPA（Element Plus、ECharts） |
+| `web-mobile/` | 移动端前端（Vue 3 + TypeScript）——第二生产前端；部署要求先构建 `dist/` |
 | `bg/` | 后台 worker —— 探测、生命周期清理、统计聚合、分区维护 |
 | `storage/` | 双模式存储工厂（`full`：PG+Redis / `lite`：SQLite+文件+进程内 KV） |
 | `internal/` | 横切基础设施 —— IR、vendor 字段剥离、会话镜像、outbox、遥测… |
-| `sql/migrations/` + `db/migrations/` | 幂等迁移（startup 系列当前到 863） |
+| `sql/migrations/` + `db/migrations/` | 幂等迁移（startup 系列当前到 864） |
 | `installer/` | 独立跨平台安装器 / 升级器模块 |
 | `scripts/`、`deploy/` | 构建、部署、镜像与校验工具 |
 
@@ -166,7 +167,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 ### 凭据监控 — 多源 × 多凭据健康
 
 ![凭据监控](docs/assets/screenshots/credential-monitor.png)
-*实时二维可用性矩阵（生产环境 19 凭据 × 18 模型），一眼看出哪个凭据下哪个模型出问题。每凭据 P95 延迟、1 小时滑动窗口成功率与并发槽位占用。指纹池（50+ User-Agent、35 种 Accept-Language 变体、11 种 uTLS profile）+ 自适应探测自动躲避上游风控 —— 失败即触发熔断，无需人工介入*
+*实时二维可用性矩阵（生产环境 19 凭据 × 18 模型），一眼看出哪个凭据下哪个模型出问题。每凭据 P95 延迟、1 小时滑动窗口成功率与并发槽位占用。指纹池（42 个 User-Agent、35 种 Accept-Language 变体）+ 自适应探测自动躲避上游风控 —— 失败即触发熔断，无需人工介入*
 
 ### 工作类型配置 — 任务自动分类
 
@@ -383,7 +384,7 @@ Installer 完整设计见 [installer/README.md](installer/README.md)。
 | **数据驻留** | 数据离开企业边界 | 所有数据留在企业基础设施内 |
 | **计费** | 按用量计费（USD） | 套餐 + 积分 + 加油包 —— 为中国 SMB 而生，支付宝就绪 |
 | **上游模型** | 少数主要厂商 | 广泛模型覆盖 + 国产模型 + 本地模型 |
-| **凭据指纹池** | 基础 | 50+ User-Agent · 35 Accept-Language · 11 uTLS profile |
+| **凭据指纹池** | 基础 | 42 个 User-Agent · 35 Accept-Language |
 | **会话治理** | 请求级日志 | 粘性会话 + 全量内容回放 + 压缩 + 4 档生命周期 |
 | **MCP 工具网关** | 部分 | 2026 Q3 全量交付 |
 | **中文友好** | 有限 | 全中文 UI + 国产模型 + 支付宝 |
@@ -499,7 +500,7 @@ bash scripts/sync-to-github.sh             # 确认后 force-push（main + tags�
 
 ## ✅ CI 与门禁（2026-09-14 起）
 
-- **正式门禁 = 本地 `./verify.sh`**：提交/部署前必跑（`go test ./...` 全量、迁移 checksum 对账、隐私合规、vet、build、前端构建）。merge 到 main 与发版以它为准。
+- **正式门禁 = 本地 `./verify.sh`**：提交/部署前必跑（`go test ./...` 全量、迁移 checksum 对账、隐私合规、vet、build；前端构建为 `--web` 选通项）。merge 到 main 与发版以它为准。
 - **codeup Flow 轻量门**：远端只有 codeup，`.github/workflows/` 在 codeup 不执行；`.workflow/main-verify.yml` 提供流水线即代码配置（build + `go vet ./autoroute/...` + 60 例 auto 匹配离线套件），需在 codeup 仓库「流水线」页导入一次后随 push/PR 自动触发。
 - auto 匹配离线回归可单独复跑：`go test ./autoroute/ -run 'TestAutoMatchingSuiteHeuristic|TestPromptClassificationMatrix'`（纯离线，无网络）。
 

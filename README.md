@@ -78,7 +78,7 @@ graph TB
         CP["Control plane<br/>Admin API + embedded Vue SPA"]
         BGW["Background workers (~80 goroutines)<br/>probe / cleanup / stats / partitions"]
     end
-    GW --> PG[("PostgreSQL 15+<br/>durable facts · RLS 38+ tables · partitions")]
+    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 38+ tables · partitions")]
     GW --> RD[("Redis 7+<br/>URSM state · limits · sticky · session hot state")]
     DP -->|"IR conversion + vendor field strip"| P["LLM Providers<br/>OpenAI / Anthropic / Gemini / domestic"]
     CP -.->|"signed outbox events"| ASM["ai-session-manager<br/>session projection / analytics"]
@@ -106,10 +106,11 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `cmd/gateway/` | Composition root — single-binary production entry (data + control plane) |
 | `domains/` | 67 DDD domains — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, hooks, security… |
 | `admin/` + `web/` | Admin REST API + Vue 3 + TypeScript SPA (Element Plus, ECharts) |
+| `web-mobile/` | Mobile frontend (Vue 3 + TypeScript) — second production UI; deploy refuses to run without its `dist/` build |
 | `bg/` | Background workers — probing, lifecycle cleanup, stats aggregation, partition maintenance |
 | `storage/` | Dual-mode storage factory (`full`: PG+Redis / `lite`: SQLite+files+in-proc KV) |
 | `internal/` | Cross-cutting infra — IR, vendor strip, session mirror, outbox, telemetry… |
-| `sql/migrations/` + `db/migrations/` | Idempotent migrations (startup series currently at 863) |
+| `sql/migrations/` + `db/migrations/` | Idempotent migrations (startup series currently at 864) |
 | `installer/` | Standalone cross-platform installer / upgrader module |
 | `scripts/`, `deploy/` | Build, deploy, mirror, and verification tooling |
 
@@ -166,7 +167,7 @@ All modules below are shipped and running in the k3s production deployment. Scre
 ### Credential Monitor — Multi-Source × Multi-Credential Health
 
 ![Credential Monitor](docs/assets/screenshots/credential-monitor.png)
-*A live 2-D availability matrix (19 credentials × 18 models in production) shows at a glance which credential breaks which model. Per-credential P95 latency, 1-hour sliding-window success rate, and concurrency slot usage. Fingerprint pool (50+ User-Agents, 35 Accept-Language variants, 11 uTLS profiles) + adaptive probing dodge upstream risk control automatically — failures trip the breaker, no human in the loop*
+*A live 2-D availability matrix (19 credentials × 18 models in production) shows at a glance which credential breaks which model. Per-credential P95 latency, 1-hour sliding-window success rate, and concurrency slot usage. Fingerprint pool (42 User-Agents, 35 Accept-Language variants) + adaptive probing dodge upstream risk control automatically — failures trip the breaker, no human in the loop*
 
 ### Work-Type Configuration — Task Auto-Classification
 
@@ -446,7 +447,7 @@ For the installer's full design, see [installer/README.md](installer/README.md).
 | **Data residency** | Data leaves your perimeter | All data stays inside your infrastructure |
 | **Billing** | Usage-based (USD) | Plans + credits + booster packs — built for China SMB, Alipay-ready |
 | **Upstream models** | A few major vendors | Broad model coverage + Chinese domestic models + local models |
-| **Credential fingerprint pool** | Basic | 50+ User-Agents · 35 Accept-Language · 11 uTLS profiles |
+| **Credential fingerprint pool** | Basic | 42 User-Agents · 35 Accept-Language |
 | **Session governance** | Request-level logs | Sticky sessions + full-content replay + compression + 4-tier lifecycle |
 | **MCP tool gateway** | Partial | Full delivery targeted Q3 2026 |
 | **Chinese-friendly** | Limited | Full Chinese UI + domestic models + Alipay |
@@ -563,7 +564,7 @@ Sensitive-information protection: `.githooks/pre-push` automatically runs `scrip
 
 ## ✅ CI 与门禁（2026-09-14 起）
 
-- **正式门禁 = 本地 `./verify.sh`**：提交/部署前必跑（`go test ./...` 全量、迁移 checksum 对账、隐私合规、vet、build、前端构建）。merge 到 main 与发版以它为准。
+- **正式门禁 = 本地 `./verify.sh`**：提交/部署前必跑（`go test ./...` 全量、迁移 checksum 对账、隐私合规、vet、build；前端构建为 `--web` 选通项）。merge 到 main 与发版以它为准。
 - **codeup Flow 轻量门**：远端只有 codeup，`.github/workflows/` 在 codeup 不执行；`.workflow/main-verify.yml` 提供流水线即代码配置（build + `go vet ./autoroute/...` + 60 例 auto 匹配离线套件），需在 codeup 仓库「流水线」页导入一次后随 push/PR 自动触发。
 - auto 匹配离线回归可单独复跑：`go test ./autoroute/ -run 'TestAutoMatchingSuiteHeuristic|TestPromptClassificationMatrix'`（纯离线，无网络）。
 

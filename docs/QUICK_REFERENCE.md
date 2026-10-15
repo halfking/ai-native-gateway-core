@@ -45,7 +45,7 @@ Go源文件:       10,256 个    (find . -name "*.go" -type f | wc -l)
 Admin API:       653 个    (find ./admin -name "*.go" -type f | wc -l)
 后台Worker:      401 个    (find ./bg -name "*.go" -type f | wc -l)
 领域模块:        67 个    (ls ./domains/ | wc -l)
-数据库迁移:     1058 个    (find ./sql/migrations -name "*.sql" | wc -l)
+数据库迁移:     1060 个    (find ./sql/migrations -name "*.sql" | wc -l)
 单元测试:     2,935 个    (*_test.go 文件)
 可执行程序:      34 个    (ls ./cmd/ | wc -l)
 ```
