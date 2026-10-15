@@ -1094,6 +1094,31 @@ func intStr(v int) string {
 	return string(buf)
 }
 
+// EligibleForTurnMirrorPolicy reports whether the request belongs to the
+// policy population that should produce a session_turn. It intentionally does
+// NOT apply the runtime shadow-write switch: turning session writes off while
+// business traffic continues is exactly what data-horizon must detect.
+//
+// PersistHook keeps the individual early returns below for observability and
+// exclusion-ledger tests; this exported classifier is the shared contract for
+// independent consumers such as the per-instance data-horizon canary.
+func EligibleForTurnMirrorPolicy(entry *telemetry.RequestLogEntry) bool {
+	if entry == nil {
+		return false
+	}
+	if !entry.Success && !isTerminalFailure(entry) {
+		return false
+	}
+	if IsProbeSyntheticSession(entry) {
+		return false
+	}
+	synthetic := entry.GwSessionID == nil || strings.TrimSpace(*entry.GwSessionID) == ""
+	if !synthetic && telemetry.IsInternalAutoEntry(entry) {
+		return false
+	}
+	return true
+}
+
 func isTerminalFailure(entry *telemetry.RequestLogEntry) bool {
 	if entry == nil || entry.Success {
 		return false

@@ -22,6 +22,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/kaixuan/llm-gateway-go/domains/routeincident"
+	"github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror"
 )
 
 // derefStr safely returns the value of a *string or "" if nil.
@@ -217,6 +218,30 @@ func liveStreamEventTime(entry *telemetry.RequestLogEntry) time.Time {
 		return entry.EventAt.UTC()
 	}
 	return time.Now().UTC()
+}
+
+// dataHorizonCanaryHook records a LOCAL, terminal request that should become a
+// session turn. It intentionally runs from telemetry's onPersisted hook:
+// - in-progress placeholders are not mirrorable;
+// - the five-minute lag budget starts when persistence completes, not when a
+//   potentially long request started;
+// - Redis fan-out never reaches this hook, so other gateway instances cannot
+//   mask a local mirror outage with their own fresh rows.
+//
+// EligibleForTurnMirrorPolicy is shared with sessionv2mirror's policy gates.
+// Runtime shadow-write disablement is deliberately not a reason to skip the
+// canary: disabling the writer while business traffic continues is precisely
+// what the data-horizon endpoint must report.
+func dataHorizonCanaryHook(hub *admin.LiveStreamSSEHub, now func() time.Time) func(*telemetry.RequestLogEntry) {
+	if now == nil {
+		now = time.Now
+	}
+	return func(entry *telemetry.RequestLogEntry) {
+		if hub == nil || !sessionv2mirror.EligibleForTurnMirrorPolicy(entry) {
+			return
+		}
+		hub.AddDataHorizonCanary(entry.RequestID, now().UTC())
+	}
 }
 
 // liveStreamEmittedForwarderCapacity bounds the queue between the telemetry

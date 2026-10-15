@@ -2732,16 +2732,22 @@ func main() {
 		fwd := newLiveStreamEmittedForwarder(hub)
 		liveStreamEmittedFwd = fwd
 		go fwd.run()
-		telemetryClient.SetOnRequestLogEmitted(func(entry *telemetry.RequestLogEntry) {
-			requestdetail.CaptureFromEntry(entry)
-			fwd.emit(entry)
-		})
+			telemetryClient.SetOnRequestLogEmitted(func(entry *telemetry.RequestLogEntry) {
+				requestdetail.CaptureFromEntry(entry)
+				fwd.emit(entry)
+			})
+
 		slog.Info("telemetry onEmitted forwarder wired → live stream SSE hub (pre-DB in_progress projection) + request detail capture")
 		// 阶段二: persisted → 最终状态补偿。经同一转发器 FIFO 发布(顺序保证
 		// 见上), 回调在 telemetry worker 上仍只做非阻塞投递 —— 比 旧直发
 		// Publish 回调更轻, 不会拖慢 telemetry 落库 worker。
-		telemetryClient.AddOnRequestLogPersisted(fwd.persist)
-		telemetryClient.AddOnRequestLogPersisted(requestdetail.ClearAfterPersist)
+			horizonCanary := dataHorizonCanaryHook(hub, nil)
+			telemetryClient.AddOnRequestLogPersisted(func(entry *telemetry.RequestLogEntry) {
+				horizonCanary(entry)
+				fwd.persist(entry)
+			})
+			telemetryClient.AddOnRequestLogPersisted(requestdetail.ClearAfterPersist)
+
 		slog.Info("telemetry onPersisted wired → live stream SSE hub via forwarder FIFO (post-commit compensation) + request detail clear")
 	} else {
 		slog.Warn("live stream hub created but telemetryClient is nil; no data will flow to swim lanes")

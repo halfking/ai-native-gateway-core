@@ -10,12 +10,22 @@ import { reactive } from 'vue'
 declare global {
   // eslint-disable-next-line no-var
   var __llmgwRelayCacheInvalidator: (() => void) | undefined
+  // eslint-disable-next-line no-var
+  var __llmgwLiveStreamIdentityInvalidator: (() => void) | undefined
 }
 function relayCacheInvalidator(): void {
   try {
     globalThis.__llmgwRelayCacheInvalidator?.()
   } catch {
     /* api-autoroute.ts not yet loaded — nothing to clear. */
+  }
+}
+
+function liveStreamIdentityInvalidator(): void {
+  try {
+    globalThis.__llmgwLiveStreamIdentityInvalidator?.()
+  } catch {
+    /* liveStreamStore.ts not yet loaded — no stream state exists to clear. */
   }
 }
 
@@ -90,16 +100,20 @@ export const store = reactive({
 })
 
 export function setApiKey(k: string) {
+  const changed = store.apiKey !== k
   store.apiKey = k
   // 2026-08-26 (P1-7 fix): memory-only — see module-level comment.
   // Legacy callers that previously persisted to localStorage keep
   // working for the lifetime of this SPA mount.
-  relayCacheInvalidator?.()
+  relayCacheInvalidator()
+  if (changed) liveStreamIdentityInvalidator()
 }
 
 export function clearApiKey() {
+  const changed = store.apiKey !== ''
   store.apiKey = ''
   relayCacheInvalidator()
+  if (changed) liveStreamIdentityInvalidator()
 }
 
 /** Per-user preferred API key id for /chat (sk-* resolved via reveal). */
@@ -161,6 +175,10 @@ export function setUserInfo(user: UserInfo | null) {
   const userChanged = prevUserId !== normalized?.id
   if (tenantChanged || userChanged) {
     relayCacheInvalidator()
+    // Live requests, queue snapshots, node labels and action timelines are all
+    // tenant/user scoped. Fence and clear them before the new identity can
+    // render the dashboard; reconnect only if a consumer is still mounted.
+    liveStreamIdentityInvalidator()
   }
 }
 
@@ -173,6 +191,7 @@ export function clearMustChangePasswordFlag() {
 }
 
 export function clearJwt() {
+  const identityWasPresent = store.jwtToken !== '' || store.userInfo !== null
   store.jwtToken = ''
   store.userInfo = null
   // 2026-08-26 (P1-7 fix): do NOT write JWT / apiKey to localStorage —
@@ -186,6 +205,7 @@ export function clearJwt() {
   // next user (possibly on a different tenant) never inherits the
   // previous user's revealed key.
   relayCacheInvalidator()
+  if (identityWasPresent) liveStreamIdentityInvalidator()
 }
 
 // 2026-07-09: 标记 auth hydration 完成。App.vue 首次进入 onMounted 时调用，
