@@ -136,7 +136,7 @@ export function forceRecoverCredential(credentialId: number, options?: RequestOp
 }
 
 /**
- * `POST /api/routing/credentials/{id}/reset-state`（admin/handler.go:946，superAdmin）
+ * `POST /api/routing/credentials/{id}/reset-state`（admin/handler.go:965，superAdmin）
  * 聚焦式状态复位，handler admin/routing_reset.go:52。`reason` 必填（:69-72）。
  *
  * 与 force-recover 的分工：那个是「凭据级 5 步全清」，这个是「带 reason 的记账式
@@ -394,7 +394,7 @@ export function resolveRouting(
   return req<RoutingResolveResponse>('GET', `/api/routing/resolve?${qs}`, undefined, options)
 }
 
-/** `GET /api/routing/score-details?model=X`（admin/handler.go:1209）—— 打分明细。 */
+/** `GET /api/routing/score-details?model=X`（admin/handler.go:1230）—— 打分明细。 */
 export interface ScoreDetailsResponse {
   model: string
   total_score?: number

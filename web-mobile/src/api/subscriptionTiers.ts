@@ -7,12 +7,12 @@ import { req, type RequestOptions } from './client'
  *
  * - ★★★★★ **注册机制与本仓绝大多数端点不同**：它**不在** `admin/handler.go` 的
  *   `mux.HandleFunc` 里，而是在 **echo 的 group** 上：
- *   `cmd/gateway/main.go:7027`  `adminGroup := e.Group("/api/admin", requireSuperAdmin)`
- *   → `cmd/gateway/main.go:7029`  `licensing.RegisterModuleRoutes(adminGroup, licensingStore)`
+ *   `cmd/gateway/main.go:7063`  `adminGroup := e.Group("/api/admin", requireSuperAdmin)`
+ *   → `cmd/gateway/main.go:7065`  `licensing.RegisterModuleRoutes(adminGroup, licensingStore)`
  *   → `licensing/admin_api.go:33`  `func RegisterModuleRoutes(g *echo.Group, store Store)`
  *   → `licensing/module_api.go:22` `g.GET("/tiers", h.ListTiers)`
  *   ⇒ ★★★ **这是本仓第三种注册机制**（前两种：`admin/handler.go` 的 mux、
- *     `cmd/gateway/main.go:7070` 附近的 requestJourney 一族）。
+ *     `cmd/gateway/main.go:7169-7172` 附近的 requestJourney 一族）。
  *     查端点时**只 grep mux 会把「已注册」误判成「死端点」** —— 本批差点就这么判。
  *   ⚠️ **行号订正（2026-10-14，第一百二十批）**：本段原先写 `:6964` / `:6966`，
  *     实况是 `:7027` / `:7029`，**漂了 63 行**。
