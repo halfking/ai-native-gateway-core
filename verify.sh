@@ -60,6 +60,12 @@ bash tests/db252_tunnel_test.sh
 echo "[verify] deploy timeout portability contracts"
 bash tests/deploy_timeout_portability_test.sh
 
+# 2026-10-14：magpie P0 观测脚本曾因 154 二进制名 llm-gateway-go≠gateway、
+# 裸 journal unit、pipefail+grep 零命中中途死 → 授权后观测假 FAIL。
+# 零外部依赖门锁住双名解析 / canary 日志 / 反假绿量具 / 部署硬门。
+echo "[verify] magpie P0 observe contracts"
+bash tests/observe_magpie_p0_contract_test.sh
+
 # 2026-10-10：资源探测改为「主机优先」（host → docker → 自动安装）。
 # 旧顺序先扫 docker，扫到就把 mode 定成 docker，主机上真跑着的 pg/redis 被跳过；
 # 而 docker-less 机器会直接 die 在 "Docker Compose is unavailable"。

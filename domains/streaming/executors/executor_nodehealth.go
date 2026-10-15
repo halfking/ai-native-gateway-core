@@ -426,6 +426,11 @@ func (e *Executor) recordProtocolCircuitFailure(params *ExecParams, providerID, 
 		// provider/credential and would incorrectly suppress sibling models.
 		return
 	}
+	// P0-C：与 Breaker.RecordFailure 同矩阵——PenaltyNone（json-word /
+	// client_bug / context_length…）永不进协议腿熔断。
+	if errorsx.PenaltyOf(kind).Target == errorsx.PenaltyNone {
+		return
+	}
 	if params != nil && params.DispatchAttempt {
 		return
 	}
@@ -487,6 +492,11 @@ func errorKindFromNodeHealth(kind nodehealth.ErrorKind) errorsx.ErrorKind {
 		return errorsx.KindModelNotFound
 	case nodehealth.ErrorKindEmptyResponse:
 		return errorsx.KindEmptyResponse
+	case nodehealth.ErrorKindRequest:
+		// Round-trip of nodeHealthErrorKind(client_bug…) — must not collapse
+		// to KindTransient or a forced EffectRecordCircuitFailure would cool
+		// the node (P0-C / r1027 cascade).
+		return errorsx.KindClientBug
 	default:
 		return errorsx.KindTransient
 	}
