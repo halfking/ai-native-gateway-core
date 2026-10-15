@@ -65,7 +65,7 @@ import {
   type CallEntry,
 } from '@/api/slidingWindow'
 
-useHyperPage({ title: () => t('sw.title') })
+useHyperPage({ title: () => (allowed.value ? t('sw.title') : t('common.pageDenied')) })
 
 const auth = useAuthStore()
 

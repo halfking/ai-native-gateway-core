@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
@@ -612,7 +613,9 @@ func serializeAnthropicMessageContent(msg Message, targetProvider string, modelN
 		var args any = map[string]any{}
 		if tc.Function.Arguments != "" {
 			var parsed any
-			if err := json.Unmarshal([]byte(tc.Function.Arguments), &parsed); err != nil {
+			decoder := json.NewDecoder(bytes.NewBufferString(tc.Function.Arguments))
+			decoder.UseNumber()
+			if err := decoder.Decode(&parsed); err != nil || !json.Valid([]byte(tc.Function.Arguments)) {
 				parsed = nil
 			}
 			if obj, ok := parsed.(map[string]any); ok {
@@ -731,7 +734,9 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, m
 			// bytes through as a string.
 			var input any
 			if block.ToolUse.Input != nil {
-				if err := json.Unmarshal(block.ToolUse.Input, &input); err != nil {
+				if json.Valid(block.ToolUse.Input) {
+					input = json.RawMessage(block.ToolUse.Input)
+				} else {
 					input = string(block.ToolUse.Input)
 				}
 			}

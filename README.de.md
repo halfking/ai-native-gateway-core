@@ -78,7 +78,7 @@ graph TB
         CP["Control plane<br/>Admin API + embedded Vue SPA"]
         BGW["Background workers (~80 goroutines)<br/>probe / cleanup / stats / partitions"]
     end
-    GW --> PG[("PostgreSQL 15+<br/>durable facts · RLS 38+ tables · partitions")]
+    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 38+ tables · partitions")]
     GW --> RD[("Redis 7+<br/>URSM state · limits · sticky · session hot state")]
     DP -->|"IR conversion + vendor field strip"| P["LLM Providers<br/>OpenAI / Anthropic / Gemini / domestic"]
     CP -.->|"signed outbox events"| ASM["ai-session-manager<br/>session projection / analytics"]
@@ -106,10 +106,11 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `cmd/gateway/` | Composition-Root — Produktions-Einstiegspunkt als Single-Binary (Data + Control Plane) |
 | `domains/` | 67 DDD-Domains — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, Hooks, Security … |
 | `admin/` + `web/` | Admin-REST-API + Vue 3 + TypeScript SPA (Element Plus, ECharts) |
+| `web-mobile/` | Mobiles Frontend (Vue 3 + TypeScript) — zweites Produktions-UI; das Deployment verweigert den Start ohne den `dist/`-Build |
 | `bg/` | Background-Worker — Probing, Lifecycle-Cleanup, Stats-Aggregation, Partition-Wartung |
 | `storage/` | Dual-Mode-Storage-Factory (`full`: PG+Redis / `lite`: SQLite+Dateien+In-Proc-KV) |
 | `internal/` | Querschnitts-Infrastruktur — IR, Vendor-Strip, Session-Mirror, Outbox, Telemetry … |
-| `sql/migrations/` + `db/migrations/` | Idempotente Migrationen (Startup-Serie aktuell bei 863) |
+| `sql/migrations/` + `db/migrations/` | Idempotente Migrationen (Startup-Serie aktuell bei 864) |
 | `installer/` | Eigenständiges plattformübergreifendes Installer-/Upgrader-Modul |
 | `scripts/`, `deploy/` | Build-, Deploy-, Mirror- und Verifikations-Werkzeuge |
 
@@ -166,7 +167,7 @@ Alle unten gezeigten Module sind ausgeliefert und laufen im k3s-Produktionsdeplo
 ### Credential-Monitor — Multi-Source × Multi-Credential-Health
 
 ![Credential Monitor](docs/assets/screenshots/credential-monitor.png)
-*Eine live 2-D-Verfügbarkeitsmatrix (19 Credentials × 18 Modelle in Produktion) zeigt auf einen Blick, welches Credential welches Modell bricht. P95-Latenz je Credential, 1-Stunden-Sliding-Window-Erfolgsrate und Concurrency-Slot-Nutzung. Fingerprint-Pool (50+ User-Agents, 35 Accept-Language-Varianten, 11 uTLS-Profile) + adaptives Probing umgehen Upstream-Risk-Control automatisch — Fehler lösen den Breaker aus, ganz ohne menschliches Zutun*
+*Eine live 2-D-Verfügbarkeitsmatrix (19 Credentials × 18 Modelle in Produktion) zeigt auf einen Blick, welches Credential welches Modell bricht. P95-Latenz je Credential, 1-Stunden-Sliding-Window-Erfolgsrate und Concurrency-Slot-Nutzung. Fingerprint-Pool (42 User-Agents, 35 Accept-Language-Varianten) + adaptives Probing umgehen Upstream-Risk-Control automatisch — Fehler lösen den Breaker aus, ganz ohne menschliches Zutun*
 
 ### Work-Type-Konfiguration — Task-Auto-Klassifikation
 
@@ -362,7 +363,7 @@ Das vollständige Installer-Design finden Sie in [installer/README.md](installer
 | **Data Residency** | Daten verlassen Ihren Perimeter | Alle Daten bleiben in Ihrer Infrastruktur |
 | **Billing** | Usage-basiert (USD) | Tarife + Credits + Booster-Packs — gebaut für China-SMB, Alipay-ready |
 | **Upstream-Modelle** | Einige große Anbieter | Breite Modellabdeckung + chinesische Domestic-Modelle + lokale Modelle |
-| **Credential-Fingerprint-Pool** | Basis | 50+ User-Agents · 35 Accept-Language · 11 uTLS-Profile |
+| **Credential-Fingerprint-Pool** | Basis | 42 User-Agents · 35 Accept-Language |
 | **Session-Governance** | Request-Level-Logs | Sticky Sessions + Vollinhalt-Replay + Kompression + 4-stufiger Lebenszyklus |
 | **MCP-Tool-Gateway** | Teilweise | Volle Auslieferung angezielt für Q3 2026 |
 | **Chinesisch-freundlich** | Begrenzt | Volle chinesische UI + Domestic-Modelle + Alipay |
@@ -468,7 +469,7 @@ Schutz sensibler Informationen: `.githooks/pre-push` führt beim Push zu GitHub 
 
 ## ✅ CI & Gates (ab 2026-09-14)
 
-- **Offizielles Gate = lokales `./verify.sh`**: Muss vor jedem Commit/Deployment laufen (`go test ./...` vollständig, Migrations-Checksum-Abgleich, Datenschutz-Compliance, vet, build, Frontend-Build). Merges nach main und Releases richten sich danach.
+- **Offizielles Gate = lokales `./verify.sh`**: Muss vor jedem Commit/Deployment laufen (`go test ./...` vollständig, Migrations-Checksum-Abgleich, Datenschutz-Compliance, vet, build; Frontend-Build nur mit `--web`). Merges nach main und Releases richten sich danach.
 - **codeup Flow leichtes Gate**: Es gibt nur codeup als Remote; `.github/workflows/` wird auf codeup nicht ausgeführt; `.workflow/main-verify.yml` bietet Pipeline-as-Code-Konfiguration (build + `go vet ./autoroute/...` + Offline-Suite mit 60 Auto-Matching-Testfällen). Sie muss einmal über die Seite „Pipelines“ im codeup-Repository importiert werden und wird danach bei push/PR automatisch ausgelöst.
 - Die Auto-Matching-Offline-Regression kann separat erneut ausgeführt werden: `go test ./autoroute/ -run 'TestAutoMatchingSuiteHeuristic|TestPromptClassificationMatrix'` (rein offline, ohne Netzwerk).
 

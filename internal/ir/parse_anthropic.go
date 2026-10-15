@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
@@ -50,7 +51,7 @@ func ParseAnthropic(body []byte) (*InternalRequest, error) {
 	}
 	extensions := make(map[string]json.RawMessage)
 	for key, value := range rawMap {
-		if !knownFields[key] && len(value) > 0 && string(value) != "null" {
+		if !knownFields[key] && len(value) > 0 {
 			extensions[key] = value
 			// Step 4.10 (2026-07-28): parse-time unknown-field anomaly.
 			ReportParseUnknownField("unknown", ProtocolAnthropicMessages, key, nil)
@@ -221,7 +222,9 @@ func parseAnthropicMessages(raw json.RawMessage) ([]Message, error) {
 	messages := make([]Message, 0, len(rawMessages))
 	for i, rawMsg := range rawMessages {
 		var msg map[string]any
-		if err := json.Unmarshal(rawMsg, &msg); err != nil {
+		decoder := json.NewDecoder(bytes.NewReader(rawMsg))
+		decoder.UseNumber()
+		if err := decoder.Decode(&msg); err != nil {
 			return nil, fmt.Errorf("unmarshal message[%d]: %w", i, err)
 		}
 
@@ -405,9 +408,15 @@ func parseAnthropicContentBlocks(blocks []any) ([]ContentBlock, error) {
 		}
 
 		// Parse index if present
-		if idx, ok := blockMap["index"].(float64); ok {
+		switch idx := blockMap["index"].(type) {
+		case float64:
 			i := int(idx)
 			irBlock.Index = &i
+		case json.Number:
+			if n, err := idx.Int64(); err == nil {
+				i := int(n)
+				irBlock.Index = &i
+			}
 		}
 
 		result = append(result, irBlock)

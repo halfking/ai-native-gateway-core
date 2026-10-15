@@ -43,7 +43,7 @@ import {
   type StorageTableSizes,
 } from '@/api/dataLifecycleStorage'
 
-useHyperPage({ title: () => t('dls.title') })
+useHyperPage({ title: () => (allowed.value ? t('dls.title') : t('common.pageDenied')) })
 
 const auth = useAuthStore()
 

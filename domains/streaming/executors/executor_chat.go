@@ -2154,8 +2154,14 @@ func (e *Executor) executeOpenAI(
 						// 审计 R3 #2 (2026-09-09): params.BodyBytes 此时仍是客户端原始
 						// Anthropic 体(上游体在 bodyBytes 中另行转换),以其估算
 						// message_start.usage.input_tokens,替代恒 0。
+						bridgeResp := resp
+						if nativeStream && upgradedFromChat {
+							copy := *resp
+							copy.Body = responsesToChatStream(streamReaderContext(params, resp), resp.Body, outboundModel)
+							bridgeResp = &copy
+						}
 						streamOutcome = e.OpenAIToAnthropicStream(
-							streamReaderContext(params, resp), streamSink, resp,
+							streamReaderContext(params, resp), streamSink, bridgeResp,
 							params.ClientModel, outboundModel,
 							diagnosticRequestID(params),
 							params.Capture, nil,
@@ -3422,7 +3428,41 @@ func proactiveChatToResponsesUpgrade(cand provider.Candidate, params *ExecParams
 	if len(params.BodyBytes) == 0 {
 		return nil, false
 	}
-	converted, ok := chatBodyToResponsesBody(params.BodyBytes, cand.RawModel)
+	sourceBody := params.BodyBytes
+	// Messages handlers retain the original Anthropic body. Parse its actual
+	// dialect before the shared Responses conversion so system/tools survive.
+	if params.ClientProtocol == providercatalog.ProtocolAnthropicMessages {
+		parsed, err := ir.ParseAnthropic(sourceBody)
+		if err != nil {
+			return nil, false
+		}
+		if model := strings.TrimSpace(cand.RawModel); model != "" {
+			parsed.Model = model
+		}
+		parsed.TargetProvider = cand.CatalogCode
+		// An explicit effort remains authoritative over the thinking budget,
+		// matching ParseOpenAI's precedence on the previous Chat intermediate.
+		var explicitEffort string
+		if json.Unmarshal(parsed.Extensions["reasoning_effort"], &explicitEffort) == nil && explicitEffort != "" {
+			parsed.Reasoning = &ir.ReasoningConfig{Effort: explicitEffort}
+		}
+		// Preserve the existing Responses thinking translation without passing
+		// through the Chat dialect, which cannot carry Anthropic thinking.
+		if parsed.Thinking != nil && parsed.Reasoning == nil {
+			raw, _ := json.Marshal(parsed.Thinking)
+			if _, translated, ok := paramreg.TranslateThinkingForProtocol(raw, "responses"); ok {
+				var reason struct {
+					Effort string `json:"effort"`
+				}
+				if json.Unmarshal(translated, &reason) == nil {
+					parsed.Reasoning = &ir.ReasoningConfig{Effort: reason.Effort}
+				}
+			}
+		}
+		converted, err := ir.SerializeResponsesRequest(parsed)
+		return converted, err == nil && len(converted) > 0
+	}
+	converted, ok := chatBodyToResponsesBody(sourceBody, cand.RawModel)
 	if !ok {
 		return nil, false
 	}

@@ -43,7 +43,7 @@ LLM Gateway Go 是一个**企业级大语言模型网关系统**，为企业提�
 | Admin API文件 | 653 个 | `find ./admin -name "*.go" -type f \| wc -l` |
 | 后台Worker文件 | 401 个 | `find ./bg -name "*.go" -type f \| wc -l` |
 | 领域模块数量 | 67 个 | `ls ./domains/ \| wc -l` (一级目录) |
-| 数据库迁移 | 1058 个 SQL | `sql/migrations/` 全量；startup 数字序列活跃至 **863**（work_type 路由来源；7xx 段止于 765），下一枚 864 |
+| 数据库迁移 | 1060 个 SQL | `sql/migrations/` 全量；startup 数字序列活跃至 **864**（work_type 路由来源；7xx 段止于 765），下一枚 865 |
 | 单元测试文件 | 2,899 个 | `*_test.go`（不含 vendor/installer） |
 | 可执行程序 | 34 个 | `ls ./cmd/ \| wc -l` |
 
@@ -410,7 +410,7 @@ Go源文件总数:     5,173 个 (不含 vendor/installer)
 Admin API文件:      653 个
 后台Worker文件:     401 个
 领域模块:            67 个 (domains/ 一级目录)
-数据库迁移:         1058 个 SQL (sql/migrations/; startup 活跃序列最新 863, 下一枚 864)
+数据库迁移:         1060 个 SQL (sql/migrations/; startup 活跃序列最新 864, 下一枚 865)
 测试文件:         2,899 个 (*_test.go, 不含 vendor/installer)
 可执行程序:           34 个 (cmd/)
 ```

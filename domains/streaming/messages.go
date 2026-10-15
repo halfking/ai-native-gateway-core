@@ -1717,7 +1717,7 @@ func mapAnthropicStopReason(finishReason string) string {
 	case "length", "max_tokens":
 		return "max_tokens"
 	case "content_filter":
-		return "end_turn"
+		return "refusal"
 	default:
 		return "end_turn"
 	}

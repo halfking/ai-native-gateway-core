@@ -422,6 +422,9 @@ export const zhCN = {
     sessionExpired: '登录状态已过期，请重新登录。',
     sessionAliveUnauthorized: '登录状态有效，但该功能当前不可用（可能未启用该功能）。',
     forbidden: '当前账号没有执行此操作的权限。',
+    // ★ 第一百三十四批：深链直达受限页时，document.title 用它
+    //   —— `common.forbidden` 讲的是「不能做某个操作」，语义不对口。
+    pageDenied: '无权访问此页',
     notFoundOrDenied: '记录不存在或当前账号无权查看。',
     conflict: '服务端数据已变化，请刷新后重试。',
     serverError: '服务端暂时无法完成操作，请稍后重试。',

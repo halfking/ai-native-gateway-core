@@ -51,7 +51,7 @@ import {
   type SubscriptionTierRow,
 } from '@/api/subscriptionTiers'
 
-useHyperPage({ title: () => t('sts.title') })
+useHyperPage({ title: () => (allowed.value ? t('sts.title') : t('common.pageDenied')) })
 
 const auth = useAuthStore()
 

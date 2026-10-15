@@ -18956,3 +18956,340 @@ Q02 / Q04 在加 ⑥-4 之前是 `NO_RED`，之后变红 **不是因为弱化被
 
 ⇒ 本批**零产品代码改动**，零孤儿缺口变化（孤儿仍为 2，均已登记）。
 ⇒ ★ 它的产出是**把一个「碰巧对」的代理口径变成「被看着的口径」**。
+
+## 11.171 ★★ 壳层缺口第一次被**量化**：无权限深链会通过 `document.title` 泄露受限页面的真名（第一百三十四批）
+
+批 130~133 连着四批都在加判据、修判据。本批第一次回头量那条**一直挂着没动**的
+壳层缺口 —— `hyper-wiring.ts` 的 `beforeEach` 不消费 `meta.requiresRole`。
+
+量之前先问：**批 130~133 给 15 个面都补了自身兜底，这条缺口现在还值多少钱？**
+
+### 一、★ 缺口仍然存在，但它只剩一个可观测代价
+
+内容层面：15 个面现在**全部**有自身兜底（批 130 的普查门 + 批 131 的配对自证钉着），
+深链直达会显示 nope 区、**不发任何请求**。⇒ 内容不漏。
+
+⇒ ★★ 但 **`document.title` 会泄露页面真名**。机制：
+
+```
+useHyperPage({ title: () => t('anomalies.title') })     ← ① 视图注册（无条件）
+  └ onMounted → Hyper.registerPage()                      ← runtime.ts:340
+hyper/runtime.ts:189-191  routeTitle = t(to.meta.titleKey) ← ② 路由 meta（另一路）
+titleResolver 优先级链：overlay → page(registered) → route meta → appName
+```
+
+⇒ **两条独立来源**，而 15 个视图的 `title` 全是**无条件**的
+（`Hyper.registerPage` 在 `onMounted` 里跑，与 `allowed` 无关），
+路由 meta 里又正好是同一个 `titleKey`。
+
+⇒ 所以无权限用户深链 `/request-anomalies` 会看到：
+**页头写着「请求侧异常」、正文写着「无权访问」** —— 页面存在与名字都被泄出。
+
+### 二、★★★ 先量后改：把「修法形状」跑出来，而不是读代码推
+
+写一个临时探针直接跑 `TitleResolver`（**纯函数，命中即停**），拿到四条读数：
+
+| 情形 | 解析结果 | 含义 |
+|---|---|---|
+| A 注册真名 | `"请求侧异常"` ← `registered` | **泄漏是真的** |
+| B 注册**空串** | `"请求侧异常"` ← **`route`** | ★ **空字符串堵不住** |
+| C 注册「无权访问此页」 | `"无权访问此页"` | ★ **这一路能堵** |
+| D 两源都空 | `"LLM Gateway"` | 最坏不退化成空白 |
+
+⇒ ★★★ **B 这条读数决定了修法的形状**：
+若按直觉「无权限就返回空标题」，实测会落到 `route` 那一档，**真名照样显示** ——
+**空串是最容易想到、也完全无效的那个修法。**
+
+⇒ 而 C 成立的原因是：`registered` 那一档**优先于** `route meta`，
+所以只要注册一个**非空**的兜底标题，`route` 那一路就永远轮不到。
+
+### 三、修法（15 个面，一行一处）
+
+```ts
+// 之前（无条件）
+useHyperPage({ title: () => t('anomalies.title') })
+// 之后
+useHyperPage({ title: () => (allowed.value ? t('anomalies.title') : t('common.pageDenied')) })
+```
+
+- 15 个受限视图的守卫变量**全部**叫 `allowed`（逐个核过），所以是机械替换；
+- `useHyperPage` 的箭头是**惰性**的（`onMounted` 才调用），引用后声明的
+  `allowed` 无 TDZ 问题；
+- 新增 `common.pageDenied`（zh「无权访问此页」/ en「Access denied」）。
+  **没有复用 `common.forbidden`** —— 它讲的是「不能做某个操作」，语义不对口。
+
+⇒ ★★ **本批没有改壳层的导航语义**（拒绝之后去哪，是口径决策，见第八节），
+只在视图层把「页面名泄露」这一项堵掉。
+
+### 四、判据 `⑦` `⑧` 组（8 条）
+
+| 判据 | 钉什么 |
+|---|---|
+| ⑦-1~⑦-4 | **实测契约**：A/B/C/D 四条读数逐条钉住（尤其 B：空串无效） |
+| ⑧-1 | 15 个受限视图的标题**必须**随 `allowed` 切换（逐条核对） |
+| ⑧-2 | 路由 `meta.titleKey` 必须与视图的**有权**标题是同一个键 |
+| ⑧-3 | `pageDenied` 两语种都在、值 ≠ 键名、且**不含**任何一席的真页面名 |
+| ⑧-4 | 显式留档：`hyper-wiring.ts` **仍不消费** `requiresRole`（缺口没修，别误以为修了） |
+
+### 五、变异台 4/4 全红
+
+| 编号 | 变异 | 结果 |
+|---|---|---|
+| R01 | 把一个视图的标题改回**无条件** | **⑧-1 红** |
+| R02 | 把真页面名塞进 `pageDenied`（换汤不换药） | **⑧-3 红** |
+| R03 | 路由 `meta.titleKey` 与视图有权标题脱钩 | **⑧-2 红** |
+| **R04** | 把 `titleResolver` 里「registered 优先」**整档删掉** | **⑦ 组红** |
+
+⇒ ★★ R04 值得单说：它不碰视图、不碰 i18n，只删**优先级链的一档**
+⇒ **兜底标题当场失效**。这证明 ⑦ 组不是装饰 ——
+**视图层的修法整个建立在「registered 优先于 route」这条契约上**，
+契约一变，15 个视图的修法一起作废。
+
+### 六、⚠️ 本批我自己写错的一处（如实记）
+
+⑧-3 第一版把**提示语当成了期望值**：
+
+```ts
+expect(cond).toBe(`${loc} 的 pageDenied 里带了具体页面名`)   // ← 比的是 false === '提示语'
+```
+
+⇒ vitest 的第二参是 **`expect(value, message)`**，不是 `toBe(value, message)`。
+⇒ 报错是 `expected false to be 'zh-CN 的 pageDenied 里带了具体页面名'` ——
+**报错文本看起来像「数据不对」，实际是判据形状写错了。**
+
+⇒ ★ 与本会话第 131~133 批那条同源：
+**报错文本指向被测物，而成因在判据。** 判别动作仍是「先问量具对不对」。
+
+### 七、读数
+
+| 环节 | 结果 |
+|---|---|
+| `RestrictedPageTitle.spec.ts` 单跑 | **8 passed** |
+| `vue-tsc -b`（先删 tsbuildinfo） | RC=0 |
+| css / touch / i18n / comment 四门 | 全 RC=0（i18n 各 **3814** 键，+1） |
+| `gate:selftest` / `npm run build` | RC=0 |
+| **全量** | **220 files / 8083 passed / 1 skipped / 0 failed（RC=0）**（较批 133 **+8**；文件数 219→220 是**上游**在 rebase 的 24 个提交里加的，测试数不变） |
+| **变异台** | **4/4 全红** |
+| 十连跑 | **10/10** 全 8083 passed，快照 0 份 |
+
+### 八、★ 壳层缺口：代价已量化，但**决定权仍在属主**
+
+| 项 | 现状 |
+|---|---|
+| 内容泄露 | ✅ 已堵（批 130，15/15 面自身兜底） |
+| 页面名泄露 | ✅ **本批已堵**（视图层，15/15） |
+| 路由仍然解析、无权限用户仍能深链进入受限路由 | ⛔ **仍在** —— 改它要拍板「拒绝后去哪」 |
+
+⇒ 三种可能的壳层语义（**都需要产品决定，不该由本流水线替他选**）：
+① `return false` 中止导航（用户停在原页，**没有任何解释**）
+② 跳到某个「无权」页（需要新页面）
+③ 维持现状（视图层解释，批 130 的做法）
+
+⇒ ⇒ **本批把代价量清楚了、把能自己修的修掉了，把需要拍板的留在原地。**
+
+### 九、★ 变更清单（18 个文件）
+
+| 类别 | 文件 |
+|---|---|
+| 15 个受限视图 | `views/*.vue` × 15（各 1 行标题写法） |
+| i18n | `i18n/zh-CN.ts`、`i18n/en-US.ts`（`common.pageDenied`） |
+| 判据 | `views/RestrictedPageTitle.spec.ts`（新建，8 条） |
+| 文档 | 本节 |
+
+---
+
+## 11.172 第一百三十五批：壳层缺口的第二半（内容侧）第一次被量化 —— 深链打开受限页，请求发不发
+
+> 本批零产品代码改动。产出是一个新判据 `views/RestrictedPageGuard.spec.ts`（11 条）
+> 与一组读数。批 134 量的是**页面名**泄露；本批量的是**内容**侧：
+> 无权限用户深链打开一个受限页时，到底会不会把请求发出去。
+
+### 一、为什么现在量这个
+
+批 134 收尾时，壳层缺口的清单是三项：内容泄露、页面名泄露、路由仍会解析。
+第一项当时写的是「✅ 已堵（批 130）」，依据是 15 个受限视图代码里都有
+`allowed` 与 nope 区。**那是读代码读出来的，不是量出来的。**
+
+本批把第一项真正量一遍。判据分六组：
+
+| 组 | 量什么 |
+|---|---|
+| ① | 召回自证：路由里带 `requiresRole` 的声明**逐条**与判据表配对（数量 + 配对两问） |
+| ② | 错角色深链挂载，**零请求** |
+| ③ | **正控**：放行角色点该席的取数按钮，**必须**发出请求 |
+| ④ | 错角色时取数按钮**不在 DOM** |
+| ⑤ | nope 区不露裸 i18n 键（按**字典反查**） |
+| ⑥ | 表与视图不许漂移（`allowed` 用的哪个 gate、trigger/fill 是否真实存在） |
+
+### 二、★ 量具的关键决定：不 mock api 模块，改 mock 传输接缝
+
+第一版的设计是把 15 个 api 模块的导出函数统统换成 `vi.fn` 来数调用。
+**那个设计有一个会毁掉全部读数的坑**：`allowed` 用的正是这些模块导出的
+gate helper（如 `anomalyRoleIsSuperAdmin`），而「凡导出函数一律换成 vi.fn」
+会把 **gate helper 自己**也换成恒返回 `{}` 的桩 ⇒ `allowed` 恒真
+⇒ 「零请求」不是因为兜底，是因为**门被量具自己拆了**。
+
+改从 `api/transport` 的 `setTransport` 接缝计数。实测 15 个模块 **15/15**
+都走 `./client`，而 `client.ts` 的**唯一**传输出口在 `client.ts:252`
+的 `getTransport()({...})`。于是 **client、api 模块、gate helper、视图全部真跑**，
+只有最底层换成计数器。
+
+### 三、★★★ v1 的读数是假门 —— 正控把它自己否掉了
+
+v1 测「错角色挂载后零请求」，15/15 全绿。③ 的正控（放行角色挂载同一视图）跑出
+**14/15 一个请求都没发**：
+
+| v1 正控结果 | 结论 |
+|---|---|
+| `/request-anomalies` 发了 2 次 | 唯一**挂载即取数**的席位 |
+| 其余 14 席 0 次 | 它们**不在挂载时取数**，要用户点查询按钮 |
+
+⇒ 那个「零」根本不是兜底挡的。**v1 的 ② 是空门**：它对
+「兜底被删掉」与「兜底被删掉且这个视图本来就不自动取数」**给出同样的读数**。
+
+修法两处：③ 的正控改成**点该席的取数按钮**；② 增加一条更强的读数 ——
+**无权限时那个按钮压根不在 DOM 里**，不是「点了没反应」，而是**结构上无法发请求**。
+
+### 四、★★★ 正控第二次翻车：按钮是禁用的
+
+改完点按钮，mh / sw / ra 三席仍然 0 次。读模板才发现：这三席的按钮带
+`:disabled="loading || !paramsOk"`，参数不合法时**禁用**，
+`trigger('click')` 不会触发 handler。
+
+⇒ 量到的是「按钮禁用」而不是「兜底失效」。判据表因此加了 `fill` 字段
+（mh 填 `mh-credentialId` + `mh-rawModel`、sw 填 `sw-credentialId` + `sw-model`、
+ra 填 `ra-request-id`），正控先把参数填成合法值再点。
+
+⇒ ★★ 这条对任何「点按钮才取数」的普查判据都成立：
+**正控不把触发条件摆平，量到的可能是控件状态而不是被测行为。**
+
+### 五、读数
+
+**① 召回**：路由 `requiresRole` 声明 **15 条** / 表 **15 行**，
+档位分布 super_admin 8 条、admin 7 条，逐条配对（path + 档位 + 组件文件）全对。
+
+**② 错角色（`user`）深链挂载**：**15/15 零请求**，15/15 渲染 nope 区。
+
+**③ 正控（放行角色点取数按钮）**：**15/15 发出请求**。
+
+| 路径 | 挂载 | 点击 | 实际打到的端点（实测） |
+|---|---|---|---|
+| `/request-anomalies` | **2** | 0 | `/api/admin/request-anomalies?limit=50` |
+| `/errors-trend` | 0 | 1 | `/api/errors/trend?hours=24&supplier=&error_type=` |
+| `/model-history` | 0 | 1 | `/api/credentials/model-history?credential_id=1&raw_model_name=gpt-4&limit=50` |
+| `/sliding-window` | 0 | 1 | `/api/credentials/sliding-window?credential_id=1&model=gpt-4&minutes=60&limit=50` |
+| `/model-iq` | 0 | 2 | `/api/admin/model-iq/catalog` |
+| `/ops-overview` | 0 | 1 | `/api/admin/ops/overview` |
+| `/request-actions` | 0 | 1 | `/api/admin/requests/req-1/actions` |
+| `/subscription-tiers` | 0 | 1 | `/api/admin/tiers` |
+| `/platform-settings` | 0 | 1 | `/api/admin/settings` |
+| `/usage-enhanced` | 0 | 1 | `/api/admin/usage/cache-economics?days=30` |
+| `/data-lifecycle-storage` | 0 | 1 | `/api/admin/data-lifecycle/storage` |
+| `/storage-log-config` | 0 | 1 | `/api/admin/storage/config` |
+| `/storage-migration-state` | 0 | 1 | `/api/admin/storage/migration-state` |
+| `/turns-filter-options` | 0 | 1 | `/api/admin/turns/sessions/filter-options` |
+| `/session-analytics-filter-options` | 0 | 1 | `/api/admin/session-analytics/filter-options` |
+
+⇒ ★★ **本批最要紧的一条读数：挂载即取数的席位 = 1/15**，且那一席正是批 130 补兜底的那一席。
+⇒ ★ 风险面因此是**集中的**：自动发请求的面只有一个，它已经被 fail-closed 挡住；
+   其余 14 席要用户点按钮才发。
+
+**④ 结构层**：14 席（除自动取数那一席）无权限时取数按钮**均不在 DOM**。
+
+**★ 读数的宽度**（阴性结论必须说清边界）：传输桩固定返回 `{}`，
+所以一个视图里**链式**取数的第二个请求可能因响应形状校验失败而不发。
+实测 `/usage-enhanced` 的 `load()` 连调 `fetchCacheEconomics()` 与
+`fetchPeriodCompare()`（`UsageEnhancedView.vue:81-82`），本组只量到 **1** 次。
+⇒ **③ 只要求「≥1 次」，不要求「等于真实次数」**；
+**② 的 0 不受这条限制** —— 计数器打在 `getTransport()` 调用那一刻，
+请求只要发出去就一定被记下 ⇒ ② 的 0 是**真 0**。
+
+### 六、★★ 顺带给「后端缺陷③」补上了精确的影响面
+
+「`/api/admin/usage/{cost-trend,period-compare,cache-economics}` 缺角色下限」
+此前只知道「这一族缺下限」。本批实测把影响面钉死了：
+
+| 端点 | 移动端调用方 |
+|---|---|
+| `cache-economics` | `/usage-enhanced`（**admin 档受限席**）`load()` 第一发 |
+| `period-compare` | `/usage-enhanced` 同一函数第二发（见上文宽度说明） |
+| `cost-trend` | `usageEnhanced.ts` 导出了 `fetchCostTrend`，但**移动端零调用方**（`/usage` 调的是 `api/usage.ts` 里那个同名函数，指向同一端点，而**那一席不受限**） |
+
+⇒ ★★ 两个端点确实有**受限调用方**，而那一席的前端兜底是
+**唯一挡在 tenant_admin 与跨租户数据之间的东西**（服务端 `AdminMiddleware` 只认证不检 role）。
+⇒ 这条后端待办的优先级证据因此变强，但**后端仍然超范围，本流水线不动它**。
+
+### 七、★★★ 变异台 8 条，两条 `NO_RED` 各揭出**一个判据自身的洞**
+
+| 变异 | 手法 | 期望 | 结果 |
+|---|---|---|---|
+| M01 | 删 `RequestAnomaliesView.loadList()` 的 `if (!allowed.value) return` | ②-1 红 | ✅ RED |
+| M02 | 把 `/errors-trend` 的组件换成 `ModelHistoryView`（**条数不变**） | ①-2 红 | ✅ RED（①-1 绿） |
+| M03 | 把 `ErrorsTrendView` 的 `allowed` 焊成 `computed(() => true)` | ④-1 红 | ✅ RED |
+| M04 | nope 区改成 `t('et.nopeXX')` | ⑤-1 红 | ⛔ **NO_RED** → 修判据后 RED |
+| M05 | `stripComments` 顺序换回「先块后行」 | ①-0 红 | ⛔ **NO_RED** → 修判据后 RED |
+| M06 | 表里 `/model-history` 的 gate 名改错 | ⑥-1 红 | ✅ RED |
+| M07 | 表里 `/usage-enhanced` 的放行角色改成 `user` | ③-1 红 | ✅ RED |
+| M08 | nope 区不再按 `allowed` 渲染 | ②-1 红 | ✅ RED |
+
+⇒ 最终 **8/8 全红**，还原后基线 **11/11 绿**。
+
+**M05 揭出：①-0 原本是恒真的假门。**
+夹具只有两行、行尾是 `/api/maas/**`，后面**没有**一个真的块注释结尾。
+先删块注释时，那个 `/**` 找不到配对的结尾，**什么都不会发生** ⇒ 两种剥离顺序都通过。
+真实的坑（第一百三十二批 `appNav.ts` 吃掉 450 行真实代码）需要
+**后面存在一个真 `*/`**，夹具第三行补上后才复现。**那一行不能删，删了这条判据就废了。**
+
+**M04 揭出：裸键过滤器写错了三版。**
+
+1. 第一版按「尾巴全小写」过滤 ⇒ `et.nopeXX`（驼峰尾巴）**整条漏网**；
+2. 第二版加了词边界 `\b` ⇒ 实测**仍然漏**：真实渲染是
+   `Error trend` + `et.nope` + `Tenant scope` 拼起来的，裸键**粘在相邻文本中间、
+   根本没有词边界**（实测 `w.text()` 是 `"Error trendet.nopeXXTenant scope…"`）；
+3. 第三版去掉边界，改用**字典反查**（形状像键 **且** 字典里查不到）⇒ 有牙。
+
+⇒ ★★★ 根因不在正则，在**自证样本**：第一版 ⑤-2 的自证样本是
+`'无权访问 et.nopeXX'`（前后带空格）⇒ 词边界成立 ⇒ 自证绿灯，
+而真实 DOM 里根本没有词边界。
+**自证样本比现实友好时，判据是假门，而且它自己会给自己作证。**
+
+⇒ 另附一条口径：去掉边界后，粘接文本里前缀会被上一个词吞掉
+（匹到的是 `ndet.nopeXXTenant`）。本判据只回答「有没有漏出字典外的点分键」，
+**不**回答「这个键被切成了哪一段」⇒ 断言用**包含**而不是相等。
+要精确分词得写分词器，那是另一件事，不该混进这个问题里。
+
+**M02 与 M03 各量出一条分辨力边界：**
+M03（门焊死 `true`）让 **② 仍绿、只有 ④ 红** —— 因为那一席挂载不取数。
+⇒ ② 与 ④ 各压一半：**只测「零请求」是半盲的**，必须配一条「控件不在 DOM」。
+M02（换组件、条数不变）让 **①-1 绿、只有 ①-2 红** —— 这是第一百三十一批那条结论的复现。
+
+### 八、验证读数
+
+| 环节 | 结果 |
+|---|---|
+| `RestrictedPageGuard.spec.ts` 单跑 | **11 passed** |
+| `vue-tsc -b`（先删 tsbuildinfo） | RC=0 |
+| css / touch / i18n / comment 四门 | 全 RC=0（i18n 各 **3814** 键，与批 134 持平） |
+| `gate:selftest` / `npm run build` | RC=0 |
+| **全量** | **221 files / 8094 passed / 1 skipped / 0 failed**（较批 134 **+11**；文件数 220→221 即本批新建的判据） |
+| **变异台** | **8/8 全红**（其中 2 条是把两条假门修成有牙之后才红） |
+| 十连跑 | **10/10** 全绿 |
+
+### 九、★ 壳层缺口：内容侧已量化，结论与页名侧不同
+
+| 项 | 现状 |
+|---|---|
+| 内容泄露（会不会发请求） | ✅ **本批量化**：15/15 零请求，且**不是空门**（③ 正控 15/15 证明探针有牙） |
+| 页面名泄露 | ✅ 已堵（批 134） |
+| 路由仍解析、无权限用户仍能深链进入受限路由 | ⛔ **仍在** —— 改它要拍板「拒绝后去哪」，本批不动 |
+
+⇒ 与前两批不同的是，**这一项没有被改，是被量出来的**。
+⇒ ★ 而且量出来的结论比「已堵」更精确：内容侧的风险**集中在 1 席**
+（唯一挂载即取数的那一席，已 fail-closed），其余 14 席靠「不渲染控件」在结构层挡住。
+
+### 十、变更清单（2 个文件）
+
+| 类别 | 文件 |
+|---|---|
+| 判据 | `web-mobile/src/views/RestrictedPageGuard.spec.ts`（新建，11 条） |
+| 文档 | 本节 |

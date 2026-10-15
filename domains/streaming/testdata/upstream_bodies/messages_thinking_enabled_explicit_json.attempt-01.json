@@ -1,0 +1,1 @@
+{"input":[{"content":[{"text":"hi","type":"input_text"}],"role":"user"}],"max_output_tokens":128,"model":"m","reasoning":{"effort":"low"}}

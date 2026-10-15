@@ -1384,6 +1384,8 @@ files=(
   # 生产实测（62h 窗口）：mean 987.3 ms / 每次 114,159 buffer 页 /
   # 占 llm_gateway 全库数据库时间 4.06%。无表依赖，可放链尾；CREATE INDEX IF NOT EXISTS 幂等。
   "$ROOT_DIR/sql/migrations/startup/858_request_logs_final_success_gsid_idx.sql"
+  # Physical body-writer repair, independent of the historical 708 ledger.
+  "$ROOT_DIR/sql/migrations/startup/865_session_bodies_kind_reconcile.sql"
 )
 
 
@@ -1663,6 +1665,8 @@ for file in "${files[@]}"; do
   psql_file "$file"
   psql_query "INSERT INTO public.gateway_db_revision_sequences (sequence_name, content_sha256) VALUES ('${marker}', '${file_sha}') ON CONFLICT (sequence_name) DO NOTHING"
 done
+# Fingerprints cannot detect physical drift after delivery. Fail before cutover.
+psql_query "SELECT public.assert_session_bodies_kind_contract()"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

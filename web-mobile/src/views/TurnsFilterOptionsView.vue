@@ -47,7 +47,7 @@ import {
   type TurnsFilterOptions,
 } from '@/api/turnsFilterOptions'
 
-useHyperPage({ title: () => t('tfo.title') })
+useHyperPage({ title: () => (allowed.value ? t('tfo.title') : t('common.pageDenied')) })
 
 const auth = useAuthStore()
 

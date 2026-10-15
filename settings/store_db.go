@@ -55,6 +55,9 @@ func (s *StoreDB) Set(scope Scope, key string, value any) (jsonRawMessage, error
 	if scope == ScopeTenant {
 		return nil, fmt.Errorf("use SetTenant for tenant scope")
 	}
+	if isSessionWriteKey(key) {
+		return s.mutateSessionWriteSetting(key, value, false)
+	}
 	spec := Global.Spec(key)
 	if spec == nil {
 		return nil, fmt.Errorf("unknown setting: %s", key)
@@ -209,6 +212,9 @@ func (s *StoreDB) ListTenant(tenantID string) (map[string]jsonRawMessage, error)
 // Rollback reverts key to its prev_value. Returns the value that was
 // written as the new "current" value.
 func (s *StoreDB) Rollback(scope Scope, key, tenantID string) (jsonRawMessage, error) {
+	if scope != ScopeTenant && isSessionWriteKey(key) {
+		return s.mutateSessionWriteSetting(key, nil, true)
+	}
 	var newVal []byte
 	var err error
 	if scope == ScopeTenant {

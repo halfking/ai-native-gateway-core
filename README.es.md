@@ -78,7 +78,7 @@ graph TB
         CP["Control plane<br/>Admin API + embedded Vue SPA"]
         BGW["Background workers (~80 goroutines)<br/>probe / cleanup / stats / partitions"]
     end
-    GW --> PG[("PostgreSQL 15+<br/>durable facts · RLS 38+ tables · partitions")]
+    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 38+ tables · partitions")]
     GW --> RD[("Redis 7+<br/>URSM state · limits · sticky · session hot state")]
     DP -->|"IR conversion + vendor field strip"| P["LLM Providers<br/>OpenAI / Anthropic / Gemini / domestic"]
     CP -.->|"signed outbox events"| ASM["ai-session-manager<br/>session projection / analytics"]
@@ -106,10 +106,11 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `cmd/gateway/` | Raíz de composición — entrada de producción de binario único (plano de datos + control) |
 | `domains/` | 67 dominios DDD — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, hooks, seguridad… |
 | `admin/` + `web/` | API REST de administración + SPA Vue 3 + TypeScript (Element Plus, ECharts) |
+| `web-mobile/` | Frontend móvil (Vue 3 + TypeScript): segunda UI de producción; el despliegue se niega a arrancar sin su build `dist/` |
 | `bg/` | Workers en segundo plano — sondeo, limpieza del ciclo de vida, agregación de estadísticas, mantenimiento de particiones |
 | `storage/` | Fábrica de almacenamiento de doble modo (`full`: PG+Redis / `lite`: SQLite+ficheros+KV en proceso) |
 | `internal/` | Infraestructura transversal — IR, strip de campos del proveedor, espejo de sesión, outbox, telemetría… |
-| `sql/migrations/` + `db/migrations/` | Migraciones idempotentes (serie de arranque actualmente en 863) |
+| `sql/migrations/` + `db/migrations/` | Migraciones idempotentes (serie de arranque actualmente en 864) |
 | `installer/` | Módulo instalador/actualizador autónomo multiplataforma |
 | `scripts/`, `deploy/` | Herramientas de build, despliegue, espejo y verificación |
 
@@ -166,7 +167,7 @@ Todos los módulos siguientes están entregados y funcionando en el despliegue d
 ### Monitor de credenciales — salud multi-fuente × multi-credencial
 
 ![Credential Monitor](docs/assets/screenshots/credential-monitor.png)
-*Una matriz de disponibilidad 2-D en vivo (19 credenciales × 18 modelos en producción) muestra de un vistazo qué credencial rompe qué modelo. Latencia P95 por credencial, tasa de éxito con ventana deslizante de 1 hora y uso de slots de concurrencia. El pool de huellas (50+ User-Agents, 35 variantes de Accept-Language, 11 perfiles uTLS) + el sondeo adaptativo esquivan automáticamente el control de riesgo del upstream — los fallos disparan el breaker, sin intervención humana*
+*Una matriz de disponibilidad 2-D en vivo (19 credenciales × 18 modelos en producción) muestra de un vistazo qué credencial rompe qué modelo. Latencia P95 por credencial, tasa de éxito con ventana deslizante de 1 hora y uso de slots de concurrencia. El pool de huellas (42 User-Agents, 35 variantes de Accept-Language) + el sondeo adaptativo esquivan automáticamente el control de riesgo del upstream — los fallos disparan el breaker, sin intervención humana*
 
 ### Configuración de tipos de trabajo — clasificación automática de tareas
 
@@ -362,7 +363,7 @@ Para el diseño completo del instalador, véase [installer/README.md](installer/
 | **Residencia de datos** | Los datos salen de su perímetro | Todos los datos permanecen dentro de su infraestructura |
 | **Facturación** | Por uso (USD) | Planes + créditos + paquetes booster — pensado para la PYME china, listo para Alipay |
 | **Modelos upstream** | Unos pocos grandes proveedores | Amplia cobertura de modelos + modelos domésticos chinos + modelos locales |
-| **Pool de huellas de credenciales** | Básico | 50+ User-Agents · 35 Accept-Language · 11 perfiles uTLS |
+| **Pool de huellas de credenciales** | Básico | 42 User-Agents · 35 Accept-Language |
 | **Gobernanza de sesión** | Logs a nivel de petición | Sesiones sticky + replay completo + compresión + ciclo de vida de 4 niveles |
 | **Pasarela de herramientas MCP** | Parcial | Entrega completa prevista para el T3 2026 |
 | **Amigable con China** | Limitada | UI completa en chino + modelos domésticos + Alipay |
@@ -468,7 +469,7 @@ Protección de información sensible: `.githooks/pre-push` ejecuta automáticame
 
 ## ✅ CI y puertas (desde 2026-09-14)
 
-- **Puerta oficial = `./verify.sh` local**: obligatorio antes de commit/despliegue (`go test ./...` completo, verificación de checksums de migraciones, cumplimiento de privacidad, vet, build, build del frontend). Los merge a main y las releases se rigen por él.
+- **Puerta oficial = `./verify.sh` local**: obligatorio antes de commit/despliegue (`go test ./...` completo, verificación de checksums de migraciones, cumplimiento de privacidad, vet, build; el build del frontend solo con `--web`). Los merge a main y las releases se rigen por él.
 - **Puerta ligera de codeup Flow**: el único remoto es codeup; `.github/workflows/` no se ejecuta en codeup; `.workflow/main-verify.yml` ofrece la configuración de pipeline como código (build + `go vet ./autoroute/...` + suite offline de auto matching con 60 casos); debe importarse una vez desde la página «Pipeline» del repositorio de codeup y después se dispara automáticamente con cada push/PR.
 - La regresión offline de auto matching puede relanzarse por separado: `go test ./autoroute/ -run 'TestAutoMatchingSuiteHeuristic|TestPromptClassificationMatrix'` (puramente offline, sin red).
 
