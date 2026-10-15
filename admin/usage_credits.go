@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/maas"
 )
 
@@ -116,10 +117,27 @@ func (h *Handler) queryCreditsFromBuckets(ctx context.Context, tenantID string, 
 	return credits, bucketRows, err
 }
 
-// requestLogsFromClause mirrors maas.requestLogsSource for admin usage queries.
+// requestLogsFromClause is the FROM source for admin usage/credits queries and
+// the board's error drill fallback.
+//
+// 2026-10-15（r1033）：两臂都改为 session 族供数（用户裁决「统计以
+// session_turns 为准、弃用 request_logs」）：
+//   · ≤7 天臂原读物理表 _request_logs_hot——S4 停写后冻结，看板「总积分
+//     消耗」的默认租户估算与错误钻取在短窗上停在停写前；现读会话族
+//     热腿原生源（session_turns_hot + details 投影，115 列 v1 形状）。
+//   · >7 天臂保持 canonical 视图 request_logs_with_current_month——视图族
+//     自 S4 起由 session 分支供数（生产 pg_get_viewdef 实证含 session_turns），
+//     同时保留 v1 历史行（停写前的存量）。
+//
+// credits 表达式（maas.RequestLogCreditsSQL）引用的 credits_rate_multiplier
+// 在会话投影上是 NULL（canonicalV2Comment）——估算腿按倍率 1.0 计，与
+// canonical 视图会话分支同口径；优先使用的 credits_charged 列真实投影。
+//
+// （maas 包有自己的 requestLogsSource——租户计费面读数，另行处理，此处
+// 刻意不改。）
 func requestLogsFromClause(days int) (from string, alias string) {
 	if days <= 7 {
-		return "_request_logs_hot AS r", "r"
+		return dbpkg.SessionFamilyTurnsHotSourceSQL() + " AS r", "r"
 	}
 	return "request_logs_with_current_month AS r", "r"
 }

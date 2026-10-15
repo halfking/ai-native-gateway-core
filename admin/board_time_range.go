@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/bg"
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
 
 // boardTimeRange is the resolved window for dashboard board queries.
@@ -141,17 +142,29 @@ func boardPresetTimeRange(days int, now time.Time) boardTimeRange {
 	}
 }
 
-// boardRequestLogsFromClause returns the cross-partition union view for dashboard queries.
-// 2026-08-31: switch to the _without_customer_id companion view. The full
-// view adds a LATERAL JOIN back to _request_logs_hot/request_logs to expose
-// customer_id (added by migration 575), which turns every COUNT/SUM/AVG
-// over the August 2026 columnar partition (314K rows) into an 11s+ Seq Scan
-// + Nested Loop that exhausts the 8s dashboard fallback timeout. The
-// board fallback path (admin/dashboard_board_queries.go:fallbackBoardSummary,
-// admin/dashboard_board_fallback.go:fallbackBoardPies/fillOverviewCountsFromLogs)
-// doesn't read customer_id at all, so we skip the LATERAL JOIN entirely.
+// boardRequestLogsFromClause returns the FROM source for dashboard fallback
+// queries.
+//
+// 2026-10-15（r1033）：换到**会话族原生源**（session_turns hot ∪ parent，
+// 115 列 v1 形状投影）。旧的 request_logs_with_current_month_without_customer_id
+// 是纯 v1 视图（_request_logs_hot UNION ALL _request_logs，无 session 分支，
+// 生产 pg_get_viewdef 实证）——S4 停写后该腿冻结，分钟统计缺覆盖的窗口里
+// fallback 会把「没有数据」和「停在停写前」混在同一张饼上。
+//
+// 列兼容性：fallback 全部查询（summary/trends/pies/error-drill/overview
+// counts）引用的列——ts/tenant_id/provider_id/request_status/success/
+// error_kind/client_model/outbound_model/prompt_tokens/completion_tokens/
+// cache_*_tokens/cost_usd/latency_ms/agent_name/client_profile/client_ip/
+// identity_hash + 探针谓词的 quality_flags/task_type/origin_actor + credits
+// 表达式的 credits_charged/credits_rate_multiplier——全部在
+// canonicalColumnOrderV2（115 列契约）里，投影按名字一一供给。
+//
+// 性能：hot∪parent 两腿 UNION ALL，外层 ts 谓词可下推进两臂（t.ts 为简单
+// 列引用）；fallback 只在分钟统计缺覆盖时触发（常态不跑），正确性优先。
+// ≤8d 窗口如需进一步提速可仿 f1b027645 换 hot-only 腿（SessionFamilyTurns
+// HotSourceSQL），此处保持全族以防 >7d 回退窗漏 parent 行。
 func boardRequestLogsFromClause() (from string, alias string) {
-	return "request_logs_with_current_month_without_customer_id AS r", "r"
+	return dbpkg.SessionFamilyTurnsSourceSQL() + " AS r", "r"
 }
 
 func boardStatsCoverageSlack(tr boardTimeRange) time.Duration {

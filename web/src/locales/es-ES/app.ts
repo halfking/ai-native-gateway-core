@@ -48,12 +48,10 @@ export default {
     lightTitle: 'Light mode',
     darkTitle: 'Dark mode',
   },
-  v1DataFrozen: {
-    title: 'Los datos de tráfico han dejado de actualizarse: las cifras de esta página solo reflejan el periodo anterior a la parada de escritura',
-    titleUnconfirmed: 'El interruptor de detención de escritura no está configurado explícitamente: no se puede saber si estas cifras están obsoletas',
+  dataHorizon: {
+    title: 'Los datos de tráfico se están quedando atrás: la pasarela atiende solicitudes pero session_turns no se mantiene al día',
     titleUnavailable: 'No se puede confirmar el estado de los datos de tráfico: las cifras de esta página pueden estar obsoletas',
-    affects: 'Clases de puntos de lectura afectadas',
-    gateKey: 'Ajuste de control',
+    hintLabel: 'Investigar',
     retry: 'Volver a comprobar',
     failedHint: 'No se pudo leer el estado de los datos. Un estado no confirmado no es un estado correcto: trata las cifras de esta página como posiblemente obsoletas.',
   },

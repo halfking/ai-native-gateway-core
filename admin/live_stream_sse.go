@@ -455,6 +455,9 @@ type LiveStreamSSEHub struct {
 
 	lastActivityMu sync.RWMutex
 	lastActivity   time.Time
+	// lastBusinessActivity 只统计业务请求（IsProbe=false），供 data_horizon
+	// 的断流判据使用——探针/auto 流量不进会话族，见 run 循环注释。
+	lastBusinessActivity time.Time
 
 	// providerCache is a sync.Map of provider_id → catalog_code.
 	// Populated lazily on first miss by ProviderCodeFor() so the
@@ -686,7 +689,11 @@ func NewLiveStreamSSEHub(db *pgxpool.Pool, cfg LiveStreamConfig) *LiveStreamSSEH
 		unregister:          make(chan *liveStreamClient, 16),
 		broadcast:           make(chan LiveRequest, cfg.BroadcastQueueSize),
 		clients:             make(map[*liveStreamClient]struct{}),
-		lastActivity:        time.Now(),
+		// 2026-10-15：零值初始化——lastActivity 语义改为「本进程最后一次
+		// 广播请求」的真实值，而不是「hub 创建时刻」。data_horizon 的断流
+		// 判据（admin/data_horizon.go）把零值读作「无流量信号」；用创建
+		// 时刻冒充信号会让空闲网关在每次重启后的近期窗内被误判 stale。
+		lastActivity:        time.Time{},
 		stopCh:              make(chan struct{}),
 		cachedSnapshot:      make(map[string]*cachedSnapshotEntry),
 		lastSnapshotAt:      make(map[string]time.Time),
@@ -812,6 +819,12 @@ func (h *LiveStreamSSEHub) Run() {
 		case req := <-h.broadcast:
 			h.lastActivityMu.Lock()
 			h.lastActivity = time.Now()
+			// 2026-10-15（r1033）：data_horizon 的断流判据只看**业务**请求——
+			// 探针/auto 流量不进会话族（S4 实测：auto 请求不产生 session_turns
+			// 行），拿它们当流量信号会在「只有探针在跑」的窗口误报断流。
+			if !req.IsProbe {
+				h.lastBusinessActivity = time.Now()
+			}
 			h.lastActivityMu.Unlock()
 			atomic.AddInt64(&h.broadcastCount, 1)
 			// Compute BOTH scopes so super-admin and tenant-admin clients each
@@ -2867,6 +2880,16 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 }
 
 // Stats 返回 SSE Hub 的监控指标
+// LastRequestSeenAt 返回本进程最后一次**业务**请求广播的时刻（零值 =
+// 启动以来未见业务请求；探针/auto 不计入——它们不进会话族）。
+// data_horizon 用它与 session_turns 的 MAX(ts) 对齐，区分「没数据因为
+// 没流量」与「没数据因为断流」。只读，不推动状态。
+func (h *LiveStreamSSEHub) LastRequestSeenAt() time.Time {
+	h.lastActivityMu.RLock()
+	defer h.lastActivityMu.RUnlock()
+	return h.lastBusinessActivity
+}
+
 func (h *LiveStreamSSEHub) Stats() map[string]interface{} {
 	h.mu.RLock()
 	activeClients := len(h.clients)

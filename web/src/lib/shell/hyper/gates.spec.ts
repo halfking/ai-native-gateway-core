@@ -549,7 +549,7 @@ describe('CSS 令牌存在性：var(--x) 不得引用未定义的令牌', () => 
     'composables/useDataViewMode.ts',
     'components/shell/AppBottomNav.vue',
     'components/shell/AppAccountSheet.vue',
-    'components/shell/V1DataFrozenBanner.vue',
+    'components/shell/DataHorizonBanner.vue',
     'components/ui/CardList.vue',
     'components/ui/ResponsiveDataView.vue',
     'components/ui/HyperLoadMore.vue',
@@ -560,7 +560,7 @@ describe('CSS 令牌存在性：var(--x) 不得引用未定义的令牌', () => 
   //   代价是暗色主题下横幅对比度 1.10:1（失败态 1.02:1）＝ 隐形。
   // ⇒ 这两条门**本来就是对的**，只是漏了这个文件。补进 OWNED 即可，不要另写一套。
   // ⚠️ 但 ① 仍然**看不见**「只在浅色块定义、深色块没定义」：它的 globalTokens 是
-  //    两个主题块的并集。分主题的那一维由 `V1DataFrozenBanner.test.ts` 的 D21 钉承担，
+  //    两个主题块的并集。分主题的那一维由 `DataHorizonBanner.test.ts` 的 D21 钉承担，
   //    两者互补，不是重复。
 
   /** 剥掉全部注释（块/模板/行）。只剥块注释不够：行注释里也可能有令牌名。 */
