@@ -77,9 +77,11 @@ func TestGateInjectsEveryDBCredentialName(t *testing.T) {
 	}
 	t.Logf("仓内 DB URL 变量名 %d 个：%v", len(names), names)
 
-	// TEST_TENANT_DATABASE_URL is the one name that must NOT be $GATE_URL.
+	// TEST_TENANT_DATABASE_URL needs a non-bypass role. The two destructive
+	// session fixtures instead need their dedicated required runner, checked
+	// below; they must never recreate public in this populated gate database.
 	//
-	// Every other name wants the ordinary gate DSN. This one wants a DSN whose
+	// Other names want the ordinary gate DSN. The tenant name wants a DSN whose
 	// role cannot bypass RLS, because its only consumers are tenant-isolation
 	// probes. Pointing it at $GATE_URL handed those probes a superuser
 	// (rolsuper=t, rolbypassrls=t), and
@@ -94,6 +96,12 @@ func TestGateInjectsEveryDBCredentialName(t *testing.T) {
 	const tenantVar = "TEST_TENANT_DATABASE_URL"
 	for _, name := range names {
 		if name == tenantVar {
+			continue
+		}
+		if contract, ok := dedicatedSessionDB(name); ok {
+			for _, problem := range sessionStorageGateProblems(name, contract, sessionStorageGateSources(t, contract, act)) {
+				t.Errorf("%s 专用隔离门缺失：%s", name, problem)
+			}
 			continue
 		}
 		if !regexp.MustCompile(regexp.QuoteMeta(name) + `="\$GATE_URL"`).MatchString(act) {
