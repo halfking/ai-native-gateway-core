@@ -281,6 +281,25 @@ for _v in D211_GO_BASE_IMAGE D211_RUNTIME_BASE_IMAGE D211_BASE_REGISTRY; do
     bad "--via 未转发 ${_v}，远端将回落 docker.io 默认基础镜像"
   fi
 done
+# ── Web 前端腿（2026-10-15）：root SPA / /m 移动端 / 版本元数据 ─────────
+# 形态钉桩：tar 排除必须收窄到顶层 ./dist（裸 --exclude=dist 按 basename
+# 匹配会把 web/dist、web-mobile/dist 一并排掉，root 只剩版本 JSON——
+# llm.itestu.cn 打不开管理页的根因）；种子+挂载+env 三件必须成套。
+# 判据剥掉注释行再匹配：脚本的警告注释里会引用裸 --exclude=dist 字样作说明
+_nocomment="$(grep -vE '^[[:space:]]*#' "$SCRIPT")"
+if printf '%s' "$_nocomment" | grep -q -- "--exclude=\./dist" \
+   && ! printf '%s' "$_nocomment" | grep -q -- "--exclude=dist"; then
+  ok "tar 同步排除收窄为顶层 ./dist（web/dist、web-mobile/dist 随树上树）"
+else
+  bad "tar 排除未收窄：裸 --exclude=dist 会排掉 web/dist（root SPA 缺失根因）"
+fi
+for _pat in 'LLM_GATEWAY_STATIC_DIR=/app/web/dist' 'MOBILE_WEB_DIST=/app/web-mobile/dist' '/app/version.json:ro'; do
+  if grep -qF "$_pat" "$SCRIPT"; then
+    ok "web 腿契约在场: $_pat"
+  else
+    bad "web 腿契约缺失: $_pat（SPA/移动端/版本元数据将回落或不可用）"
+  fi
+done
 
 echo
 printf '结果: %d 通过, %d 失败\n' "$pass" "$fail"
