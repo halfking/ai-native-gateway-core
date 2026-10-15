@@ -73,6 +73,8 @@ bash tests/observe_magpie_p0_contract_test.sh
 # 已认领的槽位、维护库探活（应用库还没建时也要认领）、以及自动安装先于 docker 失败。
 echo "[verify] deploy host-first resource contracts"
 bash tests/deploy_host_first_contract_test.sh
+echo "[verify] deploy session write environment contracts"
+bash tests/deploy_session_write_env_test.sh
 # 2026-10-10：252 上 pg17-disk-watch.sh 堆到 310 份副本、149 个僵死
 # `docker exec ... psql`，把 15G 内存吃到 swap 100% / load 300，PG 因此
 # 无法服务 154 网关（SQLSTATE 57P03、一小时 194 个 HTTP 503）。
@@ -118,8 +120,10 @@ go test ./... -count=1 -timeout=300s
 # 2026-10-14（r1031 §五-3 / 判据纪律 #11）：TestStorageAudit* 集成审计是三域存储
 # 契约（冷读一致性/跨实例一致性/V2 元数据配对）的唯一观测器，带 -tags=integration
 # 且需要一次性回环 Redis+PG——上面的 `go test ./...` 从不编译它们，此前无任何入口
-# 真实执行；首次执行即抓到真缺陷（F3）。docker 可用时必跑，否则显式 SKIP。
-echo "[verify] session storage audit integration suite (docker-gated)"
+# 真实执行；首次执行即抓到真缺陷（F3）。缺少依赖或观测到不一致均拒绝发布。
+echo "[verify] session storage audit gate decision contracts"
+bash tests/session_storage_audit_gate_test.sh
+echo "[verify] session storage audit integration suite (required coherence)"
 bash tests/session_storage_audit_gate.sh
 
 echo "[verify] privacy compliance tests"
