@@ -282,3 +282,66 @@ func TestStorageAuditTTLFailureLeavesPriorPairAndTTL(t *testing.T) {
 		})
 	}
 }
+
+func TestStorageAuditInvalidateRetiresLegacyAndPreservesPairOnDenial(t *testing.T) {
+	r, _ := auditStorage(t)
+	ctx := context.Background()
+	tenant, id := "audit-invalidate", fmt.Sprintf("audit-%d", time.Now().UnixNano())
+	legacy, key := legacyRedisKey(tenant, id), redisKey(tenant, id)
+	lockKey := key + ":lease"
+	user := fmt.Sprintf("audit-invalidate-%d", time.Now().UnixNano())
+	t.Cleanup(func() { r.Do(ctx, "ACL", "DELUSER", user); r.Del(ctx, legacy, key, lockKey) })
+	body := []byte(`{"messages":[{"role":"user","content":"confirmed"}]}`)
+	old := sharedState(body, "")
+	old.ApprovalStatus = ApprovalStateApproved
+	require.NoError(t, r.HSet(ctx, legacy, encodeSessionStateFields(old)...).Err())
+	require.NoError(t, r.PExpire(ctx, legacy, time.Minute).Err())
+	cache := NewSessionCache(auditRedisBackend{r}, nil)
+	fresh := sharedState(body, "")
+	fresh.ApprovalStatus = ApprovalStateRejected
+	require.NoError(t, cache.Set(ctx, tenant, id, fresh, body))
+	before := make([]map[string]string, 2)
+	expires := make([]int64, 2)
+	for i, k := range []string{legacy, key} {
+		var err error
+		before[i], err = r.HGetAll(ctx, k).Result()
+		require.NoError(t, err)
+		expires[i], err = r.Do(ctx, "PEXPIRETIME", k).Int64()
+		require.NoError(t, err)
+		require.Positive(t, expires[i])
+	}
+	// Exercise the actual invalidation script under a denied DEL identity;
+	// lease acquisition has its own DEL permission check, so seed the token
+	// separately to reach the invalidation preflight itself.
+	token := "confirmed-owner"
+	require.NoError(t, r.Set(ctx, lockKey, token, time.Minute).Err())
+	require.NoError(t, r.Do(ctx, "ACL", "SETUSER", user, "on", ">"+user, "~*", "+@all", "-del").Err())
+	limited := redis.NewClient(&redis.Options{Addr: r.Options().Addr, Username: user, Password: user, MaxRetries: -1})
+	t.Cleanup(func() { _ = limited.Close() })
+	allowed, err := limited.Eval(ctx, `return redis.acl_check_cmd('DEL',KEYS[1],KEYS[2]) and 1 or 0`, []string{legacy, key}).Int64()
+	require.NoError(t, err)
+	require.Zero(t, allowed, "denied DEL premise must actually be present")
+	err = NewSessionCache(auditRedisBackend{limited}, nil).invalidateShared(ctx, tenant, id, token)
+	require.Error(t, err)
+	for i, k := range []string{legacy, key} {
+		after, err := r.HGetAll(ctx, k).Result()
+		require.NoError(t, err)
+		require.Equal(t, before[i], after)
+		expiry, err := r.Do(ctx, "PEXPIRETIME", k).Int64()
+		require.NoError(t, err)
+		require.Equal(t, expires[i], expiry, "denied invalidation must preserve both TTLs")
+	}
+	got, out, err := NewSessionCache(auditRedisBackend{r}, nil).GetOrLoad(ctx, tenant, id)
+	require.NoError(t, err)
+	require.Equal(t, ApprovalStateRejected, got.ApprovalStatus)
+	require.Equal(t, string(body), string(out))
+	require.NoError(t, r.Del(ctx, lockKey).Err())
+	cache.Invalidate(ctx, tenant, id)
+	exists, err := r.Exists(ctx, legacy, key).Result()
+	require.NoError(t, err)
+	require.Zero(t, exists)
+	got, out, err = NewSessionCache(auditRedisBackend{r}, nil).GetOrLoad(ctx, tenant, id)
+	require.NoError(t, err)
+	require.Nil(t, got)
+	require.Empty(t, out)
+}
