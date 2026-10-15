@@ -51,7 +51,7 @@ import {
   type MigrationStateResponse,
 } from '@/api/storageMigrationState'
 
-useHyperPage({ title: () => t('sms.title') })
+useHyperPage({ title: () => (allowed.value ? t('sms.title') : t('common.pageDenied')) })
 
 const auth = useAuthStore()
 

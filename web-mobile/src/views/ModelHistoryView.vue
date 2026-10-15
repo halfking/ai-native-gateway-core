@@ -59,7 +59,7 @@ import {
   type ModelHistoryEvent,
 } from '@/api/modelHistory'
 
-useHyperPage({ title: () => t('mh.title') })
+useHyperPage({ title: () => (allowed.value ? t('mh.title') : t('common.pageDenied')) })
 
 const auth = useAuthStore()
 

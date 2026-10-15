@@ -36,7 +36,7 @@ import {
   type LogConfigResponse,
 } from '@/api/storageAndLogConfig'
 
-useHyperPage({ title: () => t('slc.title') })
+useHyperPage({ title: () => (allowed.value ? t('slc.title') : t('common.pageDenied')) })
 
 const auth = useAuthStore()
 

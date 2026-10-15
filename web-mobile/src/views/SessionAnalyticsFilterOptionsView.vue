@@ -67,7 +67,7 @@ import {
   type SessionAnalyticsFilterOptions,
 } from '@/api/sessionAnalyticsFilterOptions'
 
-useHyperPage({ title: () => t('saf.title') })
+useHyperPage({ title: () => (allowed.value ? t('saf.title') : t('common.pageDenied')) })
 
 const auth = useAuthStore()
 

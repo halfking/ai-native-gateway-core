@@ -61,7 +61,7 @@ import {
 import { useAuthStore } from '@/stores/auth'
 import { anomalyRoleIsSuperAdmin } from '@/api/requestAnomalies'
 
-useHyperPage({ title: () => t('anomalies.title') })
+useHyperPage({ title: () => (allowed.value ? t('anomalies.title') : t('common.pageDenied')) })
 
 const auth = useAuthStore()
 const role = computed(() => auth.role)

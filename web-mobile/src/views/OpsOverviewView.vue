@@ -73,7 +73,7 @@ import {
   type OpsOverviewResponse,
 } from '@/api/opsOverview'
 
-useHyperPage({ title: () => t('ops.title') })
+useHyperPage({ title: () => (allowed.value ? t('ops.title') : t('common.pageDenied')) })
 
 const auth = useAuthStore()
 
