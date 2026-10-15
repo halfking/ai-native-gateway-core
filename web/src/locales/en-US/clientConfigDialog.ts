@@ -94,6 +94,8 @@ export default {
   },
 
   error: {
+    invalidGatewayURL: "Enter a valid HTTP(S) API URL without credentials, query parameters, or a fragment.",
+    invalidProviderName: "Use 1–64 letters (A–Z), digits, underscores, or hyphens for the provider name, starting with a letter or digit.",
     featuredLoadFailed: "Failed to load featured models. Please retry.",
     catalogLoadFailed: "Failed to load the model catalog. Please retry.",
     selectModel: "Select at least one model. If featured models are empty, configure them in Routing Policy first.",

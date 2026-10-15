@@ -94,6 +94,8 @@ export default {
   },
 
   error: {
+    invalidGatewayURL: "Introduzca una URL de API HTTP(S) válida sin credenciales, parámetros de consulta ni fragmentos.",
+    invalidProviderName: "Use de 1 a 64 letras (A–Z), números, guiones bajos o guiones para el nombre del proveedor, comenzando con una letra o un número.",
     featuredLoadFailed: "No se pudieron cargar los modelos destacados. Reinténtelo.",
     catalogLoadFailed: "No se pudo cargar el catálogo de modelos. Reinténtelo.",
     selectModel: "Seleccione al menos un modelo. Si no hay modelos destacados, configúrelos primero en Política de enrutamiento.",

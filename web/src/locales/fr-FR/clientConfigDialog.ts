@@ -94,6 +94,8 @@ export default {
   },
 
   error: {
+    invalidGatewayURL: "Saisissez une URL API HTTP(S) valide, sans identifiants, paramètres de requête ni fragment.",
+    invalidProviderName: "Le nom du fournisseur doit comporter 1 à 64 lettres (A–Z), chiffres, traits de soulignement ou traits d’union et commencer par une lettre ou un chiffre.",
     featuredLoadFailed: "Impossible de charger les modèles en vedette. Réessayez.",
     catalogLoadFailed: "Impossible de charger le catalogue de modèles. Réessayez.",
     selectModel: "Sélectionnez au moins un modèle. Si aucun modèle en vedette n’est disponible, configurez-les d’abord dans Politique de routage.",

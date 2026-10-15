@@ -20,6 +20,27 @@ beforeEach(()=>{
 async function dialog(tool:'zcode'|'cursor'='zcode'){const view=mount(ClientConfigDialog,{props:{open:true,tool},global:{plugins:[i18n]}});await flushPromises();return view}
 async function generate(view:any){await view.findAll('button').find((button:any)=>button.text()==='生成配置')!.trigger('click');await flushPromises()}
 describe('client config dialog',()=>{
+ it.each([
+  { selector: 'input[type="url"]', value: 'not-a-url', error: 'invalidGatewayURL' as const },
+  { selector: 'input[maxlength="64"]', value: 'invalid:name', error: 'invalidProviderName' as const },
+ ])('localizes $error and updates it after a locale change without revealing a key', async ({ selector, value, error }) => {
+  i18n.global.locale.value = 'en'
+  const view = await dialog()
+  const input = view.get(selector)
+  await input.setValue(value)
+  await view.findAll('button').find(button => button.text() === enUS.footer.generate)!.trigger('click')
+  await flushPromises()
+  expect(view.get('.alert-danger').text()).toBe(enUS.error[error])
+  expect(revealKey).not.toHaveBeenCalled()
+  i18n.global.locale.value = 'zh-CN'
+  await flushPromises()
+  expect(view.get('.alert-danger').text()).toBe(zhCN.error[error])
+  expect(view.text()).not.toContain(enUS.error[error])
+  expect((input.element as HTMLInputElement).value).toBe(value)
+  expect(revealKey).not.toHaveBeenCalled()
+  expect(view.find('.results-section').exists()).toBe(false)
+  view.unmount()
+ })
  it('updates labels and an existing error when the locale changes without resetting the form', async () => {
   vi.mocked(getClientConfigFeatured).mockRejectedValue(new Error('unavailable'))
   const view = await dialog()

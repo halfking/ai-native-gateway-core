@@ -94,6 +94,8 @@ export default {
   },
 
   error: {
+    invalidGatewayURL: "API 位址須為有效的 HTTP(S) URL，且不能包含帳號、查詢參數或片段。",
+    invalidProviderName: "供應商名稱須為 1–64 個英文字母、數字、底線或連字號，且以字母或數字開頭。",
     featuredLoadFailed: "特色模型載入失敗，請重試。",
     catalogLoadFailed: "模型目錄載入失敗，請重試。",
     selectModel: "請至少選擇一個模型；特色模型為空時請先到「路由策略」配置。",
