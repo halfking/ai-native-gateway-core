@@ -9,15 +9,21 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/kaixuan/llm-gateway-go/domains/outputcompliance"
+	"github.com/kaixuan/llm-gateway-go/domains/sanitizerules"
 	"github.com/kaixuan/llm-gateway-go/internal/credentialtext"
 )
 
 // SensitiveFragment 检测到的敏感信息片段
 type SensitiveFragment struct {
-	Type  SensitiveType
-	Value string // 原始敏感值
-	Start int    // 在输入文本中的起始位置
-	End   int    // 在输入文本中的结束位置
+	Type       SensitiveType
+	Value      string // 原始敏感值
+	Start      int    // 在输入文本中的起始位置
+	End        int    // 在输入文本中的结束位置
+	RuleID     string
+	Action     string
+	Version    int64
+	Exemptions []string
 }
 
 // Detector 敏感信息检测器接口
@@ -88,7 +94,10 @@ type patternEntry struct {
 	// credibleSecretCandidate. Rules loaded from a YAML config own their
 	// own regex semantics and are never subject to that filter — a config
 	// author writing `KEY-[A-Z]{4}` means it literally.
-	vendorKeyShape bool
+	vendorKeyShape   bool
+	id, kind, action string
+	scopes           []DetectionScope
+	exemptions       []string
 }
 
 // PatternDetector 基于正则模式匹配的检测器
@@ -96,6 +105,7 @@ type PatternDetector struct {
 	mu         sync.RWMutex
 	patterns   []patternEntry
 	configPath string
+	rules      *sanitizerules.Manager
 }
 
 // NewPatternDetector 创建包含默认 PII 模式的检测器
@@ -115,52 +125,72 @@ func (d *PatternDetector) Detect(ctx context.Context, text string) ([]SensitiveF
 // DetectScope runs the detector under an explicit scope. ScopeRedact is what
 // Detect does; ScopeEgress additionally matches address rules and is reserved
 // for the tool-argument egress guard.
-func (d *PatternDetector) DetectScope(_ context.Context, text string, scope DetectionScope) ([]SensitiveFragment, error) {
+func (d *PatternDetector) DetectScope(ctx context.Context, text string, scope DetectionScope) ([]SensitiveFragment, error) {
 	if d == nil {
 		return nil, nil
 	}
 	d.mu.RLock()
 	patterns := append([]patternEntry(nil), d.patterns...)
 	d.mu.RUnlock()
+	managed, snapshot := d.managedPatterns(ctx, scope)
+	if snapshot != nil {
+		patterns = managed
+	}
+	var blocked string
 	var fragments []SensitiveFragment
 	seen := make(map[string]bool)
 	reserved := PlaceholderPattern.FindAllStringIndex(text, -1)
-	credentialView := credentialtext.DetectionText(text)
+	credentialView, syntaxSpans := credentialtext.DetectionView(text)
 	var pairAccount, pairSecret bool
 	for _, p := range patterns {
-		if p.regex.String() == credentialtext.CredentialPairPattern {
+		if p.kind == "credential_pair" {
 			pairAccount = pairAccount || p.sType == TypeAccount && p.group == 1
 			pairSecret = pairSecret || p.sType == TypeSecret && p.group == 2
 		}
 	}
 	var pairs [][]int
 	if scope == ScopeInputDeclarations && pairAccount && pairSecret {
-		pairs = credentialPair.FindAllStringSubmatchIndex(text, -1)
+		for _, p := range patterns {
+			if p.kind == "credential_pair" && p.sType == TypeSecret && p.group == 2 {
+				pairs = append(pairs, p.regex.FindAllStringSubmatchIndex(text, -1)...)
+			}
+		}
 	}
 
 	for _, p := range patterns {
-		if scope != ScopeEgress && scopedType(p.sType) {
+		if !p.appliesScope(scope) {
+			continue
+		}
+		if snapshot == nil && scope != ScopeEgress && scopedType(p.sType) {
 			continue
 		}
 		re := p.regex
-		if scope != ScopeInputDeclarations {
-			switch p.regex.String() {
-			case credentialtext.CredentialPairPattern:
+		if snapshot == nil && scope != ScopeInputDeclarations {
+			switch p.kind {
+			case "credential_pair":
 				continue
-			case credentialValuePattern:
+			case "credential_declaration":
 				re = structuredPassword
-			case accountValuePattern:
+			case "account_declaration":
 				re = structuredAccount
 			}
 		}
 		scan := text
-		if p.sType == TypeSecret && p.regex.String() == credentialValuePattern {
+		if p.sType == TypeSecret && (p.kind == "credential_declaration" || p.kind == "credential_assignment") {
 			scan = credentialView
+			if snapshot != nil {
+				for _, span := range syntaxSpans {
+					if re.MatchString(text[span[0]:span[1]]) {
+						d.observeRule(ctx, p.id, snapshot.Version, scope, "exempted")
+						break
+					}
+				}
+			}
 		}
 		matches := re.FindAllStringSubmatchIndex(scan, -1)
 		for _, m := range matches {
 			start, end := m[2*p.group], m[2*p.group+1]
-			declaration := p.regex.String() == credentialValuePattern || p.regex.String() == accountValuePattern
+			declaration := p.kind == "credential_declaration" || p.kind == "account_declaration" || p.kind == "credential_assignment" || p.kind == "account_assignment"
 			if declaration {
 				overlap := false
 				for _, pair := range pairs {
@@ -169,7 +199,7 @@ func (d *PatternDetector) DetectScope(_ context.Context, text string, scope Dete
 						break
 					}
 				}
-				if overlap {
+				if overlap && p.action != "block" {
 					continue
 				}
 			}
@@ -187,7 +217,17 @@ func (d *PatternDetector) DetectScope(_ context.Context, text string, scope Dete
 			}
 
 			value := text[start:end]
-			if (declaration || p.regex.String() == credentialtext.CredentialPairPattern) && credentialtext.NonLiteralDeclaration(text[m[0]:m[2*p.group]], text[m[2*p.group]:m[2*p.group+1]], value, text[end:], scope == ScopeEgress) {
+			if snapshot != nil && p.kind == "review_combination" {
+				d.observeCombination(ctx, p.id, snapshot.Version, value)
+				continue
+			}
+			if (declaration || p.kind == "credential_pair") && credentialtext.NonLiteralDeclaration(text[m[0]:m[2*p.group]], text[m[2*p.group]:m[2*p.group+1]], value, text[end:], scope == ScopeEgress) {
+				if snapshot != nil {
+					d.observeRule(ctx, p.id, snapshot.Version, scope, "exempted")
+				}
+				continue
+			}
+			if p.kind == "network_destination" && !hasPublicHostDestination(value) {
 				continue
 			}
 			typ := p.sType
@@ -203,19 +243,48 @@ func (d *PatternDetector) DetectScope(_ context.Context, text string, scope Dete
 					typ = TypeInternalIP
 				}
 			}
+			if trusted, _ := ctx.Value(managedTrustedKey{}).(bool); trusted && scope == ScopeRedact && outputcompliance.RestoredValuesFromContext(ctx).Contains(value) {
+				d.observeRule(ctx, p.id, snapshot.Version, scope, "exempted")
+				continue
+			}
+			if snapshot != nil && p.action == "log" {
+				d.observeRule(ctx, p.id, snapshot.Version, scope, "log")
+				continue
+			}
+			if snapshot != nil && scope != ScopeEgress && p.action == "block" {
+				d.observeRule(ctx, p.id, snapshot.Version, scope, "block")
+				blocked = p.id
+				continue
+			}
 			// Exempt only marker bytes, never the surrounding secret/private key.
 			for _, span := range outsideReservedSpans(start, end, reserved) {
 				key := fmt.Sprintf("%s:%d:%d", typ, span[0], span[1])
+				if snapshot != nil {
+					key += ":" + p.id
+				}
 				if seen[key] {
 					continue
 				}
 				seen[key] = true
-				fragments = append(fragments, SensitiveFragment{Type: typ, Value: text[span[0]:span[1]], Start: span[0], End: span[1]})
+				f := SensitiveFragment{Type: typ, Value: text[span[0]:span[1]], Start: span[0], End: span[1]}
+				if snapshot != nil {
+					f.Exemptions = p.exemptions
+					f.RuleID = p.id
+					f.Action = p.action
+					f.Version = snapshot.Version
+					if scope != ScopeEgress {
+						d.observeRule(ctx, p.id, snapshot.Version, scope, p.action)
+					}
+				}
+				fragments = append(fragments, f)
 			}
 		}
 	}
 
-	sort.Slice(fragments, func(i, j int) bool {
+	if blocked != "" {
+		return nil, ruleBlockError(blocked)
+	}
+	sort.SliceStable(fragments, func(i, j int) bool {
 		return fragments[i].Start < fragments[j].Start
 	})
 	return fragments, nil

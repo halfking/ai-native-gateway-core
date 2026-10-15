@@ -187,6 +187,7 @@ files=(
   # 无法用 lower(raw_name) 表达式索引与 uq 第二列，CMI rollup 68/h 被 30s
   # 击杀（2026-10-15 252 审计轮实测）。2,744 行构建毫秒级。
   "$ROOT_DIR/sql/migrations/startup/864_model_aliases_bare_raw_name_active_idx.sql"
+  "$ROOT_DIR/sql/migrations/startup/866_sanitize_rule_management.sql"
   "$ROOT_DIR/sql/migrations/startup/394_request_stats_minute.sql"
   # 2026-10-12 host-first PG/gateway log audit: the candidate-binding scope
   # revision chain (541 raw_model table → 569 canonical table + cmb triggers →

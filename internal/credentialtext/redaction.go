@@ -16,12 +16,20 @@ var maskedReplacement = regexp.MustCompile(`(?i)^(?:(?:[a-z0-9_]*(?:password|pas
 // credential wildcard and a known masking replacement qualifies. Otherwise
 // the original expression remains visible, including its credential context.
 func DetectionText(text string) string {
+	view, _ := DetectionView(text)
+	return view
+}
+
+// DetectionView also returns byte ranges recognized as masking syntax. Callers
+// can audit exemptions without retaining the script or any credential values.
+func DetectionView(text string) (string, [][2]int) {
 	if !strings.Contains(text, "sed") {
-		return text
+		return text, nil
 	}
+	var spans [][2]int
 	view := []byte(text)
 	for _, match := range sedScript.FindAllStringSubmatchIndex(text, -1) {
-		maskScript(view, text, match)
+		maskScript(view, text, match, &spans)
 		end := match[1]
 		for {
 			next := nextSedScript.FindStringSubmatchIndex(text[end:])
@@ -33,14 +41,14 @@ func DetectionText(text string) string {
 					next[i] += end
 				}
 			}
-			maskScript(view, text, next)
+			maskScript(view, text, next, &spans)
 			end = next[1]
 		}
 	}
-	return string(view)
+	return string(view), spans
 }
 
-func maskScript(view []byte, text string, match []int) {
+func maskScript(view []byte, text string, match []int, spans *[][2]int) {
 	start, end := match[2], match[3]
 	if start < 0 {
 		start, end = match[4], match[5]
@@ -77,6 +85,7 @@ func maskScript(view []byte, text string, match []int) {
 		if wildcardAssignment.MatchString(script[patternStart:patternEnd]) && (replacement == "" || maskedReplacement.MatchString(replacement)) {
 			blank(view, start+patternStart, start+patternEnd)
 			blank(view, start+replacementStart, start+replacementEnd)
+			*spans = append(*spans, [2]int{start + patternStart, start + patternEnd}, [2]int{start + replacementStart, start + replacementEnd})
 		}
 		cursor = flagsEnd
 	}
