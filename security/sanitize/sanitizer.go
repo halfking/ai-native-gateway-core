@@ -138,7 +138,15 @@ func (s *Sanitizer) sanitizeInputStable(ctx context.Context, text string, offset
 		return nil, ErrNilSanitizer
 	}
 
-	fragments, err := s.detector.Detect(ctx, text)
+	var fragments []SensitiveFragment
+	var err error
+	if scoped, ok := s.detector.(interface {
+		DetectScope(context.Context, string, DetectionScope) ([]SensitiveFragment, error)
+	}); ok {
+		fragments, err = scoped.DetectScope(ctx, text, ScopeInputDeclarations)
+	} else {
+		fragments, err = s.detector.Detect(ctx, text)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("sanitize: detect failed: %w", err)
 	}

@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/kaixuan/llm-gateway-go/internal/credentialtext"
 )
 
 // SensitiveFragment 检测到的敏感信息片段
@@ -52,6 +54,9 @@ const (
 	// ScopeEgress additionally matches address rules. Used only by the
 	// tool-argument egress guard.
 	ScopeEgress
+	// ScopeInputDeclarations additionally recognizes human credential declarations.
+	// Natural-language heuristics must never widen output tool blocking.
+	ScopeInputDeclarations
 )
 
 // scopedType reports whether a fragment type belongs to the address family
@@ -120,23 +125,71 @@ func (d *PatternDetector) DetectScope(_ context.Context, text string, scope Dete
 	var fragments []SensitiveFragment
 	seen := make(map[string]bool)
 	reserved := PlaceholderPattern.FindAllStringIndex(text, -1)
+	credentialView := credentialtext.DetectionText(text)
+	var pairAccount, pairSecret bool
+	for _, p := range patterns {
+		if p.regex.String() == credentialtext.CredentialPairPattern {
+			pairAccount = pairAccount || p.sType == TypeAccount && p.group == 1
+			pairSecret = pairSecret || p.sType == TypeSecret && p.group == 2
+		}
+	}
+	var pairs [][]int
+	if scope == ScopeInputDeclarations && pairAccount && pairSecret {
+		pairs = credentialPair.FindAllStringSubmatchIndex(text, -1)
+	}
 
 	for _, p := range patterns {
-		if scope == ScopeRedact && scopedType(p.sType) {
+		if scope != ScopeEgress && scopedType(p.sType) {
 			continue
 		}
-		matches := p.regex.FindAllStringSubmatchIndex(text, -1)
+		re := p.regex
+		if scope != ScopeInputDeclarations {
+			switch p.regex.String() {
+			case credentialtext.CredentialPairPattern:
+				continue
+			case credentialValuePattern:
+				re = structuredPassword
+			case accountValuePattern:
+				re = structuredAccount
+			}
+		}
+		scan := text
+		if p.sType == TypeSecret && p.regex.String() == credentialValuePattern {
+			scan = credentialView
+		}
+		matches := re.FindAllStringSubmatchIndex(scan, -1)
 		for _, m := range matches {
 			start, end := m[2*p.group], m[2*p.group+1]
-			if p.group > 0 && end-start >= 2 && ((text[start] == '"' && text[end-1] == '"') || (text[start] == '\'' && text[end-1] == '\'')) {
-				start++
-				end--
+			declaration := p.regex.String() == credentialValuePattern || p.regex.String() == accountValuePattern
+			if declaration {
+				overlap := false
+				for _, pair := range pairs {
+					if start >= pair[0] && end <= pair[1] {
+						overlap = true
+						break
+					}
+				}
+				if overlap {
+					continue
+				}
+			}
+			if p.group > 0 && start >= 0 && end > start {
+				for _, quotes := range [][2]string{{"\"", "\""}, {"'", "'"}, {"`", "`"}, {"“", "”"}, {"‘", "’"}} {
+					if end-start >= len(quotes[0])+len(quotes[1]) && strings.HasPrefix(text[start:end], quotes[0]) && strings.HasSuffix(text[start:end], quotes[1]) {
+						start += len(quotes[0])
+						end -= len(quotes[1])
+						break
+					}
+				}
 			}
 			if start < 0 || start >= end {
 				continue
 			}
 
 			value := text[start:end]
+			if (declaration || p.regex.String() == credentialtext.CredentialPairPattern) && credentialtext.NonLiteralDeclaration(text[m[0]:m[2*p.group]], text[m[2*p.group]:m[2*p.group+1]], value, text[end:], scope == ScopeEgress) {
+				continue
+			}
 			typ := p.sType
 			if p.vendorKeyShape && !credibleSecretCandidate(value) {
 				continue
