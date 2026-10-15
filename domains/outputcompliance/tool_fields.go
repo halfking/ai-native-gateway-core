@@ -1,7 +1,6 @@
 package outputcompliance
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -22,10 +21,8 @@ func (c *Checker) CheckField(ctx context.Context, tenant, label, text string) (*
 	if !json.Valid([]byte(text)) {
 		return nil, fmt.Errorf("invalid tool argument JSON")
 	}
-	decoder := json.NewDecoder(bytes.NewBufferString(text))
-	decoder.UseNumber()
-	var root any
-	if err := decoder.Decode(&root); err != nil {
+	root, err := decodeToolJSON(text)
+	if err != nil {
 		return nil, err
 	}
 	result := &ComplianceResult{Compliant: true, RedactedOutput: text}
@@ -88,7 +85,6 @@ func (c *Checker) CheckField(ctx context.Context, tenant, label, text string) (*
 		}
 		return value, nil
 	}
-	var err error
 	root, err = visit(root, 0)
 	if err != nil {
 		return nil, err

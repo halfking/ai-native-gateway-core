@@ -48,3 +48,17 @@ func TestR1034ToolScalarAndKeyPIIRemainInspected(t *testing.T) {
 		}
 	}
 }
+
+func TestR1034ToolJSONRejectsDuplicateKeys(t *testing.T) {
+	c := NewBuiltinChecker()
+	for _, args := range []string{`{"command":"password=ActualValue987!","command":"echo ok"}`, `{"nested":{"command":"password=ActualValue987!"},"nested":{}}`, `{"command":"password=ActualValue987!","comm\u0061nd":"echo ok"}`, `{"nested":[{"command":"password=ActualValue987!","command":"echo ok"}]}`} {
+		before, err := c.Check(context.Background(), "default", args)
+		if err != nil || len(before.Issues) == 0 {
+			t.Fatal("raw detection premise absent")
+		}
+		r, err := c.CheckField(context.Background(), "default", "__tool_json@Bash", args)
+		if err == nil && (r == nil || !r.Blocked) {
+			t.Fatal("ambiguous JSON hid a previous value")
+		}
+	}
+}
