@@ -75,6 +75,8 @@ echo "[verify] deploy host-first resource contracts"
 bash tests/deploy_host_first_contract_test.sh
 echo "[verify] deploy session write environment contracts"
 bash tests/deploy_session_write_env_test.sh
+echo "[verify] rollback running-service verification"
+bash tests/deploy_rollback_service_test.sh
 # 2026-10-10：252 上 pg17-disk-watch.sh 堆到 310 份副本、149 个僵死
 # `docker exec ... psql`，把 15G 内存吃到 swap 100% / load 300，PG 因此
 # 无法服务 154 网关（SQLSTATE 57P03、一小时 194 个 HTTP 503）。
