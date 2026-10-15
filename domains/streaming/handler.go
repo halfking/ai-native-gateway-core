@@ -1145,6 +1145,7 @@ type ChatHandler struct {
 	// with {SENSITIVE:type:index} placeholders before the request reaches
 	// the executor. The reverse mapping is persisted to Redis and consumed
 	// by SanitizeRestoreInterceptor on the response path. nil = disabled.
+	pinRuleContext          func(context.Context) context.Context
 	sanitizeInputMiddleware func(http.Handler) http.Handler
 
 	// handoffHook may return an explicit resume packet before provider dispatch;
@@ -1900,6 +1901,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w, r, journeyWriter := beginRequestJourney(w, r, h)
 	defer finishRequestJourney(r, journeyWriter)
 	r = markExplicitStreamSession(r)
+	r = h.pinRules(r)
 	if h.sanitizeInputMiddleware != nil {
 		var authorized bool
 		r, authorized = h.prepareSanitizeRequest(r)
@@ -4819,6 +4821,24 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 	}
 goalRetryLoopDone:
+	if errors.Is(execErr, errorsx.ErrOutputPolicyBlocked) {
+		if preStream != nil {
+			h.unregisterStreamConnection(requestID, "output_policy_blocked")
+			preStream.stop()
+			preStream = nil
+		}
+		p, c := failureAttribution(execErr, candidates)
+		logCtx.SetRoute(p, c)
+		if ee, ok := execErr.(*executors.ExecuteError); ok {
+			logCtx.ApplyQueueTimestampsFromError(ee)
+		}
+		auditBuilder.Success(false)
+		rt.Emit(state.EventFailed)
+		captureAndEmitFailure("output_policy_blocked", "Response blocked by output policy", p, c)
+		writeErrorJSONWithDebugProto(protocolOfRequest(r), w, http.StatusForbidden, requestID,
+			"Response blocked by output policy", "policy_violation", "output_policy_blocked", nil)
+		return
+	}
 	// A held tool lane may be rejected while survival reports its write error
 	// as a disconnect. The interceptor already rendered the policy terminal;
 	// preserve that decision before generic executor/survival failure handling.
