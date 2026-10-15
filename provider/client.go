@@ -334,9 +334,11 @@ func (c *Candidate) UnavailableReason() string {
 	if c.LifecycleStatus != "" && c.LifecycleStatus != "active" {
 		reasons = append(reasons, "lifecycle:"+c.LifecycleStatus)
 	}
-	if c.CircuitState == "open" {
-		reasons = append(reasons, "circuit:open")
-	}
+	// CircuitState is an asynchronous, lossy DB mirror of a per-process
+	// breaker, not routing authority. Gating here can strand a healthy
+	// credential after restart or prevent the live breaker from receiving
+	// its half-open recovery probe. Keep the field for diagnostics; actual
+	// admission is enforced by credential.Manager.Allow at dispatch.
 	switch c.AvailabilityState {
 	case "suspended":
 		reasons = append(reasons, "availability:suspended")
