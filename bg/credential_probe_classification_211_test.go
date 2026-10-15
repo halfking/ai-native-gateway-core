@@ -241,8 +241,8 @@ func TestCredentialProbe211FallbackFailureAndCapability(t *testing.T) {
 			if ok || models != 1 || responses != 1 || chat != 1 {
 				t.Fatalf("ok=%v hits models=%d responses=%d chat=%d msg=%s", ok, models, responses, chat, msg)
 			}
-			if !strings.HasPrefix(msg, fmt.Sprintf("chat status %d:", tc.chat)) || !strings.Contains(msg, "responses probe rejected as unsupported") {
-				t.Fatalf("final Chat envelope/diagnostic lost: %s", msg)
+			if msg != fmt.Sprintf("chat status %d: %s", tc.chat, tc.body) {
+				t.Fatalf("classification must receive only final Chat error: %s", msg)
 			}
 			pr := classifyProbeFailure(msg)
 			if pr.AvailabilityState != tc.state || pr.StateReasonCode != tc.reason || pr.BindingOnly != tc.binding {
@@ -275,6 +275,59 @@ func TestCredentialProbe211FallbackFailureAndCapability(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCredentialProbe211FallbackLegIsolation(t *testing.T) {
+	for _, nativeBody := range []string{
+		`{"error":{"message":"Responses API unsupported. This model is not available in your region"}}`,
+		`{"error":{"message":"Responses API unsupported. Insufficient account balance"}}`,
+		`{"error":{"message":"Responses API unsupported. API key disabled"}}`,
+	} {
+		for _, final := range []struct {
+			body, state, reason string
+			binding             bool
+		}{
+			{`{"error":{"message":"Forbidden"}}`, "auth_failed", "auth_error", false},
+			{`{"error":{"message":"Insufficient account balance"}}`, "ready", "balance_low", false},
+			{`{"error":{"message":"This model is not available in your region"}}`, "ready", "model_binding_error", true},
+		} {
+			t.Run(nativeBody+"/"+final.reason, func(t *testing.T) {
+				var models, responses, chat int
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					switch r.URL.Path {
+					case "/v1/models":
+						models++
+						fmt.Fprint(w, `{"data":[{"id":"claude-sonnet-5"}]}`)
+					case "/v1/responses":
+						responses++
+						w.WriteHeader(400)
+						fmt.Fprint(w, nativeBody)
+					case "/v1/chat/completions":
+						chat++
+						w.WriteHeader(403)
+						fmt.Fprint(w, final.body)
+					default:
+						t.Errorf("unexpected path %s", r.URL.Path)
+						w.WriteHeader(404)
+					}
+				}))
+				defer srv.Close()
+				c := &CredentialProbeV2{}
+				var capability *bool
+				ok, msg := c.probeCredentialWithCapability(t.Context(), v2Snapshot{BaseURL: srv.URL, ProviderProtocol: "openai-responses", DefaultProbeModel: "claude-sonnet-5"}, &capability)
+				if ok || models != 1 || responses != 1 || chat != 1 || capability == nil || *capability {
+					t.Fatalf("probe premises missing: ok=%v hits=%d/%d/%d capability=%v", ok, models, responses, chat, capability)
+				}
+				pr := classifyProbeFailure(msg)
+				if pr.AvailabilityState != final.state || pr.StateReasonCode != final.reason || pr.BindingOnly != final.binding {
+					t.Fatalf("old Responses body polluted final Chat verdict: %+v", pr)
+				}
+				if msg != "chat status 403: "+final.body {
+					t.Fatalf("cross-leg classification text: %s", msg)
+				}
+			})
+		}
 	}
 }
 

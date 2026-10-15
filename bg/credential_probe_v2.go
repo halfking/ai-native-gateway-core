@@ -968,11 +968,12 @@ func (c *CredentialProbeV2) probeCredentialWithCapability(ctx context.Context, s
 				if chatOK {
 					return true, ""
 				}
-				// miniChat 不回 HTTP 状态/时延，不伪造 "(HTTP 0, 0ms)"——
-				// 真实状态码已在 chatErr 文本里（"chat status %d"）。最终
-				// Chat envelope 必须在前，Responses 仅作诊断，不能让已知不支持
-				// 的旧状态码覆盖最终鉴权/额度/模型错误，也不扫描正文伪前缀。
-				return false, firstLine(chatErr) + "; responses probe rejected as unsupported: " + errMsg
+				// Keep legs separate: even a trailing native-body keyword can
+				// contaminate quota/key/model classification of the final Chat.
+				// errMsg already contains only the sanitized, bounded preview.
+				slog.Info("credential probe v2: Responses unsupported before failed Chat fallback",
+					"responses_status", respStatus, "responses_error", errMsg)
+				return false, chatErr
 			}
 			return ok, errMsg
 		}
