@@ -8807,4 +8807,5 @@ git show origin/main:scripts/deploy-lib/db-changelog.sh
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
+| 867 | `867_session_summaries_last_request_at_idx.sql` | `7da780e89d9e0855215f842449258242176afe416cbbf5e75b15986d5c1a0d01` | 内容加固登记（本轮未执行生产迁移）：同名索引必须 valid/ready 且双列顺序、collation、默认 opclass、部分谓词一致；缺索引且 heap 超过 32MB 时拒绝普通构建，要求低负载窗口并发预建；保留外层存在性判断以跳过 CREATE，lock_timeout 收紧为 2s。真实 PG18 临时 varchar 夹具验证首屏/keyset 无排序、重复时间戳、三类排序反例拒绝及大表保护；canonical/embed 一致。下列原指纹保留，索引现场 valid/ready 不代表本加固字节已上线。 |
 | 867 | `867_session_summaries_last_request_at_idx.sql` | `b8eedd6b67628339af4e327c32020084ea1a37cda32de7a1d891fe5f81379c73` | 252 生产共享库已于 2026-10-16 03:3x 由运维 `CREATE INDEX CONCURRENTLY` 同名预建（构建 32s、valid、49MB；未跑本文件，台账待部署链记账时由 to_regclass 判定整段跳过、不拿表锁）。`/api/admin/sessions/online` 超管路径 EXPLAIN 102ms/3,974 缓冲页 → 0.22ms/19 页；245/154 端点首调 4–21ms。canonical 与 embeddata 两副本 SHA 一致；一次性 PG17 实测首跑/重放/down-up 往返通过，且证实「索引已存在时裸 IF NOT EXISTS 仍被写事务挡住」（2s 锁超时）而本文件 0s 完成。211 / host-first 未应用（随下次部署普通构建）。 |

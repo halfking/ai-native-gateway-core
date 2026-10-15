@@ -34,7 +34,53 @@
 BEGIN;
 
 SET LOCAL statement_timeout = '10min';
-SET LOCAL lock_timeout = '60s';
+SET LOCAL lock_timeout = '2s';
+
+-- Validity and ordering must be checked before accepting a same-name prebuild.
+DO $guard_867_index$
+BEGIN
+  IF to_regclass('public.idx_session_summaries_last_request_recent') IS NOT NULL THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_index
+      WHERE indexrelid = to_regclass('public.idx_session_summaries_last_request_recent')
+        AND indisvalid AND indisready
+    ) THEN
+      RAISE EXCEPTION '867: global online index is invalid; repair the concurrent build before retrying';
+    END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_index i
+      JOIN pg_class c ON c.oid = i.indexrelid
+      JOIN pg_am am ON am.oid = c.relam
+      JOIN pg_attribute a1 ON a1.attrelid = i.indrelid AND a1.attnum = i.indkey[0]
+      JOIN pg_attribute a2 ON a2.attrelid = i.indrelid AND a2.attnum = i.indkey[1]
+      JOIN pg_opclass o1 ON o1.oid = i.indclass[0]
+      JOIN pg_opclass o2 ON o2.oid = i.indclass[1]
+      WHERE i.indexrelid = to_regclass('public.idx_session_summaries_last_request_recent')
+        AND i.indrelid = 'public.session_summaries'::regclass
+        AND am.amname = 'btree'
+        AND i.indnatts = 2 AND i.indnkeyatts = 2
+        AND NOT i.indisunique AND i.indexprs IS NULL
+        AND pg_get_indexdef(i.indexrelid, 1, true) = 'last_request_at'
+        AND pg_get_indexdef(i.indexrelid, 2, true) = 'session_key'
+        AND i.indoption[0] = 3 AND i.indoption[1] = 3
+        AND i.indcollation[0] = a1.attcollation
+        AND i.indcollation[1] = a2.attcollation
+        AND o1.opcdefault AND o1.opcmethod = c.relam AND o1.opcintype = a1.atttypid
+        -- varchar uses default text_ops, not any binary-compatible type's ordering.
+        AND o2.opcdefault AND o2.opcmethod = c.relam
+        AND (o2.opcintype = a2.atttypid OR (
+          a2.atttypid = 'pg_catalog.varchar'::regtype
+          AND o2.opcintype = 'pg_catalog.text'::regtype
+        ))
+        AND pg_get_expr(i.indpred, i.indrelid) = '(last_request_at IS NOT NULL)'
+    ) THEN
+      RAISE EXCEPTION '867: global online index definition mismatch; repair the index before retrying';
+    END IF;
+  ELSIF pg_relation_size('public.session_summaries'::regclass) > 33554432 THEN
+    RAISE EXCEPTION '867: prebuild idx_session_summaries_last_request_recent using a concurrent build during a low-load window before applying this migration';
+  END IF;
+END
+$guard_867_index$;
 
 DO $create_867_index$
 BEGIN
