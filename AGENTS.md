@@ -1547,6 +1547,40 @@ streaming 全包 150s 绿。154 终验：拦截请求三件套全绿（终态带
 
 ---
 
+# 追加：2026-10-14 r1028 —— `=== pwd ===` 分节装饰误触发密钥规则（三份正则副本同修）
+
+> 用户报告：grok-4.6 工具调用 `output_policy_blocked reason=unknown`。
+> 取证：raw_data（LLM_GATEWAY_RAW_LOG_DIR=/var/log/llm-gateway-go/raw_data）
+> 帧重建——被拦的是 1279 字节**纯 git 检查命令**，触发行 `echo '=== pwd ==='`。
+> 详见 `docs/audit/2026-10-14-models只列可路由模型-r1027.md` 追加节。
+
+1. **同一误伤家族、三份正则副本、两条拦截路径**：①
+   `configs/sensitive_patterns.yaml` secret.password + ② Go fallback
+   `operational_patterns.go` credentialValuePattern/accountValuePattern ——
+   值字符类放行纯 `=` 串，`pwd ===` → 「pwd = 赋值 ==」→ ScopeEgress 流式
+   lane 硬拦（issues=0）；③ `domains/outputcompliance/checker.go`
+   detectSecrets（第二套 DB 合规引擎，无 CheckField，共享拦截器整段回退
+   Check）`\S+` 吃掉 `==` → 工具 lane 改写保护把 redact 升级成整流
+   block（403 主拦截者）。修复=三处统一「未加引号的值首字符不得为 `=`，
+   引号值走引号分支」（DB 引擎为 `("[^"]*"|'[^']*'|[^=\s'"][^\s]*)`——
+   第一版只排 `=` 时 `pwd ='` 尾引号仍命中，判据抓到后补齐）。
+2. 判据：`security/sanitize/r1028_secret_value_equals_decoration_test.go`
+   （生产 1279B 原文夹具 + sanitize 双副本正则断言 + redact 侧配对）+
+   `domains/outputcompliance/r1028_dbengine_pwd_decoration_test.go`。
+   变异三方向（yaml/Go/DB 引擎各自回退）全部红在正确断言。
+3. 部署：154=**2606**、245=**2607**。线上探针：装饰形态 PASS 逐字透传
+   （修复前 403）；真实口令按租户策略脱敏；公网 IP 契约不变。
+4. 量具坑：**被 compliance 拦下的 lane 不落 session_bodies**——被拦内容唯一
+   取证源是 raw_data 三段帧（client_request/upstream_request/
+   upstream_response，base64）；`grep -a` 替代 strings（CJK 断行漏报）；
+   进程真实 yaml 路径=systemd WorkingDirectory 下的 configs/（与 release
+   内副本是两份，都要 md5）；共享构建锁被本地 deploy 占用时生产 deploy
+   报 `shared build lock held` 直接失败（判 pid 等待）。
+5. **开放项**：252 宿主 load 33+（跑飞的 `grep -rl cutover-backup` 自
+   10-13 起 + python backfill + kswapd0），导致一次部署 DB 就绪失败自动
+   回滚——ops 催办；outputcompliance DB 引擎补 CheckField（label 感知，
+   避免整段回退丢工具上下文）登记不修。
+
 # 追加：2026-10-14 S4 退役改名轮 —— request_logs 族 `_` 前缀待删除标志（本地已上线）
 
 > 用户目标：审计双写转换收尾——写入关停核验、MV/API 读源核验、性能核验、

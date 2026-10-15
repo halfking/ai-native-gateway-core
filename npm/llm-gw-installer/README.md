@@ -55,7 +55,7 @@ network — they work immediately after `npm i -g`, before any binary exists.
 
 | Variable | Meaning | Default |
 |----------|---------|---------|
-| `MAINTAIN_BASE` | release entry | `https://llmgateway.internal.example.com/maintain-api` |
+| `MAINTAIN_BASE` | release entry | `https://llmgo.kxpms.cn/maintain-api` |
 | `LLM_GATEWAY_HOME` | install dir | `~/llm-gateway` |
 
 Requires Node.js ≥ 18. Linux / macOS / Windows.

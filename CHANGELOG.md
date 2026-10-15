@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+- **多媒体统一出口 + 凭据 routing_scope 隔离（2026-10-08）**：标准 chat 与媒体面凭据硬隔离；音频按时长计费；图片/视频 generations 骨架。
+  - `credentials.routing_scope` in {all, chat_only, media_only}（migration 847 + ensure）；候选 SQL 按 modality 过滤。
+  - `cmb.billing_unit` / `request_logs*.audio_seconds`（migration 848）；MaaS audio_second；`/v1/audio/*` 落库 duration。
+  - `POST /v1/images/generations`、`POST /v1/videos/generations` 统一出口骨架。
+  - Admin CredsTab：routing_scope 徽章/抽屉 + 8 语 i18n。
+  - 设计：`docs/design/2026-10-08-multimedia-unified-gateway-credential-scope.md`。
+
 ### Fixed
 - **网关套网关时，下游签发的占位符被上游实例销毁（2026-10-08）**：本系统的脱敏实例把敏感值替换为 `{SENSITIVE:type:index}` 后再发给上游；当上游**也是本系统**时，上游实例看到的是一批自己没有签发的标记。还原阶段的既定规则是"还原不了的标记一律遮蔽"（这正是拦住模型伪造 `{SENSITIVE:secret:1}` 去套取本会话真密钥的那条规则），于是它把这批标记打成 `[REDACTED]`，下游持有的映射随之作废，客户端丢值。实测（mimo-v2.5-pro / glm-5.3）：kaixuan 侧直接回 `sshpass -p '[REDACTED]' ssh root@[REDACTED]`。
   - 新增 `security/sanitize/hop.go`。本实例**实际产出过标记**时，在出向上游请求上盖 `X-Kx-Sanitize-Hop`；上游侧同时要求两个条件才认这个跳——peer 的声明，**且**请求里确实带着标记。

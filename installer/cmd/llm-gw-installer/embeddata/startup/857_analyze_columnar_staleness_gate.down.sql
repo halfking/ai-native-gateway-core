@@ -1,4 +1,4 @@
--- 856_analyze_columnar_staleness_gate.down.sql
+-- 857_analyze_columnar_staleness_gate.down.sql
 -- 回滚：移除陈旧度闸门，恢复「当月列存分区每轮都手工 analyze」的旧行为。
 -- ⚠ 回滚会让数据库时间回到约 171 分钟/天，并让 MV 刷新重新被这趟 pass 的
 --   长快照拖住（runbook §10.110.14）。仅在确认新闸门造成计划劣化时才回滚。

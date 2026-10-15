@@ -252,36 +252,63 @@ done
 #   manualByDesign in installer/cmd/llm-gw-installer/stats_migrations_test.go.
 #   Editing one without the other leaves the other gate red — "已豁免" must hold
 #   on both sides at once (single-side green is not green).
-# 842 (2026-10-07)：latest_bucket 聚合的索引，**登记为带外交付（installer-only）**。
+# 842 —— 本条目曾在本清单里，**已于同日撤除**（记录留痕，避免下一个读到这个
+# 历史的人以为它还生效）。
 #
-# 归属与 691/747/748/759 同类，**不是** 830 那一类（manual-by-design）——
-# 两类的判据不同，别混：
-#   · 747/748/759/842 = 库**已经有了**，是补一条登记让门认识这个既成事实；
-#   · 830 = 迁移**根本不该被自动跑**（RENAME 活表），Go 侧还镜像了后半段。
-# 842 不满足 manualByDesign 的第 2 条（Go 侧无镜像）：全仓 grep
-# `credential_model_index_cred_model_bucket_idx` 只命中它自己的 .sql 与
-# migration_842_test.go，没有任何 Go ensure 镜像它。
+# 2026-10-07 20:36 人工拍板后，本会话一度把 842 登记为 installer-only
+# （当时的读数：只有 channel_gap_allowlist 这一条路能让门转绿）。
+# 20:41 合并 origin/main 时发现：**并行线已自己把它登记进
+# `scripts/apply-db-revision-sequence.sh` 的 files=(...) 正常升级通道**
+# （随迁移 843_candidate_failure_logs_ts_desc_idx 一起，理由写的是
+# 「部署扫描腿本就会按目录+台账投递，登记是元数据补全」）。
 #
-# 为什么登记（2026-10-07 人工拍板，由 mavis 代为处置）：
-#   842 已在 installer/internal/dbinit/runner.go:909 的 StartupFiles 里
-#   （= 全新安装会拿到它），缺的只是升级通道。此前无人登记 ⇒ 契约门红，
-#   而门红会挡住**整个仓库所有人的提交**（pre-commit 钩子于同日装上并实测
-#   生效：rc=1 阻断提交）。
+# ⇒ 处置归属权归作者，且**两个清单不能并存**（门只认「在任一处」，
+#   但一个说「库已经有了」、另一个说「它会被升级通道投递」，语义相反）。
+#   撤除本侧登记，保留作者的通道登记。
 #
-#   事实校准（不要沿用早期那个夸大的说法）：
-#   它建索引的对象是 **分区父表 public.credential_model_index**（3 分区，
-#   354,153 行）与 **普通堆表 credential_model_index_hot**（2,361 行）。
-#   ⚠ 「356,514 行」是那个 UNION ALL **视图**的行数，不是任何一张表的行数 ——
+# ★ 事实校准（留下给下一个读到 842 的人，它**不因撤除本条目而失效**）：
+#   · 842 建索引的对象是 **分区父表 public.credential_model_index**（3 分区，
+#     354,153 行）与 **普通堆表 credential_model_index_hot**（2,361 行）。
+#     ⚠「356,514 行」是那个 UNION ALL **视图**的行数，不是任何一张表的行数 ——
 #     父表自身不存数据（`pg_total_relation_size(<父表>)` 返回 0），体量要逐分区求和。
-#   它自己的头注明：不支持在分区父表上 CREATE INDEX CONCURRENTLY，普通建索引
-#   会对每个分区取锁直到建完 ⇒ 是否进无人值守升级是**部署窗口策略**问题。
+#   · 它自己的头注明：不支持在分区父表上 CREATE INDEX CONCURRENTLY，
+#     普通建索引会对每个分区取锁直到建完。
+#   · 全仓 grep `credential_model_index_cred_model_bucket_idx` 只命中它自己的
+#     `.sql` 与 `migration_842_test.go` ⇒ **没有 Go ensure 镜像**，
+#     所以它不属于 `manualByDesign` 那一类（该类要求 Go 侧镜像后半段）。
 #
-# ★ 代价（必须与「已豁免」一起读）：登记为 installer-only ⇒ **存量库永远拿不到
-#   这两个索引**。而 842 修的是 pg_stat_statements 里全库第 2 名的语句
-#   （累计 37.6 小时 / 188,357 次 / 均 719 ms）。⇒ 老库的慢查询不会因为这次登记
-#   而消失，需要人工在窗口期执行。**「已豁免」不等于「已解决」。**
-#   若日后决定让存量库也拿到，正确处置是把 842 加进
-#   scripts/apply-db-revision-sequence.sh 的 files=(...) 通道，并从本清单移除。
+# ✔ 更正（2026-10-07 20:50）：本会话一度在这里写过一条「扫描腿不存在」的
+#   实测反证。**那条反证是错的，已撤除。**
+#   扫描腿**确实存在**：`scripts/deploy-lib/db-changelog.sh:241`
+#     for f in sql/migrations/startup/[0-9]*.sql; do … schema_migrations 台账 …
+#   （`deploy-154.sh` 的头也写着「切换前 DB 迁移 + db-changelog」）
+#   ⇒ **作者那条理由是对的。**
+#   我错在只 grep 了 `scripts/` 顶层，漏掉 `deploy-lib/` 这个子目录，
+#     拿一条覆盖面不足的搜索去否定一个全集。
+#
+# ★★ 留这条更正的用意不是「记录我错过」，而是：
+#   这个文件里关于**投递机制**的每一条陈述都会被人当依据读。
+#   一条「已确认不存在」比「没查到」危险得多 —— 它会让下一个人
+#   直接采信并停止查证。⇒ 撤除错误陈述，并把它的成因留在这里。
+#
+# ✔ 更正二（2026-10-07 23:53）：上面这条更正**自身也不完整** ——
+#   `scripts/deploy-lib/db-changelog.sh` 不是仓内文件，而是**软链**，指向仓外
+#   workspace SSOT（`ai-native-tools/deploy-lib`，commit 722e9020f 的治理决定，
+#   `git ls-files scripts/deploy-lib/` 返回空）。
+#   ⇒ 「扫描腿确实存在」这句话**只在本机成立**：换机器或 CI runner 上
+#     该路径根本不存在，那时本文件的这一整段都无法自证。
+#   ⇒ 把它读成「本仓能证明扫描腿存在」是错的。
+#   要判断 842/843 在别的环境会不会被投递，**必须去 workspace SSOT 查**。
+#   判别动作：引用部署机制前先 `git ls-files <路径>`，
+#     不要用 `ls` 看到文件就当它是仓内资产 —— 软链让两者看起来完全一样。
+#
+# ★ 两条投递腿**彼此独立**（都不是对方的子集）：
+#   ① 扫描腿  scripts/deploy-lib/db-changelog.sh（★ 仓外软链 SSOT）
+#              —— 扫目录 + 查台账，未记录即投递
+#   ② 通道腿  本脚本 files=(...) 数组（★ 仓内）—— 显式列出才投递
+#   ⇒ 所以「登记 files=(...)」与「反正扫描腿会投递」**两句话都对**，
+#     而它们说的是两件不同的事。（这正是最初那条冲突的根因。）
+#
 channel_gap_allowlist=$(cat <<'EOF'
 691_proxy_region_policy.sql
 692_session_summaries_user_intent_widen.sql
@@ -289,7 +316,6 @@ channel_gap_allowlist=$(cat <<'EOF'
 748_selfcheck_system_key_tier.sql
 759_report_snapshots_grain_dims.sql
 830_ursm_node_snapshot_min_partitioned.sql
-842_credential_model_index_latest_bucket_idx.sql
 EOF
 )
 

@@ -94,16 +94,14 @@ func dataLifecycleTrendSQL(tenantFilter string) string {
 				  FROM request_logs_bodies_with_current_month
 				 WHERE ts <= ` + dbpkg.V1FreezeCutoffSQL + `
 				UNION ALL
-				-- 会话腿：冻结点之后（停写后的新流量）。★ 这里**必须**走
+				-- 会话腿：冻结点之后（停写后的新流量），走 session_bodies_unified
+				-- 合并视图（hot ∪ 月度分区父表，迁移 625；promote 排空 hot ⇒
+				-- 两侧 request_id 交集 0，UNION ALL 不重复）。★ 这里**必须**走
 				-- SessionBodiesHasOutboundPredicate：会话族用 jsonb null 表示
 				-- 「没有正文」（实测 11,420 行），裸 IS NOT NULL 恒真 ⇒ 会把
 				-- 当天**每一个** turn 都算成压缩过（实测 993 vs 真实 250）。
 				SELECT request_id, ts, (` + dbpkg.SessionBodiesHasOutboundPredicate("s") + `) AS has_outbound
-				  FROM public.session_bodies_hot s
-				 WHERE s.ts > ` + dbpkg.V1FreezeCutoffSQL + `
-				UNION ALL
-				SELECT request_id, ts, (` + dbpkg.SessionBodiesHasOutboundPredicate("s") + `) AS has_outbound
-				  FROM public.session_bodies s
+				  FROM public.session_bodies_unified s
 				 WHERE s.ts > ` + dbpkg.V1FreezeCutoffSQL + `
 			) u
 			WHERE (has_outbound)
