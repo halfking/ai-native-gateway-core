@@ -22,31 +22,28 @@ import { join, relative, sep } from 'node:path'
  *   ⇒ ★ **不判 ≠ 对**。本判据只对那 68 条负责，分母写在这里以免读数被误读成
  *     「全仓只有 69 条引用」。
  *
- * ★★★★★ **阴性结论带宽度**：修复前那 68 条里初次实测 **32 条对不上（46%）**。
- *   本批订正了其中 **13 条**（逐条打开源码核过真实行，且**确认注释里的结论
- *   仍然成立** —— 光移行号不改结论不算修好），剩 **25 条**（可判定里 24 条 +
- *   区间反向 1 条）登记进 `KNOWN_DRIFT`。
- *   ★ 那 25 条里**混着两类**，本判据分不出来，也不假装分得出来：
- *     · **真错**（token 在所引文件里根本不出现 / 区间反向等畸形）
- *     · **检查器假阳性**（引用其实正确，但 token 不是字面出现 ——
- *       例如注释写 `/api/admin/connection-registry/{id}` 而 Go 里是
- *       `{request_id}`；或注释指的是个常量名而非字面量）
- *   ⇒ 棘轮只管「不许变多」与「登记项不许悄悄变好」，**分类留给人**。
+ * ★★★★★ **阴性结论带宽度与演进**：
+ *   判据建成时（批 136）那 68 条里 **32 条对不上（46%）**；
+ *   批 137 **逐条定性** —— **12 条是真错**（含 1 处区间反向、1 处指向空行、
+ *   1 处只差 1 行），已全部订正并**复核结论仍然成立**（光移行号不算修好）；
+ *   剩下 **15 条经逐字核对，引用本身是对的**，只是本判据抓 token 的方式不适用
+ *   ⇒ 登记进 `KNOWN_FALSE_POSITIVE`，**它们不是债**。
+ *   ⇒ 现状：`KNOWN_DRIFT`（真错）**0 条**，`KNOWN_FALSE_POSITIVE` **15 条**。
  *
- * ★★ **本判据自身的宽度**（也是它为什么只覆盖 68 条）：
- *   · 端点 token 必须写成 `/api/...` 的字面量；写常量名（如 `dispatchJournalAPIPath`）
- *     的引用判不出来 ⇒ 会落进「无可核 token」那一类，不算错也不算对。
+ * ★★★★ **批 137 的一个额外发现，值得单独记住**：
+ *   那 12 处真错修完之后，在**普查扫不到的范围**里又找到 **16 处同源残留** ——
+ *   散落在 `views/*.vue`、`*.test.ts`、判据文件里，引用的是**同一批过期行号**。
+ *   ⇒ 普查的「不判」不等于「干净」：946 处判不了的地方藏着同类问题。
+ *   ⇒ 本批把那 16 处一并修了，但**普查范围本身没扩**（扩到 views/ 是另一件事）。
+ *
+ * ★★ **本判据自身的宽度**（也是它为什么只覆盖 69 条）：
+ *   · 端点 token 必须写成 `/api/...` 的**字面量**；写常量名（如 `dispatchJournalAPIPath`）
+ *     的引用判不出来 ⇒ 落进「无可核 token」或 `KNOWN_FALSE_POSITIVE`。
  *   · 标识符 token 要求**小写字母开头**（`queryInt`/`writeError`/`wrapAdmin`），
- *     大写开头的（`SuperAdminMiddleware`）同样落进「无可核 token」。
- *     ⇒ 这是**已知的漏检面**，不是「那些引用是对的」。
- *
- * 判据四组：
- *  ① 普查读数 + **召回自证**（合成一条错引用，扫描器必须抓到）
- *     + **阳性对照**（一条真实正确的引用必须判为 OK）。
- *  ② ★★ 未登记的漂移 ⇒ 红（这是「不许新欠债」的那道门）。
- *  ③ ★★★ 登记项必须**仍然漂移** —— 修好了就把它从名单里删，
- *     否则这条判据会退化成「名单即免死金牌」。
- *  ④ 名单规模钉死。
+ *     大写开头的（`SuperAdminMiddleware`）同样判不出来。
+ *   · token 与被引区间必须**逐字包含**；「引用的是函数定义、token 在函数体内」
+ *     这类**语义上正确**的引用判不出来 ⇒ 这是 15 条假阳性的全部来源。
+ *   ⇒ 这些是**已知的漏检/误检面**，不是「那些引用是对的」。
  */
 
 // ── 仓库里的真实 Go 文件集合 ────────────────────────────────────────────────
@@ -194,33 +191,42 @@ const key = (r: Ref) => `${r.file}:${r.line} ${r.raw}`
  *   ⚠️ 每一条都必须在 ② 里仍然判为「对不上」——
  *     谁把它修好了，③ 会逼他把这一条从名单里删掉。
  */
-const KNOWN_DRIFT = [
-  'api/connectionRegistry.ts:7 admin/handler.go:1044',
-  'api/credentialsOps.ts:18 admin/credential_monitor.go:1785-1792',
-  'api/credentialsOps.ts:140 admin/routing_reset.go:52',
-  'api/dashboard.ts:14 admin/dashboardapi/types.go:187',
-  'api/dataLifecycleStats.ts:89 admin/data_lifecycle.go:33-38',
-  'api/dispatchJournal.ts:18 admin/journal_handlers.go:30-35',
-  'api/dispatchWaterfall.ts:8 cmd/gateway/main.go:7228-7230',
-  'api/errorsTrend.ts:38 admin/users.go:406',
-  'api/modelHistory.ts:137 admin/handler.go:1534-1544',
-  'api/modelPolicies.ts:10 admin/tenants.go:188-190',
-  'api/modules.ts:106 settings/spec.go:284-283',
-  'api/outputCompliance.ts:131 admin/output_compliance_handler.go:711',
-  'api/requestActions.ts:94 middleware/requestid_mw.go:83-89',
-  'api/requestAnomalies.ts:70 admin/handler.go:1494-1498',
-  'api/requestAnomalies.ts:166 admin/handler.go:1546-1549',
-  'api/sessionAnalyticsFilterOptions.ts:78 cmd/gateway/main.go:7085-7089',
-  'api/sessions.ts:9 cmd/gateway/main.go:7268-7275',
-  'api/sessions.ts:11 admin/session_summary_v2.go:89',
-  'api/slidingWindow.ts:18 credentialhealth/recorder.go:16-22',
-  'api/taskProfile.ts:27 taskprofile/suggest.go:45-92',
-  'api/taskTypeCorrectionStats.ts:20 admin/handler.go:1413',
-  'api/turnsFilterOptions.ts:317 admin/turns_filter_options.go:61-73',
-  'api/usageEnhanced.ts:27 pkg/identity/verifier.go:111',
-  'api/usageTrendSeries.ts:143 admin/usage_trend_series.go:22-24',
-  'api/usageTrendSeries.ts:265 admin/usage_trend_series.go:407',
+/**
+ * ★★ 真错名单：**本批清零**。
+ *   批 136 登记 25 条，批 137 逐条定性 —— 其中 **12 条是真错**（含 1 处区间反向、
+ *   1 处指向空行、1 处差 1 行），已全部订正并把结论一并复核过。
+ *   ⇒ 名单留成空数组而不是删掉：**空名单本身是一条断言**（不许悄悄新增），
+ *     与 `KNOWN_ORPHANS` 同一处理方式。
+ */
+const KNOWN_DRIFT: string[] = []
+
+/**
+ * ★★★ 「检查器假阳性」名单 —— **不是债，是判据分辨率不足**。
+ *   下面每一条的引用**逐字核对过、被引处确实是它声称的东西**，
+ *   只是本判据抓 token 的方式不适用（token 不是字面出现、或与引用不在同一段）。
+ *   ★★ 之所以要显式列出来而不是直接删：删了之后它们会变成
+ *     **「未登记的漂移」** ⇒ ② 会红，而红的原因与人无关。
+ *   每条写清「为什么判不出来」，将来改判据时才知道该动哪儿。
+ */
+const KNOWN_FALSE_POSITIVE: { key: string; note: string }[] = [
+  { key: 'api/connectionRegistry.ts:7 admin/handler.go:1044', note: '注释写 `{id}`，Go 里是 `{request_id}` —— 字面不同，指的同一条注册' },
+  { key: 'api/credentialsOps.ts:140 admin/routing_reset.go:52', note: '52 行是 `handleResetCredentialState` 的函数定义；token `reason` 在函数体内（注释自己就写了 `:69-72`）' },
+  { key: 'api/dashboard.ts:14 admin/dashboardapi/types.go:187', note: '187 行是 `writeSuccessJSON` 产出结构里的一行（`Success: true`），不是该函数本身' },
+  { key: 'api/dispatchJournal.ts:18 admin/journal_handlers.go:30-35', note: '被引处写的是**常量名** `dispatchJournalAPIPath`，字面量在 :13' },
+  { key: 'api/errorsTrend.ts:38 admin/users.go:406', note: '行里是大写 `Role`，token 是小写 `role`（大小写敏感）' },
+  { key: 'api/outputCompliance.ts:131 admin/output_compliance_handler.go:712', note: '712 行是 `writeJSON(...{"feedback": items...})`，token 是函数名 `listFeedback`（定义在 :673）' },
+  { key: 'api/requestActions.ts:94 middleware/requestid_mw.go:83-89', note: '83 行是 `generateRequestID()` 的定义；token `request_id` 在函数体内' },
+  { key: 'api/sessions.ts:9 cmd/gateway/main.go:7268-7275', note: '7268-7275 是路由清单 `slog.Info`，token `wrapAdmin` 出现在同一段里但不在被引区间' },
+  { key: 'api/sessions.ts:11 admin/session_summary_v2.go:89', note: '89 行正是 `if r.Method != http.MethodPost` 那句；token 是端点名 `summary`（不在该行）' },
+  { key: 'api/slidingWindow.ts:18 credentialhealth/recorder.go:16-22', note: '同一行是一串链式引用；`slidingWindowQuery` 配的是同行的 `:815` 那条，`recorder.go:16-22` 配的是 `CallEntry`' },
+  { key: 'api/taskProfile.ts:27 taskprofile/suggest.go:45-92', note: '45 行是 `Suggest` 的定义；token `ensurePool` 配的是同行另一条引用 `:435-441`' },
+  { key: 'api/taskTypeCorrectionStats.ts:20 admin/handler.go:1413', note: '1413 行确实是 `admin(...)` 注册（结论成立）；token `requiresRole` 是**前端概念**，Go 里没有这个词' },
+  { key: 'api/turnsFilterOptions.ts:317 admin/turns_filter_options.go:61-73', note: '61-73 就是注释里**逐字引用的那段**租户判断；token 是函数名（定义在 :49）' },
+  { key: 'api/usageEnhanced.ts:27 pkg/identity/verifier.go:111', note: '111 行是 `Verify` 的定义；token `supportedRole` 在它函数体内（:120 附近）' },
+  { key: 'api/usageTrendSeries.ts:265 admin/usage_trend_series.go:407', note: '407 行是 SQL 读面的 FROM 子句；token `source` 是**对外字段名**' },
 ]
+
+const REGISTERED: string[] = [...KNOWN_DRIFT, ...KNOWN_FALSE_POSITIVE.map((f) => f.key)]
 
 // ── ① 普查与召回自证 ────────────────────────────────────────────────────────
 
@@ -244,10 +250,10 @@ describe('① Go 行号引用普查：读数 + 召回自证 + 阳性对照', () 
         counts['可判定'],
       '三类之和与总数对不上，分类器漏了项',
     ).toBe(refs.length)
-    const unlisted = bad.map((r) => `${r.file}:${r.line} ${r.raw}`).filter((k) => !KNOWN_DRIFT.includes(k))
-    const listed = KNOWN_DRIFT.filter((k) => !bad.map((r) => `${r.file}:${r.line} ${r.raw}`).includes(k))
+    const unlisted = bad.map((r) => `${r.file}:${r.line} ${r.raw}`).filter((k) => !REGISTERED.includes(k))
+    const listed = REGISTERED.filter((k) => !bad.map((r) => `${r.file}:${r.line} ${r.raw}`).includes(k))
     if (unlisted.length || listed.length) console.log('[①-1] 未登记:', unlisted, ' 已修好:', listed)
-    expect(bad.length).toBe(KNOWN_DRIFT.length)
+    expect(bad.length).toBe(REGISTERED.length)
   })
 
   it('①-2 ★★★★★★ 召回自证：合成一条错引用，扫描器必须抓到并判为对不上', () => {
@@ -281,10 +287,11 @@ describe('① Go 行号引用普查：读数 + 召回自证 + 阳性对照', () 
 describe('② ★★ 未登记的漂移一律红', () => {
   it('②-1 ★★★ 对不上的引用必须全部在 KNOWN_DRIFT 里', () => {
     const { bad } = classify(allRefs())
-    const unknown = bad.map(key).filter((k) => !KNOWN_DRIFT.includes(k))
+    const unknown = bad.map(key).filter((k) => !REGISTERED.includes(k))
     expect(
       unknown,
-      '这些引用判为对不上但没登记 ⇒ 债又欠下了（要么订正，要么显式登记）：\n' + unknown.join('\n'),
+      '这些引用判为对不上但没登记 ⇒ 债又欠下了（订正，或在 KNOWN_DRIFT / KNOWN_FALSE_POSITIVE 里显式登记）：\n' +
+        unknown.join('\n'),
     ).toEqual([])
   })
 })
@@ -295,7 +302,7 @@ describe('③ ★★★ 登记项必须仍然对不上（修好了就要删登�
   it('③-1 ★★★★ KNOWN_DRIFT 里每一条都仍然判为对不上', () => {
     const { bad } = classify(allRefs())
     const present = new Set(bad.map(key))
-    const fixed = KNOWN_DRIFT.filter((k) => !present.has(k))
+    const fixed = REGISTERED.filter((k) => !present.has(k))
     expect(
       fixed,
       '这些登记项已经不判为对不上了 ⇒ 把它们从 KNOWN_DRIFT 里删掉，别让名单变成免死金牌：\n' +
@@ -304,7 +311,7 @@ describe('③ ★★★ 登记项必须仍然对不上（修好了就要删登�
   })
 
   it('③-2 ★★★ 名单里不许有重名项（重名会让 ③-1 的比对失去意义）', () => {
-    const dup = KNOWN_DRIFT.filter((k, i) => KNOWN_DRIFT.indexOf(k) !== i)
+    const dup = REGISTERED.filter((k, i) => REGISTERED.indexOf(k) !== i)
     expect(dup).toEqual([])
   })
 })
@@ -312,12 +319,16 @@ describe('③ ★★★ 登记项必须仍然对不上（修好了就要删登�
 // ── ④ 名单规模钉死 ───────────────────────────────────────────────────────────
 
 describe('④ 名单规模', () => {
-  it('④-1 ★★★ KNOWN_DRIFT 恰好 25 条（订正一条就要同步改这里）', () => {
-    expect(KNOWN_DRIFT).toHaveLength(25)
+  it('④-1 ★★★★ KNOWN_DRIFT 真错名单**恰好 0 条**（本批清零）', () => {
+    expect(KNOWN_DRIFT).toHaveLength(0)
+  })
+
+  it('④-1b ★★★ KNOWN_FALSE_POSITIVE 恰好 15 条（逐条定性过，不是债）', () => {
+    expect(KNOWN_FALSE_POSITIVE).toHaveLength(15)
   })
 
   it('④-2 ★★ 名单里每一条的 Go 文件都得真实存在（否则是笔误不是债）', () => {
-    const ghost = KNOWN_DRIFT.map((k) => k.split(' ')[1]?.split(':')[0] ?? '').filter((g) => !GO_FILES.has(g))
+    const ghost = REGISTERED.map((k) => k.split(' ')[1]?.split(':')[0] ?? '').filter((g) => !GO_FILES.has(g))
     expect(ghost, `名单里有不存在的 Go 文件：${ghost.join(', ')}`).toEqual([])
   })
 

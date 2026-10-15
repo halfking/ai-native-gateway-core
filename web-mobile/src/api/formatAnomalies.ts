@@ -114,7 +114,7 @@ import { req, type RequestOptions } from './client'
  *   ⇒ **本仓第六次「不隔离」**（前五次：批 75、76、77、81 等）。
  *   两张表都有 `tenant_id` 列且 list 会 SELECT 出来，但 WHERE **从不过滤**。
  *
- * ★ `unresolved_only` 用 `queryBool`（`handler.go:1546-1549`）：
+ * ★ `unresolved_only` 用 `queryBool`（`handler.go:1569-1571`）：
  *   ```go
  *   return strings.EqualFold(s, "true") || s == "1"
  *   ```

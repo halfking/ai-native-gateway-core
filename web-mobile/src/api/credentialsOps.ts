@@ -15,7 +15,7 @@ import { req, type RequestOptions } from './client'
 /**
  * `POST /api/credentials/set-manual-disabled`
  *
- * 后端 admin/credential_monitor.go:1785-1792 强制校验：`reason` 为空串直接 400
+ * 后端 admin/credential_monitor.go:1838-1858 强制校验：`reason` 为空串直接 400
  * （"reason required"）。移动端若让用户提交空 reason，请求必定失败且报错信息
  * 对用户无意义 ⇒ 视图层必须在提交前挡住，不要指望后端兜底。
  *

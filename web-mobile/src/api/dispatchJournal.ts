@@ -44,7 +44,7 @@ import { req, type RequestOptions } from './client'
  * (3) ★★★★★ **两种错误体形状并存，且取决于「哪一层写的」**：
  *     - handler 层 `writeRequestJourneyError`（`request_journey.go:287-291`）：
  *       `{"error":{"message":msg,"type":"admin_error"}}`
- *     - 中间件层 `writeError`（`handler.go:1494-1498`）：`{"error":{"detail":msg}}`
+ *     - 中间件层 `writeError`（`handler.go:1517-1523`）：`{"error":{"detail":msg}}`
  *       （401 `authentication required`、403 `password change required` 走这条）
  *     ⇒ ★★ **同一个 admin 包里就有两种**，键名互斥（`message` vs `detail`）
  *     ⇒ ⇒ 错误映射必须按（**写出层**）分支，不能只按包分支。

@@ -80,7 +80,7 @@ import { req, type RequestOptions } from './client'
  *      limit := queryInt(r, "limit", 200)
  *      if limit <= 0 || limit > 500 { limit = 200 }
  *      ```
- *      而 `queryInt`（`handler.go:1534-1544`）用 `strconv.Atoi`，**解析失败直接返回缺省**。
+ *      而 `queryInt`（`handler.go:1557-1566`）用 `strconv.Atoi`，**解析失败直接返回缺省**。
  *      ⇒ `days=31` / `days=0` / `days=abc` / `days=" 7"` **四种写法都拿到 `days=7` 的数据**。
  *      ⇒ ★ 与批八十批的 `/storage/tables` 静默回落同款；
  *        与批七十八批 `/api/admin/probe/tasks` 的 **400** 仍是同仓两种风格。

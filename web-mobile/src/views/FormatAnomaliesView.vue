@@ -42,7 +42,7 @@
 //   8. ★★★ `request_id` 恒在但**可以是空串**（`text NOT NULL` ≠ 非空串）。
 //   9. ★★★ 三条 500 的文案**各不相同**（`count query failed` / `list query failed` /
 //      `summary query failed`）⇒ 失败发生在哪一步是可区分的。
-//  10. ★★ `unresolved_only` 用 `queryBool`（`handler.go:1546-1549`）：
+//  10. ★★ `unresolved_only` 用 `queryBool`（`handler.go:1569-1571`）：
 //      只有 `true`/`TRUE`/`True`/`1` 为真，**其它任何值（含 `yes`/`on`/`t`）都为假**
 //      ⇒ 这是「不报错、不回落成缺省」的布尔解析，**无法区分「没传」与「传了假值」**。
 import { computed, onBeforeUnmount, ref } from 'vue'

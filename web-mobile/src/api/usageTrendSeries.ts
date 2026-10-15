@@ -140,7 +140,7 @@ export const TREND_MODELS_SQL_LIMIT = 100
 /** admin/usage_trend_series.go:42 `usageTrendOthersKey = "__others__"`。 */
 export const TREND_OTHERS_KEY = '__others__'
 
-/** admin/usage_trend_series.go:22-24 `usageTrendModelExpr` 的兜底常量。 */
+/** admin/usage_trend_series.go:49 `usageTrendModelExpr` 的兜底常量。 */
 export const TREND_UNKNOWN_MODEL = '__unknown__'
 
 /** admin/usage_enhanced.go:466 同一套 `YYYY-MM` 无关；本族用 `usage.go:1452` 的 `YYYY-MM-DD`。 */
