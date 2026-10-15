@@ -173,3 +173,160 @@ func (s *readGateStore) Current(ctx context.Context) (Version, error) {
 	}
 	return v, err
 }
+func TestRefreshReadOrderCannotRegressAppliedSnapshot(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	_, _ = base.Publish(ctx, 0, testConfig(), "admin", "first", 0)
+	gated := &readGateStore{Store: base, entered: make(chan struct{}), release: make(chan struct{})}
+	m, _ := NewManager(gated, testConfig(), Options{InstanceID: "a"})
+	done1 := make(chan struct{})
+	go func() { _ = m.Refresh(ctx); close(done1) }()
+	<-gated.entered
+	v, err := base.Publish(ctx, 1, testConfig(), "admin", "second", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done2 := make(chan struct{})
+	go func() { _ = m.Refresh(ctx); close(done2) }()
+	select {
+	case <-done2:
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(gated.release)
+	<-done1
+	<-done2
+	if m.Current().Version != v.ID {
+		t.Fatal("older read replaced newer head", m.Current().Version)
+	}
+}
+func TestBaselineIsPersistedOnceAndDigestIdentifiesFallback(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	a, _ := NewManager(s, testConfig(), Options{InstanceID: "a"})
+	other := testConfig()
+	other.Rules[0].Name = "other host default"
+	b, _ := NewManager(s, other, Options{InstanceID: "b"})
+	if a.Current().Version != 0 || a.Current().ConfigDigest == "" || a.Current().ConfigDigest == b.Current().ConfigDigest {
+		t.Fatal("fallback identity missing")
+	}
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		if err := a.Refresh(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	wg.Go(func() {
+		if err := b.Refresh(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	wg.Wait()
+	if a.Current().Version != 1 || b.Current().Version != 1 || a.Current().ConfigDigest != b.Current().ConfigDigest {
+		t.Fatalf("baselines diverged: a=%+v b=%+v", a.Current(), b.Current())
+	}
+	versions, _ := s.ListVersions(ctx, 100)
+	if len(versions) != 1 {
+		t.Fatal("multiple baseline versions", len(versions))
+	}
+	if _, err := a.Rollback(ctx, 1, 0, "admin", "rollback fallback"); !errors.Is(err, ErrInvalid) {
+		t.Fatal("rollback to unpersisted fallback allowed", err)
+	}
+}
+func TestInvalidPublishedConfigRetainsSnapshotAndOfflineFallbackSurvives(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	failing := &failingStore{Store: s, fail: true}
+	m, _ := NewManager(failing, testConfig(), Options{InstanceID: "a"})
+	if err := m.Refresh(ctx); err == nil || m.Current().Version != 0 {
+		t.Fatal("offline fallback unavailable")
+	}
+	failing.setFail(false)
+	if err := m.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	invalid := s.versions[s.head]
+	invalid.ID++
+	invalid.Config.Rules[0].Pattern = "("
+	s.head = invalid.ID
+	s.versions[s.head] = invalid
+	s.mu.Unlock()
+	if err := m.Refresh(ctx); err == nil || m.Current().Version != 1 {
+		t.Fatal("invalid persisted config replaced active snapshot")
+	}
+}
+
+type blockedAuditStore struct {
+	Store
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockedAuditStore) RecordEvent(ctx context.Context, e Event, limit int) error {
+	select {
+	case s.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-s.release:
+		return s.Store.RecordEvent(ctx, e, limit)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+func TestSlowAuditDoesNotDelayPolicyPolling(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	base := NewMemoryStore()
+	s := &blockedAuditStore{Store: base, entered: make(chan struct{}, 1), release: make(chan struct{})}
+	defer close(s.release)
+	m, _ := NewManager(s, testConfig(), Options{InstanceID: "node", PollInterval: func() time.Duration { return 10 * time.Millisecond }})
+	if err := m.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { m.Run(ctx); close(done) }()
+	defer func() { cancel(); <-done }()
+	m.Record(ctx, Event{RuleID: "secret", Phase: "input", Action: "mask"})
+	<-s.entered
+	v, err := base.Publish(ctx, 1, testConfig(), "admin", "second", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if m.Current().Version == v.ID {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("audit write blocked DB head polling")
+}
+func TestRecordDoesNotCallBlockingObserverOnRequest(t *testing.T) {
+	ctx := context.Background()
+	release := make(chan struct{})
+	defer close(release)
+	m, _ := NewManager(NewMemoryStore(), testConfig(), Options{InstanceID: "node", QueueSize: 1, OnError: func(error) { <-release }})
+	e := Event{RuleID: "secret", Phase: "input", Action: "mask"}
+	m.Record(ctx, e)
+	done := make(chan struct{})
+	go func() { m.Record(ctx, e); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("request blocked on audit error observer")
+	}
+}
+func TestOlderDatabaseHeadDoesNotReplaceAppliedVersion(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	m, _ := NewManager(s, testConfig(), Options{InstanceID: "node"})
+	_ = m.Refresh(ctx)
+	_, _ = m.Publish(ctx, 1, testConfig(), "admin", "two")
+	s.mu.Lock()
+	s.head = 1
+	s.mu.Unlock()
+	if err := m.Refresh(ctx); err == nil || m.Current().Version != 2 {
+		t.Fatal("regressed DB head replaced active policy")
+	}
+}
