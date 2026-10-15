@@ -2005,7 +2005,7 @@ func main() {
 		routingExec.StripDeepSeekFields = streaming.StripDeepSeekFieldsBody
 		routingExec.StripDoubaoFields = streaming.StripDoubaoFieldsBody
 		// Write-time 客户端可见脱敏（2026-07-09，增强 1）
-		routingExec.RedactBodyFn = buildRedactBodyFn(dbConn.Stdlib())
+		routingExec.RedactBodyWithContextFn = buildRedactBodyWithContextFn(dbConn.Stdlib())
 		routingExec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
 		routingExec.UpstreamTimeout = time.Duration(cfg.UpstreamTimeout) * time.Second
 		routingExec.StreamRetryThreshold = cfg.StreamRetryThreshold
@@ -6266,6 +6266,9 @@ func main() {
 	if adminHandler != nil {
 		adminHandler.SetSensitiveWordEngine(swEngine)
 		adminHandler.SetSanitizePatternDetector(sanitizePatternDetector)
+		if sanitizePatternDetector != nil {
+			adminHandler.SetSanitizeRuleManager(sanitizePatternDetector.RuleManager())
+		}
 		slog.Info("admin: sensitive word engine wired", "words", swEngine.LoadedWordCount())
 	}
 
@@ -8034,6 +8037,8 @@ func main() {
 		if stateManager != nil {
 			stateManager.Stop()
 		}
+
+		stopSanitizeRules()
 
 		// 2. Stop hub/background producers before closing their dependencies.
 		// Forwarder must stop FIRST so its consumer exits before the hub

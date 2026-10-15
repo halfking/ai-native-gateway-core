@@ -8796,3 +8796,9 @@ git show origin/main:scripts/deploy-lib/db-changelog.sh
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 865 | `865_session_bodies_kind_reconcile.sql` | `470a55246c522ad30010f50c5cd5b68a5030010f2bcce0c33340759a4597d1a9` | 已交付canonical/embed/map/manifest/升级通道；独立真实PG17验证原数据保留、幂等、旧marker齐全但物理漂移和NULL拒绝整笔回滚。保留708原字节；补parent/hot的kind、13列invoker视图、final_full唯一索引与可复用物理postcondition。应用环境及版本见[第三轮审计](audit/2026-10-15-magpie第三轮字节与会话一致性.md)，此行不声称已部署154/245。 |
+
+## 2026-10-16 — 版本化脱敏规则管理
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 866 | `866_sanitize_rule_management.sql` | `112957018fcdf6dd50c2ea9007d1eb4e6638eaa591630fc721d0e055953a2add` | pending deploy。本地临时PostgreSQL验证，未修改生产库；版本、人工复核、实例确认；canonical/installer/通道同步，策略回滚走管理API创建新版本。 |

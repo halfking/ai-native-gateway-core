@@ -58,6 +58,7 @@ import modulesView from './modulesView'
 import formatAnomaliesView from './formatAnomaliesView'
 import modelIntegrityView from './modelIntegrityView'
 import outputCompliance from './outputCompliance'
+import sanitizeRules from './sanitizeRules'
 import agentRegistryView from './agentRegistryView'
 import ops from './ops'
 import qualityCorrelations from './qualityCorrelations'
@@ -82,6 +83,7 @@ import hyper from './hyper'
 import routeIncidentDrawer from './routeIncidentDrawer'
 
 export default {
+  sanitizeRules,
   hyper,
   usageTrend,
   common,

@@ -414,6 +414,9 @@ func (c *ChatExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.
 	// sessionID/tenantID 需从上下文传入（当前简化为空，TODO: 从 routing 上下文注入）。
 	if c.RedactBodyFn != nil {
 		body = c.RedactBodyFn(body, "", "")
+		if err := outputPolicyError(body); err != nil {
+			return nil, err
+		}
 	}
 	copyNonStreamResponseHeaders(w.Header(), resp.Header, len(body))
 	w.WriteHeader(resp.StatusCode)
@@ -2474,14 +2477,19 @@ func (e *Executor) executeOpenAI(
 							ResponseBody: append([]byte(nil), respBody...),
 						})
 					}
-					// paramledger (2026-09-22): Responses 响应对象回显
-					// reasoning.effort——出站被降级/归一时，把回显值还原为
-					// 客户端原始值再写回。
-					// R51 (2026-09-21): restore/redact 都可能改写 body 长度，
-					// 必须在 copyNonStreamResponseHeaders 计算 Content-Length
-					// 之前完成全部改写；此前先按上游 body 定长再改写，
-					// net/http 按旧定长截断，客户端拿到残缺 JSON。
-					respBody = e.redactClientResponse(params, e.restoreClientEcho(params, respBody))
+				}
+				// Restore Responses reasoning.effort before redacting; both transforms
+				// must precede the Content-Length/header copy (R51, paramledger).
+				// Deferred/native handlers still commit ResponseBody later. Apply
+				// the same policy decision even when this executor owns no write.
+				respBody = e.redactClientResponse(params, e.restoreClientEcho(params, respBody))
+				if err := outputPolicyError(respBody); err != nil {
+					return &ExecuteResult{
+						Candidate: cand, LatencyMs: latencyMs,
+						RequestBody: append([]byte(nil), bodyBytes...), InboundBody: sourceBody,
+					}, err
+				}
+				if !params.SuppressSuccessWrite && params.W != nil {
 					if !params.DeferredOutputGovernance {
 						e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "openai-responses"), respBody)
 					}
@@ -2649,7 +2657,15 @@ func (e *Executor) executeOpenAI(
 						ResponseBody:       append([]byte(nil), respBody...),
 					})
 				}
-				respBody = e.redactClientResponse(params, respBody)
+			}
+			respBody = e.redactClientResponse(params, respBody)
+			if err := outputPolicyError(respBody); err != nil {
+				return &ExecuteResult{
+					Candidate: cand, LatencyMs: latencyMs,
+					RequestBody: append([]byte(nil), bodyBytes...), InboundBody: sourceBody,
+				}, err
+			}
+			if !params.SuppressSuccessWrite && params.W != nil {
 				if !params.DeferredOutputGovernance {
 					// R25-V: under DeferredOutputGovernance these bytes only
 					// reached the handler's capture buffer; the handler may

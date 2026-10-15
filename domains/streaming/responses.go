@@ -108,6 +108,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w, r, journeyWriter := beginRequestJourney(w, r, h.chatHandler)
 	defer finishRequestJourney(r, journeyWriter)
 	r = markExplicitStreamSession(r)
+	r = h.chatHandler.pinRules(r)
 	if h.chatHandler.sanitizeInputMiddleware != nil {
 		var authorized bool
 		r, authorized = h.chatHandler.prepareSanitizeRequest(r)
@@ -899,6 +900,27 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 		}
 	}
 
+	if errors.Is(execErr, errorsx.ErrOutputPolicyBlocked) {
+		const code, message = "output_policy_blocked", "Response blocked by output policy"
+		attemptErrCode, attemptErrMsg = code, message
+		auditBuilder.Success(false)
+		rt.Emit(state.EventFailed)
+		providerID, credentialID := failureAttribution(execErr, candidates)
+		if logCtx != nil {
+			logCtx.SetRoute(providerID, credentialID)
+			if ee, ok := execErr.(*executors.ExecuteError); ok {
+				logCtx.ApplyQueueTimestampsFromError(ee)
+			}
+			logCtx.failAndMark(code, message, providerID, credentialID)
+		} else {
+			latency := int(time.Since(startTime).Milliseconds())
+			h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
+				providerID, credentialID, code, message, latency, chatBodyBytes, keyInfo, r)
+		}
+		*attemptLogged = true
+		writeResponsesError(w, http.StatusForbidden, message, code, "blocked")
+		return
+	}
 	if execErr != nil {
 		// SP-02: state machine — executor failed (skip when the failure was a
 		// client cancel, since r.Context() cancellation has already driven

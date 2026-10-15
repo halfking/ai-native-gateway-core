@@ -23,10 +23,10 @@ var credentialPair = regexp.MustCompile(credentialtext.CredentialPairPattern)
 
 func operationalPatternEntries() []patternEntry {
 	return []patternEntry{
-		{sType: TypeAccount, regex: regexp.MustCompile(credentialtext.CredentialPairPattern), group: 1},
-		{sType: TypeSecret, regex: regexp.MustCompile(credentialtext.CredentialPairPattern), group: 2},
-		{sType: TypeSecret, regex: regexp.MustCompile(credentialValuePattern), group: 1},
-		{sType: TypeAccount, regex: regexp.MustCompile(accountValuePattern), group: 1},
+		{sType: TypeAccount, regex: regexp.MustCompile(credentialtext.CredentialPairPattern), group: 1, kind: "credential_pair"},
+		{sType: TypeSecret, regex: regexp.MustCompile(credentialtext.CredentialPairPattern), group: 2, kind: "credential_pair"},
+		{sType: TypeSecret, regex: regexp.MustCompile(credentialValuePattern), group: 1, kind: "credential_declaration"},
+		{sType: TypeAccount, regex: regexp.MustCompile(accountValuePattern), group: 1, kind: "account_declaration"},
 		{sType: TypeSecret, regex: regexp.MustCompile(`(?i)\bBearer\s+([A-Za-z0-9._~+/=-]+)`), group: 1},
 		{sType: TypeSecret, regex: regexp.MustCompile(`\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`)},
 		{sType: TypeSecret, regex: regexp.MustCompile(`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`)},

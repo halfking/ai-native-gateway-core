@@ -34,10 +34,10 @@ import {
  *   **租户_admin 之间的隔离**。本族不一样 —— 要挡的是**比 tenant_admin 更低的 `user`**。
  *
  *   逐字链条：
- *   ① 注册 `admin/handler.go:1289`
+ *   ① 注册 `admin/handler.go:1297`
  *      `mux.HandleFunc("/api/admin/usage/", h.admin(h.HandleUsageAdmin))`
  *      ⇒ **前缀子路由**（与批 121 的 settingsRouter 同形态）。
- *   ② `h.admin` = `AdminMiddleware`（`handler.go:894` → `auth.go:85`）
+ *   ② `h.admin` = `AdminMiddleware`（`handler.go:901` → `auth.go:85`）
  *      —— 全文**只有**「验 JWT」+「强制改密码」，**没有任何角色下限**。
  *   ③ `pkg/identity/verifier.go` 的 `supportedRole`
  *      —— ★★★ `case "user", "tenant_admin", "super_admin": return true`
@@ -282,13 +282,13 @@ describe('① 权限档 admin（本仓第一个「有租户维度但缺角色下
     }
   })
 
-  it('①-8 ★★★★★ 注册处行号订正：模块头原写 `:1267`，实为 `:1289`', () => {
+  it('①-8 ★★★★★ 注册处行号订正：模块头原写 `:1267`，实为 `:1297`', () => {
     const src = goSrc('admin/handler.go')
     const lines = src.split('\n')
     const at = lines.findIndex((l) => l.includes('"/api/admin/usage/"'))
     expect(at, '找不到 /api/admin/usage/ 的注册行').toBeGreaterThan(-1)
-    // ★ 漂了 22 行 ⇒ 断言**真实**行号，而不是模块头原来的 1267。
-    expect(at + 1).toBe(1289)
+    // ★ 漂了 30 行 ⇒ 断言**真实**行号，而不是模块头原来的 1267。
+    expect(at + 1).toBe(1297)
     expect(lines[at]).toMatch(/h\.admin\(h\.HandleUsageAdmin\)/)
     // ★★ 反向护栏：原行号那行必须**不是**本族注册处（它其实是 errorsTrend 相关）。
     expect(lines[1266]).not.toMatch(/usage/i)

@@ -1069,6 +1069,8 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"864_model_aliases_bare_raw_name_active_idx.sql",
 			// Additive repair: stale 708 markers do not prove the body writer schema.
 			"865_session_bodies_kind_reconcile.sql",
+			// Versioned sanitization policies, review evidence, and instance acknowledgements.
+			"866_sanitize_rule_management.sql",
 		},
 	}
 }

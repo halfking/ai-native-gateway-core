@@ -64,6 +64,7 @@ func PlatformSpecs() []*Spec {
 	// 与敏感词评分阈值（security.sensitive_block/warn_score）。
 	out = append(out, NodeFailoverSpecs()...)
 	out = append(out, SensitiveSpecs()...)
+	out = append(out, SanitizeRulesSpecs()...)
 	// 2026-09-22: Wave 3 B1 —— 峰谷倍率时段表（maas.rate_periods，
 	// Go/SQL 双侧同源取档）。
 	out = append(out, MaasRatePeriodSpecs()...)

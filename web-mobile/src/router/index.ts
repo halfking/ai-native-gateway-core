@@ -794,7 +794,7 @@ const routes: RouteRecordRaw[] = [
   },
   {
     // ★ 运维总览（2026-10-14 第一百一十七批）。
-    //   注册 `admin/handler.go:1091` `mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))`
+    //   注册 `admin/handler.go:1099` `mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))`
     //   —— 注册处**确实**是 admin 档（`AdminMiddleware`，`admin/auth.go:85-140` **只认证不检 role**），
     //   而 `handleOpsOverview` 自己既不读 AuthContext 也不看 role。
     // ★★★★ 但**归第三类**：本族**完全没有租户维度** —— 11 条子查询全是全局表，

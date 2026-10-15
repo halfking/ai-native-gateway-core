@@ -412,7 +412,7 @@ export const DRAWER_NAV: readonly NavItem[] = [
     requiresRole: 'super_admin',
   },
   // 2026-10-08 第一百批：任务类型档案 + 人工修正反馈闭环。
-  // ★ admin 档（`admin/handler.go:1413` 用 `admin` 挂载 `RegisterTaskProfileRoutes`）
+  // ★ admin 档（`admin/handler.go:1421` 用 `admin` 挂载 `RegisterTaskProfileRoutes`）
   //   ⇒ **不设** requiresRole（与上面那席相反）。
   // ★ 这一席同时接上批 98/99 的两个 API 模块 —— 它们此前**没有任何 UI 引用**，
   //   全仓 94 个 API 模块里有 32 个是这种「做完了但用户点不到」的孤儿。

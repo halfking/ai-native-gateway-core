@@ -186,6 +186,14 @@ func (s *requestInputSanitizer) sanitizeToolCallsDepth(raw json.RawMessage, dept
 	if err := json.Unmarshal(raw, &call); err != nil || call == nil {
 		return nil, false, fmt.Errorf("%w: tool call", errInvalidSanitizeInput)
 	}
+
+	priorCtx := s.ctx
+	var tool string
+	_ = json.Unmarshal(call["name"], &tool)
+	if tool != "" {
+		s.ctx = WithRuleField(priorCtx, tool, "")
+	}
+	defer func() { s.ctx = priorCtx }()
 	changed := false
 	if fn, ok := call["function"]; ok {
 		updated, didChange, err := s.sanitizeToolCallsDepth(fn, depth+1)
@@ -197,7 +205,7 @@ func (s *requestInputSanitizer) sanitizeToolCallsDepth(raw json.RawMessage, dept
 		}
 	}
 	if args, ok := call["arguments"]; ok {
-		updated, didChange, err := s.sanitizeToolValue(args, 0)
+		updated, didChange, err := s.sanitizeToolValueWithLabel(args, 0, "arguments")
 		if err != nil {
 			return nil, false, err
 		}
@@ -213,7 +221,12 @@ func (s *requestInputSanitizer) sanitizeToolCallsDepth(raw json.RawMessage, dept
 }
 
 func (s *requestInputSanitizer) sanitizeToolBlock(raw json.RawMessage, block map[string]json.RawMessage, field string, value json.RawMessage) (json.RawMessage, bool, error) {
-	updated, changed, err := s.sanitizeToolValue(value, 0)
+	priorCtx := s.ctx
+	var tool string
+	_ = json.Unmarshal(block["name"], &tool)
+	s.ctx = WithRuleField(priorCtx, tool, "")
+	defer func() { s.ctx = priorCtx }()
+	updated, changed, err := s.sanitizeToolValueWithLabel(value, 0, field)
 	if err != nil || !changed {
 		return raw, false, err
 	}
@@ -249,7 +262,11 @@ func (s *requestInputSanitizer) sanitizeToolValueWithLabel(raw json.RawMessage, 
 			// match a sensitive-data rule and mint a second placeholder).
 			return raw, false, nil
 		}
-		if credentialField(label) && text != "" {
+		managed := false
+		if d, ok := s.sanitizer.detector.(*PatternDetector); ok {
+			managed = d.RuleManager() != nil
+		}
+		if !managed && credentialField(label) && text != "" {
 			typ := TypeSecret
 			switch strings.ToLower(label) {
 			case "account", "username", "user_name", "login", "帐号", "账号", "账户", "用户名":
@@ -269,14 +286,27 @@ func (s *requestInputSanitizer) sanitizeToolValueWithLabel(raw json.RawMessage, 
 			return out, true, err
 		}
 		doc := bytes.TrimSpace([]byte(text))
-		if len(doc) > 0 && (doc[0] == '{' || doc[0] == '[') && json.Valid(doc) {
-			updated, changed, err := s.sanitizeToolValue(doc, depth+1)
+		// Managed nested strings keep their actual field and full restoration
+		// boundary. Only protocol arguments/input roots carry embedded JSON
+		// containers; legacy unversioned parsing retains its recursive behavior.
+		structuredRoot := !managed || depth == 0 && (label == "arguments" || label == "input")
+		if structuredRoot && len(doc) > 0 && (doc[0] == '{' || doc[0] == '[') && json.Valid(doc) {
+			// Decoded arrays retain the containing field for their string
+			// elements; object members acquire their own actual JSON keys.
+			if doc[0] == '{' {
+				label = ""
+			}
+			updated, changed, err := s.sanitizeToolValueWithLabel(doc, depth+1, label)
 			if err != nil || !changed {
 				return raw, false, err
 			}
 			out, err := json.Marshal(string(updated))
 			return out, true, err
 		}
+		prior := s.ctx
+		meta, _ := prior.Value(ruleFieldKey{}).(ruleField)
+		s.ctx = WithRuleField(prior, meta.tool, label)
+		defer func() { s.ctx = prior }()
 		return s.sanitizeText(raw)
 	case '{':
 		if credentialField(label) {
