@@ -580,9 +580,14 @@ type Executor struct {
 	// （magpie probeOne）。nil = 默认 true；测试可显式 false 回退扇出。
 	ProbeOneEnabled *bool
 
-	// ProbeOneFlight (P0-D) model-scoped SET NX 单飞。nil = 进程内 memory
-	// 默认；生产可注入 NewRedisProbeOneFlight。锁未拿到则本请求跳过 ProbeSync。
+	// ProbeOneFlight (P0-D) model-scoped SET NX 单飞。nil = 本 Executor
+	// 惰性 memory（见 probeOneMem）；生产注入 NewRedisProbeOneFlight。
+	// 锁未拿到则本请求跳过 ProbeSync。
 	ProbeOneFlight ProbeOneFlight
+	// probeOneMemOnce/probeOneMem：ProbeOneFlight==nil 时的 per-Executor
+	// 回落。禁止进程级单例——holdTimeout TTL 会跨测试串味。
+	probeOneMemOnce sync.Once
+	probeOneMem     *MemoryProbeOneFlight
 
 	// ParamLedger (2026-09-22) 参数协商账本：paramguard/reqprobe 的出站
 	// 调整按 request_id 记账，native responses 回程把 reasoning.effort

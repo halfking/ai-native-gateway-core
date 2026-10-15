@@ -53,18 +53,6 @@ func (m *MemoryProbeOneFlight) TryAcquire(_ context.Context, model string, ttl t
 	return true
 }
 
-var (
-	defaultFlightOnce sync.Once
-	defaultFlight     *MemoryProbeOneFlight
-)
-
-func defaultMemoryProbeOneFlight() ProbeOneFlight {
-	defaultFlightOnce.Do(func() {
-		defaultFlight = NewMemoryProbeOneFlight()
-	})
-	return defaultFlight
-}
-
 // RedisProbeOneFlight uses SET key NX PX ttl.
 type RedisProbeOneFlight struct {
 	rdb    redis.UniversalClient

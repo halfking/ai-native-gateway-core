@@ -26,13 +26,21 @@ func (e *Executor) probeOneEnabled() bool {
 	return true
 }
 
-// probeOneFlight returns the model-scoped single-flight lock. Nil Executor
-// field → process-local memory (Redis 降级可接受：多实例最多各探一次)。
+// probeOneFlight returns the model-scoped single-flight lock.
+// Explicit ProbeOneFlight (生产 Redis) wins; otherwise lazy per-Executor
+// memory — NOT a process-global singleton (that poisoned package tests:
+// HoldTimeout TTL left "minimax-m3" locked and skipped later ProbeSync).
 func (e *Executor) probeOneFlight() ProbeOneFlight {
-	if e != nil && e.ProbeOneFlight != nil {
+	if e == nil {
+		return NewMemoryProbeOneFlight()
+	}
+	if e.ProbeOneFlight != nil {
 		return e.ProbeOneFlight
 	}
-	return defaultMemoryProbeOneFlight()
+	e.probeOneMemOnce.Do(func() {
+		e.probeOneMem = NewMemoryProbeOneFlight()
+	})
+	return e.probeOneMem
 }
 
 // selectProbeOne 在启用时把同步探测候选收窄为 1 个：CoolUntil 最早到期者

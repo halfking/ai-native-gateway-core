@@ -128,6 +128,21 @@ func TestToNoCandidatesProbeSliceSelectsEarliest(t *testing.T) {
 	}
 }
 
+// TestDefaultProbeOneFlightIsPerExecutor 钉住：nil ProbeOneFlight 不得共用
+// 进程级 map（否则 NoCandidateProbe_HonorsClientCancel 在同包先跑探测后会假红）。
+func TestDefaultProbeOneFlightIsPerExecutor(t *testing.T) {
+	a, b := &Executor{}, &Executor{}
+	if !a.probeOneFlight().TryAcquire(context.Background(), "shared-model", time.Minute) {
+		t.Fatal("executor A must acquire")
+	}
+	if !b.probeOneFlight().TryAcquire(context.Background(), "shared-model", time.Minute) {
+		t.Fatal("executor B must acquire independently (per-Executor memory, not process-global)")
+	}
+	if a.probeOneFlight().TryAcquire(context.Background(), "shared-model", time.Minute) {
+		t.Fatal("executor A second acquire must lose (same instance still holds)")
+	}
+}
+
 func TestProbeOneFlightMemoryConcurrentAcquireOnce(t *testing.T) {
 	flight := NewMemoryProbeOneFlight()
 	var wins atomic.Int32
