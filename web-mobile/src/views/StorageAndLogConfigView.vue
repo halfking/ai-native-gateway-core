@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // StorageAndLogConfigView — 存储配置 + 日志轮转配置（2026-10-14，第一百二十四批）。
 //
-// GET /api/admin/storage/config   （admin/handler.go:1129 h.superAdmin）
-// GET /api/admin/logs/config      （admin/handler.go:1135 h.superAdmin）
+// GET /api/admin/storage/config   （admin/handler.go:1137 h.superAdmin）
+// GET /api/admin/logs/config      （admin/handler.go:1143 h.superAdmin）
 //
 // ══ 权限 ══════════════════════════════════════════════════════════════════
 // ★★★★★ `requiresRole: 'super_admin'` —— 而且**服务端是真门**（第二类）。
@@ -15,7 +15,7 @@
 //   ⚠️ 与批 122 / 123 两族**性质不同**：那两族服务端**根本没有**角色下限
 //   （`AdminMiddleware` 只认证），前端那一层是唯一的门；本族不是。
 //
-//   ★★ 权限必须**逐行**读：`:1129`（superAdmin）与 `:1132`（admin，
+//   ★★ 权限必须**逐行**读：`:1137`（superAdmin）与 `:1140`（admin，
 //      storage/migration-state）**相邻两行却是两种档位**
 //   ⇒ **绝不能按 `/api/admin/storage/` 前缀推权限**。
 //
