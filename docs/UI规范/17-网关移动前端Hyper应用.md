@@ -17733,3 +17733,151 @@ FAIL src/views/V1DataHorizonView.spec.ts  （2 条：同上 + 注册处）
   format-anomalies + model-integrity-events、`/api/admin/requests/{id}/actions` 无租户过滤，
   以及批 121/122/125 新登记的三条角色下限缺陷（settings history / settings rollback / usage 三端点 /
   storage migration-state）。
+
+## 11.164 十连跑揪出第五类 flaky：一条判据的耗时是 **O(导航项数)**，每接一席就更接近翻车（第一百二十七批追加）
+
+### 一、它是怎么被发现的
+
+第 127 批收口时按纪律在 rebase **之后**重跑十连跑（rebase 前那轮的读数不能沿用）。
+10 轮全部留存快照，`STABILITY_RC=1`：
+
+| 轮次 | 失败条数 |
+|---|---|
+| run#1 / #2 / #4 ~ #10 | **5**（恒为 `v1DataHorizon` 那族既有红） |
+| **run#3** | **6** ← 多了一条 |
+
+多出来的那条不是断言失败，是**超时**：
+
+```
+× ★ 穷举：站在每个导航项自己的路由上点它，都必须收起（不抽样、不写死路径）  20131ms
+Error: Test timed out in 20000ms.
+```
+
+⇒ **20131ms vs 阈值 20000ms**。它不是「差一点」的抖动，是**顶着阈值过线**。
+
+### 二、根因：这条判据的复杂度随 `DRAWER_NAV` 线性增长
+
+`src/components/shell/AppDrawer.spec.ts` 那条「穷举」判据对**每个导航项**做一次：
+
+```ts
+for (const item of DRAWER_NAV) {
+  const w = await mountDrawerAs('super_admin', item.to)   // ← 每项都重来一遍
+  ... 点自己、断言 emit(false) ...
+}
+```
+
+而 `mountDrawerAs` 每次都要**新建 pinia + 一个含全部导航路径的 memory router + mount 整棵抽屉**：
+
+```ts
+const router = createRouter({
+  history: createMemoryHistory(),
+  routes: [{ path: '/', ... }, ...DRAWER_NAV.map((n) => ({ path: n.to, ... }))],
+})
+```
+
+⇒ **耗时 = O(DRAWER_NAV 项数)**，而 vitest 给的默认 timeout 是**固定 20000ms**。
+⇒ ⇒ 两条曲线必然相交：**每接一个页面席，这条判据就更靠近一次偶发翻车。**
+
+而第 127 批恰好就是**加了一席**：
+
+```
+批 126 worktree：  DRAWER_NAV 85 项
+批 127 worktree：  DRAWER_NAV 86 项    ← 本批
+```
+
+**这不是巧合**：接页面席是本流水线的日常动作，而这批的十连跑正好是第一次把它顶过线。
+⇒ 记为**第五类 flaky**（前四类是 ComplianceHitsView / RoutingOptView 两族时序断言、
+`v1DataHorizon` 断裂、以及 SIGKILL=RC137 那类环境事件）。
+
+### 三、量出来的证据：单跑 2~3s，全量并行 20.1s
+
+先排除「这条判据本来就慢」与「本批改坏了抽屉」两种解释：
+
+```
+# 单跑（无并行争抢），三次
+real 3.49 / 2.39 / 2.17     ← 秒级
+```
+
+⇒ **断言本身极快**，慢的只是并行压力下的 CPU 争抢 ⇒
+「穷举」这个设计本身没问题（它该穷举，抽样就失去意义了）。
+
+### 四、处置：只放宽**时间预算**，断言一个都没动
+
+```ts
+  },
+  120_000)     // ← 显式 timeout，替掉默认的 20000
+```
+
+三条纪律，写在代码注释里而不是只在文档里：
+
+1. ★ **判据逻辑零改动**。`for` 循环体、两条 `expect`、那句「只取 `<a>`」的过滤
+   全部原样保留 —— 变的是「多慢算失败」这条**与机器负载有关**的判据，
+   不是「什么算不通过」这条**与被测物有关**的判据。
+2. ★ **不能用「跑得慢」搪塞成 flaky**。这里的机制是**可证的**（O(n) vs 常数阈值），
+   机制清楚就能给出确定处置；真正未定位的 flaky（ComplianceHitsView /
+   RoutingOptView）才归「未复现 ≠ 已修复」那一档。
+3. ★ **阈值要写清为什么是 120s、什么时候要改**。注释里点明：
+   单跑 2~3s、并行实测 20131ms、当时项数 85→86，
+   并留一句「导航项继续暴涨时要跟着调，而不是回退成默认 20s」
+   —— 否则下一个接席的人会把它当成「随手写的魔法数」删掉。
+
+### 五、★ 必须证伪「这是不是又一个恒绿假门」
+
+放宽 timeout 最容易被质疑的就是**把红改成绿**。所以做了变异复验：
+
+```go
+// 把守卫改成恒假
+- if (route.path === to) emit('update:modelValue', false)
++ if (route.path === to && false) emit('update:modelValue', false)
+```
+
+```
+× ★ 穷举：站在每个导航项自己的路由上点它，都必须收起（不抽样、不写死路径）  15ms
+Tests  2 failed | 21 passed (23)      ← 红，且**命中**了目标用例
+```
+
+⇒ 判据**仍有牙**。还原后逐字节比对：`True 7296 7296`，单跑 23/23 绿。
+
+⇒ ★★ **通用式：任何「放宽阈值」型修改，都必须配一次变异证明它没变成假门。**
+   否则「把 flaky 修掉」和「把判据关掉」在 git log 里长得一模一样。
+
+### 六、复验
+
+| 环节 | 修 timeout 前 | 修 timeout 后 |
+|---|---|---|
+| 全量 | 5 failed / 8090 passed | **5 failed / 8090 passed**（不变） |
+| 十连跑 | 9 轮 5 条 + **run#3 6 条** | **10/10 轮全部 5 条** |
+| 失败并集 | 5 条 `v1DataHorizon` | **5 条 `v1DataHorizon`（恒等）** |
+
+⇒ 读快照的 `×` 行确认失败面恒为那 5 条既有红，**本批零红**。
+
+### 七、★ 附带发现：一批**纯注释**的文档债（不影响任何门）
+
+复核 `cmd/gateway/main.go` 行号时发现：约 12 个 `api/*.ts` 模块头声称的
+`cmd/gateway/main.go:<行号>` **全部漂移**，偏移 **+31 ~ +100 不等**（不统一 ⇒ 是长期累积，
+不是某一次改动整体位移）。例：
+
+| 模块头声称 | 实测 |
+|---|---|
+| `sessionAnalyticsFilterOptions.ts:9` → `main.go:7186` | **7286** |
+| `approvals.ts:6` → `main.go:7384` | **7484** |
+| `subscriptionTiers.ts:10` → `main.go:7027` | **7058** |
+| `dispatchJournal.ts:9` → `main.go:7135-7136` | 另处 |
+| `sessionAnalyticsFilterOptions.ts:18` → `session_tenant.go:126-131` | **189-195** |
+
+**为什么没有一条判据因此变红？** 因为本仓的读源码判据**一律锚内容正则**、不钉死行号：
+
+```ts
+const src = goSrc('cmd/gateway/main.go')
+const group = src.match(/adminGroup := e\.Group\("\/api\/admin", (requireSuperAdmin)\)/)
+expect(group, '没找到 echo group 声明（正则失配会让这条恒绿）').toBeTruthy()
+```
+
+⇒ ★ 这正是「锚内容」优于「锚行号」的收益：**源码位移只伤注释，不伤门。**
+⇒ 但注释确实在指错行，属文档债，归属各模块属主批次修（登记待办，不在本批扩散）。
+⇒ 判别动作：**看到模块头声称的行号，一律现读一遍再引用**，别沿用上一批抄来的。
+
+- 下一批：`sessionAnalyticsFilterOptions`（最后一个真缺口）——
+  取证已完成：注册 `main.go:7286` 前缀 catch-all + `session_analytics_handler.go:728-729` 分发器
+  （第六种注册形态）；权限档 = **`admin`**（`AdminMiddleware` 只认证不检 role；
+  `effectiveScopeTenant` 让 `super_admin` 看全部租户）；模块头 7 处行号漂移本批一并订正。
