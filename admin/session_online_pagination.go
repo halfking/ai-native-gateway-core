@@ -107,11 +107,16 @@ func encodeOnlineSessionCursor(ts time.Time, sessionID string) (string, error) {
 }
 
 // computeCursorHMAC 计算 cursor 的 HMAC-SHA256 签名。
-// The secret is mandatory so deployments cannot silently share a public key.
+// Prefer CURSOR_HMAC_SECRET；未配置时回落 LLM_GATEWAY_SECRET_KEY（网关必配、≥32）。
+// 2026-10-15：D2 把 online 从空结果修成真实行后，缺专用密钥会让 hasMore 页整页 503
+// （pagination cursor unavailable）——回落避免「修好慢查询却打不开列表」。
 func computeCursorHMAC(data string) (string, error) {
 	secret := strings.TrimSpace(os.Getenv("CURSOR_HMAC_SECRET"))
+	if secret == "" {
+		secret = strings.TrimSpace(os.Getenv("LLM_GATEWAY_SECRET_KEY"))
+	}
 	if len(secret) < 32 {
-		return "", fmt.Errorf("cursor HMAC secret must be at least 32 bytes")
+		return "", fmt.Errorf("cursor HMAC secret must be at least 32 bytes (CURSOR_HMAC_SECRET or LLM_GATEWAY_SECRET_KEY)")
 	}
 	h := hmac.New(sha256.New, []byte(secret))
 	h.Write([]byte(data))

@@ -64,10 +64,57 @@ bash tests/observe_magpie_p0_contract_test.sh        # ALL PASS
 
 生产 SQL 对照（252 `pg-252-pg17` / `llm_gateway`）：见上文 EXPLAIN 数字。
 
-## 六、下一轮提示词
+## 六、下一轮提示词（部署前口径；已被 §七 收口）
 
 1. ★ **部署本轮**（154/245/211）：magpie P0-B/C/D + D1/D2/D3；复验 `/api/admin/sessions/online` 与 `/api/logs/top-models` 亚秒、dashboard 无 500。
 2. **MV REFRESH 争用**：`routing_analytics_7d` 降频或 CONCURRENTLY 窗口错峰（URSM §10.110 续）。
 3. **`r43-fresh-install`** 门/脚本是否拣有用文件合入（禁止带删 704/705）。
 4. **model alternatives** 超时与 nvidia probe 502：owner。
 5. 窗口外九月远端三分支留置。
+
+## 七、部署执行收口（2026-10-15 本 checkout `llm-gateway-go-3`）
+
+> 构建锚点：`6dc0ad45`（含 peer 已上线的 D1/D2/D3；本会话叠加 MV 降频 + cursor HMAC 回落 + 211 脚本硬化）。
+> **未授权 commit**——工作区改动仍脏，待 owner 一句话。
+
+### 7.1 本会话代码增量（未提交）
+
+| 项 | 变更 |
+|---|---|
+| MV 降频 | `RefreshInterval` 10m→**30m**；`mvFreshnessBudget` 15m→**45m**；算术钉子两侧夹住 |
+| cursor HMAC | `CURSOR_HMAC_SECRET` 缺/短时回落 `LLM_GATEWAY_SECRET_KEY`（≥32）；`TestCursorFallsBackToGatewaySecretKey` |
+| r43 门拣选 | 只合三门测试 + `scripts/audit/{map_creators,scan_startup_chain}.py`；718/719 **不注销**，进 concurrency 例外表 |
+| deploy-211 | `D211_REPO_ROOT`；禁裸 `--exclude=build`；新鲜度排除 `*.test/spec`；`COPYFILE_DISABLE` + `--no-xattrs`；半包后脚本存在门；契约 **46/46** |
+
+### 7.2 部署版本与端口
+
+| 目标 | version | active_port | 备注 |
+|---|---|---|---|
+| **245** | `2.5.8-6dc0ad45-20261015-**2650**` | **8781** | `deploy-245.sh` |
+| **154** | `2.5.8-6dc0ad45-20261015-**2651**` | **8782** | `deploy-154.sh`；等 peer 2642 锁后切流 |
+| **211** | `2.5.8-6dc0ad45-20261015-**2645**` | 8781（容器） | `deploy-211-docker.sh --via`；seq 计数器独立 |
+
+### 7.3 复验矩阵（实测）
+
+| 端点 / 探针 | 245 | 154 | 211 |
+|---|---|---|---|
+| `/api/admin/sessions/online` | 200 **102ms**（首轮冷 423ms） | 200 **114ms** | 200 **6.6ms** |
+| `/api/logs/top-models?days=3` | 200 **332ms**（首轮冷 1156ms 一次） | 200 **337ms** | 200 **11.1ms** |
+| magpie 四指纹 | OK（`TARGET=245 JOURNAL=1`） | OK（`TARGET=154 JOURNAL=1`） | OK（容器 `llm-gateway` 字节） |
+| readyz | ready :8781 | ready :8782 | ready :8781 |
+
+magpie 30m 日志计数本窗全 0（无风暴信号；脚本本身不宣称「全绿」）。
+
+### 7.4 运维副作用
+
+1. **online 首轮 503 `pagination cursor unavailable`**：生产缺 `CURSOR_HMAC_SECRET`。处置=代码回落 SECRET_KEY + 245/154 `/etc` 注入 64 字节；154 `/opt/.env` 曾留下 **空值 CURSOR 行**（len=0），已从 `/etc` 回填并备份 `.env.bak-cursor-*`。
+2. **211 admin**：`gateway.env` **无** `LLM_GATEWAY_ADMIN_*`（设计内——users 表继承）；用本机 `.env.local` 同账号登录成功。
+3. **deploy 产物脏树**：`VERSION` / `version.json` / `web/public/*` / `docs/db-changelog.md` 已 `git checkout --` 还原，勿混进提交。
+
+### 7.5 下一轮提示词（部署后）
+
+1. **owner 授权后 commit + push** 本会话脏集（MV/cursor/r43 门/211 脚本）；勿带部署产物。
+2. **deploy-211 续优化**（已硬化 xattr/半包/REPO_ROOT；仍欠）：把 `LLM_GATEWAY_ADMIN_*` 可选写入 `gateway.env`（或文档钉「用 .env.local 同库账号」）；observe 脚本补 `TARGET=211` 容器路径；claim/URSM 已有自占复用，冷启动后 emergency-repair 是否仍需人工留观。
+3. **MV 争用**：30m 降频已上线——用 pg_stat_statements 对比 `routing_analytics_7d` 总耗时是否下降；不足再错峰。
+4. model alternatives 超时、fp_slot、nvidia probe：owner。
+5. 窗口外 `r43-fresh-install*` / 九月远端三分支：留置。

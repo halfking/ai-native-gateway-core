@@ -16,15 +16,17 @@ import (
 
 // TestMaterializedViewRefresherConstants pins the timing contract the rest
 // of the system relies on: cycles must not overlap (timeout < interval),
-// and consumers (admin.mvFreshnessBudget = 15min) tolerate one missed
-// cycle, which requires interval < freshness budget.
+// and consumers (admin.mvFreshnessBudget = 45min) keep interval strictly
+// below that budget so a healthy refresher never forces constant fallbacks.
 func TestMaterializedViewRefresherConstants(t *testing.T) {
 	require.Greater(t, RefreshInterval, time.Duration(0))
 	require.Greater(t, InitialDelay, time.Duration(0))
 	require.Less(t, RefreshTimeout, RefreshInterval,
 		"refresh timeout must stay below the interval so cycles cannot pile up")
-	require.LessOrEqual(t, RefreshInterval, 15*time.Minute,
-		"interval above 15min would exceed the admin freshness budget and force constant fallbacks")
+	require.Equal(t, 30*time.Minute, RefreshInterval,
+		"2026-10-15 降频契约：routing MV 每 30m 刷一次")
+	require.Less(t, RefreshInterval, 45*time.Minute,
+		"interval must stay below admin.mvFreshnessBudget (45min) or every cycle falls back")
 }
 
 // TestMaterializedViewRefresher_StopDuringInitialDelay verifies Stop()

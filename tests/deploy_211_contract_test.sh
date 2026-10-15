@@ -292,6 +292,22 @@ if printf '%s' "$_nocomment" | grep -qE -- "--exclude=(\./)?dist"; then
 else
   ok "tar 同步不带任何 dist 排除（web/dist、web-mobile/dist 随树上树）"
 fi
+# 同族：--exclude=build 会误伤 vendor/.../api/types/build/*.go（2026-10-15 12h 审计 P2）
+if printf '%s' "$_nocomment" | grep -qE -- "--exclude=(\./)?build([[:space:]]|$)"; then
+  bad "tar 同步仍带 build 排除（bsdtar 尾段语义会排掉 vendor/.../types/build）"
+else
+  ok "tar 同步不带裸 build 排除（vendor docker types/build 随树上树）"
+fi
+# configs 种子必须钉 D211_REPO_ROOT，禁止再 $(cd "$(dirname "$0")/..")——相对 $0
+# 依赖 cwd，docker build 后/非仓库 cwd 会报 cd: scripts/..: No such file（2026-10-15）。
+if printf '%s' "$_nocomment" | grep -qE 'D211_CONFIGS_SRC=.*\$D211_REPO_ROOT/configs'; then
+  ok "configs 种子路径钉 D211_REPO_ROOT（不依赖 cwd/\$0）"
+else
+  bad "configs 种子仍用 dirname \$0 相对 cd，非仓库 cwd 会 No such file"
+fi
+if printf '%s' "$_nocomment" | grep -qE 'D211_CONFIGS_SRC=.*dirname "\$0"'; then
+  bad "configs 种子仍含 dirname \"\$0\" 相对路径（cwd 漂移即炸）"
+fi
 # ── 前端产物新鲜度闭环（2026-10-15 审计 P1）────────────────────────────
 # 搬运链通了不等于闭环了：原实现缺 dist 时只 warn，且 rm -rf 写在 if 内，
 # 于是「上一版 SPA 被继续挂载」= 无声前端回滚；陈旧 dist 照样种子化；而
@@ -308,6 +324,13 @@ if printf '%s' "$_nocomment" | grep -qE -- '-newer .*index\.html'; then
   ok "211 前端闸门按源码新鲜度判定（-newer），不靠构建序号"
 else
   bad "211 前端闸门没有新鲜度判定：陈旧 dist 会被照旧种子化，线上是旧 SPA 而部署显示成功"
+fi
+if printf '%s' "$_nocomment" | grep -qE "!\ -name '\*\.test\.ts'|!\ -name \"\*\.test\.ts\"|! -name '\\*\\.test\\.ts'"; then
+  ok "211 前端新鲜度排除 *.test.ts（测试文件不进 bundle）"
+elif printf '%s' "$_nocomment" | grep -qF "! -name '*.test.ts'"; then
+  ok "211 前端新鲜度排除 *.test.ts（测试文件不进 bundle）"
+else
+  bad "211 前端新鲜度未排除 *.test.ts，测试文件 mtime 会误杀部署"
 fi
 if printf '%s' "$_nocomment" | grep -qE 'D211_ALLOW_STALE_WEB'; then
   ok "211 保留纯 API 形态逃生舱 D211_ALLOW_STALE_WEB"
