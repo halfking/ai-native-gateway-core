@@ -1067,6 +1067,8 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 等值，现有 lower(raw_name) 表达式索引与 uq 第二列均不服务，
 			// CMI rollup 68/h 被击杀（252 审计轮实测）。
 			"864_model_aliases_bare_raw_name_active_idx.sql",
+			// Additive repair: stale 708 markers do not prove the body writer schema.
+			"865_session_bodies_kind_reconcile.sql",
 		},
 	}
 }
