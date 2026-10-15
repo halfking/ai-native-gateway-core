@@ -844,6 +844,7 @@ const routes: RouteRecordRaw[] = [
     // ⚠️ 第 129 批随 r1033 的后端重写一起改名：端点 `/v1-data-horizon` →
     //   `/data-horizon`，判据从「v1 停写门」换成「session_turns 新鲜度」。
     path: '/data-horizon',
+    alias: '/v1-data-horizon',
     name: 'data-horizon',
     component: () => import('@/views/DataHorizonView.vue'),
     meta: { titleKey: 'dh.title', requiresAuth: true },
