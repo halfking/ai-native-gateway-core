@@ -146,6 +146,22 @@ func finishNativeResponsesEvent(event NativeResponsesEvent, dataLines []string, 
 		if err := json.Unmarshal(event.Data, &event.Payload); err != nil {
 			return event, fmt.Errorf("native Responses SSE event %q: invalid JSON: %w", event.Name, err)
 		}
+		// r1024（2026-10-13，vapeur grok-4.6 生产复现）：部分上游（vapeur）
+		// 不发 `event:` 行，事件名只在 data JSON 的 type 字段里。此前 Name
+		// 恒空 → StreamNativeResponsesSSE 的终态判定（response.completed 等
+		// 只看 Name）永不置位，随后上游正常关连接被当成
+		// native_responses_read_error 流中断——客户端已收完
+		// response.completed 却又收到 response.failed，且失败计入凭据健康
+		// （3 连败停节点 → no_candidate 连坐）。从 payload type 回填 Name，
+		// 让终态判定 / 分类 / capture 语义与带 event: 行的上游一致。
+		if event.Name == "" {
+			if typeRaw, ok := event.Payload["type"]; ok {
+				var typeName string
+				if err := json.Unmarshal(typeRaw, &typeName); err == nil && typeName != "" {
+					event.Name = typeName
+				}
+			}
+		}
 	}
 	event.Class = classifyNativeResponsesEvent(event.Name, event.Data)
 	return event, nil

@@ -22,7 +22,20 @@ type ProbeQueueWorkerConfig struct {
 	Workers      int
 	Lease        time.Duration
 	PollInterval time.Duration
+
+	// IdlePollCap 是**空闲退避**的封顶间隔（2026-10-13，runbook §10.110.15）。
+	// ≤0 时取默认值 ProbeQueueIdlePollCapDefault。
+	// 只在「这一轮一件都没取到」时生效；一取到任务立刻回到 PollInterval，
+	// 所以**队列有活时的行为与改前逐字相同**。
+	IdlePollCap time.Duration
 }
+
+// ProbeQueueIdlePollCapDefault 是空闲退避的默认封顶（30s）。
+//
+// 取 30s 的理由：探针是后台健康检查，**没有秒级时效要求**；
+// 而生产实测 99.33% 的轮询都是空转（410 万次取件只回 27,443 行）。
+// ⇒ 空转侧从 250ms 退到 30s，可省掉这部分 ~5.3% 的数据库时间。
+const ProbeQueueIdlePollCapDefault = 30 * time.Second
 
 // ProbeQueueWorker consumes durable tasks and delegates every probe to the
 // same ActiveProbeExecutor used by the legacy active probe path.
@@ -128,41 +141,100 @@ func (w *ProbeQueueWorker) Stop() {
 
 func (w *ProbeQueueWorker) run(ctx context.Context) {
 	defer w.wg.Done()
-	ticker := time.NewTicker(w.cfg.PollInterval)
-	defer ticker.Stop()
+
+	// 2026-10-13（runbook §10.110.15）：空闲退避。
+	//
+	// 改前是固定 250ms ticker，**队列空转时也照跑**。生产实测（61.7 小时窗口）：
+	//   Claim 4,106,933 次只取到 27,443 行 ⇒ **99.33% 的轮询是空转**
+	//   RequeueExpiredLeases 4,106,941 次只改 39 行 ⇒ 99.999% 空转
+	// 两项合计 201.5 分钟 = llm_gateway 全库数据库时间的 **5.3%**。
+	//
+	// 改法：空转时把间隔翻倍（封顶 IdlePollCap），**一取到任务立刻复位**。
+	// ⇒ 队列有活时仍是 250ms，延迟不变；只有「本来就没活」的那 99.33% 变慢。
+	// 这是队列消费者的标准形态，不是「降频」，所以不改任何调度语义。
+	base := w.cfg.PollInterval
+	if base <= 0 {
+		base = 250 * time.Millisecond
+	}
+	maxIdle := w.cfg.IdlePollCap
+	if maxIdle <= 0 {
+		// 未配置 ⇒ 取默认封顶。
+		//
+		// ⚠️ 2026-10-13 12h 审计轮（P1）修正：此前这里写的是
+		//   if maxIdle < base { maxIdle = base }
+		// 而**生产装配点从未给 IdlePollCap 赋值**（cmd/gateway/main.go 的
+		// NewProbeQueueWorker 只设了 PollInterval: 250ms），于是 maxIdle=0
+		// → 被抬成 base(250ms) → nextIdlePoll 的封顶恒等于 base
+		// ⇒ 退避幅度恒为 0，行为与改前逐字相同。
+		// 字段注释承诺的「≤0 时取 ProbeQueueIdlePollCapDefault」在代码里
+		// **根本不存在** —— 这正是该缺陷能通过评审的原因，也是它藏住的
+		// 原因：注释说有，代码没做。
+		maxIdle = ProbeQueueIdlePollCapDefault
+	}
+	if maxIdle < base {
+		// 配得比 base 还小 ⇒ 退避无处可退，退化成改前的固定间隔，
+		// 而不是产生一个比 base 更慢的间隔。
+		maxIdle = base
+	}
+	wait := base
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
 	for {
-		if err := w.processBatch(ctx); err != nil && ctx.Err() == nil {
+		n, err := w.processBatch(ctx)
+		if err != nil && ctx.Err() == nil {
 			slog.Warn("probe queue worker batch failed", "error", err)
 		}
+		wait = nextIdlePoll(wait, base, maxIdle, n)
+		timer.Reset(wait)
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		}
 	}
 }
 
-func (w *ProbeQueueWorker) processBatch(ctx context.Context) error {
+// nextIdlePoll 是空闲退避的**决策规则**，单独抽出来是为了能被直接判据覆盖：
+// run() 里的循环结构（定时器用法、什么时候调用它）由
+// TestProbeQueueIdlePollBackoffIsWiredIntoRun 钉住，决策本身由决策表钉住。
+//
+// current：本轮实际等待的间隔；base：有活时的间隔；cap：封顶；
+// claimed：上一轮 processBatch 取到的任务数。
+func nextIdlePoll(current, base, cap time.Duration, claimed int) time.Duration {
+	if claimed > 0 {
+		// 一取到活立刻复位 —— 这是「有活时延迟不变」这条承诺的全部实现。
+		return base
+	}
+	if next := current * 2; next < cap {
+		return next
+	}
+	return cap
+}
+
+func (w *ProbeQueueWorker) processBatch(ctx context.Context) (int, error) {
+	// 2026-10-13（runbook §10.110.15）：返回值从 error 扩成 (claimed, error)，
+	// 让 run() 能据此决定要不要退避。调用点只有 run() 一处。
 	// 2026-09-17 (R39): the instance-level decrypt circuit must gate the
 	// queue path too, not just the legacy drainDue loop — a wrong-key
 	// instance claiming durable queue rows fails every direct round with
 	// endpoint_build and (before the mirrorNodeProbeState CASE WHEN guard)
 	// advanced the shared consecutive_failures ladder. Mirrors drainDue.
 	if w.cfg.ProbeService != nil && w.cfg.ProbeService.worker.decryptCircuitTripped() {
-		return nil
+		// 熔断期间不取件 ⇒ 按「这一轮没活」退避，别继续空转。
+		return 0, nil
 	}
 	if _, err := w.cfg.Queue.RequeueExpiredLeases(ctx); err != nil {
-		return err
+		return 0, err
 	}
 	w.maybeReviveExpiredReady(ctx)
 	tasks, err := w.cfg.Queue.Claim(ctx, 1, w.cfg.Lease)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	for _, task := range tasks {
 		w.processTask(ctx, task)
 	}
-	return nil
+	return len(tasks), nil
 }
 
 // maybeReviveExpiredReady runs the zombie-ready rescue at most once per 30s

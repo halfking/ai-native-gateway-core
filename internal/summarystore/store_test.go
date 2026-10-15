@@ -70,6 +70,7 @@ func TestSummary_ZeroValueValid(t *testing.T) {
 		t.Fatalf("zero Summary should be all-empty, got %+v", s)
 	}
 }
+
 // TestSanitiseUTF8_InvalidBytesReplaced verifies that invalid UTF-8 byte
 // sequences (truncated CJK multibyte, as observed in production error
 // 0xe5 0xe2 0x80) are replaced with U+FFFD so PostgreSQL accepts the row.

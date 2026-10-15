@@ -42,7 +42,12 @@ pii:
       description: "中国护照号码"
       
     account:
-      regex: '(?i)(?:account|username|user_name|login|帐号|账号|账户|用户名)["'']?\s*[:=：]\s*("(?:\\.|[^"\\])*"|''[^'']*''|(?:\{SENSITIVE:[a-z_]+:[0-9]+\}|[^\s"'',;，；<>{}\]]+)+)'
+      # r1024（2026-10-13）：label 集合补 `user` 与 `*_user` 后缀形态（ssh_user= /
+      # db_user= / user=）。此前只认 username|user_name|login|account 的确切拼写，
+      # 部署配置散文里的 `ssh_user=deploy` 漏检——用户名以明文出网关，模型回显
+      # 时又撞上输出侧凭据键检查，整条 tool 调用被掐断。用户名进占位符闭环
+      # （TypeAccount）后，出向是占位符、回程可还原。
+      regex: '(?i)(?:account|user(?:name|_name)?|[a-z0-9_]*_user|login|帐号|账号|账户|用户名)["'']?\s*[:=：]\s*("(?:\\.|[^"\\])*"|''[^'']*''|(?:\{SENSITIVE:[a-z_]+:[0-9]+\}|[^\s"'',;，；<>{}\]]+)+)'
       group: 1
       description: "带标签的登录帐号"
     # 2026-10-10: server_ip / server_ipv6 不再进入脱敏范围。

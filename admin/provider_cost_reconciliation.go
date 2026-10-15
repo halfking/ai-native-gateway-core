@@ -116,21 +116,33 @@ func (h *ProviderCostReconciliationHandler) handleList(w http.ResponseWriter, r 
 	// 缺省 month 取「当前月的月初」，不是当前时刻。
 	//
 	// ⚠️ 这里是曾经的真实缺陷（静默失败，非报错）：reconciliation_month 列是
-	// date，读端 PGReconciliationStore.ListByMonth 以 `WHERE reconciliation_month = $1`
-	// 比较，列里存的是**日历月首日**；而裸 `month := time.Now()`（如 2026-10-11 23:45）
+	// date，读端以 `WHERE reconciliation_month = $1::date` 比较，列里存的是
+	// **日历月首日**；而裸 `month := time.Now()`（如 2026-10-11 23:45）
 	// 传进去与该列必然不等 ⇒ 端点返回 200 + count=0，不报错、不告警。
-	// 构造方式与写方逐字一致（bg/cost_reconciliation_worker.go:91 的
-	// CostReconciliationMonthsToAggregate），Location 也取 now.Location()，
-	// 使读端默认路径与写方落在同一日历月。
+	//
+	// ⚠️⚠️ 第二层（2026-10-13 线上实测）：上一版的修复只对齐了默认路径，
+	//	**显式 `?month=YYYY-MM` 那条路径仍然是坏的**：
+	//	  · 默认路径用 `time.Date(..., now.Location())`（+08）；
+	//	  · 显式路径用 `time.Parse("2006-01", v)` —— 它返回 **UTC**；
+	//	  · 而 PG 把 timestamptz 折成 date 时按**会话 TimeZone**，
+	//	 于是同一时刻两条路径给出的 date 键不同。
+	//	实测：默认路径 count=19、显式 ?month=2026-10 count=0。
+	//
+	//	⇒ 现在两端都走**文本日历月键**（domains/providerprofile.monthKey），
+	//	  这里只需要保证「解析出哪个日历月」是对的，转换交给 SQL 的 `::date`，
+	//	  不再依赖任何时区。
+	var month time.Time
 	now := time.Now()
-	month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 	if v := r.URL.Query().Get("month"); v != "" {
+		// 显式月份：只取年/月，**丢弃时刻与时区**。
 		parsed, err := time.Parse("2006-01", v)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "month must be in YYYY-MM format")
 			return
 		}
-		month = parsed
+		month = time.Date(parsed.Year(), parsed.Month(), 1, 0, 0, 0, 0, time.UTC)
+	} else {
+		month = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	}
 	items, err := h.service.ListByMonth(r.Context(), month)
 	if err != nil {

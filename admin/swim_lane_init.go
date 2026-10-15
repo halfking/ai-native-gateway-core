@@ -87,6 +87,10 @@ func (h *Handler) fetchSwimLaneData(ctx context.Context, hours int) ([]SwimLaneR
 	// provider_id, request_status, ...). Any call returned a 500. Rewritten
 	// against the real columns + the canonical→family→vendor and credential
 	// joins used elsewhere by the live-stream aggregation path.
+	// 2026-10-13 S3 波 2（停写切换）：原读 request_logs_hot，停写后热窗排空
+	// 泳道恒空；改读 canonical 视图（12 列全在 118 契约内，会话臂服务新
+	// 流量）。已登记退化：会话臂 client_model 依赖 734 details 层，缺
+	// details 行的轮次 vendor 回退到 mf.vendor 或 'unknown'。
 	query := `
 		SELECT
 			rl.request_id,
@@ -100,7 +104,7 @@ func (h *Handler) fetchSwimLaneData(ctx context.Context, hours int) ([]SwimLaneR
 			COALESCE(rl.cost_usd, 0) AS cost_usd,
 			COALESCE(rl.prompt_tokens, 0) AS prompt_tokens,
 			COALESCE(rl.completion_tokens, 0) AS completion_tokens
-		FROM request_logs_hot rl
+		FROM request_logs_with_current_month rl
 		LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
 		LEFT JOIN model_families   mf ON mf.id = mc.family
 		LEFT JOIN credentials      c  ON c.id  = rl.credential_id

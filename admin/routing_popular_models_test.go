@@ -12,13 +12,18 @@ import (
 )
 
 // TestPopularModelsHotSQL_TargetsHotTable pins the SQL constant to the
-// correct source table. Regression guard for the 2026-08-26 fix that
-// switched the "凭据路由模型" picker away from
-// request_logs_with_current_month (which dragged every ATTACHED columnar
-// partition into the scan) to request_logs_hot (heap, ~7d retention).
+// correct source. Regression guard for the 2026-08-26 fix that switched
+// the "凭据路由模型" picker away from request_logs_with_current_month
+// (which dragged every ATTACHED columnar partition into the scan), and
+// for the 2026-10-13 S3 波 3 migration off the draining v1 hot table to
+// the native session-turn family: both the columnar view AND the v1 hot
+// table are forbidden sources now.
 func TestPopularModelsHotSQL_TargetsHotTable(t *testing.T) {
-	if !strings.Contains(popularModelsHotSQL, "FROM request_logs_hot rl") {
-		t.Fatalf("popularModelsHotSQL must target request_logs_hot; got:\n%s", popularModelsHotSQL)
+	if !strings.Contains(popularModelsHotSQL, "FROM public.session_turns_hot t") {
+		t.Fatalf("popularModelsHotSQL must read the native session-turn family (v1 hot drains after the S4 stop-write); got:\n%s", popularModelsHotSQL)
+	}
+	if strings.Contains(popularModelsHotSQL, "FROM request_logs_hot rl") {
+		t.Fatalf("popularModelsHotSQL must not read the draining v1 hot table:\n%s", popularModelsHotSQL)
 	}
 	if strings.Contains(popularModelsHotSQL, "request_logs_with_current_month") {
 		t.Fatalf("popularModelsHotSQL must not scan the partitioned view (slow columnar scan):\n%s", popularModelsHotSQL)
@@ -242,15 +247,22 @@ func TestListTopModelsSQL_TargetsHotTable(t *testing.T) {
 	}
 	handler := body[start : start+end+2]
 
-	// Source table must be the hot standalone table.
-	if !strings.Contains(handler, "FROM request_logs_hot rl") {
-		t.Fatalf("listTopModels must target request_logs_hot; full handler:\n%s", handler)
+	// 2026-10-13 S3 波 2（停写切换）：源从 request_logs_hot 换到会话族
+	// 原生源（SessionFamilyTurnsSourceSQL 拼接）。原来的 hot 钉桩理由
+	// （2026-08-26：视图拖列式分区）保持有效，所以**两个方向都禁**：
+	// 不得读会拖列式分区的 canonical 视图，也不得留在停写后会排空的
+	// v1 hot 表。
+	if !strings.Contains(handler, "SessionFamilyTurnsSourceSQL") {
+		t.Fatalf("listTopModels must read the native session-turn family (v1 hot drains after the S4 stop-write); full handler:\n%s", handler)
 	}
 	// Source must NOT be the partitioned view (columnar scan).
 	// Use the SQL-shaped token to ignore the historical comment that
 	// mentions the old view by name.
 	if strings.Contains(handler, "FROM request_logs_with_current_month rl") {
 		t.Fatalf("listTopModels must not scan the partitioned view; full handler:\n%s", handler)
+	}
+	if strings.Contains(handler, "FROM request_logs_hot rl") {
+		t.Fatalf("listTopModels must not read the draining v1 hot table; full handler:\n%s", handler)
 	}
 	// Must keep an explicit context timeout.
 	if !strings.Contains(handler, "context.WithTimeout") {

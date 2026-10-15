@@ -810,6 +810,51 @@ var candidateFailureLogsTsDescIdx843 []byte
 //go:embed embeddata/startup/844_supplier_view_cache_baseline_columns.sql
 var supplierViewCacheBaselineColumns844 []byte
 
+//go:embed embeddata/startup/845_stats_event_dedup_join_index.sql
+var statsEventDedupJoinIndex845 []byte
+
+//go:embed embeddata/startup/846_session_turns_req_status_backfill_idx.sql
+var sessionTurnsReqStatusBackfillIdx846 []byte
+
+//go:embed embeddata/startup/847_credential_routing_scope.sql
+var credentialRoutingScope847 []byte
+
+//go:embed embeddata/startup/848_billing_unit_and_audio_seconds.sql
+var billingUnitAndAudioSeconds848 []byte
+
+//go:embed embeddata/startup/849_session_turns_req_status_backfill_cover_idx.sql
+var sessionTurnsReqStatusBackfillCoverIdx849 []byte
+
+//go:embed embeddata/startup/850_session_summaries_project_backfill_recent_idx.sql
+var sessionSummariesProjectBackfillRecentIdx850 []byte
+
+//go:embed embeddata/startup/851_disable_overbroad_pii_ip_address_rule.sql
+var disableOverbroadPiiIpAddressRule851 []byte
+
+//go:embed embeddata/startup/856_usage_ledger_ts_cover_agg_idx.sql
+var usageLedgerTsCoverAggIdx856 []byte
+
+//go:embed embeddata/startup/857_tighten_pii_phone_intl_regex.sql
+var tightenPiiPhoneIntlRegex857 []byte
+
+//go:embed embeddata/startup/852_models_canonical_column_set_reconcile.sql
+var modelsCanonicalColumnSetReconcile852 []byte
+
+//go:embed embeddata/startup/853_credential_probe_queue_automatic.sql
+var credentialProbeQueueAutomatic853 []byte
+
+//go:embed embeddata/startup/854_session_turns_advisory_lock_key.sql
+var sessionTurnsAdvisoryLockKey854 []byte
+
+//go:embed embeddata/startup/855_session_analytics_time_window.sql
+var sessionAnalyticsTimeWindow855 []byte
+
+//go:embed embeddata/startup/857_analyze_columnar_staleness_gate.sql
+var analyzeColumnarStalenessGate857 []byte
+
+//go:embed embeddata/startup/858_request_logs_final_success_gsid_idx.sql
+var requestLogsFinalSuccessGsidIdx858 []byte
+
 //go:embed embeddata/startup/829_bodies_columnar_rollback.sql
 var bodiesColumnarRollback829 []byte
 
@@ -1066,6 +1111,21 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/842_credential_model_index_latest_bucket_idx.sql":                       credentialModelIndexLatestBucketIdx842,
 	"startup/843_candidate_failure_logs_ts_desc_idx.sql":                             candidateFailureLogsTsDescIdx843,
 	"startup/844_supplier_view_cache_baseline_columns.sql":                           supplierViewCacheBaselineColumns844,
+	"startup/845_stats_event_dedup_join_index.sql":                                   statsEventDedupJoinIndex845,
+	"startup/846_session_turns_req_status_backfill_idx.sql":                          sessionTurnsReqStatusBackfillIdx846,
+	"startup/847_credential_routing_scope.sql":                                       credentialRoutingScope847,
+	"startup/848_billing_unit_and_audio_seconds.sql":                                 billingUnitAndAudioSeconds848,
+	"startup/849_session_turns_req_status_backfill_cover_idx.sql":                    sessionTurnsReqStatusBackfillCoverIdx849,
+	"startup/850_session_summaries_project_backfill_recent_idx.sql":                  sessionSummariesProjectBackfillRecentIdx850,
+	"startup/851_disable_overbroad_pii_ip_address_rule.sql":                          disableOverbroadPiiIpAddressRule851,
+	"startup/856_usage_ledger_ts_cover_agg_idx.sql":                                  usageLedgerTsCoverAggIdx856,
+	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
+	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
+	"startup/853_credential_probe_queue_automatic.sql":                               credentialProbeQueueAutomatic853,
+	"startup/854_session_turns_advisory_lock_key.sql":                                sessionTurnsAdvisoryLockKey854,
+	"startup/855_session_analytics_time_window.sql":                                  sessionAnalyticsTimeWindow855,
+	"startup/857_analyze_columnar_staleness_gate.sql":                                analyzeColumnarStalenessGate857,
+	"startup/858_request_logs_final_success_gsid_idx.sql":                            requestLogsFinalSuccessGsidIdx858,
 	"startup/829_bodies_columnar_rollback.sql":                                       bodiesColumnarRollback829,
 	"startup/835_modality_verify_probe_ledger.sql":                                   modalityVerifyProbeLedger835,
 	"startup/834_supplier_errors_base_tables.sql":                                    supplierErrorsBaseTables834,

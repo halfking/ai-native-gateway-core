@@ -174,14 +174,19 @@ var toolUseCapable = map[string]bool{
 // app/core/protocol/sanitizer.py in services/llm-gateway):
 //
 //  1. Explicit catalog allow-list (openai / anthropic / zhipu / minimax).
-//  2. Protocol heuristic — openai-completions and anthropic-messages
-//     carry the standard tool definition block, so any provider speaking
-//     one of those wire formats is treated as tool-capable regardless of
-//     catalog code.  This is what made Xiaomi MiMo (catalog_code="xiaomi",
-//     protocol="openai-completions") work with the Python gateway —
-//     without step 2 the Go gateway would fold MiMo's prior tool history
-//     into "[调用工具 ...]" text, breaking multi-turn audit tasks that
-//     the agent runs across 50+ turns of tool calls.
+//  2. Protocol heuristic — openai-completions, openai-responses and
+//     anthropic-messages carry the standard tool definition block, so any
+//     provider speaking one of those wire formats is treated as tool-capable
+//     regardless of catalog code.  This is what made Xiaomi MiMo
+//     (catalog_code="xiaomi", protocol="openai-completions") work with the
+//     Python gateway — without step 2 the Go gateway would fold MiMo's prior
+//     tool history into "[调用工具 ...]" text, breaking multi-turn audit
+//     tasks that the agent runs across 50+ turns of tool calls.
+//     openai-responses joined the heuristic in r1024 (2026-10-13): vapeur
+//     (catalog_code empty, protocol openai-responses) got its structured
+//     tool history prose-folded on the chat leg — the model then imitated
+//     the collapse format in its own output, so the client received prose
+//     instead of tool_calls and could not execute anything.
 //
 // protocol may be empty for backwards compatibility (callers that don't
 // yet have a Candidate handy); in that case only the catalog check applies.
@@ -191,7 +196,7 @@ func IsToolUseCapable(catalogCode string, protocol ...string) bool {
 	}
 	for _, p := range protocol {
 		switch p {
-		case "openai-completions", "anthropic-messages":
+		case "openai-completions", "anthropic-messages", "openai-responses":
 			return true
 		}
 	}

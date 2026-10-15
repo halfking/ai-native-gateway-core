@@ -53,6 +53,14 @@ bash tests/monitor_single_instance_gate_test.sh
 echo "[verify] deploy-local orphan gateway reap contracts"
 bash tests/deploy_local_reap_test.sh
 
+# 2026-10-13：192.168.31.211 的 Docker 形态部署。零外部依赖门锁住
+# · Redis 库号（用户口中的 "tableid"）必须从 15 往下倒排，不能从 0 抢；
+# · claim 持久化使重跑不漂移（否则每次部署换库 = 缓存全丢）；
+# · PG 复用判定必须同时校验 PG17 与 columnar 两个维度；
+# · $var 紧跟全角括号在 UTF-8 locale 会被并入变量名（unbound variable）。
+echo "[verify] deploy-211 docker contracts"
+bash tests/deploy_211_contract_test.sh
+
 echo "[verify] pre-commit checks"
 ./scripts/pre-commit-check.sh
 

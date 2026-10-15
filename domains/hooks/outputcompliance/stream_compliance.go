@@ -69,6 +69,12 @@ type complianceStreamState struct {
 	frames   []*checkedStreamFrame
 	lanes    map[string][]*streamTextPart
 	bytes    int
+	// toolNames 是参数 lane → 工具名的声明记录（r1020）。Responses/Anthropic
+	// 流式的参数增量帧本身不带工具名，名字在 output_item.added /
+	// content_block_start 这类声明帧里；终态合并检查时按 lane 取回，用于
+	// sanitize 侧的惰性内容工具豁免。chat 形态首增量自带名字（直接进标签），
+	// 不依赖这张表。
+	toolNames map[string]string
 }
 
 func (it *OutputComplianceInterceptor) streamState(ctx context.Context, meta *response.StreamMeta) *complianceStreamState {
@@ -124,7 +130,7 @@ func (it *OutputComplianceInterceptor) processStreamChunk(ctx context.Context, f
 		state.clear()
 		return &response.ChunkResult{ShouldBlock: true}, nil
 	}
-	checked, err := it.inspectSSEFrame(state.checkCtx, frame, meta, state.redact)
+	checked, err := it.inspectSSEFrame(state.checkCtx, frame, meta, state.redact, &state.toolNames)
 	if err != nil {
 		state.clear()
 		return &response.ChunkResult{ShouldBlock: true}, nil
@@ -192,7 +198,7 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 	}
 	defer state.clear()
 	for lane, parts := range state.lanes {
-		if len(parts) < 2 && (len(parts) == 0 || parts[0].field.label != "__tool_json") {
+		if len(parts) < 2 && (len(parts) == 0 || !isToolJSONLabel(parts[0].field.label)) {
 			continue
 		}
 		var joined strings.Builder
@@ -200,7 +206,13 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 			joined.WriteString(part.original)
 		}
 		original := joined.String()
-		result, err := it.checkText(ctx, meta.TenantID, parts[0].field.label, original)
+		// 工具名优先取字段自带标签（chat 首增量）； Responses/Anthropic 的
+		// 增量帧无名，回查声明帧留下的 lane → name 记录。
+		label := parts[0].field.label
+		if name, ok := splitToolJSONLabel(label); ok && name == "" {
+			label = toolJSONLabelFor(state.toolNames[lane])
+		}
+		result, err := it.checkText(ctx, meta.TenantID, label, original)
 		if err != nil || result == nil {
 			return nil, fmt.Errorf("check stream lane %q: %w", lane, errOrMissingResult(err))
 		}
@@ -219,7 +231,7 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 		// Tool-call argument deltas form one JSON document. Moving a rewrite
 		// to the first delta is valid only when the reconstructed arguments
 		// remain JSON; otherwise fail closed rather than break the client tool.
-		if parts[0].field.label == "__tool_json" && json.Valid([]byte(original)) && !json.Valid([]byte(result.RedactedOutput)) {
+		if isToolJSONLabel(parts[0].field.label) && json.Valid([]byte(original)) && !json.Valid([]byte(result.RedactedOutput)) {
 			return nil, errors.New("redacted tool arguments are invalid JSON")
 		}
 		parts[0].field.set(result.RedactedOutput)
@@ -370,7 +382,7 @@ func isStreamTerminalFrame(frame []byte) bool {
 	return false
 }
 
-func (it *OutputComplianceInterceptor) inspectSSEFrame(ctx context.Context, frame []byte, meta *response.StreamMeta, shouldRedact bool) (*checkedStreamFrame, error) {
+func (it *OutputComplianceInterceptor) inspectSSEFrame(ctx context.Context, frame []byte, meta *response.StreamMeta, shouldRedact bool, toolNames *map[string]string) (*checkedStreamFrame, error) {
 	if isSSECommentOnlyFrame(frame) {
 		text := sseCommentText(frame)
 		checked := &checkedStreamFrame{
@@ -419,6 +431,9 @@ func (it *OutputComplianceInterceptor) inspectSSEFrame(ctx context.Context, fram
 	}
 	checked.root = root
 	incremental := isIncrementalStreamText(root)
+	if toolNames != nil {
+		recordDeclaredToolNames(root, toolNames)
+	}
 	for _, field := range collectVisibleText(root, true) {
 		if field.checkOnly && !it.mandatory {
 			continue
@@ -428,7 +443,9 @@ func (it *OutputComplianceInterceptor) inspectSSEFrame(ctx context.Context, fram
 			continue
 		}
 		label := field.label
-		if incremental && label == "__tool_json" && !field.checkOnly {
+		if incremental && isToolJSONLabel(label) && !field.checkOnly {
+			// 增量片段（含命名形态）一律按片段处理：完整的 JSON 检查在终态
+			// 合并后进行，命名工具名随 parts[0].field.label / 声明记录带回。
 			label = "__tool_fragment"
 		}
 		result, err := it.checkText(ctx, meta.TenantID, label, original)
@@ -448,7 +465,7 @@ func (it *OutputComplianceInterceptor) inspectSSEFrame(ctx context.Context, fram
 			if field.immutable || (it.mandatory && (isToolArgumentLane(field.lane) || field.label != "")) {
 				return nil, errors.New("cannot safely rewrite signed or sensitive tool stream event")
 			}
-			if field.label == "__tool_json" && json.Valid([]byte(original)) && !json.Valid([]byte(result.RedactedOutput)) {
+			if isToolJSONLabel(field.label) && json.Valid([]byte(original)) && !json.Valid([]byte(result.RedactedOutput)) {
 				return nil, errors.New("redacted tool arguments are invalid JSON")
 			}
 			field.set(result.RedactedOutput)
@@ -456,6 +473,110 @@ func (it *OutputComplianceInterceptor) inspectSSEFrame(ctx context.Context, fram
 		}
 	}
 	return checked, nil
+}
+
+// recordDeclaredToolNames 登记声明帧里的工具名（r1020）。
+//
+// Responses/Anthropic 的参数增量帧不带工具名（名字在 output_item.added /
+// content_block_start 里，且那些帧的 arguments 多为空串、进不了 parts），
+// 终态合并检查拿不到名字就会把惰性内容工具当命令类处理。这里按**参数 lane
+// 原文**记录，lane 构造与 collectVisibleText 逐字对齐——两边不同步时名字
+// 落空，行为退回裸 __tool_json（fail-closed），不会误放行。
+func recordDeclaredToolNames(root map[string]any, names *map[string]string) {
+	if root == nil || names == nil {
+		return
+	}
+	record := func(lane, name string) {
+		if name == "" || lane == "" {
+			return
+		}
+		if *names == nil {
+			*names = map[string]string{}
+		}
+		(*names)[lane] = name
+	}
+	// chat：choices[].{message,delta}.tool_calls[].function.name / function_call.name
+	if choices, ok := root["choices"].([]any); ok {
+		for position, raw := range choices {
+			choice, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			choiceLane := fmt.Sprintf("chat.choice.%s", streamLaneComponent(choice, "index", position))
+			for _, key := range []string{"message", "delta"} {
+				msg, ok := choice[key].(map[string]any)
+				if !ok {
+					continue
+				}
+				msgLane := choiceLane + "." + key
+				if calls, ok := msg["tool_calls"].([]any); ok {
+					for callPosition, rawCall := range calls {
+						call, ok := rawCall.(map[string]any)
+						if !ok {
+							continue
+						}
+						function, ok := call["function"].(map[string]any)
+						if !ok {
+							continue
+						}
+						name, _ := function["name"].(string)
+						record(fmt.Sprintf("%s.tool.%s.arguments", msgLane, streamLaneComponent(call, "index", callPosition)), name)
+					}
+				}
+				if function, ok := msg["function_call"].(map[string]any); ok {
+					name, _ := function["name"].(string)
+					record(msgLane+".function_call.arguments", name)
+				}
+			}
+		}
+	}
+	typ, _ := root["type"].(string)
+	// anthropic：content_block_start 的 tool_use 名字。合并 lane 有 .input 与
+	// .partial_json 两种形态（结构化 input 走前者，增量 JSON 走后者），都记。
+	if typ == "content_block_start" {
+		if block, ok := root["content_block"].(map[string]any); ok {
+			if blockType, _ := block["type"].(string); blockType == "tool_use" {
+				if name, _ := block["name"].(string); name != "" {
+					blockLane := "anthropic.block." + streamLaneComponent(root, "index", 0)
+					record(blockLane+".input", name)
+					record(blockLane+".partial_json", name)
+				}
+			}
+		}
+	}
+	// responses：output_item.added / output_item.done / function_call_arguments.done
+	// 的 function_call 名字。增量帧的 lane 是 responses.<item_id>.<output_index>.
+	// .arguments；声明帧的 item.id 与增量帧的 item_id 在标准协议里同值，两个都记
+	//（不同也无害，查不到就退回裸标签 fail-closed）。
+	if typ == "response.output_item.added" || typ == "response.output_item.done" {
+		item, ok := root["item"].(map[string]any)
+		if !ok {
+			return
+		}
+		switch itemType, _ := item["type"].(string); itemType {
+		case "function_call", "custom_tool_call":
+			name, _ := item["name"].(string)
+			if name == "" {
+				return
+			}
+			itemID := streamLaneComponent(root, "item_id", 0)
+			outputIndex := streamLaneComponent(root, "output_index", 0)
+			declaredID := streamLaneComponent(item, "id", 0)
+			if declaredID == "0" {
+				declaredID = itemID
+			}
+			record(fmt.Sprintf("responses.%s.%s.arguments", declaredID, outputIndex), name)
+			record(fmt.Sprintf("responses.%s.%s.arguments", itemID, outputIndex), name)
+		}
+	}
+	// r1020：done 快照自带 item_id + name，是最可靠的名字声明点——即便
+	// added 帧因故没经过守卫（被上游 holder 批量释放等），这里也能补记。
+	if typ == "response.function_call_arguments.done" {
+		if name, _ := root["name"].(string); name != "" {
+			record(fmt.Sprintf("responses.%s.%s.arguments",
+				streamLaneComponent(root, "item_id", 0), streamLaneComponent(root, "output_index", 0)), name)
+		}
+	}
 }
 
 func isIncrementalStreamText(root map[string]any) bool {

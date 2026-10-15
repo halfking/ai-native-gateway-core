@@ -440,7 +440,10 @@ func (h *Handler) providerLogs(w http.ResponseWriter, r *http.Request, providerI
 	defer cancel()
 
 	var total int
-	countSQL := fmt.Sprintf(`SELECT COUNT(*) FROM request_logs rl WHERE %s`, where)
+	// 2026-10-13 S3 波 2（停写切换）：count 的 FROM 从 request_logs 母表
+	// 改为 canonical 视图——原实现既漏 hot 行又漏会话臂新流量，分页 total
+	// 恒低估；data 查询早在视图上，两腿源从此一致。
+	countSQL := fmt.Sprintf(`SELECT COUNT(*) FROM request_logs_with_current_month rl WHERE %s`, where)
 	if err := h.db.QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
 		slog.Warn("providerLogs count failed", "error", err)
 		total = 0

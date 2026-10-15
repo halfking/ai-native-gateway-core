@@ -118,15 +118,13 @@ var requestLogsControlPlaneReaders = map[string]controlPlaneVerdict{
 			"仍然只有日志、**没有指标与告警**。护栏把危险动作停了，把「为什么没动作」留在了日志里。",
 	},
 	"domains/hooks/observability/telemetry/client.go": {
-		Feeds: "会话身份与轮次序号：FindRecentGatewaySession 决定无 id 请求复用哪个会话；lookupTurnNumber 决定 outbox 事件里的 turn_no",
-		Live:  true,
-		Gated: false,
-		Evidence: "AND gw_session_id LIKE 'gw\\_%'\n" +
-			"\t\t  AND ts >= NOW() - ($4 * INTERVAL '1 second')\n" +
-			"\t\tORDER BY ts DESC\n" +
-			"\t\tLIMIT 1",
+		Feeds:    "会话身份与轮次序号：FindRecentGatewaySession 决定无 id 请求复用哪个会话；lookupTurnNumber 决定 outbox 事件里的 turn_no",
+		Live:     true,
+		Gated:    false,
+		Evidence: "FROM public.session_turns_hot t",
 		BlastRadius: "空结果 ⇒ session_assignment.go:194 createSession()，即**新分配一个 gw_ 会话 id**；" +
-			"turn_no 则冻结为停写前的计数。",
+			"turn_no 则回退为提示性缺省。2026-10-13 S3 波 2：finder 改双热腿（session_turns_hot ∪ request_logs_hot）、" +
+			"turn_no 改会话族 MAX(turn_no) 权威读，停写后仍由会话腿供数。",
 		Note: "**2026-10-02 自我更正**：子代理初判「每个请求静默新开 gw_session_id」，" +
 			"我复核后**判定过重**——主路径是 Redis 的 LastSystemSessionIndex（5 分钟 TTL，" +
 			"不受 S4 门控），DB finder 只是兜底。准确的失效条件是两条：\n" +
@@ -377,12 +375,12 @@ var requestLogsControlPlaneReaders = map[string]controlPlaneVerdict{
 		Note:        "读 710（有 session 臂）⇒ 不查空；但正文质量依赖 bodies 腿（见读端表 bodies 族）。",
 	},
 	"internal/summarystore/store.go": {
-		Feeds:       "request_logs_hot 计数 → session_summaries 的 INSERT/UPDATE 决策",
+		Feeds:       "轮次计数 → session_summaries 的 INSERT/UPDATE 决策",
 		Live:        true,
 		Gated:       false,
-		Evidence:    "SELECT COUNT(*)::int FROM request_logs_hot",
+		Evidence:    "SELECT COUNT(*)::int FROM ` + db.SessionFamilyTurnsForSessionSQL()",
 		BlastRadius: "`INSERT INTO session_summaries`（:181）——是否/如何写会话摘要。",
-		Note:        "计数用于「有没有轮次可摘要」的判断；停写后计数冻结。",
+		Note:        "2026-10-13 S3 波 2：主腿改读 session_turns(_hot)，0 行回退 canonical 视图（镜像前历史会话）；停写后计数照常。",
 	},
 	"domains/routeincident/store.go": {
 		Feeds:       "710 视图 → 路由事件状态机（pending/active/recovering 迁移）",
@@ -393,10 +391,10 @@ var requestLogsControlPlaneReaders = map[string]controlPlaneVerdict{
 		Note:        "读端表已登记并经族门复核过；控制面轴上它是 live（驱动状态机迁移）。",
 	},
 	"internal/quality/minute_aggregator.go": {
-		Feeds:    "request_logs_hot → provider_metrics_minute（供给质量评分）",
+		Feeds:    "canonical 视图 → provider_metrics_minute（供给质量评分）",
 		Live:     true,
 		Gated:    false,
-		Evidence: "FROM request_logs_hot",
+		Evidence: "FROM request_logs_with_current_month",
 		BlastRadius: "`INSERT INTO provider_metrics_minute`（:21）——分钟级质量指标，" +
 			"下游据此评分并影响路由/凭据决策。",
 		Note: "判 live 而非 not_control_plane 的依据：写的是**被决策消费的指标**，不是展示用物化。",
@@ -449,30 +447,24 @@ var requestLogsControlPlaneReaders = map[string]controlPlaneVerdict{
 			"异常记录的真实 token 口径退化为 estimated。fault_events 同样不再新增。",
 	},
 	"cmd/gateway/main_v3_wiring.go": {
-		Feeds:       "request_logs 的上一轮 outbound → compression.LastOutboundRow → 压缩决策",
+		Feeds:       "上一轮 outbound（会话族优先，v1 视图/母表回退）→ compression.LastOutboundRow → 压缩决策",
 		Live:        true,
 		Gated:       false,
 		Evidence:    "FROM request_logs",
 		BlastRadius: "压缩决策的输入——决定发给上游的内容形态。",
-		Note:        "无本地写入，但**消费方是压缩决策**，会改变实际发往 provider 的请求体，故判 live。",
+		Note:        "无本地写入，但**消费方是压缩决策**，会改变实际发往 provider 的请求体，故判 live。2026-10-13 S3 波 2：主腿改会话族两源拼装（turns 元数据 + SessionFamilyBodiesSourceSQL 的 outbound_body），v1 母表查询降为回退腿（evidence 即回退腿）。",
 	},
 	"domains/hooks/goal/history_store.go": {
-		Feeds:       "request_logs + bodies → FormatHistoryForPrompt → 拼进 prompt 的历史",
+		Feeds:       "会话正文（会话族优先，v1 回退）→ FormatHistoryForPrompt → 拼进 prompt 的历史",
 		Live:        true,
 		Gated:       false,
 		Evidence:    "FROM request_logs rl",
 		BlastRadius: "拼装进下一次请求 prompt 的历史消息——直接改变发往上游的内容。",
-		Note:        "与 main_v3_wiring 同形：无本地写，但输出进入请求体。",
+		Note:        "与 main_v3_wiring 同形：无本地写，但输出进入请求体。2026-10-13 S3 波 2：主腿改会话族两源拼装（ForSession turns + SessionFamilyBodiesSourceSQL），evidence 是 v1 回退腿（服务镜像前历史会话）。",
 	},
-	"domains/streaming/model_alternatives.go": {
-		Feeds:       "request_logs_hot 7 天热度 → 返回给客户端的备选模型列表",
-		Live:        false,
-		Gated:       false,
-		Evidence:    "FROM request_logs_hot",
-		BlastRadius: "（dormant：无写入；输出是 API 响应内容）",
-		Note: "判 not_control_plane 的依据：无任何写入，输出流向响应。" +
-			"但它**改变 API 答案**（备选模型列表变空），读端轴上已由 batch4 登记为 silently_empty 语义。",
-	},
+	// domains/streaming/model_alternatives.go 于 2026-10-13（S3 波 2 停写切换）
+	// 除名：usage_7d 热面改读会话族原生源（SessionFamilyTurnsSourceSQL），
+	// 文件已不在 requestLogsReadInventory，控制面表不得收录非清单成员。
 	"internal/trace/trace.go": {
 		Feeds:       "request_logs 的 trace_events → LoadFromPG → 链路详情响应",
 		Live:        false,
@@ -483,12 +475,12 @@ var requestLogsControlPlaneReaders = map[string]controlPlaneVerdict{
 			"已随 S4 门控一并关停，不属本轴。",
 	},
 	"cmd/gateway/waterfall_db.go": {
-		Feeds:       "request_logs_hot → waterfall 响应",
+		Feeds:       "canonical 视图 → waterfall 响应",
 		Live:        false,
 		Gated:       false,
-		Evidence:    "FROM request_logs_hot",
+		Evidence:    "FROM request_logs_with_current_month",
 		BlastRadius: "（dormant：只服务响应）",
-		Note:        "无写入。停写后查不到 → errors_out（可接受失败模式），已在读端轴登记。",
+		Note:        "无写入。2026-10-13 S3 波 2：DB 腿改读 canonical 视图，session 臂继续供数（读端轴已同步改判 unaffected）。",
 	},
 	// ── 第四批：2026-10-02 收口，52/52 ────────────────────────────────────
 	//
@@ -505,15 +497,8 @@ var requestLogsControlPlaneReaders = map[string]controlPlaneVerdict{
 			"⇒ 停写后 cache_read_tokens / compression_strategy / outbound_token_est 恒 0，" +
 			"而 request_count 与成本照常有值 ⇒ **建议照常写入、内容静默失真**。",
 	},
-	"domains/analysis/request_summary.go": {
-		Feeds:    "request_logs 会话内请求 → INSERT INTO session_request_summaries（LLM 阶段）",
-		Live:     true,
-		Gated:    false,
-		Evidence: "FROM request_logs",
-		BlastRadius: "`INSERT INTO session_request_summaries … ON CONFLICT DO UPDATE`（:174）" +
-			"——单请求摘要落库。",
-		Note: "与 optimizer 同形：直读 v1 裸表，session 侧无兜底。",
-	},
+	// domains/analysis/request_summary.go 于 2026-10-13（S3 波 2 停写切换）
+	// 除名：loadRequestLogs 改读会话族原生源，文件已不在 requestLogsReadInventory。
 	"domains/sessionsummary/system_prompt_prefix.go": {
 		Feeds:       "bodies 腿取会话首条请求体的 system prompt → 作为总结 LLM 的额外输入 → 写 session_summaries",
 		Live:        true,

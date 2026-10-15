@@ -25,6 +25,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/db"
 )
 
 // HistoryMessage is a single chat message in the reconstructed transcript.
@@ -65,6 +67,42 @@ const maxHistoryMessageChars = 12000
 // request_logs rows for the session and merging their request messages with the
 // assistant reply that followed.
 //
+// historySessionSQL / historyV1SQL（S3 波 2 停写切换，见 FetchBySession 注释）。
+// 2026-07-21 Ticket #11: LEFT JOIN request_logs_bodies retrieves full
+// request_body/response_body (moved to separate table in #10); COALESCE
+// keeps backwards compatibility during migration.
+//
+// 2026-10-13 S3 波 2（停写切换）：gw_session_id 是会话内谓词（A 形态），
+// 按守卫规则迁会话族原生源：turns 腿用 SessionFamilyTurnsForSessionSQL
+// （session_id=$1 内推、idx_session_turns_session 可用），bodies 腿用
+// SessionFamilyBodiesSourceSQL（request_id 单键 JOIN，helper 合同明确支持；
+// 禁止 ts 等值 JOIN——两侧 ts 99.85% 不等）。S4 停写后新会话的正文只在
+// session_bodies。会话族查询为 0 行时回退 v1 查询，服务镜像链启用前的
+// 历史会话（该窗口正文只在 request_logs_bodies）。提升为包级变量是给
+// 形状钉桩用的。
+var historySessionSQL = `
+		SELECT rb.request_body AS request_body,
+		       rb.response_body AS response_body
+		FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl
+		JOIN ` + db.SessionFamilyBodiesSourceSQL() + ` rb
+		  ON rb.request_id = rl.request_id
+		WHERE COALESCE(rl.tenant_id, '') = COALESCE(NULLIF($2, ''), rl.tenant_id)
+		  AND (rb.request_body IS NOT NULL)
+		ORDER BY rl.ts DESC
+		LIMIT $3`
+
+const historyV1SQL = `
+		SELECT rb.request_body AS request_body,
+		       rb.response_body AS response_body
+		FROM request_logs rl
+		LEFT JOIN request_logs_bodies rb
+		  ON rb.request_id = rl.request_id
+		WHERE rl.gw_session_id = $1
+		  AND COALESCE(rl.tenant_id, '') = COALESCE(NULLIF($2, ''), rl.tenant_id)
+		  AND (rb.request_body IS NOT NULL)
+		ORDER BY rl.ts DESC
+		LIMIT $3`
+
 // Rows are read newest-first (the index is (gw_session_id, ts DESC)) then
 // reversed so the transcript is chronological.
 func (s *PGHistoryStore) FetchBySession(ctx context.Context, sessionID, tenantID string, limit int) ([]HistoryMessage, error) {
@@ -75,50 +113,26 @@ func (s *PGHistoryStore) FetchBySession(ctx context.Context, sessionID, tenantID
 		limit = defaultHistoryLimit
 	}
 
-	// 2026-07-21 Ticket #11: Modified to use LEFT JOIN with request_logs_bodies
-	// to retrieve full request_body and response_body (moved to separate table in #10).
-	// COALESCE ensures backwards compatibility during migration.
-	const query = `
-		SELECT rb.request_body AS request_body,
-		       rb.response_body AS response_body
-		FROM request_logs rl
-		LEFT JOIN request_logs_bodies rb 
-		  ON rb.request_id = rl.request_id
-		WHERE rl.gw_session_id = $1
-		  AND COALESCE(rl.tenant_id, '') = COALESCE(NULLIF($2, ''), rl.tenant_id)
-		  AND (rb.request_body IS NOT NULL)
-		ORDER BY rl.ts DESC
-		LIMIT $3`
-
+	query := historySessionSQL
 	rows, err := s.db.QueryContext(ctx, query, sessionID, tenantID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("goal: query session history: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-
-	type pair struct {
-		req  []HistoryMessage
-		resp *HistoryMessage
+	pairs, err := collectHistoryPairs(rows)
+	if err != nil {
+		return nil, err
 	}
-	var pairs []pair
-
-	for rows.Next() {
-		var reqBody, respBody sql.NullString
-		if err := rows.Scan(&reqBody, &respBody); err != nil {
-			return nil, fmt.Errorf("goal: scan session history: %w", err)
+	if len(pairs) == 0 {
+		// 会话族 0 行：镜像前历史会话（或正文缺失），回退 v1。
+		query = historyV1SQL
+		rows, err = s.db.QueryContext(ctx, query, sessionID, tenantID, limit)
+		if err != nil {
+			return nil, fmt.Errorf("goal: query session history: %w", err)
 		}
-
-		reqMsgs := parseRequestMessages(reqBody.String)
-		var assistant *HistoryMessage
-		if respBody.Valid && respBody.String != "" {
-			if am := parseAssistantReply(respBody.String); am != nil {
-				assistant = am
-			}
+		pairs, err = collectHistoryPairs(rows)
+		if err != nil {
+			return nil, err
 		}
-		pairs = append(pairs, pair{req: reqMsgs, resp: assistant})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("goal: iterate session history: %w", err)
 	}
 
 	// pairs is newest-first; reverse to chronological order.
@@ -142,6 +156,43 @@ func (s *PGHistoryStore) FetchBySession(ctx context.Context, sessionID, tenantID
 		}
 	}
 	return out, nil
+}
+
+// collectHistoryPairs 扫描「request_body / response_body」两列结果集为
+// newest-first 的消息对。由会话族腿与 v1 回退腿共用——两条腿的投影契约
+// 相同，扫描逻辑若各写一份，修一处漏一处只是时间问题。
+func collectHistoryPairs(rows *sql.Rows) ([]struct {
+	req  []HistoryMessage
+	resp *HistoryMessage
+}, error) {
+	defer func() { _ = rows.Close() }()
+
+	var pairs []struct {
+		req  []HistoryMessage
+		resp *HistoryMessage
+	}
+	for rows.Next() {
+		var reqBody, respBody sql.NullString
+		if err := rows.Scan(&reqBody, &respBody); err != nil {
+			return nil, fmt.Errorf("goal: scan session history: %w", err)
+		}
+
+		reqMsgs := parseRequestMessages(reqBody.String)
+		var assistant *HistoryMessage
+		if respBody.Valid && respBody.String != "" {
+			if am := parseAssistantReply(respBody.String); am != nil {
+				assistant = am
+			}
+		}
+		pairs = append(pairs, struct {
+			req  []HistoryMessage
+			resp *HistoryMessage
+		}{req: reqMsgs, resp: assistant})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("goal: iterate session history: %w", err)
+	}
+	return pairs, nil
 }
 
 // parseRequestMessages extracts the messages array from a chat-completions

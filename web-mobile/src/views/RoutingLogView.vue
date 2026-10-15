@@ -43,7 +43,7 @@ const PAGE_SIZE = 50
 const kind = ref<RoutingLogKind>('all')
 const result = ref<RoutingLogResult>('all')
 const rangeHours = ref(24)
-const total = ref(0)
+const total = ref<number | null>(null)
 
 /** 后端硬上限 7 天，选项封顶在这里而不是发出后吃 400。 */
 const RANGE_OPTIONS = [
@@ -163,7 +163,7 @@ function openEntry(e: RoutingLogEntry): void {
     </div>
 
     <p class="rlog__summary">
-      <span>{{ t('routingLog.total', { n: total }) }}</span>
+      <span v-if="total !== null">{{ t('routingLog.total', { n: total }) }}</span>
     </p>
     <p class="rlog__hint">
       <AppIcon name="alert" :size="14" />

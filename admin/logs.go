@@ -1295,31 +1295,43 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 		limit = 50
 	}
 
+	// 2026-10-13 S3 波 2（停写切换）：原读 request_logs_hot，停写后热窗排空
+	// 组件恒空；改读会话族原生源（db.SessionFamilyTurnsSourceSQL，hot ∪
+	// parent 两腿）。**不走 canonical 视图**：2026-08-26 实测裁决（视图把
+	// ATTACHED 列式分区拖进扫描，见 routing_popular_models_test 钉桩）对
+	// 本读点同样适用。会话族口径额外收益：探针/内部回环轮次本就不镜像，
+	// 「热门模型」的总体更干净。镜像前的历史热度不在本源（排行是近期
+	// 语义，可接受）。「有模型」判据扩为 client→outbound→canonical 回退
+	// 链：会话臂 client_model 依赖 734 details 层，无回退臂则新会话轮整
+	// 类消失；alias JOIN 键同步加 outbound/canonical 臂（raw_name 本就是
+	// 小写，会话臂 outbound=归一化名，命中 raw_name 别名的概率随目录覆盖）。
 	rows, err := h.db.Query(ctx, `
 		SELECT
 			COALESCE(mc.id, mc2.id) AS canonical_id,
-			COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model) AS canonical_name,
-			COALESCE(mc.display_name, mc2.display_name, mc.canonical_name, mc2.canonical_name, rl.client_model) AS display_name,
+			COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model, rl.outbound_model) AS canonical_name,
+			COALESCE(mc.display_name, mc2.display_name, mc.canonical_name, mc2.canonical_name, rl.client_model, rl.outbound_model) AS display_name,
 			COUNT(*) AS request_count
-		FROM request_logs_hot rl
+		FROM `+dbpkg.SessionFamilyTurnsSourceSQL()+` rl
 		LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
 		LEFT JOIN LATERAL (
 			SELECT canonical_id
 			FROM model_aliases
 			-- 2026-07-14: model_aliases.raw_name is persisted lowercase.
-			WHERE raw_name = lower(rl.client_model)
+			WHERE (raw_name = lower(rl.client_model)
+			    OR raw_name = lower(rl.outbound_model)
+			    OR raw_name = lower(rl.canonical_model))
 			  AND status = 'active'
 			LIMIT 1
 		) ma ON TRUE
 		LEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id
 		WHERE rl.ts >= $1 AND rl.ts <= $2
-		  AND rl.client_model IS NOT NULL AND rl.client_model != ''
+		  AND COALESCE(NULLIF(rl.client_model, ''), NULLIF(rl.outbound_model, ''), NULLIF(rl.canonical_model, '')) IS NOT NULL
 		-- 2026-08-25: GROUP BY must use full COALESCE expressions, not the
 		-- SELECT aliases (rl.canonical_id / canonical_name / display_name
 		-- collide with view columns and trigger "column reference is ambiguous").
 		GROUP BY COALESCE(mc.id, mc2.id),
-		         COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model),
-		         COALESCE(mc.display_name, mc2.display_name, mc.canonical_name, mc2.canonical_name, rl.client_model)
+		         COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model, rl.outbound_model),
+		         COALESCE(mc.display_name, mc2.display_name, mc.canonical_name, mc2.canonical_name, rl.client_model, rl.outbound_model)
 		ORDER BY request_count DESC
 		LIMIT $3
 	`, start, end, limit)

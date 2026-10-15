@@ -163,6 +163,14 @@ files=(
   # and 358 (session_dim, the join target); the views are dropped and rebuilt,
   # so the unique indexes REFRESH CONCURRENTLY needs are recreated here too.
   "$ROOT_DIR/sql/migrations/startup/855_session_analytics_time_window.sql"
+  # 857（2026-10-13 Vapeur 全量测试轮）：收窄 316 播种的 pii_patterns.phone_intl
+  # ——原正则把算术式 `+100` 当国际电话在输出侧遮成 [REDACTED:phone]（tool 参数
+  # 被改坏的实测现场：`（23*47[REDACTED:phone])/3`）。被叫号码下限 1 位 → 7 位
+  # （E.164 现实区间）。与 851 同族：UPDATE 存活幂等重放，全通道必须应用。
+  # 856（2026-10-13，b3cbd3462 提交时漏登记，本轮补齐五点同步的另一腿）：
+  # usage_ledger(+hot) 时间窗聚合覆盖索引（/api/usage/summary 5s 预算超时修复）。
+  "$ROOT_DIR/sql/migrations/startup/856_usage_ledger_ts_cover_agg_idx.sql"
+  "$ROOT_DIR/sql/migrations/startup/857_tighten_pii_phone_intl_regex.sql"
   "$ROOT_DIR/sql/migrations/startup/394_request_stats_minute.sql"
   # 2026-10-12 host-first PG/gateway log audit: the candidate-binding scope
   # revision chain (541 raw_model table → 569 canonical table + cmb triggers →
@@ -1244,6 +1252,33 @@ files=(
   # 841：月度分区族的分区级 DROP 保留。**建表即为空 ⇒ 迁移应用后行为与今天完全一致**，
   # 真正启用需按族 INSERT 保留月数（业务决定，不在本迁移内）。
   "$ROOT_DIR/sql/migrations/startup/841_monthly_partition_retention.sql"
+  # 842（2026-10-07 审计轮补登，837-841 同族复发后一小时）：给 autoroute
+  # latest_bucket 聚合补 (credential_id, raw_model, bucket) 索引（runbook
+  # §10.106.26）。正常升级通道：落 main 时未登记，最高编号守卫按设计拦下。
+  "$ROOT_DIR/sql/migrations/startup/842_credential_model_index_latest_bucket_idx.sql"
+  # 856（2026-10-13 随 origin/main 引入，升级腿在本合并轮补登）：给
+  # usage_ledger / usage_ledger_hot 建 (ts, tenant_id) INCLUDE(prompt_tokens,
+  # completion_tokens, cost_usd, latency_ms, success) 覆盖索引。存量库同样需要它——
+  # 缺陷是 iPhone 6s 真机上 /api/usage/summary 与 /api/usage/by-model **任何窗口都 500**
+  # （handler 5s 预算掐掉，空载 EXPLAIN ANALYZE 已 2.28s）。现有索引只有 (ts)，
+  # 服务过滤不服务取列 ⇒ 6.6 万行全部回堆。
+  # 与 842 同款取舍：不加 CONCURRENTLY（分区父表上会被拒），窗口内写被阻塞、
+  # 读不受影响，逐分区合计 <900 MB，实测窗口秒级，建议低峰应用。
+  # 两条 CREATE INDEX IF NOT EXISTS 均幂等；无表依赖，可放链尾。
+  "$ROOT_DIR/sql/migrations/startup/856_usage_ledger_ts_cover_agg_idx.sql"
+  # 2026-10-07 §10.106.28：candidate_failure_logs 两臂补 (ts DESC) 索引。
+  # 该族无任何 ts 打头的索引 ⇒ 无过滤的 max(ts) 只能全量扫索引条目
+  # （父表 cost 4566 / hot 171，26 倍差），而告警语句 58,001 次调用。
+  # 本地同形状实测：加索引前读 55,000 行 2.736ms，加后读 1 行 0.036ms。
+  # 2026-10-11 host-first deploy: 843 引用 candidate_failure_logs_hot——
+  # 该族由 392 建（幂等 ×23，函数体为旧版，已置于 694/698 之前登记，
+  # 见该处注释与 intentional_function_chains 的链序登记）。
+  "$ROOT_DIR/sql/migrations/startup/843_candidate_failure_logs_ts_desc_idx.sql"
+  # 2026-10-11 host-first deploy: 361b 补 provider_models.source（domain/361
+  # 的防御性 ALTER，原通道是 init-local-db/installer，startup 通道从未投递）。
+  # 缺列时 gateway 启动 ensure 链在 db open 即 42703（ensure asr catalog seed）。
+  "$ROOT_DIR/sql/migrations/startup/361b_provider_models_source_prelude.sql"
+
   # 2026-10-07（844）：给 v_supplier_price_vs_baseline 补两个缓存基准价的投影。
   #
   # 编号注（**本条让位两次**，最终 844）：
@@ -1255,9 +1290,7 @@ files=(
   # 编号是身份键，同号两迁移会让契约门与台账同时指错对象。
   #
   # ⚠ 教训：本条从落地到推送**一直没上远端**，所以两次撞号都是「本地撞远端」。
-  #   并行线在一个会话里连落两条（20:05 前 12 分钟还有 19:25 那条），
-  #   ⇒ **推之前不 fetch 就提交编号，是可以预见的返工**。
-  #   判别动作：新建迁移时先 `git fetch && git ls-tree origin/main -- sql/migrations/startup`
+  #   ⇒ 判别动作：新建迁移时先 `git fetch && git ls-tree origin/main -- sql/migrations/startup`
   #   看下一个空号，而不是看本地 `ls`。
   #
   # 缺口：826 建的视图只投影 in/out 两个基准价，cache 列只出现在 ADD COLUMN
@@ -1317,7 +1350,21 @@ files=(
   # fresh-install 链每 ~30s 重演同一报错（本机 host-first 1088 次实测）。
   # ADD COLUMN IF NOT EXISTS 幂等；部署链存量库早已应用，投递零行为变化。
   "$ROOT_DIR/sql/migrations/startup/486_credential_model_bindings_add_probe_revert_at.sql"
+  # 857（2026-10-13）：analyze_llm_gateway_table_stats 的「当月列存分区」分支
+  # 增加陈旧度闸门。原谓词只看「是不是列存」，不看统计是否新鲜，于是三张当月
+  # 列存分区（request_logs_bodies_2026_10 529 MB / 666,124 行等）每轮都被无差别
+  # 重扫：实测 40 次调用 mean 256.82 s / max 582.30 s ≈ 171 分钟/天，
+  # 且它持有的长快照会让每个 REFRESH MATERIALIZED VIEW CONCURRENTLY 等它。
+  # CREATE OR REPLACE FUNCTION 幂等；「从未分析过」那条判据不变。
+  "$ROOT_DIR/sql/migrations/startup/857_analyze_columnar_staleness_gate.sql"
+  # 858（2026-10-13）：给「会话终态晋级」（claimSessionFinalSuccess）补
+  # is_final_success 存在性索引，缺口本体是 **hot 侧有、月度分区侧没有**，
+  # 而该语句要逐个探测 4 个月度分区 ⇒ 每次调用摸约 5.1 万索引条目且逐条回堆。
+  # 生产实测（62h 窗口）：mean 987.3 ms / 每次 114,159 buffer 页 /
+  # 占 llm_gateway 全库数据库时间 4.06%。无表依赖，可放链尾；CREATE INDEX IF NOT EXISTS 幂等。
+  "$ROOT_DIR/sql/migrations/startup/858_request_logs_final_success_gsid_idx.sql"
 )
+
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的
 # 迁移文件内容被加固（幂等守卫重建、canonical 清单扩充等）而编号不变时，
@@ -1351,12 +1398,11 @@ legacy_content_replays=(
 # SQL line/block comments and dollar-quoted bodies, so prose or dynamic SQL
 # that merely mentions CREATE OR REPLACE cannot trigger it.
 intentional_function_chains=(
-  # 839 supersedes 838's body of analyze_llm_gateway_table_stats：838 先把
-  # 冻结月（上月分区）从 ANALYZE 集里摘掉，839 在同一体上叠加「当月堆分区
-  # 交还 autovacuum + 月份感知 SET (0.005/0.02)」，**839 必须是最后一项**
-  # ——它是活库里应有的最终体（runbook §10.106.12.1 的 HEAD 恢复路径即
-  # 此链序）。840 的节流槽是另一函数，不入本链。
-  'analyze_llm_gateway_table_stats|838_analyze_skip_frozen_month.sql|839_autovac_current_month_heap_handoff.sql|'
+  # 857 (2026-10-13) 重定义 analyze_llm_gateway_table_stats：给「当月列存分区」
+  # 分支加陈旧度闸门。链序必须是 838 → 839 → 857，且 **857 必须是最后一项**——
+  # 它是活库里应有的最终体。少这一行，部署会在应用任何文件之前 abort（exit 5），
+  # 因为一个函数被三个通道文件重定义而未登记为有意链。
+  'analyze_llm_gateway_table_stats|838_analyze_skip_frozen_month.sql|839_autovac_current_month_heap_handoff.sql|857_analyze_columnar_staleness_gate.sql|'
   # 829 (2026-10-05, Owner 拍板补登通道腿) 重定义
   # ensure_request_logs_bodies_partition 为**纯 heap**，去掉 765 引入的
   # citus_columnar/USING columnar 分支。链序必须是 694 → 765 → 829：

@@ -89,9 +89,9 @@ func setSessionCookieRemember(w http.ResponseWriter, r *http.Request, token stri
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     CookieName,
-		Value:    token,
-		Path:     CookiePath,
+		Name:  CookieName,
+		Value: token,
+		Path:  CookiePath,
 		// MaxAge=0 → 不输出 Max-Age 属性；Expires 保持零值 → 不输出 Expires。
 		// 两者都没有 = 会话级 cookie，浏览器退出即失效。
 		HttpOnly: true,

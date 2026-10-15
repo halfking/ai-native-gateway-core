@@ -36,7 +36,7 @@ func TestErrorKindToHTTPStatusContract(t *testing.T) {
 		KindUpstreamOverloaded: http.StatusServiceUnavailable,
 
 		// 504 — temporal
-		KindTimeout:      http.StatusGatewayTimeout,
+		KindTimeout:       http.StatusGatewayTimeout,
 		KindStreamTimeout: http.StatusGatewayTimeout,
 
 		// 502 — transport / everything else

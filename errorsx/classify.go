@@ -338,6 +338,19 @@ var noAvailableChannelRe = regexp.MustCompile(
 	`(?i)no available channel[^\n]{0,160}(for model|for the model|to serve model|serving model)`,
 )
 
+// noEnterpriseProviderRe matches the relay verdict "No enterprise provider is
+// available for this request path" (2026-10-13 Vapeur claude-haiku streaming
+// incident: the chat leg forwards /v1/messages internally and the Claude
+// series has no enterprise backend on that path). Same family as
+// noAvailableChannelRe — no backend can serve this — but it arrives on 4xx,
+// where the channel regex is deliberately status-scoped to 5xx (see its
+// comment above). Dedicated narrow regex + dedicated gate (400/403/422/5xx)
+// in both classifiers: KindNoAvailableChannel means fail over to a sibling
+// credential/model, not blind same-node retries that park a healthy node.
+var noEnterpriseProviderRe = regexp.MustCompile(
+	`(?i)no [a-z ]{0,24}provider is available for (this request path|this model|model)`,
+)
+
 var unsupportedFeatureRe = regexp.MustCompile(
 	`(?i)((does not|doesn'?t) support (coding plan|tool|function|tools|function call)|` +
 		`(does not|doesn'?t) support (image|vision|image input|multimodal)|` +
@@ -365,6 +378,68 @@ var unsupportedFeatureRe = regexp.MustCompile(
 var unsupportedParamValueRe = regexp.MustCompile(
 	`(?i)(["']code["']\s*:\s*["']unsupported[_ -]?value["']|` +
 		`unsupported value:?\s*['"\x60][a-z0-9_.\-]+['"\x60])`,
+)
+
+// unsupportedParamRe matches upstream rejections of a parameter ITSELF (as
+// opposed to its value — that's unsupportedParamValueRe above):
+//
+//	{"error":{"message":"Unsupported parameter: 'temperature' is not
+//	 supported with this model.","type":"invalid_request_error",
+//	 "code":"invalid_request"}}                      ← Vapeur gpt-5.6-sol
+//	{"error":{"message":"Unknown parameter: 'thinking'.", ...}}  ← Vapeur probe
+//	"Unrecognized request argument supplied: reasoning_effort"   ← OpenAI
+//	"Validation: Unsupported parameter(s): `web_search`"         ← kimi relays
+//
+// 2026-10-13（Vapeur gpt-5.6-sol temperature 事故）：这类 400 此前不匹配
+// 任何专用正则，落到 ClassifyResponseStatus 的 default → KindTransient——
+// 同一 body 被盲重试三次（该轮 reqprobe 点名成功但 temperature 在保护集
+// 里剥不掉，修的是另一条腿，见 reqprobe skeletonParams）。参数本身不被
+// 上游接受是请求侧问题：重试同 body 必然再败，节点是健康的。归
+// KindClientBug：跳过盲重试、不冷却凭据；reqprobe 的参数剔除重试
+// （executor 里先于可重试判定执行）仍然兜底。
+// vendorResponsesStreamUnsupportedRe matches the aggregator-relay verdict that
+// the backing vendor cannot serve Responses API STREAMING for a model family
+// (2026-10-13 Vapeur claude round: 502 wrapping
+// "该供应商不支持 Responses API 流式请求" / English "X provider does not
+// support the Responses API"). This is a permanent capability boundary, not
+// a dead node: the same node serves non-stream fine, and blind transient
+// retries re-park the node every request, taking the whole model (including
+// non-stream traffic) out of rotation. KindUnsupportedFeature: fail fast,
+// let candidate failover speak, don't cool the credential.
+var vendorResponsesStreamUnsupportedRe = regexp.MustCompile(
+	`(?i)(不支持\s*responses\s*api|responses\s*api\s*不支持|` +
+		`does not support (the )?responses api|responses api .*not supported)`)
+
+// operationNotAllowedRe matches Vapeur's policy refusal "Operation not
+// allowed" — emitted for geo/plan/model gates, e.g. claude family streaming
+// via the chat endpoint (2026-10-13). Two observed shapes: bare
+// {"message":"Operation not allowed"} and double-nested
+// {"code":4006,"message":"{\"message\":\"Operation not allowed\"}"} — hence
+// phrase-level matching instead of JSON-anchored (this classifier only runs
+// on 4xx/403 error bodies, so a model's prose mentioning the phrase cannot
+// reach it). Treated as transient by default it burns three same-body
+// retries and parks a healthy node; it is request/permission-shaped and
+// permanent for the node in question.
+var operationNotAllowedRe = regexp.MustCompile(
+	`(?i)(operation not allowed|operation is not allowed|操作不被允许|操作不允许)`)
+
+// toolCallPairingRe matches MiniMax's 2013 tool-call pairing rejections
+// (2026-10-13 /v1/responses E2E: a client request carrying a dangling
+// function_call with no function_call_output gets
+// "invalid params, tool call and result not match (2013)"; the sibling
+// wording "tool call result does not follow tool call (2013)" comes from the
+// earlier split-parallel-call incident). Both are request-shaped: the same
+// body can never succeed on retry, yet transient classification burned three
+// blind upstream calls, opened the credential circuit (parking the node for
+// real traffic), and surfaced a misleading "provider_unavailable" to the
+// client. KindClientBug: fail fast, no same-body retries, no cooling.
+var toolCallPairingRe = regexp.MustCompile(
+	`(?i)(tool call and result[^(]*\(2013\)|tool call result does not follow tool call|invalid params, tool call[^"]*\(?2013\)?)`)
+
+var unsupportedParamRe = regexp.MustCompile(
+	`(?i)((unsupported|unknown|unrecognized|unexpected)[_ -]?parameters?(\([a-z]+\))?\s*[:：]|` +
+		`unrecognized request argument|` +
+		`parameters?\s*\(?s?\)?\s*[:：]?\s*['"\x60][a-z0-9_.\-]+['"\x60]\s+is not supported)`,
 )
 
 // modelDeprecatedRe matches upstream error bodies that signal the model has
@@ -953,6 +1028,14 @@ func ClassifyResponseStatus(resp *http.Response) ErrorKind {
 // the body was unreadable). The body is NOT consumed here; ownership
 // stays with the caller.
 func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
+	// Vapeur 型聚合中转在流式腿把上游 4xx 包成 5xx stream_error
+	// （2026-10-13 gpt-5.6-sol temperature 事故）：按内层 4xx 重新分类，
+	// 请求侧错误不再被当节点故障盲重试/冷却。见 UnwrapStreamWrapped4xx。
+	if status >= 500 {
+		if st, embedded, ok := UnwrapStreamWrapped(body); ok {
+			return ClassifyErrorWithBody(st, embedded)
+		}
+	}
 	if len(body) > 0 {
 		// 2026-07-04 V20 fix: exclude generic web-server 404 bodies from
 		// model_not_found classification. Patterns like "404 page not found",
@@ -979,6 +1062,11 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		// routing to a 404) and NOT KindConcurrent (which IsRetryable → re-tries
 		// the same broken credential).
 		if status >= 500 && noAvailableChannelRe.Match(body) {
+			return KindNoAvailableChannel
+		}
+		// 4xx/5xx 上的「无后端可服务」（Vapeur 专属形态，见 noEnterpriseProviderRe）：
+		// 与 channel 同判——换兄弟节点，不盲重试。
+		if (status == 400 || status == 403 || status == 422 || status >= 500) && noEnterpriseProviderRe.Match(body) {
 			return KindNoAvailableChannel
 		}
 		if degradedFunctionRe.Match(body) {
@@ -1068,6 +1156,25 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		// 注释：请求侧问题，盲重试必再败，且不得按 transient 拉黑节点。
 		if (status == 400 || status == 422) && unsupportedParamValueRe.Match(body) {
 			return KindClientBug
+		}
+		// 参数本身不被支持（"Unsupported parameter: 'temperature' …"），
+		// 见 unsupportedParamRe 注释：同属请求侧问题，不盲重试。
+		if (status == 400 || status == 422) && unsupportedParamRe.Match(body) {
+			return KindClientBug
+		}
+		// MiniMax 2013 工具调用配对缺失（悬空 function_call 等）——请求侧
+		// 结构问题，重试同 body 必再败；见 toolCallPairingRe 注释。
+		if (status == 400 || status == 422) && toolCallPairingRe.Match(body) {
+			return KindClientBug
+		}
+		// 供应商能力裁决（Responses 流式不支持）与 Vapeur 裸策略拒绝：
+		// 永久形态，快速失败让故障转移说话，不冷却节点。
+		if (status == 400 || status == 403 || status == 422 || status >= 500) &&
+			vendorResponsesStreamUnsupportedRe.Match(body) {
+			return KindUnsupportedFeature
+		}
+		if (status == 400 || status == 403) && operationNotAllowedRe.Match(body) {
+			return KindUnsupportedFeature
 		}
 		// 2026-08-20 P0 fix (apigpt/apiclaude.cc node-credit-exhaustion regression):
 		// the budgetExhaustion check has been moved ABOVE the concurrentOverload
@@ -1329,12 +1436,23 @@ func nextFiveHourBoundaryUTC8(now time.Time) time.Time {
 // KindUpstreamDown instead, because the failure is the gateway's
 // connectivity, not the model's existence.
 func ClassifyResponseBody(status int, body []byte) ErrorKind {
+	// 与 ClassifyErrorWithBody 同判：解包流式腿上被中转包成 5xx 的内层 4xx。
+	if status >= 500 {
+		if st, embedded, ok := UnwrapStreamWrapped(body); ok {
+			return ClassifyResponseBody(st, embedded)
+		}
+	}
 	if len(body) > 0 {
 		// 2026-08-09: distributor "no available channel" — see the matching
 		// comment in ClassifyErrorWithBody. Body-only classifier (SSE error
 		// chunks, relayed body capture) gets the same 5xx-gated treatment so
 		// the two classifiers cannot diverge on the same body.
 		if status >= 500 && noAvailableChannelRe.Match(body) {
+			return KindNoAvailableChannel
+		}
+		// 4xx/5xx 上的「无后端可服务」（Vapeur 专属形态，见 noEnterpriseProviderRe）：
+		// 与 channel 同判——换兄弟节点，不盲重试。
+		if (status == 400 || status == 403 || status == 422 || status >= 500) && noEnterpriseProviderRe.Match(body) {
 			return KindNoAvailableChannel
 		}
 		if degradedFunctionRe.Match(body) {
@@ -1402,6 +1520,22 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 		// 同判（SSE 流内错误帧同型）。
 		if (status == 400 || status == 422) && unsupportedParamValueRe.Match(body) {
 			return KindClientBug
+		}
+		// 参数本身不被支持——同上，与 ClassifyErrorWithBody 同判。
+		if (status == 400 || status == 422) && unsupportedParamRe.Match(body) {
+			return KindClientBug
+		}
+		// MiniMax 2013 工具调用配对缺失——与 ClassifyErrorWithBody 同判。
+		if (status == 400 || status == 422) && toolCallPairingRe.Match(body) {
+			return KindClientBug
+		}
+		// 能力裁决/策略拒绝——与 ClassifyErrorWithBody 同判。
+		if (status == 400 || status == 403 || status == 422 || status >= 500) &&
+			vendorResponsesStreamUnsupportedRe.Match(body) {
+			return KindUnsupportedFeature
+		}
+		if (status == 400 || status == 403) && operationNotAllowedRe.Match(body) {
+			return KindUnsupportedFeature
 		}
 		if (status == 400 || status == 403 || status == 422 || status == 451 || status >= 500) &&
 			contentFilterRe.Match(body) {

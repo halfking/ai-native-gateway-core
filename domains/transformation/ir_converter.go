@@ -535,9 +535,38 @@ func (c *TransportIRConverter) restoreRequestExtensionsWithContext(body []byte, 
 	// IRExtensionExtractor 从 body 里提取），它可能包含不同的字段子集。
 	// 为保持一致，这里也用 paramreg.Apply 逐字段决策，不用旧的 naive restorer。
 	srcDialect := paramreg.DialectForProtocol(req.SourceProtocol)
-	dstDialect := paramreg.Resolve(req.TargetProvider, targetProtocol)
-	if ctx != nil && dstDialect == paramreg.DialectUnknown {
-		dstDialect = paramreg.DialectForCatalogCode(ctx.UpstreamCatalogCode)
+	// ⚠️ 这里必须与 internal/ir 的 resolveTargetDialect（extensions_restore.go:174）
+	// **同形**，否则两遍还原会互相打脸。
+	//
+	// 2026-10-13 12h 审计轮（P0）：此前用的是 paramreg.Resolve，而 Resolve 在
+	// catalog_code 未登记时**回退到协议**（dialect.go:188-192）。executor 盖的
+	// 哨兵 paramreg.CatalogCodeUnknownRelay（= "unknown-relay"）刻意不进
+	// catalogToDialect，于是：
+	//   pass1（internal/ir）  DialectForCatalogCode → Unknown ⇒ fail-open，正确裁掉
+	//   pass2（本函数）        Resolve → 回退协议 ⇒ DialectOpenAIChat ⇒ 把 thinking /
+	//                        enable_thinking 又写回出站体
+	// 而紧随其后的 ctx.UpstreamCatalogCode 补偿分支条件是
+	// `dstDialect == DialectUnknown` —— Resolve 已经把它塌成具体方言，
+	// 该分支**永远进不去**，等于没有兜底。
+	// 实测（overlay 复现）：pass1 输出 {"reasoning_effort":"high"}，
+	// 走完 transport 后变成 {"reasoning_effort":"high","thinking":{...}}，
+	// 正是 4d6bb3c27 记录的 `Unknown parameter: 'thinking'` 400 原样复发；
+	// 且 pass1 已上报的 ir_protocol_loss 谎报「已裁剪」——台账与事实相反。
+	//
+	// 修法：非空 TargetProvider 一律不回退协议（与 pass1 逐字一致）。
+	dstDialect := paramreg.DialectUnknown
+	if req.TargetProvider != "" {
+		// 哨兵与任何未登记 code 都落到 Unknown（fail-open 放行）。
+		dstDialect = paramreg.DialectForCatalogCode(req.TargetProvider)
+	} else {
+		// TargetProvider 为空时才允许用上游 catalog_code 兜底，再退协议。
+		// ⚠️ 这条兜底只能在 TargetProvider 为空时生效；否则它会重新引入
+		// 「非空未登记 code 回退协议」的同一个缺陷。
+		if ctx != nil && ctx.UpstreamCatalogCode != "" {
+			if d := paramreg.DialectForCatalogCode(ctx.UpstreamCatalogCode); d != paramreg.DialectUnknown {
+				dstDialect = d
+			}
+		}
 		if dstDialect == paramreg.DialectUnknown {
 			dstDialect = paramreg.DialectForProtocol(targetProtocol)
 		}

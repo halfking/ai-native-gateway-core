@@ -143,6 +143,12 @@ func Decide(key string, src, dst Dialect) (RestoreAction, *FieldSpec) {
 		return ActionRestore, spec
 
 	case KindPortable:
+		// 2026-10-13（thinking 翻译轮裁决）：Dialects 对 Portable 保持
+		// 「来源标注」语义（注册表注释：如需阻止到达其它上游，在
+		// strip_request_fields 配置）——登记方言层面无跨厂商硬 400 实证
+		// 的字段不按 r1021 教义收口；有实证的（enable_thinking 对
+		// unknown-relay，台账三条+联界 kimi 一条）走 RejectedByUnknown
+		// 显式登记。
 		return ActionRestore, spec
 
 	case KindTranslatable:

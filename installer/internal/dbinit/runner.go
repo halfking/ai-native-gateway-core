@@ -942,8 +942,89 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// ★ 配置表**建表即空** ⇒ 应用后不删任何东西；
 			//   启用需按族 INSERT 保留月数，那是业务决定，不在本迁移内。
 			"841_monthly_partition_retention.sql",
+			// 842：给 latest_bucket 聚合补 (credential_id, raw_model, bucket) 索引。
 			"842_credential_model_index_latest_bucket_idx.sql",
+			// 843（并行线）：candidate_failure_logs 两臂补 (ts DESC)，
+			// 让无过滤的 max(ts) 从全索引扫描变成读一条索引条目。
 			"843_candidate_failure_logs_ts_desc_idx.sql",
+			// 844（本会话）：给 v_supplier_price_vs_baseline 补两个缓存基准价的投影。
+			// 缺了它们，缓存基准价只在 models_canonical 里躺着，永远进不了
+			// supplier_price_drift ⇒ 被 2026-10-07 拍板指定为「合理性下限告警」
+			// 依据的四个价里，有两个没有任何监控。
+			// ★ 幂等：CREATE OR REPLACE VIEW 只在末尾追加列，
+			//   既有列的位置/类型/顺序逐字不变，消费方不受影响。
+			// ★ 编号注：本条先撞 842（19:25）重排为 843，再撞 843（20:05）重排为 844。
+			"844_supplier_view_cache_baseline_columns.sql",
+			// 845（R30，2026-10-09）：stats_event_dedup 补 (event_id, occurred_at)
+			// 复合索引，消 stats 日聚合 JOIN 的逐行 heap 回表。
+			// ★ 文件带 dbinit:no-transaction 标记（CREATE INDEX CONCURRENTLY
+			//   不能进事务块），applySQL 据此走非事务通道，
+			//   TestNoTransactionMarkerIsJustified 钉住「标记文件必须真含
+			//   不可事务化语句」。
+			"845_stats_event_dedup_join_index.sql",
+			// 846（R30，2026-10-09）：session_turns 父表 partial 索引
+			// (id) WHERE request_status IS NULL，回填 worker 候选捞取的承重索引。
+			// ★ 分区父表不能 CONCURRENTLY（R46/843 先例），改普通 CREATE INDEX
+			//   IF NOT EXISTS（幂等），ShareLock 随部署窗口；全新安装时表为空，
+			//   无代价。
+			"846_session_turns_req_status_backfill_idx.sql",
+			// 847（multimedia，2026-10-08）：credentials 加 routing_scope
+			// （all|text_only|media_only），多模态路由隔离的候选闸。
+			"847_credential_routing_scope.sql",
+			// 848（multimedia，2026-10-08）：billing_unit（token|image|audio_second）
+			// 与 audio_second 计费列骨架。
+			"848_billing_unit_and_audio_seconds.sql",
+			// 849（R31 SQL 审计，2026-10-10）：session_turns 补 (request_id)
+			// 覆盖式部分索引 WHERE request_status IS NULL，remaining-count
+			// gauge 的 t 侧走 index-only；事务内 SET LOCAL statement_timeout
+			// = '10min' 防部署期 57014（e3e2b4ef5）。
+			"849_session_turns_req_status_backfill_cover_idx.sql",
+			// 850（R31 SQL 审计，2026-10-10）：session_summaries 补 (created_at,
+			// session_key) 部分索引 WHERE gw_project_id IS NULL，支撑
+			// project_backfill 候选捞取的 48h 滚动窗，消除每日 ~6,700s 的
+			// 「证明无事」空扫。
+			"850_session_summaries_project_backfill_recent_idx.sql",
+			// 851（2026-10-10）：停用 316 播种的 pii_patterns.ip_address 规则。
+			//
+			// 为什么必须在这里显式登记：316 是**幂等播种**，全新安装必然把这条
+			// 规则种成 enabled=true，而它把每一个 IPv4（含环回、版本号）都当成
+			// PII 在**输出侧**单向遮成 `*********`。遮蔽发生在 sanitize 还原
+			// **之后**（见 cmd/gateway/goal_control.go 的链序：guard → 还原 →
+			// 输出合规），因此模型回显的地址刚被还原成原文就被压成星号，且不可
+			// 还原——客户端拿到的是坏掉的运维命令 / 坏掉的工具参数。
+			//
+			// 这条迁移此前**从未被登记**：文件躺在 sql/migrations/startup/ 里，
+			// deploy 的目录扫描会捡到它，但安装器只跑 StartupFiles，于是每台
+			// 全新安装的机器上这条规则都还开着。登记它是对「文件存在 ≠ 迁移会
+			// 运行」这一形态的修复，不是新增策略。
+			"851_disable_overbroad_pii_ip_address_rule.sql",
+			// 855（2026-10-12，installer 五点同步 2026-10-13 补登记）：给
+			// session-analytics 三兄弟（session_client_stats / session_task_stats /
+			// session_client_task_matrix）加 30 天时间窗。deploy 的目录扫描会捡到
+			// 这个文件，安装器只跑 StartupFiles，所以全新安装此前建出来的是**没有
+			// 时间窗**的旧定义视图——三兄弟每轮重写约 169.3MB WAL、占集群 62~75%，
+			// task 维度输出 104,299 组长尾；带窗后 154 实测降到 1,832 组（-98.2%）。
+			// ⚠️ 口径变更：报表不再含 30 天以前的会话（owner 已知悉并拍板）。
+			//
+			// 放在 851 之后（链尾）而不是按编号插位：它读 session_summaries
+			// （655/560/677 一族）与 session_dim（805 收编、683 补列），必须排在这
+			// 两者定型之后；链尾是唯一无条件成立的位置。文件自带
+			// `SET LOCAL statement_timeout = '10min'`（245 首部署实测 65.2s，
+			// 服务端 30s 默认值会 57014），且是 DROP IF EXISTS + CREATE MATERIALIZED
+			// VIEW，重复应用零行为变化。
+			"855_session_analytics_time_window.sql",
+			// 857（2026-10-13）：收窄 316 播种的 pii_patterns.phone_intl——
+			// `\+\d{1,3}[-\s]?\d{1,14}` 第二段只要求 1 位数字，算术式
+			// `23*47+100` 的 `+100` 会被当国际电话在输出侧遮成
+			// [REDACTED:phone]（agent 的 tool 参数被改坏，请求侧完好、
+			// 遮蔽全部在响应侧 write-time redact_body）。收窄为被叫号码
+			// ≥7 位（E.164 现实区间），与 851 同族：UPDATE 存活 316 幂等
+			// 重放，全新安装也必须应用，故登记 StartupFiles。
+			// 856（2026-10-13，b3cbd3462 提交但登记残缺，本轮补齐）：usage_ledger
+			// （+hot）按时间窗聚合覆盖索引——/api/usage/summary 与 by-model 的
+			// 5s 预算 500 修复。普通 CREATE INDEX（事务内），两腿均可跑。
+			"856_usage_ledger_ts_cover_agg_idx.sql",
+			"857_tighten_pii_phone_intl_regex.sql",
 		},
 	}
 }

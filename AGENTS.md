@@ -848,10 +848,20 @@ host-first 孤儿网关回收 + 517 形态探测 r2538、mobile UX 第二轮、2
 
 - `TestV1BodiesReadersAreAssessed` 仍故意红：27 文件/39 站点 bodies 读方逐点
   评估是删除 request_logs_bodies 的前置，不是停写前置。
-- `TestReaderPopulationGroundTruth` 红：bg/candidate_failure_monitor.go 未登记
-  （并行会话 3b7180abe/31d466e21 轮引入的读方，pristine HEAD 复跑同红）。
-- 其它 ~35 个 request_logs_hot 直读面（仪表盘/凭据健康/路由分析族）在 v1 行
-  被 promote 排空（8h/7d 窗）后逐窗变空——S3 波 2/3 的分波原生改造范围。
+- ~~`TestReaderPopulationGroundTruth` 红：bg/candidate_failure_monitor.go 未登记~~
+  **已修（2026-10-13 S3 波 2 轮）**：基线 48→49 补记成员资格（档位 ③ 早已在场）。
+- ~~其它 ~35 个 request_logs_hot 直读面~~ **S3 波 2 第一分片已完成（2026-10-13，
+  合并 87da7fade + 04801872b，本地部署 2587 验证通过）**：16 个生产读点按谓词
+  形态分派修复（A 形会话内读→ForSession 助手；B 形→canonical 视图；性能裁决
+  在案→会话族原生源拼接；热表点查→双热腿 UNION），含凭据健康核心
+  recent_success_rate 双热腿化与 routing_analytics_source 视图化（boot 自愈 +
+  陈旧判据，**量具坑：pg_get_viewdef 不内联嵌套视图**，按直接 FROM 引用判）。
+  审计网络全绿（唯一红 = bodies 故意负向闸门），明细见
+  `docs/audit/2026-10-13-s3-wave2-requestlogs-readsource-migration.md`。
+  **剩余**：tenants.go logsTable（R36-A1 性能裁决，需专门分片）、探针面族
+  （观测对象无处落表，属主拍板）、routing.go picker（有 live 腿兜底）、
+  trace_events 结构缺口、auto_index_refresher 名字匹配率核对、
+  data_lifecycle blob 治理会话臂扩展。
 - 视图 session 分支的列投影里 task_type 等列可为 NULL：非空扫描的读方可能
   还有漏网（auto_route 已修一处），发现一处修一处。
 
@@ -861,3 +871,241 @@ host-first 孤儿网关回收 + 517 形态探测 r2538、mobile UX 第二轮、2
 对生产 settings_kv 翻转两个键。前置：生产库跑 7 天 dual-read-drift 零漂移；
 **本地库的 update_session_summary 触发器 bug 版（DECIMAL(10,6)）在 252 镜像
 里也疑似存在，翻转前建议先应用 661 迁移**（幂等，本地已验证）。
+
+---
+
+# 追加：2026-10-13 r1020 —— minimax-m3「模型未返回任何数据」= 输出合规误伤 Write 工具
+
+> 用户报告：ZCode 经本地网关（:8782）请求 minimax-m3 频繁报「模型未返回任何数据」。
+> 根因：防外传守卫对 tool 参数里**每个字符串**做目的地检查，而 coding agent 的
+> 参数主体是 Write/Edit 写入的文件内容——源码引用公网 URL（`https://acc.kxpms.cn`）
+> 与 `casdoor.ts:455` 文件名:行号（被 egressHostFromPort 当成 host:port）都会把
+> 整条响应 `output_policy_blocked`（chunk_count 0，客户端零内容）。
+> 修复两层：① 惰性内容工具（Write/Edit 族封闭集）按载体能力豁免外传检查
+> （标签 `__tool_json@<工具名>`，凭据键检查不豁免，未收录名默认 fail-closed，
+> 流式跨帧名字经 complianceStreamState.toolNames 侧信道）；② host:port 冒号
+> 形态改为网络动词锚定（netcat 族+curl/wget/httpie），文件名:行号不再误伤。
+> 判据 `security/sanitize/r1020_inert_tool_content_test.go`（三协议流式形状 +
+> 前提在场配对 + 封闭性钉子），变异验证 M1/M2/M3 三方向红在正确断言。
+> **夹具坑三则**：帧构造先转义 `\` 再转义 `"`；手写 SSE 帧闭合括号数三层；
+> 终态帧的阻断信号在 ShouldBlock 不在 error。
+> 详见 `docs/audit/2026-10-13-minimax-m3输出合规误伤write工具-r1020.md`。
+> 遗留：本地网关需重部署生效（勿从含并行会话半成品的 checkout 部署）；
+> telemetry/streaming-alternatives 两处测试红是并行会话 S4 迁移半成品
+> （pristine + 其单文件即复现），与本修复无关。
+
+> **r1020b 补丁（同日，提交 80bf575d6，随 2581 上线）**：2579 复验发现
+> /v1/responses 仍拦 Write+URL——桥接器每工具多发一帧
+> `response.function_call_arguments.done`（完整参数+name 在事件根），
+> collectVisibleText 对该快照帧未挂名 → 裸 `__tool_json` 立即检查 → 豁免失效。
+> 已修（done 快照挂名 + 侧信道补记）；判据夹具升级为真实捕获帧序列，
+> M4 变异红。**判据纪律第 6 条：自建协议夹具必须与真实桥接输出对帧——
+> 用无害内容过真网关捕获线帧、换入有害内容回放单测链，别手写形状**。
+> 跨模型共性审计：本地 162 条流终止全是本族（minimax-m3 68 + glm-5.3 系 11，
+> 修复模型无关同时受益）；154/245 journal 零观测（无 coding-agent 流量形态）。
+> 遗留（未修，待 owner 拍板）：Bash 参数里版本号样四元组（17.0.20.1）与
+> 用户自有公网 IP（115.29.212.252）仍按 IP 字面量硬阻断（r1013 显式契约）。
+
+> **多会话提交纪律（2026-10-13 实录）**：共享 checkout 里并行会话可能已把
+> 文件 `git add` 进暂存区——你的 `git commit` 会消费**整个 index**，把对方
+> 半成品一并带入并推送（本轮 2be061b25 误带 6 个引用未提交符号的 s3_wave2
+> 测试，6 包在 origin/main 编译断裂，3ec7b5f7c 前向修复退出）。**提交前必看
+> `git diff --cached --stat` 只含你的文件**；误入后用 `git rm --cached` 前向
+> 退出 + `git show <commit>:<path> > <path>` 恢复盘上内容，不 force-push。
+
+> **r1021（同日，提交 4d6bb3c27，随 2583 上线）**：grok-4.6 空响应 =
+> thinking 对象透传给 unknown-relay 中转（vapeur，openai-responses 严格
+> 线格式）整条 400。注册表修法：thinking 加 RejectedBy 名单 + 新增
+> FieldSpec.RejectedByUnknown 显式开关（唯一允许对 DialectUnknown 也拒的
+> 途径，须硬 400 实证；不动 A1.6 的 fail-open 教义）。教训：**IR 序列化
+> 路径与扩展还原路径对同一字段的方言政策必须一致**——两路径不一致时，
+> 一条修好了另一条还在漏。
+
+> **r1022（2026-10-13，提交 25eca54fa，随本地 2591 上线）**：claude-sonnet-5
+> 「返回有 tools 但没有成功执行」= 流式还原毒分支整帧吞掉工具参数 JSON
+> 结构字符。/v1/responses 的 function_call_arguments.delta 里出现 marker
+> 家族文本（模型自造 `{sensitive_*}` 或回显请求侧遮蔽 marker）且分片边界
+> 落在 marker 尾与 `\"`/`}`/`&&` 之间时，restoreStreamStringField 两个
+> 整帧遮蔽分支把结构字符一并换成 `[REDACTED]`，客户端拼接参数 JSON.parse
+> 失败→工具不执行→模型重发死循环。修复：JSON 参数 lane（三协议共用）改
+> 跨度级遮蔽（分支 A 透传 restored，分支 B `redactedMarker + value`），
+> 散文 lane 保持 r244 整段契约。判据同层驱动 + 真实捕获分片回放 + 前提
+> 在场配对，M1/M2 单分支变异红。**踩坑**：`reservedMarkerStarted` 要求
+> 扣住前缀含完整 `{sensitive` 词——短前缀 `{sens` 的续帧走的是 verbatim
+> 释放路径，第一版判据因此假绿；变异不红时先用探针找准分支触发条件。
+> **取证方法论**：解包 ZCode（AI-SDK）确认工具 input 取自
+> output_item.done 的 arguments 并被 JSON.parse，才把「客户端解析错误」
+> 定位到参数字符串完整性上。遗留登记：Responses 桥 message/function_call
+> 同 output_index:0（规范违规、现 SDK 不炸）未动。
+> 详见 `docs/audit/2026-10-13-claude-sonnet-5-tools解析错误-r1022.md`。
+
+> **r1023（2026-10-13 下午，提交 1b370b13b，随本地 2593 上线）**：Responses 桥
+> 两条线协议契约修正（OpenAI→Responses / Anthropic→Responses 共 scaffold）。
+> ① output_index 唯一化：旧实现把上游 tool_calls[].index / content_block
+> index（几乎恒 0）直接当 output_index，与预声明 message item（0）线上冲突。
+> scaffold 新增 wire-index 分配器（message=0，工具按首次出现 1,2,…），两个
+> writeChunkIR 在任何索引键控状态（fit/hold/toolCallIDs/toolStates）之前统一
+> 重编号。② output_item.done 的 function_call item.status 必须是字面量
+> "completed"（AI-SDK Zod literal 硬契约，length 截断曾带 "incomplete" 使
+> 客户端整流解析失败）；截断语义只在终态 envelope（status+incomplete_details）。
+> 判据 `domains/streaming/r1023_responses_output_index_contract_test.go`（同层
+> 驱动两桥逐帧断言+前提在场），M1 撤重编号两方向红 / M2 状态回退红。
+> E2E（2593，claude-sonnet-5）：/v1/responses 并行双工具 output_index
+> {0,1,2} 且参数合法；/v1/messages 文本+工具块结构正确。
+> **登记未动**：截断流的事件名恒为 response.completed（终态判定器
+> attempt_commit_gate 按此 grep，改事件名需连带评估）；tool-only 流的
+> message item 预声明后不关（added 无 done）；AI-SDK 对 function_call
+> arguments.done/content_part.added 走 unknown_chunk 容忍分支不校验。
+
+---
+
+# 追加：2026-10-13 S3 波 3 —— 停写收尾（最后一处漏网写点）+ 读侧第二分片
+
+> 会话目标：继续完成 request_logs 读写向 session_turns 的转换、停掉
+> request_logs 相关写入。提交 `f61f24bd1`，本地部署 2594（8782）验证通过。
+> 明细见 `docs/audit/2026-10-13-s3-wave3-stopsweep-and-readsource-next-shard.md`。
+
+## 写侧（全仓盘点后：唯一漏网写点已收口）
+
+- 全仓扫描（非测试）request_logs 家族写语句逐一核对：telemetry client /
+  admin ingest / lite sink / trace.FlushToPG 均在 S4 门内；promote/archive/
+  data_lifecycle/credential reset 属存量生命周期或运维语义（保留）。
+- **`domains/streaming/audio_usage_log.go` 是最后一个未挂门的流量写点**
+  （音频计量行不走 telemetry 链），已按 R52 trace 语义挂门：停写即丢弃
+  （计费走 maas 不受影响）。音频秒数观测无会话族落点——与探针行同桶
+  （主拍板项）。判据 `audio_usage_gate_test.go`（零期望 pgxmock = 停写
+  行为断言 + 门开前提在场），反转门变异红。
+- 本地实证：翻转（07:01:04）后 request_logs_hot/bodies_hot 零新行，
+  2594 部署后仍零（门保持）。
+
+## 读侧（波 2 §5 登记的三项下片债清偿）
+
+1. **tenants.go logsTable 四臂化**（R36-A1 性能裁决读面）：两条会话腿
+  （冻结点守卫 + 双子排除）+ 两条 v1 腿原样（零反连接，30s 裁决保持）。
+   新原语 `db.V1FreezeCutoffSQL`（v1 两表 max(ts)；max 必须同盖 hot∪母表，
+   只看母表会把冻结点定在数小时前）。**实测教训：镜像行 ts ≠ v1 行 ts**
+  （差 ~15s，落库侧时刻），冻结点单独用会在翻转边界双计（真库实测 1 例）
+   ⇒ 消费方必须同时在会话腿带 NOT EXISTS v1 双子。
+2. **popularModelsHotSQL → 会话族原生源**（listTopModels 同款回退链）；
+   文件脱离 v1 族，四登记表除名（tiering 114→113、静默档 61→59，审计
+   文档已订正）。
+3. **auto_index_refresher 双源化**：前置实测坐实 audit 的担忧——会话侧
+   raw_model_name 是**剥 provider 前缀的归一化名**，精确等值只 54%；
+   alias 链（lower(t.model)→model_aliases→canonical→offers）恢复 96.5%
+  （v1 侧 96.7%）。**half-1 与 half-2 反连接必须同迁**，否则停写后
+   cold-start 基线每 5 分钟经 ON CONFLICT 覆盖真实指标。model_task_index
+   **登记不迁**（auto 请求不进会话族：实测 3,420 vs 0）。
+4. 在线验证（2594）：tenant stats 今日 10,224 条含翻转后流量；picker
+   usage 源真实计数；refresher 新桶 7-11 行真实指标；readyz ready。
+
+## 判据纪律增量（第 7 条）
+
+**形状钉桩对「N 条同构腿」必须 count==N 而非 Contains**：只查在场时，
+「删一条腿」的变异仍绿——而那正是最危险的静默回退（half-2 抑制腿被删 =
+基线覆盖真实指标）。本轮两处判据（tenants 冻结点×2、refresher 会话腿×2）
+都经历了「第一版 0 红 → 加强 count==N → 红」。
+
+## 本轮自伤事故（量具教训复刻）
+
+变异验证脚本里 `git checkout -- admin/tenants.go` 想恢复被变异的文件，
+把**自己未提交的工作全部洗掉**（共享 checkout 清洗风险的自己动手版，
+与 memory「shared-checkout-wipe-hazard」同源）。重做后改为 `cp` 备份恢复。
+变异恢复一律不用 git 命令。
+
+## 既存红（pristine 同红，非本轮引入）
+
+`bg/TestDirectProbeBodyUsesAnthropicMessagesShape`（HEAD 8c6aa6d584 即红，
+probe body 形状断言）；工作区另有并行会话 r1023 的缩进级遗留
+（executor_anthropic.go +4 个 ir 测试，无语义，未随本轮提交）。
+
+---
+
+# 追加：2026-10-13 r1024 —— 多轮 tool × 脱敏还原 E2E（三家供应商 × 四台部署）
+
+> 用户目标：特色模型（minimax / z.ai / vapeur ai）经网关逐模型发 ~5 轮带
+> tools 的请求（/goal 提示词=拉主分支合并 / 24h 审计两型），跟踪 log 修问题、
+> 部署再验证，直到全绿；重点是参数收发与转换——**脱敏介入后客户端必须拿到
+> tools 参数里可用的真实值（IP/用户/密码），拿到占位符=无法操作**。
+> 提交 `95640a655`（+ 后续 deploy-211 密钥透传），本地 2595→2600、
+> 245=2601、154=2602、211 docker 全部部署并 E2E 验证通过。
+> 明细与判据：`docs/audit/2026-10-13-r1024-多轮tool脱敏还原E2E.md`。
+
+## 七缺陷一句话清单（详见审计文档 §二）
+
+1. **身份字段硬阻断**：`username/account/login` 与密码族混在一个
+   `credentialField`，裸用户名结构性不可能成为占位符 → 任何带 username 的
+   SSH 类 tool 调用整流 `output_policy_blocked`。已拆
+   `secretCredentialField`（保留硬拦）vs `identityField`（放行，仍走检测器
+   +外传目的地检查）；**畸形形状（number/bool/map）仍全集 fail-closed**。
+2. **YAML account 漏检**：`ssh_user=/db_user=/user=` 形态不在 account 正则
+   → 用户名明文出网关。label 集补 `user(?:name|_name)?|[a-z0-9_]*_user`。
+3. **钉扎静默失效**：`ChatHandler.SetAdminAPIKey` 全仓无人调用 →
+   `X-LLMGW-Preferred-Credential` 恒被忽略（E2E 归因失真的元凶）。
+   main.go 已接线。
+4. **openai-responses 供应商 tool 历史被散文折叠**：`IsToolUseCapable`
+   协议启发式补 openai-responses（vapeur 折叠后模型用散文模仿工具调用，
+   客户端拿不到结构化 tool_calls）。
+5. **无 `event:` 行的 Responses SSE 终态误判**：事件名从 payload `type`
+   回填；此前 terminal 永不置位 → 完整响应后补发 response.failed +
+   探针 3 连败停节点（no_candidate 连坐）。
+6. **chat 嵌套形 tools 发 /v1/responses**：native 出站前
+   `NormalizeResponsesTools` 归一化平铺（转换而非拒绝；上游 400 会被当
+   transient 重试三次+连坐凭据）。
+7. **模型自造占位拼写**：`"password":"PLACEHOLDER"`/`"USE_DEPLOY_PASSWORD"`
+   三路判据放行（字面量集 + 值自指涉凭据关键词 + 模板包裹形）；
+   普通明文（hunter2 类）照拦。**模型自造公网 IP（1.2.3.4）仍拦——r1013
+   显式契约，不是误伤**。
+
+## E2E 覆盖（全部 PASS：客户端零占位符泄漏、参数 JSON 合法、真值逐字还原）
+
+- 本地 2600：3 供应商 × chat/responses 两腿 × merge/audit 两场景 ×
+  10+ 项目目录（gateway-2/memora/nbjjl/crm-go/GEOFlow/network-switch/
+  agent-companion/RedClaw/acc-toolkit/pocket-opencode/marketing/myvpn）。
+- 245=2601-95640a65（8782）：MiniMax chat + grok responses PASS（SSH 隧道）。
+- 154=2602-95640a65（8781）：glm chat + MiniMax responses + claude responses
+  PASS。
+- 211 docker（同代码，二进制含 changeme 指纹）：MiniMax/glm/grok/claude
+  全 PASS。harness：`/tmp/gwtool_e2e/tool_roundtrip_e2e.py`（判据 A-E 详见
+  审计文档 §一）。
+
+## 211 部署的三个新坑（本轮实测）
+
+1. **envs SSOT 本机又消失**（~/workspace 两处都没有 loader.sh）：
+   从 252 `/root/workspace/ai-native-tools/envs/` 拷回，且那是 252-root
+   专用 stub（密钥路径 /root/.ssh）——本机版 stub 要指向本机
+   ~/.ssh/id_ed25519。deploy-seamless 的 ENVS_ROOT 双候选兜底已进 main
+   （160 行段），但候选路径仍是那两处，SSOT 真身在 252。
+2. **211 的凭据密文解密钥匙**：库是生产副本，credentials 按
+   `CREDENTIAL_ENCRYPTION_KEY`（44 字符 base64url，.env.local 里 fL0ML 开头
+   那把，与 245 一致）加密；deploy-211 原先只注入 SECRET_KEY（随机生成）
+   → node_probe 全量 `cannot decrypt: unknown format` + 路由全灭
+   key_decrypt_failed。**deploy-211-docker.sh 已补透传**（环境变量 →
+   gateway.credkey 持久化 → -e 注入；--via 转发）。
+   ⚠ 本地部署根 .env 里的 CREDENTIAL_ENCRYPTION_KEY（9e7456 开头 64 字符）
+   解码失败会静默回落 SECRET_KEY 路径——本地能跑是靠 SECRET_KEY=生产值
+   的 SHA256 兜底；**别把它当真钥用**。
+3. **211 每 deploy 换 Redis 库号**（15→14→…→10，claim 不粘）：URSM 全新
+   冷启动 → grok/claude no_candidate。恢复：admin
+   `PATCH /api/routing/emergency-repair`（force_enable, cred 63）或等探针
+   回写。claim 不粘的根因未查（登记）。
+4. 211 无 LLM_GATEWAY_ADMIN_* env：users 表是生产副本，.env.local 的 admin
+   密码直接可用；`ssh 192.168.31.211`（需在 ~/.ssh/config 加
+   `Host 192.168.31.211 User root`，deploy-211 的 rsync 默认用本机用户名）。
+
+## 判据纪律增量（第 8 条）
+
+**供应商级结论先证钉扎**：「glm-5.3 会折叠 tool 历史」这个误判浪费了小半
+小时——真因是钉扎静默失效、请求被路由到 nvidia/vapeur。归因到供应商前必看
+`upstream_http_attempt` 的 provider_id/credential_id 是否是指定值。
+
+## 遗留登记
+
+- `password_restored`（还原后的真实密码）在 sanitize 守卫视角=非占位符凭据
+  值（现链序守卫在还原前，不触发）；若有人把守卫挪到还原后会打断闭环——
+  判据矩阵已有钉子。
+- 散文里带 JSON 转义的占位符还原兜底为遮蔽（折叠修复后出现率大降，留观）。
+- 模型自造公网 IP 的早产调用整流拦（r1013 契约保留）；「只丢单条 tool call
+  而非整流」需协议级手术，另立轮次。
+- 211 Redis 库号 claim 不粘 + UrsmlHealthyKeyReconciler 在 211 容器未起
+  （154/245 有 `ursm.v2 healthy-key reconciler started`，211 日志无此行），
+  冷启动靠 emergency-repair——两件一起查。

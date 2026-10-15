@@ -69,7 +69,9 @@ func egressGuardBlocks(t *testing.T, d *PatternDetector, toolArguments string) b
 	if err := json.Unmarshal([]byte(toolArguments), &value); err != nil {
 		t.Fatalf("tool arguments must be valid JSON: %v (%s)", err, toolArguments)
 	}
-	blocked, err := checker.unsafeToolValue(context.Background(), value, "", 0)
+	// 空 toolName = 命令类调用（默认 fail-closed），与 r1014 语义一致；
+	// r1020 的惰性工具豁免另有判据文件覆盖。
+	blocked, err := checker.unsafeToolValue(context.Background(), value, "", 0, "")
 	if err != nil {
 		t.Fatalf("unsafeToolValue: %v", err)
 	}

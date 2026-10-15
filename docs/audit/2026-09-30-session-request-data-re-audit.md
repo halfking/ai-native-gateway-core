@@ -4719,8 +4719,31 @@ live 分支只写了 `Reason` 忘了把 `Stale` 设回 `false` ⇒ 该字段**�
 | `errors_out` | 3 | 响亮失败，灰度立刻可见（**可接受**） |
 | `validator_dual_read` | 1 | §9.35 的新鲜度探针 |
 
-**⇒ 灰度前必须处理的静默档：**69** 条**（`silently_empty` + `silently_degraded_content` + `silently_frozen`）**
+**⇒ 灰度前必须处理的静默档：**59** 条**（`silently_empty` + `silently_degraded_content` + `silently_frozen`；计数口径 = countSilentStopWriteEffects 的三档 switch，见下方 2026-10-13 订正）
 
+> ⚠ **S3 波 3 订正（2026-10-13，停写切换读侧第二分片）：61 → 59。**
+> −1：admin/routing.go 除名——popularModelsHotSQL 改读会话族原生源
+> （SessionFamilyTurnsSourceSQL），文件脱离 v1 族（silently_frozen 少一条）。
+> −1：admin/tenants.go 由 silently_empty 改判 silently_degraded_aggregate——
+> logsTable 补冻结点守卫的会话腿后 credits/byModel/byApp/daily 对新流量
+> 继续供数；degraded_aggregate 不在「必须处理」三档计数内（它是
+> 「继续供数、口径降级」的可接受稳态）。
+
+> ⚠ **S3 波 2 订正（2026-10-13，停写切换轮）：这一句是 69，本轮改为 61。**
+>
+> 变化**不是**风险消失，而是 8 个读点在 S3 波 2（request_logs 停写后的读侧
+> 迁移）里被**修复或改判**，逐条都有可执行的代码与钉桩：
+> `internal/summarystore/store.go`、`domains/hooks/observability/telemetry/client.go`、
+> `admin/provider_models.go`、`cmd/gateway/waterfall_db.go` 四条改判 `unaffected`
+> （主腿改会话族原生源 / canonical 视图，session 臂继续供数）；
+> `domains/analysis/request_summary.go`、`domains/streaming/model_alternatives.go`
+> 两条整体迁会话族原生源、自清单除名（不再读 request_logs 族）；
+> `admin/work_types.go`、`internal/quality/minute_aggregator.go` 两条自
+> empty/frozen 改判 `silently_degraded_aggregate`（session 臂供数、聚合维度
+> 部分退化——degraded_aggregate 不在原三档口径内，本订正同步把口径改为四档）。
+> 登记表总数与四道审计网络门的同步明细见
+> `docs/audit/2026-10-13-s3-wave2-requestlogs-readsource-migration.md`。
+>
 > ⚠ **§9.73.6 订正：这一句是 70，2026-10-03 改为 69。**
 >
 > 变化**不是**「少评估了一个读点」，也不是「有人把风险藏起来了」，而是

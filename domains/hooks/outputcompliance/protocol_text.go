@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 )
 
 // visibleTextField points only at client-visible text. IDs, usage, media data,
@@ -39,6 +40,53 @@ func (f visibleTextField) set(text string) {
 		f.array[f.index] = text
 	} else {
 		f.parent[f.key] = text
+	}
+}
+
+// ── tool JSON 标签的命名形态（r1020）────────────────────────────────
+//
+// `__tool_json@<name>` 携带工具名（chat 的 function.name、anthropic 的
+// tool_use.name、responses 的 function_call.name）。消费方是
+// security/sanitize 的 CheckField（parseToolJSONLabel）：惰性内容工具
+// （Write/Edit 写文件等）的参数不触网，豁免外传目的地检查；凭据键检查不受
+// 影响。裸 `__tool_json` 语义不变 = 工具名未知 = 默认 fail-closed。
+
+// toolJSONLabelFor 返回带工具名的 tool JSON 标签。
+func toolJSONLabelFor(name string) string {
+	if name == "" {
+		return "__tool_json"
+	}
+	return "__tool_json@" + name
+}
+
+// splitToolJSONLabel 拆出 `__tool_json` / `__tool_json@<name>` 里的工具名。
+// 非 tool JSON 标签返回 ok=false。
+func splitToolJSONLabel(label string) (toolName string, ok bool) {
+	if label == "__tool_json" {
+		return "", true
+	}
+	if rest, found := strings.CutPrefix(label, "__tool_json@"); found {
+		return rest, true
+	}
+	return "", false
+}
+
+// isToolJSONLabel 报告标签是否为 tool JSON（含命名形态）。
+func isToolJSONLabel(label string) bool {
+	_, ok := splitToolJSONLabel(label)
+	return ok
+}
+
+// nameAppendedToolJSONFields 把 start 之后新追加的 __tool_json 字段换成带
+// 工具名的标签。name 为空时不动作。
+func nameAppendedToolJSONFields(fields []visibleTextField, start int, name string) {
+	if name == "" {
+		return
+	}
+	for i := start; i < len(fields); i++ {
+		if fields[i].label == "__tool_json" {
+			fields[i].label = toolJSONLabelFor(name)
+		}
 	}
 }
 
@@ -83,7 +131,7 @@ func transformVisibleJSON(body []byte, stream bool, blockToolRewrite bool, trans
 			if field.immutable || (blockToolRewrite && (isToolArgumentLane(field.lane) || field.label != "")) {
 				return nil, issues, true, nil
 			}
-			if field.label == "__tool_json" && json.Valid([]byte(original)) && !json.Valid([]byte(replacement)) {
+			if isToolJSONLabel(field.label) && json.Valid([]byte(original)) && !json.Valid([]byte(replacement)) {
 				return nil, issues, true, nil
 			}
 			field.set(replacement)
@@ -111,14 +159,16 @@ func collectVisibleText(root map[string]any, stream bool) []visibleTextField {
 			fields = append(fields, visibleTextField{parent: parent, key: key, lane: lane, label: label, immutable: immutable})
 		}
 	}
-	addToolInput := func(parent map[string]any, key, lane string) {
+	addToolInput := func(parent map[string]any, key, lane, toolName string) {
+		before := len(fields)
 		add(parent, key, lane, false)
 		if value, ok := parent[key]; ok && value != nil {
 			if _, isText := value.(string); !isText {
-				fields = append(fields, visibleTextField{lane: lane, label: "__tool_json", checkValue: value, checkOnly: true})
+				fields = append(fields, visibleTextField{lane: lane, label: toolJSONLabelFor(toolName), checkValue: value, checkOnly: true})
 				collectToolInputStrings(value, lane, &fields)
 			}
 		}
+		nameAppendedToolJSONFields(fields, before, toolName)
 	}
 	// addStringishArray covers the replayed hit/output arrays: elements are
 	// either plaintext strings or {text|-key} containers. Used by
@@ -161,7 +211,8 @@ func collectVisibleText(root map[string]any, stream bool) []visibleTextField {
 				_, signed := p["signature"].(string)
 				add(p, "thinking", partLane+".thinking", thinkingImmutable || signed)
 			case "tool_use":
-				addToolInput(p, "input", partLane+".input")
+				name, _ := p["name"].(string)
+				addToolInput(p, "input", partLane+".input", name)
 			}
 		}
 	}
@@ -191,13 +242,19 @@ func collectVisibleText(root map[string]any, stream bool) []visibleTextField {
 						if call, ok := rawCall.(map[string]any); ok {
 							if function, ok := call["function"].(map[string]any); ok {
 								callLane := fmt.Sprintf("%s.tool.%s.arguments", msgLane, streamLaneComponent(call, "index", callPosition))
+								before := len(fields)
+								name, _ := function["name"].(string)
 								add(function, "arguments", callLane, false)
+								nameAppendedToolJSONFields(fields, before, name)
 							}
 						}
 					}
 				}
 				if function, ok := msg["function_call"].(map[string]any); ok {
+					before := len(fields)
+					name, _ := function["name"].(string)
 					add(function, "arguments", msgLane+".function_call.arguments", false)
+					nameAppendedToolJSONFields(fields, before, name)
 				}
 			}
 		}
@@ -232,8 +289,11 @@ func collectVisibleText(root map[string]any, stream bool) []visibleTextField {
 			addTextParts(item["content"], itemLane, false)
 			add(item, "refusal", itemLane+".refusal", false)
 		case "function_call", "custom_tool_call":
+			name, _ := item["name"].(string)
+			before := len(fields)
 			add(item, "arguments", itemLane+".arguments", false)
-			addToolInput(item, "input", itemLane+".input")
+			nameAppendedToolJSONFields(fields, before, name)
+			addToolInput(item, "input", itemLane+".input", name)
 		case "reasoning":
 			addTextParts(item["summary"], itemLane+".summary", false)
 			addTextParts(item["content"], itemLane+".content", false)
@@ -244,7 +304,7 @@ func collectVisibleText(root map[string]any, stream bool) []visibleTextField {
 		// 的载体集合对齐；结构化子树沿用 credential-key label 语义
 		//（mandatory 闸阻断、owner 闸就地 redact），标量 lane 走普通文本。
 		case "mcp_call":
-			addToolInput(item, "arguments", itemLane+".arguments")
+			addToolInput(item, "arguments", itemLane+".arguments", "")
 			add(item, "output", itemLane+".output", false)
 		case "tool_search_call", "mcp_approval_request":
 			// 195 号：e0625c6a5 把这两个载体收进了入向 sanitize 与
@@ -254,7 +314,7 @@ func collectVisibleText(root map[string]any, stream bool) []visibleTextField {
 			// 依赖 `responses.` 前缀 + `.arguments` 后缀），从而沿用
 			// mandatory 闸的 __tool_json 语义。addToolInput 同时覆盖
 			// JSON-string 与结构化两种形态。
-			addToolInput(item, "arguments", itemLane+".arguments")
+			addToolInput(item, "arguments", itemLane+".arguments", "")
 		case "web_search_call":
 			if action, ok := item["action"].(map[string]any); ok {
 				add(action, "query", itemLane+".action.query", false)
@@ -339,8 +399,21 @@ func collectVisibleText(root map[string]any, stream bool) []visibleTextField {
 		add(root, "delta", responseSummaryLane+".reasoning_summary_text", false)
 	case "response.function_call_arguments.delta":
 		add(root, "delta", responseItemLane+".arguments", false)
+	case "response.function_call_arguments.done":
+		// r1020：done 快照带完整参数与工具名（name 在事件根上）。此前不挂
+		// 名字 → 裸 __tool_json 立即检查 → Write 写文件引用 URL 被误伤
+		// （真实桥接形状，2026-10-13 /v1/responses 复现实证）。
+		before := len(fields)
+		name, _ := root["name"].(string)
+		add(root, "arguments", responseItemLane+".arguments.snapshot", false)
+		nameAppendedToolJSONFields(fields, before, name)
 	case "response.custom_tool_call_input.delta":
 		add(root, "delta", responseItemLane+".custom_input", false)
+	case "response.custom_tool_call_input.done":
+		before := len(fields)
+		name, _ := root["name"].(string)
+		add(root, "input", responseItemLane+".custom_input.snapshot", false)
+		nameAppendedToolJSONFields(fields, before, name)
 	case "response.output_text.done":
 		add(root, "text", responseContentLane+".output_text.snapshot", false)
 	case "response.refusal.done":
@@ -350,10 +423,6 @@ func collectVisibleText(root map[string]any, stream bool) []visibleTextField {
 		add(root, "text", responseContentLane+".reasoning_text.snapshot", false)
 	case "response.reasoning_summary_text.done":
 		add(root, "text", responseSummaryLane+".reasoning_summary_text.snapshot", false)
-	case "response.function_call_arguments.done":
-		add(root, "arguments", responseItemLane+".arguments.snapshot", false)
-	case "response.custom_tool_call_input.done":
-		add(root, "input", responseItemLane+".custom_input.snapshot", false)
 	case "response.audio_transcript.done":
 		add(root, "transcript", responseContentLane+".audio_transcript.snapshot", false)
 		add(root, "text", responseContentLane+".audio_transcript.snapshot", false)
@@ -363,7 +432,8 @@ func collectVisibleText(root map[string]any, stream bool) []visibleTextField {
 			add(block, "text", blockLane+".text", false)
 			add(block, "thinking", blockLane+".thinking", true)
 			if typ, _ := block["type"].(string); typ == "tool_use" {
-				addToolInput(block, "input", blockLane+".input")
+				name, _ := block["name"].(string)
+				addToolInput(block, "input", blockLane+".input", name)
 			}
 		}
 	case "response.content_part.added", "response.content_part.done":
@@ -405,7 +475,10 @@ func collectVisibleText(root map[string]any, stream bool) []visibleTextField {
 					}
 				}
 			case "function_call":
+				before := len(fields)
+				name, _ := item["name"].(string)
 				add(item, "arguments", initialLane+".arguments", false)
+				nameAppendedToolJSONFields(fields, before, name)
 			case "custom_tool_call":
 				add(item, "input", initialLane+".custom_input", false)
 			case "reasoning":
@@ -419,12 +492,12 @@ func collectVisibleText(root map[string]any, stream bool) []visibleTextField {
 			// ── 第三十一轮 §四#5 镜像（2026-10-02）：added 帧与 done 快照
 			// 同口径，否则工具/检索载体存在 added/done 之间的半帧缝。
 			case "mcp_call":
-				addToolInput(item, "arguments", initialLane+".arguments")
+				addToolInput(item, "arguments", initialLane+".arguments", "")
 				add(item, "output", initialLane+".output", false)
 			case "tool_search_call", "mcp_approval_request":
 				// 195 号：与上面 addOutputItem 同口径镜像，否则 added 帧
 				// 会出现「done 才拦」的半帧缝。
-				addToolInput(item, "arguments", initialLane+".arguments")
+				addToolInput(item, "arguments", initialLane+".arguments", "")
 			case "web_search_call":
 				if action, ok := item["action"].(map[string]any); ok {
 					add(action, "query", initialLane+".action.query", false)

@@ -50,7 +50,7 @@ const availableRanges = computed(() => RANGES.filter((r) => r.hours <= maxHours.
 const rangeKey = ref('logs.range24h')
 const statusFilter = ref<RequestLogStatus | 'all'>('all')
 const query = ref('')
-const total = ref(0)
+const total = ref<number | null>(null)
 const aggregate = ref<{ total_requests?: number; failure_requests?: number; avg_latency_ms?: number } | null>(null)
 
 function currentRange(): Range {
@@ -198,7 +198,7 @@ watch(maxHours, () => {
     </div>
 
     <p class="logs__summary">
-      <span>{{ t('logs.total', { n: total }) }}</span>
+      <span v-if="total !== null">{{ t('logs.total', { n: total }) }}</span>
       <span v-if="aggregate?.failure_requests != null">{{ t('logs.failures', { n: aggregate.failure_requests }) }}</span>
       <span v-if="aggregate?.avg_latency_ms != null">
         {{ t('logs.avgLatency', { ms: Math.round(aggregate.avg_latency_ms) }) }}

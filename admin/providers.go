@@ -789,10 +789,13 @@ func (h *Handler) getProvider(w http.ResponseWriter, r *http.Request, id int) {
 		LEFT JOIN (SELECT provider_id, COUNT(*) cnt FROM credentials WHERE availability_state='unreachable' GROUP BY provider_id) uc ON uc.provider_id = p.id
 		LEFT JOIN (SELECT c.provider_id, COUNT(*) cnt FROM model_offers mo JOIN credentials c ON c.id = mo.credential_id WHERE mo.available=true GROUP BY c.provider_id) am ON am.provider_id = p.id
 		LEFT JOIN (SELECT c.provider_id, COUNT(*) cnt FROM model_offers mo JOIN credentials c ON c.id = mo.credential_id WHERE mo.available=false GROUP BY c.provider_id) um ON um.provider_id = p.id
-		-- Per 2026-07 partition architecture: 24-hour window query targets
-		-- request_logs_hot directly (independent hot table for the last 7 days,
-		-- migration 341, 2026-07-05).
-		LEFT JOIN (SELECT provider_id, COALESCE(SUM(CASE WHEN lower(COALESCE(request_status, '')) IN ('failure', '') AND NOT success THEN 1 ELSE 0 END)::float8 / NULLIF(COUNT(*),0), 0) rate FROM request_logs_hot WHERE ts >= now() - interval '24 hours' GROUP BY provider_id) er ON er.provider_id = p.id
+		-- 2026-07-31 partition architecture: 24-hour window query read
+		-- request_logs_hot directly (migration 341 hot table).
+		-- 2026-10-13 S3 波 2（停写切换）：hot 已停写、热窗排空后 error_rate_24h
+		-- 对新流量恒 0；改读 canonical 视图（会话臂 provider_id 依赖 734
+		-- details 特征层，缺 details 行的会话轮不进分子分母——已登记的覆盖缺口，
+		-- 不是本查询的回归）。4 列全在 118 列契约内。
+		LEFT JOIN (SELECT provider_id, COALESCE(SUM(CASE WHEN lower(COALESCE(request_status, '')) IN ('failure', '') AND NOT success THEN 1 ELSE 0 END)::float8 / NULLIF(COUNT(*),0), 0) rate FROM request_logs_with_current_month WHERE ts >= now() - interval '24 hours' GROUP BY provider_id) er ON er.provider_id = p.id
 		-- 2026-08-31: 软删除的供应商不存在（列表与详情都不返回 404）。
 		WHERE p.id = $1 AND p.tenant_id = 'default' AND p.deleted_at IS NULL
 	`, id).Scan(

@@ -802,6 +802,11 @@ func main() {
 	pools := pool.NewPoolManager(upClient.Proxy().ProxyFunc())
 
 	chatHandler := streaming.NewChatHandler(cm, lim, matrix, pools, resolver, auditSink)
+	// X-LLMGW-Preferred-Credential 钉扎的操作员闸门键。r1024（2026-10-13）：
+	// SetAdminAPIKey 此前从未被调用，adminAPIKey 恒空导致该路由覆盖在 v1
+	// 数据面静默失效（QA 钉扎请求被自由路由，E2E 归因失真）。键来自
+	// LLM_GATEWAY_ADMIN_API_KEY，与 /metrics 的 AdminTokenMiddleware 同源。
+	chatHandler.SetAdminAPIKey(cfg.AdminAPIKey)
 	if len(cfg.SessionIDBodyKeys) > 0 {
 		streaming.SetSessionIDBodyKeys(cfg.SessionIDBodyKeys)
 	}
@@ -4090,11 +4095,19 @@ func main() {
 			slog.Info("CHECKPOINT: provider profile system started")
 		}
 
-		// 2026-08-15 (M3 CO-3): 供应商成本对账管理端点（月度账单导入 + diff
-		// 查询）。仅当 provider_profile.cost_reconciliation.enabled 开启时
-		// CostReconciler 非 nil，端点才注册；默认关闭与 main 行为一致。
-		if profileWorkers != nil && adminHandler != nil {
-			if cr := profileWorkers.CostReconciler(); cr != nil {
+		// 2026-10-13：供应商成本对账**从 provider profile 解耦**。
+		//
+		// 原来这段挂在 profile 总开关内：`initProviderProfile` 在
+		// `LLM_GATEWAY_PROVIDER_PROFILE_ENABLED` 未开时整个返回 nil，
+		// 于是对帐端点永远不注册，移动端「费用对账」那一页必然 404，
+		// 且 404 与「端点不存在」同形 ⇒ 没有一层会说真话。
+		//
+		// 不用总开关去解它，是因为 profile 的 AlertWorker 有权**自动停用凭据**；
+		// 为一个只读对帐页开那个开关，代价与收益不成比例。
+		// 现在对帐只受自己的子开关控制，且必须在 RegisterRoutes（main.go:6817）
+		// **之前**装配 —— 晚于它设置 handler 也不会补注册路由。
+		if dbConn != nil && dbConn.Enabled() && adminHandler != nil {
+			if cr := initCostReconciliation(dbConn.Pool()); cr != nil {
 				adminHandler.SetProviderCostReconciliationHandler(admin.NewProviderCostReconciliationHandler(cr))
 			}
 		}

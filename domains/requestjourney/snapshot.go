@@ -1,6 +1,9 @@
 package requestjourney
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // RequestSnapshot is the content-free list representation of one journey.
 type RequestSnapshot struct {
@@ -36,6 +39,53 @@ type RequestSnapshot struct {
 type TotalRequestFIFOSnapshot struct {
 	Capacity int               `json:"capacity"`
 	Requests []RequestSnapshot `json:"requests"`
+}
+
+// LifecycleCounts tallies the snapshot by lifecycle state.
+//
+// ⚠️ 口径（别把它当全局队列深度）：这是**最近 capacity 条请求**窗口里的
+// 分状态计数，不是网关上全部在途请求的总量。窗口外的在途请求不在其中。
+// 移动端首页「实时请求队列」展示的三个数就是它。
+func (s *TotalRequestFIFOSnapshot) LifecycleCounts() (pending, inFlight, completed int) {
+	if s == nil {
+		return 0, 0, 0
+	}
+	for _, request := range s.Requests {
+		switch request.LifecycleState {
+		case LifecyclePending:
+			pending++
+		case LifecycleInFlight:
+			inFlight++
+		case LifecycleCompleted:
+			completed++
+		}
+	}
+	return pending, inFlight, completed
+}
+
+// MarshalJSON adds the per-lifecycle tally to the wire shape.
+//
+// ⚠️ 为什么在**序列化时推导**、而不是存三个字段让 Append 维护
+//　（2026-10-13 真机发现，这是个已上线的缺陷）：
+//
+//　移动端首页 `HomeView.vue:61` 读 `total_snapshot.pending/in_flight/completed`，
+//　而本结构体**从来没有**这三个字段 ⇒ 线上接口只返回
+//　`{capacity, requests}` ⇒ 前端拿到三个 `undefined` ⇒ 「实时请求队列」
+//　在真机上**永远显示三个「—」**，无论队列里有没有东西。
+//　（前端类型把这三项写成可选，等于把这个缺口藏了起来。）
+//
+//　推导式还顺手消掉一整类漂移：`admin/request_journey.go:49` 与 `:194`
+//　都是**字面量构造**本结构体的，存字段的话那两处会静默停在 0 ——
+//　正是这个 bug 本身。
+func (s TotalRequestFIFOSnapshot) MarshalJSON() ([]byte, error) {
+	type plain TotalRequestFIFOSnapshot
+	pending, inFlight, completed := s.LifecycleCounts()
+	return json.Marshal(struct {
+		plain
+		Pending   int `json:"pending"`
+		InFlight  int `json:"in_flight"`
+		Completed int `json:"completed"`
+	}{plain(s), pending, inFlight, completed})
 }
 
 func NewTotalRequestFIFOSnapshot(capacity int) *TotalRequestFIFOSnapshot {

@@ -35,6 +35,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
+	"github.com/kaixuan/llm-gateway-go/db"
 )
 
 // Default refresh cadence. Override via env vars at startup.
@@ -447,6 +448,13 @@ func (r *AutoIndexRefresher) rollupCredentialModelIndex(ctx context.Context, buc
 // Source: request_logs in the last 5 minutes, classified by task_type
 // (heuristic, persisted in request_logs.task_type from auto requests).
 // If no auto requests yet, the table stays empty — that's fine.
+//
+// S4 停写登记（2026-10-13 S3 波 3 实测，不迁）：auto 请求（sys:% 会话）
+// 按设计**不镜像进 session_turns 家族**——本地真库 3 天窗 v1 侧 3,420 条
+// is_auto_request 行、会话侧 0 条。此读点没有会话族数据源，与探针面族
+// 同类（audit §5「观测对象无 session 家族归宿」桶，主拍板项）。停写后
+// model_task_index 冻结在停写前状态（auto 请求本身也停了 → 无新样本，
+// 表维持既有行，非崩溃）。
 func (r *AutoIndexRefresher) rollupModelTaskIndex(ctx context.Context, bucket time.Time) (int, error) {
 	tag, err := r.db.Exec(ctx, rollupModelTaskIndexSQL, bucket)
 	if err != nil {
@@ -499,7 +507,7 @@ func (r *AutoIndexRefresher) rollupModelTaskIndex(ctx context.Context, bucket ti
 // spinning up the full autoroute.Score() formula in PL/pgSQL.
 // The Decider still calls autoroute.Score() at request time using fresh
 // signals, so the SQL scores are advisory.
-const rollupCredentialModelIndexSQL = `
+var rollupCredentialModelIndexSQL = `
 WITH fresh AS (
 -- ── Half 1: traffic-derived rows (5-min window from request_logs) ─────────
 -- 2026-09-10 修复：peak 子查询改为关联内层 q 的分组列。原来子查询里引用
@@ -551,11 +559,11 @@ FROM (
 SELECT
     $1::timestamptz AS bucket,
     rl.credential_id,
-    COALESCE(rl.outbound_model, rl.client_model) AS raw_model,
-    mo.canonical_id,
-    mo.billing_mode,
-    AVG(mo.unit_price_in_per_1m)  AS unit_price_in_per_1m,
-    AVG(mo.unit_price_out_per_1m) AS unit_price_out_per_1m,
+    rl.model_key AS raw_model,
+    rl.mo_canonical_id AS canonical_id,
+    rl.mo_billing_mode AS billing_mode,
+    AVG(rl.mo_price_in)  AS unit_price_in_per_1m,
+    AVG(rl.mo_price_out) AS unit_price_out_per_1m,
     MAX(mc.context_window)        AS context_window,
     -- success rate over the bucket window
     COALESCE(AVG(CASE WHEN rl.success THEN 1.0 ELSE 0.0 END), 0.9) AS success_rate,
@@ -563,40 +571,81 @@ SELECT
     MAX(cr.concurrency_limit)  AS concurrency_limit,
     -- Simplified pre-computed scores (no subquery; pressure assumed 0).
     -- smart weights: price=25 speed=25 stab=20 match=25 pressure=10 ctx=15
-    (COALESCE(100 * (1 - LEAST(1.0, AVG(mo.unit_price_in_per_1m + mo.unit_price_out_per_1m) / 20.0)), 50) * 0.25
+    (COALESCE(100 * (1 - LEAST(1.0, AVG(rl.mo_price_in + rl.mo_price_out) / 20.0)), 50) * 0.25
    + COALESCE(100 - LEAST(100, percentile_cont(0.95) WITHIN GROUP (ORDER BY rl.latency_ms) / 30), 50) * 0.25
    + COALESCE(AVG(CASE WHEN rl.success THEN 1.0 ELSE 0.0 END), 0.9) * 100 * 0.20
-   + 50 * 0.25
-   + 100 * 0.10
-   + 80 * 0.15)::numeric(8,4) AS score_smart,
+    + 50 * 0.25
+    + 100 * 0.10
+    + 80 * 0.15)::numeric(8,4) AS score_smart,
     -- speed_first weights: price=10 speed=50 stab=20 match=15 pressure=5 ctx=10
-    (COALESCE(100 * (1 - LEAST(1.0, AVG(mo.unit_price_in_per_1m + mo.unit_price_out_per_1m) / 20.0)), 50) * 0.10
+    (COALESCE(100 * (1 - LEAST(1.0, AVG(rl.mo_price_in + rl.mo_price_out) / 20.0)), 50) * 0.10
    + COALESCE(100 - LEAST(100, percentile_cont(0.95) WITHIN GROUP (ORDER BY rl.latency_ms) / 30), 50) * 0.50
    + COALESCE(AVG(CASE WHEN rl.success THEN 1.0 ELSE 0.0 END), 0.9) * 100 * 0.20
-   + 50 * 0.15
-   + 100 * 0.05
-   + 80 * 0.10)::numeric(8,4) AS score_speed_first,
+    + 50 * 0.15
+    + 100 * 0.05
+    + 80 * 0.10)::numeric(8,4) AS score_speed_first,
     -- cost_first weights: price=50 speed=10 stab=15 match=20 pressure=5 ctx=10
-    (COALESCE(100 * (1 - LEAST(1.0, AVG(mo.unit_price_in_per_1m + mo.unit_price_out_per_1m) / 20.0)), 50) * 0.50
+    (COALESCE(100 * (1 - LEAST(1.0, AVG(rl.mo_price_in + rl.mo_price_out) / 20.0)), 50) * 0.50
    + COALESCE(100 - LEAST(100, percentile_cont(0.95) WITHIN GROUP (ORDER BY rl.latency_ms) / 30), 50) * 0.10
    + COALESCE(AVG(CASE WHEN rl.success THEN 1.0 ELSE 0.0 END), 0.9) * 100 * 0.15
     + 50 * 0.20
     + 100 * 0.05
     + 80 * 0.10)::numeric(8,4) AS score_cost_first
-FROM request_logs_hot rl
+-- ── 2026-10-13 S3 波 3（停写切换）双源化 ──
+-- v1 腿原样保留（写门开 = 生产/回滚期它就是全部流量）；新增会话腿只收
+-- 冻结点（db.V1FreezeCutoffSQL = v1 两表 max(ts)）以上的行——停写后 v1
+-- hot 排空，真实 success/latency 由会话腿继续供数，autoroute 候选池不再
+-- 退化为 half-2 cold-start 基线。
+-- 会话腿的 offers 匹配不走路由名精确等值：session 侧 t.raw_model_name 是
+-- 剥 provider 前缀的归一化名（真库实测 3 天双写对里 v1 名匹配 96.7%、
+-- 会话 raw 名仅 54%），改走 alias 链 lower(t.model) → model_aliases →
+-- canonical_id → model_offers.canonical_id，实测恢复到 96.5%（与 v1 持平）。
+-- 输出名对齐：匹配行用 offers 自己的 raw_model_name（与 half-2 基线键、
+-- credential_model_peak_1m.raw_model 同名空间），未匹配行回落 t.model
+-- （与 v1 腿未匹配行的失序幅度同级）。
+FROM (
+    SELECT rl.credential_id AS credential_id,
+           COALESCE(rl.outbound_model, rl.client_model) AS model_key,
+           mo.canonical_id AS mo_canonical_id,
+           mo.billing_mode AS mo_billing_mode,
+           mo.unit_price_in_per_1m AS mo_price_in,
+           mo.unit_price_out_per_1m AS mo_price_out,
+           rl.success, rl.latency_ms
+    FROM request_logs_hot rl
+    LEFT JOIN model_offers mo
+      ON mo.credential_id = rl.credential_id
+     AND (mo.outbound_model_name = COALESCE(rl.outbound_model, rl.client_model)
+       OR mo.raw_model_name = COALESCE(rl.outbound_model, rl.client_model))
+    WHERE rl.ts >= NOW() - INTERVAL '5 minutes'
+      AND rl.ts < NOW()
+      AND rl.credential_id IS NOT NULL
+    UNION ALL
+    SELECT (CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint END),
+           COALESCE(mo.raw_model_name, mo.outbound_model_name, t.model),
+           mo.canonical_id,
+           mo.billing_mode,
+           mo.unit_price_in_per_1m,
+           mo.unit_price_out_per_1m,
+           t.success, t.latency_ms
+    FROM session_turns_hot t
+    LEFT JOIN model_offers mo
+      ON mo.credential_id = (CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint END)
+     AND mo.canonical_id IN (SELECT ma.canonical_id FROM model_aliases ma
+                             WHERE ma.raw_name = lower(t.model) AND ma.status = 'active')
+    WHERE t.ts >= NOW() - INTERVAL '5 minutes'
+      AND t.ts < NOW()
+      AND t.credential_id IS NOT NULL
+      AND t.credential_id <> ''
+      -- 5 分钟窗 ≪ hot 保留窗（默认 8h），会话腿只读 hot 表即可；
+      -- 冻结点守卫防双写期双计（镜像 ts 是落库侧时刻，晚于 v1 行 ts）。
+      AND t.ts > ` + db.V1FreezeCutoffSQL + `
+) rl
 JOIN credentials cr ON cr.id = rl.credential_id
-LEFT JOIN model_offers mo
-  ON mo.credential_id = rl.credential_id
- AND (mo.outbound_model_name = COALESCE(rl.outbound_model, rl.client_model)
-   OR mo.raw_model_name = COALESCE(rl.outbound_model, rl.client_model))
-LEFT JOIN models_canonical mc ON mc.id = mo.canonical_id
-WHERE rl.ts >= NOW() - INTERVAL '5 minutes'
-  AND rl.ts < NOW()
-  AND rl.credential_id IS NOT NULL
-  AND COALESCE(cr.status, 'active') = 'active'
+LEFT JOIN models_canonical mc ON mc.id = rl.mo_canonical_id
+WHERE COALESCE(cr.status, 'active') = 'active'
   AND COALESCE(cr.lifecycle_status, 'active') = 'active'
-GROUP BY rl.credential_id, COALESCE(rl.outbound_model, rl.client_model),
-         mo.canonical_id, mo.billing_mode
+GROUP BY rl.credential_id, rl.model_key,
+         rl.mo_canonical_id, rl.mo_billing_mode
 ) q
 
 UNION ALL
@@ -666,6 +715,21 @@ WHERE v.is_routable = TRUE
         AND (rl.outbound_model = pm.raw_model_name
           OR rl.client_model  = pm.raw_model_name)
         AND rl.ts >= NOW() - INTERVAL '5 minutes'
+  )
+  -- S3 波 3（2026-10-13）：同源会话腿抑制——停写后 v1 NOT EXISTS 恒空，
+  -- 没有这条腿的话 half-2 的 cold-start 基线会每 5 分钟经 ON CONFLICT
+  -- 覆盖 half-1 刚写入的真实指标（half-1/half-2 必须同迁，见文件头）。
+  -- 匹配键与 half-1 会话腿同一 alias 链（canonical 粒度）；pm.canonical_id
+  -- 为 NULL 时 IN 集为空 = 不抑制 = 写基线，与 v1 名失配时的行为同级。
+  AND NOT EXISTS (
+      SELECT 1
+      FROM session_turns_hot t
+      WHERE (CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint END) = v.credential_id
+        AND t.ts >= NOW() - INTERVAL '5 minutes'
+        AND t.ts > ` + db.V1FreezeCutoffSQL + `
+        AND lower(t.model) IN (SELECT ma.raw_name FROM model_aliases ma
+                               WHERE ma.canonical_id = pm.canonical_id
+                                 AND ma.status = 'active')
   )
 )
 -- ── Dedup: skip rows whose (credential_id, raw_model) had IDENTICAL

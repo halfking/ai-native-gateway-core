@@ -614,17 +614,17 @@ func TestRequestLogsRetirementExposure(t *testing.T) {
 // the difference — read the report, not just the gate verdict.
 var retirementBreakers = map[string]string{
 	// ── still blocking after column→relation attribution (§9.165) ──────────
-	"admin/work_types.go": "reads request_logs.work_type directly — the file's own comment calls it " +
-		"'Direct work_type column'; work_type is 0.00% on the session side, so repointing to the " +
-		"view returns an empty page",
-	"db/db.go": "defines the 118-column canonical projection itself, so it names every exposed " +
-		"column including work_type / is_final_success. Not an operational reader: retiring " +
-		"request_logs means replacing this body",
+	// admin/work_types.go 与 db/db.go 于 2026-10-13（S3 波 2 停写切换）移出
+	// breaker 登记（门指示：reader repointed ⇒ delete the entry）：
+	// work_types 四个读点改读 canonical 视图 + 「指定模型」回退链（停写影响
+	// 面改判 silently_degraded_aggregate，见停写分类表）；db/db.go 的
+	// routingAnalyticsMVSQL 重建体与 recent_success_rate 函数体不再把契约
+	// 缺口列名带进 v1 基表读字面量。
 	"domains/hooks/observability/telemetry/client.go": "the v1 **writer** (insertRequestLog). An " +
 		"INSERT into a dropped table errors, so it must be removed or repointed, not tolerated",
-	"domains/streaming/model_alternatives.go": "still blocked after §9.165's attribution fix: its " +
-		"remaining `id` occurrence is not models_canonical's. canonical_id is also effectively empty " +
-		"on the session side (0.07% vs 9.79% v1)",
+	// domains/streaming/model_alternatives.go 于 2026-10-13（S3 波 2 停写切换）
+	// 移出 breaker 登记：usage_7d 热面已整体迁至会话族原生源，原 `id`/
+	// canonical_id 缺口随 v1 读点的消失一并解除。
 	"cmd/gateway/dual_read_validator.go": "reads v1 work_type / request_type / origin_actor as its " +
 		"V1-side inputs — legitimate in itself (§9.163.1), but work_type is 0% on the session side, " +
 		"so the validator's exclusion arm loses its discriminator after the v1 side is gone",
@@ -653,7 +653,8 @@ var retirementReattributed = map[string]string{
 		"停写之后它要么退役、要么改观测对象，**不能留着一个永远 dead 的判据**。",
 	"admin/probe_history.go":     "repoint-degraded: `credential_id` only. The `id` was `models_canonical.id`",
 	"admin/providers.go":         "repoint-degraded: `provider_id` only. Every `p.id`/`c.id` belongs to the providers/credentials tables",
-	"admin/routing.go":           "repoint-degraded: `canonical_id` only. The `id` was `models_canonical.id`",
+	// admin/routing.go 于 2026-10-13（S3 波 3）除名：popularModelsHotSQL 改读
+	// 会话族原生源后文件内已无 v1 列引用（exposure 扫描 0 列 = 无测量对象）。
 	"admin/swim_lane_init.go":    "**repoint-safe**: no exposure columns at all. The `id`s were models_canonical / model_families / credentials / providers primary keys",
 	"bg/auto_index_refresher.go": "repoint-degraded: `canonical_id` only. The `id`s were credentials / models_canonical / provider_models / credential_model_bindings primary keys",
 	"bg/credential_recovery.go":  "repoint-degraded: `client_model` + `credential_id` only",

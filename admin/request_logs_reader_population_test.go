@@ -324,7 +324,12 @@ func TestReaderPopulationGroundTruth(t *testing.T) {
 // same treatment as every other hand-maintained list in this audit: it is
 // asserted to be consistent with what the instrument measured on the same
 // commit, rather than being trusted.
-var unjudgedBaseline = 48
+//
+// 48→49（2026-10-13，S3 波 2 审计轮）：bg/candidate_failure_monitor.go 由并行
+// 会话（3b7180abe/31d466e21）引入为 v1 基表新读方（候选失败监控，探针面），
+// 消费面分档已登记 Tier ③（request_logs_retirement_tiering_test.go「候选失败
+// 监控：探针面」），退役风险判定随档位走——本基线只补记成员资格，不改判档。
+var unjudgedBaseline = 49
 
 // unjudgedBaselineFiles is the membership that goes with unjudgedBaseline.
 // A set, not a count: see the swap case in TestReaderPopulationGroundTruth.
@@ -335,8 +340,15 @@ var unjudgedBaseline = 48
 // canonical 视图精确等价，252 EXCEPT 对拍双向差集 0），退役时随 v1 一并
 // 改指或退役，与 v1_write_liveness 的 ③ 类同档；完整退役判定待退役轮做。
 var unjudgedBaselineFiles = map[string]bool{
-	"admin/analytics.go":                            true,
-	"admin/auto_route_outcome_freshness.go":         true,
+	"admin/analytics.go":                    true,
+	"admin/auto_route_outcome_freshness.go": true,
+	// 2026-10-13 S3 波 2 审计轮补记：并行会话引入的候选失败监控读方
+	// （Tier ③，探针面；分档见 request_logs_retirement_tiering_test.go）。
+	"bg/candidate_failure_monitor.go": true,
+	// 2026-10-13 S3 波 2：db/db.go 自 retirementBreakers 移出（routing 源
+	// 视图重建后 v1 基表读字面量不再带契约缺口列名，breaker 判定自然消失），
+	// 回到未判定态——成员资格补记，档位仍是 ①（v1 生命周期 DDL，随 v1 退役）。
+	"db/db.go":                                      true,
 	"admin/body_resolver.go":                        true,
 	"admin/credential_monitor.go":                   true,
 	"admin/credential_success_rate.go":              true,

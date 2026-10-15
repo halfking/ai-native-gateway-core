@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/db"
 )
 
 // Summary is the persistent shape of a session-level LLM summary. The
@@ -254,37 +256,66 @@ func (s *Store) LastSummarized(ctx context.Context, sessionKey string) (time.Tim
 	return *ts, nil
 }
 
-// CountNewTurns returns the number of successful request_logs rows for the
-// session whose ts > since. Used by the rolling-gate trigger to decide
-// whether enough new turns have accumulated since the last summary.
+// countTurnsSessionSQL 是会话族腿的共享体：session 谓词由
+// SessionFamilyTurnsForSessionSQL 内推到 $1（idx_session_turns_session 可用），
+// 调用点只追加速率谓词。S4 停写后新流量的轮次只落 session_turns(_hot)。
+var countTurnsSessionSQL = `SELECT COUNT(*)::int FROM ` + db.SessionFamilyTurnsForSessionSQL() + ` rl
+		WHERE rl.success = TRUE`
+
+// v1FallbackCountSQL 是会话族计数为 0 时的 v1 回退腿（canonical 视图，
+// 服务镜像链启用前的历史会话）。走视图而不是裸 hot 表：CountTotalTurns
+// 原实现只读 request_logs_hot，promote 排空的行本来就数不到——回退腿
+// 不应复制这个缺口。
+const v1FallbackCountSQL = `SELECT COUNT(*)::int FROM request_logs_with_current_month
+		WHERE gw_session_id = $1 AND success = TRUE`
+
+// CountNewTurns returns the number of successful turns for the session whose
+// ts > since. Used by the rolling-gate trigger to decide whether enough new
+// turns have accumulated since the last summary.
+//
+// 2026-10-13 S3 波 2（停写切换）：原实现只读 request_logs_hot，S4 停写后
+// 新流量轮次只落 session_turns(_hot)，门会恒 0、自动摘要停摆。改为会话族
+// 优先（gw_session_id 会话内谓词，A 形态），计数为 0 时回退 canonical
+// 视图读镜像前历史会话。会话族口径不含内部回环与探针轮次（镜像按设计
+// 排除），比 v1 hot 口径干净——门槛语义（≥5 轮、增量>0）不受影响。
 func (s *Store) CountNewTurns(ctx context.Context, sessionKey string, since time.Time) (int, error) {
 	if s == nil || s.pool == nil {
 		return 0, fmt.Errorf("summarystore: pool not configured")
 	}
 	var n int
-	err := s.pool.QueryRow(ctx, `
-		SELECT COUNT(*)::int FROM request_logs_hot
-		WHERE gw_session_id = $1 AND success = TRUE AND ts > $2
-	`, sessionKey, since).Scan(&n)
+	err := s.pool.QueryRow(ctx, countTurnsSessionSQL+` AND rl.ts > $2`, sessionKey, since).Scan(&n)
+	if err == nil && n > 0 {
+		return n, nil
+	}
+	if err != nil && !strings.Contains(err.Error(), "no rows") {
+		return 0, err
+	}
+	err = s.pool.QueryRow(ctx, v1FallbackCountSQL+` AND ts > $2`, sessionKey, since).Scan(&n)
 	return n, err
 }
 
-// CountTotalTurns returns the total number of successful request_logs rows
-// for the session (all time). Used by the rolling-gate trigger to enforce
-// the minimum session length requirement before allowing summary generation.
+// CountTotalTurns returns the total number of successful turns for the
+// session (all time). Used by the rolling-gate trigger to enforce the
+// minimum session length requirement before allowing summary generation.
 //
 // 2026-08-06: added to implement the 5-turn minimum gate — summaries should
 // only be generated for sessions with at least 5 successful turns, regardless
 // of when the last summary was generated. This prevents premature summaries
 // on short exploratory sessions and reduces cost waste.
+//
+// 2026-10-13 S3 波 2：源切换同 CountNewTurns（会话族优先，0 回退 v1 视图）。
 func (s *Store) CountTotalTurns(ctx context.Context, sessionKey string) (int, error) {
 	if s == nil || s.pool == nil {
 		return 0, fmt.Errorf("summarystore: pool not configured")
 	}
 	var n int
-	err := s.pool.QueryRow(ctx, `
-		SELECT COUNT(*)::int FROM request_logs_hot
-		WHERE gw_session_id = $1 AND success = TRUE
-	`, sessionKey).Scan(&n)
+	err := s.pool.QueryRow(ctx, countTurnsSessionSQL, sessionKey).Scan(&n)
+	if err == nil && n > 0 {
+		return n, nil
+	}
+	if err != nil && !strings.Contains(err.Error(), "no rows") {
+		return 0, err
+	}
+	err = s.pool.QueryRow(ctx, v1FallbackCountSQL, sessionKey).Scan(&n)
 	return n, err
 }

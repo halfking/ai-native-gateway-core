@@ -112,13 +112,18 @@ func singleGet(ctx context.Context, endpoint, apiKey string, desc providercap.De
 	return classifyHTTPResponse(resp.StatusCode, string(body), latencyMs)
 }
 
-// singleChatPing does ONE POST chat completion with max_tokens=1 (Layer 4).
+// singleChatPing does ONE POST chat completion (Layer 4).
+//
+// 2026-10-13 12h 审计轮（P2）：max_tokens 曾是硬编码的 1。与 bg/node_probe.go 等
+// 同族站点不同，这里漏迁 —— 聚合中转把 chat ping 转成 Responses 转发时撞同一个
+// ≥16 下限（见 providercap.ProbePingMaxTokens 的事故记述），会造成「探针三连败
+// → 节点停 5 分钟 → 用户流量 db_empty 连坐」。故一并走该常量。
 func singleChatPing(ctx context.Context, endpoint, apiKey, modelField string, desc providercap.Descriptor, credID int, rawModel string) httpProbeResult {
 	start := time.Now()
 	body, _ := json.Marshal(map[string]any{
 		"model":       modelField,
 		"messages":    []map[string]string{{"role": "user", "content": "."}},
-		"max_tokens":  1,
+		"max_tokens":  providercap.ProbePingMaxTokens,
 		"temperature": 0,
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))

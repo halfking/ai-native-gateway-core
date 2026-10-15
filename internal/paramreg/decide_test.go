@@ -178,7 +178,7 @@ func TestDecide_TranslateRandomSeed(t *testing.T) {
 //	MiniMax 上游自 2026-09 起将 thinking.type 收窄为 adaptive | disabled，
 //	对 enabled 硬 400。客户端 Anthropic 风格 thinking{type:enabled} 落进
 //	req.Extensions → restoreExtensions 原样回写 → MiniMax 拒收。
-// 	→dst==MiniMax 必须把 enabled 翻译为 adaptive（最接近的合法值），
+//	→dst==MiniMax 必须把 enabled 翻译为 adaptive（最接近的合法值），
 //	  其它方言（Anthropic / DeepSeek / GLM / Kimi / Ark / OpenAI Chat）
 //	  原样透传。
 func TestDecide_TranslateThinking_EnabledToAdaptive(t *testing.T) {
@@ -392,5 +392,56 @@ func TestIRHandledWithDialects_WhitelistAndDecide(t *testing.T) {
 	_, _, actTemp, _ := Apply("temperature", json.RawMessage(`0.7`), DialectAnthropic, DialectOpenAIChat)
 	if actTemp != ActionRestore {
 		t.Fatalf("temperature: got %v, want ActionRestore", actTemp)
+	}
+}
+
+// TestTranslateThinkingDropsForNonAcceptingDialects 钉 r1021：thinking 对象
+// 只放行已知接受的方言（RejectedBy 硬拒）。2026-10-13 grok-4.6/vapeur 实测
+// ——透传给严格上游 = 整条 400「Unknown parameter: 'thinking'」。
+// 2026-10-13 thinking 翻译轮策略演进：DialectResponses / DialectGrok 从
+// 裁剪名单移出——translateThinking 翻译成 reasoning{effort}/reasoning_effort
+// （Vapeur 全模型实测 200 + grok reasoning_tokens=672 真生效，见
+// docs/audit/2026-10-13-Vapeur全量测试轮.md §七），判据随策略更新。
+func TestTranslateThinkingDropsForNonAcceptingDialects(t *testing.T) {
+	enabled := json.RawMessage(`{"type":"enabled"}`)
+	for _, dst := range []Dialect{DialectMistral, DialectVLLM, DialectUnknown} {
+		key, out, action, _ := Apply("thinking", enabled, DialectOpenAIChat, dst)
+		if action != ActionDrop || key != "" || out != nil {
+			t.Errorf("thinking 应被裁剪（dst=%s）：action=%v key=%q out=%v", dst, action, key, out)
+		}
+	}
+	// 翻译轮新增：responses/grok 从裁剪升级为 effort 翻译。
+	if key, out, action, _ := Apply("thinking", enabled, DialectOpenAIChat, DialectResponses); action != ActionTranslate || key != "reasoning" {
+		t.Errorf("responses 应翻译成 reasoning：action=%v key=%q out=%s", action, key, out)
+	}
+	if key, out, action, _ := Apply("thinking", enabled, DialectOpenAIChat, DialectGrok); action != ActionTranslate || key != "reasoning_effort" {
+		t.Errorf("grok 应翻译成 reasoning_effort：action=%v key=%q out=%s", action, key, out)
+	}
+	// 前提在场一：接受的方言照常透传/改写。
+	for _, dst := range []Dialect{DialectDeepSeek, DialectGLM, DialectKimi, DialectArk, DialectAnthropic} {
+		key, out, action, _ := Apply("thinking", enabled, DialectOpenAIChat, dst)
+		if action != ActionTranslate || key != "thinking" || string(out) != string(enabled) {
+			t.Errorf("接受方言 %s 应原样透传：action=%v key=%q out=%s", dst, action, key, out)
+		}
+	}
+	// 前提在场二：openai_chat 目标（路由前序列化点语义）必须保字段——
+	// executor 拿到 TargetProvider 后才有条件做方言处理。
+	key, _, action, _ := Apply("thinking", enabled, DialectOpenAIChat, DialectOpenAIChat)
+	if action != ActionTranslate || key != "thinking" {
+		t.Errorf("pre-routing（openai_chat dst）应透传：action=%v key=%q", action, key)
+	}
+	_, out, action, _ := Apply("thinking", enabled, DialectOpenAIChat, DialectMiniMax)
+	if action != ActionTranslate || string(out) != `{"type":"adaptive"}` {
+		t.Errorf("MiniMax 应改写为 adaptive：action=%v out=%s", action, out)
+	}
+}
+
+// TestUnknownRelayBodyOmitsThinking 是 r1021 的线上形态判据：executor 对空
+// catalog 中转盖 unknown-relay 哨兵（grok-4.6/vapeur 走的正是这条路），
+// 序列化后的上游体不得再含 thinking。与 ir 包的 pre-routing 契约
+// （TargetProvider="" 时保字段）互为镜像。
+func TestUnknownRelayBodyOmitsThinking(t *testing.T) {
+	if key, out, action, _ := Apply("thinking", json.RawMessage(`{"type":"enabled"}`), DialectOpenAIChat, DialectForCatalogCode("unknown-relay")); action != ActionDrop || key != "" || out != nil {
+		t.Errorf("unknown-relay 哨兵方言应裁剪 thinking：action=%v key=%q out=%v", action, key, out)
 	}
 }

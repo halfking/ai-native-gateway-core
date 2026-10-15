@@ -3322,7 +3322,7 @@ func directProbeBody(model, protocol string) string {
 	case upstreamurl.EpMessages:
 		body, _ := json.Marshal(map[string]any{
 			"model":      model,
-			"max_tokens": 10,
+			"max_tokens": providercap.ProbePingMaxTokens,
 			"messages":   []map[string]any{{"role": "user", "content": "ping"}},
 		})
 		return string(body)
@@ -3337,7 +3337,7 @@ func directProbeBody(model, protocol string) string {
 		body, _ := json.Marshal(map[string]any{
 			"model":      model,
 			"messages":   []map[string]string{{"role": "user", "content": "ping"}},
-			"max_tokens": 10,
+			"max_tokens": providercap.ProbePingMaxTokens,
 		})
 		return string(body)
 	}

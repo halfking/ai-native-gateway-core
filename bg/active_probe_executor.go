@@ -633,7 +633,7 @@ func buildProbePingBody(model string, desc providercap.Descriptor) (string, erro
 		payload = map[string]any{
 			"model":      model,
 			"messages":   []map[string]string{{"role": "user", "content": "ping"}},
-			"max_tokens": 1,
+			"max_tokens": providercap.ProbePingMaxTokens,
 		}
 	case upstreamurl.EpResponses:
 		payload = map[string]any{
@@ -645,7 +645,7 @@ func buildProbePingBody(model string, desc providercap.Descriptor) (string, erro
 		payload = map[string]any{
 			"model":       model,
 			"messages":    []map[string]string{{"role": "user", "content": "ping"}},
-			"max_tokens":  1,
+			"max_tokens":  providercap.ProbePingMaxTokens,
 			"temperature": 0,
 		}
 	}

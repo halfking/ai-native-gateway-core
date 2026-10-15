@@ -11,6 +11,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/licensing"
 )
 
@@ -775,17 +776,61 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	//（migration 330 首发形态）：显式列投影——真库 hot 与父表列数已漂移，
 	// SELECT * UNION 报 42601。语义：不排除已进 session_turns 的请求（与
 	// totals/修复前父表读法一致，统计聚合数全量请求）。
-	logsTable := `(SELECT tenant_id, ts, application_id, outbound_model, client_model,
-	                       success, total_tokens, prompt_tokens, completion_tokens,
-	                       credits_charged, cost_usd, latency_ms,
-	                       cache_read_tokens, cache_write_tokens
+	//
+	// 2026-10-13 S3 波 3（停写切换读侧第二分片）：补两条会话族腿，修复
+	// S4 停写后 stats 对新流量渐进全盲（audit §5 登记债）。**不翻视图**——
+	// R36-A1 的 30s 超时裁决对反连接形态仍然成立；也不对 v1 腿加反连接
+	// ——去重靠**冻结点切分 + 会话腿双子排除**：
+	//   - 会话腿只收 `ts > db.V1FreezeCutoffSQL`（v1 两表当前 max ts）的行。
+	//     写门开着时 max(ts)≈now()，会话腿近似空集（双子探测也随之空转），
+	//     行为与 R36-A1 定稿一致（回滚安全）；停写后 max(ts) 冻结在翻转
+	//     时刻，新流量全部由会话腿供数。
+	//   - 会话腿仍带 NOT EXISTS v1 双子（canonical 视图同款双 NOT EXISTS，
+	//     但只作用在冻结点以上的少数行，不是 R36-A1 禁掉的 v1 全量反连接）：
+	//     镜像的 ts 是落库侧时刻、**不等于** v1 行 ts（实测差 ~15s），翻转
+	//     边界存在「v1 双子（ts≤冻结点）+ 晚落镜像（ts>冻结点）」的行——
+	//     真库实测 1 例（2026-10-13 本地），没有双子排除会把它们双计。
+	// 会话腿不联 session_turn_details：byModel 的首选臂 outbound_model 在
+	// 会话族直映 t.model（710 投影契约），client_model 属 734 特征层，
+	// 作为次选臂投影 NULL（与「指定模型」判据的既登记覆盖边界同款）。
+	// 租户维度索引 idx_session_turns(_hot)_tenant 已在场，谓词可下推。
+	logsTable := `(SELECT t.tenant_id::text AS tenant_id, t.ts,
+	                       (CASE WHEN t.application_id ~ '^[0-9]+$' THEN t.application_id::bigint END) AS application_id,
+	                       t.model AS outbound_model, NULL::text AS client_model,
+	                       t.success,
+	                       NULLIF(COALESCE(t.prompt_tokens, 0) + COALESCE(t.completion_tokens, 0), 0) AS total_tokens,
+	                       t.prompt_tokens, t.completion_tokens,
+	                       t.credits_charged, t.cost_usd::numeric(14,8) AS cost_usd, t.latency_ms,
+	                       t.cache_read_tokens, t.cache_write_tokens
+	                FROM session_turns_hot t
+	                WHERE t.ts > ` + db.V1FreezeCutoffSQL + `
+	                  AND NOT EXISTS (SELECT 1 FROM request_logs_hot h WHERE h.request_id = t.request_id)
+	                  AND NOT EXISTS (SELECT 1 FROM request_logs p WHERE p.request_id = t.request_id) -- sqlreadguard:allow S3 波3 会话补丁腿：会话腿必须反连接 v1 母表，否则 promote 前后同一 request_id 会被两腿各计一次（脚注腿）
+	        UNION ALL
+	               SELECT t.tenant_id::text, t.ts,
+	                      (CASE WHEN t.application_id ~ '^[0-9]+$' THEN t.application_id::bigint END),
+	                      t.model, NULL::text,
+	                      t.success,
+	                      NULLIF(COALESCE(t.prompt_tokens, 0) + COALESCE(t.completion_tokens, 0), 0),
+	                      t.prompt_tokens, t.completion_tokens,
+	                      t.credits_charged, t.cost_usd::numeric(14,8), t.latency_ms,
+	                      t.cache_read_tokens, t.cache_write_tokens
+	               FROM session_turns t
+	               WHERE t.ts > ` + db.V1FreezeCutoffSQL + `
+	                 AND NOT EXISTS (SELECT 1 FROM request_logs_hot h WHERE h.request_id = t.request_id)
+	                 AND NOT EXISTS (SELECT 1 FROM request_logs p WHERE p.request_id = t.request_id) -- sqlreadguard:allow 同上：v1 腿与会话腿共用同一套反连接去重，否则 v1 腿行数虚高
+	        UNION ALL
+	               SELECT tenant_id, ts, application_id, outbound_model, client_model,
+	                      success, total_tokens, prompt_tokens, completion_tokens,
+	                      credits_charged, cost_usd, latency_ms,
+	                      cache_read_tokens, cache_write_tokens
 	                FROM request_logs_hot
 	        UNION ALL
 	               SELECT tenant_id, ts, application_id, outbound_model, client_model,
 	                      success, total_tokens, prompt_tokens, completion_tokens,
 	                      credits_charged, cost_usd, latency_ms,
 	                      cache_read_tokens, cache_write_tokens
-	        FROM request_logs) -- sqlreadguard:allow R36-A1 漏热尾根修的双腿之母表腿（hot 腿同查询内联；252-dev 实测 NOT EXISTS 反连接 + 租户过滤 COUNT 30s 超时，故走 hot∪母表 UNION ALL）`
+	        FROM request_logs) -- sqlreadguard:allow R36-A1 漏热尾根修的双腿之母表腿（hot 腿同查询内联；252-dev 实测 NOT EXISTS 反连接 + 租户过滤 COUNT 30s 超时，故走 hot∪母表 UNION ALL）+ S3 波 3 会话补丁腿（冻结点切分 + 会话腿双子排除，v1 腿保持零反连接）`
 	usageTable := "usage_ledger_with_current_month"
 
 	// Overall totals (upstream cost from usage_ledger; credits from request_logs)

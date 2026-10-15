@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 )
 
@@ -115,8 +116,11 @@ func TestProbeWithRetry_AnthropicMessagesWireShape(t *testing.T) {
 		if gotModel != "claude-fable-5" {
 			t.Fatalf("body model = %q, want probe target model", gotModel)
 		}
-		if gotMaxTokens != 1 {
-			t.Fatalf("max_tokens = %v, want 1", gotMaxTokens)
+		// 2026-10-13 12h 审计轮：本断言此前钉字面量 1。ProbePingMaxTokens 的
+		// 存在理由就是「chat 腿的 max_tokens 撞聚合中转的 ≥16 下限 → 探针三连败
+		// → 节点停 5 分钟 → 用户流量 db_empty 连坐」，故此处断言契约常量本身。
+		if gotMaxTokens != providercap.ProbePingMaxTokens {
+			t.Fatalf("max_tokens = %v, want ProbePingMaxTokens=%v", gotMaxTokens, providercap.ProbePingMaxTokens)
 		}
 		if result.status != "ok" || result.category != probeCategoryOK {
 			t.Fatalf("status = %q category = %q, want ok", result.status, result.category)

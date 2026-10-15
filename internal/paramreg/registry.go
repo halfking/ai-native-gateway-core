@@ -209,14 +209,46 @@ var specs = []FieldSpec{
 		Note: "OpenAI Responses {effort,summary,context,mode}；OpenRouter {effort,max_tokens,exclude,enabled}，其中 effort 与 max_tokens 互斥"},
 	{Name: "thinking", Kind: KindTranslatable, IRPath: "Thinking/Reasoning",
 		Translate: translateThinking,
-		Note: "取值分歧：Anthropic enabled|adaptive|disabled / DeepSeek·GLM·Kimi enabled|disabled / Ark 多 auto / MiniMax 仅 adaptive|disabled（无 enabled；2026-09 起上游拒收 enabled，硬 400）"},
+		// r1021（2026-10-13，grok-4.6/vapeur.ai 实测）：客户端带
+		// thinking{type:enabled} 的请求发到这些线格式/厂商时整条 400
+		// 「Unknown parameter: 'thinking'」。RejectedBy 是 Decide 的第一
+		// 优先级（硬拒防护），也覆盖 DialectUnknown——executor 对空 catalog
+		// 中转盖 unknown-relay 哨兵后 dst=Unknown，按方言注释「只裁剪明确
+		// RejectedBy 的字段」，这里的登记正是那个明确意见：thinking 是
+		// 已登记的方言私有字段，名单外的目标不该收到它。IR 侧
+		// applyThinkingToOpenAIChat 对 grok/mistral/未知方言本就不出
+		// thinking，两条路径同一政策。
+		//
+		// DialectOpenAIChat 不进名单：它承担「路由前序列化点」语义
+		// （TargetProvider 空串→协议回退，见 serialize_openai_thinking_
+		// dialect_test.go 场景 A），那里必须保字段；真 openai.com 上游的
+		// 拒收由 provider 级 strip / reqprobe 学习兜底。
+		// 2026-10-13（thinking 翻译轮）：DialectResponses / DialectGrok 从
+		// 名单移出——translateThinking 现在把它们翻译成
+		// reasoning{effort} / reasoning_effort（Vapeur 全模型实测 200，
+		// grok reasoning_tokens=672 证明真生效），思考意图不再丢失；
+		// 仍不接受的方言（mistral/openrouter/vllm/ollama/gemini/qwen）
+		// 维持硬拒。
+		RejectedBy: []Dialect{DialectMistral,
+			DialectOpenRouter, DialectVLLM, DialectOllama, DialectGemini,
+			DialectQwen},
+		RejectedByUnknown: true,
+		Note:              "取值分歧：Anthropic enabled|adaptive|disabled / DeepSeek·GLM·Kimi enabled|disabled / Ark 多 auto / MiniMax 仅 adaptive|disabled（无 enabled；2026-09 起上游拒收 enabled，硬 400）"},
 
 	// P5 之前：enable_thinking / thinking_budget / thinking_token_budget
 	// 是 KindPortable（IR 尚未统一处理，须靠 Extensions 透传）。
 	// P5 完成后将改为 KindIRHandled。
 	{Name: "enable_thinking", Kind: KindPortable,
 		Dialects: []Dialect{DialectQwen, DialectVLLM},
-		Note:     "Qwen 顶层布尔；开源权重模型带 thinking 时只能流式调用。P5 完成前须 Portable"},
+		// 2026-10-13（thinking 翻译轮）：Dialects 维持来源标注语义（注册表
+		// 既有设计，登记方言层无拒绝实证不收口）；unknown-relay 上 Vapeur
+		// responses 腿对 gpt-5.6-sol/gpt-6.1-sol/grok-4.6 三族实测
+		// 400「Unknown parameter: 'enable_thinking'」（redis 台账
+		// llmgw:reqanom 三条），拒绝理由同 r1021 的 thinking：qwen/vllm
+		// 专属旋钮不是未登记字段，不适用 fail-open。qwen 意图经
+		// thinking 翻译路径（extensions_restore 按协议提升）保留。
+		RejectedByUnknown: true,
+		Note:              "Qwen 顶层布尔；开源权重模型带 thinking 时只能流式调用。P5 完成前须 Portable"},
 	{Name: "thinking_budget", Kind: KindPortable,
 		Dialects: []Dialect{DialectQwen},
 		Note:     "Qwen 顶层整数，配合 enable_thinking。P5 完成前须 Portable"},

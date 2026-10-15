@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"io"
 	"log/slog"
 	"net/http"
@@ -566,7 +567,7 @@ func (w *SelfCheckWorker) doPing(ctx context.Context, model string) roundResult 
 	body := map[string]any{
 		"model":      model,
 		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
-		"max_tokens": 10,
+		"max_tokens": providercap.ProbePingMaxTokens,
 	}
 	reqBody, _ := json.Marshal(body)
 	return w.doRequest(ctx, model, string(reqBody), false)
@@ -713,6 +714,13 @@ func (w *SelfCheckWorker) doRequest(ctx context.Context, model, reqBody string, 
 // Upstream isolation
 // --------------------------------------------------------------------------
 
+// selfCheckPingBody 构造自检 ping 体（chat 腿）。token 预算走
+// providercap.ProbePingMaxTokens（≥16 下限，见其注释），单独成函数
+// 供 probe_ping_token_floor_test 钉住合法性与下限。
+func selfCheckPingBody(model string) string {
+	return fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"ping"}],"max_tokens":%d}`, model, providercap.ProbePingMaxTokens)
+}
+
 func (w *SelfCheckWorker) isolateUpstream(ctx context.Context, model string) (result string, latencyMs int, errMsg string) {
 	var secretCiphertext []byte
 	var baseURL string
@@ -740,7 +748,7 @@ func (w *SelfCheckWorker) isolateUpstream(ctx context.Context, model string) (re
 		baseURL = strings.TrimSuffix(baseURL, "/v1")
 	}
 
-	pingBody := fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"ping"}],"max_tokens":10}`, model)
+	pingBody := selfCheckPingBody(model)
 	req, _ := http.NewRequestWithContext(ctx, "POST", baseURL+"/v1/chat/completions",
 		strings.NewReader(pingBody))
 	req.Header.Set("Authorization", "Bearer "+plainKey)

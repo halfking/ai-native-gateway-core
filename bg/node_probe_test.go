@@ -3,10 +3,13 @@ package bg
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 )
 
 // TestNodeProbeBackoffLadder pins the 5s/30s/60s/5m/1h/2h/6h
@@ -93,7 +96,14 @@ func TestDirectProbeEndpointUsesAnthropicMessages(t *testing.T) {
 
 func TestDirectProbeBodyUsesAnthropicMessagesShape(t *testing.T) {
 	body := directProbeBody("claude-sonnet-5", "anthropic-messages")
-	if !strings.Contains(body, `"max_tokens":10`) || !strings.Contains(body, `"content":"ping"`) {
+	// ⚠️ 2026-10-13 12h 审计轮：本断言此前钉的是字面量 10，而 91136746b 已把
+	// 该探针的 max_tokens 换成 providercap.ProbePingMaxTokens(32) —— **测试没跟上**，
+	// 于是 ./bg 在 origin/main 上就是红的（与 internal/sqlreadguard 等守卫同源的
+	// 「改了生产码、忘了改钉桩」）。
+	// 改为断言契约而非字面量：≥16 下限（聚合中转会转成 Responses 形态并撞这个下限），
+	// 且等于那个常量本身，避免下次再漂。
+	if !strings.Contains(body, fmt.Sprintf(`"max_tokens":%d`, providercap.ProbePingMaxTokens)) ||
+		!strings.Contains(body, `"content":"ping"`) {
 		t.Fatalf("unexpected anthropic probe body: %s", body)
 	}
 }

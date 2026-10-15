@@ -67,10 +67,46 @@ func restoreExtensions(out map[string]any, req *InternalRequest, targetProtocol 
 	src := paramreg.DialectForProtocol(req.SourceProtocol)
 	dst := resolveTargetDialect(req, targetProtocol)
 
+	// thinking 翻译轮（2026-10-13）：unknown-relay（DialectUnknown）上
+	// thinking 的 RejectedByUnknown 裁剪改为**按目标协议翻译**——这里独有
+	// 协议信息（Decide/Translate 只有方言粒度）。数据矩阵（Vapeur 全模型
+	// 实测，docs/audit/2026-10-13-Vapeur全量测试轮.md §七）：
+	//   · responses 协议 → reasoning{effort}（除 claude/gemini 后端外全 200）
+	//   · openai-chat 协议 → reasoning_effort（全模型 200）
+	// gpt/grok 严格后端不再吃「Unknown parameter: 'thinking'」的 400 往返
+	// （reqprobe 剥参兜底从「每次两跳」变「零跳」），宽容后端思考意图保留。
+	// IR 已渲染 effort（reasoning/reasoning_effort 在 out）时不覆盖——
+	// 客户端显式 effort 优先于 thinking 值换算。
+	translateUnknownThinking := func(val json.RawMessage) (string, json.RawMessage, bool) {
+		if dst != paramreg.DialectUnknown {
+			return "", nil, false
+		}
+		switch targetProtocol {
+		case ProtocolOpenAIResponses:
+			if _, exists := out["reasoning"]; exists {
+				return "", nil, false
+			}
+			return paramreg.TranslateThinkingForProtocol(val, "responses")
+		case ProtocolOpenAIChat:
+			if _, exists := out["reasoning_effort"]; exists {
+				return "", nil, false
+			}
+			return paramreg.TranslateThinkingForProtocol(val, "openai-chat")
+		}
+		return "", nil, false
+	}
+
 	for key, val := range req.Extensions {
 		if _, exists := out[key]; exists {
 			// IR 序列化器已经输出了这个键，不覆盖。
 			continue
+		}
+
+		if key == "thinking" {
+			if outKey, outVal, ok := translateUnknownThinking(val); ok {
+				out[outKey] = preservedRawValue(outVal)
+				continue
+			}
 		}
 
 		outKey, outVal, action, spec := paramreg.Apply(key, val, src, dst)

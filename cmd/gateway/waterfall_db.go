@@ -107,14 +107,14 @@ func mergeWaterfallWithDB(ctx context.Context, snap dispatch.WaterfallSnapshot, 
 	return snap
 }
 
-func queryWaterfallFromDB(ctx context.Context, pool *pgxpool.Pool, limit int, model string, credID int, tenantID string) ([]dispatch.WaterfallRequest, error) {
-	if pool == nil || limit <= 0 {
-		return nil, nil
-	}
-	qctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-
-	const sql = `
+// waterfallListSQL 是瀑布列表查询。2026-10-13 S3 波 2（停写切换）：原读
+// request_logs_hot，停写后新流量不落该表、热窗排空后面板恒空；改读
+// canonical 视图（会话臂服务新流量、v1 臂服务历史、反连接去重——手工拼
+// 双热腿需要 anti-join 两族才等价，且 credential_id 等列要逐个守卫 CAST，
+// 等价重写不如直接用视图）。16 个表达式全在 118 列契约内；ORDER BY t0
+// DESC LIMIT 的代价由面板 LIMIT 兜住（登记：252 规模下若成瓶颈，参照
+// credential_monitor 的 ≤120min 双热腿快路径分波补）。
+const waterfallListSQL = `
 SELECT
   request_id,
   COALESCE(tenant_id, ''),
@@ -132,7 +132,7 @@ SELECT
   t7_forward_start_at,
   t8_response_start_at,
   t9_response_end_at
-FROM request_logs_hot
+FROM request_logs_with_current_month
 	WHERE t0_arrived_at IS NOT NULL
 	  AND ($1 = '' OR tenant_id = $1)
 	  AND ($2 = '' OR outbound_model = $2 OR client_model = $2 OR canonical_model = $2)
@@ -140,7 +140,14 @@ FROM request_logs_hot
 	ORDER BY t0_arrived_at DESC
 	LIMIT $4`
 
-	rows, err := pool.Query(qctx, sql, tenantID, model, credID, limit)
+func queryWaterfallFromDB(ctx context.Context, pool *pgxpool.Pool, limit int, model string, credID int, tenantID string) ([]dispatch.WaterfallRequest, error) {
+	if pool == nil || limit <= 0 {
+		return nil, nil
+	}
+	qctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	rows, err := pool.Query(qctx, waterfallListSQL, tenantID, model, credID, limit)
 	if err != nil {
 		return nil, err
 	}

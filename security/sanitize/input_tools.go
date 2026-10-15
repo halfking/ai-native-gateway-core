@@ -57,8 +57,96 @@ func sortedRawKeys(object map[string]json.RawMessage) []string {
 }
 
 func credentialField(key string) bool {
+	return secretCredentialField(key) || identityField(key)
+}
+
+// secretCredentialField 报告 key 是否「密码族」凭据字段——值本身是机密
+// （password/token/api_key 等）。输出侧防外传守卫对这类字段的明文值保持
+// 硬阻断（r1020 契约：模型写出的明文凭据整条拦）。
+func secretCredentialField(key string) bool {
 	switch strings.ToLower(key) {
-	case "password", "passwd", "pwd", "secret", "token", "api_key", "apikey", "access_key", "authorization", "account", "username", "user_name", "login", "帐号", "账号", "账户", "用户名", "密码", "口令":
+	case "password", "passwd", "pwd", "secret", "token", "api_key", "apikey", "access_key", "authorization", "密码", "口令":
+		return true
+	}
+	return false
+}
+
+// identityField 报告 key 是否「身份族」字段——值是登录身份（用户名/账号），
+// 不是机密本身。r1024（2026-10-13，minimax-m3 多轮 tool E2E）：
+// 输出守卫原来按 credentialField 一律硬阻断非占位符值，而裸用户名
+// （"deploy"/"root"/"ops"）不命中任何输入检测规则、永远不可能以占位符
+// 形态出现，于是「带 username 的 SSH 类工具调用」被结构性永久掐断
+// （客户端零内容）。身份不是凭据：把它从阻断集合里拆出去，仍走
+// 检测器 + 外传目的地检查。输入侧占位符分配（TypeAccount）不受影响。
+func identityField(key string) bool {
+	switch strings.ToLower(key) {
+	case "account", "username", "user_name", "login", "帐号", "账号", "账户", "用户名":
+		return true
+	}
+	return false
+}
+
+// placeholderCredentialValues 是「模型自造的非敏感占位值」字面量集（整值、
+// 大小写不敏感、两侧空白容忍）。
+//
+// r1024b（2026-10-13，minimax-m3 audit 场景生产复现）：模型在还没拿到部署
+// 配置时会并行发出「先用占位值顶着」的工具调用（"password":"PLACEHOLDER"）。
+// 这类值按定义不是机密——不是从会话里泄漏的真值，拦它只会把同轮里合法的
+// 其它工具调用一并陪葬（客户端零内容）。封闭集方向是「豁免确定无害的拼写」，
+// 任何未收录值保持 fail-closed 硬拦，与 r1020 的形态枚举禁区（把锚定当充分
+// 条件）相反：这里枚举的是「定义上不构成泄漏」的字面量，不是「长得像无害」
+// 的形状。
+var placeholderCredentialValues = map[string]bool{
+	"placeholder":   true,
+	"<placeholder>": true,
+	"changeme":      true,
+	"todo":          true,
+	"tbd":           true,
+	"xxx":           true,
+	"dummy":         true,
+	"example":       true,
+	"n/a":           true,
+}
+
+// credentialKeywordFamily 是凭据字段的关键词族（小写），用于「值自指涉字段名」
+// 判定：USE_DEPLOY_PASSWORD / PASSWORD_HERE / <password> / ${password} 这类
+// 值引用的是字段本身，是占位拼写而不是机密。模型每次自造的拼写都不同
+// （实测 PLACEHOLDER 与 USE_DEPLOY_PASSWORD 并存），字面量集挡不住自造词，
+// 自指涉判据才跟得上。
+//
+// 已知边界（如实登记）：真实密码里恰好含这些关键词（如 "Password1!"）会被
+// 判为占位而放行。该值仍只回给会话属主（客户端），不构成对第三方的泄漏；
+// 触网外传由目的地检查（hasPublicHostDestination / detectEgress）另行把守。
+var credentialKeywordFamily = []string{
+	"password", "passwd", "pwd", "secret", "token", "api_key", "apikey",
+	"access_key", "authorization", "credential", "帐号", "账号", "密码", "口令",
+}
+
+// isPlaceholderCredentialValue 报告凭据字段的值是否「模型自造的占位拼写」。
+// label 是该值所属的 JSON 键（凭据字段名），用于自指涉判定。
+func isPlaceholderCredentialValue(label, value string) bool {
+	v := strings.ToLower(strings.TrimSpace(value))
+	if v == "" {
+		return true
+	}
+	if placeholderCredentialValues[v] {
+		return true
+	}
+	// 自指涉：值里包含凭据关键词（字段名或其同族词）。
+	for _, kw := range credentialKeywordFamily {
+		if strings.Contains(v, kw) {
+			return true
+		}
+	}
+	_ = label
+	// 整体模板/占位包裹形态：<...>、${...}、$name、{name}、%s、{{...}}。
+	if len(v) >= 2 && v[0] == '<' && v[len(v)-1] == '>' {
+		return true
+	}
+	if strings.HasPrefix(v, "$") || strings.HasPrefix(v, "%") {
+		return true
+	}
+	if len(v) >= 2 && v[0] == '{' && v[len(v)-1] == '}' {
 		return true
 	}
 	return false

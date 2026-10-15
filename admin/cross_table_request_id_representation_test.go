@@ -18,21 +18,24 @@
 //	同一批 id 去掉连字符后再打                                  15/15 → 200
 //
 // （`/journey` 查的是 `request_state_transitions … WHERE request_id = $2`，是 text 列等值，
-//   见 domains/requestjourney —— 所以左边必须是 32-hex。）
 //
-// ★★ 修法已实施（§4.6.70）：四处 uuid::text 全部 `replace(…, '-', '')` 规范化。
-//    本守卫现在的职责**从「登记已知缺陷」变成「防止它重新长出来」** ——
-//    这比登记更难，因为**没有登记表可依**，必须靠正反两侧：
-//      正向：任何**未经 replace 规范化**的 `request_id::text`（uuid 列来源）⇒ 红。
-//      反向：登记在册的「text 列 → text 空操作」白名单若**消失了/变了**⇒ 红，
-//            否则白名单会退化成「无条件放行」。
+//	见 domains/requestjourney —— 所以左边必须是 32-hex。）
+//
+// ★★ 修法已实施（§4.6.70）：四处 uuid::text 全部 `replace(…, '-', ”)` 规范化。
+//
+//	本守卫现在的职责**从「登记已知缺陷」变成「防止它重新长出来」** ——
+//	这比登记更难，因为**没有登记表可依**，必须靠正反两侧：
+//	  正向：任何**未经 replace 规范化**的 `request_id::text`（uuid 列来源）⇒ 红。
+//	  反向：登记在册的「text 列 → text 空操作」白名单若**消失了/变了**⇒ 红，
+//	        否则白名单会退化成「无条件放行」。
 //
 // ⚠️ 第一版守卫有三个洞，本轮补上（都是它自己暴露的）：
-//   ① 正则要求 `…request_id::text AS request_id`，**无别名**的投影漏掉
-//      （credential_monitor.go 的 `SELECT rdl.ts, rdl.request_id::text, …`）；
-//   ② **join / 比较**形态漏掉（analytics.go 的 `probe.request_id = routing_decision_log.request_id::text`
-//      —— 那一条原本恒不成立，等于把一个业务过滤静默架空，比投影错更隐蔽）；
-//   ③ 只扫 `admin` 目录，**看不见 `db/`**。
+//
+//	① 正则要求 `…request_id::text AS request_id`，**无别名**的投影漏掉
+//	   （credential_monitor.go 的 `SELECT rdl.ts, rdl.request_id::text, …`）；
+//	② **join / 比较**形态漏掉（analytics.go 的 `probe.request_id = routing_decision_log.request_id::text`
+//	   —— 那一条原本恒不成立，等于把一个业务过滤静默架空，比投影错更隐蔽）；
+//	③ 只扫 `admin` 目录，**看不见 `db/`**。
 //
 // 离线读源码，不连库、不发网络请求。
 package admin
@@ -54,7 +57,7 @@ var canonicalRequestIDRe = regexp.MustCompile(`^[0-9a-f]{32}$`)
 // requestIDCastRe 匹配任意 `request_id::text`（含 `x.request_id::text`）。
 var requestIDCastRe = regexp.MustCompile(`\w+\.request_id::text`)
 
-// normalizedRe 匹配「已经被 replace(…, '-', '') 规范化过」的写法。
+// normalizedRe 匹配「已经被 replace(…, '-', ”) 规范化过」的写法。
 var normalizedRe = regexp.MustCompile(`replace\(\s*[\w.]*request_id::text\s*,\s*'-'\s*,\s*''\s*\)`)
 
 // noopTextCasts 白名单：**text 列 → text 的空操作**，不是 uuid::text，不需要规范化。
