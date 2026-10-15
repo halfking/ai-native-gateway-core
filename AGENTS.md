@@ -2151,10 +2151,16 @@ owner 拍板）；session_censors 可逆还原无读取方（配密钥+读取端
 5. 本地已合并陈旧分支 10 条删除；24h 窗内不活跃未合并远程分支 **0**；
    `r43-fresh-install*` 窗口外留置（含删 704/705 的危险 diff）。
 
-## 下一轮提示词（2026-10-15 24h 审计）
+## 下一轮提示词（2026-10-15 部署收口后）
 
-1. ★ **部署本轮**（154/245/211）：复验 sessions/online 与 top-models 亚秒、dashboard 无 500；
-   magpie 指纹/观测脚本按 `observe-magpie-p0-postdeploy.sh`。
-2. **MV REFRESH 争用**：`routing_analytics_7d` 仍是 pg_stat_statements 总耗时第一。
-3. **r43** 是否拣有用门文件（禁带删 704/705）。
+> 明细追加：`docs/audit/2026-10-15-24h审计-magpie收口与admin慢查询.md` §七。
+> 生产：245=`2650-6dc0ad45`(:8781) / 154=`2651-6dc0ad45`(:8782) / 211=`2645-6dc0ad45`；
+> online/top-models 亚秒复验过；magpie 四指纹 OK。工作区 MV/cursor/r43/211 改动**未提交**。
+
+1. ★ **owner 授权后 commit + push**（MV 30m/45m、cursor SECRET 回落、r43 三门、
+   deploy-211 硬化）；勿带 VERSION/version.json 等部署产物。
+2. **deploy-211 续优化**：可选注入 `LLM_GATEWAY_ADMIN_*`；observe 补 `TARGET=211`；
+   claim/URSM 冷启动是否仍要 emergency-repair 留观。
+3. **MV 争用**：用 pg_stat_statements 核 `routing_analytics_7d` 总耗时是否随 30m 降频下降。
 4. model alternatives 超时、fp_slot、nvidia probe：owner。
+5. `r43-fresh-install*` / 九月远端三分支：留置。

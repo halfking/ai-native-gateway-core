@@ -138,12 +138,25 @@ if [[ -n "$VIA" ]]; then
   # 命中 web/dist），root 的 admin SPA 与 /m 移动端就没了——llm.itestu.cn
   # 打开只剩版本 JSON（2026-10-15 两轮实测）。目标树每次同步前整体 rm -rf
   # 重建，陈旧 dist 残留不成立；前端 dist 由部署机预构建后随树上树。
-  tar -C "$D211_REPO_ROOT" \
-      --exclude=.git --exclude=node_modules --exclude=build \
-      --exclude=.build-local \
-      --exclude='*.log' --exclude='.env' --exclude='.env.*' \
-      --exclude='._*' --exclude='.DS_Store' \
-      -cf - . | ssh "$VIA" "tar --no-xattrs -C ~/llm-gateway-go-211 -xf - && \
+  # ⚠ 同样不要 --exclude=build：会误伤 vendor/.../api/types/build/*.go
+  # （2026-10-15 12h 审计 P2）。仓库根无 build/ 目录；大缓存用 .build-local。
+  # macOS bsdtar 默认把 quarantine/provenance xattr 打进 archive，GNU tar 刷屏
+  # Ignoring unknown extended header；偶发半截同步 → 远端缺 scripts/（RC=127）。
+  # COPYFILE_DISABLE + --no-xattrs/--no-mac-metadata（有则用）关掉资源叉/xattr。
+  _tar_create=(tar -C "$D211_REPO_ROOT")
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    export COPYFILE_DISABLE=1
+    _tar_create+=(--no-xattrs)
+    tar --help 2>&1 | grep -q -- '--no-mac-metadata' && _tar_create+=(--no-mac-metadata)
+  fi
+  _tar_create+=(
+    --exclude=.git --exclude=node_modules
+    --exclude=.build-local
+    --exclude='*.log' --exclude='.env' --exclude='.env.*'
+    --exclude='._*' --exclude='.DS_Store'
+    -cf - .
+  )
+  "${_tar_create[@]}" | ssh "$VIA" "tar --no-xattrs -C ~/llm-gateway-go-211 -xf - && \
         find ~/llm-gateway-go-211 -name '._*' -type f -delete && \
         find ~/llm-gateway-go-211 -name '.DS_Store' -type f -delete && \
         echo '[211] 同步后 ._* 残留: '\$(find ~/llm-gateway-go-211 -name '._*' -type f | wc -l)"
@@ -151,6 +164,9 @@ if [[ -n "$VIA" ]]; then
   ssh "$VIA" "find ~/llm-gateway-go-211 -maxdepth 2 -name '.env*' -type f -delete; \
              echo '[211] 目标树残留 .env*: '\$(find ~/llm-gateway-go-211 -name '.env*' -type f | wc -l) \
              ' ._*: '\$(find ~/llm-gateway-go-211 -name '._*' -type f | wc -l)"
+  # 半截同步硬门：缺入口脚本就别往下跑（否则 bash 报 No such file → RC=127）
+  ssh "$VIA" "test -f ~/llm-gateway-go-211/scripts/deploy-211-docker.sh" \
+    || die "同步后远端缺少 scripts/deploy-211-docker.sh（半截 tar？）；拒跑部署"
   # 基础镜像 build-arg 变量一并转发：211 的 /opt/kaixuan/base-images 存有
   # 离线基础镜像（kx-base/golang:1.27-alpine-amd64 等），daemon 的 mirror 不
   # 保证每次可达，构建腿应优先吃本地已 load 的镜像。空值 = 远端走脚本默认。
@@ -842,7 +858,9 @@ chown -R 65532:65532 "$D211_GW_DATA_ROOT" 2>/dev/null || true
 # 镜像不含 configs/（sensitive_patterns.yaml 缺失时网关回落内置脱敏集，
 # 与宿主机部署行为不一致）；docker cp 进容器层则 docker rm -f 即丢。
 # 改为宿主 bind（只读），每次部署以仓库文件为准覆盖种子。
-D211_CONFIGS_SRC="${D211_CONFIGS_SRC:-$(cd "$(dirname "$0")/.." && pwd)/configs}"
+# 用 D211_REPO_ROOT（脚本顶部已解析），禁止再 $(cd "$(dirname "$0")/..")——
+# docker build 段可能已 cd 走 cwd，相对 scripts/.. 会 No such file（2026-10-15 实测）。
+D211_CONFIGS_SRC="${D211_CONFIGS_SRC:-$D211_REPO_ROOT/configs}"
 mkdir -p "$D211_GW_DATA_ROOT/configs"
 for _cfg in sensitive_patterns.yaml sensitive_words.json; do
   if [[ -f "$D211_CONFIGS_SRC/$_cfg" ]]; then
@@ -890,7 +908,12 @@ seed_web_dist() {
   fi
   if [[ "$D211_ALLOW_STALE_WEB" != "1" && -d "$_src" ]]; then
     local _newer
-    _newer="$(find "$_src" -type f -newer "$_dist/index.html" -print -quit 2>/dev/null || true)"
+    # 只盯会影响 Vite 产物的源码：*.test/spec 不进 bundle，mtime 漂移不该拦部署
+    # （2026-10-15：LiveRequestStreamV2.queueStreamNotice.test.ts 误杀整次 211 部署）。
+    _newer="$(find "$_src" -type f \
+      ! -name '*.test.ts' ! -name '*.test.tsx' ! -name '*.test.js' ! -name '*.test.jsx' \
+      ! -name '*.spec.ts' ! -name '*.spec.tsx' ! -name '*.spec.js' ! -name '*.spec.jsx' \
+      -newer "$_dist/index.html" -print -quit 2>/dev/null || true)"
     if [[ -n "$_newer" ]]; then
       die "$_dist 陈旧：$_newer 晚于 $_dist/index.html，拒绝部署陈旧前端（否则线上是旧 SPA 而部署显示成功）。重新构建前端，或显式 D211_ALLOW_STALE_WEB=1 走纯 API 形态"
     fi
