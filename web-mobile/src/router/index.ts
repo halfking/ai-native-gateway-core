@@ -900,6 +900,17 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'dls.title', requiresAuth: true, requiresRole: 'admin' },
   },
   {
+    // ★ 存储与日志配置（2026-10-14，第一百二十四批）。
+    //   ★★★ 服务端是**真门**（第二类）：h.superAdmin → SuperAdminMiddleware
+    //   （admin/auth.go:376）逐字 `if claims.Role != "super_admin" { 403 }`
+    //   ⇒ 视图内那一层兜的是**体验**（不发请求），**不是**安全边界。
+    //   ⚠️ 与批 122/123 性质不同：那两族服务端**没有**角色下限。
+    path: '/storage-log-config',
+    name: 'storage-log-config',
+    component: () => import('@/views/StorageAndLogConfigView.vue'),
+    meta: { titleKey: 'slc.title', requiresAuth: true, requiresRole: 'super_admin' },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),

@@ -94,6 +94,7 @@ export const enUS = {
     platformSettings: 'Platform settings',
     usageEnhanced: 'Usage & cost',
     dataLifecycleStorage: 'Storage overview',
+    storageAndLogConfig: 'Storage & log config',
     account: 'Me',
   },
   // ★ Subscription tiers (2026-10-14, batch 120). Prefix: sts.
@@ -202,6 +203,41 @@ export const enUS = {
       noTenant: 'This payload carries no tenant dimension; it is a platform-wide total.',
     },
     field: { total: 'Total size', tables: 'Tables', indexes: 'Indexes', free: 'Free' },
+  },
+  // ★ Storage & log config (2026-10-14, batch 124). Prefix: slc.
+  slc: {
+    title: 'Storage & log config',
+    nope: {
+      msg: 'Only super admins can view this.',
+      why: 'The server middleware answers 403; this page just saves you the error screen.',
+    },
+    load: { title: 'Fetch', btn: 'Refresh config' },
+    readonly: { note: 'Read-only here: the desktop app can write, mobile does not.' },
+    storage: { title: 'Storage config', types: 'Common values: {list} (the real value is not limited to this list).' },
+    logs: { title: 'Log rotation', synced: 'Matches runtime' },
+    masked: { count: '{n} secret(s) configured (values are not shown)' },
+    check: {
+      sourceMisused: 'Note: config_source describes the source of one single key, not of the whole configuration.',
+      sourceUnknown: 'config_source is outside the default / env / db domain.',
+      typeUnknown: 'storage_type is not in the common list — it can be set to any string.',
+      needsRestart: 'Configuration changed but is not in effect yet; a restart is required.',
+      logPendingReload: 'Configured log path differs from the runtime path: the change has not hot-reloaded.',
+    },
+    // ★★ One key per line on purpose: the i18n gate's key flattener cannot parse
+    //   several `key: value` pairs on a single line (see the zh-CN block for details).
+    field: {
+      storageType: 'Storage type',
+      effectiveDir: 'Effective dir',
+      configSource: 'Source',
+      downloadPrefix: 'Download prefix',
+      masked: 'Secrets',
+      filePath: 'Configured path',
+      logFile: 'Runtime path',
+      maxSize: 'Max file size',
+      maxBackups: 'Max backups',
+      deleteDays: 'Retention days',
+      enabledSource: 'Toggle source',
+    },
   },
   // ★ Usage & cost (2026-10-14, batch 122). Prefix: ue.
   ue: {

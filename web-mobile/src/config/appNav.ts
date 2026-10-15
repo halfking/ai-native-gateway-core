@@ -599,6 +599,20 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.dataLifecycleStorage',
     requiresRole: 'admin',
   },
+  // ★ 存储与日志配置（2026-10-14 第一百二十四批）——
+  //   `h.superAdmin` ⇒ 服务端**真门** ⇒ 抽屉席必须设 super_admin 并进 AppDrawer 白名单。
+  //   ★ 第九十三批写这个模块时，模块头**一开始就把权限结论写对了**
+  //     （它顺手看了相邻那一行 `storage/migration-state` 是 admin 档，
+  //     并写下「绝不能按 /api/admin/storage/ 前缀推权限」）——
+  //     本批要改的只是那几处**漂了 21 行的行号**，
+  //     结论一个字都不用改（这在九批里是第一次）。
+  {
+    key: 'storage-log-config',
+    to: '/storage-log-config',
+    icon: 'grid',
+    titleKey: 'nav.storageAndLogConfig',
+    requiresRole: 'super_admin',
+  },
   // ★ 加这一席**必须**同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
   {
     key: 'routing-policy',

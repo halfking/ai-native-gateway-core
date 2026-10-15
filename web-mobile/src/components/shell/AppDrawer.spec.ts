@@ -220,6 +220,10 @@ describe('navItemsFor', () => {
       //   本席的理由是**服务端中间件本身就是那道门**
       //   （`main_jwt_middleware.go:65-73` 逐字 `if role != "super_admin" { 403 }`），
       //   所以它**同样没有**租户维度，却**不是**第三类那三种理由中的任何一种。
+      // ★★ 2026-10-14 第一百二十四批：存储与日志配置
+      //   （`admin/handler.go:1129` / `:1135`，两行都 `h.superAdmin`）
+      //   ⇒ 服务端中间件是**真门** ⇒ 与 121/122/123 三席的「无角色下限」性质不同。
+      'storage-log-config',
       'subscription-tiers',
       'task-index',
       'tenants',

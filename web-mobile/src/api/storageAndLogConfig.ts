@@ -5,18 +5,33 @@ import { req, type RequestOptions } from './client'
  *
  * GET /api/admin/storage/config · GET /api/admin/logs/config
  *
- * - **注册**：`admin/handler.go:1108` 与 `:1114`，**两行相邻、同一个 mux**：
+ * - **注册**：`admin/handler.go:1129` 与 `:1135`，**两处夹着另外两行**：
  *   ```go
- *   mux.HandleFunc("/api/admin/storage/config", h.superAdmin(h.handleStorageConfig))  // :1108
- *   mux.HandleFunc("/api/admin/storage/config/test-path", h.superAdmin(h.handleStorageTestPath)) // :1109
- *   mux.HandleFunc("/api/admin/storage/migration-state", admin(h.handleMigrationState)) // :1111 ★ admin 档
- *   mux.HandleFunc("/api/admin/logs/config", h.superAdmin(h.handleLogConfig))        // :1114
+ *   mux.HandleFunc("/api/admin/storage/config", h.superAdmin(h.handleStorageConfig))          // :1129
+ *   mux.HandleFunc("/api/admin/storage/config/test-path", h.superAdmin(h.handleStorageTestPath)) // :1130
+ *   mux.HandleFunc("/api/admin/storage/migration-state", admin(h.handleMigrationState))         // :1132 ★ admin 档
+ *   mux.HandleFunc("/api/admin/logs/config", h.superAdmin(h.handleLogConfig))                   // :1135
  *   ```
- *   ⇒ ★★★★★ **`:1108` 与 `:1111` 相邻两行却是两种档位**（superAdmin vs admin）
- *   ⇒ ⇒ **整族（storage/config、logs/config）是 `h.superAdmin` 档**
+ *   ⚠️ **行号订正（2026-10-14，第一百二十四批）**：本段原写 `:1108` / `:1109` /
+ *     `:1111` / `:1114`，实况 `:1129` / `:1130` / `:1132` / `:1135`，**整块漂 21 行**。
+ *   ⇒ ★★ `:1129` 与 `:1132` 相邻两行却是**两种档位**（superAdmin vs admin）
+ *   ⇒ ⇒ **绝不能按 `/api/admin/storage/` 这个前缀推权限。**
+ *   ⇒ ★★★★★ 整族（`storage/config`、`logs/config`）是 `h.superAdmin` 档
  *     ⇒ tenant_admin 直接 403 ⇒ 抽屉席**必须**设 `requiresRole: 'super_admin'`。
- *   ⇒ ★★ 但同前缀下的 `storage/migration-state` 是 **admin 档**
- *     ⇒ **绝不能按 `/api/admin/storage/` 这个前缀推权限**。
+ *
+ *   ★★★★★★ **本模块的权限结论是「对的」，而它之所以对值得单独记一笔** ——
+ *     第一百二十一 / 一百二十二 / 一百二十三批的模块头都栽在
+ *     「`admin(...)` ⇒ admin 档 ⇒ 抽屉席不设 `requiresRole`」这一句上，
+ *     根因是**没人去看中间件那一层**（`AdminMiddleware` 根本没有角色下限）。
+ *     而本模块（第九十三批写的）的作者**恰好看了相邻那一行**，
+ *     并写下了「绝不能按前缀推权限」——
+ *     ★ **「顺手看一眼邻居」这一步，就是三批返工的**有**与没有的分界线。**
+ *
+ *   ⇒ ★★ **服务端中间件是**真门**（第二类，见批 120）**：
+ *     `h.superAdmin` = `SuperAdminMiddleware`（`admin/handler.go` 的方法 → `admin/auth.go:376`），
+ *     其内部逐字 `if claims.Role != "super_admin" { 403 "super_admin role required…" }`
+ *     ⇒ ★★ **越权请求会被服务端挡下来** ⇒ 视图内那一层兜的是**体验**（不发请求），
+ *     **不是**安全边界 —— 这与批 122 / 123 两族**性质不同**（那两族服务端根本没这道门）。
  * - **实现**：`admin/storage_config.go`（570 行）· `admin/log_management.go`（669 行）。
  * - **桌面调用方**：`web/src/api/tuning.ts:798` 与 `:930` —— `req<StorageConfig>` /
  *   `req<LogConfig>` 直接强转，**不做任何校验** ⇒ 全部校验由本模块补上。
@@ -428,3 +443,41 @@ export function logConfigPutKeyFor(getKey: string): string {
   if (getKey === 'delete_days') return 'archive_delete_days'
   return getKey
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 权限档（2026-10-14，第一百二十四批新增）
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * ★★★★ 本族的权限档结论**由服务端中间件保证**（第二类「真门」）。
+ *
+ * `h.superAdmin` → `SuperAdminMiddleware`（`admin/auth.go:376`）逐字
+ * `if claims.Role != "super_admin" { 403 "super_admin role required for this endpoint" }`
+ * ⇒ ★★ **越权请求会被服务端挡下来** ⇒ 视图内那一层兜的是**体验**，
+ * **不是**安全边界。
+ *
+ * ★ 与批 122 / 123 两族**性质不同**：那两族服务端**根本没有**角色下限
+ * （`AdminMiddleware` 只认证），前端那一层是唯一的门。
+ * ⇒ 本函数存在的意义是**把这个区别显式化** —— 若哪天 `h.superAdmin`
+ *   被换成 `admin(...)`，它会立刻转 false，提示「不再是真门，重新判档」。
+ */
+export function storageConfigServerIsRealGate(middlewareName: string): boolean {
+  return middlewareName === 'h.superAdmin'
+}
+
+/**
+ * ★★★★★ `config_source` 只描述**一个键**的来源，不是整张表单的来源。
+ *
+ * 后端 `handleStorageConfig` 里它由 `storage.attachment_ttl_days` 的 `src`
+ * 最终决定（`storage.type` 只决定它是不是 `db`）⇒
+ * ★ 用它给**整张表单**打「来源」标签是**错的**。
+ *
+ * ⚠️⚠️⚠️ ★★★ **这里刻意不提供 `configSourceDescribesWholeResponse()` 之类的谓词。**
+ *   我**写过**一个恒返回 `false` 的版本，本批自己把它删了 ——
+ *   ★★ 那正是第一百二十一批（`platformSettings`）里
+ *   `settingsRollbackNeedsSuperAdmin()` 被删掉的原因：
+ *   **恒定返回的函数就是假门** —— 它看起来像一道闸，实际什么都挡不住。
+ *   ⇒ 这条提醒的正确载体是**页面上的静态说明**（`slc.check.sourceMisused`），
+ *     而**不是**一个假装在判断的布尔。
+ *   ⇒ 真判据由 `logConfigPathMatchesRuntime` 之类**随输入变化**的函数承担。
+ */
