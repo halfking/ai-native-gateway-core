@@ -9,7 +9,7 @@ package admin
 // # 为什么要有门
 //
 // 写侧已修（de9be4a8f，final_success_turn.go），所以**新请求**不再丢标记。
-// 但已经躺在 session_turns 里的历史行，标记仍然是 NULL —— 而 `request_logs`
+// 但已经躺在 session_turns 里的历史行，标记仍然是 NULL —— 而 `_request_logs`
 // 退役之后这份信息就**再也无法恢复**了。
 //
 // 而在此之前，这件事是**完全不可见**的：`session_turns.is_final_success`
@@ -31,7 +31,7 @@ package admin
 //
 // 三种「看起来通过」的情形都不是通过：
 //   - 没设 TEST_DATABASE_URL ⇒ Skip（指名）；
-//   - v1 已被退役（request_logs 不存在）⇒ **Skip 并指名**「回填窗口已关闭」，
+//   - v1 已被退役（_request_logs 不存在）⇒ **Skip 并指名**「回填窗口已关闭」，
 //     绝不是 Pass —— 那意味着没人再能修复这笔欠账，是最该报警的状态之一；
 //   - v1 有 0 个 winner 且 v2 有 0 个标记 ⇒ 两者都是 0，判据无意义，指名 Skip。
 //
@@ -76,7 +76,7 @@ func TestSessionFinalSuccessBacklogIsClosed(t *testing.T) {
 		t.Fatalf("probe v2 face: %v", err)
 	}
 	if !v1Face {
-		t.Skip("v1 月度分区不存在（request_logs 已退役？）—— **Skip 而非 Pass**：" +
+		t.Skip("v1 月度分区不存在（_request_logs 已退役？）—— **Skip 而非 Pass**：" +
 			"回填窗口已关闭，未标记的历史 final-success 永久不可恢复。这不是通过。")
 	}
 	if !v2Face {
@@ -132,7 +132,7 @@ func TestSessionFinalSuccessBacklogIsClosed(t *testing.T) {
 			"但 v2 只有 %d 行带标记 ⇒ 会话时间线仍把这些会话的成功轮显示成普通 success"+
 			"（另有 %d 个 v1 winner 按镜像排除规则本就无 v2 turn，不计入）。\n"+
 			"修复：psql \"$DB_URL\" -f sql/scripts/backfill_final_success_marks.sql"+
-			"（幂等，约 89s / 110k 行；必须赶在 request_logs 退役前跑）",
+			"（幂等，约 89s / 110k 行；必须赶在 _request_logs 退役前跑）",
 			v1With-v2Marked, v1With, v2Marked, v1Without)
 	}
 	if v2Marked > v1With {

@@ -15,7 +15,7 @@ import (
 //
 // Date windows overlap the session: last_request_at >= from AND
 // first_request_at <= to. task_id matches session_dim.task_id (the column
-// the list JSON exposes; migration 350 copies the first request_logs.gw_task_id)
+// the list JSON exposes; migration 350 copies the first _request_logs.gw_task_id)
 // or session_summaries.gw_task_id (added by migration 655, and often still
 // null when only session_dim was filled).
 func appendSessionAnalyticsListFilters(where string, args []any, argCount int, taskID, dateFromRaw, dateToRaw string) (string, []any, int, error) {

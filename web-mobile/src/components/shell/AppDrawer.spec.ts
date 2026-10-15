@@ -121,6 +121,10 @@ describe('navItemsFor', () => {
       //   `wrap := h.superAdmin`）—— 这一条**要** super_admin，与前几批 admin 档页面相反。
       'credential-model-state',
       'flow',
+      // ★ 2026-10-14 第一百零九批：响应格式异常
+      //   （admin/handler.go:913-914 两条都是 h.superAdmin）⇒ 这一条**要** super_admin。
+      //   ★ 本族虽是第六次「不隔离」，但档位本身就是那道门 ⇒ 视图内无需段落级门控。
+      'format-anomalies',
       'funnel',
       'integrity',
       'maas-admin-catalog',
@@ -128,11 +132,18 @@ describe('navItemsFor', () => {
       'maas-rates',
       'maas-tenant-ops',
       'matrix',
+      // ★ 2026-10-14 第一百一十批：指纹漂移
+      //   （admin/handler.go:942-943 两条都是 h.superAdmin）⇒ 这一条**要** super_admin。
+      //   ★ 与批 109 的 format-anomalies 同档 ⇒ 两条合起来把 superAdmin 档的席钉死。
+      'model-integrity-drift',
       'model-policies',
       'model-policy-audit',
       'overrides',
       'proposals',
       'reconciliation',
+      // ★ 2026-10-14 第一百一十一批：对账报表（admin/handler.go:1086 h.superAdmin）
+      //   ⇒ **要** super_admin。⚠️ 与上面 reconciliation 是两个不同功能，别接错。
+      'report-rollup',
       'request-anomalies',
       'routing-audit',
       // ★ 2026-10-08 第一百零一批：路由策略配置面（`admin/handler.go:1200 :1201 :1215`

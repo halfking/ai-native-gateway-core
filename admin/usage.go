@@ -1115,7 +1115,7 @@ func (h *Handler) usageKeyTrend(w http.ResponseWriter, r *http.Request, keyID in
 	writeJSON(w, http.StatusOK, trends)
 }
 
-// usageKeyTraffic returns per-5-minute request counts from request_logs for
+// usageKeyTraffic returns per-5-minute request counts from _request_logs for
 // a single API key.  Used by /keys/:id to show peak traffic and gateway vs
 // upstream failure breakdown within the selected window.
 func (h *Handler) usageKeyTraffic(w http.ResponseWriter, r *http.Request, keyID int) { //nolint:unused

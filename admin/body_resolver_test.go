@@ -291,7 +291,7 @@ func TestHandleControlledBodyFallsBackToArchiveView(t *testing.T) {
 
 	occurred := time.Date(2026, 8, 17, 1, 2, 3, 0, time.UTC)
 	requestBody := `{"messages":[{"role":"user","content":"archived prompt"}]}`
-	mock.ExpectQuery(`(?s)SELECT rl\.ts,.*FROM request_logs_hot.*rl\.request_id = \$1.*rl\.tenant_id = \$2`).
+	mock.ExpectQuery(`(?s)SELECT rl\.ts,.*FROM _request_logs_hot.*rl\.request_id = \$1.*rl\.tenant_id = \$2`).
 		WithArgs("req-archive", "tenant-a").WillReturnError(pgx.ErrNoRows)
 	mock.ExpectQuery(`(?s)SELECT rl\.ts,.*FROM request_logs_with_current_month.*rl\.request_id = \$1.*rl\.tenant_id = \$2`).
 		WithArgs("req-archive", "tenant-a").

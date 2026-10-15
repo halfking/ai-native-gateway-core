@@ -26,8 +26,9 @@ const (
 	MsgInsufficientCredits = "insufficient_credits" // "Insufficient credits..."
 
 	// Session errors.
-	MsgSessionForbidden    = "SESSION_FORBIDDEN"     // "session not owned by this API key"
-	MsgSessionAssignFailed = "SESSION_ASSIGN_FAILED" // "failed to assign session id"
+	MsgSessionForbidden        = "SESSION_FORBIDDEN"         // "session not owned by this API key"
+	MsgSessionAssignFailed     = "SESSION_ASSIGN_FAILED"     // "failed to assign session id"
+	MsgSessionStoreUnavailable = "SESSION_STORE_UNAVAILABLE" // "session store unavailable; retry later"
 
 	// Security policy.
 	MsgBlocked = "blocked" // "Request blocked by security policy"

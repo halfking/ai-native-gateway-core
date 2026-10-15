@@ -8,9 +8,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // same handler authentication surface
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // modelsStaleGrace bounds how long the last successful /v1/models result
@@ -28,10 +30,116 @@ type modelEntry struct {
 	ContextWindow *int   `json:"context_window,omitempty"`
 }
 
+// modelsListOnlyRoutableKey is the settings_kv kill-switch (hot-reloaded)
+// for the r1027 routable-models filter. Default true: /v1/models derives
+// liveness from the same surface the router routes on
+// (credential_model_bindings + node_probe_state), so models whose only
+// credential is balance-dead / protocol-dead stop being advertised to
+// clients that pick discovery models straight off this list (154
+// 2026-10-14: opencode kept calling minimax-m2.7-quickspeed's fixed
+// auxiliary request against a model with zero catalog rows → 400 every
+// time). Flipping it to false restores the legacy model_offers semantics
+// without a deploy.
+const modelsListOnlyRoutableKey = "models.list_only_routable"
+
+// modelsRoutableSQL lists models that are routable RIGHT NOW: at least one
+// binding is available on an active credential of an enabled provider, and
+// the pair's probe state is not failing. This mirrors the router's DB-level
+// gates and UrsmlHealthyKeyReconciler's healthyCandidateSQL predicates —
+// NOT model_offers.available, which is a different table the failure ladders
+// never touch (the 2026-10-13 grok-4.7 incident: its only credential sat at
+// 88 consecutive INSUFFICIENT_BALANCE failures while model_offers still said
+// available). The node_probe_state gate keeps a balance-dead credential's
+// flapping binding (probe marks it down → auto-recover re-enables it → probe
+// fails again) from flickering the model back into the list: a credential
+// with consecutive_failures > 0 stays excluded until a probe actually
+// succeeds and zeroes the counter.
+//
+// 2026-10-14 第二分片（生产 403→127 复核抓到的缝隙）：bindings 只覆盖绑定级
+// 死活；credentials.availability_state / quota_state 是凭据级死活
+// （auth_failed / permanently_exhausted 的凭据，其 binding 仍可挂着
+// available=TRUE——grok-4.7 的五个死凭据 67/68/69/70/72 全是这个形态）。
+// availability_state='ready' 门与 UrsmlHealthyKeyReconciler 的
+// healthyCandidateSQL 同款。
+const modelsRoutableSQL = `
+		SELECT DISTINCT
+			mc.canonical_name,
+			COALESCE(mc.family, 'unknown') AS family,
+			COALESCE(mc.modality, 'text') AS modality,
+			mc.context_window
+		FROM models_canonical mc
+		JOIN provider_models pm ON pm.canonical_id = mc.id
+		JOIN credential_model_bindings cmb ON cmb.provider_model_id = pm.id
+		JOIN credentials c ON c.id = cmb.credential_id
+		JOIN providers p ON p.id = c.provider_id
+		LEFT JOIN node_probe_state nps
+		  ON nps.credential_id = cmb.credential_id
+		  AND nps.raw_model_name = pm.raw_model_name
+		WHERE cmb.available = TRUE
+		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
+		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		  -- 模型级死活（2026-10-14 审计补齐）：provider_models 自身的
+		  -- available / unavailable_reason 是模型级下线开关，路由侧
+		  -- recommend_v2.go 与 v_routable_credential_models 视图都有，
+		  -- 漏掉会让运维的下线对发现列表完全无效。
+		  AND pm.available = TRUE
+		  AND COALESCE(pm.unavailable_reason, '') NOT LIKE 'manual%'
+		  AND COALESCE(c.status, 'active') = 'active'
+		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
+		  AND COALESCE(c.availability_state, 'ready') = 'ready'
+		  -- quota_state 有三个耗尽态（凭据级），availability_state='ready'
+		  -- 并不蕴含 quota_state 非耗尽——两列各有独立 CHECK 约束，路由
+		  -- 视图正是因此同时检查两者。原实现只排除了其中 1/3。
+		  AND COALESCE(c.quota_state, 'ok') <> ALL (ARRAY['permanently_exhausted','balance_exhausted','periodic_exhausted'])
+		  AND COALESCE(c.health_status, 'unknown') IN ('healthy', 'unknown')
+		  AND COALESCE(c.trust_level, '') NOT IN ('quarantine')
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  AND COALESCE(p.enabled, TRUE) = TRUE
+		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
+		  AND (nps.credential_id IS NULL
+		       OR COALESCE(nps.consecutive_failures, 0) = 0)
+		ORDER BY family, mc.canonical_name
+	`
+
+// modelsLegacySQL is the pre-r1027 query (model_offers liveness), kept as
+// the models.list_only_routable=false escape hatch.
+const modelsLegacySQL = `
+		SELECT DISTINCT
+			mc.canonical_name,
+			COALESCE(mc.family, 'unknown') AS family,
+			COALESCE(mc.modality, 'text') AS modality,
+			mc.context_window
+		FROM models_canonical mc
+		JOIN model_offers mo ON mo.canonical_id = mc.id
+		JOIN credentials c ON c.id = mo.credential_id
+		JOIN providers p ON p.id = c.provider_id
+		WHERE mo.available = TRUE
+		  AND c.status = 'active'
+		  AND c.trust_level NOT IN ('quarantine')
+		  AND p.enabled = TRUE
+		ORDER BY family, mc.canonical_name
+	`
+
+// modelsQueryFor resolves which liveness source serves the discovery list:
+// the router-aligned binding/probe-state query when the gate is on (default),
+// the legacy model_offers query as the escape hatch.
+func modelsQueryFor(listOnlyRoutable bool) string {
+	if listOnlyRoutable {
+		return modelsRoutableSQL
+	}
+	return modelsLegacySQL
+}
+
+// ModelsDB is the read surface the models endpoint needs. *pgxpool.Pool
+// satisfies it; tests inject pgxmock.
+type ModelsDB interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
 // ModelsHandler serves the /v1/models endpoint.
 // It returns only models that have valid, active credentials.
 type ModelsHandler struct {
-	dbPool *pgxpool.Pool
+	db ModelsDB
 
 	// keyVerifier 校验调用方。2026-10-11 起不再是可选的「装饰」——
 	// AuthMiddleware 对 sk-* 故意放行（见 middleware/auth_mw.go 的 Rule 20 §2），
@@ -48,7 +156,13 @@ func NewModelsHandler() *ModelsHandler {
 }
 
 func (h *ModelsHandler) SetDB(pool *pgxpool.Pool) {
-	h.dbPool = pool
+	h.db = pool
+}
+
+// SetModelsDB injects the read surface directly; tests use this to supply a
+// pgxmock pool without constructing a real *pgxpool.Pool.
+func (h *ModelsHandler) SetModelsDB(q ModelsDB) {
+	h.db = q
 }
 
 // SetAuth wires the data-plane key verifier.
@@ -111,7 +225,7 @@ func (h *ModelsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !h.authenticate(w, r) {
 		return
 	}
-	if h.dbPool == nil {
+	if h.db == nil {
 		if entries, ok := h.lastGoodEntries(); ok {
 			slog.Warn("models: no database connection, serving last-good list")
 			h.writeEntries(w, entries)
@@ -165,22 +279,10 @@ func (h *ModelsHandler) serveFromDB(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	rows, err := h.dbPool.Query(ctx, `
-		SELECT DISTINCT
-			mc.canonical_name,
-			COALESCE(mc.family, 'unknown') AS family,
-			COALESCE(mc.modality, 'text') AS modality,
-			mc.context_window
-		FROM models_canonical mc
-		JOIN model_offers mo ON mo.canonical_id = mc.id
-		JOIN credentials c ON c.id = mo.credential_id
-		JOIN providers p ON p.id = c.provider_id
-		WHERE mo.available = TRUE
-		  AND c.status = 'active'
-		  AND c.trust_level NOT IN ('quarantine')
-		  AND p.enabled = TRUE
-		ORDER BY family, mc.canonical_name
-	`)
+	// r1027: liveness source follows the router (bindings + probe state),
+	// not model_offers. models.list_only_routable=false restores the legacy
+	// query without a deploy.
+	rows, err := h.db.Query(ctx, modelsQueryFor(settings.GetPlatformBool(modelsListOnlyRoutableKey, true)))
 	if err != nil {
 		slog.Error("models: db query failed", "error", err)
 		if entries, ok := h.lastGoodEntries(); ok {

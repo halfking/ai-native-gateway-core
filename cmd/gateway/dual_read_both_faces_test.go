@@ -13,8 +13,8 @@ import (
 //
 // 本地真库的四个存储面**不是**同一张表的两种视图，而是**四个不同的关系**：
 //
-//	request_logs_hot     最后写入 2026-10-05 22:51（新鲜）
-//	request_logs         最后写入 2026-10-05 13:53（**落后约 9 小时**）
+//	_request_logs_hot     最后写入 2026-10-05 22:51（新鲜）
+//	_request_logs         最后写入 2026-10-05 13:53（**落后约 9 小时**）
 //	session_turns        最后写入 2026-10-05 13:53
 //	session_bodies       最后写入 2026-10-05 13:53
 //
@@ -40,7 +40,7 @@ func TestS4DriftScopeReadsBothStorageFaces(t *testing.T) {
 	// 两侧各要两个面。任何一面缺席，下面的计数就会在窗口里挖一个洞，
 	// 而那个洞的形状恰好是「看起来流量变少了」。
 	for _, face := range []string{
-		"request_logs_hot", "request_logs",
+		"_request_logs_hot", "_request_logs",
 		"session_turns_hot", "session_turns",
 	} {
 		if !strings.Contains(sql, face) {
@@ -52,13 +52,13 @@ func TestS4DriftScopeReadsBothStorageFaces(t *testing.T) {
 
 	// 阴性对照：判据必须能分辨「两个面」与「一个面」。
 	// 没有对照的话，上面那段 if 写错了也一直绿。
-	oneFace := "SELECT 1 FROM request_logs WHERE 1=1"
-	if containsAll(oneFace, []string{"request_logs_hot", "request_logs"}) {
-		t.Errorf("判据分不清单面与双面：一个只读 request_logs 的片段被判成双面 —— " +
+	oneFace := "SELECT 1 FROM _request_logs WHERE 1=1"
+	if containsAll(oneFace, []string{"_request_logs_hot", "_request_logs"}) {
+		t.Errorf("判据分不清单面与双面：一个只读 _request_logs 的片段被判成双面 —— " +
 			"上面四条断言此时会恒绿")
 	}
-	bothFaces := "FROM request_logs_hot UNION ALL FROM request_logs"
-	if !containsAll(bothFaces, []string{"request_logs_hot", "request_logs"}) {
+	bothFaces := "FROM _request_logs_hot UNION ALL FROM _request_logs"
+	if !containsAll(bothFaces, []string{"_request_logs_hot", "_request_logs"}) {
 		t.Errorf("判据把一个真双面片段判成单面 —— 对照本身失效")
 	}
 }

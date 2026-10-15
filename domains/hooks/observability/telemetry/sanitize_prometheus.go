@@ -76,7 +76,7 @@ var sanitizeFieldLabels = []string{
 //	            truncated prefix is KEPT in the column so auditors still see
 //	            something. Non-alerting by itself, but worth tracking per
 //	            (field, source, stage); model-level comparisons come from
-//	            request_logs_hot/request_wal_hot because this metric has no model label.
+//	            _request_logs_hot/request_wal_hot because this metric has no model label.
 var (
 	sanitizeOutcomeLabels = []string{"discarded", "rescued"}
 	sanitizeStageLabels   = []string{"sanitize", "required_field_guard"}

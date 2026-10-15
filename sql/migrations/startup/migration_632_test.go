@@ -214,10 +214,10 @@ func TestMigration632_RoutingAnalyticsMaterializedView(t *testing.T) {
 		require.GreaterOrEqual(t, columnsAt, 0, "runtime must ensure analytics columns")
 		require.Greater(t, viewsAt, columnsAt,
 			"origin_stage/task_type columns must be ensured before analytics views")
-		require.Contains(t, src, "ALTER TABLE IF EXISTS request_logs_hot",
-			"runtime prerequisite must cover request_logs_hot")
-		require.Contains(t, src, "ALTER TABLE IF EXISTS request_logs",
-			"runtime prerequisite must cover request_logs")
+		require.Contains(t, src, "ALTER TABLE IF EXISTS _request_logs_hot",
+			"runtime prerequisite must cover _request_logs_hot")
+		require.Contains(t, src, "ALTER TABLE IF EXISTS _request_logs",
+			"runtime prerequisite must cover _request_logs")
 	})
 
 	t.Run("view_definitions_do_not_carry_refreshed_at", func(t *testing.T) {

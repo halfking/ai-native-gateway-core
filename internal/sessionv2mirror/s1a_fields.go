@@ -1,7 +1,7 @@
 // Package sessionv2mirror — s1a_fields.go
 //
 // 存储优化方案 v2 S1a（migration 706/707）：把 telemetry.RequestLogEntry 上
-// request_logs 独有的五类数据（计费/路由/诊断/检索·完整性/访问维度）补采进
+// _request_logs 独有的五类数据（计费/路由/诊断/检索·完整性/访问维度）补采进
 // V2 会话族，使 session_turns 成为 turn 级唯一事实源（plan §3 D1）。
 //
 // 数据源事实（2026-09-14 审计，2026-10-02 订正）：RequestLogEntry 曾缺

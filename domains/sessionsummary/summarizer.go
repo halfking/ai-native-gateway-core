@@ -40,13 +40,13 @@ type Summarizer struct {
 	redisClient   *redis.Client
 	llmClient     LLMClient
 	model         string
-	messageSource MessageSource // where conversation messages are read from; defaults to request_logs
+	messageSource MessageSource // where conversation messages are read from; defaults to _request_logs
 }
 
 // MessageSource is the storage-agnostic read surface for a session's messages.
 //
-// Historically the summarizer read directly from request_logs /
-// request_logs_bodies (the V1 per-turn full-body store). A2/A6 in
+// Historically the summarizer read directly from _request_logs /
+// _request_logs_bodies (the V1 per-turn full-body store). A2/A6 in
 // docs/omni-ref3 require the summarizer to keep working once V1 request bodies
 // are retired in favor of the V2 incremental session_bodies store. Extracting
 // these two reads behind an interface lets a V2 implementation be registered
@@ -54,7 +54,7 @@ type Summarizer struct {
 //
 // Implementations must be safe for concurrent use (multiple summaries may run
 // in parallel goroutines). Both methods return up to 20 messages in ascending
-// chronological order, matching the original request_logs query semantics.
+// chronological order, matching the original _request_logs query semantics.
 type MessageSource interface {
 	// GetSessionMessages returns the most recent messages for a session
 	// (the full-summary input).
@@ -122,14 +122,14 @@ func NewSummarizer(pool *pgxpool.Pool, redisClient *redis.Client, llmClient LLMC
 		llmClient:   llmClient,
 		model:       "summary-fast",
 	}
-	// Default MessageSource reads from request_logs / request_logs_bodies (V1),
+	// Default MessageSource reads from _request_logs / _request_logs_bodies (V1),
 	// preserving the pre-A6 behavior exactly. Call SetMessageSource to swap in
 	// a V2 session_bodies implementation once V2 read is enabled (A1).
 	s.messageSource = &pgRequestLogsSource{pool: pool}
 	return s
 }
 
-// NewRequestLogsMessageSource returns the V1 request_logs MessageSource.
+// NewRequestLogsMessageSource returns the V1 _request_logs MessageSource.
 func NewRequestLogsMessageSource(pool *pgxpool.Pool) MessageSource {
 	return &pgRequestLogsSource{pool: pool}
 }
@@ -624,7 +624,7 @@ func (s *Summarizer) getSessionMessages(ctx context.Context, tenantID, sessionKe
 }
 
 // pgRequestLogsSource is the default MessageSource: it reads from the V1
-// request_logs / request_logs_bodies tables. The SQL is the exact code the
+// _request_logs / _request_logs_bodies tables. The SQL is the exact code the
 // summarizer ran before A6, moved here verbatim so behavior is unchanged when
 // the default source is in use (NewSummarizer installs it automatically).
 //
@@ -636,8 +636,8 @@ type pgRequestLogsSource struct {
 
 func (m *pgRequestLogsSource) getSessionMessagesQuery() string {
 	// 2026-08-26: 读面切到 _with_current_month 视图（hot ∪ parent）。
-	// 此前读 parent request_logs / request_logs_bodies，migration 600 后请求体
-	// 先落 request_logs_bodies_hot，父表要等热点提升才有数据，导致会话刚
+	// 此前读 parent _request_logs / _request_logs_bodies，migration 600 后请求体
+	// 先落 _request_logs_bodies_hot，父表要等热点提升才有数据，导致会话刚
 	// 关闭时总结读不到 fresh 消息（观测：hot-only 会话 GenerateSummary 报
 	// "no messages found"）。_with_current_month 视图早已存在且
 	// syncCanonicalSessionTitle 已在用，视图只加宽读面、不改语义。
@@ -678,8 +678,8 @@ func (m *pgRequestLogsSource) GetSessionMessages(ctx context.Context, tenantID, 
 	return messages, rows.Err()
 }
 
-// 注意：request_logs 使用 gw_session_id（350 迁移修正）。
-// 2026-07-21 Ticket #11: Modified to use LEFT JOIN with request_logs_bodies
+// 注意：_request_logs 使用 gw_session_id（350 迁移修正）。
+// 2026-07-21 Ticket #11: Modified to use LEFT JOIN with _request_logs_bodies
 // to retrieve full request_body (moved to separate table in #10).
 func (m *pgRequestLogsSource) GetMessagesSince(ctx context.Context, tenantID, sessionKey string, since time.Time) ([]SessionMessage, error) {
 	if m.pool == nil {

@@ -176,7 +176,7 @@ func TestRoleFallbackMetricNamesMatchAlertRule(t *testing.T) {
 
 // TestRoleLayerConstantsMatchAuditFieldValues 证伪"埋点与审计字段分叉"。
 //
-// Decision.RoleFallbackLayer 经 decisionToWire 序列化进 request_logs.auto_decision，
+// Decision.RoleFallbackLayer 经 decisionToWire 序列化进 _request_logs.auto_decision，
 // 运维的 SQL 与 Prometheus 的告警看的是同一个语义。若两处字面量不同
 // （例如审计写 "mainstream"、埋点记 "main"），SQL 查得到但告警不响。
 func TestRoleLayerConstantsMatchAuditFieldValues(t *testing.T) {

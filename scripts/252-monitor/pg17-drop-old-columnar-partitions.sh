@@ -61,8 +61,8 @@ RETAIN_MONTHS=2
 #（requiring hot-table + monthly partition architecture）
 PARENTS=(
   model_probe_runs
-  request_logs
-  request_logs_bodies
+  _request_logs
+  _request_logs_bodies
   request_wal
   usage_ledger
   routing_decision_log

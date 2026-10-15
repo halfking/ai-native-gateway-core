@@ -2,7 +2,7 @@
 //
 // MaterializedViewRefresher periodically refreshes the routing analytics
 // materialized views (migration 632) so the admin analytics endpoints can
-// serve pre-aggregated data instead of Seq-Scanning 314K+ request_logs
+// serve pre-aggregated data instead of Seq-Scanning 314K+ _request_logs
 // rows per request.
 //
 // Refresh strategy:

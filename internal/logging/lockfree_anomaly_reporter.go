@@ -44,7 +44,7 @@ type AnomalyReport struct {
 
 	// 2026-07-27: correlation envelope. Producers fill these from the
 	// request context so the external endpoint can pivot into
-	// request_logs and trace spans without an extra lookup.
+	// _request_logs and trace spans without an extra lookup.
 	ClientRequestID string `json:"client_request_id,omitempty"`
 	GWSessionID     string `json:"gw_session_id,omitempty"`
 	GWTaskID        string `json:"gw_task_id,omitempty"`
@@ -610,7 +610,7 @@ type AnomalyReporterStats struct {
 // AnomalyReportEnvelope is the correlation context attached to every
 // anomaly report. Producers (executor / streaming bridges) populate it
 // from the request context so the external endpoint can join with
-// request_logs and the on-disk audit log without re-fetching the body.
+// _request_logs and the on-disk audit log without re-fetching the body.
 type AnomalyReportEnvelope struct {
 	ClientRequestID string
 	GWSessionID     string

@@ -23,7 +23,7 @@ SELECT
     COUNT(*) as error_count,
     MAX(created_at) as last_seen,
     STRING_AGG(DISTINCT SUBSTRING(upstream_response_preview, 1, 100), ' | ') as sample_responses
-FROM request_logs
+FROM _request_logs
 WHERE provider_code = 'zhipuai'
   AND request_status = 'failure'
   AND created_at > now() - interval '24 hours'
@@ -53,7 +53,7 @@ SELECT
     COUNT(rl.id) as requests_after_unavailable,
     MAX(rl.created_at) as last_request_at
 FROM unavailable_creds uc
-LEFT JOIN request_logs rl
+LEFT JOIN _request_logs rl
     ON rl.credential_id = uc.credential_id
     AND rl.created_at > uc.unavailable_at
 GROUP BY uc.credential_id, uc.raw_model_name, uc.unavailable_reason
@@ -106,7 +106,7 @@ SELECT
     upstream_status_code,
     COUNT(*) as error_count,
     MAX(created_at) as last_seen
-FROM request_logs
+FROM _request_logs
 WHERE provider_code LIKE '%sensenova%'
   AND request_status = 'failure'
   AND created_at > now() - interval '24 hours'

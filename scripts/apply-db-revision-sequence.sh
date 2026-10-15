@@ -96,7 +96,7 @@ sha256_file() {
 # (db.ensureGoalClientSignalSchema at db/db.go:350 and
 # db.ensureRoutingAnalyticsMaterializedViews + routingAnalyticsMVSQL at
 # db/db.go:1081/937 respectively), so they stay out of this list.
-# 651 (request_logs_hot contract columns + minute-aggregator index),
+# 651 (_request_logs_hot contract columns + minute-aggregator index),
 # 652 (system_monitor_fallback_queue table) and 653/654
 # (archive_credential_model_index canonical tuple + DETACH/DROP rewrite)
 # are mutually independent of the session_summaries/auto_route_selections
@@ -163,14 +163,25 @@ files=(
   # and 358 (session_dim, the join target); the views are dropped and rebuilt,
   # so the unique indexes REFRESH CONCURRENTLY needs are recreated here too.
   "$ROOT_DIR/sql/migrations/startup/855_session_analytics_time_window.sql"
-  # 857（2026-10-13 Vapeur 全量测试轮）：收窄 316 播种的 pii_patterns.phone_intl
+  # 859（2026-10-13 Vapeur 全量测试轮；原编号 857 与并行会话的 analyze_columnar_staleness_gate 撞车改号）：收窄 316 播种的 pii_patterns.phone_intl
   # ——原正则把算术式 `+100` 当国际电话在输出侧遮成 [REDACTED:phone]（tool 参数
   # 被改坏的实测现场：`（23*47[REDACTED:phone])/3`）。被叫号码下限 1 位 → 7 位
   # （E.164 现实区间）。与 851 同族：UPDATE 存活幂等重放，全通道必须应用。
   # 856（2026-10-13，b3cbd3462 提交时漏登记，本轮补齐五点同步的另一腿）：
   # usage_ledger(+hot) 时间窗聚合覆盖索引（/api/usage/summary 5s 预算超时修复）。
   "$ROOT_DIR/sql/migrations/startup/856_usage_ledger_ts_cover_agg_idx.sql"
-  "$ROOT_DIR/sql/migrations/startup/857_tighten_pii_phone_intl_regex.sql"
+  "$ROOT_DIR/sql/migrations/startup/859_tighten_pii_phone_intl_regex.sql"
+  # 860（2026-10-14 S4 退役轮）：request_logs 族 `_` 前缀改名（待删除标志）。
+  # 静态可解析的 EXECUTE 字面量改名（liveRelations 文本重放依赖此形态）+
+  # 26 个 plpgsql 函数体改写 + 幂等守卫。视图按 OID 跟随，不需重建。
+  "$ROOT_DIR/sql/migrations/startup/860_rename_request_logs_family_pending_delete.sql"
+  # 861（2026-10-14）：重建 candidate_failure_logs_with_current_month 吸收
+  # session_id 列（SELECT * 视图不跟随后续 ALTER；42703 修复）。
+  "$ROOT_DIR/sql/migrations/startup/861_candidate_failure_view_absorb_session_id.sql"
+  # 862（2026-10-14）：session_turns / _request_logs 两分区父表无谓词 (ts)
+  # 前导索引（canonical 视图窗口臂 + V1FreezeCutoffSQL 母表臂；842/846/858
+  # 普通父表级联先例）。request_logs 腿引用 860 后的 `_` 前缀名。
+  "$ROOT_DIR/sql/migrations/startup/862_partition_family_leading_ts_idx.sql"
   "$ROOT_DIR/sql/migrations/startup/394_request_stats_minute.sql"
   # 2026-10-12 host-first PG/gateway log audit: the candidate-binding scope
   # revision chain (541 raw_model table → 569 canonical table + cmb triggers →
@@ -184,7 +195,7 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/571_candidate_binding_scope_revision_canonical_priority_hash.sql"
   "$ROOT_DIR/sql/migrations/startup/578_candidate_binding_scope_filter_disabled.sql"
   # 2026-10-12 host-first PG/gateway log audit: 543 (streaming observability's
-  # discard_events on request_logs{,_hot}, 4x IF NOT EXISTS) was never
+  # discard_events on _request_logs{,_hot}, 4x IF NOT EXISTS) was never
   # registered. Must precede 695: its promote column list selects
   # discard_events, so every promote_request_logs_hot_to_partition cycle
   # died with 42703 on hosts where 543 never ran.
@@ -292,7 +303,7 @@ files=(
   # Alternative: call upsert_llm_hourly_stats(hour_text, ...) helper function.
   "$ROOT_DIR/sql/migrations/startup/668_llm_hourly_stats_final_fix.sql"
   "$ROOT_DIR/deploy/sql/migrations/V371__supplier_errors_hot_and_stats.sql"
-  # 2026-09-07 PG log audit: migration 455 已声明把 request_logs_bodies_hot
+  # 2026-09-07 PG log audit: migration 455 已声明把 _request_logs_bodies_hot
   # 唯一索引从 (request_id, ts) 切到 (request_id),但实测库上索引仍是
   # (request_id, ts);每个 telemetry 写入触发 42P10。同时 model_offers 视图
   # 缺 priority / unavailable_recover_at 列,provider/client.go 历史 mo.priority
@@ -334,7 +345,7 @@ files=(
   # at every boot. Idempotent no-op on a healthy database.
   # 2026-10-10 host-first deploy: 680 rebuilds
   # request_logs_with_current_month with request_class / due_at selected from
-  # request_logs_hot and request_logs. Those two columns are added by 610,
+  # _request_logs_hot and request_logs. Those two columns are added by 610,
   # which was never registered, so on a host where the Go ensure chain had not
   # booted the rebuild failed with 42703 'column h.request_class does not
   # exist'. 610 is idempotent (6x ADD COLUMN IF NOT EXISTS) and must run
@@ -462,8 +473,8 @@ files=(
   # enqueue/claim reference it by name. Must follow 489/490 (table creator);
   # see the file header for the full reconciliation rationale.
   "$ROOT_DIR/sql/migrations/startup/853_credential_probe_queue_automatic.sql"
-  # 2026-10-10 host-first deploy: 696 rebuilds the request_logs views to also
-  # expose system_fingerprint, which 487 adds to request_logs / _hot. It was
+  # 2026-10-10 host-first deploy: 696 rebuilds the _request_logs views to also
+  # expose system_fingerprint, which 487 adds to _request_logs / _hot. It was
   # never registered, so on a host where the Go ensure chain had not booted
   # the rebuild failed with 42703 'column h.system_fingerprint does not exist'.
   # 487 is idempotent (3x ADD COLUMN IF NOT EXISTS) and must run before 696.
@@ -474,7 +485,7 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/485_request_logs_add_raw_model_name.sql"
   "$ROOT_DIR/sql/migrations/startup/487_request_logs_add_system_fingerprint.sql"
   # 487 only alters the partitioned parent; 696's LATERAL also reads
-  # request_logs_hot, which the snapshot creates with an independent column
+  # _request_logs_hot, which the snapshot creates with an independent column
   # list. 487b/487c add the same columns (485/487 pairs) to the hot heap.
   "$ROOT_DIR/sql/migrations/startup/487b_request_logs_hot_system_fingerprint.sql"
   "$ROOT_DIR/sql/migrations/startup/487c_request_logs_hot_raw_model_name.sql"
@@ -491,7 +502,7 @@ files=(
   # +08 窗口的行落入上一月分组,ensure 按 694 钉扎的上海边界建的分区不含该行,
   # INSERT 23514 整批卡死（cfl 表的 TTL trim 随即开数据丢失窗口,657828114 的
   # 预建只救了 cfl 一张表）。生产集群 default TZ=Asia/Shanghai 故潜伏;
-  # 新宿主机/维护 psql/裸 pgx 任一 UTC 会话即触发。request_logs 体 = 697 体
+  # 新宿主机/维护 psql/裸 pgx 任一 UTC 会话即触发。_request_logs 体 = 697 体
   # （含 695 自愈与 system_fingerprint 三列）加钉扎,其余 8 个 = objects/ 规范
   # 体加钉扎,迁移文件由 objects/ 机械变换生成。纯 CREATE OR REPLACE,幂等
   # 收敛,down 无。698 已查生产双账本空闲（seq/schema_migrations 均 0 命中）。
@@ -522,7 +533,7 @@ files=(
   # 升级型数据库(共享 252 生产 PG 即是)经通道升级将永远轮不到它,693/699/701
   # 同款缺口。文件自带 schema_migrations INSERT(695-699 先例),通道补条目即闭环。
   "$ROOT_DIR/sql/migrations/startup/703_supplier_errors_promote_timezone_pin.sql"
-  # 2026-09-14 P0 存储治理:request_logs promote 断链修复。337 曾 DETACH
+  # 2026-09-14 P0 存储治理:_request_logs promote 断链修复。337 曾 DETACH
   # 2026_07..2026_12 月分区,而 ensure_request_logs_partition(694 体)只查
   # pg_class relname——DETACH 后的空壳仍存在,ensure 永远跳过,promote
   # (602/688)INSERT INTO 父表全路由进 request_logs_default(本机实测
@@ -597,9 +608,9 @@ files=(
   # 查本机双账本 710 空闲(schema_migrations/sequences 均 0 命中)。
   # Go 镜像体:db/request_logs_view_schema.go canonicalV2DDL(启动自愈/升级
   # 同体),等价性由 db/view_schema_v2_contract_test.go 校验。
-  # 2026-10-10 host-first deploy: 710 rebuilds the request_logs view family
+  # 2026-10-10 host-first deploy: 710 rebuilds the _request_logs view family
   # over the queue-timing columns (t0_arrived_at … t9_response_end_at), which
-  # 491 adds to request_logs / _hot. It was never registered, so on a host
+  # 491 adds to _request_logs / _hot. It was never registered, so on a host
   # where the Go ensure chain had not booted the sequence aborted with 42703
   # 'column "t0_arrived_at" does not exist'. 491 is idempotent (23x
   # ADD COLUMN IF NOT EXISTS) and must run before 710.
@@ -623,6 +634,11 @@ files=(
   # 714 钉扎体（deploy exit 5）。
   "$ROOT_DIR/sql/migrations/startup/534_handoff_logs_hot_columnar.sql"
   "$ROOT_DIR/sql/migrations/startup/714_partition_timezone_pin_remaining.sql"
+  # 863（2026-10-14 211 日志审计轮）：ensure_handoff_logs_partition 存储形态
+  # 自适应——挂对父表即合法（columnar 只是优化）；无 pgcolumnar 环境
+  # （restore 血统，211 acc-pg17）建 heap 分区。位置硬约束：必须在 714
+  # 之后（clobber chain 终态项），否则 714 钉扎体覆盖 863 自适应体。
+  "$ROOT_DIR/sql/migrations/startup/863_handoff_partition_am_aware.sql"
   # 2026-09-17 R33 审计（通道登记补齐）：715 route_incidents pending state。
   # bba08b922 引入 StatePending、6f3d03073 接线 Go-ensure（ensure 的 CHECK/
   # 索引重建幂等），但 sql/migrations/startup/715_*.sql 未登记任何投递通道，
@@ -636,7 +652,7 @@ files=(
   # TestCanonicalStartupMigrationsAtOrAbove704AreRegistered 守卫与通道门禁
   # 双双红灯。按 701 定式登记 sequence 管存量库升级。
   "$ROOT_DIR/sql/migrations/startup/716_unify_probe_health_views.sql"
-  # 2026-09-17 R36 审计（新迁移登记）：717 request_logs_hot 列型对齐母表
+  # 2026-09-17 R36 审计（新迁移登记）：717 _request_logs_hot 列型对齐母表
   # （10 列，6 列硬不兼容）——闭合 R34 遗留#2 全新安装 42804 启动链阻断
   # 与 602 promote 批次失败。三份 01-schema baseline 已同步对齐并由
   # TestBaselineRequestLogsHotColumnTypesMatchMother 守卫。sequence 管存量
@@ -653,7 +669,7 @@ files=(
   # with 42P01. 630 is idempotent (4x IF NOT EXISTS); must run before 718.
   "$ROOT_DIR/sql/migrations/startup/630_session_aggregate_outbox.sql"
   "$ROOT_DIR/sql/migrations/startup/718_drop_redundant_indexes_and_add_ttl_indexes.sql"
-  # 2026-09-17 R38 审计（新迁移登记）：719 ensure 约束影蔽索引根治 + request_logs
+  # 2026-09-17 R38 审计（新迁移登记）：719 ensure 约束影蔽索引根治 + _request_logs
   # 父索引跨通道所有权归一（drop idx_request_logs_parent_request_id，canonical
   # 归 parent_ts）+ tool_usage_stats_hot ASC/DESC 三对收敛（保 348 显式 DESC）。
   # 与 db.go/db_omnifree.go 同 commit 删除 ensure 创建者联动，drop 后不再复活。
@@ -705,7 +721,7 @@ files=(
   # 原编 721 与 R40 余额元数据迁移撞号，重编 724。
   "$ROOT_DIR/sql/migrations/startup/724_task_type_corrections.sql"
   # 2026-09-18 R41 修复轮前置（并行会话交付，R42 补五点登记）：725
-  # request_logs + tenant_model_policies 补 super_admin_bypass policy,
+  # _request_logs + tenant_model_policies 补 super_admin_bypass policy,
   # 全语句 DROP POLICY IF EXISTS + CREATE POLICY 幂等。
   "$ROOT_DIR/sql/migrations/startup/725_r41_request_logs_and_tmp_super_admin_bypass.sql"
   # 2026-09-18 auto route rollup 42P10 修复（58384b0d8，R43 补五点登记）：726
@@ -721,7 +737,7 @@ files=(
   # CREATE INDEX CONCURRENTLY IF NOT EXISTS 幂等；2026-09-20 已在 252
   # 存量真库实跑验证。
   "$ROOT_DIR/sql/migrations/startup/727_sql_audit_slow_query_indexes.sql"
-  # 2026-09-21 252 PG SQL 日志审计复核轮：728 request_logs 分区侧
+  # 2026-09-21 252 PG SQL 日志审计复核轮：728 _request_logs 分区侧
   # credential+model 表达式索引（父表 + 存量月分区三段式，hot 侧
   # sql/objects 已有）——provider-model 抽屉轮询查询窗口跨入月分区时
   # Parallel Seq Scan（pss 10 天 184,620 次/累计 8.6h 全库第一；
@@ -740,11 +756,11 @@ files=(
   # 2026-09-20 会话存储解耦 v3（六点同步登记：db.Open ensure 链不扫 SQL
   # 文件，新迁移必须进本清单才会在存量库应用）：原编 727/728 与 origin
   # 上 R46/R48 撞号，重编 733/734。733 建 session_turn_details 特征层
-  # 表族（hot + 月分区 + RLS + promote + request_logs 反向回填）；
+  # 表族（hot + 月分区 + RLS + promote + _request_logs 反向回填）；
   # 734 把 canonical 视图 session 分支 30 个 NULL 占位换成 details
   # LEFT JOIN。Go 侧 ensure（ensureRequestLogsCurrentMonthView）在表族
   # 缺席时自动回退 710 形态，双形态兼容。
-  # 2026-10-11 host-first deploy: 733 的 request_logs 反向回填 SELECT 了
+  # 2026-10-11 host-first deploy: 733 的 _request_logs 反向回填 SELECT 了
   # request_type 列（510 加的）。host-first 库上 Go ensure 链未启动、510
   # 从未登记，第 558 行 42703 'column "request_type" does not exist'。510
   # 全幂等（ADD COLUMN IF NOT EXISTS ×5），登记在 733 之前兜底。
@@ -776,7 +792,7 @@ files=(
   # 本轮已在本机存量真库先跑对账脚本后验证通过。
   "$ROOT_DIR/sql/migrations/startup/735_models_canonical_active_folded_unique.sql"
   # 2026-09-22 Wave 3 B1：736 峰谷倍率 —— usage_ledger[_hot].rate_multiplier
-  # / request_logs[_hot].credits_rate_multiplier 四列（ADD COLUMN IF NOT
+  # / _request_logs[_hot].credits_rate_multiplier 四列（ADD COLUMN IF NOT
   # EXISTS，分区族自动级联）+ maas_resolve_rate_multiplier() 共享取档函数
   # （与 maas.ResolveRateMultiplier 同规则，配置 maas.rate_periods）。
   # 幂等，默认 enabled=false 行为零漂移。
@@ -889,7 +905,7 @@ files=(
   # bg.PartitionManager.cleanupSessionTurnLogsByTTL（跑在 24h 的
   # archiveOldPartitionsIfNeeded tick 上），支持热重载。
   "$ROOT_DIR/sql/migrations/startup/753_session_turn_logs_ttl.sql"
-  # 2026-09-27 R67 session-storage 审计子任务 7：754 request_logs 主表
+  # 2026-09-27 R67 session-storage 审计子任务 7：754 _request_logs 主表
   # archive 流水线——331 移除 archive_request_logs 整族后主表月分区一直
   # 只保留不归档；本迁移按 lifecycle.request_logs_ttl_days 把超出窗口的
   # 月分区摘要字段落进 request_logs_archive_YYYY_MM（丢弃 18 个大 JSONB
@@ -901,7 +917,7 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/754_archive_request_logs_default.sql"
   # 756 makes 754's id cursor index-backed on upgraded databases. Build at
   # a controlled migration window because the non-concurrent index takes a
-  # write-blocking lock on existing request_logs partitions.
+  # write-blocking lock on existing _request_logs partitions.
   "$ROOT_DIR/sql/migrations/startup/756_request_logs_id_index.sql"
   # 757/758 repair production read/write contracts. Both are idempotent and
   # also registered in the installer for fresh databases.
@@ -931,7 +947,7 @@ files=(
   # ALTER + conname 守卫 PK + is_called 感知防回退 setval；存量 id 有重复时
   # PK 显式失败（fail-closed）。252/本机已手工修复，重放为 no-op 并补台账。
   "$ROOT_DIR/sql/migrations/startup/763_provider_events_contract.sql"
-  # 2026-09-30 三十六轮 R36-B3：request_logs 分区家族补 (tenant_id, ts DESC)
+  # 2026-09-30 三十六轮 R36-B3：_request_logs 分区家族补 (tenant_id, ts DESC)
   # 索引——341 只索引 hot 侧，分区父表从未有 tenant 前导索引，tenant 维度
   # days>7 聚合对每分区全表扫（252-dev 实测 3 行租户 6.5s / default 21.5s）。
   # 父表 CREATE INDEX IF NOT EXISTS 级联全部分区，重放 no-op 并补台账。
@@ -976,7 +992,7 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/804_credential_model_context_window_columns.sql"
   "$ROOT_DIR/sql/migrations/startup/805_session_dim_reconcile.sql"
   "$ROOT_DIR/sql/migrations/startup/806_session_bodies_partitions_heap.sql"
-  # 2026-10-01 审计十七轮（807）：request_logs_bodies_hot 删除被同列 UNIQUE
+  # 2026-10-01 审计十七轮（807）：_request_logs_bodies_hot 删除被同列 UNIQUE
   # 索引 idx_request_logs_bodies_hot_request_id（455/678 建，承重
   # ON CONFLICT (request_id) upsert）全量影蔽的冗余普通索引。DROP INDEX
   # CONCURRENTLY 不允许在事务块内执行——文件带 dbinit:no-transaction 标记
@@ -989,7 +1005,7 @@ files=(
   # 612/808 两条静默漏网（同 803-806 批注的断链形态：只进 installer
   # StartupFiles，存量库的 sequence 通道拿不到）。三条对存量库均可重放：
   #   612 native_responses_capability：CREATE TABLE IF NOT EXISTS 幂等。
-  #   808 request_logs DEFAULT 分区兜底：存在性检查 + NOTICE skipping。
+  #   808 _request_logs DEFAULT 分区兜底：存在性检查 + NOTICE skipping。
   #   809 instance_release_status nullable release_id：DROP NOT NULL +
   #     偏索引 IF NOT EXISTS，重放 no-op。
   # 534 亦同批收编但位次受 clobber guard 约束——其 ensure_handoff_logs_partition
@@ -1005,7 +1021,7 @@ files=(
   # NOTICE 跳过指路 806/562 通道；幂等（治愈后扫描为空集）。
   "$ROOT_DIR/sql/migrations/startup/810_heap_partitions_toastless_heal.sql"
 
-  # 2026-10-02 SQL 日志审计二十轮（811）：request_logs / routing_decision_log
+  # 2026-10-02 SQL 日志审计二十轮（811）：_request_logs / routing_decision_log
   # 分区边界 473 型 UTC 零点污染重建为正典 +08 零点网格（687 姊妹篇；
   # 252 生产 overlap ×8、ensure 2026_11 永远建不出来、11-01 写入时间炸弹
   # 实证）。存储引擎跟随原分区（rdl=columnar 单族）；bak 两遍回灌计数
@@ -1039,7 +1055,7 @@ files=(
   # admin/compression_stats.go 分带聚合的既有读点（此前每调 42703 被
   # 吞掉、仪表盘静默为空）。顶层 view 全量重建为 118 列契约；幂等。
   # 三基线+installer 五点同步（815 曾漏登本通道=守卫红，见 f7f1c97f4）。
-  # 2026-10-11 host-first deploy: 815 的重建前置探测要求 request_logs(_hot)
+  # 2026-10-11 host-first deploy: 815 的重建前置探测要求 _request_logs(_hot)
   # 三列齐备，缺列时静默 skip 但尾部列数对账仍 fail-closed（内部不一致）。
   # token_band 由 542 加列（幂等 ×7）且从未进本序列，host-first 库上必缺
   # ⇒ 登记在 815 之前兜底，消除 skip/对账互斥。
@@ -1121,7 +1137,7 @@ files=(
   # 依赖 817 链形与 session_turn_details 族，缺链时 NOTICE 跳过由 db.ensure 重建。
   "$ROOT_DIR/sql/migrations/startup/824_request_status_rate_limited_projection.sql"
 
-  # 2026-10-05（829，Owner 拍板登记）：request_logs_bodies 从 Citus columnar
+  # 2026-10-05（829，Owner 拍板登记）：_request_logs_bodies 从 Citus columnar
   # 退回全 heap 的止血迁移。此前它是「有文件、无通道」——startup 通道数组里
   # 没有它，`apply-db-revision-sequence_test.sh` 的目录驱动不变式因此常驻红
   # （R44 移交第 2 项）。三臂里只有 embeddata/startup 副本是齐的，通道腿缺失。
@@ -1130,13 +1146,13 @@ files=(
   # ensure_request_logs_bodies_partition 重定义为**纯 heap**。只要这行改动不
   # 下发，**新建的月分区就继续被建成列存**，而 §9.197.4 实测过 9 个列存分区
   # 的 UNION ALL 子查询计划 **7/7 全部失败**（invalid perminfoindex 0 in RTE
-  # with relid 0），同形状的全 heap request_logs 正常返回 218 万行。也就是说
+  # with relid 0），同形状的全 heap _request_logs 正常返回 218 万行。也就是说
   # 「不登记」不是一个中性的等待态，它是在持续生产新的故障面。
   #
   # 为什么这条可以安全进通道：幂等（CREATE OR REPLACE / IF EXISTS / DO 守卫，
   # 可安全重放）；**不重写任何数据**——只转换**空**分区，非空分区一律
   # `RAISE NOTICE` 保留并交给 TTL 按月 DROP 消化；锁在 ACCESS EXCLUSIVE 下
-  # 复核空值，避免与 promote 并发窗口互踩。代价是 request_logs_bodies 放弃
+  # 复核空值，避免与 promote 并发窗口互踩。代价是 _request_logs_bodies 放弃
   # 列存压缩、新分区按 heap 建，存储占用会上升——这是已知的、被接受的代价。
   #
   # ⚠ 与 830 的 manual-by-design **不是同一类**（R44 明确区分）：830 之所以不
@@ -1206,7 +1222,7 @@ files=(
   # 2026-10-06（835）：把 system_probe_runs 的 task_type 词表放宽一个值
   # （modality_verify），让多模态定时核实的每一次尝试进自检台账。在它之前，
   # 核实循环是唯一一条「在跑但运维查不到」的链路：语义探针经
-  # internal/upstreamurl 直连上游、不产生 request_logs，进程内尝试台账又随
+  # internal/upstreamurl 直连上游、不产生 _request_logs，进程内尝试台账又随
   # 重启清零。编号注：834 悬空 —— 828（supplier_errors_unified 视图）的底表
   # 只在未受追踪的 deploy/sql/migrations/V371 里定义，受追踪链与基线都不建，
   # 而 828 排在 834 之前 ⇒ 一条编号在后的迁移救不了它。修法待裁决，故 835
@@ -1413,9 +1429,11 @@ intentional_function_chains=(
   'ensure_request_logs_bodies_partition|694_partition_ensure_timezone.sql|765_bodies_columnar_storage.sql|829_bodies_columnar_rollback.sql|'
   # 534 (24h 审计第二十八轮 canonical 收编) 引入 ensure_handoff_logs_partition
   # 的 columnar 体；714 的 handoff_logs 腿是同一函数的 Asia/Shanghai 时区钉扎版
-  # （DECLARE 初始化器移入函数体）。714 必须保持为后项——与 699/703 的
-  # V371-track 同型：钉扎版必须是活库里的最终体。
-  'ensure_handoff_logs_partition|534_handoff_logs_hot_columnar.sql|714_partition_timezone_pin_remaining.sql|'
+  # （DECLARE 初始化器移入函数体）。863（2026-10-14 211 日志审计轮）在 714
+  # 之上做存储形态自适应：挂对父表即合法（columnar 只是优化）、无 pgcolumnar
+  # 环境（restore 血统，如 211 acc-pg17）建 heap 分区；714 的时区钉扎语义
+  # 原样保留。863 必须保持为最后一项——它是活库里应有的最终体。
+  'ensure_handoff_logs_partition|534_handoff_logs_hot_columnar.sql|714_partition_timezone_pin_remaining.sql|863_handoff_partition_am_aware.sql|'
   # 2026-10-10 host-first deploy: 640 was registered for 713's client_protocol
   # prerequisite. It also redefines promote_session_turns_hot_to_partition, and
   # 640 is sequenced AFTER 707 — which the block comment above names as the

@@ -126,9 +126,9 @@ run_scenario() {
     # 用同会话的出向正文判断成因
     local ph_present="unknown"
     local rid
-    rid=$(rsql "select request_id from request_logs_hot where gw_session_id like 'gw_${sid}' order by ts desc limit 1")
+    rid=$(rsql "select request_id from _request_logs_hot where gw_session_id like 'gw_${sid}' order by ts desc limit 1")
     if [ -n "$rid" ]; then
-      ph_present=$(rsql "select coalesce((outbound_body::text like '%SENSITIVE%')::text,'nobody') from request_logs_bodies_hot where request_id='$rid'")
+      ph_present=$(rsql "select coalesce((outbound_body::text like '%SENSITIVE%')::text,'nobody') from _request_logs_bodies_hot where request_id='$rid'")
     fi
     if [ "$ph_present" = "false" ]; then
       bad "B2 网关漏检：真值原样到达客户端 ($model):$leaked"
@@ -217,7 +217,7 @@ if [ -n "$SID1" ]; then
   echo "-- 目标会话: $SID1"
   # 1) outbound_body 必须不含原文（真值只应在加密的 censors 里）
   echo "-- request_logs_bodies_hot.outbound_body 抽样（应为占位符）:"
-  rsql "select left(outbound_body::text, 400) from request_logs_bodies_hot where ts > now() - interval '30 minutes' and outbound_body is not null order by ts desc limit 3" \
+  rsql "select left(outbound_body::text, 400) from _request_logs_bodies_hot where ts > now() - interval '30 minutes' and outbound_body is not null order by ts desc limit 3" \
     | tee "$OUT/outbound_sample.txt" | cut -c1-260
   if grep -q 'SENSITIVE:' "$OUT/outbound_sample.txt"; then
     ok "E1 上游收到的是占位符而非原文"
@@ -237,7 +237,7 @@ if [ -n "$SID1" ]; then
 
   # 3) 明文泄漏扫描：近 30 分钟落库的 outbound_body 里是否出现真值
   echo "-- 明文泄漏扫描（outbound_body 是否含真值）:"
-  LEAK=$(rsql "select count(*) from request_logs_bodies_hot where ts > now() - interval '30 minutes' and (outbound_body::text like '%13900001111%' or outbound_body::text like '%zhangsan@example.com%' or outbound_body::text like '%110101199003078888%' or outbound_body::text like '%6222021234567890123%')")
+  LEAK=$(rsql "select count(*) from _request_logs_bodies_hot where ts > now() - interval '30 minutes' and (outbound_body::text like '%13900001111%' or outbound_body::text like '%zhangsan@example.com%' or outbound_body::text like '%110101199003078888%' or outbound_body::text like '%6222021234567890123%')")
   if [ "${LEAK:-0}" = "0" ]; then
     ok "E3 出向落库无明文敏感值"
   else
@@ -247,7 +247,7 @@ if [ -n "$SID1" ]; then
   # 4) 入向 request_body 是否存明文（设计上原始正文有独立存储边界，
   #    这里只做观测，不判失败）
   echo "-- 入向 request_body 观测（记录用，不判失败）:"
-  rsql "select count(*) from request_logs_bodies_hot where ts > now() - interval '30 minutes' and request_body::text like '%13900001111%'" \
+  rsql "select count(*) from _request_logs_bodies_hot where ts > now() - interval '30 minutes' and request_body::text like '%13900001111%'" \
     | tail -1 | sed 's/^/   含真值的入向行数: /' | tee "$OUT/inbound_plaintext_count.txt"
 fi
 

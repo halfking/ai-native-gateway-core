@@ -232,9 +232,9 @@ func TestS4CoverageIsCrossValidated(t *testing.T) {
 	var refCovered, refBearing int64
 	if err := pool.QueryRow(ctx, `
 		WITH v AS (
-		  SELECT date_trunc('hour', ts) h FROM request_logs_hot WHERE ts >= $1 AND ts < $2
+		  SELECT date_trunc('hour', ts) h FROM _request_logs_hot WHERE ts >= $1 AND ts < $2
 		  UNION ALL
-		  SELECT date_trunc('hour', ts) FROM request_logs      WHERE ts >= $1 AND ts < $2),
+		  SELECT date_trunc('hour', ts) FROM _request_logs      WHERE ts >= $1 AND ts < $2),
 		s AS (
 		  SELECT date_trunc('hour', ts) h FROM session_turns_hot WHERE ts >= $1 AND ts < $2
 		  UNION ALL

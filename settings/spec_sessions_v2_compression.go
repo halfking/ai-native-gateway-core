@@ -21,10 +21,9 @@ func SessionsV2CompressionPlatformSpecs() []*Spec {
 			Scope:       ScopePlatform,
 			Category:    CategoryCompression,
 			Default:     true,
-			Description: "Read session state (compression + summaries) from V2 (session_bodies) instead of V1 (request_logs). Default on; set false to revert to V1.",
+			Description: "Read session state (compression + summaries) from V2 (session_bodies) instead of V1 (_request_logs). Default on; set false to revert to V1.",
 			HotReload:   true,
 			DangerLevel: Warning,
 		},
 	}
 }
-

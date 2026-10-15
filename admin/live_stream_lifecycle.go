@@ -125,7 +125,7 @@ func flattenActionEvent(ev liveactions.ActionEvent, labels map[int]string) map[s
 }
 
 // normalizeLiveRequestType maps the persisted request_type vocabulary
-// (request_logs.request_type, migration 510: main/title_gen/summary/
+// (_request_logs.request_type, migration 510: main/title_gen/summary/
 // sensitive_check/compression/probe) onto the frozen 24号 §3 wire enum
 // chat|title|summary|sensitive_word|probe|unknown. Main requests return ""
 // so the requestType alias stays absent on ordinary frames (optional 字段,

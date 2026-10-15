@@ -75,6 +75,29 @@ var uncommonParams = []string{
 	"reasoning_effort_hint",
 }
 
+// wireKeyAliases 把上游文案点名的参数名映射到我方出站线体的顶层键。
+//
+// 2026-10-14（Bedrock 后端 effort 值拒绝，claude-opus-5-5 经 vapeur）：
+// 上游侧叫 "output_config.effort"（Bedrock converse 概念），我方 chat
+// 线体键是 "reasoning_effort"、responses 线体嵌套在 "reasoning"。不映射
+// 则 named 路径空手而归 → 剥参重试不触发（同名假设首次被上游命名空间
+// 打破）。嵌套键（reasoning.effort）剥整对象：effort 是该对象的全部
+// 语义，留空对象不如整键删除。
+var wireKeyAliases = map[string][]string{
+	"output_config.effort": {"reasoning_effort", "reasoning"},
+	"reasoning.effort":     {"reasoning_effort", "reasoning"},
+	"effort":               {"reasoning_effort", "reasoning"},
+}
+
+// resolveWireKeys 返回 named 参数名在出站体上可能的线体键
+// （原名 + 别名扩展，保持原名优先）。
+func resolveWireKeys(named string) []string {
+	named = strings.ToLower(strings.TrimSpace(named))
+	keys := []string{named}
+	keys = append(keys, wireKeyAliases[named]...)
+	return keys
+}
+
 // StrippableParams 返回出站体中存在且可剔除的参数名列表。
 // named 非空时只返回它（若存在）；否则返回 uncommon 清单与出站体的交集。
 // named 路径只让开 skeletonParams（见其注释）；无名路径 coreParams 永不返回。
@@ -85,12 +108,13 @@ func StrippableParams(outbound []byte, named string) []string {
 	}
 	if named != "" {
 		for _, n := range strings.Split(named, ",") {
-			n = strings.ToLower(strings.TrimSpace(n))
-			if n == "" || skeletonParams[n] {
-				continue
-			}
-			if _, ok := obj[n]; ok {
-				return []string{n}
+			for _, k := range resolveWireKeys(n) {
+				if k == "" || skeletonParams[k] {
+					continue
+				}
+				if _, ok := obj[k]; ok {
+					return []string{k}
+				}
 			}
 		}
 		return nil
@@ -114,12 +138,13 @@ func StripParams(body []byte, named string) ([]byte, []string) {
 	var targets []string
 	if named != "" {
 		for _, n := range strings.Split(named, ",") {
-			n = strings.ToLower(strings.TrimSpace(n))
-			if n == "" || skeletonParams[n] {
-				continue
-			}
-			if _, ok := obj[n]; ok {
-				targets = append(targets, n)
+			for _, k := range resolveWireKeys(n) {
+				if k == "" || skeletonParams[k] {
+					continue
+				}
+				if _, ok := obj[k]; ok {
+					targets = append(targets, k)
+				}
 			}
 		}
 	} else {

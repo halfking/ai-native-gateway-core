@@ -11,8 +11,8 @@ import (
 
 // partitionedTableConfig defines configuration for a partitioned table
 type partitionedTableConfig struct {
-	TableName        string // e.g., "request_logs", "request_wal"
-	ArchiveTableName string // e.g., "request_logs_archive", optional when only drop/inspect is supported
+	TableName        string // e.g., "_request_logs", "request_wal"
+	ArchiveTableName string // e.g., "_request_logs_archive", optional when only drop/inspect is supported
 	PartitionColumn  string // e.g., "ts", "created_at"
 	Description      string // Human-readable description
 	HasArchiveFunc   bool   // Whether archive_<table>() function exists
@@ -20,13 +20,13 @@ type partitionedTableConfig struct {
 
 // Supported partitioned tables for columnar archive management
 //
-// Migration 331 (2026-07-04): Removed request_logs_archive and request_wal_archive
+// Migration 331 (2026-07-04): Removed _request_logs_archive and request_wal_archive
 // to simplify architecture. Archive tables had minimal storage footprint and no
 // application code queried them. Old partitions are now dropped directly or retained
 // longer in main table if needed.
 var partitionedTables = []partitionedTableConfig{
 	{
-		TableName:        "request_logs",
+		TableName:        "_request_logs",
 		ArchiveTableName: "",
 		PartitionColumn:  "ts",
 		Description:      "请求日志表",
@@ -251,7 +251,7 @@ func (h *Handler) getPartitionTableStatus(ctx context.Context, config partitione
 // POST /api/admin/data-lifecycle/partitions/archive
 // Archives a specific partition to columnar storage
 type archivePartitionRequest struct {
-	TableName    string `json:"table_name"`    // e.g., "request_logs"
+	TableName    string `json:"table_name"`    // e.g., "_request_logs"
 	ArchiveMonth string `json:"archive_month"` // YYYY-MM format
 	DryRun       bool   `json:"dry_run"`
 }

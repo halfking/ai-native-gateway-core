@@ -320,5 +320,5 @@ func SummaryPrompt() string {
 
 // ErrRebuildFailed indicates a rebuild attempt could not produce a usable
 // body (parse failure, no messages, etc.). Callers use this to fall back
-// to the strategy=noop path (write original body to request_logs).
+// to the strategy=noop path (write original body to _request_logs).
 var ErrRebuildFailed = fmt.Errorf("compressor: rebuild failed")

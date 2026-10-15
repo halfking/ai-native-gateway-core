@@ -22,7 +22,7 @@ import (
 //   - 放弃 request_logs_with_current_month：全 owner GROUP BY 本地实测
 //     22–35s（视图外层 LATERAL request_class 富化 + 中间层 NOT EXISTS
 //     相关子查询 542K 次/行索引扫描），页面端点不可用。
-//   - request_logs.owner_user 本地全空；api_key_owner_user 虽有值但读面过重。
+//   - _request_logs.owner_user 本地全空；api_key_owner_user 虽有值但读面过重。
 //   - 不依赖 session_owners 视图（仓内 schema 与本地库均无定义，独立遗留项）。
 //
 // 权限与 /api/users 同口径：super_admin/admin_key 全量；tenant_admin 限本租户

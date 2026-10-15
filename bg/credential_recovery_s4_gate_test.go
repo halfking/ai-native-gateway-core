@@ -11,7 +11,7 @@ import (
 // S4 停写门控范围（2026-10-02 审计，第三处跨门边界的检查）。
 //
 // lookbackCandidateSQL 拿「36h 窗口内是否有成功」当候选资格判据，证据源是
-// request_logs_hot ∪ request_logs —— **整体在 S4 门内**。停写生效后证据源冻结，
+// _request_logs_hot ∪ _request_logs —— **整体在 S4 门内**。停写生效后证据源冻结，
 // EXISTS(...) 恒空，于是**没有任何绑定再进 lookback 候选集**，降级/离线绑定
 // 在这条路径上永久失去恢复机会，而扫描照常返回空、无任何痕迹。
 //
@@ -22,7 +22,7 @@ import (
 // 逐项核实过同文件另外两条恢复路径**不需要**门控（不是「同一个文件就一起挡」）：
 //   - expiredCmbRecoverySQL（:1132 的 NOT EXISTS）读 node_probe_state；
 //   - recoverFreshDegradedSQL（:1261 的 NOT EXISTS）同样读 node_probe_state。
-// 两者都不碰 request_logs、不受该门影响，停写后仍完全可判定。
+// 两者都不碰 _request_logs、不受该门影响，停写后仍完全可判定。
 // 真正被这条扫描漏掉的，正是 unavailable_reason **不**属于
 // continuous_failure / probe!_% / auto!_% 的那批绑定——因为那正是另外两条
 // 路径接不住的部分。
@@ -109,7 +109,7 @@ func TestLookbackScanIsGatedBeforeQuerying(t *testing.T) {
 	gate := findIfCallingCred(t, scan, "lookbackComparability")
 	if gate == nil {
 		t.Fatal("scanLookbackRecoveries no longer consults lookbackComparability — the 36h " +
-			"evidence source (request_logs_hot/request_logs) is inside the S4 blast radius, " +
+			"evidence source (_request_logs_hot/request_logs) is inside the S4 blast radius, " +
 			"and after stop-write the scan would report 'no candidates' forever")
 	}
 	if !hasReturnCred(gate.Body.List) {
@@ -150,7 +150,7 @@ func TestLookbackScanIsGatedBeforeQuerying(t *testing.T) {
 	}
 
 	// The two ungated sibling scans must stay ungated: they read
-	// node_probe_state, not request_logs, so they remain fully decidable under
+	// node_probe_state, not _request_logs, so they remain fully decidable under
 	// stop-write. Gating them would trade a silent hole for a different one.
 	for _, d := range file.Decls {
 		fd, ok := d.(*ast.FuncDecl)

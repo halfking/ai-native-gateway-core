@@ -139,7 +139,7 @@ func FromTelemetryEntry(entry *telemetry.RequestLogEntry, ts time.Time) (
 
 	prompt := int64(derefInt(entry.PromptTokens))
 	completion := int64(derefInt(entry.CompletionTokens))
-	// total_tokens 口径与 request_logs / usage_facts（event.go）对齐：
+	// total_tokens 口径与 _request_logs / usage_facts（event.go）对齐：
 	// prompt + completion，cache 等细分项是子集，**不另加**。
 	// R48-F1（2026-10-06）：此前这里 +cacheRead+cacheWrite，是 event.go
 	// 同族的双重计——usage_facts 回填 cache 数据后分钟表/看板缓存会虚高。

@@ -583,7 +583,7 @@ func stringPtrValue(p *string) string {
 
 // turnBodyItem 是 serveSessionTurnsBodies 返回的单轮正文投影。
 // 正文来自 public.session_bodies（V2 增量存储），每轮只保存「本轮新增」
-// 的请求消息 + 本轮回复 + 实际发往 LLM 的 outbound，避免 request_logs
+// 的请求消息 + 本轮回复 + 实际发往 LLM 的 outbound，避免 _request_logs
 // 那种每轮全量套娃。全面切到 session_turns 模式后，这是会话正文的唯一来源。
 type turnBodyItem struct {
 	TurnNo        int    `json:"turn_no"`
@@ -595,7 +595,7 @@ type turnBodyItem struct {
 
 // serveSessionTurnsBodies 返回会话所有轮次的正文（按 turn_no 升序），
 // 数据源为 public.session_bodies。前端「会话轮次」视图据此渲染每轮用户指令
-// 摘要与单轮消息过滤；request_logs 正文派生作为空数据时的兜底。
+// 摘要与单轮消息过滤；_request_logs 正文派生作为空数据时的兜底。
 //
 // GET /api/admin/sessions/<id>/turns/bodies?limit=
 func (h *Handler) serveSessionTurnsBodies(w http.ResponseWriter, r *http.Request, sessionID string) {

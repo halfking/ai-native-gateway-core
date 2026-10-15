@@ -25,7 +25,7 @@ var (
 	//   <parameter name="arg">value</parameter>
 	//   </invoke>
 	//   </minimax:tool_call>
-	// We saw this in production request_logs id 30089 (2026-06-11) when
+	// We saw this in production _request_logs id 30089 (2026-06-11) when
 	// MiniMax M2.7 falls back to XML when its native tool_use wire format
 	// is unavailable.
 	minimaxToolCallRE = regexp.MustCompile(`(?s)<minimax:tool_call>\s*<invoke\s+name="([A-Za-z_][\w.-]*)">(.*?)</invoke>\s*</minimax:tool_call>`)

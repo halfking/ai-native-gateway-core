@@ -72,7 +72,7 @@ func TestNonfeaturedWatchdogIntegration(t *testing.T) {
 			tenant_id TEXT DEFAULT 'default',
 			featured_models TEXT[]
 		);
-		CREATE TABLE IF NOT EXISTS request_logs_hot (
+		CREATE TABLE IF NOT EXISTS _request_logs_hot (
 			id BIGINT PRIMARY KEY,
 			ts TIMESTAMPTZ,
 			success BOOLEAN,
@@ -124,7 +124,7 @@ func TestNonfeaturedWatchdogIntegration(t *testing.T) {
 		    SELECT lower(raw_model) AS raw_model FROM (
 		        SELECT COALESCE(rl.outbound_model, rl.client_model) AS raw_model,
 		               count(*) AS calls
-		        FROM request_logs_hot rl
+		        FROM _request_logs_hot rl
 		        WHERE rl.success
 		          AND rl.ts > now() - make_interval(hours => $2)
 		          AND COALESCE(rl.outbound_model, rl.client_model) <> ''

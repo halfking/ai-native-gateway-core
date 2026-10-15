@@ -619,9 +619,11 @@ func TestSurvivalOptionsUseNightRetryBudget(t *testing.T) {
 }
 
 func TestSurvivalOptionsDefaultToFiveHourThirtySecondRecovery(t *testing.T) {
+	// P0-2 (2026-10-14): the zero-value deadline default dropped from 5h to
+	// the 240s bounded budget; the 30s recovery cadence is unchanged.
 	opts := (SurvivalOptions{}).withDefaults()
-	if opts.Deadline != 5*time.Hour || opts.RetryBase != 30*time.Second || opts.RetryInterval != 30*time.Second {
-		t.Fatalf("defaults = deadline %v/base %v/interval %v, want 5h/30s/30s", opts.Deadline, opts.RetryBase, opts.RetryInterval)
+	if opts.Deadline != 4*time.Minute || opts.RetryBase != 30*time.Second || opts.RetryInterval != 30*time.Second {
+		t.Fatalf("defaults = deadline %v/base %v/interval %v, want 4m/30s/30s", opts.Deadline, opts.RetryBase, opts.RetryInterval)
 	}
 }
 

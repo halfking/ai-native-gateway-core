@@ -153,7 +153,7 @@ func (s *Store) MarkInProgress(ctx context.Context, r *Response) error {
 // Save replaces the row with the final status. Used both on success
 // and failure. If body is larger than MaxBodyBytes, only a stub is
 // stored and BytesBuffered reflects the actual size; the operator
-// must consult request_logs for the full body.
+// must consult _request_logs for the full body.
 func (s *Store) Save(ctx context.Context, r *Response) error {
 	if r == nil {
 		return errors.New("pending: nil response")
@@ -171,7 +171,7 @@ func (s *Store) Save(ctx context.Context, r *Response) error {
 
 	if len(r.Body) > MaxBodyBytes {
 		originalBytes := len(r.Body)
-		r.Body = fmt.Sprintf(`{"error":{"message":"response_too_large: %d bytes (limit %d); see request_logs for full body","code":"response_too_large"}}`,
+		r.Body = fmt.Sprintf(`{"error":{"message":"response_too_large: %d bytes (limit %d); see _request_logs for full body","code":"response_too_large"}}`,
 			originalBytes, MaxBodyBytes)
 		r.BytesBuffered = MaxBodyBytes
 	} else {

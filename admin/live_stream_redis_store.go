@@ -382,7 +382,7 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest, inst
 	// exhausted), we return nil WITHOUT writing: the request is dropped from
 	// the live stream rather than written in a raced state. Dropping one tile
 	// is far less visible than a persistent duplicate; the canonical record
-	// still lives in request_logs and arrives via the next snapshot refresh.
+	// still lives in _request_logs and arrives via the next snapshot refresh.
 	release, locked := s.acquireLiveStreamRecordLock(ctx, req.RequestID)
 	if !locked {
 		slog.Warn("live stream record: lock not acquired, dropping request to preserve dedup",

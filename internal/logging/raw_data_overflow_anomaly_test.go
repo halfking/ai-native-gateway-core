@@ -79,7 +79,7 @@ func TestAsyncRawDataLogger_OverflowEmitsAnomaly(t *testing.T) {
 // TestAsyncRawDataLogger_CloseWritesDrainedStub covers the
 // graceful-shutdown hook (2026-07-28 §5.8). Close() must write a
 // final close_drained stub entry to the raw log file so operators
-// can correlate the shutdown row with the request_logs they were
+// can correlate the shutdown row with the _request_logs they were
 // observing at the time.
 func TestAsyncRawDataLogger_CloseWritesDrainedStub(t *testing.T) {
 	dir := t.TempDir()

@@ -27,7 +27,7 @@ var SessionHeadersPriority = []string{
 // (e.g. ZCode's per-session bare-UUID x-session-id) send a STABLE id with no
 // gw_/gt_/gs_ prefix; the previous behaviour treated such ids as unknown and
 // minted a fresh gw_<uuid> per request via the CreateV2 fallback, so one
-// client conversation never grouped under a single request_logs.gw_session_id
+// client conversation never grouped under a single _request_logs.gw_session_id
 // and session_turns stayed at turn 1 forever. Deriving "gw_" + <client id>
 // keeps the gateway namespace canonical while making the mapping
 // deterministic: the derived id registers via the honored gw_ branch
@@ -235,7 +235,7 @@ func generateSystemSessionID() string {
 // /v1/responses 的"客户端已提供 id"分支与 chat 路径(handler.go)对齐 —
 // b02a5c385 的确定性映射 + 幂等注册此前只接了 chat:
 //  1. 非网关稳定身份(裸 UUID x-session-id)确定性映射 gw_<id>;否则异构
-//     命名空间直接落 request_logs.gw_session_id,session_turns 轮次聚合恒 1;
+//     命名空间直接落 _request_logs.gw_session_id,session_turns 轮次聚合恒 1;
 //  2. Redis 未知的受信 gw_ id(新会话首请求)幂等注册 EnsureV2WithID(异步、
 //     尽力而为、带 panic 防护)— 否则每次后续请求都重复 ErrSessionNotFound,
 //     Touch 与轮次状态永不生效。branch 命名空间(gt_/gs_)不注册,与 chat 一致。
@@ -254,6 +254,20 @@ var errClientSessionForbidden = errors.New("client session forbidden")
 // would 403 legitimate traffic during a Redis outage.
 var errClientSessionUnavailable = errors.New("client session store unavailable")
 
+// sessionAbsentErr reports whether a session Get error means "no such
+// session (anymore)" as opposed to "the store is degraded".
+//
+// r1029（2026-10-14）：ErrSessionExpired 此前被当成 store fault 走 503
+// 分支——但过期是**确定性终态**（Redis TTL 到期），同 body 重试必再败；
+// 实测 auto_summary 内部回环对该 503 反复重试（日志 2040 次 transient
+// retry / 4051 次 failed），且 503 响应体曾误用 SESSION_FORBIDDEN 文案
+// 把归因引向所有权。语义上过期 ≈ NotFound：id 保持原样重新登记/认领，
+// 会话在同一个 id 下重新开始。
+func sessionAbsentErr(err error) bool {
+	return errors.Is(err, session.ErrSessionNotFound) ||
+		errors.Is(err, session.ErrSessionExpired)
+}
+
 func normalizeAndRegisterClientSession(
 	r *http.Request,
 	sessionID string,
@@ -267,7 +281,7 @@ func normalizeAndRegisterClientSession(
 		return sessionID, nil, nil
 	}
 	si, getErr := getter.Get(r.Context(), sessionID)
-	if getErr != nil && !errors.Is(getErr, session.ErrSessionNotFound) {
+	if getErr != nil && !sessionAbsentErr(getErr) {
 		// R25-W (V3-A02, 2026-09-30 round 30): a store fault is not a
 		// verdict on ownership. Returning (id, nil, nil) here would let an
 		// unverified client-supplied session id flow into dispatch while
@@ -315,7 +329,7 @@ func normalizeAndRegisterClientSession(
 		}
 		return sessionID, si, nil
 	}
-	if errors.Is(getErr, session.ErrSessionNotFound) &&
+	if sessionAbsentErr(getErr) &&
 		strings.HasPrefix(sessionID, "gw_") && !isBranchSessionID(sessionID) {
 		regDeviceSeed := r.Header.Get("X-Device-Seed")
 		if regDeviceSeed == "" {

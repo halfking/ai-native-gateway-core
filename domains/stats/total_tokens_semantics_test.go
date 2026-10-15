@@ -33,7 +33,7 @@ import (
 // "provider billing evidence, not a generic token replacement"）。真库
 // 246 行**恒为 0**。拿它对拍会算出「拿 0 当基准」的假差值 —— 我犯过。
 //
-// 正确的参照是 `request_logs.total_tokens`（取自上游 usage.total_tokens）：
+// 正确的参照是 `_request_logs.total_tokens`（取自上游 usage.total_tokens）：
 // 近 30 天 1,492,562 行**全部**严格等于 prompt+completion，而 cache_read
 // 平均占总 token 的 42.5%（87,888 行有 cache 读，avg 12,218.9）
 // ⇒ 它确实没被另加。本判据就是让 usage_facts 与它同口径。

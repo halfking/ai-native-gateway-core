@@ -1,15 +1,15 @@
 package admin
 
 // 会话存储解耦 v3 审计（2026-10-02）：request_logs_with_current_month 契约之外、
-// 只在物理 request_logs 上存在的列。
+// 只在物理 _request_logs 上存在的列。
 //
 // 放在非 test 文件里是因为两道门都要用同一份清单，build tag 不能把它们隔开：
 //   - TestNoPhysicalOnlyColumnsInViewSourcedSQL（!integration，静态、逐字面量）
 //   - TestPhysicalOnlyColumnsListMatchesRealDatabase（integration，真库反向校验）
 //
-// physicalOnlyRequestLogColumns 是在 request_logs 上存在、但在视图契约上
+// physicalOnlyRequestLogColumns 是在 _request_logs 上存在、但在视图契约上
 // **不存在**的列。清单由 integration 那道门从 information_schema 重新推导并
-// 逐列核对，所以视图一旦新增其中任一列、或 request_logs 删掉其中任一列，
+// 逐列核对，所以视图一旦新增其中任一列、或 _request_logs 删掉其中任一列，
 // 那道门就会红并要求更新。
 //
 // 815（2026-10-02，审计 §9.22）把 origin_stage / token_band /

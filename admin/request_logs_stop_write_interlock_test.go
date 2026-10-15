@@ -4,7 +4,7 @@ package admin
 //
 // # 这道门测什么
 //
-// 退役 `request_logs` 的第一前提是**停写**。停写开关是
+// 退役 `_request_logs` 的第一前提是**停写**。停写开关是
 // `settings.storage.request_logs_write_enabled`
 // （`settings/key_request_logs_write_enabled.go`，`Default: true`、HotReload）。
 //
@@ -14,7 +14,7 @@ package admin
 //
 // ★ **现状（实测，2026-10-05）**：
 //	- 该键在 `settings_kv` 里**没有行** ⇒ 取默认 **true** ⇒ **仍在双写**；
-//	- 真库 `request_logs_hot` 的 `max(ts)` 距测量时刻 **86 秒** ⇒ 确实在写；
+//	- 真库 `_request_logs_hot` 的 `max(ts)` 距测量时刻 **86 秒** ⇒ 确实在写；
 //	- 逐点评估进度 **106/107**，未评估 **1** 个 ⇒ 门自己的日志写着
 //	  「缺口仍在，**S4 灰度前置条件未达成**」。
 //

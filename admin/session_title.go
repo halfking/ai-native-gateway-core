@@ -1,6 +1,6 @@
 package admin
 
-// NOTE: All SELECTs on tenant-scoped tables (request_logs etc.) in this file
+// NOTE: All SELECTs on tenant-scoped tables (_request_logs etc.) in this file
 // use sessionLogsWhere() which embeds tenantLogsClause()
 // (admin/session_tenant.go) to inject "AND tenant_id = $N" for tenant_admin
 // callers on non-default tenants. Super-admin / legacy admin_key /

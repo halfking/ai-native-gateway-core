@@ -189,9 +189,7 @@ func StreamNativeResponsesSSE(ctx context.Context, w http.ResponseWriter, resp *
 	w, gate := wrapAttemptWriter(ctx, w, ProtocolOpenAIResponses)
 	// vapeur3 同款尾部兜底（与 anthropic_stream.go 同步补线，三十七轮审计）：
 	// 非 survival 路径的 pending 滞留帧在 EOF 处排水，空 pending 为 no-op。
-	if gw, ok := w.(*GateWriter); ok {
-		defer gw.DrainPending()
-	}
+	defer drainGateWriterPending(w)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return StreamOutcome{Interrupted: true, Reason: "no_flusher", Kind: errorsx.KindUpstreamDown, Resumable: true}

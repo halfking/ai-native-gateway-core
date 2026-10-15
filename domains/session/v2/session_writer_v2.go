@@ -285,9 +285,9 @@ type ProcessedRequest struct {
 	// just never copied it — so public.session_turns could not tell a
 	// rate-limited rejection from a genuine upstream failure.
 	//
-	// Why this matters for the request_logs retirement: 394,614 rate_limited
+	// Why this matters for the _request_logs retirement: 394,614 rate_limited
 	// turns (≈446,819 including the stop-write window, audit §9.150) are already
-	// mirrored into session_turns. Once request_logs is gone, this field is the
+	// mirrored into session_turns. Once _request_logs is gone, this field is the
 	// only surviving way to tell model-catalog scan traffic apart from real
 	// failures. See audit §9.150.4 / §9.155.
 	RequestStatus string
@@ -314,7 +314,7 @@ type ProcessedRequest struct {
 	// 这是该列 0% 填充的第三个原因（另两个：entry 无源、Write 里硬写 ""）。
 	SearchText string
 
-	// ── 存储优化方案 v2 S1a（migration 706/707）：request_logs 独有数据补采。
+	// ── 存储优化方案 v2 S1a（migration 706/707）：_request_logs 独有数据补采。
 	// 数据源是 telemetry.RequestLogEntry（mirror bridge
 	// entryToProcessedRequest 逐一拷贝）；四组列全部可空、零值即 NULL。
 	// 缺源字段（TraceEvents/SearchText/RequestChecksum/RawModelName 在

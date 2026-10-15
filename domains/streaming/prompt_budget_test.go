@@ -94,7 +94,7 @@ func TestPreflightDoesNotUseGatewayCeilingAsProviderWindow(t *testing.T) {
 
 // TestPromptBudgetHandlerRejection pins the /v1/chat/completions 413 path:
 // with the guard on, an oversized prompt is rejected before JSON parse and
-// upstream dispatch, with code=prompt_too_large and a request_logs failure
+// upstream dispatch, with code=prompt_too_large and a _request_logs failure
 // row (logCtx marked logged so the safety net does not double-emit).
 func TestPromptBudgetHandlerRejection(t *testing.T) {
 	t.Setenv("LLM_GATEWAY_MAX_PROMPT_TOKENS", "50")

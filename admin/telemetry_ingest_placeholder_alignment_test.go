@@ -33,9 +33,9 @@ func TestPersistRequestLogPlaceholderAlignment(t *testing.T) {
 		rest = rest[:j+1]
 	}
 
-	sqlStart := strings.Index(rest, "INSERT INTO request_logs_hot (")
+	sqlStart := strings.Index(rest, "INSERT INTO _request_logs_hot (")
 	if sqlStart < 0 {
-		t.Fatalf("INSERT INTO request_logs_hot not found")
+		t.Fatalf("INSERT INTO _request_logs_hot not found")
 	}
 	sqlEnd := strings.Index(rest[sqlStart:], "`") + sqlStart
 	sql := rest[sqlStart:sqlEnd]

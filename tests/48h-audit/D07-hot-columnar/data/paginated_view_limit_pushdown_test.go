@@ -16,7 +16,7 @@
 //
 //	| FROM 来源                                        | 执行时间 | 计划形状                                    |
 //	|--------------------------------------------------|---------|---------------------------------------------|
-//	| 直查 request_logs                                 |  0.288ms| Index Scan，LIMIT 下推                        |
+//	| 直查 _request_logs                                 |  0.288ms| Index Scan，LIMIT 下推                        |
 //	| 内层嵌套视图（含 LATERAL，**不含**两个反连接）    |  0.120ms| `Merge Append` + `Limit loops=10`，**下推**   |
 //	| 完整视图 request_logs_with_current_month          | 12390ms | `Append (actual rows=404794)`，**下推失效**  |
 //
@@ -99,7 +99,7 @@ func literalIsPaginated(s string) bool {
 var justifiedPaginatedAntiJoinViews = map[string]string{
 	// P1（2026-09-29 实测，未修）：两个相关 NOT EXISTS 反连接打掉 LIMIT 下推。
 	// 实测（PG 17.10，2026-09-26 单日窗口，ORDER BY ts DESC LIMIT 10）：
-	//   直查 request_logs                      0.288ms（Index Scan，LIMIT 下推）
+	//   直查 _request_logs                      0.288ms（Index Scan，LIMIT 下推）
 	//   内层嵌套视图（含 LATERAL，无反连接）    0.120ms（Merge Append + Limit loops=10）
 	//   完整视图                               12390ms（Append actual rows=404794，下推失效）
 	// LIMIT 10 与 LIMIT 1000 的 Append 行数完全相同（均 404794）→ 页大小不约束工作量。

@@ -9,7 +9,7 @@ import (
 // recent_success_rate 函数体的双族取样形状。
 //
 // 背景：S4 停写（storage.request_logs_write_enabled=false）后新流量只落
-// session_turns(_hot)。原函数体只读 request_logs_hot——3 小时窗口滑过停写
+// session_turns(_hot)。原函数体只读 _request_logs_hot——3 小时窗口滑过停写
 // 时刻后 samples 恒 0、rate 恒 NULL，而消费方把零读成「正常」
 // （BelowThreshold=false），凭据健康体系的降级/恢复机制静默失灵。这正是
 // request_logs_stop_write_classification_test 登记的主失效源；本钉桩防止
@@ -21,7 +21,7 @@ func TestRecentSuccessRateBodyServesBothHotFamilies(t *testing.T) {
 	body := recentSuccessRateEnsureSQL
 
 	// 两族热腿都必须在场——缺任何一腿，停写切换的某一侧就是盲区。
-	for _, leg := range []string{"FROM request_logs_hot", "FROM public.session_turns_hot"} {
+	for _, leg := range []string{"FROM _request_logs_hot", "FROM public.session_turns_hot"} {
 		if !strings.Contains(body, leg) {
 			t.Errorf("recent_success_rate 函数体缺少 %q：停写切换的一侧将供不出样本", leg)
 		}
@@ -62,7 +62,7 @@ func TestRoutingAnalyticsSourceServesSessionFamily(t *testing.T) {
 	if !strings.Contains(body, "FROM request_logs_with_current_month") {
 		t.Error("routing_analytics_source 未改读 canonical 视图——停写后自动路由分析将静默归零")
 	}
-	if strings.Contains(body, "FROM request_logs_hot") || strings.Contains(body, "FROM request_logs;") {
+	if strings.Contains(body, "FROM _request_logs_hot") || strings.Contains(body, "FROM _request_logs;") {
 		t.Error("routing_analytics_source 仍在直读 v1 底表")
 	}
 	// CREATE OR REPLACE 列契约：15 列逐一在场（matview 消费方会 42703）。

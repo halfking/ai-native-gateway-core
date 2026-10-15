@@ -1,7 +1,7 @@
 // Package middleware — origin_mw.go
 //
 // OriginMiddleware populates request-context with the caller's origin
-// metadata that the realtime stream / request_logs should display:
+// metadata that the realtime stream / _request_logs should display:
 //
 //   - origin_stage        : self_check | node_probe | system_health | business
 //     (plus legacy probe_* values for backward
@@ -13,7 +13,7 @@
 //     > RemoteAddr, mirroring
 //     telemetry/request_metadata.go:ExtractClientIP).
 //   - client_forwarded_for: full X-Forwarded-For header chain (capped at
-//     1024B to keep the request_logs row narrow).
+//     1024B to keep the _request_logs row narrow).
 //
 // Header trust model
 // ──────────────────
@@ -215,7 +215,7 @@ func NewOriginMiddleware() *OriginMiddleware {
 		BaseMiddleware: BaseMiddleware{
 			name: "origin",
 			bypass: BypassRule{
-				// Skip infra endpoints that don't produce request_logs rows.
+				// Skip infra endpoints that don't produce _request_logs rows.
 				ExactPaths: []string{"/healthz", "/metrics", "/"},
 			},
 		},
@@ -297,7 +297,7 @@ func (m *OriginMiddleware) Wrap(next http.Handler) http.Handler {
 		}
 
 		// 1024B cap on the chain so a malicious header cannot bloat
-		// request_logs rows.  The IP column is a single INET and
+		// _request_logs rows.  The IP column is a single INET and
 		// stays short naturally.
 		if len(clientChain) > 1024 {
 			clientChain = clientChain[:1024]
@@ -365,7 +365,7 @@ func (m *OriginMiddleware) resolveOrigin(r *http.Request) (stage, actor string, 
 	return stage, actor, strip
 }
 
-// isValidOriginStage matches the additive CHECK on request_logs.origin_stage
+// isValidOriginStage matches the additive CHECK on _request_logs.origin_stage
 // (see migration 341). Unknown values fall back to "business" so the
 // row still passes the CHECK and an operator can spot the spoof.
 func isValidOriginStage(s string) bool {

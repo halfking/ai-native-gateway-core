@@ -38,7 +38,7 @@ type SessionTurn struct {
 	ResponseBody        json.RawMessage `json:"response_body"`
 }
 
-// Session 单一会话完整数据 - 由 extract.py 从生产 request_logs_hot 导出
+// Session 单一会话完整数据 - 由 extract.py 从生产 _request_logs_hot 导出
 type Session struct {
 	Meta  SessionMeta   `json:"session_meta"`
 	Turns []SessionTurn `json:"turns"`

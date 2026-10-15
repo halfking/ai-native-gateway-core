@@ -46,7 +46,7 @@ func readExportScript(t *testing.T) string {
 }
 
 // groupingColumns returns the model-ish columns each artifact groups by. This
-// is the assertion that carries the most weight: request_logs has six
+// is the assertion that carries the most weight: _request_logs has six
 // model-ish columns and raw_model_name is empty on every damaged row in the
 // real database, so grouping by it turns "which credential and model is
 // broken" into "which credentials have a blank model".
@@ -71,8 +71,8 @@ func TestNegativeCostExportParity(t *testing.T) {
 	// 1. Same table. The export additionally reads the ledger and the rollups
 	//    (that is the whole point of it), so this checks presence, not equality.
 	for name, src := range map[string]string{"health check": checkSQL, "export script": script} {
-		if !strings.Contains(src, "public.request_logs") {
-			t.Errorf("%s: must read public.request_logs to find the traceable tail; "+
+		if !strings.Contains(src, "public._request_logs") {
+			t.Errorf("%s: must read public._request_logs to find the traceable tail; "+
 				"pointing it at the rollups alone would report damage with no source rows",
 				name)
 		}

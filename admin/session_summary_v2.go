@@ -202,12 +202,12 @@ func (api *SessionSummaryV2API) generateSummary(
 	if len(turns) == 0 {
 		// 2026-08-30: many sessions have V2 shadow-write disabled
 		// (sessions_v2.enabled=false) so session_turns is empty even though
-		// request_logs (the V1 store) has the full conversation. Fall back
-		// to request_logs so the operator gets a real summary instead of
+		// _request_logs (the V1 store) has the full conversation. Fall back
+		// to _request_logs so the operator gets a real summary instead of
 		// "no turns found".
 		fallback, ferr := api.queryRequestLogsFallback(ctx, req.SessionID, tenantID, req.UpToTurn)
 		if ferr != nil {
-			return nil, fmt.Errorf("query turns (request_logs fallback): %w", ferr)
+			return nil, fmt.Errorf("query turns (_request_logs fallback): %w", ferr)
 		}
 		if len(fallback) == 0 {
 			return nil, fmt.Errorf("no turns found for session %s", req.SessionID)
@@ -282,8 +282,8 @@ func newFallbackTurnKey(requestID string, ts time.Time) fallbackTurnKey {
 // delivered as NULL.
 
 // queryRequestLogsFallback derives turn-shaped conversation text from the
-// V1 request_logs store. request_logs_with_current_month already includes the
-// hot write window, so querying request_logs_hot separately would duplicate
+// V1 _request_logs store. request_logs_with_current_month already includes the
+// hot write window, so querying _request_logs_hot separately would duplicate
 // every recent request.
 //
 // It runs as **two queries**, not one join (measured on the live database,
@@ -302,8 +302,8 @@ func newFallbackTurnKey(requestID string, ts time.Time) fallbackTurnKey {
 //
 // Ordering and row set are unchanged: phase 1 owns the ORDER BY and the
 // LIMIT, and phase 2 only supplies bodies. The join is 1:1 — every partition
-// of request_logs_bodies carries a UNIQUE (request_id, ts) primary key and
-// request_logs_bodies_hot is disjoint from the monthly parent (verified: 0
+// of _request_logs_bodies carries a UNIQUE (request_id, ts) primary key and
+// _request_logs_bodies_hot is disjoint from the monthly parent (verified: 0
 // overlapping rows) — so limiting before the body fetch drops nothing.
 func (api *SessionSummaryV2API) queryRequestLogsFallback(
 	ctx context.Context,
@@ -328,7 +328,7 @@ func (api *SessionSummaryV2API) queryRequestLogsFallback(
 	//	turns 腿 = v1 视图  ×  bodies 配 request_id         → 100.000%（16409/16409）
 	//	turns 腿 = 原生源    ×  bodies 配 (request_id, ts)  → 0.007%（1/14582）
 	//
-	// 根因见 §5.9：request_logs_bodies.ts 是**正文写入时间**，不是轮次时间
+	// 根因见 §5.9：_request_logs_bodies.ts 是**正文写入时间**，不是轮次时间
 	// （通常差 8~16 秒）。单键安全性已实测：request_logs_bodies_with_current_month
 	// 2,220,507 行 = 2,220,507 个不同 request_id，无重键，所以 request_id
 	// 单键是**无歧义**的，不需要 ts 来消歧。

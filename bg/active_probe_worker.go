@@ -3,7 +3,7 @@
 // Listens for "consecutive failure" submissions from
 // CredentialStateManager.UpdateOnFailure and runs a direct-to-provider
 // HTTP probe on the offending (credential, model) pair. Probe results
-// flow into request_logs (task_type='probe_triggered') so the realtime
+// flow into _request_logs (task_type='probe_triggered') so the realtime
 // request stream shows every probe attempt in real time.
 //
 // Probe cycle per (credential, model):
@@ -124,7 +124,7 @@ func probeKey(credID int, model string) string {
 // present) and enqueues a task for the worker goroutine.
 //
 // parentReqID is the request_id of the failed business request that
-// triggered the probe. Stored so the probe row in request_logs can be
+// triggered the probe. Stored so the probe row in _request_logs can be
 // correlated with the original failure via parent_request_id.
 func (w *ActiveProbeWorker) Submit(credID int, model string, tenantID string, parentReqID string) {
 	if w == nil || !w.cfg.Enabled {
@@ -347,7 +347,7 @@ func (w *ActiveProbeWorker) processOne(ctx context.Context, task probeTask) {
 	result := w.executor.Run(ctx, target)
 	result.Log(task.CredID, task.Model, attempt)
 
-	// 3. Emit to request_logs (auto-pushed to live-stream SSE).
+	// 3. Emit to _request_logs (auto-pushed to live-stream SSE).
 	w.emitter.Emit(ctx, target.CredentialID, target.ProviderID, stateTenantID,
 		task.Model, target.OutboundModel, "direct", stateParentReqID, attempt, result)
 

@@ -51,7 +51,7 @@ func withRequestLogsWriteSetting(t *testing.T, writeEnabled bool) {
 
 // TestTelemetryIngestRequestLogStopWriteGate：admin ingest（POST
 // /api/telemetry/request-log 消费端）的 S4 停写门控。关停后仅保留
-// usage_ledger 计费行；request_logs_hot 主行与 request_logs_bodies_hot
+// usage_ledger 计费行；_request_logs_hot 主行与 _request_logs_bodies_hot
 // 正文（UPDATE → INSERT..SELECT → UPDATE 三段）整体跳过，事务照常提交。
 func TestTelemetryIngestRequestLogStopWriteGate(t *testing.T) {
 	tests := []struct {
@@ -59,7 +59,7 @@ func TestTelemetryIngestRequestLogStopWriteGate(t *testing.T) {
 		writeOn    bool
 		expectWide bool
 	}{
-		{name: "gate on persists request_logs and bodies", writeOn: true, expectWide: true},
+		{name: "gate on persists _request_logs and bodies", writeOn: true, expectWide: true},
 		{name: "gate off keeps only usage_ledger", writeOn: false, expectWide: false},
 	}
 	for _, tc := range tests {
@@ -86,16 +86,16 @@ func TestTelemetryIngestRequestLogStopWriteGate(t *testing.T) {
 				WithArgs(anyArgSlice(18)...).
 				WillReturnResult(pgxmock.NewResult("INSERT", 1))
 			if tc.expectWide {
-				mock.ExpectExec("INSERT INTO request_logs_hot").
+				mock.ExpectExec("INSERT INTO _request_logs_hot").
 					WithArgs(anyArgSlice(36)...).
 					WillReturnResult(pgxmock.NewResult("INSERT", 1))
-				mock.ExpectExec("UPDATE request_logs_bodies_hot").
+				mock.ExpectExec("UPDATE _request_logs_bodies_hot").
 					WithArgs(anyArgSlice(3)...).
 					WillReturnResult(pgxmock.NewResult("UPDATE", 0))
-				mock.ExpectExec("INSERT INTO request_logs_bodies_hot").
+				mock.ExpectExec("INSERT INTO _request_logs_bodies_hot").
 					WithArgs(anyArgSlice(3)...).
 					WillReturnResult(pgxmock.NewResult("INSERT", 1))
-				mock.ExpectExec("UPDATE request_logs_bodies_hot").
+				mock.ExpectExec("UPDATE _request_logs_bodies_hot").
 					WithArgs(anyArgSlice(3)...).
 					WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 			}

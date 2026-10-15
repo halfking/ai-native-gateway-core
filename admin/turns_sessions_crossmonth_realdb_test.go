@@ -231,8 +231,8 @@ func TestTurnsSessionsFinalizeWhere_ParenPinsComposition(t *testing.T) {
 			if !strings.Contains(got, c.want) {
 				t.Fatalf("turnsSessionsFinalizeWhere(%q) 未含 %q\n实际=%q", c.filter, c.want, got)
 			}
-			if strings.Contains(got, "request_logs") {
-				t.Fatalf("去重谓词不得把 request_logs 拖回主查询：%q", got)
+			if strings.Contains(got, "_request_logs") {
+				t.Fatalf("去重谓词不得把 _request_logs 拖回主查询：%q", got)
 			}
 		})
 	}

@@ -354,14 +354,14 @@ func TestObserveChunk_NilCapture(t *testing.T) {
 // TestStreamCapture_ChunkCountersSnapshot covers ChunkCountersSnapshot /
 // Finalized (2026-07-28 §5.5). Once MarkDone is called, the snapshot
 // returns the values cached at finalisation time so concurrent emit
-// calls (success + failure) read the same numbers and the request_logs
+// calls (success + failure) read the same numbers and the _request_logs
 // row matches StreamCapture.
 //
 // We name the method ChunkCountersSnapshot because StreamCapture
 // already exposes a 5-tuple Snapshot() (chunkCount/ttfbMs/done/
 // interrupted/checksum) used by SummaryAsMap; renaming it would
 // break every existing call site. The 2-tuple carries just the
-// counters the request_logs row needs.
+// counters the _request_logs row needs.
 func TestStreamCapture_ChunkCountersSnapshot(t *testing.T) {
 	c := NewStreamCapture()
 	c.RecordChunkSent()

@@ -372,7 +372,7 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 		// post-decider model is the one the test runner verifies against.
 		//
 		// recordMockRequestLog (not a bare *attemptLogged = true) so the
-		// request still produces its one request_logs row.
+		// request still produces its one _request_logs row.
 		if testMode.IsMockMode() {
 			chosen := modelname.CanonicalizeClientModel(ApplyAliasPrefix(reqBody.Model))
 			h.chatHandler.recordMockRequestLog(logCtx, testMode, chosen, keyInfo)

@@ -66,7 +66,7 @@ var _ outcomeFreshnessDB = fakeOutcomeDB{}
 // two guard against a reader mistaking "no evidence" for "no failure".
 func TestQueryOutcomeFreshness(t *testing.T) {
 	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
-	undefinedTable := &pgconn.PgError{Code: "42P01", Message: `relation "request_logs_hot" does not exist`}
+	undefinedTable := &pgconn.PgError{Code: "42P01", Message: `relation "_request_logs_hot" does not exist`}
 
 	cases := []struct {
 		name       string

@@ -11,7 +11,7 @@ import (
 
 func intPtr(v int) *int { return &v }
 
-// probeCase is one row under test: a request_logs entry and whether the board
+// probeCase is one row under test: a _request_logs entry and whether the board
 // must refuse to count it.
 type probeCase struct {
 	name  string

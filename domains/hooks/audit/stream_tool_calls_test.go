@@ -235,7 +235,7 @@ func TestObserveChunk_ToolCalls_EmptyResponse(t *testing.T) {
 }
 
 // TestObserveChunk_ToolCalls_JSONMarshaling tests that tool_calls can be marshaled to JSON
-// (for persistence in request_logs.tool_calls JSONB column).
+// (for persistence in _request_logs.tool_calls JSONB column).
 func TestObserveChunk_ToolCalls_JSONMarshaling(t *testing.T) {
 	capture := NewStreamCapture()
 

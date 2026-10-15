@@ -9,7 +9,7 @@
 // ────────────────
 // Every 30s the worker calls system_health_status() (SQL helper
 // introduced in migration 341) which reads the most recent 30s window
-// of request_logs_hot and returns:
+// of _request_logs_hot and returns:
 //
 //	status         = "ok"        (success rate >= 80%,  green)
 //	                | "degraded" (< 80%,                red)

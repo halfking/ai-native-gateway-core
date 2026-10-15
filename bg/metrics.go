@@ -146,7 +146,7 @@ var (
 	// Operators should alert on sustained failures (e.g., rate(5m) > 0).
 	//
 	// Label "table" is the human-readable hot table name from promoteSpecs(),
-	// e.g. "request_logs_hot", "session_bodies_hot", etc.
+	// e.g. "_request_logs_hot", "session_bodies_hot", etc.
 	hotTablePromoteFailuresTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "llm_gateway_hot_table_promote_failures_total",

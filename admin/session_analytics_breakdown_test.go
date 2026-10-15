@@ -506,7 +506,7 @@ func TestMergeLongTail(t *testing.T) {
 //   - fk_session_tenant 要求 tenants 里先有 'tnt_test'（修前 23503）；
 //   - session_summaries.duration_seconds 是 GENERATED ALWAYS 列（修前
 //     显式插入 428C9），时长经 last_request_at = first + N 秒表达；
-//   - request_logs.provider_id 是 bigint（修前夹具塞 'openai' 字符串 22P02）；
+//   - _request_logs.provider_id 是 bigint（修前夹具塞 'openai' 字符串 22P02）；
 //   - 上下文改 tenant_admin（super_admin 无租户过滤，会在共享真库上聚合
 //     全量真实行，断言既不确定也踩真实数据形状）；
 //   - 日期窗口动态覆盖 now()（修前固定 2026-07 窗口，夹具行落在 now()
@@ -534,14 +534,14 @@ func seedBreakdownTenant(t *testing.T, db *pgxpool.Pool) {
 	}
 }
 
-// cleanupBreakdownFixtures 按外键逆序清扫夹具行（request_logs →
+// cleanupBreakdownFixtures 按外键逆序清扫夹具行（_request_logs →
 // session_summaries → tenants）。必须在 defer db.Close() 之后注册
 // （LIFO 先清理后关池）。
 func cleanupBreakdownFixtures(t *testing.T, db *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := db.Exec(ctx, `DELETE FROM request_logs WHERE tenant_id = $1 AND gw_session_id LIKE 'gw\_%'`, breakdownTenant); err != nil {
-		t.Errorf("cleanup request_logs: %v", err)
+	if _, err := db.Exec(ctx, `DELETE FROM _request_logs WHERE tenant_id = $1 AND gw_session_id LIKE 'gw\_%'`, breakdownTenant); err != nil {
+		t.Errorf("cleanup _request_logs: %v", err)
 	}
 	if _, err := db.Exec(ctx, `DELETE FROM session_summaries WHERE tenant_id = $1 AND session_key LIKE 'gw\_%'`, breakdownTenant); err != nil {
 		t.Errorf("cleanup session_summaries: %v", err)
@@ -565,7 +565,7 @@ func setupModelBreakdownTestData(t *testing.T, db *pgxpool.Pool) {
 		t.Fatalf("failed to insert session_summaries: %v", err)
 	}
 
-	// 插入 request_logs（provider_id 为 bigint：9010/9020 夹具值）
+	// 插入 _request_logs（provider_id 为 bigint：9010/9020 夹具值）
 	for i := 0; i < 10; i++ {
 		model := "gpt-4o"
 		provider := int64(9010)
@@ -575,12 +575,12 @@ func setupModelBreakdownTestData(t *testing.T, db *pgxpool.Pool) {
 		}
 
 		_, err := db.Exec(ctx, `
-			INSERT INTO request_logs (request_id, gw_session_id, tenant_id, ts, outbound_model, provider_id, cost_usd, prompt_tokens, completion_tokens, latency_ms, request_status, success)
+			INSERT INTO _request_logs (request_id, gw_session_id, tenant_id, ts, outbound_model, provider_id, cost_usd, prompt_tokens, completion_tokens, latency_ms, request_status, success)
 			VALUES ($5, 'gw_test_1', $1, $2, $3, $4, 0.5, 100, 200, 1000, 'success', true)
 		`, breakdownTenant, now.Add(time.Duration(i)*time.Minute), model, provider,
 			fmt.Sprintf("test-mbd-1-%d-%d", i, now.UnixNano()))
 		if err != nil {
-			t.Fatalf("failed to insert request_logs: %v", err)
+			t.Fatalf("failed to insert _request_logs: %v", err)
 		}
 	}
 }
@@ -593,24 +593,24 @@ func setupLongTailTestData(t *testing.T, db *pgxpool.Pool) {
 	// 插入主要模型（高占比）
 	for i := 0; i < 100; i++ {
 		_, err := db.Exec(ctx, `
-			INSERT INTO request_logs (request_id, gw_session_id, tenant_id, ts, outbound_model, provider_id, cost_usd, prompt_tokens, completion_tokens, latency_ms, request_status, success)
+			INSERT INTO _request_logs (request_id, gw_session_id, tenant_id, ts, outbound_model, provider_id, cost_usd, prompt_tokens, completion_tokens, latency_ms, request_status, success)
 			VALUES ($4, $1, $2, $3, 'gpt-4o', 9010, 0.5, 100, 200, 1000, 'success', true)
 		`, fmt.Sprintf("gw_test_%d", i), breakdownTenant, now.Add(time.Duration(i)*time.Minute),
 			fmt.Sprintf("test-ltl-m-%d-%d", i, now.UnixNano()))
 		if err != nil {
-			t.Fatalf("failed to insert request_logs: %v", err)
+			t.Fatalf("failed to insert _request_logs: %v", err)
 		}
 	}
 
 	// 插入长尾模型（低占比 <2%）
 	for i := 0; i < 3; i++ {
 		_, err := db.Exec(ctx, `
-			INSERT INTO request_logs (request_id, gw_session_id, tenant_id, ts, outbound_model, provider_id, cost_usd, prompt_tokens, completion_tokens, latency_ms, request_status, success)
+			INSERT INTO _request_logs (request_id, gw_session_id, tenant_id, ts, outbound_model, provider_id, cost_usd, prompt_tokens, completion_tokens, latency_ms, request_status, success)
 			VALUES ($5, $1, $2, $3, $4, 9090, 0.1, 10, 20, 500, 'success', true)
 		`, fmt.Sprintf("gw_tiny_%d", i), breakdownTenant, now.Add(time.Duration(i)*time.Minute),
 			fmt.Sprintf("tiny-model-%d", i), fmt.Sprintf("test-ltl-t-%d-%d", i, now.UnixNano()))
 		if err != nil {
-			t.Fatalf("failed to insert request_logs: %v", err)
+			t.Fatalf("failed to insert _request_logs: %v", err)
 		}
 	}
 }

@@ -14,7 +14,7 @@ import (
 )
 
 // bodySummaryEnvelope is the observer-side view of the digest envelope that
-// summary mode writes into request_logs_bodies_hot in place of the full
+// summary mode writes into _request_logs_bodies_hot in place of the full
 // body. Tests decode the persisted payload into this shape instead of
 // calling the production summarizer (no circular assertions).
 type bodySummaryEnvelope struct {
@@ -30,7 +30,7 @@ type bodySummaryEnvelopeOuter struct {
 }
 
 // bodySummaryMatcher asserts that the value persisted to
-// request_logs_bodies_hot is a digest envelope of rawBody (and NOT the full
+// _request_logs_bodies_hot is a digest envelope of rawBody (and NOT the full
 // body itself).
 type bodySummaryMatcher struct {
 	rawBody string
@@ -101,7 +101,7 @@ func withBodiesSummaryMode(t *testing.T, enabled bool) {
 // TestUpdateRequestLog_BodiesSummaryModeWritesDigest (CO-5): when summary
 // mode is active (sessions_v2.enabled), updateRequestLog must persist a
 // digest envelope (mode/bytes/sha256/bounded head) into
-// request_logs_bodies_hot instead of the full request/response body.
+// _request_logs_bodies_hot instead of the full request/response body.
 func TestUpdateRequestLog_BodiesSummaryModeWritesDigest(t *testing.T) {
 	withBodiesSummaryMode(t, true)
 	t.Setenv("LLM_GATEWAY_BODY_DIGEST_CANARY_APPLICATIONS", "digest-canary")
@@ -122,10 +122,10 @@ func TestUpdateRequestLog_BodiesSummaryModeWritesDigest(t *testing.T) {
 		Success:       true,
 		RequestStatus: &status,
 	})
-	mockDB.ExpectExec(`UPDATE request_logs_hot`).
+	mockDB.ExpectExec(`UPDATE _request_logs_hot`).
 		WithArgs(requestLogArgs...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+	mockDB.ExpectExec(`INSERT INTO _request_logs_bodies_hot`).
 		WithArgs(
 			pgxmock.AnyArg(),
 			bodySummaryMatcher{rawBody: requestBody},
@@ -215,10 +215,10 @@ func TestUpdateRequestLog_BodiesFullModeUnchanged(t *testing.T) {
 				Success:       true,
 				RequestStatus: &status,
 			})
-			mockDB.ExpectExec(`UPDATE request_logs_hot`).
+			mockDB.ExpectExec(`UPDATE _request_logs_hot`).
 				WithArgs(requestLogArgs...).
 				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-			mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+			mockDB.ExpectExec(`INSERT INTO _request_logs_bodies_hot`).
 				WithArgs(
 					pgxmock.AnyArg(),
 					fullBodyMatcher{want: tc.wantRequestBody},
@@ -270,10 +270,10 @@ func TestInsertRequestLog_BodiesSummaryModeWritesDigest(t *testing.T) {
 	for index := range requestInsertArgs {
 		requestInsertArgs[index] = pgxmock.AnyArg()
 	}
-	mockDB.ExpectExec(`INSERT INTO\s+request_logs_hot\s*\(`).
+	mockDB.ExpectExec(`INSERT INTO\s+_request_logs_hot\s*\(`).
 		WithArgs(requestInsertArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+	mockDB.ExpectExec(`INSERT INTO _request_logs_bodies_hot`).
 		WithArgs(
 			pgxmock.AnyArg(),
 			bodySummaryMatcher{rawBody: requestBody},
@@ -436,10 +436,10 @@ func TestUpdateRequestLog_BodiesSummaryModeKeepsEmptySemantics(t *testing.T) {
 				Success:       true,
 				RequestStatus: &status,
 			})
-			mockDB.ExpectExec(`UPDATE request_logs_hot`).
+			mockDB.ExpectExec(`UPDATE _request_logs_hot`).
 				WithArgs(requestLogArgs...).
 				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-			mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+			mockDB.ExpectExec(`INSERT INTO _request_logs_bodies_hot`).
 				WithArgs(
 					pgxmock.AnyArg(),
 					tc.wantRequestBody,

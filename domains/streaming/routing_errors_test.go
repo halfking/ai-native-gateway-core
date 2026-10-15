@@ -51,7 +51,7 @@ func TestClassifyRoutingError(t *testing.T) {
 		},
 		{
 			name:        "relation does not exist",
-			err:         errors.New(`relation "request_logs" does not exist`),
+			err:         errors.New(`relation "_request_logs" does not exist`),
 			wantCode:    "routing_schema_error",
 			wantStatus:  http.StatusInternalServerError,
 			wantMessage: "Internal routing configuration error",

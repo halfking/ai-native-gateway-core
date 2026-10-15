@@ -196,7 +196,7 @@ func TestDecisionToWire_IncludesEnabledFeatures(t *testing.T) {
 
 // TestAutoDecision_RoundTrip verifies the full Decision → wire → JSON →
 // unmarshal pipeline. This is the contract between autoroute.Decision,
-// the X-Gw-Auto-Decision header, and request_logs.auto_decision JSONB:
+// the X-Gw-Auto-Decision header, and _request_logs.auto_decision JSONB:
 // every field must survive serialisation intact.
 func TestAutoDecision_RoundTrip(t *testing.T) {
 	dec := &autoroute.Decision{

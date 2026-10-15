@@ -1,16 +1,16 @@
 package goal
 
-// history_store.go — reconstructs a conversation transcript from request_logs
+// history_store.go — reconstructs a conversation transcript from _request_logs
 // for the audit hook.
 //
 // The gateway is stateless w.r.t. conversation history: each client request
 // carries the full messages array, and the gateway does not persist it as a
-// first-class object. But request_logs DOES store, per request:
+// first-class object. But _request_logs DOES store, per request:
 //   - request_body  (JSONB) — the client's chat-completions request (full messages)
 //   - response_body (JSONB) — the upstream response (assistant reply)
 // both correlated by gw_session_id (indexed by idx_request_logs_session_outbound).
 //
-// So to give the audit hook "the full conversation", we query request_logs by
+// So to give the audit hook "the full conversation", we query _request_logs by
 // session and turn each row into a request→response pair. The audit prompt then
 // references the complete back-and-forth instead of only the last reply.
 //
@@ -43,7 +43,7 @@ type HistoryStore interface {
 	FetchBySession(ctx context.Context, sessionID, tenantID string, limit int) ([]HistoryMessage, error)
 }
 
-// PGHistoryStore implements HistoryStore against the request_logs table.
+// PGHistoryStore implements HistoryStore against the _request_logs table.
 type PGHistoryStore struct {
 	db *sql.DB
 }
@@ -53,7 +53,7 @@ func NewPGHistoryStore(db *sql.DB) *PGHistoryStore {
 	return &PGHistoryStore{db: db}
 }
 
-// defaultHistoryLimit caps how many request_logs rows are pulled per audit.
+// defaultHistoryLimit caps how many _request_logs rows are pulled per audit.
 // Each row is a full turn; 20 turns is plenty for judging task execution while
 // keeping the audit prompt and DB load bounded.
 const defaultHistoryLimit = 20
@@ -64,11 +64,11 @@ const defaultHistoryLimit = 20
 const maxHistoryMessageChars = 12000
 
 // FetchBySession reconstructs the transcript by reading the most recent
-// request_logs rows for the session and merging their request messages with the
+// _request_logs rows for the session and merging their request messages with the
 // assistant reply that followed.
 //
 // historySessionSQL / historyV1SQL（S3 波 2 停写切换，见 FetchBySession 注释）。
-// 2026-07-21 Ticket #11: LEFT JOIN request_logs_bodies retrieves full
+// 2026-07-21 Ticket #11: LEFT JOIN _request_logs_bodies retrieves full
 // request_body/response_body (moved to separate table in #10); COALESCE
 // keeps backwards compatibility during migration.
 //
@@ -78,7 +78,7 @@ const maxHistoryMessageChars = 12000
 // SessionFamilyBodiesSourceSQL（request_id 单键 JOIN，helper 合同明确支持；
 // 禁止 ts 等值 JOIN——两侧 ts 99.85% 不等）。S4 停写后新会话的正文只在
 // session_bodies。会话族查询为 0 行时回退 v1 查询，服务镜像链启用前的
-// 历史会话（该窗口正文只在 request_logs_bodies）。提升为包级变量是给
+// 历史会话（该窗口正文只在 _request_logs_bodies）。提升为包级变量是给
 // 形状钉桩用的。
 var historySessionSQL = `
 		SELECT rb.request_body AS request_body,
@@ -94,8 +94,8 @@ var historySessionSQL = `
 const historyV1SQL = `
 		SELECT rb.request_body AS request_body,
 		       rb.response_body AS response_body
-		FROM request_logs rl
-		LEFT JOIN request_logs_bodies rb
+		FROM _request_logs rl
+		LEFT JOIN _request_logs_bodies rb
 		  ON rb.request_id = rl.request_id
 		WHERE rl.gw_session_id = $1
 		  AND COALESCE(rl.tenant_id, '') = COALESCE(NULLIF($2, ''), rl.tenant_id)

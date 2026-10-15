@@ -14,11 +14,11 @@ type UsageCorrector interface {
 	CorrectEstimatedUsage(ctx context.Context, entry *telemetry.RequestLogEntry) (int64, error)
 }
 
-// backfillEstimatedUsage asynchronously corrects a request_logs row that
+// backfillEstimatedUsage asynchronously corrects a _request_logs row that
 // still carries usage_source='estimated' with the real usage in entry, and —
 // when a row actually transitions — backfills the request's
 // response_format_anomalies rows with the real completion tokens (the
-// anomaly rows themselves are labelled usage_source='llm'; request_logs
+// anomaly rows themselves are labelled usage_source='llm'; _request_logs
 // keeps the dedicated 'corrected' state). This is the online path; the
 // AnomalyHarvester's periodic backfillActualTokens sweep is the batch
 // safety net for rows this path misses.
@@ -64,7 +64,7 @@ func runUsageBackfill(ctx context.Context, corrector UsageCorrector, anomalies *
 	}
 	rows, err := corrector.CorrectEstimatedUsage(ctx, entry)
 	if err != nil {
-		slog.Warn("usage backfill: request_logs correction failed",
+		slog.Warn("usage backfill: _request_logs correction failed",
 			"request_id", entry.RequestID, "error", err)
 		return
 	}

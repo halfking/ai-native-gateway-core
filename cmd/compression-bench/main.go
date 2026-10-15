@@ -1,5 +1,5 @@
 // Command compression-bench benchmarks the v3 SessionCompressor on
-// historical request_logs from a live database.
+// historical _request_logs from a live database.
 package main
 
 import (
@@ -75,9 +75,9 @@ func main() {
 	// Load historical rows
 	rows, err := loadRequestLogs(ctx, pool, *days, *maxSamples)
 	if err != nil {
-		log.Fatalf("load request_logs: %v", err)
+		log.Fatalf("load _request_logs: %v", err)
 	}
-	log.Printf("loaded %d request_logs rows", len(rows))
+	log.Printf("loaded %d _request_logs rows", len(rows))
 
 	// When share-session is set, use a single session so rows form a conversation sequence
 	sharedSessionID := ""
@@ -93,7 +93,7 @@ func main() {
 		log.Printf("share-session enabled: processing rows in one synthetic session")
 	}
 
-	// Persisting benchmark rows is opt-in. The default path reads request_logs
+	// Persisting benchmark rows is opt-in. The default path reads _request_logs
 	// and emits aggregate metrics only, which is safe for sensitive production
 	// traffic and leaves the source database unchanged.
 	if *persistResults {
@@ -182,7 +182,7 @@ func main() {
 // Data loading
 // ──────────────────────────────────────────────────────────────────────────────
 
-// requestLogRow 不再持有 v1 的 request_logs.id（2026-10-02 移除）。
+// requestLogRow 不再持有 v1 的 _request_logs.id（2026-10-02 移除）。
 //
 // 为什么删而不是留：id 在本工具里只当「结果行 ↔ 源行」的关联标签用
 // （→ benchResult.RowID → 结果表 row_id），**不参与任何压缩比判定**，
@@ -210,10 +210,10 @@ func loadRequestLogs(ctx context.Context, pool *pgxpool.Pool, days, maxSamples i
 		limitClause = fmt.Sprintf("LIMIT %d", maxSamples)
 	}
 
-	// 正文来自 request_logs_bodies 腿，不是 request_logs（2026-10-02 修正）。
+	// 正文来自 _request_logs_bodies 腿，不是 _request_logs（2026-10-02 修正）。
 	//
 	// 原来的写法是 `COALESCE(outbound_body::text, request_body::text, '{}')`
-	// 直读 request_logs，而真库上 **request_logs 没有 request_body 这一列**
+	// 直读 _request_logs，而真库上 **_request_logs 没有 request_body 这一列**
 	// （真库实测：`column "request_body" does not exist`）⇒ 这条查询**在任何
 	// 情况下都会硬报错**，工具今天跑不起来。同名的两列都在 bodies 腿上。
 	//
@@ -233,8 +233,8 @@ func loadRequestLogs(ctx context.Context, pool *pgxpool.Pool, days, maxSamples i
 			COALESCE(rl.outbound_msg_count, 0) AS msg_count,
 			COALESCE(rl.compression_strategy, '') AS compression_strategy,
 			rl.ts
-		FROM request_logs rl
-		JOIN request_logs_bodies b ON b.request_id = rl.request_id AND b.ts = rl.ts
+		FROM _request_logs rl
+		JOIN _request_logs_bodies b ON b.request_id = rl.request_id AND b.ts = rl.ts
 		WHERE rl.ts >= NOW() - INTERVAL '1 day' * $1
 		  AND b.outbound_body IS NOT NULL
 		ORDER BY rl.ts DESC
@@ -277,7 +277,7 @@ func loadRequestLogs(ctx context.Context, pool *pgxpool.Pool, days, maxSamples i
 // ──────────────────────────────────────────────────────────────────────────────
 
 type benchResult struct {
-	// 行身份是 request_id。原来的 RowID（= v1 request_logs.id）已删：
+	// 行身份是 request_id。原来的 RowID（= v1 _request_logs.id）已删：
 	// 它是唯一挡住本工具改视图读法的补位列，且不参与任何判定。见 requestLogRow。
 	RequestID   string    `json:"request_id"`
 	TenantID    string    `json:"tenant_id"`

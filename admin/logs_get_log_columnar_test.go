@@ -82,7 +82,7 @@ func TestFetchRequestBodies_HotOnly_PassesInUnderOneSecond(t *testing.T) {
 // hot has no row for a given request_id, the helper still tries the bodies
 // view. We can only assert the fallback is *invoked* (no columnar in the
 // dev DB test environment if TTL hasn't promoted anything), so we
-// simulate by inserting directly into request_logs_bodies only.
+// simulate by inserting directly into _request_logs_bodies only.
 func TestFetchRequestBodies_HotMiss_FallsBackToBodiesView(t *testing.T) {
 	pool := setupTestDB(t)
 	defer pool.Close()
@@ -90,8 +90,8 @@ func TestFetchRequestBodies_HotMiss_FallsBackToBodiesView(t *testing.T) {
 	ctx := context.Background()
 	requestID := "test-fetch-bodies-cold-" + time.Now().Format("20060102-150405.000000")
 
-	// Insert metadata + body in the partitioned table only. request_logs_hot
-	// and request_logs_bodies_hot will not have this request_id, so the
+	// Insert metadata + body in the partitioned table only. _request_logs_hot
+	// and _request_logs_bodies_hot will not have this request_id, so the
 	// helper must fall back to the bodies view.
 	require.NoError(t, insertBodyIntoPartitionedOnly(t, pool, requestID))
 	// R65 同形修正（R41 R-1 漏网处）：t.Cleanup 晚于 defer pool.Close 执行，
@@ -164,13 +164,13 @@ func TestFetchRequestBodies_CancelledParentCtx_DoesNotHang(t *testing.T) {
 }
 
 // insertBodyIntoPartitionedOnly writes a body row directly into
-// request_logs_bodies (no hot counterpart). Used to exercise the cold
+// _request_logs_bodies (no hot counterpart). Used to exercise the cold
 // fallback path in fetchRequestBodies.
 func insertBodyIntoPartitionedOnly(t *testing.T, pool *pgxpool.Pool, requestID string) error {
 	t.Helper()
 	ctx := context.Background()
 	_, err := pool.Exec(ctx, `
-		INSERT INTO request_logs_bodies (request_id, ts, request_body, response_body)
+		INSERT INTO _request_logs_bodies (request_id, ts, request_body, response_body)
 		VALUES (
 			$1,
 			now(),
@@ -188,7 +188,7 @@ func insertBodyIntoPartitionedOnly(t *testing.T, pool *pgxpool.Pool, requestID s
 func cleanupColdBody(t *testing.T, pool *pgxpool.Pool, requestID string) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := pool.Exec(ctx, `DELETE FROM request_logs_bodies WHERE request_id = $1`, requestID); err != nil {
+	if _, err := pool.Exec(ctx, `DELETE FROM _request_logs_bodies WHERE request_id = $1`, requestID); err != nil {
 		t.Logf("cleanupColdBody: best-effort delete failed (columnar partition may be read-only): %v", err)
 	}
 }

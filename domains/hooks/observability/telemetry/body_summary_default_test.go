@@ -21,10 +21,10 @@ func TestUpdateRequestLog_SessionsV2DefaultsToFullBodies(t *testing.T) {
 		WithArgs("req-default-full", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	status := RequestStatusSuccess
-	mockDB.ExpectExec(`UPDATE request_logs_hot`).
+	mockDB.ExpectExec(`UPDATE _request_logs_hot`).
 		WithArgs(requestLogUpdateArgs(RequestLogEntry{Success: true, RequestStatus: &status})...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+	mockDB.ExpectExec(`INSERT INTO _request_logs_bodies_hot`).
 		WithArgs(
 			pgxmock.AnyArg(),
 			fullBodyMatcher{want: requestBody},
@@ -64,10 +64,10 @@ func TestUpdateRequestLog_LegacyFalseOverrideStillKeepsFullBodies(t *testing.T) 
 		WithArgs("req-legacy-false", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	status := RequestStatusSuccess
-	mockDB.ExpectExec(`UPDATE request_logs_hot`).
+	mockDB.ExpectExec(`UPDATE _request_logs_hot`).
 		WithArgs(requestLogUpdateArgs(RequestLogEntry{Success: true, RequestStatus: &status})...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+	mockDB.ExpectExec(`INSERT INTO _request_logs_bodies_hot`).
 		WithArgs(
 			pgxmock.AnyArg(),
 			fullBodyMatcher{want: requestBody},

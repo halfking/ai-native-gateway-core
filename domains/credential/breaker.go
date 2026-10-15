@@ -390,6 +390,129 @@ func (b *Breaker) MarkFreeTier() { b.freeTier.Store(true) }
 // IsFreeTier reports whether the free-tier cooling profile is active.
 func (b *Breaker) IsFreeTier() bool { return b.freeTier.Load() }
 
+// P0-4 (2026-10-14, docs/research/2026-10-14-magpie对比与优化方案.md):
+// quota 熔断冷却对齐上游声明的重置时刻（rest 分级）的上下界。下界防止
+// 「resets in 5s」把冷却缩成没有意义的瞬窗；上界防止正文里的垃圾时间戳
+// 把凭据 park 到小时级（超过 2h 的重置信号交给 quota 探活通道按周期收回）。
+const (
+	quotaResetMinCooling = 30 * time.Second
+	quotaResetMaxCooling = 2 * time.Hour
+)
+
+// RecordFailureWithReset records a failure whose quota window carries an
+// upstream-declared reset moment (errorsx.ParseQuotaResetAt /
+// errorsx.GradeQuotaRest). Signature keeps the legacy RecordFailure intact;
+// ok=false (reset not parseable) or a non-quota kind falls back to the exact
+// legacy behaviour.
+//
+// Rest grading (magpie P0-4): for a quota-family kind with a valid future
+// resetAt, the breaker transitions to OPEN IMMEDIATELY (the upstream's own
+// reset declaration is confirmation enough — no 2-failure threshold) with
+// cooling = clamp(resetAt-now, 30s, 2h). This also DOWNGRADES a prior
+// QUARANTINED that was set by a quota kind: an explicit reset time proves
+// the exhaustion is time-bounded, and QUARANTINED is reserved for auth-class
+// / genuinely permanent states. A reset in the past is treated as "not ok"
+// (the window has rolled; the legacy path decides what to do).
+//
+// Credit-class 402/429 (errorsx.IsCreditExhausted) routes through here with
+// resetAt = now + errorsx.CreditExhaustedCooling (30min flat re-probe) —
+// money exhaustion has no reset semantics, only a top-up fixes it, so a
+// bounded re-probe replaces the permanent quarantine.
+//
+// ⚠ wiring note: as of this change the request-path call sites
+// (executor_nodehealth.go ApplyNodeHealthDecision / recordProtocolCircuitFailure)
+// still call RecordFailureWithBillingMode — the reset hint must be threaded
+// through upstream.Error alongside Retry-After to reach this method. See the
+// delivery report for the exact call-site list.
+func (b *Breaker) RecordFailureWithReset(kind ErrorKind, resetAt time.Time, ok bool) {
+	now := time.Now()
+	if ok && errorsx.IsQuotaExhaustion(kind) && resetAt.After(now) {
+		b.openAlignedToQuotaReset(kind, resetAt, now)
+		return
+	}
+	b.RecordFailure(kind)
+}
+
+// openAlignedToQuotaReset performs the reset-aligned OPEN transition. The
+// explicit upstream reset replaces any earlier cooling window (exponential
+// ladder / credit flat) — it is the authoritative evidence for when the
+// quota window rolls. Counters (consecutive/failCount) still advance so a
+// later non-reset failure escalates from real history, and observers are
+// notified with the new cooling deadline (same contract as RecordFailure's
+// re-entry notification).
+func (b *Breaker) openAlignedToQuotaReset(kind ErrorKind, resetAt, now time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	cooling := resetAt.Sub(now)
+	clamped := false
+	if cooling < quotaResetMinCooling {
+		cooling = quotaResetMinCooling
+		clamped = true
+	}
+	if cooling > quotaResetMaxCooling {
+		cooling = quotaResetMaxCooling
+		clamped = true
+	}
+
+	previous := b.State()
+	b.lastFailureAt = now
+	b.lastErrorKind = kind
+	b.consecutive.Add(1)
+	b.failCount.Add(1)
+	b.state.Store(int32(StateOpen))
+	b.halfOpenProbes.Store(0)
+	b.openSince = now
+	b.coolingCycle = 0 // not part of the exponential ladder
+	b.coolingExpires = now.Add(cooling)
+
+	slog.Warn("circuit quota cooling aligned to upstream reset",
+		"key", b.key,
+		"previous_state", previous.String(),
+		"new_state", StateOpen.String(),
+		"error_kind", kind,
+		"reset_at", resetAt.Format(time.RFC3339),
+		"cooling_duration_ms", cooling.Milliseconds(),
+		"cooling_until", b.coolingExpires.Format(time.RFC3339),
+		"clamped", clamped,
+	)
+
+	if final := b.State(); final != previous || final == StateOpen || final == StateQuarantined {
+		b.notify(previous, final, kind, b.coolingExpires)
+	}
+}
+
+// RecordModelScopedFailure records a failure that is scoped to ONE
+// (credential, model) binding — the upstream error names the model
+// (errorsx.ModelScopedRejection: "model 'X' not found/retired/EOL/
+// unsupported", 410 family). Per P0-4 the credential-level breaker must NOT
+// accumulate such failures (the credential's sibling models are healthy —
+// counting them here is exactly the 凭据连坐 this change removes).
+//
+// Behaviour: no consecutive/failCount accumulation, no state transition. If
+// the breaker sits in HALF_OPEN (the failed attempt consumed the probe
+// slot), the slot is released so the next request can probe the credential
+// again — the model-scoped error is not probe evidence against the
+// credential (same semantics as the KindRateLimit early-return).
+//
+// The binding-level marking itself belongs to the model-probe state machine
+// (bg/model_probe.go 'model_probe_broken' via SubmitManualProbe →
+// consensus); this method only keeps the credential breaker out of the way.
+func (b *Breaker) RecordModelScopedFailure(kind ErrorKind, model string) {
+	b.mu.Lock()
+	halfOpen := State(b.state.Load()) == StateHalfOpen
+	b.mu.Unlock()
+	if halfOpen {
+		b.ReleaseProbe()
+	}
+	slog.Info("circuit skipped credential failure: model-scoped rejection",
+		"key", b.key,
+		"error_kind", kind,
+		"model", model,
+		"half_open_probe_released", halfOpen,
+	)
+}
+
 // RecordFailure records a failure and transitions the circuit state.
 func (b *Breaker) RecordFailure(kind ErrorKind) {
 	// 2026-07-03 P0 fix: client bugs (tool_call_id_mismatch, invalid_request_format,
@@ -846,6 +969,20 @@ func (m *Manager) RecordFailureWithBillingMode(providerID, credentialID int, kin
 		b.MarkFreeTier()
 	}
 	b.RecordFailure(kind)
+}
+
+// RecordFailureWithReset is the Manager wrapper for the P0-4 reset-aligned
+// quota cooling (see Breaker.RecordFailureWithReset).
+func (m *Manager) RecordFailureWithReset(providerID, credentialID int, kind ErrorKind, resetAt time.Time, ok bool) {
+	b := m.GetOrCreate(providerID, credentialID)
+	b.RecordFailureWithReset(kind, resetAt, ok)
+}
+
+// RecordModelScopedFailure is the Manager wrapper for the P0-4 model-level
+// isolation (see Breaker.RecordModelScopedFailure).
+func (m *Manager) RecordModelScopedFailure(providerID, credentialID int, kind ErrorKind, model string) {
+	b := m.GetOrCreate(providerID, credentialID)
+	b.RecordModelScopedFailure(kind, model)
 }
 
 // RecordSuccess records a success on the appropriate breaker.

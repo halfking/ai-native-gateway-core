@@ -21,14 +21,14 @@ WHERE s.relid IN (
 ORDER BY pg_total_relation_size(c.oid) DESC
 LIMIT 20;
 
--- B: request_logs_archive 月度分区尺寸序列（历史增长斜率）
+-- B: _request_logs_archive 月度分区尺寸序列（历史增长斜率）
 SELECT
   c.oid::regclass                                   AS partition_name,
   pg_get_expr(c.relpartbound, c.oid)                AS partition_bound,
   pg_size_pretty(pg_total_relation_size(c.oid))     AS total_size,
   COALESCE(c.reltuples::bigint, 0)                  AS row_estimate
 FROM pg_inherits i
-JOIN pg_class parent ON parent.oid = to_regclass('public.request_logs_archive')
+JOIN pg_class parent ON parent.oid = to_regclass('public._request_logs_archive')
 JOIN pg_class c ON c.oid = i.inhrelid
 WHERE i.inhparent = parent.oid
 ORDER BY partition_name;

@@ -28,7 +28,7 @@ type PickProbeResult struct {
 }
 
 // PickProbeModelForCredential implements the 4-level fallback algorithm
-// (manual > request_logs > featured > random_fallback > empty).
+// (manual > _request_logs > featured > random_fallback > empty).
 // Skips credentials with source='manual' (already pinned by admin).
 //
 // Priority 2 "featured" — picks a binding model whose standardized_name
@@ -72,8 +72,8 @@ func PickProbeModelForCredential(ctx context.Context, db pickDB, credID int) (Pi
 		return PickProbeResult{}, nil
 	}
 
-	// Priority 1: most-used client_model in request_logs (7d).
-	// request_logs uses the boolean success column (NOT status_code);
+	// Priority 1: most-used client_model in _request_logs (7d).
+	// _request_logs uses the boolean success column (NOT status_code);
 	// request_status stores the upstream HTTP code as text when present.
 	// 2026-09-11: read the current-month surface — the bare parent only
 	// holds cold rows, so the 7d window was blind to the most recent days

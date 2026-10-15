@@ -4,7 +4,7 @@
 // TaskKind 回答"这类活是搜索还是总结还是 git 操作"，TaskType 回答
 // "这是代码还是推理还是创作"。TaskKind 仅供 role_llm_router 选择
 // 轻量/重量池（用户口径：搜索/总结/git/运维 → 轻量池；分析/规划/
-// 方案编写 → 重量池），不写入 request_logs.task_type、不进 admin
+// 方案编写 → 重量池），不写入 _request_logs.task_type、不进 admin
 // TaskType UI、不改变任何既有 TaskType 的语义。
 //
 // 代码风格对齐 task_types_ext.go：中英双语关键词 + 有序通道判定，

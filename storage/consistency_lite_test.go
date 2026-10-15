@@ -4,7 +4,7 @@ package storage_test
 // 与重启恢复的运行态证据。
 //
 // 审计缺口：lite 模式 request body（文件）与 SQLite reference（turn meta /
-// session 行 / request_logs.has_body）、附件与 session 元数据的跨资源
+// session 行 / _request_logs.has_body）、附件与 session 元数据的跨资源
 // 原子性缺少集成测试。本文件用真实 SQLite + 真实文件系统验证：
 //
 //  1. 一致写入 → 关闭（重启）→ 重开：三侧（session 行 / turn meta /

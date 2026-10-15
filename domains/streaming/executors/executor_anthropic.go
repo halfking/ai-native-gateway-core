@@ -575,7 +575,7 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 		// S2-F3/R60: stamp the gateway request id into the IR metadata carrier
 		// so ir-layer format anomalies ({\"raw\":...} tool_use.input wrap 等)
 		// 上报时带真实 request_id（serialize_anthropic 经 irRequestID 读取）。
-		// 与 request_logs.request_id 同源，异常可与请求日志/泳道对账。
+		// 与 _request_logs.request_id 同源，异常可与请求日志/泳道对账。
 		// R61: 与 openai 面共用 stampIRRequestID 助手；序列化器只透出
 		// user_id，本 stamp 不进上游请求体。
 		irReq = stampIRRequestID(irReq, params.RequestID)
@@ -868,7 +868,7 @@ func (e *Executor) executeAnthropic(
 			// surface the compression event captured during any 4xx retry
 			// that preceded this successful leg, merged with pre-request
 			// trim metadata. relay/handler.go emitTelemetry writes these
-			// into request_logs.compression_*.
+			// into _request_logs.compression_*.
 			if result.CompressionReason == nil && contextLenRecovery.lastReason != "" && contextLenRecovery.lastReason != "noop" {
 				reason := contextLenRecovery.lastReason
 				strategy := contextLenRecovery.lastStrategy
@@ -1267,7 +1267,7 @@ func (e *Executor) executeAnthropicOnce(
 			// Kind=errKind instead of re-classifying a fmt.Errorf string
 			// via ClassifyError, which would degrade body-driven kinds
 			// (KindToolCallIdMismatch, KindUnsupportedFeature) back to
-			// KindTransient in request_logs.error_kind.
+			// KindTransient in _request_logs.error_kind.
 			upstreamErr := &upstreampkg.Error{
 				Kind:       errKind,
 				Message:    fmt.Sprintf("upstream %d", resp.StatusCode),
@@ -1344,17 +1344,17 @@ func (e *Executor) executeAnthropicOnce(
 		outcome := ae.StreamResponse(streamReaderContext(params, resp), responseSink(params), resp)
 		if outcome.Interrupted && (outcome.Reason == "client_cancel" || outcome.Kind == errorsx.KindCanceled) {
 			return &ExecuteResult{
-				Response:    resp,
-				Candidate:   cand,
-				LatencyMs:   latencyMs,
-				RequestBody: append([]byte(nil), bodyBytes...),
-				InboundBody: sourceBody,
-			}, &streamInterruptedError{
-				reason:       outcome.Reason,
-				credentialID: cand.CredentialID,
-				resumable:    false,
-				kind:         errorsx.KindCanceled,
-			}
+					Response:    resp,
+					Candidate:   cand,
+					LatencyMs:   latencyMs,
+					RequestBody: append([]byte(nil), bodyBytes...),
+					InboundBody: sourceBody,
+				}, &streamInterruptedError{
+					reason:       outcome.Reason,
+					credentialID: cand.CredentialID,
+					resumable:    false,
+					kind:         errorsx.KindCanceled,
+				}
 		}
 		if outcome.Interrupted {
 			streamKind := outcome.Kind

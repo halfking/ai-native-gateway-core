@@ -16,7 +16,7 @@
 #   2026-08-31  v1.1  Full-object audit: + views / indexes / constraints /
 #                      sequences comparison (v1.0 compared tables+columns only
 #                      and missed the drift found by the 2026-08-31 audit:
-#                      request_logs body columns, 610 constraint, stale views).
+#                      _request_logs body columns, 610 constraint, stale views).
 #   2026-08-31  v1.0  Initial version (table inventory + structure diff,
 #                      gated --reconcile mode).
 # -----------------------------------------------------------------------------
@@ -169,7 +169,7 @@ compare_sig() {
 # runtime monthly partitions (`*_2026_08` style).
 # NOTE: columns are sorted by NAME, not ordinal position — PG cannot reorder
 # columns in place, and the two instances legitimately differ in physical
-# order for identical logical schemas (e.g. request_logs after migration 573).
+# order for identical logical schemas (e.g. _request_logs after migration 573).
 COLS_SQL="SELECT table_name||'|'||column_name||'|'||data_type||'|'||is_nullable||'|'||coalesce(column_default,'') FROM information_schema.columns WHERE table_schema='public' AND table_name NOT LIKE '\_%' AND table_name !~ '_202[0-9]_[0-9]+$' ORDER BY table_name, column_name"
 
 VIEWS_SQL="SELECT viewname||'|'||md5(definition) FROM pg_views WHERE schemaname='public' AND viewname NOT LIKE '\_%' ORDER BY viewname"

@@ -318,3 +318,90 @@ git push origin main
 1. **「本地 = llm.itestu.cn」裁定后，DB fix 是「清理积压」不是「远程修复」**——本机 PG 是 docker 容器提供，与 llm.itestu.cn 后端同处。环境阻塞时没有 .40 那边的「双重保险」可走。
 2. **「并发 deploy 抢资源」是 AGENTS.md §1 已记录风险**——本机 154 另一 checkout 正在 deploy，load 27+，本会话所有 PG 操作全部卡死。教训是：**destructive DB 操作应在 no-deploy 窗口做**，或至少在 `pg -c "SELECT pg_advisory_lock(...)"` 取锁前明示自己。
 3. **「commit / push 与 destructive DB 是不同步的执行轨道」**——Docker 卡死只能阻断 UPDATE；git / docker-out-of-loop 不受影响。下一轮即使 PG 仍然卡，audit doc 也可以单独推送。
+
+---
+
+## 8. Fix A / Fix B 执行与终态（2026-10-14 00:3x，用户授权「请按建议执行剩余任务」）
+
+### 8.0 前置：环境恢复 + 容器重启
+
+- 上一轮 §7 的 Docker daemon 卡死已解除（load 回落、`docker ps` 恢复响应）。
+- 发现 `llm-gateway-local-8782` 在 Docker Desktop 重启时被带走（`Exited(255) 20 hours ago`，
+  容器无 restart 策略）。`docker start` 拉回，12s 内 `/readyz ready`。
+  **教训（登记）**：本容器的 `docker run` 未带 `--restart unless-stopped`，
+  Docker Desktop 重启 = 网关下线。后续部署建议加 restart 策略（本轮未改，避免与
+  蓝绿/部署脚本语义冲突，留 owner 裁决）。
+
+### 8.1 Fix A（gpt-4 mock-provider 摘除）——已执行 ✅
+
+```sql
+UPDATE credential_model_bindings
+SET available=false, unavailable_reason='manual_dark_2026-10-12_mock_provider_down'
+WHERE credential_id IN (66,67,68)
+  AND provider_model_id IN (SELECT id FROM provider_models WHERE raw_model_name='gpt-4');
+-- UPDATE 3（binding 2999161/62/63）
+```
+
+**实测效果**：gpt-4 从「6 候选 20 秒全灭 + 200s 挂死」变成**即时干净 `no_candidate`**。
+错误信号可区分、可归因，不再烧 20s 超时预算。
+
+### 8.2 Fix B（claude-opus-5 Vapeur 摘除）——已执行 ✅，但暴露下一层
+
+```sql
+UPDATE credential_model_bindings
+SET available=false, unavailable_reason='manual_dark_2026-10-12_upstream_empty_body'
+WHERE credential_id=126
+  AND provider_model_id IN (SELECT id FROM provider_models WHERE raw_model_name='claude-opus-5');
+-- UPDATE 1（binding 3483077）
+```
+
+**实测效果**：路由立即切换到唯一剩余 DB-健康候选 cred 35（zhima-max）——
+`routing_resolve candidates_count=1, top_credential_id=35`（request_id
+`89a7b6e562e7356c12f12a080dff1bc8`）。但请求仍 503，`model_not_found`。
+
+### 8.3 cred 35 被静默丢弃的根因（request_id 跟踪到代码行）
+
+- dispatch 层 `dispatchCandidateAllowed`（executor_dispatch.go:170-172）要求
+  `candidate.IsAvailable()`；该函数（provider/client.go:311-359）把
+  `quota_state ∈ {balance_exhausted, permanently_exhausted, periodic_exhausted}`
+  计入不可用原因。
+- cred 35 实测 `quota_state='periodic_exhausted'`（zhima-max 套餐周期额度用尽）
+  → 候选在 executor_dispatch.go:120-122 被 `continue` **静默丢弃，零日志**。
+- DB 侧其余 8 个 claude-opus-5 绑定全部真坏（auth_failed×5 / disabled×2 /
+  permanently_exhausted×1），没有可恢复项。
+
+**判定**：这是 fail-closed 的正确行为——套餐额度耗尽的凭据本来就不该接流量。
+**不是 gateway 缺陷**，是 upstream 套餐状态。
+
+**自愈路径**：`PeriodicQuotaProbe`（cmd/gateway/main.go:4288 起，默认 5min tick）
+会在 zhima-max 套餐刷新后把 quota_state 翻回，claude-opus-5 随之自动恢复路由，
+无需人工干预。
+
+### 8.4 观测缺口（登记不修）
+
+quota-exhausted 候选在 dispatch 层被静默 `continue`，没有任何 WARN/INFO——
+本次归因花了「拉 request_id → 对时序 → 读代码」三步。建议下一轮给
+executor_dispatch.go:120 的 `continue` 加一条 Debug 级（含 credential_id +
+UnavailableReason），成本一行、不刷屏。本轮不改码（改动需带判据与变异验证，
+且与「修模型调用」目标正交）。
+
+### 8.5 终态矩阵（2026-10-14 00:42，fresh key 1086，事后已 revoke）
+
+| 模型 | 结果 |
+|---|---|
+| gpt-4 | 503 `no_candidate`（干净即时信号，Fix A 终态）|
+| gpt-4o / claude-fable-5 / glm-5.2 / glm-5.3 / deepseek-v4-flash / deepseek-v4-pro / abab5.5-chat / grok-4.6 / minimax-m3 / minimax-m2.7 | 200 OK |
+| kimi-k3 | 200 OK（status-code 探针超时属 curl 侧，body OK）|
+| claude-opus-5 | 503 `model_not_found`（唯一健康候选 quota periodic_exhausted，等周期探针自愈，§8.3）|
+
+**11/13 PASS**。两个 fail 都是「clean error + 已归因 + 有自愈或修复路径」，
+与修复前的「20s 挂死 + 615 模型假绿 + empty-body 三连重试」是质变。
+
+### 8.6 交付物清单（本轮增量）
+
+- Fix A SQL 执行 + 验证（UPDATE 3）
+- Fix B SQL 执行 + 验证（UPDATE 1）
+- cred 35 静默丢弃根因定位（代码行级）
+- 测试 key 1086 用毕即 revoke（1082/1083/1085/1086 全部 revoked）
+- reconciler 重启后恢复 tick（60s 间隔，repaired 6-14/轮，文件日志为权威源；
+  `docker logs` 在高负载下流滞后——量具坑，取证据用挂载文件）

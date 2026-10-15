@@ -9,7 +9,7 @@ import (
 
 // S3 波1 样板（plan §4-S3）：FROM 源切换的形态守卫。
 // 视图形态必须保持既有文本（存量行为零漂移）；原生形态必须只含
-// session_turns 家族、携带 113 列契约的关键列名，且绝无 request_logs 引用。
+// session_turns 家族、携带 113 列契约的关键列名，且绝无 _request_logs 引用。
 
 // memSettingsBackend is a minimal in-memory settings Backend (jsonRawMessage
 // is a []byte alias, so plain []byte satisfies the interface).
@@ -77,8 +77,8 @@ func TestLogsSourceFromSQLNativeTurns(t *testing.T) {
 			t.Errorf("native source missing %q", want)
 		}
 	}
-	// 原生形态唯一不允许的字样：request_logs（v1 分支/反连接整体剔除）。
-	if strings.Contains(got, "request_logs") {
-		t.Errorf("native source must not reference request_logs at all\ngot: %s", got)
+	// 原生形态唯一不允许的字样：_request_logs（v1 分支/反连接整体剔除）。
+	if strings.Contains(got, "_request_logs") {
+		t.Errorf("native source must not reference _request_logs at all\ngot: %s", got)
 	}
 }

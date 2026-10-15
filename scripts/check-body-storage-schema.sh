@@ -52,30 +52,30 @@ echo "$HEADER Bodies partition:    $BODIES_PARENT"
 echo "$HEADER Bodies view:         $VIEW"
 echo ""
 
-# ---------- 1. Body columns in request_logs_hot (should be EMPTY pre-LP1 → ALREADY 0 after LP1) ----------
-echo "$HEADER [1/4] request_logs_hot — should NOT carry full bodies"
+# ---------- 1. Body columns in _request_logs_hot (should be EMPTY pre-LP1 → ALREADY 0 after LP1) ----------
+echo "$HEADER [1/4] _request_logs_hot — should NOT carry full bodies"
 for col in "${EXPECTED_GONE_FROM_HOT[@]}"; do
     # Match only the column DEFINITION, not comments or default values.
     # We grep for: ^    <col>  (start-of-line indent + col name + whitespace)
     if grep -qE "^[[:space:]]+${col}\s+jsonb" "$HOT"; then
-        echo "  ❌ request_logs_hot still has ${col} (jsonb) column defined"
+        echo "  ❌ _request_logs_hot still has ${col} (jsonb) column defined"
         HAS_LEAK=1
     elif grep -qE "^[[:space:]]+${col}\s+" "$HOT"; then
-        echo "  ⚠  request_logs_hot has ${col} (non-jsonb type, expected gone)"
+        echo "  ⚠  _request_logs_hot has ${col} (non-jsonb type, expected gone)"
         HAS_LEAK=1
     else
-        echo "  ✅ request_logs_hot has no ${col} column"
+        echo "  ✅ _request_logs_hot has no ${col} column"
     fi
 done
 
 if [[ "${HAS_LEAK:-0}" == "1" ]]; then
-    echo "$HEADER ❌ FAIL: request_logs_hot still leaks body JSONB columns — LP1 not applied yet"
+    echo "$HEADER ❌ FAIL: _request_logs_hot still leaks body JSONB columns — LP1 not applied yet"
     exit 1
 fi
 echo ""
 
-# ---------- 2. Body columns in request_logs_bodies_hot ----------
-echo "$HEADER [2/4] request_logs_bodies_hot — should hold all 3 body cols + request_id + ts"
+# ---------- 2. Body columns in _request_logs_bodies_hot ----------
+echo "$HEADER [2/4] _request_logs_bodies_hot — should hold all 3 body cols + request_id + ts"
 bodies_hot_cols=$(grep -oE "^[[:space:]]+[a-z_][a-z_0-9]*\s+(jsonb|timestamp|text|bigint)" "$BODIES_HOT" \
     | awk '{print $1}' | sort)
 expected_bodies_hot=$(printf "%s\n" "${EXPECTED_BODIES_HOT_COLS[@]}" | sort)
@@ -88,8 +88,8 @@ fi
 echo "  ✅ bodies_hot column set: $(echo $bodies_hot_cols | tr '\n' ' ')"
 echo ""
 
-# ---------- 3. Body columns in request_logs_bodies (parent partition) ----------
-echo "$HEADER [3/4] request_logs_bodies (partitioned parent) — should match bodies_hot schema"
+# ---------- 3. Body columns in _request_logs_bodies (parent partition) ----------
+echo "$HEADER [3/4] _request_logs_bodies (partitioned parent) — should match bodies_hot schema"
 bodies_parent_cols=$(grep -oE "^[[:space:]]+[a-z_][a-z_0-9]*\s+(jsonb|timestamp|text|bigint)" "$BODIES_PARENT" \
     | awk '{print $1}' | sort)
 expected_bodies_parent=$(printf "%s\n" "${EXPECTED_BODIES_PARENT_COLS[@]}" | sort)
@@ -105,14 +105,14 @@ echo ""
 # ---------- 4. View body — must only project bodies_hot ∪ bodies parent ----------
 echo "$HEADER [4/4] view request_logs_bodies_with_current_month — must project from bodies_hot ∪ bodies"
 view_tables=$(grep -oE "FROM\s+public\.[a-z_]+" "$VIEW" | awk '{print $2}' | sed 's/^public\.//' | sort -u)
-expected_view_tables=$(printf "request_logs_bodies_hot\nrequest_logs_bodies\n" | sort -u)
+expected_view_tables=$(printf "_request_logs_bodies_hot\nrequest_logs_bodies\n" | sort -u)
 if [[ "$view_tables" != "$expected_view_tables" ]]; then
     echo "  ❌ view FROM list mismatch"
     echo "  Got:      $view_tables"
     echo "  Expected: $expected_view_tables"
     exit 1
 fi
-view_cols=$(grep -oE "request_logs_bodies_hot\.[a-z_]+|request_logs_bodies\.[a-z_]+" "$VIEW" \
+view_cols=$(grep -oE "_request_logs_bodies_hot\.[a-z_]+|_request_logs_bodies\.[a-z_]+" "$VIEW" \
     | awk -F. '{print $2}' | sort -u)
 expected_view_cols=$(printf "%s\n" "${EXPECTED_BODIES_HOT_COLS[@]}" | sort -u)
 if [[ "$view_cols" != "$(printf "%s\n" "${EXPECTED_BODIES_PARENT_COLS[@]}" | sort -u)" ]]; then
@@ -139,7 +139,7 @@ if [[ -n "${PGHOST:-}${PGDATABASE:-}${PGUSER:-}" || -n "${DATABASE_URL:-}" ]]; t
             SELECT table_name || '.' || column_name
               FROM information_schema.columns
              WHERE table_schema='public'
-               AND table_name IN ('request_logs_hot','request_logs_bodies_hot','request_logs_bodies')
+               AND table_name IN ('_request_logs_hot','_request_logs_bodies_hot','_request_logs_bodies')
              ORDER BY table_name, ordinal_position")
         rc=$?
         set -e
@@ -148,23 +148,23 @@ if [[ -n "${PGHOST:-}${PGDATABASE:-}${PGUSER:-}" || -n "${DATABASE_URL:-}" ]]; t
             exit 2
         fi
         echo "$live_cols" | sed 's/^/  /'
-        live_hot_cols=$(printf '%s\n' "$live_cols" | sed -n 's/^request_logs_hot\.//p')
+        live_hot_cols=$(printf '%s\n' "$live_cols" | sed -n 's/^_request_logs_hot\.//p')
         if printf '%s\n' "$live_hot_cols" | grep -Eq '^(request_body|response_body|outbound_body)$'; then
-            echo "  ❌ live DB still has body columns on request_logs_hot"
+            echo "  ❌ live DB still has body columns on _request_logs_hot"
             exit 2
         fi
 
-        live_bodies_hot_cols=$(printf '%s\n' "$live_cols" | sed -n 's/^request_logs_bodies_hot\.//p' | sort)
+        live_bodies_hot_cols=$(printf '%s\n' "$live_cols" | sed -n 's/^_request_logs_bodies_hot\.//p' | sort)
         if [[ "$live_bodies_hot_cols" != "$expected_bodies_hot" ]]; then
-            echo "  ❌ live DB request_logs_bodies_hot columns mismatch"
+            echo "  ❌ live DB _request_logs_bodies_hot columns mismatch"
             echo "  Got:      $live_bodies_hot_cols"
             echo "  Expected: $expected_bodies_hot"
             exit 2
         fi
 
-        live_bodies_parent_cols=$(printf '%s\n' "$live_cols" | sed -n 's/^request_logs_bodies\.//p' | sort)
+        live_bodies_parent_cols=$(printf '%s\n' "$live_cols" | sed -n 's/^_request_logs_bodies\.//p' | sort)
         if [[ "$live_bodies_parent_cols" != "$expected_bodies_parent" ]]; then
-            echo "  ❌ live DB request_logs_bodies columns mismatch"
+            echo "  ❌ live DB _request_logs_bodies columns mismatch"
             echo "  Got:      $live_bodies_parent_cols"
             echo "  Expected: $expected_bodies_parent"
             exit 2

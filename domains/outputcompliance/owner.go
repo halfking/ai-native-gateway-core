@@ -5,7 +5,7 @@
 // 背景（见 docs/2026-07-09-session-tagging-redaction-architecture.md §1.1）：
 // 数据面调用方（/v1/chat/*）只有 sk- key，无真实 user_id。唯一的"主人"信号是
 // api_keys.owner_user（创建 key 时填的自由文本），与数据行的 owner_user
-// （session_dim.owner_user / request_logs.api_key_owner_user）按约定一致。
+// （session_dim.owner_user / _request_logs.api_key_owner_user）按约定一致。
 // 复用 admin/session_tenant.go 的 ownerScopeClause 既有约定，不新建授权表。
 package outputcompliance
 

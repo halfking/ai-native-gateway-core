@@ -49,7 +49,7 @@ func requestLogUpdateArgs(entry RequestLogEntry) []interface{} {
 	// 608 request class/due_at at $98-$99 (V6-W1.6 R8, migration 610);
 	// Wave 3 B1 rate multiplier at $100 (migration 736).
 	// 2026-08-24 Phase 1: outbound_body (was $60) is removed from the main table
-	// UPDATE bind list. The dedicated request_logs_bodies_hot table is the sole
+	// UPDATE bind list. The dedicated _request_logs_bodies_hot table is the sole
 	// outbound_body owner; outbound_body is written via upsertRequestLogBodies.
 	// All placeholders $N≥60 are shifted by -1 (so this helper's array shrinks
 	// from 97 to 96).
@@ -75,7 +75,7 @@ func TestUpsertRequestLogBodies_UsesBodyOnlyColumns(t *testing.T) {
 	tx, err := mockDB.Begin(context.Background())
 	require.NoError(t, err)
 
-	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot \(request_id, ts, request_body, response_body, outbound_body\)`).
+	mockDB.ExpectExec(`INSERT INTO _request_logs_bodies_hot \(request_id, ts, request_body, response_body, outbound_body\)`).
 		WithArgs("req-body-only", `{"messages":[]}`, `{"choices":[]}`, `{"messages":[]}`).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
@@ -132,10 +132,10 @@ func TestUpdateRequestLog_AllowsTerminalSuccessToReplaceIntermediateFailure(t *t
 		Success:       true,
 		RequestStatus: &status,
 	})
-	mockDB.ExpectExec(`UPDATE request_logs_hot[\s\S]*request_logs_hot\.request_status = 'failure'`).
+	mockDB.ExpectExec(`UPDATE _request_logs_hot[\s\S]*_request_logs_hot\.request_status = 'failure'`).
 		WithArgs(requestLogArgs...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+	mockDB.ExpectExec(`INSERT INTO _request_logs_bodies_hot`).
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mockDB.ExpectCommit()
@@ -226,7 +226,7 @@ func TestUpdateRequestLog_TerminalGuardDistinguishesNoOpFromMissing(t *testing.T
 				WithArgs(tc.entry.RequestID, pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 			requestLogArgs := requestLogUpdateArgs(tc.entry)
-			mockDB.ExpectExec(`UPDATE request_logs_hot`).
+			mockDB.ExpectExec(`UPDATE _request_logs_hot`).
 				WithArgs(requestLogArgs...).
 				WillReturnResult(pgxmock.NewResult("UPDATE", tc.updateRows))
 			if tc.wantQuery {
@@ -238,7 +238,7 @@ func TestUpdateRequestLog_TerminalGuardDistinguishesNoOpFromMissing(t *testing.T
 				mockDB.ExpectRollback()
 			}
 			if tc.wantCommit {
-				mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+				mockDB.ExpectExec(`INSERT INTO _request_logs_bodies_hot`).
 					WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 					WillReturnResult(pgxmock.NewResult("INSERT", 1))
 				mockDB.ExpectCommit()
@@ -262,7 +262,7 @@ func TestUpdateRequestLog_MissingRequestFallsBackToInsert(t *testing.T) {
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 	requestLogArgs := requestLogUpdateArgs(RequestLogEntry{Success: false})
-	mockDB.ExpectExec(`UPDATE request_logs_hot`).
+	mockDB.ExpectExec(`UPDATE _request_logs_hot`).
 		WithArgs(requestLogArgs...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 	mockDB.ExpectQuery(`SELECT EXISTS`).
@@ -282,10 +282,10 @@ func TestUpdateRequestLog_MissingRequestFallsBackToInsert(t *testing.T) {
 	for index := range requestInsertArgs {
 		requestInsertArgs[index] = pgxmock.AnyArg()
 	}
-	mockDB.ExpectExec(`INSERT INTO\s+request_logs_hot\s*\(`).
+	mockDB.ExpectExec(`INSERT INTO\s+_request_logs_hot\s*\(`).
 		WithArgs(requestInsertArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+	mockDB.ExpectExec(`INSERT INTO _request_logs_bodies_hot`).
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mockDB.ExpectCommit()
@@ -395,7 +395,7 @@ func TestResolveRequestStatus(t *testing.T) {
 
 func TestRequestLogsUpdateSQL_SetClauseDoesNotReferenceTargetAlias(t *testing.T) {
 	// 2026-08-20: 校正 stale 断言。早期的 *_default 表（canonical write target）
-	// 已被迁移 341 替换为 request_logs_hot（hot table），production 代码不再
+	// 已被迁移 341 替换为 _request_logs_hot（hot table），production 代码不再
 	// 写 request_logs_default。该测试现锁定"UPDATE 必须指向 hot 表且不带
 	// 别名"。
 	//
@@ -403,14 +403,14 @@ func TestRequestLogsUpdateSQL_SetClauseDoesNotReferenceTargetAlias(t *testing.T)
 	// 只校验 SET 子句没有 `rl.` 别名引用 + WHERE 指向 hot 表。这是 schema
 	// 演进路径上的"轻量级回归防护"——具体列由 SQL 编译器保证。
 	const updateSQL = `
-		UPDATE request_logs_hot
+		UPDATE _request_logs_hot
 		   SET client_model = COALESCE($2, client_model),
 		       outbound_model = COALESCE($3, outbound_model),
 		       quality_flags = COALESCE(CAST($59 AS text[]), quality_flags),
 		       quality_fix_actions = COALESCE(CAST($60 AS jsonb), quality_fix_actions)
 		  FROM latest
-		 WHERE request_logs_hot.id = latest.id
-		   AND request_logs_hot.ts = latest.ts
+		 WHERE _request_logs_hot.id = latest.id
+		   AND _request_logs_hot.ts = latest.ts
 	`
 
 	setIdx := strings.Index(updateSQL, "SET ")
@@ -422,29 +422,29 @@ func TestRequestLogsUpdateSQL_SetClauseDoesNotReferenceTargetAlias(t *testing.T)
 	if strings.Contains(setClause, "rl.") {
 		t.Fatalf("SET clause must not reference target alias rl: %s", setClause)
 	}
-	if strings.Contains(updateSQL, "UPDATE request_logs rl") {
-		t.Fatal("UPDATE must not alias request_logs as rl")
+	if strings.Contains(updateSQL, "UPDATE _request_logs rl") {
+		t.Fatal("UPDATE must not alias _request_logs as rl")
 	}
 	if strings.Contains(updateSQL, "UPDATE request_logs_default") {
 		t.Fatal("UPDATE must NOT target the deprecated request_logs_default table")
 	}
-	if !strings.Contains(updateSQL, "UPDATE request_logs_hot") {
-		t.Fatal("UPDATE must target request_logs_hot (post-migration 341)")
+	if !strings.Contains(updateSQL, "UPDATE _request_logs_hot") {
+		t.Fatal("UPDATE must target _request_logs_hot (post-migration 341)")
 	}
-	if !strings.Contains(updateSQL, "request_logs_hot.id") {
-		t.Fatal("WHERE clause must reference request_logs_hot.id")
+	if !strings.Contains(updateSQL, "_request_logs_hot.id") {
+		t.Fatal("WHERE clause must reference _request_logs_hot.id")
 	}
 }
 
 func TestRequestLogsHotTarget_QualityColumnsUseHotTable(t *testing.T) {
 	// 2026-08-20: 锁定 quality_* 列随 INSERT/UPDATE 一起迁移到 hot 表。
-	// 测试不依赖具体参数编号，只验证 SQL 中同时出现 quality_* 和 request_logs_hot。
+	// 测试不依赖具体参数编号，只验证 SQL 中同时出现 quality_* 和 _request_logs_hot。
 	const sql = `
-		INSERT INTO request_logs_hot (request_id, ts, quality_flags, quality_fix_actions)
+		INSERT INTO _request_logs_hot (request_id, ts, quality_flags, quality_fix_actions)
 		VALUES ($1, $2, $3::text[], $4::text::jsonb)
 	`
-	if !strings.Contains(sql, "request_logs_hot") {
-		t.Fatal("INSERT must target request_logs_hot")
+	if !strings.Contains(sql, "_request_logs_hot") {
+		t.Fatal("INSERT must target _request_logs_hot")
 	}
 	for _, col := range []string{"quality_flags", "quality_fix_actions"} {
 		if !strings.Contains(sql, col) {
@@ -500,10 +500,10 @@ func TestPersistRequestLog_ReleasesBodiesAfterPersistedHooks(t *testing.T) {
 	mockDB.ExpectExec(`UPDATE usage_ledger_hot`).
 		WithArgs("req-release", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mockDB.ExpectExec(`UPDATE request_logs_hot`).
+	mockDB.ExpectExec(`UPDATE _request_logs_hot`).
 		WithArgs(requestLogUpdateArgs(RequestLogEntry{Success: true, RequestStatus: &status})...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+	mockDB.ExpectExec(`INSERT INTO _request_logs_bodies_hot`).
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mockDB.ExpectCommit()
@@ -867,7 +867,7 @@ func TestLookupProviderName(t *testing.T) {
 // 0 时回退 v1 母表 30d 计数（镜像前历史会话）。
 func TestLookupTurnNumber(t *testing.T) {
 	const sessionQ = `SELECT COALESCE\(MAX\(turn_no\), 0\)[\s\S]*`
-	const v1Q = `SELECT COUNT\(\*\)[\s\S]*FROM request_logs[\s\S]*gw_session_id = \$1[\s\S]*`
+	const v1Q = `SELECT COUNT\(\*\)[\s\S]*FROM _request_logs[\s\S]*gw_session_id = \$1[\s\S]*`
 
 	t.Run("session family turn_no is authoritative", func(t *testing.T) {
 		mockDB, err := pgxmock.NewPool()
@@ -1096,10 +1096,10 @@ func TestRequestLogEmittedBeforePersisted(t *testing.T) {
 	for index := range requestInsertArgs {
 		requestInsertArgs[index] = pgxmock.AnyArg()
 	}
-	mockDB.ExpectExec(`INSERT INTO\s+request_logs_hot\s*\(`).
+	mockDB.ExpectExec(`INSERT INTO\s+_request_logs_hot\s*\(`).
 		WithArgs(requestInsertArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+	mockDB.ExpectExec(`INSERT INTO _request_logs_bodies_hot`).
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mockDB.ExpectCommit()

@@ -80,6 +80,12 @@ func (h *Handler) handleUserAnalyticsList(w http.ResponseWriter, r *http.Request
 	baseWhere := ""
 	baseArgs := []interface{}{}
 
+	// owner_user 为 NULL 的行不构成「用户画像」：它扫进 string 会 500
+	// （pgx 不做隐式 NULL→""），且 COUNT(DISTINCT owner_user) 本就忽略
+	// NULL ⇒ 不过滤会让 total 与列表口径分叉。这里在两处查询统一排掉。
+	// 2026-10-14 全量 API 扫描轮实测抓到（真库 session_owners 含 NULL 属主行）。
+	nullOwnerFilter := "so.owner_user IS NOT NULL"
+
 	// 三层隔离
 	if IsRegularUser(r) {
 		// 普通用户只看到自己
@@ -88,19 +94,23 @@ func (h *Handler) handleUserAnalyticsList(w http.ResponseWriter, r *http.Request
 			writeError(w, http.StatusForbidden, "no user identity")
 			return
 		}
-		baseWhere = "WHERE so.owner_user = $1"
+		baseWhere = "WHERE " + nullOwnerFilter + " AND so.owner_user = $1"
 		baseArgs = append(baseArgs, owner)
 	} else if IsTenantAdmin(r) {
 		tenantID := GetTenantID(r)
 		if tenantID != "" && tenantID != "default" {
-			baseWhere = "WHERE so.tenant_id = $1"
+			baseWhere = "WHERE " + nullOwnerFilter + " AND so.tenant_id = $1"
 			baseArgs = append(baseArgs, tenantID)
+		} else {
+			baseWhere = "WHERE " + nullOwnerFilter
 		}
 	} else {
 		// super_admin/admin_key — 可指定 tenant_id
 		if q := queryString(r, "tenant_id"); q != "" {
-			baseWhere = "WHERE so.tenant_id = $1"
+			baseWhere = "WHERE " + nullOwnerFilter + " AND so.tenant_id = $1"
 			baseArgs = append(baseArgs, q)
+		} else {
+			baseWhere = "WHERE " + nullOwnerFilter
 		}
 	}
 

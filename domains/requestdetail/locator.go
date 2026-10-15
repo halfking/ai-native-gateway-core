@@ -39,7 +39,7 @@ type BodyReader interface {
 // Redis-backed live stream cache. It is invoked between the local
 // in-process store and the DB readers so a click on a live swim lane
 // returns immediately while the request is still being persisted to
-// request_logs / session_turns.
+// _request_logs / session_turns.
 //
 // LoadLiveDetail returns ErrNotFound when Redis has no entry for the
 // request id; the Locator falls through to the DB layers in that case.
@@ -63,7 +63,7 @@ var ErrNotFound = errors.New("requestdetail: not found")
 //
 // 2026-08-30: default raised from 1 → 2. The original single attempt
 // proved too tight when the live stream publishes a request that has
-// not yet been written to request_logs on the responding replica; two
+// not yet been written to _request_logs on the responding replica; two
 // short retries (≈100ms apart) collapse most cross-replica races
 // without inflating latency for the steady state.
 const (
@@ -72,7 +72,7 @@ const (
 )
 
 // Locator resolves detail in order: memory → file → live (Redis) →
-// request_logs → session_turns.
+// _request_logs → session_turns.
 type Locator struct {
 	Store  *Store
 	Bodies BodyReader
@@ -133,7 +133,7 @@ func (l *Locator) Get(ctx context.Context, requestID string, omitBody bool) (*De
 	// 2026-08-30: live-stream Redis cache. Inserted between the local
 	// store and the DB readers so a click on a still-running swim lane
 	// returns metadata immediately instead of bouncing off the eventual
-	// request_logs write. Tenant gating is enforced by LoadLiveDetail.
+	// _request_logs write. Tenant gating is enforced by LoadLiveDetail.
 	// When the caller wants bodies, we treat the live hit as metadata
 	// only and fall through to the DB readers so the response still
 	// contains request/response bodies. This branch intentionally runs
@@ -220,7 +220,7 @@ func (l *Locator) Get(ctx context.Context, requestID string, omitBody bool) (*De
 			Source:      SourceRequestLogs,
 			Persistence: PersistencePersisted,
 			Meta:        requestLogsMeta,
-			Warning:     "request body row not found in request_logs or session_turns; metadata-only fallback",
+			Warning:     "request body row not found in _request_logs or session_turns; metadata-only fallback",
 		}, nil
 	}
 	return nil, err

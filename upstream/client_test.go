@@ -522,7 +522,7 @@ func TestDo_OverloadBodyOn502IsUpstreamOverloaded(t *testing.T) {
 		t.Errorf("Kind = %q, want %q", uErr.Kind, errorsx.KindUpstreamOverloaded)
 	}
 	// The diagnostic message must carry the upstream's own words, otherwise
-	// request_logs.response_preview is useless for post-mortems.
+	// _request_logs.response_preview is useless for post-mortems.
 	if !strings.Contains(uErr.Message, "currently overloaded") {
 		t.Errorf("Message = %q, want it to contain the upstream text", uErr.Message)
 	}

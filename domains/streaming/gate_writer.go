@@ -162,6 +162,33 @@ func (gw *GateWriter) UnderlyingAttemptGate() *AttemptCommitGate {
 	return gw.gate
 }
 
+// drainGateWriterPending resolves the GateWriter behind transport decoration
+// (monitoredResponseWriter et al.) and drains its frame-assembly residue.
+//
+// r1028 (2026-10-14, 154 incident): the direct `w.(*GateWriter)` assertion
+// every bridge used after wrapAttemptWriter fails exactly when the gate was
+// recovered from behind a wrapper — i.e. on every survival-streaming request
+// — which left R-vapeur3's terminal-frame drain dead code on that path. A
+// vapeur-shaped stream (`data: [DONE]\n` with no blank-line terminator) then
+// strands its terminal in the assembly buffer: holders never see the terminal
+// event, held frames wait for finish()'s FlushStreamPending, and a policy
+// block at that point is the last writer standing. Reports whether a gate
+// writer was found (drained or not).
+func drainGateWriterPending(w http.ResponseWriter) bool {
+	for hops := 0; hops < 8; hops++ {
+		if gw, ok := w.(*GateWriter); ok {
+			_ = gw.DrainPending()
+			return true
+		}
+		u, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return false
+		}
+		w = u.Unwrap()
+	}
+	return false
+}
+
 // SetFirstSemanticByteCallback binds dispatch's attempt-scoped first-byte hook
 // to a coordinator-created gate without stacking a second classifier.
 func (gw *GateWriter) SetFirstSemanticByteCallback(callback func()) {

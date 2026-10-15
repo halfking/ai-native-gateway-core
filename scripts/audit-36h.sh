@@ -64,8 +64,8 @@ EOF
 SELECT COUNT(*) total, COUNT(*) FILTER (WHERE success) succ,
        COUNT(*) FILTER (WHERE NOT success) fail,
        ROUND(100.0*COUNT(*) FILTER (WHERE success)/NULLIF(COUNT(*),0),2) succ_pct
-FROM request_logs_hot WHERE ts > NOW() - INTERVAL '36 hours';
-SELECT 'hot_size' AS m, COUNT(*), MAX(ts), MIN(ts) FROM request_logs_hot;
+FROM _request_logs_hot WHERE ts > NOW() - INTERVAL '36 hours';
+SELECT 'hot_size' AS m, COUNT(*), MAX(ts), MIN(ts) FROM _request_logs_hot;
 SELECT 'partition_2026_07' AS m, COUNT(*), MAX(ts), MIN(ts) FROM request_logs_2026_07;
 SELECT 'partition_2026_08' AS m, COUNT(*), MAX(ts), MIN(ts) FROM request_logs_2026_08;
 SELECT 'partition_default' AS m, COUNT(*), MAX(ts), MIN(ts) FROM request_logs_default;
@@ -75,46 +75,46 @@ EOF
        ;;
     errkind) cat >> /tmp/q-errkind.sql <<'EOF'
 SELECT COALESCE(error_kind,'<null>') ek, COUNT(*) c
-FROM request_logs_hot WHERE ts > NOW() - INTERVAL '36 hours'
+FROM _request_logs_hot WHERE ts > NOW() - INTERVAL '36 hours'
 GROUP BY ek ORDER BY c DESC LIMIT 20;
 EOF
        ;;
     status) cat >> /tmp/q-status.sql <<'EOF'
 SELECT COALESCE(request_status,'<null>') rs, COUNT(*) c
-FROM request_logs_hot WHERE ts > NOW() - INTERVAL '36 hours'
+FROM _request_logs_hot WHERE ts > NOW() - INTERVAL '36 hours'
 GROUP BY rs ORDER BY c DESC;
 EOF
        ;;
     failstage) cat >> /tmp/q-failstage.sql <<'EOF'
 SELECT COALESCE(failure_stage,'<null>') fs, COUNT(*) c
-FROM request_logs_hot WHERE ts > NOW() - INTERVAL '36 hours' AND NOT success
+FROM _request_logs_hot WHERE ts > NOW() - INTERVAL '36 hours' AND NOT success
 GROUP BY fs ORDER BY c DESC;
 EOF
        ;;
     detailcode) cat >> /tmp/q-detailcode.sql <<'EOF'
 SELECT COALESCE(failure_detail_code,'<null>') dc, COUNT(*) c
-FROM request_logs_hot WHERE ts > NOW() - INTERVAL '36 hours' AND NOT success
+FROM _request_logs_hot WHERE ts > NOW() - INTERVAL '36 hours' AND NOT success
 GROUP BY dc ORDER BY c DESC LIMIT 30;
 EOF
        ;;
     bytime) cat >> /tmp/q-bytime.sql <<'EOF'
 SELECT date_trunc('hour', ts) hr, COUNT(*),
        COUNT(*) FILTER (WHERE NOT success) fail
-FROM request_logs_hot WHERE ts > NOW() - INTERVAL '36 hours'
+FROM _request_logs_hot WHERE ts > NOW() - INTERVAL '36 hours'
 GROUP BY hr ORDER BY hr;
 EOF
        ;;
     model) cat >> /tmp/q-model.sql <<'EOF'
 SELECT client_model, COUNT(*), COUNT(*) FILTER (WHERE NOT success) fail,
        ROUND(100.0*COUNT(*) FILTER (WHERE NOT success)/NULLIF(COUNT(*),0),1) fail_pct
-FROM request_logs_hot WHERE ts > NOW() - INTERVAL '36 hours'
+FROM _request_logs_hot WHERE ts > NOW() - INTERVAL '36 hours'
 GROUP BY client_model HAVING COUNT(*) > 30 ORDER BY fail DESC LIMIT 15;
 EOF
        ;;
     cred) cat >> /tmp/q-cred.sql <<'EOF'
 SELECT credential_id, COUNT(*), COUNT(*) FILTER (WHERE NOT success) fail,
        ROUND(100.0*COUNT(*) FILTER (WHERE NOT success)/NULLIF(COUNT(*),0),1) fail_pct
-FROM request_logs_hot WHERE ts > NOW() - INTERVAL '36 hours' AND credential_id IS NOT NULL
+FROM _request_logs_hot WHERE ts > NOW() - INTERVAL '36 hours' AND credential_id IS NOT NULL
 GROUP BY credential_id HAVING COUNT(*) > 30 ORDER BY fail DESC LIMIT 15;
 EOF
        ;;

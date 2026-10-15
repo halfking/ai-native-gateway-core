@@ -14,7 +14,7 @@ func requestdetailNotFound() error { return requestdetail.ErrNotFound }
 
 // TestLiveDetailAdapter_HitReturnsMeta pins that a Redis-hit returns the
 // live-store meta via the Locator's LiveDetailReader interface. Without
-// this, dashboard swim-lane clicks 404 until the request_logs write lands.
+// this, dashboard swim-lane clicks 404 until the _request_logs write lands.
 func TestLiveDetailAdapter_HitReturnsMeta(t *testing.T) {
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})

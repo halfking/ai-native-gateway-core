@@ -184,7 +184,7 @@ func (a *OptimizationAdviser) detect(s *sessionStatsForOpt) []suggestion {
 	return out
 }
 
-// loadStats 读取会话统计（session_summaries + request_logs 聚合）。
+// loadStats 读取会话统计（session_summaries + _request_logs 聚合）。
 func (a *OptimizationAdviser) loadStats(ctx context.Context, tenantID, gwSessionID string) (*sessionStatsForOpt, error) {
 	query := `
 		SELECT ss.session_key, ss.tenant_id,
@@ -192,9 +192,9 @@ func (a *OptimizationAdviser) loadStats(ctx context.Context, tenantID, gwSession
 		       ss.total_prompt_tokens, ss.total_completion_tokens,
 		       ss.total_cost_usd, ss.input_cost_usd,
 		       ss.user_intent, ss.primary_model, ss.model_switch_count,
-		       COALESCE((SELECT SUM(COALESCE(cache_read_tokens,0)) FROM request_logs WHERE gw_session_id = ss.session_key), 0),
-		       COALESCE((SELECT COUNT(*) FROM request_logs WHERE gw_session_id = ss.session_key AND compression_strategy IS NOT NULL AND compression_strategy != ''), 0),
-		       COALESCE((SELECT SUM(COALESCE(outbound_token_est,0)) FROM request_logs WHERE gw_session_id = ss.session_key), 0)
+		       COALESCE((SELECT SUM(COALESCE(cache_read_tokens,0)) FROM _request_logs WHERE gw_session_id = ss.session_key), 0),
+		       COALESCE((SELECT COUNT(*) FROM _request_logs WHERE gw_session_id = ss.session_key AND compression_strategy IS NOT NULL AND compression_strategy != ''), 0),
+		       COALESCE((SELECT SUM(COALESCE(outbound_token_est,0)) FROM _request_logs WHERE gw_session_id = ss.session_key), 0)
 		FROM session_summaries ss
 		WHERE ss.session_key = $1`
 	args := []any{gwSessionID}

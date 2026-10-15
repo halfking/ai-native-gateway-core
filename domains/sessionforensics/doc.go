@@ -3,7 +3,7 @@
 //
 // 它汇集了三个曾分散在不同模块的能力：
 //
-//  1. 会话导出：从生产 request_logs + request_logs_bodies + session_summaries
+//  1. 会话导出：从生产 _request_logs + _request_logs_bodies + session_summaries
 //     拉到一台机器，形成可下载的迁移包；
 //  2. 会话回放：把导出包喂给本机的 compression.SessionCompressor.Prepare，
 //     验证 delta-append / 缓存命中 / tools_cached / strip / windowing 的实际行为；

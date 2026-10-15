@@ -1,6 +1,6 @@
 // Package bg/systemmonitor — recent_success_hook.go
 //
-// 在 telemetry 持久化 request_logs 行后，调用本 hook 写 Redis 缓存
+// 在 telemetry 持久化 _request_logs 行后，调用本 hook 写 Redis 缓存
 // llmgw:monitor:node:recent_success:{cred}:{model}，TTL=300s。
 // 设计依据: docs/会话优化v2/32-系统监测模块设计.md §4.3 / §6.2
 //

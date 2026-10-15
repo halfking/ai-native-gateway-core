@@ -48,12 +48,12 @@ DELETE FROM self_check_runs
 WHERE created_at < NOW() - INTERVAL '7 days';
 
 -- 4. REINDEX膨胀表
-REINDEX TABLE CONCURRENTLY request_logs_hot;
+REINDEX TABLE CONCURRENTLY _request_logs_hot;
 REINDEX TABLE CONCURRENTLY request_wal_hot;
 REINDEX TABLE CONCURRENTLY model_probe_runs_hot;
 
 -- 5. ANALYZE更新统计
-VACUUM ANALYZE request_logs_hot;
+VACUUM ANALYZE _request_logs_hot;
 VACUUM ANALYZE request_wal_hot;
 VACUUM ANALYZE model_probe_runs_hot;
 VACUUM ANALYZE credential_model_index_2026_07;
@@ -65,7 +65,7 @@ SELECT '=== Cleanup Complete ===' as status;
 SELECT 
     pg_size_pretty(pg_database_size('llm_gateway')) as db_size,
     pg_size_pretty(pg_total_relation_size('columnar_internal.chunk'::regclass)) as columnar_chunk,
-    pg_size_pretty(pg_total_relation_size('request_logs_hot'::regclass)) as hot_table;
+    pg_size_pretty(pg_total_relation_size('_request_logs_hot'::regclass)) as hot_table;
 SQL
 )
 

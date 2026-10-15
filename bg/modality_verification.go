@@ -415,7 +415,7 @@ var probeLedgerMissingTableOnce sync.Once
 //
 // 目标里的「这个需要加入到自检任务中」此前**没有兑现**：核实循环是独立 ticker、
 // 进不了 credential_probe_queue、语义探针经 internal/upstreamurl 直连上游
-// （所以不产生 request_logs）、尝试记录只在进程内 m.attempts。⇒ 运维唯一能
+// （所以不产生 _request_logs）、尝试记录只在进程内 m.attempts。⇒ 运维唯一能
 // 问出「核实跑过什么」的通道是 slog，而这些日志活不过一次重启。
 //
 // 本方法是**只加出口、不改行为**的：核实结论仍然只写

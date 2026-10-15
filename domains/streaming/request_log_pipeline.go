@@ -34,7 +34,7 @@ func jsonMarshal(v any) ([]byte, error) {
 
 // RequestLogContext caches request facts across handler lifecycle stages
 // (auth, body read, routing, upstream, response) so every exit path emits
-// a complete request_logs row with user/application correlation.
+// a complete _request_logs row with user/application correlation.
 type RequestLogContext struct {
 	handler   *ChatHandler
 	RequestID string
@@ -48,14 +48,14 @@ type RequestLogContext struct {
 	terminalKind  string
 	terminalEntry *telemetry.RequestLogEntry
 	// ClientRequestID is the X-Request-Id the client supplied, if any.
-	// Persisted into request_logs.client_request_id for debug /
+	// Persisted into _request_logs.client_request_id for debug /
 	// cross-system tracing. Distinct from RequestID (the server-generated
 	// UUID that is the primary audit key) so client retries that reuse
 	// the same id do not collapse into one row.
 	ClientRequestID string
 	// RequestClass / DueAt carry the V6-W1.6 R8 request class
 	// (immediate|scheduled, from X-Gw-Due-At) so BOTH the initial
-	// request_logs_hot row and the completion UPDATE persist it
+	// _request_logs_hot row and the completion UPDATE persist it
 	// (migration 608). Set next to parseDispatchDueAt in each protocol
 	// handler; empty RequestClass or zero DueAt means immediate.
 	RequestClass string
@@ -104,7 +104,7 @@ type RequestLogContext struct {
 	// production default ("live"); non-empty values are the test-mode
 	// tokens (mock / auto-only / other-only).
 	//
-	// NOT persisted: request_logs has no test_mode column, so this stays
+	// NOT persisted: _request_logs has no test_mode column, so this stays
 	// in-process only. Operators filter internal test traffic with
 	// `WHERE error_kind NOT LIKE '%_mock'` — that column IS written, by
 	// recordMockRequestLog on the mock short-circuit path. Do not write
@@ -135,7 +135,7 @@ type RequestLogContext struct {
 	// OutboundProvenance (R35, 2026-09-17 audit P0-1) carries the original→
 	// compressed/sanitized provenance write-through: a pre-merged JSON object
 	// with alignment_map / sanitize_message_refs / window_source keys, folded
-	// into request_logs.compression_meta (and thence sessions_v2 metadata via
+	// into _request_logs.compression_meta (and thence sessions_v2 metadata via
 	// the mirror whitelist, which already knows these keys). Without this the
 	// V2 read path (applyCompressionMeta) read keys no writer ever produced.
 	// Size-capped at the producer (see buildOutboundProvenance).
@@ -154,14 +154,14 @@ type RequestLogContext struct {
 	// 2026-08-06: 父子关联维度。Set from the X-Gw-Parent-Request-Id and
 	// X-Gw-Source-Actor headers at handler entry (admin/auto_title_generator.go
 	// forwards them on its loopback LLM call). Flow into
-	// request_logs_hot.parent_request_id / origin_actor so operators can SQL
+	// _request_logs_hot.parent_request_id / origin_actor so operators can SQL
 	// JOIN child ↔ parent and filter "all rows emitted by the auto-title
 	// generator".
 	ParentRequestID string // user request_id that triggered this loopback
 	OriginActor     string // emitting component, e.g. "auto-title-generator"
 
 	// 2026-07-17: 同步探测 hold 维度。executor 进入 no_candidate 分支时
-	// 通过 OnProbeHoldStart/End 回调更新这三个字段；request_logs 写入时
+	// 通过 OnProbeHoldStart/End 回调更新这三个字段；_request_logs 写入时
 	// 可序列化进 attachment JSON 用于运维追查。
 	ProbeHoldStartedAt  *time.Time // hold 开始时刻（探针进入）
 	ProbeHoldDurationMs int        // hold 总毫秒（OnProbeHoldEnd 计算）
@@ -188,11 +188,11 @@ type RequestLogContext struct {
 	streamChunksSent   atomic.Int64
 
 	// 2026-07-01: 附件元数据字段 (migration 325)
-	// 存储从请求体中提取的 base64/data-URI 附件元数据，写入 request_logs.attachments JSONB。
+	// 存储从请求体中提取的 base64/data-URI 附件元数据，写入 _request_logs.attachments JSONB。
 	Attachments []attachments.AttachmentMetadata
 
 	// RoutingTracker (2026-07-20) 记录所有路由轮次，供 buildEntry 写入
-	// request_logs.routing_attempts。nil 表示不追踪（旧路径/降级）。
+	// _request_logs.routing_attempts。nil 表示不追踪（旧路径/降级）。
 	RoutingTracker *executors.RoutingAttemptsTracker
 
 	// V3.1 dispatch queue timestamps (from ExecuteResult / ExecuteError after
@@ -288,7 +288,7 @@ func (c *RequestLogContext) IncrementStreamChunksSent() {
 
 // StreamChunkErrors returns the current value of the atomic counter in
 // a way that callers (e.g. emitTelemetry) can copy into the immutable
-// request_logs row.
+// _request_logs row.
 func (c *RequestLogContext) StreamChunkErrorsValue() int {
 	if c == nil {
 		return 0
@@ -386,7 +386,7 @@ func (h *ChatHandler) NewRequestLogContext(r *http.Request, requestID string, st
 	// R59 audit (S6-2): T0 must default to the request arrival time. Before
 	// this, T0ArrivedAt was only stamped on the dispatch-queue path, so
 	// pre-dispatch rejections (auth/budget/rate-limit) and synthetic probe
-	// rows landed with t0_arrived_at NULL — 99.5% of request_logs_hot, which
+	// rows landed with t0_arrived_at NULL — 99.5% of _request_logs_hot, which
 	// poisoned every time-window query that filtered on it (154 critical
 	// audit R3). Dispatch-path ApplyQueueTimestamps* still overwrite with
 	// the queue-side stamp when one exists.
@@ -421,7 +421,7 @@ func (c *RequestLogContext) SetClientModel(model string) {
 	}
 }
 
-// SetWorkType stores the X-Gw-Work-Type header for request_logs.work_type.
+// SetWorkType stores the X-Gw-Work-Type header for _request_logs.work_type.
 func (c *RequestLogContext) SetWorkType(wt string) {
 	c.WorkType = strings.TrimSpace(wt)
 }
@@ -512,11 +512,11 @@ func applyWorkTypeField(entry *telemetry.RequestLogEntry, c *RequestLogContext) 
 // request:
 //
 //	SELECT child.request_id, child.parent_request_id, child.origin_actor
-//	FROM request_logs_hot child
+//	FROM _request_logs_hot child
 //	WHERE child.origin_actor = 'auto-title-generator'
 //	  AND child.ts > now() - interval '1 hour';
 //
-// Without this, request_logs_hot.parent_request_id is always NULL on title
+// Without this, _request_logs_hot.parent_request_id is always NULL on title
 // rows and operators have no way to correlate "08aa2a8a → 3a03f7db".
 func applyParentCorrelationFields(entry *telemetry.RequestLogEntry, c *RequestLogContext) {
 	if entry == nil || c == nil {
@@ -813,7 +813,7 @@ func (c *RequestLogContext) IsLogged() bool {
 // MarkProbeHoldStart is invoked by the executor when it enters the
 // synchronous no-candidate probe hold. The timestamp is later used
 // by MarkProbeHoldEnd to compute ProbeHoldDurationMs for trace /
-// request_logs correlation. Idempotent.
+// _request_logs correlation. Idempotent.
 func (c *RequestLogContext) MarkProbeHoldStart() {
 	if c == nil {
 		return
@@ -837,7 +837,7 @@ func (c *RequestLogContext) MarkProbeHoldEnd(recovered bool) {
 }
 
 // SetAutoDecision stores the auto-route decision for persistence in
-// request_logs.auto_decision JSONB. Called from relay/handler.go when
+// _request_logs.auto_decision JSONB. Called from relay/handler.go when
 // model="auto" was resolved.
 func (c *RequestLogContext) SetAutoDecision(wire *autoRouteDecision) {
 	if c == nil {
@@ -925,7 +925,7 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 
 	gwSessionID, gwTaskID := c.SessionTask()
 	// R50 F15：730 sessions 归因三列的采集点（role/父会话头；父任务复用
-	// gwTaskID）。仅进 Mirror-only 传输字段，request_logs 列契约不动。
+	// gwTaskID）。仅进 Mirror-only 传输字段，_request_logs 列契约不动。
 	agentRole, parentSessionID := gwAgentAttributionFromRequest(c.Request)
 	clientProfile := c.meta.ClientProfile
 	identityHash := c.meta.IdentityHash
@@ -1124,7 +1124,7 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 		reqLog.OutboundBody = json.RawMessage(c.OutboundBody)
 	}
 
-	// 2026-07-20: serialize routing attempts into request_logs
+	// 2026-07-20: serialize routing attempts into _request_logs
 	if c.RoutingTracker != nil {
 		jsonBytes, err := c.RoutingTracker.ToJSONBytes()
 		switch {
@@ -1201,7 +1201,7 @@ func (c *RequestLogContext) minimalTerminalEntry(errCode, status string) *teleme
 	}
 }
 
-// EmitFailure writes/updates request_logs for a non-success exit.
+// EmitFailure writes/updates _request_logs for a non-success exit.
 func (c *RequestLogContext) EmitFailure(errCode, errMessage string, providerID, credentialID *int) {
 	if c == nil || c.handler == nil {
 		return
@@ -1560,7 +1560,7 @@ func buildOutboundProvenance(r *http.Request, alignment []compression.AlignmentI
 }
 
 // applyRoutingMetadata (spec §12 GAP 3) merges the per-request
-// routing_state_source and conversion_path into the request_logs
+// routing_state_source and conversion_path into the _request_logs
 // metadata so each row can be attributed to its routing decision
 // (authoritative / fallback / canary / off) and its transport path
 // (ir / legacy). Until a dedicated routing_state_source column is

@@ -226,7 +226,7 @@ type SessionTurn struct {
 
 // 会话身份语义（v4 T7-2 / UT-FS-04，消除 sessions.id 与 session_id 歧义）：
 //
-//	gw_session_id（文本）  request_logs*.gw_session_id，时间线的主键语义；
+//	gw_session_id（文本）  _request_logs*.gw_session_id，时间线的主键语义；
 //	                       dispatch.QueuedRequest.SessionID 的文档曾把它写成
 //	                       public.sessions.id（数值），是歧义来源。
 //	sessions.id（数值）    sessions 表代理键（BIGSERIAL，月分区）。
@@ -313,8 +313,8 @@ func deriveTurnOutcome(status string, isFinalSuccess, sessionHasFinalSuccess boo
 // GET /api/admin/sessions/{id}/timeline[?session_pk=<sessions.id>]
 //
 // v4 T7 改动：
-//  1. 读路径从 request_logs_hot 扩到 request_logs_with_current_month
-//     （= request_logs_hot UNION ALL request_logs 分区母表，migration
+//  1. 读路径从 _request_logs_hot 扩到 request_logs_with_current_month
+//     （= _request_logs_hot UNION ALL _request_logs 分区母表，migration
 //     340/448/459/491/510/532 维护），修复 >7d 会话被截断的问题
 //     （promote_request_logs_hot_to_partition 7 天后把行搬离 hot）。
 //  2. 统一 session 标识语义（见 sessionIDSource* 常量注释）。
@@ -415,7 +415,7 @@ func (h *Handler) handleSessionTimeline(w http.ResponseWriter, r *http.Request) 
 //
 // 会话存储解耦 v3：本端点**已于 2026-09-30 迁到 session 族原生源**。
 // 迁移一度被真库核对否决——当时 sessions_v2.enabled=true、shadow_write=true
-// 前提下仍有 20,660 个会话 / 38,878 行只存在于 request_logs。但 §5.3.1 复核
+// 前提下仍有 20,660 个会话 / 38,878 行只存在于 _request_logs。但 §5.3.1 复核
 // 证明那批「漏写」绝大多数是**按设计排除**的内部回环与非终态占位行，
 // 真正的 `genuine_loss`（1,459 行）已由 scripts/audit/mirror_outbox_backfill.sql
 // 全量补写，35 天窗口复测 `genuine_loss = 0`。

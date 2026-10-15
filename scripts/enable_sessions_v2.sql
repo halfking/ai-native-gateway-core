@@ -32,7 +32,7 @@ VALUES (
     'bool',
     'platform',
     'session',
-    '启用副写模式（同时写入request_logs和V2表）',
+    '启用副写模式（同时写入_request_logs和V2表）',
     NOW()
 )
 ON CONFLICT (key) DO UPDATE

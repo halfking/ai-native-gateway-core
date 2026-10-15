@@ -27,7 +27,7 @@ func TestWindowExceedsV1Data(t *testing.T) {
 	// Measured read-only on 252 on 2026-10-05, for tenant rows that carry a
 	// session header (§9.220/§9.221/§9.222):
 	//
-	//   request_logs    2026-09-30 18:54:28 .. 2026-10-04 15:53:32   (4 days)
+	//   _request_logs    2026-09-30 18:54:28 .. 2026-10-04 15:53:32   (4 days)
 	//   session_turns   2026-09-06 11:53:50 .. 2026-10-04 15:53:33   (24 days earlier)
 	//
 	// The retention policy allows 2 months, but the data that actually exists

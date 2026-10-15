@@ -39,14 +39,14 @@ WARNINGS=0
 
 # 需要审计的表列表（根据迁移文件识别）
 PARTITIONED_TABLES=(
-    "request_logs"
+    "_request_logs"
     "usage_ledger"
     "credit_ledger"
     "tool_usage_stats"
     "request_wal"
     "routing_decision_log"
     "credential_model_index"
-    "request_logs_bodies"
+    "_request_logs_bodies"
 )
 
 # 审计报告文件

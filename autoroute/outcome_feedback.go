@@ -6,7 +6,7 @@ package autoroute
 // Before this file, recordFeedbackAsync fired the plugin's RecordFeedback at
 // DECISION time with IsSuccess hardcoded true — an open feedback loop: the
 // optimizer's learning input never saw a failure. The real outcome only
-// existed on the request-completion path (request_logs success/latency/cost)
+// existed on the request-completion path (_request_logs success/latency/cost)
 // and in the async settle chain (auto_route_selections ← settle worker), which
 // routingopt never consumed.
 //
@@ -18,7 +18,7 @@ package autoroute
 //     decision-time placeholder writes for correlatable requests are gone.
 //  2. The request completes → domains/streaming calls ReportRoutingOutcome
 //     with the terminal success/latency/cost (same choke points that emit
-//     tuning signals and terminal request_logs rows). The stashed feedback is
+//     tuning signals and terminal _request_logs rows). The stashed feedback is
 //     popped, filled with the REAL outcome, and written through the same
 //     bounded fire-and-forget dispatch as before.
 //  3. Requests that never report an outcome (rate-limited before execution,
@@ -55,7 +55,7 @@ import (
 // RoutingOutcome is the terminal result of one auto-routed request, reported
 // by the request-completion path (domains/streaming) once success, latency
 // and cost are final. It mirrors the columns the settle worker later joins
-// from request_logs_hot, but arrives in-process instead of via DB polling.
+// from _request_logs_hot, but arrives in-process instead of via DB polling.
 type RoutingOutcome struct {
 	// RequestID is the correlation id (X-Request-Id) the decision was stashed
 	// under. Empty ids are ignored — they cannot match anything.
@@ -64,7 +64,7 @@ type RoutingOutcome struct {
 	// rounds (goal-% shadow rounds, internal title/summary loopbacks) are
 	// dropped by ReportRoutingOutcome (R35-R2 灰度口径).
 	OriginActor string
-	// Success is the terminal request_logs outcome (2xx upstream response).
+	// Success is the terminal _request_logs outcome (2xx upstream response).
 	Success bool
 	// LatencyMs is the settled end-to-end latency (0 when unknown).
 	LatencyMs int64
@@ -225,7 +225,7 @@ func startPendingJanitor() {
 // and ignored. Never blocks — matching a pending entry is O(1) and the write
 // goes through the same bounded drop-on-full dispatch as before.
 //
-// Called by domains/streaming at the terminal request_logs choke points
+// Called by domains/streaming at the terminal _request_logs choke points
 // (success telemetry + EmitFailure), NOT at decision time.
 func ReportRoutingOutcome(outcome RoutingOutcome) {
 	if outcome.RequestID == "" {
@@ -236,7 +236,7 @@ func ReportRoutingOutcome(outcome RoutingOutcome) {
 	// was gated at recordFeedbackAsync), so letting it through would inflate
 	// orphan with self-call noise; a goal-% shadow round would inflate
 	// matched. Skipped BEFORE any counter so the synthetic flow is invisible
-	// to the registry (it still flows through request_logs for auditability).
+	// to the registry (it still flows through _request_logs for auditability).
 	if IsSyntheticActor(outcome.OriginActor) {
 		return
 	}

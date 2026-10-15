@@ -612,7 +612,6 @@ func TestParseOpenAI_RepetitionPenalty_RoundTrip(t *testing.T) {
 	}
 }
 
-
 // BenchmarkParseOpenAI benchmarks the OpenAI parser.
 func BenchmarkParseOpenAI(b *testing.B) {
 	body := []byte(`{

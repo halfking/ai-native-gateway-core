@@ -28,7 +28,7 @@ import (
 //	      与 L3 回填（da6b95627 契约：注入且非空 = 共享，不再按模式门控）
 //	L2:   RedisGovernanceCache — Redis 治理元数据（verdicts only）；
 //	      仅 full 模式使用，lite 模式跳过（lite = SQLite + File + Memory，无 Redis）
-//	L3:   SessionTurnsReader — 冷启动回源（读 session_turns，不是 request_logs）
+//	L3:   SessionTurnsReader — 冷启动回源（读 session_turns，不是 _request_logs）
 //
 // 存储模式（storage.StorageMode，经 effectiveMode 归一化）：
 //   - full（默认；零值与未知值都归一化为 full）：读 L1→L2→L3，写 L1+L2，

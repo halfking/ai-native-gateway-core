@@ -27,7 +27,7 @@ import (
 // SystemMonitorSSEHub fans out Redis Pub/Sub events to dashboard clients.
 //
 // 与 LiveStreamSSEHub (admin/live_stream_sse.go) 不同：
-//   - 不直接收 request_logs（那是 live-stream 的职责）
+//   - 不直接收 _request_logs（那是 live-stream 的职责）
 //   - 订阅 llmgw:monitor:events（系统监测自有通道）
 //   - envelope 字段集更精简（详见 systemMonitorEvent）
 type SystemMonitorSSEHub struct {

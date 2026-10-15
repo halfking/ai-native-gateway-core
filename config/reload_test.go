@@ -25,7 +25,7 @@ func TestStoreReloadFileNormalizesExclusiveRetryOwner(t *testing.T) {
 	if cfg.StreamRetryEnabled {
 		t.Fatal("stream retry must be disabled when survival owns outer retries")
 	}
-	if cfg.RequestSurvivalInteractiveDeadlineSeconds != 18000 {
+	if cfg.RequestSurvivalInteractiveDeadlineSeconds != 240 {
 		t.Fatalf("interactive deadline = %d, want normalized default", cfg.RequestSurvivalInteractiveDeadlineSeconds)
 	}
 }

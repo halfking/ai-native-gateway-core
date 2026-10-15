@@ -28,18 +28,18 @@ func NewRequestIDMiddleware() *RequestIDMiddleware {
 //
 // Behaviour:
 //   - ALWAYS generates a fresh server-side request_id (so two retries
-//     carrying the same X-Request-Id do NOT collide in request_logs).
+//     carrying the same X-Request-Id do NOT collide in _request_logs).
 //   - Preserves the client-supplied X-Request-Id on X-Client-Request-Id
 //     (response header) and X-Gw-Client-Request-Id (request header for
 //     downstream handlers) so it can be recorded in
-//     request_logs.client_request_id for debug / cross-system tracing.
+//     _request_logs.client_request_id for debug / cross-system tracing.
 //   - gw_session_id (X-Gw-Session-Id) is the canonical correlation key
 //     for "same client retry". Per-request ids are intentionally unique.
 //
 // Regression context (2026-06-26): previously this middleware reused the
 // client X-Request-Id when present. A misbehaving client (ZCode agent
 // reusing the same id across retries) caused 5 retries to produce 5
-// request_logs rows sharing one request_id, all marked success=true
+// _request_logs rows sharing one request_id, all marked success=true
 // because the last retry's UPDATE flowed through COALESCE. See the
 // bug report for request_id 3875431e-9ba6-4e90-8b43-0d234f90d85d.
 func (m *RequestIDMiddleware) Wrap(next http.Handler) http.Handler {
@@ -50,7 +50,7 @@ func (m *RequestIDMiddleware) Wrap(next http.Handler) http.Handler {
 		id := generateRequestID()
 
 		// Forward the client value downstream so handlers can
-		// persist it into request_logs.client_request_id.
+		// persist it into _request_logs.client_request_id.
 		if clientID := strings.TrimSpace(r.Header.Get("X-Request-Id")); clientID != "" && clientID != id {
 			r.Header.Set("X-Gw-Client-Request-Id", clientID)
 			w.Header().Set("X-Client-Request-Id", clientID)

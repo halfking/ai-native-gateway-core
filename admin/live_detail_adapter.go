@@ -1,7 +1,7 @@
 // live_detail_adapter.go — adapt LiveStreamRedisStore into the
 // requestdetail.Locator's LiveDetailReader interface so the unified
 // admin detail handler can resolve a click on a still-running swim lane
-// without waiting for the eventual request_logs write.
+// without waiting for the eventual _request_logs write.
 package admin
 
 import (

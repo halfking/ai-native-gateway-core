@@ -105,7 +105,7 @@ func (sc *StreamCapture) ObserveChunk(chunk *ir.StreamChunk) {
 			}
 			// 2026-09-09 audit round 3: cache/reasoning tokens were parsed by
 			// the IR layer but never copied into the capture, leaving
-			// request_logs cache columns NULL on every streaming request
+			// _request_logs cache columns NULL on every streaming request
 			// (billing/cache-hit-rate distortion). StreamUsage carries them as
 			// pointers only when the upstream actually reported them.
 			if chunk.Usage.CacheReadTokens != nil {

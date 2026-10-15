@@ -1,13 +1,13 @@
 // Package v2 implements Sessions V2 storage architecture
 //
 // This package provides parallel session storage alongside the existing
-// request_logs system. The V2 architecture splits data into:
+// _request_logs system. The V2 architecture splits data into:
 //   - sessions: session snapshots (one per session)
 //   - session_turns: turn metadata (no bodies)
 //   - session_bodies: incremental message deltas (columnar storage)
 //   - session_turn_logs: processing stage logs (24h TTL)
 //
-// V2 can be enabled via Feature Flags without affecting V1 (request_logs).
+// V2 can be enabled via Feature Flags without affecting V1 (_request_logs).
 package v2
 
 import (
@@ -138,7 +138,7 @@ type TurnRecord struct {
 	DigestJSON []byte
 
 	// V3.1 dispatch 9-stage (10 timestamps) queue timestamps (migration 513).
-	// Mirrors the same columns on public.request_logs_hot so the session_turns
+	// Mirrors the same columns on public._request_logs_hot so the session_turns
 	// table can answer timeline queries without joining request_logs. Populated
 	// by SessionWriterV2.Write from ProcessedRequest.T0ArrivedAt..T9ResponseEndAt,
 	// which the telemetry mirror carries from RequestLogEntry. nil-safe —
@@ -154,7 +154,7 @@ type TurnRecord struct {
 	T8ResponseStartAt *time.Time
 	T9ResponseEndAt   *time.Time
 
-	// ── 存储优化方案 v2 S1a（migration 707）：request_logs 独有数据补采列。
+	// ── 存储优化方案 v2 S1a（migration 707）：_request_logs 独有数据补采列。
 	// 零值即 NULL；镜像 ProcessedRequest 同名字段（SessionWriterV2.Write
 	// 负责搬运）。分组语义见 ProcessedRequest 注释与 storage-optimization-
 	// plan.md §3 D1。

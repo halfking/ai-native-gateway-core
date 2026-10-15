@@ -15,7 +15,7 @@ import (
 // WriteNonStreamResponse implementations write this out so the
 // executor can propagate the signals into ExecuteResult, which
 // in turn feeds relay/handler.go emitTelemetry →
-// request_logs.quality_flags / quality_fix_actions / quality_score.
+// _request_logs.quality_flags / quality_fix_actions / quality_score.
 type QualitySignals struct {
 	Flags      []string
 	FixActions []byte

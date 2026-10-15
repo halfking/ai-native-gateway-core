@@ -1,8 +1,8 @@
 #!/bin/bash
-# 通过 API 完整测试 request_logs_hot 表的写入和更新
+# 通过 API 完整测试 _request_logs_hot 表的写入和更新
 # 测试流程：
 #   1. 通过 API 发起请求
-#   2. 验证 request_logs_hot 表中有记录
+#   2. 验证 _request_logs_hot 表中有记录
 #   3. 验证记录被正确更新（tokens, cost 等）
 #   4. 验证视图能正确聚合数据
 
@@ -66,8 +66,8 @@ function check_service() {
 function cleanup_old_data() {
     log_section "步骤 2: 清理旧测试数据"
     
-    log_info "清理 request_logs_hot 中的测试数据..."
-    psql_exec "DELETE FROM request_logs_hot WHERE request_id LIKE 'api-test-%';" > /dev/null 2>&1
+    log_info "清理 _request_logs_hot 中的测试数据..."
+    psql_exec "DELETE FROM _request_logs_hot WHERE request_id LIKE 'api-test-%';" > /dev/null 2>&1
     
     log_info "清理 usage_ledger_hot 中的测试数据..."
     psql_exec "DELETE FROM usage_ledger_hot WHERE request_id LIKE 'api-test-%';" > /dev/null 2>&1
@@ -81,13 +81,13 @@ function cleanup_old_data() {
 function check_current_data() {
     log_section "步骤 3: 查看当前数据量"
     
-    local hot_count=$(psql_exec "SELECT COUNT(*) FROM request_logs_hot;")
+    local hot_count=$(psql_exec "SELECT COUNT(*) FROM _request_logs_hot;")
     hot_count=$(echo "$hot_count" | xargs)
     
     local view_count=$(psql_exec "SELECT COUNT(*) FROM request_logs_with_current_month;")
     view_count=$(echo "$view_count" | xargs)
     
-    log_info "request_logs_hot 当前数据: $hot_count 行"
+    log_info "_request_logs_hot 当前数据: $hot_count 行"
     log_info "request_logs_with_current_month 视图: $view_count 行"
 }
 
@@ -152,32 +152,32 @@ function wait_for_data() {
 }
 
 # ============================================================
-# 步骤 6: 验证 request_logs_hot 表有数据
+# 步骤 6: 验证 _request_logs_hot 表有数据
 # ============================================================
 function verify_hot_table_insert() {
-    log_section "步骤 6: 验证 request_logs_hot 表数据插入"
+    log_section "步骤 6: 验证 _request_logs_hot 表数据插入"
     ((TOTAL_TESTS++))
     
     log_info "查询最近 30 秒内的记录..."
     
-    local recent_count=$(psql_exec "SELECT COUNT(*) FROM request_logs_hot WHERE ts > NOW() - INTERVAL '30 seconds';")
+    local recent_count=$(psql_exec "SELECT COUNT(*) FROM _request_logs_hot WHERE ts > NOW() - INTERVAL '30 seconds';")
     recent_count=$(echo "$recent_count" | xargs)
     
     log_info "找到 $recent_count 条最近记录"
     
     if [[ "$recent_count" -gt 0 ]]; then
-        log_info "✅ request_logs_hot 表有新数据写入"
+        log_info "✅ _request_logs_hot 表有新数据写入"
         
         # 显示最新记录的详情
         log_info "\n最新记录详情："
         psql_exec "SELECT request_id, ts, success, prompt_tokens, completion_tokens, client_model 
-                   FROM request_logs_hot 
+                   FROM _request_logs_hot 
                    WHERE ts > NOW() - INTERVAL '30 seconds' 
                    ORDER BY ts DESC LIMIT 1;" | head -3
         
         ((PASSED_TESTS++))
     else
-        log_error "❌ request_logs_hot 表没有新数据"
+        log_error "❌ _request_logs_hot 表没有新数据"
         log_error "可能原因："
         log_error "  1. API 请求失败"
         log_error "  2. 写入逻辑有问题"
@@ -190,13 +190,13 @@ function verify_hot_table_insert() {
 # 步骤 7: 验证数据更新（如果是流式响应）
 # ============================================================
 function verify_hot_table_update() {
-    log_section "步骤 7: 验证 request_logs_hot 表数据更新"
+    log_section "步骤 7: 验证 _request_logs_hot 表数据更新"
     ((TOTAL_TESTS++))
     
     log_info "检查最新记录的 tokens 数据..."
     
     local tokens_result=$(psql_exec "SELECT prompt_tokens, completion_tokens, total_tokens 
-                                      FROM request_logs_hot 
+                                      FROM _request_logs_hot 
                                       WHERE ts > NOW() - INTERVAL '30 seconds' 
                                       ORDER BY ts DESC LIMIT 1;")
     
@@ -222,17 +222,17 @@ function verify_view_aggregation() {
     
     log_info "对比 hot 表和视图的数据量..."
     
-    local hot_count=$(psql_exec "SELECT COUNT(*) FROM request_logs_hot;")
+    local hot_count=$(psql_exec "SELECT COUNT(*) FROM _request_logs_hot;")
     hot_count=$(echo "$hot_count" | xargs)
     
-    local parent_count=$(psql_exec "SELECT COUNT(*) FROM request_logs;")
+    local parent_count=$(psql_exec "SELECT COUNT(*) FROM _request_logs;")
     parent_count=$(echo "$parent_count" | xargs)
     
     local view_count=$(psql_exec "SELECT COUNT(*) FROM request_logs_with_current_month;")
     view_count=$(echo "$view_count" | xargs)
     
-    log_info "  request_logs_hot: $hot_count 行"
-    log_info "  request_logs (父表): $parent_count 行"
+    log_info "  _request_logs_hot: $hot_count 行"
+    log_info "  _request_logs (父表): $parent_count 行"
     log_info "  request_logs_with_current_month: $view_count 行"
     
     local expected=$((hot_count + parent_count))
@@ -256,19 +256,19 @@ function test_manual_update() {
     log_info "手动插入测试记录..."
     
     local test_id="manual-test-$(date +%s)"
-    psql_exec "INSERT INTO request_logs_hot (request_id, ts, tenant_id, success, prompt_tokens, completion_tokens) 
+    psql_exec "INSERT INTO _request_logs_hot (request_id, ts, tenant_id, success, prompt_tokens, completion_tokens) 
                VALUES ('$test_id', NOW(), 'default', true, 10, 20);"
     
     log_info "  插入记录: $test_id"
     
     log_info "更新 tokens 数据..."
-    psql_exec "UPDATE request_logs_hot 
+    psql_exec "UPDATE _request_logs_hot 
                SET prompt_tokens = 100, completion_tokens = 200, total_tokens = 300 
                WHERE request_id = '$test_id';"
     
     log_info "验证更新结果..."
     local updated=$(psql_exec "SELECT prompt_tokens, completion_tokens, total_tokens 
-                                FROM request_logs_hot WHERE request_id = '$test_id';")
+                                FROM _request_logs_hot WHERE request_id = '$test_id';")
     
     log_info "更新后的数据: $updated"
     
@@ -281,7 +281,7 @@ function test_manual_update() {
     fi
     
     log_info "清理测试数据..."
-    psql_exec "DELETE FROM request_logs_hot WHERE request_id = '$test_id';"
+    psql_exec "DELETE FROM _request_logs_hot WHERE request_id = '$test_id';"
 }
 
 # ============================================================
@@ -293,7 +293,7 @@ function show_final_stats() {
     log_info "各表数据统计："
     
     local tables=(
-        "request_logs_hot"
+        "_request_logs_hot"
         "usage_ledger_hot"
         "request_wal_hot"
         "routing_decision_log_hot"
@@ -306,9 +306,9 @@ function show_final_stats() {
     done
     
     log_info "\n最近 24 小时数据："
-    local recent_24h=$(psql_exec "SELECT COUNT(*) FROM request_logs_hot WHERE ts > NOW() - INTERVAL '24 hours';")
+    local recent_24h=$(psql_exec "SELECT COUNT(*) FROM _request_logs_hot WHERE ts > NOW() - INTERVAL '24 hours';")
     recent_24h=$(echo "$recent_24h" | xargs)
-    log_info "  request_logs_hot (24h): $recent_24h 行"
+    log_info "  _request_logs_hot (24h): $recent_24h 行"
 }
 
 # ============================================================
@@ -343,7 +343,7 @@ function main() {
     if [[ "$FAILED_TESTS" -eq 0 ]]; then
         log_info "🎉 所有测试通过！"
         log_info ""
-        log_info "✅ request_logs_hot 表数据写入正常"
+        log_info "✅ _request_logs_hot 表数据写入正常"
         log_info "✅ UPDATE 操作正常"
         log_info "✅ 视图聚合正常"
         log_info ""

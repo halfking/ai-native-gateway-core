@@ -11,7 +11,7 @@
 //	DELETE /api/admin/work-types/:key         — soft delete (enabled=false)
 //	PUT    /api/admin/work-types/:key/routes  — replace model routes
 //
-// NOTE: All SELECTs on tenant-scoped tables (request_logs etc.) in this file
+// NOTE: All SELECTs on tenant-scoped tables (_request_logs etc.) in this file
 // are wrapped with tenantLogsClause() (admin/session_tenant.go) — adds
 // "AND tenant_id = $N" for tenant_admin callers on non-default tenants.
 // Super-admin / legacy admin_key / default-tenant callers see all rows.
@@ -265,7 +265,7 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	// Direct work_type column (future)
 	//
 	// 2026-06-24 fix: the explicit-model branch used `is_auto_request = FALSE`,
-	// which is NULL for historical request_logs rows (the writer only learned
+	// which is NULL for historical _request_logs rows (the writer only learned
 	// to set TRUE/FALSE later). PostgreSQL three-valued logic excluded every
 	// NULL row, so explicit-model requests never appeared in by_work_type /
 	// by_l1_task / top_models. Use `is_auto_request IS NOT TRUE` so NULL
@@ -281,7 +281,7 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	// R37 (R35-R2 灰度口径): gateway-synthetic rounds (goal-% shadow rounds,
 	// internal title/summary loopbacks) never count as business usage.
 	wtSyntheticExclude := autoroute.SQLExcludeSyntheticActors("")
-	// 2026-10-13 S3 波 2（停写切换）：源 request_logs_hot → canonical 视图
+	// 2026-10-13 S3 波 2（停写切换）：源 _request_logs_hot → canonical 视图
 	// （停写后新流量只落 session_turns；视图会话臂服务新流量、v1 臂服务
 	// 历史，反连接去重）。「指定模型」判据从 client_model 单列扩为
 	// client→outbound→canonical 回退链：会话臂 client_model 依赖 734
@@ -331,7 +331,7 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	// composite key. Same fix as the audit handler task_distribution.
 	taskExpr := fmt.Sprintf(`COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '%s' END)`, SpecifiedModelTaskKey)
 	l1Dist := map[string]int{}
-	// 24 小时窗口查询走 request_logs_hot（heap 落地热数据，性能最优）
+	// 24 小时窗口查询走 _request_logs_hot（heap 落地热数据，性能最优）
 	// 符合 docs/partition/partition-standards.md 查询规范
 	// R37 fix: wtSyntheticExclude contains '%' (LIKE 'goal-%') — embedding it
 	// in the Sprintf template corrupted the verb stream and the handler's
@@ -373,7 +373,7 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	// counted as non-auto. Same fix applied in admin/auto_route.go
 	// handleAudit (2026-06-24).
 	var totalAuto, totalSpec int
-	// 24 小时窗口查询走 request_logs_hot（heap 落地热数据，性能最优）
+	// 24 小时窗口查询走 _request_logs_hot（heap 落地热数据，性能最优）
 	// 符合 docs/partition/partition-standards.md 查询规范
 	_ = h.db.QueryRow(ctx, `
 		SELECT
@@ -438,7 +438,7 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	// Top models 24h (union auto + specified, with client_model fallback).
 	// 2026-06-24: same NULL-safe filter as the other two queries above.
 	topModels := make([]map[string]interface{}, 0)
-	// 24 小时窗口查询走 request_logs_hot（heap 落地热数据，性能最优）
+	// 24 小时窗口查询走 _request_logs_hot（heap 落地热数据，性能最优）
 	// 符合 docs/partition/partition-standards.md 查询规范
 	rows, err = h.db.Query(ctx, `
 		SELECT COALESCE(NULLIF(outbound_model, ''), client_model, canonical_model) AS m, COUNT(*) AS c

@@ -211,7 +211,7 @@ func compactJSON(body []byte) string {
 // It is critical that the result is valid UTF-8 because the caller writes the
 // string into PostgreSQL columns with encoding=UTF8; an invalid byte sequence
 // (e.g. a multi-byte rune split mid-character) causes the INSERT to fail with
-// SQLSTATE 22021 and the entire request_logs row is dropped.  Prior versions
+// SQLSTATE 22021 and the entire _request_logs row is dropped.  Prior versions
 // used s[:limit-1] which silently produced invalid sequences for Chinese /
 // emoji content, manifesting as missing rows for glm-5.1 / minimax / doubao
 // traffic.  See incident 2026-06-11.

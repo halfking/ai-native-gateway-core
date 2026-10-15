@@ -277,7 +277,7 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 			parent_task_id = COALESCE(EXCLUDED.parent_task_id, public.sessions.parent_task_id),
 			-- R69 审计：首值优先固化首个请求 id。admin 会话详情端点的
 			-- gw_session_id 反向映射臂（session_detail_v2.go resolveSessionID
-			-- 步骤 2）经 sessions.primary_request_id 关联 request_logs——本
+			-- 步骤 2）经 sessions.primary_request_id 关联 _request_logs——本
 			-- 写入者此前不含该列，活跃会话恒 NULL，反向臂只服务 backfill/
 			-- repair 期数据。聚合按轮到达顺序追加，首个非空 RequestID 即
 			-- 语义上的"第一个请求"，与 430 列注释一致。

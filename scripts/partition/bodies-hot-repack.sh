@@ -7,7 +7,7 @@
 # | 1.0  | 2026-08-18 | 初始版本（swap/vacuum-full/pg-repack）| Infra |
 # ========================================
 #
-# bodies-hot-repack.sh — request_logs_bodies_hot TOAST 膨胀重排执行器
+# bodies-hot-repack.sh — _request_logs_bodies_hot TOAST 膨胀重排执行器
 #
 # 三种模式（按推荐顺序）：
 #   --mode=swap        【推荐】活行复制 + 原子换名。旧表保留为 *_bloat_backup_<ts>，
@@ -37,7 +37,7 @@ set -euo pipefail
 ENV_ARG="local"
 MODE="dry-run"
 FORCE=false
-TABLE="request_logs_bodies_hot"
+TABLE="_request_logs_bodies_hot"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --env=*)   ENV_ARG="${1#--env=}" ;;
@@ -128,7 +128,7 @@ VIEW_REFRESH_SQL=""
 # known bodies view, recreate its rule after the new table takes the live name.
 # Any unrecognized dependent view blocks the swap rather than silently serving
 # the retained backup table.
-if [[ "$TABLE" == "request_logs_bodies_hot" ]]; then
+if [[ "$TABLE" == "_request_logs_bodies_hot" ]]; then
   DEPENDENT_VIEWS=$(run_sql -Atc "
     SELECT DISTINCT n.nspname || '.' || c.relname
     FROM pg_depend d
@@ -150,14 +150,14 @@ SELECT request_logs_bodies_hot.request_id,
        request_logs_bodies_hot.request_body,
        request_logs_bodies_hot.outbound_body,
        request_logs_bodies_hot.response_body
-FROM public.request_logs_bodies_hot
+FROM public._request_logs_bodies_hot
 UNION ALL
 SELECT request_logs_bodies.request_id,
        request_logs_bodies.ts,
        request_logs_bodies.request_body,
        request_logs_bodies.outbound_body,
        request_logs_bodies.response_body
-FROM public.request_logs_bodies;
+FROM public._request_logs_bodies;
 SQL
 )
   fi

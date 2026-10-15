@@ -3,7 +3,7 @@
 // 2026-06-23 Phase 2 (P1) of the minimax-m3 transient-error fix:
 // persistent log of per-credential / per-model upstream failures.
 //
-// The Phase 1 fix added upstream response body to request_logs.response_preview
+// The Phase 1 fix added upstream response body to _request_logs.response_preview
 // for transient errors, but operators still couldn't see WHICH credentials were
 // failing in a request sequence. This file introduces a dedicated log table
 // (candidate_failure_logs) and the writer that the executor calls once per

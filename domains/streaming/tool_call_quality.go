@@ -16,7 +16,7 @@ const (
 )
 
 // Quality flag constants — stable identifiers used in
-// request_logs.quality_flags. Add new tags here, never inline string
+// _request_logs.quality_flags. Add new tags here, never inline string
 // literals, so dashboards and SQL aggregations stay consistent.
 const (
 	QualityFlagEmptyToolName       = "empty_tool_name"
@@ -27,7 +27,7 @@ const (
 )
 
 // QualityFixResult is the output of ProcessNonStreamBody. Callers
-// persist Flags + FixActions into request_logs and emit a metric.
+// persist Flags + FixActions into _request_logs and emit a metric.
 // Score is 0..1 (higher = better). nil = "not evaluated" (off mode).
 type QualityFixResult struct {
 	Flags      []string       `json:"flags"`

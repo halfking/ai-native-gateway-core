@@ -145,7 +145,7 @@ func TestMigration762ProjectBackfillChain_RealDB(t *testing.T) {
 	}
 
 	// 存量夹具：两条 NULL 项目会话（app 口径）+ 一条无信号会话（保持 NULL）。
-	// s4 预留给写链验证：生产序是 request_logs_hot 触发器先建 ss 行、
+	// s4 预留给写链验证：生产序是 _request_logs_hot 触发器先建 ss 行、
 	// sessionv2mirror 请求终态后 UPSERT session_dim，所以这里也先建 ss 行。
 	seed := `
 INSERT INTO session_summaries (session_key, tenant_id, first_request_at, last_request_at, request_count)

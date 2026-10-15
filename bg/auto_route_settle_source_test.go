@@ -14,7 +14,7 @@ import (
 // # 这道门在防什么
 //
 // §9.43 把三条腿（outcome join / LATERAL / loadTaskBaselines）接到同一个
-// `settleSourceSpec` 上，按 S4 写门在 `request_logs_hot` 与 `session_turns_hot`
+// `settleSourceSpec` 上，按 S4 写门在 `_request_logs_hot` 与 `session_turns_hot`
 // 之间切换。三个具体风险：
 //
 //  1. **三条腿不同源**。outcome 读会话族而 baseline 读 v1（或反过来）时，
@@ -30,8 +30,8 @@ func TestSettleSourceForDefaultsToV1(t *testing.T) {
 	if src.Family != settleFamilyV1 {
 		t.Errorf("写门开着时 family = %q，期望 %q", src.Family, settleFamilyV1)
 	}
-	if src.TurnsTable != "request_logs_hot" {
-		t.Errorf("写门开着时 TurnsTable = %q，期望 request_logs_hot（与移植前逐字相同）", src.TurnsTable)
+	if src.TurnsTable != "_request_logs_hot" {
+		t.Errorf("写门开着时 TurnsTable = %q，期望 _request_logs_hot（与移植前逐字相同）", src.TurnsTable)
 	}
 	if src.SessionKeyCol != "gw_session_id" {
 		t.Errorf("写门开着时 SessionKeyCol = %q，期望 gw_session_id", src.SessionKeyCol)
@@ -70,7 +70,7 @@ func TestSettleLegsAllUseTheSameSource(t *testing.T) {
 	sql := settleSQLLiteralText(t)
 
 	// 硬编码的表名（作为 SQL 字面量文本出现）= 绕过规格。
-	for _, banned := range []string{"FROM request_logs_hot r2", "JOIN request_logs_hot rl"} {
+	for _, banned := range []string{"FROM _request_logs_hot r2", "JOIN _request_logs_hot rl"} {
 		if strings.Contains(sql, banned) {
 			t.Errorf("SQL 里出现了硬编码表名 %q。三条腿必须共用 settleSourceSpec，\n"+
 				"  否则会出现「outcome 读会话族、baseline 读 v1」——基线与被归一化的\n"+

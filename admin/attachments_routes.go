@@ -26,7 +26,7 @@ var errAttachmentOwnershipNoDB = errors.New("admin: no db pool for attachment ow
 // 角色下载前先做租户归属校验——新写入是内容寻址布局
 // （2026/07/a1/b2/<sha256>.png），URL 不携带 request_id/租户，tenant_admin
 // 拿到（或枚举到）他人租户的 relPath 即可跨租户读文件。校验经
-// request_attachments.request_id → request_logs.tenant_id 联查；历史
+// request_attachments.request_id → _request_logs.tenant_id 联查；历史
 // req_<request_id>/ 布局走 request_id 快路径。super_admin / admin_key 与
 // 列表端点同口径不收敛；校验失败 fail-closed，拒绝以 404 返回（不确认存在性）。
 func (h *Handler) handleAttachmentsDownload(w http.ResponseWriter, r *http.Request) {

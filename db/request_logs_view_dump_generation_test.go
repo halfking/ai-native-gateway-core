@@ -23,7 +23,7 @@ import (
 //	      AND NOT EXISTS (… FROM public.session_turns tp WHERE tp.request_id = rl.request_id)
 //
 //	本文件（v1 回退体，session_turns 缺表时由 Go 侧保留/重建）
-//	  两条臂：request_logs_hot ∪ request_logs，无反连接。
+//	  两条臂：_request_logs_hot ∪ _request_logs，无反连接。
 //
 // ⇒ 后果不是「文件写错了」（回退体是**仍然可产出**的合法形态：
 //
@@ -100,7 +100,10 @@ func viewDumpVerdict(src string) (string, []string) {
 	switch {
 	case sessionArms > 0:
 		return verdictSessionFam, arms
-	case seen["request_logs"] && seen["request_logs_hot"]:
+	// v1 两臂：两代物理名都算（迁移 860 把 dump 之外的运行库改名 `_` 前缀；
+	// sql/objects/ 下的 dump 是改名前世界的参考件，保留旧名）。
+	case (seen["request_logs"] || seen["_request_logs"]) &&
+		(seen["request_logs_hot"] || seen["_request_logs_hot"]):
 		return verdictV1Fallback, arms
 	default:
 		return verdictUnknownShape, arms
@@ -204,11 +207,11 @@ func TestViewDumpVerdictDiscriminates(t *testing.T) {
 	t.Run("负控1_三臂会话体不得被判为v1回退体", func(t *testing.T) {
 		// 模拟「有人从 v3 库重新 dump」：往真文件里插入两条会话臂。
 		mutated := strings.Replace(real,
-			"   FROM public.request_logs_hot",
-			"   FROM public.session_turns_hot t\nUNION ALL\n SELECT 1\n   FROM public.session_turns t\nUNION ALL\n SELECT 1\n   FROM public.request_logs_hot",
+			"   FROM public._request_logs_hot",
+			"   FROM public.session_turns_hot t\nUNION ALL\n SELECT 1\n   FROM public.session_turns t\nUNION ALL\n SELECT 1\n   FROM public._request_logs_hot",
 			1)
 		if mutated == real {
-			t.Skip("锚点 `   FROM public.request_logs_hot` 已不在 dump 里；" +
+			t.Skip("锚点 `   FROM public._request_logs_hot` 已不在 dump 里；" +
 				"世代判定的主断言会先变红，此负控随之失效——请更新它")
 		}
 		got, arms := viewDumpVerdict(mutated)
@@ -223,11 +226,11 @@ func TestViewDumpVerdictDiscriminates(t *testing.T) {
 	})
 
 	t.Run("负控2_单臂不得被判为v1回退体", func(t *testing.T) {
-		// 判据不是「出现过 request_logs 就算数」：少一条臂必须是未知形态。
-		got, arms := viewDumpVerdict("CREATE VIEW v AS SELECT 1 FROM public.request_logs;")
+		// 判据不是「出现过 _request_logs 就算数」：少一条臂必须是未知形态。
+		got, arms := viewDumpVerdict("CREATE VIEW v AS SELECT 1 FROM public._request_logs;")
 		if got == verdictV1Fallback {
-			t.Fatalf("单臂 `FROM request_logs` 被判为 %q（源表 %v）——"+
-				"判据退化成子串匹配，任意含 request_logs 的文件都会通过", got, arms)
+			t.Fatalf("单臂 `FROM _request_logs` 被判为 %q（源表 %v）——"+
+				"判据退化成子串匹配，任意含 _request_logs 的文件都会通过", got, arms)
 		}
 		if got != verdictUnknownShape {
 			t.Errorf("单臂判定 = %q，期望 %q", got, verdictUnknownShape)

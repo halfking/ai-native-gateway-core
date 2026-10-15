@@ -777,11 +777,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 	// — an upstream that closes without the SSE blank-line terminator strands
 	// the final frame while the request is recorded as a clean outcome.
 	// See GateWriter.DrainPending.
-	defer func() {
-		if gw, ok := w.(*GateWriter); ok {
-			_ = gw.DrainPending()
-		}
-	}()
+	defer drainGateWriterPending(w)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -823,7 +819,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		outputTokens int
 		// 2026-09-09 audit round 3: carry Anthropic cache tokens through the
 		// bridge so the terminal synthesized usage chunk (and the capture it
-		// feeds) no longer loses them — request_logs cache columns were NULL
+		// feeds) no longer loses them — _request_logs cache columns were NULL
 		// for every Anthropic-upstream stream.
 		cacheReadTokens     int
 		cacheWriteTokens    int

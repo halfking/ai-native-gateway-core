@@ -38,7 +38,7 @@ func TestCreditBucketsSQL(t *testing.T) {
 
 // TestBackfillCreditBucketsSQLGuards ensures the backfill SQL overwrites
 // (not accumulates) so repeated runs converge to the same value as
-// request_logs.credits_charged. This is the contract that makes
+// _request_logs.credits_charged. This is the contract that makes
 // restarts safe: a partial backfill that ran before live traffic began
 // can be safely re-run after the gateway has served hours of traffic,
 // and the result will still match the source of truth (because ChargeRequest
@@ -54,7 +54,7 @@ func TestBackfillCreditBucketsSQLGuards(t *testing.T) {
 			COALESCE(SUM(r.credits_charged), 0)::bigint AS credits,
 			COUNT(*)::int AS request_count,
 			now() AS updated_at
-		FROM request_logs_hot AS r
+		FROM _request_logs_hot AS r
 		WHERE r.ts >= now() - ($1::int * INTERVAL '1 day')
 		  AND r.credits_charged IS NOT NULL
 		GROUP BY r.tenant_id, date_trunc('hour', r.ts)
@@ -72,8 +72,8 @@ func TestBackfillCreditBucketsSQLGuards(t *testing.T) {
 	if !contains(sql, "date_trunc('hour', r.ts)") {
 		t.Errorf("backfill SQL must bucket by hour for window slicing")
 	}
-	if !contains(sql, "request_logs_hot") {
-		t.Errorf("backfill SQL must read credits_charged from request_logs")
+	if !contains(sql, "_request_logs_hot") {
+		t.Errorf("backfill SQL must read credits_charged from _request_logs")
 	}
 	if !contains(sql, "credits_charged IS NOT NULL") {
 		t.Errorf("backfill SQL must skip rows with NULL credits_charged")

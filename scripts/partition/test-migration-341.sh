@@ -79,8 +79,8 @@ ok "Migration 341 应用成功"
 log "步骤 3: 验证数据迁移"
 
 # 3.1 检查热表行数
-HOT_COUNT=$("${PSQL_CMD[@]}" -t -A -c "SELECT count(*) FROM request_logs_hot;" 2>/dev/null || echo "0")
-log "request_logs_hot: $HOT_COUNT 行"
+HOT_COUNT=$("${PSQL_CMD[@]}" -t -A -c "SELECT count(*) FROM _request_logs_hot;" 2>/dev/null || echo "0")
+log "_request_logs_hot: $HOT_COUNT 行"
 
 if [[ "$HOT_COUNT" != "$BACKUP_COUNT" ]]; then
     fail "数据丢失！backup=$BACKUP_COUNT, hot=$HOT_COUNT"
@@ -88,8 +88,8 @@ fi
 ok "数据完整性验证通过"
 
 # 3.2 检查索引
-INDEX_COUNT=$("${PSQL_CMD[@]}" -t -A -c "SELECT count(*) FROM pg_indexes WHERE tablename = 'request_logs_hot';" 2>/dev/null || echo "0")
-log "request_logs_hot 索引数: $INDEX_COUNT"
+INDEX_COUNT=$("${PSQL_CMD[@]}" -t -A -c "SELECT count(*) FROM pg_indexes WHERE tablename = '_request_logs_hot';" 2>/dev/null || echo "0")
+log "_request_logs_hot 索引数: $INDEX_COUNT"
 if [[ "$INDEX_COUNT" -lt 6 ]]; then
     warn "索引数量少于预期（应为 6 个）"
 fi
@@ -100,7 +100,7 @@ ATTACHED_COUNT=$("${PSQL_CMD[@]}" -t -A -c "
     SELECT count(*)
     FROM pg_inherits i
     JOIN pg_class c ON i.inhrelid = c.oid
-    WHERE i.inhparent = 'request_logs'::regclass
+    WHERE i.inhparent = '_request_logs'::regclass
       AND c.relname LIKE 'request_logs_2026_%';" 2>/dev/null || echo "0")
 log "ATTACHED 月度分区数: $ATTACHED_COUNT"
 
@@ -112,20 +112,20 @@ log "步骤 4: 写入测试"
 
 # 4.1 INSERT 测试
 "${PSQL_CMD[@]}" -c "
-    INSERT INTO request_logs_hot (request_id, ts, tenant_id, success)
+    INSERT INTO _request_logs_hot (request_id, ts, tenant_id, success)
     VALUES ('test-341-insert', now(), 'test-tenant-341', true);" >/dev/null || fail "INSERT 失败"
 ok "INSERT 测试通过"
 
 # 4.2 UPDATE 测试
 "${PSQL_CMD[@]}" -c "
-    UPDATE request_logs_hot
+    UPDATE _request_logs_hot
     SET success = false
     WHERE request_id = 'test-341-insert';" >/dev/null || fail "UPDATE 失败"
 ok "UPDATE 测试通过"
 
 # 4.3 UPSERT 测试
 "${PSQL_CMD[@]}" -c "
-    INSERT INTO request_logs_hot (request_id, ts, tenant_id, success)
+    INSERT INTO _request_logs_hot (request_id, ts, tenant_id, success)
     VALUES ('test-341-upsert', now(), 'test-tenant-341', true)
     ON CONFLICT (request_id, ts) DO UPDATE SET success = EXCLUDED.success;" >/dev/null || fail "UPSERT 失败"
 ok "UPSERT 测试通过"
@@ -139,7 +139,7 @@ log "步骤 5: 查询测试"
 # 5.1 直接查热表（用 EXPLAIN ANALYZE 拿真实耗时）
 HOT_QUERY_TIME=$("${PSQL_CMD[@]}" -c "\timing on" -c "
     EXPLAIN (ANALYZE, FORMAT TEXT)
-    SELECT count(*) FROM request_logs_hot WHERE ts >= now() - interval '1 day';
+    SELECT count(*) FROM _request_logs_hot WHERE ts >= now() - interval '1 day';
 " 2>&1 | grep "Execution Time" | awk '{print $3}')
 log "热表查询执行时间: ${HOT_QUERY_TIME:-N/A} ms"
 
@@ -152,7 +152,7 @@ log "VIEW 查询执行时间: ${VIEW_QUERY_TIME:-N/A} ms"
 
 # 5.3 验证 VIEW 数据完整性
 VIEW_COUNT=$("${PSQL_CMD[@]}" -t -A -c "SELECT count(*) FROM request_logs_with_current_month WHERE ts >= '2026-06-01';" 2>/dev/null || echo "0")
-PARENT_COUNT=$("${PSQL_CMD[@]}" -t -A -c "SELECT count(*) FROM request_logs WHERE ts >= '2026-06-01';" 2>/dev/null || echo "0")
+PARENT_COUNT=$("${PSQL_CMD[@]}" -t -A -c "SELECT count(*) FROM _request_logs WHERE ts >= '2026-06-01';" 2>/dev/null || echo "0")
 log "VIEW 数据: $VIEW_COUNT 行"
 log "父表数据: $PARENT_COUNT 行"
 
@@ -170,7 +170,7 @@ log "步骤 6: Promote 函数测试"
 
 # 插入一些旧数据（8 天前）
 "${PSQL_CMD[@]}" -c "
-    INSERT INTO request_logs_hot (request_id, ts, tenant_id, success)
+    INSERT INTO _request_logs_hot (request_id, ts, tenant_id, success)
     VALUES ('test-341-old', now() - interval '8 days', 'test-tenant-341', true)
     ON CONFLICT DO NOTHING;" >/dev/null 2>&1 || warn "插入旧数据失败"
 
@@ -189,7 +189,7 @@ fi
 # ========================================
 
 log "步骤 7: 清理测试数据"
-"${PSQL_CMD[@]}" -c "DELETE FROM request_logs_hot WHERE request_id LIKE 'test-341-%';" >/dev/null 2>&1 || warn "清理失败"
+"${PSQL_CMD[@]}" -c "DELETE FROM _request_logs_hot WHERE request_id LIKE 'test-341-%';" >/dev/null 2>&1 || warn "清理失败"
 ok "测试数据已清理"
 
 # ========================================

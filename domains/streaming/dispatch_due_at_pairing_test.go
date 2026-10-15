@@ -11,7 +11,7 @@ import (
 )
 
 // TestDispatchDueAtIsAlwaysPairedWithRequestClass 钉住 request_class 与 due_at
-// 的**配对不变量**：任何写进 request_logs 的 logCtx，要么两者皆空（immediate），
+// 的**配对不变量**：任何写进 _request_logs 的 logCtx，要么两者皆空（immediate），
 // 要么两者皆非空（scheduled）。不存在只填其一的形态。
 //
 // 它由 applyRequestClassToLogCtx 一处保证——该函数要么把两者都写成非空常量

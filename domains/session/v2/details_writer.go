@@ -13,7 +13,7 @@
 //	· 同事务：与 turn+bodies 共用 AppendTurn 的事务，任一失败整体回滚，
 //	  不留孤儿（spec §6.2 同构）；
 //	· 幂等 upsert：ON CONFLICT (tenant_id, request_id, partition_date)
-//	  DO UPDATE——telemetry 晚到回填/重放取最新值（与 request_logs 的
+//	  DO UPDATE——telemetry 晚到回填/重放取最新值（与 _request_logs 的
 //	  in_progress→终态 UPDATE 语义对齐）；
 //	· 可选：表族缺席（733 未跑的陈旧库/极简测试桩）时整体跳过，
 //	  零错误零降级（SetDetailsWriter(nil) 同效）。

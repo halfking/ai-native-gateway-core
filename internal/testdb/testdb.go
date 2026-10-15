@@ -9,7 +9,7 @@
 //
 // Migration behaviour tests cannot use that. The SQL they execute is PRODUCTION
 // code — sql/migrations/startup/*.sql — and it says `public.` explicitly
-// throughout (ALTER TABLE public.request_logs, CREATE FUNCTION
+// throughout (ALTER TABLE public._request_logs, CREATE FUNCTION
 // public.repair_…(), CREATE TABLE public.request_logs_default). That is not
 // test code, so it cannot be edited to drop the qualifier, and unqualified
 // DDL would create a different object than the one production ships. For this
@@ -28,9 +28,9 @@
 // database, where their `public.`-qualified fixtures collide with the real
 // tables:
 //
-//	705      CREATE TABLE public.request_logs        -> 42P07
+//	705      CREATE TABLE public._request_logs        -> 42P07
 //	706-708  CREATE TABLE public.session_turns_hot   -> 42P07
-//	717      CREATE TABLE public.request_logs_hot    -> 42P07
+//	717      CREATE TABLE public._request_logs_hot    -> 42P07
 //
 // and the 541 pair additionally reached DROP TABLE
 // public.credential_model_bindings, which on a populated database is

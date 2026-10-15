@@ -14,7 +14,7 @@ import (
 // removed / provider_model_id dangling / pm.raw_model_name renamed). Each
 // submission is a doomed run: queue claim → in-flight tile → endpoint-build
 // "no rows" → missing-binding drop + a fake-success audit row. The
-// request_logs branch is binding-anchored by its own JOINs, so ONE outer
+// _request_logs branch is binding-anchored by its own JOINs, so ONE outer
 // binding-chain EXISTS (same predicate shape as pumpDueStatesSQL's) covers
 // the UNION without changing branch-1 semantics.
 func TestDailyProbeAuditSQLFiltersMissingBindingPairs(t *testing.T) {
@@ -53,7 +53,7 @@ func TestDailyProbeAuditSQLErrorGated(t *testing.T) {
 	for _, want := range []string{
 		// INV-3: probe traffic must not count as usage (self-sustaining loop).
 		"NOT COALESCE('probe' = ANY(rl.quality_flags), FALSE)",
-		// INV-3: 3-day usage scope on the request_logs branch.
+		// INV-3: 3-day usage scope on the _request_logs branch.
 		probeUsageWindowInterval,
 		// INV-5: usage branch only for credentials with failure evidence.
 		credentialFailureEvidenceSQL("c.id", probeUsageWindowInterval),

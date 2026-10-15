@@ -184,7 +184,7 @@ func (h *AnomalyHarvester) runBridge(ctx context.Context) {
 
 // backfillActualTokens (CO-2) sweeps response_format_anomalies rows that
 // were recorded with actual_tokens=NULL (estimated usage path,
-// handler.go emitTelemetry) and fills them from request_logs_hot rows whose
+// handler.go emitTelemetry) and fills them from _request_logs_hot rows whose
 // usage_source has since become a real-usage terminal state ('llm' via a
 // later real-usage update, or 'corrected' via the online CO-2 correction —
 // both mean completion_tokens is authoritative). Runs inside the harvester's
@@ -219,7 +219,7 @@ func backfillActualTokensSweep(ctx context.Context, tx pgx.Tx) error {
 		UPDATE response_format_anomalies a
 		SET actual_tokens = r.completion_tokens,
 		    usage_source  = 'llm'
-		FROM request_logs_hot r
+		FROM _request_logs_hot r
 		WHERE a.request_id = r.request_id
 		  AND a.actual_tokens IS NULL
 		  AND a.usage_source  = 'estimated'

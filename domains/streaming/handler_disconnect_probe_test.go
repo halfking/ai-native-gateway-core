@@ -17,7 +17,7 @@ import (
 // TestBuildClientDisconnectProbeEntry_Cancel covers 问题4: when the client
 // cancels (context.Canceled) the handler must synthesize a "probe-" prefixed
 // RequestLogEntry carrying the selected credential_id, so it lands in
-// request_logs_hot and the live-stream swim lane under the right provider.
+// _request_logs_hot and the live-stream swim lane under the right provider.
 //
 // 2026-08-15: probe rows are synthetic diagnostics. They keep compact
 // request_preview and ClientRequestID, but must not duplicate the original

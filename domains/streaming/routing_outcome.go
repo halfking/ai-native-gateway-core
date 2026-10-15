@@ -5,7 +5,7 @@ package streaming
 //
 // The decider parks its decision-time feedback in the autoroute outcome
 // registry (autoroute/outcome_feedback.go) instead of writing a placeholder
-// row; the terminal request_logs choke points call ReportRoutingOutcome here
+// row; the terminal _request_logs choke points call ReportRoutingOutcome here
 // with the real success/latency/cost. Import direction is the existing
 // streaming → autoroute edge (decider wiring), so no cycle is created and no
 // cmd/-level indirection is needed.
@@ -23,7 +23,7 @@ func originActorOf(e *telemetry.RequestLogEntry) string {
 	return *e.OriginActor
 }
 
-// routingOutcomeFromEntry projects a terminal request_logs entry onto the
+// routingOutcomeFromEntry projects a terminal _request_logs entry onto the
 // outcome report the autoroute registry matches stashed decisions by.
 // Latency/cost default to 0 when the entry carries no value — the feedback
 // row then simply keeps the zero metrics instead of a wrong number.

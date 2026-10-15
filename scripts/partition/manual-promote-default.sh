@@ -19,7 +19,7 @@
 #
 # 示例：
 #   # 迁移 request_logs_default 中 7 天前的数据
-#   ./scripts/partition/manual-promote-default.sh --table request_logs
+#   ./scripts/partition/manual-promote-default.sh --table _request_logs
 #
 #   # 迁移 14 天前的数据（更长保留）
 #   ./scripts/partition/manual-promote-default.sh --table usage_ledger --retention 14
@@ -57,7 +57,7 @@ usage() {
   echo "用法：$0 [OPTIONS]"
   echo ""
   echo "选项："
-  echo "  --table TABLE      指定表名 (request_logs, usage_ledger, 等)"
+  echo "  --table TABLE      指定表名 (_request_logs, usage_ledger, 等)"
   echo "  --retention DAYS   保留天数 (默认: 7)"
   echo "  --batch SIZE       每批大小 (默认: 5000)"
   echo "  --all              迁移所有表"
@@ -65,7 +65,7 @@ usage() {
   echo "  --help             显示帮助"
   echo ""
   echo "示例："
-  echo "  $0 --table request_logs --retention 7"
+  echo "  $0 --table _request_logs --retention 7"
   echo "  $0 --all --dry-run"
   echo "  RETENTION_DAYS=14 $0 --table usage_ledger"
   exit 1
@@ -144,12 +144,12 @@ fi
 # ========================================
 
 ALL_TABLE_NAMES=(
-  "request_logs"
+  "_request_logs"
   "request_wal"
   "usage_ledger"
   "routing_decision_log"
   "credential_model_index"
-  "request_logs_bodies"
+  "_request_logs_bodies"
   "credit_ledger"
   "tool_usage_stats"
 )
@@ -178,7 +178,7 @@ promote_table() {
   # 确定时间戳列
   local ts_column=""
   case "$table_name" in
-    request_logs|usage_ledger|routing_decision_log|request_logs_bodies)
+    _request_logs|usage_ledger|routing_decision_log|_request_logs_bodies)
       ts_column="ts"
       ;;
     request_wal)

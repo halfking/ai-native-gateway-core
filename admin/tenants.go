@@ -494,7 +494,7 @@ func (h *Handler) getTenant(w http.ResponseWriter, r *http.Request, code string)
 	_ = h.db.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE tenant_id = $1`, code).Scan(&t.UserCount)
 	_ = h.db.QueryRow(ctx, `SELECT COUNT(*) FROM api_keys WHERE tenant_id = $1`, code).Scan(&t.APIKeyCount)
 
-	// 7-day usage (billing credits + upstream cost from request_logs)
+	// 7-day usage (billing credits + upstream cost from _request_logs)
 	_ = h.db.QueryRow(ctx, `
 		SELECT COUNT(*)::bigint,
 		       COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0)::bigint,
@@ -804,8 +804,8 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	                       t.cache_read_tokens, t.cache_write_tokens
 	                FROM session_turns_hot t
 	                WHERE t.ts > ` + db.V1FreezeCutoffSQL + `
-	                  AND NOT EXISTS (SELECT 1 FROM request_logs_hot h WHERE h.request_id = t.request_id)
-	                  AND NOT EXISTS (SELECT 1 FROM request_logs p WHERE p.request_id = t.request_id) -- sqlreadguard:allow S3 波3 会话补丁腿：会话腿必须反连接 v1 母表，否则 promote 前后同一 request_id 会被两腿各计一次（脚注腿）
+	                  AND NOT EXISTS (SELECT 1 FROM _request_logs_hot h WHERE h.request_id = t.request_id)
+	                  AND NOT EXISTS (SELECT 1 FROM _request_logs p WHERE p.request_id = t.request_id) -- sqlreadguard:allow S3 波3 会话补丁腿：会话腿必须反连接 v1 母表，否则 promote 前后同一 request_id 会被两腿各计一次（脚注腿）
 	        UNION ALL
 	               SELECT t.tenant_id::text, t.ts,
 	                      (CASE WHEN t.application_id ~ '^[0-9]+$' THEN t.application_id::bigint END),
@@ -817,23 +817,23 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	                      t.cache_read_tokens, t.cache_write_tokens
 	               FROM session_turns t
 	               WHERE t.ts > ` + db.V1FreezeCutoffSQL + `
-	                 AND NOT EXISTS (SELECT 1 FROM request_logs_hot h WHERE h.request_id = t.request_id)
-	                 AND NOT EXISTS (SELECT 1 FROM request_logs p WHERE p.request_id = t.request_id) -- sqlreadguard:allow 同上：v1 腿与会话腿共用同一套反连接去重，否则 v1 腿行数虚高
+	                 AND NOT EXISTS (SELECT 1 FROM _request_logs_hot h WHERE h.request_id = t.request_id)
+	                 AND NOT EXISTS (SELECT 1 FROM _request_logs p WHERE p.request_id = t.request_id) -- sqlreadguard:allow 同上：v1 腿与会话腿共用同一套反连接去重，否则 v1 腿行数虚高
 	        UNION ALL
 	               SELECT tenant_id, ts, application_id, outbound_model, client_model,
 	                      success, total_tokens, prompt_tokens, completion_tokens,
 	                      credits_charged, cost_usd, latency_ms,
 	                      cache_read_tokens, cache_write_tokens
-	                FROM request_logs_hot
+	                FROM _request_logs_hot
 	        UNION ALL
 	               SELECT tenant_id, ts, application_id, outbound_model, client_model,
 	                      success, total_tokens, prompt_tokens, completion_tokens,
 	                      credits_charged, cost_usd, latency_ms,
 	                      cache_read_tokens, cache_write_tokens
-	        FROM request_logs) -- sqlreadguard:allow R36-A1 漏热尾根修的双腿之母表腿（hot 腿同查询内联；252-dev 实测 NOT EXISTS 反连接 + 租户过滤 COUNT 30s 超时，故走 hot∪母表 UNION ALL）+ S3 波 3 会话补丁腿（冻结点切分 + 会话腿双子排除，v1 腿保持零反连接）`
+	        FROM _request_logs) -- sqlreadguard:allow R36-A1 漏热尾根修的双腿之母表腿（hot 腿同查询内联；252-dev 实测 NOT EXISTS 反连接 + 租户过滤 COUNT 30s 超时，故走 hot∪母表 UNION ALL）+ S3 波 3 会话补丁腿（冻结点切分 + 会话腿双子排除，v1 腿保持零反连接）`
 	usageTable := "usage_ledger_with_current_month"
 
-	// Overall totals (upstream cost from usage_ledger; credits from request_logs)
+	// Overall totals (upstream cost from usage_ledger; credits from _request_logs)
 	//
 	// 2026-09-30 (R36-B4): both totals were `_ =`, so a dead context or a
 	// statement_timeout silently published TotalRequests=0 / TotalCredits=0
@@ -867,7 +867,7 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		return
 	}
 
-	// By model (credits + cost from request_logs)
+	// By model (credits + cost from _request_logs)
 	modelRows, err := h.db.Query(ctx, `
 		SELECT COALESCE(NULLIF(TRIM(outbound_model), ''), NULLIF(TRIM(client_model), ''), '<unknown>') AS model,
 		       COUNT(*)::bigint,
@@ -909,7 +909,7 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		s.ByModel = []tenantModelBreakdown{}
 	}
 
-	// By application (credits + cost from request_logs)
+	// By application (credits + cost from _request_logs)
 	//
 	// R65: 别名 `rl` 必须从新行开始——logsTable 片段以 `-- sqlreadguard:allow`
 	// 行注释收尾，同一行拼接的任何 token 都会被注释吞掉（修前实锤

@@ -63,7 +63,7 @@ func c() string {
 
 func d() string {
 	// 对 hot 表写入是完全正确的做法，绝不能被判成父表违规
-	return `+"`UPDATE request_logs_hot SET body='{}' WHERE id=$1`"+`
+	return `+"`UPDATE _request_logs_hot SET body='{}' WHERE id=$1`"+`
 }
 func e() string {
 	return `+"`DELETE FROM candidate_failure_logs_hot WHERE ts < now()`"+`
@@ -82,7 +82,7 @@ func h() string {
 	writeFile(t, dir, "commented.go", `package x
 
 // 这里说明为什么不能 UPDATE sessions：分区父表不接受 UPDATE。
-// 参考 DELETE FROM request_logs 的 hot 侧写法。
+// 参考 DELETE FROM _request_logs 的 hot 侧写法。
 func i() string { return "no sql here" }
 `)
 	// 反向对照三：_test.go 不在扫描范围。
@@ -103,13 +103,13 @@ func j() string { return `+"`UPDATE sessions SET title=$1`"+` }
 		}
 	}
 	for _, bad := range []struct{ file, table string }{
-		{"good.go", "request_logs"}, // _hot 后缀被贪婪捕获成 request_logs_hot
+		{"good.go", "_request_logs"}, // _hot 后缀被贪婪捕获成 _request_logs_hot
 		{"good.go", "candidate_failure_logs"},
 		{"good.go", "some_unpartitioned_table"},
 		{"good.go", "sessions"}, // INSERT 不是 UPDATE/DELETE/TRUNCATE
 		{"good.go", "session_bodies"},
 		{"commented.go", "sessions"},
-		{"commented.go", "request_logs"},
+		{"commented.go", "_request_logs"},
 		{"bad_test.go", "sessions"}, // 测试文件不在范围
 	} {
 		if hasV(vs, bad.file, bad.table) {

@@ -11,7 +11,7 @@ import (
 // non-streaming requests that the gateway classified as Success=true but
 // whose persisted ResponseBody is empty / missing. The pre-existing
 // `has_response_body` slog label in client.go:1481 only fires on the
-// request_logs_bodies_hot failure path; success-with-empty-body is a
+// _request_logs_bodies_hot failure path; success-with-empty-body is a
 // distinct, observability-blind failure mode (the client saw an HTTP 200
 // with content, but the audit row is bodyless — usually a transformer
 // truncation, a stream-reassembly bug, or a redaction side-effect).
@@ -31,7 +31,7 @@ import (
 // alerted on (stream chunk count > 0 already proves success).
 var successResponseBodyMissingTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "telemetry_success_response_body_missing_total",
-	Help: "Successful (Success=true) request_logs rows whose ResponseBody is empty/missing at INSERT/UPDATE commit. protocol=request_mode (bounded); stream=non_stream|stream (derived from StreamChunkCount). The non_stream bucket is the alertable surface — a healthy gateway with N streaming + M non-streaming successes should have ZERO in non_stream. A non-zero rate suggests a body-loss regression in the audit pipeline.",
+	Help: "Successful (Success=true) _request_logs rows whose ResponseBody is empty/missing at INSERT/UPDATE commit. protocol=request_mode (bounded); stream=non_stream|stream (derived from StreamChunkCount). The non_stream bucket is the alertable surface — a healthy gateway with N streaming + M non-streaming successes should have ZERO in non_stream. A non-zero rate suggests a body-loss regression in the audit pipeline.",
 },
 	[]string{"protocol", "stream"},
 )

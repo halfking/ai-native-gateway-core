@@ -9,12 +9,12 @@ import "time"
 // 2026-08-19 observability: this closes the gap where the
 // "Partial assistant output was discarded before a streaming retry" failure
 // class was only visible through gateway_survival_resume_safety_blocked
-// counters. Operators can now SELECT discard_events FROM request_logs_hot
+// counters. Operators can now SELECT discard_events FROM _request_logs_hot
 // WHERE request_id = ? and see exactly which attempt was dropped, how many
 // bytes were thrown away, what the commit state was at decision time, and
 // which action/reason the survival coordinator paired it with.
 //
-// DiscardEvents is JSON-serialised into the request_logs_hot.discard_events
+// DiscardEvents is JSON-serialised into the _request_logs_hot.discard_events
 // JSONB column by the audit upsert path (see SummaryAsMap / discard_events
 // emission); there is no need to write it from per-call sites.
 type DiscardEvent struct {

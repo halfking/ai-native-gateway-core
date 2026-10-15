@@ -21,7 +21,7 @@ SELECT
     created_at,
     jsonb_array_length(request_body::jsonb->'tools') as has_tools,
     jsonb_array_length(request_body::jsonb->'messages') as msg_count
-FROM request_logs
+FROM _request_logs
 WHERE client_model LIKE '%opus%'
 AND created_at > NOW() - INTERVAL '2 hours'
 ORDER BY created_at DESC
@@ -39,7 +39,7 @@ SELECT
     error_message,
     request_body::jsonb->'messages'->-1->>'role' as last_role,
     LENGTH(request_body::jsonb->'messages'->-1->>'content') as last_content_len
-FROM request_logs
+FROM _request_logs
 WHERE client_model LIKE '%opus%'
 AND request_body::jsonb->'tools' IS NOT NULL
 AND created_at > NOW() - INTERVAL '2 hours'
@@ -57,7 +57,7 @@ SELECT
     error_code,
     error_message,
     created_at
-FROM request_logs
+FROM _request_logs
 WHERE client_model LIKE '%opus%'
 AND request_body::text LIKE '%\"role\":\"tool\"%'
 AND created_at > NOW() - INTERVAL '2 hours'

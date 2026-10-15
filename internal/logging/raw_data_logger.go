@@ -77,13 +77,13 @@ type RawDataEntry struct {
 	// interrupted frame (e.g. "client_cancel", "upstream_error",
 	// "end_of_stream", "stream_panic"). Distinct from Error which
 	// holds the message text. Operators filter the audit log on this
-	// field the same way they filter request_logs.error_kind, so the
+	// field the same way they filter _request_logs.error_kind, so the
 	// values must line up with the executor's errorsx classification
 	// (2026-07-28 §5.6 / §5.8).
 	Reason string `json:"reason,omitempty"`
 
 	// 2026-07-27: Correlation envelope. Every raw entry is tagged with the
-	// same identifiers that request_logs and trace spans use, so the
+	// same identifiers that _request_logs and trace spans use, so the
 	// audit log can be sliced by session, provider, attempt, or trace.
 	ClientRequestID  string `json:"client_request_id,omitempty"`
 	GWSessionID      string `json:"gw_session_id,omitempty"`
@@ -570,7 +570,7 @@ func encodeRawData(data []byte) string {
 
 // hashBytes returns the lowercase hex SHA-256 of the input. Used by
 // RawDataEntry to anchor each raw entry against the upstream body so
-// request_logs, the anomaly endpoint, and the on-disk audit log can
+// _request_logs, the anomaly endpoint, and the on-disk audit log can
 // be cross-checked without re-reading the payload.
 func hashBytes(data []byte) string {
 	sum := sha256.Sum256(data)

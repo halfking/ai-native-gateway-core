@@ -405,10 +405,10 @@ func ParseOpenAIResponse(body []byte) (*InternalResponse, error) {
 	//	           cache_write/input/output 六个 key（domains/hooks/audit/audit.go:819）
 	//	  →（缺）→ handler.go:6234-6248：从那个 map 里取值的那段**没有这四个 key**
 	//	  →（缺）→ telemetry.RequestLogEntry 的同名字段（声明在 client.go:292-296，
-	//	           全树无赋值点）→ usage_facts / request_logs 的对应列
+	//	           全树无赋值点）→ usage_facts / _request_logs 的对应列
 	//
 	// 真库读数（2026-10-05，只读）：
-	//   - request_logs 近 30 天 2,101,395 行：image_tokens / audio_tokens /
+	//   - _request_logs 近 30 天 2,101,395 行：image_tokens / audio_tokens /
 	//     video_tokens / reasoning_tokens **全部 NULL**（连非 NULL 的 0 都没有）；
 	//   - 而 cache_read_tokens 有 38,044 行为正 ⇒ 不是整条链没写，是**只断在这四个**；
 	//   - 量具自证：reasoning_tokens 在 deepseek-v4-pro(8,248 次)、
@@ -430,7 +430,7 @@ func ParseOpenAIResponse(body []byte) (*InternalResponse, error) {
 	//      completion_tokens_details.reasoning_tokens 是 completion 的细分
 	//      ⇒ 那样相加是重复计。成本公式 calcCostWithConvention 也是同一口径
 	//      （把 cache_read 当 prompt 的子集：先按原价减再按缓存价入账）。
-	//      现在口径是 prompt+completion，与 request_logs（1,492,562 行实测全部
+	//      现在口径是 prompt+completion，与 _request_logs（1,492,562 行实测全部
 	//      相等）一致；判据与变异验证见 domains/stats/total_tokens_semantics_test.go。
 	//
 	// ⚠ 关于「成本少计」：**我一度在这里断言 image/audio/video 都会少计费，

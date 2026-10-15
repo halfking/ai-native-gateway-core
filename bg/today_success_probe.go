@@ -144,7 +144,7 @@ func todaySuccessProbeSQL() string {
 	return `
 		WITH used AS (
 			SELECT rl.credential_id AS id, pm.raw_model_name, MAX(rl.ts) AS last_used_at
-			FROM request_logs_hot rl
+			FROM _request_logs_hot rl
 			JOIN credential_model_bindings cmb ON cmb.credential_id = rl.credential_id
 			JOIN provider_models pm ON pm.id = cmb.provider_model_id
 			WHERE rl.ts >= now() - interval '24 hours'

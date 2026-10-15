@@ -679,7 +679,7 @@ func parseAnalyticsFilters(r *http.Request) (*analyticsFilters, error) {
 	}, nil
 }
 
-// buildWhereClause builds request_logs WHERE clause. For regular users the
+// buildWhereClause builds _request_logs WHERE clause. For regular users the
 // clause restricts to gw_session_ids owned by the caller via session_dim.
 func buildWhereClause(r *http.Request, filters *analyticsFilters, alias string) (string, []interface{}) {
 	where := " WHERE " + alias + ".ts >= $1 AND " + alias + ".ts < $2"

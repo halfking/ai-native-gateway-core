@@ -71,7 +71,7 @@ func TestCollectMinuteMetrics_Integration(t *testing.T) {
 		t.Fatalf("CollectMinuteMetrics() failed: %v", err)
 	}
 
-	// 验证数据是否写入（可能为 0 行，如果 request_logs 为空）
+	// 验证数据是否写入（可能为 0 行，如果 _request_logs 为空）
 	var count int
 	query := `SELECT COUNT(*) FROM provider_metrics_minute 
 	          WHERE bucket >= NOW() - INTERVAL '5 minutes'`
@@ -170,9 +170,9 @@ func TestCollect_WithTestData(t *testing.T) {
 
 	ctx := context.Background()
 
-	// 插入测试数据到 request_logs
+	// 插入测试数据到 _request_logs
 	testData := `
-INSERT INTO request_logs (
+INSERT INTO _request_logs (
     provider_id, model_name, endpoint, created_at,
     status_code, latency_ms, input_tokens, output_tokens, cost
 ) VALUES 
@@ -222,7 +222,7 @@ WHERE provider_id = 1
 	t.Logf("测试数据验证通过: %d 请求, %d 成功, %d 5xx", totalRequests, successfulRequests, error5xx)
 
 	// 清理测试数据
-	db.ExecContext(ctx, "DELETE FROM request_logs WHERE model_name = 'test-model'")
+	db.ExecContext(ctx, "DELETE FROM _request_logs WHERE model_name = 'test-model'")
 }
 
 // Example_usage 使用示例

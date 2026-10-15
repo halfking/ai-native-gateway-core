@@ -67,8 +67,8 @@ import (
 //
 // 这四个走 `requestLogsSource(days)` / `requestLogsFromClause(days)` 切换层，
 // 而 `ClampUsageDays` 对 `days < 1` 返回 **1** ⇒ 默认分支是
-// **`request_logs_hot AS r`，一张 v1 底表**。
-// `maas/usage.go` 唯一的 `from request_logs` 文本在**第 27 行的注释里**
+// **`_request_logs_hot AS r`，一张 v1 底表**。
+// `maas/usage.go` 唯一的 `from _request_logs` 文本在**第 27 行的注释里**
 // ⇒ 按行扫描的 `requestLogsReadInventory` 看不见它，
 // 按 AST 抽列的 exposure 门也只覆盖直接读方 ⇒ **四道门全部看不见**。
 //
@@ -100,7 +100,7 @@ import (
 type verdict string
 
 const (
-	// verdictReadsV1：读 v1 宽族基表（request_logs / _hot / _bodies / _bodies_hot）。
+	// verdictReadsV1：读 v1 宽族基表（_request_logs / _hot / _bodies / _bodies_hot）。
 	verdictReadsV1 verdict = "reads-v1"
 	// verdictCanonicalOnly：读 canonical 视图或会话族。
 	// ⚠ **「读 canonical 视图」不等于「退役后照常工作」**：视图的 v1 臂在
@@ -155,33 +155,33 @@ var indirectSiteAssessments = map[string]siteAssessment{
 	// ── 读 v1 宽族基表（6 文件 / 12 处）──────────────────────────────────
 	// 这 6 个里有 **4 个在 admin 侧四张登记表里一处都没有**（§9.227）。
 	// 它们全部走切换层，而切换层的表名以 Go 字符串进 SQL；
-	// `maas/usage.go` 唯一的 `from request_logs` 文本在**第 27 行的注释里**，
+	// `maas/usage.go` 唯一的 `from _request_logs` 文本在**第 27 行的注释里**，
 	// 所以按行扫描的 requestLogsReadInventory 看不见它。
 	"admin/tenants.go": {
 		Verdict:    verdictReadsV1,
-		ResolvesTo: "request_logs_hot",
-		Via: "logsTable 是段 UNION 子查询：`(SELECT … FROM request_logs_hot UNION ALL " +
-			"SELECT … FROM request_logs) -- sqlreadguard:allow …`（tenants.go:770），" +
+		ResolvesTo: "_request_logs_hot",
+		Via: "logsTable 是段 UNION 子查询：`(SELECT … FROM _request_logs_hot UNION ALL " +
+			"SELECT … FROM _request_logs) -- sqlreadguard:allow …`（tenants.go:770），" +
 			"用在 `FROM `+logsTable+` 的租户 credits/tokens/latency 聚合上（798/809/826/873/916）。" +
 			"⚠ 两张表都在，登记只写第一个是因为 v1Tables 是集合查询；" +
-			"另一张是 request_logs。",
+			"另一张是 _request_logs。",
 		Consequence: "DROP 后这 5 个聚合**返回 0/NULL 而不是报错**：" +
 			"COALESCE(SUM(...),0) 把「读不到」变成「这个租户没花过钱」。" +
 			"⚠ 这是本清单里最危险的一条——它伪造的是**计费数字**。",
 	},
 	"admin/usage_credits.go": {
 		Verdict:    verdictReadsV1,
-		ResolvesTo: "request_logs_hot",
+		ResolvesTo: "_request_logs_hot",
 		Via: "requestLogsFromClause(days)（usage_credits.go:120）：days<=7 返回 " +
-			"`request_logs_hot AS r`，否则 `request_logs_with_current_month AS r`。" +
+			"`_request_logs_hot AS r`，否则 `request_logs_with_current_month AS r`。" +
 			"默认支在 149 行的 `FROM `+logsTable+`。",
 		Consequence: "同 tenants.go：credits 聚合读不到时 COALESCE 成 0，" +
 			"租户用量页显示 0 credits 而非报错。",
 	},
 	"maas/usage.go": {
 		Verdict:    verdictReadsV1,
-		ResolvesTo: "request_logs_hot",
-		Via: "requestLogsSource(days)（usage.go:66）：days<=7 → `request_logs_hot AS r`。" +
+		ResolvesTo: "_request_logs_hot",
+		Via: "requestLogsSource(days)（usage.go:66）：days<=7 → `_request_logs_hot AS r`。" +
 			"⚠ **默认支就是 v1 底表**：`ClampUsageDays`（usage.go:39）对 days<1 返回 **1**，" +
 			"所以不传 days 或传 0 的调用全部落在 v1 一支。" +
 			"用在 106/116/134/170 四处 `FROM `+logsTable+`（TotalRequests/TotalCredits/按模型/趋势）。",
@@ -192,7 +192,7 @@ var indirectSiteAssessments = map[string]siteAssessment{
 	},
 	"maas/consumption_detail.go": {
 		Verdict:    verdictReadsV1,
-		ResolvesTo: "request_logs_hot",
+		ResolvesTo: "_request_logs_hot",
 		Via: "同一套 requestLogsSource(days)（usage.go:66），" +
 			"消费明细查询在 81 行 `FROM ` + logsTable + `。默认支同为 v1 底表。",
 		Consequence: "消费明细按小时/按模型分组；读不到时**返回空分组而不是报错**，" +
@@ -200,7 +200,7 @@ var indirectSiteAssessments = map[string]siteAssessment{
 	},
 	"maas/credit_buckets.go": {
 		Verdict:    verdictReadsV1,
-		ResolvesTo: "request_logs_hot",
+		ResolvesTo: "_request_logs_hot",
 		Via: "同一套 requestLogsSource(days)，49 行 `FROM `+logsTable+`，" +
 			"写入小时级 credit 桶（ON CONFLICT DO UPDATE）。",
 		Consequence: "⚠ **与其它几条不同类**：它不是读后展示，而是**写聚合桶**。" +
@@ -209,9 +209,9 @@ var indirectSiteAssessments = map[string]siteAssessment{
 	},
 	"cmd/tools/backfill_session_bodies/main.go": {
 		Verdict:    verdictReadsV1,
-		ResolvesTo: "request_logs_bodies",
-		Via: "bodiesTable := \"request_logs_bodies\"，`--use-hot` 时改成 " +
-			"\"request_logs_bodies_hot\"（main.go:88-90），96 行 " +
+		ResolvesTo: "_request_logs_bodies",
+		Via: "bodiesTable := \"_request_logs_bodies\"，`--use-hot` 时改成 " +
+			"\"_request_logs_bodies_hot\"（main.go:88-90），96 行 " +
 			"`SELECT request_body, response_body FROM ` + bodiesTable + ` WHERE request_id = $1`。",
 		Consequence: "⚠ **与运行时读方不同类**：这是**迁移工具**，" +
 			"DROP 后它没有任何替代源 ⇒ session_bodies 的回填**永久做不了**。" +
@@ -227,7 +227,7 @@ var indirectSiteAssessments = map[string]siteAssessment{
 		Via: "viewName := \"tuning_signals_daily\"，days<=7 时改成 " +
 			"\"tuning_signals_5m\"（auto_route_tuning.go:765-768），769 行拼进 FROM。" +
 			"两个都是 tuning 信号视图，不在 v1 关系名里。",
-		Consequence: "与 request_logs 退役无关。**残留噪声**：本文件报的是" +
+		Consequence: "与 _request_logs 退役无关。**残留噪声**：本文件报的是" +
 			"真关系名，所以这条不是误报。",
 	},
 	"admin/dashboard_board_queries.go": {
@@ -244,12 +244,12 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"归 D29-d 切换清单，**不是** DROP 前的 blocker。" +
 			"★ §9.260：这个包装视图由 composer 运行时创建、**仓库里没有 DDL 文件**，" +
 			"所以只看 sql/objects/views/ 的推导器认不出它 —— " +
-			"真库 pg_class 里有 4 个 request_logs*_with_current_month* 视图且**全部含 v1 臂**。",
+			"真库 pg_class 里有 4 个 _request_logs*_with_current_month* 视图且**全部含 v1 臂**。",
 	},
 	"admin/provider_cred_lifecycle.go": {
 		Verdict:     verdictCanonicalOnly,
 		Via:         "usageTable 解析为 `usage_ledger`（483 行）——计费台账表，不在 v1 族。",
-		Consequence: "与 request_logs 退役无关。",
+		Consequence: "与 _request_logs 退役无关。",
 	},
 	"autoroute/metrics.go": {
 		Verdict: verdictCanonicalOnly,
@@ -437,11 +437,23 @@ var indirectSiteAssessments = map[string]siteAssessment{
 		Consequence: "与 v1 无关。退役门登记见 admin/request_logs_bodies_retirement_gate_test.go" +
 			"（该文件已整体出列 v1 族）。",
 	},
+	// 2026-10-14（S4 退役改名轮）：data_lifecycle 趋势端点跨族 + 冻结点切分。
+	"admin/data_lifecycle.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "dataLifecycleTrendSQL 无租户支经 `+ dbpkg.V1FreezeCutoffSQL +` 与 " +
+			"`+ dbpkg.SessionBodiesHasOutboundPredicate(\"s\") +` 拼接（V1FreezeCutoffSQL 是 " +
+			"db 包常量，读 v1 两表 max(ts)——工具按跨包常量判 canonical-only；" +
+			"它实际是**冻结点标量**，语义上属于跨族切分的一部分）。带租户支经 " +
+			"dataLifecycleCompressedExists（EXISTS v1 视图 ∪ 会话族源）。",
+		Consequence: "DROP v1 后 V1FreezeCutoffSQL 退化为常数（v1 两表不存在 ⇒ " +
+			"该 SQL 报错，响亮失败）；趋势端点的处置随 v1 存储治理面板一并评估" +
+			"（退役门 Tier ② 登记在案）。",
+	},
 	// S4 波 4 补记（2026-10-13）：quality_correlations 重写后经切换层取 bodies。
 	"admin/quality_correlations.go": {
 		Verdict: verdictReadsV1Arm,
 		Via: "buildBreakdownQuery：`LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb` ×5 个" +
-			"分桶查询（2026-10-13 S4 波 4 从 request_logs 基表字面量改来）；turns 腿是 " +
+			"分桶查询（2026-10-13 S4 波 4 从 _request_logs 基表字面量改来）；turns 腿是 " +
 			"SessionFamilyTurnsSourceSQL()（canonical，含 v1 臂）。工具判 reads-v1-arm。" +
 			"默认支 = 切换层 v1 臂（native_read=false 时）。",
 		Consequence: "DROP v1 后切换层删 v1 臂 ⇒ 分桶只由会话族供数；探针流量按 R51" +
@@ -510,10 +522,10 @@ var indirectSiteAssessments = map[string]siteAssessment{
 	},
 	"bg/auto_route_settle_sql.go": {
 		Verdict:    verdictReadsV1,
-		ResolvesTo: "request_logs_hot",
+		ResolvesTo: "_request_logs_hot",
 		Via: "`FROM ` + src.TurnsTable + ` rl`（73/99/120 行）。src 来自 " +
 			"settleSourceFor(logsWriteEnabled)（auto_route_settle_source.go:66-77）：" +
-			"写门**开着** ⇒ request_logs_hot，**关掉** ⇒ session_turns_hot。" +
+			"写门**开着** ⇒ _request_logs_hot，**关掉** ⇒ session_turns_hot。" +
 			"⚠ 工具对 *ast.SelectorExpr（struct 字段）返回 nil ⇒ 判 unresolved；" +
 			"这里靠读源码定级。已登记在 admin/request_logs_indirect_readers_test.go。",
 		Consequence: "条件性：S4 关上写门后自动切到会话族。" +
@@ -555,7 +567,7 @@ var indirectSiteAssessments = map[string]siteAssessment{
 		Via: "6 处（449/1146/1317/1705/1738/2125）都是分区 DDL，" +
 			"表名经 pgxIdent() / s.fnName / 形参传入。",
 		Consequence: "与 v1 无关。⚠ 但它**管理** v1 分区：" +
-			"DROP request_logs 时这套逻辑会因 to_regclass 为 NULL 而走空分支，" +
+			"DROP _request_logs 时这套逻辑会因 to_regclass 为 NULL 而走空分支，" +
 			"不报错——与 §9.221 记的「视图被带外操作删除后没有机制重建」同族。",
 	},
 
@@ -1021,7 +1033,13 @@ type bucketSnapshot struct {
 // 「把看不见变成看得见」与「字面量 → 拼接」，无桶变小；v1 桶 6/12 一动不动
 // （★ 与 §9.256 结论一致：解析率再怎么变，v1 基表读方数不变）。
 var documentedSnapshot = bucketSnapshot{
-	TotalSites: 94,
+	// 同日晚间二次：compression_sessions 的 LATERAL 性能修复消除 2 处拼接
+	//（LATERAL 体重跑 canonical 全源改单趟 CTE，e01ffed39）→ 94→92、
+	// canonical 37→35。文件集合不变，非扫描盲区。
+	// 2026-10-14（S4 退役改名轮）：data_lifecycle 趋势端点跨族化新增 1 处
+	// V1FreezeCutoffSQL 拼接（工具判 canonical）→ 92→93、canonical 23→24 文件 /
+	// 35→36 处。文件集合其余不变。
+	TotalSites: 93,
 	V1Files:    6,
 	V1Sites:    12,
 	// ★ §9.258：第四桶是**退役工作量的主体**，而前两桶都不是。
@@ -1033,12 +1051,12 @@ var documentedSnapshot = bucketSnapshot{
 	// sql/objects/views/，而 `request_logs_with_current_month_without_customer_id`
 	// 与 `…_without_request_class_due_at` 是 composer **运行时**建的、没有 DDL 文件
 	// ⇒ 读它们的读方被判成 canonical（把有风险的报成安全）。
-	// 真库 pg_class 里 4 个 request_logs*_with_current_month* 视图**全部含 v1 臂**。
+	// 真库 pg_class 里 4 个 _request_logs*_with_current_month* 视图**全部含 v1 臂**。
 	// （2026-10-07 全量门首跑：V1ArmSites 26→27，方向=变大，同上注释。）
 	V1ArmFiles: 16,
 	V1ArmSites: 28,
-	CanonFiles: 23,
-	CanonSites: 37,
+	CanonFiles: 24,
+	CanonSites: 36,
 	UnresFiles: 10,
 	UnresSites: 17,
 }

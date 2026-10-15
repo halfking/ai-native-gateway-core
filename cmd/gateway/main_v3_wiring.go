@@ -112,7 +112,7 @@ var lastOutboundSessionSQL = `
 // LastOutboundForSession runs the L3 cold-start fallback query.
 //
 // 2026-10-13 S3 波 2（停写切换）：gw_session_id 是会话内谓词（A 形态）。
-// 原实现只读 request_logs 母表（outbound 自 Phase 1 起就大多在 bodies 表，
+// 原实现只读 _request_logs 母表（outbound 自 Phase 1 起就大多在 bodies 表，
 // 该查询本就接近恒空），S4 停写后新会话完全无行。会话族优先：turns 元数据
 // 四列（113 列契约内）经 SessionFamilyTurnsForSessionSQL 按 session 内推，
 // outbound_body 经 SessionFamilyBodiesSourceSQL 按 request_id 单键 JOIN
@@ -137,7 +137,7 @@ func (a *pgBackendAdapter) LastOutboundForSession(ctx context.Context, tenantID,
 	v1Row := pool.QueryRow(ctx, `
 		SELECT outbound_body, outbound_msg_count, outbound_token_est,
 		       outbound_msg_hashes, compression_meta
-		FROM request_logs
+		FROM _request_logs
 		WHERE tenant_id = $1 AND gw_session_id = $2 AND outbound_body IS NOT NULL
 		ORDER BY ts DESC
 		LIMIT 1

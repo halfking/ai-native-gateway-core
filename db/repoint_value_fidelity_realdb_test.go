@@ -147,11 +147,11 @@ func TestRepointValueFidelity(t *testing.T) {
 	defer pool.Close()
 
 	var v1Total int64
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM public.request_logs_hot`).Scan(&v1Total); err != nil {
-		t.Skipf("request_logs_hot not readable (%v) — v1 already retired here", err)
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM public._request_logs_hot`).Scan(&v1Total); err != nil {
+		t.Skipf("_request_logs_hot not readable (%v) — v1 already retired here", err)
 	}
 	if v1Total == 0 {
-		t.Skip("request_logs_hot is empty — nothing to certify")
+		t.Skip("_request_logs_hot is empty — nothing to certify")
 	}
 
 	const window = "24 hours"
@@ -183,7 +183,7 @@ func TestRepointValueFidelity(t *testing.T) {
 		           r.success, r.credential_id, r.client_model, r.outbound_model,
 		           (EXISTS (SELECT 1 FROM public.session_turns_hot t WHERE t.request_id = r.request_id)
 		            OR EXISTS (SELECT 1 FROM public.session_turns     t WHERE t.request_id = r.request_id)) AS has_twin
-		    FROM public.request_logs_hot r
+		    FROM public._request_logs_hot r
 		    WHERE r.ts >= now() - $1::interval AND r.success = TRUE
 		), j AS (
 		    SELECT v1.request_id, v1.has_twin, v.request_id AS matched,
@@ -293,7 +293,7 @@ func TestRepointValueFidelity(t *testing.T) {
 	} {
 		if m.n != 0 {
 			t.Errorf("v1 leg: %d of %d rows came back with a different %s, but the v1 leg "+
-				"projects request_logs verbatim — either the view changed or this gate's "+
+				"projects _request_logs verbatim — either the view changed or this gate's "+
 				"join is no longer measuring what it claims", m.n, v1LegRows, m.name)
 		}
 	}

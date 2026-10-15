@@ -14,7 +14,7 @@ type AllowedColumns struct {
 }
 
 var (
-	// RequestLogsColumns - request_logs 表的允许列
+	// RequestLogsColumns - _request_logs 表的允许列
 	RequestLogsColumns = AllowedColumns{
 		OrderBy: map[string]bool{
 			"created_at":     true,
@@ -44,7 +44,7 @@ var (
 
 	// 表名到列白名单的映射
 	tableColumns = map[string]*AllowedColumns{
-		"request_logs": &RequestLogsColumns,
+		"_request_logs": &RequestLogsColumns,
 		"session_summaries": {
 			OrderBy: map[string]bool{
 				"first_request_at": true,

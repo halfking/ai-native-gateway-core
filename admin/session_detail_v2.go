@@ -186,7 +186,7 @@ func (api *SessionDetailV2API) ServeHTTP(w http.ResponseWriter, r *http.Request)
 
 	sessionID := r.URL.Query().Get("session_id")
 	if sessionID == "" {
-		// 兼容旧客户端：部分调用方仍按 V1 习惯传 gw_session_id（request_logs.gw_session_id）。
+		// 兼容旧客户端：部分调用方仍按 V1 习惯传 gw_session_id（_request_logs.gw_session_id）。
 		// 通过 resolveSessionID 反向解析到 sessions.session_id；两侧都为空则按 bad request 处理。
 		sessionID = r.URL.Query().Get("gw_session_id")
 	}
@@ -507,12 +507,12 @@ func (api *SessionDetailV2API) queryTurns(
 // 主键对客户端不可见）。策略：
 //
 //  1. 若 input 已等于某行 sessions.session_id（同租户） → 直接返回。
-//  2. 否则尝试经 request_logs.gw_session_id → sessions.primary_request_id
+//  2. 否则尝试经 _request_logs.gw_session_id → sessions.primary_request_id
 //     的反向映射；只允许唯一解析（命中多行返回 error，禁止把 gw_session_id
 //     隐式覆盖多个会话）。
 //  3. 两步都查不到 → 返回 errSessionNotFound，让上游按 404 处理。
 //
-// RLS：所有查询都带 tenant_id 谓词；不绕过 sessions / request_logs 的现有
+// RLS：所有查询都带 tenant_id 谓词；不绕过 sessions / _request_logs 的现有
 // RLS 策略。sessionDetailV2DB 接口未暴露 Exec/QueryRow with bypass_rls，
 // 因此本 helper 无法也无法绕过租户隔离。
 func (api *SessionDetailV2API) resolveSessionID(
@@ -541,7 +541,7 @@ func (api *SessionDetailV2API) resolveSessionID(
 		return "", fmt.Errorf("resolveSessionID direct: %w", err)
 	}
 
-	// 2. 反向映射：request_logs.gw_session_id → sessions.primary_request_id →
+	// 2. 反向映射：_request_logs.gw_session_id → sessions.primary_request_id →
 	//    session_id。仅在 direct miss 时执行。取全部 DISTINCT session_id：
 	//    恰好 1 个才返回；0 个按未找到处理；>1 个说明该 gw_session_id 跨
 	//    多个会话 —— 显式拒绝。12h 审计 F-1：初版注释承诺"多命中返回
@@ -570,12 +570,12 @@ func (api *SessionDetailV2API) resolveSessionID(
 		      WHERE tenant_id = $1 AND session_id = $2
 		      UNION ALL
 		      -- R71 审计：双腿化（hot∪母表，R47 守卫纪律）。活跃会话的
-		      -- request_logs 行在热表、历史行已被 promote 进母表；单腿母表
+		      -- _request_logs 行在热表、历史行已被 promote 进母表；单腿母表
 		      -- 只能解析 8h 前的 gw_session_id，热窗内反向臂恒 miss。
-		      SELECT request_id FROM request_logs_hot
+		      SELECT request_id FROM _request_logs_hot
 		      WHERE tenant_id = $1 AND gw_session_id = $2
 		      UNION ALL
-		      SELECT request_id FROM request_logs
+		      SELECT request_id FROM _request_logs
 		      WHERE tenant_id = $1 AND gw_session_id = $2
 		  )
 		LIMIT 2

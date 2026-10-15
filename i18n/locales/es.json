@@ -20,6 +20,9 @@
   "SESSION_FORBIDDEN": {
     "other": "la sesión no pertenece a esta clave de API"
   },
+  "SESSION_STORE_UNAVAILABLE": {
+    "other": "El almacén de sesiones no está disponible; inténtelo más tarde"
+  },
   "SESSION_ASSIGN_FAILED": {
     "other": "error al asignar el id de sesión"
   },

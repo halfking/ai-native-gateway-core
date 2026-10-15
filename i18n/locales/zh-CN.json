@@ -20,6 +20,9 @@
   "SESSION_FORBIDDEN": {
     "other": "该会话不属于此 API 密钥"
   },
+  "SESSION_STORE_UNAVAILABLE": {
+    "other": "会话存储暂不可用，请稍后重试"
+  },
   "SESSION_ASSIGN_FAILED": {
     "other": "分配会话 ID 失败"
   },

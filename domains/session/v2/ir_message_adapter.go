@@ -859,7 +859,7 @@ func looksEnvelopeBlock(raw json.RawMessage) bool {
 	return false
 }
 
-// msgProbeCompat is the on-wire shape used by request_logs entries: a flat
+// msgProbeCompat is the on-wire shape used by _request_logs entries: a flat
 // content string plus optional tool_calls / tool_call_id / name. Defined here
 // rather than reusing sessionv2mirror.msgProbe so this adapter stays
 // self-contained and importable from any package (Phase 2 will move

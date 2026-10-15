@@ -2,7 +2,7 @@
 //
 //	GET /api/admin/live-stream  →  text/event-stream
 //
-// The hub fans out newly-persisted request_logs rows to every
+// The hub fans out newly-persisted _request_logs rows to every
 // connected dashboard client. It also sends an initial replay of the
 // most recent N requests when a client connects, so a freshly opened
 // dashboard fills from left-to-right immediately rather than waiting
@@ -307,7 +307,7 @@ type LiveRequest struct {
 	RequestID string `json:"request_id"`
 	Ts        string `json:"ts"`
 	TenantID  string `json:"tenant_id"`
-	// GwSessionID is the LLM-Gateway session id (request_logs.gw_session_id)
+	// GwSessionID is the LLM-Gateway session id (_request_logs.gw_session_id)
 	// if the request was sent through a session. Empty when the request
 	// is one-off (e.g. a /v1/chat/completions call without a session).
 	GwSessionID      string `json:"gw_session_id,omitempty"`
@@ -320,7 +320,7 @@ type LiveRequest struct {
 	PromptTokens     *int   `json:"prompt_tokens,omitempty"`
 	CompletionTokens *int   `json:"completion_tokens,omitempty"`
 	TotalTokens      *int   `json:"total_tokens,omitempty"`
-	// 2026-09-18: 缓存 token 投影（request_logs.cache_read_tokens /
+	// 2026-09-18: 缓存 token 投影（_request_logs.cache_read_tokens /
 	// cache_write_tokens）。可空语义与其余 token 字段一致 —— 缺省渲染 "—"，
 	// 禁止零值冒充（前端 tooltip 计算缓存命中率时以 null 跳过）。
 	CacheReadTokens  *int     `json:"cache_read_tokens,omitempty"`
@@ -339,7 +339,7 @@ type LiveRequest struct {
 	ClientProfile  string `json:"client_profile,omitempty"`
 	IdentityHash   string `json:"identity_hash,omitempty"`
 	CreditsCharged *int   `json:"credits_charged,omitempty"`
-	// 2026-07-27: 客户端感知扩展。request_logs_hot 写入后,SSE 推送
+	// 2026-07-27: 客户端感知扩展。_request_logs_hot 写入后,SSE 推送
 	// 给前端的实时请求流 tile,前端可按"客户端"筛选 + 显示。
 	AgentName      string `json:"agent_name,omitempty"`
 	AgentType      string `json:"agent_type,omitempty"`
@@ -505,7 +505,7 @@ type LiveStreamSSEHub struct {
 
 	// 2026-08-26: 快照终态 overlay 节流。"请求已完成但 tile 卡在 in_progress"
 	// 修复第 3 环：每个 scope 至多每 60s 对 in_progress 卡死 tile 做一次
-	// DB request_logs 状态对账（详见 overlaySnapshotTerminalStatuses）。
+	// DB _request_logs 状态对账（详见 overlaySnapshotTerminalStatuses）。
 	terminalOverlayMu sync.Mutex
 	terminalOverlayAt map[string]time.Time // key = scope.cacheKey（初始帧用连接级 key）
 	// 淘汰阈值统一使用 cfg.CachedSnapshotTTL，不再单独维护字段。
@@ -2378,7 +2378,7 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 		if err == nil && len(items) > 0 {
 			// 2026-08-26: Redis 回放可能含有卡死的 in_progress tile（forwarder
 			// 丢弃 persisted 终态 / Record 锁失败等遗留路径）。用 DB
-			// request_logs 的终态覆盖一次，让卡住 tile 在初始帧即被纠正。
+			// _request_logs 的终态覆盖一次，让卡住 tile 在初始帧即被纠正。
 			return h.overlayTerminalStatuses(ctx, items), nil
 		}
 		if err != nil {
@@ -2487,14 +2487,14 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 
 // liveStreamTerminalOverlayMinAge 只覆盖"明显卡住"的进行中 tile：正常 LLM
 // 请求在数秒~一两分钟内会由 persisted 终态补偿更新；超过该阈值还在
-// in_progress 的大概率是补偿丢失，需要以 DB request_logs 为准纠正。
+// in_progress 的大概率是补偿丢失，需要以 DB _request_logs 为准纠正。
 const liveStreamTerminalOverlayMinAge = 90 * time.Second
 
 // liveStreamSnapshotOverlayInterval 限制快照级 overlay 的数据库访问频率
 // （computeScopeDelta 每 2s tick 都会被调用，不能让每个 tick 打 DB）。
 const liveStreamSnapshotOverlayInterval = 60 * time.Second
 
-// overlayTerminalStatuses 用 DB request_logs 的终态覆盖 Redis 回放中仍停在
+// overlayTerminalStatuses 用 DB _request_logs 的终态覆盖 Redis 回放中仍停在
 // in_progress 的请求。仅查询比 liveStreamTerminalOverlayMinAge 更旧的
 // in_progress 请求；无 DB / 无候选时原样返回。2026-08-26: "请求已完成但
 // tile 非终态" 修复的第 3 环（回放兜底）。
@@ -2751,7 +2751,7 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 	// 需要将调用的模型名称全部转成标准名称再建立维度，然后请求过来后
 	// 要使用请求中的标准模型名称，不是供应商的原始模型名称"。
 	//
-	// 2026-07-27: 优先用入参 canonicalName (来自 request_logs_hot.canonical_model
+	// 2026-07-27: 优先用入参 canonicalName (来自 _request_logs_hot.canonical_model
 	// 字段),省掉一次 DB 查询。如果入参空 (canonical_id 没匹配),仍走原来的
 	// CanonicalNameFor fallback。
 	canonicalName := canonicalNameIn // 2026-07-27: 入参直接用 (跳过 DB JOIN)

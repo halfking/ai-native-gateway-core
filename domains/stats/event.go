@@ -174,7 +174,7 @@ func EventFromTelemetry(entry *telemetry.RequestLogEntry, now time.Time) (Event,
 	//      子集（先按原价 `promptCost -= cacheRead*priceIn` 减掉，再按缓存价
 	//      `+= cacheRead*cachePrice` 入账）⇒ cache 绝不能再加一次。
 	//  2) 与另两张表口径不符（2026-10-06 真库读数，30 天只读）：
-	//       - `request_logs.total_tokens`（取自上游 usage.total_tokens）：
+	//       - `_request_logs.total_tokens`（取自上游 usage.total_tokens）：
 	//         近 30 天 **1,492,562 行全部**严格等于 prompt+completion，
 	//         有无 cache 读都一样；而 cache_read 平均占总 token 的 **42.5%**
 	//         （87,888 行有 cache 读，avg 12,218.9）⇒ 它确实没被另加。
@@ -192,13 +192,13 @@ func EventFromTelemetry(entry *telemetry.RequestLogEntry, now time.Time) (Event,
 	// 两种公式结果相同（真库 246 行验证：total 一律 = prompt+completion）。
 	// ⇒ 这是一次**前向修正**，对存量读数零变化，改动当下也**测不出差异**。
 	// 别因此以为它不重要：回填 48 天 usage_facts 之后（那批有大量 cache 读，
-	// 87,888 行 / 30 天），看板总量会相对 request_logs 虚高 42%。
+	// 87,888 行 / 30 天），看板总量会相对 _request_logs 虚高 42%。
 	//
 	// ⚠ 口径边界：上游 usage 若真的报了一个与 prompt+completion 不同的
 	// total_tokens，这里**不会**跟随（Event 里没有承载它的列；`provider_tokens`
 	// 不是它 —— 那是 Doubao Seed 的 `seed_token_usage`，见 usage.go:152-159，
 	// 真库 246 行恒为 0，**不可当参照系**）。要跟随上游总量需要加一列，那是
-	// 另一件事；本行的契约是「与 request_logs 同口径」。
+	// 另一件事；本行的契约是「与 _request_logs 同口径」。
 	e.TotalTokens = e.PromptTokens + e.CompletionTokens
 	e.ErrorClass, e.AttributionOwner = classifyError(e.ErrorKind, e.HTTPStatus, status)
 	return e, true

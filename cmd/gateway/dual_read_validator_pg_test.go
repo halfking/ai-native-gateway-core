@@ -57,7 +57,7 @@ func resolveDualReadDSN() string {
 // openDualReadPool 建一个**每条连接都设好 RLS 旁路**的池。
 //
 // 为什么必须用 AfterConnect 而不是执行一次 set_config：pgxpool 的连接会被复用，
-// 一次 Exec 只作用于当时那条连接。FORCE RLS 的 request_logs（真库确认
+// 一次 Exec 只作用于当时那条连接。FORCE RLS 的 _request_logs（真库确认
 // relforcerowsecurity=t）会在别的连接上静默返回 0 行——而 0 行恰好能通过下面
 // 若干断言（I3/I5 在全零时恒成立），是最危险的失败形态。本机 DSN 用户是
 // superuser 所以看不出差别，CI 的受限 DSN 用户会。
@@ -88,7 +88,7 @@ func probeDualReadTables(t *testing.T, pool *pgxpool.Pool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	for _, tbl := range []string{
-		"request_logs", "request_logs_hot",
+		"_request_logs", "_request_logs_hot",
 		"session_turns", "session_turns_hot",
 	} {
 		var exists bool
@@ -110,7 +110,7 @@ func pickRealSession(t *testing.T, pool *pgxpool.Pool) (tenant, session string) 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	// ts 边界 + 有界样本，两个都是必需的：
-	//  1. 第一版没有 ts 边界，对 215 万行 request_logs 做 GROUP BY + 相关
+	//  1. 第一版没有 ts 边界，对 215 万行 _request_logs 做 GROUP BY + 相关
 	//     EXISTS，30s 超时，门只能 Skip——而 **Skip 在报告里和 PASS 长得
 	//     一样**。同一段 EXISTS 在 Summarize 里对 24h 窗口只需 0.43s，
 	//     证明 request_id 索引没问题，问题纯在分母。
@@ -122,7 +122,7 @@ func pickRealSession(t *testing.T, pool *pgxpool.Pool) (tenant, session string) 
 	err := pool.QueryRow(ctx, `
 		WITH recent AS (
 			SELECT tenant_id::text AS tenant_id, gw_session_id, request_id
-			FROM public.request_logs
+			FROM public._request_logs
 			WHERE ts > now() - interval '24 hours'
 			  AND gw_session_id IS NOT NULL AND gw_session_id <> ''
 			LIMIT $1
@@ -168,7 +168,7 @@ func TestDualReadValidator_Compare_RealDB(t *testing.T) {
 	// 而不是复述实现——复述实现的话，Compare 自己算错也会跟着「一致」。
 	var wantCompared int
 	if err := pool.QueryRow(ctx, `
-		SELECT count(*) FROM public.request_logs
+		SELECT count(*) FROM public._request_logs
 		WHERE tenant_id::text = $1 AND gw_session_id = $2`, tenant, session).Scan(&wantCompared); err != nil {
 		t.Fatalf("independent count: %v", err)
 	}
@@ -338,7 +338,7 @@ func requireSessionWithRows(t *testing.T, pool *pgxpool.Pool, tenant, session st
 	defer cancel()
 	var n int
 	if err := pool.QueryRow(ctx, `
-		SELECT count(*) FROM public.request_logs
+		SELECT count(*) FROM public._request_logs
 		WHERE tenant_id::text = $1 AND gw_session_id = $2`, tenant, session).Scan(&n); err != nil {
 		t.Fatalf("count session rows: %v", err)
 	}
@@ -354,12 +354,12 @@ func requireSessionWithRows(t *testing.T, pool *pgxpool.Pool, tenant, session st
 //
 // 事实（本机真库，24h 内某会话）：
 //
-//	Compare        V1Rows = 141   ← 只读 public.request_logs
-//	CompareDetail  V1Rows = 152   ← 读 public.request_logs_hot ∪ public.request_logs
+//	Compare        V1Rows = 141   ← 只读 public._request_logs
+//	CompareDetail  V1Rows = 152   ← 读 public._request_logs_hot ∪ public._request_logs
 //	差                11   ← 全部来自仍在 hot 窗口的行
 //
-// request_logs_hot 与 request_logs 是**两张独立表**（真库确认 request_logs_hot
-// 不是 request_logs 的分区，pg_inherits 命中 0），所以 CompareDetail 的
+// _request_logs_hot 与 _request_logs 是**两张独立表**（真库确认 _request_logs_hot
+// 不是 _request_logs 的分区，pg_inherits 命中 0），所以 CompareDetail 的
 // UNION ALL 不是重复计数，而是真的补上了 hot 侧的行。
 //
 // 为什么把不一致钉成测试而不是直接修：dual_read_validator.go:189-191 的注释
@@ -394,9 +394,9 @@ func TestDualReadValidator_CompareVsDetailScope_RealDB(t *testing.T) {
 	var parentOnly, hotOnly int
 	if err := pool.QueryRow(ctx, `
 		SELECT
-			(SELECT count(*) FROM public.request_logs
+			(SELECT count(*) FROM public._request_logs
 			 WHERE tenant_id::text=$1 AND gw_session_id=$2),
-			(SELECT count(*) FROM public.request_logs_hot
+			(SELECT count(*) FROM public._request_logs_hot
 			 WHERE tenant_id::text=$1 AND gw_session_id=$2)`,
 		tenant, session).Scan(&parentOnly, &hotOnly); err != nil {
 		t.Fatalf("scope counts: %v", err)

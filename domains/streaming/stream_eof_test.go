@@ -476,7 +476,7 @@ func TestSplitCombinedDoneFrame_ExtractsCompleteJSONFromTransportGarbage(t *test
 //   - The capture MUST reflect the failure so the audit pipeline writes
 //     success=false, failure_detail_code="eof_without_done",
 //     error_kind="eof_without_done". Otherwise §11.6's
-//     "不向客户端返回伪成功" promise is hollow — the request_logs row
+//     "不向客户端返回伪成功" promise is hollow — the _request_logs row
 //     would still look like a success while the wire shape is a
 //     structured error.
 //
@@ -485,7 +485,7 @@ func TestSplitCombinedDoneFrame_ExtractsCompleteJSONFromTransportGarbage(t *test
 // the production handler.go:5438 reads from. The capture must:
 //
 //   - BE marked interrupted (`stream_interrupted == true` in summary) so
-//     audit Success=false lands in request_logs
+//     audit Success=false lands in _request_logs
 //   - publish `failure_detail_code == "eof_without_done"` via
 //     isInterruptionCode path in audit.go (so the SQL filter
 //     `failure_detail_code='eof_without_done'` catches both committed
@@ -561,7 +561,7 @@ func TestStreamChatWithPendingCapture_EOFWithoutDoneAfterCommitIsStructuredError
 	// Capture state — the load-bearing invariant for audit failure.
 	summary := capture.SummaryAsMap()
 	assert.True(t, summary["stream_interrupted"].(bool),
-		"§11.6: capture MUST be marked interrupted so audit handler.go:5438 writes Success=false; otherwise pseudo-success leaks into request_logs even though the wire is a failure")
+		"§11.6: capture MUST be marked interrupted so audit handler.go:5438 writes Success=false; otherwise pseudo-success leaks into _request_logs even though the wire is a failure")
 	assert.Equal(t, "eof_without_done", summary["failure_detail_code"],
 		"failure_detail_code column must equal the reason literal so SQL filter `failure_detail_code='eof_without_done'` matches the row")
 }
@@ -637,7 +637,7 @@ func TestStreamChatWithPendingCapture_EOFWithoutDoneZeroChunksRemainsFailure(t *
 //     corrupt the wire protocol. The structured error IS the §11.6
 //     "structured error" path for committed streams.
 //  3. Audit capture — `stream_interrupted=true` so handler.go:5438
-//     writes Success=false into request_logs; `failure_detail_code =
+//     writes Success=false into _request_logs; `failure_detail_code =
 //     "eof_without_done"` so SQL filter
 //     `failure_detail_code='eof_without_done'` matches.
 //  4. Executor classification — Kind=KindUpstreamDown so

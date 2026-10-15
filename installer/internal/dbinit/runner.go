@@ -1013,18 +1013,55 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 服务端 30s 默认值会 57014），且是 DROP IF EXISTS + CREATE MATERIALIZED
 			// VIEW，重复应用零行为变化。
 			"855_session_analytics_time_window.sql",
-			// 857（2026-10-13）：收窄 316 播种的 pii_patterns.phone_intl——
-			// `\+\d{1,3}[-\s]?\d{1,14}` 第二段只要求 1 位数字，算术式
-			// `23*47+100` 的 `+100` 会被当国际电话在输出侧遮成
-			// [REDACTED:phone]（agent 的 tool 参数被改坏，请求侧完好、
-			// 遮蔽全部在响应侧 write-time redact_body）。收窄为被叫号码
-			// ≥7 位（E.164 现实区间），与 851 同族：UPDATE 存活 316 幂等
-			// 重放，全新安装也必须应用，故登记 StartupFiles。
-			// 856（2026-10-13，b3cbd3462 提交但登记残缺，本轮补齐）：usage_ledger
-			// （+hot）按时间窗聚合覆盖索引——/api/usage/summary 与 by-model 的
-			// 5s 预算 500 修复。普通 CREATE INDEX（事务内），两腿均可跑。
+
+			// 856（2026-10-13，origin/main 引入时的五点同步缺口，本合并轮补登记）：
+			// 给 usage_ledger / usage_ledger_hot 建 (ts, tenant_id) INCLUDE(...) 覆盖索引，
+			// 让「用量」页的 /api/usage/summary 与 /api/usage/by-model 走 index-only scan。
+			// ⚠️ 补登记前必须先判「它该不该进 installer」——判据报错文案只说「补五点同步」，
+			//   但同族有 6 张豁免表。先例 842 是决定性的：**它同样带显式 BEGIN/COMMIT、
+			//   同样建在分区父表上、同样已登记在 StartupFiles** ⇒ 显式事务对这一族不是障碍，
+			//   正解是登记而不是豁免。两条 CREATE INDEX IF NOT EXISTS 均幂等。
 			"856_usage_ledger_ts_cover_agg_idx.sql",
-			"857_tighten_pii_phone_intl_regex.sql",
+			// 857（2026-10-13）：analyze_llm_gateway_table_stats 的列存分支加陈旧度闸门。
+			// 见 runbook §10.110.14；函数体另有四份副本，migration_857_test.go 把这件事钉成门。
+			// ⚠️ 原拟编号 856，与 origin/main 的 856_usage_ledger_ts_cover_agg_idx.sql 撞号，
+			//    合并时改号为 857（两侧均未部署，改号无生产代价）。
+			// 必须排在 838 → 839 之后且为链尾：它是该函数应有的最终体。
+			"857_analyze_columnar_staleness_gate.sql",
+			// 858（2026-10-13）：给「会话终态晋级」写路径补 is_final_success 存在性索引。
+			// 见 runbook §10.110.16。缺口本体：hot 侧有同形状索引、5 个月度分区全没有，
+			// 而这条语句必须逐个探测分区 ⇒ 每次调用摸约 5.1 万个索引条目并逐条回堆
+			// （生产实测 mean 987.3 ms / 每次 114,159 页 / 4.06% 全库数据库时间）。
+			// 与 842 同款取舍：建在分区父表上由 PG 级联，不加 CONCURRENTLY
+			// （CONCURRENTLY 在分区父表上被拒）；窗口内写被阻塞、读不受影响。
+			// 非唯一：唯一性仍由 hot 侧的 uq_request_logs_hot_final_success_session 承担。
+			"858_request_logs_final_success_gsid_idx.sql",
+
+			// 859（2026-10-13 Vapeur 全量测试轮；原编号 857 与上面的
+			// analyze_columnar_staleness_gate 撞号改 859）：收窄 316 播种的
+			// pii_patterns.phone_intl——第二段 \d{1,14} 只要求 1 位数字，
+			// 算术式 `23*47+100` 的 `+100` 被当国际电话在输出侧遮成
+			// [REDACTED:phone]（agent 的 tool 参数被改坏）。收窄为被叫
+			// 号码 ≥7 位（E.164 现实区间）；UPDATE 存活 316 幂等重放。
+			"859_tighten_pii_phone_intl_regex.sql",
+			// 860（2026-10-14 S4 退役轮）：request_logs 族 `_` 前缀改名
+			// （待删除标志）+ 26 个 plpgsql 函数体同步改写。视图按 OID
+			// 自动跟随；分区/归档子表与索引名不动。回滚 = .down 迁移
+			// （仅在族被真正 DROP 前有效）。
+			"860_rename_request_logs_family_pending_delete.sql",
+			// 861（2026-10-14）：重建 candidate_failure_logs_with_current_month，
+			// 让 SELECT * 快照吸收 617 后加的 session_id（否则该列在视图上
+			// 42703、/api/candidate-failures 恒 500）。861 = 纯视图重建。
+			"861_candidate_failure_view_absorb_session_id.sql",
+			// 862（2026-10-14）：session_turns / _request_logs 两分区父表
+			// 无谓词 (ts) 前导索引 —— canonical 视图窗口读臂与
+			// V1FreezeCutoffSQL 母表臂此前只能整条索引扫（252 实测
+			// rollup mean 7.4s、峰值 29.5s 贴 30s 击杀线）。
+			"862_partition_family_leading_ts_idx.sql",
+			// 863（2026-10-14）：ensure_handoff_logs_partition 存储形态
+			// 自适应——挂对父表即合法（columnar 只是优化）；无 pgcolumnar
+			// 环境（restore 血缘）建 heap 分区。211 日志审计轮。
+			"863_handoff_partition_am_aware.sql",
 		},
 	}
 }

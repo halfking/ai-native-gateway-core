@@ -431,10 +431,18 @@ func (h *Handler) handleSessionAuditExport(w http.ResponseWriter, r *http.Reques
 	}
 
 	// 构建查询
-	var rows pgx.Rows
-	var qerr error
+	// ★ rows 必须在 withTenantTx 闭包**内**消费并关闭（2026-10-14 全量 API
+	// 扫描轮实测抓到）：旧形态把 rows 带出闭包，事务提交时连接带着未关闭的
+	// rows 归还连接池 ⇒ 该连接的下一次使用报 "conn busy"（500，本地实测
+	// 100% 复现）。list 处理器（:167）一直是闭包内 defer Close 的正确形态。
+	var rowsLeakMarker = pgx.Rows(nil)
+	_ = rowsLeakMarker
+	type exportRow struct{ cells []string }
+	var out []exportRow
 	err := withTenantTx(r.Context(), h.db, req.TenantID, func(tx pgx.Tx) error {
-		sql := `
+		// 局部变量不再叫 sql：闭包内的扫描代码用 database/sql 的
+		// sql.NullString，变量名会遮蔽包名。
+		sqlText := `
 			SELECT
 				id, session_id, tenant_id,
 				client_ip, client_user_agent, client_model,
@@ -450,33 +458,88 @@ func (h *Handler) handleSessionAuditExport(w http.ResponseWriter, r *http.Reques
 		argIdx := 1
 
 		if req.TenantID != "" && !isSuper {
-			sql += fmt.Sprintf(" AND tenant_id = $%d", argIdx)
+			sqlText += fmt.Sprintf(" AND tenant_id = $%d", argIdx)
 			args = append(args, req.TenantID)
 			argIdx++
 		}
 		if req.SessionID != "" {
-			sql += fmt.Sprintf(" AND session_id = $%d", argIdx)
+			sqlText += fmt.Sprintf(" AND session_id = $%d", argIdx)
 			args = append(args, req.SessionID)
 			argIdx++
 		}
 		if req.Status != "" {
-			sql += fmt.Sprintf(" AND status = $%d", argIdx)
+			sqlText += fmt.Sprintf(" AND status = $%d", argIdx)
 			args = append(args, req.Status)
 			argIdx++
 		}
-		sql += " ORDER BY created_at DESC"
-		sql += fmt.Sprintf(" LIMIT $%d", argIdx)
+		sqlText += " ORDER BY created_at DESC"
+		sqlText += fmt.Sprintf(" LIMIT $%d", argIdx)
 		args = append(args, req.Limit)
 
-		rows, qerr = tx.Query(r.Context(), sql, args...)
-		return qerr
+		rows, qerr := tx.Query(r.Context(), sqlText, args...)
+		if qerr != nil {
+			return qerr
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var id int64
+			var sessionID, tenantID, clientIP, clientUA, clientModel sql.NullString
+			var contentSummary, contentTitle, contentHash sql.NullString
+			var intentType, intentReason sql.NullString
+			var intentScore sql.NullFloat64
+			var secScore, dangerScore, trustScore, sensitiveScore sql.NullInt64
+			var detectScore sql.NullInt64
+			var detectDecision sql.NullString
+			var threatsJSON, sensitiveWordsJSON []byte
+			var status, approvalStatus sql.NullString
+			var createdAt time.Time
+
+			if err := rows.Scan(
+				&id, &sessionID, &tenantID,
+				&clientIP, &clientUA, &clientModel,
+				&contentSummary, &contentTitle, &contentHash,
+				&intentType, &intentScore, &intentReason,
+				&secScore, &dangerScore, &trustScore, &sensitiveScore,
+				&detectScore, &detectDecision, &threatsJSON, &sensitiveWordsJSON,
+				&status, &approvalStatus,
+				&createdAt,
+			); err != nil {
+				warnRowSkip("sessionAuditExport", err)
+				continue
+			}
+
+			out = append(out, exportRow{[]string{
+				fmt.Sprintf("%d", id),
+				sessionID.String,
+				tenantID.String,
+				clientIP.String,
+				clientUA.String,
+				clientModel.String,
+				contentSummary.String,
+				contentTitle.String,
+				contentHash.String,
+				intentType.String,
+				fmt.Sprintf("%.2f", intentScore.Float64),
+				intentReason.String,
+				fmt.Sprintf("%d", secScore.Int64),
+				fmt.Sprintf("%d", dangerScore.Int64),
+				fmt.Sprintf("%d", trustScore.Int64),
+				fmt.Sprintf("%d", sensitiveScore.Int64),
+				fmt.Sprintf("%d", detectScore.Int64),
+				detectDecision.String,
+				string(threatsJSON),
+				string(sensitiveWordsJSON),
+				status.String,
+				approvalStatus.String,
+				createdAt.Format(time.RFC3339),
+			}})
+		}
+		return rows.Err()
 	})
 	if err != nil {
 		writeInternalErr(w, "query failed", err)
 		return
-	}
-	if rows != nil {
-		defer rows.Close()
 	}
 
 	w.Header().Set("Content-Type", "text/csv")
@@ -494,63 +557,8 @@ func (h *Handler) handleSessionAuditExport(w http.ResponseWriter, r *http.Reques
 	}
 	writer.Write(header)
 
-	for rows.Next() {
-		var id int64
-		var sessionID, tenantID, clientIP, clientUA, clientModel sql.NullString
-		var contentSummary, contentTitle, contentHash sql.NullString
-		var intentType, intentReason sql.NullString
-		var intentScore sql.NullFloat64
-		var secScore, dangerScore, trustScore, sensitiveScore sql.NullInt64
-		var detectScore sql.NullInt64
-		var detectDecision sql.NullString
-		var threatsJSON, sensitiveWordsJSON []byte
-		var status, approvalStatus sql.NullString
-		var createdAt time.Time
-
-		if err := rows.Scan(
-			&id, &sessionID, &tenantID,
-			&clientIP, &clientUA, &clientModel,
-			&contentSummary, &contentTitle, &contentHash,
-			&intentType, &intentScore, &intentReason,
-			&secScore, &dangerScore, &trustScore, &sensitiveScore,
-			&detectScore, &detectDecision, &threatsJSON, &sensitiveWordsJSON,
-			&status, &approvalStatus,
-			&createdAt,
-		); err != nil {
-			warnRowSkip("sessionAuditExport", err)
-			continue
-		}
-
-		row := []string{
-			fmt.Sprintf("%d", id),
-			sessionID.String,
-			tenantID.String,
-			clientIP.String,
-			clientUA.String,
-			clientModel.String,
-			contentSummary.String,
-			contentTitle.String,
-			contentHash.String,
-			intentType.String,
-			fmt.Sprintf("%.2f", intentScore.Float64),
-			intentReason.String,
-			fmt.Sprintf("%d", secScore.Int64),
-			fmt.Sprintf("%d", dangerScore.Int64),
-			fmt.Sprintf("%d", trustScore.Int64),
-			fmt.Sprintf("%d", sensitiveScore.Int64),
-			fmt.Sprintf("%d", detectScore.Int64),
-			detectDecision.String,
-			string(threatsJSON),
-			string(sensitiveWordsJSON),
-			status.String,
-			approvalStatus.String,
-			createdAt.Format(time.RFC3339),
-		}
-		writer.Write(row)
-	}
-	// CSV 响应头已 200 无法收回：迭代中断留服务端痕迹（与 usage 导出同语义）。
-	if rerr := rows.Err(); rerr != nil {
-		slog.Warn("session audit export csv aborted; output truncated", "error", rerr)
+	for _, r := range out {
+		writer.Write(r.cells)
 	}
 	writer.Flush()
 }

@@ -3,7 +3,7 @@ package admin
 // request_logs_stop_write_classification_test.go — 2026-10-02：S4 停写的
 // 逐文件依赖分类与覆盖率门。
 //
-// 审计 §8.5 的结论是：读 request_logs 的生产文件有 104 个、调用点 237 处，
+// 审计 §8.5 的结论是：读 _request_logs 的生产文件有 104 个、调用点 237 处，
 // 而逐点评估**一个都没做过**。`TestRequestLogsReadInventoryIsComplete`
 // （request_logs_read_inventory_test.go）钉住了「有 104 个」，但那只数个数，
 // 不下判定——所以它防的是「缺口扩大时有人知道」，防不了「缺口已被评估」。
@@ -153,7 +153,7 @@ const effectUnclassified = "unclassified"
 // 每条豁免都必须回答同一个问题：**停写之后，这个读点返回的东西会变吗？**
 var bodiesUnaffectedJustification = map[string]string{
 	"domains/hooks/observability/telemetry/client.go": "本文件的 bodies 触点全部在写门内：" +
-		"upsertRequestLogBodies 的 ts 回填读（`FROM request_logs_hot rl WHERE rl.request_id = $1`）" +
+		"upsertRequestLogBodies 的 ts 回填读（`FROM _request_logs_hot rl WHERE rl.request_id = $1`）" +
 		"只被 bodies 写路径调用，而 bodies 写与主行写一起包在 requestLogsWriteEnabled() 门内" +
 		"（2026-10-13 S3 波 2 复核作用域不变）。判 unaffected 的两个读点" +
 		"（FindRecentGatewaySession 双热腿、lookupTurnNumber 会话族 MAX(turn_no)）" +
@@ -163,19 +163,33 @@ var bodiesUnaffectedJustification = map[string]string{
 		"全部包在 `if requestLogsWriteEnabled() {}` 内（:391、:454）。停写后这段不执行，" +
 		"读点根本不发生 ⇒ 无「返回内容变空」可言。这与「读 bodies 拿到空正文」是两种形状。",
 	"db/db.go": "两处 bodies 引用都不是读内容：:7197 与 :7231 里的 " +
-		"`'request_logs_bodies'` 是 **pg_class.relname 的字符串名单**（ALTER TABLE SET storage " +
+		"`'_request_logs_bodies'` 是 **pg_class.relname 的字符串名单**（ALTER TABLE SET storage " +
 		"参数 / ANALYZE 分区巡检），表名出现在一个正则/数组里，不是 FROM/JOIN 任何一张表。" +
 		"bodies 族按正则识别，把「名字出现在巡检名单里」也算成「读 bodies」。" +
-		"本文件全部 request_logs 命中都是结构面（见分级表的 Note）。",
+		"本文件全部 _request_logs 命中都是结构面（见分级表的 Note）。",
 	"cmd/tools/validate_sessions_v2/loader.go": "离线校验工具，**读 v1 就是它的工作本身**：" +
 		"LoadV1Turns(:119/:122) 两步查 v1 母表 + bodies（hot ∪ parent），目的是与 LoadV2Turns " +
 		"逐轮对拍以判定镜像是否漂移。停写后它不报错、仍能对**存量**会话跑校验，只是覆盖不到新会话" +
 		"（LoadV1Turns 缺 body 时 pgx.ErrNoRows 被 continue 吞掉、保留空默认，校验会报" +
 		"「v2 多出轮次」而不是崩）。它由人工触发、不在在线读写路径上，" +
 		"所以「不读正文内容」的退化不构成服务面影响。",
-	// admin/data_lifecycle_blobs.go 于 2026-10-13（S4 波 4）出列：会话臂
-	// 治理已落地（原豁免「读的是体量不是内容」随之失效——治理对象已是
-	// session_bodies 族）。
+	"admin/compression_sessions.go": "本文件的 bodies 触点**已在本轮（S3 波 4）改成双源**，所以「bodies 没有 session 兜底」这条前提对它不成立：" +
+		"顶层过滤器是跨族 EXISTS（compressionOutboundBodyPredicate：v1 腿 `request_logs_bodies_with_current_month` ∪ 会话腿 db.SessionFamilyBodiesSourceSQL()），" +
+		"LATERAL（compressionLatestOrigMsgsLATERAL）同样是两族并集——v1 腿保留 ts 等值只服务停写前历史，会话腿按 request_id 单键 JOIN session_bodies（§9.231 列合同无 ts）。" +
+		"真库实测回答本表要求的那一个问题「停写之后这个读点返回的东西会变吗」：**不会变少，只会变多**。" +
+		"24h 窗会话数 1,125 → 9,255（差额是被旧谓词整行滤掉的停写后会话）；" +
+		"estimated_original_msgs 在停写前 811 个已取值会话上**逐个同值**（same 811 / different 0 / 被并集变 NULL 的 0），另新增 11,646+7,412 个会话有值；" +
+		"仍为 NULL 的 msg_reduction 源自 outbound_msg_count/outbound_token_est 的**列填充率**（停写前 11.40% vs 停写后 28.34%，停写后更高），与 v1 无关。" +
+		"⚠ 本条在 2026-10-14 之前登记为 silently_degraded_content，且 Note 写「列表行仍返回」——**那是错的**：" +
+		"它只看了 LATERAL 的谓词，漏掉顶层 whereClause 里同族的 `rb.outbound_body IS NOT NULL`（LEFT JOIN + WHERE IS NOT NULL = 内连接），" +
+		"那一行才是把停写后会话整行滤掉的真凶。分类表的 Note 与真实行为不符时，门不会报错——**只有逐点复核会发现**。",
+	"admin/data_lifecycle_blobs.go": "读的是体量不是内容：唯一的 bodies 引用是 " +
+		"`COALESCE(pg_column_size(rb.request_body), 0)`，即「存量正文占多少字节、" +
+		"清理能省多少」。停写不改变存量字节数，也不改变待清理行数。" +
+		"注意 bodies 族是按正则识别的，会把 pg_column_size 也算成「读 bodies」，" +
+		"所以这条豁免不是可有可无的形式主义。" +
+		"⚠ 但 S3 波 4 复核时实测到它的**读腿覆盖不到停写后的新正文**（bodies 只来自 v1 ⇒ 新行字节数报 0、清理预览少算），" +
+		"已登记为下一分片的治理面扩展项；在那之前本条豁免只覆盖「存量字节数不变」这一半，不覆盖「新正文看不见」这一半。",
 }
 
 // requestLogsStopWriteClassification 覆盖 requestLogsReadInventory 的 104 个文件。
@@ -192,46 +206,46 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	// 子代理把「机械统计里的某个数字」当成了族标签。照它去「修」会修坏一个没坏的分类器。
 	"admin/analytics.go": {
 		Effect:   effectErrorsOut,
-		Evidence: "FROM request_logs_hot\n\t\t    WHERE request_id = ANY($1::text[])",
+		Evidence: "FROM _request_logs_hot\n\t\t    WHERE request_id = ANY($1::text[])",
 		Note:     "决策回放按 request_id 查 hot∪母表双腿；`errors.Is(err, pgx.ErrNoRows)` 已显式转 404（analytics.go:806），停写后新请求查不到立刻暴露。属可接受失败模式。",
 	},
 	"admin/data_lifecycle_attachments.go": {
 		Effect:   effectErrorsOut,
-		Evidence: "SELECT request_id, ts, tenant_id,\n\t\t       COALESCE(client_model, ''), success, attachments::text\n\t\tFROM request_logs",
+		Evidence: "SELECT request_id, ts, tenant_id,\n\t\t       COALESCE(client_model, ''), success, attachments::text\n\t\tFROM _request_logs",
 		Note:     "三个读点全走裸母表。停写只冻结不删历史 ⇒ 历史附件仍可列出，只有停写后的新请求查不到：单条 404、列表尾部缺失。errors_out 而非静默。",
 	},
 	"admin/provider_diagnose.go": {
 		Effect:   effectSilentlyFrozen,
-		Evidence: "SELECT COALESCE(error_kind,'other'), COUNT(*) FROM request_logs_hot WHERE provider_id = $1 AND ts >= now() - interval '24 hours' GROUP BY error_kind",
+		Evidence: "SELECT COALESCE(error_kind,'other'), COUNT(*) FROM _request_logs_hot WHERE provider_id = $1 AND ts >= now() - interval '24 hours' GROUP BY error_kind",
 		Note:     "24h 错误分类窗口（:529，`ecRows, _ :=` 显式丢弃 error）读 hot 冻结面。停写后错误计数恒为旧值，接口 200、字段齐全、无错误信号——健康度评分看起来「稳定良好」。",
 	},
 	"admin/session_detail_v2.go": {
 		Effect:   effectErrorsOut,
-		Evidence: "SELECT request_id FROM request_logs\n\t\t      WHERE tenant_id = $1 AND gw_session_id = $2",
+		Evidence: "SELECT request_id FROM _request_logs\n\t\t      WHERE tenant_id = $1 AND gw_session_id = $2",
 		Note:     "主腿已迁 session_turns_with_current_month；残留 v1 读点只在 resolveSessionID 反向映射的 UNION 末两条腿，session 腿先行兜住活跃会话，0 候选走 errSessionNotFound → 404。代码注释 556-558 已自认此风险。",
 	},
 	"autoroute/recommend_v2.go": {
 		Effect:   effectSilentlyEmpty,
-		Evidence: "SELECT canonical_id, count(*) as usage_count\n\t\tFROM request_logs\n\t\tWHERE ts > NOW() - INTERVAL '48 hours'",
+		Evidence: "SELECT canonical_id, count(*) as usage_count\n\t\tFROM _request_logs\n\t\tWHERE ts > NOW() - INTERVAL '48 hours'",
 		Note:     "48h Top-3 canonical 榜与纠正分读点（:393-407，err 直接 `return map[string]float64{}, nil` 全吞）都读冻结母表。停写后 Top-3 返空 → fallback 挑不到模型且被写进 2 分钟 TTL 缓存持续生效，全程无错误。",
 	},
 	"bg/credential_selfcheck.go": {
 		Effect:   effectSilentlyFrozen,
-		Evidence: "FROM request_logs_hot rl\n\t\t\tWHERE rl.credential_id = c.id\n\t\t\t  AND rl.ts >= now() - interval '24 hours'",
+		Evidence: "FROM _request_logs_hot rl\n\t\t\tWHERE rl.credential_id = c.id\n\t\t\t  AND rl.ts >= now() - interval '24 hours'",
 		Note:     "pickDueCredential 的 MAX(rl.ts) 24h 窗口（:259-262）驱动自检选点；停写后窗口恒为旧行，ErrNoRows 被当「本轮无到期凭据」静默跳过。控制面轴另判为 live（写 self_check_runs / 探针提交）。",
 	},
 	"bg/model_probe.go": {
 		Effect:   effectSilentlyFrozen,
-		Evidence: "SELECT COALESCE(rl.outbound_model, rl.client_model) AS raw_model,\n\t\t\t               count(*) AS calls\n\t\t\t        FROM request_logs_hot rl\n\t\t\t        WHERE rl.success",
+		Evidence: "SELECT COALESCE(rl.outbound_model, rl.client_model) AS raw_model,\n\t\t\t               count(*) AS calls\n\t\t\t        FROM _request_logs_hot rl\n\t\t\t        WHERE rl.success",
 		Note:     "探测 usage 扫描全读 hot 冻结面。停写后 usage 集恒为旧值 ⇒ 非精选模型被无限延长 next_retry_at、精选模型过不了 traffic EXISTS 门，探测定时策略静默失真且无报错。",
 	},
 	"cmd/gateway/dual_read_validator.go": {
 		Effect:   effectValidator,
-		Evidence: "FROM request_logs_hot\n    WHERE ts >= $2 AND gw_session_id IS NOT NULL AND gw_session_id <> ''\n    UNION ALL",
+		Evidence: "FROM _request_logs_hot\n    WHERE ts >= $2 AND gw_session_id IS NOT NULL AND gw_session_id <> ''\n    UNION ALL",
 		Note:     "刻意对账面。§8.2 已修：s4GateVerdictOf 在 v1WritesOn=false 时把 S4Ready 置为 void 并回 S4GateVoid/S4GateVoidReason，停写后报 void 而非给出「可开 S4」许可。",
 	},
 	"cmd/gateway/waterfall_db.go": {
-		// 2026-10-13 S3 波 2：DB 腿 FROM request_logs_hot → canonical 视图。
+		// 2026-10-13 S3 波 2：DB 腿 FROM _request_logs_hot → canonical 视图。
 		// t0..t9 是会话臂直映列（513 起会话轮自带调度计时），session 臂继续
 		// 供数 ⇒ 不再冻结。
 		Effect:   effectUnaffected,
@@ -242,15 +256,15 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	// 除名：loadRequestLogs 改读会话族原生源（SessionFamilyTurnsForSessionSQL），
 	// 文件已不在 requestLogsReadInventory，本表只收清单成员。
 	"internal/quality/minute_aggregator.go": {
-		// 2026-10-13 S3 波 2：源 FROM request_logs_hot → canonical 视图。
+		// 2026-10-13 S3 波 2：源 FROM _request_logs_hot → canonical 视图。
 		Effect:   effectSilentlyDegradedAggregate,
 		Evidence: "FROM request_logs_with_current_month\nWHERE ts >= date_trunc('minute', NOW() - INTERVAL '1 minute')\n  AND ts < date_trunc('minute', NOW())",
 		Note:     "分钟聚合 UPSERT 2026-10-13 起读 canonical 视图：session 臂继续供数，provider_metrics_minute 不再停止增长。降级点：provider_id 是 734 details 层供列，缺 details 行的会话轮被 `provider_id IS NOT NULL` 谓词排除 ⇒ 覆盖率随 details 行走（聚合维度部分缺失，非整体停摆）。",
 	},
 	"tests/session_audit/cmd/audit-test/main.go": {
 		Effect:   effectSilentlyEmpty,
-		Evidence: "FROM request_logs\n\t\tWHERE ts >= NOW() - INTERVAL '7 days'",
-		Note:     "会话输出审计测试工具按 7 天窗口抽 body；停写后活跃会话一条不中，len(results) 变小但工具照常跑完并打印「252 数据库 request_logs 表 (最近 7 天)」。是测试工具，业务影响有限。",
+		Evidence: "FROM _request_logs\n\t\tWHERE ts >= NOW() - INTERVAL '7 days'",
+		Note:     "会话输出审计测试工具按 7 天窗口抽 body；停写后活跃会话一条不中，len(results) 变小但工具照常跑完并打印「252 数据库 _request_logs 表 (最近 7 天)」。是测试工具，业务影响有限。",
 	},
 	"admin/attachments_routes.go": {
 		Effect:   effectUnaffected,
@@ -286,9 +300,21 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 			"附件数据本身在 request_attachments 表里未丢（domains/attachments/repository.go:183 已有读法），" +
 			"所以这是读腿的退化，不是数据丢失。",
 	},
-	// 2026-10-13 S4 波 4 出列：admin/compression_sessions.go 整只端点已
-	// 会话族化（原条目预告的「全零静默降级」当天就被修掉——turns/bodies
-	// 双源 + LATERAL 改 request_delta 数组长度），不再属 v1 停写面。
+	"admin/compression_sessions.go": {
+		// ⚠ 2026-10-14 S3 波 4：本条**在停写状态下是错的，本轮已修**。
+		// 原文只看了 LATERAL 的 :147 谓词，写下「列表行仍返回」——
+		// 而顶层 whereClause（:89）里另有一条 `rb.outbound_body IS NOT NULL`，
+		// 它来自 `LEFT JOIN request_logs_bodies_with_current_month`，在 WHERE 里
+		// 等价于内连接，于是把**停写后的会话整行滤掉**。真库实测（本地库，
+		// 24h 窗）：旧谓词命中 1,125 个会话 / 新谓词 9,255；停写后的会话在旧
+		// 形态下 **100% 不可见**。本轮把该谓词改成跨族 EXISTS
+		// （compressionOutboundBodyPredicate）、LATERAL 改双源，并修掉一个
+		// 「LIMIT 排在 LATERAL 之后」的性能陷阱（同窗 9.9s → 0.32s，
+		// 旧形态已贴着本端点 10s 超时）。
+		Effect:   effectUnaffected,
+		Evidence: "JOIN request_logs_bodies_with_current_month rb2",
+		Note:     "S3 波 4 修复后逐项实测（本地库，翻转点 2026-10-13 07:01:04）：①行数：旧谓词 24h 窗命中 1,125 会话、新谓词 9,255，差额即停写后被滤掉的会话；②estimated_original_msgs：停写前 811 个已取值会话在新 LATERAL 下**逐个同值**（same 811 / different 0 / 因并集变 NULL 的 0），同时新增 11,646（停写前）+ 7,412（停写后）个会话有值；③残余的 msg_reduction 仍会为 NULL，是因为 outbound_msg_count/outbound_token_est 在**两侧都有空值**（710 视图实测填充率：停写前 11.40%、停写后 28.34%），属列填充率而非停写依赖——停写后反而更高。Evidence 锚在保留的 v1 腿上：它现在只服务**停写前的历史**，停写后的轮次走 session_bodies 单键 JOIN（§9.231 列合同无 ts，禁止等值）。⇒ 判 unaffected。",
+	},
 	"admin/logs_summary.go": {
 		Effect:   effectSilentlyDegradedContent,
 		Evidence: "COALESCE(rb.request_body::text, '') AS request_body",
@@ -306,7 +332,7 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	"db/db.go": {
 		Effect:   effectUnaffected,
-		Evidence: "WHERE to_regclass('public.request_logs') IS NOT NULL",
+		Evidence: "WHERE to_regclass('public._request_logs') IS NOT NULL",
 		Note:     "已核实无流量读：全部命中是结构面——ensureRequestLogSchema 的 information_schema/pg_indexes catalog 短路(:2008+)、ensureRequestLogsCurrentMonthView 的视图幂等重建(:227)、:7197/:7231 的 pg_class relname 名单（ALTER TABLE SET storage / ANALYZE 分区）。停写改变行数但不改变表结构与生命周期语义。（控制面轴同样判 unaffected：产出的是 DDL，不是决策。）",
 	},
 	"domains/sessionsummary/system_prompt_prefix.go": {
@@ -317,7 +343,7 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	// ── batch5：2026-10-02 §9.35 新增（1 条）────────────────────────────────
 	"admin/auto_route_outcome_freshness.go": {
 		Effect:   effectValidator,
-		Evidence: "SELECT MAX(ts) FROM request_logs_hot",
+		Evidence: "SELECT MAX(ts) FROM _request_logs_hot",
 		Note:     "**这个文件不消费 v1 的数据，它观察 v1 的新鲜度**——所以判 validator 而非 silently_frozen。queryOutcomeFreshness 只取 MAX(ts) 一个标量，算出 age_seconds 并与 outcomeSourceStaleAfter(镜像 bg.settleAbandonAfter=4h) 比较，把结果作为 `outcome_source` 块挂在 /auto-route/audit、/affinity/ranking、/affinity/selections 三个响应上。停写后 MAX(ts) 冻结 ⇒ age 越过 4h ⇒ stale=true、reason=stale ⇒ **冻结本身就是信号**，没有任何业务判断建立在这个值上，所以不是 silently_frozen 那一档。v1 被退役后 MAX(ts) 报 42P01，映射成 reason=absent 而非 5xx（退役是预期终态）。门槛语义由 TestOutcomeSourceStaleAfterMirrorsSettleAbandonAfter 守。⚠ 注意：本条让 effectValidator 这一档第一次**装了非「v1↔session 对账」的用例**（它是新鲜度探针，不是对账）；下一个读这张表的人若发现该档语义已不足以覆盖观察类读点，应扩档而不是把它塞回 silently_frozen。",
 	},
 	// ── batch6：2026-10-02 §9.36 收口剩余未评估文件 ─────────────────────────
@@ -332,29 +358,33 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	// 全历史口径与近期口径给出**相反**的档位。
 	"discovery/discovery.go": {
 		Effect:   effectUnaffected,
-		Evidence: "SELECT 1 FROM request_logs rl",
-		Note:     "机制是「**读点在门内**」，不是「结果不变」。:1160 的 `SELECT 1 FROM request_logs rl` 在 `UPDATE model_offers SET available=FALSE` 的 NOT EXISTS 子查询里（谓词含 `rl.success=TRUE AND rl.ts > now() - interval '<graceHours> hours'`，graceHours 默认 24），停写后该谓词确实会恒真——这正是 :1076-1085 注释自陈的失效形态。**但代码已经不再走到那里**：`expireStaleModels` 在 :1110-1115 有显式 S4 护栏 `if mayExpire, blockedReason := staleExpiryMayRun(settings.RequestLogsWriteEnabled()); !mayExpire { slog.Info(...); return }`，`staleExpiryMayRun`(:1091-1096) 在 !requestLogsWritable 时返回 false ⇒ 整段 stale 下架（含伴生的 credential_model_bindings 写）一起短路，护栏由 discovery/stale_expiry_gate_test.go 钉住，灰度时 slog 留有 reason + would_expire 可见。与 admin/telemetry.go 在 bodiesUnaffectedJustification 登记的「读点在写门内 ⇒ 无『返回内容变空』可言」同一种形状。**遗留缺口（不在本档范围）**：admin/request_logs_control_plane_dependency_test.go:297-309 仍登记 `Gated: false` 且 Note 描述的是「未加护栏时」的形态，而护栏是 e52687954（§9.12）后加的 ⇒ 登记表已过期；那道门只核 Evidence 逐字存在与 `Live && !Gated` 时 BlastRadius 非空，**没有任何一条把 Gated 与代码里的实际护栏对照** ⇒ 这条过期不会被自动发现。",
+		Evidence: "SELECT 1 FROM _request_logs rl",
+		Note:     "机制是「**读点在门内**」，不是「结果不变」。:1160 的 `SELECT 1 FROM _request_logs rl` 在 `UPDATE model_offers SET available=FALSE` 的 NOT EXISTS 子查询里（谓词含 `rl.success=TRUE AND rl.ts > now() - interval '<graceHours> hours'`，graceHours 默认 24），停写后该谓词确实会恒真——这正是 :1076-1085 注释自陈的失效形态。**但代码已经不再走到那里**：`expireStaleModels` 在 :1110-1115 有显式 S4 护栏 `if mayExpire, blockedReason := staleExpiryMayRun(settings.RequestLogsWriteEnabled()); !mayExpire { slog.Info(...); return }`，`staleExpiryMayRun`(:1091-1096) 在 !requestLogsWritable 时返回 false ⇒ 整段 stale 下架（含伴生的 credential_model_bindings 写）一起短路，护栏由 discovery/stale_expiry_gate_test.go 钉住，灰度时 slog 留有 reason + would_expire 可见。与 admin/telemetry.go 在 bodiesUnaffectedJustification 登记的「读点在写门内 ⇒ 无『返回内容变空』可言」同一种形状。**遗留缺口（不在本档范围）**：admin/request_logs_control_plane_dependency_test.go:297-309 仍登记 `Gated: false` 且 Note 描述的是「未加护栏时」的形态，而护栏是 e52687954（§9.12）后加的 ⇒ 登记表已过期；那道门只核 Evidence 逐字存在与 `Live && !Gated` 时 BlastRadius 非空，**没有任何一条把 Gated 与代码里的实际护栏对照** ⇒ 这条过期不会被自动发现。",
 	},
 	"domains/providerprofile/adapters.go": {
 		Effect:   effectSilentlyEmpty,
 		Evidence: "COUNT(*) FILTER (WHERE NOT success) AS error_count,",
-		Note:     "**「空」在下游被读成「完美」，这是本批最实的一处。** 4 个读点（:147 AnalyzeRequests / :178 ErrorTypes / :209 429 命中率 / :260 BucketSuccessRates）全部 `FROM request_logs_hot`，窗口 `ts >= NOW() - INTERVAL '1 hour' * $2`，$2 clamp 到 providerProfileHotHours=8；而消费端 LightweightCollector.collectForCredential 实际传 **hours=2**（domains/providerprofile/collector.go:165）⇒ 停写 **2 小时**后四腿同时零行。零行不报错（COUNT(*) 返回一行 0）⇒ MetricSnapshot 照常 SaveSnapshot 落库，字段齐全：TotalRequests=0 / SuccessRequests=0 / ErrorCount=0 / ErrorTypes={} / RateLimitMetrics{0,0,0} / AvailabilityWindow{TotalBuckets:0}。**而评分端把零读成满分**：domains/providerprofile/scorer.go:384-385 `if totalRequests == 0 { return 100 }`，同形还有 :92（TotalRequests>0 才计可用性维度）、:98（RateLimitMetrics 存在即算「已测量」），以及本文件 :294-295 自己的注释「空桶不能算不可用，否则冷启动的供应商都会被扣成 0 分」。⇒ 停写后每个凭据的稳定性分趋向 100，且与「真的零流量」在数据上不可区分。四处 err 全部上抛（未被吞），但 0 行不是错误——这正是本档与 errors_out 的分界。窗口 2~8h ⇒ **empty 不是 frozen**。",
+		Note:     "**「空」在下游被读成「完美」，这是本批最实的一处。** 4 个读点（:147 AnalyzeRequests / :178 ErrorTypes / :209 429 命中率 / :260 BucketSuccessRates）全部 `FROM _request_logs_hot`，窗口 `ts >= NOW() - INTERVAL '1 hour' * $2`，$2 clamp 到 providerProfileHotHours=8；而消费端 LightweightCollector.collectForCredential 实际传 **hours=2**（domains/providerprofile/collector.go:165）⇒ 停写 **2 小时**后四腿同时零行。零行不报错（COUNT(*) 返回一行 0）⇒ MetricSnapshot 照常 SaveSnapshot 落库，字段齐全：TotalRequests=0 / SuccessRequests=0 / ErrorCount=0 / ErrorTypes={} / RateLimitMetrics{0,0,0} / AvailabilityWindow{TotalBuckets:0}。**而评分端把零读成满分**：domains/providerprofile/scorer.go:384-385 `if totalRequests == 0 { return 100 }`，同形还有 :92（TotalRequests>0 才计可用性维度）、:98（RateLimitMetrics 存在即算「已测量」），以及本文件 :294-295 自己的注释「空桶不能算不可用，否则冷启动的供应商都会被扣成 0 分」。⇒ 停写后每个凭据的稳定性分趋向 100，且与「真的零流量」在数据上不可区分。四处 err 全部上抛（未被吞），但 0 行不是错误——这正是本档与 errors_out 的分界。窗口 2~8h ⇒ **empty 不是 frozen**。",
 	},
 	"internal/trace/trace.go": {
 		Effect:   effectErrorsOut,
-		Evidence: "FROM request_logs_hot WHERE request_id = $1",
+		Evidence: "FROM _request_logs_hot WHERE request_id = $1",
 		Note:     "唯一读点：:611/:613 同一条 `LoadFromPG` 的 `UNION ALL ... WHERE trace_events IS NOT NULL ORDER BY ts DESC LIMIT 1`（hot ∪ 母表）。`trace_events` 是 **v1 独有**——视图契约刻意不投影它（db/request_logs_view_schema.go:606：「镜像从不写，近窗非空率 0，投影即净数据损失」），session 侧无任何等价物。**本档的判级关键是：被吞掉的错误没有消失，它被转译成了 HTTP 404。** `errors.Is(err, pgx.ErrNoRows)` 被显式吞成 `(nil, nil)`（:619-621，注释 :592-595 写明理由：原实现会让前端展示「no rows in result set」红色错误），非 ErrNoRows 仍上抛。停写后新请求在这条 PG 腿必然 0 行 ⇒ LoadFromPG 返 (nil,nil) ⇒ 上层 loadTrace 转去问 requestTraceState（admin/request_trace.go:187-196，同族另两腿同样 0 行）⇒ traceStateMissing ⇒ loadTrace 返 (nil,\"\",nil) ⇒ handleTrace 显式 **404 not_found**（:136-139）。灰度时立刻可见，故判可接受档。探针请求另有 node_probe_runs 合成路径（admin/request_trace.go:173-177），不受停写影响。",
 	},
 	"bg/stats_minute_rollup_retire.go": {
 		Effect:   effectUnaffected,
 		Evidence: "FROM request_logs_with_current_month AS r",
-		Note:     "三个读点（:21 retireClosedMainMinuteSQL / :77 retireClosedDimStatement / :99 retireClosedErrorDrillMinuteSQL）**全是 NOT EXISTS 存在性守卫，不投影任何值**，只回答「这个已闭分钟的键，视图还产不产出」，产出则保留、不产出则 DELETE。净效应是「**退化成 no-op**」而不是「误删」：① **删除侧与写入侧同源同谓词**——rollup 的整键替换（bg/stats_minute_rollup.go:226/:289）与这三条读的是同一张视图、同一套 dimKey 表达式（:66-68 注释明确 dimKey 与 error 过滤都来自 rollupDimQueries 同一拼接口径），停写后两侧看到同一批 session 臂行 ⇒ 不会把 rollup 刚写的键误判成悬空键删掉；② 这三条唯一要清理的是 v1 侧累加器（internal/quality/minute_aggregator.go 读 request_logs_hot，已单列）的键，而累加器在停写后停产 ⇒ 扫描窗内根本没有键可删，恒删 0 行；③ 视图继续供行，守卫继续保护这些行。用到的列里 request_status/ts/tenant_id/canonical_id/error_kind/outbound_model 六项是 815 视图 session 臂的 `t.*` 直映；`gw_task_id` 与 `api_key_prefix` 本文件**零命中**；仅 provider_id/client_profile/client_model 骑 details 层且只参与等值匹配。错误通道未被吞（fmt.Errorf 包装上抛 ⇒ 外层 slog.Warn）。",
+		Note:     "三个读点（:21 retireClosedMainMinuteSQL / :77 retireClosedDimStatement / :99 retireClosedErrorDrillMinuteSQL）**全是 NOT EXISTS 存在性守卫，不投影任何值**，只回答「这个已闭分钟的键，视图还产不产出」，产出则保留、不产出则 DELETE。净效应是「**退化成 no-op**」而不是「误删」：① **删除侧与写入侧同源同谓词**——rollup 的整键替换（bg/stats_minute_rollup.go:226/:289）与这三条读的是同一张视图、同一套 dimKey 表达式（:66-68 注释明确 dimKey 与 error 过滤都来自 rollupDimQueries 同一拼接口径），停写后两侧看到同一批 session 臂行 ⇒ 不会把 rollup 刚写的键误判成悬空键删掉；② 这三条唯一要清理的是 v1 侧累加器（internal/quality/minute_aggregator.go 读 _request_logs_hot，已单列）的键，而累加器在停写后停产 ⇒ 扫描窗内根本没有键可删，恒删 0 行；③ 视图继续供行，守卫继续保护这些行。用到的列里 request_status/ts/tenant_id/canonical_id/error_kind/outbound_model 六项是 815 视图 session 臂的 `t.*` 直映；`gw_task_id` 与 `api_key_prefix` 本文件**零命中**；仅 provider_id/client_profile/client_model 骑 details 层且只参与等值匹配。错误通道未被吞（fmt.Errorf 包装上抛 ⇒ 外层 slog.Warn）。",
 	},
-	// admin/data_lifecycle_blobs.go 于 2026-10-13（S4 波 4）出列：会话臂治理。
+	"admin/data_lifecycle_blobs.go": {
+		Effect:   effectUnaffected,
+		Evidence: "COALESCE(pg_column_size(rb.request_body), 0),",
+		Note:     "两个读点（:99/:220）都是 710 视图 LEFT JOIN bodies，但消费的两列是 `pg_column_size(rb.request_body)` 与 `rb.request_body IS NOT NULL` —— **体量不是内容**。端点语义是「**存量**正文占多少字节、清理能省多少」，停写后新正文本就不再产生，所以「数字停在存量值」是如实反映而非应变化却没变化的指标冻结。查询错误未被吞（:113-117 与 :228-232 都 writeInternalErr → 500）。bodies 族判 unaffected 需具名豁免，已在 bodiesUnaffectedJustification 登记；本轮独立复核该豁免成立（剥注释后两处 bodies 引用确实只有 pg_column_size / IS NOT NULL，:249-255 的 UPDATE 与 :263 的 VACUUM 都不是读点）。",
+	},
 	"admin/telemetry.go": {
 		Effect:   effectUnaffected,
 		Evidence: "SELECT $1, rl.ts, $2::jsonb, $3::jsonb",
-		Note:     "机制是「读点在写门内 ⇒ 读点根本不发生」。剥注释后本文件的 request_logs 引用只剩 6 处，其中唯一的**内容读**是 :571-579 `SELECT $1, rl.ts, $2::jsonb, $3::jsonb FROM request_logs_hot rl WHERE rl.request_id = $1`（回填 bodies 的 ts），它只被 upsertRequestLogBodies(:560) 调用，而唯一调用点是 :534。**本轮用括号配平独立验证了门的作用域**：`if requestLogsWriteEnabled() {` 起于 :454，到 :540 仍未闭合 ⇒ :463 的 INSERT INTO request_logs_hot、:534 的 bodies 写入、:571-579 的读全部在门内；:391 的 t.mirrorRequestBodies(e) 同理。requestLogsWriteEnabled()(:371) 读 settings.RequestLogsWriteEnabled()，与 S4 键同源。错误路径 :536-540 只 slog.Warn + return，但停写时这条路不执行。bodies 族豁免已在 bodiesUnaffectedJustification 登记。",
+		Note:     "机制是「读点在写门内 ⇒ 读点根本不发生」。剥注释后本文件的 _request_logs 引用只剩 6 处，其中唯一的**内容读**是 :571-579 `SELECT $1, rl.ts, $2::jsonb, $3::jsonb FROM _request_logs_hot rl WHERE rl.request_id = $1`（回填 bodies 的 ts），它只被 upsertRequestLogBodies(:560) 调用，而唯一调用点是 :534。**本轮用括号配平独立验证了门的作用域**：`if requestLogsWriteEnabled() {` 起于 :454，到 :540 仍未闭合 ⇒ :463 的 INSERT INTO _request_logs_hot、:534 的 bodies 写入、:571-579 的读全部在门内；:391 的 t.mirrorRequestBodies(e) 同理。requestLogsWriteEnabled()(:371) 读 settings.RequestLogsWriteEnabled()，与 S4 键同源。错误路径 :536-540 只 slog.Warn + return，但停写时这条路不执行。bodies 族豁免已在 bodiesUnaffectedJustification 登记。",
 	},
 	"admin/no_topic_session.go": {
 		Effect:   effectSilentlyDegradedContent,
@@ -369,12 +399,12 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	"cmd/tools/backfill_session_bodies/main.go": {
 		Effect:   effectSilentlyEmpty,
 		Evidence: "SELECT request_id, tenant_id, ts",
-		Note:     "两个读点：:61-65 Step1 `SELECT request_id, tenant_id, ts ... FROM request_logs`（**直读 v1 物理母表**，非视图，无 session 臂）、:96 Step2 bodies 点查（request_logs_bodies 或 _hot，:88-91 动态拼名）。停写后 Step1 对**新会话恒 0 行** ⇒ turnRows 空 ⇒ 逐轮 Step2 不执行 ⇒ :145-146 打印 `turns=0 bodies=0` 并 **exit 0**，无任何错误信号 ⇒ 运维看到的是「跑完了」。而 Step2 对存量行仍命中、缺行则 log.Fatalf 硬失败——那是 Step2 的 errors_out 形态，但决定整条工具表现的是 Step1 的静默空。判 empty 而非 unaffected：它虽由人工触发、目标人群本就是 V2 之前的历史会话（那些行停写后仍在），但**对新会话它会静默欠回填**（得到 0 轮而不是从 session 族取数），且 exit 0 让这一点不可见。",
+		Note:     "两个读点：:61-65 Step1 `SELECT request_id, tenant_id, ts ... FROM _request_logs`（**直读 v1 物理母表**，非视图，无 session 臂）、:96 Step2 bodies 点查（_request_logs_bodies 或 _hot，:88-91 动态拼名）。停写后 Step1 对**新会话恒 0 行** ⇒ turnRows 空 ⇒ 逐轮 Step2 不执行 ⇒ :145-146 打印 `turns=0 bodies=0` 并 **exit 0**，无任何错误信号 ⇒ 运维看到的是「跑完了」。而 Step2 对存量行仍命中、缺行则 log.Fatalf 硬失败——那是 Step2 的 errors_out 形态，但决定整条工具表现的是 Step1 的静默空。判 empty 而非 unaffected：它虽由人工触发、目标人群本就是 V2 之前的历史会话（那些行停写后仍在），但**对新会话它会静默欠回填**（得到 0 轮而不是从 session 族取数），且 exit 0 让这一点不可见。",
 	},
 	"domains/sessionforensics/export.go": {
 		Effect:   effectSilentlyDegradedContent,
 		Evidence: "COALESCE(rb.request_body, '{}'::jsonb) AS request_body,",
-		Note:     "三个读点：:51-52（forensicsExportMessagesSQL，710 + LEFT JOIN bodies）、:71-72（…SQLAlt，同形）、:416（`FROM request_logs` 直读物理母表，ListRecentSessions）。**产出形态正是本文件 :203-205 注释自己判定「比导出失败危险得多」的那种**：710 的 session 臂保证新会话仍有行、turn 编号连续、跳行会 :206 上抛（所以不触发），但正文因 bodies 无 session 臂被 COALESCE 成字面量 \"{}\"；而 `respBody != nil && *respBody != \"\"` 成立 ⇒ `msg.Content = \"{}\"` ⇒ 产出一份**结构自洽、逐轮齐全、正文全空**的证据包。第三个读点另属 silently_frozen（`GROUP BY gw_session_id` + `ORDER BY latest_at DESC LIMIT $2`，:418-420，无时间下界 ⇒ 最新会话集合永久停在停写前一刻），按「取最危险一档」记 degraded 并把 frozen 形态写在这里。错误不吞：:206/:244 上抛，:266-268 空消息且无摘要才回 ErrSessionNotFound。",
+		Note:     "三个读点：:51-52（forensicsExportMessagesSQL，710 + LEFT JOIN bodies）、:71-72（…SQLAlt，同形）、:416（`FROM _request_logs` 直读物理母表，ListRecentSessions）。**产出形态正是本文件 :203-205 注释自己判定「比导出失败危险得多」的那种**：710 的 session 臂保证新会话仍有行、turn 编号连续、跳行会 :206 上抛（所以不触发），但正文因 bodies 无 session 臂被 COALESCE 成字面量 \"{}\"；而 `respBody != nil && *respBody != \"\"` 成立 ⇒ `msg.Content = \"{}\"` ⇒ 产出一份**结构自洽、逐轮齐全、正文全空**的证据包。第三个读点另属 silently_frozen（`GROUP BY gw_session_id` + `ORDER BY latest_at DESC LIMIT $2`，:418-420，无时间下界 ⇒ 最新会话集合永久停在停写前一刻），按「取最危险一档」记 degraded 并把 frozen 形态写在这里。错误不吞：:206/:244 上抛，:266-268 空消息且无摘要才回 ErrSessionNotFound。",
 	},
 	"admin/session_analytics_breakdown.go": {
 		Effect:   effectSilentlyDegradedContent,
@@ -399,18 +429,18 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	"admin/diagnostics_credential.go": {
 		Effect:   effectSilentlyEmpty,
 		Evidence: "AND ts > now() - ($2 || ' minutes')::interval",
-		Note:     "读点 :148 `FROM request_logs_hot`（另 JOIN credentials/providers，非本族）。窗口 `ts > now() - ($2 || ' minutes')::interval`，默认 **15 分钟**、上限 1440（:73-78）⇒ 短窗口，停写后一小时内结果集真变空：RecentFailures 保持 :99 初始化的空切片、RecentFailuresCount=0，响应 200、字段齐全。**错误通道被吞**：:153 与 :167 都是 slog.Warn 后 else 跳过 ⇒ 查询失败与查不到行**产生完全相同的响应**。⚠ 控制面边缘（灰度前必须知道）：RecentFailuresCount 是 analyzeDiag(:174) 的 switch 条件（:210/:213/:216 判 >=5 / >=3 才建议 force-recover），归零后落到 default「凭据状态正常，无显著异常」⇒ 停写会把**真的坏了的凭据**读成正常并**收回**恢复建议。force-recover(:227+) 本身不读 request_logs、由人独立点 POST，所以不是自动授权写入，本表控制面轴仍判 not_control_plane。",
+		Note:     "读点 :148 `FROM _request_logs_hot`（另 JOIN credentials/providers，非本族）。窗口 `ts > now() - ($2 || ' minutes')::interval`，默认 **15 分钟**、上限 1440（:73-78）⇒ 短窗口，停写后一小时内结果集真变空：RecentFailures 保持 :99 初始化的空切片、RecentFailuresCount=0，响应 200、字段齐全。**错误通道被吞**：:153 与 :167 都是 slog.Warn 后 else 跳过 ⇒ 查询失败与查不到行**产生完全相同的响应**。⚠ 控制面边缘（灰度前必须知道）：RecentFailuresCount 是 analyzeDiag(:174) 的 switch 条件（:210/:213/:216 判 >=5 / >=3 才建议 force-recover），归零后落到 default「凭据状态正常，无显著异常」⇒ 停写会把**真的坏了的凭据**读成正常并**收回**恢复建议。force-recover(:227+) 本身不读 _request_logs、由人独立点 POST，所以不是自动授权写入，本表控制面轴仍判 not_control_plane。",
 	},
 	"admin/request_trace.go": {
 		Effect:   effectSilentlyEmpty,
-		Evidence: "FROM request_logs_hot WHERE request_id = $1",
-		Note:     "三条 SQL 共 6 处表引用（每条都是 `request_logs_hot UNION ALL request_logs` 双腿点查，无时间窗）：:190/:192 requestTraceState、:306/:311 fetchRequestSummary（12 列元信息）、:602/:604 origin 判定。**三腿里两腿是静默的，故整档取 silently_empty 而不是 errors_out**。① :306/:311 是决定性的一条：`row.Scan` 任何失败都 `return requestSummary{RequestID: requestID}`（:322-325，注释写「没找到就返回半填充」）⇒ 消费方 handleAIPrompt(:255/:257) 照常 **200**；而 buildAIPrompt(:390-407) 每段都是 `if s.X != \"\"` 卫语句 ⇒ 空值被**静默整行省略、无任何标注**（注释声称的「prompt 中标注」与实现不符）⇒ 产出一份看起来完整、实则缺模型/状态/耗时/provider/credential/错误信息的故障分析提示词。② :602/:604 显式 `_ = ...Scan(&chosen)` 丢错，静默回落 origin=\"direct\"。③ :190/:192 那腿反而是响亮的：trace_events 是 v1 独有（internal/trace/trace.go 的同族读点已单列 errors_out），停写后 PG 腿 0 行 ⇒ handleTrace 显式 **404**。探针请求另有 node_probe_runs 合成路径（:173-177）不受影响。",
+		Evidence: "FROM _request_logs_hot WHERE request_id = $1",
+		Note:     "三条 SQL 共 6 处表引用（每条都是 `_request_logs_hot UNION ALL _request_logs` 双腿点查，无时间窗）：:190/:192 requestTraceState、:306/:311 fetchRequestSummary（12 列元信息）、:602/:604 origin 判定。**三腿里两腿是静默的，故整档取 silently_empty 而不是 errors_out**。① :306/:311 是决定性的一条：`row.Scan` 任何失败都 `return requestSummary{RequestID: requestID}`（:322-325，注释写「没找到就返回半填充」）⇒ 消费方 handleAIPrompt(:255/:257) 照常 **200**；而 buildAIPrompt(:390-407) 每段都是 `if s.X != \"\"` 卫语句 ⇒ 空值被**静默整行省略、无任何标注**（注释声称的「prompt 中标注」与实现不符）⇒ 产出一份看起来完整、实则缺模型/状态/耗时/provider/credential/错误信息的故障分析提示词。② :602/:604 显式 `_ = ...Scan(&chosen)` 丢错，静默回落 origin=\"direct\"。③ :190/:192 那腿反而是响亮的：trace_events 是 v1 独有（internal/trace/trace.go 的同族读点已单列 errors_out），停写后 PG 腿 0 行 ⇒ handleTrace 显式 **404**。探针请求另有 node_probe_runs 合成路径（:173-177）不受影响。",
 	},
 	"admin/swim_lane_init.go": {
-		// 2026-10-13 S3 波 2：FROM request_logs_hot rl → canonical 视图 rl。
+		// 2026-10-13 S3 波 2：FROM _request_logs_hot rl → canonical 视图 rl。
 		Effect:   effectSilentlyDegradedContent,
 		Evidence: "FROM request_logs_with_current_month rl",
-		Note:     "读点 :103 `FROM request_logs_hot rl`（LEFT JOIN models_canonical/model_families/credentials/providers，非本族）。窗口 `since = time.Now().Add(-hours)`，hours 默认 **1**、上限 24（:54-58）⇒ 最短窗口，停写后 requests 为 nil、stats 的三个计数器为 0、三个 map 为 `{}`，而响应是 `json.NewEncoder(w).Encode(resp)` **未设状态码 ⇒ 恒 200**，字段齐全。错误通道未被吞（Query err → return → writeInternalTextErr :113-116/:63-66）；Scan 失败 continue（:143-145）会静默丢行但不影响本档判定。窗口 1~24h。2026-10-13 S3 波 2 改读视图后 session 臂继续供数（empty 判定解除）；vendor 列的 client_model 在缺 details 行的会话轮上为空，回退 mf.vendor/'unknown' ⇒ 内容级降级而非断流。",
+		Note:     "读点 :103 `FROM _request_logs_hot rl`（LEFT JOIN models_canonical/model_families/credentials/providers，非本族）。窗口 `since = time.Now().Add(-hours)`，hours 默认 **1**、上限 24（:54-58）⇒ 最短窗口，停写后 requests 为 nil、stats 的三个计数器为 0、三个 map 为 `{}`，而响应是 `json.NewEncoder(w).Encode(resp)` **未设状态码 ⇒ 恒 200**，字段齐全。错误通道未被吞（Query err → return → writeInternalTextErr :113-116/:63-66）；Scan 失败 continue（:143-145）会静默丢行但不影响本档判定。窗口 1~24h。2026-10-13 S3 波 2 改读视图后 session 臂继续供数（empty 判定解除）；vendor 列的 client_model 在缺 details 行的会话轮上为空，回退 mf.vendor/'unknown' ⇒ 内容级降级而非断流。",
 	},
 	"bg/auto_route_settle_sql.go": {
 		Effect:   effectSilentlyDegradedAggregate,
@@ -425,7 +455,7 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 			"让这三道门认识间接读点；**不是**加注释让扫描器看见（那是伪造测量）。\n\n" +
 			"**当前读法**：settleBaselinesSQL(:32，基线 cohort) 与 settlePendingSQL(:57，" +
 			"outcome join :73 + LATERAL :80) 两条，关系名都是 src.TurnsTable；src 由 " +
-			"`settleSourceFor(logsWriteEnabled)` 决定：写门开 ⇒ request_logs_hot，闸 ⇒ " +
+			"`settleSourceFor(logsWriteEnabled)` 决定：写门开 ⇒ _request_logs_hot，闸 ⇒ " +
 			"session_turns_hot。调用点 loadTaskBaselines(:369) / settleBatch(:535) 仍在 " +
 			"bg/auto_route_settle_worker.go。\n\n" +
 			"**停写后（闸关）的实测后果，§9.44**：outcome join 仍命中（会话臂对 selection " +
@@ -457,11 +487,11 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 			"  同包 `bg/probe_policy.go` 已有两条具名探针谓词（本文件与它同包却一条没用），\n" +
 			"  但两条都要 `quality_flags`，而 `session_turns_hot` 实测 104 列里**没有该列**\n" +
 			"  ⇒ 对会话族分支会 42703，必须分族分叉。**该修正本轮裁决为「分族修」，尚未实施。**\n\n" +
-			"**⚠⚠ §9.77（2026-10-03，252 实测，独立于档位的新证据）**：`request_logs_hot` " +
+			"**⚠⚠ §9.77（2026-10-03，252 实测，独立于档位的新证据）**：`_request_logs_hot` " +
 			"是**暂存表**（全部写入方的 INSERT 目标），后台 promoter 每 8 小时把超过 8 小时的行" +
 			"**移动**到分区父表（`promote_request_logs_hot_to_partition` DELETE 源行）。" +
 			"而本读点的 `settleBaselinesSQL` 窗口是 `baselineWindow = 24h`、数据源只有 " +
-			"`request_logs_hot` ⇒ **它问 24 小时的 p95/p75，表里最多只有 8 小时**。" +
+			"`_request_logs_hot` ⇒ **它问 24 小时的 p95/p75，表里最多只有 8 小时**。" +
 			"24h 窗口实测：完整总体（hot ∪ parent）**13,452** 行，只读 hot **4,665** 行 = " +
 			"**34.7%，缺 65.3%**。\n" +
 			"  ⇒ **§9.74 那次加探针谓词只解决了「总体选错」，没解决「总体被欠采样」**；" +
@@ -471,18 +501,18 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	"bg/ledger_reconciliation.go": {
 		Effect:   effectUnaffected,
-		Evidence: "FROM request_logs_hot",
-		Note:     "机制是「读点在门内 ⇒ 根本不发生」。读点 :345 在 usageCreditSQL() 的 usage CTE 里，`FROM request_logs_hot` FULL OUTER JOIN credit_ledger_hot。**但它在到达 SQL 之前就被短路**：checkUsageCredit(:377) 首行 `if ok, reason := usageCreditComparability(settings.RequestLogsWriteEnabled()); !ok { r.markSkipped(reason); slog.Info(...); return 0 }`，而 `usageCreditComparability(:327-332)` 在 !logsWriteEnabled 时返回 `(false, usageCreditSkipS4StopWrite)` ⇒ **查询一次都不发**。:317-324 的注释正是这个自我修复的记录（「继续比对会把停写本身记成账务差异」）。**观测性缺口已闭合（§9.38）**：本条此前记的「SkippedChecks() 只有测试消费者、没有 metric/告警」已修——RunOnce 末尾 `defer recordS4ScanSkipState(...)` 把 skip 列表发布为 `llm_gateway_bg_s4_scan_skipped_last_run{worker,reason}`（1=本轮未执行），由 `deploy/prometheus/rules/s4-scan-skip.yml` 的 `BgS4ScanSkipped`（for: 10m）消费；另有 `BgS4ScanStalled` 用 last_run_unix 区分「被门控跳过」与「worker 卡死」。停写期间只看 findings 计数仍会显示「账务无差异」，但**现在有一条会响的告警说这句话本身不成立**。",
+		Evidence: "FROM _request_logs_hot",
+		Note:     "机制是「读点在门内 ⇒ 根本不发生」。读点 :345 在 usageCreditSQL() 的 usage CTE 里，`FROM _request_logs_hot` FULL OUTER JOIN credit_ledger_hot。**但它在到达 SQL 之前就被短路**：checkUsageCredit(:377) 首行 `if ok, reason := usageCreditComparability(settings.RequestLogsWriteEnabled()); !ok { r.markSkipped(reason); slog.Info(...); return 0 }`，而 `usageCreditComparability(:327-332)` 在 !logsWriteEnabled 时返回 `(false, usageCreditSkipS4StopWrite)` ⇒ **查询一次都不发**。:317-324 的注释正是这个自我修复的记录（「继续比对会把停写本身记成账务差异」）。**观测性缺口已闭合（§9.38）**：本条此前记的「SkippedChecks() 只有测试消费者、没有 metric/告警」已修——RunOnce 末尾 `defer recordS4ScanSkipState(...)` 把 skip 列表发布为 `llm_gateway_bg_s4_scan_skipped_last_run{worker,reason}`（1=本轮未执行），由 `deploy/prometheus/rules/s4-scan-skip.yml` 的 `BgS4ScanSkipped`（for: 10m）消费；另有 `BgS4ScanStalled` 用 last_run_unix 区分「被门控跳过」与「worker 卡死」。停写期间只看 findings 计数仍会显示「账务无差异」，但**现在有一条会响的告警说这句话本身不成立**。",
 	},
 	"bg/today_success_probe.go": {
 		Effect:   effectSilentlyEmpty,
-		Evidence: "FROM request_logs_hot rl",
-		Note:     "**控制面：读点输出直接决定是否发起探针提交。** 读点 :147 `FROM request_logs_hot rl`（JOIN credential_model_bindings/provider_models，LEFT JOIN node_probe_state），窗口 `rl.ts >= now() - interval '24 hours' AND rl.success = TRUE`，lookback = todaySuccessProbeLookback(:16) 24h、tick 15min(:15)。停写后 24h 内 used CTE 空 ⇒ 0 对 ⇒ `SubmitWithSource(credID, model, \"default\", \"today-success-probe\", \"selfcheck\")`(:126) **一次都不再被调用** ⇒ 被判 unhealthy 的 (credential, model) 永远拿不到复验探针 ⇒ **凭据自恢复闭环静默停止**。错误通道被吞：Query 失败是 slog.Warn + return(:110-112)，且与「0 对」在外部观察上同形（都只留一行 `slog.Info(\"today success probe queued\", \"pairs\", 0)`）⇒ 连「扫描在空跑」都看不出来。与 bg/credential_selfcheck.go 同族闭环。",
+		Evidence: "FROM _request_logs_hot rl",
+		Note:     "**控制面：读点输出直接决定是否发起探针提交。** 读点 :147 `FROM _request_logs_hot rl`（JOIN credential_model_bindings/provider_models，LEFT JOIN node_probe_state），窗口 `rl.ts >= now() - interval '24 hours' AND rl.success = TRUE`，lookback = todaySuccessProbeLookback(:16) 24h、tick 15min(:15)。停写后 24h 内 used CTE 空 ⇒ 0 对 ⇒ `SubmitWithSource(credID, model, \"default\", \"today-success-probe\", \"selfcheck\")`(:126) **一次都不再被调用** ⇒ 被判 unhealthy 的 (credential, model) 永远拿不到复验探针 ⇒ **凭据自恢复闭环静默停止**。错误通道被吞：Query 失败是 slog.Warn + return(:110-112)，且与「0 对」在外部观察上同形（都只留一行 `slog.Info(\"today success probe queued\", \"pairs\", 0)`）⇒ 连「扫描在空跑」都看不出来。与 bg/credential_selfcheck.go 同族闭环。",
 	},
 	"cmd/gateway/output_compliance_control.go": {
 		Effect:   effectSilentlyFrozen,
 		Evidence: "WHERE gw_session_id = sd.gw_session_id",
-		Note:     "**本批唯一带安全语义的一条。** 读点 :84 `FROM request_logs`，作为 LEFT JOIN LATERAL 挂在 `FROM session_dim sd` 上，取 api_key_owner_user（callerOwner），无任何时间窗、只有 `ORDER BY ts DESC LIMIT 1` ⇒ 对**任何停写前有流量的会话**，返回值永久钉在停写前那一行、caller 身份不再变化（不像 7 天窗会自己排空，这里不会）。消费链：lookupOwners → (callerOwner, dataOwner) → makeRedactOwnerLookup（写时脱敏）与输出合规 interceptor → outputcompliance.ShouldRedact(mode, callerOwner, dataOwner)。**反向方向是 fail-closed（安全）**：new-session ⇒ 0 行 ⇒ caller 为 NULL/空，OwnerAllowsSensitive 对空 caller 返 false（domains/outputcompliance/owner.go:36-43）⇒ owner_mismatch 模式下**过度脱敏**，与 :72-73 注释一致。**真正的风险是冻结**：会话的 api key 归属若变更，owner-mismatch 判定会永远沿用旧身份；且 `row.Scan` 错误与 NULL 行走同一条 `return \"\",\"\"`（:95-98）⇒ **错误通道被合并、无任何区分**。判 frozen 而非 empty（点查无窗、存量永久命中）。是否 live 受 getRedactionMode() 的线上取值影响：只有 owner_mismatch 模式受影响，off/always 不受影响。",
+		Note:     "**本批唯一带安全语义的一条。** 读点 :84 `FROM _request_logs`，作为 LEFT JOIN LATERAL 挂在 `FROM session_dim sd` 上，取 api_key_owner_user（callerOwner），无任何时间窗、只有 `ORDER BY ts DESC LIMIT 1` ⇒ 对**任何停写前有流量的会话**，返回值永久钉在停写前那一行、caller 身份不再变化（不像 7 天窗会自己排空，这里不会）。消费链：lookupOwners → (callerOwner, dataOwner) → makeRedactOwnerLookup（写时脱敏）与输出合规 interceptor → outputcompliance.ShouldRedact(mode, callerOwner, dataOwner)。**反向方向是 fail-closed（安全）**：new-session ⇒ 0 行 ⇒ caller 为 NULL/空，OwnerAllowsSensitive 对空 caller 返 false（domains/outputcompliance/owner.go:36-43）⇒ owner_mismatch 模式下**过度脱敏**，与 :72-73 注释一致。**真正的风险是冻结**：会话的 api key 归属若变更，owner-mismatch 判定会永远沿用旧身份；且 `row.Scan` 错误与 NULL 行走同一条 `return \"\",\"\"`（:95-98）⇒ **错误通道被合并、无任何区分**。判 frozen 而非 empty（点查无窗、存量永久命中）。是否 live 受 getRedactionMode() 的线上取值影响：只有 owner_mismatch 模式受影响，off/always 不受影响。",
 	},
 	// ── batch7：2026-10-02 §9.36 续 batch6（11 条）──────────────────────────
 	//
@@ -512,7 +542,7 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	"bg/candidate_failure_monitor.go": {
 		Effect:   effectUnaffected,
 		Evidence: "FROM request_logs_with_current_month",
-		Note:     "两个 request_logs 读点：:206 staleness 判据的 lastRequest（`SELECT max(ts) FROM request_logs_with_current_month WHERE ts >= now() - interval '5 minutes'`）、:333 auto-cool 的 win CTE（`WHERE ts >= now() - interval '5 minutes' AND credential_id IS NOT NULL GROUP BY credential_id`）。**判 unaffected 的理由是「流量由未挂 S4 写门的 session 臂持续供给 + 谓词不依赖补位列」**，见 nullPaddedUnaffectedJustification 的具名论证。5 分钟窗口本应倾向 empty，但**empty 的前提（没有新行）不成立**——session 臂照写 ⇒ 窗口内恒有新行，这正是这两个读点的用途。补位列核查：request_logs 读点的行级谓词只有 `ts` 与 `credential_id`（直映非补位）；族标记命中的 provider_id(:256/:267) **全部落在 candidate_failure_logs_with_current_month 腿**（不是 request_logs 族）且只在投影与 GROUP BY。⚠ 同 live_stream_sse：族把本文件分到 null_padded 是因为 `id`（:397 `WHERE id = $2`），那不是 710 视图的列 ⇒ **族误触发**。错误通道两处都是 `if err != nil { return err }`（:207/:353）上抛，不存在吞错转静默。下游表现：failureLogIsStale(:241-243) 在 lastRequest==nil 时 return false 不告警，但 lastRequest 不会为 nil；auto-cool 继续按真实失败率翻 cooling。",
+		Note:     "两个 _request_logs 读点：:206 staleness 判据的 lastRequest（`SELECT max(ts) FROM request_logs_with_current_month WHERE ts >= now() - interval '5 minutes'`）、:333 auto-cool 的 win CTE（`WHERE ts >= now() - interval '5 minutes' AND credential_id IS NOT NULL GROUP BY credential_id`）。**判 unaffected 的理由是「流量由未挂 S4 写门的 session 臂持续供给 + 谓词不依赖补位列」**，见 nullPaddedUnaffectedJustification 的具名论证。5 分钟窗口本应倾向 empty，但**empty 的前提（没有新行）不成立**——session 臂照写 ⇒ 窗口内恒有新行，这正是这两个读点的用途。补位列核查：_request_logs 读点的行级谓词只有 `ts` 与 `credential_id`（直映非补位）；族标记命中的 provider_id(:256/:267) **全部落在 candidate_failure_logs_with_current_month 腿**（不是 _request_logs 族）且只在投影与 GROUP BY。⚠ 同 live_stream_sse：族把本文件分到 null_padded 是因为 `id`（:397 `WHERE id = $2`），那不是 710 视图的列 ⇒ **族误触发**。错误通道两处都是 `if err != nil { return err }`（:207/:353）上抛，不存在吞错转静默。下游表现：failureLogIsStale(:241-243) 在 lastRequest==nil 时 return false 不告警，但 lastRequest 不会为 nil；auto-cool 继续按真实失败率翻 cooling。",
 	},
 	"bg/shared_pick.go": {
 		Effect:   effectSilentlyEmpty,
@@ -522,15 +552,15 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	"admin/credential_success_rate.go": {
 		Effect:   effectSilentlyEmpty,
 		Evidence: "CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50, 3)",
-		Note:     "**失效源是 recent_success_rate() 这个 SQL 函数**——本轮已在真库核过线上生效版本的定义：它直读 `FROM request_logs_hot`，窗口 `ts > NOW() - (p_window_hours || ' hours')::interval`，调用处传 3（:59/:183 的 `CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50, 3)`），另排除 probe/self-check 行。停写后 3 小时窗口滑过停写时刻 ⇒ 恒 0 行 ⇒ 函数返回 `AVG(...)::float8 = NULL` 与 `COUNT(*)::int = 0`。**消费方把零读成「正常」**：RecentRate=nil、RecentSamples=0、**BelowThreshold = (0 >= 20 AND …) = false** ⇒ 每个凭据都显示「低于阈值=false / 正常」，接口 200、字段齐全、数值为零/null ⇒ 典型静默变空（数值全零的 healthy 信号）。3 小时极短 ⇒ empty 不是 frozen。:47 的 oldest_request_time 子查询（`SELECT MIN(ts) ... WHERE rl.credential_id=c.id AND lower(COALESCE(rl.outbound_model, rl.client_model))=mo.canonical_raw_name AND rl.ts > NOW() - INTERVAL '3 hours'`）会变 NULL（omitempty ⇒ 字段消失）但外层行集由 `FROM model_offers mo JOIN credentials c` 决定、与 request_logs 无关，且错误上抛（:63/:83/:95/:186 → 500），不构成静默 ⇒ 由 recent_success_rate 主导。⚠ :116 的 `DELETE FROM request_logs_hot` 是写操作不是读点。补位列核查：client_model 只作 COALESCE 兜底且首位是直映的 outbound_model。",
+		Note:     "**失效源是 recent_success_rate() 这个 SQL 函数**——本轮已在真库核过线上生效版本的定义：它直读 `FROM _request_logs_hot`，窗口 `ts > NOW() - (p_window_hours || ' hours')::interval`，调用处传 3（:59/:183 的 `CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50, 3)`），另排除 probe/self-check 行。停写后 3 小时窗口滑过停写时刻 ⇒ 恒 0 行 ⇒ 函数返回 `AVG(...)::float8 = NULL` 与 `COUNT(*)::int = 0`。**消费方把零读成「正常」**：RecentRate=nil、RecentSamples=0、**BelowThreshold = (0 >= 20 AND …) = false** ⇒ 每个凭据都显示「低于阈值=false / 正常」，接口 200、字段齐全、数值为零/null ⇒ 典型静默变空（数值全零的 healthy 信号）。3 小时极短 ⇒ empty 不是 frozen。:47 的 oldest_request_time 子查询（`SELECT MIN(ts) ... WHERE rl.credential_id=c.id AND lower(COALESCE(rl.outbound_model, rl.client_model))=mo.canonical_raw_name AND rl.ts > NOW() - INTERVAL '3 hours'`）会变 NULL（omitempty ⇒ 字段消失）但外层行集由 `FROM model_offers mo JOIN credentials c` 决定、与 _request_logs 无关，且错误上抛（:63/:83/:95/:186 → 500），不构成静默 ⇒ 由 recent_success_rate 主导。⚠ :116 的 `DELETE FROM _request_logs_hot` 是写操作不是读点。补位列核查：client_model 只作 COALESCE 兜底且首位是直映的 outbound_model。",
 	},
 	"admin/provider_models.go": {
-		// 2026-10-13 S3 波 2：count 腿 FROM request_logs（裸母表，漏 hot+
+		// 2026-10-13 S3 波 2：count 腿 FROM _request_logs（裸母表，漏 hot+
 		// session 双料）→ canonical 视图，与 data 腿同源；provider_id 在 734
 		// details 层覆盖 99.9996%（真库实测，见 model_status 条），计数恢复。
 		Effect:   effectUnaffected,
 		Evidence: "SELECT COUNT(*) FROM request_logs_with_current_month rl WHERE %s",
-		Note:     "两个读点共用同一个 where 构造（:402 `conditions := []string{\"rl.provider_id = $1\"}` 恒在），**provider_id 是 710 的补位列** ⇒ 视图腿（:456 `FROM request_logs_with_current_month rl WHERE %s ORDER BY rl.ts DESC`）的 session 臂行被恒在谓词全部滤掉，只剩 v1 存量行；基表腿（:443 `SELECT COUNT(*) FROM request_logs rl WHERE %s`，**直读物理母表**）同样只剩存量。停写后 v1 不再增长 ⇒ **结果冻结为停写前的存量**，不是变空（provider_id 在 v1 行上有真实值、存量行持续可查）。默认无时间下界（filter.FromTS/ToTS 可选，不传则全量）⇒ 长窗口 ⇒ **frozen 而非 empty**。错误通道进一步放大不可见性：:444-447 `if err != nil { slog.Warn(\"providerLogs count failed\"); total = 0 }` ⇒ **计数失败直接降级为 0、仅 Warn、仍返回 200**；:456 明细腿的 rows.Err() 走 writeAggRowsErr 会 500。补位列核查：client_model(:412 `rl.client_model ILIKE $N OR rl.outbound_model ILIKE $N`) 仅当用户传了 filter.Model 才追加，且 OR 右侧 outbound_model 是直映列、session 臂有值 ⇒ 不恒 0 行。2026-10-13 S3 波 2 起 count/data 同源视图，停写后 session 臂继续供数（provider_id 走 details 层）。",
+		Note:     "两个读点共用同一个 where 构造（:402 `conditions := []string{\"rl.provider_id = $1\"}` 恒在），**provider_id 是 710 的补位列** ⇒ 视图腿（:456 `FROM request_logs_with_current_month rl WHERE %s ORDER BY rl.ts DESC`）的 session 臂行被恒在谓词全部滤掉，只剩 v1 存量行；基表腿（:443 `SELECT COUNT(*) FROM _request_logs rl WHERE %s`，**直读物理母表**）同样只剩存量。停写后 v1 不再增长 ⇒ **结果冻结为停写前的存量**，不是变空（provider_id 在 v1 行上有真实值、存量行持续可查）。默认无时间下界（filter.FromTS/ToTS 可选，不传则全量）⇒ 长窗口 ⇒ **frozen 而非 empty**。错误通道进一步放大不可见性：:444-447 `if err != nil { slog.Warn(\"providerLogs count failed\"); total = 0 }` ⇒ **计数失败直接降级为 0、仅 Warn、仍返回 200**；:456 明细腿的 rows.Err() 走 writeAggRowsErr 会 500。补位列核查：client_model(:412 `rl.client_model ILIKE $N OR rl.outbound_model ILIKE $N`) 仅当用户传了 filter.Model 才追加，且 OR 右侧 outbound_model 是直映列、session 臂有值 ⇒ 不恒 0 行。2026-10-13 S3 波 2 起 count/data 同源视图，停写后 session 臂继续供数（provider_id 走 details 层）。",
 	},
 	"admin/tenants.go": {
 		// 2026-10-13 S3 波 3 改判：empty → degraded_aggregate。logsTable 补两条
@@ -544,7 +574,7 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	"admin/usage_trend_series.go": {
 		Effect:   effectSilentlyEmpty,
 		Evidence: "FROM request_logs_with_current_month_without_customer_id r",
-		Note:     "**本条的关键是「该视图没有 session 臂」，本轮用 pg_get_viewdef 逐字确认过**：`request_logs_with_current_month_without_customer_id` 的真库定义是纯 `request_logs_hot UNION ALL request_logs`（118 列全量），**不含任何 session 分支**，与顶层 `request_logs_with_current_month`（session ∪ v1 反连接）不同。⚠ 记录一次**我自己犯的测法错误**：我一度按 request_id 把该视图的行与 session 族 LEFT JOIN，得出「2,167,015 行里 1,517,608 行来自 session（70%）」并据此差点改判 unaffected——那是**跨存储面按 id 匹配**的假象（该包装视图没有顶层那层反连接，v1 行的 request_id 本来就与 session 行重合）。**这里的正确量具是 pg_get_viewdef，不是按 id 猜来源。** ⇒ 停写后 v1 侧不再增长，两个读点（:354 queryUsageTrendDetail、:538 queryUsageTrendModelsDetail）的趋势序列最新桶不再有新数据、已落盘桶保持原值 ⇒ 无错误信号的停摆。窗口由 boardTimeRange 决定（boardDays 默认 1 天、上限 90，admin/board_time_range.go + dashboard_board.go:180）⇒ **默认 1 天窗很快归零（empty，稳态），7/30/90 天窗则冻结（frozen）**；按取最危险记 empty 并在此记录 frozen 过渡。错误通道上抛（:364/:377/:544/:561），scan 失败 warnRowSkip+continue 跳坏行。补位列：provider_id(:337/:522) 与 client_model(经 usageTrendModelExpr :39) 都在**可选**过滤分支内，恒在谓词只有 `r.request_status IN (...)`（710 派生列、session 臂真值）与 ts 区间 ⇒ 真正的失效源是「没有 session 臂」而非补位谓词。",
+		Note:     "**本条的关键是「该视图没有 session 臂」，本轮用 pg_get_viewdef 逐字确认过**：`request_logs_with_current_month_without_customer_id` 的真库定义是纯 `_request_logs_hot UNION ALL _request_logs`（118 列全量），**不含任何 session 分支**，与顶层 `request_logs_with_current_month`（session ∪ v1 反连接）不同。⚠ 记录一次**我自己犯的测法错误**：我一度按 request_id 把该视图的行与 session 族 LEFT JOIN，得出「2,167,015 行里 1,517,608 行来自 session（70%）」并据此差点改判 unaffected——那是**跨存储面按 id 匹配**的假象（该包装视图没有顶层那层反连接，v1 行的 request_id 本来就与 session 行重合）。**这里的正确量具是 pg_get_viewdef，不是按 id 猜来源。** ⇒ 停写后 v1 侧不再增长，两个读点（:354 queryUsageTrendDetail、:538 queryUsageTrendModelsDetail）的趋势序列最新桶不再有新数据、已落盘桶保持原值 ⇒ 无错误信号的停摆。窗口由 boardTimeRange 决定（boardDays 默认 1 天、上限 90，admin/board_time_range.go + dashboard_board.go:180）⇒ **默认 1 天窗很快归零（empty，稳态），7/30/90 天窗则冻结（frozen）**；按取最危险记 empty 并在此记录 frozen 过渡。错误通道上抛（:364/:377/:544/:561），scan 失败 warnRowSkip+continue 跳坏行。补位列：provider_id(:337/:522) 与 client_model(经 usageTrendModelExpr :39) 都在**可选**过滤分支内，恒在谓词只有 `r.request_status IN (...)`（710 派生列、session 臂真值）与 ts 区间 ⇒ 真正的失效源是「没有 session 臂」而非补位谓词。",
 	},
 	// domains/streaming/model_alternatives.go 于 2026-10-13（S3 波 2 停写切换）
 	// 除名：usage_7d 热面改读会话族原生源（SessionFamilyTurnsSourceSQL），
@@ -557,14 +587,14 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	"admin/probe_history.go": {
 		Effect:   effectSilentlyEmpty,
-		Evidence: "FROM request_logs",
-		Note:     "request_log_failures CTE（6h 窗口、request_status='failure'）是 /routing/recent-model-failures 三个 UNION 臂之一，err 路径 500 但 0 行不报错 ⇒ 停写 6h 后该臂归零，接口仍 200 且 sources.request_logs 字段齐全为 0，看板只剩 active/passive 探针数，真实流量失败从「模型发现」失败徽标里静默消失（单臂空，不是整体空）。",
+		Evidence: "FROM request_logs_with_current_month",
+		Note:     "request_log_failures CTE（6h 窗口、request_status='failure'）是 /routing/recent-model-failures 三个 UNION 臂之一，err 路径 500 但 0 行不报错 ⇒ 停写 6h 后该臂归零，接口仍 200 且 sources._request_logs 字段齐全为 0，看板只剩 active/passive 探针数，真实流量失败从「模型发现」失败徽标里静默消失（单臂空，不是整体空）。",
 	},
 	// admin/routing.go 于 2026-10-13（S3 波 3 停写切换）除名：唯一的 v1 读点
 	// popularModelsHotSQL 改读会话族原生源（SessionFamilyTurnsSourceSQL，
 	// 会话臂持续供数），文件已不在 requestLogsReadInventory，本表只收清单成员。
 	"admin/work_types.go": {
-		// 2026-10-13 S3 波 2：4 个读点 FROM request_logs_hot → canonical 视图，
+		// 2026-10-13 S3 波 2：4 个读点 FROM _request_logs_hot → canonical 视图，
 		// 「指定模型」判据扩为 client→outbound→canonical 回退链（会话臂
 		// client_model 依赖 details 层，无回退臂则非 auto 新流量整类消失）。
 		Effect:   effectSilentlyDegradedAggregate,
@@ -573,38 +603,38 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	"bg/credential_recovery.go": {
 		Effect:   effectSilentlyEmpty,
-		Evidence: "SELECT 1 FROM request_logs_hot rl",
-		Note:     "lookbackCandidateSQL 的双 EXISTS（request_logs_hot ∪ request_logs，36h 成功窗口）是「36h 成功回看恢复」的唯一证据源，scanLookbackRecoveries 里 `if len(candidates) == 0 { return }` 无日志无指标 ⇒ 停写 36h 后候选集静默为空，降级凭据不再被「有成功流量」证据自动拉回 available，只能等探针自身恢复，监控上看不出扫描在空跑。**该文件同时是 §9.10 的写授权缺陷**（陈旧证据持续放行恢复写入），控制面轴判 live 且更严重。",
+		Evidence: "SELECT 1 FROM _request_logs_hot rl",
+		Note:     "lookbackCandidateSQL 的双 EXISTS（_request_logs_hot ∪ _request_logs，36h 成功窗口）是「36h 成功回看恢复」的唯一证据源，scanLookbackRecoveries 里 `if len(candidates) == 0 { return }` 无日志无指标 ⇒ 停写 36h 后候选集静默为空，降级凭据不再被「有成功流量」证据自动拉回 available，只能等探针自身恢复，监控上看不出扫描在空跑。**该文件同时是 §9.10 的写授权缺陷**（陈旧证据持续放行恢复写入），控制面轴判 live 且更严重。",
 	},
 	"bg/lite_retention_worker.go": {
 		Effect:   effectUnaffected,
 		Evidence: "SELECT rowid FROM request_logs WHERE ts < ? LIMIT ?",
-		Note:     "全文件没有对 v1 的流量读点——唯一触到 request_logs 的语句是 SQLite 行级保留期的 DELETE FROM request_logs WHERE rowid IN (...)，且是 lite 模式本地库、与 PG 侧 S4 门控无关；它读的是生命周期（待清理行），停写既不让它报错也不改变它的行为。",
+		Note:     "全文件没有对 v1 的流量读点——唯一触到 _request_logs 的语句是 SQLite 行级保留期的 DELETE FROM request_logs WHERE rowid IN (...)，且是 lite 模式本地库、与 PG 侧 S4 门控无关；它读的是生命周期（待清理行），停写既不让它报错也不改变它的行为。",
 	},
 	"cmd/compression-bench/main.go": {
 		Effect:   effectSilentlyFrozen,
-		Evidence: "FROM request_logs",
-		Note:     "离线 bench CLI 从 FROM request_logs（ts >= NOW() - INTERVAL '1 day' * $1，默认 7 天）取历史行跑 SessionCompressor 基准，样本为空也不 Fatal 只 log.Printf ⇒ 停写后样本集静默冻结为停写前那批流量、基准结论悄悄变成「S4 之前」的口径，窗口完全滚过后打成 0 行仍照常输出空聚合。",
+		Evidence: "FROM _request_logs",
+		Note:     "离线 bench CLI 从 FROM _request_logs（ts >= NOW() - INTERVAL '1 day' * $1，默认 7 天）取历史行跑 SessionCompressor 基准，样本为空也不 Fatal 只 log.Printf ⇒ 停写后样本集静默冻结为停写前那批流量、基准结论悄悄变成「S4 之前」的口径，窗口完全滚过后打成 0 行仍照常输出空聚合。",
 	},
 	"cmd/gateway/waterfall_by_request.go": {
 		Effect:   effectErrorsOut,
-		Evidence: "FROM request_logs_hot",
-		Note:     "单请求 waterfall 落库回查按 request_id = $1 命中 request_logs_hot，pgx.ErrNoRows 被翻译成 (_, false, nil)，调用方 handleDispatchWaterfallByRequest 直接 http.Error(404, ...) ⇒ 内存环之外的请求立刻 404，灰度即可见（可接受失败模式）。",
+		Evidence: "FROM _request_logs_hot",
+		Note:     "单请求 waterfall 落库回查按 request_id = $1 命中 _request_logs_hot，pgx.ErrNoRows 被翻译成 (_, false, nil)，调用方 handleDispatchWaterfallByRequest 直接 http.Error(404, ...) ⇒ 内存环之外的请求立刻 404，灰度即可见（可接受失败模式）。",
 	},
 	"domains/analysis/optimizer.go": {
 		Effect:   effectSilentlyEmpty,
-		Evidence: "SUM(COALESCE(cache_read_tokens,0)) FROM request_logs WHERE gw_session_id = ss.session_key",
-		Note:     "三个相关子查询（cache_read_tokens 求和、compression_strategy 非空计数、outbound_token_est 求和）全部直读裸 request_logs 按 session_key 聚合，外面套 COALESCE(..., 0)，会话统计其余字段来自仍在长的 session_summaries ⇒ 新会话的优化建议里这三项静默为 0，而 request_count/成本照常有值，detect() 规则（如「存在压缩空间」）静默失活、save() 照常写库。",
+		Evidence: "SUM(COALESCE(cache_read_tokens,0)) FROM _request_logs WHERE gw_session_id = ss.session_key",
+		Note:     "三个相关子查询（cache_read_tokens 求和、compression_strategy 非空计数、outbound_token_est 求和）全部直读裸 _request_logs 按 session_key 聚合，外面套 COALESCE(..., 0)，会话统计其余字段来自仍在长的 session_summaries ⇒ 新会话的优化建议里这三项静默为 0，而 request_count/成本照常有值，detect() 规则（如「存在压缩空间」）静默失活、save() 照常写库。",
 	},
 	"domains/streaming/anomaly_harvester.go": {
 		Effect:   effectSilentlyEmpty,
-		Evidence: "FROM request_logs_hot r",
-		Note:     "backfillActualTokensSweep 用 UPDATE response_format_anomalies ... FROM request_logs_hot r 回填 actual_tokens，`n := ct.RowsAffected(); if n > 0` 才打日志 ⇒ 停写后 join 恒 0 行、无错无日志，新异常行的 actual_tokens 永远停在 NULL，response_format 异常的真实 token 口径静默退化为 estimated。",
+		Evidence: "FROM _request_logs_hot r",
+		Note:     "backfillActualTokensSweep 用 UPDATE response_format_anomalies ... FROM _request_logs_hot r 回填 actual_tokens，`n := ct.RowsAffected(); if n > 0` 才打日志 ⇒ 停写后 join 恒 0 行、无错无日志，新异常行的 actual_tokens 永远停在 NULL，response_format 异常的真实 token 口径静默退化为 estimated。",
 	},
 	"storage/sqlite/request_log_store.go": {
 		Effect:   effectUnaffected,
 		Evidence: "FROM request_logs`",
-		Note:     "这是 lite 模式自己的 SQLite request_logs（9 列轻量形态，body 只落 has_body 标记），NewRequestLogStore 在 StorageModeLite 下才被 factory 选中（full 模式走 newPgRequestLogStore），与 PG 侧 S4 门控不是同一条链；读点是 GetRequest/ListRequests，空结果走 storage.ErrNotFound 或非 nil 空切片且错误正常上抛，形态不因停写而变。",
+		Note:     "这是 lite 模式自己的 SQLite request_logs（9 列轻量形态；SQLite 是另一个存储面，不随 PG 侧迁移 860 改名，body 只落 has_body 标记），NewRequestLogStore 在 StorageModeLite 下才被 factory 选中（full 模式走 newPgRequestLogStore），与 PG 侧 S4 门控不是同一条链；读点是 GetRequest/ListRequests，空结果走 storage.ErrNotFound 或非 nil 空切片且错误正常上抛，形态不因停写而变。",
 	},
 	"admin/model_routing_diagnostic.go": {
 		// 2026-10-02 **自我更正**：batch4 判 unaffected，被 null-padded 族门判红。核实 :95-99
@@ -694,7 +724,7 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 		Effect:   effectSilentlyDegradedContent,
 		Evidence: "FROM request_logs_with_current_month `+where+`",
 		Note: "R89-DQ（206 号）**重写了本条的理由**——Effect 不变，但「同一文件取更危险档」这个依据已经不存在了。\n" +
-			"改前两条腿后果不同：handleSessionMessages(:795-796) 读 710 + LEFT JOIN request_logs_bodies_with_current_month，bodies 腿硬失败 ⇒ 仍 200 但 request_body/response_body 变空串（degraded）；handleMemoraContext(:615-616) **直读裸 request_logs**，停写后 requestCount 恒 0 ⇒ 404 task not found（errors_out），文件按「取更危险档」记 degraded_content。\n" +
+			"改前两条腿后果不同：handleSessionMessages(:795-796) 读 710 + LEFT JOIN request_logs_bodies_with_current_month，bodies 腿硬失败 ⇒ 仍 200 但 request_body/response_body 变空串（degraded）；handleMemoraContext(:615-616) **直读裸 _request_logs**，停写后 requestCount 恒 0 ⇒ 404 task not found（errors_out），文件按「取更危险档」记 degraded_content。\n" +
 			"**改后两条腿都读 710**，第二条腿的 errors_out 消失 ⇒ 本条现在**只由 bodies 那条腿**支撑，degraded_content 这个档位不变但理由必须跟着换。\n" +
 			"**为什么这条腿换视图是对的（不是「让门变绿」）**：sessionLogsWhere 的主谓词是 `gw_task_id = $1 AND ts > …`（admin/session_scope.go:39），gw_task_id 由 734 的 details 层供给（`d.gw_task_id`），**不在** 6 条「会话臂恒 NULL 补位列」里（db/request_logs_view_padded_columns.go：id / test_col / test_tab_indent / provider_model / credits_rate_multiplier），真库 details 行级覆盖 99.9996% ⇒ 换过去不会落进「行级有、谓词级空」。同函数的 client_model 也是 details 供给列，latest_model 子查询同样成立。\n" +
 			"⚠️ **判停写后果必须量近期填充率，不能用全历史均值**（本仓同源教训，已在 discovery/ 与 session_extract.go 两条上各判错一次）：gw_task_id 在 710 视图的全历史 NULL 率是 94.1%，而按天是 09-29 的 4.77% → 09-30 的 37.88% → 10-01 的 97.72% → 10-02 的 98.51% ⇒ details 写入链在 09-30 前后已修好，**近期行带着真值** ⇒ session 臂供数成立。全历史口径会给出「停写后恒 0 行」这个**相反**的档位。\n" +
@@ -705,18 +735,20 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 		Evidence: "COALESCE(rb.request_body::text, '') AS request_body,",
 		Note:     "已核实 sessionLogsWhere(admin/session_scope.go:39) 主谓词是 gw_task_id = $1 AND ts > …，不是会话头；gw_task_id 由 session 臂的 details 层(d.gw_task_id)提供，故 loadTaskLogsForTitle 的行不会消失——但 bodies 腿硬失败使 request_body/response_body 变空串，buildSummaryCorpus 只能靠 request_preview/response_preview 兜底 ⇒ 标题照常 200 生成但语料从全文降级为预览片段；只有语料短到 40 rune 以下才显式 400。",
 	},
-	// 2026-10-13 S4 波 4 出列：cmd/scenario_driver/main.go 落库断言已改数
-	// session_bodies_hot / session_turns_hot（原条目预告的「delta 恒 0 硬失败」
-	// 修掉——数会话族热表恢复「造流量→量增量」的冒烟语义）。
+	"cmd/scenario_driver/main.go": {
+		Effect:   effectErrorsOut,
+		Evidence: "SELECT count(*) FROM request_logs_bodies_hot WHERE ts > NOW() - INTERVAL '1 hour'",
+		Note:     "它自己造流量（POST {gateway}/v1/chat/completions 跑 60/20/80 轮）再量 v1 增量，所以停写后必然测不到：bodies 增量与 request_logs_hot success=false 增量双双为 0，Passed=false + Message: \"delta_bodies=0, expected >= 50\"，属立刻暴露的硬失败（离线工具，不影响在线面）。",
+	},
 	"domains/hooks/observability/telemetry/client.go": {
 		// 2026-10-13 S3 波 2：FindRecentGatewaySession 改双热腿 UNION
-		//（session_turns_hot ∪ request_logs_hot），turn_no 改会话族
+		//（session_turns_hot ∪ _request_logs_hot），turn_no 改会话族
 		// MAX(turn_no) 权威读 + v1 回退——停写后两者都由会话腿供数。
 		Effect:   effectUnaffected,
 		Evidence: "FROM public.session_turns_hot t",
 		// 2026-10-02：读端与控制面分开记。读端后果是会话身份退化为「每请求新建」；
 		// 控制面后果（写授权/身份）更严重，见 request_logs_control_plane_dependency_test.go。
-		Note: "FindRecentGatewaySession 2026-10-13 起读双热腿（session_turns_hot 供停写后新流量，request_logs_hot 供回滚期），api_key_id/identity_hash 由 707 S1a 加列、idx_session_turns_hot_ts 供窗口。Redis 主路径语义不变（LastSystemSessionIndex TTL 5 分钟，DB finder 兜底）。turn_no 读会话族 MAX(turn_no)（session_id 等值走 idx_session_turns_session），0 回退 v1 母表 30d 计数；在途轮次可能少计一轮——该值是提示性载荷，权威归 session/v2 aggregator。",
+		Note: "FindRecentGatewaySession 2026-10-13 起读双热腿（session_turns_hot 供停写后新流量，_request_logs_hot 供回滚期），api_key_id/identity_hash 由 707 S1a 加列、idx_session_turns_hot_ts 供窗口。Redis 主路径语义不变（LastSystemSessionIndex TTL 5 分钟，DB finder 兜底）。turn_no 读会话族 MAX(turn_no)（session_id 等值走 idx_session_turns_session），0 回退 v1 母表 30d 计数；在途轮次可能少计一轮——该值是提示性载荷，权威归 session/v2 aggregator。",
 	},
 	// ── batch2：2026-10-02 逐点评估（25 条，读端轴收口）──────────────────────
 	"admin/attempt_quality_api.go": {
@@ -726,22 +758,22 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	"admin/data_lifecycle_metrics.go": {
 		Effect:   effectUnaffected,
-		Evidence: "pg_total_relation_size('request_logs') AS total_size",
+		Evidence: "pg_total_relation_size('_request_logs') AS total_size",
 		Note:     "唯一读点是 pg_total_relation_size + COUNT 分龄（7/30/90 天桶），读的是表体量与生命周期分布而非流量；停写后存量仍在、行数只因保留期清理下降，不产生查空或报错。已核实无流量类读点混入。",
 	},
 	"admin/providers.go": {
 		Effect:   effectSilentlyEmpty,
 		Evidence: "COALESCE(SUM(CASE WHEN lower(COALESCE(request_status, '')) IN ('failure', '') AND NOT success THEN 1 ELSE 0 END)::float8",
-		Note:     "供应商详情页 error_rate_24h 走 LEFT JOIN (... FROM request_logs_hot WHERE ts >= now() - interval '24 hours' ...)，停写 24h 后该子查询恒零行 ⇒ LEFT JOIN 补 NULL ⇒ COALESCE(er.rate, 0) 把 error_rate_24h **静默改成 0**，接口仍 200、凭据数与健康数全部照常，运营会读成「该供应商零故障」。本次最隐蔽的一处。",
+		Note:     "供应商详情页 error_rate_24h 走 LEFT JOIN (... FROM _request_logs_hot WHERE ts >= now() - interval '24 hours' ...)，停写 24h 后该子查询恒零行 ⇒ LEFT JOIN 补 NULL ⇒ COALESCE(er.rate, 0) 把 error_rate_24h **静默改成 0**，接口仍 200、凭据数与健康数全部照常，运营会读成「该供应商零故障」。本次最隐蔽的一处。",
 	},
 	"admin/session_tenant.go": {
 		Effect:   effectUnaffected,
-		Evidence: "SELECT 1 FROM request_logs_hot",
+		Evidence: "SELECT 1 FROM _request_logs_hot",
 		Note:     "assertTaskInTenant 是 OR-of-EXISTS 权限门，五条腿逐支核实：session_summaries / session_turn_details_hot / session_turn_details 三条 session 腿不受停写影响且先短路，v1 两条腿只是镜像链启用前的历史窗口。⚠️ 前提未实测：三条 session 腿对新 task 是否都及时落行，只能从代码确认「设计上供数」。若灰度发现某类 task 只在 v1 留痕，该门仍可能翻转成 404。",
 	},
 	"bg/auto_route_affinity_worker.go": {
 		Effect:   effectSilentlyFrozen,
-		Evidence: "SELECT 1 FROM request_logs_hot rl",
+		Evidence: "SELECT 1 FROM _request_logs_hot rl",
 		Note:     "两条 NOT EXISTS 腿只作 synthetic 轮次排除闸、不供数；主聚合源 auto_route_selections_all（selection_writer 未受 S4 门控）继续增长。停写后 14 天滚动窗口内旧选择仍命中 v1 行做排除，新选择因 v1 无行而一律通过闸门 ⇒ **样本集逐渐失去 synthetic 排除，聚合值继续变化但口径悄然漂移**。既非冻结为常数也非对账，取最接近档并写明该语义。",
 	},
 	"bg/integrity_fingerprint_probe.go": {
@@ -751,8 +783,8 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	"bg/model_tier.go": {
 		Effect:   effectSilentlyFrozen,
-		Evidence: "FROM request_logs_hot rl",
-		Note:     "Usage Top-N 段读 request_logs_hot 近 probe.featured_usage_window_hours（默认 72h）窗口。停写 72h 后查询返零行但不报错（err==nil 分支照常执行、rows 空迭代），fs.usage 被整表替换为空集并 m.cur.Store(fs) 落盘。**与 static 段刻意「失败保旧集」的防御相反**：这里空结果会静默清空 usage 精选模型集，深探范围无声收缩。",
+		Evidence: "FROM _request_logs_hot rl",
+		Note:     "Usage Top-N 段读 _request_logs_hot 近 probe.featured_usage_window_hours（默认 72h）窗口。停写 72h 后查询返零行但不报错（err==nil 分支照常执行、rows 空迭代），fs.usage 被整表替换为空集并 m.cur.Store(fs) 落盘。**与 static 段刻意「失败保旧集」的防御相反**：这里空结果会静默清空 usage 精选模型集，深探范围无声收缩。",
 	},
 	"cmd/gateway/main_v3_wiring.go": {
 		Effect:   effectErrorsOut,
@@ -778,7 +810,7 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	"tests/test_popularity_tracker.go": {
 		Effect:   effectUnaffected,
-		Evidence: "WHERE table_name = 'request_logs'",
+		Evidence: "WHERE table_name = '_request_logs'",
 		Note:     "离线手工测试脚本（人工触发）；前半是 information_schema/pg_indexes 结构检查（与流量无关），后半 1 小时窗口统计停写后只会打印 0，不报错不改变退出语义。",
 	},
 	"admin/credential_monitor_heatmap.go": {
@@ -827,24 +859,27 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	"admin/body_resolver.go": {
 		Effect:   effectErrorsOut,
-		Evidence: "LEFT JOIN request_logs_bodies_hot rb",
+		Evidence: "LEFT JOIN _request_logs_bodies_hot rb",
 		Note:     "lookupControlledBody 两段查（hot → 710 视图 LEFT JOIN bodies）：bodies 无 session 兜底但元数据腿有 ⇒ 停写后新 request_id 的 710 视图腿能查到元数据、bodies 腿返 NULL ⇒ COALESCE(...,' ') 给出空串正文，受控正文端点返回 200 但 prompt/response 为空串；只有元数据与 bodies 双双查不到时才走 err ⇒ 调用方统一 404（ErrNotFound），失败可见。",
 	},
 	"admin/logs.go": {
 		Effect:   effectSilentlyDegradedContent,
-		Evidence: "FROM request_logs_bodies_hot",
+		Evidence: "FROM _request_logs_bodies_hot",
 		Note:     "getLog 元数据走 logsSourceFromSQL()（默认 710 视图，session 臂继续供数），但 fetchRequestBodies / fetchRequestOutboundBody 的 bodies 两段停写后对新请求恒 sql.ErrNoRows，而调用方显式吞掉：detail.RequestBody = nil; detail.ResponseBody = nil 后照常 writeJSON(w, 200, detail) ⇒ **请求详情页对停写后的新请求永远 200 且正文字段静默为 null**，无任何错误信号。",
 	},
-	// admin/quality_correlations.go 于 2026-10-13（S4 波 4）出列：会话族重写
-	// （turns=canonical、bodies=切换层 outbound_body；探针样本出围属口径变更）。
+	"admin/quality_correlations.go": {
+		Effect:   effectSilentlyEmpty,
+		Evidence: "FROM request_logs rl",
+		Note:     "五个相关性分桶全部直读 v1 母表 request_logs LEFT JOIN request_logs_bodies、窗口 ts >= NOW() - INTERVAL '1 day' * $1；停写后每桶零行 ⇒ len(xs) < 2 静默 continue ⇒ results 空 ⇒ 洞察列表返回空数组、接口 200，无错误信号（session 族不参与这五个分桶）。",
+	},
 	"admin/unified_detail.go": {
 		Effect:   effectErrorsOut,
-		Evidence: "FROM request_logs_bodies_hot",
+		Evidence: "FROM _request_logs_bodies_hot",
 		Note:     "元数据腿是 hot → 710 视图（session 臂兜底，停写后仍能定位新请求），正文腿 loadOutboundBody 只读 bodies_hot → bodies 视图；bodies 查不到时返回 requestdetail.ErrNotFound（:290-292）而上抛，转成 404/错误而非静默空 body ⇒ 失败可见，属可接受。",
 	},
 	"cmd/tools/validate_sessions_v2/loader.go": {
 		Effect:   effectUnaffected,
-		Evidence: "FROM request_logs_bodies_hot",
+		Evidence: "FROM _request_logs_bodies_hot",
 		Note:     "离线校验工具（人工触发、不在在线写路径上）；LoadV1Turns 两步查 v1 母表 + bodies（hot ∪ parent，缺 body 时 pgx.ErrNoRows 被 continue 吞掉、保留空默认），停写后仍能对存量会话跑校验，只是覆盖不到新会话。",
 	},
 	"domains/sessionsummary/summarizer.go": {
@@ -884,7 +919,7 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 		// 停写后 success/p95 继续来自真实流量。钉桩
 		// bg/auto_index_refresher_s3_wave3_test.go。
 		Effect:   effectSilentlyFrozen,
-		Evidence: "FROM request_logs_hot rl",
+		Evidence: "FROM _request_logs_hot rl",
 		Note:     "两个 rollup 分裂。credential_model_index：2026-10-13 起双源（v1 腿 + 冻结点守卫的会话腿），停写后真实指标持续更新，不再退化为 cold-start 基线。model_task_index：auto 请求（sys:% 会话）按设计不镜像进 session 族（实测 3 天 v1 3,420 行 vs 会话 0 行）⇒ 该 rollup 停写后无数据源、冻结在停写前状态——与探针面族同桶，主拍板项（改读探针专属表或随 v1 退役）。",
 	},
 	"bg/integrity_fingerprint_drift.go": {
@@ -905,7 +940,7 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	"domains/hooks/goal/history_store.go": {
 		Effect:   effectSilentlyEmpty,
-		Evidence: "LEFT JOIN request_logs_bodies rb",
+		Evidence: "LEFT JOIN _request_logs_bodies rb",
 		// 作者逐行核实（2026-10-02）：该查询按 gw_session_id 取最近 N 轮的
 		// (request_body, response_body) 对，重建对话全文供 goal 审计钩子使用。
 		// 停写后新会话在这条路径上取不到任何行；:120 起
@@ -988,7 +1023,7 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 //
 // 结构性事实（处处成立，来自 pg_get_viewdef 的真库输出）：
 //   request_logs_with_current_month = session_turns ∪ session_turns_hot
-//                                     ∪ request_logs ∪ request_logs_hot
+//                                     ∪ _request_logs ∪ _request_logs_hot
 //   ⇒ 停写只冻结 v1 两条臂，session 两条臂继续增长；视图读者不会「查空」。
 //
 // 幅度数字（**仅本地开发库 llm_gateway，24h 窗口实测**，2026-10-02）：
@@ -1045,7 +1080,7 @@ func TestRequestLogsStopWriteClassificationProgress(t *testing.T) {
 	for file := range requestLogsStopWriteClassification {
 		if !known[file] {
 			t.Errorf("分级表里的 %s 不在已知读点全集（直接表 ∪ 间接表）里 —— "+
-				"该文件要么不再读 request_logs，要么清单陈旧；两种情况都让「N 个已评估」这句话失真", file)
+				"该文件要么不再读 _request_logs，要么清单陈旧；两种情况都让「N 个已评估」这句话失真", file)
 		}
 	}
 
@@ -1076,7 +1111,7 @@ func progressVerdict(todo int) string {
 // classificationHowTo 是填分级登记的操作说明。它被三处引用（进度日志、覆盖率门、
 // 以及门失败时的提示），所以写成常量而不是复制三份——措辞一旦分叉，三个地方
 // 会给出互相矛盾的做法。
-const classificationHowTo = `打开该文件、找到读 request_logs 的位置，按「停写之后会发生什么」归入：
+const classificationHowTo = `打开该文件、找到读 _request_logs 的位置，按「停写之后会发生什么」归入：
 
   errors_out              停写后必然查不到 → 报错/空。可接受的失败模式，灰度时立刻暴露
   silently_empty          结果集静默变空，接口仍 200、字段齐全、全零/空列表
@@ -1255,7 +1290,7 @@ func isRegisteredSwitchFunc(fn string) bool {
 // 文件被逐个判成 silently_empty（停写后查不到）——**系统性错误**。真库实测：
 //
 //	request_logs_with_current_month 的定义含四张基表：
-//	  session_turns ∪ session_turns_hot ∪ request_logs ∪ request_logs_hot
+//	  session_turns ∪ session_turns_hot ∪ _request_logs ∪ _request_logs_hot
 //	24h 实测：视图 7,221 行 = session 臂 2,639（36.55%）+ v1 臂 4,582（63.45%）
 //
 // 停写只冻结 v1 那条臂，**session 那条臂继续增长**（镜像链不归 S4 管）。所以视图
@@ -1268,7 +1303,7 @@ func isRegisteredSwitchFunc(fn string) bool {
 //	               （session_bodies 只有增量、无 final_full 全量，见审计 §6）
 //	               ⇒ 停写后硬失败，无退路。
 //	familyView   —— 710 视图有 session 臂 ⇒ 静默少计。
-//	familyBase   —— request_logs / request_logs_hot 为 v1 专有 ⇒ 完全停止增长。
+//	familyBase   —— _request_logs / _request_logs_hot 为 v1 专有 ⇒ 完全停止增长。
 //	familyBodiesMixed —— 一并读，但**其中 bodies 腿没有任何 session 兜底**。
 //	               「一并读」不等于「部分退化」：主轮次腿可能照常工作，
 //	               而正文腿彻底失效，表现为「拿得到轮次、拿不到正文」。
@@ -1289,8 +1324,8 @@ var (
 	gateStopWriteBlockCommentRE = regexp.MustCompile(`(?s)/\*.*?\*/`)
 	// 注释先剥是硬要求：本仓 40 条 grep 命中里 36 条是注释，不剥的话
 	// 「读 710 视图」会被历史注释里的提及带偏。
-	familyBodiesRE = regexp.MustCompile(`(?i)request_logs_bodies`)
-	familyBaseRE   = regexp.MustCompile(`(?i)\bfrom\s+request_logs(_hot)?\b`)
+	familyBodiesRE = regexp.MustCompile(`(?i)_?request_logs_bodies`)
+	familyBaseRE   = regexp.MustCompile(`(?i)\bfrom\s+_?request_logs(_hot)?\b`)
 	// 视图族**不能**靠名字模式判定：名字带 request_logs_with_ 的中间层视图
 	// 可能仍是纯 v1。下面的 requestLogsViewsWithSessionArm 才是判据，
 	// 且它由真库门 TestRequestLogsViewSessionArmPinIsCurrent 钉住。
@@ -1724,8 +1759,8 @@ func sourceFamilyOf(code string, readsVBodies bool) string {
 			v1OnlyView = true
 		}
 	}
-	// 读了 v1-only 视图的，即使 SQL 文本里没有裸 FROM request_logs，也是
-	// 实质上的基表读者——这是「只看 from request_logs 就会漏掉」的一类。
+	// 读了 v1-only 视图的，即使 SQL 文本里没有裸 FROM _request_logs，也是
+	// 实质上的基表读者——这是「只看 from _request_logs 就会漏掉」的一类。
 	ba := familyBaseRE.MatchString(code) || v1OnlyView
 	// 视图族的第二维：谓词级 NULL 补位（2026-10-02）。
 	//

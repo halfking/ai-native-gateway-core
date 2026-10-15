@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// tenantLogsClause returns an SQL AND-fragment filtering request_logs by tenant_id
+// tenantLogsClause returns an SQL AND-fragment filtering _request_logs by tenant_id
 // for tenant_admin callers on non-default tenants. Super-admin, legacy admin_key,
 // and any user on the default tenant see all tenants (no isolation).
 // argStart is the next $N placeholder index.
@@ -58,7 +58,7 @@ func requireSessionTaskAccess(w http.ResponseWriter, r *http.Request, ctx contex
 //   - session_turn_details 月分区母表：同一权威来源的已 promote 行。802 补了
 //     (tenant_id, gw_task_id) 部分索引并级联到全部分区，真库 EXPLAIN 实测走
 //     Index Only Scan（Buffers: shared hit=4）；无索引时这是 167 万行顺序扫描。
-//   - v1 request_logs_hot ∪ request_logs：镜像链启用之前的历史窗口。
+//   - v1 _request_logs_hot ∪ _request_logs：镜像链启用之前的历史窗口。
 //
 // OR-of-EXISTS 会短路：任一腿先命中即返回，因此四条腿的代价不会叠加。
 func assertTaskInTenant(ctx context.Context, db *pgxpool.Pool, taskID, tenantID string) bool {
@@ -77,10 +77,10 @@ func assertTaskInTenant(ctx context.Context, db *pgxpool.Pool, taskID, tenantID 
 			SELECT 1 FROM session_turn_details
 			WHERE gw_task_id = $1 AND tenant_id = $2
 		) OR EXISTS(
-			SELECT 1 FROM request_logs_hot
+			SELECT 1 FROM _request_logs_hot
 			WHERE gw_task_id = $1 AND tenant_id = $2
 		) OR EXISTS(
-			SELECT 1 FROM request_logs
+			SELECT 1 FROM _request_logs
 			WHERE gw_task_id = $1 AND tenant_id = $2
 		)
 	`, taskID, tenantID).Scan(&exists)
@@ -117,10 +117,10 @@ func taskIDsInTenant(ctx context.Context, db taskTenantDB, taskIDs []string, ten
 			SELECT gw_task_id FROM session_turn_details
 			WHERE tenant_id = $1 AND gw_task_id = ANY($2)
 			UNION
-			SELECT gw_task_id FROM request_logs_hot
+			SELECT gw_task_id FROM _request_logs_hot
 			WHERE tenant_id = $1 AND gw_task_id = ANY($2)
 			UNION
-			SELECT gw_task_id FROM request_logs
+			SELECT gw_task_id FROM _request_logs
 			WHERE tenant_id = $1 AND gw_task_id = ANY($2)
 		) t
 	`, tenantID, taskIDs)

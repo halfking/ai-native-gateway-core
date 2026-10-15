@@ -442,6 +442,22 @@ var unsupportedParamRe = regexp.MustCompile(
 		`parameters?\s*\(?s?\)?\s*[:：]?\s*['"\x60][a-z0-9_.\-]+['"\x60]\s+is not supported)`,
 )
 
+// jsonModeWordRequiredRe matches OpenAI's structured-output contract error:
+// json_object / text.format(json_object) requires the prompt to mention
+// "json". Deterministic client-side contract violation — retrying the same
+// body can never succeed and cooling the node punishes unrelated traffic
+// (measured 2026-10-14: one such 400 on gpt-6.1-sol cascaded into a
+// multi-minute no_candidate window for every subsequent request).
+//
+// Matched vendor phrasings (both legs observed in raw-logs 2026-10-14):
+//   - chat:      "'messages' must contain the word 'json' in some form, to
+//     use 'response_format' of type 'json_object'."
+//   - responses: "Response input messages must contain the word 'json' in
+//     some form to use 'text.format' of type 'json_object'."
+var jsonModeWordRequiredRe = regexp.MustCompile(
+	`(?i)must contain the word ['"]?json['"]? in some form`,
+)
+
 // modelDeprecatedRe matches upstream error bodies that signal the model has
 // been permanently removed / end-of-lifed / deprecated by the provider.
 //
@@ -930,7 +946,7 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 		// collapsed into err.Error() and ClassifyError(err, nil) was
 		// returning KindTransient for these cases. That broke the
 		// IsClientBug / IsRetryable / writeCredentialStateOnError
-		// branches downstream and polluted request_logs.error_kind
+		// branches downstream and polluted _request_logs.error_kind
 		// with "transient" for what is actually a client-side bug.
 		//
 		// Running the same regexes on the err.Error() string closes
@@ -1150,6 +1166,14 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 			return KindToolCallIdMismatch
 		}
 		if (status == 400 || status == 422) && invalidRequestFormatRe.Match(body) {
+			return KindClientBug
+		}
+		// OpenAI json 模式契约：提示词必须含 "json" 字样（chat 腿
+		// response_format 与 responses 腿 text.format 同族）。确定性
+		// 客户端契约错误——同 body 重试必败，且按 transient 冷却节点
+		// 会把无关流量拖进 no_candidate 级联（2026-10-14 实测，
+		// gpt-6.1-sol 一次 400 → 数分钟 no_candidate 窗口）。
+		if (status == 400 || status == 422) && jsonModeWordRequiredRe.Match(body) {
 			return KindClientBug
 		}
 		// 参数值不被支持（code:"unsupported_value"），见 unsupportedParamValueRe
@@ -1514,6 +1538,11 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 			return KindToolCallIdMismatch
 		}
 		if (status == 400 || status == 422) && invalidRequestFormatRe.Match(body) {
+			return KindClientBug
+		}
+		// 与 ClassifyErrorWithBody 同臂：json 模式契约错误（提示词须含
+		// "json"），确定性客户端错误，不按 transient 冷却节点。
+		if (status == 400 || status == 422) && jsonModeWordRequiredRe.Match(body) {
 			return KindClientBug
 		}
 		// 参数值不被支持（code:"unsupported_value"）——与 ClassifyErrorWithBody

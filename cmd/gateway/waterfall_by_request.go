@@ -13,7 +13,7 @@ import (
 )
 
 // waterfallByRequestSQL 是单请求瀑布点查（request_id，B 形态）。2026-10-13
-// S3 波 2：FROM request_logs_hot → canonical 视图（会话臂服务新流量、v1 臂
+// S3 波 2：FROM _request_logs_hot → canonical 视图（会话臂服务新流量、v1 臂
 // 服务历史、反连接去重；16 个表达式全在 118 列契约内，t0..t9 会话侧直映）。
 // 提升为包级常量是给形状钉桩用的：这段文本就是发给 PG 的文本。
 const waterfallByRequestSQL = `

@@ -6,8 +6,11 @@ import { req, type RequestOptions } from './client'
  * GET /api/admin/dispatch/journal/{tenant}/{request_id}
  *
  * - **注册**：**第四种注册形态** —— 既不在 `admin/handler.go` 的 mux 清单里，
- *   也不在 `cmd/gateway/main.go:7070` 的 requestJourney 直挂清单里，而是
- *   `cmd/gateway/main.go:7074-7075` 现构造 API 对象、现调 `RegisterRoutes`：
+ *   也不在 `cmd/gateway/main.go:7135-7136` 的 requestJourney 直挂清单里，而是
+ *   `cmd/gateway/main.go:7143-7144` 现构造 API 对象、现调 `RegisterRoutes`
+ *   （★ 第八十九批写的 `:7070` / `:7074-7075` 已随并发提交漂移，
+ *     第一百一十二批现场核对后订正 —— 承批 103「现状盘点数字应当删掉而不是改对」的同族，
+ *     行号只是**定位提示**，判据不依赖它）：
  *   ```go
  *   journalSnapshotAPI := admin.NewJournalSnapshotAPI(journalSnapshotStore)
  *   journalSnapshotAPI.RegisterRoutes(mux, requestJourneyWrapAdmin)

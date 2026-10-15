@@ -4,13 +4,13 @@ package telemetry
 // auto-route feedback loop.
 //
 // Architecture: separate batching goroutine (independent from
-// request_logs) to keep the hot path zero-allocation. The writer
+// _request_logs) to keep the hot path zero-allocation. The writer
 // maintains its own channel + worker + timer; it never blocks the
 // request handler even when the DB is slow or down.
 //
 // Lifecycle:
 //   - relay/handler.go calls WriteTuningSignal(entry) after every
-//     request_logs update.
+//     _request_logs update.
 //   - The entry is queued on a 4096-cap channel, batched up to 50
 //     entries or 200ms, then flushed in a single multi-row INSERT.
 //   - Errors are logged and dropped (best-effort, hot path is preserved).

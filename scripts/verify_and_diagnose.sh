@@ -237,7 +237,7 @@ quick_diagnosis() {
     echo "=== 快速检查1: 智谱AI错误类型 ==="
     psql "$DATABASE_URL" -c "
     SELECT error_kind, upstream_status_code, COUNT(*) as cnt
-    FROM request_logs
+    FROM _request_logs
     WHERE provider_code = 'zhipuai'
       AND request_status = 'failure'
       AND created_at > now() - interval '24 hours'
@@ -259,7 +259,7 @@ quick_diagnosis() {
     )
     SELECT COUNT(*) as degraded_usage_count
     FROM unavailable_creds uc
-    JOIN request_logs rl ON rl.credential_id = uc.credential_id
+    JOIN _request_logs rl ON rl.credential_id = uc.credential_id
     WHERE rl.created_at > uc.unavailable_at;
     " 2>&1 | tee /tmp/quick_check2.txt
     echo ""

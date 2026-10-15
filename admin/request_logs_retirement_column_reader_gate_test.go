@@ -34,7 +34,7 @@ package admin
 // 「-- 注释里提到 SELECT」不会冒充读方。
 //
 // 这也是本仓已经吃过的一课（`request_logs_retirement_exposure_test.go` 头注释：
-// 逐行 `from\s+request_logs` 正则「数调用点可以，归因到某一列不行」）——
+// 逐行 `from\s+_request_logs` 正则「数调用点可以，归因到某一列不行」）——
 // 我用手工 grep 又犯了一次。
 
 import (
@@ -67,7 +67,7 @@ var retirementColumnsWithoutReaders = map[string]string{
 		"`admin/telemetry.go` 的写列、`domains/session/v2/details_writer.go` 的写列；" +
 		"`domains/streaming/handler.go:6255` 读的是**内存 map** `m[\"stream_chunks_sent\"]`，" +
 		"不是 SQL。⇒ 无 SQL 读方，降级对它不构成读方风险。",
-	"quality_fix_actions": "只出现在 db/db.go 的 **DDL** 里：`ALTER TABLE request_logs … SET storage` " +
+	"quality_fix_actions": "只出现在 db/db.go 的 **DDL** 里：`ALTER TABLE _request_logs … SET storage` " +
 		"的列名清单（:2056）与 `ADD COLUMN IF NOT EXISTS quality_fix_actions JSONB`（:2158）。" +
 		"两者都不是 SELECT。⇒ 它的降级不构成任何读方风险。",
 	"client_forwarded_for": "只有写方：`telemetry/context_attrs.go:159/190`（写 entry + 写列）、" +

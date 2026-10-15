@@ -133,8 +133,8 @@ rm -f /tmp/r112_base_$$.log
 # database can apply migrations in filename order.
 info "Ensuring local hot-table prerequisites..."
 pg_exec_db -c "
-  CREATE TABLE IF NOT EXISTS request_logs_hot
-  (LIKE request_logs INCLUDING ALL);
+  CREATE TABLE IF NOT EXISTS _request_logs_hot
+  (LIKE _request_logs INCLUDING ALL);
   CREATE TABLE IF NOT EXISTS usage_ledger_hot
   (LIKE usage_ledger INCLUDING ALL);
   CREATE TABLE IF NOT EXISTS request_wal_hot

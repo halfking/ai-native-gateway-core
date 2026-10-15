@@ -686,7 +686,7 @@ func TestViewColumnContract_DetectorDiscriminates(t *testing.T) {
 		},
 		{
 			name:     "same column on the right table is not a violation",
-			literal:  "SELECT COUNT(DISTINCT l.gw_session_id) FROM request_logs l",
+			literal:  "SELECT COUNT(DISTINCT l.gw_session_id) FROM _request_logs l",
 			governed: usageGoverned, known: usageKnown,
 			want: nil,
 		},

@@ -24,44 +24,38 @@ import { join } from 'node:path'
  *   「变红」正是它的工作方式，不是它的缺陷。
  *
  * ## 判据本身的口径：从 UI 出发的**传递**可达性
-
-「孤儿」= `src/api/*.ts`（排除 `.test.ts` / `.spec.ts`）里，
-**从 `src/` 下任何 UI 文件（视图 / 组件 / store / 配置 / 路由）出发，沿 import 边走不到**的那个模块。
-
-★ 第一版只查**直接**引用，并且显式跳过 `src/api/` 整个目录。两处都错了：
-
-1. **跳过整个 `src/api/` 是错的。** 第一百零二批消解 `nodeHealth.ts` / `nodeHealthTimeline.ts`
-   这对副本时，靠的是**API 层内部的委托**（`nodeHealth.ts` 改成 import 厚的那个）。
-   直接引用口径下，委托方在 `src/api/` 里 ⇒ 被跳过 ⇒ **计数一点没降**，
-   而事实上重复契约已经合并、模块已经可达。
-2. **只看直接引用也是错的。** 第九十九批的 `taskTypeCorrectionStats` 从 `./taskProfile` 导入
-   `unwrapCorrectionStat` —— 那是**同结构复用**，本身不是 UI 入口；
-   但如果它自己也变成可达的，那它**传递可达**（UI → taskTypeCorrectionStats → taskProfile）。
-   ⇒ 第一版靠「排除整个 api 目录」来避开这个假阳性，
-   **代价是把所有 API 层内部委托一并排除了**。
-
-⇒ ⇒ ★★★ **正确口径是传递可达性**：种子是「被 UI 文件直接 import 的模块」，
-再沿 api 模块之间的 import 边做闭包。
-⇒ 这样 api 内部互相引用**不会**凭空产生可达性（种子不从那里起），
-而真正的委托**会**被算进去 —— 两个问题一次性解决，不需要例外条款。
-
-const ROOT = join(process.cwd(), 'src')
-const API_DIR = join(ROOT, 'api')
+ *
+ * 「孤儿」= `src/api/*.ts`（排除 `.test.ts` / `.spec.ts`）里，
+ * **从 `src/` 下任何 UI 文件（视图 / 组件 / store / 配置 / 路由）出发，沿 import 边走不到**的那个模块。
+ *
+ * ★ 第一版只查**直接**引用，并且显式跳过 `src/api/` 整个目录。两处都错了：
+ *
+ * 1. **跳过整个 `src/api/` 是错的。** 第一百零二批消解 `nodeHealth.ts` / `nodeHealthTimeline.ts`
+ *    这对副本时，靠的是**API 层内部的委托**（`nodeHealth.ts` 改成 import 厚的那个）。
+ *    直接引用口径下，委托方在 `src/api/` 里 ⇒ 被跳过 ⇒ **计数一点没降**，
+ *    而事实上重复契约已经合并、模块已经可达。
+ * 2. **只看直接引用也是错的。** 第九十九批的 `taskTypeCorrectionStats` 从 `./taskProfile` 导入
+ *    `unwrapCorrectionStat` —— 那是**同结构复用**，本身不是 UI 入口；
+ *    但如果它自己也变成可达的，那它**传递可达**（UI → taskTypeCorrectionStats → taskProfile）。
+ *    ⇒ 第一版靠「排除整个 api 目录」来避开这个假阳性，
+ *    **代价是把所有 API 层内部委托一并排除了**。
+ *
+ * ⇒ ⇒ ★★★ **正确口径是传递可达性**：种子是「被 UI 文件直接 import 的模块」，
+ *   再沿 api 模块之间的 import 边做闭包。
+ * ⇒ 这样 api 内部互相引用**不会**凭空产生可达性（种子不从那里起），
+ *   而真正的委托**会**被算进去 —— 两个问题一次性解决，不需要例外条款。
+ */
 
 /** 当前已登记的孤儿模块（**只能减少**）。接线一个就删一行。 */
 const KNOWN_ORPHANS: readonly string[] = [
   'boardOperational',
   'dataLifecycleStorage',
-  'dispatchJournal',
   'errorsTrend',
-  'formatAnomalies',
   'modelHistory',
   'modelIQ',
-  'modelIntegrityDrift',
   'nativeTransport',
   'opsOverview',
   'platformSettings',
-  'reportRollup',
   'requestActions',
   'sessionAnalyticsFilterOptions',
   'slidingWindow',
@@ -256,6 +250,49 @@ describe('孤儿棘轮', () => {
     //   （admin/stats.go:87-97）对非 super_admin 强制用 auth.TenantID 并忽略 tenant_id
     //   ⇒ tenant_admin 天然隔离 ⇒ 视图内部**不需要**任何角色分支。
     expect(currentOrphans()).not.toContain('usageTrendSeries')
+  })
+
+  it('★★ 已接线的哨兵：formatAnomalies 不在孤儿里（第一百零九批）', () => {
+    // ★ 响应格式异常接上了抽屉席与路由 ⇒ 棘轮清单同步删掉那一行。
+    //   该族是 **superAdmin 档**（admin/handler.go:913-914）⇒ 席**要** requiresRole，
+    //   所以 `AppDrawer.spec.ts` 的排序白名单里**必须**出现 format-anomalies。
+    //   ⇒ 两条判据合起来才覆盖「接上了」+「档位挂对了」；
+    //     只加抽屉席不改正那份白名单，「tenant_admin 少掉的只有这些」那条立刻红。
+    expect(currentOrphans()).not.toContain('formatAnomalies')
+  })
+
+  it('★★ 已接线的哨兵：modelIntegrityDrift 不在孤儿里（第一百一十批）', () => {
+    // ★ 指纹漂移接上了抽屉席与路由 ⇒ 棘轮清单同步删掉那一行。
+    //   该族是 **superAdmin 档**（admin/handler.go:942-943，整个前缀都是 h.superAdmin）
+    //   ⇒ 席**要** requiresRole，所以 `AppDrawer.spec.ts` 的排序白名单里
+    //   **必须**出现 model-integrity-drift。
+    //   ⇒ 两条判据合起来才覆盖「接上了」+「档位挂对了」；
+    //     只加抽屉席不改正那份白名单，「tenant_admin 少掉的只有这些」那条立刻红。
+    // ★ 顺带记下一条**同前缀不同档**的事实：`integrity` 席（summary/events/resolve）
+    //   与本席共用 `/api/admin/model-integrity/` 前缀却是**两张席** ——
+    //   所以权限判据必须落到可执行注册处，不能按前缀判。
+    expect(currentOrphans()).not.toContain('modelIntegrityDrift')
+  })
+
+  it('★★ 已接线的哨兵：reportRollup 不在孤儿里（第一百一十一批）', () => {
+    // ★ 对账报表接上了抽屉席与路由 ⇒ 棘轮清单同步删掉那一行。
+    //   该族是 **superAdmin 档**（admin/handler.go:1086，整个 `/api/admin/report-rollup/`
+    //   前缀带尾斜杠都是 h.superAdmin）⇒ 席**要** requiresRole，
+    //   所以 `AppDrawer.spec.ts` 的排序白名单里**必须**出现 report-rollup。
+    //   ⇒ 两条判据合起来才覆盖「接上了」+「档位挂对了」。
+    // ★⚠️ 另记一条**命名陷阱**：`reconciliation` 席走的是 `costReconciliation`
+    //   （费用对账），本席走 `reportRollup`（对账报表）——两张席都叫「对账」，
+    //   接错模块这两条判据**都不会红** ⇒ 靠的是 nav 标题与哨兵注释里的显式区分。
+    expect(currentOrphans()).not.toContain('reportRollup')
+  })
+
+  it('★★ 已接线的哨兵：dispatchJournal 不在孤儿里（第一百一十二批）', () => {
+    // ★ 单请求调度轨迹接上了抽屉席与路由 ⇒ 棘轮清单同步删掉那一行。
+    //   该族是 **admin 档**（可执行注册处 cmd/gateway/main.go:7143-7144 传的是
+    //   `requestJourneyWrapAdmin` → `admin.AdminMiddleware`，**不检查 role**）
+    //   ⇒ 席**不设** requiresRole ⇒ `AppDrawer.spec.ts` 的 superAdmin 白名单里
+    //   **不该**出现 dispatch-journal（与 probe-queue / connection-registry 同一条纪律）。
+    expect(currentOrphans()).not.toContain('dispatchJournal')
   })
 
   it('★★★ 反向护栏：api 内部的互相引用不得凭空产生可达性', () => {

@@ -55,7 +55,7 @@ case "$MODE" in
       LEFT JOIN pg_inherits i ON child.oid = i.inhrelid
       LEFT JOIN pg_class parent ON parent.oid = i.inhparent
       JOIN pg_am am ON child.relam = am.oid
-      WHERE child.relname ~ '^(request_logs|credential_model_index|usage_ledger|request_wal)_2026_(0[1-9]|1[0-2])$'
+      WHERE child.relname ~ '^(_request_logs|credential_model_index|usage_ledger|request_wal)_2026_(0[1-9]|1[0-2])$'
         AND child.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public')
         AND am.amname = 'heap'
       ORDER BY child.relname;
@@ -84,7 +84,7 @@ case "$MODE" in
       JOIN pg_class parent ON parent.oid = i.inhparent
       JOIN pg_class child ON child.oid = i.inhrelid
       JOIN pg_am am ON child.relam = am.oid
-      WHERE parent.relname IN ('request_logs', 'credential_model_index', 'usage_ledger', 'request_wal')
+      WHERE parent.relname IN ('_request_logs', 'credential_model_index', 'usage_ledger', 'request_wal')
         AND child.relname ~ '_2026_(0[1-9]|1[0-2])$'
         AND am.amname = 'heap'
       ORDER BY parent.relname, child.relname;

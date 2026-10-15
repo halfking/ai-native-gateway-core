@@ -10,7 +10,7 @@ import (
 
 // CO-2 (2026-08-15): estimated 行回填修正。当后续真实 usage 到达
 // （同 request_id 的重试成功/补写路径）时，CorrectEstimatedUsage 把
-// request_logs 行从 usage_source='estimated' 修正为 'corrected' 并覆盖
+// _request_logs 行从 usage_source='estimated' 修正为 'corrected' 并覆盖
 // token 列。只在 estimated 行生效 —— llm/corrected 行不受影响（幂等）。
 func TestCorrectEstimatedUsage_UpdatesEstimatedRow(t *testing.T) {
 	mockDB, err := pgxmock.NewPool()
@@ -18,7 +18,7 @@ func TestCorrectEstimatedUsage_UpdatesEstimatedRow(t *testing.T) {
 	defer mockDB.Close()
 
 	prompt, completion := 120, 340
-	mockDB.ExpectExec(`UPDATE request_logs_hot[\s\S]*usage_source = 'corrected'[\s\S]*WHERE request_id = \$1[\s\S]*AND usage_source = 'estimated'`).
+	mockDB.ExpectExec(`UPDATE _request_logs_hot[\s\S]*usage_source = 'corrected'[\s\S]*WHERE request_id = \$1[\s\S]*AND usage_source = 'estimated'`).
 		WithArgs("req-correct", &prompt, &completion, pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
@@ -39,7 +39,7 @@ func TestCorrectEstimatedUsage_NoEstimatedRowIsNoop(t *testing.T) {
 	require.NoError(t, err)
 	defer mockDB.Close()
 
-	mockDB.ExpectExec(`UPDATE request_logs_hot`).
+	mockDB.ExpectExec(`UPDATE _request_logs_hot`).
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 
@@ -81,10 +81,10 @@ func TestUpdateRequestLog_DoesNotDowngradeCorrectedUsageSource(t *testing.T) {
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	status := RequestStatusSuccess
-	mockDB.ExpectExec(`UPDATE request_logs_hot[\s\S]*CASE WHEN usage_source = 'corrected' THEN usage_source[\s\S]*ELSE COALESCE\(NULLIF\(\$36, ''\), usage_source\) END`).
+	mockDB.ExpectExec(`UPDATE _request_logs_hot[\s\S]*CASE WHEN usage_source = 'corrected' THEN usage_source[\s\S]*ELSE COALESCE\(NULLIF\(\$36, ''\), usage_source\) END`).
 		WithArgs(requestLogUpdateArgs(RequestLogEntry{Success: true, RequestStatus: &status})...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+	mockDB.ExpectExec(`INSERT INTO _request_logs_bodies_hot`).
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mockDB.ExpectCommit()

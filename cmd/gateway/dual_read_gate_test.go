@@ -302,8 +302,8 @@ func TestS4Gate_CoverageRule(t *testing.T) {
 		{
 			// ⚠ SYNTHETIC, not measured. An earlier draft of this table listed
 			// "last 6h → 0%" and "last 24h → 68%" as measured local shapes. They
-			// were artefacts of a manual query that read only `request_logs` and
-			// not `request_logs_hot` — §9.160.7's trap, hit for the third time in
+			// were artefacts of a manual query that read only `_request_logs` and
+			// not `_request_logs_hot` — §9.160.7's trap, hit for the third time in
 			// this section, and this time in the evidence table for the gate
 			// written to catch exactly that class of mistake. Re-measured with
 			// both faces, v1 is writing normally and the last 6h/24h/72h are all

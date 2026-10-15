@@ -2,10 +2,10 @@ package executors
 
 // R34-A1: responses 专属压缩链的 provenance 组装。此前该链（candidate
 // window 前置裁剪 + 4xx recovery aggressive 裁剪）只输出裁剪后的 body，
-// request_logs 上无"哪些 input item 被删"的审计证据；messages 车道
+// _request_logs 上无"哪些 input item 被删"的审计证据；messages 车道
 // 本就带 AlignmentMap（R34 批判复审 A-G3 定论），本文件把对齐证据补齐
 // 到 responses 车道，最终经 ExecResult.CompressionMeta 落
-// request_logs.compression_meta（v7 §3.2 JSONB，运维 SQL 可查）。
+// _request_logs.compression_meta（v7 §3.2 JSONB，运维 SQL 可查）。
 
 import (
 	"encoding/json"

@@ -80,7 +80,7 @@ type SanitizeInfo struct {
 // reads SanitizeInfo.MessageRefs and emits `sanitize_message_refs`, called from
 // handler.go:4017 (chat, with AlignmentMap), responses.go:272 and
 // messages.go:262 (both pass alignment=nil). The product lands in
-// request_logs.compression_meta, and sessions_v2 reads it back at
+// _request_logs.compression_meta, and sessions_v2 reads it back at
 // domains/session/v2/cache_v2.go:803.
 //
 // What is actually missing is narrower and must be stated exactly:

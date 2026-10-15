@@ -313,7 +313,7 @@ func TestBuildTurnsSessionWhere_UsesUpdatedAt(t *testing.T) {
 func TestTurnsSessionsListSQL_SlimMainQuery(t *testing.T) {
 	sql := turnsSessionsListSQL()
 	if strings.Contains(sql, "request_logs_with_current_month") {
-		t.Fatalf("main query must not join request_logs: %s", sql)
+		t.Fatalf("main query must not join _request_logs: %s", sql)
 	}
 	if strings.Contains(sql, "handoff_logs_with_current_month") {
 		t.Fatalf("main query must not lateral join handoff_logs: %s", sql)

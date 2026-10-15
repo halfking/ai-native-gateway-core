@@ -8,7 +8,7 @@ package admin
 // 与 Python 控制面 parity 契约，不改）——恒命中内网直显臂，下面的外网
 // GeoIP 段表分支对唯一数据源不可达。R57 落真源：rollup 与看板切到
 // client_ip 维度（origin 中间件信任表解析的真实客户端 IP，341 起落在
-// request_logs[_hot]，740 起经 view 链投影），内网直显 IP、外网归类
+// _request_logs[_hot]，740 起经 view 链投影），内网直显 IP、外网归类
 // 国家·省·市 的设计语义自此对真实数据可达。真源不可得的行（后台合成
 // 流量）落 __unknown__ 哨兵。
 //

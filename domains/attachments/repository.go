@@ -14,7 +14,7 @@ import (
 // RequestAttachmentRow is the relational representation of one attachment
 // metadata record persisted in request_attachments (migration 401).
 //
-// Mirrors the JSONB payload in request_logs.attachments (migration 325) but
+// Mirrors the JSONB payload in _request_logs.attachments (migration 325) but
 // is queryable / indexable / cleanable as a first-class table.
 type RequestAttachmentRow struct {
 	ID             int64     `json:"id"`
@@ -33,7 +33,7 @@ type RequestAttachmentRow struct {
 }
 
 // ToRow converts an in-memory AttachmentMetadata (the value already stored
-// as JSONB on request_logs) into the relational row form for INSERT.
+// as JSONB on _request_logs) into the relational row form for INSERT.
 //
 // Empty optional fields collapse to defaults so the table does not store
 // empty strings ("", " ") that pollute hash / status indexes.

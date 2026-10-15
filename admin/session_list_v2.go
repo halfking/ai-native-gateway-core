@@ -165,11 +165,11 @@ func (api *SessionListV2API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// contract_freeze §1.6：list_v2 端点的数据源是
 	// sessionforensics.Exporter.ListRecentSessions，**实际拉到的是
-	// request_logs.gw_session_id**（V1 文本客户端标识，不是
+	// _request_logs.gw_session_id**（V1 文本客户端标识，不是
 	// sessions.session_id）。因此响应 id_kind 严格标注 "gw_session_id"
 	// —— 5 类 ID 互不替代（contract_freeze §1.6 互查表）。
 	//
-	// 注：端点路径命名是 /sessions/list 但内部数据流仍是 V1 request_logs
+	// 注：端点路径命名是 /sessions/list 但内部数据流仍是 V1 _request_logs
 	// 聚合。把 list_v2 真正切到 sessions_v2 表（session_id 主键）属于另一
 	// 条独立任务（5 类 ID 数据源迁移），不在本 P0 范围内。
 	items := make([]map[string]any, 0, len(audits))

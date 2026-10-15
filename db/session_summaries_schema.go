@@ -14,7 +14,7 @@ import (
 // 共享库上的 memora/kxmemory 部署用自身最小结构（session_id PK +
 // summary_json）覆盖了 public.session_summaries，丢掉 canonical 全部统计列。
 // 后果（本地 2026-09-04 事故，生产同构环境同样暴露）：
-//   - request_logs_hot 的 AFTER INSERT 触发器 trg_update_session_summary 按
+//   - _request_logs_hot 的 AFTER INSERT 触发器 trg_update_session_summary 按
 //     canonical 列 INSERT session_summaries (session_key, ...) 报 42703，
 //     整条 INSERT 回滚 —— 带 gw_session_id 的业务请求日志全部落库失败
 //     （探测请求无 gw_session_id 不触发，仍能落库），前端"实时请求流 →
@@ -62,7 +62,7 @@ func (d *DB) ensureSessionSummariesCanonical(ctx context.Context) error {
 	// 部署安全网只能回滚。日志逐字归因：本 ensure 之前的三条（847/848/704）都
 	// 打了 "catalog short-circuit"，唯独这条没有。
 	//
-	// 与 credentials / request_logs 的既有修法同构（db.go:columnsAllPresent）：
+	// 与 credentials / _request_logs 的既有修法同构（db.go:columnsAllPresent）：
 	// 形状齐全就零 DDL 直返。守卫覆盖列、索引、约束与 user_intent 的 widen，
 	// 任一不满足即回落到原 ensure 路径——那条路径自含幂等，缺什么补什么。
 	if d.sessionSummariesCanonicalComplete(ctx) {

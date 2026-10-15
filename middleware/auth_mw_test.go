@@ -339,3 +339,75 @@ func TestAuthMiddleware_NonNavigationRequestsKeepGate(t *testing.T) {
 		}
 	}
 }
+
+func TestAuthMiddleware_BypassesRootPublicAssets(t *testing.T) {
+	// 2026-10-12（2547 轮 GUI 验收抓到）：web/public 根级公共资产必须匿名可达。
+	// /assets/ 前缀只覆盖 Vite 哈希产物，public/ 根文件（与 index.html 同级）
+	// 此前对活跃的全局 API-key 门一律 401：logo/favicon 破图（含已登录用户——
+	// 本门不读 session cookie，JWT 也非数据面 key）、theme-init.js 失效
+	// （暗色首帧白闪）、entry-switch.js 失效。<img>/<script> 请求不携带
+	// API key，Accept 也不是 text/html，SPA 导航豁免救不了它们。
+	called := false
+	mw := NewAuthMiddleware("secret-key")
+	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	cases := []string{
+		"/logo-icon.png",
+		"/logo-icon-dark.png",
+		"/favicon.png",
+		"/theme-init.js",
+		"/entry-switch.js",
+		"/donation-qr.png",
+		"/user-agreement.html",
+		"/index.html",
+	}
+
+	for _, path := range cases {
+		called = false
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		// 浏览器 <img>/<script> 的典型 Accept（非 text/html 导航）
+		req.Header.Set("Accept", "*/*")
+		// NO Authorization header — 静态资产请求本就无 key，cookie 不被本门读取
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		if !called {
+			t.Errorf("%s: root public asset should bypass auth, got status=%d body=%s", path, rr.Code, rr.Body.String())
+			continue
+		}
+		if rr.Code == http.StatusUnauthorized {
+			t.Errorf("%s: should NOT return 401, got %d body=%s", path, rr.Code, rr.Body.String())
+		}
+	}
+}
+
+func TestAuthMiddleware_RootAssetBypassDoesNotLeakNeighbors(t *testing.T) {
+	// 反向钉子：根级豁免按**精确路径**收口，不得外溢到未登记的相邻路径。
+	// （形状钉桩纪律：只断言「登记的在场」不够，必须同时钉住「未登记的仍被拒」，
+	// 否则清单被删一半时判据依然全绿。）
+	mw := NewAuthMiddleware("secret-key")
+	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("%s: unregistered neighbor must not ride the root-asset bypass", r.URL.Path)
+	}))
+
+	cases := []string{
+		"/logo-icon.png.bak",        // 同名近似路径
+		"/logo-icon-dark.png/x",     // 尾巴路径
+		"/not-registered.png",       // 未来误放进 public 根且未登记的文件
+		"/logo-archive/logo-icon.bak.20260709.svg", // public 子目录不在豁免内
+	}
+
+	for _, path := range cases {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Accept", "*/*")
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusUnauthorized {
+			t.Errorf("%s: expected 401 for unregistered neighbor, got %d body=%s", path, rr.Code, rr.Body.String())
+		}
+	}
+}

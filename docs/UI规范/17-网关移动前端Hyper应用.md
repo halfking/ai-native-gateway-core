@@ -14742,3 +14742,704 @@ S18 第一版写的是 `series.bucket_minutes || 60` ⇒ **NO_EFFECT**。
   日志 `/tmp/co108-stability.log`）
   ⇒ `ComplianceHitsView` / `RoutingOptView` 两个历史 flaky 本轮仍未复现 ——
   按连跑器口径这**不是「已修复」**，只是没抓到。
+## 11.145 响应格式异常接进 UI：第六次「不隔离」，但这次**档位本身就是门**（第一百零九批，2026-10-14）
+
+### 一、接线
+
+- 新增 `web-mobile/src/views/FormatAnomaliesView.vue` + `.spec.ts`（**46 条**）
+- `src/config/appNav.ts`：抽屉席 `format-anomalies`，**须设** `requiresRole: 'super_admin'`
+- `src/router/index.ts`：`/format-anomalies`
+- `src/i18n/zh-CN.ts` + `en-US.ts`：`nav.formatAnomalies` 与 `fa` 命名空间
+- `src/components/shell/AppDrawer.spec.ts`：排序白名单加 `format-anomalies`
+- `src/api/orphanLedger.spec.ts`：删 `formatAnomalies` + 加哨兵（孤儿 21 → 20）
+
+### 二、★★★ 本族是**第六次「不隔离」，但处置与批 104 / 106 相反**
+
+`withAllTenantReadOnlyTx`（`admin/format_anomalies.go:106`/`:143`/`:213`）：
+`response_format_anomalies` 与 `model_integrity_events` 两张表**都有** `tenant_id` 列、
+list 会 SELECT 出来，但 WHERE **从不过滤**。
+
+★ 但把三族并排看，才能看清**决定处置的是档位而不是「隔不隔离」**：
+
+| 批次 | 隔离 | 档位 | tenant_admin 能读到跨租户？ | 处置 |
+|---|---|---|---|---|
+| 104 `dashboardBoard` | 无 | `admin` | **能** | 抽屉席不设 requiresRole + **视图内按段落门控** |
+| 106 `selfCheck` | 无（有列不引用） | `admin` | **能**（含 `request_body`） | 同上 |
+| **109 `formatAnomalies`** | **无** | **`superAdmin`** | **不能** | **抽屉席设 `requiresRole` 即完整处置** |
+
+⇒ ★★ 所以本页**没有任何角色分支**，而那**不是漏写**：
+档位本身就是那道门，视图内再加一层只会是重复。
+⇒ 判据专门钉这一条（`expect(w.text()).not.toContain('跨租户')`），
+**免得下一个读者按批 104 的模板补一段多余的门控**。
+
+⚠️ 代价要说清：**这不是把后端修好了**。绕过前端直接调端点，super_admin 本来就能看全量；
+这一族没有「tenant_admin 越权」风险，但**审计口径上仍然是第六次不隔离**。
+
+### 三、★★★★★ 本族最要紧的一格：**同名字段 `count` 在两个端点里语义相反**
+
+| 端点 | `count` 的来源 | 恒成立的不变式 |
+|---|---|---|
+| `/format-anomalies`（`:100-111` + `:186-191`） | **独立的** `SELECT COUNT(*)` = **全表命中数** | `count >= anomalies.length` |
+| `/format-anomaly-summary`（`:231` 后） | **`len(summaries)`** = 本页行数 | `count === summaries.length` |
+
+⇒ ★★★ 两处的 `count` 读法**正好相反**，而字段名、类型、所在响应都一样。
+⇒ 与批 78（`count == tasks.length`）、批 81（`count == events.length`）比，
+**在 list 上又恰好相反** ⇒ ★★ 判据与 UI 文案都**不能跨族照抄**。
+⇒ 处置：页面上两处**分开措辞**（明细「全表命中 N 条，本页 M 条」/ 汇总「本页共 N 行」），
+并各配一条违规告警。
+
+### 四、判据钉的十一组不变量（摘要）
+
+① 两个 `count` 语义相反 ② `count < len` ⇒ 违规告警，且 **`count > len` ⇒ 不得误报**（见第七节）
+③ `limit`/`offset` **都回显** ⇒ 分页能精确判定（⚠️ 与批 79/80/81 只回显 days 相反）
+④ `provider_code` 键缺失 ⇒ 「不可能匹配任何 provider 过滤」——
+   因为展示与过滤用**同一个** `COALESCE`（`:119`/`:81`），而 `NULL = 'x'` 求值为 NULL、WHERE 不放行
+⑤ `request_id` 恒在但**可空串**（`text NOT NULL` ≠ 非空串）
+⑥ `response_structure` 是 map + omitempty ⇒ **键在就意味着非空** ⇒ 「结构为空」是恒真判据，**不提供**
+⑦ summary 三个 `AVG(...)` 是 `*float64` + omitempty ⇒ **`AVG` 返回 NULL 时键被省略**（不是 0、不是 null）
+⑧ `COUNT(DISTINCT request_id)` ⇒ `affected_requests <= anomaly_count`；`resolved_count <= anomaly_count`
+⑨ summary 的 `LIMIT 200` **硬编码在 SQL 里**（`:231`），不可调、不回显 ⇒ 只能靠 `count >= 200` 反推
+⑩ 排序是 `ORDER BY hour DESC, anomaly_count DESC` ⇒ **整表不按计数降序**，
+只能断言「**同一 hour 内**按 `anomaly_count` 非增」—— 这是本族最容易被误用的不变量
+⑪ `anomaly_type`/`severity` 是**开放域**（写入入口接受任意字符串、建表无 CHECK）
+⇒ 未知值要标出来但**不是错误**；且本表 `severity` 缺省是 `medium`，
+`model_integrity_events` 是 `low` ⇒ 跨表比较不能想当然
+
+★ 另：`unresolved_only` 用 `queryBool`（`handler.go:1546-1549`），
+只有 `true`/`TRUE`/`1` 为真，**`yes`/`on`/`t` 都为假** ⇒ 不报错、不回落成缺省，
+**无法区分「没传」与「传了假值」** ⇒ 页面因此**恒发**这个参数。
+
+### 五、★ 视图里三处「我自己写错、按名字猜签名」的坑
+
+1. `formatNumericValueIsZero` 我按名字当成 `(v: number) => boolean`，
+   实际是 **`(row, key)`**；`formatSummaryAvgIsAbsent` 同理。
+   ⇒ vue-tsc 的 TS2554 当场打出来。**凭函数名猜签名必被类型门抓住** ——
+   但前提是**真的跑了类型门**。
+2. ★★ 键名 `content_size_bytes` 与 Go 字段名 `ContentSize` 不一致，
+   我先写了个 `r as Record<string, unknown>` 的索引取值，
+   vue-tsc 报 **TS2352**（该类型没有索引签名，转 `Record` 不安全）。
+   ⇒ **接口里那个字段名本来就是对的**，直接 `r.content_size_bytes` 即可，
+   索引技巧纯属绕远路。
+3. `.fa__chip-btn` 里我连写了两行 `border`，第一行还把 `--app-radius-sm` 当颜色用。
+
+### 六、★★★ 本批的判据自身出了五处问题（**都不是被测物的错**）
+
+★ 与批 106–108 的「判据抓到产品缺陷」相反，这一批**判据自己**翻车了五次，
+而每一次都是变异或类型门揭出来的：
+
+| # | 判据的问题 | 症状 | 揭穿者 |
+|---|---|---|---|
+| 1 | ★ **整行 `not.toContain('无数据')` 范围过宽** | 夹具只让两格键缺、第三格是 0 ⇒ 那一格**正确地**显示「无数据」⇒ 断言必红 | 首跑 |
+| 2 | 断言按 `zh-CN` 渲染，却写了 **en-US 的单位值** | `0 词元` vs `0 tok` | 首跑 |
+| 3 | i18n parity 判「未翻译」的口径是 **值 === 键名** | `fa.unit.bytes = bytes` 两侧都被抓 | i18n 门 |
+| 4 | ★★ **恒真判据**：`offset` 初始就是默认 0 ⇒ 换档前后都是 0 | 无论有没有 `offset = 0` 都通过 | **变异 S17** |
+| 5 | ★★★ **缺失一个方向的正控**：只钉了 `count == len` 不报错，**没钉 `count > len` 不报错** | 把「`count < len` 才违规」改成「`!= len` 就违规」，**最正常的分页**整页染红却没人拦 | **变异 S1** |
+
+⇒ ★★★ 第 5 条是本批最值钱的：「违规告警」的判据天然只写「什么时候该报」，
+**几乎不会写「什么时候不该报」** ——
+而**误报方向**恰好是正常业务路径占的那一半。
+⇒ 补法固定：每加一条 `xxx ⇒ 报`，就配一条 `yyy ⇒ 不报`，且 `yyy` 要是**正常**取值。
+
+### 七、可证等价 ⇒ 删变异、简化实现（第 6 处）
+
+变异 S8 第一版是「把 `!(key in row)` 换成 `row[key] === undefined`」⇒ **NO_EFFECT**。
+
+★ 不是判据没牙：TS 里字段是可选的（`expected_tokens?: number`），
+JSON 里键缺解包后**就是** `undefined`
+⇒ 两个判断在**每一个后端可达的取值上**完全一致（含「指针指向 0」那一格，
+两边都判「不是键缺」）。
+
+⇒ 与批 108 的 `bucket_minutes || 60` 同型：**可证等价 ⇒ 删变异，而不是补用例**。
+⇒ 顺带把**实现**里那句多余的 `key in row` 也简化掉了
+（`=== undefined` 更直白，且 46 条判据一条没红 ⇒ 证明它确实是多余的）。
+
+★ 脚本最终 **17 条**（删掉 S8 后），**17/17 全有牙**，还原 md5 逐字节一致、
+未用 `git checkout --`，跑完复查零 `CO109S` 残留。
+
+### 八、孤儿 21 → 20
+
+`formatAnomalies` 从 `KNOWN_ORPHANS` 删掉一行并加哨兵。
+哨兵注释写明：该族是 superAdmin 档 ⇒ 席**要** requiresRole
+⇒ `AppDrawer.spec.ts` 的白名单里**必须**出现 `format-anomalies`；
+**只加抽屉席不改正那份白名单，「tenant_admin 少掉的只有这些」那条立刻红** ——
+这正是它该做的。
+
+### 九、验证
+
+- 新增 `FormatAnomaliesView.spec.ts` **46 条**；`orphanLedger.spec.ts` 13 → 14 条
+- ★★★ 变异 **17/17 全有牙**（`/tmp/mut-co109.mjs`，标记 `CO109S1…S18`（S8 已删），
+  还原 md5 逐字节一致，**未用** `git checkout --`；跑完复查文件里**零** `CO109S` 残留）
+- 五门 rc=0（i18n parity 2829 → **3110 键** / 触控 R1 103 个 `.vue` / CSS / `vue-tsc` / `build`）
+- 全量 **7260 条 / 198 文件** rc=0（1 skipped）
+- 十连跑 **10/10 全绿、每轮 7260 逐条一致**（`总次数 10 · 失败次数 0 · 快照 0 份`，
+  日志 `/tmp/co109-stability.log`；1 skipped 是仓内既有跳过，不是本批引入）
+  ⇒ `ComplianceHitsView` / `RoutingOptView` 两个历史 flaky 本轮仍未复现 ——
+  按连跑器口径这**不是「已修复」**，只是没抓到。
+---
+
+## 11.146 第一百一十批：指纹漂移接进 UI，附带挖出「一段未闭合的注释吞掉两行代码，而每道门都绿」
+
+### 一、批次目标与接线
+
+把 `src/api/modelIntegrityDrift.ts`（第一百零一批做的 API 层）接成可达 UI 入口。
+
+- 视图 `web-mobile/src/views/ModelIntegrityDriftView.vue`
+- 判据 `ModelIntegrityDriftView.spec.ts` **51 条**
+- 抽屉席 `model-integrity-drift`（`to: '/model-integrity-drift'`，**superAdmin 档**）
+- 路由 `/model-integrity-drift`，`meta: { titleKey: 'mid.title', requiresAuth: true }`
+- 两侧 i18n 新增 `mid` 块 + `nav.modelIntegrityDrift`（3110 → **3155 键**）
+- 孤儿 **20 → 19**
+
+四路取证结论：注册 `admin/handler.go:942-943` 两条都是 `h.superAdmin`；
+分发 `admin/model_integrity.go:62-84` 的 switch（`summary` / `events` / `events/{id}/resolve` /
+`fingerprint-drift`，未命中 ⇒ `http.NotFound`）；实现 `admin/model_integrity.go:314-388`；
+桌面调用方 `web/src/api/integrity.ts:96-102` + 视图 `web/src/views/ModelIntegrityView.vue`
+的 `drift` 标签页（1070 行）。
+
+★ 移动端既有 `IntegrityView.vue`（抽屉席 `integrity`）用的是 `@/api/modelIntegrity`
+的 summary/events/resolve，**零** drift 引用 ⇒ 本族确属独立孤儿，值得单独一席。
+
+⚠️ 权限不得按前缀判：同一个 `/api/admin/model-integrity/` 前缀上，
+`integrity` 席与本席是**两张席**（前者管 summary/events/resolve）。登记在
+`AppDrawer.spec.ts` 与视图文件头。
+
+### 二、★★★ 附带发现：一段未闭合的文件头注释吞掉两行代码，而**每道门都绿**
+
+这才是本批最值钱的一条，与漂移功能本身无关。
+
+**现象**：`src/api/orphanLedger.spec.ts` 里 `grep -c '^const ROOT'` 返回 **2**，
+但 TypeScript 全程不报 `TS2451`（重复块级变量），vitest 15 条断言全绿。
+
+**根因**：文件头 `/**` 从第 5 行开启后，第 28 行起的一整段**丢了行首的 ` * ` 前缀**
+（`「孤儿」= …` / `★ 第一版只查…` / `⇒ ⇒ ★★★ **正确口径是传递可达性**…` 全部变成顶格裸行），
+于是注释**一直没闭合** —— 直到第 51 行那个本该独立成段的 `/** … */` 的 `*/`
+才把文件头注释关掉。**中间那两行是真的代码，被整段吞进了注释：**
+
+```ts
+const ROOT = join(process.cwd(), 'src')
+const API_DIR = join(ROOT, 'api')
+```
+
+真正的声明还在文件后半段活着（今天的第 104-105 行，是当初复制时留下的另一份）。
+
+⇒ ★★★ **于是产生了本仓最隐蔽的一种读数：每道门都绿，而那两行是死文本。**
+逐条实测（损伤态，真实文件）：
+
+| 门 | 读数 |
+|---|---|
+| `orphanLedger.spec.ts` 15 条断言 | **全绿** |
+| `vue-tsc --noEmit`（含该文件） | **EXIT=0** |
+| esbuild / vitest | 不报错（那两行不是代码） |
+| 新增的 `verify-comment-boundaries.mjs` | **EXIT=1，准确报出 48 / 49 行** |
+
+★★ **为什么 `vue-tsc` 看不见 —— 这是本条最要紧的一半**：
+`TS2451` 恰恰是**对这类缺陷结构性不可见**的那道检查 ——
+注释已经把那两行从 program 里摘掉了，binder 眼里**根本不存在第二个 `ROOT`**。
+⇒ 也就是说：**恰恰因为它是重复的，它才被伪装成无害。**
+如果那两行不是重复的，这道门会在「一切正常」的读数下**静默失效**，
+而**没有任何一道现有门会红**。
+
+★★ 顺带对照本仓已有的那条教训（「块注释不嵌套 ⇒ 提前闭合、报错位置与错因相距很远」）：
+那次是**提前闭合**，这次是**迟迟不闭合** —— 同一个手误的**两个方向**，
+而这一次**连报错都没有**，所以更难发现。
+
+**处置**：把第 28-46 段的 ` * ` 前缀补回去、在段落末尾显式闭合注释、删掉被吞的两行。
+改完 `ROOT`/`API_DIR` 只剩一处声明，15 条断言与类型门复跑仍全绿。
+
+**影响面**：写了个扫描器量全仓 `src/**` 的 `.ts` / `.vue`（**434 个文件**），
+命中**只有这 2 行、只有这 1 个文件** ⇒ 是孤立事件，不是系统性写法问题。
+
+**新增门**：`scripts/verify-comment-boundaries.mjs` —— 判据是「块注释内部不得出现顶格的代码行」，
+并入 `build` 前置链与 `gate:selftest`；自测 `verify-comment-boundaries.selftest.mjs` **15/15**。
+读数：**436 个文件，块注释里没有藏代码**。
+
+⇒ 这道门与 `TS2451` 是**互补**而非重复：一个管「同一份代码里声明两次」，
+一个管「第二次声明被注释吞了」，后者对前者**永远不可见**。
+
+### 三、后端契约（十四条要点）
+
+1. **权限**：`handler.go:942-943` 两条都是 `h.superAdmin`，**整个前缀**都是这一档。
+2. **租户口径**：`:328` 用 `withAllTenantReadOnlyTx`，SQL **选了** `tenant_id` 扫进
+   `item.TenantID`，但 WHERE 只有 `anomaly_type = 'fingerprint_drift'` 与时间窗，
+   **没有任何租户条件** ⇒ 与 operational / selfCheck / routing / formatAnomalies 同族。
+   ★★ **处置与批 104 / 批 106 相反**：那两族是 admin 档 + 不隔离 ⇒ 必须视图内按段落门控；
+   本族 superAdmin 档 ⇒ **档位本身就是那道门** ⇒ 抽屉席设 `requiresRole` 即完整处置，
+   **视图里不应有任何角色分支**。
+   ⚠️ 注释里**故意不写「第几次不隔离」**：`modelIntegrityDrift.ts` 头写「第五次」而
+   批 109 写「第六次」，谁都复核不了 ⇒ 要指认就**按名字列**。
+3. **`days` / `limit` 是静默回落，不是 400**：`days <= 0 || days > 30 ⇒ 7`，
+   `limit <= 0 || limit > 500 ⇒ 200`，且 `queryInt` 解析失败直接取缺省
+   ⇒ `days=31` / `days=0` / `days=abc` **三种写法都拿到 7 天的数据**。
+4. ★★ **桌面那个 1..90 是真 bug**：`web/src/views/ModelIntegrityView.vue:597` 的
+   days 输入框 `min="1" max="90"`，而后端上限是 30 ⇒ 桌面选 31..90 时
+   **静默回落成 7 天**，界面上却显示用户选的值。移动端**只给 1..30**（变异 S3/S4 把这条钉死）。
+5. `days` 回显的是**生效窗口**（`"days": days`），不是请求值
+   ⇒ 与批 76 `errors/trend` 回显**请求值**正好相反，同仓两种口径必须逐端点读。
+6. `count` **恒等于** `events.length`（`:385` 写的是 `len(items)`），且 `events` 恒数组
+   （`:322` 的 `make(…, 0)`）⇒ 零行是 `[]` 不是 `null`。
+7. ★★ 响应**不回显 limit**（只回显 `days`）⇒ 截断只能靠「拿满请求上限」反推。
+8. `anomaly_type` 是 SQL 里的**硬编码常量** ⇒ 每行必然是 `fingerprint_drift`
+   ⇒ 本族**唯一**可严格校验取值的字符串键。
+9. `severity` 四值域（`low`/`medium`/`high`/`critical`）**只存在于注释里**，
+   建表与 baseline 都**没有 CHECK**。
+10. ★★ 本表 `severity DEFAULT 'low'`（`462_model_integrity_events.sql:52`），
+    而批 109 的 `response_format_anomalies` 是 `DEFAULT 'medium'`
+    ⇒ **同族、同超级管理员、同开放域，缺省值不同** ⇒ 缺省这件事绝不能跨表照抄。
+11. **十九个键里十四个是指针 + omitempty**：5 恒在（`id` / `detected_at` /
+    `anomaly_type` / `severity` / `resolved`）+ 14 条件。
+12. ★★★ 指针 + omitempty ⇒ `provider_id` / `credential_id` **键在时值可能是真实的 0**
+    （与批 108 `content_size_bytes` 的「值类型 omitempty 吃掉 0」方向相反）
+    ⇒ 真值判断会把 0 误判成「没有值」。
+13. ★★★★ **`context` 键缺失不能证明「没有上下文」**：`jsoncol.Decode`
+    （`internal/jsoncol/jsoncol.go:57-79`）有**三条路**让键消失 ——
+    列是 NULL、列是 JSON `null`、**列里的 JSON 解析失败**（只留 Warn、dst 一个字节不动）
+    ⇒ 页面只能说「无法判定」。
+14. 排序 `ORDER BY ts DESC` ⇒ `detected_at` 非增（**含相等**，同一毫秒两行是合法的）。
+
+**错误信封三条**：405 `method not allowed`（`:316-318`）、
+503 `database not configured`（**dispatcher 层** `:56-59`，在子路径分发之前
+⇒ `summary` / `events` / `fingerprint-drift` 共享它）、
+500 `drift query failed`（`:379-382`）。
+
+### 四、视图的取舍
+
+- **越界档位一律不给**：后端是静默回落（不报错），给了等于让用户以为「我查的是 45 天」
+  而实际拿到 7 天的数据 ⇒ 只给 `days ∈ {1, 7, 14, 30}`、`limit ∈ {50, 200, 500}`。
+- **`context` 键缺说「无法判定」**，键在且空才说「存在但为空」。
+- **`request_id` 键缺与空串用两句不同措辞**（NULL vs 存了 `''` 是两件事）。
+- **处置痕迹分四档**而不是两档（见下）。
+- **不渲染空行**：`resolved_at` / `resolution_notes` 缺键时那两个行整行不出现。
+
+### 五、判据十三组
+
+① 档位与错误信封 · ② 越界档位不得出现在页面上 · ③ `days` 回显生效值 ·
+④ `count` 恒等于本页行数（**含 `>` 方向**）· ⑤ 拿满上限=可能截断（含正控）·
+⑥ 指针型数字键的 0 · ⑦ `context` 的三条消失路径 · ⑧ 处置痕迹四档 ·
+⑨ `severity` 表缺省是 `low` · ⑩ 条件键「缺失」与「空值」· ⑪ 排序/空窗口/跨租户 ·
+⑫ **无角色分支** · ⑬ 触控目标。
+
+★★ ⑫ 比批 109 那条强一个量级：批 109 量的是**文案**
+（`expect(w.text()).not.toContain('跨租户')`），可写文案的人照样能加一个 `v-if`。
+本批分两层：
+
+- **结构层**：断言视图源码（**剥掉注释后**）不含 `@/stores/auth` / `useAuthStore` /
+  `super_admin` / `tenant_admin` ⇒ 压根没拿身份，渲染不可能随身份变。
+- **行为层**：同一份载荷下换角色重挂两次 ⇒ 渲染**逐字节相同**。
+
+### 六、★★★ 判据自身翻了六次车（五次是判据错，一次是被测物错）
+
+1. **负断言范围过宽**（批 109 踩过的同一条，我照抄了模板又踩了一次）：
+   ⑩-2 断的是整张卡片 `not.toContain('未提供（键缺失）')`，而同一行里
+   `provider_code` / `client_model` / … 确实都缺键、**正确地**渲染成那句话 ⇒ 必然误报。
+   ⇒ 收窄到 `request_id` 那一格（并给它补了 testid）。
+2. **断言假设了一个不存在的参数**：`toHaveBeenCalledWith({ days: 30 }, expect.anything())`
+   —— 视图只传一个参数 ⇒ 报的是「参数个数不符」，而我真正要量的是「days 落在请求里」。
+3. **角色断言匹配到了注释**：视图文件头就写着「抽屉席须设 `requiresRole: 'super_admin'`」
+   ⇒ 第一版对**原文**匹配 `super_admin` 当场自曝 ⇒ 角色断言必须先剥注释。
+4. **触控正则吃掉了自己的合法值**：`not.toMatch(/min-height:\s*(?:0|[1-4]?\d)px/)`
+   里 `[1-4]?\d` 会吃掉**两位数**（`'4' + '8' + 'px'`）⇒ 连 `48px` 自己都被判违规
+   ⇒ 改成把数值**解析出来**再比大小（既不误伤，也挡得住真值 47）。
+5. **`import.meta.url` 在 vitest 里不是 `file:` scheme** ⇒ 两条读源码的判据一起崩。
+6. ★★ **唯一一次是「被测物错」，判据是对的**：⑧-2（`resolved=true` 且两个痕迹键都缺）
+   期望「标记已解决但没有处置痕迹」，实得「有处置痕迹（标记与痕迹不一致）」。
+   根因是我用了模块的**并集**判据 `driftHasResolutionTrace`
+   （`resolved === true || 'resolved_at' in row`）⇒ 它对 `resolved === true` 单独成立，
+   于是「什么都没留下」被算成「有痕迹」。
+   ⇒ 修**实现**成四档，把三个状态分开；并把这个缺陷**固定成变异 S10**，
+   免得以后重构又合并回去。
+
+### 七、变异台 17/17 全有牙
+
+`/tmp/mut-co110.mjs`（标记 `CO110S1…S18`），还原走 `writeFileSync` 原始字节 +
+逐字节比对，**未用** `git checkout --`，跑完复查零残留。
+
+- **S10**：把第六次翻车那个缺陷**原样注回去** ⇒ 1 条转红。
+- **S11**：★ `countViolation` 从 `!countMatches` 改成 `count < len`
+  ⇒ 只剩「小于」一个方向 ⇒ **「count 比本页多」这种最普通的载荷不再报违规**，
+  而判据 ④-3 立刻转红。这就是批 109 那条「告警类判据必须配正控」的**再次验证**。
+- ★★ **S1 / S2 第一版被判成 `MUTATION_INVALID`**：我把行内标记 `// CO110S1` 塞进了
+  **模板属性**（`@click="days = dp; load()"` → `@click="days = dp" // CO110S1`），
+  Vue 模板表达式编译失败 ⇒ **整套件 0 条跑成**。
+  ⇒ 这是**工装问题不是判据没牙**；处置是模板类变异不带行内标记，
+  残留改由 `restore()` 的逐字节比对 + 末尾 grep 复查把守。
+- ★★★ **S6 按纪律删除，而不是补用例**：把「值为 0」的分支去掉之后落穿到
+  `` `${v} ${suffix}` ``，而 `v === 0` 时它与 `` `0 ${suffix}` `` **逐字相同**
+  ⇒ **可证等价** ⇒ 删变异。判据 ⑥-1 本身不需要加强。
+- ★ 收尾的**零残留复查自己先崩了**：写的是 `leftover.equals(orig)`，
+  而 `readFileSync(path, 'utf8')` 返回的是**字符串** ⇒ 字符串没有 `.equals`。
+  ⇒ 「收尾检查崩掉」这件事最容易被当成「跑过了」——
+  **收尾检查必须先自己跑通再当证据用。**
+
+### 八、孤儿 20 → 19
+
+`modelIntegrityDrift` 从 `KNOWN_ORPHANS` 删掉一行并加哨兵。
+哨兵注释写明 superAdmin 档 ⇒ 席**要** requiresRole ⇒ `AppDrawer.spec.ts` 的白名单里
+**必须**出现 `model-integrity-drift`；**只加抽屉席不改正那份白名单，
+「tenant_admin 少掉的只有这些」那条立刻红**。
+
+剩余 19 项：`boardOperational`、`dataLifecycleStorage`、`dispatchJournal`、`errorsTrend`、
+`modelHistory`、`modelIQ`、`nativeTransport`、`opsOverview`、`platformSettings`、
+`reportRollup`、`requestActions`、`sessionAnalyticsFilterOptions`、`slidingWindow`、
+`storageAndLogConfig`、`storageMigrationState`、`subscriptionTiers`、`turnsFilterOptions`、
+`usageEnhanced`、`v1DataHorizon`。
+
+### 九、验证
+
+- 新增 `ModelIntegrityDriftView.spec.ts` **51 条**；`orphanLedger.spec.ts` 15 → **16 条**；
+  `AppDrawer.spec.ts` 白名单同步
+- ★★★ 变异 **17/17 全有牙**（`/tmp/mut-co110.mjs`，S6 按「可证等价」删除，
+  还原逐字节一致，**未用** `git checkout --`；跑完复查零 `CO110S` 残留且字节一致）
+- ★★ 新增门 `verify-comment-boundaries.mjs` **436 文件 0 命中**；
+  自测 **15/15**；`gate:selftest` 四门合计 **64 条**（11 + 11 + 27 + 15）
+- 五门 rc=0（i18n parity 3110 → **3155 键** / 触控 R1 103 → **104 个 `.vue`** /
+  CSS 107 files / `vue-tsc` / `comment:check`）
+- 全量 **7312 条 / 199 文件** rc=0（1 skipped）
+- 十连跑 **10/10 全绿**（日志 `/tmp/co110-stability.log`）
+
+---
+
+## 11.147 第一百一十一批：对账报表面接进 UI，以及「变异加个前缀就想让它恒真」被运算符优先级吃掉
+
+### 一、批次目标与接线
+
+把 `src/api/reportRollup.ts`（第八十四批做的 API 层，191 条判据）接成可达 UI 入口。
+
+- 视图 `web-mobile/src/views/ReportRollupView.vue`
+- 判据 `ReportRollupView.spec.ts` **48 条**
+- 抽屉席 `report-rollup`（`to: '/report-rollup'`，**superAdmin 档**）
+- 路由 `/report-rollup`，`meta: { titleKey: 'rr.title', requiresAuth: true }`
+- 两侧 i18n 新增 `rr` 块 + `nav.reportRollup`（3155 → **3214 键**）
+- 孤儿 **19 → 18**
+
+四路取证：注册 `admin/handler.go:1086`
+`mux.HandleFunc("/api/admin/report-rollup/", h.superAdmin(h.handleReportRollup))`
+⇒ **整个前缀（带尾斜杠）都是 superAdmin 档**；分发 `admin/report_rollup.go:94-118`
+（**`strings.HasSuffix`** 而非路径段精确匹配）；桌面调用方
+`web/src/views/admin/ReconciliationReport.vue` + `useReconciliationPage.ts`；
+移动端无任何引用 ⇒ 孤儿成立。
+
+### 二、★★★ 命名陷阱：两张席都叫「对账」
+
+移动端**已经有**一张 `reconciliation` 席（`/reconciliation` →
+`CostReconciliationView.vue` → `@/api/costReconciliation`），讲的是**费用对账**。
+本席讲的是**对账报表**（区间多维汇总 + 筛选栏候选），走 `@/api/reportRollup`。
+
+⇒ 两张席的 nav 标题、路由、视图、API 模块全不相同，**只有中文名相近**。
+⇒ 接错模块，**孤儿棘轮的判据与抽屉白名单都不会红**（它们只看席与路由是否存在）。
+所以处置写在两处：抽屉席注释 + 棘轮哨兵注释里显式列出两个模块路径。
+
+⇒ ★ 这是「完成口径 = 可达 UI 入口」的一个**新失效模式**：
+前面的批次里，孤儿棘轮足以保证「接上了」，因为一个模块名 ↔ 一个功能；
+本族**一个中文名 ↔ 两个模块**，棘轮的「存在性」判据就不足了。
+
+### 三、★★★ 本批补齐了两条**派生列**判据（API 层原先没有）
+
+`domains/reportrollup/report.go:210-231` 的 `finalize()` 一次性补齐四个派生列：
+
+```go
+t.ErrorCount = t.RequestCount - t.SuccessCount
+if t.RequestCount > 0 {
+    t.ErrorRate = float64(t.ErrorCount) / float64(t.RequestCount)
+}
+t.TotalTokens = t.InputTokens + t.OutputTokens + t.CacheReadTokens + t.CacheWriteTokens
+denom := t.InputTokens + t.CacheReadTokens
+if denom > 0 { r := …; t.CacheHitRatio = &r }
+```
+
+★ 原先 API 层只覆盖了 `error_count`（无条件）与 `cache_hit_ratio`（裸 null）两条，
+**接 UI 时逐行核出另外两条**，一并补进模块：
+
+1. `reportTotalsTotalTokensMatches` — **`total_tokens` 把 `cache_read` / `cache_write`
+   也算进去** ⇒ 「total = input + output」这种直觉写法在本族**恒不成立**。
+2. `reportTotalsErrorRateIsZeroWhenNoRequests` — ★★ **派生发生在 `if` 之外，
+   分母的守卫只包住除法**；而 `ErrorRate` 是值类型 `float64`（无 omitempty）
+   ⇒ 零请求时它保持零值 **`0`** 并照常出现。
+   ⇒ 客户端自己拿 `error_count / request_count` 重算会得到 **`NaN`**，
+   而服务端给的是 `0`。两种「0% 失败率」读数一样，**只能靠 `request_count` 本身是 0 区分**。
+
+### 四、`reportRollupIsDegraded` 必须是**类型守卫**（vue-tsc 抓出来的）
+
+降级与正常是**互斥的两种形状**（`report_rollup.go:317-319` 的
+`{"degraded": true, "error_code": "REPORT_SNAPSHOTS_NOT_MIGRATED"}`，主键整个消失），
+而调用方天然写成 `if (isDegraded(body)) {…} else { body.report }`。
+原签名返回 `boolean` ⇒ **`else` 分支不被收窄** ⇒
+`vue-tsc` 报 `TS2339: Property 'report' does not exist on type '{degraded:true; error_code:string}'`。
+
+⇒ 处置是**改签名**成 `body is ReportRollupDegradedResponse`，
+**不是**在视图里加 `as any` —— 后者会把「两种形状互斥」这个契约信息从类型里抹掉。
+
+★ 同族：`detected_at`/`request_id` 等「指针 vs 值」的判别，在 TS 里同样只能靠类型承载；
+一旦用 `as any` 绕过，判据就再也看不出「这两件事不一样」了。
+
+### 五、视图的取舍
+
+- **不提供 xlsx 导出**：那个端点返回 `…spreadsheetml.sheet` 二进制（不是 JSON），
+  而移动端 WebView 里落盘/分享 xlsx 需要原生能力 ⇒ 做了就是半成品。
+  理由写进视图文件头，不是「忘了做」。
+- **单日窗口要提供**：`report_rollup.go:143-145` 判的是 `end.Sub(start) > 366*24h`
+  ⇒ `start === end` 合法，而单日对账是常用看法 ⇒ 档位 `[1, 7, 30, 90, 366]`。
+- **不提供「今天」**：聚合是 **T+1** 的（`reportRange` 的 `end = 昨日`，注释自陈
+  「今日快照尚不存在」）⇒ 区间一律不含今日，并在页面上显式说明。
+- **`coverage` 的两个数组按三态渲染**：键缺失 / **裸 `null`** / 有长度
+  ⇒ 合并成「0」就是撒谎（`[]string` 无 omitempty 且为 nil slice 时是裸 `null`）。
+- **`filter` 恒不回显**（`GrainFilter` 标着 `json:"-"`）⇒ 页面显式说明「查不到」，
+  **不假装**能显示「当前过滤：…」。
+
+### 六、★★★ 判据自身翻了三次车（三次都是判据错，后端与实现都对）
+
+1. **★ 我把 Go 的 `switch` 顺序读反了。** 断言「`grain_dates` 非空 + `legacy_dates` 空
+   ⇒ 派生 `legacy`」，实得 `grain`。
+   `grainreport.go:945-951` 的第二个 case 要求的是 **`LegacyDates > 0`**，
+   不是 `GrainDates > 0` ⇒ legacy_dates 为空时两个 case 都不匹配 ⇒ 落 `default` ⇒ `grain`。
+   ⇒ ★★ 这正是契约头 (14)「推论一」的来源：**`source === "grain"` 连 `grain_dates` 非空
+   都不蕴含**。第一版的断言比后端**更乐观**。
+2. **负断言又放到整行。** 判「coverage 有值时显示长度」时对整行断
+   `not.toContain('裸 null')`，而同一行的 `legacy_dates` 在那个夹具里**就是 null**
+   ⇒ 「裸 null」是**正确**呈现。⇒ 收窄成断 grain 那一半的 `grain_dates 2 项`
+   并显式断言 `legacy_dates 裸 null`。（承批 109/110，同一条第三次。）
+3. **断言了一个视图并不提供的档位。** 「不得提供超出 366 天的窗口」顺手写成
+   `expect(Math.min(...ws)).toBe(1)`，而档位里本来没有 1
+   ⇒ ★ 处置不是删断言，而是**把 1 补进 `WINDOW_CHOICES`**
+   （单日本来就合法、且是常用看法）⇒ 断言变真、且比原来更有用。
+
+### 七、★★★ 变异台 17/17 全有牙，而**头三条白跑了**
+
+`/tmp/mut-co111.mjs`，还原走 `writeFileSync` 原始字节 + 逐字节比对，**未用** `git checkout --`。
+
+★ **本批最值钱的一条**：第一版把三条变异写成「在表达式里插一个前缀让它恒真」：
+
+```js
+// 想让它恒真
+const coverageAscending = computed(() => // CO111S5
+  true ||   …原来的 : 三元表达式…)
+```
+
+结果 **两条 NO_EFFECT + 一条语法错**。原因：
+
+```js
+true || r ? A : B   // 实际是 (true || r) ? A : B  ≡  r ? A : B
+```
+
+★★ **JS 里 `?:` 的优先级低于 `||`** ⇒ 这个「变异」在每一个取值上都与原式**完全相同**。
+（第三条更隐蔽：`false || (` + 原表达式 ⇒ 原表达式尾部那个 `computed(x,)` 的逗号被吞进
+括号 ⇒ `(expr,)` 是**带尾逗号的 SequenceExpression** ⇒ 语法错 ⇒ 整套件 0 条跑成
+⇒ 被判 `MUTATION_INVALID`，**工装问题不是判据没牙**。）
+
+⇒ ★★★ **处置不是「再想想怎么写变异」，而是整段替换** `computed(() => true)` / `(…) => false`。
+⇒ ★ **「在表达式里插前缀」是变异台的一类**系统性**陷阱**：
+  优先级、结合性、短路，会让变异**在语义上等于没改**，而台子只报 `NO_EFFECT`，
+  很容易被误读成「这条判据没牙」。**判别动作：一条 NO_EFFECT 的第一问仍然是
+  「这条变异实际造成了差别吗」。**
+
+### 八、告警类判据的四个方向（本批每条都配了正控）
+
+| 判据 | 破坏要报 | 正常不报 |
+|---|---|---|
+| `error_count` 等式 | ②-2 | ②-1 |
+| `total_tokens` 求和 | ②-5 | ②-3 / ②-4 |
+| 零请求 ⇒ `error_rate === 0` | ②-7 | ②-6 / **②-8（条件不得误触发）** |
+| `source` ⇔ `coverage` | ③-2 | ③-1 / ③-3 / ③-4 / ③-5 |
+| `coverage` 升序 | ④-5 | ④-4 |
+
+★ 其中 ②-8 是「**条件的正控**」：把 `request_count === 0` 那个 `if` 拆掉后，
+`request_count=10 且 error_rate=0.3` 这种**正常载荷**就会被判成零请求违例
+⇒ 变异 S3 当场转红。
+
+### 九、孤儿 19 → 18
+
+`reportRollup` 从 `KNOWN_ORPHANS` 删掉一行并加哨兵。
+哨兵注释写明 superAdmin 档 ⇒ 席**要** requiresRole ⇒ `AppDrawer.spec.ts` 的白名单里
+**必须**出现 `report-rollup`；并把「两张席都叫对账」这个接错陷阱写进注释
+（★ 因为接错模块这两条判据都不会红）。
+
+剩余 18 项：`boardOperational`、`dataLifecycleStorage`、`dispatchJournal`、`errorsTrend`、
+`modelHistory`、`modelIQ`、`nativeTransport`、`opsOverview`、`platformSettings`、
+`requestActions`、`sessionAnalyticsFilterOptions`、`slidingWindow`、`storageAndLogConfig`、
+`storageMigrationState`、`subscriptionTiers`、`turnsFilterOptions`、`usageEnhanced`、
+`v1DataHorizon`。
+
+### 十、验证
+
+- 新增 `ReportRollupView.spec.ts` **48 条**；`orphanLedger.spec.ts` 16 → **17 条**
+- ★★★ 变异 **17/17 全有牙**（`/tmp/mut-co111.mjs`；还原逐字节一致，**未用** `git checkout --`；
+  跑完复查零 `CO111S` 残留且字节一致）
+- 五门 rc=0（i18n parity 3155 → **3214 键** / 触控 R1 104 → **105 个 `.vue`** /
+  CSS 108 files / `vue-tsc` / `comment:check` 438 文件 0 命中）
+- 全量 **7361 条 / 200 文件** rc=0（1 skipped）
+  （= 批 110 基线 7312 + 本批 48 条视图判据 + 1 条哨兵 = 7361，分毫不差）
+- 十连跑 **10/10 全绿**（日志 `/tmp/co111-stability.log`）
+---
+
+## 11.148 第一百一十二批：调度轨迹接进 UI —— 本仓**第一个真做租户鉴权的读端点**
+
+### 一、批次目标与接线
+
+把 `src/api/dispatchJournal.ts`（第八十九批做的 API 层，100 条判据）接成可达 UI 入口。
+
+- 视图 `web-mobile/src/views/DispatchJournalView.vue`
+- 判据 `DispatchJournalView.spec.ts` **39 条**
+- 抽屉席 `dispatch-journal`（`to: '/dispatch-journal'`，**admin 档，不设 requiresRole**）
+- 路由 `/dispatch-journal`，`meta: { titleKey: 'dj.title', requiresAuth: true }`
+- 两侧 i18n 新增 `dj` 块 + `nav.dispatchJournal`（3214 → **3268 键**）
+- 孤儿 **18 → 17**
+- ★ 顺手订正模块头里漂移的行号（`:7070`/`:7074-7075` → `:7135-7136`/`:7143-7144`）
+
+### 二、★★★ 四路取证里差点被两个陷阱吃掉
+
+**陷阱一：只 grep `mux.HandleFunc` 会判成「死端点」。**
+本族是**第四种注册形态**：既不在 `admin/handler.go` 的 mux 清单里，也不在
+`cmd/gateway/main.go:7135-7136` 的 requestJourney 直挂清单里，而是现构造 API 对象、
+现调 `RegisterRoutes`：
+
+```go
+// cmd/gateway/main.go:7143-7144
+journalSnapshotAPI := admin.NewJournalSnapshotAPI(journalSnapshotStore)
+journalSnapshotAPI.RegisterRoutes(mux, requestJourneyWrapAdmin)
+```
+
+⇒ `admin/journal_handlers.go:30-35` 才真正 `mux.HandleFunc`。
+★ 这是「判端点是否存在必须查六处」的又一个实例，而且是最贵的一个：
+**只看 `mux.HandleFunc` 会得出「这端点没了」的相反结论。**
+
+**陷阱二：注释里的「端点已被移除」是真的，但指的是**另一个**端点。**
+`domains/dispatch/pipeline.go:1780`：
+
+> ship the per-request attempt journal to the optional JournalSink so post-hoc ops/CS
+> diagnosis can see the trace **after the global `/api/admin/dispatch/journal` endpoint
+> was removed in ff18dc3b6**
+
+⇒ 被移除的是**全局无租户版**；**带租户的 `{tenant}/{request_id}` 版仍在服役**。
+⇒ ★ 若只读到这句注释就下结论「这族没有端点了」，会直接错杀一个可接线的功能。
+**处置**：两处都核（注册点 + 移除注释的上下文），并在视图文件头把两者关系写明。
+
+### 三、★★★★ 本族是本仓**第一个真正做租户鉴权**的读端点
+
+`admin/journal_handlers.go:59-67`：
+
+```go
+privileged := auth.Role == "super_admin" || auth.Role == "admin_key"
+if !privileged && auth.Role != "tenant_admin" { writeRequestJourneyError(w, 404, "not found"); return }
+if !privileged && callerTenant != tenantID     { writeRequestJourneyError(w, 404, "not found"); return }
+```
+
+⇒ ★★★ 与批 75/76/77/104/106/109/110 的「读路径不隔离」**完全相反**。
+⇒ 权限是**「角色 × 路径里的租户」二维**的：`super_admin` / `admin_key` 可读任意租户，
+`tenant_admin` **只能读本租户**（且租户键取自 **JWT**，不是 URL）。
+⇒ ★★ 越权返 **404 而不是 403** —— 连普通用户都是 404（`AdminMiddleware` 只验 JWT
+有效性、**不检查 role**）⇒ **本族根本没有 403 这条路**，客户端不能用「没报权限错」推断
+「有权限」；`404` 有七种成因、文案**完全相同**。
+
+⇒ 前端**不需要**段落级门控，但**理由与批 104/106 不同**：
+不是「档位挡住了跨租户」，而是「**后端自己按调用方租户挡了**」。
+
+### 四、抽屉席是 **admin 档** —— 与批 109/110/111 连续三批相反
+
+可执行注册处传的是 `requestJourneyWrapAdmin` → `newWrapAdmin`
+（`cmd/gateway/main_admin_wrappers.go:26-30`）→ `admin.AdminMiddleware`。
+⇒ 席**不设** `requiresRole`，且**不得**进 `AppDrawer.spec.ts` 的 superAdmin 白名单
+（加进去「tenant_admin 少掉的只有这些」那条立刻红）。
+
+★ 判据 ①-3 特意对**剥掉注释后的源码**断言「不含角色字面量」——
+视图文件头**大量**写着 `super_admin` / `tenant_admin` 作为**契约说明**，
+不断言剥注释就会把**文档当成行为**（批 110 踩过同一条）。
+
+### 五、★★★ 「空」与「完整」这两件事在本族各有一个陷阱
+
+1. ★★★★★ **`truncated === false` 不等于「轨迹完整」** —— 截断是**两段式**的，
+   而只有第二段被报告：
+   - 第一段（每请求环形缓冲，上限 **128**，`journal.go:137-140`）满了从**头部**丢最旧的，
+     **这个丢弃没有任何标记**；
+   - 第二段（快照窗口，上限 **50**，`pipeline.go:1874-1879`）保留最近 50 条，
+     `truncated = true`、`truncated_count = 原长度 − 50`。
+   ⇒ ★★ 唯一能看到第一段丢弃的线索是**首条 `seq` 不为 1**（`seq` 从 1 开始连续自增，
+   `journal.go:118-119`）⇒ 页面把这条做成常驻提示。
+2. ★★★★ **`entries` 为空是二义的**（`dispatchJournalEmptyEntriesAreAmbiguous`）：
+   「这个请求没有重试或切换」与「快照已被 LRU 淘汰 / 进程重启冲掉了」返回**同一个 200**。
+   ⇒ 页面必须说「无法区分」，**不能**说「这个请求很干净」。
+   ⇒ 附带：快照是进程内 LRU（`NewInMemoryJournalStore(10000)`），且
+   **`ConsumeSnapshot` 会 `moveToFrontLocked` ⇒ 读操作有副作用**（续命）。
+
+### 六、八条可自验不变式（每条都配正控）
+
+| 不变式 | 来源 |
+|---|---|
+| 首条 `seq === 1` | `journal.go:118-119` |
+| 相邻 `seq` 差 1（保留下来的窗口内无空洞） | 同上；截断只砍**头部窗口** |
+| 末条 `action ∈ {completed, failed, canceled}` | `pipeline.go:1784` 只在终态路径发射 |
+| `snapshot_version === 末条 seq` | `pipeline.go:1880` |
+| `attempt` 非递减 | 该事件之后的累计 AttemptCount |
+| `counts` 逐条非递减、末条即总量 | `journal.go:118-135` 折叠后快照 |
+| `truncated ⇒ entries.length === 50` | `pipeline.go:1876-1879` 精确切片 |
+| `truncated_count === 0 ⟺ !truncated` | 同上 |
+
+★ 其中「末条是终态」与截断**互不干扰**：截断从**头部**丢，终态条目恒在最末。
+
+### 七、★★ 12 个可选键都是「值类型 + 无指针 + omitempty」
+
+`domains/dispatch/journal.go:25-55`：
+`CredentialID int json:"credential_id,omitempty"` ⇒ **值为 0 时键不存在** ⇒
+★ 「`credential_id` 是 0」与「`credential_id` 不存在」**在响应里不可区分**。
+⇒ 与批 110 的指针族（**键在时值可能是真实的 0**）**方向完全相反**。
+⇒ 页面一律说「未提供（键缺失或值为 0，二者不可区分）」，**既不说 0 也不说没有**。
+
+### 八、★★★ 判据自身翻了两次车
+
+1. **mock 顺序写错**：⑨-1 在 `lookup`（第一次查询）**之前**就 `mockRejectedValueOnce`
+   ⇒ 那次拒绝被第一次查询吃掉了、快照根本没渲染 ⇒ 后面 `dj-s-entries` 断言必然红。
+   ⇒ 「先渲出旧数据，再让它失败」这个场景，mock 必须**按调用次序**排。
+2. **i18n 命名空间放错**：视图用 `dj.col.entries`，我把它写成了 `dj.snap.entries`
+   ⇒ **i18n 门当场抓出**（承批 111 同一条）。
+
+### 九、★★★★ 判据自身**主动删掉一条**（自造判据）
+
+原本有一条 ⑦-3「值真的是 0 时也不许渲染成 0」。核到 Go 源码
+（`journal.go:26` 是值类型 `int` + `omitempty`）后确认：
+**「键在且值为 0」是后端不可达的载荷** ⇒ 为不可达输入加防御分支 = **自造判据**
+（承批 105「一条自己造的恒真判据」）⇒ **删掉**，并把理由写进判据文件。
+
+⇒ ★★ 同一件事的另一个面：**变异 S14（把存在判断换成真值判断）因此也是可证等价的**
+⇒ 按「可证等价 ⇒ 删变异而不是补用例」**删掉 S14**。
+⇒ 「不为不可达输入写判据」与「不为不可达输入写变异」是**同一个决定的两个面**。
+
+★ 同理，变异 **S16 第一版是 NO_EFFECT**：判据 ③-5 只钉了「终态**不该**报告警」，
+**没有一条钉「终态标记要出现」** ⇒ 砍掉标记照样绿 ⇒ 补 ③-10（必须出现）+
+③-11（非终态不得出现）之后才有牙。
+⇒ ★ **「配了正控」不等于「钉住了内容」**：正控钉的是「不该报错的分支」，
+而这类变异砍的是「该出现的内容」⇒ **两个方向都要钉。**
+
+### 十、变异台 16/16 全有牙
+
+`/tmp/mut-co112.mjs`（S14 按可证等价删除），还原走 `writeFileSync` 原始字节 +
+逐字节比对，**未用** `git checkout --`。
+
+- ★ 本批重点：**九条告警判据里八条是「不等就报」**，所以变异分两半 ——
+  ① 把 `!X` 改成 `X`（**反面**：正常载荷被误报）② 把告警整个关掉（`false`）。
+  **两半都必须有牙**，否则「配了正控」只是说说。
+- ★★ 变异台的一个工装细节：`expect` 是对**用例 fullName 的子串匹配**，
+  而判据标题里带 markdown `**` ⇒ 期望值写成「必须带「（终态）」标记」而标题是
+  「那一格`**必须**`带…」时会**明明红了却报 PARTIAL** ⇒ 期望值必须取
+  **判据标题里确实存在**的连续子串。
+
+### 十一、孤儿 18 → 17
+
+`dispatchJournal` 从 `KNOWN_ORPHANS` 删掉一行并加哨兵。
+哨兵注释写明 **admin 档** ⇒ 席**不设** requiresRole ⇒
+`AppDrawer.spec.ts` 的 superAdmin 白名单里**不该**出现 `dispatch-journal`
+（与 `probe-queue` / `connection-registry` 同一条纪律）。
+
+剩余 17 项：`boardOperational`、`dataLifecycleStorage`、`errorsTrend`、`modelHistory`、
+`modelIQ`、`nativeTransport`、`opsOverview`、`platformSettings`、`requestActions`、
+`sessionAnalyticsFilterOptions`、`slidingWindow`、`storageAndLogConfig`、
+`storageMigrationState`、`subscriptionTiers`、`turnsFilterOptions`、`usageEnhanced`、
+`v1DataHorizon`。
+
+### 十二、验证
+
+- 新增 `DispatchJournalView.spec.ts` **39 条**；`orphanLedger.spec.ts` 17 → **18 条**
+- ★★★ 变异 **16/16 全有牙**（`/tmp/mut-co112.mjs`；S14 按可证等价删除；
+  还原逐字节一致，**未用** `git checkout --`；跑完复查零 `CO112S` 残留且字节一致）
+- 五门 rc=0（i18n parity 3214 → **3268 键** / 触控 R1 105 → **106 个 `.vue`** /
+  CSS 109 files / `vue-tsc` / `comment:check` 440 文件 0 命中）
+- 全量 **7401 条 / 201 文件** rc=0（1 skipped）
+  （= 批 111 基线 7361 + 本批 39 条视图判据 + 1 条哨兵 = 7401，分毫不差）
+- 十连跑 **10/10 全绿**（日志 `/tmp/co112-stability.log`）

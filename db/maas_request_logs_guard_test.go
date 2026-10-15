@@ -13,7 +13,7 @@ import (
 // PostgreSQL must take ACCESS EXCLUSIVE on the parent table and on every
 // partition before it can check whether the column exists, so a column that has
 // been in place for months still costs a full exclusive pass on every boot.
-// Measured on production (runbook §10.97) against request_logs — the busiest
+// Measured on production (runbook §10.97) against _request_logs — the busiest
 // table in the database, with 5 monthly partitions there, i.e. 6 relations
 // locked for a statement that changes nothing:
 //
@@ -21,7 +21,7 @@ import (
 //
 // The same shape already guards work_type in db.go
 // (workTypeRequestLogsCurrent, see work_type_request_logs_guard_test.go);
-// this is the remaining unguarded request_logs DDL in the startup path.
+// this is the remaining unguarded _request_logs DDL in the startup path.
 func TestEnsureMaasSchema_ShortCircuitsRequestLogsDDL(t *testing.T) {
 	src, err := os.ReadFile("maas_schema.go")
 	if err != nil {
@@ -47,7 +47,7 @@ func TestEnsureMaasSchema_ShortCircuitsRequestLogsDDL(t *testing.T) {
 			t.Fatal("maas_schema.go should declare maasRequestLogsDDL separately")
 		}
 		ddl := slice("const maasRequestLogsDDL = `")
-		for _, want := range []string{"ALTER TABLE request_logs", "idx_request_logs_credits_charged"} {
+		for _, want := range []string{"ALTER TABLE _request_logs", "idx_request_logs_credits_charged"} {
 			if !strings.Contains(ddl, want) {
 				t.Errorf("maasRequestLogsDDL should still carry %q", want)
 			}
@@ -55,7 +55,7 @@ func TestEnsureMaasSchema_ShortCircuitsRequestLogsDDL(t *testing.T) {
 		// The rest of the batch must NOT be inside the guarded constant —
 		// otherwise skipping it would also skip maas_settings seeding.
 		if strings.Contains(ddl, "maas_settings") || strings.Contains(ddl, "model_credit_rates") {
-			t.Error("maasRequestLogsDDL must stay scoped to request_logs; " +
+			t.Error("maasRequestLogsDDL must stay scoped to _request_logs; " +
 				"the settings/rates batch is what seeds pricing data")
 		}
 	})

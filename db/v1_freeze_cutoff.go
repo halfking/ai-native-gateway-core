@@ -1,12 +1,12 @@
 package db
 
-// V1FreezeCutoffSQL — request_logs 宽表家族「冻结点」标量表达（S3 波 3，
+// V1FreezeCutoffSQL — _request_logs 宽表家族「冻结点」标量表达（S3 波 3，
 // 2026-10-13）：v1 两表（hot ∪ 分区母表）当前的 max(ts)。
 //
 // # 它在解决什么
 //
 // S4 停写（storage.request_logs_write_enabled=false）后，新流量只落
-// session_turns 家族；但**双写期两族并存**——同一请求在 request_logs 与
+// session_turns 家族；但**双写期两族并存**——同一请求在 _request_logs 与
 // session_turns 各有一行。停写前的历史统计要继续由 v1 腿服务、停写后的
 // 新流量要由会话腿服务，两腿 UNION 而不双计，需要一条**确定性的分界**。
 //
@@ -41,5 +41,5 @@ package db
 // settings.KeyRequestLogsWriteEnabled 同一教训：分界值散写多处的门，
 // 早晚有一处被单独改掉）。
 const V1FreezeCutoffSQL = `(SELECT GREATEST(
-	COALESCE((SELECT max(ts) FROM public.request_logs_hot), '-infinity'::timestamptz),
-	COALESCE((SELECT max(ts) FROM public.request_logs), '-infinity'::timestamptz)))`
+	COALESCE((SELECT max(ts) FROM public._request_logs_hot), '-infinity'::timestamptz),
+	COALESCE((SELECT max(ts) FROM public._request_logs), '-infinity'::timestamptz)))`

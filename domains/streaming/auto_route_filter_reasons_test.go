@@ -10,7 +10,7 @@ import (
 
 // TestDecisionToWire_FilterReasons pins the RT-1 wire contract: gate filter
 // reasons surface as filter_reasons in X-Gw-Auto-Decision /
-// request_logs.auto_decision, and a gate-off decision serialises WITHOUT the
+// _request_logs.auto_decision, and a gate-off decision serialises WITHOUT the
 // field (omitempty) so the payload stays byte-identical to pre-RT-1.
 func TestDecisionToWire_FilterReasons(t *testing.T) {
 	t.Run("gate off omits the field", func(t *testing.T) {

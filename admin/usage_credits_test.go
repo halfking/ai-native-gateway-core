@@ -44,20 +44,20 @@ func TestQueryCreditsFromBucketsSQLShape(t *testing.T) {
 func TestQueryCreditsFromRequestLogsFallbackSQLShape(t *testing.T) {
 	platformSQL := `
 		SELECT COALESCE(SUM(COALESCE(r.credits_charged, CASE)), 0)::bigint
-		  FROM request_logs_hot AS r
+		  FROM _request_logs_hot AS r
 		 WHERE r.ts >= now() - ($1 * INTERVAL '1 day')
 		   AND r.tenant_id <> ''
 	`
 	tenantSQL := `
 		SELECT COALESCE(SUM(COALESCE(r.credits_charged, CASE)), 0)::bigint
-		  FROM request_logs_hot AS r
+		  FROM _request_logs_hot AS r
 		 WHERE r.ts >= now() - ($1 * INTERVAL '1 day')
 		   AND r.tenant_id = $2
 	`
 	for _, sql := range []string{platformSQL, tenantSQL} {
-		for _, want := range []string{"request_logs_hot", "COALESCE(SUM"} {
+		for _, want := range []string{"_request_logs_hot", "COALESCE(SUM"} {
 			if !strings.Contains(sql, want) {
-				t.Errorf("credits request_logs fallback SQL missing %q", want)
+				t.Errorf("credits _request_logs fallback SQL missing %q", want)
 			}
 		}
 	}

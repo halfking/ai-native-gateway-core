@@ -313,7 +313,7 @@ func ParseOpenAIStreamChunk(line string) (*StreamChunk, error) {
 		// audit-stream-multimodal (2026-07-13): detailed usage fields
 		//
 		// ⚠ 2026-10-06 实测：这四个字段解析后**到不了落库**。断链在
-		// audit.StreamCapture（它没有这四个字段）⇒ 真库 request_logs 近 30 天
+		// audit.StreamCapture（它没有这四个字段）⇒ 真库 _request_logs 近 30 天
 		// 2,101,395 行的 image/audio/video/reasoning_tokens 全为 NULL，而
 		// cache_read_tokens 有 38,044 行为正。完整断链与真实库读数写在
 		// response.go 里 audit-ir-multimodal 那段注释上 —— 那里是这件事的 SSOT。

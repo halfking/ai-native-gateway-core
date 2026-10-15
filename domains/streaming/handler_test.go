@@ -288,7 +288,7 @@ func TestShouldSkipAutoTitleGeneration(t *testing.T) {
 
 // TestApplyParentCorrelationFields (2026-08-06) — guards the flow from
 // logCtx.ParentRequestID / OriginActor into the persisted RequestLogEntry.
-// Without this, request_logs_hot.parent_request_id is always NULL on
+// Without this, _request_logs_hot.parent_request_id is always NULL on
 // auto-title loopback rows, so operators cannot SQL JOIN
 // "08aa2a8a → 3a03f7db".
 func TestApplyParentCorrelationFields(t *testing.T) {
@@ -959,7 +959,7 @@ func TestPropagateIsAutoRequestToEntry_FullAutoFields(t *testing.T) {
 	}
 	// Mirror contract: a business auto turn (TaskType present) must NOT be
 	// classified as an internal loopback — otherwise the turn is dropped from
-	// session_turns while request_logs still claims it (GLOBAL_G2 break).
+	// session_turns while _request_logs still claims it (GLOBAL_G2 break).
 	if telemetry.IsInternalAutoEntry(entry) {
 		t.Fatal("business auto turn with TaskType must not be mirror-excluded")
 	}

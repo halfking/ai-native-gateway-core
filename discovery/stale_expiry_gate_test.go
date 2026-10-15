@@ -1,7 +1,7 @@
 // stale_expiry_gate_test.go — 2026-10-02。
 //
 // 钉住 S4 停写护栏：`expireStaleModels` 的宽限守卫是**否定式**的
-// （`NOT EXISTS (request_logs 近 N 小时成功)`）。停写后该子查询结构性恒空，
+// （`NOT EXISTS (_request_logs 近 N 小时成功)`）。停写后该子查询结构性恒空，
 // 守卫从「已验证近期无成功」退化成「没有证据」，而代码会照常下架 ——
 // 主动禁用仍在工作的凭据模型，且无异常信号。
 //
@@ -51,8 +51,8 @@ func TestStaleExpiryMayRun(t *testing.T) {
 // 只是换了个方向且更难查。
 func TestStaleExpiryMayRunReasonIsDistinctFromSilence(t *testing.T) {
 	_, reason := staleExpiryMayRun(false)
-	if !strings.Contains(reason, "request_logs") {
-		t.Errorf("阻断原因必须点名证据源（request_logs），否则读日志的人无法定位；得到 %q", reason)
+	if !strings.Contains(reason, "_request_logs") {
+		t.Errorf("阻断原因必须点名证据源（_request_logs），否则读日志的人无法定位；得到 %q", reason)
 	}
 }
 

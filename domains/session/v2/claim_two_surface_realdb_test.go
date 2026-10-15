@@ -45,7 +45,7 @@ package v2
 // ⇒ 我在 §9.186 的 `ExecuteRepair` 端到端门里**又踩了一次这个坑**
 // （绿着把夹具留在库里，实测残留 6/6/1/3/6）。那条门已改为在
 // `t.Cleanup` 内部关池、不吞错误；但它必须读生产那套完整 schema
-// （`request_logs` + `session_turns` + `session_bodies` + 两个合并视图 +
+// （`_request_logs` + `session_turns` + `session_bodies` + 两个合并视图 +
 // advisory lock 函数），塞不进本门这种「最小内联 DDL」的形状。
 // **本门只需要两张表，所以走既有的一次性数据库做法，把「不留残留」这件事
 // 从根上消掉而不是靠清理。**

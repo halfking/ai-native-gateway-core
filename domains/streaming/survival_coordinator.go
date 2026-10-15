@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"sort"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/requestflow"
 	"github.com/kaixuan/llm-gateway-go/metrics"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // survival_coordinator.go — SR-06 (doc 18 §5.1, §7, §8, §9.1)
@@ -43,8 +45,13 @@ import (
 // the retry budget. The deadline is the stronger stop condition for a
 // long-lived in-connection request.
 type SurvivalOptions struct {
-	// Deadline is the total in-connection budget. Zero defaults to five
-	// hours, matching the interactive recovery policy.
+	// Deadline is the total in-connection budget. Zero defaults to 240
+	// seconds (P0-2, 2026-10-14: the historical 5h default let a
+	// wait_recovery loop keep a client hanging behind 200+keepalive
+	// essentially forever — 154 incident p99=889s, max 85min; magpie's
+	// Patience is a 60-240s bounded wait). Valid range (0, 18000]; a
+	// settings_kv hot-reload override (survival.interactive_deadline_
+	// seconds) can replace this per Run without a redeploy.
 
 	Deadline time.Duration
 	// RetryBase is the first backoff step. Zero defaults to 30 seconds.
@@ -69,7 +76,7 @@ type SurvivalOptions struct {
 
 func (o SurvivalOptions) withDefaults() SurvivalOptions {
 	if o.Deadline <= 0 {
-		o.Deadline = 5 * time.Hour
+		o.Deadline = 4 * time.Minute
 
 	}
 	if o.RetryBase <= 0 {
@@ -297,6 +304,103 @@ func survivalCancellationDecision(err error) TaskDecision {
 	return TaskDecision{Action: TaskActionFailClosed, Reason: "client_disconnected"}
 }
 
+// survivalInteractiveDeadlineOverride reads the settings_kv hot-reload key
+// survival.interactive_deadline_seconds (P0-2, 2026-10-14). Zero/absent keeps
+// opts.Deadline — which itself falls back to the 240s bounded budget. The
+// value is read once per Run, so a settings_kv flip applies to the next
+// request without a redeploy. settings.Global == nil (bare tests, lite boot
+// before Init) is the ordinary "no override" case.
+func survivalInteractiveDeadlineOverride() time.Duration {
+	if settings.Global == nil {
+		return 0
+	}
+	if secs := settings.SurvivalInteractiveDeadlineSeconds(); secs > 0 {
+		return time.Duration(secs) * time.Second
+	}
+	return 0
+}
+
+// deadlineExceededDecision builds the synthetic interactive-deadline verdict
+// with the P0-2 readable summary: attempt count, per-kind failure histogram
+// and (when a recovery hint exists) the earliest candidate recovery time.
+// The summary rides TaskDecision.Detail; Reason stays the closed
+// "deadline_exceeded" enum so dashboards and clients that pattern-match the
+// reason are unaffected.
+func deadlineExceededDecision(res SurvivalResult, kindCounts map[errorsx.ErrorKind]int) TaskDecision {
+	return TaskDecision{
+		Action: TaskActionFailClosed,
+		Reason: "deadline_exceeded",
+		Detail: survivalDeadlineDetail(res, kindCounts),
+	}
+}
+
+// survivalDeadlineDetail renders the human-readable deadline summary, e.g.
+//
+//	attempts=7 kinds=rate_limit:3,upstream_down:4 earliest_recovery_sec=30
+//
+// Kind names are sorted for deterministic output. earliest_recovery_sec is
+// the minimum positive Retry-After observed on the FINAL attempt's candidate
+// outcomes — the freshest signal about when a candidate might come back —
+// falling back to the last aggregated decision's NextRetryAfter (the retry
+// cadence the coordinator was honoring when the budget ran out, the hint
+// that exists in production today). Without any hint the summary degrades
+// to attempts+kinds only.
+func survivalDeadlineDetail(res SurvivalResult, kindCounts map[errorsx.ErrorKind]int) string {
+	parts := make([]string, 0, 3)
+	parts = append(parts, fmt.Sprintf("attempts=%d", res.Attempts))
+	kinds := make([]string, 0, len(kindCounts))
+	for k, n := range kindCounts {
+		if k != "" && n > 0 {
+			kinds = append(kinds, fmt.Sprintf("%s:%d", k, n))
+		}
+	}
+	sort.Strings(kinds)
+	if len(kinds) > 0 {
+		parts = append(parts, "kinds="+strings.Join(kinds, ","))
+	}
+	var earliest time.Duration
+	if res.FinalAttempt != nil {
+		for _, co := range res.FinalAttempt.CandidateOutcomes {
+			if co.RetryAfter > 0 && (earliest == 0 || co.RetryAfter < earliest) {
+				earliest = co.RetryAfter
+			}
+		}
+	}
+	if earliest == 0 && res.Decision.NextRetryAfter > 0 {
+		earliest = res.Decision.NextRetryAfter
+	}
+	if earliest > 0 {
+		parts = append(parts, fmt.Sprintf("earliest_recovery_sec=%d", ceilSeconds(earliest)))
+	}
+	return strings.Join(parts, " ")
+}
+
+// ceilSeconds rounds a duration up to whole seconds: whole seconds already
+// round-trip exactly; fractional ones round up so the recovery hint never
+// promises a recovery earlier than reality.
+func ceilSeconds(d time.Duration) int64 {
+	s := d / time.Second
+	if d%time.Second != 0 {
+		s++
+	}
+	return int64(s)
+}
+
+// survivalFoldKindCounts folds one attempt's candidate outcome kinds into
+// the cumulative deadline histogram. Called right after res.Attempts++ so
+// EVERY deadline check (loop-top, post-attempt, post-wait) sees complete
+// data including the attempt that just finished.
+func survivalFoldKindCounts(counts map[errorsx.ErrorKind]int, r *AttemptResult) {
+	if r == nil {
+		return
+	}
+	for _, co := range r.CandidateOutcomes {
+		if co.Kind != "" {
+			counts[co.Kind]++
+		}
+	}
+}
+
 // Run drives the recovery loop until the task reaches a terminal state,
 // the deadline expires or ctx is cancelled. sw is the shared serialized
 // writer over the real connection; the caller owns its construction.
@@ -309,6 +413,15 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 	}
 
 	opts := c.Options.withDefaults()
+	// P0-2 hot-reload override: settings_kv outranks the wiring-supplied
+	// Deadline (which itself carries the config default). Read once per Run
+	// so a settings flip applies to the next request immediately.
+	if override := survivalInteractiveDeadlineOverride(); override > 0 {
+		opts.Deadline = override
+	}
+	// Cumulative per-kind failure histogram for the deadline_exceeded
+	// summary (P0-2 readable terminal). Folded after every attempt.
+	deadlineKindCounts := map[errorsx.ErrorKind]int{}
 	startedAt := c.now()
 	maxRetries := opts.retriesFor(startedAt)
 	// MaxRetries is retries after the initial attempt, while the shared budget
@@ -397,7 +510,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			return res
 		}
 		if !c.now().Before(deadline) {
-			res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
+			res.Decision = deadlineExceededDecision(res, deadlineKindCounts)
 			c.renderTerminal(res.Decision, nil, false)
 			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 			return res
@@ -459,6 +572,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			gate.FinishShadowObservation()
 		}
 		res.Attempts++
+		survivalFoldKindCounts(deadlineKindCounts, res.FinalAttempt)
 		if err := ctx.Err(); err != nil {
 			if gate.State() < CommitStateContent {
 				_ = gate.Discard()
@@ -471,7 +585,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			if gate.State() < CommitStateContent {
 				_ = gate.Discard()
 			}
-			res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
+			res.Decision = deadlineExceededDecision(res, deadlineKindCounts)
 			c.renderTerminal(res.Decision, gate, false)
 			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 			return res
@@ -761,7 +875,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				"action", res.Decision.Action.String(),
 				"reason", res.Decision.Reason,
 			)...)
-			// Record the discard into the audit capture so request_logs_hot
+			// Record the discard into the audit capture so _request_logs_hot
 			// .discard_events JSONB column carries the buffer size and
 			// decision context for offline post-mortem.
 			if params.Capture != nil {
@@ -778,7 +892,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				})
 			}
 			if !c.now().Before(deadline) {
-				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
+				res.Decision = deadlineExceededDecision(res, deadlineKindCounts)
 				c.renderTerminal(res.Decision, gate, false)
 				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
@@ -799,7 +913,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				wait = remaining
 			}
 			if wait <= 0 {
-				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
+				res.Decision = deadlineExceededDecision(res, deadlineKindCounts)
 				c.renderTerminal(res.Decision, gate, false)
 				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
@@ -852,7 +966,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				return res
 			}
 			if !c.now().Before(deadline) {
-				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
+				res.Decision = deadlineExceededDecision(res, deadlineKindCounts)
 				c.renderTerminal(res.Decision, gate, false)
 				recordSurvivalTransition(waitState, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)

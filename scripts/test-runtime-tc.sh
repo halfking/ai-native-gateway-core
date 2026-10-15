@@ -85,7 +85,7 @@ tc6() {
 
   info "Step 6: 验证实际使用的凭据"
   local used_cred
-  used_cred=$(pg "SELECT credential_id FROM request_logs WHERE created_at > NOW() - INTERVAL '1 minute' ORDER BY created_at DESC LIMIT 1")
+  used_cred=$(pg "SELECT credential_id FROM _request_logs WHERE created_at > NOW() - INTERVAL '1 minute' ORDER BY created_at DESC LIMIT 1")
   echo "  实际使用: $used_cred"
   if echo "$used_cred" | grep -q "^$test_cred_id|"; then
     err "FAIL: 使用了耗尽凭据"; test_result=1

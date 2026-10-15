@@ -34,6 +34,28 @@ export const DRAWER_NAV: readonly NavItem[] = [
   { key: 'usage', to: '/usage', icon: 'chart', titleKey: 'nav.usage' },
   { key: 'users', to: '/users', icon: 'user', titleKey: 'nav.users', requiresRole: 'admin' },
   { key: 'reconciliation', to: '/reconciliation', icon: 'chart', titleKey: 'nav.reconciliation', requiresRole: 'super_admin' },
+  // ★ 2026-10-14 第一百一十一批：对账报表（区间多维汇总 + 筛选栏候选）。
+  //   `admin/handler.go:1086` `h.superAdmin(h.handleReportRollup)` ⇒ **要** super_admin。
+  //   ⚠️ ★★ 与上面那张 `reconciliation` 席是**两个不同功能**，标题必须能区分：
+  //     · reconciliation → CostReconciliationView → @/api/costReconciliation（费用对账）
+  //     · report-rollup  → ReportRollupView       → @/api/reportRollup（对账报表）
+  //     两张席都叫「对账」⇒ 靠 nav 标题区分，接线时别接错模块。
+  {
+    key: 'report-rollup',
+    to: '/report-rollup',
+    icon: 'chart',
+    titleKey: 'nav.reportRollup',
+    requiresRole: 'super_admin',
+  },
+  // ★ 2026-10-14 第一百一十二批：单请求调度轨迹。
+  //   ★★ **admin 档，不是 superAdmin**（可执行注册处 `cmd/gateway/main.go:7143-7144`
+  //   传的是 `requestJourneyWrapAdmin` → `admin.AdminMiddleware`，后者**不检查 role**）
+  //   ⇒ **不设** `requiresRole`（tenant_admin 也够用）
+  //   ⇒ 且**不得**进 `AppDrawer.spec.ts` 的 superAdmin 白名单 —— 加进去那条立刻红。
+  //   ⚠️ 这与批 109/110/111 连续三批相反，接线时别照抄那一套。
+  //   ★ 但**租户隔离是真做了**的（`admin/journal_handlers.go:59-67`：
+  //   「角色 × 路径租户」二维，越权返 **404 而非 403**）⇒ 前端无需段落级门控。
+  { key: 'dispatch-journal', to: '/dispatch-journal', icon: 'search', titleKey: 'nav.dispatchJournal' },
   // 2026-10-06：路由检查（只读 explain）从 desktopOnly 收进移动端，抽屉席位。
   // 不占底栏（02 §4 底栏 ≤5 席已满），与「告警/用量」同级。admin 档。
   { key: 'routing', to: '/routing', icon: 'search', titleKey: 'nav.routing' },
@@ -182,6 +204,30 @@ export const DRAWER_NAV: readonly NavItem[] = [
   //   super_admin 强制用 auth.TenantID 并**忽略 tenant_id 参数** ⇒ tenant_admin 天然隔离，
   //   与批 104（硬编码 tenant）与批 106（有列不接线）相反 ⇒ 不需要段落级门控。
   { key: 'usage-trend-series', to: '/usage-trend-series', icon: 'chart', titleKey: 'nav.usageTrendSeries' },
+  // 响应格式异常（明细 + 按小时汇总）。★★ **superAdmin 档**
+  //   （admin/handler.go:913-914 两条都是 `h.superAdmin`）⇒ 抽屉席**须设** requiresRole，
+  //   并同步 `src/components/shell/AppDrawer.spec.ts` 的排序白名单。
+  // ★★ 本族是本仓第六次「不隔离」（withAllTenantReadOnlyTx，
+  //   admin/format_anomalies.go:106/:143/:213）：两张表都有 tenant_id 列、
+  //   list 会 SELECT 出来，但 WHERE 从不过滤。
+  //   ★ 与批 104/106 的处置**相反**：那两族是 admin 档 + 不隔离
+  //     ⇒ tenant_admin 能读到跨租户 ⇒ 必须在视图内按段落门控；
+  //     本族是 superAdmin 档 ⇒ **档位本身就挡住了** ⇒ 无需任何段落级门控。
+  { key: 'format-anomalies', to: '/format-anomalies', icon: 'alert', titleKey: 'nav.formatAnomalies', requiresRole: 'super_admin' },
+  // ★ 2026-10-14 第一百一十批：指纹漂移。`admin/handler.go:942-943` 两条都是
+  //   `h.superAdmin`（整个 `/api/admin/model-integrity/` 前缀都是 superAdmin 档）
+  //   ⇒ 这一席**要** `requiresRole: 'super_admin'`。
+  //   ★ 本族读路径跨全部租户（`admin/model_integrity.go:328` 的 `withAllTenantReadOnlyTx`
+  //     且 WHERE 无租户条件），但**档位本身就是那道门** ⇒ 视图内无需段落级门控。
+  //   ⚠️ 与 `integrity`（同前缀的 summary/events/resolve 那一面）是**两张席**：
+  //     同一个前缀上既有 admin 面也有 superAdmin 面 ⇒ 权限**不得**按前缀判。
+  {
+    key: 'model-integrity-drift',
+    to: '/model-integrity-drift',
+    icon: 'alert',
+    titleKey: 'nav.modelIntegrityDrift',
+    requiresRole: 'super_admin',
+  },
   // MaaS 租户运维面。**superAdmin 档**（/api/admin/maas/tenants/** 全 superAdmin）⇒ 须设。
   {
     key: 'maas-tenant-ops',

@@ -1,11 +1,11 @@
 // Package data - D07 数据测试（第二批）：promote_* 批游标必须有首列索引。
 //
 // 背景（R79 / D07 S-01）：754 归档函数的批游标 `WHERE id > :last ORDER BY id
-// LIMIT 1000` 被头注称作「主键游标」，但 request_logs 根本没有 id 索引——
+// LIMIT 1000` 被头注称作「主键游标」，但 _request_logs 根本没有 id 索引——
 // 每批次退化成全分区扫描，成本 O(rows²/1000)。S-01 实测：2.1M 行月分区冷归档
 // 30:00.028 被 statement_timeout 击杀并整笔回滚；补索引后 25.96s。
 //
-// 那一轮只修了 request_logs 一族。本文件是那道**跨族普查门**，并且刻意分成两件事：
+// 那一轮只修了 _request_logs 一族。本文件是那道**跨族普查门**，并且刻意分成两件事：
 //
 //	TestData_PromoteBatchCursor_HasLeadingIndex  (Gate A)
 //	    活函数（真被 promoteSpecs 调用）的批游标必须有首列索引。
@@ -94,7 +94,7 @@ var knownMissingTableFunctions = map[string]string{
 	"promote_credit_ledger_default_batch": "P3 (R79): parent credit_ledger is PARTITIONED with 4 monthly " +
 		"partitions and NO default partition, so there is nothing to drain; 0 Go callers. " +
 		"Registering it would 42P01 immediately. Drop it or add the DEFAULT partition deliberately.",
-	"promote_request_logs_bodies_default_batch": "P3 (R79): parent request_logs_bodies has 2 monthly " +
+	"promote_request_logs_bodies_default_batch": "P3 (R79): parent _request_logs_bodies has 2 monthly " +
 		"partitions and NO default partition; 0 Go callers. Same shape as the credit_ledger case.",
 	"promote_tool_usage_stats_default_batch": "P3 (R79): parent tool_usage_stats has no default partition; " +
 		"0 Go callers. Same shape as the credit_ledger case.",
@@ -356,7 +356,7 @@ func TestData_PromoteBatchCursor_HasLeadingIndex(t *testing.T) {
 		t.Errorf("%d LIVE promote_* batch cursor(s) order by a column with no leading-column index on "+
 			"their source table:\n  %s\n"+
 			"Each batch then sorts the whole table, making the drain loop O(rows² / batch_size). "+
-			"Measured precedent: request_logs archived this way took >30min and was rolled back at "+
+			"Measured precedent: _request_logs archived this way took >30min and was rolled back at "+
 			"2.1M rows. Add CREATE INDEX <table> (<cursor column>) or record a measured waiver.",
 			len(real), strings.Join(real, "\n  "))
 	}

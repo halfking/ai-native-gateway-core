@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "node scripts/verify-css-media-syntax.mjs && node scripts/verify-touch-targets.mjs && node scripts/verify-i18n-parity.mjs && vue-tsc -b && vite build",
+    "build": "node scripts/verify-css-media-syntax.mjs && node scripts/verify-touch-targets.mjs && node scripts/verify-i18n-parity.mjs && node scripts/verify-comment-boundaries.mjs && vue-tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "vue-tsc -b",
     "test": "vitest run",
@@ -13,9 +13,10 @@
     "css:check": "node scripts/verify-css-media-syntax.mjs",
     "touch:check": "node scripts/verify-touch-targets.mjs",
     "i18n:check": "node scripts/verify-i18n-parity.mjs",
+    "comment:check": "node scripts/verify-comment-boundaries.mjs",
     "audit:selftest": "node scripts/layout-audit-selftest.mjs",
     "audit:settle": "node scripts/settle-selftest.mjs",
-    "gate:selftest": "node scripts/verify-css-media-syntax.selftest.mjs && node scripts/verify-touch-targets.selftest.mjs && node scripts/verify-i18n-parity.selftest.mjs && node scripts/anchor-check.selftest.mjs",
+    "gate:selftest": "node scripts/verify-css-media-syntax.selftest.mjs && node scripts/verify-touch-targets.selftest.mjs && node scripts/verify-i18n-parity.selftest.mjs && node scripts/verify-comment-boundaries.selftest.mjs && node scripts/anchor-check.selftest.mjs",
     "audit:web": "node scripts/layout-audit-web.mjs",
     "audit:anchors": "node scripts/anchor-check.mjs"
   },

@@ -1103,7 +1103,7 @@ func seedCanonicalAliases(ctx context.Context, db modelcatalog.Querier, rawName 
 // staleExpiryBlockedS4Reason 非空表示下架被禁止，原因见此常量。
 //
 // 2026-10-02（审计 §9.10.2）：下面 model_offers 的宽限守卫是
-// `NOT EXISTS (request_logs 近 N 小时成功)` —— 一条**否定式守卫**。S4 停写后
+// `NOT EXISTS (_request_logs 近 N 小时成功)` —— 一条**否定式守卫**。S4 停写后
 // 该子查询不是「查不到」，而是**结构性恒空**：守卫从「已验证近期无成功」
 // 退化成「根本没有证据」，而代码会照常执行下架 ⇒ 无论模型是否真在用，
 // 都被判为 auto_discovery_expired。这不是降级，是主动禁用仍在工作的凭据模型，
@@ -1111,7 +1111,7 @@ func seedCanonicalAliases(ctx context.Context, db modelcatalog.Querier, rawName 
 //
 // 否定式比肯定式危险一个量级：肯定式在证据消失时不做动作（安全降级），
 // 否定式在证据消失时**做动作**。
-const staleExpiryBlockedS4Reason = "S4 停写中：宽限守卫依赖 request_logs，证据源已停止写入，下架判定不成立"
+const staleExpiryBlockedS4Reason = "S4 停写中：宽限守卫依赖 _request_logs，证据源已停止写入，下架判定不成立"
 
 // staleExpiryMayRun 判定「能否基于 v1 证据执行 stale 下架」。
 //
@@ -1186,9 +1186,9 @@ func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 			  AND available = TRUE
 			  AND COALESCE(admin_protected, FALSE) = FALSE
 			  AND NOT EXISTS (
-			    SELECT 1 FROM request_logs rl
+			    SELECT 1 FROM _request_logs rl
 			    WHERE rl.credential_id = $1
-			      -- case-insensitive: request_logs.outbound_model can differ in
+			      -- case-insensitive: _request_logs.outbound_model can differ in
 			      -- case from model_offers.raw_model_name (e.g. "MiniMax-M3" vs
 			      -- "minimax-m3"). A plain = would miss the rows and wrongly
 			      -- expire a model that's actively succeeding.

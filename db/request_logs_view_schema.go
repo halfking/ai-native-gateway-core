@@ -17,7 +17,7 @@ import (
 // 2026-09-07 事故自愈：共享 PG 上的 canonical 查询视图
 // request_logs_with_current_month 被带外操作删掉（577/610 的包装视图
 // …_without_customer_id、…_without_request_class_due_at 仍在，顶层缺失），
-// /api/logs 全部请求 42P01。写路径（telemetry → request_logs_hot）不受影响，
+// /api/logs 全部请求 42P01。写路径（telemetry → _request_logs_hot）不受影响，
 // 只有读路径挂——这类"表在、视图没了"的状态没有任何 migration 会重建
 // （610 之后再无 migration 触碰该视图），网关也没有启动自愈，于是持续报错。
 //
@@ -94,7 +94,7 @@ func (d *DB) ensureRequestLogsCurrentMonthView(ctx context.Context) error {
 			EXISTS (SELECT 1 FROM pg_views WHERE schemaname = 'public'
 				AND viewname = 'request_logs_with_current_month_without_customer_id')
 	`).Scan(&classWrapperExists, &baseWrapperExists); err != nil {
-		return fmt.Errorf("probe request_logs view wrappers: %w", err)
+		return fmt.Errorf("probe _request_logs view wrappers: %w", err)
 	}
 
 	if !baseWrapperExists {
@@ -106,31 +106,31 @@ func (d *DB) ensureRequestLogsCurrentMonthView(ctx context.Context) error {
 			  FROM pg_attribute h
 			  JOIN pg_class hc ON hc.oid = h.attrelid
 			  JOIN pg_namespace hn ON hn.oid = hc.relnamespace
-			  JOIN pg_attribute p ON p.attrelid = ('public.request_logs')::regclass
+			  JOIN pg_attribute p ON p.attrelid = ('public._request_logs')::regclass
 			                     AND p.attname = h.attname
 			  JOIN pg_class pc ON pc.oid = p.attrelid
 			  JOIN pg_namespace pn ON pn.oid = pc.relnamespace
 			 WHERE hn.nspname = 'public'
-			   AND hc.relname = 'request_logs_hot'
+			   AND hc.relname = '_request_logs_hot'
 			   AND pn.nspname = 'public'
-			   AND pc.relname = 'request_logs'
+			   AND pc.relname = '_request_logs'
 			   AND h.attnum > 0 AND NOT h.attisdropped
 			   AND p.attnum > 0 AND NOT p.attisdropped
 			   AND h.attname NOT IN ('customer_id', 'request_class', 'due_at')
 		`).Scan(&baseCols); err != nil {
-			return fmt.Errorf("derive request_logs base view columns: %w", err)
+			return fmt.Errorf("derive _request_logs base view columns: %w", err)
 		}
 		if baseCols == "" {
-			return fmt.Errorf("request_logs view self-heal: empty base column list " +
-				"(request_logs_hot/request_logs missing? run migration 341 first)")
+			return fmt.Errorf("_request_logs view self-heal: empty base column list " +
+				"(_request_logs_hot/request_logs missing? run migration 341 first)")
 		}
 		if _, err := d.pool.Exec(ctx, fmt.Sprintf(`
 			CREATE VIEW public.request_logs_with_current_month_without_customer_id AS
-			SELECT %s FROM public.request_logs_hot
+			SELECT %s FROM public._request_logs_hot
 			UNION ALL
-			SELECT %s FROM public.request_logs
+			SELECT %s FROM public._request_logs
 		`, baseCols, baseCols)); err != nil {
-			return fmt.Errorf("rebuild request_logs base wrapper view: %w", err)
+			return fmt.Errorf("rebuild _request_logs base wrapper view: %w", err)
 		}
 	}
 
@@ -141,15 +141,15 @@ func (d *DB) ensureRequestLogsCurrentMonthView(ctx context.Context) error {
 			SELECT v.*, m.customer_id
 			FROM public.request_logs_with_current_month_without_customer_id v
 			LEFT JOIN LATERAL (
-				SELECT customer_id FROM public.request_logs_hot
+				SELECT customer_id FROM public._request_logs_hot
 				WHERE request_id = v.request_id AND ts = v.ts
 				UNION ALL
-				SELECT customer_id FROM public.request_logs
+				SELECT customer_id FROM public._request_logs
 				WHERE request_id = v.request_id AND ts = v.ts
 				LIMIT 1
 			) m ON true
 		`); err != nil {
-			return fmt.Errorf("rebuild request_logs customer_id wrapper view: %w", err)
+			return fmt.Errorf("rebuild _request_logs customer_id wrapper view: %w", err)
 		}
 	}
 
@@ -236,29 +236,29 @@ func (d *DB) ensureRequestLogsCurrentMonthView(ctx context.Context) error {
 			EXISTS (
 				SELECT 1 FROM information_schema.columns
 				WHERE table_schema = 'public'
-				  AND table_name = 'request_logs_hot'
+				  AND table_name = '_request_logs_hot'
 				  AND column_name = 'system_fingerprint'
 			),
 			EXISTS (
 				SELECT 1 FROM information_schema.columns
 				WHERE table_schema = 'public'
-				  AND table_name = 'request_logs_hot'
+				  AND table_name = '_request_logs_hot'
 				  AND column_name = 'raw_model_name'
 			),
 			EXISTS (
 				SELECT 1 FROM information_schema.columns
 				WHERE table_schema = 'public'
-				  AND table_name = 'request_logs_hot'
+				  AND table_name = '_request_logs_hot'
 				  AND column_name = 'credits_rate_multiplier'
 			),
 			EXISTS (
 				SELECT 1 FROM information_schema.columns
 				WHERE table_schema = 'public'
-				  AND table_name = 'request_logs_hot'
+				  AND table_name = '_request_logs_hot'
 				  AND column_name = 'client_ip'
 			)
 	`).Scan(&hotHasFingerprint, &hotHasRawModelName, &hotHasCredits, &hotHasClientIP); err != nil {
-		return fmt.Errorf("probe request_logs_hot appended columns: %w", err)
+		return fmt.Errorf("probe _request_logs_hot appended columns: %w", err)
 	}
 	// 追加序与 canonicalV2DDL 逐字一致：class, due, fp, raw, credits, client_ip
 	// （时间序 = 追加迁移序；两侧文本漂移会破坏 ensure↔迁移 viewdef 等价契约）。
@@ -291,11 +291,11 @@ func (d *DB) ensureRequestLogsCurrentMonthView(ctx context.Context) error {
 		FROM public.request_logs_with_current_month_without_request_class_due_at v
 		LEFT JOIN LATERAL (
 			SELECT %s
-			FROM public.request_logs_hot h
+			FROM public._request_logs_hot h
 			WHERE h.request_id = v.request_id AND h.ts = v.ts
 			UNION ALL
 			SELECT %s
-			FROM public.request_logs p
+			FROM public._request_logs p
 			WHERE p.request_id = v.request_id AND p.ts = v.ts
 			LIMIT 1
 		) source ON true
@@ -511,7 +511,7 @@ var projectionExprsV2 = []string{
 	// 有值），而「text 不能直映」只说明它**需要一次显式转换**，不是不能映。
 	//
 	// 与 v1 同义的依据（252 生产库，审计 §9.60.6.1）：同 request_id 配对 826 行
-	// session_turns.client_ip == host(request_logs.client_ip) **826/826、差异 0**。
+	// session_turns.client_ip == host(_request_logs.client_ip) **826/826、差异 0**。
 	// 本机那条「两列 100% 相同 ⇒ 它是转发头副本」的旧裁决已被证伪——本机全库
 	// client_forwarded_for 只有 6 个 distinct 取值、多跳链路 0 条，零分辨力。
 	//
@@ -631,7 +631,7 @@ func (d *DB) middleWrapperCols(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("derive middle wrapper column list: %w", err)
 	}
 	if cols == "" {
-		return "", fmt.Errorf("request_logs view self-heal: empty middle wrapper column list")
+		return "", fmt.Errorf("_request_logs view self-heal: empty middle wrapper column list")
 	}
 	return cols, nil
 }
@@ -666,7 +666,7 @@ func (d *DB) middleWrapperCols(ctx context.Context) (string, error) {
 // i.e. the canonical view — and the eight native readers that share this
 // projection — overstated `failure` by 32% and under-reported `rate_limited`
 // as 0. This is not a retirement-only concern: it is wrong **today**, and once
-// request_logs is dropped the view would report zero rate-limited requests
+// _request_logs is dropped the view would report zero rate-limited requests
 // system-wide.
 //
 // ── Why the status_code = 429 arm is kept ──────────────────────────────────
@@ -780,7 +780,7 @@ var canonicalColumnOrderV2 = []string{
 	"client_ip",
 	// 813 追加尾列：origin_stage/token_band/client_forwarded_for。id 刻意
 	// 不在其中——真库 1,515,984 组同 request_id 配对里 r.id = t.id 命中
-	// **0** 次：v1 的 request_logs.id 是请求行 id，session_turns.id 是 turn
+	// **0** 次：v1 的 _request_logs.id 是请求行 id，session_turns.id 是 turn
 	// id，判据是「同一个东西」而不是「session 侧有这个名字」。
 	"origin_stage",
 	"token_band",
@@ -907,11 +907,11 @@ func canonicalV2DDL(middleCols string, baseHasFP, baseHasRaw, baseHasCredits, ba
 		FROM public.request_logs_with_current_month_without_request_class_due_at v
 		LEFT JOIN LATERAL (
 			SELECT %s
-			FROM public.request_logs_hot h
+			FROM public._request_logs_hot h
 			WHERE h.request_id = v.request_id AND h.ts = v.ts
 			UNION ALL
 			SELECT %s
-			FROM public.request_logs p
+			FROM public._request_logs p
 			WHERE p.request_id = v.request_id AND p.ts = v.ts
 			LIMIT 1
 		) source ON true
@@ -939,8 +939,8 @@ func canonicalV2DDL(middleCols string, baseHasFP, baseHasRaw, baseHasCredits, ba
 //
 // The returned source carries no alias — callers append one (e.g. `rl`).
 // Unlike the 710 view it omits the frozen-v1 branch and anti-join entirely:
-// rows promoted out of request_logs history are NOT covered, so native mode
-// is only correct while request_logs still holds every not-yet-retired row
+// rows promoted out of _request_logs history are NOT covered, so native mode
+// is only correct while _request_logs still holds every not-yet-retired row
 // (i.e. before S4 stop-write + TTL retirement of windows that predate the
 // session mirror).
 func SessionFamilyTurnsSourceSQL() string {
@@ -1003,7 +1003,7 @@ func SessionFamilyTurnsForSessionSQL() string {
 //
 // 两侧的**列名不同**（实测 information_schema，2026-10-05）：
 //
-//	v1   request_logs_bodies : request_id text NOT NULL, request_body jsonb, response_body jsonb
+//	v1   _request_logs_bodies : request_id text NOT NULL, request_body jsonb, response_body jsonb
 //	会话  session_bodies      : request_id text NOT NULL, request_delta jsonb, response_delta jsonb
 //
 // 语义相同（都是 JSONB），**名字不同**。所以「把 LEFT JOIN
@@ -1050,6 +1050,42 @@ func SessionFamilyBodiesSourceSQL() string {
 // 加上它会把一个解析期错误换成一个**静默的行数变化**。响亮失败优于静默改行。
 var sessionBodiesSourceProjection = "sb.request_id, sb.request_delta AS request_body, " +
 	"sb.response_delta AS response_body, sb.outbound_body"
+
+// SessionBodiesHasOutboundPredicate returns "this turn really carried an
+// outbound body" for a column alias fed by SessionFamilyBodiesSourceSQL.
+//
+// # 为什么不能只写 `outbound_body IS NOT NULL`（真库实测，2026-10-14）
+//
+// 会话族与 v1 对「没有这个正文」用了**两种不同的表达**：
+//
+//	v1 `_request_logs_bodies*`	无正文 = SQL NULL（实测 outbound_body /
+//	                             request_body 的 jsonb-null 各 **0** 行）
+//	会话族 `session_bodies*`	    无正文 = jsonb `null`（实测 outbound_body
+//	                             11,420 行、request_delta 1,882 行，
+//	                             **SQL NULL 各 0 行**）
+//
+// ⇒ 对会话族写 `IS NOT NULL` 是**恒真**：20,643 行里 20,643 行通过，
+// 判据等于没写。而它的后果不是"少算"，是**多算**——实测同一张压缩统计表
+// （2026-10-12）v1 口径 5,405、会话族 `IS NOT NULL` 口径 9,129（**多 69%**），
+// 而多出来的那些轮次在 turns 行里 `outbound_msg_count` 是 NULL，
+// 独立证人否定了它们。
+//
+// # 加上 `<> 'null'::jsonb` 之后才是等价替换（同一张表实测）
+//
+//	v1 口径				5,405
+//	会话族忠实口径			4,204
+//	并集（跨族 OR）			**5,405** ← 与 v1 逐字相同
+//	（会话族 0 行是 v1 没有的；v1 多出的 1,201 行是 jsonb-null 行）
+//
+// ⇒ 跨族 OR 在**停写前的历史日**上逐字复现 v1 基线，同时补回停写后的流量。
+// 这正是"确保数据在更改前后一致"能被验证的形态：不是"新数看起来差不多"，
+// 是历史日的数字**完全相等**。
+//
+// ⚠ 同一条陷阱适用于 `request_body`（投影名 request_delta）：会话族的
+// "无请求体"同样是 jsonb null，用 `IS NOT NULL` 会把 1,892 行算成有正文。
+func SessionBodiesHasOutboundPredicate(alias string) string {
+	return alias + `.outbound_body IS NOT NULL AND ` + alias + `.outbound_body <> 'null'::jsonb`
+}
 
 // SessionBodiesSourceSQL returns the aliased bodies FROM-source for **any
 // package**, gated by the shared read-side switch.
@@ -1103,7 +1139,7 @@ var SessionFamilyBodiesSourceColumns = []string{
 	"request_id", "request_body", "response_body", "outbound_body",
 }
 
-// MirrorDriftClassSQL classifies a V1 request_logs row into the three buckets
+// MirrorDriftClassSQL classifies a V1 _request_logs row into the three buckets
 // the session mirror hook cares about. Kept as one expression so the aggregate
 // and the breakdown cannot disagree — and so every consumer that needs to
 // exclude "the hook would not have mirrored this" agrees on the definition.

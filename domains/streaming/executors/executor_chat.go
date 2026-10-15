@@ -24,6 +24,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/paramledger"
+	"github.com/kaixuan/llm-gateway-go/internal/paramrefusal"
 	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
@@ -34,6 +35,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/provider"
 	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/security/sanitize"
+	"github.com/kaixuan/llm-gateway-go/settings"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
@@ -80,6 +82,197 @@ func ExecuteHooksFromContext(ctx context.Context) *ExecuteHooks {
 		return v
 	}
 	return nil
+}
+
+// ── P0-3 (2026-10-14): eof_without_done 断流原地续问 ──────────────────
+//
+// 学习 magpie 的 ended-short + continuation：上游 chat SSE 在说完前断掉
+// （无 finish_reason、无 [DONE]）且客户端已收到部分正文时，同候选以已发
+// 文本为 assistant prefill 续问一次，续问响应帧拼进同一条出站管道。
+// ADR-Disp-003 约束下这是同候选、同一 executor 尝试内部的透明动作——
+// 不换人、不重复已发字节、不产生第二个 terminal。
+//
+// The hook lives in THIS package (not domains/streaming) because the
+// dependency direction is streaming → executors: the executor owns the
+// request, headers and HTTP client needed to re-issue the upstream call,
+// while the chat stream reader (domains/streaming/stream.go §11.6 branch)
+// owns the EOF detection point. They meet on the upstream request context.
+
+// StreamContinuationFn is installed on the upstream request context before
+// the request is built (so the stream reader discovers it via
+// resp.Request.Context()). The reader invokes it when the upstream SSE loop
+// ends without any terminal marker after the client has already seen
+// committed text; the hook must return a fresh SSE body to splice into the
+// same outbound pipe, or an error (the reader then falls back to the legacy
+// eof_without_done terminal — no partial state is left behind).
+type StreamContinuationFn func(prefixText string) (io.ReadCloser, error)
+
+type streamContinuationCtxKey struct{}
+
+// WithStreamContinuation returns a derived context carrying the provided
+// continuation hook. nil fn / nil parent are no-ops.
+func WithStreamContinuation(parent context.Context, fn StreamContinuationFn) context.Context {
+	if fn == nil || parent == nil {
+		return parent
+	}
+	return context.WithValue(parent, streamContinuationCtxKey{}, fn)
+}
+
+// StreamContinuationFromContext extracts a continuation hook previously
+// stored by WithStreamContinuation. Returns nil when absent.
+func StreamContinuationFromContext(ctx context.Context) StreamContinuationFn {
+	if ctx == nil {
+		return nil
+	}
+	if fn, ok := ctx.Value(streamContinuationCtxKey{}).(StreamContinuationFn); ok {
+		return fn
+	}
+	return nil
+}
+
+// chatStreamContinuation carries the late-bound plumbing for one executor
+// attempt's continuation hook. req/client are assigned after the attempt
+// closure builds them; the hook is only ever invoked from inside the stream
+// read loop, which runs strictly after both assignments.
+type chatStreamContinuation struct {
+	e      *Executor
+	params *ExecParams
+	cand   provider.Candidate
+	// body is the attempt's outbound chat body — the prefill is APPENDED to
+	// exactly what upstream saw, so model rewrite / stream_options / vendor
+	// params all survive. Snapshot at install time: bodyBytes is only ever
+	// reassigned (never mutated in place) at points that return a retryable
+	// error first, so a per-attempt snapshot equals the streamed body.
+	body []byte
+	req  *http.Request
+	// client is the same pool/default HTTP client the attempt used.
+	client *http.Client
+	// used enforces the P0-3 budget: exactly one continuation per executor
+	// attempt (== per request, since a committed-output EOF is non-resumable
+	// and the candidate loop never re-runs it). The stream reader also keeps
+	// a local spent flag; the atomic here is the authoritative guard against
+	// any future second splice site.
+	used atomic.Bool
+}
+
+// invoke implements StreamContinuationFn for chatStreamContinuation.
+func (s *chatStreamContinuation) invoke(prefixText string) (io.ReadCloser, error) {
+	if s == nil {
+		return nil, errors.New("stream continuation: nil state")
+	}
+	if !s.used.CompareAndSwap(false, true) {
+		return nil, errors.New("stream continuation budget already spent")
+	}
+	if s.req == nil || s.client == nil {
+		return nil, errors.New("stream continuation: upstream request not bound")
+	}
+	if len(prefixText) == 0 {
+		return nil, errors.New("stream continuation: no committed text to prefill")
+	}
+	if ctxErr := s.req.Context().Err(); ctxErr != nil {
+		return nil, fmt.Errorf("stream continuation: upstream context done: %w", ctxErr)
+	}
+	contBody, err := appendAssistantPrefillMessage(s.body, prefixText)
+	if err != nil {
+		return nil, fmt.Errorf("stream continuation: %w", err)
+	}
+	// Clone reuses the full header set of the original request (auth,
+	// egress meta, disguise, session, virtual client ids, transform
+	// injections). GetBody must be rebound to the continuation body:
+	// upstream.Client's retry loop replays via GetBody and would otherwise
+	// resend the original (pre-prefill) body.
+	clone := s.req.Clone(s.req.Context())
+	contBytes := contBody
+	clone.Body = io.NopCloser(bytes.NewReader(contBytes))
+	clone.ContentLength = int64(len(contBytes))
+	clone.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(contBytes)), nil
+	}
+	// NOTE (pool): no re-acquire — the owning attempt still holds its pool
+	// lease (released only when the attempt closure returns, i.e. after the
+	// stream loop finishes); acquiring the same single-slot pool here would
+	// self-deadlock. Going straight through the same client keeps the same
+	// transport/connection pool without the semaphore.
+	var resp *http.Response
+	if s.e.Upstream != nil {
+		var uErr *upstreampkg.Error
+		resp, uErr = s.e.Upstream.DoWithHTTPClient(clone, s.client)
+		if uErr != nil {
+			return nil, fmt.Errorf("stream continuation upstream call: %s", uErr.Error())
+		}
+	} else {
+		var doErr error
+		resp, doErr = s.client.Do(clone)
+		if doErr != nil {
+			return nil, fmt.Errorf("stream continuation http call: %w", doErr)
+		}
+	}
+	if resp.StatusCode != http.StatusOK {
+		preview := make([]byte, 256)
+		n, _ := resp.Body.Read(preview)
+		//nolint:errcheck // best-effort close on the error path
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("stream continuation: upstream status %d (%s)",
+			resp.StatusCode, strings.TrimSpace(string(preview[:min(n, len(preview))])))
+	}
+	// R51-F15 同款：续问是准入内的第二次上游调用，必须补记 RPM/TPM 桶，
+	// 否则是隐性成本。
+	meterExtraUpstreamCall(s.params)
+	slog.Info("stream continuation issued",
+		"request_id", s.params.RequestID,
+		"provider_id", s.cand.ProviderID,
+		"credential_id", s.cand.CredentialID,
+		"raw_model", s.cand.RawModel,
+		"prefix_len", len(prefixText),
+		"continuation_body_bytes", len(contBody),
+		"attempt", 1,
+	)
+	return resp.Body, nil
+}
+
+// appendAssistantPrefillMessage returns a copy of body with one trailing
+// assistant message carrying prefixText as plain text (magpie-style
+// assistant prefill continuation).
+//
+// Boundaries (deliberate, see P0-3 design):
+//   - only the choices[0].delta.content text accumulated by the stream
+//     reader is prefilled; reasoning_content and tool_call argument
+//     fragments are NOT — a half-emitted tool_call JSON cannot be
+//     reconstructed into a valid prefill message and would steer the
+//     continuation into malformed output;
+//   - unknown top-level fields are preserved verbatim (raw-message round
+//     trip), so stream_options / tools / vendor params survive;
+//   - multi-choice (n>1) upstreams: only choice 0's text exists in the
+//     reader accumulator (ParseOpenAIStreamChunk reads choices[0]), so the
+//     prefill represents choice 0 only.
+func appendAssistantPrefillMessage(body []byte, prefixText string) ([]byte, error) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(body, &top); err != nil {
+		return nil, fmt.Errorf("parse outbound body: %w", err)
+	}
+	rawMsgs, ok := top["messages"]
+	if !ok {
+		return nil, errors.New("outbound body has no messages array")
+	}
+	var msgs []json.RawMessage
+	if err := json.Unmarshal(rawMsgs, &msgs); err != nil {
+		return nil, fmt.Errorf("parse messages: %w", err)
+	}
+	prefill := struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}{Role: "assistant", Content: prefixText}
+	prefillRaw, err := json.Marshal(prefill)
+	if err != nil {
+		return nil, err
+	}
+	msgs = append(msgs, json.RawMessage(prefillRaw))
+	newMsgs, err := json.Marshal(msgs)
+	if err != nil {
+		return nil, err
+	}
+	top["messages"] = newMsgs
+	return json.Marshal(top)
 }
 
 // ChatExecutor is the ProtocolHandler for OpenAI Chat Completions
@@ -354,6 +547,64 @@ func (e *Executor) selectUpstreamTimeout(params *ExecParams, cand provider.Candi
 	return timeout
 }
 
+// ── P0-1 paramrefusal（2026-10-14）：动态可选字段剔除记忆 ──────────────
+//
+// docs/research/2026-10-14-magpie对比与优化方案.md：vapeur 类 unknown-relay
+// 严格中转对未知顶层字段 400——stream_options 泄漏三连修（r1026 pass1/
+// pass2 + r1026b 原生透传腿）、thinking 对象（r1021）都是「每个新字段一次
+// 线上事故 + 一次代码修」。本机制把它变成「一次自动重试 + 一行日志」：
+// 失败一次 → errorsx.RefusedOptionalParam 解析 400 指名参数 → 剔除后同
+// 候选重试一次（每请求预算 1，不分字段）→ 记忆到重启/24h TTL，后续请求
+// 在出站 choke point 发前主动剔除。静态防线（StripStreamOptions /
+// RejectedBy 名单 / reqprobe）全部保留，本机制纯增量兜底；与 reqprobe 的
+// 分工见 internal/paramrefusal 包注释（reqprobe 骨架集保护住的字段——
+// 如 stream_options——与 RequestProbe 未接线场景由本机制兜住）。
+
+// paramRefusalStore 返回注入的记忆实例；未注入时用进程级 Default()
+// （重启清零，多实例各自学习——文档已认可）。
+func (e *Executor) paramRefusalStore() *paramrefusal.Store {
+	if e.ParamRefusal != nil {
+		return e.ParamRefusal
+	}
+	return paramrefusal.Default()
+}
+
+// paramRefusalWireKey 推导记忆的线格式维度：native responses 传输（含
+// chat→responses 升级/回退后）统一记 "openai-responses"，否则按候选协议。
+func paramRefusalWireKey(cand provider.Candidate, nativeTransport bool) string {
+	if nativeTransport {
+		return providercatalog.ProtocolOpenAIResponses
+	}
+	return cand.Protocol
+}
+
+// paramRefusalApply 在出站体上应用已记忆的可选字段剔除（无记忆时零开销
+// 原样返回）。
+func (e *Executor) paramRefusalApply(body []byte, providerID int, model, wire string) []byte {
+	fields := e.paramRefusalStore().StrippableFields(providerID, model, wire)
+	if len(fields) == 0 {
+		return body
+	}
+	return transformation.StripTopLevelJSONFields(body, fields)
+}
+
+// paramRefusalPresentKeys 返回 keys 中真实存在于 body 顶层的子集（前提
+// 在场判定：剔除重试必须先证明首发确实带了被拒字段，否则是「看不见」
+// 式假绿——判据纪律第 2 条在热路径上的对应物）。
+func paramRefusalPresentKeys(body []byte, keys []string) []string {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil || obj == nil {
+		return nil
+	}
+	var out []string
+	for _, k := range keys {
+		if _, ok := obj[k]; ok {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
 func (e *Executor) executeOpenAI(
 	params *ExecParams,
 	cand provider.Candidate,
@@ -561,7 +812,7 @@ func (e *Executor) executeOpenAI(
 	var bodyBytes []byte
 	// R34-A1: responses 专属压缩链的 provenance JSON（strategy + dropped
 	// indexes + AlignmentMap）。proactive 与 4xx recovery 两条路径写入，
-	// preTrimMeta 构建处统一合入 request_logs.compression_meta。
+	// preTrimMeta 构建处统一合入 _request_logs.compression_meta。
 	var responsesProvenance []byte
 	if nativeNonStream || nativeStream {
 		// R-vapeur4 (2026-10-12): prefer the proactively converted body over
@@ -589,13 +840,29 @@ func (e *Executor) executeOpenAI(
 		if bytes.Contains(sourceBody, []byte(`"stream_options"`)) {
 			sourceBody = transformation.StripStreamOptions(sourceBody)
 		}
+		// r1027（2026-10-14）：chat 风格顶层参数的线格式适配——
+		// reasoning_effort→reasoning.effort、response_format→text.format、
+		// max_completion_tokens→max_output_tokens、logprobs 系删除
+		// （raw-logs 01:03-01:05 四条实证，上游逐条点名 "moved to ..."）。
+		// native 透传腿此前不做任何适配，同语义在 IR 转换路径上本就正确。
+		if bytes.Contains(sourceBody, []byte(`"reasoning_effort"`)) ||
+			bytes.Contains(sourceBody, []byte(`"response_format"`)) ||
+			bytes.Contains(sourceBody, []byte(`"max_completion_tokens"`)) ||
+			bytes.Contains(sourceBody, []byte(`"logprobs"`)) {
+			sourceBody = transformation.AdaptChatParamsToResponsesWire(sourceBody)
+		}
+		// P0-1 paramrefusal 主动剔除（choke point #1，native 透传腿）：
+		// 已被上游 400 拒绝过的可选字段在压缩/改写前先行剔除——静态名单
+		// （上面两条）覆盖已知字段，这里覆盖「学到的」字段。
+		sourceBody = e.paramRefusalApply(sourceBody, cand.ProviderID, cand.RawModel,
+			paramRefusalWireKey(cand, true))
 		contextWindow := 0
 		if cand.ContextWindow != nil {
 			contextWindow = *cand.ContextWindow
 		}
 		reserve := transformation.OutputTokenReserve(sourceBody, "openai-responses")
 		// R34-A1: responses 专属压缩链带 provenance（dropped indexes 等），
-		// 由 recordResponsesInputTrim 合入 request_logs.compression_meta。
+		// 由 recordResponsesInputTrim 合入 _request_logs.compression_meta。
 		var responsesTrimMeta *transformation.ResponsesInputTrimMeta
 		bodyBytes, responsesTrimMeta = transformation.CompressResponsesInputIfNeededWithMeta(sourceBody, contextWindow, reserve)
 		recordResponsesInputTrimMeta(&responsesProvenance, sourceBody, bodyBytes, responsesTrimMeta)
@@ -617,6 +884,12 @@ func (e *Executor) executeOpenAI(
 	// reqprobe: 前置应用已学习的参数剔除规则（此前已被"剔除后重试成功"
 	// 验证过的参数，24h 滑窗；LLM_GATEWAY_REQPROBE_LEARN=off 关闭）。
 	bodyBytes = e.reqprobeApplyLearned(bodyBytes, cand, params.RequestID)
+	// P0-1 paramrefusal 主动剔除（choke point #2，finalize 后统一出站体）：
+	// chat 腿首发同样应用已记忆字段（否则记忆对 chat 腿只有「先吃一次
+	// 400」的反应价值，没有先发价值）；native 腿在上面 choke point #1 已
+	// 对 sourceBody 处理过，此处对派生 bodyBytes 是幂等 no-op。
+	bodyBytes = e.paramRefusalApply(bodyBytes, cand.ProviderID, cand.RawModel,
+		paramRefusalWireKey(cand, nativeNonStream || nativeStream))
 
 	// 2026-07-16: Pre-request validation
 	if e.PreRequestValidator != nil {
@@ -642,7 +915,7 @@ func (e *Executor) executeOpenAI(
 
 	// Round 47 compression v7 T-NEW-4: capture the pre-request trim
 	// delta (transformation.CompressMessagesIfNeeded inside finalize) so
-	// emitTelemetry writes compression_meta into request_logs even when
+	// emitTelemetry writes compression_meta into _request_logs even when
 	// no 4xx happened. Without this the pre-request trim runs silently
 	// and operators can't see how many bytes were saved.
 	preTrimMeta := buildPreRequestTrimMeta(len(sourceBody), len(bodyBytes), cand.ContextWindow)
@@ -666,6 +939,10 @@ func (e *Executor) executeOpenAI(
 	probe := reqProbeRuntime{}
 	probeRetry := false
 	probeNoDelay := false
+	// P0-1 paramrefusal：每请求剔除重试预算 1 次（不分字段——第二次指名
+	// 说明还有别的问题，连续剥参交给 reqprobe 的有界多轮，本机制只兜
+	// 第一跳）。
+	paramRefusalTried := false
 	// A successful Chat probe after an explicit "Responses API unsupported"
 	// verdict is also a valid execution path. Apply the same decision to live
 	// requests before the ordinary 5xx retry/failover branch handles relay 502s.
@@ -850,6 +1127,27 @@ func (e *Executor) executeOpenAI(
 			if e.QualitySetMode != nil {
 				upCtx = e.QualitySetMode(upCtx, cand.QualityFixMode)
 			}
+			// P0-3 (2026-10-14): 断流原地续问 hook。OpenAI-chat 线格式的流式
+			// 出站安装续问能力——必须在 http.NewRequestWithContext 之前挂进
+			// upCtx，stream reader（domains/streaming/stream.go §11.6 分支）经
+			// resp.Request.Context() 才能发现它。req/client 在下方构建完成后
+			// late-bind 进 state；hook 只会在流读取循环内被调用，那时两者
+			// 均已就位。nativeStream（responses 线格式上游）与 anthropic
+			// 线格式上游本轮不覆盖——hook 对 OpenAIToAnthropicStream /
+			// OpenAIToResponsesStream 桥（chat 线上游、非 chat 线客户端）同样
+			// 挂载但桥侧暂不消费（登记待接线）。
+			var continuation *chatStreamContinuation
+			if params.IsStream && !nativeStream && e.StreamChat != nil &&
+				cand.Protocol != providercatalog.ProtocolAnthropicMessages &&
+				settings.GetPlatformBool(settings.KeyStreamContinuationEnabled, true) {
+				continuation = &chatStreamContinuation{
+					e:      e,
+					params: params,
+					cand:   cand,
+					body:   bodyBytes,
+				}
+				upCtx = WithStreamContinuation(upCtx, continuation.invoke)
+			}
 			req, err := http.NewRequestWithContext(
 				upCtx,
 				http.MethodPost,
@@ -954,6 +1252,13 @@ func (e *Executor) executeOpenAI(
 			}
 			if poolUnavailable != nil {
 				return nil, poolUnavailable
+			}
+
+			// P0-3: late-bind the continuation hook now that the request and
+			// the resolved HTTP client both exist.
+			if continuation != nil {
+				continuation.req = req
+				continuation.client = httpClient
 			}
 
 			// Track C (2026-06-18): upCtx is set at loop scope above.
@@ -1119,7 +1424,7 @@ func (e *Executor) executeOpenAI(
 				// carries the real classifier signal
 				// ("tool_call_id_mismatch" / "invalid_request_format" / …).
 				// Capture a 256-byte preview of the 4xx body so operators
-				// don't need tcpdump / request_logs excavation to figure
+				// don't need tcpdump / _request_logs excavation to figure
 				// out WHY the upstream rejected us. Goes after the
 				// attemptLog call (the resp.Body is still untouched at
 				// this point).
@@ -1409,6 +1714,51 @@ func (e *Executor) executeOpenAI(
 					}
 				}
 
+				// P0-1 paramrefusal（2026-10-14）：上游 400/422 指名可选参数 →
+				// 剔除后同候选免费重试一次 + 记忆（(provider, model, wire) 键，
+				// 24h TTL）。放在 reqprobe 之后 = 第二道兜底：reqprobe 骨架集
+				// 保护住的字段（stream_options 等）、RequestProbe 未接线、或
+				// reqprobe 词表未覆盖的词形（pydantic loc 数组 / \uXXXX 转义体）
+				// 在此处理；reqprobe 已触发剔除重试时到不了这里（其 return
+				// retryableError 先行）。黑名单字段（messages/model 等）由
+				// paramrefusal.Strippable 拒绝——不重试、不记忆。probeStatus/
+				// probeBody 取解包后的值（流式 5xx 包内层 4xx 场景同 reqprobe）。
+				if !paramRefusalTried &&
+					(probeStatus == http.StatusBadRequest || probeStatus == http.StatusUnprocessableEntity) {
+					if field, refused := errorsx.RefusedOptionalParam(probeBody); refused {
+						if keys := paramrefusal.StripCandidates(field); len(keys) > 0 {
+							// 前提在场：首发出站体确实带着被拒字段（否则是
+							// 提取误报或字段来自别的层，重试同 body 无意义）。
+							if present := paramRefusalPresentKeys(bodyBytes, keys); len(present) > 0 {
+								wire := paramRefusalWireKey(cand, nativeNonStream || nativeStream)
+								slog.Warn("paramrefusal retry",
+									"request_id", params.RequestID,
+									"provider_id", cand.ProviderID,
+									"credential_id", cand.CredentialID,
+									"raw_model", cand.RawModel,
+									"status", probeStatus,
+									"named_param", field,
+									"stripped", strings.Join(present, ","),
+									"wire", wire,
+								)
+								e.paramRefusalStore().Remember(cand.ProviderID, cand.RawModel, wire, present...)
+								bodyBytes = transformation.StripTopLevelJSONFields(bodyBytes, present)
+								paramRefusalTried = true
+								probeRetry = true
+								// R51-F15 同型：剔除重试是准入内的第二次上游调用。
+								meterExtraUpstreamCall(params)
+								return nil, &retryableError{err: &upstreampkg.Error{
+									Kind:       errKind,
+									Message:    fmt.Sprintf("upstream %d (paramrefusal strip retry: %s)", probeStatus, strings.Join(present, ",")),
+									Body:       append([]byte(nil), probeBody...),
+									StatusCode: probeStatus,
+									RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
+								}}
+							}
+						}
+					}
+				}
+
 				// 模式回退（chat→responses，2026-10-02）：上面的分支处理「provider
 				// 不支持 Responses → 退回 chat」。本分支补上反向缺口：「模型只存在于
 				// Responses → chat 腿被拒」。此前该方向完全没有降级：reqprobe.Diagnose
@@ -1445,8 +1795,13 @@ func (e *Executor) executeOpenAI(
 						// r1026b：与 native 分支同源同治——ResponsesBodyBytes
 						// 是客户端原文，stream_options（chat 线格式专属）必须
 						// 在这里同样剔除，否则 reactive 重试腿绕过 native
-						// 分支的 strip choke point。
-						retryBody = transformation.StripStreamOptions(append([]byte(nil), params.ResponsesBodyBytes...))
+						// 分支的 strip choke point。r1027：chat 风格参数的
+						// 线格式适配同此。P0-1 paramrefusal（choke point #3）：
+						// 已记忆的 responses 线格式可选字段同样剔除。
+						retryBody = e.paramRefusalApply(
+							transformation.AdaptChatParamsToResponsesWire(
+								transformation.StripStreamOptions(append([]byte(nil), params.ResponsesBodyBytes...))),
+							cand.ProviderID, cand.RawModel, paramRefusalWireKey(cand, true))
 					} else if converted, convOK := chatBodyToResponsesBody(clientSourceBody, cand.RawModel); convOK {
 						retryBody = converted
 					}
@@ -1655,7 +2010,7 @@ func (e *Executor) executeOpenAI(
 					// this, the same minimax-m3 tool_call_id_mismatch
 					// 4xx that surfaces as "client bug" on the inner
 					// branch (line 456) regresses to "transient" in
-					// request_logs.error_kind / circuit / sticky / URSM.
+					// _request_logs.error_kind / circuit / sticky / URSM.
 					return nil, &upstreampkg.Error{
 						Kind:       errKind,
 						Message:    fmt.Sprintf("upstream %d: %s", resp.StatusCode, string(body[:min(n, 200)])),
@@ -1820,18 +2175,18 @@ func (e *Executor) executeOpenAI(
 						"chunk_count", streamOutcome.ChunkCount,
 					)
 					return &ExecuteResult{
-							Response:       resp,
-							Candidate:      cand,
-							LatencyMs:      latencyMs,
-							RequestBody:    append([]byte(nil), bodyBytes...),
-							InboundBody:    sourceBody,
-							RoutingTracker: params.RoutingTracker,
-						}, &streamInterruptedError{
-							reason:       streamOutcome.Reason,
-							credentialID: cand.CredentialID,
-							resumable:    false,
-							kind:         errorsx.KindCanceled,
-						}
+						Response:       resp,
+						Candidate:      cand,
+						LatencyMs:      latencyMs,
+						RequestBody:    append([]byte(nil), bodyBytes...),
+						InboundBody:    sourceBody,
+						RoutingTracker: params.RoutingTracker,
+					}, &streamInterruptedError{
+						reason:       streamOutcome.Reason,
+						credentialID: cand.CredentialID,
+						resumable:    false,
+						kind:         errorsx.KindCanceled,
+					}
 				}
 				if streamOutcome.Interrupted {
 					isResumable := streamOutcome.Resumable && streamOutcome.ChunkCount < e.StreamRetryThreshold
@@ -1919,23 +2274,23 @@ func (e *Executor) executeOpenAI(
 					}
 
 					return &ExecuteResult{
-							Response:    resp,
-							Candidate:   cand,
-							LatencyMs:   latencyMs,
-							RequestBody: append([]byte(nil), bodyBytes...),
-							// Phase D (2026-06-22): inbound body for audit logging
-							InboundBody: sourceBody,
-							// 2026-06-19 quality fix mode: capture any flags the
-							// stream reader observed before the interrupt fired.
-							QualityFlags:   streamQualityFlags,
-							QualityScore:   streamQualityScore,
-							RoutingTracker: params.RoutingTracker,
-						}, &streamInterruptedError{
-							reason: streamOutcome.Reason, credentialID: cand.CredentialID,
-							resumable: isResumable, kind: streamKind,
-							statusCode: resp.StatusCode, rawError: streamOutcome.Reason,
-							terminalRendered: streamOutcome.TerminalRendered,
-						}
+						Response:    resp,
+						Candidate:   cand,
+						LatencyMs:   latencyMs,
+						RequestBody: append([]byte(nil), bodyBytes...),
+						// Phase D (2026-06-22): inbound body for audit logging
+						InboundBody: sourceBody,
+						// 2026-06-19 quality fix mode: capture any flags the
+						// stream reader observed before the interrupt fired.
+						QualityFlags:   streamQualityFlags,
+						QualityScore:   streamQualityScore,
+						RoutingTracker: params.RoutingTracker,
+					}, &streamInterruptedError{
+						reason: streamOutcome.Reason, credentialID: cand.CredentialID,
+						resumable: isResumable, kind: streamKind,
+						statusCode: resp.StatusCode, rawError: streamOutcome.Reason,
+						terminalRendered: streamOutcome.TerminalRendered,
+					}
 				}
 				recordAttemptSuccess(streamOutcome.ChunkCount)
 				return &ExecuteResult{
@@ -1954,7 +2309,7 @@ func (e *Executor) executeOpenAI(
 					// 2026-06-19 quality fix mode: relay/stream.go populated
 					// capture.QualityFlags as each chunk was processed.
 					// relay/handler.go emitTelemetry writes these into
-					// request_logs.quality_flags / quality_score.
+					// _request_logs.quality_flags / quality_score.
 					QualityFlags:   streamQualityFlags,
 					QualityScore:   streamQualityScore,
 					RoutingTracker: params.RoutingTracker,
@@ -2261,14 +2616,14 @@ func (e *Executor) executeOpenAI(
 				// Round 47 compression v7 T-NEW-2: surface the compression
 				// event captured by handleContextLengthRecovery so
 				// relay/handler.go emitTelemetry can write it to
-				// request_logs.compression_*.
+				// _request_logs.compression_*.
 				CompressionReason:   strPtrCompat(contextLenRecovery.lastReason),
 				CompressionStrategy: strPtrCompat(contextLenRecovery.lastStrategy),
 				CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, mergeCompressionMeta(responsesProvenance, preTrimMeta)),
 				// Round 47 compression v7 T-NEW-4: pre-request trim
 				// metadata merged in via mergeCompressionMeta above.
 				// 2026-06-19 quality fix mode: relay/handler.go emitTelemetry
-				// copies these into request_logs.quality_* columns.
+				// copies these into _request_logs.quality_* columns.
 				QualityFlags:      qualityFlags,
 				QualityFixActions: qualityActions,
 				QualityScore:      qualityScore,

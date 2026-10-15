@@ -21,10 +21,10 @@ import (
 // Retirement exposure of the v1 readers (audit §9.162).
 //
 // requestLogsReadInventory pins **coverage** — 104 files / 237 call sites that
-// read `request_logs*` — but deliberately draws no conclusion about them ("this
+// read `_request_logs*` — but deliberately draws no conclusion about them ("this
 // gate counts, it does not judge"). So the retirement work list has never
 // existed. §9.161 supplies the other half: which canonical columns the session
-// family can still serve after `request_logs` is dropped. This file joins the
+// family can still serve after `_request_logs` is dropped. This file joins the
 // two.
 //
 // # Why this is not the "automatic classification" that already failed
@@ -54,7 +54,7 @@ import (
 // # Why the extraction is ast-based, not a line regex
 //
 // The existing inventory scanner counts with a per-line
-// `from\s+request_logs` regex, which also matches inside `--` comments. That is
+// `from\s+_request_logs` regex, which also matches inside `--` comments. That is
 // fine for counting call sites and wrong for attributing a **column** to a
 // statement: a comment explaining the old expression would inject column names
 // into the exposure set. Comments are stripped here, and SQL inside Go string
@@ -136,7 +136,7 @@ func ensureV1RelationMatchers(t *testing.T) {
 		alt[i] = regexp.QuoteMeta(n)
 	}
 	// ⚠ **最长在前**：Go 的 alternation 是 leftmost-first，**不是** longest-match。
-	// 写成 (request_logs|request_logs_hot|…) 时，它会先匹配前缀 `request_logs`，
+	// 写成 (_request_logs|_request_logs_hot|…) 时，它会先匹配前缀 `_request_logs`，
 	// 后面的可选别名组因为下一个字符是 `_` 而匹配不上 ⇒ **别名被丢掉**。
 	// 那不是降级测量，是**完全没有测量**（§9.165 的教训，已写在该文件 v1AliasRe 注释里）。
 	sort.Slice(alt, func(i, j int) bool { return len(alt[i]) > len(alt[j]) })
@@ -218,9 +218,9 @@ type v1ReadingLiteral struct {
 	// 产不出来，所以「从未被分析」与「已 repoint 完」长得一模一样。
 	// 关系宇宙一放宽，两者混进同一个桶，暴露出一个真实的分类缺陷：
 	// **已经走视图的读方不是 breaker**。它的依赖在「视图的 v1 臂」上，
-	// 那属于**切换时的迁移问题**（DROP request_logs 时视图要改成 session-only），
+	// 那属于**切换时的迁移问题**（DROP _request_logs 时视图要改成 session-only），
 	// 不是「这个文件必须在 DROP 之前改掉」。把它写进 retirementBreakers 会留下一条
-	// 「reads request_logs.work_type directly」这种**不属实**的登记。
+	// 「reads _request_logs.work_type directly」这种**不属实**的登记。
 	viaBaseTable     bool
 	viaCanonicalView bool
 	// columns are the exposure-class columns named in this literal, with each
@@ -236,7 +236,7 @@ type v1ReadingLiteral struct {
 	// some other alias (`mc.id`, `c.id`, `p.id`, …) or is a JSONB key access
 	// (`att->>'id'`). Those are the shape of dimension-table primary keys, and
 	// treating them as v1 dependencies is what made §9.162/§9.164 report `id`
-	// as the blocker for eleven files that never touch request_logs.id.
+	// as the blocker for eleven files that never touch _request_logs.id.
 	columns map[string]string // column -> class
 	// allColumns is every canonical contract column this literal names, with the
 	// same attribution rule but **not** restricted to the non-baseline classes.
@@ -627,7 +627,7 @@ func TestRequestLogsRetirementExposure(t *testing.T) {
 
 // retirementBreakers is the named registry of files that name a column the
 // session family cannot serve, inside SQL that reads the v1 family. These are
-// the files that must be repointed or retired **before** `request_logs` is
+// the files that must be repointed or retired **before** `_request_logs` is
 // dropped.
 //
 // It is a registry rather than a derived assertion so that fixing a reader is a
@@ -684,7 +684,7 @@ var retirementBreakers = map[string]string{
 // The defect they share: the old extractor asked "does the substring `id` appear
 // in a v1-reading literal", and these files' literals are full of dimension-table
 // primary keys (`mc.id`, `c.id`, `p.id`), a JSONB key access (`att->>'id'`), and
-// an output alias (`credential_id AS id`). None of them is request_logs.id.
+// an output alias (`credential_id AS id`). None of them is _request_logs.id.
 var retirementReattributed = map[string]string{
 	"admin/data_lifecycle_attachments.go": "repoint-degraded: real dependency is `attachments` (18.19% session vs 100% v1). The `id` was `att->>'id'`, a JSONB key access on the attachments column",
 	"cmd/gateway/v1_write_liveness.go": "§9.264/§9.265 的 v1 写入腿存活读数。" +
@@ -826,7 +826,7 @@ func computeV1ReadingExposure(t *testing.T, root string) (measured, viewArm map[
 		// 放宽之后它们混进 breaks 桶——而它们**不是 breaker**：
 		// 直读底表的读方必须在 DROP 之前改；经视图读的读方是
 		// **切换时的迁移问题**（视图要改成 session-only）。
-		// 把两者塞进同一张登记表，会写出「reads request_logs.work_type directly」
+		// 把两者塞进同一张登记表，会写出「reads _request_logs.work_type directly」
 		// 这种**不属实**的条目——比缺一条登记更糟，因为它会误导下一个复核的人。
 		// 逐字面量分投，**两个桶都算**，不是二选一。
 		//
@@ -911,7 +911,7 @@ func TestRequestLogsRetirementBreakersRegistryIsConsistent(t *testing.T) {
 
 	if len(unregistered) > 0 {
 		t.Errorf("%d file(s) 直读 v1 底表、且读了会话族供不上的列，但不在 retirementBreakers 里 —— "+
-			"在这些文件改掉之前 request_logs 不能删：\n  %s", len(unregistered), strings.Join(unregistered, "\n  "))
+			"在这些文件改掉之前 _request_logs 不能删：\n  %s", len(unregistered), strings.Join(unregistered, "\n  "))
 	}
 
 	// 经视图读的读方**不进** retirementBreakers（理由见上面那段注释），
@@ -929,7 +929,7 @@ func TestRequestLogsRetirementBreakersRegistryIsConsistent(t *testing.T) {
 			t.Logf("  %s", n)
 		}
 		t.Logf("这一组不是「DUMP 之前必须改掉的文件」，而是**切换时的迁移清单**：\n" +
-			"DROP request_logs 时 request_logs_with_current_month 的 v1 臂消失，\n" +
+			"DROP _request_logs 时 request_logs_with_current_month 的 v1 臂消失，\n" +
 			"这些文件会拿到空结果（典型是 work_type，session 臂上 0%%）。\n" +
 			"处置属属主决定（决策表新增 D29-d），本门只负责让它**可见**。")
 	}
@@ -1031,7 +1031,7 @@ func TestRequestLogsRetirementRepointVerdict(t *testing.T) {
 		{[]string{"work_type"}, db.RepointEmpty,
 			"0% on the session side while v1 holds values"},
 		{[]string{"upstream_endpoint"}, db.RepointNoSuchColumn,
-			"a real request_logs column that the view does not project"},
+			"a real _request_logs column that the view does not project"},
 		{nil, db.RepointNoColumnsMeasured,
 			"no columns is an absence of measurement, never a clean bill of health"},
 		{[]string{"latency_ms"}, db.RepointSafe,
@@ -1073,7 +1073,7 @@ func TestRequestLogsRetirementRepointVerdict(t *testing.T) {
 	// A file that contributes no columns is not a finding about that file — it is
 	// the instrument failing on it. §9.167 shipped three such files graded
 	// `repoint-safe` because the alias regex dropped the `rl` qualifier for
-	// `request_logs_hot`, and nothing in this test could tell that apart from a
+	// `_request_logs_hot`, and nothing in this test could tell that apart from a
 	// genuinely clean reader. So it is an error, not a log line.
 	if n := len(byVerdict[string(db.RepointNoColumnsMeasured)]); n > 0 {
 		t.Errorf("%d assessed file(s) contributed no columns, so their verdict is an absence "+
@@ -1108,22 +1108,22 @@ func countsBySeverity(exposures []fileExposure) map[string]int {
 	return out
 }
 
-// v1AliasRe captures the alias bound to a v1 relation: `FROM request_logs_hot rl`
-// binds rl, while `FROM request_logs` with no alias leaves the table name itself
+// v1AliasRe captures the alias bound to a v1 relation: `FROM _request_logs_hot rl`
+// binds rl, while `FROM _request_logs` with no alias leaves the table name itself
 // as the only valid qualifier.
 // The alternatives are ordered **longest first** and the table name is
 // `\b`-anchored on both sides. Both parts are load-bearing, and getting either
 // wrong is silent rather than loud.
 //
 // Go's regexp alternation is leftmost-first, not longest-match, so
-// `(request_logs|request_logs_hot|…)` matches the *prefix* `request_logs` of
-// `FROM request_logs_hot rl`. The optional alias group then has nothing to match
+// `(_request_logs|_request_logs_hot|…)` matches the *prefix* `_request_logs` of
+// `FROM _request_logs_hot rl`. The optional alias group then has nothing to match
 // (the next character is `_`, not whitespace), so **the alias is dropped**:
-// v1al came out as `{request_logs: true}` with no `rl`.
+// v1al came out as `{_request_logs: true}` with no `rl`.
 //
 // Downstream that is not a degraded measurement, it is an **absent** one:
 // columnAttribution sees `rl.client_model`, finds `rl` is not a known v1
-// qualifier, and returns attrNone. Every column of every `request_logs_hot`
+// qualifier, and returns attrNone. Every column of every `_request_logs_hot`
 // reader was therefore reported as depending on nothing, and
 // `RetirementRepointVerdictFor([])` — whose loop body never executes — returns
 // its zero value, `RepointSafe`.

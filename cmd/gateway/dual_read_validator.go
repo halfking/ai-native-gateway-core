@@ -14,7 +14,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/db"
 )
 
-// DualReadDiff summarizes the divergence between V1 (public.request_logs)
+// DualReadDiff summarizes the divergence between V1 (public._request_logs)
 // and V2 (public.session_turns) for one session during the cut-over
 // observation window. Non-zero TokenDiff / CostDiff means V1 and V2
 // disagree, which must be reconciled before flipping the primary read.
@@ -27,13 +27,13 @@ type DualReadDiff struct {
 }
 
 // DualReadDetail is the storage-plan-v2 S2 row-level reconciliation
-// (plan §4 S2: dual_read_validator 对账扩展「turns vs request_logs 等值」;
+// (plan §4 S2: dual_read_validator 对账扩展「turns vs _request_logs 等值」;
 // §8-C/D 的端点化形态). Compare is the aggregate view; CompareDetail adds
 // the per-request_id set difference and per-field drift samples that make
 // a "7 天零漂移" gate auditable:
-//   - OnlyInV1: request_logs rows with no session_turns counterpart
+//   - OnlyInV1: _request_logs rows with no session_turns counterpart
 //     (mirror loss / no-session traffic not yet covered by D4 synthetics);
-//   - OnlyInV2: turns rows with no request_logs counterpart;
+//   - OnlyInV2: turns rows with no _request_logs counterpart;
 //   - drifted matched rows per field (tokens / cost / success /
 //     credits_charged), each with up to SampleLimit request_ids.
 //
@@ -296,12 +296,12 @@ SELECT rl.request_id, rl.gw_session_id, rl.tenant_id::text AS tenant_id,
 FROM (
     SELECT request_id, gw_session_id, tenant_id, work_type, request_status, error_kind,
            is_auto_request, origin_actor, request_type, task_type, success, ts
-    FROM request_logs_hot
+    FROM _request_logs_hot
     WHERE ts >= $2 AND gw_session_id IS NOT NULL AND gw_session_id <> ''
     UNION ALL
     SELECT request_id, gw_session_id, tenant_id, work_type, request_status, error_kind,
            is_auto_request, origin_actor, request_type, task_type, success, ts
-    FROM request_logs
+    FROM _request_logs
     WHERE ts >= $2 AND gw_session_id IS NOT NULL AND gw_session_id <> ''
 ) rl
 WHERE ($1 = '' OR rl.tenant_id = $1)
@@ -360,7 +360,7 @@ func clampWindowHours(h int) int {
 // denominator come from the same snapshot.
 //
 // ★ Both storage faces are read, and that is load-bearing, not stylistic.
-// `request_logs_hot` is a **separate, disjoint table** (§9.160.7): reading only
+// `_request_logs_hot` is a **separate, disjoint table** (§9.160.7): reading only
 // the parent misses the newest rows, so a window that ends in the last hours
 // would score V1CoveragePP ≈ 0 and the gate would report a *false* void.
 //
@@ -379,9 +379,9 @@ const v1CoverageHoursSQL = `
 		), per_hour AS (
 			SELECT
 			  EXISTS (SELECT 1 FROM (
-			        SELECT tenant_id FROM request_logs_hot WHERE ts >= h.b AND ts < h.b + interval '1 hour'
+			        SELECT tenant_id FROM _request_logs_hot WHERE ts >= h.b AND ts < h.b + interval '1 hour'
 			        UNION ALL
-			        SELECT tenant_id FROM request_logs      WHERE ts >= h.b AND ts < h.b + interval '1 hour'
+			        SELECT tenant_id FROM _request_logs      WHERE ts >= h.b AND ts < h.b + interval '1 hour'
 			      ) rv WHERE $1 = '' OR rv.tenant_id::text = $1) AS has_v1,
 			  EXISTS (SELECT 1 FROM (
 			        SELECT tenant_id FROM session_turns_hot WHERE ts >= h.b AND ts < h.b + interval '1 hour'
@@ -416,10 +416,10 @@ func (v *DualReadValidator) SummarizeFrom(ctx context.Context, tenant string, no
 	// filter of mirrorDriftScopeSQL so the ratio is meaningful.
 	if err := v.db.QueryRow(ctx, `
 		SELECT COUNT(*) FROM (
-			SELECT tenant_id FROM request_logs_hot
+			SELECT tenant_id FROM _request_logs_hot
 			WHERE ts >= $2 AND gw_session_id IS NOT NULL AND gw_session_id <> ''
 			UNION ALL
-			SELECT tenant_id FROM request_logs
+			SELECT tenant_id FROM _request_logs
 			WHERE ts >= $2 AND gw_session_id IS NOT NULL AND gw_session_id <> ''
 		) x
 		WHERE ($1 = '' OR x.tenant_id::text = $1)`,
@@ -626,7 +626,7 @@ func (v *DualReadValidator) Compare(ctx context.Context, tenant, session string,
 
 	var count int
 	if err := v.db.QueryRow(ctx, `
-		SELECT count(*) FROM public.request_logs
+		SELECT count(*) FROM public._request_logs
 		WHERE tenant_id::TEXT=$1 AND gw_session_id=$2
 	`, tenant, session).Scan(&count); err != nil {
 		return d, fmt.Errorf("count v1: %w", err)
@@ -637,7 +637,7 @@ func (v *DualReadValidator) Compare(ctx context.Context, tenant, session string,
 		WITH v1 AS (
 			SELECT COALESCE(prompt_tokens + completion_tokens, 0) AS total_tokens,
 			       COALESCE(cost_usd, 0) AS cost
-			FROM public.request_logs
+			FROM public._request_logs
 			WHERE tenant_id::TEXT=$1 AND gw_session_id=$2
 		),
 		v2 AS (
@@ -676,21 +676,21 @@ func (v *DualReadValidator) CompareDetail(ctx context.Context, tenant, session s
 		sampleLimit = 50
 	}
 
-	// Base tables both sides. v1: request_logs_hot holds the pre-promote
-	// window, request_logs the promoted partitions. v2: same family shape.
+	// Base tables both sides. v1: _request_logs_hot holds the pre-promote
+	// window, _request_logs the promoted partitions. v2: same family shape.
 	// token 表达式双侧同构（NULLIF(COALESCE(p,0)+COALESCE(c,0),0)）以便
 	// 等值比较而非口径比较。
 	const v1CTE = `
 		SELECT request_id,
 		       NULLIF(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0), 0) AS tokens,
 		       cost_usd, success, credits_charged
-		FROM public.request_logs_hot
+		FROM public._request_logs_hot
 		WHERE gw_session_id = $2 AND ($1 = '' OR tenant_id::TEXT = $1)
 		UNION ALL
 		SELECT request_id,
 		       NULLIF(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0), 0) AS tokens,
 		       cost_usd, success, credits_charged
-		FROM public.request_logs
+		FROM public._request_logs
 		WHERE gw_session_id = $2 AND ($1 = '' OR tenant_id::TEXT = $1)
 	`
 	const v2CTE = `

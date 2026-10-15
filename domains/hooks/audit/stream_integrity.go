@@ -19,7 +19,7 @@ type StreamTextObserver interface {
 	ObserveText(s string) bool
 	// BreachReason names the rule that tripped, e.g.
 	// "integrity_repeated_content". Used as the capture's interruption
-	// reason so request_logs keeps a specific cause.
+	// reason so _request_logs keeps a specific cause.
 	BreachReason() string
 	// RepeatedContentHash returns the block hash and hit count when
 	// repeated content was detected incrementally, so the final

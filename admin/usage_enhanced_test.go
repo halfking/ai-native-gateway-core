@@ -31,7 +31,7 @@ func TestUsageCostTrend_ByModel(t *testing.T) {
 	// 创建租户
 	_, _ = db.Exec(ctx, `INSERT INTO tenants (id, name) VALUES ($1, $1) ON CONFLICT (id) DO NOTHING`, tenantID)
 
-	// 插入测试数据到 usage_ledger（或 request_logs）
+	// 插入测试数据到 usage_ledger（或 _request_logs）
 	testData := []struct {
 		model   string
 		cost    float64
@@ -47,7 +47,7 @@ func TestUsageCostTrend_ByModel(t *testing.T) {
 
 	for _, td := range testData {
 		_, err := db.Exec(ctx, `
-			INSERT INTO request_logs (
+			INSERT INTO _request_logs (
 				request_id, tenant_id, ts, raw_model_name, outbound_model,
 				cost_usd, total_tokens, prompt_tokens, completion_tokens, success
 			) VALUES (
@@ -95,7 +95,7 @@ func TestUsageCostTrend_ByModel(t *testing.T) {
 	}
 
 	// 清理
-	_, _ = db.Exec(ctx, `DELETE FROM request_logs WHERE tenant_id = $1`, tenantID)
+	_, _ = db.Exec(ctx, `DELETE FROM _request_logs WHERE tenant_id = $1`, tenantID)
 	_, _ = db.Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenantID)
 }
 
@@ -168,7 +168,7 @@ func TestUsagePeriodCompare_MonthOverMonth(t *testing.T) {
 	currentMonth, _ := time.Parse("2006-01", "2026-07")
 	for i := 0; i < 5; i++ {
 		_, _ = db.Exec(ctx, `
-			INSERT INTO request_logs (
+			INSERT INTO _request_logs (
 				request_id, tenant_id, ts, raw_model_name,
 				cost_usd, total_tokens, prompt_tokens, completion_tokens, success
 			) VALUES (
@@ -182,7 +182,7 @@ func TestUsagePeriodCompare_MonthOverMonth(t *testing.T) {
 	previousMonth, _ := time.Parse("2006-01", "2026-06")
 	for i := 0; i < 3; i++ {
 		_, _ = db.Exec(ctx, `
-			INSERT INTO request_logs (
+			INSERT INTO _request_logs (
 				request_id, tenant_id, ts, raw_model_name,
 				cost_usd, total_tokens, prompt_tokens, completion_tokens, success
 			) VALUES (
@@ -225,7 +225,7 @@ func TestUsagePeriodCompare_MonthOverMonth(t *testing.T) {
 	}
 
 	// 清理
-	_, _ = db.Exec(ctx, `DELETE FROM request_logs WHERE tenant_id = $1`, tenantID)
+	_, _ = db.Exec(ctx, `DELETE FROM _request_logs WHERE tenant_id = $1`, tenantID)
 	_, _ = db.Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenantID)
 }
 
@@ -286,7 +286,7 @@ func TestUsageCacheEconomics_BasicCalculation(t *testing.T) {
 
 	// 插入缓存命中的请求
 	_, _ = db.Exec(ctx, `
-		INSERT INTO request_logs (
+		INSERT INTO _request_logs (
 			request_id, tenant_id, ts, raw_model_name,
 			cost_usd, total_tokens, prompt_tokens, completion_tokens,
 			cache_read_tokens, success
@@ -298,7 +298,7 @@ func TestUsageCacheEconomics_BasicCalculation(t *testing.T) {
 
 	// 插入普通请求（无缓存）
 	_, _ = db.Exec(ctx, `
-		INSERT INTO request_logs (
+		INSERT INTO _request_logs (
 			request_id, tenant_id, ts, raw_model_name,
 			cost_usd, total_tokens, prompt_tokens, completion_tokens,
 			cache_read_tokens, success
@@ -355,7 +355,7 @@ func TestUsageCacheEconomics_BasicCalculation(t *testing.T) {
 	}
 
 	// 清理
-	_, _ = db.Exec(ctx, `DELETE FROM request_logs WHERE tenant_id = $1`, tenantID)
+	_, _ = db.Exec(ctx, `DELETE FROM _request_logs WHERE tenant_id = $1`, tenantID)
 	_, _ = db.Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenantID)
 }
 
@@ -376,7 +376,7 @@ func TestUsageCacheEconomics_NoCache(t *testing.T) {
 
 	// 插入无缓存的请求
 	_, _ = db.Exec(ctx, `
-		INSERT INTO request_logs (
+		INSERT INTO _request_logs (
 			request_id, tenant_id, ts, raw_model_name,
 			cost_usd, total_tokens, prompt_tokens, completion_tokens,
 			cache_read_tokens, success
@@ -413,7 +413,7 @@ func TestUsageCacheEconomics_NoCache(t *testing.T) {
 	}
 
 	// 清理
-	_, _ = db.Exec(ctx, `DELETE FROM request_logs WHERE tenant_id = $1`, tenantID)
+	_, _ = db.Exec(ctx, `DELETE FROM _request_logs WHERE tenant_id = $1`, tenantID)
 	_, _ = db.Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenantID)
 }
 
@@ -434,7 +434,7 @@ func TestUsageCacheEconomics_WithCompression(t *testing.T) {
 
 	// 插入带压缩的请求
 	_, _ = db.Exec(ctx, `
-		INSERT INTO request_logs (
+		INSERT INTO _request_logs (
 			request_id, tenant_id, ts, raw_model_name,
 			cost_usd, total_tokens, prompt_tokens, completion_tokens,
 			cache_read_tokens, compression_strategy, success
@@ -477,7 +477,7 @@ func TestUsageCacheEconomics_WithCompression(t *testing.T) {
 	}
 
 	// 清理
-	_, _ = db.Exec(ctx, `DELETE FROM request_logs WHERE tenant_id = $1`, tenantID)
+	_, _ = db.Exec(ctx, `DELETE FROM _request_logs WHERE tenant_id = $1`, tenantID)
 	_, _ = db.Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenantID)
 }
 

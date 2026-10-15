@@ -200,7 +200,7 @@ func (m *CandidateFailureMonitor) checkStaleness(ctx context.Context) error {
 			-- being written minutes earlier.
 			(SELECT max(ts) FROM candidate_failure_logs_with_current_month),
 			-- 2026-09-11: recent-window reads must use the current-month
-			-- surface — the bare request_logs parent only holds cold rows
+			-- surface — the bare _request_logs parent only holds cold rows
 			-- (max(ts) a day+ stale on 154), so "gateway has recent activity"
 			-- evaluated false and staleness alerts never fired.
 			(SELECT max(ts) FROM request_logs_with_current_month WHERE ts >= now() - interval '5 minutes')
@@ -310,7 +310,7 @@ func (m *CandidateFailureMonitor) checkAlerts(ctx context.Context) error {
 //
 // 窗口契约（2026-10-13 252 审计轮）：本查询两条臂只读 hot 双写表，其语义
 // 等价性成立的前提是窗口字面量（'5 minutes'）≤ hot 保留期——
-// session_turns_hot / request_logs_hot / candidate_failure_logs_hot 的
+// session_turns_hot / _request_logs_hot / candidate_failure_logs_hot 的
 // promote retention 名义 8h（settings lifecycle.*，R16 fact 85），5 分钟窗内
 // 的行只可能存在于 hot 侧，canonical 视图的分区腿与 v1 腿反连接在窗内恒
 // 贡献空集（与 admin.slidingWindowHotQuery 的 ≤120min 闸门同一论证，R32
@@ -363,7 +363,7 @@ func (m *CandidateFailureMonitor) checkAutoCool(ctx context.Context) error {
 		        WHERE t.ts >= now() - interval '5 minutes'
 		        UNION ALL
 		        SELECT r.credential_id, r.request_status, r.error_kind
-		        FROM request_logs_hot r
+		        FROM _request_logs_hot r
 		        WHERE r.ts >= now() - interval '5 minutes'
 		          AND NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = r.request_id)
 		    ) cand

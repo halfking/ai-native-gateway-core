@@ -10,7 +10,7 @@ package main
 //
 // Owner rule (see docs/2026-07-09-session-tagging-redaction-architecture.md §2.3):
 //   - callerOwner = api_keys.owner_user of the key that made the request
-//     (stored on request_logs.api_key_owner_user per row)
+//     (stored on _request_logs.api_key_owner_user per row)
 //   - dataOwner   = session_dim.owner_user (the session's primary owner)
 //   - text match → allow plaintext; mismatch or empty → redact
 //
@@ -114,7 +114,7 @@ func lookupOwners(ctx context.Context, db *sql.DB, sessionID, tenantID string) (
 		FROM session_dim sd
 		LEFT JOIN LATERAL (
 			SELECT api_key_owner_user
-			FROM request_logs
+			FROM _request_logs
 			WHERE gw_session_id = sd.gw_session_id
 			  AND ($2 = '' OR tenant_id = $2)
 			ORDER BY ts DESC
@@ -153,7 +153,7 @@ func makeDataOwnerLookup(db *sql.DB) outputcompliancehook.OwnerContextFunc {
 // makeOwnerLookup (2026-09-30 ctx-aware drift): the interceptor owner lookup
 // reads ONLY the session owner (session_dim.owner_user) — callerOwner rides
 // on InterceptRequest.CallerOwner from the streaming layer, so the
-// request_logs LATERAL join is unnecessary on this lane. Guards: missing
+// _request_logs LATERAL join is unnecessary on this lane. Guards: missing
 // session/tenant or a cancelled context return "" without a DB round-trip.
 func makeOwnerLookup(db *sql.DB) outputcompliancehook.OwnerContextFunc {
 	return func(ctx context.Context, sessionID, tenantID string) string {

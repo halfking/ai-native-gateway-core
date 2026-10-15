@@ -19,7 +19,7 @@ import "bytes"
 //
 //  2. There is no body-pruning job for session_bodies. The only body-blob
 //     reaper (admin/data_lifecycle_blobs.go) targets the V1 table
-//     `request_logs_bodies_hot` and NULLs its columns; it never touches
+//     `_request_logs_bodies_hot` and NULLs its columns; it never touches
 //     `session_bodies`.
 //
 //  3. `session_bodies` is month-partitioned WITH a DEFAULT partition

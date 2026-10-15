@@ -40,7 +40,7 @@ type Violation struct {
 // 标识符边界：靠捕获组的**贪婪**语义实现，不加额外断言。
 //
 // 两次踩坑都记在这里，因为它们是同一个错误的两种形态：
-//   - R78 子代理用 `\b` 锚右边界 → `request_logs_hot` 的下划线被判成
+//   - R78 子代理用 `\b` 锚右边界 → `_request_logs_hot` 的下划线被判成
 //     边界，把合法的 hot 表写入误报成父表违规。
 //   - 本守卫第一版用 `(?:[A-Za-z0-9_])` 当"边界" → 这是**消耗式**分组
 //     不是零宽断言，等于要求表名后面还得再有一个标识符字符，于是几乎
@@ -48,8 +48,8 @@ type Violation struct {
 //     Go 的 RE2 不支持 lookahead (?![...])，想写零宽断言也写不了。
 //
 // 正确做法就是什么都不加：`([a-z_][a-z0-9_]*)` 贪婪吃到标识符自然结束
-// （后跟空格/换行/别名/标点），因此 `request_logs_hot` 被整体捕获成
-// `request_logs_hot`、查不在父表集合里而正确跳过。
+// （后跟空格/换行/别名/标点），因此 `_request_logs_hot` 被整体捕获成
+// `_request_logs_hot`、查不在父表集合里而正确跳过。
 var stmtPatterns = []struct {
 	stmt  string
 	regex *regexp.Regexp
@@ -60,7 +60,7 @@ var stmtPatterns = []struct {
 }
 
 // sqliteBacked 是连 SQLite 而非 PostgreSQL 的路径。它们的表名恰好与
-// PG 分区父表重名（sessions / session_turns / request_logs /
+// PG 分区父表重名（sessions / session_turns / _request_logs /
 // session_turn_details），但那不是"对分区父表写"——是另一个数据库里的
 // 同名单文件表。红线约束的是 PostgreSQL 侧，故整路径排除。
 //

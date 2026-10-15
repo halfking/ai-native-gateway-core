@@ -20,6 +20,9 @@
   "SESSION_FORBIDDEN": {
     "other": "session not owned by this API key"
   },
+  "SESSION_STORE_UNAVAILABLE": {
+    "other": "session store unavailable; please retry later"
+  },
   "SESSION_ASSIGN_FAILED": {
     "other": "failed to assign session id"
   },

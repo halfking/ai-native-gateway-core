@@ -240,7 +240,7 @@ func (g *AutoSummaryGenerator) SetWorkerSlots(n int) {
 // X-Gw-Session-Id.
 //
 // parentRequestID is the user request's request_id; forwarded to the
-// loopback so request_logs_hot.parent_request_id makes the summary loopback
+// loopback so _request_logs_hot.parent_request_id makes the summary loopback
 // linkable back to its parent user request.
 //
 // body / preview mirror the title generator's contract.
@@ -693,7 +693,7 @@ func (g *AutoSummaryGenerator) doCallSummaryOnce(
 	req.Header.Set("X-Gw-Work-Type", task.Key)
 	req.Header.Set("X-Gw-Task-Id", "auto-summary:"+sessionID+":"+mode)
 	// 2026-08-06 (gs prefix): tag the loopback's own session_id with the
-	// "gs" branch namespace so request_logs_hot.gw_session_id shows
+	// "gs" branch namespace so _request_logs_hot.gw_session_id shows
 	// "gs_gw_<original>" instead of a fresh gw_<uuid>. Operators can SQL
 	//   WHERE gw_session_id LIKE 'gs\_%' ESCAPE '\'
 	// to find every auto-summary row.

@@ -23,19 +23,19 @@ func TestS3Wave2TurnCountSources(t *testing.T) {
 		t.Error("成功轮计数谓词丢失（门槛口径回归）")
 	}
 	// v1 回退必须覆盖 promote 排空的历史行（2026-10-13 252 审计轮演进：从
-	// canonical 视图收窄到 request_logs 分区父表——父表 hot∪各月分区都在，
+	// canonical 视图收窄到 _request_logs 分区父表——父表 hot∪各月分区都在，
 	// promote 排空的行照数；且回退腿只在会话族腿为 0 时执行，此时本会话
 	// 在 session_turns 无行可反连接，视图 turns 两臂 + details join 是
 	// leg 1 刚证明为空的纯重复扫描，252 实测单次 1.0-5.6s × 29 次/10.2h）。
 	// 钉子从「必须视图」演进为「必须父表直读」双向钉死。
-	if !strings.Contains(v1FallbackCountSQL, "FROM request_logs\n") &&
-		!strings.Contains(v1FallbackCountSQL, "FROM request_logs ") {
-		t.Error("v1 回退腿应直读 request_logs 分区父表（hot∪分区全覆盖，不落裸 hot 缺口）")
+	if !strings.Contains(v1FallbackCountSQL, "FROM _request_logs\n") &&
+		!strings.Contains(v1FallbackCountSQL, "FROM _request_logs ") {
+		t.Error("v1 回退腿应直读 _request_logs 分区父表（hot∪分区全覆盖，不落裸 hot 缺口）")
 	}
 	if strings.Contains(v1FallbackCountSQL, "request_logs_with_current_month") {
 		t.Error("v1 回退腿不应再走 canonical 视图（turns 臂对回退场景是纯重复扫描，2026-10-13 审计轮）")
 	}
-	if strings.Contains(v1FallbackCountSQL, "request_logs_hot") {
+	if strings.Contains(v1FallbackCountSQL, "_request_logs_hot") {
 		t.Error("v1 回退腿禁止退回裸 hot 表（promote 排空的历史行会漏计）")
 	}
 	if !strings.Contains(v1FallbackCountSQL, "gw_session_id = $1 AND success = TRUE") {

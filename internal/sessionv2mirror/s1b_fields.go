@@ -15,7 +15,7 @@
 //	  quality_fix_actions/quality_score/stream_chunk_errors/
 //	  stream_chunks_sent/attachments/request_type/request_class/due_at
 //	· 缺源 4 列（RequestLogEntry 无字段，保持 NULL；历史值由 733 回填
-//	  从 request_logs 补齐，后续管道接线登记）：virtual_ip/virtual_mac/
+//	  从 _request_logs 补齐，后续管道接线登记）：virtual_ip/virtual_mac/
 //	  key_alias/owner_user
 //	· 储备组（node_switch_count 等 24 列）entry 无源，列已在 733 建好，
 //	  待 S3 视图迁移接线。

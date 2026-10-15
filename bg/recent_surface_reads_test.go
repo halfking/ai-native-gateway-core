@@ -8,9 +8,9 @@ import (
 
 // TestRecentWindowReadsUseCurrentMonthSurface extends the
 // passive_probe_recent_surface_test.go doctrine (2026-09-10 minimax-prod-v2
-// incident) to the remaining bg workers with recent-window request_logs
-// reads. The bare request_logs parent only holds cold rows — its max(ts) ran
-// a full day+ stale on 154 while request_logs_hot served live traffic — so
+// incident) to the remaining bg workers with recent-window _request_logs
+// reads. The bare _request_logs parent only holds cold rows — its max(ts) ran
+// a full day+ stale on 154 while _request_logs_hot served live traffic — so
 // every recent-window read against it is structurally blind.
 //
 // Covered files (2026-09-11 audit round):
@@ -37,7 +37,7 @@ import (
 //   - model_probe.go: 5-minute passive-boost pick (always empty)
 //
 // 2026-10-13 252 SQL 日志审计轮：doctrine 再演进——hot 双写表本身成为合法
-// 近窗面。2026-09-10 事故的对立面是「裸父表冷读」，而 request_logs_hot /
+// 近窗面。2026-09-10 事故的对立面是「裸父表冷读」，而 _request_logs_hot /
 // candidate_failure_logs_hot 是写方同步喂数的最新鲜面；canonical 视图对
 // 短窗（≤hot promote retention 8h）是纯税（三臂全分区反连接，R32
 // slidingWindowHotQuery 定版同一论证）。candidate_failure_monitor.go 的
@@ -46,7 +46,7 @@ import (
 // 豁免以 _hot 后缀放行 + 读点数钉死（下方案数断言），新读点必须先过
 // 对拍门再扩名单——与 opslog_trimmer/integrity_fingerprint 两个先例同款。
 func TestRecentWindowReadsUseCurrentMonthSurface(t *testing.T) {
-	re := regexp.MustCompile(`(?i)FROM\s+request_logs(\w*)`)
+	re := regexp.MustCompile(`(?i)FROM\s+_?request_logs(\w*)`)
 	for _, file := range []string{
 		"candidate_failure_monitor.go",
 		"shared_pick.go",
@@ -59,7 +59,7 @@ func TestRecentWindowReadsUseCurrentMonthSurface(t *testing.T) {
 		src := string(contents)
 		matches := re.FindAllStringSubmatch(src, -1)
 		if len(matches) == 0 {
-			t.Fatalf("%s: no request_logs reads found — query surface moved?", file)
+			t.Fatalf("%s: no _request_logs reads found — query surface moved?", file)
 		}
 		for _, m := range matches {
 			// 2026-10-13: hot 双写表是合法近窗面（见头注 doctrine 演进）。
@@ -75,7 +75,7 @@ func TestRecentWindowReadsUseCurrentMonthSurface(t *testing.T) {
 	}
 
 	// 2026-10-13: hot 快路径读点钉子——candidate_failure_monitor.go 恰好
-	// 1 处 request_logs_hot（auto-cool win 的 v1 臂）+ 1 处
+	// 1 处 _request_logs_hot（auto-cool win 的 v1 臂）+ 1 处
 	// candidate_failure_logs_hot（cfl 臂）读点。数字变了=有新近窗读点或
 	// 旧读点被改面，必须先过 auto_cool_hot_realdb_test.go 对拍门再改这里。
 	monSrc, err := os.ReadFile("candidate_failure_monitor.go")
@@ -85,7 +85,7 @@ func TestRecentWindowReadsUseCurrentMonthSurface(t *testing.T) {
 	for _, pin := range []struct {
 		re   string
 		want int
-	}{{`(?i)FROM\s+request_logs_hot\b`, 1}, {`(?i)FROM\s+candidate_failure_logs_hot\b`, 1}} {
+	}{{`(?i)FROM\s+_request_logs_hot\b`, 1}, {`(?i)FROM\s+candidate_failure_logs_hot\b`, 1}} {
 		if got := len(regexp.MustCompile(pin.re).FindAllStringSubmatch(string(monSrc), -1)); got != pin.want {
 			t.Fatalf("candidate_failure_monitor.go hot 读点数变化 (%s): got=%d want=%d — "+
 				"先过对拍门再改 recent_surface_reads_test.go 的钉子", pin.re, got, pin.want)
@@ -126,7 +126,7 @@ func TestRecentWindowReadsUseCurrentMonthSurface(t *testing.T) {
 	// base wrapper's hot∩parent intersection had been frozen before 603
 	// added the column to the hot table), so the scanner now reads the view
 	// like every other recent-window reader. The remaining guard flips
-	// accordingly: every request_logs-family FROM in the drift scanner must
+	// accordingly: every _request_logs-family FROM in the drift scanner must
 	// stay on the _with_current_month surface — no silent regression to the
 	// bare parent, no new bare-parent reader unreviewed.
 	drift, err := os.ReadFile("integrity_fingerprint_drift.go")
@@ -135,7 +135,7 @@ func TestRecentWindowReadsUseCurrentMonthSurface(t *testing.T) {
 	}
 	driftMatches := re.FindAllStringSubmatch(string(drift), -1)
 	if len(driftMatches) == 0 {
-		t.Fatalf("integrity_fingerprint_drift.go: no request_logs reads found — query surface moved?")
+		t.Fatalf("integrity_fingerprint_drift.go: no _request_logs reads found — query surface moved?")
 	}
 	for _, m := range driftMatches {
 		if m[1] != "_with_current_month" {

@@ -682,7 +682,7 @@ func (s *Store) Events(ctx context.Context, tenantID, incidentID string, limit i
 
 // Timeline24h returns 5-minute buckets for the given incident over
 // the last 24 hours, scoped to the tenant. Aggregates are derived
-// from request_logs (read-only) — never inserted into the
+// from _request_logs (read-only) — never inserted into the
 // route_incidents aggregate. Insufficient data is explicit: the
 // store returns an empty slice and the API layer renders a banner.
 func (s *Store) Timeline24h(ctx context.Context, tenantID, incidentID string) ([]IncidentTimelinePoint, error) {

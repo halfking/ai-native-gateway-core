@@ -21,7 +21,7 @@ import (
 
 // ── Session List & Summary API (v4, 2026-06-21) ───────────────────────
 // GET /api/admin/sessions?tenant_id=default&page=1&size=20&q=&status=
-// Returns aggregated sessions from request_logs grouped by gw_session_id.
+// Returns aggregated sessions from _request_logs grouped by gw_session_id.
 
 type SessionSummary struct {
 	SessionID string `json:"session_id"`
@@ -301,7 +301,7 @@ func parseIntParam(s string, def int) int {
 
 type SessionDetail struct {
 	SessionSummary
-	RequestLogs []RequestLogBrief `json:"request_logs"`
+	RequestLogs []RequestLogBrief `json:"_request_logs"`
 }
 
 type RequestLogBrief struct {

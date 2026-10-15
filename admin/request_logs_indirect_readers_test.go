@@ -11,10 +11,10 @@
 // 在任何「扫文件找 v1 表名」的器眼里，关系名**不存在**。
 //
 // §9.49 是在自己的回归上撞见这件事的：§9.43 把 settle worker 的
-// `LEFT JOIN request_logs_hot rl` 改成 `LEFT JOIN " + src.TurnsTable + " rl`，
+// `LEFT JOIN _request_logs_hot rl` 改成 `LEFT JOIN " + src.TurnsTable + " rl`，
 // 于是一夜之间**三道独立的门同时变红**，而它们全都是绿的：
 //
-//	requestLogsReadInventory        按行正则 `from\s+request_logs` 扫
+//	requestLogsReadInventory        按行正则 `from\s+_request_logs` 扫
 //	paddedColumnsReadFromV1Direct  从 SQL 字面量里抽关系名
 //	sourceFamilyOf                 剥注释后匹配族正则
 //
@@ -23,7 +23,7 @@
 // # 为什么不能用「加条注释让它看见」
 //
 // 那会让计数变对而**理由是错的**：扫描器扫的是原始行文本，注释里的
-// `from request_logs` 会被计成一个读点。这是**伪造测量**——门绿了，测的却不是
+// `from _request_logs` 会被计成一个读点。这是**伪造测量**——门绿了，测的却不是
 // 代码里真实存在的东西。§9.45 记过同族的事：子串门被注释喂饱。
 // ⇒ 唯一诚实的做法是让器眼**知道**有间接读点，而不是骗它。
 //
@@ -83,7 +83,7 @@ type indirectReader struct {
 var indirectRequestLogsReaders = map[string]indirectReader{
 	"db/request_logs_view_schema.go": {
 		Family:     familyBodies,
-		ResolvesTo: "request_logs_bodies",
+		ResolvesTo: "_request_logs_bodies",
 		SwitchFunc: "SessionBodiesSourceSQL",
 		Reason: "★ bodies 读端灰度切换层的**唯一**所在地（§9.233）。" +
 			"`SessionBodiesSourceSQL()` 有两臂：默认返回字面量 " +
@@ -104,10 +104,10 @@ var indirectRequestLogsReaders = map[string]indirectReader{
 	},
 	"bg/auto_route_settle_sql.go": {
 		Family:     familyBase,
-		ResolvesTo: "request_logs_hot",
+		ResolvesTo: "_request_logs_hot",
 		Reason: "settleBatch / loadTaskBaselines 的 SQL 由 settleBaselinesSQL(src) 与 " +
 			"settlePendingSQL(src) 构造，关系名是 src.TurnsTable（§9.43 引入）。" +
-			"src 来自 settleSourceFor(logsWriteEnabled)：写门开着 ⇒ request_logs_hot（当前族），" +
+			"src 来自 settleSourceFor(logsWriteEnabled)：写门开着 ⇒ _request_logs_hot（当前族），" +
 			"关掉 ⇒ session_turns_hot（§9.44）。⇒ 同一段 SQL 在两个族之间切换，" +
 			"族不能由文本判定，必须显式登记。",
 	},
@@ -157,7 +157,7 @@ func TestIndirectRequestLogsReadersAreStillIndirect(t *testing.T) {
 			continue
 		}
 		if n := direct[file]; n != 0 {
-			t.Errorf("间接读点登记 %q：现在能被直接扫到 %d 处（`from request_logs` 匹配上了）。\n"+
+			t.Errorf("间接读点登记 %q：现在能被直接扫到 %d 处（`from _request_logs` 匹配上了）。\n"+
 				"  间接性已经消失——请把它从本表删掉、并登记进 requestLogsReadInventory，\n"+
 				"  然后重新评估它的族与停写后果。留着会让「间接」变成永不更新的占位。", file, n)
 		}

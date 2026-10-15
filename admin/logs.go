@@ -237,7 +237,7 @@ const requestLogsListCols = `
 	`
 
 // requestLogsDetailCols extends the list columns with the JSONB blobs
-// that remain on request_logs after body payloads moved to
+// that remain on _request_logs after body payloads moved to
 // request_logs_bodies. Used only by getLog (/api/logs/:id). The full
 // outbound body is fetched separately from the body store.
 const requestLogsDetailCols = requestLogsListCols + `,
@@ -260,7 +260,7 @@ const requestLogsJoins = `
 	-- manually-edited session titles in the request-logs list. The
 	-- composite key (task_id, scoped_session_id) matches the unique
 	-- index on session_titles. scoped_session_id falls back to '' to
-	-- cover request_logs rows where gw_session_id is NULL.
+	-- cover _request_logs rows where gw_session_id is NULL.
 	-- 2026-08-06: previously the JOIN required st.task_id = rl.gw_task_id
 	-- exactly, but auto-generated titles were hardcoded to task_id='auto'
 	-- while the request's real gw_task_id is typically 'default' — the two
@@ -877,17 +877,17 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 	//
 	// 2026-08-17 BUGFIX: dashboard "实时请求流 → 点击请求" 报 "query failed"
 	// (HTTP 500 + db_error "timeout: context deadline exceeded")。
-	// 根因：request_logs_bodies 的 2026_08 月分区是 Citus columnar (2020 MB)，
+	// 根因：_request_logs_bodies 的 2026_08 月分区是 Citus columnar (2020 MB)，
 	// 不支持 btree 索引，planner 必须 ColumnarScan + 反压 JSONB chunk group，
 	// 单 ID 查询 30s+ timeout，把 getLog 5s context 打爆。dashboard 实时流命中的
-	// 请求体仍在 request_logs_bodies_hot（heap, <1ms），与 columnar 同走一个视图
+	// 请求体仍在 _request_logs_bodies_hot（heap, <1ms），与 columnar 同走一个视图
 	// UNION ALL 被迫全表扫描。
 	//
 	// 修复策略：把 body JOIN 从主查询剥离，拆成两步：
 	//   (1) 主查询只读 request_logs_with_current_month（metadata + 主表内嵌 body）
 	//   (2) 若主表内嵌 body 为空（hot 表已迁移 body 列到 sibling 表），
-	//       单独查 body：先 request_logs_bodies_hot（idx 命中，<1ms），
-	//       找不到再回退到 request_logs_bodies 视图（columnar，慢但可走 20s ctx）。
+	//       单独查 body：先 _request_logs_bodies_hot（idx 命中，<1ms），
+	//       找不到再回退到 _request_logs_bodies 视图（columnar，慢但可走 20s ctx）。
 	// 这样 dashboard 实时流（24h 内请求）走 hot fast path，不会再 5s timeout。
 	err = h.db.QueryRow(ctx, fmt.Sprintf(`
 		SELECT %s
@@ -1074,15 +1074,15 @@ func normalizeJSONForAPI(raw json.RawMessage) json.RawMessage {
 	return raw
 }
 
-// fetchRequestBodies 2026-08-17 BUGFIX 二阶段 body 读取：从 request_logs_bodies
+// fetchRequestBodies 2026-08-17 BUGFIX 二阶段 body 读取：从 _request_logs_bodies
 // 中拉取单条请求的 request_body/response_body。
 //
 //   - 阶段 0：内存 LRU+TTL 缓存（rule 36 §1 持久化语义）。
 //     dashboard 用户经常"开 → 关 → 再开"同一个 request_id 来回比对；
 //     重复点击走 cache < 1ms 而非 5s columnar 扫描。命中条件：5min 内同 ID。
-//   - 阶段 1：查 request_logs_bodies_hot (heap, 单条索引 <1ms)，
+//   - 阶段 1：查 _request_logs_bodies_hot (heap, 单条索引 <1ms)，
 //     覆盖 dashboard "实时请求流 → 点击请求" 高频路径（24h 内请求都还在 hot）。
-//   - 阶段 2：hot 找不到时回退到 request_logs_bodies 视图（含 columnar 月分区，
+//   - 阶段 2：hot 找不到时回退到 _request_logs_bodies 视图（含 columnar 月分区，
 //     单 ID 扫描可能 30s+），走独立的 20s ctx。cold ctx 直接派生自 r.Context()
 //     而非 metadata 用的 30s ctx——确保冷路径有完整 20s 余量，metadata
 //     慢也不会拖累 body 读取（rule 11 §14 持续验证）。
@@ -1100,7 +1100,7 @@ func (h *Handler) fetchRequestOutboundBody(ctx context.Context, requestID string
 	defer hotCancel()
 	err := h.db.QueryRow(hotCtx, `
 		SELECT outbound_body::text
-		  FROM request_logs_bodies_hot
+		  FROM _request_logs_bodies_hot
 		 WHERE request_id = $1
 		 LIMIT 1
 	`, requestID).Scan(&raw)
@@ -1185,7 +1185,7 @@ func (h *Handler) fetchRequestBodies(ctx context.Context, requestID string) (req
 	var rb, ob []byte
 	row := h.db.QueryRow(hotCtx, `
 		SELECT request_body::text, response_body::text
-		  FROM request_logs_bodies_hot
+		  FROM _request_logs_bodies_hot
 		 WHERE request_id = $1
 		 LIMIT 1
 	`, requestID)
@@ -1271,9 +1271,9 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 	}
 	// 2026-08-26: the top-models dashboard widget is a "recent hot models"
 	// view. It used request_logs_with_current_month, which is
-	// `request_logs_hot UNION ALL request_logs` — the parent monthly table
+	// `_request_logs_hot UNION ALL _request_logs` — the parent monthly table
 	// brings every ATTACHED columnar partition into the scan even for a
-	// 72h window. Switch the source to request_logs_hot directly (heap,
+	// 72h window. Switch the source to _request_logs_hot directly (heap,
 	// ~7 days retention by promote_request_logs_hot_to_partition). For
 	// ranges that exceed the hot-table window the widget sees fewer rows
 	// than before; that is acceptable because top-models is a "what is hot
@@ -1295,7 +1295,7 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 		limit = 50
 	}
 
-	// 2026-10-13 S3 波 2（停写切换）：原读 request_logs_hot，停写后热窗排空
+	// 2026-10-13 S3 波 2（停写切换）：原读 _request_logs_hot，停写后热窗排空
 	// 组件恒空；改读会话族原生源（db.SessionFamilyTurnsSourceSQL，hot ∪
 	// parent 两腿）。**不走 canonical 视图**：2026-08-26 实测裁决（视图把
 	// ATTACHED 列式分区拖进扫描，见 routing_popular_models_test 钉桩）对

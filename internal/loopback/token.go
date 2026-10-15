@@ -24,7 +24,7 @@ const TokenHeader = "X-Gw-Loopback-Token"
 // logCtx.IsAutoRequest (session_turns mirror exclusion, auto-title
 // self-trigger suppression, executors' continuation-trim exemption);
 // X-Gw-Parent-Request-Id / X-Gw-Source-Actor persist into
-// request_logs_hot.parent_request_id / origin_actor.
+// _request_logs_hot.parent_request_id / origin_actor.
 var CorrelationHeaders = []string{
 	"X-Gw-Is-Auto",
 	"X-Gw-Parent-Request-Id",

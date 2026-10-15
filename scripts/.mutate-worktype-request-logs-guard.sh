@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 变异验证：ensureWorkTypeSchema 的 request_logs 独占锁守卫（M78~M81）
+# 变异验证：ensureWorkTypeSchema 的 _request_logs 独占锁守卫（M78~M81）
 # 规则：还原一律用 cp 文件副本，禁止 git checkout --（会静默丢弃未提交工作）
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -43,7 +43,7 @@ PY
 
 mutate "M78 把 ALTER 塞回 workTypeSchemaSQL（守卫形同虚设）" "
 t = t.replace('''CREATE INDEX IF NOT EXISTS idx_work_type_config_l1 ON work_type_config (l1_task_type);''', '''CREATE INDEX IF NOT EXISTS idx_work_type_config_l1 ON work_type_config (l1_task_type);
-ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS work_type TEXT;''')
+ALTER TABLE _request_logs ADD COLUMN IF NOT EXISTS work_type TEXT;''')
 "
 
 mutate "M79 先执行 DDL 再探测（等于没守卫）" "
@@ -54,9 +54,9 @@ t = t.replace(old, new)
 "
 
 mutate "M80 探测失败时当成「已就绪」跳过 DDL（缺列的库将永远补不上）" "
-old = '''		slog.Warn(\"work_type request_logs probe failed; applying DDL\", \"error\", err)
+old = '''		slog.Warn(\"work_type _request_logs probe failed; applying DDL\", \"error\", err)
 		return false'''
-new = '''		slog.Warn(\"work_type request_logs probe failed; skipping DDL\", \"error\", err)
+new = '''		slog.Warn(\"work_type _request_logs probe failed; skipping DDL\", \"error\", err)
 		return true'''
 assert t.count(old) == 1
 t = t.replace(old, new)

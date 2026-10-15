@@ -1,6 +1,6 @@
 #!/bin/bash
 # 端到端测试脚本：验证所有热表架构
-# 测试 5 张已迁移的热表：request_logs_hot, usage_ledger_hot, request_wal_hot, 
+# 测试 5 张已迁移的热表：_request_logs_hot, usage_ledger_hot, request_wal_hot, 
 # routing_decision_log_hot, credential_model_index_hot
 #
 # 使用方式：
@@ -43,7 +43,7 @@ function psql_exec() {
 log_info "测试 1: 验证所有热表存在"
 
 TABLES=(
-    "request_logs_hot"
+    "_request_logs_hot"
     "usage_ledger_hot"
     "request_wal_hot"
     "routing_decision_log_hot"
@@ -145,12 +145,12 @@ for view in "${VIEWS[@]}"; do
 done
 
 # ============================================================
-# 测试 6: 插入测试数据（request_logs_hot）
+# 测试 6: 插入测试数据（_request_logs_hot）
 # ============================================================
-log_info "测试 6: 插入测试数据到 request_logs_hot"
+log_info "测试 6: 插入测试数据到 _request_logs_hot"
 
 TEST_REQUEST_ID="e2e-test-$(date +%s)"
-psql_exec "INSERT INTO request_logs_hot (request_id, ts, tenant_id, success) VALUES ('$TEST_REQUEST_ID', NOW(), 'default', true);"
+psql_exec "INSERT INTO _request_logs_hot (request_id, ts, tenant_id, success) VALUES ('$TEST_REQUEST_ID', NOW(), 'default', true);"
 log_info "  ✓ INSERT success (request_id=$TEST_REQUEST_ID)"
 
 # ============================================================
@@ -158,7 +158,7 @@ log_info "  ✓ INSERT success (request_id=$TEST_REQUEST_ID)"
 # ============================================================
 log_info "测试 7: 更新测试数据"
 
-psql_exec "UPDATE request_logs_hot SET prompt_tokens = 100, completion_tokens = 50 WHERE request_id = '$TEST_REQUEST_ID';"
+psql_exec "UPDATE _request_logs_hot SET prompt_tokens = 100, completion_tokens = 50 WHERE request_id = '$TEST_REQUEST_ID';"
 log_info "  ✓ UPDATE success"
 
 # ============================================================
@@ -166,7 +166,7 @@ log_info "  ✓ UPDATE success"
 # ============================================================
 log_info "测试 8: 查询测试数据"
 
-tokens=$(psql_exec "SELECT prompt_tokens FROM request_logs_hot WHERE request_id = '$TEST_REQUEST_ID';")
+tokens=$(psql_exec "SELECT prompt_tokens FROM _request_logs_hot WHERE request_id = '$TEST_REQUEST_ID';")
 tokens=$(echo "$tokens" | xargs)
 if [[ "$tokens" == "100" ]]; then
     log_info "  ✓ SELECT success (prompt_tokens=100)"
@@ -192,7 +192,7 @@ done
 # ============================================================
 log_info "测试 10: 清理测试数据"
 
-psql_exec "DELETE FROM request_logs_hot WHERE request_id = '$TEST_REQUEST_ID';"
+psql_exec "DELETE FROM _request_logs_hot WHERE request_id = '$TEST_REQUEST_ID';"
 log_info "  ✓ DELETE success"
 
 # ============================================================

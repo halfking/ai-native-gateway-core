@@ -275,7 +275,7 @@ func (g *GatewayModelInvoker) InvokeModel(ctx context.Context, provider string, 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+g.apiKey)
 	req.Header.Set("X-Gateway-Quality-Test", "true") // 标识为质量测试请求
-	// 2026-08-10: 打 origin 头，让网关侧 request_logs 把 IQ 测试请求归到
+	// 2026-08-10: 打 origin 头，让网关侧 _request_logs 把 IQ 测试请求归到
 	// origin_stage=self_check（而非默认 business），自检记录可与业务流量区分。
 	// 需配合 owner_user='model-quality-worker' 的系统 key 才被网关信任。
 	req.Header.Set("X-LLM-Origin-Stage", "self_check")

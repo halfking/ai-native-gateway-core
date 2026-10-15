@@ -1,4 +1,4 @@
-// Package sessionv2mirror mirrors request_logs into V2 sessions tables
+// Package sessionv2mirror mirrors _request_logs into V2 sessions tables
 // (public.sessions, public.session_turns, public.session_bodies,
 // public.session_turn_logs).
 //
@@ -9,7 +9,7 @@
 //
 // Best-effort contract: the returned hook logs and continues on any
 // error; it never propagates failures up to telemetry. The primary
-// request_logs INSERT must always succeed.
+// _request_logs INSERT must always succeed.
 package sessionv2mirror
 
 import (
@@ -29,7 +29,7 @@ import (
 )
 
 // PersistHook returns a telemetry "onPersisted" hook that mirrors
-// request_logs entries into the V2 sessions tables.
+// _request_logs entries into the V2 sessions tables.
 //
 // The hook checks sessions_v2.shadow_write and sessions_v2.enabled flags.
 // The hook is a no-op when:
@@ -40,7 +40,7 @@ import (
 // 存储优化方案 v2 §3-D4：无 gw_session_id 的流量（探针/系统/匿名）不再被
 // 丢弃，而是合成 client_type='system' 的系统会话（session_id=
 // 'sys:{kind}:{cred|prov}:{yyyymmdd}'，按日聚合）继续走同一条 turns 写链——
-// S4 停写 request_logs 后这类流量才有落点。合成路径跳过 title/summary
+// S4 停写 _request_logs 后这类流量才有落点。合成路径跳过 title/summary
 // 排除与 session_dim 维护，其余闸门（终态、shadow 开关、超时预算）与常规
 // 路径一致。
 //
@@ -73,7 +73,7 @@ func PersistHook(writer V2Writer, dims ...DimWriter) func(entry *telemetry.Reque
 			return
 		}
 
-		// request_logs emits an in_progress INSERT before upstream execution.
+		// _request_logs emits an in_progress INSERT before upstream execution.
 		// V2 turns are idempotent on request_id and cannot be updated after the
 		// first insert, so mirroring that placeholder would permanently record
 		// success=false/status_code=500 and drop the later success enrichment.
@@ -86,7 +86,7 @@ func PersistHook(writer V2Writer, dims ...DimWriter) func(entry *telemetry.Reque
 		// mirror——它们合成 sys:probe:* 系统会话后集中打 advisory lock，实测
 		// 失败噪声 ~115/min（99.6% 为该类）。判据是探针专有强特征（无会话头
 		// + origin/task_type 探针标记，见 IsProbeSyntheticSession 注释），不
-		// 误伤真实用户会话；探针事实仍留在 request_logs/v1 面。与 replay.go
+		// 误伤真实用户会话；探针事实仍留在 _request_logs/v1 面。与 replay.go
 		// 的 gate parity 共用本谓词。
 		if IsProbeSyntheticSession(entry) {
 			return
@@ -197,7 +197,7 @@ const (
 
 	// shadowWriteConcurrency caps concurrent shadow writes. Each slot holds
 	// one pgxpool connection for up to the write budget; 8 keeps the mirror
-	// well inside db.MaxConns=32 alongside the primary request_logs path.
+	// well inside db.MaxConns=32 alongside the primary _request_logs path.
 	shadowWriteConcurrency = 8
 )
 
@@ -272,7 +272,7 @@ func runShadowWrite(w V2Writer, req *v2.ProcessedRequest, entry *telemetry.Reque
 		// Spec §12 GAP 2 (closed 2026-09-15, migration 712): persist the
 		// failed entry to the durable session_mirror_outbox so the replay
 		// reaper recovers it across restarts. The payload carries the full
-		// entry JSON, so replay does not depend on request_logs surviving.
+		// entry JSON, so replay does not depend on _request_logs surviving.
 		// The in-process backlog remains the last-resort surface when the
 		// outbox INSERT itself fails (DB unreachable), keeping the gauge and
 		// DrainBacklog observability contract intact.
@@ -426,7 +426,7 @@ func entryToProcessedRequest(entry *telemetry.RequestLogEntry, sessionID string)
 		req.MultimodalTypes = multimodalTypes(req.Attachments)
 	}
 
-	// 存储优化方案 v2 S1a：request_logs 独有的五类数据补采（计费/路由/
+	// 存储优化方案 v2 S1a：_request_logs 独有的五类数据补采（计费/路由/
 	// 诊断/检索·完整性/访问维度）+ client_type 断供修复。
 	applyStorageS1AFields(req, entry)
 	applyStorageS1BFields(req, entry)

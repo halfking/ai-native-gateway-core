@@ -82,12 +82,12 @@ func (h *Handler) fetchSwimLaneData(ctx context.Context, hours int) ([]SwimLaneR
 
 	// 2026-07-27: This SQL previously selected non-existent columns
 	// (request_at, model, original_model_family, credential_name,
-	// credential_code, status) on request_logs_hot, whose actual schema is
-	// LIKE request_logs (ts, client_model, canonical_id, credential_id,
+	// credential_code, status) on _request_logs_hot, whose actual schema is
+	// LIKE _request_logs (ts, client_model, canonical_id, credential_id,
 	// provider_id, request_status, ...). Any call returned a 500. Rewritten
 	// against the real columns + the canonical→family→vendor and credential
 	// joins used elsewhere by the live-stream aggregation path.
-	// 2026-10-13 S3 波 2（停写切换）：原读 request_logs_hot，停写后热窗排空
+	// 2026-10-13 S3 波 2（停写切换）：原读 _request_logs_hot，停写后热窗排空
 	// 泳道恒空；改读 canonical 视图（12 列全在 118 契约内，会话臂服务新
 	// 流量）。已登记退化：会话臂 client_model 依赖 734 details 层，缺
 	// details 行的轮次 vendor 回退到 mf.vendor 或 'unknown'。

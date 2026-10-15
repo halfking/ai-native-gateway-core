@@ -54,7 +54,7 @@ func auditOne(t *testing.T, files map[string]string) []Site {
 //
 // 这是最坏的一个失效方向：绑定解析不出时，若把标识符原样当作候选表名，
 // `logsTable` 会被判成「名为 logsTable 的非 v1 表」⇒ 归入「退役安全」，
-// 而它实际在 `days <= 7` 时读 `request_logs_hot`。
+// 而它实际在 `days <= 7` 时读 `_request_logs_hot`。
 func TestUnknownIdentifierIsNotTreatedAsASafeTableName(t *testing.T) {
 	sites := auditOne(t, map[string]string{
 		"a.go": `package a
@@ -92,7 +92,7 @@ func q1(days int) {
 
 func pick(days int) (string, string) {
 	if days <= 7 {
-		return "request_logs_hot AS r", "r"
+		return "_request_logs_hot AS r", "r"
 	}
 	return "request_logs_with_current_month AS r", "r"
 }
@@ -142,12 +142,12 @@ func TestCanonicalViewIsNotAV1Relation(t *testing.T) {
 		in   string
 		want bool
 	}{
-		{"hot 表", "request_logs_hot AS r", true},
-		{"母表", "request_logs", true},
-		{"bodies", "request_logs_bodies", true},
+		{"hot 表", "_request_logs_hot AS r", true},
+		{"母表", "_request_logs", true},
+		{"bodies", "_request_logs_bodies", true},
 		{"canonical 视图", "request_logs_with_current_month AS r", false},
 		{"canonical 视图变体", "request_logs_with_current_month_without_customer_id AS r", false},
-		{"带引号", `"request_logs_hot"`, true},
+		{"带引号", `"_request_logs_hot"`, true},
 		{"空串", "", false},
 	}
 	for _, c := range cases {
@@ -159,7 +159,7 @@ func TestCanonicalViewIsNotAV1Relation(t *testing.T) {
 
 // 门 4：条件性切换层必须按**最坏情况**算 v1。
 //
-// `if days <= 7 { return request_logs_hot }; return 视图` 这种形状在真实代码里有
+// `if days <= 7 { return _request_logs_hot }; return 视图` 这种形状在真实代码里有
 // 6 处（maas/usage.go ×4、maas/credit_buckets.go、maas/consumption_detail.go）。
 // 它不是「恒读 v1」，但也绝不是安全：它确实会在某个入参下命中，而扫描器看不见
 // 那个条件。
@@ -169,7 +169,7 @@ func TestConditionalSwitchLayerCountsAsV1(t *testing.T) {
 
 func pick(days int) string {
 	if days <= 7 {
-		return "request_logs_hot"
+		return "_request_logs_hot"
 	}
 	return "request_logs_with_current_month"
 }
@@ -193,7 +193,7 @@ func q(days int) {
 
 // 门 5：完整字面量里的 FROM **不是**拼接点，不该被报出来。
 //
-// 判据钉在「片段以 FROM/JOIN 结尾」上：`FROM request_logs_hot` 是完整的，
+// 判据钉在「片段以 FROM/JOIN 结尾」上：`FROM _request_logs_hot` 是完整的，
 // 文本扫描器看得见它，本工具的职责是补上**看不见**的那部分。把看得见的也报一遍
 // 会让输出变噪声，噪声会让人忽略真正的条目。
 //
@@ -208,11 +208,11 @@ func TestCompleteRelationLiteralIsNotAConcatSite(t *testing.T) {
 
 func q(cond string) {
 	// ① 孤立完整字面量：看得见，不该报
-	_ = ¤SELECT id FROM request_logs_hot WHERE x = 1¤
+	_ = ¤SELECT id FROM _request_logs_hot WHERE x = 1¤
 	// ② 拼接：看不见，要报
-	_ = ¤SELECT 1 FROM ¤ + "request_logs_hot" + ¤ WHERE x = 1¤
+	_ = ¤SELECT 1 FROM ¤ + "_request_logs_hot" + ¤ WHERE x = 1¤
 	// ③ 完整字面量自己参与拼接：里面的关系名是**字面量**，仍看得见，不该报
-	_ = ¤SELECT 1 FROM request_logs_hot WHERE x = 1¤ + cond
+	_ = ¤SELECT 1 FROM _request_logs_hot WHERE x = 1¤ + cond
 }
 `,
 	})
@@ -229,9 +229,9 @@ func q(cond string) {
 // 这是一条 2026-10-05 实测出来的**自信的错误**：`admin/tenants.go` 的
 // logsTable 是
 //
-//	(SELECT … FROM request_logs_hot
+//	(SELECT … FROM _request_logs_hot
 //	 UNION ALL
-//	 SELECT … FROM request_logs) -- sqlreadguard:allow …
+//	 SELECT … FROM _request_logs) -- sqlreadguard:allow …
 //
 // 「取第一个 token」拿到的是 `(select`，不在 v1Tables 里，于是 tenants.go
 // 被列进「退役安全」——而它读的是**两张 v1 底表**。
@@ -242,16 +242,16 @@ func q(cond string) {
 // ⇒ 只写「不许把未知报成安全」的门，挡不住它。
 func TestSubqueryResolvedToV1IsNotCalledRetirementSafe(t *testing.T) {
 	const unionSubquery = `(SELECT tenant_id, ts, total_tokens, cost_usd
-	                FROM request_logs_hot
+	                FROM _request_logs_hot
 	        UNION ALL
 	               SELECT tenant_id, ts, total_tokens, cost_usd
-	                FROM request_logs) -- sqlreadguard:allow R36-A1 漏热尾根修`
+	                FROM _request_logs) -- sqlreadguard:allow R36-A1 漏热尾根修`
 
 	// 正向：整段子查询必须判成 v1。
 	if !isV1Relation(unionSubquery) {
-		t.Errorf("isV1Relation(%q) = false，期望 true —— 它 UNION 了 request_logs_hot "+
-			"与 request_logs 两张 v1 底表。判成 false 会让 tenants.go 落进「退役安全」。",
-			"…UNION ALL…request_logs_hot…request_logs…")
+		t.Errorf("isV1Relation(%q) = false，期望 true —— 它 UNION 了 _request_logs_hot "+
+			"与 _request_logs 两张 v1 底表。判成 false 会让 tenants.go 落进「退役安全」。",
+			"…UNION ALL…_request_logs_hot…_request_logs…")
 	}
 
 	// 走一遍完整链路，确认 Classification 也翻过来了（只测 isV1Relation 不够：
@@ -267,10 +267,10 @@ func TestSubqueryResolvedToV1IsNotCalledRetirementSafe(t *testing.T) {
 
 func q() {
 	logsTable := ¤(SELECT tenant_id, ts
-	                FROM request_logs_hot
+	                FROM _request_logs_hot
 	        UNION ALL
 	               SELECT tenant_id, ts
-	                FROM request_logs)¤
+	                FROM _request_logs)¤
 	_ = ¤SELECT SUM(total_tokens) FROM ¤ + logsTable + ¤ WHERE tenant_id = $1¤
 }
 `,
@@ -308,16 +308,16 @@ func TestSubqueryScanStillExcludesCanonicalView(t *testing.T) {
 	}
 	// 对照组 A：同样两条，把其中一个换成 v1 底表就必须翻成 true。
 	// 没有这一条，上面那张表可以靠「永远返回 false」而全绿。
-	if !isV1Relation("(SELECT tenant_id FROM session_turns UNION ALL SELECT tenant_id FROM request_logs)") {
-		t.Error("对照组 A：子查询里出现 request_logs 时必须判 true，否则上一道门是恒假的")
+	if !isV1Relation("(SELECT tenant_id FROM session_turns UNION ALL SELECT tenant_id FROM _request_logs)") {
+		t.Error("对照组 A：子查询里出现 _request_logs 时必须判 true，否则上一道门是恒假的")
 	}
-	// 对照组 B：带双引号的 v1 关系名。`from "request_logs_hot"` 在 SQL 里合法，
+	// 对照组 B：带双引号的 v1 关系名。`from "_request_logs_hot"` 在 SQL 里合法，
 	// 而 firstRelationToken 的剥引号是这条路径上**唯一**处理它的地方。
 	// 少了它，上表那行 `"request_logs_with_current_month" AS r` 仍然判 false
 	//（视图名本来就不在 v1Tables 里，剥不剥引号都一样），
 	// 于是整张表**不会**因为剥引号被删而变红 —— 变异验证实测确实如此。
 	// ⇒ 必须单独给一个「剥引号被删就变红」的正例，否则这道门测不到它。
-	if !isV1Relation(`"request_logs_hot"`) {
+	if !isV1Relation(`"_request_logs_hot"`) {
 		t.Error("对照组 B：带双引号的 v1 关系名必须判 true")
 	}
 }
@@ -348,7 +348,7 @@ func TestTestFilesAreExcludedFromAudit(t *testing.T) {
 var requestLogsReadInventory = map[string]int{"x.go": 1}
 
 func check() error {
-	return fmt.Errorf(¤%%d file(s) read request_logs but are absent from ¤ +
+	return fmt.Errorf(¤%%d file(s) read _request_logs but are absent from ¤ +
 		requestLogsReadInventory + ¤ — S4 would silently stop feeding them:\n  %%s¤)
 }
 `
@@ -423,7 +423,7 @@ func q(balArg string) {
 	// ① 比较运算符：不该报
 	_ = ¤balance_usd IS DISTINCT FROM ¤ + balArg
 	// ② 真的 FROM：该报
-	_ = ¤SELECT 1 FROM ¤ + ¤request_logs_hot¤ + ¤ WHERE x = 1¤
+	_ = ¤SELECT 1 FROM ¤ + ¤_request_logs_hot¤ + ¤ WHERE x = 1¤
 }
 `,
 	})
@@ -466,7 +466,7 @@ func TestPackageLevelVarSitesAreEnumerated(t *testing.T) {
 
 // A real func declaration: this is the shape production has
 // (dbpkg.SessionBodiesSourceSQL), not a var holding a func literal.
-func turnsSource() string { return "request_logs_hot" }
+func turnsSource() string { return "_request_logs_hot" }
 
 var packageLevelSQL = "SELECT * FROM " + turnsSource() + " t"
 
@@ -727,7 +727,7 @@ func q() string {
 // 第四桶是在 `viewsWithV1Arm` 返回空时**恒为 0**的，而且那个 0 看起来
 // 和「仓库里真的没有 v1 臂视图」完全一样。本轮实测就在这里卡住过一轮：
 // `fromRelationRE` 的捕获范围不含 schema 限定，于是视图 DDL 里的
-// `FROM public.request_logs_bodies_hot` 只捕获到 `public` ⇒ 推导器认不出任何视图。
+// `FROM public._request_logs_bodies_hot` 只捕获到 `public` ⇒ 推导器认不出任何视图。
 //
 // # 夹具照着真实 DDL 抄（§9.257.3 的教训）
 //
@@ -750,20 +750,20 @@ func TestV1ArmViewsAreDerivedFromDDL(t *testing.T) {
 	// 真·有 v1 臂
 	write("request_logs_bodies_with_current_month.sql",
 		"--\n-- Name: x; Type: VIEW\n--\n\nCREATE VIEW public.request_logs_bodies_with_current_month AS\n"+
-			" SELECT request_logs_bodies_hot.request_id FROM public.request_logs_bodies_hot\n"+
-			"UNION ALL\n SELECT request_logs_bodies.request_id FROM public.request_logs_bodies;\n")
+			" SELECT _request_logs_bodies_hot.request_id FROM public._request_logs_bodies_hot\n"+
+			"UNION ALL\n SELECT _request_logs_bodies.request_id FROM public._request_logs_bodies;\n")
 	// 真·无 v1 臂（会话族投影）
 	write("session_only_view.sql",
 		"CREATE VIEW public.session_only_view AS\n SELECT 1 FROM public.session_turns t\n"+
-			" WHERE 'request_logs' <> ''; -- ← 注释/字面量里提到 v1 表，不该算数\n")
+			" WHERE '_request_logs' <> ''; -- ← 注释/字面量里提到 v1 表，不该算数\n")
 	// ★ 纯字面量提及，**绝不能**被算成有臂
 	write("mentions_only.sql",
-		"-- 这个视图的历史实现读 request_logs，已改\nCREATE VIEW public.mentions_only AS SELECT 1;\n")
+		"-- 这个视图的历史实现读 _request_logs，已改\nCREATE VIEW public.mentions_only AS SELECT 1;\n")
 
 	got := viewsWithV1Arm(dir)
 	if len(got) == 0 {
 		t.Fatalf("一个视图都没推出来 —— ★ 最可能的原因：`fromRelationRE` 的捕获范围被改窄、" +
-			"不再吃 schema 限定名（`FROM public.request_logs_bodies_hot` 只捕获到 `public`）。" +
+			"不再吃 schema 限定名（`FROM public._request_logs_bodies_hot` 只捕获到 `public`）。" +
 			"本轮就卡在这里一轮，而第四桶当时**恒为 0 且看起来正常**。")
 	}
 	if !got["request_logs_bodies_with_current_month"] {
@@ -774,14 +774,14 @@ func TestV1ArmViewsAreDerivedFromDDL(t *testing.T) {
 			"不该被判成含 v1 臂。集合=%v", v1ArmViewNames(got))
 	}
 	if got["mentions_only"] {
-		t.Errorf("mentions_only 只在**注释**里提到 request_logs，不该被判成含 v1 臂。集合=%v",
+		t.Errorf("mentions_only 只在**注释**里提到 _request_logs，不该被判成含 v1 臂。集合=%v",
 			v1ArmViewNames(got))
 	}
 }
 
 // 门 16（§9.260）：推导器必须认得**运行时由 composer 创建、没有仓库 DDL 文件**的视图。
 //
-// 真库 `pg_class` 里有 4 个 `request_logs*_with_current_month*` 视图，
+// 真库 `pg_class` 里有 4 个 `_request_logs*_with_current_month*` 视图，
 // 4 个**全部含 v1 臂**；而 `sql/objects/views/` 的 54 个 DDL 文件只覆盖其中 2 个。
 // 缺的两个由 composer 在运行时建（`db/request_logs_view_schema.go:128` / `:140`）。
 //
@@ -800,7 +800,7 @@ func TestV1ArmViewsIncludeComposerDefinedOnes(t *testing.T) {
 			t.Errorf("视图 %q 没被推出含 v1 臂。\n"+
 				"★ 最可能的原因：它由 composer 在**运行时**创建、仓库里没有 DDL 文件 ⇒ "+
 				"推导器只读 sql/objects/views/ 就会漏。\n"+
-				"真库 pg_class 里有 4 个 request_logs*_with_current_month* 视图，**全部含 v1 臂**；"+
+				"真库 pg_class 里有 4 个 _request_logs*_with_current_month* 视图，**全部含 v1 臂**；"+
 				"漏掉任何一个都会把它下面的读方判成 canonical（把有风险的报成安全）。\n"+
 				"当前推出集合：%v", w, v1ArmViewNames(set))
 		}

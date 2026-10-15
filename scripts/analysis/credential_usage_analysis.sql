@@ -6,7 +6,7 @@
 --   * psql -f 直跑（无 psql 元命令依赖）；建议在只读副本或低峰期执行。
 --   * 文件头 SET statement_timeout 防误操作长事务，可按需调整。
 --   * 读面 = request_logs_with_current_month（hot ∪ 母表，448/510/710）。
---     直接查 request_logs 母表会漏掉 hot 表最近 8h 的写入 —— 7 天总量/成功率/
+--     直接查 _request_logs 母表会漏掉 hot 表最近 8h 的写入 —— 7 天总量/成功率/
 --     成本全部少计最近 8h（R44 F1 修正；本机实测 24h 窗口母表少 13.6% 行）。
 --   * top_models / error_breakdown 均为一次性 GROUP BY 预聚合后 JOIN 回主表，
 --     不再使用按行执行的相关子查询（旧版对每行凭据重复全窗口扫描，母表无

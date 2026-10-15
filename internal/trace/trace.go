@@ -4,7 +4,7 @@
 //   - 请求进入 → 中间件 → handler → executor → upstream → 流响应 全链路事件
 //   - 每个事件包含: 序号 / 阶段 / 模块 / 耗时 / 状态 / 详情 / 错误
 //   - 请求进行中: Redis 暂存 (key=request:trace:{request_id}, TTL 600s)
-//   - 请求完成: 一次性 UPDATE 到 request_logs.trace_events (JSONB)
+//   - 请求完成: 一次性 UPDATE 到 _request_logs.trace_events (JSONB)
 //   - 失败时: 保存上下文快照(路由状态/节点状态/并发槽位/凭据缓存等)
 //
 // 优雅降级:
@@ -161,7 +161,7 @@ type Recorder interface {
 	// Load 读取完整 trace。优先从 Redis 读,自动 fallback 到 PG。
 	Load(ctx context.Context, requestID string) (*RequestTrace, bool, error)
 
-	// FlushToPG 把 Redis 中的 trace 写入 request_logs.trace_events。
+	// FlushToPG 把 Redis 中的 trace 写入 _request_logs.trace_events。
 	// 一般在请求结束的 defer 中调用。失败仅日志,不抛错。
 	FlushToPG(ctx context.Context, db *pgxpool.Pool, requestID string) error
 
@@ -458,7 +458,7 @@ func (r *RedisRecorder) Load(ctx context.Context, requestID string) (*RequestTra
 
 // FlushToPG implements Recorder.
 //
-// 把 Redis 中的 trace 一次性写入 request_logs.trace_events (JSONB)。
+// 把 Redis 中的 trace 一次性写入 _request_logs.trace_events (JSONB)。
 // 删除 Redis key 在写入成功(或写入失败但已重试)后执行,避免并发请求看到"trace 已 flush 但 DB 还未写"的中间态。
 func (r *RedisRecorder) FlushToPG(ctx context.Context, db *pgxpool.Pool, requestID string) error {
 	if requestID == "" || r == nil || r.rdb == nil || db == nil {
@@ -493,7 +493,7 @@ func (r *RedisRecorder) FlushToPG(ctx context.Context, db *pgxpool.Pool, request
 	}
 
 	result, err := db.Exec(runCtx, `
-		UPDATE request_logs_hot
+		UPDATE _request_logs_hot
 		SET trace_events = $1::jsonb
 		WHERE request_id = $2
 	`, raw, requestID)
@@ -538,7 +538,7 @@ func shouldDeleteTraceAfterFlush(rowsAffected int64) bool {
 	return rowsAffected > 0
 }
 
-// ErrTraceParentNotFound 表示 trace 对应的 request_logs 行尚未落库或已不存在。
+// ErrTraceParentNotFound 表示 trace 对应的 _request_logs 行尚未落库或已不存在。
 var ErrTraceParentNotFound = errors.New("trace: request log row not found")
 
 // ErrEmptyRequestID 当 requestID 为空时返回。
@@ -594,9 +594,9 @@ func unmarshalTrace(raw, fallbackID string) (*RequestTrace, error) {
 // 不应该作为 HTTP 500 报给前端。原实现会让前端展示 "no rows in result set" 红色错误,
 // 实际只是该行尚无 trace_events JSONB;此处把 ErrNoRows 当成"未找到"返回。
 //
-// 2026-07-20: 增加 request_logs_hot 回退查找。migration 341 把 request_logs 拆分成
-// 热表 request_logs_hot + 月度分区 request_logs,最近的请求 (0-7 天) 只在 hot 表;
-// 只查 request_logs 会让前端"流程详情"对所有近 7 天的请求都返回空。
+// 2026-07-20: 增加 _request_logs_hot 回退查找。migration 341 把 _request_logs 拆分成
+// 热表 _request_logs_hot + 月度分区 _request_logs,最近的请求 (0-7 天) 只在 hot 表;
+// 只查 _request_logs 会让前端"流程详情"对所有近 7 天的请求都返回空。
 // 这里用 UNION ALL 先查 hot、再查分区表,顺序按"最近优先"。
 func LoadFromPG(ctx context.Context, db *pgxpool.Pool, requestID string) (*RequestTrace, error) {
 	if requestID == "" {
@@ -608,9 +608,9 @@ func LoadFromPG(ctx context.Context, db *pgxpool.Pool, requestID string) (*Reque
 	var raw []byte
 	err := db.QueryRow(ctx,
 		`SELECT trace_events FROM (
-			SELECT trace_events, ts FROM request_logs_hot WHERE request_id = $1
+			SELECT trace_events, ts FROM _request_logs_hot WHERE request_id = $1
 			UNION ALL
-			SELECT trace_events, ts FROM request_logs WHERE request_id = $1
+			SELECT trace_events, ts FROM _request_logs WHERE request_id = $1
 		) t WHERE trace_events IS NOT NULL ORDER BY ts DESC LIMIT 1`,
 		requestID).Scan(&raw)
 	if err != nil {

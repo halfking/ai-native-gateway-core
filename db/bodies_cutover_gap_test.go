@@ -46,7 +46,7 @@ func newBodiesCutoverPool(t *testing.T) *pgxpool.Pool {
 //	admin/request_logs_bodies_retirement_gate_test.go
 //	    问：「每个读 v1 bodies 腿的文件，是否都被逐点评估并登记了？」（流程）
 //	本文件
-//	    问：「session_bodies 能不能替代 request_logs_bodies？」（数据）
+//	    问：「session_bodies 能不能替代 _request_logs_bodies？」（数据）
 //
 // 流程门永远绿不了（26 个文件未评估），而**数据门是可能变绿的**——
 // 当回填补齐之后。所以它们不是重复：前者决定「能不能开始切」，
@@ -54,7 +54,7 @@ func newBodiesCutoverPool(t *testing.T) *pgxpool.Pool {
 //
 // # 为什么这道门是**故意红**的，以及它红在哪个数上
 //
-// ⚠ 下面这组数字来自 §9.228 的**第一个总体**（request_logs 口径），
+// ⚠ 下面这组数字来自 §9.228 的**第一个总体**（_request_logs 口径），
 // 已被 §9.229/D33 **撤回**（acc0511b0 的提交信息与 6d5b9196f 的就地更正）：
 // 总体应按被影响 SQL 的 FROM 选（session_turns 族）。数字留在这里只作
 // 历史测量记录，不再作为本门论据；现行判据用 bodiesGap.SessionTurns
@@ -63,7 +63,7 @@ func newBodiesCutoverPool(t *testing.T) *pgxpool.Pool {
 // 实测（本地库，2026-10-05，808,556 个带会话头的 v1 turn）：
 //
 //	in session_bodies            770,209  (95.26%)
-//	in request_logs_bodies       742,472  (91.81%)
+//	in _request_logs_bodies       742,472  (91.81%)
 //	v1 有、session 没有（会丢）    29,691
 //	两边都没有                    8,656
 //
@@ -94,7 +94,7 @@ type bodiesGap struct {
 	// 导出/对比 API 的 FROM 是 SessionFamilyTurnsForSessionSQL()，
 	// 一个没有 session_turns 行的 turn 从来就不在它们的结果集里。
 	SessionTurns int64
-	// HasV1Body 是其中在 request_logs_bodies 里有正文的。
+	// HasV1Body 是其中在 _request_logs_bodies 里有正文的。
 	HasV1Body int64
 	// HasSessionBody 是其中在 session_bodies 里有正文的。
 	HasSessionBody int64
@@ -134,7 +134,7 @@ func BodiesBlocksCutover(g bodiesGap) (blocked bool, why string) {
 // measureBodiesGapSQL 是上面那个测量的 SQL。
 //
 // ⚠ **口径钉死在这里，不要在调用点改写**：
-//   - 总体 = `request_logs` 里 `request_id IS NOT NULL` 且有会话头的 turn。
+//   - 总体 = `_request_logs` 里 `request_id IS NOT NULL` 且有会话头的 turn。
 //     这与 bodies 的实际用法一致：export/compare/summarizer 都是在
 //     会话族的 turn 列表上按 request_id 去 join bodies。
 //   - 两侧都按 **DISTINCT request_id** 计，避免 bodies 表里有重复行时
@@ -142,7 +142,7 @@ func BodiesBlocksCutover(g bodiesGap) (blocked bool, why string) {
 const measureBodiesGapSQL = `
 WITH st AS (SELECT request_id, session_id FROM session_turns),
      sb AS (SELECT DISTINCT request_id FROM session_bodies),
-     rb AS (SELECT DISTINCT request_id FROM request_logs_bodies)
+     rb AS (SELECT DISTINCT request_id FROM _request_logs_bodies)
 SELECT
   count(*)::bigint AS session_turns,
   count(*) FILTER (WHERE rb.request_id IS NOT NULL)::bigint AS has_v1_body,
@@ -167,7 +167,7 @@ LEFT JOIN rb ON rb.request_id = st.request_id
 // 按设计就不进会话族（§9.215 记过同一类排除）。
 const v1OnlyTurnsSQL = `
 WITH v1 AS (
-  SELECT request_id, gw_session_id, is_auto_request FROM request_logs
+  SELECT request_id, gw_session_id, is_auto_request FROM _request_logs
   WHERE request_id IS NOT NULL AND gw_session_id IS NOT NULL AND gw_session_id <> ''
 ), st AS (SELECT DISTINCT request_id FROM session_turns)
 SELECT
@@ -186,7 +186,7 @@ FROM v1 LEFT JOIN st ON st.request_id = v1.request_id
 const lossByDaySQL = `
 WITH st AS (SELECT request_id, ts FROM session_turns),
      sb AS (SELECT DISTINCT request_id FROM session_bodies),
-     rb AS (SELECT DISTINCT request_id FROM request_logs_bodies)
+     rb AS (SELECT DISTINCT request_id FROM _request_logs_bodies)
 SELECT st.ts::date AS day, count(*)::bigint AS would_lose
 FROM st
 JOIN rb ON rb.request_id = st.request_id
@@ -203,7 +203,7 @@ GROUP BY 1 ORDER BY 1
 const measureBodiesSessionTailSQL = `
 WITH st AS (SELECT request_id, session_id FROM session_turns),
      sb AS (SELECT DISTINCT request_id FROM session_bodies),
-     rb AS (SELECT DISTINCT request_id FROM request_logs_bodies)
+     rb AS (SELECT DISTINCT request_id FROM _request_logs_bodies)
 SELECT
   count(*)::bigint AS sessions,
   count(*) FILTER (WHERE would_lose > 0)::bigint AS sessions_that_lose,

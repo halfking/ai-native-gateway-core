@@ -58,11 +58,29 @@ func NewAuthMiddleware(apiKey string) *AuthMiddleware {
 			// ——仅绕过鉴权层，链上其余中间件（Prometheus/Logging 等）照常
 			// 生效。
 			bypass: BypassRule{
-				// 2026-08-29：加 /readyz + /version。供 scripts/lifecycle/preflight.sh 三段检查使用。
-				// /readyz 返回 DB+Redis 是否就绪（K8s readiness），/version 暴露 build metadata。
-				// 两者均无敏感信息，必须 anon 可达。
-				ExactPaths:   []string{"/healthz", "/healthz/full", "/readyz", "/version", "/metrics", "/", "/m", "/maintain"},
-				PathPrefixes: []string{"/api/", "/admin/", "/assets/", "/maintain/", "/plugins/", "/mock/", "/m/", "/m-assets/"},
+			// 2026-08-29：加 /readyz + /version。供 scripts/lifecycle/preflight.sh 三段检查使用。
+			// /readyz 返回 DB+Redis 是否就绪（K8s readiness），/version 暴露 build metadata。
+			// 两者均无敏感信息，必须 anon 可达。
+			//
+			// 2026-10-12（2547 轮 GUI 验收抓到）：web/public **根级**公共资产。
+			// /assets/ 前缀只覆盖 Vite 哈希产物；public/ 根文件部署在 web 根
+			// （与 index.html 同级），此前对活跃的全局 API-key 门一律 401：
+			// logo/favicon 破图（含已登录用户——本门不读 session cookie，
+			// JWT 也不是数据面 key）、theme-init.js 失效（暗色首帧白闪）、
+			// entry-switch.js 失效（移动端入口切换断腿）。自 2026-07-10
+			// PNG logo 落地（8ec9fcc341）起即如此。均为公共品牌/引导资产
+			// （theme-init/entry-switch 仅含客户端主题与入口判断逻辑，
+			// 2026-10-12 过目无配置泄露）。
+			// 维护契约：今后往 web/public 根新增文件，必须同步登记此处，
+			// 或改放 /assets/（前缀已豁免）；**勿将任何敏感文件放进 web/public 根**。
+			ExactPaths: []string{
+				"/healthz", "/healthz/full", "/readyz", "/version", "/metrics",
+				"/", "/index.html", "/m", "/maintain",
+				"/logo-icon.png", "/logo-icon-dark.png", "/favicon.png",
+				"/theme-init.js", "/entry-switch.js", "/donation-qr.png",
+				"/user-agreement.html",
+			},
+			PathPrefixes: []string{"/api/", "/admin/", "/assets/", "/maintain/", "/plugins/", "/mock/", "/m/", "/m-assets/"},
 			},
 		},
 		expectedKey: apiKey,
@@ -102,7 +120,7 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 		// before the /v1/messages handler — whose extractBearerToken has
 		// honored x-api-key since 2026-06-26 — ever sees the request
 		// (observed 2026-09-21: claude-cli 401s on 154, zero rows in
-		// request_logs_hot). Precedence matches extractBearerToken:
+		// _request_logs_hot). Precedence matches extractBearerToken:
 		// Authorization Bearer first, x-api-key only as fallback.
 		provided := ""
 		if auth := r.Header.Get("Authorization"); len(auth) >= 7 && auth[:7] == "Bearer " {

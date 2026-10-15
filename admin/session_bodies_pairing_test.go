@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// 审计报告 §5.9（2026-10-01）：`request_logs_bodies.ts` 是**正文写入时间**，
+// 审计报告 §5.9（2026-10-01）：`_request_logs_bodies.ts` 是**正文写入时间**，
 // 不是轮次时间。实测同一个 request_id 在 `session_turns` 与
 // `request_logs_bodies_with_current_month` 里的 ts **99.85% 不相等**
 // （809,892 / 811,128，通常差 8~16 秒）。
@@ -73,7 +73,7 @@ func TestSessionBodyPairingKeysMatchTheirCallers(t *testing.T) {
 	if strings.Contains(summarySrc, "querySessionBodiesByRequestIDAndTS(") {
 		t.Error("session_summary_v2.go must pair bodies by request_id; the (request_id, ts) " +
 			"tuple hits 11.2% of the time even against the v1 source, because " +
-			"request_logs_bodies.ts is the body-write time, not the turn time (audit §5.9)")
+			"_request_logs_bodies.ts is the body-write time, not the turn time (audit §5.9)")
 	}
 	if !strings.Contains(summarySrc, "queryV1BodiesByRequestID(ctx, api.pool, requestIDs)") {
 		t.Error("session_summary_v2.go must fetch bodies with the request_id-keyed batch " +

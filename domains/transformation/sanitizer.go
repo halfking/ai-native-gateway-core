@@ -858,3 +858,133 @@ func StripStreamOptions(body []byte) []byte {
 	}
 	return out
 }
+
+// StripTopLevelJSONFields removes the named top-level keys from a JSON
+// request body (P0-1 paramrefusal, 2026-10-14).
+//
+// Only TOP-LEVEL keys are removed: nested keys of the same name (e.g. a
+// `metadata` object inside a message part) are untouched. Byte-level JSON
+// round-trip via json.RawMessage preserves every other key's value verbatim.
+// No target key present / invalid JSON / empty field list → the original body
+// is returned unchanged (callers diff the result to detect an actual strip).
+//
+// Consumers: the paramrefusal memory legs in
+// domains/streaming/executors/executor_chat.go (native responses choke
+// point, chat-leg pre-send, reactive retry body). This is the general form of
+// StripStreamOptions above — the static one-parameter variant stays (it is
+// load-bearing in three r1026b call sites and reads clearer there).
+func StripTopLevelJSONFields(body []byte, fields []string) []byte {
+	if len(fields) == 0 {
+		return body
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil || obj == nil {
+		return body
+	}
+	removed := false
+	for _, f := range fields {
+		if f == "" {
+			continue
+		}
+		if _, ok := obj[f]; ok {
+			delete(obj, f)
+			removed = true
+		}
+	}
+	if !removed {
+		return body
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// chatParamToResponsesWireAdapters 把 chat 线格式的顶层参数适配到
+// Responses 线格式。键 = chat 形态参数名，值 = 目标键路径与语义。
+//
+// 背景（raw-logs 2026-10-14T01:03-01:05 四条实证，grok-4.6 经 vapeur）：
+// responses 客户端把 chat 风格参数发到 /v1/responses，native 透传腿原样
+// 转发，上游逐条点名：
+//
+//	"Unsupported parameter: 'reasoning_effort'. In the Responses API,
+//	 this parameter has moved to 'reasoning.effort'."
+//	"'response_format' … moved to 'text.format'."
+//	"'max_completion_tokens' … moved to 'max_output_tokens'."
+//	"Unknown parameter: 'logprobs'."（Responses 无此概念）
+//
+// 这些全部是网关侧线格式适配缺口（不是供应商错误）：同名语义在
+// ir.SerializeResponsesRequest 的转换路径上都已正确处理，唯独 native
+// 透传腿（客户端原文直发）没有适配。
+//
+// drop 列：Responses 线格式无对应概念，删除（logprobs/top_logprobs 的
+// Responses 等价物 top_logprobs 仅在 output 里，请求侧不存在）。
+var responsesWireDropChatParams = []string{"logprobs", "top_logprobs"}
+
+// AdaptChatParamsToResponsesWire 把出站体上 chat 线格式专属的顶层参数
+// 适配/删除为 Responses 线格式形态。已在目标形态在场的键不覆盖
+// （客户端显式目标形态优先）。返回适配后的 body；无改动时原样返回。
+func AdaptChatParamsToResponsesWire(body []byte) []byte {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil || obj == nil {
+		return body
+	}
+	modified := false
+	// reasoning_effort → reasoning.effort（不覆盖已有 reasoning）。
+	if raw, ok := obj["reasoning_effort"]; ok {
+		if _, has := obj["reasoning"]; !has {
+			var effort json.RawMessage
+			if err := json.Unmarshal(raw, &effort); err == nil {
+				// effort 需要是合法 JSON 值（字符串档位）。
+				if len(effort) > 0 && effort[0] == '"' {
+					reasoning, err := json.Marshal(map[string]json.RawMessage{"effort": effort})
+					if err == nil {
+						obj["reasoning"] = reasoning
+						modified = true
+					}
+				}
+			}
+		}
+		delete(obj, "reasoning_effort")
+		modified = true
+	}
+	// response_format → text.format（不覆盖已有 text）。
+	if raw, ok := obj["response_format"]; ok {
+		if _, has := obj["text"]; !has {
+			var format json.RawMessage
+			if err := json.Unmarshal(raw, &format); err == nil {
+				text, err := json.Marshal(map[string]json.RawMessage{"format": format})
+				if err == nil {
+					obj["text"] = text
+					modified = true
+				}
+			}
+		}
+		delete(obj, "response_format")
+		modified = true
+	}
+	// max_completion_tokens → max_output_tokens（不覆盖已有）。
+	if raw, ok := obj["max_completion_tokens"]; ok {
+		if _, has := obj["max_output_tokens"]; !has {
+			obj["max_output_tokens"] = raw
+		}
+		delete(obj, "max_completion_tokens")
+		modified = true
+	}
+	// 无对应概念：删除。
+	for _, drop := range responsesWireDropChatParams {
+		if _, ok := obj[drop]; ok {
+			delete(obj, drop)
+			modified = true
+		}
+	}
+	if !modified {
+		return body
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return out
+}

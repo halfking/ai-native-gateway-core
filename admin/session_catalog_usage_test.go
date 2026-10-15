@@ -96,8 +96,8 @@ func TestMergeCatalogSearchHitsKeepsTitleMatch(t *testing.T) {
 }
 
 func TestCatalogSearchSQLDoesNotScanRequestLogs(t *testing.T) {
-	if strings.Contains(catalogSearchSQL, "request_logs") {
-		t.Fatal("search SQL must stay on session_summaries; request_logs ILIKE measured about 16s")
+	if strings.Contains(catalogSearchSQL, "_request_logs") {
+		t.Fatal("search SQL must stay on session_summaries; _request_logs ILIKE measured about 16s")
 	}
 	if !strings.Contains(catalogSearchSQL, "session_summaries") || !strings.Contains(catalogSearchSQL, "btrim(session_key)") {
 		t.Fatal("search SQL missing summary source or blank-id guard")
@@ -106,14 +106,14 @@ func TestCatalogSearchSQLDoesNotScanRequestLogs(t *testing.T) {
 
 // TestCatalogUsageSQLReadsSessionFamily 钉住「用量只从 session 族取」。
 //
-// 这条断言曾经是反的：它要求 catalogUsageSQL 必须含 request_logs_hot 和
-// FROM request_logs，等于把 S4 退役表钉成硬依赖，会主动阻止读端迁移。
-// S4 停写（storage.request_logs_write_enabled=false）后 request_logs 只剩历史行，
+// 这条断言曾经是反的：它要求 catalogUsageSQL 必须含 _request_logs_hot 和
+// FROM _request_logs，等于把 S4 退役表钉成硬依赖，会主动阻止读端迁移。
+// S4 停写（storage.request_logs_write_enabled=false）后 _request_logs 只剩历史行，
 // 聚合恒 0；而 overlayCatalogUsage 只补 0 值，于是同一会话显示对错取决于 Redis
 // 缓存是否命中。守卫方向必须跟着事实源一起翻过来。
 func TestCatalogUsageSQLReadsSessionFamily(t *testing.T) {
-	if strings.Contains(catalogUsageSQL, "request_logs") {
-		t.Fatalf("usage SQL must read the session family, not the retired request_logs: \n%s", catalogUsageSQL)
+	if strings.Contains(catalogUsageSQL, "_request_logs") {
+		t.Fatalf("usage SQL must read the session family, not the retired _request_logs: \n%s", catalogUsageSQL)
 	}
 	for _, want := range []string{
 		"FROM session_turns_hot", // 未 promote 的近期行

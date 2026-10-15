@@ -93,7 +93,7 @@ func (h *Handler) queryBoardSummary(ctx context.Context, tenantID string, tr boa
 	}, true
 }
 
-// fallbackBoardSummary 在 minute 统计不可用时走 request_logs 聚合。
+// fallbackBoardSummary 在 minute 统计不可用时走 _request_logs 聚合。
 //
 // ## 2026-10-03：原来这里 `_ = ...Scan(...)` 丢弃错误
 //
@@ -136,7 +136,7 @@ func (h *Handler) fallbackBoardSummary(ctx context.Context, tenantID string, tr 
 	//
 	// 本次改成 queryBoardCreditsExcludingProbes 而非 queryTotalCreditsCharged：
 	//   · 同源 —— 主路径的 request_stats_minute.credits_charged 本身就是
-	//     maas.RequestLogCreditsSQL 对 request_logs 算出来的，回退路径读同源，
+	//     maas.RequestLogCreditsSQL 对 _request_logs 算出来的，回退路径读同源，
 	//     1d/7d/30d 切页时数字才不会因为换源而跳变（上游注释指出的正是这个缺陷）；
 	//   · 同口径 —— 其余读面（请求数/成功率/Token/费用）都经 boardLogsWhere 排除了
 	//     探针，积分若仍取自计费账本（账本无探针标记、探针轮次是真的被扣费的），
@@ -202,7 +202,7 @@ func (h *Handler) fallbackBoardSummary(ctx context.Context, tenantID string, tr 
 // shouldChargeUsage (domains/streaming/billing.go:9) inspects only token counts
 // and failure stage, never the probe markers.
 //
-// So the board derives credits from request_logs with the same exclusion every
+// So the board derives credits from _request_logs with the same exclusion every
 // other board read face uses. That also makes this path AGREE with the minute
 // rollup, which computes credits the same way (maas.RequestLogCreditsSQL over
 // probe-filtered rows) — before this change the two paths answered the same
@@ -323,7 +323,7 @@ func piesEmpty(pies map[string]any) bool {
 func (h *Handler) queryBoardPies(ctx context.Context, tenantID string, tr boardTimeRange) (map[string]any, error) {
 	// 2026-09-03 (audit closure): the "clients" pie now aggregates by
 	// agent_name (the canonical client-type identifier persisted on
-	// request_logs_hot.agent_name) instead of client_profile (the legacy
+	// _request_logs_hot.agent_name) instead of client_profile (the legacy
 	// device-fingerprint column).
 	types := map[string]string{
 		"clients": "agent_name",

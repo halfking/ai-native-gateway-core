@@ -2,7 +2,7 @@
 //
 // Impact matrix (rule 57 — read-only, no DDL):
 //
-//	structure: request_logs_hot.t0_arrived_at … t9_response_end_at (migration 491)
+//	structure: _request_logs_hot.t0_arrived_at … t9_response_end_at (migration 491)
 //	writers:   telemetry RequestLogger INSERT/UPSERT (unchanged)
 //	readers:   NEW this file (admin waterfall when memory ring < limit)
 //	views:     none touched
@@ -108,7 +108,7 @@ func mergeWaterfallWithDB(ctx context.Context, snap dispatch.WaterfallSnapshot, 
 }
 
 // waterfallListSQL 是瀑布列表查询。2026-10-13 S3 波 2（停写切换）：原读
-// request_logs_hot，停写后新流量不落该表、热窗排空后面板恒空；改读
+// _request_logs_hot，停写后新流量不落该表、热窗排空后面板恒空；改读
 // canonical 视图（会话臂服务新流量、v1 臂服务历史、反连接去重——手工拼
 // 双热腿需要 anti-join 两族才等价，且 credential_id 等列要逐个守卫 CAST，
 // 等价重写不如直接用视图）。16 个表达式全在 118 列契约内；ORDER BY t0

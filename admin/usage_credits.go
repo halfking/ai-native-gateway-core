@@ -65,7 +65,7 @@ func (h *Handler) queryTotalCreditsCharged(ctx context.Context, tenantID string,
 		return credits + defaultCredits, ""
 	}
 	if err != nil && !IsMissingRelationError(err) {
-		slog.Warn("usageSummary: credits bucket query failed, falling back to request_logs",
+		slog.Warn("usageSummary: credits bucket query failed, falling back to _request_logs",
 			"tenant_id", tenantID,
 			"days", days,
 			"error", err)
@@ -73,12 +73,12 @@ func (h *Handler) queryTotalCreditsCharged(ctx context.Context, tenantID string,
 	logsCredits, logsErr := h.queryCreditsFromRequestLogs(ctx, tenantID, days, platform)
 	if logsErr != nil {
 		if IsMissingRelationError(logsErr) {
-			slog.Debug("usageSummary: credits request_logs fallback unavailable",
+			slog.Debug("usageSummary: credits _request_logs fallback unavailable",
 				"relation", ExtractMissingRelationName(logsErr))
 			// 两条腿都断了 → 0 是「没算出来」，不是「消耗为 0」。
 			return 0, creditDegradedView(logsErr)
 		}
-		slog.Warn("usageSummary: credits request_logs fallback failed",
+		slog.Warn("usageSummary: credits _request_logs fallback failed",
 			"tenant_id", tenantID,
 			"days", days,
 			"error", logsErr)
@@ -119,7 +119,7 @@ func (h *Handler) queryCreditsFromBuckets(ctx context.Context, tenantID string, 
 // requestLogsFromClause mirrors maas.requestLogsSource for admin usage queries.
 func requestLogsFromClause(days int) (from string, alias string) {
 	if days <= 7 {
-		return "request_logs_hot AS r", "r"
+		return "_request_logs_hot AS r", "r"
 	}
 	return "request_logs_with_current_month AS r", "r"
 }

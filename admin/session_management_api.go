@@ -374,7 +374,7 @@ func (h *Handler) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 
 	// 查询会话中的请求列表（最近50条）
 	//
-	// 此前直读 request_logs_hot 单腿：① 只能看到 7 天热窗内的行，被 promote 进月
+	// 此前直读 _request_logs_hot 单腿：① 只能看到 7 天热窗内的行，被 promote 进月
 	// 分区的历史行不可见；② S4 停写（storage.request_logs_write_enabled=false）
 	// 后新会话一行都查不到，而下面 err 分支只把 Requests 置空、不上报，接口仍返
 	// 200 —— 表现为「会话详情 Requests 列表静默空白」。改读 734 视图：视图体已

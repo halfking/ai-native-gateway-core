@@ -48,7 +48,7 @@ func TestLocator_DBRetry_RecoversOnSecondAttempt(t *testing.T) {
 		t.Fatalf("expected retry to recover, got err: %v", err)
 	}
 	if d.Source != SourceRequestLogs || d.Bodies == nil {
-		t.Fatalf("expected request_logs source with bodies, got source=%s bodies=%+v", d.Source, d.Bodies)
+		t.Fatalf("expected _request_logs source with bodies, got source=%s bodies=%+v", d.Source, d.Bodies)
 	}
 	if got := atomic.LoadInt32(&flaky.calls); got != 2 {
 		t.Fatalf("expected 2 calls (1 miss + 1 hit), got %d", got)

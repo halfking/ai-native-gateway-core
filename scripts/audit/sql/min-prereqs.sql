@@ -201,11 +201,11 @@ CREATE TABLE public.session_turns (
 ) PARTITION BY RANGE (partition_date);
 CREATE TABLE public.session_turns_default PARTITION OF public.session_turns DEFAULT;
 
--- request_logs_hot — required by attachment cleanup execute (migration 629).
+-- _request_logs_hot — required by attachment cleanup execute (migration 629).
 -- Production carries many more columns; the audit fixture only needs the
 -- JSONB attachments column plus the ts/tenant_id/request_id columns the
 -- cleanup SQL filters on.
-CREATE TABLE IF NOT EXISTS public.request_logs_hot (
+CREATE TABLE IF NOT EXISTS public._request_logs_hot (
     id bigserial PRIMARY KEY,
     request_id text NOT NULL,
     ts timestamptz NOT NULL DEFAULT NOW(),

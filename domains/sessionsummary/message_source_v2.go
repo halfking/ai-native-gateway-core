@@ -14,7 +14,7 @@ import (
 // v2SessionBodiesSource is the V2 MessageSource: it reads from the
 // public.session_bodies_unified view (hot ∪ partition; see migration 625/637)
 // (+ session_turns for the model name) instead of the V1
-// request_logs / request_logs_bodies tables.
+// _request_logs / _request_logs_bodies tables.
 //
 // It exists so the summarizer can keep working once V1 request bodies are
 // retired (docs/omni-ref3 A1 / P3). It is NOT installed by default; A1 wires it

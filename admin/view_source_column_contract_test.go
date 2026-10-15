@@ -43,7 +43,7 @@ import (
 //
 // `request_logs_with_current_month` 在 migration 710 之后是「session 家族拼装体」，
 // 冻结 113 列契约。真库 information_schema 查得：该视图 origin_stage 列数 = 0，
-// 而 request_logs / request_logs_hot / session_turns 各 = 1。所以把物理表谓词
+// 而 _request_logs / _request_logs_hot / session_turns 各 = 1。所以把物理表谓词
 // 贴到以该视图为源的查询上，**每次调用都 500**，不是偶发。
 //
 // 加重它的是 `excludeSelf_test` 缺省 true（credential_monitor_heatmap.go 的
@@ -70,7 +70,7 @@ import (
 
 // TestNoPhysicalOnlyColumnsInViewSourcedSQL flags any SINGLE SQL literal that
 // both takes request_logs_with_current_month as a source and names a column
-// that exists only on the physical request_logs tables.
+// that exists only on the physical _request_logs tables.
 //
 // Scope is deliberately per-literal, not per-declaration. Per-declaration was
 // tried first and false-positived 13 times on correct code, because a handler
@@ -168,7 +168,7 @@ func checkLiteralsInFile(t *testing.T, path string, fired map[string]bool) {
 				}
 				t.Errorf("%s: 同一条 SQL 字面量里，%q 绑定到 request_logs_with_current_month，却引用了物理表独有列 %q\n"+
 					"该列不在视图的冻结 113 列契约内 → SQLSTATE 42703，这条查询必然失败。\n"+
-					"改用 bg.ProbeTrafficExclusionPredicateView 一类的视图变体谓词，或把数据源换成 request_logs_hot。\n"+
+					"改用 bg.ProbeTrafficExclusionPredicateView 一类的视图变体谓词，或把数据源换成 _request_logs_hot。\n"+
 					"若这是已知的待修缺陷，请加进 viewSourcePhysicalOnlyColumnExemptions 并写明理由与跟踪位置。",
 					key, ref.text, col)
 			}
@@ -207,7 +207,7 @@ type viewSourceScope struct {
 //
 // 这一步不是可有可无的收紧，而是这道门能不能用的问题。同一条字面量里同时存在
 // 多张表时，`<别的表别名>.<列>` 是完全合法的，而同一个列名恰好也存在于物理
-// request_logs 上——不判别名就会把正确代码判成违规。实测两种成因：
+// _request_logs 上——不判别名就会把正确代码判成违规。实测两种成因：
 //
 //	rb.outbound_body  绑 LEFT JOIN 的 request_logs_bodies_with_current_month
 //	                  （admin/session_sanitize_matches.go、data_lifecycle_blobs.go）

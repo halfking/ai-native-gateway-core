@@ -78,7 +78,8 @@ var bodiesFamilyCallRE = regexp.MustCompile(`\bSessionFamilyBodiesSourceSQL\s*\(
 
 // v1BodiesRelationRE 匹配 v1 bodies 腿的关系名（**不含** viewsWithV1Arm 那种闭合集合，
 // 这里只需要「指名了 v1 bodies」这一个判据）。
-var v1BodiesRelationRE = regexp.MustCompile(`\brequest_logs_bodies(?:_hot|_with_current_month)?\b`)
+// `_?`（迁移 860）：物理名已带待删除前缀，源码字面量同步。
+var v1BodiesRelationRE = regexp.MustCompile(`\b_?request_logs_bodies(?:_hot|_with_current_month)?\b`)
 
 // bodiesReadPath 是 27 个 bodies 读方里某一条的取源路径。
 type bodiesReadPath string
@@ -142,7 +143,7 @@ func TestBodiesReadPathClassifierSeparatesTheTwoHelpers(t *testing.T) {
 		t.Errorf("字面量读被判成 %q，期望 %q", got, bodiesLiteralOnly)
 	}
 	// 两者都有 ⇒ mixed
-	if got := classifyBodiesReadPath("FROM request_logs_bodies_hot rb " +
+	if got := classifyBodiesReadPath("FROM _request_logs_bodies_hot rb " +
 		bodiesSourceCallRE.FindString("dbpkg.SessionBodiesSourceSQL()")); got != bodiesMixed {
 		t.Errorf("混合形态被判成 %q，期望 %q", got, bodiesMixed)
 	}

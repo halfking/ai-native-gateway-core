@@ -644,6 +644,11 @@ fi
 # =============================================================================
 SECRET_KEY="${LLM_GATEWAY_SECRET_KEY:-}"
 if [[ -z "$SECRET_KEY" ]]; then
+  # ⚠ SECRET_KEY 决定 api_keys.key_hash 的 HMAC（domains/authentication/
+  # verifier.go）。**换了库就得换对SECRET**：2026-10-14 实测，211 库为
+  # mac mini 血统（生产 SECRET_KEY）时，用本机旧值/随机值 → 全部 key
+  # invalid_key。持久文件 env/gateway.secret 是「这个库对应的秘钥」，
+  # 与 DB 血统绑定，不要在换库时沿用旧值。
   if [[ -f "$D211_STATE_DIR/env/gateway.secret" ]]; then
     SECRET_KEY="$(cut -d= -f2- "$D211_STATE_DIR/env/gateway.secret")"
   else
@@ -739,11 +744,47 @@ docker rm -f "$D211_GW_CONTAINER" >/dev/null 2>&1 || true
 D211_GW_DATA_ROOT="${D211_GW_DATA_ROOT:-/opt/kaixuan/data/llm-gateway}"
 mkdir -p "$D211_GW_DATA_ROOT/data" "$D211_GW_DATA_ROOT/logs"
 chown -R 65532:65532 "$D211_GW_DATA_ROOT" 2>/dev/null || true
+# ── configs 随部署种子（2026-10-14）────────────────────────────────────
+# 镜像不含 configs/（sensitive_patterns.yaml 缺失时网关回落内置脱敏集，
+# 与宿主机部署行为不一致）；docker cp 进容器层则 docker rm -f 即丢。
+# 改为宿主 bind（只读），每次部署以仓库文件为准覆盖种子。
+D211_CONFIGS_SRC="${D211_CONFIGS_SRC:-$(cd "$(dirname "$0")/.." && pwd)/configs}"
+mkdir -p "$D211_GW_DATA_ROOT/configs"
+for _cfg in sensitive_patterns.yaml sensitive_words.json; do
+  if [[ -f "$D211_CONFIGS_SRC/$_cfg" ]]; then
+    cp -f "$D211_CONFIGS_SRC/$_cfg" "$D211_GW_DATA_ROOT/configs/$_cfg"
+  else
+    echo "warning: $D211_CONFIGS_SRC/$_cfg 不存在，容器将回落内置默认集" >&2
+  fi
+done
+chown -R 65532:65532 "$D211_GW_DATA_ROOT/configs" 2>/dev/null || true
+
+# ── 迁移腿（2026-10-14 r1030）：网关容器启动前重放 DB 修订序列 ──────────
+# deploy-seamless（245/154）自带 deploy_apply_pending_migrations；本脚本原先
+# 缺这一腿——从别机 dump 恢复的库（如 acc-pg17 ← mac pg18 dump）停在旧迁移
+# 位（实测 schema_migrations 止于 851），新网关 boot 探测 `_request_logs_hot`
+# （迁移 860 改名后的家族名）失败 → 静默降级 lite（readyz 的 mode 字段是唯
+# 一肉眼判据）。序列幂等（already applied 无操作、健康路径零 DDL），故每次
+# 部署无脑重放是安全默认。
+REVISION_SEQ="$(cd "$(dirname "$0")" && pwd)/apply-db-revision-sequence.sh"
+if [[ -f "$REVISION_SEQ" ]]; then
+  log "重放 DB 修订序列（幂等）→ ${PG_CONTAINER}/${D211_PG_DB}"
+  DATABASE_URL="$DB_URL" \
+  LLM_GATEWAY_PG_CONTAINER="$PG_CONTAINER" \
+  LLM_GATEWAY_PG_USER="${LLM_GATEWAY_PG_USER:-$PG_USER}" \
+  LLM_GATEWAY_PG_PASSWORD="$PG_PASS" \
+  LLM_GATEWAY_PG_DATABASE="$D211_PG_DB" \
+    bash "$REVISION_SEQ" || die "DB 修订序列失败——直接启动会降级 lite，先修库再部署"
+else
+  echo "warning: apply-db-revision-sequence.sh 不在场，跳过迁移重放" >&2
+fi
+
 docker run -d --name "$D211_GW_CONTAINER" --restart unless-stopped \
   --network "$D211_NETWORK" \
   -p "${D211_GW_PORT}:8781" \
   -v "${D211_GW_DATA_ROOT}/data:/app/data" \
   -v "${D211_GW_DATA_ROOT}/logs:/app/logs" \
+  -v "${D211_GW_DATA_ROOT}/configs:/app/configs:ro" \
   "${GW_ENV[@]}" \
   "$D211_GW_IMAGE" >/dev/null || die "网关容器启动失败"
 

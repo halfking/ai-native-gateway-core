@@ -40,7 +40,7 @@ func (r *recordingMessageSource) GetMessagesSince(ctx context.Context, tenantID,
 
 // TestSetMessageSource_RoutesReadsThroughInterface verifies that after
 // SetMessageSource, the summarizer's read helpers delegate to the injected
-// source instead of the default request_logs source.
+// source instead of the default _request_logs source.
 func TestSetMessageSource_RoutesReadsThroughInterface(t *testing.T) {
 	s := NewSummarizer(nil, nil, nil)
 	wantFull := []SessionMessage{{RequestID: "r1", Role: "user", Content: "hi"}}
@@ -99,7 +99,7 @@ func TestSetMessageSource_PropagatesErrors(t *testing.T) {
 }
 
 // TestDefaultMessageSource_IsRequestLogs guards the contract that NewSummarizer
-// installs the V1 request_logs source by default (so behavior is unchanged
+// installs the V1 _request_logs source by default (so behavior is unchanged
 // until a V2 source is explicitly registered). The concrete type assertion is
 // intentional — it documents the default.
 func TestDefaultMessageSource_IsRequestLogs(t *testing.T) {

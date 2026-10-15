@@ -242,7 +242,7 @@ func TestProbeRetirementExposureAttributionGap(t *testing.T) {
 //     「`request_logs_retirement_exposure_test.go` 的 `v1TableRe`
 //     **不认** `_with_current_month` 视图」——若共用，那条断言就是恒真的。
 var probeV1BaseTableRe = regexp.MustCompile(
-	`\b(request_logs|request_logs_hot|request_logs_bodies|request_logs_bodies_hot)\b`)
+	`\b(_request_logs|_request_logs_hot|_request_logs_bodies|_request_logs_bodies_hot)\b`)
 
 // currentMonthViewRe 认 `*_with_current_month` 视图族。
 var currentMonthViewRe = regexp.MustCompile(`\b[a-z_]*_with_current_month\b`)

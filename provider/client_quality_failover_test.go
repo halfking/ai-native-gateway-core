@@ -34,7 +34,7 @@ func TestModelRoutingDiagnosticUsesBindingSafeSchema(t *testing.T) {
 	}
 
 	query := string(body)
-	for _, forbidden := range []string{"FROM request_logs\n"} {
+	for _, forbidden := range []string{"FROM _request_logs\n"} {
 		if strings.Contains(query, forbidden) {
 			t.Fatalf("diagnostic query contains stale schema reference %q", forbidden)
 		}

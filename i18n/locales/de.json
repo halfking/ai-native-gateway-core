@@ -20,6 +20,9 @@
   "SESSION_FORBIDDEN": {
     "other": "Diese Sitzung gehört nicht zu diesem API-Schlüssel"
   },
+  "SESSION_STORE_UNAVAILABLE": {
+    "other": "Session-Speicher vorübergehend nicht verfügbar; bitte später erneut versuchen"
+  },
   "SESSION_ASSIGN_FAILED": {
     "other": "Zuweisung der Sitzungs-ID fehlgeschlagen"
   },

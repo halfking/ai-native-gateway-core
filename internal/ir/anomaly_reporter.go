@@ -164,7 +164,7 @@ func (e AnomalyEvent) MetadataAsJSON() string {
 // irRequestID extracts the gateway request id from the IR's metadata carrier
 // for anomaly reporting (S2-F3/R60). Metadata.RequestID is the designated
 // gateway-internal carrier — the executors stamp it from the same per-request
-// id that request_logs.request_id uses (domains/streaming/executors), so
+// id that _request_logs.request_id uses (domains/streaming/executors), so
 // reported anomalies are correlatable with the request log row and the
 // dashboard swim lane. Falls back to "unknown" when the carrier is unset
 // (parse-time fixtures, off-request tools) — the dedup key still includes

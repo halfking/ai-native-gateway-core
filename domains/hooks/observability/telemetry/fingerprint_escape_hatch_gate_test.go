@@ -20,7 +20,7 @@ import (
 //
 // `bg/integrity_fingerprint_drift.go` 的短路有两条腿：
 //
-//	腿 1（探针）：`probeFingerprintTraffic` 读 request_logs_hot / request_logs
+//	腿 1（探针）：`probeFingerprintTraffic` 读 _request_logs_hot / _request_logs
 //	              的 `system_fingerprint IS NOT NULL` ⇒ 停写后恒空
 //	腿 2（进程内 arm）：`fingerprintScanDecision` 的 `inProcSeen` 分支，
 //	              来自 `telemetry.SystemFingerprintObservedSince()`

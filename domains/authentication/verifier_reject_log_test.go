@@ -13,7 +13,7 @@ import (
 
 // The verification predicate in callVerifyDB folds four different failures into
 // one pgx.ErrNoRows — unknown key, enabled=false, revoked|disabled, expired.
-// They all produce the same 401 body, and neither nginx nor request_logs keeps
+// They all produce the same 401 body, and neither nginx nor _request_logs keeps
 // the credential, so an operator could not tell "the client rotated its key"
 // from "we revoked it" (2026-10-05~07, ~3,200 failing requests/day).
 //

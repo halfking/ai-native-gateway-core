@@ -20,6 +20,9 @@
   "SESSION_FORBIDDEN": {
     "other": "cette session n'appartient pas à cette clé API"
   },
+  "SESSION_STORE_UNAVAILABLE": {
+    "other": "Le magasin de sessions est indisponible ; veuillez réessayer plus tard"
+  },
   "SESSION_ASSIGN_FAILED": {
     "other": "échec de l'attribution de l'identifiant de session"
   },

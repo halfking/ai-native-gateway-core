@@ -27,7 +27,7 @@ package bg
 //
 // ── 判据的形状（双向，都必须有牙）──
 //   1. CalcCost 及其调用链不得读 baseline_* 任何一列；
-//   2. models_canonical 的 baseline_* 列不得出现在 usage_ledger / request_logs
+//   2. models_canonical 的 baseline_* 列不得出现在 usage_ledger / _request_logs
 //      的任何写入语句里（防「不经过 CalcCost 直接落库」这条旁路）。
 // 第 2 条不可省：只钉第 1 条的话，在 handler 里先算出 cost 再乘一个 baseline
 // 系数落库，CalcCost 源码依然干净。

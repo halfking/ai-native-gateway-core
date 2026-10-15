@@ -22,7 +22,7 @@ func TestGetLogDetail_WithBodies(t *testing.T) {
 	// Insert test data into both tables (simulating Ticket #10 dual-write)
 	insertTestRequestLogWithBodies(t, pool, requestID)
 
-	// Query using the new SSOT pattern: bodies live in request_logs_bodies_hot
+	// Query using the new SSOT pattern: bodies live in _request_logs_bodies_hot
 	// (after migration 573 dropped request_logs_hot.{request,response,outbound}_body)
 	var requestBody, responseBody string
 	err := pool.QueryRow(ctx, `
@@ -47,7 +47,7 @@ func TestGetLogDetail_WithBodies(t *testing.T) {
 // TestGetLogDetail_BackwardsCompatible pins the storage-tier compatibility
 // contract of the SSOT detail read path.
 //
-// R65 前提重构：本测试原名"bodies 仍在 request_logs_hot 的旧数据"——迁移
+// R65 前提重构：本测试原名"bodies 仍在 _request_logs_hot 的旧数据"——迁移
 // 573 已 DROP request_logs_hot.{request,response,outbound}_body，"bodies 在
 // 元数据表"的形态在存储层已不可表达，旧夹具 INSERT 实锤 42703（该测试自
 // 573 起从未真绿）。仍真实存在且必须兼容的"旧数据"是**已晋升出 _hot 的
@@ -55,7 +55,7 @@ func TestGetLogDetail_WithBodies(t *testing.T) {
 // 0A000 不支持），主库纪律（只许夹具级 INSERT/DELETE）下无法无残留地造
 // 父表行。故契约改钉两层：
 //  1. 视图双腿覆盖（information_schema.view_table_usage 必须同时含
-//     request_logs_bodies_hot 与 request_logs_bodies）——晋升行可达性的
+//     _request_logs_bodies_hot 与 _request_logs_bodies）——晋升行可达性的
 //     存储层前提；
 //  2. 行级：_hot 腿 JOIN 解析 body（可清理的实证半边）。
 func TestGetLogDetail_BackwardsCompatible(t *testing.T) {
@@ -79,8 +79,8 @@ func TestGetLogDetail_BackwardsCompatible(t *testing.T) {
 		legs = append(legs, name)
 	}
 	require.NoError(t, rows.Err())
-	assert.Contains(t, legs, "request_logs_bodies_hot", "bodies view must cover the _hot tier")
-	assert.Contains(t, legs, "request_logs_bodies", "bodies view must cover the promoted parent tier")
+	assert.Contains(t, legs, "_request_logs_bodies_hot", "bodies view must cover the _hot tier")
+	assert.Contains(t, legs, "_request_logs_bodies", "bodies view must cover the promoted parent tier")
 
 	// 契约 2（行级可清理半边）：元数据 + _hot 腿 body 行经 SSOT JOIN 解析。
 	insertTestRequestLogWithBodies(t, pool, requestID)
@@ -104,7 +104,7 @@ func TestGetLogDetail_BackwardsCompatible(t *testing.T) {
 }
 
 // TestGetLogDetail_MissingBodies verifies that the LEFT JOIN handles cases where
-// request_logs_bodies_hot has no matching record (returns NULL gracefully).
+// _request_logs_bodies_hot has no matching record (returns NULL gracefully).
 func TestGetLogDetail_MissingBodies(t *testing.T) {
 	pool := setupTestDB(t)
 	defer pool.Close()
@@ -112,10 +112,10 @@ func TestGetLogDetail_MissingBodies(t *testing.T) {
 	ctx := context.Background()
 	requestID := "test-missing-bodies-" + time.Now().Format("20060102-150405.000")
 
-	// Insert ONLY into request_logs_hot (no bodies in either table)
+	// Insert ONLY into _request_logs_hot (no bodies in either table)
 	insertTestRequestLogMetadataOnly(t, pool, requestID)
 
-	// Query using the new SSOT pattern: bodies live in request_logs_bodies_hot
+	// Query using the new SSOT pattern: bodies live in _request_logs_bodies_hot
 	var requestBody, responseBody *string
 	err := pool.QueryRow(ctx, `
 		SELECT
@@ -155,17 +155,17 @@ func insertTestRequestLogWithBodies(t *testing.T, pool *pgxpool.Pool, requestID 
 	`, requestID)
 	require.NoError(t, err)
 
-	// Insert into request_logs_hot (NO bodies)
+	// Insert into _request_logs_hot (NO bodies)
 	_, err = tx.Exec(ctx, `
-		INSERT INTO request_logs_hot (
+		INSERT INTO _request_logs_hot (
 			request_id, ts, tenant_id, application_id, success
 		) VALUES ($1, now(), 'test-tenant', 1, true)
 	`, requestID)
 	require.NoError(t, err)
 
-	// Insert into request_logs_bodies_hot (with bodies)
+	// Insert into _request_logs_bodies_hot (with bodies)
 	_, err = tx.Exec(ctx, `
-		INSERT INTO request_logs_bodies_hot (
+		INSERT INTO _request_logs_bodies_hot (
 			request_id, ts, request_body, response_body
 		) VALUES (
 			$1, now(), 
@@ -195,9 +195,9 @@ func insertTestRequestLogMetadataOnly(t *testing.T, pool *pgxpool.Pool, requestI
 	`, requestID)
 	require.NoError(t, err)
 
-	// Insert into request_logs_hot (NO bodies)
+	// Insert into _request_logs_hot (NO bodies)
 	_, err = tx.Exec(ctx, `
-		INSERT INTO request_logs_hot (
+		INSERT INTO _request_logs_hot (
 			request_id, ts, tenant_id, application_id, success
 		) VALUES ($1, now(), 'test-tenant', 1, true)
 	`, requestID)

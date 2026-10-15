@@ -71,7 +71,7 @@ const providerErrorCleanupInterval = time.Hour
 const promoteBatchSize = 5000
 
 // requestLogsBodiesPromoteBatchSize is the default per-call LIMIT for the
-// request_logs_bodies promote. Bodies rows are TOAST-heavy (~350 KB avg; the
+// _request_logs_bodies promote. Bodies rows are TOAST-heavy (~350 KB avg; the
 // hot table was 13 GB / 37k rows), so the generic 5000-row batch moves
 // ~1.7 GB per call and consistently exceeds PG statement_timeout=30s on the
 // shared DB — promote then never makes progress and every hourly tick adds
@@ -92,11 +92,22 @@ const requestLogsBodiesPromoteBatchSize = 500
 //
 // Usage:
 //
-//	pm := bg.NewPartitionManager(dbConn.Pool(), 24*time.Hour)
-//	pm.Start(context.Background())
-//	defer pm.Stop()
+// partitionDB 是 PartitionManager 对 *pgxpool.Pool 的窄接口视图：生产代码
+// 传 pgxpool（构造签名不变），863 判据（parent-shape 门）传 pgxmock。方法
+// 集就是本文件实际用到的全部池操作，勿为测试便利扩面。
+type partitionDB interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Begin(ctx context.Context) (pgx.Tx, error)
+	BeginTx(ctx context.Context, txOptions pgx.TxOptions) (pgx.Tx, error)
+}
+
+// pm := bg.NewPartitionManager(dbConn.Pool(), 24*time.Hour)
+// pm.Start(context.Background())
+// defer pm.Stop()
 type PartitionManager struct {
-	db              *pgxpool.Pool
+	db              partitionDB
 	interval        time.Duration
 	promoteInterval time.Duration
 	errorAggregator *ProviderErrorAggregator      // 2026-08-29: provider error aggregation
@@ -146,18 +157,35 @@ type archiveSpec struct {
 	// 0, offset) (daily partitions, R68 迁移 750 usage_facts 按日分区接入）。
 	// pgx still receives time.Time; argExpr controls the cast to ::date.
 	partitionUnit string
+
+	// parentTable gates the 24h-tick call on the parent table actually being
+	// a partitioned table (relkind 'p'). 2026-10-14（本轮 211 日志审计）：
+	// db.go 的 boot ensure 对 830 家族先探形状再决定调用，但本 tick 直接
+	// 调函数——在 830 未应用（或已回滚、或 restore 后丢失分区性）的环境
+	// 上每 24h 报一条 42P17「is not partitioned」。两条路径的契约必须
+	// 一致（r1021 教训同族）：声明了 parentTable 的 spec 先探形状，
+	// 非 'p' 则按 db.go 的口径 Info 跳过，而不是反复报错。
+	parentTable string
 }
 
-func NewPartitionManager(db *pgxpool.Pool, interval time.Duration) *PartitionManager {
+func NewPartitionManager(db partitionDB, interval time.Duration) *PartitionManager {
 	if interval <= 0 {
 		interval = 24 * time.Hour
+	}
+	// 聚合器要 *pgxpool.Pool 真身（后台 goroutine 自起生命周期）；
+	// 判据注入 pgxmock 时不构造（不会 Start，nil 无害）。
+	var errorAggregator *ProviderErrorAggregator
+	var supplierStats *SupplierErrorStatsAggregator
+	if pool, ok := db.(*pgxpool.Pool); ok {
+		errorAggregator = NewProviderErrorAggregator(pool, 10*time.Minute)
+		supplierStats = NewSupplierErrorStatsAggregator(pool, 5*time.Minute)
 	}
 	return &PartitionManager{
 		db:              db,
 		interval:        interval,
 		promoteInterval: DefaultPromoteInterval,
-		errorAggregator: NewProviderErrorAggregator(db, 10*time.Minute),
-		supplierStats:   NewSupplierErrorStatsAggregator(db, 5*time.Minute),
+		errorAggregator: errorAggregator,
+		supplierStats:   supplierStats,
 		done:            make(chan struct{}),
 		promoteDone:     make(chan struct{}),
 		cleanupDone:     make(chan struct{}),
@@ -315,7 +343,7 @@ func (pm *PartitionManager) runCleanup(ctx context.Context) {
 			pm.cleanupOldSupplierErrorStats(ctx)
 			pm.cleanupOldRoutingFeedbackLog(ctx)
 			pm.cleanupOldRoutingOptimizationMetrics(ctx)
-			// request_logs 主表归档（迁移 754）。2026-09-28 十六轮审计
+			// _request_logs 主表归档（迁移 754）。2026-09-28 十六轮审计
 			// 根修：此前挂在 pm.run 的 24h 定相 ticker 上再过滤 hour==3，
 			// 而 24h ticker 的相位 = 进程启动时刻——除非网关恰好在
 			// 03:00–03:59 之间启动，归档永远不会执行（754 流水线静默
@@ -355,8 +383,11 @@ func (pm *PartitionManager) runCleanup(ctx context.Context) {
 // 自然适用，UTC 会话在 +08 0-8h 同样不会把次日误建为今日。
 func (pm *PartitionManager) ensureNextMonthPartitions(ctx context.Context) {
 	specs := ensureSpecs()
-	for offset := 0; offset <= 1; offset++ {
-		for _, s := range specs {
+	for _, s := range specs {
+		if !pm.ensureSpecEligible(ctx, s) {
+			continue
+		}
+		for offset := 0; offset <= 1; offset++ {
 			unit := s.partitionUnit
 			if unit == "" {
 				unit = "month"
@@ -399,10 +430,49 @@ func (pm *PartitionManager) ensureNextMonthPartitions(ctx context.Context) {
 	}
 }
 
+// ensureSpecEligible 报告本 tick 是否应对该 spec 调 ensure。声明了
+// parentTable 的 spec 先探父表形状（与 db.go boot ensure 的 0) 探测同序同
+// 口径）：非分区父表 = 迁移未应用/已回滚/restore 丢失分区性，属合法世界
+// 态，Info 跳过而不是每 24h 报 42P17。to_regclass 而非 ::regclass：表本身
+// 可能不存在（部分供给的库），裸 cast 会 raise。探测失败按保守方向跳过
+// （本轮不促升，下轮重试）。
+//
+// ⚠️ 2026-10-14（12h 审计轮 D-F3）：本探测必须自带超时，不能直接用裸 ctx。
+// 它是本文件**唯一**一处没有派生的 WithTimeout 的 DB 调用，而它位于
+// ensureNextMonthPartitions 头部、且在启动期先于 close(pm.ready) 执行
+// ⇒ 探测挂起会同时卡住 run()（分区 ensure/归档/residue 全停）与 runPromote()
+// （等 <-pm.ready，促升与 ANALYZE 全停）。Stop() 的 cancel() 能解开，所以不是
+// 永久死锁，但会让分区维护**静默失效**且无任何日志。与同函数下游的 30s 口径
+// （见调用方 ensure 的 WithTimeout）对齐。
+func (pm *PartitionManager) ensureSpecEligible(ctx context.Context, s archiveSpec) bool {
+	if s.parentTable == "" {
+		return true
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	var partitioned bool
+	if err := pm.db.QueryRow(probeCtx, `
+		SELECT EXISTS (
+		           SELECT 1 FROM pg_class c
+		            WHERE c.oid = to_regclass('public.' || $1)
+		              AND c.relkind = 'p')`,
+		s.parentTable).Scan(&partitioned); err != nil {
+		slog.Error("partition_manager: probe parent shape failed",
+			"fn", s.fnName, "parent", s.parentTable, "error", err)
+		return false
+	}
+	if !partitioned {
+		slog.Info("partition_manager: parent is not a partitioned table — migration not applied (or rolled back); skipping partition ensure",
+			"fn", s.fnName, "parent", s.parentTable)
+		return false
+	}
+	return true
+}
+
 // checkDefaultPartitionResidue surfaces rows stranded in a `*_default`
 // partition (D8-d, audit §9.152 / §9.153).
 //
-// Why this exists. Both `session_turns` and `request_logs` carry a DEFAULT
+// Why this exists. Both `session_turns` and `_request_logs` carry a DEFAULT
 // partition, so a write whose month has no dedicated partition does NOT fail
 // with 23514 — PostgreSQL silently routes the row into `*_default`
 // (measured: `INSERT 0 1`, row lands in t_default). Nothing ever moves it
@@ -476,11 +546,11 @@ func (pm *PartitionManager) checkDefaultPartitionResidue(ctx context.Context) {
 //
 // Kept separate from the counting loop so the selector itself can be tested
 // against a real catalog (bg/default_residue_realdb_test.go).
-func defaultResidueTargets(ctx context.Context, db *pgxpool.Pool) ([]string, error) {
+func defaultResidueTargets(ctx context.Context, db partitionDB) ([]string, error) {
 	return defaultResidueTargetsInSchema(ctx, db, "public")
 }
 
-func defaultResidueTargetsInSchema(ctx context.Context, db *pgxpool.Pool, schema string) ([]string, error) {
+func defaultResidueTargetsInSchema(ctx context.Context, db partitionDB, schema string) ([]string, error) {
 	rows, err := db.Query(ctx, `
 		SELECT d.relname
 		FROM pg_class d
@@ -571,7 +641,7 @@ func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 	// retention via lifecycle.credential_probe_model_log_ttl_days.
 	pm.cleanupOldCredentialProbeModelLog(ctx)
 
-	// 5. 2026-07-14: request_logs_bodies partition cleanup (every tick).
+	// 5. 2026-07-14: _request_logs_bodies partition cleanup (every tick).
 	// Request/response bodies are only needed for debugging; older than
 	// lifecycle.request_logs_bodies_ttl_days (default 7d) get DROP'd.
 	pm.dropOldRequestLogsBodiesPartitions(ctx)
@@ -640,7 +710,7 @@ func clampRequestLogsArchiveDays(raw int) int {
 }
 
 // requestLogsArchiveHourOfDay is the single hour (local) in which the
-// request_logs archive sweep is allowed to run. See archiveOldRequestLogs for
+// _request_logs archive sweep is allowed to run. See archiveOldRequestLogs for
 // why the sweep cannot simply run on every cleanup tick.
 const requestLogsArchiveHourOfDay = 3
 
@@ -651,7 +721,7 @@ func shouldRunRequestLogsArchive(now time.Time) bool {
 	return now.Hour() == requestLogsArchiveHourOfDay
 }
 
-// archiveOldRequestLogs archives request_logs monthly partitions older than the
+// archiveOldRequestLogs archives _request_logs monthly partitions older than the
 // configured retention into request_logs_archive_YYYY_MM.
 //
 // 2026-09-27 (R67 session-storage 审计子任务 7, handoff §9). 2026-09-28
@@ -666,7 +736,7 @@ func shouldRunRequestLogsArchive(now time.Time) bool {
 //
 // ## Why this is daily and not on every tick
 //
-// The SQL has no "already archived" marker. It enumerates every request_logs
+// The SQL has no "already archived" marker. It enumerates every _request_logs
 // month whose month_end is past the cutoff and, for each, pages the WHOLE
 // source partition through INSERT ... ON CONFLICT DO NOTHING. Rows archived on
 // a previous run simply conflict — but they are still read, joined, and
@@ -674,7 +744,7 @@ func shouldRunRequestLogsArchive(now time.Time) bool {
 // window), and it never shrinks.
 //
 // Running it on every hourly cleanup tick (providerErrorCleanupInterval = 1h)
-// would mean a growing full re-scan of historical request_logs, forever, for
+// would mean a growing full re-scan of historical _request_logs, forever, for
 // work that is already done. The hour==3 gate keeps it to once a day (~24x
 // less) without touching the migration.
 //
@@ -715,6 +785,11 @@ func shouldRunRequestLogsArchive(now time.Time) bool {
 // 驱动层语句，函数内的批游标不稀释 statement_timeout；252 角色级 30s 会
 // 击杀大积压首跑并整批回滚（活锁，同 R72 F2 对 753 的诊断）。
 func (pm *PartitionManager) archiveOldRequestLogs(ctx context.Context) {
+	if v1LifecycleRetired() {
+		// v1 族已停写且物理改名（迁移 860 待删除标志）：归档摘要没有任何
+		// 消费方，跑了只会往待删族里写新行。回写开启时本门自动恢复。
+		return
+	}
 	if pm.db == nil {
 		return
 	}
@@ -736,14 +811,14 @@ func (pm *PartitionManager) archiveOldRequestLogs(ctx context.Context) {
 	// 同型，252 SQL 日志审计轮先例）。
 	tx, err := pm.db.Begin(timeoutCtx)
 	if err != nil {
-		slog.Error("partition_manager: request_logs archive begin failed",
+		slog.Error("partition_manager: _request_logs archive begin failed",
 			"ttl_days", retentionDays, "error", err)
 		return
 	}
 	if _, err := tx.Exec(timeoutCtx,
 		"SET LOCAL statement_timeout = '30min'"); err != nil {
 		tx.Rollback(timeoutCtx)
-		slog.Error("partition_manager: request_logs archive timeout setup failed",
+		slog.Error("partition_manager: _request_logs archive timeout setup failed",
 			"ttl_days", retentionDays, "error", err)
 		return
 	}
@@ -752,7 +827,7 @@ func (pm *PartitionManager) archiveOldRequestLogs(ctx context.Context) {
 		retentionDays)
 	if err != nil {
 		tx.Rollback(timeoutCtx)
-		slog.Error("partition_manager: request_logs archive failed",
+		slog.Error("partition_manager: _request_logs archive failed",
 			"ttl_days", retentionDays, "error", err)
 		return
 	}
@@ -766,7 +841,7 @@ func (pm *PartitionManager) archiveOldRequestLogs(ctx context.Context) {
 		if err := rows.Scan(&name, &archived); err != nil {
 			// pgx 里 rows 未关闭前连接不能复用：先记住失败、跳出循环、
 			// Close 之后再统一 Rollback，绝不在 rows 存活时触碰 tx。
-			slog.Error("partition_manager: request_logs archive scan failed", "error", err)
+			slog.Error("partition_manager: _request_logs archive scan failed", "error", err)
 			scanFailed = true
 			break
 		}
@@ -778,18 +853,18 @@ func (pm *PartitionManager) archiveOldRequestLogs(ctx context.Context) {
 	if scanFailed || rowsErr != nil {
 		tx.Rollback(timeoutCtx)
 		if rowsErr != nil {
-			slog.Error("partition_manager: request_logs archive rows failed",
+			slog.Error("partition_manager: _request_logs archive rows failed",
 				"rows_error", rowsErr)
 		}
 		return
 	}
 	if err := tx.Commit(timeoutCtx); err != nil {
-		slog.Error("partition_manager: request_logs archive commit failed", "error", err)
+		slog.Error("partition_manager: _request_logs archive commit failed", "error", err)
 		return
 	}
 
 	if partitions > 0 {
-		slog.Info("partition_manager: request_logs archived",
+		slog.Info("partition_manager: _request_logs archived",
 			"ttl_days", retentionDays, "partitions", partitions, "rows", totalRows)
 	}
 }
@@ -1215,7 +1290,7 @@ func (pm *PartitionManager) cleanupOldRuntimeAlertEvents(ctx context.Context) {
 }
 
 // dropOldRequestLogsBodiesPartitions drops monthly partitions of
-// request_logs_bodies older than the configured TTL. Retention is
+// _request_logs_bodies older than the configured TTL. Retention is
 // read fresh from settings.Global on every call
 // (lifecycle.request_logs_bodies_ttl_days, default 7), so changes
 // take effect on the next partition_manager tick.
@@ -1234,13 +1309,13 @@ func (pm *PartitionManager) dropOldRequestLogsBodiesPartitions(ctx context.Conte
 		retentionDays,
 	).Scan(&dropped)
 	if err != nil {
-		slog.Error("partition_manager: request_logs_bodies cleanup failed",
+		slog.Error("partition_manager: _request_logs_bodies cleanup failed",
 			"ttl_days", retentionDays, "error", err)
 		return
 	}
 
 	if dropped > 0 {
-		slog.Info("partition_manager: request_logs_bodies cleanup dropped partitions",
+		slog.Info("partition_manager: _request_logs_bodies cleanup dropped partitions",
 			"ttl_days", retentionDays, "count", dropped)
 	}
 }
@@ -1351,15 +1426,29 @@ func (pm *PartitionManager) runArchive(ctx context.Context, s archiveSpec, twoMo
 // invoke on every tick. Add a row here when a new table is onboarded.
 //
 // Migration 328a (2026-07-02) split the body columns out of
-// request_logs into request_logs_bodies. The bodies partition is
+// _request_logs into request_logs_bodies. The bodies partition is
 // paired with the metadata partition by (target_ts → month), so we
-// ensure both at the same time. Without this entry, request_logs
-// would have a partition that request_logs_bodies lacks, and the
+// ensure both at the same time. Without this entry, _request_logs
+// would have a partition that _request_logs_bodies lacks, and the
 // admin/body JOIN would silently return no rows for that month.
+// v1LifecycleRetired reports whether the request_logs family's lifecycle jobs
+// (ensure/promote/archive) should stand down. S4 stop-write flipped
+// storage.request_logs_write_enabled=false (2026-10-13 production, local
+// 07:01:04); migration 860 then renamed the family to `_request_logs*` as the
+// pending-delete marker. The rewritten SQL functions would keep "maintaining"
+// a frozen family (creating future partitions, promoting an always-empty hot
+// table, archiving summaries nobody reads) — wasteful and confusing. The
+// retention DELETE (drop_old_request_logs_bodies_partitions) stays ON: it is
+// the one job that actually shrinks the family ahead of the final DROP.
+// Re-enabling writes flips this back automatically (hot-reloadable setting).
+func v1LifecycleRetired() bool {
+	return !settings.RequestLogsWriteEnabled()
+}
+
 func ensureSpecs() []archiveSpec {
-	return []archiveSpec{
-		{fnName: "ensure_request_logs_partition", label: "request_logs"},
-		{fnName: "ensure_request_logs_bodies_partition", label: "request_logs_bodies"},
+	specs := []archiveSpec{
+		{fnName: "ensure_request_logs_partition", label: "_request_logs"},
+		{fnName: "ensure_request_logs_bodies_partition", label: "_request_logs_bodies"},
 		{fnName: "ensure_request_wal_partition", label: "request_wal"},
 		{fnName: "ensure_routing_decision_log_partition", label: "routing_decision_log"},
 		{fnName: "ensure_credential_model_index_partition", label: "credential_model_index"},
@@ -1434,8 +1523,28 @@ func ensureSpecs() []archiveSpec {
 		// 执行前会一直不存在。ensureNextMonthPartitions 的错误处理是
 		// slog.Error + continue（每 24h 记一条，不打断进程），与 db.go 的
 		// boot ensure 容忍缺失一致 ⇒ 两个步骤的先后顺序无关。
-		{fnName: "ensure_ursm_node_snapshot_min_daily_partition", label: "ursm_node_snapshot_min (daily)", argExpr: "$1::date", partitionUnit: "day"}, // Migration 830
+		{fnName: "ensure_ursm_node_snapshot_min_daily_partition", label: "ursm_node_snapshot_min (daily)", argExpr: "$1::date", partitionUnit: "day", parentTable: "ursm_node_snapshot_min"}, // Migration 830
 	}
+	return filterRetiredV1Lifecycle(specs)
+}
+
+// filterRetiredV1Lifecycle drops the request_logs family's lifecycle entries
+// when the family is retired (stop-write + migration 860 rename). See
+// v1LifecycleRetired for the full rationale.
+func filterRetiredV1Lifecycle(specs []archiveSpec) []archiveSpec {
+	if !v1LifecycleRetired() {
+		return specs
+	}
+	out := make([]archiveSpec, 0, len(specs))
+	for _, s := range specs {
+		switch s.fnName {
+		case "ensure_request_logs_partition", "ensure_request_logs_bodies_partition",
+			"promote_request_logs_hot_to_partition", "promote_request_logs_bodies_hot_to_partition":
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 // archiveSpecs returns the archive_<table>() functions we invoke on
@@ -1474,13 +1583,13 @@ func archiveSpecs() []archiveSpec {
 // p_batch_size int) RETURNS bigint; the caller loops until the function
 // returns 0 (no more eligible cold rows for this table).
 func promoteSpecs() []archiveSpec {
-	return []archiveSpec{
-		{fnName: "promote_request_logs_hot_to_partition", label: "request_logs_hot"},
+	specs := []archiveSpec{
+		{fnName: "promote_request_logs_hot_to_partition", label: "_request_logs_hot"},
 		{fnName: "promote_usage_ledger_hot_to_partition", label: "usage_ledger_hot"},
 		{fnName: "promote_request_wal_hot_to_partition", label: "request_wal_hot"},
 		{fnName: "promote_routing_decision_log_hot_to_partition", label: "routing_decision_log_hot"},
 		{fnName: "promote_credential_model_index_hot_to_partition", label: "credential_model_index_hot"},
-		{fnName: "promote_request_logs_bodies_hot_to_partition", label: "request_logs_bodies"},
+		{fnName: "promote_request_logs_bodies_hot_to_partition", label: "_request_logs_bodies"},
 		{fnName: "promote_credit_ledger_hot_to_partition", label: "credit_ledger"},
 		{fnName: "promote_tool_usage_stats_hot_to_partition", label: "tool_usage_stats"},
 		// model_probe_runs_hot 已切换为纯 hot 表策略（2026-07-14），
@@ -1505,6 +1614,7 @@ func promoteSpecs() []archiveSpec {
 		{fnName: "promote_session_censors_hot_to_partition", label: "session_censors_hot"}, // Migration 706
 		{fnName: "promote_session_tools_hot_to_partition", label: "session_tools_hot"},     // Migration 706
 	}
+	return filterRetiredV1Lifecycle(specs)
 }
 
 // promoteDefaultToPartitions iterates promoteSpecs() and, for each,
@@ -1753,7 +1863,7 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 // hotTableBacklogRows counts remaining rows in a spec's hot table. The
 // physical hot table is <label> (already suffixed) or <label>_hot for the
 // three labels that name the partition family instead (credit_ledger,
-// request_logs_bodies, tool_usage_stats). Query errors return -1 (gauge
+// _request_logs_bodies, tool_usage_stats). Query errors return -1 (gauge
 // keeps last value; caller Warns) — never blocks the promote cycle.
 func (pm *PartitionManager) hotTableBacklogRows(ctx context.Context, label string) int64 {
 	table := label
@@ -1990,8 +2100,8 @@ func isUndefinedFunction(err error) bool {
 // (DefaultPromoteInterval = 1h).
 //
 // Per-table retention settings (all hot-reloadable):
-//   - lifecycle.hot_retention_hours            — request_logs_hot, usage_ledger_hot, ... (default 8h)
-//   - lifecycle.request_logs_bodies_retention_hours — request_logs_bodies (1d default)
+//   - lifecycle.hot_retention_hours            — _request_logs_hot, usage_ledger_hot, ... (default 8h)
+//   - lifecycle.request_logs_bodies_retention_hours — _request_logs_bodies (1d default)
 //   - lifecycle.handoff_logs_hot_retention_hours — handoff_logs_hot (8h default)
 //   - lifecycle.session_module_executions_hot_retention_hours — Migration 580 (8h default)
 //   - lifecycle.dashboard_access_events_hot_retention_hours — Migration 579 (8h default)
@@ -2031,8 +2141,8 @@ func resolvePromoteConfig(label string) (time.Duration, int) {
 			batchSize = 50_000
 		}
 		return retention, batchSize
-	case "request_logs_bodies":
-		// 2026-07-13: request_logs_bodies stores full request/response
+	case "_request_logs_bodies":
+		// 2026-07-13: _request_logs_bodies stores full request/response
 		// payloads (TOAST). It grew to 3.4 GB / 24k rows in one month
 		// because the default retention was 7d. Bodies are only needed
 		// for forensic / export use cases — operators rarely look at

@@ -62,15 +62,15 @@ type Signals struct {
 	GwSessionID string
 	TenantID    string
 
-	// WorkType 是 X-Gw-Work-Type（ACC 工种键），已落 request_logs.work_type。
+	// WorkType 是 X-Gw-Work-Type（ACC 工种键），已落 _request_logs.work_type。
 	WorkType string
 	// SystemPrompt 常含仓库路径 / 目录名，是最强的确定性信号。调用方可从
 	// request_body 提取后填入；PGStore 默认不填（避免为归集反序列化整个
 	// body），留给需要更高命中率的部署自行注入。
 	SystemPrompt string
-	// UserText 来自 request_logs.request_preview，是首轮请求的轻量预览。
+	// UserText 来自 _request_logs.request_preview，是首轮请求的轻量预览。
 	UserText string
-	// IdentityHash 是 request_logs.identity_hash（客户端指纹），供 inherit
+	// IdentityHash 是 _request_logs.identity_hash（客户端指纹），供 inherit
 	// 层关联同一客户端的历史归属。
 	IdentityHash string
 	APIKeyID     int64

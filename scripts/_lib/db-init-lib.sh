@@ -276,7 +276,7 @@ body_lines = [
     '',
 ] + body_lines
 
-# Move recent_success_rate (LANGUAGE sql, refs request_logs) to deferred block.
+# Move recent_success_rate (LANGUAGE sql, refs _request_logs) to deferred block.
 rsr_start = rsr_end = None
 for i, ln in enumerate(body_lines):
     if 'CREATE FUNCTION public.recent_success_rate(' in ln:
@@ -294,7 +294,7 @@ if rsr_start is not None and rsr_end is not None:
         '-- -----------------------------------------------------------------------------',
         '-- The function `recent_success_rate` was originally here in the pg_dump output,',
         '-- but pg_dump orders by creation OID, not by dependency. This function references',
-        '-- `request_logs` directly (LANGUAGE sql) which doesn\'t exist yet at this point.',
+        '-- `_request_logs` directly (LANGUAGE sql) which doesn\'t exist yet at this point.',
         '-- It has been moved to the end of this file, after all tables are created.',
         '-- -----------------------------------------------------------------------------',
     ]
@@ -405,7 +405,7 @@ header = f"""-- ================================================================
 --
 -- Post-processing: dump-schema.sh does two re-orderings because pg_dump
 -- orders by OID (creation order), not by dependency:
---   1. recent_success_rate (LANGUAGE sql, refs request_logs) — moved to a
+--   1. recent_success_rate (LANGUAGE sql, refs _request_logs) — moved to a
 --      "DEFERRED FUNCTIONS" block placed BEFORE the first CREATE TRIGGER.
 --   2. trigger functions (e.g. cmb_protect_manual_disable, routing_overrides_audit_fn)
 --      — also need to live in the DEFERRED block because PostgreSQL validates

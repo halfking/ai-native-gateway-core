@@ -4,7 +4,7 @@ package db
 //
 // The fill-rate measurement in db/session_family_column_availability_test.go
 // establishes, per canonical column, whether the session family can still serve
-// it once `request_logs` is dropped. This file is the **single source of truth**
+// it once `_request_logs` is dropped. This file is the **single source of truth**
 // for the two dispositions that measurement produces, so that the read-side
 // exposure analysis (admin/request_logs_retirement_exposure_test.go) does not
 // carry its own copy of the list.
@@ -154,7 +154,7 @@ var retirementSessionLegDivergent = func() map[string]bool {
 // carries nothing), then degraded, then baseline.
 //
 // not-in-contract is checked first and exists because of a measurement
-// (audit §9.166): `request_logs` carries **157** columns, the canonical view
+// (audit §9.166): `_request_logs` carries **157** columns, the canonical view
 // projects **118**. So a reader can name a column that is perfectly real on the
 // table being retired and completely absent from the view that is supposed to
 // replace it. Before this arm, such a column fell through every branch to
@@ -207,7 +207,7 @@ func RetirementExposureClassify(col string) string {
 // its rows looks exactly like a query that is working.
 type ColumnFill struct {
 	SessionPct float64 // non-null share on session_turns_hot ∪ session_turns
-	V1Pct      float64 // non-null share on request_logs
+	V1Pct      float64 // non-null share on _request_logs
 }
 
 // Measured 2026-10-04 on the local real database by
@@ -299,7 +299,7 @@ const (
 	// **"safe" on zero evidence**.
 	//
 	// It reached that state through a silent extractor bug (§9.167: the alias
-	// regex preferred `request_logs` over `request_logs_hot`, dropping the
+	// regex preferred `_request_logs` over `_request_logs_hot`, dropping the
 	// `rl` alias, so every hot-table reader extracted zero columns and three
 	// files were published as `repoint-safe` in §9.165 and §9.166). The regex is
 	// fixed; this verdict is the part that stops the same class of failure from

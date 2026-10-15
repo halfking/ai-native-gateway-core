@@ -3,7 +3,7 @@
 // 需求: 针对常用模型强化自检 (更高频/更深/更高优先级/更快恢复), 其它模型降低频度.
 //
 // 常用模型 = 静态精选 routing_policy.featured_models ∪ 用量 Top-N
-// (request_logs_hot 近窗口成功调用最多的 N 个模型). 与 daily-selfcheck 的
+// (_request_logs_hot 近窗口成功调用最多的 N 个模型). 与 daily-selfcheck 的
 // featured→most_used 分级一致. 用量集合 + 静态集合由后台 ticker 每 10min 刷新一次,
 // 通过 atomic.Value 提供无锁读. nil-db / 未启动时 IsFeaturedModel 回退到 false
 // (不影响故障路径 — node-probe 仍按错误触发, 只是Priority/backoff 不分级).
@@ -154,7 +154,7 @@ func (m *ModelTier) refresh(ctx context.Context) {
 		return
 	}
 
-	// Usage Top-N. Audit fix: request_logs_hot has no `model` column; the real
+	// Usage Top-N. Audit fix: _request_logs_hot has no `model` column; the real
 	// model-name is COALESCE(outbound_model, client_model). GROUP BY raw_model
 	// dedupes across alias variants (audit issue #11).
 	if topN := settings.GetPlatformInt("probe.featured_usage_top_n", 20); topN > 0 {
@@ -170,7 +170,7 @@ func (m *ModelTier) refresh(ctx context.Context) {
 			SELECT raw_model FROM (
 				SELECT COALESCE(rl.outbound_model, rl.client_model) AS raw_model,
 				       count(*) AS calls
-				FROM request_logs_hot rl
+				FROM _request_logs_hot rl
 				WHERE rl.success
 				  AND rl.ts > now() - make_interval(hours => $1)
 				  AND `+fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")+`

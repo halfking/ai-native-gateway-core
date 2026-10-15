@@ -60,7 +60,7 @@ func TestEntryToProcessedRequest_CarriesEveryRequestStatus(t *testing.T) {
 // A nil RequestStatus must not panic and must not invent a value: the column
 // stays NULL, which is what makes "written after migration 823" the only
 // reliable population rule (historical rows cannot be backfilled — the signal
-// lived only in request_logs).
+// lived only in _request_logs).
 func TestEntryToProcessedRequest_NilRequestStatusStaysEmpty(t *testing.T) {
 	got := entryToProcessedRequest(&telemetry.RequestLogEntry{
 

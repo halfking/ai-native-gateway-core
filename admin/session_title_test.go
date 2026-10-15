@@ -52,10 +52,10 @@ func TestNormalizeSessionTitle_StripsThinkingTags(t *testing.T) {
 
 func TestRequestLogStatusExprRequiresRLAlias(t *testing.T) {
 	if !strings.Contains(requestLogStatusExpr, "rl.") {
-		t.Fatal("requestLogStatusExpr must reference request_logs alias rl")
+		t.Fatal("requestLogStatusExpr must reference _request_logs alias rl")
 	}
-	// loadTaskLogsForTitle / loadSessionLogsForSummary must use FROM request_logs rl.
-	const fromClause = "FROM request_logs rl"
+	// loadTaskLogsForTitle / loadSessionLogsForSummary must use FROM _request_logs rl.
+	const fromClause = "FROM _request_logs rl"
 	q := `
 		SELECT rl.ts, ` + requestLogStatusExpr + ` AS request_status
 		` + fromClause + `

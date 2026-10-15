@@ -46,7 +46,7 @@ func TestEventFromTelemetryIsBodyFreeAndIdempotent(t *testing.T) {
 	// `prompt_tokens_details` 里，而成本公式 calcCostWithConvention 也是这么
 	// 算的（先按原价减再按缓存价入账）。
 	//
-	// 证据：真库 `request_logs.total_tokens` 近 30 天 1,492,562 行**全部**严格
+	// 证据：真库 `_request_logs.total_tokens` 近 30 天 1,492,562 行**全部**严格
 	// 等于 prompt+completion，而那 87,888 行有 cache 读的请求里 cache 平均占总
 	// token 的 42.5% —— 它确实没被另加。usage_facts 必须与它同口径，因为它
 	// 经 daily_monthly_rollup.go:197/:207 直接 SUM 进看板。

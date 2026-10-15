@@ -152,7 +152,7 @@ func TestHeatmapExcludeSelfTestKeepsSessionBranchRows(t *testing.T) {
 // TestPhysicalOnlyColumnsListMatchesRealDatabase reverse-validates the hardcoded
 // list in view_source_column_contract_test.go against the real schema, so the list
 // cannot silently rot: if the view ever gains one of these columns, or a column is
-// dropped from request_logs, this fails and forces the list to be updated.
+// dropped from _request_logs, this fails and forces the list to be updated.
 func TestPhysicalOnlyColumnsListMatchesRealDatabase(t *testing.T) {
 	dsn := os.Getenv("TEST_PG_URL")
 	if dsn == "" {
@@ -171,7 +171,7 @@ func TestPhysicalOnlyColumnsListMatchesRealDatabase(t *testing.T) {
 		FROM pg_attribute a
 		JOIN pg_class c ON c.oid = a.attrelid
 		JOIN pg_namespace n ON n.oid = c.relnamespace
-		WHERE n.nspname='public' AND c.relname='request_logs'
+		WHERE n.nspname='public' AND c.relname='_request_logs'
 		  AND a.attnum > 0 AND NOT a.attisdropped
 		  AND NOT EXISTS (
 		    SELECT 1 FROM pg_attribute v
@@ -201,7 +201,7 @@ func TestPhysicalOnlyColumnsListMatchesRealDatabase(t *testing.T) {
 	}
 	for _, col := range physicalOnlyRequestLogColumns {
 		if !real[col] {
-			t.Errorf("physicalOnlyRequestLogColumns lists %q but it is NOT (request_logs minus view) "+
+			t.Errorf("physicalOnlyRequestLogColumns lists %q but it is NOT (_request_logs minus view) "+
 				"on the real schema — the view may have gained it, or the column was dropped. "+
 				"Re-derive the list before trusting the static guard.", col)
 		}

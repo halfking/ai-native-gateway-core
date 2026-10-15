@@ -19,7 +19,7 @@
 //   - 复用 pg_column_size 拿到真实占用（已 TOAST 压缩后的字节数）
 //
 // 2026-10-13 S4 波 4 补记：治理对象会话族化（退役门登记的
-// 「DROP 前必须落地」项）。v1 时代治理 request_logs_bodies 族
+// 「DROP 前必须落地」项）。v1 时代治理 _request_logs_bodies 族
 //（request_body/outbound_body）；停写后新正文只落 session_bodies 族，
 // 大对象真身是 **outbound_body + request_attachments/response_attachments**
 //（request_delta/response_delta 按设计是小增量，清理时刻意保留——

@@ -981,12 +981,12 @@ type contextLengthRecoveryState struct {
 	memoraAttempted     bool
 	llmAttempted        bool
 	// Round 47 compression v7 T-NEW-1: track the strategy that actually
-	// produced the rebuild so we can report it on the request_logs row.
+	// produced the rebuild so we can report it on the _request_logs row.
 	// Only the last successful tier wins (lower tiers short-circuit on
 	// success), matching the v7 §3.4 "mechanical → memora → llm" cascade.
 	lastStrategy string
 	lastReason   string
-	lastMeta     []byte // JSON-serialised compression_meta for request_logs
+	lastMeta     []byte // JSON-serialised compression_meta for _request_logs
 }
 
 type ctxLenRecoveryAction int
@@ -1091,7 +1091,7 @@ func (e *Executor) handleContextLengthRecovery(
 
 	// Round 47 compression v7 T-NEW-1: capture bytes_before for compression_meta.
 	// Set on the state struct so the successful tier can attach it to the
-	// request_logs row.
+	// _request_logs row.
 	st.lastMeta = nil
 	st.lastReason = "mode_2_on_4xx"
 	st.lastStrategy = "noop"
@@ -1339,7 +1339,7 @@ func buildCompressionMeta(contextWindow *int, bytesBefore, bytesAfter int) []byt
 // buildPreRequestTrimMeta (Round 47 v7 T-NEW-4) records bytes_before/after
 // for the pre-request transform trim (transform.CompressMessagesIfNeeded
 // inside finalizeOpenAIUpstreamBody) so emitTelemetry writes
-// compression_meta into request_logs even when no 4xx happened.
+// compression_meta into _request_logs even when no 4xx happened.
 //
 // Returns nil when no trim actually occurred (bytesAfter >= bytesBefore)
 // — emitTelemetry already short-circuits when CompressionMeta is empty.

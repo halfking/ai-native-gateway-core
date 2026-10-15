@@ -30,7 +30,7 @@ func parseSessionScope(r *http.Request) sessionScope {
 	return sc
 }
 
-// sessionLogsWhere builds WHERE clause + args for request_logs scoped like
+// sessionLogsWhere builds WHERE clause + args for _request_logs scoped like
 // memora-sessions topic_sessions (task_id + optional session_id + hours).
 // tenant_admin callers get an additional tenant_id filter.
 // Returns clause starting with "WHERE" and args beginning with taskID.

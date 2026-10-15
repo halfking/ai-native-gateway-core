@@ -3,7 +3,7 @@
 // SimpleProtocol 池对真库执行（bg/sql_audit_realdb_test.go 模板）。
 //
 // 2026-10-11 252 审计第 32 轮起回退查询分两路（slidingWindowHotMaxMinutes）：
-//   - hot 快路径（≤120min）：session_turns_hot ∪ request_logs_hot（去重
+//   - hot 快路径（≤120min）：session_turns_hot ∪ _request_logs_hot（去重
 //     反连接），断言计划走 hot 表达式索引且不触碰 canonical 视图——
 //     视图三臂全分区反连接阻断 LIMIT 下推，252 实测 med 1.27s/次，是
 //     抽屉 batch 轮询的事故放大器；
@@ -97,7 +97,7 @@ func hotWindowTablesPresent(t *testing.T, pool *pgxpool.Pool) bool {
 	if err := pool.QueryRow(context.Background(),
 		`SELECT to_regclass('public.session_turns_hot') IS NOT NULL
 		     AND to_regclass('public.session_turn_details_hot') IS NOT NULL
-		     AND to_regclass('public.request_logs_hot') IS NOT NULL`,
+		     AND to_regclass('public._request_logs_hot') IS NOT NULL`,
 	).Scan(&ok); err != nil {
 		t.Fatalf("probe hot tables: %v", err)
 	}
@@ -125,8 +125,8 @@ func TestCredentialDrawerHotWindow_RealDB(t *testing.T) {
 	if strings.Contains(plan, "request_logs_with_current_month") {
 		t.Fatalf("hot 快路径计划触碰 canonical 视图（应只读 hot 双写表）:\n%s", plan)
 	}
-	if !strings.Contains(plan, "session_turns_hot") || !strings.Contains(plan, "request_logs_hot") {
-		t.Fatalf("hot 快路径计划未同时覆盖 session_turns_hot 与 request_logs_hot 两臂:\n%s", plan)
+	if !strings.Contains(plan, "session_turns_hot") || !strings.Contains(plan, "_request_logs_hot") {
+		t.Fatalf("hot 快路径计划未同时覆盖 session_turns_hot 与 _request_logs_hot 两臂:\n%s", plan)
 	}
 	// 索引条件下推断言：hot 索引在库时，credential+窗过滤必须进索引条件
 	// 而非 Filter（回归点：表达式索引缺席或查询改动使过滤退化）。

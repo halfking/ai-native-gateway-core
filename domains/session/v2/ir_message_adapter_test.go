@@ -162,7 +162,7 @@ func TestMessage_RoundTripIR(t *testing.T) {
 }
 
 // TestIRMessagesFromJSON_ObjectForm — parses the canonical
-// {"messages":[{...}]} shape produced by request_logs RequestBody.
+// {"messages":[{...}]} shape produced by _request_logs RequestBody.
 func TestIRMessagesFromJSON_ObjectForm(t *testing.T) {
 	raw := json.RawMessage(`{"model":"gpt-4o","messages":[
 		{"role":"system","content":"be brief"},

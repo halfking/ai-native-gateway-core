@@ -77,7 +77,7 @@ const (
 )
 
 // applyRequestClassToLogCtx stamps the parsed X-Gw-Due-At onto the log
-// context so the initial request_logs row AND the completion UPDATE both
+// context so the initial _request_logs row AND the completion UPDATE both
 // persist the class (migration 608). Called next to parseDispatchDueAt in
 // every protocol handler.
 func applyRequestClassToLogCtx(logCtx *RequestLogContext, dueAt time.Time) {

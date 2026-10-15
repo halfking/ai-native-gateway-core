@@ -29,7 +29,7 @@ func rawText(s string) json.RawMessage {
 }
 
 // TestCollapseToLastRequestMessage_SelectsLast is the V1-parity contract: V1's
-// request_logs query returns messages[-1] of the turn body. The V2 source must
+// _request_logs query returns messages[-1] of the turn body. The V2 source must
 // do the same with request_delta so both sources feed the summarizer the same
 // representative prompt per turn.
 func TestCollapseToLastRequestMessage_SelectsLast(t *testing.T) {

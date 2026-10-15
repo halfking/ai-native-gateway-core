@@ -101,7 +101,7 @@ var OperatorWhitelist = map[string]string{
 		"('z-ai/glm-5.2:free', 'minimax/minimax-m3:free', …) are canonical rows of their own — " +
 		"so re-pointing it at any one tied target (0.99 ×5) would be wrong. " +
 		"Operator decision 2026-09-12: keep the row; zero requests ever routed here " +
-		"(request_logs: 0 rows for canonical_id=2664333 and 0 for provider_id=21, all time).",
+		"(_request_logs: 0 rows for canonical_id=2664333 and 0 for provider_id=21, all time).",
 }
 
 // CandidateSources lists the models_canonical.source values written by the

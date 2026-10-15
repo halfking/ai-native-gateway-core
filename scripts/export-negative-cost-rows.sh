@@ -16,11 +16,11 @@
 #   The damage record is FRAGMENTED across four tables with FOUR DIFFERENT
 #   RETENTION WINDOWS, and the oldest damage survives only in the rollups where
 #   it can no longer be traced back to a source row. An operator who "repairs
-#   from request_logs" and stops will leave real money unaccounted for:
+#   from _request_logs" and stops will leave real money unaccounted for:
 #     - usage_ledger holds negative-cost history for credentials that
-#       request_logs no longer has any row for;
+#       _request_logs no longer has any row for;
 #     - stats_usage_daily holds negative-cost buckets whose source events are
-#       older than anything still in request_logs or usage_ledger;
+#       older than anything still in _request_logs or usage_ledger;
 #     - usage_facts, the reconciliation's ground truth, has no row for events
 #       the inbox already marked processed, so the cost-drift signal is blind
 #       no matter what the sections below report.
@@ -65,7 +65,7 @@ scalar() {
 }
 
 # NOTE ON MODEL COLUMNS
-#   request_logs has SIX model-ish columns: client_model, raw_model_name,
+#   _request_logs has SIX model-ish columns: client_model, raw_model_name,
 #   canonical_model, model_chosen, outbound_model, provider_model.
 #   The grouping column below is outbound_model. raw_model_name is NOT a
 #   synonym: on the real database it is empty on every negative-cost row, so
@@ -92,7 +92,7 @@ scalar "SELECT 'models_canonical rows with a baseline input price: ' || count(*)
 scalar "SELECT 'models_canonical rows total: ' || count(*) FROM public.models_canonical"
 printf '```\n'
 
-printf '\n## 2. Source rows: request_logs (the traceable tail)\n\n'
+printf '\n## 2. Source rows: _request_logs (the traceable tail)\n\n'
 printf '```text\n'
 q 'all-time vs the 30-day window the health check uses' "
 SELECT count(*)                                            AS all_time_rows,
@@ -102,7 +102,7 @@ SELECT count(*)                                            AS all_time_rows,
                                                            AS usd_in_30d_window,
        min(ts)::date                                       AS oldest,
        max(ts)::date                                       AS newest
-  FROM public.request_logs
+  FROM public._request_logs
  WHERE cost_usd < 0;"
 printf '```\n'
 printf '\n> The health check only looks 30 days back, while the historical damage\n'
@@ -120,7 +120,7 @@ SELECT r.credential_id,
        sum(COALESCE(r.cache_read_tokens, 0) - COALESCE(r.prompt_tokens, 0))      AS cache_exceeds_prompt_by,
        min(r.ts)::date                                                           AS first_day,
        max(r.ts)::date                                                           AS last_day
-  FROM public.request_logs r
+  FROM public._request_logs r
  WHERE r.cost_usd < 0
  GROUP BY r.credential_id, r.outbound_model
  ORDER BY neg_usd;"
@@ -132,13 +132,13 @@ psql -X -q -v ON_ERROR_STOP=1 --csv "$DATABASE_URL" \
              sum(COALESCE(r.prompt_tokens,0)) AS prompt_tokens,
              sum(COALESCE(r.cache_read_tokens,0)) AS cache_read_tokens,
              min(r.ts)::date AS first_day, max(r.ts)::date AS last_day
-        FROM public.request_logs r
+        FROM public._request_logs r
        WHERE r.cost_usd < 0
        GROUP BY r.credential_id, r.outbound_model ORDER BY neg_usd;" >"$cp_out"
 mv "$cp_out" "$CSV"; chmod 0600 "$CSV"
 trap - EXIT
 
-printf '\n## 4. usage_ledger: WIDER than request_logs\n\n'
+printf '\n## 4. usage_ledger: WIDER than _request_logs\n\n'
 printf '```text\n'
 q 'negative-cost ledger rows per credential' "
 SELECT credential_id,
@@ -150,8 +150,8 @@ SELECT credential_id,
  WHERE cost_usd < 0
  GROUP BY 1
  ORDER BY 1;"
-q 'credentials damaged in the ledger but with NO traceable row left in request_logs' "
-WITH rl AS (SELECT DISTINCT credential_id FROM public.request_logs  WHERE cost_usd < 0),
+q 'credentials damaged in the ledger but with NO traceable row left in _request_logs' "
+WITH rl AS (SELECT DISTINCT credential_id FROM public._request_logs  WHERE cost_usd < 0),
      lg AS (SELECT DISTINCT credential_id FROM public.usage_ledger  WHERE cost_usd < 0)
 SELECT lg.credential_id,
        (SELECT count(*)::int FROM public.usage_ledger u
@@ -209,7 +209,7 @@ printf "> not carry it over from the other one.\n"
 printf '\n## 6. Retention gap: damage older than any surviving source row\n\n'
 printf '```text\n'
 q 'oldest surviving source row vs oldest damaged rollup bucket' "
-SELECT (SELECT min(ts)::date  FROM public.request_logs WHERE cost_usd < 0) AS oldest_negative_request_log,
+SELECT (SELECT min(ts)::date  FROM public._request_logs WHERE cost_usd < 0) AS oldest_negative_request_log,
        (SELECT min(ts)::date  FROM public.usage_ledger WHERE cost_usd < 0) AS oldest_negative_ledger_row,
        (SELECT min(day_utc)   FROM public.stats_usage_daily WHERE cost_usd < 0) AS oldest_negative_daily_bucket,
        (SELECT min(month_start) FROM public.stats_usage_monthly WHERE cost_usd < 0) AS oldest_negative_month;"
@@ -218,7 +218,7 @@ SELECT dimension_type, count(*)::int AS buckets, min(day_utc) AS oldest, max(day
        round(sum(cost_usd)::numeric, 6) AS usd
   FROM public.stats_usage_daily
  WHERE cost_usd < 0
-   AND day_utc < (SELECT min(ts)::date FROM public.request_logs WHERE cost_usd < 0)
+   AND day_utc < (SELECT min(ts)::date FROM public._request_logs WHERE cost_usd < 0)
  GROUP BY 1 ORDER BY 1;"
 printf '```\n'
 printf '\n> A non-empty second table means: those buckets are wrong, their events\n'

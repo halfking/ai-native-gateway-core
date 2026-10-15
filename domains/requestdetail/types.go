@@ -12,7 +12,7 @@ const (
 	SourceMemory       Source = "memory"
 	SourceFile         Source = "file"
 	SourceLive         Source = "live_stream"
-	SourceRequestLogs  Source = "request_logs"
+	SourceRequestLogs  Source = "_request_logs"
 	SourceSessionTurns Source = "session_turns"
 )
 

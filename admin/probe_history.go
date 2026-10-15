@@ -10,7 +10,7 @@
 //
 // Spec: 2026-06-18-model-probe-rounds
 //
-// NOTE: All SELECTs on tenant-scoped tables (model_probe_runs, request_logs)
+// NOTE: All SELECTs on tenant-scoped tables (model_probe_runs, _request_logs)
 // in this file rely on the endpoints being superAdmin()-guarded. If a future
 // change makes them callable by tenant_admin, wrap the SELECTs with
 // tenantLogsClause() (admin/session_tenant.go) which injects
@@ -421,9 +421,9 @@ func (h *Handler) handleProviderProbeStates(w http.ResponseWriter, r *http.Reque
 // v5 (2026-06-20): UNION ALL three data sources:
 //   - model_probe_runs (active L1+L2+L4 probes)
 //   - passive_probe_state (Layer 5 passive observation)
-//   - request_logs (real traffic failures)
+//   - _request_logs (real traffic failures)
 //
-// request_logs 那条腿走双腿视图 request_logs_with_current_month 而非裸母表
+// _request_logs 那条腿走双腿视图 request_logs_with_current_month 而非裸母表
 // （R89-DO）：hot 默认仅保留 8h，而本 CTE 的窗口是 `ts > NOW() - INTERVAL
 // '6 hours'`，**完全落在 hot 的保留期内** ⇒ 裸母表读对最近 6h 的真实流量
 // 失败恒为 0 腿，模型发现页「近期失败」徽标在最近 8h 内系统性漏计。两条腿
@@ -501,7 +501,7 @@ func (h *Handler) handleRoutingRecentModelFailures(w http.ResponseWriter, r *htt
 			       total_failures, last_failed_at, sample_error_code
 			FROM passive_failures
 			UNION ALL
-			SELECT 'request_logs' AS source, raw_model_name, creds_affected,
+			SELECT '_request_logs' AS source, raw_model_name, creds_affected,
 			       total_failures, last_failed_at, sample_error_code
 			FROM request_log_failures
 		),
@@ -514,7 +514,7 @@ func (h *Handler) handleRoutingRecentModelFailures(w http.ResponseWriter, r *htt
 			    MIN(sample_error_code) AS sample_error_code,
 			    COALESCE(SUM(CASE WHEN source = 'active_probe' THEN total_failures ELSE 0 END), 0) AS active_probe_count,
 			    COALESCE(SUM(CASE WHEN source = 'passive_probe' THEN total_failures ELSE 0 END), 0) AS passive_probe_count,
-			    COALESCE(SUM(CASE WHEN source = 'request_logs' THEN total_failures ELSE 0 END), 0) AS request_logs_count
+			    COALESCE(SUM(CASE WHEN source = '_request_logs' THEN total_failures ELSE 0 END), 0) AS request_logs_count
 			FROM all_failures
 			GROUP BY raw_model_name
 		)
@@ -554,7 +554,7 @@ func (h *Handler) handleRoutingRecentModelFailures(w http.ResponseWriter, r *htt
 	type sourceBreakdown struct {
 		ActiveProbe  int `json:"active_probe"`
 		PassiveProbe int `json:"passive_probe"`
-		RequestLogs  int `json:"request_logs"`
+		RequestLogs  int `json:"_request_logs"`
 	}
 	type entry struct {
 		RawModel      string          `json:"raw_model_name"`

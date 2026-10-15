@@ -23,8 +23,8 @@ func TestRequestSurvivalDefaults(t *testing.T) {
 func TestRequestSurvivalNormalizeFillsDefaults(t *testing.T) {
 	cfg := &Config{}
 	cfg.NormalizeRequestSurvival()
-	if cfg.RequestSurvivalInteractiveDeadlineSeconds != 18000 {
-		t.Fatalf("interactive deadline = %d, want 18000 (5h recovery window)", cfg.RequestSurvivalInteractiveDeadlineSeconds)
+	if cfg.RequestSurvivalInteractiveDeadlineSeconds != 240 {
+		t.Fatalf("interactive deadline = %d, want 240 (P0-2 bounded wait budget)", cfg.RequestSurvivalInteractiveDeadlineSeconds)
 	}
 	if cfg.RequestSurvivalDurableDeadlineSeconds != 86400 {
 		t.Fatalf("durable deadline = %d, want 86400", cfg.RequestSurvivalDurableDeadlineSeconds)

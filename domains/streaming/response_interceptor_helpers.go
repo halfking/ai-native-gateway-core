@@ -180,7 +180,7 @@ func (h *ChatHandler) injectFollowUpRequest(ctx context.Context, sessionID strin
 // The synthesized request carries the same correlation headers the auto-title
 // loopback uses (X-Gw-Source-Actor / X-Gw-Parent-Request-Id), so the shadow
 // turn is persisted with origin_actor='goal-*' and a joinable parent_request_id
-// in request_logs and session_turns (方案：docs/03-design/02-feature-design/
+// in _request_logs and session_turns (方案：docs/03-design/02-feature-design/
 // 会话优化v4/18-Goal影子指令与续跑优化方案.md §3). It is deliberately NOT
 // marked X-Gw-Is-Auto: that header routes the entry into isInternalAutoEntry
 // and would silently drop the shadow turn from the session mirror, breaking
@@ -260,7 +260,7 @@ func buildFollowUpRequest(ctx context.Context, sessionID string, body []byte, ac
 }
 
 // followUpSourceActor maps a follow-up action to the origin_actor value
-// persisted on the shadow turn (request_logs.origin_actor and
+// persisted on the shadow turn (_request_logs.origin_actor and
 // session_turns.origin_actor, via the X-Gw-Source-Actor header). Only
 // goal-family actions get a goal-% actor: the audit family uses the same
 // HasPrefix(action, "audit") semantics as the goal hook's own skip check

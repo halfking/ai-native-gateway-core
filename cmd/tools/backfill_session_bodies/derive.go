@@ -1,11 +1,11 @@
 // Package main — backfill public.session_bodies (per-turn deltas) for a session
-// from the accumulated request_logs bodies.
+// from the accumulated _request_logs bodies.
 //
 // Rationale (full-switch to Sessions V2): session_bodies stores only THIS turn's
 // messages (request_delta + response_delta), not the full matryoshka. Historical
 // sessions that predate the V2 dual-write have no session_bodies, so the detail
 // page and the dual_read validator cannot read them from V2. This tool derives
-// per-turn deltas from request_logs (full body at each turn minus the previous
+// per-turn deltas from _request_logs (full body at each turn minus the previous
 // turn's full body) and writes them via the existing SessionBodiesWriter.
 //
 // The delta-derivation core (DeriveTurnDeltas / subtractMessages / parsing) is
@@ -31,7 +31,7 @@ type Msg struct {
 //	fullMsgs[i] — full accumulated request message list at turn i (matryoshka).
 //	respMsgs[i] — assistant reply messages for turn i (may be empty/nil).
 //
-// The request_logs full body for turn i contains all previous turns' messages
+// The _request_logs full body for turn i contains all previous turns' messages
 // (user + assistant) plus the current user message. The delta for turn i is the
 // set of user messages that appear in fullMsgs[i] but not in fullMsgs[i-1].
 // (System messages are assumed constant and not part of the delta.)

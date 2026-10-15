@@ -211,7 +211,7 @@ type CostInput struct {
 //
 // ★ 2026-10-06 真库实测（127.0.0.1:5432，只读）：
 //
-//	request_logs  cost_usd < 0                        = 1,628 行（−$4.79）
+//	_request_logs  cost_usd < 0                        = 1,628 行（−$4.79）
 //	其中 cache_read_tokens > prompt_tokens 的          = 1,628（全部）
 //	同口径行数                                        = 11,837
 //	那批行里 cache 占 token 的比例                    = 96.2%（4.53M vs 179K）

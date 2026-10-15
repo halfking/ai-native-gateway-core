@@ -3,7 +3,7 @@ package bg
 // auto_index_refresher_s3_wave3_test.go — S3 波 3（2026-10-13，停写切换
 // 读侧第二分片）形状钉桩：rollupCredentialModelIndexSQL 的双源化。
 //
-// 停写后 request_logs_hot 排空，autoroute 候选池的核心指标源若无会话腿，
+// 停写后 _request_logs_hot 排空，autoroute 候选池的核心指标源若无会话腿，
 // 每 5 分钟退化为 half-2 cold-start 基线（success=0.9/p95=1000/分数 50），
 // 路由质量静默坍缩。本判据钉三件事：
 //  1. half-1 带会话腿（session_turns_hot + 冻结点守卫 + alias 链 offers 匹配）；
@@ -42,8 +42,8 @@ func TestRollupCredentialModelIndex_ServesSessionFamily(t *testing.T) {
 		t.Fatalf("session leg must match offers through the alias chain (canonical granularity); got:\n%s", sql)
 	}
 	// v1 腿保留：写门开（生产/回滚）时它是全部流量。
-	if !strings.Contains(sql, "FROM request_logs_hot rl") {
-		t.Fatalf("half-1 must keep the v1 request_logs_hot leg for gate-open eras; got:\n%s", sql)
+	if !strings.Contains(sql, "FROM _request_logs_hot rl") {
+		t.Fatalf("half-1 must keep the v1 _request_logs_hot leg for gate-open eras; got:\n%s", sql)
 	}
 	// half-2 抑制腿：同 alias 链反向（canonical → aliases → lower(t.model)）。
 	if !strings.Contains(sql, "lower(t.model) IN (SELECT ma.raw_name FROM model_aliases ma") {
@@ -55,11 +55,11 @@ func TestRollupCredentialModelIndex_ServesSessionFamily(t *testing.T) {
 // registered decision: auto requests (sys:% sessions) are NOT mirrored into
 // the session family (measured 2026-10-13: v1 3,420 auto rows vs 0 session
 // rows over 3 days), so this rollup has no session-side source and stays on
-// request_logs_hot by design — the comment block must keep documenting that
+// _request_logs_hot by design — the comment block must keep documenting that
 // S4 fate so nobody "finishes" this migration into a silently-empty table.
 func TestRollupModelTaskIndex_StaysV1_RegisteredNotMigrated(t *testing.T) {
-	if !strings.Contains(rollupModelTaskIndexSQL, "FROM request_logs_hot rl") {
-		t.Fatalf("model_task rollup stays on request_logs_hot by registered decision; got:\n%s", rollupModelTaskIndexSQL)
+	if !strings.Contains(rollupModelTaskIndexSQL, "FROM _request_logs_hot rl") {
+		t.Fatalf("model_task rollup stays on _request_logs_hot by registered decision; got:\n%s", rollupModelTaskIndexSQL)
 	}
 	src, err := os.ReadFile("auto_index_refresher.go")
 	if err != nil {

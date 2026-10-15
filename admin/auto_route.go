@@ -2,7 +2,7 @@
 //
 // Exposes the autoroute subsystem to the admin UI and curl:
 //
-//	GET    /api/admin/auto-route/decisions    — recent auto-route decisions (request_logs)
+//	GET    /api/admin/auto-route/decisions    — recent auto-route decisions (_request_logs)
 //	GET    /api/admin/auto-route/index        — current model × task × profile index snapshot
 //	PUT    /api/admin/auto-route/profile      — set API key's sticky profile
 //	GET    /api/admin/auto-route/audit        — aggregated stats (task distribution, top models)
@@ -11,7 +11,7 @@
 // All routes are mounted via RegisterAutoRouteRoutes (called from
 // admin/handler.go).
 //
-// NOTE: All SELECTs on tenant-scoped tables (request_logs etc.) in this file
+// NOTE: All SELECTs on tenant-scoped tables (_request_logs etc.) in this file
 // are wrapped with tenantLogsClause() (admin/session_tenant.go) — adds
 // "AND tenant_id = $N" for tenant_admin callers on non-default tenants.
 // Super-admin / legacy admin_key / default-tenant callers see all rows.
@@ -126,7 +126,7 @@ func (h *AutoRouteHandlers) RegisterAutoRouteRoutes(mux *http.ServeMux, adminWra
 }
 
 // handleDecisions returns the most recent N auto-route decisions from
-// request_logs (filter: is_auto_request = TRUE).
+// _request_logs (filter: is_auto_request = TRUE).
 //
 // Query params:
 //   - limit : max rows (default 50, max 500)
@@ -493,7 +493,7 @@ func (h *AutoRouteHandlers) handleSetProfile(w http.ResponseWriter, r *http.Requ
 // 2026-06-24 fix: every per-row filter that previously used
 // `is_auto_request = FALSE` was NULL-unsafe (PostgreSQL three-valued
 // logic excludes rows where the bool column is NULL). Historical
-// request_logs rows have is_auto_request IS NULL because the writer
+// _request_logs rows have is_auto_request IS NULL because the writer
 // learned to set TRUE/FALSE only later. The query now uses
 // `is_auto_request IS NOT TRUE` so NULL rows are admitted alongside
 // TRUE auto requests and counted as specified_model_requests. Without
@@ -549,7 +549,7 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 		total, successes, totalAuto, totalSpecified = mvTotal, mvSuccesses, mvAuto, mvSpecified
 	} else {
 		// Fallback to the canonical analytics source view (migration 649).
-		// It spans request_logs_hot + request_logs without the customer_id
+		// It spans _request_logs_hot + _request_logs without the customer_id
 		// LATERAL (a 10s+ Seq Scan over 314K rows) and matches the source
 		// the routing_audit_summary_7d materialized view aggregates, so the
 		// fallback numbers stay identical to the MV path across month

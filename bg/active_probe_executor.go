@@ -10,7 +10,7 @@
 //
 // Each call produces a single ProbeResult. The caller (ActiveProbeWorker)
 // is responsible for:
-//   - emitting the result to request_logs (so it lands in the live stream)
+//   - emitting the result to _request_logs (so it lands in the live stream)
 //   - feeding it back into CredentialStateManager.UpdateFromProbe
 //
 // HTTP-timeout: 30s by default, overridable via config.
@@ -657,7 +657,7 @@ func buildProbePingBody(model string, desc providercap.Descriptor) (string, erro
 }
 
 // truncatePreview keeps at most maxChars characters of a probe response
-// for inclusion in request_logs.response_preview.
+// for inclusion in _request_logs.response_preview.
 func truncatePreview(s string, maxChars int) string {
 	if maxChars <= 0 {
 		return ""
@@ -684,7 +684,7 @@ func (r *ProbeResult) Log(credID int, model string, attempt int) {
 }
 
 // classifyProbeErrorKind maps a ProbeResult.Status into an error_kind
-// string suitable for request_logs.error_kind. Kept in this file (rather
+// string suitable for _request_logs.error_kind. Kept in this file (rather
 // than emitter.go) so the executor + emitter share the same vocabulary.
 func classifyProbeErrorKind(r *ProbeResult) string {
 	switch r.Status {
@@ -738,7 +738,7 @@ func classifyProbeErrorKind(r *ProbeResult) string {
 }
 
 // classifyProbeFailureStage returns the coarse failure_stage value
-// (request_logs.failure_stage) for a probe result. It distinguishes
+// (_request_logs.failure_stage) for a probe result. It distinguishes
 // gateway-side build failures (decrypt / endpoint / body marshalling —
 // the request never left the gateway) from genuine upstream faults
 // (network / timeout / HTTP status / auth / rate-limit — the request

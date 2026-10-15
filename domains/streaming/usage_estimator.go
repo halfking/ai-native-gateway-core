@@ -5,7 +5,7 @@ import (
 	"unicode"
 )
 
-// UsageSource values stored in request_logs.usage_source.
+// UsageSource values stored in _request_logs.usage_source.
 const (
 	UsageSourceLLM       = "llm"       // From upstream response usage block
 	UsageSourceEstimated = "estimated" // Computed locally from request/response text
@@ -30,7 +30,7 @@ const (
 //   - System prompt overhead: +2 tokens
 //
 // NOTE: This is an ESTIMATE, not a BPE-exact count. Rows written with these
-// values are tagged with usage_source='estimated' in request_logs so the UI
+// values are tagged with usage_source='estimated' in _request_logs so the UI
 // can mark them distinctly from upstream-reported usage.
 func estimatePromptTokens(requestBody []byte) int {
 	if len(requestBody) == 0 {

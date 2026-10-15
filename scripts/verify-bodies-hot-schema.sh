@@ -1,5 +1,5 @@
 #!/bin/bash
-# Verification script for request_logs_bodies_hot schema
+# Verification script for _request_logs_bodies_hot schema
 # Part of Issue #9: Validate database schema and indexes
 
 set -euo pipefail
@@ -12,15 +12,15 @@ DB_USER="${DB_USER:-llm_gateway}"
 PSQL="psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -t -A"
 
 echo "======================================"
-echo "Schema Verification for request_logs_bodies_hot"
+echo "Schema Verification for _request_logs_bodies_hot"
 echo "======================================"
 echo ""
 
 # Check 1: Table exists
 echo "✓ Checking if table exists..."
-TABLE_EXISTS=$($PSQL -c "SELECT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'request_logs_bodies_hot' AND schemaname = 'public');")
+TABLE_EXISTS=$($PSQL -c "SELECT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = '_request_logs_bodies_hot' AND schemaname = 'public');")
 if [ "$TABLE_EXISTS" != "t" ]; then
-    echo "❌ FAIL: Table request_logs_bodies_hot does not exist"
+    echo "❌ FAIL: Table _request_logs_bodies_hot does not exist"
     exit 1
 fi
 echo "  ✅ Table exists"
@@ -28,7 +28,7 @@ echo ""
 
 # Check 2: Required columns
 echo "✓ Checking required columns..."
-COLUMNS=$($PSQL -c "SELECT column_name FROM information_schema.columns WHERE table_name = 'request_logs_bodies_hot' ORDER BY ordinal_position;")
+COLUMNS=$($PSQL -c "SELECT column_name FROM information_schema.columns WHERE table_name = '_request_logs_bodies_hot' ORDER BY ordinal_position;")
 REQUIRED_COLS=("request_id" "ts" "request_body" "outbound_body" "response_body")
 
 for col in "${REQUIRED_COLS[@]}"; do
@@ -43,7 +43,7 @@ echo ""
 
 # Check 3: Unique index on (request_id, ts)
 echo "✓ Checking UNIQUE index on (request_id, ts)..."
-UNIQUE_INDEX=$($PSQL -c "SELECT indexname FROM pg_indexes WHERE tablename = 'request_logs_bodies_hot' AND indexdef LIKE '%UNIQUE%' AND indexdef LIKE '%request_id%' AND indexdef LIKE '%ts%';")
+UNIQUE_INDEX=$($PSQL -c "SELECT indexname FROM pg_indexes WHERE tablename = '_request_logs_bodies_hot' AND indexdef LIKE '%UNIQUE%' AND indexdef LIKE '%request_id%' AND indexdef LIKE '%ts%';")
 if [ -z "$UNIQUE_INDEX" ]; then
     echo "  ❌ FAIL: UNIQUE index on (request_id, ts) not found"
     exit 1
@@ -53,7 +53,7 @@ echo ""
 
 # Check 4: Index on ts
 echo "✓ Checking index on ts..."
-TS_INDEX=$($PSQL -c "SELECT indexname FROM pg_indexes WHERE tablename = 'request_logs_bodies_hot' AND indexdef LIKE '%ts%' AND indexdef NOT LIKE '%request_id%';")
+TS_INDEX=$($PSQL -c "SELECT indexname FROM pg_indexes WHERE tablename = '_request_logs_bodies_hot' AND indexdef LIKE '%ts%' AND indexdef NOT LIKE '%request_id%';")
 if [ -z "$TS_INDEX" ]; then
     echo "  ❌ FAIL: Index on ts not found"
     exit 1
@@ -63,7 +63,7 @@ echo ""
 
 # Check 5: Index on request_id
 echo "✓ Checking index on request_id..."
-REQUEST_ID_INDEX=$($PSQL -c "SELECT indexname FROM pg_indexes WHERE tablename = 'request_logs_bodies_hot' AND indexdef LIKE '%request_id%' AND indexdef NOT LIKE '%ts%';")
+REQUEST_ID_INDEX=$($PSQL -c "SELECT indexname FROM pg_indexes WHERE tablename = '_request_logs_bodies_hot' AND indexdef LIKE '%request_id%' AND indexdef NOT LIKE '%ts%';")
 if [ -z "$REQUEST_ID_INDEX" ]; then
     echo "  ❌ FAIL: Index on request_id not found"
     exit 1
@@ -92,7 +92,7 @@ echo ""
 
 # Check 8: Table storage type (should be heap, not columnar)
 echo "✓ Checking table storage type..."
-STORAGE=$($PSQL -c "SELECT am.amname FROM pg_class c JOIN pg_am am ON c.relam = am.oid WHERE c.relname = 'request_logs_bodies_hot';")
+STORAGE=$($PSQL -c "SELECT am.amname FROM pg_class c JOIN pg_am am ON c.relam = am.oid WHERE c.relname = '_request_logs_bodies_hot';")
 if [ "$STORAGE" = "heap" ]; then
     echo "  ✅ Storage type: heap (correct for hot table)"
 else

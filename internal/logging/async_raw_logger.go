@@ -205,7 +205,7 @@ func (l *AsyncRawDataLogger) LogClientRequest(requestID, protocol string, body [
 
 // LogClientRequestWithEnvelope is the correlation-aware counterpart of
 // LogClientRequest. Operators can attach session, task, provider, and
-// trace identifiers so the audit log can be joined with request_logs
+// trace identifiers so the audit log can be joined with _request_logs
 // without an external index.
 func (l *AsyncRawDataLogger) LogClientRequestWithEnvelope(
 	requestID, protocol string,
@@ -225,7 +225,7 @@ func (l *AsyncRawDataLogger) LogClientRequestWithEnvelope(
 		// 2026-07-27: A dropped raw entry is no longer silent. Emit a
 		// stub entry that records the queue overflow plus the
 		// correlation envelope so the operator can still join with
-		// request_logs and the anomaly endpoint can dedupe across
+		// _request_logs and the anomaly endpoint can dedupe across
 		// processes.
 		overflow := makeOverflowStub("client_request", requestID, protocol, conversionStep, env)
 		overflow.Headers = entry.Headers
@@ -238,7 +238,7 @@ func (l *AsyncRawDataLogger) LogClientRequestWithEnvelope(
 
 // makeEntry builds a RawDataEntry from the supplied envelope, computing
 // the SHA-256 of the body so the raw log can be verified against the
-// request_logs row and the anomaly endpoint.
+// _request_logs row and the anomaly endpoint.
 //
 // R12: 实现下放为包级 makeRawEntry（Async/Buffered 共用，Headers 拷贝
 // 语义见 raw_sink.go）。
@@ -279,7 +279,7 @@ type RawCorrelationEnvelope struct {
 // (raw_log_close_drained). The reporter's ReportRawLogOverflow /
 // ReportRawLogCloseDrained methods carry the audit correlation
 // envelope so dashboards can correlate the anomaly with the
-// request_logs row. Calling with nil disables both hooks.
+// _request_logs row. Calling with nil disables both hooks.
 //
 // 2026-07-28 §5.8: replaces the silent slog.Warn-only behaviour.
 func (l *AsyncRawDataLogger) SetOverflowReporter(rep *LockFreeAnomalyReporter) {

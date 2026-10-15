@@ -302,7 +302,10 @@ func nativeStreamPolicyFailureFrame(protocol string) []byte {
 	case "openai-responses":
 		return []byte("event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"}}}\n\n")
 	default:
-		return []byte("data: {\"error\":{\"type\":\"api_error\",\"message\":\"Response blocked by output policy\"}}\n\ndata: [DONE]\n\n")
+		// r1028: carry a machine-classifiable code — agent clients (ZCode)
+		// map unknown api_error shapes to "reason=unknown retryable=false";
+		// the code lets them distinguish policy blocks from provider faults.
+		return []byte("data: {\"error\":{\"type\":\"api_error\",\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"}}\n\ndata: [DONE]\n\n")
 	}
 }
 
@@ -511,7 +514,7 @@ func writePrewarmedStreamErrorFull(w http.ResponseWriter, message, errType, code
 }
 
 // blackholeResponseWriter accepts writes without touching the wire. The
-// shared post-execute error path keeps its bookkeeping (request_logs,
+// shared post-execute error path keeps its bookkeeping (_request_logs,
 // decision logs, metrics) while its wire writes become no-ops — used when
 // the survival coordinator already rendered a protocol terminal
 // (errSurvivalTerminalRendered) and any further frame would stack a second
@@ -588,7 +591,7 @@ func sanitizeGwSessionHeader(v string) string {
 	// not gateway session IDs. Branch prefixes MUST stay in sync with the
 	// X-Gw-Session-Id header set by the auto-title / auto-summary loopback
 	// callers; otherwise the loopback's session_id is silently dropped and
-	// the resulting request_logs_hot row shows a fresh gw_<uuid>.
+	// the resulting _request_logs_hot row shows a fresh gw_<uuid>.
 	if !strings.HasPrefix(s, "gw_") && !strings.HasPrefix(s, "gt_") && !strings.HasPrefix(s, "gs_") {
 		return ""
 	}
@@ -722,7 +725,7 @@ func setRequestHeader(r *http.Request, key, value string) {
 // Contract (2026-07-28):
 //   - returns the client-supplied X-Gw-Session-Id when present and
 //     gw_-prefixed
-//   - otherwise returns a fresh gw_<uuid> so request_logs.gw_session_id
+//   - otherwise returns a fresh gw_<uuid> so _request_logs.gw_session_id
 //     is never empty
 //   - NEVER writes X-Gw-Session-Id back to the response — the
 //     canonical session id is decided after body parsing
@@ -985,7 +988,7 @@ type ChatHandler struct {
 	// suggestion but nothing else.
 	altFinder *ModelAlternativesFinder
 	// requestLogHook is an optional test sink.  When set, every
-	// request_logs row the gateway emits is also passed to the hook
+	// _request_logs row the gateway emits is also passed to the hook
 	// function so unit tests can assert on the safety-net coverage.
 	// See SetRequestLogHook.
 	requestLogHook func(*telemetry.RequestLogEntry)
@@ -1096,9 +1099,9 @@ type ChatHandler struct {
 		// 320-byte summary used as fallback.
 		// 2026-08-06: parentRequestID is the user request_id that triggered
 		// this title generation; forwarded as X-Gw-Parent-Request-Id so
-		// request_logs_hot.parent_request_id makes the loopback joinable.
+		// _request_logs_hot.parent_request_id makes the loopback joinable.
 		// 2026-08-06: taskID is the request's gw_task_id so the stored title
-		// row matches request_logs on (task_id, scoped_session_id).
+		// row matches _request_logs on (task_id, scoped_session_id).
 		MaybeGenerateTitle(sessionID, tenantID, taskID, requestBody, requestPreview, parentRequestID, requestID string)
 	}
 
@@ -1617,9 +1620,9 @@ func (h *ChatHandler) invokeProvisionalMetadataOnArrival(r *http.Request, sessio
 	})
 }
 
-// 2026-08-06: signature extended with parentRequestID for request_logs_hot.parent_request_id linkage.
+// 2026-08-06: signature extended with parentRequestID for _request_logs_hot.parent_request_id linkage.
 // 2026-08-06: signature extended with taskID so the stored title row matches
-// request_logs on (task_id, scoped_session_id).
+// _request_logs on (task_id, scoped_session_id).
 func (h *ChatHandler) SetAutoTitleGenerator(atg interface {
 	MaybeGenerateTitle(sessionID, tenantID, taskID, requestBody, requestPreview, parentRequestID, requestID string)
 }) {
@@ -1645,7 +1648,7 @@ func (h *ChatHandler) SetArmor(judge armor.Judge, logger *armor.Logger) {
 }
 
 // SetRequestLogHook installs an in-memory sink that records every
-// request_logs row the safety-net (or the success path) emits.  It is
+// _request_logs row the safety-net (or the success path) emits.  It is
 // used by unit tests in this package to assert that every error exit
 // path still produces a row.  Passing nil clears the hook (the
 // default is nil; production callers should never set a hook).
@@ -1752,7 +1755,7 @@ func (h *ChatHandler) SetFormatAnomalyRecorder(recorder *FormatAnomalyRecorder) 
 // SetAttachmentExtractor (2026-07-01) wires the attachment extractor.
 // When set, the handler extracts base64/data-URI attachments from incoming
 // requests and saves them to the filesystem before forwarding to upstream.
-// The extracted metadata is written to request_logs.attachments JSONB column.
+// The extracted metadata is written to _request_logs.attachments JSONB column.
 // nil disables attachment extraction (attachments remain inline).
 func (h *ChatHandler) SetAttachmentExtractor(extractor *attachments.Extractor) {
 	h.attachmentExtractor = extractor
@@ -1912,7 +1915,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 	// ── requestAttempt safety-net: every request that reaches this
-	//    handler must produce exactly one request_logs row, regardless
+	//    handler must produce exactly one _request_logs row, regardless
 	//    of which early-return path it takes.  attemptErrCode is
 	//    populated by the inner functions when they exit without
 	//    writing a row themselves; the deferred block at the end
@@ -1927,7 +1930,7 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 	// We still defensively fall back to generateRequestID() here in
 	// case the middleware chain was bypassed (e.g. direct unit-test
 	// invocation), and we capture the client value for
-	// request_logs.client_request_id so retries can be correlated.
+	// _request_logs.client_request_id so retries can be correlated.
 	requestID := r.Header.Get("X-Request-Id")
 	if requestID == "" {
 		requestID = generateRequestID()
@@ -1958,7 +1961,7 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 	// 2026-08-06: 读取父子关联 header。auto_title_generator 在 loopback
 	// 请求中转发父请求的 request_id 与调用方 actor；handler 入口侧把它们
 	// 写入 logCtx，再经 applyParentCorrelationFields 持久化到
-	// request_logs_hot.parent_request_id / origin_actor。这是 "08aa2a8a →
+	// _request_logs_hot.parent_request_id / origin_actor。这是 "08aa2a8a →
 	// 3a03f7db" 父子链路 SQL JOIN 的关键。
 	if v := strings.TrimSpace(r.Header.Get(autoParentRequestIDHeader)); v != "" {
 		logCtx.ParentRequestID = v
@@ -2010,11 +2013,11 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 	// json_parse_error, rate_limit_exceeded, model_forbidden) that previously
 	// never reached the CreateInitial call at ~line 2371 (it runs AFTER auth,
 	// body parse, session assign, and model resolution). Those failures got a
-	// request_logs_hot row via the safety net but NO WAL row at all.
+	// _request_logs_hot row via the safety net but NO WAL row at all.
 	//
 	// This early write uses the minimal fields available at this point
 	// (requestID + provisional session id); tenant_id and client_model are
-	// enriched later (the request_logs_hot row carries the full detail via
+	// enriched later (the _request_logs_hot row carries the full detail via
 	// the telemetry path). CreateInitial now conflicts on (request_id) — via
 	// the unique index from migration 461 — and does an additive
 	// COALESCE first-write-wins UPDATE, so the later, fuller CreateInitial at
@@ -2025,12 +2028,12 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 	if h.requestLogger != nil {
 		earlyReq := &telemetry.InitialRequest{
 			RequestID:   requestID,
-			TenantID:    "default", // enriched in request_logs_hot; WAL just needs a row
+			TenantID:    "default", // enriched in _request_logs_hot; WAL just needs a row
 			SessionID:   provisionalSessionID,
 			Provisional: true,
 		}
 		if err := h.requestLogger.CreateInitial(r.Context(), earlyReq); err != nil {
-			// Non-fatal: the safety net + request_logs_hot still record the
+			// Non-fatal: the safety net + _request_logs_hot still record the
 			// request. WAL is best-effort for fast operator drill-down.
 			slog.Warn("request_logger: early CreateInitial failed",
 				"request_id", requestID, "error", err)
@@ -2093,7 +2096,7 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 			}
 			// ── 2026-07-09: 问题4 —— 客户端取消/超时探测记录 ──────────────
 			// 在前端取消(context.Canceled)或超时(context.DeadlineExceeded)
-			// 时，额外生成一条 probe 记录写入 request_logs_hot 并推入泳道，
+			// 时，额外生成一条 probe 记录写入 _request_logs_hot 并推入泳道，
 			// 让运维在"实时请求流"里直接看到取消/超时事件及其凭据归属。
 			// 用专用 probe- 前缀 + 时间戳的 request_id，避免与初始 in_progress
 			// 行的 ON CONFLICT 冲突。携带 credential_id 以便泳道按供应商反查。
@@ -2132,7 +2135,7 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 			_ = h.traceRecorder.Finalize(finalizeCtx, requestID, fs, failS)
 			finalizeCancel()
 
-			// FlushToPG 可能早于 telemetry worker 写入 request_logs；有限退避重试
+			// FlushToPG 可能早于 telemetry worker 写入 _request_logs；有限退避重试
 			// 覆盖该竞态，且只有 UPDATE 命中行时 recorder 才会删除 Redis key。
 			// 2026-09-23: 首试延迟 1.2s。生产两轮实证（本地 2235→2238）：delay=0
 			// 首试几乎必然撞竞态（attempt1 失败 7601 条 vs attempt2 144 条）；
@@ -2173,7 +2176,7 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		logCtx.SetError("method_not_allowed", "method not allowed")
 		// 2026-06-20 audit fix: capture the body + model so the
-		// request_logs row records what the client actually sent
+		// _request_logs row records what the client actually sent
 		// (not just "method not allowed"). Without this every
 		// 405 row shows empty body + model="<unknown>" and the
 		// operator can't tell which client / tool sent the
@@ -2221,7 +2224,7 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 // serveWithExecutor is the main chat-completions / completions pipeline.
 // It receives pointers to the safety-net attempt state from ServeHTTP
 // so that any exit path can populate them and the deferred logger in
-// the caller will record exactly one request_logs row.  attemptLogged
+// the caller will record exactly one _request_logs row.  attemptLogged
 // is set to true by any inner function that has already recorded the
 // row (e.g. via recordFailedRequest or emitTelemetry on the success
 // path) so the deferred safety net does not duplicate it.
@@ -2264,7 +2267,7 @@ func (h *ChatHandler) serveWithExecutor(
 		logCtx.SetError(errCode, errMsg)
 		logCtx.EnsureCaptured()
 		// 2026-07-27: Surface the provisional session id on early-failure
-		// branches so request_logs.gw_session_id stays non-empty without
+		// branches so _request_logs.gw_session_id stays non-empty without
 		// overwriting a client-supplied or body-supplied session id (which
 		// hasn't been parsed yet at this point).
 		applyProvisionalGatewaySessionHeader(r, logCtx.ProvisionalSessionID)
@@ -2299,7 +2302,7 @@ func (h *ChatHandler) serveWithExecutor(
 		// 2026-08-26 (kimi-k3 queue bug fix #2): rate-limit early-return
 		// bypassed recordInitialRequestLog (handler.go:3572), so the
 		// subsequent EmitRateLimited UPDATE hit 0 rows in
-		// request_logs_hot — leaving the failure unlogged while the WAL
+		// _request_logs_hot — leaving the failure unlogged while the WAL
 		// and Redis trace still recorded it. INSERT a minimal placeholder
 		// (RequestStatus=in_progress) so the UPDATE lands. Idempotent via
 		// INSERT … ON CONFLICT (request_id) DO UPDATE on
@@ -2764,7 +2767,7 @@ func (h *ChatHandler) serveWithExecutor(
 				h.sessionGetter.Touch(touchCtx, sessionID)
 			}()
 			ctx = session.SessionFromContextWith(ctx, sessionInfo)
-		} else if err == session.ErrSessionNotFound && keyInfo != nil {
+		} else if sessionAbsentErr(err) && keyInfo != nil {
 			// 2026-08-15 (OBS-DV2 #4): auto-title/auto-summary loopback sessions
 			// carry an internal branch id (gt_/gs_) that is intentionally NOT a
 			// real user session. Do NOT auto-create a fresh gw_<uuid> for them —
@@ -2785,7 +2788,7 @@ func (h *ChatHandler) serveWithExecutor(
 				// there). The previous auto-create REWROTE the id with a fresh
 				// gw_<uuid> on every request, so /v1/chat/completions callers
 				// tagging requests with X-Gw-Session-Id: gw_<dispatch_id> got a
-				// different session id per call: request_logs/sessions rows
+				// different session id per call: _request_logs/sessions rows
 				// never grouped under the caller's id and correlation lookups
 				// found nothing. Session V2 turn aggregation keys off the
 				// request row's gw_session_id, so the sessions row for the
@@ -2819,8 +2822,11 @@ func (h *ChatHandler) serveWithExecutor(
 						writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "session_error", i18n.MsgSessionForbidden, nil)
 						return
 					}
+					// r1029：store fault 的响应体不能用 SESSION_FORBIDDEN 文案
+					// ——那是所有权语义，会误导调用方与运维归因（实测
+					// auto_summary 把该 503 当所有权问题反复重试）。
 					captureAndEmitFailure("session_unavailable", "session store unavailable", nil, nil)
-					writeErrorJSONCtx(r.Context(), w, http.StatusServiceUnavailable, requestID, "session_error", i18n.MsgSessionForbidden, nil)
+					writeErrorJSONCtx(r.Context(), w, http.StatusServiceUnavailable, requestID, "session_error", i18n.MsgSessionStoreUnavailable, nil)
 					return
 				}
 				if claimed != nil {
@@ -2877,14 +2883,17 @@ func (h *ChatHandler) serveWithExecutor(
 					}
 				}
 			}
-		} else if err != nil && err != session.ErrSessionNotFound {
+		} else if err != nil && !sessionAbsentErr(err) {
 			// R25-W (V3-A02): a store fault is not a verdict on ownership.
 			// Continuing to dispatch would trust an unverified client-supplied
 			// session id while the store is degraded; surfacing 503 (not 403)
 			// keeps the blame on our side and tells the client to retry.
+			// r1029：ErrSessionExpired 不再进此分支（确定性终态，归 absent
+			// 家族按 not-found 路径认领/保留）；503 响应体改用 store 语义
+			// 文案，不再误标 SESSION_FORBIDDEN。
 			slog.Warn("session lookup failed", "error", err)
 			captureAndEmitFailure("session_unavailable", "session store unavailable", nil, nil)
-			writeErrorJSONCtx(r.Context(), w, http.StatusServiceUnavailable, requestID, "session_error", i18n.MsgSessionForbidden, nil)
+			writeErrorJSONCtx(r.Context(), w, http.StatusServiceUnavailable, requestID, "session_error", i18n.MsgSessionStoreUnavailable, nil)
 			return
 		}
 	}
@@ -2964,7 +2973,7 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 	}
 	// 2026-07-27: Final session propagation. Mirrors the messages and
-	// responses handlers so request_logs.gw_session_id, request context,
+	// responses handlers so _request_logs.gw_session_id, request context,
 	// and sticky/fingerprint routing all see the same session identifier.
 	if sessionID == "" {
 		// absolute fallback for the rare case where both body-session
@@ -3105,7 +3114,7 @@ func (h *ChatHandler) serveWithExecutor(
 			// outage). Surface a 502 with a transparent error_kind instead of
 			// silently rewriting the request to a fallback model. The original
 			// behaviour hid routing-data outages as "user picked the fallback
-			// model" rows in request_logs, which is exactly what the
+			// model" rows in _request_logs, which is exactly what the
 			// routing-error-transparency work is removing — see
 			// docs/2026-07-01-unknown-error-root-cause.md.
 			captureAndEmitFailure("auto_route_decider_failed",
@@ -3143,7 +3152,7 @@ func (h *ChatHandler) serveWithExecutor(
 	//
 	// Two invariants this branch must preserve:
 	//
-	//  1. The handler's safety net requires exactly one request_logs row
+	//  1. The handler's safety net requires exactly one _request_logs row
 	//     per request. Returning via markLogged() alone would mark the row
 	//     written while writing NOTHING, so mock traffic would be invisible
 	//     in the dashboard AND in the audit trail. recordMockRequestLog
@@ -3672,7 +3681,7 @@ func (h *ChatHandler) serveWithExecutor(
 		// 2026-07-20: Record routing attempts for the no_candidate exit so
 		// /api/logs/<id> 详情页 surfaces the full decision chain instead of
 		// an empty routing_attempts JSONB. The tracker is stored on logCtx
-		// so buildEntry picks it up and writes to request_logs.routing_attempts.
+		// so buildEntry picks it up and writes to _request_logs.routing_attempts.
 		// This covers ALL routing rounds at the candidate-resolution layer —
 		// each subsequent executor round is tracked separately inside Execute().
 		noCandReason := "router_returned_zero_candidates"
@@ -4267,7 +4276,7 @@ func (h *ChatHandler) serveWithExecutor(
 	var execErr error
 
 	// 2026-07-20: Pre-populate the routing tracker with the full candidate
-	// list so request_logs.routing_attempts captures ALL rounds — both the
+	// list so _request_logs.routing_attempts captures ALL rounds — both the
 	// initial candidate pool and each subsequent upstream attempt (recorded
 	// inside executor_chat.go). When candidates > 10, log the count only to
 	// avoid bloating the JSONB payload.
@@ -4491,7 +4500,7 @@ func (h *ChatHandler) serveWithExecutor(
 			// request body. The actual upstream model id is resolved per
 			// candidate inside the executor via resolveOutboundModel().
 			//
-			// outboundForLog is preserved for request_logs / decision log /
+			// outboundForLog is preserved for _request_logs / decision log /
 			// audit and is exposed via params.Transform.MatchedRule +
 			// explicitOutbound (see recordInitialRequestLog below).
 			//
@@ -4562,7 +4571,7 @@ func (h *ChatHandler) serveWithExecutor(
 			// 2026-07-14: pass the per-request id so the no-candidates
 			// fallback inside Execute() can hand it to ActiveProbeWorker
 			// as the probe row's parent_request_id. Without this the
-			// probe row in request_logs / live-stream would have no link
+			// probe row in _request_logs / live-stream would have no link
 			// back to the failed business request.
 			RequestID:                requestID,
 			ClientRequestID:          auditCtx.ClientRequestID,
@@ -4591,7 +4600,7 @@ func (h *ChatHandler) serveWithExecutor(
 			}(),
 			// 2026-07-19: 路由尝试追踪器，记录每次 upstream 尝试详情
 			// 2026-07-20: Pre-populated with the candidate list above so
-			// request_logs.routing_attempts captures ALL routing rounds.
+			// _request_logs.routing_attempts captures ALL routing rounds.
 			RoutingTracker: candTracker,
 		}
 	}
@@ -4625,8 +4634,9 @@ func (h *ChatHandler) serveWithExecutor(
 		// run — the buffered gate guarantees only client-visible
 		// (committed) bytes ever reach it.
 		base := w
+		var survivalIntercepted *interceptingStreamWriter
 		if h.responseInterceptor != nil {
-			base = newInterceptingStreamWriter(w, h.responseInterceptor, r.Context(), response.StreamMeta{
+			survivalIntercepted = newInterceptingStreamWriter(w, h.responseInterceptor, r.Context(), response.StreamMeta{
 				SessionID:      gwSessionID,
 				RequestID:      requestID,
 				TenantID:       tenantID,
@@ -4635,11 +4645,27 @@ func (h *ChatHandler) serveWithExecutor(
 				SanitizeHop:    sanitize.SanitizeHopFromContext(r.Context()),
 				ClientModel:    clientModel,
 			})
-			defer base.(*interceptingStreamWriter).finish()
+			base = survivalIntercepted
+			defer survivalIntercepted.finish()
 		}
 		// SP-02: state machine — survival branch dispatches upstream.
 		rt.Emit(state.EventDispatching)
 		result, execErr = h.runSurvivalCoordinator(r, base, buildExecParams, tenantID, durableStream)
+		// r1028 (2026-10-14, 154 incident): run the interceptor's pending
+		// flush HERE — not only in the deferred finish — and stamp the
+		// governance terminal so the R25-V branch below emits the
+		// output_policy_blocked failure audit. Before this the survival
+		// branch never wired outputGovernanceTerminal (only the goal-retry
+		// loop did), so a stream-lane block was invisible end to end: the
+		// client saw an opaque mid-stream api_error, the audit row kept
+		// success=true and no log line named the request. finish() is
+		// idempotent; the deferred call above stays as panic-safety.
+		if survivalIntercepted != nil {
+			survivalIntercepted.finish()
+			if survivalIntercepted.OutputPolicyBlocked() {
+				outputGovernanceTerminal = "output_policy_blocked"
+			}
+		}
 		goto goalRetryLoopDone
 	}
 
@@ -5064,7 +5090,7 @@ goalRetryLoopDone:
 			w = blackholeResponseWriter{}
 		}
 		// V3.1: capture dispatch queue timestamps from ExecuteError before
-		// any failAndMark / EmitFailure so failure request_logs keep T0–T9.
+		// any failAndMark / EmitFailure so failure _request_logs keep T0–T9.
 		if logCtx != nil {
 			if ee, ok := execErr.(*executors.ExecuteError); ok {
 				logCtx.ApplyQueueTimestampsFromError(ee)
@@ -5195,7 +5221,7 @@ goalRetryLoopDone:
 			// gateway's stored credential (HTTP 401/403/402 → KindAuth /
 			// KindAuthRevoked / KindQuotaPermanent), surface a dedicated error
 			// code so operators can:
-			//   - filter request_logs by error_kind = upstream_credential_invalid
+			//   - filter _request_logs by error_kind = upstream_credential_invalid
 			//     vs the old blanket "provider_error" or "model_not_found",
 			//   - immediately tell the client "this is NOT your API key" by
 			//     surfacing a clear, dedicated message,
@@ -5387,7 +5413,7 @@ goalRetryLoopDone:
 			realKind := mapExecuteErrorToKind(execErrTyped)
 			logCtx.SetOutboundModel(explicitOutbound)
 			// 2026-06-20: write the REAL underlying kind to
-			// request_logs.error_kind (e.g. "rate_limit",
+			// _request_logs.error_kind (e.g. "rate_limit",
 			// "concurrent", "upstream_down") instead of the
 			// backward-compat "model_not_found". The HTTP
 			// error.code stays "model_not_found" for old clients
@@ -5477,12 +5503,12 @@ goalRetryLoopDone:
 		}
 		logCtx.SetOutboundModel(explicitOutbound)
 		// 2026-06-23 P0 audit: capture upstream response body so transient
-		// errors have a diagnostic message in request_logs.response_preview.
+		// errors have a diagnostic message in _request_logs.response_preview.
 		// Without this, "error_kind=transient" rows are diagnostically
 		// useless — operators can't see why upstream failed.
 		enrichedErrMsg := execErr.Error()
 		if ue, ok := extractUpstreamError(execErr); ok {
-			// 2026-06-30: 记录上游状态码到 request_logs (migration 320)
+			// 2026-06-30: 记录上游状态码到 _request_logs (migration 320)
 			if ue.StatusCode > 0 {
 				logCtx.SetUpstreamStatus(ue.StatusCode)
 			}
@@ -5574,7 +5600,7 @@ goalRetryLoopDone:
 	// scResult.CompressionStrategy != ""), so admin UI's v3 转发体 tab
 	// showed an empty body for every request without compression. Use the
 	// executor's actual upstream body (result.RequestBody) as the fallback
-	// so request_logs.outbound_body always reflects what was forwarded to
+	// so _request_logs.outbound_body always reflects what was forwarded to
 	// upstream, regardless of whether compression fired.
 	if logCtx != nil && result != nil {
 		logCtx.ApplyQueueTimestampsFromResult(result)
@@ -5784,7 +5810,13 @@ goalRetryLoopDone:
 	// block). finish() already wrote the single protocol terminal frame to
 	// the wire; emit the attributed failure audit and skip success telemetry.
 	if outputGovernanceTerminal == "output_policy_blocked" {
-		p, c := intPtr(result.Candidate.ProviderID), intPtr(result.Candidate.CredentialID)
+		// r1028: nil-safe — the survival branch can stamp the terminal on a
+		// request whose executor result is nil (coordinator fail-closed after
+		// the block latched mid-stream).
+		var p, c *int
+		if result != nil {
+			p, c = intPtr(result.Candidate.ProviderID), intPtr(result.Candidate.CredentialID)
+		}
 		captureAndEmitFailure("output_policy_blocked", "Response blocked by output policy", p, c)
 		return
 	}
@@ -6008,7 +6040,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			// sc.ToolCalls. Persist them into the synthetic response_body as
 			// `message.tool_calls` so downstream admin UI / API consumers can
 			// read tool_calls directly from response_body (instead of only
-			// from the dedicated request_logs.tool_calls JSONB column).
+			// from the dedicated _request_logs.tool_calls JSONB column).
 			//
 			// We strip the streaming-only `index` key from each entry: OpenAI
 			// final-response tool_calls do NOT carry `index` (only streaming
@@ -6052,7 +6084,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		} else if previewStr, ok := m["response_preview"].(string); ok && previewStr != "" {
 			// Fallback: textContent is empty (e.g. function-calling responses
 			// that only carry `delta.tool_calls` and no `delta.content`, or
-			// request_logs that are stored for audit even when no parsed text
+			// _request_logs that are stored for audit even when no parsed text
 			// was collected). Persist the raw SSE preview as the body so the
 			// row is non-empty and downstream auditors/queries can still
 			// inspect the wire format.
@@ -6140,7 +6172,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		// Round 47 compression v7 T-NEW-3: write the compression event
 		// captured by the executor's 4xx recovery (see
 		// executors.context_summarize.handleContextLengthRecovery) into
-		// request_logs.compression_*. Operators can then SQL-trace the
+		// _request_logs.compression_*. Operators can then SQL-trace the
 		// parent-child chain via parent_request_id.
 		//
 		// We only set these when the executor actually rewrote the body;
@@ -6479,7 +6511,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	// 2026-06-30: Extract tokens from response body for BOTH streaming and non-streaming.
 	// Previously this was inside the `if capture != nil` block, which meant non-streaming
 	// requests never had their completion_tokens/cache tokens extracted from the response.
-	// This caused request_logs to show NULL for completion_tokens and cache_*_tokens even
+	// This caused _request_logs to show NULL for completion_tokens and cache_*_tokens even
 	// when the upstream response contained a complete usage block.
 	if len(result.ResponseBody) > 0 {
 		pt, ct, crt, cwt := extractTokensFromResponseBody(result.ResponseBody)
@@ -6704,7 +6736,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 
 	applyKeyInfoToRequestLog(reqLog, keyInfo)
 	// 2026-07-27: 客户端感知字段 (agent_name/agent_type/client_protocol/virtual_client_id)
-	// 通过 meta 透传到 reqLog,主表 request_logs_hot 也能 GROUP BY 统计。
+	// 通过 meta 透传到 reqLog,主表 _request_logs_hot 也能 GROUP BY 统计。
 	enrichRequestLogFromMeta(reqLog, keyInfo, &logCtx.meta)
 	// v3: merge session compressor outbound fields into the log entry.
 	applySessionCompressorFields(reqLog, logCtx)
@@ -6734,7 +6766,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	}
 
 	// 2026-09-12 指纹写路径贯通：上游 X-System-Fingerprint 此前只进
-	// integrity detector 的 context JSONB，request_logs_hot.system_fingerprint
+	// integrity detector 的 context JSONB，_request_logs_hot.system_fingerprint
 	// 专用列全表零行（603 建列后从未接线），7 天漂移检测器空转。此处统一
 	// 盖章（流式/非流式共用 emitTelemetry），经 persistSystemFingerprint 落列、
 	// 迁移 697 起 promote 携带进分区。
@@ -6786,7 +6818,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	// set from the X-Gw-Is-Auto header or model="auto") so the auto title generator
 	// does not re-trigger on its own title requests (chain self-triggering).
 	// v2.5 (2026-08-06): pass evt.RequestID as parentRequestID so the loopback
-	// LLM call's request_logs_hot.parent_request_id is filled — operators can
+	// LLM call's _request_logs_hot.parent_request_id is filled — operators can
 	// SQL JOIN child ↔ parent to find "08aa2a8a → 3a03f7db".
 	// Fire-and-forget async call; never blocks the request path.
 	if h.autoTitleGenerator != nil && reqLog.Success && reqLog.GwSessionID != nil && *reqLog.GwSessionID != "" && !shouldSkipAutoTitleGeneration(logCtx) {
@@ -7017,7 +7049,7 @@ func intValueOrZero(p *int) int {
 	return *p
 }
 
-// recordFailedRequest writes a request_logs row for any non-success
+// recordFailedRequest writes a _request_logs row for any non-success
 // request exit (auth, rate-limit, budget, validation, candidate,
 // executor, panic, …).  It is the safety net that guarantees
 // every request that reaches any of the three handlers
@@ -7038,7 +7070,7 @@ func intValueOrZero(p *int) int {
 // real time. Operators could not see WHY a request vanished from the live
 // stream. This synthesizes a first-class RequestLogEntry with a "probe-"
 // prefixed request_id so it:
-//  1. is persisted to request_logs_hot via EmitRequestLogInsert, and
+//  1. is persisted to _request_logs_hot via EmitRequestLogInsert, and
 //  2. is pushed to the live-stream swim lane via the onEmitted hook.
 //
 // The record carries the credential_id / provider_id selected for the
@@ -7331,11 +7363,11 @@ func isAnthropicMessagesPath(path string) bool {
 
 // capturePartialBodyOnReadError keeps bytes already received when io.ReadAll
 // fails mid-stream (timeout, client disconnect). model is usually near the
-// start of JSON bodies, so partial data is enough for request_logs preview.
+// start of JSON bodies, so partial data is enough for _request_logs preview.
 //
 // 2026-06-20 audit fix v3: when the partial body has no "model" field
 // (e.g. /v1/messages client sent messages first), set client_model to
-// "<unknown>" so request_logs never shows a blank client_model alongside
+// "<unknown>" so _request_logs never shows a blank client_model alongside
 // a non-empty body — same invariant as captureAttemptBody /
 // ensureRequestBodyBuffered.
 func capturePartialBodyOnReadError(body []byte, attemptRequestBody *[]byte, attemptClientModel *string) {
@@ -7474,7 +7506,7 @@ func classifyFailureStage(errCode string) string {
 // from a *resolve.Resolution result. Returns "" when modelResolution is nil
 // or CanonicalName is nil (passthrough case — no canonical row matched).
 // 2026-07-27: written so recordInitialRequestLog can persist the standard
-// name to request_logs.canonical_model (migration 458) without each caller
+// name to _request_logs.canonical_model (migration 458) without each caller
 // having to nil-check.
 func canonicalNameFromResolution(modelResolution *resolve.Resolution) string {
 	if modelResolution == nil || modelResolution.CanonicalName == nil {
@@ -7627,7 +7659,7 @@ func (h *ChatHandler) recordInitialRequestLog(
 		autoCtx.SetOriginStage(*reqLog.OriginStage)
 	}
 	// 2026-08-02 (spec §12 GAP 3): persist routing_state_source and
-	// conversion_path into request_logs metadata so the IR default-cut-
+	// conversion_path into _request_logs metadata so the IR default-cut-
 	// over readiness gate can attribute each row to its routing decision
 	// and transport path. Until a dedicated routing_state_source column
 	// is migrated (TODO migration), the values are merged into the
@@ -8136,7 +8168,7 @@ func extractBearerToken(r *http.Request) string {
 	return ""
 }
 
-// insertRateLimitedPlaceholder ensures request_logs_hot has a row before the
+// insertRateLimitedPlaceholder ensures _request_logs_hot has a row before the
 // rate-limit UPDATE writes its terminal fields. Used by the rate-limit
 // early-return path (handler.go captureAndEmitRateLimited) which bypasses
 // recordInitialRequestLog. Idempotent: INSERT … ON CONFLICT (request_id)
@@ -8144,7 +8176,7 @@ func extractBearerToken(r *http.Request) string {
 //
 // 2026-08-26: introduced to plug the kimi-k3 / RPM queue blind spot —
 // when the queue budget was exceeded the request returned 429/200 bytes
-// but never landed in request_logs_hot (only WAL + Redis trace did),
+// but never landed in _request_logs_hot (only WAL + Redis trace did),
 // producing "request log row not found, retaining Redis trace" warnings
 // at FlushToPG. Mirrors the seed surface of recordInitialRequestLog
 // without pulling in its 14-arg signature.
@@ -8173,7 +8205,7 @@ func (h *ChatHandler) insertRateLimitedPlaceholder(logCtx *RequestLogContext) {
 	h.telemetryClient.EmitRequestLogInsert(minimal)
 }
 
-// recordMockRequestLog writes the terminal request_logs row for a request
+// recordMockRequestLog writes the terminal _request_logs row for a request
 // that was short-circuited by X-Gw-Test-Mode mock / auto-only
 // (2026-09-29 audit).
 //
@@ -8190,7 +8222,7 @@ func (h *ChatHandler) insertRateLimitedPlaceholder(logCtx *RequestLogContext) {
 // filter internal test traffic out of production dashboards with
 // `WHERE error_kind LIKE '%_mock'` without needing a schema migration.
 // Writing a real row — not skipping one — is what keeps "exactly one
-// request_logs row per request" true across every exit path.
+// _request_logs row per request" true across every exit path.
 func (h *ChatHandler) recordMockRequestLog(
 	logCtx *RequestLogContext,
 	mode TestMode,
@@ -8258,7 +8290,7 @@ func (h *ChatHandler) recordMockRequestLog(
 //     OpenAI Responses, early-failure rows).
 //  4. r.Body sniff — best-effort fallback if r.Body is still readable
 //     (only true before captureAttemptBody runs).
-//  5. "anonymous" — last-resort fallback so request_logs_hot.end_user_id
+//  5. "anonymous" — last-resort fallback so _request_logs_hot.end_user_id
 //     is always populated (operator dashboards can filter on it).
 //
 // 2026-08-06: previously only paths 1-2 existed. Failure-path callers
@@ -8469,7 +8501,7 @@ func extractTokensFromResponseBody(body []byte) (promptTokens, completionTokens,
 }
 
 // injectUsageIntoResponseBody augments a response body JSON with usage data extracted
-// from the stream capture. This ensures request_logs.response_body always contains a
+// from the stream capture. This ensures _request_logs.response_body always contains a
 // `usage` block even when the upstream's last SSE chunk does not include one.
 func injectUsageIntoResponseBody(body []byte, pt, ct, crt, cwt int) []byte {
 	if pt <= 0 && ct <= 0 {
@@ -8548,7 +8580,7 @@ func classifyStreamInterruption(m map[string]any) (isError bool, detailCode stri
 }
 
 // streamErrorKindForDetailCode maps the StreamOutcome.FailureDetailCode
-// captured at the executor boundary to a stable request_logs.error_kind
+// captured at the executor boundary to a stable _request_logs.error_kind
 // value. Operators SQL-filter on this column to break down the "stream
 // issue" bucket into actionable categories:
 //
@@ -8633,7 +8665,7 @@ func streamErrorKindForDetailCode(outcome *StreamOutcome, detailCode string) str
 // trackerFromResultOrLogCtx returns the routing tracker from the executor
 // result first, falling back to the logCtx-level tracker. This ensures the
 // failure path (no_candidate, pre-executor errors) also surfaces routing
-// attempts in the request_logs.routing_attempts column.
+// attempts in the _request_logs.routing_attempts column.
 func trackerFromResultOrLogCtx(result *executors.ExecuteResult, logCtx *RequestLogContext) *executors.RoutingAttemptsTracker {
 	if result != nil && result.RoutingTracker != nil {
 		return result.RoutingTracker
@@ -8652,7 +8684,7 @@ func canonicalOrClient(canonical, client string) string {
 }
 
 // generateRequestID returns a stable per-request UUID used both as the
-// X-Request-Id response header and as the request_logs row's request_id
+// X-Request-Id response header and as the _request_logs row's request_id
 // column.  Always non-empty so the safety-net logger can find a row.
 func generateRequestID() string {
 	return uuid.NewString()
@@ -8960,7 +8992,7 @@ func mapExecuteErrorToKind(err *executors.ExecuteError) string {
 }
 
 // errorKindOrFallback (2026-06-20) returns the real underlying error
-// kind for request_logs.error_kind. Falls back to "model_not_found"
+// kind for _request_logs.error_kind. Falls back to "model_not_found"
 // when the kind is empty or "unknown" so we never write a misleading
 // empty/garbage value to the database. The HTTP error.code is handled
 // separately (see serveWithExecutor's Exhausted branch) and stays
@@ -8974,7 +9006,7 @@ func errorKindOrFallback(kind string) string {
 
 // extractUpstreamError (2026-06-23 P0) walks an error chain looking for
 // an *upstream.Error. Used by the relay handler to surface the vendor's
-// actual response body (and HTTP status) into request_logs so that
+// actual response body (and HTTP status) into _request_logs so that
 // transient/5xx failures become diagnostically useful. Walks Unwrap
 // because the routing layer wraps upstream errors with fmt.Errorf("%w",
 // ...) for retry/exhaustion tracking.
@@ -8998,7 +9030,7 @@ func extractUpstreamError(err error) (*upstreampkg.Error, bool) {
 // key, HTTP status, and OpenAI-style error type. The whole purpose of
 // this helper is to make "the upstream rejected OUR credential" stand
 // out from "the upstream had a transient 5xx" — operations staff need to
-// be able to grep request_logs.error_kind and immediately tell the two
+// be able to grep _request_logs.error_kind and immediately tell the two
 // apart.
 //
 // Returns ("", "", 0, "") when the failure is NOT a credential problem
@@ -9146,7 +9178,7 @@ func extractUpstreamReasonRaw(err error) string {
 //
 // 2026-06-20 audit fix v2: When the body is captured but has no
 // "model" field (e.g. /v1/messages client omitted model, or body is
-// `{}`), set client_model to "<unknown>" so request_logs never shows
+// `{}`), set client_model to "<unknown>" so _request_logs never shows
 // a blank client_model alongside a non-empty request_body. Without
 // this, the operator cannot tell whether the body was empty OR the
 // client simply forgot the model field — both look like an empty
@@ -9181,7 +9213,7 @@ func captureAttemptBody(r *http.Request, bodyOut *[]byte, modelOut *string) {
 		return
 	}
 	// Body captured but no model field found — record as <unknown>
-	// so request_logs.client_model is never blank when body is set.
+	// so _request_logs.client_model is never blank when body is set.
 	// This distinguishes "empty body" from "body present but no
 	// model field" — both look the same otherwise.
 	*modelOut = "<unknown>"
@@ -9320,7 +9352,7 @@ func boolToFloat(b bool) float64 {
 // streamChunksSentFromLogCtx returns the count of stream chunks sent for
 // this request, defaulting to 0 when logCtx is nil (non-streaming path or
 // pre-init failure). Added 2026-07-01 to satisfy the NOT NULL constraint
-// on request_logs.stream_chunks_sent (migration 320) — without this
+// on _request_logs.stream_chunks_sent (migration 320) — without this
 // helper, BuildSuccessEntry used to leave reqLog.StreamChunksSent nil,
 // causing INSERT/UPDATE to fail with SQLSTATE 23502 and stopping all
 // new rows from being written on 184.
@@ -9363,7 +9395,7 @@ func applyActualOutboundBody(logCtx *RequestLogContext, result *executors.Execut
 
 // requestBytesFromLogCtx returns the request body size from logCtx.
 // Returns nil if logCtx is nil or RequestBodySize is 0 (to avoid storing
-// zero values in request_logs.request_bytes for requests without bodies).
+// zero values in _request_logs.request_bytes for requests without bodies).
 // 2026-07-25: Used for Redis real-time body size statistics.
 func requestBytesFromLogCtx(c *RequestLogContext) *int {
 	if c == nil || c.RequestBodySize <= 0 {

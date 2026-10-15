@@ -267,4 +267,10 @@
 249	851_disable_overbroad_pii_ip_address_rule.sql
 250	855_session_analytics_time_window.sql
 251	856_usage_ledger_ts_cover_agg_idx.sql
-252	857_tighten_pii_phone_intl_regex.sql
+252	857_analyze_columnar_staleness_gate.sql
+253	858_request_logs_final_success_gsid_idx.sql
+254	859_tighten_pii_phone_intl_regex.sql
+255	860_rename_request_logs_family_pending_delete.sql
+256	861_candidate_failure_view_absorb_session_id.sql
+257	862_partition_family_leading_ts_idx.sql
+258	863_handoff_partition_am_aware.sql

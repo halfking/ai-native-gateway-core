@@ -244,7 +244,7 @@ func (s *Service) chargeTokensWithMultiplier(ctx context.Context, tenantID, requ
 	// INSERT … ON CONFLICT DO UPDATE is row-locked by PG, so concurrent
 	// ChargeRequest calls in different gateway instances accumulate
 	// safely without external locking. Backfill (cmd/gateway startup)
-	// reconciles from request_logs.credits_charged for catch-up windows.
+	// reconciles from _request_logs.credits_charged for catch-up windows.
 	_, _ = s.pool.Exec(ctx, `
 		INSERT INTO maas_credit_consumption_buckets
 			(tenant_id, bucket_start, credits, request_count, updated_at)

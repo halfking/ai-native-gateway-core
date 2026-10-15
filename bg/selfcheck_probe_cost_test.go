@@ -174,7 +174,7 @@ func expectPickModelsThree(mock pgxmock.PgxPoolIface, credID int) {
 			AddRow("model-b", "model-b").AddRow("model-c", "model-c"))
 	mock.ExpectQuery("FROM routing_policy").WithArgs("default").
 		WillReturnRows(pgxmock.NewRows([]string{"featured_models"}).AddRow([]string{"model-a"}))
-	// No request_logs_hot expectation: with no Redis ranking (w.redis nil)
+	// No _request_logs_hot expectation: with no Redis ranking (w.redis nil)
 	// recentInUsageWindow short-circuits on the empty recent set.
 }
 

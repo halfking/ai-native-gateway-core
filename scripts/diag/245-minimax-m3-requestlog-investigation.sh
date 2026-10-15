@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 245 minimax-m3 request_logs_hot 写入缺失诊断脚本
+# 245 minimax-m3 _request_logs_hot 写入缺失诊断脚本
 # 2026-08-23 — Step 6: 配套 telemetry_sanitize_events_total{outcome=discarded|rescued}
 # Prometheus counter、EmitRequestLogUpdate 必填字段守卫、sanitize 后保留 truncated
 # prefix 的新行为。
@@ -47,7 +47,7 @@ else
   COLUMN_CMD="cat"
 fi
 
-echo "================ 245 minimax-m3 request_logs_hot 调查 ================"
+echo "================ 245 minimax-m3 _request_logs_hot 调查 ================"
 echo "日志目录 : $LOG_DIR"
 echo "PG       : $PGUSER@$PGHOST:$PGPORT/$PGDATABASE"
 echo "回看时长 : 最近 $LOOKBACK_HOURS 小时"
@@ -119,19 +119,19 @@ SELECT
   count(*) FILTER (WHERE request_status = 'client_disconnect') AS client_disc,
   count(*) FILTER (WHERE request_status NOT IN ('success','failure','client_disconnect') OR request_status IS NULL) AS other,
   count(*) AS total
-FROM request_logs_hot
+FROM _request_logs_hot
 WHERE ts > now() - interval '$LOOKBACK_HOURS hour'
   AND lower(COALESCE(NULLIF(outbound_model, ''), NULLIF(client_model, ''))) IN ('minimax-m3','gpt-5.6-terra')
 GROUP BY 1
 ORDER BY 1;
 SQL
 
-  echo "  [3a] 各模型在 request_logs_hot 的状态分布（按实际模型字段）："
+  echo "  [3a] 各模型在 _request_logs_hot 的状态分布（按实际模型字段）："
   $COLUMN_CMD "$OUT_DIR/sql-model-counts.txt" | sed 's/^/    /'
   echo
 
   # 3b) 以 WAL request_id 为基准对照 logs_hot。两表模型字段不一致时，
-  #     仍能准确识别“WAL 有、最终 request_logs_hot 没有”的请求。
+  #     仍能准确识别“WAL 有、最终 _request_logs_hot 没有”的请求。
   psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -At -F'|' <<SQL > "$OUT_DIR/sql-wal-vs-logs.txt"
 WITH wal AS (
   SELECT request_id, lower(client_model) AS model
@@ -141,7 +141,7 @@ WITH wal AS (
 ), matched AS (
   SELECT w.model, w.request_id, (r.request_id IS NOT NULL) AS log_present
   FROM wal w
-  LEFT JOIN request_logs_hot r ON r.request_id = w.request_id
+  LEFT JOIN _request_logs_hot r ON r.request_id = w.request_id
 )
 SELECT model,
        count(*) AS wal_rows,
@@ -152,11 +152,11 @@ GROUP BY model
 ORDER BY model;
 SQL
 
-  echo "  [3b] WAL request_id vs request_logs_hot（缺失 = WAL 有但最终行不存在）："
+  echo "  [3b] WAL request_id vs _request_logs_hot（缺失 = WAL 有但最终行不存在）："
   $COLUMN_CMD "$OUT_DIR/sql-wal-vs-logs.txt" | sed 's/^/    /'
   echo
 
-  # 3c) 正文写在 request_logs_bodies_hot，不在 request_logs_hot；主表的
+  # 3c) 正文写在 _request_logs_bodies_hot，不在 _request_logs_hot；主表的
   #     request_body/response_body 为 NULL 是预期架构。这里同时区分 side-table
   #     行缺失与 side-table 正文 NULL，避免把正常元数据行误报成 sanitize 丢失。
   psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -At -F'|' <<SQL > "$OUT_DIR/sql-null-rates.txt"
@@ -164,7 +164,7 @@ WITH logs AS (
   SELECT request_id, ts,
          lower(COALESCE(NULLIF(outbound_model, ''), NULLIF(client_model, ''))) AS model,
          outbound_body, routing_attempts, attachments, tool_calls, discard_events, t9_response_end_at
-  FROM request_logs_hot
+  FROM _request_logs_hot
   WHERE ts > now() - interval '$LOOKBACK_HOURS hour'
     AND lower(COALESCE(NULLIF(outbound_model, ''), NULLIF(client_model, ''))) IN ('minimax-m3','gpt-5.6-terra')
 )
@@ -179,7 +179,7 @@ SELECT l.model,
   round(100.0 * count(*) FILTER (WHERE l.tool_calls IS NULL) / count(*), 1) AS tool_calls_null_pct,
   round(100.0 * count(*) FILTER (WHERE l.discard_events IS NULL) / count(*), 1) AS discard_null_pct
 FROM logs l
-LEFT JOIN request_logs_bodies_hot b ON b.request_id = l.request_id
+LEFT JOIN _request_logs_bodies_hot b ON b.request_id = l.request_id
 GROUP BY l.model
 ORDER BY l.model;
 SQL
@@ -191,7 +191,7 @@ SQL
   psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -At -F'|' <<SQL > "$OUT_DIR/sql-failure-detail.txt"
 SELECT
   request_status, error_kind, failure_detail_code, failure_stage, count(*)
-FROM request_logs_hot
+FROM _request_logs_hot
 WHERE ts > now() - interval '$LOOKBACK_HOURS hour'
   AND lower(COALESCE(NULLIF(outbound_model, ''), NULLIF(client_model, ''))) = 'minimax-m3'
   AND (request_status <> 'success' OR success = false)
@@ -217,11 +217,11 @@ SELECT
 FROM (
   SELECT request_id,
          lower(COALESCE(NULLIF(outbound_model, ''), NULLIF(client_model, ''))) AS model
-  FROM request_logs_hot
+  FROM _request_logs_hot
   WHERE ts > now() - interval '$LOOKBACK_HOURS hour'
     AND lower(COALESCE(NULLIF(outbound_model, ''), NULLIF(client_model, ''))) IN ('minimax-m3','gpt-5.6-terra')
 ) l
-LEFT JOIN request_logs_bodies_hot b ON b.request_id = l.request_id
+LEFT JOIN _request_logs_bodies_hot b ON b.request_id = l.request_id
 GROUP BY l.model
 ORDER BY l.model;
 SQL
@@ -266,7 +266,7 @@ echo "2) 若 [3c] 显示 minimax-m3 的正文 side-table 行缺失或正文 NULL
 echo "   占比远高于 gpt-5.6-terra："
 echo "   → 检查 sanitizeRequestLogEntry、upsertRequestLogBodies 及 DB 写入失败。"
 echo "     注意 request_logs_hot.request_body/response_body 按设计为 NULL，"
-echo "     不能单独作为 sanitize 丢失证据；以 request_logs_bodies_hot 为准。"
+echo "     不能单独作为 sanitize 丢失证据；以 _request_logs_bodies_hot 为准。"
 echo "     Step 6 起，部分场景（truncate 救回 JSON prefix）会改为 rescued，"
 echo "     而不是 discarded；rescued 的累积计数见"
 echo "     telemetry_sanitize_events_total{outcome=\"rescued\"}。"

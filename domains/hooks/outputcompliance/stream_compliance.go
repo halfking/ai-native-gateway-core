@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"sync"
 
@@ -218,6 +219,21 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 		}
 		if result.Blocked {
 			metrics.OutputGateDecisionsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateActionBlock, metrics.OutputGatePathStreamLane).Inc()
+			// r1028 (2026-10-14, 154 incident): the lane block used to be
+			// completely silent — no log named the request, so every hit
+			// looked like an unexplained client disconnect. Log the decision
+			// with the joined-lane shape; the payload preview stays off the
+			// log on purpose (blocked text may carry the very bytes the
+			// policy refuses to emit).
+			slog.Warn("output_compliance: blocked stream lane",
+				"request_id", meta.RequestID,
+				"session_id", meta.SessionID,
+				"tenant_id", meta.TenantID,
+				"lane", lane,
+				"label", label,
+				"lane_bytes", len(original),
+				"issues", len(result.Issues),
+			)
 			return nil, errors.New("output policy blocked stream lane")
 		}
 		if !state.redact || result.RedactedOutput == "" || result.RedactedOutput == original {
@@ -225,6 +241,15 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 		}
 		for _, part := range parts {
 			if part.field.immutable || (it.mandatory && (isToolArgumentLane(lane) || part.field.label != "")) {
+				slog.Warn("output_compliance: refused stream lane rewrite",
+					"request_id", meta.RequestID,
+					"session_id", meta.SessionID,
+					"tenant_id", meta.TenantID,
+					"lane", lane,
+					"mandatory", it.mandatory,
+					"immutable_field", part.field.immutable,
+					"lane_bytes", len(original),
+				)
 				return nil, errors.New("cannot safely rewrite signed or sensitive tool stream lane")
 			}
 		}
@@ -396,6 +421,12 @@ func (it *OutputComplianceInterceptor) inspectSSEFrame(ctx context.Context, fram
 		}
 		if result.Blocked {
 			metrics.OutputGateDecisionsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateActionBlock, metrics.OutputGatePathStreamComment).Inc()
+			slog.Warn("output_compliance: blocked stream comment",
+				"request_id", meta.RequestID,
+				"session_id", meta.SessionID,
+				"tenant_id", meta.TenantID,
+				"comment_bytes", len(text),
+			)
 			return nil, errors.New("output policy blocked stream comment")
 		}
 		checked.parts = append(checked.parts, &streamTextPart{
@@ -454,6 +485,13 @@ func (it *OutputComplianceInterceptor) inspectSSEFrame(ctx context.Context, fram
 		}
 		if result.Blocked {
 			metrics.OutputGateDecisionsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateActionBlock, metrics.OutputGatePathStreamEvent).Inc()
+			slog.Warn("output_compliance: blocked stream event",
+				"request_id", meta.RequestID,
+				"session_id", meta.SessionID,
+				"tenant_id", meta.TenantID,
+				"label", label,
+				"field_bytes", len(original),
+			)
 			return nil, errors.New("output policy blocked stream event")
 		}
 		if incremental {

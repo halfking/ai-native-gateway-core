@@ -17,7 +17,7 @@
 //   - admin.TurnListItem 与 admin.SessionChildRequest 必须显式标注
 //   - admin.SessionDetailV2API 通过 resolveSessionID 把 gw_session_id
 //     反向解析为 session_id，且绝不暴露 SessionPK
-//   - 跨租户访问被 sessions / request_logs RLS 拒绝（基线断言，详见
+//   - 跨租户访问被 sessions / _request_logs RLS 拒绝（基线断言，详见
 //     session_analytics_rls_test.go 的同等断言风格）
 //
 // 运行：go test ./tests/session_identity_contract/... -v
@@ -78,7 +78,7 @@ func TestSessionSummary_FiveIDContractLocksJSONTags(t *testing.T) {
 		t.Fatalf("Unmarshal SessionSummary: %v", err)
 	}
 
-	// contract_freeze §1.3：V1 列表聚合自 request_logs.gw_session_id，字段必须标注。
+	// contract_freeze §1.3：V1 列表聚合自 _request_logs.gw_session_id，字段必须标注。
 	if got := payload["id_kind"]; got != "gw_session_id" {
 		t.Errorf("id_kind=%v, want gw_session_id", got)
 	}
@@ -154,8 +154,8 @@ func TestSessionListV2_ResponseIDKindAnnotation(t *testing.T) {
 	}
 	defer mock.Close()
 
-	// sessionforensics.ListRecentSessions 用 request_logs 表（gw_session_id 聚合）。
-	mock.ExpectQuery(`FROM request_logs`).
+	// sessionforensics.ListRecentSessions 用 _request_logs 表（gw_session_id 聚合）。
+	mock.ExpectQuery(`FROM _request_logs`).
 		WithArgs("default", 50).
 		WillReturnRows(sessionListV2ContractRow("gw_abc"))
 
@@ -177,7 +177,7 @@ func TestSessionListV2_ResponseIDKindAnnotation(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	// contract_freeze §1.6：list_v2 的数据源是 request_logs.gw_session_id，
+	// contract_freeze §1.6：list_v2 的数据源是 _request_logs.gw_session_id，
 	// 顶层 + 每行都必须显式标注"gw_session_id"，禁止标签错位。
 	if resp.IdKind != "gw_session_id" {
 		t.Errorf("top-level id_kind=%q, want gw_session_id", resp.IdKind)
@@ -231,7 +231,7 @@ func TestSessionListV2_TenantPinnedToAuthContext(t *testing.T) {
 	defer mock.Close()
 
 	// 传入 ?tenant=other（他人租户），但查询参数必须是 auth 租户 tenant-a。
-	mock.ExpectQuery(`FROM request_logs`).
+	mock.ExpectQuery(`FROM _request_logs`).
 		WithArgs("tenant-a", 50).
 		WillReturnRows(sessionListV2ContractRow("gw_abc"))
 
@@ -251,7 +251,7 @@ func TestSessionListV2_TenantPinnedToAuthContext(t *testing.T) {
 
 // TestSessionDetailV2_ResolveGwSessionIDToSessionID 验证
 // admin.SessionDetailV2API.resolveSessionID 把 gw_session_id 反向解析为
-// session_id 走通（路径：request_logs.gw_session_id → sessions.primary_request_id
+// session_id 走通（路径：_request_logs.gw_session_id → sessions.primary_request_id
 // → sessions.session_id）。
 //
 // 失败语义：5 类 ID 互不替代 → 输入 gw_session_id 时，绝不允许 querySession
@@ -342,7 +342,7 @@ func TestSessionTurnV2_TurnPKNotSerialized(t *testing.T) {
 
 // TestSessionDetailV2_ReverseMapFallbackToPrimaryRequestID 测试
 // resolveSessionID 步骤 2：direct miss → 反向映射路径
-// request_logs.gw_session_id → sessions.primary_request_id → session_id。
+// _request_logs.gw_session_id → sessions.primary_request_id → session_id。
 //
 // 这条路径在生产里通常走不到（V2 writer 默认把 sessions.session_id 与
 // gw_session_id 保持一致），但必须在 spec 上存在 —— 老的 V1-only 数据
@@ -565,7 +565,7 @@ func TestSessionListV2_QueryFailureDoesNotLeakInternalError(t *testing.T) {
 	defer mock.Close()
 
 	secret := "pq: relation \"request_logs_partition_missing\" does not exist tenant-a"
-	mock.ExpectQuery(`FROM request_logs`).
+	mock.ExpectQuery(`FROM _request_logs`).
 		WithArgs("tenant-a", 50).
 		WillReturnError(errors.New(secret))
 

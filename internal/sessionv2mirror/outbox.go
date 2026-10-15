@@ -11,7 +11,7 @@
 // 设计取舍（plan §4-S4 方案对比定案）：仅失败路径 outbox 化——正常路径与
 // 8 槽/2000ms 前台预算零改动；全量 outbox 化被否（100% 写两遍与存储优化
 // 目标相悖，且 session_aggregate_outbox 的 payload 是 SessionUpdate 聚合
-// 快照，重放不写 turns）。payload 自带全量事实，S4 停写 request_logs 后
+// 快照，重放不写 turns）。payload 自带全量事实，S4 停写 _request_logs 后
 // 重放不依赖 v1 反查。
 //
 // 前台预算契约：登记是单行轻量 INSERT，走独立 500ms 短预算、不占

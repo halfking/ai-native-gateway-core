@@ -186,7 +186,7 @@ JOIN pg_class child  ON child.oid  = i.inhrelid
 JOIN pg_class parent ON parent.oid = i.inhparent
 WHERE child.relname LIKE '%_default'
   AND parent.relname IN (
-    'request_logs','usage_ledger','request_wal','tool_usage_stats',
+    '_request_logs','usage_ledger','request_wal','tool_usage_stats',
     'routing_decision_log','credit_ledger','credential_model_index',
     'handoff_logs','candidate_failure_logs','credential_model_call_history'
   )

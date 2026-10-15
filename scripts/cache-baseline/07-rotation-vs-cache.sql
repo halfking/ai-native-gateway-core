@@ -1,7 +1,7 @@
 -- 缓存命中率基线诊断 - 凭据轮换对缓存的影响
 -- 文件: scripts/cache-baseline/07-rotation-vs-cache.sql
 -- 用途: 评估凭据轮换对缓存的影响
--- 数据源: request_logs + session_credential_rotations
+-- 数据源: _request_logs + session_credential_rotations
 -- 时间窗: 最近 7 天
 
 WITH rotation_counts AS (
@@ -22,7 +22,7 @@ SELECT
   COUNT(DISTINCT r.session_id) AS session_count,
   ROUND(AVG(r.cache_read_tokens), 0) AS avg_cache_read,
   ROUND(AVG(r.prompt_tokens), 0) AS avg_prompt
-FROM request_logs r
+FROM _request_logs r
 LEFT JOIN rotation_counts rc ON rc.session_id = r.session_id
 WHERE r.ts >= NOW() - INTERVAL '7 days'
   AND r.success = true

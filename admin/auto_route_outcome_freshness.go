@@ -16,9 +16,9 @@ import (
 // auto-route endpoints return is **not measured** by the request being served —
 // it is produced later by bg.AutoRouteSettleWorker, which fills in the outcome
 // by joining that worker's selection row back to the v1 hot table
-// (`settleBatch`: `LEFT JOIN request_logs_hot rl ON rl.request_id = s.request_id`).
+// (`settleBatch`: `LEFT JOIN _request_logs_hot rl ON rl.request_id = s.request_id`).
 // The cohort baselines the reward normalises against come from the same table
-// (`loadTaskBaselines`: percentiles over `request_logs_hot`).
+// (`loadTaskBaselines`: percentiles over `_request_logs_hot`).
 //
 // So the v1 hot table is this family's **evidence source**, and after the S4
 // stop-write it freezes while `auto_route_selections` keeps receiving new rows.
@@ -108,7 +108,7 @@ func queryOutcomeFreshness(ctx context.Context, db outcomeFreshnessDB, now time.
 	}
 
 	var asOf *time.Time
-	if err := db.QueryRow(ctx, `SELECT MAX(ts) FROM request_logs_hot`).Scan(&asOf); err != nil {
+	if err := db.QueryRow(ctx, `SELECT MAX(ts) FROM _request_logs_hot`).Scan(&asOf); err != nil {
 		// A dropped relation is the EXPECTED end state of the retirement, not a
 		// fault: report it as such and let the endpoint answer normally.
 		var pgErr *pgconn.PgError

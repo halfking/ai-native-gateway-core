@@ -11,7 +11,7 @@
 //     but the hot-only path is sufficient for this test — we skip the
 //     partitioned parent by never inserting into it; the view falls back
 //     to the hot rows on their own)
-//   - request_logs_hot carrying origin_actor (the new LEFT JOIN)
+//   - _request_logs_hot carrying origin_actor (the new LEFT JOIN)
 //   - session_summaries (existing aggregate() dependency)
 //
 // Contract under test:
@@ -37,7 +37,7 @@ import (
 )
 
 const affinityWorkerSchema = `
-CREATE TABLE request_logs_hot (
+CREATE TABLE _request_logs_hot (
 	request_id text PRIMARY KEY,
 	origin_actor text,
 	ts timestamptz NOT NULL DEFAULT NOW()
@@ -95,14 +95,14 @@ func TestAutoRouteAffinity_AggregateExcludesSyntheticActors_RealDB(t *testing.T)
 	// lands in this test's per-test schema, and the code under test reads these
 	// tables unqualified as well — measured 2026-10-02:
 	//
-	//	bg/auto_route_settle_worker.go   FROM request_logs_hot, JOIN request_logs_hot,
+	//	bg/auto_route_settle_worker.go   FROM _request_logs_hot, JOIN _request_logs_hot,
 	//	                                 FROM auto_route_selections_hot,
 	//	                                 UPDATE auto_route_selections_hot
-	//	bg/auto_route_affinity_worker.go FROM request_logs_hot, JOIN request_logs_hot
+	//	bg/auto_route_affinity_worker.go FROM _request_logs_hot, JOIN _request_logs_hot
 	//
 	// These statements used to say `public.…`, which sent them to the PRODUCTION
 	// table on the gate database instead of the fixture — measured as
-	// "null value in column "tenant_id" of relation "request_logs_hot"
+	// "null value in column "tenant_id" of relation "_request_logs_hot"
 	// violates not-null constraint" (23502), a constraint the fixture table does
 	// not have. De-qualifying is the fix, and it is NOT a vacuous one: the
 	// product queries resolve through search_path to the same per-test schema
@@ -119,10 +119,10 @@ func TestAutoRouteAffinity_AggregateExcludesSyntheticActors_RealDB(t *testing.T)
 		}
 	}
 
-	// Seed request_logs_hot with origin_actor for each synthetic / real row.
+	// Seed _request_logs_hot with origin_actor for each synthetic / real row.
 	// All rows settled within the affinity window so the WHERE clause's
 	// s.settled_at >= NOW() - interval doesn't drop them.
-	mustExec(`INSERT INTO request_logs_hot (request_id, origin_actor) VALUES
+	mustExec(`INSERT INTO _request_logs_hot (request_id, origin_actor) VALUES
 		('req-real', ''),
 		('req-goal', 'goal-audit'),
 		('req-loop', 'auto-title-generator'),

@@ -167,7 +167,7 @@ SELECT
     COUNT(*) FILTER (WHERE success = true) AS success,
     COUNT(*) FILTER (WHERE success = false) AS failed,
     ROUND(100.0 * COUNT(*) FILTER (WHERE success = true) / NULLIF(COUNT(*), 0), 2) AS rate
-FROM request_logs_hot
+FROM _request_logs_hot
 WHERE ts >= NOW() - INTERVAL '$TIME_WINDOW minutes';
 EOF
 )
@@ -220,7 +220,7 @@ SELECT
     COUNT(*) AS total,
     COUNT(*) FILTER (WHERE success = true) AS success,
     ROUND(100.0 * COUNT(*) FILTER (WHERE success = true) / COUNT(*), 2) AS rate
-FROM request_logs_hot
+FROM _request_logs_hot
 WHERE ts >= NOW() - INTERVAL '$TIME_WINDOW minutes'
   AND (outbound_model LIKE '%minimax%' OR outbound_model LIKE '%glm%' 
        OR client_model LIKE '%minimax%' OR client_model LIKE '%glm%')
@@ -313,7 +313,7 @@ check_error_distribution() {
 SELECT 
     error_kind,
     COUNT(*) AS count
-FROM request_logs_hot
+FROM _request_logs_hot
 WHERE ts >= NOW() - INTERVAL '$TIME_WINDOW minutes'
   AND success = false
   AND error_kind IS NOT NULL

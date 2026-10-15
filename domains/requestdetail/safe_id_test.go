@@ -26,7 +26,7 @@ import (
 //
 // Bench / routing-test prefixed IDs are NOT request_ids — they are
 // bench-only identifiers that the test suite uses directly. They must
-// never appear in the request_id column of request_logs and so the
+// never appear in the request_id column of _request_logs and so the
 // regex correctly rejects them.
 func TestSafeRequestIDCompatibilityMatrix(t *testing.T) {
 	cases := []struct {

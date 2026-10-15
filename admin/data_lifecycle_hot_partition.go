@@ -29,12 +29,12 @@ func quoteIdentifier(name string) string {
 // 2026-07-14: model_probe_runs_hot 切换为纯 hot 表策略，
 // 移除了 model_probe_runs_hot 项（不再 promote）。
 var hotPromoteTableMap = map[string]string{
-	"request_logs_hot":              "promote_request_logs_hot_to_partition",
+	"_request_logs_hot":             "promote_request_logs_hot_to_partition",
 	"usage_ledger_hot":              "promote_usage_ledger_hot_to_partition",
 	"request_wal_hot":               "promote_request_wal_hot_to_partition",
 	"routing_decision_log_hot":      "promote_routing_decision_log_hot_to_partition",
 	"credential_model_index_hot":    "promote_credential_model_index_hot_to_partition",
-	"request_logs_bodies_hot":       "promote_request_logs_bodies_hot_to_partition",
+	"_request_logs_bodies_hot":      "promote_request_logs_bodies_hot_to_partition",
 	"credit_ledger_hot":             "promote_credit_ledger_hot_to_partition",
 	"tool_usage_stats_hot":          "promote_tool_usage_stats_hot_to_partition",
 	"candidate_failure_logs_hot":    "promote_candidate_failure_logs_hot_to_partition",
@@ -422,8 +422,8 @@ func (h *Handler) runHotPromoteJob(ctx context.Context, job *HotPromoteJob, maxB
 				"total_migrated", job.TotalMigrated,
 				"batches", job.BatchesExecuted,
 				"duration_seconds", job.DurationSeconds)
-			if job.TableName == "request_logs_hot" && job.TotalMigrated > 0 {
-				job.Warning = "已迁移数据，但 TOAST 空间尚未释放。请在【存储总览】页面对 request_logs_hot 执行 VACUUM FULL 以回收磁盘空间。"
+			if job.TableName == "_request_logs_hot" && job.TotalMigrated > 0 {
+				job.Warning = "已迁移数据，但 TOAST 空间尚未释放。请在【存储总览】页面对 _request_logs_hot 执行 VACUUM FULL 以回收磁盘空间。"
 			}
 			return
 		}
@@ -680,8 +680,8 @@ func (h *Handler) handleDataLifecyclePromoteHot(w http.ResponseWriter, r *http.R
 	if totalMigrated == 0 && resp.Status == "success" {
 		resp.Message = "no rows eligible for migration (all data within retention window)"
 	}
-	if req.TableName == "request_logs_hot" && totalMigrated > 0 {
-		resp.Warning = "已迁移数据，但 TOAST 空间尚未释放。请在【存储总览】页面对 request_logs_hot 执行 VACUUM FULL 以回收磁盘空间。"
+	if req.TableName == "_request_logs_hot" && totalMigrated > 0 {
+		resp.Warning = "已迁移数据，但 TOAST 空间尚未释放。请在【存储总览】页面对 _request_logs_hot 执行 VACUUM FULL 以回收磁盘空间。"
 	}
 
 	slog.Info("data-lifecycle: manual promote complete",

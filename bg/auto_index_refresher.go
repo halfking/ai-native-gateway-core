@@ -367,14 +367,14 @@ func (r *AutoIndexRefresher) RefreshOnceStatus(ctx context.Context) (skipped boo
 // snapshot into credential_model_index.
 //
 // Source of truth (last 5 min bucket from credential_model_peak_1m +
-// historical request_logs). One row per (credential_id, raw_model).
+// historical _request_logs). One row per (credential_id, raw_model).
 //
 // Pre-computes the three profile scores (smart, speed_first, cost_first)
 // inline so the hot path (Decider.Decide) doesn't need to recompute.
 //
 // 2026-06-28 (provider-314 incident): the underlying SELECT is a
 // UNION ALL of two halves:
-//   - half 1: traffic-derived (request_logs last 5 min) — original path
+//   - half 1: traffic-derived (_request_logs last 5 min) — original path
 //   - half 2: cold-start fallback (v_routable_credential_models bindings
 //     not already covered by half 1)
 //
@@ -445,8 +445,8 @@ func (r *AutoIndexRefresher) rollupCredentialModelIndex(ctx context.Context, buc
 // rollupModelTaskIndex inserts the latest per-canonical × per-task_type
 // snapshot into model_task_index.
 //
-// Source: request_logs in the last 5 minutes, classified by task_type
-// (heuristic, persisted in request_logs.task_type from auto requests).
+// Source: _request_logs in the last 5 minutes, classified by task_type
+// (heuristic, persisted in _request_logs.task_type from auto requests).
 // If no auto requests yet, the table stays empty — that's fine.
 //
 // S4 停写登记（2026-10-13 S3 波 3 实测，不迁）：auto 请求（sys:% 会话）
@@ -484,21 +484,21 @@ func (r *AutoIndexRefresher) rollupModelTaskIndex(ctx context.Context, bucket ti
 //	(2) Cold-start fallback rows (added 2026-06-28):
 //	    For every (credential_id, raw_model) that is_routable=TRUE in the
 //	    unified v_routable_credential_models view BUT was not produced by
-//	    the request_logs rollup above, insert a baseline row with neutral
+//	    the _request_logs rollup above, insert a baseline row with neutral
 //	    scores (success_rate=0.9, p95=1000, scores=50). This closes the
 //	    "manual disable → traffic stops → credential_model_index drains
 //	    → auto-route forgets the credential → admin re-enables → still
 //	    invisible" loop (provider-314/gpt-5.4 incident 2026-06-28).
 //	    Default values are conservative: a restored credential sits at
-//	    cohort-average quality until the first real request_logs row
+//	    cohort-average quality until the first real _request_logs row
 //	    arrives, at which point the ON CONFLICT DO UPDATE branch takes
 //	    over and replaces the baseline with live metrics.
 //
 // Cost note: this query is the heaviest in the v2.0 data plane. It runs
 // every 5 minutes and touches ~3k rows for a typical 5-min window.
 // Mitigations if it gets slow:
-//   - Add covering index on request_logs(credential_id, ts)
-//   - Materialise request_logs into a per-minute summary table
+//   - Add covering index on _request_logs(credential_id, ts)
+//   - Materialise _request_logs into a per-minute summary table
 //   - Run in a separate "reporting" DB replica
 //
 // NOTE: The profile-score pre-computation in SQL is intentionally rough.
@@ -509,7 +509,7 @@ func (r *AutoIndexRefresher) rollupModelTaskIndex(ctx context.Context, bucket ti
 // signals, so the SQL scores are advisory.
 var rollupCredentialModelIndexSQL = `
 WITH fresh AS (
--- ── Half 1: traffic-derived rows (5-min window from request_logs) ─────────
+-- ── Half 1: traffic-derived rows (5-min window from _request_logs) ─────────
 -- 2026-09-10 修复：peak 子查询改为关联内层 q 的分组列。原来子查询里引用
 -- COALESCE(rl.outbound_model, rl.client_model)，它只是 GROUP BY 表达式而非
 -- 裸列，PG 报 "subquery uses ungrouped column"。聚合下推到 q，外层再取
@@ -611,7 +611,7 @@ FROM (
            mo.unit_price_in_per_1m AS mo_price_in,
            mo.unit_price_out_per_1m AS mo_price_out,
            rl.success, rl.latency_ms
-    FROM request_logs_hot rl
+    FROM _request_logs_hot rl
     LEFT JOIN model_offers mo
       ON mo.credential_id = rl.credential_id
      AND (mo.outbound_model_name = COALESCE(rl.outbound_model, rl.client_model)
@@ -651,11 +651,11 @@ GROUP BY rl.credential_id, rl.model_key,
 UNION ALL
 
 -- ── Half 2: cold-start fallback (added 2026-06-28, provider-314 incident) ─
--- For every routable binding that the request_logs rollup above did NOT
+-- For every routable binding that the _request_logs rollup above did NOT
 -- already produce, write a baseline row so the auto-route can see it
 -- even with zero recent traffic. Baseline values are intentionally
 -- conservative (success=0.9, p95=1000, scores=50) — the first real
--- request through the credential will produce a request_logs row that
+-- request through the credential will produce a _request_logs row that
 -- the half-1 rollup will overwrite via ON CONFLICT DO UPDATE below.
 --
 -- Anti-join clause: skip pairs that already appeared in half 1 so we
@@ -710,7 +710,7 @@ LEFT JOIN models_canonical mc       ON mc.id = pm.canonical_id
 WHERE v.is_routable = TRUE
   AND pm.raw_model_name IS NOT NULL
   AND NOT EXISTS (
-      SELECT 1 FROM request_logs_hot rl
+      SELECT 1 FROM _request_logs_hot rl
       WHERE rl.credential_id = v.credential_id
         AND (rl.outbound_model = pm.raw_model_name
           OR rl.client_model  = pm.raw_model_name)
@@ -796,7 +796,7 @@ ON CONFLICT (bucket, credential_id, raw_model) DO UPDATE SET
     updated_at           = NOW()
 `
 
-// rollupModelTaskIndexSQL aggregates request_logs into per-task-type
+// rollupModelTaskIndexSQL aggregates _request_logs into per-task-type
 // performance buckets. Used by the admin auto-route dashboard
 // ("which model wins which task type?") and future analytics.
 //
@@ -823,7 +823,7 @@ SELECT
          ELSE 0
     END AS avg_cost_per_1k_usd,
     MODE() WITHIN GROUP (ORDER BY rl.credential_id) AS primary_credential_id
-FROM request_logs_hot rl
+FROM _request_logs_hot rl
 WHERE rl.ts >= NOW() - INTERVAL '5 minutes'
   AND rl.ts < $1
   AND rl.is_auto_request = TRUE

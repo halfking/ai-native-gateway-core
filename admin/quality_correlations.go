@@ -22,7 +22,7 @@ package admin
 // The response also includes an "insights" section that ranks
 // each predictor by absolute Pearson correlation with quality_score.
 //
-// NOTE: All SELECTs on request_logs in this file use buildBreakdownQuery()
+// NOTE: All SELECTs on _request_logs in this file use buildBreakdownQuery()
 // which is wrapped by the handler to inject tenantLogsClause() (see
 // admin/session_tenant.go) — adds "AND tenant_id = $N" for tenant_admin
 // callers on non-default tenants. Super-admin / legacy admin_key /
@@ -37,8 +37,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
-	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
 
 // QualityCorrelationRow is a single bucket row.
@@ -154,18 +152,6 @@ func (h *AutoRouteHandlers) handleQualityCorrelations(w http.ResponseWriter, r *
 // Each query aggregates per-bucket and computes the average
 // success/latency/quality/cost. The bucket definition is inlined
 // in the SELECT/GROUP BY.
-//
-// 2026-10-13 S4 波 4：读源会话族化（退役门登记的 DROP 前置实现项）。
-// turns 腿改 canonical 会话族源（is_auto_request/ts/success/latency_ms/
-// quality_score/cost_usd/prompt_tokens/request_preview/tenant_id 全在
-// 118 列合同内）；bodies 腿经切换层取 **outbound_body**（完整上游请求
-// 对象，含 tools 键与 messages）——不能像旧实现那样读 request_body：
-// 会话臂的 request_body 是 request_delta 增量数组（无 tools/messages 键），
-// 机械沿用会把 tools/images 桶静默塌成 '0'/'no_image'。
-// 语义边界（登记在案）：无会话头的探针行按设计不进会话族（R51），
-// 分桶样本自此只含**业务 auto 流量**（旧实现对 is_auto_request=TRUE 的
-// 查询无探针排除谓词、探针行混入样本——新口径更干净，属口径变更）。
-// 停写前历史由 canonical 的 v1 臂继续供数（is_auto_request 在 707 加列）。
 func buildBreakdownQuery(by string) (string, error) {
 	var bucketExpr string
 	switch by {
@@ -179,29 +165,22 @@ func buildBreakdownQuery(by string) (string, error) {
 				ELSE '8000+'
 			END`
 	case "tools":
-		// Count tools in the JSONB outbound_body (full upstream request).
-		// ⚠ jsonb_typeof 守卫（波 4 的 22023 教训）：outbound_body 缺
-		// tools 键时 ->'tools' 为 NULL、COALESCE 兜 '[]'；但 tools 为
-		// JSON 字面量 null 时 SQL 值非 NULL，裸 jsonb_array_length 直接
-		// 22023——非 array 一律记 0。
+		// Count tools in the JSONB request_body
+		// 2026-07-21 Ticket #11: Use COALESCE to access request_body from either table
 		bucketExpr = `
 			CASE
-				WHEN CASE WHEN jsonb_typeof(COALESCE(rb.outbound_body->'tools', '[]'::jsonb)) = 'array'
-				          THEN jsonb_array_length(rb.outbound_body->'tools')
-				          ELSE 0 END = 0
+				WHEN jsonb_array_length(COALESCE(rb.request_body->'tools', '[]'::jsonb)) = 0
 					THEN '0'
-				WHEN CASE WHEN jsonb_typeof(COALESCE(rb.outbound_body->'tools', '[]'::jsonb)) = 'array'
-				          THEN jsonb_array_length(rb.outbound_body->'tools')
-				          ELSE 0 END = 1
+				WHEN jsonb_array_length(COALESCE(rb.request_body->'tools', '[]'::jsonb)) = 1
 					THEN '1'
 				ELSE '2+'
 			END`
 	case "images":
-		// Count images in messages. outbound_body 为 JSON null 时
-		// ->'messages' 得 NULL、NULL @> x 不为真 ⇒ 落 no_image（安全）。
+		// Count images in messages
+		// 2026-07-21 Ticket #11: Use COALESCE to access request_body from either table
 		bucketExpr = `
 			CASE
-				WHEN COALESCE(rb.outbound_body, '{}'::jsonb)->'messages' @> '[{"content":[{"type":"image_url"}]}]'::jsonb
+				WHEN COALESCE(rb.request_body, '{}'::jsonb)->'messages' @> '[{"content":[{"type":"image_url"}]}]'::jsonb
 					THEN 'has_image'
 				ELSE 'no_image'
 			END`
@@ -209,9 +188,10 @@ func buildBreakdownQuery(by string) (string, error) {
 		// Check for triple-backtick in any message. We use
 		// chr(96) three times to avoid backticks inside the
 		// raw string literal (which would terminate it).
+		// 2026-07-21 Ticket #11: Use COALESCE to access request_body from either table
 		bucketExpr = `
 			CASE
-				WHEN position(chr(96) || chr(96) || chr(96) in COALESCE(rb.outbound_body, '{}'::jsonb)::text) > 0
+				WHEN position(chr(96) || chr(96) || chr(96) in COALESCE(rb.request_body, '{}'::jsonb)::text) > 0
 					THEN 'has_code'
 				ELSE 'no_code'
 			END`
@@ -234,16 +214,36 @@ func buildBreakdownQuery(by string) (string, error) {
 		return "", nil // unreachable: caller already validated
 	}
 
+	// ⚠ 2026-10-14（S3 波 4 bodies 逐点评估）删掉 `LEFT JOIN request_logs_bodies
+	// rb ON rb.request_id = rl.request_id`，并删掉上方那段"2026-07-21 Ticket #11
+	// 为了读 request_body 的 JSONB 结构而加 JOIN"的注释。
+	//
+	// **注释是过期的，JOIN 是它留下的孤儿**：当前这条查询的分桶是**语言维度**
+	// （`request_preview ~ '[一-鿿]'` 那一串正则，见 bucketExpr），投影里
+	// `COUNT/AVG(rl.*)` 也一个 rb 列都没用 ⇒ 该 JOIN 不参与任何计算。
+	// Ticket #11 当年服务的是 tools / images / code_block 维度，那些维度后来
+	// 换掉了，JOIN 没人删。
+	//
+	// 为什么现在删而不是登记：它是 v1 bodies 读方总体里的一处**纯字面量死读点**，
+	// 而 v1 bodies 的退役前置是逐点评估（TestV1BodiesReadersAreAssessed）——
+	// 一个什么都不做的读点没有"退役后由什么替代"可写，删掉才是评估结论本身。
+	//
+	// 等价性是实测的（本地库 2026-10-14，7 天窗全部桶逐行对撞）：
+	// 带 JOIN / 不带 JOIN 两侧逐字相同 ——
+	// en  22,951 行 success_rate 0.500501 avg_latency 4841 avg_cost 0.00000000
+	// zh     835 行 success_rate 0.947305 avg_latency 3163 avg_cost 0.00000000
+	//
+	// ⚠ 本文件真正的停写失效源**不是**这个 JOIN，而是 `FROM request_logs`
+	// 裸母表 + `is_auto_request = TRUE`：auto/探针流量按设计不进会话族，
+	// 属 S3 波 2 已登记的「探针面族」（不迁，主拍板项）。
 	return `
 		SELECT ` + bucketExpr + ` AS bucket,
 		       COUNT(*) AS samples,
 		       AVG(CASE WHEN rl.success THEN 1.0 ELSE 0.0 END) AS success_rate,
 		       COALESCE(AVG(rl.latency_ms), 0)::int AS avg_latency,
-		       COALESCE(AVG(rl.quality_score), 0) AS avg_quality,
+		       AVG(rl.quality_score) AS avg_quality,
 		       COALESCE(AVG(rl.cost_usd), 0) AS avg_cost
-		FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl
-		LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb
-		  ON rb.request_id = rl.request_id
+		FROM request_logs rl
 		WHERE rl.is_auto_request = TRUE
 		  AND rl.ts >= NOW() - INTERVAL '1 day' * $1
 		GROUP BY 1

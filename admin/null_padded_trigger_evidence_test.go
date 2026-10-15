@@ -248,7 +248,7 @@ func TestNullPaddedFamilyHitsAreVisible(t *testing.T) {
 // （跨表 `id` 分不出来），所以这一半也不能自动接受。
 var nullPaddedNonSqlOnlyJustified = map[string]string{
 	"admin/attachments_routes.go": "via=id。命中只在 :65 的注释散文「the request " +
-		"id is in the path」；本文件对 request_logs 族的唯一读点（attachmentOwnedByTenant，" +
+		"id is in the path」；本文件对 _request_logs 族的唯一读点（attachmentOwnedByTenant，" +
 		"已双腿化）只判 EXISTS/JOIN 上的 request_id 与 tenant_id，从不引用 id 列。",
 	"admin/credential_monitor_heatmap.go": "via=credits_rate_multiplier。命中只在 :306-318 " +
 		"那段**注释**里（解释 815 三列与 §9.27 的自纠过程，正文写着「真库该视图现为 118 列…」）。" +
@@ -256,12 +256,12 @@ var nullPaddedNonSqlOnlyJustified = map[string]string{
 		"⇒ 列名出现在注释里，恰恰是**描述**过期，不是代码在过滤补位列。",
 	"admin/memora_handlers.go": "via=id。命中是 :107-108 的**注释散文**（guessed ID）与 " +
 		":168/:663 的 **Go map 键**（`\"id\": fact.ID` / `\"id\": b.ID`，那是 L1 Memora 事实的 " +
-		"JSON 响应字段名，与 SQL 无关）。本文件对 request_logs 族的读点只产出 " +
+		"JSON 响应字段名，与 SQL 无关）。本文件对 _request_logs 族的读点只产出 " +
 		"COUNT(*) 与 client_model，**既不选也不按 id 过滤**。",
 	"admin/route_incidents.go": "via=id。`id` 在本文件是 **route incident 的 Go 标识符**：" +
 		":8/:118 的路由文档 `{id}`、:132 `id := parts[0]`、以及各 handler 的 `id string` 形参；" +
 		"其 SQL 用的是 `incident_id` 与 `inc.ID`（:647/:782/:799/:548），" +
-		"对 request_logs 族的读点不引用 id 列。",
+		"对 _request_logs 族的读点不引用 id 列。",
 }
 
 func fmtCounts(label string, n int) string {

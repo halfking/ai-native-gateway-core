@@ -366,12 +366,12 @@ function audit_credential_model_index() {
 }
 
 # ============================================================
-# 表 7: request_logs_bodies 审计
+# 表 7: _request_logs_bodies 审计
 # ============================================================
 function audit_request_logs_bodies() {
-    local table="request_logs_bodies"
+    local table="_request_logs_bodies"
     log_section "表 7: $table 审计"
-    write_report "## 7. request_logs_bodies 审计\n\n"
+    write_report "## 7. _request_logs_bodies 审计\n\n"
     
     ((TOTAL_TESTS++))
     
@@ -405,7 +405,7 @@ function audit_request_logs_bodies() {
         ((FAILED_TESTS++))
         log_error "❌ JSONB 插入失败"
         write_report "- JSONB 插入: ❌ 失败\n"
-        ALL_ISSUES+=("request_logs_bodies: JSONB插入失败")
+        ALL_ISSUES+=("_request_logs_bodies: JSONB插入失败")
     fi
     
     # 清理
@@ -415,11 +415,11 @@ function audit_request_logs_bodies() {
 }
 
 # ============================================================
-# 表 8: request_logs 审计（已完成，仅记录）
+# 表 8: _request_logs 审计（已完成，仅记录）
 # ============================================================
 function audit_request_logs() {
-    log_section "表 8: request_logs 审计（已完成）"
-    write_report "## 8. request_logs 审计\n\n"
+    log_section "表 8: _request_logs 审计（已完成）"
+    write_report "## 8. _request_logs 审计\n\n"
     write_report "- 状态: ✅ 已在单独测试中完成\n"
     write_report "- 详细报告: docs/request-logs-data-audit-report.md\n\n"
     ((TOTAL_TESTS++))

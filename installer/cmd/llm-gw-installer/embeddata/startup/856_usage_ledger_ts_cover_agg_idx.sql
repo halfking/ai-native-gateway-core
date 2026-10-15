@@ -66,6 +66,11 @@
 
 BEGIN;
 
+-- 共享 PG 服务端 statement_timeout=30s。父表+hot 覆盖索引在存量分区上
+-- 是秒级到几十秒（856 头注：usage_ledger_2026_09 = 720 MB），不加
+-- SET LOCAL 会在部署链上 57014，与 849/855 同形。
+SET LOCAL statement_timeout = '10min';
+
 -- 分区父表：级联到每个分区。
 CREATE INDEX IF NOT EXISTS usage_ledger_ts_tenant_cover_agg_idx
     ON public.usage_ledger (ts, tenant_id)

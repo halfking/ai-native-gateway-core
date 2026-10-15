@@ -2,7 +2,7 @@
 //
 // 激活 provider_cost_reconciliation（供应商成本对账，doc 19 §3 CO-3）：
 //
-//	request_logs_hot + request_logs --按 provider+月聚合--> 对账表
+//	_request_logs_hot + _request_logs --按 provider+月聚合--> 对账表
 //	管理端导入供应商账单 ------------------------------> 对账表（provider_* 列）
 //	差异率超阈值 -------------------------------------> provider_events 告警事件
 //

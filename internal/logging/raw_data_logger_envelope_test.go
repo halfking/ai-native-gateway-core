@@ -19,7 +19,7 @@ import (
 // the same envelope and verifying both land in the file even when the
 // queue is intentionally small. The second body is large enough to
 // force an overflow entry, which must still carry the correlation
-// envelope so request_logs and the on-disk audit log stay joinable.
+// envelope so _request_logs and the on-disk audit log stay joinable.
 func TestAsyncRawDataLogger_OverflowEntry(t *testing.T) {
 	dir := t.TempDir()
 	// capacity=1 forces the second enqueue to fall into the overflow

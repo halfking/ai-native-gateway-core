@@ -170,7 +170,7 @@ func TestIntegrityFingerprintDriftAlertNamesTheRealCause(t *testing.T) {
 	require.True(t, strings.Contains(text, "停写之前探针就已经是空的"),
 		"the alert must state the measured fact that the probe was ALREADY empty before stop-write; "+
 			"§9.51 retracted the \"stop-write is the likely cause\" version")
-	require.True(t, strings.Contains(text, "FROM request_logs_hot"),
+	require.True(t, strings.Contains(text, "FROM _request_logs_hot"),
 		"the alert must ship the query that reproduces the diagnosis — a conclusion with no "+
 			"measuring stick leaves the next reader guessing")
 

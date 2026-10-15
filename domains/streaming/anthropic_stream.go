@@ -127,9 +127,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 	// 无空行终止帧会滞留 GateWriter.pending，survival 分支由 coordinator
 	// Finish() 兜住，非 survival 路径此前无人排水——终端帧丢失但请求记
 	// success。DrainPending 对空 pending 是 no-op，重复排水无害。
-	if gw, ok := w.(*GateWriter); ok {
-		defer gw.DrainPending()
-	}
+	defer drainGateWriterPending(w)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)

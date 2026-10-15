@@ -14,7 +14,7 @@ import (
 // ── Attachment Filesystem Management API ────────────────────────────────────
 // 管理附件文件系统：目录大小、磁盘空间、文件数统计、按时间清理文件。
 // 与 data_lifecycle_attachments.go 的区别：
-//   - data_lifecycle_attachments.go: 管理 DB 中的 request_logs.attachments JSONB 元数据
+//   - data_lifecycle_attachments.go: 管理 DB 中的 _request_logs.attachments JSONB 元数据
 //   - 本文件: 管理文件系统中的实体文件（按 hash 命名的 .png/.jpg 等）
 
 // AttachmentFilesystemStatsResponse 附件文件系统统计信息

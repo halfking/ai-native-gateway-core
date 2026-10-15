@@ -11,7 +11,7 @@ import (
 )
 
 // CO-5 (docs/修订0811/19 §3, M2) briefly replaced bodies persisted to
-// request_logs_bodies_hot with digest envelopes. That write mode is disabled;
+// _request_logs_bodies_hot with digest envelopes. That write mode is disabled;
 // the envelope implementation remains only for compatibility tests and admin
 // readers of rows written while it was active.
 //
@@ -25,13 +25,13 @@ const (
 	// a full body.
 	bodySummaryModeDigest = "digest"
 	// bodySummaryHeadBytes bounds the retained head prefix of the raw body
-	// inside the digest envelope. Aligned with the request_logs preview
+	// inside the digest envelope. Aligned with the _request_logs preview
 	// policy (bounded audit head), but larger since this is the only body
 	// retained in summary mode.
 	bodySummaryHeadBytes = 2048
 )
 
-// gwBodySummary is the digest envelope written to request_logs_bodies_hot in
+// gwBodySummary is the digest envelope written to _request_logs_bodies_hot in
 // summary mode. The outer JSON object carries a single "_gw_body_summary"
 // key so consumers (admin log views, forensics export) can detect the
 // downsampled form without colliding with real body fields.
@@ -110,7 +110,7 @@ func setRequestBodiesSummaryEnabledForTest(fn bodySummaryEnabledFn) {
 }
 
 // summarizeBodyJSON converts a full body JSON literal (the strPtrToJSON
-// output bound for request_logs_bodies_hot) into the digest envelope.
+// output bound for _request_logs_bodies_hot) into the digest envelope.
 //
 // No-payload sentinels are passed through unchanged so summary mode cannot
 // alter the NULL/{} semantics relied on by upsertRequestLogBodies ("missing

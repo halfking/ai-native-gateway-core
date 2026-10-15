@@ -52,10 +52,10 @@ func TestEmitRateLimited_EmitsNotRunDecisionRow(t *testing.T) {
 	defer mockDB.Close()
 	mockDB.MatchExpectationsInOrder(false)
 
-	// The completion-side request_logs UPSERT fires first (insertRateLimited
+	// The completion-side _request_logs UPSERT fires first (insertRateLimited
 	// placeholder aside, EmitRequestLogUpdate upserts on request_id).
 	// No WithArgs: the SQL shape is the contract here, not the column list.
-	mockDB.ExpectExec(`INSERT INTO request_logs_hot`).
+	mockDB.ExpectExec(`INSERT INTO _request_logs_hot`).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	// The not-run-class decision row.
 	mockDB.ExpectExec(`INSERT INTO routing_decision_log_hot`).

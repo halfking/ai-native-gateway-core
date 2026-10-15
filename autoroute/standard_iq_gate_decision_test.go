@@ -9,7 +9,7 @@ import (
 
 // TestDecideV2_StandardIQGate_FilterReasonsInMetadata pins the RT-1 audit
 // contract end-to-end: when the gate excludes a candidate, the decision
-// metadata (Decision.FilterReasons, surfaced in request_logs.auto_decision)
+// metadata (Decision.FilterReasons, surfaced in _request_logs.auto_decision)
 // records why; when the gate is off, FilterReasons stays nil.
 func TestDecideV2_StandardIQGate_FilterReasonsInMetadata(t *testing.T) {
 	build := func() (*Decider, *Index) {

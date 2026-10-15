@@ -16,7 +16,7 @@ import (
 // # 它和已有那张表不是一回事
 //
 // `requestLogsReadInventory`（108 文件 / 256 调用点，R48-A10 订正）答的是「谁在文本上写了
-// `from request_logs…`」；`cmd/tools/sql_source_indirection_audit` 答的是
+// `from _request_logs…`」；`cmd/tools/sql_source_indirection_audit` 答的是
 // 「哪些读点的关系名是 Go 标识符拼进去的」。**两张表是两个总体，不是一张表的两半**
 // —— 这正是 §9.259 那句「114」踩的坑，下面 TestV1ReaderTieringDomainIsBothPopulations
 // 把两个总体各自的成员钉住，就是为了不让下一次再把它们当成一个数。
@@ -51,98 +51,98 @@ var v1ReaderRetirementTiering = map[string]retirementTieringEntry{
 	"admin/auto_route_outcome_freshness.go": {Tier: "④", Reason: "auto-route 结果新鲜度 queryOutcomeFreshness：是结算正确性门（②）还是自检（③），取决于它卡不卡结算"},
 	"admin/auto_title_generator.go":         {Tier: "②", Reason: "对外功能：会话标题生成读 v1 首条成功轮次"},
 	"admin/body_resolver.go":                {Tier: "②", Reason: "对外功能：请求体解析（bodies），退役后详情页仍要显示"},
-	// 2026-10-13 S4 波 4 出列：admin/compression_sessions.go 整只端点会话族化。
-	"admin/compression_stats.go":          {Tier: "②", Reason: "对外 API：压缩统计端点"},
-	"admin/credential_monitor.go":         {Tier: "③", Reason: "凭证监控摘要（summaryCache + buildMonitorSummarySQL）：观测面，读 v1 是被观测对象"},
-	"admin/credential_monitor_heatmap.go": {Tier: "③", Reason: "凭证健康热力图：同上，运维观测面"},
-	"admin/credential_success_rate.go":    {Tier: "②", Reason: "对外 API：凭证成功率。★ 注意：它同时是监控面，但走 HTTP 响应，退役后端点仍需有数"},
-	"admin/dashboard_board_queries.go":    {Tier: "②", Reason: "对外 API：看板首屏聚合（读 composer 建的 v1 臂视图）"},
-	"admin/data_lifecycle.go":             {Tier: "②", Reason: "对外 API + **对 v1 有写**：数据生命周期清理/预览，退役后清理对象要改"},
-	"admin/data_lifecycle_attachments.go": {Tier: "②", Reason: "对外 API：附件清理"},
-	// data_lifecycle_blobs 于 2026-10-13（S4 波 4）出列：会话臂治理已落地。
-	"admin/data_lifecycle_metrics.go":   {Tier: "②", Reason: "对外 API：生命周期指标"},
-	"admin/diagnostics_credential.go":   {Tier: "③", Reason: "凭证诊断端点 handleCredentialDiagnostic：诊断面"},
-	"admin/live_stream_sse.go":          {Tier: "④", Reason: "SSE 实时流 replay/terminalStatusesFromDB：退役后是否继续供流式详情，需属主定"},
-	"admin/logs.go":                     {Tier: "②", Reason: "对外 API：日志列表/详情/统计（读 v1 基表）"},
-	"admin/logs_summary.go":             {Tier: "②", Reason: "对外功能：会话日志摘要（bodies 读方）"},
-	"admin/memora_handlers.go":          {Tier: "②", Reason: "对外 API：memora 会话/上下文端点"},
-	"admin/model_routing_diagnostic.go": {Tier: "③", Reason: "模型路由诊断端点：诊断面"},
-	"admin/model_status.go":             {Tier: "②", Reason: "对外 API：模型状态"},
-	"admin/no_topic_session.go":         {Tier: "②", Reason: "对外 API：无主题会话端点"},
-	"admin/probe_history.go":            {Tier: "③", Reason: "probe-run 历史端点：这个读的**目的**就是看 v1 探针跑过什么"},
-	"admin/provider_diagnose.go":        {Tier: "③", Reason: "provider 诊断（从 provider_probe.go 拆出）：诊断面"},
-	"admin/provider_models.go":          {Tier: "②", Reason: "对外 API：provider 下的模型与用量（§9.49 动态列盲区形态）"},
-	"admin/providers.go":                {Tier: "②", Reason: "对外 API：provider 列表"},
-	"admin/quality_correlations.go":     {Tier: "③", Reason: "请求级质量关联分析：观测面（2026-10-13 S4 波 4 起经 canonical+切换层读，v1 臂）"},
-	"admin/request_trace.go":            {Tier: "②", Reason: "对外 API：请求链路"},
-	"admin/route_incidents.go":          {Tier: "③", Reason: "路由事故（route_incidents）：观测面"},
+	"admin/compression_sessions.go":         {Tier: "②", Reason: "对外 API：压缩会话端点"},
+	"admin/compression_stats.go":            {Tier: "②", Reason: "对外 API：压缩统计端点"},
+	"admin/credential_monitor.go":           {Tier: "③", Reason: "凭证监控摘要（summaryCache + buildMonitorSummarySQL）：观测面，读 v1 是被观测对象"},
+	"admin/credential_monitor_heatmap.go":   {Tier: "③", Reason: "凭证健康热力图：同上，运维观测面"},
+	"admin/credential_success_rate.go":      {Tier: "②", Reason: "对外 API：凭证成功率。★ 注意：它同时是监控面，但走 HTTP 响应，退役后端点仍需有数"},
+	"admin/dashboard_board_queries.go":      {Tier: "②", Reason: "对外 API：看板首屏聚合（读 composer 建的 v1 臂视图）"},
+	"admin/data_lifecycle.go":               {Tier: "②", Reason: "对外 API + **对 v1 有写**：数据生命周期清理/预览，退役后清理对象要改"},
+	"admin/data_lifecycle_attachments.go":   {Tier: "②", Reason: "对外 API：附件清理"},
+	"admin/data_lifecycle_blobs.go":         {Tier: "②", Reason: "对外 API + 对 v1 有写：blob 清理"},
+	"admin/data_lifecycle_metrics.go":       {Tier: "②", Reason: "对外 API：生命周期指标"},
+	"admin/diagnostics_credential.go":       {Tier: "③", Reason: "凭证诊断端点 handleCredentialDiagnostic：诊断面"},
+	"admin/live_stream_sse.go":              {Tier: "④", Reason: "SSE 实时流 replay/terminalStatusesFromDB：退役后是否继续供流式详情，需属主定"},
+	"admin/logs.go":                         {Tier: "②", Reason: "对外 API：日志列表/详情/统计（读 v1 基表）"},
+	"admin/logs_summary.go":                 {Tier: "②", Reason: "对外功能：会话日志摘要（bodies 读方）"},
+	"admin/memora_handlers.go":              {Tier: "②", Reason: "对外 API：memora 会话/上下文端点"},
+	"admin/model_routing_diagnostic.go":     {Tier: "③", Reason: "模型路由诊断端点：诊断面"},
+	"admin/model_status.go":                 {Tier: "②", Reason: "对外 API：模型状态"},
+	"admin/no_topic_session.go":             {Tier: "②", Reason: "对外 API：无主题会话端点"},
+	"admin/probe_history.go":                {Tier: "③", Reason: "probe-run 历史端点：这个读的**目的**就是看 v1 探针跑过什么"},
+	"admin/provider_diagnose.go":            {Tier: "③", Reason: "provider 诊断（从 provider_probe.go 拆出）：诊断面"},
+	"admin/provider_models.go":              {Tier: "②", Reason: "对外 API：provider 下的模型与用量（§9.49 动态列盲区形态）"},
+	"admin/providers.go":                    {Tier: "②", Reason: "对外 API：provider 列表"},
+	"admin/quality_correlations.go":         {Tier: "③", Reason: "请求级质量关联分析：观测面"},
+	"admin/request_trace.go":                {Tier: "②", Reason: "对外 API：请求链路"},
+	"admin/route_incidents.go":              {Tier: "③", Reason: "路由事故（route_incidents）：观测面"},
 	// admin/routing.go 于 2026-10-13（S3 波 3 停写切换）除名：唯一的 v1 读点
 	// popularModelsHotSQL 改读会话族原生源（SessionFamilyTurnsSourceSQL），
 	// 文件已无任何 v1 读点证据（字面量 106→105，分档域 114→113）。
-	"admin/session_analytics_breakdown.go":     {Tier: "②", Reason: "对外 API：会话分析分组"},
-	"admin/session_analytics_timeseries.go":    {Tier: "②", Reason: "对外 API：会话分析时序"},
-	"admin/session_bodies_batch.go":            {Tier: "②", Reason: "对外功能：bodies 批量读（经切换层 SessionBodiesSourceSQL）"},
-	"admin/session_compare.go":                 {Tier: "②", Reason: "对外 API：会话对比（间接读方，§9.259 点名的 7 个之一）"},
-	"admin/session_detail_v2.go":               {Tier: "②", Reason: "对外 API：会话详情 v2"},
-	"admin/session_export.go":                  {Tier: "②", Reason: "对外 API：会话导出（★ FROM 读会话族 LEFT JOIN bodies，退役总体是 session_turns 不是 v1）"},
-	"admin/session_extract.go":                 {Tier: "②", Reason: "对外 API：会话抽取"},
-	"admin/session_management_api.go":          {Tier: "②", Reason: "对外 API：会话管理"},
-	"admin/session_online.go":                  {Tier: "②", Reason: "对外 API：在线会话时间线"},
-	"admin/session_sanitize_matches.go":        {Tier: "②", Reason: "对外功能：脱敏匹配（bodies 读方）"},
-	"admin/session_summary_v2.go":              {Tier: "②", Reason: "对外功能：会话摘要 v2（含 v1 回退查询）"},
-	"admin/session_tenant.go":                  {Tier: "②", Reason: "对外功能：会话租户判定"},
-	"admin/session_timeline_query.go":          {Tier: "②", Reason: "对外功能：会话时间线查询"},
-	"admin/session_title.go":                   {Tier: "②", Reason: "对外功能：任务标题生成"},
-	"admin/session_turns_tree.go":              {Tier: "②", Reason: "对外 API：会话轮次树"},
-	"admin/session_turns_unified.go":           {Tier: "②", Reason: "对外 API：统一轮次读端"},
-	"admin/swim_lane_init.go":                  {Tier: "②", Reason: "对外 API：看板泳道初始化"},
-	"admin/telemetry.go":                       {Tier: "②", Reason: "对外 API + **对 v1 有写**：`/api/telemetry/request-log` 是 v1 写入端点之一"},
-	"admin/tenants.go":                         {Tier: "②", Reason: "对外 API：租户列表与统计"},
-	"admin/top_problems.go":                    {Tier: "③", Reason: "top-problems 报告：观测面"},
-	"admin/unified_detail.go":                  {Tier: "②", Reason: "对外功能：统一详情（bodies 读方）"},
-	"admin/usage.go":                           {Tier: "②", Reason: "对外 API：用量（**含 `/api/maas/usage/summary` 对外计费面**）"},
-	"admin/usage_credits.go":                   {Tier: "②", Reason: "对外 API + 切换层：积分用量，requestLogsFromClause 切换层所在地"},
-	"admin/usage_enhanced.go":                  {Tier: "②", Reason: "对外 API：用量增强（planCostTrend 切换层）"},
-	"admin/usage_trend_series.go":              {Tier: "②", Reason: "对外 API：用量趋势时序（usageTrendSource 切换层；★ §9.260 点名的 3 个字面量盲区之一）"},
-	"admin/work_types.go":                      {Tier: "②", Reason: "对外 API：工作类型统计"},
-	"autoroute/recommend_v2.go":                {Tier: "③", Reason: "推荐索引（读 v1 纠错分）：自检面"},
-	"bg/auto_index_refresher.go":               {Tier: "②", Reason: "后台：自动建索引刷新器（按 v1 表规模决策，退役后要改判对象）"},
-	"bg/auto_route_affinity_worker.go":         {Tier: "②", Reason: "后台：任务→模型亲和度学习（从已结算选择学，读 v1）"},
-	"bg/auto_route_settle_sql.go":              {Tier: "②", Reason: "★ 后台结算：`settleSourceFor` 写门开＝v1_hot、写门关＝session_turns_hot，同一段 SQL 两族切换"},
-	"bg/candidate_failure_monitor.go":          {Tier: "③", Reason: "候选失败监控：探针面"},
-	"bg/credential_recovery.go":                {Tier: "③", Reason: "凭证恢复（探针驱动）：观测→动作，探针面"},
-	"bg/credential_selfcheck.go":               {Tier: "③", Reason: "凭证自检：读 v1 是被自检对象"},
-	"bg/daily_probe_audit.go":                  {Tier: "③", Reason: "每日探针审计：探针面"},
-	"bg/integrity_fingerprint_drift.go":        {Tier: "③", Reason: "指纹漂移：探针面"},
-	"bg/integrity_fingerprint_probe.go":        {Tier: "③", Reason: "指纹探针：探针面"},
-	"bg/ledger_reconciliation.go":              {Tier: "③", Reason: "账本对账（usage_ledger↔credit_ledger）：对账面"},
-	"bg/lite_retention_worker.go":              {Tier: "①", Reason: "lite 模式行级 TTL：v1 那条 DELETE 腿随 v1 退役；**文件本身不退役**（同函数还清 sessions/session_turns）"},
-	"bg/model_probe.go":                        {Tier: "③", Reason: "模型探针：探针面"},
-	"bg/model_tier.go":                         {Tier: "③", Reason: "常用模型分级「用于自检」：自检面"},
-	"bg/passive_probe_listener.go":             {Tier: "③", Reason: "被动观测监听器（Layer 5 passive observer）：观测面"},
-	"bg/shared_pick.go":                        {Tier: "②", Reason: "后台：探针选型共享逻辑（PickProbeModelForCredential）"},
-	"bg/stats_minute_rollup.go":                {Tier: "②", Reason: "后台：分钟级聚合 **写入 request_stats_minute**（聚合表退役后仍要算，读源必须改）"},
-	"bg/stats_minute_rollup_retire.go":         {Tier: "②", Reason: "后台：删除聚合表里视图不再产出的键 —— **NOT EXISTS 守卫读 v1 臂视图**，退役后守卫要改指"},
-	"bg/today_success_probe.go":                {Tier: "③", Reason: "当日成功探针：探针面"},
-	"cmd/compression-bench/main.go":            {Tier: "④", Reason: "scenario_driver / traffic-replay / compression-bench：压测与回放工具，读 v1 形态随工具定位"},
-	"cmd/gateway/dual_read_validator.go":       {Tier: "③", Reason: "双读校验器：存在的意义就是校验 v1 与 v2 读数一致"},
-	"cmd/gateway/main_v3_wiring.go":            {Tier: "②", Reason: "进程装配：V3 接线引用 v1 读点"},
-	"cmd/gateway/output_compliance_control.go": {Tier: "④", Reason: "output 出口合规控制：读 v1 判合规，合规门在退役后是否还有对象，需属主定"},
-	"cmd/gateway/v1_write_liveness.go":         {Tier: "③", Reason: "v1 写入腿存活读数（§9.264）：判据就是「v1 还在不在写」这个事实本身，观测面；⚠ §9.265 实测它让字面量总体从 107 变 108"},
-	"cmd/gateway/waterfall_by_request.go":      {Tier: "②", Reason: "对外功能：按请求的 waterfall"},
-	"cmd/gateway/waterfall_db.go":              {Tier: "②", Reason: "对外功能：waterfall DB 侧"},
-	// 2026-10-13 S4 波 4 出列：cmd/scenario_driver/main.go 断言改数会话族热表。
+	"admin/session_analytics_breakdown.go":      {Tier: "②", Reason: "对外 API：会话分析分组"},
+	"admin/session_analytics_timeseries.go":     {Tier: "②", Reason: "对外 API：会话分析时序"},
+	"admin/session_bodies_batch.go":             {Tier: "②", Reason: "对外功能：bodies 批量读（经切换层 SessionBodiesSourceSQL）"},
+	"admin/session_compare.go":                  {Tier: "②", Reason: "对外 API：会话对比（间接读方，§9.259 点名的 7 个之一）"},
+	"admin/session_detail_v2.go":                {Tier: "②", Reason: "对外 API：会话详情 v2"},
+	"admin/session_export.go":                   {Tier: "②", Reason: "对外 API：会话导出（★ FROM 读会话族 LEFT JOIN bodies，退役总体是 session_turns 不是 v1）"},
+	"admin/session_extract.go":                  {Tier: "②", Reason: "对外 API：会话抽取"},
+	"admin/session_management_api.go":           {Tier: "②", Reason: "对外 API：会话管理"},
+	"admin/session_online.go":                   {Tier: "②", Reason: "对外 API：在线会话时间线"},
+	"admin/session_sanitize_matches.go":         {Tier: "②", Reason: "对外功能：脱敏匹配（bodies 读方）"},
+	"admin/session_summary_v2.go":               {Tier: "②", Reason: "对外功能：会话摘要 v2（含 v1 回退查询）"},
+	"admin/session_tenant.go":                   {Tier: "②", Reason: "对外功能：会话租户判定"},
+	"admin/session_timeline_query.go":           {Tier: "②", Reason: "对外功能：会话时间线查询"},
+	"admin/session_title.go":                    {Tier: "②", Reason: "对外功能：任务标题生成"},
+	"admin/session_turns_tree.go":               {Tier: "②", Reason: "对外 API：会话轮次树"},
+	"admin/session_turns_unified.go":            {Tier: "②", Reason: "对外 API：统一轮次读端"},
+	"admin/swim_lane_init.go":                   {Tier: "②", Reason: "对外 API：看板泳道初始化"},
+	"admin/telemetry.go":                        {Tier: "②", Reason: "对外 API + **对 v1 有写**：`/api/telemetry/request-log` 是 v1 写入端点之一"},
+	"admin/tenants.go":                          {Tier: "②", Reason: "对外 API：租户列表与统计"},
+	"admin/top_problems.go":                     {Tier: "③", Reason: "top-problems 报告：观测面"},
+	"admin/unified_detail.go":                   {Tier: "②", Reason: "对外功能：统一详情（bodies 读方）"},
+	"admin/usage.go":                            {Tier: "②", Reason: "对外 API：用量（**含 `/api/maas/usage/summary` 对外计费面**）"},
+	"admin/usage_credits.go":                    {Tier: "②", Reason: "对外 API + 切换层：积分用量，requestLogsFromClause 切换层所在地"},
+	"admin/usage_enhanced.go":                   {Tier: "②", Reason: "对外 API：用量增强（planCostTrend 切换层）"},
+	"admin/usage_trend_series.go":               {Tier: "②", Reason: "对外 API：用量趋势时序（usageTrendSource 切换层；★ §9.260 点名的 3 个字面量盲区之一）"},
+	"admin/work_types.go":                       {Tier: "②", Reason: "对外 API：工作类型统计"},
+	"autoroute/recommend_v2.go":                 {Tier: "③", Reason: "推荐索引（读 v1 纠错分）：自检面"},
+	"bg/auto_index_refresher.go":                {Tier: "②", Reason: "后台：自动建索引刷新器（按 v1 表规模决策，退役后要改判对象）"},
+	"bg/auto_route_affinity_worker.go":          {Tier: "②", Reason: "后台：任务→模型亲和度学习（从已结算选择学，读 v1）"},
+	"bg/auto_route_settle_sql.go":               {Tier: "②", Reason: "★ 后台结算：`settleSourceFor` 写门开＝v1_hot、写门关＝session_turns_hot，同一段 SQL 两族切换"},
+	"bg/candidate_failure_monitor.go":           {Tier: "③", Reason: "候选失败监控：探针面"},
+	"bg/credential_recovery.go":                 {Tier: "③", Reason: "凭证恢复（探针驱动）：观测→动作，探针面"},
+	"bg/credential_selfcheck.go":                {Tier: "③", Reason: "凭证自检：读 v1 是被自检对象"},
+	"bg/daily_probe_audit.go":                   {Tier: "③", Reason: "每日探针审计：探针面"},
+	"bg/integrity_fingerprint_drift.go":         {Tier: "③", Reason: "指纹漂移：探针面"},
+	"bg/integrity_fingerprint_probe.go":         {Tier: "③", Reason: "指纹探针：探针面"},
+	"bg/ledger_reconciliation.go":               {Tier: "③", Reason: "账本对账（usage_ledger↔credit_ledger）：对账面"},
+	"bg/lite_retention_worker.go":               {Tier: "①", Reason: "lite 模式行级 TTL：v1 那条 DELETE 腿随 v1 退役；**文件本身不退役**（同函数还清 sessions/session_turns）"},
+	"bg/model_probe.go":                         {Tier: "③", Reason: "模型探针：探针面"},
+	"bg/model_tier.go":                          {Tier: "③", Reason: "常用模型分级「用于自检」：自检面"},
+	"bg/passive_probe_listener.go":              {Tier: "③", Reason: "被动观测监听器（Layer 5 passive observer）：观测面"},
+	"bg/shared_pick.go":                         {Tier: "②", Reason: "后台：探针选型共享逻辑（PickProbeModelForCredential）"},
+	"bg/stats_minute_rollup.go":                 {Tier: "②", Reason: "后台：分钟级聚合 **写入 request_stats_minute**（聚合表退役后仍要算，读源必须改）"},
+	"bg/stats_minute_rollup_retire.go":          {Tier: "②", Reason: "后台：删除聚合表里视图不再产出的键 —— **NOT EXISTS 守卫读 v1 臂视图**，退役后守卫要改指"},
+	"bg/today_success_probe.go":                 {Tier: "③", Reason: "当日成功探针：探针面"},
+	"cmd/compression-bench/main.go":             {Tier: "④", Reason: "scenario_driver / traffic-replay / compression-bench：压测与回放工具，读 v1 形态随工具定位"},
+	"cmd/gateway/dual_read_validator.go":        {Tier: "③", Reason: "双读校验器：存在的意义就是校验 v1 与 v2 读数一致"},
+	"cmd/gateway/main_v3_wiring.go":             {Tier: "②", Reason: "进程装配：V3 接线引用 v1 读点"},
+	"cmd/gateway/output_compliance_control.go":  {Tier: "④", Reason: "output 出口合规控制：读 v1 判合规，合规门在退役后是否还有对象，需属主定"},
+	"cmd/gateway/v1_write_liveness.go":          {Tier: "③", Reason: "v1 写入腿存活读数（§9.264）：判据就是「v1 还在不在写」这个事实本身，观测面；⚠ §9.265 实测它让字面量总体从 107 变 108"},
+	"cmd/gateway/waterfall_by_request.go":       {Tier: "②", Reason: "对外功能：按请求的 waterfall"},
+	"cmd/gateway/waterfall_db.go":               {Tier: "②", Reason: "对外功能：waterfall DB 侧"},
+	"cmd/scenario_driver/main.go":               {Tier: "④", Reason: "scenario_driver / traffic-replay / compression-bench：压测与回放工具，读 v1 形态随工具定位"},
 	"cmd/tools/backfill_session_bodies/main.go": {Tier: "①", Reason: "一次性 bodies 回填工具：源就是 v1 bodies（matryoshka），V2 上线前置，跑完即退役"},
-	"cmd/tools/validate_sessions_v2/loader.go":  {Tier: "①", Reason: "一次性 v1↔v2 对账工具：LoadV1Turns 读 request_logs_bodies，工具跑完即退役（cmd/tools/validate_sessions_v2）"},
+	"cmd/tools/validate_sessions_v2/loader.go":  {Tier: "①", Reason: "一次性 v1↔v2 对账工具：LoadV1Turns 读 _request_logs_bodies，工具跑完即退役（cmd/tools/validate_sessions_v2）"},
 	"cmd/traffic-replay/main.go":                {Tier: "④", Reason: "scenario_driver / traffic-replay / compression-bench：压测与回放工具，读 v1 形态随工具定位"},
-	"db/db.go":                                  {Tier: "①", Reason: "v1 生命周期 DDL：12 处 CREATE/ALTER/DROP request_logs*，读的不是数据而是 v1 这张表本身（db/db.go）"},
+	"db/db.go":                                  {Tier: "①", Reason: "v1 生命周期 DDL：12 处 CREATE/ALTER/DROP _request_logs*，读的不是数据而是 v1 这张表本身（db/db.go）"},
 	"db/probe_views_unified.go":                 {Tier: "③", Reason: "节点状态派生 SSOT（SQL 片段）：探针/节点面"},
 	"discovery/discovery.go":                    {Tier: "②", Reason: "对外功能：模型自动发现"},
 	"domains/analysis/optimizer.go":             {Tier: "④", Reason: "优化建议器 loadStats 读 v1 统计：建议是「观测」还是「面向用户的产出」，两侧都讲得通"},
 	// domains/analysis/request_summary.go 与 domains/streaming/model_alternatives.go
 	// 于 2026-10-13（S3 波 2 停写切换）除名：两者读源已整体迁至会话族原生源
 	//（SessionFamilyTurnsForSessionSQL / SessionFamilyTurnsSourceSQL），
-	// 与 request_logs 族再无关系引用——不再是 v1 读方，分档域只收 v1 读方。
+	// 与 _request_logs 族再无关系引用——不再是 v1 读方，分档域只收 v1 读方。
 	"domains/attachments/handler.go":                  {Tier: "②", Reason: "对外功能：附件按请求列出（ListByRequest）"},
 	"domains/credentialstate/popularity_tracker.go":   {Tier: "②", Reason: "后台：模型热度统计"},
 	"domains/hooks/goal/history_store.go":             {Tier: "②", Reason: "对外功能：目标历史按会话取（FetchBySession）"},
@@ -168,13 +168,13 @@ var v1ReaderRetirementTiering = map[string]retirementTieringEntry{
 // v1ArmViewNames 是「体里含 v1 臂」的视图集合，**与运行时真库对过账**。
 //
 // 真库 `pg_class`（2026-10-06 实测，`llm-gateway-pg` / `llm_gateway`）里
-// `relkind='v' AND relname LIKE 'request_logs%'` 只有这 4 个，
+// `relkind='v' AND relname LIKE '_request_logs%'` 只有这 4 个，
 // 且 4 个**全部**引用 v1 基表：
 //
-//	request_logs_bodies_with_current_month                  → request_logs_bodies, request_logs_bodies_hot
-//	request_logs_with_current_month                          → request_logs, request_logs_hot, session_turns(_hot), session_turn_details(_hot)
-//	request_logs_with_current_month_without_customer_id      → request_logs, request_logs_hot
-//	request_logs_with_current_month_without_request_class_due_at → request_logs, request_logs_hot
+//	request_logs_bodies_with_current_month                  → _request_logs_bodies, _request_logs_bodies_hot
+//	request_logs_with_current_month                          → _request_logs, _request_logs_hot, session_turns(_hot), session_turn_details(_hot)
+//	request_logs_with_current_month_without_customer_id      → _request_logs, _request_logs_hot
+//	request_logs_with_current_month_without_request_class_due_at → _request_logs, _request_logs_hot
 //
 // ★ 「与运行时对账」不是形式：推导源是 `sql/objects/views/*.sql` +
 // `db/request_logs_view_schema.go`，而后面那两个 `…_without_*` **没有仓库 DDL 文件**
@@ -210,8 +210,11 @@ var v1ArmLiteralBlindSpot = []string{
 	// （S4 停写交接）移出本桶：两处 bodies 读各加了 session 家族兜底腿
 	// （+dbpkg.SessionFamilyBodiesSourceSQL()+ 拼接点），拼接点工具从此
 	// 看得见它们 —— 按本门的口径迁入 v1ReaderIndirectPopulation。
-	// admin/compression_sessions.go 于 2026-10-13（S4 波 4）移出本桶：整只端点
-	// 会话族化（canonical turns 源 + SessionFamilyBodiesSourceSQL）。
+	// admin/compression_sessions.go 于 2026-10-14（S3 波 4 停写盲区修复片）
+	// 移出本桶：bodies 过滤器改跨族 EXISTS、含
+	// `+dbpkg.SessionFamilyBodiesSourceSQL()+` 拼接点，拼接点工具从此看得见
+	// —— 按本门口径迁入 v1ReaderIndirectPopulation。★ 注意**分档域不变**
+	// （仍是 Tier ② 对外 API）；变的只是「工具能不能看见」。
 	"admin/credential_monitor.go",
 	"admin/credential_monitor_heatmap.go",
 	"admin/credential_success_rate.go",
@@ -227,7 +230,7 @@ var v1ArmLiteralBlindSpot = []string{
 	"db/db.go",
 	"internal/quality/minute_aggregator.go",
 	"admin/data_lifecycle.go",
-	// data_lifecycle_blobs 于 2026-10-13（S4 波 4）迁出：会话臂治理。
+	"admin/data_lifecycle_blobs.go",
 	"admin/live_stream_sse.go",
 	"admin/model_routing_diagnostic.go",
 	"admin/model_status.go",
@@ -236,9 +239,7 @@ var v1ArmLiteralBlindSpot = []string{
 	"admin/route_incidents.go",
 	"admin/session_analytics_breakdown.go",
 	"admin/session_analytics_timeseries.go",
-	// admin/session_bodies_batch.go 于 2026-10-13（S4 波 4）迁出：主批量
-	// 取数器改为 SessionFamilyBodiesSourceSQL 拼接形态（v1 变体仅存 summary
-	// 回退路径），拼接点工具已能看见它。
+	"admin/session_bodies_batch.go",
 	"admin/session_extract.go",
 	"admin/session_management_api.go",
 	"admin/session_summary_v2.go",
@@ -274,13 +275,15 @@ var v1ArmLiteralBlindSpot = []string{
 //
 // 实测：字面量 107 ∩ 间接 22 = 14，并集 = **115**。
 var v1ReaderIndirectPopulation = []string{
-	// 2026-10-13（S4 波 4）迁入：quality_correlations 改经 canonical+切换层拼接。
-	"admin/quality_correlations.go",
 	"admin/auto_title_generator.go",
 	// 2026-10-13（S4 停写交接）自 v1ArmLiteralBlindSpot 迁入：bodies 读加
 	// 了 session 兜底拼接点（+dbpkg.SessionFamilyBodiesSourceSQL()+），
 	// 拼接点工具从此看得见。
 	"admin/body_resolver.go",
+	// 2026-10-14（S3 波 4 停写盲区修复片）自 v1ArmLiteralBlindSpot 迁入（同上）：
+	// 顶层 bodies 过滤器改跨族 EXISTS，带 dbpkg.SessionFamilyBodiesSourceSQL()
+	// 拼接点。
+	"admin/compression_sessions.go",
 	"admin/compression_stats.go",
 	"admin/dashboard_board_queries.go",
 	"admin/logs.go",
@@ -389,18 +392,22 @@ func TestV1ReaderTieringDomainIsBothPopulations(t *testing.T) {
 		// 2026-10-13（S3 波 2 停写切换）：request_summary / model_alternatives
 		// 两文件读源整体迁会话族原生源，自字面量总体与分档域同步除名
 		//（106/24/16/114）；分档域只收 v1 读方，两个文件的退役负担随
-		// request_logs 族的边界一起消失。
+		// _request_logs 族的边界一起消失。
 		// 2026-10-13（S3 波 3，同日第二分片）：admin/routing.go 同款除名
 		//（popularModelsHotSQL → 会话族原生源；106→105、114→113）。
-		// 2026-10-13（S4 波 4）：compression_sessions / scenario_driver 整体
-		//		出 v1 族（105→103；114→113→111）。
-		{"字面量总体", len(literal), 101},
+		{"字面量总体", len(literal), 105},
 		// 2026-10-13（S4 停写交接）：body_resolver / unified_detail 因加了
 		// session 兜底拼接点自盲区桶迁入（+2）；两者同时仍是字面量读方
 		//（交集 14→16），并集不变。
+		// 2026-10-14（S3 波 4 停写盲区修复片）：admin/compression_sessions.go
+		// 因顶层 bodies 过滤器改跨族 EXISTS（含 dbpkg.SessionFamilyBodiesSourceSQL()
+		// 拼接点）自盲区桶迁入间接总体（24→25）；它同时**仍是字面量读方**
+		//（v1 腿保留服务停写前历史），故交集 16→17、字面量总体 105 与并集
+		// 113 均不变。★ 这正是本门 ② 号断言存在的意义：只迁一个总体时，
+		// 并集不动，容易被读成「什么都没变」——而实际上覆盖面变好了一格。
 		{"间接总体", len(indirect), 25},
-		{"交集", inter, 16},
-		{"并集（域）", union, 110},
+		{"交集", inter, 17},
+		{"并集（域）", union, 113},
 	} {
 		if c.got != c.exp {
 			t.Errorf("%s = %d，期望 %d", c.name, c.got, c.exp)
@@ -432,15 +439,15 @@ func TestV1ReaderTieringDomainIsBothPopulations(t *testing.T) {
 // 而它还留在表里被当成退役工作量。这里对每个文件独立取证：剥掉 Go 与 SQL 注释后，
 // 它必须仍然含 v1 关系的 `FROM/JOIN` 字面量，或含一个 v1 关系名字面量。
 //
-// ★ 带阴性对照：判据在注释里写 `FROM request_logs_hot` 时必须给 0。
+// ★ 带阴性对照：判据在注释里写 `FROM _request_logs_hot` 时必须给 0。
 // 没有对照的话，「剥注释」写错了也会一直绿。
 func TestV1ReaderTieringEveryFileProvenToReadV1(t *testing.T) {
 	root := repoRootFromCaller(t)
 
 	// 阴性 + 阳性对照（两条通路各一组）。没有对照，「剥注释没生效」
 	// 与「正则写窄了」都会表现为全体假绿，而假绿看起来和通过一模一样。
-	if l, _ := v1ReadEvidence("-- FROM request_logs_hot\n// FROM request_logs_bodies_hot\n"); l != 0 {
-		t.Errorf("阴性对照失败：注释里的 FROM request_logs 被判成 %d 个读点，期望 0 —— "+
+	if l, _ := v1ReadEvidence("-- FROM _request_logs_hot\n// FROM _request_logs_bodies_hot\n"); l != 0 {
+		t.Errorf("阴性对照失败：注释里的 FROM _request_logs 被判成 %d 个读点，期望 0 —— "+
 			"剥注释没生效，这道门会恒绿", l)
 	}
 	if l, sp := v1ReadEvidence("SELECT 1 FROM request_logs_with_current_month"); l == 0 || sp != 0 {
@@ -452,8 +459,8 @@ func TestV1ReaderTieringEveryFileProvenToReadV1(t *testing.T) {
 	}
 	// ★ 这条对照来自 domains/streaming/model_alternatives.go —— 那个文件里
 	// `-- request_logs_with_current_month …` 只在 SQL 注释中，真读点是
-	// `FROM request_logs_hot`。剥注释若不钻进原始字符串，它会被误判成臂视图读方。
-	if readsAnyV1ArmView("`\n-- request_logs_with_current_month is a UNION\nFROM request_logs_hot\n`") {
+	// `FROM _request_logs_hot`。剥注释若不钻进原始字符串，它会被误判成臂视图读方。
+	if readsAnyV1ArmView("`\n-- request_logs_with_current_month is a UNION\nFROM _request_logs_hot\n`") {
 		t.Errorf("对照失败：原始字符串里的 SQL 注释被判成 v1 臂视图读点 —— " +
 			"剥注释没有钻进字符串里（domains/streaming/model_alternatives.go 就是这个形状）")
 	}
@@ -571,7 +578,7 @@ func TestV1ReaderTiersAssertMembers(t *testing.T) {
 		"admin/live_stream_sse.go",
 		"cmd/gateway/output_compliance_control.go",
 		"cmd/compression-bench/main.go",
-		// cmd/scenario_driver/main.go 于 2026-10-13（S4 波 4）出列：断言改数会话族热表。
+		"cmd/scenario_driver/main.go",
 		"cmd/traffic-replay/main.go",
 		"domains/analysis/optimizer.go",
 		"internal/collector/gateway_adapters.go",
@@ -762,7 +769,7 @@ func readFileForEvidence(path string) (string, error) {
 //
 // ★ 为什么捕获再判、而不是把 v1 表名直接写进正则：
 // Go 用的是 RE2，**不支持 lookahead**（`(?![a-z0-9_])` 编译不过），
-// 而 `\b` 在这里**不可用** —— `_` 是词字符，所以 `request_logs_bodies_hot`
+// 而 `\b` 在这里**不可用** —— `_` 是词字符，所以 `_request_logs_bodies_hot`
 // 会在 `_bodies` 之后要求一个词边界，而下一个字符是 `_` ⇒ 永不成立
 // ⇒ bodies 视图被漏判。首次对账时 4 个 v1 臂视图全部报「不含 v1 基表」，
 // 就是这个坑。所以改成「捕获标识符 → 用集合判定」。
@@ -775,14 +782,20 @@ var fromJoinV1RE = regexp.MustCompile(`(?i)\b(?:from|join)\s+(?:public\.)?([a-z_
 var splicedFromRE = regexp.MustCompile(`(?i)\b(?:from|join)\s+(?:` + "`" + `|"|[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*\s*\+)`)
 
 // quotedV1RelationRE 捕获字符串字面量的内容，用于切换层 / 结构体字段形态
-// （`TurnsTable: "request_logs_hot"`、`return "request_logs_with_current_month"`）。
+// （`TurnsTable: "_request_logs_hot"`、`return "request_logs_with_current_month"`）。
 var quotedV1RelationRE = regexp.MustCompile(`"([^"\n]*)"`)
 
 // v1RelationNames 是 v1 族关系的判定集合（**闭合**，不是通配）。
 func isV1Relation(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
+	// 两代物理名并存：迁移 860（2026-10-14）把 v1 底表改名为 `_` 前缀
+	// （待删除标志）。生产 Go 源码已随清扫只用前缀名，但 SQLite 侧
+	// （storage/sqlite/request_log_store.go，另一个存储面）与历史迁移
+	// 文本仍是旧名——分档域的「读 v1」证据对两代名字都要认得。
 	case "request_logs", "request_logs_hot", "request_logs_bodies",
-		"request_logs_bodies_hot", "request_logs_archive":
+		"request_logs_bodies_hot", "request_logs_archive",
+		"_request_logs", "_request_logs_hot", "_request_logs_bodies",
+		"_request_logs_bodies_hot", "_request_logs_archive":
 		return true
 	}
 	for _, v := range v1ArmViewNamesRuntimeChecked {
@@ -793,7 +806,7 @@ func isV1Relation(name string) bool {
 	return false
 }
 
-// firstRelationToken 取 `FROM request_logs_hot r` 里的第一个 token，
+// firstRelationToken 取 `FROM _request_logs_hot r` 里的第一个 token，
 // 并剥掉 `AS` 别名。`FROM x, y` 这种逗号列表不在本判据内（v1 读点不会这样写）。
 func firstRelationToken(rest string) string {
 	fields := strings.Fields(rest)
@@ -817,7 +830,7 @@ func firstRelationToken(rest string) string {
 //	        于是字符串**内部**的 SQL 注释活了下来 ——
 //	        `domains/streaming/model_alternatives.go` 的第 230 行
 //	        `-- request_logs_with_current_month is a UNION of …` 被当成真读点，
-//	        而它真正的读点是第 244 行的 `FROM request_logs_hot`（**基表**，不是臂视图）。
+//	        而它真正的读点是第 244 行的 `FROM _request_logs_hot`（**基表**，不是臂视图）。
 //	        那个文件正是 `request_logs_reader_population_test.go` 举的反例，
 //	        原因一字不差。
 //

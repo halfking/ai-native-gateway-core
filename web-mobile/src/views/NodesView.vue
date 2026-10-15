@@ -2,7 +2,7 @@
 // NodesView — 节点（凭据）健康：连续加载卡片列表 + 搜索（250ms debounce，
 // 13 §5）+ 详情 Sheet（每模型探测宽表走专注模式，07 §8）+ **运维操作区**
 // （状态修改 / 凭据检查 / 强制恢复，17 §2 desktopOnly 让位轮）。
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, shallowRef } from 'vue'
 import { ContinuousListController, useHyperPage } from '@/hyper'
 import { fetchMonitorSummary, type CredentialMonitorSummary } from '@/api/nodes'
 import {
@@ -44,7 +44,23 @@ const auth = useAuthStore()
 
 // 全量缓存 + 前端过滤：monitor-summary 单端点返回全网凭据（量级 ~百），
 // 分页在客户端切片；queryRevision 机制照常隔离 requery 前后响应。
-let cache: CredentialMonitorSummary[] = []
+//
+// ★★★★★ 2026-10-14 修的真缺陷：这里原来是**裸 `let`**，不是响应式的。
+//   后果（真机 iPhone 17 Pro / iOS 26.3 实测）：**供应商与模型两个过滤
+//   下拉永远是空的**，只剩「全部供应商 / 全部模型」一项 —— 而下方分组
+//   却照常渲染 4 个供应商。看起来像「iOS 原生 select 不刷新」，其实不是：
+//   jsdom 里挂载出来的 DOM 同样只有一个 option。
+//
+//   机制：`providerOptions` / `modelOptions` 是 computed，而它们读的
+//   `cache` **不在 Vue 的依赖追踪里** ⇒ computed 在首次渲染（`cache`
+//   还是 `[]`）时算完就永久缓存，Vue 永远不会通知它重算。
+//   列表之所以正常，是因为 `grouped()` 是**命令式**在 `fetchPage` 里直读
+//   `cache`，压根不走响应式。
+//   ⇒ 目标要求的「根据模型过滤节点，或供应商过滤节点」此前**完全不可用**。
+//
+//   修法：`cache` 改成 shallowRef（整份替换，不需要深度响应式；
+//   shallow 还能避免上百条凭据被逐字段代理）。
+const cache = shallowRef<CredentialMonitorSummary[]>([])
 const query = ref('')
 const providerFilter = ref('')
 const modelFilter = ref('')
@@ -54,8 +70,8 @@ interface ProviderGroup { providerId: number; name: string; credentials: Credent
 const controller = new ContinuousListController<ProviderGroup>({
   fetchPage: async (page) => {
     if (page > 1) return { items: [], total: grouped().length }
-    if (cache.length === 0) {
-      cache = await fetchMonitorSummary()
+    if (cache.value.length === 0) {
+      cache.value = await fetchMonitorSummary()
     }
     const items = grouped()
     return { items, total: items.length }
@@ -66,7 +82,7 @@ const controller = new ContinuousListController<ProviderGroup>({
 
 function filtered(): CredentialMonitorSummary[] {
   const q = query.value.trim().toLowerCase()
-  return cache.filter((c) => {
+  return cache.value.filter((c) => {
     if (providerFilter.value && String(c.provider_id) !== providerFilter.value) return false
     if (modelFilter.value && !c.models?.some((m) => m.canonical_name === modelFilter.value || m.raw_model_name === modelFilter.value)) return false
     if (!q) return true
@@ -74,8 +90,8 @@ function filtered(): CredentialMonitorSummary[] {
   })
 }
 
-const providerOptions = computed(() => [...new Map(cache.map((c) => [String(c.provider_id), c.provider_name])).entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name)))
-const modelOptions = computed(() => [...new Set(cache.flatMap((c) => (c.models ?? []).flatMap((m) => [m.canonical_name, m.raw_model_name]).filter((name): name is string => Boolean(name))))].sort((a, b) => a.localeCompare(b)))
+const providerOptions = computed(() => [...new Map(cache.value.map((c) => [String(c.provider_id), c.provider_name])).entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name)))
+const modelOptions = computed(() => [...new Set(cache.value.flatMap((c) => (c.models ?? []).flatMap((m) => [m.canonical_name, m.raw_model_name]).filter((name): name is string => Boolean(name))))].sort((a, b) => a.localeCompare(b)))
 
 function grouped(): ProviderGroup[] {
   const byProvider = new Map<number, ProviderGroup>()
@@ -417,11 +433,11 @@ async function runConfirmedOp(): Promise<void> {
     }
     // 写操作后重新拉全量：后端有 15s 缓存（monitor-summary TTL），
     // 立即重查可能拿到旧值 —— 但仍要重查，因为缓存过期后自然刷新。
-    cache = await fetchMonitorSummary()
+    cache.value = await fetchMonitorSummary()
     controller.loadFirst('requery')
     // 就地更新 detail 引用，避免 Sheet 里继续显示旧状态
     if (detail.value) {
-      const fresh = cache.find((c) => c.id === detail.value?.id)
+      const fresh = cache.value.find((c) => c.id === detail.value?.id)
       if (fresh) detail.value = fresh
     }
   } catch (err) {
@@ -458,7 +474,7 @@ function describeError(err: unknown): string {
   <HyperList
     :controller="controller"
     :item-key="(group: ProviderGroup) => `provider-${group.providerId}`"
-    :on-refresh="async () => { cache = await fetchMonitorSummary(); controller.loadFirst('requery') }"
+    :on-refresh="async () => { cache.value = await fetchMonitorSummary(); controller.loadFirst('requery') }"
     :empty-hint="t('common.empty')"
   >
     <template #header>

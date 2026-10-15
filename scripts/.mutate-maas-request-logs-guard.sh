@@ -73,7 +73,7 @@ t = t.replace('idx_request_logs_credits_charged', 'idx_never_created_by_this_gua
 # M89 探测函数里跑 DDL —— 探测本身就锁表，等于没守卫
 mutate "M89 探测函数里跑 DDL" "
 t = t.replace('''	\`).Scan(&missing)''', '''	\`).Scan(&missing)
-	_, _ = d.pool.Exec(ctx, \"ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS probe_side_effect BIGINT\")
+	_, _ = d.pool.Exec(ctx, \"ALTER TABLE _request_logs ADD COLUMN IF NOT EXISTS probe_side_effect BIGINT\")
 	_ = missing''')
 " probe_must_not_run_ddl
 

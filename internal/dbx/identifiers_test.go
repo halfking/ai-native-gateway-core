@@ -3,7 +3,7 @@ package dbx
 import "testing"
 
 func TestValidateIdentifier(t *testing.T) {
-	for _, ok := range []string{"a", "tenant_id", "_x", "a1_b2", "request_logs_hot"} {
+	for _, ok := range []string{"a", "tenant_id", "_x", "a1_b2", "_request_logs_hot"} {
 		if err := ValidateIdentifier(ok); err != nil {
 			t.Errorf("ValidateIdentifier(%q) = %v, want nil", ok, err)
 		}

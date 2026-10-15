@@ -16,7 +16,7 @@ package attachments
 //     —— **这是一条未兑现的注释承诺**（与 D13 的 `disabled` 注释同型）；
 //   - 真正被调用的清理端点是 `POST /api/admin/attachments/cleanup/execute`
 //     （`admin/handler.go:1006`，super_admin），它执行的是
-//     `UPDATE request_logs_hot`（`admin/data_lifecycle_attachments.go:516`）把 JSONB 置 NULL，
+//     `UPDATE _request_logs_hot`（`admin/data_lifecycle_attachments.go:516`）把 JSONB 置 NULL，
 //     **既不调用 `DeleteOlderThan`、也不删附件行**。
 //
 // ⇒ **真实缺陷比 59 号的表述更精确也更严重：不是「没有删除实现」，而是

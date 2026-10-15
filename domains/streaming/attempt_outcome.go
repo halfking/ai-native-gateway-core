@@ -155,6 +155,12 @@ type TaskDecision struct {
 	Reason string
 	// NextRetryAfter is the suggested backoff for RetryNow/WaitRecovery.
 	NextRetryAfter time.Duration
+	// Detail is an optional human-readable supplement (P0-2, 2026-10-14):
+	// the survival coordinator fills it on the synthetic deadline_exceeded
+	// verdict with the attempt/kind/recovery summary so the terminal frame
+	// can tell the client WHY the wait ended. Empty on every other
+	// decision; consumers must treat it as display-only.
+	Detail string
 }
 
 // taskActionForKind is retained as the compatibility projection for callers

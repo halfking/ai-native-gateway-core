@@ -12,7 +12,7 @@ import (
 // TestApplyRoutingMetadata_MergesSourceAndPath pins the spec §12 GAP 3
 // contract: applyRoutingMetadata reads the per-request routing decision
 // from the executors seam and merges routing_state_source +
-// conversion_path into request_logs.compression_meta JSONB (the generic
+// conversion_path into _request_logs.compression_meta JSONB (the generic
 // metadata map, pending a dedicated column migration).
 func TestApplyRoutingMetadata_MergesSourceAndPath(t *testing.T) {
 	executors.ResetRoutingSourceForTest()

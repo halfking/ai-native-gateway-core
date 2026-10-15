@@ -1,7 +1,7 @@
 -- 缓存命中率基线诊断 - 按 Prompt 长度分组
 -- 文件: scripts/cache-baseline/05-by-prompt-length.sql
 -- 用途: 前缀长度对缓存的影响
--- 数据源: request_logs
+-- 数据源: _request_logs
 -- 时间窗: 最近 7 天
 
 SELECT
@@ -22,7 +22,7 @@ SELECT
     )
     ELSE 0
   END AS hit_ratio
-FROM request_logs
+FROM _request_logs
 WHERE ts >= NOW() - INTERVAL '7 days' AND success = true
 GROUP BY 1
 ORDER BY 1;

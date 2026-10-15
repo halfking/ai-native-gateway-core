@@ -5,8 +5,8 @@
 -- 使用说明：
 --   * psql -f 直跑（无 psql 元命令依赖）；建议在只读副本或低峰期执行。
 --   * 文件头 SET statement_timeout 防误操作长事务，可按需调整。
---   * 读面 = request_logs_with_current_month（request_logs_hot ∪ 月度分区母表，
---     迁移 448/510/710 维护重建）。直接查 request_logs 母表会漏掉 hot 表最近
+--   * 读面 = request_logs_with_current_month（_request_logs_hot ∪ 月度分区母表，
+--     迁移 448/510/710 维护重建）。直接查 _request_logs 母表会漏掉 hot 表最近
 --     8h 的写入（promote 周期内），健康检查恰恰最该看到"刚出事"的时段。
 --   * error_kind 取值 = errorsx.ErrorKind 真实分类法（errorsx/classify.go）；
 --     凭据状态词汇：availability_state = credentials CHECK 约束；quota_state

@@ -18,7 +18,7 @@
 // ⚠ 已知盲区（R33，2026-10-02 12h 审计登记，检测臂待下一轮补）：本工具只认
 // `+` 拼接（BinaryExpr ADD）。`fmt.Sprintf("... FROM %s ...", t)` 形态完全
 // 不可见——例如 admin/dashboard_board_fallback.go:238 的
-// fallbackErrorDrill（logsTable 在 days≤7 时取 request_logs_hot，v1 基表）只经
+// fallbackErrorDrill（logsTable 在 days≤7 时取 _request_logs_hot，v1 基表）只经
 // Sprintf 进 SQL，本文件无任何 `+` 形 FROM 拼接，因此不出现在输出里。
 // §9.45 的「盲区当前无活漏网」建立在这个缺一半的枚举上；引用本工具的计数
 // 时要连这个例外一起说。
@@ -28,7 +28,7 @@
 //
 // # 三种结果分别意味着什么
 //
-//	reads-v1        解析到 v1 宽族（request_logs*）⇒ 退役后会拿到 session 臂的
+//	reads-v1        解析到 v1 宽族（_request_logs*）⇒ 退役后会拿到 session 臂的
 //	                NULL 补位列。**这是需要有人拍板的那一类。**
 //	reads-canonical 解析到 canonical 视图或会话族 ⇒ 退役安全，仅作信息。
 //	unresolved      跨包调用 / struct 字段 / 运行时决定 ⇒ 机械判定不了，需要手验。

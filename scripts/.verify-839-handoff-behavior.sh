@@ -57,11 +57,11 @@ qf() {
   return 0
 }
 
-echo "== 夹具：request_logs 父表 + 当月/上月堆分区 + 一个当月从未分析过的表 =="
+echo "== 夹具：_request_logs 父表 + 当月/上月堆分区 + 一个当月从未分析过的表 =="
 qf <<SQL
-CREATE TABLE request_logs (id BIGINT NOT NULL, ts TIMESTAMPTZ NOT NULL) PARTITION BY RANGE (ts);
-CREATE TABLE request_logs_$CUR   PARTITION OF request_logs FOR VALUES FROM ('$CUR-01') TO ('$NEXT');
-CREATE TABLE request_logs_$LAST  PARTITION OF request_logs FOR VALUES FROM ('$LAST-01') TO ('$CUR-01');
+CREATE TABLE _request_logs (id BIGINT NOT NULL, ts TIMESTAMPTZ NOT NULL) PARTITION BY RANGE (ts);
+CREATE TABLE request_logs_$CUR   PARTITION OF _request_logs FOR VALUES FROM ('$CUR-01') TO ('$NEXT');
+CREATE TABLE request_logs_$LAST  PARTITION OF _request_logs FOR VALUES FROM ('$LAST-01') TO ('$CUR-01');
 -- 404 给所有月分区设的基线
 ALTER TABLE request_logs_$CUR  SET (autovacuum_analyze_scale_factor = 0.02, autovacuum_analyze_threshold = 50);
 ALTER TABLE request_logs_$LAST SET (autovacuum_analyze_scale_factor = 0.02, autovacuum_analyze_threshold = 50);

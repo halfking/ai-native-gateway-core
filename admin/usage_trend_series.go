@@ -376,7 +376,7 @@ func (h *Handler) queryUsageTrendProvider(ctx context.Context, tr boardTimeRange
 	return h.scanUsageTrendRows(ctx, query, args)
 }
 
-// queryUsageTrendDetail 读 request_logs 视图族（带 api_key_id 过滤；provider 过滤
+// queryUsageTrendDetail 读 _request_logs 视图族（带 api_key_id 过滤；provider 过滤
 // 可同时下推）。credits 口径与 rollup writer 一致（COALESCE(credits_charged, 估算)）。
 func (h *Handler) queryUsageTrendDetail(ctx context.Context, tr boardTimeRange, f usageTrendFilters) ([]usageTrendRow, error) {
 	creditsExpr := maas.RequestLogCreditsSQL("r", f.tenantID == "" || f.tenantID == "default")

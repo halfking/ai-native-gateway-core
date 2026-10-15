@@ -15,7 +15,7 @@ import (
 // canonical agent name via telemetry.DetectAgentFromSystemPrompt.
 //
 // Without this fallback, most real-world AI agent traffic shows up in
-// request_logs.agent_name as "unknown", which makes the client-type
+// _request_logs.agent_name as "unknown", which makes the client-type
 // dashboard useless.
 func TestFillAttemptMeta_AgentNameSemanticFallback(t *testing.T) {
 	tests := []struct {
@@ -187,7 +187,7 @@ func TestShouldOverrideAgentName(t *testing.T) {
 // to enrichRequestLogFromMeta copies the new client-perception fields
 // (agent_name, agent_type, client_protocol, virtual_client_id) from the
 // requestAttemptMeta into the RequestLogEntry so they get persisted to
-// request_logs_hot (the main table, not just the side table).
+// _request_logs_hot (the main table, not just the side table).
 //
 // Before the fix, agent_name was only written to request_context_attrs and
 // the main table always showed NULL, making GROUP BY agent_name stats 0.

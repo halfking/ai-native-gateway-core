@@ -1,5 +1,5 @@
 // unified_detail.go — GET /api/admin/request-detail/{request_id}
-// Unified request detail facade: memory → file → request_logs → session_turns.
+// Unified request detail facade: memory → file → _request_logs → session_turns.
 package admin
 
 import (
@@ -59,7 +59,7 @@ func (h *Handler) SetRequestDetailStore(store *requestdetail.Store, retry ...Loc
 	}
 	// 2026-08-30: route Redis-backed live-stream details through the
 	// same locator so a click on a still-running swim lane resolves
-	// without waiting for the eventual request_logs write. The adapter
+	// without waiting for the eventual _request_logs write. The adapter
 	// is nil-safe — when liveStreamRedisStore is nil (no Redis or
 	// feature flag off), the live step is simply skipped.
 	if h.liveStreamRedisStore != nil {
@@ -179,7 +179,7 @@ func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string,
 		SELECT request_id, COALESCE(tenant_id, ''),
 		       gw_session_id, gw_task_id, client_model,
 		       request_status, success, latency_ms
-		  FROM request_logs_hot
+		  FROM _request_logs_hot
 		 WHERE request_id = $1`+tenantClause+`
 		 LIMIT 1
 	`, args...).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
@@ -190,7 +190,7 @@ func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string,
 			SELECT request_id, COALESCE(tenant_id, ''),
 			       gw_session_id, gw_task_id, client_model,
 			       request_status, success, latency_ms
-			  FROM request_logs_hot
+			  FROM _request_logs_hot
 			 WHERE client_request_id = $1`+tenantClause+`
 			 ORDER BY ts DESC
 			 LIMIT 1
@@ -273,7 +273,7 @@ func (r *pgBodyReader) loadOutboundBody(ctx context.Context, requestID string) (
 	// 2026-08-27 OPTIMIZATION: Try hot table first, then fall back to partitioned bodies table
 	err := r.db.QueryRow(ctx, `
 		SELECT outbound_body::text
-		  FROM request_logs_bodies_hot
+		  FROM _request_logs_bodies_hot
 		 WHERE request_id = $1
 		 LIMIT 1
 	`, requestID).Scan(&raw)

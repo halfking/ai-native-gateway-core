@@ -60,7 +60,7 @@ import (
 // `settings_kv` (true — the key is not set locally, so the default `true`
 // applies) and therefore that v1 had stopped writing, which a parent-only
 // query seemed to confirm with a newest row of 2026-10-04 23:42. **That was
-// wrong**: `request_logs_hot` is a separate, disjoint table and its newest row
+// wrong**: `_request_logs_hot` is a separate, disjoint table and its newest row
 // was minutes old. Re-measured with both storage faces, the last 6h, 24h and
 // 72h are each at 100% coverage. §9.160.7's trap, hit for the third time in
 // this section — including in the evidence for the rule written to catch that

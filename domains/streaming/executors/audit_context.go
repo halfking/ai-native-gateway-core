@@ -64,7 +64,7 @@ func AuditContextFromRequest(r *http.Request, sn *session.Session, body []byte, 
 	if r != nil {
 		// RequestID is the gateway-owned id already stamped by middleware.
 		// The client id is kept separately by RequestIDMiddleware so a client
-		// cannot choose the request_logs primary key.
+		// cannot choose the _request_logs primary key.
 		ctx.RequestID = strings.TrimSpace(r.Header.Get("X-Request-Id"))
 		ctx.ClientRequestID = sanitizeCorrelationID(r.Header.Get("X-Gw-Client-Request-Id"))
 		if ctx.ClientRequestID == "" {

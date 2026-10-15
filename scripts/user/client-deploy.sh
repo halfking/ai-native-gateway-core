@@ -1169,8 +1169,8 @@ psql_exec() {
   docker exec -i -e PGPASSWORD="$POSTGRES_PASSWORD" "$PG_CONTAINER" \
     psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "$1"
 }
-LOG_TABLE="$(psql_exec "SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('request_logs','request_logs_hot') LIMIT 1" 2>/dev/null | tr -d '[:space:]' || true)"
-[[ -n "$LOG_TABLE" ]] || { log "未找到 request_logs 表，跳过"; exit 0; }
+LOG_TABLE="$(psql_exec "SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('_request_logs','_request_logs_hot') LIMIT 1" 2>/dev/null | tr -d '[:space:]' || true)"
+[[ -n "$LOG_TABLE" ]] || { log "未找到 _request_logs 表，跳过"; exit 0; }
 COL="$(psql_exec "SELECT column_name FROM information_schema.columns WHERE table_name='${LOG_TABLE}' AND column_name IN ('created_at','requested_at','created_time') LIMIT 1" 2>/dev/null | tr -d '[:space:]' || true)"
 [[ -n "$COL" ]] || { log "${LOG_TABLE} 无可识别时间列，跳过"; exit 0; }
 cutoff="$(date -u -d "${LOG_RETENTION_DAYS} days ago" +%Y-%m-%dT00:00:00Z 2>/dev/null \

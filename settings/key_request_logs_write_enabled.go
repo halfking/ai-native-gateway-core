@@ -1,7 +1,7 @@
 package settings
 
-// KeyRequestLogsWriteEnabled is the S4 stop-write gate for the request_logs
-// wide family (request_logs_hot main rows + request_logs_bodies_hot bodies).
+// KeyRequestLogsWriteEnabled is the S4 stop-write gate for the _request_logs
+// wide family (_request_logs_hot main rows + _request_logs_bodies_hot bodies).
 // Default true = keep double-writing as today. Declared in spec_storage.go;
 // this constant is the single Go-side spelling.
 //
@@ -18,7 +18,7 @@ package settings
 // literal spelling of this key is a finding, not a style preference.
 const KeyRequestLogsWriteEnabled = "storage.request_logs_write_enabled"
 
-// RequestLogsWriteEnabled reports whether the request_logs wide family may
+// RequestLogsWriteEnabled reports whether the _request_logs wide family may
 // still be written. Mirrors the S4 gate consulted by every ingest path.
 //
 // Safe to call before Global is initialised — GetPlatformBool falls back to

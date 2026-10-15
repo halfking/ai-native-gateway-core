@@ -40,13 +40,13 @@ func sqlLiteralsOfSettleFile(t *testing.T, path string) []string {
 // # 这道门在防什么
 //
 // 停写后这个 worker 会全量 abandon（§9.35 已让它可见）。最直觉的修法是
-// 「把三个读点从 request_logs_hot 换成会话族」或「换成 710 视图」——
+// 「把三个读点从 _request_logs_hot 换成会话族」或「换成 710 视图」——
 // **两个都被实测否决了**，而否决的理由不会自己写在代码里：
 //
-//  1. **710 视图不是 drop-in**。它在真库上把 citus 父表 request_logs 展开成
+//  1. **710 视图不是 drop-in**。它在真库上把 citus 父表 _request_logs 展开成
 //     7 个叶子分区做 Seq Scan（2026-10-02 实测：request_logs_2026_07 …
 //     request_logs_default）。这个 worker 每 5 分钟跑一次、每次 500 行的
-//     LEFT JOIN，扛不住。文件顶部那段「DO NOT add UNION ALL request_logs」
+//     LEFT JOIN，扛不住。文件顶部那段「DO NOT add UNION ALL _request_logs」
 //     的注释在实质上是对的——只是它描述的报错（invalid perminfoindex）
 //     在这条查询上**没有复现**，实测到的不是报错而是**更坏的东西：计划**。
 //     「没报错但计划烂掉」的替代方案比报错那个更危险，因为更容易被接受。
@@ -138,22 +138,22 @@ func TestSettleSQLFilesStillCarrySQL(t *testing.T) {
 
 func TestAutoRouteSettleWorkerDoesNotUseThe710View(t *testing.T) {
 	// 判据只跑在**字符串字面量**（即真正的 SQL）上，不跑整份源码。
-	// 第一版对整份源码跑 `(?i)JOIN\s+request_logs\s`，结果命中第 15 行**注释里的
-	// 散文** `//  3. Join request_logs for success / latency / cost.` —— 假阳性。
+	// 第一版对整份源码跑 `(?i)JOIN\s+_request_logs\s`，结果命中第 15 行**注释里的
+	// 散文** `//  3. Join _request_logs for success / latency / cost.` —— 假阳性。
 	// 「把在场代码报成不在场」比没有门更坏：它训练读者忽略自己。
 	all := strings.ToLower(settleSQLLiteralText(t))
 
 	if strings.Contains(all, "request_logs_with_current_month") {
 		t.Error("auto_route_settle_worker.go 的 SQL 里引用了 request_logs_with_current_month。\n" +
-			"  真库实测（2026-10-02）：该视图的 v1 臂是 citus 父表 request_logs，\n" +
+			"  真库实测（2026-10-02）：该视图的 v1 臂是 citus 父表 _request_logs，\n" +
 			"  在 settleBatch 这条 LEFT JOIN 的计划里展开成 7 个叶子分区 Seq Scan\n" +
 			"  （request_logs_2026_07 … request_logs_default）。这个 worker 每 5 分钟\n" +
 			"  跑一次、每次 500 行，扛不住。\n" +
 			"  改动前请先 EXPLAIN 实测，并把计划代价记进审计文档。")
 	}
-	citusParent := regexp.MustCompile(`(?i)join\s+request_logs\s`)
+	citusParent := regexp.MustCompile(`(?i)join\s+_request_logs\s`)
 	if citusParent.MatchString(all) {
-		t.Error("auto_routeSettle 的 SQL 出现了对 citus 父表 request_logs 的 JOIN。\n" +
+		t.Error("auto_routeSettle 的 SQL 出现了对 citus 父表 _request_logs 的 JOIN。\n" +
 			"  父表是列存分区，集合运算里带它会在计划期报\n" +
 			"  `ERROR: invalid perminfoindex 0 in RTE with relid 0`（PG 17.10 / citus 13.3）。\n" +
 			"  要看更早的数据请跑两条查询在 Go 里合并，或按分区显式 LATERAL。")

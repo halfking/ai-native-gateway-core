@@ -20,6 +20,9 @@
   "SESSION_FORBIDDEN": {
     "other": "該工作階段不屬於此 API 金鑰"
   },
+  "SESSION_STORE_UNAVAILABLE": {
+    "other": "會話儲存暫不可用，請稍後重試"
+  },
   "SESSION_ASSIGN_FAILED": {
     "other": "指派工作階段 ID 失敗"
   },

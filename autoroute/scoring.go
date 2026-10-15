@@ -77,7 +77,7 @@ type Candidate struct {
 
 // ScoringBreakdown is the per-dimension score output (each 0-100)
 // plus the weighted composite. Surfaced in X-Gw-Auto-Decision header
-// for observability and stored in request_logs.auto_decision JSONB.
+// for observability and stored in _request_logs.auto_decision JSONB.
 type ScoringBreakdown struct {
 	PriceScore     float64 `json:"price_score"`
 	SpeedScore     float64 `json:"speed_score"`

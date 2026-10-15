@@ -286,6 +286,28 @@ func parseResponsesInput(raw json.RawMessage) (messages []Message, systemText st
 			continue
 		}
 		if msg != nil {
+			// r1030: one assistant turn in the Responses wire format is a
+			// sequence of output items — [message, function_call, ...] — and
+			// spec-conforming clients (AI-SDK/ZCode) replay them adjacently
+			// in input[]. A function_call that directly follows an assistant
+			// message belongs to that same turn: merge it into the preceding
+			// message instead of emitting two adjacent assistant messages.
+			// MiniMax-M3 stopped issuing tool calls entirely when the chat
+			// wire carried the turn split in two; the merged form is the
+			// canonical chat-history shape every chat-dialect upstream
+			// expects.
+			if msg.Role == "assistant" && len(msg.ToolCalls) > 0 && len(msg.Content) == 0 &&
+				len(messages) > 0 {
+				prev := &messages[len(messages)-1]
+				// Consecutive function_call items (parallel calls of one
+				// turn) keep appending to the same assistant message; a
+				// function_call after a tool result or a user message is its
+				// own turn and stays unmerged.
+				if prev.Role == "assistant" {
+					prev.ToolCalls = append(prev.ToolCalls, msg.ToolCalls...)
+					continue
+				}
+			}
 			messages = append(messages, *msg)
 		}
 	}

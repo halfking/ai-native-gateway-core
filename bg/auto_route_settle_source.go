@@ -11,9 +11,9 @@ import (
 //
 // # 背景
 //
-// 停写后 `request_logs_hot` 停止增长，而 selection 行仍由
+// 停写后 `_request_logs_hot` 停止增长，而 selection 行仍由
 // domains/hooks/observability/telemetry/selection_writer.go 持续写入
-// （该写方**不咨询** S4 写门）⇒ `LEFT JOIN request_logs_hot rl ON
+// （该写方**不咨询** S4 写门）⇒ `LEFT JOIN _request_logs_hot rl ON
 // rl.request_id = s.request_id` 对每条新 selection 恒不命中 ⇒
 // `p.success == nil` ⇒ 过 settleAbandonAfter 即 abandon，reward 永久为 NULL。
 //
@@ -71,7 +71,7 @@ func settleSourceFor(logsWriteEnabled bool) settleSourceSpec {
 		}
 	}
 	return settleSourceSpec{
-		TurnsTable:    "request_logs_hot",
+		TurnsTable:    "_request_logs_hot",
 		SessionKeyCol: "gw_session_id",
 		Family:        settleFamilyV1,
 	}
@@ -89,7 +89,7 @@ var (
 	autoRouteSettleSource = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "llmgw_autoroute_settle_source_total",
-			Help: "Settled selections by the request-row family the outcome/baseline/LATERAL legs read (v1 = request_logs_hot, session = session_turns_hot). Switches when S4 stop-write flips.",
+			Help: "Settled selections by the request-row family the outcome/baseline/LATERAL legs read (v1 = _request_logs_hot, session = session_turns_hot). Switches when S4 stop-write flips.",
 		},
 		[]string{"family"},
 	)

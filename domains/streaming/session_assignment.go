@@ -149,7 +149,7 @@ func (h *ChatHandler) assignGatewaySessionWithFinder(
 
 	// Wave4-D1 (2026-09-22): consult the LastSystemSessionIndex before the
 	// DB finder — the index had been write-only since introduction while
-	// every no-id resume paid a request_logs_hot query. The index is keyed
+	// every no-id resume paid a _request_logs_hot query. The index is keyed
 	// by api_key_id only (the DB finder scopes by tenant+key+identity_hash),
 	// so a hit additionally requires the entry's device seed to match the
 	// request's — device seed is the primary identity component, and every

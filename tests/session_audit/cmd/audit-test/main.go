@@ -185,7 +185,7 @@ func extractData() ([]ExtractedContent, error) {
 			ts AS created_at,
 			COALESCE(client_model, '') AS model,
 			COALESCE(provider_code, '') AS provider
-		FROM request_logs
+		FROM _request_logs
 		WHERE ts >= NOW() - INTERVAL '7 days'
 		  AND (
 		      (outbound_body IS NOT NULL AND outbound_body != 'null'::jsonb)
@@ -407,7 +407,7 @@ func saveResults(testRunID string, config *TestConfig, sensitiveWords []string, 
 	`, testRunID,
 		fmt.Sprintf("会话输出审计测试 - %s", time.Now().Format("2006-01-02 15:04:05")),
 		configJSON, sensitiveWords,
-		"252 数据库 request_logs 表 (最近 7 天)", len(results))
+		"252 数据库 _request_logs 表 (最近 7 天)", len(results))
 
 	if err != nil {
 		return fmt.Errorf("保存测试批次元数据失败: %w", err)

@@ -126,7 +126,7 @@ func (h *Handler) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		items = append(items, item)
 	}
 
-	// 目录搜索只查 session_summaries。用量按会话 id 打 request_logs 底表，不走联表视图。
+	// 目录搜索只查 session_summaries。用量按会话 id 打 _request_logs 底表，不走联表视图。
 	searchQ := strings.TrimSpace(r.URL.Query().Get("q"))
 	if searchQ != "" {
 		items = h.mergeCatalogSearch(ctxFn(r), items, tenantID, searchQ, limit)

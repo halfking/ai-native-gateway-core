@@ -10,7 +10,7 @@ import (
 )
 
 // Offline contract tests for migration 610 (V6-W1.6 R8): request_class /
-// due_at must be wired through EVERY write statement of request_logs_hot and
+// due_at must be wired through EVERY write statement of _request_logs_hot and
 // keep the column ↔ placeholder ↔ arg alignment. Reads client.go source
 // only — same offline pattern as TestRequestLogMainTableExcludesBodyColumns.
 
@@ -44,8 +44,8 @@ func TestInsertRequestLogCarriesRequestClass(t *testing.T) {
 		"$102",                                // due_at placeholder
 		"entry.RequestClass",                  // $101 arg
 		"entry.DueAt",                         // $102 arg
-		"request_class        = COALESCE(EXCLUDED.request_class, request_logs_hot.request_class)",
-		"due_at               = COALESCE(EXCLUDED.due_at, request_logs_hot.due_at)",
+		"request_class        = COALESCE(EXCLUDED.request_class, _request_logs_hot.request_class)",
+		"due_at               = COALESCE(EXCLUDED.due_at, _request_logs_hot.due_at)",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("insertRequestLog missing 608 contract piece %q", want)
@@ -78,7 +78,7 @@ func TestInsertRequestLogCarriesRequestClass(t *testing.T) {
 
 func TestUpdateRequestLogCarriesRequestClass(t *testing.T) {
 	src := readClientSource(t)
-	idx := strings.Index(src, "UPDATE request_logs_hot\n")
+	idx := strings.Index(src, "UPDATE _request_logs_hot\n")
 	if idx < 0 {
 		t.Fatalf("UPDATE statement not found")
 	}

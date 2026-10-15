@@ -75,7 +75,7 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	// 2026-09-23 252 SQL 日志审计轮：迁移期 statement_timeout 钉住（D1 残余
 	// 根修）。ApplyMigrations 期间置位 migrationsPinned，BeforeAcquire 给每条
 	// 取出的连接抬 statement_timeout 到 5min——boot 链对 credentials /
-	// request_logs 等热表的 ALTER ... ADD COLUMN IF NOT EXISTS 即使全部列已
+	// _request_logs 等热表的 ALTER ... ADD COLUMN IF NOT EXISTS 即使全部列已
 	// 在位也要 ACCESS EXCLUSIVE（逐列 no-op），共享库持续写流下锁等待稳定
 	// 超角色级 30s 被 57014 击杀且烧点不推进（245 seq 2193-2202 十连败实证，
 	// 07:23-08:16）。迁移结束 pool.Reset() 丢弃被抬连接，serving 期每条连接
@@ -263,7 +263,7 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureCredentialRoutingScope(migCtx); err != nil {
 		return err
 	}
-	// 2026-10-08 migration 848: cmb.billing_unit + request_logs.audio_seconds
+	// 2026-10-08 migration 848: cmb.billing_unit + _request_logs.audio_seconds
 	if err := db.ensureBillingUnitAndAudioSeconds(migCtx); err != nil {
 		return err
 	}
@@ -2522,7 +2522,7 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 	}
 	// 2026-09-23 252 SQL 日志审计轮（D1 残余根修，07:23/07:26 245 蓝绿两连败
 	// 实证）：下方 ADD COLUMN IF NOT EXISTS 即使全部列已存在，也要对
-	// request_logs 父表 + 全部月分区取 ACCESS EXCLUSIVE 锁才能逐列 no-op。
+	// _request_logs 父表 + 全部月分区取 ACCESS EXCLUSIVE 锁才能逐列 no-op。
 	// 晨间负载下锁等待超角色级 statement_timeout=30s 被 57014 击杀，boot 重试
 	// 撞同一堵墙（烧点不可推进）→ retry_budget 烧穿 → postgres disabled →
 	// readyz 永不过 → 部署安全网回滚。information_schema/pg_indexes 短路：
@@ -2542,10 +2542,10 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		     't5_cred_enqueued_at','t6_cred_dequeued_at','t7_forward_start_at',
 		     't8_response_start_at','t9_response_end_at','is_final_success'
 		   ]) AS want(name)
-		   WHERE to_regclass('public.request_logs') IS NOT NULL
+		   WHERE to_regclass('public._request_logs') IS NOT NULL
 		     AND NOT EXISTS (
 		       SELECT 1 FROM information_schema.columns
-		       WHERE table_schema='public' AND table_name='request_logs'
+		       WHERE table_schema='public' AND table_name='_request_logs'
 		         AND column_name = want.name))
 		+
 		  (SELECT count(*) FROM unnest(ARRAY[
@@ -2554,10 +2554,10 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		     't6_cred_dequeued_at','t7_forward_start_at','t8_response_start_at',
 		     't9_response_end_at','is_final_success'
 		   ]) AS want(name)
-		   WHERE to_regclass('public.request_logs_hot') IS NOT NULL
+		   WHERE to_regclass('public._request_logs_hot') IS NOT NULL
 		     AND NOT EXISTS (
 		       SELECT 1 FROM information_schema.columns
-		       WHERE table_schema='public' AND table_name='request_logs_hot'
+		       WHERE table_schema='public' AND table_name='_request_logs_hot'
 		         AND column_name = want.name))
 		+
 		  (SELECT count(*) FROM unnest(ARRAY[
@@ -2575,14 +2575,14 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		`
 	var missing int
 	if err := d.pool.QueryRow(ctx, catalogShortCircuitSQL).Scan(&missing); err == nil && missing == 0 {
-		slog.Info("request_logs schema ensured (catalog short-circuit: all columns and indexes present, zero DDL)")
+		slog.Info("_request_logs schema ensured (catalog short-circuit: all columns and indexes present, zero DDL)")
 		return nil
 	} else if err != nil {
 		// 探测失败不阻断：回落原 ensure 路径（其自含幂等）。
-		slog.Warn("request_logs ensure catalog probe failed; falling back to full ensure", "error", err)
+		slog.Warn("_request_logs ensure catalog probe failed; falling back to full ensure", "error", err)
 	}
 	_, err := d.pool.Exec(ctx, `
-		ALTER TABLE request_logs
+		ALTER TABLE _request_logs
 		    ADD COLUMN IF NOT EXISTS gw_session_id TEXT,
 		    ADD COLUMN IF NOT EXISTS gw_task_id TEXT,
 		    ADD COLUMN IF NOT EXISTS request_status TEXT,
@@ -2604,65 +2604,65 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		    ADD COLUMN IF NOT EXISTS outbound_msg_hashes JSONB,
 		    -- 2026-06-26: client-provided X-Request-Id is preserved here
 		    -- for debug / cross-system tracing while the primary
-		    -- request_id (request_logs.request_id) is forced server-side
+		    -- request_id (_request_logs.request_id) is forced server-side
 		    -- to prevent client retries from collapsing into a single
 		    -- audit row. See db/migrations/054_request_logs_client_request_id.sql.
 		    ADD COLUMN IF NOT EXISTS client_request_id TEXT;
 		CREATE INDEX IF NOT EXISTS idx_request_logs_gw_session_ts
-		    ON request_logs (gw_session_id, ts DESC)
+		    ON _request_logs (gw_session_id, ts DESC)
 		    WHERE gw_session_id IS NOT NULL AND gw_session_id <> '';
 		CREATE INDEX IF NOT EXISTS idx_request_logs_gw_task_ts
-		    ON request_logs (gw_task_id, ts DESC)
+		    ON _request_logs (gw_task_id, ts DESC)
 		    WHERE gw_task_id IS NOT NULL AND gw_task_id <> '';
 		CREATE INDEX IF NOT EXISTS idx_request_logs_status_ts
-		    ON request_logs (request_status, ts DESC)
+		    ON _request_logs (request_status, ts DESC)
 		    WHERE request_status IS NOT NULL AND request_status <> '';
 		CREATE INDEX IF NOT EXISTS idx_request_logs_parent_ts
-		    ON request_logs (parent_request_id, ts DESC)
+		    ON _request_logs (parent_request_id, ts DESC)
 		    WHERE parent_request_id IS NOT NULL;
 		-- 2026-06-26: lookup by client-provided X-Request-Id (debug).
 		CREATE INDEX IF NOT EXISTS idx_request_logs_client_request_id
-		    ON request_logs (client_request_id, ts DESC)
+		    ON _request_logs (client_request_id, ts DESC)
 		    WHERE client_request_id IS NOT NULL;
 		-- v3 T23: session outbound lookup (used by SessionCache L3 fallback).
 		CREATE INDEX IF NOT EXISTS idx_request_logs_session_outbound
-		    ON public.request_logs (gw_session_id, ts DESC)
+		    ON public._request_logs (gw_session_id, ts DESC)
 		  WHERE gw_session_id IS NOT NULL
 		      AND outbound_body IS NOT NULL;
 		CREATE INDEX IF NOT EXISTS idx_request_logs_outbound_msg_count
-		    ON public.request_logs (tenant_id, ts DESC)
+		    ON public._request_logs (tenant_id, ts DESC)
 		  WHERE outbound_msg_count IS NOT NULL
 		      AND outbound_msg_count > 0;
 		-- 2026-06-19: quality fix mode (db/migrations/017_quality_fix_mode.sql).
 		-- Per-request tool_call quality signal columns. quality_flags is GIN-
 		-- indexed for cheap "which provider emits empty_tool_name most" lookups.
-		ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS quality_flags        TEXT[]    NOT NULL DEFAULT '{}';
-		ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS quality_fix_actions JSONB    NOT NULL DEFAULT '{}'::jsonb;
-		ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS quality_score      NUMERIC(3,2);
+		ALTER TABLE _request_logs ADD COLUMN IF NOT EXISTS quality_flags        TEXT[]    NOT NULL DEFAULT '{}';
+		ALTER TABLE _request_logs ADD COLUMN IF NOT EXISTS quality_fix_actions JSONB    NOT NULL DEFAULT '{}'::jsonb;
+		ALTER TABLE _request_logs ADD COLUMN IF NOT EXISTS quality_score      NUMERIC(3,2);
 		CREATE INDEX IF NOT EXISTS idx_request_logs_quality_flags
-		    ON request_logs USING GIN (quality_flags)
+		    ON _request_logs USING GIN (quality_flags)
 		    WHERE cardinality(quality_flags) > 0;
 		CREATE INDEX IF NOT EXISTS idx_request_logs_provider_quality
-		    ON request_logs (provider_id, quality_score, ts DESC)
+		    ON _request_logs (provider_id, quality_score, ts DESC)
 		    WHERE quality_score IS NOT NULL;
 	-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
 	-- See db/migrations/018_upstream_finish_reason.sql. The new column is
 	-- the SOLE home for the upstream finish_reason (stop, tool_calls,
 	-- length, end_turn, …). failure_detail_code now keeps only the
 	-- actual failure code (interruption, 5xx, etc.).
-	ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS upstream_finish_reason TEXT;
+	ALTER TABLE _request_logs ADD COLUMN IF NOT EXISTS upstream_finish_reason TEXT;
 	CREATE INDEX IF NOT EXISTS idx_request_logs_upstream_finish_reason
-	    ON request_logs (upstream_finish_reason, ts DESC)
+	    ON _request_logs (upstream_finish_reason, ts DESC)
 	    WHERE upstream_finish_reason IS NOT NULL
 	      AND upstream_finish_reason <> '';
 	-- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
 	-- Populated from both streaming and non-streaming responses.
-	ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS tool_calls JSONB;
+	ALTER TABLE _request_logs ADD COLUMN IF NOT EXISTS tool_calls JSONB;
 	CREATE INDEX IF NOT EXISTS idx_request_logs_tool_calls
-	    ON request_logs USING GIN (tool_calls)
+	    ON _request_logs USING GIN (tool_calls)
 	    WHERE tool_calls IS NOT NULL AND tool_calls != '[]'::jsonb;
 	CREATE INDEX IF NOT EXISTS idx_request_logs_provider_tool_calls
-	    ON request_logs (provider_id, ts DESC)
+	    ON _request_logs (provider_id, ts DESC)
 	    WHERE tool_calls IS NOT NULL
 	      AND jsonb_typeof(tool_calls) = 'array'
 	      AND jsonb_array_length(tool_calls) > 0;
@@ -2674,7 +2674,7 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 	// V3.1 (migration 491): 9-stage dispatch queue timestamps on hot + parent.
 	// Startup ensure so environments that have not yet run 491 still accept INSERTs.
 	_, err = d.pool.Exec(ctx, `
-		ALTER TABLE request_logs_hot
+		ALTER TABLE _request_logs_hot
 		    ADD COLUMN IF NOT EXISTS t0_arrived_at TIMESTAMPTZ,
 		    ADD COLUMN IF NOT EXISTS t1_total_enqueued_at TIMESTAMPTZ,
 		    ADD COLUMN IF NOT EXISTS t2_total_dequeued_at TIMESTAMPTZ,
@@ -2685,7 +2685,7 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		    ADD COLUMN IF NOT EXISTS t7_forward_start_at TIMESTAMPTZ,
 		    ADD COLUMN IF NOT EXISTS t8_response_start_at TIMESTAMPTZ,
 		    ADD COLUMN IF NOT EXISTS t9_response_end_at TIMESTAMPTZ;
-		ALTER TABLE request_logs
+		ALTER TABLE _request_logs
 		    ADD COLUMN IF NOT EXISTS t0_arrived_at TIMESTAMPTZ,
 		    ADD COLUMN IF NOT EXISTS t1_total_enqueued_at TIMESTAMPTZ,
 		    ADD COLUMN IF NOT EXISTS t2_total_dequeued_at TIMESTAMPTZ,
@@ -2707,21 +2707,21 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 	// ensure_request_logs_partition 为新分区补建（columnar AM 可能拒建唯一
 	// 索引，故此处只做 hot 侧 Go 镜像）。
 	_, err = d.pool.Exec(ctx, `
-		ALTER TABLE request_logs_hot
+		ALTER TABLE _request_logs_hot
 		    ADD COLUMN IF NOT EXISTS is_final_success BOOLEAN NOT NULL DEFAULT FALSE;
-		ALTER TABLE request_logs
+		ALTER TABLE _request_logs
 		    ADD COLUMN IF NOT EXISTS is_final_success BOOLEAN NOT NULL DEFAULT FALSE;
 		CREATE UNIQUE INDEX IF NOT EXISTS uq_request_logs_hot_final_success_session
-		    ON request_logs_hot (gw_session_id)
+		    ON _request_logs_hot (gw_session_id)
 		    WHERE is_final_success AND gw_session_id IS NOT NULL AND gw_session_id <> '';
 	`)
 	if err != nil {
 		return err
 	}
 
-	slog.Info("request_logs schema ensured (gw_session_id, gw_task_id, request_status, api_key_prefix, api_key_owner_user, application_code, parent_request_id, compression_reason, compression_strategy, compression_meta, outbound_body, outbound_msg_count, outbound_token_est, outbound_msg_hashes, quality_flags, quality_fix_actions, quality_score, client_request_id, is_final_success)")
+	slog.Info("_request_logs schema ensured (gw_session_id, gw_task_id, request_status, api_key_prefix, api_key_owner_user, application_code, parent_request_id, compression_reason, compression_strategy, compression_meta, outbound_body, outbound_msg_count, outbound_token_est, outbound_msg_hashes, quality_flags, quality_fix_actions, quality_score, client_request_id, is_final_success)")
 
-	// Validate request_logs_hot is heap (not columnar) — UPDATE-heavy table
+	// Validate _request_logs_hot is heap (not columnar) — UPDATE-heavy table
 	// Citus Columnar does not support UPDATE/CTID scans (SQLSTATE 0A000).
 	// See: https://github.com/citusdata/citus/issues/... (ColumnarScan UPDATE limitation)
 	var storage string
@@ -2729,22 +2729,22 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		SELECT am.amname
 		FROM pg_class c
 		JOIN pg_am am ON am.oid = c.relam
-		WHERE c.relname = 'request_logs_hot'
+		WHERE c.relname = '_request_logs_hot'
 	`).Scan(&storage)
 	if err != nil {
-		slog.Warn("request_logs_hot storage validation failed",
+		slog.Warn("_request_logs_hot storage validation failed",
 			"error", err,
-			"hint", "ensure request_logs_hot exists and is accessible")
+			"hint", "ensure _request_logs_hot exists and is accessible")
 	} else if storage != "heap" {
-		slog.Error("request_logs_hot storage is NOT heap - UPDATEs will fail!",
+		slog.Error("_request_logs_hot storage is NOT heap - UPDATEs will fail!",
 			"actual_storage", storage,
 			"expected", "heap",
-			"action_required", "Convert to heap: ALTER TABLE request_logs_hot SET (storage = heap) or recreate as heap")
+			"action_required", "Convert to heap: ALTER TABLE _request_logs_hot SET (storage = heap) or recreate as heap")
 	} else {
-		slog.Debug("request_logs_hot storage validation passed", "storage", storage)
+		slog.Debug("_request_logs_hot storage validation passed", "storage", storage)
 	}
 
-	// Validate current month partition of request_logs is heap (DETACHED, supports UPDATE)
+	// Validate current month partition of _request_logs is heap (DETACHED, supports UPDATE)
 	// The current month partition must be heap because it receives UPDATEs from claimSessionFinalSuccess
 	// via the NOT EXISTS check against request_logs. If it's columnar, UPDATEs routed to it will fail.
 	currentMonthPartition := "request_logs_" + time.Now().Format("2006_01")
@@ -2997,11 +2997,11 @@ func (d *DB) ensureBillingUnitAndAudioSeconds(ctx context.Context) error {
 		return nil
 	}
 	cmbOK := d.columnsAllPresent(ctx, "credential_model_bindings", []string{"billing_unit"})
-	hotOK := d.columnsAllPresent(ctx, "request_logs_hot", []string{"audio_seconds"})
+	hotOK := d.columnsAllPresent(ctx, "_request_logs_hot", []string{"audio_seconds"})
 	if cmbOK && hotOK {
 		if _, err := d.pool.Exec(ctx, `
 			INSERT INTO public.schema_migrations (version, description)
-			VALUES ('848', 'cmb.billing_unit + request_logs.audio_seconds for media duration billing')
+			VALUES ('848', 'cmb.billing_unit + _request_logs.audio_seconds for media duration billing')
 			ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
 		`); err != nil {
 			return err
@@ -3029,14 +3029,14 @@ func (d *DB) ensureBillingUnitAndAudioSeconds(ctx context.Context) error {
 		END
 		$do$;
 
-		ALTER TABLE request_logs_hot
+		ALTER TABLE _request_logs_hot
 		    ADD COLUMN IF NOT EXISTS audio_seconds double precision;
 
-		ALTER TABLE request_logs
+		ALTER TABLE _request_logs
 		    ADD COLUMN IF NOT EXISTS audio_seconds double precision;
 
 		INSERT INTO public.schema_migrations (version, description)
-		VALUES ('848', 'cmb.billing_unit + request_logs.audio_seconds for media duration billing')
+		VALUES ('848', 'cmb.billing_unit + _request_logs.audio_seconds for media duration billing')
 		ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
 	`)
 	if err != nil {
@@ -3899,20 +3899,20 @@ func (d *DB) ensureRoutingAnalyticsColumns(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
-	// D1 残余（2026-09-23 审计轮）：request_logs / request_logs_hot 上的
+	// D1 残余（2026-09-23 审计轮）：_request_logs / _request_logs_hot 上的
 	// ADD COLUMN IF NOT EXISTS，列全在位时跳过（245 seq 2199 boot 在此 57014
 	// 实锤；同 columnsAllPresent 注）。
-	if d.columnsAllPresent(ctx, "request_logs_hot", []string{"task_type", "origin_stage", "origin_actor"}) &&
-		d.columnsAllPresent(ctx, "request_logs", []string{"task_type", "origin_stage", "origin_actor"}) {
+	if d.columnsAllPresent(ctx, "_request_logs_hot", []string{"task_type", "origin_stage", "origin_actor"}) &&
+		d.columnsAllPresent(ctx, "_request_logs", []string{"task_type", "origin_stage", "origin_actor"}) {
 		return nil
 	}
 	_, err := d.pool.Exec(ctx, `
-		ALTER TABLE IF EXISTS request_logs_hot
+		ALTER TABLE IF EXISTS _request_logs_hot
 		    ADD COLUMN IF NOT EXISTS task_type TEXT,
 		    ADD COLUMN IF NOT EXISTS origin_stage VARCHAR(32),
 		    ADD COLUMN IF NOT EXISTS origin_actor VARCHAR(255);
 
-		ALTER TABLE IF EXISTS request_logs
+		ALTER TABLE IF EXISTS _request_logs
 		    ADD COLUMN IF NOT EXISTS task_type TEXT,
 		    ADD COLUMN IF NOT EXISTS origin_stage VARCHAR(32),
 		    ADD COLUMN IF NOT EXISTS origin_actor VARCHAR(255);
@@ -3936,7 +3936,7 @@ func (d *DB) ensureRoutingAnalyticsColumns(ctx context.Context) error {
 // NULL as FALSE everywhere (`is_auto_request IS NOT TRUE`).
 //
 // tenant_id is TEXT in this schema (not bigint — verified on prod 252 PG:
-// request_logs_hot.tenant_id → text). The unique indexes therefore use
+// _request_logs_hot.tenant_id → text). The unique indexes therefore use
 // plain tenant_id columns with no COALESCE placeholder: PG rejects
 // expression indexes for REFRESH MATERIALIZED VIEW CONCURRENTLY
 // (SQLSTATE 55000, seen on prod 2026-09-01), and plain-column uniqueness
@@ -3958,8 +3958,8 @@ const routingAnalyticsMVSQL = `
 		-- CREATE OR REPLACE (not DROP+CREATE): the routing matviews depend on
 		-- this view, so a plain DROP fails with SQLSTATE 2BP01 whenever this
 		-- batch runs on the index-repair path (views current, ukey missing).
-		-- 2026-10-13 S3 波 2（停写切换）：源从 request_logs_hot UNION ALL
-		-- request_logs 换成 canonical 视图 request_logs_with_current_month。
+		-- 2026-10-13 S3 波 2（停写切换）：源从 _request_logs_hot UNION ALL
+		-- _request_logs 换成 canonical 视图 request_logs_with_current_month。
 		-- 停写后新流量只落 session_turns(_hot)，裸 v1 双腿会让整套自动路由
 		-- 分析（matrix/flow/funnel 端点与 7d 物化视图）随热窗排空静默归零。
 		-- 15 列全部在 118 列契约内、列名/类型/次序与旧体逐位一致（CREATE
@@ -4212,7 +4212,7 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 					AND POSITION('refreshed_at' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_audit_summary_7d'), true), '')) = 0
 					-- S3 波 2（2026-10-13 停写切换）：source 重建体的 FROM 直接
 					-- 引用 canonical 视图；pre-S3波2 旧体 FROM 的是
-					-- request_logs_hot / request_logs 底表。⚠ 量具注意：
+					-- _request_logs_hot / _request_logs 底表。⚠ 量具注意：
 					-- pg_get_viewdef **不内联**嵌套视图（实测本库），重建体的
 					-- 定义里只有 request_logs_with_current_month 这个关系名、
 					-- 不会出现 session_turns——按直接 FROM 引用判，别按展开体判。
@@ -4349,20 +4349,20 @@ func (d *DB) ensureOrchestrationRuntimeInstancesSchema(ctx context.Context) erro
 // lock. PG must acquire ACCESS EXCLUSIVE on the parent and on every partition
 // before it can check whether the column exists, so a column that has been in
 // place for months still costs a full exclusive pass on every boot — measured
-// at up to 109,456 ms on production (runbook §10.79). request_logs carries 5
+// at up to 109,456 ms on production (runbook §10.79). _request_logs carries 5
 // monthly partitions there, so that is 6 relations locked for a no-op, on
 // every gateway start, blocking concurrent writers of the busiest table.
 //
 // ensureRequestLogSchema already solves this for its own 31 columns with a
 // catalog short-circuit (see its comment); this applies the same shape to the
-// last unguarded request_logs DDL in the startup path.
+// last unguarded _request_logs DDL in the startup path.
 const workTypeRequestLogsDDL = `
-ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS work_type TEXT;
+ALTER TABLE _request_logs ADD COLUMN IF NOT EXISTS work_type TEXT;
 CREATE INDEX IF NOT EXISTS idx_request_logs_work_type
-    ON request_logs (work_type, ts DESC)
+    ON _request_logs (work_type, ts DESC)
     WHERE work_type IS NOT NULL AND work_type <> '';`
 
-// workTypeRequestLogsCurrent reports whether request_logs already carries the
+// workTypeRequestLogsCurrent reports whether _request_logs already carries the
 // work_type column and its index, i.e. whether workTypeRequestLogsDDL would be
 // a pure no-op. Both are checked because the DDL is applied as one unit: the
 // index cannot be created before the column exists.
@@ -4371,10 +4371,10 @@ func (d *DB) workTypeRequestLogsCurrent(ctx context.Context) bool {
 	err := d.pool.QueryRow(ctx, `
 		SELECT
 		  (SELECT count(*) FROM (VALUES ('work_type')) AS want(name)
-		   WHERE to_regclass('public.request_logs') IS NOT NULL
+		   WHERE to_regclass('public._request_logs') IS NOT NULL
 		     AND NOT EXISTS (
 		       SELECT 1 FROM information_schema.columns
-		        WHERE table_schema='public' AND table_name='request_logs'
+		        WHERE table_schema='public' AND table_name='_request_logs'
 		          AND column_name = want.name))
 		  +
 		  (SELECT count(*) FROM (VALUES ('idx_request_logs_work_type')) AS want(name)
@@ -4385,7 +4385,7 @@ func (d *DB) workTypeRequestLogsCurrent(ctx context.Context) bool {
 	if err != nil {
 		// A failed probe must not be read as "current": that would skip DDL on
 		// a database that genuinely needs it. Fall through to applying it.
-		slog.Warn("work_type request_logs probe failed; applying DDL", "error", err)
+		slog.Warn("work_type _request_logs probe failed; applying DDL", "error", err)
 		return false
 	}
 	return missing == 0
@@ -4403,7 +4403,7 @@ func (d *DB) ensureWorkTypeSchema(ctx context.Context) error {
 	// small config tables and is cheap to re-check.
 	if d.workTypeRequestLogsCurrent(ctx) {
 		slog.Info("work_type_config schema ensured (22 seed rows idempotent); " +
-			"request_logs work_type column and index already present, DDL skipped")
+			"_request_logs work_type column and index already present, DDL skipped")
 		return nil
 	}
 	if _, err := d.pool.Exec(ctx, workTypeRequestLogsDDL); err != nil {
@@ -6774,7 +6774,7 @@ func (d *DB) ensureCredentialGovernorRevision(ctx context.Context) error {
 	return nil
 }
 
-// ensureRoutingRecentSuccessRate mirrors the live request_logs_hot definition
+// ensureRoutingRecentSuccessRate mirrors the live _request_logs_hot definition
 // from sql/migrations/startup/406_recent_success_rate_read_hot.sql.
 //
 // Two parts, both idempotent:
@@ -6786,7 +6786,7 @@ func (d *DB) ensureCredentialGovernorRevision(ctx context.Context) error {
 //     candidate pool.
 //  2. recent_success_rate(cred, model, sample_n) helper used by
 //     loadCandidatesDB so the last-N gate is a single SQL expression. The
-//     function is STABLE and uses the request_logs_hot composite index for a
+//     function is STABLE and uses the _request_logs_hot composite index for a
 //     50-row index descent.
 //
 // Runs at startup via ensureSchema so every gateway instance converges on the
@@ -6810,7 +6810,7 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
-	// D1 残余（2026-09-23 审计轮）：request_logs_hot 是最热大表，列全在位时
+	// D1 残余（2026-09-23 审计轮）：_request_logs_hot 是最热大表，列全在位时
 	// no-op ALTER ... ADD COLUMN IF NOT EXISTS 仍要取 ACCESS EXCLUSIVE 锁才能
 	// 逐列确认；共享 252 PG 持续写流下锁等待烧穿 applyMigrationsOnce 的 3min
 	// 预算（245 seq 2221 boot 实证：attempt1 15:02:36 governor revision 后
@@ -6819,16 +6819,16 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 	// REPLACE 始终执行，保持函数体与代码同步，锁窗口毫秒级）；backfill
 	// UPDATE 保留——成熟库空集毫秒级通过，有真实 broken_confirmed 行时是
 	// 必须执行的数据回填，不可短路。
-	if !d.columnsAllPresent(ctx, "request_logs_hot", []string{"task_type", "origin_stage"}) {
+	if !d.columnsAllPresent(ctx, "_request_logs_hot", []string{"task_type", "origin_stage"}) {
 		if _, err := d.pool.Exec(ctx, `
-			ALTER TABLE IF EXISTS request_logs_hot
+			ALTER TABLE IF EXISTS _request_logs_hot
 			    ADD COLUMN IF NOT EXISTS task_type TEXT,
 			    ADD COLUMN IF NOT EXISTS origin_stage VARCHAR(32);
 		`); err != nil {
 			return err
 		}
 	} else {
-		slog.Info("request_logs_hot task_type/origin_stage columns ensured (catalog short-circuit)")
+		slog.Info("_request_logs_hot task_type/origin_stage columns ensured (catalog short-circuit)")
 	}
 	var fnMissing int
 	if err := d.pool.QueryRow(ctx, recentSuccessRateExistsSQL).Scan(&fnMissing); err != nil {
@@ -6856,7 +6856,7 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 	}
 	// (2) recent_success_rate helper. Body is re-synced on every boot via
 	//     CREATE OR REPLACE; the legacy 3-arg signature is dropped only while
-	//     the 4-arg one is absent (signature migration window). request_logs
+	//     the 4-arg one is absent (signature migration window). _request_logs
 	//     only receives promoted rows, so using it for the default 3-hour
 	//     window yields samples=0 by design.
 	//     2026-06-23: Add p_window_hours parameter for time-based windowing.
@@ -6879,7 +6879,7 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 // recentSuccessRateEnsureSQL 是 recent_success_rate 的运行时 SSOT（boot 时
 // CREATE OR REPLACE 自愈；428 迁移只负责首次播种，最终形状以这里的为准）。
 //
-// 2026-10-13 S3 波 2（停写切换）：双热腿取样。原体只读 request_logs_hot；
+// 2026-10-13 S3 波 2（停写切换）：双热腿取样。原体只读 _request_logs_hot；
 // S4 停写后新流量只落 session_turns_hot，3 小时窗口滑过停写时刻后 samples
 // 恒 0、rate 恒 NULL——消费方把零读成「正常」，凭据健康体系的
 // BelowThreshold 恢复机制全体失灵（request_logs_stop_write_classification_test
@@ -6902,7 +6902,7 @@ const recentSuccessRateEnsureSQL = `
 		AS $$
 			    WITH recent AS (
 			        SELECT success, ts
-				    FROM request_logs_hot
+				    FROM _request_logs_hot
 				    WHERE credential_id = p_credential_id
 				      AND lower(COALESCE(outbound_model, client_model)) = lower(p_raw_model)
 				      AND ts > NOW() - (p_window_hours || ' hours')::interval
@@ -8270,10 +8270,10 @@ func (d *DB) ensurePartitionAutovacuumSchema(ctx context.Context) error {
 		        JOIN pg_class p ON p.oid = i.inhparent
 		        WHERE n.nspname = 'public'
 		          AND p.relname = ANY (ARRAY[
-		              'credential_model_index','model_probe_runs','request_logs',
+		              'credential_model_index','model_probe_runs','_request_logs',
 		              'routing_decision_log','request_wal','usage_ledger',
 		              'credit_ledger','tool_usage_stats','candidate_failure_logs',
-		              'handoff_logs','request_logs_bodies'])
+		              'handoff_logs','_request_logs_bodies'])
 		          -- Same guard as the hot-table loop above: 40 partitions on
 		          -- 252 production, all already carrying these reloptions.
 		          AND NOT (COALESCE(c.reloptions, ARRAY[]::text[]) @> ARRAY[
@@ -8319,7 +8319,7 @@ func (d *DB) ensurePartitionAutovacuumSchema(ctx context.Context) error {
 		            SELECT c.relname FROM pg_class c
 		            JOIN pg_namespace n ON n.oid = c.relnamespace
 		            WHERE n.nspname = 'public' AND c.relkind = 'r'
-		              AND c.relname ~ ('^(credential_model_index|model_probe_runs|request_logs|routing_decision_log|request_wal|usage_ledger|credit_ledger|tool_usage_stats|candidate_failure_logs|handoff_logs|request_logs_bodies)_' || suffix || '$')
+		              AND c.relname ~ ('^(credential_model_index|model_probe_runs|_request_logs|routing_decision_log|request_wal|usage_ledger|credit_ledger|tool_usage_stats|candidate_failure_logs|handoff_logs|_request_logs_bodies)_' || suffix || '$')
 		              -- 838/839 handoff predicate (must stay in sync with
 		              -- sql/migrations/startup/839_autovac_current_month_heap_handoff.sql):
 		              -- ① never-analysed relations always stay in the manual pass;

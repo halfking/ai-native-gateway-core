@@ -1,7 +1,7 @@
 -- 缓存命中率基线诊断 - 按模型分组
 -- 文件: scripts/cache-baseline/02-by-model.sql
 -- 用途: 识别哪些模型缓存命中率最高/最低
--- 数据源: request_logs
+-- 数据源: _request_logs
 -- 时间窗: 最近 7 天
 
 SELECT
@@ -19,7 +19,7 @@ SELECT
   END AS hit_ratio,
   ROUND(SUM(COALESCE(cache_write_tokens, 0))::numeric /
         NULLIF(COUNT(*), 0), 0) AS avg_cache_write_per_req
-FROM request_logs
+FROM _request_logs
 WHERE ts >= NOW() - INTERVAL '7 days'
   AND success = true
   AND prompt_tokens > 100

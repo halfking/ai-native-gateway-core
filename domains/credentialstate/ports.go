@@ -40,7 +40,7 @@ type NoCandidatesSignal struct {
 	// "minimax-m3"). Used purely for logging / metrics.
 	ClientModel string
 	// TenantID is propagated onto the probe row's tenant_id so the
-	// request_logs hot table shows the correct owner.
+	// _request_logs hot table shows the correct owner.
 	TenantID string
 	// RequestID is the request_id of the failed business request that
 	// triggered the no-candidates path. Linked to the probe row's
@@ -78,7 +78,7 @@ type StateObserver interface {
 	// UpdateOnFailure records a failed real request. After the configured
 	// consecutive-failure threshold it triggers a fast re-probe via the
 	// injected probe submitter. The supplied tenantID is propagated onto
-	// the emitted request_logs row (and downstream SSE envelopes) so the
+	// the emitted _request_logs row (and downstream SSE envelopes) so the
 	// probe is attributed to the requesting tenant rather than "system".
 	//
 	// billingMode is the candidate's model_offers.billing_mode ("free",

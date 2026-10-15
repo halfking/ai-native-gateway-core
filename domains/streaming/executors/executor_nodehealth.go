@@ -195,10 +195,35 @@ func (a executorNodeHealthAdapter) ApplyNodeHealthDecision(ctx context.Context, 
 			// original request failure keeps recording; the confirm pings
 			// themselves never touch the breaker ("不叠加熔断").
 			if e.Circuit != nil {
+				providerID, credentialID := int(decision.Node.ProviderID), int(decision.Node.CredentialID)
+				// P0-4 模型级隔离：上游正文指名某单一模型（"model 'X' not
+				// found/retired/已下线"族）时，即便分类落在了非 binding 档
+				// （400/404 误标 transient 的既知登记项），也不得连坐凭据级
+				// 熔断——同凭据的兄弟模型继续服务。绑定级标记由同批
+				// EffectSetBindingUnavailable 走 model_probe 状态机完成。
+				if model, ok := errorsx.ModelScopedRejection([]byte(decision.ErrorDetail)); ok {
+					e.Circuit.RecordModelScopedFailure(providerID, credentialID, kind, model)
+					continue
+				}
+				// P0-4 rest 分级：quota 族失败且正文携带重置信号（绝对时刻
+				// /相对时长/欠费词）时，冷却对齐到该时刻而非指数梯——上游
+				// 显式重置时间是硬事实，不随 billing mode 缩短，但 free 标记
+				// 仍要预置，让后续非对齐失败沿用 freeTierPolicies 档。
+				if errorsx.IsQuotaExhaustion(kind) && strings.TrimSpace(decision.ErrorDetail) != "" {
+					if hint := errorsx.GradeQuotaRest([]byte(decision.ErrorDetail), time.Now()); hint.HasReset {
+						if strings.EqualFold(strings.TrimSpace(decision.BillingMode), "free") {
+							if brk := e.Circuit.Get(providerID, credentialID); brk != nil {
+								brk.MarkFreeTier()
+							}
+						}
+						e.Circuit.RecordFailureWithReset(providerID, credentialID, kind, hint.ResetAt, true)
+						continue
+					}
+				}
 				// 2026-09-15 (245 free-capacity plan): billing-mode-aware
 				// recording lets free credentials adopt the shortened
 				// freeTierPolicies cooling profile inside the breaker.
-				e.Circuit.RecordFailureWithBillingMode(int(decision.Node.ProviderID), int(decision.Node.CredentialID), kind, decision.BillingMode)
+				e.Circuit.RecordFailureWithBillingMode(providerID, credentialID, kind, decision.BillingMode)
 			}
 		case nodehealth.EffectRecoverCircuit:
 			if e.Circuit != nil {

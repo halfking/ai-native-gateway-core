@@ -24,7 +24,7 @@
 //       &tags=...          按 user_tags（逗号分隔，任一命中即保留，&& 数组重叠语义）过滤
 //       &client=...        按客户端（sd.client_id / sd.application_code / s.client_type）过滤
 //       &owner_user=...    按会话属主用户（sd.owner_user）过滤
-//       &api_key_id=...    按会话内轮次关联的 API Key（request_logs.api_key_id）过滤
+//       &api_key_id=...    按会话内轮次关联的 API Key（_request_logs.api_key_id）过滤
 //       &status=...        按会话状态（active/closed/archived/deleted）过滤
 //
 // 鉴权：admin() 中间件。tenant_admin 只能看到自己的租户数据。
@@ -95,7 +95,7 @@ type TurnsSessionGroup struct {
 	EndUserID       *string    `json:"end_user_id,omitempty"`
 	UserTags        []string   `json:"user_tags"`
 	StartTime       *time.Time `json:"start_time,omitempty"`
-	// API Key：取会话最近一轮关联 request_logs.api_key_id；label 仅前缀/别名。
+	// API Key：取会话最近一轮关联 _request_logs.api_key_id；label 仅前缀/别名。
 	APIKeyID    *int64  `json:"api_key_id,omitempty"`
 	APIKeyLabel *string `json:"api_key_label,omitempty"`
 
@@ -140,7 +140,7 @@ type TurnGroupItem struct {
 }
 
 // turnsSessionsListSQL 是会话列表主查询（不含 WHERE/LIMIT）。
-// api_key / handoff 在分页结果确定后批量 enrich，避免每行 LATERAL 扫 request_logs。
+// api_key / handoff 在分页结果确定后批量 enrich，避免每行 LATERAL 扫 _request_logs。
 //
 // 2026-08-26: 增加 LEFT JOIN LATERAL session_analysis_metadata（migration 567），
 // 暴露 SessionAnalysisView。前端轮次列表页直接渲染 agent/work_types/project，

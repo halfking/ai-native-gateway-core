@@ -8,7 +8,7 @@
 // 4xx recovery 聚合中转）此前只输出裁剪后的 body，无任何"哪些 input
 // item 去了哪里"的审计证据。本文件给 responses input 形态补齐同一套
 // original→compressed 位置映射，供 executor 写入
-// request_logs.compression_meta。
+// _request_logs.compression_meta。
 package compression
 
 import (

@@ -79,7 +79,7 @@ type Manager struct {
 
 	// 2026-07-13: 错误触发的主动探测提交函数（bg.ActiveProbeWorker.Submit）。
 	// 连续失败 ≥2 次时立即调用，让 ActiveProbeWorker 直接探测上游并把
-	// 探测结果写入 request_logs（自动出现在实时请求流）。
+	// 探测结果写入 _request_logs（自动出现在实时请求流）。
 	activeProbeSubmitter func(credID int, model string, tenantID string, parentReqID string)
 
 	// 2026-07-13: 触发主动探测的连续失败阈值（默认 2，配置来自 settings.error_probe.consecutive_threshold）
@@ -266,7 +266,7 @@ func (m *Manager) UpdateOnSuccess(ctx context.Context, credID int, model string,
 
 // UpdateOnFailure 请求失败时更新状态（含闪断保护）
 //
-// 探测触发时使用 requestID 的来源租户，使 request_logs 中的探测行归属
+// 探测触发时使用 requestID 的来源租户，使 _request_logs 中的探测行归属
 // 到正确的租户，而不是先前硬编码的 "system"。
 //
 // 2026-07-14: billingMode 参数。当 billingMode=="free" 且 errKind 是 transient
@@ -348,7 +348,7 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 	// 2026-07-13: 错误触发的主动探测 (active_probe)。
 	// 当连续失败 >= activeProbeThreshold（默认 2）时立即调用 activeProbeSubmitter，
 	// bg.ActiveProbeWorker 会按 5s → 30s → 2m → 5m → 15m backoff 链直连上游探测，
-	// 每轮结果写 request_logs，自动出现在实时请求流。
+	// 每轮结果写 _request_logs，自动出现在实时请求流。
 	// active_probe 与下面的"永久/临时分级探测"并行：
 	//   - active_probe 优先用于快速隔离"上游 vs gateway"问题，0s 延迟
 	//   - credProbeV2（按 30s/2m/5m 分级延迟后立即探测）作为兜底
@@ -626,7 +626,7 @@ func (m *Manager) UpdateFromProbe(ctx context.Context, state *State) {
 
 // OnNoCandidates (2026-07-14) fans out per-candidate probes when the
 // router reports zero available nodes. The previous code path emitted
-// only a failed request_logs row (kind="no_candidate") and stopped
+// only a failed _request_logs row (kind="no_candidate") and stopped
 // there, leaving operators with no follow-up investigation artifact
 // beyond the per-request breakdown. This is the missing link that
 // produced the 2026-07-14 minimax-m3 incident where every request for
@@ -640,7 +640,7 @@ func (m *Manager) UpdateFromProbe(ctx context.Context, state *State) {
 //     30 candidates does not flood the worker queue.
 //   - Submit one (credID, model) pair per call to activeProbeSubmitter,
 //     reusing the existing ActiveProbeWorker.Submit signature so the
-//     probe appears in the live request stream and request_logs with
+//     probe appears in the live request stream and _request_logs with
 //     task_type='probe_triggered'.
 //
 // Safe when no activeProbeSubmitter is wired: emits a debug log and
@@ -902,7 +902,7 @@ func (m *Manager) Enabled() bool {
 
 // EnablePopularityTracking 启用模型热度追踪（Phase 2 特性）
 //
-// 启用后，Manager 会基于 request_logs 统计模型调用频率，
+// 启用后，Manager 会基于 _request_logs 统计模型调用频率，
 // 动态调整探测间隔：
 //   - 高频模型（>100 req/h）：10秒探测
 //   - 中频模型（10-100 req/h）：2分钟探测

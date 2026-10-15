@@ -7,7 +7,7 @@
 # | 1.0  | 2026-08-18 | 初始版本（P1 TOAST bloat 诊断）| Infra  |
 # ========================================
 #
-# bodies-hot-diagnose.sh — request_logs_bodies_hot TOAST/bloat 只读诊断
+# bodies-hot-diagnose.sh — _request_logs_bodies_hot TOAST/bloat 只读诊断
 #
 # 背景：2026-08-18 审计发现 252 上该表 ~35GB（几乎全在 TOAST），
 # live rows 仅 ~1.8k，但累计 ins 22.8w / upd 18.8w / del 31.3w，
@@ -16,7 +16,7 @@
 # 用法：
 #   ./scripts/partition/bodies-hot-diagnose.sh --env=local
 #   ./scripts/partition/bodies-hot-diagnose.sh --env=252
-#   ./scripts/partition/bodies-hot-diagnose.sh --env=252 --table=request_logs_bodies_hot
+#   ./scripts/partition/bodies-hot-diagnose.sh --env=252 --table=_request_logs_bodies_hot
 #
 # 全部查询只读；pgstattuple 缺失时仅跳过，不会自动安装扩展。
 # 可在任意时间执行。依赖：psql；--env=252 会按需建立受控 SSH 隧道。
@@ -24,7 +24,7 @@
 set -euo pipefail
 
 ENV_ARG="local"
-TABLE="request_logs_bodies_hot"
+TABLE="_request_logs_bodies_hot"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --env=*) ENV_ARG="${1#--env=}" ;;

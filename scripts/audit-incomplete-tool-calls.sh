@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# audit-incomplete-tool-calls.sh — 检查 request_logs_hot 中不完整的 tool_use/tool_result
+# audit-incomplete-tool-calls.sh — 检查 _request_logs_hot 中不完整的 tool_use/tool_result
 #
 # 用法:
 #   bash scripts/audit-incomplete-tool-calls.sh [--server 252|245|154]
@@ -63,7 +63,7 @@ WITH tool_use_requests AS (
         interrupted,
         reason,
         created_at
-    FROM request_logs_hot
+    FROM _request_logs_hot
     WHERE created_at >= NOW() - INTERVAL '24 hours'
       AND response_body::text LIKE '%"type":"tool_use"%'
       AND response_body IS NOT NULL
@@ -93,7 +93,7 @@ WITH tool_use_requests AS (
         interrupted,
         reason,
         created_at
-    FROM request_logs_hot
+    FROM _request_logs_hot
     WHERE created_at >= NOW() - INTERVAL '24 hours'
       AND response_body::text LIKE '%"type":"tool_use"%'
       AND response_body IS NOT NULL
@@ -126,7 +126,7 @@ WITH tool_use_requests AS (
         reason,
         created_at,
         client_model
-    FROM request_logs_hot
+    FROM _request_logs_hot
     WHERE created_at >= NOW() - INTERVAL '24 hours'
       AND response_body::text LIKE '%"type":"tool_use"%'
       AND response_body IS NOT NULL

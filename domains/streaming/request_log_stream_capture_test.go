@@ -8,7 +8,7 @@ import (
 )
 
 // TestRequestLogContext_StreamCountersMatchCapture covers
-// 2026-07-28 §5.5: the request_logs row's stream_chunks_sent /
+// 2026-07-28 §5.5: the _request_logs row's stream_chunks_sent /
 // stream_chunk_errors must match audit.StreamCapture after
 // MarkDone. Concurrent RecordChunkSent / RecordChunkError from
 // many goroutines must aggregate correctly without atomics

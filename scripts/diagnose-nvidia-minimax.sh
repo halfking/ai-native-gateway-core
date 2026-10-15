@@ -53,7 +53,7 @@ echo -e "\n=== 检查最近的请求日志 ==="
 psql -h localhost -U "$PG_USER" -d llm_gateway -c "
 SELECT id, request_model, outbound_model, provider_id, credential_id,
        error_code, error_message, created_at
-FROM request_logs
+FROM _request_logs
 WHERE request_model LIKE '%minimax%m2.7%'
 ORDER BY created_at DESC
 LIMIT 10;

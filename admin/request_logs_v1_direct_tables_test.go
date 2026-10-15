@@ -16,8 +16,8 @@ package admin
 
 // v1DirectTables 是「绕过视图直读」判定里的 v1 宽族关系名。
 var v1DirectTables = map[string]bool{
-	"request_logs": true, "request_logs_hot": true,
-	"request_logs_bodies": true, "request_logs_bodies_hot": true,
+	"_request_logs": true, "_request_logs_hot": true,
+	"_request_logs_bodies": true, "_request_logs_bodies_hot": true,
 }
 
 const canonicalView = "request_logs_with_current_month"

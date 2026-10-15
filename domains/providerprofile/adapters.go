@@ -108,7 +108,7 @@ func (p *GatewayNetworkProber) ProbeLatency(ctx context.Context, credentialID in
 }
 
 // GatewayRequestAnalyzer 请求分析器适配器
-// 从 request_logs_hot 表聚合请求统计（hot 保留期默认 8h——R46 F8⑦ 注释
+// 从 _request_logs_hot 表聚合请求统计（hot 保留期默认 8h——R46 F8⑦ 注释
 // 如实化，原"0-7天热数据"失实；与 recent_success_rate() SQL 函数读取
 // 同一张表，参见 sql/objects/functions/recent_success_rate_*.sql）。
 // 入参 hours 在各方法入口 clamp 到 8h：本表只覆盖 hot 侧，hours>保留期
@@ -117,7 +117,7 @@ type GatewayRequestAnalyzer struct {
 	db *pgxpool.Pool
 }
 
-// providerProfileHotHours 是 request_logs_hot 的默认保留期（partition
+// providerProfileHotHours 是 _request_logs_hot 的默认保留期（partition
 // manager 8h 常量）。本适配器全部查询 clamp 到该窗口内。
 const providerProfileHotHours = 8
 
@@ -144,7 +144,7 @@ func (a *GatewayRequestAnalyzer) AnalyzeRequests(ctx context.Context, credential
 			COUNT(*) FILTER (WHERE NOT success) AS error_count,
 			AVG(stream_first_chunk_ms) FILTER (WHERE stream_first_chunk_ms IS NOT NULL) AS avg_ttft_ms,
 			AVG(latency_ms) FILTER (WHERE latency_ms IS NOT NULL) AS avg_duration_ms
-		FROM request_logs_hot
+		FROM _request_logs_hot
 		WHERE credential_id = $1
 		  AND ts >= NOW() - INTERVAL '1 hour' * $2
 	`
@@ -175,7 +175,7 @@ func (a *GatewayRequestAnalyzer) AnalyzeRequests(ctx context.Context, credential
 	// 类型字符串的首字符判断是否为 5xx，所以状态码优先。
 	errorTypeQuery := `
 		SELECT COALESCE(upstream_status_code::text, error_kind, 'unknown') AS error_type, COUNT(*)
-		FROM request_logs_hot
+		FROM _request_logs_hot
 		WHERE credential_id = $1
 		  AND ts >= NOW() - INTERVAL '1 hour' * $2
 		  AND NOT success
@@ -206,7 +206,7 @@ func (a *GatewayRequestAnalyzer) AnalyzeRequests(ctx context.Context, credential
 	rlQuery := `
 		SELECT COUNT(*) FILTER (WHERE upstream_status_code = 429) AS rl_hits,
 		       COUNT(*) AS total
-		FROM request_logs_hot
+		FROM _request_logs_hot
 		WHERE credential_id = $1
 		  AND ts >= NOW() - INTERVAL '1 hour' * $2
 	`
@@ -257,7 +257,7 @@ func (a *GatewayRequestAnalyzer) BucketSuccessRates(
 		  FLOOR(EXTRACT(EPOCH FROM ts) / ($3 * 60)) * ($3 * 60) AS bucket_epoch,
 		  100.0 * COUNT(*) FILTER (WHERE success) / NULLIF(COUNT(*), 0) AS sr,
 		  COUNT(*) AS req
-		FROM request_logs_hot
+		FROM _request_logs_hot
 		WHERE credential_id = $1
 		  AND ts >= NOW() - INTERVAL '1 hour' * $2
 		GROUP BY 1

@@ -82,7 +82,7 @@ type storageRuntime struct {
 	// requestMirror 是请求侧 body 镜像器（H3：HotZone.Dir/requests 子树，
 	// fire-and-forget 异步写、失败仅计数）。full 热区装配时按
 	// HotZone.RequestMirrorEnabled 创建，经 bodyMirrorFn 注入 telemetry
-	//（request_logs_bodies_hot 三件套）与 SessionWriterV2（session bodies
+	//（_request_logs_bodies_hot 三件套）与 SessionWriterV2（session bodies
 	// 三件套）。lite 模式不装配（沿用既有 session_bodies 写入路径，不重复
 	// 镜像），此字段恒 nil。
 	requestMirror *filestore.RequestMirror
@@ -412,7 +412,7 @@ func initLiteStorageMode(storageCfg *config.StorageConfig) (*storageRuntime, err
 	bg.SpawnLoopWG(trimmerCtx, "storage_mode_init.bodiesTrimmer", &rt.trimmerWG, bodiesTrimmer.Start)
 
 	// 行级保留期 worker（R46 F6）：此前 RequestLogsDays 是死配置——文件侧
-	// 有两个 Trimmer，SQLite 行侧（request_logs/sessions/session_turns）无
+	// 有两个 Trimmer，SQLite 行侧（_request_logs/sessions/session_turns）无
 	// 任何 TTL，长跑单文件无界增长。sessions/turns 以会话为单位整体清理。
 	if sqlDB := f.SQLiteDB(); sqlDB != nil {
 		retention := bg.NewLiteRetentionWorker(sqlDB,

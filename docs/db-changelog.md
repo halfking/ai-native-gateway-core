@@ -8744,3 +8744,43 @@ git show origin/main:scripts/deploy-lib/db-changelog.sh
 | 858 | `858_request_logs_final_success_gsid_idx.sql` | `1c0b788418a3f20c3dfa947c13ecc583df8a248baaf2a5b5e06b54d2f6a09936` | applied+verified |
 | 859 | `859_tighten_pii_phone_intl_regex.sql` | `0a808ff313cdc193fcde91b3b0a9cd5e5262c3ad9d8404ae05e1e15d57b64bc3` | applied+verified |
 
+
+## 2026-10-14T04:20:00Z — local (S4 retirement rename wave)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 860 | `860_rename_request_logs_family_pending_delete.sql` | `91383c46282490bc53a6aba925857b38b8a00c65c040ad9c46cfa35887430c68` | applied+verified (local 2624) |
+## 2026-10-13T20:29:34Z — 内容加固登记（非部署轮）：856 补 SET LOCAL statement_timeout
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 856 | `856_usage_ledger_ts_cover_agg_idx.sql` | `68f7ad879cb8d2cee84ad9b604884cc71725b20b76b60e97f0a3c07a6aa8d6b2` | 内容加固登记（非部署应用）：按 849/855 先例补 `SET LOCAL statement_timeout='10min'`（共享 PG 服务端 30s 会掐长索引构建，849 实录 57014）。原登记行（2026-10-12T19:54 deploy 2562）旧指纹 `5ab420d0…` **保留**，两指纹均合法（校验和门任一匹配即过，627 先例）。共享 PG 两索引已在场（deploy 目录扫描腿已应用），指纹通道下次运行按幂等重放收敛；未应用环境直接获得加固版 |
+
+
+## 2026-10-14T05:45:00Z — local (exhaustive API sweep fixes)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 861 | `861_candidate_failure_view_absorb_session_id.sql` | `4b58ab7a37c385a6adaf2425245f853c32d1f619e16ca2c823d95766da090217` | applied+verified (local 2626) |
+
+## 2026-10-14T12:38:00Z — r1030 audit round (862 guard/annotation defect + ledger backfill)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 862 | `862_partition_family_leading_ts_idx.sql` | `aca31a92fa1f47887136bb7914f2fc1f93f99982673882f3b44abc473bee5b78` | r1030 修正版（**当前正典**）：建腿本就由 `to_regclass` 守卫，但文件末尾两条 `COMMENT ON INDEX` 是无条件的——该族缺席的环境（860 之前的旧名形态／已 DROP 的族／未建该族的新装库）整文件在 COMMIT 之后以 `relation "idx_request_logs_ts" does not exist` 非零退出。dbinit applySQL 走 `psql -v ON_ERROR_STOP=1` 且只按退出码记账，故该迁移永不 applied、每次 boot 重放同样失败（索引其实早已 IF NOT EXISTS 命中而在场）。修正：两条 COMMENT 与各自建腿同守卫（to_regclass 判定后再下 COMMENT） |
+| 862 | `862_partition_family_leading_ts_idx.sql` | `57add569df0a5b3673c3848ef96f3ead0bf010a41c6a095f5a7e8dfafc58c7c6` | 修正前指纹（2026-10-14 f43501d16 引入）。**保留**：252 已按 736 先例手动预应用双索引且不占台账，但任何**该族在场**的环境（预应用成功的部署目录扫描腿）会把旧字节自记账进 `schema_migrations`，校验和门需两指纹均合法（627/856 先例，任一匹配即过） |
+
+## 2026-10-14T13:40:00Z — 12h 审计轮（862 补 statement_timeout + 863 台账补登）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 862 | `862_partition_family_leading_ts_idx.sql` | `9e2c52244e5d2720a3eb7a5e900c46fb5bd500b13f1da3a3c6076e317634f6a3` | 内容加固登记（**当前正典**）：按 849/855/856 先例补 `SET LOCAL statement_timeout='10min'`。缺陷：862 是 850–863 区间**唯一**「建索引却不设 statement_timeout」的迁移——共享 PG 服务端 30s 会掐断 94.2s 的 `idx_session_turns_ts`（2026_09 79.8 万 + 2026_10 12.8 万行，实录见 `docs/audit/2026-10-14-252-sql-log-audit-round.md:66`），dbinit/部署链 `psql_file` 只按退出码记账 ⇒ 57014 后永不 applied、每次部署重放同样失败（永久迁移卡点，与 50eb3bb88 修掉的 COMMENT 守卫击穿同族）。858 同无 statement_timeout 但建于 S4 起停写的 request_logs 族，不构成本例 |
+| 862 | `862_partition_family_leading_ts_idx.sql` | `aca31a92fa1f47887136bb7914f2fc1f93f99982673882f3b44abc473bee5b78` | 上一正典（2026-10-14 r1030 修正版）。**保留**：两指纹均合法（校验和门任一匹配即过，627/856 先例） |
+| 863 | `863_handoff_partition_am_aware.sql` | `2ef10fc83170663a4622fd96e3672ba9c7554a495ed192eecba38d17cac523b2` | applied+verified（2026-10-14 9faea142a，252 临时库）。台账**补登**：该提交只补了 canonical/embeddata/TSV/通道五点同步中的前四点，漏了 `docs/db-changelog.md`——与 50eb3bb88 刚以「D2 台账缺口」修掉的 862 属同一族，一个提交后被重新引入。影响当时不外显，因 `internal/sqlguard/migration_registry_continuity_test.go` 的窗口锚点被 `sql/migrations/manual/20260719_*` 毒化（该两文件被 `Atoi` 解析为 20260719，窗口坍缩成 `[20260700,20260719]`），见本轮同批修正 |
+
+## 2026-10-14T13:45:00Z — 台账连续性门锚点修复后的补登（844 / 851）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 844 | `844_supplier_view_cache_baseline_columns.sql` | `d626b9376032c721135fb5dd5a5cb49bde01667134c635f8eacd7c5cee8c8989` | applied+verified。台账补登：本轮修正 `internal/sqlguard/migration_registry_continuity_test.go` 的编号解析（限定 `^[0-9]{3}_`）后，近邻窗口从坍缩的 `[20260700,20260719]` 恢复为真实的 `[844,863]`，随即暴露本条与 851 两条**此前被锚点缺陷掩盖**的漏登记。二者 canonical 与 embeddata 副本 sha 一致、均已进安装器通道 |
+| 851 | `851_disable_overbroad_pii_ip_address_rule.sql` | `c9ee0e5f7ed97d2b27838ad6a15767e17e7424c70463ab958a2454bb7466d045` | applied+verified。台账补登：停用 316 播种的 pii_patterns.ip_address 规则（它把每一个 IPv4 含环回与公网都当 PII 遮成 ***.*.*.*.*）。同 844，属锚点缺陷掩盖的漏登记 |

@@ -33,7 +33,7 @@ func backfillEntry(prompt, completion int) *telemetry.RequestLogEntry {
 	}
 }
 
-// estimated → 真实回填：request_logs 行被修正（rows=1）后，format_anomalies
+// estimated → 真实回填：_request_logs 行被修正（rows=1）后，format_anomalies
 // 行补写真实 completion tokens 与 usage_source='corrected'。
 func TestRunUsageBackfill_CorrectedRowBackfillsAnomalies(t *testing.T) {
 	corrector := &fakeUsageCorrector{rows: 1}

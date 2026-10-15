@@ -519,7 +519,7 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 			// The predicate above collapses FOUR causes into one ErrNoRows:
 			// unknown key / enabled=false / revoked|disabled / expired. The
 			// 401 they all produce is byte-identical, so nginx and
-			// request_logs cannot tell them apart either — a client whose
+			// _request_logs cannot tell them apart either — a client whose
 			// key was rotated looked exactly like a client whose key was
 			// revoked. This is that 2026-10-05~07 incident: ~3,200 failing
 			// requests/day with no way to name the credential.

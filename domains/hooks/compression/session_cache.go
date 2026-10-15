@@ -4,7 +4,7 @@
 //
 //	L1 — in-process sync.Map (< 0.1 ms, bounded by MaxL1Sessions)
 //	L2 — Redis Hash session:sc:{tenantID}:{gwSessionID}:v1 (~2 ms RTT)
-//	L3 — PostgreSQL request_logs fallback (cold-start / Redis miss / schema
+//	L3 — PostgreSQL _request_logs fallback (cold-start / Redis miss / schema
 //	     upgrade)
 //
 // SessionState captures what the gateway last forwarded to the LLM for a
@@ -258,7 +258,7 @@ type SessionCacheBackend interface {
 
 // SessionCacheDB is the minimal PostgreSQL interface required by SessionCache.
 type SessionCacheDB interface {
-	// LastOutboundForSession queries request_logs for the most recent row
+	// LastOutboundForSession queries _request_logs for the most recent row
 	// that has an outbound_body for the given session, returning the
 	// outbound_msg_hashes, compression_meta (for summary_marker), and
 	// the msg count / token estimate.
@@ -318,7 +318,7 @@ func NewSessionCache(redis SessionCacheBackend, db SessionCacheDB) *SessionCache
 
 // SetTurnReader wires the Sessions V2 body reader used by the L3 cold-start
 // path. It is optional: when V2 tables are unavailable, loadFromDB falls back
-// to the legacy request_logs reader.
+// to the legacy _request_logs reader.
 func (c *SessionCache) SetTurnReader(reader *v2.TurnReader) {
 	if c == nil {
 		return

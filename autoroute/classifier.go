@@ -20,7 +20,7 @@
 //
 // Side effects:
 //
-//   - request_logs gains 5 columns (see docs/2026-06-15-auto-route-mode.sql)
+//   - _request_logs gains 5 columns (see docs/2026-06-15-auto-route-mode.sql)
 //   - credential_model_index is refreshed every 5 min by
 //     bg/auto_index_refresher.go
 //
@@ -39,7 +39,7 @@ import (
 
 // TaskType is one of 8 mutually exclusive request categories used by the
 // auto route decider. Values must match the strings persisted in
-// request_logs.task_type and model_task_index.task_type.
+// _request_logs.task_type and model_task_index.task_type.
 type TaskType string
 
 const (
