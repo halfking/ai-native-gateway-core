@@ -100,8 +100,12 @@ if [[ -n "$VIA" ]]; then
   # 进 docker build 上下文、留在镜像层里（docker history 就能翻出来）。
   # ._* / .DS_Store 排除：macOS 同步到 Linux 时 AppleDouble 元数据会进 go:embed，
   # i18n 加载 `._ar.json` 直接 panic invalid character '\x00'。见真机 2026-10-13 翻车。
+  # ⚠ dist 只排顶层 ./dist：`--exclude=dist`（无斜杠）按 basename 匹配任意
+  # 层级，会把 web/dist、web-mobile/dist 一并排掉——网关 root 的 admin SPA 与
+  # /m 移动端随之消失，llm.itestu.cn 打开只剩版本 JSON（2026-10-15 实测）。
+  # 前端 dist 由部署机预构建后随 tar 上树（见下方 web 种子段）。
   tar -C "$D211_REPO_ROOT" \
-      --exclude=.git --exclude=node_modules --exclude=dist --exclude=build \
+      --exclude=.git --exclude=node_modules --exclude=./dist --exclude=build \
       --exclude=.build-local \
       --exclude='*.log' --exclude='.env' --exclude='.env.*' \
       --exclude='._*' --exclude='.DS_Store' \
@@ -815,6 +819,53 @@ for _cfg in sensitive_patterns.yaml sensitive_words.json; do
 done
 chown -R 65532:65532 "$D211_GW_DATA_ROOT/configs" 2>/dev/null || true
 
+# ── Web 前端随部署种子（2026-10-15）：root SPA + /m 移动端 + 版本元数据 ──
+# 网关从 cfg.StaticDir（env LLM_GATEWAY_STATIC_DIR，默认探 cwd 下的
+# web/dist/index.html）挂 admin SPA，从 MOBILE_WEB_DIST 挂 /m 移动端，
+# 从 version.json 读版本元数据——三者镜像里都没有，root 只会回落版本 JSON。
+# 与 configs 同款治理：宿主 bind 只读，每次部署以仓库（部署机预构建）为准
+# 覆盖种子。缺失时 warn 不拒绝（纯 API 形态仍可用），但要把后果说破。
+D211_WEB_DIST_SRC="${D211_WEB_DIST_SRC:-$D211_REPO_ROOT/web/dist}"
+D211_MOBILE_DIST_SRC="${D211_MOBILE_DIST_SRC:-$D211_REPO_ROOT/web-mobile/dist}"
+mkdir -p "$D211_GW_DATA_ROOT/web" "$D211_GW_DATA_ROOT/web-mobile"
+GW_MOUNTS=(
+  -v "${D211_GW_DATA_ROOT}/data:/app/data"
+  -v "${D211_GW_DATA_ROOT}/logs:/app/logs"
+  -v "${D211_GW_DATA_ROOT}/configs:/app/configs:ro"
+)
+GW_WEB_ENV=()
+if [[ -f "$D211_WEB_DIST_SRC/index.html" ]]; then
+  rm -rf "$D211_GW_DATA_ROOT/web/dist"
+  cp -R "$D211_WEB_DIST_SRC" "$D211_GW_DATA_ROOT/web/dist"
+  chown -R 65532:65532 "$D211_GW_DATA_ROOT/web" 2>/dev/null || true
+  GW_MOUNTS+=( -v "${D211_GW_DATA_ROOT}/web/dist:/app/web/dist:ro" )
+  GW_WEB_ENV+=( -e "LLM_GATEWAY_STATIC_DIR=/app/web/dist" )
+  log "admin SPA 种子: web/dist → ${D211_GW_DATA_ROOT}/web/dist"
+else
+  echo "warning: $D211_WEB_DIST_SRC 缺失（部署机未构建前端？），root 将回落版本 JSON 而非管理页" >&2
+fi
+if [[ -f "$D211_MOBILE_DIST_SRC/index.html" ]]; then
+  rm -rf "$D211_GW_DATA_ROOT/web-mobile/dist"
+  cp -R "$D211_MOBILE_DIST_SRC" "$D211_GW_DATA_ROOT/web-mobile/dist"
+  chown -R 65532:65532 "$D211_GW_DATA_ROOT/web-mobile" 2>/dev/null || true
+  GW_MOUNTS+=( -v "${D211_GW_DATA_ROOT}/web-mobile/dist:/app/web-mobile/dist:ro" )
+  GW_WEB_ENV+=( -e "MOBILE_WEB_DIST=/app/web-mobile/dist" )
+  log "移动端 SPA 种子: web-mobile/dist → ${D211_GW_DATA_ROOT}/web-mobile/dist"
+else
+  echo "warning: $D211_MOBILE_DIST_SRC 缺失，/m 移动端将不可用" >&2
+fi
+if [[ -f "$D211_REPO_ROOT/version.json" ]]; then
+  cp -f "$D211_REPO_ROOT/version.json" "$D211_GW_DATA_ROOT/version.json"
+  chown 65532:65532 "$D211_GW_DATA_ROOT/version.json" 2>/dev/null || true
+  GW_MOUNTS+=( -v "${D211_GW_DATA_ROOT}/version.json:/app/version.json:ro" )
+  log "版本元数据种子: version.json（$(python3 -c "import json;print(json.load(open('$D211_GW_DATA_ROOT/version.json')).get('version','?'))" 2>/dev/null || echo '?')）"
+else
+  echo "warning: $D211_REPO_ROOT/version.json 缺失，/version 将显示 dev/unknown" >&2
+fi
+# ${arr[@]+…} 惯用法：GW_WEB_ENV 可能为空（dist 全缺），bash 3.2 在 set -u 下
+# 直接 "${空数组[@]}" 会报 unbound variable
+GW_ENV+=( ${GW_WEB_ENV[@]+"${GW_WEB_ENV[@]}"} )
+
 # ── 迁移腿（2026-10-14 r1030）：网关容器启动前重放 DB 修订序列 ──────────
 # deploy-seamless（245/154）自带 deploy_apply_pending_migrations；本脚本原先
 # 缺这一腿——从别机 dump 恢复的库（如 acc-pg17 ← mac pg18 dump）停在旧迁移
@@ -838,9 +889,7 @@ fi
 docker run -d --name "$D211_GW_CONTAINER" --restart unless-stopped \
   --network "$D211_NETWORK" \
   -p "${D211_GW_PORT}:8781" \
-  -v "${D211_GW_DATA_ROOT}/data:/app/data" \
-  -v "${D211_GW_DATA_ROOT}/logs:/app/logs" \
-  -v "${D211_GW_DATA_ROOT}/configs:/app/configs:ro" \
+  "${GW_MOUNTS[@]}" \
   "${GW_ENV[@]}" \
   "$D211_GW_IMAGE" >/dev/null || die "网关容器启动失败"
 
