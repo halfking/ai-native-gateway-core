@@ -32,7 +32,7 @@
 
 | 工具 | 状态 | 说明 |
 |---|---|---|
-| `go` | `~/sdk/go/bin/go` 1.27.1 | **不在 PATH 上**，跑任何 go 命令前 `export PATH="$HOME/sdk/go/bin:$PATH"` |
+| `go` | Homebrew `/opt/homebrew/bin/go` **1.27.2**（2026-10-16 `brew upgrade go`） | 在 PATH 上；`~/sdk/go` 已不存在。须 ≥ `go.mod` 的版本，否则 deploy-seamless（`GOTOOLCHAIN=local`）回退 amd64 容器构建。`/usr/local/go` 1.24.5（root）排在其后不生效 |
 | `bash` ≥4 | `~/sdk/bash5/bin/bash` 5.2.0 | 系统只有 3.2，deploy-lib 用到 `${var^^}`（bash 4+）必须用这个。**2026-10-11 下午曾被整目录清掉**（`~/sdk/` 只剩 go/caddy/缓存），已按下方重编法重建回原路径——`~/sdk/` 下的工具可能被清理，用前先 `ls` 确认 |
 | `pnpm` | `corepack prepare pnpm@10.29.2` | 仓库 `packageManager` 锁 10.29.2 |
 | `node` | nvm 24.21.0 | 在 PATH 上（22.23.3 已被升级替代） |
@@ -2151,16 +2151,30 @@ owner 拍板）；session_censors 可逆还原无读取方（配密钥+读取端
 5. 本地已合并陈旧分支 10 条删除；24h 窗内不活跃未合并远程分支 **0**；
    `r43-fresh-install*` 窗口外留置（含删 704/705 的危险 diff）。
 
-## 下一轮提示词（2026-10-15 部署收口后）
+## 下一轮提示词（2026-10-16 复审重部署后）
 
-> 明细追加：`docs/audit/2026-10-15-24h审计-magpie收口与admin慢查询.md` §七。
-> 生产：245=`2650-6dc0ad45`(:8781) / 154=`2651-6dc0ad45`(:8782) / 211=`2645-6dc0ad45`；
-> online/top-models 亚秒复验过；magpie 四指纹 OK。工作区 MV/cursor/r43/211 改动**未提交**。
+> 明细：`docs/audit/2026-10-15-24h审计-magpie收口与admin慢查询.md` §八。
+> 生产（2026-10-16 03:4x 复核）：245=`2664-dd0d8248`(:8782，并行会话部署) /
+> 154=`2663-75bf327a`(:8782) / 211=`75bf327a-dirty-20261016-211`（docker :8781）。
+> 优化轮明细见同审计文档 §九。
 
-1. ★ **owner 授权后 commit + push**（MV 30m/45m、cursor SECRET 回落、r43 三门、
-   deploy-211 硬化）；勿带 VERSION/version.json 等部署产物。
-2. **deploy-211 续优化**：可选注入 `LLM_GATEWAY_ADMIN_*`；observe 补 `TARGET=211`；
-   claim/URSM 冷启动是否仍要 emergency-repair 留观。
-3. **MV 争用**：用 pg_stat_statements 核 `routing_analytics_7d` 总耗时是否随 30m 降频下降。
-4. model alternatives 超时、fp_slot、nvidia probe：owner。
-5. `r43-fresh-install*` / 九月远端三分支：留置。
+1. ~~commit + push 两文件~~ **已提交（2026-10-16 优化轮，同批）**。
+2. ~~online 超管冷查询 >5s~~ **迁移 867 已落地**：`session_summaries
+   (last_request_at DESC, session_key DESC) WHERE last_request_at IS NOT NULL`。
+   252 共享库已 CONCURRENTLY 同名预建（32s/49MB），EXPLAIN 102ms/3,974 页 →
+   0.22ms/19 页，245/154 端点首调 4–21ms。**大表迁移范式**：启动链单事务不能
+   CONCURRENTLY ⇒ 生产先运维预建，迁移体用 `to_regclass IS NULL` 判定包住
+   CREATE——PG 的 `CREATE INDEX IF NOT EXISTS` 在发现同名索引**之前**就拿
+   ShareLock（一次性 PG17 实测：写事务在场时裸跑 2s 锁超时，判定块 0s）。
+3. ~~211 注入 production~~ **已改脚本、未部署**：deploy-211-docker.sh 补齐
+   ValidateAuthSecrets 四件（API_KEY 前缀 `gw211_`、ADMIN `ops_`、CURSOR_HMAC
+   64hex，env/gateway.{apikey,adminkey,cursorhmac} 持久、重跑不轮换）+
+   `LLM_GATEWAY_ENV=production`。注意：154/245 也**没设** LLM_GATEWAY_ENV，
+   只是四件齐全故无告警；211 生效后 `/healthz/full` `/metrics` 等需 ops token
+   （/readyz、/healthz 不受影响；实测 211 无抓取方）。
+4. ~~本机 Go 升 1.27.2~~ **已完成**（见工具链表）。
+5. ★ **部署待 owner 拍板**：并行会话 02:3x 合入「版本化脱敏规则管理」（61 checkpoint
+   + 迁移 866，台账 pending deploy），并已把 245 部署为 `2664-dd0d8248`；154 仍
+   `2663-75bf327a`、211 仍旧版。此时部署任何一台都会连带 866 与该功能。
+6. MV 争用、model alternatives 超时、fp_slot、nvidia probe、252 负载 15–22：owner。
+7. `r43-fresh-install*` / 九月远端三分支：留置。
