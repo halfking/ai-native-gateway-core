@@ -2034,6 +2034,14 @@ export const enUS = {
   },
   anomalies: {
     title: 'Request anomalies',
+    // ★ Deep-link guard copy (batch 130). NOTE the server-side
+    // `SuperAdminMiddleware` compares the role literally ⇒ this family is a
+    // **real gate**, so this layer guards the **experience**, not security —
+    // the opposite direction from the `admin`-tier family (batch 121-128).
+    nope: {
+      msg: 'Only super administrators can view request anomalies.',
+      why: 'The server returns 403 (this family is gated by a backend middleware); this page blocks it earlier so you see why, instead of a string of API errors.',
+    },
     counts: 'Unresolved counts',
     unresolved: 'Unresolved',
     newToday: 'New today',
