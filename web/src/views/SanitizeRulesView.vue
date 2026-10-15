@@ -558,7 +558,84 @@ onBeforeUnmount(() => {
       <section v-if="tab === 'rules' && superAdmin" :aria-busy="loading">
         <p v-if="loading">{{ t("sanitizeRules.loading") }}</p>
         <template v-else-if="head">
-           </template
+          <div class="toolbar">
+            <strong
+              >{{ t("sanitizeRules.draft") }} · {{ draft.rules.length }}</strong
+            ><button
+              class="btn"
+              data-test="add-rule"
+              :disabled="busy"
+              @click="addRule"
+            >
+              {{ t("sanitizeRules.add") }}</button
+            ><button
+              v-if="dirty || advancedDirty"
+              class="btn"
+              :disabled="busy"
+              @click="loadCurrent()"
+            >
+              {{ t("sanitizeRules.reset") }}
+            </button>
+          </div>
+          <div class="rule-workspace">
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>{{ t("sanitizeRules.rule") }}</th>
+                    <th>{{ t("sanitizeRules.scopes") }}</th>
+                    <th>{{ t("sanitizeRules.action") }}</th>
+                    <th>{{ t("sanitizeRules.enabled") }}</th>
+                    <th>{{ t("sanitizeRules.edit") }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="(rule, index) in draft.rules"
+                    :key="rule.id + '-' + index"
+                    data-test="rule-row"
+                    :class="{ selected: index === selected }"
+                  >
+                    <td>
+                      <strong>{{ rule.name }}</strong
+                      ><small
+                        ><code>{{ rule.id }}</code> · {{ rule.type }}</small
+                      ><small>{{
+                        rule.tenant_id || t("sanitizeRules.all")
+                      }}</small>
+                    </td>
+                    <td>{{ rule.scopes.join(", ") }}</td>
+                    <td>
+                      <code>{{ rule.action }}</code>
+                    </td>
+                    <td>
+                      <input
+                        v-model="rule.enabled"
+                        type="checkbox"
+                        :aria-label="
+                          t('sanitizeRules.enabled') + ' ' + rule.name
+                        "
+                        :disabled="busy"
+                      />
+                    </td>
+                    <td>
+                      <button
+                        class="btn"
+                        data-test="edit-rule"
+                        :disabled="busy"
+                        @click="selected = index"
+                      >
+                        {{ t("sanitizeRules.edit") }}
+                      </button>
+                    </td>
+                  </tr>
+                  <tr v-if="!draft.rules.length">
+                    <td colspan="5">{{ t("sanitizeRules.noRules") }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div> </template
         >
       </section>
     </template>
