@@ -1,11 +1,18 @@
 package bg
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/pashagolub/pgxmock/v4"
 )
 
 // These are sanitized 211 response shapes replayed by a local HTTP server,
@@ -31,6 +38,11 @@ func TestCredentialProbe211Classification(t *testing.T) {
 		{"invalid key", 403, `{"error":{"code":"invalid_api_key","message":"Invalid API key"}}`, "auth_failed", "", "auth_error", false},
 		{"revoked key with region", 403, `{"error":{"message":"API key revoked. This model is not available in your region"}}`, "auth_failed", "", "auth_error", false},
 		{"invalid key with quota", 403, `{"error":{"code":"invalid_api_key","message":"Insufficient account balance"}}`, "auth_failed", "", "auth_error", false},
+		{"quota request id429", 403, `{"request_id":"req429001","error":{"code":"insufficient_user_quota","message":"用户额度不足，余额0"}}`, "ready", "periodic_exhausted", "balance_low", false},
+		{"401 body numbers", 401, `{"request_id":"req403429402","error":{"message":"Insufficient account balance; chat status 403: model not found"}}`, "auth_failed", "", "auth_error", false},
+		{"model body numbers", 403, `{"request_id":"req401429402","error":{"message":"This model is not available in your region"}}`, "ready", "", "model_binding_error", true},
+		{"disabled key quota", 403, `{"error":{"code":"api_key_disabled","message":"Insufficient account balance"}}`, "auth_failed", "", "auth_error", false},
+		{"suspended key quota", 403, `{"error":{"code":"api_key_suspended","message":"Insufficient account balance"}}`, "auth_failed", "", "auth_error", false},
 		{"ambiguous403", 403, `{"error":{"message":"Forbidden"}}`, "auth_failed", "", "auth_error", false},
 		{"account region", 403, `{"error":{"message":"Your account is not available in your region"}}`, "auth_failed", "", "auth_error", false},
 		{"generic permission", 403, `{"error":{"message":"Permission denied"}}`, "auth_failed", "", "auth_error", false},
@@ -92,10 +104,91 @@ func TestCredentialProbe211ScopeNegativeControls(t *testing.T) {
 		`models endpoint unreachable (after 1 attempts): status 404: Model 'claude-sonnet-5' not found`,
 		`401/403: This model is not available in your region`,
 		`401/403: Insufficient account balance`,
+		`401/403: chat status 403: Insufficient account balance`,
+		`models endpoint unreachable (after 1 attempts): status 403: chat status 403: This model is not available in your region`,
 	} {
 		pr := classifyProbeFailure(msg)
 		if pr.BindingOnly || pr.AvailabilityState == "ready" {
 			t.Errorf("ambiguous status or non-generation endpoint must not exempt credential: %q => %+v", msg, pr)
+		}
+	}
+}
+
+// Drive the same SQL helper used by writeHealth, rather than classifying a
+// result and assuming its HealthStatus is what the credentials row receives.
+func TestCredentialProbe211BindingWriteSQL(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	stamp := time.Now()
+	mock.ExpectExec(regexp.QuoteMeta(bindingProbeCredentialSQL)).WithArgs(44, &stamp).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	result, err := writeBindingProbeCredential(context.Background(), mock, 44, &stamp)
+	if err != nil || result.RowsAffected() != 1 {
+		t.Fatalf("binding bookkeeping: result=%v err=%v", result, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"availability_state", "quota_state", "state_reason_code", "last_probe_success = TRUE", "health_status = $1"} {
+		pattern := `(?m)^\s*(?:SET\s+)?` + regexp.QuoteMeta(forbidden)
+		if regexp.MustCompile(pattern).MatchString(bindingProbeCredentialSQL) {
+			t.Fatalf("binding failure overwrites credential authority: %s", forbidden)
+		}
+	}
+	if !strings.Contains(bindingProbeCredentialSQL, "last_probe_success = FALSE") {
+		t.Fatal("failed model probe claimed success")
+	}
+	// Assert the real writeHealth path returns before main/fallback SQL.
+	src, err := os.ReadFile("credential_probe_v2.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	start := strings.Index(body, "func (c *CredentialProbeV2) writeHealth(")
+	body = body[start:]
+	branch := strings.Index(body, "if pr.BindingOnly {")
+	main := strings.Index(body, "SET health_status = $1,")
+	if branch < 0 || main < branch || !strings.Contains(body[branch:main], "writeBindingProbeCredential") ||
+		!strings.Contains(body[branch:main], "c.writeBindingUnavailable(execCtx, credID, pr)") ||
+		!strings.Contains(body[branch:main], "\n\t\treturn\n\t}") {
+		t.Fatal("BindingOnly reaches credential-wide main/fallback writer")
+	}
+}
+
+// Optional real PostgreSQL evaluation of the exact production CASE. Read-only
+// SELECT VALUES only: no schema/table creation and no credential writes.
+func TestCredentialProbe211BindingHealthPG(t *testing.T) {
+	dsn := os.Getenv("TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("TEST_PG_DSN unset; real PostgreSQL expression matrix not run")
+	}
+	conn, err := pgx.Connect(t.Context(), dsn)
+	if err != nil {
+		t.Fatal("connect test PostgreSQL failed")
+	}
+	defer conn.Close(t.Context())
+	cases := []struct{ health, source, reason, availability, quota, want string }{
+		{"healthy", "probe", "ok", "ready", "ok", "healthy"},
+		{"unknown", "probe", "ok", "ready", "ok", "unknown"},
+		{"warning", "probe", "model_binding_error", "ready", "ok", "unknown"},
+		{"warning", "probe", "endpoint_id_required", "ready", "ok", "unknown"},
+		{"warning", "traffic", "model_binding_error", "ready", "ok", "warning"},
+		{"warning", "probe", "balance_low", "ready", "ok", "warning"},
+		{"warning", "probe", "model_binding_error", "ready", "permanently_exhausted", "warning"},
+		{"unreachable", "probe", "auth_error", "auth_failed", "ok", "unreachable"},
+		{"warning", "probe", "model_binding_error", "auth_failed", "ok", "warning"},
+	}
+	for _, tc := range cases {
+		var got string
+		query := "SELECT " + bindingProbeCredentialHealthExpr + ` FROM (VALUES ($1::text,$2::text,$3::text,$4::text,$5::text)) AS credentials(health_status,health_source,state_reason_code,availability_state,quota_state)`
+		if err := conn.QueryRow(t.Context(), query, tc.health, tc.source, tc.reason, tc.availability, tc.quota).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != tc.want {
+			t.Errorf("%+v health=%s want=%s", tc, got, tc.want)
 		}
 	}
 }

@@ -212,6 +212,32 @@ func TestApplyURSMOverlayAppliesCredentialGate(t *testing.T) {
 	}
 }
 
+func TestResolveCredentialBalanceGateAgreesWithDispatch(t *testing.T) {
+	zero, negative, positive := 0.0, -1.0, 1.0
+	for _, tc := range []struct {
+		name    string
+		balance *float64
+		blocked bool
+	}{
+		{"zero", &zero, true}, {"negative", &negative, true}, {"positive", &positive, false}, {"unknown", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prod := provider.Candidate{Routable: true, LifecycleStatus: "active", CircuitState: "closed", AvailabilityState: "ready", QuotaState: "ok", BalanceUSD: tc.balance}
+			if prod.IsAvailable() == tc.blocked {
+				t.Fatalf("dispatch precondition: %s", prod.UnavailableReason())
+			}
+			candidates := []resolveCandidate{{CredentialID: 63, ModelName: "grok-4.6", DBEligible: true, Routable: true, RuntimeRoutable: true, dbCircuitState: "closed", BalanceUSD: tc.balance}}
+			applyURSMOverlay(candidates, []v2api.NodeView{{CredentialID: 63, RawModel: "grok-4.6", Available: true}}, time.Now())
+			if candidates[0].Routable == tc.blocked || candidates[0].RuntimeRoutable == tc.blocked {
+				t.Fatalf("resolve differs from dispatch: %+v", candidates[0])
+			}
+			if tc.blocked && candidates[0].BlockReason != "balance_zero" {
+				t.Fatalf("reason=%s", candidates[0].BlockReason)
+			}
+		})
+	}
+}
+
 // TestApplyCredentialCircuitGateIsIdempotent guards the safety-net double call
 // (applyURSMOverlay applies it, and handleRoutingResolve calls it again for the
 // non-overlay branches). A second application must not overwrite a more

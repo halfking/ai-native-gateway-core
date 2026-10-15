@@ -5752,12 +5752,21 @@ func applyURSMOverlay(candidates []resolveCandidate, views []api.NodeView, now t
 func applyCredentialCircuitGate(candidates []resolveCandidate) {
 	for i := range candidates {
 		c := &candidates[i]
-		if c.dbCircuitState != "open" {
+		reason := ""
+		if c.dbCircuitState == "open" {
+			reason = "circuit_open"
+			// Surface the real reason, not a defaulted one.
+			c.CircuitState = "open"
+			c.CoolingUntil = c.dbCoolingUntil
+		} else if c.BalanceUSD != nil && *c.BalanceUSD <= 0 {
+			// Candidate.UnavailableReason also rejects a known nonpositive
+			// balance even when quota_state is still ok. Unknown balance is
+			// not proof of exhaustion and must remain untouched.
+			reason = "balance_zero"
+		}
+		if reason == "" {
 			continue
 		}
-		// Surface the real reason, not a defaulted one.
-		c.CircuitState = "open"
-		c.CoolingUntil = c.dbCoolingUntil
 		if !c.Routable && !c.RuntimeRoutable {
 			// Already blocked by the SQL view or the URSM overlay; keep the
 			// more specific existing reason rather than overwriting it.
@@ -5765,7 +5774,7 @@ func applyCredentialCircuitGate(candidates []resolveCandidate) {
 		}
 		c.Routable = false
 		c.RuntimeRoutable = false
-		c.BlockReason = "circuit_open"
+		c.BlockReason = reason
 	}
 }
 

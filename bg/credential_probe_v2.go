@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -1243,21 +1244,22 @@ func authProbeBackoffRecoverAt(n int) time.Time {
 
 func classifyProbeFailure(errMsg string) probeResult {
 	pr := probeResult{HealthSource: "probe"}
+	status, legacyAuth := credentialProbeFailureStatus(errMsg)
 	switch {
-	case (strings.Contains(errMsg, "401") || strings.Contains(errMsg, "403")) &&
+	case (legacyAuth || status == 401 || status == 403) &&
 		!isProbeQuotaFailure(errMsg) && !isPerModelChatFailure(errMsg):
 		pr.HealthStatus = "unreachable"
 		pr.AvailabilityState = "auth_failed"
 		pr.HealthError = errMsg
 		pr.StateReasonCode = "auth_error"
-	case strings.Contains(errMsg, "429"):
+	case status == 429:
 		pr.HealthStatus = "warning"
 		pr.AvailabilityState = "rate_limited"
 		recover := time.Now().Add(60 * time.Second)
 		pr.AvailabilityRecoverAt = &recover
 		pr.HealthError = errMsg
 		pr.StateReasonCode = "rate_limited"
-	case isProbeQuotaFailure(errMsg) || strings.Contains(errMsg, "402") || strings.Contains(errMsg, "balance"):
+	case isProbeQuotaFailure(errMsg) || status == 402:
 		pr.HealthStatus = "warning"
 		pr.AvailabilityState = "ready"
 		pr.QuotaState = "periodic_exhausted"
@@ -1311,13 +1313,37 @@ func classifyProbeFailure(errMsg string) probeResult {
 	return pr
 }
 
+// Only parse our leading error envelope, never status-like numbers/prefixes in
+// provider prose, request IDs or JSON. Legacy combined auth remains fail-closed.
+var generationProbeStatusRe = regexp.MustCompile(`^(?:(?:chat|messages|responses) unreachable \(after [0-9]+ attempts\): )?(?:chat|messages|responses) status ([0-9]{3}):`)
+var credentialProbeStatusRe = regexp.MustCompile(`^(?:(?:chat|messages|responses|models endpoint) unreachable \(after [0-9]+ attempts\): )?(?:(?:chat|messages|responses) )?status ([0-9]{3}):`)
+var credentialProbeLegacyStatusRe = regexp.MustCompile(`^(?:(?:chat|messages|responses|models endpoint) unreachable \(after [0-9]+ attempts\): )?([0-9]{3})(?: |:)`)
+
+func credentialProbeFailureStatus(errMsg string) (int, bool) {
+	unwrapped := errMsg
+	if i := strings.Index(unwrapped, "): "); i >= 0 &&
+		(strings.HasPrefix(unwrapped, "chat unreachable (after ") || strings.HasPrefix(unwrapped, "models endpoint unreachable (after ")) {
+		unwrapped = unwrapped[i+3:]
+	}
+	if strings.HasPrefix(unwrapped, "401/403:") {
+		return 0, true
+	}
+	for _, re := range []*regexp.Regexp{credentialProbeStatusRe, credentialProbeLegacyStatusRe} {
+		if m := re.FindStringSubmatch(errMsg); m != nil {
+			status, _ := strconv.Atoi(m[1])
+			return status, false
+		}
+	}
+	return 0, false
+}
+
 // probeKeyFailureRe prevents quota/model prose from exempting an explicit
 // invalid/revoked key verdict. Unknown 403s retain the auth-failure default.
-var probeKeyFailureRe = regexp.MustCompile(`(?i)(invalid[_ -]?(api[_ -]?)?key|(?:api[_ -]?)?key.{0,20}(?:invalid|revoked|expired)|invalid[_ -]?token|authentication[_ -]?(?:failed|error)|unauthorized)`)
+var probeKeyFailureRe = regexp.MustCompile(`(?i)(invalid[_ -]?(api[_ -]?)?key|(?:api[_ -]?)?key.{0,20}(?:invalid|revoked|expired|disabled|suspended)|(?:invalid|revoked|expired|disabled|suspended)[_ -]?(?:api[_ -]?)?key|invalid[_ -]?token|authentication[_ -]?(?:failed|error)|unauthorized)`)
 
 func isProbeQuotaFailure(errMsg string) bool {
-	status, ok := extractStatusCode(errMsg)
-	if !ok || (status != 402 && status != 403) || probeKeyFailureRe.MatchString(errMsg) {
+	status, legacyAuth := credentialProbeFailureStatus(errMsg)
+	if legacyAuth || (status != 402 && status != 403) || probeKeyFailureRe.MatchString(errMsg) {
 		return false
 	}
 	kind := errorsx.ClassifyErrorWithBody(status, []byte(errMsg))
@@ -1381,22 +1407,45 @@ func isPerModelChatFailure(errMsg string) bool {
 // /v1/models channel's "models endpoint unreachable" prefix, which
 // must stay credential-scoped).
 func chatProbeStatusCode(errMsg string) int {
-	for _, prefix := range []string{"chat status ", "messages status ", "responses status "} {
-		i := strings.Index(errMsg, prefix)
-		if i < 0 {
-			continue
-		}
-		rest := errMsg[i+len(prefix):]
-		n := 0
-		for n < len(rest) && rest[n] >= '0' && rest[n] <= '9' {
-			n++
-		}
-		if n == 3 {
-			code, _ := strconv.Atoi(rest[:3])
-			return code
-		}
+	if m := generationProbeStatusRe.FindStringSubmatch(errMsg); m != nil {
+		code, _ := strconv.Atoi(m[1])
+		return code
 	}
 	return 0
+}
+
+// Only an attributable legacy binding warning may be normalized. A failed
+// model probe is not evidence to reset credential auth, quota or healthy state.
+const bindingProbeCredentialHealthExpr = `CASE
+    WHEN health_status = 'warning' AND health_source = 'probe'
+      AND state_reason_code IN ('model_binding_error', 'endpoint_id_required')
+      AND availability_state = 'ready' AND COALESCE(quota_state, 'ok') = 'ok'
+    THEN 'unknown'
+    ELSE health_status
+END`
+
+const bindingProbeCredentialSQL = `UPDATE credentials
+SET health_status = ` + bindingProbeCredentialHealthExpr + `,
+    health_error = CASE
+        WHEN health_source = 'probe'
+          AND state_reason_code IN ('model_binding_error', 'endpoint_id_required')
+          AND availability_state = 'ready' AND COALESCE(quota_state, 'ok') = 'ok'
+        THEN NULL ELSE health_error END,
+    last_probe_at = NOW(),
+    probe_consecutive_failures = COALESCE(probe_consecutive_failures, 0) + 1,
+    last_probe_success = FALSE
+WHERE id = $1
+  AND COALESCE(manual_disabled, FALSE) = FALSE
+  AND (lifecycle_status = 'active' OR
+       (lifecycle_status = 'disabled' AND auto_disabled_at IS NOT NULL))
+  AND ($2::timestamptz IS NULL OR COALESCE(state_updated_at, to_timestamp(0)) < $2)`
+
+type bindingProbeExecer interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+func writeBindingProbeCredential(ctx context.Context, db bindingProbeExecer, credID int, evidenceAt *time.Time) (pgconn.CommandTag, error) {
+	return db.Exec(ctx, bindingProbeCredentialSQL, credID, evidenceAt)
 }
 
 // writeHealth persists probe results with manual-disable guard.
@@ -1423,6 +1472,37 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 	var evidenceAt *time.Time
 	if !pr.EvidenceAt.IsZero() {
 		evidenceAt = &pr.EvidenceAt
+	}
+
+	if pr.BindingOnly {
+		// Do not enter either credential-wide UPDATE below (including the
+		// hard-quota fallback). Keep model diagnostics in the binding reason.
+		result, err := writeBindingProbeCredential(execCtx, c.db, credID, evidenceAt)
+		if err != nil {
+			slog.Warn("credential probe v2: binding probe bookkeeping failed", "credential_id", credID, "error", err)
+			return
+		}
+		if result.RowsAffected() == 0 {
+			return // manual/lifecycle/stale evidence guard rejected the probe
+		}
+		c.writeBindingUnavailable(execCtx, credID, pr)
+		// Only the failed model is evidenced here; do not mark siblings healthy
+		// while credential auth/quota may still be blocking them.
+		if c.cache != nil && c.cache.Enabled() && pr.HealthProbeModel != "" {
+			if err := c.cache.Set(execCtx, credID, pr.HealthProbeModel, modelAvailabilityFields(
+				credID, pr.HealthProbeModel, "model_binding", false, pr.HealthStatus,
+				0, 0, nil, pr.HealthSource)); err != nil {
+				slog.Warn("credential probe v2: binding cache write failed", "credential_id", credID, "error", err)
+			}
+		}
+		if c.stateManager != nil && pr.HealthProbeModel != "" {
+			c.stateManager.UpdateFromProbe(execCtx, &credentialstate.State{
+				CredentialID: credID, Model: pr.HealthProbeModel, Available: false,
+				HealthStatus: pr.HealthStatus, LastUpdatedAt: time.Now(), LastError: pr.HealthError,
+				Source: "probe_v2",
+			})
+		}
+		return
 	}
 
 	result, err := c.db.Exec(execCtx, `
