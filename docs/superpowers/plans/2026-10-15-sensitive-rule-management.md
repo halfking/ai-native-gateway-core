@@ -31,8 +31,10 @@
 
 ## S5 — 集成验证及收口
 - [x] 本地临时PG/Redis验证两个独立规则/API进程；真实Handler/Executor覆盖公共协议，browser-use验证完整管理闭环，不以纯mock页面替代。
-- [ ] 精确运行go test ./domains/sanitizerules ./security/sanitize ./domains/outputcompliance ./domains/hooks/outputcompliance ./domains/streaming ./settings；相关admin与cmd/gateway子集；race；go vet/build ./...；installer迁移测试；pnpm typecheck/build/test。
+- [x] 精确运行go test ./domains/sanitizerules ./security/sanitize ./domains/outputcompliance ./domains/hooks/outputcompliance ./domains/streaming ./settings；相关admin与cmd/gateway子集；race；go vet/build ./...；installer迁移测试；pnpm typecheck/build/test。
 - [x] 撤去CAS/原子切换/通知补偿/作用域/租户/事件遮蔽/回滚保护的变异应在对应断言变红。
-- [ ] 全量检查staged/unstaged/deleted/untracked，写Task Stop Summary并验证；三轴精确SHA审查通过后小提交、merge --no-ff main、push origin main，核对远端SHA并清理worktree。
+- [x] 全量检查staged/unstaged/deleted/untracked并验证Task Stop Summary；实现按小于200改行的结构checkpoint收口，独立Go/TypeScript/规格/质量审查通过。
+
+最终交付门：在小提交后绑定精确SHA审查，再merge --no-ff main、push origin main，核对远端包含交付SHA并清理worktree；实际结果以最终Task Stop Summary及远端核验记录为准。
 
 验证命令使用Go源码实际工具链；统一门失败须与干净基线对照，禁止为通过而修改既有负向判据或添加排除项。生产部署不包含在任务中。
