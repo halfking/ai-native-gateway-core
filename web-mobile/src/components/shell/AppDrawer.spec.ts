@@ -135,7 +135,7 @@ describe('AppDrawer 搜索（2026-10-15：85 席无搜索是可达性硬伤）',
   }
 
   it('★ 子串过滤：输入 compress 只剩 compression 家族的席，且远小于全量', async () => {
-    const w = await mountDrawerAs('super_admin')
+    await mountDrawerAs('super_admin')
     const before = await drawerLinks()
     expect(before.length).toBeGreaterThan(20) // 85 席基线在场，否则本用例失去判别力
     // 测试环境 locale 是 en-US：匹配面 = 标题 + key + 路径（组件对三者都做
@@ -158,7 +158,7 @@ describe('AppDrawer 搜索（2026-10-15：85 席无搜索是可达性硬伤）',
   })
 
   it('★ 空串 = 不过滤：清空搜索后席数回到角色全量', async () => {
-    const w = await mountDrawerAs('super_admin')
+    await mountDrawerAs('super_admin')
     const full = (await drawerLinks()).length
     await typeSearch('compress')
     const filtered = (await drawerLinks()).length
