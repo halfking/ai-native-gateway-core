@@ -115,6 +115,82 @@ check "claim 库全为网关自占键 → 复用不漂移" "6" "$(run_alloc '6' 
 # 10) 外来键：claim 库非空且非网关键（自占集合不含它）→ 放弃 claim 重新分配
 check "claim 库为外来键占用 → 放弃 claim 重新分配" "11" "$(run_alloc '12 13 14 15' 12 '')"
 
+echo "== URSM 库号复用（gateway.env 持久化，不逐次下移） =="
+sed -n '/^URSM_REDIS_DB="\${URSM_V2_REDIS_DB:-}"$/,/^\[\[ -n "\$URSM_REDIS_DB" \]\] || die/p' \
+  "$SCRIPT" > "$TMP/ursm.sh"
+[[ -s "$TMP/ursm.sh" ]] && ok "截取到 URSM 分配段" || bad "截取不到 URSM 分配段（锚点行被改？）"
+run_ursm() {
+  # $1=占用集合 $2=env 里上次的 URSM 库号(可空) $3=自占集合 $4=会话库号
+  local occupied="$1" prev="$2" self_occ="$3"
+  (
+    set -uo pipefail
+    unset URSM_V2_REDIS_DB
+    ENV_FILE="$TMP/ursm.env"; : > "$ENV_FILE"
+    [[ -n "$prev" ]] && printf 'export URSM_V2_REDIS_DB=%s\n' "$prev" > "$ENV_FILE"
+    REDIS_DB="$4"; REDIS_CONTAINER=stub
+    redis_db_in_use() { [[ " $occupied " == *" $2 "* ]]; }
+    redis_db_has_gateway_keys() { [[ " $self_occ " == *" $2 "* ]]; }
+    die() { printf 'DIED\n'; exit 9; }
+    log() { :; }
+    source "$TMP/ursm.sh"
+    printf '%s\n' "$URSM_REDIS_DB"
+  )
+}
+# 211 实测形态：0～15 全有键，上次 URSM=0 且库内只有 ursm:* → 必须复用 0
+check "URSM 上次库号只含网关键 → 复用(全库被占也不 die)" "0" \
+  "$(run_ursm '0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15' 0 '0' 5)"
+check "URSM 上次库号被外来键占用 → 放弃并找空库" "13" \
+  "$(run_ursm '0 14' 0 '' 5)"
+check "URSM 上次库号与会话库撞号 → 不复用" "14" \
+  "$(run_ursm '' 5 '5' 5)"
+check "无持久化记录 → 默认优先 db14" "14" "$(run_ursm '' '' '' 5)"
+
+echo "== production 模式鉴权密钥（生成 / 持久复用 / 环境变量优先）=="
+if extract_fn d211_auth_secret > "$TMP/authsec.sh"; then
+  run_sec() {
+    # $1=变量名 $2=持久文件名 $3=前缀 $4=调用方环境变量值(可空)
+    (
+      set -uo pipefail
+      D211_STATE_DIR="$TMP/state"; mkdir -p "$D211_STATE_DIR/env"
+      unset "$1"; [[ -n "$4" ]] && export "$1=$4"
+      source "$TMP/authsec.sh"
+      d211_auth_secret "$1" "$2" "$3"
+    )
+  }
+  k1="$(run_sec LLM_GATEWAY_ADMIN_API_KEY t.adminkey ops_ '')"
+  [[ "$k1" =~ ^ops_[0-9a-f]{64}$ ]] && ok "首次生成带前缀的 256 位随机值（ops_+64hex）" \
+    || bad "首次生成形态不对：$k1"
+  k2="$(run_sec LLM_GATEWAY_ADMIN_API_KEY t.adminkey ops_ '')"
+  check "重跑复用持久值，不轮换" "$k1" "$k2"
+  check "持久文件内容 = NAME=值" "LLM_GATEWAY_ADMIN_API_KEY=$k1" "$(cat "$TMP/state/env/t.adminkey")"
+  check "持久文件权限 600" "600" "$(stat -f %Lp "$TMP/state/env/t.adminkey" 2>/dev/null || stat -c %a "$TMP/state/env/t.adminkey")"
+  check "调用方环境变量优先并回写持久文件" "ops_from_env" \
+    "$(run_sec LLM_GATEWAY_ADMIN_API_KEY t.adminkey ops_ ops_from_env)"
+  check "回写后持久文件跟随环境变量" "LLM_GATEWAY_ADMIN_API_KEY=ops_from_env" "$(cat "$TMP/state/env/t.adminkey")"
+  h="$(run_sec CURSOR_HMAC_SECRET t.hmac '' '')"
+  (( ${#h} >= 32 )) && ok "CURSOR_HMAC_SECRET 长度 ${#h} ≥ 32（ValidateAuthSecrets 门）" \
+    || bad "CURSOR_HMAC_SECRET 长度 ${#h} < 32，production 会拒启"
+else
+  bad "抽不出 d211_auth_secret（production 模式密钥段被删或改名）"
+fi
+api_prefix="$(sed -nE 's/^GW_STATIC_API_KEY="\$\(d211_auth_secret LLM_GATEWAY_API_KEY gateway\.apikey ([^)]*)\)"$/\1/p' "$SCRIPT")"
+if [[ -n "$api_prefix" && "$api_prefix" != sk-* ]]; then
+  ok "静态 API key 前缀 '$api_prefix' 不是 sk-（sk-* 会被委托库校验，静态比对失效）"
+else
+  bad "静态 API key 前缀缺失或为 sk-*：'$api_prefix'"
+fi
+for want in 'LLM_GATEWAY_ENV=production' 'LLM_GATEWAY_API_KEY=${GW_STATIC_API_KEY}' \
+            'LLM_GATEWAY_ADMIN_API_KEY=${GW_ADMIN_API_KEY}' 'CURSOR_HMAC_SECRET=${GW_CURSOR_HMAC}'; do
+  if grep -qF -- "-e \"$want\"" "$SCRIPT"; then ok "容器 -e 注入 $want"; else bad "容器缺 -e $want"; fi
+done
+env_line="$(grep -n "printf 'export LLM_GATEWAY_ENV=production" "$SCRIPT" | cut -d: -f1)"
+gen_line="$(grep -n '^GW_CURSOR_HMAC=' "$SCRIPT" | cut -d: -f1)"
+if [[ -n "$env_line" && -n "$gen_line" && "$gen_line" -lt "$env_line" ]]; then
+  ok "production 开关写入前三项密钥已就绪（${gen_line} < ${env_line}）"
+else
+  bad "LLM_GATEWAY_ENV=production 未持久化或早于密钥生成"
+fi
+
 echo "== PG 17 版本判定 =="
 run_pg17() { ( set -uo pipefail; source "$TMP/pg17.sh"; pg_is_17 "$1" && echo yes || echo no ); }
 check "17.5 (170005) 判为 PG17" "yes" "$(run_pg17 170005)"
@@ -351,6 +427,22 @@ for _pat in 'LLM_GATEWAY_STATIC_DIR=/app/web/dist' 'MOBILE_WEB_DIST=/app/web-mob
     bad "web 腿契约缺失: $_pat（SPA/移动端/版本元数据将回落或不可用）"
   fi
 done
+# 版本戳：仓库 version.json 是别的部署留下的戳，211 必须用部署机真实 HEAD 改写，
+# 否则 /version 冒充他人版本（2026-10-16 实测：跑 75bf327a 却显示 2661-76e185e7）。
+if printf '%s' "$_nocomment" | grep -qF "D211_BUILD_SHA='\${D211_BUILD_SHA}'"; then
+  ok "--via 转发构建提交号 D211_BUILD_SHA"
+else
+  bad "--via 未转发 D211_BUILD_SHA，远端无 .git 只能沿用他人版本戳"
+fi
+if command -v python3 >/dev/null 2>&1; then
+  sed -n '/^import json, sys, time$/,/^json.dump(v, open(path, "w"), indent=2)$/p' "$SCRIPT" > "$TMP/vstamp.py"
+  printf '{"version":"2.5.8-76e185e7-20261015-2661","git_tag":"2.5.8","git_sha":"76e185e7","build_seq":2661}\n' > "$TMP/v.json"
+  python3 "$TMP/vstamp.py" "$TMP/v.json" "75bf327a" >/dev/null 2>&1
+  _vs="$(python3 -c 'import json,sys;v=json.load(open(sys.argv[1]));print(v["git_sha"], v["version"].split("-")[1], v["version"].endswith("-211"))' "$TMP/v.json" 2>/dev/null)"
+  check "种子 version.json 按构建提交号改写（sha/version 后缀 -211）" "75bf327a 75bf327a True" "$_vs"
+else
+  printf '  SKIP 版本戳改写行为（本机无 python3）\n'
+fi
 # 执行位置守卫：macOS 裸跑（无 --via）必须立刻给出 --via 指引，而不是让
 # mkdir /opt/llm-gateway-go-211 甩出无上下文的 Permission denied（2026-10-15 用户实测踩到）
 if grep -q 'uname -s.*==.*Darwin.*||' "$SCRIPT" || grep -qE '\[\[ -z "\$VIA" && "\$\(uname -s\)" == "Darwin" \]\]' "$SCRIPT"; then

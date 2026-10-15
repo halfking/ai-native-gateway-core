@@ -170,8 +170,14 @@ if [[ -n "$VIA" ]]; then
   # 基础镜像 build-arg 变量一并转发：211 的 /opt/kaixuan/base-images 存有
   # 离线基础镜像（kx-base/golang:1.27-alpine-amd64 等），daemon 的 mirror 不
   # 保证每次可达，构建腿应优先吃本地已 load 的镜像。空值 = 远端走脚本默认。
+  # 构建提交号随行：目标树不带 .git，远端只能从这里拿到真实 HEAD，用来改写
+  # 种子 version.json（否则 /version 显示的是工作区里别的部署留下的戳）。
+  D211_BUILD_SHA="$(git -C "$D211_REPO_ROOT" rev-parse --short=8 HEAD 2>/dev/null || true)"
+  if [[ -n "$D211_BUILD_SHA" && -n "$(git -C "$D211_REPO_ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+    D211_BUILD_SHA="${D211_BUILD_SHA}-dirty"
+  fi
   log "在 $VIA 上执行 deploy ..."
-  ssh "$VIA" "cd ~/llm-gateway-go-211 && D211_STATE_DIR=$D211_STATE_DIR D211_REDIS_DB_START=$D211_REDIS_DB_START D211_REDIS_DB_END=$D211_REDIS_DB_END LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY='${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}' D211_GO_BASE_IMAGE='${D211_GO_BASE_IMAGE:-}' D211_RUNTIME_BASE_IMAGE='${D211_RUNTIME_BASE_IMAGE:-}' D211_BASE_REGISTRY='${D211_BASE_REGISTRY:-}' PROBE_TIMEOUT_SECS='${PROBE_TIMEOUT_SECS:-}' bash scripts/deploy-211-docker.sh $*"
+  ssh "$VIA" "cd ~/llm-gateway-go-211 && D211_BUILD_SHA='${D211_BUILD_SHA}' D211_STATE_DIR=$D211_STATE_DIR D211_REDIS_DB_START=$D211_REDIS_DB_START D211_REDIS_DB_END=$D211_REDIS_DB_END LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY='${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}' D211_GO_BASE_IMAGE='${D211_GO_BASE_IMAGE:-}' D211_RUNTIME_BASE_IMAGE='${D211_RUNTIME_BASE_IMAGE:-}' D211_BASE_REGISTRY='${D211_BASE_REGISTRY:-}' PROBE_TIMEOUT_SECS='${PROBE_TIMEOUT_SECS:-}' bash scripts/deploy-211-docker.sh $*"
   exit $?
 fi
 
@@ -691,8 +697,21 @@ else
 fi
 
 # URSM 专用 Redis db（与网关会话库隔离，避免 persist SCAN 扫会话键）。
-# 允许调用方用 URSM_V2_REDIS_DB 覆盖；默认优先 14，跳过 REDIS_DB，找空库。
+# 允许调用方用 URSM_V2_REDIS_DB 覆盖；否则先复用 $ENV_FILE 里上次分配的库号
+# （库空或只含网关自身键即视为自占）；都不成立才默认优先 14，跳过 REDIS_DB，找空库。
+# 不复用时 URSM 写下的 ursm:* 键会让上次的库判「占用」，库号逐次下移直到 0～15
+# 全被占、部署 die（211 实测 14→…→0）。
 URSM_REDIS_DB="${URSM_V2_REDIS_DB:-}"
+if [[ -z "$URSM_REDIS_DB" && -f "$ENV_FILE" ]]; then
+  _prev_ursm="$(sed -nE 's/^(export )?URSM_V2_REDIS_DB=([0-9]+)$/\2/p' "$ENV_FILE" | tail -1)"
+  if [[ "$_prev_ursm" =~ ^[0-9]+$ && "$_prev_ursm" != "$REDIS_DB" ]]; then
+    if ! redis_db_in_use "$REDIS_CONTAINER" "$_prev_ursm" \
+      || redis_db_has_gateway_keys "$REDIS_CONTAINER" "$_prev_ursm"; then
+      URSM_REDIS_DB="$_prev_ursm"
+      log "复用已分配的 URSM Redis 库号 db${URSM_REDIS_DB}（$ENV_FILE 持久化，避免重跑漂移）"
+    fi
+  fi
+fi
 if [[ -z "$URSM_REDIS_DB" ]]; then
   for _cand in 14 13 12 11 10 9 8 7 6 5 4 3 2 1 0; do
     if [[ "$_cand" == "$REDIS_DB" ]]; then
@@ -778,6 +797,28 @@ if [[ -n "$CRED_ENC_KEY" ]]; then
   chmod 600 "$D211_STATE_DIR/env/gateway.credkey"
 fi
 
+# 生产模式（LLM_GATEWAY_ENV=production）的启动门：config.ValidateAuthSecrets 缺任
+# 一项即 panic。环境变量优先，其次 env/<文件> 持久值，都没有才首次生成——重跑
+# 不轮换。静态 API key 不得用 sk- 前缀（auth_mw 把 sk-* 委托给库校验，静态比对
+# 永远走不到）；admin token 按 rule 20 §3 带 ops_ 前缀。
+d211_auth_secret() {
+  local name="$1" file="$D211_STATE_DIR/env/$2" prefix="$3" val="${!1:-}"
+  if [[ -z "$val" && -f "$file" ]]; then
+    val="$(cut -d= -f2- "$file")"
+  fi
+  if [[ -z "$val" ]]; then
+    val="${prefix}$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  fi
+  printf '%s=%s\n' "$name" "$val" > "$file"
+  chmod 600 "$file"
+  printf '%s' "$val"
+}
+GW_STATIC_API_KEY="$(d211_auth_secret LLM_GATEWAY_API_KEY gateway.apikey gw211_)"
+GW_ADMIN_API_KEY="$(d211_auth_secret LLM_GATEWAY_ADMIN_API_KEY gateway.adminkey ops_)"
+GW_CURSOR_HMAC="$(d211_auth_secret CURSOR_HMAC_SECRET gateway.cursorhmac '')"
+[[ -n "$GW_STATIC_API_KEY" && -n "$GW_ADMIN_API_KEY" && ${#GW_CURSOR_HMAC} -ge 32 ]] \
+  || die "鉴权密钥生成/读取失败（production 模式启动门会拒启）：检查 $D211_STATE_DIR/env/ 写权限"
+
 # 组装网关要用的连接串（走 docker 网络内的容器名）
 # 密码必须 URL-encode（`@` / `:` / `/` 会拆断 DSN；`unused` 表示 trust 模式可不带）
 url_encode() { printf '%s' "$1" | python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.stdin.read(), safe=''))" 2>/dev/null || printf '%s' "$1"; }
@@ -823,6 +864,10 @@ DB_URL="postgres://${PG_USER_ENC}:${PG_PASS_ENC}@${PG_CONTAINER}:5432/${D211_PG_
   # URSM 专用 db 优先 14，且不得与网关会话 REDIS_DB 撞车；已被占用则降序找空库。
   printf 'export LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true\n'
   printf 'export URSM_V2_REDIS_DB=%q\n' "$URSM_REDIS_DB"
+  printf 'export LLM_GATEWAY_ENV=production\n'
+  printf 'export LLM_GATEWAY_API_KEY=%q\n' "$GW_STATIC_API_KEY"
+  printf 'export LLM_GATEWAY_ADMIN_API_KEY=%q\n' "$GW_ADMIN_API_KEY"
+  printf 'export CURSOR_HMAC_SECRET=%q\n' "$GW_CURSOR_HMAC"
 } > "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 
@@ -836,6 +881,10 @@ GW_ENV=(
   -e "LLM_GATEWAY_CORS_ORIGINS=${CORS_ORIGINS}"
   -e "LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true"
   -e "URSM_V2_REDIS_DB=${URSM_REDIS_DB}"
+  -e "LLM_GATEWAY_ENV=production"
+  -e "LLM_GATEWAY_API_KEY=${GW_STATIC_API_KEY}"
+  -e "LLM_GATEWAY_ADMIN_API_KEY=${GW_ADMIN_API_KEY}"
+  -e "CURSOR_HMAC_SECRET=${GW_CURSOR_HMAC}"
 )
 if [[ -n "$CRED_ENC_KEY" ]]; then
   GW_ENV+=( -e "LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=${CRED_ENC_KEY}" )
@@ -951,6 +1000,20 @@ if [[ "$GW_MOBILE_DIST_OK" == "1" ]]; then
 fi
 if [[ -f "$D211_REPO_ROOT/version.json" ]]; then
   cp -f "$D211_REPO_ROOT/version.json" "$D211_GW_DATA_ROOT/version.json"
+  # 仓库 version.json 的戳来自最近一次 154/245/本地部署（或提交时的旧值），
+  # 不是本次 211 构建；有 D211_BUILD_SHA 时改写成 <tag>-<sha>-<date>-211。
+  if [[ -n "${D211_BUILD_SHA:-}" ]]; then
+    python3 - "$D211_GW_DATA_ROOT/version.json" "$D211_BUILD_SHA" <<'PY' \
+      || warn "version.json 改写失败，沿用仓库原戳"
+import json, sys, time
+path, sha = sys.argv[1], sys.argv[2]
+v = json.load(open(path))
+date = time.strftime("%Y%m%d")
+v.update(git_sha=sha, build_date=date, target="211",
+         version="%s-%s-%s-211" % (v.get("git_tag", "dev"), sha, date))
+json.dump(v, open(path, "w"), indent=2)
+PY
+  fi
   chown 65532:65532 "$D211_GW_DATA_ROOT/version.json" 2>/dev/null || true
   GW_MOUNTS+=( -v "${D211_GW_DATA_ROOT}/version.json:/app/version.json:ro" )
   log "版本元数据种子: version.json（$(python3 -c "import json;print(json.load(open('$D211_GW_DATA_ROOT/version.json')).get('version','?'))" 2>/dev/null || echo '?')）"
