@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"strconv"
 	"strings"
 
 	compliancehook "github.com/kaixuan/llm-gateway-go/domains/hooks/outputcompliance"
@@ -144,12 +145,13 @@ func (c *outputSensitiveChecker) CheckField(ctx context.Context, tenant, label, 
 		if err := decoder.Decode(&value); err != nil {
 			return nil, err
 		}
-		unsafe, err := c.unsafeToolValue(ctx, value, "", 0, toolName)
+		issue := outputcompliance.ComplianceIssue{}
+		unsafe, err := c.unsafeToolValueDetail(ctx, value, "", 0, toolName, "$", &issue)
 		if err != nil {
 			return nil, err
 		}
 		if unsafe {
-			return &outputcompliance.ComplianceResult{Blocked: true}, nil
+			return &outputcompliance.ComplianceResult{Blocked: true, Issues: []outputcompliance.ComplianceIssue{issue}}, nil
 		}
 		return &outputcompliance.ComplianceResult{Compliant: true, RedactedOutput: text}, nil
 	}
@@ -171,6 +173,10 @@ func (c *outputSensitiveChecker) CheckField(ctx context.Context, tenant, label, 
 // 检查——但密码族凭据键检查（secretCredentialField）对任何工具都保留：写文件
 // 写出的明文凭据与触网无关，属另一条底线。身份族字段（r1024）不在此列。
 func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any, label string, depth int, toolName string) (bool, error) {
+	return c.unsafeToolValueDetail(ctx, value, label, depth, toolName, "$", nil)
+}
+
+func (c *outputSensitiveChecker) unsafeToolValueDetail(ctx context.Context, value any, label string, depth int, toolName, path string, issue *outputcompliance.ComplianceIssue) (bool, error) {
 	if depth > maxNativeToolInputDepth {
 		return false, errors.New("output tool input depth exceeded")
 	}
@@ -180,6 +186,7 @@ func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any,
 		// 泄漏的真值，不触发密码族明文阻断——否则并行工具调用里一个早产
 		// 的占位值会把同轮全部合法调用一并掐断。
 		if _, marker := ParsePlaceholder(value); secretCredentialField(label) && value != "" && !marker && !isPlaceholderCredentialValue(label, value) {
+			setToolIssue(issue, "credential", path)
 			return true, nil
 		}
 		document := bytes.TrimSpace([]byte(value))
@@ -190,7 +197,7 @@ func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any,
 			if err := decoder.Decode(&embedded); err != nil {
 				return false, err
 			}
-			return c.unsafeToolValue(ctx, embedded, label, depth+1, toolName)
+			return c.unsafeToolValueDetail(ctx, embedded, label, depth+1, toolName, path, issue)
 		}
 		if isInertContentTool(toolName) {
 			// 惰性内容载体（Write/Edit 写文件等）：参数是被写的数据，不是被
@@ -228,6 +235,11 @@ func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any,
 				// (TestGeneratedSensitiveToolOperationsAreBlocked contract).
 				continue
 			}
+			reason := string(fragment.Type)
+			if scopedType(fragment.Type) || fragment.Type == TypeEmail {
+				reason = "egress_destination"
+			}
+			setToolIssue(issue, reason, path)
 			return true, nil
 		}
 		// 2026-10-11：ScopeEgress 只匹配 IP 字面量规则，域名形式的外传目的地
@@ -235,6 +247,7 @@ func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any,
 		// 底线：默认公网可达即阻断，只豁免明确不可路由的主机。见 egress_host.go。
 		// 放在片段循环之后：两套规则互相独立，私网 IP 的豁免不会被这里撤销。
 		if hasPublicHostDestination(value) {
+			setToolIssue(issue, "egress_destination", path)
 			return true, nil
 		}
 		return false, nil
@@ -242,22 +255,27 @@ func (c *outputSensitiveChecker) unsafeToolValue(ctx context.Context, value any,
 		// r1024：身份族与密码族都保持「非字符串形状 fail-closed」（畸形形状是
 		// 绕过手法，与值是否机密无关）；只有字符串明文按族分流（见上）。
 		if credentialField(label) {
+			setToolIssue(issue, "credential", path)
 			return true, nil
 		}
 		for key, child := range value {
 			if compliancehook.IsOpaqueToolValue(key, child) {
 				continue
 			}
-			unsafe, err := c.unsafeToolValue(ctx, child, key, depth+1, toolName)
+			unsafe, err := c.unsafeToolValueDetail(ctx, child, key, depth+1, toolName, path+"."+key, issue)
 			if unsafe || err != nil {
 				return unsafe, err
 			}
 		}
 	case json.Number, bool:
-		return credentialField(label), nil
+		if credentialField(label) {
+			setToolIssue(issue, "credential", path)
+			return true, nil
+		}
+		return false, nil
 	case []any:
-		for _, child := range value {
-			unsafe, err := c.unsafeToolValue(ctx, child, label, depth+1, toolName)
+		for i, child := range value {
+			unsafe, err := c.unsafeToolValueDetail(ctx, child, label, depth+1, toolName, path+"["+strconv.Itoa(i)+"]", issue)
 			if unsafe || err != nil {
 				return unsafe, err
 			}
@@ -291,6 +309,13 @@ func isNonRoutableAddressFragment(fragment SensitiveFragment) bool {
 		return false
 	}
 	return isNonExfiltrationAddress(fragment.Value)
+}
+
+// setToolIssue records rule and schema location, never the rejected value.
+func setToolIssue(issue *outputcompliance.ComplianceIssue, reason, path string) {
+	if issue != nil {
+		*issue = outputcompliance.ComplianceIssue{Type: "sensitive", Subtype: reason, Location: path, Content: RedactionMarker(TypeSecret), Severity: 8, Score: 1}
+	}
 }
 
 // isNonExfiltrationEmailFragment 判断一个邮箱形状的片段在 egress 语境下是不是

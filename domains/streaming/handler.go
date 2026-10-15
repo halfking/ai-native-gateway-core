@@ -4819,6 +4819,20 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 	}
 goalRetryLoopDone:
+	// A held tool lane may be rejected while survival reports its write error
+	// as a disconnect. The interceptor already rendered the policy terminal;
+	// preserve that decision before generic executor/survival failure handling.
+	if outputGovernanceTerminal == "output_policy_blocked" {
+		// Survival may lose the final result on a held-write rejection. Without
+		// an actual result/attempt, leave attribution unknown instead of guessing.
+		p, c := failureAttribution(execErr, nil)
+		if result != nil {
+			p, c = intPtr(result.Candidate.ProviderID), intPtr(result.Candidate.CredentialID)
+		}
+		logCtx.SetRoute(p, c)
+		captureAndEmitFailure("output_policy_blocked", "Response blocked by output policy", p, c)
+		return
+	}
 
 	// ── End of retry loop ────────────────────────────────────────────────
 
