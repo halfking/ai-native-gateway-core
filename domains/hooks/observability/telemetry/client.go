@@ -2599,6 +2599,9 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 			// firePersistedHooks(entry) 读的是调用方那个 entry。不同步回去
 			// 的话, 走了这条分支的请求在 session 族仍然拿不到标记。
 			entry.FinalSuccessClaimed = fallback.FinalSuccessClaimed
+			// INSERT takes a fresh live write-source snapshot. The original
+			// entry consumed by hooks must retain that committed decision too.
+			entry.SessionV2WriteRequired = fallback.SessionV2WriteRequired
 			return nil
 		}
 
