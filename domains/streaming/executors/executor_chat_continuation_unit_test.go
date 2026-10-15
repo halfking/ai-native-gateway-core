@@ -16,7 +16,7 @@ import (
 
 func TestP03AppendAssistantPrefillMessage(t *testing.T) {
 	base := `{"model":"m","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"hi"}],"vendor_extra":{"x":1}}`
-	out, err := appendAssistantPrefillMessage([]byte(base), "one two")
+	out, err := appendAssistantPrefillMessage([]byte(base), "one two", "prefix")
 	if err != nil {
 		t.Fatalf("appendAssistantPrefillMessage: %v", err)
 	}
@@ -75,6 +75,7 @@ func TestP03InvokeBudgetIsAtomicExactlyOnce(t *testing.T) {
 		e:      &Executor{},
 		params: &ExecParams{RequestID: "p03-unit"},
 		body:   []byte(`{"messages":[{"role":"user","content":"hi"}]}`),
+		mode:   "prefix",
 		req:    req,
 		client: upstream.Client(),
 	}
@@ -104,6 +105,7 @@ func TestP03InvokeEmptyPrefixAndBadStatus(t *testing.T) {
 		e:      &Executor{},
 		params: &ExecParams{},
 		body:   []byte(`{"messages":[]}`),
+		mode:   "prefix",
 		req:    req,
 		client: badUpstream.Client(),
 	}
