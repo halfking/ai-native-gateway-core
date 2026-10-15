@@ -335,6 +335,16 @@ if grep -q 'uname -s.*==.*Darwin.*||' "$SCRIPT" || grep -qE '\[\[ -z "\$VIA" && 
 else
   bad "缺 macOS 裸跑守卫：部署机误以本机模式执行只会看到 mkdir Permission denied"
 fi
+# deploy-211.sh 薄包装（deploy-154 风格一条命令）：必须指向真脚本并内定 --via，
+# 包装断了用户就会退回裸跑真脚本踩 macOS 守卫
+WRAPPER="$ROOT/scripts/deploy-211.sh"
+if [[ -f "$WRAPPER" ]] \
+   && grep -q "deploy-211-docker.sh" "$WRAPPER" \
+   && grep -q -- '--via "$D211_WRAPPER_HOST"' "$WRAPPER"; then
+  ok "deploy-211.sh 薄包装在场（内定 --via，转发真脚本）"
+else
+  bad "deploy-211.sh 薄包装缺失或未正确转发 deploy-211-docker.sh --via"
+fi
 
 echo
 printf '结果: %d 通过, %d 失败\n' "$pass" "$fail"
