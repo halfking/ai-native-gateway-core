@@ -127,10 +127,24 @@ const TABLE = [
  *   反过来时 `appNav.ts` 行注释里的 `/api/maas/**` 会贡献一个**伪块注释起点**，
  *   把后面 450 行真实代码整段当注释吃掉 —— 30924 字节只剩 6118）。
  *   本批 ①-0 就是钉这个顺序的，不靠注释提醒。
+ *
+ * ★★★★★★ 第一百四十三批订正上面那句话 —— 当时的 ①-0 **并没有**钉住顺序。
+ *   它自己上面的注释早就写着「第三行那句真块注释**不能删**，删了这条判据就废了」，
+ *   而**实测（删掉第三行）11 个用例全绿**：警示写在注释里，但没有任何门钉住它。
+ *   ⇒ 现在把 `order` 提成参数，并加 ①-0b **要求两种顺序给出不同结果** ——
+ *     这才是把「第三行不能删」从一句警告变成一条可执行断言。
+ *   ⇒ 与 dynamicKeys ⑦ 同族但**不同形状**：那边是「源头计算式无自证」，
+ *     这边是「**夹具的承重部分**无门」。两者都只有变异台能发现。
+ *   ⚠️ 默认参数是 `line-first`，与本批之前的实现**逐字等价**，
+ *     其余调用点不需要改。
  */
-function stripComments(src: string): string {
+function stripComments(src: string, order: 'line-first' | 'block-first' = 'line-first'): string {
   const noLine = src.replace(/\/\/[^\n]*/g, '')
-  return noLine.replace(/\/\*[\s\S]*?\*\//g, '')
+  const noBlock = src.replace(/\/\*[\s\S]*?\*\//g, '')
+  // ★ 两个中间量先各自算好再组合 —— 这样 `block-first` 才真的是「先删块」，
+  //   而不是把 line-first 的结果再删一次行注释（那样两种顺序会给出相同结果，
+  //   ①-0b 的反向断言就会变红 —— 正是它要抓的那类退化）。
+  return order === 'line-first' ? noLine.replace(/\/\*[\s\S]*?\*\//g, '') : noBlock.replace(/\/\/[^\n]*/g, '')
 }
 
 function routerSrc(): string {
@@ -215,6 +229,9 @@ async function fillParams(row: Row, w: ReturnType<typeof mount>): Promise<void> 
 
 // ── ① 召回自证 ───────────────────────────────────────────────────────────────
 
+// 两条断言共享承重夹具；删掉真块注释时区分力断言必须红。
+const COMMENT_ORDER_TRAP = ['const a = 1 // 路径 /api/maas/**', 'const 真实代码 = a + 1', '/* 真的块注释 */'].join('\n')
+
 describe('① ★★★★★★ 召回自证：本表与路由里的 requiresRole 声明逐条配对', () => {
   it('①-0 ★★★★★★ stripComments 的剥离顺序：先删行注释，再删块注释', () => {
     // ★★★ 这个夹具是**分支条件**，不是示意 —— 第一版（只有两行、后面没有
@@ -224,12 +241,34 @@ describe('① ★★★★★★ 召回自证：本表与路由里的 requiresRo
     //   行注释里那个 `/**` 被当成块注释起点，一路吃到下一个真 `*/`，
     //   把夹在中间的**真实代码**整段吃掉（第一百三十二批 `appNav.ts` 的原形）。
     //   ⇒ 所以第三行那句真块注释**不能删**，删了这条判据就废了。
-    const trap = ['const a = 1 // 路径 /api/maas/**', 'const 真实代码 = a + 1', '/* 真的块注释 */'].join('\n')
+    const trap = COMMENT_ORDER_TRAP
     expect(stripComments(trap), '真实代码被伪块注释起点吃掉了（剥离顺序反了）').toContain('const 真实代码')
     expect(stripComments(trap)).not.toContain('/api/maas')
     // 反向也钉：块注释**确实**会被删（否则这个函数是恒等函数，假门）。
     expect(stripComments('/* 注释 */ const 留下 = 1')).not.toContain('注释')
     expect(stripComments('/* 注释 */ const 留下 = 1')).toContain('留下')
+  })
+
+  it('①-0b ★★★★★★ 夹具必须有区分力：两种剥离顺序给出**不同**结果', () => {
+    // ★★★★ 第一百四十三批新增，针对一个**实测**出来的洞：
+    //   把上面那个夹具的第三行（真块注释）删掉 ⇒ 11 个用例**全绿**。
+    //   原因：第三行是**后面存在一个真 `*/`**，只有它存在时，
+    //   `block-first` 才会从行注释里那个伪 `/**` 一路吃到它、并吃掉中间的
+    //   `const 真实代码`。删掉第三行 ⇒ 两种顺序结果**相同** ⇒ ①-0 恒真通过。
+    // ⇒ 所以不能只断言「现行顺序对」—— 那对承重夹具退化与不退化一视同仁。
+    // ⇒ 必须断言「两种顺序**结果不同**」，把「这是个分支条件」变成可执行事实。
+    const trap = COMMENT_ORDER_TRAP
+    const a = stripComments(trap, 'line-first')
+    const b = stripComments(trap, 'block-first')
+    expect(a, '现行顺序（先删行后删块）必须保住真实代码').toContain('const 真实代码')
+    expect(
+      b,
+      '★★ 顺序反过来时**也**保住了真实代码 ⇒ 这个夹具已经失去区分力（多半是承重那行被删了）\n' +
+        '  此时 ①-0 是恒真的假门：它对「剥离顺序写反」与「夹具被掏空」一视同仁地放行。',
+    ).not.toContain('const 真实代码')
+    // ★ 顺带把夹具形状钉住：承重那行必须在（它是被测的那一行，不是排版）。
+    expect(trap.split('\n'), '夹具必须仍是三行（第二行是要保护的代码，第三行是承重的真块注释）').toHaveLength(3)
+    expect(stripComments(trap, 'line-first')).not.toContain('/api/maas')
   })
 
   it('①-1 ★★★★★★ 数量对账：路由里带 requiresRole 的条数 == 本表的行数', () => {
