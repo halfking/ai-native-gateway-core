@@ -28,9 +28,9 @@ import (
 //
 // ⚠ **这三行是 §9.226.3 的快照，已过期**。当前实测见
 // `documentedSnapshot`（由 `TestDocumentedSnapshotMatchesMeasurement` 钉住，
-// 2026-10-06 / §9.257 更新）：
+// 2026-10-15 / r1033 读源切换后更新）：
 //
-//	全仓拼接点 73 处（v1 6 文件/12 处、canonical 12/18、unresolved 9/16、v1arm 15/27）
+//	全仓拼接点 93 处（v1 5 文件/11 处、canonical 25/38、unresolved 10/17、v1arm 16/27）
 //	（2026-10-05 832/833 收口轮：+2 全部来自 modalityVerifyAddressableSource
 //	共用常量的两个引用点，见清单 bg/modality_verification.go 条目；v1 桶不动）
 //	（2026-10-07 全量门首跑：+1 拼接点 / +1 v1 臂视图处数，方向=变大=「把看
@@ -152,8 +152,8 @@ type siteAssessment struct {
 // 判定依据是逐个文件读源码，不是抄工具输出。
 var indirectSiteAssessments = map[string]siteAssessment{
 
-	// ── 读 v1 宽族基表（6 文件 / 12 处）──────────────────────────────────
-	// 这 6 个里有 **4 个在 admin 侧四张登记表里一处都没有**（§9.227）。
+	// ── 读 v1 宽族基表（5 文件 / 11 处）──────────────────────────────────
+	// 这 5 个里有 **3 个在 admin 侧四张登记表里一处都没有**（§9.227）。
 	// 它们全部走切换层，而切换层的表名以 Go 字符串进 SQL；
 	// `maas/usage.go` 唯一的 `from _request_logs` 文本在**第 27 行的注释里**，
 	// 所以按行扫描的 requestLogsReadInventory 看不见它。
@@ -170,13 +170,12 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"⚠ 这是本清单里最危险的一条——它伪造的是**计费数字**。",
 	},
 	"admin/usage_credits.go": {
-		Verdict:    verdictReadsV1,
-		ResolvesTo: "_request_logs_hot",
-		Via: "requestLogsFromClause(days)（usage_credits.go:120）：days<=7 返回 " +
-			"`_request_logs_hot AS r`，否则 `request_logs_with_current_month AS r`。" +
-			"默认支在 149 行的 `FROM `+logsTable+`。",
-		Consequence: "同 tenants.go：credits 聚合读不到时 COALESCE 成 0，" +
-			"租户用量页显示 0 credits 而非报错。",
+		Verdict: verdictReadsV1Arm,
+		Via: "requestLogsFromClause(days)：r1033（f5f7b1d1b）将 days<=7 改为 " +
+			"`db.SessionFamilyTurnsHotSourceSQL() AS r`；days>7 仍读 " +
+			"`request_logs_with_current_month AS r`（会话族 + v1 历史臂）。",
+		Consequence: "短窗已脱离 v1 基表；长窗仍含 v1 历史臂，DROP 时历史行减少，" +
+			"关系名保留、不报缺表。maas 包自己的短窗源未随本次切换。",
 	},
 	"maas/usage.go": {
 		Verdict:    verdictReadsV1,
@@ -231,20 +230,11 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"真关系名，所以这条不是误报。",
 	},
 	"admin/dashboard_board_queries.go": {
-		// ★ §9.260：由 canonical-only 改为 reads-v1-arm。**不是原来写错了** ——
-		// 原文的 Via 与 Consequence 都准确地写着「带 v1 臂 / 少掉 v1 那部分行」，
-		// 只有 Verdict 标签是 §9.257 之前那条推导路径的产物。
-		// 改动理由：`…_without_customer_id` 是 composer **运行时**建的视图、
-		// 仓库里没有 DDL 文件 ⇒ §9.258 的推导器认不出它，这个文件被判成 canonical。
-		// 推导器补全后（§9.260）它正确落进 v1 臂桶，而清单标签与工具判定**矛盾** ⇒ 门红。
-		Verdict: verdictReadsV1Arm,
-		Via: "logsTable 解析为 `request_logs_with_current_month_without_customer_id AS r`" +
-			"（119 行）—— canonical 视图的包装视图，**带 v1 臂**。",
-		Consequence: "⚠ 视图的 v1 臂在 DROP 时消失 ⇒ 看板的这张表会少掉 v1 那部分行。" +
-			"归 D29-d 切换清单，**不是** DROP 前的 blocker。" +
-			"★ §9.260：这个包装视图由 composer 运行时创建、**仓库里没有 DDL 文件**，" +
-			"所以只看 sql/objects/views/ 的推导器认不出它 —— " +
-			"真库 pg_class 里有 4 个 _request_logs*_with_current_month* 视图且**全部含 v1 臂**。",
+		Verdict: verdictCanonicalOnly,
+		Via: "fallbackBoardSummary 与 queryBoardCreditsExcludingProbes 共用 " +
+			"boardRequestLogsFromClause；r1033（f5f7b1d1b）将其改为 " +
+			"`db.SessionFamilyTurnsSourceSQL() AS r`，直接投影会话族，不再读 v1 包装视图。",
+		Consequence: "两处聚合均不依赖 v1 基表或 v1 历史臂；v1 DROP 不改变该读源。",
 	},
 	"admin/provider_cred_lifecycle.go": {
 		Verdict:     verdictCanonicalOnly,
@@ -1039,9 +1029,14 @@ var documentedSnapshot = bucketSnapshot{
 	// 2026-10-14（S4 退役改名轮）：data_lifecycle 趋势端点跨族化新增 1 处
 	// V1FreezeCutoffSQL 拼接（工具判 canonical）→ 92→93、canonical 23→24 文件 /
 	// 35→36 处。文件集合其余不变。
+	// 2026-10-15（r1033，f5f7b1d1b）：board_queries 两处从 v1 臂切到会话族；
+	// usage_credits 的短窗从 v1 基表切到会话族、长窗仍有 v1 臂。
+	// 因此 v1 -1/文件 -1、v1 臂净 -1、canonical +2/文件 +1，总数不变。
+	// 已逐读 board_time_range.go / usage_credits.go / dashboard_board_queries.go，
+	// 不是扫描范围缩小或解析错误被吞。
 	TotalSites: 93,
-	V1Files:    6,
-	V1Sites:    12,
+	V1Files:    5,
+	V1Sites:    11,
 	// ★ §9.258：第四桶是**退役工作量的主体**，而前两桶都不是。
 	// ⚠ 这里的 25 处**不含** 3 处 `src.TurnsTable` —— 那个操作数是 struct 字段，
 	// 静态推不出，留在 unresolved 桶；但手验确认它读 v1 基表。
@@ -1054,9 +1049,9 @@ var documentedSnapshot = bucketSnapshot{
 	// 真库 pg_class 里 4 个 _request_logs*_with_current_month* 视图**全部含 v1 臂**。
 	// （2026-10-07 全量门首跑：V1ArmSites 26→27，方向=变大，同上注释。）
 	V1ArmFiles: 16,
-	V1ArmSites: 28,
-	CanonFiles: 24,
-	CanonSites: 36,
+	V1ArmSites: 27,
+	CanonFiles: 25,
+	CanonSites: 38,
 	UnresFiles: 10,
 	UnresSites: 17,
 }
