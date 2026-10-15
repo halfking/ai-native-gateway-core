@@ -35,14 +35,14 @@
 
 **Files:** Create `domains/streaming/upstream_bytes_golden_test.go`、同目录专用fixture/fake测试及`testdata/upstream_bodies/`；必要修正限定在真实IR/协议转换的有损点。
 
-- [ ] 复用chat_output_commit_test.go的真实executor/dispatch骨架，接真实transformation.NewTransportIRConverter与生产stream桥。
-- [ ] 编写可编程HTTP fake，io.ReadAll捕获全部attempt，按顶层RawMessage点名拒绝，回复真实JSON/SSE；自测“前提不在场”会失败。
-- [ ] 普通模式缺golden应红；显式更新仅在交换成功和独立语义通过后写文件；另测普通模式绝不创建。
-- [ ] 每协议复合输入包含未知嵌套对象/数组/null、精确大整数、转义、工具调用+结果、缓存字段；跨协议结构允许声明的转换，值不得丢失/舍入。
-- [ ] 先完成同协议6例，随后补全跨协议12例和严格中转6例；retry按顺序保存全部attempt。
-- [ ] 若暴露有损生产行为，先独立红测再最小修复，不能把损坏输出当golden。每次变异在隔离overlay/副本执行，禁止并发污染源码。
-- [ ] 命令：`GOTOOLCHAIN=go1.27.2 SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk go test ./domains/streaming -run 'TestUpstreamBodies|TestUpstreamGolden' -count=1`；显式更新后清开关再跑普通模式。
-- [ ] 规格/代码审查精确SHA与rule17通过，checkpoint合并push；此门完成前后两任务仅做诊断与红测设计。
+- [x] 复用chat_output_commit_test.go的真实executor/dispatch骨架，接真实transformation.NewTransportIRConverter与生产stream桥。
+- [x] 编写可编程HTTP fake，io.ReadAll捕获全部attempt，按顶层RawMessage点名拒绝，回复真实JSON/SSE；自测“前提不在场”会失败。
+- [x] 普通模式缺golden应红；显式更新仅在交换成功和独立语义通过后写文件；另测普通模式绝不创建。
+- [x] 每协议复合输入包含未知嵌套对象/数组/null、精确大整数、转义、工具调用+结果、缓存字段；跨协议结构允许声明的转换，值不得丢失/舍入。
+- [x] 先完成同协议6例，随后补全跨协议12例和严格中转6例；retry按顺序保存全部attempt。
+- [x] 若暴露有损生产行为，先独立红测再最小修复，不能把损坏输出当golden。每次变异在隔离overlay/副本执行，禁止并发污染源码。
+- [x] 命令：`GOTOOLCHAIN=go1.27.2 SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk go test ./domains/streaming -run 'TestUpstreamBodies|TestUpstreamGolden' -count=1`；显式更新后清开关再跑普通模式。
+- [x] 规格/代码审查精确SHA与rule17通过，checkpoint合并push；此门完成前后两任务仅做诊断与红测设计。
 
 ## Task 2：会话数据写入修复
 
