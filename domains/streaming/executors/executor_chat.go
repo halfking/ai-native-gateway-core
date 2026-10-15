@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -144,6 +145,7 @@ type chatStreamContinuation struct {
 	// reassigned (never mutated in place) at points that return a retryable
 	// error first, so a per-attempt snapshot equals the streamed body.
 	body []byte
+	mode string // vendor wire mode: prefix (DeepSeek) or partial (Moonshot)
 	req  *http.Request
 	// client is the same pool/default HTTP client the attempt used.
 	client *http.Client
@@ -172,7 +174,7 @@ func (s *chatStreamContinuation) invoke(prefixText string) (io.ReadCloser, error
 	if ctxErr := s.req.Context().Err(); ctxErr != nil {
 		return nil, fmt.Errorf("stream continuation: upstream context done: %w", ctxErr)
 	}
-	contBody, err := appendAssistantPrefillMessage(s.body, prefixText)
+	contBody, err := appendAssistantPrefillMessage(s.body, prefixText, s.mode)
 	if err != nil {
 		return nil, fmt.Errorf("stream continuation: %w", err)
 	}
@@ -182,6 +184,11 @@ func (s *chatStreamContinuation) invoke(prefixText string) (io.ReadCloser, error
 	// upstream.Client's retry loop replays via GetBody and would otherwise
 	// resend the original (pre-prefill) body.
 	clone := s.req.Clone(s.req.Context())
+	if s.mode == "prefix" {
+		// DeepSeek serves prefix completion under /beta, beside /v1.
+		clone.URL.Path = "/beta/chat/completions"
+		clone.URL.RawPath = ""
+	}
 	contBytes := contBody
 	clone.Body = io.NopCloser(bytes.NewReader(contBytes))
 	clone.ContentLength = int64(len(contBytes))
@@ -230,6 +237,32 @@ func (s *chatStreamContinuation) invoke(prefixText string) (io.ReadCloser, error
 	return resp.Body, nil
 }
 
+// chatContinuationMode admits only vendor endpoints and model families whose
+// assistant prefill has continuation semantics. A relay's model name alone is
+// no evidence: generic Chat APIs can silently restart the answer.
+func chatContinuationMode(upstreamURL, model string) string {
+	u, err := url.Parse(upstreamURL)
+	if err != nil || u.Scheme != "https" || (u.Port() != "" && u.Port() != "443") {
+		return ""
+	}
+	if u.Path != "/v1/chat/completions" && u.Path != "/chat/completions" && u.Path != "/beta/chat/completions" {
+		return ""
+	}
+	model = strings.ToLower(strings.TrimSpace(model))
+	switch strings.ToLower(u.Hostname()) {
+	case "api.deepseek.com":
+		if model == "deepseek-chat" {
+			return "prefix"
+		}
+	case "api.moonshot.cn", "api.moonshot.ai":
+		switch model {
+		case "moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k":
+			return "partial"
+		}
+	}
+	return ""
+}
+
 // appendAssistantPrefillMessage returns a copy of body with one trailing
 // assistant message carrying prefixText as plain text (magpie-style
 // assistant prefill continuation).
@@ -245,7 +278,10 @@ func (s *chatStreamContinuation) invoke(prefixText string) (io.ReadCloser, error
 //   - multi-choice (n>1) upstreams: only choice 0's text exists in the
 //     reader accumulator (ParseOpenAIStreamChunk reads choices[0]), so the
 //     prefill represents choice 0 only.
-func appendAssistantPrefillMessage(body []byte, prefixText string) ([]byte, error) {
+func appendAssistantPrefillMessage(body []byte, prefixText, mode string) ([]byte, error) {
+	if mode != "prefix" && mode != "partial" {
+		return nil, errors.New("upstream has no proven prefill capability")
+	}
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(body, &top); err != nil {
 		return nil, fmt.Errorf("parse outbound body: %w", err)
@@ -261,7 +297,9 @@ func appendAssistantPrefillMessage(body []byte, prefixText string) ([]byte, erro
 	prefill := struct {
 		Role    string `json:"role"`
 		Content string `json:"content"`
-	}{Role: "assistant", Content: prefixText}
+		Prefix  bool   `json:"prefix,omitempty"`
+		Partial bool   `json:"partial,omitempty"`
+	}{Role: "assistant", Content: prefixText, Prefix: mode == "prefix", Partial: mode == "partial"}
 	prefillRaw, err := json.Marshal(prefill)
 	if err != nil {
 		return nil, err
@@ -1135,16 +1173,19 @@ func (e *Executor) executeOpenAI(
 			// 均已就位。nativeStream（responses 线格式上游）与 anthropic
 			// 线格式上游本轮不覆盖——hook 对 OpenAIToAnthropicStream /
 			// OpenAIToResponsesStream 桥（chat 线上游、非 chat 线客户端）同样
-			// 挂载但桥侧暂不消费（登记待接线）。
+			// 挂载但桥侧暂不消费（登记待接线）。仅官方已知 prefill 主机+模型
+			// 可装钩；设置缺失默认关闭。工具调用开始后由读循环拒绝续问。
 			var continuation *chatStreamContinuation
-			if params.IsStream && !nativeStream && e.StreamChat != nil &&
+			continuationMode := chatContinuationMode(upstreamURL, outboundModel)
+			if continuationMode != "" && params.IsStream && !nativeStream && e.StreamChat != nil &&
 				cand.Protocol != providercatalog.ProtocolAnthropicMessages &&
-				settings.GetPlatformBool(settings.KeyStreamContinuationEnabled, true) {
+				settings.GetPlatformBool(settings.KeyStreamContinuationEnabled, false) {
 				continuation = &chatStreamContinuation{
 					e:      e,
 					params: params,
 					cand:   cand,
 					body:   bodyBytes,
+					mode:   continuationMode,
 				}
 				upCtx = WithStreamContinuation(upCtx, continuation.invoke)
 			}

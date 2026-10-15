@@ -829,6 +829,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		chunkCount          int
 		bufferedText        strings.Builder
 		hasEmittedToolCalls bool
+		hasNamedToolCalls   bool
 		bufferedToolArgs    strings.Builder
 		currentToolCallID   string
 		initialArgsSent     bool
@@ -1236,6 +1237,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 							initialArgsSent = false
 						}
 						hasEmittedToolCalls = true
+						hasNamedToolCalls = hasNamedToolCalls || evt.ContentBlock.Name != ""
 					} else if err == nil && evt.ContentBlock.Type == "tool_result" {
 						// 2026-08-29: Register tool_result with validator
 						var toolResultEvt struct {
@@ -1490,6 +1492,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			if finishReason != nil {
 				fr = *finishReason
 			}
+			fr = ir.ToolCallFinishReason(fr, hasNamedToolCalls)
 			// 2026-09-13 fix (holdback parity with the responses bridges):
 			// the survival L1 holdback window (5s/20 chunks) holds semantic
 			// frames WITHOUT advancing the gate commit state, so a stream

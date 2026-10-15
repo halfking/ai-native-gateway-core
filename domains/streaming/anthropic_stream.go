@@ -1144,9 +1144,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				break
 			}
 		}
-		if hasStartedTool {
-			finalFinishReason = "tool_calls"
-		}
+		finalFinishReason = ir.ToolCallFinishReason(finalFinishReason, hasStartedTool)
 
 		// Content delivery above may have committed the gate. A detached client
 		// still needs the clean terminal sequence in the pending capturer.

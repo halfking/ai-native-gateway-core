@@ -204,7 +204,7 @@ func ParseOpenAIStreamChunk(line string) (*StreamChunk, error) {
 	}
 
 	// Extract "data: " prefix (with lenient parsing for malformed SSE)
-	if !strings.HasPrefix(line, "data: ") {
+	if !strings.HasPrefix(line, "data:") {
 		// Lenient mode: if line looks like JSON, auto-prefix it
 		if strings.HasPrefix(line, "{") && strings.Contains(line, "\"id\"") {
 			line = "data: " + line
@@ -215,7 +215,7 @@ func ParseOpenAIStreamChunk(line string) (*StreamChunk, error) {
 			return nil, fmt.Errorf("not a data line: %s", line)
 		}
 	}
-	payload := strings.TrimPrefix(line, "data: ")
+	payload := strings.TrimPrefix(line, "data:")
 	payload = strings.TrimSpace(payload)
 
 	// Handle [DONE] sentinel

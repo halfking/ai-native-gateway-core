@@ -8784,3 +8784,9 @@ git show origin/main:scripts/deploy-lib/db-changelog.sh
 |-----------|------|---------|--------|
 | 844 | `844_supplier_view_cache_baseline_columns.sql` | `d626b9376032c721135fb5dd5a5cb49bde01667134c635f8eacd7c5cee8c8989` | applied+verified。台账补登：本轮修正 `internal/sqlguard/migration_registry_continuity_test.go` 的编号解析（限定 `^[0-9]{3}_`）后，近邻窗口从坍缩的 `[20260700,20260719]` 恢复为真实的 `[844,863]`，随即暴露本条与 851 两条**此前被锚点缺陷掩盖**的漏登记。二者 canonical 与 embeddata 副本 sha 一致、均已进安装器通道 |
 | 851 | `851_disable_overbroad_pii_ip_address_rule.sql` | `c9ee0e5f7ed97d2b27838ad6a15767e17e7424c70463ab958a2454bb7466d045` | applied+verified。台账补登：停用 316 播种的 pii_patterns.ip_address 规则（它把每一个 IPv4 含环回与公网都当 PII 遮成 ***.*.*.*.*）。同 844，属锚点缺陷掩盖的漏登记 |
+
+## 2026-10-15 — Magpie 第二轮全量验证发现的 864 台账补登
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 864 | `864_model_aliases_bare_raw_name_active_idx.sql` | `e55e941391097b23599346de941512bb62ac22401057cf3387ed5ebcceebb9b4` | 台账补登：ae2de4627 已同步 canonical、installer embed/map、安装清单和部署通道，但遗漏本台账。补充 `(raw_name, canonical_id) WHERE status='active'` 部分索引，服务裸列 raw_name 等值查询。SHA 由 canonical 与 embeddata 两副本现场计算并确认一致；本轮仅补登记，不声称新执行数据库迁移。 |

@@ -32,6 +32,7 @@ func (c *cannedRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
 	c.calls++
 	rec := httptest.NewRecorder()
 	rec.WriteHeader(http.StatusOK)
+	_, _ = rec.WriteString(`{"ok":true}`)
 	return rec.Result(), nil
 }
 
@@ -96,6 +97,7 @@ func TestClientDoDispatchesEgressTransport(t *testing.T) {
 func TestClientDoEgressProviderNilKeepsDefault(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	defer srv.Close()
 

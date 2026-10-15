@@ -21,6 +21,7 @@ FROM ${GO_BASE_IMAGE}${GO_IMAGE_DIGEST:+@${GO_IMAGE_DIGEST}} AS builder
 # China network: proxy.golang.org is unreachable, use goproxy.cn instead.
 # The offline-package build script already does this; Docker builds need it too.
 ENV GOPROXY=https://goproxy.cn,direct
+ENV GOTOOLCHAIN=go1.27.2
 
 WORKDIR /app
 

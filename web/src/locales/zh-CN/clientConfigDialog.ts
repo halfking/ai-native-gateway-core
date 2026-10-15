@@ -4,7 +4,7 @@ export default {
   close: '关闭',
 
   step1: {
-    title: '① 选择 API Key（当前租户下所有密钥）',
+    title: "① 选择可用 API Key",
     refresh: '刷新',
     refreshing: '刷新中…',
     loading: '加载中…',
@@ -18,16 +18,16 @@ export default {
 
   step2: {
     title: '② 操作系统',
-    pathHint: '配置文件路径：',
+    pathHint: "配置入口：",
   },
 
   step3: {
-    title: '③ 选择模型范围',
-    featured: '热门模型（路由 featured 配置）',
+    title: "④ 选择模型范围",
+    featured: "特色模型（所选密钥租户的路由配置）",
     all: '全部可用模型（从网关拉取）',
     featuredPreview: {
       loading: '加载中…',
-      empty: '路由中尚未配置热门模型',
+      empty: "所选租户尚未配置特色模型",
       manageButton: '前往「路由策略」配置 →',
       manage: '管理 →',
     },
@@ -42,6 +42,21 @@ export default {
     },
   },
 
+  retry: "重试",
+  otherFamily: "其它",
+  gateway: {
+    title: "③ 网关 API 地址",
+    hint: "默认使用当前网关站点地址。配置中会包含所选 API Key，请妥善保管生成文件和脚本。",
+  },
+  provider: {
+    label: "供应商名称",
+    hint: "同名且同地址时更新原项。若地址不同，脚本会停止并提示改名。",
+  },
+  notes: {
+    cherryStudio: "请在客户端设置面板填入所选密钥；此文件仅为参数清单。",
+    rooCode: "在 Roo Code 设置面板配置 OpenAI Compatible。",
+  },
+
   footer: {
     generated: '已生成 {count} 个模型配置',
     generate: '生成配置',
@@ -51,11 +66,14 @@ export default {
 
   results: {
     tabs: {
+      yaml: "YAML 片段",
       file: '配置文件',
       script: '配置脚本',
       manual: '手动步骤',
     },
     actions: {
+      scriptWarning: "脚本包含密钥，请下载后在本机执行。生成的脚本不在页面展开。",
+      mergeHint: "脚本先备份旧配置，再合并 {provider}，保留其他供应商",
       copyContent: '复制内容',
       downloadFile: '下载文件',
       downloadScript: '下载脚本',
@@ -76,6 +94,12 @@ export default {
   },
 
   error: {
+    featuredLoadFailed: "特色模型加载失败，请重试。",
+    catalogLoadFailed: "模型目录加载失败，请重试。",
+    selectModel: "请至少选择一个模型；特色模型为空时请先到「路由策略」配置。",
+    keyUnavailable: "所选密钥无法读取，请重新选择。",
+    generateFailed: "配置生成失败，请重试。",
+    copyFailed: "复制失败，请下载文件。",
     applyFailed: '申请失败',
   },
   // Added 2026-07-02 — Cursor fallback note (used by ClientConfigDialog when tool === 'cursor').

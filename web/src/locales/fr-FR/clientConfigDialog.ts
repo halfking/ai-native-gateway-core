@@ -4,7 +4,7 @@ export default {
   close: 'Fermer',
 
   step1: {
-    title: '① Sélectionner la clé API (toutes les clés sous le locataire actuel)',
+    title: "① Sélectionner une clé API disponible",
     refresh: 'Actualiser',
     refreshing: 'Actualisation…',
     loading: 'Chargement…',
@@ -18,16 +18,16 @@ export default {
 
   step2: {
     title: '② Système d\'exploitation',
-    pathHint: 'Chemin du fichier de configuration :',
+    pathHint: "Emplacement de la configuration :",
   },
 
   step3: {
-    title: '③ Sélectionner la portée du modèle',
-    featured: 'Modèles en vedette (configuration de routage featured)',
+    title: "④ Sélectionner la portée des modèles",
+    featured: "Modèles en vedette (routage du locataire de la clé sélectionnée)",
     all: 'Tous les modèles disponibles (depuis la passerelle)',
     featuredPreview: {
       loading: 'Chargement…',
-      empty: 'Aucun modèle en vedette configuré dans le routage',
+      empty: "Aucun modèle en vedette configuré pour le locataire sélectionné",
       manageButton: 'Aller à "Politique de routage" pour configurer →',
       manage: 'Gérer →',
     },
@@ -42,6 +42,21 @@ export default {
     },
   },
 
+  retry: "Réessayer",
+  otherFamily: "Autres",
+  gateway: {
+    title: "③ URL de l’API de la passerelle",
+    hint: "L’adresse de cette passerelle est utilisée par défaut. Les fichiers et scripts générés contiennent la clé API sélectionnée ; conservez-les en sécurité.",
+  },
+  provider: {
+    label: "Nom du fournisseur",
+    hint: "Une entrée de même nom et de même URL est mise à jour. Si l’URL diffère, le script s’arrête et demande un autre nom.",
+  },
+  notes: {
+    cherryStudio: "Saisissez la clé sélectionnée dans les paramètres du client. Ce fichier liste uniquement les paramètres.",
+    rooCode: "Configurez OpenAI Compatible dans les paramètres de Roo Code.",
+  },
+
   footer: {
     generated: '{count} configurations de modèle générées',
     generate: 'Générer la configuration',
@@ -51,11 +66,14 @@ export default {
 
   results: {
     tabs: {
+      yaml: "Extrait YAML",
       file: 'Fichier de configuration',
       script: 'Script de configuration',
       manual: 'Étapes manuelles',
     },
     actions: {
+      scriptWarning: "Le script contient votre clé. Téléchargez-le et exécutez-le localement ; son contenu n’est pas affiché ici.",
+      mergeHint: "Le script sauvegarde l’ancienne configuration, fusionne {provider} et conserve les autres fournisseurs",
       copyContent: 'Copier le contenu',
       downloadFile: 'Télécharger le fichier',
       downloadScript: 'Télécharger le script',
@@ -76,6 +94,12 @@ export default {
   },
 
   error: {
+    featuredLoadFailed: "Impossible de charger les modèles en vedette. Réessayez.",
+    catalogLoadFailed: "Impossible de charger le catalogue de modèles. Réessayez.",
+    selectModel: "Sélectionnez au moins un modèle. Si aucun modèle en vedette n’est disponible, configurez-les d’abord dans Politique de routage.",
+    keyUnavailable: "Impossible de lire la clé sélectionnée. Sélectionnez-la à nouveau.",
+    generateFailed: "La génération de la configuration a échoué. Réessayez.",
+    copyFailed: "La copie a échoué. Téléchargez le fichier.",
     applyFailed: 'La demande a échoué',
   },
   // Added 2026-07-02 — Cursor fallback note (used by ClientConfigDialog when tool === 'cursor').

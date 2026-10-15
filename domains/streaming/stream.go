@@ -645,6 +645,8 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 	pc *pendingCapturer,
 	diagnostics *DiagnosticContext,
 ) (outcome StreamOutcome) {
+	// Terminal repair state belongs to this request, including its empty-stream gate.
+	norm = norm.forStream()
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
@@ -764,7 +766,10 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 	// active, a failed client write only disables response writes; the
 	// upstream body must still be consumed for replay.
 	clientDisconnected := false
+	continuationHasToolCall := false
 	writeClientLine := func(line string) bool {
+		// Observe the final wire shape, including XML-coerced and nonzero-choice calls.
+		continuationHasToolCall = continuationHasToolCall || chatLineStartsToolCall(line)
 		if clientDisconnected {
 			return false
 		}
@@ -1247,7 +1252,7 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 						// 失败/预算耗尽/无正文可 prefill 则原样落入下方既有
 						// eof_without_done 终态化（不双 terminal）。
 						if contFn := executors.StreamContinuationFromContext(ctx); contFn != nil &&
-							!continuationSpent && continuationPrefix.Len() > 0 {
+							!continuationSpent && !continuationHasToolCall && continuationPrefix.Len() > 0 {
 							newBody, contErr := contFn(continuationPrefix.String())
 							if contErr == nil && newBody != nil {
 								continuationSpent = true
@@ -1690,11 +1695,41 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 }
 
 func extractPayload(line string) string {
-	if !strings.HasPrefix(line, "data: ") {
+	if !strings.HasPrefix(line, "data:") {
 		return ""
 	}
-	payload := strings.TrimPrefix(line, "data: ")
+	payload := strings.TrimPrefix(line, "data:")
 	return strings.TrimSpace(payload)
+}
+
+// chatLineStartsToolCall checks every choice, including legacy function_call.
+// Once tool arguments have started, plain text cannot reconstruct the reply.
+func chatLineStartsToolCall(line string) bool {
+	if !strings.HasPrefix(line, "data:") {
+		return false
+	}
+	payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	if !strings.Contains(payload, "tool_calls") && !strings.Contains(payload, "function_call") {
+		return false
+	}
+	var frame struct {
+		Choices []struct {
+			Delta struct {
+				ToolCalls    []json.RawMessage `json:"tool_calls"`
+				FunctionCall json.RawMessage   `json:"function_call"`
+			} `json:"delta"`
+		} `json:"choices"`
+	}
+	if json.Unmarshal([]byte(payload), &frame) != nil {
+		return false
+	}
+	for _, choice := range frame.Choices {
+		legacy := strings.TrimSpace(string(choice.Delta.FunctionCall))
+		if len(choice.Delta.ToolCalls) > 0 || legacy != "" && legacy != "null" {
+			return true
+		}
+	}
+	return false
 }
 
 // accumulateChatContentDelta appends the chunk's plain text delta to the
@@ -1720,14 +1755,14 @@ func accumulateChatContentDelta(chunk *ir.StreamChunk, b *strings.Builder) {
 // that also carries content/tool_calls/finish_reason/usage keeps everything
 // but the role. Line shape in / out: "data: {json}\n".
 func stripContinuationRoleFromLine(line string) (string, bool) {
-	if !strings.HasPrefix(line, "data: ") {
+	if !strings.HasPrefix(line, "data:") {
 		return line, false
 	}
 	trailing := "\n"
 	if !strings.HasSuffix(line, "\n") {
 		trailing = ""
 	}
-	payload := strings.TrimSuffix(strings.TrimPrefix(line, "data: "), "\n")
+	payload := strings.TrimSuffix(strings.TrimPrefix(line, "data:"), "\n")
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(payload), &obj); err != nil {
 		return line, false
@@ -1797,10 +1832,10 @@ func stripContinuationRoleFromLine(line string) (string, bool) {
 // marker, which callers requeue as a separate SSE frame.
 func splitCombinedDoneFrame(line string) (string, bool) {
 	trimmed := strings.TrimSpace(line)
-	if !strings.HasPrefix(trimmed, "data: ") {
+	if !strings.HasPrefix(trimmed, "data:") {
 		return line, false
 	}
-	payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data: "))
+	payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
 	if payload == "" || payload == "[DONE]" {
 		return line, false
 	}
@@ -1939,10 +1974,10 @@ func stripChunkFields(line string, stripFn func([]byte) []byte) (string, int, st
 // explicitly avoids fragile function-value identity checks and cross-vendor
 // error classification.
 func stripChunkFieldsForVendor(line, vendorCode string, stripFn func([]byte) []byte) (string, int, string) {
-	if !strings.HasPrefix(line, "data: ") {
+	if !strings.HasPrefix(line, "data:") {
 		return line, 0, ""
 	}
-	payload := strings.TrimSpace(strings.TrimPrefix(line, "data: "))
+	payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 	if payload == "" || payload == "[DONE]" {
 		return line, 0, ""
 	}
@@ -2024,10 +2059,10 @@ func (c *onceReadCloser) Close() error {
 }
 
 func extractModelFromChunk(line string) string {
-	if !strings.HasPrefix(line, "data: ") || strings.HasPrefix(line, "data: [DONE") {
+	if !strings.HasPrefix(line, "data:") || strings.HasPrefix(line, "data: [DONE") {
 		return ""
 	}
-	jsonStr := strings.TrimPrefix(line, "data: ")
+	jsonStr := strings.TrimPrefix(line, "data:")
 	jsonStr = strings.TrimSpace(jsonStr)
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(jsonStr), &obj); err != nil {
@@ -2086,13 +2121,13 @@ func safeWriteSSE(w io.Writer, line string) (ok bool) {
 }
 
 func replaceModelInChunk(line, clientModel, discoveredUpstream string) string {
-	if !strings.HasPrefix(line, "data: ") || clientModel == "" {
+	if !strings.HasPrefix(line, "data:") || clientModel == "" {
 		return line
 	}
 	if strings.HasPrefix(line, "data: [DONE") {
 		return line
 	}
-	jsonStr := strings.TrimPrefix(line, "data: ")
+	jsonStr := strings.TrimPrefix(line, "data:")
 	jsonStr = strings.TrimSpace(jsonStr)
 
 	var obj map[string]json.RawMessage
