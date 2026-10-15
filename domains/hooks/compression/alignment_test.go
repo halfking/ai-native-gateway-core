@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -248,8 +249,26 @@ func TestSessionState_AlignmentMapRoundTrip(t *testing.T) {
 type captureBackend struct {
 	mu     sync.Mutex
 	fields map[string]string
+	once   sync.Once
+	inner  *fakeRedis
 }
 
+func (c *captureBackend) backend() *fakeRedis {
+	c.once.Do(func() { c.inner = newFakeRedis() })
+	return c.inner
+}
+func (c *captureBackend) Eval(ctx context.Context, script string, keys []string, args ...any) (any, error) {
+	result, err := c.backend().Eval(ctx, script, keys, args...)
+	if err == nil && result == int64(1) && strings.Contains(script, "session-cache-commit") {
+		c.mu.Lock()
+		c.fields = make(map[string]string, len(args)/2-1)
+		for i := 2; i < len(args); i += 2 {
+			c.fields[fmt.Sprint(args[i])] = fmt.Sprint(args[i+1])
+		}
+		c.mu.Unlock()
+	}
+	return result, err
+}
 func (c *captureBackend) HSet(_ context.Context, _ string, values ...any) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -261,8 +280,8 @@ func (c *captureBackend) HSet(_ context.Context, _ string, values ...any) error 
 	}
 	return nil
 }
-func (c *captureBackend) HGetAll(_ context.Context, _ string) (map[string]string, error) {
-	return map[string]string{}, nil
+func (c *captureBackend) HGetAll(ctx context.Context, key string) (map[string]string, error) {
+	return c.backend().HGetAll(ctx, key)
 }
 func (c *captureBackend) Expire(_ context.Context, _ string, _ time.Duration) error { return nil }
 func (c *captureBackend) Del(_ context.Context, _ string) error                     { return nil }
