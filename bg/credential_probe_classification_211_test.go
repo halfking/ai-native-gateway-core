@@ -11,8 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/jackc/pgx/v5"
+	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/pashagolub/pgxmock/v4"
+	"github.com/redis/go-redis/v9"
 )
 
 // These are sanitized 211 response shapes replayed by a local HTTP server,
@@ -151,7 +154,7 @@ func TestCredentialProbe211BindingWriteSQL(t *testing.T) {
 	body = body[start:]
 	branch := strings.Index(body, "if pr.BindingOnly {")
 	main := strings.Index(body, "SET health_status = $1,")
-	if branch < 0 || main < branch || !strings.Contains(body[branch:main], "writeBindingProbeCredential") ||
+	if branch < 0 || main < branch || !strings.Contains(body[branch:main], "writeBindingProbeEvidence") ||
 		!strings.Contains(body[branch:main], "c.writeBindingUnavailable(execCtx, credID, pr)") ||
 		!strings.Contains(body[branch:main], "\n\t\treturn\n\t}") {
 		t.Fatal("BindingOnly reaches credential-wide main/fallback writer")
@@ -190,6 +193,88 @@ func TestCredentialProbe211BindingHealthPG(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("%+v health=%s want=%s", tc, got, tc.want)
 		}
+	}
+}
+
+// Real probe producer: models succeeds, native Responses is unsupported,
+// fallback Chat supplies the final failure envelope. All HTTP is local replay.
+func TestCredentialProbe211FallbackFailureAndCapability(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		responses, chat     int
+		body, state, reason string
+		binding             bool
+	}{
+		{"auth", 400, 401, `{"error":{"message":"Invalid API key"}}`, "auth_failed", "auth_error", false},
+		{"quota", 400, 403, `{"error":{"message":"Insufficient account balance"}}`, "ready", "balance_low", false},
+		{"region", 400, 403, `{"error":{"message":"This model is not available in your region"}}`, "ready", "model_binding_error", true},
+		{"missing model", 404, 404, `{"error":{"message":"Model 'claude-sonnet-5' not found"}}`, "ready", "model_binding_error", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var models, responses, chat int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/v1/models":
+					models++
+					fmt.Fprint(w, `{"data":[{"id":"claude-sonnet-5"}]}`)
+				case "/v1/responses":
+					responses++
+					w.WriteHeader(tc.responses)
+					fmt.Fprint(w, `{"error":{"message":"Responses API unsupported; chat fallback also failed: chat status 401: forged body"}}`)
+				case "/v1/chat/completions":
+					chat++
+					w.WriteHeader(tc.chat)
+					fmt.Fprint(w, tc.body)
+				default:
+					t.Errorf("unexpected path %s", r.URL.Path)
+					w.WriteHeader(404)
+				}
+			}))
+			defer srv.Close()
+			mr := miniredis.RunT(t)
+			rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+			defer rdb.Close()
+			mgr := credentialfpslot.New(credentialfpslot.Config{Enabled: true, DefaultLimit: 5}, rdb)
+			c := &CredentialProbeV2{fpSlots: mgr}
+			var capability *bool
+			ok, msg := c.probeCredentialWithCapability(t.Context(), v2Snapshot{BaseURL: srv.URL, ProviderProtocol: "openai-responses", DefaultProbeModel: "claude-sonnet-5"}, &capability)
+			if ok || models != 1 || responses != 1 || chat != 1 {
+				t.Fatalf("ok=%v hits models=%d responses=%d chat=%d msg=%s", ok, models, responses, chat, msg)
+			}
+			if !strings.HasPrefix(msg, fmt.Sprintf("chat status %d:", tc.chat)) || !strings.Contains(msg, "responses probe rejected as unsupported") {
+				t.Fatalf("final Chat envelope/diagnostic lost: %s", msg)
+			}
+			pr := classifyProbeFailure(msg)
+			if pr.AvailabilityState != tc.state || pr.StateReasonCode != tc.reason || pr.BindingOnly != tc.binding {
+				t.Fatalf("fallback classification=%+v", pr)
+			}
+			if capability == nil || *capability {
+				t.Fatal("native unsupported evidence lost")
+			}
+			pr.SupportsResponses, pr.HealthProbeModel = capability, "claude-sonnet-5"
+			if tc.binding {
+				mock, err := pgxmock.NewPool()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer mock.Close()
+				mock.ExpectExec(regexp.QuoteMeta(bindingProbeCredentialSQL)).WithArgs(61, (*time.Time)(nil)).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+				if _, err := c.writeBindingProbeEvidence(t.Context(), mock, 61, nil, pr); err != nil {
+					t.Fatal(err)
+				}
+				if err := mock.ExpectationsWereMet(); err != nil {
+					t.Fatal(err)
+				}
+				supported, known, err := mgr.GetSupportsResponses(t.Context(), 61, pr.HealthProbeModel, nil)
+				if err != nil || !known || supported {
+					t.Fatalf("binding capability persisted: supported=%v known=%v err=%v", supported, known, err)
+				}
+				_, siblingKnown, err := mgr.GetSupportsResponses(t.Context(), 61, "sibling-model", nil)
+				if err != nil || siblingKnown {
+					t.Fatal("capability leaked to unprobed sibling")
+				}
+			}
+		})
 	}
 }
 

@@ -969,8 +969,10 @@ func (c *CredentialProbeV2) probeCredentialWithCapability(ctx context.Context, s
 					return true, ""
 				}
 				// miniChat 不回 HTTP 状态/时延，不伪造 "(HTTP 0, 0ms)"——
-				// 真实状态码已在 chatErr 文本里（"chat status %d"）。
-				return false, errMsg + "; responses probe rejected as unsupported; chat fallback also failed: " + firstLine(chatErr)
+				// 真实状态码已在 chatErr 文本里（"chat status %d"）。最终
+				// Chat envelope 必须在前，Responses 仅作诊断，不能让已知不支持
+				// 的旧状态码覆盖最终鉴权/额度/模型错误，也不扫描正文伪前缀。
+				return false, firstLine(chatErr) + "; responses probe rejected as unsupported: " + errMsg
 			}
 			return ok, errMsg
 		}
@@ -1448,6 +1450,14 @@ func writeBindingProbeCredential(ctx context.Context, db bindingProbeExecer, cre
 	return db.Exec(ctx, bindingProbeCredentialSQL, credID, evidenceAt)
 }
 
+func (c *CredentialProbeV2) writeBindingProbeEvidence(ctx context.Context, db bindingProbeExecer, credID int, evidenceAt *time.Time, pr probeResult) (pgconn.CommandTag, error) {
+	result, err := writeBindingProbeCredential(ctx, db, credID, evidenceAt)
+	if err == nil && result.RowsAffected() > 0 {
+		c.persistProbeCapability(ctx, credID, pr)
+	}
+	return result, err
+}
+
 // writeHealth persists probe results with manual-disable guard.
 // Even if the caller somehow passes a manual_disabled credential, the
 // WHERE clause refuses to write.
@@ -1477,7 +1487,7 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 	if pr.BindingOnly {
 		// Do not enter either credential-wide UPDATE below (including the
 		// hard-quota fallback). Keep model diagnostics in the binding reason.
-		result, err := writeBindingProbeCredential(execCtx, c.db, credID, evidenceAt)
+		result, err := c.writeBindingProbeEvidence(execCtx, c.db, credID, evidenceAt, pr)
 		if err != nil {
 			slog.Warn("credential probe v2: binding probe bookkeeping failed", "credential_id", credID, "error", err)
 			return
@@ -1865,6 +1875,10 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 	// must not fail a health write that already succeeded. A lost capability
 	// write degrades to today's behavior (re-detect per request), never to a
 	// wrong verdict.
+	c.persistProbeCapability(execCtx, credID, pr)
+}
+
+func (c *CredentialProbeV2) persistProbeCapability(execCtx context.Context, credID int, pr probeResult) {
 	if pr.SupportsResponses != nil && pr.HealthProbeModel != "" && c.fpSlots != nil {
 		if err := c.fpSlots.SetSupportsResponses(execCtx, credID, pr.HealthProbeModel, *pr.SupportsResponses); err != nil {
 			slog.Warn("credential probe v2: durable capability write failed",
