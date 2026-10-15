@@ -17,7 +17,7 @@
 
 - 新域domains/sanitizerules负责规则模型/验证/不可变快照、Postgres版本/事件/心跳存储、原子刷新管理器。只依赖标准库与现有Redis库，不依赖sanitize以免循环。
 - security/sanitize负责将YAML默认规则转为带语义的Rule并消费管理器快照，输入/输出/工具三阶段沿用现有主链；domains/outputcompliance消费同一快照的输出规则，避免前后两套规则漂移。
-- Config={rules:Rule[]}。Rule={id,name,type,kind,pattern,group,scopes,action,enabled,priority,tenant_id,tools,fields,samples}；Sample={text,match}。kind采用pattern/credential_declaration/credential_assignment/credential_pair/account_declaration/account_assignment等封闭值；合规sed识别仍由内置语法解析器完成并记为exempted。
+- Config={rules:Rule[]}。Rule={id,name,type,kind,pattern,group,scopes,action,enabled,priority,tenant_id,tools,fields,samples,exemptions}；Sample={text,match}。kind采用pattern/credential_declaration/credential_assignment/credential_pair/account_declaration/account_assignment/network_destination/review_combination等封闭值；合规sed识别仍由内置语法解析器完成并记为exempted。
 - Version={id,parent_id,rollback_of,config,actor,comment,created_at}；id=0表示无发布时的内置/YAML基线。所有持久化发布ID递增，CAS以当前指针为准。首次可用数据库将默认配置CAS保存为baseline1，竞态节点采用获胜版本。0仅表示离线本地回退，显示config_digest，不可作为rollback目标；baseline1可正常回滚。
 - Event={id,fingerprint,tenant_id,rule_id,version,phase,action,status,sample_masked,count,first_seen,last_seen,reviewer,review_comment,reviewed_at}。sample_masked由系统生成类型/字段结构摘要，绝不接收客户端原文作为存储证据。
 - Instance={instance_id,version,config_digest,last_seen,last_refresh,error}；实例ID由主机/端口/进程启动标识生成，避免154/245或蓝绿实例覆盖。
@@ -38,3 +38,14 @@
 - API：匿名401、非超级管理员写403、跨租户拒绝、发布/回滚/复核成功与失败。
 - UI：单测+类型/构建+browser-use真实交互（参数保存、规则校验拒绝、发布、双实例生效、误报复核、回滚、非法版本不覆盖）。
 - 回归：sanitize/outputcompliance/hooks/streaming/settings/admin相关包、race、全仓vet/build；统一门按当前基线实测，不套用历史失败结论。关键逻辑做撤修复变异。
+
+## 审查后澄清
+
+- 敏感类型采用可还原的十种类型闭集；导入既有PII表时bank_card映射credit_card，地址类型映射server_ip，其他旧类型映射custom，避免产生不能还原的标记。
+- egress可配置exemptions={inert_tool,nonroutable_destination,identity}，只对携带该豁免的规则生效；内置基线保持既有运维豁免，自建阻断规则默认无豁免。重叠规则独立判定，任何未豁免block均不能被另一条规则吞掉。
+- network_destination把既有网络目的地识别作为可版本化语义，限定egress；review_combination限定input/log，只记录候选。候选事件动作pending，结构枚举pair_slash/pair_pipe/pair_colon/pair_other，不保存帐号、口令或原始请求。
+- Redis订阅建立与数据库轮询独立，握手有真实读取期限；数据库刷新也有超时。后置及write-time检查保留可信还原值，mandatory模型输出守卫不继承该豁免。
+
+- 人工复核提供两条显式入口：编辑实际命中规则保留原ID与适用范围并提示全局影响；新增限定补充规则保留原规则且明确不覆盖。发布关联只表示变更溯源，不自动宣称误报已消失。
+- 字段约束使用真实文本叶键；管理模式仅对协议根arguments/input容器解码JSON，实际嵌套字符串（含自定义字段）保持完整值。
+- main的write-time callback传递请求ctx与认证tenant，恢复来源在运行时读取，避免启动装配顺序捕获空来源。

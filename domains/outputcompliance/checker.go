@@ -16,10 +16,11 @@ import (
 
 // Checker 输出合规检查器
 type Checker struct {
-	db           *sql.DB
-	piiPatterns  []*PIIPattern
-	toxicWords   map[string]*ToxicKeyword
-	biasDetector *BiasDetector
+	managedRuleSource func() ManagedRuleCheck
+	db                *sql.DB
+	piiPatterns       []*PIIPattern
+	toxicWords        map[string]*ToxicKeyword
+	biasDetector      *BiasDetector
 }
 
 // PIIPattern PII 检测模式
@@ -172,20 +173,26 @@ func (c *Checker) Check(ctx context.Context, tenantID, output string) (*Complian
 		RedactedOutput: output,
 	}
 
+	var managed ManagedRuleCheck
+	if c.managedRuleSource != nil {
+		managed = c.managedRuleSource()
+	}
+	// A published snapshot owns PII, secrets and IP rules as one policy.
+	// Do not run the former DB/hardcoded rules again after a rule is disabled.
 	// PII 检测
-	if policy.CheckPII {
+	if managed == nil && policy.CheckPII {
 		piiIssues := c.detectPII(output, policy)
 		result.Issues = append(result.Issues, piiIssues...)
 	}
 
 	// 密钥/凭据检测
-	if policy.CheckSecrets {
+	if managed == nil && policy.CheckSecrets {
 		secretIssues := c.detectSecrets(output, policy)
 		result.Issues = append(result.Issues, secretIssues...)
 	}
 
 	// 内网 IP 检测
-	if policy.CheckInternalIP {
+	if managed == nil && policy.CheckInternalIP {
 		ipIssues := c.detectInternalIP(output, policy)
 		result.Issues = append(result.Issues, ipIssues...)
 	}
@@ -209,7 +216,16 @@ func (c *Checker) Check(ctx context.Context, tenantID, output string) (*Complian
 
 	result.Compliant = len(result.Issues) == 0 || !policy.StrictMode
 	result.Blocked = c.shouldBlock(result.Issues, policy)
-
+	if managed != nil {
+		checked, err := managed(ctx, tenantID, result.RedactedOutput)
+		if err != nil {
+			return nil, err
+		}
+		result.Issues = append(result.Issues, checked.Issues...)
+		result.Blocked = result.Blocked || checked.Blocked
+		result.Compliant = result.Compliant && checked.Compliant
+		result.RedactedOutput = checked.RedactedOutput
+	}
 	return result, nil
 }
 
