@@ -50,6 +50,7 @@ type responsesToChatTranslator struct {
 	nextTool     int
 	toolCallSeen bool
 	done         bool
+	err          error
 }
 
 func newResponsesToChatTranslator(model string) *responsesToChatTranslator {
