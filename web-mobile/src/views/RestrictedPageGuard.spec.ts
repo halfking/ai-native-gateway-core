@@ -137,15 +137,16 @@ function routerSrc(): string {
   return readFileSync(join(process.cwd(), 'src/router/index.ts'), 'utf8')
 }
 
-/** ★ 字典反查：按点分路径取值，取不到就是「字典里没有这个键」。 */
-function dictHas(key: string): boolean {
-  let cur: unknown = zhCN
-  for (const seg of key.split('.')) {
-    if (typeof cur !== 'object' || cur === null) return false
-    cur = (cur as Record<string, unknown>)[seg]
-  }
-  return cur !== undefined
+/** 字典里的字符串叶子键：有翻译也不能把键本身直接露在 DOM 里。 */
+function dictKeys(node: unknown, prefix = ''): string[] {
+  if (typeof node === 'string') return [prefix]
+  if (typeof node !== 'object' || node === null) return []
+  return Object.entries(node).flatMap(([key, value]) =>
+    dictKeys(value, prefix ? `${prefix}.${key}` : key),
+  )
 }
+
+const I18N_KEYS = dictKeys(zhCN)
 
 /**
  * ★★★ 从路由源码里**独立地**抽出「path / component / requiresRole」三条。
@@ -318,14 +319,19 @@ describe('③ ★★★★★★★★ 正控：放行角色下点取数按钮�
     //   —— 正是它揭穿了「零请求」是空门。删掉它，② 就退化成装饰。
     expect(silent, '正控失败：\n' + silent.join('\n')).toEqual([])
     expect(report).toHaveLength(15)
+    expect(autoFire, '实测自动取数席位变了，本文件的风险面要重测').toBe(1)
   })
 
-  it('③-2 ★★★★ 读数留档：15 席里只有 1 席挂载即取数（其余要用户点按钮）', () => {
-    // ★ 这条不是断言行为，而是把**风险面**钉住：挂载即取数的那几席才需要在
-    //   `load()` 首行 fail-closed；只靠按钮触发的那些，兜底主要靠「不渲染」。
-    //   ⚠️ 数字变了要改这里，所以它断言的是**结构**而不是这个具体值。
-    const auto = TABLE.filter((r) => r.path === '/request-anomalies')
-    expect(auto, '自动取数席位的集合变了，本文件的读数要重测').toHaveLength(1)
+  it('③-2 ★★★★ 读数留档：15 席里只有 request-anomalies 挂载即取数', async () => {
+    // 从实际挂载请求量风险面；按固定表项筛选会漏掉新增的自动取数行为。
+    const auto: string[] = []
+    for (const row of TABLE) {
+      calls = []
+      const w = await mountAs(row, row.okRole)
+      if (calls.length > 0) auto.push(row.path)
+      w.unmount()
+    }
+    expect(auto, '实测自动取数席位的集合变了，本文件的读数要重测').toEqual(['/request-anomalies'])
   })
 })
 
@@ -358,21 +364,21 @@ describe('④ ★★★★★★ 无权限时取数按钮不在 DOM（结构上�
 
 describe('⑤ ★★★★ 错角色时不露出裸 i18n 键', () => {
   /**
-   * ★★★ 判据按**字典反查**抓裸键，不按「长得像不像键」。
+   * 已知字典键与未知点分键都不能直接出现在拒绝区。
    *   第一版用 `/[a-z]\.[a-z]{2,}$/` 当过滤条件 —— 那个正则要求尾巴**全小写**，
    *   于是 `et.nopeXX`（变异 M04 用的正是它）**整条漏网**。
    *   第二版加了**词边界** `\b`，实测仍然漏 —— 因为真实渲染是
    *   `Error trend` + `et.nope` + `Tenant scope` 拼起来的，
    *   裸键**粘在相邻文本中间、根本没有词边界**（实测 `w.text()` 里那串是
    *   `"Error trendet.nopeXXTenant scope…"`）⇒ 有边界的正则一条都匹不到。
-   *   ⇒ 第三版去掉边界，靠**字典反查**兜误报：
-   *   形状像键（前缀 2~4 字母 + 点 + 驼峰键名）**且字典里查不到**。
-   *   ★ 用 zh-CN 字典查、断言不看具体语言 ⇒ 不押一种语言；
-   *     若某一侧缺键，本组不会误报（缺键由 i18n 门负责）。
+   *   ⇒ 去掉边界，并独立查找字典中的完整叶子键；字典有键只说明可以翻译，
+   *   不代表 DOM 已翻译。未知键仍按前缀 2~4 字母 + 点 + 驼峰键名抓取。
+   *   断言不看具体翻译文案；真视图阴性对照防止规则过宽。
    */
   function bareKeys(text: string): string[] {
+    const known = I18N_KEYS.filter((key) => text.includes(key))
     const cand = text.match(/[a-z]{2,4}\.[a-z][a-zA-Z0-9]+/g) ?? []
-    return cand.filter((t) => !dictHas(t))
+    return [...new Set([...known, ...cand])]
   }
 
   it('⑤-1 ★★★★ 15/15 的 nope 区走的是真字典', async () => {
@@ -389,18 +395,17 @@ describe('⑤ ★★★★ 错角色时不露出裸 i18n 键', () => {
     // ⚠️⚠️ 样本必须**照抄真实渲染的粘接形态**（`错误标题` + 键 + `后续文案`），
     //   **不能**用前后带空格的「友好」样本：第一版正是用带空格的样本自证通过，
     //   而真实 DOM 里根本没有词边界 ⇒ 判据是假门，变异 M04 实测全绿。
-    // ⚠️ 断言用**包含**而不是相等：本判据只回答「有没有漏出字典外的点分键」，
+    // ⚠️ 断言用**包含**而不是相等：本判据只回答「有没有漏出点分键」，
     //   **不**回答「这个键被切成了哪一段」—— 粘接文本里前缀会被上一个词吞掉
     //   （实测匹到的是 `ndet.nopeXXTenant`）。要精确分词就得写分词器，
     //   那是另一件事，不该混进「有没有漏裸键」这个问题里。
     const glued = bareKeys('Error trendet.nopeXXTenant scope')
     expect(glued.some((t) => t.includes('nopeXX')), '漏掉了粘在文本中间的驼峰尾巴裸键（M04 的逃逸样本）').toBe(true)
-    // 全小写尾巴也要抓到（第一版过滤器的「正常」路径仍在）。
-    // ⚠️ 这里**不能**拿 `et.nope` 当样本 —— 它是字典里**真有的**键，
-    //   反查正确时就不该被标成裸键（第一版写这个断言时正踩了这个）。
+    // 未知键与字典里已有的键都要抓；已有键也可能被直接写进模板。
     expect(bareKeys('Error trendzz.nopeTenant scope').some((t) => t.includes('zz.nope'))).toBe(true)
-    // 反向：字典里**真有的**键不能被当成裸键（否则会对每个页面误报）。
-    expect(bareKeys('范围说明 saf.state'), '把字典里真有的键误判成裸键了').toEqual([])
+    expect(bareKeys(' et.nope '), '漏掉字典里已有的裸键').toContain('et.nope')
+    expect(bareKeys('Error trendet.nopeTenant scope'), '漏掉粘在文案里的已有裸键').toContain('et.nope')
+    expect(bareKeys('范围说明 saf.state.title'), '漏掉嵌套字典裸键').toContain('saf.state.title')
     // ★ 反向的更强形式：对**真视图**的 nope 区跑一遍，必须**抓不到任何东西**
     //   —— 这是 ⑤-1 不被误报淹没的保证（第二版正是漏在这一步）。
     const w = await mountAs(TABLE[1], 'user')

@@ -1,32 +1,16 @@
-// Package compressor - session_cache.go (v3 T24)
+// Package compression stores exact outbound session state/body pairs.
 //
-// Three-tier session state cache for the v3 session-level compressor:
+// With Redis configured, session:sc:{tenant}:{session}:v2 is authoritative.
+// Every acknowledged write replaces its complete payload and TTL atomically;
+// L1 can only reuse a revision confirmed by Redis. The outbound body has the
+// same privacy boundary as existing session persistence: it is tenant-scoped,
+// TTL-bound, never logged here, and gzip compression is not encryption.
 //
-//	L1 — in-process sync.Map (< 0.1 ms, bounded by MaxL1Sessions)
-//	L2 — Redis Hash session:sc:{tenantID}:{gwSessionID}:v1 (~2 ms RTT)
-//	L3 — PostgreSQL _request_logs fallback (cold-start / Redis miss / schema
-//	     upgrade)
-//
-// SessionState captures what the gateway last forwarded to the LLM for a
-// given gw_session_id so the next request can run a message-level LCS diff
-// and only append new turns, avoiding redundant re-send of the full history.
-//
-// summary_marker protocol (smm_v1):
-//
-//	When the session compressor produces an LLM summary, it writes
-//	"smm_v1:<sha256-of-summary-content-prefix>" into SessionState.SummaryMarker
-//	and also serialises it into compression_meta JSONB under the key
-//	"summary_marker". The diff algorithm (diff.go) treats any message whose
-//	content starts with compactionMarkerPrefix as a summary boundary — it is
-//	kept verbatim in the rebuilt body and skipped by LCS diff so it is never
-//	re-summarised.
-//
-// Schema versioning:
-//
-//	Every Redis Hash entry carries schema_version=1. If GetOrLoad finds a
-//	different version it drops the entry and returns nil (graceful downgrade:
-//	the caller falls back to treating the request as a fresh session). This
-//	prevents old-format state from poisoning a new schema.
+// v1 metadata is imported only when its exact body hash can be established.
+// v2 writers do not mirror into v1: old readers/writers must be drained before
+// promising cross-instance consistency. Mixed generations cannot coordinate
+// through the old metadata-only protocol. SessionState schema remains 1;
+// the shared pair envelope is independently versioned as pair_v=2.
 
 package compression
 
@@ -245,7 +229,7 @@ type MsgHash struct {
 // SessionCacheBackend is the minimal Redis interface required by SessionCache.
 // Using an interface allows tests to inject a mock without a real Redis.
 type SessionCacheBackend interface {
-	// HSet sets fields in a Redis hash and resets the TTL.
+	// HSet writes legacy fields; shared commits require SessionCacheScriptBackend.
 	HSet(ctx context.Context, key string, values ...any) error
 	// HGetAll returns all fields of a Redis hash. Returns an empty map (not
 	// an error) when the key does not exist.
@@ -278,11 +262,12 @@ type LastOutboundRow struct {
 // list.Element in the LRU ordering, AND its elem pointer lets the LRU
 // promote an entry to the front in O(1) on access.
 type l1Entry struct {
-	key   string // tenantID + ":" + gwSessionID (back-reference for eviction)
-	state *SessionState
-	body  []byte // last outbound body bytes (nil if evicted from L1 to save RAM)
-	bytes int    // len(body) + len(key) + l1EntryOverheadBytes (D3: byte-budget tracking)
-	elem  *list.Element
+	key      string // tenantID + ":" + gwSessionID (back-reference for eviction)
+	state    *SessionState
+	body     []byte // last outbound body bytes (nil if evicted from L1 to save RAM)
+	bytes    int    // len(body) + len(key) + l1EntryOverheadBytes (D3: byte-budget tracking)
+	elem     *list.Element
+	revision string // immutable shared commit token; empty for L1-only entries
 }
 
 // SessionCache provides three-tier session state caching.
@@ -339,7 +324,7 @@ func l1Key(tenantID, gwSessionID string) string {
 }
 
 func redisKey(tenantID, gwSessionID string) string {
-	return "session:sc:" + tenantID + ":" + gwSessionID + ":v1"
+	return "session:sc:" + tenantID + ":" + gwSessionID + ":v2"
 }
 
 func (c *SessionCache) updateStripe(key string) *sync.Mutex {
@@ -348,197 +333,127 @@ func (c *SessionCache) updateStripe(key string) *sync.Mutex {
 }
 
 // Update atomically loads, transforms, and stores one session state. The
-// callback receives caller-owned copies; returning nil state deletes nothing
-// and leaves the existing cache entry unchanged.
-func (c *SessionCache) Update(
-	ctx context.Context,
-	tenantID, gwSessionID string,
-	fn func(*SessionState, []byte) (*SessionState, []byte, error),
-) error {
-	if gwSessionID == "" || fn == nil || !settings.IsEnabled("session_cache") {
+// callback receives caller-owned copies and runs at most once per call.
+// Returning nil state leaves the entry unchanged and acknowledges no new write.
+func (c *SessionCache) Update(ctx context.Context, tenantID, gwSessionID string, fn func(*SessionState, []byte) (*SessionState, []byte, error)) error {
+	if c == nil || gwSessionID == "" || fn == nil || !settings.IsEnabled("session_cache") {
 		return nil
 	}
-	key := l1Key(tenantID, gwSessionID)
-	stripe := c.updateStripe(key)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if c.redis != nil {
+		return c.withSharedLease(ctx, tenantID, gwSessionID, func(token string) error {
+			state, body, err := c.loadSharedLocked(ctx, tenantID, gwSessionID, token)
+			if err != nil {
+				return err
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			state, body, err = fn(state, body)
+			if err != nil {
+				return err
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			// nil state is an explicit no-op, not an acknowledgment of a new write.
+			if state == nil {
+				return nil
+			}
+			return c.commitShared(ctx, tenantID, gwSessionID, token, state, body)
+		})
+	}
+	stripe := c.updateStripe(l1Key(tenantID, gwSessionID))
 	stripe.Lock()
 	defer stripe.Unlock()
-
-	state, body, err := c.GetOrLoad(ctx, tenantID, gwSessionID)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	state, body, err := c.getLocal(ctx, tenantID, gwSessionID)
 	if err != nil {
 		return err
 	}
 	state, body, err = fn(state, body)
-	if err != nil || state == nil {
+	if err != nil {
 		return err
 	}
-	return c.Set(ctx, tenantID, gwSessionID, state, body)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if state != nil {
+		runThreeTierCheck(ctx, tenantID, gwSessionID, state)
+		c.setL1(l1Key(tenantID, gwSessionID), state, body)
+	}
+	return nil
 }
 
-// GetOrLoad returns the SessionState and last outbound body for the session,
-// or (nil, nil, nil) when the session is new / unknown.
-// Tier priority: L1 → L2 → L3. A cache-miss at one tier is back-filled
-// from the next tier before returning.
-//
-// KILL-SWITCH (2026-07-12 incident): when settings.IsEnabled("session_cache")
-// is false (env KILL_SESSION_CACHE=1), the entire cache subsystem is bypassed
-// and we behave as if every session is brand-new. This isolates compression
-// issues from request hot-paths during incident response.
-func (c *SessionCache) GetOrLoad(ctx context.Context, tenantID, gwSessionID string) (state *SessionState, lastOutboundBody []byte, err error) {
-	if gwSessionID == "" {
+// GetOrLoad uses Redis as the authority whenever it is configured. L1 can
+// only reuse the exact revision Redis just confirmed. With no Redis, the
+// per-object stripe protects local backfill and read-modify-write operations.
+func (c *SessionCache) GetOrLoad(ctx context.Context, tenantID, gwSessionID string) (*SessionState, []byte, error) {
+	if c == nil || gwSessionID == "" || !settings.IsEnabled("session_cache") {
 		return nil, nil, nil
 	}
-	if !settings.IsEnabled("session_cache") {
-		return nil, nil, nil
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
 	}
+	if c.redis != nil {
+		return c.getShared(ctx, tenantID, gwSessionID)
+	}
+	stripe := c.updateStripe(l1Key(tenantID, gwSessionID))
+	stripe.Lock()
+	defer stripe.Unlock()
+	return c.getLocal(ctx, tenantID, gwSessionID)
+}
+func (c *SessionCache) getLocal(ctx context.Context, tenantID, gwSessionID string) (*SessionState, []byte, error) {
 	key := l1Key(tenantID, gwSessionID)
-
-	// L1 hit.
 	c.mu.Lock()
 	if e, ok := c.l1[key]; ok {
-		c.ll.MoveToFront(e.elem) // O(1) LRU promote.
-		st := cloneSessionState(e.state)
-		body := append([]byte(nil), e.body...)
+		c.ll.MoveToFront(e.elem)
+		st, body := cloneSessionState(e.state), append([]byte(nil), e.body...)
 		c.mu.Unlock()
 		return st, body, nil
 	}
 	c.mu.Unlock()
-
-	// L2: Redis. Redis intentionally stores metadata only, so a metadata hit
-	// must rehydrate the last outbound body from L3 before returning. Without
-	// this step an L1 eviction/process switch would look like a brand-new
-	// session and undo the previously compressed history.
-	if c.redis != nil {
-		st, body, rerr := c.loadFromRedis(ctx, tenantID, gwSessionID)
-		if rerr != nil {
-			slog.Warn("session_cache: redis load error", "session", gwSessionID, "error", rerr)
-		} else if st != nil {
-			if len(body) == 0 && (c.turnReader != nil || c.db != nil) {
-				persistedState, persistedBody, derr := c.loadFromDB(ctx, tenantID, gwSessionID)
-				if derr != nil {
-					slog.Warn("session_cache: l2 body rehydrate failed", "session", gwSessionID, "error", derr)
-				} else if len(persistedBody) > 0 {
-					// V2 stores the message array rather than the full provider
-					// request envelope, so its serialized hash cannot be compared
-					// directly with the legacy full-body hash.
-					persistedHash := sha256Hex(persistedBody)
-					switch {
-					case st.LastOutboundHash == "" || persistedHash == st.LastOutboundHash:
-						body = persistedBody
-					case c.turnReader != nil && (st.MsgCount <= 0 || st.MsgCount == countMessages(persistedBody)):
-							// The mismatch here is the envelope-vs-array wrap shape
-							// (see loadFromDB), not a foreign body: the L3 query is
-							// session-scoped and the message count still agrees with
-							// the Redis state. Adopt the pair and re-derive the hash
-							// so the state+body entry cached into L1 is
-							// self-consistent. Leaving the envelope hash in place
-							// made diff.go's lineage guard reject this pairing and
-							// silently reset every L1-evicted session to a full
-							// resend on the V1 fallback path. A count mismatch
-							// (genuinely different turn content) falls through to
-							// the mismatch handling below.
-							body = persistedBody
-							// st is the exclusive object returned by loadFromRedis
-							// (a fresh `var st SessionState` on its stack), so writing
-							// st.LastOutboundHash here only mutates this call's local
-							// copy. setL1 below will cloneSessionState again before
-							// storing, so neither the Redis metadata pool nor any
-							// existing L1 entry is touched by this assignment.
-							st.LastOutboundHash = persistedHash
-					default:
-						adopted := false
-						if c.turnReader != nil {
-							// The Redis metadata may predate the V2 tables; the
-							// body its hash describes can only live in legacy
-							// _request_logs. When turnReader is nil loadFromDB
-							// already IS the legacy source, so the retry only
-							// helps here.
-							slog.Warn("session_cache: l3 body hash mismatch, trying legacy source",
-								"session", gwSessionID)
-							_, legacyBody, legacyErr := c.loadFromLegacyDB(ctx, tenantID, gwSessionID)
-							if legacyErr != nil {
-								slog.Warn("session_cache: legacy body rehydrate failed",
-									"session", gwSessionID, "error", legacyErr)
-							} else if len(legacyBody) > 0 &&
-								(st.LastOutboundHash == "" || sha256Hex(legacyBody) == st.LastOutboundHash) {
-								body, adopted = legacyBody, true
-							}
-						}
-						if !adopted && persistedState != nil {
-							// No source reproduces the body the Redis metadata
-							// was hashed against: the metadata is stale relative
-							// to the session's persisted history (failed Redis
-							// write-back, mirror lag, or a multi-instance race).
-							// Returning the stale state with an empty body is
-							// not the conservative outcome it looks like — the
-							// empty body makes diff.go's lineage guard treat the
-							// next request as a brand-new session (full resend +
-							// compression lineage reset), and setL1 below would
-							// cache the knowingly-incoherent pair. The L3 reader
-							// produced a self-consistent state+body pair for
-							// this exact session; adopt it wholesale instead of
-							// mixing the new body into the stale metadata.
-							slog.Warn("session_cache: adopting self-consistent l3 pair, redis metadata stale",
-								"session", gwSessionID,
-								"redis_msg_count", st.MsgCount, "l3_msg_count", persistedState.MsgCount)
-							st, body = persistedState, persistedBody
-						}
-					}
-				}
-			}
-			c.setL1(key, st, body)
-			return st, body, nil
-		}
-	}
-
-	// L3: DB cold-start.
 	if c.turnReader != nil || c.db != nil {
-		st, body, derr := c.loadFromDB(ctx, tenantID, gwSessionID)
-		if derr != nil {
-			slog.Warn("session_cache: db load error", "session", gwSessionID, "error", derr)
-		} else if st != nil {
+		st, body, err := c.loadFromDB(ctx, tenantID, gwSessionID)
+		if err != nil {
+			slog.Warn("session_cache: db load error", "session", gwSessionID, "error", err)
+			return nil, nil, nil
+		}
+		if st != nil {
 			c.setL1(key, st, body)
-			// Back-fill L2 so subsequent requests are fast.
-			if c.redis != nil {
-				if werr := c.saveToRedis(ctx, tenantID, gwSessionID, st); werr != nil {
-					slog.Warn("session_cache: redis backfill failed", "session", gwSessionID, "error", werr)
-				}
-			}
 			return st, body, nil
 		}
 	}
-
 	return nil, nil, nil
 }
 
-// Set persists updated session state to L1 and L2 after a request completes.
-// outboundBody is stored in L1 only (not Redis) to avoid large blobs in Redis.
-//
-// KILL-SWITCH (2026-07-12 incident): see GetOrLoad. When session_cache is
-// disabled, Set is a no-op.
+// Set replaces the complete state/body pair. nil body is an exact empty-body
+// replacement. A nil error with Redis configured confirms the shared commit;
+// errors never publish unconfirmed data to L1.
 func (c *SessionCache) Set(ctx context.Context, tenantID, gwSessionID string, state *SessionState, outboundBody []byte) error {
-	if gwSessionID == "" || state == nil {
+	if c == nil || gwSessionID == "" || state == nil || !settings.IsEnabled("session_cache") {
 		return nil
 	}
-	if !settings.IsEnabled("session_cache") {
-		return nil
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	// A-G1 (修订审计三十二轮 §四A): three-tier provenance check at the
-	// single chokepoint where the merged raw/compressed/sanitized state is
-	// persisted — this is where "algn" and "san_msg_refs" get serialised
-	// (encodeSessionStateFields), covering all three writers (updateCache,
-	// CommitFinal, recovery coordinator). Observability-only: a misaligned
-	// state is logged and counted, never blocks the write. No-op when the
-	// threetier verifier is not linked into the binary.
-	runThreeTierCheck(ctx, tenantID, gwSessionID, state)
-	key := l1Key(tenantID, gwSessionID)
-	c.setL1(key, state, outboundBody)
-
 	if c.redis != nil {
-		if err := c.saveToRedis(ctx, tenantID, gwSessionID, state); err != nil {
-			slog.Warn("session_cache: redis save error", "session", gwSessionID, "error", err)
-			// Non-fatal: L1 still has fresh data.
-		}
+		return c.withSharedLease(ctx, tenantID, gwSessionID, func(token string) error {
+			return c.commitShared(ctx, tenantID, gwSessionID, token, state, outboundBody)
+		})
 	}
+	stripe := c.updateStripe(l1Key(tenantID, gwSessionID))
+	stripe.Lock()
+	defer stripe.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	runThreeTierCheck(ctx, tenantID, gwSessionID, state)
+	c.setL1(l1Key(tenantID, gwSessionID), state, outboundBody)
 	return nil
 }
 
@@ -556,35 +471,50 @@ func (c *SessionCache) Invalidate(ctx context.Context, tenantID, gwSessionID str
 		return
 	}
 	key := l1Key(tenantID, gwSessionID)
-	c.mu.Lock()
-	if e, ok := c.l1[key]; ok {
-		c.ll.Remove(e.elem)
-		delete(c.l1, key)
-		c.curBytes -= e.bytes // D3: decrement aggregate byte tracker
-	}
-	c.mu.Unlock()
-	if c.redis != nil {
-		if err := c.redis.Del(ctx, redisKey(tenantID, gwSessionID)); err != nil {
-			slog.Warn("session_cache: redis invalidate error", "session", gwSessionID, "error", err)
+	clearLocal := func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if e, ok := c.l1[key]; ok {
+			c.ll.Remove(e.elem)
+			delete(c.l1, key)
+			c.curBytes -= e.bytes
 		}
-		// Best-effort cascade: the sanitize hashes live in the same Redis DB
-		// as the L2 state (both written per session), so deleting them here
-		// closes the lifecycle gap without a new dependency on the sanitize
-		// package (which imports this one).
-		//
-		// T11-P0 v2: sanitize key 现在带 tenantHash 段；tenantID 由 caller 在
-		// Invalidate() 入参传入，落到与 L2 redisKey 同一 tenant。空 tenant 时
-		// mirror 函数会落到 "_unknown" 桶 — 与输入中间件降级路径一致。
-		// T11-P0 v2 fix: 之前直接把 raw tenantID 传给 SessionSanitizeRedisKey，
-		// 但该函数的第一个参数应是 tenantHash (sha256[:8])。写入侧
-		// (smart_sani_guard.go) 用 HashTenant 派生 hash，所以 key 永远匹配不上，
-		// 删除是静默 no-op — stale sanitize map/offset 泄漏到 TTL。这里镜像同样
-		// 的 hash 派生后再调用 key builder。
-		tenantHash := hashTenantForSanitizeKey(tenantID)
-		_ = c.redis.Del(ctx, SessionSanitizeRedisKey(tenantHash, gwSessionID))
-		_ = c.redis.Del(ctx, SessionSanitizeOffsetRedisKey(tenantHash, gwSessionID))
-		_ = c.redis.Del(ctx, SessionSanitizeRedisKey(tenantHash, gwSessionID)+":generation")
 	}
+	if c.redis == nil {
+		stripe := c.updateStripe(key)
+		stripe.Lock()
+		defer stripe.Unlock()
+		clearLocal()
+		return
+	}
+	if err := c.withSharedLease(ctx, tenantID, gwSessionID, func(token string) error {
+		if err := c.invalidateShared(ctx, tenantID, gwSessionID, token); err != nil {
+			return err
+		}
+		clearLocal()
+		return nil
+	}); err != nil {
+		slog.WarnContext(ctx, "session_cache: redis invalidate error", "session", gwSessionID, "error", err)
+		return
+	}
+
+	// Best-effort cascade: the sanitize hashes live in the same Redis DB
+	// as the L2 state (both written per session), so deleting them here
+	// closes the lifecycle gap without a new dependency on the sanitize
+	// package (which imports this one).
+	//
+	// T11-P0 v2: sanitize key 现在带 tenantHash 段；tenantID 由 caller 在
+	// Invalidate() 入参传入，落到与 L2 redisKey 同一 tenant。空 tenant 时
+	// mirror 函数会落到 "_unknown" 桶 — 与输入中间件降级路径一致。
+	// T11-P0 v2 fix: 之前直接把 raw tenantID 传给 SessionSanitizeRedisKey，
+	// 但该函数的第一个参数应是 tenantHash (sha256[:8])。写入侧
+	// (smart_sani_guard.go) 用 HashTenant 派生 hash，所以 key 永远匹配不上，
+	// 删除是静默 no-op — stale sanitize map/offset 泄漏到 TTL。这里镜像同样
+	// 的 hash 派生后再调用 key builder。
+	tenantHash := hashTenantForSanitizeKey(tenantID)
+	_ = c.redis.Del(ctx, SessionSanitizeRedisKey(tenantHash, gwSessionID))
+	_ = c.redis.Del(ctx, SessionSanitizeOffsetRedisKey(tenantHash, gwSessionID))
+	_ = c.redis.Del(ctx, SessionSanitizeRedisKey(tenantHash, gwSessionID)+":generation")
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -602,6 +532,10 @@ func cloneSessionState(state *SessionState) *SessionState {
 }
 
 func (c *SessionCache) setL1(key string, state *SessionState, body []byte) {
+	c.setL1Revision(key, state, body, "")
+}
+
+func (c *SessionCache) setL1Revision(key string, state *SessionState, body []byte, revision string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	st := cloneSessionState(state)
@@ -615,6 +549,7 @@ func (c *SessionCache) setL1(key string, state *SessionState, body []byte) {
 		c.curBytes += entryBytes
 		existing.state = st
 		existing.body = bodyCopy
+		existing.revision = revision
 
 		existing.bytes = entryBytes
 		c.ll.MoveToFront(existing.elem)
@@ -622,7 +557,7 @@ func (c *SessionCache) setL1(key string, state *SessionState, body []byte) {
 	}
 
 	// New entry: push to front, evict the LRU (back) if over capacity OR bytes.
-	entry := &l1Entry{key: key, state: st, body: bodyCopy, bytes: entryBytes}
+	entry := &l1Entry{key: key, state: st, body: bodyCopy, bytes: entryBytes, revision: revision}
 	entry.elem = c.ll.PushFront(entry)
 	c.l1[key] = entry
 	c.curBytes += entryBytes
@@ -645,35 +580,11 @@ func (c *SessionCache) setL1(key string, state *SessionState, body []byte) {
 	}
 }
 
-func (c *SessionCache) loadFromRedis(ctx context.Context, tenantID, gwSessionID string) (*SessionState, []byte, error) {
-	fields, err := c.redis.HGetAll(ctx, redisKey(tenantID, gwSessionID))
-	if err != nil {
-		return nil, nil, err
-	}
-	if len(fields) == 0 {
-		return nil, nil, nil
-	}
-	var st SessionState
-	if err := decodeSessionStateFields(fields, &st); err != nil {
-		slog.Warn("session_cache: redis schema mismatch, dropping entry",
-			"session", gwSessionID, "error", err)
-		return nil, nil, nil
-	}
-	if st.SchemaVersion != schemaVersion {
-		// Schema changed — treat as cache miss.
-		return nil, nil, nil
-	}
-	// Body is not stored in Redis (too large); caller will re-read from L3 if needed.
-	return &st, nil, nil
-}
-
-func (c *SessionCache) saveToRedis(ctx context.Context, tenantID, gwSessionID string, state *SessionState) error {
-	key := redisKey(tenantID, gwSessionID)
-	fields := encodeSessionStateFields(state)
-	if err := c.redis.HSet(ctx, key, fields...); err != nil {
-		return err
-	}
-	return c.redis.Expire(ctx, key, sessionCacheRedisTTL())
+// loadFromRedis reads the complete current shared pair. Legacy imports are
+// deliberately handled under the lease by loadSharedLocked instead.
+func (c *SessionCache) loadFromRedis(ctx context.Context, tenantID, sessionID string) (*SessionState, []byte, error) {
+	st, body, _, err := c.readShared(ctx, tenantID, sessionID)
+	return st, body, err
 }
 
 func (c *SessionCache) loadFromDB(ctx context.Context, tenantID, gwSessionID string) (*SessionState, []byte, error) {
@@ -835,6 +746,9 @@ func encodeSessionStateFields(st *SessionState) []any {
 }
 
 func decodeSessionStateFields(fields map[string]string, st *SessionState) error {
+	if raw, ok := fields["state"]; ok {
+		return json.Unmarshal([]byte(raw), st)
+	}
 	parseInt := func(s string) int64 {
 		var v int64
 		//nolint:errcheck // best-effort parse, non-critical

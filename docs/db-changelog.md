@@ -8790,3 +8790,9 @@ git show origin/main:scripts/deploy-lib/db-changelog.sh
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 864 | `864_model_aliases_bare_raw_name_active_idx.sql` | `e55e941391097b23599346de941512bb62ac22401057cf3387ed5ebcceebb9b4` | 台账补登：ae2de4627 已同步 canonical、installer embed/map、安装清单和部署通道，但遗漏本台账。补充 `(raw_name, canonical_id) WHERE status='active'` 部分索引，服务裸列 raw_name 等值查询。SHA 由 canonical 与 embeddata 两副本现场计算并确认一致；本轮仅补登记，不声称新执行数据库迁移。 |
+
+## 2026-10-16 — Magpie第三轮会话body物理契约增量修复865
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 865 | `865_session_bodies_kind_reconcile.sql` | `470a55246c522ad30010f50c5cd5b68a5030010f2bcce0c33340759a4597d1a9` | 已交付canonical/embed/map/manifest/升级通道；独立真实PG17验证原数据保留、幂等、旧marker齐全但物理漂移和NULL拒绝整笔回滚。保留708原字节；补parent/hot的kind、13列invoker视图、final_full唯一索引与可复用物理postcondition。应用环境及版本见[第三轮审计](audit/2026-10-15-magpie第三轮字节与会话一致性.md)，此行不声称已部署154/245。 |
