@@ -175,3 +175,38 @@ func TestManagedMaskIgnoresLegacyGlobalBlock(t *testing.T) {
 		t.Fatal("old environment overrode rule action", result, err)
 	}
 }
+
+func TestManagedSpecialCombinationsQueueSafeStructuralEvidence(t *testing.T) {
+	d, m := managedFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { m.Run(ctx); close(done) }()
+	defer func() { cancel(); <-done }()
+	request := WithAuthenticatedTenant(ctx, "a")
+	const raw = "R7#kQ?92!"
+	for _, separator := range []string{"/", "|", ":"} {
+		if _, err := d.DetectScope(request, "管理员账号改成ops"+separator+raw, ScopeInputDeclarations); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		events, _ := m.Store().ListEvents(ctx, sanitizerules.EventFilter{Action: "pending"})
+		if len(events) == 3 {
+			encoded, _ := json.Marshal(events)
+			if strings.Contains(string(encoded), raw) || strings.Contains(string(encoded), "ops") {
+				t.Fatal("raw combination persisted")
+			}
+			fields := map[string]bool{}
+			for _, e := range events {
+				fields[e.Field] = true
+			}
+			if !fields["pair_slash"] || !fields["pair_pipe"] || !fields["pair_colon"] {
+				t.Fatal("combination shapes collapsed", fields)
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("special combination candidates not recorded")
+}

