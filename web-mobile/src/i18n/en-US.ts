@@ -93,6 +93,7 @@ export const enUS = {
     subscriptionTiers: 'Subscription tiers',
     platformSettings: 'Platform settings',
     usageEnhanced: 'Usage & cost',
+    dataLifecycleStorage: 'Storage overview',
     account: 'Me',
   },
   // ★ Subscription tiers (2026-10-14, batch 120). Prefix: sts.
@@ -182,6 +183,25 @@ export const enUS = {
       operator: 'Operator',
       role: 'Role',
     },
+  },
+  // ★ Storage overview (2026-10-14, batch 123). Prefix: dls.
+  dls: {
+    title: 'Storage overview',
+    nope: {
+      msg: 'Only admins can view the storage overview.',
+      why: 'The server sets no role floor on these endpoints, so a plain account can read local disk and database usage.',
+    },
+    load: { title: 'Fetch', btn: 'Refresh storage overview' },
+    scope: { note: 'These are platform-wide totals; they are not split per tenant.' },
+    warn: { title: 'Diagnostics' },
+    db: { title: 'Database', ok: 'Server confirmed the query succeeded' },
+    tables: { title: 'Table sizes', limit: 'At most {n} tables are listed.' },
+    check: {
+      dbFailed: 'Database size query failed: the whole block below is zero; it does not mean the database is empty.',
+      freeUnmeasurable: 'Note: free space is unmeasurable (the connection only sees the client side); a blank value is not “0 bytes free”.',
+      noTenant: 'This payload carries no tenant dimension; it is a platform-wide total.',
+    },
+    field: { total: 'Total size', tables: 'Tables', indexes: 'Indexes', free: 'Free' },
   },
   // ★ Usage & cost (2026-10-14, batch 122). Prefix: ue.
   ue: {

@@ -887,6 +887,19 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'ue.title', requiresAuth: true, requiresRole: 'admin' },
   },
   {
+    // ★ 存储总览（2026-10-14，第一百二十三批）。
+    //   ★★★ 'admin' 档，**两条独立理由**：
+    //   （甲）**不过度限制到 super_admin**：载荷是纯平台基础设施事实
+    //         （data_lifecycle_storage.go 整个文件零 tenant 命中）⇒ 不含任何租户数据；
+    //   （乙）**但需要 admin**：`admin(...)` 是 handler.go:925 的局部别名 `admin := h.admin`，
+    //         而 h.admin = AdminMiddleware **无角色下限** + supportedRole 接受 "user"
+    //         ⇒ 任何已认证的普通用户都能调 ⇒ 客户端要补的正是**角色下限**。
+    path: '/data-lifecycle-storage',
+    name: 'data-lifecycle-storage',
+    component: () => import('@/views/DataLifecycleStorageView.vue'),
+    meta: { titleKey: 'dls.title', requiresAuth: true, requiresRole: 'admin' },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),

@@ -17080,3 +17080,134 @@ expect(goFunc(src, 'EffectiveTenantIDAll')).toMatch(/return "" \/\/ empty string
 （三条合起来构成完整链条，缺任何一条都会让结论失去证据）。
 ★ 这是待办②那一类缺陷的**第三个实例**，而本族落在**成本**上 ——
 建议与 ② 一并处理，别只修那两个端点。
+
+
+## 11.159 存储总览接进 UI —— 权限档**第十一次**：**同一个错连续第三批**；根因是「admin 档」这个标签**掩盖了服务端根本没有角色下限**（第一百二十三批）
+
+### 一、这批做了什么
+
+把 `dataLifecycleStorage`（第八十批建的 API 模块，**一直是孤儿**）接进移动端，孤儿 7 → **6**：
+
+| 项 | 值 |
+|---|---|
+| 视图 | `web-mobile/src/views/DataLifecycleStorageView.vue` |
+| 判据 | `DataLifecycleStorageView.spec.ts` **28 条**；API 层 165 → **170 条**（新增 5 条权限/租户维度判据）|
+| 路由 | `/data-lifecycle-storage`，`meta.requiresRole: 'admin'` |
+| 抽屉席 | `data-lifecycle-storage`，`requiresRole: 'admin'` ⇒ **不得**进 superAdmin 白名单 |
+| i18n | 前缀 `dls` + `nav.dataLifecycleStorage`（zh-CN / en-US 各 3701 键）|
+| 变异台 | **15/15 有牙**，还原后逐字节零残留 |
+
+### 二、★★★★★★ 同一个错**连续第三批**出现，根因终于被钉住
+
+| 批 | 族 | 模块头原写 |
+|---|---|---|
+| 一百二十一 | `platformSettings` | 「都是 `h.admin(...)` ⇒ admin 档 ⇒ 抽屉席不设 `requiresRole`」|
+| 一百二十二 | `usageEnhanced` | 「挂在 `h.admin(...)` 上 ⇒ tenant_admin 可用 ⇒ 抽屉席不设 `requiresRole`」|
+| **一百二十三** | **`dataLifecycleStorage`** | 「两个都是 **admin 档**（tenant_admin 可用）⇒ 抽屉席**不设** `requiresRole`」|
+
+⇒ ⇒ ★★★★★ **三批的根因是同一句话，而那句话本身是错的**：
+
+```go
+// admin/handler.go:925
+admin := h.admin          // ★ 局部别名
+```
+
+`admin(...)` 与 `h.admin(...)` **是同一个东西**，而 `h.admin` = `AdminMiddleware`
+（`handler.go:894` → `auth.go:85-140`）—— 全文**只有**「验 JWT」+「强制改密码」，
+**没有任何角色下限**。
+
+⇒ ★★★★★ **「admin 档」在注册行里的真实含义是「已认证」，不是「管理员」。**
+⇒ 而这个标签**掩盖了服务端根本没有角色下限**这件事 ——
+叠加批 122 的实证（`pkg/identity` 的 `supportedRole` 接受 `"user"`）
+⇒ 任何已认证的普通用户都能调这些 `/api/admin/` 端点。
+
+★ 判据 ①-5 把**这个别名本身**钉住了：
+```ts
+const line = h.split('\n').find((l) => /^\s*admin := h\.admin\s*$/.test(l))
+expect(line, '没找到 `admin := h.admin` 别名（三批同源错误的根）').toBeTruthy()
+```
+—— 哪天这个别名被改掉或删掉，那三批的推导前提就全变了，这条会红。
+
+### 三、★★★ 最终是 `'admin'`：**不是 `super_admin`，也不是不设**
+
+★ 两条判据必须**分开**看，缺一不可 —— 这正是「一个标签掩盖两件事」的代价：
+
+**（甲）不过度限制到 `super_admin`**
+`admin/data_lifecycle_storage.go` **整个文件零 `tenant` 命中**
+⇒ 载荷是**纯平台基础设施事实**：全库字节数、列存统计、本机磁盘、日志目录大小。
+★ 它**不含任何租户的数据** ⇒ 按批 119 钉下的边界
+（「过度限制的正当性来自『载荷里有没有别人的东西』」）⇒ **没有**理由挡到 super_admin。
+
+**（乙）但需要 `'admin'`**
+服务端无角色下限 ⇒ 普通 `user` 够得着；
+而「本机磁盘已用 ≥ 90%」「日志目录超过 5GB」**没有任何理由给普通用户看**
+⇒ 客户端这一层要补的正是**角色下限**，不是数据隔离。
+
+⇒ ★★ 与批 119（v1 数据地平线，**不设** `requiresRole`）的差别只在一句：
+**那份告示必须让所有人看见**（「接口没报错不代表数据是新的」），
+本族**没有**这个理由 ⇒ ★「**没理由给普通用户看**」本身就是一道门。
+
+⇒ ①-3 用一条**可执行、可变异**的判据钉住理由甲：
+```ts
+expect(storageOverviewCarriesNoTenantDimension(ov())).toBe(true)
+// ★ 反向：一旦后端加了 per-tenant 拆分，这条会红 ⇒ 提示权限档要重判
+expect(storageOverviewCarriesNoTenantDimension({ ...ov(), tenant: 'acme' })).toBe(false)
+```
+①-6 则从事实侧钉「两个 handler 全文**无 `tenant`**」。
+
+### 四、★★★ 行号订正：整块漂 19 行
+
+| | 模块头原写 | 实况 |
+|---|---|---|
+| storage | `:982` | **`:1001`** |
+| storage/tables | `:983` | **`:1002`** |
+| 同族 vacuum/reindex 六个 | `:986-992` | **`:1005-:1011`** |
+
+★ 抽查其余引用（`:107` / `:140` / `:152` / `:242` / `:54`）**全部准确**
+⇒ 这个模块头的行号是**局部漂**而不是整体过期，订正时不要顺手改别的。
+
+### 五、★★★ 本族的载荷陷阱：**失败留下「全零整块」，而不是缺键**
+
+`handleDataLifecycleStorage` 里：
+```go
+if dbErr != nil { resp.Warnings = append(resp.Warnings, "数据库大小查询失败: "+dbErr.Error()) }
+else             { resp.Database = *dbInfo }
+```
+`storageOverview.Database` 是**值类型**（无 omitempty）⇒ **失败时键照常存在**，
+八个键全 0 / 全 `""`，而 `server_version` 因 omitempty **被省略**。
+
+⇒ ★★ 「失败」的完整形状是**两半**：判据说「`database_human` 为空」，
+而「整块塌成零」是另一半 —— ③-2 用「只塌一半」的夹具钉住「**两半缺一不可**」
+（变异 S7 正是去掉第二半，咬的就是这条）。
+
+★★ 而 `columnar` 用 `note` 说明原因，与 database 的表达**不同构** ⇒
+③-5 特别钉住「`note` 存在**不代表** database 查询失败」。
+
+★★★ 另有一条「第十种 nil 编码」：`free_bytes` 恒为 0、`free_human` 恒为 `""`
+—— 不是「空闲 0 字节」，是**测不到**（连接只能看到客户端视角）。
+⇒ ④ 两条判据：空串时提示必须出现**且渲染成占位符**；非空时不提示（阴性对照）。
+
+### 六、读数
+
+- `vue-tsc -b` rc=0（**先删 `*.tsbuildinfo`**）；css / touch / i18n / comment 四门 rc=0
+- `i18n:check` ⇒ zh-CN / en-US 各 **3701** 键，键集一致，无未翻译项
+- `gate:selftest` 5/5；`npm run build` rc=0
+- 全量：**213 files / 7964 passed**（基线 212 / 7936），1 skipped
+- 变异台 **15/15 有牙**
+- 十连跑 **10/10 全绿**
+- 文档 §11.159（**59** 节）
+
+### 七、★ 本批的两条记录
+
+1. **判据里不要臆造 API 名。** 本批写视图时**一次性臆造了三个导出**
+   （`databaseHumanIsEmpty` / `columnarNoteIsPresent` / `STORAGE_TABLES_LIMIT_DEFAULT`），
+   外加两个字段名（`tables_human` / `indexes_human`）——
+   真名是 `storageDatabaseQueryFailed` / `columnar.note` / `STORAGE_TABLES_LIMIT_FALLBACK`
+   与**数字**字段 `tables_bytes` / `indexes_bytes`。
+   ⇒ ★ 写视图**先列真实导出**（`grep '^export'`），再写。
+   ⇒ ★ 判据侧同理：夹具必须照**真实接口形状**写。批 122 的 ④-4 就因为照着
+   顶层字段编了个不存在的夹具形状而假性失败（真判据是 `previous.total_cost_usd`）。
+2. **变异表里写错期望标题 ≠ 判据没牙。** S7 首轮判 `RED_NOT_MATCHED`，
+   逐字查红因才发现它咬的是 **③-2**（我初版写的是 ③-1）。
+   ⇒ ★ 这是「红了但没命中」的**第四种**成因：**台子写错，不是对象不行**。
+   ⇒ 处理顺序：先看**实际红了哪些**（台子的输出里就有），再决定改台子还是改判据。

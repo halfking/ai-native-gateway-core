@@ -93,6 +93,7 @@ export const zhCN = {
     subscriptionTiers: '订阅档',
     platformSettings: '平台设置',
     usageEnhanced: '用量成本',
+    dataLifecycleStorage: '存储总览',
     account: '我的',
   },
   // ★ 订阅档（2026-10-14，第一百二十批）。前缀 sts。
@@ -176,6 +177,25 @@ export const zhCN = {
       operator: '操作者',
       role: '角色',
     },
+  },
+  // ★ 存储总览（2026-10-14，第一百二十三批）。前缀 dls。
+  dls: {
+    title: '存储总览',
+    nope: {
+      msg: '仅管理员可查看存储总览。',
+      why: '服务端这两个端点没有角色下限，普通账号也能读到本机磁盘与数据库的用量。',
+    },
+    load: { title: '取数', btn: '刷新存储总览' },
+    scope: { note: '这是全平台合计的用量，不按租户拆分。' },
+    warn: { title: '诊断' },
+    db: { title: '数据库', ok: '服务端确认查询成功' },
+    tables: { title: '表级大小', limit: '最多列出 {n} 张表。' },
+    check: {
+      dbFailed: '数据库大小查询失败：下面这一块全是 0，不代表库里真的没有数据。',
+      freeUnmeasurable: '注意：剩余空间测不到（连接只能看到客户端视角），空值不是「空闲 0 字节」。',
+      noTenant: '这份数据里没有租户维度，是全平台合计。',
+    },
+    field: { total: '总大小', tables: '表', indexes: '索引', free: '剩余' },
   },
   // ★ 用量成本（2026-10-14，第一百二十二批）。前缀 ue。
   ue: {
