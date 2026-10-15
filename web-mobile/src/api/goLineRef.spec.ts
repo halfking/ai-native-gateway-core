@@ -175,6 +175,36 @@ function classify(refs: Ref[]): { counts: Record<Kind, number>; bad: Ref[] } {
   return { counts, bad }
 }
 
+/**
+ * ★★ 扩范围扫描：**全 src 的 .ts / .vue，含测试文件**，且**排除本判据自身**
+ *   （它自己的 `KNOWN_FALSE_POSITIVE` 字符串里就写着 `xxx.go:123`，不自排除会自食其尾）。
+ *   ⚠️ 这一组**不是质量门，是读数锁** —— 见 ⑤ 的注释。
+ */
+function wideFiles(): string[] {
+  const out: string[] = []
+  const walk = (d: string) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name)
+      if (e.isDirectory()) walk(p)
+      else if (e.isFile() && (e.name.endsWith('.ts') || e.name.endsWith('.vue'))) {
+        if (p === __filename) continue
+        out.push(p)
+      }
+    }
+  }
+  walk(WEB)
+  return out.sort()
+}
+
+function allRefsWide(): Ref[] {
+  const out: Ref[] = []
+  for (const p of wideFiles()) {
+    const rel = relative(WEB, p).split(sep).join('/')
+    out.push(...scanRefs(readFileSync(p, 'utf8'), rel))
+  }
+  return out
+}
+
 function allRefs(): Ref[] {
   const out: Ref[] = []
   for (const p of apiModules()) {
@@ -335,5 +365,52 @@ describe('④ 名单规模', () => {
   it('④-3 ★★ 判据自身不得依赖未纳入仓库的路径', () => {
     expect(existsSync(join(ROOT, 'admin', 'handler.go')), 'admin/handler.go 不在预期位置，ROOT 推断错了').toBe(true)
     expect(existsSync(join(WEB, 'api', 'requestAnomalies.ts'))).toBe(true)
+  })
+})
+
+// ── ⑤ 扩范围读数锁 ───────────────────────────────────────────────────────────
+
+/**
+ * ★★★ **⑤ 是读数锁，不是质量门** —— 它不做任何「对/错」判定，只把
+ *   **现行棘轮覆盖不到的那部分范围**的数量钉住，理由是批 137~138 实测到的两件事：
+ *   ① 批 136 建门时只扫 `api/**` 非测试文件，于是批 137 一订正就发现
+ *      **16 处同源残留**散落在 `views/` 与 `*.test.ts` 里；
+ *   ② 批 138 把范围量开：可判定引用从 **69 → 145**，对不上从 **15 → 48**。
+ *   ⇒ 「不判」不等于「干净」，这个差价必须一直看得见。
+ *
+ * ⚠️★ **它红的时候不许直接改数字**：先重新量一遍、确认是**真的新增/减少**了，
+ *   再决定是「有新债要订正」还是「旧债被订正了」。盲改数字就把这道门废了。
+ * ⚠️★ 对不上的那批**尚未逐条定性**（只有本批定位出的 2 条真错已修），
+ *   定性与棘轮扩展留给下一批 —— 这里**不假装**它们已被处理。
+ */
+describe('⑤ ★★★ 扩范围读数锁：棘轮覆盖不到的那部分，引用有多少', () => {
+  it('⑤-1 ★★★ 全 src（.ts+.vue，含测试，排除本判据自身）的引用计数', () => {
+    const wide = allRefsWide()
+    const { counts } = classify(wide)
+    const covered = classify(allRefs())
+    console.log(
+      `[⑤-1] 现行覆盖：${allRefs().length} 处引用 / 可判定 ${covered.counts['可判定']} / 对不上 ${covered.counts['可判定但对不上']}\n` +
+        `       扩到全 src：${wide.length} 处 / 可判定 ${counts['可判定']} / 对不上 ${counts['可判定但对不上']}` +
+        `（路径不唯一 ${counts['路径不唯一']} · 无可核 token ${counts['无可核 token']} · 越界/反向 ${counts['行号越界或区间反向']}）`,
+    )
+    // ★ 分类对账：四类之和 == 总数（防止分类器自己漏项）。
+    expect(
+      counts['路径不唯一'] + counts['无可核 token'] + counts['行号越界或区间反向'] + counts['可判定'],
+      '扩范围的分类对不上账',
+    ).toBe(wide.length)
+    // ★ 不变式：扩范围**只多不少**。少了说明扫描范围被改窄了。
+    expect(wide.length).toBeGreaterThan(allRefs().length)
+    expect(counts['可判定']).toBeGreaterThanOrEqual(covered.counts['可判定'])
+  })
+
+  it('⑤-2 ★★★ 扩范围的对不上**不参与棘轮**，但必须看得见（打印 + 断言非零是已知的）', () => {
+    const { bad } = classify(allRefsWide())
+    console.log(`[⑤-2] 扩范围对不上 ${bad.length} 处，抽样：\n  ` + bad.slice(0, 5).map((r) => `${r.file}:${r.line} ${r.raw}`).join('\n  '))
+    // ★★★ 断言**精确值**而不是下界 —— 第一版写的是 `>= 30`，实测变异 J01
+    //   （把本批刚订正的一处改回旧的错行号）**全绿**：下界结构上就抓不到「新增」。
+    //   ⇒ 与 ④-1b 同一形态：**订正一条就把数字顶下去并同步改这里**，
+    //     这样这道读数锁才能同时当棘轮用。
+    // ⚠️ 红了不许直接改数字：先重量一遍，确认是**真的**新增/减少（见 ⑤ 的注释）。
+    expect(bad.length).toBe(34)
   })
 })
