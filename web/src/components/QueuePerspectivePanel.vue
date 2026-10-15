@@ -409,23 +409,36 @@ async function loadModelScope() {
 // featured/top-models 请求可能整体失败（scope 为空且 loading 已复位），
 // 面板此前只剩"切走再切回（重挂载）"这一条恢复路径。3s 后对空 scope 补
 // 一次重试，消除对重挂载的依赖；scope 已有数据则零开销跳过。
-const FIRST_SCOPE_RETRY_MS = 3000
-let firstScopeRetryTimer: ReturnType<typeof setTimeout> | null = null
+// 2026-10-15 扩为有界多次重试：生产 top-models 在 MV REFRESH 争用下会
+// 10s 打满 500（f1b027645 的 EXPLAIN：旧 JOIN 52s/0 行），单次 3s 重试仍
+// 撞在同一争用窗口上，重挂载又成了唯一恢复路径。改为 3s/9s/20s 三次
+// 递进（总窗口 ~32s，避开 10s 预算端点的失败节奏），次数有界，不对慢
+// 端点形成循环压测。
+const SCOPE_RETRY_DELAYS_MS = [3_000, 9_000, 20_000]
+let scopeRetryIndex = 0
+let scopeRetryTimer: ReturnType<typeof setTimeout> | null = null
+
+function scheduleNextScopeRetry() {
+  if (scopeRetryIndex >= SCOPE_RETRY_DELAYS_MS.length) return
+  const delay = SCOPE_RETRY_DELAYS_MS[scopeRetryIndex]
+  scopeRetryIndex += 1
+  scopeRetryTimer = setTimeout(() => {
+    scopeRetryTimer = null
+    if (modelScopeMeta.value.size > 0) return
+    if (!modelScopeLoading.value) void loadModelScope()
+    scheduleNextScopeRetry()
+  }, delay)
+}
 
 onMounted(() => {
   void loadModelScope()
   startStatsPoll()
-  firstScopeRetryTimer = setTimeout(() => {
-    firstScopeRetryTimer = null
-    if (modelScopeMeta.value.size === 0 && !modelScopeLoading.value) {
-      void loadModelScope()
-    }
-  }, FIRST_SCOPE_RETRY_MS)
+  scheduleNextScopeRetry()
 })
 onUnmounted(() => {
-  if (firstScopeRetryTimer) {
-    clearTimeout(firstScopeRetryTimer)
-    firstScopeRetryTimer = null
+  if (scopeRetryTimer) {
+    clearTimeout(scopeRetryTimer)
+    scopeRetryTimer = null
   }
   modelScopeAbort?.abort()
   stopStatsPoll()

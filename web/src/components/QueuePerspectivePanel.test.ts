@@ -1467,6 +1467,45 @@ describe('QueuePerspectivePanel', () => {
       }
       expect(wrapper.text()).toContain('m-1')
       expect(wrapper.text()).not.toContain('模型范围暂不可用')
+      // 2026-10-15 有界重试：scope 已非空后，后续重试档（9s/20s）必须全部
+      // 停火——有数据还继续请求就是白打。推进完整重试窗口后调用数不变。
+      await vi.advanceTimersByTimeAsync(30_000)
+      for (let i = 0; i < 5 && getFeatured.mock.calls.length < 3; i++) {
+        await vi.advanceTimersByTimeAsync(0)
+      }
+      expect(getFeatured).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops after the bounded retry schedule when the scope stays empty (no request hammering)', async () => {
+    // 2026-10-15：单次重试扩为 3s/9s/20s 三档后，必须证明档位**有界**——
+    // 生产 top-models 是 10s 预算端点，无界重试会把它压成循环 500。
+    // 变异防护点：把 SCOPE_RETRY_DELAYS_MS 改长/改多或去掉 index 上限，
+    // 本用例在「推进 60s 仍是 4 次调用」处变红。
+    vi.useFakeTimers()
+    try {
+      getFeatured.mockReset().mockResolvedValue({ featured_models: [] })
+      vi.mocked(getRequestLogTopModels).mockReset().mockResolvedValue({ items: [] })
+      resolveRouting.mockReset().mockResolvedValue({ raw_models: [], candidates: [] })
+      liveStreamState.nodes = [
+        { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+      ]
+
+      mountPanel()
+
+      // 3s/9s/20s 三档全部走完 + 60s 额外空转：调用数恒为 1（初始）+3（重试）。
+      await vi.advanceTimersByTimeAsync(3_000)
+      for (let i = 0; i < 5 && getFeatured.mock.calls.length < 2; i++) await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(9_000)
+      for (let i = 0; i < 5 && getFeatured.mock.calls.length < 3; i++) await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(20_000)
+      for (let i = 0; i < 5 && getFeatured.mock.calls.length < 4; i++) await vi.advanceTimersByTimeAsync(0)
+      expect(getFeatured).toHaveBeenCalledTimes(4)
+      await vi.advanceTimersByTimeAsync(60_000)
+      for (let i = 0; i < 5 && getFeatured.mock.calls.length < 5; i++) await vi.advanceTimersByTimeAsync(0)
+      expect(getFeatured).toHaveBeenCalledTimes(4)
     } finally {
       vi.useRealTimers()
     }
