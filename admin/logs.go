@@ -1305,13 +1305,20 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 	// 链：会话臂 client_model 依赖 734 details 层，无回退臂则新会话轮整
 	// 类消失；alias JOIN 键同步加 outbound/canonical 臂（raw_name 本就是
 	// 小写，会话臂 outbound=归一化名，命中 raw_name 别名的概率随目录覆盖）。
+	//
+	// 2026-10-15：≤8d 窗只用 hot 腿——dashboard 默认 3d 在 MV REFRESH 争用下
+	// 曾 10s 打满 500；hot 腿 3d COUNT 生产实测 ~8ms。
+	turnsSrc := dbpkg.SessionFamilyTurnsSourceSQL()
+	if end.Sub(start) <= 8*24*time.Hour {
+		turnsSrc = dbpkg.SessionFamilyTurnsHotSourceSQL()
+	}
 	rows, err := h.db.Query(ctx, `
 		SELECT
 			COALESCE(mc.id, mc2.id) AS canonical_id,
 			COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model, rl.outbound_model) AS canonical_name,
 			COALESCE(mc.display_name, mc2.display_name, mc.canonical_name, mc2.canonical_name, rl.client_model, rl.outbound_model) AS display_name,
 			COUNT(*) AS request_count
-		FROM `+dbpkg.SessionFamilyTurnsSourceSQL()+` rl
+		FROM `+turnsSrc+` rl
 		LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
 		LEFT JOIN LATERAL (
 			SELECT canonical_id

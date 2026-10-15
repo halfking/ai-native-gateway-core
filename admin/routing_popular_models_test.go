@@ -255,6 +255,10 @@ func TestListTopModelsSQL_TargetsHotTable(t *testing.T) {
 	if !strings.Contains(handler, "SessionFamilyTurnsSourceSQL") {
 		t.Fatalf("listTopModels must read the native session-turn family (v1 hot drains after the S4 stop-write); full handler:\n%s", handler)
 	}
+	// 2026-10-15：短窗走 HotSourceSQL，长窗仍走全族 SourceSQL。
+	if !strings.Contains(handler, "SessionFamilyTurnsHotSourceSQL") {
+		t.Fatalf("listTopModels must offer SessionFamilyTurnsHotSourceSQL for ≤8d windows; full handler:\n%s", handler)
+	}
 	// Source must NOT be the partitioned view (columnar scan).
 	// Use the SQL-shaped token to ignore the historical comment that
 	// mentions the old view by name.

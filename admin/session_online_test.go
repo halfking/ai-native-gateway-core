@@ -5,9 +5,42 @@ package admin
 
 import (
 	"encoding/base64"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+// TestSessionsOnlineSQL_UsesSessionSummaries 钉住 2026-10-15 根修：在线列表
+// 必须读 session_summaries，禁止再 JOIN 停写后的 request_logs 视图
+// （生产 EXPLAIN 52s / 0 行 → summaries 0.76ms）。
+func TestSessionsOnlineSQL_UsesSessionSummaries(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("session_online.go"))
+	if err != nil {
+		t.Fatalf("read session_online.go: %v", err)
+	}
+	src := string(body)
+	// 只看 handleSessionsOnline 函数体（timeline 仍可引用 session 族 helpers）。
+	start := strings.Index(src, "func (h *Handler) handleSessionsOnline(")
+	if start < 0 {
+		t.Fatal("handleSessionsOnline not found")
+	}
+	end := strings.Index(src[start+1:], "\nfunc ")
+	if end < 0 {
+		end = len(src) - start
+	}
+	fn := src[start : start+end]
+	if !strings.Contains(fn, "FROM session_summaries") {
+		t.Fatal("handleSessionsOnline must SELECT FROM session_summaries")
+	}
+	if strings.Contains(fn, "request_logs_with_current_month") {
+		t.Fatal("handleSessionsOnline must not JOIN request_logs_with_current_month")
+	}
+	if strings.Contains(fn, "session_last_requests") {
+		t.Fatal("handleSessionsOnline must not read empty session_last_requests table")
+	}
+}
 
 // TestParseCursor 测试 cursor 解析。
 func TestParseCursor(t *testing.T) {

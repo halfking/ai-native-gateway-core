@@ -87,7 +87,7 @@ var v1ReaderRetirementTiering = map[string]retirementTieringEntry{
 	"admin/session_export.go":                  {Tier: "②", Reason: "对外 API：会话导出（★ FROM 读会话族 LEFT JOIN bodies，退役总体是 session_turns 不是 v1）"},
 	"admin/session_extract.go":                 {Tier: "②", Reason: "对外 API：会话抽取"},
 	"admin/session_management_api.go":          {Tier: "②", Reason: "对外 API：会话管理"},
-	"admin/session_online.go":                  {Tier: "②", Reason: "对外 API：在线会话时间线"},
+	"admin/session_online.go":                  {Tier: "②", Reason: "对外 API：timeline 仍读会话族；online 列表已改 session_summaries（2026-10-15）"},
 	"admin/session_sanitize_matches.go":        {Tier: "②", Reason: "对外功能：脱敏匹配（bodies 读方）"},
 	"admin/session_summary_v2.go":              {Tier: "②", Reason: "对外功能：会话摘要 v2（含 v1 回退查询）"},
 	"admin/session_tenant.go":                  {Tier: "②", Reason: "对外功能：会话租户判定"},

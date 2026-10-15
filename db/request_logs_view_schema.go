@@ -954,6 +954,17 @@ func SessionFamilyTurnsSourceSQL() string {
 		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date)"
 }
 
+// SessionFamilyTurnsHotSourceSQL is the hot-only leg of
+// SessionFamilyTurnsSourceSQL. Use for short dashboard windows (≤ ~7d hot
+// retention) so parent-partition scans and concurrent MV REFRESH do not
+// push /api/logs/top-models over its 10s budget (2026-10-15 生产 500 实证).
+func SessionFamilyTurnsHotSourceSQL() string {
+	return "(SELECT " + sessionFamilyProjection(true) +
+		" FROM public.session_turns_hot t" +
+		" LEFT JOIN public.session_turn_details_hot d" +
+		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date)"
+}
+
 // SessionFamilyTurnsForSessionSQL returns the same frozen-column source as
 // SessionFamilyTurnsSourceSQL, but with the session predicate **pushed inside**
 // both legs so it can use idx_session_turns_session (session_id, turn_no DESC).

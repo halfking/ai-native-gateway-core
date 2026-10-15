@@ -4,6 +4,24 @@
 
 ## 待观察经验
 
+## 2026-10-15 — probeOne 进程级 MemoryFlight + holdTimeout TTL → 包测串味（Seen: 1/3）
+- 任务 / 缺陷：`TestExecutor_NoCandidateProbe_HonorsClientCancel` 单独绿、连跑红
+- 基线 / 修复 SHA：合入 main 的 24h 审计提交（基线 magpie `9ea45f7f8`）
+- 场景与影响：同包先跑 NoCandidateProbe 后，Cancel 测报 ProbeSync never called
+- 根因：`defaultMemoryProbeOneFlight` 进程单例；`TryAcquire(model, holdTimeout)` 无 Release
+- 防复发检查：单飞默认 per-Executor 惰性 memory；钉子 `TestDefaultProbeOneFlightIsPerExecutor`
+- 证据：连跑组修前红 / 修后 `go test ./domains/streaming/executors/ -count=1` RC=0
+- 状态：观察中
+
+## 2026-10-15 — session_online ⋈ 停写后视图 → EXPLAIN 52s/0 行（Seen: 1/3）
+- 任务 / 缺陷：dashboard `/api/admin/sessions/online` 5s→500
+- 基线 / 修复 SHA：本轮 24h 审计（生产 252 EXPLAIN）
+- 场景与影响：视图臂 `id` 对 session 行为 NULL；`session_last_requests` 0 行仍付规划代价
+- 根因：S4 后仍 JOIN `request_logs_with_current_month` 取 tenant
+- 防复发检查：改读 `session_summaries`；钉子禁 `request_logs_with_current_month` / `session_last_requests`
+- 证据：旧 JOIN 52.8s/0 行；summaries 近窗 0.76ms/180 行
+- 状态：观察中
+
 ## 2026-10-14 — miniredis「跨实例」测用了不同 Redis key 前缀 → 假红（Seen: 1/3）
 - 任务 / 缺陷：`p0b_rawlogs_miniredis_convergence_test` 首跑 LearnedParams=[]
 - 基线 / 修复 SHA：未提交（基线 `ed620001e`）
