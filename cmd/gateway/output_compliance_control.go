@@ -45,6 +45,7 @@ func buildOutputComplianceInterceptor(db *sql.DB) *outputcompliancehook.OutputCo
 		slog.Warn("output_compliance_control: NewChecker failed, feature inert", "error", err)
 		return nil
 	}
+	checker.SetManagedRuleSource(managedOutputRuleSource)
 	ownerFn := makeDataOwnerLookup(db)
 	return outputcompliancehook.NewOutputComplianceInterceptor(checker, ownerFn)
 }
@@ -82,9 +83,18 @@ func loadSanitizeRestoredValues() sanitizeSessionValuesFunc {
 }
 
 // buildRedactBodyFn 构造 write-time 客户端可见脱敏函数（2026-07-09，增强 1）。
-// 与 buildOutputComplianceInterceptor 使用同一个 checker；write-time 路径没有
-// 请求上下文，caller/data owner 均来自 DB 查询（RedactOwnerContextFunc 形态）。
+// Legacy adapter for callers without a request; gateway routing uses the context-aware form.
 func buildRedactBodyFn(db *sql.DB) func([]byte, string, string) []byte {
+	fn := buildRedactBodyWithContextFn(db)
+	if fn == nil {
+		return nil
+	}
+	return func(body []byte, session, tenant string) []byte {
+		return fn(context.Background(), body, session, tenant)
+	}
+}
+
+func buildRedactBodyWithContextFn(db *sql.DB) func(context.Context, []byte, string, string) []byte {
 	if db == nil {
 		return nil
 	}
@@ -93,7 +103,14 @@ func buildRedactBodyFn(db *sql.DB) func([]byte, string, string) []byte {
 		slog.Warn("output_compliance_control: buildRedactBodyFn NewChecker failed", "error", err)
 		return nil
 	}
-	return streaming.BuildRedactBodyFn(checker, makeRedactOwnerLookup(db), loadSanitizeRestoredValues())
+	checker.SetManagedRuleSource(managedOutputRuleSource)
+	return streaming.BuildRedactBodyWithContextFn(checker, makeRedactOwnerLookup(db), func(ctx context.Context, session, tenant string) ([]string, error) {
+		// Routing is constructed before the sanitizer registers its source.
+		if source := loadSanitizeRestoredValues(); source != nil {
+			return source(ctx, session, tenant)
+		}
+		return nil, nil
+	})
 }
 
 // lookupOwners resolves (callerOwner, dataOwner) for a session in one DB
