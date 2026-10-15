@@ -1520,6 +1520,11 @@ func main() {
 		slog.Info("settings: registry disabled (no DB)")
 	}
 
+	if err := validateSessionWriteSafety(dbConn != nil && dbConn.Enabled()); err != nil {
+		slog.Error("unsafe request storage configuration", "error", err)
+		os.Exit(1)
+	}
+
 	// ── Dynamic Timeout Config (Phase 2, 2026-07-23) ────────────────────
 	// Initialize TimeoutConfig for adaptive timeout calculation based on
 	// context size, historical latency, and network conditions.
