@@ -277,3 +277,4 @@
 259	864_model_aliases_bare_raw_name_active_idx.sql
 260	865_session_bodies_kind_reconcile.sql
 261	866_sanitize_rule_management.sql
+262	867_session_summaries_last_request_at_idx.sql

@@ -1071,6 +1071,10 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"865_session_bodies_kind_reconcile.sql",
 			// Versioned sanitization policies, review evidence, and instance acknowledgements.
 			"866_sanitize_rule_management.sql",
+			// 867（2026-10-16）：session_summaries (last_request_at DESC,
+			// session_key DESC) 部分索引 —— 在线会话超管路径无租户前导，
+			// tenant_time 只能整扫（252 冷缓存 >5s）。已建则整段跳过、不拿锁。
+			"867_session_summaries_last_request_at_idx.sql",
 		},
 	}
 }

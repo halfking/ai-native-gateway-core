@@ -188,6 +188,10 @@ files=(
   # 击杀（2026-10-15 252 审计轮实测）。2,744 行构建毫秒级。
   "$ROOT_DIR/sql/migrations/startup/864_model_aliases_bare_raw_name_active_idx.sql"
   "$ROOT_DIR/sql/migrations/startup/866_sanitize_rule_management.sql"
+  # 867（2026-10-16）：session_summaries (last_request_at DESC, session_key DESC)
+  # WHERE last_request_at IS NOT NULL —— 在线会话超管路径（无 tenant_id 等值）
+  # 的承重索引。生产大表须先 CONCURRENTLY 同名预建；本文件判存在后整段跳过。
+  "$ROOT_DIR/sql/migrations/startup/867_session_summaries_last_request_at_idx.sql"
   "$ROOT_DIR/sql/migrations/startup/394_request_stats_minute.sql"
   # 2026-10-12 host-first PG/gateway log audit: the candidate-binding scope
   # revision chain (541 raw_model table → 569 canonical table + cmb triggers →
