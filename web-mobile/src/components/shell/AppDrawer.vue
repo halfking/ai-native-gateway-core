@@ -52,7 +52,7 @@ watch(
   () => props.modelValue,
   (open) => {
     if (open) {
-      searchQuery.value = 
+      searchQuery.value = ''
       overlay.present()
       void nextTick(() => {
         panelRef.value?.querySelector<HTMLElement>('a, button')?.focus()

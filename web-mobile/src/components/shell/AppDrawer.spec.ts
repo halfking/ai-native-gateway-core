@@ -168,14 +168,14 @@ describe('AppDrawer 搜索（2026-10-15：85 席无搜索是可达性硬伤）',
   })
 
   it('★ 权限门控先于搜索：tenant_admin 搜 integrity 搜不出越权入口', async () => {
-    const w = await mountDrawerAs('tenant_admin')
+    await mountDrawerAs('tenant_admin')
     await typeSearch('integrity')
     const links = await drawerLinks()
     expect(links.some((h) => h.includes('/integrity'))).toBe(false)
   })
 
   it('★ 无结果提示在场：搜不存在的词给可行动提示，而不是空白面板', async () => {
-    const w = await mountDrawerAs('super_admin')
+    await mountDrawerAs('super_admin')
     await typeSearch('zzz-no-such-page')
     expect((await drawerLinks()).length).toBe(0)
     const empty = document.body.querySelector('.drawer__search-empty')
