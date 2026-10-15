@@ -1,7 +1,8 @@
 import { req, type RequestOptions } from './client'
 
-// 脱敏规则只读面；h.admin 只认证，操作权限由 handler 再判断。
-// 权限依据：admin/sanitize_rules_handler.go:32-38；租户由服务端从认证上下文取，禁止拼 tenant_id。
+// 脱敏规则四 GET + 事件复核 POST；h.admin 只认证，操作权限由 handler 再判断。
+// 权限依据：admin/sanitize_rules_handler.go:32-38；tenant_admin 有租户时可读/复核事件。
+// 复核依据：admin/sanitize_rules_handler.go:201-238、284-301；tenant/reviewer 由服务端决定，禁止透传。
 // 两种 Store 的列表均初始化为 []；Compile 拒绝 nil/empty rules，不能把坏响应伪装成空集。
 // current/实例可能仍用本地 fallback 的版本 0，历史记录的 id 则必须为正值。
 
@@ -177,4 +178,31 @@ export function fetchSanitizeRuleEvents(
 
 export function fetchSanitizeRuleInstances(options?: RequestOptions): Promise<{ target_version: number; instances: SanitizeRuleInstance[] }> {
   return read(`${root}/instances`, (value) => object(value) && nonnegative(value.target_version) && arrayOf(isInstance)(value.instances), options)
+}
+
+export async function reviewSanitizeRuleEvent(
+  id: number,
+  body: { status: 'confirmed_sensitive' | 'false_positive' | 'ignored'; comment: string },
+  options?: RequestOptions,
+): Promise<SanitizeRuleEvent> {
+  if (!positive(id) || !object(body)
+    || !oneOf(['confirmed_sensitive', 'false_positive', 'ignored'])(body.status)
+    || !string(body.comment)) throw new Error('sanitizeRules.invalidReview')
+  // Go len(comment) 计 UTF-8 字节而非 JS UTF-16 长度；空评论合法。
+  // domains/sanitizerules/events.go:32-39
+  const { status, comment } = body
+  if (new TextEncoder().encode(comment).length > 2000) throw new Error('sanitizeRules.invalidReview')
+  let value: unknown
+  try {
+    // 白名单构造请求体；未知 tenant_id/reviewer 等字段不会进入服务端严格 decoder。
+    value = await req<unknown>('POST', `${root}/events/${id}/review`, { status, comment }, options)
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new Error('sanitizeRules.invalidResponse')
+    throw error
+  }
+  // 不以另一行或未生效的旧状态替换视图中的目标事件。
+  if (!isEvent(value) || !object(value) || value.id !== id || value.status !== status) {
+    throw new Error('sanitizeRules.invalidResponse')
+  }
+  return value as unknown as SanitizeRuleEvent
 }

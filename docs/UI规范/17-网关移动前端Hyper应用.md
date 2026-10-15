@@ -20552,3 +20552,31 @@ API 188条，页面23条，受限页/标题普查扩15→16席；历史15席过�
 源码可证热点：⑥-3按每个可达API调用uiImportersOf，重复全树readFileSync；每个importer最多又三次读/拼/剥注释。新增页面增加扫描工作量，但无前后性能对照，未证明是唯一超时原因。附带修复仅orphanLedger.spec.ts：uiSources取每次新快照、uiImporterIndex逐文件一次解析，⑥-3复用局部索引和stripped；无全局缓存，不调超时、范围和引用口径保持原样。新增实际逐模块直接过滤等价及合成正负控，37条单跑通过；共享importsOf意味着不证明解析器完备。⑥-2仍有重复扫描，未发现超时，不泛化为全部性能已解决。
 
 扩展严格变异到17条（原14+索引返空/错配模块/伪造文件），原始基线248/0失败，17/17 RED_HIT，三份源码finally逐字节还原。最终含扫描优化的五spec268、vue-tsc -b --force、四门/selftest81/build、全量227文件8564 passed+1 skipped、十连跑顺序链rc0。最终十连跑10/10，每轮8564+1，失败0、快照0；本worktree期间不改产品文件、不并发测试/变异。相对批143新增188+23+1=212条；旧超时已保留，有限十轮未复现不证明所有负载下不再超时。产品API/页面10文件保持冻结哈希；最终提交范围扩为11个移动文件+文档共12文件，Go不归本批。本节不恢复冷类型/写侧完成/live HTTP/原生壳等未经证明声明。
+
+## 11.182 第一百四十五批：脱敏规则事件人工复核写侧接入移动端
+
+### 一、交付与权限边界
+
+本批在已有 /sanitize-rules 事件卡片接入人工复核 POST；沿用抽屉入口、不增加底栏席。规则编辑、验证、发布、回滚和参数写侧仍未复制，不称全功能完成。批144提交6bb02ae9e9f3e8ed2d35948578ab59773957fca4已推送，fetch实测远端与其一致后从该父节点建立独立 /tmp/co145-wt；主树与Go源码不改。
+
+逐端点取证：admin/sanitize_rules_handler.go:32–38允许super_admin/admin_key与有TenantID的tenant_admin复核；:201–238从认证身份决定tenant，manager先查事件归属，不信客户端；:284–301只解一个JSON、拒绝未知字段、body最多2MiB。domains/sanitizerules/events.go:32–39仅允许confirmed_sensitive/false_positive/ignored，评论Go len最多2000字节，空串合法；reviewer由服务端产生。本批前端角色兜底不替代服务端租户与角色门。
+
+### 二、API与可达交互
+
+新增reviewSanitizeRuleEvent，POST /api/admin/sanitize-rules/events/{id}/review，仅白名单发送status/comment；正安全整数ID、三态、字符串与UTF-8字节边界先验证，错误用sanitizeRules.invalidReview。复用完整isEvent并核返回id/status，错误行/旧状态不替换当前事件。JSON解析错误映射invalidResponse，HTTP/取消沿用client；安全整数保护不称接受所有Go int64。
+
+事件卡片编辑→确认→保存两步，确认态冻结输入，评论提示避免密钥或敏感原文。复核期间禁重复提交、事件刷新与打开另一复核；成功仅更新目标行并提示重新读取才应用筛选，失败保留事件/评论并退回编辑态。role/id/tenant切换或卸载立即abort并清表单，generation/signal/disposed在成功、失败和finally共同隔离迟到响应。四GET仍由原入口手动取数，不自动轮询。
+
+### 三、判据与返工
+
+新增真实req→transport API测试108条、视图23条，共131；原读面188+23保留，四spec342通过。覆盖三权限/三终态、确认前无POST、请求白名单、ASCII/中文/emoji字节边界、坏响应/id或status不一致、失败保留、重复写/刷新隔离、确认冻结、重读清稿、四种切换取消、旧成功不能覆盖新成功，以及账号/tenant/role/unmount迟到失败。卸载用例确认signal已abort与promise结束，不把它说成卸载后DOM证明。
+
+首轮336条1失败是夹具把transport异常误当服务端message；改用真实503 JSON响应后336通过。类型门随后报新API测试第106行畸形body强转TS2352，改unknown中转后强制重建rc0。独立只读审查误把已报告诊断定位到121行，并据此判FAIL；已明确撤回错误定位/FAIL，不能将静态推测当编译实测。采纳其迟到失败覆盖与保存失败语境建议，补3条并改通用“请求失败”；此前正在执行的检查链主动取消，不作为最终验收。
+
+严格台先原始baseline131/0失败，再11/11 RED_HIT：UTF8改字符长度、body额外字段透传、响应ID/status撤核、完整事件校验撤除、pending放行、重复提交锁撤除、刷新不清稿、取消撤除、live恒真、视图UTF8退化。每条读JSON用例总数/失败数/fullName，finally与外层finally写回并逐字节核两源码；零用例无效，红而未命中不冒充有牙。不变异Go，有限11种退化不证明所有退化可检出。
+
+### 四、最终检查与限制
+
+固定补审内容后完整顺序链rc0：四spec342、npx vue-tsc -b --force强制重建、CSS/touch/i18n/comment四门、gate:selftest分项11+11+39+15+5=81、build、全量229文件8695 passed+1 skipped、十连跑10/10。每轮8695+1、失败0、快照0；期间不改产品文件、不并发测试或变异。两语种各3878键；七产品文件无U+FFFD/NUL，Go差异为空。共享依赖缓存不删除，不称冷类型检查。日志与变异JSON位于/tmp/co145-wt/.audit145，未纳入产品提交。
+
+本批未做live HTTP、真实浏览器/原生壳交互或深链标题端到端；client跨realm取消分类未扩改，历史flaky未复现不等于已修复。后端历史跨租户风险、壳层拒绝去向及属主决策仍超范围。提交推送仍需精确最终SHA只读审查、最新fetch及远端包含关系，本节检查通过不代表上线。

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 脱敏规则只读面（批144）。服务端逐操作鉴权，前端分区是体验兜底，不替代服务端。
+// 脱敏规则四GET（批144）与事件复核（批145）。服务端逐操作鉴权，前端分区是体验兜底，不替代服务端。
 // 注册与权限见 admin/sanitize_rules_handler.go；事件租户条件由服务端强制，不传tenant_id。
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { useHyperPage } from '@/hyper'
@@ -7,7 +7,7 @@ import { t } from '@/i18n'
 import { useAuthStore } from '@/stores/auth'
 import {
   fetchSanitizeRulesCurrent, fetchSanitizeRuleEvents, fetchSanitizeRuleVersions, fetchSanitizeRuleInstances,
-  sanitizeRulesCanManage, sanitizeRulesCanReadEvents,
+  sanitizeRulesCanManage, sanitizeRulesCanReadEvents, reviewSanitizeRuleEvent,
   type SanitizeRuleCurrent, type SanitizeRuleEvent, type SanitizeRuleVersion, type SanitizeRuleInstance,
 } from '@/api/sanitizeRules'
 
@@ -26,7 +26,49 @@ const loading = ref<Record<Section, boolean>>({ events: false, rules: false, ver
 const errors = ref<Record<Section, string>>({ events: '', rules: '', versions: '', instances: '' })
 const requests = new Map<Section, AbortController>()
 let generation = 0, disposed = false
+const reviewID = ref<number | null>(null), reviewStatus = ref('confirmed_sensitive'), reviewComment = ref('')
+const reviewing = ref(false), reviewConfirm = ref(false), reviewError = ref(''), reviewSuccess = ref('')
+let reviewRequest: AbortController | null = null
+function resetReview() {
+  reviewRequest?.abort(); reviewRequest = null
+  reviewID.value = null; reviewStatus.value = 'confirmed_sensitive'; reviewComment.value = ''
+  reviewing.value = false; reviewConfirm.value = false; reviewError.value = ''; reviewSuccess.value = ''
+}
+function beginReview(id: number) {
+  if (!allowed.value || reviewing.value || loading.value.events || !events.value?.some(e => e.id === id)) return
+  resetReview(); reviewID.value = id
+}
+function prepareReview() {
+  if (!allowed.value || reviewID.value === null || reviewing.value) return
+  reviewError.value = ''
+  if (!['confirmed_sensitive', 'false_positive', 'ignored'].includes(reviewStatus.value) || new TextEncoder().encode(reviewComment.value).length > 2000) {
+    reviewError.value = t('sr.invalidReview'); return
+  }
+  reviewConfirm.value = true
+}
+async function submitReview() {
+  if (!allowed.value || !reviewConfirm.value || reviewID.value === null || reviewing.value) return
+  const id = reviewID.value, epoch = generation, request = new AbortController()
+  reviewRequest = request; reviewing.value = true; reviewError.value = ''; reviewSuccess.value = ''
+  const live = () => !disposed && epoch === generation && !request.signal.aborted
+  try {
+    const result = await reviewSanitizeRuleEvent(id, { status: reviewStatus.value as 'confirmed_sensitive' | 'false_positive' | 'ignored', comment: reviewComment.value }, { signal: request.signal })
+    if (live()) {
+      events.value = (events.value ?? []).map(e => e.id === id ? result : e)
+      reviewID.value = null; reviewComment.value = ''; reviewConfirm.value = false; reviewSuccess.value = t('sr.reviewSaved')
+    }
+  } catch (e) {
+    if (live()) {
+      const message = e instanceof Error ? e.message : ''
+      reviewError.value = message === 'sanitizeRules.invalidReview' ? t('sr.invalidReview') : message === 'sanitizeRules.invalidResponse' ? t('sr.invalidResponse') : message || t('sr.requestFailed')
+      reviewConfirm.value = false
+    }
+  } finally {
+    if (live()) { reviewing.value = false; reviewRequest = null }
+  }
+}
 function clear() {
+  resetReview()
   generation++
   for (const r of requests.values()) r.abort()
   requests.clear()
@@ -37,7 +79,8 @@ function clear() {
 watch(() => [auth.role, auth.userInfo?.id, auth.userInfo?.tenant_id], clear)
 onUnmounted(() => { disposed = true; clear() })
 async function load(section: Section) {
-  if (!allowed.value || (section !== 'events' && !manager.value) || loading.value[section]) return
+  if (!allowed.value || (section !== 'events' && !manager.value) || loading.value[section] || (section === 'events' && reviewing.value)) return
+  if (section === 'events') resetReview()
   const epoch = generation, request = new AbortController()
   requests.set(section, request); loading.value[section] = true; errors.value[section] = ''
   const live = () => !disposed && epoch === generation && !request.signal.aborted
@@ -75,7 +118,7 @@ async function load(section: Section) {
     <template v-else>
       <p class="sr__note" data-testid="sr-readonly">{{ t('sr.readonly') }}</p>
       <section class="sr__card" data-testid="sr-events-section">
-        <header><h2>{{ t('sr.events') }}</h2><button class="sr__btn" data-testid="sr-load" :disabled="loading.events" @click="load('events')">{{ loading.events ? t('common.loading') : t('sr.refresh') }}</button></header>
+        <header><h2>{{ t('sr.events') }}</h2><button class="sr__btn" data-testid="sr-load" :disabled="loading.events || reviewing" @click="load('events')">{{ loading.events ? t('common.loading') : t('sr.refresh') }}</button></header>
         <p data-testid="sr-scope">{{ manager ? t('sr.allTenants') : t('sr.ownTenant') }}</p>
         <div class="sr__filters">
           <label>{{ t('sr.action') }}<select v-model="action" data-testid="sr-action"><option value="">{{ t('sr.all') }}</option><option value="mask">mask</option><option value="block">block</option><option value="log">log</option><option value="exempted">exempted</option><option value="pending">pending</option></select></label>
@@ -89,7 +132,17 @@ async function load(section: Section) {
           <dl><dt>{{ t('sr.tenant') }}</dt><dd>{{ event.tenant_id }}</dd><dt>{{ t('sr.action') }}</dt><dd>{{ event.phase }} / {{ event.action }}</dd><dt>{{ t('sr.status') }}</dt><dd>{{ event.status }}</dd><dt>{{ t('sr.count') }}</dt><dd>{{ event.count }}</dd><dt>{{ t('sr.sample') }}</dt><dd>{{ event.sample_masked }}</dd><dt>{{ t('sr.lastSeen') }}</dt><dd>{{ event.last_seen }}</dd></dl>
           <p v-if="event.type || event.field" class="sr__mono" data-testid="sr-event-structure">{{ event.type }} / {{ event.field }}</p>
           <p v-if="event.reviewer || event.review_comment">{{ event.reviewer }} · {{ event.review_comment }}</p>
+          <button class="sr__btn" data-testid="sr-review-open" :disabled="reviewing || loading.events" @click="beginReview(event.id)">{{ t('sr.review') }}</button>
+          <div v-if="reviewID === event.id" data-testid="sr-review-form" class="sr__filters">
+            <p>{{ t('sr.reviewNote') }}</p>
+            <label>{{ t('sr.status') }}<select v-model="reviewStatus" data-testid="sr-review-status" :disabled="reviewConfirm || reviewing"><option value="confirmed_sensitive">{{ t('sr.confirmedSensitive') }}</option><option value="false_positive">{{ t('sr.falsePositive') }}</option><option value="ignored">{{ t('sr.ignored') }}</option></select></label>
+            <label>{{ t('sr.reviewComment') }}<textarea v-model="reviewComment" data-testid="sr-review-comment" :disabled="reviewConfirm || reviewing" /></label>
+            <p v-if="reviewError" class="sr__error" role="alert" data-testid="sr-review-error">{{ reviewError }}</p>
+            <template v-if="reviewConfirm"><p data-testid="sr-review-confirm-note">{{ t('sr.reviewConfirm') }} #{{ event.id }} · {{ reviewStatus }}</p><button class="sr__btn" data-testid="sr-review-submit" :disabled="reviewing" @click="submitReview">{{ reviewing ? t('common.loading') : t('common.confirm') }}</button><button class="sr__btn" data-testid="sr-review-back" :disabled="reviewing" @click="reviewConfirm = false">{{ t('common.cancel') }}</button></template>
+            <template v-else><button class="sr__btn" data-testid="sr-review-prepare" @click="prepareReview">{{ t('sr.review') }}</button><button class="sr__btn" data-testid="sr-review-cancel" @click="resetReview">{{ t('common.cancel') }}</button></template>
+          </div>
         </article>
+        <p v-if="reviewSuccess" role="status" data-testid="sr-review-success">{{ reviewSuccess }}</p>
       </section>
       <template v-if="manager">
         <section class="sr__card" data-testid="sr-rules-section">
@@ -122,13 +175,14 @@ async function load(section: Section) {
 .sr header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
 .sr h2 { font-size: 17px; margin: 0; }
 .sr p { overflow-wrap: anywhere; font-size: 13px; line-height: 1.6; }
-.sr__btn, .sr select, .sr input { min-height: 48px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); color: var(--app-text); padding: 8px 12px; font: inherit; }
+.sr__btn, .sr select, .sr input, .sr textarea { min-height: 48px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); color: var(--app-text); padding: 8px 12px; font: inherit; }
 .sr__btn { color: var(--app-primary); }
 .sr__btn:disabled { opacity: .5; }
 .sr__btn:focus-visible, .sr select:focus-visible, .sr input:focus-visible, .sr summary:focus-visible { outline: 2px solid var(--app-primary); outline-offset: 2px; }
 .sr__filters { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
 .sr label { display: grid; gap: 6px; font-size: 13px; min-width: 0; }
-.sr input, .sr select { width: 100%; box-sizing: border-box; min-width: 0; }
+.sr input, .sr select, .sr textarea { width: 100%; box-sizing: border-box; min-width: 0; }
+.sr textarea { min-height: 96px; resize: vertical; }
 .sr__row { border-top: 1px solid var(--app-border); padding-top: 14px; margin-top: 14px; overflow-wrap: anywhere; }
 .sr__mono, .sr pre { font-family: ui-monospace, monospace; font-size: 12px; }
 .sr pre { white-space: pre-wrap; overflow-wrap: anywhere; }

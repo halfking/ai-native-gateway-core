@@ -4741,7 +4741,10 @@ sctx: {
   },
   sr: {
     title: '脱敏规则', denied: '仅超级管理员、legacy 管理密钥和有租户的租户管理员可访问。',
-    readonly: '本页只读：查看规则、命中事件、版本与实例。编辑、发布、回滚和人工复核请使用桌面端。',
+    readonly: '本页可查看规则、命中事件、版本与实例，并人工复核事件。编辑、发布和回滚请使用桌面端。',
+    review: '复核事件', reviewComment: '复核评论（最多2000 UTF-8字节）', reviewNote: '请选择复核结论。评论会持久保存，请勿填写密钥或敏感原文。',
+    confirmedSensitive: '确认敏感', falsePositive: '误报', ignored: '忽略', reviewConfirm: '确认保存此事件的复核结论：',
+    invalidReview: '复核状态无效，或评论超过2000 UTF-8字节。', reviewSaved: '复核已保存；当前列表保留该事件，重新读取后应用筛选条件。',
     events: '命中事件', rules: '当前规则', versions: '发布历史', instances: '实例版本', refresh: '读取',
     allTenants: '范围：全部租户', ownTenant: '范围：当前租户；由服务端强制过滤。',
     action: '处理动作', status: '复核状态', limit: '读取上限（1–1000）', all: '全部',
@@ -4751,6 +4754,6 @@ sctx: {
     enabled: '启用', disabled: '停用', priority: '优先级', details: '查看完整结构', localInstance: '本机状态',
     rollbackOf: '回滚来源', target: '数据库目标版本', sameVersion: '版本号一致', versionDiffers: '版本号不同',
     lastRefresh: '最后刷新', instanceNote: '版本号一致不等于实例健康；请同时核对摘要、最后上报时间与错误。本页不自动轮询。',
-    invalidResponse: '服务端响应结构异常，未替换已显示数据。', invalidFilter: '筛选参数无效，请核对动作、状态和整数上限。', requestFailed: '读取失败，请重试。',
+    invalidResponse: '服务端响应结构异常，未替换已显示数据。', invalidFilter: '筛选参数无效，请核对动作、状态和整数上限。', requestFailed: '请求失败，请重试。',
   },
 } as const
