@@ -1,7 +1,8 @@
 import { req, type RequestOptions } from './client'
 
-// 脱敏规则四 GET + 事件复核 POST；h.admin 只认证，操作权限由 handler 再判断。
-// 权限依据：admin/sanitize_rules_handler.go:32-38；tenant_admin 有租户时可读/复核事件。
+// 脱敏规则四 GET + 草稿验证/事件复核 POST；h.admin 只认证，操作权限由 handler 再判断。
+// 权限依据：admin/sanitize_rules_handler.go:32-38；验证仅管理员，tenant_admin 有租户时可读/复核事件。
+// 验证依据：admin/sanitize_rules_handler.go:54-67、284-301；RE2/规则语义交给服务端 Compile。
 // 复核依据：admin/sanitize_rules_handler.go:201-238、284-301；tenant/reviewer 由服务端决定，禁止透传。
 // 两种 Store 的列表均初始化为 []；Compile 拒绝 nil/empty rules，不能把坏响应伪装成空集。
 // current/实例可能仍用本地 fallback 的版本 0，历史记录的 id 则必须为正值。
@@ -178,6 +179,41 @@ export function fetchSanitizeRuleEvents(
 
 export function fetchSanitizeRuleInstances(options?: RequestOptions): Promise<{ target_version: number; instances: SanitizeRuleInstance[] }> {
   return read(`${root}/instances`, (value) => object(value) && nonnegative(value.target_version) && arrayOf(isInstance)(value.instances), options)
+}
+
+// 仅草稿请求严格限定 JSON 键；GET 响应的扩展字段行为保持不变。
+// domains/sanitizerules/types.go:18-41
+const ruleKeys = ['id', 'name', 'type', 'kind', 'pattern', 'group', 'scopes', 'action', 'enabled', 'priority', 'tenant_id', 'tools', 'fields', 'samples', 'exemptions']
+const onlyKeys = (row: Row, keys: readonly string[]) => Object.keys(row).every((key) => keys.includes(key))
+const isDraft: Check = (value) => isConfig(value) && object(value) && onlyKeys(value, ['rules'])
+  && (value.rules as Row[]).every((rule) => onlyKeys(rule, ruleKeys)
+    && optional(rule, 'samples', arrayOf((sample) => object(sample) && onlyKeys(sample, ['text', 'match']))))
+
+export async function validateSanitizeRules(
+  config: SanitizeRuleConfig,
+  options?: RequestOptions,
+): Promise<{ valid: true; config_digest: string }> {
+  let snapshot: unknown
+  try {
+    if (!isDraft(config)) throw new Error('invalid draft')
+    const json = JSON.stringify(config)
+    // 检查实际 JSON 的 UTF-8 字节（含转义/结构），且在传输前脱离调用方可变对象。
+    if (new TextEncoder().encode(json).length > (2 << 20)) throw new Error('oversized draft')
+    snapshot = JSON.parse(json)
+    if (!isDraft(snapshot)) throw new Error('invalid serialized draft')
+  } catch {
+    throw new Error('sanitizeRules.invalidDraft')
+  }
+  let value: unknown
+  try {
+    value = await req<unknown>('POST', `${root}/validate`, snapshot, options)
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new Error('sanitizeRules.invalidResponse')
+    throw error
+  }
+  if (!object(value) || value.valid !== true || typeof value.config_digest !== 'string'
+    || value.config_digest.length !== 64 || !/^[0-9a-f]{64}$/.test(value.config_digest)) throw new Error('sanitizeRules.invalidResponse')
+  return value as { valid: true; config_digest: string }
 }
 
 export async function reviewSanitizeRuleEvent(

@@ -20580,3 +20580,27 @@ API 188条，页面23条，受限页/标题普查扩15→16席；历史15席过�
 固定补审内容后完整顺序链rc0：四spec342、npx vue-tsc -b --force强制重建、CSS/touch/i18n/comment四门、gate:selftest分项11+11+39+15+5=81、build、全量229文件8695 passed+1 skipped、十连跑10/10。每轮8695+1、失败0、快照0；期间不改产品文件、不并发测试或变异。两语种各3878键；七产品文件无U+FFFD/NUL，Go差异为空。共享依赖缓存不删除，不称冷类型检查。日志与变异JSON位于/tmp/co145-wt/.audit145，未纳入产品提交。
 
 本批未做live HTTP、真实浏览器/原生壳交互或深链标题端到端；client跨realm取消分类未扩改，历史flaky未复现不等于已修复。后端历史跨租户风险、壳层拒绝去向及属主决策仍超范围。提交推送仍需精确最终SHA只读审查、最新fetch及远端包含关系，本节检查通过不代表上线。
+
+## 11.183 第一百四十六批：脱敏规则草稿编辑与服务端验证接入移动端
+
+### 一、交付与权限边界
+
+本批在已有 /sanitize-rules 抽屉下加 JSON 草稿编辑与草稿 POST /api/admin/sanitize-rules/validate。验证只对当前 super_admin/admin_key 可见；事件复核与四 GET 不动。批145提交 6aaefb57d960b4ad80470639afc4cf1c5b930501 已推送，fetch 后 origin/main 仍为该提交，本批从该父节点建立独立 /tmp/co146-wt。规则发布与回滚仍未复制，不称全功能完成。
+
+逐端点取证：admin/sanitize_rules_handler.go:32–38 限制 super/admin_key；:54–67 验证后端先做 Compile，仅返回 valid/config_digest 不写库；:284–301 body 上限 2MiB、严格一个 JSON、拒绝未知字段。domains/sanitizerules/model.go:24–124 Compile 校验规则结构、ID 唯一、RE2 合法、scope/action/exemptions 互相约束；types.go:18–41 是 Rule JSON 形状的唯一真值。前端草稿严格键白名单、原始 UTF-8 字节 ≤2MiB 仍属产品门，服务端才是最终判官。
+
+### 二、API 与可达交互
+
+sanitizeRules.ts 新增 validateSanitizeRules，仅 POST {config}。运行时 isDraft 严格限定 config/rule/sample 三层键，拒绝未知键与显式 undefined optional；序列化独立 snapshot，传输中脱离调用方可变对象。成功必须 valid === true 和 64 位小写十六进制摘要；SyntaxError 与结构异常统一 sanitizeRules.invalidResponse。草稿本身错误键 sanitizeRules.invalidDraft。
+
+事件卡片继续在已有入口，复核保存与错误态保留。SanitizeRulesView 加草稿卡片：复制当前规则（有内容时禁用按钮）、粘贴 JSON、再次验证、清空草稿；任一编辑触发同步 watch 清空已验证摘要与取消在途请求；摘要与草稿原文逐字符比较，验证有效才显示摘要。身份变化或卸载清空草稿并 abort 在途请求，乐观守卫让迟到成功不再贴到新草稿上。已清稿前不让再次复制，发布前必须先重验。租户管理员与无权限 user 只读看说明，明确"本页只读"，不显示草稿区。
+
+### 三、判据、返工与限制
+
+新增真实 req→transport API 测试 137 条、视图 26 条，共 163；批145 的 108+23 保持不变，6 spec 507 通过。API 覆盖请求白名单与 options/快照/合法字段与调用方可变不改变 payload/未知键拒绝/显式 undefined/UTF-8 2MiB 边界/响应 valid true 与 64 位小写摘要/HTTP/取消/非法 JSON。视图覆盖三权限可达、复制不被覆盖、未读取不可复制、空稿不验证、非 JSON 草稿不发送 POST、服务端语义失败保留草稿、同时只能一个验证请求、编辑取消在途请求与旧成功不覆盖、迟到的旧成功摘要不回填、身份/卸载/重读清稿、迟到失败不污染新稿、新稿先成功后旧失败不污染。10/10 严格变异 RED_HIT：未知键放行、字节边界降级、valid 弱校验、摘要形状撤核、watch 撤除、abort 撤除、乐观守卫恒真、复制按钮守卫撤除、同稿重复锁撤除、清稿撤除。
+
+两轮变异 0 红：M05 旧预期「验证后编辑立即取消有效标记」被乐观守卫（live=epoch/revision/signal）覆盖，移除 watch 后守卫仍挡；M08 改测按钮 disabled 与禁止覆盖后 RED_HIT。最终判据加一条「编辑后旧成功摘要不能回填到新草稿」让 M05 真正成为 RED_HIT。父主动停止所有早期检查链，不作最终验收。
+
+最终顺序链 rc0：6 spec 507、npx vue-tsc -b --force 强制重建、CSS/touch/i18n/comment 四门（两语种各 3887 键，键集一致且非空）、gate:selftest 11+11+39+15+5=81、build、全量、十连跑。每轮全量与十连跑读数、失败/快照数、变异 JSON 与结果摘要均落在 .audit146，未纳入产品提交。七产品文件无 U+FFFD/NUL，Go 差异为空。共享依赖缓存不删除，不称冷类型检查。
+
+历史 ComplianceHitsView/ RoutingOptView flaky 未复现不等于已修复；live HTTP、真实浏览器/原生壳或深链标题端到端未单独验证。client 跨 realm DOMException AbortError 仍按 network_error 处理，页面靠 signal/generation 隔离。提交推送仍需精确最终 SHA 独立审查、最新 fetch 及远端包含关系，本节检查通过不代表上线。

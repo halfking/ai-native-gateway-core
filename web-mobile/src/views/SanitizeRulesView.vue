@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 脱敏规则四GET（批144）与事件复核（批145）。服务端逐操作鉴权，前端分区是体验兜底，不替代服务端。
+// 脱敏规则四GET、事件复核与草稿验证（批144–146）。服务端逐操作鉴权，前端分区是体验兜底，不替代服务端。
 // 注册与权限见 admin/sanitize_rules_handler.go；事件租户条件由服务端强制，不传tenant_id。
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { useHyperPage } from '@/hyper'
@@ -7,8 +7,8 @@ import { t } from '@/i18n'
 import { useAuthStore } from '@/stores/auth'
 import {
   fetchSanitizeRulesCurrent, fetchSanitizeRuleEvents, fetchSanitizeRuleVersions, fetchSanitizeRuleInstances,
-  sanitizeRulesCanManage, sanitizeRulesCanReadEvents, reviewSanitizeRuleEvent,
-  type SanitizeRuleCurrent, type SanitizeRuleEvent, type SanitizeRuleVersion, type SanitizeRuleInstance,
+  sanitizeRulesCanManage, sanitizeRulesCanReadEvents, reviewSanitizeRuleEvent, validateSanitizeRules,
+  type SanitizeRuleCurrent, type SanitizeRuleEvent, type SanitizeRuleVersion, type SanitizeRuleInstance, type SanitizeRuleConfig,
 } from '@/api/sanitizeRules'
 
 const auth = useAuthStore()
@@ -26,6 +26,37 @@ const loading = ref<Record<Section, boolean>>({ events: false, rules: false, ver
 const errors = ref<Record<Section, string>>({ events: '', rules: '', versions: '', instances: '' })
 const requests = new Map<Section, AbortController>()
 let generation = 0, disposed = false
+const draft = ref(''), draftError = ref(''), validatedDraft = ref(''), validatedDigest = ref(''), validating = ref(false)
+let draftRevision = 0, validateRequest: AbortController | null = null
+const draftValid = computed(() => validatedDigest.value !== '' && validatedDraft.value === draft.value)
+function invalidateDraft() {
+  draftRevision++; validateRequest?.abort(); validateRequest = null
+  validating.value = false; validatedDraft.value = ''; validatedDigest.value = ''; draftError.value = ''
+}
+watch(draft, invalidateDraft, { flush: 'sync' })
+function copyCurrent() {
+  if (!manager.value || !current.value || draft.value !== '') return
+  invalidateDraft(); draft.value = JSON.stringify(current.value.config, null, 2)
+}
+function clearDraft() { invalidateDraft(); draft.value = '' }
+async function validateDraft() {
+  if (!manager.value || validating.value || draft.value === '') return
+  const text = draft.value, epoch = generation, revision = draftRevision
+  let config: unknown
+  try { config = JSON.parse(text) } catch { draftError.value = t('sr.invalidDraft'); return }
+  const request = new AbortController(); validateRequest = request; validating.value = true; draftError.value = ''
+  validatedDraft.value = ''; validatedDigest.value = ''
+  const live = () => !disposed && epoch === generation && revision === draftRevision && draft.value === text && !request.signal.aborted
+  try {
+    const result = await validateSanitizeRules(config as SanitizeRuleConfig, { signal: request.signal })
+    if (live()) { validatedDraft.value = text; validatedDigest.value = result.config_digest }
+  } catch (e) {
+    if (live()) {
+      const message = e instanceof Error ? e.message : ''
+      draftError.value = message === 'sanitizeRules.invalidDraft' ? t('sr.invalidDraft') : message === 'sanitizeRules.invalidResponse' ? t('sr.invalidResponse') : message || t('sr.requestFailed')
+    }
+  } finally { if (live()) { validating.value = false; validateRequest = null } }
+}
 const reviewID = ref<number | null>(null), reviewStatus = ref('confirmed_sensitive'), reviewComment = ref('')
 const reviewing = ref(false), reviewConfirm = ref(false), reviewError = ref(''), reviewSuccess = ref('')
 let reviewRequest: AbortController | null = null
@@ -68,6 +99,7 @@ async function submitReview() {
   }
 }
 function clear() {
+  clearDraft()
   resetReview()
   generation++
   for (const r of requests.values()) r.abort()
@@ -116,7 +148,7 @@ async function load(section: Section) {
       <h2>{{ t('common.pageDenied') }}</h2><p>{{ t('sr.denied') }}</p>
     </section>
     <template v-else>
-      <p class="sr__note" data-testid="sr-readonly">{{ t('sr.readonly') }}</p>
+      <p class="sr__note" data-testid="sr-readonly">{{ t(manager ? 'sr.readonlyManager' : 'sr.readonly') }}</p>
       <section class="sr__card" data-testid="sr-events-section">
         <header><h2>{{ t('sr.events') }}</h2><button class="sr__btn" data-testid="sr-load" :disabled="loading.events || reviewing" @click="load('events')">{{ loading.events ? t('common.loading') : t('sr.refresh') }}</button></header>
         <p data-testid="sr-scope">{{ manager ? t('sr.allTenants') : t('sr.ownTenant') }}</p>
@@ -154,6 +186,15 @@ async function load(section: Section) {
             <details><summary>{{ t('sr.localInstance') }}</summary><pre>{{ JSON.stringify(current.status, null, 2) }}</pre></details>
           </template>
         </section>
+        <section class="sr__card" data-testid="sr-draft-section">
+          <h2>{{ t('sr.draftTitle') }}</h2><p>{{ t('sr.draftNote') }}</p>
+          <button class="sr__btn" data-testid="sr-draft-copy" :disabled="!current || draft !== ''" @click="copyCurrent">{{ t('sr.copyCurrent') }}</button>
+          <label>{{ t('sr.draftJson') }}<textarea v-model="draft" data-testid="sr-draft-input" class="sr__draft" spellcheck="false" /></label>
+          <button class="sr__btn" data-testid="sr-draft-validate" :disabled="validating || draft === ''" @click="validateDraft">{{ validating ? t('common.loading') : t('sr.validateDraft') }}</button>
+          <button class="sr__btn" data-testid="sr-draft-clear" @click="clearDraft">{{ t('sr.clearDraft') }}</button>
+          <p v-if="draftError" class="sr__error" role="alert" data-testid="sr-draft-error">{{ draftError }}</p>
+          <p v-if="draftValid" role="status" data-testid="sr-draft-valid">{{ t('sr.draftValidated') }} <span class="sr__mono">{{ validatedDigest }}</span></p>
+        </section>
         <section class="sr__card" data-testid="sr-versions-section">
           <header><h2>{{ t('sr.versions') }}</h2><button class="sr__btn" data-testid="sr-versions-load" :disabled="loading.versions" @click="load('versions')">{{ loading.versions ? t('common.loading') : t('sr.refresh') }}</button></header>
           <p v-if="errors.versions" class="sr__error" role="alert">{{ errors.versions }}</p><p v-if="versions === null">{{ t('sr.notLoaded') }}</p><p v-else-if="versions.length === 0">{{ t('sr.empty') }}</p>
@@ -183,6 +224,7 @@ async function load(section: Section) {
 .sr label { display: grid; gap: 6px; font-size: 13px; min-width: 0; }
 .sr input, .sr select, .sr textarea { width: 100%; box-sizing: border-box; min-width: 0; }
 .sr textarea { min-height: 96px; resize: vertical; }
+.sr textarea.sr__draft { min-height: 240px; font-family: ui-monospace, monospace; }
 .sr__row { border-top: 1px solid var(--app-border); padding-top: 14px; margin-top: 14px; overflow-wrap: anywhere; }
 .sr__mono, .sr pre { font-family: ui-monospace, monospace; font-size: 12px; }
 .sr pre { white-space: pre-wrap; overflow-wrap: anywhere; }

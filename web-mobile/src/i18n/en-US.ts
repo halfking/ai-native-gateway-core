@@ -4711,7 +4711,10 @@ sctx: {
   },
   sr: {
     title: 'Sanitize rules', denied: 'Access requires super admin, a legacy admin key, or a tenant admin with a tenant.',
-    readonly: 'Inspect rules, events, versions and instances, and review events here. Use desktop for editing, publishing and rollback.',
+    readonly: 'Inspect rules, events, versions and instances, and review events here.',
+    readonlyManager: 'Inspect rules, events, versions and instances, review events, and edit and validate rule drafts here. Use desktop for publishing and rollback.',
+    draftTitle: 'Rule draft', draftNote: 'JSON drafts stay on this page only and are discarded on leaving or identity changes. Validation sends the draft to the server but does not publish rules. The server validates RE2 expressions and sample semantics.',
+    copyCurrent: 'Copy current rules', draftJson: 'Draft JSON', validateDraft: 'Validate on server', clearDraft: 'Clear draft', invalidDraft: 'Invalid draft JSON, field structure or size (request maximum 2 MiB).', draftValidated: 'This draft passed server validation but is not published:',
     review: 'Review event', reviewComment: 'Review comment (maximum 2000 UTF-8 bytes)', reviewNote: 'Choose a review outcome. Comments are stored; do not include keys or sensitive source text.',
     confirmedSensitive: 'Confirmed sensitive', falsePositive: 'False positive', ignored: 'Ignored', reviewConfirm: 'Confirm saving this event review:',
     invalidReview: 'Invalid review status or comment exceeds 2000 UTF-8 bytes.', reviewSaved: 'Review saved. The event stays in this list; reload to apply filters.',
