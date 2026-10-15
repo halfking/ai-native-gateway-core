@@ -1362,4 +1362,84 @@ summary:focus-visible {
   color: var(--muted);
   font-size: 12px;
 }
+fieldset {
+  border: 1px solid var(--border);
+  margin: 0 0 12px;
+  padding: 10px;
+}
+legend {
+  font-size: 12px;
+}
+h3,
+h4 {
+  margin: 0 0 12px;
+}
+summary {
+  cursor: pointer;
+  padding: 10px 0;
+}
+.sample {
+  border-bottom: 1px dashed var(--border);
+  padding: 10px 0;
+  margin-bottom: 12px;
+}
+.publish {
+  margin-top: 16px;
+}
+.event > code {
+  display: block;
+  margin-bottom: 10px;
+}
+.event > small {
+  margin-bottom: 12px;
+}
+.history-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+.version-row {
+  display: block;
+  width: 100%;
+  text-align: start;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 12px;
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+.rollback-confirm {
+  margin-top: 12px;
+  border: 1px solid var(--warning);
+  padding: 12px;
+}
+.parameter-form {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.parameter-form .toolbar {
+  grid-column: 1/-1;
+}
+@media (max-width: 1024px) {
+  .rule-workspace,
+  .history-layout {
+    grid-template-columns: 1fr;
+  }
+  .sanitize-rules-view {
+    padding: 12px;
+  }
+  .provenance small {
+    margin-inline-start: 0;
+  }
+  .parameter-form {
+    grid-template-columns: 1fr;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  * {
+    scroll-behavior: auto;
+  }
+}
 </style>
