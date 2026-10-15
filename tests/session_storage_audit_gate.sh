@@ -9,23 +9,23 @@
 # 空 body,lineage 重置为全量重发),同轮修复。
 #
 # 行为:docker daemon 与审计镜像(postgres:17-alpine / redis:7.4.11-alpine)可用
-# 时必跑 scripts/audit/run-session-storage-stream.sh;不可用时**显式** SKIP 并
-# 说明启用方法——绝不静默跳过(与 verify.sh 的 CHROME_BIN 正控同一模式)。
+# 时必跑 scripts/audit/run-session-storage-stream.sh;不可用时拒绝通过。
+# 默认要求跨实例 coherence，不允许把「只观察到不一致」解释成发布成功。
 # 失败传播:套件 rc≠0 时本门非零退出(runner 内部 go test -count=1,无缓存绿)。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 if ! command -v docker >/dev/null 2>&1; then
-  echo "[session-storage-audit] SKIP: docker 不可用 (安装 docker 并 pull postgres:17-alpine redis:7.4.11-alpine 后自动接入)"
-  exit 0
+  echo "[session-storage-audit] FAIL: docker 不可用 (需 docker 与 postgres:17-alpine / redis:7.4.11-alpine)" >&2
+  exit 1
 fi
 if ! docker info >/dev/null 2>&1; then
-  echo "[session-storage-audit] SKIP: docker daemon 未运行 (启动后自动接入)"
-  exit 0
+  echo "[session-storage-audit] FAIL: docker daemon 未运行" >&2
+  exit 1
 fi
 if ! docker image inspect postgres:17-alpine redis:7.4.11-alpine >/dev/null 2>&1; then
-  echo "[session-storage-audit] SKIP: 审计镜像缺失 (docker pull postgres:17-alpine redis:7.4.11-alpine 后自动接入)"
-  exit 0
+  echo "[session-storage-audit] FAIL: 审计镜像缺失 (需 postgres:17-alpine / redis:7.4.11-alpine)" >&2
+  exit 1
 fi
 
-bash scripts/audit/run-session-storage-stream.sh "$@"
+bash scripts/audit/run-session-storage-stream.sh --require-coherence "$@"

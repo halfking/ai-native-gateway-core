@@ -120,11 +120,11 @@ canonical_delivery_path_check() {
     version=${name%%_*}
     [[ "$version" < "690" ]] && continue
 
-    if printf '%s\n' "$startup_files" | grep -Fxq "$name" \
-      || printf '%s\n' "$sequence_files" | grep -Fxq "$name" \
-      || printf '%s\n' "$ensure_files" | grep -Fxq "$name" \
-      || printf '%s\n' "$superseded_files" | grep -Fxq "$name" \
-      || printf '%s\n' "$channel_gap_files" | grep -Fxq "$name"; then
+    if grep -Fxq "$name" <<<"$startup_files" \
+      || grep -Fxq "$name" <<<"$sequence_files" \
+      || grep -Fxq "$name" <<<"$ensure_files" \
+      || grep -Fxq "$name" <<<"$superseded_files" \
+      || grep -Fxq "$name" <<<"$channel_gap_files"; then
       continue
     fi
 
@@ -136,6 +136,14 @@ canonical_delivery_path_check() {
   done <<<"$canonical_files"
   return $found
 }
+
+# Matching the first line of a large catalog must not become a false miss.
+# grep -q exits before printf drains; pipefail then sees the producer's SIGPIPE.
+large_delivery_list=$(awk 'BEGIN { print "690_large_catalog_member.sql"; for (i=0;i<30000;i++) print "999_padding_migration_" i ".sql" }')
+if ! canonical_delivery_path_check "690_large_catalog_member.sql" "$large_delivery_list" "" "" "" "" >/dev/null; then
+  gate_fail "delivery path guard rejected a present migration in a large catalog (early grep exit / producer SIGPIPE)"
+fi
+unset large_delivery_list
 
 # Keep the helper independently regression-tested: a future edit must preserve
 # all three delivery paths and continue to reject an uncovered >=690 file.
@@ -178,7 +186,7 @@ if multi_output=$(canonical_delivery_path_check \
   exit 1
 fi
 for orphan in 690_orphan_a.sql 691_orphan_b.sql 692_orphan_c.sql; do
-  printf '%s\n' "$multi_output" | grep -Fq "$orphan" || {
+  grep -Fq "$orphan" <<<"$multi_output" || {
     printf 'canonical delivery-path guard stopped at the first failure: %s was never reported\n' "$orphan" >&2
     printf '    (this is the exact "one failure at a time" behaviour §9.253 removed)\n' >&2
     exit 1
@@ -370,7 +378,7 @@ top_startup=$(ls "$ROOT_DIR"/sql/migrations/startup/*.sql 2>/dev/null \
   | grep -v '\.down\.sql$' \
   | while IFS= read -r f; do
       b=$(basename "$f")
-      if printf '%s\n' "$channel_gap_allowlist" | grep -Fxq "$b"; then
+      if grep -Fxq "$b" <<<"$channel_gap_allowlist"; then
         continue   # 按设计不进通道，不参与「最高编号」评选
       fi
       printf '%s\n' "$f"
@@ -503,10 +511,10 @@ while IFS= read -r name; do
   version=${name%%_*}
   [[ "$version" < "690" ]] && continue
   [[ "$name" == "755_drop_dead_cleanup_expired_session_turn_logs.sql" ]] && continue
-  if printf '%s\n' "$sequence_files" | grep -Fxq "$name" \
-    || printf '%s\n' "$ensure_allowlist" | grep -Fxq "$name" \
-    || printf '%s\n' "$channel_gap_allowlist" | grep -Fxq "$name" \
-    || printf '%s\n' "$superseded_migrations" | grep -Fxq "$name"; then
+  if grep -Fxq "$name" <<<"$sequence_files" \
+    || grep -Fxq "$name" <<<"$ensure_allowlist" \
+    || grep -Fxq "$name" <<<"$channel_gap_allowlist" \
+    || grep -Fxq "$name" <<<"$superseded_migrations"; then
     continue
   fi
   # No bare printf here: the finding is collected and reported once, in the

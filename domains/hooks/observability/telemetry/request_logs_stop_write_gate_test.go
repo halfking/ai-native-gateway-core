@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/settings"
@@ -83,6 +84,13 @@ func TestInsertRequestLogStopWriteGate(t *testing.T) {
 			mock.ExpectCommit()
 
 			c := NewClientWithRequestLogDB(mock)
+			c.AddOnRequestLogPersisted(func(entry *RequestLogEntry) {
+				raw, err := json.Marshal(entry)
+				require.NoError(t, err)
+				var persisted map[string]any
+				require.NoError(t, json.Unmarshal(raw, &persisted))
+				require.Equal(t, !tc.writeOn, persisted["session_v2_write_required"] == true, "the committed request must retain its selected canonical writer")
+			})
 			err = c.persistRequestLog(&RequestLogEntry{
 				Op:        RequestLogInsert,
 				RequestID: "req-stop-write-insert",
@@ -130,6 +138,13 @@ func TestUpdateRequestLogStopWriteGate(t *testing.T) {
 			mock.ExpectCommit()
 
 			c := NewClientWithRequestLogDB(mock)
+			c.AddOnRequestLogPersisted(func(entry *RequestLogEntry) {
+				raw, err := json.Marshal(entry)
+				require.NoError(t, err)
+				var persisted map[string]any
+				require.NoError(t, json.Unmarshal(raw, &persisted))
+				require.Equal(t, !tc.writeOn, persisted["session_v2_write_required"] == true, "the committed request must retain its selected canonical writer")
+			})
 			err = c.persistRequestLog(&RequestLogEntry{
 				Op:        RequestLogUpdate,
 				RequestID: "req-stop-write-update",
@@ -140,4 +155,56 @@ func TestUpdateRequestLogStopWriteGate(t *testing.T) {
 			require.NoError(t, mock.ExpectationsWereMet())
 		})
 	}
+}
+
+// A terminal UPDATE may find no V1 row and fall back to INSERT after a
+// live configuration switch. The committed copy must pass its selected V2
+// source back to the original entry consumed by persisted hooks.
+type reviewSwitchBackend struct {
+	fakeSettingsBackend
+	reads int
+}
+
+func (b *reviewSwitchBackend) Get(scope settings.Scope, key string) ([]byte, error) {
+	if key == settings.KeyRequestLogsWriteEnabled {
+		b.reads++
+		if b.reads <= 2 {
+			return []byte("true"), nil
+		}
+		return []byte("false"), nil
+	}
+	return b.fakeSettingsBackend.Get(scope, key)
+}
+func TestReviewV2LatchSurvivesUpdateFallback(t *testing.T) {
+	prev := settings.Global
+	t.Cleanup(func() { settings.Global = prev })
+	b := &reviewSwitchBackend{fakeSettingsBackend: fakeSettingsBackend{store: map[string][]byte{"sessions_v2.enabled": []byte("true"), "sessions_v2.shadow_write": []byte("true")}}}
+	reg := settings.NewRegistry()
+	reg.RegisterBackend(settings.ScopePlatform, b)
+	for _, sp := range append(settings.StorageSpecs(), settings.SessionsV2Specs()...) {
+		reg.MustRegisterSpec(sp)
+	}
+	settings.Global = reg
+	mock, err := pgxmock.NewConn()
+	require.NoError(t, err)
+	defer mock.Close(context.Background())
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE usage_ledger_hot").WithArgs(anyArgs(5)...).WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectExec("UPDATE _request_logs_hot").WithArgs(anyArgs(100)...).WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectQuery("SELECT EXISTS").WithArgs("review-fallback").WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectRollback()
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO usage_ledger_hot").WithArgs(anyArgs(19)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectCommit()
+	c := NewClientWithRequestLogDB(mock)
+	observed := false
+	c.AddOnRequestLogPersisted(func(e *RequestLogEntry) {
+		observed = true
+		require.True(t, e.SessionV2WriteRequired, "committed fallback skipped V1, original entry must preserve selected V2 source")
+	})
+	e := &RequestLogEntry{Op: RequestLogUpdate, RequestID: "review-fallback", TenantID: "tenant-1", Success: true}
+	require.NoError(t, c.persistRequestLog(e))
+	require.NoError(t, mock.ExpectationsWereMet())
+	require.True(t, observed)
+	require.Equal(t, 3, b.reads)
 }

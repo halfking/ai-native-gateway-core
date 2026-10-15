@@ -829,6 +829,9 @@ dl_write_env() {
     # LLM_GATEWAY_STORAGE_MAX_CONNECTIONS 只作用于 storage factory（当前
     # 仅 lite 模式构造，full 模式 gateway 不消费）。两者均 honor .env.local
     # 显式值，未设时写空行（gateway 侧视为未设置走默认）。
+    # Explicit write opt-ins only; unset retains the registry defaults.
+    dl_emit_env_line LLM_GATEWAY_SESSIONS_V2_ENABLED "${LLM_GATEWAY_SESSIONS_V2_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_SESSIONS_V2_SHADOW_WRITE "${LLM_GATEWAY_SESSIONS_V2_SHADOW_WRITE:-}"
     dl_emit_env_line LLM_GATEWAY_DB_MAX_CONNS "${LLM_GATEWAY_DB_MAX_CONNS:-}"
     dl_emit_env_line LLM_GATEWAY_STORAGE_MAX_CONNECTIONS "${LLM_GATEWAY_STORAGE_MAX_CONNECTIONS:-}"
     # 2026-09-30 hotzone 部署演练 D1：双模式与热区旋钮透传。白名单此前缺失

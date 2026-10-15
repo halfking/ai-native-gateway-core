@@ -101,10 +101,14 @@ func (w *SessionWriterV2) ensureLifecycle() {
 // NewSessionWriterV2 creates a new SessionWriterV2 instance
 func NewSessionWriterV2(tw *TurnWriter, bw *SessionBodiesWriter, sa *SessionAggregator, tlw *TurnLogsWriter) *SessionWriterV2 {
 	ctx, cancel := context.WithCancel(context.Background())
+	var aggregator sessionUpdater
+	if sa != nil {
+		aggregator = sa
+	}
 	return &SessionWriterV2{
 		turnWriter:        tw,
 		bodiesWriter:      bw,
-		sessionAggregator: sa,
+		sessionAggregator: aggregator,
 		turnLogsWriter:    tlw,
 		lifecycleCtx:      ctx,
 		lifecycleCancel:   cancel,
