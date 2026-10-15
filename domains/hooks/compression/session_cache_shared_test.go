@@ -7,6 +7,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -430,4 +431,151 @@ func TestSessionCacheSharedCancelWhileWaitingDoesNotCallCallback(t *testing.T) {
 	}
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.Zero(t, calls)
+}
+
+func TestSessionCacheSharedSetEmptyBodyReplacesHistory(t *testing.T) {
+	r := newSharedTestRedis(t)
+	c := NewSessionCache(r, nil)
+	body := []byte("body")
+	require.NoError(t, c.Set(context.Background(), "shared-tenant", "gw_shared001", sharedState(body, "old"), body))
+	require.NoError(t, c.Set(context.Background(), "shared-tenant", "gw_shared001", &SessionState{SchemaVersion: schemaVersion, SanitizeMapGeneration: "empty"}, nil))
+	requireSharedPair(t, NewSessionCache(r, nil), nil, "empty")
+}
+
+func TestSessionCacheSharedUpdateCacheUsesCurrentAuditState(t *testing.T) {
+	r := newSharedTestRedis(t)
+	c := NewSessionCache(r, nil)
+	body := []byte(`{"messages":[{"role":"user","content":"body"}]}`)
+	stale := sharedState(body, "")
+	stale.AuditScore = 1
+	current := sharedState(body, "")
+	current.AuditScore = 9
+	current.ApprovalStatus = ApprovalStatePending
+	require.NoError(t, c.Set(context.Background(), "shared-tenant", "gw_shared001", current, body))
+	sc := NewSessionCompressor(SessionCompressorDeps{Cache: c})
+	sc.updateCache(context.Background(), "shared-tenant", "gw_shared001", stale, body, &PrepareResult{MsgCount: 1}, false, false)
+	got, _, err := c.GetOrLoad(context.Background(), "shared-tenant", "gw_shared001")
+	require.NoError(t, err)
+	require.Equal(t, 9, got.AuditScore, "Prepare's stale state must not overwrite concurrent audit")
+	require.Equal(t, ApprovalStatePending, got.ApprovalStatus)
+}
+
+func TestSessionCacheSharedBodyAboveStale32MiBLimit(t *testing.T) {
+	r := newSharedTestRedis(t)
+	c := NewSessionCache(r, nil)
+	// The handler's actual maxBodySize is 128 MiB; its old error text says 32.
+	// This highly compressible payload makes the corrected boundary inexpensive.
+	body := bytes.Repeat([]byte("x"), 33<<20)
+	require.NoError(t, c.Set(context.Background(), "shared-tenant", "gw_shared001", sharedState(body, "large"), body))
+	st, got, err := NewSessionCache(r, nil).GetOrLoad(context.Background(), "shared-tenant", "gw_shared001")
+	require.NoError(t, err)
+	require.NotNil(t, st)
+	if !bytes.Equal(body, got) {
+		t.Fatalf("large shared body mismatch: got %d bytes, want %d", len(got), len(body))
+	}
+	require.Equal(t, sha256Hex(body), st.LastOutboundHash)
+}
+
+type blockingSharedDB struct {
+	entered chan struct{}
+	resume  chan struct{}
+	row     *LastOutboundRow
+}
+
+func (d *blockingSharedDB) LastOutboundForSession(ctx context.Context, _, _ string) (*LastOutboundRow, error) {
+	close(d.entered)
+	select {
+	case <-d.resume:
+		return d.row, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+func TestSessionCacheSharedBackfillCannotOverwriteConcurrentSet(t *testing.T) {
+	r := newSharedTestRedis(t)
+	oldBody, newBody := []byte("old-database-body"), []byte("new-committed-body")
+	db := &blockingSharedDB{entered: make(chan struct{}), resume: make(chan struct{}), row: &LastOutboundRow{OutboundBody: oldBody}}
+	reader, writer := NewSessionCache(r, db), NewSessionCache(r, nil)
+	readDone, writeDone := make(chan error, 1), make(chan error, 1)
+	go func() {
+		_, _, err := reader.GetOrLoad(context.Background(), "shared-tenant", "gw_shared001")
+		readDone <- err
+	}()
+	select {
+	case <-db.entered:
+	case <-time.After(time.Second):
+		t.Fatal("backfill did not load DB")
+	}
+	contended := r.observeContention()
+	go func() {
+		writeDone <- writer.Set(context.Background(), "shared-tenant", "gw_shared001", sharedState(newBody, "new"), newBody)
+	}()
+	// A correct writer waits on the DB reader's lease; the old writer commits
+	// immediately, and the old backfill then overwrites that acknowledged write.
+	completed := false
+	select {
+	case err := <-writeDone:
+		require.NoError(t, err)
+		completed = true
+	case <-contended:
+	case <-time.After(time.Second):
+		close(db.resume)
+		t.Fatal("writer neither completed nor contended")
+	}
+	close(db.resume)
+	select {
+	case err := <-readDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("backfill did not finish")
+	}
+	if !completed {
+		select {
+		case err := <-writeDone:
+			require.NoError(t, err)
+		case <-time.After(time.Second):
+			t.Fatal("writer did not finish")
+		}
+	}
+	requireSharedPair(t, NewSessionCache(r, nil), newBody, "new")
+}
+
+func TestSessionCacheSharedInvalidStateEncodingDoesNotPublish(t *testing.T) {
+	r := newSharedTestRedis(t)
+	c := NewSessionCache(r, nil)
+	body := []byte("body")
+	require.NoError(t, c.Set(context.Background(), "shared-tenant", "gw_shared001", sharedState(body, "base"), body))
+	invalid := sharedState(body, "invalid")
+	invalid.CompressionQuality.OverallScore = math.NaN()
+	require.Error(t, c.Set(context.Background(), "shared-tenant", "gw_shared001", invalid, body))
+	requireSharedPair(t, c, body, "base")
+}
+
+type legacyOnlySharedBackend struct{ r *sharedTestRedis }
+
+func (b legacyOnlySharedBackend) HGetAll(ctx context.Context, key string) (map[string]string, error) {
+	return b.r.HGetAll(ctx, key)
+}
+func (b legacyOnlySharedBackend) HSet(ctx context.Context, key string, args ...any) error {
+	return b.r.HSet(ctx, key, args...)
+}
+func (b legacyOnlySharedBackend) Expire(ctx context.Context, key string, ttl time.Duration) error {
+	return b.r.Expire(ctx, key, ttl)
+}
+func (b legacyOnlySharedBackend) Del(ctx context.Context, key string) error { return b.r.Del(ctx, key) }
+func TestSessionCacheSharedBackendWithoutAtomicSupportFailsExplicitly(t *testing.T) {
+	r := newSharedTestRedis(t)
+	c := NewSessionCache(legacyOnlySharedBackend{r}, nil)
+	body := []byte("body")
+	require.Error(t, c.Set(context.Background(), "shared-tenant", "gw_shared001", sharedState(body, "bad"), body), "configured Redis cannot silently fall back to local writes")
+}
+
+func TestSessionCacheSharedMissingRedisACLCapabilityFailsExplicitly(t *testing.T) {
+	r := newSharedTestRedis(t)
+	r.skipACLShim = true
+	c := NewSessionCache(r, nil)
+	err := c.Set(context.Background(), "shared-tenant", "gw_shared001", sharedState([]byte("body"), "base"), []byte("body"))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "requires Redis 7.0")
+	require.Empty(t, r.server.Keys(), "unsupported Redis must fail before lease or payload writes")
 }
