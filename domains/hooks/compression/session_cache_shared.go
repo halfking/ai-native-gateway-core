@@ -35,6 +35,13 @@ return redis.call('SET',KEYS[1],ARGV[1],'NX','PX',ARGV[2]) and 1 or 0`
 	sharedReleaseScript = `-- session-cache-release
 if redis.call('GET',KEYS[1]) == ARGV[1] then return redis.call('DEL',KEYS[1]) end
 return 0`
+	sharedInvalidateScript = `-- session-cache-invalidate
+if type(redis.acl_check_cmd) ~= 'function' then return redis.error_reply('session cache requires Redis 7.0 acl_check_cmd') end
+if redis.call('GET',KEYS[3]) ~= ARGV[1] then return 0 end
+-- A single DEL retires both namespaces without a partial deletion on error.
+if not redis.acl_check_cmd('DEL',KEYS[1],KEYS[2]) then return redis.error_reply('NOPERM session cache invalidate commands denied') end
+redis.call('DEL',KEYS[1],KEYS[2])
+return 1`
 	sharedCommitScript = `-- session-cache-commit
 if type(redis.acl_check_cmd) ~= 'function' then return redis.error_reply('session cache requires Redis 7.0 acl_check_cmd') end
 if redis.call('GET',KEYS[2]) ~= ARGV[1] then return 0 end
@@ -131,6 +138,25 @@ func (c *SessionCache) withSharedLease(ctx context.Context, tenantID, sessionID 
 		return err
 	}
 	return work(token)
+}
+
+func (c *SessionCache) invalidateShared(ctx context.Context, tenantID, sessionID string, token string) error {
+	backend, err := c.scriptBackend()
+	if err != nil {
+		return err
+	}
+	key := redisKey(tenantID, sessionID)
+	result, err := backend.Eval(ctx, sharedInvalidateScript, []string{legacyRedisKey(tenantID, sessionID), key, key + ":lease"}, token)
+	if err != nil {
+		return fmt.Errorf("invalidate shared session cache: %w", err)
+	}
+	if result == int64(0) {
+		return ErrSessionCacheLeaseLost
+	}
+	if result != int64(1) {
+		return fmt.Errorf("invalid session cache invalidate result: %T", result)
+	}
+	return nil
 }
 
 func (c *SessionCache) readShared(ctx context.Context, tenantID, sessionID string) (*SessionState, []byte, string, error) {

@@ -471,35 +471,50 @@ func (c *SessionCache) Invalidate(ctx context.Context, tenantID, gwSessionID str
 		return
 	}
 	key := l1Key(tenantID, gwSessionID)
-	c.mu.Lock()
-	if e, ok := c.l1[key]; ok {
-		c.ll.Remove(e.elem)
-		delete(c.l1, key)
-		c.curBytes -= e.bytes // D3: decrement aggregate byte tracker
-	}
-	c.mu.Unlock()
-	if c.redis != nil {
-		if err := c.redis.Del(ctx, redisKey(tenantID, gwSessionID)); err != nil {
-			slog.Warn("session_cache: redis invalidate error", "session", gwSessionID, "error", err)
+	clearLocal := func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if e, ok := c.l1[key]; ok {
+			c.ll.Remove(e.elem)
+			delete(c.l1, key)
+			c.curBytes -= e.bytes
 		}
-		// Best-effort cascade: the sanitize hashes live in the same Redis DB
-		// as the L2 state (both written per session), so deleting them here
-		// closes the lifecycle gap without a new dependency on the sanitize
-		// package (which imports this one).
-		//
-		// T11-P0 v2: sanitize key 现在带 tenantHash 段；tenantID 由 caller 在
-		// Invalidate() 入参传入，落到与 L2 redisKey 同一 tenant。空 tenant 时
-		// mirror 函数会落到 "_unknown" 桶 — 与输入中间件降级路径一致。
-		// T11-P0 v2 fix: 之前直接把 raw tenantID 传给 SessionSanitizeRedisKey，
-		// 但该函数的第一个参数应是 tenantHash (sha256[:8])。写入侧
-		// (smart_sani_guard.go) 用 HashTenant 派生 hash，所以 key 永远匹配不上，
-		// 删除是静默 no-op — stale sanitize map/offset 泄漏到 TTL。这里镜像同样
-		// 的 hash 派生后再调用 key builder。
-		tenantHash := hashTenantForSanitizeKey(tenantID)
-		_ = c.redis.Del(ctx, SessionSanitizeRedisKey(tenantHash, gwSessionID))
-		_ = c.redis.Del(ctx, SessionSanitizeOffsetRedisKey(tenantHash, gwSessionID))
-		_ = c.redis.Del(ctx, SessionSanitizeRedisKey(tenantHash, gwSessionID)+":generation")
 	}
+	if c.redis == nil {
+		stripe := c.updateStripe(key)
+		stripe.Lock()
+		defer stripe.Unlock()
+		clearLocal()
+		return
+	}
+	if err := c.withSharedLease(ctx, tenantID, gwSessionID, func(token string) error {
+		if err := c.invalidateShared(ctx, tenantID, gwSessionID, token); err != nil {
+			return err
+		}
+		clearLocal()
+		return nil
+	}); err != nil {
+		slog.WarnContext(ctx, "session_cache: redis invalidate error", "session", gwSessionID, "error", err)
+		return
+	}
+
+	// Best-effort cascade: the sanitize hashes live in the same Redis DB
+	// as the L2 state (both written per session), so deleting them here
+	// closes the lifecycle gap without a new dependency on the sanitize
+	// package (which imports this one).
+	//
+	// T11-P0 v2: sanitize key 现在带 tenantHash 段；tenantID 由 caller 在
+	// Invalidate() 入参传入，落到与 L2 redisKey 同一 tenant。空 tenant 时
+	// mirror 函数会落到 "_unknown" 桶 — 与输入中间件降级路径一致。
+	// T11-P0 v2 fix: 之前直接把 raw tenantID 传给 SessionSanitizeRedisKey，
+	// 但该函数的第一个参数应是 tenantHash (sha256[:8])。写入侧
+	// (smart_sani_guard.go) 用 HashTenant 派生 hash，所以 key 永远匹配不上，
+	// 删除是静默 no-op — stale sanitize map/offset 泄漏到 TTL。这里镜像同样
+	// 的 hash 派生后再调用 key builder。
+	tenantHash := hashTenantForSanitizeKey(tenantID)
+	_ = c.redis.Del(ctx, SessionSanitizeRedisKey(tenantHash, gwSessionID))
+	_ = c.redis.Del(ctx, SessionSanitizeOffsetRedisKey(tenantHash, gwSessionID))
+	_ = c.redis.Del(ctx, SessionSanitizeRedisKey(tenantHash, gwSessionID)+":generation")
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

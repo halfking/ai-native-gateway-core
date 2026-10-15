@@ -110,6 +110,20 @@ func (f *fakeRedis) Eval(ctx context.Context, script string, keys []string, args
 		}
 		delete(f.store, keys[0])
 		delete(f.expiry, keys[0])
+	case strings.Contains(script, "session-cache-invalidate"):
+		if len(keys) != 3 || len(args) != 1 {
+			return nil, fmt.Errorf("invalid invalidate arguments")
+		}
+		expire(keys[2])
+		if f.store[keys[2]]["lease_token"] != token {
+			return int64(0), nil
+		}
+		for _, key := range keys[:2] {
+			delete(f.store, key)
+			delete(f.expiry, key)
+			delete(f.ttls, key)
+			f.delCh <- key
+		}
 	case strings.Contains(script, "session-cache-commit"):
 		expire(keys[1])
 		if f.store[keys[1]]["lease_token"] != token {
@@ -775,13 +789,14 @@ func TestInvalidate_RemovesFromAllTiers(t *testing.T) {
 
 	c.Invalidate(context.Background(), "t", "s1")
 
-	select {
-	case k := <-redis.delCh:
-		if k != redisKey("t", "s1") {
-			t.Errorf("Invalidate: deleted key %q, want session:sc:t:s1:v1", k)
+	for _, key := range []string{legacyRedisKey("t", "s1"), redisKey("t", "s1")} {
+		fields, err := redis.HGetAll(context.Background(), key)
+		if err != nil || len(fields) != 0 {
+			t.Errorf("Invalidate: key %q remains: %v, err=%v", key, fields, err)
 		}
-	case <-time.After(100 * time.Millisecond):
-		t.Error("Invalidate: Redis Del not called")
+	}
+	if c.l1[l1Key("t", "s1")] != nil {
+		t.Error("Invalidate: L1 entry remains")
 	}
 }
 
@@ -825,16 +840,15 @@ func TestInvalidate_DeletesSanitizeKeysWithTenantHash(t *testing.T) {
 
 	c.Invalidate(context.Background(), tenantID, sessID)
 
-	// Drain all deletes (L2 session-key + sanitize map + sanitize offsets = 3
-	// total). We confirm the two sanitize keys land among them.
+	// Drain the two session namespaces and all three sanitize keys.
 	deleted := map[string]bool{}
 	timeout := time.After(200 * time.Millisecond)
-	for len(deleted) < 3 {
+	for len(deleted) < 5 {
 		select {
 		case k := <-redis.delCh:
 			deleted[k] = true
 		case <-timeout:
-			t.Fatalf("Invalidate: expected 3 deletes (L2 + sanitize map + offsets); got %v", deleted)
+			t.Fatalf("Invalidate: expected 5 deletes (v1/v2 + sanitize map/offsets/generation); got %v", deleted)
 		}
 	}
 	if !deleted[sanitizeKey] {

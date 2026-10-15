@@ -135,6 +135,18 @@ func (m *MockSessionCacheBackend) Eval(ctx context.Context, script string, keys 
 		}
 		delete(m.data, keys[0])
 		delete(m.expiry, keys[0])
+	case strings.Contains(script, "session-cache-invalidate"):
+		if len(keys) != 3 || len(args) != 1 {
+			return nil, fmt.Errorf("invalid invalidate arguments")
+		}
+		expire(keys[2])
+		if m.data[keys[2]]["lease_token"] != token {
+			return int64(0), nil
+		}
+		for _, key := range keys[:2] {
+			delete(m.data, key)
+			delete(m.expiry, key)
+		}
 	case strings.Contains(script, "session-cache-commit"):
 		if len(keys) != 2 || len(args) < 4 || len(args)%2 != 0 {
 			return nil, fmt.Errorf("invalid commit arguments")
