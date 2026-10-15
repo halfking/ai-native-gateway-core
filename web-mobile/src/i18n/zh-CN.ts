@@ -94,6 +94,7 @@ export const zhCN = {
     platformSettings: '平台设置',
     usageEnhanced: '用量成本',
     dataLifecycleStorage: '存储总览',
+    storageAndLogConfig: '存储与日志',
     account: '我的',
   },
   // ★ 订阅档（2026-10-14，第一百二十批）。前缀 sts。
@@ -196,6 +197,42 @@ export const zhCN = {
       noTenant: '这份数据里没有租户维度，是全平台合计。',
     },
     field: { total: '总大小', tables: '表', indexes: '索引', free: '剩余' },
+  },
+  // ★ 存储与日志配置（2026-10-14，第一百二十四批）。前缀 slc。
+  slc: {
+    title: '存储与日志配置',
+    nope: {
+      msg: '仅超级管理员可查看。',
+      why: '服务端中间件会返回 403；这一页只是让你不必看到那一屏错误。',
+    },
+    load: { title: '取数', btn: '刷新配置' },
+    readonly: { note: '本页只读：桌面端有写入入口，移动端不提供。' },
+    storage: { title: '存储配置', types: '常见取值：{list}（实际取值不被这个列表限制）。' },
+    logs: { title: '日志轮转', synced: '与运行时一致' },
+    masked: { count: '{n} 个密钥已配置（值不回显）' },
+    check: {
+      sourceMisused: '注意：config_source 只描述某一个键的来源，不能当成整份配置的来源。',
+      sourceUnknown: 'config_source 不在 default / env / db 三值域内。',
+      typeUnknown: 'storage_type 不在常见取值列表里——它可以被设置成任意字符串。',
+      needsRestart: '配置已改动但尚未生效，需要重启。',
+      logPendingReload: '配置的日志路径与运行时实际路径不同：改动尚未热加载。',
+    },
+    // ★★ 这里必须**一键一行**：i18n 门的键展平器解析不了「一行多对」的写法
+    //   （首版把 11 个键压成 4 行 ⇒ 门报「slc.field.* 两侧一致地缺」，
+    //     而同一块的 slc.check.* 却全部解析成功 ⇒ 分界正是「一行多对」）。
+    field: {
+      storageType: '存储类型',
+      effectiveDir: '生效目录',
+      configSource: '来源',
+      downloadPrefix: '下载前缀',
+      masked: '密钥',
+      filePath: '配置路径',
+      logFile: '运行时路径',
+      maxSize: '单文件上限',
+      maxBackups: '保留份数',
+      deleteDays: '保留天数',
+      enabledSource: '开关来源',
+    },
   },
   // ★ 用量成本（2026-10-14，第一百二十二批）。前缀 ue。
   ue: {
