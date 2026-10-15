@@ -17579,3 +17579,305 @@ expect(src).toMatch(/const base = gatewayBaseUrl\(\)/)
   且在壳安装前**无法验证** ⇒ 现在补写就是「写一段永远跑不到、也验不了的代码」，
   与本仓「恒真判据 = 假门」的纪律同源 ⇒ **不写**，登记 + 自撤销即可。
 - 下一批：`sessionAnalyticsFilterOptions` / `turnsFilterOptions` 两个真缺口。
+
+## 11.163 轮次筛选候选值接进 UI —— 权限档**第十三次**：**第四个**写下「admin 档 ⇒ 不设 requiresRole」的模块；变异台当场揪出一个**恒等函数**（第一百二十七批）
+
+### 一、这批做了什么
+
+把 `turnsFilterOptions`（第九十六批建的 API 模块，**一直是孤儿**）接进移动端，**真缺口 2 → 1**：
+
+| 项 | 值 |
+|---|---|
+| 视图 | `web-mobile/src/views/TurnsFilterOptionsView.vue` |
+| 判据 | `TurnsFilterOptionsView.spec.ts` **40 条**（新写）；API 层 97 条（第九十六批原样，本批只**追加**两个权限 helper）|
+| 路由 | `/turns-filter-options`，`meta.requiresRole: 'admin'` |
+| 抽屉席 | `turns-filter-options`，`requiresRole: 'admin'` ⇒ **不得**进 superAdmin 白名单 |
+| i18n | 前缀 `tfo` + `nav.turnsFilterOptions`（zh-CN / en-US 各 3789 键）|
+| 变异台 | **24/24 有牙**，还原后逐字节零残留 |
+| 读数 | `217 files / 8090 passed`（批 126 基线 216 / 8055；**另有 5 条既有红**，见第七节）|
+
+### 二、★★★★★★ 本族是**第四个**写下那句错话的模块
+
+第九十六批写的模块头原文：
+
+> `⇒ ★★ **admin 档**（`h.admin` = `AdminMiddleware`，`handler.go:880`）⇒ 抽屉席不设 `requiresRole`。`
+
+⇒ ★★★★ **这句话让第一百二十一 / 一百二十二 / 一百二十三批连续返工**，
+而本模块只是**第四个**写下它的。
+
+⇒ 结论**正好相反**，两条独立理由：
+
+- **（甲）需要 `'admin'`** —— 载荷是**租户级聚合清单**：
+  8 个维度分别是「这个租户**所有人**用过的项目 / 任务 / 负责人 / 客户端 / 标签 / 模型 / 供应商 / 状态码」，
+  **不是**某个用户自己的数据 ⇒ 一个只该看自己请求的普通用户，
+  没理由看到整个租户的负责人名单与客户端清单。
+- **（乙）不过度限制到 `'super_admin'`** —— 载荷是**租户内**的。
+  handler（`admin/turns_filter_options.go:61-73`）逐字：
+  ```go
+  if IsTenantAdmin(r) { tenantID = GetTenantID(r) } else { tenantID = tenantFromQueryOrContext(r) }
+  if tenantID != "" { tenantWhere = " AND ss.tenant_id = $1" … }
+  ```
+  ⇒ **每个维度都带 `tenantWhere`**（`ss` 族 5 个 + `t` 族 3 个）⇒ 没有「别人的东西」。
+
+⇒ ★★ **服务端这一层是唯一的门**（`admin(...)` = `AdminMiddleware` 全文无 `claims.Role` 比对
++ `supportedRole` 接受 `"user"`）⇒ 深链兜底兜的是**安全**，不是体验。
+
+★★ 顺带订正两处**行号漂移**：模块头原写 `admin/handler.go:1277`（实为 **`:1299`**，
+整块漂 22 行）与 `handler.go:880`（实为 **`:925`**，即 `admin := h.admin` 那个别名）。
+
+⇒ ★★ **没有新缺陷**：`tenantFromQueryOrContext` 的租户覆盖被 `IsSuperAdminOrLegacy(r)`
+守着（`session_turns_v2.go:889-891`）⇒ **只有超管/旧版管理员**能读 `?tenant=` /
+`?tenant_id=` / `X-Tenant-ID` ⇒ 模块头 (11)「永远不会跨租户」的说法逐字为真。
+判据 ①-8 把这个守卫钉住 —— 哪天有人删掉那三行，本族「不过度限制」的理由就作废。
+
+### 三、★★★★★ 本族最容易撒谎的三处，页面上必须分开写
+
+1. **响应里没有 `api_keys`** ⇒ 桌面 `TurnsFilterBar.vue:171` 写的是
+   `v-for="opt in filterOptions.api_keys || []"` —— 那句 `|| []` 就是作者撞到缺失键后打的补丁，
+   **于是桌面那把「API Key」下拉永远是空的** ⇒ 移动端**不得**渲染它，
+   而且**要明说**（判据 ⑤-3 断言页面上有一条 `tfo-no-apikeys` 告示）。
+2. **「近 30 天」只对 3 个维度成立** —— 文件头注释写「基于近 30 天实际使用数据」，
+   而 `lastActiveSource`（`:136-140`）拼的 SQL 里 `cond` 与 `tenantWhere` 之间**没有任何时间条件**
+   ⇒ ★★★ **只有走 `session_turns` 的 3 个维度**（models / providers / status_codes）有 30 天窗口
+   （`lastActiveTurnQuery:148-153`），其余五个是「**全历史**里最近活跃的」。
+   ⇒ 把五个无窗口的维度说成「近 30 天」就是撒谎 ⇒ 页面上逐维度分开写（判据 ③-2）。
+3. **`status_codes` 是 `integer::text`**（`"200"`），而桌面把查询参数类型写成 `number`
+   （`turns.ts:164`）⇒ **桌面的类型是错的**（只因 `String(params.status_code)` 才没出事）
+   ⇒ 页面原样显示 + 把**转不成整数的值单独标出来**（判据 ④-2）。
+
+★ 另：客户端维度是 `client_id ∪ application_code` 的 **UNION**，
+且它**根本没走** `lastActiveQuery` 包装（是内联的两段拼接）⇒ 页面上说清「混着两种来源」。
+
+### 四、★★★ 判据在首跑里**抓到了三个我自己的错**（都不是「判据写得不够严」）
+
+| # | 首跑红的原因 | 处置 |
+|---|---|---|
+| ③-3 | 我断言 Go 源码里有 `INTERVAL '30 days'` —— **它根本没有这个字面量**，是 `fmt.Sprintf(…, INTERVAL '%d days', turnsFilterOptionsWindowDays, …)` | 改成断言两件事：模板里有 `%d days`，且那个常量**真的是 30** |
+| ③-2 | 我断言五个无窗口维度的文案**逐字等于** `tfo.note.allTime` —— 而 `clients`/`tags` 用的是自己的 noteKey | 不变式改成「**说明里不得声称有窗口**」，并让那两条文案也点明「不受时间窗口约束」|
+| ⑤-3 | 我断言 `w.html()` **不含 `api_keys`** —— 而**我自己写的告示文案里就有这个词**（那正是本条要说明的内容）| 改成断言**没有承载 api_keys 的元素**（控件 / testid），而不是没有这个词 |
+
+⇒ ★★★ 三条都是同一族：**判据否的「形态」与它要否的「东西」不是一回事**。
+⇒ ★ 另两条同类：③-1 我写了 `expect(t(...)).toMatch(/窗口|window|30/)` ——
+**判据自己押了一种语言**（`t()` 取当前 locale，默认 en），改走 `dictLookup` 两语种各查各的；
+②-4 我误用了一个「8 维全非空」的夹具去测「哪些维度为空」⇒ 红得对，夹具与意图不符。
+
+⇒ ★★★★ 结论：`{n}` 占位符这条是判据**替我抓到**的
+（③-2 断言渲染结果不含字面 `{n}`，而我首版视图渲染时**忘了传参**）⇒ **视图当场修**。
+
+### 五、★★★★★ 变异台揪出一个**恒等函数**（第一百二十六批纪律的第三次落地）
+
+初版视图里有一个帮助函数：
+
+```ts
+function statusCodeLabel(v: string): string {
+  const n = statusCodeFilterValue(v)
+  return n === null ? v : String(n)
+}
+```
+
+变异 **S14** 把渲染分支换成 `v-if="false"`（退回原样输出）⇒ **全绿**。
+
+⇒ ★★★ 根因：`statusCodeFilterValue` 只接受 `/^-?\d+$/`，合法值转成 `Number` 再 `String()`
+回去**与原串逐字相同** ⇒ ★★ **它是一个恒等函数，也就是一个假门**（看起来在判别，实际什么都不改变）。
+⇒ 处置：**删掉它**（不是补判据）—— 与批 121 删 `settingsRollbackNeedsSuperAdmin()`、
+批 124 删 `configSourceDescribesWholeResponse()` 同一处置。
+⇒ 真正有牙齿的判据是 **④-1**（原样显示数字串）与 **④-2**（坏值被单独标出），`④-3` 钉转换规则。
+
+★ 处置过程中还顺手做对了一条：**④-1 本身也没有可写的变异**
+（把 `{{ v }}` 换成 `{{ Number(v) }}` 显示结果逐字相同）⇒ 按批 116 纪律
+「**不为等价输入写变异**」，把那条变异**删掉**而不是硬造一个假的 ⇒ 终态 **24/24 有牙**。
+
+### 六、首轮另外 3 条 `RED_NOT_MATCHED` 全部是**台子写错期望标题**
+
+| # | 我写的期望 | 实际红的是 | 根因 |
+|---|---|---|---|
+| S3 | `①` | `②-1/②-2/②-3` | 兜底判据取反时默认角色（`super_admin`）进不了主分支 ⇒ 红的是**渲染侧**；「非超管不发请求」那条在 **⑥-1**，不在 ① 组 |
+| S12 | `③-1` | `③-2` | 去掉 `{n}` 参数后，红的是断言「不含 `{n}`」的那条 |
+| S24 | `⑥-6` | `⑤-6` | clients 说明那条判据编在 ⑤ 组（截断/api_keys），不在 ⑥ 组（接线）|
+| S25 | `⑤` | `⑥-10` | 反变异实际咬住的是「恒真假门」那条，它在 ⑥ 组 |
+
+⇒ ★ 这是「红了但没命中」的**第六种**成因：**期望标题所属的组写错了**（前五种：台覆盖面不足 /
+死代码 / 判据被改坏 / 台子算错 / 被测物错 / 二份实现漂移）。
+⇒ **处置一律是改台子的期望，判据一个字不动。**
+
+### 七、⚠️ 本批**不修**的既有断裂（已与属主确认归属）
+
+**`origin/main` 上本来就有 5 条红**，与本批改动**零关系**（`git diff` 证明我一行都没碰那些文件）：
+
+```
+FAIL src/api/v1DataHorizon.test.ts        （3 条：读 admin/v1_freeze_notice.go）
+FAIL src/views/V1DataHorizonView.spec.ts  （2 条：同上 + 注册处）
+```
+
+⇒ 根因：并发会话的 **r1033 重写**把 `admin/v1_freeze_notice.go` 换成了 `admin/data_horizon.go`
+—— 判据的落点从「v1 停写门（`storage.request_logs_write_enabled`）」改成
+「`session_turns` 是否跟得上（`session_turns_hot` 的 MAX(ts) × hub lastActivity 两个信号对齐）」，
+三态从 `live/frozen/unavailable` 改成 **`live/stale/unknown`**。
+⇒ 而移动端的 `v1DataHorizon.ts`（18 KB）、97 条 API 判据（27 KB）、视图判据（23 KB）与视图
+**仍在钉旧文件与旧语义**（约 169 处旧关键字）。
+
+⇒ ★★ **按属主裁决：本批只交付 `turnsFilterOptions`，这族记为高优先级待办** ——
+不去动并发会话正在改的那块（改动面约 69 KB + 视图 + i18n，且明确重叠）。
+⇒ 归口建议：**由做 r1033 的那位会话收口移动端那一侧**，否则每批的全量读数都会带着这 5 条红。
+
+### 八、遗留
+
+- **真缺口只剩 1 个**：`sessionAnalyticsFilterOptions`（批 128）。
+  ⚠️ 提醒：它是本模块头 (12) 点名的**同名不同形兄弟端点** ——
+  注册在**分发器**里（`session_analytics_handler.go:728-729`，第六种注册形态）而非 `mux.HandleFunc`，
+  响应**只有 2 个键** `{models, providers}`，租户口径是 `effectiveScopeTenant(r)`，
+  503 文案是 **`"db not available"`**（本端点是 `"database not configured"`），超时 10s（本端点 12s）
+  ⇒ ★★ **叶名相同、键数差 4 倍、档位来源不同、503 文案不同 ⇒ 不可互相套用。**
+- 后端待办历次一律**未动**（见第七节同款口径）：sliding-window 租户条件、
+  errors-trend + model-history 角色门控、operational 三子查询、selfCheck 六 handler、
+  format-anomalies + model-integrity-events、`/api/admin/requests/{id}/actions` 无租户过滤，
+  以及批 121/122/125 新登记的三条角色下限缺陷（settings history / settings rollback / usage 三端点 /
+  storage migration-state）。
+
+## 11.164 十连跑揪出第五类 flaky：一条判据的耗时是 **O(导航项数)**，每接一席就更接近翻车（第一百二十七批追加）
+
+### 一、它是怎么被发现的
+
+第 127 批收口时按纪律在 rebase **之后**重跑十连跑（rebase 前那轮的读数不能沿用）。
+10 轮全部留存快照，`STABILITY_RC=1`：
+
+| 轮次 | 失败条数 |
+|---|---|
+| run#1 / #2 / #4 ~ #10 | **5**（恒为 `v1DataHorizon` 那族既有红） |
+| **run#3** | **6** ← 多了一条 |
+
+多出来的那条不是断言失败，是**超时**：
+
+```
+× ★ 穷举：站在每个导航项自己的路由上点它，都必须收起（不抽样、不写死路径）  20131ms
+Error: Test timed out in 20000ms.
+```
+
+⇒ **20131ms vs 阈值 20000ms**。它不是「差一点」的抖动，是**顶着阈值过线**。
+
+### 二、根因：这条判据的复杂度随 `DRAWER_NAV` 线性增长
+
+`src/components/shell/AppDrawer.spec.ts` 那条「穷举」判据对**每个导航项**做一次：
+
+```ts
+for (const item of DRAWER_NAV) {
+  const w = await mountDrawerAs('super_admin', item.to)   // ← 每项都重来一遍
+  ... 点自己、断言 emit(false) ...
+}
+```
+
+而 `mountDrawerAs` 每次都要**新建 pinia + 一个含全部导航路径的 memory router + mount 整棵抽屉**：
+
+```ts
+const router = createRouter({
+  history: createMemoryHistory(),
+  routes: [{ path: '/', ... }, ...DRAWER_NAV.map((n) => ({ path: n.to, ... }))],
+})
+```
+
+⇒ **耗时 = O(DRAWER_NAV 项数)**，而 vitest 给的默认 timeout 是**固定 20000ms**。
+⇒ ⇒ 两条曲线必然相交：**每接一个页面席，这条判据就更靠近一次偶发翻车。**
+
+而第 127 批恰好就是**加了一席**：
+
+```
+批 126 worktree：  DRAWER_NAV 85 项
+批 127 worktree：  DRAWER_NAV 86 项    ← 本批
+```
+
+**这不是巧合**：接页面席是本流水线的日常动作，而这批的十连跑正好是第一次把它顶过线。
+⇒ 记为**第五类 flaky**（前四类是 ComplianceHitsView / RoutingOptView 两族时序断言、
+`v1DataHorizon` 断裂、以及 SIGKILL=RC137 那类环境事件）。
+
+### 三、量出来的证据：单跑 2~3s，全量并行 20.1s
+
+先排除「这条判据本来就慢」与「本批改坏了抽屉」两种解释：
+
+```
+# 单跑（无并行争抢），三次
+real 3.49 / 2.39 / 2.17     ← 秒级
+```
+
+⇒ **断言本身极快**，慢的只是并行压力下的 CPU 争抢 ⇒
+「穷举」这个设计本身没问题（它该穷举，抽样就失去意义了）。
+
+### 四、处置：只放宽**时间预算**，断言一个都没动
+
+```ts
+  },
+  120_000)     // ← 显式 timeout，替掉默认的 20000
+```
+
+三条纪律，写在代码注释里而不是只在文档里：
+
+1. ★ **判据逻辑零改动**。`for` 循环体、两条 `expect`、那句「只取 `<a>`」的过滤
+   全部原样保留 —— 变的是「多慢算失败」这条**与机器负载有关**的判据，
+   不是「什么算不通过」这条**与被测物有关**的判据。
+2. ★ **不能用「跑得慢」搪塞成 flaky**。这里的机制是**可证的**（O(n) vs 常数阈值），
+   机制清楚就能给出确定处置；真正未定位的 flaky（ComplianceHitsView /
+   RoutingOptView）才归「未复现 ≠ 已修复」那一档。
+3. ★ **阈值要写清为什么是 120s、什么时候要改**。注释里点明：
+   单跑 2~3s、并行实测 20131ms、当时项数 85→86，
+   并留一句「导航项继续暴涨时要跟着调，而不是回退成默认 20s」
+   —— 否则下一个接席的人会把它当成「随手写的魔法数」删掉。
+
+### 五、★ 必须证伪「这是不是又一个恒绿假门」
+
+放宽 timeout 最容易被质疑的就是**把红改成绿**。所以做了变异复验：
+
+```go
+// 把守卫改成恒假
+- if (route.path === to) emit('update:modelValue', false)
++ if (route.path === to && false) emit('update:modelValue', false)
+```
+
+```
+× ★ 穷举：站在每个导航项自己的路由上点它，都必须收起（不抽样、不写死路径）  15ms
+Tests  2 failed | 21 passed (23)      ← 红，且**命中**了目标用例
+```
+
+⇒ 判据**仍有牙**。还原后逐字节比对：`True 7296 7296`，单跑 23/23 绿。
+
+⇒ ★★ **通用式：任何「放宽阈值」型修改，都必须配一次变异证明它没变成假门。**
+   否则「把 flaky 修掉」和「把判据关掉」在 git log 里长得一模一样。
+
+### 六、复验
+
+| 环节 | 修 timeout 前 | 修 timeout 后 |
+|---|---|---|
+| 全量 | 5 failed / 8090 passed | **5 failed / 8090 passed**（不变） |
+| 十连跑 | 9 轮 5 条 + **run#3 6 条** | **10/10 轮全部 5 条** |
+| 失败并集 | 5 条 `v1DataHorizon` | **5 条 `v1DataHorizon`（恒等）** |
+
+⇒ 读快照的 `×` 行确认失败面恒为那 5 条既有红，**本批零红**。
+
+### 七、★ 附带发现：一批**纯注释**的文档债（不影响任何门）
+
+复核 `cmd/gateway/main.go` 行号时发现：约 12 个 `api/*.ts` 模块头声称的
+`cmd/gateway/main.go:<行号>` **全部漂移**，偏移 **+31 ~ +100 不等**（不统一 ⇒ 是长期累积，
+不是某一次改动整体位移）。例：
+
+| 模块头声称 | 实测 |
+|---|---|
+| `sessionAnalyticsFilterOptions.ts:9` → `main.go:7186` | **7286** |
+| `approvals.ts:6` → `main.go:7384` | **7484** |
+| `subscriptionTiers.ts:10` → `main.go:7027` | **7058** |
+| `dispatchJournal.ts:9` → `main.go:7135-7136` | 另处 |
+| `sessionAnalyticsFilterOptions.ts:18` → `session_tenant.go:126-131` | **189-195** |
+
+**为什么没有一条判据因此变红？** 因为本仓的读源码判据**一律锚内容正则**、不钉死行号：
+
+```ts
+const src = goSrc('cmd/gateway/main.go')
+const group = src.match(/adminGroup := e\.Group\("\/api\/admin", (requireSuperAdmin)\)/)
+expect(group, '没找到 echo group 声明（正则失配会让这条恒绿）').toBeTruthy()
+```
+
+⇒ ★ 这正是「锚内容」优于「锚行号」的收益：**源码位移只伤注释，不伤门。**
+⇒ 但注释确实在指错行，属文档债，归属各模块属主批次修（登记待办，不在本批扩散）。
+⇒ 判别动作：**看到模块头声称的行号，一律现读一遍再引用**，别沿用上一批抄来的。
+
+- 下一批：`sessionAnalyticsFilterOptions`（最后一个真缺口）——
+  取证已完成：注册 `main.go:7286` 前缀 catch-all + `session_analytics_handler.go:728-729` 分发器
+  （第六种注册形态）；权限档 = **`admin`**（`AdminMiddleware` 只认证不检 role；
+  `effectiveScopeTenant` 让 `super_admin` 看全部租户）；模块头 7 处行号漂移本批一并订正。
