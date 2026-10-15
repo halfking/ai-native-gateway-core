@@ -835,15 +835,18 @@ const routes: RouteRecordRaw[] = [
     //   注册 `admin/handler.go:1109` 的 `admin(...)` ⇒ **admin 档**（不设 requiresRole）。
     // ★★★★★ 本族是**第三类（过度限制）的边界**，与批 115/117/118 **相反**且它们并没错：
     //   过度限制的正当性来自「载荷里有**别人的东西**」，不是来自「没有租户维度」本身。
-    //   本族没有租户维度，但它答的是**平台级全局事实**（`_request_logs` 写门是否停更），
-    //   七键里无一带租户 ⇒ **不需要**过度限制，tenant_admin 可用。
+    //   本族没有租户维度，但它答的是**平台级全局事实**
+    //   （「这台网关的 session_turns 有没有在跟上最近收到的请求」），
+    //   六个键里无一带租户 ⇒ **不需要**过度限制，tenant_admin 可用。
     // ★★★ 而且**必须**对 tenant_admin 可见：`silence` 那句自陈
-    //   「接口照常 200、结果集非空、字段齐全，接口没报错不代表数据是新的」——
-    //   挡掉它等于让租户把停更数据读成新鲜数据。
-    path: '/v1-data-horizon',
-    name: 'v1-data-horizon',
-    component: () => import('@/views/V1DataHorizonView.vue'),
-    meta: { titleKey: 'v1h.title', requiresAuth: true },
+    //   「这类断流没有任何错误信号：统计接口照常返回、数字齐全。
+    //    接口没报错不代表数据是新的」—— 挡掉它等于让租户把断流数据读成新鲜数据。
+    // ⚠️ 第 129 批随 r1033 的后端重写一起改名：端点 `/v1-data-horizon` →
+    //   `/data-horizon`，判据从「v1 停写门」换成「session_turns 新鲜度」。
+    path: '/data-horizon',
+    name: 'data-horizon',
+    component: () => import('@/views/DataHorizonView.vue'),
+    meta: { titleKey: 'dh.title', requiresAuth: true },
   },
   {
     // ★ 订阅档（2026-10-14，第一百二十批）。

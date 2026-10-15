@@ -688,16 +688,23 @@ describe('孤儿棘轮', () => {
     expect(currentOrphans()).not.toContain('requestActions')
   })
 
-  it('★★ 已接线的哨兵：v1DataHorizon 不在孤儿里（第一百一十九批）', () => {
-    // ★ v1 数据地平线接上了抽屉席与路由 ⇒ 棘轮清单同步删掉那一行。
+  it('★★ 已接线的哨兵：dataHorizon 不在孤儿里（第一百一十九批；第 129 批改名）', () => {
+    // ★ 流量数据地平线接上了抽屉席与路由 ⇒ 棘轮清单同步删掉那一行。
     //   该族是 **admin 档**（`admin/handler.go:1109` 的 `admin(...)`，AdminMiddleware
     //   只认证不检 role ⇒ 后端 tenant_admin 可读）
     //   ⇒ 席**不设** requiresRole ⇒ `AppDrawer.spec.ts` 的 superAdmin 白名单里
-    //   **不该**出现 v1-data-horizon（与 probe-queue / connection-registry 同一条纪律）。
+    //   **不该**出现 data-horizon（与 probe-queue / connection-registry 同一条纪律）。
     // ★★ 与批 115/117/118 三族**相反**而那三族并没错：本族虽无租户维度，
-    //   但载荷是**平台级全局事实**（七个键无一带租户）⇒ 过度限制**不适用**。
+    //   但载荷是**平台级全局事实**（六个键无一带租户）⇒ 过度限制**不适用**。
     //   ⇒ 两条判据合起来才覆盖「接上了」+「档位挂对了」。
-    expect(currentOrphans()).not.toContain('v1DataHorizon')
+    // ⚠️ 第 129 批：模块随 r1033 的后端重写改名 `v1DataHorizon` → `dataHorizon`。
+    //   ★★ 这条哨兵的**取样方式**与第 128 批判据同一个病：断言「仓库里恰好有
+    //   一个已接线的模块」—— 模块改名它就红，而它红的原因与被测行为无关。
+    //   ⇒ 真正的承重判据是上面那条「当前孤儿集合 = 三类登记并集」，
+    //     它对**全部**孤儿逐个核对；这条哨兵只补一个「改名后仍可达」的实例。
+    expect(currentOrphans()).not.toContain('dataHorizon')
+    // ★ 旧名必须**不再存在**（否则改名就是复制而不是移动）
+    expect(apiModules()).not.toContain('v1DataHorizon')
   })
 
   it('★★★ 反向护栏：api 内部的互相引用不得凭空产生可达性', () => {

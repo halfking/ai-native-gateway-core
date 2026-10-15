@@ -528,13 +528,14 @@ export const DRAWER_NAV: readonly NavItem[] = [
     titleKey: 'nav.requestActions',
     requiresRole: 'super_admin',
   },
-  // ★ v1 数据地平线（2026-10-14 第一百一十九批）——
+  // ★ 流量数据地平线（2026-10-14 第一百一十九批；2026-10-15 第 129 批随 r1033 改名）——
   //   注册 `admin/handler.go:1109` 的 `admin(...)` ⇒ **admin 档**（不设 requiresRole）。
   // ⚠️ 与批 115/117/118 三席**相反**，而它们并没错：本族没有租户维度，
-  //   但载荷是**平台级全局事实**（七个键无一带租户）
+  //   但载荷是**平台级全局事实**（六个键无一带租户）
   //   ⇒ 过度限制的判据是「载荷里有没有别人的东西」，不是「有没有 tenant 条件」。
   // ⇒ 且**不得**进 `AppDrawer.spec.ts` 的 superAdmin 白名单 —— 加进去那条立刻红。
-  { key: 'v1-data-horizon', to: '/v1-data-horizon', icon: 'clock', titleKey: 'nav.v1DataHorizon' },
+  // ⚠️ 第 129 批：席名/路径随端点改名（`/v1-data-horizon` → `/data-horizon`）。
+  { key: 'data-horizon', to: '/data-horizon', icon: 'clock', titleKey: 'nav.dataHorizon' },
   // ★ 订阅档（2026-10-14 第一百二十批）——
   //   ★★★★ 权限档**第四类**，与前三席都不同：
   //   它**同样没有租户维度**（读全局 `subscription_tiers`），

@@ -25,7 +25,7 @@ export const zhCN = {
     modelIQ: '模型智商',
     opsOverview: '运维总览',
     requestActions: '动作时间线',
-    v1DataHorizon: 'v1 数据地平线',
+    dataHorizon: '流量数据地平线',
     slidingWindow: '滑窗调用明细',
     modelIntegrityDrift: '指纹漂移',
     modelPolicies: '模型策略',
@@ -4687,43 +4687,43 @@ sctx: {
   //   注册处 admin/handler.go:1109 的 admin(...) ⇒ **admin 档**，抽屉席**不设** requiresRole。
   // ★★ 本族与批 115/117/118 **相反**且它们并没错：没有租户维度 ≠ 就要过度限制，
   //   判据是「载荷里有没有别人的东西」—— 本族是**平台级全局事实**，七个键无一带租户。
-  v1h: {
-    title: 'v1 数据地平线',
+  dh: {
+    title: '流量数据地平线',
     load: {
       title: '读取',
       btn: '读取告示',
     },
     scope: {
-      note: '本页回答一个平台级问题：v1 流量读源是否已停更。它与租户无关，所以对所有角色开放。',
-      headerNote: '服务端还有一个响应头承载同一件事，但移动端的请求层只取响应体，本页只用响应体判定。',
+      note: '本页回答一个平台级问题：网关还在收请求，而 session_turns 有没有跟上。它与租户无关，所以对所有角色开放。',
+      headerNote: '服务端在这个端点自身的响应上带一个响应头承载同一件事；移动端的请求层只取响应体，本页只用响应体判定。',
       empty: '尚未读取。',
     },
     state: {
       title: '当前状态',
-      live: '正常写入',
-      frozen: '已停更',
-      unknown: '无法确认',
-      'unknown-shape': '形状异常',
+      live: '数据新鲜或网关空闲',
+      stale: '已断流',
+      unknown: '读不到',
+      'unexpected-shape': '形状异常',
       note: {
-        live: '写门明确开着，这一类读源没有停更。',
-        frozen: '明确读到写门已关闭：接口照常返回、结果集非空，但内容停在停写前一刻。',
-        unknown: '控制这个读源的配置键没有显式取值，当前读到的值来自默认值回落 —— 既不能说它停更，也不能说它还在写。',
-        'unknown-shape': '响应既不是「未停更」，也不符合「停更」或「无法确认」这两种形态之一。',
+        live: '会话数据跟上了最近的请求，或者网关最近根本没收到请求（没有流量就没有「该到而未到的数据」）。',
+        stale: '★ 网关仍在接收请求，但 session_turns 没记录到新数据：统计接口照常返回、数字齐全，可内容停在断流那一刻。注意：会话表连一行都没有也算这一档。',
+        unknown: '★ 读不到 session_turns（数据库故障、表缺失、未接库）。既不能说它断流，也不能说它正常 —— 请按「可能已过期」对待。',
+        'unexpected-shape': '响应既不是「数据新鲜」，也不符合「已断流」或「读不到」这两种形态之一。',
       },
     },
     check: {
-      flagBad: '告示对象里 frozen 与 unknown 没有恰好一个为 true —— 后端不产出这种形态。',
-      affectsBad: 'affects 里有后端没有列出的取值。',
-      affectsCountBad: 'affects 的项数不是后端固定的那三个。',
-      sourceBad: 'source 不是那张表的表名（应为 _request_logs，注意开头的下划线；它不是配置来源）。',
-      gateKeyBad: 'gate_key 与后端那个控制键不符 —— 运维要知道改哪里。',
-      shapeBad: '有告示对象但不符合停更/无法确认两种形态之一。',
+      flagBad: '告示对象里 stale 与 unknown 没有恰好一个为 true —— 后端不产出这种形态。',
+      shapeBad: '有告示对象，但不符合「已断流 / 读不到」两种形态之一。',
+      sourceBad: 'source 不是被检查的数据源族（应为 session_turns_hot；它不是配置来源）。',
       envelope: '本状态（{state}）对应的响应体形态已核对。',
     },
     field: {
-      source: '读源族',
-      gateKey: '控制键',
-      affects: '受影响档位',
+      source: '数据源族',
+      recentWindow: '「近期有请求」判定窗',
+      lagTolerance: 'session 侧落后容忍',
+    },
+    source: {
+      note: '本页只**如实转述**服务端判定，不在前端重算：后端要比对 session_turns 的 MAX(ts) 与网关进程内的 lastActivity 两个信号（{source}）才能下结论。',
     },
   },
 } as const
