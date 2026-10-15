@@ -635,7 +635,188 @@ onBeforeUnmount(() => {
                 </tbody>
               </table>
             </div>
-          </div> </template
+            <form
+              v-if="activeRule"
+              class="editor card"
+              @submit.prevent="validate"
+            >
+              <h3>{{ t("sanitizeRules.edit") }}</h3>
+              <label
+                >{{ t("sanitizeRules.ruleId")
+                }}<input v-model="activeRule.id" :disabled="busy" /></label
+              ><label
+                >{{ t("sanitizeRules.name")
+                }}<input
+                  v-model="activeRule.name"
+                  data-test="rule-name"
+                  :disabled="busy"
+              /></label>
+              <div class="form-grid">
+                <label
+                  >{{ t("sanitizeRules.type")
+                  }}<select v-model="activeRule.type" :disabled="busy">
+                    <option v-for="type in RULE_TYPES" :key="type">
+                      {{ type }}
+                    </option>
+                  </select></label
+                ><label
+                  >{{ t("sanitizeRules.kind")
+                  }}<select v-model="activeRule.kind" :disabled="busy">
+                    <option v-for="kind in RULE_KINDS" :key="kind">
+                      {{ kind }}
+                    </option>
+                  </select></label
+                >
+              </div>
+              <p v-if="activeRule.kind === 'review_combination'" class="muted">
+                {{ t("sanitizeRules.combinationHint") }}
+              </p>
+              <label
+                >{{ t("sanitizeRules.pattern")
+                }}<textarea
+                  v-model="activeRule.pattern"
+                  rows="3"
+                  :disabled="busy"
+                  spellcheck="false"
+                />
+              </label>
+              <div class="form-grid">
+                <label
+                  >{{ t("sanitizeRules.group")
+                  }}<input
+                    v-model.number="activeRule.group"
+                    type="number"
+                    min="0"
+                    :disabled="busy" /></label
+                ><label
+                  >{{ t("sanitizeRules.priority")
+                  }}<input
+                    v-model.number="activeRule.priority"
+                    type="number"
+                    min="-10000"
+                    max="10000"
+                    :disabled="busy" /></label
+                ><label
+                  >{{ t("sanitizeRules.action")
+                  }}<select v-model="activeRule.action" :disabled="busy">
+                    <option>mask</option>
+                    <option>block</option>
+                    <option>log</option>
+                  </select></label
+                ><label
+                  >{{ t("sanitizeRules.tenant")
+                  }}<input
+                    v-model="activeRule.tenant_id"
+                    data-test="rule-tenant"
+                    :disabled="busy"
+                /></label>
+              </div>
+              <fieldset>
+                <legend>{{ t("sanitizeRules.scopes") }}</legend>
+                <label
+                  v-for="phase in ['input', 'output', 'egress'] as const"
+                  :key="phase"
+                  class="check"
+                  ><input
+                    v-model="activeRule.scopes"
+                    type="checkbox"
+                    :value="phase"
+                    :disabled="busy"
+                  />{{ phase }}</label
+                >
+              </fieldset>
+              <label
+                >{{ t("sanitizeRules.tools")
+                }}<input
+                  :value="activeRule.tools?.join(', ')"
+                  :disabled="busy"
+                  @input="setList('tools', $event)" /></label
+              ><label
+                >{{ t("sanitizeRules.fields")
+                }}<input
+                  :value="activeRule.fields?.join(', ')"
+                  :disabled="busy"
+                  @input="setList('fields', $event)"
+              /></label>
+              <fieldset>
+                <legend>{{ t("sanitizeRules.exemptions") }}</legend>
+                <p class="muted">{{ t("sanitizeRules.exemptionsHint") }}</p>
+                <label v-for="item in RULE_EXEMPTIONS" :key="item" class="check"
+                  ><input
+                    v-model="activeRule.exemptions"
+                    type="checkbox"
+                    :value="item"
+                    :disabled="busy || !activeRule.scopes.includes('egress')"
+                  />{{ item }}</label
+                >
+              </fieldset>
+              <h4>{{ t("sanitizeRules.samples") }}</h4>
+              <p class="muted">{{ t("sanitizeRules.safeSamples") }}</p>
+              <div
+                v-for="(sample, index) in activeRule.samples"
+                :key="index"
+                class="sample"
+              >
+                <label
+                  >{{ t("sanitizeRules.sampleText")
+                  }}<textarea
+                    v-model="sample.text"
+                    rows="2"
+                    :disabled="busy"
+                  /></label
+                ><label class="check"
+                  ><input
+                    v-model="sample.match"
+                    type="checkbox"
+                    :disabled="busy"
+                  />{{ t("sanitizeRules.expectedMatch") }}</label
+                ><button
+                  type="button"
+                  class="btn"
+                  :disabled="busy"
+                  @click="activeRule.samples?.splice(index, 1)"
+                >
+                  {{ t("sanitizeRules.sampleRemove") }}
+                </button>
+              </div>
+              <button
+                type="button"
+                class="btn"
+                :disabled="busy"
+                @click="
+                  (activeRule.samples ??= []).push({ text: '', match: true })
+                "
+              >
+                {{ t("sanitizeRules.addSample") }}</button
+              ><button
+                type="button"
+                class="btn danger"
+                data-test="delete-rule"
+                :disabled="busy"
+                @click="removeRule"
+              >
+                {{ t("sanitizeRules.remove") }}
+              </button>
+            </form>
+          </div>
+          <details
+            @toggle="
+              ($event.target as HTMLDetailsElement).open && openAdvanced()
+            "
+          >
+            <summary>{{ t("sanitizeRules.advanced") }}</summary>
+            <textarea
+              v-model="advanced"
+              class="json-editor"
+              @input="advancedDirty = true"
+              rows="18"
+              spellcheck="false"
+              :aria-label="t('sanitizeRules.advanced')"
+              :disabled="busy"
+            /><button class="btn" :disabled="busy" @click="applyAdvanced">
+              {{ t("sanitizeRules.applyJson") }}
+            </button>
+          </details> </template
         >
       </section>
     </template>
