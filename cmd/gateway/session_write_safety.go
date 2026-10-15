@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -18,4 +19,17 @@ func validateSessionWriteSafety(pgEnabled bool) error {
 		return fmt.Errorf("%w: V2 persistence requires PostgreSQL", settings.ErrNoRequestWriteSource)
 	}
 	return nil
+}
+
+// validSessionWriteConfigExamples returns four canonical configurations that
+// pass validateSessionWriteSafety. Returned to main() on hard-fail so ops see
+// the exact keys to set, not just the error sentinel. The list is intentionally
+// short and matches settings.ValidateSessionWriteState's accepted shapes.
+func validSessionWriteConfigExamples() string {
+	return strings.Join([]string{
+		"  - V1-only:    REQUEST_LOGS_WRITE_ENABLED=true  (no V2, no PG required)",
+		"  - V2-only:    PG enabled + SESSIONS_V2_ENABLED=true",
+		"  - V1+V2 dual: PG enabled + REQUEST_LOGS_WRITE_ENABLED=true (V2 runs alongside)",
+		"  - Shadow:     PG enabled + SESSIONS_V2_ENABLED=true + SESSIONS_V2_SHADOW_WRITE=true",
+	}, "\n")
 }
