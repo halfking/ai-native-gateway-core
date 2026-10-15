@@ -281,3 +281,91 @@ func (c *SessionCache) commitShared(ctx context.Context, tenantID, sessionID, to
 	c.setL1Revision(l1Key(tenantID, sessionID), state, body, revision)
 	return nil
 }
+
+// loadSharedLocked rechecks the authority after acquiring the lease. DB
+// backfill and legacy imports cannot overwrite a writer that won that lease.
+func (c *SessionCache) loadSharedLocked(ctx context.Context, tenantID, sessionID, token string) (*SessionState, []byte, error) {
+	st, body, rev, err := c.readShared(ctx, tenantID, sessionID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if st != nil {
+		c.setL1Revision(l1Key(tenantID, sessionID), st, body, rev)
+		return st, body, nil
+	}
+	legacy, err := c.redis.HGetAll(ctx, legacyRedisKey(tenantID, sessionID))
+	if err != nil {
+		return nil, nil, fmt.Errorf("read legacy session cache: %w", err)
+	}
+	if len(legacy) > 0 {
+		var old SessionState
+		if err := decodeSessionStateFields(legacy, &old); err != nil {
+			return nil, nil, err
+		}
+		if old.SchemaVersion == schemaVersion {
+			if old.LastOutboundHash == "" && old.MsgCount == 0 {
+				st = &old
+			} else {
+				// Only the exact original envelope proves association. Equal message
+				// counts or a rewrapped V2 message array cannot establish provenance.
+				if c.db != nil {
+					_, body, err = c.loadFromLegacyDB(ctx, tenantID, sessionID)
+					if err != nil {
+						return nil, nil, err
+					}
+				}
+				if len(body) == 0 || sha256Hex(body) != old.LastOutboundHash {
+					return nil, nil, errors.New("legacy session cache has no exact matching outbound body")
+				}
+				st = &old
+			}
+		}
+	}
+	if st == nil && (c.turnReader != nil || c.db != nil) {
+		st, body, err = c.loadFromDB(ctx, tenantID, sessionID)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	if st == nil {
+		return nil, nil, nil
+	}
+	if err := c.commitShared(ctx, tenantID, sessionID, token, st, body); err != nil {
+		return nil, nil, err
+	}
+	st = cloneSessionState(st)
+	st.LastOutboundHash = sha256Hex(body)
+	return st, body, nil
+}
+
+func (c *SessionCache) getShared(ctx context.Context, tenantID, sessionID string) (st *SessionState, body []byte, err error) {
+	st, body, rev, err := c.readShared(ctx, tenantID, sessionID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if st != nil {
+		// A revision is immutable. Redis was read and validated before L1 reuse;
+		// process-local state can never hide a shared failure or a newer revision.
+		key := l1Key(tenantID, sessionID)
+		c.mu.Lock()
+		entry := c.l1[key]
+		if entry != nil && entry.revision == rev {
+			c.ll.MoveToFront(entry.elem)
+			st, body = cloneSessionState(entry.state), append([]byte(nil), entry.body...)
+			c.mu.Unlock()
+			return st, body, nil
+		}
+		c.mu.Unlock()
+		c.setL1Revision(key, st, body, rev)
+		return st, body, nil
+	}
+	err = c.withSharedLease(ctx, tenantID, sessionID, func(token string) error {
+		var loadErr error
+		st, body, loadErr = c.loadSharedLocked(ctx, tenantID, sessionID, token)
+		return loadErr
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return st, body, nil
+}
