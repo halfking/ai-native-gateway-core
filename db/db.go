@@ -994,31 +994,49 @@ func (d *DB) ensureSessionSummariesArchivalSchema(ctx context.Context) error {
 	// 1) Columns. Nullable ADD COLUMN is metadata-only, but it still needs a
 	// momentary ACCESS EXCLUSIVE lock; cap the lock-queue wait at 2s per
 	// attempt so a busy writer cannot stack every request behind the DDL wait.
-	var colErr error
-	for attempt := 1; attempt <= 3; attempt++ {
-		if attempt > 1 {
-			select {
-			case <-time.After(2 * time.Second):
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-		_, colErr = d.pool.Exec(ctx, `
-			SET LOCAL lock_timeout = '2s';
-			ALTER TABLE public.session_summaries ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMPTZ;
-			ALTER TABLE public.session_summaries ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
-		`)
-		if colErr == nil {
-			break
-		}
-		var pgErr *pgconn.PgError
-		if errors.As(colErr, &pgErr) && pgErr.Code == "55P03" {
-			continue
-		}
-		return fmt.Errorf("ensure session_summaries archival columns: %w", colErr)
+	//
+	// 2026-10-16 252 SQL 日志审计轮：稳态库上两列早已就位，ADD COLUMN IF NOT
+	// EXISTS 仍是需要 ACCESS EXCLUSIVE 的目录操作——部署窗口里排在一个长读/写
+	// 后面 2s lock_timeout 三连失败（10-13→10-16 实测每个 deploy 窗口 40-70 条
+	// 55P03，252 ctr.log），且排队中的 AEL 会按锁队列公平性卡住其后全部 DML。
+	// 先查 information_schema，两列齐就整段跳过；缺列或预检失败回落原重试路径。
+	// 后续 backfill/索引两段在稳态本就是无锁 no-op，照常执行。
+	var present int
+	skipColumnsDDL := false
+	if err := d.pool.QueryRow(ctx, `
+		SELECT count(*) FROM information_schema.columns
+		 WHERE table_schema = 'public' AND table_name = 'session_summaries'
+		   AND column_name IN ('last_accessed_at', 'archived_at')
+	`).Scan(&present); err == nil && present == 2 {
+		skipColumnsDDL = true
 	}
-	if colErr != nil {
-		return fmt.Errorf("ensure session_summaries archival columns: %w", colErr)
+	if !skipColumnsDDL {
+		var colErr error
+		for attempt := 1; attempt <= 3; attempt++ {
+			if attempt > 1 {
+				select {
+				case <-time.After(2 * time.Second):
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			_, colErr = d.pool.Exec(ctx, `
+				SET LOCAL lock_timeout = '2s';
+				ALTER TABLE public.session_summaries ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMPTZ;
+				ALTER TABLE public.session_summaries ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+			`)
+			if colErr == nil {
+				break
+			}
+			var pgErr *pgconn.PgError
+			if errors.As(colErr, &pgErr) && pgErr.Code == "55P03" {
+				continue
+			}
+			return fmt.Errorf("ensure session_summaries archival columns: %w", colErr)
+		}
+		if colErr != nil {
+			return fmt.Errorf("ensure session_summaries archival columns: %w", colErr)
+		}
 	}
 
 	conn, err := d.pool.Acquire(ctx)
