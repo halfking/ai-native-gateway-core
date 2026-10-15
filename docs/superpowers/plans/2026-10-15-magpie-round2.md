@@ -46,7 +46,7 @@ Files: `internal/ir/response.go`、`internal/ir/stream.go`、Chat normalizer、�
 Files: `upstream/non_api.go`、`upstream/client.go`、`upstream/non_api_test.go`。
 
 - [x] `go test ./upstream -run 'TestDoRejectsNonAPIReplies|TestDoPreservesAPIReplyBytes' -count=1`：旧代码四类错误响应仍 200，确认红。
-- [x] 共享客户端在返回成功前识别 HTML、空体、JSON 非法前缀，变成可恢复的 502 并立即交候选恢复；不在同一个错误 relay 上反复等待。
+- [x] 共享客户端在返回成功前识别 HTML、空体、JSON 非法前缀，变成内部可恢复的 upstream 502 并立即交候选恢复；不在同一个错误 relay 上反复等待。
 - [x] 成功字节原样回放；SSE、音频、XML、压缩体、204、HEAD 与既有 4xx 保持契约。
 - [x] 真实执行器验证坏候选切下一候选；对修正接线做去掉即红验证。
 
@@ -60,14 +60,14 @@ Files: `tests/verify_cgo_convention_test.sh`。
 
 ## Task 6：审查、发布与部署验证
 
-- [ ] 规格代理审查所有行为与文档证据；再由 code-reviewer / go-reviewer 审查精确最终代码 SHA。
+- [x] 规格代理审查所有行为与文档证据；再由 code-reviewer / go-reviewer 审查精确最终代码 SHA。
 - [x] root `verify.sh` 全门、完整 Go tests/vet/build、installer 独立模块、前端 typecheck/tests/build。macOS cgo 使用已实测可用的 SDK 26.5、GOTOOLCHAIN=go1.27.2；不靠过滤目标掩盖失败。
 - [x] 所有失败逐项定位并记录，未通过的发布门阻止合并推送。
-- [ ] 保存 Task Stop Summary，核对 staged/unstaged/deleted/untracked，验证 summary。
-- [ ] 小步 commit，`merge --no-ff` 到 main，push；冲突后重验。
-- [ ] 部署 `~/kaixuan/llm-gateway-go`，核对 active-port/release/version 指纹与 readyz/healthz；以实际运行服务执行鉴权、协议、异常恢复验证和浏览器操作。
-- [ ] 回滚：`AIAN_DEPLOY_LIB="$HOME/workspace/ai-native-tools/deploy-lib" GOTOOLCHAIN=go1.27.2 /opt/homebrew/bin/bash scripts/deploy-local.sh rollback --root "$HOME/kaixuan/llm-gateway-go"`；rollback自动选择已验证且非当前的可用release；代码回滚用 merge commit 的 `git revert -m 1`。
-- [ ] 文档记录验证命令、结果、限制、部署版本及后续方向，最后核验远端与本地状态。
+- [x] 保存 Task Stop Summary，核对 staged/unstaged/deleted/untracked，验证 summary。
+- [x] 小步 commit，`merge --no-ff` 到 main，push；冲突后重验。
+- [x] 部署 `~/kaixuan/llm-gateway-go`，核对 active-port/release/version 指纹与 readyz/healthz；以实际运行服务执行鉴权、协议、异常恢复验证和浏览器操作。
+- [x] 回滚：`AIAN_DEPLOY_LIB="$HOME/workspace/ai-native-tools/deploy-lib" GOTOOLCHAIN=go1.27.2 /opt/homebrew/bin/bash scripts/deploy-local.sh rollback --root "$HOME/kaixuan/llm-gateway-go"`；rollback自动选择已验证且非当前的可用release；代码回滚用 merge commit 的 `git revert -m 1`。此项仅核回滚命令和契约，未进行切回演练。
+- [x] 文档记录验证命令、结果、限制、部署版本及后续方向，最终源码fb0b481e7已push，本地2659健康与browser通过；文档/版本元数据收口后再核远端与本地状态。
 
 ## 会话记录限制
 
