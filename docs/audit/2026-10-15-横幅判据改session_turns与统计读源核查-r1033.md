@@ -88,7 +88,16 @@ D21 双主题令牌钉随迁）；parity 门 8 语种全绿。
 
 ## 五、部署验证
 
-本地 → 245 → 154（记录见部署日志）。
+- 本地 2647（r1033+r1033b）：`/api/admin/data-horizon` 空闲态返回 `data_horizon:null`
+  （横幅消失；旧版显示「无法确认」）；浏览器实测横幅不渲染。
+- 245 = 2648-54fa7543：部署门全过（含解密冒烟）；端点（目标机 .env 凭据）返回
+  `data_horizon:null`。
+- 154 = 2649-54fa7543：端点返回 `data_horizon:null`（生产业务流量持续 +
+  session_turns_hot 新鲜，两信号对齐=健康）；board 端点 200/0.21s；
+  公网 healthz 200；`/dashboard` bundle 含 dataHorizon 代码与「流量数据记录滞后」
+  文案、v1DataFrozen 零引用——**常驻横幅正式从生产消失**。
+- r1033b：本地首测抓到空表 MAX(NULL) 扫描 bug（空库误报 unknown），修为
+  sql.NullTime 归一 + pgxmock 两格钉子（NULL⇒零值无错 / 有值⇒原样）。
 
 ## 六、遗留登记
 
