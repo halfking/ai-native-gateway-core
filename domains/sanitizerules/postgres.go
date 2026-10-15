@@ -196,3 +196,54 @@ func (s *PostgresStore) ListEvents(ctx context.Context, f EventFilter) ([]Event,
 	}
 	return out, nil
 }
+func (s *PostgresStore) ReviewEvent(ctx context.Context, tenant string, id int64, status, reviewer, comment string) (Event, error) {
+	if err := validReview(status, reviewer, comment); err != nil {
+		return Event{}, err
+	}
+	return scanEvent(s.db.QueryRowContext(ctx, `UPDATE sanitize_rule_events SET status=$1,reviewer=$2,review_comment=$3,reviewed_at=now() WHERE id=$4 AND tenant_id=$5 RETURNING `+eventColumns, status, reviewer, comment, id, tenant))
+}
+func (s *PostgresStore) Heartbeat(ctx context.Context, instance Instance) error {
+	if !validID(instance.InstanceID) {
+		return fmt.Errorf("%w: invalid instance id", ErrInvalid)
+	}
+	i := safeInstance(instance)
+	var refreshed any
+	if !i.LastRefresh.IsZero() {
+		refreshed = i.LastRefresh
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO sanitize_rule_instances(instance_id,version,config_digest,last_seen,last_refresh,error) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(instance_id) DO UPDATE SET version=EXCLUDED.version,config_digest=EXCLUDED.config_digest,last_seen=EXCLUDED.last_seen,last_refresh=EXCLUDED.last_refresh,error=EXCLUDED.error`, i.InstanceID, i.Version, i.ConfigDigest, i.LastSeen, refreshed, i.Error)
+	if err != nil {
+		return storeError("heartbeat", err)
+	}
+	return nil
+}
+func (s *PostgresStore) ListInstances(ctx context.Context) ([]Instance, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT instance_id,version,config_digest,last_seen,last_refresh,error FROM sanitize_rule_instances ORDER BY instance_id`)
+	if err != nil {
+		return nil, storeError("instances read", err)
+	}
+	defer rows.Close()
+	out := []Instance{}
+	for rows.Next() {
+		var i Instance
+		var refresh sql.NullTime
+		if err = rows.Scan(&i.InstanceID, &i.Version, &i.ConfigDigest, &i.LastSeen, &refresh, &i.Error); err != nil {
+			return nil, storeError("instance read", err)
+		}
+		if refresh.Valid {
+			i.LastRefresh = refresh.Time
+		}
+		out = append(out, i)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, storeError("instances read", err)
+	}
+	return out, nil
+}
+
+var _ Store = (*PostgresStore)(nil)
+var _ Store = (*MemoryStore)(nil)
+
+func (s *PostgresStore) GetEvent(ctx context.Context, id int64) (Event, error) {
+	return scanEvent(s.db.QueryRowContext(ctx, `SELECT `+eventColumns+` FROM sanitize_rule_events WHERE id=$1`, id))
+}
