@@ -197,7 +197,7 @@ func SerializeResponsesRequest(req *InternalRequest) ([]byte, error) {
 func buildResponsesInput(messages []Message) []map[string]any {
 	input := make([]map[string]any, 0, len(messages))
 
-	for _, msg := range messages {
+	for _, msg := range expandToolResultMessages(messages) {
 		// System role is conveyed via "instructions", never as an input item.
 		if msg.Role == "system" {
 			continue

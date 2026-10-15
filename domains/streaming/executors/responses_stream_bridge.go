@@ -36,6 +36,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -50,6 +51,7 @@ type responsesToChatTranslator struct {
 	nextTool     int
 	toolCallSeen bool
 	done         bool
+	err          error
 }
 
 func newResponsesToChatTranslator(model string) *responsesToChatTranslator {
@@ -223,40 +225,9 @@ func (t *responsesToChatTranslator) handle(eventType string, payload []byte) []b
 		}}}, nil)
 
 	case "response.completed", "response.incomplete", "response.failed":
-		var env struct {
-			Response struct {
-				Usage struct {
-					InputTokens  int `json:"input_tokens"`
-					OutputTokens int `json:"output_tokens"`
-					TotalTokens  int `json:"total_tokens"`
-				} `json:"usage"`
-			} `json:"response"`
-		}
-		// R32 (P2-B): usage used to be parsed and discarded (`_ =`), so every
-		// bridged stream recorded zero tokens. Re-emit it in chat shape on the
-		// terminal frame; a malformed payload degrades to a zero-valued usage
-		// rather than killing the stream.
-		_ = json.Unmarshal(payload, &env)
-		usage := &chatUsage{
-			PromptTokens:     env.Response.Usage.InputTokens,
-			CompletionTokens: env.Response.Usage.OutputTokens,
-			TotalTokens:      env.Response.Usage.TotalTokens,
-		}
-		reason := "stop"
-		if t.toolCallSeen {
-			reason = "tool_calls"
-		}
-		out := t.frameUsage(chatDelta{}, strPtr(reason), usage)
-		t.done = true
-		return append(out, []byte("data: [DONE]\n\n")...)
-
+		return t.terminal(eventType, payload)
 	case "error":
-		// Surface the upstream failure as an error frame rather than closing
-		// silently: a truncated stream that looks like a clean stop is the
-		// worst possible outcome for a streaming client.
-		t.done = true
-		return append(t.frame(chatDelta{}, strPtr("stop")),
-			[]byte("data: [DONE]\n\n")...)
+		return t.fail(payload, nil)
 	}
 	// response.output_text.done / content_part.* / output_item.done /
 	// function_call_arguments.done carry no information the deltas did not
@@ -291,6 +262,17 @@ func parseResponsesSSEFrame(eventName string, data []byte) responsesSSEFrame {
 	return f
 }
 
+type responsesBridgeBody struct {
+	io.ReadCloser
+	closeSource func()
+}
+
+func (b *responsesBridgeBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.closeSource()
+	return err
+}
+
 // responsesToChatStream converts an upstream Responses SSE body into chat SSE.
 //
 // Implemented as a pipe so the existing chat StreamChat reader can consume the
@@ -298,10 +280,13 @@ func parseResponsesSSEFrame(eventName string, data []byte) responsesSSEFrame {
 // be Closed by the caller, which unblocks the goroutine.
 func responsesToChatStream(ctx context.Context, upstream io.ReadCloser, model string) io.ReadCloser {
 	pr, pw := io.Pipe()
+	var once sync.Once
+	closeSource := func() { once.Do(func() { _ = upstream.Close() }) }
+	stopCancel := context.AfterFunc(ctx, func() { _ = pw.CloseWithError(ctx.Err()); closeSource() })
 	go func() {
-		defer func() { _ = upstream.Close() }()
+		defer closeSource()
+		defer stopCancel()
 		defer func() { _ = pw.Close() }()
-
 		t := newResponsesToChatTranslator(model)
 		sc := bufio.NewScanner(upstream)
 		// Individual Responses frames are small; the envelope carries the full
@@ -309,43 +294,50 @@ func responsesToChatStream(ctx context.Context, upstream io.ReadCloser, model st
 		// requests (measured: response.created with 6 tools ≈ 1.2 KiB, but a
 		// large toolset scales it).
 		sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-
-		var (
-			eventName string
-			dataBuf   []byte
-		)
-		flush := func() {
+		var eventName string
+		var dataBuf []byte
+		flush := func() bool {
 			if len(dataBuf) == 0 && eventName == "" {
-				return
+				return true
 			}
 			frame := parseResponsesSSEFrame(eventName, dataBuf)
+			eventName, dataBuf = "", nil
 			if out := t.handle(frame.EventType, frame.Data); len(out) > 0 {
 				if _, err := pw.Write(out); err != nil {
-					return
+					return false
 				}
 			}
-			eventName = ""
-			dataBuf = nil
+			if t.err != nil {
+				_ = pw.CloseWithError(t.err)
+			}
+			return !t.done
 		}
-
+		fail := func(cause error) {
+			if ctx.Err() != nil {
+				cause = ctx.Err()
+			}
+			if out := t.fail(nil, cause); len(out) > 0 {
+				_, _ = pw.Write(out)
+			}
+			_ = pw.CloseWithError(cause)
+		}
 		for sc.Scan() {
 			line := strings.TrimRight(sc.Text(), "\r")
 			switch {
 			case line == "":
-				flush()
+				if !flush() {
+					return
+				}
 			case strings.HasPrefix(line, ":"):
-				// SSE comment / keep-alive.
 			case strings.HasPrefix(line, "event:"):
 				eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
 			case strings.HasPrefix(line, "data:"):
 				payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 				if payload == "[DONE]" {
-					// Upstream signalled end of stream.
-					if out := t.handle("response.completed", nil); len(out) > 0 {
-						_, _ = pw.Write(out)
+					if !flush() {
+						return
 					}
-					t.done = true
-					flush()
+					fail(io.ErrUnexpectedEOF)
 					return
 				}
 				if len(dataBuf) > 0 {
@@ -354,14 +346,14 @@ func responsesToChatStream(ctx context.Context, upstream io.ReadCloser, model st
 				dataBuf = append(dataBuf, payload...)
 			}
 		}
-		flush()
-		if !t.done {
-			// Truncated upstream: still close the chat stream properly so the
-			// client is not left waiting on an unterminated body.
-			if out := t.handle("response.completed", nil); len(out) > 0 {
-				_, _ = pw.Write(out)
-			}
+		if !flush() {
+			return
+		}
+		if err := sc.Err(); err != nil {
+			fail(err)
+		} else {
+			fail(io.ErrUnexpectedEOF)
 		}
 	}()
-	return pr
+	return &responsesBridgeBody{ReadCloser: pr, closeSource: closeSource}
 }
