@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -577,6 +578,8 @@ func dispatchNoticeDropReason(params *ExecParams) string {
 // with an errorsx kind that drives the handler's HTTP status + goal-retry.
 func dispatchErrToExecuteError(err error) *ExecuteError {
 	switch {
+	case errors.Is(err, errorsx.ErrOutputPolicyBlocked):
+		return &ExecuteError{LastErr: err, Exhausted: false, LastKind: errorsx.KindContentFilter}
 	case errors.Is(err, context.Canceled):
 		return &ExecuteError{LastErr: err, Exhausted: false, LastKind: errorsx.KindCanceled}
 	case errors.Is(err, dispatch.ErrNoRoute), errors.Is(err, dispatch.ErrOverflow):
@@ -712,6 +715,16 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			out = dispatch.ForwardOutcome{Err: fmt.Errorf("dispatch forward panic: %v", recovered)}
+		}
+		if errors.Is(out.Err, errorsx.ErrOutputPolicyBlocked) {
+			// A local policy rejection is not evidence against this node. Skip
+			// candidate failure logs, health trackers and the outcome reducer.
+			out.ErrorKind = string(errorsx.KindContentFilter)
+			out.HTTPStatus = http.StatusForbidden
+			if probeConsumed && e.Circuit != nil {
+				e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+			}
+			return
 		}
 		if out.Err != nil {
 			kind := classifyExecError(out.Err)
@@ -1025,6 +1038,9 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		}
 	}()
 
+	if errors.Is(execErr, errorsx.ErrOutputPolicyBlocked) {
+		return dispatch.ForwardOutcome{Err: execErr, ErrorKind: string(errorsx.KindContentFilter), HTTPStatus: http.StatusForbidden}
+	}
 	if execErr == nil {
 		e.recordDispatchSuccess(params, cand, result, dctx)
 		return dispatch.ForwardOutcome{Result: result}
