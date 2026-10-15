@@ -21,8 +21,11 @@ type patternCategory struct {
 }
 
 type patternDefinition struct {
-	Regex string `yaml:"regex"`
-	Group int    `yaml:"group"`
+	Regex  string   `yaml:"regex"`
+	Group  int      `yaml:"group"`
+	Kind   string   `yaml:"kind"`
+	Scopes []string `yaml:"scopes"`
+	Action string   `yaml:"action"`
 }
 
 // NewPatternDetectorFromFile loads the shared sensitive-pattern configuration.
@@ -37,6 +40,9 @@ func NewPatternDetectorFromFile(path string) (*PatternDetector, error) {
 
 // BuildFromFile replaces detector rules only after the file fully validates.
 func (d *PatternDetector) BuildFromFile(path string) error {
+	if d.RuleManager() != nil {
+		return fmt.Errorf("sensitive patterns are version managed; publish through rule management")
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read sensitive pattern config failed: %w (path=%s)", err, path)
@@ -111,11 +117,16 @@ func parsePatternConfig(data []byte) ([]patternEntry, error) {
 			// a deployment may legitimately name its own short-token rule
 			// `api_key`, and that rule means exactly what it says.
 			vendorKeyShape := isVendorKeyShapeRegex(pattern.Regex)
+			kind, scopes, action, err := patternMetadata(category.name, name, pattern)
+			if err != nil {
+				return nil, err
+			}
 			entries = append(entries, patternEntry{
 				sType:          sensitiveTypeForPattern(category.name, name),
 				regex:          re,
 				group:          pattern.Group,
 				vendorKeyShape: vendorKeyShape,
+				id:             category.name + "." + name, kind: kind, scopes: scopes, action: action,
 			})
 		}
 	}

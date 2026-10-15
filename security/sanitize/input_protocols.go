@@ -48,7 +48,7 @@ func (s *requestInputSanitizer) sanitizeEnvelope(body []byte, path string) ([]by
 	switch path {
 	case "/v1/messages":
 		if raw, ok := envelope["system"]; ok {
-			updated, didChange, err := s.sanitizeContent(raw)
+			updated, didChange, err := s.sanitizeContent(raw, "system")
 			if err != nil {
 				return nil, nil, err
 			}
@@ -63,7 +63,7 @@ func (s *requestInputSanitizer) sanitizeEnvelope(body []byte, path string) ([]by
 		}
 	case "/v1/responses":
 		if raw, ok := envelope["instructions"]; ok {
-			updated, didChange, err := s.sanitizeText(raw)
+			updated, didChange, err := s.sanitizeText(raw, "instructions")
 			if err != nil {
 				return nil, nil, err
 			}
@@ -113,7 +113,7 @@ func (s *requestInputSanitizer) sanitizeCompletionPrompt(raw json.RawMessage) (j
 	}
 	if trimmed[0] == '"' {
 		before := s.replacements
-		updated, changed, err := s.sanitizeText(raw)
+		updated, changed, err := s.sanitizeText(raw, "prompt")
 		return updated, []compression.SanitizedMessageRef{messageRef(0, raw, updated, changed, s.replacements-before)}, changed, err
 	}
 	if trimmed[0] != '[' {
@@ -131,7 +131,7 @@ func (s *requestInputSanitizer) sanitizeCompletionPrompt(raw json.RawMessage) (j
 		didChange := false
 		if item := bytes.TrimSpace(prompt); len(item) > 0 && item[0] == '"' {
 			var err error
-			updated, didChange, err = s.sanitizeText(prompt)
+			updated, didChange, err = s.sanitizeText(prompt, "prompt")
 			if err != nil {
 				return nil, nil, false, err
 			}
@@ -213,7 +213,7 @@ func (s *requestInputSanitizer) sanitizeMessage(raw json.RawMessage) (json.RawMe
 	changed := false
 	for _, field := range []string{"content", "reasoning_content"} {
 		if content, ok := message[field]; ok {
-			updated, didChange, err := s.sanitizeContent(content)
+			updated, didChange, err := s.sanitizeContent(content, field)
 			if err != nil {
 				return nil, false, err
 			}
@@ -247,7 +247,7 @@ func (s *requestInputSanitizer) sanitizeResponsesInput(raw json.RawMessage) (jso
 	}
 	if trimmed[0] == '"' {
 		before := s.replacements
-		updated, changed, err := s.sanitizeText(raw)
+		updated, changed, err := s.sanitizeText(raw, "input")
 		return updated, []compression.SanitizedMessageRef{messageRef(0, raw, updated, changed, s.replacements-before)}, changed, err
 	}
 	if trimmed[0] == '{' {
@@ -367,11 +367,11 @@ func (s *requestInputSanitizer) sanitizeResponsesItem(raw json.RawMessage) (json
 	var changed bool
 	var err error
 	if field == "text" {
-		updated, changed, err = s.sanitizeText(value)
+		updated, changed, err = s.sanitizeText(value, field)
 	} else if field == "arguments" || field == "input" {
 		return s.sanitizeToolBlock(raw, item, field, value)
 	} else {
-		updated, changed, err = s.sanitizeContent(value)
+		updated, changed, err = s.sanitizeContent(value, field)
 	}
 	if err != nil || !changed {
 		return raw, false, err
@@ -390,7 +390,7 @@ func (s *requestInputSanitizer) sanitizeReasoningItem(raw json.RawMessage, item 
 		if !ok {
 			continue
 		}
-		updated, didChange, err := s.sanitizeContent(value)
+		updated, didChange, err := s.sanitizeContent(value, field)
 		if err != nil {
 			return nil, false, err
 		}
@@ -409,9 +409,14 @@ func (s *requestInputSanitizer) sanitizeReasoningItem(raw json.RawMessage, item 
 // mcp_call 携带 arguments（JSON 字符串或结构化工具入参）与 output（工具返回
 // 明文），都是客户端回传的正文；approval_request_id / server_label 是元数据不动。
 func (s *requestInputSanitizer) sanitizeMcpCallItem(raw json.RawMessage, item map[string]json.RawMessage) (json.RawMessage, bool, error) {
+	prior := s.ctx
+	var tool string
+	_ = json.Unmarshal(item["name"], &tool)
+	s.ctx = WithRuleField(prior, tool, "")
+	defer func() { s.ctx = prior }()
 	changed := false
 	if value, ok := item["arguments"]; ok {
-		updated, didChange, err := s.sanitizeToolValue(value, 0)
+		updated, didChange, err := s.sanitizeToolValueWithLabel(value, 0, "arguments")
 		if err != nil {
 			return nil, false, err
 		}
@@ -420,7 +425,7 @@ func (s *requestInputSanitizer) sanitizeMcpCallItem(raw json.RawMessage, item ma
 		}
 	}
 	if value, ok := item["output"]; ok {
-		updated, didChange, err := s.sanitizeContent(value)
+		updated, didChange, err := s.sanitizeContent(value, "output")
 		if err != nil {
 			return nil, false, err
 		}
@@ -454,7 +459,7 @@ func (s *requestInputSanitizer) sanitizeWebSearchCallItem(raw json.RawMessage, i
 	}
 	changed := false
 	if query, ok := action["query"]; ok {
-		updated, didChange, err := s.sanitizeText(query)
+		updated, didChange, err := s.sanitizeText(query, "query")
 		if err != nil {
 			return nil, false, err
 		}
@@ -473,7 +478,7 @@ func (s *requestInputSanitizer) sanitizeWebSearchCallItem(raw json.RawMessage, i
 		for i, el := range results {
 			var textEl string
 			if err := json.Unmarshal(el, &textEl); err == nil {
-				updated, didChange, err := s.sanitizeText(el)
+				updated, didChange, err := s.sanitizeText(el, "results")
 				if err != nil {
 					return nil, false, err
 				}
@@ -490,7 +495,7 @@ func (s *requestInputSanitizer) sanitizeWebSearchCallItem(raw json.RawMessage, i
 			if !ok {
 				continue
 			}
-			updated, didChange, err := s.sanitizeText(text)
+			updated, didChange, err := s.sanitizeText(text, "text")
 			if err != nil {
 				return nil, false, err
 			}
@@ -534,7 +539,7 @@ func (s *requestInputSanitizer) sanitizeFileSearchCallItem(raw json.RawMessage, 
 		}
 		qChanged := false
 		for i, q := range queries {
-			updated, didChange, err := s.sanitizeText(q)
+			updated, didChange, err := s.sanitizeText(q, "queries")
 			if err != nil {
 				return nil, false, err
 			}
@@ -561,7 +566,7 @@ func (s *requestInputSanitizer) sanitizeFileSearchCallItem(raw json.RawMessage, 
 			if !ok {
 				continue
 			}
-			updated, didChange, err := s.sanitizeText(text)
+			updated, didChange, err := s.sanitizeText(text, "text")
 			if err != nil {
 				return nil, false, err
 			}
@@ -601,7 +606,7 @@ func (s *requestInputSanitizer) sanitizeShellCallOutputItem(raw json.RawMessage,
 		if !ok {
 			continue
 		}
-		updated, didChange, err := s.sanitizeText(text)
+		updated, didChange, err := s.sanitizeText(text, "text")
 		if err != nil {
 			return nil, false, err
 		}
@@ -622,11 +627,11 @@ func (s *requestInputSanitizer) sanitizeShellCallOutputItem(raw json.RawMessage,
 }
 
 // code_interpreter_call 回传模型代码与执行输出：code（明文）与 outputs[].logs
-//（stdout/stderr 明文）入洗；container_id 与 image 类输出不动。
+// （stdout/stderr 明文）入洗；container_id 与 image 类输出不动。
 func (s *requestInputSanitizer) sanitizeCodeInterpreterCallItem(raw json.RawMessage, item map[string]json.RawMessage) (json.RawMessage, bool, error) {
 	changed := false
 	if value, ok := item["code"]; ok {
-		updated, didChange, err := s.sanitizeText(value)
+		updated, didChange, err := s.sanitizeText(value, "code")
 		if err != nil {
 			return nil, false, err
 		}
@@ -645,7 +650,7 @@ func (s *requestInputSanitizer) sanitizeCodeInterpreterCallItem(raw json.RawMess
 			if !ok {
 				continue
 			}
-			updated, didChange, err := s.sanitizeText(logs)
+			updated, didChange, err := s.sanitizeText(logs, "logs")
 			if err != nil {
 				return nil, false, err
 			}
@@ -689,7 +694,7 @@ func (s *requestInputSanitizer) sanitizeApplyPatchCallItem(raw json.RawMessage, 
 	if !ok {
 		return raw, false, nil
 	}
-	updated, didChange, err := s.sanitizeText(content)
+	updated, didChange, err := s.sanitizeText(content, "content")
 	if err != nil {
 		return nil, false, err
 	}
@@ -734,7 +739,21 @@ func (s *requestInputSanitizer) sanitizeShellActionCallItem(raw json.RawMessage,
 	return out, true, err
 }
 
-func (s *requestInputSanitizer) sanitizeContent(raw json.RawMessage) (json.RawMessage, bool, error) {
+// bindInputField scopes metadata to one protocol leaf. Nested text blocks may
+// override their container field while tool identity and request pinning survive;
+// restoring the previous context prevents leakage into sibling fields.
+func (s *requestInputSanitizer) bindInputField(field string) func() {
+	prior := s.ctx
+	meta, _ := prior.Value(ruleFieldKey{}).(ruleField)
+	s.ctx = WithRuleField(prior, meta.tool, field)
+	return func() { s.ctx = prior }
+}
+
+func (s *requestInputSanitizer) sanitizeContent(raw json.RawMessage, fields ...string) (json.RawMessage, bool, error) {
+	if len(fields) > 0 {
+		restore := s.bindInputField(fields[0])
+		defer restore()
+	}
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return raw, false, nil
@@ -809,12 +828,12 @@ func (s *requestInputSanitizer) sanitizeContentBlock(raw json.RawMessage) (json.
 	var changed bool
 	var err error
 	if field == "text" {
-		updated, changed, err = s.sanitizeText(value)
+		updated, changed, err = s.sanitizeText(value, field)
 	} else {
 		if field == "input" {
 			return s.sanitizeToolBlock(raw, block, field, value)
 		}
-		updated, changed, err = s.sanitizeContent(value)
+		updated, changed, err = s.sanitizeContent(value, field)
 	}
 	if err != nil || !changed {
 		return raw, false, err
@@ -831,7 +850,11 @@ func (s *requestInputSanitizer) sanitizeContentBlock(raw json.RawMessage) (json.
 	return out, true, err
 }
 
-func (s *requestInputSanitizer) sanitizeText(raw json.RawMessage) (json.RawMessage, bool, error) {
+func (s *requestInputSanitizer) sanitizeText(raw json.RawMessage, fields ...string) (json.RawMessage, bool, error) {
+	if len(fields) > 0 {
+		restore := s.bindInputField(fields[0])
+		defer restore()
+	}
 	var value string
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return nil, false, fmt.Errorf("%w: text field must be a string: %v", errInvalidSanitizeInput, err)
@@ -862,6 +885,9 @@ func (s *requestInputSanitizer) sanitizeText(raw json.RawMessage) (json.RawMessa
 func writeSanitizeFailure(w http.ResponseWriter, r *http.Request, status int) {
 	message := "Request sanitization unavailable"
 	kind := "server_error"
+	if status == http.StatusForbidden {
+		message, kind = "Request blocked by sensitive information policy", "policy_violation"
+	}
 	if status == http.StatusBadRequest {
 		message, kind = "Invalid request body", "invalid_request"
 	} else if status == http.StatusRequestEntityTooLarge {
