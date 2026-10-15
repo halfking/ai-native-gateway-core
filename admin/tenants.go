@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/licensing"
@@ -833,25 +834,37 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	        FROM _request_logs) -- sqlreadguard:allow R36-A1 漏热尾根修的双腿之母表腿（hot 腿同查询内联；252-dev 实测 NOT EXISTS 反连接 + 租户过滤 COUNT 30s 超时，故走 hot∪母表 UNION ALL）+ S3 波 3 会话补丁腿（冻结点切分 + 会话腿双子排除，v1 腿保持零反连接）`
 	usageTable := "usage_ledger_with_current_month"
 
-	// Overall totals (upstream cost from usage_ledger; credits from _request_logs)
+	// ── 五段聚合并行（2026-10-15 可靠性轮根修）──
 	//
-	// 2026-09-30 (R36-B4): both totals were `_ =`, so a dead context or a
-	// statement_timeout silently published TotalRequests=0 / TotalCredits=0
-	// alongside whatever the later queries managed to return — an internally
-	// inconsistent 200 that reads as "this tenant burned nothing". Fail loudly
-	// instead of fabricating zeros.
-	if err := h.db.QueryRow(ctx, `
+	// 修前形态：totals/credits/byModel/byApplication/daily 五段**串行**共用一个
+	// 10s ctx 预算（CURRENT-STATE.md 第二十九节实测：30 天窗 1,516,587 行，
+	// 六段串行总和 >10s ⇒ days=30 确定性 504；days=7 冷启动也偶发顶穿）。
+	// 五段互相独立、各写各的字段 ⇒ 改 errgroup 并行，墙钟 = max(段) 而非 sum(段)，
+	// 实测 DB 侧最重段 ~6s ⇒ 30 天窗回到预算内。错误语义保持 R36-B4 定稿
+	// 「哪段死都响亮报错」：首个失败的段经 g.Wait() 冒泡，携段名走
+	// writeTenantStatsError（DeadlineExceeded 仍判 504 + 缩窗提示）。
+	// 池容量 32（db.go poolMaxConnsFromEnv 缺省），5 并发查询无池饥饿。
+	g, gctx := errgroup.WithContext(ctx)
+
+	// 1/5 totals（上游成本走 usage_ledger；credits 在下一段）。R36-B4 注释保留：
+	// 这两段曾 `_ =` 吞错发布全零 200 —— 并行化不改变「响亮失败」的定稿。
+	g.Go(func() error {
+		if err := h.db.QueryRow(gctx, `
 		SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_usd), 0.0),
 		       COUNT(DISTINCT api_key_id), COUNT(DISTINCT COALESCE(NULLIF(raw_model_name, ''), canonical_id::text)),
 		       COUNT(DISTINCT application_id)
 		FROM `+usageTable+`
 		WHERE tenant_id = $1 AND ts >= now() - ($2 * INTERVAL '1 day')
 	`, code, days).Scan(&s.TotalRequests, &s.TotalTokens, &s.TotalCost,
-		&s.UniqueKeys, &s.UniqueModels, &s.UniqueApps); err != nil {
-		writeTenantStatsError(w, ctx, code, "totals aggregate", err)
-		return
-	}
-	if err := h.db.QueryRow(ctx, `
+			&s.UniqueKeys, &s.UniqueModels, &s.UniqueApps); err != nil {
+			return statsStageError{"totals aggregate", err}
+		}
+		return nil
+	})
+
+	// 2/5 credits + token 构成（logsTable 四腿 union）
+	g.Go(func() error {
+		if err := h.db.QueryRow(gctx, `
 		SELECT COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint,
 		       COALESCE(SUM(COALESCE(prompt_tokens, 0)), 0)::bigint,
 		       COALESCE(SUM(COALESCE(completion_tokens, 0)), 0)::bigint,
@@ -861,14 +874,16 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		FROM `+logsTable+`
 		WHERE tenant_id = $1 AND ts >= now() - ($2 * INTERVAL '1 day')
 	`, code, days).Scan(
-		&s.TotalCredits, &s.InputTokens, &s.OutputTokens,
-		&s.CacheRead, &s.CacheWrite, &s.AvgLatencyMs); err != nil {
-		writeTenantStatsError(w, ctx, code, "credits aggregate", err)
-		return
-	}
+			&s.TotalCredits, &s.InputTokens, &s.OutputTokens,
+			&s.CacheRead, &s.CacheWrite, &s.AvgLatencyMs); err != nil {
+			return statsStageError{"credits aggregate", err}
+		}
+		return nil
+	})
 
-	// By model (credits + cost from _request_logs)
-	modelRows, err := h.db.Query(ctx, `
+	// 3/5 byModel（R78 扫描失败跳行留痕的口径保留）
+	g.Go(func() error {
+		modelRows, err := h.db.Query(gctx, `
 		SELECT COALESCE(NULLIF(TRIM(outbound_model), ''), NULLIF(TRIM(client_model), ''), '<unknown>') AS model,
 		       COUNT(*)::bigint,
 		       COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0)::bigint,
@@ -880,42 +895,28 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		ORDER BY SUM(COALESCE(credits_charged, 0)) DESC, SUM(COALESCE(cost_usd, 0)) DESC
 		LIMIT 20
 	`, code, days)
-	if err != nil {
-		// R36-B4: `if err == nil { ... }` with no else published an empty
-		// by_model list on failure — the client cannot tell "no traffic" from
-		// "the query died". Report the failure.
-		writeTenantStatsError(w, ctx, code, "by-model aggregate", err)
-		return
-	}
-	{
+		if err != nil {
+			return statsStageError{"by-model aggregate", err}
+		}
 		defer modelRows.Close()
 		for modelRows.Next() {
 			var m tenantModelBreakdown
-			// R78: 扫描失败原本是 `_ =`，坏行会把全零的 model 条目塞进
-			// by_model（客户端看不出是坏数据还是真零流量）。跳行留痕。
 			if scanErr := modelRows.Scan(&m.Model, &m.Requests, &m.Tokens, &m.Credits, &m.Cost); scanErr != nil {
 				warnRowSkip("tenants.stats.byModel", scanErr)
 				continue
 			}
 			s.ByModel = append(s.ByModel, m)
 		}
-		// 迭代中断会静默截断 top-20 列表；同 daily 段口径显式失败。
 		if rerr := modelRows.Err(); rerr != nil {
-			writeTenantStatsError(w, ctx, code, "by-model aggregate iteration", rerr)
-			return
+			return statsStageError{"by-model aggregate iteration", rerr}
 		}
-	}
-	if s.ByModel == nil {
-		s.ByModel = []tenantModelBreakdown{}
-	}
+		return nil
+	})
 
-	// By application (credits + cost from _request_logs)
-	//
-	// R65: 别名 `rl` 必须从新行开始——logsTable 片段以 `-- sqlreadguard:allow`
-	// 行注释收尾，同一行拼接的任何 token 都会被注释吞掉（修前实锤
-	// 42P01 missing FROM-clause entry for table "rl"，TestTenantStatsDaily_Live
-	// 是本修法的回归网）。
-	appRows, err := h.db.Query(ctx, `
+	// 4/5 byApplication（R65：别名 rl 必须从新行开始——logsTable 片段以
+	// sqlreadguard 行注释收尾，同一行拼接的 token 会被注释吞掉）
+	g.Go(func() error {
+		appRows, err := h.db.Query(gctx, `
 		SELECT COALESCE(app.code, '<none>') AS app_code,
 		       COUNT(*)::bigint,
 		       COALESCE(SUM(COALESCE(rl.prompt_tokens, 0) + COALESCE(rl.completion_tokens, 0)), 0)::bigint,
@@ -929,11 +930,9 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		ORDER BY SUM(COALESCE(rl.credits_charged, 0)) DESC, SUM(COALESCE(rl.cost_usd, 0)) DESC
 		LIMIT 20
 	`, code, days)
-	if err != nil {
-		writeTenantStatsError(w, ctx, code, "by-application aggregate", err)
-		return
-	}
-	{
+		if err != nil {
+			return statsStageError{"by-application aggregate", err}
+		}
 		defer appRows.Close()
 		for appRows.Next() {
 			var a tenantAppBreakdown
@@ -944,21 +943,14 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 			s.ByApplication = append(s.ByApplication, a)
 		}
 		if rerr := appRows.Err(); rerr != nil {
-			writeTenantStatsError(w, ctx, code, "by-application aggregate iteration", rerr)
-			return
+			return statsStageError{"by-application aggregate iteration", rerr}
 		}
-	}
-	if s.ByApplication == nil {
-		s.ByApplication = []tenantAppBreakdown{}
-	}
+		return nil
+	})
 
-	// Daily time series (2026-09-30 统计 UI 优化轮)：generate_series 左连接
-	// 补零，保证前端趋势图拿到 days 条连续日期。表选择与上方 credits/byModel/
-	// byApp 同口径（全窗口 raw union 含热尾，三十六轮合并定稿）。
-	// 日切显式钉 Asia/Shanghai（R36-A3）：与 usage_facts 日分区边界（迁移
-	// 750/751）及用户统计 daily 同口径，不随会话时区漂移；对账页保持显式
-	// UTC 日（结算口径，有意分叉）。
-	dailyRows, err := h.db.Query(ctx, `
+	// 5/5 daily（generate_series 左连接补零；日切钉 Asia/Shanghai，R36-A3）
+	g.Go(func() error {
+		dailyRows, err := h.db.Query(gctx, `
 		WITH days AS (
 			SELECT generate_series(
 				date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') - (($2::int - 1) * INTERVAL '1 day'),
@@ -982,37 +974,56 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		FROM days LEFT JOIN agg ON agg.d = days.d
 		ORDER BY days.d
 	`, code, days)
-	if err != nil {
-		// R36-A2 logged this; R36-B4 raises it to an explicit failure. A warn
-		// plus an all-zero trend is still a 200 the client will render as
-		// "this tenant had no traffic", which is a materially wrong answer
-		// rather than a missing one.
-		writeTenantStatsError(w, ctx, code, "daily aggregate", err)
-		return
-	}
-	for dailyRows.Next() {
-		var d tenantDailyStat
-		if scanErr := dailyRows.Scan(&d.Date, &d.Requests, &d.Success, &d.Errors, &d.Tokens, &d.Credits, &d.Cost); scanErr != nil {
+		if err != nil {
+			// R36-B4 定稿口径：全零趋势 200 是实质错答案，不是缺答案。
+			return statsStageError{"daily aggregate", err}
+		}
+		for dailyRows.Next() {
+			var d tenantDailyStat
+			if scanErr := dailyRows.Scan(&d.Date, &d.Requests, &d.Success, &d.Errors, &d.Tokens, &d.Credits, &d.Cost); scanErr != nil {
+				dailyRows.Close()
+				return statsStageError{"daily aggregate scan", scanErr}
+			}
+			s.Daily = append(s.Daily, d)
+		}
+		if rerr := dailyRows.Err(); rerr != nil {
 			dailyRows.Close()
-			writeTenantStatsError(w, ctx, code, "daily aggregate scan", scanErr)
+			return statsStageError{"daily aggregate iteration", rerr}
+		}
+		dailyRows.Close()
+		return nil
+	})
+
+	if err := g.Wait(); err != nil {
+		var se statsStageError
+		if errors.As(err, &se) {
+			writeTenantStatsError(w, ctx, code, se.stage, se.err)
 			return
 		}
-		s.Daily = append(s.Daily, d)
-	}
-	if rerr := dailyRows.Err(); rerr != nil {
-		// Truncated series: pgx surfaces mid-iteration failures (connection
-		// drop, statement_timeout) here, after Next() already returned true.
-		dailyRows.Close()
-		writeTenantStatsError(w, ctx, code, "daily aggregate iteration", rerr)
+		writeTenantStatsError(w, ctx, code, "stats pipeline", err)
 		return
 	}
-	dailyRows.Close()
+	if s.ByModel == nil {
+		s.ByModel = []tenantModelBreakdown{}
+	}
+	if s.ByApplication == nil {
+		s.ByApplication = []tenantAppBreakdown{}
+	}
 	if s.Daily == nil {
 		s.Daily = []tenantDailyStat{}
 	}
 
 	writeJSON(w, http.StatusOK, s)
 }
+
+// statsStageError carries which parallel stats stage failed so the error
+// answer keeps the per-stage detail of the pre-parallel serial pipeline.
+type statsStageError struct {
+	stage string
+	err   error
+}
+
+func (e statsStageError) Error() string { return e.stage + ": " + e.err.Error() }
 
 // writeTenantStatsError reports a failed stage of the tenant stats pipeline as
 // an explicit HTTP error instead of letting the zero value reach the client.
