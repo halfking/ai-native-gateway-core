@@ -20134,3 +20134,124 @@ NAME → COLON → VALUE → SEP →(,) NAME
   登记只能覆盖已知值，后端新增一个状态 ⇒ 用户看到裸键，**没有任何门会红**。
   已写进 `OPEN_PREFIXES` 并由 `⑥-3` 钉住「不许把它当成闭合的」。
 - ⛔ 仍然待属主拍板：72 条孤儿 i18n 键的**删除**（本线只量出 + 钉住 + 逐条注明）。
+
+## 11.179 第一百四十二批：孤儿问题的**第三面** —— 模块有人 import，函数也实现了，**但没有任何调用点**
+
+### 一、本批补的是哪一面
+
+批 116 起这条线一直在清「孤儿」，到目前为止量过两面：
+
+| 面 | 问的问题 | 判据 | 状态 |
+|---|---|---|---|
+| ① 孤儿**模块** | 这个 api 模块有人 import 吗 | `orphanLedger.spec.ts`（批 133） | 真缺口已清零 |
+| ② 孤儿 **i18n 键** | 词典里这个键有人用吗 | `orphanKeys.spec.ts`（批 140） | 72 条已登记 |
+| ③ **导出无人调** | 模块有人 import，函数也实现了，**有没有人调它** | **本批** | **9 条，已定性** |
+
+第 ③ 面才是「功能做了但用户点不到」的形态，而且它**不会**被前两面发现：
+模块在 import 图里好好的，函数也在，只是没人调。
+本批立项时的具体线索是两条历史读数 —— 批 116 的 `getCatalogIQ` / `getNodeIQLatest`
+零调用，以及批 135 记下的「`usageEnhanced.fetchCostTrend` 移动端零调用方」。
+
+### 二、★ 分母的选择：540 还是 9
+
+先量「只看生产调用方」：**540 个**导出函数没有生产调用方。这个数很吓人，但逐条打开看，
+**531 个是导出给 `*.test.ts` 用的断言判定函数** —— `workTypeStatsShareL1Proxy` /
+`trendSourceRealTable` / `approvalTimeValid` / `workTypesAreSortedBySortOrderThenKey` …。
+它们**不是死代码，它们是那些模块的判据**（把判定逻辑导出，测试才能逐条打）。
+
+⇒ 拿 540 当分母会得到一个**大部分不是债**的账。
+⇒ 换成**含测试的严格口径**：连测试都没引用的，才是真的没人要。
+
+| 口径 | 读数 | 含义 |
+|---|---|---|
+| api 模块 | **97** 个（排除 `*.test.ts`） | 分母 |
+| 导出函数 | **1460** 个 | 分母 |
+| ★ 零引用（**含测试**，严格） | **9** | **本批的目标** |
+| 只看生产 | 540 | 读数，不是债（531 个只被测试引用） |
+| 另：导出形态计数 | function 1457 · async function 3 · const 793 · interface/type 644 | 覆盖面自证用 |
+
+### 三、9 条逐条定性（本批逐条打开源码 + 查 Go 注册处）
+
+| 符号 | 分类 | 结论 |
+|---|---|---|
+| `logsAdmin.logsAdminPath` | **A** | 本文件 `:318/:334/:350` 三处在用，只是没必要的 `export` |
+| `modules.modulesPath` | **A** | 本文件 `:187/:203/:230` 三处在用 |
+| `pendingResponses.unwrapPendingStats` | **A** | 本文件 `:203` 的 `.then(...)` 在用（定义写在 `:207`，调用在它上面） |
+| `credentialsOps.fetchScoreDetails` | **B** | ★ 打 `admin/handler.go:1230` 的 `/api/routing/score-details` —— 后端在、客户端实现了、`ScoreDetailsResponse` 也定义了，**没有任何页面展示打分明细** |
+| `models.fetchFeaturedModelSuggestions` | **B** | ★ 打 `admin/handler.go:1237` 的 `/api/routing/featured-models` —— 同族的 `fetchFeaturedModels` / `saveFeaturedModels` 都已在 `ModelsView.vue` 接线，**唯独它没有** |
+| `requestLogs.fetchRequestLogDetail` | **B** | ★ 打 `/api/logs/<id>`（注册 `admin/handler.go:1291`，取 id 的那行是 `admin/logs.go:846`）；而 UI 实际用的是**另一个端点** `/api/admin/request-detail/`（`admin/handler.go:1293`）⇒ 两端点并存，只接了一个 |
+| `system.fetchVersion` | **B** | ★ 打 `/version`（`cmd/gateway/main.go:6324`）；Go 侧注释写明它供 `scripts/lifecycle/preflight.sh` 用 ⇒ 移动端无入口 |
+| `tenants.tenantAggSourceNote` | **C** | 承载「详情是 `_ =` 吞错」这句知识，但 UI 无处体现。★ 降级提示本身**已落地**：姊妹函数 `tenantUsageMayBeDegraded` 有 2 个生产调用方 |
+| `turnsSessions.turnIsProblem` | **C** | 「失败 / 限流 / 注入拦截都算」已实现，但没人在轮次列表上用它着色 |
+
+⇒ **A 3 条 · B 4 条 · C 2 条**。`④-4` 把「三个分类都必须在用」钉住 ——
+不许哪天有人把 B 类悄悄降级成 A/C，这条会红。
+
+⇒ ★ B 类那 4 条是**真正的功能缺口**：后端端点存在、移动端客户端函数已实现，
+**但没有任何页面调它**。它们是**接线决策**，不是本线可以擅自做的 —— 登记待属主拍板。
+
+### 四、★★ 本批的漂移门自己响了两次 —— 而且两次都是**我自己的注释**
+
+新文件里的 Go 行号引用被批 139 建的那道 `goLineRef` 门抓到：
+
+1. `admin/handler.go:1291` —— 结论成立，但 token `/api/logs/{id}` 在那行**不逐字出现**
+   （那行是 `/api/logs/`）。⇒ **没有登记成假阳性**，而是把引用改到
+   **逐字出现 id 解析的那一行**（`admin/logs.go:846`）—— 让引用可核。
+2. `admin/handler.go:1293` —— 同类，`/api/admin/request-detail/{id}` 与源码的
+   `/api/admin/request-detail/` 差一个尾斜杠 ⇒ 把路径改成逐字对齐注册处。
+
+⇒ ★ 这道门在本批**当场兑现价值**：它拦住的是我自己刚写的注释。
+⇒ ★ 与批 140 的「注释里不能写不存在的点号路径」同向：
+**注释里的 Go 引用和代码里的注释一样，是会被量具读到的**。
+
+### 五、★★★ 变异台揭出：两条棘轮都能被整个掏空而无症状
+
+首轮 9 条变异：
+
+| # | 内容 | 结果 |
+|---|---|---|
+| M04 / M05 | 把 ② 的 `unknown` / ③ 的 `used` **整个掏空** | ★ **全绿** —— `[] === []`，棘轮被关掉没有任何症状 |
+| M08 | 把「B 类必须在用」改成恒真 | ★ **全绿** —— **削弱判据不会被判据自己发现** |
+
+⇒ 处置：②/③ 各自抽出**具名纯函数** `unregisteredDead` / `noLongerDead`，
+并加**内置负控**（负控**先跑**，调用同一个函数、只传一个被打破的输入）。
+`M06`（掏空负控所依赖的那个函数）转红。
+
+⇒ ★ 与批 140 的 K03/K04 **同一条边界**，第三次兑现：
+**「负控走的是另一段表达式」时，负控就是装饰。**
+
+⇒ ★ M08 保留为**常驻阴性对照**：它证明「把一条真判据改成恒真」这件事
+**在判据内部永远不会被发现**，只能靠变异台盯着。
+
+### 六、判据与变更
+
+| 文件 | 改动 |
+|---|---|
+| `src/api/deadExports.spec.ts`（新） | 10 条，四组：① 三个口径读数 + 双向自证 + 覆盖面自证 ② 未登记零引用一律红 ③ 登记项必须仍然是零引用 ④ 名单规模/定性/符号存在/三分类都在用 |
+| 本节 | 文档 |
+
+**零产品代码改动**：本批只加了一道判据。
+⇒ ★ **零后端代码改动**：对 Go 的唯一动作是**读**（查 4 个端点的注册处）。
+
+### 七、验证读数
+
+| 项 | 读数 |
+|---|---|
+| 单跑新判据 | **10/10** |
+| 变异台 | **9 条：6 有牙 + 3 条有意保留** |
+| typecheck | `vue-tsc -b` rc=0（先删 tsbuildinfo） |
+| 四门 | css / touch / i18n / comment 全 rc=0 |
+| 门禁自测 | `gate:selftest` rc=0 |
+| 构建 | `npm run build` rc=0 |
+| 全量 | **225 文件 / 8347 passed + 1 skipped**（批 141 为 224/8337） |
+| 十连跑 | **10/10** 全绿 |
+| `goLineRef` 读数 | 仍为 **全范围 2071 处引用 / 可判定 131 / 对不上 29**（本批订正了自己的两条新引用，**没有欠新债**） |
+
+### 八、留给属主的三件事
+
+1. ⛔ **B 类 4 条要不要接线**：`fetchScoreDetails`（打分明细）·
+   `fetchFeaturedModelSuggestions`（推荐模型建议）·
+   `fetchRequestLogDetail`（`/api/logs/<id>`，与已接的 `/api/admin/request-detail/` 并存）·
+   `fetchVersion`（版本信息）。⇒ 端点都在、客户端都实现了，**接线是产品决策**。
+2. ⛔ **A 类 3 条**：只是没必要的 `export`，删掉零风险，但收益也只是「不误导人」。
+3. ⛔ **C 类 2 条**：承载的是正确性知识。要么让 UI 用起来，要么把知识降级进注释。
