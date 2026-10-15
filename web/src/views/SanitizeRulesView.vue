@@ -1169,4 +1169,197 @@ onBeforeUnmount(() => {
     </template>
   </main>
 </template>
-<style scoped></style>
+<style scoped>
+.sanitize-rules-view {
+  padding: 20px;
+  min-width: 0;
+  color: var(--text-primary);
+}
+.provenance,
+.toolbar,
+.tabs {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.provenance {
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  padding: 12px;
+  margin-bottom: 16px;
+  font-variant-numeric: tabular-nums;
+}
+.provenance small {
+  margin-inline-start: auto;
+}
+.tabs {
+  border-bottom: 1px solid var(--border);
+  margin: 16px 0;
+  gap: 0;
+}
+.tab {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 12px 16px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.toolbar {
+  margin-bottom: 12px;
+}
+.toolbar label {
+  margin: 0;
+}
+.card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+  background: var(--bg-card, var(--bg-secondary));
+}
+.rule-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 430px);
+  gap: 18px;
+  align-items: start;
+}
+.rule-workspace:not(:has(.editor)) {
+  grid-template-columns: minmax(0, 1fr);
+}
+.table-scroll {
+  overflow-x: auto;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+th,
+td {
+  text-align: start;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+th {
+  font-size: 12px;
+  color: var(--muted);
+}
+tr.selected {
+  background: var(--bg-hover);
+}
+small {
+  display: block;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+code,
+pre,
+.json-editor {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+}
+code {
+  overflow-wrap: anywhere;
+}
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.check {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  margin-inline-end: 12px;
+}
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 12px;
+}
+input:not([type="checkbox"]),
+textarea,
+select {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-input, var(--bg));
+  color: var(--text-primary);
+  padding: 8px;
+  min-width: 0;
+  max-width: 100%;
+  font: inherit;
+}
+textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+.json-editor {
+  width: 100%;
+  margin: 12px 0;
+}
+input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+}
+.btn {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+}
+.btn-primary {
+  background: var(--accent);
+  color: var(--on-primary);
+  border-color: var(--accent);
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.danger {
+  color: var(--danger);
+}
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.error-banner {
+  padding: 12px;
+  border-inline-start: 3px solid var(--danger);
+  background: var(--bg-secondary);
+  color: var(--danger);
+}
+.notice {
+  padding: 12px;
+  border-inline-start: 3px solid var(--accent);
+  background: var(--bg-secondary);
+}
+.warning {
+  color: var(--warning);
+}
+.muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+</style>
