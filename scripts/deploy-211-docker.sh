@@ -84,6 +84,17 @@ done
 CLAIM_FILE="$D211_STATE_DIR/redis-db.claim"
 ENV_FILE="$D211_STATE_DIR/env/gateway.env"
 
+# ── 执行位置守卫（2026-10-15）────────────────────────────────────────
+# 无参模式 = 「在 211 本机以 root 执行」：状态目录 /opt/llm-gateway-go-211、
+# 本机 docker 容器探测、docker build、127.0.0.1:8781 就绪探测全是目标机
+# 语境。在部署机（macOS）上裸跑会在 mkdir /opt/llm-gateway-go-211 处报
+# Permission denied——那不是权限配置问题，是执行位置不对；而且就算 sudo
+# 建出目录，后面操作的也是 Mac 自己的 docker 而不是 211 的。远程部署一律
+# 走 --via（tar 同步仓库 → ssh 到目标机以 root 重跑本脚本）。
+if [[ -z "$VIA" && "$(uname -s)" == "Darwin" ]]; then
+  die "检测到在 macOS 上以本机模式运行。本脚本无参模式必须在 211 本机以 root 执行（状态目录 ${D211_STATE_DIR} 是 Linux 路径）；从部署机远程部署请用：bash $0 --via ${D211_TARGET_IP}（基础镜像可用 D211_GO_BASE_IMAGE/D211_RUNTIME_BASE_IMAGE 指向本地离线包）"
+fi
+
 # =============================================================================
 # --via：把当前仓库同步到目标机并在目标机上执行本脚本
 # =============================================================================

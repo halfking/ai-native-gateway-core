@@ -328,6 +328,13 @@ for _pat in 'LLM_GATEWAY_STATIC_DIR=/app/web/dist' 'MOBILE_WEB_DIST=/app/web-mob
     bad "web 腿契约缺失: $_pat（SPA/移动端/版本元数据将回落或不可用）"
   fi
 done
+# 执行位置守卫：macOS 裸跑（无 --via）必须立刻给出 --via 指引，而不是让
+# mkdir /opt/llm-gateway-go-211 甩出无上下文的 Permission denied（2026-10-15 用户实测踩到）
+if grep -q 'uname -s.*==.*Darwin.*||' "$SCRIPT" || grep -qE '\[\[ -z "\$VIA" && "\$\(uname -s\)" == "Darwin" \]\]' "$SCRIPT"; then
+  ok "macOS 裸跑守卫在场（误用即报并指路 --via）"
+else
+  bad "缺 macOS 裸跑守卫：部署机误以本机模式执行只会看到 mkdir Permission denied"
+fi
 
 echo
 printf '结果: %d 通过, %d 失败\n' "$pass" "$fail"
