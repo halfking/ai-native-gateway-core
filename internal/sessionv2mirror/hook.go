@@ -34,7 +34,8 @@ import (
 // The hook checks sessions_v2.shadow_write and sessions_v2.enabled flags.
 // The hook is a no-op when:
 //   - writer is nil,
-//   - the feature flag disables V2 shadow writes,
+//   - the feature flag disables new V2 shadow writes and this entry has not
+//     already selected V2 as its canonical write source,
 //   - the entry is a non-terminal (in_progress) state.
 //
 // 存储优化方案 v2 §3-D4：无 gw_session_id 的流量（探针/系统/匿名）不再被
@@ -116,7 +117,10 @@ func PersistHook(writer V2Writer, dims ...DimWriter) func(entry *telemetry.Reque
 		// Check feature flags via the shadowWriteEnabled seam (defaults to
 		// the settings-backed reader; tests override it because
 		// settings.Global is nil in the unit-test binary).
-		if !shadowWriteEnabled() {
+		// A completed telemetry transaction that skipped V1 has already chosen
+		// V2 as its fact source. Finish that write even if a subsequent config
+		// switch closes new shadow writes; durable replay has the same contract.
+		if !entry.SessionV2WriteRequired && !shadowWriteEnabled() {
 			return
 		}
 

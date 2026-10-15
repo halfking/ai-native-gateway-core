@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/settings"
@@ -83,6 +84,13 @@ func TestInsertRequestLogStopWriteGate(t *testing.T) {
 			mock.ExpectCommit()
 
 			c := NewClientWithRequestLogDB(mock)
+			c.AddOnRequestLogPersisted(func(entry *RequestLogEntry) {
+				raw, err := json.Marshal(entry)
+				require.NoError(t, err)
+				var persisted map[string]any
+				require.NoError(t, json.Unmarshal(raw, &persisted))
+				require.Equal(t, !tc.writeOn, persisted["session_v2_write_required"] == true, "the committed request must retain its selected canonical writer")
+			})
 			err = c.persistRequestLog(&RequestLogEntry{
 				Op:        RequestLogInsert,
 				RequestID: "req-stop-write-insert",
@@ -130,6 +138,13 @@ func TestUpdateRequestLogStopWriteGate(t *testing.T) {
 			mock.ExpectCommit()
 
 			c := NewClientWithRequestLogDB(mock)
+			c.AddOnRequestLogPersisted(func(entry *RequestLogEntry) {
+				raw, err := json.Marshal(entry)
+				require.NoError(t, err)
+				var persisted map[string]any
+				require.NoError(t, json.Unmarshal(raw, &persisted))
+				require.Equal(t, !tc.writeOn, persisted["session_v2_write_required"] == true, "the committed request must retain its selected canonical writer")
+			})
 			err = c.persistRequestLog(&RequestLogEntry{
 				Op:        RequestLogUpdate,
 				RequestID: "req-stop-write-update",

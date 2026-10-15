@@ -251,14 +251,18 @@ const (
 )
 
 type RequestLogEntry struct {
-	Op            RequestLogOp `json:"op,omitempty"`
-	RequestID     string       `json:"request_id"`
-	EventAt       *time.Time   `json:"event_at,omitempty"`
-	TenantID      string       `json:"tenant_id"`
-	ApplicationID *int         `json:"application_id,omitempty"`
-	APIKeyID      *int         `json:"api_key_id,omitempty"`
-	EndUserID     *string      `json:"end_user_id,omitempty"`
-	CustomerID    *int64       `json:"customer_id,omitempty"`
+	// SessionV2WriteRequired records this request's already-selected fact source.
+	// Once a transaction skips V1, later configuration changes must not cancel
+	// its V2 persistence. JSON preserves the decision through fallback/outbox.
+	SessionV2WriteRequired bool         `json:"session_v2_write_required,omitempty"`
+	Op                     RequestLogOp `json:"op,omitempty"`
+	RequestID              string       `json:"request_id"`
+	EventAt                *time.Time   `json:"event_at,omitempty"`
+	TenantID               string       `json:"tenant_id"`
+	ApplicationID          *int         `json:"application_id,omitempty"`
+	APIKeyID               *int         `json:"api_key_id,omitempty"`
+	EndUserID              *string      `json:"end_user_id,omitempty"`
+	CustomerID             *int64       `json:"customer_id,omitempty"`
 	// RequestClass 是请求类型（V6-W1.6 R8，migration 610）：immediate|scheduled。
 	// nil 落库为 'immediate'（列 NOT NULL DEFAULT，INSERT 侧 COALESCE）；
 	// 由 handler 从 ExecParams.DispatchDueAt（X-Gw-Due-At 头）推导并盖章。
@@ -1339,6 +1343,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 
 	// S4 停写门控：每事务读一次，快照贯穿整个写入路径。
 	logsWrite := requestLogsWriteEnabled()
+	entry.SessionV2WriteRequired = entry.SessionV2WriteRequired || !logsWrite
 
 	// §9.51：进程内指纹 arm 必须在门控**之外**——它记录的是「本实例见过带
 	// 指纹的请求」，不是「值落进了 v1」。放在 persistSystemFingerprint 里
@@ -2127,6 +2132,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 
 	// S4 停写门控：每事务读一次，快照贯穿整个写入路径。
 	logsWrite := requestLogsWriteEnabled()
+	entry.SessionV2WriteRequired = entry.SessionV2WriteRequired || !logsWrite
 
 	// §9.51：进程内指纹 arm 必须在门控**之外**——它记录的是「本实例见过带
 	// 指纹的请求」，不是「值落进了 v1」。放在 persistSystemFingerprint 里
