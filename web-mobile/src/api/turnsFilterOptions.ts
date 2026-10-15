@@ -5,7 +5,7 @@ import { req, type RequestOptions } from './client'
  *
  * GET /api/admin/turns/sessions/filter-options
  *
- * - **注册**：`admin/handler.go:1299`（★ 原写 `:1277`，**整块漂 22 行**，第一百二十七批订正）
+ * - **注册**：`admin/handler.go:1307`（★ 原写 `:1277`，**整块漂 30 行**，第一百二十七批订正）
  *   ```go
  *   mux.HandleFunc("/api/admin/turns/sessions/filter-options", admin(h.handleTurnsFilterOptions))
  *   ```
@@ -322,7 +322,7 @@ export function statusCodeFilterValue(v: string): number | null {
  * ⇒ 每个维度都带 `tenantWhere`，**没有别人的东西** ⇒ 按批 119 的边界不过度限制。
  *
  * ⚠️⚠️★★ **服务端这一层是唯一的门**：
- * 注册 `admin/handler.go:1299` 的 `admin(...)` 是 `admin/handler.go:925` 的局部别名
+ * 注册 `admin/handler.go:1307` 的 `admin(...)` 是 `admin/handler.go:933` 的局部别名
  * `admin := h.admin` ⇒ `h.admin` = `AdminMiddleware`（`admin/auth.go:85` 起，
  * **全文无任何 `claims.Role` 比对**）+ `pkg/identity` 的 `supportedRole` **接受 `"user"`**
  * ⇒ 任何已认证的普通用户都能调到这些**租户级**清单。

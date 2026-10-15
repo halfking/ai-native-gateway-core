@@ -5,12 +5,12 @@ import { req, type RequestOptions } from './client'
  *
  * GET /api/admin/storage/migration-state
  *
- * - **注册**：`mux.HandleFunc` 直挂在 `admin/handler.go:1111`
+ * - **注册**：`mux.HandleFunc` 直挂在 `admin/handler.go:1140`
  *   ```go
  *   mux.HandleFunc("/api/admin/storage/migration-state", admin(h.handleMigrationState))
  *   ```
- *   ⇒ ★★ **admin 档**（`h.admin` = `AdminMiddleware`，`handler.go:880`）
- *   ⇒ ★★★ **与批 93 的 `storage/config`（`:1108`，**superAdmin** 档）同前缀、
+ *   ⇒ ★★ **admin 档**（`h.admin` = `AdminMiddleware`，`handler.go:901`）
+ *   ⇒ ★★★ **与批 93 的 `storage/config`（`:1137`，**superAdmin** 档）同前缀、
  *     相邻两行、两种档位** ⇒ 再次印证「不能按前缀推权限」。
  * - **实现**：`admin/storage_migration.go:401-421`（handler）· `:425-427`（分发入口）·
  *   `:99-112`（`getMigration`）· `:48-64`（`migrationRun`）· `:40-45`（状态枚举）。
@@ -385,7 +385,7 @@ export function migrationStateContainsRunId(s: MigrationStateResponse, runId: st
  * ⇒ 载荷里没有「别人的东西」⇒ 按批 119 的边界**不过度限制**。
  *
  * **（乙）但需要 `'admin'`** —— 服务端**没有角色下限**。
- * 注册行 `admin/handler.go:1132` 的 `admin(...)` 是 `admin/handler.go:925` 的
+ * 注册行 `admin/handler.go:1140` 的 `admin(...)` 是 `admin/handler.go:933` 的
  * 局部别名 `admin := h.admin`，而 `h.admin` = `AdminMiddleware`
  * （`admin/auth.go:85` 起，全文**无任何 `claims.Role` 比对**）
  * + `pkg/identity/verifier.go` 的 `supportedRole` **接受 `"user"`**
@@ -393,8 +393,8 @@ export function migrationStateContainsRunId(s: MigrationStateResponse, runId: st
  *   而「本机附件目录正从 A 搬到 B」**没理由给普通用户看**。
  *
  * ⚠️★★ 与第一百二十四批（`storageAndLogConfig`）**结论相反且只隔一行**：
- *   `:1129`（storage/config）是 `h.superAdmin` ⇒ **服务端是真门**；
- *   `:1132`（本族）是 `admin(...)` ⇒ **服务端没有门**。
+ *   `:1137`（storage/config）是 `h.superAdmin` ⇒ **服务端是真门**；
+ *   `:1140`（本族）是 `admin(...)` ⇒ **服务端没有门**。
  * ⇒ ★★ 前端这一层在批 124 是**体验兜底**，在本族**是唯一的门**。
  *   前端严于后端是**兜底不是修复**。
  *

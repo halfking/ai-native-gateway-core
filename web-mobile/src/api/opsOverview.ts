@@ -5,7 +5,7 @@ import { req, type RequestOptions } from './client'
  *
  * GET /api/admin/ops/overview
  *
- * - **注册**：`admin/handler.go:1091` `mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))`
+ * - **注册**：`admin/handler.go:1099` `mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))`
  *   ⇒ **admin 档**（`AdminMiddleware` 只认证不检 role ⇒ tenant_admin 后端**能**读）。
  * ★★ 2026-10-14 第一百一十七批订正：这一行原先写的是 `handler.go:1070`（**漂移 21 行**），
  *   且结论「抽屉席**不设** `requiresRole`」与同文件末尾那句「不按租户隔离」**自相矛盾** ——
@@ -337,7 +337,7 @@ export interface OpsOverviewResponse {
 
 // ── fetch ───────────────────────────────────────────────────────────────────
 
-/** GET `/api/admin/ops/overview`（`handler.go:1091`，**admin 档** ⇒ 后端 tenant_admin 可读）。无参数。 */
+/** GET `/api/admin/ops/overview`（`handler.go:1099`，**admin 档** ⇒ 后端 tenant_admin 可读）。无参数。 */
 export function fetchOpsOverview(options?: RequestOptions): Promise<OpsOverviewResponse> {
   return req<unknown>('GET', '/api/admin/ops/overview', undefined, options).then(unwrapOpsOverview)
 }
@@ -613,7 +613,7 @@ export function opsRuntimeHasMetrics(row: OpsRuntimeMetric): boolean {
 
 /**
  * ★★★★★★ 权限档（第一百一十七批逐字核过四处）：
- *   ① 注册处 `admin/handler.go:1091` 传的是 `admin(...)` = `h.admin`（`handler.go:894`）
+ *   ① 注册处 `admin/handler.go:1099` 传的是 `admin(...)` = `h.admin`（`handler.go:901`）
  *      → `AdminMiddleware`（`admin/auth.go:85-140`）—— **只认证，不检 role**；
  *   ② 该中间件全文**没有** `claims.Role` 比较（对比 `SuperAdminMiddleware` `auth.go:376-409`）；
  *   ③ `admin/ops_overview.go` 全文**没有** `AuthContext` / `IsTenantAdmin` / `Role`；

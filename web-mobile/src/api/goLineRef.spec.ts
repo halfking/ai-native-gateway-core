@@ -28,7 +28,7 @@ import { join, relative, sep } from 'node:path'
  *   1 处只差 1 行），已全部订正并**复核结论仍然成立**（光移行号不算修好）；
  *   剩下 **15 条经逐字核对，引用本身是对的**，只是本判据抓 token 的方式不适用
  *   ⇒ 登记进 `KNOWN_FALSE_POSITIVE`，**它们不是债**。
- *   ⇒ 现状：`KNOWN_DRIFT`（真错）**0 条**，`KNOWN_FALSE_POSITIVE` **15 条**。
+ *   ⇒ 现状：`KNOWN_DRIFT`（真错）**0 条**，`KNOWN_FALSE_POSITIVE` **27 条**（扩全范围后订正）。
  *
  * ★★★★ **批 137 的一个额外发现，值得单独记住**：
  *   那 12 处真错修完之后，在**普查扫不到的范围**里又找到 **16 处同源残留** ——
@@ -239,36 +239,34 @@ const KNOWN_DRIFT: string[] = []
  *   每条写清「为什么判不出来」，将来改判据时才知道该动哪儿。
  */
 const KNOWN_FALSE_POSITIVE: { key: string; note: string }[] = [
-  { key: 'api/connectionRegistry.ts:7 admin/handler.go:1044', note: '注释写 `{id}`，Go 里是 `{request_id}` —— 字面不同，指的同一条注册' },
+  { key: 'api/connectionRegistry.ts:7 admin/handler.go:1052', note: '注释写 `{id}`，Go 里是 `{request_id}` —— 字面不同，指的同一条注册' },
   { key: 'api/credentialsOps.ts:140 admin/routing_reset.go:52', note: '52 行是 `handleResetCredentialState` 的函数定义；token `reason` 在函数体内（注释自己就写了 `:69-72`）' },
   { key: 'api/dashboard.ts:14 admin/dashboardapi/types.go:187', note: '187 行是 `writeSuccessJSON` 产出结构里的一行（`Success: true`），不是该函数本身' },
   { key: 'api/dispatchJournal.ts:18 admin/journal_handlers.go:30-35', note: '被引处写的是**常量名** `dispatchJournalAPIPath`，字面量在 :13' },
   { key: 'api/errorsTrend.ts:38 admin/users.go:406', note: '行里是大写 `Role`，token 是小写 `role`（大小写敏感）' },
   { key: 'api/outputCompliance.ts:131 admin/output_compliance_handler.go:712', note: '712 行是 `writeJSON(...{"feedback": items...})`，token 是函数名 `listFeedback`（定义在 :673）' },
   { key: 'api/requestActions.ts:94 middleware/requestid_mw.go:83-89', note: '83 行是 `generateRequestID()` 的定义；token `request_id` 在函数体内' },
-  { key: 'api/sessions.ts:9 cmd/gateway/main.go:7268-7275', note: '7268-7275 是路由清单 `slog.Info`，token `wrapAdmin` 出现在同一段里但不在被引区间' },
   { key: 'api/sessions.ts:11 admin/session_summary_v2.go:89', note: '89 行正是 `if r.Method != http.MethodPost` 那句；token 是端点名 `summary`（不在该行）' },
   { key: 'api/slidingWindow.ts:18 credentialhealth/recorder.go:16-22', note: '同一行是一串链式引用；`slidingWindowQuery` 配的是同行的 `:815` 那条，`recorder.go:16-22` 配的是 `CallEntry`' },
   { key: 'api/taskProfile.ts:27 taskprofile/suggest.go:45-92', note: '45 行是 `Suggest` 的定义；token `ensurePool` 配的是同行另一条引用 `:435-441`' },
-  { key: 'api/taskTypeCorrectionStats.ts:20 admin/handler.go:1413', note: '1413 行确实是 `admin(...)` 注册（结论成立）；token `requiresRole` 是**前端概念**，Go 里没有这个词' },
+  { key: 'api/taskTypeCorrectionStats.ts:20 admin/handler.go:1421', note: '1421 行确实是 `admin(...)` 注册（结论成立）；token `requiresRole` 是**前端概念**，Go 里没有这个词' },
   { key: 'api/turnsFilterOptions.ts:317 admin/turns_filter_options.go:61-73', note: '61-73 就是注释里**逐字引用的那段**租户判断；token 是函数名（定义在 :49）' },
   { key: 'api/usageEnhanced.ts:27 pkg/identity/verifier.go:111', note: '111 行是 `Verify` 的定义；token `supportedRole` 在它函数体内（:120 附近）' },
   { key: 'api/usageTrendSeries.ts:265 admin/usage_trend_series.go:407', note: '407 行是 SQL 读面的 FROM 子句；token `source` 是**对外字段名**' },
   // —— 以下 14 条为第一百三十九批新增（把棘轮扩到 views/ 与测试文件后暴露的）
-  { key: 'api/sessionContext.test.ts:34 admin/handler.go:1318', note: '★ token 字面写的是 `/api/system/...`（**带省略号**）⇒ 永远不可能在源码里逐字命中；引用本身本批已订正为真实的 `:1318`' },
+  { key: 'api/sessionContext.test.ts:34 admin/handler.go:1326', note: '★ token 字面写的是 `/api/system/...`（**带省略号**）⇒ 永远不可能在源码里逐字命中；引用本身本批已订正为真实的 `:1326`' },
   { key: 'router/index.ts:765 admin/credential_monitor.go:704-782', note: '★★ **否定式断言**：该行声称的是「这一段里**没有** `tenantID` 变量」⇒ token 不出现**正是它要断言的事实**。这类断言结构上就判不出对错，只能登记' },
   { key: 'router/index.ts:855 cmd/gateway/main_jwt_middleware.go:65-73', note: '★ `:65` 逐字就是 `func newRequireSuperAdminMiddleware()`；token 是 `main.go:7002` 那个**局部变量**的名字 —— 定义处/调用点/绑定点三者分离' },
   { key: 'router/index.ts:948 cmd/gateway/main_admin_wrappers.go:42', note: '★ `:42` 逐字就是 `func newWrapSessionAnalytics(...)`；同上，token 是调用点的变量名' },
   { key: 'views/SubscriptionTiersView.spec.ts:31 cmd/gateway/main_jwt_middleware.go:65-73', note: '与 `router/index.ts:855` 同一条引用（工厂函数定义行）' },
   { key: 'views/SubscriptionTiersView.vue:14 cmd/gateway/main_jwt_middleware.go:65-74', note: '同上；范围 65-74 比 65-73 多一行，仍完整覆盖该函数' },
-  { key: 'views/ModuleDetailView.spec.ts:72 admin/modules.go:836-839', note: '引用的是该端点**响应结构**的 `writeJSON(map...)` 段；token 是请求路径，不是 JSON 键' },
+  { key: 'views/ModuleDetailView.spec.ts:72 admin/modules.go:838-841', note: '引用的是该端点**响应结构**的 `writeJSON(map...)` 段；token 是请求路径，不是 JSON 键' },
   { key: 'views/WorkTypesView.spec.ts:22 admin/work_types.go:298', note: '引用的是 SQL 的 `AND (...)` 片段；token 是**列名** `by_work_type`，不出现在片段的起始行' },
   { key: 'views/WorkTypesView.vue:66 admin/work_types.go:518', note: '518 行是 struct 定义里的一个字段；token `model_routes` 是**另一个** JSON 键' },
   { key: 'views/ComplianceHitsView.vue:21 admin/output_compliance_handler.go:712', note: '与 `api/outputCompliance.ts` 那条同一引用；712 行是 `writeJSON(...{"feedback": items...})`，token 是函数名' },
   { key: 'views/DispatchJournalView.vue:12 admin/journal_handlers.go:30-35', note: '与 `api/dispatchJournal.ts` 那条同一引用；token `requiresRole` 是**前端概念**，Go 里没有这个词' },
   { key: 'views/FormatAnomaliesView.vue:12 admin/format_anomalies.go:106', note: '引用的是 `withAllTenantReadOnlyTx(...)` 那一行；token `tenant_id` 是**拼进 SQL 的列名**，不在该行' },
   { key: 'views/UsageTrendSeriesView.vue:8 admin/usage.go:60-64', note: 'token `requiresRole` 是**前端概念**（路由 meta），Go 里没有这个词；引用本身正确' },
-  { key: 'api/attachments.test.ts:56 admin/handler.go:1021', note: '本批已订正到 `:1021`；但 token `/api/admin/attachments/` 带**尾斜杠**，而 `:1021` 注册写的是 `"/api/admin/attachments"`（无尾斜杠）⇒ 结构上判不出' },
 ]
 
 const REGISTERED: string[] = [...KNOWN_DRIFT, ...KNOWN_FALSE_POSITIVE.map((f) => f.key)]
@@ -321,7 +319,7 @@ describe('① Go 行号引用普查：读数 + 召回自证 + 阳性对照', () 
 
   it('①-3 ★★★★ 阳性对照：一条真实**正确**的引用必须判为对得上', () => {
     // 批 136 实测：`api/connectionRegistry.ts` 的列表端点引用
-    //   `admin/handler.go:1043`，而那一行逐字是
+    //   `admin/handler.go:1051`，而那一行逐字是
     //   `mux.HandleFunc("/api/admin/connection-registry", admin(...))`。
     // ⇒ 反向读数：判据不能只会喊「对不上」。
     const src = readFileSync(join(WEB, 'api', 'connectionRegistry.ts'), 'utf8')
@@ -329,7 +327,7 @@ describe('① Go 行号引用普查：读数 + 召回自证 + 阳性对照', () 
     const { counts, bad } = classify(refs)
     expect(counts['可判定']).toBe(2)
     expect(bad).toHaveLength(1)
-    expect(bad[0]?.from, '唯一判为对不上的应该是 {id} 那条（Go 里是 {request_id}）').toBe(1044)
+    expect(bad[0]?.from, '唯一判为对不上的应该是 {id} 那条（Go 里是 {request_id}）').toBe(1052)
   })
 })
 
@@ -378,8 +376,8 @@ describe('④ 名单规模', () => {
     expect(KNOWN_DRIFT).toHaveLength(0)
   })
 
-  it('④-1b ★★★★ KNOWN_FALSE_POSITIVE 恰好 29 条（逐条定性过，不是债）', () => {
-    expect(KNOWN_FALSE_POSITIVE).toHaveLength(29)
+  it('④-1b ★★★★ KNOWN_FALSE_POSITIVE 恰好 27 条（逐条定性过，不是债）', () => {
+    expect(KNOWN_FALSE_POSITIVE).toHaveLength(27)
   })
 
   it('④-2 ★★ 名单里每一条的 Go 文件都得真实存在（否则是笔误不是债）', () => {
@@ -445,7 +443,7 @@ describe('⑤ ★★★ 全范围读数报告（棘轮已在本批扩到全范�
     // ⚠️ 本条在第一百三十九批起**退回可见性下界**：全范围的棘轮已由 ②/③ 承担，
     //   这里只负责「把数量一直印出来」，不再重复当棘轮用。
     //   （下界结构上抓不到新增 —— 批 138 的 J01 就是这么全绿的；那个教训已由 ② 兑现。）
-    // ⚠️ 29 = 14 条批 137 登记的 + 15 条本批新增的**假阳性**，全部逐条注明了
+    // ⚠️ 当前 27 条假阳性：sessions / attachments 改引真实注册后移除了两条旧登记；其余注明了
     //   「为何结构上判不出」。真错 KNOWN_DRIFT 已在批 137 清零。
     expect(bad.length).toBeGreaterThanOrEqual(20)
   })
