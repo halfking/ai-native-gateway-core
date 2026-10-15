@@ -196,3 +196,42 @@ func (s *MemoryStore) ReviewEvent(ctx context.Context, tenant string, id int64, 
 	}
 	return Event{}, ErrNotFound
 }
+func (s *MemoryStore) Heartbeat(ctx context.Context, i Instance) error {
+	if !validID(i.InstanceID) {
+		return fmt.Errorf("%w: invalid instance id", ErrInvalid)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.instances[i.InstanceID] = safeInstance(i)
+	return nil
+}
+func (s *MemoryStore) ListInstances(ctx context.Context) ([]Instance, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	out := []Instance{}
+	for _, i := range s.instances {
+		out = append(out, i)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].InstanceID < out[j].InstanceID })
+	return out, nil
+}
+
+func (s *MemoryStore) GetEvent(ctx context.Context, id int64) (Event, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return Event{}, err
+	}
+	for _, e := range s.events {
+		if e.ID == id {
+			return cloneEvent(e), nil
+		}
+	}
+	return Event{}, ErrNotFound
+}
