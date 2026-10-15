@@ -99,9 +99,14 @@ func TestQuotaHeldAll(t *testing.T) {
 	if !quotaHeldAll(cands) {
 		t.Fatal("quotaHeldAll want true when routing_blocked wraps quota: (production shape)")
 	}
+	// The DB circuit mirror must not change quota-only probe eligibility.
 	cands[0].CircuitState = "open"
+	if !quotaHeldAll(cands) {
+		t.Fatal("observational circuit mirror must not turn quota-only holds into probeable failures")
+	}
+	cands[0].AvailabilityState = "cooling"
 	if quotaHeldAll(cands) {
-		t.Fatal("quotaHeldAll want false when circuit:open present")
+		t.Fatal("quotaHeldAll want false for an authoritative non-quota hold")
 	}
 }
 

@@ -24,8 +24,10 @@
 //	  provider/client.go:290   IsAvailable() := UnavailableReason()==""
 //	  executors/executor_dispatch.go:120/170-171  dispatchCandidateAllowed 逐候选准入
 //
-//	即：**DB 里的 circuit_state='open' 会真实摘掉候选**，凭据收不到请求
-//	（唯一例外是 PinCredentialID 的可信探测豁免，executor_dispatch.go:169-171）。
+//	这是 R89-EJ 时点的历史读路径。2026-10-16 Vapeur 修复已撤除
+//	UnavailableReason 中 circuit_state 镜像准入：字段仍用于诊断，
+//	真实熔断由 dispatch 的 credential.Manager.Allow 执行。否则重启后
+//	陈旧 open 或异步丢失的 closed 镜像会阻止候选进入半开恢复。
 //
 //	为什么 R87-f 没看见：routeguard 的扫描面**只有 SQL 文件**
 //	（RoutingViewFiles 只 walk *.sql），上面这条读路径全在 Go 里，
