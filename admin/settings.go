@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -277,6 +278,10 @@ func (h *Handler) settingsPut(w http.ResponseWriter, r *http.Request, key string
 		oldVal, err = store.Set(scope, key, v)
 	}
 	if err != nil {
+		if errors.Is(err, settings.ErrNoRequestWriteSource) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeInternalErr(w, "save failed", err)
 		return
 	}
