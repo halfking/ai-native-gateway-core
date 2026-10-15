@@ -239,7 +239,7 @@ func (it *OutputComplianceInterceptor) processBody(ctx context.Context, req *res
 		if result == nil {
 			return "", 0, false, errors.New("output compliance checker returned nil result")
 		}
-		if result.Blocked {
+		if result.Blocked || shouldRedact && result.ToolShapeRedactionRequired {
 			return "", 0, true, nil
 		}
 		if !shouldRedact || result.RedactedOutput == "" || result.RedactedOutput == original {
