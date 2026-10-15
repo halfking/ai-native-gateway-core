@@ -190,3 +190,157 @@ func (m *Manager) Rollback(ctx context.Context, base, target int64, actor, comme
 	m.afterPublish(ctx, v.ID)
 	return v, nil
 }
+func (m *Manager) afterPublish(ctx context.Context, id int64) {
+	_ = m.Refresh(ctx)
+	if m.opts.Notifications != nil {
+		if err := m.opts.Notifications.Publish(ctx, id); err != nil {
+			m.report("sanitize rule notification failed")
+		}
+	}
+}
+
+// Record accepts metadata into a bounded queue. It never performs a DB operation
+// or reads dynamic settings. The background writer applies the live audit switch.
+func (m *Manager) Record(ctx context.Context, e Event) bool {
+	if ctx.Err() != nil || m.stopped.Load() {
+		return false
+	}
+	clean, err := prepareEvent(e)
+	if err != nil {
+		m.queueError("sanitize rule event metadata invalid")
+		return false
+	}
+	select {
+	case m.queue <- clean:
+		return true
+	default:
+		m.dropped.Add(1)
+		m.queueError("sanitize rule audit queue full")
+		return false
+	}
+}
+func (m *Manager) queueError(message string) {
+	select {
+	case m.errors <- message:
+	default:
+	}
+}
+
+// DroppedEvents reports metadata records rejected by the full audit queue.
+func (m *Manager) DroppedEvents() int64 { return m.dropped.Load() }
+func (m *Manager) pollInterval() time.Duration {
+	d := 30 * time.Second
+	if m.opts.PollInterval != nil {
+		d = m.opts.PollInterval()
+	}
+	if d < 10*time.Millisecond {
+		d = 10 * time.Millisecond
+	}
+	if d > 5*time.Minute {
+		d = 5 * time.Minute
+	}
+	return d
+}
+func (m *Manager) writeEvent(ctx context.Context, e Event) {
+	// Settings can read the database. They belong to this bounded background
+	// worker; Record must never wait on a settings query in the request path.
+	if m.opts.AuditEnabled != nil && !m.opts.AuditEnabled() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	limit := 10000
+	if m.opts.EventLimit != nil {
+		limit = m.opts.EventLimit()
+	}
+	if err := m.store.RecordEvent(ctx, e, limit); err != nil {
+		m.report("sanitize rule audit write failed")
+	}
+}
+
+// Run owns background polling and bounded audit writes until cancellation. Audit
+// persistence has its own worker so a slow write cannot delay policy convergence.
+// OnError is called from background/control operations and must return promptly.
+func (m *Manager) Run(ctx context.Context) {
+	if !m.running.CompareAndSwap(false, true) {
+		m.report("sanitize rule manager already running")
+		return
+	}
+	auditDone := make(chan struct{})
+	go func() { defer close(auditDone); m.auditWorker(ctx) }()
+	defer func() { m.stopped.Store(true); <-auditDone }()
+
+	var events <-chan int64
+	type subscriptionResult struct {
+		events <-chan int64
+		err    error
+	}
+	subscribed := make(chan subscriptionResult, 1)
+	pending := false
+	subscribe := func() {
+		if events != nil || pending || m.opts.Notifications == nil {
+			return
+		}
+		pending = true
+		go func() {
+			ch, err := m.opts.Notifications.Subscribe(ctx)
+			select {
+			case subscribed <- subscriptionResult{ch, err}:
+			case <-ctx.Done():
+			}
+		}()
+	}
+
+	_ = m.Refresh(ctx)
+	subscribe()
+	timer := time.NewTimer(m.pollInterval())
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			m.stopped.Store(true)
+			return
+		case result := <-subscribed:
+			pending = false
+			if result.err != nil {
+				m.report("sanitize rule subscription failed")
+			} else {
+				events = result.events
+			}
+		case message := <-m.errors:
+			m.report(message)
+		case _, open := <-events:
+			if !open {
+				events = nil
+			} else {
+				_ = m.Refresh(ctx)
+			}
+		case <-timer.C:
+			_ = m.Refresh(ctx)
+			subscribe()
+			timer.Reset(m.pollInterval())
+		}
+	}
+}
+func (m *Manager) auditWorker(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			drainCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			for {
+				select {
+				case e := <-m.queue:
+					m.writeEvent(drainCtx, e)
+					if drainCtx.Err() != nil {
+						return
+					}
+				default:
+					return
+				}
+			}
+		case e := <-m.queue:
+			m.writeEvent(ctx, e)
+		}
+	}
+}
