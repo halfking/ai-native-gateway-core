@@ -242,6 +242,9 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 			m.logger.Warn("sanitize_middleware: sanitize failed",
 				"error", err, "session_id", sessionID)
 			status := http.StatusServiceUnavailable
+			if errors.Is(err, ErrRuleBlocked) {
+				status = http.StatusForbidden
+			}
 			if errors.Is(err, errInvalidSanitizeInput) {
 				status = http.StatusBadRequest
 			}
