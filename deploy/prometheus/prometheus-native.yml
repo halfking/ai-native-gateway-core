@@ -1,0 +1,27 @@
+# Native 245 template. Compose uses prometheus.yml instead.
+# Install sync-active-target.py and its systemd service/timer before reload.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'llm-gateway'
+    environment: 'production'
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['127.0.0.1:9093']
+
+rule_files:
+  - '/opt/monitoring/prometheus/rules/*.yml'
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['127.0.0.1:9090']
+  - job_name: 'llm-gateway'
+    scrape_interval: 15s
+    file_sd_configs:
+      - files: ['/opt/monitoring/prometheus/targets/gateway-active.json']
+        refresh_interval: 5s
+    bearer_token_file: '/opt/monitoring/prometheus/secrets/admin_token'

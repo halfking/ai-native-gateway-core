@@ -67,7 +67,17 @@ RFC-2606 占位符**：未配置时响亮失败而非静默，这正是它当初
 `slots/8782/` 这类蓝绿槽位会改变监听端口，而 Prometheus 的 `static_configs`
 是写死的。**网关迁槽后 `up` 会一直是 0，而 `LLMGatewayDown` 会一直 firing**——
 告警常年真鸣，最终被当噪声忽略，反而掩盖了真实故障。
-⇒ 蓝绿切换后第一件事：`curl 127.0.0.1:<新端口>/metrics` 并核对 Prometheus targets。
+2026-10-16 复查再次发现反向漂移：active-port 已回到 8781，抓取仍固定 8782，产生 `LLMGatewayDown`。原先仅改端口并没有解决复发。
+
+原生部署改用 `prometheus-native.yml` 的 `file_sd_configs`：
+- `sync-active-target.py` 读取 `/opt/llm-gateway-go/run/active-port`，只接受 8781/8782，原子发布 `/opt/monitoring/prometheus/targets/gateway-active.json`。
+- `llmgo-prometheus-target-sync.timer` 每 15 秒更新，Prometheus 每 5 秒读取；`instance=gateway-245` 跨槽保持一致。
+- active-port 缺失或非法时 updater 失败并保留最后目标，不用空列表隐藏故障。仍需关注 updater unit 的失败状态。
+- 不抓闲置槽位，避免把正常关闭的槽位当作宕机；compose 配置保持不变。
+
+安装：将脚本放到 `/opt/monitoring/prometheus/`，先创建 `targets/`；将 service/timer 放到 `/etc/systemd/system/`，执行 `systemctl daemon-reload`、`systemctl start llmgo-prometheus-target-sync.service`、`systemctl enable --now llmgo-prometheus-target-sync.timer`。备份现网配置，将现有网关 job 的 static_configs 替换为模板的 file_sd_configs，保留其他 job 和 bearer 文件；运行 promtool check config 后 reload。
+
+验收仍需查询 targets 的真实端口及 `up{job="llm-gateway",instance="gateway-245"}=1`；不要仅凭定时器启动成功宣称采集恢复。
 
 ### 陷阱二：规则里的指标名会过期，且**过期是静默的**
 
@@ -89,7 +99,7 @@ RFC-2606 占位符**：未配置时响亮失败而非静默，这正是它当初
 
 1. `up{job="llm-gateway"} == 1`；
 2. 规则 `state == "firing"`（用 `/api/v1/rules` 读，不是看 Alertmanager）；
-3. Alertmanager 日志出现 `Notify for alerts failed` 或成功投递记录。
+3. 真实配置的接收端收到通知，并核对告警名称与接收时间。`Notify for alerts failed` 只能证明尝试失败，不能作为投递通过；当前占位 webhook 尚未完成真实收件闭环。
 
 第 3 跳之前，**配置看起来永远是绿的**。
 
