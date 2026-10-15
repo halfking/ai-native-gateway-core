@@ -37,6 +37,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 )
 
 // QualityCorrelationRow is a single bucket row.
@@ -152,6 +154,18 @@ func (h *AutoRouteHandlers) handleQualityCorrelations(w http.ResponseWriter, r *
 // Each query aggregates per-bucket and computes the average
 // success/latency/quality/cost. The bucket definition is inlined
 // in the SELECT/GROUP BY.
+//
+// 2026-10-13 S4 波 4：读源会话族化（退役门登记的 DROP 前置实现项）。
+// turns 腿改 canonical 会话族源（is_auto_request/ts/success/latency_ms/
+// quality_score/cost_usd/prompt_tokens/request_preview/tenant_id 全在
+// 118 列合同内）；bodies 腿经切换层取 **outbound_body**（完整上游请求
+// 对象，含 tools 键与 messages）——不能像旧实现那样读 request_body：
+// 会话臂的 request_body 是 request_delta 增量数组（无 tools/messages 键），
+// 机械沿用会把 tools/images 桶静默塌成 '0'/'no_image'。
+// 语义边界（登记在案）：无会话头的探针行按设计不进会话族（R51），
+// 分桶样本自此只含**业务 auto 流量**（旧实现对 is_auto_request=TRUE 的
+// 查询无探针排除谓词、探针行混入样本——新口径更干净，属口径变更）。
+// 停写前历史由 canonical 的 v1 臂继续供数（is_auto_request 在 707 加列）。
 func buildBreakdownQuery(by string) (string, error) {
 	var bucketExpr string
 	switch by {
@@ -165,22 +179,29 @@ func buildBreakdownQuery(by string) (string, error) {
 				ELSE '8000+'
 			END`
 	case "tools":
-		// Count tools in the JSONB request_body
-		// 2026-07-21 Ticket #11: Use COALESCE to access request_body from either table
+		// Count tools in the JSONB outbound_body (full upstream request).
+		// ⚠ jsonb_typeof 守卫（波 4 的 22023 教训）：outbound_body 缺
+		// tools 键时 ->'tools' 为 NULL、COALESCE 兜 '[]'；但 tools 为
+		// JSON 字面量 null 时 SQL 值非 NULL，裸 jsonb_array_length 直接
+		// 22023——非 array 一律记 0。
 		bucketExpr = `
 			CASE
-				WHEN jsonb_array_length(COALESCE(rb.request_body->'tools', '[]'::jsonb)) = 0
+				WHEN CASE WHEN jsonb_typeof(COALESCE(rb.outbound_body->'tools', '[]'::jsonb)) = 'array'
+				          THEN jsonb_array_length(rb.outbound_body->'tools')
+				          ELSE 0 END = 0
 					THEN '0'
-				WHEN jsonb_array_length(COALESCE(rb.request_body->'tools', '[]'::jsonb)) = 1
+				WHEN CASE WHEN jsonb_typeof(COALESCE(rb.outbound_body->'tools', '[]'::jsonb)) = 'array'
+				          THEN jsonb_array_length(rb.outbound_body->'tools')
+				          ELSE 0 END = 1
 					THEN '1'
 				ELSE '2+'
 			END`
 	case "images":
-		// Count images in messages
-		// 2026-07-21 Ticket #11: Use COALESCE to access request_body from either table
+		// Count images in messages. outbound_body 为 JSON null 时
+		// ->'messages' 得 NULL、NULL @> x 不为真 ⇒ 落 no_image（安全）。
 		bucketExpr = `
 			CASE
-				WHEN COALESCE(rb.request_body, '{}'::jsonb)->'messages' @> '[{"content":[{"type":"image_url"}]}]'::jsonb
+				WHEN COALESCE(rb.outbound_body, '{}'::jsonb)->'messages' @> '[{"content":[{"type":"image_url"}]}]'::jsonb
 					THEN 'has_image'
 				ELSE 'no_image'
 			END`
@@ -188,10 +209,9 @@ func buildBreakdownQuery(by string) (string, error) {
 		// Check for triple-backtick in any message. We use
 		// chr(96) three times to avoid backticks inside the
 		// raw string literal (which would terminate it).
-		// 2026-07-21 Ticket #11: Use COALESCE to access request_body from either table
 		bucketExpr = `
 			CASE
-				WHEN position(chr(96) || chr(96) || chr(96) in COALESCE(rb.request_body, '{}'::jsonb)::text) > 0
+				WHEN position(chr(96) || chr(96) || chr(96) in COALESCE(rb.outbound_body, '{}'::jsonb)::text) > 0
 					THEN 'has_code'
 				ELSE 'no_code'
 			END`
@@ -214,19 +234,15 @@ func buildBreakdownQuery(by string) (string, error) {
 		return "", nil // unreachable: caller already validated
 	}
 
-	// 2026-07-21 Ticket #11: Modified to use LEFT JOIN with request_logs_bodies
-	// to access JSONB fields in request_body (moved to separate table in #10).
-	// This affects "tools", "images", and "code_block" dimensions which need
-	// to read the full request_body JSONB structure.
 	return `
 		SELECT ` + bucketExpr + ` AS bucket,
 		       COUNT(*) AS samples,
 		       AVG(CASE WHEN rl.success THEN 1.0 ELSE 0.0 END) AS success_rate,
 		       COALESCE(AVG(rl.latency_ms), 0)::int AS avg_latency,
-		       AVG(rl.quality_score) AS avg_quality,
+		       COALESCE(AVG(rl.quality_score), 0) AS avg_quality,
 		       COALESCE(AVG(rl.cost_usd), 0) AS avg_cost
-		FROM request_logs rl
-		LEFT JOIN request_logs_bodies rb 
+		FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl
+		LEFT JOIN ` + dbpkg.SessionBodiesSourceSQL() + ` rb
 		  ON rb.request_id = rl.request_id
 		WHERE rl.is_auto_request = TRUE
 		  AND rl.ts >= NOW() - INTERVAL '1 day' * $1

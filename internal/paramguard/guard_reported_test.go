@@ -17,21 +17,24 @@ func findReport(reports []Report, field, action string) *Report {
 	return nil
 }
 
-// TestApplyReportedGrokXHighNormalize：grok-4.6 能力表含 xhigh，客户端
-// 发 "x-high"（连字符）应被归一为 "xhigh" 出站，并报告 normalize
-// （响应回显还原用）。语义不变，不产生 clamp。
+// TestApplyReportedGrokXHighNormalize：2026-10-13 审计轮订正后，grok-4.6
+// 能力表**不含** xhigh（vapeur grok-4.6-1 后端 400 明示支持集为
+// none|low|medium|high，raw-logs 2026-10-13T19:36）。客户端发 "x-high"
+// （连字符）先归一为 "xhigh"，再就近降档 "high"——normalize 与 clamp
+// 两条报告都产生（还原链取 clamp 的 Original=x-high）。
 func TestApplyReportedGrokXHighNormalize(t *testing.T) {
 	body := []byte(`{"model":"grok-4.6","messages":[],"reasoning_effort":"x-high"}`)
 	out, reports := ApplyReported(body, paramreg.DialectGrok)
-	if !strings.Contains(string(out), `"reasoning_effort":"xhigh"`) {
-		t.Fatalf("body = %s, want xhigh", out)
+	if !strings.Contains(string(out), `"reasoning_effort":"high"`) {
+		t.Fatalf("body = %s, want high (xhigh clamped)", out)
 	}
 	rep := findReport(reports, "reasoning_effort", "normalize")
 	if rep == nil || rep.Original != "x-high" || rep.Sent != "xhigh" {
 		t.Fatalf("normalize report = %+v", rep)
 	}
-	if findReport(reports, "reasoning_effort", "clamp") != nil {
-		t.Fatalf("grok-4.6 supports xhigh; clamp must not fire: %+v", reports)
+	rep = findReport(reports, "reasoning_effort", "clamp")
+	if rep == nil || rep.Original != "x-high" || rep.Sent != "high" {
+		t.Fatalf("clamp report = %+v", rep)
 	}
 }
 
@@ -128,14 +131,19 @@ func TestApplyReportedNestedResponsesEffort(t *testing.T) {
 	}
 }
 
-// TestApplyReportedNestedResponsesNormalizeOnly：模型支持 xhigh 时只归一。
+// TestApplyReportedNestedResponsesNormalizeOnly：2026-10-13 订正后
+// grok-4.6 不含 xhigh，嵌套形态 "x-high" 归一 + 降档到 high。
 func TestApplyReportedNestedResponsesNormalizeOnly(t *testing.T) {
 	body := []byte(`{"model":"grok-4.6","input":[],"reasoning":{"effort":"x-high"}}`)
 	out, reports := ApplyReported(body, paramreg.DialectResponses)
-	if !strings.Contains(string(out), `"effort":"xhigh"`) {
-		t.Fatalf("body = %s, want xhigh", out)
+	if !strings.Contains(string(out), `"effort":"high"`) {
+		t.Fatalf("body = %s, want effort high (xhigh clamped)", out)
 	}
-	if findReport(reports, "reasoning.effort", "clamp") != nil {
-		t.Fatalf("grok-4.6 supports xhigh: %+v", reports)
+	if findReport(reports, "reasoning.effort", "normalize") == nil {
+		t.Fatalf("normalize report missing: %+v", reports)
+	}
+	rep := findReport(reports, "reasoning.effort", "clamp")
+	if rep == nil || rep.Original != "x-high" || rep.Sent != "high" {
+		t.Fatalf("clamp report = %+v", rep)
 	}
 }

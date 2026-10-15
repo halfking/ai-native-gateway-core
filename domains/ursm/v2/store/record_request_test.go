@@ -682,3 +682,95 @@ func TestRecordRequestLuaSmokeOnRealRedis(t *testing.T) {
 		t.Fatalf("health=%q err=%v, want recovering on real redis", health, err)
 	}
 }
+
+// TestRecordRequestProbePriorityKeyTTLNeverShrinks pins the 2026-10-13
+// extend-only TTL contract for probe/admin-priority keys (source_priority
+// > 10): request telemetry must keep such a key alive but must never cut
+// its TTL back to the traffic NodeTTL. The 7h probe floor (probe.go
+// probeWriteTTLFloor) is what keeps a busy-then-idle pair routable across
+// idle gaps; shrinking it on every request made the authoritative view go
+// red minutes after the last request and every resume stall in
+// sync_no_candidate_probe (154 2026-10-13 grok-4.6).
+func TestRecordRequestProbePriorityKeyTTLNeverShrinks(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("traffic does not shrink a long probe TTL", func(t *testing.T) {
+		s, mr := newTestStore(t)
+		defer mr.Close()
+		node := "ursm:v2:node:probe-ttl-keep"
+		mr.HSet(node, "source_priority", "20", "available", "1")
+		// Probe-grade key with ~7h remaining (25200s floor minus drift).
+		if err := s.rdb.Expire(ctx, node, 7*time.Hour).Err(); err != nil {
+			t.Fatalf("seed ttl: %v", err)
+		}
+		if _, err := s.RecordRequest(ctx, node,
+			"ursm:v2:win:1m:probe-ttl-keep", "ursm:v2:win:5m:probe-ttl-keep", "ursm:v2:win:30m:probe-ttl-keep",
+			RecordOutcome{Success: true, NowMs: 3_000_000, LatencyMs: 100, RequestID: "keep",
+				NodeTTL: 15 * time.Minute, Window5mTTL: 6 * time.Minute, Window30mTTL: 35 * time.Minute}); err != nil {
+			t.Fatalf("record: %v", err)
+		}
+		ttl, err := s.rdb.TTL(ctx, node).Result()
+		if err != nil {
+			t.Fatalf("ttl: %v", err)
+		}
+		if ttl < 6*time.Hour {
+			t.Fatalf("ttl=%v, want ~7h preserved (traffic must not shrink a probe-priority key to NodeTTL)", ttl)
+		}
+		if got := mr.HGet(node, "source_priority"); got != "20" {
+			t.Fatalf("source_priority=%q, want 20 (adjudication ownership preserved)", got)
+		}
+	})
+
+	t.Run("traffic extends a probe key about to lapse", func(t *testing.T) {
+		s, mr := newTestStore(t)
+		defer mr.Close()
+		node := "ursm:v2:node:probe-ttl-extend"
+		mr.HSet(node, "source_priority", "20", "available", "1")
+		if err := s.rdb.Expire(ctx, node, 30*time.Second).Err(); err != nil {
+			t.Fatalf("seed ttl: %v", err)
+		}
+		if _, err := s.RecordRequest(ctx, node,
+			"ursm:v2:win:1m:probe-ttl-extend", "ursm:v2:win:5m:probe-ttl-extend", "ursm:v2:win:30m:probe-ttl-extend",
+			RecordOutcome{Success: true, NowMs: 3_000_001, LatencyMs: 100, RequestID: "extend",
+				NodeTTL: 15 * time.Minute, Window5mTTL: 6 * time.Minute, Window30mTTL: 35 * time.Minute}); err != nil {
+			t.Fatalf("record: %v", err)
+		}
+		ttl, err := s.rdb.TTL(ctx, node).Result()
+		if err != nil {
+			t.Fatalf("ttl: %v", err)
+		}
+		// miniredis resolves TTLs at second granularity; require the key to
+		// live well past the pre-record 30s and near the 15m NodeTTL.
+		if ttl < 14*time.Minute {
+			t.Fatalf("ttl=%v, want ~15m (traffic extends a key about to lapse)", ttl)
+		}
+	})
+
+	t.Run("traffic still owns the TTL of a telemetry-priority key", func(t *testing.T) {
+		s, mr := newTestStore(t)
+		defer mr.Close()
+		node := "ursm:v2:node:telemetry-ttl"
+		// No source_priority field → priority 0 (≤10): the full telemetry
+		// path must keep refreshing the TTL to NodeTTL (existing contract).
+		mr.HSet(node, "available", "1")
+		if err := s.rdb.Expire(ctx, node, 7*time.Hour).Err(); err != nil {
+			t.Fatalf("seed ttl: %v", err)
+		}
+		if _, err := s.RecordRequest(ctx, node,
+			"ursm:v2:win:1m:telemetry-ttl", "ursm:v2:win:5m:telemetry-ttl", "ursm:v2:win:30m:telemetry-ttl",
+			RecordOutcome{Success: true, NowMs: 3_000_002, LatencyMs: 100, RequestID: "own",
+				NodeTTL: 15 * time.Minute, Window5mTTL: 6 * time.Minute, Window30mTTL: 35 * time.Minute}); err != nil {
+			t.Fatalf("record: %v", err)
+		}
+		ttl, err := s.rdb.TTL(ctx, node).Result()
+		if err != nil {
+			t.Fatalf("ttl: %v", err)
+		}
+		if ttl > 16*time.Minute {
+			t.Fatalf("ttl=%v, want ~15m (telemetry-priority keys keep NodeTTL refresh semantics)", ttl)
+		}
+		if got := mr.HGet(node, "source_priority"); got != "10" {
+			t.Fatalf("source_priority=%q, want 10 (traffic ownership recorded)", got)
+		}
+	})
+}

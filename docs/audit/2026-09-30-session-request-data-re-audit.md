@@ -4719,8 +4719,19 @@ live 分支只写了 `Reason` 忘了把 `Stale` 设回 `false` ⇒ 该字段**�
 | `errors_out` | 3 | 响亮失败，灰度立刻可见（**可接受**） |
 | `validator_dual_read` | 1 | §9.35 的新鲜度探针 |
 
-**⇒ 灰度前必须处理的静默档：**59** 条**（`silently_empty` + `silently_degraded_content` + `silently_frozen`；计数口径 = countSilentStopWriteEffects 的三档 switch，见下方 2026-10-13 订正）
+**⇒ 灰度前必须处理的静默档：**57** 条**（`silently_empty` + `silently_degraded_content` + `silently_frozen`；计数口径 = countSilentStopWriteEffects 的三档 switch，见下方 2026-10-13 订正）
 
+> ⚠ **S4 波 4 补记（2026-10-13，blob 会话臂 + quality 会话族重写轮）：58 → 57。**
+> −1：admin/quality_correlations.go 除名——五个分桶整体会话族化
+>（canonical turns + 切换层 outbound_body），原判 silently_empty 的
+> 「停写后每桶零行」不再成立于 v1 面（样本口径变更：探针流量出围）。
+
+> ⚠ **S4 波 4 订正（2026-10-13，bodies 退役评估轮）：59 → 58。**
+> −1：admin/compression_sessions.go 除名——整只端点会话族化
+> （canonical turns 源 + SessionFamilyBodiesSourceSQL，LATERAL 改
+> request_delta 数组长度），文件脱离 v1 族（原判 silently_degraded_content
+> 的「停写后全零」当天即被修掉）。
+>
 > ⚠ **S3 波 3 订正（2026-10-13，停写切换读侧第二分片）：61 → 59。**
 > −1：admin/routing.go 除名——popularModelsHotSQL 改读会话族原生源
 > （SessionFamilyTurnsSourceSQL），文件脱离 v1 族（silently_frozen 少一条）。

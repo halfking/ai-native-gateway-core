@@ -45,6 +45,7 @@
 - 发现链：caller 显式配置 → 主机原生服务（本机 pg18:54318 + redis:6379，含 PATH 注入）→ docker → 自动源码安装（PG17 最新小版本 + pgcolumnar v1.0-alpha4（Citus columnar 独立发行）+ Redis 7.4.2）
 - 密钥在仓库 `.env.local`（gitignored，含 admin 凭据）；缓存=host redis，数据=host pg18
 - 域名：`llm.itestu.cn` → NetBird DNS zone `llm-itestu-zone` A 记录 → 100.106.169.63:8782（本机 peer nb-macmini-29）。**两条入口并存**：mesh 内（NetBird zone，:8782/:8443）+ 公网（公网 DNS → 252 nginx 443 SNI 透传 → 9443 TLS 终结 → mesh 8782）；远端回连已于 2026-10-11 经 252 实测通过（公网证书免 -k 校验通过）。
+- **2026-10-13 增补：mesh 内 `https://llm.itestu.cn`（标准 443）曾断裂**（NetBird 解析到 mesh IP 但 mac 只听 8443 且自签证书）。已修：mac Caddy 加 `:443` 腿，服务**从 252 同步的 LE 公网证书**（`setup-caddy.sh DL_PUBLIC_TLS=1` + 新增 `scripts/sync-public-cert.sh`，mac mini crontab 每日 04:26 拉取变更才 reload）。内外网三路径（mesh 443 / LAN 192.168.31.40:443 / 公网 252 链）全绿，4 模型 API 实测通过；拓扑与坑（手启旧 caddy 无 pidfile 不被 --stop 清、BSD 多进程可共听同端口、macOS 非特权可绑 443）见部署文档 §5.3。
 - **坑（2026-10-11 实测）**：
   - **252 上 mihomo（tun+fake-ip，`dns-hijack any:53`）会劫持 mesh 域名解析**：252 按 `llm.itestu.cn` 访问网关超时而按 IP 正常。已修：`/etc/mihomo/config.yaml` 加 `fake-ip-filter: +.llm.itestu.cn` + `nameserver-policy +.llm.itestu.cn → 100.106.190.139`（252 netbird 解析器），API 热重载。**策略不可放宽到 `+.itestu.cn`**（netbird 上游转发同样被劫持，会弄坏兄弟 vhost）。详见 host-first 部署文档 §5.1。
   - **252 的 netbird 客户端是 podman 容器 `nb-252-host`**（非宿主服务；二进制在镜像里，状态盘 bind-mount 在 `/opt/netbird/openpocket/nb-252-host-state`）。管理用 `netbird-252 status -d`（宿主封装=`podman exec`）；重启 `podman restart nb-252-host` 实测 peer 身份/IP 保留、三链路自愈。代理订阅已从陈旧内联快照改为 efanyun provider（与 mac network-switch 对齐，103 节点全活）。⚠️ 手工改 252 mihomo 组配置按 `^- ` 切块而非 `^- name:`（Auto/Cursor-Direct 首键是 `- interval:`）。
@@ -1109,3 +1110,243 @@ probe body 形状断言）；工作区另有并行会话 r1023 的缩进级遗�
 - 211 Redis 库号 claim 不粘 + UrsmlHealthyKeyReconciler 在 211 容器未起
   （154/245 有 `ursm.v2 healthy-key reconciler started`，211 日志无此行），
   冷启动靠 emergency-repair——两件一起查。
+
+---
+
+# 追加：2026-10-13 r1025 —— Vapeur 复验轮 + 钉扎×fp_slot 预过滤缝隙修复
+
+> 复验 r1024+审计轮（2603）之后的 Vapeur 全量矩阵（10 模型 × T1/T1b/T2，
+> tools+thinking high/medium）。修复 P7：admin 钉扎（r1024 激活）与 fp_slot
+> 预过滤叠加时，钉扎凭据先被预过滤剔除、再被 dispatchRoute 硬 pin 过滤收窄
+> 成 0 候选（未触上游即 503）。修复=预过滤豁免钉扎候选（抽取
+> `Executor.fpPrefilterCandidates`），降级路径交给既有 dispatch Acquire 的
+> no-slot 继续。提交含判据
+> `TestFpPrefilterKeepsPinnedCandidateWhenSlotSaturated`（同层驱动 + 去 pin
+> 反例），变异红在正确断言。部署 2604 后 glm-5.3 全套件复绿。
+> **上游能力登记修正**：claude-haiku-5-5 在 Vapeur 流式两腿持续封锁
+> （chat 腿 400 Operation not allowed / responses 腿 502 不支持流式，直连
+> 证实，非「偶发过载」）；opus 流式正常。非流式不受影响。
+> 详见 `docs/audit/2026-10-13-Vapeur复验轮-r1024后全量矩阵与钉扎fp预过滤修复.md`。
+> 量具坑：部署重启后的候选预热空窗实测可达 **3 分钟**（kimi 15:34→15:37），
+> 批次测试首跑失败先重试再定罪；E2E 批次要带 ≥20s 间隔，上游 429 是节奏问题
+> 不是模型故障（grok/deepseek 重测即绿）。
+
+---
+
+# 追加：2026-10-13 r1026 —— grok-4.6「不可靠」双根因：URSM 键 TTL 被流量砍缩 + tentative restore 必然回环
+
+> 用户报告：经 llm.kxpms.cn 调 grok-4.6 不可靠/总失败，怀疑「供应商模式没生效」。
+> **模式没问题**（proactive chat→responses 升级在生产生效，实测出站 URL=
+> `api.vapeur.ai/v1/responses`）；真根因是可用性层两缺陷，修复已部署。
+> 详见 `docs/audit/2026-10-13-grok46不可靠根因-ursm键ttl砍缩与tentative回环-r1026.md`。
+
+1. **record_request.lua(+dual) prio>10 分支砍缩 TTL**：probe 键 7h 地板
+   （probeWriteTTLFloor）被每条流量遥测 `EXPIRE node_ttl`(15min) 砍回；
+   稀疏流量模型（grok-4.6 48h 27 行）每次空闲>15min 键过期 → 视图红 →
+   唯一候选被滤 → 9s sync probe 挂起（实测冷请求 15.8s vs 热 7-9s）。
+   修复=extend-only（只延不砍，TTL=-1 不动，prio≤10 原语义不变）。
+   判据 `TestRecordRequestProbePriorityKeyTTLNeverShrinks`（3 子用例），
+   变异红在正确断言。脚本长度钉子 13089/11579 随更。
+2. **ProbeSync tentative restore 回环**：2026-08-24 盖章
+   `probe_revert_at=+15min` 依赖「下一次确认探测」，2026-09-20 park 政策
+   使确认结构性永不到来 → ProbeRollback 每 15min 必然翻红 5min
+   （实测锚点：16:23:11 盖章 → **16:38:08** `probe_revert_timeout` 翻红），
+   翻红窗内请求再触发救援再盖章 = 自持循环；且翻红期间 reconciler 的
+   `cmb.available=TRUE` 谓词把该对排除在修复外——两根因互相放大。
+   修复=删盖章调用（恢复为最终态；`MarkTentativeRestore`/ProbeRollback
+   机制保留消化滚动部署期存量盖章行）。判据改写为
+   `TestProbeSyncRestoreIsFinalWithoutTentativeStamp`（反契约 + R-vapeur2
+   两条竞态不变量保留），变异红。
+3. 部署：154=**2576-9e2d77b9**（17:14 切流，active_port=8782；本 checkout
+   的 seq 计数器独立，2576<2602 是正常现象，以回显 version= 为准），
+   二进制指纹：`Extend-only`×2 + `revert loop` 在场、
+   `tentative restore stamp failed` 消失；154 同时补齐了 r1025。
+   245 同构建并行部署。**本次部署从 llm-gateway-go-4 checkout 以脏工作区
+   构建（用户流程=先部署验证后提交），发布 sha 显示 HEAD 提交号但产物含
+   本轮修复，用 strings 指纹判定。**
+4. 开放项（登记不修）：① reconciler 盲区——键过期后 14+ tick 未修、
+   `repaired≈36/tick` 恒定轮转未解释（修复①后用户面影响缩小，灾难恢复
+   场景仍需单独根修）；② fp_slot 新实例启动即 ratio=1（指纹槽跨重启
+   残留，降级放行正常）；③ persist collect 30s SCAN 仍超时（既有）；
+   ④ 死凭据 72/68 的 expired-binding 恢复队列空转待 owner 清退。
+5. 量具坑：epoch 毫秒心算连环错（必须 `date +%s%3N` 同框比对）；
+   strings 找注释短语先确认短语真在源里（`existing_ttl` 这类新标识符
+   是可靠 marker）；共享 db2 禁用 `--scan` 全库（挂死 ssh，两次实证）。
+
+# 追加：2026-10-13 S4 波 4 —— bodies 退役评估（25 文件登记转绿）+ 四处读方迁移
+
+> 用户目标：request_logs 及相关表按规划将删除、只留 session_*；对涉
+> request_logs 的查询/API 尽量切换，无法切换的修正内部实现，数据前后一致。
+> 提交 `afc44baac`（+ 后续守卫修复提交）。本地部署 2605→2606（8782）验证。
+> 明细与判据：`docs/audit/2026-10-13-s3-wave4-bodies-retirement-assessment.md`。
+
+## 数据一致性结论（删表前置的事实基础，本地真库实测）
+
+v1 冻结存量 35,506；v1_only 23,795 = **探针观测 22,951（无会话头，R51 设计
+不镜像）+ 回环/非终态 844；真损失 0**（带会话头未镜像行全为设计内跳过）。
+⇒ 删 request_logs_bodies 不丢用户可见正文。两个易踩口径坑：
+- `MirrorDriftClassSQL` 字面转录会把无会话头探针行判 genuine_loss——
+  drift 校验器的范围 SQL 在分类前就过滤 `gw_session_id IS NOT NULL`，
+  两者不矛盾；自己写分类查询必须带会话头过滤。
+- **JSON 字面量 null 是标量**：jsonb 列里 `typeof='null'` 的行 SQL 值非
+  NULL，COALESCE 救不了，裸 `jsonb_array_length` 直接 22023（2605 端点
+  实测抓到，本地 outbound 非空行 1,433+ 条）。凡对 jsonb 列做数组/对象
+  运算，先 `jsonb_typeof` 判形。
+
+## 本轮四处读方迁移（前两处是活缺陷修复）
+
+1. **session_bodies_batch 主取数器固定会话族源**：消费方 session_compare
+   turns 腿是会话族，bodies 腿却读 v1 视图——停写后新会话正文对对比/摘要
+   **静默为空**（跨冻结会话实证：24 轮 v1 源只见 13）。修复后端点实测
+   冻结后 57/57 全有正文。summary_v2 的 v1 回退路径保留**显式命名的 v1
+   变体**（turns 腿与 bodies 腿必须同族），随 v1 退役。
+2. **session_compare 解析器补 delta 数组臂**（request/response_delta 是
+   消息数组；v1 request_body 是带 messages 键的对象——两种形状都会到达，
+   双臂并存，数组臂在前互不误吞）。
+3. **compression_sessions 整端点会话族化**（canonical turns ×3 + bodies
+   源 ×3；LATERAL 改 jsonb_typeof 守卫的数组长度；ts 等值配对删除）。
+4. **scenario_driver 断言改数 session_bodies_hot/session_turns_hot**
+   （停写后数 v1 delta 恒 0，s22-3/s23-3 永久 FAIL——修掉）。
+
+## 退役门里程碑
+
+`v1BodiesReaders` 25 文件四组登记填齐，`TestV1BodiesReadersAreAssessed`
+**首次转绿**（按门自身定义：全绿=登记齐=才谈得上 request_logs_bodies 可删）。
+admin 全包绿（负向闸门 bodies 这道已功成身退；bodies 退役门余下的
+`TestV1BodiesReadersAreAssessed` 不再红）。审计网络 7 张登记表同步
+（静默档 59→58、tiering 105/113→103/111、population 49→48、盲区 44）；
+**manifest 工具测试清偿波 2/3 的 8 条旧账**（snapshot 73→92/canonical
+12/18→22/36）复绿——那道门自波 2 起一直红着没人跑。
+
+## 删 request_logs_bodies 前置清单（登记在退役门内，DROP 前必须完成）
+
+1. data_lifecycle_blobs 会话臂扩展（否则停写后新正文无容量治理）；
+2. quality_correlations 重写（业务 auto 行改**原生 outbound_body**——机械
+   换切换层会静默塌桶，request_delta 无 tools 键；探针维度归 node_probe_runs）；
+3. 生产 owner 复核同口径四象限 + 未镜像遗留会话（sessions_v2.enabled=false
+   时代）人群规模——它们的摘要回退随 v1 消失；
+4. 生产 settings_kv 确认 `storage.session_bodies_native_read=true`。
+
+## 多会话实录
+
+本轮工作区再次被并行会话在我编辑期间合并 r1025（HEAD db33818→9e2d77b），
+我的未提交改动全部幸存；按 shared-checkout 纪律完成后立即原子提交推送。
+并行遗留（executor_anthropic/ollama 缩进级 + ir 测试空白行）经 `git diff -w`
+核实纯空白，不阻塞从本 checkout 部署。
+
+> **S4 波 4 下半场（同日，2607 上线）**：删表前置清单的两个实现项落地——
+> ① data_lifecycle_blobs 会话臂扩展（Top-N/preview 治理 session_bodies 族
+> outbound_body+双 attachments，execute 目标 session_bodies_hot 且**增量正文
+> 刻意保留**；端点实测 preview >50KB 命中 426 行/34.6MB）；② quality_
+> correlations 会话族重写（canonical turns + 切换层 outbound_body，tools 桶
+> jsonb_typeof 守卫；探针样本出围属拍板口径变更——本地 v1 auto 23,786 行里
+> 探针占 22,951，业务 auto 流量到达前分桶空是新口径的如实反映）。判据
+> M6/M7 变异红；登记表七张同步（静默档 58→57、tiering 101/25/110、
+> population 46、blobs 出列 + quality 改判 already-switched、manifest 94）。
+> 删 request_logs_bodies 的代码侧前置至此**全部完成**，余下两项属 owner
+> 动作：生产库四象限复核 + 确认 native_read=true（然后才可执行 DROP）。
+> 量具教训（第三次实证）：对 jsonb 列做运算前先 `jsonb_typeof` 判形——
+> JSON 字面量 null 的 SQL 值非 NULL，COALESCE 救不了（M5 的 22023 与
+> M7 的守卫同源）。
+
+> **r1026（2026-10-13 下午，提交 50acf8ce5，随本地 2608 上线）**：grok-4.6
+> chat 流式整流 503 = `stream_options.include_usage`（AI-SDK 流式恒发）经
+> KindPortable 透传进 **openai-responses 出站体**（该线格式无此字段），
+> vapeur 严格中转 400 Unknown parameter、单候选即整流失败。修复是
+> **pass1/pass2 双层同形线格式守卫**（internal/ir/extensions_restore.go 与
+> domains/transformation/ir_converter.go）：目标线格式为 Responses/Anthropic/
+> Gemini 时裁剪并上报 loss，chat 线（含 unknown-relay）保持透传——刻意不用
+> RejectedByUnknown（会把 chat 形态中转的 include_usage=false 语义反转成
+> 注入的 true）。usage 契约由 R32 桥的 response.completed 提取兜底，实测
+> usage 帧仍回客户端。r1021「两路径政策必须一致」教训再次实证：只修 pass1
+> 时 pass2 会把字段从 Extensions 重新写回。判据用 raw-logs 真实失败请求
+> 回放 + 前提在场配对，M1/M2/M3 三变异红。详见
+> `docs/audit/2026-10-13-r1026-grok-chat流式stream_options泄漏进responses线体.md`。
+> 同轮登记不动：nvidia 系探针 503（egress 代理缺失，owner 拍板项）、
+> routing_analytics_7d 刷新 23505、ursm_node_snapshot_min 42P17（均非请求路径）。
+
+> **生产删表前置确认（2026-10-13 晚，S4 波 4 收尾，只读经 245 直连）**：
+> 生产双写仍在（write_enabled=true）、`storage.session_bodies_native_read`
+> **未设置**（默认 v1 臂）。**带会话头真损失 158 条（168h 窗 147）≠0 ⇒
+> 生产翻转未就绪**：根因是 154 的镜像写对共享 PG 超时（日志实证
+> `sessionv2mirror: V2 shadow write failed`，今日 5-54 次/小时持续；245 零
+> 失败；outbox reaper 正常但入队超时的行不进 outbox、不可重放）。丢失行
+> 可从 v1 定向回填。探针观测 156,385 行（设计不镜像）维持 owner 拍板。
+> **翻转 runbook 五步（顺序刚性）**：修 154 超时→168h 零损失→回填 158 行→
+> native_read=true→停写→owner 授权后 DROP。详见波 4 审计文档 §九。
+
+> **r1026b（2026-10-13 晚，批判式审计轮，提交 af27bb7b4e + 6adf6b00f，
+> 随本地 2611→2614 上线）**：对 r1026 复审判据的探边抓到两真缺陷。
+> ① **D1 native Responses 透传腿第三泄漏口**：/v1/responses 客户端的
+> ResponsesBodyBytes 原文直发不经 IR 序列化，r1026 的 pass1/pass2 守卫
+> 均不可见 → stream_options 原样送达严格中转 400（response.failed
+> provider_unavailable）。修复=native 分支 choke point 调
+> transformation.StripStreamOptions + reactive 重试腿同源同治（2614）。
+> ② **D2 reasoncap 表 grok-4.6 行无实证登记 xhigh**：paramguard 钳制
+> 空转，ZCode 显式 reasoning_effort=xhigh → vapeur grok-4.6-1 后端 400
+> （上游明示支持集 none|low|medium|high）。按实证订正表行后钳到 high。
+> ③ 本地栈（网关/Redis/PG）19:21:09-10 被**协同停止**（来源未定位，
+> 登记），本轮手工恢复三件套。④ 判据纪律第 9 条（候选）：**变异脚本
+> 必须先验证变异落盘**（perl 未转义 `()` 是捕获组→变异无操作→绿被
+> 误读为判据无效）；**线格式泄漏检测必须解析 JSON 顶层键**（字符串
+> 包含会把正文讨论该参数的流量判成泄漏，raw-logs 复核 11 条全假）。
+> ⑤ 同轮登记不动：上游 400 外显为 model_not_found/transient/retryable
+> 的误导性包装（既有行为，动外显契约属维护者拍板）。
+> 详见 `docs/audit/2026-10-13-r1026-批判式审计轮.md`。
+
+---
+
+# 追加：2026-10-13 晚 —— 生产 245/154 + 211 停写翻转执行与三台验证
+
+> 用户指令：关闭 245/154 双写并测试验证；再关闭 211 双写，并确保 211 各
+> 服务目录与数据库文件在 docker 外（/opt/kaixuan 相关目录）。
+
+## 执行序（245/154，共享库 settings_kv 翻转一次覆盖两台）
+
+1. **先部署后翻转**（前置核查：部署态 2601/2602=r1024 含 wave2/3 读迁移、
+   缺 wave4——直接翻转会让 compare/compression 显示空正文/全零）：
+   部署 2612/2613-af27bb7b → 翻转中抓到两个**生产规模集成缺陷**并当日
+   修复重部署 2617/2618-d3ce08d8：
+   - **compression_sessions LATERAL 重跑 canonical 全源**（本地 12k 行测
+     不出，生产 925k turns × ~1k 会话把 10s 预算打满）→ 单趟 CTE +
+     DISTINCT ON（提交 e01ffed39，判据禁 LATERAL，M8 红）；
+   - **quality_correlations avg_quality 裸 AVG**（会话族 quality_score 可
+     全 NULL → Scan 崩）→ COALESCE（提交 d3ce08d86，M9 红）。
+2. `sessions_v2.write_timeout_ms=5000`（默认 2000）：**154 镜像滴漏止住**
+   （此前 5-54 次/小时；调参后归零——免部署调参先行的实证）。
+3. `storage.session_bodies_native_read=true` → `storage.request_logs_write_enabled=false`
+   （**20:18:27**，经 245 直连共享库写入）。
+4. 验证（两台）：request_logs_hot max_ts 冻结在 20:18:11；session_turns_hot
+   持续推进；post-flip 会话 compare 200 且**正文在场**（wave4 修复生产实证）；
+   端点清扫两台一致——sessions/compression/blobs/quality 全 200，
+   **data-lifecycle/stats 500@30s**（v1 存储语义端点的生产规模超时，
+   既存问题非翻转回归，登记随 v1 退役）。
+
+## 211（192.168.31.211，docker 形态）
+
+- **目录合规核查**（用户重点）：DB=acc-pg17 bind `/opt/kaixuan/data/pg/
+  acc-pg17` ✓、Redis=nbjl-redis bind `/opt/kaixuan/data/redis` ✓（该机
+  DEPLOY-STANDARDS 总纲「容器是空壳，数据在宿主 /opt/kaixuan/data」，
+  data-placement-report.sh 可复核）。**网关容器是唯一违规**（零挂载，
+  keystore/hotzone 等状态在容器层，每次部署 rm -f 即清空）→ 已迁移：
+  docker cp 导出 → `/opt/kaixuan/data/llm-gateway/{data,logs}`（uid 65532）
+  → **deploy-211-docker.sh 补 bind mount**（提交 562cc1e6d，后续部署保持）
+  → 重部署验证（容器内可见宿主状态、keystore 完整）。
+- **双写已是关闭态**（其库为本机库副本，继承翻转设置；实测行为吻合）；
+  补 write_timeout_ms=5000 对齐。**E2E 决定性验证**：建 key → 真实
+  glm-4.5-flash 请求（21:21:55）→ session_turns_hot 有该轮（内部 uuid
+  7d19f081）、bodies 窗口 31 行、**request_logs_hot 恒 0** ✓；管理面
+  4 端点 200（毫秒级）+ compare 有正文。
+- **新坑（登记）**：① 网关容器**重建后首启可能 DB 池判 no-DB 且不重试**
+  （重启即愈；根因未深查）——而 deploy 脚本就绪门只查 readyz 200，
+  **lite 回落也返 200**，门形同虚设；后续应断言 readyz 的 mode 字段。
+  ② 重部署后 redis 库号又漂（10→9，claim 不粘，既有登记项）。
+  ③ 211 的 ursm 降级理由是 SYSTEM_MONITOR_ENABLED（与 154/245 的
+  reconciler 差异，既有登记项）。
+
+## 量具与运维注记
+
+- llm.itestu.cn 从 252 访问曾超时（该入口指向**本机 mac 网关**，与生产
+  翻转无关；252 侧 netbird/mihomo 链路抖动，留观）。
+- 生产 158 条真损失行仍在 v1 可回填（DROP 前）；154 滴漏虽止，翻转后
+  镜像是唯一记录，**write_timeout_ms=5000 需保留**。

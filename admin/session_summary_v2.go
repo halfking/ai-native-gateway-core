@@ -333,7 +333,12 @@ func (api *SessionSummaryV2API) queryRequestLogsFallback(
 	// 2,220,507 行 = 2,220,507 个不同 request_id，无重键，所以 request_id
 	// 单键是**无歧义**的，不需要 ts 来消歧。
 	//
-	bodies, err := querySessionBodiesByRequestID(ctx, api.pool, requestIDs)
+	// 2026-10-13 S4 停写后：本回退路径的 turns 腿是 v1 视图（session_turns
+	// 为空的遗留会话），bodies 取数改用同源的 v1 变体（queryV1BodiesByRequestID，
+	// 见 session_bodies_batch.go）。会话族批量取数器已固定读 session_bodies
+	// （服务 session_compare 的会话族 turns），此处若共用会把「正文只在 v1」
+	// 的遗留会话读成空。v1 变体随 v1 表 DROP 一起退役。
+	bodies, err := queryV1BodiesByRequestID(ctx, api.pool, requestIDs)
 	if err != nil {
 		return nil, err
 	}

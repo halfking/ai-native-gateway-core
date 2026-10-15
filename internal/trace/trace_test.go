@@ -219,17 +219,63 @@ func TestKeyFor(t *testing.T) {
 }
 
 func TestEventBuilder_ConcurrentAppendIsGoroutineSafe(t *testing.T) {
-	// 多 goroutine 同时构造 EventBuilder (immutable by design)
-	// 只是确认 builder 自身没有共享可变 state。
+	// ⚠️ 2026-10-13 重写。旧版是 50 个 goroutine 各自
+	// `_ = BodyParse(1024, nil).Build()` —— **构造结果被直接丢弃**，
+	// 体内没有任何断言。变异实测（builder.go 的 Stage/StageName 改成
+	// 明显错误的常量后跑本条）：
+	//   · 默认配置（与 installer-ci.yml 的 `go test ./...` 一致）→ **绿**
+	//   · 加 `-race`                                    → **仍然绿**
+	// 而同包的 TestEventBuilder_BuildProducesValidEvent 在同一变异下立刻转红
+	// （阳性对照，证明变异本身有效、不是变异无效）。
+	// ⇒ 它不是「缺 `-race` 才没牙」，是**彻底空转**：Build() 返回完全错误的
+	//   值，这条判据在任何配置下都看不见。
+	//
+	// 现在钉的是真正想守住的东西：**builder 按设计不可变 ⇒ 并发构造不许串味**。
+	// 每个 goroutine 用**互不相同**的 bodySize / err，构造完立刻核对**自己那一份**；
+	// 一旦 builder 或 details map 出现跨 goroutine 共享的可变 state，
+	// 就会表现为「某个 goroutine 读到了别人的值」，断言立刻转红。
+	const n = 50
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
+	bad := make(chan string, n)
+
+	for i := 0; i < n; i++ {
 		wg.Add(1)
-		go func() {
+		go func(i int) {
 			defer wg.Done()
-			_ = BodyParse(1024, nil).Build()
-		}()
+			size := 1000 + i                        // 每个 goroutine 一个唯一值
+			sentinel := fmt.Errorf("boom-%02d", i) // 错误文本也唯一
+
+			ev := BodyParse(size, sentinel).Build()
+
+			switch {
+			case ev.Stage != StageBodyParse:
+				bad <- fmt.Sprintf("goroutine %d: Stage=%q, want %q", i, ev.Stage, StageBodyParse)
+			case ev.StageName != StageDisplayNameKey(StageBodyParse):
+				bad <- fmt.Sprintf("goroutine %d: StageName=%q", i, ev.StageName)
+			case ev.Status != StatusFailed:
+				bad <- fmt.Sprintf("goroutine %d: Status=%q, want failed", i, ev.Status)
+			case ev.Error != sentinel.Error():
+				bad <- fmt.Sprintf("goroutine %d: Error=%q, want %q", i, ev.Error, sentinel.Error())
+			case ev.Details["body_size"] != size:
+				// ⭐ 串味在这里最先暴露：details map 若被共享，
+				// 这里读到的就是别的 goroutine 的 size。
+				bad <- fmt.Sprintf("goroutine %d: details[body_size]=%v, want %d（疑似跨 goroutine 串味）",
+					i, ev.Details["body_size"], size)
+			}
+		}(i)
 	}
+
 	wg.Wait()
+	close(bad)
+
+	var msgs []string
+	for m := range bad {
+		msgs = append(msgs, m)
+	}
+	if len(msgs) > 0 {
+		t.Fatalf("并发构造出现串味或字段错乱（%d/%d 个 goroutine 出错）：\n%s",
+			len(msgs), n, strings.Join(msgs, "\n"))
+	}
 }
 
 // TestLoadFromPG_NilDBReturnsNil 验证 db==nil 时 LoadFromPG 返回 (nil,nil),

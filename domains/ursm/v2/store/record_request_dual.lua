@@ -209,7 +209,13 @@ local function apply_set(node_key, w1, w5, w30)
 
   local current_priority = tonumber(redis.call("HGET", node_key, "source_priority") or "0") or 0
   if current_priority > 10 then
-    redis.call("EXPIRE", node_key, node_ttl)
+    -- Extend-only TTL for probe/admin-priority keys (see record_request.lua):
+    -- shrinking the 7h probe floor to the traffic TTL on every request made
+    -- busy-then-idle pairs expire and fail the authoritative view closed.
+    local existing_ttl = redis.call("TTL", node_key)
+    if existing_ttl >= 0 and existing_ttl < node_ttl then
+      redis.call("EXPIRE", node_key, node_ttl)
+    end
     return
   end
 

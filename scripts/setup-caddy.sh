@@ -28,6 +28,7 @@
 # | `~/kaixuan/caddy/Caddyfile` | 主配置（HTTP→HTTPS + reverse_proxy） |
 # | `~/kaixuan/caddy/pki/ca.crt` + `ca.key` | 自签名 CA（3650 天） |
 # | `~/kaixuan/caddy/pki/<domain>.{crt,key}` | 服务端证书（825 天，SAN=domain） |
+# | `~/kaixuan/caddy/pki/<domain>.le.{crt,key}` | 公网可信证书（sync-public-cert.sh 拉取；可选 :443） |
 # | `~/kaixuan/caddy/run/caddy.pid` | Caddy 自写 pidfile（caddy run --pidfile-file） |
 # | `~/kaixuan/caddy/logs/caddy.log` | Caddy stdout/stderr |
 #
@@ -41,6 +42,19 @@
 #     DL_DOMAIN=foo.example bash scripts/setup-caddy.sh   # override served hostname
 #     DL_UPSTREAM=127.0.0.1:9000 bash scripts/setup-caddy.sh   # override backend
 #     DL_HTTPS_PORT=8443 bash scripts/setup-caddy.sh     # non-privileged port (default 8443)
+#     DL_PUBLIC_TLS=1 bash scripts/setup-caddy.sh        # also serve :443 with the
+#                                                         # public-trusted cert synced by
+#                                                         # scripts/sync-public-cert.sh
+#                                                         # (pki/<domain>.le.{crt,key})
+#
+# ## 公网可信证书模式（DL_PUBLIC_TLS=1）
+#
+# 自签 CA 模式要求每个客户端信任本地 CA；mesh 内直接访问
+# https://<domain>（443 端口）时体验断裂。开启本模式后，Caddy 额外在
+# DL_PUBLIC_TLS_PORT（默认 443）上用公网 CA（Let's Encrypt，由边缘机
+# certbot 续期、scripts/sync-public-cert.sh 拉取）终结 TLS，mesh/LAN/
+# 公网三类客户端用同一域名与浏览器原生信任即可访问。证书文件缺失时
+# 仅告警并跳过 443 块（不阻塞 8443 自签入口），补齐后重跑本脚本即可。
 #
 set -euo pipefail
 
@@ -61,6 +75,10 @@ DL_CA_CRT="$DL_PKI_DIR/ca.crt"
 DL_CA_KEY="$DL_PKI_DIR/ca.key"
 DL_SRV_CRT="$DL_PKI_DIR/${DL_DOMAIN}.crt"
 DL_SRV_KEY="$DL_PKI_DIR/${DL_DOMAIN}.key"
+DL_PUBLIC_TLS="${DL_PUBLIC_TLS:-0}"
+DL_PUBLIC_TLS_PORT="${DL_PUBLIC_TLS_PORT:-443}"
+DL_PUB_CRT="$DL_PKI_DIR/${DL_DOMAIN}.le.crt"
+DL_PUB_KEY="$DL_PKI_DIR/${DL_DOMAIN}.le.key"
 
 # ───────────────────────────── io ─────────────────────────────
 log() { printf '[setup-caddy] %s\n' "$*" >&2; }
@@ -191,6 +209,26 @@ write_caddyfile() {
     }
 }
 EOF
+  if [[ "$DL_PUBLIC_TLS" == "1" ]]; then
+    if [[ -f "$DL_PUB_CRT" && -f "$DL_PUB_KEY" ]]; then
+      cat >> "$DL_CADDYFILE" <<EOF
+
+# ── Public-trusted HTTPS (LE cert synced by scripts/sync-public-cert.sh) ──
+:${DL_PUBLIC_TLS_PORT} {
+    tls $DL_PUB_CRT $DL_PUB_KEY
+    encode zstd gzip
+    reverse_proxy $DL_UPSTREAM {
+        header_up X-Forwarded-Proto https
+        header_up X-Forwarded-Host {host}
+        header_up X-Real-IP {remote_host}
+    }
+}
+EOF
+      log "public-trusted TLS site :${DL_PUBLIC_TLS_PORT} added ($DL_PUB_CRT)"
+    else
+      warn "DL_PUBLIC_TLS=1 but $DL_PUB_CRT / $DL_PUB_KEY missing; :${DL_PUBLIC_TLS_PORT} block skipped (run scripts/sync-public-cert.sh first, then rerun)"
+    fi
+  fi
   log "wrote $DL_CADDYFILE"
 }
 
@@ -276,6 +314,7 @@ print_plan() {
   upstream:  $DL_UPSTREAM
   http:      :${DL_HTTP_PORT}  (redirect → https)
   https:     :${DL_HTTPS_PORT}
+  public-tls: ${DL_PUBLIC_TLS}$([[ "$DL_PUBLIC_TLS" == "1" ]] && echo " → :${DL_PUBLIC_TLS_PORT} (${DL_PUB_CRT})" || echo " (off)")
 EOF
 }
 

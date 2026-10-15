@@ -36,22 +36,31 @@ func TestProbeTentativeRevertAfter(t *testing.T) {
 	}
 }
 
-// TestProbeSyncMarksTentativeRestore pins the smart-fallback marking contract
-// (需求 6 bullet 6): the ProbeSync success branch must call
-// MarkTentativeRestore behind the revert-window guard, AFTER the availability
-// restore so the retry still sees the node, and BEFORE the gateway round.
+// TestProbeSyncRestoreIsFinalWithoutTentativeStamp pins the 2026-10-13
+// contract that REPLACED the 2026-08-24 smart-fallback marking (需求 6
+// bullet 6): the ProbeSync success branch must NOT call MarkTentativeRestore
+// anymore, because the 2026-09-20 probe-volume park policy makes the
+// "next confirming probe" structurally unreachable — probe successes park
+// node_probe_state for 30 days and every scheduler skips parked rows, so a
+// stamped probe_revert_at ALWAYS ran out and ProbeRollback reverted the
+// binding ~15min after every rescue (154 grok-4.6 2026-10-13 flap loop:
+// rescue at 16:23:11 → probe_revert_timeout revert at 16:38:08 → red window
+// → next request rescue → re-stamp). The sync restore via
+// updateBindingAvailability(true) clears probe_revert_at and is therefore
+// final.
+//
 // String-level contract test in the style of probe_rollback_contract_test.go
 // (SQL behavior is covered by migration 351 + the rollback worker's one-shot
 // WHERE guard).
 //
-// 2026-09-29 (R-vapeur2) additionally pins the recovery-race invariants:
+// The 2026-09-29 (R-vapeur2) recovery-race invariants stay pinned:
 // the URSM v2 view write must precede the DB bookkeeping (it is the
 // authoritative router's only recovery signal and must not queue behind
 // slow DB writes), and the winner delivery (results <- res) must precede
 // the gateway round (diagnostics must not hold the recovered request
 // hostage — gpt-6-astra 2026-09-29: probes succeeded but the result
 // landed past the hold deadline, so the request still 503'd).
-func TestProbeSyncMarksTentativeRestore(t *testing.T) {
+func TestProbeSyncRestoreIsFinalWithoutTentativeStamp(t *testing.T) {
 	source, err := os.ReadFile("node_probe.go")
 	if err != nil {
 		t.Fatalf("read node_probe.go: %v", err)
@@ -66,23 +75,19 @@ func TestProbeSyncMarksTentativeRestore(t *testing.T) {
 	if end >= 0 {
 		body = body[:end]
 	}
-	markIdx := strings.Index(body, "MarkTentativeRestore(markCtx")
-	if markIdx < 0 {
-		t.Fatal("ProbeSync success branch must call MarkTentativeRestore (smart-fallback marking entry)")
+	if strings.Contains(body, "MarkTentativeRestore(") {
+		t.Fatal("ProbeSync must NOT stamp a tentative restore: the park policy makes the confirming probe unreachable, so the stamp degrades into a guaranteed 15-min revert loop (154 2026-10-13 grok-4.6)")
 	}
 	availIdx := strings.Index(body, "updateBindingAvailability(bookCtx, j.credID, j.model, true, \"\", 0, \"\")")
 	if availIdx < 0 {
-		t.Fatal("ProbeSync success branch must restore availability")
+		t.Fatal("ProbeSync success branch must restore availability (final restore — healthyBindingSQL clears probe_revert_at)")
 	}
 	gwIdx := strings.Index(body, "gwRound = w.probeGateway(bookCtx")
 	if gwIdx < 0 {
 		t.Fatal("ProbeSync success branch must run the gateway round")
 	}
-	if !(availIdx < markIdx && markIdx < gwIdx) {
-		t.Fatalf("marking order broken: availability=%d, mark=%d, gateway=%d — mark must sit between restore and gateway round", availIdx, markIdx, gwIdx)
-	}
-	if !strings.Contains(body, "probeTentativeRevertAfter()") {
-		t.Fatal("marking must be guarded by the revert-window env (0/off disables)")
+	if availIdx > gwIdx {
+		t.Fatalf("availability restore (%d) must precede the gateway round (%d) — routing must see the restored credential, not stale cooling state", availIdx, gwIdx)
 	}
 	ursmIdx := strings.Index(body, "w.updateURSMv2ProbeState(ctx, tenantID, j.credID, j.model, res.direct.ok, res.direct.latencyMs)")
 	if ursmIdx < 0 {

@@ -78,30 +78,30 @@ var requestLogsReadInventory = map[string]int{
 	"admin/auto_route_correlations.go":      5,
 	"admin/auto_title_generator.go":         2,
 	"admin/body_resolver.go":                4,
-	"admin/compression_sessions.go":         5,
-	"admin/compression_stats.go":            4,
-	"admin/credential_monitor.go":           4,
-	"admin/credential_monitor_heatmap.go":   1,
-	"admin/credential_success_rate.go":      2,
-	"admin/data_lifecycle.go":               16,
-	"admin/data_lifecycle_attachments.go":   6,
-	"admin/data_lifecycle_blobs.go":         5,
-	"admin/data_lifecycle_metrics.go":       1,
-	"admin/diagnostics_credential.go":       1,
-	"admin/live_stream_sse.go":              2,
-	"admin/logs.go":                         4,
-	"admin/logs_summary.go":                 2,
-	"admin/memora_handlers.go":              4,
-	"admin/model_routing_diagnostic.go":     1,
-	"admin/model_status.go":                 2,
-	"admin/no_topic_session.go":             4,
-	"admin/probe_history.go":                1,
-	"admin/provider_diagnose.go":            2,
-	"admin/provider_models.go":              2,
-	"admin/providers.go":                    1,
-	"admin/quality_correlations.go":         2,
-	"admin/request_trace.go":                4,
-	"admin/route_incidents.go":              1,
+	// admin/compression_sessions.go 于 2026-10-13（S4 波 4）移出 v1 族：整只端点会话族化。
+	"admin/compression_stats.go":          4,
+	"admin/credential_monitor.go":         4,
+	"admin/credential_monitor_heatmap.go": 1,
+	"admin/credential_success_rate.go":    2,
+	"admin/data_lifecycle.go":             16,
+	"admin/data_lifecycle_attachments.go": 6,
+	// admin/data_lifecycle_blobs.go 于 2026-10-13（S4 波 4）出列：会话臂治理。
+	"admin/data_lifecycle_metrics.go":   1,
+	"admin/diagnostics_credential.go":   1,
+	"admin/live_stream_sse.go":          2,
+	"admin/logs.go":                     4,
+	"admin/logs_summary.go":             2,
+	"admin/memora_handlers.go":          4,
+	"admin/model_routing_diagnostic.go": 1,
+	"admin/model_status.go":             2,
+	"admin/no_topic_session.go":         4,
+	"admin/probe_history.go":            1,
+	"admin/provider_diagnose.go":        2,
+	"admin/provider_models.go":          2,
+	"admin/providers.go":                1,
+	// admin/quality_correlations.go 于 2026-10-13（S4 波 4）出列：会话族重写。
+	"admin/request_trace.go":   4,
+	"admin/route_incidents.go": 1,
 	// admin/routing.go 于 2026-10-13（S3 波 3 停写切换）除名：唯一的 v1 读点
 	// popularModelsHotSQL 改读会话族原生源（SessionFamilyTurnsSourceSQL），
 	// 文件内已无 request_logs 家族引用（钉桩 routing_popular_models_test）。
@@ -132,10 +132,10 @@ var requestLogsReadInventory = map[string]int{
 	"admin/telemetry.go":                1,
 	// 2026-10-13 S3 波 3：4→8——logsTable 补两条会话腿后，双子排除的
 	// NOT EXISTS（request_logs_hot/request_logs 各 ×2）计入引用计数。
-	"admin/tenants.go":                  8,
-	"admin/top_problems.go":             2,
-	"admin/unified_detail.go":           6,
-	"admin/usage.go":                    3,
+	"admin/tenants.go":        8,
+	"admin/top_problems.go":   2,
+	"admin/unified_detail.go": 6,
+	"admin/usage.go":          3,
 	// 2026-10-02: usage trend-series detail 路径读当月视图（与 board fallback 同源）。
 	"admin/usage_trend_series.go": 2,
 	// 2026-10-03: usage_enhanced.go 读 request_logs 两处，但扫描器只数到 1 处 ——
@@ -177,13 +177,13 @@ var requestLogsReadInventory = map[string]int{
 	// §9.265：v1 写入腿存活读数。行存在性判据，**只按计数用**
 	// （v1_hot_rows / v1_parent_rows 两处 FROM），不看列。
 	// 取源分层：它读的是「v1 还在不在写」这个事实本身 ⇒ 消费面属 ③。
-	"cmd/gateway/v1_write_liveness.go":          2,
-	"cmd/gateway/dual_read_validator.go":        6, // 4 + §9.235 的 2 处存在性探测（L428/L430 `EXISTS(… FROM request_logs_hot/request_logs WHERE ts >= h.b AND ts < h.b + interval '1 hour')`，只数「该小时有没有 v1」）；§9.235 漏登记，门当场转红但被当成基线混过去了
-	"cmd/gateway/main_v3_wiring.go":             1,
-	"cmd/gateway/output_compliance_control.go":  1,
-	"cmd/gateway/waterfall_by_request.go":       1,
-	"cmd/gateway/waterfall_db.go":               1,
-	"cmd/scenario_driver/main.go":               4,
+	"cmd/gateway/v1_write_liveness.go":         2,
+	"cmd/gateway/dual_read_validator.go":       6, // 4 + §9.235 的 2 处存在性探测（L428/L430 `EXISTS(… FROM request_logs_hot/request_logs WHERE ts >= h.b AND ts < h.b + interval '1 hour')`，只数「该小时有没有 v1」）；§9.235 漏登记，门当场转红但被当成基线混过去了
+	"cmd/gateway/main_v3_wiring.go":            1,
+	"cmd/gateway/output_compliance_control.go": 1,
+	"cmd/gateway/waterfall_by_request.go":      1,
+	"cmd/gateway/waterfall_db.go":              1,
+	// cmd/scenario_driver/main.go 于 2026-10-13（S4 波 4）移出 v1 族：断言改数会话族热表。
 	"cmd/tools/backfill_session_bodies/main.go": 2,
 	// 第 6 处 = HasV1RowsInRange（§R44/移交.1 端边界守门的实测探测，R45 轮加入）：
 	// LIMIT 1，家族过滤（tenant + 会话头）与同文件 LoadV1TimeRange 逐字一致——

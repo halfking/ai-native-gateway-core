@@ -102,10 +102,11 @@ host 模式会在「psql is required」死掉（这正是 2026-10-11 修掉的�
 
 `llm.itestu.cn` 有**两条并存入口**，故障定位时先分清走的是哪条：
 
-| 入口 | 解析 | 链路 | 状态（2026-10-11） |
+| 入口 | 解析 | 链路 | 状态（2026-10-13） |
 |---|---|---|---|
-| mesh 内 | NetBird zone `llm-itestu-zone` → `100.106.169.63` | peer → 网关 `:8782`（HTTP）/ mac Caddy `:8443`（自签 HTTPS） | ✅ |
+| mesh 内 | NetBird zone `llm-itestu-zone` → `100.106.169.63` | peer → 网关 `:8782`（HTTP）/ mac Caddy `:8443`（自签 HTTPS）/ **mac Caddy `:443`（LE 公网证书，2026-10-13 起，见 §5.3）** | ✅ |
 | 公网 | 公网 DNS（hichina）`llm.itestu.cn → 115.29.212.252` | 252 nginx stream `:443`（SNI `ssl_preread` 透传）→ `:9443`（letsencrypt TLS 终结，证书公网校验通过）→ upstream `100.106.169.63:8782`（走 wt0 mesh）→ 网关 | ✅ |
+| LAN 非 mesh | 公网 DNS → `115.29.212.252` | 同公网链路（或直连 `https://llm.itestu.cn:443` 断言 `192.168.31.40`，SNI 命中 mac Caddy LE 证书） | ✅ |
 
 **踩坑一（已修）：252 上 mihomo fake-ip 劫持 mesh 域名。** 252 跑着 mihomo
 （tun + `dns-hijack: any:53` + fake-ip），发往任何 DNS 的查询都被劫持发
@@ -204,6 +205,57 @@ llm 三链路与兄弟域名 fake-ip 行为零回归。手术前的完整备份�
 把路由弹回 `/bootstrap`——这是产品自身的激活门禁（License 决策属用户侧），
 非缺陷。另有一条非阻断提示「Stop-write switch is not explicitly
 configured」（数据状态无法确认新鲜度），待管理员在设置里显式配置。
+
+### 5.3 mesh 内 `https://llm.itestu.cn`（443 端口）断裂修复（2026-10-13）
+
+**症状**：mesh 客户端（如 MacBook peer）不开代理直接访问
+`https://llm.itestu.cn`（标准 443 端口）失败——`connection refused`；而
+`http://192.168.31.40:8782`（LAN 明文）与经代理走公网链路均正常。
+
+**根因**（两层叠加，缺一不可）：
+
+1. NetBird DNS 把域名解到 mac mini mesh IP（`100.106.169.63`），而 mac 上
+   Caddy 只监听 `:8443`/`:8080`，**443 无人监听**；
+2. `:8443` 上服务的是自签 CA 证书（`setup-caddy.sh` 原设计，要求每个客户端
+   信任 `pki/ca.crt`），未推 CA 的客户端即便带端口访问也报证书错误。
+
+**修法**（不动 NetBird/252，只在 mac 侧加一条公网可信腿）：
+
+- `scripts/setup-caddy.sh` 新增 `DL_PUBLIC_TLS=1` 模式：Caddy 额外监听
+  `:443`（`DL_PUBLIC_TLS_PORT` 可调），证书用 `pki/<domain>.le.{crt,key}`；
+  证书缺失时只 warn 跳过 443 块，不影响 8443 自签入口（降级不中断）。
+- 新增 `scripts/sync-public-cert.sh`：从 252（certbot 权威源，
+  `/etc/letsencrypt/live/llm.itestu.cn/`）拉 fullchain+privkey，校验
+  （可解析/SAN 匹配/≥7 天有效期/公私钥配对）后落盘；内容变化才
+  `caddy reload`（走 admin :2019，不断连接），幂等可重入。
+- mac mini crontab：`26 4 * * * ~/kaixuan/caddy/sync-public-cert.sh`
+  （日志 `~/kaixuan/caddy/logs/cert-sync.log`）。252 certbot 续期后 ≤24h
+  自动跟上；LE 90 天窗口下绰绰有余。
+
+**启用步骤**（mac mini 上，操作副本在 `~/kaixuan/caddy/`）：
+
+```bash
+bash ~/kaixuan/caddy/sync-public-cert.sh          # 先拉证书
+bash ~/kaixuan/caddy/setup-caddy.sh --stop        # 注意：老实例若手启无 pidfile，--stop 报 not running，需手工 kill
+DL_PUBLIC_TLS=1 bash ~/kaixuan/caddy/setup-caddy.sh   # 重建 Caddyfile(含443块)+启动
+```
+
+**验证（2026-10-13 实测全绿）**：mesh 直连 443 / LAN `192.168.31.40:443`（SNI）/
+公网（经 252）三路径 readyz 均 200 且证书 issuer=Let's Encrypt；真实 API
+`glm-5.3`/`minimax-m3`/`deepseek-v4-pro`/`mimo-v2.5-pro` 四模型经域名两腿
+（mesh 直连 + 公网）正常返回内容。
+
+**运维要点与坑**：
+
+- **macOS 允许非特权用户绑低端口**（实测 huangxt 直接 bind :443 成功），
+  caddy 无需 root。
+- **BSD 允许多进程 REUSEADDR 共听同端口**：手启的旧 caddy（无 pidfile）与
+  新实例会同时 LISTEN 8443，`--stop` 只认 pidfile、报 "not running" 不会替你
+  清旧进程——切换后必须 `ps` 核对只剩一个 `caddy run`（本轮清了 2 个残留）。
+- 自签 `:8443` 入口保留（已信任本地 CA 的客户端不受影响）；`:8080` 跳转与
+  caddy 自动开的 `:80`（ACME 预留）不变。
+- 证书同步方向是 **mac mini → 252 root SSH**（BatchMode，已互通）；若 252
+  重装/换 IP，改 `sync-public-cert.sh` 顶部 `CERT_SRC_*` 三变量。
 
 ## 6. 验证矩阵
 

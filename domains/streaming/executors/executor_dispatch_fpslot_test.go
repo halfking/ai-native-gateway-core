@@ -180,3 +180,40 @@ func TestForwardForDispatchDegradesWhenFpSlotSaturatesAfterPrefilter(t *testing.
 		t.Fatal("dispatch context did not record fp-slot degradation")
 	}
 }
+
+// 2026-10-13 glm-5.3 事故：钉扎（X-LLMGW-Preferred-Credential / 探针
+// X-LLM-Pin-Credential）凭据被 fp_slot 预过滤剔除后，dispatchRoute 的硬 pin
+// 过滤把候选集收窄成 0，请求未触上游即 "all 0 candidates failed"（本地
+// 15:34:39 / 15:41:46 两轮实测）。钉扎候选必须在预过滤中豁免——下游 Acquire
+// 对饱和本就有 degraded-continue 兜底。判据同层驱动 fpPrefilterCandidates。
+func TestFpPrefilterKeepsPinnedCandidateWhenSlotSaturated(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	fpMgr := credentialfpslot.New(credentialfpslot.Config{DefaultLimit: 1, Enabled: true}, client)
+
+	fpLimit := 1
+	if lease, ok := fpMgr.Acquire(t.Context(), 63, &fpLimit, "other-session", "default"); !ok || lease == nil {
+		t.Fatal("failed to saturate fingerprint slot for credential 63")
+	}
+
+	exec := &Executor{FpSlots: fpMgr}
+	pin := 63
+	params := &ExecParams{
+		R:               httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+		TenantID:        "default",
+		PinCredentialID: &pin,
+	}
+	saturated := provider.Candidate{ProviderID: 36, CredentialID: 63, FpSlotLimit: &fpLimit}
+	healthy := provider.Candidate{ProviderID: 5917, CredentialID: 29, FpSlotLimit: &fpLimit}
+
+	got := exec.fpPrefilterCandidates(params, []provider.Candidate{saturated, healthy}, "pinned-holder")
+	if len(got) != 2 {
+		t.Fatalf("pinned saturated candidate must survive the prefilter, got %d candidates: %+v", len(got), got)
+	}
+
+	params.PinCredentialID = nil
+	got = exec.fpPrefilterCandidates(params, []provider.Candidate{saturated, healthy}, "pinned-holder")
+	if len(got) != 1 || got[0].CredentialID != 29 {
+		t.Fatalf("without a pin the saturated candidate must still be dropped, got %+v", got)
+	}
+}

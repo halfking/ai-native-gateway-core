@@ -727,9 +727,23 @@ if [[ -n "$CRED_ENC_KEY" ]]; then
 fi
 
 docker rm -f "$D211_GW_CONTAINER" >/dev/null 2>&1 || true
+# ── 状态目录出容器（2026-10-13，对齐 211 机 DEPLOY-STANDARDS 总纲）──────
+# /app/data（keystore/hotzone/attachments/backups/model-quality）与 /app/logs
+# 原先落在容器层——每次部署 docker rm -f 即静默清空（keystore 丢=api key
+# 快照/凭据状态回落，hotzone 与模型质量观测归零）。按 211 机总纲「容器是
+# 空壳，数据在宿主 /opt/kaixuan/data」改为 bind mount。宿主目录为空且旧
+# 容器还在时，先 docker cp 导出一次（迁移；旧容器被 rm 后此步自然跳过）。
+# DB（acc-pg17→/opt/kaixuan/data/pg/acc-pg17）与 Redis（→/opt/kaixuan/data/
+# redis）按本脚本「优先复用」口径本就落在宿主 bind，不在本块范围。
+# 属主对齐容器内运行用户（uid 65532=llmgw）。
+D211_GW_DATA_ROOT="${D211_GW_DATA_ROOT:-/opt/kaixuan/data/llm-gateway}"
+mkdir -p "$D211_GW_DATA_ROOT/data" "$D211_GW_DATA_ROOT/logs"
+chown -R 65532:65532 "$D211_GW_DATA_ROOT" 2>/dev/null || true
 docker run -d --name "$D211_GW_CONTAINER" --restart unless-stopped \
   --network "$D211_NETWORK" \
   -p "${D211_GW_PORT}:8781" \
+  -v "${D211_GW_DATA_ROOT}/data:/app/data" \
+  -v "${D211_GW_DATA_ROOT}/logs:/app/logs" \
   "${GW_ENV[@]}" \
   "$D211_GW_IMAGE" >/dev/null || die "网关容器启动失败"
 

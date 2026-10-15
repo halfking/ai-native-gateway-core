@@ -188,7 +188,7 @@ func TestBackfillBatchBudgetIsTransactionLocal(t *testing.T) {
 	body := backfillOnceBody(t)
 
 	begin := strings.Index(body, "pool.Begin(")
-	setCfg := strings.Index(body, "set_config('statement_timeout'")
+	setCfg := strings.Index(body, "backfillBatchTuningSQL")
 	batch := strings.Index(body, "sessionProjectBackfillSQL")
 	commit := strings.Index(body, "tx.Commit(")
 
@@ -196,24 +196,32 @@ func TestBackfillBatchBudgetIsTransactionLocal(t *testing.T) {
 		t.Fatal("BackfillOnce no longer opens a transaction — the SET LOCAL has nothing to be local to")
 	}
 	if setCfg < 0 {
-		t.Fatal("BackfillOnce no longer sets a transaction-local statement_timeout; " +
+		t.Fatal("BackfillOnce no longer applies the batch tuning (backfillBatchTuningSQL); " +
 			"the batch is back under the 30s role default and will be killed under contention")
 	}
 	if commit < 0 {
 		t.Fatal("BackfillOnce never commits its transaction — every batch's work is silently discarded")
 	}
 	if !(begin < setCfg && setCfg < batch) {
-		t.Errorf("ordering wrong: Begin@%d, set_config@%d, batch@%d — expected "+
-			"Begin < set_config < batch", begin, setCfg, batch)
+		t.Errorf("ordering wrong: Begin@%d, tuning@%d, batch@%d — expected "+
+			"Begin < tuning < batch", begin, setCfg, batch)
 	}
 	if !(batch < commit) {
 		t.Errorf("ordering wrong: batch@%d must be committed@%d, not after it", batch, commit)
 	}
 	// The third argument is what makes it LOCAL. Dropping it leaks the budget
-	// onto pooled connections, where it would outlive the batch.
-	if !strings.Contains(body, "set_config('statement_timeout', $1, true)") {
-		t.Error("set_config must be called with the literal third argument `true` " +
-			"(= SET LOCAL); anything else leaks the raised timeout onto pooled connections")
+	// and the parallelism change onto pooled connections, where they would
+	// outlive the batch. (2026-10-13: the literal moved into the shared
+	// backfillBatchTuningSQL const — asserted below against the const, and the
+	// call site is pinned via the setCfg index above.)
+	for _, want := range []string{
+		"set_config('statement_timeout', $1, true)",
+		"set_config('max_parallel_workers_per_gather', '0', true)",
+	} {
+		if !strings.Contains(backfillBatchTuningSQL, want) {
+			t.Errorf("backfillBatchTuningSQL lost %q — the third argument `true` "+
+				"(= SET LOCAL) and the parallel-off setting are load-bearing", want)
+		}
 	}
 	// The budget must be derived from the named constant, so the startup log and
 	// the enforced value cannot drift apart.

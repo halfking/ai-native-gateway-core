@@ -1761,27 +1761,31 @@ func (w *NodeProbeWorker) ProbeSync(
 				// CRITICAL: update state BEFORE probeGateway so the
 				// routing layer sees the restored credential, not the
 				// stale cooling state left by the original 5xx.
+				// updateBindingAvailability's success branch clears
+				// probe_revert_at, so this restore is FINAL — see the
+				// 2026-10-13 note below for why it must stay that way.
 				w.updateBindingAvailability(bookCtx, j.credID, j.model, true, "", 0, "")
 				w.updateCredentialHealth(bookCtx, j.credID)
 				w.updateObservedState(bookCtx, j.credID, j.model, true, "", time.Now())
-				// 2026-08-24: smart-fallback tentative restore (需求 6
-				// bullet 6). A sync probe "passed in isolation" — stamp a
-				// revert deadline so bg.ProbeRollback reverts the binding
-				// if no confirming probe success (which clears
-				// probe_revert_at via updateBindingAvailability's success
-				// branch) lands within the window. Confirmation arrives
-				// naturally: the tick/queue still probes this (cred,model)
-				// because emitSyncAudit deliberately does NOT touch
-				// node_probe_state (next_retry_at unchanged). Disabled
-				// entirely when the window env is 0/off.
-				if revertAfter := probeTentativeRevertAfter(); revertAfter > 0 {
-					markCtx, markCancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
-					if err := MarkTentativeRestore(markCtx, w.db, j.credID, j.model, revertAfter); err != nil {
-						slog.Warn("node_probe_worker: tentative restore stamp failed",
-							"credential_id", j.credID, "model", j.model, "error", err)
-					}
-					markCancel()
-				}
+				// 2026-10-13: the 2026-08-24 smart-fallback tentative
+				// restore (MarkTentativeRestore stamp here, 需求 6 bullet 6)
+				// is deliberately NOT re-applied. Its contract needed a
+				// "next confirming probe success" to clear the revert
+				// deadline; the 2026-09-20 probe-volume park policy makes
+				// that confirmation structurally unreachable — a probe
+				// success parks node_probe_state for 30 days, every probe
+				// scheduler skips parked rows, so probe_revert_at always
+				// ran out and ProbeRollback reverted the binding ~15min
+				// after every rescue. Each revert produced a fresh
+				// no_candidates window whose ProbeSync re-stamped the
+				// deadline: a self-sustaining flap loop (154 grok-4.6
+				// 2026-10-13: binding flipped probe_revert_timeout at
+				// 16:38:08, exactly stamp+15min from the 16:23:11 rescue).
+				// A direct-round success is already the restore signal by
+				// doctrine (the gateway round is diagnostic-only); real
+				// regressions are caught by the request-failure ladder,
+				// request_failure-triggered probes and the tick schedulers
+				// — none of which depend on the revert deadline.
 			} else {
 				// 2026-09-17: gateway-side errors (decrypt/endpoint build) must
 				// not touch the shared availability surfaces — same doctrine as

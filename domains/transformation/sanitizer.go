@@ -831,3 +831,30 @@ func toContentParts(v any) (parts []any, isArray bool, asString string, ok bool)
 		return nil, false, "", false
 	}
 }
+
+// StripStreamOptions removes the top-level `stream_options` key from a JSON
+// request body.
+//
+// stream_options exists only on the openai-chat wire format (Responses streams
+// carry usage unconditionally in response.completed). The native Responses
+// passthrough preserves the client body verbatim, so a responses-shaped client
+// that (mistakenly or by SDK habit) includes stream_options would forward it
+// to strict relays and eat a 400 "Unknown parameter: 'stream_options.
+// include_usage'" (observed on vapeur/grok-4.6, raw-logs 2026-10-13T19:36).
+// Mirrors the wire-format guard in internal/ir/extensions_restore.go (r1026);
+// this is the third choke point — the native leg bypasses IR serialization.
+func StripStreamOptions(body []byte) []byte {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return body
+	}
+	if _, ok := obj["stream_options"]; !ok {
+		return body
+	}
+	delete(obj, "stream_options")
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return out
+}

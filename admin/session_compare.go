@@ -665,6 +665,37 @@ func parseMessagesFromBody(body string, index *int) []MessageView {
 		msgs[len(msgs)-1].Content = appendEnvelopeDisplayNote(msgs[len(msgs)-1].Content, env)
 		return msgs
 	}
+	// 会话族 request_delta 是消息数组（[{role,content},…]），v1 request_body
+	// 是带 messages 键的完整对象（2026-10-13 S4：正文源切到 session_bodies 后
+	// 两种形状都会到达这里）。数组臂放在前面：unmarshal 对形状不匹配是
+	// 硬失败，两条臂互不误吞——对象进数组臂报错、数组进对象臂报错。
+	var arr []struct {
+		Role      string          `json:"role"`
+		Content   json.RawMessage `json:"content"`
+		ToolCalls json.RawMessage `json:"tool_calls,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(body), &arr); err == nil {
+		msgs := make([]MessageView, 0, len(arr))
+		for _, m := range arr {
+			*index++
+			content := extractTextContent(m.Content)
+			tc := ""
+			if len(m.ToolCalls) > 0 {
+				tc = string(m.ToolCalls)
+				if len(tc) > 200 {
+					tc = tc[:200] + "..."
+				}
+			}
+			msgs = append(msgs, MessageView{
+				Index:      *index,
+				Role:       m.Role,
+				Content:    content,
+				ToolCalls:  tc,
+				TokenCount: estimateTokens(content),
+			})
+		}
+		return msgs
+	}
 	var parsed struct {
 		Messages []struct {
 			Role      string          `json:"role"`
@@ -709,6 +740,36 @@ func parseResponseMessages(body string, index *int) []MessageView {
 			return envelopeMessage(index, env)
 		}
 		msgs[len(msgs)-1].Content = appendEnvelopeDisplayNote(msgs[len(msgs)-1].Content, env)
+		return msgs
+	}
+	// 会话族 response_delta 是消息数组（[{role,content},…]），先于 OpenAI
+	// 对象形状尝试——数组进 {choices} 结构是硬失败，互不误吞（与
+	// parseMessagesFromBody 的数组臂同轮引入，2026-10-13）。
+	var deltaArr []struct {
+		Role      string          `json:"role"`
+		Content   json.RawMessage `json:"content"`
+		ToolCalls json.RawMessage `json:"tool_calls,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(body), &deltaArr); err == nil {
+		msgs := make([]MessageView, 0, len(deltaArr))
+		for _, m := range deltaArr {
+			*index++
+			content := extractTextContent(m.Content)
+			tc := ""
+			if len(m.ToolCalls) > 0 {
+				tc = string(m.ToolCalls)
+				if len(tc) > 200 {
+					tc = tc[:200] + "..."
+				}
+			}
+			msgs = append(msgs, MessageView{
+				Index:      *index,
+				Role:       m.Role,
+				Content:    content,
+				ToolCalls:  tc,
+				TokenCount: estimateTokens(content),
+			})
+		}
 		return msgs
 	}
 	// Try OpenAI format first

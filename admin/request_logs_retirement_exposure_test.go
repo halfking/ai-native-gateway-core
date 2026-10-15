@@ -366,6 +366,51 @@ func extractV1ReadingLiterals(t *testing.T, path string) []v1ReadingLiteral {
 // 那是本轮实测打掉过的判据（审计 §9.193.3 的 v4）。
 func extractV1ReadingLiteralsScoped(t *testing.T, path string, fileScope bool) []v1ReadingLiteral {
 	t.Helper()
+	// 2026-10-13 记忆化：这一层原先**每处调用都重读+重解析文件**，
+	// 而它被 4 个文件、7 处循环调用（:527 / :803 / :938 /
+	// request_logs_reader_population_test.go:137 /
+	// request_logs_view_arm_cutover_test.go:157 /
+	// probe 测试的 :120/:317/:386），每次都对「总体里的每个文件」跑一遍
+	// ⇒ 同一条判据族在一次包里把整仓扫 N 遍。
+	// 实测（-json 时间线）：那几条是**串行**的，首尾相接约 171s，
+	// 而 make test-short 给整个 admin 包的预算只有 120s。
+	//
+	// ⚠️ 上层 measureV1ReadingExposure 的记忆化**不足以**解决这个问题：
+	//    它只挡住同一条判据的第二个调用方，而 TestRequestLogsRetirementExposure
+	//    走的是**另一条**未缓存的路径（实测它 41.05s，
+	//    随后 TestRequestLogsRetirementBreakersRegistryIsConsistent 仍要 43.50s）。
+	//    ⇒ 必须沉到**共用原语**这一层。
+	//
+	// 安全性：相关测试文件都不写磁盘（os.WriteFile 命中 0），
+	// 不存在「测到一半改源文件」让缓存失效的场景。
+	// 返回**副本**，避免调用方 append 改到共享底层数组。
+	key := path + "|" + strconv.FormatBool(fileScope)
+	v1LitsMu.Lock()
+	if c, ok := v1LitsCache[key]; ok {
+		v1LitsMu.Unlock()
+		out := make([]v1ReadingLiteral, len(c))
+		copy(out, c)
+		return out
+	}
+	v1LitsMu.Unlock()
+
+	out := computeV1ReadingLiteralsScoped(t, path, fileScope)
+
+	v1LitsMu.Lock()
+	v1LitsCache[key] = out
+	v1LitsMu.Unlock()
+	cp := make([]v1ReadingLiteral, len(out))
+	copy(cp, out)
+	return cp
+}
+
+var (
+	v1LitsMu    sync.Mutex
+	v1LitsCache = map[string][]v1ReadingLiteral{}
+)
+
+func computeV1ReadingLiteralsScoped(t *testing.T, path string, fileScope bool) []v1ReadingLiteral {
+	t.Helper()
 	// 匹配器必须在**入口**建好（见 ensureV1RelationMatchers 的注释）。
 	ensureV1RelationMatchers(t)
 	ensureSessionFamilyMatcher(t)
@@ -651,8 +696,8 @@ var retirementReattributed = map[string]string{
 		"（灰度时立刻发现，不会悄悄给出错误答案）」，所以**可以容忍，但必须先退役或改指**。\n" +
 		"⇒ 消费面分档为 ③（按设计继续读 v1）：它的判据就是「v1 还在不在写」这件事本身。" +
 		"停写之后它要么退役、要么改观测对象，**不能留着一个永远 dead 的判据**。",
-	"admin/probe_history.go":     "repoint-degraded: `credential_id` only. The `id` was `models_canonical.id`",
-	"admin/providers.go":         "repoint-degraded: `provider_id` only. Every `p.id`/`c.id` belongs to the providers/credentials tables",
+	"admin/probe_history.go": "repoint-degraded: `credential_id` only. The `id` was `models_canonical.id`",
+	"admin/providers.go":     "repoint-degraded: `provider_id` only. Every `p.id`/`c.id` belongs to the providers/credentials tables",
 	// admin/routing.go 于 2026-10-13（S3 波 3）除名：popularModelsHotSQL 改读
 	// 会话族原生源后文件内已无 v1 列引用（exposure 扫描 0 列 = 无测量对象）。
 	"admin/swim_lane_init.go":    "**repoint-safe**: no exposure columns at all. The `id`s were models_canonical / model_families / credentials / providers primary keys",
@@ -735,7 +780,42 @@ func TestRetirementExposurePopulationIsEveryKnownReader(t *testing.T) {
 	}
 }
 
+// v1ExposureCache 缓存 measureV1ReadingExposure 的结果。
+//
+// 2026-10-13 加：这一层原先**没有**缓存，而它的上一层
+// （indirectSourceConsumers → consumersOnce）已经缓存了。
+// ⇒ 成本不在扫盘，而在**逐文件解析** extractV1ReadingLiterals：
+//
+//	它对总体里的每个文件跑一次，被下面两条慢测试各调一遍
+//	（TestRequestLogsRetirementExposure /
+//	  TestRequestLogsRetirementBreakersRegistryIsConsistent /
+//	  TestViewArmCutoverReadersRegistryIsConsistent，共三条）。
+//
+// 实测（-short -v）：三条分别 36.8s / 37.4s / 40.4s，合计 114.6s，
+// 而 build-test 作业的 `make test-short` 给整个 admin 包的预算是 120s
+// ⇒ 实测 FAIL 121.004s，**余量为零**。
+//
+// 为什么可以缓存（安全性已核，不是推测）：
+//  1. 三个调用方全部**只读**返回值（`range` / `map[k]` / `len`），
+//     没有任何写入或 delete ⇒ 返回同一张表不会互相污染。
+//  2. 本文件（及另外两个调用方所在的测试文件）**不写磁盘**
+//     （os.WriteFile 命中 0）⇒ 不存在「测到一半改文件」导致缓存失效的场景。
+//  3. 与本包既有的 consumersOnce 同一形状，不引入新的模式。
+var (
+	v1ExposureOnce     sync.Once
+	v1ExposureMeasured map[string]string
+	v1ExposureViewArm  map[string]string
+)
+
 func measureV1ReadingExposure(t *testing.T, root string) (measured, viewArm map[string]string) {
+	t.Helper()
+	v1ExposureOnce.Do(func() {
+		v1ExposureMeasured, v1ExposureViewArm = computeV1ReadingExposure(t, root)
+	})
+	return v1ExposureMeasured, v1ExposureViewArm
+}
+
+func computeV1ReadingExposure(t *testing.T, root string) (measured, viewArm map[string]string) {
 	t.Helper()
 	measured = map[string]string{} // file -> severity（**仅限直读 v1 底表**的读方）
 	viewArm = map[string]string{}  // file -> severity（经 canonical 视图读 v1 臂的读方）

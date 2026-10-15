@@ -572,17 +572,23 @@ func (c *TransportIRConverter) restoreRequestExtensionsWithContext(body []byte, 
 		}
 	}
 
-	return c.restoreExtensionsWithParamreg(body, req.Extensions, srcDialect, dstDialect)
+	return c.restoreExtensionsWithParamreg(body, req.Extensions, srcDialect, dstDialect, targetProtocol)
 }
 
 // restoreExtensionsWithParamreg 按注册表策略逐字段决策并还原 Extensions 进 body。
 //
 // 与 internal/ir 的 restoreExtensions 逻辑一致；此函数在 transport 层独立实现，
 // 避免 transport → internal/ir 的反向依赖（ir 需要 import paramreg）。
+//
+// targetProtocol 用于线格式专属字段的裁剪（r1026：stream_options 仅存在于
+// openai-chat 线格式）。⚠️ 与 internal/ir/extensions_restore.go 的同名守卫
+// 必须同步维护——本函数是第二遍还原（pass1 在 ir.Serialize* 内），只修
+// 一遍另一遍会把字段写回去（r1021 thinking 事故的同构复发路径）。
 func (c *TransportIRConverter) restoreExtensionsWithParamreg(
 	body []byte,
 	extensions map[string]json.RawMessage,
 	src, dst paramreg.Dialect,
+	targetProtocol string,
 ) []byte {
 	if len(extensions) == 0 {
 		return body
@@ -600,6 +606,15 @@ func (c *TransportIRConverter) restoreExtensionsWithParamreg(
 	for key, val := range extensions {
 		if _, exists := target[key]; exists {
 			continue // IR 已输出该键，不覆盖
+		}
+
+		// r1026：stream_options 是 openai-chat 线格式专属参数，见
+		// internal/ir/extensions_restore.go 同名守卫的注释。
+		if key == "stream_options" {
+			switch targetProtocol {
+			case ir.ProtocolOpenAIResponses, ir.ProtocolAnthropicMessages, ir.ProtocolGeminiGenerate:
+				continue
+			}
 		}
 
 		outKey, outVal, action, _ := paramreg.Apply(key, val, src, dst)

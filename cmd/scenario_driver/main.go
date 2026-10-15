@@ -14,9 +14,10 @@
 //	  --prompt medium
 //
 // 子命令 (--scenario):
-//   s22-3   60 轮长 prompt → 验证 request_logs_bodies_hot delta ≥ 50
-//   s22-4   20 轮 + mock server_error → 验证 request_logs_hot.success=false delta ≥ 1
-//   s23-3   80 轮 → 验证 request_logs_bodies_hot delta ≥ 70
+//   s22-3   60 轮长 prompt → 验证 session_bodies_hot delta ≥ 50（S4 停写后
+//           改数会话族热表，2026-10-13；数 v1 表 delta 恒 0）
+//   s22-4   20 轮 + mock server_error → 验证 session_turns_hot.success=false delta ≥ 1
+//   s23-3   80 轮 → 验证 session_bodies_hot delta ≥ 70
 //
 // DB 连接默认从 LLM_GATEWAY_DATABASE_URL 取, 或 PGPASSWORD/PGHOST 等 env.
 //
@@ -112,13 +113,16 @@ func run(cfg *Config) *Result {
 	defer conn.Close(context.Background())
 
 	// 2. Take base count
-	baseBodies, err := queryScalarInt(conn, "SELECT count(*) FROM request_logs_bodies_hot WHERE ts > NOW() - INTERVAL '1 hour'")
+	// S4 停写（2026-10-13）后 v1 宽表不再进新行：chat rounds 的落库断言
+	// 改数会话族热表（session_bodies_hot / session_turns_hot）——数 v1 表
+	// delta 恒 0，s22-3/s23-3 会永久 FAIL。会话族热表同为 8h 热窗、带 ts。
+	baseBodies, err := queryScalarInt(conn, "SELECT count(*) FROM session_bodies_hot WHERE ts > NOW() - INTERVAL '1 hour'")
 	if err != nil {
 		res.Error = "base bodies query: " + err.Error()
 		return res
 	}
 	res.BaseBodies = baseBodies
-	baseFail, _ := queryScalarInt(conn, "SELECT count(*) FROM request_logs_hot WHERE ts > NOW() - INTERVAL '1 minute' AND success = false")
+	baseFail, _ := queryScalarInt(conn, "SELECT count(*) FROM session_turns_hot WHERE ts > NOW() - INTERVAL '1 minute' AND success = false")
 	res.BaseFail = baseFail
 
 	// 3. (s22-4 only) inject server_error on all groups
@@ -146,18 +150,18 @@ func run(cfg *Config) *Result {
 
 	// 6. After count
 	time.Sleep(3 * time.Second)
-	afterBodies, _ := queryScalarInt(conn, "SELECT count(*) FROM request_logs_bodies_hot WHERE ts > NOW() - INTERVAL '1 hour'")
+	afterBodies, _ := queryScalarInt(conn, "SELECT count(*) FROM session_bodies_hot WHERE ts > NOW() - INTERVAL '1 hour'")
 	res.AfterBodies = afterBodies
 	res.DeltaBodies = afterBodies - baseBodies
 
-	afterFail, _ := queryScalarInt(conn, "SELECT count(*) FROM request_logs_hot WHERE ts > NOW() - INTERVAL '1 minute' AND success = false")
+	afterFail, _ := queryScalarInt(conn, "SELECT count(*) FROM session_turns_hot WHERE ts > NOW() - INTERVAL '1 minute' AND success = false")
 	res.AfterFail = afterFail
 	res.DeltaFail = afterFail - baseFail
 
 	// 7. Pass/fail logic per scenario
 	switch cfg.Scenario {
 	case "s22-3":
-		// 60 轮长 prompt 后 request_logs_bodies_hot delta >= 50
+		// 60 轮长 prompt 后 session_bodies_hot delta >= 50
 		res.Passed = res.DeltaBodies >= 50
 		res.Message = fmt.Sprintf("delta_bodies=%d, expected >= 50", res.DeltaBodies)
 	case "s22-4":
@@ -165,7 +169,7 @@ func run(cfg *Config) *Result {
 		res.Passed = res.DeltaFail >= 1
 		res.Message = fmt.Sprintf("delta_fail=%d, expected >= 1", res.DeltaFail)
 	case "s23-3":
-		// 80 轮 chat 后 request_logs_bodies_hot delta >= 70
+		// 80 轮 chat 后 session_bodies_hot delta >= 70
 		res.Passed = res.DeltaBodies >= 70
 		res.Message = fmt.Sprintf("delta_bodies=%d, expected >= 70", res.DeltaBodies)
 	default:

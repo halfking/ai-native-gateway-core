@@ -173,11 +173,9 @@ var bodiesUnaffectedJustification = map[string]string{
 		"（LoadV1Turns 缺 body 时 pgx.ErrNoRows 被 continue 吞掉、保留空默认，校验会报" +
 		"「v2 多出轮次」而不是崩）。它由人工触发、不在在线读写路径上，" +
 		"所以「不读正文内容」的退化不构成服务面影响。",
-	"admin/data_lifecycle_blobs.go": "读的是体量不是内容：唯一的 bodies 引用是 " +
-		"`COALESCE(pg_column_size(rb.request_body), 0)`，即「存量正文占多少字节、" +
-		"清理能省多少」。停写不改变存量字节数，也不改变待清理行数。" +
-		"注意 bodies 族是按正则识别的，会把 pg_column_size 也算成「读 bodies」，" +
-		"所以这条豁免不是可有可无的形式主义。",
+	// admin/data_lifecycle_blobs.go 于 2026-10-13（S4 波 4）出列：会话臂
+	// 治理已落地（原豁免「读的是体量不是内容」随之失效——治理对象已是
+	// session_bodies 族）。
 }
 
 // requestLogsStopWriteClassification 覆盖 requestLogsReadInventory 的 104 个文件。
@@ -288,11 +286,9 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 			"附件数据本身在 request_attachments 表里未丢（domains/attachments/repository.go:183 已有读法），" +
 			"所以这是读腿的退化，不是数据丢失。",
 	},
-	"admin/compression_sessions.go": {
-		Effect:   effectSilentlyDegradedContent,
-		Evidence: "AND rb2.outbound_body IS NOT NULL",
-		Note:     "列表行仍返回（compression_strategy 在 session 臂有真值），但 LATERAL 的 rb2.outbound_body IS NOT NULL(:147) 停写后恒假 ⇒ estimated_original_msgs 对每行都是 COALESCE(NULL,0)=0，且 outbound_msg_count / outbound_token_est 是补位 NULL ⇒ 200 OK、字段齐全、全零，**压缩效果的度量整体失去意义**。",
-	},
+	// 2026-10-13 S4 波 4 出列：admin/compression_sessions.go 整只端点已
+	// 会话族化（原条目预告的「全零静默降级」当天就被修掉——turns/bodies
+	// 双源 + LATERAL 改 request_delta 数组长度），不再属 v1 停写面。
 	"admin/logs_summary.go": {
 		Effect:   effectSilentlyDegradedContent,
 		Evidence: "COALESCE(rb.request_body::text, '') AS request_body",
@@ -354,11 +350,7 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 		Evidence: "FROM request_logs_with_current_month AS r",
 		Note:     "三个读点（:21 retireClosedMainMinuteSQL / :77 retireClosedDimStatement / :99 retireClosedErrorDrillMinuteSQL）**全是 NOT EXISTS 存在性守卫，不投影任何值**，只回答「这个已闭分钟的键，视图还产不产出」，产出则保留、不产出则 DELETE。净效应是「**退化成 no-op**」而不是「误删」：① **删除侧与写入侧同源同谓词**——rollup 的整键替换（bg/stats_minute_rollup.go:226/:289）与这三条读的是同一张视图、同一套 dimKey 表达式（:66-68 注释明确 dimKey 与 error 过滤都来自 rollupDimQueries 同一拼接口径），停写后两侧看到同一批 session 臂行 ⇒ 不会把 rollup 刚写的键误判成悬空键删掉；② 这三条唯一要清理的是 v1 侧累加器（internal/quality/minute_aggregator.go 读 request_logs_hot，已单列）的键，而累加器在停写后停产 ⇒ 扫描窗内根本没有键可删，恒删 0 行；③ 视图继续供行，守卫继续保护这些行。用到的列里 request_status/ts/tenant_id/canonical_id/error_kind/outbound_model 六项是 815 视图 session 臂的 `t.*` 直映；`gw_task_id` 与 `api_key_prefix` 本文件**零命中**；仅 provider_id/client_profile/client_model 骑 details 层且只参与等值匹配。错误通道未被吞（fmt.Errorf 包装上抛 ⇒ 外层 slog.Warn）。",
 	},
-	"admin/data_lifecycle_blobs.go": {
-		Effect:   effectUnaffected,
-		Evidence: "COALESCE(pg_column_size(rb.request_body), 0),",
-		Note:     "两个读点（:99/:220）都是 710 视图 LEFT JOIN bodies，但消费的两列是 `pg_column_size(rb.request_body)` 与 `rb.request_body IS NOT NULL` —— **体量不是内容**。端点语义是「**存量**正文占多少字节、清理能省多少」，停写后新正文本就不再产生，所以「数字停在存量值」是如实反映而非应变化却没变化的指标冻结。查询错误未被吞（:113-117 与 :228-232 都 writeInternalErr → 500）。bodies 族判 unaffected 需具名豁免，已在 bodiesUnaffectedJustification 登记；本轮独立复核该豁免成立（剥注释后两处 bodies 引用确实只有 pg_column_size / IS NOT NULL，:249-255 的 UPDATE 与 :263 的 VACUUM 都不是读点）。",
-	},
+	// admin/data_lifecycle_blobs.go 于 2026-10-13（S4 波 4）出列：会话臂治理。
 	"admin/telemetry.go": {
 		Effect:   effectUnaffected,
 		Evidence: "SELECT $1, rl.ts, $2::jsonb, $3::jsonb",
@@ -713,11 +705,9 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 		Evidence: "COALESCE(rb.request_body::text, '') AS request_body,",
 		Note:     "已核实 sessionLogsWhere(admin/session_scope.go:39) 主谓词是 gw_task_id = $1 AND ts > …，不是会话头；gw_task_id 由 session 臂的 details 层(d.gw_task_id)提供，故 loadTaskLogsForTitle 的行不会消失——但 bodies 腿硬失败使 request_body/response_body 变空串，buildSummaryCorpus 只能靠 request_preview/response_preview 兜底 ⇒ 标题照常 200 生成但语料从全文降级为预览片段；只有语料短到 40 rune 以下才显式 400。",
 	},
-	"cmd/scenario_driver/main.go": {
-		Effect:   effectErrorsOut,
-		Evidence: "SELECT count(*) FROM request_logs_bodies_hot WHERE ts > NOW() - INTERVAL '1 hour'",
-		Note:     "它自己造流量（POST {gateway}/v1/chat/completions 跑 60/20/80 轮）再量 v1 增量，所以停写后必然测不到：bodies 增量与 request_logs_hot success=false 增量双双为 0，Passed=false + Message: \"delta_bodies=0, expected >= 50\"，属立刻暴露的硬失败（离线工具，不影响在线面）。",
-	},
+	// 2026-10-13 S4 波 4 出列：cmd/scenario_driver/main.go 落库断言已改数
+	// session_bodies_hot / session_turns_hot（原条目预告的「delta 恒 0 硬失败」
+	// 修掉——数会话族热表恢复「造流量→量增量」的冒烟语义）。
 	"domains/hooks/observability/telemetry/client.go": {
 		// 2026-10-13 S3 波 2：FindRecentGatewaySession 改双热腿 UNION
 		//（session_turns_hot ∪ request_logs_hot），turn_no 改会话族
@@ -845,11 +835,8 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 		Evidence: "FROM request_logs_bodies_hot",
 		Note:     "getLog 元数据走 logsSourceFromSQL()（默认 710 视图，session 臂继续供数），但 fetchRequestBodies / fetchRequestOutboundBody 的 bodies 两段停写后对新请求恒 sql.ErrNoRows，而调用方显式吞掉：detail.RequestBody = nil; detail.ResponseBody = nil 后照常 writeJSON(w, 200, detail) ⇒ **请求详情页对停写后的新请求永远 200 且正文字段静默为 null**，无任何错误信号。",
 	},
-	"admin/quality_correlations.go": {
-		Effect:   effectSilentlyEmpty,
-		Evidence: "FROM request_logs rl",
-		Note:     "五个相关性分桶全部直读 v1 母表 request_logs LEFT JOIN request_logs_bodies、窗口 ts >= NOW() - INTERVAL '1 day' * $1；停写后每桶零行 ⇒ len(xs) < 2 静默 continue ⇒ results 空 ⇒ 洞察列表返回空数组、接口 200，无错误信号（session 族不参与这五个分桶）。",
-	},
+	// admin/quality_correlations.go 于 2026-10-13（S4 波 4）出列：会话族重写
+	// （turns=canonical、bodies=切换层 outbound_body；探针样本出围属口径变更）。
 	"admin/unified_detail.go": {
 		Effect:   effectErrorsOut,
 		Evidence: "FROM request_logs_bodies_hot",
