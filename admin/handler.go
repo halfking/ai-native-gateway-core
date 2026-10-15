@@ -30,6 +30,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/modelquality"    // model-IQ backend interface (modelQualityBackend)
 	"github.com/kaixuan/llm-gateway-go/domains/reportrollup"    // 对账报表读面/导出（2026-09-25）
 	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
+	"github.com/kaixuan/llm-gateway-go/domains/sanitizerules"
 	"github.com/kaixuan/llm-gateway-go/domains/session"      //nolint:depguard // session state manager
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/stats"
@@ -170,6 +171,7 @@ type Handler struct {
 	// sanitizePatternDetector reloads SmartSaniGuard's YAML rule set through
 	// the same admin operation as sensitive words.
 	sanitizePatternDetector *sanitize.PatternDetector
+	sanitizeRuleManager     *sanitizerules.Manager
 	// routeIncidentHandler (2026-07-13) backs the read-only
 	// /api/admin/route-incidents* endpoints. nil disables the
 	// diagnose feature on the swim lane.
@@ -891,6 +893,11 @@ func (h *Handler) SetSanitizePatternDetector(detector *sanitize.PatternDetector)
 	h.sanitizePatternDetector = detector
 }
 
+// SetSanitizeRuleManager wires managed policy administration; nil keeps routes available as 503.
+func (h *Handler) SetSanitizeRuleManager(manager *sanitizerules.Manager) {
+	h.sanitizeRuleManager = manager
+}
+
 func (h *Handler) admin(fn http.HandlerFunc) http.HandlerFunc {
 	return AdminMiddleware(fn, h.db, h.secret)
 }
@@ -910,6 +917,7 @@ func (h *Handler) providerConsole(fn http.HandlerFunc) http.HandlerFunc {
 }
 
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
+	h.registerSanitizeRuleRoutes(mux)
 	// Public routes (no Bearer admin key)
 	mux.HandleFunc("/api/auth/token", h.handleLogin)
 	mux.HandleFunc("/api/auth/logout", h.handleLogout)
