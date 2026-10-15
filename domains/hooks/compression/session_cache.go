@@ -278,11 +278,12 @@ type LastOutboundRow struct {
 // list.Element in the LRU ordering, AND its elem pointer lets the LRU
 // promote an entry to the front in O(1) on access.
 type l1Entry struct {
-	key   string // tenantID + ":" + gwSessionID (back-reference for eviction)
-	state *SessionState
-	body  []byte // last outbound body bytes (nil if evicted from L1 to save RAM)
-	bytes int    // len(body) + len(key) + l1EntryOverheadBytes (D3: byte-budget tracking)
-	elem  *list.Element
+	key      string // tenantID + ":" + gwSessionID (back-reference for eviction)
+	state    *SessionState
+	body     []byte // last outbound body bytes (nil if evicted from L1 to save RAM)
+	bytes    int    // len(body) + len(key) + l1EntryOverheadBytes (D3: byte-budget tracking)
+	elem     *list.Element
+	revision string // immutable shared commit token; empty for L1-only entries
 }
 
 // SessionCache provides three-tier session state caching.
@@ -425,25 +426,25 @@ func (c *SessionCache) GetOrLoad(ctx context.Context, tenantID, gwSessionID stri
 					case st.LastOutboundHash == "" || persistedHash == st.LastOutboundHash:
 						body = persistedBody
 					case c.turnReader != nil && (st.MsgCount <= 0 || st.MsgCount == countMessages(persistedBody)):
-							// The mismatch here is the envelope-vs-array wrap shape
-							// (see loadFromDB), not a foreign body: the L3 query is
-							// session-scoped and the message count still agrees with
-							// the Redis state. Adopt the pair and re-derive the hash
-							// so the state+body entry cached into L1 is
-							// self-consistent. Leaving the envelope hash in place
-							// made diff.go's lineage guard reject this pairing and
-							// silently reset every L1-evicted session to a full
-							// resend on the V1 fallback path. A count mismatch
-							// (genuinely different turn content) falls through to
-							// the mismatch handling below.
-							body = persistedBody
-							// st is the exclusive object returned by loadFromRedis
-							// (a fresh `var st SessionState` on its stack), so writing
-							// st.LastOutboundHash here only mutates this call's local
-							// copy. setL1 below will cloneSessionState again before
-							// storing, so neither the Redis metadata pool nor any
-							// existing L1 entry is touched by this assignment.
-							st.LastOutboundHash = persistedHash
+						// The mismatch here is the envelope-vs-array wrap shape
+						// (see loadFromDB), not a foreign body: the L3 query is
+						// session-scoped and the message count still agrees with
+						// the Redis state. Adopt the pair and re-derive the hash
+						// so the state+body entry cached into L1 is
+						// self-consistent. Leaving the envelope hash in place
+						// made diff.go's lineage guard reject this pairing and
+						// silently reset every L1-evicted session to a full
+						// resend on the V1 fallback path. A count mismatch
+						// (genuinely different turn content) falls through to
+						// the mismatch handling below.
+						body = persistedBody
+						// st is the exclusive object returned by loadFromRedis
+						// (a fresh `var st SessionState` on its stack), so writing
+						// st.LastOutboundHash here only mutates this call's local
+						// copy. setL1 below will cloneSessionState again before
+						// storing, so neither the Redis metadata pool nor any
+						// existing L1 entry is touched by this assignment.
+						st.LastOutboundHash = persistedHash
 					default:
 						adopted := false
 						if c.turnReader != nil {
@@ -602,6 +603,10 @@ func cloneSessionState(state *SessionState) *SessionState {
 }
 
 func (c *SessionCache) setL1(key string, state *SessionState, body []byte) {
+	c.setL1Revision(key, state, body, "")
+}
+
+func (c *SessionCache) setL1Revision(key string, state *SessionState, body []byte, revision string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	st := cloneSessionState(state)
@@ -615,6 +620,7 @@ func (c *SessionCache) setL1(key string, state *SessionState, body []byte) {
 		c.curBytes += entryBytes
 		existing.state = st
 		existing.body = bodyCopy
+		existing.revision = revision
 
 		existing.bytes = entryBytes
 		c.ll.MoveToFront(existing.elem)
@@ -622,7 +628,7 @@ func (c *SessionCache) setL1(key string, state *SessionState, body []byte) {
 	}
 
 	// New entry: push to front, evict the LRU (back) if over capacity OR bytes.
-	entry := &l1Entry{key: key, state: st, body: bodyCopy, bytes: entryBytes}
+	entry := &l1Entry{key: key, state: st, body: bodyCopy, bytes: entryBytes, revision: revision}
 	entry.elem = c.ll.PushFront(entry)
 	c.l1[key] = entry
 	c.curBytes += entryBytes
