@@ -28,7 +28,7 @@ const CredentialPairPattern = `(?i)` + pairContext + pairSeparator + `(` + pairA
 var variableReference = regexp.MustCompile(`^\$(?:[a-zA-Z_][a-zA-Z0-9_]*|\{[a-zA-Z_][a-zA-Z0-9_]*\})$`)
 
 // questionLead limits prose exemptions to unquoted natural-language declarations.
-var questionLead = regexp.MustCompile(`(?i)(?:是|为|\bis)\s*$`)
+var questionLead = regexp.MustCompile(`(?i)^(?:` + SecretLabel + `|` + AccountLabel + `)["']?(?:\*{1,2}|` + "`" + `)?\s*(?:是|为|\s+is\s+)\s*$`)
 
 // NonLiteralDeclaration recognizes references and questions while retaining
 // quote semantics: shell single quotes and quoted human input denote literals.

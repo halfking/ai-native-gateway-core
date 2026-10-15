@@ -127,3 +127,24 @@ func TestR1034NaturalInputDoesNotWidenToolOutputRules(t *testing.T) {
 		}
 	}
 }
+
+func TestR1034ExplicitCredentialActionsOverrideQuestionWords(t *testing.T) {
+	s := productionConfiguredSanitizer(t)
+	for _, prefix := range []string{"密码设置为", "密码设为", "密码更新为", "密码改为", "密码改成", "password set to ", "password changed to ", "password updated to "} {
+		for _, secret := range []string{"what?", "which?"} {
+			input := prefix + secret
+			r, err := s.SanitizeInput(context.Background(), input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, value := range r.SanitizeMap {
+				found = found || value == secret
+			}
+			restored, restoreErr := s.RestoreOutput(context.Background(), r.SanitizedText, r.SanitizeMap)
+			if !found || strings.Contains(r.SanitizedText, secret) || restoreErr != nil || restored != input {
+				t.Errorf("explicit declaration not protected/round-tripped: %q", input)
+			}
+		}
+	}
+}
