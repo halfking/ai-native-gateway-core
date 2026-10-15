@@ -431,6 +431,9 @@ export const enUS = {
     sessionExpired: 'Your session expired. Sign in again.',
     sessionAliveUnauthorized: 'You are signed in, but this feature is unavailable (it may be disabled).',
     forbidden: 'Your account does not have permission for this operation.',
+    // ★ Batch 134: title used when a restricted page is reached by deep link.
+    //   `common.forbidden` is about *actions*, which is the wrong sense here.
+    pageDenied: 'Access denied',
     notFoundOrDenied: 'The record is unavailable or you do not have access to it.',
     conflict: 'The data changed on the server. Refresh and try again.',
     serverError: 'The server could not complete this operation. Retry shortly.',

@@ -52,7 +52,7 @@ import {
   type PeriodCompareResponse,
 } from '@/api/usageEnhanced'
 
-useHyperPage({ title: () => t('ue.title') })
+useHyperPage({ title: () => (allowed.value ? t('ue.title') : t('common.pageDenied')) })
 
 const auth = useAuthStore()
 
