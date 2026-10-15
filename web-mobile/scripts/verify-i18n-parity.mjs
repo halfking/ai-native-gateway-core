@@ -95,9 +95,21 @@ function parseDict(path) {
       if (hits > 0) continue
     }
     // 叶子： `  key: 'value',` 或 `  key: 'value'`
-    const leaf = line.match(/^(\s*)([A-Za-z_$][\w$]*):\s*'((?:[^'\\]|\\.)*)'\s*,?\s*$/)
+    // ★ 第一百四十批：**键名也可以是带引号的**，例如
+    //   `'unexpected-shape': '形状异常'` / `'6h': '每 6 小时'`。
+    //   初版只认裸标识符，于是词典里 7 个这类键被**整段静默丢弃** ——
+    //   后果不是「门误报」，而是判据 1/2/3（键集一致 / 无未翻译 / 无重复）
+    //   **对这 7 个键根本不生效**：zh/en 写得不一致、值等于键名，门全程绿。
+    //   （实测漏掉：dh.state.unexpected-shape · dh.state.note.unexpected-shape ·
+    //     miq.err.{invalid-provider,invalid-canonical,credential-required,model-required} ·
+    //     compressionView.granularity.6h —— 共 7 个。）
+    // ⚠️ 只做这一处**全行锚定**的放宽是安全的；「一行多键」那种形态
+    //   （`jan: '1 月', feb: '2 月', ...`）需要字符串感知的扫描器，
+    //   手写会在值内部的逗号上误切 —— 本批刻意**不**碰，登记为遗留项
+    //   （`common.month.*` 12 个键，键集一致对它们目前不生效）。
+    const leaf = line.match(/^(\s*)(?:'([^']+)'|([A-Za-z_$][\w$]*))\s*:\s*'((?:[^'\\]|\\.)*)'\s*,?\s*$/)
     if (leaf && stack.length > 0) {
-      const keyPath = [...stack, leaf[2]].join('.')
+      const keyPath = [...stack, leaf[2] ?? leaf[3]].join('.')
       // ★ 重复键检测：Map.set 会静默覆盖，必须在覆盖前记下来。
       //   同一段内重复（两行之间没有开/闭对象）才是真重复；
       //   不同段里同名（如两个词典各自都有 `title`）是正常的，按完整路径区分。
@@ -105,7 +117,7 @@ function parseDict(path) {
         duplicates.push(`${keyPath}（第 ${firstSeen.get(keyPath)} 行与第 ${i + 1} 行）`)
       } else {
         firstSeen.set(keyPath, i + 1)
-        out.set(keyPath, leaf[3])
+        out.set(keyPath, leaf[4])
       }
       continue
     }

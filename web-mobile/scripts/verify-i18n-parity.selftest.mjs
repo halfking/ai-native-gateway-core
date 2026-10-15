@@ -248,4 +248,32 @@ const doc = (body) => `export const D = {\n${body}\n} as const\n`
 }
 
 console.log('' + NL + 'i18n-parity selftest: ' + pass + ' passed, ' + fail + ' failed')
+// ── 第九组：第一百四十批新增 —— **带引号的键名**（第一批的洞）──────────────
+// ★ 这组用例存在的理由：parseDict 初版只认裸标识符，于是词典里
+//   `'unexpected-shape': '形状异常'` / `'6h': '每 6 小时'` 这类键被**整段静默丢弃**。
+//   丢弃的后果不是误报，是判据 1/2/3 对这些键**根本不生效**。
+//   而「键集一致」在一侧少写这种键时，本该拦下 —— 初版不会拦。
+{
+  const zhQ = "export const zhCN = {\n  a: {\n    'b-b': '值',\n  },\n} as const\n"
+  const enQ = "export const enUS = {\n  a: {\n    'b-b': 'value',\n  },\n} as const\n"
+  const r = runGate(makeRepo({ zh: zhQ, en: enQ }))
+  check('带引号的键名两侧都有 → 放行', r.code === 0, r.out)
+}
+{
+  // ★ 正控：en 侧**漏掉**这个带引号的键 ⇒ 必须拦下（初版看不见它）
+  const zhQ = "export const zhCN = {\n  a: {\n    'b-b': '值',\n  },\n} as const\n"
+  const enQ = "export const enUS = {\n  a: {\n    other: 'value',\n  },\n} as const\n"
+  const r = runGate(makeRepo({ zh: zhQ, en: enQ }))
+  check('en 少了带引号的键 → 拦下', r.code === 1, r.out)
+  check('报出了具体键名 a.b-b', r.out.includes('a.b-b'), r.out)
+}
+{
+  // ★ 负控：「值 === 键名」这条判据对带引号的键也要生效
+  const zhQ = "export const zhCN = {\n  a: {\n    'b-b': 'b-b',\n  },\n} as const\n"
+  const enQ = "export const enUS = {\n  a: {\n    'b-b': 'b-b',\n  },\n} as const\n"
+  const r = runGate(makeRepo({ zh: zhQ, en: enQ }))
+  check('带引号的键未翻译 → 拦下', r.code === 1, r.out)
+  check('报出未翻译', r.out.includes('未翻译'), r.out)
+}
+
 process.exit(fail === 0 ? 0 : 1)
