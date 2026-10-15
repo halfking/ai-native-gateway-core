@@ -4,7 +4,7 @@ export default {
   close: 'Schließen',
 
   step1: {
-    title: '① API-Schlüssel auswählen (alle Schlüssel unter aktuellem Mandant)',
+    title: "① Verfügbaren API-Schlüssel auswählen",
     refresh: 'Aktualisieren',
     refreshing: 'Wird aktualisiert…',
     loading: 'Lädt…',
@@ -18,16 +18,16 @@ export default {
 
   step2: {
     title: '② Betriebssystem',
-    pathHint: 'Konfigurationsdateipfad:',
+    pathHint: "Konfigurationsort:",
   },
 
   step3: {
-    title: '③ Modellbereich auswählen',
-    featured: 'Ausgewählte Modelle (Routing-Featured-Konfiguration)',
+    title: "④ Modellumfang auswählen",
+    featured: "Empfohlene Modelle (Routing des Mandanten des gewählten Schlüssels)",
     all: 'Alle verfügbaren Modelle (vom Gateway)',
     featuredPreview: {
       loading: 'Lädt…',
-      empty: 'Keine ausgewählten Modelle im Routing konfiguriert',
+      empty: "Für den gewählten Mandanten sind keine empfohlenen Modelle konfiguriert",
       manageButton: 'Zu "Routing-Richtlinie" gehen, um zu konfigurieren →',
       manage: 'Verwalten →',
     },
@@ -42,6 +42,21 @@ export default {
     },
   },
 
+  retry: "Erneut versuchen",
+  otherFamily: "Andere",
+  gateway: {
+    title: "③ Gateway-API-URL",
+    hint: "Standardmäßig wird die Adresse dieses Gateways verwendet. Generierte Dateien und Skripte enthalten den gewählten API-Schlüssel. Bewahren Sie sie sicher auf.",
+  },
+  provider: {
+    label: "Anbietername",
+    hint: "Ein Eintrag mit gleichem Namen und gleicher URL wird aktualisiert. Bei abweichender URL stoppt das Skript und fordert einen neuen Namen an.",
+  },
+  notes: {
+    cherryStudio: "Tragen Sie den gewählten Schlüssel in den Client-Einstellungen ein. Diese Datei enthält nur die Parameter.",
+    rooCode: "Konfigurieren Sie OpenAI Compatible in den Einstellungen von Roo Code.",
+  },
+
   footer: {
     generated: '{count} Modellkonfigurationen generiert',
     generate: 'Konfiguration generieren',
@@ -51,11 +66,14 @@ export default {
 
   results: {
     tabs: {
+      yaml: "YAML-Ausschnitt",
       file: 'Konfigurationsdatei',
       script: 'Konfigurationsskript',
       manual: 'Manuelle Schritte',
     },
     actions: {
+      scriptWarning: "Das Skript enthält Ihren Schlüssel. Laden Sie es herunter und führen Sie es lokal aus. Der Inhalt wird hier nicht angezeigt.",
+      mergeHint: "Das Skript sichert die alte Konfiguration, führt {provider} zusammen und erhält andere Anbieter",
       copyContent: 'Inhalt kopieren',
       downloadFile: 'Datei herunterladen',
       downloadScript: 'Skript herunterladen',
@@ -76,6 +94,12 @@ export default {
   },
 
   error: {
+    featuredLoadFailed: "Empfohlene Modelle konnten nicht geladen werden. Bitte erneut versuchen.",
+    catalogLoadFailed: "Modellkatalog konnte nicht geladen werden. Bitte erneut versuchen.",
+    selectModel: "Wählen Sie mindestens ein Modell. Falls keine empfohlenen Modelle vorhanden sind, konfigurieren Sie diese zuerst unter Routing-Richtlinie.",
+    keyUnavailable: "Der gewählte Schlüssel konnte nicht gelesen werden. Bitte erneut auswählen.",
+    generateFailed: "Die Konfiguration konnte nicht generiert werden. Bitte erneut versuchen.",
+    copyFailed: "Kopieren fehlgeschlagen. Bitte die Datei herunterladen.",
     applyFailed: 'Antrag fehlgeschlagen',
   },
   // Added 2026-07-02 — Cursor fallback note (used by ClientConfigDialog when tool === 'cursor').

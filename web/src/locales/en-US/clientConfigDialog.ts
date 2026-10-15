@@ -4,7 +4,7 @@ export default {
   close: 'Close',
 
   step1: {
-    title: '① Select API Key (all keys under current tenant)',
+    title: "① Select an available API key",
     refresh: 'Refresh',
     refreshing: 'Refreshing…',
     loading: 'Loading…',
@@ -18,16 +18,16 @@ export default {
 
   step2: {
     title: '② Operating System',
-    pathHint: 'Config file path:',
+    pathHint: "Configuration location:",
   },
 
   step3: {
-    title: '③ Select Model Scope',
-    featured: 'Featured Models (routing featured config)',
+    title: "④ Select Model Scope",
+    featured: "Featured Models (routing for the selected key’s tenant)",
     all: 'All Available Models (from gateway)',
     featuredPreview: {
       loading: 'Loading…',
-      empty: 'No featured models configured in routing',
+      empty: "No featured models configured for the selected tenant",
       manageButton: 'Go to "Routing Policy" to configure →',
       manage: 'Manage →',
     },
@@ -42,6 +42,21 @@ export default {
     },
   },
 
+  retry: "Retry",
+  otherFamily: "Other",
+  gateway: {
+    title: "③ Gateway API URL",
+    hint: "Uses this gateway’s address by default. Generated files and scripts contain the selected API key; store them securely.",
+  },
+  provider: {
+    label: "Provider name",
+    hint: "An entry with the same name and URL is updated. If the URL differs, the script stops and asks you to rename it.",
+  },
+  notes: {
+    cherryStudio: "Enter the selected key in the client settings. This file only lists the parameters.",
+    rooCode: "Configure OpenAI Compatible in Roo Code settings.",
+  },
+
   footer: {
     generated: 'Generated {count} model configurations',
     generate: 'Generate Config',
@@ -51,11 +66,14 @@ export default {
 
   results: {
     tabs: {
+      yaml: "YAML snippet",
       file: 'Config File',
       script: 'Config Script',
       manual: 'Manual Steps',
     },
     actions: {
+      scriptWarning: "The script contains your key. Download and run it locally; its contents are not displayed here.",
+      mergeHint: "The script backs up the old configuration, merges {provider}, and preserves other providers",
       copyContent: 'Copy Content',
       downloadFile: 'Download File',
       downloadScript: 'Download Script',
@@ -76,6 +94,12 @@ export default {
   },
 
   error: {
+    featuredLoadFailed: "Failed to load featured models. Please retry.",
+    catalogLoadFailed: "Failed to load the model catalog. Please retry.",
+    selectModel: "Select at least one model. If featured models are empty, configure them in Routing Policy first.",
+    keyUnavailable: "The selected key could not be read. Please select it again.",
+    generateFailed: "Configuration generation failed. Please retry.",
+    copyFailed: "Copy failed. Please download the file.",
     applyFailed: 'Application failed',
   },
   // Added 2026-07-02 — Cursor fallback note (used by ClientConfigDialog when tool === 'cursor').
