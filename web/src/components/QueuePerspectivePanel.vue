@@ -26,6 +26,8 @@ import {
   queueRef,
   nodesRef,
   liveStreamState,
+  connectionRef,
+  lastEventAtRef,
   snapshotRef,
   getNodesForModel,
   getRequestsForCredential,
@@ -156,6 +158,14 @@ const congestionHint = computed(() => {
 })
 
 const hasData = computed(() => queue.value !== null && queue.value.wired)
+
+// streamAwaitingData（2026-10-15 r1032c）：连接未建立，或已建立但还没收到
+// 任何一帧。这段窗口里「队列数据未接入」是**抢跑的误报**——queue envelope
+// 只是还没到达，不是 dispatch 没接线（本地实测：建连 <0.4s、首帧 ~2s，
+// 中间约 1.5s 空态区写着误导性文案且无任何加载标记）。
+const streamAwaitingData = computed(
+  () => connectionRef.value !== 'open' || lastEventAtRef.value === 0,
+)
 const isIdle = computed(() => hasData.value && totalDepth.value === 0)
 
 // ── 队列深度分区：默认折叠，拥堵时自动展开 ─────────────────────────────────
@@ -1231,9 +1241,15 @@ function requestTitleTooltip(request: LiveRequest): string {
 
     <!-- 空态：只声明队列链路未接入。下方模型分组/请求轨迹分区独立渲染，
          不再被 hasData 整体吞掉（2026-09-22 总览页首开无数据修复：
-         dispatch 未接线时「按处理队列」视图此前整屏只剩这一行空态） -->
+         dispatch 未接线时「按处理队列」视图此前整屏只剩这一行空态）。
+         2026-10-15 r1032c：实时流尚未交付任何一帧时，这里显示加载标记而
+         不是「未接入」——queue envelope 只是还没到，不是 dispatch 没接线。 -->
     <div v-if="!hasData" class="qp-empty">
-      <span class="qp-empty-text">队列数据未接入（dispatch 未启用或未 wired）</span>
+      <span v-if="streamAwaitingData" class="qp-empty-text qp-empty-text--loading">
+        <i class="qp-loading-dot" aria-hidden="true" />
+        {{ t('requestJourneys.queueAwaitingStream') }}
+      </span>
+      <span v-else class="qp-empty-text">队列数据未接入（dispatch 未启用或未 wired）</span>
     </div>
 
     <!-- 紧凑指标条：调度链路（BE3 缺省隐藏对应项）+ 节点健康度 一行看完 -->
@@ -1509,6 +1525,26 @@ function requestTitleTooltip(request: LiveRequest): string {
 .qp-empty {
   padding: 16px;
   text-align: center;
+}
+/* r1032c：等待实时流交付的加载态——脉冲点 + 文案，动画只用 opacity。 */
+.qp-empty-text--loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.qp-loading-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--kx-primary, var(--kx-accent, currentColor));
+  animation: qp-loading-pulse 1.4s ease-in-out infinite;
+}
+@keyframes qp-loading-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .qp-loading-dot { animation: none; }
 }
 .qp-empty-text {
   color: var(--kx-text-secondary);

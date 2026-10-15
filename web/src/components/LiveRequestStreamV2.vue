@@ -48,9 +48,13 @@ const {
 })
 
 // 解构出 reconnect —— 保存新 URL 后立即用新地址重连，不再只是 localStorage 默默记住
+// lastEventAt（2026-10-15 r1032c）：「连接已建立」≠「数据已到达」——本地实测
+// 建连 <0.4s、首批 SSE 帧 ~2s，中间这段空窗（r1032 只覆盖到建连）此前
+// 数据区没有任何加载标记。
 const {
   snapshot: liveSnapshot,
   connection,
+  lastEventAt,
   paused,
   togglePause,
   reconnect: reconnectStream,
@@ -197,19 +201,28 @@ function clearAutoReconnect() {
   }
 }
 
+// awaitingFirstData（r1032c）：连接未建立，或已建立但还没收到任何一帧
+// （lastEventAt===0；服务端 queue/node/keepalive 心跳 ≤2s 内必到）。
+// 这段窗口里数据区必须挂着加载标记——否则看起来就是「死页面」，
+// 且队列面板会抢跑出误导性的「队列数据未接入」空态（见 QueuePerspectivePanel）。
+const awaitingFirstData = computed(
+  () => connection.value !== 'open' || lastEventAt.value === 0,
+)
+
 const queueStreamNotice = computed<{ tone: 'connecting' | 'closed' | 'unsupported'; text: string } | null>(() => {
   switch (connection.value) {
-    case 'open':
-      return null
     case 'closed':
       return { tone: 'closed', text: t('dashboard.liveStream.queueStreamClosed') }
     case 'unsupported':
       return { tone: 'unsupported', text: t('dashboard.liveStream.queueStreamUnsupported') }
-    default:
-      // connecting / reconnecting；挂载后 idle 只存在于建连前的极短窗口，
-      // 与 connecting 同样展示，不给「未连接」的误读留缝。
-      return { tone: 'connecting', text: t('dashboard.liveStream.queueStreamConnecting') }
   }
+  if (awaitingFirstData.value) {
+    // 已连接但首帧未到：文案如实区分「连接中」与「接收首批数据中」。
+    return connection.value === 'open'
+      ? { tone: 'connecting', text: t('dashboard.liveStream.queueStreamAwaiting') }
+      : { tone: 'connecting', text: t('dashboard.liveStream.queueStreamConnecting') }
+  }
+  return null
 })
 
 watch(connection, (state) => {
@@ -264,6 +277,15 @@ function handleToggleLegend(key: string) {
 // 2026-07-13 修正：只有 filteredLanes 也为空时才显示空态（避免有泳道显示时仍显示"暂无请求数据"）
 const isColdStart = computed(() => {
   return lanes.value.length === 0 && filteredLanes.value.length === 0
+})
+
+// r1032c：冷启动空态按连接状态区分文案——连接中/未连接说「正在连接」，
+// 已连接才说「等待请求」。混用一句会把建连窗口读成「没有数据」。
+const coldStartText = computed(() => {
+  if (connection.value === 'open' && lastEventAt.value > 0) {
+    return t('dashboard.liveStream.emptyWaiting')
+  }
+  return t('dashboard.liveStream.emptyConnecting')
 })
 
 // 2026-08-06: 保留 UI label 辅助函数（i18n 翻译）
@@ -601,7 +623,7 @@ function vendorOptionLabel(v: string) {
            "仅探测"过滤为空时不显示（已有泳道只是被过滤，按钮文字已说明） -->
       <div v-if="isColdStart" class="swim-lanes__empty">
         <span class="swim-lanes__empty-icon">⏳</span>
-        <span class="swim-lanes__empty-text">{{ t('dashboard.liveStream.emptyWaiting') }}</span>
+        <span class="swim-lanes__empty-text">{{ coldStartText }}</span>
       </div>
     </div>
 

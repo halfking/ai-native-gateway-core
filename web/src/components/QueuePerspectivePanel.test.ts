@@ -88,6 +88,7 @@ const i18n = createI18n({
   locale: 'zh-CN',
   messages: { 'zh-CN': { requestJourneys: {
     modelScopeLoading: '正在加载特色模型和近 3 天热门模型…',
+    queueAwaitingStream: '正在连接实时流，连接后本区数据自动加载…',
     refreshScope: '刷新范围',
     modelGroupLayerTitle: '按模型分组的可用节点',
     modelGroupCount: '{count} 个模型',
@@ -145,6 +146,11 @@ describe('QueuePerspectivePanel', () => {
     liveStreamState.requests = []
     liveStreamState.nodes = []
     liveStreamState.snapshot = null
+    // r1032c 基线：默认置为「流已交付」（open + 至少一帧）——本文件既有用例
+    // 的空态断言（队列数据未接入）只在流交付后成立；等待流的窗口显示的是
+    // 加载标记（见 queue-empty awaiting 用例）。
+    liveStreamState.connection = 'open'
+    liveStreamState.lastEventAt = 1
     getFeatured.mockReset().mockResolvedValue({ featured_models: ['gpt-4o', 'claude-sonnet', 'm-1'] })
     resolveRouting.mockReset().mockResolvedValue({ raw_models: [], candidates: [] })
     reorderCandidateBindings.mockReset().mockResolvedValue({ message: 'updated', items: [] })
@@ -1402,6 +1408,38 @@ describe('QueuePerspectivePanel', () => {
     expect(wrapper.find('.qp-layer--model-groups').exists()).toBe(true)
     expect(wrapper.text()).toContain('按模型分组的可用节点')
     expect(wrapper.text()).toContain('最近请求处理轨迹')
+  })
+
+  it('★ queue-empty shows a loading marker (not 未接入) while the live stream has not delivered a frame', async () => {
+    // r1032c：本地实测复现的窗口——SSE 建连 <0.4s、首帧（queue/node 心跳）
+    // ~2s，中间约 1.5s 里 hasData=false 的空态区写着「队列数据未接入
+    // （dispatch 未启用或未 wired）」：那是**抢跑的误报**，queue envelope
+    // 只是还没到。等待流的窗口必须显示加载标记。变异防护：把
+    // streamAwaitingData 改成恒 false（删掉等待分支）→ 本用例红在
+    // 「误报文案仍在」。
+    liveStreamState.queue = null
+    liveStreamState.nodes = []
+    // 等待流的两格：连接未建立；已建立但首帧未到。
+    for (const [conn, lastEvent] of [['connecting', 0], ['open', 0]] as const) {
+      liveStreamState.connection = conn
+      liveStreamState.lastEventAt = lastEvent
+      const wrapper = mountPanel()
+      await flushPromises()
+      expect(wrapper.find('.qp-empty-text--loading').exists(),
+        `conn=${conn} 时空态区必须有加载标记`).toBe(true)
+      expect(wrapper.text()).toContain('正在连接实时流')
+      expect(wrapper.text(), `conn=${conn} 时不得抢跑「未接入」误报`).not.toContain('队列数据未接入')
+      wrapper.unmount()
+    }
+
+    // 首帧到达后回到既有口径：hasData 仍为 false（dispatch 真没接线）→
+    // 「队列数据未接入」如实显示，加载标记退场。
+    liveStreamState.connection = 'open'
+    liveStreamState.lastEventAt = 1
+    const delivered = mountPanel()
+    await flushPromises()
+    expect(delivered.text()).toContain('队列数据未接入')
+    expect(delivered.find('.qp-empty-text--loading').exists()).toBe(false)
   })
 
   it('retries the model-scope load once when the first attempt landed empty (first-open fix)', async () => {

@@ -17,6 +17,7 @@ import { createI18n } from 'vue-i18n'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import LiveRequestStreamV2 from './LiveRequestStreamV2.vue'
 import { __testing, liveStreamState } from '../composables/liveStreamStore'
+import { _resetPersistState } from '../composables/liveStreamPreferences'
 import zhCNDashboard from '../locales/zh-CN/dashboard'
 
 enableAutoUnmount(afterEach)
@@ -64,6 +65,7 @@ describe('LiveRequestStreamV2 queue-view stream notice + auto-reconnect', () => 
     vi.stubGlobal('EventSource', FakeEventSource)
     __testing.resetStream()
     __testing.resetForTest()
+    _resetPersistState()
     localStorage.clear()
   })
 
@@ -72,7 +74,7 @@ describe('LiveRequestStreamV2 queue-view stream notice + auto-reconnect', () => 
     vi.useRealTimers()
   })
 
-  it('shows 正在连接实时流 in the queue view while connecting, and clears it once open', async () => {
+  it('shows 正在连接实时流 in the queue view while connecting, and keeps a marker until the first frame arrives', async () => {
     const wrapper = mountStream()
     await vi.advanceTimersByTimeAsync(0)
 
@@ -84,10 +86,22 @@ describe('LiveRequestStreamV2 queue-view stream notice + auto-reconnect', () => 
     expect(strip.classes()).toContain('live-queue-connect--connecting')
     expect(strip.text()).toContain('正在连接实时流')
 
-    // open 后状态条消失（数据区不该常驻一条提示）。
+    // ★ r1032c：连接建立 ≠ 数据到达。open 后首帧未到（lastEventAt 仍为 0），
+    // 加载标记必须继续挂在数据区——本地实测这段空窗 ~1.5s，此前无任何标记，
+    // 队列面板还会抢跑出「队列数据未接入」的误导空态。
     FakeEventSource.instances[0].onopen?.()
     await vi.advanceTimersByTimeAsync(0)
     expect(liveStreamState.connection).toBe('open')
+    expect(liveStreamState.lastEventAt).toBe(0)
+    const awaiting = noticeStrip(wrapper)
+    expect(awaiting.exists()).toBe(true)
+    expect(awaiting.classes()).toContain('live-queue-connect--connecting')
+    expect(awaiting.text()).toContain('正在接收首批数据')
+
+    // 首帧到达 → 标记消失（数据区不该常驻提示）。
+    FakeEventSource.instances[0].onmessage?.({ data: JSON.stringify({ type: 'health_update', ts: new Date().toISOString() }) })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(liveStreamState.lastEventAt).toBeGreaterThan(0)
     expect(noticeStrip(wrapper).exists()).toBe(false)
   })
 
@@ -95,8 +109,11 @@ describe('LiveRequestStreamV2 queue-view stream notice + auto-reconnect', () => 
     const wrapper = mountStream()
     const first = FakeEventSource.instances[0]
     first.onopen?.()
+    // 送入首帧（本用例测的是断连重连，不是首帧等待——先把流置为「已交付」）。
+    first.onmessage?.({ data: JSON.stringify({ type: 'health_update', ts: new Date().toISOString() }) })
     await vi.advanceTimersByTimeAsync(0)
     expect(liveStreamState.connection).toBe('open')
+    expect(liveStreamState.lastEventAt).toBeGreaterThan(0)
 
     // 致命错误：readyState=2（HTTP 层 401/404 等），浏览器不会再自动重连。
     first.readyState = 2
@@ -114,8 +131,9 @@ describe('LiveRequestStreamV2 queue-view stream notice + auto-reconnect', () => 
     expect(FakeEventSource.instances.length).toBe(2)
     expect(liveStreamState.connection).toBe('connecting')
 
-    // 新连接成功 → open，状态条消失，退避计数复位。
+    // 新连接成功并交付首帧 → 状态条消失，退避计数复位。
     FakeEventSource.instances[1].onopen?.()
+    FakeEventSource.instances[1].onmessage?.({ data: JSON.stringify({ type: 'health_update', ts: new Date().toISOString() }) })
     await vi.advanceTimersByTimeAsync(0)
     expect(liveStreamState.connection).toBe('open')
     expect(noticeStrip(wrapper).exists()).toBe(false)
@@ -132,6 +150,7 @@ describe('LiveRequestStreamV2 queue-view stream notice + auto-reconnect', () => 
     const wrapper = mountStream()
     const first = FakeEventSource.instances[0]
     first.onopen?.()
+    first.onmessage?.({ data: JSON.stringify({ type: 'health_update', ts: new Date().toISOString() }) })
     await vi.advanceTimersByTimeAsync(0)
     first.readyState = 0
     first.onerror?.()
@@ -143,5 +162,27 @@ describe('LiveRequestStreamV2 queue-view stream notice + auto-reconnect', () => 
     await vi.advanceTimersByTimeAsync(30_000)
     expect(__testing.openConnectionTotal()).toBe(before)
     expect(FakeEventSource.instances.length).toBe(1)
+  })
+
+  it('★ swim-lane cold start says 正在连接 while the stream has not delivered (non-queue dimension)', async () => {
+    // r1032c：非队列维度（按凭据/模型等）的原显示区域是泳道区，冷启动空态
+    // 此前不分连接状态一律「等待实时请求流数据…」——建连窗口会被读成
+    // 「没有数据」。连接未交付前必须说「正在连接」。
+    localStorage.setItem('llmgw_live_stream_preferences_v1:legacy:default', JSON.stringify({ groupBy: 'credential' }))
+    const wrapper = mountStream()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(liveStreamState.connection).toBe('connecting')
+
+    const empty = wrapper.find('.swim-lanes__empty')
+    expect(empty.exists()).toBe(true)
+    expect(empty.text()).toContain('正在连接实时流')
+    expect(empty.text()).not.toContain('等待实时请求流数据')
+
+    // 首帧交付后（连接 open + lastEventAt>0）才回到「等待请求」的口径。
+    FakeEventSource.instances[0].onopen?.()
+    FakeEventSource.instances[0].onmessage?.({ data: JSON.stringify({ type: 'health_update', ts: new Date().toISOString() }) })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(wrapper.find('.swim-lanes__empty').text()).toContain('等待实时请求流数据')
+    localStorage.removeItem('llmgw_live_stream_preferences_v1:legacy:default')
   })
 })

@@ -31,6 +31,7 @@ export default {
   noModelNodes: 'No live nodes are bound to featured or hot models.',
   modelScopeError: 'Model scope is unavailable; model nodes are hidden.',
   modelScopeLoading: 'Loading featured and hot models from the last 3 days…',
+  queueAwaitingStream: 'Connexion au flux en direct en cours, les données de cette zone se chargeront automatiquement une fois connectée…',
   refreshScope: 'Refresh scope',
   modelGroupLayerTitle: 'Available nodes grouped by model',
   modelGroupCount: '{count} models',
