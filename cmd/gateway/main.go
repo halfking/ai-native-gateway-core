@@ -1522,6 +1522,7 @@ func main() {
 
 	if err := validateSessionWriteSafety(dbConn != nil && dbConn.Enabled()); err != nil {
 		slog.Error("unsafe request storage configuration", "error", err)
+		slog.Error("accepted configurations:\n" + validSessionWriteConfigExamples())
 		os.Exit(1)
 	}
 
