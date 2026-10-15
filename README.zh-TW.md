@@ -78,7 +78,7 @@ graph TB
         CP["Control plane<br/>Admin API + embedded Vue SPA"]
         BGW["Background workers (~80 goroutines)<br/>probe / cleanup / stats / partitions"]
     end
-    GW --> PG[("PostgreSQL 15+<br/>durable facts · RLS 38+ tables · partitions")]
+    GW --> PG[("PostgreSQL 14+<br/>durable facts · RLS 38+ tables · partitions")]
     GW --> RD[("Redis 7+<br/>URSM state · limits · sticky · session hot state")]
     DP -->|"IR conversion + vendor field strip"| P["LLM Providers<br/>OpenAI / Anthropic / Gemini / domestic"]
     CP -.->|"signed outbox events"| ASM["ai-session-manager<br/>session projection / analytics"]
@@ -106,10 +106,11 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `cmd/gateway/` | 組合根——單一二進位生產入口（資料面 + 控制面） |
 | `domains/` | 67 個 DDD 領域——`streaming`、`dispatch`、`credential`、`session`(+v2)、`ursm`、hooks、security… |
 | `admin/` + `web/` | 管理 REST API + Vue 3 + TypeScript SPA（Element Plus、ECharts） |
+| `web-mobile/` | 行動端前端（Vue 3 + TypeScript）——第二生產前端；部署要求先建置 `dist/` |
 | `bg/` | 背景工作者——探測、生命週期清理、統計聚合、分區維護 |
 | `storage/` | 雙模式儲存工廠（`full`：PG+Redis / `lite`：SQLite+檔案+行程內 KV） |
 | `internal/` | 橫切基礎設施——IR、vendor 欄位剝離、工作階段鏡像、outbox、遙測… |
-| `sql/migrations/` + `db/migrations/` | 冪等遷移（啟動系列目前 863） |
+| `sql/migrations/` + `db/migrations/` | 冪等遷移（啟動系列目前 864） |
 | `installer/` | 獨立跨平台安裝器 / 升級器模組 |
 | `scripts/`、`deploy/` | 建置、部署、鏡像與驗證工具 |
 
@@ -166,7 +167,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 ### 憑證監控 — 多來源 × 多憑證健康度
 
 ![憑證監控](docs/assets/screenshots/credential-monitor.png)
-*即時二維可用性矩陣（生產環境 19 憑證 × 18 模型）一眼看出哪個憑證拖垮了哪個模型。按憑證的 P95 延遲、1 小時滑動視窗成功率與並發槽位用量。指紋池（50+ User-Agent、35 種 Accept-Language、11 套 uTLS 設定檔）+ 自適應探測自動規避上游風控——失敗即觸發熔斷，無需人工介入*
+*即時二維可用性矩陣（生產環境 19 憑證 × 18 模型）一眼看出哪個憑證拖垮了哪個模型。按憑證的 P95 延遲、1 小時滑動視窗成功率與並發槽位用量。指紋池（42 個 User-Agent、35 種 Accept-Language）+ 自適應探測自動規避上游風控——失敗即觸發熔斷，無需人工介入*
 
 ### 工作類型設定 — 任務自動分類
 
@@ -362,7 +363,7 @@ Installer 完整設計見 [installer/README.md](installer/README.md)。
 | **資料駐留** | 資料離開企業邊界 | 所有資料留在你的基礎設施內 |
 | **計費** | 按用量計費（USD） | 套餐 + 積分 + 加油包——為中國 SMB 而設，支援支付寶 |
 | **上游模型** | 少數主流廠商 | 廣泛模型覆蓋 + 中國國產模型 + 本地模型 |
-| **憑證指紋池** | 基礎 | 50+ User-Agent · 35 Accept-Language · 11 uTLS 設定檔 |
+| **憑證指紋池** | 基礎 | 42 個 User-Agent · 35 Accept-Language |
 | **工作階段治理** | 請求級日誌 | 黏性工作階段 + 全文回放 + 壓縮 + 4 檔生命週期 |
 | **MCP 工具閘道** | 部分 | 2026 年 Q3 全量交付 |
 | **中文友好** | 有限 | 完整中文介面 + 國產模型 + 支付寶 |
@@ -468,7 +469,7 @@ git push github       # → github (secret scan, blocked on BLOCK-level hit)
 
 ## ✅ CI 與門禁（2026-09-14 起）
 
-- **正式門禁 = 本地 `./verify.sh`**：提交/部署前必跑（`go test ./...` 全量、遷移 checksum 對賬、隱私合規、vet、build、前端建置）。merge 到 main 與發版以它為準。
+- **正式門禁 = 本地 `./verify.sh`**：提交/部署前必跑（`go test ./...` 全量、遷移 checksum 對賬、隱私合規、vet、build；前端建置為 `--web` 選通項）。merge 到 main 與發版以它為準。
 - **codeup Flow 輕量門**：遠端只有 codeup，`.github/workflows/` 在 codeup 不執行；`.workflow/main-verify.yml` 提供流水線即程式碼設定（build + `go vet ./autoroute/...` + 60 例 auto 匹配離線套件），需在 codeup 倉庫「流水線」頁匯入一次後隨 push/PR 自動觸發。
 - auto 匹配離線回歸可單獨復跑：`go test ./autoroute/ -run 'TestAutoMatchingSuiteHeuristic|TestPromptClassificationMatrix'`（純離線，無網路）。
 

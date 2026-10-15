@@ -286,7 +286,7 @@ func (p *Pool) redisStats(ctx context.Context) (map[string]interface{}, bool) {
 	}, true
 }
 
-// defaultUserAgents — 50+ real browser UA strings, no impersonation.
+// defaultUserAgents — 42 real browser UA strings, no impersonation.
 // Source: open-source UA databases (useragents.me / whatismybrowser).
 var defaultUserAgents = []string{
 	// Chrome on Windows 125

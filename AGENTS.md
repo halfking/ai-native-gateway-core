@@ -498,7 +498,7 @@ bash scripts/post-deploy-verify.sh     # SSOT 在 ~/workspace/ai-native-workspac
 ### 任务 4 — deploy-local 全链路回归门
 
 ```bash
-bash scripts/deploy_timeout_portability_test.sh   # rc=0
+bash tests/deploy_timeout_portability_test.sh   # rc=0
 bash tests/deploy_local_contract_test.sh           # 仅在 SSOT 在场时跑（CI runner 上不存在，会挂主门，因此本轮未接入 verify.sh）
 ```
 
