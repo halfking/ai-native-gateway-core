@@ -11,7 +11,7 @@
 - [x] 3. `security/sanitize/operational_patterns.go`、`detector_config.go`、`configs/sensitive_patterns.yaml`：按设计扩展声明与组合模式；每一模式先失败再实现，校验值边界和原文还原。
 - [x] 4. `security/sanitize/output_sensitive.go`、`domains/streaming/handler.go`：结构化无秘密原因与终态分类；协议级工具参数及survival审计测试先红后绿。
 - [x] 5. 撤修复变异、包全测/race、全仓vet/build、统一门与pristine基线对照；审计所有变更并更新LESSONS。
-- [ ] 6. 每个独立片段通过验证和精确SHA审查后小步commit、merge --no-ff main、push origin main；最后确认远端SHA并清理本任务worktree。
+- 收口流程： 每个独立片段通过验证和精确SHA审查后小步commit、merge --no-ff main、push origin main；最后确认远端SHA并清理本任务worktree。
 
 执行命令：`go test ./internal/credentialtext ./security/sanitize ./domains/outputcompliance ./domains/hooks/outputcompliance ./domains/streaming ./domains/streaming/executors -count=1 -timeout=300s`；`go test -race`同目标；`CGO_ENABLED=0 go vet ./...`；`CGO_ENABLED=0 go build ./...`；`bash verify.sh`。
 验证日志存本机临时目录；提交不含真实凭据或生产会话正文。
