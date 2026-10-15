@@ -673,7 +673,7 @@ func SerializeOpenAIResponse(ir *InternalResponse, clientModel string) ([]byte, 
 		created = time.Now().Unix()
 	}
 
-	finishReason := ir.FinishReason
+	finishReason := ToolCallFinishReason(ir.FinishReason, len(toolCalls) > 0)
 	if finishReason == "" {
 		finishReason = "stop"
 	}
@@ -837,6 +837,10 @@ func SerializeAnthropicResponse(ir *InternalResponse, clientModel string) ([]byt
 	}
 	if droppedNameless > 0 && emitted == 0 && ir.FinishReason == "tool_calls" {
 		stopReason = mapFinishReasonToAnthropic("stop")
+	}
+	if emitted > 0 && ToolCallFinishReason(ir.FinishReason, true) == "tool_calls" &&
+		(stopReason == "" || stopReason == "end_turn") {
+		stopReason = "tool_use"
 	}
 
 	out := map[string]any{
@@ -1219,6 +1223,15 @@ func shortIDFromSeed(seed string) string {
 }
 
 // ─── Finish reason helpers ───────────────────────────────────────────────────
+
+// ToolCallFinishReason repairs a relay's ordinary stop beside executable tool
+// calls. Explicit truncation, filtering and vendor failure reasons stay intact.
+func ToolCallFinishReason(reason string, hasNamedTool bool) string {
+	if hasNamedTool && (reason == "" || reason == "stop") {
+		return "tool_calls"
+	}
+	return reason
+}
 
 // mapAnthropicFinishReason converts Anthropic stop reasons to OpenAI form.
 func mapAnthropicFinishReason(reason string) string {
