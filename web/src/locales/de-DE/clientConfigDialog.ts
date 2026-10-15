@@ -94,6 +94,8 @@ export default {
   },
 
   error: {
+    invalidGatewayURL: "Geben Sie eine gültige HTTP(S)-API-URL ohne Zugangsdaten, Abfrageparameter oder Fragment ein.",
+    invalidProviderName: "Der Anbietername muss aus 1–64 Buchstaben (A–Z), Ziffern, Unterstrichen oder Bindestrichen bestehen und mit einem Buchstaben oder einer Ziffer beginnen.",
     featuredLoadFailed: "Empfohlene Modelle konnten nicht geladen werden. Bitte erneut versuchen.",
     catalogLoadFailed: "Modellkatalog konnte nicht geladen werden. Bitte erneut versuchen.",
     selectModel: "Wählen Sie mindestens ein Modell. Falls keine empfohlenen Modelle vorhanden sind, konfigurieren Sie diese zuerst unter Routing-Richtlinie.",

@@ -94,6 +94,8 @@ export default {
   },
 
   error: {
+    invalidGatewayURL: "認証情報、クエリパラメーター、フラグメントを含まない有効な HTTP(S) API URL を入力してください。",
+    invalidProviderName: "プロバイダー名は英字（A–Z）、数字、アンダースコア、ハイフンの1～64文字で、先頭は英字または数字にしてください。",
     featuredLoadFailed: "注目モデルの読み込みに失敗しました。再試行してください。",
     catalogLoadFailed: "モデル一覧の読み込みに失敗しました。再試行してください。",
     selectModel: "モデルを一つ以上選択してください。注目モデルがない場合は、先にルーティングポリシーで設定してください。",

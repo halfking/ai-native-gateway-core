@@ -74,9 +74,15 @@ describe('safe client installers', () => {
  it('makes manual clients use their settings panel and an actual model ID',()=>{
   expect(OS_INFO.macos.paths.cursor).not.toContain('mcp.json'); expect(getManualSteps('roocode','macos',URL,['model-a'])).toContain('model-a'); expect(generateShellScript('roocode','windows','{}')).not.toContain('Set-Content'); expect(getManualSteps('minimax_code','macos',URL)).toContain('独立的供应商库')
  })
- it('rejects unsafe URLs and invalid provider names',()=>{
-  expect(normalizeGatewayURL(URL+'/')).toBe(URL); for(const value of ['ftp://host','https://user:pass@host/v1','https://host/v1?key=secret','https://host/v1#x']) expect(()=>normalizeGatewayURL(value)).toThrow()
-  expect(validateProviderName('itestu')).toBe('itestu'); for(const name of ['','a:b','a\nPY','a/b']) expect(()=>validateProviderName(name)).toThrow()
+ it.each(['not-a-url', '', 'ftp://host', 'https://user:pass@host/v1', 'https://host/v1?key=secret', 'https://host/v1#x'])('rejects invalid gateway URLs with a stable translation key: %s', value => {
+  expect(() => normalizeGatewayURL(value)).toThrow(new Error('clientConfigDialog.error.invalidGatewayURL'))
+ })
+ it('normalizes valid gateway URLs and provider names',()=>{
+  expect(normalizeGatewayURL(URL+'/')).toBe(URL)
+  expect(validateProviderName(' itestu ')).toBe('itestu')
+ })
+ it.each(['', 'a:b', 'a\nPY', 'a/b', 'a'.repeat(65)])('rejects invalid provider names with a stable translation key: %s', name => {
+  expect(() => validateProviderName(name)).toThrow(new Error('clientConfigDialog.error.invalidProviderName'))
  })
  it('uses authenticated API plumbing and snake_case audit fields',async()=>{
   const fetch=vi.spyOn(globalThis,'fetch').mockResolvedValue(new Response('{"ok":true}',{headers:{'Content-Type':'application/json'}}))

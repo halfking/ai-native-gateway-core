@@ -255,14 +255,19 @@ export function generateShellScript(tool: ToolId, os: OS, configContent: string,
 
 export function validateProviderName(value: string): string {
   const name = value.trim()
-  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name)) throw new Error('供应商名称须为 1–64 个英文字母、数字、下划线或连字符。')
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name)) throw new Error('clientConfigDialog.error.invalidProviderName')
   return name
 }
 
 export function normalizeGatewayURL(value: string): string {
-  const url = new URL(value.trim())
+  let url: URL
+  try {
+    url = new URL(value.trim())
+  } catch {
+    throw new Error('clientConfigDialog.error.invalidGatewayURL')
+  }
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
-    throw new Error('API 地址须为 HTTP(S)，且不能包含账号、查询参数或片段。')
+    throw new Error('clientConfigDialog.error.invalidGatewayURL')
   }
   return url.href.replace(/\/+$/, '')
 }
