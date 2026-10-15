@@ -75,7 +75,7 @@ export const HOURS_MIN = 1
 /** :78-80 钳位上界。 */
 export const HOURS_MAX = 720
 
-/** `queryInt`（handler.go:1534-1544）：空串或 `Atoi` 失败 ⇒ 回落缺省。 */
+/** `queryInt`（handler.go:1557-1566）：空串或 `Atoi` 失败 ⇒ 回落缺省。 */
 export function hoursParseEffective(raw: string | undefined): number {
   if (raw === undefined || raw === '') return HOURS_DEFAULT
   const n = Number(raw)

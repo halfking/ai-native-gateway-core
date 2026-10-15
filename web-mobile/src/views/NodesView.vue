@@ -316,7 +316,7 @@ const confirmOpen = ref(false)
 const confirmOp = ref<PendingOp>(null)
 
 /**
- * reason 必填：后端 admin/credential_monitor.go:1785-1792 对空串直接 400。
+ * reason 必填：后端 admin/credential_monitor.go:1838-1858 对空串直接 400。
  *
  * ★ `resetState` 也在内 —— 它的 reason 是**审计留痕**（routing_reset.go:69-72
  * `reason is required for audit trail`），不填就 400。

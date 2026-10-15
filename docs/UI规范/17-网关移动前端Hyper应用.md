@@ -19293,3 +19293,304 @@ M02（换组件、条数不变）让 **①-1 绿、只有 ①-2 红** —— 这
 |---|---|
 | 判据 | `web-mobile/src/views/RestrictedPageGuard.spec.ts`（新建，11 条） |
 | 文档 | 本节 |
+
+---
+
+## 11.173 第一百三十六批：把「注释里的 Go 行号引用」量了一遍 —— 1015 处引用，机器能判的 68 条里 32 条对不上
+
+> 本批**不改任何后端代码**，改的全是**注释里的行号**，外加一个新判据。
+> 起因是待办里那条「约 12 个 api 模块头的 main.go 行号漂移」——
+> 本批把它量清楚之后，发现**比「漂移」严重得多**。
+
+### 一、为什么值得单独量
+
+本仓的**权限决策大量压在注释里的 Go 行号引用**上。最显眼的是批 130：
+整条「服务端是真门」的结论，依据就是
+`admin/handler.go:936-937` 挂 `h.superAdmin(...)` 与 `admin/auth.go:383-384`
+逐字比 `claims.Role != "super_admin"`。
+
+**那两条本批复验过，今天仍然逐字成立**（`:936` 是 request-anomalies 列表注册，
+`:383` 就是那句 role 比对）。⇒ 手核过的可信。
+
+但**批量写**的那些没人核过。于是本批把它们全量扫一遍。
+
+### 二、读数
+
+api 模块（97 个，排除 `.test.ts` / `.spec.ts`）里 `.go:行号` 形式的引用共 **1015 处**：
+
+| 分类 | 处数 | 含义 |
+|---|---|---|
+| 路径不唯一 | **611** | 写的是裸文件名（如 `handler.go`），仓库里有多个同名文件，**无法确定指哪一个** ⇒ 不判 |
+| 无可核 token | **335** | 同一行注释里没有端点路径、也没有反引号标识符 ⇒ 不判 |
+| 行号越界 / 区间反向 | **1** | `settings/spec.go:284-283`（起止颠倒）⇒ 判错 |
+| **可机器判定** | **68** | 路径唯一 + 有 token + 行号在范围内 |
+| └ 其中**对不上** | **32** | 被引的那一行/区间里根本不含注释声称的 token |
+
+⇒ ★ **修复前那 68 条里 32 条对不上 = 46%。**
+
+⚠️ **不判 ≠ 对。** 946 处「不判」不是「没问题」，是「本判据判不了」。
+这个分母必须写在这里，否则读数会被读成「全仓只有 68 条引用」。
+
+### 三、本批订正了 13 条
+
+每一条都**打开源码核过真实行**，而且**确认注释里的结论仍然成立** ——
+光移行号、不改结论，不算修好（结论若也变了，那是另一件事，要单独登记）。
+
+| 文件 | 原引用 | 真实位置 | 性质 |
+|---|---|---|---|
+| `approvalConfig.ts` | `main.go:7367` | `:7538` | 指向 `integrityProbePlanner.Start(...)` |
+| `approvalConfig.ts` | `handler.go:926-927` | `:945` | 指向一行注释 |
+| `approvals.ts` | `main.go:7384 / :7385` | `:7489 / :7490` | 指向 credential-success-rates 两条注册 |
+| `connectionRegistry.ts` | `handler.go:1024 / :1025` | `:1043 / :1044` | 指向 attachments cleanup 两条注册 |
+| `credentialsOps.ts` | `handler.go:946` | `:965` | 指向 mobile-node descriptor |
+| `credentialsOps.ts` | `handler.go:1209` | `:1230` | ★ 原引用指向**空行** |
+| `subscriptionTiers.ts` | `main.go:7027 / :7029` | `:7063 / :7065` | 分别指向 `}` 与一行 PEM 加载 |
+| `subscriptionTiers.ts` | `main.go:7070` | `:7169-7172` | requestJourney 直挂清单 |
+| `requestJourney.ts` | `main.go:7072-7073` | `:7169-7172` | 指向 licensingCustomerAPI 构造 |
+| `dispatchJournal.ts` | `main.go:7143-7144` | `:7179-7180` | 指向一段 proxy 注释 |
+
+⇒ ★ 顺带说明：这类漂移**不是本流水线造成的**。并发会话一直在推 main，
+行号会自己漂。`dispatchJournal.ts` 里甚至留着第八十九批写的
+「`:7070` / `:7074-7075` 已随并发提交漂移」——本批再次印证。
+
+### 四、★★★ 新判据 `src/api/goLineRef.spec.ts`（9 条，四组）
+
+| 组 | 内容 |
+|---|---|
+| ① | 普查读数 + **召回自证**（合成一条错引用喂给扫描器）+ **阳性对照**（一条真实正确的引用必须判为对得上）+ **分类对账**（四类之和 == 总数） |
+| ② | ★★ **未登记的漂移一律红**（不许新欠债） |
+| ③ | ★★★ **登记项必须仍然对不上** —— 修好了就要把登记删掉，否则名单会变成免死金牌 |
+| ④ | 名单规模 / 名单里的 Go 文件必须真实存在 / 判据自身不依赖未纳入仓库的路径 |
+
+`KNOWN_DRIFT` 初始 **25 条**（可判定里 24 + 区间反向 1），**只登记，不假装已修**。
+
+⚠️★ 那 25 条**混着两类，本判据分不出来也不假装分得出来**：
+- **真错**：token 在所引文件里根本不出现（`slidingWindow.ts` 的
+  `slidingWindowQuery`、`taskProfile.ts` 的 `ensurePool`、
+  `taskTypeCorrectionStats.ts` 的 `requiresRole` 在 Go 里**零命中**）、
+  以及区间反向等畸形；
+- **检查器假阳性**：引用其实正确，只是 token 不是字面出现
+  （`connectionRegistry.ts` 写 `/api/admin/connection-registry/{id}`，
+  Go 里是 `{request_id}`；`dispatchJournal.ts` 指的是一个**常量名**
+  `dispatchJournalAPIPath` 而不是字面量）。
+
+⇒ 棘轮只管「不许变多」与「登记项不许悄悄变好」，**分类留给人**。
+
+### 五、★★ 判据自身的宽度（写进文件头，不藏着）
+
+- 端点 token 必须写成 `/api/...` 的**字面量**；写常量名的引用判不出来。
+- 标识符 token 要求**小写字母开头**（`queryInt` / `writeError` / `wrapAdmin`）；
+  大写开头的（`SuperAdminMiddleware`）落进「无可核 token」。
+- ⇒ 这是**已知的漏检面**，不是「那些引用是对的」。
+
+### 六、★★★ 变异台 7 条，两条被判无效 / 等价
+
+| 变异 | 手法 | 期望 | 结果 |
+|---|---|---|---|
+| G01 | 把本批刚订正的引用**改回旧的错行号** | ②-1 红 | ✅ RED |
+| G02 | 从名单里删掉一条 | ②-1 红 | ✅ RED（★ 首轮我把它标成 ③-1，红的其实是 ②-1：删登记 = 制造一条未登记的漂移） |
+| G03 | 往名单里塞一条**并不漂移**的项 | ③-1 红 | ✅ RED |
+| G04 | 把「对不上」的判定关掉（`if (false)`） | ③-1 红 | ✅ RED（★ bad 变空后 ② 反而绿，**只有 ③ 咬得住**） |
+| G05 | 把引用正则换成**恒空匹配** | ①-1 红 | ✅ RED |
+| G06 | 把仓库根推断错（指向 `web-mobile` 自身） | ①-1 红 | ✅ RED |
+| G07 | 把 api 模块清单扩大到含测试/判据文件 | ②-1 红 | ✅ RED |
+| ~~G08~~ | 把一条正确引用指到隔壁行 | — | ⛔ **等价变异，已删** |
+
+⇒ **G08 是可证等价的**：`admin/handler.go` 的 `1043` 与 `1044` 两行
+**都**包含 `/api/admin/connection-registry` 这个子串 ⇒ 对本判据而言改过去读数一样。
+按纪律「可证等价 ⇒ 删变异而不是补用例」删掉，并把这条**分辨率限制**记在这里。
+
+⇒ ★★ **G04 量出一条分辨力边界**：把「对不上」的判定整个关掉，
+②（不许新欠债）**反而是绿的** —— 因为债确实变少了。
+**只有 ③（登记项必须仍然漂移）能抓住**。
+⇒ 这就是**棘轮必须双向**的理由：只有正向的棘轮，判据自己有洞时不会被发现。
+
+### 七、★ 过程中撞到的两件仓库事实
+
+1. **仓库里有一个悬空符号链接**：
+   `docs/archive/process/incidents-collection/2026-08-31-154-blue-green-deploy-recovery.md`
+   指向不存在的 `docs/fixes/2026-08-31-154-blue-green-deploy-recovery.md`。
+   ⇒ 判据最初用 `statSync` 走目录，**在收集阶段就 ENOENT 崩掉**。
+   改用 `readdirSync(..., { withFileTypes: true })`（lstat 语义）后安静跳过。
+   ⇒ ★★ 这是一个**跨工具的通用坑**：任何递归扫仓库的脚本都可能踩到它。
+   （本批**没有**去修那个链接 —— 它不是本批的产出物，也没人知道原意。）
+2. **写文件工具在本仓混进过 5 个 U+FFFD**（本批判据落盘时当场扫出来）：
+   一处在「注释指的是个常量名」、一处在「分类留给人」。
+   ⇒ 再次印证：**写完必须做字节扫描**，这条纪律不是形式主义。
+
+### 八、验证读数
+
+| 环节 | 结果 |
+|---|---|
+| `goLineRef.spec.ts` 单跑 | **9 passed** |
+| `vue-tsc -b`（先删 tsbuildinfo） | RC=0（首轮 3 处 `noUncheckedIndexedAccess` 报错，改掉后 RC=0） |
+| css / touch / i18n / comment 四门 | 全 RC=0 |
+| `gate:selftest` / `npm run build` | RC=0 |
+| **全量** | **222 files / 8103 passed / 1 skipped / 0 failed**（较批 135 **+9**） |
+| **变异台** | **7/7 全红**（另有 1 条等价变异按纪律删除） |
+| 十连跑 | **10/10** 全绿 |
+
+### 九、变更清单（9 个文件）
+
+| 类别 | 文件 |
+|---|---|
+| 注释订正（7 个） | `api/approvalConfig.ts` · `api/approvals.ts` · `api/connectionRegistry.ts` · `api/credentialsOps.ts` · `api/dispatchJournal.ts` · `api/requestJourney.ts` · `api/subscriptionTiers.ts` |
+| 判据 | `api/goLineRef.spec.ts`（新建，9 条） |
+| 文档 | 本节 |
+
+⇒ ★ **零后端代码改动**：本批唯一的 Go 相关动作是**读**。
+
+---
+
+## 11.174 第一百三十七批：把 25 条登记逐条定性 —— 12 条真错订正完毕，真错名单清零
+
+> 零后端代码改动。承批 136：那条「登记了 25 条漂移」的清单，本批逐条打开源码核对，
+> 定性、修掉、归类，并给出两条独立的额外读数。
+
+### 一、定性结果
+
+| 分类 | 条数 | 处置 |
+|---|---|---|
+| **真错**（引用指向的地方根本不是它声称的东西） | **12** | 逐条订正行号，**并复核结论仍然成立** |
+| **检查器假阳性**（引用其实是对的，本判据抓 token 的方式不适用） | **13** | 移出债名单，改登记进 `KNOWN_FALSE_POSITIVE` |
+| 合计 | 25 | ⇒ 订正过程中又暴露 2 条（见下），最终真错 **12** 条全清 |
+
+⇒ ★★ 结论：**`KNOWN_DRIFT`（真错）现在是 0 条**，但**数组保留不删** ——
+空名单本身是一条断言（不许悄悄新增），与 `KNOWN_ORPHANS` 同一处理方式。
+
+### 二、12 条真错（每条都复核了结论）
+
+| 文件 | 原引用 | 真实位置 | 原引用实际指向 |
+|---|---|---|---|
+| `credentialsOps.ts:18` | `credential_monitor.go:1785-1792` | `:1838-1858` | 另一个 handler 的租户分支 |
+| `dispatchWaterfall.ts:8` | `main.go:7228-7230` | `:7395-7397` | ★ **质量画像 API** 那块 |
+| `modelHistory.ts:137` | `handler.go:1534-1544` | `:1557-1566` | `readJSON` 那段 |
+| `modelPolicies.ts:10` | `tenants.go:188-190` | `:191` | `isModelPoliciesSubResource` 判断 |
+| `modules.ts:106` | `settings/spec.go:284-283` | `:283` | ★ **区间起止写反**，切片为空 |
+| `outputCompliance.ts:131` | `output_compliance_handler.go:711` | `:712` | ★ **只差 1 行** |
+| `requestAnomalies.ts:70` | `handler.go:1494-1498` | `:1517-1523` | model-iq 那两条注册 |
+| `requestAnomalies.ts:166` | `handler.go:1546-1549` | `:1569-1571` | `maxAdminBodySize` 那几行 |
+| `sessionAnalyticsFilterOptions.ts:78` | `main.go:7085-7089` | `:7189-7193` | licensing health 注释 |
+| `usageTrendSeries.ts:143` | `usage_trend_series.go:22-24` | `:49` | 该常量上方三行注释 |
+| `dataLifecycleStats.ts:89` | `data_lifecycle.go:33-38` + `:187` | `:54-59` + `:270` | ★ **一处两错**：33-38 是外层结构；`:187` 处没有 COALESCE |
+| `slidingWindow.ts:18` | `credential_monitor.go:790-809` | `:815` | 函数已下移 |
+
+⇒ ★ **结论复核**的三个关键例子：
+- `dispatchWaterfall.ts` 声称「三条都是 `wrapAdmin` = `AdminMiddleware`」——
+  打开 `main.go:7395-7397` 逐字看，**确实是** `wrapAdmin(...)` ⇒ **结论成立，只修行号**。
+  （中途一度怀疑是不是「没挂鉴权」的安全问题，查清后是**指错了块**，不是结论错。
+  ⇒ **差点报了一个不存在的安全缺陷**。）
+- `dataLifecycleStats.ts` 那条指的不是「行号过期」，而是**指错了对象**
+  （`tenantDataStats` 在 54-59，33-38 是外层 `dataLifecycleStats`）。
+- `outputCompliance.ts` 只差 1 行 —— 这类小误差最容易被「反正差不多」放过。
+
+### 三、★★★ 额外读数：普查扫不到的范围里，藏着 **16 处同源残留**
+
+12 处真错订正完，回头按「同一条过期引用」全局搜，发现**同一批过期行号**还出现在
+**普查根本没覆盖的范围**里：
+
+| 范围 | 处数 |
+|---|---|
+| `api/*.ts`（普查覆盖） | 0 |
+| `views/*.vue` + `views/*.spec.ts` | 8 |
+| `api/*.test.ts` | 8 |
+
+⇒ ★★ 这直接印证了批 136 写下的那条警告：
+**「不判」不等于「干净」。** 946 处「判不了」里藏着同类问题。
+本批把那 16 处一并修了，但**普查范围本身没有扩**
+（扩到 `views/` 与测试文件是另一件事，需要重新评估分母与召回）。
+
+### 四、★ 15 条假阳性不是债，是判据分辨率不足
+
+它们逐字核对过，**被引处确实是它声称的东西**，只是抓 token 的方式不适用：
+
+| 现象 | 例子 |
+|---|---|
+| 引用的是**函数定义**，token 在函数体内 | `routing_reset.go:52` 是 `handleResetCredentialState` 的定义行，token 是函数体内的 `reason` |
+| 引用的是**常量名**而非字面量 | `journal_handlers.go:30-35` 里写的是 `dispatchJournalAPIPath`，字面量在 `:13` |
+| **大小写**不同 | `users.go:406` 里是大写 `Role`，token 是小写 `role` |
+| 引用的是**同一行链式引用里的另一条** | `slidingWindow.ts:18` 那行串了四个引用，`slidingWindowQuery` 配的是 `:815`，`recorder.go:16-22` 配的是 `CallEntry` |
+| token 是**前端概念**，Go 里没有这个词 | `taskTypeCorrectionStats.ts` 的 `requiresRole` —— 而 `:1413` 确实是 `admin(...)` 注册，**结论成立** |
+| token 是**对外字段名**而非 Go 标识符 | `usage_trend_series.go:407` 是 SQL 读面，token 是对外的 `source` |
+
+⇒ 之所以**显式登记**而不是直接删：删了它们会变成「未登记的漂移」⇒ ② 会红，
+而红的原因**与人无关**。每条写清「为什么判不出来」，将来改判据时才知道该动哪儿。
+
+### 五、判据改动（9 条 → 10 条）
+
+| 改动 | 内容 |
+|---|---|
+| `KNOWN_DRIFT` | **25 → 0 条**，保留空数组 + `④-1` 断言恒为 0 |
+| `KNOWN_FALSE_POSITIVE` | 新增，15 条，每条带「为什么判不出来」 |
+| `②` | 判据改成「对不上的必须登记在**两者之一**」 |
+| `③` | 反向断言扩到全部登记项 |
+| `④` | 新增 `④-1b` 钉死假阳性 15 条 |
+| 文件头 | 读数改写为「批 136 建成时 32/68（46%）→ 批 137 定性后真错 0、假阳性 15」，并把「16 处同源残留」写进去 |
+
+⇒ ★ 现状读数：引用 **1015** 处不变，路径不唯一 **611**、无可核 token **335**、
+区间反向 **0**、可判定 **69**（对不上 **15**，全部是假阳性）。
+
+### 六、变异台 8/8
+
+| 变异 | 手法 | 期望 | 结果 |
+|---|---|---|---|
+| H01 | 把本批刚订正的引用**改回旧的错行号** | ②-1 红 | ✅ RED |
+| H02 | 往**真错**名单塞一条 | ④-1 红 | ✅ RED |
+| H03 | 往**假阳性**名单塞一条并不存在的项 | ③-1 红 | ✅ RED |
+| H04 | 把「对不上」的判定关掉（`if (false)`） | ③-1 红 | ✅ RED |
+| H05 | 引用正则换成**恒空匹配** | ①-1 红 | ✅ RED |
+| H06 | 仓库根推断错 | ①-1 红 | ✅ RED |
+| H07 | 把某条假阳性的 key 改成与实际不符 | ③-1 红 | ✅ RED |
+| H08 | 把「无可核 token 不判」那一档删掉 | ②-1 红 | ✅ RED |
+
+⇒ ★★ **H04 再次量出同一条边界**（与批 136 的 G04 同一形状）：
+把「对不上」的判定整个关掉 ⇒ 债确实变少了 ⇒ **② 反而是绿的**，
+全靠 ③（登记项必须仍然对不上）抓住。
+**双向棘轮的必要性不是理论上的，是两次独立变异都撞出来的。**
+
+⇒ ★ **H08 是新增的反向读数**：把「无可核 token 不判」这一档删掉，
+判据立刻变严、② 抓到大批未登记漂移 ⇒ 说明那 335 处**确实是被有意放过的**，
+而不是「漏掉了所以没人管」。
+
+### 七、★ 一次**自找**的 flaky：变异台和十连跑抢同一批文件
+
+第一次跑十连跑时 **10 次里失败了 1 次**（`goLineRef.spec.ts` 4 条红，落在 run-02）。
+按纪律看快照而不是看汇总 ⇒ 报错是「`scanRefs` 对一行合成文本返回 56 条」。
+
+**根因不在产品、也不在判据，在我**：
+十连跑是后台任务，而我在它跑的同时**又启动了变异台** ——
+变异台会就地改写 `web-mobile/src/**` 与判据自身，两者抢同一批文件。
+⇒ run-02 读到的是**某条变异生效期间的文件**。
+
+处置与验证：
+1. 确认工作树无残留（变异台每条都有 `try/finally` 还原 + 逐字节比对 ⇒ 还原是干净的）；
+2. 单跑判据 **10/10 稳定**（隔离环境，连跑 10 次）；
+3. 删掉那次快照，**独占**重跑十连跑。
+
+⇒ ★★★ **纪律补一条：十连跑期间不得在同一 worktree 上跑任何会改文件的东西**
+（变异台、批量替换、格式化）。后台任务的「跑着」不等于「跑在真空里」。
+⇒ ⚠️ 与本仓另两条**已知未定位**的 flaky（`ComplianceHitsView` / `RoutingOptView`）
+  **无关** —— 那两条至今根因未查明，本批十连跑未复现，**未复现 ≠ 已修复**。
+
+### 七、验证读数
+
+| 环节 | 结果 |
+|---|---|
+| `goLineRef.spec.ts` 单跑 | **10 passed** |
+| `vue-tsc -b`（先删 tsbuildinfo） | RC=0 |
+| css / touch / i18n / comment 四门 | 全 RC=0 |
+| `gate:selftest` / `npm run build` | RC=0 |
+| **全量** | **222 files / 8104 passed / 1 skipped / 0 failed**（较批 136 **+1**） |
+| **变异台** | **8/8 全红** |
+| 十连跑 | **10/10** 全绿 |
+
+### 八、变更清单
+
+| 类别 | 文件 |
+|---|---|
+| 注释订正（`api/*.ts`） | `credentialsOps` · `dataLifecycleStats` · `dispatchWaterfall` · `modelHistory` · `modelPolicies` · `modules` · `outputCompliance` · `requestAnomalies` · `sessionAnalyticsFilterOptions` · `slidingWindow` · `usageTrendSeries` · `dispatchJournal` · `freeDiscovery` · `requestDetail` · `compression` · `modelIntegrityDrift` · `formatAnomalies` |
+| 注释订正（视图 / 测试） | `views/FormatAnomaliesView.vue` · `views/ComplianceHitsView.vue` · `views/ComplianceHitsView.spec.ts` · `views/NodesView.vue` · `views/NodesView.spec.ts` · `api/credentialsOps.test.ts` · `api/modelPolicies.test.ts` |
+| 判据 | `api/goLineRef.spec.ts`（登记重构，9 → 10 条） |
+| 文档 | 本节 |
+
+⇒ ★ **零后端代码改动**：本批对 Go 的唯一动作是**读**。

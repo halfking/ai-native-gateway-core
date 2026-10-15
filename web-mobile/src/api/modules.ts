@@ -103,7 +103,7 @@ export const MODULES_WITH_CONFIG_ENDPOINT = ['feishu_bot'] as const
 export const MODULES_FALLBACK_SOURCE = 'default'
 
 /**
- * ★★★ `source` 的**全部**可能取值 —— 由 `settings/spec.go:284-283` 的 doc 注释写死：
+ * ★★★ `source` 的**全部**可能取值 —— 由 `settings/spec.go:283` 的 doc 注释写死：
  *   `source ∈ {"db","env","default"}`。**只有这三个。**
  *   ★ 我第一版测试夹具里编了 `'platform'` / `'tenant'` 两个不存在的值 ——
  *     夹具必须照抄后端，不能凭印象。已修正。

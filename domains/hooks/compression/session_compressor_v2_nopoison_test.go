@@ -2,6 +2,8 @@ package compression
 
 import (
 	"context"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,14 +13,27 @@ import (
 // cache was written. Other SessionCacheBackend methods are no-ops.
 type recordingBackend struct {
 	hsets int32
+	once  sync.Once
+	inner *fakeRedis
+}
+
+func (r *recordingBackend) backend() *fakeRedis {
+	r.once.Do(func() { r.inner = newFakeRedis() })
+	return r.inner
+}
+func (r *recordingBackend) Eval(ctx context.Context, script string, keys []string, args ...any) (any, error) {
+	if strings.Contains(script, "session-cache-commit") {
+		atomic.AddInt32(&r.hsets, 1)
+	}
+	return r.backend().Eval(ctx, script, keys, args...)
 }
 
 func (r *recordingBackend) HSet(_ context.Context, _ string, _ ...any) error {
 	atomic.AddInt32(&r.hsets, 1)
 	return nil
 }
-func (r *recordingBackend) HGetAll(_ context.Context, _ string) (map[string]string, error) {
-	return map[string]string{}, nil
+func (r *recordingBackend) HGetAll(ctx context.Context, key string) (map[string]string, error) {
+	return r.backend().HGetAll(ctx, key)
 }
 func (r *recordingBackend) Expire(_ context.Context, _ string, _ time.Duration) error { return nil }
 func (r *recordingBackend) Del(_ context.Context, _ string) error                     { return nil }

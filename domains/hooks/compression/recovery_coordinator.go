@@ -133,15 +133,12 @@ func (rc *RecoveryCoordinator) Recover(
 		}
 	}
 	if attempt == 0 && rc.deps.Cache != nil && gwSessionID != "" {
-		if state, _, _ := rc.deps.Cache.GetOrLoad(ctx, tenantID, gwSessionID); state != nil && state.HasCutMarker && sanitizeGenerationMatches(ctx, state.SanitizeMapGeneration) {
+		if state, cachedBody, _ := rc.deps.Cache.GetOrLoad(ctx, tenantID, gwSessionID); state != nil && state.HasCutMarker && sanitizeGenerationMatches(ctx, state.SanitizeMapGeneration) {
 			marker := state.ToCutMarker("")
 			if marker != nil && !marker.IsExpired(sessionCacheRedisTTL()) {
-				// The summary text is in L1 only; try to get it from cache.
-				_, l1Body, _ := rc.deps.Cache.GetOrLoad(ctx, tenantID, gwSessionID)
-				if l1Body != nil {
-					// Extract summary from the cached L1 body (the first
-					// non-system user message with smartWindowSummaryPrefix).
-					marker.SummaryText = extractSummaryFromCachedBody(l1Body)
+				// The marker and summary must come from the same confirmed pair.
+				if cachedBody != nil {
+					marker.SummaryText = extractSummaryFromCachedBody(cachedBody)
 				}
 				var rebuilt []byte
 				var ok bool
@@ -272,10 +269,6 @@ func (rc *RecoveryCoordinator) Recover(
 	)
 
 	if rc.deps.Cache != nil && gwSessionID != "" {
-		prev, _, _ := rc.deps.Cache.GetOrLoad(ctx, tenantID, gwSessionID)
-		if prev == nil || !sanitizeGenerationMatches(ctx, prev.SanitizeMapGeneration) {
-			prev = &SessionState{SchemaVersion: schemaVersion}
-		}
 		persistRes := &PrepareResult{
 			MsgCount:                  countMessages(rebuilt),
 			TokenEst:                  estimateBodyTokens(rebuilt),
@@ -285,17 +278,19 @@ func (rc *RecoveryCoordinator) Recover(
 		if _, report, err := prefix.Stabilize(rebuilt, prefix.Options{TailTurns: 1}); err == nil && report != nil {
 			persistRes.CompressedPrefixHash = report.PrefixHash
 		}
-		state := buildSessionState(prev, rebuilt, persistRes, true, time.Now().Unix())
-		// 对齐 CommitFinal「先清空再算」口径：smart_window 重写了出向 body，
-		// prev 的 CompressedPrefixHash 经 buildSessionState 的空值守卫残留下来
-		// 对新 body 已失效；Stabilize 失败时必须清零而非继承（清零后下一轮
-		// 缓存命中分支见空自愈重算）。
-		if persistRes.CompressedPrefixHash == "" {
-			state.CompressedPrefixHash = ""
+		if err := rc.deps.Cache.Update(ctx, tenantID, gwSessionID, func(prev *SessionState, _ []byte) (*SessionState, []byte, error) {
+			if prev == nil || !sanitizeGenerationMatches(ctx, prev.SanitizeMapGeneration) {
+				prev = &SessionState{SchemaVersion: schemaVersion}
+			}
+			state := buildSessionState(prev, rebuilt, persistRes, true, time.Now().Unix())
+			// A rebuilt body cannot inherit the prior body's prefix fingerprint.
+			state.CompressedPrefixHash = persistRes.CompressedPrefixHash
+			hydrateSanitizeInfo(ctx, state)
+			state.SetCutMarker(marker)
+			return state, rebuilt, nil
+		}); err != nil {
+			slog.Warn("recovery: cache update failed", "session", gwSessionID, "error", err)
 		}
-		hydrateSanitizeInfo(ctx, state)
-		state.SetCutMarker(marker)
-		_ = rc.deps.Cache.Set(ctx, tenantID, gwSessionID, state, rebuilt)
 	}
 
 	res.NewBody = rebuilt

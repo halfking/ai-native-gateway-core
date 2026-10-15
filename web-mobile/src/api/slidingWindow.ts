@@ -15,7 +15,7 @@ import { req, type RequestOptions } from './client'
  * ★★ **行号订正（2026-10-14，第一百一十五批）**：挂载点原先写 `:1453`，**已过期**。
  *   ⇒ 行号只是**定位提示**，判据不得依赖它。
  * - **实现**：`admin/credential_monitor.go:697-788`（handler）·
- *   `:790-809`（回退查询 `slidingWindowQuery`）· `credentialhealth/recorder.go:16-22`
+ *   `:815`（回退查询 `slidingWindowQuery`）· `credentialhealth/recorder.go:16-22`
  *   （`CallEntry`）· `:155-177`（`ComputeStats`）。
  * - **桌面调用方**：`web/src/api/credential-monitor.ts:149-168` —— `req<{…}>`
  *   直接强转，**不做任何校验** ⇒ 全部校验由本模块补上。

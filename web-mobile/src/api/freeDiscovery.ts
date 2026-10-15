@@ -861,7 +861,7 @@ export function schedulerEnabledButNotStarted(s: FdScanSchedulerStatus): boolean
 }
 
 // ── 错误文案判读 ───────────────────────────────────────────────────────
-// 错误信封：`{"error": {"detail": msg}}`（`admin/handler.go:1494-1498`）
+// 错误信封：`{"error": {"detail": msg}}`（`admin/handler.go:1517-1523`）
 // ⇒ `client.ts` 抛 `ApiError(status, detail)`，`e.message === detail`。
 
 /** ★★ 六条 deps 端点的 503（`free_discovery.go:92-98`）。 */
