@@ -340,7 +340,7 @@ func l1Key(tenantID, gwSessionID string) string {
 }
 
 func redisKey(tenantID, gwSessionID string) string {
-	return "session:sc:" + tenantID + ":" + gwSessionID + ":v1"
+	return "session:sc:" + tenantID + ":" + gwSessionID + ":v2"
 }
 
 func (c *SessionCache) updateStripe(key string) *sync.Mutex {
@@ -351,28 +351,58 @@ func (c *SessionCache) updateStripe(key string) *sync.Mutex {
 // Update atomically loads, transforms, and stores one session state. The
 // callback receives caller-owned copies; returning nil state deletes nothing
 // and leaves the existing cache entry unchanged.
-func (c *SessionCache) Update(
-	ctx context.Context,
-	tenantID, gwSessionID string,
-	fn func(*SessionState, []byte) (*SessionState, []byte, error),
-) error {
-	if gwSessionID == "" || fn == nil || !settings.IsEnabled("session_cache") {
+func (c *SessionCache) Update(ctx context.Context, tenantID, gwSessionID string, fn func(*SessionState, []byte) (*SessionState, []byte, error)) error {
+	if c == nil || gwSessionID == "" || fn == nil || !settings.IsEnabled("session_cache") {
 		return nil
 	}
-	key := l1Key(tenantID, gwSessionID)
-	stripe := c.updateStripe(key)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if c.redis != nil {
+		return c.withSharedLease(ctx, tenantID, gwSessionID, func(token string) error {
+			state, body, err := c.loadSharedLocked(ctx, tenantID, gwSessionID, token)
+			if err != nil {
+				return err
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			state, body, err = fn(state, body)
+			if err != nil {
+				return err
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			// nil state is an explicit no-op, not an acknowledgment of a new write.
+			if state == nil {
+				return nil
+			}
+			return c.commitShared(ctx, tenantID, gwSessionID, token, state, body)
+		})
+	}
+	stripe := c.updateStripe(l1Key(tenantID, gwSessionID))
 	stripe.Lock()
 	defer stripe.Unlock()
-
-	state, body, err := c.GetOrLoad(ctx, tenantID, gwSessionID)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	state, body, err := c.getLocal(ctx, tenantID, gwSessionID)
 	if err != nil {
 		return err
 	}
 	state, body, err = fn(state, body)
-	if err != nil || state == nil {
+	if err != nil {
 		return err
 	}
-	return c.Set(ctx, tenantID, gwSessionID, state, body)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if state != nil {
+		runThreeTierCheck(ctx, tenantID, gwSessionID, state)
+		c.setL1(l1Key(tenantID, gwSessionID), state, body)
+	}
+	return nil
 }
 
 // GetOrLoad returns the SessionState and last outbound body for the session,
@@ -384,7 +414,23 @@ func (c *SessionCache) Update(
 // is false (env KILL_SESSION_CACHE=1), the entire cache subsystem is bypassed
 // and we behave as if every session is brand-new. This isolates compression
 // issues from request hot-paths during incident response.
-func (c *SessionCache) GetOrLoad(ctx context.Context, tenantID, gwSessionID string) (state *SessionState, lastOutboundBody []byte, err error) {
+func (c *SessionCache) GetOrLoad(ctx context.Context, tenantID, gwSessionID string) (*SessionState, []byte, error) {
+	if c == nil || gwSessionID == "" || !settings.IsEnabled("session_cache") {
+		return nil, nil, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	if c.redis != nil {
+		return c.getShared(ctx, tenantID, gwSessionID)
+	}
+	stripe := c.updateStripe(l1Key(tenantID, gwSessionID))
+	stripe.Lock()
+	defer stripe.Unlock()
+	return c.getLocal(ctx, tenantID, gwSessionID)
+}
+
+func (c *SessionCache) getLocal(ctx context.Context, tenantID, gwSessionID string) (state *SessionState, lastOutboundBody []byte, err error) {
 	if gwSessionID == "" {
 		return nil, nil, nil
 	}
@@ -517,29 +563,25 @@ func (c *SessionCache) GetOrLoad(ctx context.Context, tenantID, gwSessionID stri
 // KILL-SWITCH (2026-07-12 incident): see GetOrLoad. When session_cache is
 // disabled, Set is a no-op.
 func (c *SessionCache) Set(ctx context.Context, tenantID, gwSessionID string, state *SessionState, outboundBody []byte) error {
-	if gwSessionID == "" || state == nil {
+	if c == nil || gwSessionID == "" || state == nil || !settings.IsEnabled("session_cache") {
 		return nil
 	}
-	if !settings.IsEnabled("session_cache") {
-		return nil
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	// A-G1 (修订审计三十二轮 §四A): three-tier provenance check at the
-	// single chokepoint where the merged raw/compressed/sanitized state is
-	// persisted — this is where "algn" and "san_msg_refs" get serialised
-	// (encodeSessionStateFields), covering all three writers (updateCache,
-	// CommitFinal, recovery coordinator). Observability-only: a misaligned
-	// state is logged and counted, never blocks the write. No-op when the
-	// threetier verifier is not linked into the binary.
-	runThreeTierCheck(ctx, tenantID, gwSessionID, state)
-	key := l1Key(tenantID, gwSessionID)
-	c.setL1(key, state, outboundBody)
-
 	if c.redis != nil {
-		if err := c.saveToRedis(ctx, tenantID, gwSessionID, state); err != nil {
-			slog.Warn("session_cache: redis save error", "session", gwSessionID, "error", err)
-			// Non-fatal: L1 still has fresh data.
-		}
+		return c.withSharedLease(ctx, tenantID, gwSessionID, func(token string) error {
+			return c.commitShared(ctx, tenantID, gwSessionID, token, state, outboundBody)
+		})
 	}
+	stripe := c.updateStripe(l1Key(tenantID, gwSessionID))
+	stripe.Lock()
+	defer stripe.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	runThreeTierCheck(ctx, tenantID, gwSessionID, state)
+	c.setL1(l1Key(tenantID, gwSessionID), state, outboundBody)
 	return nil
 }
 
