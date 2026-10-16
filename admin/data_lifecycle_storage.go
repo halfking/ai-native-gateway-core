@@ -283,12 +283,14 @@ func (h *Handler) refreshStorageOverviewAsync(ctx context.Context) {
 // 2026-10-17 第二次性能修正（stale-while-revalidate）：
 // TTL 快照解决了"重复请求都聚合"，但**过期时仍会同步重算**，
 // 而聚合本身要 SUM(pg_total_relation_size) 扫全部 3362 个关系，实测
-// 1.26–2.36s。于是每 30s 仍有一次请求破 2 秒。
+// 冷页缓存下实测 1.26–2.36s（热缓存下同一 SQL 只要 0.77–0.94s，差别全在
+// pg_total_relation_size 要真去 stat 文件）。于是每 30s 仍有一次请求破 2 秒。
 //
 // 改为：过期不再同步重算，而是**立即返回旧读数 + 后台单飞聚合**。
 // 除"进程启动后的第一次"外，任何请求都不再支付聚合成本。
 //
-// 代价：读数最坏陈旧到 TTL + 一次聚合时长（约 30 + 2.4 ≈ 32s），而非严格 30s。
+// 代价：读数最坏陈旧到 TTL + 一次聚合时长（实测 30 + 0.9 ≈ 31s；冷页缓存
+// 下聚合要 2.4s，则最坏约 32s），而非严格 30s。
 // 要精确读数的运维用 VACUUM FULL / REINDEX，那会显式失效快照。
 //
 // 失败语义保持与优化前一致：聚合永远成功（内部各段失败只记 warning），
@@ -309,13 +311,8 @@ func (h *Handler) storageOverviewSnapshot(ctx context.Context) *storageOverview 
 	// 聚合用 WithoutCancel 的独立 ctx：发起者被客户端断开/超时时，
 	// 不能把其他等待者共享的那一次聚合一起取消掉。等待方仍各自受自己的
 	// ctx 约束（见下面的 select）。
-	ch := storageSnapshots.sf.DoChan(fmt.Sprintf("storage-overview:%p", h.db), func() (any, error) {
-		collectCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), storageCollectTimeout)
-		defer cancel()
-		storageSnapshots.collect.Add(1)
-		ov := collectStorageOverview(collectCtx, h)
-		storageSnapshots.put(h.db, ov)
-		return ov, nil
+	ch := storageSnapshots.sf.DoChan(storageOverviewFlightKey(h.db), func() (any, error) {
+		return collectStorageOverviewSnapshot(ctx, h), nil
 	})
 
 	select {
@@ -338,6 +335,71 @@ func (h *Handler) storageOverviewSnapshot(ctx context.Context) *storageOverview 
 		Warnings:    []string{"存储快照采集未完成且无可用缓存，请稍后重试"},
 		CollectedAt: time.Now().UTC(),
 	}
+}
+
+// storageOverviewFlightKey 单飞键。按 pool 区分，与 tableSizesFlightKey 同构，
+// 这样并发 miss 不会跨连接共享同一次聚合。
+func storageOverviewFlightKey(pool *pgxpool.Pool) string {
+	return fmt.Sprintf("storage-overview:%p", pool)
+}
+
+// collectStorageOverviewSnapshot 是单飞的采集函数体。
+//
+// 抽成具名函数而不是留在 storageOverviewSnapshot 里内联，是为了让启动预热
+// （PrewarmStorageSnapshots）与请求路径**共用同一份实现与同一个单飞键**。
+// 预热若复制一份逻辑，两边迟早漂移，而漂移的表现是"预热采到了、请求路径
+// 仍然判定无快照"，也就是那个 >2s 的冷路径又回来了，且没有任何报错。
+func collectStorageOverviewSnapshot(ctx context.Context, h *Handler) *storageOverview {
+	collectCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), storageCollectTimeout)
+	defer cancel()
+	storageSnapshots.collect.Add(1)
+	ov := collectStorageOverview(collectCtx, h)
+	storageSnapshots.put(h.db, ov)
+	return ov
+}
+
+// PrewarmStorageSnapshots 在进程启动后**后台**预热两份存储快照。
+//
+// 为什么需要它（2026-10-17 第四次性能修正）：
+// 上面两次 stale-while-revalidate 改造把"每 30s 破一次 2 秒"消掉了，
+// 但都留了同一个尾巴——**进程启动后的第一个请求**没有任何快照可读，仍要
+// 同步付全额聚合成本。实测 /storage/tables 的进程首调 2.82s、/storage
+// 1.75s，其中 /storage/tables 仍**超过任务规定的 2 秒门槛**。
+//
+// 启动时就把两份快照采好，首调就退化成纯读。代价是启动后多两次后台聚合
+// （实测 0.06s / 0.9s CPU+IO，各只一次；冷页缓存下最慢一次测到 2.4s），
+// 不阻塞启动、不阻塞任何请求。
+//
+// 语义要点：
+//   - 用 context.WithoutCancel：启动 ctx 早结束也不该把预热连坐取消
+//     （否则 DB 慢一点就等于没预热，首调照样破 2 秒）；
+//   - 复用请求路径的单飞键：预热途中到来的首个请求会**加入**同一次采集，
+//     而不是再打一次库；
+//   - 失败只记 warning：预热是优化不是正确性前提，失败后请求路径自己会
+//     同步采集（退回到改造前的行为），绝不能因此让端点 500。
+func (h *Handler) PrewarmStorageSnapshots(ctx context.Context) {
+	if h == nil || h.db == nil {
+		return
+	}
+	base := context.WithoutCancel(ctx)
+
+	go func() {
+		ch := storageSnapshots.sf.DoChan(storageOverviewFlightKey(h.db), func() (any, error) {
+			return collectStorageOverviewSnapshot(base, h), nil
+		})
+		if res := <-ch; res.Err != nil {
+			slog.Warn("storage: startup prewarm of overview failed", "error", res.Err)
+		}
+	}()
+
+	go func() {
+		ch := tableSizesSnapshots.sf.DoChan(tableSizesFlightKey(h.db), func() (any, error) {
+			return collectTableSizesSnapshot(base, h)
+		})
+		if res := <-ch; res.Err != nil {
+			slog.Warn("storage: startup prewarm of table sizes failed", "error", res.Err)
+		}
+	}()
 }
 
 // InvalidateDataLifecycleStorageCache 清空存储总览快照。
@@ -497,6 +559,11 @@ func collectTableSizesSnapshot(ctx context.Context, h *Handler) (*tableSizesSnap
 	return snap, nil
 }
 
+// tableSizesFlightKey 单飞键，按 pool 区分（口径同 storageOverviewFlightKey）。
+func tableSizesFlightKey(pool *pgxpool.Pool) string {
+	return fmt.Sprintf("table-sizes:%p", pool)
+}
+
 // refreshTableSizesAsync 过期后**后台**单飞刷新，不阻塞本次请求。
 //
 // 关键点：采集 ctx 不能挂在调用方的请求 ctx 上——发起者随时可能超时/断开，
@@ -507,7 +574,7 @@ func collectTableSizesSnapshot(ctx context.Context, h *Handler) (*tableSizesSnap
 func (h *Handler) refreshTableSizesAsync(ctx context.Context) {
 	base := context.WithoutCancel(ctx)
 	go func() {
-		ch := tableSizesSnapshots.sf.DoChan(fmt.Sprintf("table-sizes:%p", h.db), func() (any, error) {
+		ch := tableSizesSnapshots.sf.DoChan(tableSizesFlightKey(h.db), func() (any, error) {
 			return collectTableSizesSnapshot(base, h)
 		})
 		res := <-ch
@@ -531,7 +598,7 @@ func (h *Handler) refreshTableSizesAsync(ctx context.Context) {
 // 于是除"进程启动后的第一次"外，任何请求都不再支付冷路径成本。
 //
 // 代价（已评估、属可接受）：读数最坏可陈旧到 TTL + 一次采集时长
-// （正常约 2.4s，故最坏约 32s），而非严格的 30s。
+// （实测热缓存 0.06s、冷缓存 2.4s，故最坏 30.1–32.4s），而非严格的 30s。
 // 运维要精确读数时用 VACUUM FULL / REINDEX，那会显式失效快照。
 //
 // 失败语义不变：无任何历史快照时仍同步采集一次（返回 error → handler 照旧 500）；
@@ -542,7 +609,6 @@ func (h *Handler) tableSizesSnapshot(ctx context.Context, limit int) (tableSizes
 		if time.Now().Before(snap.expiresAt) {
 			return tableSizesResponseFrom(snap, limit), nil
 		}
-		// 已过期：先把手上的旧读数发出去，刷新在后台跑。
 		h.refreshTableSizesAsync(ctx)
 		return tableSizesResponseFrom(snap, limit), nil
 	}

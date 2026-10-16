@@ -5233,6 +5233,15 @@ func main() {
 		// channel that no consumer ever drains.
 		admin.StartIngester(dbConn.Pool())
 		admin.SetIngesterRedisClient(fpSlotRedis)
+		// 2026-10-17：预热 /storage 与 /storage/tables 的两份快照。
+		// stale-while-revalidate（1233e7931）消掉了"每 30s 破一次 2 秒"，
+		// 但进程启动后的**第一个**请求仍无快照可读、仍要同步付全额聚合，
+		// 实测 /storage/tables 首调 2.82s 仍超任务规定的 2 秒门槛。
+		// 启动后台先采好，首调即退化为纯读。失败只记 warning，
+		// 请求路径自己会同步采集兜底，不会 500。
+		if adminHandler != nil {
+			adminHandler.PrewarmStorageSnapshots(context.Background())
+		}
 		// 2026-10-01 F5：admin HTTP ingest（/api/telemetry/request-log）是
 		// _request_logs_bodies_hot 的第三落库点（方案 §3-H3 只点了 telemetry
 		// client 与 session v2），补接热区请求侧镜像。闭包与前两处同源

@@ -451,6 +451,70 @@
   修好后日志 `过期响应=52723712(202µs) 刷新后=60325888`。
 - 状态：已落地
 
+## 2026-10-17 — deploy-local 切流失败的根因是端口，不是新代码：pidfile 可与真实持有者脱节（Seen: 1/3）
+
+- 任务 / 缺陷：用 `scripts/deploy-local.sh deploy` 部署含预热改动的新版本，
+  连续 3 次 `readiness gate failed`，最终 `active cutover failed; previous
+  release was restarted`。表面看像是"新代码起不来"。
+- 真因（**与新代码无关**）：日志里是
+  `ERROR gateway listen failed: listen tcp :8782: bind: address already in use`。
+  启动流程一路走到 `CHECKPOINT: HTTP server configured`，**没有任何 panic**——
+  新二进制本身是好的，只是抢不到端口。
+  现场取证：真正持有 8782 的是 PID 87330（01:59 启动的 2687，`PPID=1` 孤儿），
+  而 `run/gateway-8782.pid` 里写的是 **21247**（早已死亡的另一个 pid），
+  脚本 `stop_instance` 按 pidfile 去停 19769，**压根没碰到 87330**。
+- 附带发现：`/tmp/lgw-env.sh:14` 有 `export LLM_GATEWAY_ROOT=...`。
+  在**它之后**再 `export LLM_GATEWAY_ROOT="$(pwd)"` 会被静默覆盖；
+  而 `LLM_GATEWAY_ROOT` 只是部署根（`~/kaixuan/llm-gateway-go-v2`，非 git 仓库），
+  源码根是脚本自身的 `PROJECT_ROOT`（`SCRIPT_DIR/..`）。
+- 防复发检查：
+  (a) 切流失败先看 `gateway-*.log` 里的 `gateway listen failed` —— 有这行就是
+      **端口/孤儿问题**，不是代码问题，别去改代码；
+  (b) 部署前先 `lsof -nP -iTCP:8781 -iTCP:8782 -sTCP:LISTEN` 与
+      `run/*.pid` 对账，二者不一致就说明有孤儿，先按 TERM→轮询→KILL 规范清掉；
+  (c) 每次部署都必须 `export LLM_GATEWAY_ROOT`，且**在 `source /tmp/lgw-env.sh`
+      之后**执行，否则等于没设；
+  (d) `reap_stray_gateways` 是**模式锚定部署根**的，本仓进程实际跑在 worktree 的
+      `bin/2.5.8.NNNN/gateway` 下，锚点不同就可能清不到——不能指望它兜底。
+- 证据：`~/kaixuan/llm-gateway-go-v2/logs/gateway-8782.log` 尾部
+  `listen tcp :8782: bind: address already in use`；`lsof` 87330 vs pidfile 21247；
+  停掉 87330 后重部成功。
+- 状态：已落地（本地开发网关；同一模式在 154/245 用 deploy-seamless，不适用本条）
+
+## 2026-10-17 — 部署纪律：切流失败先看端口；更隐蔽的是「部署了错误的代码树」（Seen: 1/3）
+
+- 任务 / 缺陷：用 `scripts/deploy-local.sh deploy` 部署含预热改动的新版本。
+  **连续 4 次部署（2688–2691）全部 `VERIFY_PASS=1`，但一次都没部署到我的代码。**
+- 真因（**我自己犯的**，AGENTS.md 早就写过「source 后必须立刻 cd 回 worktree」）：
+  `/tmp/lgw-env.sh` 第 15 行是 `cd /Users/.../llm-gateway-go || exit 1`。
+  我写的是 `cd <worktree> && source /tmp/lgw-env.sh && deploy`，于是 source 把我
+  **切回主 checkout**，deploy 脚本随之解析到主 checkout 的副本，
+  `PROJECT_ROOT` 变成主 checkout，编出来的是并发会话那棵树（git_sha 9406de65）。
+- 静默性来源：`deploy-local.sh` 自带 verify，`VERIFY_PASS=1` 只证明
+  「新产物起来了且 /version 与 bundle 元数据自洽」，**不证明产物来自我想要的源码**。
+  `version.json` 里的 git_sha 取自**仓库里那个陈旧的 version.json 文件**，
+  本次它就写着 9406de65——所以连版本号都在**配合**这个错误，一眼看不出来。
+- 抓到的证据（都是"多看一眼"才抓到的）：
+  (a) `strings <bundle>/gateway | grep "startup prewarm of overview failed"` = 0，
+      而同参数自建的有 1；
+  (b) 2688/2690/2691 三个 bundle 的 `gateway` **md5 完全相同**（`f4e954ef…`）——
+      输入不变则产物不变，而我的源码明明变了；
+  (c) `go env GOMOD` 指向主 checkout 的 `go.mod`（正常应是 worktree 的）。
+- 防复发检查：
+  (a) **source 之后必须立刻 `cd` 回目标 worktree**，顺序写成
+      `source /tmp/lgw-env.sh && cd <worktree> && export LLM_GATEWAY_ROOT=... && deploy`；
+  (b) 部署后**验产物内容**，不只看 `VERIFY_PASS`：至少挑一个本次新增的字符串常量
+      `strings` 一下，或比对 bundle 二进制 md5 是否随源码变化；
+  (c) `VERIFY_PORT`/`VERIFY_RELEASE` 要一起看，只 grep PASS 会漏掉端口错位；
+  (d) 切流失败先看 `gateway-*.log` 的 `gateway listen failed`——有这行就是**端口/
+      孤儿**问题，不是代码问题（本次另有一次：`run/gateway-8782.pid` 写 21247、
+      真实持有者是 PID 87330 的孤儿进程，脚本按 pidfile 去停另一个 pid，
+      新进程 `bind: address already in use` 连续 3 次 readiness gate 失败）。
+- 证据：自建 md5 `3bbae51c…`（含 DBG 埋点）vs 部署 md5 `f4e954ef…`（无）；
+  修正顺序后 2692 的 git_sha = `1233e793`（= 本 worktree HEAD）且
+  `strings` 命中预热常量。
+- 状态：已落地（本地开发网关；154/245 用 deploy-seamless，不适用本条）
+
 ## 晋级记录
 
 将已晋级条目移到这里，并链接目标规则、清单或技能。同一模式只按不同工作日计 `Seen`；出现三天后晋级。经证据确认的安全、隐私、数据丢失或生产事故，若已有可执行的防复发检查，可立即晋级。
