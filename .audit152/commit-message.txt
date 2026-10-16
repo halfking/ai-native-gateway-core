@@ -1,0 +1,20 @@
+chore(mobile): 清理 33 个旧 worktree（co118～co150，批152）
+
+无产品代码变更 —— 只做 git worktree 环境清理。
+所有 detached HEAD 已通过 rebase + push 合入 origin/main，
+worktree 本身只是占着磁盘与 git 元数据。
+
+清理后剩余 3 个 worktree：
+- 主仓 main（6aaefb57d，落后 origin/main 38 个 commit 是历史状态）
+- co151-wt（e43bfa808，KEEP 作下一批起点）
+- .worktrees/211-routing-circuit-auth（其它分支，不删）
+
+主仓 main 的 254 个 uncommitted 改动属于其它会话工作，stash 仍保留做回滚垫，
+不在 worktree 清理范围里动它。
+
+scratch 目录（co117-mut / co120-doc 等约 6 个）不是 worktree，
+不在 git worktree list 里 —— 留作下一轮单独处理。
+
+doc: 纯追加 §11.189（55 节 → 56 节，末节为 §11.189）。
+
+Co-Authored-By: Mavis <[email protected]>

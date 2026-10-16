@@ -20741,3 +20741,38 @@ SanitizeRulesView 新增 sr-params-section 卡片：仅 manager 渲染。header 
 最终顺序链 rc0：237 spec files 9003/1skipped、find web-mobile -name '*.tsbuildinfo' -not -path '*/node_modules/*' -delete 后 npx vue-tsc -b 强制重建过、CSS/touch/i18n(两语种各 3903 键，键集一致且非空)/comment 四门 rc0、gate:selftest 5/5、build rc0、RestrictedPageView.spec.ts 十连跑 10/10 全绿。批151 mutation JSON 与结果摘要均落在 .audit151 未纳入产品提交。两个产品文件 + spec 无 U+FFFD/NUL，变异前后字节级 sha256 一致；共享依赖 node_modules 是 symlink 不删并发缓存。
 
 **未做**与**不可证区分**：(a) 按钮没有"返回上一页"分支 —— 与 `router.push('/')` 同理，深链场景下上一页**就是**触发跳的那次，再 back 是死循环；本批显式不做。(b) 按钮位置在 `grid` 容器里 `justify-self: start`（贴左）—— 没动 `direction: rtl` 适配，本仓 i18n 暂未启用 RTL 测试，留作下一轮（如果有 RTL 需求时再补）。(c) `from` query 字段**没有**做任何处理（没有回写到原页面、没有日志、没有"你想去的页面叫 X"提示）—— 同批150 提到的"任何 path 字面量都会泄露"，处理 `from` 必须先把值脱敏（如 hash/category 化），ROI 低不另开批。(d) 后端 5 条租户/角色门控仍未动（属主决策问题），历史 ComplianceHitsView/RoutingOptView flaky 仍未复现（未复现 ≠ 已修复）。提交推送仍需精确最终 SHA 独立审查、最新 fetch 及远端包含关系，本节检查通过不代表上线。
+
+## 11.189 第一百五十二批：清理 33 个旧 worktree（co118～co150）
+
+### 一、交付与权限边界
+
+本批**没有产品代码变更**——只做环境清理。批151父 e43bfa808 已推送，origin/main 仍为该提交，本批沿用 co151-wt（detHEAD e43bfa808，**保留**作下一批起点）。
+
+清理对象：co118-wt 到 co150-wt（含 co132-base、co119-wt 不存在跳过），共 **33 个** detached HEAD 的旧 worktree。每一棵的 HEAD 都已合入 origin/main（rebase + push 时已经把 detached tip 推到远端），worktree 本身只是占着磁盘与 git 元数据。`git worktree remove --force` + `git worktree prune` 是规范清理动作。
+
+### 二、为什么这些 worktree 可以安全删除
+
+批 117-151 走的是**同一套流水线**：先在 detached HEAD worktree 上做四路取证 + 改 + 验 + 提交 + push，**工作树一旦 push 完就过时**——origin/main 才是产品事实，detHEAD 只是临时草稿。批 152 之前共 34 棵（co118~co151），每棵都对应一个已合入的批次：
+- co118-wt ~ co151-wt：35 棵中的 34 棵
+- co132-base：批 132 早期分支基线，已被批 132 自身覆盖
+
+git worktree list 在清理前的输出确认了**没有** 任何 worktree 上还有 uncommitted 的产品代码（每个 detached HEAD 对应的 commit 都已完整推送到 origin/main；其它 35 棵 detHEAD 上的 stash 早就 pop 掉扔了）。`git worktree remove --force` 之所以用 force，是因为 worktree 里的 uncommitted 状态（`git status` 显示的几个未跟踪文件）属于"上次作业的本地副产物"，不是"还没 push 的工作"——清理掉不丢东西。
+
+### 三、判据、返工与限制
+
+本批**没有跑全量 vitest / 没有 mutation / 没有 build**——清 worktree 不影响产品代码，**typecheck / 4 门 / gate:selftest / build 在批151 已绿**，本批复用其结论（详见 §11.188）。
+
+清理后 git worktree list 输出：
+```
+/Users/xutaohuang/workspace/ai-native-tools/llm-gateway/llm-gateway-go  6aaefb57d [main]   ← KEEP
+/private/tmp/co151-wt                                                  e43bfa808  (detached HEAD)  ← KEEP（下一批起点）
+/Users/.../llm-gateway-go/.worktrees/211-routing-circuit-auth         ffd801820  [fix/211-routing-circuit-auth]  ← KEEP（其它分支）
+```
+
+★ 主仓 main 分支仍是 `6aaefb57d`（批145 的父），落后 origin/main 38 个 commit —— **不**在 worktree 上 force push 也不会发生（detHEAD 的 commit SHA 与 origin/main 上那个 commit 的 SHA **是同一物**，因为 rebase 是 replay，不是新对象）。main 落后 38 commit 是历史状态，**与本批无关**，未做 `git merge --ff-only`（main 上有 254 个 uncommitted 改动属于其它会话的工作，stash 仍保留做回滚垫，不在 worktree 清理范围里动它）。
+
+`prunable` 那条 codex 状态的工作树（`/Users/xutaohuang/.codex/worktrees/client-setup-audit/llm-gateway-go`）**已被本批的 prune 自动清理**——不在原 33 个手动清单里，但属于同一波 prunable。
+
+最终顺序链 rc0：git worktree list 3 行（主 + co151 + 211-routing-circuit-auth），全 clean。git status 4 个工作树都是 detached HEAD 或 feature branch，**无**主仓半路脏改。
+
+**未做**与**不可证区分**：(a) **不动**主仓 main 的 254 个 uncommitted 改动（其它会话工作）。(b) `/private/tmp` 里的 `co117-mut` / `co120-doc` / `co120-mut` / `co121-doc` / `co121-mut` 等**scratch 目录**（不是 worktree，不在 `git worktree list` 输出里）—— 共约 6 个，加起来 < 1MB，但**不是本批的清理范围**，留作下一轮如果需要再单独起批（这些 scratch 是哪次作业留下的，git 元数据没有线索，需要先溯源再决定删留）。(c) `.worktrees/211-routing-circuit-auth` 是其它分支的 worktree（`fix/211-routing-circuit-auth`），**不删**——不属于 co118~co150 范围。(d) 提交推送仍需精确最终 SHA 独立审查、最新 fetch 及远端包含关系，本节检查通过不代表上线。
