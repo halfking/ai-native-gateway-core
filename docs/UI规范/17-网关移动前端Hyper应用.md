@@ -21132,3 +21132,95 @@ h.superAdmin(h.handleModelIntegrity)          → h.modelIntegrityTenantAdmin(..
 (b) **3 表无 RLS policy**（model_discovery_runs / credential_health_checks / self_check_runs）仍是独立缺陷——批 157 不动它，列入下次"R 深度防御"批次。
 
 (c) **super_admin key 池形态**未变（admin_key 仍走 super 路径）。批 155 收口的 `sliding_window` 已对齐此模式。
+
+## 11.195 第一百五十八批 a 接 P1 孤儿 sessionAnalyticsFilterOptions：6 端点综合视图进 UI
+
+### 一、目标与边界
+
+11 孤儿终态矩阵（30 跳）：P1×2（sessionAnalyticsFilterOptions + usageEnhanced）/ P2 boardOperational / P3 dataLifecycleStorage / P4 opsOverview。本节把 sessionAnalyticsFilterOptions 这个 0 后端风险的 P1 接进 UI —— 6 个端点全在现有 `/api/admin/session-analytics/{clients,tasks,users}` 三组 REST 里，handler 实证（29 跳）全部带 `($N = '' OR tenant_id = $N)` 过滤，租户隔离完备。0 后端改动。
+
+### 二、调研要点
+
+- 后端 6 端点 = 3 路由 × 2 形态（聚合列表 + ID 详情）
+- API 层 `api/sessionAnalytics.ts` 已有 18 个 export helper，本批只新增 1 个聚合 helper 走 3 端点并发
+- 视图借用现有 `SessionAnalyticsFilterOptionsView.vue` 三列布局（客户端 / 任务 / 用户）
+- 点击行后 push 路由到 `/clients/:id` / `/tasks/:id` / `/users/:id` 三子视图
+- 全文件硬编码中文（与 TurnsListView 161 行注释一致）
+- drawer 入口已在 admin subrouter 下，nav.ts item 块 +1 条目；不挂 appNav.ts（与 158b 同形态）
+
+### 三、改动清单（7 文件）
+
+| 文件 | 行 | 内容 |
+|---|---|---|
+| `web/src/api/sessionAnalyticsFilterOptions.ts` | +59 | 新建：listSessionAnalyticsFilterOptions 聚合 helper，3 端点并发 + URLSearchParams |
+| `web/src/views/SessionAnalyticsFilterOptionsView.vue` | +193 | 新建：3 列布局 + 加载态 + 错误态 + 选中跳子端点 |
+| `web/src/router.ts` | +6 | route + lazy import + meta requiresAuth |
+| `web/src/locales/{zh-CN,en-US}/nav.ts` | 各 +1 | sessionAnalyticsFilterOptions 条目 |
+| `web/src/api/sessionAnalyticsFilterOptions.test.ts` | +68 | 3 测试：并发 + 空响应 + 默认参数 |
+| `web/src/views/SessionAnalyticsFilterOptionsView.test.ts` | +71 | 3 测试：3 列表 + 选中跳 + 加载失败 |
+
+合计 399 行。
+
+### 四、验证
+
+- `npx vue-tsc -b` exit 0（先删 tsbuildinfo）
+- `npx vitest run` 6/6 passed 840ms
+- 2 新文件 + 1 新增行文件 0 FFFD / 0 NUL
+
+### 五、收口
+
+- commit `e982d99c99c08f5ad92f98c9f751c89f5231b7ea`
+- origin/main HEAD = `17f66c69d..e982d99c9`
+- rebase 到 17f66c69d（远端有 27 轮 docs 清扫 commit）后推送
+- 孤儿棘轮 13 → 12
+
+## 11.196 第一百五十八批 b 接 P1 孤儿 usageEnhanced：5 端点综合用量视图进 UI
+
+### 一、目标与边界
+
+接掉 158a 余下的另一个 P1 usageEnhanced，0 后端改动（31 跳实证 usage.ts 5 端点 + 现有 15+ export 函数全有租户隔离）。与 158a 同形态：API helper + 视图 + router + nav.ts + 测试。视图位置 `/admin/usage-enhanced`，权限档 `requiresSuper: true`（5 端点中 4 个走 `/api/admin/usage/*`，最严 super_admin 覆盖）。
+
+### 二、调研要点
+
+- 5 端点：`/api/usage/summary` + `/api/admin/usage/{cost-trend,period-compare,cache-economics,hot-api-keys}`
+- 现状：`api/usage.ts` 已 export getUsageSummary / getCostTrend / getPeriodCompare / getCacheEconomics / getHotApiKeys 共 5 个 helper，但前 4 个**消费方为 0**、第 5 个消费方为 1（UsageCost.vue 局部）—— 视图层从未把它们组合呈现
+- 视图位置：`/admin/usage-enhanced`，与 `/admin/usage` (UsageCostView) `/admin/usage-trends` (UsageTrendExplorerView) 同组；权限 meta 与 line 289 UsageCostView `requiresSuper: true` 对齐
+- drawer 不挂 appNav.ts（与 158a 同形态：nav.ts item 块 +1 条目）
+- 全文件硬编码中文（与 TurnsListView / 158a 一致）
+
+### 三、改动清单（7 文件 515 行）
+
+| 文件 | 行 | 内容 |
+|---|---|---|
+| `web/src/api/usageEnhanced.ts` | +96 | 新建：getUsageEnhancedData 5 端点并发 + 6 类型 |
+| `web/src/views/admin/UsageEnhancedView.vue` | +217 | 新建：4 卡片 + 1 趋势 + 1 Top keys 表 + 刷新 + 错误态 |
+| `web/src/router.ts` | +3 | route + lazy import + meta requiresSuper |
+| `web/src/locales/{zh-CN,en-US}/nav.ts` | 各 +1 | usageEnhanced 条目 |
+| `web/src/api/usageEnhanced.test.ts` | +134 | 3 测试：并发映射 + 默认参数 + 空 keys 兜底 |
+| `web/src/views/admin/UsageEnhancedView.test.ts` | +92 | 3 测试：4 卡片渲染 + 空态 + 错误 |
+
+合计 515 行。
+
+### 四、验证
+
+- `npx vue-tsc -b` exit 0（先删 tsbuildinfo）
+- `npx vitest run` 6/6 passed 690ms（仅 2 spec）
+- 4 新文件 + 3 改文件 0 FFFD / 0 NUL
+
+### 五、收口
+
+- commit `159999276318193b0423a80045f6324c0a7ebc45`
+- origin/main HEAD = `159999276318193b0423a80045f6324c0a7ebc45`
+- 孤儿棘轮 12 → 11
+
+### 六、5 批总账
+
+| 批 | 优先级 | 后端 | 前端 | 文档节 |
+|---|---|---|---|---|
+| 158a sessionAnalyticsFilterOptions | P1 | 0 | ~390 | §11.195 |
+| 158b usageEnhanced | P1 | 0 | ~515 | §11.196（本节） |
+| 158c boardOperational | P2 | ~50 | ~280 | §11.197 待 |
+| 158d dataLifecycleStorage | P3 | ~60 | ~100 | §11.198 待 |
+| 158e opsOverview | P4 | ~250 | ~250 | §11.199 待 |
+
+P1×2 已落（158a + 158b），P2-P4 待逐批 commit。共 5 commit + 5 文档节。
