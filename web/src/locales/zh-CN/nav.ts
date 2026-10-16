@@ -32,6 +32,7 @@ export default {
     reconciliation: '供应商对账',
     settlementReport: '结算报表',
     usageTrends: '用量趋势分析',
+    usageEnhanced: '用量增强分析',
     pricing: '成本价格',
     modelPricing: '定价管理',
     freePool: '免费资源',

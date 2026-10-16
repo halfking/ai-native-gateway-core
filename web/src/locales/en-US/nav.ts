@@ -31,6 +31,7 @@ export default {
     reconciliation: 'Provider Reconciliation',
     settlementReport: 'Settlement Report',
     usageTrends: 'Usage Trends',
+    usageEnhanced: 'Usage Enhanced',
     pricing: 'Cost Pricing',
     modelPricing: 'Pricing Management',
     freePool: 'Free Resources',
