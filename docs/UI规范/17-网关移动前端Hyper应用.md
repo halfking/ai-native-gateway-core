@@ -20628,3 +20628,29 @@ sanitizeRules.ts 新增 publishSanitizeRules、rollbackSanitizeRules。运行时
 多轮变异 M05–M07 0 红：视图守卫"未验证草稿不能发布"被乐观守卫（trim 已能挡空评论）和 UI 按钮 disabled 一起承担，绕开 isComment 字节检查后仍被 prepare 拦截；M05 在 API 侧把 isVersion 调用改写为 if (false) 后 18 条"坏响应"测试全红，证明版本校验守卫能击中。有限 5 种变异命中不证明所有退化都可检出。
 
 历史 ComplianceHitsView/ RoutingOptView flaky 未复现不等于已修复；live HTTP、真实浏览器/原生壳或深链标题端到端未单独验证。client 跨 realm DOMException AbortError 仍按 network_error 处理，页面靠 signal/generation 隔离。提交推送仍需精确最终 SHA 独立审查、最新 fetch 及远端包含关系，本节检查通过不代表上线。
+
+## 11.185 第一百四十八批：脱敏规则运行参数写侧接入移动端（sanitize.rules.refresh_interval_seconds / audit_enabled / event_limit 三键）
+
+### 一、交付与权限边界
+
+本批接 desktop web/src/api/settings.ts:60-63 的 updateSetting、admin/settings.go:96-117/225-289 的 settingsPut 与 settings/spec_sanitize_rules.go:10-22 的三键定义。批147父 d9eb4571 已推送，origin/main 仍为该提交，本批从该父建立独立 /tmp/co148-wt。事件复核、规则四 GET、草稿验证、发布回滚已在批144-147完成；参数写侧仍未复制，不称全功能完成。
+
+逐端点取证：admin/settings.go:96-117 RegisterAdmin 仅传 settingsRouter，settingsRouter 在 PATCH/PUT 段经 RouterGroup /api/admin/settings；:225-289 settingsPut 注册到二级路径，handler 内 AssertAuth 之后 settingsPut 自身按 dangerLevel >= 2 (即 dangerous / breaking) 强制 super_admin；audit / confirm_token / hmac 流程不在前端暴露。detail 单键端点 /api/admin/settings/{key} 的 GET handler 走 admin_middleware，按 role 而非 tenant 过滤；settings/spec_sanitize_rules.go:10-22 的三键 scope 全部 platform（无 tenant 维度），因此前端 requiresRole: 'admin' 而非 super_admin。SanitizeRuleSpecs 真最小/最大仍是服务端 sp.Validate 的最终判官，前端只做「客户端二次校验 + 与服务端对齐」的体验兜底。
+
+### 二、API 与可达交互
+
+platformSettings.ts 新增 updateSetting 与 updateSanitizeRuleSettings。updateSetting 入口守门 typeof key==='string' && key!=='' 且 'value' in params 且 params.value!==undefined（拒绝 undefined 与其它假值不直接拒）；不重写服务端 sp.Validate，由服务端 settingsPut 在 handler 阶段拒。unwrap 阶段 requireObject(resp,'设置更新响应') → 强制 status:string / new_value:不在'键在值undefined'集合 / applied_at:string；任一缺失抛 settings.invalidResponse，含«形状不符»或«设置»字样的错误统一回到 invalidResponse 客户端稳定键，HTTP 4xx/5xx 沿用 client 不被吸收。updateSanitizeRuleSettings 顺序 await 三个 updateSetting（refresh→audit→event），内部 new AbortController 任一失败时 controller.abort() 把在途兄弟拉断，result 部分填充抛首个错误，不被 catch 静默吞；空入参早 return {} 不发请求；return 形保留三个键可选，便于 UI 单独更新。
+
+SanitizeRulesView 新增 sr-params-section 卡片：仅 manager 渲染。header 内 sr-params-load 一键 GET /api/admin/settings?category=modules，定位 sanitize.rules.* 三键，对照 paramDefs 字面量（refresh 1..300 秒、event 100..100000 条、audit 布尔）填充 forms：int 用 :value+@input → Number(...) 直接进 refreshDraft/limitDraft；bool 用 :value+@change → 'true'==='true' 进 auditDraft。所有 i18n 走 t('sr.paramsTitle/Note/Current/Save/Saved/Invalid') 等六键，跨语种键集对齐；导入 zhCN/zhEN 两语种已对齐 reviewSave 既有键集。prepare/save/save 后 revertParams 清空三 draft。saveParams 入参每个 int 字段客户端做 Number.isInteger + min/max 二次校验，超范围立即 paramsInvalid 不会写入；audit_enabled 不进范围检查。
+
+### 三、判据、返工与限制
+
+新增 updateSetting/updateSanitizeRuleSettings API 测试 28 条 + SanitizeRulesParams 视图测试 11 条，与既有 10 spec 681 条叠加共 9040/1 skipped（与批147同基线 + 39）。API 覆盖合法 PUT、白名单 body、非法 key（含 ''/null/undefined/0/{}/true/false 7 种各看一眼）、非法 value undefined、非法响应 7 种形状含 unreachable 字段、HTTP 6 状态保留 ApiError、signal 透传、空对象不发请求、并发顺序与 NaN、首个失败抛错、payload 不被调用方后续修改污染。视图覆盖 super_admin 读取后展示三键当前值、四角色（tenant_admin/user/admin/unknown）不渲染 sr-params-section、编辑启用保存 + 超范围稳定错误、三键并发 PUT 超范围前就在请求体、保存后自动重读并清稿、失败保留草稿与错误文案、身份切换取消在途 signal、旧响应不污染、读取失败稳定错误。
+
+视图写侧一处真实缺陷（**不是测试 bug**）在调试中暴露并修复：saveParams 成功后调用 await loadParams() 时，因 savingParams 还为 true，loadParams 的入队守门看到 savingParams=true 直接 early-return，**第二次 GET 不会发** ⇒「保存后自动重读」的 UI 契约脱钩。修补方式：在 if (live()) 块内把 savingParams.value=false 显式挪到 await loadParams() 之前；finally 块对 savingParams 的复位保持幂等。此修对应变 M148-V1（删 savingParams=false 后"保存后自动重读"用例 1 红）。
+
+5/5 变异有牙（M148-1/2/V1/V2/V3，每条命中用例即至少 1 红）：M148-1 删 key 空串守门→"非法 key"7 红；M148-2 删 value undefined 守门→"非法 value undefined"1 红；M148-V1 删 savingParams=false→"保存后自动重读"1 红；M148-V2 删 revertParams→"保存后自动重读"1 红；M148-V3 删客户端 refresh 边界检查→"超出范围返回稳定错误"1 红。两版不可证区分（M148-3/3b/4/5）不入台但仍记入口径：删 status/new_value 类型校验在本批 spec 不可证区分（既有"非法响应"测试已在新_value/applied_at 阶段被拒掉）；删 paramsDirty audit_enabled 不等分支在本批 spec 不可证区分（audit_enabled 仍会被 saveParams 的 updates 构造包含，dirty 仅影响按钮 enable，不会少发 PUT）；for-await → Promise.all 在「数量+排序」断言层面不可证区分；删空 entries 短路对空入参恒等价。
+
+最终顺序链 rc0：10 spec 9040/1skipped、find web-mobile -name '*.tsbuildinfo' -not -path '*/node_modules/*' -delete 后 npx vue-tsc -b 强制重建过、CSS/touch/i18n(两语种各 3903 键，键集一致且非空)/comment 四门 rc0、gate:selftest 5/5、build rc0、十连跑 10/10 全绿。批148 mutation JSON 与结果摘要均落在 .audit148 未纳入产品提交。八产品文件含 i18n/sr/en 三个 shared 编辑无 U+FFFD/NUL，变异前后字节级 sha256 一致；共享依赖 node_modules 是 symlink 不删并发缓存；vue-tsc 用 --force 强制重建才称冷类型检查。批前后 platformSettings.ts 与 SanitizeRulesView.vue 共 200+ 字节差异，全部在 mutate 测试后 byte-by-byte 还原回原状态。
+
+**不可证区分**与**未做**：(a) history 端点、tenantSettings(Q3 super_admin 与 tenant_admin 之间的猜测) 未复制，与批144-147一致仅交付平台范围；(b) settingsPut 内部 audit/dangerLevel/confirm_token 逻辑未在前端暴露，dangerLevel 由服务端负责；(c) 未改 Go 一字；(d) 重复造轮子已查批 117 同款 `go/ast` 量具类不存在此场景。历史 ComplianceHitsView/RoutingOptView flaky 仍未复现，未复现 ≠ 已修复；live HTTP、真实浏览器/原生壳或深链标题端到端未单独验证。提交推送仍需精确最终 SHA 独立审查、最新 fetch 及远端包含关系，本节检查通过不代表上线。

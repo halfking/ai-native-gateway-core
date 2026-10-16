@@ -389,6 +389,59 @@ export function fetchSettingHistory(
   ).then(unwrapSettingHistory)
 }
 
+/** PUT `/api/admin/settings/{key}` — 仅写value（其它字段服务端拒）。 */
+export interface SettingsUpdateResponse { status: string; old_value?: unknown; new_value: unknown; applied_at: string }
+export function updateSetting(
+  params: { key: string; value: unknown },
+  options?: RequestOptions,
+): Promise<SettingsUpdateResponse> {
+  if (typeof params.key !== 'string' || params.key === '') throw new Error('settings.invalidKey')
+  if (!('value' in params) || params.value === undefined) throw new Error('settings.invalidValue')
+  return req<unknown>(
+    'PUT',
+    `${PLATFORM_SETTINGS_PATH}/${encodeURIComponent(params.key)}`,
+    { value: params.value },
+    options,
+  ).then((resp) => {
+    const d = requireObject(resp, '设置更新响应')
+    if (typeof d['status'] !== 'string' || typeof d['new_value'] === 'undefined' || typeof d['applied_at'] !== 'string') {
+      throw new Error('settings.invalidResponse')
+    }
+    return d as unknown as SettingsUpdateResponse
+  }).catch((err) => {
+    if (err instanceof Error && (err.message.startsWith('设置') || err.message.includes('形状不符'))) throw new Error('settings.invalidResponse')
+    throw err
+  })
+}
+
+/** 仅平台范围：sanitize.rules.refresh_interval_seconds/audit_enabled/event_limit 三键并发保存。
+ *  客户端拆分独立 PUT；任一失败抛首个错误；其它在途请求由 call 内的 signal 统一中断。
+ *  文档：admin/settings.go:108-109 与 settings/spec_sanitize_rules.go:10-22。 */
+export async function updateSanitizeRuleSettings(
+  updates: { refresh_interval_seconds?: unknown; audit_enabled?: unknown; event_limit?: unknown },
+  options?: RequestOptions,
+): Promise<{
+  refresh_interval_seconds?: SettingsUpdateResponse
+  audit_enabled?: SettingsUpdateResponse
+  event_limit?: SettingsUpdateResponse
+}> {
+  const entries = Object.entries(updates).filter(([, v]) => v !== undefined) as [keyof typeof updates, unknown][]
+  if (entries.length === 0) return {}
+  const result: Record<string, SettingsUpdateResponse> = {}
+  const controller = options?.signal ? undefined : new AbortController()
+  const signal = options?.signal ?? controller?.signal
+  try {
+    for (const [key, value] of entries) {
+      const fullKey = `sanitize.rules.${String(key)}`
+      result[String(key)] = await updateSetting({ key: fullKey, value }, { signal })
+    }
+  } catch (err) {
+    controller?.abort()
+    throw err
+  }
+  return result
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // 解包
 // ═══════════════════════════════════════════════════════════════════════════

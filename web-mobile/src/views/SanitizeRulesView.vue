@@ -5,6 +5,7 @@ import { computed, onUnmounted, ref, watch } from 'vue'
 import { useHyperPage } from '@/hyper'
 import { t } from '@/i18n'
 import { useAuthStore } from '@/stores/auth'
+import { fetchSettingsList, updateSanitizeRuleSettings } from '@/api/platformSettings'
 import {
   fetchSanitizeRulesCurrent, fetchSanitizeRuleEvents, fetchSanitizeRuleVersions, fetchSanitizeRuleInstances,
   sanitizeRulesCanManage, sanitizeRulesCanReadEvents, reviewSanitizeRuleEvent, validateSanitizeRules, publishSanitizeRules, rollbackSanitizeRules,
@@ -172,11 +173,126 @@ async function submitReview() {
     if (live()) { reviewing.value = false; reviewRequest = null }
   }
 }
+
+// ── 脱敏规则运行参数（sanitize.rules.refresh_interval_seconds / audit_enabled / event_limit）
+// 与桌面端 settings.ts 的 updateSetting 同源；前端的并发三 PUT 与写后刷新是体验层路径，
+// 服务端 settingsPut 仍按 dangerLevel 在 PUT 端点逐项校验（见 admin/settings.go:225-289）。
+interface SanitizeRuleParam { key: 'refresh_interval_seconds' | 'audit_enabled' | 'event_limit'; type: 'int' | 'bool'; min: number; max: number; value: number | boolean | null }
+const paramDefs: { key: SanitizeRuleParam['key']; label: string; type: 'int' | 'bool'; min: number; max: number; unit: string }[] = [
+  { key: 'refresh_interval_seconds', label: '刷新间隔', type: 'int', min: 1, max: 300, unit: '秒' },
+  { key: 'audit_enabled', label: '审计启用', type: 'bool', min: 0, max: 0, unit: '' },
+  { key: 'event_limit', label: '事件保留量', type: 'int', min: 100, max: 100000, unit: '条' },
+]
+const paramFullKey = (key: string) => `sanitize.rules.${key}`
+const paramsList = ref<SanitizeRuleParam[] | null>(null)
+const refreshDraft = ref<number | null>(null)
+const auditDraft = ref<boolean | null>(null)
+const limitDraft = ref<number | null>(null)
+const loadingParams = ref(false), savingParams = ref(false)
+const paramsError = ref(''), paramsSuccess = ref('')
+let paramsRequest: AbortController | null = null
+const paramsDirty = computed(() => {
+  if (!paramsList.value) return false
+  for (const def of paramDefs) {
+    const current = currentParamValue(def.key)
+    if (def.key === 'refresh_interval_seconds' && typeof current === 'number' && refreshDraft.value !== null && refreshDraft.value !== current) return true
+    if (def.key === 'audit_enabled' && typeof current === 'boolean' && auditDraft.value !== null && auditDraft.value !== current) return true
+    if (def.key === 'event_limit' && typeof current === 'number' && limitDraft.value !== null && limitDraft.value !== current) return true
+  }
+  return false
+})
+function currentParamValue(key: SanitizeRuleParam['key']): number | boolean | null {
+  return paramsList.value?.find(p => p.key === key)?.value ?? null
+}
+function paramInputValue(key: SanitizeRuleParam['key']): number | boolean | '' {
+  if (key === 'refresh_interval_seconds') return refreshDraft.value ?? currentParamValue(key) ?? ''
+  if (key === 'audit_enabled') return auditDraft.value ?? currentParamValue(key) ?? ''
+  if (key === 'event_limit') return limitDraft.value ?? currentParamValue(key) ?? ''
+  return ''
+}
+function setParamDraft(key: SanitizeRuleParam['key'], value: number | boolean) {
+  if (key === 'refresh_interval_seconds') refreshDraft.value = value as number
+  else if (key === 'audit_enabled') auditDraft.value = value as boolean
+  else if (key === 'event_limit') limitDraft.value = value as number
+}
+function resetParams() {
+  paramsRequest?.abort(); paramsRequest = null
+  paramsList.value = null; refreshDraft.value = null; auditDraft.value = null; limitDraft.value = null
+  loadingParams.value = false; savingParams.value = false
+  paramsError.value = ''; paramsSuccess.value = ''
+}
+async function loadParams() {
+  if (!manager.value || loadingParams.value || savingParams.value) return
+  paramsError.value = ''; paramsSuccess.value = ''
+  const epoch = generation, request = new AbortController(); paramsRequest = request; loadingParams.value = true
+  const live = () => !disposed && epoch === generation && !request.signal.aborted
+  try {
+    const resp = await fetchSettingsList({ category: 'modules' }, { signal: request.signal })
+    if (!live()) return
+    const list: SanitizeRuleParam[] = []
+    for (const item of resp.items) {
+      const def = paramDefs.find(d => paramFullKey(d.key) === item.key)
+      if (!def) continue
+      if (def.type === 'int' && typeof item.value === 'number' && Number.isFinite(item.value)) {
+        list.push({ key: def.key, type: def.type, min: def.min, max: def.max, value: item.value })
+      } else if (def.type === 'bool' && typeof item.value === 'boolean') {
+        list.push({ key: def.key, type: def.type, min: 0, max: 0, value: item.value })
+      }
+    }
+    paramsList.value = list
+  } catch (e) {
+    if (live()) {
+      const message = e instanceof Error ? e.message : ''
+      paramsError.value = message === 'settings.invalidResponse' ? t('sr.invalidResponse') : message || t('sr.requestFailed')
+    }
+  } finally { if (live()) { loadingParams.value = false; paramsRequest = null } }
+}
+function revertParams() {
+  refreshDraft.value = null; auditDraft.value = null; limitDraft.value = null
+  paramsError.value = ''; paramsSuccess.value = ''
+}
+async function saveParams() {
+  if (!manager.value || savingParams.value || !paramsList.value) return
+  paramsError.value = ''; paramsSuccess.value = ''
+  const updates: { refresh_interval_seconds?: number; audit_enabled?: boolean; event_limit?: number } = {}
+  for (const def of paramDefs) {
+    if (def.key === 'refresh_interval_seconds' && refreshDraft.value !== null) {
+      const v = refreshDraft.value
+      if (!Number.isInteger(v) || v < def.min || v > def.max) { paramsError.value = t('sr.paramsInvalid'); return }
+      updates.refresh_interval_seconds = v
+    } else if (def.key === 'audit_enabled' && auditDraft.value !== null) {
+      updates.audit_enabled = auditDraft.value
+    } else if (def.key === 'event_limit' && limitDraft.value !== null) {
+      const v = limitDraft.value
+      if (!Number.isInteger(v) || v < def.min || v > def.max) { paramsError.value = t('sr.paramsInvalid'); return }
+      updates.event_limit = v
+    }
+  }
+  if (Object.keys(updates).length === 0) return
+  const epoch = generation, request = new AbortController(); paramsRequest = request; savingParams.value = true
+  const live = () => !disposed && epoch === generation && !request.signal.aborted
+  try {
+    await updateSanitizeRuleSettings(updates, { signal: request.signal })
+    if (live()) {
+      paramsSuccess.value = t('sr.paramsSaved')
+      // ★ 必须先松开 savingParams——否则下面的 loadParams 在自己的入队守门里看到 savingParams=true 直接 early-return，不会发起第二次 GET（与「成功→自动重读」的 UI 契约脱钩，对应 SR-1 仓库里该分支 4 条用例的隐性回归面）
+      savingParams.value = false
+      await loadParams()
+      revertParams()
+    }
+  } catch (e) {
+    if (live()) {
+      const message = e instanceof Error ? e.message : ''
+      paramsError.value = message === 'settings.invalidResponse' ? t('sr.invalidResponse') : message || t('sr.requestFailed')
+    }
+  } finally { if (live()) { savingParams.value = false; paramsRequest = null } }
+}
 function clear() {
   resetPublish()
   resetRollback()
   clearDraft()
   resetReview()
+  resetParams()
   generation++
   for (const r of requests.values()) r.abort()
   requests.clear()
@@ -295,6 +411,28 @@ async function load(section: Section) {
           <header><h2>{{ t('sr.instances') }}</h2><button class="sr__btn" data-testid="sr-instances-load" :disabled="loading.instances" @click="load('instances')">{{ loading.instances ? t('common.loading') : t('sr.refresh') }}</button></header>
           <p v-if="errors.instances" class="sr__error" role="alert">{{ errors.instances }}</p><p v-if="instances === null">{{ t('sr.notLoaded') }}</p><template v-else><p data-testid="sr-target">{{ t('sr.target') }} v{{ targetVersion }}</p><p v-if="instances.length === 0">{{ t('sr.empty') }}</p><article v-for="instance in instances" :key="instance.instance_id" class="sr__row" data-testid="sr-instance"><strong>{{ instance.instance_id }}</strong><p>v{{ instance.version }} · {{ instance.version === targetVersion ? t('sr.sameVersion') : t('sr.versionDiffers') }}</p><p class="sr__mono">{{ instance.config_digest }}</p><p>{{ t('sr.lastSeen') }} {{ instance.last_seen }}</p><p>{{ t('sr.lastRefresh') }} {{ instance.last_refresh }}</p><p v-if="instance.error" class="sr__error">{{ instance.error }}</p></article></template>
           <p>{{ t('sr.instanceNote') }}</p>
+        </section>
+        <section class="sr__card" data-testid="sr-params-section">
+          <header><h2>{{ t('sr.paramsTitle') }}</h2><button class="sr__btn" data-testid="sr-params-load" :disabled="loadingParams || savingParams" @click="loadParams">{{ loadingParams ? t('common.loading') : t('sr.refresh') }}</button></header>
+          <p>{{ t('sr.paramsNote') }}</p>
+          <p v-if="paramsError" class="sr__error" role="alert" data-testid="sr-params-error">{{ paramsError }}</p>
+          <p v-if="paramsSuccess" role="status" data-testid="sr-params-success">{{ paramsSuccess }}</p>
+          <p v-if="!paramsList">{{ t('sr.notLoaded') }}</p>
+          <article v-else class="sr__row" data-testid="sr-params">
+            <div v-for="def in paramDefs" :key="def.key" data-testid="sr-params-row">
+              <strong>{{ def.label }}</strong><p class="sr__mono">{{ paramFullKey(def.key) }}</p>
+              <template v-if="def.type === 'int'">
+                <p class="sr__mono">{{ t('sr.paramsCurrent') }} {{ currentParamValue(def.key) }}</p>
+                <input type="number" :value="paramInputValue(def.key)" @input="setParamDraft(def.key, Number(($event.target as HTMLInputElement).value))" :min="def.min" :max="def.max" :disabled="savingParams || loadingParams" :data-testid="`sr-params-input-${def.key}`" />
+              </template>
+              <template v-else>
+                <p class="sr__mono">{{ t('sr.paramsCurrent') }} {{ String(currentParamValue(def.key)) }}</p>
+                <select :value="String(paramInputValue(def.key))" @change="setParamDraft(def.key, ($event.target as HTMLSelectElement).value === 'true')" :disabled="savingParams || loadingParams" :data-testid="`sr-params-input-${def.key}`"><option value="true">true</option><option value="false">false</option></select>
+              </template>
+            </div>
+            <button class="sr__btn" data-testid="sr-params-save" :disabled="!paramsDirty || savingParams || loadingParams" @click="saveParams">{{ savingParams ? t('common.loading') : t('sr.paramsSave') }}</button>
+            <button class="sr__btn" data-testid="sr-params-revert" :disabled="!paramsDirty || savingParams || loadingParams" @click="revertParams">{{ t('common.cancel') }}</button>
+          </article>
         </section>
       </template>
     </template>
