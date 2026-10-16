@@ -21224,3 +21224,73 @@ h.superAdmin(h.handleModelIntegrity)          → h.modelIntegrityTenantAdmin(..
 | 158e opsOverview | P4 | ~250 | ~250 | §11.199 待 |
 
 P1×2 已落（158a + 158b），P2-P4 待逐批 commit。共 5 commit + 5 文档节。
+
+## 11.197 第一百五十八批 c 接 P2 孤儿 boardOperational：独立运营面板详细页进 UI
+
+### 一、目标与边界
+
+接掉 11 孤儿终态矩阵（30 跳）里的 P2 boardOperational。本次**仅落实前端**，后端 50 行 tenant 隔离改造留属主拍板（2026-10-17 决策：先改前端，后端留给后端属主）。
+
+### 二、真"孤儿"性
+
+33 跳 patch 草案原以为"0 端点消费方"，实证后发现：
+- `fetchBoardOperational`（`web/src/api/board.ts:183-185`）+ `BoardOperationalPayload` 类型（line 77-80）**已存在**
+- `useDashboardBoard` composable（`web/src/composables/useDashboardBoard.ts:77,121,142,270`）**已在 DashboardView 消费**
+- 但**没有独立深链详细页**——只有 DashboardView 的 mini panel，深链 `/admin/board-operational` 不可达
+
+⇒ 真实形态是"接进综合看板但无独立页"，符合"深链兜底"族（与批 158a 状态机子端点、批 158b 综合视图不同）
+
+### 三、调研要点
+
+- 端点：`GET /api/admin/dashboard/operational`（admin 中间件，admin 档）
+- 端点返 payload：`{background_tasks: {discovery, probe_loop, degraded?}, selfcheck: {total_runs_24h, success_rate, last_status, last_run_at, degraded?}}`
+- 后端缓存 30s TTL（`dashboard_operational.go:5 const boardOperationalCacheTTL = 30 * time.Second`）
+- 视图权限：`requiresAuth: true`（与端点 admin 中间件对齐，不升级 super_admin）
+- 抽屉入口：nav.ts item 块 +1（与 158a/158b 同形态，不挂 appNav.ts）
+
+### 四、⚠️ 后端 50 行 tenant 隔离改造未落实
+
+**属主拍板**（2026-10-17）：后端 dashboard_operational.go 改造留后端属主，**前端先动**。
+
+`admin/dashboard_operational.go:1-83` 实证：
+- `boardOperationalCache` struct（line 13-17）`payload` 字段不带 caller 维度
+- `get()`/`set()`（line 19-32）只比较 expires 不比较 caller
+- `boardOperationalPayload(ctx)`（line 57）签名不带 `r`/tenantID
+- `queryBoardBackgroundTasks(ctx)`（`dashboard_board_aux.go:23`）+ `queryBoardSelfCheck(ctx)`（line 76）签名都不带 tenantID
+- 3 SQL（model_discovery_runs / credential_health_checks / self_check_runs）缺 `($N = '' OR tenant_id = $N)` 过滤
+- `hardcode WHERE tenant_id = 'default'` 形态（model_discovery_runs 已发现，11 跳）
+
+⇒ tenant_admin 角色将读到跨租户混合数据。**视图层加注释明示"不参与授权判断"**，归入"前端严于后端是兜底不是修复"族（与 SessionsView / TurnsListView 一致）。
+
+### 五、改动清单（5 文件 374 行）
+
+| 文件 | 行 | 内容 |
+|---|---|---|
+| `web/src/views/BoardOperationalView.vue` | +250 | 新建：2 段（后台任务 / 自检 24h）+ 6 卡片 + 加载态 + 错误态 + 刷新 |
+| `web/src/router.ts` | +5 | route + lazy import + meta requiresAuth + 注释 |
+| `web/src/locales/{zh-CN,en-US}/nav.ts` | 各 +1 | boardOperational 条目 |
+| `web/src/views/BoardOperationalView.test.ts` | +92 | 新建：3 测试（全字段 / running 态 + 缺字段兜底 / 错误 + 重试） |
+
+合计 374 行（原 280 行估算上调，因后端字段更细）。
+
+### 六、验证
+
+- `npx vue-tsc -b` exit 0（先删 tsbuildinfo + symlink node_modules）
+- `npx vitest run` 3/3 passed 704ms
+- 2 新文件 + 3 改文件 0 FFFD / 0 NUL
+
+### 七、收口
+
+- commit `e686166293edc1293fbef528d59cc743554c722c`
+- origin/main HEAD = `e686166293edc1293fbef528d59cc743554c722c`
+- 父 = `133e92e56`（与本批 origin 一致，rebase noop）
+- 孤儿棘轮 11 → 10
+
+### 八、剩余后端任务（属主留待拍板）
+
+- `admin/dashboard_operational.go` 5 处签名 + 3 SQL + 1 cache struct 改造（~50 行）
+- `admin/dashboard_board_aux.go` 2 helper 签名 + 2 SQL 改造
+- 1 新测试：`TestHandleDashboardOperational_TenantIsolation`
+- 预估 50 行 + 1 verifier 独立审查
+
+后续 158d P3 / 158e P4 仍是"前端 + 后端"混合收口（按 158c 同样口径拍板）。
