@@ -515,6 +515,42 @@
   `strings` 命中预热常量。
 - 状态：已落地（本地开发网关；154/245 用 deploy-seamless，不适用本条）
 
+## 2026-10-17 — 会自愈的状态不能写成静态结论；先找那个"已经归好名"的视图（Seen: 1/3）
+
+- 任务 / 缺陷：验证 7 个目标模型在本地网关上是否可用。
+  01:4x 那轮我写下的结论是「三条凭据全部额度耗尽，本地已无任何上游容量」。
+- 根因（结论本身错，不是数据错）：凭据状态**会自愈**。02:4x 在同一台机器重测，
+  cred=1 已完全恢复（视图判定 10/10 `is_routable`），
+  `deepseek-v4-flash` 与 `glm-5.2` 端到端 200。把某一时刻的读数写成结论，
+  等于把快照当常量。
+- 真正的分层（此前被"全是额度问题"这句话盖住了）：三个凭据三种**互不相同**的原因——
+  cred=1 已恢复；cred=2 `availability_state=ready` 却因 `node_probe_state` 里
+  8 行 `last_direct_ok=false AND next_retry_at > now()` 而贡献 **0 个候选**；
+  cred=3 标着 `permanently_exhausted` 却带着每次都往前滚的 `availability_recover_at`。
+- 防复发检查：
+  (a) 报告"某能力不可用"前，**必须当场重测一次**，且把结论写成
+      「时刻 T 的观测 + 会自愈」而不是「不可用」；
+  (b) **先找那个已经把失败原因归好名的视图**再手写 SQL。本轮
+      `v_routable_credential_models.unavailable_reason` 直接给出
+      `node_probe_failed` / `availability_rate_limited`，
+      一步就把三层原因分开了——手写候选 SQL 只能看到"0 行"，看不出是哪一条；
+  (c) 区分"整体不通"与"某个凭据独占的模型不通"要靠**判别实验**：
+      另取 3 个同属该凭据独占的模型实跑，全 503 ⇒ 是凭据级问题；
+      本轮正是这一步否掉了"只有这几个模型坏了"的猜测；
+  (d) `health_status=healthy` **不代表能路由**（cred=2 就是反例）。
+- 附带查出的独立缺陷：`quota_state='permanently_exhausted'` 与
+  `availability_recover_at` 每次前推 ~90s 自相矛盾，而候选 SQL 用
+  `quota_state NOT IN ('permanently_exhausted',…)` 做**硬排除** ⇒
+  **143 个本可每 90s 服务一次的模型被当成永久不可用**。命名与语义不符，
+  待 owner 决定改状态还是改语义（见验证记录 §8.1）。
+- 证据：`v_routable_credential_models` 按凭据统计
+  `cred=1 routable=10/10`、`cred=2 routable=0/89 (node_probe_failed)`、
+  `cred=3 routable=0/148 (availability_rate_limited)`；
+  三次 25s 间隔采样下 cred=3 的 `availability_recover_at`
+  02:49:13 → 02:50:43 → 02:50:43。
+- 状态：取证已落地（`docs/05-testing/02-test-plans/会话轮次退役/退役验证记录.md` §8.1），
+  状态语义修正待 owner 拍板
+
 ## 晋级记录
 
 将已晋级条目移到这里，并链接目标规则、清单或技能。同一模式只按不同工作日计 `Seen`；出现三天后晋级。经证据确认的安全、隐私、数据丢失或生产事故，若已有可执行的防复发检查，可立即晋级。
