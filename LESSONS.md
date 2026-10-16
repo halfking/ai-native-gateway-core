@@ -551,6 +551,48 @@
 - 状态：取证已落地（`docs/05-testing/02-test-plans/会话轮次退役/退役验证记录.md` §8.1），
   状态语义修正待 owner 拍板
 
+## 2026-10-17 — 同一个错误码在两条代码路径里可以差 360 倍；先问"错误类别参与了决策吗"（Seen: 1/3）
+
+- 任务 / 缺陷：排查目标模型 `glm-5.3-flash` 为什么不可路由。
+  路由层给的答案是 `node_probe_failed`，指向 `node_probe_state` 的探针退避。
+- 第一次归因错了：我写成「节点探针退避不自解，8 个模型持续压制」。
+  **错。** 退避阶梯是 `bg/node_probe.go` 硬编码的 `NodeProbeBackoffChain`
+  （`5s→30s→60s→5m→1h→2h→6h` 封顶），注释里明写
+  "rows keep ticking forever — 'paused' was removed from this mode"。
+  它不是卡住，是**每 6 小时仍会重试**。我看到 `next_retry_at` 在未来 4 小时就
+  下结论"不自解"，等于把"下一次重试还没到"读成了"不会再来"。
+  **采样窗口（50 秒）短于重试周期（6 小时）时，任何"没有恢复"的观察都是无效的。**
+- 真正的机制：`bg/node_probe.go:2620` 用
+  `ChainBackoffIndex(attempt, NodeProbeBackoffChain)` 取延迟，
+  **只用 attempt 索引，`last_err_code` 完全不参与决策**。逐行实况：
+  8 行里 4 行是上游 **410「已到生命周期终点」**、1 行 429、1 行 timeout、
+  1 行 404、1 行 500。于是：
+  - **410（永久）按瞬时处理**，每 6 小时重试、永远重试；
+  - **429（瞬时）被升到 6 小时封顶**。
+- 而同一仓库的凭据级探针 `classifyProbeFailure`（`bg/credential_probe_v2.go`）
+  早就把两者都判对了：410 = **binding 级终态**（兄弟模型照常可路由，
+  判据 `TestClassifyProbeFailure_ModelEOLEndOfLifeIsBindingOnly`）；
+  429 = **60 秒**恢复窗口。
+  **同一个 410 与同一个 429，两条探针路径给出完全不同的结论；
+  429 的恢复窗口相差 360 倍（60s vs 21600s）。**
+  `bg/node_probe.go` / `bg/probe_policy.go` 里 410/EOL 零引用。
+- 防复发检查：
+  (a) 看到"某节点不再被尝试"时，先读 `next_retry_at - now()`：
+      **采样间隔必须 ≥ 重试周期**，否则"没恢复"这个观察不成立；
+  (b) 排查失败分类时，**先确认错误码有没有真的参与决策**——
+      找"用了 error/code/status 的那处分支"，而不是只看它被存进了哪个字段；
+  (c) 同一仓库里对同一外部信号存在**两条路径**（凭据级 vs 节点级）时，
+      把两条的判据并排读一遍；并排一读就能看出分歧，
+      单独读任何一条都只会看到"它工作正常"；
+  (d) 记录 `last_err_detail` 的**原文**再归因。`http_410` 与 `http_500`
+      在码表上都是"失败"，原文里一个写着 end of life、一个写着内部错误，
+      处置完全相反。
+- 证据：`node_probe_state` cred=2 八行逐行 `last_err_code`/`last_err_detail`
+  （4×410 end of life、`glm-5.3-flash`=429、`glm-5.3`=timeout、
+  `codestral`=404、`ai-synthetic-video-detector`=500）；
+  `bg/probe_backoff.go` 的 `NextDelay(failures int)` 签名只吃失败次数。
+- 状态：取证已落地（验证记录 §8.1）；探针策略是否按错误类别分流待 owner 拍板
+
 ## 晋级记录
 
 将已晋级条目移到这里，并链接目标规则、清单或技能。同一模式只按不同工作日计 `Seen`；出现三天后晋级。经证据确认的安全、隐私、数据丢失或生产事故，若已有可执行的防复发检查，可立即晋级。
