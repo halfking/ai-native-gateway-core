@@ -61,6 +61,7 @@ export default {
     modelIntegrity: "Modellintegritäts-Monitor",
     modules: "Modulverwaltung",
     sessionAnalytics: "Sitzungsanalyse-Zentrum",
+    sessionAnalyticsFilterOptions: "Sitzungsanalyse-Filter",
     sessionPlugin: "Sitzungsbetrieb (Plugin)",
     sessionPluginSettings: "Sitzungs-Plugin-Einstellungen",
     sessionAnalysis: "Sitzungsanalyse",

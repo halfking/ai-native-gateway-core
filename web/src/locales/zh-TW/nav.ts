@@ -61,6 +61,7 @@ export default {
     modelIntegrity: "模型完整性監控",
     modules: "模組管理",
     sessionAnalytics: "會話分析中心",
+    sessionAnalyticsFilterOptions: "會話分析篩選",
     sessionPlugin: "會話營運（外掛）",
     sessionPluginSettings: "會話外掛設定",
     sessionAnalysis: "會話分析",

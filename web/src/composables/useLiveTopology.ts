@@ -1,13 +1,13 @@
-// useLiveTopology.ts — 实时拓扑页的编排层（2026-10-16）
+// useLiveTopology.ts — 实时拓扑页的编排层（2026-10-17 改版）
 //
 // 职责：把 live-stream SSE 的请求/节点帧 + 本地过滤态，编排成
-// 「图 + 左右侧栏 + 粒子」三者共用的同一份数据。**关键约束**：
-// 图、供应商统计栏、请求窄条必须收敛到同一个过滤子集，否则用户会看到
-// 「图里没有、右栏却有」的矛盾画面（判据见 LiveTopologyView.filters.test.ts）。
+// 「图（纵向四层）+ 左右两个请求面板 + 网关核心模块统计」共用的同一份数据。
+// **关键约束**：图、左面板、右面板、左栏当天统计必须收敛到同一个过滤子集，
+// 否则用户会看到「图里没有、右面板却有」的矛盾画面。
 //
-// 这里不碰 DOM、不碰 Canvas —— 渲染在 TopologyCanvas.vue，纯函数在 lib/。
+// 这里不碰 DOM、不碰 Canvas —— 渲染在组件里，纯函数在 lib/。
 
-import { computed, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import {
   actionsRef,
   nodesRef,
@@ -23,28 +23,45 @@ import {
   type LiveRequest,
 } from './liveStreamStore'
 import { buildTopology, clientKeyOf, modelKeyOf, providerNodeKeyOf, type TopoGraph } from '../lib/liveTopologyGraph'
-import { applyFilters, filterOptions } from '../lib/liveTopologyFilter'
+import { applyFilters, filterOptions, gatewayModuleStats } from '../lib/liveTopologyFilter'
 import {
   DEFAULT_TOPO_FILTERS,
   GATEWAY_CORE_ID,
+  PANEL_LIST_LIMIT,
+  type GatewayModuleKey,
   type TopoFilters,
-  type TopoNode,
 } from '../types/liveTopology'
 
-/** 请求窄条保留条数（超出淘汰最旧）。 */
-export const STRIP_LIMIT = 60
-
-export interface StripEntry {
+export interface PanelEntry {
   requestId: string
   ts: string
-  label: string
+  /** 客户端侧：客户端名；供应商侧：供应商 / 凭据 */
+  client: string
   provider: string
+  nodeId: string
   model: string
   status: string
   latencyMs?: number | null
   tokens?: number | null
+  promptTokens?: number | null
+  completionTokens?: number | null
+  costUsd?: number | null
   isProbe: boolean
   errorKind?: string | null
+  failureStage?: string | null
+  sessionId?: string
+  requestType?: string
+}
+
+export interface ClientSummary {
+  client: string
+  requests: number
+  success: number
+  failure: number
+  inFlight: number
+  tokens: number
+  lastTs?: string
+  topModel: string
 }
 
 export function useLiveTopology(opts?: { now?: () => number }) {
@@ -53,7 +70,7 @@ export function useLiveTopology(opts?: { now?: () => number }) {
 
   const now = () => clock()
 
-  /** 过滤后的请求子集：图、粒子、右栏全部读它。 */
+  /** 过滤后的请求子集：图、两个面板、粒子全部读它。 */
   const filteredRequests = computed<LiveRequest[]>(() =>
     applyFilters(requestsRef.value as never, filters.value, now()) as never[],
   )
@@ -67,104 +84,109 @@ export function useLiveTopology(opts?: { now?: () => number }) {
     }),
   )
 
-  const options = computed(() => filterOptions(filteredRequests.value as never, now(), filters.value.windowMs))
+  const options = computed(() =>
+    filterOptions(filteredRequests.value as never, now(), filters.value.windowMs),
+  )
 
-  /** 右栏窄条：最新在前，超过 STRIP_LIMIT 淘汰。 */
-  const strip = computed<StripEntry[]>(() =>
+  /** 左面板：客户端请求摘要（按客户端聚合，最新在前）。 */
+  const clientSummaries = computed<ClientSummary[]>(() => {
+    const map = new Map<string, ClientSummary & { last: number; modelCount: Map<string, number> }>()
+    for (const req of filteredRequests.value) {
+      const key = clientKeyOf(req as never)
+      let entry = map.get(key)
+      if (!entry) {
+        entry = { client: key, requests: 0, success: 0, failure: 0, inFlight: 0, tokens: 0, topModel: '', last: 0, modelCount: new Map() }
+        map.set(key, entry)
+      }
+      entry.requests += 1
+      if (req.status === 'success') entry.success += 1
+      if (req.status === 'failure' || req.status === 'rate_limited') entry.failure += 1
+      if (req.status === 'in_progress') entry.inFlight += 1
+      entry.tokens += req.total_tokens ?? 0
+      const ts = req.ts ? Date.parse(req.ts) : 0
+      if (Number.isFinite(ts) && ts > entry.last) {
+        entry.last = ts
+        entry.lastTs = req.ts
+      }
+      const model = modelKeyOf(req as never)
+      entry.modelCount.set(model, (entry.modelCount.get(model) ?? 0) + 1)
+    }
+    return [...map.values()]
+      .map(({ last, modelCount, ...rest }) => ({
+        ...rest,
+        topModel: [...modelCount.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] ?? '',
+      }))
+      .sort((a, b) => b.requests - a.requests || a.client.localeCompare(b.client))
+      .slice(0, PANEL_LIST_LIMIT)
+  })
+
+  /** 左面板的逐条请求（最新在前；点条目定位到图上）。 */
+  const clientRequests = computed<PanelEntry[]>(() =>
     filteredRequests.value
       .slice()
       .reverse()
-      .slice(0, STRIP_LIMIT)
-      .map((r) => ({
-        requestId: r.request_id ?? '',
-        ts: r.ts,
-        label: clientKeyOf(r as never),
-        provider: (r.provider_code ?? '').trim() || '-',
-        model: modelKeyOf(r as never),
-        status: r.status ?? 'in_progress',
-        latencyMs: r.latency_ms ?? null,
-        tokens: r.total_tokens ?? null,
-        isProbe: !!r.is_probe,
-        errorKind: r.error_kind ?? null,
-      })),
+      .slice(0, PANEL_LIST_LIMIT)
+      .map(toPanelEntry),
   )
 
-  const stripIndex = computed(() => {
-    const map = new Map<string, number>()
-    strip.value.forEach((entry, i) => map.set(entry.requestId, i))
-    return map
-  })
+  /** 右面板：供应商端响应（只含有上游响应的请求；未派发出去的 in_progress 也算它已选定节点）。 */
+  const providerResponses = computed<PanelEntry[]>(() =>
+    filteredRequests.value
+      .filter((r) => providerNodeKeyOf(r as never) !== '')
+      .slice()
+      .reverse()
+      .slice(0, PANEL_LIST_LIMIT)
+      .map(toPanelEntry),
+  )
 
-  /** 某条请求在图上的三段路径（用于「点右栏 → 高亮链路」）。 */
-  function edgePathFor(requestId: string): { from: string; to: string }[] {
+  /** 网关核心九个模块的窗口内统计。 */
+  const gatewayStats = computed<Record<GatewayModuleKey, { count: number; errors: number }>>(() =>
+    gatewayModuleStats(filteredRequests.value as never, now(), filters.value.windowMs, nodesRef.value.length),
+  )
+
+  const queue = computed<LiveQueueSnapshot | null>(() => queueRef.value)
+
+  const coreMetric = computed(() => graph.value.nodes.find((n) => n.id === GATEWAY_CORE_ID)?.metric)
+
+  /** 某条请求在图上的路径（用于「点面板条目 → 高亮链路」）。 */
+  function edgePathFor(requestId: string): string[] {
     const req = filteredRequests.value.find((r) => r.request_id === requestId)
     if (!req) return []
     const clientId = `client:${clientKeyOf(req as never)}`
     const providerId = providerNodeKeyOf(req as never)
     const modelId = `model:${modelKeyOf(req as never)}`
-    const path = [{ from: clientId, to: GATEWAY_CORE_ID }]
-    if (providerId) {
-      path.push({ from: GATEWAY_CORE_ID, to: providerId })
-      path.push({ from: providerId, to: modelId })
-    } else {
-      path.push({ from: GATEWAY_CORE_ID, to: modelId })
-    }
-    return path
+    const ids = [clientId, GATEWAY_CORE_ID, ...(providerId ? [providerId] : []), modelId]
+    const keys: string[] = []
+    for (let i = 0; i < ids.length - 1; i += 1) keys.push(`${ids[i]}->${ids[i + 1]}`)
+    return keys
   }
 
-  /** 队列/调度投影（网关核心节点的副标题：深度 + 等待 p95）。 */
-  const queue = computed<LiveQueueSnapshot | null>(() => queueRef.value)
+  function nodeIdsFor(requestId: string): string[] {
+    const req = filteredRequests.value.find((r) => r.request_id === requestId)
+    if (!req) return []
+    const providerId = providerNodeKeyOf(req as never)
+    return [
+      `client:${clientKeyOf(req as never)}`,
+      GATEWAY_CORE_ID,
+      ...(providerId ? [providerId] : []),
+      `model:${modelKeyOf(req as never)}`,
+    ]
+  }
 
-  const coreMetric = computed(() => {
-    const core = graph.value.nodes.find((n) => n.id === GATEWAY_CORE_ID)
-    return core?.metric
-  })
-
-  const nodesById = computed(() => new Map(graph.value.nodes.map((n) => [n.id, n])))
-
-  /** 选中对象的路由判定时间线（request_lifecycle 的 action 序列）。 */
   function decisionsFor(requestId: string): ActionEvent[] {
     if (!requestId) return []
     const list = actionsRef.value.get(requestId) ?? []
     return [...list].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
   }
 
-  const providerCodes = computed(() => {
-    const set = new Set<string>()
-    for (const n of graph.value.nodes) {
-      if (n.column === 'provider' && n.providerCode) set.add(n.providerCode)
-    }
-    return [...set].sort()
-  })
-
-  const providerNodesByCode = computed(() => {
-    const map = new Map<string, TopoNode[]>()
-    for (const n of graph.value.nodes) {
-      if (n.column !== 'provider' || !n.providerCode) continue
-      const list = map.get(n.providerCode) ?? []
-      list.push(n)
-      map.set(n.providerCode, list)
-    }
-    return map
-  })
+  const requestById = computed(() => new Map(filteredRequests.value.map((r) => [r.request_id ?? '', r])))
 
   /** 过滤是否处于「有值但零命中」状态（UI 要把它与「真的没流量」分开说）。 */
   const activeFilterCount = computed(
-    () =>
-      ['provider', 'client', 'model', 'status'].filter((k) => {
-        const v = filters.value[k as keyof TopoFilters]
-        return typeof v === 'string' && v !== ''
-      }).length,
+    () => filters.value.clients.length + filters.value.providers.length + filters.value.models.length + filters.value.nodes.length + (filters.value.status ? 1 : 0),
   )
 
   const filteredOut = computed(() => filteredRequests.value.length === 0 && requestsRef.value.length > 0)
-
-  watch(
-    () => filters.value.windowMs,
-    () => {
-      // 窗口变化不重置过滤，但要让上层重新拉一次 provider 当天统计的水位提示
-    },
-  )
 
   return {
     filters,
@@ -172,20 +194,43 @@ export function useLiveTopology(opts?: { now?: () => number }) {
     filteredRequests,
     graph,
     options,
-    strip,
-    stripIndex,
+    clientSummaries,
+    clientRequests,
+    providerResponses,
+    gatewayStats,
     queue,
     coreMetric,
-    nodesById,
-    providerCodes,
-    providerNodesByCode,
-    decisionsFor,
+    requestById,
     edgePathFor,
+    nodeIdsFor,
+    decisionsFor,
     activeFilterCount,
     filteredOut,
     connection: connectionRef,
     initialDataReceived: initialDataReceivedRef,
     redisHealthy: redisHealthyRef,
     redisError: redisErrorRef,
+  }
+}
+
+function toPanelEntry(req: LiveRequest): PanelEntry {
+  return {
+    requestId: req.request_id ?? '',
+    ts: req.ts,
+    client: clientKeyOf(req as never),
+    provider: (req.provider_code ?? '').trim() || '-',
+    nodeId: providerNodeKeyOf(req as never),
+    model: modelKeyOf(req as never),
+    status: req.status ?? 'in_progress',
+    latencyMs: req.latency_ms ?? null,
+    tokens: req.total_tokens ?? null,
+    promptTokens: req.prompt_tokens ?? null,
+    completionTokens: req.completion_tokens ?? null,
+    costUsd: req.cost_usd ?? null,
+    isProbe: !!req.is_probe,
+    errorKind: req.error_kind ?? null,
+    failureStage: req.failure_stage ?? null,
+    sessionId: req.gw_session_id,
+    requestType: req.requestType,
   }
 }

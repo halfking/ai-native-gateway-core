@@ -59,6 +59,7 @@ export default {
     modelIntegrity: "モデル整合性モニター",
     modules: "モジュール管理",
     sessionAnalytics: "セッション分析センター",
+    sessionAnalyticsFilterOptions: "セッション分析フィルター",
     sessionPlugin: "セッション運用（プラグイン）",
     sessionPluginSettings: "セッションプラグイン設定",
     sessionAnalysis: "セッション分析",

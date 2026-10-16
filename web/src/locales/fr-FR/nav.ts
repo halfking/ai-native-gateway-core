@@ -61,6 +61,7 @@ export default {
     modelIntegrity: "Surveillance de l intégrité du modèle",
     modules: "Gestion des modules",
     sessionAnalytics: "Centre d'analyse des sessions",
+    sessionAnalyticsFilterOptions: "Filtres d’analyse de sessions",
     sessionPlugin: "Opérations de session (plugin)",
     sessionPluginSettings: "Paramètres du plugin de session",
     sessionAnalysis: "Analyse de session",

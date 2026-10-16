@@ -24,7 +24,17 @@ export interface GraphRequestInput {
   credential_label?: string
   status?: string
   latency_ms?: number | null
+  prompt_tokens?: number | null
+  completion_tokens?: number | null
   total_tokens?: number | null
+  cache_read_tokens?: number | null
+  cache_write_tokens?: number | null
+  gw_session_id?: string
+  /** 任务类型。**线上就是驼峰 `requestType`**（见 liveStreamStore.LiveRequest
+   *  2026-08-15 lifecycle 字段注释）；早先误写成 request_type 会让「任务识别」
+   *  模块恒为 0 —— 那正是本仓禁止的「用 0 冒充没有」。 */
+  requestType?: string
+  error_kind?: string | null
   agent_name?: string
   agent_type?: string
   client_profile?: string | null

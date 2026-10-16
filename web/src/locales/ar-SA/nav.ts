@@ -59,6 +59,7 @@ export default {
     modelIntegrity: "مراقبة سلامة النموذج",
     modules: "إدارة الوحدات",
     sessionAnalytics: "مركز تحليل الجلسات",
+    sessionAnalyticsFilterOptions: "مرشحات تحليل الجلسات",
     sessionPlugin: "تشغيل الجلسات (إضافة)",
     sessionPluginSettings: "إعدادات إضافة الجلسة",
     sessionAnalysis: "تحليل الجلسة",
