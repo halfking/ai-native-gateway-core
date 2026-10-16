@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // user_usage_stats.go — /users 页面用户级统计端点（2026-09-30 统计 UI 优化轮）。
@@ -44,6 +45,50 @@ type userUsageRow struct {
 type userUsageSummaryResponse struct {
 	Days  int            `json:"days"`
 	Items []userUsageRow `json:"items"`
+}
+
+// usageSummaryObservation contains only operational metadata, never business data.
+// rowsElapsed includes Next's I/O wait as well as Scan; phase identifies where
+// the failure surfaced, not the database's underlying cause.
+type usageSummaryObservation struct {
+	phase          string
+	acquireElapsed time.Duration
+	queryElapsed   time.Duration
+	rowsElapsed    time.Duration
+	totalElapsed   time.Duration
+	backendPID     uint32
+}
+
+// attrs deliberately classifies errors without formatting or logging them.
+func (o usageSummaryObservation) attrs(stat *pgxpool.Stat, ctxErr, err error) []any {
+	cancelClass := "none"
+	if errors.Is(ctxErr, context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		cancelClass = "deadline_exceeded"
+	} else if errors.Is(ctxErr, context.Canceled) || errors.Is(err, context.Canceled) {
+		cancelClass = "canceled"
+	}
+	phaseElapsed := o.rowsElapsed
+	switch o.phase {
+	case "acquire":
+		phaseElapsed = o.acquireElapsed
+	case "query":
+		phaseElapsed = o.queryElapsed
+	}
+	attrs := []any{
+		"phase", o.phase,
+		"phase_elapsed_ms", float64(phaseElapsed) / float64(time.Millisecond),
+		"acquire_elapsed_ms", float64(o.acquireElapsed) / float64(time.Millisecond),
+		"query_elapsed_ms", float64(o.queryElapsed) / float64(time.Millisecond),
+		"rows_elapsed_ms", float64(o.rowsElapsed) / float64(time.Millisecond),
+		"total_elapsed_ms", float64(o.totalElapsed) / float64(time.Millisecond),
+		"pool_acquired", stat.AcquiredConns(), "pool_idle", stat.IdleConns(),
+		"pool_total", stat.TotalConns(), "pool_max", stat.MaxConns(),
+		"ctx_cancel", cancelClass,
+	}
+	if o.backendPID != 0 {
+		attrs = append(attrs, "backend_pid", o.backendPID)
+	}
+	return attrs
 }
 
 // handleUserUsageSummary GET /api/admin/users/usage-summary?days=30
@@ -83,7 +128,30 @@ func (h *Handler) handleUserUsageSummary(w http.ResponseWriter, r *http.Request)
 		args = append(args, tenantID)
 	}
 
-	rows, err := h.db.Query(ctx, `
+	started := time.Now()
+	observation := usageSummaryObservation{}
+	observe := func(phase string, err error) {
+		observation.phase = phase
+		observation.totalElapsed = time.Since(started)
+		level := slog.LevelDebug
+		if err != nil {
+			level = slog.LevelWarn
+		}
+		slog.Log(ctx, level, "user_usage_summary observation", observation.attrs(h.db.Stat(), ctx.Err(), err)...)
+	}
+
+	conn, err := h.db.Acquire(ctx)
+	observation.acquireElapsed = time.Since(started)
+	if err != nil {
+		observe("acquire", err)
+		writeInternalErr(w, "query failed", err)
+		return
+	}
+	defer conn.Release()
+	observation.backendPID = conn.Conn().PgConn().PID()
+
+	queryStarted := time.Now()
+	rows, err := conn.Query(ctx, `
 		SELECT agg.owner, agg.requests, agg.tokens, agg.credits, agg.last_active
 		FROM (
 			SELECT k.owner_user AS owner, k.tenant_id AS tenant,
@@ -100,25 +168,34 @@ func (h *Handler) handleUserUsageSummary(w http.ResponseWriter, r *http.Request)
 		JOIN users u ON u.username = agg.owner AND u.tenant_id = agg.tenant
 		ORDER BY agg.requests DESC
 	`, args...)
+	observation.queryElapsed = time.Since(queryStarted)
 	if err != nil {
+		observe("query", err)
 		writeInternalErr(w, "query failed", err)
 		return
 	}
+	// Registered after Release so rows always close before returning the conn.
 	defer rows.Close()
 
+	rowsStarted := time.Now()
 	resp := userUsageSummaryResponse{Days: days, Items: []userUsageRow{}}
 	for rows.Next() {
 		var row userUsageRow
 		if err := rows.Scan(&row.OwnerUser, &row.Requests, &row.Tokens, &row.Credits, &row.LastActive); err != nil {
+			observation.rowsElapsed = time.Since(rowsStarted)
+			observe("scan", err)
 			writeInternalErr(w, "usage summary scan failed", err)
 			return
 		}
 		resp.Items = append(resp.Items, row)
 	}
+	observation.rowsElapsed = time.Since(rowsStarted)
 	if err := rows.Err(); err != nil {
+		observe("rows", err)
 		writeInternalErr(w, "query failed", err)
 		return
 	}
+	observe("complete", nil)
 	writeJSON(w, http.StatusOK, resp)
 }
 
