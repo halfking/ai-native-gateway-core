@@ -422,62 +422,106 @@ func sliceTableSizes(rows []tableSizeInfo, limit int) ([]tableSizeInfo, int64, s
 //
 // 失败语义保持与优化前一致：采集出错即返回 error，由 handler 照旧写 500
 // （这个端点优化前就是 500，不改成 200 降级，避免契约漂移）。
+// tableSizesResponseFrom 把快照按 limit 切片成响应。
+func tableSizesResponseFrom(snap *tableSizesSnapshot, limit int) tableSizesResponse {
+	tables, total, human := sliceTableSizes(snap.rows, limit)
+	return tableSizesResponse{
+		Tables: tables, TotalBytes: total, TotalHuman: human,
+		CollectedAt: snap.collectedAt,
+	}
+}
+
+// collectTableSizesSnapshot 真正打库的一次采集（单飞的函数体）。
+//
+// 一次采满 tableSizesMaxLimit 行，所有 limit 都从它切片。
+func collectTableSizesSnapshot(ctx context.Context, h *Handler) (*tableSizesSnapshot, error) {
+	collectCtx, cancel := context.WithTimeout(ctx, storageCollectTimeout)
+	defer cancel()
+	tableSizesSnapshots.collect.Add(1)
+	rows, _, _, err := queryTableSizes(collectCtx, h, tableSizesMaxLimit)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	snap := &tableSizesSnapshot{
+		rows:        rows,
+		collectedAt: now.UTC(),
+		expiresAt:   now.Add(tableSizesTTL),
+	}
+	tableSizesSnapshots.put(h.db, snap)
+	return snap, nil
+}
+
+// refreshTableSizesAsync 过期后**后台**单飞刷新，不阻塞本次请求。
+//
+// 关键点：采集 ctx 不能挂在调用方的请求 ctx 上——发起者随时可能超时/断开，
+// 那样会连带取消这次共享采集，让其他等待者也拿不到新快照。
+// 故用 context.WithoutCancel + 独立超时。
+//
+// 单飞键沿用同一个 Group，所以并发过期只会真正采集一次。
+func (h *Handler) refreshTableSizesAsync(ctx context.Context) {
+	base := context.WithoutCancel(ctx)
+	go func() {
+		ch := tableSizesSnapshots.sf.DoChan(fmt.Sprintf("table-sizes:%p", h.db), func() (any, error) {
+			return collectTableSizesSnapshot(base, h)
+		})
+		res := <-ch
+		if res.Err != nil {
+			// 后台刷新失败不影响本次响应（旧快照已经发出去了），
+			// 但要让运维看得见，否则会静默地永远停在旧读数上。
+			slog.Warn("storage: background table sizes refresh failed", "error", res.Err)
+		}
+	}()
+}
+
+// tableSizesSnapshot 取 Top-N 快照。
+//
+// 2026-10-17 第三次性能修正（stale-while-revalidate）：
+// TTL 快照解决了"重复请求都打库"，但**冷路径本身仍是 2.35s**
+// （ORDER BY pg_total_relation_size 必须对全部 440 个关系逐个算大小才能排序，
+//
+//	LIMIT 省不掉），于是每 30s 仍有一次请求破 2 秒。
+//
+// 改为：过期不再同步重算，而是**立即返回旧读数 + 后台单飞刷新**。
+// 于是除"进程启动后的第一次"外，任何请求都不再支付冷路径成本。
+//
+// 代价（已评估、属可接受）：读数最坏可陈旧到 TTL + 一次采集时长
+// （正常约 2.4s，故最坏约 32s），而非严格的 30s。
+// 运维要精确读数时用 VACUUM FULL / REINDEX，那会显式失效快照。
+//
+// 失败语义不变：无任何历史快照时仍同步采集一次（返回 error → handler 照旧 500）；
+// 采集出错且有旧快照时仍返回旧读数。
 func (h *Handler) tableSizesSnapshot(ctx context.Context, limit int) (tableSizesResponse, error) {
-	if snap := tableSizesSnapshots.get(h.db, true); snap != nil {
+	if snap := tableSizesSnapshots.get(h.db, false); snap != nil {
 		tableSizesSnapshots.hits.Add(1)
-		tables, total, human := sliceTableSizes(snap.rows, limit)
-		return tableSizesResponse{
-			Tables: tables, TotalBytes: total, TotalHuman: human,
-			CollectedAt: snap.collectedAt,
-		}, nil
+		if time.Now().Before(snap.expiresAt) {
+			return tableSizesResponseFrom(snap, limit), nil
+		}
+		// 已过期：先把手上的旧读数发出去，刷新在后台跑。
+		h.refreshTableSizesAsync(ctx)
+		return tableSizesResponseFrom(snap, limit), nil
 	}
 
+	// 无任何快照：必须同步采一次（进程启动后的第一个请求）。
 	ch := tableSizesSnapshots.sf.DoChan(fmt.Sprintf("table-sizes:%p", h.db), func() (any, error) {
-		collectCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), storageCollectTimeout)
-		defer cancel()
-		tableSizesSnapshots.collect.Add(1)
-		// 一次采满 tableSizesMaxLimit 行，所有 limit 都从它切片。
-		rows, _, _, err := queryTableSizes(collectCtx, h, tableSizesMaxLimit)
-		if err != nil {
-			return nil, err
-		}
-		snap := &tableSizesSnapshot{
-			rows:        rows,
-			collectedAt: time.Now().UTC(),
-			expiresAt:   time.Now().Add(tableSizesTTL),
-		}
-		tableSizesSnapshots.put(h.db, snap)
-		return snap, nil
+		return collectTableSizesSnapshot(context.WithoutCancel(ctx), h)
 	})
 
 	select {
 	case res := <-ch:
 		if res.Err == nil {
-			snap := res.Val.(*tableSizesSnapshot)
-			tables, total, human := sliceTableSizes(snap.rows, limit)
-			return tableSizesResponse{
-				Tables: tables, TotalBytes: total, TotalHuman: human,
-				CollectedAt: snap.collectedAt,
-			}, nil
+			return tableSizesResponseFrom(res.Val.(*tableSizesSnapshot), limit), nil
 		}
-		// 采集失败：若还有旧快照，宁可给稍旧的读数也不要 500。
+		// 采集失败但期间有别的请求写进了快照：给新读数，不报错。
 		if snap := tableSizesSnapshots.get(h.db, false); snap != nil {
 			tableSizesSnapshots.hits.Add(1)
-			tables, total, human := sliceTableSizes(snap.rows, limit)
-			return tableSizesResponse{
-				Tables: tables, TotalBytes: total, TotalHuman: human,
-				CollectedAt: snap.collectedAt,
-			}, nil
+			return tableSizesResponseFrom(snap, limit), nil
 		}
 		return tableSizesResponse{}, res.Err
 	case <-ctx.Done():
 		if snap := tableSizesSnapshots.get(h.db, false); snap != nil {
 			tableSizesSnapshots.hits.Add(1)
-			tables, total, human := sliceTableSizes(snap.rows, limit)
-			return tableSizesResponse{
-				Tables: tables, TotalBytes: total, TotalHuman: human,
-				CollectedAt: snap.collectedAt,
-			}, nil
+			return tableSizesResponseFrom(snap, limit), nil
 		}
 		return tableSizesResponse{}, ctx.Err()
 	}

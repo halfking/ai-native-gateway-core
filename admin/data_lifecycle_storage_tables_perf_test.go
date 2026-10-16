@@ -335,6 +335,14 @@ func TestDataLifecycleTableSizesInvalidateRefetches(t *testing.T) {
 
 // TestDataLifecycleTableSizesTTLExpiryRefetches TTL 到期必须重查，
 // 并先钉住生产默认值的上界。
+//
+// 2026-10-17 契约变更（stale-while-revalidate）：到期后**不再同步重算**，
+// 而是立即返回旧读数 + 后台单飞刷新。所以"重查发生了"不能靠本次调用的
+// 返回值证明——必须等后台刷新落定后再取一次。故本用例分三段：
+//
+//	③ 到期后的那次调用：**不得阻塞**（这正是本次优化的目的）
+//	④ 轮询等后台刷新落定，断言 collect 计数确实增长（刷新真的发生了）
+//	⑤ 再取一次，断言拿到的是刷新后的新读数（刷新出来的数据是有效的）
 func TestDataLifecycleTableSizesTTLExpiryRefetches(t *testing.T) {
 	h, pool, schema := newStoragePerfHandler(t)
 
@@ -377,17 +385,40 @@ func TestDataLifecycleTableSizesTTLExpiryRefetches(t *testing.T) {
 	}
 	time.Sleep(150 * time.Millisecond) // > TTL
 
-	code2, r2, _ := callTableSizes(t, h, "")
+	// ③ 到期后的调用：返回的仍是旧读数，且**不得**为它阻塞
+	code2, r2, d2 := callTableSizes(t, h, "")
 	if code2 != http.StatusOK {
 		t.Fatalf("second status = %d", code2)
 	}
-	if got := tableSizesCollectCount(); got != 2 {
-		t.Errorf("after TTL expiry collect count = %d, want 2 —— TTL 形同虚设", got)
+	if d2 >= 300*time.Millisecond {
+		t.Errorf("过期后的调用 = %v，want < 300ms —— 过期后必须走旧读数而不是同步重算", d2)
 	}
-	if r2.TotalBytes <= t1 {
-		t.Errorf("TotalBytes after TTL = %d, want > %d（到期未重新取数）", r2.TotalBytes, t1)
+	if r2.TotalBytes != t1 {
+		t.Errorf("过期调用应返回旧读数 %d，实际 %d", t1, r2.TotalBytes)
 	}
-	t.Logf("ttl=60ms t1=%d t2=%d", t1, r2.TotalBytes)
+
+	// ④⑤ 轮询到新读数真的可见。
+	//
+	// 这里**不能**只等 collect 计数：collect 在查询开始前就自增，等���它变成 2
+	// 时刷新可能还没把快照写回去（第一版判据就栽在这里，读数仍是旧值）。
+	// 契约是"刷新最终让新读数可见"，所以直接按结果轮询。
+	deadline := time.Now().Add(25 * time.Second)
+	var last int64
+	for {
+		code, r, _ := callTableSizes(t, h, "")
+		if code != http.StatusOK {
+			t.Fatalf("polling status = %d", code)
+		}
+		last = r.TotalBytes
+		if last > t1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("后台刷新后仍未拿到新读数（始终 = %d）—— 刷新 goroutine 断了", last)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Logf("ttl=60ms t1=%d 过期响应=%d(%v) 刷新后=%d", t1, r2.TotalBytes, d2, last)
 }
 
 // TestDataLifecycleTableSizesConcurrentCallsAggregateOnce 并发 N 次只查一次库。
