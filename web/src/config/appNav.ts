@@ -62,8 +62,8 @@ export type NavGroup = {
 
 /** Top-level sidebar links (no accordion group). Used for default-tenant platform ops. */
 export const NAV_PRIMARY_ITEMS: NavItem[] = [
-  // 2026-10-16: 实时拓扑新首页。放在「总览」之前 —— 它是**新增**的入口，
-  // `/` 与 `/dashboard` 保持原样（旧首页完整保留，见 ADR §7 G7）。
+  // 2026-10-16: live-topology home. Placed before "Overview" — it is a NEW entry;
+  // `/` and `/dashboard` stay untouched (the old home page is fully preserved, ADR §7 G7).
   { path: '/live', label: '实时拓扑', labelKey: 'nav.item.liveTopology', icon: '🛰', platformOps: true, exact: true },
   { path: '/dashboard', label: '总览', labelKey: 'nav.item.overview', icon: '📊', platformOps: true, exact: true },
 ]

@@ -60,6 +60,8 @@ export default {
     modules: "モジュール管理",
     sessionAnalytics: "セッション分析センター",
     sessionAnalyticsFilterOptions: "セッション分析フィルター",
+    usageEnhanced: '使用量の詳細分析',
+    boardOperational: '運用ボード',
     sessionPlugin: "セッション運用（プラグイン）",
     sessionPluginSettings: "セッションプラグイン設定",
     sessionAnalysis: "セッション分析",

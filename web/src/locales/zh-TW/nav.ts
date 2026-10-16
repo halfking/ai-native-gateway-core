@@ -62,6 +62,8 @@ export default {
     modules: "模組管理",
     sessionAnalytics: "會話分析中心",
     sessionAnalyticsFilterOptions: "會話分析篩選",
+    usageEnhanced: '用量增強分析',
+    boardOperational: '營運面板',
     sessionPlugin: "會話營運（外掛）",
     sessionPluginSettings: "會話外掛設定",
     sessionAnalysis: "會話分析",

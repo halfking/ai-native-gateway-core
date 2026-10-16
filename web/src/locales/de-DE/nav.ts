@@ -62,6 +62,8 @@ export default {
     modules: "Modulverwaltung",
     sessionAnalytics: "Sitzungsanalyse-Zentrum",
     sessionAnalyticsFilterOptions: "Sitzungsanalyse-Filter",
+    usageEnhanced: 'Erweiterte Nutzungsanalyse',
+    boardOperational: 'Betriebsübersicht',
     sessionPlugin: "Sitzungsbetrieb (Plugin)",
     sessionPluginSettings: "Sitzungs-Plugin-Einstellungen",
     sessionAnalysis: "Sitzungsanalyse",

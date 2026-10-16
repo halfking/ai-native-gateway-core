@@ -427,6 +427,29 @@
 
 ## 剩余任务（按依赖顺序）
 
+0.0. ★ **合并上游 `1a97a17cb`（9 提交）后，两道门由上游带红，本轮如实记录、未擅自处置**。
+    取证方式：**`git worktree add /tmp/lgw-origin-main origin/main --detach` 在 pristine
+    上游树复跑**，两条判据在上游自己就红（不是本轮引入，也不是「我改的文件没重叠」
+    那种弱证据）：
+
+    | 门 | 上游 pristine | 本分支合并后 | 性质 |
+    |---|---|---|---|
+    | `navCoverage.test.ts` | 红：`/admin/usage-enhanced`、`/admin/board-operational` 两条孤儿路由 | 同红 | 上游新增路由未挂菜单、未登记 `KNOWN_ORPHANS` |
+    | `hardcoded_cjk.baseline.test.ts` | 红：`5565 > baseline 5529` | 红：`5566` | 上游 9 提交把硬编码中文从 5511 抬到 5565 |
+
+    - 本分支对第二条的净贡献是 **+1**，且**不可消除**：`appNav.ts` 新增导航项的
+      `label: '实时拓扑'`。实测该计数器**按构造计数而非按字符**
+      （`{label:'实时拓扑'}` = 1，源码注释被 mask = 0），所以这不是「写了几个中文字」
+      的问题，是新增一个导航入口的固有成本。
+    - **两条都需要 owner 拍板，本轮不代做**：
+      ① 孤儿路由要么在 `appNav.ts` 挂菜单入口（会改可见导航，是产品决策），
+      要么登记 `KNOWN_ORPHANS` 并写明理由；② 硬编码中文棘轮要么把上游那 54 个
+      改走 i18n，要么 `node scripts/i18n-cjk-count.mjs --update-baseline`
+      手动抬基线（脚本注释明说基线是「清完一批后手动降棘轮」用的）。
+      本轮只做了**确定无争议**的那部分：补齐上游漏译的 nav locale 键
+      （`sessionAnalyticsFilterOptions` / `usageEnhanced` / `boardOperational`
+      共 3 组 × 6 locale），那不涉及任何产品或策略判断。
+
 ~~0. **陈旧分支清理（窗口外遗留，下轮顺手项）**~~ **已完成（2026-10-12 深夜轮）**：
 `fix/sanitize-mutation-tolerant-restore-v2` 与 `fix/sanitize-hop-passthrough`
 均已 `git branch -d` 删除（当时确认已合并）；2026-10-13 轮又清掉 [1h,48h]

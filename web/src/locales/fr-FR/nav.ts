@@ -62,6 +62,8 @@ export default {
     modules: "Gestion des modules",
     sessionAnalytics: "Centre d'analyse des sessions",
     sessionAnalyticsFilterOptions: "Filtres d’analyse de sessions",
+    usageEnhanced: 'Analyse d’utilisation avancée',
+    boardOperational: 'Tableau opérationnel',
     sessionPlugin: "Opérations de session (plugin)",
     sessionPluginSettings: "Paramètres du plugin de session",
     sessionAnalysis: "Analyse de session",

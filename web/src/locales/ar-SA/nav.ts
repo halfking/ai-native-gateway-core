@@ -60,6 +60,8 @@ export default {
     modules: "إدارة الوحدات",
     sessionAnalytics: "مركز تحليل الجلسات",
     sessionAnalyticsFilterOptions: "مرشحات تحليل الجلسات",
+    usageEnhanced: 'تحليلات الاستخدام المطوّر',
+    boardOperational: 'لوحة التشغيل',
     sessionPlugin: "تشغيل الجلسات (إضافة)",
     sessionPluginSettings: "إعدادات إضافة الجلسة",
     sessionAnalysis: "تحليل الجلسة",
