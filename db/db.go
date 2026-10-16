@@ -3953,6 +3953,14 @@ func (d *DB) ensureRoutingAnalyticsColumns(ctx context.Context) error {
 // treats them as distinct), diverging from the base queries, which read
 // NULL as FALSE everywhere (`is_auto_request IS NOT TRUE`).
 //
+// GROUP BY must use output ordinals (1..7), not the alias is_auto_request:
+// PostgreSQL resolves a GROUP BY alias to an *input* column of the same
+// name when one exists, so `GROUP BY is_auto_request` grouped the raw
+// NULL/FALSE column while SELECT emitted COALESCE(..., FALSE) — 220
+// duplicate ukey rows on prod (SQLSTATE 23505) and every canary boot
+// burned LLM_GATEWAY_DB_BOOT_RETRY_SECONDS retrying EnsureSchema
+// (2026-10-16 r1028 deploy blocker on 154).
+//
 // tenant_id is TEXT in this schema (not bigint — verified on prod 252 PG:
 // _request_logs_hot.tenant_id → text). The unique indexes therefore use
 // plain tenant_id columns with no COALESCE placeholder: PG rejects
@@ -4032,14 +4040,7 @@ const routingAnalyticsMVSQL = `
 	    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
 	  )
 	  AND COALESCE(NULLIF(outbound_model, ''), client_model) IS NOT NULL
-	GROUP BY
-	  time_bucket,
-	  effective_task_type,
-	  effective_model,
-	  effective_work_type,
-	  effective_provider_id,
-	  is_auto_request,
-	  tenant_id;
+	GROUP BY 1, 2, 3, 4, 5, 6, 7;
 
 	-- Unique index for REFRESH ... CONCURRENTLY. PG rejects expression
 	-- indexes for concurrent refresh (SQLSTATE 55000, verified on prod
@@ -4251,7 +4252,19 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 	`).Scan(&viewsExistedBefore, &staleDefinition); err != nil {
 		return err
 	}
-	if staleDefinition {
+	// Missing ukey with an existing MV cannot be repaired by CREATE IF NOT
+	// EXISTS (it keeps the duplicate-bearing rows from the alias-shadowing
+	// GROUP BY). Force a full rebuild so routingAnalyticsMVSQL recreates
+	// content under GROUP BY 1..7 before CREATE UNIQUE INDEX.
+	var missingUkey bool
+	if err := conn.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM pg_matviews WHERE schemaname='public' AND matviewname='routing_analytics_7d')
+		   AND NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='routing_analytics_7d_ukey')
+	`).Scan(&missingUkey); err != nil {
+		return err
+	}
+
+	if staleDefinition || missingUkey {
 		// 837 形状迁移（2026-10-06 本地实证的启动自锁修复）：新定义相对
 		// 旧 source 视图是**减列**（origin_actor 摘除），而 CREATE OR REPLACE
 		// VIEW 只允许在末尾加列（SQLSTATE 42P16 cannot drop columns from
@@ -4277,7 +4290,7 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 	// the index-repair path (views kept, only a missing ukey recreated) the
 	// content is exactly as stale as it was, so claiming freshness there
 	// would hide a dead refresher behind the 15-minute contract.
-	if !viewsExistedBefore || staleDefinition {
+	if !viewsExistedBefore || staleDefinition || missingUkey {
 		if err := stampRoutingMVRefresh(ctx, conn, RoutingMVViewNames...); err != nil {
 			return err
 		}

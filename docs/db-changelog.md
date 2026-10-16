@@ -8993,3 +8993,9 @@ projected = 1 ；read-back title = 'mutation probe' ；DeleteTitle UPDATE 1 ；R
 6. 重扫的完整口径见上「扫描面不足的教训」：273 条 `/api/admin/*` 静态路由全量扫，
    本轮结束后仍 500 的仅剩 `/api/admin/prompt-injection/{detections,stats}`（第 1 条，
    需新编号迁移）与 `/api/admin/session-audit{,/export}`（第 2 条，代码缺陷）。
+## 2026-10-16T12:39:24Z — deploy 154 build_seq 2676 (abdd4c75)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 869 | `869_promote_session_turns_trace_events.sql` | `41546cfdfd19e006454a022e8ca751a8a71b6a06a32ce655163ac5657b58fb27` | applied+verified |
+
