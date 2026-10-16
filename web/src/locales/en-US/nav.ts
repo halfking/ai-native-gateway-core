@@ -59,6 +59,7 @@ export default {
     modelIntegrity: 'Model Integrity',
     modules: 'Module Management',
     sessionAnalytics: 'Session Analytics',
+    sessionAnalyticsFilterOptions: 'Session Analytics Filters',
     sessionPlugin: 'Session operations',
     sessionPluginSettings: 'Session plugin settings',
     sessionAnalysis: 'Session analysis',

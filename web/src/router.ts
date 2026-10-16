@@ -269,6 +269,12 @@ export const router = createRouter({
     { path: '/admin/session-analytics/users/:owner', component: UserProfileView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/clients/:id', component: ClientAnalyticsView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/tasks/:id', component: TaskAnalyticsView, meta: { requiresAuth: true } },
+    {
+      path: '/admin/session-analytics/filter-options',
+      name: 'session-analytics-filter-options',
+      component: () => import('./views/SessionAnalyticsFilterOptionsView.vue'),
+      meta: { requiresAuth: true },
+    },
     { path: '/admin/compression',   component: CompressionView, meta: { requiresPlatformOps: true } },
     { path: '/admin/data-lifecycle', component: DataLifecycleView, meta: { requiresPlatformOps: true } },
     { path: '/admin/settings',     component: SettingsView, meta: { requiresSuper: true } },

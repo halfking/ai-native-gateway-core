@@ -60,6 +60,7 @@ export default {
     modelIntegrity: '模型完整性监控',
     modules: '模块管理',
     sessionAnalytics: '会话分析中心',
+    sessionAnalyticsFilterOptions: '会话分析筛选',
     sessionPlugin: '会话运营（插件）',
     sessionPluginSettings: '会话插件设置',
     sessionAnalysis: '会话分析',
