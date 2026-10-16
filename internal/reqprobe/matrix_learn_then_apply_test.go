@@ -77,7 +77,7 @@ func TestMatrix_LearnThenApplyNextRequest(t *testing.T) {
 	if !visible {
 		t.Fatalf("record never landed in store — worker did not drain the queue")
 	}
-	learned := coord.LearnedParams(context.Background(), "apigpt", "grok-4.6")
+	learned := coord.LearnedParams(context.Background(), LearnedKey{ProviderID: 314, OutboundModel: "grok-4.6", ActualWire: "openai-completions"})
 	if len(learned) == 0 {
 		t.Fatalf("LearnedParams empty after recovered terminal record — 节点没有被打标")
 	}

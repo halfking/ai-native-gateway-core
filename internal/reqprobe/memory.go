@@ -173,10 +173,12 @@ func (m *MemoryStore) ResolveFilter(_ context.Context, f Filter, notes string) (
 	return n, nil
 }
 
-func (m *MemoryStore) LearnedParams(_ context.Context, providerCode, outboundModel string) []string {
+func (m *MemoryStore) LearnedParams(_ context.Context, key LearnedKey) []string {
+	key = key.normalized()
+	if !key.valid() {
+		return nil
+	}
 	cutoff := m.nowFn().Add(-learnedTTL)
-	providerCode = strings.ToLower(providerCode)
-	outboundModel = strings.ToLower(outboundModel)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	set := map[string]bool{}
@@ -188,8 +190,9 @@ func (m *MemoryStore) LearnedParams(_ context.Context, providerCode, outboundMod
 		if rec.RecoveredCount == 0 || rec.LastSeen.Before(cutoff) {
 			continue
 		}
-		if strings.ToLower(rec.ProviderCode) != providerCode ||
-			strings.ToLower(rec.OutboundModel) != outboundModel {
+		if rec.ProviderID != key.ProviderID ||
+			strings.ToLower(strings.TrimSpace(rec.OutboundModel)) != key.OutboundModel ||
+			strings.ToLower(strings.TrimSpace(rec.Protocol)) != key.ActualWire {
 			continue
 		}
 		for _, p := range strings.Split(rec.Param, ",") {

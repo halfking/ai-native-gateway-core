@@ -23,7 +23,7 @@ func TestRedisStoreRoundTrip(t *testing.T) {
 
 	mk := func(recovered int) Record {
 		return Record{
-			ProviderCode: "xai", OutboundModel: "grok-4.6", ClientModel: "grok-4.6",
+			ProviderID: 7, ProviderCode: "xai", OutboundModel: "grok-4.6", ClientModel: "grok-4.6",
 			Protocol: "openai-chat", Trigger: TriggerParamRejected, Param: "reasoning_effort",
 			HTTPStatus: 400, ErrorKind: "client_bug", ErrorSample: "Invalid value for 'reasoning_effort'",
 			RecoveredCount: recovered, LastRequestID: "req-1",
@@ -49,15 +49,15 @@ func TestRedisStoreRoundTrip(t *testing.T) {
 	}
 
 	// 学习规则。
-	learned := s.LearnedParams(ctx, "xai", "grok-4.6")
+	learned := s.LearnedParams(ctx, LearnedKey{ProviderID: 7, OutboundModel: "grok-4.6", ActualWire: "openai-chat"})
 	if len(learned) != 1 || learned[0] != "reasoning_effort" {
 		t.Fatalf("learned = %v", learned)
 	}
 	// 大小写不敏感 + 其他模型不命中。
-	if got := s.LearnedParams(ctx, "XAI", "GROK-4.6"); len(got) != 1 {
+	if got := s.LearnedParams(ctx, LearnedKey{ProviderID: 7, OutboundModel: "GROK-4.6", ActualWire: "OPENAI-CHAT"}); len(got) != 1 {
 		t.Fatalf("case-insensitive learned = %v", got)
 	}
-	if got := s.LearnedParams(ctx, "xai", "other-model"); len(got) != 0 {
+	if got := s.LearnedParams(ctx, LearnedKey{ProviderID: 7, OutboundModel: "other-model", ActualWire: "openai-chat"}); len(got) != 0 {
 		t.Fatalf("other model learned = %v", got)
 	}
 
@@ -81,7 +81,7 @@ func TestRedisStoreRoundTrip(t *testing.T) {
 	if counts.Unresolved != 0 {
 		t.Fatalf("after resolve counts = %+v", counts)
 	}
-	if got := s.LearnedParams(ctx, "xai", "grok-4.6"); len(got) != 0 {
+	if got := s.LearnedParams(ctx, LearnedKey{ProviderID: 7, OutboundModel: "grok-4.6", ActualWire: "openai-chat"}); len(got) != 0 {
 		t.Fatalf("learned after resolve = %v", got)
 	}
 }
@@ -125,17 +125,17 @@ func TestRedisStoreLearningTTLWindow(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2026, 9, 21, 8, 0, 0, 0, time.Local)
 	s.nowFn = func() time.Time { return base }
-	if _, err := s.Upsert(ctx, Record{ProviderCode: "xai", OutboundModel: "grok-4.6",
+	if _, err := s.Upsert(ctx, Record{ProviderID: 7, ProviderCode: "xai", OutboundModel: "grok-4.6", Protocol: "openai-chat",
 		Trigger: TriggerParamRejected, Param: "thinking", HTTPStatus: 400,
 		ErrorKind: "client_bug", RecoveredCount: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if got := s.LearnedParams(ctx, "xai", "grok-4.6"); len(got) != 1 {
+	if got := s.LearnedParams(ctx, LearnedKey{ProviderID: 7, OutboundModel: "grok-4.6", ActualWire: "openai-chat"}); len(got) != 1 {
 		t.Fatalf("fresh rule should apply: %v", got)
 	}
 	// 超过 learnedTTL 后规则过期。
 	s.nowFn = func() time.Time { return base.Add(25 * time.Hour) }
-	if got := s.LearnedParams(ctx, "xai", "grok-4.6"); len(got) != 0 {
+	if got := s.LearnedParams(ctx, LearnedKey{ProviderID: 7, OutboundModel: "grok-4.6", ActualWire: "openai-chat"}); len(got) != 0 {
 		t.Fatalf("expired rule still applies: %v", got)
 	}
 }
