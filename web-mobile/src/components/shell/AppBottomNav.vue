@@ -12,6 +12,37 @@ defineProps<{ onMore: () => void }>()
 const route = useRoute()
 const items = computed(() => BOTTOM_NAV.map((item) => ({ ...item, label: t(item.titleKey), active: isNavItemActive(item, route.path) })))
 const moreLabel = t('nav.more')
+
+/**
+ * ★ 2026-10-16：iPhone 6s / iOS 15.8.8 真机实测 + bg_004a30db 调查结论 —— 防御性切换。
+ *
+ * 现象：WKWebView 上 WDA 合成 tap（pointerMove→pointerDown→80ms pause→pointerUp）
+ * 经常**不**触发 JS `click` 事件，于是 vue-router 5.2.0 的 `guardEvent` 整条
+ * 链路不跑、`<a>` 默认导航随之触发；该默认导航走到原生 `decidePolicyFor` →
+ * `NodeNavigationPlugin.shouldOverrideLoad`，被 `ShellOriginPolicy.allows()`
+ * 拒（`url.path` 非 `/`/空/`/index.html`），返回 `true` 取消 WKWebView 的
+ * 主帧导航 ⇒ `pushState` 始终不跑、路由纹丝不动。
+ *
+ * 根因是「`<a href>` 的默认导航」+「WKWebView tap 识别不完全匹配 W3C actions」
+ * 的耦合。修法：路由入口改用 `<RouterLink custom>` 渲染成 `<a>` + 显式
+ * `@click` 拦截 + `e.preventDefault()` 双保险，**永远不让 `<a>` 默认导航跑起来**。
+ * `click` 不触发还有第三层兜底：`@click` 与 vue-router slot prop 的 `navigate()`
+ * 各自独立；navigate 内部 `guardEvent` 任何原因早退，preventDefault 已先执行，
+ * 默认导航已经被我们吃下。
+ *
+ * 样式对 `<a>` / `<button>` 都通用（已在原 CSS 中验过：border:none; background:
+ * transparent; text-decoration:none 全部无害），UX 上 5 个底栏项视觉行为不变。
+ */
+function safeNavigate(navigate: (e?: MouseEvent) => Promise<void> | void, e: MouseEvent): void {
+  // 双保险：先拦下默认行为，再跑 vue-router。
+  e.preventDefault()
+  e.stopPropagation()
+  // navigate() 内部已经做了 guardEvent + router.push。
+  const result = navigate(e)
+  if (result && typeof (result as Promise<unknown>).then === 'function') {
+    void (result as Promise<unknown>).catch(() => undefined)
+  }
+}
 </script>
 
 <template>
@@ -20,12 +51,19 @@ const moreLabel = t('nav.more')
       v-for="item in items"
       :key="item.key"
       :to="item.to"
-      class="bottomnav__item"
-      :class="{ 'bottomnav__item--active': item.active }"
-      :aria-current="item.active ? 'page' : undefined"
+      custom
+      v-slot="{ href, navigate }"
     >
-      <AppIcon :name="item.icon" :size="22" />
-      <span class="bottomnav__label">{{ item.label }}</span>
+      <a
+        :href="href"
+        class="bottomnav__item"
+        :class="{ 'bottomnav__item--active': item.active }"
+        :aria-current="item.active ? 'page' : undefined"
+        @click="safeNavigate(navigate, $event)"
+      >
+        <AppIcon :name="item.icon" :size="22" />
+        <span class="bottomnav__label">{{ item.label }}</span>
+      </a>
     </RouterLink>
 
     <button type="button" class="bottomnav__item" :aria-label="moreLabel" @click="onMore">
