@@ -20970,3 +20970,51 @@ handler 行为：
 若用户要继续推进，可独立发起批 156/157。
 
 (e) **前端不动**：self-check 面板是 desktop Web 端（`web/src/views/SelfCheckView.vue`），不在 web-mobile 范围。本批纯后端 tenant 过滤，前端无改动。`web-mobile` 的孤儿棘轮（13→12 路线）已被批 117~152 清完，与本批无关。
+
+## 11.193 第一百五十五批 fix：handleStats 收口补全 —— 独立 verifier 抓到 4 SQL 只改 2 条
+
+### 一、交付与权限边界
+
+本节是批 155 的**收口补全**。批 155 commit `dff4d8b86` 自称"handleStats 改两个 SQL（summary + per-model）"，但独立 verifier 跑出真实问题：**handleStats 函数体里实际有 4 条 `FROM self_check_runs` 查询**，commit 只改了 2 条——`error_breakdown`（admin/self_check_handlers.go:886-889，error_type × COUNT 跨租户聚合）与 `trend`（L915-921，hour × COUNT × success_rate 跨租户节奏）**未加 tenant 过滤**。
+
+severity 中：不涉及 request_body / response_preview（那是主泄漏点，批 155 主体已闭合），但属跨租户聚合计数外露。tenant_admin 本应只看本租户的 error_type 分布与 hourly trend，结果拿到全租户聚合。
+
+### 二、verifier 怎么抓到的
+
+verifier 实测 `TestHandleStats_TenantFilterInSQL` 跑出来是 200 + 测试通过，但同时看到 pgxmock 输出：
+```
+WARN ... "all expectations were already fulfilled, call to method Query() was not expected"
+```
+连出两条——对应 error_breakdown 与 trend 的真实 DB 查询。测试 PASS 是因为 handler 在 `errRowsErr != nil` 时 graceful degrade（`slog.Warn` + section absent），200 仍发出去。**测试因 graceful degrade 而 vacuous**——pgxmock 默认 strict / ordered（`pgxmock/v4@v4.9.0/driver.go:35` `smock.ordered = true`），未 mock 的 query 抛"unexpected"错被 handler 当成"section 缺席"吞掉。
+
+**判据判别力的反向教训**：把 pgxmock 当 strict 锁"调用形态"是对的，但**handler 的 graceful degrade 路径**会把"未预期调用"翻译成"section 缺席 + 200"——测试在"无 SQL 调用"上 PASS、在"有 SQL 调用"上也 PASS。**vacuous pass** 不咬漏洞。修法：测试必须 mock 出 4 条 SQL 期望 + 4 个 `WithArgs(..., "acme")`，任何漏传 tenantID 实现会因 args 数对不上而红（不止缺 SQL 调用红）。
+
+### 三、修复（3 处）
+
+1. **`error_breakdown` SQL 加 `($2 = '' OR tenant_id = $2)` 过滤**（admin/self_check_handlers.go:888）—— `started_at` 是 $1，tenant_id 是 $2，GROUP BY 与 ORDER BY 保持。
+2. **`trend` SQL 加同款过滤**（L919）—— 同形态。
+3. **`TestHandleStats_TenantFilterInSQL` 加 2 个新 mock**：4 条 SQL 全 mock + 4 个 `WithArgs(..., "acme")`，从"vacuous"变"硬测"。任何漏 filter 的实现（无论哪一条）都会因 args 数对不上而红。
+
+★ **handleStats 其它 2 条 SQL**（summary + per-model）已在批 155 主体改过，本节**不**重做。
+
+### 四、验证
+
+- `go build ./admin/...` rc=0
+- `go vet ./admin/...` rc=0
+- `go test ./admin/... -run 'TestHandleStats_TenantFilter|TestHandleListRuns|TestHandleGetRun|TestHandleModels' -v` —— 6 条全过
+- `go test ./admin/... -count=1` —— 整组 admin + dashboardapi + dashboarddegrade + distlock rc=0（109s）
+
+### 五、判据判别力自检（修正后）
+
+`TestHandleStats_TenantFilterInSQL` 现在 4 个 mock 期望 + 4 个 `WithArgs(pgxmock.AnyArg(), "acme")`：
+- 任何漏 filter 一条 ⇒ 4 个 mock 期望耗尽，handleStats 后两条 query 落 pgxmock unexpected ⇒ `ExpectationsWereMet` 抛错 ⇒ 测试红
+- 任何漏传 tenantID ⇒ 4 个 `WithArgs` 收不到正确 args 数 ⇒ query 抛 bind 错 ⇒ 测试红
+- 任何把 `tenant_id = ''` 改成 `tenant_id IS NULL` 等形态漂移 ⇒ `ExpectQuery("tenant_id")` regex 不匹配 ⇒ 测试红
+
+### 六、不可证区分与未做
+
+(a) 批 154 verifier 抓到的 F1（"前端 0 命中" 字面错）与 F2（TestGetErrorsTrend_TenantAdminAndSuperAdminAllowed 用 nil db 没法验 gate 不挡）—— **不在本批范围**（commit 已落 `2f2c163e`）；如要补可在批 156 顺手改一行（不重做批 154）。
+
+(b) 5 条后端 issue 列表进度仍 3/5：批 153 sliding-window / 批 154 errors/trend+model-history / 批 155 selfCheck + 本节 fix。剩 operational + format_anomalies+model_integrity_events。
+
+(c) **批 155 的总 commit**仍是 `dff4d8b86`；本节 §11.193 是后续 fix 文档，归在新的 commit `XXX` 下，独立 small commit（不 amend 批 155 的 commit 历史，保持"verifier verdict → 修复"的可审计链条）。

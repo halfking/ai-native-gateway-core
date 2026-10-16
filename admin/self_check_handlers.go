@@ -883,10 +883,13 @@ func (h *SelfCheckHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Error breakdown.
+	// 2026-10-16 audit #155: tenant scope (handler has 4 SQL; commit #155
+	// originally only updated 2 — caught by independent verifier).
 	errRows, errRowsErr := h.db.Query(r.Context(), `
 		SELECT COALESCE(error_type,'none'), COUNT(*)
 		FROM self_check_runs WHERE started_at >= $1 AND status != 'success'
-		GROUP BY error_type ORDER BY COUNT(*) DESC`, since)
+		  AND ($2 = '' OR tenant_id = $2)
+		GROUP BY error_type ORDER BY COUNT(*) DESC`, since, tenantID)
 	type errStat struct {
 		ErrorType string `json:"error_type"`
 		Count     int    `json:"count"`
@@ -912,13 +915,15 @@ func (h *SelfCheckHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Trend (hourly buckets).
+	// 2026-10-16 audit #155: tenant scope (4th SQL in this handler, see comment above).
 	trendRows, trendRowsErr := h.db.Query(r.Context(), `
 		SELECT date_trunc('hour', started_at) AS ts,
 		COUNT(*) FILTER (WHERE status='success')::float / NULLIF(COUNT(*),0)::float AS success_rate,
 		COUNT(*) AS total
 		FROM self_check_runs WHERE started_at >= $1
+		  AND ($2 = '' OR tenant_id = $2)
 		GROUP BY date_trunc('hour', started_at)
-		ORDER BY ts`, since)
+		ORDER BY ts`, since, tenantID)
 	type trendPoint struct {
 		Timestamp   string  `json:"timestamp"`
 		SuccessRate float64 `json:"success_rate"`

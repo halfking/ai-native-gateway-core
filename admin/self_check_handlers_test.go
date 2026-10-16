@@ -476,22 +476,37 @@ func TestHandleGetRun_SuperAdminEmptyTenant_OK(t *testing.T) {
 }
 
 func TestHandleStats_TenantFilterInSQL(t *testing.T) {
+	// 2026-10-16 audit #155: handleStats has 4 SQL queries against
+	// self_check_runs — summary / per-model / error_breakdown / trend.
+	// Independent verifier caught that the original #155 commit only
+	// updated 2 of 4, leaving error_breakdown and trend unfiltered.
+	// This test now pins all 4 so a future scope-tight regression lights
+	// up the strict pgxmock "unexpected query" path.
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer mock.Close()
-	// Both summary and per-model queries must carry the tenant predicate.
+	// 1. summary
 	mock.ExpectQuery(`tenant_id`).
 		WithArgs(pgxmock.AnyArg(), "acme").
 		WillReturnRows(pgxmock.NewRows([]string{
 			"count", "s_count", "p_count", "f_count",
 		}).AddRow(0, 0, 0, 0))
+	// 2. per-model
 	mock.ExpectQuery(`tenant_id`).
 		WithArgs(pgxmock.AnyArg(), "acme").
 		WillReturnRows(pgxmock.NewRows([]string{
 			"model_name", "total", "s_count", "p_count", "f_count", "avg_lat",
 		}))
+	// 3. error_breakdown (must carry tenant_id too — formerly unscoped)
+	mock.ExpectQuery(`status != 'success'`).
+		WithArgs(pgxmock.AnyArg(), "acme").
+		WillReturnRows(pgxmock.NewRows([]string{"error_type", "count"}))
+	// 4. trend (must carry tenant_id too — formerly unscoped)
+	mock.ExpectQuery(`date_trunc`).
+		WithArgs(pgxmock.AnyArg(), "acme").
+		WillReturnRows(pgxmock.NewRows([]string{"ts", "success_rate", "total"}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/self-check/stats?range=24h", nil)
 	req = SetAuthContext(req, &AuthContext{Role: "tenant_admin", TenantID: "acme"})
@@ -501,7 +516,7 @@ func TestHandleStats_TenantFilterInSQL(t *testing.T) {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stats must hit SQL twice with tenant filter: %v", err)
+		t.Fatalf("stats must hit SQL 4× with tenant filter (any missing → unexpected call): %v", err)
 	}
 }
 
