@@ -78,11 +78,10 @@ import { join, relative } from 'node:path'
  * ⇒ 两条任一不成立，那条登记立刻红。
  */
 const KNOWN_DUPLICATES: readonly string[] = [
-  // 与 `dashboardBoard.ts` 同端点（`/api/admin/dashboard/operational`），
-  // 而后者已被 `DashboardOpsView.vue` 消费 ⇒ 功能已可达，本项是**重复件**不是缺口。
-  // 消解条件（写下来是为了为了让「什么时候能删」有答案）：
-  // 把这 42 个独有判据/常量逐条核实后并入 `dashboardBoard.ts`，删掉本模块。
-  'boardOperational',
+  // ★ 批 149 收口：原 `boardOperational`（与 `dashboardBoard.ts` 同打 `/api/admin/dashboard/operational`），
+  //   全仓 27 处外部 grep 0 命中（独有 42 个常量/判据自始未在生产路径被消费），
+  //   仅 spec 自身引用 ⇒ 直接删除本模块 + spec，登记清单同步清空。
+  // ⇒ 消解条件 = `web-mobile/src/api/boardOperational*.ts` 在工作树不存在 + 本清单不含这一行。
 ]
 
 /**
@@ -241,9 +240,8 @@ function shellNotInstalledGiven(
 //   ⇒ 这条立刻红。⇒ ★ 所以**留一个空数组**，不要删变量，也不要改成「无孤儿则跳过」。
 const KNOWN_ORPHANS: readonly string[] = [
   // ★ 故意为空：当前没有「有 UI 入口才能算完成」的真缺口。
-  //   （`boardOperational` 在 KNOWN_DUPLICATES —— 它与 dashboardBoard 打同一端点，
-  //     已消解，是重复件不是真缺口；`nativeTransport` 在 KNOWN_INFRASTRUCTURE
-  //     —— 零端点的非页面型基础设施。）
+  //   （`nativeTransport` 在 KNOWN_INFRASTRUCTURE —— 零端点的非页面型基础设施。
+  //   原 KNOWN_DUPLICATES 那条 `boardOperational` 在批 149 已合并删模块、清出本登记。）
 ]
 
 /**
@@ -602,7 +600,8 @@ describe('孤儿棘轮', () => {
 
   it('★★ 每一项登记的重复件**确实与某个已可达模块打同一个端点**（否则例外条款是免罪）', () => {
     // ★★★ 这条是第二类登记的**承重判据**：没有它，「重复件」就成了万能借口。
-    expect(KNOWN_DUPLICATES.length).toBeGreaterThan(0)
+    // ★ 批 149 收口：原 `boardOperational` 合并删模块后清单已清空
+    //   ⇒ 改用 `for` 循环，0 项时整条 trivial 通过；新登记必须照样自证。
     for (const name of KNOWN_DUPLICATES) {
       expect(currentOrphans(), `${name} 已不在孤儿集合里 ⇒ 这条登记该删了`).toContain(name)
       expect(duplicateIsProven(name), `${name} 没有已可达模块与它同端点 ⇒ 它是功能缺口，不是重复件`).toBe(true)
@@ -613,9 +612,11 @@ describe('孤儿棘轮', () => {
     for (const name of KNOWN_DUPLICATES) expect(KNOWN_ORPHANS).not.toContain(name)
   })
 
-  it('★★ 已消解的重复件要**移出**登记（boardOperational 被合并后这条会红）', () => {
+  it('★★ 已消解的重复件要**移出**登记（合并/删模块后这条逐条校验）', () => {
     // ★ 消解条件写在 KNOWN_DUPLICATES 的注释里；这条逼着人手工删那一行 ——
     //   与「接线一个孤儿就删一行」同一套纪律，只是对象换了。
+    // ★ 批 149 收口：`boardOperational` 合并 ⇒ 这条循环 0 项即通过；
+    //   新登记后**任一项不**在可达集合里立刻红。
     for (const name of KNOWN_DUPLICATES) expect(reachableFromUi().has(name)).toBe(false)
   })
 

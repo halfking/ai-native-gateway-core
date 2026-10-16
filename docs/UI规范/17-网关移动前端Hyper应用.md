@@ -20654,3 +20654,30 @@ SanitizeRulesView 新增 sr-params-section 卡片：仅 manager 渲染。header 
 最终顺序链 rc0：10 spec 9040/1skipped、find web-mobile -name '*.tsbuildinfo' -not -path '*/node_modules/*' -delete 后 npx vue-tsc -b 强制重建过、CSS/touch/i18n(两语种各 3903 键，键集一致且非空)/comment 四门 rc0、gate:selftest 5/5、build rc0、十连跑 10/10 全绿。批148 mutation JSON 与结果摘要均落在 .audit148 未纳入产品提交。八产品文件含 i18n/sr/en 三个 shared 编辑无 U+FFFD/NUL，变异前后字节级 sha256 一致；共享依赖 node_modules 是 symlink 不删并发缓存；vue-tsc 用 --force 强制重建才称冷类型检查。批前后 platformSettings.ts 与 SanitizeRulesView.vue 共 200+ 字节差异，全部在 mutate 测试后 byte-by-byte 还原回原状态。
 
 **不可证区分**与**未做**：(a) history 端点、tenantSettings(Q3 super_admin 与 tenant_admin 之间的猜测) 未复制，与批144-147一致仅交付平台范围；(b) settingsPut 内部 audit/dangerLevel/confirm_token 逻辑未在前端暴露，dangerLevel 由服务端负责；(c) 未改 Go 一字；(d) 重复造轮子已查批 117 同款 `go/ast` 量具类不存在此场景。历史 ComplianceHitsView/RoutingOptView flaky 仍未复现，未复现 ≠ 已修复；live HTTP、真实浏览器/原生壳或深链标题端到端未单独验证。提交推送仍需精确最终 SHA 独立审查、最新 fetch 及远端包含关系，本节检查通过不代表上线。
+
+## 11.186 第一百四十九批：孤儿棘轮第二类登记清空 —— 合并 boardOperational，删整模块 + 整 spec
+
+### 一、交付与权限边界
+
+本批在第一百二十批登记的 KNOWN_DUPLICATES（重复件登记）里清掉 `boardOperational` 这一行。批148父 25da4848 已推送，origin/main 后续推进到 bc59a39d0，本批从该父建立独立 /tmp/co149-wt。事件复核、四 GET、草稿验证、发布回滚、参数写侧已在批144-148完成；本批不动产品功能，只做一次"自始未在生产路径被消费的孤儿"消解。
+
+四路取证：boardOperational.ts 与 dashboardBoard.ts 都打 `/api/admin/dashboard/operational`（前者 :223、后者 :95），路径字面量一字不差；DashboardOpsView.vue 唯一从 `@/api/dashboardBoard` 导入 `fetchDashboardOperational`（:104）；boardOperational.ts 的 27 个 export（常量 16、判据 9、interface 4、function 2）在全仓 grep 外部引用 0 命中 —— 唯一外部引用是它自己的 test.ts。42 个"独有判据/常量"在仓库里**只活过 75 批创建时的片刻**，到本批 149 时仍无任何调用方。与 dashboardBoard 内部的 operationalDiscoveryNeverRan / operationalSelfCheckMeaningless / operationalAnyDegraded 三个 helper（已稳定在 DashboardOpsView 里被消费）形成"一个被用、一个未用"的对比，足以证：合并而非迁并。
+
+### 二、消解动作
+
+不再走"逐条并入 dashboardBoard.ts"（`KNOWN_DUPLICATES` 注释里写的消解条件 —— 当时是防御性写法，怕 42 个里有真在用的），实测是 0 在用 ⇒ 整模块 + 整 spec 走 mavis-trash 进回收站。两份登记清单同步收紧：
+- `KNOWN_DUPLICATES` 数组由 `['boardOperational']` 改为 `[]`，注释段改写为"批 149 收口：合并 + 删模块 + 删登记"；
+- `KNOWN_ORPHANS` 数组仍为空，注释段同步把"`boardOperational` 在 KNOWN_DUPLICATES"改成"原 KNOWN_DUPLICATES 那条在批 149 已合并删模块、清出本登记"。
+- `orphanLedger.spec.ts` 两条"重复件承重判据"自适：
+  - 第 601-608 行的 `expect(KNOWN_DUPLICATES.length).toBeGreaterThan(0)` 删去（0 项时这条**反向**护栏才合理），`for` 循环 0 项时 trivial 通过，新登记时仍按项自证；
+  - 第 616-620 行的"已消解的重复件要移出登记"循环对 0 项天然通过，注释加"批 149 收口：循环 0 项即通过"。
+
+`SubscriptionTiersView.spec.ts:550` 的 `expect(listOf('KNOWN_DUPLICATES')).toEqual(['boardOperational'])` 改为 `toEqual([])`，上方注释同步更新。
+
+### 三、判据、返工与限制
+
+新增/改动测试 = 0 条 —— 本批只动 `orphanLedger.spec.ts` + `SubscriptionTiersView.spec.ts` 的"对清单内容的期望"两处。删除 `boardOperational.test.ts` 自身 81 条（delta -81）。批149前 9 spec 9045，批149后 9 spec 8964 + 1 skipped。orphanLedger.spec.ts 自身 37→37（自证条数不变，仅 2 条 `for` 循环由"非空校验"放宽为"0 项即过"）；SubscriptionTiersView.spec.ts 自身 36→36。**没有新增变异台**：本批没有新代码逻辑，变异台只盯代码形态，登记清单的字面量已由 spec 内的"清单本身无重复"+"每项都真在 api 模块里"两条护栏（line 622-628）守。`boardOperational.ts` 的 16 个常量 + 9 个判据 + 4 个 interface + 2 个 function 字面删除 = 真零回归面（grep 外部引用 0 命中），不是"被 merge"。
+
+最终顺序链 rc0：235 spec files 8964/1skipped、find web-mobile -name '*.tsbuildinfo' -not -path '*/node_modules/*' -delete 后 npx vue-tsc -b 强制重建过、CSS/touch/i18n(两语种各 3903 键，键集一致且非空)/comment 四门 rc0、gate:selftest 5/5、build rc0、目标两 spec 十连跑 10/10 全绿。批149 mutation JSON 与结果摘要均落在 .audit149 未纳入产品提交。三个产品文件含 spec 二改无 U+FFFD/NUL，变异前后字节级 sha256 一致；共享依赖 node_modules 是 symlink 不删并发缓存；vue-tsc 用 --force 强制重建才称冷类型检查。
+
+**未做**与**不可证区分**：(a) `dashboardBoard.ts` 的 operationalDiscoveryNeverRan / operationalSelfCheckMeaningless / operationalAnyDegraded 与原 `boardOperational.ts` 的同语义 helper 名字不同、行为略有差异（前者更窄，后者更宽），本批**不**做 1:1 替换（"用未用过的死代码替换已用过的窄代码"是净身，不是补完），(b) Go 一字未改，(c) 后端租户/角色门控 5 条仍未动（产品决策问题，非本批范围），(d) 壳层缺口 `meta.requiresRole` 消费 + format-anomalies / model-integrity-drift 视图内兜底仍未做（属主决策问题，非本批范围）。历史 ComplianceHitsView/RoutingOptView flaky 仍未复现，未复现 ≠ 已修复。提交推送仍需精确最终 SHA 独立审查、最新 fetch 及远端包含关系，本节检查通过不代表上线。

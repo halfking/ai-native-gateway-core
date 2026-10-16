@@ -547,7 +547,9 @@ describe('⑦ 接线与编码门', () => {
     // ★★ 反向护栏：它是**功能缺口**，不是重复件（端点与 dashboardBoard 不重合）。
     //   若哪天有人图省事把它登记进 KNOWN_DUPLICATES 免罪，这条立刻红。
     expect(listOf('KNOWN_DUPLICATES')).not.toContain('subscriptionTiers')
-    expect(listOf('KNOWN_DUPLICATES')).toEqual(['boardOperational'])
+    // ★★★ 批 149 收口：合并 boardOperational 后重复件清单已清空
+    //   （孤儿登记从「无真缺口 + 一条重复件 + 一条基础设施」降到「无真缺口 + 一条基础设施」）。
+    expect(listOf('KNOWN_DUPLICATES')).toEqual([])
   })
 
   it('⑦-5 ★★★ 编码门：视图与本文件不得含 U+FFFD / NUL', () => {
