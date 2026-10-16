@@ -20776,3 +20776,58 @@ git worktree list 在清理前的输出确认了**没有** 任何 worktree 上�
 最终顺序链 rc0：git worktree list 3 行（主 + co151 + 211-routing-circuit-auth），全 clean。git status 4 个工作树都是 detached HEAD 或 feature branch，**无**主仓半路脏改。
 
 **未做**与**不可证区分**：(a) **不动**主仓 main 的 254 个 uncommitted 改动（其它会话工作）。(b) `/private/tmp` 里的 `co117-mut` / `co120-doc` / `co120-mut` / `co121-doc` / `co121-mut` 等**scratch 目录**（不是 worktree，不在 `git worktree list` 输出里）—— 共约 6 个，加起来 < 1MB，但**不是本批的清理范围**，留作下一轮如果需要再单独起批（这些 scratch 是哪次作业留下的，git 元数据没有线索，需要先溯源再决定删留）。(c) `.worktrees/211-routing-circuit-auth` 是其它分支的 worktree（`fix/211-routing-circuit-auth`），**不删**——不属于 co118~co150 范围。(d) 提交推送仍需精确最终 SHA 独立审查、最新 fetch 及远端包含关系，本节检查通过不代表上线。
+
+## 11.190 第一百五十三批：后端 `/api/credentials/sliding-window` 加租户条件 —— 5 条后端安全 issue 里 ★ 最重的一条
+
+### 一、交付与权限边界
+
+本批**破例动 Go 后端**。批 117~152 全在 web-mobile 前端域内；本批由属主决策拍板，把超范围的后端待办里 ★ 最重的一条（任何通过认证的主体报出别的租户 `credential_id` 就能读到逐次调用明细）落进批 153。
+
+落点四个：
+1. `admin/credential_monitor.go::slidingWindowQuery()` —— 视图长窗路径（>120min）WHERE 加 `AND ($5 = '' OR tenant_id = $5)`
+2. `admin/credential_monitor.go::slidingWindowHotQuery()` —— hot 快路径（≤120min）外层 WHERE 加同款；两臂 subquery 必须显式投影 `tenant_id AS tenant_id`（UNION ALL 列结构一致才能让外层 WHERE 引用 `cand.tenant_id`）
+3. `admin/credential_monitor.go::slidingWindowFromRequestLogs(...)` —— 签名加 `tenantID string`，`db.Query` 多传 $5
+4. `admin/credential_monitor_sliding_window.go::loadSlidingWindowEntries(...)` + `handleSlidingWindowBatch` —— 同款签名扩；batch 端点在 worker 调度**之前**算一次 `tenantID` + `isTenantAdmin`（caller 端，单批单租户键），不再 per-item 算
+
+**Redis 端是另一类问题**：recorder 既有 key 是 `llmgw:callhist:{credentialID}:{model}`，**没有** tenant_id 字段；任何改造（改 key 形状 / 给 CallEntry 加 tenant_id / 换存储形态）都要么数据迁移要么丢旧数据。本批选最窄路径：**tenant_admin 调用跳过 Redis 整段**（recorder.GetRecent 不调用），强制走 `_request_logs` 回退（回退路径才带 tenant_id 过滤）。super_admin / admin_key 保持 Redis 快路径不变（前者要看全租户，后者是 legacy super_admin）。这等于让 tenant_admin 永久走 DB 热路径——252 真库测 hot 路径 0.6ms，batch 端点 8 worker × 100 pair × 0.6ms ≈ 480ms，远低于 15s timeout，性能可承受。
+
+**前端不动**：批 115 SlidingWindowView 已加 `requiresRole: super_admin` + 视图内 `hasRole` 兜底（RestrictedPageView FAMILY §11.150）。tenant_admin 角色的用户**根本看不到抽屉席**，深链也兜在 RestrictedPageView；后端补上后，唯一可观察变化是：万一 shell 兜底被绕过，租户键不同也不会拿到数据，会返空 entries（DB 0 行）或 DB 失败（Redis skipped + DB missing → 503）。前端不动。
+
+### 二、修复为什么不是"做更狠的 cross-check"
+
+跟 5 条同族后端 issue 比，sliding-window 的特殊性：
+- DB 视图本身有 `tenant_id` 列（已证：`request_logs_with_current_month` 投影里 `t.tenant_id::text AS tenant_id`），SQL 层加 `($5 = '' OR tenant_id = $5)` 即可，**不**需要额外 join model_offers / credentials 拉新形态
+- 项目内已有同款范式（`admin/credential_monitor.go:357/406/1411/1434/1605` 一系列 `($N = '' OR c.tenant_id = $N)`），本批只是把范式搬进 sliding window 两路
+- 行为变化只发生在 tenant_admin 角色，且 tenant_admin 在 UI 上根本到不了这个端点（抽屉席收口），所以跨租户 probe 真正能利用的入口只剩 shell 兜底被绕过这一条
+
+更狠的 cross-check（拿 credential_id 反查 model_offers.tenant_id，**不**匹配就 403）的代价是：每请求多一次 DB round-trip + 行为变成「跨租户 403」而非「跨租户空 entries」——后者符合 codebase 「silent fail」传统（参考 `runModelHistory`：`($4 = '' OR mpr.tenant_id = $4)` 同样不返 403）。本批优先**修真门**不动 UX。
+
+### 三、测试与判据
+
+新加 5 条测试（与现有 7 条共存）：
+- `TestSlidingWindowSQL_ContainsTenantFilter` —— 直接断言两个 SQL 函数文本里都有 `($5 = '' OR tenant_id = $5)`；任何漂移（节间被人改成 `$4 = ''` 或被删掉）这条用例会立刻红
+- `TestSlidingWindowBatch_TenantAdminSkipsRedis` —— seedSlidingWindowRecorder 种 5 条；tenant_admin 调 batch，**断言每个 item 的 stats == nil 且 error != ""**（DB missing 因为 seed 出来的 handler 没装 db），证明 Redis 完全没被读
+- `TestSlidingWindowBatch_SuperAdminUsesRedis` —— 同样 seed；super_admin 调 batch，stats != nil 且 source = redis，证明 super_admin 路径不动
+- `TestHandleSlidingWindow_TenantAdminSkipsRedis` —— 单点 GET 同款断言
+- `TestHandleSlidingWindow_SuperAdminUsesRedis` —— 单点 GET 同款反断言
+
+真库回归测试 `admin/sliding_window_realdb_test.go` **必须**同步更新（5 处 `pool.Query` 调用都加第 5 个参数 `""`）——加 `$5` 占位不补调用会 `bind count mismatch`。已逐处改完。
+
+★ **顺手抓出来一个老 nil panic**：`handleSlidingWindow` 原本没有 `m.h.db == nil` guard，Redis 挂了 + DB 也没装的环境会直接 nil deref panic（batch handler 有同款 guard）。本批借新测试触发，把 guard 补上（写 `503 database not configured`）。这是本批的"路线上副作用"——不是新债，是新测试**专门**设计来验证 Redis 跳过，碰到 nil DB 才暴露的连带缺口。
+
+### 四、验证
+
+- `go build ./admin/... ./credentialhealth/...` rc=0（vendor warnings 与本批无关）
+- `go vet ./admin/... ./credentialhealth/...` rc=0
+- `go test ./credentialhealth/...` rc=0（recorder 未被改）
+- `go test ./admin/... -run 'SlidingWindow|TenantGuard' -v` —— 7 旧 + 5 新 = 12 条全过
+- `go test ./admin/... -count=1` —— 整组 admin + dashboardapi + dashboarddegrade + distlock rc=0（含 4 个子包 0 失败；112s 跑完）
+- goLineRef baseline 漂移未跑（与本批范围无关，留在 §11.191 或后续批处理）
+
+### 五、不可证区分与未做
+
+(a) Redis 端**真正**的租户隔离——key 形状不带 tenant_id，本批选"tenant_admin 跳过 Redis"是**最窄**路径；要做真隔离要么改 key（数据迁移 2h TTL 不重）要么给 CallEntry 加 tenant_id（数据迁移）。本批明确**不**做这两条，留作可能的后续批（优先级低于 §11.190 的 5 条姊妹）。
+
+(b) batch 端点 per-item tenant 验证——本批信任 caller 端 `tenant_admin` 只能查自己的租户，前端没有 per-item tenant 注入入口；同源判定（caller tenant vs item tenant）已被前端 §11.115 super_admin only 收口，跨租户 probe 实际不可达。
+
+(c) 视图路径的 EXPLAIN 计划与 hot 路径 **同形态**——新增 `$5` 是个常量表达式，PG 优化器会把它折叠成 `tenant_id = 'tenant-x'`（plan 形态不变）。但**没有真库 EXPLAIN 实证**（没接 TEST_DATABASE_URL）；`TestCredentialDrawerWindow_RealDB` 已加第 5 参数 `""`，跑起来会验证 hot/视图两路文本可解析（已断言 `request_logs_with_current_month` 视图形态未破坏）；不验证计划，需真库 CI 一遍。

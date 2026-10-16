@@ -115,13 +115,13 @@ func TestCredentialDrawerHotWindow_RealDB(t *testing.T) {
 		t.Skip("hot 双写表不在库（迁移未应用），跳过")
 	}
 
-	rows, err := pool.Query(ctx, slidingWindowHotQuery(), 0, "__no_such_model__", "5", 50)
+	rows, err := pool.Query(ctx, slidingWindowHotQuery(), 0, "__no_such_model__", "5", 50, "")
 	if err != nil {
 		t.Fatalf("hot drawer window query failed under SimpleProtocol: %v", err)
 	}
 	slidingWindowScanRows(t, rows)
 
-	plan := slidingWindowExplainPlan(t, pool, slidingWindowHotQuery(), 0, "__no_such_model__", "5", 50)
+	plan := slidingWindowExplainPlan(t, pool, slidingWindowHotQuery(), 0, "__no_such_model__", "5", 50, "")
 	if strings.Contains(plan, "request_logs_with_current_month") {
 		t.Fatalf("hot 快路径计划触碰 canonical 视图（应只读 hot 双写表）:\n%s", plan)
 	}
@@ -161,7 +161,7 @@ func TestCredentialDrawerWindowPathsAgree_RealDB(t *testing.T) {
 
 	fetch := func(query string) map[string]struct{} {
 		t.Helper()
-		rows, err := pool.Query(ctx, query, 0, "__no_such_model__", "30", 50)
+		rows, err := pool.Query(ctx, query, 0, "__no_such_model__", "30", 50, "")
 		if err != nil {
 			t.Fatalf("path query failed: %v", err)
 		}
@@ -214,7 +214,7 @@ func TestCredentialDrawerWindow_RealDB(t *testing.T) {
 		t.Skip("request_logs_with_current_month 不存在，跳过")
 	}
 
-	rows, err := pool.Query(ctx, slidingWindowQuery(), 0, "__no_such_model__", "72", 50)
+	rows, err := pool.Query(ctx, slidingWindowQuery(), 0, "__no_such_model__", "72", 50, "")
 	if err != nil {
 		t.Fatalf("drawer window query failed under SimpleProtocol: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestCredentialDrawerWindow_RealDB(t *testing.T) {
 		t.Skip("729 credential_ts 表达式索引不在库（迁移未应用），跳过计划断言")
 	}
 
-	plan := slidingWindowExplainPlan(t, pool, slidingWindowQuery(), 0, "__no_such_model__", "72", 50)
+	plan := slidingWindowExplainPlan(t, pool, slidingWindowQuery(), 0, "__no_such_model__", "72", 50, "")
 	if !strings.Contains(plan, "_credential_ts") {
 		t.Fatalf("72h drawer plan 未走 729 credential_ts 表达式索引（计划退回顺序/裸 ts 扫描）:\n%s", plan)
 	}

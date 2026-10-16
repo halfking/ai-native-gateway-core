@@ -701,6 +701,13 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 // recorder is unavailable (or returns no data) we fall back to a direct
 // _request_logs query. The response carries `source` ("redis" or
 // "_request_logs") so the UI can show where the data came from.
+//
+// 2026-10-16 audit #153: tenant isolation. Per-call detail is sensitive — any
+// caller with a valid credential_id would otherwise read every other tenant's
+// call timeline. tenant_admin is scoped to its own tenant_id; super_admin /
+// admin_key keep the unfiltered (cross-tenant) view. The Redis recorder has
+// no tenant tag on its entries, so for tenant_admin callers we force the
+// _request_logs fallback which carries the tenant_id filter.
 func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -730,6 +737,13 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 		return
 	}
 
+	// Tenant scope (audit #153): tenant_admin → own tenant, others → "" (see all).
+	tenantID := ""
+	if IsTenantAdmin(r) {
+		tenantID = GetTenantID(r)
+	}
+	isTenantAdmin := IsTenantAdmin(r)
+
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -739,15 +753,20 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 	// null) when there are no entries — otherwise the frontend's
 	// windowEntries.length throws "Cannot read properties of null".
 	entries := make([]credentialhealth.CallEntry, 0)
-	if m.recorder != nil && m.recorder.Enabled() {
+	if !isTenantAdmin && m.recorder != nil && m.recorder.Enabled() {
 		since := time.Now().Add(-time.Duration(minutes) * time.Minute)
 		entries, _ = m.recorder.GetRecent(ctx, credentialID, model, since)
 	}
 
-	// ── Fallback: _request_logs (when Redis is down or empty) ────────────
+	// ── Fallback: _request_logs (when Redis is down or empty, or when we
+	// skipped the Redis path for tenant isolation) ───────────────────────
 	if len(entries) == 0 {
 		source = "_request_logs"
-		rlEntries, err := m.slidingWindowFromRequestLogs(ctx, credentialID, model, minutes, limit)
+		if m.h == nil || m.h.db == nil {
+			writeError(w, http.StatusServiceUnavailable, "database not configured")
+			return
+		}
+		rlEntries, err := m.slidingWindowFromRequestLogs(ctx, credentialID, model, minutes, limit, tenantID)
 		if err != nil {
 			writeInternalErr(w, "failed to get window", err)
 			return
@@ -823,6 +842,11 @@ func slidingWindowQuery() string {
 		  -- so a plain = misses most rows.
 		  AND lower(COALESCE(outbound_model, client_model)) = lower($2)
 		AND ts > NOW() - ($3 || ' minutes')::interval
+		  -- 2026-10-16 audit #153: tenant isolation. Empty $5 (super_admin /
+		  -- admin_key / unauth probe) means "see all tenants"; otherwise the
+		  -- view's tenant_id must match. Without this any caller holding a
+		  -- valid credential_id would read every other tenant's call timeline.
+		  AND ($5 = '' OR tenant_id = $5)
 		ORDER BY ts DESC
 		LIMIT $4
 	`
@@ -847,6 +871,7 @@ func slidingWindowHotQuery() string {
 		FROM (
 		    SELECT t.request_id, t.ts, t.success, t.latency_ms, t.error_kind,
 		           t.model AS outbound_model, d.client_model,
+		           t.tenant_id AS tenant_id,
 		           CASE WHEN t.credential_id ~ '^[0-9]+$' THEN t.credential_id::bigint END AS credential_id
 		    FROM session_turns_hot t
 		    LEFT JOIN session_turn_details_hot d
@@ -855,7 +880,8 @@ func slidingWindowHotQuery() string {
 		     AND d.partition_date = t.partition_date
 		    UNION ALL
 		    SELECT r.request_id, r.ts, r.success, r.latency_ms, r.error_kind,
-		           r.outbound_model, r.client_model, r.credential_id
+		           r.outbound_model, r.client_model, r.credential_id,
+		           r.tenant_id AS tenant_id
 		    FROM _request_logs_hot r
 		    WHERE NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = r.request_id)
 		) cand
@@ -864,6 +890,12 @@ func slidingWindowHotQuery() string {
 		  -- 可能不一致（"MiniMax-M3" vs "minimax-m3"）。
 		  AND lower(COALESCE(outbound_model, client_model)) = lower($2)
 		  AND ts > NOW() - ($3 || ' minutes')::interval
+		  -- 2026-10-16 audit #153: tenant isolation. Empty $5 (super_admin /
+		  -- admin_key) means "see all tenants"; otherwise the hot 表的
+		  -- tenant_id 必须匹配。两臂 SELECT 必须显式投影 tenant_id（hot
+		  -- 表原生列名同名，UNION ALL 要求两臂列结构一致才能在外层 WHERE
+		  -- 引用 cand.tenant_id）。
+		  AND ($5 = '' OR tenant_id = $5)
 		ORDER BY ts DESC
 		LIMIT $4
 	`
@@ -874,12 +906,18 @@ func slidingWindowHotQuery() string {
 // returns no entries. Window-gated: ≤ slidingWindowHotMaxMinutes reads the
 // hot dual-write tables (index descent, ~sub-ms); longer windows read the
 // canonical view (slidingWindowQuery, 729-serviced) which sees full history.
-func (m *CredentialMonitorHandlers) slidingWindowFromRequestLogs(ctx context.Context, credentialID int, model string, minutes, limit int) ([]credentialhealth.CallEntry, error) {
+//
+// 2026-10-16 audit #153: tenantID is the caller's tenant scope ("" for
+// super_admin / admin_key — see all; non-empty for tenant_admin — own only).
+// threading tenantID into $5 of the SQL is the load-bearing defence: any
+// caller holding a valid credential_id would otherwise read every other
+// tenant's per-call detail.
+func (m *CredentialMonitorHandlers) slidingWindowFromRequestLogs(ctx context.Context, credentialID int, model string, minutes, limit int, tenantID string) ([]credentialhealth.CallEntry, error) {
 	q := slidingWindowQuery()
 	if minutes <= slidingWindowHotMaxMinutes {
 		q = slidingWindowHotQuery()
 	}
-	rows, err := m.h.db.Query(ctx, q, credentialID, model, fmt.Sprintf("%d", minutes), limit)
+	rows, err := m.h.db.Query(ctx, q, credentialID, model, fmt.Sprintf("%d", minutes), limit, tenantID)
 	if err != nil {
 		return nil, err
 	}

@@ -20,11 +20,18 @@ const (
 // loadSlidingWindowEntries loads call entries for one credential×model pair.
 // Primary: Redis recorder; fallback: request_logs. Always returns a non-nil
 // entries slice so JSON never serializes to null.
+//
+// 2026-10-16 audit #153: tenantID + isTenantAdmin thread the caller's tenant
+// scope down to the SQL filter. Redis entries carry no tenant tag, so for
+// tenant_admin callers we skip the Redis fast path and force the DB fallback
+// (which carries `AND ($5 = '' OR tenant_id = $5)`).
 func (m *CredentialMonitorHandlers) loadSlidingWindowEntries(
 	ctx context.Context,
 	credentialID int,
 	model string,
 	minutes, limit int,
+	tenantID string,
+	isTenantAdmin bool,
 ) (entries []credentialhealth.CallEntry, source string, err error) {
 	if m.recorder == nil && m.redisClient != nil {
 		m.recorder = credentialhealth.NewRecorder(m.redisClient, 2*time.Hour, 100)
@@ -32,7 +39,7 @@ func (m *CredentialMonitorHandlers) loadSlidingWindowEntries(
 
 	source = "redis"
 	entries = make([]credentialhealth.CallEntry, 0)
-	if m.recorder != nil && m.recorder.Enabled() {
+	if !isTenantAdmin && m.recorder != nil && m.recorder.Enabled() {
 		since := time.Now().Add(-time.Duration(minutes) * time.Minute)
 		entries, _ = m.recorder.GetRecent(ctx, credentialID, model, since)
 	}
@@ -42,7 +49,7 @@ func (m *CredentialMonitorHandlers) loadSlidingWindowEntries(
 		if m.h == nil || m.h.db == nil {
 			return entries, source, fmt.Errorf("database not configured")
 		}
-		rlEntries, rlErr := m.slidingWindowFromRequestLogs(ctx, credentialID, model, minutes, limit)
+		rlEntries, rlErr := m.slidingWindowFromRequestLogs(ctx, credentialID, model, minutes, limit, tenantID)
 		if rlErr != nil {
 			return nil, source, rlErr
 		}
@@ -154,6 +161,14 @@ func (m *CredentialMonitorHandlers) handleSlidingWindowBatch(w http.ResponseWrit
 		work = append(work, pair{idx: i, credentialID: it.CredentialID, model: it.Model})
 	}
 
+	// 2026-10-16 audit #153: compute tenant scope once for the whole batch —
+	// caller-side, not per-item (the batch is one caller, many pairs).
+	tenantID := ""
+	isTenantAdmin := IsTenantAdmin(r)
+	if isTenantAdmin {
+		tenantID = GetTenantID(r)
+	}
+
 	jobs := make(chan pair, len(work))
 	for _, job := range work {
 		jobs <- job
@@ -173,7 +188,7 @@ func (m *CredentialMonitorHandlers) handleSlidingWindowBatch(w http.ResponseWrit
 		go func() {
 			defer wg.Done()
 			for job := range jobs {
-				entries, source, err := m.loadSlidingWindowEntries(ctx, job.credentialID, job.model, minutes, slidingWindowBatchLimit)
+				entries, source, err := m.loadSlidingWindowEntries(ctx, job.credentialID, job.model, minutes, slidingWindowBatchLimit, tenantID, isTenantAdmin)
 				if err != nil {
 					results[job.idx].Error = err.Error()
 					continue

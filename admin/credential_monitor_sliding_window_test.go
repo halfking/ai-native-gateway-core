@@ -297,3 +297,132 @@ func TestSlidingWindowJSONEntries_EmptyArrayWhenIncluded(t *testing.T) {
 		t.Fatalf("newest-first truncate: %+v", got)
 	}
 }
+
+// 2026-10-16 audit #153: tenant isolation tests.
+//
+// SQL text must carry the tenant filter (the load-bearing defence: any caller
+// holding a valid credential_id would otherwise read every other tenant's
+// per-call detail). The two handler paths (single GET /api/credentials/sliding-
+// window and POST /api/credentials/sliding-window/batch) must both thread the
+// caller's tenant scope down to the SQL, AND must skip the Redis fast path
+// for tenant_admin callers (Redis entries carry no tenant tag).
+func TestSlidingWindowSQL_ContainsTenantFilter(t *testing.T) {
+	// Both SQL builders must reference the 5th bind as the tenant scope and
+	// the canonical form must be the same one the codebase uses elsewhere
+	// (e.g. runModelHistory at admin/credential_monitor.go:1411/1434):
+	//   ($N = '' OR tenant_id = $N)
+	//
+	// Empty string means "no filter" (super_admin / admin_key / unauth probe);
+	// any other value is the caller's tenant_id (tenant_admin).
+	for _, q := range []string{slidingWindowQuery(), slidingWindowHotQuery()} {
+		if !strings.Contains(q, "($5 = '' OR tenant_id = $5)") {
+			t.Fatalf("sliding-window SQL missing tenant filter:\n%s", q)
+		}
+	}
+}
+
+func TestSlidingWindowBatch_TenantAdminSkipsRedis(t *testing.T) {
+	// tenant_admin caller, Redis seeded with valid entries, NO database.
+	// The handler must skip the Redis fast path (entries carry no tenant
+	// tag) and surface a per-item DB error rather than stats. Cross-tenant
+	// probes must NOT get stats from Redis.
+	m := seedSlidingWindowRecorder(t, 5)
+	body := `{"minutes":5,"items":[{"credential_id":17,"model":"claude-sonnet-5"}]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/credentials/sliding-window/batch", strings.NewReader(body))
+	req = setTestRequestContext(req, "tenant_admin", "tenant-a", "tenant-admin-user")
+	m.handleSlidingWindowBatch(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Results []struct {
+			Stats   map[string]any               `json:"stats"`
+			Entries []credentialhealth.CallEntry `json:"entries"`
+			Error   string                       `json:"error"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Results) != 1 {
+		t.Fatalf("results=%d", len(resp.Results))
+	}
+	// Cross-tenant probe must NOT have been served from Redis.
+	if resp.Results[0].Stats != nil {
+		t.Fatalf("tenant_admin must not see Redis stats: %+v", resp.Results[0].Stats)
+	}
+	if resp.Results[0].Error == "" {
+		t.Fatalf("tenant_admin without DB must surface per-item error, got: %+v", resp.Results[0])
+	}
+}
+
+func TestSlidingWindowBatch_SuperAdminUsesRedis(t *testing.T) {
+	// super_admin caller, Redis seeded with valid entries, NO database.
+	// Existing behaviour preserved: super_admin still reads from Redis
+	// (admin_key and super_admin keep the cross-tenant view).
+	m := seedSlidingWindowRecorder(t, 5)
+	body := `{"minutes":5,"items":[{"credential_id":17,"model":"claude-sonnet-5"}]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/credentials/sliding-window/batch", strings.NewReader(body))
+	req = setTestRequestContext(req, "super_admin", "", "super-admin-user")
+	m.handleSlidingWindowBatch(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Results []struct {
+			Stats   map[string]any               `json:"stats"`
+			Entries []credentialhealth.CallEntry `json:"entries"`
+			Error   string                       `json:"error"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Results) != 1 || resp.Results[0].Error != "" {
+		t.Fatalf("super_admin should still get Redis stats: %+v", resp.Results)
+	}
+	if resp.Results[0].Stats == nil {
+		t.Fatal("super_admin expected Redis-backed stats")
+	}
+}
+
+func TestHandleSlidingWindow_TenantAdminSkipsRedis(t *testing.T) {
+	// Same defence on the single GET endpoint: tenant_admin must NOT be
+	// served from Redis. With no DB, handler returns 500 (writeInternalErr
+	// for the DB fallback failure) rather than leaking Redis entries.
+	m := seedSlidingWindowRecorder(t, 5)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/credentials/sliding-window?credential_id=17&model=claude-sonnet-5", nil)
+	req = setTestRequestContext(req, "tenant_admin", "tenant-a", "tenant-admin-user")
+	m.handleSlidingWindow(rec, req)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("tenant_admin without DB must not get 200, body=%s", rec.Body.String())
+	}
+}
+
+func TestHandleSlidingWindow_SuperAdminUsesRedis(t *testing.T) {
+	// super_admin on the single endpoint still uses Redis fast path.
+	m := seedSlidingWindowRecorder(t, 5)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/credentials/sliding-window?credential_id=17&model=claude-sonnet-5", nil)
+	req = setTestRequestContext(req, "super_admin", "", "super-admin-user")
+	m.handleSlidingWindow(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Source string                       `json:"source"`
+		Stats  map[string]any               `json:"stats"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Source != "redis" {
+		t.Fatalf("source=%q want redis", resp.Source)
+	}
+	if resp.Stats == nil {
+		t.Fatal("super_admin expected Redis-backed stats")
+	}
+}
