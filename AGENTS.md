@@ -2284,3 +2284,47 @@ owner 拍板）；session_censors 可逆还原无读取方（配密钥+读取端
    `GATEWAY_DEV_AUTH_TOKEN` 自签 JWT）后用 `GATEWAY_API_TARGET=http://localhost:8782`
    起 dev；② 在真实已登录浏览器里直接开 `/live`。
    在此之前，「动效够炫 / 60fps / 粒子不卡」**没有任何运行时证据**，只有单测与构建证据。
+
+---
+
+# 追加：2026-10-17 252 SQL 日志审计轮 —— UNION 恒炸洪水（24 万条）根修
+
+> 窗口 10-16 06:47 → 10-17 06:20。产物 `docs/audit/2026-10-17-252-sql-log-audit.md`。
+> 提交 `24748e233`（修复+判据），部署 245=2687-24748e23（8782）/154=2688-24748e23（8781）。
+
+## 主缺陷（本轮修复）
+
+**#153 批次（87499af9a）给 `admin/credential_monitor.go::slidingWindowHotQuery`
+两臂加 tenant_id 投影时位置不一致**：session 臂插在 credential_id 前、v1 臂追加在
+后，UNION ALL 按位置配对 → varchar/bigint **解析期恒炸**（42804）。245 上凭据监控
+抽屉轮询 ~12/s 报错 8h+（252 PG 日志 23.6 万条 ERROR、ctr.log 单日 773MB=正常 2-9 倍
+日志洪水），滑动窗面板全 500。修复=v1 臂列序对齐；部署后洪水归零
+（06:51 起三轮采样零新增，日志增速 2-4MB/min→15KB/min）。
+
+**事故的流程缺口**：realdb 门（`TestCredentialDrawerHotWindow_RealDB`，缺陷文本实跑
+即 42804 红——本轮变异实证）是 opt-in（TEST_DATABASE_URL 未设置即 skip），#153 改了
+SQL 与测试签名但从未对真库执行。已补**静态形状钉**
+`TestSlidingWindowHotQueryArmsPositionallyAligned`（臂数/列数/tenant_id 与
+credential_id 两臂位置一致，每次 go test 都跑）；「SQL 文本变更必过真库执行门」
+的通用解另行立项。
+
+## 本轮其余定性（无需修复）
+
+- 慢查 1,782 条/9,927s **100% 集中在洪水窗口**（洪水前 17.5h 全库零 ≥1s 慢查——
+  上轮修复后系统干净）：路由候选构建（346 次）**结构未回归**（源码重建 SQL
+  EXPLAIN=83ms，R8 基线同级）、smm daily_kline 上轮 VACUUM 基线成立（洪水尖峰连坐）、
+  其余为周期 worker 负载慢实例。
+- 已知维持：pocket $4 双型（~80/天，owner 动作）；一次性：旧二进制调已删视图 ×2、
+  人工探查 inbound_body ×4。
+- **新观察项**：session_request_status_backfill 的 session_turns×_request_logs JOIN
+  成本随 turns 增长单调上升（avg 22.8s/45min），登记不修；
+  sliding-window 批量端点的常开轮询方身份未定位。
+
+## 量具坑（第 11-16 条增量，详见审计文档 §六）
+
+纯语句体行无 PG 时间戳/pid（按 pid 配对语句体全落空）；单行语句全文在 duration 行
+本体上（execute S_N: 形态）；并发同文本语句体行逐行交错（采样必污染，EXPLAIN 用
+源码重建为权威）；`LOG:` 后双空格（`\s?` 只吃一个→慢查 census 假 0）；ssh heredoc
+sed 转义不可靠（python patch 替代）；**`~/sdk/` 工具链再次被清**——现行替代
+`/opt/homebrew/bin/bash`(5.3.9)+`/opt/homebrew/bin/go`(1.27.2)，旧配方里的
+`~/sdk/bash5`/`~/sdk/go` 前缀全部改用 brew 路径。
