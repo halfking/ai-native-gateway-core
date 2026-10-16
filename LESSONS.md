@@ -354,13 +354,14 @@
 - 证据：`vue-tsc -b` RC0（三轮）；前端全量 **237 文件 / 2484 用例全 PASS**（37~40s，三轮）；duration 重算峰值 in-flight = 4；并发 curl 32/32。
 - 状态：观察中（应用侧已修完；页面最终复验需在**可交互**的浏览器环境进行，本会话的 Electron 浏览器标签多次冻结不可靠）
 
-## 2026-10-16 — 性能数字先证伪再采信：行过滤会把报错耗时当成提速（Seen: 1/3）
+## 2026-10-16 — 性能数字先证伪再采信：行过滤会把报错耗时当成提速（Seen: 2/3）
 
 - 任务 / 缺陷：给 `GET /api/admin/data-lifecycle/storage/tables`（本机实测 1286 / 2500 / 1734ms，唯一还 >2s 的 admin GET）找优化手段。测出把 TOAST 的相关子查询 `SELECT t.oid FROM pg_class t WHERE t.reltoastrelid = c.oid` 改写成 `LEFT JOIN pg_class tc ON tc.oid = c.reltoastrelid` 后只要 **6–9ms**（原写法 1170 / 1197 / 3463ms），提速两个数量级，差点直接采用。
 - 根因：测量命令是 `psql -f q.sql 2>&1 | grep -i '^Time'`。**`\timing` 对失败的语句同样打印耗时**。而 PG 17 的 `pg_stat_user_tables` 里**根本没有** `total_size / indexes_size / toast_size` 列（`information_schema.columns` 查 `%size%` 返回 0 行），查询直接 `ERROR: column s.total_size does not exist` —— 那 8ms 是**报错耗时**。是同批跑的对照查询（没做行过滤）把同一个错误暴露了出来。
 - 补充口径纠正：真正的慢因不是 TOAST 子查询，而是 `ORDER BY pg_total_relation_size(c.oid) DESC` —— 排序必须对**全部 440 张表**逐个算大小，`LIMIT 20` 省不掉这笔钱。改成 OID 索引查找实测**没有收益**（1170/1197/3463 vs 1696/1254/1455ms），所以最终走短 TTL 快照。
 - 防复发检查：(a) 性能对比命令**不允许只用 `grep Time` 这类行过滤**，至少保留 `ERROR` 或校验返回行数；(b) 报"提速"前先跑对照查询确认两版都真的返回了数据行，而不是只看耗时；(c) "新写法快很多"必须能指出旧写法慢在哪一段的 EXPLAIN 证据，否则先怀疑自己测错了东西。
 - 证据：上文三次实测序列；`\timing` 对 ERROR 语句仍输出 `Time:`（复现命令见本条"根因"）；最终实现 `admin/data_lifecycle_storage.go` 的 `tableSizesSnapshot`，冷 3.47s → 热 14.3µs。
+- 补记（当日第 2 次，同源）：查 `pg_class` 确认 `session_bodies_hot` 是否存在时，`ORDER BY relname` 的输出被 `head -25` 截断，该行恰好排在所有 `session_bodies_2026_10_*` 之后，于是又得出一次「表不存在」的错判。**行截断与行过滤是同一类错误**：都只保留让人看到的那部分，却按「全部」来推理。见下条。
 - 状态：已落地
 
 ## 2026-10-16 — 缓存切片类改动的真正风险是口径漂移，不是缓存（Seen: 1/3）
@@ -380,6 +381,23 @@
 - 防复发检查：(a) 任何判据如果临时修改了被测常量，必须另有一条**不改常量**的断言覆盖它的默认值；(b) "过期刷新"类判据若只覆盖常量，就只能证明"覆盖后的值会过期"，不能证明"生产值会过期"。
 - 证据：`TestDataLifecycleTableSizesTTLExpiryRefetches:343`；总览侧同名判据 `TestDataLifecycleStorageTTLExpiryRefetches:399` 同构补齐。**同一模式当日出现两次（总览轮 + Top-N 轮），第三次出现即晋级为规则。**
 - 状态：观察中
+
+## 2026-10-16 — 「停写/数据丢失」先怀疑自己数错了表：写入目标是 hot 表不是分区父表（Seen: 1/3）
+
+- 任务 / 缺陷：退役验收查「新流量的 session 正文有没有落库」。`SELECT count(*) FROM session_bodies` = 550，`max(ts)` = **2026-10-16 16:22**，近 90 分钟 **0 行**；而同期 `session_turns_hot` 落了 47 行、其中 27 个成功轮。差点判成「正文写入在 16:22 停了 9 小时 = 一类数据丢失」。
+- 根因：**写入目标根本不是 `session_bodies`**。`domains/session/v2/bodies_writer.go:310,368` 写的是 `public.session_bodies_hot`（8 小时窗口表），由 PartitionManager 事后提升成 `session_bodies_yyyy_mm` 月度分区。而 `session_bodies_hot` 是**独立表**（`pg_inherits` 里对它的继承行数 = 0），所以 `count(*) FROM session_bodies`（分区父表）**不包含** hot 表的任何行。实测 hot 表 76 行、近 90 分钟 48 行、`max(ts)` 就是当时——正文一直在正常写。
+- 连带一个同源的假回归：查 `pg_class` 想确认 hot 表在不在，结果 `ORDER BY relname` + `head -25` 把 `session_bodies_hot` 截掉了（ASCII 序里 `session_bodies_2026_10_*` 全排在 `session_bodies_hot` 之前），于是又得出一次「hot 表不存在」的错判。**同一天第二次被行截断/过滤吃掉证据。**
+- 防复发检查：(a) 判断「某类数据是否还在写」时，**先从写入代码里 grep 出它 INSERT 的那张表**，再去数那张表，不要按表名"看起来像父表"去猜；(b) 分区体系里要分清**分区父表 / hot 窗口表 / 已提升的月度分区**三者的包含关系，`count(*)` 只在父子关系成立时才等价；(c) 提升是延迟的（此处 8 小时），所以"父表最新时间戳停在几小时前"本身完全正常，不构成停写证据；(d) 任何 `head -N` / `grep` 截断的输出，若要据此下"某对象不存在"的结论，必须先确认被截断的区间不包含它。
+- 证据：`session_bodies`=550（max ts 16:22）/ `session_bodies_hot`=76（max ts 与当时一致）；27 个成功轮的正文覆盖率用 hot 表算是 **27/27**，用父表算是 0/27。
+- 状态：已落地（结论改写：正文持久化无缺陷）
+
+## 2026-10-16 — 会话 id 只认 `gw_`/`gt_`/`gs_` 前缀，自造 id 会被静默丢弃（Seen: 1/3）
+
+- 任务 / 缺陷：做「5 轮真实多轮会话」验证时，客户端发 `X-Session-Id: retire-verify-<hex>`，结果库里每个会话都只有 **1 turn**，会话 id 全是网关新生成的 `gw_*`。
+- 根因：`domains/streaming/handler.go:581 sanitizeGwSessionHeader` 只接受 `gw_`（主会话）/ `gt_`（自动标题分支）/ `gs_`（自动摘要分支）三种前缀，其余一律当"客户端元数据"丢弃（`cmd/gateway/main_pipeline.go:772` 的 `X-Gw-Session-Id` → `X-Session-Id` 回退只解决大小写与命名优先级，不解决前缀校验）。所以**多轮验证在结构上根本没发生**，5 次请求被拆成 5 个独立单轮会话。
+- 判别方法：`prompt_tokens` 是否随轮次增长。改正前缀后 glm-5.2 的 ptok 为 33 → 62 → 97，说明上文确实带上了；改正前每轮 ptok 恒定。
+- 防复发检查：(a) 自造客户端标识前先读校验函数，别假设"任意字符串都会被采纳"；(b) 「多轮」验证必须有一个**独立于响应**的证据（库里同一 session 下 turn_no 连续递增、或 ptok 单调增长），否则 5 次独立请求会被误当成 5 轮会话；(c) 断言里不要用客户端自己传的字段做过滤条件——网关可能根本没用它。
+- 状态：已落地
 
 ## 晋级记录
 
