@@ -63,6 +63,9 @@ const UsageCostView = () => import('./views/admin/UsageCost.vue')
 const UsageTrendExplorerView = () => import('./views/admin/UsageTrendExplorer.vue')
 // 批 158b：P1 usageEnhanced 孤儿接前端，组合 summary + cost-trend + period-compare + cache-economics + hot-api-keys
 const UsageEnhancedView = () => import('./views/admin/UsageEnhancedView.vue')
+// 批 158c：P2 boardOperational 独立详细页（独立深链，呈现 background_tasks + selfcheck 全字段）
+// ⚠️ 后端 tenant 隔离未落实（属主拍板），前端仅"呈现已就位数据"，不参与授权判断
+const BoardOperationalView = () => import('./views/BoardOperationalView.vue')
 const ReconciliationReportView = () => import('./views/admin/ReconciliationReport.vue')
 // 2026-07-24: V2-P4 admin session detail page (dual-column turns + drawer).
 const SessionDetailView = () => import('./views/admin/SessionDetailPage.vue')
@@ -291,6 +294,7 @@ export const router = createRouter({
     { path: '/admin/usage',        component: UsageCostView, meta: { requiresSuper: true } }, // 用量成本视图 (T2.4)；R34: 与相邻 admin 路由对齐补权限 meta
     { path: '/admin/usage-trends', component: UsageTrendExplorerView, meta: { requiresAuth: true, fillViewport: true } }, // 全屏用量趋势（2026-10-02：铺满主区；模型用 ModelPicker）
     { path: '/admin/usage-enhanced', component: UsageEnhancedView, meta: { requiresSuper: true } }, // 用量增强分析（批 158b：组合 usage.ts 5 端点综合视图；同档 UsageCost 走 super_admin）
+    { path: '/admin/board-operational', component: BoardOperationalView, meta: { requiresAuth: true } }, // 运营面板（批 158c：独立详细页；⚠️ 后端 tenant 隔离未落实，admin 档 endpoint）
     { path: '/admin/reconciliation', component: ReconciliationReportView, meta: { requiresSuper: true } }, // 对账报表（供应商/内部双视角 + Excel 导出，2026-09-25）
     { path: '/admin/sessions/:id', component: SessionDetailView, meta: { requiresSuper: true } }, // 2026-07-24: V2-P4 session detail
     { path: '/admin/turns',        component: TurnsListView, meta: { requiresSuper: true } }, // 2026-08-09: 跨会话轮次列表

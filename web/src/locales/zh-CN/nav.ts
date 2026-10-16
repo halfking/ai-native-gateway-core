@@ -33,6 +33,7 @@ export default {
     settlementReport: '结算报表',
     usageTrends: '用量趋势分析',
     usageEnhanced: '用量增强分析',
+    boardOperational: '运营面板',
     pricing: '成本价格',
     modelPricing: '定价管理',
     freePool: '免费资源',
