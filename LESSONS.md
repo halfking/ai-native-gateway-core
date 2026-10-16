@@ -323,6 +323,18 @@
 - 防复发检查：(a) 页面空白**先查服务端访问日志**判断"请求发没发"，再谈渲染；(b) CDP/network 是**采样**不是事实，pending 不等于没发生，慢请求必然出现 pending；(c) 前端 `onMounted` 里的串行 `await` 链要当"单点故障链"审：任一环挂起 = 整个页面的数据区永久空白，而 UI 毫无报错。
 - 状态：观察中（确切卡点仍需能读浏览器 Console 的环境；已把范围从"整个前端"收窄到 `loadKeys/loadCredentialOptions` 这条链，且指向 `/api/providers` 的 500 与不稳定的 per-provider credentials 扇出）
 
+## 2026-10-16 — 无节制并发扇出会饿死主数据请求，且症状是「无报错的空白页」（Seen: 1/3）
+
+- 任务 / 缺陷：`/request-logs` 恒显「共 0 条 / 无记录」，而 `GET /api/logs` 直接 curl 返回 `count=576`。页面完整渲染、已登录为超级管理员、**控制台无任何报错**。
+- 基线 / 修复 SHA：修复在 `RequestLogsView.vue` 的 `onMounted`（`await loadCredentialOptions()` → `void loadCredentialOptions()`）。
+- 根因：`onMounted` 是串行 await 链 —— `loadKeys()` → `loadCredentialOptions()` → `load()`。第三段里 `loadCredentialOptions()` 对**每个** provider 并发 `await getProviderCredentials(p.id)`（`Promise.all`）。本地 `providers` 表 47 行 ⇒ 首屏一次性扇出 **47 个同源请求**；浏览器对同源 HTTP/1.1 只有约 **6 条**并发连接，主数据请求 `/api/logs` 被挤到队尾并最终被客户端取消。
+- 服务端留下的铁证：`admin listLogs count query failed: context canceled`（`caller: logs.go:646`）。**注意这条在 `http_request` 访问日志里查不到** —— 请求被取消后没走到记录访问日志那一步，只在 handler 的错误分支留痕。只看访问日志会得出「前端根本没请求」的错误结论（我第一轮就是这么错的）。
+- 讽刺之处：这段实现**违反了自己上方 40 行的设计约定**——注释原文写着「任一来源失败都不阻塞日志列表渲染，下拉回退为空」，但代码用 `await` 把下拉加载变成了日志列表的硬前置。修复即回归该约定：`void loadCredentialOptions()`，主列表先发，下拉后台补齐，失败仍由内部兜底并在筛选区显示，语义不变。
+- 为什么这类症状极难定位：① `/api/logs` 在访问日志里**缺席**，容易被误判成"前端没发"；② 手动 curl 一切正常，服务端零责任；③ 前端无报错，UI 完全正常只是没数据；④ 触发条件是**数据量**（47 个 provider），provider 少的环境永远复现不了。
+- 防复发检查：(a) 排查"页面空白"时，**服务端 handler 错误日志要先于访问日志**看——`context canceled` / `deadline exceeded` 只在前者；(b) 前端对列表做 `Promise.all` 扇出前先看**基数**，并考虑分批或加并发上限；(c) `onMounted` 里的串行 await 链要当单点故障链审，任一环挂起 = 整页数据区永久空白；(d) 注释写下的设计约定要与实现对账，注释说"不阻塞"而代码 `await` 了，就是 bug。
+- 证据：修复前网关日志 21:44:04 可见 `/api/providers` 200 后仅 6 个 credentials 请求（其中 5 个 500），`/api/logs` 只在 handler 错误分支留 `context canceled`；`/api/providers` 实返 47 条。手动复现 6 个 credentials 端点全部 200（说明 500 也是并发挤压的伴生现象，非独立缺陷）。修复后 `vue-tsc -b` RC0。
+- 状态：观察中
+
 ## 晋级记录
 
 将已晋级条目移到这里，并链接目标规则、清单或技能。同一模式只按不同工作日计 `Seen`；出现三天后晋级。经证据确认的安全、隐私、数据丢失或生产事故，若已有可执行的防复发检查，可立即晋级。
