@@ -82,9 +82,10 @@
 
 | 特性 | 代码包 | 端点 / API | 前端页 | 状态 |
 |---|---|---|---|---|
-| request_logs canonical（热/归档分区） | `telemetry/` | `/api/logs*` | RequestLogsView | CURRENT |
+| 会话轮次族 canonical（`session_turns` 热分区+`session_bodies_hot`+`session_summaries`） | `domains/session/v2/` | `/api/logs*` | RequestLogsView | CURRENT |
+| 旧 `request_logs` 历史族（**写入已关闭**，改名 `_request_logs*` 仅供历史可读与降级备份） | `telemetry/`、`db/`（分区） | — | — | RETIRED（2026-10-16） |
 | 会话视图族（30+ 文件） | `admin/session_*.go` | `/api/admin/sessions*`、`/api/admin/turns*` | SessionDetailView、TurnsListView | CURRENT |
-| Sessions V2（schema+writer+cache+镜像回填） | `domains/session/v2`、`internal/sessionv2mirror` | — | — | 🔴 **并行**（P-04：V1 主写/V2 影子写，双读 7 天零漂移门禁后翻主读） |
+| Sessions V2（schema+writer+cache+镜像回填） | `domains/session/v2`、`internal/sessionv2mirror` | `/api/admin/sessions/v2/primary_read_stats` | — | CURRENT（已翻主读：`primary_read=true`；旧 `request_logs` 写入已关闭并降级为备份） |
 | 会话摘要/标题 | `domains/sessionsummary/` | — | — | CURRENT |
 | 会话分析（物化视图+RLS） | `admin/session_analytics_*.go` | `/api/admin/session-analytics/*` | UserProfileView、ClientAnalyticsView | CURRENT |
 | live-stream SSE | dispatch QueueProjection → LiveStreamSSEHub | `/api/admin/live-stream*` | — | CURRENT |
