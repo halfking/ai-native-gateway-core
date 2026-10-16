@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -317,6 +318,83 @@ func TestSlidingWindowSQL_ContainsTenantFilter(t *testing.T) {
 	for _, q := range []string{slidingWindowQuery(), slidingWindowHotQuery()} {
 		if !strings.Contains(q, "($5 = '' OR tenant_id = $5)") {
 			t.Fatalf("sliding-window SQL missing tenant filter:\n%s", q)
+		}
+	}
+}
+
+// TestSlidingWindowHotQueryArmsPositionallyAligned 钉住 2026-10-17 审计轮
+// 回归：UNION ALL 按位置而非名字配对（外层 WHERE 引用的 cand 列名取自
+// 首臂），两臂 SELECT 列表必须同列数、同名列序。#153 把 tenant_id 插进
+// 两臂的不同位置 → varchar/bigint 解析期恒炸，245 上 ~12/s 报错 8 小时。
+// 能整句验证语义的真库门（TEST_DATABASE_URL）是 opt-in、可被静默跳过，
+// 这里加静态形状钉让每次 go test 都兜住。
+func TestSlidingWindowHotQueryArmsPositionallyAligned(t *testing.T) {
+	// SQL 注释里也出现过 "UNION ALL" 字样，只按整行匹配切臂。
+	unionAllLine := regexp.MustCompile(`(?m)^\s*UNION ALL\s*$`)
+	arms := unionAllLine.Split(slidingWindowHotQuery(), -1)
+	if len(arms) != 2 {
+		t.Fatalf("hot query 应恰有两个 UNION ALL 臂，实得 %d", len(arms))
+	}
+	fromLine := regexp.MustCompile(`(?m)^\s*FROM\s`)
+	// 臂1 文本含外层查询，取最后一个行首 FROM（session 臂主 FROM）与其
+	// 之前最后一个 SELECT；臂2 取第一个（v1 臂主 FROM 在 NOT EXISTS 子
+	// 查询之前，其 SELECT 也是首个）。
+	armColumns := func(arm string, last bool) []string {
+		locs := fromLine.FindAllStringIndex(arm, -1)
+		if len(locs) == 0 {
+			t.Fatal("arm has no line-start FROM")
+		}
+		fromPos := locs[0][0]
+		if last {
+			fromPos = locs[len(locs)-1][0]
+		}
+		list := arm[:fromPos]
+		sel := strings.Index(list, "SELECT")
+		if last {
+			sel = strings.LastIndex(list, "SELECT")
+		}
+		if sel < 0 {
+			t.Fatal("arm has no SELECT")
+		}
+		list = list[sel+len("SELECT"):]
+		var cols []string
+		var cur strings.Builder
+		depth := 0
+		for _, r := range list {
+			switch r {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			case ',':
+				if depth == 0 {
+					cols = append(cols, cur.String())
+					cur.Reset()
+					continue
+				}
+			}
+			cur.WriteRune(r)
+		}
+		return append(cols, cur.String())
+	}
+	a := armColumns(arms[0], true)
+	b := armColumns(arms[1], false)
+	if len(a) != len(b) {
+		t.Fatalf("两臂列数不一致: %d vs %d\n臂1: %q\n臂2: %q", len(a), len(b), a, b)
+	}
+	// tenant_id（audit #153 引入）与 credential_id 是历史上错位过的两列；
+	// 其余列位一旦换序同样会类型错位，靠真库门兜底。
+	for _, name := range []string{"tenant_id", "credential_id"} {
+		pos := func(cols []string) int {
+			for i, c := range cols {
+				if strings.Contains(c, name) {
+					return i
+				}
+			}
+			return -1
+		}
+		if pa, pb := pos(a), pos(b); pa != pb || pa < 0 {
+			t.Fatalf("%s 两臂位置不一致或缺失: 臂1 pos=%d 臂2 pos=%d\n臂1: %q\n臂2: %q", name, pa, pb, a, b)
 		}
 	}
 }

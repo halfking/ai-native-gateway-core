@@ -862,6 +862,11 @@ func slidingWindowQuery() string {
 //     一并推入索引条件，反连接探测走
 //     idx_session_turns_hot_request 的 Index Only。
 //
+// UNION ALL 按位置而非名字配对（外层 WHERE 的 cand.credential_id /
+// cand.tenant_id 取自首臂列名）——两臂投影顺序必须逐位一致，改任一臂
+// 的列序必须同步另一臂（2026-10-16 #153 曾把 tenant_id 插进两臂的不同
+// 位置，varchar/bigint 在解析期恒炸，245 上 ~12/s 报了 8 小时）。
+//
 // 252 真库实测（2026-10-11）：EXPLAIN ANALYZE 0.644ms，全臂索引条件
 // 下推，无排序溢出；对拍 canonical 视图 EXCEPT 双向差集 0。
 func slidingWindowHotQuery() string {
@@ -878,11 +883,12 @@ func slidingWindowHotQuery() string {
 		      ON d.tenant_id::text = t.tenant_id::text
 		     AND d.request_id = t.request_id
 		     AND d.partition_date = t.partition_date
-		    UNION ALL
-		    SELECT r.request_id, r.ts, r.success, r.latency_ms, r.error_kind,
-		           r.outbound_model, r.client_model, r.credential_id,
-		           r.tenant_id AS tenant_id
-		    FROM _request_logs_hot r
+			    UNION ALL
+			    SELECT r.request_id, r.ts, r.success, r.latency_ms, r.error_kind,
+			           r.outbound_model, r.client_model,
+			           r.tenant_id AS tenant_id,
+			           r.credential_id
+			    FROM _request_logs_hot r
 		    WHERE NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = r.request_id)
 		) cand
 		WHERE credential_id = $1
