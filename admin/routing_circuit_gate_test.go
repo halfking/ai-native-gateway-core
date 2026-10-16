@@ -32,30 +32,47 @@ func TestLivePlanOrderFiltersCredentialCircuitAndCompactsRanks(t *testing.T) {
 		t.Fatal(err)
 	}
 	blocked := livePlanOrderTestCandidate(101, 1, 100)
-	blocked.CircuitState = "open"
+	// Post-reconciliation dispatch admission gates on availability_state,
+	// quota, lifecycle and balance — NOT the lossy circuit mirror. Block this
+	// candidate through a real admission field so the panel filter + rank
+	// compaction are exercised against what production actually drops.
+	blocked.AvailabilityState = "suspended"
 	allowed := livePlanOrderTestCandidate(202, 2, 100)
-	for _, key := range []string{"ursm:v2:node:t:101:glm-5.2", "ursm:v2:node:t:202:glm-5.2"} {
+	mirrorOpen := livePlanOrderTestCandidate(303, 3, 100)
+	mirrorOpen.CircuitState = "open" // DB mirror: display-only, must survive
+	for _, key := range []string{"ursm:v2:node:t:101:glm-5.2", "ursm:v2:node:t:202:glm-5.2", "ursm:v2:node:t:303:glm-5.2"} {
 		mr.HSet(key, "available", "1", "generation", "1", "source_priority", "10", "fail_streak", "0")
 	}
 	router := executors.NewRouter(nil, nil)
 	router.URSMv2 = mgr
-	cands := []provider.Candidate{blocked, allowed}
+	cands := []provider.Candidate{blocked, allowed, mirrorOpen}
 	planned := router.PlanCandidatesPinned(context.Background(), cands, nil, nil, provider.DefaultPolicy(), nil, "t", "glm-5.2", "precondition")
-	if len(planned) != 2 || planned[0].CredentialID != 101 {
-		t.Fatalf("precondition: authoritative router must retain blocked first candidate: %v", planned)
+	if len(planned) != 3 || planned[0].CredentialID != 101 {
+		t.Fatalf("precondition: authoritative router must retain all three candidates in order: %v", planned)
 	}
 	h := &Handler{}
 	h.SetLiveRoutingSource(&LiveRoutingSource{Router: router, Resolver: &fakeLiveResolver{cands: cands}})
 	entries, source := h.livePlanOrder(context.Background(), "glm-5.2", "t")
-	if source != "live-router" || len(entries) != 1 || entries[0]["credential_id"] != 202 || entries[0]["rank"] != 1 {
+	if source != "live-router" || len(entries) != 2 {
 		t.Fatalf("dispatch-aligned compact plan: source=%s entries=%v", source, entries)
+	}
+	if entries[0]["credential_id"] != 202 || entries[0]["rank"] != 1 {
+		t.Fatalf("suspended candidate must be dropped and rank compacted: %v", entries)
+	}
+	if entries[1]["credential_id"] != 303 || entries[1]["rank"] != 2 {
+		t.Fatalf("circuit-mirror-open candidate must survive (send-time breaker decides): %v", entries)
 	}
 }
 
-// TestApplyCredentialCircuitGateBlocksCircuitOpen is the primary assertion:
-// a candidate the SQL view and URSM v2 both call routable must still be
-// reported unroutable when the credential-level breaker mirror says 'open'.
-func TestApplyCredentialCircuitGateBlocksCircuitOpen(t *testing.T) {
+// TestApplyCredentialCircuitGateSurfacesMirrorWithoutBlocking is the primary
+// post-reconciliation assertion: the DB breaker mirror must surface for the
+// node drawer (circuit_state / cooling_until) but must NOT flip the resolve
+// verdict, because dispatch admission (provider.Candidate.IsAvailable) no
+// longer gates on that mirror — the in-memory Circuit.Allow at the send point
+// owns breaker enforcement and needs its half-open probe to reach the
+// candidate. Blocking resolve on a stale 'open' mirror is how the Vapeur
+// stranding incident presented.
+func TestApplyCredentialCircuitGateSurfacesMirrorWithoutBlocking(t *testing.T) {
 	cooling := "2026-10-16T00:39:32Z"
 	candidates := []resolveCandidate{
 		{
@@ -69,12 +86,12 @@ func TestApplyCredentialCircuitGateBlocksCircuitOpen(t *testing.T) {
 	applyCredentialCircuitGate(candidates)
 
 	got := candidates[0]
-	if got.Routable || got.RuntimeRoutable {
-		t.Fatalf("cred 63: routable=%v runtime_routable=%v, want both false — production dispatch drops circuit_state='open' candidates",
+	if !got.Routable || !got.RuntimeRoutable {
+		t.Fatalf("cred 63: routable=%v runtime_routable=%v, want both true — dispatch admission does not gate on the lossy mirror",
 			got.Routable, got.RuntimeRoutable)
 	}
-	if got.BlockReason != "circuit_open" {
-		t.Fatalf("cred 63 block_reason = %q, want circuit_open", got.BlockReason)
+	if got.BlockReason != "" {
+		t.Fatalf("cred 63 block_reason = %q, want empty (display-only mirror)", got.BlockReason)
 	}
 	if got.CircuitState != "open" {
 		t.Fatalf("cred 63 circuit_state = %q, want open (must mirror the DB mirror, not the URSM default)", got.CircuitState)
@@ -87,8 +104,9 @@ func TestApplyCredentialCircuitGateBlocksCircuitOpen(t *testing.T) {
 // TestApplyCredentialCircuitGateAgreesWithDispatch is the anti-divergence
 // assertion: the resolve verdict and the production dispatch verdict must be
 // the SAME function of the same fields. It builds the exact production shape
-// (circuit_state='open', everything else healthy/ready) and requires the
-// candidate to be unroutable after the gate.
+// (circuit_state='open', everything else healthy/ready) and requires both
+// sides to agree — post-2026-10-16 reconciliation, admission keeps the
+// candidate available (breaker enforcement moved to Circuit.Allow at send).
 func TestApplyCredentialCircuitGateAgreesWithDispatch(t *testing.T) {
 	bal := 12.5
 	// This is the production shape read on 211 for credential 63.
@@ -115,14 +133,14 @@ func TestApplyCredentialCircuitGateAgreesWithDispatch(t *testing.T) {
 
 	applyCredentialCircuitGate(slice)
 
-	if prod.IsAvailable() {
-		t.Fatalf("precondition: production candidate with circuit_state=open must be unavailable")
+	if !prod.IsAvailable() {
+		t.Fatalf("precondition: production admission must keep a circuit-mirror-open candidate (send-time Circuit.Allow enforces the breaker): %q", prod.UnavailableReason())
 	}
-	if !strings.Contains(prod.UnavailableReason(), "circuit:open") {
-		t.Fatalf("precondition: production reason = %q, want it to contain circuit:open", prod.UnavailableReason())
+	if strings.Contains(prod.UnavailableReason(), "circuit:open") {
+		t.Fatalf("precondition: production reason = %q, must not contain circuit:open (lossy mirror is out of admission)", prod.UnavailableReason())
 	}
-	if slice[0].Routable {
-		t.Fatalf("resolve says routable while production says unavailable (%q) — the exact reported divergence", prod.UnavailableReason())
+	if !slice[0].Routable {
+		t.Fatalf("resolve says unroutable while production says available — divergence reborn in the opposite direction")
 	}
 }
 
@@ -196,16 +214,16 @@ func TestApplyURSMOverlayAppliesCredentialGate(t *testing.T) {
 			dbCircuitState: "open",
 		},
 	}
-	// URSM v2 reports the node healthy and out of cooldown — the exact
-	// disagreement that produced "no available candidate nodes".
+	// URSM v2 reports the node healthy and out of cooldown — the disagreement
+	// that produced "no available candidate nodes" pre-reconciliation.
 	views := []v2api.NodeView{
 		{CredentialID: 63, RawModel: "grok-4.6", Available: true},
 	}
 
 	applyURSMOverlay(candidates, views, time.Now())
 
-	if candidates[0].Routable {
-		t.Fatalf("applyURSMOverlay alone must apply the credential gate; routable stayed true despite dbCircuitState=open")
+	if !candidates[0].Routable {
+		t.Fatalf("applyURSMOverlay must apply the credential gate's admission truth; circuit mirror must not block (lossy mirror, send-time breaker decides)")
 	}
 	if candidates[0].CircuitState != "open" {
 		t.Fatalf("circuit_state = %q, want open — the DB mirror must survive the overlay", candidates[0].CircuitState)

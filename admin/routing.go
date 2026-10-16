@@ -5645,11 +5645,11 @@ func markResolveRuntimeUnknown(candidates []resolveCandidate, reason string) {
 // Redis/mirror misses are explicitly marked as missing so the diagnostic
 // surface agrees with authoritative request routing.
 func applyURSMOverlay(candidates []resolveCandidate, views []api.NodeView, now time.Time) {
-	// The credential-level circuit gate is applied at the END of this function,
-	// not by the caller. resolveRuntimeDefaults() above resets CircuitState to
-	// "closed" on every row, so a gate invoked BEFORE the overlay would be
-	// silently undone by it — a misordering that reads as a working fix and
-	// reproduces the original "resolve says routable, dispatch drops it" bug.
+	// The credential-level mirror/balance gate is applied at the END of this
+	// function, not by the caller. resolveRuntimeDefaults() above resets
+	// CircuitState to "closed" on every row, so a gate invoked BEFORE the
+	// overlay would be silently undone by it — a misordering that reads as a
+	// working fix and loses the mirrored circuit_state the node drawer renders.
 	// Folding it in here makes the ordering a property of the function rather
 	// than of a call site nobody re-checks when the overlay grows.
 	defer applyCredentialCircuitGate(candidates)
@@ -5722,63 +5722,46 @@ func applyURSMOverlay(candidates []resolveCandidate, views []api.NodeView, now t
 	}
 }
 
-// applyCredentialCircuitGate folds the credential-level circuit breaker
-// mirror (credentials.circuit_state) into the resolve verdict.
+// applyCredentialCircuitGate folds the credential-level breaker mirror
+// (credentials.circuit_state) and the balance gate into the resolve verdict.
 //
-// ## Why this exists (2026-10-16, grok-4.6 "no available candidate nodes")
+// ## Dispatch truth this mirrors (2026-10-16 reconciliation)
 //
-// Production dispatch gates on TWO independent availability signals:
+// Two same-morning fixes landed on opposite baselines and were reconciled:
 //
-//	provider/client.go  COALESCE(c.circuit_state,'closed') → Candidate.CircuitState
-//	provider/client.go  UnavailableReason(): CircuitState=="open" ⇒ "circuit:open"
-//	provider/client.go  IsAvailable() := UnavailableReason()==""
-//	executors/executor_dispatch.go  dispatchCandidateAllowed() drops !IsAvailable()
+//	29f02985b (03:49)  provider.Candidate.UnavailableReason() no longer gates
+//	                   on CircuitState — the DB mirror is an async, lossy,
+//	                   last-writer-wins copy of a per-process breaker. Gating
+//	                   admission on it strands healthy credentials after a
+//	                   restart and starves the breaker's half-open recovery
+//	                   probe (the Vapeur stranding incident).
+//	035cea8b5 (04:11)  resolve must agree with dispatch instead of calling
+//	                   SQL-routable rows routable that dispatch would drop.
 //
-// Resolve used to derive CircuitState/CoolingUntil **only** from the URSM v2
-// NodeView (applyURSMOverlay) and, when URSM was off/unknown, defaulted them to
-// "closed" (resolveRuntimeDefaults). credentials.circuit_state had been dropped
-// from the SELECT in the 2026-07-24 "slimmed scan" on the assumption that URSM
-// v2 owns those columns — true for *display*, but NOT for *production gating*.
+// Post-reconciliation dispatch has TWO layers: candidate admission
+// (dispatchCandidateAllowed → IsAvailable: lifecycle/availability/quota/
+// balance — NOT the circuit mirror) and the authoritative in-memory breaker
+// (Circuit.Allow at the send point, executor_dispatch.go, which owns half-open
+// probing). Resolve cannot see the in-memory breaker, so it mirrors the
+// admission layer exactly: the circuit mirror is surfaced for diagnostics
+// (node drawer renders circuit_state / cooling_until next to 熔断) but never
+// flips Routable — a stale open mirror must not hide a credential from this
+// panel that dispatch would actually try. This invariant is the same one
+// internal/routeguard enforces on the SQL conjunction (ForbiddenColumns).
 //
-// On 211, the initial DB snapshot showed credential 63 healthy/ready but
-// circuit_state='open'. Replaying that shape with an available URSM view
-// demonstrates the resolve/dispatch disagreement. The actual URSM view and an
-// authenticated failing request were not captured: the supplied gateway key
-// returned invalid_key. This is a proven diagnostic divergence, not proof that
-// every reported request failed solely because of this gate. A successful Ping
-// of a different model also does not establish this binding's availability.
-//
-// ## Invariant preserved
-//
-// This ANDs the circuit state into the **resolve response**, never into the
-// `v_routable_credential_models.is_routable` SQL conjunction — the latter is
-// explicitly forbidden by internal/routeguard (ForbiddenColumns), because the
-// DB mirror is an async, lossy, last-writer-wins signal. Mirroring the live
-// gate in a diagnostic surface is safe; letting an approximate value decide
-// DB-level routing eligibility is not.
-//
-// ## Why there is no cooling_until deadline check
-//
-// provider.Candidate.UnavailableReason() gates on `circuit_state == "open"`
-// alone — no deadline. Mirroring it exactly (rather than "helpfully" treating
-// an elapsed cooling_until as closed) keeps resolve honest about the same
-// window the recovery ticker has not yet closed.
+// The balance gate stays a hard flip: UnavailableReason still rejects a known
+// non-positive balance even when quota_state is ok. Unknown balance is not
+// proof of exhaustion and must remain untouched.
 func applyCredentialCircuitGate(candidates []resolveCandidate) {
 	for i := range candidates {
 		c := &candidates[i]
-		reason := ""
 		if c.dbCircuitState == "open" {
-			reason = "circuit_open"
-			// Surface the real reason, not a defaulted one.
+			// Surface the real mirror, not a defaulted one — display only.
 			c.CircuitState = "open"
 			c.CoolingUntil = c.dbCoolingUntil
-		} else if c.BalanceUSD != nil && *c.BalanceUSD <= 0 {
-			// Candidate.UnavailableReason also rejects a known nonpositive
-			// balance even when quota_state is still ok. Unknown balance is
-			// not proof of exhaustion and must remain untouched.
-			reason = "balance_zero"
 		}
-		if reason == "" {
+		balanceBlocked := c.BalanceUSD != nil && *c.BalanceUSD <= 0
+		if !balanceBlocked {
 			continue
 		}
 		if !c.Routable && !c.RuntimeRoutable {
@@ -5788,7 +5771,7 @@ func applyCredentialCircuitGate(candidates []resolveCandidate) {
 		}
 		c.Routable = false
 		c.RuntimeRoutable = false
-		c.BlockReason = reason
+		c.BlockReason = "balance_zero"
 	}
 }
 

@@ -54,10 +54,13 @@ func (h *Handler) livePlanOrder(ctx context.Context, canonicalModel, tenantID st
 	planned := src.Router.PlanCandidatesPinned(ctx, cands, nil, nil, policy, nil, tenantID, canonicalModel, "admin-resolve")
 	// 2026-10-16: PlanCandidatesPinned is only the FIRST half of the production
 	// dispatch gate. dispatchRoute additionally drops every candidate for which
-	// !dispatchCandidateAllowed(c, nil) == !c.IsAvailable() — and IsAvailable()
-	// folds in credentials.circuit_state ('circuit:open'), availability_state,
-	// quota and balance, none of which the authoritative URSM v2 backend
-	// re-checks (URSMv2Backend.FilterAvailable is a deliberate no-op).
+	// !dispatchCandidateAllowed(c, nil) == !c.IsAvailable() — IsAvailable()
+	// folds in lifecycle, availability_state, quota and balance (NOT
+	// credentials.circuit_state: the DB breaker mirror was removed from
+	// admission by the 2026-10-16 Vapeur stranding fix; the in-memory
+	// Circuit.Allow at the send point owns actual breaker enforcement).
+	// None of the admission fields are re-checked by the authoritative URSM v2
+	// backend (URSMv2Backend.FilterAvailable is a deliberate no-op).
 	//
 	// Without this second half plan_order named candidates that production then
 	// dropped, which is precisely how a node could read "route OK, top pick"
