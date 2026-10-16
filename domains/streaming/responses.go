@@ -889,7 +889,12 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 			if logCtx != nil {
 				logCtx.SetRoute(providerID, credentialID)
 				logCtx.SetError(blockCode, blockMessage)
-				logCtx.failAndMark(blockCode, blockMessage, providerID, credentialID)
+				// Render-then-emit: nativeStreamWriter.finish() already wrote the
+				// protocol terminal through writeTrustedTerminal, which sets
+				// Content-Type and writes the frame but never calls WriteHeader —
+				// so the committed stream carried HTTP 200 and the block travels
+				// as an SSE error frame. 200 is what the client received.
+				logCtx.failAndMark(blockCode, blockMessage, providerID, credentialID, http.StatusOK)
 			} else {
 				latency := int(time.Since(startTime).Milliseconds())
 				h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
@@ -911,7 +916,8 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 			if ee, ok := execErr.(*executors.ExecuteError); ok {
 				logCtx.ApplyQueueTimestampsFromError(ee)
 			}
-			logCtx.failAndMark(code, message, providerID, credentialID)
+			// http.StatusForbidden is the argument writeResponsesError writes on the line below.
+			logCtx.failAndMark(code, message, providerID, credentialID, http.StatusForbidden)
 		} else {
 			latency := int(time.Since(startTime).Milliseconds())
 			h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,

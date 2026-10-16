@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$ROOT_DIR/scripts/apply-db-revision-sequence.sh"
 
 bash -n "$SCRIPT"
+python3 "$ROOT_DIR/scripts/apply-db-revision-sequence_runtime_test.py"
 
 # ── 失败收集器（2026-10-05 审计 §9.253，P1 可用性修复）────────────────────────
 #

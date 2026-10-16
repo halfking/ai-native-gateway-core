@@ -1078,6 +1078,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 				// 868: binding-scoped client transport policy; existing bindings
 				// default to both, while Vapeur Claude is non-stream-only.
 				"868_credential_model_stream_mode.sql",
+				// 869（2026-10-16 retire 轮）：promote_session_turns_hot_to_partition
+				// 的目录派生列清单重新确立为本通道终态体。硬编码 54 列清单相对 hot 的
+				// 106 列会静默丢弃 52 列（trace_events 等），晋级不报错、计数照常递增。
+				// 本通道顺序是 640(391) → 688(477) → 707(493)，707 原本已是末位；
+				// 869 排在其后，把「派生清单 + 列形状守卫 + 后置条件」钉成终态，
+				// 并在 fresh install 上与存量库（seq 通道，此前 640 为末位）收敛到同一体。
+				"869_promote_session_turns_trace_events.sql",
 			},
 
 	}

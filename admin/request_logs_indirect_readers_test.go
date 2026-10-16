@@ -111,6 +111,24 @@ var indirectRequestLogsReaders = map[string]indirectReader{
 			"关掉 ⇒ session_turns_hot（§9.44）。⇒ 同一段 SQL 在两个族之间切换，" +
 			"族不能由文本判定，必须显式登记。",
 	},
+	// 2026-10-16（v1 退役轮）：与上一条**同一个开关**，同一张表的第二个消费者。
+	"admin/auto_route_outcome_freshness.go": {
+		Family:     familyBase,
+		ResolvesTo: "_request_logs_hot",
+		Reason: "queryOutcomeFreshness(:124) 的 `SELECT MAX(ts) FROM ` 拼的是 " +
+			"bg.ActiveSettleTurnsTable()（bg/auto_route_settle_source.go:90-92），" +
+			"后者 = settleSourceFor(settings.RequestLogsWriteEnabled()).TurnsTable：写门开着 ⇒ " +
+			"_request_logs_hot（v1），关掉 ⇒ session_turns_hot（会话族）。" +
+			"⇒ 与 bg/auto_route_settle_sql.go 完全同形（同一个 settleSourceFor、同一张 turns 表、" +
+			"同一个写门），族同样不能由文本判定，必须显式登记。\n" +
+			"★ 为什么归 familyBase 而不是「随门切换」：sourceFamilyOf 的六族是**停写后果**的分档，" +
+			"判据问的是「停写之后这个读点还有没有 session 侧兜底」。本读点与 settle worker 的" +
+			"outcome/baseline 腿读的是**同一张表**——探针存在的全部意义就是回答「worker 现在" +
+			"还能不能拿到 outcome」（见 auto_route_outcome_freshness.go:92-102 的注释与 " +
+			"degrade_marker_test.go:123）。既然 worker 的那条腿按 familyBase 评估（S4 批 1 的 " +
+			"silently_degraded_aggregate），探针腿按同一张表评估才是可比的；把它单列一档会让" +
+			"「基表读方」总体少一个，而那个总体正是退役工作量清单的分母。",
+	},
 }
 
 // TestIndirectRequestLogsReadersAreDeclaredWell 挡住「登记了但说不清」。

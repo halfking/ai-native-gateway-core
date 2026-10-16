@@ -28,11 +28,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/internal/dbx"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
+	"golang.org/x/sync/singleflight"
 )
 
 // databaseStorageInfo Postgres 实例维度的存储信息
@@ -128,6 +131,28 @@ type tableSizesResponse struct {
 }
 
 // handleDataLifecycleStorage GET /api/admin/data-lifecycle/storage
+//
+// 2026-10-16 性能：本机 PG17.10 实测该端点是 416 个 admin GET 里唯一 >2s 的。
+// 逐段计时（\\timing，冷/热各 3 次）：
+//
+//	pg_database_size + pretty + server_version        51–61ms
+//	SUM(pg_total_relation_size) 全用户 schema（3362 关系）1622–1724ms  ← 85%
+//	表/索引/TOAST 三段拆分（同一 JOIN 上 3× pg_relation_size）  245–364ms
+//	列存扩展探测                                        1.2ms
+//	queryFilesystem(".")                               <1ms（单次 statfs，不遍历）
+//	queryDirectory(logDir) 回落 cwd 时                 ~250ms（22820 文件）
+//
+// 结论：**不存在不动缓存就能达标的路**。并发化只能把 2.24s 压到 max 段
+// ~1.93s（省 13%，仍超 300ms 五倍以上）；"总览只留 pg_database_size" 会
+// 掏空 total_human / tables_bytes / indexes_bytes / toast_bytes —— 这四个
+// 字段 StorageOverview.vue 全部在渲染（web/src/views/data-lifecycle/
+// StorageOverview.vue:13,22,26,30），属破坏响应契约；把两条 size 查询
+// 合成一条也**实测更慢**（1.93s vs 1.87–2.08s，无收益，见
+// data_lifecycle_storage_perf_test.go 的对照记录）。
+//
+// 因此走短 TTL 快照：物理尺寸变化极慢（一次 VACUUM FULL 单表回收通常
+// 不超总量的 1%），30s 足以消掉重复聚合，又把最坏陈旧窗口压在 30s 内。
+// 热调用直接命中快照，返回体与直查完全同构（同一 struct、同一 warnings）。
 func (h *Handler) handleDataLifecycleStorage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -137,7 +162,162 @@ func (h *Handler) handleDataLifecycleStorage(w http.ResponseWriter, r *http.Requ
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	resp := storageOverview{
+	writeJSON(w, http.StatusOK, h.storageOverviewSnapshot(ctx))
+}
+
+// ── 快照缓存 ────────────────────────────────────────────────────────
+
+// storageOverviewTTL 快照有效期。
+//
+// 上界取 30s：足以让"打开面板 → 轮询/切页返回"这类重复请求全部命中，
+// 又保证最坏陈旧不超过 30s。VACUUM FULL / REINDEX 完成后会显式失效
+// （见 runTableMaintenanceJob），不必等 TTL 自然过期。
+//
+// 声明为 var 而非 const：判据需要能把 TTL 调到毫秒级来证明"过期会重新
+// 取数"（TestDataLifecycleStorageTTLExpiryRefetches）。把 TTL 改成极大值
+// 会让数据永久陈旧 —— 那是本判据专门要拦的退化。
+var storageOverviewTTL = 30 * time.Second
+
+// storageCollectTimeout 单次聚合的独立上限，与 handler 的 15s 对齐。
+const storageCollectTimeout = 15 * time.Second
+
+type storageOverviewSnapshot struct {
+	overview  storageOverview
+	expiresAt time.Time
+}
+
+// storageSnapshotState 进程内快照状态。
+//
+// 2026-10-16：按 *pgxpool.Pool 分桶，而不是裸进程单例。LESSONS 2026-10-15
+// 「probeOne 进程级 MemoryFlight + holdTimeout TTL → 包测串味」记的就是
+// 进程级单例把状态漏到别的用例；按 pool 分桶让每个 Handler 实例（= 每个
+// 独立连接的测试）各自持有快照，既避免串味，也不用改 handler.go 的结构体。
+//
+// 单飞键同样按 pool 区分：不同 pool 的并发 miss 不会共享一次聚合。
+type storageSnapshotState struct {
+	mu     sync.Mutex
+	byPool map[*pgxpool.Pool]*storageOverviewSnapshot
+	sf     singleflight.Group
+
+	// collect / hits 是真实的生产可观测计数（聚合实打实跑了几次、快照
+	// 命中了几次），不只为测试存在：判据靠它证明"聚合只发生了一次"。
+	collect atomic.Int64
+	hits    atomic.Int64
+}
+
+var storageSnapshots = &storageSnapshotState{byPool: make(map[*pgxpool.Pool]*storageOverviewSnapshot)}
+
+func (s *storageSnapshotState) fresh(pool *pgxpool.Pool) *storageOverview {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if snap := s.byPool[pool]; snap != nil && time.Now().Before(snap.expiresAt) {
+		return &snap.overview
+	}
+	return nil
+}
+
+// stale 取快照并忽略过期判断（仅供"采集超时但宁可给旧读数"的兜底）。
+func (s *storageSnapshotState) stale(pool *pgxpool.Pool) *storageOverview {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if snap := s.byPool[pool]; snap != nil {
+		return &snap.overview
+	}
+	return nil
+}
+
+func (s *storageSnapshotState) put(pool *pgxpool.Pool, ov *storageOverview) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.byPool[pool] = &storageOverviewSnapshot{overview: *ov, expiresAt: time.Now().Add(storageOverviewTTL)}
+}
+
+// reset 清空全部快照（不碰 singleflight 与计数）。
+func (s *storageSnapshotState) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.byPool = make(map[*pgxpool.Pool]*storageOverviewSnapshot)
+}
+
+// resetForTest 测试隔离：快照 + 计数全清。
+//
+// 刻意**不**重置 s.sf：singleflight.Group 内含互斥量，赋零值会与仍在飞行
+// 中的 DoChan 竞争。运维侧的失效走 reset()，同样不碰 Group。
+func (s *storageSnapshotState) resetForTest() {
+	s.reset()
+	s.collect.Store(0)
+	s.hits.Store(0)
+}
+
+// storageOverviewSnapshot 取快照：命中则直接返回，否则单飞聚合一次。
+//
+// 失败语义保持与优化前一致：聚合永远成功（内部各段失败只记 warning），
+// 所以本函数不会返回 error，HTTP 状态恒为 200。
+func (h *Handler) storageOverviewSnapshot(ctx context.Context) *storageOverview {
+	if ov := storageSnapshots.fresh(h.db); ov != nil {
+		storageSnapshots.hits.Add(1)
+		return ov
+	}
+
+	// 慢路径：并发 miss 只跑一次聚合。
+	//
+	// 聚合用 WithoutCancel 的独立 ctx：发起者被客户端断开/超时时，
+	// 不能把其他等待者共享的那一次聚合一起取消掉。等待方仍各自受自己的
+	// ctx 约束（见下面的 select）。
+	ch := storageSnapshots.sf.DoChan(fmt.Sprintf("storage-overview:%p", h.db), func() (any, error) {
+		collectCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), storageCollectTimeout)
+		defer cancel()
+		storageSnapshots.collect.Add(1)
+		ov := collectStorageOverview(collectCtx, h)
+		storageSnapshots.put(h.db, ov)
+		return ov, nil
+	})
+
+	select {
+	case res := <-ch:
+		if res.Err == nil {
+			return res.Val.(*storageOverview)
+		}
+		slog.Warn("storage: snapshot collect failed", "error", res.Err)
+	case <-ctx.Done():
+		// 等待期间本请求超时。回落到最近一次快照（可能已过 TTL）：
+		// 宁可给稍旧的读数，也不要让字段凭空消失。
+	}
+
+	if ov := storageSnapshots.stale(h.db); ov != nil {
+		return ov
+	}
+	// 无任何历史快照：沿用优化前的降级形态（200 + warning + 零值字段），
+	// 不引入新的 HTTP 状态码。
+	return &storageOverview{
+		Warnings:    []string{"存储快照采集未完成且无可用缓存，请稍后重试"},
+		CollectedAt: time.Now().UTC(),
+	}
+}
+
+// InvalidateDataLifecycleStorageCache 清空存储总览快照。
+//
+// 运维入口：任何会改变物理占用的操作（VACUUM FULL / REINDEX）完成后都应
+// 调用，否则 UI 最长会显示 storageOverviewTTL（30s）之前的读数。本仓已在内置
+// 表级维护任务 runTableMaintenanceJob 里自动调用；本函数供**仓外**改动物理
+// 尺寸的操作（如手工 psql 执行 VACUUM FULL、pg_restore、扩展安装）显式失效用。
+//
+// 只丢快照、不重置 singleflight.Group：本函数由后台维护任务 goroutine 调用，
+// 此刻可能有 HTTP 请求正处在 sf.DoChan 里，赋新的 Group 会与之竞争。
+func InvalidateDataLifecycleStorageCache() { storageSnapshots.reset() }
+
+// resetDataLifecycleStorageCacheForTest 测试隔离用：快照与计数全清。
+func resetDataLifecycleStorageCacheForTest() { storageSnapshots.resetForTest() }
+
+// dataLifecycleStorageCollectCount 快照聚合的真实执行次数（测试 + 观测）。
+func dataLifecycleStorageCollectCount() int64 { return storageSnapshots.collect.Load() }
+
+// dataLifecycleStorageCacheHitCount 快照命中次数（测试 + 观测）。
+func dataLifecycleStorageCacheHitCount() int64 { return storageSnapshots.hits.Load() }
+
+// collectStorageOverview 真正跑四段聚合的慢路径（原 handler 主体，逻辑未改）。
+func collectStorageOverview(ctx context.Context, h *Handler) *storageOverview {
+	resp := &storageOverview{
 		Warnings:    []string{},
 		CollectedAt: time.Now().UTC(),
 	}
@@ -193,7 +373,7 @@ func (h *Handler) handleDataLifecycleStorage(w http.ResponseWriter, r *http.Requ
 			"本机日志目录已超过 5GB，建议调小 log.max_size_mb / log.max_age_days")
 	}
 
-	writeJSON(w, http.StatusOK, resp)
+	return resp
 }
 
 // handleDataLifecycleTableSizes GET /api/admin/data-lifecycle/storage/tables?limit=20
@@ -409,24 +589,47 @@ func queryDirectory(path string) directoryInfo {
 }
 
 // queryTableSizes Top-N 大表（含索引和 TOAST），带 DB 占比
+//
+// 2026-10-16 第二次性能修正（撤掉同一天第一次修正）：
+//
+//	第一次修正给这段 SQL 套了一层 `FROM ( ... ) sized` 派生表，理由是
+//	「pg_total_relation_size 是按行函数，让它只算一次、外层按别名排序」。
+//	这个理由成立，但**修法是错的**：派生表挡住了 planner 把 LIMIT 下推，
+//	于是 toast 那个相关子查询必须对**内层的全部 440 行**求值，而不是只对
+//	最终要返回的 20 行。该子查询每次都 `Seq Scan on pg_class t`（3881 行）。
+//
+//	真实 EXPLAIN ANALYZE（本机 PG17.10，pgcolumnar 已装）：
+//	  带派生表：SubPlan 1 → Seq Scan on pg_class t (actual rows=0 loops=**440**)
+//	            Rows Removed by Filter: 3881   Execution Time: **4571ms**
+//	  无派生表：SubPlan 1 → Seq Scan on pg_class t (actual rows=0 loops=**20**)
+//	            Rows Removed by Filter: 3881   Execution Time: **1104–1289ms**
+//
+//	即 440 × 3881 ≈ 170 万行的重复全表扫描，全部花在最终**不会返回**的行上。
+//	第一次修正报的「1504ms → 527ms」是错的：它只测了派生表版的耗时，
+//	没有对照「不套派生表」这个更简单的选项，于是把 4571ms 当成了改进。
+//
+//	现写法直接去掉派生表，并用 `ORDER BY 4`（位置引用）排序：
+//	位置引用指向输出列，PG 复用 SELECT 已算出的值，**不会**重算
+//	pg_total_relation_size —— 第一次修正想达成的「每行只算一次」照样成立，
+//	同时 LIMIT 又能下推。语义与原查询逐列相同。
 func queryTableSizes(ctx context.Context, h *Handler, limit int) ([]tableSizeInfo, int64, string, error) {
 	rows, err := h.db.Query(ctx, `
 		SELECT
-			c.relname AS table_name,
-			n.nspname AS schema_name,
-			COALESCE(s.n_live_tup, 0) AS row_estimate,
-			pg_total_relation_size(c.oid) AS total_bytes,
-			pg_indexes_size(c.oid) AS index_bytes,
+			c.relname,
+			n.nspname,
+			COALESCE(s.n_live_tup, 0),
+			pg_total_relation_size(c.oid),
+			pg_indexes_size(c.oid),
 			COALESCE(pg_total_relation_size((
 				SELECT t.oid FROM pg_class t WHERE t.reltoastrelid = c.oid
-			)), 0) AS toast_bytes,
-			(c.relkind = 'p') AS is_partitioned
+			)), 0),
+			(c.relkind = 'p')
 		FROM pg_class c
 		JOIN pg_namespace n ON n.oid = c.relnamespace
 		LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
 		WHERE n.nspname NOT IN ('pg_catalog','information_schema')
 		  AND c.relkind IN ('r','p')
-		ORDER BY pg_total_relation_size(c.oid) DESC
+		ORDER BY 4 DESC
 		LIMIT $1
 	`, limit)
 	if err != nil {
@@ -825,6 +1028,10 @@ func (h *Handler) runTableMaintenanceJob(ctx context.Context, run *JobRun, schem
 	h.succeedJob(run, fmt.Sprintf("%s 完成", op))
 
 	h.UpdateProgress(run, sizeSaved, sizeBefore, 1, "完成")
+
+	// 2026-10-16：VACUUM FULL / REINDEX 会真实重写表与索引，物理占用已经变了。
+	// 立刻失效存储总览快照，别让 UI 继续显示动手之前的读数（不必等 30s TTL）。
+	InvalidateDataLifecycleStorageCache()
 }
 
 // opToJobType 把字符串 op 映射到对应的 JobType 枚举

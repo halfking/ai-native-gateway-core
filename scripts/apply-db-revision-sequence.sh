@@ -8,7 +8,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if command -v psql >/dev/null 2>&1; then
   psql_query() { psql -X -v ON_ERROR_STOP=1 -Atqc "$1" "$DATABASE_URL"; }
-  psql_file() { psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -f "$1"; }
+  psql_stream() { psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -f -; }
 else
   : "${LLM_GATEWAY_PG_CONTAINER:?psql is unavailable; set LLM_GATEWAY_PG_CONTAINER for Docker execution}"
   : "${LLM_GATEWAY_PG_PASSWORD:?set LLM_GATEWAY_PG_PASSWORD for Docker execution}"
@@ -17,12 +17,123 @@ else
       psql -X -v ON_ERROR_STOP=1 -U "${LLM_GATEWAY_PG_USER:-llm_gateway}" \
       -d "${LLM_GATEWAY_PG_DATABASE:-llm_gateway}" -Atqc "$1"
   }
-  psql_file() {
+  psql_stream() {
     docker exec -i -e PGPASSWORD="$LLM_GATEWAY_PG_PASSWORD" "$LLM_GATEWAY_PG_CONTAINER" \
       psql -X -v ON_ERROR_STOP=1 -U "${LLM_GATEWAY_PG_USER:-llm_gateway}" \
-      -d "${LLM_GATEWAY_PG_DATABASE:-llm_gateway}" -f - < "$1"
+      -d "${LLM_GATEWAY_PG_DATABASE:-llm_gateway}" -f -
   }
 fi
+
+# Historical SQL bytes (and content_sha256) remain immutable. After 860,
+# translate only the six exact physical-name tokens, including SQL literals
+# and dollar-quoted bodies. This is a bounded lexical adapter, NOT a SQL parser:
+# comments/prose with exact tokens also change; computed identifiers are not
+# generally inferred (811's exact derived INSERT target is handled explicitly).
+# Functions, views, indexes and monthly/prefix names remain unchanged. 708 has
+# a separate locked zero-work backfill guard; nonempty historical work remains
+# original SQL and is NOT silently skipped on unsupported storage engines.
+# Never adapt 860 itself: its old/new probes and rename statements must survive.
+# Both transports consume the SAME adapted stream, without copying files into
+# a Docker container or temporarily renaming live tables back.
+request_logs_generation() {
+  psql_query "
+WITH family(name) AS (VALUES ('request_logs'), ('request_logs_hot'),
+  ('request_logs_bodies'), ('request_logs_bodies_hot'),
+  ('request_logs_archive'), ('request_logs_id_seq'))
+SELECT CASE
+  WHEN EXISTS (SELECT 1 FROM family WHERE to_regclass('public.' || name) IS NOT NULL
+    AND to_regclass('public._' || name) IS NOT NULL) THEN 'ambiguous'
+  WHEN to_regclass('public._request_logs') IS NOT NULL THEN
+    CASE WHEN EXISTS (SELECT 1 FROM family WHERE to_regclass('public.' || name) IS NOT NULL)
+      THEN 'mixed' ELSE 'renamed' END
+  ELSE 'legacy' END"
+}
+request_logs_sql() {
+  local file="$1"
+  if [[ "$runtime_adaptation" == none ]]; then
+    cat "$file"
+    return
+  fi
+  command -v python3 >/dev/null 2>&1 || {
+    printf 'error: python3 required for post-860 historical SQL adaptation\n' >&2
+    return 4
+  }
+  python3 - "$file" "$runtime_adaptation" <<'PY'
+import re
+import sys
+from pathlib import Path
+# SQL identifiers may contain $, non-ASCII letters and underscores. Do not
+# rewrite a substring of one, nor double-prefix already-renamed identifiers.
+names = r'request_logs(?:_bodies_hot|_bodies|_hot|_archive|_id_seq)?'
+pattern = re.compile(r'(?<![\w$])(' + names + r')(?![\w$])')
+source = Path(sys.argv[1]).read_bytes()
+text = source.decode('utf-8')
+if sys.argv[2].startswith('request-logs-physical-v1'):
+    text = pattern.sub(lambda m: '_' + m.group(0), text)
+if Path(sys.argv[1]).name == '708_session_bodies_s1a.sql':
+    # ColumnarScan rejects even zero-row UPDATE. Preserve the original UPDATE
+    # for partitions with candidates; only avoid provably empty work. The lock
+    # excludes concurrent DML between the predicate check and the original DML.
+    anchor = """    LOOP
+        EXECUTE format(
+            'UPDATE public.%I SET kind = %L WHERE turn_no > 0 AND kind = %L',"""
+    replacement = """    LOOP
+        EXECUTE format('LOCK TABLE public.%I IN SHARE ROW EXCLUSIVE MODE', part.partition_name);
+        EXECUTE format('SELECT EXISTS (SELECT 1 FROM public.%I WHERE turn_no > 0 AND kind = %L)',
+            part.partition_name, 'final_full') INTO part_needs_backfill;
+        IF NOT part_needs_backfill THEN CONTINUE; END IF;
+        EXECUTE format(
+            'UPDATE public.%I SET kind = %L WHERE turn_no > 0 AND kind = %L',"""
+    declaration = '    part RECORD;\n'
+    if text.count(anchor) != 1 or text.count(declaration) != 1:
+        raise SystemExit('708 runtime adaptation: historical anchors drifted; review required')
+    text = text.replace(declaration, declaration + '    part_needs_backfill boolean;\n', 1)
+    text = text.replace(anchor, replacement, 1)
+if Path(sys.argv[1]).name == '811_partition_bounds_shanghai_midnight_repair.sql' and sys.argv[2].startswith('request-logs-physical-v1'):
+    # Children intentionally keep old names. 811 derives the parent from a
+    # backup child's name, so token replacement cannot see that runtime value.
+    # Map ONLY its INSERT target, never the next-month child existence probe.
+    derived = """regexp_replace(regexp_replace(r.bak, '_bounds_repair_bak$', ''),
+                                      '_[0-9]{4}_[0-9]{2}$', '')"""
+    anchor = derived + ', r.bak);'
+    replacement = "CASE " + derived + " WHEN 'request' || '_logs' THEN '_request_logs' ELSE " + derived + " END, r.bak);"
+    if text.count(anchor) != 1:
+        raise SystemExit('811 runtime adaptation: historical anchor drifted; review required')
+    text = text.replace(anchor, replacement, 1)
+sys.stdout.buffer.write(text.encode('utf-8'))
+PY
+}
+prepare_runtime_sql() {
+  local state
+  state="$(request_logs_generation)"
+  case "$state" in
+    legacy) runtime_adaptation=none ;;
+    renamed) runtime_adaptation=request-logs-physical-v1 ;;
+    *) printf 'error: request_logs family generation is %s; resolve manually (no rename-back)\n' "$state" >&2; return 4 ;;
+  esac
+  if [[ "$(basename "$1")" == 860_rename_request_logs_family_pending_delete.sql ]]; then
+    runtime_adaptation=none
+  elif [[ "$(basename "$1")" == 708_session_bodies_s1a.sql ]]; then
+    runtime_adaptation="${runtime_adaptation}+708-empty-backfill-v1"
+  elif [[ "$(basename "$1")" == 811_partition_bounds_shanghai_midnight_repair.sql && "$runtime_adaptation" != none ]]; then
+    runtime_adaptation="${runtime_adaptation}+811-derived-parent-v1"
+  fi
+}
+psql_file() {
+  prepare_runtime_sql "$1"
+  # Track delivered bytes separately; never put the adapted hash in the source
+  # content ledger. Existing source-matched markers retain their skip semantics;
+  # NULL execution provenance honestly means the old delivery is unverified.
+  if command -v sha256sum >/dev/null 2>&1; then
+    execution_sha="$(request_logs_sql "$1" | sha256sum | cut -d' ' -f1)"
+  else
+    execution_sha="$(request_logs_sql "$1" | shasum -a 256 | cut -d' ' -f1)"
+  fi
+  printf 'runtime SQL: %s (source %.12s, execution %.12s)\n' "$runtime_adaptation" "$(sha256_file "$1")" "$execution_sha"
+  request_logs_sql "$1" | psql_stream
+}
+# Detect ambiguity before any runner-owned ledger/bootstrap mutation.
+prepare_runtime_sql "$ROOT_DIR/sql/migrations/startup/860_rename_request_logs_family_pending_delete.sql"
 
 # Do not mutate a database whose required base relation is absent. In
 # particular, never rename/drop a same-named table from another product.
@@ -69,6 +180,7 @@ psql_query "CREATE TABLE IF NOT EXISTS public.gateway_db_revision_sequences (seq
 # 每次应用都记录当前文件内容 sha256，同名文件内容变更即可被识别并重放
 # （通道契约：每个迁移幂等，重跑安全——见文件头注释）。
 psql_query "ALTER TABLE public.gateway_db_revision_sequences ADD COLUMN IF NOT EXISTS content_sha256 text"
+psql_query "ALTER TABLE public.gateway_db_revision_sequences ADD COLUMN IF NOT EXISTS execution_sha256 text, ADD COLUMN IF NOT EXISTS runtime_adaptation text"
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -127,6 +239,71 @@ sha256_file() {
 # with origin/main's 657_durable_llm_tasks / 658_auto_route_structured_features,
 # so the weekly-peak repair moved to 660 and the reassert to 661.)
 files=(
+  # ── 2026-10-16 通道缺口审计（admin 端点 500 + 写侧故障）─────────────────
+  #
+  # 缺口性质：下面四个 startup 文件**已**登记在 installer's
+  # sql/schema/installed_startup_migrations.tsv（456→index 6、351→index 8、
+  # 629→index 84、632→index 87），但**从未**进入本通道的 files=()，
+  # 所以部署库上它们一个对象都没有。逐 API 扫描 416 个 admin 端点得到 12 个
+  # 500，其中 7 个由本块解释，证据见 docs/db-changelog.md 的同名小节。
+  #
+  # 为什么本块排在数组**最前**：四条迁移各自自包含（无外键、无跨表 JOIN、
+  # 无依赖本通道其它文件创建的表），且全部幂等（CREATE TABLE/INDEX/POLICY
+  # IF NOT EXISTS、DROP POLICY IF EXISTS + CREATE、ADD COLUMN IF NOT EXISTS）。
+  # 放在最前既不改动既有 677→655→… 的依赖顺序，也让这批修复先于任何会读
+  # public.sessions / session_turns 的后续文件落地。
+  #
+  # 456（7 端点共用）：public.sessions 的整组显示列（title/summary/
+  # summary_model/summary_generated_at/summary_quality/last_full_*）。
+  #   缺它时 admin/turns_sessions.go:152 的 s.title 与
+  #   admin/annotation_handler.go:706 的 sc.title 报 42703；
+  #   **更严重的是写侧** —— internal/titlestore/store.go:268/333 每次标题提交
+  #   都 UPDATE public.sessions SET title=…，该列不存在时整条提交路径报错。
+  # 351（session-clusters 端点）：session_clusters / session_cluster_members
+  #   等聚类表 + pgvector 维度列，admin/session_clusters_handler.go:97/130/163
+  #   读它们，缺失即 42P01。
+  # 629/632（attachments/cleanup/execute）：audit_attachments_cleanup 与
+  #   audit_attachments_filesystem_cleanup，admin/data_lifecycle_attachments.go:499
+  #   的 INSERT 目标，缺失即 42P01。
+  #
+  # ★ 排除项（**不要**照抄登记）：315 / 364 无法登记，原因是文件自身与
+  #   sql/schema/01-schema.sql 对同一张表给出互斥定义，且非幂等：
+  #   - sql/schema/01-schema.sql:11398 把 prompt_injection_detections.risk_level
+  #     定为 integer + CHECK(1..10)，315:135 把它定为 VARCHAR(20)；
+  #   - 315 的 CREATE TABLE IF NOT EXISTS 在基线已建表时**整段跳过**，于是
+  #     detection_score / matched_rules / matched_rules_count 永远不会被加上，
+  #     而 364 的 prompt_injection_stats_enhanced 视图正是按这些列建的；
+  #   - 315 的 4 个 CREATE INDEX 与 4 个 CREATE POLICY 均无 IF NOT EXISTS，
+  #     316 基线已建的库上直接 42P07/42710 中断；
+  #   - 315 自己的 prompt_injection_stats_today 视图按 risk_level='critical'
+  #     过滤，在 integer 列上 22P02。
+  #   本通道用 psql -v ON_ERROR_STOP=1 流式执行，登记 315 会**中断整条腿**并让
+  #   台账停在它之前的文件上。需单独一条编号更高的增量迁移解决基线冲突，
+  #   不在本轮范围。详见 docs/db-changelog.md「通道缺口审计」小节。
+  "$ROOT_DIR/sql/migrations/startup/456_session_v2_display_columns.sql"
+  "$ROOT_DIR/sql/migrations/startup/351_session_analytics_tables.sql"
+  "$ROOT_DIR/sql/migrations/startup/629_audit_attachments_cleanup.sql"
+  "$ROOT_DIR/sql/migrations/startup/632_audit_attachments_filesystem_cleanup.sql"
+  # 567（2026-10-16，与上面同族的第二层缺口）：session_analysis_metadata。
+  # admin/session_meta_view.go:90 的 sessionAnalysisJoinSQL 用 LEFT JOIN LATERAL
+  # 读它，而 admin/turns_sessions.go:173 把该 LATERAL 拼进列表主查询，所以缺它
+  # 时 /api/admin/turns/sessions 是 42P01。
+  #
+  # 归到本块的理由：它与 456 是**同一次修复暴露出的两层缺口**——456 落地后
+  # turns/sessions 的第一个缺失对象消失，第二个（567 的表）才浮上来。两者都是
+  # 「文件存在 + 已登记在 installed_startup_migrations.tsv + 从未进入通道」。
+  # 567 自包含（DO 块内 information_schema 守卫、无外键、无跨表依赖）且幂等。
+  "$ROOT_DIR/sql/migrations/startup/567_session_analysis_metadata.sql"
+  # 470/472（2026-10-16，同一缺口族的第三个实例）：cache_metrics 族。
+  # 470 建分区父表 + 两个聚合索引 + 两枚 CHECK，472 建 default 与 2026_08/2026_09
+  # 月分区并补分区级索引。admin/cache_metrics_handler.go:69/97/198 的三个查询
+  # （/api/admin/cache-metrics/{summary,timeline,top-layers}）都读它，父表缺失
+  # 时一律 42P01 —— 端点返回 "query failed"。
+  # 两条同样已登记在 installed_startup_migrations.tsv（index 4 / index 5）却从未
+  # 进入通道。两条都用 pg_tables / pg_inherits 存在性守卫包住，幂等；
+  # **470 必须排在 472 之前**（472 要 PARTITION OF 一个已存在的父表）。
+  "$ROOT_DIR/sql/migrations/startup/470_cache_metrics.sql"
+  "$ROOT_DIR/sql/migrations/startup/472_cache_metrics_partitions.sql"
   # 2026-09-07 deploy-gap audit (P0): on shared PG instances where neither
   # the gateway snapshot nor memora created public.session_summaries, the
   # base_state=='missing' gate previously refused the whole sequence. 677
@@ -152,6 +329,22 @@ files=(
   # returns ErrNoRows and the worker warns + returns every tick. All three
   # are idempotent (CREATE MATERIALIZED VIEW IF NOT EXISTS / ON CONFLICT
   # DO NOTHING); 357 precedes 358 (session_owner_stats reads its shapes).
+  #
+  # 2026-10-16: 683b must run BEFORE 357, not after it. 357 does
+  #   LEFT JOIN session_dim sd ON ss.session_key = sd.gw_session_id ...
+  # but session_dim is absent from the baseline schema (01-schema.sql has zero
+  # CREATE TABLE for it) — it is created only by 350 / 683b / 805, and 350 is
+  # deliberately NOT in this leg (it drops update_session_summary(), which 563
+  # has already wired a trigger to — see 683b's header). So on any database
+  # built from the baseline rather than carried forward from an older install,
+  # 357 aborted with
+  #   ERROR:  relation "session_dim" does not exist
+  # and, because the ledger stops advancing on the first failure, every later
+  # file in the leg was blocked behind it. 683b is the minimal, self-contained
+  # creator (CREATE TABLE/INDEX IF NOT EXISTS plus an RLS block guarded on
+  # policy absence) and depends on nothing 357 or 358 do, so ordering it first
+  # is safe and is the same fix 683b already performed for 683.
+  "$ROOT_DIR/sql/migrations/startup/683b_session_dim_table_prelude.sql"
   "$ROOT_DIR/sql/migrations/startup/357_session_analytics_aggregation_views.sql"
   "$ROOT_DIR/sql/migrations/startup/358_session_ownership.sql"
   # 2026-10-12: 855 puts a 30-day window on the three session-analytics MVs.
@@ -177,11 +370,36 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/860_rename_request_logs_family_pending_delete.sql"
   # 861（2026-10-14）：重建 candidate_failure_logs_with_current_month 吸收
   # session_id 列（SELECT * 视图不跟随后续 ALTER；42703 修复）。
-  "$ROOT_DIR/sql/migrations/startup/861_candidate_failure_view_absorb_session_id.sql"
+  # 2026-10-16: 392 moved up here from below 532. It creates
+  # candidate_failure_logs_hot (the base candidate_failure_logs IS in the
+  # baseline schema, the hot sibling is not), and 861 reads that hot table — so
+  # on a database built from the baseline the sequence aborted at 861 with
+  #   ERROR:  relation "candidate_failure_logs_hot" does not exist
+  # and the ledger stopped advancing, blocking every later file. 392 is
+  # idempotent (23x on live databases) and depends on nothing earlier in this
+  # leg: the only relation it reads is the baseline one. It still precedes
+  # 694/698/705, which its own promote/ensure function bodies must be clobbered
+  # by, so the intentional_function_chains ordering is preserved.
+  "$ROOT_DIR/sql/migrations/startup/392_candidate_failure_logs_monthly_partition.sql"
   # 862（2026-10-14）：session_turns / _request_logs 两分区父表无谓词 (ts)
   # 前导索引（canonical 视图窗口臂 + V1FreezeCutoffSQL 母表臂；842/846/858
   # 普通父表级联先例）。request_logs 腿引用 860 后的 `_` 前缀名。
   "$ROOT_DIR/sql/migrations/startup/862_partition_family_leading_ts_idx.sql"
+  # ── 2026-10-16：sql/migrations/domain/032（session-crosstalk 端点）──────
+  #
+  # session_tenant_binding 表 + update_session_tenant_binding() 触发器函数，
+  # admin/handler.go:1328 的 /api/admin/session-crosstalk 读它，缺失即 42P01。
+  #
+  # 顺序约束：032:80 的 `DROP TRIGGER IF EXISTS … ON request_logs` 目标表在
+  # 860 之后叫 `_request_logs`。本通道既有的封闭 token 机制
+  # （prepare_runtime_sql / request_logs_sql，见文件头注释）按运行期代际自动
+  # 改写这六个精确 token，**不需要**为本文件另造机制；排在 860 之后即拿到
+  # request-logs-physical-v1 改写（legacy 库上则原样用 request_logs，两种
+  # 代际都正确）。
+  #
+  # 函数唯一性：update_session_tenant_binding() 在整个 sql/ 树下只由本文件
+  # CREATE OR REPLACE 一处定义，故不需要登记进 intentional_function_chains。
+  "$ROOT_DIR/sql/migrations/domain/032_session_tenant_binding.sql"
   # 864（2026-10-15）：model_aliases 裸列 (raw_name, canonical_id) WHERE active
   # 部分索引 —— S3 波 3 alias 链（raw_name = lower(外列)）在全部生产读点
   # 无法用 lower(raw_name) 表达式索引与 uq 第二列，CMI rollup 68/h 被 30s
@@ -228,6 +446,9 @@ files=(
   # which also reference the view/column. All idempotent.
   "$ROOT_DIR/sql/migrations/startup/617_candidate_failure_logs_hot_contract.sql"
   "$ROOT_DIR/sql/migrations/startup/622_provider_error_aggregator_state.sql"
+  # Fresh 392 hot shape lacks the two diagnosis columns explicitly selected
+  # by 627. 803's header names this prerequisite; run it before that view.
+  "$ROOT_DIR/sql/migrations/startup/803_candidate_failure_logs_hot_column_reconcile.sql"
   "$ROOT_DIR/sql/migrations/startup/627_candidate_failure_logs_aggregation_id_unified.sql"
   "$ROOT_DIR/sql/migrations/startup/628_candidate_failure_logs_promote_atomic_v3.sql"
   "$ROOT_DIR/sql/migrations/startup/644_tuning_views_selfcheck_and_candidate_failure_cache.sql"
@@ -399,7 +620,11 @@ files=(
   # and that aborts with 2BP01 once 563 has already created the trigger on the
   # function — a dependency 350 cannot satisfy. 683b creates just the table
   # 683 needs, guarded and idempotent.
-  "$ROOT_DIR/sql/migrations/startup/683b_session_dim_table_prelude.sql"
+  #
+  # 2026-10-16: 683b moved up to just before 357 — 357 also reads session_dim,
+  # and on a baseline-built database it is created by neither this file's
+  # neighbours nor 01-schema.sql. It is deliberately applied ONCE, at the
+  # earlier position, not in both places.
   "$ROOT_DIR/sql/migrations/startup/683_session_dim_ownership_columns.sql"
   # 2026-09-07 部署后观察 (聚合器 tick 23505 间歇复现): 坏 665 残留的
   # idx_provider_error_details_tenant_fingerprint(键含 LEFT(error_message,200)、
@@ -440,7 +665,6 @@ files=(
   # 其 hot 表；392 也带旧版 promote/ensure 函数体，同样必须置于 694/698
   # 之前让链尾保持时区钉扎版（链序见 intentional_function_chains）。
   "$ROOT_DIR/sql/migrations/startup/532_request_logs_final_success.sql"
-  "$ROOT_DIR/sql/migrations/startup/392_candidate_failure_logs_monthly_partition.sql"
   "$ROOT_DIR/sql/migrations/startup/694_partition_ensure_timezone.sql"
   # 2026-09-12 同款升级通道缺口：695 promote final-success 冲突自愈（P2
   # 冷迁移停滞根因的数据面修复）同样只存在于仓库文件，db.go 无 ensure 镜像、
@@ -1001,7 +1225,6 @@ files=(
   #   806 session_bodies columnar 分区转 heap：仅对「非 heap 且为空」分区
   #   动手；生产/本机 session_bodies 分区全 heap，循环为空集零动作。位置
   #   约束：晚于 708（其 S1A 结构），已满足。
-  "$ROOT_DIR/sql/migrations/startup/803_candidate_failure_logs_hot_column_reconcile.sql"
   "$ROOT_DIR/sql/migrations/startup/804_credential_model_context_window_columns.sql"
   "$ROOT_DIR/sql/migrations/startup/805_session_dim_reconcile.sql"
   "$ROOT_DIR/sql/migrations/startup/806_session_bodies_partitions_heap.sql"
@@ -1394,6 +1617,21 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/858_request_logs_final_success_gsid_idx.sql"
   # Physical body-writer repair, independent of the historical 708 ledger.
   "$ROOT_DIR/sql/migrations/startup/865_session_bodies_kind_reconcile.sql"
+  # 861 requires both the hot table (392) and its later aggregation/session
+  # columns (617/627/803). Rebuild the view only after those repairs, not at
+  # the front of the sequence where a fresh baseline lacks those columns.
+  "$ROOT_DIR/sql/migrations/startup/861_candidate_failure_view_absorb_session_id.sql"
+  # 869（2026-10-16 retire 轮）：把目录派生列清单**重新确立**为本通道终态体。
+  # 缺陷本体：promote_session_turns_hot_to_partition 的硬编码 54 列清单相对
+  # hot 的 106 列会静默丢弃 52 列（trace_events / is_final_success /
+  # request_delta / identity_hash / system_fingerprint / upstream_* / stream_* …），
+  # 每次晋级都丢且不报错、moved 计数照常递增。本机存量已可见：session_turns
+  # 229 行 count(trace_events)=0，session_turns_hot 264 行 264 行全带 trace。
+  #
+  # 排在本数组**末尾**（而非 707 旁边）是关键：本清单里 707 在前、640 在后，
+  # 640 为 713 的 client_protocol 前置而登记，却带着旧的硬编码函数体，每次重放
+  # 都把 707 的目录派生体覆盖掉。869 落在 640 之后，才不会被同一次重放顶掉。
+  "$ROOT_DIR/sql/migrations/startup/869_promote_session_turns_trace_events.sql"
 )
 
 
@@ -1455,7 +1693,15 @@ intentional_function_chains=(
   # single authoritative rewriter of that function within this list. So 707
   # must stay first and 640 last, or the SELECT * form 707 installs would be
   # clobbered.
-  'promote_session_turns_hot_to_partition|707_session_turns_s1a.sql|640_session_turns_protocol_fields.sql|'
+  #
+  # 2026-10-16 retire 轮改判：上面把 640 当作「终态体」正是本次数据丢失缺陷的
+  # 根因。640 的硬编码 54 列清单相对 hot 的 106 列静默丢弃 52 列（含
+  # trace_events），晋级不报错、计数照常递增——两侧列集合全等，707 的列形状
+  # 守卫因此完全看不出问题（它守的是表形状，不是搬运清单）。
+  # 链序现为 707 → 640 → 869，**869 必须是最后一项**：它是活库里应有的终态体
+  # （目录派生列清单 + 列形状守卫 + 后置条件）。链里去掉 869，部署会在应用任何
+  # 文件之前 abort（exit 5）。
+  'promote_session_turns_hot_to_partition|707_session_turns_s1a.sql|640_session_turns_protocol_fields.sql|869_promote_session_turns_trace_events.sql|'
   # 563 restores the hot trigger with the corrected unbounded-numeric ratio
   # body; 661 re-asserts the same fixed body AFTER 563 and validates the
   # function source. 572 must stay before 563; 661 must stay last.
@@ -1464,11 +1710,11 @@ intentional_function_chains=(
   # the scan-leg numeric order production received (572, 563, 358, 661).
   'update_session_summary|572_session_summary_large_token_ratio.sql|563_session_summary_trigger_on_hot.sql|358_session_ownership.sql|661_session_summary_token_ratio_reassert.sql|'
   # 2026-10-12 channel-leg registration: the candidate_failure_logs promote
-  # chain as sequenced here is 628 (v3, carries aggregation_id) → 392 (first
-  # partitioned promote) → 698 (Asia/Shanghai timezone pin, still carrying
+  # chain as sequenced here is 392 (first partitioned promote) → 628 (v3,
+  # carries aggregation_id) → 698 (Asia/Shanghai timezone pin, still carrying
   # aggregation_id). 698 must stay last — it is the final body production's
   # numeric-order scan leg ended with, same as this chain.
-  'promote_candidate_failure_logs_hot_to_partition|628_candidate_failure_logs_promote_atomic_v3.sql|392_candidate_failure_logs_monthly_partition.sql|698_promote_hot_partition_timezone_pin.sql|'
+  'promote_candidate_failure_logs_hot_to_partition|392_candidate_failure_logs_monthly_partition.sql|628_candidate_failure_logs_promote_atomic_v3.sql|698_promote_hot_partition_timezone_pin.sql|'
   # 2026-10-12 channel-leg registration: 358 redefines 357's
   # refresh_session_analytics_views when it takes over session ownership
   # analytics; 358 stays last, matching production's numeric order.
@@ -1633,9 +1879,52 @@ if [[ -n "$redefined_functions" ]]; then
   printf '%s\n' "$redefined_functions" | sed 's/^/  /; s/|$//'
 fi
 
+# 532 can append is_final_success AFTER 680 freezes the wrapper. Historical
+# 696/700 rebuild from that older wrapper and then collide with the extra tail
+# column. Append only their missing columns onto the current canonical query;
+# preserve its existing column order, dependencies and view options (no DROP).
+# Run even with old delivery markers: source SHA is not a physical-shape proof.
+repair_request_logs_view_tail() {
+  psql_query "
+DO \$repair\$
+DECLARE
+  cols text;
+  def text;
+  parent_name text;
+  hot_name text;
+  options text;
+BEGIN
+  SELECT string_agg(quote_ident(name), ', ' ORDER BY ord) INTO cols
+  FROM (VALUES ('system_fingerprint', 1), ('raw_model_name', 2)) AS wanted(name, ord)
+  WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='request_logs_with_current_month'
+      AND column_name=wanted.name);
+  IF cols IS NULL THEN RETURN; END IF;
+  parent_name := CASE WHEN to_regclass('public._request_logs') IS NOT NULL
+    THEN '_request_logs' ELSE 'request_logs' END;
+  hot_name := parent_name || '_hot';
+  def := rtrim(pg_get_viewdef('public.request_logs_with_current_month'::regclass, true), ';' || chr(10) || chr(32));
+  SELECT string_agg(format('%I=%L', option_name, option_value), ', ') INTO options
+    FROM pg_class c, LATERAL pg_options_to_table(c.reloptions)
+    WHERE c.oid='public.request_logs_with_current_month'::regclass;
+  EXECUTE format('CREATE OR REPLACE VIEW public.request_logs_with_current_month %s AS
+    SELECT v.*, source.* FROM (%s) v LEFT JOIN LATERAL (
+      SELECT %s FROM public.%I h WHERE h.request_id=v.request_id AND h.ts=v.ts
+      UNION ALL
+      SELECT %s FROM public.%I p WHERE p.request_id=v.request_id AND p.ts=v.ts
+      LIMIT 1) source ON true', CASE WHEN options IS NULL THEN '' ELSE 'WITH (' || options || ')' END,
+      def, cols, hot_name, cols, parent_name);
+  RAISE NOTICE 'runner request_logs view-tail postcondition: appended %', cols;
+END
+\$repair\$;"
+}
+
 for file in "${files[@]}"; do
   [[ -f "$file" ]] || { printf 'error: missing migration %s\n' "$file" >&2; exit 4; }
   base="$(basename "$file")"
+  if [[ "$base" == 696_request_logs_view_system_fingerprint.sql ]]; then
+    repair_request_logs_view_tail
+  fi
   marker="${sequence_name}:${base}"
   file_sha="$(sha256_file "$file")"
   # 本文件在 legacy_content_replays 中登记的期望指纹（格式严格的
@@ -1654,7 +1943,7 @@ for file in "${files[@]}"; do
     # （每个迁移幂等）兜底重放安全性，重放使库状态收敛到当前文件内容。
     printf 'content replay (ledger %.12s -> file %.12s): applying %s\n' "$stored_sha" "$file_sha" "${file#"$ROOT_DIR/"}"
     psql_file "$file"
-    psql_query "UPDATE public.gateway_db_revision_sequences SET content_sha256='${file_sha}' WHERE sequence_name='${marker}'"
+    psql_query "UPDATE public.gateway_db_revision_sequences SET content_sha256='${file_sha}', execution_sha256='${execution_sha}', runtime_adaptation='${runtime_adaptation}' WHERE sequence_name='${marker}'"
     continue
   fi
   if [[ "$(psql_query "SELECT 1 FROM public.gateway_db_revision_sequences WHERE sequence_name='${marker}' LIMIT 1")" == 1 ]]; then
@@ -1663,7 +1952,7 @@ for file in "${files[@]}"; do
       # 一次，之后进入常规指纹管理。
       printf 'content replay (legacy, registered): applying %s\n' "${file#"$ROOT_DIR/"}"
       psql_file "$file"
-      psql_query "UPDATE public.gateway_db_revision_sequences SET content_sha256='${file_sha}' WHERE sequence_name='${marker}'"
+      psql_query "UPDATE public.gateway_db_revision_sequences SET content_sha256='${file_sha}', execution_sha256='${execution_sha}', runtime_adaptation='${runtime_adaptation}' WHERE sequence_name='${marker}'"
     else
       printf 'already applied (pre-fingerprint legacy marker): %s\n' "${file#"$ROOT_DIR/"}"
     fi
@@ -1671,7 +1960,7 @@ for file in "${files[@]}"; do
   fi
   printf 'applying %s\n' "${file#"$ROOT_DIR/"}"
   psql_file "$file"
-  psql_query "INSERT INTO public.gateway_db_revision_sequences (sequence_name, content_sha256) VALUES ('${marker}', '${file_sha}') ON CONFLICT (sequence_name) DO NOTHING"
+  psql_query "INSERT INTO public.gateway_db_revision_sequences (sequence_name, content_sha256, execution_sha256, runtime_adaptation) VALUES ('${marker}', '${file_sha}', '${execution_sha}', '${runtime_adaptation}') ON CONFLICT (sequence_name) DO NOTHING"
 done
 # Fingerprints cannot detect physical drift after delivery. Fail before cutover.
 psql_query "SELECT public.assert_session_bodies_kind_contract()"

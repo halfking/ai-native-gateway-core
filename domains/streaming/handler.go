@@ -2126,12 +2126,7 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 				fs    gwtrace.FinalStatus
 				failS gwtrace.Stage
 			)
-			if logCtx.ErrCode == "" {
-				fs, failS = gwtrace.FinalSuccess, ""
-			} else {
-				fs = gwtrace.FinalFailed
-				failS = gwtrace.ClassifyFailureToStage(logCtx.ErrCode)
-			}
+			fs, failS = terminalTraceOutcome(logCtx)
 			// Finalize 必须使用独立 context；客户端断连后 r.Context 已取消。
 			finalizeCtx, finalizeCancel := context.WithTimeout(context.Background(), 2*time.Second)
 			_ = h.traceRecorder.Finalize(finalizeCtx, requestID, fs, failS)
@@ -2265,8 +2260,18 @@ func (h *ChatHandler) serveWithExecutor(
 	// row shows empty body + model="<unknown>" and the operator cannot
 	// tell which client sent the bad request or which model it was
 	// trying to reach (the symptom that triggered the comprehensive audit).
-	captureAndEmitFailure := func(errCode, errMsg string, providerID, credentialID *int) {
+	//
+	// 2026-10-16: clientStatus is the HTTP status this exit is about to write
+	// — the very constant the caller passes to the writeErrorJSON* call on the
+	// next line. It must be stated here because the emit precedes the write and
+	// snapshots the entry synchronously. Passing it explicitly (rather than
+	// sniffing the ResponseWriter) keeps the two facts in one visible place and
+	// fails loudly at compile time if a future exit forgets: without it the row
+	// silently degrades to the consumer-side 500 fallback, which is exactly how
+	// 401 auth rejections were persisted as status_code=500.
+	captureAndEmitFailure := func(errCode, errMsg string, providerID, credentialID *int, clientStatus int) {
 		logCtx.SetError(errCode, errMsg)
+		logCtx.SetClientStatus(clientStatus)
 		logCtx.EnsureCaptured()
 		// 2026-07-27: Surface the provisional session id on early-failure
 		// branches so _request_logs.gw_session_id stays non-empty without
@@ -2320,7 +2325,7 @@ func (h *ChatHandler) serveWithExecutor(
 	if h.keyVerifier != nil && h.keyVerifier.Enabled() {
 		rawKey := extractBearerToken(r)
 		if rawKey == "" {
-			captureAndEmitFailure("missing_key", "missing api key", nil, nil)
+			captureAndEmitFailure("missing_key", "missing api key", nil, nil, http.StatusUnauthorized)
 			writeErrorJSONCtx(r.Context(), w, http.StatusUnauthorized, requestID, "authentication_error", i18n.MsgMissingKey, nil)
 			return
 		}
@@ -2337,13 +2342,13 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 		if verifyErr != nil {
 			if _, ok := verifyErr.(*authentication.InvalidKeyError); ok {
-				captureAndEmitFailure("invalid_key", "invalid or expired api key", nil, nil)
+				captureAndEmitFailure("invalid_key", "invalid or expired api key", nil, nil, http.StatusUnauthorized)
 				w.Header().Set("WWW-Authenticate", "Bearer")
 				writeErrorJSONCtx(r.Context(), w, http.StatusUnauthorized, requestID, "authentication_error", i18n.MsgInvalidKey, nil)
 				return
 			}
 			slog.Error("key verification RPC failed, rejecting request", "error", verifyErr)
-			captureAndEmitFailure("auth_unavailable", "authentication service temporarily unavailable", nil, nil)
+			captureAndEmitFailure("auth_unavailable", "authentication service temporarily unavailable", nil, nil, http.StatusServiceUnavailable)
 			writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
 				"Authentication service temporarily unavailable", "server_error", "auth_unavailable")
 			return
@@ -2370,7 +2375,7 @@ func (h *ChatHandler) serveWithExecutor(
 		// keyInfo==nil shape (it is today's path for this state).
 		rawKey := extractBearerToken(r)
 		if rawKey == "" || subtle.ConstantTimeCompare([]byte(h.staticDataPlaneKey), []byte(rawKey)) != 1 {
-			captureAndEmitFailure("invalid_key", "invalid api key (static-key fallback auth)", nil, nil)
+			captureAndEmitFailure("invalid_key", "invalid api key (static-key fallback auth)", nil, nil, http.StatusUnauthorized)
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeErrorJSONCtx(r.Context(), w, http.StatusUnauthorized, requestID, "authentication_error", i18n.MsgInvalidKey, nil)
 			return
@@ -2391,7 +2396,7 @@ func (h *ChatHandler) serveWithExecutor(
 	if keyInfo != nil && h.keyVerifier != nil {
 		if budgetErr := h.keyVerifier.CheckBudget(r.Context(), keyInfo.ID); budgetErr != nil {
 			if _, ok := budgetErr.(*authentication.BudgetExceededError); ok {
-				captureAndEmitFailure("budget_exhausted", "budget exhausted", nil, nil)
+				captureAndEmitFailure("budget_exhausted", "budget exhausted", nil, nil, http.StatusPaymentRequired)
 				writeErrorJSONCtx(r.Context(), w, http.StatusPaymentRequired, requestID, "insufficient_quota", i18n.MsgBudgetExhausted, nil)
 				return
 			}
@@ -2404,7 +2409,7 @@ func (h *ChatHandler) serveWithExecutor(
 				"request_id", requestID,
 				"key_id", keyInfo.ID,
 				"error", budgetErr)
-			captureAndEmitFailure("budget_unavailable", "budget check unavailable", nil, nil)
+			captureAndEmitFailure("budget_unavailable", "budget check unavailable", nil, nil, http.StatusServiceUnavailable)
 			writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
 				"Budget check temporarily unavailable", "server_error", "budget_unavailable")
 			return
@@ -2415,7 +2420,7 @@ func (h *ChatHandler) serveWithExecutor(
 	if keyInfo != nil && h.maasSvc != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" {
 		if err := h.maasSvc.PreCheckCredits(r.Context(), keyInfo.TenantID); err != nil {
 			if _, ok := err.(*maas.InsufficientCreditsError); ok {
-				captureAndEmitFailure("insufficient_credits", "insufficient credits", nil, nil)
+				captureAndEmitFailure("insufficient_credits", "insufficient credits", nil, nil, http.StatusPaymentRequired)
 				writeErrorJSONCtx(r.Context(), w, http.StatusPaymentRequired, requestID, "insufficient_quota", i18n.MsgInsufficientCredits, nil)
 				return
 			}
@@ -2735,13 +2740,13 @@ func (h *ChatHandler) serveWithExecutor(
 					// not be hijacked by another tenant's key merely because
 					// its APIKeyID is 0.
 					if si.TenantID != "" && si.TenantID != keyInfo.TenantID {
-						captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
+						captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil, http.StatusForbidden)
 						writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "session_error", i18n.MsgSessionForbidden, nil)
 						return
 					}
 					if bindErr := h.sessionGetter.BindAPIKey(ctx, sessionID, keyInfo.ID, keyInfo.TenantID); bindErr != nil {
 						slog.Warn("orphan session bind failed", "error", bindErr, "session_id", sessionID)
-						captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
+						captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil, http.StatusForbidden)
 						writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "session_error", i18n.MsgSessionForbidden, nil)
 						return
 					}
@@ -2749,7 +2754,7 @@ func (h *ChatHandler) serveWithExecutor(
 					si.TenantID = keyInfo.TenantID
 					sessionInfo = si
 				} else {
-					captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
+					captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil, http.StatusForbidden)
 					writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "session_error", i18n.MsgSessionForbidden, nil)
 					return
 				}
@@ -2758,7 +2763,7 @@ func (h *ChatHandler) serveWithExecutor(
 			// cross-tenant steal attempt (key ids are only unique within
 			// their issuer).
 			if keyInfo != nil && si.APIKeyID == keyInfo.ID && si.TenantID != "" && si.TenantID != keyInfo.TenantID {
-				captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
+				captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil, http.StatusForbidden)
 				writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "session_error", i18n.MsgSessionForbidden, nil)
 				return
 			}
@@ -2820,14 +2825,14 @@ func (h *ChatHandler) serveWithExecutor(
 				claimed, claimErr := ensureClaimedClientSession(ctx, h.sessionGetter, sessionID, keyInfo, regDeviceSeed, regTaskID)
 				if claimErr != nil {
 					if errors.Is(claimErr, errClientSessionForbidden) {
-						captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
+						captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil, http.StatusForbidden)
 						writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "session_error", i18n.MsgSessionForbidden, nil)
 						return
 					}
 					// r1029：store fault 的响应体不能用 SESSION_FORBIDDEN 文案
 					// ——那是所有权语义，会误导调用方与运维归因（实测
 					// auto_summary 把该 503 当所有权问题反复重试）。
-					captureAndEmitFailure("session_unavailable", "session store unavailable", nil, nil)
+					captureAndEmitFailure("session_unavailable", "session store unavailable", nil, nil, http.StatusServiceUnavailable)
 					writeErrorJSONCtx(r.Context(), w, http.StatusServiceUnavailable, requestID, "session_error", i18n.MsgSessionStoreUnavailable, nil)
 					return
 				}
@@ -2894,7 +2899,7 @@ func (h *ChatHandler) serveWithExecutor(
 			// 家族按 not-found 路径认领/保留）；503 响应体改用 store 语义
 			// 文案，不再误标 SESSION_FORBIDDEN。
 			slog.Warn("session lookup failed", "error", err)
-			captureAndEmitFailure("session_unavailable", "session store unavailable", nil, nil)
+			captureAndEmitFailure("session_unavailable", "session store unavailable", nil, nil, http.StatusServiceUnavailable)
 			writeErrorJSONCtx(r.Context(), w, http.StatusServiceUnavailable, requestID, "session_error", i18n.MsgSessionStoreUnavailable, nil)
 			return
 		}
@@ -2908,7 +2913,7 @@ func (h *ChatHandler) serveWithExecutor(
 		assignment, assignErr := h.assignGatewaySession(ctx, bodyBytes, r, keyInfo, sessionID, sessionInfo, clientProfileFromKey(keyInfo))
 		if assignErr != nil {
 			slog.Error("session assignment failed", "error", assignErr)
-			captureAndEmitFailure("session_error", "failed to assign session id", nil, nil)
+			captureAndEmitFailure("session_error", "failed to assign session id", nil, nil, http.StatusInternalServerError)
 			writeErrorJSONCtx(r.Context(), w, http.StatusInternalServerError, requestID, "session_error", i18n.MsgSessionAssignFailed, nil)
 			return
 		}
@@ -3026,7 +3031,7 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 		switch res.StatusCode {
 		case 403:
-			captureAndEmitFailure("session_audit_block", res.Reason, nil, nil)
+			captureAndEmitFailure("session_audit_block", res.Reason, nil, nil, http.StatusForbidden)
 			span := trace.SpanFromContext(r.Context())
 			span.SetAttributes(
 				attribute.String(observability.AttrTenantID, hookTenant),
@@ -3035,7 +3040,7 @@ func (h *ChatHandler) serveWithExecutor(
 			writeErrorJSON(w, http.StatusForbidden, requestID, "Request blocked by security policy: "+res.Reason, "security_violation", "blocked")
 			return
 		case 202:
-			captureAndEmitFailure("session_audit_pending_approval", res.Reason, nil, nil)
+			captureAndEmitFailure("session_audit_pending_approval", res.Reason, nil, nil, http.StatusAccepted)
 			span := trace.SpanFromContext(r.Context())
 			span.SetAttributes(
 				attribute.String(observability.AttrTenantID, hookTenant),
@@ -3073,7 +3078,7 @@ func (h *ChatHandler) serveWithExecutor(
 		)
 		if denied {
 			msg := fmt.Sprintf("Model '%s' is not available for your account", canonical)
-			captureAndEmitFailure("model_forbidden", msg, nil, nil)
+			captureAndEmitFailure("model_forbidden", msg, nil, nil, http.StatusForbidden)
 			span := trace.SpanFromContext(r.Context())
 			span.SetAttributes(
 				attribute.String(observability.AttrTenantID, keyInfo.TenantID),
@@ -3121,7 +3126,7 @@ func (h *ChatHandler) serveWithExecutor(
 			// docs/2026-07-01-unknown-error-root-cause.md.
 			captureAndEmitFailure("auto_route_decider_failed",
 				fmt.Sprintf("auto-route decider failed for model '%s'", clientModel),
-				nil, nil)
+				nil, nil, http.StatusBadGateway)
 			markLogged()
 			writeErrorJSON(w, http.StatusBadGateway, requestID,
 				"auto-route temporarily unavailable; pass an explicit model name and retry",
@@ -3185,7 +3190,7 @@ func (h *ChatHandler) serveWithExecutor(
 		)
 		if denied {
 			msg := fmt.Sprintf("Model '%s' is not available for your account", canonical)
-			captureAndEmitFailure("model_forbidden_after_auto", msg, nil, nil)
+			captureAndEmitFailure("model_forbidden_after_auto", msg, nil, nil, http.StatusForbidden)
 			span := trace.SpanFromContext(r.Context())
 			span.SetAttributes(
 				attribute.String(observability.AttrTenantID, keyInfo.TenantID),
@@ -3661,7 +3666,8 @@ func (h *ChatHandler) serveWithExecutor(
 		slog.Error("failed to get candidates from provider", "error", err, "model", clientModel, "request_id", requestID)
 		rc := classifyRoutingError(err)
 		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, rc.code, nil, int(time.Since(startTime).Milliseconds()))
-		logCtx.failAndMark(rc.code, rc.message, nil, nil)
+		// Same rc.httpStatus that writeErrorJSON below puts on the wire.
+		logCtx.failAndMark(rc.code, rc.message, nil, nil, rc.httpStatus)
 		markLogged()
 		writeErrorJSON(w, rc.httpStatus, requestID, rc.message, "server_error", rc.code)
 		return
@@ -3675,7 +3681,8 @@ func (h *ChatHandler) serveWithExecutor(
 		if !h.provider.ModelKnown(r.Context(), clientModel) {
 			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "invalid_model", nil, int(time.Since(startTime).Milliseconds()))
 			logCtx.failAndMark("invalid_model",
-				fmt.Sprintf("Model '%s' is not supported by this gateway", clientModel), nil, nil)
+				fmt.Sprintf("Model '%s' is not supported by this gateway", clientModel), nil, nil,
+				http.StatusBadRequest)
 			markLogged()
 			writeErrorJSONCtx(r.Context(), w, http.StatusBadRequest, requestID, "invalid_request_error", i18n.MsgInvalidModel, map[string]any{"Model": clientModel})
 			return
@@ -3712,8 +3719,11 @@ func (h *ChatHandler) serveWithExecutor(
 		})
 		if !survivalEligible {
 			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "no_candidate", nil, int(time.Since(startTime).Milliseconds()))
+			// writeNoCandidateWithAlternatives renders http.StatusServiceUnavailable
+			// on every arm (legacy / anthropic / with-alternatives).
 			logCtx.failAndMark("no_candidate",
-				fmt.Sprintf("No available provider for model '%s'", clientModel), nil, nil)
+				fmt.Sprintf("No available provider for model '%s'", clientModel), nil, nil,
+				http.StatusServiceUnavailable)
 			markLogged()
 			// 2026-08-09: the requested model has no routable node, but other
 			// models often do. Offer them so the caller can switch instead of
@@ -3810,7 +3820,7 @@ func (h *ChatHandler) serveWithExecutor(
 	if h.metaToolInterceptor != nil {
 		modified, intercepted, err := h.metaToolInterceptor.InterceptRequest(r.Context(), bodyBytes)
 		if err != nil {
-			captureAndEmitFailure("meta_tool_error", fmt.Sprintf("meta-tool expansion failed: %v", err), nil, nil)
+			captureAndEmitFailure("meta_tool_error", fmt.Sprintf("meta-tool expansion failed: %v", err), nil, nil, http.StatusInternalServerError)
 			writeErrorJSONCtx(r.Context(), w, http.StatusInternalServerError, requestID, "internal_error", i18n.MsgMetaToolError, nil)
 			return
 		}
@@ -4834,7 +4844,7 @@ goalRetryLoopDone:
 		}
 		auditBuilder.Success(false)
 		rt.Emit(state.EventFailed)
-		captureAndEmitFailure("output_policy_blocked", "Response blocked by output policy", p, c)
+		captureAndEmitFailure("output_policy_blocked", "Response blocked by output policy", p, c, http.StatusForbidden)
 		writeErrorJSONWithDebugProto(protocolOfRequest(r), w, http.StatusForbidden, requestID,
 			"Response blocked by output policy", "policy_violation", "output_policy_blocked", nil)
 		return
@@ -4850,7 +4860,7 @@ goalRetryLoopDone:
 			p, c = intPtr(result.Candidate.ProviderID), intPtr(result.Candidate.CredentialID)
 		}
 		logCtx.SetRoute(p, c)
-		captureAndEmitFailure("output_policy_blocked", "Response blocked by output policy", p, c)
+		captureAndEmitFailure("output_policy_blocked", "Response blocked by output policy", p, c, http.StatusForbidden)
 		return
 	}
 
@@ -5191,7 +5201,14 @@ goalRetryLoopDone:
 			}
 			errCode := ste.detailCode()
 			logCtx.SetOutboundModel(explicitOutbound)
-			logCtx.failAndMark(errCode, ste.Error(), providerID, credentialID)
+			// Render-then-emit: the survival coordinator already put its protocol
+			// terminal on the wire via renderSurvivalTerminal, which only writes SSE
+			// frames and never calls WriteHeader — on an already-committed stream
+			// that is HTTP 200 (see survival_wiring.go: "once streaming has already
+			// sent 200, the Retry-After header can no longer be written"). The client
+			// received 200, so 200 is the faithful value here; passing 5xx would
+			// invent a status it never saw.
+			logCtx.failAndMark(errCode, ste.Error(), providerID, credentialID, http.StatusOK)
 			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
 			markLogged()
 			if ste.kinds != "" {
@@ -5227,7 +5244,8 @@ goalRetryLoopDone:
 					map[string]any{"Reason": reason})
 				logCtx.SetOutboundModel(explicitOutbound)
 				logCtx.failAndMark("content_filter", execErr.Error(),
-					providerID, credentialID)
+					providerID, credentialID,
+					clientStatusForPrewarmed(preStreamPrepared, http.StatusBadRequest))
 				h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID,
 					tried, modelResolution, txResult, "content_filter", failTrace,
 					int(time.Since(startTime).Milliseconds()))
@@ -5279,7 +5297,11 @@ goalRetryLoopDone:
 			if credCode != "" {
 				errCode = credCode
 				logCtx.SetOutboundModel(explicitOutbound)
-				logCtx.failAndMark(credCode, execErr.Error(), providerID, credentialID)
+				// credHTTPStatus is the value classifyUpstreamCredentialFailure computed
+				// on the line above and that writeErrorJSONWithDebugProto below puts on
+				// the wire; the prewarmed arm is an already-200 stream.
+				logCtx.failAndMark(credCode, execErr.Error(), providerID, credentialID,
+					clientStatusForPrewarmed(preStreamPrepared, credHTTPStatus))
 				h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
 				markLogged()
 				debugInfo := map[string]any{
@@ -5335,7 +5357,8 @@ goalRetryLoopDone:
 					msg = msg + " Reason: " + reason
 				}
 				logCtx.SetOutboundModel(explicitOutbound)
-				logCtx.failAndMark("unsupported_feature", execErr.Error(), providerID, credentialID)
+				logCtx.failAndMark("unsupported_feature", execErr.Error(), providerID, credentialID,
+					clientStatusForPrewarmed(preStreamPrepared, http.StatusBadRequest))
 				h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, "unsupported_feature", failTrace, int(time.Since(startTime).Milliseconds()))
 				markLogged()
 				w.Header().Set("X-Gateway-Last-Kind", string(execErrTyped.LastKind))
@@ -5372,7 +5395,8 @@ goalRetryLoopDone:
 					msg = msg + " Reason: " + reason
 				}
 				logCtx.SetOutboundModel(explicitOutbound)
-				logCtx.failAndMark("model_deprecated", execErr.Error(), providerID, credentialID)
+				logCtx.failAndMark("model_deprecated", execErr.Error(), providerID, credentialID,
+					clientStatusForPrewarmed(preStreamPrepared, http.StatusGone))
 				h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, "model_deprecated", failTrace, int(time.Since(startTime).Milliseconds()))
 				markLogged()
 				w.Header().Set("X-Gateway-Last-Kind", string(execErrTyped.LastKind))
@@ -5404,7 +5428,8 @@ goalRetryLoopDone:
 				logCtx.SetOutboundModel(explicitOutbound)
 				logCtx.failAndMark("rate_limit",
 					fmt.Sprintf("No available provider for model '%s'. All %d candidates failed (rate limited).", clientModel, execErrTyped.Tried),
-					providerID, credentialID)
+					providerID, credentialID,
+					clientStatusForPrewarmed(preStreamPrepared, http.StatusTooManyRequests))
 				h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, "rate_limit", failTrace, int(time.Since(startTime).Milliseconds()))
 				markLogged()
 				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
@@ -5462,9 +5487,14 @@ goalRetryLoopDone:
 			// precise cause. Operators can now filter on
 			// error_kind='rate_limit' directly without parsing the
 			// X-Gateway-Last-Kind header.
+			// All-candidates-failed: the prewarmed arm is an already-200 stream
+			// (writePrewarmedStreamErrorFull writes no status); the explicit arm
+			// renders 503. This is the branch upstream 429 / quota_permanent lands
+			// on — the client saw 503, not 429 and not 500.
 			logCtx.failAndMark(errorKindOrFallback(realKind),
 				fmt.Sprintf("No available provider for model '%s'. All %d candidates failed.", clientModel, execErrTyped.Tried),
-				providerID, credentialID)
+				providerID, credentialID,
+				clientStatusForPrewarmed(preStreamPrepared, http.StatusServiceUnavailable))
 			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
 			markLogged()
 			// Step 6: surface real kind in response header so log
@@ -5574,7 +5604,8 @@ goalRetryLoopDone:
 			}
 		}
 
-		logCtx.failAndMark("provider_error", enrichedErrMsg, providerID, credentialID)
+		logCtx.failAndMark("provider_error", enrichedErrMsg, providerID, credentialID,
+			clientStatusForPrewarmed(preStreamPrepared, http.StatusBadGateway))
 		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
 		markLogged()
 		// 2026-09-23 critique round: the generic fallthrough also carries
@@ -5773,7 +5804,7 @@ goalRetryLoopDone:
 					// response_validation_failed and emit the failure audit.
 					outputGovernanceTerminal = "response_validation_failed"
 					p, c := candidateAttribution(result)
-					captureAndEmitFailure("response_validation_failed", "output governance interceptor failed: "+interceptErr.Error(), p, c)
+					captureAndEmitFailure("response_validation_failed", "output governance interceptor failed: "+interceptErr.Error(), p, c, http.StatusBadGateway)
 					writeErrorJSON(w, http.StatusBadGateway, requestID,
 						"Output governance rejected the response", "api_error", "response_validation_failed")
 					return
@@ -5790,7 +5821,7 @@ goalRetryLoopDone:
 					// silently returning nothing.
 					outputGovernanceTerminal = "output_policy_blocked"
 					p, c := candidateAttribution(result)
-					captureAndEmitFailure("output_policy_blocked", "Response blocked by output policy", p, c)
+					captureAndEmitFailure("output_policy_blocked", "Response blocked by output policy", p, c, http.StatusForbidden)
 					writeErrorJSON(w, http.StatusForbidden, requestID,
 						"Response blocked by output policy", "api_error", "output_policy_blocked")
 					return
@@ -5824,7 +5855,7 @@ goalRetryLoopDone:
 						// response_validation_failed and the failure audit.
 						outputGovernanceTerminal = "response_validation_failed"
 						p, c := candidateAttribution(result)
-						captureAndEmitFailure("response_validation_failed", "output governance returned invalid client protocol body", p, c)
+						captureAndEmitFailure("response_validation_failed", "output governance returned invalid client protocol body", p, c, http.StatusBadGateway)
 						writeErrorJSON(w, http.StatusBadGateway, requestID,
 							"Output governance returned an invalid response body", "api_error", "response_validation_failed")
 						return
@@ -5857,7 +5888,7 @@ goalRetryLoopDone:
 		if result != nil {
 			p, c = intPtr(result.Candidate.ProviderID), intPtr(result.Candidate.CredentialID)
 		}
-		captureAndEmitFailure("output_policy_blocked", "Response blocked by output policy", p, c)
+		captureAndEmitFailure("output_policy_blocked", "Response blocked by output policy", p, c, http.StatusForbidden)
 		return
 	}
 

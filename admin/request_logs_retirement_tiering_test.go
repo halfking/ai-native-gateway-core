@@ -283,6 +283,11 @@ var v1ArmLiteralBlindSpot = []string{
 //
 // 实测：字面量 107 ∩ 间接 22 = 14，并集 = **115**。
 var v1ReaderIndirectPopulation = []string{
+	// 2026-10-16（v1 退役轮）：outcome-freshness 探针的 `SELECT MAX(ts) FROM `
+	// 改拼 bg.ActiveSettleTurnsTable()（跟 settle worker 同一个写门），源码里不再有
+	// v1 关系名字面量 ⇒ 拼接点工具看得见它、自字面量总体出列。与
+	// bg/auto_route_settle_sql.go 同款，故同入本总体。
+	"admin/auto_route_outcome_freshness.go",
 	// 2026-10-13（S4 波 4）迁入：quality_correlations 改经 canonical+切换层拼接。
 	"admin/quality_correlations.go",
 	"admin/auto_title_generator.go",
@@ -409,13 +414,20 @@ func TestV1ReaderTieringDomainIsBothPopulations(t *testing.T) {
 		// 2026-10-15（24h 审计）：admin/session_online.go 两条腿都出 v1
 		//		（online → session_summaries；timeline → 会话族原生源），
 		//		同款除名（字面量 101→100、域 110→109）。
-		{"字面量总体", len(literal), 100},
+		// 2026-10-16（v1 退役轮）：admin/auto_route_outcome_freshness.go 的读点
+		//		改成拼接 bg.ActiveSettleTurnsTable()，自字面量总体移入间接总体
+		//		（字面量 100→99、间接 26→27）。**交集 17 与并集 109 都不变**——
+		//		它换的是总体归属，不是读方数量。
+		{"字面量总体", len(literal), 99},
 		// 2026-10-13（S4 停写交接）：body_resolver / unified_detail 因加了
 		// session 兜底拼接点自盲区桶迁入（+2）；两者同时仍是字面量读方
 		//（交集 14→16），并集不变。
 		// 2026-10-14（合并轮）：data_lifecycle 趋势跨族化后同款迁入
 		//（间接 25→26、交集 16→17，并集不变——它本就在字面量总体里）。
-		{"间接总体", len(indirect), 26},
+		// 2026-10-16（v1 退役轮）：outcome_freshness 拼接化后同款迁入
+		//（间接 26→27）。交集仍为 17：它是从字面量总体**移出**再进本总体，
+		//	入表前不在交集里、入表后仍不在交集里（两处总体互换了同一个成员）。
+		{"间接总体", len(indirect), 27},
 		{"交集", inter, 17},
 		{"并集（域）", union, 109},
 	} {

@@ -864,6 +864,8 @@ func parseProtocolMessages(raw json.RawMessage, response bool) []v2.Message {
 			_ = json.Unmarshal(b, &items)
 		} else if b := root["contents"]; len(b) > 0 {
 			_ = json.Unmarshal(b, &items)
+		} else if b := root["input"]; len(b) > 0 {
+			items = responsesWireItems(root, b)
 		}
 	} else if b := root["choices"]; len(b) > 0 {
 		var choices []struct {
@@ -913,6 +915,66 @@ func marshalObject(obj map[string]json.RawMessage) json.RawMessage {
 	return b
 }
 
+// responsesWireItems extracts the message list from an OpenAI-Responses request
+// envelope, producing the same []json.RawMessage shape the chat (`messages`)
+// and Gemini (`contents`) branches hand to the shared IR decoder.
+//
+// 2026-10-16 (defect: request bodies vanished on the Responses leg). `input` is
+// the Responses-wire counterpart of `messages`; `instructions` carries what the
+// chat envelope used to put in a leading system message. Neither key was in the
+// whitelist above, so any request served over the Responses wire parsed to nil
+// and its turn persisted request_delta = JSON null.
+//
+// Two production paths reach the mirror in that shape, and both were losing the
+// whole inbound body:
+//   - a genuine `/v1/responses` client (the entry's RequestBody IS the Responses
+//     envelope), and
+//   - a `/v1/chat/completions` client whose model is Responses-capable, because
+//     the proactive chat→Responses upgrade replaces the executor's InboundBody
+//     with the converted body (domains/streaming/executors/executor_chat.go:
+//     `sourceBody = proactiveResponsesBody`, then `InboundBody: sourceBody`).
+//     Verified against the local PG: exactly the two such requests
+//     (grok-4.6, gpt-5.6-luna) carry request_delta = JSON null while their
+//     chat-leg peers (deepseek-v4-flash, claude-sonnet-5-5) carry arrays.
+//
+// The response side never showed the gap because the chat→Responses bridge
+// converts the reply back into a chat `choices` envelope before it is persisted,
+// which is why the two broken rows read req=null / resp=array.
+//
+// `input` has two documented shapes: a bare string (one user turn) and an item
+// array ({"type":"message","role":..,"content":[{"type":"input_text",..}]} plus
+// function_call / function_call_output items). Only the string form needs
+// synthesizing; array items already carry role/content and are handed to the IR
+// decoder untouched — it preserves input_text/output_text block payloads verbatim.
+func responsesWireItems(root map[string]json.RawMessage, input json.RawMessage) []json.RawMessage {
+	var items []json.RawMessage
+	if err := json.Unmarshal(input, &items); err != nil {
+		items = nil
+	}
+	if len(items) == 0 {
+		var text string
+		if err := json.Unmarshal(input, &text); err == nil && text != "" {
+			if msg, err := json.Marshal(map[string]string{"role": "user", "content": text}); err == nil {
+				items = []json.RawMessage{msg}
+			}
+		}
+	}
+	var instructions string
+	if err := json.Unmarshal(root["instructions"], &instructions); err != nil || instructions == "" {
+		return items
+	}
+	// `instructions` is emitted FIRST so the reconstructed conversation keeps
+	// the original ordering: the chat→Responses converter lifts the leading
+	// system message out of `messages` into `instructions`, so without this the
+	// system prompt would silently vanish from the delta even after the body
+	// starts parsing.
+	sys, err := json.Marshal(map[string]string{"role": "system", "content": instructions})
+	if err != nil {
+		return items
+	}
+	return append([]json.RawMessage{sys}, items...)
+}
+
 // parseMessagesJSON extracts messages from the session compressor's
 // OutboundBody. That value is the FULL upstream request object
 // ({"model":...,"messages":[...]} — see compression.spliceBodyMessages), so we
@@ -935,7 +997,25 @@ func parseMessagesJSON(raw json.RawMessage) []v2.Message {
 	if err := json.Unmarshal(raw, &arr); err == nil && len(arr) > 0 {
 		return toMessages(arr)
 	}
+	// 2026-10-16: Responses-wire outbound object ({"input":[...],
+	// "instructions":..., no "messages"}). Same envelope gap as the inbound
+	// request body, so it is delegated to the shared IR decoder rather than
+	// growing a second, divergent msgProbe-shaped decoder here: outbound and
+	// inbound messages must be decoded by ONE path or they drift again.
+	if hasResponsesWireInput(raw) {
+		return parseProtocolMessages(raw, false)
+	}
 	return nil
+}
+
+// hasResponsesWireInput reports whether raw is a JSON object carrying the
+// Responses-wire `input` envelope (and therefore has no `messages` to find).
+func hasResponsesWireInput(raw json.RawMessage) bool {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &root); err != nil || root == nil {
+		return false
+	}
+	return len(root["input"]) > 0 && len(root["messages"]) == 0
 }
 
 func toMessages(raw []msgProbe) []v2.Message {
@@ -1132,7 +1212,22 @@ func isTerminalFailure(entry *telemetry.RequestLogEntry) bool {
 	return entry.ErrorKind != nil && strings.TrimSpace(*entry.ErrorKind) != ""
 }
 
+// statusCode derives the client-facing HTTP status persisted as
+// session_turns.status_code.
+//
+// Precedence (2026-10-16): ClientStatusCode is what the client actually
+// received, so it wins over everything derived. UpstreamStatusCode is the
+// provider's status, which is NOT the client's when the gateway authored the
+// response — it is kept as the second choice for proxy-shaped failures where
+// the upstream status *was* relayed verbatim. The 200/500 pair is the last
+// resort and means "no received-status information was recorded", not a claim
+// that the client saw 500: gateway-authored rejections (auth / budget /
+// session / policy) never reach an upstream, so UpstreamStatusCode is nil and
+// the old three-step chain turned every 401 into a persisted 500.
 func statusCode(entry *telemetry.RequestLogEntry) int {
+	if entry.ClientStatusCode != nil {
+		return *entry.ClientStatusCode
+	}
 	if entry.UpstreamStatusCode != nil {
 		return *entry.UpstreamStatusCode
 	}

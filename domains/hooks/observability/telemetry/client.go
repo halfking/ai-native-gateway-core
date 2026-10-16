@@ -461,6 +461,21 @@ type RequestLogEntry struct {
 	ClientEndpoint     *string `json:"client_endpoint,omitempty"`
 	StreamChunkErrors  *int    `json:"stream_chunk_errors,omitempty"`
 
+	// 2026-10-16: the HTTP status the CLIENT actually received, set by the
+	// gateway on the exits where it authors the error response itself
+	// (RequestLogContext.SetClientStatus). Distinct from
+	// UpstreamStatusCode, which is what the provider returned — for a
+	// gateway-authored rejection (401 / 402 / 403 / 5xx) there is no upstream
+	// status at all, so session_turns.status_code used to fall through to a
+	// hard-coded 500 and every auth rejection was persisted as if the upstream
+	// had 500'd (260/260 invalid_key rows on the local PG).
+	//
+	// NOT a _request_logs column: like SubmitModeHeader this is a
+	// mirror-only transport field consumed by the session v2 mirror and the
+	// lite sink. nil means "no client status was recorded for this exit" and
+	// consumers must fall back to their own derivation — it never means 500.
+	ClientStatusCode *int `json:"client_status_code,omitempty"`
+
 	// 2026-07-01: 附件元数据（migration 325）
 	// 从请求体中提取的 base64/data-URI 附件元数据，存储到 _request_logs.attachments JSONB。
 	// 附件实体文件已保存到文件系统（按 SHA256 hash 去重），此处仅记录路径、大小、类型等元信息。

@@ -4181,6 +4181,9 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 			   AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='routing_audit_summary_7d_ukey')
 			   AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0
 			   AND POSITION('auto_profile' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0
+			   -- Match the stale-definition gate below: migration 837's source
+			   -- has the current columns but still reads the legacy log tables.
+			   AND POSITION('request_logs_with_current_month' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0
 			   AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_7d'), true), '')) > 0
 		   AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_audit_summary_7d'), true), '')) > 0
 		   -- Migration 837: a definition still carrying refreshed_at is the

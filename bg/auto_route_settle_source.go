@@ -77,6 +77,20 @@ func settleSourceFor(logsWriteEnabled bool) settleSourceSpec {
 	}
 }
 
+// ActiveSettleTurnsTable 返回当前 settle worker 实际读取的行表名。
+//
+// 为什么导出：admin 的 outcome-freshness 探针
+// （admin/auto_route_outcome_freshness.go）要回答的是「结算 worker 现在还能不能
+// 拿到 outcome」。它此前硬编码读 `_request_logs_hot`，于是停写之后探针盯着的是
+// worker 早已不再读取的冻结表，每次都报 stale —— 一条与真实状态相反的告警，
+// 比没有告警更糟（运维会以为 auto-route 结算坏了，实际它在正常读会话族）。
+//
+// 复用 settleSourceFor 而不是各写一份判定：这个文件开头「三条腿必须同源」说的
+// 就是这类分叉。写门是热加载设置，所以每次调用现取，切换即刻生效。
+func ActiveSettleTurnsTable() string {
+	return settleSourceFor(settings.RequestLogsWriteEnabled()).TurnsTable
+}
+
 var (
 	// autoRouteSettleSource 暴露实际使用的源族。
 	//

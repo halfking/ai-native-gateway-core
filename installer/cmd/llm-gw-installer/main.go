@@ -861,6 +861,9 @@ var sessionSummariesLastRequestAtIdx867 []byte
 //go:embed embeddata/startup/868_credential_model_stream_mode.sql
 var credentialModelStreamMode868 []byte
 
+//go:embed embeddata/startup/869_promote_session_turns_trace_events.sql
+var promoteSessionTurnsTraceEvents869 []byte
+
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
 
@@ -1155,6 +1158,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/866_sanitize_rule_management.sql":                                       sanitizeRuleManagement866,
 	"startup/867_session_summaries_last_request_at_idx.sql":                          sessionSummariesLastRequestAtIdx867,
 	"startup/868_credential_model_stream_mode.sql":                                   credentialModelStreamMode868,
+	"startup/869_promote_session_turns_trace_events.sql":                             promoteSessionTurnsTraceEvents869,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/853_credential_probe_queue_automatic.sql":                               credentialProbeQueueAutomatic853,

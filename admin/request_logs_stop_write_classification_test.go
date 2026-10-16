@@ -316,9 +316,15 @@ var requestLogsStopWriteClassification = map[string]stopWriteClassification{
 	},
 	// ── batch5：2026-10-02 §9.35 新增（1 条）────────────────────────────────
 	"admin/auto_route_outcome_freshness.go": {
-		Effect:   effectValidator,
-		Evidence: "SELECT MAX(ts) FROM _request_logs_hot",
-		Note:     "**这个文件不消费 v1 的数据，它观察 v1 的新鲜度**——所以判 validator 而非 silently_frozen。queryOutcomeFreshness 只取 MAX(ts) 一个标量，算出 age_seconds 并与 outcomeSourceStaleAfter(镜像 bg.settleAbandonAfter=4h) 比较，把结果作为 `outcome_source` 块挂在 /auto-route/audit、/affinity/ranking、/affinity/selections 三个响应上。停写后 MAX(ts) 冻结 ⇒ age 越过 4h ⇒ stale=true、reason=stale ⇒ **冻结本身就是信号**，没有任何业务判断建立在这个值上，所以不是 silently_frozen 那一档。v1 被退役后 MAX(ts) 报 42P01，映射成 reason=absent 而非 5xx（退役是预期终态）。门槛语义由 TestOutcomeSourceStaleAfterMirrorsSettleAbandonAfter 守。⚠ 注意：本条让 effectValidator 这一档第一次**装了非「v1↔session 对账」的用例**（它是新鲜度探针，不是对账）；下一个读这张表的人若发现该档语义已不足以覆盖观察类读点，应扩档而不是把它塞回 silently_frozen。",
+		Effect: effectValidator,
+		// 2026-10-16（v1 退役轮）：读点由 `SELECT MAX(ts) FROM _request_logs_hot`
+		// 改成 `SELECT MAX(ts) FROM "+bg.ActiveSettleTurnsTable()`（跟写门走，
+		// 理由见 auto_route_outcome_freshness.go:95-102）。Evidence 必须跟着锚在
+		// **当前真实存在的代码**上——锚在旧字面量上是 §9.232 两跳校验要拦的那种
+		// 「分级还在、证据已经不存在」。拼接形态的锚法与
+		// bg/auto_route_settle_sql.go 的 "LEFT JOIN ` + src.TurnsTable + ` rl" 同款。
+		Evidence: `SELECT MAX(ts) FROM "+bg.ActiveSettleTurnsTable()`,
+		Note:     "**这个文件不消费 v1 的数据，它观察 v1 的新鲜度**——所以判 validator 而非 silently_frozen。queryOutcomeFreshness 只取 MAX(ts) 一个标量，算出 age_seconds 并与 outcomeSourceStaleAfter(镜像 bg.settleAbandonAfter=4h) 比较，把结果作为 `outcome_source` 块挂在 /auto-route/audit、/affinity/ranking、/affinity/selections 三个响应上。停写后 MAX(ts) 冻结 ⇒ age 越过 4h ⇒ stale=true、reason=stale ⇒ **冻结本身就是信号**，没有任何业务判断建立在这个值上，所以不是 silently_frozen 那一档。v1 被退役后 MAX(ts) 报 42P01，映射成 reason=absent 而非 5xx（退役是预期终态）。门槛语义由 TestOutcomeSourceStaleAfterMirrorsSettleAbandonAfter 守。⚠ 注意：本条让 effectValidator 这一档第一次**装了非「v1↔session 对账」的用例**（它是新鲜度探针，不是对账）；下一个读这张表的人若发现该档语义已不足以覆盖观察类读点，应扩档而不是把它塞回 silently_frozen。⚠ 2026-10-16 追加：探针改为读 bg.ActiveSettleTurnsTable() 后，读源与 settle worker 同源（写门开 ⇒ _request_logs_hot，关 ⇒ session_turns_hot）。本档**不因此改变**：停写后 v1 臂冻结的情形下，写门已关、探针跟着切到 session_turns_hot 并继续报 live——即本读点在新架构下**不再随停写而冻结**，它观察的是 worker 真正在读的那张表。族（familyBase，由 indirectRequestLogsReaders 登记给出，见该表同款条目）与档位是两件事，改动只影响读源、不影响「冻结即信号」的判据结构。",
 	},
 	// ── batch6：2026-10-02 §9.36 收口剩余未评估文件 ─────────────────────────
 	//

@@ -550,13 +550,14 @@ dl_resolve_sdkroot() {
     for sdk in $(ls -1 "$base" 2>/dev/null | sort -Vr); do
       [[ -d "$base/$sdk" ]] || continue
       probe="$(mktemp -d)"
-      printf 'int main(void){return 0;}\n' > "$probe/probe.c" 2>/dev/null || { rm -rf "$probe"; continue; }
+      # Resolver stdout is a path protocol; trash shims may log on stdout.
+      printf 'int main(void){return 0;}\n' > "$probe/probe.c" 2>/dev/null || { rm -rf "$probe" >&2; continue; }
       if SDKROOT="$base/$sdk" clang -o "$probe/probe" "$probe/probe.c" >/dev/null 2>&1; then
-        rm -rf "$probe"
+        rm -rf "$probe" >&2
         printf '%s\n' "$base/$sdk"
         return 0
       fi
-      rm -rf "$probe"
+      rm -rf "$probe" >&2
     done
   done
   return 1

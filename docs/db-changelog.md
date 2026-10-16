@@ -8817,3 +8817,179 @@ git show origin/main:scripts/deploy-lib/db-changelog.sh
 | 868 | `868_credential_model_stream_mode.sql` | `90025b135a7b7ada6c5ab6a743cdaab862e5d28580dc89c270b189a079b22145` | pending deploy（本轮仅补登记，未执行任何数据库迁移）。新增 `credential_model_bindings.stream_mode` 三态（both / stream_only / non_stream_only，CHECK 约束），默认值 `both`；种子把 Vapeur Claude 绑定置为 `non_stream_only`（上游对该组合拒绝流式）。canonical 与 embeddata 两副本 SHA 现场计算一致；installer go:embed + map（main.go:1153/1157）、runner 排序（runner.go:1078-1080）、`installed_startup_migrations.tsv` 第 263 位、部署通道（`scripts/apply-db-revision-sequence.sh:197`）与 `.down.sql` 均已就位。**补登原因**：`47666783c` 交付了上述全部同步点但遗漏本台账，`sqlguard.TestMigrationRegistryStaysContinuous` 于 849–868 近邻窗口内报出；按守卫说明「脚本 warn-only + 部署侧只查文件存在」，缺登记会使该迁移被静默部署。 |
 
 > 台账状态说明：本行为「补登记」，不代表 868 已应用于任何环境；`stream_mode` 的实际生效需以部署通道的实际执行记录为准。
+
+## 2026-10-16 — session_turns 晋级路径静默丢列修复 869（retire 轮）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 869 | `869_promote_session_turns_trace_events.sql` | `41546cfdfd19e006454a022e8ca751a8a71b6a06a32ce655163ac5657b58fb27` | pending deploy（本轮仅在**隔离夹具库**执行过，未触碰本机业务库 public，也未部署任何生产）。把 `promote_session_turns_hot_to_partition` 的**目录派生列清单重新确立为部署通道终态体**。缺陷本体：该函数硬编码 54 列清单，而 hot 实有 106 列，晋级时 **52 列被静默丢弃**（含 `trace_events`、`is_final_success`、`request_delta`、`response_delta`、`identity_hash`、`system_fingerprint`、`upstream_*`/`stream_*`/`failure_*`/`routing_*`/`client_*`），不报错、moved 计数照常递增。根因不是「707 漏了 trace_events」——707 早已改写成目录派生体，**是 640 为 713 前置而登记在 707 之后，每次重放都用旧硬编码体覆盖 707**，且该覆盖被 `intentional_function_chains` 固化为「640 为终态」的有意链；两侧列集合全等，故 707 的列形状守卫看不出问题（它守表形状，不守搬运清单）。installer 通道顺序 640(391)→688(477)→707(493) 本就以 707 末位，**故全新安装正确、存量/部署库错误**。改法：869 排在通道数组**末尾**（640 之后）并登记为链尾，链序 707→640→869。canonical/embeddata 两副本 SHA 现场一致；installer go:embed + map、runner.go StartupFiles（第 264 位）、`installed_startup_migrations.tsv` 第 264 行、部署通道登记与 `.down.sql` 均已就位。 |
+
+### 隔离库验证（唯一隔离夹具库 `r869_scratch_test`，按业务库 `pg_attribute` 生成的真实 106 列形状）
+
+- **缺陷复现（修复前体，同一夹具同一行）**：装 640 体 → `moved=1`、hot 1→0、父表 0→1（前提在场，非「没晋级却断言通过」），而 `trace_events`/`is_final_success`/`request_delta`/`identity_hash`/`system_fingerprint`/`upstream_status_code` 全为 `<NULL>`，仅 54 列清单内的 `status_code=299`、`turn_no=42` 幸存。
+- **修复后**：装 869 体 → 同样 `moved=1`、hot 1→0、父表 0→1，`trace_events` 与全部哨兵列完整；**106 列逐列全量往返比对**（`to_jsonb` 快照 hot 晋级前行 vs 父表晋级后行）全部一致，且 `turn_no`/`status_code`/`success` 无回归。
+- **守卫两向验证**：父表/hot **对称**加列 → 不误报，且新列**自动流经**晋级（前提在场：hot=1 → moved=1 → 新列值落地）；仅 hot 单侧加列 → `RAISE EXCEPTION 'session_turns hot/parent column contract has drifted (column set mismatch)'`。两侧形状全等（106/106、`trace_events jsonb` 均 attnum 74 且可空），**无生成列/无 identity 列**（catalog 实测），故守卫对分区键 `partition_date` 不误报。
+- **变异验证**：M1 = 派生清单加 `attname <> 'trace_events'` 过滤 → 数据判据转红（`ASSERT FAIL: promoted row trace_events IS NULL`，前提在场）；M2 = 守卫改 `IF false` + 单侧加列 → 守卫**不再报错**，退化成 `column ... does not exist` 的下游 SQL 错（证明该守卫承重）；M3 = M1 变异跑整份迁移 → 后置条件转红 `869 post-condition failed: derived column list is filtered by column name`。
+
+> M3 首轮为绿，暴露了「只断言函数是目录派生**形态**」不够：注入列名过滤后形态检查照样放行。据此加固后置条件（新增派生清单不得按列名过滤的正则断言）后 M3 转红，clean 869 仍全绿。
+>
+> **刻意不改（留给 owner 拍板）**：707/688 的默认 retention 是 `8 hours`（与 `bg/partition_manager.go` 的 `DefaultRetentionWindow = 8h` 对齐），线上现值 `7 days` 是 640 覆盖的副产物。调度器始终显式传参、默认值只对手工 promote 生效；改它会把热表窗口收窄 21 倍，属行为变更而非数据丢失修复，故本迁移**保留线上现值 `7 days`**，只修列集合这一件事。
+>
+> **未闭环项**：历史已晋级进月分区的行，其丢失列**无法回补**——`session_turns` 的 229 行里被丢的 52 列在源头已不存在（hot 里只有 264 行未晋级行），且晋级是 DELETE+INSERT，源行未留存副本。仅当对应上游仍有可重放的原始请求记录时才可能重建，需另行评估，本轮未动任何历史数据。
+
+## 2026-10-16 — 通道缺口审计：迁移已存在但从未在部署通道登记（retire 轮）
+
+**缺陷形态**：五个历史迁移的字节一直在仓里、其中五个还登记在 installer's
+`sql/schema/installed_startup_migrations.tsv`（456→index 6、351→index 8、
+567→index 21、629→index 84、632→index 87），但 `grep` 在
+`scripts/apply-db-revision-sequence.sh` 的 `files=(...)` 数组里命中 **0**——
+它们从未进入部署通道，因此这些库上对象一个都不存在。
+`sqlguard` 的 canonical delivery-path 门只覆盖 `>= 690` 的编号
+（`apply-db-revision-sequence_test.sh:120`：`[[ "$version" < "690" ]] && continue`），
+所以这一整类**结构性地逃过了守卫**：文件越小越没人看。
+
+**本轮只做登记，不改任何历史迁移字节**（含 456 本身）。
+`sql/schema/installed_startup_migrations.tsv` 亦**无需重生成**：除 domain/032（属
+domain 腿，不在 installer 的 startup 清单里）之外，其余七条本就在册。
+
+> **扫描面不足的教训**：前一任务给出的是「逐 API 扫描 416 端点得到 12 个 500」。
+> 本轮按那份清单动手，修完 6 个端点后**从 `mux.HandleFunc` 全量重建路由表重新扫**，
+> 又找出 `/api/admin/cache-metrics/{summary,timeline}` 两个 500——它们的迁移
+> （470/472）是同一缺口族，却不在那 12 个里。**「端点扫描清单」本身是有缺口的
+> 交付物**，只按清单收敛会漏。
+
+| Migration | File | SHA-256 | 缺失对象 → 端点 | Status |
+|-----------|------|---------|----------------|--------|
+| 456 | `456_session_v2_display_columns.sql` | `aef58efa2a2b9f70cb21434cd0c14c6ce1909997ea7ae7a466a926e3bc3cb130` | `public.sessions.{title,summary,summary_model,summary_generated_at,summary_quality,last_full_*}` → `/api/admin/turns/sessions`、`/api/admin/annotations/first-turn-samples` | 已登记通道并应用（真实 PG17.10，RC0）。**写侧同步自愈**：`internal/titlestore/store.go:264-273/333` 每次标题提交/清除都 `UPDATE public.sessions SET title=…`，该列原先不存在，属正在发生的写故障。 |
+| 351 | `351_session_analytics_tables.sql` | `3a9ead6a7a58af2a8bc22e507192ef2ea326bb16b5824a5e54235eb0c57c6a86` | `session_clusters`、`session_cluster_members` 等聚类表 → `/api/admin/session-clusters`、`/api/admin/session-clusters/` | 已登记通道并应用。 |
+| 567 | `567_session_analysis_metadata.sql` | `1f68b66d913b15f946205870d46ff22a0df3f821e06573b3f43b355955b78e1d` | `session_analysis_metadata` → `/api/admin/turns/sessions`（`admin/session_meta_view.go:90` 的 LEFT JOIN LATERAL） | 已登记通道并应用。**这是 456 落地后才浮出的第二层缺口**：同一个端点的第一个缺失对象消失后，下一个才暴露。 |
+| 470 | `470_cache_metrics.sql` | `f07644b71a6f62652b0ada201afb4125b8fe6c5398172d110e960722d7372846` | `cache_metrics` 分区父表 + 2 索引 + 2 CHECK → `/api/admin/cache-metrics/{summary,timeline,top-layers}` | 已登记通道并应用。**同一缺口族的第三个实例，且不在前一任务列出的 12 个 500 里**——重新从 `mux.HandleFunc` 全量重建路由表再扫一遍才暴露（`admin/cache_metrics_handler.go:69/97/198` 全部读它，父表缺失即 42P01）。 |
+| 472 | `472_cache_metrics_partitions.sql` | `a2667ef1a5436ed01272a4d8260840e486d6c00ed1e4b6552b27e48887e95053` | `cache_metrics_default` + 2026_08/2026_09 月分区 + 分区级索引 | 已登记通道并应用。**470 必须排在 472 之前**（472 要 `PARTITION OF` 一个已存在的父表）；两条都用 `pg_tables` / `pg_inherits` 存在性守卫包住，幂等。 |
+| 629 | `629_audit_attachments_cleanup.sql` | `ae462b3d4ef16d27d5c04f8799a7f15c93f140bbd575fa8769252a2acd442701` | `audit_attachments_cleanup` → `/api/admin/attachments/cleanup/execute` | 已登记通道并应用。 |
+| 632 | `632_audit_attachments_filesystem_cleanup.sql` | `c2579be0062b8777715be363f0c5c9c91147ba419b7a7f2a94c5aadb767c7bc0` | `audit_attachments_filesystem_cleanup` → 同上 | 已登记通道并应用。 |
+| 032 | `sql/migrations/domain/032_session_tenant_binding.sql` | `ab1512a2344896261290556c6d4d8c3b8c868f524280d23d0bde9455420a18c6` | `session_tenant_binding` + `update_session_tenant_binding()` 触发器 → `/api/admin/session-crosstalk` | 已登记通道并应用。**顺序约束**：历史字节写的是未改名的 `request_logs`；排在 860 之后，由通道既有的封闭 token 机制（`prepare_runtime_sql` / `request_logs_sql`）自动改写为 `_request_logs`——**未另造任何机制**。真库实测触发器挂在 `_request_logs` 父表及其全部分区。函数在 `sql/` 树下唯一，故无需登记 `intentional_function_chains`。 |
+
+### 有意排除：315 / 364 不能登记（不是「漏了没补」，是「补了会炸腿」）
+
+`/api/admin/prompt-injection/detections` 与 `/api/admin/prompt-injection/stats`
+仍为 500。它们的迁移文件**既不在通道、也不在 installer 通道**，
+且**无法通过登记修复**，实测三条硬冲突：
+
+1. **基线与迁移对同一张表给出互斥定义**。`sql/schema/01-schema.sql:11398` 把
+   `prompt_injection_detections.risk_level` 定为 `integer` + `CHECK (1..10)`；
+   `315:135` 定为 `VARCHAR(20)`。315 的 `CREATE TABLE IF NOT EXISTS` 在基线已
+   建表的库上**整段跳过**，`detection_score` / `matched_rules` /
+   `matched_rules_count` 永远不会被加上——而 364 的
+   `prompt_injection_stats_enhanced` 视图正是按这些列建的。
+2. **315 非幂等**：4 个 `CREATE INDEX` 与 4 个 `CREATE POLICY` 都没有
+   `IF NOT EXISTS`，基线已建的库上直接 42P07 / 42710。
+3. **315 自带的 `prompt_injection_stats_today` 按 `risk_level='critical'` 过滤**，
+   在 integer 列上 22P02。
+
+隔离库实测：**把 315 登记进通道 → 整条腿 rc=3 中止**（`psql -v ON_ERROR_STOP=1`
+在 315 的种子 INSERT 上撞 `prompt_injection_rules_rule_name_key` 唯一约束），
+台账停在 315，其后**每一个文件**都被挡住——包括本轮已修好的 567 与 domain/032。
+正解是新增一条编号更高的增量迁移解决基线冲突，**不在本轮范围**。
+
+### (d) 类：`/api/admin/data-lifecycle/metrics` 的 NULL 扫描契约
+
+SQL 本身合法，缺陷在扫描契约：四个分摊字节数是
+`total_size * bucket_rows / NULLIF(total_rows, 0)`，表为空时 `NULLIF` 让整式返回
+**NULL**，Scan 进非空 `int64` 直接失败 ⇒ 端点对每张空库都是硬 500。
+改法（`admin/data_lifecycle_metrics.go`）：四个字段改 `*int64` + `omitempty`，
+经 `sql.NullInt64` 中转。**刻意不用 `COALESCE(…, 0)`**——那会把「分母为 0」悄悄
+变成 0，与「该桶真实占 0 字节」不可区分。契约写进类型注释：**键缺席 = 分母为 0、
+分摊无定义；键在场 = 真实测量值（含真实的 0）**，同一载荷里的 `total_rows` 就是
+那个分母，可交叉验证。真实错误仍走原有 `err` 分支返回 500，未吞错。
+
+### 判据与验证
+
+`admin/admin_500_channel_gap_realdb_test.go`（新建，5 条）：
+
+| 测试 | 断言 | 变异验证 |
+|------|------|----------|
+| `TestChannelRegistersUndeliveredSessionGapMigrations` | 六条登记在通道内；domain/032 排在 860 之后；315/364 **不在**通道（有意排除钉子） | **M1** 六条全注释掉 → 6 条报「does not register」；**M2** 把 315/364 登记进去 → 2 条报「NOT safe to deliver」 |
+| `TestChannelGapObjectsAreDeliveredOnRealPG` | 一次性隔离 database：**先**跑同一组查询要求失败（falsification），**再**按通道数组顺序重放字节，**再**要求同一组查询成功；并要求 handler 源码仍引用该对象（把「对象存在」绑到端点） | 随 M1 变红（无文件可放） |
+| `TestRenamedGenerationTriggerLandsOnPrefixedRequestLogs` | 真实库只读：触发器必须挂 `_request_logs` 父表，其余目标必须经 `pg_inherits` 上溯确认是其分区 | 通道未跑时红 |
+| `TestDataLifecycleMetricsNullScanRealDB` | 空表 200 且四个 size 键**缺席**；非空表四键在场且为真实值；expired 桶真实 0 行时键在场且值为 0 | **M3** 改回 int64 直扫 → 复现原 500；**M4** 用 COALESCE(…,0) → 「键必须缺席」断言红 |
+| `TestFirstTurnSamplesReturnsRealSamplesAfterRealGap` | 端到端：200 且 3 条样本各带 title/total_turns/client/自动路由投影；跨租户不可见 | — |
+
+> **判据自身的假绿已修**：`channelFiles` 最初用 `"([^"]+\.sql)"` 直接匹配数组体，
+> **没有剥 bash 注释**——M1 把登记注释掉之后判据照样全绿（它测的是「文件里出现过
+> 这个字符串」，不是「通道会投递它」）。已改为先按 bash 规则剥注释再匹配，
+> M1 才真正变红。教训同 LESSONS「允许侧必须配前提仍在场」：**解析类判据要验的
+> 是语义，不是文本存在**。
+
+### 真实 PG17.10 通道验证
+
+- `LLM_REVISION_RUNTIME_LIVE=1 bash scripts/apply-db-revision-sequence_test.sh` → **RC0**
+  （9 条 runtime 用例全绿，含 `test_live_local_pg_name_generations_and_view_tail`）。
+- 完整 `bash scripts/apply-db-revision-sequence.sh`（本机 host-first 业务库）→ **RC0、0 个 ERROR**；
+  台账 224 → **229**（首批 5 条）→ **230**（补 567）→ **232**（补 470/472），
+  恰为 8 条新增，无异常增长。
+- 二次重放 → **RC0、台账 232 → 232、`^applying` 行数 0、`^psql.*ERROR` 数 0** ⇒ 零重投递。
+  `runtime_adaptation` 分布保持 `request-logs-physical-v1` 205 / `(null)` 25 /
+  `+708` 1 / `+811` 1，**没有新增适配变体**。
+- 隔离库（`llmgw_iso`，业务库完整克隆）上另做 A/B：还原到「before」态后通道一次跑通、
+  对象全部建出且查询全绿；隔离库已删除，残留 0。
+
+### 端到端复验（管理员 JWT，真实请求，凭据不打印）
+
+从 `mux.HandleFunc` 全量重建路由表（273 条 `/api/admin/*`）重扫，本轮相关端点：
+
+| 端点 | 修前 | 修后 | 载荷（真库为空表 ⇒ 明确的「无数据」，非错误凑出的 200） |
+|------|------|------|------------------------------------------------------|
+| `GET /api/admin/turns/sessions` | 500 | **200** | 20 条真实会话（`session_id`/`status`/`total_tokens`/`total_cost_usd`/`models_used`/`failover_count`） |
+| `GET /api/admin/session-clusters` | 500 | **200** | `{"clusters":[],"page":1,"page_size":20,"total":0}` |
+| `GET /api/admin/session-clusters/` | 500 | **200** | 同上 |
+| `GET /api/admin/session-crosstalk` | 500 | **200** | `{"conflicts":[],"count":0,"hours":24}` |
+| `POST /api/admin/attachments/cleanup/execute` | 500 | **200** | 真实执行并写台账（`cleanup_run_id`/`rows_affected`/`filesystem_files`） |
+| `GET /api/admin/annotations/first-turn-samples` | 500 | **200** | `{"samples":[],"total":0}`；真库 `training_human_annotations` / `session_analysis_metadata` 均为 0 行，是**真无数据**。端到端「非空壳」由 `TestFirstTurnSamplesReturnsRealSamplesAfterChannelGap` 在隔离库用 3 条带 title/轮次/客户端/自动路由投影的样本钉住 |
+| `GET /api/admin/cache-metrics/summary` | 500 | **200** | `{"by_layer":{},"hours":24,"overall":{...,"hits":0,...}}` |
+| `GET /api/admin/cache-metrics/timeline` | 500 | **200** | `{"buckets":[]}` |
+
+(d) 类端点 `/api/admin/data-lifecycle/metrics` 用**本轮新构建的二进制**在备用端口
+8799 起一份实例、连同一张真库复验（线上 8782 跑的是修复前的二进制，本轮不做部署）：
+
+```
+:8799（修复后）→ HTTP 200  {"total_rows":0,"total_size_bytes":0,"hot_data_rows":0,...}
+                        ↑ 四个 *_size_bytes 键**缺席**＝分母为 0、分摊无定义
+:8782（修复前）→ HTTP 500  {"error":{"detail":"query failed"}}
+```
+
+真库 `_request_logs` 实测 **0 行** ⇒ 这正是 (d) 的现场复现条件，不是构造出来的夹具。
+
+### 写侧故障自愈（titlestore）
+
+`internal/titlestore/store.go:264-273`（CommitTitle 投影）与 `:333`（DeleteTitle 清除）
+每次都 `UPDATE public.sessions SET title=…`，而该列此前不存在 —— 这是**正在发生的
+写故障**，影响面大于 admin 的读侧 500。真库事务内 A/B（结束时 ROLLBACK，残留 0）：
+
+```
+projected = 1 ；read-back title = 'mutation probe' ；DeleteTitle UPDATE 1 ；ROLLBACK 后残留 0
+```
+
+即 456 登记后这两条写路径**已自愈**。诚实边界：本机网关日志窗口内 `titlestore` 命中
+**0 条**，所以无法从日志观察到「失败 → 恢复」的时间线，上面的结论来自事务内
+语句级实测，不是日志观测。
+
+### 未闭环
+
+1. `/api/admin/prompt-injection/{detections,stats}` 仍 500 —— 见上「有意排除」，需新编号增量迁移。
+2. `/api/admin/session-audit`、`/api/admin/session-audit/export` 仍 500 —— super_admin 未带
+   `tenant_id` 时 `withTenantTx` 收到空租户、`SET LOCAL app.current_tenant` 失败。**代码缺陷**，
+   非迁移缺口，不在本轮范围。
+3. `admin/session_health_api.go:452-453` 与 `bg/session_lifecycle_worker.go:496-500` 写
+   `session_dim.stop_reason` / `updated_at`，而该表只有 17 列 —— 写语义决策，不在本轮范围。
+4. `sql/migrations/startup/domain/331_session_state_and_rotations.sql` 的 `CREATE TABLE` 自身
+   有重复 `created_at`，无法原样应用；它不属本轮 (a) 类缺口，未动其字节。
+5. **`admin/admin_500_column_contract_realdb_test.go`（他人所有，本轮未改）里有一条
+   潜伏缺陷**：其 seed SQL 在 `realHasTitle == true` 时把值拼成
+   `…,'cli-cold' + ", " + ", 'Cold session title'"` = `, , '…'`，报 SQLSTATE 42601。
+   该分支在 456 落地前从不执行（早退），**本轮 456 一落地它第一次运行就红**
+   （实测 `seed sessions: ERROR: syntax error at or near ","`）。这不是通道修复的
+   回归，而是那条判据的 200 侧从未被跑过。已在本文件另写独立判据覆盖同一端点，
+   不依赖它；修它需其所有者授权。
+6. 重扫的完整口径见上「扫描面不足的教训」：273 条 `/api/admin/*` 静态路由全量扫，
+   本轮结束后仍 500 的仅剩 `/api/admin/prompt-injection/{detections,stats}`（第 1 条，
+   需新编号迁移）与 `/api/admin/session-audit{,/export}`（第 2 条，代码缺陷）。

@@ -12,6 +12,7 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -19,19 +20,50 @@ import (
 )
 
 // Prometheus metrics for data lifecycle monitoring
+//
+// The four *DataSizeBytes fields are nullable on purpose. Each is a prorated
+// slice of pg_total_relation_size('_request_logs'):
+//
+//	size = total_size * (rows in bucket) / NULLIF(total_rows, 0)
+//
+// NULLIF makes the whole expression NULL — not 0 — when the table is empty.
+// Scanning that NULL into a plain int64 is what used to turn
+// /api/admin/data-lifecycle/metrics into a hard 500 on every empty (or
+// brand-new, pre-first-request) database. COALESCE(…, 0) would have hidden
+// the 500 but made "the denominator was 0" indistinguishable from "this
+// bucket genuinely occupies 0 bytes", which is exactly the distinction a
+// scraper needs when deciding whether the proration means anything.
+//
+// Contract, so the reader can tell the two apart without guessing:
+//   - key absent   => proration undefined (total_rows == 0; nothing to prorate)
+//   - key present  => a real measured byte count, including a real 0
+//
+// total_rows in the same payload is the exact NULLIF denominator, so a
+// scraper can cross-check the absent case. Nothing is swallowed: a genuine
+// query error still returns 500 through the err check below.
 type dataLifecycleMetrics struct {
 	TotalRows            int64   `json:"total_rows"`
 	TotalSizeBytes       int64   `json:"total_size_bytes"`
 	HotDataRows          int64   `json:"hot_data_rows"`
-	HotDataSizeBytes     int64   `json:"hot_data_size_bytes"`
+	HotDataSizeBytes     *int64  `json:"hot_data_size_bytes,omitempty"`
 	WarmDataRows         int64   `json:"warm_data_rows"`
-	WarmDataSizeBytes    int64   `json:"warm_data_size_bytes"`
+	WarmDataSizeBytes    *int64  `json:"warm_data_size_bytes,omitempty"`
 	ColdDataRows         int64   `json:"cold_data_rows"`
-	ColdDataSizeBytes    int64   `json:"cold_data_size_bytes"`
+	ColdDataSizeBytes    *int64  `json:"cold_data_size_bytes,omitempty"`
 	ExpiredDataRows      int64   `json:"expired_data_rows"`
-	ExpiredDataSizeBytes int64   `json:"expired_data_size_bytes"`
+	ExpiredDataSizeBytes *int64  `json:"expired_data_size_bytes,omitempty"`
 	LastCleanupAt        *string `json:"last_cleanup_at,omitempty"`
 	LastArchiveAt        *string `json:"last_archive_at,omitempty"`
+}
+
+// nullInt64Ptr maps SQL NULL to a nil pointer so json omits the key. A
+// non-NULL value — including 0 — becomes a real measured number.
+func nullInt64Ptr(v sql.NullInt64) *int64 {
+	if !v.Valid {
+		return nil
+	}
+	out := v.Int64
+	return &out
 }
 
 // GET /api/admin/data-lifecycle/metrics
@@ -47,9 +79,14 @@ func (h *Handler) handleDataLifecycleMetrics(w http.ResponseWriter, r *http.Requ
 
 	var metrics dataLifecycleMetrics
 
+	// The four prorated size expressions are NULL whenever total_rows is 0.
+	// Scan them as nullable and let the contract above decide the wire shape;
+	// a real query error is still reported below.
+	var hotSize, warmSize, coldSize, expiredSize sql.NullInt64
+
 	// Quick aggregation query (no pg_size_pretty to save CPU)
 	err := h.db.QueryRow(ctx, `
-		SELECT 
+		SELECT
 			COUNT(*) AS total_rows,
 			pg_total_relation_size('_request_logs') AS total_size,
 			COUNT(*) FILTER (WHERE ts > NOW() - INTERVAL '7 days') AS hot_rows,
@@ -65,13 +102,13 @@ func (h *Handler) handleDataLifecycleMetrics(w http.ResponseWriter, r *http.Requ
 		&metrics.TotalRows,
 		&metrics.TotalSizeBytes,
 		&metrics.HotDataRows,
-		&metrics.HotDataSizeBytes,
+		&hotSize,
 		&metrics.WarmDataRows,
-		&metrics.WarmDataSizeBytes,
+		&warmSize,
 		&metrics.ColdDataRows,
-		&metrics.ColdDataSizeBytes,
+		&coldSize,
 		&metrics.ExpiredDataRows,
-		&metrics.ExpiredDataSizeBytes,
+		&expiredSize,
 	)
 
 	if err != nil {
@@ -79,6 +116,11 @@ func (h *Handler) handleDataLifecycleMetrics(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
+
+	metrics.HotDataSizeBytes = nullInt64Ptr(hotSize)
+	metrics.WarmDataSizeBytes = nullInt64Ptr(warmSize)
+	metrics.ColdDataSizeBytes = nullInt64Ptr(coldSize)
+	metrics.ExpiredDataSizeBytes = nullInt64Ptr(expiredSize)
 
 	w.Header().Set("Content-Type", "application/json")
 	//nolint:errcheck // HTTP write error non-recoverable

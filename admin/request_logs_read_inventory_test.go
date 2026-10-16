@@ -70,14 +70,18 @@ import (
 // `session_turns_tree.go` / `session_turns_unified.go`（`parent_request_id
 // = ANY` 被判成「无会话头谓词」）。**所以这道门只数个数，不下判定。**
 var requestLogsReadInventory = map[string]int{
-	"admin/analytics.go":                    2,
-	"admin/attachments_routes.go":           2,
-	"admin/attempt_quality_api.go":          1,
-	"admin/auto_route.go":                   1,
-	"admin/auto_route_outcome_freshness.go": 1,
-	"admin/auto_route_correlations.go":      5,
-	"admin/auto_title_generator.go":         2,
-	"admin/body_resolver.go":                4,
+	"admin/analytics.go":               2,
+	"admin/attachments_routes.go":      2,
+	"admin/attempt_quality_api.go":     1,
+	"admin/auto_route.go":              1,
+	"admin/auto_route_correlations.go": 5,
+	// admin/auto_route_outcome_freshness.go 于 2026-10-16（v1 退役轮）移出本表：
+	// queryOutcomeFreshness 的 `SELECT MAX(ts) FROM ` 改拼 `bg.ActiveSettleTurnsTable()`，
+	// 源码里不再有 v1 关系名字面量 ⇒ 本表（按行正则扫字面量）测到 0 处。
+	// 与 bg/auto_route_settle_sql.go 完全同形（同一个 settleSourceFor 开关），
+	// 已按 §9.49 的分工登记进 indirectRequestLogsReaders。**不是读方变少了。**
+	"admin/auto_title_generator.go": 2,
+	"admin/body_resolver.go":        4,
 	// admin/compression_sessions.go 于 2026-10-13（S4 波 4）移出 v1 族：整只端点会话族化。
 	"admin/compression_stats.go":          4,
 	"admin/credential_monitor.go":         4,

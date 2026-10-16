@@ -63,9 +63,16 @@ var normalizedRe = regexp.MustCompile(`replace\(\s*[\w.]*request_id::text\s*,\s*
 // noopTextCasts 白名单：**text 列 → text 的空操作**，不是 uuid::text，不需要规范化。
 // 登记它们不是为了放行，而是为了让「白名单项消失了/变了」也能被发现。
 // ⚠️ key 是 `<相对本包路径>:<行内特征>`，行内特征必须仍能在该文件里 grep 到。
-var noopTextCasts = map[string]string{
-	"analytics.go:request_id::text = ANY($1::text[])": "_request_logs 是 text 列；上一段 _request_logs_hot 分支连 ::text 都不加，两边等价。别改成 replace(...)",
-}
+//
+// 2026-10-16 退役轮：原 analytics.go 的 `request_id::text = ANY($1::text[])`
+// 已从白名单**移除**，因为那一行空操作转换本身被删了——
+// admin/analytics.go 的决策回放腿改写为内联双腿后，hot 腿写
+// `request_id = ANY($1::text[])`（不带 ::text），母表腿同样去掉转换。
+// 依据是该文件内的 R47 实测注释：真库 _request_logs / _request_logs_hot 的
+// request_id **均为 text**，母表存原始 hex32；真正 uuid 型的是
+// routing_decision_log.request_id，不是这两张表。所以这条白名单的放行理由
+// 已随被放行的那行代码一起消失——保留它会让本门变成判据自己警告的「恒绿断言」。
+var noopTextCasts = map[string]string{}
 
 // noopTextCastsDB 同上，但在 db 包。
 var noopTextCastsDB = map[string]string{

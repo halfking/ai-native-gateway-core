@@ -7,6 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/kaixuan/llm-gateway-go/bg"
 )
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -87,14 +89,25 @@ const (
 	outcomeReasonQueryFailed = "query_failed" // transient; treated as stale
 )
 
-// queryOutcomeFreshness reads MAX(ts) from the v1 hot table.
+// queryOutcomeFreshness reads MAX(ts) from the relation the settle worker is
+// actually reading this instant.
 //
-// Deliberately raw, unparameterised SQL: there is nothing to interpolate, and
-// the relation name is a constant, not caller input. There is no caller-supplied
-// value anywhere in this function, so there is no injection surface.
+// 2026-10-16: this used to hardcode `_request_logs_hot`. That was correct
+// while stop-write was only a plan, but bg.settleSourceFor switches the
+// worker's source to `session_turns_hot` the moment the write gate closes, so a
+// v1-only probe spent every post-stop-write run reporting `stale` against a
+// table nobody reads any more — an alarm that asserts the opposite of the
+// truth. Resolving the table through bg.ActiveSettleTurnsTable keeps the
+// probe and the worker on one source (the same invariant settleSourceSpec's
+// header demands for the outcome/baseline/LATERAL legs).
 //
-// The 3s handler budget is not at risk: measured on the live database this is
-// an Index Only Scan on idx_request_logs_hot_ts, 0.275ms execution, 5 buffers.
+// Deliberately raw SQL: the only interpolated value is a constant chosen from a
+// closed set inside this package, never caller input, so there is no injection
+// surface.
+//
+// The 3s handler budget is not at risk: measured on the live database the v1
+// form of this was an Index Only Scan on idx_request_logs_hot_ts, 0.275ms
+// execution, 5 buffers; the session form uses idx_session_turns_hot_ts.
 func queryOutcomeFreshness(ctx context.Context, db outcomeFreshnessDB, now time.Time) outcomeSourceFreshness {
 	// Start pessimistic: everything that is not a positively-fresh reading
 	// reports stale. The live branch below has to CLEAR these, which is why
@@ -108,7 +121,7 @@ func queryOutcomeFreshness(ctx context.Context, db outcomeFreshnessDB, now time.
 	}
 
 	var asOf *time.Time
-	if err := db.QueryRow(ctx, `SELECT MAX(ts) FROM _request_logs_hot`).Scan(&asOf); err != nil {
+	if err := db.QueryRow(ctx, "SELECT MAX(ts) FROM "+bg.ActiveSettleTurnsTable()).Scan(&asOf); err != nil {
 		// A dropped relation is the EXPECTED end state of the retirement, not a
 		// fault: report it as such and let the endpoint answer normally.
 		var pgErr *pgconn.PgError
