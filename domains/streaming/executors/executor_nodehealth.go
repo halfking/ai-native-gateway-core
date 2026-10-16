@@ -185,10 +185,19 @@ func (a executorNodeHealthAdapter) ApplyNodeHealthDecision(ctx context.Context, 
 		return nil
 	}
 	kind := errorKindFromNodeHealth(decision.ErrorKind)
+	// A named model rejection is binding evidence even when upstream
+	// classification fell through to ErrorKindUpstream. The reducer intentionally
+	// remains classification-only and may emit the full third-failure effect set;
+	// the adapter owns this detail-aware scope correction so every effect consumer
+	// sees the same narrowed decision.
+	_, modelScopedOverride := errorsx.ModelScopedRejection([]byte(decision.ErrorDetail))
 	deferDegrade := flashBlipEligible(decision, e.NodeProbeConfirm)
 	var errs []error
 	var deferred []nodehealth.Effect
 	for _, effect := range decision.Effects {
+		if modelScopedOverride && isCredentialWideNodeHealthEffect(effect.Kind) {
+			continue
+		}
 		switch effect.Kind {
 		case nodehealth.EffectRecordCircuitFailure:
 			// Circuit semantics are unchanged by the flash-blip gate: the
@@ -196,15 +205,6 @@ func (a executorNodeHealthAdapter) ApplyNodeHealthDecision(ctx context.Context, 
 			// themselves never touch the breaker ("不叠加熔断").
 			if e.Circuit != nil {
 				providerID, credentialID := int(decision.Node.ProviderID), int(decision.Node.CredentialID)
-				// P0-4 模型级隔离：上游正文指名某单一模型（"model 'X' not
-				// found/retired/已下线"族）时，即便分类落在了非 binding 档
-				// （400/404 误标 transient 的既知登记项），也不得连坐凭据级
-				// 熔断——同凭据的兄弟模型继续服务。绑定级标记由同批
-				// EffectSetBindingUnavailable 走 model_probe 状态机完成。
-				if model, ok := errorsx.ModelScopedRejection([]byte(decision.ErrorDetail)); ok {
-					e.Circuit.RecordModelScopedFailure(providerID, credentialID, kind, model)
-					continue
-				}
 				// P0-4 rest 分级：quota 族失败且正文携带重置信号（绝对时刻
 				// /相对时长/欠费词）时，冷却对齐到该时刻而非指数梯——上游
 				// 显式重置时间是硬事实，不随 billing mode 缩短，但 free 标记
@@ -230,8 +230,8 @@ func (a executorNodeHealthAdapter) ApplyNodeHealthDecision(ctx context.Context, 
 				e.Circuit.RecordSuccess(int(decision.Node.ProviderID), int(decision.Node.CredentialID))
 			}
 		case nodehealth.EffectRestoreBinding:
-			if e.State != nil && e.State.Enabled() {
-				if err := e.State.RestoreOnSuccess(ctx, int(decision.Node.CredentialID), decision.Node.Model); err != nil {
+			if state := e.nodeHealthStateWriter(); state != nil && state.Enabled() {
+				if err := state.RestoreOnSuccess(ctx, int(decision.Node.CredentialID), decision.Node.Model); err != nil {
 					errs = append(errs, err)
 				}
 			}
@@ -275,10 +275,46 @@ func (e *Executor) applyNodeHealthPersist(ctx context.Context, decision nodeheal
 	}
 	if decision.Outcome == requestjourney.OutcomeSuccess {
 		e.StateObserver.UpdateOnSuccess(ctx, int(decision.Node.CredentialID), decision.Node.Model, decision.LatencyMs, decision.RequestID)
-	} else if decision.Outcome == requestjourney.OutcomeFailure {
-		kind := errorKindFromNodeHealth(decision.ErrorKind)
-		e.StateObserver.UpdateOnFailure(ctx, int(decision.Node.CredentialID), decision.Node.Model, kind, decision.RequestID, decision.Node.TenantID, decision.BillingMode)
+		return
 	}
+	if decision.Outcome != requestjourney.OutcomeFailure {
+		return
+	}
+	// The legacy observer can independently reach its credential-wide cooling
+	// threshold. Keep it out of a named-model rejection, otherwise filtering
+	// only SetCredentialUnavailable above still lets siblings be collateral.
+	if _, modelScoped := errorsx.ModelScopedRejection([]byte(decision.ErrorDetail)); modelScoped {
+		return
+	}
+	kind := errorKindFromNodeHealth(decision.ErrorKind)
+	e.StateObserver.UpdateOnFailure(ctx, int(decision.Node.CredentialID), decision.Node.Model, kind, decision.RequestID, decision.Node.TenantID, decision.BillingMode)
+}
+
+// isCredentialWideNodeHealthEffect marks effects that can contaminate sibling
+// models on a credential. Model-scoped overrides retain node-specific effects
+// (binding state, URSM, cache invalidation, scheduling and probe bookkeeping).
+func isCredentialWideNodeHealthEffect(kind nodehealth.EffectKind) bool {
+	switch kind {
+	case nodehealth.EffectRecordCircuitFailure, nodehealth.EffectSetCredentialUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
+func (e *Executor) nodeHealthStateWriter() interface {
+	Enabled() bool
+	RestoreOnSuccess(context.Context, int, string) error
+	WriteOnError(context.Context, int, string, credential.Failure) error
+	SetCredentialUnavailable(context.Context, int, credential.Failure) error
+} {
+	if e == nil {
+		return nil
+	}
+	if e.NodeHealthState != nil {
+		return e.NodeHealthState
+	}
+	return e.State
 }
 
 // applyNodeHealthDegradeEffect applies one degrade-family effect (binding /
@@ -320,16 +356,16 @@ func (e *Executor) applyNodeHealthDegradeEffect(ctx context.Context, decision no
 	kind := errorKindFromNodeHealth(decision.ErrorKind)
 	switch effect.Kind {
 	case nodehealth.EffectSetBindingUnavailable:
-		if e.State != nil && e.State.Enabled() {
+		if state := e.nodeHealthStateWriter(); state != nil && state.Enabled() {
 			failure := credential.Failure{Kind: kind, Detail: decision.ErrorDetail}
-			if err := e.State.WriteOnError(ctx, int(decision.Node.CredentialID), decision.Node.Model, failure); err != nil {
+			if err := state.WriteOnError(ctx, int(decision.Node.CredentialID), decision.Node.Model, failure); err != nil {
 				*errs = append(*errs, err)
 			}
 		}
 	case nodehealth.EffectSetCredentialUnavailable:
-		if e.State != nil && e.State.Enabled() {
+		if state := e.nodeHealthStateWriter(); state != nil && state.Enabled() {
 			failure := credential.Failure{Kind: kind, Detail: decision.ErrorDetail}
-			if err := e.State.SetCredentialUnavailable(ctx, int(decision.Node.CredentialID), failure); err != nil {
+			if err := state.SetCredentialUnavailable(ctx, int(decision.Node.CredentialID), failure); err != nil {
 				*errs = append(*errs, err)
 			}
 		}
