@@ -17,6 +17,7 @@ export default {
   },
 
   item: {
+    liveTopology: '实时拓扑',
     overview: '总览',
     tenantModels: '标准模型',
     tenantAccount: '我的账户',

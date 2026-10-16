@@ -24,6 +24,13 @@ export interface LiveRequest {
   tenant_id?: string
   gw_session_id?: string
   model?: string
+  // 2026-10-16（实时拓扑页）：canonical_name 与 credential_* 一直在 SSE 线上
+  // （Go 侧 LiveRequest 有，见 admin/live_stream_sse.go），但 TS 侧漏了声明，
+  // 于是任何按「标准模型名」「凭据级」聚合的代码都拿不到类型。
+  // 实时拓扑的供应端节点正是凭据级（node_update 同口径），这里补齐声明。
+  canonical_name?: string
+  credential_id?: number
+  credential_label?: string
   model_category?: LiveModelCategory
   provider_code?: string
   status?: LiveStatus

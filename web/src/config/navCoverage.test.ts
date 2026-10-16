@@ -58,6 +58,7 @@ const KNOWN_ORPHANS: Record<string, string> = {
   '/customer/agreement': '租户门户独立入口（customer 域），与控制台菜单是两套导航',
   '/customer/site': '租户门户独立入口（customer 域），与控制台菜单是两套导航',
   '/dev/waterfall-preview': '开发期瀑布图预览页，刻意不暴露给生产菜单导航；仅供本地调试时手敲 URL 进入',
+  '/dev/live-topology-preview': '开发期实时拓扑夹具预览页（同 /dev/waterfall-preview 的做法）：无登录态/无真实 SSE 时肉眼验收拓扑动效与排版，生产构建不注册该路由',
   '/maas/account': 'MaaS 门户独立入口（maas 域），由 /maas/models 进入',
   '/maas/models': 'MaaS 门户独立入口（maas 域），与控制台菜单是两套导航',
   '/maas/orders/:id': 'MaaS 门户子页，由 /maas/orders 内部跳转',

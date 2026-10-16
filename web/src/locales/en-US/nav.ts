@@ -16,6 +16,7 @@ export default {
   },
 
   item: {
+    liveTopology: 'Live Topology',
     overview: 'Overview',
     tenantModels: 'Standard Models',
     tenantAccount: 'My Account',

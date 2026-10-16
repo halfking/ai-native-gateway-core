@@ -6,6 +6,7 @@ import { locationFromInternalPath } from './utils/safeRedirect'
 // Critical views loaded immediately (login, home, layout)
 import LoginView from './views/LoginView.vue'
 import HomeView from './views/HomeView.vue'
+import LiveTopologyView from './views/LiveTopologyView.vue'
 import ForbiddenView from './views/ForbiddenView.vue'
 
 // All other views are lazy-loaded to reduce initial bundle size
@@ -182,6 +183,10 @@ export const router = createRouter({
     // 2026-07-21: 总览搬到 /dashboard；根路径 / 仍走 HomeView（未登录 redirect 到 maintain，已登录显示 DashboardView）。
     { path: '/dashboard',          component: HomeView, meta: { requiresAuth: true } },
     { path: '/',                   component: HomeView, meta: { public: true } },
+    // 2026-10-16: 实时拓扑新首页（/live）。与旧首页**并存**：`/` 与
+    // /dashboard 一行未改，本页只新增一个入口，不接管根路径。
+    // 权限与 /dashboard 同级（requiresAuth），租户管理员进入即按会话租户收窄。
+    { path: '/live',               component: LiveTopologyView, meta: { requiresAuth: true } },
 
     // super_admin only — providers, catalog, free pool, tenants, audit logs
     // 2026-09-04: 供应商列表/详情改挂 providerConsole —— super_admin，或
@@ -318,6 +323,11 @@ export const router = createRouter({
 
     ...(import.meta.env.DEV
       ? [{ path: '/dev/waterfall-preview', component: () => import('./views/DispatchWaterfallPreview.vue'), meta: { public: true } }]
+      : []),
+    // 2026-10-16: 实时拓扑的 DEV 夹具预览页（动效/排版的肉眼验收入口，
+    // 生产构建不注册）。同 DispatchWaterfallPreview 的既有做法。
+    ...(import.meta.env.DEV
+      ? [{ path: '/dev/live-topology-preview', component: () => import('./views/LiveTopologyPreview.vue'), meta: { public: true } }]
       : []),
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],

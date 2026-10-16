@@ -56,9 +56,18 @@ type controlledBodyDB interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
+// topologyStatsDB 是「实时拓扑当天统计」只读查询面。刻意保持窄接口
+// （只有 Query）：db 字段是具体 *pgxpool.Pool，无法在单测里注入 pgxmock，
+// 而这个端点的三条真问题（租户隔离 / 降级信封 / 未知桶保留）都必须能被
+// 单测钉住，所以按 controlledBodyDB 的同款范式开一个窄口。
+type topologyStatsDB interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
 type Handler struct {
 	db                   *pgxpool.Pool
 	bodyDB               controlledBodyDB
+	topologyStatsDB      topologyStatsDB
 	bodyServiceJWTSecret string
 	secret               string
 	encKey               []byte
@@ -408,6 +417,7 @@ func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
 	h := &Handler{
 		db:                   db,
 		bodyDB:               db,
+		topologyStatsDB:      db,
 		bodyServiceJWTSecret: strings.TrimSpace(os.Getenv("LLM_GATEWAY_SESSION_SERVICE_JWT_SECRET")),
 		secret:               secretKey,
 		encKey:               encKey,
@@ -1089,6 +1099,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/dashboard/board", admin(h.handleDashboardBoard))
 	mux.HandleFunc("/api/admin/stats", admin(h.handleStats))
 	mux.HandleFunc("/api/admin/stats/", admin(h.handleStats))
+	// 2026-10-16: 实时拓扑首页左栏「供应商当天请求/token 统计」只读投影。
+	// 与 /api/admin/stats/* 同源（stats_usage_daily），租户隔离走 statsTenantScope；
+	// 聚合表未迁移时返回 200 + degraded 信络而不是零行。
+	mux.HandleFunc("/api/admin/topology/providers-today", admin(h.handleTopologyProvidersToday))
 	// 2026-09-25: 对账报表（供应商/内部双视角区间汇总 + xlsx 双 sheet 导出
 	// + 单日手动重跑）。superAdmin——数据含全租户内部计费。
 	mux.HandleFunc("/api/admin/report-rollup/", h.superAdmin(h.handleReportRollup))

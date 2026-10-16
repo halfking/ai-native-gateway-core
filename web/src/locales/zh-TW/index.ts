@@ -17,6 +17,7 @@ import credentialMonitor from './credentialMonitor'
 import providers from './providers'
 import landing from './landing'
 import dashboard from './dashboard'
+import liveTopology from './liveTopology'
 import providerDetail from './providerDetail'
 import providerDetailPage from './providerDetailPage'
 import tenants from './tenants'
@@ -162,4 +163,5 @@ export default {
   requestDetail,
   reports,
   routeIncidentDrawer,
+  liveTopology,
 }

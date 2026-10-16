@@ -13,6 +13,7 @@ export default {
     opsplatform: "运维平台"
   },
   item: {
+    liveTopology: 'Live Topology',
     overview: "نظرة عامة",
     tenantModels: "النماذج القياسية",
     tenantAccount: "حسابي",

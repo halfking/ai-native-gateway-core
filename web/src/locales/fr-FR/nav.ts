@@ -15,6 +15,7 @@ export default {
   item: {
     activateAction: 'Activer',
     activateActionTip: 'Cliquez pour activer cette instance',
+    liveTopology: 'Topologie temps réel',
     overview: "Aperçu",
     tenantModels: "Modèles standards",
     tenantAccount: "Mon compte",

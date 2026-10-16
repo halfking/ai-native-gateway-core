@@ -13,6 +13,7 @@ export default {
     opsplatform: "运维平台"
   },
   item: {
+    liveTopology: "リアルタイムトポロジ",
     overview: "概要",
     tenantModels: "標準モデル",
     tenantAccount: "マイアカウント",

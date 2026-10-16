@@ -349,6 +349,37 @@
    - 并发会话提醒：154 上曾出现**另一份 checkout 在部署**（seq 2550 已落盘未切流）。
      **没清活锁**、等它结束后自查版本再部署——否则会把「对方已落盘的 release」
      误当成「自己已上线」。
+10. **2026-10-16 实时拓扑新首页 `/live`**（方案 + 实现，**未部署**），详见
+    `docs/03-design/02-feature-design/features/live-topology-home-design.md`：
+    - **旧首页零改动**：`/` 与 `/dashboard`、四个 tab、URL 契约一行未动；新页
+      `/live` 作为独立导航项放在「总览」之前（2026-10-16 owner 拍板）。
+    - **数据面几乎全复用既有 SSE**：请求/节点健康/队列/路由判定都来自
+      `/api/admin/live-stream`（`liveStreamStore`）；新增后端端点**只有一个**：
+      `GET /api/admin/topology/providers-today`（`admin/topology_providers_today.go`），
+      口径与 `/api/admin/stats/*` 同源（`stats_usage_daily`），租户隔离走
+      `statsTenantScope`。
+    - **当天统计 = UTC 日桶且显式标注水位**：该聚合表由 `DailyMonthlyRollup`
+      **每小时**重建，响应带 `day_utc` + `source_high_watermark` + `rollup_cadence`，
+      左栏必须画出来——把 ≤1h 滞后的数字装成实时是本仓反复吃过的亏。
+    - **供应端按凭据级节点**（owner 拍板）：node_update 本就凭据级（熔断/配额/
+      在途/延迟），才能指出「哪一把 key 坏了」；过滤下拉同时给「供应商整体」与
+      「单把凭据 `code #id`」两种口径。
+    - ★ **新判据纪律：pgxmock 不执行 SQL ⇒ 行级判据对 SQL 形态改动是假绿**。
+      把 `LEFT JOIN providers` 改成 `JOIN`（未知供应商桶被静默丢弃），5 条行级
+      判据**全绿**。必须另配钉在 SQL 常量上的契约判据
+      （`TestProvidersTodaySQLContractPinsJoinAndTenantGuard`），已做变异验证。
+    - 变异验证共 9 处：后端 5（租户作用域/降级分支/INNER JOIN/租户守卫/日桶口径）、
+      前端 4（未上报健康被画绿、布局用 `Math.random`、过滤恒真、粒子按帧数推进）、
+      另有 2 处验证三栏收敛（右栏绕过过滤、图侧绕过过滤）。
+    - 前端纯函数在 `web/src/lib/liveTopology*.ts`（构图/确定性布局/过滤/粒子池），
+      编排 `web/src/composables/useLiveTopology.ts`，视图
+      `web/src/views/LiveTopologyView.vue` + `components/live-topology/*.vue`。
+      **三栏（图/左栏/右栏）必须收敛到同一过滤子集**，由视图判据钉住。
+    - 顺带修一个既有类型缺口：TS `LiveRequest` 缺 `canonical_name` / `credential_id`
+      / `credential_label` 三个字段（Go 侧一直有），补在 `liveStreamStore.ts`。
+    - DEV 夹具预览页 `/dev/live-topology-preview`（同 `DispatchWaterfallPreview`
+      的既有做法，生产不注册）用于无登录态时肉眼验走动效。
+    - **未完成**：真实浏览器验收被沙箱挡下（见「剩余任务」第 8 条）。
 
 
 ## 剩余任务（按依赖顺序）
@@ -2178,3 +2209,11 @@ owner 拍板）；session_censors 可逆还原无读取方（配密钥+读取端
    `2663-75bf327a`、211 仍旧版。此时部署任何一台都会连带 866 与该功能。
 6. MV 争用、model alternatives 超时、fp_slot、nvidia probe、252 负载 15–22：owner。
 7. `r43-fresh-install*` / 九月远端三分支：留置。
+8. ★ **`/live` 真实浏览器验收（未做，沙箱阻塞）**：本机 dev server +
+   本地 stub API 起了，`/dev/live-topology-preview` 与仓库既有的
+   `/dev/waterfall-preview` **同样**卡在「正在检测登录状态…」——**不是新页的问题**，
+   是沙箱里 App.vue 的 `/api/auth/me` 探测不落定（无 JS 报错，network 面板无该请求）。
+   要肉眼验收需二选一：① 拿到本机 8782 网关的管理员口令（或
+   `GATEWAY_DEV_AUTH_TOKEN` 自签 JWT）后用 `GATEWAY_API_TARGET=http://localhost:8782`
+   起 dev；② 在真实已登录浏览器里直接开 `/live`。
+   在此之前，「动效够炫 / 60fps / 粒子不卡」**没有任何运行时证据**，只有单测与构建证据。

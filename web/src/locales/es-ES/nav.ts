@@ -14,6 +14,7 @@ export default {
   },
   item: {
     activateAction: 'Activar',
+    liveTopology: 'Topología en vivo',
     overview: "Resumen",
     tenantModels: "Modelos estándar",
     tenantAccount: "Mi cuenta",

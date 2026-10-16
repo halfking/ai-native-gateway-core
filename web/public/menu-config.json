@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-10-15T16:35:35.464Z",
+  "exported_at": "2026-10-16T11:38:59.936Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -13,6 +13,16 @@
     "*": "始终可用，无 plugin 依赖"
   },
   "primary": [
+    {
+      "path": "/live",
+      "label": "实时拓扑",
+      "labelKey": "nav.item.liveTopology",
+      "icon": "🛰",
+      "platformOps": true,
+      "exact": true,
+      "tenantScope": "default",
+      "pluginScope": "*"
+    },
     {
       "path": "/dashboard",
       "label": "总览",
