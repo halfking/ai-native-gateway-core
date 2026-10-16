@@ -304,16 +304,184 @@ func (h *Handler) storageOverviewSnapshot(ctx context.Context) *storageOverview 
 //
 // 只丢快照、不重置 singleflight.Group：本函数由后台维护任务 goroutine 调用，
 // 此刻可能有 HTTP 请求正处在 sf.DoChan 里，赋新的 Group 会与之竞争。
-func InvalidateDataLifecycleStorageCache() { storageSnapshots.reset() }
+func InvalidateDataLifecycleStorageCache() {
+	storageSnapshots.reset()
+	tableSizesSnapshots.reset()
+}
 
 // resetDataLifecycleStorageCacheForTest 测试隔离用：快照与计数全清。
-func resetDataLifecycleStorageCacheForTest() { storageSnapshots.resetForTest() }
+func resetDataLifecycleStorageCacheForTest() {
+	storageSnapshots.resetForTest()
+	tableSizesSnapshots.resetForTest()
+}
 
 // dataLifecycleStorageCollectCount 快照聚合的真实执行次数（测试 + 观测）。
 func dataLifecycleStorageCollectCount() int64 { return storageSnapshots.collect.Load() }
 
 // dataLifecycleStorageCacheHitCount 快照命中次数（测试 + 观测）。
 func dataLifecycleStorageCacheHitCount() int64 { return storageSnapshots.hits.Load() }
+
+// ── Top-N 大表快照缓存 ───────────────────────────────────────────────
+//
+// 与上面的总览快照同构，但**状态与计数独立**：两个端点的慢路径成因不同
+// （总览是全库 SUM，这里是 ORDER BY 必须对全部 440 张表逐个算
+// pg_total_relation_size），耦合计数会让"聚合了几次"这条判据说不清是谁触发的。
+//
+// 失效是共享的：InvalidateDataLifecycleStorageCache 一并清掉，两者都由
+// VACUUM FULL / REINDEX 改变物理占用。
+
+// tableSizesMaxLimit /storage/tables 允许的最大 limit，同时也是快照一次
+// 采集的行数。与 handleDataLifecycleTableSizes 里的 `n <= 200` 上界同源。
+const tableSizesMaxLimit = 200
+
+// tableSizesTTL 快照有效期，取值口径与 storageOverviewTTL 一致（30s）。
+// 声明为 var：判据要把它压到毫秒级来证明"到期会重新取数"（与总览同理）。
+var tableSizesTTL = 30 * time.Second
+
+type tableSizesSnapshot struct {
+	rows        []tableSizeInfo
+	collectedAt time.Time
+	expiresAt   time.Time
+}
+
+type tableSizesSnapshotState struct {
+	mu     sync.Mutex
+	byPool map[*pgxpool.Pool]*tableSizesSnapshot
+	sf     singleflight.Group
+
+	collect atomic.Int64
+	hits    atomic.Int64
+}
+
+var tableSizesSnapshots = &tableSizesSnapshotState{byPool: make(map[*pgxpool.Pool]*tableSizesSnapshot)}
+
+func (s *tableSizesSnapshotState) get(pool *pgxpool.Pool, fresh bool) *tableSizesSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snap := s.byPool[pool]
+	if snap == nil {
+		return nil
+	}
+	if fresh && !time.Now().Before(snap.expiresAt) {
+		return nil
+	}
+	return snap
+}
+
+func (s *tableSizesSnapshotState) put(pool *pgxpool.Pool, snap *tableSizesSnapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.byPool[pool] = snap
+}
+
+func (s *tableSizesSnapshotState) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.byPool = make(map[*pgxpool.Pool]*tableSizesSnapshot)
+}
+
+// resetTableSizesForTest 测试隔离：快照 + 计数全清（同样不碰 sf.Group，
+// 理由见 storageSnapshotState.resetForTest）。
+func (s *tableSizesSnapshotState) resetForTest() {
+	s.reset()
+	s.collect.Store(0)
+	s.hits.Store(0)
+}
+
+// tableSizesCollectCount / tableSizesHitCount 真实计数（判据 + 观测）。
+func tableSizesCollectCount() int64 { return tableSizesSnapshots.collect.Load() }
+func tableSizesHitCount() int64     { return tableSizesSnapshots.hits.Load() }
+
+// sliceTableSizes 从采满的 Top-N 快照里切出前 limit 行，并按"对 Top-limit
+// 求和"的原口径重算 total / 占比。
+//
+// queryTableSizes 的后处理是对**本次 limit** 求和（totalBytes、PercentOfDB），
+// 所以切片时必须重算，不能直接沿用采满时的数字——否则 limit=20 会显示
+// "对 200 行求和的占比"，与优化前不同。
+func sliceTableSizes(rows []tableSizeInfo, limit int) ([]tableSizeInfo, int64, string) {
+	if limit > len(rows) {
+		limit = len(rows)
+	}
+	out := make([]tableSizeInfo, limit)
+	copy(out, rows[:limit])
+
+	var totalBytes int64
+	for i := range out {
+		out[i].PercentOfDB = 0 // 必须清零：不能带着采满时的占比出去
+		totalBytes += out[i].TotalBytes
+	}
+	for i := range out {
+		if totalBytes > 0 {
+			out[i].PercentOfDB = int(out[i].TotalBytes * 100 / totalBytes)
+		}
+	}
+	return out, totalBytes, humanBytes(totalBytes)
+}
+
+// tableSizesSnapshot 取 Top-N 快照：命中直接切片，否则单飞采一次满量。
+//
+// 失败语义保持与优化前一致：采集出错即返回 error，由 handler 照旧写 500
+// （这个端点优化前就是 500，不改成 200 降级，避免契约漂移）。
+func (h *Handler) tableSizesSnapshot(ctx context.Context, limit int) (tableSizesResponse, error) {
+	if snap := tableSizesSnapshots.get(h.db, true); snap != nil {
+		tableSizesSnapshots.hits.Add(1)
+		tables, total, human := sliceTableSizes(snap.rows, limit)
+		return tableSizesResponse{
+			Tables: tables, TotalBytes: total, TotalHuman: human,
+			CollectedAt: snap.collectedAt,
+		}, nil
+	}
+
+	ch := tableSizesSnapshots.sf.DoChan(fmt.Sprintf("table-sizes:%p", h.db), func() (any, error) {
+		collectCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), storageCollectTimeout)
+		defer cancel()
+		tableSizesSnapshots.collect.Add(1)
+		// 一次采满 tableSizesMaxLimit 行，所有 limit 都从它切片。
+		rows, _, _, err := queryTableSizes(collectCtx, h, tableSizesMaxLimit)
+		if err != nil {
+			return nil, err
+		}
+		snap := &tableSizesSnapshot{
+			rows:        rows,
+			collectedAt: time.Now().UTC(),
+			expiresAt:   time.Now().Add(tableSizesTTL),
+		}
+		tableSizesSnapshots.put(h.db, snap)
+		return snap, nil
+	})
+
+	select {
+	case res := <-ch:
+		if res.Err == nil {
+			snap := res.Val.(*tableSizesSnapshot)
+			tables, total, human := sliceTableSizes(snap.rows, limit)
+			return tableSizesResponse{
+				Tables: tables, TotalBytes: total, TotalHuman: human,
+				CollectedAt: snap.collectedAt,
+			}, nil
+		}
+		// 采集失败：若还有旧快照，宁可给稍旧的读数也不要 500。
+		if snap := tableSizesSnapshots.get(h.db, false); snap != nil {
+			tableSizesSnapshots.hits.Add(1)
+			tables, total, human := sliceTableSizes(snap.rows, limit)
+			return tableSizesResponse{
+				Tables: tables, TotalBytes: total, TotalHuman: human,
+				CollectedAt: snap.collectedAt,
+			}, nil
+		}
+		return tableSizesResponse{}, res.Err
+	case <-ctx.Done():
+		if snap := tableSizesSnapshots.get(h.db, false); snap != nil {
+			tableSizesSnapshots.hits.Add(1)
+			tables, total, human := sliceTableSizes(snap.rows, limit)
+			return tableSizesResponse{
+				Tables: tables, TotalBytes: total, TotalHuman: human,
+				CollectedAt: snap.collectedAt,
+			}, nil
+		}
+		return tableSizesResponse{}, ctx.Err()
+	}
+}
 
 // collectStorageOverview 真正跑四段聚合的慢路径（原 handler 主体，逻辑未改）。
 func collectStorageOverview(ctx context.Context, h *Handler) *storageOverview {
@@ -385,7 +553,9 @@ func (h *Handler) handleDataLifecycleTableSizes(w http.ResponseWriter, r *http.R
 
 	limit := 20
 	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
+		// 上界用 tableSizesMaxLimit 而不是字面量：它同时是快照的采集行数，
+		// 两处一旦漂移，"Top-N 是快照前缀"的前提会在 N 上限处悄悄失效。
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= tableSizesMaxLimit {
 			limit = n
 		}
 	}
@@ -393,19 +563,14 @@ func (h *Handler) handleDataLifecycleTableSizes(w http.ResponseWriter, r *http.R
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	tables, totalBytes, totalHuman, err := queryTableSizes(ctx, h, limit)
+	resp, err := h.tableSizesSnapshot(ctx, limit)
 	if err != nil {
 		slog.Warn("storage: table sizes query failed", "error", err)
 		writeInternalErr(w, "查询表大小失败", err)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, tableSizesResponse{
-		Tables:      tables,
-		TotalBytes:  totalBytes,
-		TotalHuman:  totalHuman,
-		CollectedAt: time.Now().UTC(),
-	})
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // ── helpers ────────────────────────────────────────────────────────
@@ -612,6 +777,13 @@ func queryDirectory(path string) directoryInfo {
 //	位置引用指向输出列，PG 复用 SELECT 已算出的值，**不会**重算
 //	pg_total_relation_size —— 第一次修正想达成的「每行只算一次」照样成立，
 //	同时 LIMIT 又能下推。语义与原查询逐列相同。
+//
+//	2026-10-16 第三次：加 `, 1` 作确定性 tie-break。
+//	Top-N 快照一次采满 tableSizesMaxLimit 行、再按请求的 limit 切片，
+//	这要求「Top-20 是 Top-200 的前缀」。字节数并列时 PG 的排序不稳定，
+//	没有 tie-break 就只能算"大概率成立"，不能算严格成立。补 relname 作
+//	次键后前缀性质精确，且并列时选谁从此固定（优化前是任意的）。
+//	对耗时无影响（Top-N 的主项仍是 pg_total_relation_size）。
 func queryTableSizes(ctx context.Context, h *Handler, limit int) ([]tableSizeInfo, int64, string, error) {
 	rows, err := h.db.Query(ctx, `
 		SELECT
@@ -629,7 +801,7 @@ func queryTableSizes(ctx context.Context, h *Handler, limit int) ([]tableSizeInf
 		LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
 		WHERE n.nspname NOT IN ('pg_catalog','information_schema')
 		  AND c.relkind IN ('r','p')
-		ORDER BY 4 DESC
+		ORDER BY 4 DESC, 1
 		LIMIT $1
 	`, limit)
 	if err != nil {

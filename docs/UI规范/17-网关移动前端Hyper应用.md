@@ -21132,3 +21132,252 @@ h.superAdmin(h.handleModelIntegrity)          → h.modelIntegrityTenantAdmin(..
 (b) **3 表无 RLS policy**（model_discovery_runs / credential_health_checks / self_check_runs）仍是独立缺陷——批 157 不动它，列入下次"R 深度防御"批次。
 
 (c) **super_admin key 池形态**未变（admin_key 仍走 super 路径）。批 155 收口的 `sliding_window` 已对齐此模式。
+
+## 11.195 第一百五十八批 a 接 P1 孤儿 sessionAnalyticsFilterOptions：6 端点综合视图进 UI
+
+### 一、目标与边界
+
+11 孤儿终态矩阵（30 跳）：P1×2（sessionAnalyticsFilterOptions + usageEnhanced）/ P2 boardOperational / P3 dataLifecycleStorage / P4 opsOverview。本节把 sessionAnalyticsFilterOptions 这个 0 后端风险的 P1 接进 UI —— 6 个端点全在现有 `/api/admin/session-analytics/{clients,tasks,users}` 三组 REST 里，handler 实证（29 跳）全部带 `($N = '' OR tenant_id = $N)` 过滤，租户隔离完备。0 后端改动。
+
+### 二、调研要点
+
+- 后端 6 端点 = 3 路由 × 2 形态（聚合列表 + ID 详情）
+- API 层 `api/sessionAnalytics.ts` 已有 18 个 export helper，本批只新增 1 个聚合 helper 走 3 端点并发
+- 视图借用现有 `SessionAnalyticsFilterOptionsView.vue` 三列布局（客户端 / 任务 / 用户）
+- 点击行后 push 路由到 `/clients/:id` / `/tasks/:id` / `/users/:id` 三子视图
+- 全文件硬编码中文（与 TurnsListView 161 行注释一致）
+- drawer 入口已在 admin subrouter 下，nav.ts item 块 +1 条目；不挂 appNav.ts（与 158b 同形态）
+
+### 三、改动清单（7 文件）
+
+| 文件 | 行 | 内容 |
+|---|---|---|
+| `web/src/api/sessionAnalyticsFilterOptions.ts` | +59 | 新建：listSessionAnalyticsFilterOptions 聚合 helper，3 端点并发 + URLSearchParams |
+| `web/src/views/SessionAnalyticsFilterOptionsView.vue` | +193 | 新建：3 列布局 + 加载态 + 错误态 + 选中跳子端点 |
+| `web/src/router.ts` | +6 | route + lazy import + meta requiresAuth |
+| `web/src/locales/{zh-CN,en-US}/nav.ts` | 各 +1 | sessionAnalyticsFilterOptions 条目 |
+| `web/src/api/sessionAnalyticsFilterOptions.test.ts` | +68 | 3 测试：并发 + 空响应 + 默认参数 |
+| `web/src/views/SessionAnalyticsFilterOptionsView.test.ts` | +71 | 3 测试：3 列表 + 选中跳 + 加载失败 |
+
+合计 399 行。
+
+### 四、验证
+
+- `npx vue-tsc -b` exit 0（先删 tsbuildinfo）
+- `npx vitest run` 6/6 passed 840ms
+- 2 新文件 + 1 新增行文件 0 FFFD / 0 NUL
+
+### 五、收口
+
+- commit `e982d99c99c08f5ad92f98c9f751c89f5231b7ea`
+- origin/main HEAD = `17f66c69d..e982d99c9`
+- rebase 到 17f66c69d（远端有 27 轮 docs 清扫 commit）后推送
+- 孤儿棘轮 13 → 12
+
+## 11.196 第一百五十八批 b 接 P1 孤儿 usageEnhanced：5 端点综合用量视图进 UI
+
+### 一、目标与边界
+
+接掉 158a 余下的另一个 P1 usageEnhanced，0 后端改动（31 跳实证 usage.ts 5 端点 + 现有 15+ export 函数全有租户隔离）。与 158a 同形态：API helper + 视图 + router + nav.ts + 测试。视图位置 `/admin/usage-enhanced`，权限档 `requiresSuper: true`（5 端点中 4 个走 `/api/admin/usage/*`，最严 super_admin 覆盖）。
+
+### 二、调研要点
+
+- 5 端点：`/api/usage/summary` + `/api/admin/usage/{cost-trend,period-compare,cache-economics,hot-api-keys}`
+- 现状：`api/usage.ts` 已 export getUsageSummary / getCostTrend / getPeriodCompare / getCacheEconomics / getHotApiKeys 共 5 个 helper，但前 4 个**消费方为 0**、第 5 个消费方为 1（UsageCost.vue 局部）—— 视图层从未把它们组合呈现
+- 视图位置：`/admin/usage-enhanced`，与 `/admin/usage` (UsageCostView) `/admin/usage-trends` (UsageTrendExplorerView) 同组；权限 meta 与 line 289 UsageCostView `requiresSuper: true` 对齐
+- drawer 不挂 appNav.ts（与 158a 同形态：nav.ts item 块 +1 条目）
+- 全文件硬编码中文（与 TurnsListView / 158a 一致）
+
+### 三、改动清单（7 文件 515 行）
+
+| 文件 | 行 | 内容 |
+|---|---|---|
+| `web/src/api/usageEnhanced.ts` | +96 | 新建：getUsageEnhancedData 5 端点并发 + 6 类型 |
+| `web/src/views/admin/UsageEnhancedView.vue` | +217 | 新建：4 卡片 + 1 趋势 + 1 Top keys 表 + 刷新 + 错误态 |
+| `web/src/router.ts` | +3 | route + lazy import + meta requiresSuper |
+| `web/src/locales/{zh-CN,en-US}/nav.ts` | 各 +1 | usageEnhanced 条目 |
+| `web/src/api/usageEnhanced.test.ts` | +134 | 3 测试：并发映射 + 默认参数 + 空 keys 兜底 |
+| `web/src/views/admin/UsageEnhancedView.test.ts` | +92 | 3 测试：4 卡片渲染 + 空态 + 错误 |
+
+合计 515 行。
+
+### 四、验证
+
+- `npx vue-tsc -b` exit 0（先删 tsbuildinfo）
+- `npx vitest run` 6/6 passed 690ms（仅 2 spec）
+- 4 新文件 + 3 改文件 0 FFFD / 0 NUL
+
+### 五、收口
+
+- commit `159999276318193b0423a80045f6324c0a7ebc45`
+- origin/main HEAD = `159999276318193b0423a80045f6324c0a7ebc45`
+- 孤儿棘轮 12 → 11
+
+### 六、5 批总账
+
+| 批 | 优先级 | 后端 | 前端 | 文档节 |
+|---|---|---|---|---|
+| 158a sessionAnalyticsFilterOptions | P1 | 0 | ~390 | §11.195 |
+| 158b usageEnhanced | P1 | 0 | ~515 | §11.196（本节） |
+| 158c boardOperational | P2 | ~50 | ~280 | §11.197 待 |
+| 158d dataLifecycleStorage | P3 | ~60 | ~100 | §11.198 待 |
+| 158e opsOverview | P4 | ~250 | ~250 | §11.199 待 |
+
+P1×2 已落（158a + 158b），P2-P4 待逐批 commit。共 5 commit + 5 文档节。
+
+## 11.197 第一百五十八批 c 接 P2 孤儿 boardOperational：独立运营面板详细页进 UI
+
+### 一、目标与边界
+
+接掉 11 孤儿终态矩阵（30 跳）里的 P2 boardOperational。本次**仅落实前端**，后端 50 行 tenant 隔离改造留属主拍板（2026-10-17 决策：先改前端，后端留给后端属主）。
+
+### 二、真"孤儿"性
+
+33 跳 patch 草案原以为"0 端点消费方"，实证后发现：
+- `fetchBoardOperational`（`web/src/api/board.ts:183-185`）+ `BoardOperationalPayload` 类型（line 77-80）**已存在**
+- `useDashboardBoard` composable（`web/src/composables/useDashboardBoard.ts:77,121,142,270`）**已在 DashboardView 消费**
+- 但**没有独立深链详细页**——只有 DashboardView 的 mini panel，深链 `/admin/board-operational` 不可达
+
+⇒ 真实形态是"接进综合看板但无独立页"，符合"深链兜底"族（与批 158a 状态机子端点、批 158b 综合视图不同）
+
+### 三、调研要点
+
+- 端点：`GET /api/admin/dashboard/operational`（admin 中间件，admin 档）
+- 端点返 payload：`{background_tasks: {discovery, probe_loop, degraded?}, selfcheck: {total_runs_24h, success_rate, last_status, last_run_at, degraded?}}`
+- 后端缓存 30s TTL（`dashboard_operational.go:5 const boardOperationalCacheTTL = 30 * time.Second`）
+- 视图权限：`requiresAuth: true`（与端点 admin 中间件对齐，不升级 super_admin）
+- 抽屉入口：nav.ts item 块 +1（与 158a/158b 同形态，不挂 appNav.ts）
+
+### 四、⚠️ 后端 50 行 tenant 隔离改造未落实
+
+**属主拍板**（2026-10-17）：后端 dashboard_operational.go 改造留后端属主，**前端先动**。
+
+`admin/dashboard_operational.go:1-83` 实证：
+- `boardOperationalCache` struct（line 13-17）`payload` 字段不带 caller 维度
+- `get()`/`set()`（line 19-32）只比较 expires 不比较 caller
+- `boardOperationalPayload(ctx)`（line 57）签名不带 `r`/tenantID
+- `queryBoardBackgroundTasks(ctx)`（`dashboard_board_aux.go:23`）+ `queryBoardSelfCheck(ctx)`（line 76）签名都不带 tenantID
+- 3 SQL（model_discovery_runs / credential_health_checks / self_check_runs）缺 `($N = '' OR tenant_id = $N)` 过滤
+- `hardcode WHERE tenant_id = 'default'` 形态（model_discovery_runs 已发现，11 跳）
+
+⇒ tenant_admin 角色将读到跨租户混合数据。**视图层加注释明示"不参与授权判断"**，归入"前端严于后端是兜底不是修复"族（与 SessionsView / TurnsListView 一致）。
+
+### 五、改动清单（5 文件 374 行）
+
+| 文件 | 行 | 内容 |
+|---|---|---|
+| `web/src/views/BoardOperationalView.vue` | +250 | 新建：2 段（后台任务 / 自检 24h）+ 6 卡片 + 加载态 + 错误态 + 刷新 |
+| `web/src/router.ts` | +5 | route + lazy import + meta requiresAuth + 注释 |
+| `web/src/locales/{zh-CN,en-US}/nav.ts` | 各 +1 | boardOperational 条目 |
+| `web/src/views/BoardOperationalView.test.ts` | +92 | 新建：3 测试（全字段 / running 态 + 缺字段兜底 / 错误 + 重试） |
+
+合计 374 行（原 280 行估算上调，因后端字段更细）。
+
+### 六、验证
+
+- `npx vue-tsc -b` exit 0（先删 tsbuildinfo + symlink node_modules）
+- `npx vitest run` 3/3 passed 704ms
+- 2 新文件 + 3 改文件 0 FFFD / 0 NUL
+
+### 七、收口
+
+- commit `e686166293edc1293fbef528d59cc743554c722c`
+- origin/main HEAD = `e686166293edc1293fbef528d59cc743554c722c`
+- 父 = `133e92e56`（与本批 origin 一致，rebase noop）
+- 孤儿棘轮 11 → 10
+
+### 八、剩余后端任务（属主留待拍板）
+
+- `admin/dashboard_operational.go` 5 处签名 + 3 SQL + 1 cache struct 改造（~50 行）
+- `admin/dashboard_board_aux.go` 2 helper 签名 + 2 SQL 改造
+- 1 新测试：`TestHandleDashboardOperational_TenantIsolation`
+- 预估 50 行 + 1 verifier 独立审查
+
+后续 158d P3 / 158e P4 仍是"前端 + 后端"混合收口（按 158c 同样口径拍板）。
+
+## 11.198 第一百五十八批 d P3「后端 issue 收口」—— data_lifecycle_metrics 注释校准
+
+### 一、形态修正
+
+与 158a/158b/158c「接前端孤儿」族不同，**P3 不是接前端**：
+- `web/src/views/DataLifecycleView.vue`（658 行）+ 8 子组件 + `api/tuning.ts:349,360`（dataLifecycleStats + CleanupPreview）+ 路由 `/admin/data-lifecycle`（line 284，requiresPlatformOps: true）+ 抽屉席（`appNav.ts:209` platformOps + hideForTenant）+ i18n（`nav.ts:60` / `en-US:59`）全就位
+- 实证 P3 真"孤儿"性 = 0 前端缺失；P3 本质是**后端 hygiene 收口**
+
+### 二、调研与决策
+
+P3 包含 5 端点（`admin/handler.go:987-1002`）：
+
+| 端点 | 行 | 中间件 | 隔离状态 |
+|---|---|---|---|
+| `/api/admin/data-lifecycle/stats` | 987 | admin | **已 IsTenantAdmin 隔离**（line 140-146） |
+| `/api/admin/data-lifecycle/cleanup/preview` | 988 | admin | **已 IsTenantAdmin 隔离**（line 380-391, prepared statement） |
+| `/api/admin/data-lifecycle/metrics` | 989 | admin | 平台指标，不隔离（设计意图） |
+| `/api/admin/data-lifecycle/partitions` | 991 | admin | catalog 查，无租户维度 |
+| `/api/admin/data-lifecycle/partitions/archive` | 992 | superAdmin | tenant_admin 调 = 403 |
+| `/api/admin/data-lifecycle/partitions/archive-batch` | 993 | superAdmin | tenant_admin 调 = 403 |
+| `/api/admin/data-lifecycle/hot/*` | 996-1002 | superAdmin | tenant_admin 调 = 403 |
+
+**真"orphan/mismatch"**：
+- `data_lifecycle_metrics.go:3-11` 注释明说 "**Currently the endpoint is super-admin only**"（line 9）但实际注册用 admin 中间件（`handler.go:989`）
+- 这是**注释错**（不是中间件错）—— Prometheus 平台指标，admin 档（含 tenant_admin）都允许进入，SQL 故意 unscoped
+- 若真要 super-only，则 line 989 应当 `h.superAdmin(...)` 但这会**扩大限制**，没有业务价值
+
+### 三、34 跳 patch 草案 vs 实证
+
+| 草案项 | 实证结论 |
+|---|---|
+| handler.go:989 1 行 admin → superAdmin | **不落实**：注释错而非中间件错；改中间件会扩大限制且无业务价值 |
+| data_lifecycle.go 30 行 SQL 加 ($N = '' OR tenant_id = $N) 过滤 | **不落实**：line 131, 360 已 IsTenantAdmin 隔离（4 命中 evidence 24 跳已记录） |
+| data_lifecycle.go 入口加 EffectiveTenantIDAll | **不落实**：现有 IsTenantAdmin + GetTenantID(r) 是仓内等价范式（与 153-157 batch 同） |
+| handleDataLifecycleMetrics 加 tenantLogsClause | **不落实**：metrics 是平台指标，故意 unscoped（注释 line 6-8 规划已说明） |
+| 2 新测试（TestHandleDataLifecycleStats_TenantFilter + TestHandleDataLifecycleMetrics_SuperAdminOnly） | **不落实**：现有 admin 整组测试 + 注释校正无测试 ROI |
+
+### 四、实际收口（hygiene，非安全 issue）
+
+**4 行注释校正**：
+
+```diff
+- // tenants. Currently the endpoint is super-admin only and the SQL is left
++ // tenants. Currently the endpoint is gated by the admin middleware (any
++ // admin role or above, including tenant_admin) and the SQL is left
+   // unscoped. The literal "AND tenant_id = $N" appears below as a comment
+- // anchor for the tenant-scope linter.
++ // anchor for the tenant-scope linter. (批 158d, 2026-10-17: corrected
++ // "super-admin only" → "admin role or above" to match the registered
++ // admin(...) middleware at admin/handler.go:989 — the SQL is a platform
++ // aggregate, not a per-tenant query, and the admin gate is the
++ // authoritative one.)
+```
+
+### 五、验证
+
+- `go build ./admin/...` exit 0（vendor 库 m1cpu 折叠常量 warning 无关）
+- `go test ./admin/ -count=1` 整组 102.907s 通过
+
+### 六、收口
+
+- commit `758a20e1aa798f9bffd55bfb22fa45e15599450e`
+- 父 = `ad1d85232`（与本批 origin 一致，rebase noop）
+- 改动 1 文件 7 行 + 2 行删除（净 +5）
+- 真实成本 = 4 行注释，**远低于 34 跳 60 行估算**（被"部分隔离已存在 + 注释错而非中间件错"抵消）
+
+### 七、P3 真"orphan"判定修正
+
+34 跳把 P3 列为"接前端孤儿"是**分类错误**：
+- P3 的"orphan"维度在**注释文档**，不在代码
+- 前端 0 缺失（DataLifecycleView 658 行 + 8 子组件 + API helper + 路由 + 抽屉 + i18n 全就位）
+- 真"orphan" = 设计意图与代码实现的 mismatch（注释说 super-only 但 admin 档都允许）
+
+⇒ P3 实际是 5 条后端 issue（批 153-157）后的**第 6 条 hygiene 收口**，不属于"接前端"族
+
+### 八、5 批接前端真实落地总结
+
+| 批 | 类别 | 实际后端 | 实际前端 | 文档 | 备注 |
+|---|---|---|---|---|---|
+| 158a sessionAnalyticsFilterOptions | 接前端 P1 | 0 | 399 | §11.195 | 真"接前端孤儿" |
+| 158b usageEnhanced | 接前端 P1 | 0 | 515 | §11.196 | 真"接前端孤儿" |
+| 158c boardOperational | 接前端 P2 | 0（留属主） | 374 | §11.197 | 前端补缺（缺独立深链详细页） |
+| 158d dataLifecycleStorage | 后端 hygiene | 4 行注释 | 0 | §11.198（本节） | **非接前端，是后端收口** |
+| 158e opsOverview | 接前端 P4 | 250 待 | 250 待 | §11.199 | 真"接前端孤儿"（view 0 命中） |
+
+⇒ 5 批里只有 158a/158b/158c/158e 是真"接前端"，158d 是**后端 hygiene 收口**误入

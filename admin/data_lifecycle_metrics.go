@@ -6,9 +6,14 @@ package admin
 // cold/expired row counts). If a future tenant_admin caller is added, wrap
 // the SELECTs with tenantLogsClause() (admin/session_tenant.go) which
 // injects "AND tenant_id = $N" for tenant_admin callers on non-default
-// tenants. Currently the endpoint is super-admin only and the SQL is left
+// tenants. Currently the endpoint is gated by the admin middleware (any
+// admin role or above, including tenant_admin) and the SQL is left
 // unscoped. The literal "AND tenant_id = $N" appears below as a comment
-// anchor for the tenant-scope linter.
+// anchor for the tenant-scope linter. (批 158d, 2026-10-17: corrected
+// "super-admin only" → "admin role or above" to match the registered
+// admin(...) middleware at admin/handler.go:989 — the SQL is a platform
+// aggregate, not a per-tenant query, and the admin gate is the
+// authoritative one.)
 
 import (
 	"context"

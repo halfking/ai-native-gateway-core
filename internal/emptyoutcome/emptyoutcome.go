@@ -46,8 +46,17 @@ func IsEmptyOutcome(emittedOutput bool, clientDisconnectPending bool) bool {
 // content seen before [DONE]).
 //
 // "Real content" = delta.content != "" OR delta.reasoning_content != ""
-// OR delta.tool_calls non-empty. Usage-only and role-only chunks
-// (Type="usage" / first-chunk assistant role announcement) do NOT count.
+// OR a tool_call with a non-empty name or arguments. Usage-only and
+// role-only chunks (Type="usage" / first-chunk assistant role
+// announcement) do NOT count.
+//
+// Magpie / ZCode empty_model_response parity (2026-10-17): MiniMax and
+// similar relays emit nameless phantom tool_calls slots (empty id/name/
+// arguments) with finish_reason=tool_calls. A non-empty tool_calls array
+// alone must NOT count — otherwise the chat empty gate flushes "success"
+// and the client sees empty_model_response while the executor never
+// retries. Named tools and argument deltas (name often arrived earlier)
+// still count.
 //
 // Returns false (no content) on parse errors — a malformed chunk is treated
 // like an empty one so the gate keeps buffering and either hits the chunk/
@@ -69,8 +78,10 @@ func ChatChunkHasOutput(payload string) bool {
 	if chunk.Delta.Content != "" || chunk.Delta.ReasoningContent != "" {
 		return true
 	}
-	if len(chunk.Delta.ToolCalls) > 0 {
-		return true
+	for _, tc := range chunk.Delta.ToolCalls {
+		if tc.Name != "" || tc.Arguments != "" {
+			return true
+		}
 	}
 	if chunk.Delta.AudioDelta != nil &&
 		(chunk.Delta.AudioDelta.Data != "" || chunk.Delta.AudioDelta.Transcript != "") {
@@ -152,7 +163,13 @@ func ChatChoicesIsEmpty(raw json.RawMessage) bool {
 		Message struct {
 			Content          json.RawMessage `json:"content"`
 			ReasoningContent string          `json:"reasoning_content"`
-			ToolCalls        []any           `json:"tool_calls"`
+			ToolCalls        []struct {
+				ID       string `json:"id"`
+				Function *struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
 		} `json:"message"`
 	}
 	// R16: malformed choices → not empty (aligned with the executors copy);
@@ -165,8 +182,16 @@ func ChatChoicesIsEmpty(raw json.RawMessage) bool {
 		return true
 	}
 	for _, choice := range choices {
-		if choice.Message.ReasoningContent != "" || len(choice.Message.ToolCalls) > 0 {
+		if choice.Message.ReasoningContent != "" {
 			return false
+		}
+		// Magpie parity: nameless phantom tool_calls do not constitute
+		// agent-visible output (same rule as ChatChunkHasOutput). ID alone
+		// without name/arguments is still a phantom slot.
+		for _, tc := range choice.Message.ToolCalls {
+			if tc.Function != nil && (tc.Function.Name != "" || tc.Function.Arguments != "") {
+				return false
+			}
 		}
 		if ChatContentHasOutput(choice.Message.Content) {
 			return false

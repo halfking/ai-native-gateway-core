@@ -84,6 +84,27 @@ func isEmptySemanticDelta(payload string) bool {
 	return emptyoutcome.ChatSemanticDelta(payload)
 }
 
+// gateBufferedFinishWithoutOutput reports whether the empty-stream gate's
+// buffer carries a finish_reason with zero agent-visible output — the
+// MiniMax "close after finish_reason, no [DONE]" shape while still buffering.
+func gateBufferedFinishWithoutOutput(buffered []string) bool {
+	sawFinish := false
+	for _, l := range buffered {
+		payload := extractPayload(l)
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		if chunkHasContent(payload) {
+			return false
+		}
+		chunk, err := ir.ParseOpenAIStreamChunk(l)
+		if err == nil && chunk != nil && chunk.FinishReason != "" {
+			sawFinish = true
+		}
+	}
+	return sawFinish
+}
+
 func earlyEmptyOutcome(capture *audit.StreamCapture) *StreamOutcome {
 	if capture != nil {
 		capture.MarkInterruptedWithReason("early_empty_detection")
@@ -282,8 +303,21 @@ func runEmptyStreamGateWithVendor(
 				failure.Reason = "stream_timeout"
 				failure.Kind = errorsx.KindStreamTimeout
 			case streamReadEOF:
-				failure.Reason = "eof_without_done"
-				failure.Kind = errorsx.KindUpstreamDown
+				// Magpie emptyReply (2026-10-17): MiniMax closes after
+				// finish_reason without [DONE] while the empty gate is still
+				// buffering. If the buffer has a finish_reason and zero
+				// agent-visible output (phantoms/usage/role only), surface
+				// KindEmptyResponse — not eof_without_done — so the executor
+				// retries the way Magpie does on emptyReply.
+				if gateBufferedFinishWithoutOutput(buffered) {
+					failure.Reason = "openai_empty_response"
+					failure.Kind = errorsx.KindEmptyResponse
+					failure.Resumable = true
+					failure.ChunkCount = 0
+				} else {
+					failure.Reason = "eof_without_done"
+					failure.Kind = errorsx.KindUpstreamDown
+				}
 			}
 			if capture != nil {
 				capture.MarkInterruptedWithReason(failure.Reason)
@@ -1240,14 +1274,35 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 					//
 					// r0924b (2026-09-24): the benign promotion additionally
 					// requires sawSemanticOutput — real assistant output
-					// (content/reasoning/tool_calls, emptyoutcome table) must
-					// have reached the client. A zero-semantic stream (pure
-					// usage/keepalive/role frames + finish_reason, diluted past
-					// the empty-stream gate cap) has no tool executor waiting
-					// on it; promoting it to success would be exactly the
-					// §11.6 pseudo-success (usage-only = EMPTY regardless of
-					// finish_reason). Those streams fall through to the
-					// existing eof_without_done structured-error paths below.
+					// (content/reasoning/named-or-arg tool_calls, emptyoutcome
+					// table) must have reached the client. A zero-semantic
+					// stream (pure usage/keepalive/role frames + finish_reason,
+					// diluted past the empty-stream gate cap) has no tool
+					// executor waiting on it; promoting it to success would be
+					// exactly the §11.6 pseudo-success (usage-only = EMPTY
+					// regardless of finish_reason).
+					//
+					// Magpie emptyReply parity (2026-10-17): finish_reason with
+					// zero agent-visible output (incl. MiniMax phantom
+					// tool_calls) must surface KindEmptyResponse so the
+					// executor retries / switches candidates — not eof_without_done
+					// and not a benign success. Mirrors responses_bridge.
+					if finalFinishReason != "" && !sawSemanticOutput && !attemptHasClientSemanticOutput(gate, chunkCount) {
+						slog.Warn("upstream finish_reason with zero agent-visible output — Magpie emptyReply failover",
+							"client_model", clientModel,
+							"chunk_count", chunkCount,
+							"finish_reason", finalFinishReason,
+						)
+						if capture != nil {
+							capture.MarkInterruptedWithReason("openai_empty_response")
+						}
+						outcome.Interrupted = true
+						outcome.Reason = "openai_empty_response"
+						outcome.Kind = errorsx.KindEmptyResponse
+						outcome.Resumable = true
+						outcome.ChunkCount = chunkCount
+						return outcome
+					}
 					if finalFinishReason != "" && chunkCount > 0 && sawSemanticOutput {
 						slog.Info("upstream EOF without [DONE] after finish_reason — benign non-compliant close (§11.6 parity)",
 							"client_model", clientModel,
