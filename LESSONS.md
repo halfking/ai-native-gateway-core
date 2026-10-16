@@ -311,6 +311,18 @@
 - **但不要过度宣称**：模型可用性并未因此恢复——cred=3 仍是 `availability_state=rate_limited`（真实上游限流），`/v1/models` 从 95 变成 93。数据库写回恢复只是**必要条件**，真实限流/额度仍需上游侧解决。cred=1 的 `quota_state` 翻回 `ok` 但其模型未回到列表，说明还有 `model_probe_state` / 探测态等第二层闸门未过。
 - 状态：观察中（044 已进通道；生产 154/245 是否同样受影响**未核实**，需在生产侧确认约束白名单）
 
+## 2026-10-16 — 「页面空白 vs 后端无数据」用网关访问日志定案，别用 CDP 快照（Seen: 1/3）
+
+- 任务 / 缺陷：`/request-logs` 渲染完整、已登录为超级管理员，但恒显「共 0 条 / 无记录」；而 `GET /api/logs` 直接 curl 返回 `count=576` + 37KB。
+- 基线 / 修复 SHA：观察于 `c3abfbca1`（不在退役改动集内，`git diff HEAD~2 HEAD` 对 `web/` 零命中）。
+- 方法一（错的那条）：浏览器 `network` 快照里只看到 `/api/keys`、`/api/routing/available-models`、`/api/keys` 三条 **pending**，据此判「页面根本没发 `/api/logs`」。**这个推论不成立**——服务端实测这三条分别只要 3ms/35ms/51ms，快到完全可能在快照瞬间处于 pending。差点把"快照里没看到"当成"没发生"。
+- 方法二（对的那条，且不依赖浏览器工具）：**查网关自己的 `http_request` 访问日志**。它是服务端事实，不受 CDP 采样/超时影响。
+- 网关日志给出的事实链：浏览器时代的请求序列是 `/api/keys` → `/api/providers` → `/api/routing/available-models` → `/api/system/bootstrap/status`，**唯独没有 `/api/logs`**；`/api/providers/{id}/credentials` 在 21:13 之后再未出现；而 `/api/providers` 自身**出现过 500**（21:18:44 / 21:23:33，夹在 200 之间）。
+- 代码侧定位到可疑结构：`onMounted` 是**串行 await 链** —— `await loadKeys()` → `await loadCredentialOptions()` → `await load()`。第三段里的 `loadCredentialOptions()` 又对**每个** provider 并发 `await getProviderCredentials(p.id)`（`Promise.all`，provider 表有几十行）。这条链上**任何一环不 resolve，`load()` 就永不执行**，而模板已经渲染完，于是正好表现为「页面完整但 0 条」——服务端无责。
+- 已排除：后端 `/api/keys` 3ms、`/api/routing/available-models` 35ms、`/api/logs?page=1&page_size=20` 51ms（结构为 `{items,count,aggregate}`，与前端 `resp.items`/`resp.count` **完全匹配**）；时间范围过滤无关（带 from/to 的四种时区组合均返回 576）；`timeRange()` 是纯同步无循环；`loadCredentialOptions()` 的 catch 分支会正常 `return`。
+- 防复发检查：(a) 页面空白**先查服务端访问日志**判断"请求发没发"，再谈渲染；(b) CDP/network 是**采样**不是事实，pending 不等于没发生，慢请求必然出现 pending；(c) 前端 `onMounted` 里的串行 `await` 链要当"单点故障链"审：任一环挂起 = 整个页面的数据区永久空白，而 UI 毫无报错。
+- 状态：观察中（确切卡点仍需能读浏览器 Console 的环境；已把范围从"整个前端"收窄到 `loadKeys/loadCredentialOptions` 这条链，且指向 `/api/providers` 的 500 与不稳定的 per-provider credentials 扇出）
+
 ## 晋级记录
 
 将已晋级条目移到这里，并链接目标规则、清单或技能。同一模式只按不同工作日计 `Seen`；出现三天后晋级。经证据确认的安全、隐私、数据丢失或生产事故，若已有可执行的防复发检查，可立即晋级。
