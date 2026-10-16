@@ -20681,3 +20681,31 @@ SanitizeRulesView 新增 sr-params-section 卡片：仅 manager 渲染。header 
 最终顺序链 rc0：235 spec files 8964/1skipped、find web-mobile -name '*.tsbuildinfo' -not -path '*/node_modules/*' -delete 后 npx vue-tsc -b 强制重建过、CSS/touch/i18n(两语种各 3903 键，键集一致且非空)/comment 四门 rc0、gate:selftest 5/5、build rc0、目标两 spec 十连跑 10/10 全绿。批149 mutation JSON 与结果摘要均落在 .audit149 未纳入产品提交。三个产品文件含 spec 二改无 U+FFFD/NUL，变异前后字节级 sha256 一致；共享依赖 node_modules 是 symlink 不删并发缓存；vue-tsc 用 --force 强制重建才称冷类型检查。
 
 **未做**与**不可证区分**：(a) `dashboardBoard.ts` 的 operationalDiscoveryNeverRan / operationalSelfCheckMeaningless / operationalAnyDegraded 与原 `boardOperational.ts` 的同语义 helper 名字不同、行为略有差异（前者更窄，后者更宽），本批**不**做 1:1 替换（"用未用过的死代码替换已用过的窄代码"是净身，不是补完），(b) Go 一字未改，(c) 后端租户/角色门控 5 条仍未动（产品决策问题，非本批范围），(d) 壳层缺口 `meta.requiresRole` 消费 + format-anomalies / model-integrity-drift 视图内兜底仍未做（属主决策问题，非本批范围）。历史 ComplianceHitsView/RoutingOptView flaky 仍未复现，未复现 ≠ 已修复。提交推送仍需精确最终 SHA 独立审查、最新 fetch 及远端包含关系，本节检查通过不代表上线。
+
+## 11.187 第一百五十批：合上壳层缺口 —— `meta.requiresRole` 路由层消费 + format-anomalies / model-integrity-drift 视图内兜底
+
+### 一、交付与权限边界
+
+本批合上两处壳层缺口（详见批116的风险清单 (a) 与 (f)）：(1) `meta.requiresRole` 在全仓路由层（`hyper-wiring.ts` 的 `beforeEach`）**一直未被消费**，深链绕过抽屉时任何受限页照样挂载；(2) format-anomalies 与 model-integrity-drift 两个 superAdmin 席的视图内**没有兜底**（既不 import `useAuthStore`，也不写 `v-if`）—— 深链打开后**每个请求必 403**，是体验坑不是安全洞（服务端中间件是真门）。批149父 f6a4870ee 已推送，origin/main 仍为该提交，本批从该父建立独立 /tmp/co150-wt。
+
+逐端点取证：admin/handler.go:913-914（format-anomalies 两条 `h.superAdmin`）与 :942-943（model-integrity-drift 两条 `h.superAdmin`）—— 两族后端真门，客户端不需要担心跨租户泄漏。**安全由服务端把关，前端兜底是体验层**。appNav.ts:216 与 :225-230 的 `requiresRole: 'super_admin'` 与上述后端档位一一对应。hyper-wiring.ts 之前的 `beforeEach` 只查 `meta.requiresAuth` + `auth.isAuthenticated`（见 :46-58），完全不读 `requiresRole`。
+
+### 二、API 与可达交互
+
+`config/appNav.ts` 新增 `routeAllowedFor(path, role)`，与既有 `navItemsFor(items, role)` **同源判定**（同 `isSuper` / `isAdmin` 三元组）。每个有 `requiresRole` 的 nav 项都满足"路由层结论 == 抽屉层结论"，由 spec/routeAllowedFor.spec.ts ③-2 逐条交叉验证——防止"路由层 vs 抽屉层"两套口径漂。
+
+`hyper-wiring.ts` 的 `beforeEach` 调 `routeAllowedFor(to.path, auth.role)`，不匹配则 `replace('/restricted', query: { from: to.fullPath })`。水合链路顺序仍是「先 `requiresAuth` → 再 `isAuthenticated` → **再 `routeAllowedFor`**」，避免无 token 用户被 `routeAllowedFor` 提前挡掉而漏掉登录提示。
+
+`api/formatAnomalies.ts` 与 `api/modelIntegrityDrift.ts` 各加一条 `xxxRoleIsAllowed(role)`（仅 `role === 'super_admin'`），与同源 nav 的 `requiresRole: 'super_admin'` 双向引用。`views/FormatAnomaliesView.vue` 与 `views/ModelIntegrityDriftView.vue` 改用 `useAuthStore` 拿 role，模板加 `<p v-if="!allowed" data-testid="xx-denied">无权访问此页</p>` + `<div v-else>...`，标题用 `useHyperPage({ title: () => (allowed.value ? t('xx.title') : t('common.pageDenied')) })` 守住 `document.title`。**双向防御**：路由层挡住"程序化跳到 /format-anomalies"那一类（路由不读 useAuthStore 也会被守卫拦），视图内挡住"router 守卫被绕过"那一类（程序化 `router.push` 但守卫被旁路时仍然兜底）。
+
+`views/RestrictedPageView.vue` 是新终端页：只显示 `common.pageDenied` 一行字，**不 import 任何 API 模块**（由 spec 4 全量扫一遍 src/api 验证），meta.titleKey 复用 `common.pageDenied` ⇒ document.title 不会泄露真页面名（与 RestrictedPageTitle 8-3 同一组纪律）。`router/index.ts` 加 `/restricted` 路由 + meta.titleKey = `common.pageDenied`；`/format-anomalies` 与 `/model-integrity-drift` 的 meta 补 `requiresRole: 'super_admin'`（之前 16 席都有，剩这两席没补）。
+
+### 三、判据、返工与限制
+
+新增/改动测试：RestrictedPageView.spec.ts 5 条（双语种正文 + 模板不带真页面名 + 零 API 模块依赖 + 双语种字典值都非空 + 值不等）；config/routeAllowedFor.spec.ts 28 条（4 路径 × 6 角色真值表 + 未知 path 放行 + 16 席有 `requiresRole` 的 nav 项与 `navItemsFor` 逐条同结论）。既有 RestrictedPageTitle.spec.ts 加 format-anomalies / model-integrity-drift 两席（族从 16 → 17 席），8-1 全文逐字匹配 + 8-3 pageDenied 字典合规，**8-4 反向**：批 149 之前该条**断言 `hyper-wiring.ts` 不含 `requiresRole`**，批 150 翻面为"必须真的调 `routeAllowedFor` + `routeAllowedFor` 必须是 `export`"。既有 RestrictedPageGuard.spec.ts 加两席（族从 16 → 17），1/2/3/4/5 五组探针自动覆盖。ModelIntegrityDriftView.spec.ts 的 ⑫ 整组反向（"视图不 import auth store ⇒ 渲染不可能随身份变"翻面为"视图必须真的 import useAuthStore 与 helper + 渲染必须真的随身份变 + 错角色深链**一请求都不发**"）。goLineRef.spec.ts 3 条 line-ref 因新增 8 行的 `/restricted` 路由整体下移 8 行，订正 KNOWN_FALSE_POSITIVE 的行号（765→773、855→863、948→956）。
+
+批149前 9 spec 9045，批149后 9 spec 8964/1skipped，批150后 10 spec 8998/1skipped（delta +34）。**没有新增变异台**：本批改的是 `beforeEach` 与 `v-if` 这两类**控制流**，变异台对它们的覆盖精度远低于被改代码本身的语义（"删 v-if / 删守卫调用"会被 ⑫-1 / 8-4 两条源码形态断言抓住，比 5/5 形态变异更直接），故不另开变异台。
+
+最终顺序链 rc0：237 spec files 8998/1skipped、find web-mobile -name '*.tsbuildinfo' -not -path '*/node_modules/*' -delete 后 npx vue-tsc -b 强制重建过、CSS/touch/i18n(两语种各 3903 键，键集一致且非空)/comment 四门 rc0、gate:selftest 5/5、build rc0、目标六 spec 十连跑 10/10 全绿。批150 mutation JSON 与结果摘要均落在 .audit150 未纳入产品提交。八个产品文件含 spec 二改 + 新增 view 无 U+FFFD/NUL，变异前后字节级 sha256 一致；共享依赖 node_modules 是 symlink 不删并发缓存。
+
+**未做**与**不可证区分**：(a) 后端 5 条租户/角色门控（sliding-window / errors-trend / model-history / operational / selfCheck / format_anomalies / model_integrity_events）仍未动，**这是产品安全 issue，属主决策问题**，与本批范围不同；(b) 历史 ComplianceHitsView/RoutingOptView flaky 仍未复现，未复现 ≠ 已修复；(c) `meta.requiresRole` 路由层**已经消费**，但 `meta` 字段在路由定义里仍然与 nav 的 `requiresRole` **双源**——本批没做"以 meta 为唯一源"的重构（成本高、收益小、且对路由层 `routeAllowedFor` 的 path 查表仍依赖 nav），保留双源以限制爆炸半径；(d) RestrictedPageView 不带"返回"按钮，依赖浏览器的 back 行为，UI 一致性可再起批 151 补。提交推送仍需精确最终 SHA 独立审查、最新 fetch 及远端包含关系，本节检查通过不代表上线。

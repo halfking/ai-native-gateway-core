@@ -255,9 +255,9 @@ const KNOWN_FALSE_POSITIVE: { key: string; note: string }[] = [
   { key: 'api/usageTrendSeries.ts:265 admin/usage_trend_series.go:407', note: '407 行是 SQL 读面的 FROM 子句；token `source` 是**对外字段名**' },
   // —— 以下 14 条为第一百三十九批新增（把棘轮扩到 views/ 与测试文件后暴露的）
   { key: 'api/sessionContext.test.ts:34 admin/handler.go:1326', note: '★ token 字面写的是 `/api/system/...`（**带省略号**）⇒ 永远不可能在源码里逐字命中；引用本身本批已订正为真实的 `:1326`' },
-  { key: 'router/index.ts:765 admin/credential_monitor.go:704-782', note: '★★ **否定式断言**：该行声称的是「这一段里**没有** `tenantID` 变量」⇒ token 不出现**正是它要断言的事实**。这类断言结构上就判不出对错，只能登记' },
-  { key: 'router/index.ts:855 cmd/gateway/main_jwt_middleware.go:65-73', note: '★ `:65` 逐字就是 `func newRequireSuperAdminMiddleware()`；token 是 `main.go:7002` 那个**局部变量**的名字 —— 定义处/调用点/绑定点三者分离' },
-  { key: 'router/index.ts:948 cmd/gateway/main_admin_wrappers.go:42', note: '★ `:42` 逐字就是 `func newWrapSessionAnalytics(...)`；同上，token 是调用点的变量名' },
+  { key: 'router/index.ts:773 admin/credential_monitor.go:704-782', note: '★★ **否定式断言**：该行声称的是「这一段里**没有** `tenantID` 变量」⇒ token 不出现**正是它要断言的事实**。这类断言结构上就判不出对错，只能登记' },
+  { key: 'router/index.ts:863 cmd/gateway/main_jwt_middleware.go:65-73', note: '★ `:65` 逐字就是 `func newRequireSuperAdminMiddleware()`；token 是 `main.go:7002` 那个**局部变量**的名字 —— 定义处/调用点/绑定点三者分离' },
+  { key: 'router/index.ts:956 cmd/gateway/main_admin_wrappers.go:42', note: '★ `:42` 逐字就是 `func newWrapSessionAnalytics(...)`；同上，token 是调用点的变量名' },
   { key: 'views/SubscriptionTiersView.spec.ts:31 cmd/gateway/main_jwt_middleware.go:65-73', note: '与 `router/index.ts:855` 同一条引用（工厂函数定义行）' },
   { key: 'views/SubscriptionTiersView.vue:14 cmd/gateway/main_jwt_middleware.go:65-74', note: '同上；范围 65-74 比 65-73 多一行，仍完整覆盖该函数' },
   { key: 'views/ModuleDetailView.spec.ts:72 admin/modules.go:838-841', note: '引用的是该端点**响应结构**的 `writeJSON(map...)` 段；token 是请求路径，不是 JSON 键' },

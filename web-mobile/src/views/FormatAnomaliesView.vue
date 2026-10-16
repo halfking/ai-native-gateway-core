@@ -48,9 +48,11 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { useHyperPage } from '@/hyper'
 import { t } from '@/i18n'
+import { useAuthStore } from '@/stores/auth'
 import {
   fetchFormatAnomalies,
   fetchFormatAnomalySummary,
+  formatAnomaliesRoleIsAllowed,
   formatCountCoversWholeResult,
   formatHasMorePages,
   formatIsLastPage,
@@ -77,7 +79,13 @@ import {
   type FormatAnomalySummaryRow,
 } from '@/api/formatAnomalies'
 
-useHyperPage({ title: () => t('fa.title') })
+useHyperPage({ title: () => (allowed.value ? t('fa.title') : t('common.pageDenied')) })
+// 批 150：补视图内兜底。`formatAnomaliesRoleIsAllowed` 与 `appNav.ts:216` 的
+// `requiresRole: 'super_admin'` 同源；壳层 `hyper-wiring.ts` 已在路由层消费同样的
+// `requiresRole` ⇒ 正常导航下 `allowed` 永远 true，本兜底只在路由被绕过时生效。
+const auth = useAuthStore()
+const role = computed(() => auth.role)
+const allowed = computed(() => formatAnomaliesRoleIsAllowed(role.value))
 
 // ══ 明细段的过滤与分页 ═══════════════════════════════════════════════════
 
@@ -268,7 +276,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="fa">
+  <p v-if="!allowed" data-testid="fa-denied" role="alert">{{ t('common.pageDenied') }}</p>
+  <div v-else class="fa">
     <!-- ══ 明细段 ══ -->
     <section class="fa__sec">
       <header class="fa__head">

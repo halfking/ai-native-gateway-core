@@ -32,7 +32,7 @@ import { enUS } from '@/i18n/en-US'
  *   ⇒ 本批用**视图层**堵掉它，不去改壳层的导航语义（那是口径决策，另议）。
  */
 
-/** 当前全族：16 条带 `requiresRole` 的路由 → 视图 → 标题键（批144扩一席）。 */
+/** 当前全族：18 条带 `requiresRole` 的路由 → 视图 → 标题键（批150 扩两席：format-anomalies / model-integrity-drift）。 */
 const FAMILY: ReadonlyArray<{ path: string; view: string; key: string }> = [
   { path: '/sanitize-rules', view: 'SanitizeRulesView', key: 'sr.title' },
   { path: '/request-anomalies', view: 'RequestAnomaliesView', key: 'anomalies.title' },
@@ -50,6 +50,8 @@ const FAMILY: ReadonlyArray<{ path: string; view: string; key: string }> = [
   { path: '/storage-migration-state', view: 'StorageMigrationStateView', key: 'sms.title' },
   { path: '/turns-filter-options', view: 'TurnsFilterOptionsView', key: 'tfo.title' },
   { path: '/session-analytics-filter-options', view: 'SessionAnalyticsFilterOptionsView', key: 'saf.title' },
+  { path: '/format-anomalies', view: 'FormatAnomaliesView', key: 'fa.title' },
+  { path: '/model-integrity-drift', view: 'ModelIntegrityDriftView', key: 'mid.title' },
 ]
 
 const src = (p: string): string => readFileSync(join(process.cwd(), p), 'utf8')
@@ -155,11 +157,15 @@ describe('⑧ ★★★★★★ 16 个受限视图的标题必须随 `allowed` 
     }
   })
 
-  it('⑧-4 ★★★★ 这不是壳层的活：beforeEach 至今不消费 meta.requiresRole（缺口仍在，代价已量化）', () => {
-    // ⚠️ 显式留档：本批**没有**改壳层的导航语义（那要拍板「拒绝后去哪」），
-    //   只把「页面名泄露」这一项在视图层堵掉。
-    // ⇒ 「壳层不消费 requiresRole」这条**仍然为真**，判据钉住它，免得有人以为已修。
+  it('⑧-4 ★★★★ 批 150 合上壳层缺口：beforeEach 消费 `requiresRole`（不再未消费）', () => {
+    // ★ 批 150：本批**改了壳层**，合上"meta.requiresRole 全仓无人消费"的缺口。
+    //   hyper-wiring.ts 调 `routeAllowedFor(to.path, auth.role)`，不匹配就跳 `/restricted`。
+    // ⇒ 这条是反向钉：壳层**不**再"不消费 requiresRole"。
+    //   同时钉住 `appNav.ts` 暴露了 `routeAllowedFor`（不只是内部用），
+    //   避免有人把它"封装"回去让 hyper-wiring 拿不到。
     const wiring = src('src/hyper-wiring.ts')
-    expect(wiring).not.toMatch(/requiresRole/)
+    expect(wiring, 'beforeEach 必须真的调 routeAllowedFor ⇒ 路由层真消费 requiresRole').toMatch(/routeAllowedFor/)
+    const appNav = src('src/config/appNav.ts')
+    expect(appNav, 'routeAllowedFor 必须是 export 出来的公共函数（不能是内联）').toMatch(/export function routeAllowedFor/)
   })
 })

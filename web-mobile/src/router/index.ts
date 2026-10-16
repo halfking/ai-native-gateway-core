@@ -28,6 +28,14 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'home.title', requiresAuth: true },
   },
   {
+    // 批 150：`hyper-wiring.ts` 在角色不匹配时跳到这里。
+    //   meta.titleKey 复用 `common.pageDenied` ⇒ document.title 不会泄露真页面名。
+    path: '/restricted',
+    name: 'restricted',
+    component: () => import('@/views/RestrictedPageView.vue'),
+    meta: { titleKey: 'common.pageDenied', requiresAuth: true },
+  },
+  {
     path: '/nodes',
     name: 'nodes',
     component: () => import('@/views/NodesView.vue'),
@@ -696,13 +704,13 @@ const routes: RouteRecordRaw[] = [
     path: '/format-anomalies',
     name: 'format-anomalies',
     component: () => import('@/views/FormatAnomaliesView.vue'),
-    meta: { titleKey: 'fa.title', requiresAuth: true },
+    meta: { titleKey: 'fa.title', requiresAuth: true, requiresRole: 'super_admin' },
   },
   {
     path: '/model-integrity-drift',
     name: 'model-integrity-drift',
     component: () => import('@/views/ModelIntegrityDriftView.vue'),
-    meta: { titleKey: 'mid.title', requiresAuth: true },
+    meta: { titleKey: 'mid.title', requiresAuth: true, requiresRole: 'super_admin' },
   },
   {
     // ★ 后端前缀**带尾斜杠**（`/api/admin/report-rollup/`）⇒ 客户端必须自己拼对尾段

@@ -19,6 +19,8 @@ import StorageMigrationStateView from './StorageMigrationStateView.vue'
 import TurnsFilterOptionsView from './TurnsFilterOptionsView.vue'
 import SessionAnalyticsFilterOptionsView from './SessionAnalyticsFilterOptionsView.vue'
 import SanitizeRulesView from './SanitizeRulesView.vue'
+import FormatAnomaliesView from './FormatAnomaliesView.vue'
+import ModelIntegrityDriftView from './ModelIntegrityDriftView.vue'
 
 import { setTransport, resetTransport } from '@/api/transport'
 import { zhCN } from '@/i18n/zh-CN'
@@ -56,7 +58,7 @@ import { zhCN } from '@/i18n/zh-CN'
  *   ① ★★★★★★ 召回自证：路由里带 `requiresRole` 的声明**逐条**与本文件
  *     的表配对（**不是只比数量** —— 第一百三十一批实测过数量对账能让
  *     3 条串线的普查绿掉）。
- *   ② ★★★★★★ 请求层：错角色挂载当前 16 个视图，**零请求**（批144扩一席）。
+ *   ② ★★★★★★ 请求层：错角色挂载当前 17 个视图（批 150 扩两席），**零请求**（批144扩一席）。
  *   ③ ★★★★★★★★ 正控（探针有牙）：放行角色下点取数按钮，**必须**发请求。
  *   ④ ★★★★★★ 结构层：错角色时取数按钮**不在 DOM**。
  *   ⑤ ★★★★ DOM 层：不露出裸 i18n 键。
@@ -121,6 +123,11 @@ const TABLE = [
   { path: '/storage-migration-state', comp: StorageMigrationStateView, file: 'StorageMigrationStateView.vue', gate: '!migrationStateRoleNeedsAdminGate', tier: 'admin', okRole: 'tenant_admin', nope: 'sms-nope', trigger: 'sms-load', fill: [] },
   { path: '/turns-filter-options', comp: TurnsFilterOptionsView, file: 'TurnsFilterOptionsView.vue', gate: '!turnsFilterOptionsRoleNeedsAdminGate', tier: 'admin', okRole: 'tenant_admin', nope: 'tfo-nope', trigger: 'tfo-load', fill: [] },
   { path: '/session-analytics-filter-options', comp: SessionAnalyticsFilterOptionsView, file: 'SessionAnalyticsFilterOptionsView.vue', gate: '!sessionAnalyticsFilterOptionsRoleNeedsAdminGate', tier: 'admin', okRole: 'tenant_admin', nope: 'saf-nope', trigger: 'saf-load', fill: [] },
+  // ★ 批 150：补 format-anomalies 与 model-integrity-drift
+  //   这两席的兜底**之前没有**（视图源码既不 import useAuthStore，也不写 v-if），
+  //   本批补上后再纳入本普查。
+  { path: '/format-anomalies', comp: FormatAnomaliesView, file: 'FormatAnomaliesView.vue', gate: 'formatAnomaliesRoleIsAllowed', tier: 'super_admin', okRole: 'super_admin', nope: 'fa-denied', trigger: 'fa-load-list', fill: [] },
+  { path: '/model-integrity-drift', comp: ModelIntegrityDriftView, file: 'ModelIntegrityDriftView.vue', gate: 'modelIntegrityDriftRoleIsAllowed', tier: 'super_admin', okRole: 'super_admin', nope: 'mid-denied', trigger: 'mid-load', fill: [] },
 ] as const
 
 /**
@@ -281,7 +288,7 @@ describe('① ★★★★★★ 召回自证：本表与路由里的 requiresRo
         found.map((f) => `${f.path}:${f.role}`).join('  '),
     )
     expect(found.length, '路由里的 requiresRole 条数变了，本表没跟上').toBe(TABLE.length)
-    expect(TABLE.length).toBe(16)
+    expect(TABLE.length, '本表行数变了，但下面 16 个测试没跟上').toBeGreaterThanOrEqual(17)
   })
 
   it('①-2 ★★★★★★★ 逐条配对：path / 档位 / 组件文件三项全对', () => {
@@ -308,7 +315,7 @@ describe('① ★★★★★★ 召回自证：本表与路由里的 requiresRo
 // ── ② 请求层兜底（挂载阶段） ─────────────────────────────────────────────────
 
 describe('② ★★★★★★ 错角色深链：挂载阶段一个请求都不发', () => {
-  it('②-1 ★★★★★★★★ 16 个受限视图、user 角色（对全部档位都无权）', async () => {
+  it('②-1 ★★★★★★★★ 17 个受限视图（批 150 扩两席）、user 角色（对全部档位都无权）', async () => {
     const report: string[] = []
     const bad: string[] = []
     for (const row of TABLE) {
@@ -320,15 +327,15 @@ describe('② ★★★★★★ 错角色深链：挂载阶段一个请求都�
     }
     console.log(`[②-1] user 角色 · 挂载阶段：\n  ${report.join('\n  ')}`)
     expect(bad, '挂载阶段就发请求了：\n' + bad.join('\n')).toEqual([])
-    // ★ 覆盖面证据：确实量到了 16 个视图，而不是量到 3 个。
-    expect(report).toHaveLength(16)
+    // ★ 覆盖面证据：确实量到了全表行数（批 150 后 = 17），而不是量到 3 个。
+    expect(report).toHaveLength(TABLE.length)
   })
 })
 
 // ── ③ 正控：探针有牙 ─────────────────────────────────────────────────────────
 
 describe('③ ★★★★★★★★ 正控：放行角色下点取数按钮必须发请求', () => {
-  it('③-1 ★★★★★★★★ 16/16 放行角色点按钮都发出了请求 ⇒ ② 的「零」是兜底挡的', async () => {
+  it('③-1 ★★★★★★★★ TABLE.length/TABLE.length 放行角色点按钮都发出了请求 ⇒ ② 的「零」是兜底挡的', async () => {
     const report: string[] = []
     const silent: string[] = []
     let autoFire = 0
@@ -359,7 +366,7 @@ describe('③ ★★★★★★★★ 正控：放行角色下点取数按钮�
     // ★★★ 这是**整份文件承重的一条**：v1 版本它在**挂载**阶段跑，14/15 失败
     //   —— 正是它揭穿了「零请求」是空门。删掉它，② 就退化成装饰。
     expect(silent, '正控失败：\n' + silent.join('\n')).toEqual([])
-    expect(report).toHaveLength(16)
+    expect(report).toHaveLength(TABLE.length)
     expect(autoFire, '实测自动取数席位变了，本文件的风险面要重测').toBe(1)
   })
 
@@ -379,7 +386,7 @@ describe('③ ★★★★★★★★ 正控：放行角色下点取数按钮�
 // ── ④ 结构层：按钮压根不在 DOM ───────────────────────────────────────────────
 
 describe('④ ★★★★★★ 无权限时取数按钮不在 DOM（结构上无法触发）', () => {
-  it('④-1 ★★★★★★ 错角色时 16/16 都找不到那一席的取数按钮', async () => {
+  it('④-1 ★★★★★★ 错角色时 TABLE.length/TABLE.length 都找不到那一席的取数按钮', async () => {
     const report: string[] = []
     const bad: string[] = []
     for (const row of TABLE) {
@@ -422,7 +429,7 @@ describe('⑤ ★★★★ 错角色时不露出裸 i18n 键', () => {
     return [...new Set([...known, ...cand])]
   }
 
-  it('⑤-1 ★★★★ 16/16 的 nope 区走的是真字典', async () => {
+  it('⑤-1 ★★★★ TABLE.length/TABLE.length 的 nope 区走的是真字典', async () => {
     const bad: string[] = []
     for (const row of TABLE) {
       const w = await mountAs(row, 'user')

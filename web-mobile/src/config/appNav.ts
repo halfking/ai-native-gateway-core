@@ -712,3 +712,19 @@ export function navItemsFor(items: readonly NavItem[], role: string | null | und
       ? isAdmin
       : true)
 }
+
+/** 批 150：路由层按 `path` 判定 `role` 是否有权进入。
+ *  与 `navItemsFor` 同源（`requiresRole` ∈ { undefined, 'admin', 'super_admin' }），
+ *  但接收**单个 path** 而非完整 nav 项列表 —— 路由守卫一次只查一个目标。 */
+export function routeAllowedFor(path: string, role: string | null | undefined): boolean {
+  const isSuper = role === 'super_admin'
+  const isAdmin = isSuper || role === 'tenant_admin' || role === 'admin_key'
+  // ★★ 显式按 path 查：避免路径别名（例：`/format-anomalies` 与 `/format-anomaly`）
+  //   撞到同一 nav 项时 navItemsFor 给"对的那项"，但路由层给"错的那项"。
+  //   这里改成"看 nav 里所有 to 完全等于 path 的项"，没有则按"无 requiresRole"放行。
+  const item = DRAWER_NAV.find((n) => n.to === path) ?? BOTTOM_NAV.find((n) => n.to === path)
+  if (!item) return true
+  if (item.requiresRole === 'super_admin') return isSuper
+  if (item.requiresRole === 'admin') return isAdmin
+  return true
+}

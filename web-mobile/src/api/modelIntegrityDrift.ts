@@ -470,3 +470,9 @@ function requireKeys(obj: object, keys: readonly string[], where: string): void 
     throw new Error(`${where} 缺 ${missing.length} 个键（${missing.join(', ')}）`)
   }
 }
+/** 与 `appNav.ts:229` `requiresRole: 'super_admin'` 对齐 —— 批 150 补视图内兜底。
+ *  壳层 `hyper-wiring.ts` 会在路由层也消费同一个 `requiresRole`，
+ *  本函数是路由被绕过（程序化导航）时的最后一道闸。 */
+export function modelIntegrityDriftRoleIsAllowed(role: string | null | undefined): boolean {
+  return role === 'super_admin'
+}

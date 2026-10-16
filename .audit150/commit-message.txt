@@ -1,0 +1,44 @@
+feat(mobile): 合上壳层缺口（批150）
+
+hyper-wiring.ts 的 beforeEach 一直不消费 `meta.requiresRole`，
+任何受限页深链照样挂载、每个请求必 403。format-anomalies 与
+model-integrity-drift 两个 superAdmin 席**没有视图内兜底**
+（既不 import useAuthStore 也不写 v-if）—— 错角色深链 100% 踩 403。
+
+本批合上两处缺口：
+- config/appNav.ts 新增 `routeAllowedFor(path, role)`，与既有
+  `navItemsFor(items, role)` 同源判定（routeAllowedFor.spec.ts ③-2
+  逐条交叉验证"路由层 vs 抽屉层"两套口径不漂）
+- hyper-wiring.ts 的 beforeEach 调 `routeAllowedFor`，不匹配则
+  `replace('/restricted', query: { from })`；水合顺序仍以
+  `requiresAuth` → `isAuthenticated` → **`routeAllowedFor`** 收尾
+- 新增 RestrictedPageView.vue（只显示 `common.pageDenied` 一行字，
+  **不 import 任何 API 模块**，meta.titleKey 复用 pageDenied ⇒
+  document.title 不泄露真页面名）
+- api/formatAnomalies.ts + api/modelIntegrityDrift.ts 各加
+  `xxxRoleIsAllowed(role)`，与同源 nav 的 `requiresRole: 'super_admin'`
+  双向引用
+- views/FormatAnomaliesView.vue + views/ModelIntegrityDriftView.vue
+  改用 useAuthStore 拿 role，模板加 `<p v-if="!allowed" data-testid="xx-denied">`
+  占位 + `<div v-else>` 主体；标题用 conditional pattern
+- router/index.ts 加 /restricted 路由；/format-anomalies 与
+  /model-integrity-drift 的 meta 补 requiresRole: 'super_admin'
+- goLineRef.spec.ts 3 条 line-ref 因新增 8 行的 /restricted 整体下移
+  ⇒ 订正 KNOWN_FALSE_POSITIVE 的行号（765→773 等）
+
+判据：
+- 新增 RestrictedPageView.spec.ts 5 条 + routeAllowedFor.spec.ts 28 条
+- RestrictedPageTitle 8-4 反向：批 149 之前该条断言 `hyper-wiring.ts`
+  不含 requiresRole，批 150 翻面为"必须真的调 routeAllowedFor + 导出"
+- RestrictedPageGuard 族从 16 → 17 席（5 组探针自动覆盖新两席）
+- ModelIntegrityDriftView ⑫ 整组反向（"渲染不可能随身份变"翻面为
+  "渲染必须真的随身份变 + 错角色深链**一请求都不发**"）
+
+delta：9 spec 8964 → 10 spec 8998/1skipped（+34）。typecheck/4门/
+gate:selftest/build/十连跑 全 rc0。vue-tsc -b --force 强制重建；
+node_modules 仍为 symlink 不删共享。goLineRef 3 处行号订正（路线上的
+副作用，不引入新债）。
+
+doc: 纯追加 §11.187（53 节 → 54 节，末节为 §11.187）。
+
+Co-Authored-By: Mavis <[email protected]>

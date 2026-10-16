@@ -120,6 +120,11 @@ vi.mock('@/api/formatAnomalies', async (importOriginal) => {
   return { ...actual, fetchFormatAnomalies: vi.fn(), fetchFormatAnomalySummary: vi.fn() }
 })
 
+// 批 150：视图 import 了 `@/stores/auth` 取 `role`（与 `appNav.ts:216` 的
+// `requiresRole: 'super_admin'` 同源做兜底）。spec 不起 Pinia ⇒ 直接 mock 掉。
+const authState = { role: 'super_admin' as string | null, userInfo: { id: 1, tenant_id: 't-1' } }
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => authState }))
+
 const mList = fetchFormatAnomalies as unknown as ReturnType<typeof vi.fn>
 const mSum = fetchFormatAnomalySummary as unknown as ReturnType<typeof vi.fn>
 
