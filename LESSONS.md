@@ -399,6 +399,37 @@
 - 防复发检查：(a) 自造客户端标识前先读校验函数，别假设"任意字符串都会被采纳"；(b) 「多轮」验证必须有一个**独立于响应**的证据（库里同一 session 下 turn_no 连续递增、或 ptok 单调增长），否则 5 次独立请求会被误当成 5 轮会话；(c) 断言里不要用客户端自己传的字段做过滤条件——网关可能根本没用它。
 - 状态：已落地
 
+## 2026-10-17 — 「模型不可用」先看错误码分层：no_candidate vs All candidates failed（Seen: 1/3）
+
+- 任务 / 缺陷：验收「7 个模型」时，6 个不可用。我一度归因为
+  「4 个在 `provider_models` 没登记 + 建议给它们绑一条到健康凭据上」。
+  **两个结论都是错的**，而且方向相反——真实阻塞是上游容量。
+- 决定性证据（错误码分层）：请求 `minimax-m2.7` 时拿到的是
+  `model_not_found: **All 3 candidates failed**`，而 `minimax-m3` /
+  `glm-5.3-flash` 拿到 `no_candidate`。
+  - `no_candidate` = 候选**构造不出来** ⇒ 目录里查不到这个模型（登记/映射问题）
+  - `All N candidates failed` = 候选**找到了、逐个尝试过、都失败** ⇒ 解析链路正常，
+    是上游在拒绝
+  同一个模型在两次调用里给出不同错误码，恰恰说明**它可解析、只是上游在抖**。
+- 命名错配这个假设是被**代码**否掉的，不是被数据：`provider_models` 用两列表达同一模型
+  （`raw_model_name` 带 provider 前缀、`standardized_name` 不带），而候选解析
+  `provider/client.go:1151,1225,1693` 是 `OR mo.standardized_name = $1`，
+  **两列都匹配**。所以 `minimaxai/minimax-m3` 这种带前缀登记**不影响**对外可达。
+- 「绑到健康凭据上」这条路本身就不成立：`credentials.provider_id` 决定归属
+  （cred=1→2453、cred=2→2452、cred=3→2454），把 2454 的模型绑到只服务 2453 的
+  凭据是跨厂商端点的语义错误。
+- 连带观测：`/v1/models` 公布数随熔断状态在 **10 ↔ 92/94** 之间摆动
+  （cred=2 熔断 60s 期间只公布 10 个）。**公布 ≠ 当前可服务**。
+- 防复发检查：(a) 排查"某模型不可用"要**先分层**：错误码说 `no_candidate` 才去查登记，
+  说 `All N candidates failed` 就去查凭据健康/上游；(b) 动手改数据绑定前先确认
+  `credentials.provider_id` 的归属语义，别以为凭据可以跨 provider 复用；
+  (c) 归因"未登记"前先查 `standardized_name`，只看 `raw_model_name` 会漏掉整类模型；
+  (d) 同类样本要取**多个**再下结论——单次抽样会把瞬时熔断误读成静态缺失。
+- 证据：熔断恢复前后 `/v1/models` = 92；`minimax-m2.7` → `All 3 candidates failed`
+  vs `minimax-m3`/`glm-5.3-flash` → `no_candidate`；cred=2 `circuit_state` 于
+  01:23:42 open → 01:24:42 closed（60s 自愈）。
+- 状态：已落地（写入 `docs/05-testing/02-test-plans/会话轮次退役/退役验证记录.md` §8.1）
+
 ## 晋级记录
 
 将已晋级条目移到这里，并链接目标规则、清单或技能。同一模式只按不同工作日计 `Seen`；出现三天后晋级。经证据确认的安全、隐私、数据丢失或生产事故，若已有可执行的防复发检查，可立即晋级。
