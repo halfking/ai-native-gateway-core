@@ -104,13 +104,13 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | Chemin | Rôle |
 |------|------|
 | `cmd/gateway/` | Racine de composition — point d’entrée de production en binaire unique (plans données + contrôle) |
-| `domains/` | 67 domaines DDD — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, hooks, sécurité… |
+| `domains/` | 68 domaines DDD — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, hooks, sécurité… |
 | `admin/` + `web/` | API REST d’admin + SPA Vue 3 + TypeScript (Element Plus, ECharts) |
 | `web-mobile/` | Frontend mobile (Vue 3 + TypeScript) — seconde UI de production ; le déploiement refuse de démarrer sans son build `dist/` |
 | `bg/` | Workers en arrière-plan — probing, nettoyage du cycle de vie, agrégation de stats, maintenance des partitions |
 | `storage/` | Factory de stockage double mode (`full` : PG+Redis / `lite` : SQLite+fichiers+KV en processus) |
 | `internal/` | Infra transverse — IR, strip des champs fournisseurs, miroir de session, outbox, télémétrie… |
-| `sql/migrations/` + `db/migrations/` | Migrations idempotentes (série de démarrage actuellement à 864) |
+| `sql/migrations/` + `db/migrations/` | Migrations idempotentes (série de démarrage actuellement à 869) |
 | `installer/` | Module autonome d’installation / mise à niveau multiplateforme |
 | `scripts/`, `deploy/` | Outillage de build, déploiement, miroir et vérification |
 

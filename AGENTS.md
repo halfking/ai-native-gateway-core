@@ -204,8 +204,9 @@
    **不存在于任何可访问仓库**（本仓全历史、`-cursor`、`-5`、154 `/opt/llm-gateway-go-source`
    （旧快照 `565de1fe5`）、`/root/llm-gateway-go-session-v2`（HEAD `1e59ecf6`）均无），
    谱系无法 git 级判定。**五修复在 2533 中的证据链**：release 的
-   `configs/sensitive_patterns.yaml` md5 `866c1064…` = `ce5e35ab3` 版 = 当前 HEAD 版
-   （含 audit 244 F2 中缀连字符规则与注释），而 `ce5e35ab3` 确认包含 `7dd0b4b67`，
+   `configs/sensitive_patterns.yaml` md5 `866c1064…` = `ce5e35ab3` 版
+   （含 audit 244 F2 中缀连字符规则与注释；2026-10-11 时点 HEAD——此后 43c9f3ba4 等已再改该文件，现 HEAD md5 为 `b80d4655…`），
+   而 `ce5e35ab3` 确认包含 `7dd0b4b67`，
    且时间线上五修复（10-10 08:23）远早于 2533 构建（10-11 01:39）——**配置层确认在，
    代码层时间线相容但无法直接核验**（构建提交无处可寻、二进制 stripped，无符号）。
    已排除的疑似源：本仓全历史、`-cursor`、`-5` 两个并发 checkout、154
@@ -514,6 +515,7 @@ bash tests/deploy_local_contract_test.sh           # 仅在 SSOT 在场时跑（
 - **SSOT 软链**：`scripts/deploy-lib` 已迁移到 `ai-native-workspace/deploy-lib`。其他机器拉到此 commit 后按需 rebind：
   - 若仍在 `ai-native-tools/` 下：`git checkout HEAD~1 -- scripts/deploy-lib`
   - 若也已迁到 `ai-native-workspace/`：无需任何操作
+  - **2026-10-16 更新（a968b6f61）**：HEAD 链接已修正为 `../../../deploy-lib`（= `ai-native-tools/deploy-lib`），在 `ai-native-tools/` 下无需再 rebind；勿按上文 `checkout HEAD~1` 回退——那会恢复已确认悬空的旧链接（指向不存在的 `../../ai-native-workspace/deploy-lib`）
 
 ## 仓库内 `handoff` 命名的语义警告
 

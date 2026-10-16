@@ -39,14 +39,14 @@ git remote add origin https://codeup.aliyun.com/kaixuan/official-deploy/llm-gate
 git remote add github git@github.com:halfking/ai-native-gateway-core.git
 ```
 
-### 代码统计（基于真实扫描，2026-10-14）
+### 代码统计（基于真实扫描，2026-10-16）
 ```
-Go源文件:       10,256 个    (find . -name "*.go" -type f | wc -l)
-Admin API:       653 个    (find ./admin -name "*.go" -type f | wc -l)
-后台Worker:      401 个    (find ./bg -name "*.go" -type f | wc -l)
-领域模块:        67 个    (ls ./domains/ | wc -l)
-数据库迁移:     1060 个    (find ./sql/migrations -name "*.sql" | wc -l)
-单元测试:     2,935 个    (*_test.go 文件)
+Go源文件:       10,399 个    (find . -name "*.go" -type f | wc -l)
+Admin API:       667 个    (find ./admin -name "*.go" -type f | wc -l)
+后台Worker:      403 个    (find ./bg -name "*.go" -type f | wc -l)
+领域模块:        68 个    (ls ./domains/ | wc -l)
+数据库迁移:     1070 个    (find ./sql/migrations -name "*.sql" | wc -l)
+单元测试:     3,051 个    (*_test.go 文件)
 可执行程序:      34 个    (ls ./cmd/ | wc -l)
 ```
 
@@ -56,12 +56,12 @@ Admin API:       653 个    (find ./admin -name "*.go" -type f | wc -l)
 
 ### 顶层目录
 ```
-├── cmd/           # 可执行程序（30个）
+├── cmd/           # 可执行程序（34个）
 │   ├── gateway/   # 主网关程序 ⭐
 │   └── tools/     # 工具程序
-├── domains/       # 领域模型（64个）⭐
-├── admin/         # Admin API（453文件）⭐
-├── bg/            # 后台Worker（217文件）⭐
+├── domains/       # 领域模型（68个）⭐
+├── admin/         # Admin API（667文件）⭐
+├── bg/            # 后台Worker（403文件）⭐
 ├── web/           # Vue管理面板 ⭐
 ├── installer/     # 安装器（独立模块）⭐
 ├── adapter/       # 协议适配器
@@ -378,36 +378,37 @@ SELECT * FROM tenants WHERE id = 'xxx';
 SELECT * FROM credentials WHERE tenant_id = 'xxx' AND status = 'active';
 
 -- 请求日志
-SELECT * FROM requests 
+SELECT * FROM request_logs 
 WHERE tenant_id = 'xxx' 
-  AND created_at >= NOW() - INTERVAL '1 day'
-ORDER BY created_at DESC 
+  AND ts >= NOW() - INTERVAL '1 day'
+ORDER BY ts DESC 
 LIMIT 100;
 
 -- 会话
 SELECT * FROM sessions WHERE id = 'sess_xxx';
 
 -- 路由尝试
-SELECT * FROM routing_attempts 
-WHERE request_id = 'req_xxx'
-ORDER BY attempt_number;
+-- 注：独立 routing_attempts 表已不存在，请求级路由轨迹内联在 request_logs.routing_attempts（jsonb）
+SELECT request_id, routing_attempts
+FROM request_logs
+WHERE request_id = 'req_xxx';
 
 -- 凭据健康
-SELECT c.name, ch.status, ch.error_type, ch.last_check_at
-FROM credentials c
-JOIN credential_health ch ON c.id = ch.credential_id
-WHERE c.tenant_id = 'xxx';
+-- 注：健康状态为 credentials 表自带列（原 credential_health 独立表已不存在）
+SELECT id, label, status, health_status, health_error, health_checked_at
+FROM credentials
+WHERE tenant_id = 'xxx';
 
 -- 用量统计
-SELECT DATE(created_at) as date,
+SELECT DATE(occurred_at) as date,
        COUNT(*) as requests,
-       SUM(input_tokens) as input_tokens,
-       SUM(output_tokens) as output_tokens,
-       SUM(cost_usd) as cost_usd
-FROM usage_records
+       SUM(prompt_tokens) as input_tokens,
+       SUM(completion_tokens) as output_tokens,
+       SUM(cost_amount) as cost_usd
+FROM usage_facts
 WHERE tenant_id = 'xxx'
-  AND created_at >= NOW() - INTERVAL '7 days'
-GROUP BY DATE(created_at)
+  AND occurred_at >= NOW() - INTERVAL '7 days'
+GROUP BY DATE(occurred_at)
 ORDER BY date DESC;
 ```
 
@@ -420,26 +421,26 @@ SELECT
   r.tenant_id,
   r.client_model,
   r.outbound_model,
-  r.provider,
-  r.status,
+  r.provider_id,
+  r.status_code,
   r.latency_ms,
-  r.created_at
-FROM requests r
-WHERE r.created_at >= NOW() - INTERVAL '5 minutes'
-ORDER BY r.created_at DESC;
+  r.ts
+FROM request_logs r
+WHERE r.ts >= NOW() - INTERVAL '5 minutes'
+ORDER BY r.ts DESC;
 ```
 
 #### 路由成功率分析
 ```sql
 SELECT 
-  provider,
+  provider_id,
   outbound_model,
   COUNT(*) as total,
-  SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
-  ROUND(100.0 * SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) / COUNT(*), 2) as success_rate
-FROM requests
-WHERE created_at >= NOW() - INTERVAL '1 day'
-GROUP BY provider, outbound_model
+  SUM(CASE WHEN success THEN 1 ELSE 0 END) as success,
+  ROUND(100.0 * SUM(CASE WHEN success THEN 1 ELSE 0 END) / COUNT(*), 2) as success_rate
+FROM request_logs
+WHERE ts >= NOW() - INTERVAL '1 day'
+GROUP BY provider_id, outbound_model
 ORDER BY total DESC;
 ```
 
@@ -449,11 +450,11 @@ SELECT
   t.id,
   t.name,
   COUNT(r.id) as requests,
-  SUM(r.input_tokens + r.output_tokens) as total_tokens,
+  SUM(r.prompt_tokens + r.completion_tokens) as total_tokens,
   SUM(r.cost_usd) as total_cost
 FROM tenants t
-JOIN requests r ON t.id = r.tenant_id
-WHERE r.created_at >= NOW() - INTERVAL '7 days'
+JOIN request_logs r ON t.id = r.tenant_id
+WHERE r.ts >= NOW() - INTERVAL '7 days'
 GROUP BY t.id, t.name
 ORDER BY total_cost DESC
 LIMIT 10;
