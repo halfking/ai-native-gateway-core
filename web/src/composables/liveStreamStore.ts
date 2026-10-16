@@ -236,6 +236,13 @@ export interface LiveStreamEnvelope {
   ts: string
   request?: LiveRequest
   requests?: LiveRequest[]
+  // 2026-10-16 audit fix: the authoritative initial replay is declared by this
+  // flag, NOT by the presence of `requests`. `requests` carries `omitempty` on
+  // the server, so an empty (or nil) replay is absent from the wire entirely and
+  // `Array.isArray(env.requests)` was false for exactly the quiet tenants that
+  // most need the ready signal — pinning them to "接收首批数据中" forever.
+  // Mirrors queue_present / nodes_present, which exist for the same reason.
+  requests_present?: boolean
   snapshot?: LiveStreamSnapshot
   delta?: LiveStreamDelta
   health?: LiveStreamHealth
@@ -889,9 +896,12 @@ function handleEnvelope(env: LiveStreamEnvelope) {
     liveStreamState.redisError = env.health.redis_error || ''
   }
 
-  if (env.type === 'initial_data' && Array.isArray(env.requests)) {
+  if (env.type === 'initial_data' && env.requests_present === true) {
     // Only an authoritative initial replay (including an explicit empty replay)
     // declares the current tenant/user stream ready for rendering.
+    // Gate on requests_present, not Array.isArray(env.requests): the server's
+    // `omitempty` drops a zero-length slice, so an empty replay arrives with no
+    // `requests` key and the array check never fired for quiet identities.
     liveStreamState.initialDataReceived = true
     if (env.snapshot) {
       mergeSnapshotFromServer(env.snapshot)
@@ -901,8 +911,12 @@ function handleEnvelope(env: LiveStreamEnvelope) {
     } else if (env.delta) {
       mergeDelta(env.delta)
     }
-    applyInitialData(env.requests)
-    for (const r of env.requests) {
+    // The gate no longer implies the array exists (requests_present is the
+    // authority), so normalise before iterating: an authoritative EMPTY replay
+    // arrives with no `requests` key at all and `for...of undefined` would throw.
+    const replay = Array.isArray(env.requests) ? env.requests : []
+    applyInitialData(replay)
+    for (const r of replay) {
       if (r.ts && r.ts > maxSeenTs) maxSeenTs = r.ts
     }
     return

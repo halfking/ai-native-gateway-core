@@ -114,6 +114,7 @@ describe('liveStreamStore identity boundary + reconnect delivery', () => {
     first.onmessage?.({
       data: JSON.stringify({
         type: 'initial_data',
+        requests_present: true,
         ts: new Date().toISOString(),
         requests: [{ ts: 'x', request_id: 'req-a', model: 'm', provider_code: 'p', status: 'success' }],
         queue_present: true,
@@ -137,6 +138,7 @@ describe('liveStreamStore identity boundary + reconnect delivery', () => {
     first.onmessage?.({
       data: JSON.stringify({
         type: 'initial_data',
+        requests_present: true,
         ts: new Date().toISOString(),
         requests: [{ ts: 'y', request_id: 'req-a-late', model: 'm', provider_code: 'p', status: 'success' }],
       }),

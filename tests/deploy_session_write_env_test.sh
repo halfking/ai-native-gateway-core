@@ -2,7 +2,7 @@
 # Explicit session-write opt-ins must survive both local runtime shapes.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source "$ROOT/scripts/deploy-local-lib.sh"
+source "$ROOT/scripts/deploy-local-lib.sh" || { printf 'FATAL: 无法 source %s\n' ""$ROOT/scripts/deploy-local-lib.sh"" >&2; exit 1; }
 TASK_TMP="$(mktemp -d -t session-write-env.XXXXXX)"
 trap 'rm -rf "$TASK_TMP"' EXIT
 export LLM_GATEWAY_ROOT="$TASK_TMP/root"
