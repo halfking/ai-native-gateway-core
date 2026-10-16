@@ -207,15 +207,6 @@ type storageSnapshotState struct {
 
 var storageSnapshots = &storageSnapshotState{byPool: make(map[*pgxpool.Pool]*storageOverviewSnapshot)}
 
-func (s *storageSnapshotState) fresh(pool *pgxpool.Pool) *storageOverview {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if snap := s.byPool[pool]; snap != nil && time.Now().Before(snap.expiresAt) {
-		return &snap.overview
-	}
-	return nil
-}
-
 // stale 取快照并忽略过期判断（仅供"采集超时但宁可给旧读数"的兜底）。
 func (s *storageSnapshotState) stale(pool *pgxpool.Pool) *storageOverview {
 	s.mu.Lock()
@@ -249,17 +240,71 @@ func (s *storageSnapshotState) resetForTest() {
 	s.hits.Store(0)
 }
 
-// storageOverviewSnapshot 取快照：命中则直接返回，否则单飞聚合一次。
+// get 返回快照与其是否仍在 TTL 内（第二个返回值）。
+//
+// 2026-10-17：与 tableSizesSnapshot 对齐成 stale-while-revalidate，需要一次
+// 取出「快照 + 是否过期」而不能分两次加锁（分两次会出现
+// 「判定为过期 → 期间被别人刷新 → 仍然拿旧值去触发无谓的后台刷新」）。
+func (s *storageSnapshotState) get(pool *pgxpool.Pool) (*storageOverview, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snap := s.byPool[pool]
+	if snap == nil {
+		return nil, false
+	}
+	return &snap.overview, time.Now().Before(snap.expiresAt)
+}
+
+// refreshStorageOverviewAsync 过期后**后台**单飞聚合，不阻塞本次请求。
+//
+// 与 tableSizesSnapshot.refreshTableSizesAsync 同构：采集 ctx 必须从
+// context.WithoutCancel 派生——发起者随时可能断开，不能连带取消共享聚合。
+func (h *Handler) refreshStorageOverviewAsync(ctx context.Context) {
+	base := context.WithoutCancel(ctx)
+	go func() {
+		ch := storageSnapshots.sf.DoChan(fmt.Sprintf("storage-overview:%p", h.db), func() (any, error) {
+			collectCtx, cancel := context.WithTimeout(base, storageCollectTimeout)
+			defer cancel()
+			storageSnapshots.collect.Add(1)
+			ov := collectStorageOverview(collectCtx, h)
+			storageSnapshots.put(h.db, ov)
+			return ov, nil
+		})
+		if res := <-ch; res.Err != nil {
+			// 旧读数已经发出去了，这里失败不影响本次响应；但必须留痕，
+			// 否则会静默地永远停在旧读数上。
+			slog.Warn("storage: background overview refresh failed", "error", res.Err)
+		}
+	}()
+}
+
+// storageOverviewSnapshot 取快照。
+//
+// 2026-10-17 第二次性能修正（stale-while-revalidate）：
+// TTL 快照解决了"重复请求都聚合"，但**过期时仍会同步重算**，
+// 而聚合本身要 SUM(pg_total_relation_size) 扫全部 3362 个关系，实测
+// 1.26–2.36s。于是每 30s 仍有一次请求破 2 秒。
+//
+// 改为：过期不再同步重算，而是**立即返回旧读数 + 后台单飞聚合**。
+// 除"进程启动后的第一次"外，任何请求都不再支付聚合成本。
+//
+// 代价：读数最坏陈旧到 TTL + 一次聚合时长（约 30 + 2.4 ≈ 32s），而非严格 30s。
+// 要精确读数的运维用 VACUUM FULL / REINDEX，那会显式失效快照。
 //
 // 失败语义保持与优化前一致：聚合永远成功（内部各段失败只记 warning），
 // 所以本函数不会返回 error，HTTP 状态恒为 200。
 func (h *Handler) storageOverviewSnapshot(ctx context.Context) *storageOverview {
-	if ov := storageSnapshots.fresh(h.db); ov != nil {
+	if ov, fresh := storageSnapshots.get(h.db); ov != nil {
 		storageSnapshots.hits.Add(1)
+		if fresh {
+			return ov
+		}
+		// 已过期：先把旧读数发出去，聚合在后台跑。
+		h.refreshStorageOverviewAsync(ctx)
 		return ov
 	}
 
-	// 慢路径：并发 miss 只跑一次聚合。
+	// 无任何快照：必须同步聚合一次（进程启动后的第一个请求）。
 	//
 	// 聚合用 WithoutCancel 的独立 ctx：发起者被客户端断开/超时时，
 	// 不能把其他等待者共享的那一次聚合一起取消掉。等待方仍各自受自己的

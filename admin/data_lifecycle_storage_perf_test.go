@@ -384,12 +384,17 @@ func TestDataLifecycleStorageConcurrentCallsAggregateOnce(t *testing.T) {
 	}
 }
 
-// TestDataLifecycleStorageTTLExpiryRefetches TTL 到期必须重新取数。
+// TestDataLifecycleStorageTTLExpiryRefetches TTL 到期必须重查，
+// 并先钉住生产默认值的上界。
 //
-// 这条专治"TTL 被改成极大值"——那种改法能让显式失效用例照样全绿（显式
-// 失效不看 TTL），但数据从此永久陈旧，运维在页面上再也看不到自己刚做完的
-// VACUUM FULL 效果。所以这里把 TTL 压到毫秒级，用真实字节变化证明到期
-// 后确实重打了 PG。
+// 2026-10-17 契约变更（stale-while-revalidate）：到期后**不再同步重算**，
+// 而是立即返回旧读数 + 后台单飞聚合。所以"重查发生了"不能靠本次调用的
+// 返回值证明——必须按结果轮询（collect 计数在查询*开始前*就自增，
+// 拿它当"完成"信号会读到尚未写回的旧快照）。
+//
+// 三段：③ 到期后的调用**不得阻塞**且返回旧读数；
+//
+//	④⑤ 轮询到新读数真的可见（同时覆盖"刷新没发生"与"刷新太慢"）。
 func TestDataLifecycleStorageTTLExpiryRefetches(t *testing.T) {
 	h, pool, schema := newStoragePerfHandler(t)
 
@@ -409,7 +414,7 @@ func TestDataLifecycleStorageTTLExpiryRefetches(t *testing.T) {
 		t.Fatalf("create t_ttl: %v", err)
 	}
 
-	code1, ov1, _ := callStorageOverview(t, h)
+	code1, ov1, d1 := callStorageOverview(t, h)
 	if code1 != http.StatusOK {
 		t.Fatalf("first status = %d", code1)
 	}
@@ -418,30 +423,49 @@ func TestDataLifecycleStorageTTLExpiryRefetches(t *testing.T) {
 		t.Fatalf("collect count = %d, want 1", got)
 	}
 
-	// TTL 期内：不应重新聚合
+	// TTL 期内：不应重查
 	callStorageOverview(t, h)
 	if got := dataLifecycleStorageCollectCount(); got != 1 {
 		t.Fatalf("within TTL collect count = %d, want 1", got)
 	}
 
-	// 制造可观测的变化，再等 TTL 到期
+	// 制造可观测变化，再等 TTL 到期
 	if _, err := pool.Exec(context.Background(),
 		fmt.Sprintf("INSERT INTO %s.t_ttl SELECT generate_series(1, 200000)", schema)); err != nil {
 		t.Fatalf("fill t_ttl: %v", err)
 	}
 	time.Sleep(150 * time.Millisecond) // > TTL
 
-	code2, ov2, _ := callStorageOverview(t, h)
+	// ③ 到期后的调用：给旧读数，且**不得**为它阻塞
+	code2, ov2, d2 := callStorageOverview(t, h)
 	if code2 != http.StatusOK {
 		t.Fatalf("second status = %d", code2)
 	}
-	if got := dataLifecycleStorageCollectCount(); got != 2 {
-		t.Errorf("after TTL expiry collect count = %d, want 2 —— TTL 形同虚设，数据会永久陈旧", got)
+	if d2 >= 300*time.Millisecond {
+		t.Errorf("过期后的调用 = %v，want < 300ms —— 过期后必须走旧读数而不是同步重算", d2)
 	}
-	if ov2.Database.TotalBytes <= t1 {
-		t.Errorf("TotalBytes after TTL = %d, want > %d（到期未重新取数）", ov2.Database.TotalBytes, t1)
+	if ov2.Database.TotalBytes != t1 {
+		t.Errorf("过期调用应返回旧读数 %d，实际 %d", t1, ov2.Database.TotalBytes)
 	}
-	t.Logf("ttl=60ms t1=%d t2=%d", t1, ov2.Database.TotalBytes)
+
+	// ④⑤ 轮询到新读数真的可见（不能只等 collect 计数，见函数注释）
+	deadline := time.Now().Add(25 * time.Second)
+	var last int64
+	for {
+		code, ov, _ := callStorageOverview(t, h)
+		if code != http.StatusOK {
+			t.Fatalf("polling status = %d", code)
+		}
+		last = ov.Database.TotalBytes
+		if last > t1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("后台刷新后仍未拿到新读数（始终 = %d）—— 刷新 goroutine 断了", last)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Logf("ttl=60ms t1=%d 首调=%v 过期响应=%d(%v) 刷新后=%d", t1, d1, ov2.Database.TotalBytes, d2, last)
 }
 
 // TestDataLifecycleStorageNonGetStillRejected 方法契约不能被缓存改动波及。
