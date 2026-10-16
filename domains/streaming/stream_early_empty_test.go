@@ -151,6 +151,29 @@ func TestRunEmptyStreamGateEarlyEmptyDetection(t *testing.T) {
 	}
 }
 
+// Magpie / ZCode empty_model_response: MiniMax phantom tool_calls must
+// count as empty deltas so early-empty fires before the buffer cap flushes
+// a fake success to the client.
+const phantomToolDeltaFrame = "data: {\"id\":\"mm\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"\",\"type\":\"function\",\"function\":{\"name\":\"\",\"arguments\":\"\"}}]}}]}\n\n"
+
+func TestRunEmptyStreamGatePhantomToolCallsTriggerEarlyEmpty(t *testing.T) {
+	withEarlyEmptyThreshold(t, 3)
+
+	_, outcome, wire := runEmptyGateForTest(t, phantomToolDeltaFrame, phantomToolDeltaFrame+phantomToolDeltaFrame)
+	if outcome == nil {
+		t.Fatal("phantom tool_calls must trigger early-empty failover")
+	}
+	if outcome.Reason != "early_empty_detection" || outcome.Kind != errorsx.KindEmptyResponse {
+		t.Fatalf("outcome = %+v, want early empty KindEmptyResponse", outcome)
+	}
+	if !outcome.Resumable || outcome.ChunkCount != 0 {
+		t.Fatalf("outcome must be resumable with zero client chunks: %+v", outcome)
+	}
+	if wire != "" {
+		t.Fatalf("phantom buffer must not leak to wire: %q", wire)
+	}
+}
+
 func TestRunEmptyStreamGateContentAfterEmptyDeltasFlushes(t *testing.T) {
 	withEarlyEmptyThreshold(t, 3)
 
