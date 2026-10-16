@@ -106,7 +106,7 @@ describe('LiveRequestStreamV2 queue-view stream notice + auto-reconnect', () => 
 
     // 权威初始帧（显式空回放也算）到达 → 标记消失。
     FakeEventSource.instances[0].onmessage?.({
-      data: JSON.stringify({ type: 'initial_data', ts: new Date().toISOString(), requests: [] }),
+      data: JSON.stringify({ type: 'initial_data', ts: new Date().toISOString(), requests: [], requests_present: true }),
     })
     await vi.advanceTimersByTimeAsync(0)
     expect(liveStreamState.initialDataReceived).toBe(true)
@@ -118,7 +118,7 @@ describe('LiveRequestStreamV2 queue-view stream notice + auto-reconnect', () => 
     const first = FakeEventSource.instances[0]
     first.onopen?.()
     // 交付权威初始帧（本用例测的是断连重连，不是首帧等待）。
-    first.onmessage?.({ data: JSON.stringify({ type: 'initial_data', ts: new Date().toISOString(), requests: [] }) })
+    first.onmessage?.({ data: JSON.stringify({ type: 'initial_data', ts: new Date().toISOString(), requests: [], requests_present: true }) })
     await vi.advanceTimersByTimeAsync(0)
     expect(liveStreamState.connection).toBe('open')
     expect(liveStreamState.initialDataReceived).toBe(true)
@@ -143,7 +143,7 @@ describe('LiveRequestStreamV2 queue-view stream notice + auto-reconnect', () => 
 
     // 新连接成功并交付权威初始帧 → 状态条消失。
     FakeEventSource.instances[1].onopen?.()
-    FakeEventSource.instances[1].onmessage?.({ data: JSON.stringify({ type: 'initial_data', ts: new Date().toISOString(), requests: [] }) })
+    FakeEventSource.instances[1].onmessage?.({ data: JSON.stringify({ type: 'initial_data', ts: new Date().toISOString(), requests: [], requests_present: true }) })
     await vi.advanceTimersByTimeAsync(0)
     expect(liveStreamState.connection).toBe('open')
     expect(liveStreamState.initialDataReceived).toBe(true)
@@ -161,7 +161,7 @@ describe('LiveRequestStreamV2 queue-view stream notice + auto-reconnect', () => 
     const wrapper = mountStream()
     const first = FakeEventSource.instances[0]
     first.onopen?.()
-    first.onmessage?.({ data: JSON.stringify({ type: 'initial_data', ts: new Date().toISOString(), requests: [] }) })
+    first.onmessage?.({ data: JSON.stringify({ type: 'initial_data', ts: new Date().toISOString(), requests: [], requests_present: true }) })
     await vi.advanceTimersByTimeAsync(0)
     first.readyState = 0
     first.onerror?.()
@@ -190,7 +190,7 @@ describe('LiveRequestStreamV2 queue-view stream notice + auto-reconnect', () => 
 
     // 权威初始帧交付后（open + initialDataReceived）才回到「等待请求」的口径。
     FakeEventSource.instances[0].onopen?.()
-    FakeEventSource.instances[0].onmessage?.({ data: JSON.stringify({ type: 'initial_data', ts: new Date().toISOString(), requests: [] }) })
+    FakeEventSource.instances[0].onmessage?.({ data: JSON.stringify({ type: 'initial_data', ts: new Date().toISOString(), requests: [], requests_present: true }) })
     await vi.advanceTimersByTimeAsync(0)
     expect(wrapper.find('.swim-lanes__empty').text()).toContain('等待实时请求流数据')
     localStorage.removeItem('llmgw_live_stream_preferences_v1:legacy:default')

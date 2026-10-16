@@ -8809,3 +8809,11 @@ git show origin/main:scripts/deploy-lib/db-changelog.sh
 |-----------|------|---------|--------|
 | 867 | `867_session_summaries_last_request_at_idx.sql` | `7da780e89d9e0855215f842449258242176afe416cbbf5e75b15986d5c1a0d01` | 内容加固登记（本轮未执行生产迁移）：同名索引必须 valid/ready 且双列顺序、collation、默认 opclass、部分谓词一致；缺索引且 heap 超过 32MB 时拒绝普通构建，要求低负载窗口并发预建；保留外层存在性判断以跳过 CREATE，lock_timeout 收紧为 2s。真实 PG18 临时 varchar 夹具验证首屏/keyset 无排序、重复时间戳、三类排序反例拒绝及大表保护；canonical/embed 一致。下列原指纹保留，索引现场 valid/ready 不代表本加固字节已上线。 |
 | 867 | `867_session_summaries_last_request_at_idx.sql` | `b8eedd6b67628339af4e327c32020084ea1a37cda32de7a1d891fe5f81379c73` | 252 生产共享库已于 2026-10-16 03:3x 由运维 `CREATE INDEX CONCURRENTLY` 同名预建（构建 32s、valid、49MB；未跑本文件，台账待部署链记账时由 to_regclass 判定整段跳过、不拿表锁）。`/api/admin/sessions/online` 超管路径 EXPLAIN 102ms/3,974 缓冲页 → 0.22ms/19 页；245/154 端点首调 4–21ms。canonical 与 embeddata 两副本 SHA 一致；一次性 PG17 实测首跑/重放/down-up 往返通过，且证实「索引已存在时裸 IF NOT EXISTS 仍被写事务挡住」（2s 锁超时）而本文件 0s 完成。211 / host-first 未应用（随下次部署普通构建）。 |
+
+## 2026-10-16 — 凭据×模型级流式传输策略 868（台账补登）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 868 | `868_credential_model_stream_mode.sql` | `90025b135a7b7ada6c5ab6a743cdaab862e5d28580dc89c270b189a079b22145` | pending deploy（本轮仅补登记，未执行任何数据库迁移）。新增 `credential_model_bindings.stream_mode` 三态（both / stream_only / non_stream_only，CHECK 约束），默认值 `both`；种子把 Vapeur Claude 绑定置为 `non_stream_only`（上游对该组合拒绝流式）。canonical 与 embeddata 两副本 SHA 现场计算一致；installer go:embed + map（main.go:1153/1157）、runner 排序（runner.go:1078-1080）、`installed_startup_migrations.tsv` 第 263 位、部署通道（`scripts/apply-db-revision-sequence.sh:197`）与 `.down.sql` 均已就位。**补登原因**：`47666783c` 交付了上述全部同步点但遗漏本台账，`sqlguard.TestMigrationRegistryStaysContinuous` 于 849–868 近邻窗口内报出；按守卫说明「脚本 warn-only + 部署侧只查文件存在」，缺登记会使该迁移被静默部署。 |
+
+> 台账状态说明：本行为「补登记」，不代表 868 已应用于任何环境；`stream_mode` 的实际生效需以部署通道的实际执行记录为准。

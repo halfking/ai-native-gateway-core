@@ -95,6 +95,29 @@ type LiveStreamEnvelope struct {
 	// despite Nodes' omitempty tag.
 	NodesPresent bool `json:"nodes_present,omitempty"`
 
+	// RequestsPresent (2026-10-16 audit fix) makes an authoritative EMPTY
+	// request replay visible on the wire despite Requests' omitempty tag.
+	//
+	// Requests has carried `omitempty` since the field was introduced, and
+	// encoding/json drops BOTH a nil slice and a zero-length one. h.replay
+	// returns nil,nil when there is no DB handle (live_stream_sse.go replay())
+	// and otherwise a zero-length slice whenever the identity scope holds no
+	// rows. So for every quiet tenant the initial_data frame went out with no
+	// `requests` key at all.
+	//
+	// The frontend gate is `env.type === 'initial_data' && Array.isArray(env.requests)`
+	// (web/src/composables/liveStreamStore.ts handleEnvelope). Array.isArray(undefined)
+	// is false, so initialDataReceived was never set: awaitingInitialData /
+	// streamAwaitingData / coldStartText stayed pinned to "正在连接 / 接收首批数据中"
+	// indefinitely while the connection was open and later request frames
+	// arrived normally, and the only recovery was unmount+remount, which repeats
+	// the same handshake.
+	//
+	// QueuePresent / NodesPresent already solve this exact hazard for the two
+	// sibling fields; Requests was the third field with the same shape and was
+	// missed. This flag completes the set.
+	RequestsPresent bool `json:"requests_present,omitempty"`
+
 	// Action (OBS-BE2, V3.3-OBS 2026-08-15, 24号 §3) carries the
 	// request_lifecycle payload: one flattened action object for a single
 	// event, or an array for an aggregated batch frame. Per-action detail
@@ -649,12 +672,12 @@ func (h *LiveStreamSSEHub) fanOutQueueSnapshot() {
 	if snap == nil {
 		return
 	}
-		h.fanOut(LiveStreamEnvelope{
-			Type:         "queue_snapshot",
-			Timestamp:    time.Now().UTC(),
-			Queue:        snap,
-			QueuePresent: true,
-		})
+	h.fanOut(LiveStreamEnvelope{
+		Type:         "queue_snapshot",
+		Timestamp:    time.Now().UTC(),
+		Queue:        snap,
+		QueuePresent: true,
+	})
 }
 
 // SetNodeStatusProvider injects the node status matrix source.
@@ -696,13 +719,13 @@ func (h *LiveStreamSSEHub) fanOutNodeUpdate() {
 func NewLiveStreamSSEHub(db *pgxpool.Pool, cfg LiveStreamConfig) *LiveStreamSSEHub {
 	cfg.defaults()
 	h := &LiveStreamSSEHub{
-		db:                  db,
-		cfg:                 cfg,
-		store:               NewLiveStreamRedisStore(cfg.RedisClient),
-		register:            make(chan *liveStreamClient, 16),
-		unregister:          make(chan *liveStreamClient, 16),
-		broadcast:           make(chan LiveRequest, cfg.BroadcastQueueSize),
-		clients:             make(map[*liveStreamClient]struct{}),
+		db:         db,
+		cfg:        cfg,
+		store:      NewLiveStreamRedisStore(cfg.RedisClient),
+		register:   make(chan *liveStreamClient, 16),
+		unregister: make(chan *liveStreamClient, 16),
+		broadcast:  make(chan LiveRequest, cfg.BroadcastQueueSize),
+		clients:    make(map[*liveStreamClient]struct{}),
 		// 2026-10-15：零值初始化——lastActivity 语义改为「本进程最后一次
 		// 广播请求」的真实值，而不是「hub 创建时刻」。data_horizon 的断流
 		// 判据（admin/data_horizon.go）把零值读作「无流量信号」；用创建
@@ -2333,51 +2356,51 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 		}
 	}()
 
-		// Initial replay (oldest → newest so client renders left-to-right).
-		// Always emit one authoritative initial_data frame, even when the scope is
-		// empty. Omitting an empty replay lets a previous user's singleton state
-		// survive indefinitely because there is no later frame that means "clear".
-		initialHealth := h.checkRedisHealth()
-		items, replayErr := h.replay(r.Context(), tenantID, isSuper, h.cfg.InitialReplayLimit)
-		if replayErr != nil {
-			slog.Warn("live stream initial replay failed", "err", replayErr.Error())
-			// Do not claim an authoritative empty replay on read failure. The
-			// client keeps the generation in loading state and EventSource retries.
-		} else {
-			// OBS-BE2: replayed requests teach the action filter their tenant
-			// BEFORE the action replay below resolves ownership.
-			for _, item := range items {
-				h.rememberActionTenant(item.RequestID, item.TenantID)
-			}
-			snapshot := BuildLiveStreamSnapshot(items)
-			if h.store != nil {
-				// Use dimension-queue snapshots when available, including an explicit
-				// zero snapshot; zero is authoritative for an empty identity scope.
-				if ss, ssErr := h.store.SnapshotFromDimensionQueues(r.Context(), tenantID, isSuper); ssErr == nil && ss != nil {
-					snapshot = ss
-				}
-			}
-			// Initial-frame terminal correction is harmless for an empty snapshot.
-			snapshot = h.overlaySnapshotTerminalStatuses(r.Context(), snapshot)
-			queue := h.queueSnapshot()
-			nodes := h.nodeStatusSnapshot()
-			data, mErr := json.Marshal(LiveStreamEnvelope{
-				Type:          "initial_data",
-				Timestamp:     time.Now().UTC(),
-				Requests:      items,
-				Snapshot:      snapshot,
-				Health:        initialHealth,
-				Queue:         queue,
-				QueuePresent:  true,
-				Nodes:         nodes,
-				NodesPresent:  true,
-			})
-			if mErr == nil {
-				h.writeEvent(client, data)
-				h.replayLifecycleActionsFor(r.Context(), client, snapshotRequestIDs(snapshot))
+	// Initial replay (oldest → newest so client renders left-to-right).
+	// Always emit one authoritative initial_data frame, even when the scope is
+	// empty. Omitting an empty replay lets a previous user's singleton state
+	// survive indefinitely because there is no later frame that means "clear".
+	initialHealth := h.checkRedisHealth()
+	items, replayErr := h.replay(r.Context(), tenantID, isSuper, h.cfg.InitialReplayLimit)
+	if replayErr != nil {
+		slog.Warn("live stream initial replay failed", "err", replayErr.Error())
+		// Do not claim an authoritative empty replay on read failure. The
+		// client keeps the generation in loading state and EventSource retries.
+	} else {
+		// OBS-BE2: replayed requests teach the action filter their tenant
+		// BEFORE the action replay below resolves ownership.
+		for _, item := range items {
+			h.rememberActionTenant(item.RequestID, item.TenantID)
+		}
+		snapshot := BuildLiveStreamSnapshot(items)
+		if h.store != nil {
+			// Use dimension-queue snapshots when available, including an explicit
+			// zero snapshot; zero is authoritative for an empty identity scope.
+			if ss, ssErr := h.store.SnapshotFromDimensionQueues(r.Context(), tenantID, isSuper); ssErr == nil && ss != nil {
+				snapshot = ss
 			}
 		}
-
+		// Initial-frame terminal correction is harmless for an empty snapshot.
+		snapshot = h.overlaySnapshotTerminalStatuses(r.Context(), snapshot)
+		queue := h.queueSnapshot()
+		nodes := h.nodeStatusSnapshot()
+		data, mErr := json.Marshal(LiveStreamEnvelope{
+			Type:            "initial_data",
+			Timestamp:       time.Now().UTC(),
+			Requests:        items,
+			RequestsPresent: true,
+			Snapshot:        snapshot,
+			Health:          initialHealth,
+			Queue:           queue,
+			QueuePresent:    true,
+			Nodes:           nodes,
+			NodesPresent:    true,
+		})
+		if mErr == nil {
+			h.writeEvent(client, data)
+			h.replayLifecycleActionsFor(r.Context(), client, snapshotRequestIDs(snapshot))
+		}
+	}
 
 	// Block until the client disconnects.
 	<-r.Context().Done()
