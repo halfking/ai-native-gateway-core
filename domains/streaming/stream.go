@@ -891,8 +891,12 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 	// 读循环侧的预算防重入（hook 内另有一道 atomic CAS，双保险）；
 	// suppressContinuationRole 抑制续问首个 delta 的 role 字段重复——
 	// 客户端不应看到第二个 role:assistant 首 帧。
+	// continuationAmbiguous（P0-3 审计修复，2026-10-16）：上游一旦出现
+	// 多 choice 或非零 index 的语义输出，choice-0-only 的 prefill 无法
+	// 表达流状态——永久禁用续问，回落既有 eof_without_done 终态。
 	var continuationPrefix strings.Builder
 	continuationSpent := false
+	continuationAmbiguous := false
 	suppressContinuationRole := false
 
 	if firstLine != "" {
@@ -902,6 +906,16 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 			diagnosticCollector.observeRaw([]byte(firstRawPayload))
 			if chunk, parseErr := ir.ParseOpenAIStreamChunk(firstLine); parseErr == nil {
 				diagnosticCollector.observeChunk(chunk)
+				if chunk.Type == ir.ChunkTypeError {
+					// P0-3 审计修复：上游首帧即宣告失败——byte-silent
+					// 可恢复中断，执行器换候选；不外显供应商错误体，
+					// 不续问。首帧阶段必然未提交正文。
+					outcome, _ := chatChunkErrorTerminal(w, flusher, capture, false, 0, chunk)
+					return outcome
+				}
+				if chatStreamChoicesAmbiguous([]byte(firstRawPayload)) {
+					continuationAmbiguous = true
+				}
 				if chunk.FinishReason != "" {
 					finalFinishReason = chunk.FinishReason
 				}
@@ -1126,6 +1140,18 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 				// main-loop path at line ~1407.
 				if p != "" && p != "[DONE]" {
 					if chunk, parseErr := ir.ParseOpenAIStreamChunk(l); parseErr == nil {
+						if chunk.Type == ir.ChunkTypeError {
+							// P0-3 审计修复：闸门冲刷线上出现上游错误帧——
+							// 同主循环契约：未提交 byte-silent 可恢复；已提交
+							// 单一网关安全终态。冲刷循环此帧尚未写客户端。
+							committed := attemptHasClientSemanticOutput(gate, chunkCount)
+							outcome, rendered := chatChunkErrorTerminal(w, flusher, capture, committed, chunkCount, chunk)
+							outcome.TerminalRendered = rendered
+							return outcome
+						}
+						if chatStreamChoicesAmbiguous([]byte(p)) {
+							continuationAmbiguous = true
+						}
 						if chunk.FinishReason != "" {
 							finalFinishReason = chunk.FinishReason
 						}
@@ -1252,7 +1278,13 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 						// 失败/预算耗尽/无正文可 prefill 则原样落入下方既有
 						// eof_without_done 终态化（不双 terminal）。
 						if contFn := executors.StreamContinuationFromContext(ctx); contFn != nil &&
-							!continuationSpent && !continuationHasToolCall && continuationPrefix.Len() > 0 {
+							!continuationSpent && !continuationAmbiguous && !continuationHasToolCall &&
+							continuationPrefix.Len() > 0 && continuationPrefix.Len() <= continuationMaxPrefixBytes {
+							// P0-3 审计修复（2026-10-16）：先关旧腿 body 再发续问
+							// 请求——要求显式 Close 才释放连接的自定义 transport
+							// 不再在第二腿建连期间占用第一腿资源。
+							//nolint:errcheck // old upstream body just EOF'd; close is hygiene
+							_ = bodyCloser.Close()
 							newBody, contErr := contFn(continuationPrefix.String())
 							if contErr == nil && newBody != nil {
 								continuationSpent = true
@@ -1262,8 +1294,11 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 									"prefix_len", continuationPrefix.Len(),
 									"chunk_count", chunkCount,
 								)
-								//nolint:errcheck // old upstream body just EOF'd; close is hygiene
-								_ = bodyCloser.Close()
+								if capture != nil {
+									// 两腿分别计费：把已完结腿的最后 usage 入账，
+									// 让 SummaryAsMap 求和而不是被续问腿覆盖。
+									capture.BankCurrentUsage()
+								}
 								bodyCloser = newBody
 								reader = bufio.NewReaderSize(newBody, streamBufSize)
 								// 续问 body 在本函数返回时关闭（每请求至多
@@ -1525,22 +1560,35 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 
 		rawPayload := extractPayload(line)
 		if rawPayload != "" && rawPayload != "[DONE]" {
-			// P0-3：续问腿首帧的 role 字段抑制——上一腿已经发过
-			// role:assistant，客户端再收到一次就是重复前缀信号。只作用于
-			// 续问腿的第一个带 payload 的帧（无论其是否携带 role），处理
-			// 完一次性清零。
+			// P0-3：续问腿的 role 字段抑制——上一腿已经发过 role:assistant，
+			// 客户端再收到一次就是重复前缀信号。抑制只被「从带载荷帧上剥掉
+			// role」解除；整帧丢弃（role-only priming）与空 delta / usage 等
+			// metadata 帧都不消耗抑制机会（P0-3 审计修复，2026-10-16），
+			// 否则前置 metadata 之后的 role 重复帧会漏到客户端。
 			if suppressContinuationRole {
-				stripped, drop := stripContinuationRoleFromLine(line)
+				stripped, drop, hadRole := stripContinuationRoleFromLine(line)
 				if drop {
-					suppressContinuationRole = false
 					continue
 				}
-				line = stripped
-				suppressContinuationRole = false
+				if hadRole {
+					line = stripped
+					suppressContinuationRole = false
+				}
 			}
 			diagnosticCollector.observeRaw([]byte(rawPayload))
 			if chunk, parseErr := ir.ParseOpenAIStreamChunk(line); parseErr == nil {
 				diagnosticCollector.observeChunk(chunk)
+				if chunk.Type == ir.ChunkTypeError {
+					// P0-3 审计修复（2026-10-16）：上游在流中段显式宣告失败
+					// ——绝不可作为续问 prefill、绝不可原样转发供应商错误体。
+					committed := attemptHasClientSemanticOutput(gate, chunkCount)
+					outcome, rendered := chatChunkErrorTerminal(w, flusher, capture, committed, chunkCount, chunk)
+					outcome.TerminalRendered = rendered
+					return outcome
+				}
+				if chatStreamChoicesAmbiguous([]byte(rawPayload)) {
+					continuationAmbiguous = true
+				}
 				if chunk.FinishReason != "" {
 					finalFinishReason = chunk.FinishReason
 				}
@@ -1749,14 +1797,17 @@ func accumulateChatContentDelta(chunk *ir.StreamChunk, b *strings.Builder) {
 }
 
 // stripContinuationRoleFromLine removes the "role" field from a chat SSE
-// chunk line (P0-3 continuation splice). A first continuation frame that
-// carries ONLY the role (the typical `{"delta":{"role":"assistant",
-// "content":""}}` priming frame) is dropped entirely (drop=true); a frame
-// that also carries content/tool_calls/finish_reason/usage keeps everything
-// but the role. Line shape in / out: "data: {json}\n".
-func stripContinuationRoleFromLine(line string) (string, bool) {
+// chunk line (P0-3 continuation splice). A continuation frame that carries
+// ONLY the role (the typical `{"delta":{"role":"assistant","content":""}}`
+// priming frame) is dropped entirely (drop=true); a frame that also carries
+// content/tool_calls/finish_reason/usage keeps everything but the role.
+// hadRole reports whether the frame actually carried a role field — callers
+// keep the suppression armed when it is false so metadata/usage frames do
+// not consume the one-shot suppression (P0-3 audit fix, 2026-10-16).
+// Line shape in / out: "data: {json}\n".
+func stripContinuationRoleFromLine(line string) (out string, drop bool, hadRole bool) {
 	if !strings.HasPrefix(line, "data:") {
-		return line, false
+		return line, false, false
 	}
 	trailing := "\n"
 	if !strings.HasSuffix(line, "\n") {
@@ -1765,35 +1816,35 @@ func stripContinuationRoleFromLine(line string) (string, bool) {
 	payload := strings.TrimSuffix(strings.TrimPrefix(line, "data:"), "\n")
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(payload), &obj); err != nil {
-		return line, false
+		return line, false, false
 	}
 	choicesRaw, ok := obj["choices"]
 	if !ok {
-		return line, false
+		return line, false, false
 	}
 	var choices []json.RawMessage
 	if err := json.Unmarshal(choicesRaw, &choices); err != nil || len(choices) == 0 {
-		return line, false
+		return line, false, false
 	}
 	var choice map[string]json.RawMessage
 	if err := json.Unmarshal(choices[0], &choice); err != nil {
-		return line, false
+		return line, false, false
 	}
 	deltaRaw, ok := choice["delta"]
 	if !ok {
-		return line, false
+		return line, false, false
 	}
 	var delta map[string]json.RawMessage
 	if err := json.Unmarshal(deltaRaw, &delta); err != nil {
-		return line, false
+		return line, false, false
 	}
 	if _, hasRole := delta["role"]; !hasRole {
-		return line, false
+		return line, false, false
 	}
 	delete(delta, "role")
 	newDelta, err := json.Marshal(delta)
 	if err != nil {
-		return line, false
+		return line, false, true
 	}
 	// role-only priming frame（delta 里除 role 外无任何载荷）：整帧丢弃——
 	// 除非帧在别处还带着 finish_reason/usage，那些必须继续到达客户端。
@@ -1801,25 +1852,109 @@ func stripContinuationRoleFromLine(line string) (string, bool) {
 		_, hasFinish := choice["finish_reason"]
 		_, hasUsage := obj["usage"]
 		if !hasFinish && !hasUsage {
-			return "", true
+			return "", true, true
 		}
 	}
 	choice["delta"] = newDelta
 	newChoice, err := json.Marshal(choice)
 	if err != nil {
-		return line, false
+		return line, false, true
 	}
 	choices[0] = newChoice
 	newChoices, err := json.Marshal(choices)
 	if err != nil {
-		return line, false
+		return line, false, true
 	}
 	obj["choices"] = newChoices
 	newObj, err := json.Marshal(obj)
 	if err != nil {
-		return line, false
+		return line, false, true
 	}
-	return "data: " + string(newObj) + trailing, false
+	return "data: " + string(newObj) + trailing, false, true
+}
+
+// continuationMaxPrefixBytes caps the continuation prefill accumulator
+// (P0-3 audit fix, 2026-10-16). A longer committed prefix means the answer
+// is already far past any reasonable continuation point: splicing would
+// re-marshal a ≥64KiB body (triple memory amplification with the builder
+// and the wire buffer) for marginal recovery value. Over-cap streams fall
+// through to the existing eof_without_done terminal instead of issuing a
+// second upstream request.
+const continuationMaxPrefixBytes = 64 * 1024
+
+// chatStreamChoicesAmbiguous reports whether a raw chat SSE payload carries
+// shapes the choice-0-only continuation prefill cannot represent: more than
+// one choice, or a non-zero choice index carrying content (P0-3 audit fix,
+// 2026-10-16). Ambiguous streams permanently disable continuation — a single
+// trailing assistant message cannot stand in for multi-branch state.
+func chatStreamChoicesAmbiguous(payload []byte) bool {
+	var obj struct {
+		Choices []struct {
+			Index int `json:"index"`
+			Delta struct {
+				Content string `json:"content"`
+			} `json:"delta"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(payload, &obj); err != nil {
+		return false
+	}
+	if len(obj.Choices) > 1 {
+		return true
+	}
+	for _, c := range obj.Choices {
+		if c.Index != 0 && c.Delta.Content != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// chatChunkErrorTerminal enforces the in-band upstream error contract
+// (P0-3 audit fix, 2026-10-16): a `data: {"error":...}` frame from upstream
+// is a provider-declared failure — never continuation prefill material,
+// never forwarded raw (supplier detail must not leak to the client).
+//
+//   - uncommitted streams stay byte-silent with a resumable interruption so
+//     the executor's candidate loop can fail over;
+//   - committed streams get exactly ONE gateway-safe terminal (fixed
+//     message, no vendor fields) + synthesized [DONE].
+//
+// Returns the outcome and whether a terminal was rendered.
+func chatChunkErrorTerminal(w http.ResponseWriter, flusher http.Flusher, capture *audit.StreamCapture, committed bool, chunkCount int, chunk *ir.StreamChunk) (StreamOutcome, bool) {
+	if capture != nil {
+		capture.MarkInterruptedWithReason("upstream_error")
+	}
+	errType := ""
+	errCode := ""
+	if chunk != nil && chunk.Error != nil {
+		errType = chunk.Error.Type
+		errCode = chunk.Error.Code
+	}
+	slog.Warn("stream: upstream in-band error chunk",
+		"upstream_error_type", errType,
+		"upstream_error_code", errCode,
+		"chunk_count", chunkCount,
+		"committed", committed,
+	)
+	outcome := StreamOutcome{
+		Interrupted: true,
+		Reason:      "upstream_error",
+		Kind:        errorsx.KindUpstreamDown,
+		ChunkCount:  chunkCount,
+	}
+	if !committed {
+		// Nothing client-visible yet: stay silent so the candidate loop
+		// transparently fails over (same contract as malformed SSE frames).
+		outcome.Resumable = true
+		return outcome, false
+	}
+	errChunk := "data: {\"error\":{\"type\":\"upstream_error\",\"message\":\"upstream stream returned an error\",\"code\":\"upstream_error\",\"reason\":\"upstream_error\",\"retryable\":true},\"code\":\"upstream_error\",\"reason\":\"upstream_error\",\"retryable\":true}\n\ndata: [DONE]\n\n"
+	safeWriteSSE(w, errChunk)
+	safeFlush(flusher)
+	outcome.Resumable = false
+	outcome.TerminalRendered = true
+	return outcome, true
 }
 
 // splitCombinedDoneFrame extracts the first complete JSON value from a malformed
