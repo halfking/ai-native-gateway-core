@@ -33,7 +33,11 @@ const moreLabel = t('nav.more')
  * 样式对 `<a>` / `<button>` 都通用（已在原 CSS 中验过：border:none; background:
  * transparent; text-decoration:none 全部无害），UX 上 5 个底栏项视觉行为不变。
  */
-function safeNavigate(navigate: (e?: MouseEvent) => Promise<void> | void, e: MouseEvent): void {
+// vue-router 5.2.0 的 RouterLink slot prop 实际签名为
+//   navigate: (e?: MouseEvent) => Promise<void | NavigationFailure> | void
+// 我们只在事件 handler 里消费它，不需要 NavigationFailure 的具体类型。
+type RouterNavigate = (e?: MouseEvent) => Promise<unknown> | void
+function safeNavigate(navigate: RouterNavigate, e: MouseEvent): void {
   // 双保险：先拦下默认行为，再跑 vue-router。
   e.preventDefault()
   e.stopPropagation()
