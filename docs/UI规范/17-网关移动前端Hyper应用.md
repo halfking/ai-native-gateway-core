@@ -20709,3 +20709,35 @@ SanitizeRulesView 新增 sr-params-section 卡片：仅 manager 渲染。header 
 最终顺序链 rc0：237 spec files 8998/1skipped、find web-mobile -name '*.tsbuildinfo' -not -path '*/node_modules/*' -delete 后 npx vue-tsc -b 强制重建过、CSS/touch/i18n(两语种各 3903 键，键集一致且非空)/comment 四门 rc0、gate:selftest 5/5、build rc0、目标六 spec 十连跑 10/10 全绿。批150 mutation JSON 与结果摘要均落在 .audit150 未纳入产品提交。八个产品文件含 spec 二改 + 新增 view 无 U+FFFD/NUL，变异前后字节级 sha256 一致；共享依赖 node_modules 是 symlink 不删并发缓存。
 
 **未做**与**不可证区分**：(a) 后端 5 条租户/角色门控（sliding-window / errors-trend / model-history / operational / selfCheck / format_anomalies / model_integrity_events）仍未动，**这是产品安全 issue，属主决策问题**，与本批范围不同；(b) 历史 ComplianceHitsView/RoutingOptView flaky 仍未复现，未复现 ≠ 已修复；(c) `meta.requiresRole` 路由层**已经消费**，但 `meta` 字段在路由定义里仍然与 nav 的 `requiresRole` **双源**——本批没做"以 meta 为唯一源"的重构（成本高、收益小、且对路由层 `routeAllowedFor` 的 path 查表仍依赖 nav），保留双源以限制爆炸半径；(d) RestrictedPageView 不带"返回"按钮，依赖浏览器的 back 行为，UI 一致性可再起批 151 补。提交推送仍需精确最终 SHA 独立审查、最新 fetch 及远端包含关系，本节检查通过不代表上线。
+
+## 11.188 第一百五十一批：RestrictedPageView 加 "返回首页" 按钮（补 §11.187 (d) 余项）
+
+### 一、交付与权限边界
+
+本批补 §11.187 (d) 提到的"依赖浏览器 back 行为太隐晦"：RestrictedPageView 在批150 是"只显示一行字"，用户没有"离开"的出口。批150父 ed8b23bcd 已推送，origin/main 仍为该提交，本批从该父建立独立 /tmp/co151-wt。
+
+逐端点取证：RestrictedPageView 出口有两种选择 —— `router.back()`（依赖 history 长度）与 `router.push('/')`（显式跳首页）。**`router.back()` 在深链场景下 history.length 可能 = 1 ⇒ 退不出**（用户从 `/format-anomalies` 直接 deep-link 进来后被守卫 `replace('/restricted')`，history 长度仍为 1，再 back 就是关掉应用）。`router.push('/')` 不依赖 history 状态，更稳。
+
+### 二、API 与可达交互
+
+`views/RestrictedPageView.vue` 模板加 `<button data-testid="rp-back" @click="goHome">common.back</button>`。`goHome` 调 `router.push('/')`。按钮样式：
+- `min-height: 48px`（满足 touch-target R1 触控门）
+- 其它视觉态：`:active` 用既有 `--app-surface-muted` token（不引入新 token ⇒ 也不踩 theme.spec 的"未定义 token 棘轮"那条门）
+- 文本走既有 `common.back`（"返回" / "Back"）⇒ 不引入新 i18n 键
+
+行为层三件保证：
+- 双语种都显示按钮（test 6/7）
+- 点击真的跳到 `/`（test 8）
+- min-height ≥ 48px 在源码形态层钉住（test 9）
+
+形态层两件禁止：
+- 不允许 `router.back()` / `history.back()`（test 10）—— 这是**反向**防退化：哪怕有人将来想"方便起见用 back()"，源码层立刻红。
+- 终端页模板/脚本**不**带真页面名（test 3 已有，继续生效）—— 加按钮文本不能引出 `/format-anomalies` 这类诱饵。
+
+### 三、判据、返工与限制
+
+新增/改动测试：RestrictedPageView.spec.ts 5 条（6/7 双语种 + 8 点击跳首页 + 9 触控门源码形态 + 10 禁用 `router.back()`）。其它 5 条既有不变（1/2/3/4/5）。批150 末 9 spec 8998/1skipped，批151 末 9 spec 9003/1skipped（delta +5）。**没有新增变异台**：本批改的是**按钮 + 跳转**这一类**控制流 + 路由副作用**（vitest mount + trigger 在隔离 sandbox 里跑，跳转真不真在 router.currentRoute 上能直接断），形态层 test 9/10 已守住最小回归面，再加变异台 ROI 太低。
+
+最终顺序链 rc0：237 spec files 9003/1skipped、find web-mobile -name '*.tsbuildinfo' -not -path '*/node_modules/*' -delete 后 npx vue-tsc -b 强制重建过、CSS/touch/i18n(两语种各 3903 键，键集一致且非空)/comment 四门 rc0、gate:selftest 5/5、build rc0、RestrictedPageView.spec.ts 十连跑 10/10 全绿。批151 mutation JSON 与结果摘要均落在 .audit151 未纳入产品提交。两个产品文件 + spec 无 U+FFFD/NUL，变异前后字节级 sha256 一致；共享依赖 node_modules 是 symlink 不删并发缓存。
+
+**未做**与**不可证区分**：(a) 按钮没有"返回上一页"分支 —— 与 `router.push('/')` 同理，深链场景下上一页**就是**触发跳的那次，再 back 是死循环；本批显式不做。(b) 按钮位置在 `grid` 容器里 `justify-self: start`（贴左）—— 没动 `direction: rtl` 适配，本仓 i18n 暂未启用 RTL 测试，留作下一轮（如果有 RTL 需求时再补）。(c) `from` query 字段**没有**做任何处理（没有回写到原页面、没有日志、没有"你想去的页面叫 X"提示）—— 同批150 提到的"任何 path 字面量都会泄露"，处理 `from` 必须先把值脱敏（如 hash/category 化），ROI 低不另开批。(d) 后端 5 条租户/角色门控仍未动（属主决策问题），历史 ComplianceHitsView/RoutingOptView flaky 仍未复现（未复现 ≠ 已修复）。提交推送仍需精确最终 SHA 独立审查、最新 fetch 及远端包含关系，本节检查通过不代表上线。

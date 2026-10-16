@@ -1,0 +1,24 @@
+feat(mobile): RestrictedPageView 加 "返回首页" 按钮（批151）
+
+§11.187 (d) 余项：批150 终端页 RestrictedPageView 之前只显示一行
+common.pageDenied，没有 "离开" 的出口，用户被困住。
+
+按钮走 router.push('/')（显式跳首页）而不是 history-back（深链
+场景下 history 长度可能 = 1，back() 退不出）。按钮文本走既有
+common.back（"返回"/"Back"），不引入新 i18n 键；样式走既有
+--app-surface-muted，不引入新 token（避开 theme.spec 的"未定义
+token 棘轮"）。
+
+判据：RestrictedPageView.spec.ts +5 条：
+- 6/7 双语种都显示按钮
+- 8 点击真的跳到 /（mount + 真 router，断言 currentRoute）
+- 9 按钮 min-height ≥ 48px（源码形态层守住 touch-target R1）
+- 10 源码不允许 router.back() / history.back()（**反向**防退化：
+  哪怕将来有人想"方便起见用 back()"，源码层立刻红）
+
+delta：9 spec 8998 → 9 spec 9003/1skipped（+5）。typecheck/4门/
+gate:selftest/build/十连跑 全 rc0。vue-tsc -b --force 强制重建。
+
+doc: 纯追加 §11.188（54 节 → 55 节，末节为 §11.188）。
+
+Co-Authored-By: Mavis <[email protected]>
