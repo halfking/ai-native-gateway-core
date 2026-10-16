@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { store, isDefaultTenant } from './store'
+import { throttledFetch } from './api/_core'
 import { showOpsPlatform } from './config/edition'
 import { locationFromInternalPath } from './utils/safeRedirect'
 
@@ -344,7 +345,7 @@ async function shouldRedirectToBootstrap(toPath: string): Promise<boolean> {
   try {
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null
     const timer = controller ? window.setTimeout(() => controller.abort(), 2500) : 0
-    const res = await fetch('/api/system/bootstrap/status', {
+    const res = await throttledFetch('/api/system/bootstrap/status', {
       method: 'GET',
       credentials: 'same-origin',
       cache: 'no-store',

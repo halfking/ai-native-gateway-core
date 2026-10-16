@@ -11,6 +11,7 @@
  * navDrawerOpen：移动导航抽屉的共享开关，AppTopbar 汉堡按钮打开、
  * App.vue 挂载的 AppNavDrawer 消费。
  */
+import { throttledFetch } from '../api/_core'
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
@@ -43,7 +44,7 @@ let stopMaintainWatch: (() => void) | null = null
 
 async function checkActivationStatus() {
   try {
-    const resp = await fetch('/api/system/bootstrap/status')
+    const resp = await throttledFetch('/api/system/bootstrap/status')
     if (resp.ok) {
       const data = await resp.json()
       isActivated.value = data.activated === true

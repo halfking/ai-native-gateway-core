@@ -184,6 +184,28 @@ function releaseSlot(): void {
   if (next) next()
 }
 
+// throttledFetch —— 给**不经过 req()** 的原生 fetch 调用点用的同一把闸门。
+//
+// 为什么需要单独导出：首屏有若干请求直接用原生 `fetch`，绕过了 req()：
+//   - App.vue            → /api/system/version
+//   - composables/useAppNav.ts → /api/system/bootstrap/status
+//   - router.ts          → /api/system/bootstrap/status（同一个端点首屏被调两次）
+// 它们与 req() 的请求竞争**同一条**浏览器同源连接池，所以闸门必须覆盖它们，
+// 否则「限了 req() 的并发」只是把压力挪到了没被限的那几个上。
+//
+// 语义与 req() 中的 fetch 完全一致：排队拿到连接 → 发请求 → 无论成败都释放。
+// 不解析响应、不处理错误，调用方继续按原生 fetch 的方式自己判 status。
+export function throttledFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  return (async () => {
+    await acquireSlot()
+    try {
+      return await fetch(input, init)
+    } finally {
+      releaseSlot()
+    }
+  })()
+}
+
 export async function req<T>(method: string, path: string, body?: unknown, options?: RequestOptions): Promise<T> {
   const hasBody = body !== undefined
   await acquireSlot()
