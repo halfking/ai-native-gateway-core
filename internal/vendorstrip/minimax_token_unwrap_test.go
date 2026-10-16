@@ -41,12 +41,12 @@ func TestUnwrapMiniMaxTokenWrappers_LeavesPlainText(t *testing.T) {
 }
 
 func TestCleanMinimaxLeakFields_UnwrapsTokenWrappers(t *testing.T) {
-	body := []byte(`{"choices":[{"message":{"content":"minimax[>[<tool_call> ssh]<]minimax[>[</tool_call>"}}]}`)
+	body := []byte(`{"choices":[{"message":{"content":"minimax[>[ordinary vendor text]<]"}}]}`)
 	got := DefaultRegistry.Strip(body, VendorMiniMax)
 	if strings.Contains(string(got), "minimax[>[") {
 		t.Fatalf("wrapper leaked: %s", got)
 	}
-	if !strings.Contains(string(got), "tool_call") || !strings.Contains(string(got), "ssh") {
+	if !strings.Contains(string(got), "ordinary vendor text") {
 		t.Fatalf("unwrapped content missing: %s", got)
 	}
 }

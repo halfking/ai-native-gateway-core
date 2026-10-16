@@ -625,7 +625,8 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 				"tenant_id", params.TenantID,
 			)
 		}
-		return e.finalizeAnthropicRequestBody(params, cand, bodyBytes), nil
+		bodyBytes = e.finalizeAnthropicRequestBody(params, cand, bodyBytes)
+		return repairOutboundToolHistory(params, cand, bodyBytes, "messages")
 	}
 
 	// Legacy path (no IR converter set): use existing callbacks
@@ -693,7 +694,8 @@ func (e *Executor) legacyAnthropicBody(params *ExecParams, cand provider.Candida
 		}
 	}
 
-	return e.finalizeAnthropicRequestBody(params, cand, bodyBytes), nil
+	bodyBytes = e.finalizeAnthropicRequestBody(params, cand, bodyBytes)
+	return repairOutboundToolHistory(params, cand, bodyBytes, "messages")
 }
 
 func (e *Executor) finalizeAnthropicRequestBody(params *ExecParams, cand provider.Candidate, bodyBytes []byte) []byte {

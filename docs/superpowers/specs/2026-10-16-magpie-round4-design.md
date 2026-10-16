@@ -17,7 +17,7 @@
    没有有效定义、未知名、无名、非法参数、未闭合结构均保留原文本，不合成固定name=tool。
 2. 原结构化tool_calls不经此纠正；失败MiniMax工具候选解包保持原文，后置vendorstrip也不能再次破坏它；完整已知XML/Hermes调用保留真实参数与周边文本。普通非工具vendor清理和reasoning清理仍以既有契约为准，不能无证据整段撤除。
 3. 流式按choice隔离缓冲；DONE、finish、EOF及overflow时释放未完成的原文本，不能静默吞字。
-   held buffer有界，取消/Close正常传播，不把多帧塞进单帧归一器。
+   总hold限64KiB、活跃choice限64；超界只在本响应保留文本并停止新增纠正。原始物理行复用既有SSE配置上限，不能在后置读行器之前无限缓冲；合法待释放文本按UTF-8分成小帧。取消/Close正常传播，非终态调用帧不制造finish。
 4. 新WithNames API作为唯一可授权纠正点，旧bool-only API安全no-op；全量生产调用迁移，不能留下bool绕过。
    非流hook带context；streamReaderContext合并实际上游reader的取消语义和本次offer。
 5. 三客户端入口到既有Chat-shaped纠正点的流/非流均验证。原生Anthropic不新增XML纠正，能力边界如实记录。
@@ -46,13 +46,13 @@ survival和普通exhausted出口共用同一语义决策，已有attempts/等待
 
 ### 客户端重试投影与恢复hint
 
-普通与survival最终均消费FinalAttempt真实kind的EffectiveRetryable客户端投影；连接内TaskAction仍保留原恢复政策。
+普通与survival最终均消费FinalAttempt真实kind的既有客户端投影：rate保留既有Chat429的true特例，其他族复用EffectiveRetryable；连接内TaskAction/IsRetryable仍保留原恢复政策，不能把同候选即时重放与客户端稍后新请求混为一谈。
 client cancel/未知fail-closed为false；survival context的主code必须是context_length_exceeded，旧gateway_survival_*保留为survival_code。
 调用者key错误401与上游凭据错误502分开；context400（不受上游413/422漂移），独立body字节上限仍413。
 quotaHeld保留429、真实已尝试quota保留既有502；按已有普通策略不让SDK立即热重试，但可附真实reset的RA。
 rate429、concurrent/overload503、timeout504、network/down502沿用errorsx语义；未知模型与已知模型暂时无候选分别外显。
 客户端恢复hint向上取整并限[1,7200]秒，不能复用10秒in-flight sleep夹值。仅聚合同一终态族的真实提示，
-跨候选最早恢复必须由实际attempt元数据携带；不能用最后一个hint冒称全体最早。无真实hint的可恢复临时族默认5秒、routing默认30秒，
+跨候选最早恢复必须由实际attempt元数据携带；每候选以最新观测覆盖旧记录并按真实时间老化，不能用最后一个hint冒称全体最早。最新同族候选已过期或无hint时，不得忽略它而宣称另一未来reset为全体最早；走明确标注的默认backoff。新异族观测使该候选旧同族记录失效。真实recovery/upstream证据优先于陈旧响应预置头，精确admission backoff正控保留。无真实hint的可恢复临时族默认5秒、routing默认30秒，
 须标明是backoff而非reset；不可恢复且无真实hint不凭空写RA。头已提交仅体提示，用真实Response.Result头判据防假绿。
 early shared-key rate三入口统一429并保留scope，Anthropic invalid_request规范为invalid_request_error，Responses仅已知参数才填param。
 真实handler负控覆盖上述分支与已渲染terminal sentinel，不能仅以一个context修补代替三入口归一。

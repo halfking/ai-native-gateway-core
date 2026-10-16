@@ -1,48 +1,30 @@
 package streaming
 
 import (
-	"encoding/json"
-	"strings"
+	"github.com/kaixuan/llm-gateway-go/internal/tooloffer"
 	"testing"
 )
 
+// Unnamed vendor prose is no longer executable; successful parsing needs a real offer.
 func TestParseXMLToolCalls_UnwrapsMiniMaxTokenLeak(t *testing.T) {
-	text := `minimax[>[<tool_call> ]<]minimax[>[]<]minimax[>[ssh -o ConnectTimeout=10 ls]<]minimax[>[]<]minimax[>[Check nginx]<]minimax[>[</tool_call>`
-	remaining, calls := parseXMLToolCalls(text)
-	if remaining != "" {
-		t.Fatalf("remaining = %q, want empty", remaining)
-	}
-	if len(calls) != 1 {
-		t.Fatalf("calls = %d, want 1: %#v", len(calls), calls)
-	}
-	fn := calls[0]["function"].(map[string]any)
-	if fn["name"] != "tool" {
-		t.Fatalf("name = %q, want tool", fn["name"])
-	}
-	if !strings.Contains(fn["arguments"].(string), "ssh") {
-		t.Fatalf("arguments missing ssh: %v", fn["arguments"])
+	text := `minimax[>[<tool_call> ]<]minimax[>[]<]minimax[>[ssh ls]<]minimax[>[</tool_call>`
+	remaining, calls := parseXMLToolCallsWithNames(text, offeredSearchNames())
+	if remaining != text || len(calls) != 0 {
+		t.Fatalf("unnamed vendor prose changed: %q %#v", remaining, calls)
 	}
 }
 
 func TestCoerceXMLToolCallsInChatResponse_MiniMaxLeak(t *testing.T) {
-	body := []byte(`{"choices":[{"message":{"role":"assistant","content":"minimax[>[<tool_call> ls /etc]<]minimax[>[</tool_call>"}}]}`)
-	got := CoerceXMLToolCallsInChatResponse(body, true)
-	var resp map[string]any
-	if err := json.Unmarshal(got, &resp); err != nil {
-		t.Fatalf("invalid json: %v", err)
-	}
-	msg := resp["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
-	if msg["tool_calls"] == nil {
-		t.Fatalf("tool_calls missing: %s", got)
-	}
-	if strings.Contains(string(got), "minimax[>[") {
-		t.Fatalf("wrapper leaked: %s", got)
+	body := offeredResponse(t, `minimax[>[<tool_call> ls /etc]<]minimax[>[</tool_call>`)
+	got := CoerceXMLToolCallsInChatResponseWithNames(body, offeredSearchNames())
+	if string(got) != string(body) {
+		t.Fatalf("unknown vendor text changed: %s", got)
 	}
 }
 
 func TestParseXMLToolCalls_PreservesNamedFunctionShape(t *testing.T) {
 	text := `<tool_call><function=search><parameter=q>nginx</parameter></function></tool_call>`
-	_, calls := parseXMLToolCalls(text)
+	_, calls := parseXMLToolCallsWithNames(text, offeredSearchNames())
 	if len(calls) != 1 {
 		t.Fatalf("calls = %d", len(calls))
 	}
@@ -52,14 +34,10 @@ func TestParseXMLToolCalls_PreservesNamedFunctionShape(t *testing.T) {
 	}
 }
 
-// 2026-09-08 audit: Qwen-style vendors emit a bare JSON object inside
-// <tool_call>. The loose parser must surface the REAL tool name/arguments —
-// a fixed name="tool" makes downstream agents fail with "no such tool" and
-// aborts their loop. Non-JSON payloads keep the historical {"input": ...}
-// wrap with name="tool".
+// Complete Hermes JSON retains its offered name and exact arguments.
 func TestParseLooseToolCalls_ExtractsJSONNameAndArgs(t *testing.T) {
 	text := `<tool_call>{"name": "bash", "arguments": {"cmd": "ls -la"}}</tool_call>`
-	_, calls := parseLooseToolCalls(text)
+	_, calls := parseXMLToolCallsWithNames(text, tooloffer.FromRequest([]byte(`{"tools":[{"type":"function","function":{"name":"bash"}}]}`)))
 	if len(calls) != 1 {
 		t.Fatalf("calls = %d, want 1: %#v", len(calls), calls)
 	}
@@ -83,15 +61,8 @@ func TestParseLooseToolCalls_ExtractsJSONNameAndArgs(t *testing.T) {
 
 func TestParseLooseToolCalls_PlainTextKeepsInputWrap(t *testing.T) {
 	text := `<tool_call> ssh -o ConnectTimeout=10 ls </tool_call>`
-	_, calls := parseLooseToolCalls(text)
-	if len(calls) != 1 {
-		t.Fatalf("calls = %d, want 1", len(calls))
-	}
-	fn := calls[0]["function"].(map[string]any)
-	if fn["name"] != "tool" {
-		t.Fatalf("name = %q, want tool (fallback)", fn["name"])
-	}
-	if !strings.Contains(fn["arguments"].(string), "ssh") {
-		t.Fatalf("arguments missing ssh: %v", fn["arguments"])
+	remaining, calls := parseXMLToolCallsWithNames(text, offeredSearchNames())
+	if remaining != text || len(calls) != 0 {
+		t.Fatalf("plain prose became executable: %q %#v", remaining, calls)
 	}
 }
