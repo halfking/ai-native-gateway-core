@@ -354,6 +354,33 @@
 - 证据：`vue-tsc -b` RC0（三轮）；前端全量 **237 文件 / 2484 用例全 PASS**（37~40s，三轮）；duration 重算峰值 in-flight = 4；并发 curl 32/32。
 - 状态：观察中（应用侧已修完；页面最终复验需在**可交互**的浏览器环境进行，本会话的 Electron 浏览器标签多次冻结不可靠）
 
+## 2026-10-16 — 性能数字先证伪再采信：行过滤会把报错耗时当成提速（Seen: 1/3）
+
+- 任务 / 缺陷：给 `GET /api/admin/data-lifecycle/storage/tables`（本机实测 1286 / 2500 / 1734ms，唯一还 >2s 的 admin GET）找优化手段。测出把 TOAST 的相关子查询 `SELECT t.oid FROM pg_class t WHERE t.reltoastrelid = c.oid` 改写成 `LEFT JOIN pg_class tc ON tc.oid = c.reltoastrelid` 后只要 **6–9ms**（原写法 1170 / 1197 / 3463ms），提速两个数量级，差点直接采用。
+- 根因：测量命令是 `psql -f q.sql 2>&1 | grep -i '^Time'`。**`\timing` 对失败的语句同样打印耗时**。而 PG 17 的 `pg_stat_user_tables` 里**根本没有** `total_size / indexes_size / toast_size` 列（`information_schema.columns` 查 `%size%` 返回 0 行），查询直接 `ERROR: column s.total_size does not exist` —— 那 8ms 是**报错耗时**。是同批跑的对照查询（没做行过滤）把同一个错误暴露了出来。
+- 补充口径纠正：真正的慢因不是 TOAST 子查询，而是 `ORDER BY pg_total_relation_size(c.oid) DESC` —— 排序必须对**全部 440 张表**逐个算大小，`LIMIT 20` 省不掉这笔钱。改成 OID 索引查找实测**没有收益**（1170/1197/3463 vs 1696/1254/1455ms），所以最终走短 TTL 快照。
+- 防复发检查：(a) 性能对比命令**不允许只用 `grep Time` 这类行过滤**，至少保留 `ERROR` 或校验返回行数；(b) 报"提速"前先跑对照查询确认两版都真的返回了数据行，而不是只看耗时；(c) "新写法快很多"必须能指出旧写法慢在哪一段的 EXPLAIN 证据，否则先怀疑自己测错了东西。
+- 证据：上文三次实测序列；`\timing` 对 ERROR 语句仍输出 `Time:`（复现命令见本条"根因"）；最终实现 `admin/data_lifecycle_storage.go` 的 `tableSizesSnapshot`，冷 3.47s → 热 14.3µs。
+- 状态：已落地
+
+## 2026-10-16 — 缓存切片类改动的真正风险是口径漂移，不是缓存（Seen: 1/3）
+
+- 任务 / 缺陷：`/storage/tables` 从"每次按 `limit` 查库"改成"一次采满 `tableSizesMaxLimit=200` 行、再按请求的 `limit` 切片"。
+- 根因：新引入的 `sliceTableSizes` 必须按**本次 limit** 重算 `totalBytes` 与 `PercentOfDB`。若沿用采满时的值，**不会报任何错** —— 百分比照样落在 0–100，页面照常渲染，只是 `limit=20` 显示的变成"对 200 行求和的占比"，与优化前口径不同。这类缺陷没有任何运行时信号，只能靠判据挡住。
+- 连带发现：**Top-N 是 Top-M 的前缀，这个推理要求排序确定性**。原 SQL 只有 `ORDER BY 4 DESC`，字节数并列时 PG 的排序不稳定，前缀性质只能算"大概率成立"。补 `, 1`（`relname`）作次键后严格成立，对耗时无影响。
+- 防复发检查：(a) 占比 / 均值这类**相对量**，判据要用**响应自身的分母**复算，不要用绝对常量 —— 绝对常量会让"分母错了但分子恰好也错"的实现蒙混过关；(b) 引入缓存或切片时，逐字段列出"哪些值依赖 limit / 参数"，对**每一个**写断言，并先断言区分力前提（如 Top-5 之和确实小于 Top-200 之和）；(c) 任何"前缀 / 子集"推理，先确认底层排序有确定性 tie-break。
+- 判据：`admin/data_lifecycle_storage_tables_perf_test.go` 的 `TestDataLifecycleTableSizesSliceRecomputesTotals`（变异验证：切片忽略 limit → 红；占比不重算 → 红）。
+- 状态：已落地
+
+## 2026-10-16 — 判据覆盖了被测常量，会让该常量的变异不可见（Seen: 2/3）
+
+- 任务 / 缺陷：给 `storageOverviewTTL` / `tableSizesTTL` 写"TTL 到期会重新取数"的判据。第一版写法是把 TTL 临时压到 60ms 再等过期。
+- 根因：这版判据**把被测常量本身覆盖掉了**，于是"把 TTL 改成 365 天"这个变异在判据视野里不可见 —— 过期用例照样全绿（因为它自己把 TTL 设成了 60ms），只有显式失效路径会变，而显式失效不看 TTL。结果是数据可以永久陈旧而判据无感。
+- 修法：加一条**独立的默认值上界断言**（`tableSizesTTL ∈ (0, 60s]`），放在临时覆盖**之前**执行，让生产默认值本身进入判据范围。TTL 改成 365 天时红在 `:343`。
+- 防复发检查：(a) 任何判据如果临时修改了被测常量，必须另有一条**不改常量**的断言覆盖它的默认值；(b) "过期刷新"类判据若只覆盖常量，就只能证明"覆盖后的值会过期"，不能证明"生产值会过期"。
+- 证据：`TestDataLifecycleTableSizesTTLExpiryRefetches:343`；总览侧同名判据 `TestDataLifecycleStorageTTLExpiryRefetches:399` 同构补齐。**同一模式当日出现两次（总览轮 + Top-N 轮），第三次出现即晋级为规则。**
+- 状态：观察中
+
 ## 晋级记录
 
 将已晋级条目移到这里，并链接目标规则、清单或技能。同一模式只按不同工作日计 `Seen`；出现三天后晋级。经证据确认的安全、隐私、数据丢失或生产事故，若已有可执行的防复发检查，可立即晋级。
