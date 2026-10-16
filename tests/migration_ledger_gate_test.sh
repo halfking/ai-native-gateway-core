@@ -23,7 +23,7 @@ FAKE
 chmod +x "$fake_ssh"
 
 # shellcheck disable=SC1090
-source "$LIB"
+source "$LIB" || { printf 'FATAL: 无法 source %s\n' ""$LIB"" >&2; exit 1; }
 
 run_gate() {
   local mode=$1 expected=$2

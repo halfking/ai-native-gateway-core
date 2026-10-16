@@ -2,7 +2,7 @@
 # Contract tests for the unified local deployment entry point.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source "$ROOT/scripts/deploy-local-lib.sh"
+source "$ROOT/scripts/deploy-local-lib.sh" || { printf 'FATAL: 无法 source %s\n' ""$ROOT/scripts/deploy-local-lib.sh"" >&2; exit 1; }
 
 TMP=$(mktemp -d -t kx-local-contract.XXXXXX)
 trap 'rm -rf "$TMP"' EXIT
