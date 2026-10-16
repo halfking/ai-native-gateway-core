@@ -300,6 +300,17 @@
 - 证据：补分支后同 token `/api/admin/sessions?limit=2` → 200、`/api/logs` → 200（170246B）、`/api/logs?page=1&page_size=5` → 200（10840B）；页面侧 `inspect` 20ms 正常但 `click`/`query(network)` 275s 超时。
 - 状态：观察中（页面侧根因未定位，需能读浏览器 Console 的环境）
 
+## 2026-10-16 — 「写入持续失败」的日志关键字比报错文本更早暴露孤儿迁移（Seen: 1/3）
+
+- 任务 / 缺陷：退役轮追查 5/7 目标模型不可用。根因链有四层：`/v1/models` 少了它们 → 绑定它们的 cred=1/cred=3 是 `quota_state=permanently_exhausted` → 路由候选 SQL（`provider/client.go` 的 `quota_state NOT IN ('permanently_exhausted',…)`）把它们全部排除 → 而这个状态之所以**永远翻不回来**，是因为探针写回一直在失败。
+- 基线 / 修复 SHA：修复 `apply-db-revision-sequence.sh` 补登 044（见下条提交）。
+- 根因：`sql/migrations/startup/044_health_source_probe_now.sql` 早就在仓库里，文件头注释把症状原样写了出来（`ERROR: … violates check constraint "chk_credentials_health_source" (SQLSTATE 23514)`），但它**从未进入任何部署入口**——不在 `apply-db-revision-sequence.sh` 的 files=()，也不在 `installer/internal/dbinit/runner.go` 的 StartupFiles（后者只收 478+，0xx 段被 baseline 吸收，而 **baseline 里的约束同样是旧形态**，所以全新安装也复现）。于是 `chk_credentials_health_source` 永远停在缺 `probe_now` 的旧白名单，而 `bg/credential_probe_v2.go:2180/2198` 的 ProbeNow 快路径固定写 `probe_now` ⇒ **每一次探测都写不进去**。
+- 定位手法（可复用）：不要从「模型为什么不可用」这种结果往回猜，直接在日志里 grep **写回失败的日志关键字**——`hard-quota bookkeeping update failed` 一命中就把 SQLSTATE 23514 和约束名摆出来了，四层根因链在一次 grep 里塌缩成一条。四层归因（列表缺 → 凭据态 → 候选 SQL → 写回失败）如果逐层猜，会在中途误判成「额度真的用完了」。
+- 防复发检查：迁移文件存在 ≠ 会被执行。判断一个迁移是否真正在通道里，要查**两个入口 + baseline**：`scripts/apply-db-revision-sequence.sh` 的 files=()、`installer/internal/dbinit/runner.go` 的 StartupFiles、以及 baseline 是否已吸收其效果。`sql/migrations/startup/` 有 495 个编号而 installer 只登记 264 个 ⇒ 孤儿是常态不是意外。
+- 证据：修复前 cred=3 在 22 分钟内 23514 失败 22 次（累计 40 次，最后一次 21:33:20）；补登并经通道执行后（`gateway_db_revision_sequences` 记 content_sha256 == execution_sha256、`runtime_adaptation=request-logs-physical-v1`），cred=1 与 cred=3 的 `health_source` 都成功写成 `probe_now`，**23514 计数不再增长**，且 cred=1 的 `quota_state` 从 `permanently_exhausted` 自行翻回 `ok`。迁移序列契约门 9/9 RC0。
+- **但不要过度宣称**：模型可用性并未因此恢复——cred=3 仍是 `availability_state=rate_limited`（真实上游限流），`/v1/models` 从 95 变成 93。数据库写回恢复只是**必要条件**，真实限流/额度仍需上游侧解决。cred=1 的 `quota_state` 翻回 `ok` 但其模型未回到列表，说明还有 `model_probe_state` / 探测态等第二层闸门未过。
+- 状态：观察中（044 已进通道；生产 154/245 是否同样受影响**未核实**，需在生产侧确认约束白名单）
+
 ## 晋级记录
 
 将已晋级条目移到这里，并链接目标规则、清单或技能。同一模式只按不同工作日计 `Seen`；出现三天后晋级。经证据确认的安全、隐私、数据丢失或生产事故，若已有可执行的防复发检查，可立即晋级。
