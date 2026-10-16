@@ -923,8 +923,10 @@ func (e *Executor) executeOpenAI(
 		}
 	}
 	// reqprobe: 前置应用已学习的参数剔除规则（此前已被"剔除后重试成功"
-	// 验证过的参数，24h 滑窗；LLM_GATEWAY_REQPROBE_LEARN=off 关闭）。
-	bodyBytes = e.reqprobeApplyLearned(bodyBytes, cand, params.RequestID)
+	// 验证过的参数，24h 滑窗；LLM_GATEWAY_REQPROBE_LEARN=off 关闭）。实际
+	// 出站 wire 在 native 闸门已决定后才可确定，不能使用候选声明协议。
+	bodyBytes = e.reqprobeApplyLearned(bodyBytes, cand,
+		actualOutboundWire(cand, nativeNonStream || nativeStream), params.RequestID)
 	// P0-1 paramrefusal 主动剔除（choke point #2，finalize 后统一出站体）：
 	// chat 腿首发同样应用已记忆字段（否则记忆对 chat 腿只有「先吃一次
 	// 400」的反应价值，没有先发价值）；native 腿在上面 choke point #1 已
@@ -1027,7 +1029,7 @@ func (e *Executor) executeOpenAI(
 		if e.RequestProbe != nil {
 			probe.input = reqprobe.Input{
 				HTTPStatus: status, ErrorBody: append([]byte(nil), errorBody[:min(len(errorBody), 1024)]...),
-				OutboundBody: bodyBytes, ErrorKind: string(kind), Protocol: cand.Protocol, NativeResponses: true,
+				OutboundBody: bodyBytes, ErrorKind: string(kind), Protocol: providercatalog.ProtocolOpenAIResponses, NativeResponses: true,
 			}
 			probe.diag = reqprobe.Diagnosis{
 				Trigger: reqprobe.TriggerModeMismatch, SuggestMode: "chat", Reason: "responses_api_unsupported",
@@ -1670,7 +1672,7 @@ func (e *Executor) executeOpenAI(
 						ErrorBody:       probeBody,
 						OutboundBody:    bodyBytes,
 						ErrorKind:       string(errKind),
-						Protocol:        cand.Protocol,
+						Protocol:        actualOutboundWire(cand, nativeNonStream || nativeStream),
 						NativeResponses: nativeNonStream || nativeStream,
 					}
 					if diag, diagOK := reqprobe.Diagnose(probeIn); diagOK {
@@ -2041,7 +2043,7 @@ func (e *Executor) executeOpenAI(
 							ErrorBody:       terminalBody,
 							OutboundBody:    bodyBytes,
 							ErrorKind:       string(errKind),
-							Protocol:        cand.Protocol,
+							Protocol:        actualOutboundWire(cand, nativeNonStream || nativeStream),
 							NativeResponses: nativeNonStream || nativeStream,
 						}
 						if diag, diagOK := reqprobe.Diagnose(probeIn); diagOK {

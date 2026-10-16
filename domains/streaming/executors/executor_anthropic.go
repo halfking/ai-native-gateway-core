@@ -725,7 +725,7 @@ func (e *Executor) finalizeAnthropicRequestBody(params *ExecParams, cand provide
 	if params != nil {
 		requestID = params.RequestID
 	}
-	return e.reqprobeApplyLearned(bodyBytes, cand, requestID)
+	return e.reqprobeApplyLearned(bodyBytes, cand, providercatalog.ProtocolAnthropicMessages, requestID)
 }
 
 // anthropicSameCandidateStripRetry 是 P0-B 写死契约：Anthropic 执行器
@@ -1280,14 +1280,14 @@ func (e *Executor) executeAnthropicOnce(
 					ErrorBody:    body,
 					OutboundBody: bodyBytes,
 					ErrorKind:    string(errKind),
-					Protocol:     cand.Protocol,
+					Protocol:     providercatalog.ProtocolAnthropicMessages,
 				}); ok {
 					e.RequestProbe.RecordTerminal(reqprobe.Input{
 						HTTPStatus:   resp.StatusCode,
 						ErrorBody:    body,
 						OutboundBody: bodyBytes,
 						ErrorKind:    string(errKind),
-						Protocol:     cand.Protocol,
+						Protocol:     providercatalog.ProtocolAnthropicMessages,
 					}, diag, reqprobe.TerminalMeta{
 						RequestID:     params.RequestID,
 						ProviderID:    cand.ProviderID,

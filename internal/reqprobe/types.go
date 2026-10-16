@@ -135,6 +135,31 @@ func (f Filter) matches(r Record) bool {
 	return true
 }
 
+// LearnedKey 是学习规则的精确作用域。ProviderCode 不是隔离键：同一 catalog
+// 可挂多个行为不同的 provider 实例。Protocol 必须是实际出站线格式，而不是
+// Candidate 上声明的静态协议。
+type LearnedKey struct {
+	ProviderID    int
+	OutboundModel string
+	ActualWire    string
+}
+
+func (k LearnedKey) normalized() LearnedKey {
+	k.OutboundModel = strings.ToLower(strings.TrimSpace(k.OutboundModel))
+	k.ActualWire = strings.ToLower(strings.TrimSpace(k.ActualWire))
+	return k
+}
+
+func (k LearnedKey) valid() bool {
+	k = k.normalized()
+	return k.ProviderID > 0 && k.OutboundModel != "" && k.ActualWire != ""
+}
+
+func (k LearnedKey) cacheKey() string {
+	k = k.normalized()
+	return strconv.Itoa(k.ProviderID) + "|" + k.OutboundModel + "|" + k.ActualWire
+}
+
 // Store 是请求侧异常的持久化接口。实现必须并发安全；所有方法可被 admin
 // handler 与 Coordinator worker 同时调用。
 type Store interface {
@@ -151,21 +176,24 @@ type Store interface {
 	// ResolveFilter 将匹配过滤条件的未解决记录全部标记为已解决（批量
 	// "一键解决"），返回受影响行数。
 	ResolveFilter(ctx context.Context, f Filter, notes string) (int, error)
-	// LearnedParams 返回该 (provider, model) 上"剔除后重试成功且未解决"
-	// 的参数名集合（最近 learnedTTL 内成功过），供 executor 前置剔除。
+	// LearnedParams 返回该精确 (providerID, outboundModel, actualWire) 上
+	// "剔除后重试成功且未解决"的参数名集合（最近 learnedTTL 内成功过），
+	// 供 executor 前置剔除。无效/历史空键不学习（fail-open）。
 	// mode_mismatch 不参与学习（协议切换是每请求的廉价回退，无需缓存）。
-	LearnedParams(ctx context.Context, providerCode, outboundModel string) []string
+	LearnedParams(ctx context.Context, key LearnedKey) []string
 	Close() error
 }
 
-// Fingerprint 计算记录指纹：day|provider|model|trigger|param|mode|status|kind。
+// Fingerprint 计算记录指纹：day|providerID|providerCode|model|protocol|trigger|param|mode|status|kind。
 // 不含 ErrorSample（同一问题的上游文案抖动不应裂成多行）。
 func Fingerprint(r *Record) string {
 	h := sha1.New()
 	for _, part := range []string{
 		r.Day,
+		strconv.Itoa(r.ProviderID),
 		strings.ToLower(r.ProviderCode),
 		strings.ToLower(r.OutboundModel),
+		strings.ToLower(r.Protocol),
 		string(r.Trigger),
 		strings.ToLower(r.Param),
 		strings.ToLower(r.SuggestMode),

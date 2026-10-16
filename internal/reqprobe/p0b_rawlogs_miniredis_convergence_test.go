@@ -104,7 +104,7 @@ func TestP0BRawLogsMiniredisCrossInstanceConvergence(t *testing.T) {
 			found := false
 			for time.Now().Before(deadline.Add(2 * time.Second)) {
 				coordB.InvalidateLearned()
-				learned = coordB.LearnedParams(context.Background(), meta.ProviderCode, meta.OutboundModel)
+				learned = coordB.LearnedParams(context.Background(), LearnedKey{ProviderID: meta.ProviderID, OutboundModel: meta.OutboundModel, ActualWire: in.Protocol})
 				for _, p := range learned {
 					if p == tc.want {
 						found = true

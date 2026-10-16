@@ -23,6 +23,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 )
 
 // maxParamStrips 封顶单请求的剥参重试轮数：剥参重试不消耗 attempt 预算，
@@ -53,20 +54,38 @@ type reqProbeRuntime struct {
 	meta     reqprobe.TerminalMeta
 }
 
+// actualOutboundWire maps the RUNTIME endpoint decision onto the wire-format
+// scope reqprobe learns under. The candidate's declared protocol is NOT
+// authoritative: a responses-declared candidate whose native capability gates
+// fail actually speaks chat completions (and vice versa after the reactive
+// upgrade). Must mirror the endpoint switch in executeOpenAI's request build
+// (MessagesURL / ResponsesURL / ChatCompletionsURL).
+func actualOutboundWire(cand provider.Candidate, nativeTransport bool) string {
+	if cand.Protocol == providercatalog.ProtocolAnthropicMessages {
+		return providercatalog.ProtocolAnthropicMessages
+	}
+	if nativeTransport {
+		return providercatalog.ProtocolOpenAIResponses
+	}
+	return providercatalog.ProtocolOpenAICompletions
+}
+
 // reqprobeApplyLearned 在首次出站前应用已学习的参数剔除规则。
 // 返回（可能被修改的）body。
 //
-// P0-B：按 cand.Protocol（线格式）做骨架判定——responses 线可剥
-// stream_options，chat 线仍保护。
-func (e *Executor) reqprobeApplyLearned(body []byte, cand provider.Candidate, requestID string) []byte {
+// actualWire is determined after endpoint selection. It scopes both retrieval and
+// skeleton protection so a responses learning never changes a chat request.
+func (e *Executor) reqprobeApplyLearned(body []byte, cand provider.Candidate, actualWire, requestID string) []byte {
 	if e.RequestProbe == nil {
 		return body
 	}
-	learned := e.RequestProbe.LearnedParams(context.Background(), cand.CatalogCode, cand.RawModel)
+	learned := e.RequestProbe.LearnedParams(context.Background(), reqprobe.LearnedKey{
+		ProviderID: cand.ProviderID, OutboundModel: cand.RawModel, ActualWire: actualWire,
+	})
 	if len(learned) == 0 {
 		return body
 	}
-	out, stripped := reqprobe.StripParamsForWire(body, strings.Join(learned, ","), cand.Protocol)
+	out, stripped := reqprobe.StripParamsForWire(body, strings.Join(learned, ","), actualWire)
 	if len(stripped) == 0 {
 		return body
 	}
@@ -74,7 +93,7 @@ func (e *Executor) reqprobeApplyLearned(body []byte, cand provider.Candidate, re
 		"request_id", requestID,
 		"provider_id", cand.ProviderID,
 		"raw_model", cand.RawModel,
-		"wire", cand.Protocol,
+		"wire", actualWire,
 		"stripped", strings.Join(stripped, ","),
 	)
 	return out

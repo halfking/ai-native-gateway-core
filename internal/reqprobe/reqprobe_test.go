@@ -2,6 +2,7 @@ package reqprobe
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -254,7 +255,7 @@ func TestMemoryStoreRoundTrip(t *testing.T) {
 	}
 
 	// 学习规则：剔除后成功过 → 可前置剔除。
-	learned := s.LearnedParams(ctx, "xai", "grok-4.6")
+	learned := s.LearnedParams(ctx, LearnedKey{ProviderID: 7, OutboundModel: "grok-4.6", ActualWire: "openai-chat"})
 	if len(learned) != 1 || learned[0] != "reasoning_effort" {
 		t.Fatalf("learned = %v", learned)
 	}
@@ -273,7 +274,7 @@ func TestMemoryStoreRoundTrip(t *testing.T) {
 		t.Fatalf("counts after resolve = %+v", counts)
 	}
 	// 解决后学习规则失效。
-	if got := s.LearnedParams(ctx, "xai", "grok-4.6"); len(got) != 0 {
+	if got := s.LearnedParams(ctx, LearnedKey{ProviderID: 7, OutboundModel: "grok-4.6", ActualWire: "openai-chat"}); len(got) != 0 {
 		t.Fatalf("learned after resolve = %v", got)
 	}
 	// 未解决过滤。
@@ -281,6 +282,48 @@ func TestMemoryStoreRoundTrip(t *testing.T) {
 	if len(recs) != 0 {
 		t.Fatalf("unresolved only should be empty, got %d", len(recs))
 	}
+}
+
+func TestMemoryStoreLearnedParamsIsolatedByProviderAndWire(t *testing.T) {
+	s := NewMemoryStore()
+	ctx := context.Background()
+	seed := func(providerID int, protocol, param string) {
+		t.Helper()
+		_, err := s.Upsert(ctx, Record{
+			ProviderID: providerID, ProviderCode: "shared-catalog", OutboundModel: "shared-model",
+			Protocol: protocol, Trigger: TriggerParamRejected, Param: param,
+			HTTPStatus: 400, ErrorKind: "client_bug", RecoveredCount: 1,
+		})
+		if err != nil {
+			t.Fatalf("upsert provider=%d protocol=%s param=%s: %v", providerID, protocol, param, err)
+		}
+	}
+	seed(101, "openai-responses", "thinking")
+	seed(101, "openai-responses", "service_tier")
+	seed(202, "openai-responses", "thinking")
+	seed(202, "openai-responses", "metadata")
+	seed(101, "openai-completions", "thinking")
+	seed(101, "openai-completions", "reasoning_effort")
+
+	if _, total, err := s.List(ctx, Filter{}); err != nil || total != 6 {
+		t.Fatalf("records total=%d err=%v, want six distinct provider/wire fingerprints", total, err)
+	}
+	assertParams := func(key LearnedKey, want ...string) {
+		t.Helper()
+		got := s.LearnedParams(ctx, key)
+		if strings.Join(sortedStrings(got), ",") != strings.Join(sortedStrings(want), ",") {
+			t.Fatalf("LearnedParams(%+v)=%v, want %v", key, got, want)
+		}
+	}
+	assertParams(LearnedKey{ProviderID: 101, OutboundModel: "shared-model", ActualWire: "openai-responses"}, "thinking", "service_tier")
+	assertParams(LearnedKey{ProviderID: 202, OutboundModel: "shared-model", ActualWire: "openai-responses"}, "thinking", "metadata")
+	assertParams(LearnedKey{ProviderID: 101, OutboundModel: "shared-model", ActualWire: "openai-completions"}, "thinking", "reasoning_effort")
+}
+
+func sortedStrings(in []string) []string {
+	out := append([]string(nil), in...)
+	slices.Sort(out)
+	return out
 }
 
 func TestMemoryStoreResolveFilter(t *testing.T) {
@@ -327,7 +370,7 @@ type countingStore struct {
 	released bool
 }
 
-func (s *countingStore) LearnedParams(ctx context.Context, providerCode, outboundModel string) []string {
+func (s *countingStore) LearnedParams(ctx context.Context, key LearnedKey) []string {
 	s.mu.Lock()
 	s.calls++
 	release := s.release
@@ -338,13 +381,13 @@ func (s *countingStore) LearnedParams(ctx context.Context, providerCode, outboun
 		case <-ctx.Done():
 		}
 	}
-	return s.MemoryStore.LearnedParams(ctx, providerCode, outboundModel)
+	return s.MemoryStore.LearnedParams(ctx, key)
 }
 
 func TestCoordinatorLearnedParamsSingleflight(t *testing.T) {
 	s := &countingStore{MemoryStore: NewMemoryStore(), release: make(chan struct{})}
 	ctx := context.Background()
-	rec := Record{ProviderCode: "xai", OutboundModel: "grok-4.6", Trigger: TriggerParamRejected,
+	rec := Record{ProviderID: 7, ProviderCode: "xai", OutboundModel: "grok-4.6", Protocol: "openai-chat", Trigger: TriggerParamRejected,
 		Param: "reasoning_effort", HTTPStatus: 400, ErrorKind: "client_bug", RecoveredCount: 1}
 	if _, err := s.Upsert(ctx, rec); err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -360,7 +403,7 @@ func TestCoordinatorLearnedParamsSingleflight(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			results[i] = c.LearnedParams(ctx, "xai", "grok-4.6")
+			results[i] = c.LearnedParams(ctx, LearnedKey{ProviderID: 7, OutboundModel: "grok-4.6", ActualWire: "openai-chat"})
 		}(i)
 	}
 	// 让全部 goroutine 进入回源（首个调用阻塞在 release 上），再放行。
@@ -386,7 +429,7 @@ func TestCoordinatorLearnedParamsSingleflight(t *testing.T) {
 	}
 
 	// 命中缓存：不再回源。
-	_ = c.LearnedParams(ctx, "xai", "grok-4.6")
+	_ = c.LearnedParams(ctx, LearnedKey{ProviderID: 7, OutboundModel: "grok-4.6", ActualWire: "openai-chat"})
 	s.mu.Lock()
 	calls = s.calls
 	s.mu.Unlock()
