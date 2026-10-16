@@ -17,10 +17,12 @@ func TestRoutingCandidateBindingPriorityContract(t *testing.T) {
 	}
 	text := string(src)
 	for _, want := range []string{
-		"Priority       *bool `json:\"priority\"`",
+		"Priority       *bool   `json:\"priority\"`",
 		"priority        = COALESCE($4::boolean, priority)",
-		"WHERE id = $5",
+		"stream_mode     = COALESCE($5::text, stream_mode)",
+		"WHERE id = $6",
 		"\"priority\":        req.Priority",
+		"\"stream_mode\":     req.StreamMode",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("candidate-binding priority PATCH contract missing %q", want)

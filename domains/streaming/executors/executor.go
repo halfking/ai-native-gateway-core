@@ -2212,6 +2212,34 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 		params.R = params.R.WithContext(session.SetTenantID(params.R.Context(), params.TenantID))
 	}
 
+	// Stream-mode gate (868): drop candidates whose binding forbids this
+	// request's transport BEFORE sticky/router/probe run. Only reassign
+	// params.Candidates when the filter actually dropped something — the
+	// zero-blocked path must keep the caller's slice identity (the sync-probe
+	// hold contract mutates the caller's slice via OnProbeHoldEnd to publish
+	// recovery; a defensive copy here would hide it, see
+	// TestExecutor_NoCandidateProbe_Recovers).
+	if modeCandidates, modeBlocked := filterCandidatesByStreamMode(params.Candidates, params.IsStream); len(modeBlocked) > 0 {
+		if len(modeCandidates) == 0 {
+			mode := "non_stream"
+			if params.IsStream {
+				mode = "stream"
+			}
+			trace := streamModeMismatchTrace(modeBlocked)
+			if params.AuditBuilder != nil {
+				params.AuditBuilder.DecisionTrace(trace)
+			}
+			return nil, &ExecuteError{
+				LastErr:   fmt.Errorf("no candidate permits %s requests", mode),
+				Tried:     0,
+				Exhausted: true,
+				Trace:     trace,
+				LastKind:  errorsx.KindUnsupportedFeature,
+			}
+		}
+		params.Candidates = modeCandidates
+	}
+
 	// Keep both inbound protocol bodies immutable across candidate failover.
 	// Per-candidate rendering works from these snapshots and never re-enters
 	// attachment extraction.
@@ -3070,9 +3098,11 @@ func (e *Executor) refreshedCandidatesAfterProbe(params *ExecParams) []provider.
 			"error", err)
 		return nil
 	}
+	candidates, _ = filterCandidatesByStreamMode(candidates, params.IsStream)
 	slog.Info("executor: refreshed candidates after probe",
 		"model", params.ClientModel,
 		"tenant_id", params.TenantID,
+		"is_stream", params.IsStream,
 		"candidates", len(candidates))
 	return candidates
 }

@@ -75,6 +75,14 @@ echo "[verify] deploy host-first resource contracts"
 bash tests/deploy_host_first_contract_test.sh
 echo "[verify] deploy session write environment contracts"
 bash tests/deploy_session_write_env_test.sh
+echo "[verify] rollback running-service verification"
+bash tests/deploy_rollback_service_test.sh
+# 2026-10-16 生产实测事故：把 64 位 sha256 明文写进发给 psql 的 SQL，
+# 输出脱敏管道把它替换成 [REDACTED:*] 替身（67 字符、含非十六进制字符），
+# 污染值被 UPDATE 真正提交进 llm_gateway_migration_checksums。台账对齐必须
+# 走 convert_from(decode('<hex>','hex'),'UTF8')，明文 sha256 永不出现。
+echo "[verify] migration-ledger checksum transport"
+bash tests/ledger_checksum_hex_transport_test.sh
 # 2026-10-10：252 上 pg17-disk-watch.sh 堆到 310 份副本、149 个僵死
 # `docker exec ... psql`，把 15G 内存吃到 swap 100% / load 300，PG 因此
 # 无法服务 154 网关（SQLSTATE 57P03、一小时 194 个 HTTP 503）。

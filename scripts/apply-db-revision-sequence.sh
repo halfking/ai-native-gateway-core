@@ -192,6 +192,9 @@ files=(
   # WHERE last_request_at IS NOT NULL —— 在线会话超管路径（无 tenant_id 等值）
   # 的承重索引。生产大表须先 CONCURRENTLY 同名预建；本文件判存在后整段跳过。
   "$ROOT_DIR/sql/migrations/startup/867_session_summaries_last_request_at_idx.sql"
+  # 868（2026-10-16）：凭据×模型级通讯模式，默认 both；Vapeur Claude
+  # 精确限定 non_stream_only，路由可按请求 stream 标志过滤候选。
+  "$ROOT_DIR/sql/migrations/startup/868_credential_model_stream_mode.sql"
   "$ROOT_DIR/sql/migrations/startup/394_request_stats_minute.sql"
   # 2026-10-12 host-first PG/gateway log audit: the candidate-binding scope
   # revision chain (541 raw_model table → 569 canonical table + cmb triggers →

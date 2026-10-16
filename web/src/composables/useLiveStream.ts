@@ -15,6 +15,7 @@ import {
   connectionRef,
   pausedRef,
   lastEventAtRef,
+  initialDataReceivedRef,
   type LiveRequest,
   type ConnectionState,
 } from './liveStreamStore'
@@ -46,6 +47,7 @@ export function useLiveStream() {
     connection: connectionRef,
     paused: pausedRef,
     lastEventAt: lastEventAtRef,
+    initialDataReceived: initialDataReceivedRef,
     pause: pauseStream,
     resume: resumeStream,
     togglePause,

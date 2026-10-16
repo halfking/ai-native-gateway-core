@@ -315,10 +315,12 @@ describe('⑥ ★★★★ 常量与 Go 源码逐字一致', () => {
   it('⑥-1 ★★★★★★ 两个时间窗从 Go 源码读出来（不是抄一份）', () => {
     const p = join(process.cwd(), '..', 'admin/data_horizon.go')
     const src = readFileSync(p, 'utf8')
+    // 2026-10-16：Go 侧把两个窗口并进 const 块（gofmt 对齐后行内有多个空格），
+    // 原单行正则失配。真值 10/5 仍由下面两条钉住，失配不会伪装成通过。
     const win = src.match(
-      /const dataHorizonRecentTrafficWindow = (\d+) \* time\.Minute/,
+      /dataHorizonRecentTrafficWindow\s*= (\d+) \* time\.Minute/,
     )
-    const tol = src.match(/const dataHorizonLagTolerance = (\d+) \* time\.Minute/)
+    const tol = src.match(/dataHorizonLagTolerance\s*= (\d+) \* time\.Minute/)
     expect(win, '没找到 dataHorizonRecentTrafficWindow（正则失配会让这条恒绿）').toBeTruthy()
     expect(tol, '没找到 dataHorizonLagTolerance').toBeTruthy()
     expect(Number(win![1])).toBe(DATA_HORIZON_RECENT_TRAFFIC_WINDOW_MINUTES)
@@ -328,12 +330,14 @@ describe('⑥ ★★★★ 常量与 Go 源码逐字一致', () => {
     expect(DATA_HORIZON_LAG_TOLERANCE_MINUTES).toBe(5)
   })
 
-  it('⑥-2 ★★★★★★ `source` 恒为 session_turns_hot（读 Go 源码数出现次数）', () => {
-    expect(DATA_HORIZON_SOURCE).toBe('session_turns_hot')
+  it('⑥-2 ★★★★★★ `source` 恒为 session_turns_hot ∪ session_turns（读 Go 源码数出现次数）', () => {
+    expect(DATA_HORIZON_SOURCE).toBe('session_turns_hot ∪ session_turns')
     const p = join(process.cwd(), '..', 'admin/data_horizon.go')
     const src = readFileSync(p, 'utf8')
-    // ★ 两个分支各写一次，都必须是同一个字面量
-    const hits = [...src.matchAll(/Source:\s*"([a-z_]+)"/g)].map((m) => m[1])
+    // ★ 两个分支各写一次，都必须是同一个字面量。
+    //   2026-10-16：字面量已扩为 "session_turns_hot ∪ session_turns"
+    //   （V2 双写后断流要同时看两张表），故捕获类不再限死 [a-z_]。
+    const hits = [...src.matchAll(/Source:\s*"([^"]+)"/g)].map((m) => m[1])
     expect(hits.length, '没找到 Source 字面量').toBeGreaterThanOrEqual(2)
     for (const h of hits) expect(h).toBe(DATA_HORIZON_SOURCE)
     // ★★ 旧字面量不得复活
@@ -353,12 +357,17 @@ describe('⑥ ★★★★ 常量与 Go 源码逐字一致', () => {
     const noComment = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
     const fn = noComment.slice(noComment.indexOf('func dataHorizonNoticeFor('))
     const body = fn.slice(0, fn.indexOf('\nfunc '))
-    // ★★ 零值与落后走**同一条** if ⇒ 空表确实判 stale
-    expect(body).toMatch(
-      /if sessionMaxTS\.IsZero\(\) \|\| sessionMaxTS\.Before\(lastRequestSeen\.Add\(-dataHorizonLagTolerance\)\)/,
-    )
+    // ★★ 承重判据（2026-10-16 随 Go 侧重构同步）：判定已从 sessionMaxTS
+    //   改为 canary 口径 —— 「观察窗内的 canary 全部镜像成功 ⇒ live，
+    //   有 canary 超窗未镜像 ⇒ stale」，所以 stale 与 unknown 分属两个函数。
+    //   零值/空 canary 切片会走完循环返回 (nil,false)，即**判不出 stale**，
+    //   这正是「空表不谎报断流」的现代表形态。
+    expect(body).toMatch(/age < dataHorizonLagTolerance \|\| age > dataHorizonRecentTrafficWindow/)
+    expect(body).toMatch(/Stale:\s+true/)
     // ★ 且 unknown 走的是**另一个**函数（读不上来，不是表空）
     expect(body).not.toContain('dataHorizonNoticeForUnknown')
     expect(noComment).toMatch(/func dataHorizonNoticeForUnknown\(\)/)
+    // ★ 空 canary 切片不得判 stale（否「表空即断流」复活）
+    expect(body).toMatch(/return nil, false/)
   })
 })

@@ -82,11 +82,18 @@ type LiveStreamEnvelope struct {
 	// the queue-perspective panel. Type="queue_snapshot" identifies this
 	// variant. Optional — nil on envelopes that don't carry queue data.
 	Queue *LiveQueueSnapshot `json:"queue,omitempty"`
+	// QueuePresent distinguishes an envelope with no queue opinion from an
+	// authoritative initial frame whose queue provider is absent. The latter
+	// must clear a previous identity's queue rather than leave stale state.
+	QueuePresent bool `json:"queue_present,omitempty"`
 
 	// Nodes (2026-08-13, V3.2 BE-A4) carries the node status matrix for the
 	// node-status panel. Sent in initial_data (full) and node_update (delta).
 	// Optional — nil on envelopes that don't carry node data.
 	Nodes []LiveNodeStatus `json:"nodes,omitempty"`
+	// NodesPresent makes an authoritative empty node list visible on the wire
+	// despite Nodes' omitempty tag.
+	NodesPresent bool `json:"nodes_present,omitempty"`
 
 	// Action (OBS-BE2, V3.3-OBS 2026-08-15, 24号 §3) carries the
 	// request_lifecycle payload: one flattened action object for a single
@@ -455,9 +462,14 @@ type LiveStreamSSEHub struct {
 
 	lastActivityMu sync.RWMutex
 	lastActivity   time.Time
-	// lastBusinessActivity 只统计业务请求（IsProbe=false），供 data_horizon
-	// 的断流判据使用——探针/auto 流量不进会话族，见 run 循环注释。
-	lastBusinessActivity time.Time
+
+	// dataHorizonCanaries are bounded LOCAL terminal requests that should exist
+	// in the session family. One canary per minute is enough to detect a stream
+	// outage without retaining per-request state; keeping the recent window
+	// prevents continuous traffic from perpetually replacing an immature canary.
+	// Redis fan-out never updates this set, so another gateway cannot mask this
+	// instance's mirror outage with unrelated fresh rows.
+	dataHorizonCanaries []requestMirrorCanary
 
 	// providerCache is a sync.Map of provider_id → catalog_code.
 	// Populated lazily on first miss by ProviderCodeFor() so the
@@ -637,11 +649,12 @@ func (h *LiveStreamSSEHub) fanOutQueueSnapshot() {
 	if snap == nil {
 		return
 	}
-	h.fanOut(LiveStreamEnvelope{
-		Type:      "queue_snapshot",
-		Timestamp: time.Now().UTC(),
-		Queue:     snap,
-	})
+		h.fanOut(LiveStreamEnvelope{
+			Type:         "queue_snapshot",
+			Timestamp:    time.Now().UTC(),
+			Queue:        snap,
+			QueuePresent: true,
+		})
 }
 
 // SetNodeStatusProvider injects the node status matrix source.
@@ -671,9 +684,10 @@ func (h *LiveStreamSSEHub) fanOutNodeUpdate() {
 		return
 	}
 	h.fanOut(LiveStreamEnvelope{
-		Type:      "node_update",
-		Timestamp: time.Now().UTC(),
-		Nodes:     nodes,
+		Type:         "node_update",
+		Timestamp:    time.Now().UTC(),
+		Nodes:        nodes,
+		NodesPresent: true,
 	})
 }
 
@@ -819,12 +833,6 @@ func (h *LiveStreamSSEHub) Run() {
 		case req := <-h.broadcast:
 			h.lastActivityMu.Lock()
 			h.lastActivity = time.Now()
-			// 2026-10-15（r1033）：data_horizon 的断流判据只看**业务**请求——
-			// 探针/auto 流量不进会话族（S4 实测：auto 请求不产生 session_turns
-			// 行），拿它们当流量信号会在「只有探针在跑」的窗口误报断流。
-			if !req.IsProbe {
-				h.lastBusinessActivity = time.Now()
-			}
 			h.lastActivityMu.Unlock()
 			atomic.AddInt64(&h.broadcastCount, 1)
 			// Compute BOTH scopes so super-admin and tenant-admin clients each
@@ -2325,44 +2333,51 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 		}
 	}()
 
-	// Initial replay (oldest → newest so client renders left-to-right).
-	// Include current Redis health so the client can show warnings immediately.
-	initialHealth := h.checkRedisHealth()
-	if items, err := h.replay(r.Context(), tenantID, isSuper, h.cfg.InitialReplayLimit); err != nil {
-		slog.Warn("live stream initial replay failed", "err", err.Error())
-	} else if len(items) > 0 {
-		// OBS-BE2: replayed requests teach the action filter their tenant
-		// BEFORE the action replay below resolves ownership.
-		for _, item := range items {
-			h.rememberActionTenant(item.RequestID, item.TenantID)
-		}
-		snapshot := BuildLiveStreamSnapshot(items)
-		if h.store != nil {
-			// 2026-07-19: Use dimension-queue-based snapshot for initial data
-			if ss, ssErr := h.store.SnapshotFromDimensionQueues(r.Context(), tenantID, isSuper); ssErr == nil && ss != nil && ss.Summary.Total > 0 {
-				snapshot = ss
+		// Initial replay (oldest → newest so client renders left-to-right).
+		// Always emit one authoritative initial_data frame, even when the scope is
+		// empty. Omitting an empty replay lets a previous user's singleton state
+		// survive indefinitely because there is no later frame that means "clear".
+		initialHealth := h.checkRedisHealth()
+		items, replayErr := h.replay(r.Context(), tenantID, isSuper, h.cfg.InitialReplayLimit)
+		if replayErr != nil {
+			slog.Warn("live stream initial replay failed", "err", replayErr.Error())
+			// Do not claim an authoritative empty replay on read failure. The
+			// client keeps the generation in loading state and EventSource retries.
+		} else {
+			// OBS-BE2: replayed requests teach the action filter their tenant
+			// BEFORE the action replay below resolves ownership.
+			for _, item := range items {
+				h.rememberActionTenant(item.RequestID, item.TenantID)
+			}
+			snapshot := BuildLiveStreamSnapshot(items)
+			if h.store != nil {
+				// Use dimension-queue snapshots when available, including an explicit
+				// zero snapshot; zero is authoritative for an empty identity scope.
+				if ss, ssErr := h.store.SnapshotFromDimensionQueues(r.Context(), tenantID, isSuper); ssErr == nil && ss != nil {
+					snapshot = ss
+				}
+			}
+			// Initial-frame terminal correction is harmless for an empty snapshot.
+			snapshot = h.overlaySnapshotTerminalStatuses(r.Context(), snapshot)
+			queue := h.queueSnapshot()
+			nodes := h.nodeStatusSnapshot()
+			data, mErr := json.Marshal(LiveStreamEnvelope{
+				Type:          "initial_data",
+				Timestamp:     time.Now().UTC(),
+				Requests:      items,
+				Snapshot:      snapshot,
+				Health:        initialHealth,
+				Queue:         queue,
+				QueuePresent:  true,
+				Nodes:         nodes,
+				NodesPresent:  true,
+			})
+			if mErr == nil {
+				h.writeEvent(client, data)
+				h.replayLifecycleActionsFor(r.Context(), client, snapshotRequestIDs(snapshot))
 			}
 		}
-		// 2026-08-26: 初始帧用 DB 终态纠正卡死的 in_progress tile（连接级
-		// 触发，不走 scope 节流 —— 连接建立本来就是低频事件）。
-		snapshot = h.overlaySnapshotTerminalStatuses(r.Context(), snapshot)
-		data, mErr := json.Marshal(LiveStreamEnvelope{
-			Type:      "initial_data",
-			Timestamp: time.Now().UTC(),
-			Requests:  items,
-			Snapshot:  snapshot,
-			Health:    initialHealth,
-			Queue:     h.queueSnapshot(),
-			Nodes:     h.nodeStatusSnapshot(),
-		})
-		if mErr == nil {
-			h.writeEvent(client, data)
-			// OBS-BE2 (24号 §4): replay lifecycle actions only for request
-			// cards included in the authoritative initial snapshot. This keeps
-			// unrelated global-list activity out of the frontend timeline index.
-			h.replayLifecycleActionsFor(r.Context(), client, snapshotRequestIDs(snapshot))
-		}
-	}
+
 
 	// Block until the client disconnects.
 	<-r.Context().Done()
@@ -2879,17 +2894,49 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 	return out
 }
 
-// Stats 返回 SSE Hub 的监控指标
-// LastRequestSeenAt 返回本进程最后一次**业务**请求广播的时刻（零值 =
-// 启动以来未见业务请求；探针/auto 不计入——它们不进会话族）。
-// data_horizon 用它与 session_turns 的 MAX(ts) 对齐，区分「没数据因为
-// 没流量」与「没数据因为断流」。只读，不推动状态。
-func (h *LiveStreamSSEHub) LastRequestSeenAt() time.Time {
-	h.lastActivityMu.RLock()
-	defer h.lastActivityMu.RUnlock()
-	return h.lastBusinessActivity
+// AddDataHorizonCanary records a LOCAL terminal request that the session
+// mirror should persist. At most one request per UTC minute is retained, plus
+// a bounded recent window. Remote Redis notifications must never call this
+// method: canaries are per gateway instance by construction.
+func (h *LiveStreamSSEHub) AddDataHorizonCanary(requestID string, seenAt time.Time) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return
+	}
+	if seenAt.IsZero() {
+		seenAt = time.Now().UTC()
+	} else {
+		seenAt = seenAt.UTC()
+	}
+	cutoff := seenAt.Add(-dataHorizonRecentTrafficWindow)
+	bucket := seenAt.Truncate(time.Minute)
+
+	h.lastActivityMu.Lock()
+	defer h.lastActivityMu.Unlock()
+
+	kept := h.dataHorizonCanaries[:0]
+	for _, canary := range h.dataHorizonCanaries {
+		if canary.SeenAt.Before(cutoff) {
+			continue
+		}
+		if canary.SeenAt.Truncate(time.Minute).Equal(bucket) {
+			// Keep the first eligible request in each minute. Replacing it with
+			// every fresh request would let continuous traffic postpone the lag
+			// threshold forever while the mirror is fully down.
+			return
+		}
+		kept = append(kept, canary)
+	}
+	h.dataHorizonCanaries = append(kept, requestMirrorCanary{RequestID: requestID, SeenAt: seenAt})
 }
 
+func (h *LiveStreamSSEHub) DataHorizonCanaries() []requestMirrorCanary {
+	h.lastActivityMu.RLock()
+	defer h.lastActivityMu.RUnlock()
+	return append([]requestMirrorCanary(nil), h.dataHorizonCanaries...)
+}
+
+// Stats 返回 SSE Hub 的监控指标
 func (h *LiveStreamSSEHub) Stats() map[string]interface{} {
 	h.mu.RLock()
 	activeClients := len(h.clients)

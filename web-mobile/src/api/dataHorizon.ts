@@ -135,7 +135,7 @@ import { req, type RequestOptions } from './client'
 export const DATA_HORIZON_HEADER = 'X-LLM-Gateway-Data-Horizon'
 
 /** (9) 被检查的数据源族，**恒定**。 */
-export const DATA_HORIZON_SOURCE = 'session_turns_hot'
+export const DATA_HORIZON_SOURCE = 'session_turns_hot ∪ session_turns'
 
 /** (2) 主键恒在的两个信封键。 */
 export const DATA_HORIZON_ENVELOPE_KEYS = ['data_horizon', '//'] as const

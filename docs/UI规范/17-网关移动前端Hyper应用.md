@@ -20255,3 +20255,376 @@ NAME → COLON → VALUE → SEP →(,) NAME
    `fetchVersion`（版本信息）。⇒ 端点都在、客户端都实现了，**接线是产品决策**。
 2. ⛔ **A 类 3 条**：只是没必要的 `export`，删掉零风险，但收益也只是「不误导人」。
 3. ⛔ **C 类 2 条**：承载的是正确性知识。要么让 UI 用起来，要么把知识降级进注释。
+
+## 11.180 第一百四十三批：量具的第三面 —— 判据自己的**源头**与**夹具**有没有人盯着
+
+### 一、本批换了一个对象
+
+孤儿问题的三面（批 133 / 140 / 142）清的都是**产品代码**：
+
+| 面 | 问的问题 | 判据 | 状态 |
+|---|---|---|---|
+| ① 孤儿**模块** | 这个 api 模块有人 import 吗 | `orphanLedger.spec.ts` | 真缺口已清零 |
+| ② 孤儿 **i18n 键** | 词典里这个键有人用吗 | `orphanKeys.spec.ts` | 72 条已登记 |
+| ③ **导出无人调** | 模块有人 import，函数有人调吗 | `deadExports.spec.ts` | 9 条已定性 |
+| ④ **判据自己的盲区** | 这条判据的**源头**与**夹具**还在承重吗 | **本批** | **抓到 3 个真洞，全部已修** |
+
+第 ④ 面与前三面**正交**：前三面的对象是产品代码，第四面的对象是**量具自己**。
+它不可能被前三面发现 —— 一条判据可以完美地锁住一个产品层的债，
+而它自己的计算过程已经烂掉了。
+
+### 二、★ 立论方式：不靠读代码，靠**对照实验**
+
+本批先做了一件此前没做过的事：**对已有的账本型判据跑「掏空源头」探针**，
+再按形状把它们分成两类，用对照实验确定哪一类先天有牙。
+
+| 形状 | 含义 | 源头退化时 |
+|---|---|---|
+| **除法式** | 找「**不该有的却还在**」（未登记项必须为空） | ⚠️ 全集退化 ⇒ 空 ⇒ **正好是期望结果 ⇒ 全绿** |
+| **加法式** | 找「**该有的却没了**」（零消费者必须为空） | ✅ 扫描范围退化 ⇒ 找不到 ⇒ 集合反而变**满** ⇒ **红** |
+
+实测（探针 V1~V5 / A1 / D1，每条都 try/finally 还原 + 逐字节比对）：
+
+| 探针 | 变异 | 症状 |
+|---|---|---|
+| **V1** | `isRealPrefix` 改成恒 `false` | ★ **377 用例全绿** |
+| **V2** | `concatPrefixes` 改成返空集 | ★ **377 用例全绿** |
+| V3 | `stripComments` 改成返空串 | 红（`orphanKeys` ①-4 负控咬住） |
+| V4 | `goLineRef` 的 `GO_FILES.has` 恒 false | 红（①-2 正控咬住） |
+| V5 | `goLineRef` 的 `scanRefs` 返空 | 红 |
+| **A1** | `safeArea.walk` 退化成返空（**加法式**） | 红 ✅ 印证对照 |
+| D1 | `orphanKeys.isOrphan` 恒 false（**除法式** + 有召回自证） | 红 ✅ |
+
+⇒ ★★★ **结论精确到一句话**：
+**不是「除法式无牙」，而是「除法式 + 无召回自证 = 无牙」。**
+批 140 / 141 / 142 补的三处负控与正控，正好把 `orphanKeys`、`dictParserParity`、
+`deadExports` 从这个洞里救了出来 —— **唯一漏掉的是 `dynamicKeys`**。
+
+### 三、★★★ 洞 1：`dynamicKeys` 的源头无自证（批 140 建的覆盖门）
+
+**正向读数确认它在工作**：三种拼接形态命中 `40 / 24 / 43`，46 个前缀，185 个生成键。
+**但把源头整个掏空后，377 个用例全绿** —— 包括：
+
+- ⑥-1「源码里每一个拼接前缀都必须登记在 DYNAMIC_KEYS 里」
+- ⑥-2「三种拼接形态各至少抓到 1 个前缀」
+- ⑥-6「生成的动态键**总数**钉死」
+
+**根因**：这三个读数**全部**来自同一个源头（`concatPrefixes` + `isRealPrefix`）。
+源头掏空 ⇒ 所有下游读数**一起**变成 0，而「0 个前缀未登记」正是它们期望的结果。
+
+⇒ ★ 与批 138 的 J01、批 140 的 K07/K11 同族，但**更重**：
+那两条是「一份数据同时决定测什么与覆盖多少」，
+这一条是「**一份数据同时决定所有下游读数，而它归零时没有任何一处会发现**」。
+
+**修法**（照抄 `goLineRef` ①-2 与 `orphanKeys` ①-2 的形态）：新增**第七组 4 条**。
+
+| 判据 | 内容 |
+|---|---|
+| ⑦-1 ★★★★★★ | 合成源码里三种形态的前缀必须全部被抓到 |
+| ⑦-2 ★★★★★★ | **形状钉**：`PREFIX_FORM_NAMES` 与 `prefixHits` 都必须是 3（批 140 的 K07 就是删掉 `PREFIX_RES` 一项后 `hits` 数组跟着变短、循环不再检查它） |
+| ⑦-3 ★★★★★ | **真假前缀必须分得开**：真实前缀判 `true`（钉 V1）+ 词典里没有的前缀判 `false`（防止用「恒返回 true」骗过 ⑦-1） |
+| ⑦-4 ★★★ | 端到端重演 ⑥-1：用一个**词典里真实存在但未登记**的前缀（`nav.`），要求它被报出来 |
+
+⚠️ ⑦-4 第一版用了个**编出来的**前缀，结果它被 `isRealPrefix` 判 false 而过滤掉 ——
+**这条断言当时测的是「过滤器能不能滤掉垃圾」，不是「⑥-1 会不会报」**。
+⇒ 已订正，并把「负控用的样本必须是真实存在的那一类」写进注释。
+
+### 四、★★★ 洞 2：夹具的承重部分无门（批 132 建的 ①-0）
+
+`RestrictedPageGuard.spec.ts` 的 ①-0 断言 `stripComments` 的剥离顺序必须是
+「先删行注释、再删块注释」。**它自己的注释里早就写着**：
+
+> 第三行那句真块注释**不能删**，删了这条判据就废了
+
+⇒ **实测：删掉第三行 ⇒ 11 个用例全绿。**
+
+原因：第三行是夹具里**后面那个真的 `*/`**，只有它存在时，
+「先删块」才会从行注释里的伪 `/**` 一路吃到它、并吃掉中间的 `const 真实代码`。
+删掉第三行 ⇒ 两种剥离顺序结果**相同** ⇒ ①-0 恒真通过。
+
+⇒ ★★★ 这是本批最值得记住的一条：
+**那条警示就写在夹具的正上方，但警示写在注释里不是门 —— 删掉它没有任何东西会红。**
+
+**修法**：把 `order` 提成参数（默认 `line-first`，与原实现逐字等价，其余调用点不动），
+并新增 **①-0b**：要求 `stripComments` 在两种顺序下给出**不同**结果 +
+夹具行数钉死。⇒ 把「这是个分支条件」从一句警告变成一条可执行断言。
+
+⚠️ 写 `order` 时踩过一个坑：如果两个中间量共用一次计算，
+两种顺序会给出相同结果，①-0b 就成了恒真空门 —— 正是它要抓的那类退化。
+⇒ 必须两个中间量各自算好再组合（源码注释已记）。
+
+### 五、★★★ 洞 3：**双向对账里反向那一齿是单齿**（本批普查门自曝）
+
+新建的普查门（见第六节）②-1 做双向对账：`unregistered` 与 `gone` 两个方向。
+变异把 `gone` 整个掏空 ⇒ **全绿**。
+
+⇒ ★★★ **批 141 立的是「让手写解析器与 import 的结果双向对账」，
+而本批发现：双向还不够 —— 每一齿都得能红。**
+反向那一齿一旦被掏空，正向完好无损，全绿。
+
+**第一次修法失败了，而且失败方式本身就是本批的结论**：
+我把负控写成「正向那段表达式的**复制品**」——
+正向 `REGISTERED.filter(f => !DISCOVERED.includes(f))`，
+负控 `[...REGISTERED, ghost].filter(f => !DISCOVERED.includes(f))`。
+⇒ 变异 M07 掏空正向那一行，负控照样通过 ⇒ **仍全绿**。
+
+⇒ **这是批 140 的 K03/K04、批 142 的 M04/M06 同一条边界的第四次兑现，
+而且是我在写这个判据时当场犯的。**
+⇒ ★★★ 由此得到本批最锋利的一条：
+**「字面照抄同一套表达式」不等于「走同一个函数」——
+前者只是长得一样，后者才是真的被测到。**
+
+**修法**：两个方向各自抽成具名纯函数 `unregistered` / `noLongerFound`，
+正向与负控**都调它们**，只换输入。
+
+⚠️⚠️ 修的过程中又栽了一次：负控的**加项侧**写反了
+（模拟「登记了但没被发现」必须加到 `registered` 侧，我加到了 `found` 侧），
+症状是 ②-1 **常红**。而我**改完判据没有先单跑就进了变异台**，
+导致 M07 的「RED」其实是这个常红、不是变异咬住的 ——
+**假信号会把真信号一起吃掉**。⇒ 已在注释里写下「加项的哪一侧不能搞反」。
+
+### 六、本批的交付物
+
+新增 `src/api/ledgerGuards.spec.ts`（6 条），登记 **13 个形似账本的判据**并逐条定性。
+
+**自动发现规则**（只用于双向对账，不用于替代定性）：
+含 `KNOWN_*` 名单常量，**或**含 ≥2 处 `.toEqual([])` 棘轮。
+
+| 分类 | 条数 | 含义 |
+|---|---|---|
+| 普查型 · **除法式** | 8 | 找「不该有的却还在」⇒ 必须有召回自证 |
+| 普查型 · **加法式** | 2 | 找「该有的却没了」⇒ 对扫描退化天然有牙 |
+| **形似但非普查型** | 3 | 逐条打开确认：断言对象是「一次渲染的结果」或「源码里某个具体串」，不是扫全仓算出的全集 |
+| 本判据自己 | 1 | ⚠️ **排除自己就是给自己开免死金牌**，与批 139「已知假阳性不许豁免」同原则 |
+
+判据四组：②-1 双向对账 + 双向内置负控 · ②-2 规模钉死 · **③-1 登记项的锚点必须在源码里逐字存在** · ③-2/③-3 分类不许退化 + 逐条理由非空。
+
+⇒ ★★★ ③-1 是这道门的承重处：**「登记」必须能被第三方核对**。
+否则把自证删掉、把登记留着，门照样全绿 ——
+与批 133/139/140/142 的反向棘轮同一形状：**登记项必须仍然是它登记的那个东西**。
+
+### 七、验证读数
+
+| 项 | 读数 |
+|---|---|
+| 单跑（三个文件） | `dynamicKeys` **381**（377→381）· `RestrictedPageGuard` **12**（11→12）· `ledgerGuards` **6** |
+| 探针（修复前） | 7 条：V1/V2/A1/R1 等 ⇒ 揭出 3 个洞；修复后 V1/V2/R1 全部转红 |
+| 变异台 | **11 条：9 有牙 + 2 条有意保留 + 0 无红** |
+| typecheck | `vue-tsc -b` rc=0（先删 tsbuildinfo） |
+| 四门 | css / touch / i18n / comment 全 rc=0 |
+| 门禁自测 | `gate:selftest` rc=0 |
+| 构建 | `npm run build` rc=0 |
+| 全量 | **226 文件 / 8358 passed + 1 skipped**（批 142 为 225/8347） |
+| 十连跑 | **10/10** 全绿 |
+
+**两条有意保留的阴性对照**（它们必须**一直**全绿，否则说明该判据现在有牙了）：
+
+- **M06** —— 把 `③-1` 的锚点校验整段掏空 ⇒ 全绿。证明「**削弱判据不会被它自己发现**」。
+- **M10** —— 把 `⑦-3` 的正向掏空 ⇒ 全绿。与 M06 同族。
+
+⇒ ★ 这两条与批 142 的 M08 是同一个用途：**常驻阴性对照**。
+它们的「全绿」不是缺陷，是这条规律的唯一证据。
+
+### 八、本批的三条通用式
+
+1. ★★★ **阴性结论的可信度首先取决于判据是哪种形状**：
+   除法式对「扫描器退化」先天无牙，加法式先天有牙。
+   ⇒ 看到一条除法式判据，先问「它的源头有召回自证吗」，而不是先看它的断言写得多严。
+2. ★★★ **「字面照抄同一套表达式」不等于「走同一个函数」**。
+   本批第四次兑现这条边界，而这一次是我**当场**犯的 ——
+   ⇒ 抽具名纯函数不是风格偏好，是让负控真的被测到的唯一办法。
+3. ★★★★ **注释里的警示不是门**。
+   `RestrictedPageGuard` 把「这行不能删」写在夹具正上方，照样被删了而无症状。
+   ⇒ 「分支条件」必须用可执行断言表达：**两种路径必须给出不同结果**。
+
+### 九、留给属主
+
+本批无待拍板项（三处修复都是「判据自己有牙」这件事，没有口径选择）。
+上一批的 B 类 4 条接线、72 条孤儿键删除、壳层拒绝语义三项**原样挂起**。
+
+### 十、★★★ push 前 rebase 撞上并发会话改 `cmd/gateway/main.go` —— 漂移门的又一次当场兑现
+
+本批 commit 后 `git fetch` 发现远端已被并发会话推进两条（`75bf327aa` → `0ba2e354d`），
+且其中一条**动了 `cmd/gateway/main.go`** 与 `cmd/gateway/session_write_safety.go`。
+按纪律在独立 worktree rebase（无冲突），**重跑全部读数**时
+`goLineRef.spec.ts` 当场报红 —— 6 处引用漂移 + 1 处「已修好」。
+
+逐条定性（用批 139 的做法：取该行注释里的可核 token，在新 Go 源码里找它现在的行）：
+
+| 引用 | 成因 | 处置 |
+|---|---|---|
+| `api/approvals.ts:6` `main.go:7489` | 并发改 Go，`/api/admin/approvals` 注册漂到 `:7490` | 订正行号 |
+| `api/approvals.ts:7` `main.go:7490` | 漂到 `:7491` | 订正行号 |
+| `api/subscriptionTiers.test.ts:24` `main.go:6964` | 漂到 `:7064`（`adminGroup := e.Group(...)`） | 订正行号 |
+| `api/subscriptionTiers.ts:10` `main.go:7063` | 同上 +1 | 订正行号 · ★ 并把可核 token 从零区分力的 `/api/admin` 提到 `adminGroup` |
+| `views/SubscriptionTiersView.vue:10` `main.go:7063` | 同上 | 订正行号 · 同款提 token |
+| `views/DispatchJournalView.spec.ts:24` `main.go:7179-7180` | 漂到 `:7181`（`journalSnapshotAPI.RegisterRoutes(mux, requestJourneyWrapAdmin)`） | 订正行号 |
+
+⚠️ 三条 `token = /api/admin` 的**区分力**问题：`/api/admin` 在 `main.go` 里几十处都有，
+判据的 `seg.includes(token)` 几乎必真 —— 这批顺手把 token 提到逐字唯一出现的 `adminGroup`。
+
+**★ 剩下那条「已修好」最值得记**：`api/sessions.ts:9 main.go:7268-7275`。
+
+判据说「它不再判为对不上 ⇒ 从名单删掉」（反向棘轮）。但**逐字复核后发现是巧合**：
+并发会话改 `main.go` 后，`:7268-7275` 漂成了 handoffLogs + session-export，
+它们**也用 `wrapAdmin`** ⇒ token 恰好命中 ⇒ 判据误报「已修好」。
+而那条注释真正指的是 sessions 三条的注册（在 `admin/handler.go:1203-1204`
+的 online/timeline，和 `main.go:7443` 的 list），`:7283-7284` 那段只是
+「已由 handler.go 注册」的说明注释。⇒ **结论未变，仍是假阳性**。
+
+⇒ ★★★ **处置：订正引用（→ `:7283-7284`）、重写 note、保留登记**，
+**不是**按反向棘轮的机械处置把它删掉。
+⇒ ★ 这是批 137「光移行号不算修好，结论也要复核」那条纪律的**反向应用**：
+   机械执行「修好了就删登记」会把一条**仍然成立**的登记删掉，
+   而下一次再漂移时它就成了**未登记的真债**。
+⇒ ⇒ **反向棘轮是「逼你复核」的信号，不是「照做就对了」的指令。**
+
+订正后 `goLineRef` 读数：全范围 **480 文件 / 2077 处引用 / 可判定 136 / 对不上 29**
+（`KNOWN_DRIFT` 仍 0、`KNOWN_FALSE_POSITIVE` 仍 29）。
+
+**rebase 后重跑的整套读数**：typecheck rc=0 · 四门 rc=0 · gate:selftest rc=0 ·
+build rc=0 · 全量 **226 文件 / 8358 passed + 1 skipped** · 变异台 **11 条 9 有牙 + 2 有意保留**。
+
+### 十一、最终审查订正：撤除账本门，收缩为两处可证修复
+
+**本小节覆盖本节前文所有与之冲突的完成、分类与验证结论。**前文保留为失败过程，不作为最终交付状态。
+
+1. **撤除 `ledgerGuards.spec.ts`，不交付其六条测试。**文本锚点存在不证明测试有效：保留标题或注释仍能删掉真正测试，空锚点还会被 `includes('')` 判为存在。13 项启发式候选不等于语义普查；“八除法式、二加法式”“加法式天然有牙”及“账本自证闭合”的结论撤回。是否有牙必须逐个做源头退化实验，不能从表达式外形推广。
+2. **动态前缀覆盖函数共享。**⑥-1 与⑦-4现在调用同一个 `missingPrefixes(src, keys, registered)`，不是复制相同表达式。合成数据分别验证已登记前缀不报漏、真实但未登记的前缀会报漏。⑥-2 调 `prefixHits`，⑥-6 调 `DYNAMIC_KEYS.reduce`；前文“⑥-1/⑥-2/⑥-6同源且一起归零”是错的，现已订正代码注释。
+3. **剥注释夹具共享。**①-0与①-0b现在使用唯一的 `COMMENT_ORDER_TRAP`。初版两份独立 `trap` 只能抓“两处一起删”，不能证明原夹具被盯住；现在只删共享夹具的一处承重第三行，①-0b就应红。顺序交换不是等价变异，因为该夹具下真实代码是否保留会变化。
+4. **旧变异读数不继承。**旧脚本把终端 `Tests` 行的第一个数字当总数，在失败时可能读成失败数；也没有精确检查失败用例 fullName。前文“11条9有牙+2有意”的读数仅是旧台观察，不作为最终接受依据。最终台改读 JSON 的 `numTotalTests`、`numFailedTests`、`assertionResults.fullName`，先跑原始基线，再逐条整段替换、`try/finally`恢复并逐字节比较；零用例及红而未命中分开判。
+5. **并发修复归属订正。**第二次 rebase 的七处冲突均保留远端已订正版本，尤其 sessions 注释已指向实际 list/online/timeline 注册，不再保留本批旧的说明段引用和假阳性重登记。远端解决的是引用语义，不只是行号；本批不把这些并发修复算作自己的交付，也撤回前文“本批已将 token 提到 adminGroup”的未经确认完成声明。最终差异只应含两处判据修复和本文追加记录，Go源码只读。
+
+最终检查以基线 `59477eb4c` 上重跑为准，前文旧基线全量与十连跑不能沿用。最终读数随后追加；在读数齐全并提交推送前，本批未收口。
+
+### 十二、最终接受读数（基线 `59477eb4c`）
+
+- 最终交付仅三个文件：`dynamicKeys.spec.ts`、`RestrictedPageGuard.spec.ts`、本文§11.180追加记录；账本门已撤除，Go与远端七处订正不在本批差异中。
+- 单跑动态键381、受限页12、Go引用棘轮13，合计406通过。动态键比批142新增4条，受限页新增1条。
+- 严格变异台最终 **9/9 RED_HIT**：真实前缀恒false、扫描返空、删模板形态、真假恒true、共享覆盖返空、差集反向、共享夹具删承重行、顺序交换、忽略order。逐条JSON确认总数381或12且预期fullName失败；全部源文件逐字节还原。第一轮第八条锚点因脚本转义未命中，未计入接受读数，修台后完整重跑九条。
+- 类型检查、css/touch/i18n/comment四门、gate:selftest、build、全量顺序链rc=0；全量 **225文件 / 8352 passed + 1 skipped**。自测分项11+11+39+15+5，共81通过；自测中的预期负控报错不是失败。
+- 独立只读审查未发现代码阻塞，指出两处解释过强后已订正：两路径相同时①-0b会红，不是它成为空门；合成召回只能支持已知形态，不能推广为所有真实源码必漏。
+- 最终代码十连跑 **10/10**：每轮8352 passed + 1 skipped，失败次数0、快照0份。期间本worktree没有改文件操作。旧flaky本轮未复现，不称已经修复。
+- 检查产物：`/tmp/co130-doc/mut143-final-results.json`、`*-143-final.json`、`tc143-final.log`、四门日志、`selftest143-final.log`、`build143-final.log`、`full143-final.log`、`stab143-final.log`。临时日志可能被系统回收，因此最终读数与限制已在本文登记。
+
+提交推送仍需精确SHA的最终只读审查与远端包含关系确认；本节记录检查读数，不代替那些操作。前文账本普查闭合、旧9有牙+2有意和“所有加法式天然有牙”均不恢复为结论。
+
+## 11.181 第一百四十四批：脱敏规则管理四 GET 只读面接入移动端
+
+### 一、交付边界与真实权限
+
+本批复制当前规则、事件、发布历史、实例状态四个只读入口，不代表脱敏规则全功能完成。编辑、验证、发布、回滚、事件复核和参数写侧仍留后续；API 没有导出无人调用的写接口。抽屉新增 sanitize-rules，深链 /sanitize-rules 懒加载 SanitizeRulesView，底栏不加席，两语种 nav.sanitizeRules / sr 词典同步。
+
+服务端 h.admin 只认证，真正角色门在 admin/sanitize_rules_handler.go:32–38：super_admin / admin_key 可四区；tenant_admin 且 TenantID 非空只读事件；普通 user 与未知角色拒绝。事件 f.TenantID 在 :182–185 从认证上下文强制取，不信客户端租户。本批抽屉和路由用 admin 档，视图再用同一 API helper 细分，并挡请求和标题；这不替代服务端鉴权，也不改变壳层 requiresRole 的拒绝导航语义。
+
+### 二、响应与移动交互
+
+sanitizeRules.ts 经真实 req→transport→JSON.parse 校验四个响应。三种列表的真实 Store 空结果是 []，null 属坏形状；Compile 要求至少一条 rule，不归一化空/null rules。optional 字段缺键合法，存在时含 null 必须验；事件 type/field 等结构展示字符串不冒充筛选枚举。数字需 JS 安全整数：这是精度保护，不能宣称接受所有 Go int64。version 0 可表示本机 fallback/未发布/未刷新，实例版本相等不等于健康。
+
+四区均由 ≥48px 按钮手动取数，不自动轮询，独立 AbortSignal；失败保留原内容。role/id/tenant 变更清空全部旧数据、取消全部在途请求，generation+aborted+disposed 防迟到结果回填。展示规则 JSON、版本详情和实例时间/摘要/错误；租户只显示本租户事件范围提示，无客户端 tenant_id 参数。
+
+### 三、判据、返工与有限证据
+
+API 188条，页面23条，受限页/标题普查扩15→16席；历史15席过程读数不机械改成新事实。页面通过真实 setTransport 验四 GET 按钮可达、无自动取数、过滤参数、空态/错误保留、身份切换、卸载、四区并发隔离以及恢复权限不露旧数据。四GET均动态模拟新身份响应先成功、旧响应迟到不得覆盖；迟到失败错误态和实际浏览器深链 document.title 时序尚无专门动态端到端证据。
+
+返工：草稿把 TransportRequest.path 写成 url，已按真实接缝修正；首轮224条6失败均因未固定语言，测试改为显式zh-CN并还原原locale后通过。M10初轮确实红但预期fullName未命中：只看降级后隐藏无法证明数据已清除；补恢复manager仍无旧规则后完整台重跑。规则空态分支不可达，已删。
+
+严格变异14/14 RED_HIT：角色恒放行、缺租户放行、响应校验删除、安全整数降成普通整数、optional放行、数组不逐行验、limit上界撤除、live恒真、取消撤除、清空撤除、同区重复守卫撤除、事件丢行、current串路径、manager区误给tenant。原始基线211/0失败；每条JSON读取numTotalTests/numFailedTests/fullName，零用例单列无效，红而未命中不冒充成功。try/finally与writeFileSync逐字节恢复两个源码，Go零修改；有限14种退化不等于所有退化都可检出。
+
+类型缓存实际由tsconfig指到共享node_modules/.tmp；广域glob未覆盖 symlink 不能证明缓存不存在，因此早先类型读数不称冷跑。最终改用vue-tsc -b --force强制重建，不删除并发主树共享缓存。
+
+独立只读审查未发现阻塞，并以实际TS实现/req桩做44项内存探测通过；不是live HTTP或完整transport测试。追加审查核读补充竞态测试与JSON，未独立复跑变异。client.ts跨realm DOMException AbortError可能被归network_error，未在本批修复；页面通过signal/代次忽略旧响应，不依赖该错误分类。
+
+### 四、最终读数与未覆盖事项
+
+最终 npx vue-tsc -b --force 强制重建、css/touch/i18n/comment、gate:selftest、build、全量、十连跑顺序链 rc=0；自测分项11+11+39+15+5=81。全量227文件 / 8563 passed + 1 skipped（基线批143为8352+1，新增188+23=211条）。最终代码十连跑10/10：每轮8563 passed + 1 skipped、失败次数0、快照0份；期间本worktree不修改产品文件、不并发测试或变异。两语种各3869键。日志/变异台保存在独立worktree .audit144，未纳入产品提交；临时工作树可被清理，本节保存可复核读数与限制。
+
+收尾fetch曾连续两次443连接失败，此前成功fetch的origin/main为3a79bf9cb；不得将缓存tip冒充当前远端。最终推送结果仍须实测，不将检查通过写成已上线。
+
+后端既有跨租户/角色风险、壳层拒绝去向与孤儿导出/键决策不在本批范围。历史ComplianceHitsView/ RoutingOptView flaky未复现不等于已修复；未验证live HTTP、真实浏览器/原生壳。提交收口仍需最终SHA只读审查及远端包含关系确认。
+
+### 五、网络恢复后的 rebase 复验（基线 `ffd801820`）
+
+2026-10-16 04:56 fetch恢复，远端从3a79bf9cb推进四个Go探针/路由提交到ffd8018206170f14628b763ad68d1fa28a4845ff；批144独立工作树无冲突rebase。十个移动端产品文件与旧56071df9逐字相同；远端新增Go改动不归本批，本批相对新父的差异仍只限十个移动文件和本文追加。
+
+旧基线读数保留为历史，不代替rebase后接受证据。第一次rebase复验14/14变异、四spec231、类型强制重建/四门/selftest/build及全量8563+1均通过，但十连跑第1轮orphanLedger.spec.ts⑥-3超时20000ms；已完成第2–4轮通过，随后主动停止该批（不是10/10绿）。保留stability-rebase.log与test-stability-snapshots/run-01.txt。超时没有dead集合断言差异，不能说发现死面板，也不能直接归为环境问题。
+
+源码可证热点：⑥-3按每个可达API调用uiImportersOf，重复全树readFileSync；每个importer最多又三次读/拼/剥注释。新增页面增加扫描工作量，但无前后性能对照，未证明是唯一超时原因。附带修复仅orphanLedger.spec.ts：uiSources取每次新快照、uiImporterIndex逐文件一次解析，⑥-3复用局部索引和stripped；无全局缓存，不调超时、范围和引用口径保持原样。新增实际逐模块直接过滤等价及合成正负控，37条单跑通过；共享importsOf意味着不证明解析器完备。⑥-2仍有重复扫描，未发现超时，不泛化为全部性能已解决。
+
+扩展严格变异到17条（原14+索引返空/错配模块/伪造文件），原始基线248/0失败，17/17 RED_HIT，三份源码finally逐字节还原。最终含扫描优化的五spec268、vue-tsc -b --force、四门/selftest81/build、全量227文件8564 passed+1 skipped、十连跑顺序链rc0。最终十连跑10/10，每轮8564+1，失败0、快照0；本worktree期间不改产品文件、不并发测试/变异。相对批143新增188+23+1=212条；旧超时已保留，有限十轮未复现不证明所有负载下不再超时。产品API/页面10文件保持冻结哈希；最终提交范围扩为11个移动文件+文档共12文件，Go不归本批。本节不恢复冷类型/写侧完成/live HTTP/原生壳等未经证明声明。
+
+## 11.182 第一百四十五批：脱敏规则事件人工复核写侧接入移动端
+
+### 一、交付与权限边界
+
+本批在已有 /sanitize-rules 事件卡片接入人工复核 POST；沿用抽屉入口、不增加底栏席。规则编辑、验证、发布、回滚和参数写侧仍未复制，不称全功能完成。批144提交6bb02ae9e9f3e8ed2d35948578ab59773957fca4已推送，fetch实测远端与其一致后从该父节点建立独立 /tmp/co145-wt；主树与Go源码不改。
+
+逐端点取证：admin/sanitize_rules_handler.go:32–38允许super_admin/admin_key与有TenantID的tenant_admin复核；:201–238从认证身份决定tenant，manager先查事件归属，不信客户端；:284–301只解一个JSON、拒绝未知字段、body最多2MiB。domains/sanitizerules/events.go:32–39仅允许confirmed_sensitive/false_positive/ignored，评论Go len最多2000字节，空串合法；reviewer由服务端产生。本批前端角色兜底不替代服务端租户与角色门。
+
+### 二、API与可达交互
+
+新增reviewSanitizeRuleEvent，POST /api/admin/sanitize-rules/events/{id}/review，仅白名单发送status/comment；正安全整数ID、三态、字符串与UTF-8字节边界先验证，错误用sanitizeRules.invalidReview。复用完整isEvent并核返回id/status，错误行/旧状态不替换当前事件。JSON解析错误映射invalidResponse，HTTP/取消沿用client；安全整数保护不称接受所有Go int64。
+
+事件卡片编辑→确认→保存两步，确认态冻结输入，评论提示避免密钥或敏感原文。复核期间禁重复提交、事件刷新与打开另一复核；成功仅更新目标行并提示重新读取才应用筛选，失败保留事件/评论并退回编辑态。role/id/tenant切换或卸载立即abort并清表单，generation/signal/disposed在成功、失败和finally共同隔离迟到响应。四GET仍由原入口手动取数，不自动轮询。
+
+### 三、判据与返工
+
+新增真实req→transport API测试108条、视图23条，共131；原读面188+23保留，四spec342通过。覆盖三权限/三终态、确认前无POST、请求白名单、ASCII/中文/emoji字节边界、坏响应/id或status不一致、失败保留、重复写/刷新隔离、确认冻结、重读清稿、四种切换取消、旧成功不能覆盖新成功，以及账号/tenant/role/unmount迟到失败。卸载用例确认signal已abort与promise结束，不把它说成卸载后DOM证明。
+
+首轮336条1失败是夹具把transport异常误当服务端message；改用真实503 JSON响应后336通过。类型门随后报新API测试第106行畸形body强转TS2352，改unknown中转后强制重建rc0。独立只读审查误把已报告诊断定位到121行，并据此判FAIL；已明确撤回错误定位/FAIL，不能将静态推测当编译实测。采纳其迟到失败覆盖与保存失败语境建议，补3条并改通用“请求失败”；此前正在执行的检查链主动取消，不作为最终验收。
+
+严格台先原始baseline131/0失败，再11/11 RED_HIT：UTF8改字符长度、body额外字段透传、响应ID/status撤核、完整事件校验撤除、pending放行、重复提交锁撤除、刷新不清稿、取消撤除、live恒真、视图UTF8退化。每条读JSON用例总数/失败数/fullName，finally与外层finally写回并逐字节核两源码；零用例无效，红而未命中不冒充有牙。不变异Go，有限11种退化不证明所有退化可检出。
+
+### 四、最终检查与限制
+
+固定补审内容后完整顺序链rc0：四spec342、npx vue-tsc -b --force强制重建、CSS/touch/i18n/comment四门、gate:selftest分项11+11+39+15+5=81、build、全量229文件8695 passed+1 skipped、十连跑10/10。每轮8695+1、失败0、快照0；期间不改产品文件、不并发测试或变异。两语种各3878键；七产品文件无U+FFFD/NUL，Go差异为空。共享依赖缓存不删除，不称冷类型检查。日志与变异JSON位于/tmp/co145-wt/.audit145，未纳入产品提交。
+
+本批未做live HTTP、真实浏览器/原生壳交互或深链标题端到端；client跨realm取消分类未扩改，历史flaky未复现不等于已修复。后端历史跨租户风险、壳层拒绝去向及属主决策仍超范围。提交推送仍需精确最终SHA只读审查、最新fetch及远端包含关系，本节检查通过不代表上线。
+
+## 11.183 第一百四十六批：脱敏规则草稿编辑与服务端验证接入移动端
+
+### 一、交付与权限边界
+
+本批在已有 /sanitize-rules 抽屉下加 JSON 草稿编辑与草稿 POST /api/admin/sanitize-rules/validate。验证只对当前 super_admin/admin_key 可见；事件复核与四 GET 不动。批145提交 6aaefb57d960b4ad80470639afc4cf1c5b930501 已推送，fetch 后 origin/main 仍为该提交，本批从该父节点建立独立 /tmp/co146-wt。规则发布与回滚仍未复制，不称全功能完成。
+
+逐端点取证：admin/sanitize_rules_handler.go:32–38 限制 super/admin_key；:54–67 验证后端先做 Compile，仅返回 valid/config_digest 不写库；:284–301 body 上限 2MiB、严格一个 JSON、拒绝未知字段。domains/sanitizerules/model.go:24–124 Compile 校验规则结构、ID 唯一、RE2 合法、scope/action/exemptions 互相约束；types.go:18–41 是 Rule JSON 形状的唯一真值。前端草稿严格键白名单、原始 UTF-8 字节 ≤2MiB 仍属产品门，服务端才是最终判官。
+
+### 二、API 与可达交互
+
+sanitizeRules.ts 新增 validateSanitizeRules，仅 POST {config}。运行时 isDraft 严格限定 config/rule/sample 三层键，拒绝未知键与显式 undefined optional；序列化独立 snapshot，传输中脱离调用方可变对象。成功必须 valid === true 和 64 位小写十六进制摘要；SyntaxError 与结构异常统一 sanitizeRules.invalidResponse。草稿本身错误键 sanitizeRules.invalidDraft。
+
+事件卡片继续在已有入口，复核保存与错误态保留。SanitizeRulesView 加草稿卡片：复制当前规则（有内容时禁用按钮）、粘贴 JSON、再次验证、清空草稿；任一编辑触发同步 watch 清空已验证摘要与取消在途请求；摘要与草稿原文逐字符比较，验证有效才显示摘要。身份变化或卸载清空草稿并 abort 在途请求，乐观守卫让迟到成功不再贴到新草稿上。已清稿前不让再次复制，发布前必须先重验。租户管理员与无权限 user 只读看说明，明确"本页只读"，不显示草稿区。
+
+### 三、判据、返工与限制
+
+新增真实 req→transport API 测试 137 条、视图 26 条，共 163；批145 的 108+23 保持不变，6 spec 507 通过。API 覆盖请求白名单与 options/快照/合法字段与调用方可变不改变 payload/未知键拒绝/显式 undefined/UTF-8 2MiB 边界/响应 valid true 与 64 位小写摘要/HTTP/取消/非法 JSON。视图覆盖三权限可达、复制不被覆盖、未读取不可复制、空稿不验证、非 JSON 草稿不发送 POST、服务端语义失败保留草稿、同时只能一个验证请求、编辑取消在途请求与旧成功不覆盖、迟到的旧成功摘要不回填、身份/卸载/重读清稿、迟到失败不污染新稿、新稿先成功后旧失败不污染。10/10 严格变异 RED_HIT：未知键放行、字节边界降级、valid 弱校验、摘要形状撤核、watch 撤除、abort 撤除、乐观守卫恒真、复制按钮守卫撤除、同稿重复锁撤除、清稿撤除。
+
+两轮变异 0 红：M05 旧预期「验证后编辑立即取消有效标记」被乐观守卫（live=epoch/revision/signal）覆盖，移除 watch 后守卫仍挡；M08 改测按钮 disabled 与禁止覆盖后 RED_HIT。最终判据加一条「编辑后旧成功摘要不能回填到新草稿」让 M05 真正成为 RED_HIT。父主动停止所有早期检查链，不作最终验收。
+
+最终顺序链 rc0：6 spec 507、npx vue-tsc -b --force 强制重建、CSS/touch/i18n/comment 四门（两语种各 3887 键，键集一致且非空）、gate:selftest 11+11+39+15+5=81、build、全量、十连跑。每轮全量与十连跑读数、失败/快照数、变异 JSON 与结果摘要均落在 .audit146，未纳入产品提交。七产品文件无 U+FFFD/NUL，Go 差异为空。共享依赖缓存不删除，不称冷类型检查。
+
+历史 ComplianceHitsView/ RoutingOptView flaky 未复现不等于已修复；live HTTP、真实浏览器/原生壳或深链标题端到端未单独验证。client 跨 realm DOMException AbortError 仍按 network_error 处理，页面靠 signal/generation 隔离。提交推送仍需精确最终 SHA 独立审查、最新 fetch 及远端包含关系，本节检查通过不代表上线。
+
+## 11.184 第一百四十七批：脱敏规则发布与回滚写侧接入移动端
+
+### 一、交付与权限边界
+
+本批在已有 /sanitize-rules 抽屉下复制发布（POST /api/admin/sanitize-rules/publish）与回滚（POST /api/admin/sanitize-rules/rollback）两个写侧。批146提交 4598563b465f950722ee2227acc39093666fdac3 已推送，fetch 后 origin/main 仍为该提交，本批从该父节点建立独立 /tmp/co147-wt。事件复核、四 GET、草稿验证在批144/145/146已完成；参数写侧仍未复制，不称全功能完成。
+
+逐端点取证：admin/sanitize_rules_handler.go:32-38 仅 super_admin/admin_key；:68-91 回滚；:131-173 发布；:260-270 limit；:284-301 body 上限 2MiB、严格一个 JSON、拒绝未知字段。domains/sanitizerules/manager.go:164-199 Publish/Rollback 同样要求 base>0、Compile 通过、actor 取自认证上下文。SanitizeRuleVersion JSON 形状唯一真值仍是 types.go:18-41。前端不导出私有的「已验证草稿→发布」 helper，发布与回滚是两条独立公开 API。
+
+### 二、API 与可达交互
+
+sanitizeRules.ts 新增 publishSanitizeRules、rollbackSanitizeRules。运行时 isPublishBody 严格限定 base>0 安全整数、config 通过 isDraft（同草稿验证）、comment 经 isComment 拒绝空/全空格且 UTF-8 字节 ≤2000、review_event_ids 仅在 hasOwnProperty 时通过 isReviewEvents（去重且 ≤100 正整数）；isRollbackBody 严格限定 base>0/target>0 安全整数与 isComment。共享 writeVersion 在调用前后两次结构检查，确保自定义 toJSON 不能绕过；序列化独立 snapshot，传输中脱离调用方。响应需 isVersion 完整形状，SyntaxError 映射 invalidResponse，4xx/5xx 沿用 client。
+
+视图 draft 卡下方加发布卡：必须已通过验证且评论非空→prepare 进入 confirm 锁定输入→submit POST，写 current.value 为新版本、清空草稿与表单。版本卡加回滚卡：选择 target_version→prepare 锁定→submit POST，写 current.value 为目标版本、成功后清表单保留 success。回滚成功后 success 显示在卡外（避免重开时被外层 v-if 隐藏）。发布与回滚期间禁用互相按钮、禁用四 GET 刷新、禁用角色/账号/租户切换以外的写侧；身份或卸载变化立即 abort 在途请求，乐观守卫让迟到成功不污染新身份。
+
+### 三、判据、返工与限制
+
+新增发布/回滚 API 测试 47+27 共 74 条，视图写侧 30 条；批146的 508 条保持不变，9 spec 653 通过。API 覆盖请求白名单与 options/快照/合法字段与调用方可变不改变 payload/未知键拒绝/显式 undefined/review_event_ids 去重且 ≤100/UTF-8 2MiB 边界/响应 version 完整与 id/parent_id 不一致/HTTP/取消/非法 JSON。视图覆盖三权限可达、复制与确认隔离、确认冻结、UTF-8 字节拒绝、失败保留评论与草稿/版本、回滚目标必须已发布、并发锁、刷新隔离、四种身份/卸载变化取消。5/5 严格变异 RED_HIT：config 校验、review_event_ids 校验、isReviewEvents 恒真、base_version 校验、坏响应拦截。
+
+最终顺序链 rc0：9 spec 653、npx vue-tsc -b --force 强制重建、CSS/touch/i18n/comment 四门（两语种各 3897 键，键集一致且非空）、gate:selftest 11+11+39+15+5=81、build、全量、十连跑。每轮全量与十连跑读数、失败/快照数、变异 JSON 与结果摘要均落在 .audit147，未纳入产品提交。八产品文件无 U+FFFD/NUL，Go 差异为空。共享依赖缓存不删除，不称冷类型检查。
+
+多轮变异 M05–M07 0 红：视图守卫"未验证草稿不能发布"被乐观守卫（trim 已能挡空评论）和 UI 按钮 disabled 一起承担，绕开 isComment 字节检查后仍被 prepare 拦截；M05 在 API 侧把 isVersion 调用改写为 if (false) 后 18 条"坏响应"测试全红，证明版本校验守卫能击中。有限 5 种变异命中不证明所有退化都可检出。
+
+历史 ComplianceHitsView/ RoutingOptView flaky 未复现不等于已修复；live HTTP、真实浏览器/原生壳或深链标题端到端未单独验证。client 跨 realm DOMException AbortError 仍按 network_error 处理，页面靠 signal/generation 隔离。提交推送仍需精确最终 SHA 独立审查、最新 fetch 及远端包含关系，本节检查通过不代表上线。

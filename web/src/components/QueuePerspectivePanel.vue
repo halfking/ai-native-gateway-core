@@ -27,7 +27,7 @@ import {
   nodesRef,
   liveStreamState,
   connectionRef,
-  lastEventAtRef,
+  initialDataReceivedRef,
   snapshotRef,
   getNodesForModel,
   getRequestsForCredential,
@@ -159,12 +159,12 @@ const congestionHint = computed(() => {
 
 const hasData = computed(() => queue.value !== null && queue.value.wired)
 
-// streamAwaitingData（2026-10-15 r1032c）：连接未建立，或已建立但还没收到
-// 任何一帧。这段窗口里「队列数据未接入」是**抢跑的误报**——queue envelope
-// 只是还没到达，不是 dispatch 没接线（本地实测：建连 <0.4s、首帧 ~2s，
-// 中间约 1.5s 空态区写着误导性文案且无任何加载标记）。
+// streamAwaitingData（2026-10-16 audit）：连接未建立，或本代际的权威
+// initial_data 还没到。只有权威帧（含显式空回放）能证明「queue envelope
+// 真的不会来」；health/keepalive 旁路帧不算交付，否则队列区会抢跑
+// 「队列数据未接入」的误导空态。
 const streamAwaitingData = computed(
-  () => connectionRef.value !== 'open' || lastEventAtRef.value === 0,
+  () => connectionRef.value !== 'open' || !initialDataReceivedRef.value,
 )
 const isIdle = computed(() => hasData.value && totalDepth.value === 0)
 

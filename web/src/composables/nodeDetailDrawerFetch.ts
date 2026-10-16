@@ -1,5 +1,5 @@
 import type { Ref, ComputedRef } from 'vue'
-import { resolveRouting, type RoutingCandidate } from '../api/routing'
+import { resolveRouting, type RoutingCandidate, type StreamMode } from '../api/routing'
 import type { CredentialLifecycleStatus } from '../api/providers'
 import {
   getCredentialDecisions, getCredentialMonitorSummary, getModelHistory, getSlidingWindow,
@@ -33,6 +33,7 @@ export type FetchCtx = {
   priorityFlag: Ref<boolean>
   routingTier: Ref<number>
   weight: Ref<number>
+  streamMode: Ref<StreamMode>
   coreLoaded: Ref<boolean>
   coreLoading: Ref<boolean>
 }
@@ -75,6 +76,7 @@ export function createNodeDetailFetchers(ctx: FetchCtx) {
       ctx.priorityFlag.value = ctx.candidate.value?.priority ?? false
       ctx.routingTier.value = ctx.candidate.value?.tier ?? 2
       ctx.weight.value = ctx.candidate.value?.weight ?? 100
+      ctx.streamMode.value = ctx.candidate.value?.stream_mode ?? 'both'
       return true
     } catch (error) {
       if (!isAbort(error) && reqSeq === ctx.sequence.n && ctx.currentNode.value?.credential_id === node.credential_id) {

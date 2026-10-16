@@ -1687,7 +1687,7 @@ do_rollback() {
       err "回滚状态指针更新失败；请检查 Nginx 与 systemd"
       exit 1
     fi
-    if _verify_running_release "$target_version" && deploy_preflight_pg_from_remote_env "$SSH_CMD" "$(_env_file_for_target)"; then
+    if _verify_running_release "$target_version" "$rollback_service" && deploy_preflight_pg_from_remote_env "$SSH_CMD" "$(_env_file_for_target)"; then
       ok "蓝绿回滚完成 → $target_version (canonical active)"
     else
       err "蓝绿回滚后 running release/DB 校验失败"

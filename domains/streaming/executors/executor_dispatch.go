@@ -653,6 +653,12 @@ func (e *Executor) dispatchCandidatesForModel(ctx context.Context, d *dispatchCt
 			"request_id", d.params.RequestID, "model", model, "error", err)
 		return nil
 	}
+	cands, _ = filterCandidatesByStreamMode(cands, d.params.IsStream)
+	if len(cands) == 0 {
+		slog.Info("dispatch: alternate model has no candidates for requested stream mode",
+			"request_id", d.params.RequestID, "model", model, "is_stream", d.params.IsStream)
+		return nil
+	}
 	if policy != nil {
 		d.params.Policy = policy
 	}

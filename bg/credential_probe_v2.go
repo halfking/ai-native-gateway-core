@@ -9,12 +9,14 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -966,9 +968,12 @@ func (c *CredentialProbeV2) probeCredentialWithCapability(ctx context.Context, s
 				if chatOK {
 					return true, ""
 				}
-				// miniChat 不回 HTTP 状态/时延，不伪造 "(HTTP 0, 0ms)"——
-				// 真实状态码已在 chatErr 文本里（"chat status %d"）。
-				return false, errMsg + "; responses probe rejected as unsupported; chat fallback also failed: " + firstLine(chatErr)
+				// Keep legs separate: even a trailing native-body keyword can
+				// contaminate quota/key/model classification of the final Chat.
+				// errMsg already contains only the sanitized, bounded preview.
+				slog.Info("credential probe v2: Responses unsupported before failed Chat fallback",
+					"responses_status", respStatus, "responses_error", errMsg)
+				return false, chatErr
 			}
 			return ok, errMsg
 		}
@@ -1101,7 +1106,7 @@ func (c *CredentialProbeV2) miniChat(ctx context.Context, httpClient *http.Clien
 		return true, ""
 	}
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		return false, fmt.Sprintf("401/403: %s", truncateBody(body))
+		return false, fmt.Sprintf("chat status %d: %s", resp.StatusCode, truncateBody(body))
 	}
 	if resp.StatusCode == 429 {
 		return false, "429 rate limited"
@@ -1153,7 +1158,7 @@ func (c *CredentialProbeV2) miniResponses(ctx context.Context, httpClient *http.
 		return true, "", resp.StatusCode, preview
 	}
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		return false, fmt.Sprintf("401/403: %s", preview), resp.StatusCode, preview
+		return false, fmt.Sprintf("responses status %d: %s", resp.StatusCode, preview), resp.StatusCode, preview
 	}
 	if resp.StatusCode == 429 {
 		return false, "429 rate limited", resp.StatusCode, preview
@@ -1201,7 +1206,7 @@ func (c *CredentialProbeV2) miniAnthropic(ctx context.Context, httpClient *http.
 		return true, ""
 	}
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		return false, fmt.Sprintf("401/403: %s", truncateBody(respBody))
+		return false, fmt.Sprintf("messages status %d: %s", resp.StatusCode, truncateBody(respBody))
 	}
 	if resp.StatusCode == 429 {
 		return false, "429 rate limited"
@@ -1242,20 +1247,22 @@ func authProbeBackoffRecoverAt(n int) time.Time {
 
 func classifyProbeFailure(errMsg string) probeResult {
 	pr := probeResult{HealthSource: "probe"}
+	status, legacyAuth := credentialProbeFailureStatus(errMsg)
 	switch {
-	case strings.Contains(errMsg, "401") || strings.Contains(errMsg, "403"):
+	case (legacyAuth || status == 401 || status == 403) &&
+		!isProbeQuotaFailure(errMsg) && !isPerModelChatFailure(errMsg):
 		pr.HealthStatus = "unreachable"
 		pr.AvailabilityState = "auth_failed"
 		pr.HealthError = errMsg
 		pr.StateReasonCode = "auth_error"
-	case strings.Contains(errMsg, "429"):
+	case status == 429:
 		pr.HealthStatus = "warning"
 		pr.AvailabilityState = "rate_limited"
 		recover := time.Now().Add(60 * time.Second)
 		pr.AvailabilityRecoverAt = &recover
 		pr.HealthError = errMsg
 		pr.StateReasonCode = "rate_limited"
-	case strings.Contains(errMsg, "402") || strings.Contains(errMsg, "balance"):
+	case isProbeQuotaFailure(errMsg) || status == 402:
 		pr.HealthStatus = "warning"
 		pr.AvailabilityState = "ready"
 		pr.QuotaState = "periodic_exhausted"
@@ -1309,16 +1316,53 @@ func classifyProbeFailure(errMsg string) probeResult {
 	return pr
 }
 
-// isPerModelChatFailure returns true when the errMsg describes a
-// failure that applies only to the probed model — the credential may
-// still be healthy. Currently recognises chat-level 404 "model not
-// found" and 410 "model deprecated" responses emitted by upstream
-// vendors that have removed the model from their catalog.
-//
-// Note: 402 "payment required" / 401 / 403 / 429 are explicitly NOT in
-// this set — those are credential-wide and must keep the original
-// availability handling. endpoint_id_required has its own branch and
-// pre-empts the 404 check above.
+// Only parse our leading error envelope, never status-like numbers/prefixes in
+// provider prose, request IDs or JSON. Legacy combined auth remains fail-closed.
+var generationProbeStatusRe = regexp.MustCompile(`^(?:(?:chat|messages|responses) unreachable \(after [0-9]+ attempts\): )?(?:chat|messages|responses) status ([0-9]{3}):`)
+var credentialProbeStatusRe = regexp.MustCompile(`^(?:(?:chat|messages|responses|models endpoint) unreachable \(after [0-9]+ attempts\): )?(?:(?:chat|messages|responses) )?status ([0-9]{3}):`)
+var credentialProbeLegacyStatusRe = regexp.MustCompile(`^(?:(?:chat|messages|responses|models endpoint) unreachable \(after [0-9]+ attempts\): )?([0-9]{3})(?: |:)`)
+
+func credentialProbeFailureStatus(errMsg string) (int, bool) {
+	unwrapped := errMsg
+	if i := strings.Index(unwrapped, "): "); i >= 0 &&
+		(strings.HasPrefix(unwrapped, "chat unreachable (after ") || strings.HasPrefix(unwrapped, "models endpoint unreachable (after ")) {
+		unwrapped = unwrapped[i+3:]
+	}
+	if strings.HasPrefix(unwrapped, "401/403:") {
+		return 0, true
+	}
+	for _, re := range []*regexp.Regexp{credentialProbeStatusRe, credentialProbeLegacyStatusRe} {
+		if m := re.FindStringSubmatch(errMsg); m != nil {
+			status, _ := strconv.Atoi(m[1])
+			return status, false
+		}
+	}
+	return 0, false
+}
+
+// probeKeyFailureRe prevents quota/model prose from exempting an explicit
+// invalid/revoked key verdict. Unknown 403s retain the auth-failure default.
+var probeKeyFailureRe = regexp.MustCompile(`(?i)(invalid[_ -]?(api[_ -]?)?key|(?:api[_ -]?)?key.{0,20}(?:invalid|revoked|expired|disabled|suspended)|(?:invalid|revoked|expired|disabled|suspended)[_ -]?(?:api[_ -]?)?key|invalid[_ -]?token|authentication[_ -]?(?:failed|error)|unauthorized)`)
+
+func isProbeQuotaFailure(errMsg string) bool {
+	status, legacyAuth := credentialProbeFailureStatus(errMsg)
+	if legacyAuth || (status != 402 && status != 403) || probeKeyFailureRe.MatchString(errMsg) {
+		return false
+	}
+	kind := errorsx.ClassifyErrorWithBody(status, []byte(errMsg))
+	return kind == errorsx.KindQuotaPeriodic || kind == errorsx.KindQuotaPermanent ||
+		kind == errorsx.KindQuotaBalance || kind == errorsx.KindQuota
+}
+
+// Require a model as the subject and an explicit model access/region verdict;
+// account region restrictions and generic permission-denied are NOT binding-only.
+var probeModelAccessFailureRe = regexp.MustCompile(`(?i)\b(?:this\s+model|model\s+['"\x60]?[a-z0-9._\-/:]+['"\x60]?)\s+(?:is\s+not\s+available\s+in\s+your\s+region|(?:is\s+)?not\s+available\s+in\s+your\s+region|access\s+(?:is\s+)?denied)|\b(?:do\s+not\s+have|don't\s+have|does\s+not\s+have)\s+(?:access|permission)\s+to\s+(?:this\s+model|(?:the\s+)?model\s+['"\x60]?[a-z0-9._\-/:]+)`)
+
+// isPerModelChatFailure recognises model-scoped 403 access/region failures,
+// 404 model-not-found and 410 Gone on generation endpoints only. 401, quota
+// failures and ambiguous 403s retain credential-wide handling. The legacy
+// combined 401/403 prefix cannot prove a 403 and is deliberately not exempted.
+// endpoint_id_required has its own branch and pre-empts the 404 check above.
 //
 // The chat-level prefix requirement (`chat status 404` or
 // `messages status 404`) keeps the same upstream message from the
@@ -1336,6 +1380,9 @@ func classifyProbeFailure(errMsg string) probeResult {
 // 与模型下线在报文上同形），保留措辞信号作为门槛。
 func isPerModelChatFailure(errMsg string) bool {
 	switch chatProbeStatusCode(errMsg) {
+	case 403:
+		return !probeKeyFailureRe.MatchString(errMsg) && !isProbeQuotaFailure(errMsg) &&
+			probeModelAccessFailureRe.MatchString(errMsg)
 	case 410:
 		// chat/messages 通道上的 410 Gone：探针模型已被上游永久移除。
 		// 状态码是标准信号，厂商换措辞不影响判定；/v1/models 通道的
@@ -1344,10 +1391,12 @@ func isPerModelChatFailure(errMsg string) bool {
 	case 404:
 		// 404 有歧义：探针路径配置错与模型下线在报文上同形，保留
 		// 措辞门槛（该清单现在只守 404，不再守 410）。
-		return strings.Contains(errMsg, "model not found") ||
-			strings.Contains(errMsg, "model has been deprecated") ||
-			strings.Contains(errMsg, "end of life") ||
-			strings.Contains(errMsg, "no longer available")
+		_, namedModel := errorsx.ModelScopedRejection([]byte(errMsg))
+		lower := strings.ToLower(errMsg)
+		return namedModel || strings.Contains(lower, "model not found") ||
+			strings.Contains(lower, "model has been deprecated") ||
+			strings.Contains(lower, "end of life") ||
+			strings.Contains(lower, "no longer available")
 	}
 	return false
 }
@@ -1361,22 +1410,53 @@ func isPerModelChatFailure(errMsg string) bool {
 // /v1/models channel's "models endpoint unreachable" prefix, which
 // must stay credential-scoped).
 func chatProbeStatusCode(errMsg string) int {
-	for _, prefix := range []string{"chat status ", "messages status "} {
-		i := strings.Index(errMsg, prefix)
-		if i < 0 {
-			continue
-		}
-		rest := errMsg[i+len(prefix):]
-		n := 0
-		for n < len(rest) && rest[n] >= '0' && rest[n] <= '9' {
-			n++
-		}
-		if n == 3 {
-			code, _ := strconv.Atoi(rest[:3])
-			return code
-		}
+	if m := generationProbeStatusRe.FindStringSubmatch(errMsg); m != nil {
+		code, _ := strconv.Atoi(m[1])
+		return code
 	}
 	return 0
+}
+
+// Only an attributable legacy binding warning may be normalized. A failed
+// model probe is not evidence to reset credential auth, quota or healthy state.
+const bindingProbeCredentialHealthExpr = `CASE
+    WHEN health_status = 'warning' AND health_source = 'probe'
+      AND state_reason_code IN ('model_binding_error', 'endpoint_id_required')
+      AND availability_state = 'ready' AND COALESCE(quota_state, 'ok') = 'ok'
+    THEN 'unknown'
+    ELSE health_status
+END`
+
+const bindingProbeCredentialSQL = `UPDATE credentials
+SET health_status = ` + bindingProbeCredentialHealthExpr + `,
+    health_error = CASE
+        WHEN health_source = 'probe'
+          AND state_reason_code IN ('model_binding_error', 'endpoint_id_required')
+          AND availability_state = 'ready' AND COALESCE(quota_state, 'ok') = 'ok'
+        THEN NULL ELSE health_error END,
+    last_probe_at = NOW(),
+    probe_consecutive_failures = COALESCE(probe_consecutive_failures, 0) + 1,
+    last_probe_success = FALSE
+WHERE id = $1
+  AND COALESCE(manual_disabled, FALSE) = FALSE
+  AND (lifecycle_status = 'active' OR
+       (lifecycle_status = 'disabled' AND auto_disabled_at IS NOT NULL))
+  AND ($2::timestamptz IS NULL OR COALESCE(state_updated_at, to_timestamp(0)) < $2)`
+
+type bindingProbeExecer interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+func writeBindingProbeCredential(ctx context.Context, db bindingProbeExecer, credID int, evidenceAt *time.Time) (pgconn.CommandTag, error) {
+	return db.Exec(ctx, bindingProbeCredentialSQL, credID, evidenceAt)
+}
+
+func (c *CredentialProbeV2) writeBindingProbeEvidence(ctx context.Context, db bindingProbeExecer, credID int, evidenceAt *time.Time, pr probeResult) (pgconn.CommandTag, error) {
+	result, err := writeBindingProbeCredential(ctx, db, credID, evidenceAt)
+	if err == nil && result.RowsAffected() > 0 {
+		c.persistProbeCapability(ctx, credID, pr)
+	}
+	return result, err
 }
 
 // writeHealth persists probe results with manual-disable guard.
@@ -1403,6 +1483,37 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 	var evidenceAt *time.Time
 	if !pr.EvidenceAt.IsZero() {
 		evidenceAt = &pr.EvidenceAt
+	}
+
+	if pr.BindingOnly {
+		// Do not enter either credential-wide UPDATE below (including the
+		// hard-quota fallback). Keep model diagnostics in the binding reason.
+		result, err := c.writeBindingProbeEvidence(execCtx, c.db, credID, evidenceAt, pr)
+		if err != nil {
+			slog.Warn("credential probe v2: binding probe bookkeeping failed", "credential_id", credID, "error", err)
+			return
+		}
+		if result.RowsAffected() == 0 {
+			return // manual/lifecycle/stale evidence guard rejected the probe
+		}
+		c.writeBindingUnavailable(execCtx, credID, pr)
+		// Only the failed model is evidenced here; do not mark siblings healthy
+		// while credential auth/quota may still be blocking them.
+		if c.cache != nil && c.cache.Enabled() && pr.HealthProbeModel != "" {
+			if err := c.cache.Set(execCtx, credID, pr.HealthProbeModel, modelAvailabilityFields(
+				credID, pr.HealthProbeModel, "model_binding", false, pr.HealthStatus,
+				0, 0, nil, pr.HealthSource)); err != nil {
+				slog.Warn("credential probe v2: binding cache write failed", "credential_id", credID, "error", err)
+			}
+		}
+		if c.stateManager != nil && pr.HealthProbeModel != "" {
+			c.stateManager.UpdateFromProbe(execCtx, &credentialstate.State{
+				CredentialID: credID, Model: pr.HealthProbeModel, Available: false,
+				HealthStatus: pr.HealthStatus, LastUpdatedAt: time.Now(), LastError: pr.HealthError,
+				Source: "probe_v2",
+			})
+		}
+		return
 	}
 
 	result, err := c.db.Exec(execCtx, `
@@ -1765,6 +1876,10 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 	// must not fail a health write that already succeeded. A lost capability
 	// write degrades to today's behavior (re-detect per request), never to a
 	// wrong verdict.
+	c.persistProbeCapability(execCtx, credID, pr)
+}
+
+func (c *CredentialProbeV2) persistProbeCapability(execCtx context.Context, credID int, pr probeResult) {
 	if pr.SupportsResponses != nil && pr.HealthProbeModel != "" && c.fpSlots != nil {
 		if err := c.fpSlots.SetSupportsResponses(execCtx, credID, pr.HealthProbeModel, *pr.SupportsResponses); err != nil {
 			slog.Warn("credential probe v2: durable capability write failed",

@@ -378,9 +378,9 @@ function uiSourceBlobStripped(): string {
   return stripComments(uiSourceBlob())
 }
 
-/** 直接从 UI 引到某个 api 模块的那些文件（相对 src）。 */
-function uiImportersOf(name: string): string[] {
-  const out: string[] = []
+/** 每次调用取新快照，不跨用例缓存；调用方可在单个同步判据内复用。 */
+function uiSources(): Map<string, string> {
+  const out = new Map<string, string>()
   const walk = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name)
@@ -391,11 +391,28 @@ function uiImportersOf(name: string): string[] {
       }
       if (!/\.(ts|vue)$/.test(entry.name)) continue
       if (entry.name.endsWith('.spec.ts')) continue
-      if (importsOf(readFileSync(full, 'utf8')).includes(name)) out.push(relative(ROOT, full))
+      out.set(relative(ROOT, full), readFileSync(full, 'utf8'))
     }
   }
   walk(ROOT)
   return out
+}
+
+/** 直接从 UI 引到 API 的反向索引：每份源码只解析一次。 */
+function uiImporterIndex(sources: ReadonlyMap<string, string>): Map<string, string[]> {
+  const index = new Map<string, string[]>()
+  for (const [file, source] of sources) {
+    for (const name of new Set(importsOf(source))) {
+      const files = index.get(name) ?? []
+      files.push(file); index.set(name, files)
+    }
+  }
+  return index
+}
+
+/** 未提供快照时保持原调用口径；批量查询应复用同一个局部索引。 */
+function uiImportersOf(name: string, index = uiImporterIndex(uiSources())): string[] {
+  return index.get(name) ?? []
 }
 
 
@@ -834,20 +851,41 @@ describe('孤儿棘轮', () => {
     expect(actual, '这些模块没有任何视图直接引用（须逐个登记理由，或改成有视图入口）').toEqual(EXPECTED)
   })
 
+  it('⑥-2a 局部反向索引与逐文件过滤等价，空源/重复import不伪造引用', () => {
+    const sources = uiSources(), index = uiImporterIndex(sources)
+    for (const name of apiModules()) {
+      const direct = [...sources].filter(([, source]) => importsOf(source).includes(name)).map(([file]) => file)
+      expect(uiImportersOf(name, index)).toEqual(direct)
+    }
+    const synthetic = new Map([
+      ['views/Live.vue', 'import { a } from "@/api/live"; import { b } from "@/api/live"'],
+      ['components/Panel.vue', 'import { c } from "@/api/other"'],
+      ['views/Empty.vue', 'no imports'],
+    ])
+    const controlled = uiImporterIndex(synthetic)
+    expect(uiImportersOf('live', controlled)).toEqual(['views/Live.vue'])
+    expect(uiImportersOf('other', controlled)).toEqual(['components/Panel.vue'])
+    expect(uiImportersOf('missing', controlled)).toEqual([])
+    expect(uiImporterIndex(new Map()).size).toBe(0)
+  })
+
   it('⑥-3 ★★★★★ 非视图引用方**确实被挂载**（死面板不得伪装成 UI 入口）', () => {
+    // 批144实测20秒超时：原实现按每个API反复读全树；局部索引不改变扫描范围。
+    const sources = uiSources(), importers = uiImporterIndex(sources)
+    const stripped = stripComments([...sources.values()].join('\n'))
     // ★ 这是本组的关键一条：⑥-2 只保证「例外被点名」，
     //   而 ⑥-3 保证这些例外**真的能被人点到** ——
     //   即引用它们的那个面板/组件自己**不是死文件**（至少被一个非 spec 文件引用）。
     const seen = reachableFromUi()
     const noViewDirect = apiModules()
       .filter((m) => seen.has(m))
-      .filter((m) => uiImportersOf(m).every((f) => !f.startsWith('views/')))
+      .filter((m) => uiImportersOf(m, importers).every((f) => !f.startsWith('views/')))
 
     expect(noViewDirect.length, '一组都没扫到 ⇒ 判据量具坏了').toBeGreaterThan(0)
 
     const dead: string[] = []
     for (const m of noViewDirect) {
-      for (const importer of uiImportersOf(m)) {
+      for (const importer of uiImportersOf(m, importers)) {
         const base = importer.replace(/\.(ts|vue)$/, '')
         const stem = base.split('/').pop() as string
         // 谁引用了这个引用方？至少要被一个**非 spec** 文件提到。
@@ -857,11 +895,11 @@ describe('孤儿棘轮', () => {
         //   ⇒ 只按 import 判「有没有被引用」，会把**活着的**面板判成死的。
         const mounted =
           // ① import 语句（跨行 ⇒ 必须在整块上做多行正则）
-          new RegExp(`import[\\s\\S]{0,300}?from\\s+['"][^'"]*${stem}['"]`).test(uiSourceBlobStripped()) ||
+          new RegExp(`import[\\s\\S]{0,300}?from\\s+['"][^'"]*${stem}['"]`).test(stripped) ||
           // ② 模板里的组件标签 <XxxSheet …>
-          new RegExp(`<\\s*${stem}[\\s/>]`).test(uiSourceBlobStripped()) ||
+          new RegExp(`<\\s*${stem}[\\s/>]`).test(stripped) ||
           // ③ Options API 的 `components: { XxxSheet }` 注册
-          new RegExp(`components\\s*:\\s*\\{[^}]*\\b${stem}\\b`).test(uiSourceBlobStripped())
+          new RegExp(`components\\s*:\\s*\\{[^}]*\\b${stem}\\b`).test(stripped)
         if (!mounted) dead.push(`${m} ← ${importer}（这个引用方自己没人引用）`)
       }
     }

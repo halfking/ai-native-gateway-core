@@ -18,6 +18,7 @@ import StorageAndLogConfigView from './StorageAndLogConfigView.vue'
 import StorageMigrationStateView from './StorageMigrationStateView.vue'
 import TurnsFilterOptionsView from './TurnsFilterOptionsView.vue'
 import SessionAnalyticsFilterOptionsView from './SessionAnalyticsFilterOptionsView.vue'
+import SanitizeRulesView from './SanitizeRulesView.vue'
 
 import { setTransport, resetTransport } from '@/api/transport'
 import { zhCN } from '@/i18n/zh-CN'
@@ -55,7 +56,7 @@ import { zhCN } from '@/i18n/zh-CN'
  *   ① ★★★★★★ 召回自证：路由里带 `requiresRole` 的声明**逐条**与本文件
  *     的表配对（**不是只比数量** —— 第一百三十一批实测过数量对账能让
  *     3 条串线的普查绿掉）。
- *   ② ★★★★★★ 请求层：错角色挂载 15 个视图，**零请求**。
+ *   ② ★★★★★★ 请求层：错角色挂载当前 16 个视图，**零请求**（批144扩一席）。
  *   ③ ★★★★★★★★ 正控（探针有牙）：放行角色下点取数按钮，**必须**发请求。
  *   ④ ★★★★★★ 结构层：错角色时取数按钮**不在 DOM**。
  *   ⑤ ★★★★ DOM 层：不露出裸 i18n 键。
@@ -104,6 +105,7 @@ vi.mock('@/stores/auth', () => ({ useAuthStore: () => A }))
  *     ⇒ 正控必须先把参数填成合法值，否则量到的是「按钮禁用」而不是「兜底失效」。
  */
 const TABLE = [
+  { path: '/sanitize-rules', comp: SanitizeRulesView, file: 'SanitizeRulesView.vue', gate: 'sanitizeRulesCanReadEvents', tier: 'admin', okRole: 'super_admin', nope: 'sr-nope', trigger: 'sr-load', fill: [] },
   { path: '/request-anomalies', comp: RequestAnomaliesView, file: 'RequestAnomaliesView.vue', gate: 'anomalyRoleIsSuperAdmin', tier: 'super_admin', okRole: 'super_admin', nope: 'ra-nope', trigger: null, fill: [] },
   { path: '/errors-trend', comp: ErrorsTrendView, file: 'ErrorsTrendView.vue', gate: 'errorsTrendRoleIsAdminTier', tier: 'admin', okRole: 'tenant_admin', nope: 'et-nope', trigger: 'et-load', fill: [] },
   { path: '/model-history', comp: ModelHistoryView, file: 'ModelHistoryView.vue', gate: 'modelHistoryRoleIsAdminTier', tier: 'admin', okRole: 'tenant_admin', nope: 'mh-nope', trigger: 'mh-load', fill: [['mh-credentialId', '1'], ['mh-rawModel', 'gpt-4']] },
@@ -127,10 +129,24 @@ const TABLE = [
  *   反过来时 `appNav.ts` 行注释里的 `/api/maas/**` 会贡献一个**伪块注释起点**，
  *   把后面 450 行真实代码整段当注释吃掉 —— 30924 字节只剩 6118）。
  *   本批 ①-0 就是钉这个顺序的，不靠注释提醒。
+ *
+ * ★★★★★★ 第一百四十三批订正上面那句话 —— 当时的 ①-0 **并没有**钉住顺序。
+ *   它自己上面的注释早就写着「第三行那句真块注释**不能删**，删了这条判据就废了」，
+ *   而**实测（删掉第三行）11 个用例全绿**：警示写在注释里，但没有任何门钉住它。
+ *   ⇒ 现在把 `order` 提成参数，并加 ①-0b **要求两种顺序给出不同结果** ——
+ *     这才是把「第三行不能删」从一句警告变成一条可执行断言。
+ *   ⇒ 与 dynamicKeys ⑦ 同族但**不同形状**：那边是「源头计算式无自证」，
+ *     这边是「**夹具的承重部分**无门」。两者都只有变异台能发现。
+ *   ⚠️ 默认参数是 `line-first`，与本批之前的实现**逐字等价**，
+ *     其余调用点不需要改。
  */
-function stripComments(src: string): string {
+function stripComments(src: string, order: 'line-first' | 'block-first' = 'line-first'): string {
   const noLine = src.replace(/\/\/[^\n]*/g, '')
-  return noLine.replace(/\/\*[\s\S]*?\*\//g, '')
+  const noBlock = src.replace(/\/\*[\s\S]*?\*\//g, '')
+  // ★ 两个中间量先各自算好再组合 —— 这样 `block-first` 才真的是「先删块」，
+  //   而不是把 line-first 的结果再删一次行注释（那样两种顺序会给出相同结果，
+  //   ①-0b 的反向断言就会变红 —— 正是它要抓的那类退化）。
+  return order === 'line-first' ? noLine.replace(/\/\*[\s\S]*?\*\//g, '') : noBlock.replace(/\/\/[^\n]*/g, '')
 }
 
 function routerSrc(): string {
@@ -215,6 +231,9 @@ async function fillParams(row: Row, w: ReturnType<typeof mount>): Promise<void> 
 
 // ── ① 召回自证 ───────────────────────────────────────────────────────────────
 
+// 两条断言共享承重夹具；删掉真块注释时区分力断言必须红。
+const COMMENT_ORDER_TRAP = ['const a = 1 // 路径 /api/maas/**', 'const 真实代码 = a + 1', '/* 真的块注释 */'].join('\n')
+
 describe('① ★★★★★★ 召回自证：本表与路由里的 requiresRole 声明逐条配对', () => {
   it('①-0 ★★★★★★ stripComments 的剥离顺序：先删行注释，再删块注释', () => {
     // ★★★ 这个夹具是**分支条件**，不是示意 —— 第一版（只有两行、后面没有
@@ -224,12 +243,34 @@ describe('① ★★★★★★ 召回自证：本表与路由里的 requiresRo
     //   行注释里那个 `/**` 被当成块注释起点，一路吃到下一个真 `*/`，
     //   把夹在中间的**真实代码**整段吃掉（第一百三十二批 `appNav.ts` 的原形）。
     //   ⇒ 所以第三行那句真块注释**不能删**，删了这条判据就废了。
-    const trap = ['const a = 1 // 路径 /api/maas/**', 'const 真实代码 = a + 1', '/* 真的块注释 */'].join('\n')
+    const trap = COMMENT_ORDER_TRAP
     expect(stripComments(trap), '真实代码被伪块注释起点吃掉了（剥离顺序反了）').toContain('const 真实代码')
     expect(stripComments(trap)).not.toContain('/api/maas')
     // 反向也钉：块注释**确实**会被删（否则这个函数是恒等函数，假门）。
     expect(stripComments('/* 注释 */ const 留下 = 1')).not.toContain('注释')
     expect(stripComments('/* 注释 */ const 留下 = 1')).toContain('留下')
+  })
+
+  it('①-0b ★★★★★★ 夹具必须有区分力：两种剥离顺序给出**不同**结果', () => {
+    // ★★★★ 第一百四十三批新增，针对一个**实测**出来的洞：
+    //   把上面那个夹具的第三行（真块注释）删掉 ⇒ 11 个用例**全绿**。
+    //   原因：第三行是**后面存在一个真 `*/`**，只有它存在时，
+    //   `block-first` 才会从行注释里那个伪 `/**` 一路吃到它、并吃掉中间的
+    //   `const 真实代码`。删掉第三行 ⇒ 两种顺序结果**相同** ⇒ ①-0 恒真通过。
+    // ⇒ 所以不能只断言「现行顺序对」—— 那对承重夹具退化与不退化一视同仁。
+    // ⇒ 必须断言「两种顺序**结果不同**」，把「这是个分支条件」变成可执行事实。
+    const trap = COMMENT_ORDER_TRAP
+    const a = stripComments(trap, 'line-first')
+    const b = stripComments(trap, 'block-first')
+    expect(a, '现行顺序（先删行后删块）必须保住真实代码').toContain('const 真实代码')
+    expect(
+      b,
+      '★★ 顺序反过来时**也**保住了真实代码 ⇒ 这个夹具已经失去区分力（多半是承重那行被删了）\n' +
+        '  此时 ①-0 是恒真的假门：它对「剥离顺序写反」与「夹具被掏空」一视同仁地放行。',
+    ).not.toContain('const 真实代码')
+    // ★ 顺带把夹具形状钉住：承重那行必须在（它是被测的那一行，不是排版）。
+    expect(trap.split('\n'), '夹具必须仍是三行（第二行是要保护的代码，第三行是承重的真块注释）').toHaveLength(3)
+    expect(stripComments(trap, 'line-first')).not.toContain('/api/maas')
   })
 
   it('①-1 ★★★★★★ 数量对账：路由里带 requiresRole 的条数 == 本表的行数', () => {
@@ -240,7 +281,7 @@ describe('① ★★★★★★ 召回自证：本表与路由里的 requiresRo
         found.map((f) => `${f.path}:${f.role}`).join('  '),
     )
     expect(found.length, '路由里的 requiresRole 条数变了，本表没跟上').toBe(TABLE.length)
-    expect(TABLE.length).toBe(15)
+    expect(TABLE.length).toBe(16)
   })
 
   it('①-2 ★★★★★★★ 逐条配对：path / 档位 / 组件文件三项全对', () => {
@@ -267,7 +308,7 @@ describe('① ★★★★★★ 召回自证：本表与路由里的 requiresRo
 // ── ② 请求层兜底（挂载阶段） ─────────────────────────────────────────────────
 
 describe('② ★★★★★★ 错角色深链：挂载阶段一个请求都不发', () => {
-  it('②-1 ★★★★★★★★ 15 个受限视图、user 角色（对全部档位都无权）', async () => {
+  it('②-1 ★★★★★★★★ 16 个受限视图、user 角色（对全部档位都无权）', async () => {
     const report: string[] = []
     const bad: string[] = []
     for (const row of TABLE) {
@@ -279,15 +320,15 @@ describe('② ★★★★★★ 错角色深链：挂载阶段一个请求都�
     }
     console.log(`[②-1] user 角色 · 挂载阶段：\n  ${report.join('\n  ')}`)
     expect(bad, '挂载阶段就发请求了：\n' + bad.join('\n')).toEqual([])
-    // ★ 覆盖面证据：确实量到了 15 个视图，而不是量到 3 个。
-    expect(report).toHaveLength(15)
+    // ★ 覆盖面证据：确实量到了 16 个视图，而不是量到 3 个。
+    expect(report).toHaveLength(16)
   })
 })
 
 // ── ③ 正控：探针有牙 ─────────────────────────────────────────────────────────
 
 describe('③ ★★★★★★★★ 正控：放行角色下点取数按钮必须发请求', () => {
-  it('③-1 ★★★★★★★★ 15/15 放行角色点按钮都发出了请求 ⇒ ② 的「零」是兜底挡的', async () => {
+  it('③-1 ★★★★★★★★ 16/16 放行角色点按钮都发出了请求 ⇒ ② 的「零」是兜底挡的', async () => {
     const report: string[] = []
     const silent: string[] = []
     let autoFire = 0
@@ -313,16 +354,16 @@ describe('③ ★★★★★★★★ 正控：放行角色下点取数按钮�
       if (calls.length === 0) silent.push(`${row.path} 点了按钮也没发请求 ⇒ ② 的 0 说明不了任何事`)
     }
     console.log(
-      `[③-1] 放行角色 · 点取数按钮：\n  ${report.join('\n  ')}\n  ★ 挂载即取数的席位：${autoFire}/15`,
+      `[③-1] 放行角色 · 点取数按钮：\n  ${report.join('\n  ')}\n  ★ 挂载即取数的席位：${autoFire}/${TABLE.length}`,
     )
     // ★★★ 这是**整份文件承重的一条**：v1 版本它在**挂载**阶段跑，14/15 失败
     //   —— 正是它揭穿了「零请求」是空门。删掉它，② 就退化成装饰。
     expect(silent, '正控失败：\n' + silent.join('\n')).toEqual([])
-    expect(report).toHaveLength(15)
+    expect(report).toHaveLength(16)
     expect(autoFire, '实测自动取数席位变了，本文件的风险面要重测').toBe(1)
   })
 
-  it('③-2 ★★★★ 读数留档：15 席里只有 request-anomalies 挂载即取数', async () => {
+  it('③-2 ★★★★ 读数留档：16 席里只有 request-anomalies 挂载即取数', async () => {
     // 从实际挂载请求量风险面；按固定表项筛选会漏掉新增的自动取数行为。
     const auto: string[] = []
     for (const row of TABLE) {
@@ -338,7 +379,7 @@ describe('③ ★★★★★★★★ 正控：放行角色下点取数按钮�
 // ── ④ 结构层：按钮压根不在 DOM ───────────────────────────────────────────────
 
 describe('④ ★★★★★★ 无权限时取数按钮不在 DOM（结构上无法触发）', () => {
-  it('④-1 ★★★★★★ 错角色时 15/15 都找不到那一席的取数按钮', async () => {
+  it('④-1 ★★★★★★ 错角色时 16/16 都找不到那一席的取数按钮', async () => {
     const report: string[] = []
     const bad: string[] = []
     for (const row of TABLE) {
@@ -381,7 +422,7 @@ describe('⑤ ★★★★ 错角色时不露出裸 i18n 键', () => {
     return [...new Set([...known, ...cand])]
   }
 
-  it('⑤-1 ★★★★ 15/15 的 nope 区走的是真字典', async () => {
+  it('⑤-1 ★★★★ 16/16 的 nope 区走的是真字典', async () => {
     const bad: string[] = []
     for (const row of TABLE) {
       const w = await mountAs(row, 'user')

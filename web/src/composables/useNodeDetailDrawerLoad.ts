@@ -1,6 +1,6 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { isDefaultTenant, isSuperAdmin } from '../store'
-import type { RoutingCandidate } from '../api/routing'
+import type { RoutingCandidate, StreamMode } from '../api/routing'
 import type { CredentialLifecycleStatus } from '../api/providers'
 import type {
   CredentialModelStatus, CredentialMonitorSummary, CredentialRoutingDecision,
@@ -45,6 +45,7 @@ export function useNodeDetailDrawerLoad(
   const pingResult = ref<{ status: string; latency_ms: number; tested_at: string; error?: string } | null>(null)
   const lifecycle = ref<CredentialLifecycleStatus>('active')
   const manualPriority = ref(99); const priorityFlag = ref(false); const routingTier = ref(2); const weight = ref(100)
+  const streamMode = ref<StreamMode>('both')
   const modelActionReason = ref('')
   const coreLoaded = ref(false); const coreLoading = ref(false)
   const detailRequestId = ref<string | null>(null)
@@ -99,7 +100,7 @@ export function useNodeDetailDrawerLoad(
     sequence, loadController, requestsController, coreController, coreTask, coreCandidateTask,
     visible, currentNode, scopedModel, loading, loadError, candidate, candidateLoading, monitor,
     selectedModel, windowEntries, windowStats, windowSource, history, decisions, lifecycle,
-    manualPriority, priorityFlag, routingTier, weight, coreLoaded, coreLoading,
+    manualPriority, priorityFlag, routingTier, weight, streamMode, coreLoaded, coreLoading,
   })
 
   function resetDrawerData() {
@@ -189,6 +190,7 @@ export function useNodeDetailDrawerLoad(
       && priorityFlag.value === false
       && routingTier.value === 2
       && weight.value === 100
+      && streamMode.value === 'both'
     if (props.seedCandidate && formIsPristine) {
       candidate.value = props.seedCandidate
       lifecycle.value = (props.seedCandidate.lifecycle_status ?? 'active') as CredentialLifecycleStatus
@@ -196,6 +198,7 @@ export function useNodeDetailDrawerLoad(
       priorityFlag.value = props.seedCandidate.priority ?? false
       routingTier.value = props.seedCandidate.tier ?? 2
       weight.value = props.seedCandidate.weight ?? 100
+      streamMode.value = props.seedCandidate.stream_mode ?? 'both'
     }
     void ensureTabLoaded('detail')
     void ensureTabLoaded('availability')
@@ -248,7 +251,7 @@ export function useNodeDetailDrawerLoad(
     activeTab, otherModelsLoaded, otherModelsLoading, loading, detailLoaded, detailLoading, requestsLoaded, requestsLoading,
     settingsLoaded, settingsLoading, loadError, candidate, candidateLoading, monitor, selectedModel,
     windowEntries, windowStats, windowSource, history, decisions, saving, actionMessage, actionError,
-    pingResult, lifecycle, manualPriority, priorityFlag, routingTier, weight, modelActionReason, coreLoaded, coreLoading,
+    pingResult, lifecycle, manualPriority, priorityFlag, routingTier, weight, streamMode, modelActionReason, coreLoaded, coreLoading,
     detailRequestId, visible, canEdit, editGateHint, currentNode, allModels, models, selectedModelStatus,
     resolvedProviderId, headlineState, errorKinds, failedWindowEntries, failedDecisions, otherModelsNeedRefresh,
     mergeMonitorModels, chooseModel, refreshCurrentTab, ensureTabLoaded,
