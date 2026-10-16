@@ -3304,7 +3304,15 @@ const detachedStreamMaxLifetime = 2 * time.Hour
 // stays immune, lease abort terminates the upstream call.
 func (e *Executor) upstreamContext(params *ExecParams, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if params.IsStream && params.StreamSurvivesClientCancel {
-		upCtx, cancel := context.WithTimeout(context.WithoutCancel(params.R.Context()), detachedStreamMaxLifetime)
+		parent := context.WithoutCancel(params.R.Context())
+		if !params.SurvivalDeadline.IsZero() {
+			upCtx, cancel := context.WithDeadline(parent, params.SurvivalDeadline)
+			if abort := dispatch.DetachedStreamAbort(params.R.Context()); abort != nil {
+				return newAbortAwareContext(upCtx, abort), cancel
+			}
+			return upCtx, cancel
+		}
+		upCtx, cancel := context.WithTimeout(parent, detachedStreamMaxLifetime)
 		if abort := dispatch.DetachedStreamAbort(params.R.Context()); abort != nil {
 			return newAbortAwareContext(upCtx, abort), cancel
 		}

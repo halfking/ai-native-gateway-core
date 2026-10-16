@@ -1320,6 +1320,11 @@ type ExecParams struct {
 	// the client connection (session capture or durable/survival ownership).
 	// Provisional correlation session IDs must not set this flag.
 	StreamSurvivesClientCancel bool
+	// SurvivalDeadline is the coordinator-owned wall-clock stop for a bounded
+	// survival attempt. It is explicit because a detached stream deliberately
+	// ignores client cancellation, but must never discard the survival deadline.
+	// Zero keeps ordinary detached-stream lifetime semantics.
+	SurvivalDeadline time.Time
 	// PreStreamPrepared means the caller already committed a 200
 	// text/event-stream response and may be emitting keep-alive comments
 	// while the executor is still retrying upstream credentials. In this

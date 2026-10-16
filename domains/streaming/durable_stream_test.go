@@ -341,17 +341,39 @@ func TestDurableBeforeSemanticCommitSurvivesCanceledClientContext(t *testing.T) 
 	}
 }
 
-func TestSettleDurableStreamDeadlineDoesNotReleaseToWorker(t *testing.T) {
+func TestSettleDurableStreamDeadlineBeforeContentReleasesToWorker(t *testing.T) {
 	store := &fakeForegroundStore{}
 	b := newStreamBinding(store)
 	settleDurableStream(context.Background(), b,
 		SurvivalResult{Decision: TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}},
 		nil, "", false)
+
+	if len(store.resched) != 1 {
+		t.Fatalf("uncommitted deadline must release to worker once, got %+v", store.resched)
+	}
+	if store.resched[0].Reason != "deadline_exceeded_pre_content" {
+		t.Fatalf("release reason = %q, want deadline_exceeded_pre_content", store.resched[0].Reason)
+	}
+	if len(store.terminals) != 0 {
+		t.Fatalf("uncommitted deadline must not terminalize a replayable task: %+v", store.terminals)
+	}
+}
+
+func TestSettleDurableStreamDeadlineAfterContentDoesNotReplay(t *testing.T) {
+	store := &fakeForegroundStore{}
+	b := newStreamBinding(store)
+	if err := b.Checkpoint(CommitStateContent); err != nil {
+		t.Fatalf("content checkpoint: %v", err)
+	}
+	settleDurableStream(context.Background(), b,
+		SurvivalResult{Decision: TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}},
+		nil, "", false)
+
 	if len(store.resched) != 0 {
-		t.Fatalf("deadline settlement must not reschedule to worker: %+v", store.resched)
+		t.Fatalf("committed deadline must never replay, got %+v", store.resched)
 	}
 	if len(store.terminals) != 1 || store.terminals[0].ReasonCode != "deadline_exceeded" {
-		t.Fatalf("deadline settlement terminals = %+v, want one terminal deadline_exceeded", store.terminals)
+		t.Fatalf("committed deadline terminals = %+v, want deadline terminal", store.terminals)
 	}
 }
 

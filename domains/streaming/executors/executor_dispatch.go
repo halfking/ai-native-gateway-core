@@ -395,7 +395,11 @@ func dispatchExecutionContext(params *ExecParams) (context.Context, context.Canc
 		return context.WithCancel(context.Background())
 	}
 	if params.IsStream && params.StreamSurvivesClientCancel {
-		return context.WithTimeout(context.WithoutCancel(params.R.Context()), detachedStreamMaxLifetime)
+		parent := context.WithoutCancel(params.R.Context())
+		if !params.SurvivalDeadline.IsZero() {
+			return context.WithDeadline(parent, params.SurvivalDeadline)
+		}
+		return context.WithTimeout(parent, detachedStreamMaxLifetime)
 	}
 	return context.WithCancel(params.R.Context())
 }

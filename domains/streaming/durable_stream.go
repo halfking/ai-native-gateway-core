@@ -323,10 +323,15 @@ func settleDurableStream(_ context.Context, b *DurableStreamBinding, res Surviva
 		if err := b.FailTerminal(ctx, "durable_result_unavailable", "durable_result"); err != nil {
 			logSettleError("result_unavailable", b, err)
 		}
-	case clientDisconnected && !b.ContentCommitted():
-		// The durable promise: the worker re-executes detached and the
-		// client may poll for the result.
-		if err := b.ReleaseToWorker(ctx, "client_disconnected_pre_content"); err != nil {
+	case !b.ContentCommitted() && (clientDisconnected || res.Decision.Reason == "deadline_exceeded"):
+		// Before semantic content commits, both a departed client and an
+		// interactive survival deadline leave the durable snapshot replayable.
+		// Hand it to the worker instead of terminalizing a recoverable task.
+		reason := "client_disconnected_pre_content"
+		if res.Decision.Reason == "deadline_exceeded" {
+			reason = "deadline_exceeded_pre_content"
+		}
+		if err := b.ReleaseToWorker(ctx, reason); err != nil {
 			logSettleError("release_to_worker", b, err)
 		}
 	case clientDisconnected:
