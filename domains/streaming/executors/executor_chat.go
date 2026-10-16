@@ -174,6 +174,13 @@ func (s *chatStreamContinuation) invoke(prefixText string) (io.ReadCloser, error
 	if ctxErr := s.req.Context().Err(); ctxErr != nil {
 		return nil, fmt.Errorf("stream continuation: upstream context done: %w", ctxErr)
 	}
+	// The request-wide attempt budget is the authority for real upstream HTTP
+	// calls — the continuation leg is no exception. Consume BEFORE the wire
+	// call: an exhausted budget must not reach the network at all, and a
+	// failed continuation must not refund its slot (the call really happened).
+	if _, err := consumeUpstreamAttempt(s.params); err != nil {
+		return nil, err
+	}
 	contBody, err := appendAssistantPrefillMessage(s.body, prefixText, s.mode)
 	if err != nil {
 		return nil, fmt.Errorf("stream continuation: %w", err)
@@ -200,6 +207,10 @@ func (s *chatStreamContinuation) invoke(prefixText string) (io.ReadCloser, error
 	// stream loop finishes); acquiring the same single-slot pool here would
 	// self-deadlock. Going straight through the same client keeps the same
 	// transport/connection pool without the semaphore.
+	// R51-F15 同款：续问是准入内的第二次上游调用，必须补记 RPM/TPM 桶，
+	// 否则是隐性成本。放在 wire 调用前：成功、非 2xx、网络错误都是一次
+	// 真实上游调用，一律计量（放在 200 之后会让失败腿逃过计费）。
+	meterExtraUpstreamCall(s.params)
 	var resp *http.Response
 	if s.e.Upstream != nil {
 		var uErr *upstreampkg.Error
@@ -222,9 +233,6 @@ func (s *chatStreamContinuation) invoke(prefixText string) (io.ReadCloser, error
 		return nil, fmt.Errorf("stream continuation: upstream status %d (%s)",
 			resp.StatusCode, strings.TrimSpace(string(preview[:min(n, len(preview))])))
 	}
-	// R51-F15 同款：续问是准入内的第二次上游调用，必须补记 RPM/TPM 桶，
-	// 否则是隐性成本。
-	meterExtraUpstreamCall(s.params)
 	slog.Info("stream continuation issued",
 		"request_id", s.params.RequestID,
 		"provider_id", s.cand.ProviderID,
@@ -261,6 +269,23 @@ func chatContinuationMode(upstreamURL, model string) string {
 		}
 	}
 	return ""
+}
+
+// chatBodyHasExplicitOutputCap reports whether the outbound body sets an
+// explicit output ceiling (max_tokens / max_completion_tokens). A continued
+// second leg resets the upstream's output budget, so the two legs can
+// jointly exceed what the client asked for; the gateway cannot reliably
+// compute the remaining allowance, so an explicit cap conservatively
+// disables continuation (P0-3 audit fix, 2026-10-16).
+func chatBodyHasExplicitOutputCap(body []byte) bool {
+	var top struct {
+		MaxTokens           *json.RawMessage `json:"max_tokens"`
+		MaxCompletionTokens *json.RawMessage `json:"max_completion_tokens"`
+	}
+	if err := json.Unmarshal(body, &top); err != nil {
+		return false
+	}
+	return top.MaxTokens != nil || top.MaxCompletionTokens != nil
 }
 
 // appendAssistantPrefillMessage returns a copy of body with one trailing
@@ -1182,6 +1207,7 @@ func (e *Executor) executeOpenAI(
 			continuationMode := chatContinuationMode(upstreamURL, outboundModel)
 			if continuationMode != "" && params.IsStream && !nativeStream && e.StreamChat != nil &&
 				cand.Protocol != providercatalog.ProtocolAnthropicMessages &&
+				!chatBodyHasExplicitOutputCap(bodyBytes) &&
 				settings.GetPlatformBool(settings.KeyStreamContinuationEnabled, false) {
 				continuation = &chatStreamContinuation{
 					e:      e,
