@@ -129,6 +129,23 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 			provided = key
 		}
 		if provided == "" {
+			// 2026-10-16（zcode/ZCode minimax-m3 401 missing_key 事故）：
+			// 本分支此前**一条日志都不打**。修复前 AuthMiddleware 排在
+			// LoggingMiddleware 外侧，被它拒掉的请求既不进 http_request
+			// 记录，也没有 WARN——客户端拿到的 X-Request-Id（如 19d7d64a…）
+			// 在网关两份实例日志里 grep 命中 0 次，只剩 nginx access log
+			// 一条线索。链序已一并修复（见 cmd/gateway/main.go），但这条
+			// 日志仍要留：它带 code，能把"没带凭据"与"凭据无效"分开。
+			// 而本分支最容易被误判：边缘 nginx 对 :80 一律
+			// `301 https://$host$request_uri`，客户端按 fetch 规范跟随时
+			// Authorization 被跨源剥离、POST 被降级成 GET，落进来长得与
+			// "调用方压根没配 key" 一模一样（那把 key 当时是有效的）。
+			slog.Warn("auth: missing API key",
+				"remote", r.RemoteAddr,
+				"path", r.URL.Path,
+				"code", "missing_key",
+				"user_agent", r.UserAgent(),
+			)
 			writeAuthUnauthorized(r.Context(), w, i18n.MsgMissingAuth, "missing_key")
 			return
 		}
@@ -174,10 +191,15 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 		// api_keys.key_prefix) so operators can tell WHICH misconfigured
 		// internal caller is being rejected — the 2026-08-24 incident
 		// needed cross-replica experiments to trace this gate.
+		// user_agent 同理补齐（2026-10-16）：这是把被拒请求指认回调用方的
+		// 唯一字段——鉴权拒绝即使已进 http_request 记录，也要靠它才能定位
+		// 是哪个客户端在用错钥匙。
 		slog.Warn("auth: invalid API key",
 			"remote", r.RemoteAddr,
 			"path", r.URL.Path,
 			"key_prefix", bearerKeyPrefixForLog(provided),
+			"code", "invalid_key",
+			"user_agent", r.UserAgent(),
 		)
 		writeAuthUnauthorized(r.Context(), w, i18n.MsgInvalidKey, "invalid_key")
 	})

@@ -7595,6 +7595,15 @@ func main() {
 	handler := middleware.NewBuilder().
 		Add(middleware.NewRecoveryMiddleware()).
 		Add(middleware.NewRequestIDMiddleware()).
+		// 2026-10-16：Logging 必须排在 Auth **之外**。此前它挂在 Auth
+		// 内侧，于是 AuthMiddleware 拒掉的请求（401 missing_key /
+		// invalid_key）不产生任何 http_request 记录——客户端拿着网关发的
+		// X-Request-Id 去网关日志里查，命中 0 次（实测 19d7d64a… 在 154
+		// 两份实例日志中均为 0），只剩 nginx access log 可查。
+		// 紧跟 RequestID 之后：RequestIDMiddleware 会把生成的 id 写回
+		// r.Header["X-Request-Id"]，再往内排会让本记录的 request_id 退化成
+		// 客户端原值/空值。
+		Add(middleware.NewLoggingMiddleware()).
 		Add(middleware.NewLocaleMiddleware(cfg.DefaultLanguage)). // i18n: before auth so auth errors localize too
 		Add(middleware.NewCORSMiddleware(cfg.CORSOrigins)).
 		Add(middleware.NewPrometheusMiddleware()).
@@ -7602,7 +7611,6 @@ func main() {
 		Add(middleware.NewAuthMiddleware(cfg.APIKey)).
 		Add(middleware.NewOriginMiddlewareWithTrustedProxies(
 			middleware.ParseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs))).
-		Add(middleware.NewLoggingMiddleware()).
 		Add(middleware.NewSecurityHeadersMiddleware()).
 		Build().
 		Then(publicSurface)
