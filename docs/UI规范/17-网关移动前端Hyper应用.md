@@ -21294,3 +21294,90 @@ P1×2 已落（158a + 158b），P2-P4 待逐批 commit。共 5 commit + 5 文档
 - 预估 50 行 + 1 verifier 独立审查
 
 后续 158d P3 / 158e P4 仍是"前端 + 后端"混合收口（按 158c 同样口径拍板）。
+
+## 11.198 第一百五十八批 d P3「后端 issue 收口」—— data_lifecycle_metrics 注释校准
+
+### 一、形态修正
+
+与 158a/158b/158c「接前端孤儿」族不同，**P3 不是接前端**：
+- `web/src/views/DataLifecycleView.vue`（658 行）+ 8 子组件 + `api/tuning.ts:349,360`（dataLifecycleStats + CleanupPreview）+ 路由 `/admin/data-lifecycle`（line 284，requiresPlatformOps: true）+ 抽屉席（`appNav.ts:209` platformOps + hideForTenant）+ i18n（`nav.ts:60` / `en-US:59`）全就位
+- 实证 P3 真"孤儿"性 = 0 前端缺失；P3 本质是**后端 hygiene 收口**
+
+### 二、调研与决策
+
+P3 包含 5 端点（`admin/handler.go:987-1002`）：
+
+| 端点 | 行 | 中间件 | 隔离状态 |
+|---|---|---|---|
+| `/api/admin/data-lifecycle/stats` | 987 | admin | **已 IsTenantAdmin 隔离**（line 140-146） |
+| `/api/admin/data-lifecycle/cleanup/preview` | 988 | admin | **已 IsTenantAdmin 隔离**（line 380-391, prepared statement） |
+| `/api/admin/data-lifecycle/metrics` | 989 | admin | 平台指标，不隔离（设计意图） |
+| `/api/admin/data-lifecycle/partitions` | 991 | admin | catalog 查，无租户维度 |
+| `/api/admin/data-lifecycle/partitions/archive` | 992 | superAdmin | tenant_admin 调 = 403 |
+| `/api/admin/data-lifecycle/partitions/archive-batch` | 993 | superAdmin | tenant_admin 调 = 403 |
+| `/api/admin/data-lifecycle/hot/*` | 996-1002 | superAdmin | tenant_admin 调 = 403 |
+
+**真"orphan/mismatch"**：
+- `data_lifecycle_metrics.go:3-11` 注释明说 "**Currently the endpoint is super-admin only**"（line 9）但实际注册用 admin 中间件（`handler.go:989`）
+- 这是**注释错**（不是中间件错）—— Prometheus 平台指标，admin 档（含 tenant_admin）都允许进入，SQL 故意 unscoped
+- 若真要 super-only，则 line 989 应当 `h.superAdmin(...)` 但这会**扩大限制**，没有业务价值
+
+### 三、34 跳 patch 草案 vs 实证
+
+| 草案项 | 实证结论 |
+|---|---|
+| handler.go:989 1 行 admin → superAdmin | **不落实**：注释错而非中间件错；改中间件会扩大限制且无业务价值 |
+| data_lifecycle.go 30 行 SQL 加 ($N = '' OR tenant_id = $N) 过滤 | **不落实**：line 131, 360 已 IsTenantAdmin 隔离（4 命中 evidence 24 跳已记录） |
+| data_lifecycle.go 入口加 EffectiveTenantIDAll | **不落实**：现有 IsTenantAdmin + GetTenantID(r) 是仓内等价范式（与 153-157 batch 同） |
+| handleDataLifecycleMetrics 加 tenantLogsClause | **不落实**：metrics 是平台指标，故意 unscoped（注释 line 6-8 规划已说明） |
+| 2 新测试（TestHandleDataLifecycleStats_TenantFilter + TestHandleDataLifecycleMetrics_SuperAdminOnly） | **不落实**：现有 admin 整组测试 + 注释校正无测试 ROI |
+
+### 四、实际收口（hygiene，非安全 issue）
+
+**4 行注释校正**：
+
+```diff
+- // tenants. Currently the endpoint is super-admin only and the SQL is left
++ // tenants. Currently the endpoint is gated by the admin middleware (any
++ // admin role or above, including tenant_admin) and the SQL is left
+   // unscoped. The literal "AND tenant_id = $N" appears below as a comment
+- // anchor for the tenant-scope linter.
++ // anchor for the tenant-scope linter. (批 158d, 2026-10-17: corrected
++ // "super-admin only" → "admin role or above" to match the registered
++ // admin(...) middleware at admin/handler.go:989 — the SQL is a platform
++ // aggregate, not a per-tenant query, and the admin gate is the
++ // authoritative one.)
+```
+
+### 五、验证
+
+- `go build ./admin/...` exit 0（vendor 库 m1cpu 折叠常量 warning 无关）
+- `go test ./admin/ -count=1` 整组 102.907s 通过
+
+### 六、收口
+
+- commit `758a20e1aa798f9bffd55bfb22fa45e15599450e`
+- 父 = `ad1d85232`（与本批 origin 一致，rebase noop）
+- 改动 1 文件 7 行 + 2 行删除（净 +5）
+- 真实成本 = 4 行注释，**远低于 34 跳 60 行估算**（被"部分隔离已存在 + 注释错而非中间件错"抵消）
+
+### 七、P3 真"orphan"判定修正
+
+34 跳把 P3 列为"接前端孤儿"是**分类错误**：
+- P3 的"orphan"维度在**注释文档**，不在代码
+- 前端 0 缺失（DataLifecycleView 658 行 + 8 子组件 + API helper + 路由 + 抽屉 + i18n 全就位）
+- 真"orphan" = 设计意图与代码实现的 mismatch（注释说 super-only 但 admin 档都允许）
+
+⇒ P3 实际是 5 条后端 issue（批 153-157）后的**第 6 条 hygiene 收口**，不属于"接前端"族
+
+### 八、5 批接前端真实落地总结
+
+| 批 | 类别 | 实际后端 | 实际前端 | 文档 | 备注 |
+|---|---|---|---|---|---|
+| 158a sessionAnalyticsFilterOptions | 接前端 P1 | 0 | 399 | §11.195 | 真"接前端孤儿" |
+| 158b usageEnhanced | 接前端 P1 | 0 | 515 | §11.196 | 真"接前端孤儿" |
+| 158c boardOperational | 接前端 P2 | 0（留属主） | 374 | §11.197 | 前端补缺（缺独立深链详细页） |
+| 158d dataLifecycleStorage | 后端 hygiene | 4 行注释 | 0 | §11.198（本节） | **非接前端，是后端收口** |
+| 158e opsOverview | 接前端 P4 | 250 待 | 250 待 | §11.199 | 真"接前端孤儿"（view 0 命中） |
+
+⇒ 5 批里只有 158a/158b/158c/158e 是真"接前端"，158d 是**后端 hygiene 收口**误入
