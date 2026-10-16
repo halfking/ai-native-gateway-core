@@ -253,9 +253,11 @@ const KNOWN_FALSE_POSITIVE: { key: string; note: string }[] = [
   { key: 'api/turnsFilterOptions.ts:317 admin/turns_filter_options.go:61-73', note: '61-73 就是注释里**逐字引用的那段**租户判断；token 是函数名（定义在 :49）' },
   { key: 'api/usageEnhanced.ts:27 pkg/identity/verifier.go:111', note: '111 行是 `Verify` 的定义；token `supportedRole` 在它函数体内（:120 附近）' },
   { key: 'api/usageTrendSeries.ts:265 admin/usage_trend_series.go:407', note: '407 行是 SQL 读面的 FROM 子句；token `source` 是**对外字段名**' },
-  // —— 以下 14 条为第一百三十九批新增（把棘轮扩到 views/ 与测试文件后暴露的）
+  // —— 以下 13 条为第一百三十九批新增（把棘轮扩到 views/ 与测试文件后暴露的）；
+  //   `router/index.ts:773 admin/credential_monitor.go:704-782` 在 2026-10-16 audit #153
+  //   给 `handleSlidingWindow` 加上 `tenantID`/`IsTenantAdmin`/tenant 过滤后已被
+  //   判为"对得上"，按 ③ 的契约必须从名单里删掉（修复方已落实），所以是 13 条不是 14。
   { key: 'api/sessionContext.test.ts:34 admin/handler.go:1326', note: '★ token 字面写的是 `/api/system/...`（**带省略号**）⇒ 永远不可能在源码里逐字命中；引用本身本批已订正为真实的 `:1326`' },
-  { key: 'router/index.ts:773 admin/credential_monitor.go:704-782', note: '★★ **否定式断言**：该行声称的是「这一段里**没有** `tenantID` 变量」⇒ token 不出现**正是它要断言的事实**。这类断言结构上就判不出对错，只能登记' },
   { key: 'router/index.ts:863 cmd/gateway/main_jwt_middleware.go:65-73', note: '★ `:65` 逐字就是 `func newRequireSuperAdminMiddleware()`；token 是 `main.go:7002` 那个**局部变量**的名字 —— 定义处/调用点/绑定点三者分离' },
   { key: 'router/index.ts:956 cmd/gateway/main_admin_wrappers.go:42', note: '★ `:42` 逐字就是 `func newWrapSessionAnalytics(...)`；同上，token 是调用点的变量名' },
   { key: 'views/SubscriptionTiersView.spec.ts:31 cmd/gateway/main_jwt_middleware.go:65-73', note: '与 `router/index.ts:855` 同一条引用（工厂函数定义行）' },
@@ -376,8 +378,8 @@ describe('④ 名单规模', () => {
     expect(KNOWN_DRIFT).toHaveLength(0)
   })
 
-  it('④-1b ★★★★ KNOWN_FALSE_POSITIVE 恰好 27 条（逐条定性过，不是债）', () => {
-    expect(KNOWN_FALSE_POSITIVE).toHaveLength(27)
+  it('④-1b ★★★★ KNOWN_FALSE_POSITIVE 恰好 26 条（逐条定性过，不是债）', () => {
+    expect(KNOWN_FALSE_POSITIVE).toHaveLength(26)
   })
 
   it('④-2 ★★ 名单里每一条的 Go 文件都得真实存在（否则是笔误不是债）', () => {

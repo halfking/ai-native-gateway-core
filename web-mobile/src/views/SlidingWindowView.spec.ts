@@ -581,47 +581,52 @@ describe('⑬ 后端没有租户维度（读 Go 源码）', () => {
     return readFileSync(p, 'utf8')
   }
 
-  it('⑬-1 ★★★★★★ handler 里既没有 tenantID 变量也没有 IsTenantAdmin', () => {
+  it('⑬-1 ★★★★★★ handler 现在按 effective role 推 tenantID（audit #153 修复，2026-10-16）', () => {
     const src = goSrc('admin/credential_monitor.go')
     const fn = src.slice(src.indexOf('func (m *CredentialMonitorHandlers) handleSlidingWindow'))
     const body = fn.slice(0, fn.indexOf('\n}\n\n'))
-    // ★★★ 这三条是**本批权限档的全部依据**：
-    //   没有租户键 ⇒ 非特权角色报出别的租户的 credential_id 就能读到它的调用明细。
-    expect(body).not.toContain('tenantID')
-    expect(body).not.toContain('IsTenantAdmin')
-    expect(body).not.toContain('EffectiveTenantID')
-    expect(body).not.toMatch(/Role\s*==|RequireSuperAdmin|requireUserManager/)
+    // ★★★ audit #153 把「凭据监控抽屉的高敏感数据跨租户」关上了：handler
+    //   现在按 effective role 推 tenantID，再把 tenantID 拼进两条数据腿
+    //   （Redis 与 _request_logs 回退）。本批起反向断言改为正向断言 —
+    //   若有人回退 audit #153 把 tenant 隔离拿掉，这道门会立刻红。
+    //   角色门控（admin/handler.go 那边 audit #154 没动这一族）依旧是
+    //   `h.admin(...)`，不属于本测试钉的范围。
+    expect(body).toContain('tenantID')
+    expect(body).toContain('IsTenantAdmin')
+    expect(body).toContain('GetTenantID')
   })
 
-  it('⑬-2 ★★★★★★ Redis 腿的键只有 (credentialID, model)', () => {
+  it('⑬-2 ★★★★★★ Redis 腿仍只按 (credentialID, model) 查 —— tenant 隔离只在 _request_logs 回退路径生效', () => {
     const src = goSrc('admin/credential_monitor.go')
+    // ★ audit #153 的策略：Redis 录制端没标 tenant tag，强制走 _request_logs
+    //   回退腿（那里带 tenant_id 列），而不是去改 Redis schema。所以这条
+    //   仍叫「Redis 腿只有 (credentialID, model)」，只是后面 caller 那里
+    //   看到 entries 为空会落到回退腿。判据因此改成"调用点的签名未变"。
     expect(src).toContain('m.recorder.GetRecent(ctx, credentialID, model, since)')
     expect(src).not.toContain('GetRecent(ctx, credentialID, model, since, tenantID)')
   })
 
-  it('⑬-3 ★★★★★★ 两条回退 SQL 的 **WHERE 里都没有** tenant 过滤', () => {
+  it('⑬-3 ★★★★★★ 两条回退 SQL 的 **WHERE 都加了** tenant 过滤（audit #153 修复，2026-10-16）', () => {
     const src = goSrc('admin/credential_monitor.go')
 
-    // —— 长窗路径：整个查询里**根本没有** tenant_id ——
+    // —— 长窗路径：WHERE 段必有 tenant_id ——
     const q = src.slice(src.indexOf('func slidingWindowQuery() string'))
     const qBody = q.slice(0, q.indexOf('\n}\n'))
     expect(qBody).toContain('credential_id = $1')
-    expect(qBody).not.toContain('tenant_id')
+    expect(qBody).toContain('tenant_id')
+    // audit #153 的统一形态：空串 = 全租户（super_admin / admin_key / 未登录），
+    // 否则按 tenant_id 强过滤。判据因此钉**字面形态**，不留"加法不收敛"的口子。
+    expect(qBody).toMatch(/AND\s*\(\s*\$\d+\s*=\s*''\s*OR\s+tenant_id\s*=\s*\$\d+\s*\)/)
 
-    // ★★★★★ 热窗路径**有一个** tenant_id，但它在 **LEFT JOIN 的 ON 子句**里
-    //   （`ON d.tenant_id::text = t.tenant_id::text`）—— 那是在**同一个租户内**
-    //   把两张表对上，**不是访问控制**。
-    // ⇒ ⇒★ **naive `grep tenant_id` 会得出「这里有租户处理」的错误结论**，
-    //   而实际上 WHERE 子句里一条 tenant 条件都没有。
-    //   ⇒ 判据因此只看 **WHERE 段**（子查询合流之后的那个）。
+    // ★★★★★ 热窗路径 LEFT JOIN 段仍写 tenant_id（**同一个租户内**对齐两张
+    //   表，不是访问控制）；除此之外外层 WHERE 也必须有 audit #153 那条
+    //   tenant 过滤。判据同时钉两侧，杜绝「只改一处」的退化方向。
     const h = src.slice(src.indexOf('func slidingWindowHotQuery() string'))
     const hBody = h.slice(0, h.indexOf('\n}\n'))
     expect(hBody).toContain('ON d.tenant_id::text = t.tenant_id::text')
     const wherePart = hBody.slice(hBody.indexOf(') cand'))
     expect(wherePart).toContain('credential_id = $1')
-    expect(wherePart).not.toContain('tenant_id')
-    // ★★ 并且**没有任何按租户的绑定参数**（$5 之类）被传进这条查询
-    expect(hBody).not.toMatch(/tenant_id\s*=\s*\$\d/)
+    expect(wherePart).toMatch(/tenant_id\s*=\s*\$\d/)
   })
 
   it('⑬-4 ★★★ 注册处传的仍是 h.admin（本族**不是** superAdmin 档注册）', () => {
