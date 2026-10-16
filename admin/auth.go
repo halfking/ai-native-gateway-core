@@ -371,6 +371,92 @@ func (h *Handler) generateAdminKey(secretKey string) (raw, hash, prefix, ciphert
 	return
 }
 
+// FormatAnomalyTenantAdminMiddleware guards /api/admin/format-anomalies*:
+// super_admin (and admin_key) keeps full access; tenant_admin gets
+// read-only access to the format anomaly tables via RLS policy isolation
+// (set app.current_tenant on the connection). The /resolve subroute is
+// super_admin-only — the subrouter enforces this gate before the SQL
+// runs (see handleFormatAnomalySubrouter).
+//
+// (2026-10-16, 批 157) — modelled after ProviderConsoleMiddleware
+// (admin/provider_access.go). Authorization premise: the bypass branch
+// is reached only when tenantID == "", which only happens for
+// super_admin / admin_key (handler 入口). tenant_admin always lands in
+// the second case, where EffectiveTenantIDAll returns the caller's own
+// tenantID, satisfying withTenantOrAllReadOnlyTx's "bypass only on
+// empty tenantID" constraint.
+func FormatAnomalyTenantAdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) http.HandlerFunc {
+	return tenantAdminOrSuperAdmin(next, db, secretKey, "format-anomalies")
+}
+
+// ModelIntegrityTenantAdminMiddleware guards /api/admin/model-integrity*:
+// same shape as FormatAnomalyTenantAdminMiddleware; /resolve is
+// super_admin-only, enforced in handleModelIntegrity.
+func ModelIntegrityTenantAdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) http.HandlerFunc {
+	return tenantAdminOrSuperAdmin(next, db, secretKey, "model-integrity")
+}
+
+// tenantAdminOrSuperAdmin is the shared three-case dispatch (super_admin
+// / tenant_admin / 其它 403). The label is purely for error messages.
+func tenantAdminOrSuperAdmin(next http.HandlerFunc, db *pgxpool.Pool, secretKey, label string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Mirror SuperAdminMiddleware auth surface so the super_admin path
+		// is byte-for-byte the access it had before this middleware existed.
+		tokenStr, ok := extractBearerOrCookieToken(r)
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		claims, err := VerifyToken(tokenStr, secretKey)
+		if err != nil || claims.UserID <= 0 {
+			writeError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		issuedAt := time.Time{}
+		if claims.IssuedAt != nil {
+			issuedAt = claims.IssuedAt.Time
+		}
+		if authRevocationProbe(r.Context(), db, claims.UserID, issuedAt) {
+			writeError(w, http.StatusUnauthorized, "session revoked: password changed")
+			return
+		}
+		if enforceMustChangePassword(w, r, claims) {
+			return
+		}
+		switch {
+		case claims.Role == "super_admin" || claims.Role == "admin_key":
+			authReq := SetAuthContext(r, &AuthContext{
+				UserID:   claims.UserID,
+				TenantID: claims.TenantID,
+				Username: claims.Username,
+				Role:     claims.Role,
+				IsJWT:    true,
+			})
+			next(w, authReq)
+			return
+		case claims.Role == "tenant_admin":
+			if claims.TenantID == "" {
+				// tenant_admin without a tenant binding cannot be safely
+				// isolated — refuse rather than risk bypass.
+				writeError(w, http.StatusForbidden, "tenant_admin must have a tenant binding to access "+label)
+				return
+			}
+			authReq := SetAuthContext(r, &AuthContext{
+				UserID:   claims.UserID,
+				TenantID: claims.TenantID,
+				Username: claims.Username,
+				Role:     claims.Role,
+				IsJWT:    true,
+			})
+			next(w, authReq)
+			return
+		default:
+			writeError(w, http.StatusForbidden, "super_admin or tenant_admin role required for this endpoint")
+			return
+		}
+	}
+}
+
 // SuperAdminMiddleware wraps admin auth + role check (super_admin only).
 // tenant_admin requests get 403 Forbidden.
 func SuperAdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) http.HandlerFunc {
