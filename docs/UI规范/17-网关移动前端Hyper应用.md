@@ -20831,3 +20831,59 @@ git worktree list 在清理前的输出确认了**没有** 任何 worktree 上�
 (b) batch 端点 per-item tenant 验证——本批信任 caller 端 `tenant_admin` 只能查自己的租户，前端没有 per-item tenant 注入入口；同源判定（caller tenant vs item tenant）已被前端 §11.115 super_admin only 收口，跨租户 probe 实际不可达。
 
 (c) 视图路径的 EXPLAIN 计划与 hot 路径 **同形态**——新增 `$5` 是个常量表达式，PG 优化器会把它折叠成 `tenant_id = 'tenant-x'`（plan 形态不变）。但**没有真库 EXPLAIN 实证**（没接 TEST_DATABASE_URL）；`TestCredentialDrawerWindow_RealDB` 已加第 5 参数 `""`，跑起来会验证 hot/视图两路文本可解析（已断言 `request_logs_with_current_month` 视图形态未破坏）；不验证计划，需真库 CI 一遍。
+
+## 11.191 第一百五十四批：后端 `/api/errors/trend` + `/api/credentials/model-history` 加角色门控 —— user 角色跨租户读数（5 条后端 issue 里 ★ 次重那条）
+
+### 一、交付与权限边界
+
+本批继续在批 153 后端安全 fix 推进线上。第 5 条后端 issue 列表里的 ★ 次重那条：「effective role=user 可读跨租户」。两个端点的形态**完全同款**：
+- `/api/errors/trend` → 路由注册 `admin(...)`（= `AdminMiddleware`，**任何通过认证的角色都过**，包括 `user`）；handler 内 `tenantID := EffectiveTenantIDAll(r)` 然后 SQL `($7 = '' OR credential_id IN (SELECT id FROM credentials WHERE tenant_id = $7))`（stats 腿）/ `($6 = '' OR tenant_id = $6)`（明细腿）。
+- `/api/credentials/model-history` → 路由注册 `wrap(...)`（=`h.admin` 同款）；handler 内 `tenantID := ""; if IsTenantAdmin(r) { tenantID = GetTenantID(r) }` 然后 SQL `($4 = '' OR mpr.tenant_id = $4)` / `($4 = '' OR al.tenant_id = $4)`。
+
+**问题**：`EffectiveTenantIDAll(r)` 与 `if IsTenantAdmin(r)` 对 `role=user` 都返回 `""`（既不是 tenant_admin，也不是 super_admin/admin_key）。SQL 形如 `$N = '' OR tenant_id = $N` ⇒ `$N = ''` 永远为真 ⇒ **filter 退化为「无 filter」** ⇒ user 角色读到全租户聚合 / 全租户历史。
+
+**修法**：两个 handler 入口加同款角色门控 `if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) { 403 }`：
+- 允许：super_admin / admin_key（legacy）/ tenant_admin
+- 阻止：role=user / 任何非上述角色
+- 与 `runModelHistory` 内联同款（admin/credential_monitor.go:1531-1535 已有 `if IsTenantAdmin(r) { tenantID = GetTenantID(r) }` 的「empty-when-not-tenant_admin」约定）；本批是把约定的"另一面"补上——约定本来就该包含"非 admin 不该到这一步"。
+
+### 二、为什么不用更猛的修法（403 vs 中间件）
+
+候选 1：把两个路由从 `admin(...)` 换成 `h.superAdmin(...)` —— 太严，会把 tenant_admin 挡在外面。tenant_admin 是这两个端点的合法客户端（自己的租户聚合 / 自己的凭据历史），不应被拒。
+
+候选 2：加一个 "admin-or-above" 中间件 —— 项目里**没有**这层抽象（AdminMiddleware 与 SuperAdminMiddleware 之间缺一档），新建中间件要动路由注册 + handler 字段类型 + 注册表测试，本批不扩基建。
+
+候选 3（采用）：handler 内联检查，跟 codebase 里其它"非 super 但不是 user"档位（如 `users.go:318 "administrator role required"` / `settings.go:137 "super_admin required"` 等）一致；文案 `"administrator role required"` 与 `users.go:318` 复用同一句。
+
+### 三、`handleModelHistory` 把门控放 nil-DB 检查之前；`getErrorsTrend` 放 nil-DB 之后
+
+不一致是有意的：
+- `getErrorsTrend`：handler 用 `errorsTrendDB` interface（admin/errors_trend.go:37），pgxmock 可注入；role gate 放 nil-DB 之后，原有 `TestErrorsTrendValidationAndDBErrors/{invalid_hours, invalid_granularity, invalid_credential_id, stats_db_error_surfaces_500, db_not_configured}` 五个 subtest 只需加一行 `req = SetAuthContext(req, &AuthContext{Role: "super_admin"})` 即可继续验证它们原本想验证的语义（参数校验 / nil db / DB 错误）。
+- `handleModelHistory`：handler 直接用 `m.h.db`（`Handler.db` 字段是 `*pgxpool.Pool` **强类型**，pgxmock 不能注入）。要把 role-gate 单测打出来只有两条路：(a) 起真 pgxpool（CI 太重），(b) 把 role gate 提前到 nil-DB 之前。选 (b) —— handler 级单元测试不需要真 DB 也能咬住 role-gate；信息泄露（"system 是否装 DB"）只是 503 vs 403 的边界，对外攻击面无变化。
+
+两条路径在 production 里**等价**：AdminMiddleware 先 set AuthContext，未授权者 401 在 middleware 拦掉；进 handler 的都是合法 auth。
+
+### 四、测试与判据
+
+新加 4 条测试（与已有共存）：
+- `TestGetErrorsTrend_UserRoleForbidden` —— role=user + nil pgxmock pool；断言 403 + mock 没被消费（`mock.ExpectationsWereMet` 失败即证 DB 没被碰）
+- `TestGetErrorsTrend_TenantAdminAndSuperAdminAllowed` —— 3 个 sub-test (super_admin / admin_key / tenant_admin)；nil db 让 handler 落到 nil-DB 503 而**不是** 403，证明 gate 不挡
+- `TestHandleModelHistory_UserRoleForbidden` —— role=user + nil h.db；断言 403 + 文案含 `"administrator role required"`；与 batch handler 同款
+- 既有 `TestHandleModelHistory_NilDB` / `TestErrorsTrendValidationAndDBErrors/...`：每个 sub-test 加一行 `req = SetAuthContext(req, &AuthContext{Role: "super_admin"})`（用 helper `adminReq`），保留原意图（验证参数校验 / nil db / DB 错误），不被新 gate 误伤
+
+★ **判据判别力自检**：`TestHandleModelHistory_NilDB` 加 super_admin auth 后，仍 503 ——证明 nil-db 检查在 gate 之后；`TestHandleModelHistory_UserRoleForbidden` 不设 h.db 仍 403 ——证明 gate 在 nil-db 之前。两两对位，每条只可能因为对应分支被改才红。
+
+### 五、验证
+
+- `go build ./admin/...` rc=0
+- `go vet ./admin/...` rc=0（无新增 warning）
+- `go test ./admin/... -run 'UserRoleForbidden|TenantAdminAndSuperAdminAllowed|HandleModelHistory|ErrorsTrend' -v` —— 13 条全过
+- `go test ./admin/... -count=1` —— 整组 admin + dashboardapi + dashboarddegrade + distlock rc=0（120s）
+
+### 六、不可证区分与未做
+
+(a) **前端不动**：errors/trend 与 model-history 这两个端点**没有 web-mobile 前端入口**（grep `web-mobile/src/api` 0 命中），属于桌面端/原生 API。本批纯后端 gate，前端无对应改动。
+
+(b) **super_admin/admin_key 路径**仍由 SQL filter 兜底（`tenantID = ""` ⇒ 全租户），是 legacy 行为，本批不动；若要严控这两个角色也要租户键 → 后续批另起。
+
+(c) **其它三个后端 issue 仍未动**：operational 三条子查询 / selfCheck 六个 handler（run 详情泄漏 request_body / response_preview，比本条 ★ 更重） / format_anomalies + model_integrity_events。本批明确**不**做这三条，留作可能的后续批（按用户的"三个任务"约定，本批是 1 / 3，剩下两批若属主拍板可独立发起）。

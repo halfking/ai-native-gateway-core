@@ -180,10 +180,35 @@ func TestHandleModelHistory_NilDB(t *testing.T) {
 	m := &CredentialMonitorHandlers{h: &Handler{}}
 	req := newReq(http.MethodGet,
 		"/api/credentials/model-history?credential_id=1&raw_model_name=m", nil)
+	// 2026-10-16 audit #154: pre-empt the role gate so this test still
+	// exercises the nil-DB 503. Production always reaches the handler with
+	// an admin role set by AdminMiddleware.
+	req = SetAuthContext(req, &AuthContext{Role: "super_admin"})
 	rr := rec()
 	m.handleModelHistory(rr, req)
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// 2026-10-16 audit #154: role gate on /api/credentials/model-history. Route
+// is registered under AdminMiddleware (any authenticated user), but the SQL
+// filter is `($4 = '' OR tenant_id = $4)` and tenantID only gets populated
+// for tenant_admin (handleModelHistory:1531). A role=user caller passes ""
+// through and reads every tenant's history. Restrict to super_admin /
+// admin_key / tenant_admin.
+func TestHandleModelHistory_UserRoleForbidden(t *testing.T) {
+	m := &CredentialMonitorHandlers{h: &Handler{}} // db intentionally nil
+	req := newReq(http.MethodGet,
+		"/api/credentials/model-history?credential_id=1&raw_model_name=m", nil)
+	req = SetAuthContext(req, &AuthContext{Role: "user", TenantID: "acme"})
+	rr := rec()
+	m.handleModelHistory(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "administrator role required") {
+		t.Fatalf("expected administrator role required, got %s", rr.Body.String())
 	}
 }
 

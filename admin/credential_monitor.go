@@ -1542,6 +1542,17 @@ func (m *CredentialMonitorHandlers) handleModelHistory(w http.ResponseWriter, r 
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	// 2026-10-16 audit #154: role gate (before nil-DB 503 so unauthorised
+	// callers can't probe for 503 — and so the role-gate unit test doesn't
+	// need a real pgxpool). Registered under AdminMiddleware (any
+	// authenticated user), but the SQL filter is `($4 = '' OR tenant_id = $4)`
+	// and tenantID only gets populated for tenant_admin (line below). A
+	// role=user caller passes "" through and sees every tenant's history.
+	// Restrict to super_admin / admin_key / tenant_admin.
+	if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "administrator role required")
+		return
+	}
 	if m.h == nil || m.h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return

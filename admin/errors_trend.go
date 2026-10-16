@@ -77,6 +77,15 @@ func (h *errorsTrendHandlers) getErrorsTrend(w http.ResponseWriter, r *http.Requ
 		writeErrorWithCode(w, http.StatusServiceUnavailable, "db_not_configured", "database is not configured")
 		return
 	}
+	// 2026-10-16 audit #154: role gate. Route is registered under AdminMiddleware
+	// (any authenticated user) but the SQL filter is `$N = '' OR tenant_id =
+	// $N`, and EffectiveTenantIDAll returns "" for non-tenant_admin. A role=user
+	// caller therefore reads cross-tenant aggregates. Restrict to
+	// super_admin / admin_key / tenant_admin.
+	if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "administrator role required")
+		return
+	}
 	q := r.URL.Query()
 	hours, err := parseVendorErrorHours(q.Get("hours"))
 	if err != nil {
