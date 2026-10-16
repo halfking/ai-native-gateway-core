@@ -21018,3 +21018,117 @@ WARN ... "all expectations were already fulfilled, call to method Query() was no
 (b) 5 条后端 issue 列表进度仍 3/5：批 153 sliding-window / 批 154 errors/trend+model-history / 批 155 selfCheck + 本节 fix。剩 operational + format_anomalies+model_integrity_events。
 
 (c) **批 155 的总 commit**仍是 `dff4d8b86`；本节 §11.193 是后续 fix 文档，归在新的 commit `XXX` 下，独立 small commit（不 amend 批 155 的 commit 历史，保持"verifier verdict → 修复"的可审计链条）。
+
+## 11.194 第一百五十七批：format-anomalies + model-integrity 双角色中间件（tenant_admin 扩）
+
+### 一、交付与权限边界
+
+**目标**：把 `/api/admin/format-anomalies*` 与 `/api/admin/model-integrity*` 从 super_admin only 扩到 `super_admin / admin_key` 全访问 + `tenant_admin` 只读（受 RLS policy 隔离）。**Resolve 写路径**保持 super_admin only（写操作保守）。
+
+**调研前置（见 `/tmp/co153-wt-evidence.txt` 6-15 跳）**：
+- 两表 `response_format_anomalies` / `model_integrity_events` **都有** RLS policy（`tenant_isolation` + `super_admin`）
+- `get_current_tenant()` 函数底层读 `app.current_tenant` GUC
+- `withTenantOrAllReadOnlyTx`（`admin/tenant_ctx.go:62`）按 tenantID 空/非空分派
+- 中间件现成范式 `ProviderConsoleMiddleware`（`admin/provider_access.go:33`）可抄
+- 强约束 "bypass 前提 = tenantID 为空只可能来自 super_admin/admin_key" 由中间件挡非 super 非 tenant_admin 满足
+
+**对其它 3 条 issue 的强收敛**（同期调研发现）：
+- `model_discovery_runs` / `credential_health_checks` / `self_check_runs` **完全没有 RLS policy**
+- 这 3 表的 operational 三表是"加列 ≠ 加隔离"（已存 agent memory）
+- operational 拍板"不扩"（保持 super_admin only）—— 推荐，0 改动
+
+### 二、改动
+
+#### 2.1 新中间件（`admin/auth.go`）
+
+仿 `ProviderConsoleMiddleware` 三 case：
+- `super_admin` / `admin_key` → 全访问（走 `withAllTenantReadOnlyTx` bypass）
+- `tenant_admin` 且 `tenantID != ""` → 只读访问（走 `withTenantOrAllReadOnlyTx` 设 GUC 走 policy）
+- `tenant_admin` 但 `tenantID == ""` → 403（防止 bypass 前提被违反）
+- 其它（user / 未登录） → 403 / 401
+
+两个独立 wrapper：`FormatAnomalyTenantAdminMiddleware` + `ModelIntegrityTenantAdminMiddleware`，共享 `tenantAdminOrSuperAdmin` 三 case 派发。
+
+#### 2.2 注册处（`admin/handler.go:955-966`）
+
+```
+h.superAdmin(h.handleFormatAnomalies)         → h.formatAnomalyTenantAdmin(...)
+h.superAdmin(h.handleFormatAnomalySubrouter)  → h.formatAnomalyTenantAdmin(...)
+h.superAdmin(h.handleModelIntegrity)          → h.modelIntegrityTenantAdmin(...)
+h.superAdmin(h.handleModelIntegrity)          → h.modelIntegrityTenantAdmin(...)
+```
+
+共 4 处注册改 + 2 处 wrapper 加。
+
+#### 2.3 helper 调用（admin/format_anomalies.go + admin/model_integrity.go）
+
+| 文件 | 行号 | 原 | 新 |
+|---|---|---|---|
+| format_anomalies.go | 111/148/218 | `withAllTenantReadOnlyTx` | `withTenantOrAllReadOnlyTx(..., tenantID, ...)` |
+| format_anomalies.go | 302 | `withAllTenantTx`（写） | **保持** + SQL 加 `AND ($3 = '' OR tenant_id = $3)` |
+| model_integrity.go | 153/172/234/340 | `withAllTenantReadOnlyTx` | `withTenantOrAllReadOnlyTx(..., tenantID, ...)` |
+| model_integrity.go | 298 | `withAllTenantTx`（写） | **保持** + SQL 加 `AND ($3 = '' OR tenant_id = $3)` |
+
+4 个 sub-handler 各自入口加 `tenantID := EffectiveTenantIDAll(r)`。
+
+共 7 read helper 改 + 2 write helper 保持 + 2 write SQL 加 tenant 过滤。
+
+**为什么写路径保持 withAllTenantTx**：tenant_admin 不允许写。中间件允许 tenant_admin 进来是为了**读**；subrouter 入口有 `if !IsSuperAdminOrLegacy(r) { 403 }` 早返。
+
+#### 2.4 subrouter 入口（handleFormatAnomalySubrouter + handleModelIntegrity dispatcher）
+
+- `handleFormatAnomalySubrouter`：resolve 路径**先**做 `IsSuperAdminOrLegacy` 检查，再 db-nil 检查
+- `handleModelIntegrity` dispatcher 头部对 `events/{id}/resolve` 路径**先**做 `IsSuperAdminOrLegacy` 检查，再 db-nil，再 case 分派
+
+为什么 db-nil 检查放在角色检查**后**：避免 misconfigured 部署对已被拒绝的角色返回 503（更应 403）。这是已被 superadmin_test.go 同款测试验证的形态。
+
+#### 2.5 顺手修的独立 bug
+
+两个 Resolve SQL 之前**完全没有 tenant 过滤**：
+- `UPDATE model_integrity_events ... WHERE id = $1` —— super_admin 能 update 任意租户的 event
+- `UPDATE response_format_anomalies ... WHERE id = $1` —— 同款
+
+本批加 `AND ($3 = '' OR tenant_id = $3)` 过滤，**修复了 super_admin 跨租户 update 的已存在 bug**（批 155 类似，加列不是加隔离，handler 内 SQL 才是唯一防线）。
+
+### 三、测试
+
+新增 `admin/format_model_integrity_tenant_admin_test.go`（11 个测试）：
+
+| 测试 | 覆盖 |
+|---|---|
+| `FormatAnomalyTenantAdminMiddleware_AllowsSuperAdmin` | super_admin JWT → 200 |
+| `FormatAnomalyTenantAdminMiddleware_AllowsTenantAdmin` | tenant_admin + tenantID → 200 |
+| `FormatAnomalyTenantAdminMiddleware_RejectsUserRole` | user role → 403 |
+| `FormatAnomalyTenantAdminMiddleware_RejectsTenantAdminWithoutTenant` | tenant_admin 无 tenantID → 403（防 bypass 前提违反）|
+| `FormatAnomalyTenantAdminMiddleware_AllowsAdminKey` | admin_key 继承 super 路径 |
+| `ModelIntegrityTenantAdminMiddleware_AllowsSuperAdmin` | 同上 model-integrity |
+| `ModelIntegrityTenantAdminMiddleware_AllowsTenantAdmin` | 同上 |
+| `ModelIntegrityTenantAdminMiddleware_RejectsUserRole` | 同上 |
+| `HandleFormatAnomalySubrouter_TenantAdminResolve_403` | **关键安全判据** |
+| `HandleModelIntegrity_TenantAdminResolve_403` | **关键安全判据** |
+| `HandleModelIntegrity_TenantAdminResolve_AllowsSuperAdmin` | 反向：super 仍可 resolve |
+
+**关键安全判据**是 `*TenantAdminResolve_403` —— 即使中间件允许 tenant_admin 进 subrouter，subrouter 入口的 `IsSuperAdminOrLegacy` 检查仍挡死写路径。`HandleModelIntegrity_TenantAdminResolve_AllowsSuperAdmin` 是反向证明：super 仍能 resolve（503 是因为 db=nil，不是 403），证明 gate 是 role-conditional 不是 blanket-closed。
+
+### 四、验证
+
+- `go build ./admin/...` rc=0
+- `go test ./admin/ -run 'FormatAnomalyTenantAdmin|ModelIntegrityTenantAdmin|TenantAdminResolve' -v` —— 11/11 全过
+- `go test ./admin/ -count=1` —— 整组 admin rc=0（99.8s）
+
+### 五、剩余 issue 收口
+
+5 条后端 issue 至此**全部收口**：
+- 批 153 sliding-window（`87499af9a`）✓
+- 批 154 errors_trend+model_history（`2f2c163e`）✓
+- 批 155 selfCheck + handleStats 收口（`dff4d8b86` + `2032eaafa`）✓
+- operational（推荐 A 不扩）—— 0 改动，归档
+- format_anomalies + model_integrity（本批 `XXX`）✓
+
+### 六、不可证区分与未做
+
+(a) **handler 端 SQL 的 tenant 过滤覆盖率 100% 已验**（11 个新测试 + admin 整组 99.8s），但**真库 RLS policy 行为**只能靠人工 / 真集成测试验证。policies 已知存在且依赖 `get_current_tenant()`（6 跳实证），但**未跑真集成测试**确认 tenant_admin 调 read 端点真只见本租户。
+
+(b) **3 表无 RLS policy**（model_discovery_runs / credential_health_checks / self_check_runs）仍是独立缺陷——批 157 不动它，列入下次"R 深度防御"批次。
+
+(c) **super_admin key 池形态**未变（admin_key 仍走 super 路径）。批 155 收口的 `sliding_window` 已对齐此模式。

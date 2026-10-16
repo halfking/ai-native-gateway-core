@@ -1632,6 +1632,30 @@ files=(
   # 640 为 713 的 client_protocol 前置而登记，却带着旧的硬编码函数体，每次重放
   # 都把 707 的目录派生体覆盖掉。869 落在 640 之后，才不会被同一次重放顶掉。
   "$ROOT_DIR/sql/migrations/startup/869_promote_session_turns_trace_events.sql"
+
+  # ── 2026-10-16 孤儿迁移 044 补登（health_source 白名单缺 probe_now）──────
+  #
+  # 044_health_source_probe_now.sql 早就写在 sql/migrations/startup/ 里，注释把
+  # 症状写得很清楚，但**从未**进入本通道的 files=()，也没进 installer 的
+  # StartupFiles（后者只收 478+ 的迁移，0xx 段被 baseline 吸收，而 baseline 里的
+  # 约束同样是旧形态）—— 于是它在任何环境都不会被执行。
+  #
+  # 后果不是"少了点什么"，而是**写入持续失败**：bg/credential_probe_v2.go 的
+  # ProbeNow 快路径写 health_source='probe_now'（:2180 / :2198），而
+  # chk_credentials_health_source 只放行 ['models','probe','mixed','none',
+  # 'fast_reprobe'] ⇒ 每次探测都撞
+  #   ERROR: new row for relation "credentials" violates check constraint
+  #   "chk_credentials_health_source" (SQLSTATE 23514)
+  # 探针写不回状态 ⇒ quota_state / availability_state 永远停在旧值 ⇒ 该凭据
+  # 绑定的全部模型被路由候选 SQL（provider/client.go 的
+  # quota_state NOT IN ('permanently_exhausted',…)）排除。
+  #
+  # 本机实测：cred=3 在 2680 部署后的 22 分钟里已失败 22 次，全部只命中 cred=3。
+  #
+  # 排在本数组**末尾**：044 是纯 DDL（DROP CONSTRAINT IF EXISTS + ADD），
+  # 幂等、不带函数体、不依赖任何前序迁移的派生结果，位置无关；放末尾可确保
+  # 它看到的是前序全部重放完的最终表形态。
+  "$ROOT_DIR/sql/migrations/startup/044_health_source_probe_now.sql"
 )
 
 

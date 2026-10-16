@@ -145,17 +145,85 @@ function errorMessage(statusText: string, text: string): string {
   }
 }
 
+// ── 全局同源并发闸门（2026-10-16）──────────────────────────────────────────
+//
+// 为什么需要：一次首屏会并发打出 ~20 个 /api 请求（version / auth/me /
+// data-horizon / plugin-nav ×3 / background-tasks / anomalies / keys /
+// body-cache-stats / providers / credentials / logs …），实测任意 100ms 窗口内
+// 峰值 **13 个** in-flight。浏览器对同源 HTTP/1.1 只有约 **6** 条并发连接，
+// 超出部分由浏览器排队或直接放弃 —— 放弃的那些在服务端留下
+// `context canceled`，前端表现为「页面完整、无报错、但数据恒为空」
+// （/request-logs 的 `/api/logs` 就是这样被饿死的）。
+//
+// 这里把排队**显式化**：超过上限的请求进 FIFO 队列排队，而不是丢给浏览器
+// 去竞争那 6 条连接。浏览器本来就在排队，区别只在于排队失败会变成取消，
+// 而这里排队一定会拿到连接。
+//
+// 上限取 4（低于浏览器的 6）留出余量：静态资源与页面级请求不经过本函数，
+// 仍需要那几条连接。
+const MAX_SAME_ORIGIN_CONCURRENCY = 4
+let inFlight = 0
+const waiters: (() => void)[] = []
+
+function acquireSlot(): Promise<void> {
+  if (inFlight < MAX_SAME_ORIGIN_CONCURRENCY) {
+    inFlight++
+    return Promise.resolve()
+  }
+  return new Promise<void>((resolve) => {
+    waiters.push(() => {
+      inFlight++
+      resolve()
+    })
+  })
+}
+
+function releaseSlot(): void {
+  inFlight--
+  const next = waiters.shift()
+  if (next) next()
+}
+
+// throttledFetch —— 给**不经过 req()** 的原生 fetch 调用点用的同一把闸门。
+//
+// 为什么需要单独导出：首屏有若干请求直接用原生 `fetch`，绕过了 req()：
+//   - App.vue            → /api/system/version
+//   - composables/useAppNav.ts → /api/system/bootstrap/status
+//   - router.ts          → /api/system/bootstrap/status（同一个端点首屏被调两次）
+// 它们与 req() 的请求竞争**同一条**浏览器同源连接池，所以闸门必须覆盖它们，
+// 否则「限了 req() 的并发」只是把压力挪到了没被限的那几个上。
+//
+// 语义与 req() 中的 fetch 完全一致：排队拿到连接 → 发请求 → 无论成败都释放。
+// 不解析响应、不处理错误，调用方继续按原生 fetch 的方式自己判 status。
+export function throttledFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  return (async () => {
+    await acquireSlot()
+    try {
+      return await fetch(input, init)
+    } finally {
+      releaseSlot()
+    }
+  })()
+}
+
 export async function req<T>(method: string, path: string, body?: unknown, options?: RequestOptions): Promise<T> {
   const hasBody = body !== undefined
-  const r = await fetch(BASE + path, {
-    method,
-    headers: headers(method, hasBody),
-    // Rule 20 §6.1: send HttpOnly session cookie (llmgw_session) so the
-    // server's AdminMiddleware can authenticate JWT logins via cookie.
-    credentials: 'same-origin',
-    body: hasBody ? JSON.stringify(body) : undefined,
-    signal: options?.signal,
-  })
+  await acquireSlot()
+  let r: Response
+  try {
+    r = await fetch(BASE + path, {
+      method,
+      headers: headers(method, hasBody),
+      // Rule 20 §6.1: send HttpOnly session cookie (llmgw_session) so the
+      // server's AdminMiddleware can authenticate JWT logins via cookie.
+      credentials: 'same-origin',
+      body: hasBody ? JSON.stringify(body) : undefined,
+      signal: options?.signal,
+    })
+  } finally {
+    // 无论成功、失败还是 fetch 抛异常都必须让出连接，否则队列会死锁。
+    releaseSlot()
+  }
   if (options?.signal?.aborted) {
     throw new DOMException('The operation was aborted', 'AbortError')
   }

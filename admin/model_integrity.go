@@ -55,10 +55,10 @@ type ModelIntegritySummary struct {
 // It owns the prefix and routes to summary, events, fingerprint-drift,
 // and the events/{id}/resolve subrouter.
 func (h *Handler) handleModelIntegrity(w http.ResponseWriter, r *http.Request) {
-	if h.db == nil {
-		writeError(w, http.StatusServiceUnavailable, "database not configured")
-		return
-	}
+	// 批 157 (2026-10-16): the resolve write path stays super_admin-only.
+	// We check role+resolve *before* the db-nil guard so a tenant_admin
+	// request that reaches the dispatcher sees 403, not 503 (the role
+	// check is more informative than a configuration error).
 	path := strings.TrimPrefix(r.URL.Path, "/api/admin/model-integrity")
 	path = strings.Trim(path, "/")
 	parts := strings.Split(path, "/")
@@ -66,6 +66,22 @@ func (h *Handler) handleModelIntegrity(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// Resolve gate: POST /events/{id}/resolve. tenant_admin must NOT
+	// be able to mark model integrity events as resolved.
+	if len(parts) == 3 && parts[0] == "events" && parts[2] == "resolve" {
+		if !IsSuperAdminOrLegacy(r) {
+			writeError(w, http.StatusForbidden, "super_admin role required to resolve model integrity events")
+			return
+		}
+	}
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	// 批 157 (2026-10-16): tenant isolation. The four read sub-handlers
+	// (List / Summary / FingerprintDrift + the events list path) each
+	// declare their own tenantID. The Resolve write path stays
+	// super_admin-only (gated above).
 	switch parts[0] {
 	case "summary":
 		h.handleModelIntegritySummary(w, r)
@@ -75,6 +91,8 @@ func (h *Handler) handleModelIntegrity(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if len(parts) == 3 && parts[2] == "resolve" {
+			// super_admin-only gate already enforced at the dispatcher
+			// head (line ~73); this case is unreachable for tenant_admin.
 			h.handleModelIntegrityResolve(w, r, parts[1])
 			return
 		}
@@ -87,6 +105,12 @@ func (h *Handler) handleModelIntegrity(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleModelIntegrityList(w http.ResponseWriter, r *http.Request) {
+	// 批 157 (2026-10-16): tenant isolation. handler-level tenantID so
+	// the read helpers below (line 153, 172) can dispatch via
+	// withTenantOrAllReadOnlyTx. The four read sub-handlers each declare
+	// their own tenantID; handleModelIntegrity's tenantID (line 60) is
+	// unused outside the dispatcher.
+	tenantID := EffectiveTenantIDAll(r)
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -138,7 +162,7 @@ func (h *Handler) handleModelIntegrityList(w http.ResponseWriter, r *http.Reques
 
 	var total int
 	countQuery := `SELECT COUNT(*) FROM model_integrity_events mie WHERE ` + whereSQL
-	if err := withAllTenantReadOnlyTx(r.Context(), h.db, func(tx pgx.Tx) error {
+	if err := withTenantOrAllReadOnlyTx(r.Context(), h.db, tenantID, func(tx pgx.Tx) error {
 		return tx.QueryRow(r.Context(), countQuery, args...).Scan(&total)
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "count query failed")
@@ -157,7 +181,7 @@ func (h *Handler) handleModelIntegrityList(w http.ResponseWriter, r *http.Reques
 	args = append(args, limit, offset)
 
 	items := make([]ModelIntegrityRecord, 0, limit)
-	if err := withAllTenantReadOnlyTx(r.Context(), h.db, func(tx pgx.Tx) error {
+	if err := withTenantOrAllReadOnlyTx(r.Context(), h.db, tenantID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(r.Context(), listQuery, args...)
 		if err != nil {
 			return err
@@ -211,6 +235,8 @@ func (h *Handler) handleModelIntegritySummary(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	// 批 157 (2026-10-16): tenant isolation.
+	tenantID := EffectiveTenantIDAll(r)
 	hours := queryInt(r, "hours", 24)
 	if hours <= 0 {
 		hours = 24
@@ -219,7 +245,7 @@ func (h *Handler) handleModelIntegritySummary(w http.ResponseWriter, r *http.Req
 		hours = 24 * 30
 	}
 	summaries := make([]ModelIntegritySummary, 0)
-	if err := withAllTenantReadOnlyTx(r.Context(), h.db, func(tx pgx.Tx) error {
+	if err := withTenantOrAllReadOnlyTx(r.Context(), h.db, tenantID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(r.Context(), `
 			SELECT
 				DATE_TRUNC('hour', ts) AS hour,
@@ -291,7 +317,8 @@ func (h *Handler) handleModelIntegrityResolve(w http.ResponseWriter, r *http.Req
 			    resolved_at = NOW(),
 			    resolution_notes = $2
 			WHERE id = $1
-		`, id, body.ResolutionNotes)
+			  AND ($3 = '' OR tenant_id = $3)
+		`, id, body.ResolutionNotes, EffectiveTenantIDAll(r))
 		return execErr
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "update failed")
@@ -316,6 +343,8 @@ func (h *Handler) handleModelIntegrityFingerprintDrift(w http.ResponseWriter, r 
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	// 批 157 (2026-10-16): tenant isolation.
+	tenantID := EffectiveTenantIDAll(r)
 	days := queryInt(r, "days", 7)
 	if days <= 0 || days > 30 {
 		days = 7
@@ -325,7 +354,7 @@ func (h *Handler) handleModelIntegrityFingerprintDrift(w http.ResponseWriter, r 
 		limit = 200
 	}
 	items := make([]ModelIntegrityRecord, 0)
-	if err := withAllTenantReadOnlyTx(r.Context(), h.db, func(tx pgx.Tx) error {
+	if err := withTenantOrAllReadOnlyTx(r.Context(), h.db, tenantID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(r.Context(), `
 			SELECT id, ts, request_id, provider_id, provider_code, credential_id,
 			       client_model, outbound_model, raw_model_name,

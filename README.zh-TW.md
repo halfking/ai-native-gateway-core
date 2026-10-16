@@ -104,13 +104,13 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | 路徑 | 職責 |
 |------|------|
 | `cmd/gateway/` | 組合根——單一二進位生產入口（資料面 + 控制面） |
-| `domains/` | 67 個 DDD 領域——`streaming`、`dispatch`、`credential`、`session`(+v2)、`ursm`、hooks、security… |
+| `domains/` | 68 個 DDD 領域——`streaming`、`dispatch`、`credential`、`session`(+v2)、`ursm`、hooks、security… |
 | `admin/` + `web/` | 管理 REST API + Vue 3 + TypeScript SPA（Element Plus、ECharts） |
 | `web-mobile/` | 行動端前端（Vue 3 + TypeScript）——第二生產前端；部署要求先建置 `dist/` |
 | `bg/` | 背景工作者——探測、生命週期清理、統計聚合、分區維護 |
 | `storage/` | 雙模式儲存工廠（`full`：PG+Redis / `lite`：SQLite+檔案+行程內 KV） |
 | `internal/` | 橫切基礎設施——IR、vendor 欄位剝離、工作階段鏡像、outbox、遙測… |
-| `sql/migrations/` + `db/migrations/` | 冪等遷移（啟動系列目前 864） |
+| `sql/migrations/` + `db/migrations/` | 冪等遷移（啟動系列目前 869） |
 | `installer/` | 獨立跨平台安裝器 / 升級器模組 |
 | `scripts/`、`deploy/` | 建置、部署、鏡像與驗證工具 |
 

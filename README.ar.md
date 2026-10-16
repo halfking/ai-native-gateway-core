@@ -104,13 +104,13 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | المسار | الدور |
 |--------|------|
 | `cmd/gateway/` | جذر التركيب — مدخل الإنتاج بثنائي واحد (مستوى البيانات + مستوى التحكم) |
-| `domains/` | 67 نطاقًا بأسلوب DDD — `streaming`، `dispatch`، `credential`، `session`(+v2)، `ursm`، hooks، security… |
+| `domains/` | 68 نطاقًا بأسلوب DDD — `streaming`، `dispatch`، `credential`، `session`(+v2)، `ursm`، hooks، security… |
 | `admin/` + `web/` | واجهة REST للإدارة + Vue 3 + TypeScript SPA (Element Plus، ECharts) |
 | `web-mobile/` | واجهة الجوال (Vue 3 + TypeScript) — واجهة الإنتاج الثانية؛ يرفض النشر العمل دون بناء `dist/` |
 | `bg/` | عمال الخلفية — السبر، تنظيف دورة الحياة، تجميع الإحصاءات، صيانة الأقسام |
 | `storage/` | مصنع تخزين ثنائي الوضع (`full`: PG+Redis / `lite`: SQLite+ملفات+KV داخلي) |
 | `internal/` | بنية تحتية عرضية — IR، إزالة حقول المزوّدين، مرآة الجلسات، outbox، القياس عن بعد… |
-| `sql/migrations/` + `db/migrations/` | ترحيلات idempotent (سلسلة بدء التشغيل حاليًا عند 864) |
+| `sql/migrations/` + `db/migrations/` | ترحيلات idempotent (سلسلة بدء التشغيل حاليًا عند 869) |
 | `installer/` | وحدة تثبيت/ترقية مستقلة متعددة المنصات |
 | `scripts/`، `deploy/` | أدوات البناء والنشر والمرايا والتحقق |
 

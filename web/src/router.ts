@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { store, isDefaultTenant } from './store'
+import { throttledFetch } from './api/_core'
 import { showOpsPlatform } from './config/edition'
 import { locationFromInternalPath } from './utils/safeRedirect'
 
@@ -273,6 +274,12 @@ export const router = createRouter({
     { path: '/admin/session-analytics/users/:owner', component: UserProfileView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/clients/:id', component: ClientAnalyticsView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/tasks/:id', component: TaskAnalyticsView, meta: { requiresAuth: true } },
+    {
+      path: '/admin/session-analytics/filter-options',
+      name: 'session-analytics-filter-options',
+      component: () => import('./views/SessionAnalyticsFilterOptionsView.vue'),
+      meta: { requiresAuth: true },
+    },
     { path: '/admin/compression',   component: CompressionView, meta: { requiresPlatformOps: true } },
     { path: '/admin/data-lifecycle', component: DataLifecycleView, meta: { requiresPlatformOps: true } },
     { path: '/admin/settings',     component: SettingsView, meta: { requiresSuper: true } },
@@ -354,7 +361,7 @@ async function shouldRedirectToBootstrap(toPath: string): Promise<boolean> {
   try {
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null
     const timer = controller ? window.setTimeout(() => controller.abort(), 2500) : 0
-    const res = await fetch('/api/system/bootstrap/status', {
+    const res = await throttledFetch('/api/system/bootstrap/status', {
       method: 'GET',
       credentials: 'same-origin',
       cache: 'no-store',

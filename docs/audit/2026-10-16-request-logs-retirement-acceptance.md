@@ -348,6 +348,114 @@ mock 探针 800 条（fast/slow 各 400），**800/800 返回 200**，吞吐 19.
 
 **一条量具坑（记在案）**：本机 macOS SDK 与 CLT 链接器不兼容，`CGO_ENABLED=0` 是 AGENTS.md 规定的必要妥协。但**用它跑 `./cmd/gateway` 会让 10 条 `TestLite*` 判据必然失败**，报错是 `sqlite: 当前二进制以 CGO_ENABLED=0 构建，SQLite 驱动不可用` —— 这是**量具不适配，不是回归**。用 `CGO_ENABLED=1` 复跑同一包 `ok 2.004s`。判别方法：全部 10 条失败**原因完全一致**且指向构建标签，而非某个断言行；且 lite 存储是独立存储平面，与本轮 full 模式的会话族退役无因果关系。
 
+## 物化视图核查（目标项：确认已切到 session_turns 相关表）
+
+本机 `pg_matviews` 共 **8 个**，逐个做了定义解析 + 实际 `REFRESH`（比只看定义强）：
+
+| 物化视图 | 直接源 | 是否读 `_request_logs*` | REFRESH |
+|---|---|---|---|
+| `session_client_stats` | `session_summaries` | ❌ | ✅ |
+| `session_owner_stats` | `session_summaries` | ❌ | ✅ |
+| `session_client_task_matrix` | `session_dim` | ❌ | ✅ |
+| `session_task_stats` | `session_dim` | ❌ | ✅ |
+| `tuning_signals_5m` | `tuning_signals` | ❌ | ✅ |
+| `tuning_signals_daily` | `tuning_signals` | ❌ | ✅ |
+| `routing_analytics_7d` | `credentials` + `routing_analytics_source` | ⚠️ 间接 | ✅ |
+| `routing_audit_summary_7d` | `routing_analytics_source` | ⚠️ 间接 | ✅ |
+
+**8 个全部 REFRESH 成功** —— 意味着它们都能在退役后的当前数据上正常重算，不依赖任何已被关闭的写入路径。
+
+### 两个 routing MV 的间接依赖：查清后确认是「有意保留」而非遗漏
+
+递归展开依赖链发现：
+
+```
+routing_analytics_source
+  └─ request_logs_with_current_month          ← 三层 UNION ALL 的混合视图
+       ├─ session_turns_hot  t  + session_turn_details_hot d     (新数据)
+       ├─ session_turns       t  + session_turn_details d        (历史月)
+       └─ LEFT JOIN LATERAL → _request_logs_hot / _request_logs  (仅历史补全)
+            WHERE NOT EXISTS(session_turns_hot …) AND NOT EXISTS(session_turns …)
+```
+
+即：**新写入 100% 来自会话族**；v1 只贡献「会话族里没有、且 v1 侧还留着」的补位列行，并由**反连接**保证不与会话族重复。这正是目标里「先改名加下划线作待删除标志 + 保留旧历史可读」的形态，属**有意保留**，不是遗漏。
+
+### 顺带证伪一个早前标记的 anti-join 风险项
+
+早前静态审计把上面那个 `NOT EXISTS` 反连接标为风险（担心跨分区全表扫描）。真机 EXPLAIN：
+
+```
+SubPlan → Index Only Scan using session_turns_2026_*_request_id_idx
+          Index Cond: (request_id = h.request_id)
+          Heap Fetches: 0
+Execution Time: 0.079 ms
+```
+
+**走索引、`Heap Fetches: 0`**，不是表扫描。**该风险项证伪**。
+
+## ★ origin/main 上的移动端构建是坏的（rebase 带进来的，已修）
+
+页面逐页验收时发现 `/admin/data-lifecycle` 与 `/dashboard` 都卡在「加载中…」，而**服务端完全正常**（同一批请求在网关日志里 `dur=5–60ms`，`/storage/tables` 仅 60ms）。沿"响应回来了但前端不收"往下查，抓到一条与本轮退役无关、但**阻断发布**的上游缺陷。
+
+**排查链**（每一步都排除了一个假设）：
+
+1. 等 6 秒后仍卡住 —— 排除"瞬时快照"（上一轮我在这上面误判过一次）。
+2. Network：19 个请求全部 `pending` —— 看起来像连接池耗尽。
+3. `lsof`：浏览器到 8782 只有 **4 条**连接，未达 Chrome 的 6 条上限 —— **排除连接耗尽**。
+4. 网关日志：那批请求**全部到达且很快**（`/storage` 5ms、`/storage/tables` **60ms**、`/jobs` 53ms）—— 排除服务端 hang。
+5. 追根因：重新构建前端，发现 **`web/dist` 是 03:53 的旧产物**，而 rebase 进来的 24 个提交改了大量 `web/src` / `web-mobile/src`。我此前复用 dist 的一致性检查是在 **rebase 之前**做的，基线变了而检查没跟着做。
+6. 重建时 `web-mobile` 构建失败 ⇒ 部署 refuse 门**正确拦截**（"refusing to deploy a release without the mobile surface"）。
+
+**真正的缺陷**：`web-mobile/src/components/shell/AppBottomNav.vue` 的 `safeNavigate` 形参声明为 `(e?: MouseEvent) => Promise<void> | void`，但 vue-router slot prop `navigate` 的真实返回是 `Promise<void | NavigationFailure>`。TypeScript 的 `Promise<void>` **不接受** `Promise<void | NavigationFailure>`（`void` 不是"可忽略"的 any），于是 `vue-tsc -b` 报 **TS2345**、`pnpm run build` 退出码 1。
+
+责任归属已核实：该文件**不在本轮任何改动集内**（`git diff HEAD~1 HEAD` 无它），最后改动来自 origin/main 的 **`454740b35 fix(mobile): 底栏 RouterLink 加防御性 @click`**。也就是说 **origin/main 上任何人构建 web-mobile 都会失败**。
+
+**修复**（最小、语义等价）：形参改为 `(e?: MouseEvent) => unknown`。函数体本来就把 `result` 当 `Promise<unknown>` 处理并 `.catch()`，运行期行为逐字不变。判据就是 build 脚本内嵌的 `vue-tsc -b`（类型门）本身——修复前退出码 1，修复后 `✓ built in 1.62s`、RC0。
+
+**两条教训**：
+- 复用构建产物的**一致性检查必须跟着基线走**。我检查 `web/src` 与 `dist` 是否一致是在 rebase 之前做的；rebase 引入 24 个前端提交后这个前提就失效了，而部署的 refuse 门只查"dist 是否为空"，查不出"dist 是否陈旧"。
+- refuse 门**再次证明了自己的价值**：它没有放行一个前端不完整的 release 上去。这与 AGENTS.md 记录的"空 web/ 白屏事故"是同一道门在另一侧的功劳。
+
+## ★ 页面挂死的排查链：服务端逐项排除后，停在客户端主线程
+
+逐页验收时 `/dashboard` 与 `/admin/data-lifecycle` 都卡在「正在检测登录状态…」，且 Browser 的 `console` 查询连续两次 **275s 超时**（这本身就是信号：渲染进程的主线程被占满）。排查刻意走了"每一步排除一个假设"的路线：
+
+| 步骤 | 做法 | 结果 | 排除了什么 |
+|---|---|---|---|
+| 1 | 等 6s 再看 | 仍卡住 | 排除「瞬时快照」（上一轮我在"共 0 条"上误判过一次） |
+| 2 | Network 查询 | 19 个请求全 `pending` | 看似连接池耗尽 |
+| 3 | `lsof` 统计浏览器连接 | 只有 **4 条**（Chrome 上限 6） | **排除连接耗尽** |
+| 4 | 网关日志按路径聚合 | 同一批请求**全部到达且很快**：`/storage` 5ms、`/storage/tables` **60ms**、`/jobs` 53ms | **排除服务端 hang** |
+| 5 | curl 取静态资源 | `index.html` 200、`index-jKNFvw0R.js` 200/1.36MB，部署产物与工作树构建**同一份** | **排除产物不一致** |
+| 6 | 重启网关 + 全新构建重部署（2677）后复现 | 仍卡 | **排除网关进程状态与旧产物** |
+
+**服务端、数据库、静态资源、网关进程四者全部排除**。剩下的唯一解释是**客户端 JS 主线程在该页面上被占满**，`App.vue:261` 的 `v-if="isHydrating"`（= `!store.authHydrated`）因此永不翻转。
+
+### ★ 一条我自己推翻的结论（记在案）
+
+我一度把「单秒 96 个 `/api/routing/resolve`」判定为**客户端请求风暴/死循环**，并准备据此归因到 `a1a1eba49`。复核后**这个结论是错的**，两条量具错误：
+
+1. **网关日志每条请求写两遍**（连续 4 行的 `request_id` 成对出现），所以 96 实际是 **48**，不是 96。峰值约 58 req/s。
+2. 更关键：`routing/resolve` 只在**我打开标签页的那一刻**离散出现（19:34 / 19:42 / 20:17 / 20:24 / 20:33 各一次），**不连续**。真正死循环会持续刷屏。它是 `QueuePerspectivePanel.vue:382-386` 的首屏批量解析——代码注释自己写着"特色+热门最多 ~60 个模型"，`RESOLVE_CONCURRENCY = 8` 分块并发，**属设计内的一次性行为**。
+
+**教训**：「某个端点请求量异常高」到「它是死循环」之间隔着两步：先确认**日志是否重复写**，再确认**它在时间轴上是连续还是离散**。缺任何一步都可能把一次正常的批量预取误判成风暴——这与本轮早前「`IS NULL` 量具」和「瞬时快照判读」是同一类错误：**从代理指标直接下因果结论**。
+
+### 未收口的真实问题
+
+我**没有**定位到占满主线程的确切代码。该页在 `Browser` 里已不可用（`console`/`query` 都 275s 超时），缺少浏览器内取证能力，而在没有 Console 的情况下继续读 Vue 源码推断循环点是**猜测**，我不做。
+
+已确认的事实边界：服务端全绿（对应 API 在网关日志里 5–60ms 完成）；同一份产物用 curl 取正常；换标签页、硬刷新、重启网关、重建部署均复现。**需要在一个能读浏览器 Console 的环境继续追**，这属于前端侧问题，且不在本轮退役改动集内（`git diff HEAD~2 HEAD` 对 `web/` 零命中）。
+
+## ★ origin/main 上的移动端构建缺陷（已被上游独立修好，我这边无需再改）
+
+同一个页面会话里撞到第二个问题：重建前端时 `web-mobile` 构建失败，`vue-tsc -b` 报 **TS2345**（`safeNavigate` 形参声明 `Promise<void> | void`，而 vue-router 的 slot `navigate` 实际返回 `Promise<void | NavigationFailure>`），`deploy-local` 的 refuse 门随即**拒绝发布整个 release**。
+
+责任归属：`web-mobile/src/components/shell/AppBottomNav.vue` 最后改动来自 **`454740b35`**，不在本轮改动集内 —— 也就是说 **origin/main 上任何人构建 web-mobile 都会失败**。
+
+我当时做了最小修复（形参改 `unknown`）并成功构建。但随后 `git fetch` 发现**上游已用 `9406de656` 独立修好了同一问题**，且修法更好（用具名类型 `RouterNavigate = (e?: MouseEvent) => Promise<unknown> | void` 并写了精确注释说明 vue-router 5.2.0 的真实签名）。于是我**撤掉了自己的冗余修复、rebase 到含该修复的 origin/main**，当前 `behind: 0  ahead: 0`。
+
+**教训**：本地修好一个上游缺陷后应当 `git fetch` 再确认一次归属；否则会把同一个修复提交两次（这次是靠 refuse 门失败才暴露出来，而不是靠人工比对）。
+
 ## 页面级验收覆盖（诚实记录）
 
 浏览器（内置标签页，管理员已登录）逐页核验结果：

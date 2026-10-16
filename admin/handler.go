@@ -918,6 +918,21 @@ func (h *Handler) superAdmin(fn http.HandlerFunc) http.HandlerFunc {
 	return SuperAdminMiddleware(fn, h.db, h.secret)
 }
 
+// formatAnomalyTenantAdmin wraps the format-anomalies handler with the
+// new dual-role middleware: super_admin (and admin_key) keep full
+// access; tenant_admin gets read-only access via RLS policy isolation.
+// Sub-routes that mutate rows (POST /{id}/resolve) are additionally
+// gated inside the subrouter. (批 157, 2026-10-16)
+func (h *Handler) formatAnomalyTenantAdmin(fn http.HandlerFunc) http.HandlerFunc {
+	return FormatAnomalyTenantAdminMiddleware(fn, h.db, h.secret)
+}
+
+// modelIntegrityTenantAdmin wraps the model-integrity handler with the
+// same dual-role middleware as format-anomalies. (批 157, 2026-10-16)
+func (h *Handler) modelIntegrityTenantAdmin(fn http.HandlerFunc) http.HandlerFunc {
+	return ModelIntegrityTenantAdminMiddleware(fn, h.db, h.secret)
+}
+
 // providerConsole wraps the provider console tree with
 // ProviderConsoleMiddleware: super_admin keeps full access, and a
 // default-tenant tenant_admin gets read-only access plus credential API
@@ -947,8 +962,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/users", admin(h.handleUsers))
 	mux.HandleFunc("/api/admin/audit-logs", h.superAdmin(h.handleListAuditLogs))
 	mux.HandleFunc("/api/admin/format-anomaly-summary", h.superAdmin(h.handleFormatAnomalySummary))
-	mux.HandleFunc("/api/admin/format-anomalies", h.superAdmin(h.handleFormatAnomalies))
-	mux.HandleFunc("/api/admin/format-anomalies/", h.superAdmin(h.handleFormatAnomalySubrouter))
+	mux.HandleFunc("/api/admin/format-anomalies", h.formatAnomalyTenantAdmin(h.handleFormatAnomalies))
+	mux.HandleFunc("/api/admin/format-anomalies/", h.formatAnomalyTenantAdmin(h.handleFormatAnomalySubrouter))
 	// reqprobe (2026-09-21): 请求侧异常（参数被拒/模式不匹配）列表、
 	// 徽标计数与批量解决；存储与部署模式无关（Full=Redis / lite=内存）。
 	mux.HandleFunc("/api/admin/request-anomalies", h.superAdmin(h.handleRequestAnomalies))
@@ -957,8 +972,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// finish_refusal, finish_truncation, empty_response, repeated_content,
 	// fingerprint_drift). See domains/streaming/integrity/ and
 	// admin/model_integrity.go for the read/write surface.
-	mux.HandleFunc("/api/admin/model-integrity", h.superAdmin(h.handleModelIntegrity))
-	mux.HandleFunc("/api/admin/model-integrity/", h.superAdmin(h.handleModelIntegrity))
+	mux.HandleFunc("/api/admin/model-integrity", h.modelIntegrityTenantAdmin(h.handleModelIntegrity))
+	mux.HandleFunc("/api/admin/model-integrity/", h.modelIntegrityTenantAdmin(h.handleModelIntegrity))
 	mux.HandleFunc("/api/admin/tenants", h.superAdmin(h.handleTenants))
 	mux.HandleFunc("/api/admin/tenants/", h.superAdmin(h.handleTenants))
 	mux.HandleFunc("/api/admin/mobile-node/descriptor", h.superAdmin(h.handleMobileNodeDescriptor))

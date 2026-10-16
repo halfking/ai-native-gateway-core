@@ -104,13 +104,13 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | Ruta | Rol |
 |------|-----|
 | `cmd/gateway/` | Raíz de composición — entrada de producción de binario único (plano de datos + control) |
-| `domains/` | 67 dominios DDD — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, hooks, seguridad… |
+| `domains/` | 68 dominios DDD — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, hooks, seguridad… |
 | `admin/` + `web/` | API REST de administración + SPA Vue 3 + TypeScript (Element Plus, ECharts) |
 | `web-mobile/` | Frontend móvil (Vue 3 + TypeScript): segunda UI de producción; el despliegue se niega a arrancar sin su build `dist/` |
 | `bg/` | Workers en segundo plano — sondeo, limpieza del ciclo de vida, agregación de estadísticas, mantenimiento de particiones |
 | `storage/` | Fábrica de almacenamiento de doble modo (`full`: PG+Redis / `lite`: SQLite+ficheros+KV en proceso) |
 | `internal/` | Infraestructura transversal — IR, strip de campos del proveedor, espejo de sesión, outbox, telemetría… |
-| `sql/migrations/` + `db/migrations/` | Migraciones idempotentes (serie de arranque actualmente en 864) |
+| `sql/migrations/` + `db/migrations/` | Migraciones idempotentes (serie de arranque actualmente en 869) |
 | `installer/` | Módulo instalador/actualizador autónomo multiplataforma |
 | `scripts/`, `deploy/` | Herramientas de build, despliegue, espejo y verificación |
 

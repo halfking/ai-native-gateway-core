@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { store, clearAll, clearJwt, clearMustChangePasswordFlag, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps, markAuthHydrated, setJwtToken, setUserInfo, authBearer } from './store'
 import { logout as apiLogout } from './api/auth'
+import { throttledFetch } from './api/_core'
 import { getAuthMe } from './api/admin'
 import LoginModal from './components/LoginModal.vue'
 import ChangePasswordDialog from './components/ChangePasswordDialog.vue'
@@ -140,7 +141,7 @@ async function loadVersion() {
   if (!isLoggedIn.value) return
   const token = authBearer()
   try {
-    const resp = await fetch('/api/system/version', {
+    const resp = await throttledFetch('/api/system/version', {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
       credentials: 'same-origin',
     })

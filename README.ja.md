@@ -104,13 +104,13 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | パス | 役割 |
 |------|------|
 | `cmd/gateway/` | コンポジションルート —— シングルバイナリの本番エントリ（データ + コントロールプレーン） |
-| `domains/` | 67 の DDD ドメイン —— `streaming`、`dispatch`、`credential`、`session`(+v2)、`ursm`、hooks、security など |
+| `domains/` | 68 の DDD ドメイン —— `streaming`、`dispatch`、`credential`、`session`(+v2)、`ursm`、hooks、security など |
 | `admin/` + `web/` | 管理 REST API + Vue 3 + TypeScript SPA（Element Plus、ECharts） |
 | `web-mobile/` | モバイルフロントエンド（Vue 3 + TypeScript）——第 2 の本番 UI。デプロイは `dist/` ビルドなしでは実行されない |
 | `bg/` | バックグラウンドワーカー —— プロービング、ライフサイクルクリーンアップ、統計集計、パーティションメンテナンス |
 | `storage/` | デュアルモードストレージファクトリ（`full`：PG+Redis / `lite`：SQLite+ファイル+インプロセス KV） |
 | `internal/` | 横断インフラ —— IR、ベンダーフィールド除去、セッションミラー、outbox、テレメトリなど |
-| `sql/migrations/` + `db/migrations/` | 冪等マイグレーション（起動シリーズは現在 864） |
+| `sql/migrations/` + `db/migrations/` | 冪等マイグレーション（起動シリーズは現在 869） |
 | `installer/` | スタンドアロンのクロスプラットフォームインストーラ / アップグレーダーモジュール |
 | `scripts/`、`deploy/` | ビルド、デプロイ、ミラー、検証ツール |
 

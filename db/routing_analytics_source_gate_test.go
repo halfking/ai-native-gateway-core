@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,14 +52,30 @@ func routingAnalyticsSourceGateQueries(t *testing.T) []string {
 			return true
 		})
 	}
-	if len(queries) != 2 {
-		t.Fatalf("want exactly the fast and stale-definition queries, got %d", len(queries))
+	if len(queries) != 3 {
+		t.Fatalf("want fast + stale-definition + missing-ukey queries, got %d", len(queries))
 	}
 	return queries
 }
 
 func TestRoutingAnalyticsSourceGateQueries(t *testing.T) {
-	routingAnalyticsSourceGateQueries(t)
+	queries := routingAnalyticsSourceGateQueries(t)
+	for _, part := range []string{"routing_analytics_7d", "routing_analytics_7d_ukey", "NOT EXISTS"} {
+		if !strings.Contains(queries[2], part) {
+			t.Fatalf("missing-ukey gate query missing %q: %s", part, queries[2])
+		}
+	}
+}
+
+func TestRoutingAnalyticsMVSQLUsesOrdinalGroupBy(t *testing.T) {
+	if !strings.Contains(routingAnalyticsMVSQL, "GROUP BY 1, 2, 3, 4, 5, 6, 7") {
+		t.Fatal("routingAnalyticsMVSQL must GROUP BY output ordinals so is_auto_request alias cannot shadow the source column")
+	}
+	// The shadowing form (GROUP BY ... is_auto_request, tenant_id as aliases)
+	// is the 23505 deploy-blocker; ordinals are the only accepted shape.
+	if strings.Contains(routingAnalyticsMVSQL, "effective_provider_id,\n\t  is_auto_request,\n\t  tenant_id") {
+		t.Fatal("routingAnalyticsMVSQL still GROUP BYs is_auto_request by name (alias shadowing)")
+	}
 }
 
 // This test requires a dedicated scratch database: the gates explicitly inspect
