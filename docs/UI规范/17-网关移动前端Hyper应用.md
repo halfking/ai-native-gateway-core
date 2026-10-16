@@ -20887,3 +20887,86 @@ git worktree list 在清理前的输出确认了**没有** 任何 worktree 上�
 (b) **super_admin/admin_key 路径**仍由 SQL filter 兜底（`tenantID = ""` ⇒ 全租户），是 legacy 行为，本批不动；若要严控这两个角色也要租户键 → 后续批另起。
 
 (c) **其它三个后端 issue 仍未动**：operational 三条子查询 / selfCheck 六个 handler（run 详情泄漏 request_body / response_preview，比本条 ★ 更重） / format_anomalies + model_integrity_events。本批明确**不**做这三条，留作可能的后续批（按用户的"三个任务"约定，本批是 1 / 3，剩下两批若属主拍板可独立发起）。
+
+## 11.192 第一百五十五批：后端 `self_check/*` 六个 handler 加 tenant 条件 —— 5 条后端 issue 里 ★ 更重那条（run 详情泄漏 request_body / response_preview）
+
+### 一、交付与权限边界
+
+接批 154 收口后继续推进 5 条 issue 列表里 **★ 更重那条**：「selfCheck 六个 handler 加 tenant 条件（run 详情泄漏 request_body / response_preview）」。本条之所以比批 153/154 更重：sliding-window 是 credential_id 粒度的明细，errors/trend 是聚合；self_check_runs **run 详情**直接返回 `self_check_round_results.request_body`（截断到 4K）和 `response_preview`（前 500 字符）——这是字面意义上的"调用现场"，跨租户能拿到对方凭据的请求与响应片段。
+
+落点 4 个 admin handler（其它 4 个保持现状）：
+1. `admin/self_check_handlers.go::handleListRuns` —— 列表，加 `AND ($N = '' OR tenant_id = $N)`
+2. `admin/self_check_handlers.go::handleGetRun` —— **核心泄漏点**，run 查询加同款；rounds 表无 tenant_id 但 FK-link 到 runs，run 验证通过即安全返回 rounds
+3. `admin/self_check_handlers.go::handleStats` —— 汇总（两个 SQL：summary + per-model）都加
+4. `admin/self_check_handlers.go::handleModels` —— 模型清单
+
+**保持现状的 4 个 handler**（按设计）：
+- `handleGetSettings` —— `self_check_settings` 是单行全局配置，迁移 338 的设计就是 `id=1` 的单行；不存 tenant 维度
+- `handleUpdateSettings` —— 已用 `superAdmin(...)` 注册（不是 `admin(...)`），角色已守
+- `handleTriggerAvailability` —— 仅返状态/原因，无数据
+- `handleTrigger` —— 已用 `superAdmin(...)` 注册
+
+### 二、SQL 形态与 schema 依据
+
+`self_check_runs.tenant_id`（`sql/migrations/domain/338_self_check.sql:33`）已存在：
+```sql
+tenant_id text NOT NULL DEFAULT 'default',
+```
+**`self_check_round_results` 无 tenant_id 列**——但 rounds 是 FK-link 到 runs（`run_id bigint NOT NULL REFERENCES self_check_runs(id) ON DELETE CASCADE`），handler 先用租户过滤查 run（`WHERE id=$1 AND ($2 = '' OR tenant_id = $2)`），未找到返 404，**rounds 查询只在 run 已确认归属后才执行**——FK-link + handler 级联保证跨租户 caller 拿不到 rounds。
+
+`self_check_runs` 无 `tenant_id` 索引（仅有 `idx_self_check_runs_model`、`_started`、`_status`、`_model_started`），本批**不**加索引。理由：
+- `handleGetRun` 用 PK `id` 定位，tenant 是 post-fetch 过滤（O(1) lookup）
+- `handleListRuns` 多带 `AND model_name = $N`/`AND status = $N` 条件，`idx_self_check_runs_model_started` 仍是首选；tenant 走 Filter 一道，PG 优化器在租户基数小时退化不显著
+- 加 `(tenant_id, started_at DESC)` 索引是后续批的工作，等真库 EXPLAIN 实证后再做（本批只闭合安全洞，不动性能形态）
+
+### 三、为什么不做 cross-check（拿 run_id 反查 model_offers.tenant_id）
+
+`model_offers` 表里没有 self_check_runs.tenant_id 的 FK 链——self_check_runs 是 cron/手动触发产生的"自检结果"，跟具体 model_offer 无关（credential 维度也有，但通过 model_name 字符串关联，不可靠）。所以**没有可用的 cross-check 路径**——SQL 层 `tenant_id` 列就是唯一真相源。
+
+代码形态沿用批 153 范式：
+```go
+tenantID := EffectiveTenantIDAll(r)  // super_admin/admin_key → ""，tenant_admin → own
+// SQL 末尾加：AND ($N = '' OR tenant_id = $N)
+```
+handler 行为：
+- super_admin / admin_key → tenantID="" → SQL `tenant_id = ''` 永远 false（除非 PG 实际存了空串 tenant），实际 `OR` 短路为 true → 看到全租户
+- tenant_admin → tenantID="acme" → SQL `tenant_id = 'acme'` 过滤
+- 任何角色想跨租户看 run id → run 查询 0 行 → 404 → 不进 rounds 查询
+
+### 四、测试与判据
+
+新加 6 条测试（与既有 2 条 TestHandleTriggerAvailability 共存）：
+- `TestHandleListRuns_TenantFilterInSQL` —— pgxmock 期望 SQL 含 `tenant_id` 且 WithArgs 匹配 tenant_admin "acme" + limit
+- `TestHandleGetRun_TenantAdminCrossTenant_404` —— **关键安全判据**：tenant_admin 拿别人 run id（42）→ run query 返 ErrNoRows → handler 返 404；pgxmock 不期望 rounds 查询（**期望的 calls 用完就 fail**，等价于"rounds 查询没被调用"的安全不变量）
+- `TestHandleGetRun_TenantAdminOwnTenant_OK` —— 同租户 run 42 → run 返行 + rounds 返 ping body/pong preview → 200
+- `TestHandleGetRun_SuperAdminEmptyTenant_OK` —— super_admin tenantID="" → 200 路径同上
+- `TestHandleStats_TenantFilterInSQL` —— 两个 SQL（summary + per-model）都期望含 tenant_id + WithArgs("acme")
+- `TestHandleModels_TenantFilterInSQL` —— SQL 含 tenant_id + WithArgs("acme")
+
+★ **判据判别力自检**：
+- CrossTenant 测试**不**mock rounds 期望（pgxmock 默认 strict mode）→ 任何让 handler 走到 rounds 的实现都立刻红（rounds 触发了未 mock 的 query）
+- super_admin 测试用 `tenantID=""` + `WithArgs(int64(42), "")` 锁住——任何把 super_admin 也走 tenant filter 的"过度修复"都因 args 不匹配而红
+- 4 个 filter 测试（listRuns/stats × 2/models）都 pin WithArgs("acme")——任何漏传 tenantID 的实现都因 args 数对不上而红
+
+### 五、验证
+
+- `go build ./admin/...` rc=0
+- `go vet ./admin/...` rc=0
+- `go test ./admin/... -run 'HandleListRuns_TenantFilter|HandleGetRun_TenantAdmin|HandleGetRun_SuperAdmin|HandleStats_TenantFilter|HandleModels_TenantFilter' -v` —— 6 条全过
+- `go test ./admin/... -count=1` —— 整组 admin + dashboardapi + dashboarddegrade + distlock rc=0（115s）
+- 既有 2 条 TestHandleTriggerAvailability_* 不动（handler 逻辑未变）
+
+### 六、不可证区分与未做
+
+(a) **真库 EXPLAIN 实证**未跑——$N tenant filter 加到现有 `idx_self_check_runs_model_started` 之后是否退化 plan 形态，未接 TEST_DATABASE_URL 验证。252/211 真库 EXPLAIN 留作可能的后续批。
+
+(b) **`(tenant_id, started_at DESC)` 索引**未加——见 §二 论证，加索引是性能工作非安全必需，本批**明确**不做。
+
+(c) **批 153/154 风格对比**：本批与前两批同款——SQL 层 `($N = '' OR tenant_id = $N)` 范式 + handler 入口算 `EffectiveTenantIDAll(r)` + 测试用 pgxmock 验 SQL 文本。**没有 cross-check**（model_offers.tenant_id 反查路径不存在），是**纯 SQL 过滤**——这与批 153 一致，与批 154（角色门控）不同。
+
+(d) **5 条 issue 列表进度**：批 153 sliding-window（DONE）、批 154 errors/trend + model-history（DONE）、批 155 selfCheck（DONE）—— **3/5**。剩 2 条：
+- ③ operational 三条子查询加 tenant 条件
+- ⑤ format_anomalies + model_integrity_events 加 tenant 条件
+若用户要继续推进，可独立发起批 156/157。
+
+(e) **前端不动**：self-check 面板是 desktop Web 端（`web/src/views/SelfCheckView.vue`），不在 web-mobile 范围。本批纯后端 tenant 过滤，前端无改动。`web-mobile` 的孤儿棘轮（13→12 路线）已被批 117~152 清完，与本批无关。
