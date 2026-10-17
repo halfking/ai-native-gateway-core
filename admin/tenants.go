@@ -767,6 +767,13 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	var s tenantStats
 	s.Days = days
 
+	// 2026-10-18：S4 停写后 default/7d 仍在 by-model/by-app 上把 10s 打穿
+	// （~1e5 session_turns 行）。优先走 stats_usage_daily（与 /api/admin/stats
+	// 同源）；rollup 缺表时再回落 raw union。
+	if h.tryTenantStatsFromDailyRollup(w, ctx, code, days) {
+		return
+	}
+
 	// 2026-09-30 三十六轮合并定稿（远端十五轮 P1 实勘 + 本轮 R36-B3 真库根修）：
 	// ① hot 保留窗仅 8h（partition_manager.DefaultRetentionWindow）——days<=7
 	// 走 hot-only 会让默认"近 7 天"视图 totals/credits/daily 只见最近 ~8h、
