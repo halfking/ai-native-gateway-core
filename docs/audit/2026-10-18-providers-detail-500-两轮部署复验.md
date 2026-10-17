@@ -341,3 +341,46 @@ SELECT (SELECT count(*) FROM public.session_turns t
 
 **风险与收益**：收益 = 每 3 分钟省下一次满预算空转、并让一个从未有值的指标
 开始有值；风险 = 指标口径变化（窗外那 33 万结构性死行不再计入）。
+
+## 十一、gauge 加窗已落地（owner 拍板后实施，提交 `a86d1d286`，上线 `2698-aa16536e`）
+
+**说明**：owner 那一票是问卷**超时自动选中推荐项**，非手动确认。改动可
+`git revert a86d1d286` 回滚，故按推荐项推进。
+
+### 改了什么
+
+`sessionRequestStatusRemainingSQL` 的**父表臂**加 `partition_date >= (now()
+- interval '7 days')::date`，与 `sessionRequestStatusCandidateSQL` 同窗；
+`_hot` 臂**保持无窗**（它承载 pre-823 进程写入、尚未 promote 的 NULL 行，
+正是发布闸门要答的那一族，且仅约 6k 行）。
+
+### 口径取舍（如实记录，未埋在注释深处）
+
+旧注释称：无窗 gauge 能让「job 停摆超 7 天后仍报出积压，发布闸门保持诚实」。
+**加窗确实放弃了这一条。** 接受理由：
+
+1. 该性质在实践中本就是空的——gauge 从未返回过数字（20 次失败 / 0 次成功），
+   无从「失去」诚实性；
+2. 候选查询同样不会去动窗外那些行，下界与 job 实际作用域一致。
+
+### 判据（3 条新增，变异验证 3/3 变红）
+
+| 判据 | 钉住什么 | 变异 |
+| --- | --- | --- |
+| `ParentArmIsWindowed` | 父表臂必须有 7 天下界 | 拿掉 → 红 |
+| `HotArmStaysWindowless` | `_hot` 臂**不许**有 partition_date | 加上 → 红 |
+| `WindowAppliesToBothPredicateSites` | 两臂各自的 NULL/NOT NULL 谓词都在 | 删一个 → 红 |
+
+**为什么拆成三条而不并入既有 `CoversBothSurfaces`**：那个测试守的是
+「两个面都要查」（退役前仍存在的行不能漏），新测试守的是「父表臂要加窗」
+（否则空转回来）。两者方向相反；合并会得到一个「为满足其一而破坏其二」的
+判据。这正是本次事故里反复出现的判据设计错误。
+
+既有的 5 条相关判据（`RemainingGaugeIsVerbatim`、`RemainingGaugeFailureIs
+NotZero`、`RemainingSampledOncePerDrain`、`RemainingSQLContract`、
+`RemainingSQLCoversBothSurfaces`）全部仍然绿。
+
+### 上线
+
+`2698-aa16536e`（总 599s，慢在前端构建，非切换；切换 54s）。
+`/api/providers/14` 上线后仍 **200 / 0.12s**，无回归。
