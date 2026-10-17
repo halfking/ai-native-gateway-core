@@ -94,7 +94,8 @@ harness 未注入 `LLM_GATEWAY_DATABASE_URL=$GATE_URL`。
 
 ### 实测
 
-`pg_stat_statements`（窗口内）：
+`pg_stat_statements`（窗口 = PG 启动至今，实测 postmaster uptime 11.8 天；
+`pg_stat_database.stats_reset` 为 NULL，故统计量自 PG 启动起累计）：
 
 | mean | max | calls | 累计 | 查询 |
 |---|---|---|---|---|
@@ -102,7 +103,17 @@ harness 未注入 `LLM_GATEWAY_DATABASE_URL=$GATE_URL`。
 | 98.0s | 582.3s | 131 | 213.9 min | `SELECT analyze_llm_gateway_table_stats($1)` |
 | 444.5s | 1313.8s | 7 | 51.9 min | `… CROSS JOIN LATERAL pgstattuple_approx(…)` |
 
-### 根因（有 EXPLAIN 证据，非推测）
+⚠ **第三行已订正（2026-10-17 补测）**：我最初把它与前两行并列，
+读起来像「第三条生产慢查询」。**实测不是**：
+`pgstattuple_approx` 在 Go 侧**没有任何调用点**（全仓 grep 只命中文档），
+且连续 90s 观测 calls **恒为 7 不增长** ⇒ 它是历史**手工诊断脚本**
+（与 runbook 里「§10.28 的那个脚本，pgstattuple_approx 扫全库」对得上），
+不构成生产路径缺陷。**教训**：`pg_stat_statements` 不区分「谁发的」，
+手工 psql 与生产查询混在同一张表里；判断「是不是生产路径」必须补两步
+——(1) 代码侧有没有调用点；(2) calls 是否在增长。只看耗时排行会把
+一次性诊断当成待修缺陷。
+
+### 根因一（单次为什么 129s）：缺可覆盖的索引 —— 仍待授权
 
 `domains/providerprofile/pg_reconciliation_store.go:285` 的月度对账聚合。
 月窗（2026-09）的 EXPLAIN：
@@ -126,9 +137,49 @@ harness 未注入 `LLM_GATEWAY_DATABASE_URL=$GATE_URL`。
 ⇒ 建议索引（可让整条 DISTINCT ON + 聚合走 **Index Only Scan**，零回表）：
 `(request_id, ts DESC) INCLUDE (provider_id, prompt_tokens, completion_tokens, total_tokens, cost_usd)`
 
-**为什么不本轮实施**：这是对生产库 1,416,772 行 / 799 MB 分区建索引，
-需进迁移通道并占用磁盘与 I/O，属**不可轻易回退**的生产 DDL，
-须 owner 授权后随发布执行。本轮只交付定位与 EXPLAIN 证据。
+**为什么不实施**：对生产库 1,416,772 行 / 799 MB 分区建索引需进迁移通道、
+占磁盘与 I/O、属不可轻易回退的生产 DDL，须 owner 授权后随发布执行。
+
+### 根因二（为什么会跑这么多次）：**无任何跨实例协调** —— 本轮已修
+
+87 次 ÷ 11.8 天 ≈ **7.4 次/天**。而 `bg/cost_reconciliation_worker.go`
+**没有 advisory 锁、没有节流槽、没有租约**，三份重复叠加：
+
+1. **多副本重复**：154 / 245 各跑一遍**完全相同**的聚合。每个 tick 聚合
+   **当前月 + 上一月**（`CostReconciliationMonthsToAggregate`），即
+   2 台 × 1 次/天 × 2 月 = 4 次/天，实测 7.4 次/天 ⇒ 另有重启带来的补跑。
+2. **重启即补跑**：`Start()` 里 `w.reconcile(ctx)` 在 ticker **之前**无条件执行，
+   每次部署/重启都立刻触发一整轮 129s × 2 的重聚合（245/154 现网进程
+   uptime 分别约 1h / 58min，说明近期确实在频繁重启）。
+3. 两台完成时刻不同，**对账表刷新时刻随实例数放大漂移**。
+
+**修法**：照搬本仓**已成型的同类范式**（`partition_manager.go` 的
+`analyzeThrottleTaskName`，迁移 840），不另造机制：
+`claim_llm_gateway_task_slot` 是单语句原子操作
+（`INSERT … ON CONFLICT DO UPDATE … WHERE … RETURNING`），
+两个实例并发只有一个能拿到 true。
+
+- `CostReconciliationWorker.WithSharedThrottleDB(pool)` 接入共享槽；
+- 决策抽成纯函数 `decideSharedSlotRun(claimed, err, hasDB)`，便于无池单测；
+- 窗口取 worker 自身 interval，`interval<=0` 兜底 24h
+  ——**实测 `interval '0s'` 会让 claim 立刻再次成功**（窗口永不推进），
+  不兜底等于节流失效；
+- **认领失败一律降级放行**，不跳过：节流是省钱措施不是正确性措施，
+  收紧成「失败就跳过」会让对账在迁移 840 未应用/连接抖动时**静默不跑**，
+  而对账表不更新没有任何告警。
+
+**验证（生产真库，事后已清理）**：
+
+```
+claim1 (24h) = t      ← 认领成功
+claim2 (24h) = f      ← 对端/重复认领被挡（节流生效）
+claim (0s)   = t      ← 证明 0 窗口会立即放行，兜底是必需的
+不同 task_name 的 claim = t   ← 槽彼此独立，不干扰 analyze
+```
+
+`bg/cost_reconciliation_throttle_test.go` 4 条判据（含「认领失败必须放行」
+的反向断言），变异验证 3/3 变红：认领失败改跳过 ⇒ 2 条红；对端持槽仍跑 ⇒ 红；
+interval 兜底去掉 ⇒ 红。
 
 ### 附带澄清（避免下轮重走弯路）
 
@@ -136,7 +187,6 @@ harness 未注入 `LLM_GATEWAY_DATABASE_URL=$GATE_URL`。
   看似「索引没落到分区」。**实测为假**：分区创建路径确实给每个分区建了
   等价索引（自动改名 `usage_ledger_2026_09_ts_tenant_id_prompt_tokens_completion__idx`）。
   父表那个只是冗余声明，**不是**本查询慢的原因。
-- 87 次 ≈ 每日 1 次 × 两台机（默认 interval 86400s），**不是**调度失控。
 
 ---
 
@@ -190,3 +240,26 @@ request_logs_bodies_2026_10 | am=columnar | autoanalyze=0 | last_analyze=2026-10
 **第 8 条：给日志/指标定级时，先分清「资源风险」与「信号风险」。**
 681MB 日增 6.6MB/天不是磁盘问题，却是严重的可观测性问题。
 按资源口径定级会导向「加轮转」——而轮转让错误更难被翻到，方向恰好相反。
+
+---
+
+## 六、第四个被实测修正的判断：「pg_stat_statements 排行 = 生产问题」
+
+本文件 §三 最初把 `pgstattuple_approx`（444s 均值 / 1313s 最大）与另两条
+并列为「Top 3 慢查询」。补测后**推翻**：
+
+- 全仓 grep：该函数在 Go 侧**无任何调用点**（只出现在文档里）；
+- 连续 90s 观测：`calls` **恒为 7 不增长**。
+
+⇒ 它是历史**手工诊断脚本**的残留，不在生产路径上。
+
+**教训（新增，判据纪律第 12 条）**：`pg_stat_statements` **不记录"谁发的"**，
+手工 `psql` 与网关自动查询混在同一张表里。所以「耗时排行」只能给出
+**候选**，不能直接当结论；判定「是不是生产路径」必须补两步：
+(1) 代码侧是否存在调用点；(2) `calls` 是否随时间增长。
+只按耗时排行动手，会去优化一个**根本不自动运行**的东西。
+
+同理，本轮也修正了自己对 87 次的初判：原写「≈ 每日 1 次 × 两台机，
+不是调度失控」——补测发现每个 tick 聚合**两个月**、且 `Start()` 会
+在 ticker 前无条件补跑一次，真实成因是**多副本重复 + 重启补跑**，
+且该 worker **完全没有跨实例协调**。已按 §三 根因二 修复。
