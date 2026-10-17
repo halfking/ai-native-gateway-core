@@ -21450,3 +21450,58 @@ P3 包含 5 端点（`admin/handler.go:987-1002`）：
 | 158e opsOverview | 接前端 P4 + 中间件 | 1 行中间件 | 539 | `eb0aee4ec` | §11.199（本节） | **完成** |
 
 **5 批全部收口**，累计 5 commit + 5 文档节 + 7 verifier 收口（5 批前 5 verifier + 2 复核）。
+
+## 11.200 第一百六十批 接 P5 跨仓孤儿 subscriptionTiers：license-authority 独立服务视图进 UI
+
+### 一、形态修正
+
+17 跳 evidence（line 1070/1101/1123/1282/1616）原判 subscriptionTiers 是 license-authority 独立 service 跨仓端点，**实证后简化**：
+- admin 仓 handler.go **0 命中** `handleSubscriptionTiers` 注册
+- 但 `web/src/api/ops.ts:166` `getSubscriptionTiers` 已 export（端点 `GET /api/admin/tiers`）
+- nginx 反代 license-authority 服务的实际 URL（前端无感）
+- 真 orphan 性 = 缺视图层（API helper 已有，6 字段 SubscriptionTierInfo 类型齐）
+
+⇒ 与 5 批接前端族一致："后端端点 / API helper 都已就位 / 仅缺视图"。
+
+### 二、调研要点
+
+- 端点：`GET /api/admin/tiers`（nginx 反代 license-authority 独立 service）
+- 类型：SubscriptionTierInfo（api/ops.ts:145）6 字段：code / name / description / price_cents / sort_order / module_keys
+- 视图权限：`requiresSuper: true`（与 /admin/modules 同档，line 282-283）
+- 抽屉入口：nav.ts item 块 +1（与 158a/158b/158c/158e 同形态，不挂 appNav.ts）
+- 视图层加注释："API 跨仓 license-authority 独立服务，nginx 反代 /api/admin/tiers"
+
+### 三、改动清单（5 文件 202 行）
+
+| 文件 | 行 | 内容 |
+|---|---|---|
+| `web/src/views/SubscriptionTiersView.vue` | +167 | 新建：sort_order 升序卡片列表 + 价格格式化（cents→¥）+ 4 状态（loading/error/empty/tiers）|
+| `web/src/router.ts` | +5 | route + lazy import + meta requiresSuper |
+| `web/src/locales/{zh-CN,en-US}/nav.ts` | 各 +1 | subscriptionTiers 条目 |
+| `web/src/views/SubscriptionTiersView.test.ts` | +93 | 3 测试（按 sort_order 排序 + 价格格式化 + 空态 + 错误 + 刷新重试）|
+
+合计 202 行。
+
+### 四、验证
+
+- `npx vue-tsc -b` exit 0（先删 tsbuildinfo + symlink node_modules）
+- `npx vitest run` 3/3 passed 881ms
+- 5 文件 0 FFFD / 0 NUL
+
+### 五、收口
+
+- commit `5543f030d413576be77d091fbfc358b1ec8eba69`
+- 父 = `c07632314`（与本批 origin 一致，rebase noop）
+- 8 剩余孤儿第 1 批
+
+### 六、剩余 7 孤儿
+
+| 批 | 孤儿 | 推进分级 |
+|---|---|---|
+| 201 | turnsFilterOptions | 🟢 加 router + nav（深链独立详细页）|
+| 202 | storageMigrationState | 🟢 加 router + appNav（深链 + 抽屉）|
+| 203 | requestActions | 🟡 全新 API + view + router |
+| 204 | storageAndLogConfig | 🟡 全新 API + view + router |
+| 205 | v1DataHorizon | 🟡 全新 API + view + router |
+| 206 | nativeTransport | 🟡 全新 API + view + router（17 跳说"未对应 admin 端点"，需查 license-authority / cmd/ 或纯前端模块）|
+| 207 | platformSettings | 🟡 全新 API + view + router（17 跳说"未对应 admin 端点"）|
