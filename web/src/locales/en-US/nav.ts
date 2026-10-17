@@ -38,6 +38,7 @@ export default {
     subscriptionTiers: 'Subscription Tiers',
     turnsFilterOptions: 'Turns Filter Options',
     storageMigrationState: 'Storage Migration State',
+    requestActions: 'Request Actions Timeline',
     pricing: 'Cost Pricing',
     modelPricing: 'Pricing Management',
     freePool: 'Free Resources',

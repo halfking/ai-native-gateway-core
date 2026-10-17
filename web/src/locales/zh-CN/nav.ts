@@ -39,6 +39,7 @@ export default {
     subscriptionTiers: '订阅层级',
     turnsFilterOptions: '轮次筛选选项',
     storageMigrationState: '存储迁移状态',
+    requestActions: '请求动作时间线',
     pricing: '成本价格',
     modelPricing: '定价管理',
     freePool: '免费资源',
