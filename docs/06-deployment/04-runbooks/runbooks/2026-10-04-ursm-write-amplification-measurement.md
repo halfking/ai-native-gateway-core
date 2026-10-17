@@ -18916,3 +18916,118 @@ docker exec -i llm-gateway-pg psql -U postgres -d llm_gateway -f - < /tmp/rie_be
 
 ★ 同族：[[比率法天然看不见中间的形状]] · [[0 命中的第一嫌疑永远是量具坏了]] ·
 [[阴性结论要当缺陷一样复核]] · [[先量后说]]。
+
+---
+
+### §10.110.44 抓到一个正在发生的生产停顿：一个 DDL 堵住了整个网关（并引出 98% 的启动迁移无锁守卫）
+
+**这一节与 §41/§43 的表结构分析无关**，是追查尖峰成因时**撞上的现场**。
+
+#### 一、现象：我的查询突然全部 30 秒超时
+
+追查 §43 遗留的尖峰成因时，本该毫秒级的查询连续超时：
+
+- `count(*)` where `incident_id = '<单个 uuid>'`（估 ~27,861 行，走 Bitmap Index Scan）→ **30s 超时**
+- 同查询的 `EXPLAIN`（不执行）→ **瞬时返回，计划完全正确**
+
+⇒ 计划没问题，**执行被挡住了** ⇒ 说明不是「表病态」，是**外部阻塞**。
+
+#### 二、现场读数（生产实测，2026-10-18 06:03~06:06）
+
+```sql
+SELECT state, wait_event_type, wait_event, count(*), max(now()-query_start)
+FROM pg_stat_activity GROUP BY 1,2,3;
+```
+
+```
+ idle   | Client    | ClientRead  | 21 | 00:14:10
+ active | Lock      | relation    | 16 | 00:01:18   ← 16 个后端在等锁
+ active |           |             | 14 | 00:09:18   ← 7 个长事务（>5min）
+ active | IO        | DataFileRead|  3 | 00:01:46
+```
+
+`pg_blocking_pids()` 指认的**唯一阻塞源**是 PID `1471850`：
+
+```sql
+CREATE TABLE IF NOT EXISTS public.proxy_subscriptions (
+  id SERIAL PRIMARY KEY, name VARCHAR(100) NOT NULL, subscribe_url TEXT NOT NULL, ...
+```
+
+被它堵住的 14 条语句包括 `UPDATE credential_model_bindings`、
+`credential_probe_queue` 的 `WITH picked AS (SELECT ...)`、
+`INSERT INTO session_summaries`、以及多条
+`SELECT c.id, c.provider_id ... FROM credentials c ...`。
+
+⇒ ⇒ ★★★ **机制确认**：`CREATE TABLE IF NOT EXISTS`
+**在表已存在时依然要拿 AccessExclusiveLock**。它一进锁队列，
+**后面所有需要 AccessShareLock 的语句全被堵在它后面** ——
+INSERT/UPDATE/SELECT 一律停摆，直到它结束。
+
+★ ⇒ **「IF NOT EXISTS」给人「不会有影响」的错觉，实际上它防的是
+「对象已存在报错」，不防「拿排他锁」**。这是本节最值得记住的一句。
+
+#### 三、⚠️ 订正：它**不能**解释 §41 里的那些超时
+
+时间线对不上，必须写明：
+
+| 事件 | 时刻 |
+|---|---|
+| §41 的 `max(created_at)` 读数 | **05:47 ~ 05:52**（返回的 max 值是 05:49:23） |
+| 阻塞性 DDL 的 `xact_start` | **06:03:59** |
+
+⇒ **§41 §五 的 30 秒超时发生在这次 DDL 之前 12 分钟以上**，
+所以那批超时**不是**它造成的，§41 §五 的冷/热缓存解释**仍然成立**。
+
+⇒ ★ 这正是「先记时刻，再下因果」的用处：否则很容易把两件事
+串成一条漂亮但错误的因果链。
+
+#### 四、系统性问题：98.1% 的启动迁移没有锁守卫
+
+DDL 来源定位到 `installer/cmd/llm-gw-installer/embeddata/startup/646_proxy_management_canonical.sql:15`，
+该文件**通篇 0 个** `lock_timeout` / `statement_timeout`。
+
+普查两个启动迁移目录：
+
+| 目录 | 迁移文件数 | 含 `lock_timeout` 的 | 占比 |
+|---|---|---|---|
+| `installer/cmd/llm-gw-installer/embeddata/startup/` | 368 | 12 | 3.3% |
+| **`sql/migrations/startup/`（canonical 源）** | **920** | **17** | **1.9%** |
+
+另：canonical 目录里 **175 个**文件含**裸 `CREATE TABLE`**（不是 IF NOT EXISTS，
+连「不会报错」这层保险都没有），**36 个**文件已用 `CONCURRENTLY`。
+
+⇒ ⇒ ★★★ **结论不是「646 这条迁移写得不好」，而是「守卫没有中央收口」**：
+本仓**已经有**成熟的 `lock_timeout` 写法（`db/db.go:1024`、`:1881`、`:3446`，
+以及 `db/startup_ddl_guards_realdb_test.go` 这道真库行为门），
+但它们是**逐调用点**手工加的，**启动迁移的执行器没有统一兜底**。
+
+⚠️ 量具自伤记录：我一度想统计「非 CONCURRENTLY 的 `CREATE INDEX` 有多少」，
+用了 `grep -E` **不支持的负向先行断言** `(?!...)`，返回 0。
+那个 0 是**量具坏了**不是事实，**已作废不采信**（§41 §五 同款纪律）。
+
+#### 五、建议（**需你拍板，本轮未动任何代码**）
+
+**中央收口**：在启动迁移执行器上设**会话级** `lock_timeout`
+（建议 2~5s），让拿不到锁的迁移**快速失败（55P03）**而不是**堵住整个网关**；
+对确需长锁的迁移提供**显式白名单标记**（而不是默认放行）。
+
+⚠️ **为什么必须你拍板**：这会改变**部署行为**。默认加 `lock_timeout` 的
+风险是「原本能跑通的迁移在高峰期开始失败」⇒ 部署中断。
+这与「尽量不破坏现有系统运行」直接相关，但方向上有取舍，不宜由我单方面改。
+
+⚠️ **同时**：本节观察到 `pg_stat_database.temp_files=10,080 / temp_bytes=82 GB`
+（cache hit 99.53%、deadlocks 4），说明存在**大量落盘排序/哈希**。
+这**可能**与 §41 的坏计划（170 万行 top-N 排序）同源，
+但 82 GB 是**自统计以来累计值**，无法归因到某条查询 ⇒ **登记为待查，不下结论**。
+
+#### 六、本节效力
+
+- §43 遗留项「尖峰成因」：**未查**（本次撞上的是另一件事，非尖峰成因）。
+  尖峰的 `probe_direct_auth_failed` 占 44%（横跨 628 个事件）、
+  `probe_direct_network_error` 估 86,000 行却只集中在 24 个事件（≈3,583 行/事件）
+  ⇒ **探针循环可能无界写事件行**，这是**新的、值得单独查的线索**。
+- §41 §五 的冷/热缓存结论：**不变**（时间线已排除本节 DDL）。
+- 本节 DDL 现场：**已自行结束**，未做任何干预（只读）。
+
+★ 同族：[[0 命中的第一嫌疑永远是量具坏了]] · [[量具先自证]] ·
+[[先记时刻再下因果]] · [[阴性结论要当缺陷一样复核]]。
