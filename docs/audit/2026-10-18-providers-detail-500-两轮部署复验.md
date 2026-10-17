@@ -168,3 +168,90 @@ GET /api/providers/14 → 200  error_rate_24h=0.0255  active_cred_count=4
   **真实原因是**：`deploy-154.sh:81` 用 `exec bash` 重新执行，会取 PATH 上的 `bash`，
   系统只有 3.2（3.2 对 `set -u` 下的空数组 `${arr[@]}` 报 unbound variable，5.2 不会）。
   ⇒ 部署必须把 `~/sdk/bash5/bin` 放在 PATH **最前**，而不是只改调用方式。
+
+## 七、第三轮：并发部署把修复顶掉了（回归 → 再修复）
+
+部署成功复验之后，**并发会话用 `9c43da60` 又部署了一次 154**，该提交基于
+`61a3e3abe`（早于本修复），于是 `/api/providers/14` **当场回归**：
+
+```
+version=2.5.8-9c43da60-20261017-2715
+GET /api/providers/14 → 500  5.073974s
+```
+
+更早一步：并发会话还执行过 `git reset: moving to 61a3e3abe`
+（`git reflog` HEAD@{7}），把 `db89dccb2`/`f7de9944` 从分支上抹掉了——
+当时 `git merge-base --is-ancestor <我的提交> HEAD` 已经是 NO，
+而提交仍在 reflog 里。`git merge origin/main` 会「干净地」把我的修复合没了
+（因为它们的 providers.go 与 merge-base 同形，三方合并取了对侧版本）。
+
+处理：
+1. `git merge --abort` → `git cherry-pick db89dccb2 f7de9944` 把修复取回；
+2. 验证修复在新基线上仍然成立（`WHERE s.provider_id = p.id` 与 24h 窗口都在）
+   ——**注意**：合并后源码里 `request_logs_with_current_month` 仍出现 1 次，
+   但那是在「为什么不再读它」的注释里，判据剥注释后才断言，不受影响；
+3. 提交 `db84e1e7b`（真库门自身的 arity 缺陷，见下）；
+4. `git push origin main` → `d82a9fb06..0d7de6e7b`；
+5. 第三次部署 `2697-0d7de6e7` → 复验 **200 / error_rate_24h=0.0300**。
+
+⇒ **教训**：共享分支上「本地绿 + 已部署」不等于「主线有落点」。修复必须
+`git merge-base --is-ancestor <commit> origin/main` 验过才算数；别人一次
+reset 或一次基于旧基线的部署就能把它弄没，而生产不会告诉你。
+
+### 判据自身的第三个缺陷（真库门 arity）
+
+判据改成执行真实 SQL 后立刻暴露：那条 SQL 返回 **25 列、类型不一**，
+而测试只 `Scan(&got)` 一个目标 ⇒ `number of field descriptions must equal
+number of destinations, got 25 and 1`。**那是判据自己的问题，不是被测行为。**
+
+改法：`rows.Values()` + **断言列数**（`providerDetailColumnCount=25`）。
+error_rate_24h 按下标 23 定位，SELECT 列表一变就可能读到别的列而断言仍
+「看着通过」——与判据纪律第 3 条同源。变异：把常量改 24 → 真库门立即报
+`returned 25 columns, expected 24`。
+
+## 八、第二族慢接口（同源，未在本轮修复）
+
+串行复测（排除并发压测干扰）后确认的**真实**超时族——耗时卡在 10s/15s/30s
+整数上，那是各自 handler 的 ctx 预算被打满，不是随机抖动：
+
+| 端点 | ctx | 错误（154 日志） |
+| --- | --- | --- |
+| `/api/admin/usage/cache-economics` | 10s | `cache-economics query failed` @ `usage_enhanced.go:712` |
+| `/api/admin/session-analytics` | 15s | `session analytics list failed` @ `session_analytics_handler.go:358` |
+| `/api/admin/users/usage-summary` | 15s | `query failed` |
+| `/api/admin/attachments/stats` | 10s | `attachments: stats query failed` |
+| `/api/admin/dashboard/session-health` | 15s | `failed to query health distribution` |
+| `/api/admin/dashboard/session-overview` | 30s | 同上 |
+| `/api/admin/dashboard/session-trend` | 15s | `failed to query session trend` |
+| `/api/admin/data-lifecycle/{stats,storage/tables,blobs/top}` | 15–30s | `query failed` / `查询表大小失败` |
+| `/api/admin/auto-route/{index,audit,analytics/flow,analytics/matrix}` | 10–15s | `internal error` |
+| `/api/admin/turns/sessions/filter-options` | 12s | `query filter options failed` |
+| `/api/admin/probe/system-health` | 55s | （能返回但远超预算） |
+
+**不与 providers/14 同源**：这些不是那个 canonical 视图。
+`admin/user_usage_stats.go:23` 已注明「放弃 request_logs_with_current_month」，
+改读 `usage_facts`；慢的是 `usage_facts` 自身与 session_* 表族。
+`request_logs_with_current_month` 在 `admin/` 下有 734 处引用、跨 143 个文件，
+全量治理是独立工程，**本轮不做，如实登记**。
+
+另：`/api/credentials/monitor-summary` 的 `mode=core` 正常（200 / 2.8s），
+但 `mode=full|light|all` 均 500 @ 15s——同族。
+
+## 九、浏览器 GUI 取证：未完成（如实登记）
+
+用户已在内置浏览器完成登录（标签跳到 `/providers/14`，外壳渲染出
+「系统管理员」与版本徽章 **#2697**）。但页面主体持续停在
+「正在检测登录状态…」/「加载中…」，且：
+
+- 同一时刻 `/api/providers/14` 在**网关访问日志里是 200 / 29ms**（浏览器 UA）；
+- Browser 的 `network` 作用域为空（`lastSequence: 0`），`console` 无条目；
+- 该标签连续操作数次后劣化到 275s `BROWSER_OPERATION_TIMEOUT`。
+
+⇒ 判为**观测通道劣化**，不是页面缺陷：同一批端点在服务端与 curl 侧全绿。
+按 LESSONS「渲染侧定不下来时退回既定口径，以网关访问日志 + 直测 API 定案，
+并如实标注渲染未取证」，本轮的页面数据结论**以网关日志 + API 直测**为准，
+逐页截图证据**未取得**。
+
+期间发现的真实信号（来自网关日志，非浏览器）：该页同批请求里
+`/api/credentials/monitor-summary?mode=core` 出现 **500 / 104ms**（快速失败，
+非超时），curl 复测却 200 —— 未能稳定复现，记为待查。
