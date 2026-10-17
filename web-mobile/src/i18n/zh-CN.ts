@@ -1742,6 +1742,11 @@ export const zhCN = {
     lastActive: '最后活跃 {t}',
     loadMore: '加载更多',
     openDetail: '打开会话详情 {id}',
+    detailTitle: '会话详情',
+    sessionId: '会话 ID',
+    lastActiveLabel: '最后活跃',
+    focusTurns: '全屏查看轮次',
+    openInTurns: '在会话页打开',
     errForbidden: '当前账号没有查看在线会话的权限',
   },
   dataFlow: {

@@ -1704,6 +1704,11 @@ export const enUS = {
     lastActive: 'Last active {t}',
     loadMore: 'Load more',
     openDetail: 'Open session detail {id}',
+    detailTitle: 'Session detail',
+    sessionId: 'Session ID',
+    lastActiveLabel: 'Last active',
+    focusTurns: 'Fullscreen turns',
+    openInTurns: 'Open in sessions',
     errForbidden: 'This account cannot view online sessions',
   },
   dataFlow: {

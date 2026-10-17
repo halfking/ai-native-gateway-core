@@ -24,11 +24,11 @@
 //     ⇒ 缺失显示「—」，空模型显示「未知模型」，不显示 0ms。
 
 import { computed, onBeforeUnmount, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import { useHyperPage } from '@/hyper'
 import { useAuthStore } from '@/stores/auth'
 import AppIcon from '@/components/common/AppIcon.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
+import OnlineSessionDetailSheet from '@/components/session/OnlineSessionDetailSheet.vue'
 import { t } from '@/i18n'
 import { relativeTime } from '@/utils/format'
 import {
@@ -41,14 +41,17 @@ import {
 
 useHyperPage({ title: () => t('online.title') })
 
-const router = useRouter()
 const auth = useAuthStore()
 const PAGE = ONLINE_LIMIT_MAX
 
-/** 点行进会话页：用 session_id 预填搜索，展开轮次/链路详情。 */
-function openSessionDetail(sessionId: string): void {
-  if (!sessionId) return
-  void router.push({ path: '/turns', query: { search: sessionId } })
+/** 点行开详情板：直拉 turns，不依赖 /turns?search= 列表命中。 */
+const detail = ref<OnlineSession | null>(null)
+const detailOpen = ref(false)
+
+function openSessionDetail(s: OnlineSession): void {
+  if (!s.session_id) return
+  detail.value = s
+  detailOpen.value = true
 }
 
 const rows = ref<OnlineSession[]>([])
@@ -139,7 +142,7 @@ onBeforeUnmount(() => {
           class="on__item-btn"
           :aria-label="t('online.openDetail', { id: s.session_id })"
           :data-session-id="s.session_id"
-          @click="openSessionDetail(s.session_id)"
+          @click="openSessionDetail(s)"
         >
           <div class="on__item-head">
             <StatusDot :tone="toneOf(s)" />
@@ -178,6 +181,8 @@ onBeforeUnmount(() => {
     <button v-if="hasMore" type="button" class="on__more" :disabled="loadingMore" @click="loadMore">
       {{ loadingMore ? t('common.loading') : t('online.loadMore') }}
     </button>
+
+    <OnlineSessionDetailSheet v-model="detailOpen" :session="detail" />
   </div>
 </template>
 
