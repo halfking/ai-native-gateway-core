@@ -21708,3 +21708,52 @@ vue-tsc 报 `TurnsAPIKeyOption` 字段为 `id`/`label`（非 `key_id`/`key_name`
 | 205 | v1DataHorizon | session_turns_hot by request_id（17 跳 line 1063）|
 | 206 | nativeTransport | 17 跳说"未对应 admin 端点" |
 | 207 | platformSettings | 17 跳说"未对应 admin 端点" |
+
+## 11.205 第一百六十五批 v1DataHorizon：四路取证后判定 **0 代码改动**
+
+### 一、4 路取证结果
+
+| 维度 | 实证 |
+|---|---|
+| 注册处 | admin 中间件（admin/handler.go:1152 `mux.HandleFunc("/api/admin/data-horizon", admin(h.handleDataHorizon))`）|
+| handler | `admin/data_horizon.go` —— session_turns_hot UNION session_turns 查 canary request_id |
+| API 模块头 | **`web/src/api/dataHorizon.ts` 已 export** `getDataHorizon()` + 完整 `DataHorizonNotice` / `DataHorizonResponse` 类型 |
+| 桌面调用 | `web/src/components/shell/DataHorizonBanner.vue` 已存在 + `useDataHorizon` composable 已存在 + **`App.vue:18 import + :273 渲染 <DataHorizonBanner />`** + test `DataHorizonBanner.test.ts` 断言 App.vue 必须 import + 渲染（防"只 import 不渲染"假绿）|
+
+### 二、真"orphan"性 = 0
+
+**v1DataHorizon 是全局横幅（api/dataHorizon.ts:1-13 注释明说"全局横幅让人看见"），不是详细页**。  
+17 跳 evidence line 1063 标"否（by-design）by request_id"——实证后这判读精确：v1DataHorizon 是"已接端的 by-design 平台失效告示"，**不是孤儿**。
+
+### 三、本批改动
+
+**0 行代码改动**。
+
+按用户拍板"全部 8 孤儿"应做工作：
+- API helper / composable / 横幅组件 / App 渲染 / test — 全部已就位
+- 唯一缺的是**没有写明确"v1DataHorizon 不是 orphan"的实证文档** — 本节补上
+
+### 四、验证
+
+- 数据点：
+  - `web/src/api/dataHorizon.ts` 68 行（DataHorizonNotice 7 字段 + DataHorizonResponse 2 字段 + 完整契约注释）
+  - `web/src/components/shell/DataHorizonBanner.vue` 完整横幅组件
+  - `web/src/composables/useDataHorizon.ts` composable
+  - `App.vue:18 import + :273 渲染` — 全局生效
+  - `DataHorizonBanner.test.ts` 6 维断言（import + render + 三态 + i18n）
+- **0 commit / 0 行代码 / 0 测试** —— 实证修订归入 §11.205 文档
+
+### 五、收口
+
+- 仅文档 commit（无代码 commit）—— 0 -> 1 commit
+- 父 = `35cdaddd9`（批 204 文档）
+- 孤儿棘轮 5 → 5（不变 —— v1DataHorizon 本就不是 orphan）
+
+### 六、剩余 2 孤儿
+
+| 批 | 孤儿 | 备注 |
+|---|---|---|
+| 206 | nativeTransport | 17 跳说"未对应 admin 端点"，需深查 license-authority / cmd/ / web-mobile 仓 |
+| 207 | platformSettings | 17 跳说"未对应 admin 端点"，同上 |
+
+后两个孤儿 17 跳明确说"未对应 admin 端点"——可能后端真不存在。如经四路取证后仍 0 命中，则按 §11.205 同形态写实证修订（0 代码改动 + 文档收口）。
