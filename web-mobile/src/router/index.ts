@@ -979,6 +979,23 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/SanitizeRulesView.vue'),
     meta: { titleKey: 'sr.title', requiresAuth: true, requiresRole: 'admin' },
   },
+  // 兼容口语/旧书签路径（2026-10-17 真机验收）：/sessions /requests /me
+  // 曾直接落到 NotFound，用户以为功能缺失。
+  { path: '/sessions', redirect: '/sessions-online' },
+  { path: '/requests', redirect: '/logs' },
+  // /me /account：用轻量页打开账户 Sheet（query 方案在 WebView 整页导航时会被剥掉）。
+  {
+    path: '/me',
+    name: 'me',
+    component: () => import('@/views/OpenAccountView.vue'),
+    meta: { titleKey: 'nav.account', requiresAuth: true },
+  },
+  {
+    path: '/account',
+    name: 'account',
+    component: () => import('@/views/OpenAccountView.vue'),
+    meta: { titleKey: 'nav.account', requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',

@@ -7,6 +7,7 @@ import AppSheet from '@/components/common/AppSheet.vue'
 import AppStateView from '@/components/common/AppStateView.vue'
 import NodeAuditSheet from '@/components/shell/NodeAuditSheet.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
+import { useTopbarAction } from '@/components/shell/topbarActions'
 import { fmtInt, fmtUsd } from '@/utils/format'
 
 const props = defineProps<{ modelValue: boolean; provider: Provider }>()
@@ -23,6 +24,15 @@ const updating = ref(false)
 const auditOpen = ref(false)
 let generation = 0
 let controller: AbortController | null = null
+
+// 刷新进顶栏右侧，避免详情头再占一整行「刷新」按钮（移动端验收契约）。
+useTopbarAction({
+  key: 'provider-detail-refresh',
+  label: () => t('common.refresh'),
+  icon: 'refresh',
+  disabled: () => loading.value || updating.value,
+  onClick: () => { void load() },
+})
 
 const open = computed({
   get: () => props.modelValue,
@@ -128,7 +138,6 @@ function statusTone(status?: string | null): 'success' | 'warning' | 'danger' | 
         <div class="provider-detail__head-actions">
           <button v-if="canManage" type="button" class="btn" :disabled="updating" @click="toggleManualDisabled">{{ detail?.manual_disabled ? t('providers.releaseManualDisable') : t('providers.manualDisable') }}</button>
           <button v-if="canManage" type="button" class="btn" :disabled="updating" @click="toggleEnabled">{{ detail?.enabled ? t('providers.disable') : t('providers.enable') }}</button>
-          <button type="button" class="btn" :disabled="loading || updating" @click="load">{{ t('common.refresh') }}</button>
         </div>
       </div>
       <!-- ⚠️ 2026-10-11：这三张小卡的标题必须用 **不带计数** 的 tab.* 键。

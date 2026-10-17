@@ -4,6 +4,14 @@
 
 ## 待观察经验
 
+### 2026-10-17 — 顶栏 X 不关 AppSheet / Focus；/me 先开后跳会被导航清掉
+- 根因：`HyperApp.overlayActive` 只认 drawer/account，忽略 `Hyper.topOverlay`；`closeActiveOverlay` 未走 `dismissOverlay`。`/me` 若先开 Sheet 再 `replace('/')`，runtime 导航 silent-close 全 overlay。
+- 防复发：overlay 顶栏 X 必须绑定 `Hyper.topOverlay` + `dismissOverlay`；账户兼容路由先 replace 再派发 `llmgw:open-account`。判据 `HyperApp.overlayClose.spec.ts`。
+- 证据：Android CDP — OpenRouter 详情 `topbar-close-overlay` 可关；`/m/me` 打开账户 Sheet 含生产/测试/内部三站点。
+- 溯源：本会话 web-mobile 热修 + 245/154 `web-mobile` 热补丁。
+
+
+
 ## 2026-10-17 — Bash 路径里的版本四元组不是外传目的地（Seen: 1/3）
 - 任务 / 缺陷：ZCode/MiniMax 装 JDK/Maestro 时 Bash 参数含 `jdk-17.0.20.1+1`，整条 `output_policy_blocked`（request `ecb14454…`）。
 - 基线 / 修复 SHA：生产取证在 2693；修复 `c07632314`（r1033），154=`2695-c0763231`（8781）。
