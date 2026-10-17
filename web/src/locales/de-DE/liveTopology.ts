@@ -124,6 +124,9 @@ export default {
     down: 'Ausfall',
     unknown: 'nicht geprüft',
   },
+  client: {
+    unknown: 'Unbekannter Client',
+  },
 
   panel: {
     clients: 'Client-Anfragen',
@@ -150,9 +153,16 @@ export default {
     cost: 'Kosten',
     session: 'Session',
     taskType: 'Aufgabentyp',
+    openPage: 'Als Vollseite öffnen',
     probe: 'Probe',
     yes: 'Ja',
     no: 'Nein',
     error: 'Fehler',
+  },
+  page: {
+    back: 'Zurück zur Topologie',
+    waiting: 'Verbinde mit dem Live-Stream, um diese Anfrage zu laden…',
+    notFoundTitle: 'Diese Anfrage ist nicht mehr im Live-Fenster',
+    notFoundHint: 'Live-Daten behalten nur ein recentes rollierendes Fenster; die Anfrage ist möglicherweise herausgescrollt, oder du hast den Link direkt geöffnet. Kehre zur Live-Topologie zurück und öffne sie erneut.',
   },
 }

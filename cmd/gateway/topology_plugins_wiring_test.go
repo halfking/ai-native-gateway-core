@@ -14,6 +14,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/security"
 	"github.com/kaixuan/llm-gateway-go/domains/security/plugins"
+	"github.com/kaixuan/llm-gateway-go/plugin-runtime"
 	"github.com/kaixuan/llm-gateway-go/security/sanitize"
 	"github.com/kaixuan/llm-gateway-go/security/sensitive"
 )
@@ -91,5 +92,23 @@ func TestTopologyPluginsExternalNilIsEmptyList(t *testing.T) {
 	adapter := topologyPluginsAdapter{}
 	if ext := adapter.ExternalPlugins(); ext == nil || len(ext) != 0 {
 		t.Fatalf("nil external 注册中心应返回空清单, got %+v", ext)
+	}
+}
+
+func TestTopologyPluginsExternalOrderIsDeterministic(t *testing.T) {
+	// Snapshot 走 map 迭代，顺序随机 —— 适配层必须排序，
+	// 否则前端 chip 每次请求顺序变来变去（闪跳）。
+	reg := pluginruntime.NewRegistry()
+	reg.SetPlugin(&pluginruntime.PluginState{PluginID: "z-last", Status: "ready"})
+	reg.SetPlugin(&pluginruntime.PluginState{PluginID: "a-first", Status: "failed"})
+	adapter := topologyPluginsAdapter{external: reg}
+	got := adapter.ExternalPlugins()
+	if len(got) != 2 || got[0].PluginID != "a-first" || got[1].PluginID != "z-last" {
+		t.Fatalf("外部插件应按 PluginID 升序, got %+v", got)
+	}
+	// 多次调用顺序稳定
+	again := adapter.ExternalPlugins()
+	if again[0].PluginID != got[0].PluginID || again[1].PluginID != got[1].PluginID {
+		t.Fatalf("顺序不稳定: %+v vs %+v", got, again)
 	}
 }

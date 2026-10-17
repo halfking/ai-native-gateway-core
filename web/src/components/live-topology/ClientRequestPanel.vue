@@ -9,10 +9,10 @@
 // 滚动语义：列表本体可滚动；翻页后回到列表顶部。第 1 页是最新数据，
 // 实时新请求到达时第 1 页自然滚动输出（prepend 最新在前）。
 
-import { computed, ref, watch } from 'vue'
-import { nextTick } from 'vue'
+import { computed, ref, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { ClientSummary, PanelEntry } from '../../composables/useLiveTopology'
+import { clientDisplayName } from '../../lib/liveTopologyGraph'
 import { PANEL_PAGE_SIZE } from '../../types/liveTopology'
 
 const props = defineProps<{
@@ -24,6 +24,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'select-request', requestId: string): void
   (e: 'zoom', entry: PanelEntry): void
+  (e: 'open-page', entry: PanelEntry): void
 }>()
 
 const { t } = useI18n()
@@ -58,6 +59,11 @@ function nextPage() {
 function onItem(entry: PanelEntry) {
   emit('select-request', entry.requestId)
   emit('zoom', entry)
+}
+
+/** 客户端易读名（owner 2026-10-18）：identity 键 → 品牌写法。 */
+function displayName(client: string): string {
+  return clientDisplayName(client)
 }
 
 /**
@@ -109,7 +115,7 @@ function latency(value: number | null | undefined): string {
 
     <ul class="cp__summary">
       <li v-for="s in visibleSummaries" :key="s.client" class="cp__summary-row">
-        <span class="cp__summary-name">{{ s.client }}</span>
+        <span class="cp__summary-name">{{ displayName(s.client) }}</span>
         <span class="cp__summary-stats">
           <b>{{ s.requests }}</b>
           <i>{{ rate(s) }}</i>
@@ -121,23 +127,31 @@ function latency(value: number | null | undefined): string {
 
     <ul ref="listRef" class="cp__list" data-testid="client-request-list">
       <li v-for="entry in pagedRequests" :key="entry.requestId">
-        <button
-          type="button"
-          class="cp__item"
+        <div
+          class="cp__row"
           :class="[statusClass(entry.status), { 'is-active': entry.requestId === activeRequestId, 'is-probe': entry.isProbe }]"
-          @click="onItem(entry)"
         >
-          <span class="cp__row">
-            <span class="cp__time">{{ clock(entry.ts) }}</span>
-            <span class="cp__client">{{ entry.client }}</span>
-            <span class="cp__latency">{{ latency(entry.latencyMs) }}</span>
-          </span>
-          <span class="cp__row cp__row--sub">
-            <span class="cp__model">{{ entry.model }}</span>
-            <span class="cp__provider">{{ entry.provider }}</span>
-          </span>
-          <span v-if="entry.errorKind" class="cp__error">{{ entry.errorKind }}</span>
-        </button>
+          <button type="button" class="cp__item" @click="onItem(entry)">
+            <span class="cp__line">
+              <span class="cp__time">{{ clock(entry.ts) }}</span>
+              <span class="cp__client">{{ displayName(entry.client) }}</span>
+              <span class="cp__latency">{{ latency(entry.latencyMs) }}</span>
+            </span>
+            <span class="cp__line cp__line--sub">
+              <span class="cp__model">{{ entry.model }}</span>
+              <span class="cp__provider">{{ entry.provider }}</span>
+            </span>
+            <span v-if="entry.errorKind" class="cp__error">{{ entry.errorKind }}</span>
+          </button>
+          <button
+            type="button"
+            class="cp__open"
+            :data-testid="`client-open-page-${entry.requestId}`"
+            :aria-label="t('liveTopology.zoom.openPage')"
+            :title="t('liveTopology.zoom.openPage')"
+            @click.stop="emit('open-page', entry)"
+          >↗</button>
+        </div>
       </li>
     </ul>
     <p v-if="!requests.length" class="cp__empty">{{ t('liveTopology.panel.empty') }}</p>
@@ -251,40 +265,72 @@ function latency(value: number | null | undefined): string {
   overflow-y: auto;
 }
 
-.cp__item {
+/* 行容器（主按钮 + 全页打开 ↗）—— 状态色挂在容器左沿，
+   主按钮本身保持透明（button 嵌 button 不合法，拆成兄弟）。 */
+.cp__row {
   display: flex;
-  flex-direction: column;
-  gap: 1px;
-  width: 100%;
+  align-items: stretch;
+  gap: 2px;
   margin: 3px 0;
-  padding: 5px 6px;
   border: 1px solid transparent;
   border-left-width: 3px;
   border-radius: 7px;
   background: var(--kx-bg-accent);
+}
+
+.cp__row.is-success {
+  border-left-color: var(--kx-success);
+}
+
+.cp__row.is-failure {
+  border-left-color: var(--kx-danger);
+}
+
+.cp__row.is-in-progress {
+  border-left-color: var(--kx-primary);
+}
+
+/* 探测流量：与普通请求区分开（探针失败不该被当成真实业务故障看） */
+.cp__row.is-probe {
+  opacity: 0.82;
+  border-left-style: dashed;
+}
+
+.cp__row:hover,
+.cp__row.is-active {
+  border-color: var(--kx-primary);
+}
+
+.cp__item {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
   cursor: pointer;
   text-align: left;
   color: inherit;
 }
 
-.cp__item:hover,
-.cp__item.is-active {
-  border-color: var(--kx-primary);
+.cp__open {
+  flex: none;
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  color: var(--kx-muted);
+  font-size: 12px;
+  cursor: pointer;
 }
 
-.cp__item.is-success {
-  border-left-color: var(--kx-success);
+.cp__open:hover {
+  color: var(--kx-primary);
 }
 
-.cp__item.is-failure {
-  border-left-color: var(--kx-danger);
-}
-
-.cp__item.is-in-progress {
-  border-left-color: var(--kx-primary);
-}
-
-.cp__row {
+.cp__line {
   display: flex;
   align-items: baseline;
   gap: 4px;
@@ -292,7 +338,7 @@ function latency(value: number | null | undefined): string {
   color: var(--kx-text);
 }
 
-.cp__row--sub {
+.cp__line--sub {
   color: var(--kx-muted);
 }
 

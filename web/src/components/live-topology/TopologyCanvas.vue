@@ -24,6 +24,7 @@ import {
 import { ParticlePool } from '../../lib/liveTopologyParticles'
 import type { ParticleSpawn } from '../../lib/liveTopologyParticles'
 import type { TopoGraph } from '../../lib/liveTopologyGraph'
+import { clientDisplayName } from '../../lib/liveTopologyGraph'
 import {
   GATEWAY_CORE_ID,
   type GatewayCoreBox,
@@ -131,6 +132,10 @@ function protocolColor(name: string): string {
 }
 
 /** 协议 chip 投放清单：挂在 client→gateway 边中点（小字标注 + 协议色）。 */
+/** 协议 chip 投放清单：挂在 client→gateway 边上（小字标注 + 协议色）。
+ *  同一条边最多两个协议时**沿路径错开**（t=0.42/0.58）—— 审计轮抓到
+ *  两个 chip 同锚 t=0.45 会完全重叠，夹具里每客户端单协议所以肉眼没暴露。 */
+const CHIP_T_POSITIONS = [0.42, 0.58] as const
 const protocolChips = computed(() => {
   const out: Array<{ id: string; x: number; y: number; name: string; count: number; color: string }> = []
   for (const edge of layout.value.edges) {
@@ -139,10 +144,10 @@ const protocolChips = computed(() => {
     const ranked = Object.entries(edge.protocolCounts)
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
       .slice(0, 2)
-    for (const [name, count] of ranked) {
-      const p = bezierOn(edge.path, 0.45, 0)
+    ranked.forEach(([name, count], i) => {
+      const p = bezierOn(edge.path, CHIP_T_POSITIONS[i] ?? 0.42, 0)
       out.push({ id: `${edge.id}#${name}`, x: p.x, y: p.y, name, count, color: protocolColor(name) })
-    }
+    })
   }
   return out
 })
@@ -415,8 +420,29 @@ function nodeLabel(node: TopoNode): string {
   if (node.isAggregate) {
     return t('liveTopology.node.aggregate', { n: node.metric.requests })
   }
+  const label = node.column === 'client' ? displayLabel(node) : node.label
   const health = t(`liveTopology.health.${node.health}`)
-  return `${node.label} · ${health} · ${t('liveTopology.node.requests', { n: node.metric.requests })}`
+  return `${label} · ${health} · ${t('liveTopology.node.requests', { n: node.metric.requests })}`
+}
+
+/** 客户端卡片显示名（owner 2026-10-18 更易懂）：identity 键 → 品牌写法；
+ *  兜底键 unknown → 「未知客户端」。非 client 列原样。 */
+function displayLabel(node: TopoNode): string {
+  if (node.label === 'unknown') return t('liveTopology.client.unknown')
+  return clientDisplayName(node.label)
+}
+
+/** 客户端卡片的副行（owner 2026-10-18 更易懂）：`类型 · 主导协议`
+ *  —— 协议来自该客户端→网关边上的分布（与连线 chip 同源）。 */
+function clientSubLine(node: TopoNode): string {
+  const parts: string[] = []
+  if (node.sub) parts.push(node.sub)
+  const edge = edgeByKey.value.get(`${node.id}->${GATEWAY_CORE_ID}`)
+  const dominant = edge?.protocolCounts
+    ? Object.entries(edge.protocolCounts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0]
+    : undefined
+  if (dominant) parts.push(dominant)
+  return parts.join(' · ')
 }
 
 function onNodeEnter(id: string) {
@@ -479,8 +505,10 @@ function onNodeClick(node: TopoNode) {
         @click="onNodeClick(node)"
         @keydown.enter.prevent="onNodeClick(node)"
       >
-        <span class="topo-node__label">{{ node.label }}</span>
-        <span v-if="node.sub" class="topo-node__sub">{{ node.sub }}</span>
+        <span class="topo-node__label">{{ node.column === 'client' ? displayLabel(node) : node.label }}</span>
+        <span v-if="node.column === 'client' ? clientSubLine(node) : node.sub" class="topo-node__sub">
+          {{ node.column === 'client' ? clientSubLine(node) : node.sub }}
+        </span>
         <span class="topo-node__metric">{{ node.metric.requests }}<i v-if="node.metric.inFlight">·{{ node.metric.inFlight }}↻</i></span>
       </li>
     </ul>

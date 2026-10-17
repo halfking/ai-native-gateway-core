@@ -125,6 +125,9 @@ export default {
     down: '故障',
     unknown: '未探测',
   },
+  client: {
+    unknown: '未知客户端',
+  },
 
   panel: {
     clients: '客户端请求',
@@ -151,9 +154,16 @@ export default {
     cost: '费用',
     session: '会话',
     taskType: '任务类型',
+    openPage: '全页打开',
     probe: '探测任务',
     yes: '是',
     no: '否',
     error: '错误',
+  },
+  page: {
+    back: '返回拓扑',
+    waiting: '正在连接实时流取这条请求…',
+    notFoundTitle: '该请求不在当前实时窗口内',
+    notFoundHint: '实时数据只保留最近的滚动窗口；请求可能已滚出，或你是通过链接直接打开的。请回到实时拓扑页重新点开。',
   },
 }

@@ -124,6 +124,9 @@ export default {
     down: '障害',
     unknown: '未計測',
   },
+  client: {
+    unknown: '不明なクライアント',
+  },
 
   panel: {
     clients: 'クライアントリクエスト',
@@ -150,9 +153,16 @@ export default {
     cost: 'コスト',
     session: 'セッション',
     taskType: 'タスク種別',
+    openPage: '全画面で開く',
     probe: 'プローブ',
     yes: 'はい',
     no: 'いいえ',
     error: 'エラー',
+  },
+  page: {
+    back: 'トポロジーへ戻る',
+    waiting: 'このリクエストを取得するためライブストリームに接続中…',
+    notFoundTitle: 'このリクエストはライブウィンドウ内にありません',
+    notFoundHint: 'ライブデータは直近のローリングウィンドウのみ保持します。すでに流出したか、リンクから直接開いた可能性があります。ライブトポロジーに戻って開き直してください。',
   },
 }

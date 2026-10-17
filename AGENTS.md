@@ -685,6 +685,20 @@ cd web && GATEWAY_API_TARGET=http://127.0.0.1:5198 \
     - 上述 4 条在 **`git worktree add /tmp/pristine-live HEAD`** 的 pristine
       树上复跑同样红 —— 强证据，不是「文件没重叠」那种弱证据。
 
+    **2026-10-18 更新：`i18n/parity` 已关（4 条 → 2 条）**。
+    补齐上游漏译的 6 组 nav 键 × 6 locale（zh-TW/ar-SA/de-DE/es-ES/fr-FR/ja-JP），
+    parity 由红转绿。**这批不需要 owner 拍板**：是上游漏了翻译，
+    补齐属于「把上游没做完的做完」，不改变任何产品行为。
+    ⇒ 剩余 2 条**仍然都要 owner 拍板，不要代做**：
+    - `navCoverage`：这 6 条路由（`/admin/usage-enhanced`、`/admin/board-operational`、
+      `/admin/ops-overview`、`/admin/subscription-tiers`、`/admin/request-actions/:id`、
+      `/admin/storage-and-log-config`）**不在 appNav、也未登记 KNOWN_ORPHANS**。
+      挂不挂菜单 = 这批页面要不要进导航栏，是产品决策。
+      **注意它们正是刚补译的那 6 组菜单项** —— 上游加了路由和文案却忘了挂入口，
+      两处缺陷同源（补翻译时顺带查到了 navCoverage 的具体清单）。
+    - `hardcoded_cjk` 棘轮 5757 vs 5529：要么改 228 处走 i18n，
+      要么手动抬基线，两者都是策略决策。
+
     - 本分支对第二条的净贡献是 **+1**，且**不可消除**：`appNav.ts` 新增导航项的
       `label: '实时拓扑'`。实测该计数器**按构造计数而非按字符**
       （`{label:'实时拓扑'}` = 1，源码注释被 mask = 0），所以这不是「写了几个中文字」

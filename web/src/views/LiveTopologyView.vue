@@ -182,6 +182,12 @@ function onZoomRequest(entry: PanelEntry) {
   highlightEdges.value = topo.edgePathFor(entry.requestId)
 }
 
+/** 全页打开请求详情（owner 2026-10-18）：面板行 ↗ 与放大面板 ↗ 共用。 */
+function onOpenPage(entry: PanelEntry) {
+  if (!entry.requestId) return
+  void router.push({ path: `/live/request/${encodeURIComponent(entry.requestId)}` })
+}
+
 /** 点网关模块 = 纯视觉聚焦（再点一次取消）。**不改过滤子集**：那会让人
  *  以为这个模块在筛数据，而它只是主链路/旁路的一个格子。 */
 function onSelectModule(key: GatewayModuleKey) {
@@ -352,6 +358,7 @@ function onSelectProvider(code: string) {
           :active-request-id="selectedRequestId ?? undefined"
           @select-request="onSelectRequest"
           @zoom="onZoomRequest"
+          @open-page="onOpenPage"
         />
         <ProviderTodayRail
           class="live-topology__rail"
@@ -382,12 +389,14 @@ function onSelectProvider(code: string) {
           :active-request-id="selectedRequestId ?? undefined"
           @select-request="onSelectRequest"
           @zoom="onZoomRequest"
+          @open-page="onOpenPage"
         />
         <RequestZoomPanel
           v-if="zoomEntry"
           :entry="zoomEntry"
           :decisions="zoomDecisions"
           @close="zoomEntry = null"
+          @open-page="onOpenPage"
         />
       </div>
     </div>

@@ -101,6 +101,40 @@ export function clientKeyOf(req: GraphRequestInput): string {
   return 'unknown'
 }
 
+/**
+ * 客户端**易读显示名**（owner 2026-10-18：客户端信息要更易懂）。
+ * 身份键是稳定 id（client:claude-code），显示时转成品牌写法：
+ *  - 已知品牌走固定映射（Claude Code / ZCode / Codex…）；
+ *  - 其它 kebab/snake 键按分段 Title Case（vs-code-insiders → Vs Code Insiders）；
+ *  - 十六进制身份前缀原样保留 —— 大写化哈希反而失真；
+ *  - 兜底键 'unknown' 由调用方用 i18n「未知客户端」处理（这里不掺文案）。
+ * 品牌名与语言无关（不进 locale），但要变只能改这里的映射单点。
+ */
+const KNOWN_CLIENT_DISPLAY_NAMES: Record<string, string> = {
+  'claude-code': 'Claude Code',
+  'claude': 'Claude',
+  'zcode': 'ZCode',
+  'codex': 'Codex',
+  'cursor': 'Cursor',
+  'copilot': 'Copilot',
+  'gemini-cli': 'Gemini CLI',
+  'aider': 'Aider',
+  'cline': 'Cline',
+  'curl': 'curl',
+}
+
+export function clientDisplayName(key: string): string {
+  const known = KNOWN_CLIENT_DISPLAY_NAMES[key]
+  if (known) return known
+  // 十六进制身份前缀（或任何带数字开头的短哈希）不动
+  if (/^[0-9a-f]{4,}$/i.test(key)) return key
+  if (!/^[a-z0-9][a-z0-9_.-]*$/i.test(key)) return key
+  return key
+    .split(/[-_.]/)
+    .map((seg) => (seg ? seg[0].toUpperCase() + seg.slice(1) : seg))
+    .join(' ')
+}
+
 /** 供应端节点键：凭据级优先；没有凭据时退回「仅供应商」节点。 */
 export function providerNodeKeyOf(req: GraphRequestInput): string {
   if (req.credential_id) return `cred:${req.credential_id}`

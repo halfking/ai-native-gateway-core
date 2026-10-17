@@ -8,6 +8,7 @@
 import { computed, ref, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { PanelEntry } from '../../composables/useLiveTopology'
+import { clientDisplayName } from '../../lib/liveTopologyGraph'
 import { PANEL_PAGE_SIZE } from '../../types/liveTopology'
 
 const props = defineProps<{
@@ -18,7 +19,13 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'select-request', requestId: string): void
   (e: 'zoom', entry: PanelEntry): void
+  (e: 'open-page', entry: PanelEntry): void
 }>()
+
+/** 客户端易读名（owner 2026-10-18）。 */
+function displayName(client: string): string {
+  return clientDisplayName(client)
+}
 
 const { t } = useI18n()
 
@@ -96,6 +103,14 @@ function tokens(value: number | null | undefined): string {
             </span>
             <span v-if="entry.errorKind" class="pp__error">{{ entry.errorKind }}</span>
           </button>
+          <button
+            type="button"
+            class="pp__page"
+            :data-testid="`provider-open-page-${entry.requestId}`"
+            :aria-label="t('liveTopology.zoom.openPage')"
+            :title="t('liveTopology.zoom.openPage')"
+            @click.stop="emit('open-page', entry)"
+          >↗</button>
           <button
             type="button"
             class="pp__zoom"
@@ -252,6 +267,19 @@ function tokens(value: number | null | undefined): string {
 .pp__error {
   font-size: 10px;
   color: var(--kx-danger);
+}
+
+.pp__page {
+  padding: 0 5px;
+  border: 0;
+  background: transparent;
+  color: var(--kx-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pp__page:hover {
+  color: var(--kx-primary);
 }
 
 .pp__zoom {

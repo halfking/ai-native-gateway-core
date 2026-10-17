@@ -15,6 +15,8 @@ package main
 // 两者都允许为 nil：对应清单为空，端点只在完全没装配时才 degraded。
 
 import (
+	"sort"
+
 	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/domains/security"
 	"github.com/kaixuan/llm-gateway-go/plugin-runtime"
@@ -32,7 +34,7 @@ type topologyPluginsAdapter struct {
 
 // BuiltinPlugins 投影在用治理插件。
 // v2 注册中心在场时以它为准；否则报告 v1 数据面真实装配的守卫集合
-//（由非 nil 指针与词表计数推导，不是静态硬编码清单）。
+// （由非 nil 指针与词表计数推导，不是静态硬编码清单）。
 func (a topologyPluginsAdapter) BuiltinPlugins() []admin.TopologyBuiltinPlugin {
 	if a.builtin != nil {
 		plugins := a.builtin.List()
@@ -65,7 +67,8 @@ func (a topologyPluginsAdapter) BuiltinPlugins() []admin.TopologyBuiltinPlugin {
 }
 
 // ExternalPlugins 投影外部插件进程状态（含 failed/degraded —— 运维
-// 恰恰最需要看到的是这些非 ready 状态）。
+// 恰恰最需要看到的是这些非 ready 状态）。按 PluginID 排序：Snapshot 走
+// map 迭代，不排序的话同一状态两次请求顺序都不同，前端 chip 会闪跳。
 func (a topologyPluginsAdapter) ExternalPlugins() []admin.TopologyExternalPlugin {
 	if a.external == nil {
 		return []admin.TopologyExternalPlugin{}
@@ -79,5 +82,6 @@ func (a topologyPluginsAdapter) ExternalPlugins() []admin.TopologyExternalPlugin
 			Status:        st.Status,
 		})
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].PluginID < out[j].PluginID })
 	return out
 }
