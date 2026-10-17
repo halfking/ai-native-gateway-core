@@ -27,6 +27,9 @@ package bg
 //
 // 与具体存储实现解耦：只持有 *sql.DB，不 import storage 包（对齐
 // CacheTrimmer 的"只操作目录"边界）。
+//
+// 可观测性契约（2026-10-18）：**每一轮都必须出声**，包括零删除的那一轮。
+// 见 RunOnce 末尾的说明——沉默不能同时表示「无事可做」与「没在跑」。
 
 import (
 	"context"
@@ -183,13 +186,27 @@ func (w *LiteRetentionWorker) RunOnce(ctx context.Context) (logsDeleted, session
 		return logsDeleted, 0, turnsDeleted, detailsDeleted, err
 	}
 
-	if logsDeleted+sessionsDeleted+turnsDeleted+detailsDeleted > 0 {
-		slog.Info("lite retention sweep",
-			"request_logs_deleted", logsDeleted,
-			"sessions_deleted", sessionsDeleted,
-			"session_turns_deleted", turnsDeleted,
-			"session_turn_details_deleted", detailsDeleted,
-			"retention", w.retention.String())
+	// 2026-10-18：这一轮「什么都没删到」同样出声。
+	//
+	// 旧实现只在总删除数 > 0 时打这行，于是「worker 活着但稳态无事可做」
+	// 与「worker 根本没在跑」渲染成同一种沉默。周期 6h、默认 7d 保留期，
+	// 稳态下**绝大多数轮次删除数必然为 0** ⇒ 沉默是常态而非异常信号，
+	// 而这几行 slog 是本 worker 唯一的可观测面（无任何指标通道）。
+	// 与 URSM SnapshotRetentionWorker 的同族修复（2026-10-14 批 116）同形：
+	// 用 mode 字段区分「真删到了」与「这轮无事可做」，保留原有 msg 与
+	// 计数键名，既有基于日志的断言不受影响。
+	total := logsDeleted + sessionsDeleted + turnsDeleted + detailsDeleted
+	mode := "noop"
+	if total > 0 {
+		mode = "reclaimed"
 	}
+	slog.Info("lite retention sweep",
+		"mode", mode,
+		"request_logs_deleted", logsDeleted,
+		"sessions_deleted", sessionsDeleted,
+		"session_turns_deleted", turnsDeleted,
+		"session_turn_details_deleted", detailsDeleted,
+		"retention", w.retention.String(),
+		"interval", w.interval.String())
 	return logsDeleted, sessionsDeleted, turnsDeleted, detailsDeleted, nil
 }
