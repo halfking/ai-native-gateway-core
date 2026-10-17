@@ -125,4 +125,9 @@ export default {
   noRules: "Sin reglas. Añada al menos una antes de publicar.",
   combinationHint:
     "Las combinaciones pendientes solo se registran en la entrada. Elija pattern explícitamente para enmascarar o bloquear.",
+  viewMatched: "Ver regla coincidente",
+  hideMatched: "Ocultar regla coincidente",
+  expectedMiss: "No debe coincidir",
+  eventEvidenceNote:
+    "La lista de aciertos no guarda el texto original. Confirme con tipo/campo, patrón y ejemplos inventados; edite la regla o añada un suplemento acotado. Los clientes locales ven valores restaurados; el proveedor sigue enmascarado. El cumplimiento de salida opcional está desactivado por defecto.",
 };

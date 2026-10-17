@@ -4,6 +4,14 @@
 
 ## 待观察经验
 
+### 2026-10-17 — 顶栏 X 不关 AppSheet / Focus；/me 先开后跳会被导航清掉
+- 根因：`HyperApp.overlayActive` 只认 drawer/account，忽略 `Hyper.topOverlay`；`closeActiveOverlay` 未走 `dismissOverlay`。`/me` 若先开 Sheet 再 `replace('/')`，runtime 导航 silent-close 全 overlay。
+- 防复发：overlay 顶栏 X 必须绑定 `Hyper.topOverlay` + `dismissOverlay`；账户兼容路由先 replace 再派发 `llmgw:open-account`。判据 `HyperApp.overlayClose.spec.ts`。
+- 证据：Android CDP — OpenRouter 详情 `topbar-close-overlay` 可关；`/m/me` 打开账户 Sheet 含生产/测试/内部三站点。
+- 溯源：本会话 web-mobile 热修 + 245/154 `web-mobile` 热补丁。
+
+
+
 ## 2026-10-17 — Bash 路径里的版本四元组不是外传目的地（Seen: 1/3）
 - 任务 / 缺陷：ZCode/MiniMax 装 JDK/Maestro 时 Bash 参数含 `jdk-17.0.20.1+1`，整条 `output_policy_blocked`（request `ecb14454…`）。
 - 基线 / 修复 SHA：生产取证在 2693；修复 `c07632314`（r1033），154=`2695-c0763231`（8781）。
@@ -672,3 +680,10 @@
 ## 晋级记录
 
 将已晋级条目移到这里，并链接目标规则、清单或技能。同一模式只按不同工作日计 `Seen`；出现三天后晋级。经证据确认的安全、隐私、数据丢失或生产事故，若已有可执行的防复发检查，可立即晋级。
+
+## 2026-10-17 — r1035：Bash/exec 上 custom 地址规则误拦
+
+- **根因**：`pii.address.egress`（type=custom, kind=pattern）挂在 ScopeEgress；中文路径含「路/号」命中后整条 tool lane `output_policy_blocked`。地址分类 ≠ 外传目的地。
+- **防复发**：本地执行工具（Bash/exec_command…）与惰性内容工具上，跳过非 `network_destination` 的 custom；判据 `r1035_local_exec_address_not_egress_test.go`；E2E 必须确认 tool_calls 在场（否则假绿）。
+- **证据**：154 client `59d936b8…` / gw `913cf85b…`；部署后 `pii.address.egress` block=0；minimax-m3 Bash+中文路径 200+tool_calls。
+- **溯源**：未提交工作区 + 154 `2698-a4e2480e`；强制 OutputSensitive 不受 `output_compliance.enabled` 影响——关可选模块挡不住这类误拦。

@@ -120,13 +120,19 @@ export function filterOptions(
  * 网关核心九个模块的窗口内命中统计。
  *
  * 口径说明（**能算的算，算不出的留空**）：
- *  - cache：带 cache_read/cache_write token 的请求数（缓存有命中的那些）；
- *  - sanitize / route / sessionWrite：主链路请求数 / 带 gw_session_id 的比例；
+ *  - cache：**缓存命中**的请求数（带 cache_read/cache_write token 的那些）——
+ *    只有命中才有可看的量，「全部请求都过了缓存」这种数字等于没说；
+ *  - sanitize / route：主链路请求数（每条都经过）；
+ *  - sessionFile / sessionWrite：带 gw_session_id 的请求数（会话真的被写了）；
  *  - nodeState：node_update 上报的节点数（在图上有供应端节点 = 有状态可管）；
- *  - sessionFile：带 gw_session_id 的请求数（会话文件被写）；
- *  - errorRecord：失败请求数 + idle marker；
+ *  - errorRecord：失败请求数；
  *  - probeTask：is_probe 请求数；
- *  - taskDetect：带 request_type（非 main）的请求数。
+ *  - taskDetect：带 requestType（非 main）的请求数。
+ *
+ * **errors 只装失败/异常数**（`GatewayModuleStat.errors` 的类型契约）。
+ * 早先版本把缓存命中数塞进 `errors`，而 `GatewayCoreBox` 用 `errors > 0`
+ * 决定画红 —— 结果是**缓存工作正常反而显示成故障红**。命中是成功信号，
+ * 不是异常信号，必须走 `count`。
  *
  * 没有真实命中的模块返回 0，UI 画成「无流量」而不是编一个数字。
  */
@@ -144,8 +150,8 @@ export function gatewayModuleStats(
     if (!withinWindow(req, now, windowMs)) continue
     const isFail = req.status === 'failure' || req.status === 'rate_limited'
     if (isFail) failures += 1
-    stats.cache.count += 1
-    if ((req.cache_read_tokens ?? 0) > 0 || (req.cache_write_tokens ?? 0) > 0) stats.cache.errors += 1
+    // 缓存：只数「命中」，命中不是异常 ⇒ 不进 errors（否则格子被画成故障红）
+    if ((req.cache_read_tokens ?? 0) > 0 || (req.cache_write_tokens ?? 0) > 0) stats.cache.count += 1
     stats.sanitize.count += 1
     stats.route.count += 1
     stats.sessionWrite.count += req.gw_session_id ? 1 : 0

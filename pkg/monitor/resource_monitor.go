@@ -93,6 +93,10 @@ type ResourceMonitor struct {
 	proc         *process.Process
 	instanceID   string
 	lastSnapshot *ResourceSnapshot
+	// recentSnapshots 是趋势窗口内的采样环形缓冲，判定泄漏时用它做
+	// 「跨窗口趋势」而不是「相邻两点差值」。详见 detectLeaks 的注释。
+	recentSnapshots []*ResourceSnapshot
+	leakWindow      time.Duration
 	leakDetector *LeakDetector
 	started      bool
 	stopped      bool
@@ -131,6 +135,7 @@ type ResourceMonitorConfig struct {
 	MemGrowthThreshold float64       // 内存增长阈值(MB/min)，默认10MB/min
 	GoroutineThreshold int           // goroutine数量阈值，默认10000
 	FDGrowthThreshold  float64       // FD增长阈值(个/min)，默认100/min
+	LeakWindow         time.Duration // 泄漏判定的趋势窗口，默认10分钟
 }
 
 var (
@@ -186,6 +191,14 @@ func NewResourceMonitor(config ResourceMonitorConfig) (*ResourceMonitor, error) 
 	if config.FDGrowthThreshold == 0 {
 		config.FDGrowthThreshold = 100.0 // 100/min
 	}
+	if config.LeakWindow <= 0 {
+		config.LeakWindow = 10 * time.Minute
+	}
+	// 窗口至少要装得下几个采样点，否则趋势判定退化成相邻两点差值，
+	// 正是本次修复要消除的那个缺陷。
+	if minWindow := config.Interval * 3; config.LeakWindow < minWindow {
+		config.LeakWindow = minWindow
+	}
 
 	// 创建日志目录
 	if err := os.MkdirAll(config.LogDir, 0755); err != nil {
@@ -218,6 +231,7 @@ func NewResourceMonitor(config ResourceMonitorConfig) (*ResourceMonitor, error) 
 		jsonEncoder: json.NewEncoder(logWriter),
 		proc:        proc,
 		instanceID:  config.InstanceID,
+		leakWindow:  config.LeakWindow,
 		leakDetector: &LeakDetector{
 			memoryGrowthThreshold: config.MemGrowthThreshold,
 			goroutineThreshold:    config.GoroutineThreshold,
@@ -398,44 +412,74 @@ func (rm *ResourceMonitor) writeSnapshot(snapshot *ResourceSnapshot) {
 	}
 }
 
-// updateLastSnapshot 更新最后一次快照
+// updateLastSnapshot 更新最后一次快照，并把采样点存入趋势窗口环形缓冲。
+// 超出 leakWindow 的旧采样点被丢弃——判定只看窗口内的点。
 func (rm *ResourceMonitor) updateLastSnapshot(snapshot *ResourceSnapshot) {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 	rm.lastSnapshot = snapshot
+	rm.recentSnapshots = append(rm.recentSnapshots, snapshot)
+	cutoff := snapshot.Timestamp.Add(-rm.leakWindow)
+	drop := 0
+	for drop < len(rm.recentSnapshots)-1 && rm.recentSnapshots[drop].Timestamp.Before(cutoff) {
+		drop++
+	}
+	if drop > 0 {
+		rm.recentSnapshots = append([]*ResourceSnapshot(nil), rm.recentSnapshots[drop:]...)
+	}
+}
+
+// leakBaseline 返回趋势窗口内最早的那个采样点；窗口尚未铺满时返回 nil。
+func (rm *ResourceMonitor) leakBaseline(current *ResourceSnapshot) *ResourceSnapshot {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+	if len(rm.recentSnapshots) == 0 {
+		return nil
+	}
+	oldest := rm.recentSnapshots[0]
+	if current.Timestamp.Sub(oldest.Timestamp) < rm.leakWindow {
+		return nil // 窗口还没铺满，现在判定等于退化回相邻两点差值
+	}
+	return oldest
 }
 
 // detectLeaks 检测可能的泄漏
+//
+// 判据用「跨窗口趋势」而不是「相邻两点差值」，原因见下——这不是风格偏好，
+// 是生产上量出来的缺陷：
+//
+//  1. RSS 在 Go 的 GC 周期内是锯齿：245 实测周期约 2~3 分钟、幅度 ±35~70MB
+//     （heap_in_use 62~136MB 震荡，heap_released 68~124MB，GC 正常回收）。
+//  2. 相邻采样间隔默认 30 秒，而阈值 10MB/min 折合到 30 秒只有 **5MB 差值**，
+//     远低于锯齿幅度 ⇒ 30 秒窗口上的 RSS 差值 100% 被锯齿支配。
+//  3. 实测后果：resource_monitor.log 共 22645 行，其中 6646 条
+//     memory_leak_suspected（占 30%），而最长跑的进程（14.7 小时）
+//     RSS 始终在 181~293MB 之间震荡、无趋势——这些全是误报。
+//     更糟的是同一片噪声也让「缓慢但真实的泄漏」无法与噪声区分。
+//
+// 改成跨窗口趋势后，锯齿在窗口内被平均掉，阈值才重新有判别力。
+// 代价（有意接受，并在此写明）：发现延迟从一个采样周期变为一个窗口；
+// 且阈值语义从「瞬时速率」变为「窗口内持续速率」——按默认 10 分钟窗口，
+// 10MB/min 意味着要持续增长 100MB 才告警。
+//
+// 窗口长度不是拍脑袋定的，是把生产真值序列（testdata/rss_prod_20261012.csv，
+// 245 上 pid 2539639 的 14.7 小时真实 RSS，已知无泄漏）逐档扫出来的：
+//
+//	窗口   实测误报   +2MB/min  +4MB/min  +8MB/min  +12MB/min
+//	  30s(旧)   514       537       557       623       751
+//	   5m         52       102       187       402       764
+//	  10m(默认)   0         0        13       214       831
+//	  15m          0         0         0       104       873
+//
+// 读法：10 分钟是**实测中首个误报归零**的窗口，且在同样零误报下比 15 分钟
+// 多抓到 4MB/min 一档（15 分钟那条 0 是漏报），所以取 10 分钟。
+// 30s 那行（旧算法）在干净数据上就报 514 条——它对 2MB/min 的真实泄漏
+// 只报 537 条，两者只差 4%，**这种「敏感」分辨不出有没有泄漏**，是噪声不是检出。
+// 需要抓更慢的泄漏就调小 LeakWindow，代价是误报回升（见上表）。
 func (rm *ResourceMonitor) detectLeaks(current *ResourceSnapshot) {
-	rm.mu.RLock()
-	last := rm.lastSnapshot
-	rm.mu.RUnlock()
-
-	if last == nil {
-		return
-	}
-
-	duration := current.Timestamp.Sub(last.Timestamp).Minutes()
-	if duration <= 0 {
-		return
-	}
-
-	// 检测内存泄漏（只关注正向增长，避免无符号下溢误报）
-	memDelta := int64(current.MemoryStats.RSSMB) - int64(last.MemoryStats.RSSMB)
-	memGrowth := float64(memDelta) / duration
-	if memGrowth > rm.leakDetector.memoryGrowthThreshold {
-		alert := LeakAlert{
-			Timestamp:    current.Timestamp,
-			AlertType:    "memory_leak_suspected",
-			Message:      fmt.Sprintf("Memory growing at %.2f MB/min (threshold: %.2f MB/min)", memGrowth, rm.leakDetector.memoryGrowthThreshold),
-			CurrentVal:   memGrowth,
-			ThresholdVal: rm.leakDetector.memoryGrowthThreshold,
-		}
-		rm.leakDetector.addAlert(alert)
-		rm.writeAlert(alert)
-	}
-
-	// 检测goroutine泄漏
+	// goroutine 是**电平**判定（count > threshold），不是趋势判定，
+	// 因此必须在趋势窗口的提前 return 之前求值——否则它会被 10 分钟窗口
+	// 门控住，等于静默停摆。本轮就是这么引入过一次回归，由 TestLeakDetection 抓住。
 	if current.Goroutines > rm.leakDetector.goroutineThreshold {
 		alert := LeakAlert{
 			Timestamp:    current.Timestamp,
@@ -448,13 +492,38 @@ func (rm *ResourceMonitor) detectLeaks(current *ResourceSnapshot) {
 		rm.writeAlert(alert)
 	}
 
-	// 检测文件描述符泄漏
-	fdGrowth := float64(current.FileDescriptors.OpenFDs-last.FileDescriptors.OpenFDs) / duration
+	base := rm.leakBaseline(current)
+	if base == nil {
+		return
+	}
+
+	duration := current.Timestamp.Sub(base.Timestamp).Minutes()
+	if duration <= 0 {
+		return
+	}
+
+	// 检测内存泄漏（只关注正向增长，避免无符号下溢误报）
+	memDelta := int64(current.MemoryStats.RSSMB) - int64(base.MemoryStats.RSSMB)
+	memGrowth := float64(memDelta) / duration
+	if memGrowth > rm.leakDetector.memoryGrowthThreshold {
+		alert := LeakAlert{
+			Timestamp:    current.Timestamp,
+			AlertType:    "memory_leak_suspected",
+			Message:      fmt.Sprintf("Memory growing at %.2f MB/min over %.1fmin window (threshold: %.2f MB/min)", memGrowth, duration, rm.leakDetector.memoryGrowthThreshold),
+			CurrentVal:   memGrowth,
+			ThresholdVal: rm.leakDetector.memoryGrowthThreshold,
+		}
+		rm.leakDetector.addAlert(alert)
+		rm.writeAlert(alert)
+	}
+
+	// 检测文件描述符泄漏（同样用窗口基线，见 detectLeaks 注释）
+	fdGrowth := float64(current.FileDescriptors.OpenFDs-base.FileDescriptors.OpenFDs) / duration
 	if fdGrowth > rm.leakDetector.fdGrowthThreshold {
 		alert := LeakAlert{
 			Timestamp:    current.Timestamp,
 			AlertType:    "fd_leak_suspected",
-			Message:      fmt.Sprintf("File descriptors growing at %.2f/min (threshold: %.2f/min)", fdGrowth, rm.leakDetector.fdGrowthThreshold),
+			Message:      fmt.Sprintf("File descriptors growing at %.2f/min over %.1fmin window (threshold: %.2f/min)", fdGrowth, duration, rm.leakDetector.fdGrowthThreshold),
 			CurrentVal:   fdGrowth,
 			ThresholdVal: rm.leakDetector.fdGrowthThreshold,
 		}

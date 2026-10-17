@@ -9005,3 +9005,13 @@ projected = 1 ；read-back title = 'mutation probe' ；DeleteTitle UPDATE 1 ；R
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 044 (startup) | `044_health_source_probe_now.sql` | `2770fb0628594271143dc32a2ee3bbb4f1d3482a0eb0b6493e11a715053dcbb2` | applied+verified（2026-10-16 经部署通道执行，台账 `gateway_db_revision_sequences` 记录 content_sha256 == execution_sha256；补登 c3abfbca1 漏登记行。fresh-install 白名单缺口另行由 01-schema 三副本 + credentials.sql 同步收口，见 12h 审计 20261017 轮） |
+
+
+## 2026-10-17 — usage_ledger 月度对账覆盖索引 870（24h 审计轮慢 SQL）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 870 | `870_usage_ledger_recon_cover_idx.sql` | `98a43da6dfa56beacd5e2fa0120fd24a00de27130ea0f3ed8c651742e17ce30a` | **applied+verified**（2026-10-17 18:14 经用户显式授权，直接对该业务库 psql 执行本文件，psql_rc=0，墙钟 **29.8s**；执行前已核 md5 与仓库副本逐字节一致、索引确认 ABSENT。执行后实测：4 个分区**全部**带该索引且 valid=t（2026-09 = 158MB、2026-10 = 45MB，两个空月分区各 8192 bytes）；**9 月窗口真实查询 129.2s → 8,721.985ms（−93%）**，计划由 `Index Scan` 转为 `Index Only Scan`（`usage_ledger_2026_09_request_id_ts_provider_id_prompt_token_idx`），ts 谓词下推为 Index Cond，缓冲 hit=63,208 read=4,197。比写迁移时按体量外推的 ~35s 更好，因为索引同时消掉了原计划的 Incremental Sort。⚠ 附带观察：外层按 provider_id 的 Sort 现在会 **external merge 落盘 34MB temp**，属「快了很多之后才显形的次级问题」，本轮未处理（可考虑 HashAggregate 替代 Sort+GroupAggregate）。★ 验收口径修正见文件头「怎么验收」：父表显示 0 bytes + `ON ONLY` 是分区父表的**正常渲染**，必须按**分区级 + 定义匹配**验收，且不能按索引名 grep（PG 用列名自动改名）——本轮即因此误判过一次「没建出来」。）为 `usage_ledger` 建 `(request_id, ts DESC) INCLUDE (provider_id, prompt_tokens, completion_tokens, total_tokens, cost_usd)`。缺陷本体：承重读方是 `domains/providerprofile` 月度用量对账（`DISTINCT ON (request_id)` 去重后按 provider 汇总），`pg_stat_statements` 实测 **87 次 / 均值 129.2s / 最大 533.9s / 累计 187.3 分钟**。根因：leading 列为 `request_id` 的既有索引**不携带** 5 个载荷列 ⇒ 月窗 **1,416,772 行逐行回表**，且 ts 范围谓词落在 Filter 而非 Index Cond。实测收益（10 月分区 313,546 行）：基线 `Index Scan` 36,480.768ms / 缓冲 hit=355,257 → 加索引后 **`Index Only Scan`** 10,082.199ms / 缓冲 hit=66,964 ⇒ **执行时间 −72%、缓冲 −81%**，ts 谓词下推为 Index Cond；建索引本身 406,160 行 / 74MB heap 仅 **2.693s**。★ 关键选择：**建在父表上而非 `ON ONLY`** —— 分区由 `CREATE TABLE … PARTITION OF usage_ledger` 创建，普通 CREATE INDEX 级联到现存分区且未来分区自动继承；`ON ONLY` 恰好抑制级联（父表既有的 `usage_ledger_ts_tenant_cover_agg_idx` 即是 0 字节空壳，勿照抄该形态）。PG 不支持在分区父表上 `CREATE INDEX CONCURRENTLY`，故走单事务链 + `lock_timeout=2s`（抢不到锁快速失败）+ `statement_timeout=10min`，并按 867 的同名分治：同名索引已存在则只校验定义不重建。canonical/embeddata 两副本 SHA 现场计算一致；installer go:embed + map、runner.go StartupFiles、`installed_startup_migrations.tsv` 第 265 位、部署通道 `files=()` 与 `.down.sql` 均已就位（**六点同步**，本次被 `migration_embed_sync_gate_test.go` 与 `sqlguard.TestMigrationRegistryStaysContinuous` 两道门各拦一次后补齐）。 |
+
+> 台账状态说明：本行为「新增迁移 + 补齐同步点」，不代表 870 已应用于任何环境；
+> 实际生效需以部署通道的执行记录为准。应用前建议低峰窗口（9 月分区构建约 10s 量级）。

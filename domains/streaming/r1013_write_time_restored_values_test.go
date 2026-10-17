@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/domains/outputcompliance"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 func r1013Body(t *testing.T, text string) []byte {
@@ -41,17 +42,42 @@ func r1013AssistantText(t *testing.T, body []byte) string {
 	return output
 }
 
-// r1013RequireComplianceOn 保证 write-time 路径不会因为 output_compliance.enabled
-// 为假而整体短路——那种情况下下面的断言会因为「压根没检查」而全绿，是假绿。
-//
-// 今天不会跳过：outputComplianceEnabled() 走 settings.GetPlatformBool(…, true)，
-// 无平台配置时默认就是开着的。这道检查是给「哪天测试环境真把它关了」留的。
+// r1013RequireComplianceOn 强制打开可选输出合规，否则 write-time 路径整体短路，
+// 下面关于豁免的断言会假绿。产品默认已改为关闭，本 helper 只服务本文件。
 func r1013RequireComplianceOn(t *testing.T) {
 	t.Helper()
-	if !outputComplianceEnabled() {
-		t.Skip("output_compliance.enabled 为 false，write-time 脱敏整体短路；" +
-			"此时豁免是否生效无从观察，留给启用了该设置的部署用 E2E 取证")
+	prev := settings.Global
+	t.Cleanup(func() { settings.Global = prev })
+	rows := map[string][]byte{"output_compliance.enabled": []byte(`true`)}
+	r := settings.NewRegistry()
+	r.RegisterBackend(settings.ScopePlatform, &r1013FakeBackend{store: rows})
+	for _, sp := range settings.ModuleSpecs() {
+		if sp.Key != "output_compliance.enabled" {
+			continue
+		}
+		if err := r.RegisterSpec(sp); err != nil {
+			t.Fatal(err)
+		}
 	}
+	settings.Global = r
+	if !outputComplianceEnabled() {
+		t.Fatal("failed to force output_compliance.enabled=true for write-time exemption tests")
+	}
+}
+
+type r1013FakeBackend struct{ store map[string][]byte }
+
+func (b *r1013FakeBackend) Get(_ settings.Scope, key string) ([]byte, error) {
+	return b.store[key], nil
+}
+func (b *r1013FakeBackend) Set(_ settings.Scope, _ string, _ any) ([]byte, error) {
+	return nil, nil
+}
+func (b *r1013FakeBackend) GetTenant(_, key string) ([]byte, error) {
+	return b.store[key], nil
+}
+func (b *r1013FakeBackend) SetTenant(_, _ string, _ any) ([]byte, error) {
+	return nil, nil
 }
 
 func TestBuildRedactBodyFn_ProtectsRestoredCallerValues(t *testing.T) {

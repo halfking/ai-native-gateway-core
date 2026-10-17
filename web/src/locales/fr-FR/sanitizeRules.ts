@@ -125,4 +125,9 @@ export default {
   noRules: "Aucune règle. Ajoutez-en au moins une avant publication.",
   combinationHint:
     "Les combinaisons à examiner sont seulement journalisées en entrée. Choisissez explicitement pattern pour masquer ou bloquer.",
+  viewMatched: "Voir la règle correspondante",
+  hideMatched: "Masquer la règle correspondante",
+  expectedMiss: "Ne doit pas correspondre",
+  eventEvidenceNote:
+    "La liste des hits ne stocke pas le texte brut. Confirmez avec type/champ, motif et exemples fictifs ; corrigez via édition ou règle limitée. Les clients locaux voient les valeurs restaurées ; le trafic fournisseur reste masqué. La conformité de sortie optionnelle est désactivée par défaut.",
 };

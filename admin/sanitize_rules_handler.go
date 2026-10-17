@@ -196,7 +196,9 @@ func (h *Handler) listSanitizeRuleEvents(w http.ResponseWriter, r *http.Request)
 		writeSanitizeRuleError(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"events": events})
+	// Enrich with matched_rule snapshots so reviewers (incl. tenant_admin)
+	// can confirm and correct without loading the full rules editor.
+	writeJSON(w, 200, map[string]any{"events": enrichSanitizeRuleEvents(r.Context(), h.sanitizeRuleManager.Store(), events)})
 }
 func (h *Handler) reviewSanitizeRuleEvent(w http.ResponseWriter, r *http.Request) {
 	if !sanitizeRuleMethod(w, r, http.MethodPost) {

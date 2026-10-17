@@ -20,6 +20,7 @@ export default {
     connecting: 'Live stream is not connected — the graph shows the last snapshot, not the current state',
     waitingFirstFrame: 'Connected, waiting for the first authoritative frame of this session…',
     filteredEmpty: 'No requests in the window under the current filters',
+    droppedByWindow: '{n} more requests fall outside the current time window and are not shown here (widen the window to see them)',
   },
   summary: {
     inFlight: '{n} in flight',
@@ -71,6 +72,7 @@ export default {
       llm: 'Call',
       retrying: 'Retry',
       terminal: 'Terminal',
+      unreported: 'Unreported stage',
     },
     action: {
       unknown: 'event',
@@ -101,6 +103,17 @@ export default {
     probeTask: 'Probe task',
     taskDetect: 'Task detect',
   },
+  node: {
+    requests: '{n} requests',
+    aggregate: '{n} more requests (collapsed)',
+  },
+  health: {
+    healthy: 'healthy',
+    warning: 'warning',
+    down: 'down',
+    unknown: 'not probed',
+  },
+
   panel: {
     clients: 'Client requests',
     providers: 'Provider responses',

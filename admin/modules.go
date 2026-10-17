@@ -202,7 +202,7 @@ func allModuleDefinitions() []ModuleDefinition {
 			{
 				Key:         "output_compliance",
 				Name:        "输出合规检测",
-				Description: "检查 LLM 输出中的敏感数据（PII、密钥、内部 IP、Token 等），触发告警或自动脱敏。",
+				Description: "可选：检查 LLM 输出中的敏感数据（PII、密钥、内部 IP、Token 等）。默认关闭；输入脱敏与强制外传守卫不受此开关影响。",
 				Capabilities: []string{
 					"敏感数据识别（PII / 密钥 / 内部 IP）",
 					"自动脱敏处理",

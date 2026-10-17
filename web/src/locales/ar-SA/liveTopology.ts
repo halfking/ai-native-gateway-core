@@ -22,6 +22,7 @@ export default {
     connecting: 'Live stream is not connected — the graph shows the last snapshot, not the current state',
     waitingFirstFrame: 'Connected, waiting for the first frame of this session…',
     filteredEmpty: 'No requests in the window under the current filters',
+    droppedByWindow: 'هناك {n} طلبات أخرى خارج النافذة الزمنية الحالية ولا تظهر هنا (وسّع النافذة لعرضها)',
   },
   summary: {
     inFlight: '{n} in flight',
@@ -73,6 +74,7 @@ export default {
       llm: 'Call',
       retrying: 'Retry',
       terminal: 'Terminal',
+      unreported: 'مرحلة غير مُبلَّغ عنها',
     },
     action: {
       unknown: 'event',
@@ -103,6 +105,17 @@ export default {
     probeTask: 'مهمة الفحص',
     taskDetect: 'تحديد المهمة',
   },
+  node: {
+    requests: '{n} طلبات',
+    aggregate: '{n} طلبات إضافية (مجمّعة)',
+  },
+  health: {
+    healthy: 'سليم',
+    warning: 'تحذير',
+    down: 'معطّل',
+    unknown: 'غير مُقاس',
+  },
+
   panel: {
     clients: 'طلبات العملاء',
     providers: 'ردود المزوّدين',

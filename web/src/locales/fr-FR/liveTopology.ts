@@ -20,6 +20,7 @@ export default {
     connecting: 'Le flux temps réel est déconnecté — le graphique affiche le dernier instantané, pas l’état actuel',
     waitingFirstFrame: 'Connecté, en attente du premier cadre de cette session…',
     filteredEmpty: 'Aucune requête dans la fenêtre avec les filtres actuels',
+    droppedByWindow: '{n} autres requêtes sont hors de la fenêtre temporelle actuelle et ne sont pas affichées ici (élargissez la fenêtre pour les voir)',
   },
   summary: {
     inFlight: '{n} en cours',
@@ -71,6 +72,7 @@ export default {
       llm: 'Appel',
       retrying: 'Nouvel essai',
       terminal: 'Terminal',
+      unreported: 'Étape non déclarée',
     },
     action: {
       unknown: 'événement',
@@ -101,6 +103,17 @@ export default {
     probeTask: 'Tâche de sonde',
     taskDetect: 'Détection de tâche',
   },
+  node: {
+    requests: '{n} requêtes',
+    aggregate: '{n} autres requêtes (regroupées)',
+  },
+  health: {
+    healthy: 'sain',
+    warning: 'avertissement',
+    down: 'hors service',
+    unknown: 'non sondé',
+  },
+
   panel: {
     clients: 'Requêtes clients',
     providers: 'Réponses fournisseurs',

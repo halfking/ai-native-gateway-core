@@ -24,6 +24,18 @@ const { t } = useI18n()
 
 const visibleSummaries = computed(() => props.summaries.slice(0, 8))
 
+/**
+ * 表头的客户端数。
+ * **必须与下面实际渲染的行数一致**：只显示 `summaries.length`（上限 60）
+ * 而正文只画 8 行的话，表头就在宣传不存在的行，同时把真实总数藏起来。
+ * 超出时补成「8 / N」，两边对得上账。
+ */
+const headerCount = computed(() =>
+  props.summaries.length > visibleSummaries.value.length
+    ? `${visibleSummaries.value.length} / ${props.summaries.length}`
+    : String(visibleSummaries.value.length),
+)
+
 function rate(summary: ClientSummary): string {
   if (!summary.requests) return '—'
   return `${((summary.success / summary.requests) * 100).toFixed(0)}%`
@@ -56,7 +68,7 @@ function latency(value: number | null | undefined): string {
   <aside class="cp" aria-label="client request summary">
     <header class="cp__head">
       <span class="cp__title">{{ t('liveTopology.panel.clients') }}</span>
-      <span class="cp__count">{{ summaries.length }}</span>
+      <span class="cp__count">{{ headerCount }}</span>
     </header>
 
     <ul class="cp__summary">

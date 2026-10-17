@@ -30,10 +30,17 @@ const STAGE_ORDER: Array<{ key: string; tone: string }> = [
   { key: 'terminal', tone: 'is-terminal' },
 ]
 
+/**
+ * 未上报阶段的显式形态。
+ * 早先这里 `d.stage_category ?? 'routing'` —— 把「没上报」画成「路由」，
+ * 等于凭空造一个它没经历过的阶段。缺失就是缺失，渲染成中性「未上报阶段」。
+ */
+const UNREPORTED_STAGE = 'unreported'
+
 const items = computed(() =>
   props.decisions.map((d) => ({
     ...d,
-    stageKey: d.stage_category ?? 'routing',
+    stageKey: d.stage_category || UNREPORTED_STAGE,
     reason: d.blocked_reasons?.length ? d.blocked_reasons.join(' · ') : (d.reason ?? d.auto_decision ?? ''),
     transition: d.from_credential_id
       ? `${d.from_credential_id} → ${d.to_credential_id ?? d.credential_id ?? '?'}`
@@ -42,7 +49,7 @@ const items = computed(() =>
 )
 
 function stageClass(stage: string): string {
-  return STAGE_ORDER.find((s) => s.key === stage)?.tone ?? 'is-routing'
+  return STAGE_ORDER.find((s) => s.key === stage)?.tone ?? 'is-unreported'
 }
 
 function stageLabel(stage: string): string {
@@ -149,6 +156,13 @@ function actionLabel(action?: string): string {
 .decisions__stage.is-terminal {
   color: var(--kx-danger);
   background: var(--kx-danger-soft);
+}
+
+/* 未上报阶段：中性色。不能借用任何一种「有含义」的阶段色 ——
+   绿色会被读成成功、红色会被读成失败。 */
+.decisions__stage.is-unreported {
+  color: var(--kx-muted);
+  background: var(--kx-bg-accent);
 }
 
 .decisions__action {

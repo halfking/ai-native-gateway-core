@@ -82,6 +82,21 @@ export interface RuleVersion {
   created_at: string;
   review_links?: { id: number; tenant_id: string }[];
 }
+export interface MatchedRuleSummary {
+  id: string;
+  name?: string;
+  type?: string;
+  kind?: string;
+  pattern?: string;
+  group?: number;
+  scopes?: RulePhase[];
+  action?: RuleAction;
+  enabled?: boolean;
+  priority?: number;
+  tenant_id?: string;
+  samples?: RuleSample[];
+  missing?: boolean;
+}
 export interface RuleEvent {
   id: number;
   fingerprint: string;
@@ -91,6 +106,8 @@ export interface RuleEvent {
   phase: RulePhase;
   action: RuleAction | "exempted" | "pending";
   status: ReviewStatus;
+  type?: string;
+  field?: string;
   sample_masked: string;
   count: number;
   first_seen: string;
@@ -99,6 +116,7 @@ export interface RuleEvent {
   review_comment?: string;
   reviewed_at?: string;
   resolved_version?: number;
+  matched_rule?: MatchedRuleSummary;
 }
 export interface RulePublish {
   base_version: number;

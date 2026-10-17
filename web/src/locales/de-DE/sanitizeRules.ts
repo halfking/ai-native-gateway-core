@@ -127,4 +127,9 @@ export default {
     "Keine Regeln. Vor Veröffentlichung mindestens eine Regel hinzufügen.",
   combinationHint:
     "Ungeprüfte Kombinationen werden nur bei Eingaben protokolliert. Für Maskierung oder Sperrung ausdrücklich pattern wählen.",
+  viewMatched: "Getroffene Regel anzeigen",
+  hideMatched: "Getroffene Regel ausblenden",
+  expectedMiss: "Darf nicht treffen",
+  eventEvidenceNote:
+    "Trefferlisten speichern keinen Anfragetext. Prüfen Sie Typ/Feld sowie Regelmuster und erfundene Beispiele; bei Fehlalarm Regel bearbeiten oder ergänzen. Lokale Skripte/Dokumente zeigen nach Wiederherstellung echte Werte; Upstream bleibt maskiert. Optionale Output-Compliance ist standardmäßig aus.",
 };

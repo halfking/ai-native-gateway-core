@@ -297,6 +297,11 @@ function onSelectProvider(code: string) {
     <p v-else-if="isEmptyByFilter" class="live-topology__banner">
       {{ t('liveTopology.banner.filteredEmpty') }}
     </p>
+    <!-- 窗口丢弃必须说出口：否则图空了用户分不清是「真没流量」还是
+         「有流量但落在窗口外」——这两种情况该采取的动作完全不同。 -->
+    <p v-if="topo.droppedByWindow.value" class="live-topology__banner live-topology__banner--muted">
+      {{ t('liveTopology.banner.droppedByWindow', { n: topo.droppedByWindow.value }) }}
+    </p>
 
     <div class="live-topology__body">
       <div class="live-topology__left">
@@ -441,6 +446,13 @@ function onSelectProvider(code: string) {
   background: var(--kx-warning-soft);
 }
 
+/* 窗口丢弃提示是「解释」不是「告警」：用中性色，别和真正的故障横幅抢眼。 */
+.live-topology__banner--muted {
+  color: var(--kx-muted);
+  background: var(--kx-surface);
+  border: 1px dashed var(--kx-border);
+}
+
 /* 默认（窄）：单列堆叠 —— 上方拓扑，下方两个请求面板。
    ≥1024：左栏 + 拓扑两列，右侧面板落到下一行；
    ≥1440：左面板 / 拓扑 / 右面板三列并排。
@@ -460,6 +472,10 @@ function onSelectProvider(code: string) {
   flex-direction: column;
   gap: 8px;
   min-height: 0;
+  /* RequestZoomPanel 是 position:absolute 的内联放大面板。没有这行，
+     它的 containing block 会退到视口，右下角那块 460px 面板会盖住拓扑区
+     和左栏 —— 窄屏下几乎占满整屏。必须由本列当定位基准。 */
+  position: relative;
 }
 
 .live-topology__clients,

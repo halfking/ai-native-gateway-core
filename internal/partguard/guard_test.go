@@ -73,6 +73,8 @@ var allowedParentDML = []struct {
 		"**兜底腿，不是主腿**：`CleanupWithStats`（retention.go:215-240）完全按 `pg_class.relkind` 分派——分区父表走 `cleanupPartitioned`（整分区 DROP，立即归还磁盘），只有两种情况才落到这里的行级批 DELETE：① 表还是普通 heap（825 分区迁移执行前的形态）；② DROP 本轮失败，降级重试。文件注释自陈理由「宁可慢也不能让留存静默停摆——停摆的表现是磁盘单调增长，而没有任何告警」，且降级路径会打 slog.Warn 并把 `Degraded: true` 写进结果。0b80d07b7 的「形态自适应」在此成立：主腿是 DROP，行删是它明确登记的退路。"},
 	{"internal/titlestore/store.go", "sessions", 2,
 		"标题投影的条件提交（WITH changed AS (UPDATE ...) 取 RETURNING）与清除标题；两处均带 partition_date = MAX(...) pin，注释指向与 admin/session_turns_v2.go 同一手写绕行模式。"},
+	{"internal/trace/trace.go", "session_turns", 1,
+		"trace_events 回写的**第二条腿**（df9a213de 退役 request_logs v1 双写族时引入）：先打 session_turns_hot，命中 0 行才回退分区父表。回退腿是必需的——FlushToPG 的退避重试链跨 1.2s+5s+5s+5s（domains/streaming/handler.go:2146），期间 session_turns_hot→月分区的晋级若已完成，只写 hot 会让 trace_events 永久丢失（Redis key 仅在 rowsAffected>0 时才删，见 shouldDeleteTraceAfterFlush:536）。拓扑佐证：session_turns 是月分区父表（session_turns_2026_09 等），而 session_turns_hot 是 706b 用 LIKE ... INCLUDING ALL 建的**独立表**（非 PARTITION OF），故父表这条腿只能命中已晋级行，两腿互补不重叠。与 domains/session/v2/session_request_status_backfill.go 同构（写面必须覆盖 hot 之外的分区行）。df9a213de 的验证清单跑了 internal/trace 但未跑 partguard，本门因此漏红，本条为补登。"},
 }
 
 type pair struct {

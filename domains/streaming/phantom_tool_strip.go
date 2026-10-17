@@ -13,9 +13,26 @@ import (
 // failed turn (empty_model_response) even when later slots are valid.
 //
 // Malformed tool_calls entries are kept (R16). Kept entries: non-empty
-// function name, flat "name", OR non-empty arguments (streaming
-// continuation frames after the name arrived in an earlier chunk). Only
-// fully empty / id-only phantoms are dropped.
+// function name, flat "name", non-empty arguments (streaming
+// continuation frames after the name arrived in an earlier chunk), or a
+// **non-empty id**. Only fully empty slots are dropped.
+//
+// Why non-empty id counts as evidence of a real tool call (2026-10-17):
+// the previous rule dropped "id-only" slots, which silently ate the
+// **first frame of a legitimately streamed tool call** for providers that
+// emit the id before the name:
+//
+//	frame 1: {"index":0,"id":"call_x"}          ← dropped by the old rule
+//	frame 2: {"index":0,"function":{"name":"run",...}}  ← kept, but id is gone
+//
+// Two consequences, both observed as red tests in
+// executor_chat_continuation_p03_test.go:
+// TestP1ContinuationNeverResumesStartedToolCall: with the id frame gone the
+// continuation logic no longer sees "a tool call has started" and fires a
+// text-prefill continuation on top of a cut tool call (hook calls=1), and
+// the client wire loses the tool-call precondition entirely. The real
+// MiniMax phantom shape is `{"id":"","function":{"name":"","arguments":""}}`
+// — **empty id** — so an id-based rule still drops it.
 func stripPhantomToolCallsInPayload(payload string) string {
 	payload = strings.TrimSpace(payload)
 	if payload == "" || payload == "[DONE]" {
@@ -97,6 +114,7 @@ func stripPhantomToolCallsInPayload(payload string) string {
 
 func toolCallJSONKeepable(tc json.RawMessage) bool {
 	var probe struct {
+		ID       string `json:"id"`
 		Name     string `json:"name"`
 		Function *struct {
 			Name      string `json:"name"`
@@ -105,6 +123,13 @@ func toolCallJSONKeepable(tc json.RawMessage) bool {
 	}
 	if json.Unmarshal(tc, &probe) != nil {
 		return true // R16: unparseable → keep
+	}
+	// A non-empty id means the provider already committed to this call.
+	// The name may arrive in a later frame, so dropping the slot here would
+	// orphan the following frames (and make "did a tool call start?"
+	// unanswerable for the continuation gate).
+	if strings.TrimSpace(probe.ID) != "" {
+		return true
 	}
 	if probe.Function != nil {
 		if strings.TrimSpace(probe.Function.Name) != "" {

@@ -334,11 +334,23 @@ const layerLabels = computed(() => [
   { id: 'model', label: t('liveTopology.column.model'), y: layout.value.rowY.model },
 ])
 
-function onNodeEnter(id: string) {
-  hoveredId.value = id
+/**
+ * 节点的无障碍标签。
+ * 早先只有 `${label} ${requests}` —— 一个 `down` 节点读出来完全没有故障信息，
+ * 而聚合节点（label 就是 `+7`）读出来是「+7 123」，纯属噪音。
+ * 现在把健康态说清楚，聚合节点只报数量。
+ */
+function nodeLabel(node: TopoNode): string {
+  if (node.isAggregate) {
+    return t('liveTopology.node.aggregate', { n: node.metric.requests })
+  }
+  const health = t(`liveTopology.health.${node.health}`)
+  return `${node.label} · ${health} · ${t('liveTopology.node.requests', { n: node.metric.requests })}`
 }
 
-function onNodeLeave() {
+function onNodeEnter(id: string) {
+  hoveredId.value = id
+}function onNodeLeave() {
   hoveredId.value = null
 }
 
@@ -376,7 +388,7 @@ function onNodeClick(node: TopoNode) {
         :style="{ left: `${node.x}px`, top: `${node.y}px`, width: `${node.w}px`, height: `${node.h}px` }"
         tabindex="0"
         role="button"
-        :aria-label="`${node.label} ${node.metric.requests}`"
+        :aria-label="nodeLabel(node)"
         @mouseenter="onNodeEnter(node.id)"
         @mouseleave="onNodeLeave"
         @focus="onNodeEnter(node.id)"

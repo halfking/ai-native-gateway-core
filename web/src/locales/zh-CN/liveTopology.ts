@@ -20,6 +20,7 @@ export default {
     connecting: '实时流未连接，图中为最后一次快照（不代表当下状态）',
     waitingFirstFrame: '已连接，等待本代际首帧数据…',
     filteredEmpty: '当前过滤条件下窗口内没有请求',
+    droppedByWindow: '另有 {n} 条请求落在当前时间窗口之外，未计入本图（可放宽窗口查看）',
   },
   summary: {
     inFlight: '在途 {n}',
@@ -71,6 +72,7 @@ export default {
       llm: '调用',
       retrying: '回退',
       terminal: '终态',
+      unreported: '未上报阶段',
     },
     action: {
       unknown: '事件',
@@ -101,6 +103,17 @@ export default {
     probeTask: '探测任务',
     taskDetect: '任务识别',
   },
+  node: {
+    requests: '{n} 次请求',
+    aggregate: '另有 {n} 次请求（已折叠）',
+  },
+  health: {
+    healthy: '健康',
+    warning: '告警',
+    down: '故障',
+    unknown: '未探测',
+  },
+
   panel: {
     clients: '客户端请求',
     providers: '供应商响应',

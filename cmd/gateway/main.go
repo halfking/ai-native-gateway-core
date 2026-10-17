@@ -582,6 +582,10 @@ func main() {
 	memGrowthThreshold := float64(positiveIntEnv("LLM_GATEWAY_MEM_GROWTH_THRESHOLD_MB", 10))
 	goroutineThreshold := positiveIntEnv("LLM_GATEWAY_GOROUTINE_THRESHOLD", 10000)
 	fdGrowthThreshold := float64(positiveIntEnv("LLM_GATEWAY_FD_GROWTH_THRESHOLD", 100))
+	// 泄漏判定的趋势窗口。相邻采样的 RSS 差值 100% 被 GC 锯齿支配（实测 245 上
+	// 产生 6646 条误报），所以内存/FD 走跨窗口趋势而不是瞬时速率；窗口越长越
+	// 抗噪、但发现越迟，故留成 env 供现场调节。
+	leakWindow := positiveDurationEnv("LLM_GATEWAY_LEAK_WINDOW", 10*time.Minute)
 
 	resourceMonitorCfg := monitor.ResourceMonitorConfig{
 		LogDir:             persistentLogDir,
@@ -594,6 +598,7 @@ func main() {
 		MemGrowthThreshold: memGrowthThreshold,
 		GoroutineThreshold: goroutineThreshold,
 		FDGrowthThreshold:  fdGrowthThreshold,
+		LeakWindow:         leakWindow,
 	}
 
 	resourceMonitor, err = monitor.InitResourceMonitor(resourceMonitorCfg)
@@ -609,7 +614,8 @@ func main() {
 			"interval", resourceMonitorInterval,
 			"mem_growth_threshold_mb_per_min", memGrowthThreshold,
 			"goroutine_threshold", goroutineThreshold,
-			"fd_growth_threshold_per_min", fdGrowthThreshold)
+			"fd_growth_threshold_per_min", fdGrowthThreshold,
+			"leak_window", leakWindow)
 	}
 
 	// ── Columnar invariant check (Phase 23 / 03, 2026-07-02) ────────

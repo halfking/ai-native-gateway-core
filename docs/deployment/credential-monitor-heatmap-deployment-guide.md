@@ -315,6 +315,73 @@ All tests completed!
 
 ---
 
+## 🔍 查询参数语义（2026-10-17 补）
+
+本节按 `admin/credential_monitor_heatmap.go` 当前实现补齐，
+补的是代码里早已存在、但本文档此前完全未记载的两个行为。
+
+### 6.1 `exclude_self_test` —— 缺省为 `true`
+
+`admin/credential_monitor_heatmap.go:106-110`：
+
+```go
+// exclude_self_test 缺省 true（与 FEATURE-REQ §4.2 一致）
+excludeSelfTest := true
+if r.URL.Query().Has("exclude_self_test") {
+    excludeSelfTest = queryBool(r, "exclude_self_test")
+}
+```
+
+**运维要点**：这是 `Has()` + 显式覆盖的写法，不是 `Get()=="true"`。
+因此：
+
+| 请求形式 | 结果 |
+|---|---|
+| 不带该参数 | `exclude_self_test=true`（排除自测流量） |
+| `?exclude_self_test=` （空值） | 走 `queryBool` 解析，**不要假设等于 true** |
+| `?exclude_self_test=false` | `false`，自测流量计入热图 |
+
+验收时若发现热图里混进自测流量，先确认调用方传的是显式 `false`
+还是根本没传——两者行为不同。
+
+### 6.2 分桶是 epoch 对齐的
+
+`admin/credential_monitor_heatmap.go:457`、`:667`：
+
+> Buckets are epoch-aligned via `to_timestamp(floor(epoch/N)*N)`
+
+含义：桶边界按 Unix epoch 绝对对齐，**与请求的 `time_start` 无关**。
+推论三条：
+
+1. `granularity` 取任意整 N 秒都成立，不需要能整除时间跨度；
+2. 桶标签反映的是绝对时间点，不是「从 `time_start` 起第 k 桶」；
+3. 两次相同参数请求的桶边界重合，可直接逐桶对比（这也是 `cache_hit`
+   语义讨论的前提）。
+
+排查「热图整体偏移了几十分钟」类问题时，先排除把 epoch 桶标签
+误读成相对偏移。
+
+### 6.3 `meta.cache_hit` 恒为 `false`（刻意，非缺陷）
+
+`admin/credential_monitor_heatmap.go:235-236`：
+
+```go
+// cache_hit 现由缓存层控制；无缓存层时恒为 false（实时查询）
+resp.Meta.CacheHit = false
+```
+
+当前端点**自身不做缓存**，每次都是实时查询，因此该字段恒为 `false`。
+观测侧不要据此判定「缓存失效」；`meta.expires_at`（+1min）只是
+响应头语义，不代表本端点会自行复用。
+
+> 历史背景：2026-09-07 曾有一版分支引入「1min 进程内缓存 +
+> singleflight」让该字段变真。因与当前 stale-while-revalidate 的
+> 缓存层方向冲突、且会让该字段含义从「缓存层命中」漂移成
+> 「进程内命中」，该实现**未并入**，判定见
+> `docs/audit/2026-10-17-24h-audit-branch-adjudication.md` §三。
+
+---
+
 ## 🐛 故障排查
 
 ### 问题 1: API 返回 404

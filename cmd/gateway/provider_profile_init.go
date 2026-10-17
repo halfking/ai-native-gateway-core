@@ -179,7 +179,7 @@ func initProviderProfile(pool *pgxpool.Pool, fernetKey []byte, keyring *secret.K
 	return workers
 }
 
-//// initCostReconciliation 只装配**成本对账**这一条线，与 provider profile
+// // initCostReconciliation 只装配**成本对账**这一条线，与 provider profile
 // 总开关解耦（2026-10-13）。
 //
 // ⚠️ 为什么必须解耦（这是一个真实的功能不可达，不是配置疏忽）：
@@ -201,8 +201,9 @@ func initProviderProfile(pool *pgxpool.Pool, fernetKey []byte, keyring *secret.K
 //	代价与收益不成比例。
 //
 // ⇒ 所以：对账**只**由自己的子开关控制。它需要的能力
-//   （PG 聚合/存储/事件 sink）全部自包含，不依赖 collector 的解密密钥，
-//   因此可以在 profile 关闭时独立运行。
+//
+//	（PG 聚合/存储/事件 sink）全部自包含，不依赖 collector 的解密密钥，
+//	因此可以在 profile 关闭时独立运行。
 //
 // 返回 nil = 对账关闭（默认）或没有 DB。
 func initCostReconciliation(pool *pgxpool.Pool) *providerprofile.CostReconciler {
@@ -233,7 +234,8 @@ func initCostReconciliation(pool *pgxpool.Pool) *providerprofile.CostReconciler 
 	store := providerprofile.NewPGReconciliationStore(pool)
 	sink := providerprofile.NewPGReconciliationEventSink(pool)
 	reconciler := providerprofile.NewCostReconciler(source, store, sink, thresholds)
-	worker := bg.NewCostReconciliationWorkerFromReconciler(reconciler, time.Duration(reconSeconds)*time.Second)
+	worker := bg.NewCostReconciliationWorkerFromReconciler(reconciler, time.Duration(reconSeconds)*time.Second).
+		WithSharedThrottleDB(pool)
 	worker.Start()
 
 	slog.Info("provider cost reconciliation enabled",
