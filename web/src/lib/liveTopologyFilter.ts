@@ -34,8 +34,25 @@ function anyOf(candidates: readonly string[], actual: string): boolean {
   return candidates.includes(actual)
 }
 
-export function matchesFilters(req: GraphRequestInput, filters: TopoFilters, now: number): boolean {
+export function matchesFilters(
+  req: GraphRequestInput,
+  filters: TopoFilters,
+  now: number,
+  hiddenNodes?: ReadonlySet<string>,
+): boolean {
   if (!withinWindow(req, now, filters.windowMs)) return false
+  // 2026-10-18 数据开关（默认不选 = 默认隐藏）：
+  //  - 探测请求：showProbe=false 时整条排除（图/面板/统计一致收敛）；
+  //  - 无效节点：经熔断打开/不可达/手动停用节点的请求排除。
+  // 隐藏集合由调用方（useLiveTopology）从 nodesRef 算好传入 —— 过滤层
+  // 不读全局 store，保持可单测。
+  if (!filters.showProbe && req.is_probe) return false
+  // 语义收敛在函数内：开关打开时即便调用方仍传了集合也不隐藏
+  //（调用方组合错误不能变成「双保险变双重过滤」）。
+  if (!filters.showInvalidNodes && hiddenNodes && hiddenNodes.size) {
+    const nodeId = providerNodeKeyOf(req)
+    if (nodeId && hiddenNodes.has(nodeId)) return false
+  }
   if (filters.status && (req.status ?? '') !== filters.status) return false
   if (!anyOf(filters.clients, clientKeyOf(req))) return false
   if (!anyOf(filters.models, modelKeyOf(req))) return false
@@ -52,8 +69,9 @@ export function applyFilters(
   requests: readonly GraphRequestInput[],
   filters: TopoFilters,
   now: number,
+  hiddenNodes?: ReadonlySet<string>,
 ): GraphRequestInput[] {
-  return requests.filter((r) => matchesFilters(r, filters, now))
+  return requests.filter((r) => matchesFilters(r, filters, now, hiddenNodes))
 }
 
 /**

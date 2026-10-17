@@ -273,7 +273,8 @@ func TestBillingWideTableColumns_SourcelessColumnRefs(t *testing.T) {
 	}
 	root := repoRootFromCaller(t)
 
-	skipDir := map[string]bool{".git": true, "docs": true, "node_modules": true, "vendor": true}
+	skipDir := map[string]bool{".git": true, "docs": true, "node_modules": true, "vendor": true,
+		".audit": true, ".audit-validation": true, ".audit-workspace": true}
 	scanned, offenders := 0, 0
 
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {

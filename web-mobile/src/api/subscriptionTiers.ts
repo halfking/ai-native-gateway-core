@@ -7,8 +7,8 @@ import { req, type RequestOptions } from './client'
  *
  * - ★★★★★ **注册机制与本仓绝大多数端点不同**：它**不在** `admin/handler.go` 的
  *   `mux.HandleFunc` 里，而是在 **echo 的 group** 上：
- *   `cmd/gateway/main.go:7086`  `adminGroup := e.Group("/api/admin", requireSuperAdmin)`
- *   → `cmd/gateway/main.go:7075`  `licensing.RegisterModuleRoutes(adminGroup, licensingStore)`
+ *   `cmd/gateway/main.go:7092`  `adminGroup := e.Group("/api/admin", requireSuperAdmin)`
+ *   → `cmd/gateway/main.go:7094`  `licensing.RegisterModuleRoutes(adminGroup, licensingStore)`
  *   → `licensing/admin_api.go:33`  `func RegisterModuleRoutes(g *echo.Group, store Store)`
  *   → `licensing/module_api.go:22` `g.GET("/tiers", h.ListTiers)`
  *   ⇒ ★★★ **这是本仓第三种注册机制**（前两种：`admin/handler.go` 的 mux、

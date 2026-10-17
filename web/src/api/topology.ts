@@ -61,3 +61,34 @@ export function getProvidersToday(options?: { signal?: AbortSignal }): Promise<T
     signal: options?.signal,
   })
 }
+
+// ── 在用插件（2026-10-18）──────────────────────────────────────────────
+// GET /api/admin/topology/plugins —— 网关大方块插件带的真值来源。
+// builtin = 治理管线注册的内置插件（Name/Direction 来自插件自身）；
+// external = 插件进程状态（ready/degraded/failed，health loop 实时改写）。
+// degraded 只留给「装配没发生」；空清单 = 真的没有，两类语义不得混。
+
+export interface TopologyBuiltinPlugin {
+  name: string
+  direction: 'input' | 'output' | 'both' | string
+}
+
+export interface TopologyExternalPlugin {
+  plugin_id: string
+  plugin_version: string
+  status: string
+}
+
+export interface TopologyPlugins {
+  generated_at?: string
+  builtin?: TopologyBuiltinPlugin[]
+  external?: TopologyExternalPlugin[]
+  degraded?: boolean
+  error_code?: string
+}
+
+export function getTopologyPlugins(options?: { signal?: AbortSignal }): Promise<TopologyPlugins> {
+  return req<TopologyPlugins>('GET', '/api/admin/topology/plugins', undefined, {
+    signal: options?.signal,
+  })
+}

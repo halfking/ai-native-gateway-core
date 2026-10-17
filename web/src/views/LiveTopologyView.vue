@@ -58,7 +58,9 @@ function joinList(list: readonly string[]): string {
   return list.join(',')
 }
 
-/** URL ↔ 过滤态双向同步（与既有 ?tab= 契约不冲突）。 */
+/** URL ↔ 过滤态双向同步（与既有 ?tab= 契约不冲突）。
+ *  两个数据开关只在「打开」（非默认）时进 URL：probe=1 / invalid=1 ——
+ *  默认链接不带参数 = 默认隐藏，分享出去的链接语义与页面一致。 */
 function syncFromQuery() {
   const q = route.query
   const windowMs = Number(q.window ?? '')
@@ -69,6 +71,8 @@ function syncFromQuery() {
     nodes: parseList(q.node),
     status: typeof q.status === 'string' ? (q.status as never) : '',
     windowMs: Number.isFinite(windowMs) && windowMs > 0 ? windowMs : DEFAULT_TOPO_FILTERS.windowMs,
+    showProbe: q.probe === '1',
+    showInvalidNodes: q.invalid === '1',
   }
 }
 
@@ -81,6 +85,8 @@ function syncToQuery() {
   if (f.nodes.length) query.node = joinList(f.nodes)
   if (f.status) query.status = f.status
   if (f.windowMs !== DEFAULT_TOPO_FILTERS.windowMs) query.window = String(f.windowMs)
+  if (f.showProbe) query.probe = '1'
+  if (f.showInvalidNodes) query.invalid = '1'
   void router.replace({ query })
 }
 
@@ -95,6 +101,19 @@ const connectionTone = computed(() => {
 })
 
 const isEmptyByFilter = computed(() => topo.filteredOut.value)
+
+/** 转发队列深度：queue 快照没上报（未接线）时传 null，存储带隐藏徽标。 */
+const queueDepth = computed(() => {
+  const q = topo.queue.value
+  if (!q?.pipeline) return null
+  return q.pipeline.depth
+})
+
+// 在用插件清单（网关大方块插件带）。挂载时拉一次 —— 插件集合只在
+// 启动/安装时变化，不值得轮询；失败 = degraded 提示 chip（不冒充空）。
+onMounted(() => {
+  void topo.loadPlugins()
+})
 
 /** 新请求 → 粒子投放清单（edgeKey 形如 `client:x->gateway:core`）。 */
 function buildSpawns(): ParticleSpawn[] {
@@ -280,6 +299,16 @@ function onSelectProvider(code: string) {
           </option>
         </select>
 
+        <!-- 两个数据开关（owner 2026-10-18：默认不勾 = 默认去除）。 -->
+        <label class="live-topology__toggle" data-testid="toggle-probe">
+          <input v-model="topo.filters.value.showProbe" type="checkbox" />
+          <span>{{ t('liveTopology.filter.showProbe') }}</span>
+        </label>
+        <label class="live-topology__toggle" data-testid="toggle-invalid">
+          <input v-model="topo.filters.value.showInvalidNodes" type="checkbox" />
+          <span>{{ t('liveTopology.filter.showInvalid') }}</span>
+        </label>
+
         <button v-if="topo.activeFilterCount.value" type="button" class="live-topology__clear" @click="clearFilters">
           {{ t('liveTopology.filter.clear') }}
         </button>
@@ -302,6 +331,17 @@ function onSelectProvider(code: string) {
     <p v-if="topo.droppedByWindow.value" class="live-topology__banner live-topology__banner--muted">
       {{ t('liveTopology.banner.droppedByWindow', { n: topo.droppedByWindow.value }) }}
     </p>
+    <!-- 数据开关隐藏了多少条也必须说出口（同上一条的理由：图上比预期少
+         需要能被解释，否则「被开关藏了」会被读成「丢数据」）。 -->
+    <p
+      v-if="topo.hiddenProbeCount.value || topo.hiddenInvalidCount.value"
+      class="live-topology__banner live-topology__banner--muted"
+      data-testid="hidden-counts-banner"
+    >
+      <template v-if="topo.hiddenProbeCount.value">{{ t('liveTopology.banner.hiddenProbe', { n: topo.hiddenProbeCount.value }) }}</template>
+      <template v-if="topo.hiddenProbeCount.value && topo.hiddenInvalidCount.value"> · </template>
+      <template v-if="topo.hiddenInvalidCount.value">{{ t('liveTopology.banner.hiddenInvalid', { n: topo.hiddenInvalidCount.value }) }}</template>
+    </p>
 
     <div class="live-topology__body">
       <div class="live-topology__left">
@@ -311,6 +351,7 @@ function onSelectProvider(code: string) {
           :requests="topo.clientRequests.value"
           :active-request-id="selectedRequestId ?? undefined"
           @select-request="onSelectRequest"
+          @zoom="onZoomRequest"
         />
         <ProviderTodayRail
           class="live-topology__rail"
@@ -327,6 +368,8 @@ function onSelectProvider(code: string) {
           :selected-node-id="selectedNodeId ?? undefined"
           :selected-module="selectedModule"
           :gateway-stats="topo.gatewayStats.value"
+          :plugins="topo.plugins.value"
+          :queue-depth="queueDepth"
           @select-node="onSelectNode"
           @select-module="onSelectModule"
         />
@@ -365,6 +408,9 @@ function onSelectProvider(code: string) {
   display: flex;
   align-items: center;
   gap: 10px;
+  /* 标题/连接态一行，过滤栏独占第二行且自身永不换行 —— owner 要求
+     「筛选条件放在一行内」。浏览器实测 1600 宽下过滤控件需 ~1110px，
+     挤在标题同一行只剩 ~1010px，右端必被裁。 */
   flex-wrap: wrap;
 }
 
@@ -403,32 +449,70 @@ function onSelectProvider(code: string) {
 .live-topology__filters {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin-left: auto;
+  gap: 5px;
+  /* 独占一行（width:100%）、永不换行；极窄兜底横向滚动（丢滚动好过丢控件）。
+     owner 2026-10-18：筛选条件一行放下，字号更小且各控件大小一致。 */
+  width: 100%;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  font-size: 11px;
 }
 
 .live-topology__select {
-  width: 176px;
+  width: 132px;
+  /* el-select 内部字号统一为 11px，与旁边的原生 select/按钮一致。 */
+  --el-font-size-base: 11px;
+  flex: none;
 }
 
 .live-topology__filters select {
-  max-width: 140px;
-  padding: 3px 6px;
+  max-width: 120px;
+  padding: 0 5px;
+  height: 24px;
   border: 1px solid var(--kx-border);
-  border-radius: 7px;
+  border-radius: 6px;
   background: var(--kx-surface);
   color: var(--kx-text);
-  font-size: var(--kx-font-sm, 12px);
+  font-size: 11px;
+  flex: none;
+}
+
+/* 数据开关：与其它控件同高同字号（checkbox + label，一行内不凸起）。 */
+.live-topology__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--kx-border);
+  border-radius: 6px;
+  background: var(--kx-surface);
+  color: var(--kx-text);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  flex: none;
+}
+
+.live-topology__toggle input {
+  margin: 0;
+  width: 12px;
+  height: 12px;
+  accent-color: var(--kx-primary);
 }
 
 .live-topology__clear {
-  padding: 3px 8px;
+  height: 24px;
+  padding: 0 8px;
   border: 1px solid var(--kx-border);
-  border-radius: 7px;
+  border-radius: 6px;
   background: transparent;
   color: var(--kx-muted);
+  font-size: 11px;
   cursor: pointer;
+  flex: none;
 }
 
 .live-topology__summary {

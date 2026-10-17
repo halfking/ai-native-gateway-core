@@ -50,9 +50,15 @@ export interface TopoEdge {
   failure: number
   lastStatus?: string
   lastLatencyMs?: number
+  /**
+   * 客户端→网关边上的协议分布（2026-10-18 owner 要求：连线要标注协议）。
+   * 键 = client_protocol（openai / anthropic / gemini / …），值 = 窗口内条数。
+   * 只在 client→gateway 边上聚合；渲染成小字 chip + 着色。
+   */
+  protocolCounts?: Record<string, number>
 }
 
-/** 网关核心内部的处理模块（2026-10-17 维护者点名的九个环节，按处理顺序排）。 */
+/** 网关核心内部的处理模块（2026-10-18 三带布局：进站链 / 存储转发带 / 出站链）。 */
 export type GatewayModuleKey =
   | 'cache'
   | 'sanitize'
@@ -64,34 +70,55 @@ export type GatewayModuleKey =
   | 'probeTask'
   | 'taskDetect'
 
+/**
+ * 网关大方块内的**流程带**（2026-10-18 owner 要求：不同模块应处在其在
+ * 处理流程里的真实位置，且有进/出两条链路 + 存储转发效果）：
+ *
+ *   进·请求链（in，上带，L→R）：缓存 → 脱敏 →（插件带）→ 路由 → 节点状态 → 派发
+ *   存储转发带（store，中带）：转发队列（真实 pipeline depth）+ 数据会话写入 ⇄ 会话文件存储
+ *   出·响应链（out，下带，R→L）：任务识别 / 错误记录 / 探测任务（旁路族，虚线）
+ *
+ * 模块落在哪条带 = 它在真实处理流程中的位置：请求侧检查在前带，响应落库
+ * 在存储带，观测/旁路在后带。`order` 是带内顺序（渲染与判据共用）。
+ */
+export type GatewayLane = 'in' | 'store' | 'out'
+
 export interface GatewayModuleDef {
   key: GatewayModuleKey
-  /** 3×3 网格内的位置（行、列），确定性布局的一部分。 */
-  row: number
-  col: number
+  lane: GatewayLane
+  order: number
 }
 
-/**
- * 网关核心内部模块的**流程顺序**（2026-10-17 维护者给定）：
- * 缓存 → 脱敏 → 路由 → 节点状态管理 → 会话数据文件存储 → 数据会话写入
- * → 错误记录 → 探测任务 → 任务识别。
- *
- * 注意最后三个（错误记录 / 探测任务 / 任务识别）语义上是**旁路**（不是串行
- * 卡在主链路上），但维护者要求它们作为一个整体方块呈现，所以仍排在同一块内，
- * 用 `branch: true` 标出「旁路」视觉语义（虚线边框），避免读图的人以为
- * 每个请求都要依次走完九步。
- */
-export const GATEWAY_MODULES: readonly GatewayModuleDef[] = [
-  { key: 'cache', row: 0, col: 0 },
-  { key: 'sanitize', row: 0, col: 1 },
-  { key: 'route', row: 0, col: 2 },
-  { key: 'nodeState', row: 1, col: 0 },
-  { key: 'sessionFile', row: 1, col: 1 },
-  { key: 'sessionWrite', row: 1, col: 2 },
-  { key: 'errorRecord', row: 2, col: 0 },
-  { key: 'probeTask', row: 2, col: 1 },
-  { key: 'taskDetect', row: 2, col: 2 },
+export const GATEWAY_IN_MODULES: readonly GatewayModuleDef[] = [
+  { key: 'cache', lane: 'in', order: 0 },
+  { key: 'sanitize', lane: 'in', order: 1 },
+  { key: 'route', lane: 'in', order: 2 },
+  { key: 'nodeState', lane: 'in', order: 3 },
 ] as const
+
+export const GATEWAY_STORE_MODULES: readonly GatewayModuleDef[] = [
+  { key: 'sessionWrite', lane: 'store', order: 0 },
+  { key: 'sessionFile', lane: 'store', order: 1 },
+] as const
+
+export const GATEWAY_OUT_MODULES: readonly GatewayModuleDef[] = [
+  { key: 'taskDetect', lane: 'out', order: 0 },
+  { key: 'errorRecord', lane: 'out', order: 1 },
+  { key: 'probeTask', lane: 'out', order: 2 },
+] as const
+
+/** 全部模块（判据/统计遍历用）：三带并集，顺序稳定。 */
+export const GATEWAY_MODULES: readonly GatewayModuleDef[] = [
+  ...GATEWAY_IN_MODULES,
+  ...GATEWAY_STORE_MODULES,
+  ...GATEWAY_OUT_MODULES,
+] as const
+
+/** 模块 → 所属带（组件渲染按带分组，不在这里再写第二份映射）。 */
+export function laneOfModule(key: GatewayModuleKey): GatewayLane {
+  const def = GATEWAY_MODULES.find((m) => m.key === key)
+  return def?.lane ?? 'in'
+}
 
 /** 旁路模块（不串在主链路上，渲染成虚线边框）。 */
 export const GATEWAY_BRANCH_MODULES: ReadonlySet<GatewayModuleKey> = new Set<GatewayModuleKey>([
@@ -99,6 +126,22 @@ export const GATEWAY_BRANCH_MODULES: ReadonlySet<GatewayModuleKey> = new Set<Gat
   'probeTask',
   'taskDetect',
 ])
+
+/**
+ * 「在用插件」chip（/api/admin/topology/plugins）。direction 决定 chip 落在
+ * 哪条带（input/both → 进站链，output → 出站链）；status 只对外部插件
+ * 有意义（builtin 固定 'builtin'）。
+ */
+export type TopoPluginStatus = 'builtin' | 'ready' | 'degraded' | 'failed' | 'stopped' | 'starting'
+
+export interface TopoPluginChip {
+  id: string
+  /** 显示名：builtin 用 name，external 用 plugin_id。 */
+  name: string
+  direction: 'input' | 'output' | 'both'
+  status: TopoPluginStatus
+  external: boolean
+}
 
 export interface GatewayModuleStat {
   key: GatewayModuleKey
@@ -117,16 +160,29 @@ export interface TopoLayoutNode extends TopoNode {
 
 export interface TopoLayoutEdge extends TopoEdge {
   path: Array<{ x: number; y: number }>
+  /**
+   * 折叠前的**原始** edge id 集合（通常 1 条，折叠合并后可能多条）。
+   *
+   * 为什么需要：窄屏下节点会被折叠，图上的边 id 于是变成
+   * `client:x->model:folded:8` 这种，而视图的 `edgePathFor` 产出的是原始
+   * `client:x->model:deepseek-chat`。高亮按 id 集合比对 ⇒ 对不上 ⇒
+   * 「点面板条目高亮该链路」静默失效。有了它，高亮可按原始 id 命中。
+   */
+  sourceIds: string[]
 }
 
-/** 网关核心大方块的几何（纵向流程下的「中间那一层」）。 */
+/** 网关核心大方块的几何（三带：进站链 / 存储转发带 / 出站链）。 */
 export interface GatewayCoreBox {
   x: number
   y: number
   w: number
   h: number
-  /** 3×3 模块格的左上角与尺寸（与 GATEWAY_MODULES 的 row/col 对应）。 */
-  cells: Array<{ key: GatewayModuleKey; x: number; y: number; w: number; h: number }>
+  /**
+   * 三带的横向带区（判据钉「带不越框、带间不重叠」用；组件内部
+   * 模块格按正常文档流排布，不再逐格绝对定位 —— 绝对定位换来的是
+   * 每次改带内顺序都要同步两处几何，2026-10-18 三带改版起弃用）。
+   */
+  lanes: Array<{ lane: GatewayLane; x: number; y: number; w: number; h: number }>
 }
 
 export interface TopoLayout {
@@ -142,6 +198,11 @@ export interface TopoLayout {
 /**
  * 全局过滤态（进 URL query，可分享）。**四个维度都是多选**：
  * 同维度内 OR（命中任一即保留），跨维度 AND。
+ *
+ * 两个数据开关（2026-10-18 owner 要求「默认去除」）：
+ *  - showProbe：false（默认）= 探测请求从图/面板/统计中隐藏；
+ *  - showInvalidNodes：false（默认）= 经无效节点（熔断打开/不可达/手动停用）
+ *    的请求隐藏，无效节点本身也不上图。「无效」判据见 liveTopologyGraph.invalidNodeKeys。
  */
 export interface TopoFilters {
   clients: string[]
@@ -152,6 +213,10 @@ export interface TopoFilters {
   status: '' | 'success' | 'in_progress' | 'failure' | 'rate_limited'
   /** 时间窗（毫秒）。只影响「近窗」聚合与边粗细，不改节点健康。 */
   windowMs: number
+  /** 显示探测请求（默认 false：探测流量默认不出现在数据里）。 */
+  showProbe: boolean
+  /** 显示无效供应商/节点及其流量（默认 false）。 */
+  showInvalidNodes: boolean
 }
 
 export const TOPO_WINDOW_PRESETS: ReadonlyArray<{ value: number; labelKey: string }> = [
@@ -167,6 +232,8 @@ export const DEFAULT_TOPO_FILTERS: TopoFilters = {
   nodes: [],
   status: '',
   windowMs: 5 * 60_000,
+  showProbe: false,
+  showInvalidNodes: false,
 }
 
 /** 各层默认 Top N + 「其他」聚合节点的上限（性能预算见方案 §5.3）。 */
@@ -182,5 +249,7 @@ export const TOPO_PARTICLE_CAP = 240
 
 export const GATEWAY_CORE_ID = 'gateway:core'
 
-/** 右侧请求面板（供应商响应）与左侧（客户端请求）的条数上限。 */
-export const PANEL_LIST_LIMIT = 60
+/** 右侧请求面板（供应商响应）与左侧（客户端请求）的单页上限。
+ *  2026-10-18 owner 要求「分页最多一页 50 条」——面板内部翻页，
+ *  数据源不再预先截断到 60。 */
+export const PANEL_PAGE_SIZE = 50

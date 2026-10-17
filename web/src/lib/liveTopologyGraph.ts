@@ -55,6 +55,8 @@ export interface GraphNodeInput {
   in_flight?: number
   last_latency_ms?: number
   fp_disabled?: boolean
+  /** 运维手动停用 —— 与熔断打开同级判「无效」（不可服务）。 */
+  manual_disabled?: boolean
 }
 
 export interface BuildTopologyInput {
@@ -63,6 +65,13 @@ export interface BuildTopologyInput {
   /** 注入的当前时刻（ms）。窗口过滤以此为基准，不用 Date.now()。 */
   now: number
   windowMs: number
+  /**
+   * 隐藏的供应端节点键集合（`cred:<id>` / `pcode:<code>`）。
+   * 2026-10-18「默认去除无效供应商及节点」：这些 node_update **不建图节点**。
+   * 经它们的请求由 applyFilters 在上游过滤（过滤与建图必须用同一个集合，
+   * 否则会出现「节点没了、流量还在」的残边）。
+   */
+  hiddenNodes?: ReadonlySet<string>
 }
 
 export interface TopoGraph {
@@ -112,10 +121,11 @@ function metricOfStatus(status: string | undefined): 'success' | 'failure' | 'ot
   return 'other'
 }
 
-/** 节点健康态判定：熔断打开/不可达 → down；配额耗尽/降级 → warning；
+/** 节点健康态判定：熔断打开/不可达/手动停用 → down；配额耗尽/降级 → warning；
  *  没上报 → unknown（**不是** healthy：把「没数据」画成绿灯是假绿）。 */
 export function healthOfNode(node: GraphNodeInput | undefined): TopoHealth {
   if (!node) return 'unknown'
+  if (node.manual_disabled) return 'down'
   const circuit = (node.circuit_state ?? '').toLowerCase()
   const availability = (node.availability_state ?? '').toLowerCase()
   const quota = (node.quota_state ?? '').toLowerCase()
@@ -125,6 +135,21 @@ export function healthOfNode(node: GraphNodeInput | undefined): TopoHealth {
   if (health === 'healthy') return 'healthy'
   if (health === 'warning') return 'warning'
   return 'unknown'
+}
+
+/**
+ * 「无效节点」键集合（2026-10-18 默认隐藏口径）：熔断打开 / 不可达 /
+ * 手动停用的凭据节点。**warning（配额耗尽/降级）不算无效** —— 它们仍在
+ * 服务，只是变差；把 warning 也藏掉会让「半死」的供应商从视野里消失。
+ * 过滤（applyFilters）与建图（buildTopology）必须消费同一个集合。
+ */
+export function invalidNodeKeys(nodes: readonly GraphNodeInput[]): Set<string> {
+  const out = new Set<string>()
+  for (const node of nodes) {
+    if (typeof node?.credential_id !== 'number') continue
+    if (healthOfNode(node) === 'down') out.add(`cred:${node.credential_id}`)
+  }
+  return out
 }
 
 /**
@@ -179,6 +204,15 @@ export function buildTopology(input: BuildTopologyInput): TopoGraph {
     if (req.status) e.lastStatus = req.status
     if (typeof req.latency_ms === 'number') e.lastLatencyMs = req.latency_ms
     if (metricOfStatus(req.status) === 'failure') e.failure += 1
+    // 客户端→网关边：按协议累计（chip 渲染的数据源）。其他边没有
+    // client_protocol 语义，不聚合（宁缺毋假）。
+    if (to === GATEWAY_CORE_ID && from.startsWith('client:')) {
+      const proto = (req.client_protocol ?? '').trim()
+      if (proto) {
+        if (!e.protocolCounts) e.protocolCounts = {}
+        e.protocolCounts[proto] = (e.protocolCounts[proto] ?? 0) + 1
+      }
+    }
   }
 
   for (const node of input.nodes) {
@@ -237,6 +271,13 @@ export function buildTopology(input: BuildTopologyInput): TopoGraph {
   // node_update 的实时健康与在途数覆盖到 provider 列（node_update 可能先于/晚于请求到达）。
   for (const [credentialId, inputNode] of nodeInputs) {
     const id = `cred:${credentialId}`
+    // 无效节点默认隐藏（2026-10-18）：不建图节点。若已有请求流经它建了节点，
+    // 说明过滤与建图用了不同集合（上游漏过滤）——这里按隐藏口径一并移除，
+    // 并把它的边留到 keepIds 过滤阶段自然断链（from/to 不在 keep 集即丢）。
+    if (input.hiddenNodes?.has(id)) {
+      nodesById.delete(id)
+      continue
+    }
     const target = nodesById.get(id)
     if (!target) {
       // 还没有任何请求流经它：仍然建节点（这是「供应端当前有哪些」的真值来源），

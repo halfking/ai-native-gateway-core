@@ -13,6 +13,7 @@ import (
 )
 
 func TestWriteTimeUsesPinnedRuleVersionAndAuthenticatedTenant(t *testing.T) {
+	r1013RequireComplianceOn(t)
 	d := sanitize.NewPatternDetector()
 	rule := sanitizerules.Rule{ID: "phone", Name: "Phone", Type: "phone", Kind: "pattern", Pattern: `13800138000`, Scopes: []string{"output"}, Action: "log", Enabled: true, TenantID: "tenant-1"}
 	cfg := sanitizerules.Config{Rules: []sanitizerules.Rule{rule}}

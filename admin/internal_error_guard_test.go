@@ -86,7 +86,8 @@ func TestNoInternalErrorEchoIn500Responses(t *testing.T) {
 		// 白名单查找与泄漏报告在两个平台形态一致。
 		path = filepath.ToSlash(path)
 		if d.IsDir() {
-			if d.Name() == "testdata" {
+			if d.Name() == "testdata" || d.Name() == ".audit" ||
+				d.Name() == ".audit-validation" || d.Name() == ".audit-workspace" {
 				return filepath.SkipDir
 			}
 			return nil

@@ -79,6 +79,10 @@ type Handler struct {
 	// freeDiscovery (2026-09-09): 免费资源自动发现服务 (084 迁移三表).
 	// SetFreeDiscovery 在启动时注入; nil = 路由返回 503 (no-DB 模式).
 	freeDiscovery *freeDiscoveryDeps
+	// topologyPlugins (2026-10-18): 实时拓扑「在用插件」清单来源
+	// （builtin 治理插件 + external 插件进程状态）。SetTopologyPlugins
+	// 在启动时注入；nil = /api/admin/topology/plugins 返回 degraded 信封。
+	topologyPlugins topologyPluginsSource
 	// scanSchedulerStatus (2026-09-14, R20 §二.6): liveness probe for the
 	// periodic scan worker. nil → /api/free-discovery/scan-scheduler/status
 	// returns 503. Set by SetScanSchedulerStatus at startup.
@@ -1118,6 +1122,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 与 /api/admin/stats/* 同源（stats_usage_daily），租户隔离走 statsTenantScope；
 	// 聚合表未迁移时返回 200 + degraded 信络而不是零行。
 	mux.HandleFunc("/api/admin/topology/providers-today", admin(h.handleTopologyProvidersToday))
+	// 2026-10-18: 实时拓扑网关大方块「在用插件」清单（builtin 治理插件 +
+	// external 插件进程状态）。装配缺失返回 200 + degraded 而不是零清单。
+	mux.HandleFunc("/api/admin/topology/plugins", admin(h.handleTopologyPlugins))
 	// 2026-09-25: 对账报表（供应商/内部双视角区间汇总 + xlsx 双 sheet 导出
 	// + 单日手动重跑）。superAdmin——数据含全租户内部计费。
 	mux.HandleFunc("/api/admin/report-rollup/", h.superAdmin(h.handleReportRollup))

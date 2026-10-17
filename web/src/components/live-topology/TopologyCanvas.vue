@@ -12,11 +12,27 @@
 
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { computeLayout, edgeWidth, particleRadius } from '../../lib/liveTopologyLayout'
+import {
+  bezierPoint,
+  computeLayout,
+  edgeWidth,
+  isEdgeHighlighted,
+  MIN_LAYOUT_HEIGHT,
+  MIN_LAYOUT_WIDTH,
+  particleRadius,
+} from '../../lib/liveTopologyLayout'
 import { ParticlePool } from '../../lib/liveTopologyParticles'
 import type { ParticleSpawn } from '../../lib/liveTopologyParticles'
 import type { TopoGraph } from '../../lib/liveTopologyGraph'
-import type { GatewayCoreBox, GatewayModuleKey, TopoLayoutNode, TopoNode } from '../../types/liveTopology'
+import {
+  GATEWAY_CORE_ID,
+  type GatewayCoreBox,
+  type GatewayModuleKey,
+  type TopoLayoutEdge,
+  type TopoLayoutNode,
+  type TopoNode,
+  type TopoPluginChip,
+} from '../../types/liveTopology'
 import GatewayCoreBoxView from './GatewayCoreBox.vue'
 
 const props = defineProps<{
@@ -29,6 +45,10 @@ const props = defineProps<{
   gatewayStats?: Record<GatewayModuleKey, { count: number; errors: number }>
   /** 当前聚焦的网关内部模块（纯视觉高亮，不改变过滤子集）。 */
   selectedModule?: GatewayModuleKey | null
+  /** 在用插件清单（网关大方块插件带）。 */
+  plugins?: TopoPluginChip[]
+  /** 转发队列深度（存储转发带徽标；null = 未上报）。 */
+  queueDepth?: number | null
 }>()
 
 const emit = defineEmits<{
@@ -89,6 +109,48 @@ function statusColor(status?: string): string {
   }
 }
 
+/**
+ * 协议配色（2026-10-18 owner 要求：连线按协议标注/着色）。
+ * 常见协议钉固定色（运维形成色彩记忆），未知协议按稳定哈希落进
+ * 备选色板 —— 同一协议永远同色，刷新/重排不变。
+ */
+const KNOWN_PROTOCOL_COLORS: Record<string, string> = {
+  openai: '#3aa981',
+  anthropic: '#e08c3a',
+  gemini: '#5b8cff',
+  'openai-responses': '#2dd4bf',
+}
+const FALLBACK_PROTOCOL_COLORS = ['#5b8cff', '#e0a53a', '#b48cff', '#2dd4bf', '#f07167', '#7ba7c9']
+
+function protocolColor(name: string): string {
+  const known = KNOWN_PROTOCOL_COLORS[name.toLowerCase()]
+  if (known) return known
+  let hash = 5381
+  for (let i = 0; i < name.length; i += 1) hash = ((hash * 33) ^ name.charCodeAt(i)) >>> 0
+  return FALLBACK_PROTOCOL_COLORS[hash % FALLBACK_PROTOCOL_COLORS.length]
+}
+
+/** 协议 chip 投放清单：挂在 client→gateway 边中点（小字标注 + 协议色）。 */
+/** 协议 chip 投放清单：挂在 client→gateway 边上（小字标注 + 协议色）。
+ *  同一条边最多两个协议时**沿路径错开**（t=0.42/0.58）—— 审计轮抓到
+ *  两个 chip 同锚 t=0.45 会完全重叠，夹具里每客户端单协议所以肉眼没暴露。 */
+const CHIP_T_POSITIONS = [0.42, 0.58] as const
+const protocolChips = computed(() => {
+  const out: Array<{ id: string; x: number; y: number; name: string; count: number; color: string }> = []
+  for (const edge of layout.value.edges) {
+    if (edge.to !== GATEWAY_CORE_ID || !edge.from.startsWith('client:')) continue
+    if (!edge.protocolCounts) continue
+    const ranked = Object.entries(edge.protocolCounts)
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, 2)
+    ranked.forEach(([name, count], i) => {
+      const p = bezierOn(edge.path, CHIP_T_POSITIONS[i] ?? 0.42, 0)
+      out.push({ id: `${edge.id}#${name}`, x: p.x, y: p.y, name, count, color: protocolColor(name) })
+    })
+  }
+  return out
+})
+
 function healthColor(node: TopoNode): string {
   switch (node.health) {
     case 'healthy': return palette.value.success
@@ -98,16 +160,8 @@ function healthColor(node: TopoNode): string {
   }
 }
 
-function bezierPoint(path: Array<{ x: number; y: number }>, t: number, lateral: number): { x: number; y: number } {
-  const [p0, p1, p2, p3] = path
-  const u = 1 - t
-  const x = u * u * u * p0.x + 3 * u * u * t * p1.x + 3 * u * t * t * p2.x + t * t * t * p3.x
-  const y = u * u * u * p0.y + 3 * u * u * t * p1.y + 3 * u * t * t * p2.y + t * t * t * p3.y
-  const nx = p3.y - p0.y
-  const ny = -(p3.x - p0.x)
-  const norm = Math.hypot(nx, ny) || 1
-  const spread = Math.sin(Math.PI * t) * lateral * 7
-  return { x: x + (nx / norm) * spread, y: y + (ny / norm) * spread }
+function bezierOn(path: Array<{ x: number; y: number }>, t: number, lateral: number): { x: number; y: number } {
+  return bezierPoint(path, t, lateral)
 }
 
 function context2d(canvas: HTMLCanvasElement): CanvasRenderingContext2D | null {
@@ -126,7 +180,15 @@ function drawEdge(ctx: CanvasRenderingContext2D, edgeKey: string, dimmed: boolea
   ctx.globalAlpha = dimmed ? 0.12 : 0.9
   ctx.lineWidth = edgeWidth(edge.requests)
   if (edge.requests > 0) {
-    ctx.strokeStyle = edge.failure > 0 ? palette.value.danger : statusColor(edge.lastStatus)
+    // 客户端→网关边按**主导协议**着色（owner 2026-10-18：连线要能看出
+    // 协议）；失败红优先于协议色 —— 故障信息比协议归属更重要。
+    const protoDominant =
+      edge.to === GATEWAY_CORE_ID && edge.from.startsWith('client:') && edge.protocolCounts
+        ? Object.entries(edge.protocolCounts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0]
+        : undefined
+    if (edge.failure > 0) ctx.strokeStyle = palette.value.danger
+    else if (protoDominant) ctx.strokeStyle = protocolColor(protoDominant)
+    else ctx.strokeStyle = statusColor(edge.lastStatus)
   } else {
     // 没流量 ≠ 故障：中性细虚线
     ctx.strokeStyle = palette.value.border
@@ -203,17 +265,22 @@ function render(nowMs: number) {
   const highlight = new Set(props.highlightEdges ?? [])
   const phase = prefersReducedMotion.value ? 0 : nowMs / 26
 
+  // 高亮按**原始 edge id** 匹配（见 isEdgeHighlighted 的注释）：窄屏折叠后
+  // 布局边 id 变了，只比 id 的话折叠一发生高亮就静默失效。
+  const isHighlighted = (edgeId: string, sourceIds?: readonly string[]) =>
+    isEdgeHighlighted(highlight, edgeId, sourceIds)
+
   for (const edge of layout.value.edges) {
-    drawEdge(ctx, edge.id, highlight.size > 0 && !highlight.has(edge.id), phase)
+    drawEdge(ctx, edge.id, highlight.size > 0 && !isHighlighted(edge.id, edge.sourceIds), phase)
   }
 
   // reduced-motion 替代表达：每条有流量的链路一个静态密度点
   if (prefersReducedMotion.value) {
     for (const edge of layout.value.edges) {
       if (edge.requests <= 0) continue
-      const p = bezierPoint(edge.path, 0.5, 0)
+      const p = bezierOn(edge.path, 0.5, 0)
       ctx.save()
-      ctx.globalAlpha = highlight.size > 0 && !highlight.has(edge.id) ? 0.15 : 0.8
+      ctx.globalAlpha = highlight.size > 0 && !isHighlighted(edge.id, edge.sourceIds) ? 0.15 : 0.8
       ctx.fillStyle = statusColor(edge.lastStatus)
       ctx.beginPath()
       ctx.arc(p.x, p.y, Math.min(6, 2 + Math.log10(edge.requests + 1) * 1.6), 0, Math.PI * 2)
@@ -224,7 +291,7 @@ function render(nowMs: number) {
     for (const particle of pool.list()) {
       const edge = edgeByKey.value.get(particle.edgeKey)
       if (!edge) continue
-      const p = bezierPoint(edge.path, particle.t, particle.lateral)
+      const p = bezierOn(edge.path, particle.t, particle.lateral)
       const color = statusColor(particle.status)
       ctx.save()
       ctx.globalAlpha = Math.max(0.25, 1 - particle.t * 0.35)
@@ -251,9 +318,14 @@ function render(nowMs: number) {
 
 function isRelated(id: string): boolean {
   if (!hoveredId.value) return false
-  return layout.value.edges.some(
-    (e) => e.id.includes(`${hoveredId.value}->`) || e.id.includes(`->${hoveredId.value}`),
-  ) || id === hoveredId.value
+  // 关联判断同时看布局边 id 与其**原始** id：折叠后布局边 id 形如
+  // `x->model:folded:8`，而 hover 到的可能是未折叠的另一侧，只比 id 会漏。
+  return layout.value.edges.some((e) => {
+    const ids = [e.from, e.to, ...(e.sourceIds ?? [])]
+    return ids.some(
+      (v) => v.includes(`${hoveredId.value}->`) || v.includes(`->${hoveredId.value}`),
+    )
+  }) || id === hoveredId.value
 }
 
 function frame(nowMs: number) {
@@ -273,9 +345,12 @@ function measure() {
   const el = wrapRef.value
   if (!el) return
   const rect = el.getBoundingClientRect()
+  // 用容器真实尺寸。早先这里强制 `Math.max(640, …)`，而 `.topo-canvas` 是
+  // `overflow:hidden` —— 窄屏时画布画到 640 宽，右侧那截（480 视口下 113px）
+  // 直接被裁掉，大方块右边和每行末尾的卡永远看不见。**下限大于容器就是丢信息**。
   size.value = {
-    width: Math.max(640, Math.floor(rect.width)),
-    height: Math.max(480, Math.floor(rect.height)),
+    width: Math.max(MIN_LAYOUT_WIDTH, Math.floor(rect.width)),
+    height: Math.max(MIN_LAYOUT_HEIGHT, Math.floor(rect.height)),
   }
 }
 
@@ -370,10 +445,22 @@ function onNodeClick(node: TopoNode) {
         :style="{ top: `${layer.y}px` }"
       >{{ layer.label }}</span>
     </div>
+    <!-- 协议小字 chip：client→gateway 边上「协议 ×条数」（owner 2026-10-18）。 -->
+    <div class="topo-canvas__chips" aria-hidden="true">
+      <span
+        v-for="chip in protocolChips"
+        :key="chip.id"
+        class="topo-canvas__chip"
+        :data-testid="`proto-chip-${chip.name}`"
+        :style="{ left: `${chip.x}px`, top: `${chip.y}px`, borderColor: chip.color, color: chip.color }"
+      >{{ chip.name }} ×{{ chip.count }}</span>
+    </div>
     <GatewayCoreBoxView
       :box="gatewayBox"
       :stats="gatewayStats"
       :selected="selectedModule"
+      :plugins="plugins"
+      :queue-depth="queueDepth"
       @select-module="emit('select-module', $event)"
     />
     <ul class="topo-canvas__nodes">
@@ -438,6 +525,25 @@ function onNodeClick(node: TopoNode) {
   font-size: 11px;
   color: var(--kx-muted);
   letter-spacing: 0.08em;
+}
+
+.topo-canvas__chips {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.topo-canvas__chip {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  padding: 0 6px;
+  border: 1px solid;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 16px;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--kx-surface) 82%, transparent);
+  font-variant-numeric: tabular-nums;
 }
 
 .topo-canvas__nodes {

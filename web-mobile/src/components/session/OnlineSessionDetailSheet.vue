@@ -194,7 +194,7 @@ const open = computed({
   padding: 0 14px;
   border-radius: var(--app-radius);
   border: 1px solid var(--app-border);
-  background: var(--app-accent, var(--app-primary));
+  background: var(--app-primary);
   color: #fff;
   font: inherit;
   font-weight: 600;
@@ -246,6 +246,6 @@ const open = computed({
   border: 1px solid var(--app-border);
   background: transparent;
   font: inherit;
-  color: var(--app-accent, var(--app-primary));
+  color: var(--app-primary);
 }
 </style>

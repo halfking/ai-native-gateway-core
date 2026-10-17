@@ -79,7 +79,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"  //nolint:depguard // request lifecycle observation
 	"github.com/kaixuan/llm-gateway-go/domains/routeincident"   //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
 	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
-	"github.com/kaixuan/llm-gateway-go/domains/session" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/security" //nolint:depguard // 2026-10-18 topology plugins source（v2Deps.SecurityRegistry 类型）
+	"github.com/kaixuan/llm-gateway-go/domains/session"  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	v2 "github.com/kaixuan/llm-gateway-go/domains/session/v2"
 	"github.com/kaixuan/llm-gateway-go/domains/sessionarchive" //nolint:depguard // M5: session_summaries archival
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -2742,21 +2743,21 @@ func main() {
 		fwd := newLiveStreamEmittedForwarder(hub)
 		liveStreamEmittedFwd = fwd
 		go fwd.run()
-			telemetryClient.SetOnRequestLogEmitted(func(entry *telemetry.RequestLogEntry) {
-				requestdetail.CaptureFromEntry(entry)
-				fwd.emit(entry)
-			})
+		telemetryClient.SetOnRequestLogEmitted(func(entry *telemetry.RequestLogEntry) {
+			requestdetail.CaptureFromEntry(entry)
+			fwd.emit(entry)
+		})
 
 		slog.Info("telemetry onEmitted forwarder wired → live stream SSE hub (pre-DB in_progress projection) + request detail capture")
 		// 阶段二: persisted → 最终状态补偿。经同一转发器 FIFO 发布(顺序保证
 		// 见上), 回调在 telemetry worker 上仍只做非阻塞投递 —— 比 旧直发
 		// Publish 回调更轻, 不会拖慢 telemetry 落库 worker。
-			horizonCanary := dataHorizonCanaryHook(hub, nil)
-			telemetryClient.AddOnRequestLogPersisted(func(entry *telemetry.RequestLogEntry) {
-				horizonCanary(entry)
-				fwd.persist(entry)
-			})
-			telemetryClient.AddOnRequestLogPersisted(requestdetail.ClearAfterPersist)
+		horizonCanary := dataHorizonCanaryHook(hub, nil)
+		telemetryClient.AddOnRequestLogPersisted(func(entry *telemetry.RequestLogEntry) {
+			horizonCanary(entry)
+			fwd.persist(entry)
+		})
+		telemetryClient.AddOnRequestLogPersisted(requestdetail.ClearAfterPersist)
 
 		slog.Info("telemetry onPersisted wired → live stream SSE hub via forwarder FIFO (post-commit compensation) + request detail clear")
 	} else {
@@ -6720,11 +6721,13 @@ func main() {
 	// postflight. The 4 v1 handlers above stay registered as the
 	// fallback inside v2DispatchHandler; the Pipeline re-routes
 	// through them on a stage error or feature-flag off path.
+	var v2SecurityRegistry *security.Registry
 	if v2DispatchEnabled {
 		// Pass the engine in so the Pipeline's sensitive-word plugins scan with
 		// the SAME instance the admin handler reloads. Assigning it to v2Deps
 		// afterwards was a dead wire: buildV2DispatchPipeline had already run.
 		if _, v2Deps, ok := v2DispatchMux(chatRouteHandler, messagesRouteHandler, responsesRouteHandler, swEngine); ok && v2Deps != nil {
+			v2SecurityRegistry = v2Deps.SecurityRegistry
 
 			// PR-V4-09 / PR-V4-10: 注入 DB pool + ApprovalManager + Publisher +
 			// IntentStore 后再启动 Loop 和 Flusher。
@@ -6747,6 +6750,19 @@ func main() {
 			mux.Handle("/v1/responses", v2DispatchHandler(v2Deps, responsesRouteHandler))
 			slog.Info("v2 pipeline: 4 v1 endpoints overridden with Pipeline wrappers")
 		}
+	}
+
+	// 2026-10-18: 实时拓扑「在用插件」清单。v2 管线开启时读治理注册中心；
+	// 关闭（默认）时回退报告 v1 数据面真实装配的守卫（脱敏检测器/敏感词/
+	// 输出合规，见 topology_plugins_wiring.go）。external 注册中心未配插件
+	// 目录时为 nil —— 对应清单为空；端点只在完全没装配时才走 degraded 信封。
+	if adminHandler != nil {
+		adminHandler.SetTopologyPlugins(topologyPluginsAdapter{
+			builtin:   v2SecurityRegistry,
+			external:  pluginRegistry,
+			swEngine:  swEngine,
+			sanitizer: sanitizePatternDetector,
+		})
 	}
 
 	if sessionMgr != nil {

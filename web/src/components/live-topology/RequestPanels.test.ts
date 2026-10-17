@@ -176,6 +176,97 @@ describe('ProviderResponsePanel', () => {
   })
 })
 
+describe('ClientRequestPanel 分页（owner 2026-10-18：单页 ≤50 条）', () => {
+  // 行内不显示 requestId，用互不相同的 client 名来验证翻页取的是哪一段。
+  const many = Array.from({ length: 120 }, (_, i) => entry({ requestId: `r-${i}`, client: `c-${i}` }))
+
+  function mountClient(requests: PanelEntry[] = many) {
+    return mount(ClientRequestPanel, {
+      props: { summaries: [SUMMARY], requests },
+      global: { plugins: [i18n] },
+    })
+  }
+
+  it('★ renders at most 50 rows per page with a pager', () => {
+    const wrapper = mountClient()
+    expect(wrapper.findAll('.cp__item')).toHaveLength(50)
+    expect(wrapper.find('[data-testid="client-request-pager"]').exists()).toBe(true)
+    expect(wrapper.get('.cp__page-info').text()).toContain('1/3')
+    expect(wrapper.get('.cp__page-info').text()).toContain('120')
+  })
+
+  it('pages through older requests with prev/next (page 2 = 条目 51-100)', async () => {
+    const wrapper = mountClient()
+    // 第 1 页第一条 = 最新（c-0）
+    expect(wrapper.findAll('.cp__item')[0].text()).toContain('c-0')
+    await wrapper.get('[data-testid="client-page-next"]').trigger('click')
+    const page2 = wrapper.findAll('.cp__item')
+    expect(page2).toHaveLength(50)
+    // 第 2 页第一条 = 第 51 条（c-50）
+    expect(page2[0].text()).toContain('c-50')
+    // next 到第 3 页只有 20 条；prev 应回到第 2 页
+    await wrapper.get('[data-testid="client-page-next"]').trigger('click')
+    expect(wrapper.findAll('.cp__item')).toHaveLength(20)
+    await wrapper.get('[data-testid="client-page-prev"]').trigger('click')
+    expect(wrapper.findAll('.cp__item')).toHaveLength(50)
+  })
+
+  it('disables prev on the first page and next on the last page', async () => {
+    const wrapper = mountClient()
+    expect((wrapper.get('[data-testid="client-page-prev"]').element as HTMLButtonElement).disabled).toBe(true)
+    await wrapper.get('[data-testid="client-page-next"]').trigger('click')
+    await wrapper.get('[data-testid="client-page-next"]').trigger('click')
+    expect((wrapper.get('[data-testid="client-page-next"]').element as HTMLButtonElement).disabled).toBe(true)
+    expect((wrapper.get('[data-testid="client-page-prev"]').element as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('★ fewer than 50 entries fit on one page without a pager split', () => {
+    const wrapper = mountClient(Array.from({ length: 30 }, (_, i) => entry({ requestId: `r-${i}` })))
+    expect(wrapper.findAll('.cp__item')).toHaveLength(30)
+    expect(wrapper.get('.cp__page-info').text()).toContain('1/1')
+  })
+
+  it('★ clicking a row opens the detail (zoom) in addition to selecting it', async () => {
+    const wrapper = mountClient([entry()])
+    await wrapper.get('.cp__item').trigger('click')
+    expect(wrapper.emitted('select-request')?.[0]).toEqual(['r-1'])
+    expect(wrapper.emitted('zoom')?.[0]?.[0]).toMatchObject({ requestId: 'r-1', client: 'claude-code' })
+  })
+})
+
+describe('ProviderResponsePanel 分页（owner 2026-10-18：单页 ≤50 条）', () => {
+  const many = Array.from({ length: 110 }, (_, i) => entry({ requestId: `r-${i}` }))
+
+  function mountProvider(responses: PanelEntry[] = many) {
+    return mount(ProviderResponsePanel, {
+      props: { responses },
+      global: { plugins: [i18n] },
+    })
+  }
+
+  it('★ renders at most 50 rows per page (110 → 50/50/10)', async () => {
+    const wrapper = mountProvider()
+    expect(wrapper.findAll('.pp__row')).toHaveLength(50)
+    expect(wrapper.get('.pp__page-info').text()).toContain('1/3')
+    await wrapper.get('[data-testid="provider-page-next"]').trigger('click')
+    expect(wrapper.findAll('.pp__row')).toHaveLength(50)
+    await wrapper.get('[data-testid="provider-page-next"]').trigger('click')
+    expect(wrapper.findAll('.pp__row')).toHaveLength(10)
+  })
+
+  it('★ clicking the main row opens the detail panel (zoom), not just selection', async () => {
+    const wrapper = mountProvider([entry()])
+    await wrapper.get('.pp__main').trigger('click')
+    expect(wrapper.emitted('zoom')?.[0]?.[0]).toMatchObject({ requestId: 'r-1' })
+  })
+
+  it('hides the pager when there is nothing to page (empty state)', () => {
+    const wrapper = mountProvider([])
+    expect(wrapper.find('[data-testid="provider-response-pager"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('窗口内暂无请求')
+  })
+})
+
 describe('RequestZoomPanel', () => {
   it('renders every field with an explicit em dash when absent', () => {
     const wrapper = mount(RequestZoomPanel, {
@@ -219,6 +310,24 @@ describe('RequestZoomPanel', () => {
     expect(wrapper.findAll('.zoom__step')).toHaveLength(3)
     expect(wrapper.text()).toContain('upstream_timeout (upstream)')
     expect(wrapper.text()).toContain('ttfb 2100ms')
+  })
+
+  it('★ renders a status label for every enum value, never the raw i18n key', async () => {
+    // 2026-10-18 浏览器验收抓到：in_progress 直接拼 `filter.in_progress`
+    // 渲染成原始键名（文案键是 camelCase）。逐枚举值点名，谁再拼错立刻红。
+    for (const status of ['success', 'in_progress', 'failure', 'rate_limited']) {
+      const wrapper = mount(RequestZoomPanel, {
+        props: { entry: entry({ status }), decisions: [] },
+        global: { plugins: [i18n] },
+      })
+      const rows: Array<[string, string]> = wrapper.findAll('.zoom__row').map((r) => [
+        r.get('.zoom__label').text(),
+        r.get('.zoom__value').text(),
+      ])
+      const value = new Map(rows).get('状态')
+      expect(value, `status=${status}`).toBeTruthy()
+      expect(value, `status=${status} 不得渲染原始键`).not.toContain('liveTopology.')
+    }
   })
 
   it('says there is no decision event rather than an empty list', () => {

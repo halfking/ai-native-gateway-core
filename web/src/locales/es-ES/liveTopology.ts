@@ -21,6 +21,8 @@ export default {
     waitingFirstFrame: 'Conectado, esperando el primer fotograma de esta sesión…',
     filteredEmpty: 'No hay solicitudes en la ventana con los filtros actuales',
     droppedByWindow: 'Hay {n} solicitudes más fuera de la ventana de tiempo actual y no se muestran aquí (amplía la ventana para verlas)',
+    hiddenProbe: '{n} solicitudes de sondeo ocultas',
+    hiddenInvalid: '{n} solicitudes por nodos no válidos ocultas',
   },
   summary: {
     inFlight: '{n} en curso',
@@ -51,6 +53,8 @@ export default {
     failure: 'Fallida',
     rateLimited: 'Limitada',
     clear: 'Limpiar filtros',
+    showProbe: 'Mostrar sondeos',
+    showInvalid: 'Mostrar nodos no válidos',
   },
   rail: {
     title: 'Proveedores de hoy',
@@ -92,7 +96,6 @@ export default {
 
   gateway: {
     title: 'Núcleo del gateway',
-    subtitle: 'Caché · Saneado · Enrutamiento · Estado de nodo · Almacenamiento de sesión · Escritura de sesión',
     cache: 'Caché',
     sanitize: 'Saneado',
     route: 'Enrutamiento',
@@ -102,6 +105,14 @@ export default {
     errorRecord: 'Registro de errores',
     probeTask: 'Tarea de sondeo',
     taskDetect: 'Detección de tarea',
+  },
+  lane: {
+    in: 'ENTRADA · ruta de peticiones',
+    out: 'SALIDA · ruta de respuestas',
+    store: 'Almacenar y reenviar',
+    toProvider: 'envío al proveedor',
+    fromProvider: 'retorno del proveedor',
+    queue: 'cola de reenvío {n}',
   },
   node: {
     requests: '{n} solicitudes',
@@ -120,6 +131,8 @@ export default {
     zoom: 'Ampliar',
     zoomHint: 'Pulsa ⤢ para ampliar',
     empty: 'Sin solicitudes en la ventana',
+    page: 'Página {page}/{pages}',
+    total: '{n} en total',
   },
   zoom: {
     title: 'Detalle de la solicitud',
@@ -127,6 +140,7 @@ export default {
     requestId: 'ID de solicitud',
     time: 'Hora',
     client: 'Cliente',
+    protocol: 'Protocolo del cliente',
     provider: 'Proveedor',
     node: 'Nodo',
     model: 'Modelo',

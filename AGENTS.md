@@ -62,6 +62,28 @@
 - 契约门：`bash tests/deploy_host_first_contract_test.sh`（verify.sh 已接）；自动安装端到端：`DL_AUTOINSTALL_TEST=1 bash tests/deploy_host_autoinstall_test.sh`（真实源码构建，分钟级，opt-in）
 - 迁移通道 host-first 收敛轮补登：532/392/631/407/536/540/510/513/516/542/361b + 新增 680b；738/740/815/816/817/824 兼容动态交集形态。
 
+## `/live` 的免凭据肉眼验收路径（2026-10-18 实测可用）
+
+**要肉眼验收 `/live` 千万别先去要管理员口令** —— 生产路由确实要登录，但仓库自带一条
+免凭据的路：`/dev/live-topology-preview`（只在 `import.meta.env.DEV` 注册，
+`meta:{public:true}`，路由门对 `/dev/` 前缀直接放行）。
+
+```bash
+node /tmp/dev-topology-stub.mjs 5198                        # API 桩（/tmp，不进仓库）
+cd web && GATEWAY_API_TARGET=http://127.0.0.1:5198 \
+  corepack pnpm vite --port 5199 --strictPort               # 只听 IPv6 回环
+# 浏览器开 http://localhost:5199/dev/live-topology-preview
+```
+
+- 桩需覆盖：`/api/admin/topology/providers-today`、`/api/auth/me`（401）、
+  `/api/admin/live-stream`（SSE）。`/api/auth/me` 返 401 会让首屏停在
+  「正在检测登录状态…」**片刻**，导航等它落定后正常渲染 —— 这**不是**故障，
+  别照着去调代码。
+- 探活用 `localhost`（vite 绑 `::1`），`127.0.0.1` 连不上。
+- FilePanel Browser 的 `screenshot` 对这页会抓成黑底空图，但 DOM 查询同时能读到
+  完整结构、控制台零报错 ⇒ **判「元素在不在」用 DOM/文本查询，别信截图**；
+  `query(kind:'editable')` 不收 selector，查可交互元素用 `kind:'semantic'`。
+
 ## 端口：必须现场确认，不要假设
 
 两台机器都是蓝绿部署，监听端口由 `/opt/llm-gateway-go/run/active-upstream.conf`
@@ -252,6 +274,56 @@
    实测显示**旧算法在干净数据上就报 514 条**、真泄漏只多报到 537，
    只差 4% —— 那种「敏感」分辨不出有没有泄漏，是噪声不是检出能力。
    **别把噪声当检出。**
+
+### 2026-10-18 `/live` 窄屏布局轮：枚举方向错了五次，而判据全绿
+
+20. **「不越界」「不重叠」两条判据会被「什么都没画」同时满足。**
+    本轮 `fitRow` 的枚举方向写反后**恒返回 1 张卡**，而单卡必然既不越界
+    也不重叠 ⇒「never overflows」「no overlap」两条判据全绿。
+    ⇒ 几何类判据必须补一条**正向**下限：「宽屏就该画多张」
+    （`fitRow grows with width`，1440 ≥ 6 张）。**只断言「没坏」的判据，
+    在「干脆没做」面前永远是绿的。**
+21. **改坏同一个数字反复出现 3 次以上，先怀疑自己的证据链，不是代码。**
+    本轮连续三轮报错**逐位相同**（`expected 164 to be ≥ 214`），我仍在
+    改代码。真相是判据的分母/公式与实现不自洽。判据连续三次报同一个数时，
+    **先写探针脚本把中间量打出来**（`expect(out).toBe('X')` 强制失败把
+    数据带进报错），比再改一版快得多。本轮靠它一次定位。
+22. **「折叠/降级」必须先验它自己放不放得下。** 折叠节点也是一张卡；
+    只验「可见卡放得下」会漏。本轮 320px 下折叠位被挤出右边界，
+    336px 下 2 张卡「塞得下但间隙仅 4px」。⇒ 可行性校验要用**同一套
+    槽位模型**验「折叠后全部卡片 + 间隙 ≤ 可用宽」，且**要求留得出
+    最小间隙**，不是「塞得进去」。
+23. **jsdom 的 `getBoundingClientRect()` 恒返回 0。** 任何按容器尺寸分支的
+    组件（响应式布局、按宽度折叠…）在单测里都会退到最小尺寸分支。
+    本轮它让 `LiveTopologyView.filters` 误红（节点被折进「+N」）。
+    ⇒ 这类组件的测试要在 `beforeAll` 里 stub `getBoundingClientRect` 给真实
+    宽度；**该修的是夹具，不是放宽断言** —— 组件按宽度折叠是正确行为。
+24. **固定宽度的元素排布，要先问「放得下几张」。** 本轮两个缺陷同根：
+    卡片固定 150px 而槽位 = `spanW/(n+1)`，于是 1440 摊 8 张时槽位 138 <
+    150、每张压 12px，1024 压 58px。**重叠与裁切是同一类「看不见信息」
+    的缺陷**，但只有裁切会被列进遗留项 —— 重叠读代码看不见，得算。
+    ⇒ 取舍要写明：「**卡宽可读优先于张数**」，宁可 6 张 150px 而不是
+    12 张 105px。放不下的折叠成「其他 N」并求和流量，**不许静默丢弃**。
+
+### 2026-10-18 `/live` 折叠轮：审计自己刚写的改动
+
+25. **「聚合标签」要看量纲对不对，而不是看它变不变。** 折叠节点原标签
+    `+${hidden.length}` 是**节点个数**：同一份数据 1440 显示「无折叠」、
+    480 显示「+7」，用户会把**屏幕窄**误读成**流量变了**。改成报
+    被折叠的**请求量**。
+    ⇒ 关键在于分清两种「变化」：折叠量随宽度变是**正确行为**（窄屏折得多），
+    标签的**量纲**错才是缺陷。一开始我把判据写成「标签不随宽度变化」，
+    被自己的实现当场打脸 —— 那是个错误命题。
+26. **折叠/合并会改写 id，而消费者还拿着旧 id。** 折叠把节点并进
+    `model:folded:8`，布局边 id 随之变成 `client:x->model:folded:8`，
+    而视图 `edgePathFor` 产出的是**原始** `client:x->model:deepseek-chat`
+    ⇒ 高亮按 id 比对永远对不上，**点面板条目在窄屏下毫无反应且无报错**。
+    ⇒ **任何「按 id 引用」的数据在折叠/聚合后都要保留来源 id**
+    （本轮加 `sourceIds`）。判据要**同时覆盖数据侧与消费侧**：
+    只测「sourceIds 记全了」测不到画布没去读它。
+27. **画布类组件在 jsdom 里测不到渲染层**（拿不到 context）。
+    ⇒ 把判定逻辑**抽成纯函数**再单测（`isEdgeHighlighted`），
+    比给组件塞 mock 便宜也可靠得多。
 
 ## 剩余任务
 
@@ -544,7 +616,46 @@
     - 顺带补齐上游 `e982d99c9` 漏译的 6 个 locale nav 键
       （`item.sessionAnalyticsFilterOptions`）—— 该缺陷来自上游合并，
       与本轮无关（工作区零 nav 改动，git 溯源确认），但会让 parity 测试红。
-    - **未完成**：真实浏览器验收仍被沙箱挡下（见「剩余任务」第 8 条）。
+    - **浏览器验收：2026-10-18 凌晨已完成**（此前挂着「被沙箱挡下」）。
+      关键认识：**验收不必走生产 `/live`**——那条路要管理员凭据。
+      用仓库自带的 `/dev/live-topology-preview`（`import.meta.env.DEV` 才注册，
+      `meta:{public:true}` 免登录）+ `/tmp/dev-topology-stub.mjs`（API 桩）
+      + `vite --port 5199` 指向桩，即可真实渲染。详见下方「浏览器验收轮」。
+
+## 浏览器验收轮（2026-10-18 凌晨，/live 展示诚实性修复的像素级确认）
+
+**验收环境**（都不需要任何凭据，下次照抄即可）：
+```
+node /tmp/dev-topology-stub.mjs 5198                      # API 桩
+cd web && GATEWAY_API_TARGET=http://127.0.0.1:5198 \
+  corepack pnpm vite --port 5199 --strictPort             # dev server
+# 打开 http://localhost:5199/dev/live-topology-preview
+```
+（桩在 `/tmp`、不进仓库；vite 只听 IPv6 回环，探活要用 `localhost` 不是 `127.0.0.1`。）
+
+**两条与工具有关的坑，下次直接绕开**：
+
+19. **本仓 FilePanel Browser 的 `screenshot` 对这页不可信**：抓到的是黑底空图，
+    而 `query(kind:'dom')` 同时能读到完整的 `.live-topology` 结构、控制台零报错。
+    ⇒ **判定「元素在不在」一律用 DOM/文本查询，不要用截图**；截图只用来在
+    **已成功渲染过的那一张**上做视觉判断。差点据此误判成「页面挂了」。
+20. **`query(kind:'editable')` 不接受 `selector`**（只有 text/dom 接受），
+    查可交互元素要用 `kind:'semantic'` + 精确可见文本。
+
+**像素/结构级确认到的（DOM 实读，非推断）**：
+
+| 项 | 观察到的值 | 意义 |
+|---|---|---|
+| 网关九格 | `缓存 0 / 脱敏 76 / 路由 76 / 节点状态管理 4 / 会话文件 0 / 会话写入 0 / 错误记录 9 / 探测任务 9 / 任务识别 0` | 缓存=0 是 `is-idle` 而**非 `is-error`**，错误记录=9 才转红 —— 本轮 BLOCKER 修复在真实渲染下成立（夹具恰好无 cache token，正踩中修复前会误显红的那条路径） |
+| 放大面板几何 | 关闭按钮 `x=525`，右列右边缘 ≈552 | 面板**被约束在右列内**，未退到视口 —— 定位基准修复生效 |
+| 缺省时延 | 列表渲染 `—`（不是 `0ms`） | 假零禁令在面板层也成立 |
+| 左栏表头 | `4`，与实际 4 行一致 | 「8 / N」计数修复生效 |
+| 连接状态 | `已连接` | 预览页夹具注入器在持续喂数据（时间戳实时推进），页面是活的 |
+
+**仍未由像素确认的**（如实记，不要当已验）：独立审计提的
+**480 断点右侧裁切**（`TopologyCanvas.vue:277` 强制 `width≥640` 而容器 `overflow:hidden`）
+只做了 CSS 数值推导与布局函数计算，**没有在 480px 视口下真的截过图**。
+本次验收视口约 1144px（窄屏单列），未覆盖到 480。需要的话把 Browser 视口调到 480 再验一次。
 
 
 ## 剩余任务（按依赖顺序）
@@ -573,6 +684,20 @@
       全是**上游新增菜单项**未翻译，与 `liveTopology` 模块无关。
     - 上述 4 条在 **`git worktree add /tmp/pristine-live HEAD`** 的 pristine
       树上复跑同样红 —— 强证据，不是「文件没重叠」那种弱证据。
+
+    **2026-10-18 更新：`i18n/parity` 已关（4 条 → 2 条）**。
+    补齐上游漏译的 6 组 nav 键 × 6 locale（zh-TW/ar-SA/de-DE/es-ES/fr-FR/ja-JP），
+    parity 由红转绿。**这批不需要 owner 拍板**：是上游漏了翻译，
+    补齐属于「把上游没做完的做完」，不改变任何产品行为。
+    ⇒ 剩余 2 条**仍然都要 owner 拍板，不要代做**：
+    - `navCoverage`：这 6 条路由（`/admin/usage-enhanced`、`/admin/board-operational`、
+      `/admin/ops-overview`、`/admin/subscription-tiers`、`/admin/request-actions/:id`、
+      `/admin/storage-and-log-config`）**不在 appNav、也未登记 KNOWN_ORPHANS**。
+      挂不挂菜单 = 这批页面要不要进导航栏，是产品决策。
+      **注意它们正是刚补译的那 6 组菜单项** —— 上游加了路由和文案却忘了挂入口，
+      两处缺陷同源（补翻译时顺带查到了 navCoverage 的具体清单）。
+    - `hardcoded_cjk` 棘轮 5757 vs 5529：要么改 228 处走 i18n，
+      要么手动抬基线，两者都是策略决策。
 
     - 本分支对第二条的净贡献是 **+1**，且**不可消除**：`appNav.ts` 新增导航项的
       `label: '实时拓扑'`。实测该计数器**按构造计数而非按字符**
@@ -2413,14 +2538,28 @@ owner 拍板）；session_censors 可逆还原无读取方（配密钥+读取端
    `2663-75bf327a`、211 仍旧版。此时部署任何一台都会连带 866 与该功能。
 6. MV 争用、model alternatives 超时、fp_slot、nvidia probe、252 负载 15–22：owner。
 7. `r43-fresh-install*` / 九月远端三分支：留置。
-8. ★ **`/live` 真实浏览器验收（未做，沙箱阻塞）**：本机 dev server +
-   本地 stub API 起了，`/dev/live-topology-preview` 与仓库既有的
-   `/dev/waterfall-preview` **同样**卡在「正在检测登录状态…」——**不是新页的问题**，
-   是沙箱里 App.vue 的 `/api/auth/me` 探测不落定（无 JS 报错，network 面板无该请求）。
-   要肉眼验收需二选一：① 拿到本机 8782 网关的管理员口令（或
-   `GATEWAY_DEV_AUTH_TOKEN` 自签 JWT）后用 `GATEWAY_API_TARGET=http://localhost:8782`
-   起 dev；② 在真实已登录浏览器里直接开 `/live`。
-   在此之前，「动效够炫 / 60fps / 粒子不卡」**没有任何运行时证据**，只有单测与构建证据。
+8. ~~**`/live` 真实浏览器验收（未做，沙箱阻塞）**~~ —— **2026-10-18 凌晨已解除阻塞并完成**。
+   原记录归因于「沙箱里 App.vue 的 `/api/auth/me` 探测不落定，dev 预览页同样卡在登录检测」，
+   并据此认为必须拿到管理员口令或已登录浏览器才能验收 —— **这个前提是错的**。
+   实际做法：`/dev/live-topology-preview` 带 `meta:{public:true}`，且路由门
+   `shouldRedirectToBootstrap` 对 `import.meta.env.DEV && toPath.startsWith('/dev/')`
+   直接放行（`web/src/router.ts:375`）。真正卡住的是**首屏那次 `/api/auth/me` 401
+   把 guest 外壳的软启动判定拖住**，而 stub 没模拟那个探测的收敛——导航等它落定即可，
+   之后页面完整渲染，无需任何凭据。
+   环境与两条工具坑见上文「浏览器验收轮」。**已确认**（DOM 实读）：
+   缓存格在 0 命中时是 `is-idle` 非故障红、放大面板被约束在右列内、
+   缺省时延渲染 `—`、左栏表头计数与行数一致。
+   **仍未覆盖**：~~480 断点右侧裁切~~ —— **2026-10-18 已修**（`06455178c`）：
+   `TopologyCanvas.measure()` 原强制 `width>=640` 而容器 `overflow:hidden`，
+   480 视口（容器 456px）下右侧 113px 被裁掉。改为用容器真实宽度、
+   下限只兜退化输入，放不下的节点显式折叠成「其他 N」（流量求和，
+   不静默丢弃）。同一轮还查出**同源的卡片重叠**：卡片固定 150px 而
+   槽位 `spanW/(n+1)`，1440 摊 8 张时槽位 138 < 150、每张压 12px，
+   1024 压 58px —— **重叠与裁切是同一类「看不见信息」的缺陷，
+   而缺陷清单里原本只有裁切**（重叠读代码看不出来，得算）。
+   布局判据 1 条扩到 6 条，6 处变异验证全部变红。
+   **仍未覆盖**：「60fps / 粒子不卡」仍无运行时帧率证据
+   （要补得用 DevTools performance 录制，单测覆盖不了）。
 
 ---
 
@@ -2465,3 +2604,117 @@ credential_id 两臂位置一致，每次 go test 都跑）；「SQL 文本变�
 sed 转义不可靠（python patch 替代）；**`~/sdk/` 工具链再次被清**——现行替代
 `/opt/homebrew/bin/bash`(5.3.9)+`/opt/homebrew/bin/go`(1.27.2)，旧配方里的
 `~/sdk/bash5`/`~/sdk/go` 前缀全部改用 brew 路径。
+
+---
+
+# 追加：2026-10-18 24h 审计轮 —— 三族真问题（已修已推）
+
+> 窗口 10-17 06:20 → 10-18 03:55。`go build / go vet` 全绿；`CGO_ENABLED=0 go test` 覆盖
+> admin/bg/domains/stats/security/streaming/outputcompliance/proxy/settings 全绿（installer 13 包
+> 绿，web-mobile 9013/9014 绿，web 4 红为上游已记录门）。
+> 提交 `8c4f5abbb`，已推 origin/main。
+
+## 结论/根因
+
+1. **`.audit-validation/` 暂存目录被 8 道门当源码扫**。9ed60bfaa（`feat(sanitize)`）
+   只把 `.audit-validation/` 加进 `.gitignore`，没同步给按目录走文件树的测试门；保留
+   在磁盘上的旧路径快照（`.audit-validation/trace-retirement/source/...`）被当成
+   新增 bodies 读方 / 读源 / 形态未登记，触发 8 道门红（v1_bodies_read_path × 2、
+   v1_bodies_reader_shapes、request_logs_read_inventory、indirect_readers、
+   view_source_column_contract、view_column_contract、billing_wide_table_columns、
+   internal_error_guard）。根因：判据普遍 skip `.git + docs + node_modules + vendor`，
+   缺 `.audit*` 这一档。
+2. **write-time 合规门在 `output_compliance.enabled=false` 默认下一律假绿**。
+   9ed60bfaa 把 `output_compliance.enabled` 默认改 `false` 后，BuildRedactBodyFn
+   第一行就 return 原 body，6 道门（write_time_policy_terminal × 3 协议、
+   real_compliance_stream、r25_output_interception × 2、managed_write_block、
+   managed_write_snapshot、chat_deferred × 2）原本是绿的实际是「短路在 enabled=false」，
+   跑下来就成了绿。修法：按既有 `r1013RequireComplianceOn(t)` helper 模式显式开。
+3. **web-mobile 9 处 Go 行号引用 + 4 处 CSS token 引用过期**。cmd/gateway/main.go
+   在 870 迁移、批 156 等近 10 个 commit 累积下行号漂移；goLineRef 与 theme 双门
+   各报 9 + 4 条。Go 行号按现 main 重校；token 引用按本仓既有约定（`app-accent →
+   app-primary`、`app-surface-2 → app-surface`，注释里 ModelIQView / RequestActionsView
+   都明说「本仓没有 app-accent」）。
+
+## 改动文件与关键行为
+
+- 8 道 test 门同源：`.audit*` 加进 skipDir 集合（统一改动到 `admin/{request_logs_*,
+  view_*, billing_*, internal_error_guard*}_test.go`）。
+- 6 道 output_compliance 测试入口：每个 `func TestX` 头部补 `r1013RequireComplianceOn(t)`
+  一行（`domains/streaming/{write_time_policy_terminal,r25_output_interception,
+  native_response_hook_integration,managed_write_block,managed_write_snapshot,
+  chat_output_commit}_test.go`）。
+- `web-mobile/src/api/{approvals,dispatchWaterfall,sessionAnalyticsFilterOptions,
+  sessions,subscriptionTiers,subscriptionTiers.test}.ts` 注释挂的行号按现 main 校准。
+- `web-mobile/src/views/{DispatchJournalView.spec,SubscriptionTiersView}.vue` 同上。
+- `web-mobile/src/components/session/OnlineSessionDetailSheet.vue` 2 处 `var(--app-accent,
+  var(--app-primary))` → `var(--app-primary)`（与兄弟页 ModelIQView/RequestActionsView
+  注释一致）。
+- `web-mobile/src/views/{AutoRouteView,OnlineSessionsView}.vue` 2 处 `var(--app-surface-2)`
+  → `var(--app-surface)`。
+
+## 测试命令与结果
+
+```
+$ export PATH="$HOME/sdk/go/bin:$PATH"
+$ go build ./...        # rc=0
+$ go vet ./...          # rc=0
+$ CGO_ENABLED=0 go test ./settings/... ./security/... ./domains/outputcompliance/... \
+                     ./domains/streaming/... ./proxy/...  # 全部 ok
+$ CGO_ENABLED=0 go test ./admin/... ./bg/... ./domains/stats/...  # 全部 ok
+$ cd installer && go test ./...  # 13 包全绿
+$ cd web-mobile && pnpm test  # 240/240 文件 · 9013 通过 · 1 skip
+$ cd web && pnpm test  # 4 红（孤儿路由 + CJK 棘轮 + i18n parity × 2，上游已记，本轮未擅自处置）
+$ bash tests/deploy_host_first_contract_test.sh  # ALL PASSED
+$ bash tests/deploy_timeout_portability_test.sh  # OK
+$ bash scripts/apply-db-revision-sequence_test.sh  # OK (9 tests)
+```
+
+13/13 goLineRef、11/11 theme 复测全绿。
+
+## 遗留风险（已记未修）
+
+1. **生产 log 实测两个 ERROR 持续累积**（本机 `~/kaixuan/llm-gateway-go-v2/logs/gateway-8782.log`）：
+   - `provider_error_aggregator: watermark stalled past promote retention`
+     已 25h+、pre_watermark=40 条 stranded；上游 promote retention 8h，本地 25h 没自愈。
+   - `candidate_failure_monitor: failure log is stale` 已 22h+，last_insert_at=2026-10-17 02:48 不动。
+   两条均非本轮回归，根因需 owner 单独立项。
+2. **feat/app-icon-standard 远端分支反复被 force-push 重建**（本轮已第二次删），每次
+   都混着已上 main 的 revert（870 applied+verified 回退、AGENTS.md 大段删、deploy-211
+   修复回退、QUICK_REFERENCE 计数回退）+ 唯一的「额外」提交也是 main 上同源修复的复制
+   （bc4dc52a6 vs 9c268f2ee）。下一次再被 push，**别单独看 diff 大小，先按 AGENTS.md
+   判据纪律 #5 逐文件去 main 找等价物**。若作者本意是推同源修复，应直接 cherry-pick
+   main 上已合并的 SHA，不要 force-push 整分支。
+3. **pristine `origin/main` 自带红门 4 条**（`main` 上 4 条 web 测试红为上游带下）：
+   navCoverage（孤儿路由 `/admin/usage-enhanced`、`/admin/board-operational`）、
+   hardcoded_cjk.baseline（棘轮 5566 > 5529）、i18n parity × 2。
+   按 AGENTS.md「上游红门本轮如实记录、未擅自处置」，本轮不修。
+4. **AGENTS.md 全文 2592 行**，本次追加在末尾未冲突。
+
+## 更新本 handoff
+
+本节已追加至 `AGENTS.md`（在「2026-10-17 252 SQL 日志审计轮」之后），下轮 prompt 应
+直接定位到 `# 追加：2026-10-18 24h 审计轮` 段。
+
+## 下一轮提示词
+
+1. **feat/app-icon-standard 若再被 force-push**，先看远端 commit 与 main 的 diff 方向：
+   若仍是 870 applied+verified / AGENTS.md 段 / deploy-211 修复 / QUICK_REFERENCE 计数
+   四件套的 revert + 同源重复，**直接 `git push origin --delete feat/app-icon-standard`**
+   并提示作者 cherry-pick main 上 bc4dc52a6 / e2cbd11cf / 2d5ded16c / 4227200ce 即可。
+2. **生产 ERROR 累积 2 条**（`provider_error_aggregator` watermark 25h+ / `candidate_failure_monitor`
+   stale 22h+）需 owner 单独立项，不要混进 24h 审计修复集。
+3. **本轮三族修复**（`.audit*` skip、r1013 打开、Go 行号 + token 校准）下一次审计轮
+   复测时**直接对照** commit `8c4f5abbb` 即可；若新加 .audit-validation/ 类似目录或
+   改 `output_compliance.enabled` 默认值，本轮补的 8 + 6 道门会立刻再次红。
+4. **本机本地网关**（`~/kaixuan/llm-gateway-go-v2`，2.5.8-1233e793）日志中两个 ERROR
+   持续累积，**下轮可以先用真库排查 `provider_error_aggregator_state.last_advance_at`**
+   与 `candidate_failure_log.last_insert_at` 的实际值与基线，根因可能在 promote retention
+   触发逻辑与 candidate_failure log writer 写入路径。
+5. **fast-forward 不再可用的频率上升**：本轮 1h 内 origin/main 推了 2 次（54e1ad4e2 →
+   8c4f5abbb 推送时已 rebase），下轮若仍以同一 checkout 推，可能再撞并发；建议 push
+   前先 `git fetch && git log --oneline HEAD..origin/main` 看一眼，被阻就 `git pull
+   --rebase`。
+6. **记忆已写**：`/Users/niuer/.zcode/cli/memories/projects/llm-gateway-go-1614005e1f428788/memory/`
+   下追加 `audit-round-2026-10-18.md`，含本轮三族修复 + 两个生产 ERROR 登记 + 分支 force-push
+   防范要点。

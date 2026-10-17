@@ -46,6 +46,9 @@ D211_GW_IMAGE="${D211_GW_IMAGE:-llm-gateway-211}"
 D211_GW_PORT="${D211_GW_PORT:-8781}"
 D211_PG_DB="${D211_PG_DB:-llm_gateway}"
 D211_PG_USER="${D211_PG_USER:-llm_gateway}"
+# 「调用方显式钉死」与「默认值」必须分开记：选谁 PG 的第一优先级是显式指定，
+# 若把默认名 kx-pg17-columnar 也当成显式值，自管实例会永远压过任何真候选。
+if [[ -n "${D211_PG_CONTAINER:-}" ]]; then D211_PG_CONTAINER_PINNED=1; else D211_PG_CONTAINER_PINNED=0; fi
 D211_PG_CONTAINER="${D211_PG_CONTAINER:-kx-pg17-columnar}"
 D211_PG_IMAGE="${D211_PG_IMAGE:-kx-pg17-columnar:17}"
 D211_REDIS_CONTAINER="${D211_REDIS_CONTAINER:-llm-gateway-redis}"
@@ -237,6 +240,93 @@ pg_is_17()         { local v="$1"; (( v >= 170000 && v < 180000 )); }
 pg_has_columnar() { (( "$1" > 0 )); }
 pg_has_vector()    { (( "$1" > 0 )); }
 
+# ── 网关库检测（2026-10-18）──────────────────────────────────────────────
+# 「这台容器里有没有网关的库」是**独立于**「这台容器是不是 pg17+columnar」的一个维度。
+# 211 上同时满足 PG 能力判据的容器有两只：acc-pg17（持有 llm_gateway）与
+# redclaw-local-stack-redclaw-casdoor-db-1（redclaw 栈自己的 PG，没有网关库），
+# 两者镜像同为 kx-citus-pg17:amd64。只看能力判据无法区分，必须再问库。
+#
+# 输出 "<has_db> <has_gateway_objects>"，两者都是 0/1：
+#   has_db            —— pg_database 里有 $D211_PG_DB
+#   has_gateway_objects —— 该库 public schema 下有网关自己的表（schema_migrations /
+#                       session_summaries / gateway_db_revision_sequences / api_keys）
+# 连接口沿用 pg_probe_container 的解析口径（POSTGRES_USER → postgres），
+# 因为复用他人容器时超级用户几乎从不叫 postgres（acc-pg17=acc_super、
+# casdoor=casdoor）。注意全程不连 $D211_PG_DB 本身——它可能根本不存在。
+pg_gateway_db_state() {
+  local c="$1" u pw has objs
+  u="$(docker exec "$c" printenv POSTGRES_USER 2>/dev/null || true)"
+  u="${u:-postgres}"
+  pw="$(docker exec "$c" printenv POSTGRES_PASSWORD 2>/dev/null || true)"
+  pw="${pw:-${LLM_GATEWAY_PG_PASSWORD:-}}"
+  for cu in "$u" postgres; do
+    has="$(docker exec -e PGPASSWORD="$pw" "$c" \
+      psql -X -U "$cu" -d postgres -tAc \
+      "SELECT count(*) FROM pg_database WHERE datname='${D211_PG_DB}'" \
+      2>/dev/null | tr -d '\r' | head -1)" || continue
+    has="$(printf '%s' "$has" | tr -cd '0-9')"
+    [[ -z "$has" ]] && continue
+    if (( has == 0 )); then printf '0 0\n'; return 0; fi
+    objs="$(docker exec -e PGPASSWORD="$pw" "$c" \
+      psql -X -U "$cu" -d "$D211_PG_DB" -tAc \
+      "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'
+         AND table_name IN ('schema_migrations','session_summaries',
+                            'gateway_db_revision_sequences','api_keys')" \
+      2>/dev/null | tr -d '\r' | head -1)" || continue
+    objs="$(printf '%s' "$objs" | tr -cd '0-9')"
+    (( objs > 0 )) || objs=0
+    printf '1 %s\n' "$objs"
+    return 0
+  done
+  printf '0 0\n'
+  return 0
+}
+
+# 上一次部署绑定的 PG 主机名（写在 gateway.env 的 DSN 里）。这是「上次用的是什么」
+# 的**唯一权威记录**，比任何探测都强——但仍要过下面的 has_db 复核才敢直接复用。
+pg_persisted_host() {
+  [[ -f "$ENV_FILE" ]] || return 0
+  sed -nE 's#^export LLM_GATEWAY_DATABASE_URL=postgres://[^@]*@([^:/]+).*#\1#p' "$ENV_FILE" | tail -1
+}
+
+# 纯打分（无 IO，可离线驱动）：候选 → 分值，-1 = 不可复用。
+# 六个入参：explicit persisted has_db has_objs managed n_qualified
+# 判据纪律：唯一允许「什么都探测不到也敢复用」的情形是**全场只有一个**候选
+# （那时不存在「选错谁」的可能）；一旦有歧义就走新建，而不是赌 docker ps 的顺序。
+pg_candidate_score() {
+  local is_explicit="${1:-0}" is_persisted="${2:-0}" has_db="${3:-0}" has_objs="${4:-0}"
+  local is_managed="${5:-0}" n_qualified="${6:-1}"
+  (( is_explicit )) && { printf '1000\n'; return 0; }
+  (( is_persisted )) && { (( has_db )) && { printf '900\n'; return 0; }; printf '200\n'; return 0; }
+  (( has_db )) && { (( has_objs )) && { printf '800\n'; return 0; }; printf '700\n'; return 0; }
+  (( is_managed )) && { printf '600\n'; return 0; }
+  (( n_qualified == 1 )) && { printf '500\n'; return 0; }
+  printf -- '-1\n'
+}
+
+# 纯选择（无 IO）：入参是候选表，每行
+#   "<name> <explicit> <persisted> <has_db> <has_objs> <managed>"
+# 输出被选中的容器名；无可复用者返回非 0。
+# 并列取**排序后第一个**（调用方按名字排序），保证同样的候选集永远选出同一个，
+# 不受 docker ps 顺序影响。
+pg_pick_from_candidates() {
+  local table="$1" n
+  n="$(printf '%s\n' "$table" | grep -c . || true)"
+  (( n > 0 )) || return 1
+  local name explicit persisted has_db has_objs managed score best="" best_score=-1
+  while read -r name explicit persisted has_db has_objs managed; do
+    [[ -n "$name" ]] || continue
+    score="$(pg_candidate_score "${explicit:-0}" "${persisted:-0}" "${has_db:-0}" \
+                                "${has_objs:-0}" "${managed:-0}" "$n")"
+    if (( score > best_score )); then
+      best_score="$score"; best="$name"
+      [[ "$score" -ge 200 ]] && log "  候选 $name: 网关库=${has_db} 网关对象=${has_objs} → 分值 $score"
+    fi
+  done <<< "$table"
+  [[ -n "$best" ]] || return 1
+  printf '%s\n' "$best"
+}
+
 # 在所有容器里找一个 pg17+columnar 的实例；找到输出容器名，否则返回非 0。
 #
 # ⚠ 2026-10-13 真机翻车：docker ps --format "{{.Names}}|{{.Image}}" 用 `|` 分隔，
@@ -244,8 +334,21 @@ pg_has_vector()    { (( "$1" > 0 )); }
 # → case 关键字匹配只走 lower_name（永远没 *citus* 之类）→ 所有候选全 continue
 # → 走「新建」路径 → codeload tarball 没 submodule → 构建炸。
 # 修：单行 IFS='|' read 强制按 | 切。
+#
+# ⚠ 2026-10-18 真机翻车（本函数第二次重写）：旧实现「第一个合格者即返回」。
+# 「合格」只覆盖了 pg17+columnar+vector 这三个**能力**维度，而 211 上同时满足
+# 能力判据的容器有两只是常态（acc-pg17 与 redclaw 栈自己的
+# redclaw-local-stack-redclaw-casdoor-db-1，同为 kx-citus-pg17 镜像）。docker ps
+# 的输出顺序既不稳定也不带语义（实测选中了只活了 38 分钟的 casdoor PG），随后
+# ensure_pg_database 在错误超级用户上静默失败，最终在几百行之后的迁移腿报
+# 「database llm_gateway does not exist」——离根因三层远，且换个重启顺序就换一套
+# 症状。⇒ **能力判据与「选谁」必须分离**：先把全部合格者收集齐，再按
+#   谁持有网关库 / 谁是上次绑定 / 谁是脚本自建 / 唯一候选
+# 的显式优先级打分（pg_candidate_score + pg_pick_from_candidates）。
 find_pg_container() {
-  local name img lower_name lower_img probe
+  local name img lower_name lower_img probe ver col vec
+  local persisted has_db has_objs explicit managed persisted_hit list="" picked
+  persisted="$(pg_persisted_host)"
   while IFS='|' read -r name img; do
     [[ -z "$name" ]] && continue
     # 容器状态必须是 running 才谈得上"能用"
@@ -258,17 +361,35 @@ find_pg_container() {
     esac
     if probe="$(pg_probe_container "$name")"; then
       # probe 形如 "<ver> <col> <vec>"，三段用 read 拆
-      local ver col vec
       read -r ver col vec < <(printf '%s\n' "$probe")
       if pg_is_17 "$ver" && pg_has_columnar "$col" && pg_has_vector "$vec"; then
-        printf '%s\n' "$name"; return 0
+        read -r has_db has_objs < <(pg_gateway_db_state "$name")
+        explicit=0; managed=0
+        [[ "$name" == "$D211_PG_CONTAINER" ]] && {
+          [[ "$D211_PG_CONTAINER_PINNED" == "1" ]] && explicit=1 || managed=1
+        }
+        [[ -n "$persisted" && "$name" == "$persisted" ]] && persisted_hit=1 || persisted_hit=0
+        list+="$name $explicit $persisted_hit ${has_db:-0} ${has_objs:-0} $managed"$'\n'
+      else
+        log "  候选 $name: 版本=${ver} columnar=${col} vector=${vec} → 不满足(需 PG17+columnar+vector)，继续找"
       fi
-      log "  候选 $name: 版本=${ver} columnar=${col} vector=${vec} → 不满足(需 PG17+columnar+vector)，继续找"
     else
       log "  候选 $name: psql 探活失败（可能不是 PG 或需密码），继续找"
     fi
   done < <(docker ps --format '{{.Names}}|{{.Image}}')
-  return 1
+  [[ -n "$list" ]] || return 1
+  # 按名字排序：把 docker ps 顺序这个隐含随机量从决策里彻底去掉，并列时结果稳定。
+  picked="$(pg_pick_from_candidates "$(printf '%s' "$list" | sort)" || true)"
+  if [[ -z "$picked" ]]; then
+    warn "有合格 PG 实例但都无法判定归属（都没有网关库 ${D211_PG_DB}），不猜——将新建专用实例"
+    printf '%s\n' "$list" | while read -r n _ _ _ _ _; do log "  落选 ${n}（无网关库，且存在多个候选）"; done
+    return 1
+  fi
+  read -r _n _e _p _pdb _pobj _m < <(printf '%s' "$list" | awk -v p="$picked" '$1==p {print; exit}')
+  local db_desc
+  if (( ${_pdb:-0} )); then db_desc="存在（网关对象 ${_pobj:-0}）"; else db_desc="缺失（本次将创建）"; fi
+  log "选定 PG 实例: ${picked}（网关库 ${D211_PG_DB} ${db_desc}）"
+  printf '%s\n' "$picked"
 }
 
 # 新建 PG17+columnar 实例（源码编译 pgcolumnar 扩展打进镜像）
@@ -333,31 +454,53 @@ EOF
   log "PG 实例就绪: $D211_PG_CONTAINER"
 }
 
+# 复用他人容器时的超级用户解析（2026-10-18）。
+# ⚠ 旧代码这里硬编码 `-U postgres`。acc-pg17 的超级用户是 acc_super、casdoor 栈的
+# 是 casdoor——`-U postgres` 在两者上都直接报「role does not exist」，而那一处
+# 被 `2>/dev/null` + `|| warn` 双重吞掉：存在性检查判假不存在 → CREATE DATABASE
+# 失败 → 只 warn → 脚本带着一个**根本没建出来的库**继续往下跑，最终在迁移腿报
+# 「database llm_gateway does not exist」。根因离症状三百行，且换个容器就换症状。
+# ⇒ 解析口径与 pg_probe_container / pg_gateway_db_state 统一（POSTGRES_USER 优先）。
+pg_superuser_of() {
+  local u
+  u="$(docker exec "$1" printenv POSTGRES_USER 2>/dev/null || true)"
+  printf '%s\n' "${u:-postgres}"
+}
+
+# 以超级用户身份在容器内跑 psql（不吞错误：调用方决定是 warn 还是 die）
+pg_as_super() {
+  local c="$1" su="$2"; shift 2
+  docker exec -e PGPASSWORD="${LLM_GATEWAY_PG_PASSWORD:-}" "$c" \
+    psql -X -v ON_ERROR_STOP=1 -U "$su" "$@"
+}
+
 # 在选定的 PG 实例里准备网关库/角色（幂等）
 ensure_pg_database() {
-  local c="$1"
-  # 若已被别的服务建过同名库，直接复用（不覆盖数据）
-  if docker exec -e PGPASSWORD="${LLM_GATEWAY_PG_PASSWORD:-}" "$c" \
-      psql -X -U postgres -d postgres -tAc \
-      "SELECT 1 FROM pg_database WHERE datname='${D211_PG_DB}'" 2>/dev/null | grep -q 1; then
-    log "数据库 $D211_PG_DB 已存在，复用"
-  else
-    docker exec -e PGPASSWORD="${LLM_GATEWAY_PG_PASSWORD:-}" "$c" \
-      psql -X -U postgres -d postgres -c "CREATE DATABASE \"${D211_PG_DB}\" OWNER \"${D211_PG_USER}\";" \
-      >/dev/null 2>&1 || warn "CREATE DATABASE 未成功（可能已存在），继续"
-    log "已创建数据库 $D211_PG_DB"
-  fi
-  # 角色（幂等）
-  docker exec -e PGPASSWORD="${LLM_GATEWAY_PG_PASSWORD:-}" "$c" \
-    psql -X -U postgres -d postgres -c \
+  local c="$1" su exists
+  su="$(pg_superuser_of "$c")"
+  # 角色必须先于库创建：CREATE DATABASE ... OWNER 指向不存在的角色会 42704，
+  # 而旧顺序（先建库后建角色）正好把这个失败也吞进 warn 里。
+  pg_as_super "$c" "$su" -d postgres -c \
     "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='${D211_PG_USER}') THEN CREATE ROLE \"${D211_PG_USER}\" LOGIN PASSWORD '${LLM_GATEWAY_PG_PASSWORD:-}'; END IF; END \$\$;" \
-    >/dev/null 2>&1 || warn "角色 $D211_PG_USER 创建告警"
+    >/dev/null 2>&1 || die "无法在 PG 容器 $c 上以超级用户 $su 建角色 ${D211_PG_USER}（密码来源 LLM_GATEWAY_PG_PASSWORD）——不继续：带着建不出来的库往下走只会换一个更远的报错"
+
+  # 若已被别的服务建过同名库，直接复用（不覆盖数据）
+  exists="$(pg_as_super "$c" "$su" -d postgres -tAc \
+    "SELECT 1 FROM pg_database WHERE datname='${D211_PG_DB}'" 2>/dev/null | head -1 || true)"
+  if [[ "$exists" == "1" ]]; then
+    log "数据库 $D211_PG_DB 已存在（容器 ${c}，超级用户 ${su}），复用"
+  else
+    pg_as_super "$c" "$su" -d postgres -c \
+      "CREATE DATABASE \"${D211_PG_DB}\" OWNER \"${D211_PG_USER}\";" \
+      >/dev/null 2>&1 \
+      || die "在 PG 容器 ${c}（超级用户 ${su}）上创建数据库 $D211_PG_DB 失败；请确认容器归属正确后重试（用 D211_PG_CONTAINER 显式指定）"
+    log "已创建数据库 ${D211_PG_DB}（容器 ${c}）"
+  fi
   # 兼容多种 columnar 发行：citus_columnar（Citus 系，acc-pg17 即此）/
   # columnar / pgcolumnar / vector + 其他 contrib 扩展一并装上。
   # 网关运行时 00-prereqs.sql 会再 idempotent 装一次，这里是兜底（即使 prereqs
   # 没跑到也能让 USING columnar 立即可用）。
-  docker exec -e PGPASSWORD="${LLM_GATEWAY_PG_PASSWORD:-}" "$c" \
-    psql -X -U postgres -d "$D211_PG_DB" -v ON_ERROR_STOP=0 -c "
+  pg_as_super "$c" "$su" -d "$D211_PG_DB" -v ON_ERROR_STOP=0 -c "
 DO \$col\$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name='citus_columnar') THEN
@@ -597,8 +740,16 @@ show_status() {
     p="$(pg_probe_container "$PG_FOUND" || echo '? 0 0')"
     read -r ver col vec < <(printf '%s\n' "$p")
     echo "PG   : 复用容器 $PG_FOUND  (版本=${ver} columnar=${col} vector=${vec})"
+    # 谁在服务网关库这件事必须看得见：能力判据合格的容器不止一只，
+    # 「选中的这只里到底有没有网关库」才是复用的理由。
+    local _db _objs
+    read -r _db _objs < <(pg_gateway_db_state "$PG_FOUND")
+    echo "       网关库 $D211_PG_DB: $( ((_db)) && echo "存在（网关对象 ${_objs}）" || echo '不存在（将在本次部署中创建）' )"
+    local _prev; _prev="$(pg_persisted_host)"
+    [[ -n "$_prev" && "$_prev" != "$PG_FOUND" ]] && \
+      echo "       ⚠ 上次绑定的是 ${_prev}，与本次选定的不一致"
   else
-    echo "PG   : 无匹配的 pg17+columnar+vector 实例（将新建 ${D211_PG_CONTAINER}）"
+    echo "PG   : 无可复用的 pg17+columnar+vector 实例（将新建 ${D211_PG_CONTAINER}）"
   fi
   if [[ -n "$REDIS_FOUND" ]]; then
     echo "Redis: 复用容器 $REDIS_FOUND"
@@ -628,6 +779,7 @@ if [[ "$MODE" == "probe-only" ]]; then
     echo "  container     = $PG_FOUND"
     echo "  POSTGRES_USER = $(docker exec "$PG_FOUND" printenv POSTGRES_USER 2>/dev/null || echo '?')"
     echo "  POSTGRES_DB   = $(docker exec "$PG_FOUND" printenv POSTGRES_DB 2>/dev/null || echo '?')"
+    echo "  网关库状态     = $(pg_gateway_db_state "$PG_FOUND")（有网关库, 网关对象数）"
   fi
   if [[ -n "$REDIS_FOUND" ]]; then
     echo

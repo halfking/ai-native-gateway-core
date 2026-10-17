@@ -21,6 +21,8 @@ export default {
     waitingFirstFrame: 'Connected, waiting for the first authoritative frame of this session…',
     filteredEmpty: 'No requests in the window under the current filters',
     droppedByWindow: '{n} more requests fall outside the current time window and are not shown here (widen the window to see them)',
+    hiddenProbe: '{n} probe requests hidden',
+    hiddenInvalid: '{n} requests via invalid nodes hidden',
   },
   summary: {
     inFlight: '{n} in flight',
@@ -51,6 +53,8 @@ export default {
     failure: 'Failure',
     rateLimited: 'Rate limited',
     clear: 'Clear filters',
+    showProbe: 'Show probe requests',
+    showInvalid: 'Show invalid nodes',
   },
   rail: {
     title: 'Providers today',
@@ -92,7 +96,6 @@ export default {
 
   gateway: {
     title: 'Gateway Core',
-    subtitle: 'Cache · Sanitize · Route · Node state · Session storage · Session write',
     cache: 'Cache',
     sanitize: 'Sanitize',
     route: 'Route',
@@ -102,6 +105,14 @@ export default {
     errorRecord: 'Error log',
     probeTask: 'Probe task',
     taskDetect: 'Task detect',
+  },
+  lane: {
+    in: 'IN · request path',
+    out: 'OUT · response path',
+    store: 'Store & forward',
+    toProvider: 'dispatch to provider',
+    fromProvider: 'provider return',
+    queue: 'forward queue {n}',
   },
   node: {
     requests: '{n} requests',
@@ -120,6 +131,8 @@ export default {
     zoom: 'Zoom in',
     zoomHint: 'Tap ⤢ to zoom',
     empty: 'No requests in the window',
+    page: 'Page {page}/{pages}',
+    total: '{n} total',
   },
   zoom: {
     title: 'Request detail',
@@ -127,6 +140,7 @@ export default {
     requestId: 'Request ID',
     time: 'Time',
     client: 'Client',
+    protocol: 'Client protocol',
     provider: 'Provider',
     node: 'Node',
     model: 'Model',

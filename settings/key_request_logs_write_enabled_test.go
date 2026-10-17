@@ -41,7 +41,8 @@ func TestRequestLogsWriteEnabledKeyIsSpelledOnce(t *testing.T) {
 		}
 		if d.IsDir() {
 			switch d.Name() {
-			case ".git", "vendor", "node_modules", "docs", "installer":
+			case ".git", "vendor", "node_modules", "docs", "installer",
+				".audit", ".audit-validation", ".audit-workspace":
 				return filepath.SkipDir
 			}
 			return nil
