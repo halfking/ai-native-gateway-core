@@ -1091,6 +1091,8 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 网关持续写该表，普通 CREATE INDEX 的 SHARE 锁会阻塞写入。
 			// 该文件带 dbinit:no-transaction 标记，走非事务通道。
 			"871_route_incident_events_created_at_idx.sql",
+			// 872（2026-10-18）：credential_model_index 月分区 columnar→heap 存量转换。
+			"872_credential_model_index_partitions_heap.sql",
 		},
 	}
 }

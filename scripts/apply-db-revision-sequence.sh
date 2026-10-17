@@ -1650,6 +1650,21 @@ files=(
   # lock_timeout=2s（抢不到锁快速失败），建议低峰窗口执行。
   "$ROOT_DIR/sql/migrations/startup/870_usage_ledger_recon_cover_idx.sql"
 
+  # ── 871（2026-10-17/18 轮）：route_incident_events 的 created_at 首列索引 ──
+  # 交付时只做了 installer 腿、漏了本通道与台账（apply-db-revision-sequence_test
+  # 报「871 exists but is missing from the channel files=() array」实证）——
+  # 845-851 八连红的同型缺口，2026-10-18 252 SQL 审计轮补登。
+  "$ROOT_DIR/sql/migrations/startup/871_route_incident_events_created_at_idx.sql"
+
+  # ── 872（2026-10-18 252 SQL 审计轮）：credential_model_index 月分区转回 heap ──
+  # 白名单已摘（{routing_decision_log}）、ensure 已建 heap 分区（694）、
+  # columnar_healthcheck 已报 non-compliant，唯独存量分区从未转换：
+  # 5 分钟增量小批量写把列存打成海量微小 stripe（2026_10 121k 行 16308 buffer
+  # hits vs 2026_09 301k 行 660 hits），autoroute 刷新语句实测 mean 2310ms
+  # （in-repo 第一名），其中 89% 在两个月分区 423k 行的列存扫描。
+  # 806/812/813/836 同族先例；详证见迁移文件头。
+  "$ROOT_DIR/sql/migrations/startup/872_credential_model_index_partitions_heap.sql"
+
   # ── 2026-10-16 孤儿迁移 044 补登（health_source 白名单缺 probe_now）──────
   #
   # 044_health_source_probe_now.sql 早就写在 sql/migrations/startup/ 里，注释把
