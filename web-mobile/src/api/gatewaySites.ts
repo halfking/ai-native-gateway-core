@@ -33,9 +33,11 @@ export interface GatewaySite {
  *   反向依赖 web 构建产物。
  */
 export const GATEWAY_SITES: GatewaySite[] = [
-  { id: 'production', name: '生产', origin: 'https://llm.kxpms.cn', env: 'production' },
-  { id: 'staging', name: '测试', origin: 'https://llmgo.kxpms.cn', env: 'staging' },
-  { id: 'internal', name: '内部', origin: 'https://llm.itestu.cn', env: 'internal' },
+  // name 用主机名：env 徽章已是「生产/测试/内部」，再写同文案会变成「测试 测试」
+  // （2026-10-17 真机登录页肉眼实证）。
+  { id: 'production', name: 'llm.kxpms.cn', origin: 'https://llm.kxpms.cn', env: 'production' },
+  { id: 'staging', name: 'llmgo.kxpms.cn', origin: 'https://llmgo.kxpms.cn', env: 'staging' },
+  { id: 'internal', name: 'llm.itestu.cn', origin: 'https://llm.itestu.cn', env: 'internal' },
 ]
 
 /** 移动端 SPA 在网关上的挂载路径（router base '/m/'，见 utils/base.ts）。 */
