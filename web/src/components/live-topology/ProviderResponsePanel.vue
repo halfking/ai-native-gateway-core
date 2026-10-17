@@ -43,9 +43,11 @@ function latency(value: number | null | undefined): string {
   return value >= 1000 ? `${(value / 1000).toFixed(2)}s` : `${Math.round(value)}ms`
 }
 
+/** token 量。缺省返回 `—`（**不带单位**）：拼成「— tok」等于把
+ *  「没有数据」说成一个零值，违反本仓的假零禁令。 */
 function tokens(value: number | null | undefined): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
-  return value >= 1000 ? `${(value / 1000).toFixed(1)}K` : String(value)
+  return value >= 1000 ? `${(value / 1000).toFixed(1)}K tok` : `${value} tok`
 }
 </script>
 
@@ -66,7 +68,7 @@ function tokens(value: number | null | undefined): string {
             </span>
             <span class="pp__line pp__line--sub">
               <span class="pp__model">{{ entry.model }}</span>
-              <span class="pp__tokens">{{ tokens(entry.tokens) }} tok</span>
+              <span class="pp__tokens">{{ tokens(entry.tokens) }}</span>
             </span>
             <span v-if="entry.errorKind" class="pp__error">{{ entry.errorKind }}</span>
           </button>

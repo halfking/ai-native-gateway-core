@@ -98,6 +98,31 @@ describe('ClientRequestPanel', () => {
     expect(wrapper.get('.cp__latency').text()).toBe('—')
     expect(wrapper.get('.cp__latency').text()).not.toContain('0ms')
   })
+
+  it('★ header count always matches the rows actually rendered', () => {
+    // 表头原来直接显示 summaries.length（上限 60），正文只画 8 行 ——
+    // 表头在宣传不存在的行，同时把真实客户端总数藏起来。
+    const many = Array.from({ length: 12 }, (_, i) => ({ ...SUMMARY, client: `c-${i}` }))
+    const wrapper = mount(ClientRequestPanel, {
+      props: { summaries: many, requests: [] },
+      global: { plugins: [i18n] },
+    })
+    const rows = wrapper.findAll('.cp__summary-row').length
+    const header = wrapper.get('.cp__count').text().trim()
+    expect(rows).toBe(8)
+    // 8 / 12：渲染行数与真实总数两个数都看得见
+    expect(header).toBe('8 / 12')
+    expect(header).not.toBe('12')
+  })
+
+  it('shows a plain count when every client fits', () => {
+    const wrapper = mount(ClientRequestPanel, {
+      props: { summaries: [SUMMARY, { ...SUMMARY, client: 'codex' }], requests: [] },
+      global: { plugins: [i18n] },
+    })
+    expect(wrapper.findAll('.cp__summary-row')).toHaveLength(2)
+    expect(wrapper.get('.cp__count').text().trim()).toBe('2')
+  })
 })
 
 describe('ProviderResponsePanel', () => {
@@ -129,6 +154,25 @@ describe('ProviderResponsePanel', () => {
       global: { plugins: [i18n] },
     })
     expect(wrapper.get('.pp__tokens').text()).toContain('—')
+  })
+
+  it('★ never renders a missing token count with a unit suffix', () => {
+    // 「— tok」把「没有数据」说成了一个零值单位。缺省时必须只剩破折号。
+    const wrapper = mount(ProviderResponsePanel, {
+      props: { responses: [entry({ tokens: null })] },
+      global: { plugins: [i18n] },
+    })
+    const text = wrapper.get('.pp__tokens').text().trim()
+    expect(text).toBe('—')
+    expect(text).not.toContain('tok')
+  })
+
+  it('keeps the unit on a real token count', () => {
+    const wrapper = mount(ProviderResponsePanel, {
+      props: { responses: [entry({ tokens: 900 })] },
+      global: { plugins: [i18n] },
+    })
+    expect(wrapper.get('.pp__tokens').text()).toBe('900 tok')
   })
 })
 
@@ -192,5 +236,23 @@ describe('RequestZoomPanel', () => {
     })
     await wrapper.get('.zoom__close').trigger('click')
     expect(wrapper.emitted('close')).toHaveLength(1)
+  })
+
+  it('★ labels a missing stage as unreported, never as routing', () => {
+    // 早先两处都回落成 'routing'，等于给没上报阶段的事件盖上「路由」章。
+    // 缺省就是缺省，渲染成中性的「未上报阶段」。
+    const decisions: ActionEvent[] = [
+      { seq: 1, action: 'resolve' },
+      { seq: 2, action: 'upstream', stage_category: 'llm' },
+    ]
+    const wrapper = mount(RequestZoomPanel, {
+      props: { entry: entry(), decisions },
+      global: { plugins: [i18n] },
+    })
+    const stages = wrapper.findAll('.zoom__step .zoom__stage').map((s) => s.text())
+    expect(stages[0]).toBe('未上报阶段')
+    // 有阶段时照常显示真实值（不能为了防编造把真值也抹掉）
+    expect(stages[1]).toBe('调用')
+    expect(stages[0]).not.toBe('路由')
   })
 })

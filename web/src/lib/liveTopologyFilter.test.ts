@@ -149,14 +149,41 @@ describe('gatewayModuleStats', () => {
     // 会话写入/文件：只有带 gw_session_id 的两条
     expect(stats.sessionWrite.count).toBe(2)
     expect(stats.sessionFile.count).toBe(2)
-    // 缓存命中记在 errors 位（错放在 count 上会把「命中」读成「流量」）
-    expect(stats.cache.errors).toBe(1)
+    // 缓存：**命中**记在 count（只有命中才有可看的量）
+    expect(stats.cache.count).toBe(1)
     // 旁路：失败数、探测数、非 main 的任务数
     expect(stats.errorRecord.count).toBe(1)
     expect(stats.probeTask.count).toBe(1)
     expect(stats.taskDetect.count).toBe(1)
     // 节点状态管理 = 上报的节点数
     expect(stats.nodeState.count).toBe(2)
+  })
+
+  it('★ never reports a cache hit as an error', () => {
+    // 缓存命中是**成功**信号。早先版本把它累加进 `errors`，而 GatewayCoreBox
+    // 用 `errors > 0` 决定画红 —— 于是「缓存工作正常」显示成「缓存故障」。
+    // 这条判据钉的是类型契约（errors 只装失败/异常数）：
+    // 把命中改回 errors 位，它立刻变红。
+    const hits = [
+      { ...base, cache_read_tokens: 120 },
+      { ...base, request_id: 'r2', cache_write_tokens: 64 },
+    ]
+    const stats = gatewayModuleStats(hits, NOW, WINDOW, 0)
+    expect(stats.cache.errors).toBe(0)
+    expect(stats.cache.count).toBe(2)
+  })
+
+  it('★ only counts real failures in errors', () => {
+    // 成功与在途请求都不许让任何模块变红：errors 应当只在真有失败时非零。
+    const healthy = gatewayModuleStats(
+      [{ ...base, status: 'success' }, { ...base, request_id: 'r2', status: 'in_progress' }],
+      NOW,
+      WINDOW,
+      0,
+    )
+    for (const mod of GATEWAY_MODULES) {
+      expect(healthy[mod.key].errors).toBe(0)
+    }
   })
 
   it('ignores out-of-window requests', () => {

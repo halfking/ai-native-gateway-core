@@ -20,6 +20,7 @@ export default {
     connecting: 'El flujo en vivo no está conectado: el gráfico muestra la última instantánea, no el estado actual',
     waitingFirstFrame: 'Conectado, esperando el primer fotograma de esta sesión…',
     filteredEmpty: 'No hay solicitudes en la ventana con los filtros actuales',
+    droppedByWindow: 'Hay {n} solicitudes más fuera de la ventana de tiempo actual y no se muestran aquí (amplía la ventana para verlas)',
   },
   summary: {
     inFlight: '{n} en curso',
@@ -71,6 +72,7 @@ export default {
       llm: 'Llamada',
       retrying: 'Reintento',
       terminal: 'Terminal',
+      unreported: 'Etapa no reportada',
     },
     action: {
       unknown: 'evento',
@@ -101,6 +103,17 @@ export default {
     probeTask: 'Tarea de sondeo',
     taskDetect: 'Detección de tarea',
   },
+  node: {
+    requests: '{n} solicitudes',
+    aggregate: '{n} solicitudes más (agrupadas)',
+  },
+  health: {
+    healthy: 'correcto',
+    warning: 'advertencia',
+    down: 'caído',
+    unknown: 'sin sondear',
+  },
+
   panel: {
     clients: 'Solicitudes de clientes',
     providers: 'Respuestas de proveedores',

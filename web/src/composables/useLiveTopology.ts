@@ -139,9 +139,29 @@ export function useLiveTopology(opts?: { now?: () => number }) {
       .map(toPanelEntry),
   )
 
+  /** 过滤子集里真正流经过的供应端节点数（与图上 provider 列同源）。 */
+  const filteredProviderNodeCount = computed(() => {
+    const ids = new Set<string>()
+    for (const req of filteredRequests.value) {
+      const id = providerNodeKeyOf(req as never)
+      if (id) ids.add(id)
+    }
+    // 过滤后一条请求都没有时仍如实反映「当前没有任何供应端在管」，
+    // 而不是回退到全局总数（那会把「空」说成「有 N 个节点」）。
+    return ids.size
+  })
+
   /** 网关核心九个模块的窗口内统计。 */
   const gatewayStats = computed<Record<GatewayModuleKey, { count: number; errors: number }>>(() =>
-    gatewayModuleStats(filteredRequests.value as never, now(), filters.value.windowMs, nodesRef.value.length),
+    // nodeState 必须跟着过滤走：其余八格都是过滤子集内的量，只有它显示
+    // 全量节点数的话，筛窄之后这一格会和旁边八格对不上账。
+    // 判据：useLiveTopology.test.ts「nodeState 随节点过滤收敛」。
+    gatewayModuleStats(
+      filteredRequests.value as never,
+      now(),
+      filters.value.windowMs,
+      filteredProviderNodeCount.value,
+    ),
   )
 
   const queue = computed<LiveQueueSnapshot | null>(() => queueRef.value)
@@ -188,6 +208,28 @@ export function useLiveTopology(opts?: { now?: () => number }) {
 
   const filteredOut = computed(() => filteredRequests.value.length === 0 && requestsRef.value.length > 0)
 
+  /**
+   * 被时间窗口丢掉的请求数。
+   *
+   * 这个数之前只在 `buildTopology` 里累加、没有任何 UI 消费：窗口调小后图会
+   * 变空，但用户分不清是「真的没流量」还是「有流量但落在窗口外」。
+   * 两个原因要采取的动作完全不同（等 vs 放宽窗口），所以必须在页面上说清。
+   *
+   * **不能读 `graph.droppedByWindow`**：`applyFilters` 已经先按窗口筛过一遍，
+   * `buildTopology` 拿到手时窗口外的请求早就没了，那个计数器结构性恒为 0。
+   * 这里另跑一遍纯计数，判据见 LiveTopologyView.honesty.test.ts。
+   */
+  const droppedByWindow = computed(() => {
+    const cutoff = now() - filters.value.windowMs
+    let dropped = 0
+    for (const req of requestsRef.value as LiveRequest[]) {
+      const ts = req.ts ? Date.parse(req.ts) : NaN
+      // 没有时间戳的帧不算「被窗口丢掉」—— 它压根没参与时间判定。
+      if (Number.isFinite(ts) && ts < cutoff) dropped += 1
+    }
+    return dropped
+  })
+
   return {
     filters,
     now,
@@ -206,6 +248,7 @@ export function useLiveTopology(opts?: { now?: () => number }) {
     decisionsFor,
     activeFilterCount,
     filteredOut,
+    droppedByWindow,
     connection: connectionRef,
     initialDataReceived: initialDataReceivedRef,
     redisHealthy: redisHealthyRef,
@@ -218,7 +261,7 @@ function toPanelEntry(req: LiveRequest): PanelEntry {
     requestId: req.request_id ?? '',
     ts: req.ts,
     client: clientKeyOf(req as never),
-    provider: (req.provider_code ?? '').trim() || '-',
+    provider: (req.provider_code ?? '').trim() || '—',
     nodeId: providerNodeKeyOf(req as never),
     model: modelKeyOf(req as never),
     status: req.status ?? 'in_progress',

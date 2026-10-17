@@ -20,6 +20,7 @@ export default {
     connecting: '即時串流未連線，圖中為最後一次快照（不代表當下狀態）',
     waitingFirstFrame: '已連線，等待本世代首幀資料…',
     filteredEmpty: '目前篩選條件下視窗內沒有請求',
+    droppedByWindow: '另有 {n} 筆請求落在目前時間視窗之外，未計入本圖（可放寬視窗檢視）',
   },
   summary: {
     inFlight: '在途 {n}',
@@ -71,6 +72,7 @@ export default {
       llm: '呼叫',
       retrying: '回退',
       terminal: '終態',
+      unreported: '未回報階段',
     },
     action: {
       unknown: '事件',
@@ -101,6 +103,17 @@ export default {
     probeTask: '探測任務',
     taskDetect: '任務識別',
   },
+  node: {
+    requests: '{n} 次請求',
+    aggregate: '另有 {n} 次請求（已折疊）',
+  },
+  health: {
+    healthy: '健康',
+    warning: '告警',
+    down: '故障',
+    unknown: '未探測',
+  },
+
   panel: {
     clients: '用戶端請求',
     providers: '供應商回應',

@@ -20,6 +20,7 @@ export default {
     connecting: 'ライブストリーム未接続 — 図は最終スナップショットで、現状ではありません',
     waitingFirstFrame: '接続済み。この世代の初回フレームを待機中…',
     filteredEmpty: '現在のフィルタでウィンドウ内にリクエストがありません',
+    droppedByWindow: '現在の時間ウィンドウ外のリクエストが {n} 件あります（ウィンドウを広げると表示されます）',
   },
   summary: {
     inFlight: '進行中 {n}',
@@ -71,6 +72,7 @@ export default {
       llm: '呼び出し',
       retrying: '再試行',
       terminal: '終端',
+      unreported: '未報告ステージ',
     },
     action: {
       unknown: 'イベント',
@@ -101,6 +103,17 @@ export default {
     probeTask: 'プローブタスク',
     taskDetect: 'タスク判定',
   },
+  node: {
+    requests: '{n} リクエスト',
+    aggregate: '他 {n} リクエスト（集約表示）',
+  },
+  health: {
+    healthy: '正常',
+    warning: '警告',
+    down: '障害',
+    unknown: '未計測',
+  },
+
   panel: {
     clients: 'クライアントリクエスト',
     providers: 'プロバイダ応答',

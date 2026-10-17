@@ -48,8 +48,10 @@ function fmt(value: number | null | undefined): string {
   return String(value)
 }
 
+/** 阶段标签。**缺失就是缺失** —— 早先这里回落成 `routing`，
+ *  等于给一条没上报阶段的事件凭空盖上「路由」章。 */
 function stageLabel(stage?: string): string {
-  return stage ? t(`liveTopology.decision.stage.${stage}`) : t('liveTopology.decision.stage.routing')
+  return t(`liveTopology.decision.stage.${stage || 'unreported'}`)
 }
 
 function actionLabel(action?: string): string {

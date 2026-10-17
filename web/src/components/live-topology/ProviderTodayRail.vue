@@ -86,6 +86,13 @@ function compactNumber(value: number): string {
   return String(value)
 }
 
+/** token 量。缺省返回 `—`，不带单位：拼成「— tok」等于把「没有数据」
+ *  说成一个零值，违反本仓的假零禁令。 */
+function tokens(value: number): string {
+  const n = compactNumber(value)
+  return n === '—' ? n : `${n} tok`
+}
+
 function successRate(item: { success: number; requests: number }): string {
   if (!item.requests) return '—'
   return `${((item.success / item.requests) * 100).toFixed(1)}%`
@@ -144,7 +151,7 @@ onUnmounted(() => {
               <i>{{ successRate(item) }}</i>
             </span>
             <span class="rail__bar" :style="{ width: `${Math.round((item.share || 0) * 100)}%` }" />
-            <span class="rail__tokens">{{ compactNumber(item.total_tokens) }} tok</span>
+            <span class="rail__tokens">{{ tokens(item.total_tokens) }}</span>
           </button>
         </li>
       </ul>

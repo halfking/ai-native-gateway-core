@@ -20,6 +20,7 @@ export default {
     connecting: 'Live-Stream nicht verbunden – die Grafik zeigt den letzten Snapshot, nicht den aktuellen Zustand',
     waitingFirstFrame: 'Verbunden, warte auf den ersten Frame dieser Sitzung…',
     filteredEmpty: 'Im Zeitfenster gibt es unter den aktuellen Filtern keine Anfragen',
+    droppedByWindow: '{n} weitere Anfragen liegen außerhalb des aktuellen Zeitfensters und werden hier nicht gezeigt (Zeitfenster erweitern)',
   },
   summary: {
     inFlight: '{n} in Arbeit',
@@ -71,6 +72,7 @@ export default {
       llm: 'Aufruf',
       retrying: 'Wiederholung',
       terminal: 'Endzustand',
+      unreported: 'Nicht gemeldete Phase',
     },
     action: {
       unknown: 'Ereignis',
@@ -101,6 +103,17 @@ export default {
     probeTask: 'Probe-Aufgabe',
     taskDetect: 'Aufgabenerkennung',
   },
+  node: {
+    requests: '{n} Anfragen',
+    aggregate: '{n} weitere Anfragen (zusammengefasst)',
+  },
+  health: {
+    healthy: 'gesund',
+    warning: 'Warnung',
+    down: 'Ausfall',
+    unknown: 'nicht geprüft',
+  },
+
   panel: {
     clients: 'Client-Anfragen',
     providers: 'Anbieter-Antworten',
