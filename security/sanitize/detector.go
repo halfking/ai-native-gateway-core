@@ -21,6 +21,7 @@ type SensitiveFragment struct {
 	Start      int    // 在输入文本中的起始位置
 	End        int    // 在输入文本中的结束位置
 	RuleID     string
+	Kind       string // rule kind (pattern / network_destination / …); empty for builtin fallback
 	Action     string
 	Version    int64
 	Exemptions []string
@@ -266,7 +267,7 @@ func (d *PatternDetector) DetectScope(ctx context.Context, text string, scope De
 					continue
 				}
 				seen[key] = true
-				f := SensitiveFragment{Type: typ, Value: text[span[0]:span[1]], Start: span[0], End: span[1]}
+				f := SensitiveFragment{Type: typ, Value: text[span[0]:span[1]], Start: span[0], End: span[1], Kind: p.kind}
 				if snapshot != nil {
 					f.Exemptions = p.exemptions
 					f.RuleID = p.id

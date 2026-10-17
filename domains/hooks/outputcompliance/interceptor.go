@@ -126,28 +126,11 @@ func redactionMode() outputcompliance.RedactionMode {
 
 // enabled 读取 output_compliance.enabled。
 //
-// 默认 enabled：settings.Global 未初始化 / spec 未注册 / 没有具体配置时，
-// 按原 ModuleSpecs 默认 + write-time redactor 语义，认为 compliance 启用。
-// 只有显式设置 enabled=false 才禁用。
+// 默认关闭：与 ModuleSpecs / write-time redactor 一致。未初始化、未注册、
+// 未写入具体值时都不跑可选输出合规；只有显式 true 才启用。强制外传守卫
+// （mandatory OutputSensitive）不走本函数。
 func enabled() bool {
-	if settings.Global == nil {
-		return true
-	}
-	sp := settings.Global.Spec("output_compliance.enabled")
-	if sp == nil {
-		// Match ModuleSpecs' default and the write-time redactor. The
-		// gateway may have a checker before settings registration completes.
-		return true
-	}
-	raw, _, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
-	if err != nil || len(raw) == 0 {
-		return true
-	}
-	var b bool
-	if json.Unmarshal(raw, &b) != nil {
-		return true
-	}
-	return b
+	return settings.GetPlatformBool("output_compliance.enabled", false)
 }
 
 // InterceptNonStream 处理非流式响应：检测 + owner 规则脱敏。

@@ -23,7 +23,7 @@ const expectedKeys = Object.keys(en.sanitizeRules).sort();
 
 describe("sanitize rules in actual bundled and lazy locale exports", () => {
   it("pins the complete source namespace", () =>
-    expect(expectedKeys).toHaveLength(113));
+    expect(expectedKeys).toHaveLength(117));
   for (const [locale, bundle] of Object.entries(bundles)) {
     it(`${locale} exports and resolves every rule-management message`, () => {
       const namespace = bundle.sanitizeRules as

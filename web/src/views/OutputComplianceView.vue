@@ -32,6 +32,7 @@ interface ComplianceRecord {
   severity: number
   redacted: boolean
   content_preview: string
+  evidence?: string
   created_at: string
 }
 
@@ -82,7 +83,7 @@ const recordsSize = ref(50)
 const recordsError = ref('')
 
 const config = ref<OutputComplianceConfig>({
-  enabled: true,
+  enabled: false,
   redaction_mode: 'owner_mismatch',
   pii_engine: 'regex',
   toxicity_engine: 'keyword',

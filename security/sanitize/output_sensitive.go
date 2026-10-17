@@ -121,6 +121,33 @@ func isInertContentTool(name string) bool {
 	return inertContentTools[strings.ToLower(strings.TrimSpace(name))]
 }
 
+// localExecTools 是在客户端本地执行的命令类工具（参数会进 shell/exec，但
+// **不是**「把内容 POST 到外网」的专用上传工具）。比较前小写化。
+//
+// 2026-10-17 r1035（154 request 913cf85b… / client 59d936b8…）：托管规则
+// `pii.address.egress`（type=custom, kind=pattern）把 Bash 参数里中文路径/
+// 文档字样（含「路/号/室」）当成地址整条 `output_policy_blocked`。地址类
+// custom 规则的语义是数据分类脱敏，不是外传目的地；对本地执行工具硬拦会
+// 直接打断 coding agent，且拦不住「模型侧已见到该文本」（响应已由供应商生成）。
+//
+// 对这类工具：仍硬拦真正的网络目的地（network_destination / 公网 IP/域名）
+// 与 secret；跳过其余 custom 分类规则（address/passport/iban…）。
+var localExecTools = map[string]bool{
+	"bash": true, "shell": true, "zsh": true, "sh": true,
+	"exec_command": true, "run_terminal_cmd": true, "run_command": true,
+	"execute": true, "terminal": true, "powershell": true, "cmd": true,
+}
+
+func isLocalExecTool(name string) bool {
+	return localExecTools[strings.ToLower(strings.TrimSpace(name))]
+}
+
+// isEgressDestinationKind reports whether a custom-typed fragment is an actual
+// network-destination rule (vs a PII classifier reused on the egress scope).
+func isEgressDestinationKind(fragment SensitiveFragment) bool {
+	return fragment.Kind == "network_destination"
+}
+
 type outputSensitiveChecker struct {
 	sanitizer *Sanitizer
 	action    OutputSensitiveAction
@@ -256,6 +283,15 @@ func (c *outputSensitiveChecker) unsafeToolValueDetail(ctx context.Context, valu
 				// action) made tool-driving models unusable. Public addresses
 				// keep the hard block
 				// (TestGeneratedSensitiveToolOperationsAreBlocked contract).
+				continue
+			}
+			// r1035：本地执行 / 惰性内容工具上的 custom 分类规则（address 等）
+			// 不是外传目的地。仍拦 network_destination / secret / 公网 IP·域名。
+			// 托管规则若未登记 inert_tool 豁免，旧逻辑会把 Write 里的中文地址
+			// 与 Bash 路径一并硬拦——与 r1020 载体分流同向补齐。
+			if (isLocalExecTool(toolName) || isInertContentTool(toolName)) &&
+				fragment.Type == TypeCustom && !isEgressDestinationKind(fragment) {
+				c.observe(ctx, fragment, "exempted")
 				continue
 			}
 			c.observe(ctx, fragment, "block")

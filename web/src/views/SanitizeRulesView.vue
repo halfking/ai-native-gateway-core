@@ -74,6 +74,7 @@ const statusFilter = ref(""),
   reviewBusy = ref<number | null>(null),
   linked = ref<number[]>([]);
 const editingMatched = ref(false);
+const expandedEvent = ref<number | null>(null);
 const chosenVersion = ref<RuleVersion | null>(null),
   rollbackOpen = ref(false),
   rollbackComment = ref("");
@@ -911,6 +912,7 @@ onBeforeUnmount(() => {
         <p v-else-if="!events.length && !eventError">
           {{ t("sanitizeRules.empty") }}
         </p>
+        <p class="event-note">{{ t("sanitizeRules.eventEvidenceNote") }}</p>
         <article v-for="event in events" :key="event.id" class="card event">
           <div class="toolbar">
             <strong>#{{ event.id }} · {{ event.rule_id }}</strong
@@ -920,10 +922,83 @@ onBeforeUnmount(() => {
             ><span>{{ labels[event.status] }}</span
             ><span>×{{ event.count }}</span>
           </div>
+          <p class="event-meta">
+            <span
+              >{{ t("sanitizeRules.type") }}: {{ event.type || "—" }}</span
+            >
+            ·
+            <span
+              >{{ t("sanitizeRules.kind") }}: {{ event.field || "—" }}</span
+            >
+          </p>
           <code>{{ event.sample_masked }}</code
           ><small
             >{{ date(event.first_seen) }} → {{ date(event.last_seen) }}</small
           >
+          <div
+            v-if="event.matched_rule"
+            class="matched-rule"
+            :data-test="'matched-rule-' + event.id"
+          >
+            <button
+              class="btn"
+              type="button"
+              :data-test="'toggle-matched-' + event.id"
+              @click="
+                expandedEvent = expandedEvent === event.id ? null : event.id
+              "
+            >
+              {{
+                expandedEvent === event.id
+                  ? t("sanitizeRules.hideMatched")
+                  : t("sanitizeRules.viewMatched")
+              }}
+            </button>
+            <div
+              v-if="expandedEvent === event.id"
+              class="matched-rule__body"
+              :data-test="'matched-body-' + event.id"
+            >
+              <p v-if="event.matched_rule.missing" class="error-banner">
+                {{ t("sanitizeRules.missingRule") }}
+              </p>
+              <template v-else>
+                <p>
+                  <strong>{{ event.matched_rule.name || event.rule_id }}</strong>
+                  · {{ event.matched_rule.type }} /
+                  {{ event.matched_rule.kind }} ·
+                  {{ (event.matched_rule.scopes || []).join(", ") }} /
+                  {{ event.matched_rule.action }}
+                  <span v-if="event.matched_rule.enabled === false">
+                    · {{ t("sanitizeRules.enabled") }}: off</span
+                  >
+                </p>
+                <label
+                  >{{ t("sanitizeRules.pattern")
+                  }}<code class="matched-pattern">{{
+                    event.matched_rule.pattern
+                  }}</code></label
+                >
+                <ul
+                  v-if="event.matched_rule.samples?.length"
+                  class="matched-samples"
+                >
+                  <li
+                    v-for="(sample, i) in event.matched_rule.samples"
+                    :key="i"
+                  >
+                    <code>{{ sample.text }}</code>
+                    ·
+                    {{
+                      sample.match
+                        ? t("sanitizeRules.expectedMatch")
+                        : t("sanitizeRules.expectedMiss")
+                    }}
+                  </li>
+                </ul>
+              </template>
+            </div>
+          </div>
           <p v-if="event.resolved_version">
             {{ t("sanitizeRules.linked") }}: v{{ event.resolved_version }}
           </p>
@@ -950,7 +1025,7 @@ onBeforeUnmount(() => {
             >
               {{ labels[status] }}</button
             ><button
-              v-if="superAdmin && event.status !== 'pending'"
+              v-if="superAdmin"
               class="btn"
               :data-test="'edit-event-' + event.id"
               :disabled="busy || !head"
@@ -958,7 +1033,7 @@ onBeforeUnmount(() => {
             >
               {{ t("sanitizeRules.editMatched") }}
             </button><button
-              v-if="superAdmin && event.status !== 'pending'"
+              v-if="superAdmin"
               class="btn"
               :data-test="'draft-event-' + event.id"
               :disabled="busy || !head"
@@ -1441,5 +1516,38 @@ summary {
   * {
     scroll-behavior: auto;
   }
+}
+.event-note {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0 0 12px;
+}
+.event-meta {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--text-secondary, var(--muted));
+}
+.matched-rule {
+  margin: 10px 0;
+}
+.matched-rule__body {
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+}
+.matched-pattern {
+  display: block;
+  margin-top: 4px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.matched-samples {
+  margin: 8px 0 0;
+  padding-inline-start: 18px;
+}
+.matched-samples li {
+  margin-bottom: 4px;
 }
 </style>

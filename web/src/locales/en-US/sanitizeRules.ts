@@ -125,4 +125,9 @@ export default {
   noRules: "No rules. Add at least one before publishing.",
   combinationHint:
     "Review combinations only log during input. To mask or block a confirmed sensitive value, explicitly choose pattern semantics.",
+  viewMatched: "View matched rule",
+  hideMatched: "Hide matched rule",
+  expectedMiss: "Must not match",
+  eventEvidenceNote:
+    "Hit records never store request plaintext. Confirm with type/field plus the rule pattern and invented samples below; edit the matched rule or add a scoped supplement after review. Local clients still see restored values in scripts/docs; outbound provider traffic stays masked. Optional output compliance is off by default.",
 };

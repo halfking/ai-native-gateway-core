@@ -141,10 +141,23 @@ describe("managed rule workflows", () => {
           phase: "input",
           action: "mask",
           status: "pending",
-          sample_masked: "[REDACTED:secret]",
+          type: "secret",
+          field: "pattern",
+          sample_masked: "[REDACTED:secret] field=pattern phase=input action=mask",
           count: 2,
           first_seen: "2026-10-15T00:00:00Z",
           last_seen: "2026-10-15T00:00:00Z",
+          matched_rule: {
+            id: "secret",
+            name: "Secret rule",
+            type: "secret",
+            kind: "pattern",
+            pattern: "secret=(\\w+)",
+            scopes: ["input"],
+            action: "mask",
+            enabled: true,
+            samples: [{ text: "secret=example", match: true }],
+          },
         },
       ],
     });
@@ -152,6 +165,15 @@ describe("managed rule workflows", () => {
     await flushPromises();
     await w.get('[data-test="tab-events"]').trigger("click");
     await flushPromises();
+    expect(w.text()).toContain("secret");
+    expect(w.text()).toContain("pattern");
+    await w.get('[data-test="toggle-matched-7"]').trigger("click");
+    expect(w.get('[data-test="matched-body-7"]').text()).toContain(
+      "secret=(\\w+)",
+    );
+    // pending 即可编辑/起草，不必先复核
+    expect(w.find('[data-test="edit-event-7"]').exists()).toBe(true);
+    expect(w.find('[data-test="draft-event-7"]').exists()).toBe(true);
     await w
       .get('[data-test="review-comment-7"]')
       .setValue("limited false positive");

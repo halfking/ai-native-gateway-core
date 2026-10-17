@@ -18,6 +18,7 @@ import {
   ElTag,
 } from 'element-plus'
 import {
+  BOOTSTRAP_REQUIRE_KEY,
   bootstrapApi,
   markBootstrapActivated,
   type BootstrapStatus,
@@ -388,6 +389,15 @@ function finish() {
 }
 
 function skipToLogin() {
+  // Soft-skip: router.beforeEach redirects to /bootstrap whenever
+  // status.activated=false unless the local "don't force bootstrap" flag
+  // is set. Without writing it, 「稍后再说」bounces right back here and
+  // the admin console (e.g. /admin/sanitize-rules) is unreachable.
+  try {
+    localStorage.setItem(BOOTSTRAP_REQUIRE_KEY, '0')
+  } catch {
+    /* ignore quota / private mode */
+  }
   router.push({ path: '/', query: { login: '1' } })
 }
 

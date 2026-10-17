@@ -659,3 +659,10 @@
 ## 晋级记录
 
 将已晋级条目移到这里，并链接目标规则、清单或技能。同一模式只按不同工作日计 `Seen`；出现三天后晋级。经证据确认的安全、隐私、数据丢失或生产事故，若已有可执行的防复发检查，可立即晋级。
+
+## 2026-10-17 — r1035：Bash/exec 上 custom 地址规则误拦
+
+- **根因**：`pii.address.egress`（type=custom, kind=pattern）挂在 ScopeEgress；中文路径含「路/号」命中后整条 tool lane `output_policy_blocked`。地址分类 ≠ 外传目的地。
+- **防复发**：本地执行工具（Bash/exec_command…）与惰性内容工具上，跳过非 `network_destination` 的 custom；判据 `r1035_local_exec_address_not_egress_test.go`；E2E 必须确认 tool_calls 在场（否则假绿）。
+- **证据**：154 client `59d936b8…` / gw `913cf85b…`；部署后 `pii.address.egress` block=0；minimax-m3 Bash+中文路径 200+tool_calls。
+- **溯源**：未提交工作区 + 154 `2698-a4e2480e`；强制 OutputSensitive 不受 `output_compliance.enabled` 影响——关可选模块挡不住这类误拦。

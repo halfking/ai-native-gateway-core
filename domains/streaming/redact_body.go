@@ -202,11 +202,11 @@ func rewriteAssistantContentInJSON(body []byte, redactedContent string) ([]byte,
 	return out, true
 }
 
-// outputComplianceEnabled 读取 output_compliance.enabled。SC-2
-// (docs/修订0811/19)：此前是硬编码 true 的占位实现，绕过了管理台的
-// 模块开关；现在从 settings 读取（默认 true 保持旧行为）。
+// outputComplianceEnabled 读取 output_compliance.enabled。
+// 默认 false：与 ModuleSpecs / optional interceptor 一致；显式 true 才启用
+// write-time 脱敏。强制外传守卫不走本开关。
 func outputComplianceEnabled() bool {
-	return settings.GetPlatformBool("output_compliance.enabled", true)
+	return settings.GetPlatformBool("output_compliance.enabled", false)
 }
 
 // getRedactionMode 读取 output_compliance.redaction_mode。SC-2：此前硬
