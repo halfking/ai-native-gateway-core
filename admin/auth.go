@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -271,7 +272,11 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 			// canonical identities. DSN 未配置时 RecordShadow 内部 noop。
 			identity.RecordShadow("llm-gateway", u.ID, u.TenantID, u.DisplayName, u.Email)
 
-			h.auditLog(u.Username, "authentication.login", "user", u.ID, fmt.Sprintf("method=jwt role=%s tenant=%s ip=%s", u.Role, u.TenantID, r.RemoteAddr))
+			h.auditLog(u.Username, "authentication.login", "user", u.ID, fmt.Sprintf("method=jwt role=%s tenant=%s ip=%s", u.Role, u.TenantID, clientIP))
+			// 成功登录必须 Reset 限流桶：Allow() 在入口已计数，不 Reset 则
+			// 5 次成功登录后同一 IP 整分钟 429（legacy key 路径早已 Reset，
+			// JWT 路径漏了——2026-10-17 llm.itestu.cn 无法登录根因）。
+			loginLimiter.Reset(clientIP)
 			clearLoginFailures(clientIP)
 			// Dual-write (rule 20 §6.1): set HttpOnly cookie AND return access_token。
 			// remember_me=false → 会话级 cookie（无 Max-Age/Expires，关掉即失效）。
@@ -500,18 +505,32 @@ func SuperAdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey str
 	}
 }
 
-// clientIPFromRequest extracts the client IP, preferring X-Forwarded-For header.
+// clientIPFromRequest extracts the client IP for login rate-limit / captcha.
+// Order: X-Forwarded-For (left-most) → X-Real-IP → RemoteAddr host.
+// Strips :port so "192.168.1.2:54321" and "192.168.1.2" share one bucket.
 func clientIPFromRequest(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		for i := 0; i < len(xff); i++ {
-			if xff[i] == ',' {
-				return xff[:i]
-			}
+	if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
+		if i := strings.IndexByte(xff, ','); i >= 0 {
+			xff = strings.TrimSpace(xff[:i])
 		}
-		return xff
+		if xff != "" {
+			return stripHostPort(xff)
+		}
 	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return xri
+	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
+		return stripHostPort(xri)
 	}
-	return r.RemoteAddr
+	return stripHostPort(r.RemoteAddr)
+}
+
+func stripHostPort(hostport string) string {
+	hostport = strings.TrimSpace(hostport)
+	if hostport == "" {
+		return hostport
+	}
+	// net.SplitHostPort needs brackets for IPv6; fall back to raw on error.
+	if h, _, err := net.SplitHostPort(hostport); err == nil && h != "" {
+		return h
+	}
+	return hostport
 }
