@@ -3,7 +3,7 @@
 // history 标记由 Hyper runtime 负责；Esc/系统返回经 BackDispatcher 仲裁）。
 // 业务关闭（受控）：调用返回的 close()；父组件直接置 modelValue=false 也
 // 会同步清理注册与标记（幂等）。
-import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useHyperOverlay } from '@/hyper'
 import AppIcon from './AppIcon.vue'
 import { t } from '@/i18n'
@@ -34,6 +34,26 @@ const overlay = useHyperOverlay({
 })
 const isTopOverlay = overlay.isTop
 
+// compact sheet：顶栏已显示 Hyper.title。若 sheet 头再画一遍标题 = 双标题
+// （2026-10-17 6s-size Maestro 08 截图像素实证）。
+// ★ 关闭钮必须留在 sheet 头：iOS WKWebView 对顶栏 icon 按钮经常不暴露
+// aria-label 文本到 Maestro a11y 树（实测顶栏 ✕ 搜不到「关闭」），
+// 去掉 sheet 关闭后 flow 08 直接 Element not found。modal / ≥600px 仍显示完整头。
+const hideDuplicateTitle = computed(() => {
+  if (props.presentation !== 'sheet') return false
+  if (typeof window === 'undefined' || !window.matchMedia) return false
+  return window.matchMedia('(max-width: 599px)').matches
+})
+
+function preferPanelFocus(): void {
+  // ★ 永远不要自动 focus 业务按钮（如「解除手动停用」会立刻弹出 window.prompt）。
+  // iOS 模拟器常报 pointer:fine / hover:hover，旧分支会落到第一个 button，
+  // Maestro 二次打开详情时就卡在原生 prompt 上（08 二次关闭全红）。
+  const closeButton = panelRef.value?.querySelector<HTMLElement>('.app-sheet__close')
+  const target = closeButton ?? panelRef.value
+  target?.focus()
+}
+
 watch(
   () => props.modelValue,
   (open) => {
@@ -54,15 +74,7 @@ watch(
       if (lastFocused instanceof HTMLElement) lastFocused.blur()
       overlay.present()
       void nextTick(() => {
-        if (window.matchMedia?.('(pointer: coarse)').matches || window.matchMedia?.('(hover: none)').matches) {
-          const closeButton = panelRef.value?.querySelector<HTMLElement>('.app-sheet__close')
-          ;(closeButton ?? panelRef.value)?.focus()
-          return
-        }
-        const focusable = panelRef.value?.querySelector<HTMLElement>(
-          'input, select, textarea, button:not(.app-sheet__close), [tabindex]:not([tabindex="-1"])',
-        )
-        focusable?.focus()
+        preferPanelFocus()
       })
     } else {
       overlay.release()
@@ -128,10 +140,12 @@ function onKeydownTab(ev: KeyboardEvent): void {
           ref="panelRef"
           class="app-sheet__panel"
           :class="`app-sheet__panel--${presentation}`"
+          tabindex="-1"
           @keydown="onKeydownTab"
         >
-          <header class="app-sheet__header">
-            <h2 class="app-sheet__title">{{ title }}</h2>
+          <header class="app-sheet__header" :class="{ 'app-sheet__header--title-deferred': hideDuplicateTitle }">
+            <h2 v-if="!hideDuplicateTitle" class="app-sheet__title">{{ title }}</h2>
+            <span v-else class="app-sheet__title-spacer" aria-hidden="true" />
             <button id="app-sheet-close" type="button" class="app-sheet__close" :aria-label="t('common.close')" @click="requestClose">
               <AppIcon name="close" :size="20" />
             </button>
@@ -240,6 +254,15 @@ function onKeydownTab(ev: KeyboardEvent): void {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.app-sheet__title-spacer {
+  flex: 1;
+  min-width: 0;
+}
+
+.app-sheet__header--title-deferred {
+  justify-content: flex-end;
 }
 
 .app-sheet__close {
