@@ -104,8 +104,19 @@ const testApi = (store as unknown as {
 // jsdom 没装 canvas 包，getContext 会抛 "Not implemented"。
 // 组件本身已做 try/catch 降级（隐私模式浏览器同理），这里再兜一层，
 // 免得 rAF 循环把测试输出刷成噪声。
+//
+// ★ 还要给容器一个**真实宽度**：jsdom 的 `getBoundingClientRect()` 全返回 0，
+//   布局会退到 `MIN_LAYOUT_WIDTH`(320) 兜底 —— 那是个「手机极窄」形态，
+//   放不下几张卡就会折叠，于是 `kimi-k2` 被折进「+N」而让本判据误红。
+//   布局按宽度决定画几张卡是**正确行为**（窄屏就该折叠），
+//   所以要修的是夹具：给它一个像样的宽度，而不是放宽断言。
+const CANVAS_W = 1200
+const CANVAS_H = 800
 beforeAll(() => {
   HTMLCanvasElement.prototype.getContext = (() => null) as unknown as HTMLCanvasElement['getContext']
+  Element.prototype.getBoundingClientRect = function (this: Element) {
+    return { width: CANVAS_W, height: CANVAS_H, top: 0, left: 0, right: CANVAS_W, bottom: CANVAS_H, x: 0, y: 0, toJSON: () => ({}) } as DOMRect
+  }
 })
 
 const i18n = createI18n({

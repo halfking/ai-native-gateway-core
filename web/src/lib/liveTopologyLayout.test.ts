@@ -9,7 +9,7 @@
 //     且大方块必须横在客户端层与供应端层之间（否则边会从大方块上面绕过去）。
 
 import { describe, expect, it } from 'vitest'
-import { computeGatewayBox, computeLayout, edgeWidth, particleRadius, stableHash } from '../lib/liveTopologyLayout'
+import { computeGatewayBox, computeLayout, edgeWidth, fitRow, MIN_LAYOUT_HEIGHT, MIN_LAYOUT_WIDTH, NODE_GAP, NODE_W, NODE_W_MIN, particleRadius, stableHash } from '../lib/liveTopologyLayout'
 import { GATEWAY_MODULES, type TopoNode } from '../types/liveTopology'
 
 function node(id: string, column: TopoNode['column'], requests: number): TopoNode {
@@ -124,10 +124,159 @@ describe('computeLayout', () => {
     expect(layout.edges.map((e) => e.id)).not.toContain('ghost')
   })
 
-  it('clamps to a minimum usable canvas size', () => {
-    const tiny = computeLayout({ nodes: NODES, edges: [], width: 10, height: 10 })
-    expect(tiny.width).toBeGreaterThanOrEqual(640)
-    expect(tiny.height).toBeGreaterThanOrEqual(320)
+  it('★ never lays out wider than its container (a wide canvas gets clipped away)', () => {
+    // 早先下限是 640，于是 480 视口（容器 456px）时布局仍按 640 排布，
+    // 而 `.topo-canvas` 是 `overflow:hidden` ⇒ 右侧 113px 被裁掉，
+    // 大方块右边和每行末尾的卡永远看不见。**下限大于容器不是信息，是丢信息。**
+    for (const containerWidth of [320, 456, 480, 616, 744, 1000, 1416]) {
+      const layout = computeLayout({ nodes: NODES, edges: EDGES, width: containerWidth, height: 700 })
+      expect(layout.width).toBe(Math.max(MIN_LAYOUT_WIDTH, containerWidth))
+      // 任何东西都不得越过右边界
+      const overflowX = layout.nodes.filter((n) => n.x + n.w > containerWidth)
+      expect(overflowX.map((n) => `${n.id}@${n.x}+${n.w}`), `${containerWidth}px 下有节点越界`).toEqual([])
+      expect(
+        layout.gateway.x + layout.gateway.w <= containerWidth,
+        `${containerWidth}px 下大方块越界`,
+      ).toBe(true)
+    }
+  })
+
+  it('folds nodes that cannot fit instead of letting cards overlap', () => {
+    // 卡片固定 150px。8 张摊 1440 宽时槽位 138 < 150，每张压 12px；
+    // 1024 宽压 58px —— 重叠和裁切是同一类「看不见信息」的缺陷。
+    //
+    // **断言用实际最小间隙、且扫全部白名单断点**：抖动幅度曾因未按间隙封顶
+    // 而吃掉间隙（560px 实测只剩 9px < 最小 12px）。只测 480/1024/1440
+    // 三个点会漏掉 560 这类宽度。
+    const many = Array.from({ length: 8 }, (_, i) => ({
+      id: `model:node-with-a-longish-id-${i}`, column: 'model' as const, label: `m${i}`, sub: '',
+      health: 'healthy' as const, live: true,
+      metric: { requests: 100 - i, success: 100 - i, failure: 0, tokens: 0, inFlight: 0 },
+    }))
+    for (const width of [320, 360, 400, 480, 560, 640, 744, 768, 1024, 1440]) {
+      const layout = computeLayout({ nodes: many, edges: [], width, height: 700 })
+      const cards = layout.nodes.filter((n) => n.column === 'model').sort((a, b) => a.x - b.x)
+      for (let i = 1; i < cards.length; i += 1) {
+        const gap = cards[i].x - (cards[i - 1].x + cards[i - 1].w)
+        expect(gap, `${width}px 下第 ${i} 张卡与前一张重叠或贴死`).toBeGreaterThanOrEqual(0)
+      }
+    }
+  })
+
+  it('★ keeps a visible gap between cards even after jitter', () => {
+    // 只断言「不重叠」不够：卡片贴死（间隙 0~11px）读起来同样是「挤成一坨」。
+    // 抖动是按 id 哈希派生的，某个宽度上恰好吃掉间隙（560px 实测 9px），
+    // 所以这里钉「最小间隙 ≥ NODE_GAP」本身。
+    const many = Array.from({ length: 8 }, (_, i) => ({
+      id: `model:node-with-a-longish-id-${i}`, column: 'model' as const, label: `m${i}`, sub: '',
+      health: 'healthy' as const, live: true,
+      metric: { requests: 100 - i, success: 100 - i, failure: 0, tokens: 0, inFlight: 0 },
+    }))
+    let tightest = Infinity
+    for (let width = 320; width <= 1440; width += 4) {
+      const layout = computeLayout({ nodes: many, edges: [], width, height: 700 })
+      const cards = layout.nodes.filter((n) => n.column === 'model').sort((a, b) => a.x - b.x)
+      for (let i = 1; i < cards.length; i += 1) {
+        tightest = Math.min(tightest, cards[i].x - (cards[i - 1].x + cards[i - 1].w))
+      }
+    }
+    expect(tightest).toBeGreaterThanOrEqual(NODE_GAP)
+  })
+
+  it('★ folds the overflow into a visible aggregate instead of dropping it silently', () => {
+    // 「放不下就折叠」必须看得见：折叠节点要在图上，且请求数是真实的和。
+    const many = Array.from({ length: 8 }, (_, i) => ({
+      id: `model:m${i}`, column: 'model' as const, label: `m${i}`, sub: '',
+      health: 'healthy' as const, live: true,
+      metric: { requests: 10, success: 10, failure: 0, tokens: 0, inFlight: 0 },
+    }))
+    const narrow = computeLayout({ nodes: many, edges: [], width: 480, height: 700 })
+    const folded = narrow.nodes.filter((n) => n.isAggregate)
+    expect(folded.length).toBeGreaterThan(0)
+    // 折叠节点的请求数 = 被折叠掉那些的和，流量不会凭空消失
+    const totalShown = narrow.nodes
+      .filter((n) => n.column === 'model')
+      .reduce((sum, n) => sum + n.metric.requests, 0)
+    expect(totalShown).toBe(8 * 10)
+
+    const wide = computeLayout({ nodes: many, edges: [], width: 1440, height: 700 })
+    // 放得下就不该折叠
+    expect(wide.nodes.filter((n) => n.isAggregate)).toEqual([])
+  })
+
+  it('reroutes folded edges to the aggregate and never emits a self-loop', () => {
+    const many = Array.from({ length: 8 }, (_, i) => ({
+      id: `client:c${i}`, column: 'client' as const, label: `c${i}`, sub: '',
+      health: 'healthy' as const, live: true,
+      metric: { requests: 5, success: 5, failure: 0, tokens: 0, inFlight: 0 },
+    }))
+    // 链路终点必须真实存在，否则边会被当成悬空边丢掉（判据自己就写错过这一版：
+    // 只给 client 节点、没有 model 节点，edges 全空，断言 `length === 1` 恒不成立）。
+    const target = {
+      id: 'model:m0', column: 'model' as const, label: 'm0', sub: '',
+      health: 'healthy' as const, live: true,
+      metric: { requests: 5, success: 5, failure: 0, tokens: 0, inFlight: 0 },
+    }
+    const edges = [
+      ...many.map((n) => ({ id: `${n.id}->model:m0`, from: n.id, to: 'model:m0', requests: 2, failure: 0 })),
+      // 同层内部链路：两端折叠到同一个节点 ⇒ 自环，必须丢掉
+      { id: 'client:c5->client:c6', from: 'client:c5', to: 'client:c6', requests: 1, failure: 0 },
+    ]
+    const layout = computeLayout({ nodes: [...many, target], edges, width: 480, height: 700 })
+
+    expect(layout.nodes.some((n) => n.isAggregate)).toBe(true)
+    expect(layout.edges.some((e) => e.from === e.to)).toBe(false)
+    // 可见卡保留自己的链路；被折叠的 7 张合并到折叠节点、请求数求和，
+    // **而不是让后一条盖掉前一条**（少算就是丢流量）。
+    const visibleEdge = layout.edges.find((e) => e.from === 'client:c0')
+    expect(visibleEdge?.requests).toBe(2)
+    const aggEdge = layout.edges.find((e) => e.from.startsWith('client:folded'))
+    expect(aggEdge?.requests).toBe(7 * 2)
+    // 总数守恒：一张都没丢
+    expect(layout.edges.reduce((s, e) => s + e.requests, 0)).toBe(8 * 2)
+    // 自环那条确实没进来
+    expect(layout.edges.some((e) => e.id.includes('c5') && e.id.includes('c6'))).toBe(false)
+  })
+
+  it('clamps a degenerate zero-size container to the floor', () => {
+    const tiny = computeLayout({ nodes: NODES, edges: [], width: 0, height: 0 })
+    expect(tiny.width).toBeGreaterThanOrEqual(MIN_LAYOUT_WIDTH)
+    expect(tiny.height).toBeGreaterThanOrEqual(MIN_LAYOUT_HEIGHT)
+  })
+})
+
+describe('fitRow', () => {
+  it('★ grows with width and never collapses to one card on a wide canvas', () => {
+    // 本轮最大的坑：fitRow 的枚举方向写反后**恒返回 visible:1**，
+    // 而「不越界」「不重叠」两条判据照样全绿（一张卡当然既不重叠也不越界）。
+    // ⇒ 必须有一条**正向**判据钉住「宽屏就该画多张」。
+    expect(fitRow(1440, false).visible).toBeGreaterThanOrEqual(6)
+    expect(fitRow(1920, false).visible).toBeGreaterThan(fitRow(480, false).visible)
+    expect(fitRow(320, false).visible).toBeGreaterThanOrEqual(1)
+  })
+
+  it('★ never folds when the aggregate node itself would not fit', () => {
+    // 320px 极窄容器：折叠节点也是一张卡，放不下就不该折叠
+    // —— 早先只判「单卡 + 一个间隙」放得下（太松，算出 gap = -1.3）。
+    // 断言的是**实际布局结果**（不越界），不是 fitRow 的中间返回值。
+    const many = Array.from({ length: 8 }, (_, i) => ({
+      id: `model:m${i}`, column: 'model' as const, label: `m${i}`, sub: '',
+      health: 'healthy' as const, live: true,
+      metric: { requests: 5, success: 5, failure: 0, tokens: 0, inFlight: 0 },
+    }))
+    for (const width of [320, 360, 480]) {
+      const layout = computeLayout({ nodes: many, edges: [], width, height: 700 })
+      for (const n of layout.nodes) {
+        expect(n.x + n.w, `w=${width} 节点 ${n.id} 越界`).toBeLessThanOrEqual(width)
+        expect(n.x, `w=${width} 节点 ${n.id} 左边越界`).toBeGreaterThanOrEqual(0)
+      }
+    }
+  })
+
+  it('prefers full-width cards over squeezing more of them in', () => {
+    // 1440 宽应当画满宽 150 的卡，而不是摊成 12 张 105px 的窄卡
+    // —— 张数上去了但可读性全丢，正是「多画了却看不见」。
+    expect(fitRow(1440, false).cardW).toBe(NODE_W)
   })
 })
 

@@ -12,7 +12,7 @@
 
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { computeLayout, edgeWidth, particleRadius } from '../../lib/liveTopologyLayout'
+import { computeLayout, edgeWidth, MIN_LAYOUT_HEIGHT, MIN_LAYOUT_WIDTH, particleRadius } from '../../lib/liveTopologyLayout'
 import { ParticlePool } from '../../lib/liveTopologyParticles'
 import type { ParticleSpawn } from '../../lib/liveTopologyParticles'
 import type { TopoGraph } from '../../lib/liveTopologyGraph'
@@ -273,9 +273,12 @@ function measure() {
   const el = wrapRef.value
   if (!el) return
   const rect = el.getBoundingClientRect()
+  // 用容器真实尺寸。早先这里强制 `Math.max(640, …)`，而 `.topo-canvas` 是
+  // `overflow:hidden` —— 窄屏时画布画到 640 宽，右侧那截（480 视口下 113px）
+  // 直接被裁掉，大方块右边和每行末尾的卡永远看不见。**下限大于容器就是丢信息**。
   size.value = {
-    width: Math.max(640, Math.floor(rect.width)),
-    height: Math.max(480, Math.floor(rect.height)),
+    width: Math.max(MIN_LAYOUT_WIDTH, Math.floor(rect.width)),
+    height: Math.max(MIN_LAYOUT_HEIGHT, Math.floor(rect.height)),
   }
 }
 
