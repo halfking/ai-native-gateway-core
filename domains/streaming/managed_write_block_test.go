@@ -10,6 +10,7 @@ import (
 )
 
 func TestWriteTimeManagedBlockCannotReturnOriginalBody(t *testing.T) {
+	r1013RequireComplianceOn(t)
 	checker := outputcompliance.NewBuiltinChecker()
 	checker.SetManagedRuleSource(func() outputcompliance.ManagedRuleCheck {
 		return func(context.Context, string, string) (*outputcompliance.ComplianceResult, error) {

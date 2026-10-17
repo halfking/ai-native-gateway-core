@@ -21,6 +21,8 @@ export default {
     waitingFirstFrame: '已连接，等待本代际首帧数据…',
     filteredEmpty: '当前过滤条件下窗口内没有请求',
     droppedByWindow: '另有 {n} 条请求落在当前时间窗口之外，未计入本图（可放宽窗口查看）',
+    hiddenProbe: '已隐藏 {n} 条探测请求',
+    hiddenInvalid: '已隐藏 {n} 条经无效节点的请求',
   },
   summary: {
     inFlight: '在途 {n}',
@@ -51,6 +53,8 @@ export default {
     failure: '失败',
     rateLimited: '限流',
     clear: '清空过滤',
+    showProbe: '显示探测请求',
+    showInvalid: '显示无效节点',
   },
   rail: {
     title: '供应商当天统计',
@@ -92,7 +96,6 @@ export default {
 
   gateway: {
     title: '网关核心',
-    subtitle: '缓存 · 脱敏 · 路由 · 节点状态 · 会话存储 · 会话写入',
     cache: '缓存',
     sanitize: '脱敏',
     route: '路由',
@@ -102,6 +105,15 @@ export default {
     errorRecord: '错误记录',
     probeTask: '探测任务',
     taskDetect: '任务识别',
+  },
+  /** 三条流程带（2026-10-18 owner 拍板：进/出双链路 + 存储转发）。 */
+  lane: {
+    in: '进 · 请求链',
+    out: '出 · 响应链',
+    store: '存储转发',
+    toProvider: '派发供应端',
+    fromProvider: '供应端返回',
+    queue: '转发队列 {n}',
   },
   node: {
     requests: '{n} 次请求',
@@ -120,6 +132,8 @@ export default {
     zoom: '放大查看',
     zoomHint: '点 ⤢ 放大',
     empty: '窗口内暂无请求',
+    page: '第 {page}/{pages} 页',
+    total: '共 {n} 条',
   },
   zoom: {
     title: '请求详情',
@@ -127,6 +141,7 @@ export default {
     requestId: '请求 ID',
     time: '时间',
     client: '客户端',
+    protocol: '客户端协议',
     provider: '供应商',
     node: '节点',
     model: '模型',

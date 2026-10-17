@@ -21,6 +21,8 @@ export default {
     waitingFirstFrame: 'Verbunden, warte auf den ersten Frame dieser Sitzung…',
     filteredEmpty: 'Im Zeitfenster gibt es unter den aktuellen Filtern keine Anfragen',
     droppedByWindow: '{n} weitere Anfragen liegen außerhalb des aktuellen Zeitfensters und werden hier nicht gezeigt (Zeitfenster erweitern)',
+    hiddenProbe: '{n} Probe-Anfragen ausgeblendet',
+    hiddenInvalid: '{n} Anfragen über ungültige Knoten ausgeblendet',
   },
   summary: {
     inFlight: '{n} in Arbeit',
@@ -51,6 +53,8 @@ export default {
     failure: 'Fehler',
     rateLimited: 'Rate-Limit',
     clear: 'Filter zurücksetzen',
+    showProbe: 'Probe-Anfragen zeigen',
+    showInvalid: 'Ungültige Knoten zeigen',
   },
   rail: {
     title: 'Anbieter heute',
@@ -92,7 +96,6 @@ export default {
 
   gateway: {
     title: 'Gateway-Kern',
-    subtitle: 'Cache · Bereinigung · Routing · Knotenstatus · Session-Speicher · Session-Write',
     cache: 'Cache',
     sanitize: 'Bereinigung',
     route: 'Routing',
@@ -102,6 +105,14 @@ export default {
     errorRecord: 'Fehlerprotokoll',
     probeTask: 'Probe-Aufgabe',
     taskDetect: 'Aufgabenerkennung',
+  },
+  lane: {
+    in: 'EIN · Anfragepfad',
+    out: 'AUS · Antwortpfad',
+    store: 'Speichern & Weiterleiten',
+    toProvider: 'Weiterleitung an Provider',
+    fromProvider: 'Provider-Rückgabe',
+    queue: 'Weiterleitungswarteschlange {n}',
   },
   node: {
     requests: '{n} Anfragen',
@@ -120,6 +131,8 @@ export default {
     zoom: 'Vergrößern',
     zoomHint: '⤢ zum Vergrößern',
     empty: 'Keine Anfragen im Zeitfenster',
+    page: 'Seite {page}/{pages}',
+    total: '{n} gesamt',
   },
   zoom: {
     title: 'Anfragendetails',
@@ -127,6 +140,7 @@ export default {
     requestId: 'Anfrage-ID',
     time: 'Zeit',
     client: 'Client',
+    protocol: 'Client-Protokoll',
     provider: 'Anbieter',
     node: 'Knoten',
     model: 'Modell',

@@ -4,7 +4,7 @@
 // 每条都做过变异验证（改坏逻辑必须变红）。
 
 import { describe, expect, it } from 'vitest'
-import { buildTopology, clientKeyOf, healthOfNode, modelKeyOf, providerNodeKeyOf } from '../lib/liveTopologyGraph'
+import { buildTopology, clientKeyOf, healthOfNode, invalidNodeKeys, modelKeyOf, providerNodeKeyOf } from '../lib/liveTopologyGraph'
 import { TOPO_COLUMN_LIMITS } from '../types/liveTopology'
 
 const NOW = Date.parse('2026-10-16T12:00:00Z')
@@ -59,6 +59,26 @@ describe('liveTopologyGraph health', () => {
     expect(healthOfNode({ credential_id: 1, quota_state: 'quota_exhausted' })).toBe('warning')
     expect(healthOfNode({ credential_id: 1, fp_disabled: true })).toBe('warning')
     expect(healthOfNode({ credential_id: 1, health_status: 'healthy' })).toBe('healthy')
+  })
+
+  it('★ treats manual_disabled as down (2026-10-18 无效节点口径)', () => {
+    expect(healthOfNode({ credential_id: 1, manual_disabled: true })).toBe('down')
+    // 手动停用 + 健康上报并存时也以「不可服务」为准
+    expect(healthOfNode({ credential_id: 1, manual_disabled: true, health_status: 'healthy' })).toBe('down')
+  })
+
+  it('★ invalidNodeKeys covers down nodes only — warning stays visible', () => {
+    // warning（配额耗尽/降级）仍在服务，只是变差；藏掉它会让「半死」的
+    // 供应商从视野里消失。无效口径 = down（熔断打开/不可达/手动停用）。
+    const keys = invalidNodeKeys([
+      { credential_id: 1, circuit_state: 'open' },
+      { credential_id: 2, manual_disabled: true },
+      { credential_id: 3, health_status: 'unreachable' },
+      { credential_id: 4, quota_state: 'quota_exhausted' },
+      { credential_id: 5, health_status: 'healthy' },
+      { credential_id: 6 },
+    ])
+    expect([...keys].sort()).toEqual(['cred:1', 'cred:2', 'cred:3'])
   })
 })
 
@@ -130,5 +150,66 @@ describe('buildTopology', () => {
     expect(aggregate.isAggregate).toBe(true)
     expect(aggregate.label).toBe('+4')
     expect(aggregate.metric.requests).toBe(4)
+  })
+
+  it('★ aggregates client_protocol counts on client→gateway edges only', () => {
+    // owner 2026-10-18：连线要能看出协议。协议分布只挂在 client→gateway 边上；
+    // 其他边（gateway→provider / provider→model）没有 client_protocol 语义。
+    const graph = buildTopology({
+      requests: [
+        req({ request_id: 'r1', credential_id: 7, client_protocol: 'openai' }),
+        req({ request_id: 'r2', credential_id: 7, client_protocol: 'openai' }),
+        req({ request_id: 'r3', credential_id: 7, client_protocol: 'anthropic', agent_name: 'codex' }),
+      ],
+      nodes: [],
+      now: NOW,
+      windowMs: 5 * MIN,
+    })
+    const edge = graph.edges.find((e) => e.id === 'client:claude-code->gateway:core')
+    expect(edge?.protocolCounts).toEqual({ openai: 2 })
+    const codexEdge = graph.edges.find((e) => e.id === 'client:codex->gateway:core')
+    expect(codexEdge?.protocolCounts).toEqual({ anthropic: 1 })
+    // 非 client→gateway 边不得带 protocolCounts（宁缺毋假）
+    const providerEdge = graph.edges.find((e) => e.id === 'gateway:core->cred:7')
+    expect(providerEdge?.protocolCounts).toBeUndefined()
+  })
+
+  it('★ hiddenNodes removes those provider nodes and their edges entirely', () => {
+    // 默认隐藏无效节点：node_update 不建节点；若上游漏过滤、请求已建出节点
+    // 与边，这里也要一并移除（防御性收敛，防「节点没了残边还在」）。
+    const hidden = new Set(['cred:9'])
+    const graph = buildTopology({
+      requests: [req({ request_id: 'r1', credential_id: 9 })],
+      nodes: [{ credential_id: 9, provider_code: 'deepseek', circuit_state: 'open' }],
+      now: NOW,
+      windowMs: 5 * MIN,
+      hiddenNodes: hidden,
+    })
+    expect(graph.nodes.some((n) => n.id === 'cred:9')).toBe(false)
+    expect(graph.edges.some((e) => e.id === 'gateway:core->cred:9')).toBe(false)
+    // 前提在场：不传 hiddenNodes 时它正常出现（同输入别处隐藏 ≠ 构图坏了）
+    const visible = buildTopology({
+      requests: [req({ request_id: 'r1', credential_id: 9 })],
+      nodes: [{ credential_id: 9, provider_code: 'deepseek', circuit_state: 'open' }],
+      now: NOW,
+      windowMs: 5 * MIN,
+    })
+    expect(visible.nodes.some((n) => n.id === 'cred:9')).toBe(true)
+  })
+
+  it('hiddenNodes does not touch healthy nodes sharing the provider', () => {
+    // 隐藏无效凭据 9 不得连带藏掉同供应商的健康凭据 7。
+    const graph = buildTopology({
+      requests: [req({ request_id: 'r1', credential_id: 7 })],
+      nodes: [
+        { credential_id: 7, provider_code: 'deepseek', health_status: 'healthy' },
+        { credential_id: 9, provider_code: 'deepseek', circuit_state: 'open' },
+      ],
+      now: NOW,
+      windowMs: 5 * MIN,
+      hiddenNodes: new Set(['cred:9']),
+    })
+    expect(graph.nodes.some((n) => n.id === 'cred:7')).toBe(true)
+    expect(graph.nodes.some((n) => n.id === 'cred:9')).toBe(false)
   })
 })

@@ -21,6 +21,8 @@ export default {
     waitingFirstFrame: 'Connecté, en attente du premier cadre de cette session…',
     filteredEmpty: 'Aucune requête dans la fenêtre avec les filtres actuels',
     droppedByWindow: '{n} autres requêtes sont hors de la fenêtre temporelle actuelle et ne sont pas affichées ici (élargissez la fenêtre pour les voir)',
+    hiddenProbe: '{n} requêtes de sonde masquées',
+    hiddenInvalid: '{n} requêtes via nœuds invalides masquées',
   },
   summary: {
     inFlight: '{n} en cours',
@@ -51,6 +53,8 @@ export default {
     failure: 'Échec',
     rateLimited: 'Limité',
     clear: 'Réinitialiser les filtres',
+    showProbe: 'Afficher les sondes',
+    showInvalid: 'Afficher les nœuds invalides',
   },
   rail: {
     title: 'Fournisseurs du jour',
@@ -92,7 +96,6 @@ export default {
 
   gateway: {
     title: 'Cœur de la passerelle',
-    subtitle: 'Cache · Assainissement · Routage · État des nœuds · Stockage de session · Écriture de session',
     cache: 'Cache',
     sanitize: 'Assainissement',
     route: 'Routage',
@@ -102,6 +105,14 @@ export default {
     errorRecord: 'Journal d’erreurs',
     probeTask: 'Tâche de sonde',
     taskDetect: 'Détection de tâche',
+  },
+  lane: {
+    in: 'ENTRÉE · chemin des requêtes',
+    out: 'SORTIE · chemin des réponses',
+    store: 'Stockage et transfert',
+    toProvider: 'envoi au fournisseur',
+    fromProvider: 'retour fournisseur',
+    queue: 'file de transfert {n}',
   },
   node: {
     requests: '{n} requêtes',
@@ -120,6 +131,8 @@ export default {
     zoom: 'Agrandir',
     zoomHint: 'Cliquez sur ⤢ pour agrandir',
     empty: 'Aucune requête dans la fenêtre',
+    page: 'Page {page}/{pages}',
+    total: '{n} au total',
   },
   zoom: {
     title: 'Détail de la requête',
@@ -127,6 +140,7 @@ export default {
     requestId: 'ID de requête',
     time: 'Heure',
     client: 'Client',
+    protocol: 'Protocole client',
     provider: 'Fournisseur',
     node: 'Nœud',
     model: 'Modèle',

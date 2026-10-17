@@ -245,7 +245,7 @@ onBeforeUnmount(() => {
   -webkit-tap-highlight-color: transparent;
 }
 .on__item-btn:active {
-  background: var(--app-surface-2, var(--app-surface));
+  background: var(--app-surface);
 }
 .on__item-head {
   display: flex;

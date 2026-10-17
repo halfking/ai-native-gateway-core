@@ -23,6 +23,8 @@ export default {
     waitingFirstFrame: 'Connected, waiting for the first frame of this session…',
     filteredEmpty: 'No requests in the window under the current filters',
     droppedByWindow: 'هناك {n} طلبات أخرى خارج النافذة الزمنية الحالية ولا تظهر هنا (وسّع النافذة لعرضها)',
+    hiddenProbe: 'تم إخفاء {n} طلب فحص',
+    hiddenInvalid: 'تم إخفاء {n} طلب عبر عُقد غير صالحة',
   },
   summary: {
     inFlight: '{n} in flight',
@@ -53,6 +55,8 @@ export default {
     failure: 'Failure',
     rateLimited: 'Rate limited',
     clear: 'Clear filters',
+    showProbe: 'إظهار طلبات الفحص',
+    showInvalid: 'إظهار العُقد غير الصالحة',
   },
   rail: {
     title: 'Providers today',
@@ -94,7 +98,6 @@ export default {
 
   gateway: {
     title: 'نواة البوابة',
-    subtitle: 'ذاكرة مؤقتة · تنقية · توجيه · حالة العقدة · تخزين الجلسة · كتابة الجلسة',
     cache: 'ذاكرة مؤقتة',
     sanitize: 'تنقية',
     route: 'توجيه',
@@ -104,6 +107,14 @@ export default {
     errorRecord: 'سجل الأخطاء',
     probeTask: 'مهمة الفحص',
     taskDetect: 'تحديد المهمة',
+  },
+  lane: {
+    in: 'دخول · مسار الطلبات',
+    out: 'خروج · مسار الاستجابات',
+    store: 'تخزين وإعادة توجيه',
+    toProvider: 'إرسال إلى المزوّد',
+    fromProvider: 'عودة المزوّد',
+    queue: 'طابور إعادة التوجيه {n}',
   },
   node: {
     requests: '{n} طلبات',
@@ -122,6 +133,8 @@ export default {
     zoom: 'تكبير',
     zoomHint: 'اضغط ⤢ للتكبير',
     empty: 'لا توجد طلبات في النافذة',
+    page: 'صفحة {page}/{pages}',
+    total: 'الإجمالي {n}',
   },
   zoom: {
     title: 'تفاصيل الطلب',
@@ -129,6 +142,7 @@ export default {
     requestId: 'معرّف الطلب',
     time: 'الوقت',
     client: 'العميل',
+    protocol: 'بروتوكول العميل',
     provider: 'المزوّد',
     node: 'العقدة',
     model: 'النموذج',

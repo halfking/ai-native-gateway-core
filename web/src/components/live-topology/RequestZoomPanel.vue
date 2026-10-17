@@ -29,10 +29,11 @@ const rows = computed(() => {
     { key: 'requestId', label: t('liveTopology.zoom.requestId'), value: e.requestId || '—' },
     { key: 'time', label: t('liveTopology.zoom.time'), value: e.ts },
     { key: 'client', label: t('liveTopology.zoom.client'), value: e.client || '—' },
+    { key: 'protocol', label: t('liveTopology.zoom.protocol'), value: e.clientProtocol || '—' },
     { key: 'provider', label: t('liveTopology.zoom.provider'), value: e.provider },
     { key: 'node', label: t('liveTopology.zoom.node'), value: e.nodeId || '—' },
     { key: 'model', label: t('liveTopology.zoom.model'), value: e.model || '—' },
-    { key: 'status', label: t('liveTopology.zoom.status'), value: t(`liveTopology.filter.${e.status || 'inProgress'}`) },
+    { key: 'status', label: t('liveTopology.zoom.status'), value: statusLabel(e.status || 'in_progress') },
     { key: 'latency', label: t('liveTopology.zoom.latency'), value: typeof e.latencyMs === 'number' ? `${e.latencyMs} ms` : '—' },
     { key: 'tokens', label: t('liveTopology.zoom.tokens'), value: `${fmt(e.promptTokens)} / ${fmt(e.completionTokens)} / ${fmt(e.tokens)}` },
     { key: 'cost', label: t('liveTopology.zoom.cost'), value: typeof e.costUsd === 'number' ? `$${e.costUsd.toFixed(4)}` : '—' },
@@ -52,6 +53,19 @@ function fmt(value: number | null | undefined): string {
  *  等于给一条没上报阶段的事件凭空盖上「路由」章。 */
 function stageLabel(stage?: string): string {
   return t(`liveTopology.decision.stage.${stage || 'unreported'}`)
+}
+
+/** 状态显示名。线上 status 枚举是 snake_case（in_progress/rate_limited），
+ *  而 filter 文案键是 camelCase（inProgress/rateLimited）—— 早先直接拼键，
+ *  in_progress/rate_limited 两条渲染成原始键名（2026-10-18 浏览器验收抓到）。 */
+function statusLabel(status: string): string {
+  const key: Record<string, string> = {
+    success: 'success',
+    in_progress: 'inProgress',
+    failure: 'failure',
+    rate_limited: 'rateLimited',
+  }
+  return t(`liveTopology.filter.${key[status] ?? 'allStatuses'}`)
 }
 
 function actionLabel(action?: string): string {

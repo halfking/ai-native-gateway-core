@@ -2604,3 +2604,117 @@ credential_id 两臂位置一致，每次 go test 都跑）；「SQL 文本变�
 sed 转义不可靠（python patch 替代）；**`~/sdk/` 工具链再次被清**——现行替代
 `/opt/homebrew/bin/bash`(5.3.9)+`/opt/homebrew/bin/go`(1.27.2)，旧配方里的
 `~/sdk/bash5`/`~/sdk/go` 前缀全部改用 brew 路径。
+
+---
+
+# 追加：2026-10-18 24h 审计轮 —— 三族真问题（已修已推）
+
+> 窗口 10-17 06:20 → 10-18 03:55。`go build / go vet` 全绿；`CGO_ENABLED=0 go test` 覆盖
+> admin/bg/domains/stats/security/streaming/outputcompliance/proxy/settings 全绿（installer 13 包
+> 绿，web-mobile 9013/9014 绿，web 4 红为上游已记录门）。
+> 提交 `8c4f5abbb`，已推 origin/main。
+
+## 结论/根因
+
+1. **`.audit-validation/` 暂存目录被 8 道门当源码扫**。9ed60bfaa（`feat(sanitize)`）
+   只把 `.audit-validation/` 加进 `.gitignore`，没同步给按目录走文件树的测试门；保留
+   在磁盘上的旧路径快照（`.audit-validation/trace-retirement/source/...`）被当成
+   新增 bodies 读方 / 读源 / 形态未登记，触发 8 道门红（v1_bodies_read_path × 2、
+   v1_bodies_reader_shapes、request_logs_read_inventory、indirect_readers、
+   view_source_column_contract、view_column_contract、billing_wide_table_columns、
+   internal_error_guard）。根因：判据普遍 skip `.git + docs + node_modules + vendor`，
+   缺 `.audit*` 这一档。
+2. **write-time 合规门在 `output_compliance.enabled=false` 默认下一律假绿**。
+   9ed60bfaa 把 `output_compliance.enabled` 默认改 `false` 后，BuildRedactBodyFn
+   第一行就 return 原 body，6 道门（write_time_policy_terminal × 3 协议、
+   real_compliance_stream、r25_output_interception × 2、managed_write_block、
+   managed_write_snapshot、chat_deferred × 2）原本是绿的实际是「短路在 enabled=false」，
+   跑下来就成了绿。修法：按既有 `r1013RequireComplianceOn(t)` helper 模式显式开。
+3. **web-mobile 9 处 Go 行号引用 + 4 处 CSS token 引用过期**。cmd/gateway/main.go
+   在 870 迁移、批 156 等近 10 个 commit 累积下行号漂移；goLineRef 与 theme 双门
+   各报 9 + 4 条。Go 行号按现 main 重校；token 引用按本仓既有约定（`app-accent →
+   app-primary`、`app-surface-2 → app-surface`，注释里 ModelIQView / RequestActionsView
+   都明说「本仓没有 app-accent」）。
+
+## 改动文件与关键行为
+
+- 8 道 test 门同源：`.audit*` 加进 skipDir 集合（统一改动到 `admin/{request_logs_*,
+  view_*, billing_*, internal_error_guard*}_test.go`）。
+- 6 道 output_compliance 测试入口：每个 `func TestX` 头部补 `r1013RequireComplianceOn(t)`
+  一行（`domains/streaming/{write_time_policy_terminal,r25_output_interception,
+  native_response_hook_integration,managed_write_block,managed_write_snapshot,
+  chat_output_commit}_test.go`）。
+- `web-mobile/src/api/{approvals,dispatchWaterfall,sessionAnalyticsFilterOptions,
+  sessions,subscriptionTiers,subscriptionTiers.test}.ts` 注释挂的行号按现 main 校准。
+- `web-mobile/src/views/{DispatchJournalView.spec,SubscriptionTiersView}.vue` 同上。
+- `web-mobile/src/components/session/OnlineSessionDetailSheet.vue` 2 处 `var(--app-accent,
+  var(--app-primary))` → `var(--app-primary)`（与兄弟页 ModelIQView/RequestActionsView
+  注释一致）。
+- `web-mobile/src/views/{AutoRouteView,OnlineSessionsView}.vue` 2 处 `var(--app-surface-2)`
+  → `var(--app-surface)`。
+
+## 测试命令与结果
+
+```
+$ export PATH="$HOME/sdk/go/bin:$PATH"
+$ go build ./...        # rc=0
+$ go vet ./...          # rc=0
+$ CGO_ENABLED=0 go test ./settings/... ./security/... ./domains/outputcompliance/... \
+                     ./domains/streaming/... ./proxy/...  # 全部 ok
+$ CGO_ENABLED=0 go test ./admin/... ./bg/... ./domains/stats/...  # 全部 ok
+$ cd installer && go test ./...  # 13 包全绿
+$ cd web-mobile && pnpm test  # 240/240 文件 · 9013 通过 · 1 skip
+$ cd web && pnpm test  # 4 红（孤儿路由 + CJK 棘轮 + i18n parity × 2，上游已记，本轮未擅自处置）
+$ bash tests/deploy_host_first_contract_test.sh  # ALL PASSED
+$ bash tests/deploy_timeout_portability_test.sh  # OK
+$ bash scripts/apply-db-revision-sequence_test.sh  # OK (9 tests)
+```
+
+13/13 goLineRef、11/11 theme 复测全绿。
+
+## 遗留风险（已记未修）
+
+1. **生产 log 实测两个 ERROR 持续累积**（本机 `~/kaixuan/llm-gateway-go-v2/logs/gateway-8782.log`）：
+   - `provider_error_aggregator: watermark stalled past promote retention`
+     已 25h+、pre_watermark=40 条 stranded；上游 promote retention 8h，本地 25h 没自愈。
+   - `candidate_failure_monitor: failure log is stale` 已 22h+，last_insert_at=2026-10-17 02:48 不动。
+   两条均非本轮回归，根因需 owner 单独立项。
+2. **feat/app-icon-standard 远端分支反复被 force-push 重建**（本轮已第二次删），每次
+   都混着已上 main 的 revert（870 applied+verified 回退、AGENTS.md 大段删、deploy-211
+   修复回退、QUICK_REFERENCE 计数回退）+ 唯一的「额外」提交也是 main 上同源修复的复制
+   （bc4dc52a6 vs 9c268f2ee）。下一次再被 push，**别单独看 diff 大小，先按 AGENTS.md
+   判据纪律 #5 逐文件去 main 找等价物**。若作者本意是推同源修复，应直接 cherry-pick
+   main 上已合并的 SHA，不要 force-push 整分支。
+3. **pristine `origin/main` 自带红门 4 条**（`main` 上 4 条 web 测试红为上游带下）：
+   navCoverage（孤儿路由 `/admin/usage-enhanced`、`/admin/board-operational`）、
+   hardcoded_cjk.baseline（棘轮 5566 > 5529）、i18n parity × 2。
+   按 AGENTS.md「上游红门本轮如实记录、未擅自处置」，本轮不修。
+4. **AGENTS.md 全文 2592 行**，本次追加在末尾未冲突。
+
+## 更新本 handoff
+
+本节已追加至 `AGENTS.md`（在「2026-10-17 252 SQL 日志审计轮」之后），下轮 prompt 应
+直接定位到 `# 追加：2026-10-18 24h 审计轮` 段。
+
+## 下一轮提示词
+
+1. **feat/app-icon-standard 若再被 force-push**，先看远端 commit 与 main 的 diff 方向：
+   若仍是 870 applied+verified / AGENTS.md 段 / deploy-211 修复 / QUICK_REFERENCE 计数
+   四件套的 revert + 同源重复，**直接 `git push origin --delete feat/app-icon-standard`**
+   并提示作者 cherry-pick main 上 bc4dc52a6 / e2cbd11cf / 2d5ded16c / 4227200ce 即可。
+2. **生产 ERROR 累积 2 条**（`provider_error_aggregator` watermark 25h+ / `candidate_failure_monitor`
+   stale 22h+）需 owner 单独立项，不要混进 24h 审计修复集。
+3. **本轮三族修复**（`.audit*` skip、r1013 打开、Go 行号 + token 校准）下一次审计轮
+   复测时**直接对照** commit `8c4f5abbb` 即可；若新加 .audit-validation/ 类似目录或
+   改 `output_compliance.enabled` 默认值，本轮补的 8 + 6 道门会立刻再次红。
+4. **本机本地网关**（`~/kaixuan/llm-gateway-go-v2`，2.5.8-1233e793）日志中两个 ERROR
+   持续累积，**下轮可以先用真库排查 `provider_error_aggregator_state.last_advance_at`**
+   与 `candidate_failure_log.last_insert_at` 的实际值与基线，根因可能在 promote retention
+   触发逻辑与 candidate_failure log writer 写入路径。
+5. **fast-forward 不再可用的频率上升**：本轮 1h 内 origin/main 推了 2 次（54e1ad4e2 →
+   8c4f5abbb 推送时已 rebase），下轮若仍以同一 checkout 推，可能再撞并发；建议 push
+   前先 `git fetch && git log --oneline HEAD..origin/main` 看一眼，被阻就 `git pull
+   --rebase`。
+6. **记忆已写**：`/Users/niuer/.zcode/cli/memories/projects/llm-gateway-go-1614005e1f428788/memory/`
+   下追加 `audit-round-2026-10-18.md`，含本轮三族修复 + 两个生产 ERROR 登记 + 分支 force-push
+   防范要点。

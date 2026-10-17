@@ -345,6 +345,7 @@ func goFilesUnder(root string) ([]string, error) {
 	skipDir := map[string]bool{
 		".git": true, "vendor": true, "node_modules": true,
 		"testdata": true, "dist": true, "build": true,
+		".audit": true, ".audit-validation": true, ".audit-workspace": true,
 	}
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {

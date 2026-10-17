@@ -22,15 +22,24 @@ import {
   type LiveQueueSnapshot,
   type LiveRequest,
 } from './liveStreamStore'
-import { buildTopology, clientKeyOf, modelKeyOf, providerNodeKeyOf, type TopoGraph } from '../lib/liveTopologyGraph'
+import {
+  buildTopology,
+  clientKeyOf,
+  invalidNodeKeys,
+  modelKeyOf,
+  providerNodeKeyOf,
+  type GraphNodeInput,
+  type TopoGraph,
+} from '../lib/liveTopologyGraph'
 import { applyFilters, filterOptions, gatewayModuleStats } from '../lib/liveTopologyFilter'
 import {
   DEFAULT_TOPO_FILTERS,
   GATEWAY_CORE_ID,
-  PANEL_LIST_LIMIT,
   type GatewayModuleKey,
   type TopoFilters,
+  type TopoPluginChip,
 } from '../types/liveTopology'
+import { getTopologyPlugins } from '../api/topology'
 
 export interface PanelEntry {
   requestId: string
@@ -51,6 +60,8 @@ export interface PanelEntry {
   failureStage?: string | null
   sessionId?: string
   requestType?: string
+  /** 客户端协议（openai / anthropic / …）—— 详情面板与协议 chip 共用。 */
+  clientProtocol?: string
 }
 
 export interface ClientSummary {
@@ -70,9 +81,18 @@ export function useLiveTopology(opts?: { now?: () => number }) {
 
   const now = () => clock()
 
+  /** 无效节点键集合（熔断打开/不可达/手动停用）。过滤与建图消费同一份，
+   *  否则会出现「节点没了、残边还在」。开关 showInvalidNodes 打开时不启用。 */
+  const invalidNodes = computed<Set<string>>(() =>
+    invalidNodeKeys(nodesRef.value as unknown as GraphNodeInput[]),
+  )
+  const hiddenNodes = computed<Set<string> | undefined>(() =>
+    filters.value.showInvalidNodes ? undefined : invalidNodes.value,
+  )
+
   /** 过滤后的请求子集：图、两个面板、粒子全部读它。 */
   const filteredRequests = computed<LiveRequest[]>(() =>
-    applyFilters(requestsRef.value as never, filters.value, now()) as never[],
+    applyFilters(requestsRef.value as never, filters.value, now(), hiddenNodes.value) as never[],
   )
 
   const graph = computed<TopoGraph>(() =>
@@ -81,6 +101,7 @@ export function useLiveTopology(opts?: { now?: () => number }) {
       nodes: nodesRef.value as unknown as LiveNodeStatus[],
       now: now(),
       windowMs: filters.value.windowMs,
+      hiddenNodes: hiddenNodes.value,
     }),
   )
 
@@ -117,15 +138,14 @@ export function useLiveTopology(opts?: { now?: () => number }) {
         topModel: [...modelCount.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] ?? '',
       }))
       .sort((a, b) => b.requests - a.requests || a.client.localeCompare(b.client))
-      .slice(0, PANEL_LIST_LIMIT)
+      .slice(0, 8)
   })
 
-  /** 左面板的逐条请求（最新在前；点条目定位到图上）。 */
+  /** 左面板的逐条请求（最新在前；面板内部按 50/页翻页，这里不再预截断）。 */
   const clientRequests = computed<PanelEntry[]>(() =>
     filteredRequests.value
       .slice()
       .reverse()
-      .slice(0, PANEL_LIST_LIMIT)
       .map(toPanelEntry),
   )
 
@@ -135,7 +155,6 @@ export function useLiveTopology(opts?: { now?: () => number }) {
       .filter((r) => providerNodeKeyOf(r as never) !== '')
       .slice()
       .reverse()
-      .slice(0, PANEL_LIST_LIMIT)
       .map(toPanelEntry),
   )
 
@@ -230,6 +249,71 @@ export function useLiveTopology(opts?: { now?: () => number }) {
     return dropped
   })
 
+  /**
+   * 被两个数据开关隐藏的请求数（窗口内口径，与 droppedByWindow 同层）。
+   * 必须说出口：默认隐藏后「图上比预期少」需要能被解释，否则用户会把
+   * 「被开关藏了」误读成「没流量/丢数据」。
+   */
+  const hiddenProbeCount = computed(() => {
+    if (filters.value.showProbe) return 0
+    const cutoff = now() - filters.value.windowMs
+    let n = 0
+    for (const req of requestsRef.value as LiveRequest[]) {
+      if (!req.is_probe) continue
+      const ts = req.ts ? Date.parse(req.ts) : NaN
+      if (Number.isFinite(ts) && ts < cutoff) continue
+      n += 1
+    }
+    return n
+  })
+
+  const hiddenInvalidCount = computed(() => {
+    if (filters.value.showInvalidNodes || !invalidNodes.value.size) return 0
+    const cutoff = now() - filters.value.windowMs
+    let n = 0
+    for (const req of requestsRef.value as LiveRequest[]) {
+      const nodeId = providerNodeKeyOf(req as never)
+      if (!nodeId || !invalidNodes.value.has(nodeId)) continue
+      const ts = req.ts ? Date.parse(req.ts) : NaN
+      if (Number.isFinite(ts) && ts < cutoff) continue
+      n += 1
+    }
+    return n
+  })
+
+  /** 网关「在用插件」chip（/api/admin/topology/plugins）。拉取失败 = 空清单
+   *  + degraded 标记 —— 前端渲染成「插件状态不可用」，不是「没有插件」。 */
+  const plugins = ref<TopoPluginChip[]>([])
+  const pluginsDegraded = ref(false)
+
+  async function loadPlugins(): Promise<void> {
+    try {
+      const resp = await getTopologyPlugins()
+      if (resp.degraded) {
+        plugins.value = []
+        pluginsDegraded.value = true
+        return
+      }
+      pluginsDegraded.value = false
+      const chips: TopoPluginChip[] = []
+      for (const p of resp.builtin ?? []) {
+        const direction = p.direction === 'output' ? 'output' : p.direction === 'both' ? 'both' : 'input'
+        chips.push({ id: `builtin:${p.name}`, name: p.name, direction, status: 'builtin', external: false })
+      }
+      for (const p of resp.external ?? []) {
+        const status =
+          p.status === 'ready' || p.status === 'degraded' || p.status === 'failed' || p.status === 'stopped' || p.status === 'starting'
+            ? p.status
+            : 'stopped'
+        chips.push({ id: `ext:${p.plugin_id}`, name: p.plugin_id, direction: 'input', status, external: true })
+      }
+      plugins.value = chips
+    } catch {
+      plugins.value = []
+      pluginsDegraded.value = true
+    }
+  }
+
   return {
     filters,
     now,
@@ -249,6 +333,12 @@ export function useLiveTopology(opts?: { now?: () => number }) {
     activeFilterCount,
     filteredOut,
     droppedByWindow,
+    hiddenProbeCount,
+    hiddenInvalidCount,
+    invalidNodeIds: invalidNodes,
+    plugins,
+    pluginsDegraded,
+    loadPlugins,
     connection: connectionRef,
     initialDataReceived: initialDataReceivedRef,
     redisHealthy: redisHealthyRef,
@@ -275,5 +365,6 @@ function toPanelEntry(req: LiveRequest): PanelEntry {
     failureStage: req.failure_stage ?? null,
     sessionId: req.gw_session_id,
     requestType: req.requestType,
+    clientProtocol: (req.client_protocol ?? '').trim() || undefined,
   }
 }

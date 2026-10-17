@@ -74,6 +74,28 @@ describe('matchesFilters', () => {
   it('keeps frames without a timestamp rather than dropping them silently', () => {
     expect(matchesFilters({ ...base, ts: undefined }, filters(), NOW)).toBe(true)
   })
+
+  // ── 2026-10-18 数据开关（默认不选 = 默认隐藏）──────────────────────
+  // 每条隐藏开关都配「打开就回来」的前提在场断言，防「永远 false」的假绿。
+  it('★ hides probe requests by default and shows them when the switch is on', () => {
+    const probe = { ...base, request_id: 'probe-1', is_probe: true }
+    expect(matchesFilters(probe, filters(), NOW)).toBe(false)
+    expect(matchesFilters(probe, filters({ showProbe: true }), NOW)).toBe(true)
+    // 前提在场：同一批数据里非探测请求默认可见（隐藏是选择性的，不是全灭）
+    expect(matchesFilters(base, filters(), NOW)).toBe(true)
+  })
+
+  it('★ hides requests routed through invalid nodes by default', () => {
+    const hidden = new Set(['cred:7'])
+    expect(matchesFilters(base, filters(), NOW, hidden)).toBe(false)
+    expect(matchesFilters(base, filters({ showInvalidNodes: true }), NOW, hidden)).toBe(true)
+    // 经**其他**节点的请求不受影响（选择性隐藏，不是全灭）
+    expect(matchesFilters({ ...base, credential_id: 8 }, filters(), NOW, hidden)).toBe(true)
+    // 没有 provider 节点的请求（未派发）不因无效节点集合被隐藏
+    expect(matchesFilters({ ...base, credential_id: 0, provider_code: '' }, filters(), NOW, hidden)).toBe(true)
+    // 空集合 = 没有无效节点，一切照旧
+    expect(matchesFilters(base, filters(), NOW, new Set())).toBe(true)
+  })
 })
 
 describe('applyFilters', () => {
@@ -96,6 +118,21 @@ describe('applyFilters', () => {
       { ...base, request_id: 'r3', provider_code: 'qianwen', credential_id: 9, canonical_name: 'qwen', agent_name: 'zcode' },
     ]
     expect(applyFilters(requests, filters({ providers: ['deepseek', 'moonshot'] }), NOW).map((r) => r.request_id)).toEqual(['r1', 'r2'])
+  })
+
+  it('★ default filters remove probes and invalid-node traffic in one pass', () => {
+    // owner 2026-10-18「默认去除」的端到端口径：默认态一次过滤后
+    // 探测与无效节点流量都不在，打开开关后各回各位。
+    const requests = [
+      base,
+      { ...base, request_id: 'probe-1', is_probe: true },
+      { ...base, request_id: 'r3', credential_id: 9 },
+    ]
+    const hidden = new Set(['cred:9'])
+    expect(applyFilters(requests, filters(), NOW, hidden).map((r) => r.request_id)).toEqual(['r1'])
+    expect(applyFilters(requests, filters({ showProbe: true }), NOW, hidden).map((r) => r.request_id)).toEqual(['r1', 'probe-1'])
+    expect(applyFilters(requests, filters({ showInvalidNodes: true }), NOW, hidden).map((r) => r.request_id)).toEqual(['r1', 'r3'])
+    expect(applyFilters(requests, filters({ showProbe: true, showInvalidNodes: true }), NOW, hidden)).toHaveLength(3)
   })
 })
 

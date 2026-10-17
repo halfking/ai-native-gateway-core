@@ -21,6 +21,8 @@ export default {
     waitingFirstFrame: '接続済み。この世代の初回フレームを待機中…',
     filteredEmpty: '現在のフィルタでウィンドウ内にリクエストがありません',
     droppedByWindow: '現在の時間ウィンドウ外のリクエストが {n} 件あります（ウィンドウを広げると表示されます）',
+    hiddenProbe: '{n} 件のプローブリクエストを非表示',
+    hiddenInvalid: '無効ノード経由のリクエスト {n} 件を非表示',
   },
   summary: {
     inFlight: '進行中 {n}',
@@ -51,6 +53,8 @@ export default {
     failure: '失敗',
     rateLimited: 'レート制限',
     clear: 'フィルタ解除',
+    showProbe: 'プローブを表示',
+    showInvalid: '無効ノードを表示',
   },
   rail: {
     title: 'プロバイダ当日集計',
@@ -92,7 +96,6 @@ export default {
 
   gateway: {
     title: 'ゲートウェイコア',
-    subtitle: 'キャッシュ · マスキング · ルーティング · ノード状態 · セッション保存 · セッション書込',
     cache: 'キャッシュ',
     sanitize: 'マスキング',
     route: 'ルーティング',
@@ -102,6 +105,14 @@ export default {
     errorRecord: 'エラー記録',
     probeTask: 'プローブタスク',
     taskDetect: 'タスク判定',
+  },
+  lane: {
+    in: '入 · リクエスト経路',
+    out: '出 · レスポンス経路',
+    store: 'ストア＆フォワード',
+    toProvider: 'プロバイダーへ配送',
+    fromProvider: 'プロバイダー応答',
+    queue: '転送キュー {n}',
   },
   node: {
     requests: '{n} リクエスト',
@@ -120,6 +131,8 @@ export default {
     zoom: '拡大',
     zoomHint: '⤢ で拡大',
     empty: 'ウィンドウ内にリクエストはありません',
+    page: '{page}/{pages} ページ',
+    total: '全 {n} 件',
   },
   zoom: {
     title: 'リクエスト詳細',
@@ -127,6 +140,7 @@ export default {
     requestId: 'リクエスト ID',
     time: '時刻',
     client: 'クライアント',
+    protocol: 'クライアントプロトコル',
     provider: 'プロバイダ',
     node: 'ノード',
     model: 'モデル',
