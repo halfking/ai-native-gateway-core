@@ -39,6 +39,7 @@ export default {
     turnsFilterOptions: 'Turns Filter Options',
     storageMigrationState: 'Storage Migration State',
     requestActions: 'Request Actions Timeline',
+    storageAndLogConfig: 'Storage & Log Config',
     pricing: 'Cost Pricing',
     modelPricing: 'Pricing Management',
     freePool: 'Free Resources',

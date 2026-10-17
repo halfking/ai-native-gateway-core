@@ -77,6 +77,8 @@ const TurnsFilterOptionsView = () => import('./views/TurnsFilterOptionsView.vue'
 const StorageMigrationStateView = () => import('./views/StorageMigrationStateView.vue')
 // 批 203：P2 requestActions 孤儿接前端（Redis LIST by request_id）
 const RequestActionsView = () => import('./views/RequestActionsView.vue')
+// 批 204：P0 storageAndLogConfig 孤儿接前端（3 段只读摘要：storage + filesystem + log）
+const StorageAndLogConfigView = () => import('./views/StorageAndLogConfigView.vue')
 const ReconciliationReportView = () => import('./views/admin/ReconciliationReport.vue')
 // 2026-07-24: V2-P4 admin session detail page (dual-column turns + drawer).
 const SessionDetailView = () => import('./views/admin/SessionDetailPage.vue')
@@ -315,6 +317,7 @@ export const router = createRouter({
     { path: '/admin/turns/filter-options', component: TurnsFilterOptionsView, meta: { requiresSuper: true } }, // 轮次筛选选项（批 201：API 已有 listTurnsFilterOptions，缺独立深链详细页）
     { path: '/admin/data-lifecycle/migration-state', component: StorageMigrationStateView, meta: { requiresPlatformOps: true } }, // 存储迁移状态（批 202：API + StorageConfig 已有，缺独立深链；与父 /admin/data-lifecycle 端点同档 platformOps）
     { path: '/admin/request-actions/:id', name: 'request-actions', component: RequestActionsView, meta: { requiresSuper: true } }, // 请求动作时间线（批 203：Redis LIST by request_id；admin 档 endpoint）
+    { path: '/admin/storage-and-log-config', component: StorageAndLogConfigView, meta: { requiresSuper: true } }, // 存储与日志配置（批 204：3 段只读摘要；子视图 StorageConfig/FilesystemMaintenance/LogManagement 全在 DataLifecycleView 父视图下）
     { path: '/admin/reconciliation', component: ReconciliationReportView, meta: { requiresSuper: true } }, // 对账报表（供应商/内部双视角 + Excel 导出，2026-09-25）
     { path: '/admin/sessions/:id', component: SessionDetailView, meta: { requiresSuper: true } }, // 2026-07-24: V2-P4 session detail
     { path: '/admin/turns',        component: TurnsListView, meta: { requiresSuper: true } }, // 2026-08-09: 跨会话轮次列表
