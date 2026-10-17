@@ -7,7 +7,7 @@
 // ★★★★★★ 权限档：**`requiresRole: 'super_admin'`**，而且这是**真门**（与批 115/117/118 相反）。
 //   ★★★ **第三种注册机制**：它**不在** `admin/handler.go` 的 `mux.HandleFunc` 里，
 //   而在 **echo 的 group** 上：
-//     `cmd/gateway/main.go:7082` `adminGroup := e.Group("/api/admin", requireSuperAdmin)`
+//     `cmd/gateway/main.go:7086` `adminGroup := e.Group("/api/admin", requireSuperAdmin)`
 //     → `:7075` `licensing.RegisterModuleRoutes(adminGroup, licensingStore)`
 //     → `licensing/module_api.go:22` `g.GET("/tiers", h.ListTiers)`
 //   ⇒ ★★★ **只 grep mux 会把「已注册」误判成「死端点」** —— 本批取证时差点就这么判。
