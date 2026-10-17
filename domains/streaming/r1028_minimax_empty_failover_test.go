@@ -106,6 +106,25 @@ func TestR1028NamedToolStillSucceeds(t *testing.T) {
 	assert.Contains(t, body, `"status":"completed"`)
 }
 
+func TestR1028bHybridPhantomPlusNamedOnResponsesBridge(t *testing.T) {
+	// 154 production (openai_responses): empty slot + Bash in one delta.
+	// Chat-leg strip alone left this path leaking phantoms into capture and
+	// (historically) into client-visible function_call scaffolding.
+	resp := responsesUpstream(t,
+		`data: {"id":"c","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"","type":"","function":{"name":"","arguments":""}},{"index":1,"id":"call_bash","type":"function","function":{"name":"Bash","arguments":"{\"command\":\"pwd\"}"}}]},"finish_reason":null}]}`+"\n\n",
+		`data: {"id":"c","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`+"\n\n",
+		`data: [DONE]`+"\n\n",
+	)
+	rec := httptest.NewRecorder()
+	out := StreamOpenAIToResponsesSSE(context.Background(), rec, resp, "minimax-m3", "minimax-m3", "req-r1028b-hybrid", nil, nil)
+
+	require.False(t, out.Interrupted, "hybrid must succeed on the named tool: %+v", out)
+	body := rec.Body.String()
+	assert.Contains(t, body, `"name":"Bash"`)
+	assert.Contains(t, body, `"status":"completed"`)
+	assert.NotContains(t, body, `"name":""`)
+}
+
 func TestR1028TextStillSucceeds(t *testing.T) {
 	resp := responsesUpstream(t,
 		`data: {"id":"c","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}`+"\n\n",

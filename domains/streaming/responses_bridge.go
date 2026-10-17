@@ -1394,7 +1394,14 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 			return StreamOutcome{ChunkCount: chunkCount}
 		}
 
-		rawFrame := []byte(line)
+		// r1028b: MiniMax prepends empty tool_calls slots before real
+		// tools. Magpie/ZCode hit this bridge (/v1/responses), not chat
+		// SSE — strip before parse so IR / capture / SerializeResponses
+		// never see nameless phantoms.
+		trimmed = stripPhantomToolCallsFromSSELine(trimmed)
+		payload = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(trimmed), "data:"))
+
+		rawFrame := []byte(trimmed)
 		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "openai-completions"), rawFrame)
 		diagnosticCollector.observeRaw([]byte(payload))
 
