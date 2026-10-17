@@ -203,6 +203,122 @@ check "17.5 (170005) 判为 PG17" "yes" "$(run_pg17 170005)"
 check "18.1 (180001) 不判为 PG17" "no"  "$(run_pg17 180001)"
 check "16.4 (160004) 不判为 PG17" "no"  "$(run_pg17 160004)"
 
+echo "== 选谁当网关 PG：按「谁持有网关库」而不是按 docker ps 顺序（2026-10-18）=="
+# 背景：211 上 acc-pg17 与 redclaw-local-stack-redclaw-casdoor-db-1 用**同一张
+# kx-citus-pg17:amd64 镜像**，同时满足 pg17+columnar+vector 三维能力判据。旧实现
+# 「第一个合格者即返回」，而 docker ps 顺序不含语义（实测选中了只活了 38 分钟的
+# casdoor PG）→ 随重启换症状。真正的判据是「这只容器里有没有 llm_gateway」。
+if extract_fn pg_candidate_score > "$TMP/pgscore.sh"; then
+  ok "抽到 pg_candidate_score（纯打分，无 IO）"
+else
+  bad "抽不出 pg_candidate_score（脚本结构变了？）"; echo "  FAIL 无法继续 PG 选择用例"; exit 1
+fi
+if extract_fn pg_pick_from_candidates > "$TMP/pgpick.sh"; then
+  ok "抽到 pg_pick_from_candidates（纯选择，无 IO）"
+else
+  bad "抽不出 pg_pick_from_candidates"; exit 1
+fi
+run_score() { ( set -uo pipefail; source "$TMP/pgscore.sh"; pg_candidate_score "$@" ); }
+run_pick() {
+  # $1=候选表（每行 "<name> <explicit> <persisted> <has_db> <has_objs> <managed>"）
+  ( set -uo pipefail; log(){ :; }; source "$TMP/pgpick.sh"; source "$TMP/pgscore.sh"
+    pg_pick_from_candidates "$1" ) 2>/dev/null
+}
+# 打分表（值取自真机形态，不是随手编的）
+check "显式指定优先(1000)"        "1000" "$(run_score 1 0 0 0 0 9)"
+check "上次绑定且持有网关库(900)"  "900"  "$(run_score 0 1 1 1 0 9)"
+check "持有网关库+网关对象(800)"   "800"  "$(run_score 0 0 1 1 0 9)"
+check "仅持有网关库(700)"          "700"  "$(run_score 0 0 1 0 0 9)"
+check "脚本自建实例(600)"          "600"  "$(run_score 0 0 0 0 1 9)"
+check "全场唯一候选(500)"          "500"  "$(run_score 0 0 0 0 0 1)"
+check "上次绑定但库里没有网关库→降到200" "200" "$(run_score 0 1 0 0 0 9)"
+check "多候选且谁都无网关库→拒绝复用(-1)" "-1" "$(run_score 0 0 0 0 0 2)"
+
+# ★ 真机复现：docker ps 把 redclaw 的 casdoor PG 列在 acc-pg17 之前（实测即如此）
+CASDOOR_FIRST=$'redclaw-local-stack-redclaw-casdoor-db-1 0 0 0 0 0\nacc-pg17 0 0 1 4 0'
+ACC_FIRST=$'acc-pg17 0 0 1 4 0\nredclaw-local-stack-redclaw-casdoor-db-1 0 0 0 0 0'
+check "真机形态（casdoor 在前）→ 必须选持有网关库的 acc-pg17" "acc-pg17" "$(run_pick "$CASDOOR_FIRST")"
+check "同一候选集换顺序 → 结果不变（去掉 docker ps 顺序这个随机量）" "acc-pg17" "$(run_pick "$ACC_FIRST")"
+# 变异自检：把「谁持有网关库」对调（casdoor 持有、acc-pg17 不持有）→ 必须改选
+# casdoor。这一条证明选择**跟着数据走**，而不是跟着行序或容器名偏好走；
+# 若实现里残留「按名字挑」「取第一行」，它会立刻打红。
+REVERSED=$'redclaw-local-stack-redclaw-casdoor-db-1 0 0 1 1 0\nacc-pg17 0 0 0 0 0'
+check "变异自检：持库者对调后跟着改选（证明判据读的是数据）" \
+  "redclaw-local-stack-redclaw-casdoor-db-1" "$(run_pick "$REVERSED")"
+# 不自洽的夹具（has_db=0 却 has_objs>0）必须一律被拒，不能因为「有网关对象」而选中：
+# 网关对象只有在库里才谈得上，这个组合只可能是采集读错了列。
+if [[ -z "$(run_pick $'a-pg 0 0 0 9 0\nb-pg 0 0 0 0 0')" ]]; then
+  ok "自相矛盾的候选（有对象却无库）不被选中"
+else
+  bad "自相矛盾的候选被选中：网关对象只在库里存在，has_objs 必蕴含 has_db"
+fi
+# 上次部署被污染（gateway.env 指向 casdoor）时，也不能把网关再绑到 casdoor 上
+POLLUTED=$'redclaw-local-stack-redclaw-casdoor-db-1 0 1 0 0 0\nacc-pg17 0 0 1 4 0'
+check "上次绑定被污染（无网关库）→ 仍选持有网关库的那只" "acc-pg17" "$(run_pick "$POLLUTED")"
+# 歧义即新建：两只都合格、谁也没有网关库 → 不赌，直接返回非 0 让上层新建
+if [[ -z "$(run_pick $'b-pg 0 0 0 0 0\na-pg 0 0 0 0 0')" ]]; then
+  ok "多候选且均无网关库 → 拒绝复用（上层转新建，不猜）"
+else
+  bad "多候选均无网关库时仍复用了其中一只（等于回到按顺序猜）"
+fi
+# 唯一候选：不存在「选错谁」的可能，允许复用并建库
+check "全场唯一候选且无网关库 → 仍复用（保持既有行为）" "only-pg" \
+  "$(run_pick $'only-pg 0 0 0 0 0')"
+# 显式指定压过一切
+check "显式指定压过「持有网关库」的其它容器" "kx-pg17-columnar" \
+  "$(run_pick $'acc-pg17 0 0 1 4 0\nkx-pg17-columnar 1 0 0 0 1 2')"
+
+echo "== 网关库检测（本轮新增的独立维度）=="
+# 只查「能力」不查「库」，就分不出 acc-pg17 与 casdoor 的 PG —— 这正是本轮根因。
+if grep -qF "pg_gateway_db_state" "$SCRIPT" \
+   && grep -qF "FROM pg_database WHERE datname='\${D211_PG_DB}'" "$SCRIPT" \
+   && grep -qF "gateway_db_revision_sequences" "$SCRIPT"; then
+  ok "网关库检测查 pg_database + 网关特征表（独立于 pg17/columnar/vector 能力判据）"
+else
+  bad "网关库检测缺失：无法区分「有网关库的 PG」与「别人的 PG」"
+fi
+# 超级用户解析：复用他人容器时几乎从不叫 postgres（acc-pg17=acc_super、
+# casdoor=casdoor）。硬编码 -U postgres 会让存在性检查与 CREATE DATABASE 双双
+# 静默失败（`2>/dev/null` + `|| warn`），症状远在几百行外。
+#
+# ⚠ 判据形状（变异 C 打红过一轮）：早期这道门只查「函数体里没有字面 `-U postgres`」，
+# 而实现其实早就不写那个字面量了——超级用户统一从变量 $su 传进 pg_as_super。
+# 于是把 `su="$(pg_superuser_of …)"` 换成 `su="postgres"`（**语义完全等价于本轮缺陷**
+# 且门全绿），因为门在看语法形状、看不到取值来源。
+# ⇒ 改为钉住**解析入口这一行本身**：必须真的调 pg_superuser_of 拿值。
+ensure_body="$(sed -n "/^ensure_pg_database()/,/^}/p" "$SCRIPT")"
+if grep -qF 'su="$(pg_superuser_of "$c")"' "$SCRIPT" \
+   && ! printf '%s' "$ensure_body" | grep -qF -- '-U postgres'; then
+  ok "ensure_pg_database 的超级用户来自 pg_superuser_of（不再是写死的 postgres）"
+else
+  bad "ensure_pg_database 未从容器实际超级用户取值（复用他人容器必静默失败）"
+fi
+# 建库/建角色失败必须 die 而不是 warn：本轮症状（迁移腿报 database does not exist）
+# 完全由「warn 后继续」放大而来。
+# ⚠ 判据形状（变异 D 打红过一轮）：早期这道门只查「函数体里出现过 die」——函数里
+# 共有两处 die，任一处还在就恒绿，把建库那处的 warn 放过去测不出来。
+# ⇒ 改为**逐分支**断言：取 CREATE 那行及其后两行，里面必须有 || die。
+for anchor in 'CREATE ROLE \"' 'CREATE DATABASE \"'; do
+  branch="$(printf '%s' "$ensure_body" | grep -A2 -F "$anchor" | head -3)"
+  if printf '%s' "$branch" | grep -qF '|| die'; then
+    ok "「${anchor}」分支失败时 die（不 warn 后继续）"
+  else
+    bad "「${anchor}」分支失败只 warn → 带不存在的库继续跑，故障点漂到几百行外"
+  fi
+done
+# 角色必须先于库创建：CREATE DATABASE ... OWNER 指向不存在的角色报 42704。
+# ⚠ 判据写法（2026-10-18 自己踩的坑）：锚点必须带转义引号 `CREATE ROLE \"`，
+# 只写 `CREATE ROLE` 会先命中**上面那行解释这件事的注释**（注释里同样出现了
+# "CREATE DATABASE ... OWNER"），于是 role_line 反而大于 db_line，把正确的实现
+# 判成错的。凡是本仓这类「源码文本扫描」的门，锚点都要精确到只有真代码才有的形状。
+role_line="$(printf '%s' "$ensure_body" | grep -nF 'CREATE ROLE \"' | head -1 | cut -d: -f1)"
+db_line="$(printf '%s' "$ensure_body" | grep -nF 'CREATE DATABASE \"' | head -1 | cut -d: -f1)"
+if [[ -n "$role_line" && -n "$db_line" && "$role_line" -lt "$db_line" ]]; then
+  ok "先建角色再建库（OWNER 不悬空）"
+else
+  bad "CREATE DATABASE 早于 CREATE ROLE（OWNER 会 42704）role=${role_line:-无} db=${db_line:-无}"
+fi
+
 echo "== 脚本静态契约 =="
 # $var 紧跟非 ASCII 字符（典型是中文全角括号）在 UTF-8 locale 下会被 bash
 # 并入变量名 → "unbound variable"。真实踩过两次：$idx（ 与 $envf（。
