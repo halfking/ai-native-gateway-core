@@ -75,14 +75,32 @@ var concurrentlyRe = regexp.MustCompile(`(?i)\bCONCURRENTLY\b`)
 // CONCURRENTLY 文件，但以 reviewed exception 记账，避免假绿或强制危险注销。
 // 修法落地（非 CONCURRENTLY 变体或迁入 psqlConcurrencyRequired）后删掉条目。
 var knownStartupChainConcurrencyViolations = map[string]int{
-	"718_drop_redundant_indexes_and_add_ttl_indexes.sql":                  46,
-	"719_unify_ensure_shadowed_indexes_and_parent_index_owner.sql":        12,
+	"718_drop_redundant_indexes_and_add_ttl_indexes.sql":           46,
+	"719_unify_ensure_shadowed_indexes_and_parent_index_owner.sql": 12,
 	// 以下为 r43 之后合入、仍走 installer 单事务路径的 CONCURRENTLY 债；
 	// 门记账防回归，修法同 718/719（非 CONCURRENTLY 变体或迁入豁免表）。
-	"807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql":    1,
-	"822_session_summaries_health_pending_index.sql":                     1,
-	"837_routing_mv_refresh_state.sql":                                   1,
-	"845_stats_event_dedup_join_index.sql":                               1,
+	"807_request_logs_bodies_hot_drop_duplicate_request_id_index.sql": 1,
+	"822_session_summaries_health_pending_index.sql":                  1,
+	"837_routing_mv_refresh_state.sql":                                1,
+	"845_stats_event_dedup_join_index.sql":                            1,
+	// 871（2026-10-18）与上面几条**不同类**：它不是债，是「已复核的豁免」。
+	//
+	// 本门的前提是「注册文件里出现 CONCURRENTLY ⇒ 它在 --single-transaction 下
+	// 永远跑不起来」。该前提**对携带 dbinit:no-transaction 标记的文件不成立**：
+	// runner.go 的 applySQL 在拼参数时对标记文件**不加** --single-transaction
+	// （`if !requiresNoTransaction(content) { args = append(args, "--single-transaction") }`），
+	// 871 因此走非事务通道，能正常应用 —— 与 718 同一先例。
+	//
+	// 计数 4 而非 1，是因为本门按子串统计且只看剥掉注释后的正文，
+	// 871 的字符串字面量里另有三处提到 CONCURRENTLY（DO 块的失败提示、
+	// COMMENT ON INDEX 的说明）。
+	//
+	// ⚠️ 真正需要留意的是别的：applySQL 的 ctx 是 **5 分钟**超时
+	// （exec.CommandContext）。CONCURRENTLY 构建若被 ctx 掐断，会留下
+	// **invalid 索引**，而同一 psql 调用里的形状校验块也来不及跑。
+	// ⇒ 871 的 DO 块会对 indisvalid=false 明确报错，**下一次启动迁移**
+	// 才会发现，届时需先 DROP INDEX CONCURRENTLY 重建。
+	"871_route_incident_events_created_at_idx.sql": 4,
 }
 
 func countConcurrently(t *testing.T, path string) int {
