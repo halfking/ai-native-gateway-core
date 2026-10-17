@@ -20143,9 +20143,12 @@ data, err := client.HGetAll(ctx, key).Result()                   // 第 2 次往
 ⇒ **§53 的方案 ③ 不能独立成立** —— 它假设预算充裕、可分批花完；
 而实测预算是被 `Collect` 吃光的，此时分批只是换一种死法。
 
-★ 附带的工程缺口（**本仓已具备批量版的前科**）：
-`internal/redis/safe_operations.go` 里 `SafeMGet` 有 `maxBatchSize` 分批，
-**`SafeHGetAll` 却没有对应的批量形态** —— 而它正是唯一被用在「每分钟 1,800 次」热路径上的那个。
+★ 附带的工程缺口（**2026-10-18 §56 一 订正：本句第二半是错的**）：
+`internal/redis/safe_operations.go` 里 `SafeMGet` 有 `maxBatchSize` 分批；
+⚠️ **但 `SafeHGetAll` 的批量形态早就存在** —— `internal/redis/safe_pipeline.go`
+的 `SafeHGetAllPipeline` 已被 `store/pipeline.go:67`、`store/probe_evidence.go:63,90` 使用。
+⇒ **真实缺口不是「没有批量原语」，而是 persist 的 `Collect` 一直没用它。**
+§56 已把 `Collect` 改到分块批量路径（往返实测 1200 → 6，生产口径 ~3,600 → ~14）。
 
 #### 九、⚠️ 未定项（如实登记，不猜）
 
@@ -20276,3 +20279,118 @@ if err != nil {
 而 ① 只在 B 之后才有意义。
 
 ⚠️ 本节**未做任何生产写操作**；入库代码默认走与生产同构的旧行为。
+
+---
+
+### §10.110.56 方案 A 落地：`Collect` 改分块批量读 —— 往返 1200 → 6
+
+#### 一、⛔ 先订正 §55 的一句话：我说的「工程缺口」找错了地方
+
+§55 §四写「`SafeMGet` 有分批、`SafeHGetAll` 没有批量形态」—— **第二句是错的**。
+`internal/redis/safe_pipeline.go` 里 **`SafeHGetAllPipeline` 早就存在**，
+并且已经被 `domains/ursm/v2/store/pipeline.go:67` 与 `probe_evidence.go:63,90` 使用。
+
+⇒ **真实缺口不是「没有批量原语」，而是「persist 的 `Collect` 根本没用它」。**
+⇒ ⭐ 教训：断言「某能力不存在」之前，先把该处**全部**相关实现列全再下结论
+（与 §10.110.17 第 15 条同族：判「不存在某能力」前先把候选列全）。
+
+⚠️ 我据此写出的 `SafeHGetAllBatch` 第一版**重复实现了整条 pipeline**。
+已改成对既有 `SafeHGetAllPipeline` 的**分块封装**——它只补一件事：
+**让单次 HGETALL 回复有界**（既有实现吃无上限 key 列表，一次把全部 hash 读进内存）。
+删除动作被可恢复删除护栏拦下（`mavis-trash` 不可用），因此选择**改造成复用**而不是绕过删除。
+
+#### 二、改了什么
+
+| 文件 | 改动 | 入库是否改变生产行为 |
+|---|---|---|
+| `internal/redis/safe_operations_batch.go` | `SafeHGetAllBatch` = `SafeHGetAllPipeline` 的分块封装 + `BatchSizeFromEnv` | 否（新增函数，无调用方） |
+| `domains/ursm/v2/persist/writer.go` | `Collect` 改成三段式；`Writer.WithHashReader` 测试接缝；`collectHashBatchSize()` | ⭐ **是** |
+| `domains/ursm/v2/persist/collect_batch_test.go` | 3 条判据 | 否 |
+| `internal/redis/safe_operations_batch_test.go` | 5 条判据 | 否 |
+
+**`Collect` 的三段式**：
+
+```go
+阶段 1  扫描 → 过滤 :request_dedup: → ParseNodeKeyAny → 候选列表（保持 SCAN 顺序）
+阶段 2  SafeHGetAllBatch(ctx, rdb, keys, batch)     ← 往返 = 2 × ⌈N/批⌉
+阶段 3  按候选顺序建行（first_cid 语义不变）
+```
+
+**保持不变的**：读哪些 key、怎么解析、哪些行被丢弃（dedup 过滤 / 不可解析 key / 缺席 key /
+空 hash）、租户校验、去重规则、任一 key 读失败 ⇒ **整轮 0 行**的 fail-fast 语义。
+
+⚠️ 与 §55 的 `RunCycle` 不同：那一项默认走旧行为只加观测；
+**这一项入库即生效**，因为它不改任何口径、只改传输方式。
+批大小可用 `URSM_V2_PERSIST_HASH_BATCH_SIZE` 覆盖（默认 256，非法值回落默认）。
+
+#### 三、往返次数实测（判据里的真读数）
+
+`internal/redis/safe_operations_batch_test.go::TestBatchCollapsesRoundTrips`
+用计数包装器直接量「往返」（pipeline 一次 Exec = 一次往返，无论携带多少命令）：
+
+```
+600 个 key：
+  逐 key SafeHGetAll  → 1200 次往返（TYPE + HGETALL，每 key 两次）
+  SafeHGetAllBatch    →    6 次往返（3 块 × 每块 2 次：TYPE 一轮、HGETALL 一轮）
+                        = 200× 压缩
+```
+
+生产口径（~1,800 key、批 256）：**~3,600~3,800 次 → 约 14 次**。
+
+⚠️ 口径诚实说明：Collect 默认路径的往返数**不是直接测量**，而是由
+「`Collect` 唯一调用 `SafeHGetAllBatch`」推导；该前提由
+`TestCollectReadsAllKeysInOneBatchedCall`（断言批量读被调用 **1 次**、且收到全部 key）钉住。
+
+#### 四、判据与变异验证（**redissafe 3/3 + persist 2/2，全红**）
+
+| 层 | 变异 | 变红的判据 |
+|---|---|---|
+| redissafe | M1 内部退回逐 key | `TestBatchCollapsesRoundTrips` + 另 2 条 |
+| redissafe | M2 默认批大小改成 3 | `TestBatchFallsBackToDefaultSize` |
+| redissafe | M3 不跳过缺席 key | `TestBatchPreservesPerKeySemantics` |
+| persist | **M1 `Collect` 打回逐 key（生产原始形态）** | `TestCollectReadsAllKeysInOneBatchedCall` + **另 11 条既有判据** |
+| persist | M2 批量读失败时继续（返回空 map） | `TestCollectFailsTheWholeCycle…` + **`TestWriterRejectsWrongTypeNodeHash`** |
+
+⭐ persist 的 M1 一条变异红 12 条，说明**既有判据也守住了改造**——
+`TestWriterCollectsTenantScopedNodeState` / `TestWriterSkipsRequestDedupMarkerKeys` /
+`Test818*` 等全部覆盖到，它们就是这次重构的等价性保障。
+
+#### 五、纪律留档（本节踩到的四个）
+
+1. ⭐ **变异脚本被中断时，`finally` 里的还原不会执行。** M2 造成死循环、我 kill 了任务，
+   结果源文件**停在变异态**。必须 `diff` 核对后再跑一遍全包确认绿。
+2. ⭐ **变异可以把判据从「红」变成「挂」。** M2 让 `maxBatchSize` 兜底失效 ⇒
+   `start += 0` 死循环 ⇒ 整包测试卡住而不是报红。
+   ⇒ 循环步长类代码的判据要带超时保护（`TestBatchFallsBackToDefaultSize` 现在
+   用 goroutine + `select` + 10s 超时，让失败表现为红断言而不是卡住的运行）。
+3. ⭐ 判据红了第三次仍是**前提写错**：夹具用了 `credential_id=0`，
+   而 canonical key 语法拒绝它 ⇒ `rows=39, want=40`。
+4. ⭐ **又一次把「存在的问题」当成「不存在的能力」**（§一）。
+
+#### 六、既有失败登记（**与本会话无关**）
+
+`cmd/gateway` 的 `TestWriteRedactorLoadsRestorationSourceAfterConstruction` 红。
+用 `git worktree` 做强证明（不是「`go list -deps` 说它不依赖我改的包」那种弱证明）：
+
+| 基线 | 结果 |
+|---|---|
+| 本会话**开始前**的 `1f5aaade5`（§53） | ❌ 红 |
+| 本会话的 `6cf9d2bbd`（§55，已推） | ❌ 红 |
+| 当前工作区（含本节未提交改动） | ❌ 红（连跑 3 次，稳定） |
+
+⇒ **本会话开始前就红**，与 §54/§55/§56 无关。它测的是 sanitize redactor 的 sqlmock wiring，
+与 persist/cycle/collect 无符号交集。**未修，留给属主。**
+
+#### 七、本节效力
+
+- 方案 A（根治）**代码已完成**：往返 3,600 → ~14，Collect 不再吃满 30s 预算，
+  Flush 因此拿到完整预算 ⇒ 失效率应从当前 ~100% 回到接近 0。
+- **未部署**（生产零写入，本会话只改仓库）。是否上生产由属主决定。
+- 方案 B（`Collect` 超时返回已读行）与方案 ①（预切）仍待拍板；
+  若 B 落地后打开 ①，二者相乘。
+- ⚠️ 本节**没有**重新验证故障是否已止住——那要等部署后看 `collect_took` 与
+  `flush_budget`（§55 入库的观测项）。
+
+★ 同族：[[复用而非重复造轮子]] · [[变异没生效要单独报]] ·
+[[0 命中的第一嫌疑永远是量具坏了]] · [[串行往返型采集：预算 ÷ 往返次数 = 临界延迟]] ·
+[[阴性结论要当缺陷一样复核]]。

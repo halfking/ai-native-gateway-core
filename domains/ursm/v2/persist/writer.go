@@ -21,6 +21,22 @@ type Writer struct {
 	prefix string
 	db     *pgxpool.Pool
 	every  time.Duration
+
+	// readHashes reads every candidate key in ONE call. §10.110.56 replaced a
+	// per-key SafeHGetAll loop (two serial round trips each, ~3,600 total at
+	// ~1,800 keys) with a chunked pipeline; this seam exists so that fact is
+	// observable in a test rather than only in production logs. Nil means the
+	// real chunked pipeline path.
+	readHashes func(ctx context.Context, keys []string) (map[string]map[string]string, error)
+}
+
+// WithHashReader overrides how Collect reads node hashes. Intended for tests
+// and benchmarks; production wiring uses the default chunked pipeline.
+func (w *Writer) WithHashReader(fn func(ctx context.Context, keys []string) (map[string]map[string]string, error)) *Writer {
+	if w != nil {
+		w.readHashes = fn
+	}
+	return w
 }
 
 func New(rdb *redis.Client, prefix string, db *pgxpool.Pool) *Writer {
@@ -180,6 +196,26 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 	snapshotTS := time.Now()
 	var out []Row
 
+	// ── §10.110.56：把「扫一个 key 就往返读一次」拆成三段 ──
+	//
+	// 改动前这个循环体里做的是 SafeHGetAll(ctx, w.rdb, k)，而它每次调用是
+	// TYPE + HGETALL **两次串行往返**（internal/redis/safe_operations.go）。
+	// 每轮 ~1,800 个 key ⇒ ~3,600~3,800 次往返挤在同一个 30s 预算里：
+	//
+	//	30,000 ms ÷ 3,800 ≈ 7.9 ms/往返  ← 临界线
+	//
+	// 实测往返 8.8ms（154 视角）/ 26.1ms（245 视角）已经越过这条线（§54），
+	// 于是 Collect 必然吃满预算，Flush 只剩几百毫秒，单事务回滚 → 整轮全丢。
+	//
+	// 现在：阶段 1 扫齐 key 并按原顺序解析 → 阶段 2 分块批量读
+	// → 阶段 3 按扫描顺序建行。读哪些 key、怎么解析、哪些行被丢弃，全部不变。
+
+	// 阶段 1：扫齐 key 并解析。
+	type nodeCandidate struct {
+		key    string
+		parsed store.ParsedNodeKeyWithSchema
+	}
+	candidates := make([]nodeCandidate, 0, 2048)
 	for iter.Next(ctx) {
 		k := iter.Val()
 
@@ -196,7 +232,7 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 			continue
 		}
 
-		// 4. Decode the node key under either grammar. A key neither
+		// Decode the node key under either grammar. A key neither
 		// grammar can decode is ambiguous: it is excluded from the
 		// snapshot and left to the migration preflight's NO-GO
 		// classification — never guessed into a tuple (doc 14 §4).
@@ -205,17 +241,39 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 			slog.Warn("ursm.v2: persist excluded ambiguous node key", "key", k)
 			continue
 		}
+		candidates = append(candidates, nodeCandidate{key: k, parsed: parsed})
+	}
+	if err := iter.Err(); err != nil {
+		return nil, fmt.Errorf("redis scan failed: %w", err)
+	}
 
-		// 5. Read hash fields through the type-checking wrapper. A missing key
-		// is normal during TTL expiry; any other read error must be visible so
-		// a corrupted node key cannot silently disappear from the snapshot.
-		hash, err := redissafe.SafeHGetAll(ctx, w.rdb, k)
-		if errors.Is(err, redissafe.ErrKeyNotFound) {
-			continue
+	// 阶段 2：分块批量读。批大小让单次 HGETALL 回复有界，
+	// 往返次数 = 2 × ⌈N/批⌉（每块两次 pipeline：TYPE 一轮、HGETALL 一轮）。
+	keys := make([]string, len(candidates))
+	for i, c := range candidates {
+		keys[i] = c.key
+	}
+	readHashes := w.readHashes
+	if readHashes == nil {
+		readHashes = func(ctx context.Context, keys []string) (map[string]map[string]string, error) {
+			return redissafe.SafeHGetAllBatch(ctx, w.rdb, keys, collectHashBatchSize())
 		}
-		if err != nil {
-			slog.Warn("ursm.v2: persist failed to read node hash", "operation", "hgetall", "error", err)
-			return nil, fmt.Errorf("ursm.v2.persist: read node hash: %w", err)
+	}
+	hashes, err := readHashes(ctx, keys)
+	if err != nil {
+		// 与改动前同一语义：任何一个 key 读失败就让整轮返回错误（0 行）。
+		slog.Warn("ursm.v2: persist failed to read node hashes",
+			"operation", "hgetall_pipeline", "keys", len(keys), "error", err)
+		return nil, fmt.Errorf("ursm.v2.persist: read node hash: %w", err)
+	}
+
+	// 阶段 3：按扫描顺序建行（first_cid 语义与改动前一致）。
+	for _, c := range candidates {
+		parsed := c.parsed
+		hash, present := hashes[c.key]
+		if !present {
+			// SafeHGetAll 对缺席键返回 ErrKeyNotFound，改动前是 continue。
+			continue
 		}
 		if len(hash) == 0 {
 			continue
@@ -223,7 +281,7 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 		tenantID := parsed.TenantID
 		if hashTenant := hash["tenant_id"]; hashTenant != "" {
 			if tenantID != "" && hashTenant != tenantID {
-				slog.Warn("ursm.v2: persist skipped tenant mismatch", "key", k, "key_tenant", tenantID, "hash_tenant", hashTenant)
+				slog.Warn("ursm.v2: persist skipped tenant mismatch", "key", c.key, "key_tenant", tenantID, "hash_tenant", hashTenant)
 				continue
 			}
 			tenantID = hashTenant
@@ -281,7 +339,7 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 			row.Payload = payloadBytes
 		} else {
 			slog.Warn("ursm.v2: persist failed to marshal payload",
-				"key", k,
+				"key", c.key,
 				"error", err)
 			// 继续处理，只是 Payload 为空
 		}
@@ -313,10 +371,6 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 		assignStr(&row.CoolReason, hash["cool_reason"])
 
 		out = append(out, row)
-	}
-
-	if err := iter.Err(); err != nil {
-		return nil, fmt.Errorf("redis scan failed: %w", err)
 	}
 
 	// During dual mode one logical tuple exists in both grammars; the
@@ -431,4 +485,20 @@ ON CONFLICT (snapshot_ts, tenant_id, credential_id, raw_model_name) DO NOTHING`,
 	)
 
 	return nil
+}
+
+// collectHashBatchSize is the number of node keys read per pipeline in
+// Collect. Two round trips per chunk (one TYPE pipeline, one HGETALL
+// pipeline), so at ~1,800 keys and the default 256 this is ~14 round trips
+// instead of ~3,600.
+//
+// Overridable for operators who want to trade reply size against round trips;
+// a non-positive or unparseable value keeps the default so a typo can never
+// turn into an unbounded batch (SafeHGetAllBatch normalises it anyway, but
+// the default is what the round-trip arithmetic above assumes).
+func collectHashBatchSize() int {
+	if v, ok := redissafe.BatchSizeFromEnv("URSM_V2_PERSIST_HASH_BATCH_SIZE"); ok {
+		return v
+	}
+	return redissafe.DefaultHashBatchSize
 }
