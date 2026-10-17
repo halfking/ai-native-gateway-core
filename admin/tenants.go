@@ -716,7 +716,10 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	// 2026-09-30 R36-B3：5s 在真库上不够——byModel/byApp/daily 聚合在
 	// 百万行级 usage/request 家族上实测可达 3s+（252-dev 实测），5s 会把
 	// 后续查询饿死成静默空序列。上调至 10s（与 users 端点 15s 同量级）。
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	// 2026-10-18：停写态走 stats_usage_daily 仍会与小时 rollup 重建抢锁
+	// （245 journal：rebuild daily buckets 57014 与 rollup totals 同窗），
+	// 10s 预算不够；提到 30s，仍远低于前端用户可等上限。
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
 	// Verify tenant exists.
