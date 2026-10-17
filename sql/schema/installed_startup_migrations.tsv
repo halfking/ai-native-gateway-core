@@ -282,3 +282,4 @@
 264	869_promote_session_turns_trace_events.sql
 265	870_usage_ledger_recon_cover_idx.sql
 266	871_route_incident_events_created_at_idx.sql
+267	872_credential_model_index_partitions_heap.sql
