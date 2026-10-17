@@ -255,3 +255,89 @@ error_rate_24h 按下标 23 定位，SELECT 列表一变就可能读到别的列
 期间发现的真实信号（来自网关日志，非浏览器）：该页同批请求里
 `/api/credentials/monitor-summary?mode=core` 出现 **500 / 104ms**（快速失败，
 非超时），curl 复测却 200 —— 未能稳定复现，记为待查。
+
+## 十、第二族的共因：backfill gauge「证明无事空扫」空转到超时（未修，待 owner 决策）
+
+上一节那 15 个端点不是各自独立的问题。追到数据库侧找到一条**每 tick 必烧满
+预算、却从未产出过任何指标**的后台查询。
+
+### 现场
+
+`domains/session/v2/session_request_status_backfill.go:498` 的
+`sessionRequestStatusRemainingSQL`（remaining gauge）：
+
+```sql
+SELECT (SELECT count(*) FROM public.session_turns t
+        JOIN public._request_logs l ON l.request_id = t.request_id
+       WHERE t.request_status IS NULL AND l.request_status IS NOT NULL)
+     + (SELECT count(*) FROM public.session_turns_hot t
+        JOIN public._request_logs l ON l.request_id = t.request_id
+       WHERE t.request_status IS NULL AND l.request_status IS NOT NULL)
+```
+
+它**刻意没有时间窗**（注释原文：*the semantics (window-less, both surfaces,
+-1 on failure) are untouched*）。
+
+154 当前实例（`gateway-canary-8782.log`，00:56 启动）该 worker 的全部日志形态：
+
+| 形态 | 次数 |
+| --- | --- |
+| `starting` | 2 |
+| `stopped` | 1 |
+| `remaining count failed` | **20** |
+| 任何成功行（`remaining=`） | **0** |
+
+末次失败 06:30，**5.5 小时内零成功**。这不是"偶发超时"，是**从未成功过**——
+而它每次都要把预算烧完。
+
+### 根因（三层，逐层实测）
+
+1. **统计从未采集**。`session_turns_2026_09`（**798,278 行 / 2.7GB**）
+   的 `last_autoanalyze` 为 NULL、`n_live_tup=0`。规划器只能估 2348 行并
+   改用 pkey → Nested Loop，每个外层行还要探测 `_request_logs` 的 5 个分区。
+   我手工 `ANALYZE` 该分区，**耗时 13 分 37 秒**（本身即采样代价的证据）。
+
+2. **但 ANALYZE 并不解决问题**。重新 EXPLAIN 得到诚实计划
+   （`session_turns_2026_09` 上 `rows=330544`，改为 Parallel Hash Join，
+   cost 202322），实测该查询**仍然 60s 超时**。真值是：
+   **该分区有 330,544 行 `request_status IS NULL`**，必须与 `_request_logs`
+   做哈希连接。数据量本身就是不可承受的。
+
+3. **而这 330k 行按代码自己的注释是死重**。`session_request_status_backfill.go:46-55`
+   已经为**候选查询**做过同一件事的修复并写明理由：
+   > 可回填候选的存在窗口 = 「823 之后写入 + promote 保留期（8h）」——小时级；
+   > 7 天是 ~21 倍安全系数的滚动窗口。**窗外行 = 823 之前的 v1 历史行**
+   > （252 实测 793,519 行，全部 partition_date ≤ 2026-09-30，
+   > 且 `_request_logs` 源行已被 TTL 清除——「结构性无法回填」族），
+   > **排除它们不改变可回填集合**
+
+   候选查询拿到了 7 天窗，**gauge 没有**。2026_09 正是那一族。
+
+### 实测对照（252 生产库）
+
+| 形态 | 结果 |
+| --- | --- |
+| A 现行（无窗） | **60s 超时，从未完成**（另一次 120s 同样被杀） |
+| B 加 7 天窗（与候选同窗） | **7 秒完成，返回 0** |
+
+`0` 是正确答案：回填在实际作用域内已无剩余。
+
+### 为什么本轮没有直接改
+
+这是一条**发布闸门指标**的语义。R31（2026-10-10）明确保留过
+"window-less, both surfaces, -1 on failure"，并以「849 覆盖部分索引 +
+`SET LOCAL` 提预算」作为可完成性的依据——**本轮的实测否证了这个依据**：
+优化计划不等于查询能完成，那次"修复"从未验证过端到端效果。
+
+加窗会把指标从"全量 NULL 行里还剩多少可回填"改成"回填实际排空的窗口内
+还剩多少可回填"。按代码自己的论证两者在**可回填集合**上等价（窗外结构性
+不可回填），但这是 release gate 的口径变更，应由 owner 拍板，不在本轮单方面改。
+
+**建议 patch**（待拍板）：给 `sessionRequestStatusRemainingSQL` 的父表臂
+加 `AND t.partition_date >= (now() - interval '7 days')::date`，与
+`sessionRequestStatusCandidateSQL` 保持同窗；`_hot` 臂不加（hot 表仅
+6,193 行 / 93MB，且其 NULL 行是 pre-823 进程写入的"退役前仍存在"的那些，
+保持覆盖正是 R31 反对过的那个盲区）。
+
+**风险与收益**：收益 = 每 3 分钟省下一次满预算空转、并让一个从未有值的指标
+开始有值；风险 = 指标口径变化（窗外那 33 万结构性死行不再计入）。
