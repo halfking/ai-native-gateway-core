@@ -493,7 +493,7 @@ INCLUDE (prompt_tokens, completion_tokens, cost_usd, latency_ms, success)
 | 读滚存 `stats_usage_daily` | **双重否证** | ①口径不对：`dimension_type` 有 person/provider/provider_model/credential/tenant/error 六种存同一批事实，直接求和是多重计数；即便只取 `tenant+business` 也只有 318,225 条 vs 明细 1,478,030 条。②更慢：扫 74,178 行用了 **32.9 s**（明细只要 3.4 s） |
 | 加宽 handler 预算 | 否 | 不消除 1.5 GB 回堆；且属行为变更，需单独评审（856 文末已预留这条） |
 
-### 13.4 修复：迁移 872
+### 13.4 修复：迁移 873
 
 建 856 的**超集**（键 `(ts, tenant_id)` 不变，INCLUDE 补上
 `cache_read_tokens` / `cache_write_tokens`），同迁移内按序删掉 856 的两条 ——

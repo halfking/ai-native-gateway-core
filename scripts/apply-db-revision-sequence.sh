@@ -1664,6 +1664,7 @@ files=(
   # （in-repo 第一名），其中 89% 在两个月分区 423k 行的列存扫描。
   # 806/812/813/836 同族先例；详证见迁移文件头。
   "$ROOT_DIR/sql/migrations/startup/872_credential_model_index_partitions_heap.sql"
+  "$ROOT_DIR/sql/migrations/startup/873_usage_ledger_ts_cover_cache_agg_idx.sql"
 
   # ── 2026-10-16 孤儿迁移 044 补登（health_source 白名单缺 probe_now）──────
   #

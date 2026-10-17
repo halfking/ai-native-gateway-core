@@ -1,4 +1,4 @@
--- Rollback for migration 872_usage_ledger_ts_cover_cache_agg_idx.sql.
+-- Rollback for migration 873_usage_ledger_ts_cover_cache_agg_idx.sql.
 -- Drops the superset covering indexes and recreates 856's originals verbatim.
 -- No data is touched.
 --

@@ -283,3 +283,4 @@
 265	870_usage_ledger_recon_cover_idx.sql
 266	871_route_incident_events_created_at_idx.sql
 267	872_credential_model_index_partitions_heap.sql
+268	873_usage_ledger_ts_cover_cache_agg_idx.sql

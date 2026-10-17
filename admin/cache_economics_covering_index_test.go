@@ -136,7 +136,7 @@ func ledgerCoverIndexHasCacheTokens(ctx context.Context, pool *pgxpool.Pool, par
 // TestCacheEconomicsAggregateIsServedWithoutHeapFetch 真库判据：
 //
 // ① 前提：每个 usage_ledger 分区上都有一条携带缓存 token 列的覆盖索引。
-//    （872 迁移之前必然红 —— 这就是它的作用）
+//    （873 迁移之前必然红 —— 这就是它的作用）
 // ② 结果：30 天窗口那条聚合的 EXPLAIN 里，真正吃时间的分区
 //    （9 月，1,039,470 行）必须走 **Index Only Scan**。
 //
@@ -196,7 +196,7 @@ func TestCacheEconomicsAggregateIsServedWithoutHeapFetch(t *testing.T) {
 	}
 	if len(missing) > 0 {
 		t.Fatalf("分区 %v 上没有携带 cache_read_tokens 的 (ts, tenant_id) 覆盖索引："+
-			"带 SUM(cache_read_tokens) 的窗口聚合会退回逐行回堆。请应用迁移 872"+
+			"带 SUM(cache_read_tokens) 的窗口聚合会退回逐行回堆。请应用迁移 873"+
 			"（注意：分区索引按列名自动改名，不要按名字 grep）", missing)
 	}
 

@@ -1093,6 +1093,8 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"871_route_incident_events_created_at_idx.sql",
 			// 872（2026-10-18）：credential_model_index 月分区 columnar→heap 存量转换。
 			"872_credential_model_index_partitions_heap.sql",
+			// 873（2026-10-18）：usage_ledger 窗口聚合覆盖索引补齐缓存 token 列。
+			"873_usage_ledger_ts_cover_cache_agg_idx.sql",
 		},
 	}
 }

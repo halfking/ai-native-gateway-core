@@ -783,18 +783,18 @@
 
 ## 2026-10-18 — 剥掉 `--` 注释还不够：`DO` 块里的字符串字面量与无界子串切片同样让 `Contains` 失去判别力（Seen: 1/3）
 
-- 任务 / 缺陷：修 `/api/admin/usage/cache-economics` 的 500（迁移 872，
+- 任务 / 缺陷：修 `/api/admin/usage/cache-economics` 的 500（迁移 873，
   给 `usage_ledger` 的覆盖索引补上 `cache_read_tokens`）。为这条迁移写了
   9 条源码不变量判据。**首轮变异验证 9/9「全红」，但其中 3 条是假红。**
 - 真实情况：同一个陷阱连踩了三次，每次剥掉一层，下一层又让它失效。
   (1) 迁移注释里反复出现 `cache_read_tokens`，`strings.Contains` 恒真
       ⇒ 已加 `--` 剥离；
-  (2) 剥掉 `--` 后，两个**旧索引名**在 `DO $comment_872_index$` 块里又以
+  (2) 剥掉 `--` 后，两个**旧索引名**在 `DO $comment_873_index$` 块里又以
       **字符串字面量**（`COMMENT ON INDEX` 的正文）出现一次
       ⇒ `Contains(code, "…cover_agg_idx")` 依然恒真，删掉真正的
       `DROP INDEX` 语句判据照样绿。改成**语句级**匹配（切分 `;` 后逐句取）；
   (3) 守卫块用 `guard := code[guardStart:]` 取 —— 这是**无上界**切片，一路
-      吃到文件末尾，把后面 `$comment_872_index$` 块里的同名 `to_regclass`
+      吃到文件末尾，把后面 `$comment_873_index$` 块里的同名 `to_regclass`
       一起吞进来，于是「守卫块判没判这个索引」也恒真。给切片加上界。
 - 为什么危险：假红最容易被读成「判据很强」。我当时看到 9/9 全红就准备收工，
   是因为**同一次变异里 `TestRegistryShaIsActuallyTheFile` 也红了**——

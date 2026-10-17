@@ -9024,3 +9024,5 @@ projected = 1 ；read-back title = 'mutation probe' ；DeleteTitle UPDATE 1 ；R
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 872 | `872_usage_ledger_ts_cover_cache_agg_idx.sql` | `2f9cd8aae9176af0e88e02cea4d9115e956c70665c739ee7dd934d4beaf13bda` | pending deploy（cache-economics 500 的覆盖索引修复；应用后需按迁移文末的验收 SQL 确认分区计划转 Index Only Scan） |
+
+| 873 | `873_usage_ledger_ts_cover_cache_agg_idx.sql` | `a1793c47a8004b118cdca50653ff4a0235c00e6b8b9f53fcf8a18353468baf52` | pending deploy（cache-economics 500 的覆盖索引修复：856 的 INCLUDE 缺 cache_read_tokens，30 天 1,478k 行窗口实测 buffers 209,361 → 20,981，三臂全转 Parallel Index Only Scan；事务内试跑 + ROLLBACK 已验证零残留。⚠ 原拟编号 872，与 origin/main 的 872_credential_model_index_partitions_heap.sql 撞号，改 873。应用后需按迁移文末的验收 SQL 确认分区计划。） |

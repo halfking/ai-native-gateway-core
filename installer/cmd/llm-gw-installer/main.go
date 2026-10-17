@@ -882,6 +882,9 @@ var routeIncidentEventsCreatedAtIdx871 []byte
 //go:embed embeddata/startup/872_credential_model_index_partitions_heap.sql
 var cmiPartitionsHeap872 []byte
 
+//go:embed embeddata/startup/873_usage_ledger_ts_cover_cache_agg_idx.sql
+var usageLedgerCoverCacheAgg873 []byte
+
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
 
@@ -1180,6 +1183,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/870_usage_ledger_recon_cover_idx.sql":                                   usageLedgerReconCover870,
 	"startup/871_route_incident_events_created_at_idx.sql":                           routeIncidentEventsCreatedAtIdx871,
 	"startup/872_credential_model_index_partitions_heap.sql":                         cmiPartitionsHeap872,
+	"startup/873_usage_ledger_ts_cover_cache_agg_idx.sql":                     usageLedgerCoverCacheAgg873,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/853_credential_probe_queue_automatic.sql":                               credentialProbeQueueAutomatic853,

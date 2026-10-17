@@ -1,4 +1,4 @@
--- 872_usage_ledger_ts_cover_cache_agg_idx.sql
+-- 873_usage_ledger_ts_cover_cache_agg_idx.sql
 -- 2026-10-18：把 856 的覆盖索引扩成**含缓存 token 列的超集**。
 --
 -- 缺陷（生产实测，154 / 共用库 172.16.2.210）：
@@ -60,7 +60,7 @@
 --   正常渲染。分区上的索引名由**列名**自动改写（名字里不含 `cache`），
 --   按名字 grep 会得出「没建」的假结论（870 已踩过一次）。验收见文末。
 --
--- 回滚：872_..._down.sql 删新索引并按原样重建 856 的两条，不动数据。
+-- 回滚：873_..._down.sql 删新索引并按原样重建 856 的两条，不动数据。
 
 BEGIN;
 
@@ -87,13 +87,13 @@ DECLARE
   v_newhot regclass := to_regclass('public.usage_ledger_hot_ts_tenant_cache_agg_idx');
 BEGIN
   IF v_new IS NULL OR v_newhot IS NULL THEN
-    RAISE EXCEPTION '872: 超集覆盖索引未建成，拒绝删除 856 的旧覆盖索引';
+    RAISE EXCEPTION '873: 超集覆盖索引未建成，拒绝删除 856 的旧覆盖索引';
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_index WHERE indexrelid = v_new   AND indisvalid AND indisready) THEN
-    RAISE EXCEPTION '872: usage_ledger_ts_tenant_cache_agg_idx 无效，拒绝删除旧覆盖索引';
+    RAISE EXCEPTION '873: usage_ledger_ts_tenant_cache_agg_idx 无效，拒绝删除旧覆盖索引';
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_index WHERE indexrelid = v_newhot AND indisvalid AND indisready) THEN
-    RAISE EXCEPTION '872: usage_ledger_hot_ts_tenant_cache_agg_idx 无效，拒绝删除旧覆盖索引';
+    RAISE EXCEPTION '873: usage_ledger_hot_ts_tenant_cache_agg_idx 无效，拒绝删除旧覆盖索引';
   END IF;
 
   DROP INDEX IF EXISTS public.usage_ledger_ts_tenant_cover_agg_idx;
@@ -104,18 +104,18 @@ $drop_856_superseded$;
 COMMIT;
 
 -- r1030 教训：凡「可能不存在的对象」的 COMMENT 都在 to_regclass 判定后下发。
-DO $comment_872_index$
+DO $comment_873_index$
 BEGIN
   IF to_regclass('public.usage_ledger_ts_tenant_cache_agg_idx') IS NOT NULL THEN
     COMMENT ON INDEX usage_ledger_ts_tenant_cache_agg_idx IS
-      '872: usage_ledger「按时间窗聚合用量」覆盖索引的超集版 —— 在 856 的 INCLUDE 之外补上 cache_read_tokens / cache_write_tokens。856 那条不含缓存 token 列，于是任何带 SUM(cache_read_tokens) 的窗口聚合都会退回 Parallel Index Scan 逐行回堆：30 天 1,478k 行实测 buffers 209,361 / 3.2s，删掉该列即转 Index Only Scan buffers 19,245 / 1.5s。本索引取代 856 的 usage_ledger_ts_tenant_cover_agg_idx（同一 (ts, tenant_id) 前缀，不并存以免给最热的写表加冗余写放大）。';
+      '873: usage_ledger「按时间窗聚合用量」覆盖索引的超集版 —— 在 856 的 INCLUDE 之外补上 cache_read_tokens / cache_write_tokens。856 那条不含缓存 token 列，于是任何带 SUM(cache_read_tokens) 的窗口聚合都会退回 Parallel Index Scan 逐行回堆：30 天 1,478k 行实测 buffers 209,361 / 3.2s，删掉该列即转 Index Only Scan buffers 19,245 / 1.5s。本索引取代 856 的 usage_ledger_ts_tenant_cover_agg_idx（同一 (ts, tenant_id) 前缀，不并存以免给最热的写表加冗余写放大）。';
   END IF;
   IF to_regclass('public.usage_ledger_hot_ts_tenant_cache_agg_idx') IS NOT NULL THEN
     COMMENT ON INDEX usage_ledger_hot_ts_tenant_cache_agg_idx IS
-      '872: 872 超集覆盖索引在 hot 表上的同形状副本。usage_ledger_with_current_month 是 UNION ALL，两臂形状不同会让 planner 在其中一臂退回回堆，收益减半。';
+      '873: 本迁移的超集覆盖索引在 hot 表上的同形状副本。usage_ledger_with_current_month 是 UNION ALL，两臂形状不同会让 planner 在其中一臂退回回堆，收益减半。';
   END IF;
 END
-$comment_872_index$;
+$comment_873_index$;
 
 -- ---------------------------------------------------------------------------
 -- 怎么验收（★ 沿用 870 的教训：别按父表大小、别按索引名判成败）
