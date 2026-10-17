@@ -131,6 +131,10 @@ function protocolColor(name: string): string {
 }
 
 /** 协议 chip 投放清单：挂在 client→gateway 边中点（小字标注 + 协议色）。 */
+/** 协议 chip 投放清单：挂在 client→gateway 边上（小字标注 + 协议色）。
+ *  同一条边最多两个协议时**沿路径错开**（t=0.42/0.58）—— 审计轮抓到
+ *  两个 chip 同锚 t=0.45 会完全重叠，夹具里每客户端单协议所以肉眼没暴露。 */
+const CHIP_T_POSITIONS = [0.42, 0.58] as const
 const protocolChips = computed(() => {
   const out: Array<{ id: string; x: number; y: number; name: string; count: number; color: string }> = []
   for (const edge of layout.value.edges) {
@@ -139,10 +143,10 @@ const protocolChips = computed(() => {
     const ranked = Object.entries(edge.protocolCounts)
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
       .slice(0, 2)
-    for (const [name, count] of ranked) {
-      const p = bezierOn(edge.path, 0.45, 0)
+    ranked.forEach(([name, count], i) => {
+      const p = bezierOn(edge.path, CHIP_T_POSITIONS[i] ?? 0.42, 0)
       out.push({ id: `${edge.id}#${name}`, x: p.x, y: p.y, name, count, color: protocolColor(name) })
-    }
+    })
   }
   return out
 })

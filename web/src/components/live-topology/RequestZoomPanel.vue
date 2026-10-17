@@ -57,7 +57,8 @@ function stageLabel(stage?: string): string {
 
 /** 状态显示名。线上 status 枚举是 snake_case（in_progress/rate_limited），
  *  而 filter 文案键是 camelCase（inProgress/rateLimited）—— 早先直接拼键，
- *  in_progress/rate_limited 两条渲染成原始键名（2026-10-18 浏览器验收抓到）。 */
+ *  in_progress/rate_limited 两条渲染成原始键名（2026-10-18 浏览器验收抓到）。
+ *  未知枚举值显示原始字符串（比回落到「全部状态」诚实）。 */
 function statusLabel(status: string): string {
   const key: Record<string, string> = {
     success: 'success',
@@ -65,7 +66,8 @@ function statusLabel(status: string): string {
     failure: 'failure',
     rate_limited: 'rateLimited',
   }
-  return t(`liveTopology.filter.${key[status] ?? 'allStatuses'}`)
+  const mapped = key[status]
+  return mapped ? t(`liveTopology.filter.${mapped}`) : status
 }
 
 function actionLabel(action?: string): string {

@@ -18,6 +18,8 @@ import { describe, expect, it, vi, beforeAll, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import { createRouter, createMemoryHistory } from 'vue-router'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import LiveTopologyView from './LiveTopologyView.vue'
 import zhCN from '../locales/zh-CN/liveTopology'
 
@@ -469,6 +471,32 @@ describe('LiveTopologyView 连线与协议标注（owner 2026-10-18）', () => {
     expect(wrapper.find('[data-testid="proto-chip-anthropic"]').text()).toContain('1')
   })
 
+  it('★ spreads two protocol chips on the same edge (no overlap)', async () => {
+    // 审计轮缺陷：同边双协议 chip 同锚 t=0.45 完全重叠。夹具此前每客户端
+    // 单协议，肉眼与判据都没踩到 —— 这条夹具故意给同一客户端混两种协议。
+    testApi.setRequests([
+      { ...REQUESTS[0], request_id: 'mix-1', client_protocol: 'openai' },
+      { ...REQUESTS[0], request_id: 'mix-2', client_protocol: 'anthropic' },
+    ])
+    const { wrapper } = await mountView()
+    const chips = [
+      wrapper.find('[data-testid="proto-chip-openai"]'),
+      wrapper.find('[data-testid="proto-chip-anthropic"]'),
+    ]
+    expect(chips[0].exists()).toBe(true)
+    expect(chips[1].exists()).toBe(true)
+    // 两个 chip 的定位必须错开（左/上至少一项不同；同位 = 重叠缺陷回归）
+    const pos = (i: number) => {
+      const style = chips[i].attributes('style') ?? ''
+      const left = /left:\s*([\d.]+)px/.exec(style)?.[1] ?? ''
+      const top = /top:\s*([\d.]+)px/.exec(style)?.[1] ?? ''
+      return `${left},${top}`
+    }
+    expect(pos(0), '同边双协议 chip 不得同位重叠').not.toBe(pos(1))
+    // 还原夹具，避免污染后续用例
+    testApi.setRequests(REQUESTS.map((r) => ({ ...r })))
+  })
+
   it('★ renders plugin chips inside the gateway box from the topology plugins endpoint', async () => {
     const { wrapper } = await mountView()
     const inChips = wrapper.find('[data-testid="gw-plugins-in"]').findAll('.gw__plugin')
@@ -483,5 +511,27 @@ describe('LiveTopologyView 连线与协议标注（owner 2026-10-18）', () => {
     await flushPromises()
     // 选中的是 deepseek 那条：右栏没有 moonshot 高亮，左栏对应条目 is-active
     expect(wrapper.findAll('.cp__item.is-active').length).toBe(1)
+  })
+})
+
+describe('LiveTopologyView 版面契约（owner 2026-10-18：筛选一行 + 字号一致）', () => {
+  // jsdom 的 getComputedStyle 恒为空串（AGENTS 判据纪律 19），样式契约按
+  // 本仓 honesty.test 的 readSrc 先例直接钉源码文本。变异验证：把 nowrap
+  // 改回 wrap 或字号改大，本组立刻红。
+  const source = readFileSync(resolve(process.cwd(), 'src/views/LiveTopologyView.vue'), 'utf8')
+
+  it('★ filter bar never wraps (one row, horizontal scroll as narrow fallback)', () => {
+    const filtersBlock = source.split('.live-topology__filters {')[1]?.split('\n}')[0] ?? ''
+    expect(filtersBlock, '过滤栏样式块必须存在').toContain('flex-wrap: nowrap')
+    expect(filtersBlock).toContain('overflow-x: auto')
+  })
+
+  it('★ every filter control is 11px and 24px tall (uniform size)', () => {
+    for (const block of ['.live-topology__filters select {', '.live-topology__toggle {', '.live-topology__clear {']) {
+      const body = source.split(block)[1]?.split('\n}')[0] ?? ''
+      expect(body, `${block} 必须存在`).toContain('font-size: 11px')
+    }
+    // el-select 走 element 变量注入统一字号
+    expect(source).toContain('--el-font-size-base: 11px')
   })
 })
