@@ -67,7 +67,7 @@ describe('ClientRequestPanel', () => {
     })
     expect(wrapper.findAll('.cp__summary-row')).toHaveLength(2)
     expect(wrapper.findAll('.cp__item')).toHaveLength(2)
-    expect(wrapper.text()).toContain('claude-code')
+    expect(wrapper.text()).toContain('Claude Code')
     expect(wrapper.text()).toContain('upstream_timeout')
     // 成功率按聚合口径算（3/4 = 75%），不是随手编的数字
     expect(wrapper.find('.cp__summary-stats').text()).toContain('75%')
@@ -178,7 +178,7 @@ describe('ProviderResponsePanel', () => {
 
 describe('ClientRequestPanel 分页（owner 2026-10-18：单页 ≤50 条）', () => {
   // 行内不显示 requestId，用互不相同的 client 名来验证翻页取的是哪一段。
-  const many = Array.from({ length: 120 }, (_, i) => entry({ requestId: `r-${i}`, client: `c-${i}` }))
+  const many = Array.from({ length: 120 }, (_, i) => entry({ requestId: `r-${i}`, client: `client-${i}` }))
 
   function mountClient(requests: PanelEntry[] = many) {
     return mount(ClientRequestPanel, {
@@ -198,12 +198,12 @@ describe('ClientRequestPanel 分页（owner 2026-10-18：单页 ≤50 条）', (
   it('pages through older requests with prev/next (page 2 = 条目 51-100)', async () => {
     const wrapper = mountClient()
     // 第 1 页第一条 = 最新（c-0）
-    expect(wrapper.findAll('.cp__item')[0].text()).toContain('c-0')
+    expect(wrapper.findAll('.cp__item')[0].text()).toContain('Client 0')
     await wrapper.get('[data-testid="client-page-next"]').trigger('click')
     const page2 = wrapper.findAll('.cp__item')
     expect(page2).toHaveLength(50)
     // 第 2 页第一条 = 第 51 条（c-50）
-    expect(page2[0].text()).toContain('c-50')
+    expect(page2[0].text()).toContain('Client 50')
     // next 到第 3 页只有 20 条；prev 应回到第 2 页
     await wrapper.get('[data-testid="client-page-next"]').trigger('click')
     expect(wrapper.findAll('.cp__item')).toHaveLength(20)
@@ -231,6 +231,22 @@ describe('ClientRequestPanel 分页（owner 2026-10-18：单页 ≤50 条）', (
     await wrapper.get('.cp__item').trigger('click')
     expect(wrapper.emitted('select-request')?.[0]).toEqual(['r-1'])
     expect(wrapper.emitted('zoom')?.[0]?.[0]).toMatchObject({ requestId: 'r-1', client: 'claude-code' })
+  })
+
+  it('★ renders the human-readable client name (claude-code → Claude Code)', () => {
+    const wrapper = mountClient([entry()])
+    expect(wrapper.get('.cp__client').text()).toBe('Claude Code')
+    // 摘要行同样走易读名（同一显示口径）
+    expect(wrapper.get('.cp__summary-name').text()).toBe('Claude Code')
+  })
+
+  it('★ emits open-page with the entry when the ↗ link is clicked (全页详情入口)', async () => {
+    const wrapper = mountClient([entry()])
+    await wrapper.get('.cp__open').trigger('click')
+    expect(wrapper.emitted('open-page')?.[0]?.[0]).toMatchObject({ requestId: 'r-1' })
+    // ↗ 是独立按钮：不得顺带触发选中/放大（那是主行的行为）
+    expect(wrapper.emitted('zoom')).toBeUndefined()
+    expect(wrapper.emitted('select-request')).toBeUndefined()
   })
 })
 
@@ -265,6 +281,12 @@ describe('ProviderResponsePanel 分页（owner 2026-10-18：单页 ≤50 条）'
     expect(wrapper.find('[data-testid="provider-response-pager"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('窗口内暂无请求')
   })
+
+  it('★ emits open-page when the ↗ link is clicked (全页详情入口)', async () => {
+    const wrapper = mountProvider([entry()])
+    await wrapper.get('.pp__page').trigger('click')
+    expect(wrapper.emitted('open-page')?.[0]?.[0]).toMatchObject({ requestId: 'r-1' })
+  })
 })
 
 describe('RequestZoomPanel', () => {
@@ -291,7 +313,7 @@ describe('RequestZoomPanel', () => {
     }
     expect(byLabel.get('Token（入 / 出 / 合计）')).toBe('— / — / —')
     // 有值的字段仍然照常显示（不能因为要防假零就全变「—」）
-    expect(byLabel.get('客户端')).toBe('claude-code')
+    expect(byLabel.get('客户端')).toBe('Claude Code')
     expect(byLabel.get('模型')).toBe('glm-4.5')
     expect(wrapper.text()).not.toContain('$0.0000')
     expect(wrapper.text()).not.toContain('0 ms')
@@ -345,6 +367,21 @@ describe('RequestZoomPanel', () => {
     })
     await wrapper.get('.zoom__close').trigger('click')
     expect(wrapper.emitted('close')).toHaveLength(1)
+  })
+
+  it('★ keeps every detail row after the shared-view extraction + offers open-page', async () => {
+    // 内容抽到 RequestDetailView 后字段不能少（两宿主共享一份实现，
+    // 但抽取本身可能漏搬 —— 逐字段点名）。
+    const wrapper = mount(RequestZoomPanel, {
+      props: { entry: entry(), decisions: [] },
+      global: { plugins: [i18n] },
+    })
+    const labels = wrapper.findAll('.zoom__label').map((l) => l.text())
+    for (const need of ['请求 ID', '客户端协议', '状态', 'Token（入 / 出 / 合计）', '费用', '会话', '任务类型', '探测任务', '错误']) {
+      expect(labels, `缺字段 ${need}`).toContain(need)
+    }
+    await wrapper.get('[data-testid="zoom-open-page"]').trigger('click')
+    expect(wrapper.emitted('open-page')?.[0]?.[0]).toMatchObject({ requestId: 'r-1' })
   })
 
   it('★ labels a missing stage as unreported, never as routing', () => {

@@ -124,6 +124,9 @@ export default {
     down: 'caído',
     unknown: 'sin sondear',
   },
+  client: {
+    unknown: 'Cliente desconocido',
+  },
 
   panel: {
     clients: 'Solicitudes de clientes',
@@ -150,9 +153,16 @@ export default {
     cost: 'Coste',
     session: 'Sesión',
     taskType: 'Tipo de tarea',
+    openPage: 'Abrir página completa',
     probe: 'Sondeo',
     yes: 'Sí',
     no: 'No',
     error: 'Error',
+  },
+  page: {
+    back: 'Volver a la topología',
+    waiting: 'Conectando al stream en vivo para obtener esta petición…',
+    notFoundTitle: 'Esta petición ya no está en la ventana en vivo',
+    notFoundHint: 'Los datos en vivo solo conservan una ventana rotativa reciente; la petición puede haber salido, o abriste el enlace directamente. Vuelve a la topología en vivo y ábrela de nuevo.',
   },
 }

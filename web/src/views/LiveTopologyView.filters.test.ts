@@ -164,7 +164,10 @@ const REQUESTS: Frame[] = [
 async function mountView(initialPath = '/live') {
   const router = createRouter({
     history: createMemoryHistory(),
-    routes: [{ path: '/live', component: LiveTopologyView }],
+    routes: [
+      { path: '/live', component: LiveTopologyView },
+      { path: '/live/request/:requestId', component: { template: '<div />' } },
+    ],
   })
   await router.push(initialPath)
   await router.isReady()
@@ -302,6 +305,19 @@ describe('LiveTopologyView filter convergence', () => {
     expect(empty.text()).not.toContain('当前过滤条件下窗口内没有请求')
   })
 
+  it('★ navigates to the full-page request detail when the ↗ link is clicked', async () => {
+    const { wrapper, router } = await mountView()
+    // 左栏最新在上：第一行是 r-gw-reject
+    await wrapper.get('.cp__open').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/live/request/r-gw-reject')
+    expect(router.currentRoute.value.params.requestId).toBe('r-gw-reject')
+    // 返回 /live 仍可用
+    await router.push('/live')
+    await flushPromises()
+    expect(wrapper.find('.live-topology').exists()).toBe(true)
+  })
+
   it('opens an inline zoom panel from the right panel and renders missing fields as em dash', async () => {
     const { wrapper } = await mountView()
     const rows = wrapper.findAll('.pp__row')
@@ -415,7 +431,7 @@ describe('LiveTopologyView 数据开关（owner 2026-10-18：默认去除，开�
     const checkbox = wrapper.get('[data-testid="toggle-probe"]').get('input')
     expect((checkbox.element as HTMLInputElement).checked).toBe(true)
     // 探测标记回到面板（is-probe 样式在，条目也在）
-    expect(wrapper.findAll('.cp__item.is-probe').length).toBe(1)
+    expect(wrapper.findAll('.cp__row.is-probe').length).toBe(1)
     expect(wrapper.get('[data-testid="hidden-counts-banner"]').text()).not.toContain('探测')
   })
 
@@ -510,7 +526,7 @@ describe('LiveTopologyView 连线与协议标注（owner 2026-10-18）', () => {
     await items[3].trigger('click')
     await flushPromises()
     // 选中的是 deepseek 那条：右栏没有 moonshot 高亮，左栏对应条目 is-active
-    expect(wrapper.findAll('.cp__item.is-active').length).toBe(1)
+    expect(wrapper.findAll('.cp__row.is-active').length).toBe(1)
   })
 })
 

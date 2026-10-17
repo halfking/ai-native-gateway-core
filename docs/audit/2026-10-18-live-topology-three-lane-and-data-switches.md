@@ -126,3 +126,37 @@ getComputedStyle 恒空（判据纪律 19）—— 按 honesty.test 的 readSrc 
 - 插件清单挂载时拉取一次（插件集合只在启动/安装时变化）；安装/卸载后需刷新
   页面才更新。若要实时，接 SSE 事件即可（登记）。
 - 真实浏览器肉眼验收：本地部署后经 `/dev/live-topology-preview`（免凭据）复核。
+
+## 六、客户端易读信息 + 请求详情全页轮（2026-10-18 上午第二次增量）
+
+owner 两个新要求，均落地并部署 2.5.8.2717：
+
+### 1. 客户端信息更易懂
+- `clientDisplayName()`（lib 纯函数）：已知品牌固定映射（claude-code→Claude Code、
+  zcode→ZCode…），其余 kebab/snake 键分段 Title Case，**十六进制身份前缀原样**
+  （大写化哈希即失真）；`unknown` 由渲染层走 i18n「未知客户端」。
+- 生效面：图上客户端卡（label 易读名 + 副行改 `类型 · 主导协议`，协议与连线
+  chip 同源）、左栏摘要/明细行、详情面板。
+- 判据：品牌映射/Title 化/十六进制不动/非标识符透传 4 条（M12 变异红——
+  删映射后 ZCode 用例咬住，Claude Code 用例因 Title 化兜底同形不红，属预期）。
+
+### 2. 请求详情全页（/live/request/:requestId）
+- 内容抽取 `RequestDetailView`（zoom 面板与全页**共享一份实现**，两处字段
+  必然一致——判据逐字段点名防抽取漏搬）；zoom 面板变薄包装并加 ↗。
+- 左右面板每行加 ↗（client 面板行结构从单 button 改容器，button 嵌套不合法）；
+  跳转 `router.push`，M13 变异（不接线）红。
+- **全页读原始 store 而非过滤子集**：被数据开关隐藏的探测/无效节点请求
+  从链接仍可打开——隐藏是展示口径不是数据删除（M14 变异红）。
+- 全页自建 SSE 连接（引用计数单例）：深链/刷新时首帧 initial_data 回放
+  最近窗口，请求仍在回放窗内即可真渲染；三态分明：**有数据 / 正在取
+  （首帧未到）/ 已滚出窗口**（最后者明说，绝不渲染空壳冒充）。
+- 鉴权：生产路由 requiresAuth（详情含 token/费用/会话）；DEV-only 免登录
+  别名 `/dev/live-request-preview/:requestId`（同 waterfall-preview 先例）供
+  肉眼验收，navCoverage 按孤儿登记（生产路由因被视图链接覆盖**不需**登记——
+  门自己拦下了我的多余登记，白名单「不得凭空登记」判据生效的实证）。
+
+浏览器验收（DOM+截图）：客户端卡 "Claude Code / cli · anthropic" 等四家
+易读名+协议副行全部在场；左右面板各 33 个 ↗；全页详情完整渲染 15+ 字段
+（Claude Code / anthropic / 842ms / 900/334/1234 / $0.0042 / 返回链接）；
+已滚出窗口态诚实显示。全量 2687 条仅剩 navCoverage(6 条上游孤儿，owner
+拍板项) + CJK 棘轮(上游) 两文件红；CJK 计数 5757 净贡献仍为 0。

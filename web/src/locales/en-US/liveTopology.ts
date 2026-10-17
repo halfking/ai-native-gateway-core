@@ -124,6 +124,9 @@ export default {
     down: 'down',
     unknown: 'not probed',
   },
+  client: {
+    unknown: 'Unknown client',
+  },
 
   panel: {
     clients: 'Client requests',
@@ -150,9 +153,16 @@ export default {
     cost: 'Cost',
     session: 'Session',
     taskType: 'Task type',
+    openPage: 'Open full page',
     probe: 'Probe',
     yes: 'Yes',
     no: 'No',
     error: 'Error',
+  },
+  page: {
+    back: 'Back to topology',
+    waiting: 'Connecting to the live stream to fetch this request…',
+    notFoundTitle: 'This request is no longer in the live window',
+    notFoundHint: 'Live data only keeps a recent rolling window; the request may have scrolled out, or you opened this link directly. Go back to the live topology and open it again.',
   },
 }

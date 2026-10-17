@@ -8,6 +8,7 @@ import { locationFromInternalPath } from './utils/safeRedirect'
 import LoginView from './views/LoginView.vue'
 import HomeView from './views/HomeView.vue'
 import LiveTopologyView from './views/LiveTopologyView.vue'
+import RequestDetailPage from './views/RequestDetailPage.vue'
 import ForbiddenView from './views/ForbiddenView.vue'
 
 // All other views are lazy-loaded to reduce initial bundle size
@@ -205,6 +206,10 @@ export const router = createRouter({
     // /dashboard 一行未改，本页只新增一个入口，不接管根路径。
     // 权限与 /dashboard 同级（requiresAuth），租户管理员进入即按会话租户收窄。
     { path: '/live',               component: LiveTopologyView, meta: { requiresAuth: true } },
+    // 2026-10-18: 请求详情**全页**（owner 要求：面板可整页打开某条请求的
+    // 详情）。从 /live 左右面板的 ↗ 进入，非导航项（navCoverage 按孤儿登记）；
+    // 数据来自实时滚动窗口，直链/刷新时可能已滚出（页面如实说明，不冒充空详情）。
+    { path: '/live/request/:requestId', component: RequestDetailPage, meta: { requiresAuth: true } },
 
     // super_admin only — providers, catalog, free pool, tenants, audit logs
     // 2026-09-04: 供应商列表/详情改挂 providerConsole —— super_admin，或
@@ -360,6 +365,11 @@ export const router = createRouter({
     // 生产构建不注册）。同 DispatchWaterfallPreview 的既有做法。
     ...(import.meta.env.DEV
       ? [{ path: '/dev/live-topology-preview', component: () => import('./views/LiveTopologyPreview.vue'), meta: { public: true } }]
+      : []),
+    // 2026-10-18: 请求详情全页的 DEV 免登录别名（浏览器验收用；生产路由
+    // /live/request/:id 保持 requiresAuth —— 详情含 token/费用/会话，不许匿名）。
+    ...(import.meta.env.DEV
+      ? [{ path: '/dev/live-request-preview/:requestId', component: RequestDetailPage, meta: { public: true } }]
       : []),
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],

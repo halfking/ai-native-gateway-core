@@ -4,7 +4,7 @@
 // 每条都做过变异验证（改坏逻辑必须变红）。
 
 import { describe, expect, it } from 'vitest'
-import { buildTopology, clientKeyOf, healthOfNode, invalidNodeKeys, modelKeyOf, providerNodeKeyOf } from '../lib/liveTopologyGraph'
+import { buildTopology, clientDisplayName, clientKeyOf, healthOfNode, invalidNodeKeys, modelKeyOf, providerNodeKeyOf } from '../lib/liveTopologyGraph'
 import { TOPO_COLUMN_LIMITS } from '../types/liveTopology'
 
 const NOW = Date.parse('2026-10-16T12:00:00Z')
@@ -22,6 +22,30 @@ function req(over: Partial<Parameters<typeof buildTopology>[0]['requests'][numbe
     ...over,
   }
 }
+
+describe('clientDisplayName（owner 2026-10-18 更易懂）', () => {
+  it('maps known agent brands to their display spelling', () => {
+    expect(clientDisplayName('claude-code')).toBe('Claude Code')
+    expect(clientDisplayName('zcode')).toBe('ZCode')
+    expect(clientDisplayName('codex')).toBe('Codex')
+    expect(clientDisplayName('gemini-cli')).toBe('Gemini CLI')
+  })
+
+  it('★ title-cases other kebab/snake identity keys (agent-name-123 → Agent Name 123)', () => {
+    expect(clientDisplayName('my-custom-agent')).toBe('My Custom Agent')
+    expect(clientDisplayName('web_dev_tool')).toBe('Web Dev Tool')
+  })
+
+  it('★ never mangles hex identity prefixes (uppercase would corrupt the hash)', () => {
+    expect(clientDisplayName('abcdef01')).toBe('abcdef01')
+    expect(clientDisplayName('1a2b3c4d')).toBe('1a2b3c4d')
+  })
+
+  it('passes through non-identifier text as-is', () => {
+    expect(clientDisplayName('curl用户')).toBe('curl用户')
+    expect(clientDisplayName('Agent X')).toBe('Agent X')
+  })
+})
 
 describe('liveTopologyGraph identity keys', () => {
   it('client key prefers agent_name, then profile, then protocol, then identity prefix', () => {

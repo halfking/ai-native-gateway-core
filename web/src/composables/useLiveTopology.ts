@@ -218,6 +218,18 @@ export function useLiveTopology(opts?: { now?: () => number }) {
     return [...list].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
   }
 
+  /**
+   * 按 id 取任意一条请求的详情（全页详情路由 /live/request/:id 用）。
+   * **刻意读原始 store 而不是过滤子集**：从面板点开一条被开关隐藏的
+   * 探测/无效节点请求时，详情页必须还能打开（「隐藏」是展示口径，
+   * 不是数据删除）；窗口外/已被淘汰的请求返回 null，由页面如实说明。
+   */
+  function panelEntryFor(requestId: string): PanelEntry | null {
+    if (!requestId) return null
+    const req = (requestsRef.value as LiveRequest[]).find((r) => r.request_id === requestId)
+    return req ? toPanelEntry(req) : null
+  }
+
   const requestById = computed(() => new Map(filteredRequests.value.map((r) => [r.request_id ?? '', r])))
 
   /** 过滤是否处于「有值但零命中」状态（UI 要把它与「真的没流量」分开说）。 */
@@ -330,6 +342,7 @@ export function useLiveTopology(opts?: { now?: () => number }) {
     edgePathFor,
     nodeIdsFor,
     decisionsFor,
+    panelEntryFor,
     activeFilterCount,
     filteredOut,
     droppedByWindow,

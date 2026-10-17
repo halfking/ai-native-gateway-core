@@ -24,6 +24,7 @@ import {
 import { ParticlePool } from '../../lib/liveTopologyParticles'
 import type { ParticleSpawn } from '../../lib/liveTopologyParticles'
 import type { TopoGraph } from '../../lib/liveTopologyGraph'
+import { clientDisplayName } from '../../lib/liveTopologyGraph'
 import {
   GATEWAY_CORE_ID,
   type GatewayCoreBox,
@@ -419,8 +420,29 @@ function nodeLabel(node: TopoNode): string {
   if (node.isAggregate) {
     return t('liveTopology.node.aggregate', { n: node.metric.requests })
   }
+  const label = node.column === 'client' ? displayLabel(node) : node.label
   const health = t(`liveTopology.health.${node.health}`)
-  return `${node.label} · ${health} · ${t('liveTopology.node.requests', { n: node.metric.requests })}`
+  return `${label} · ${health} · ${t('liveTopology.node.requests', { n: node.metric.requests })}`
+}
+
+/** 客户端卡片显示名（owner 2026-10-18 更易懂）：identity 键 → 品牌写法；
+ *  兜底键 unknown → 「未知客户端」。非 client 列原样。 */
+function displayLabel(node: TopoNode): string {
+  if (node.label === 'unknown') return t('liveTopology.client.unknown')
+  return clientDisplayName(node.label)
+}
+
+/** 客户端卡片的副行（owner 2026-10-18 更易懂）：`类型 · 主导协议`
+ *  —— 协议来自该客户端→网关边上的分布（与连线 chip 同源）。 */
+function clientSubLine(node: TopoNode): string {
+  const parts: string[] = []
+  if (node.sub) parts.push(node.sub)
+  const edge = edgeByKey.value.get(`${node.id}->${GATEWAY_CORE_ID}`)
+  const dominant = edge?.protocolCounts
+    ? Object.entries(edge.protocolCounts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0]
+    : undefined
+  if (dominant) parts.push(dominant)
+  return parts.join(' · ')
 }
 
 function onNodeEnter(id: string) {
@@ -483,8 +505,10 @@ function onNodeClick(node: TopoNode) {
         @click="onNodeClick(node)"
         @keydown.enter.prevent="onNodeClick(node)"
       >
-        <span class="topo-node__label">{{ node.label }}</span>
-        <span v-if="node.sub" class="topo-node__sub">{{ node.sub }}</span>
+        <span class="topo-node__label">{{ node.column === 'client' ? displayLabel(node) : node.label }}</span>
+        <span v-if="node.column === 'client' ? clientSubLine(node) : node.sub" class="topo-node__sub">
+          {{ node.column === 'client' ? clientSubLine(node) : node.sub }}
+        </span>
         <span class="topo-node__metric">{{ node.metric.requests }}<i v-if="node.metric.inFlight">·{{ node.metric.inFlight }}↻</i></span>
       </li>
     </ul>

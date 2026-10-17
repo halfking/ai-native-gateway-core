@@ -124,6 +124,9 @@ export default {
     down: 'hors service',
     unknown: 'non sondé',
   },
+  client: {
+    unknown: 'Client inconnu',
+  },
 
   panel: {
     clients: 'Requêtes clients',
@@ -150,9 +153,16 @@ export default {
     cost: 'Coût',
     session: 'Session',
     taskType: 'Type de tâche',
+    openPage: 'Ouvrir en pleine page',
     probe: 'Sonde',
     yes: 'Oui',
     no: 'Non',
     error: 'Erreur',
+  },
+  page: {
+    back: 'Retour à la topologie',
+    waiting: 'Connexion au flux temps réel pour récupérer cette requête…',
+    notFoundTitle: "Cette requête n'est plus dans la fenêtre temps réel",
+    notFoundHint: "Les données temps réel ne conservent qu'une fenêtre glissante récente ; la requête est peut-être sortie, ou vous avez ouvert le lien directement. Retournez à la topologie temps réel et rouvrez-la.",
   },
 }

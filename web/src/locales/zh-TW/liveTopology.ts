@@ -124,6 +124,9 @@ export default {
     down: '故障',
     unknown: '未探測',
   },
+  client: {
+    unknown: '未知用戶端',
+  },
 
   panel: {
     clients: '用戶端請求',
@@ -150,9 +153,16 @@ export default {
     cost: '費用',
     session: '會話',
     taskType: '任務類型',
+    openPage: '全頁開啟',
     probe: '探測任務',
     yes: '是',
     no: '否',
     error: '錯誤',
+  },
+  page: {
+    back: '返回拓撲',
+    waiting: '正在連線即時串流取這條請求…',
+    notFoundTitle: '該請求不在目前即時視窗內',
+    notFoundHint: '即時資料只保留最近的滾動視窗；請求可能已滾出，或你是透過連結直接開啟的。請回到即時拓撲頁重新點開。',
   },
 }
