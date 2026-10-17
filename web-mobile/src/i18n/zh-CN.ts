@@ -1741,6 +1741,7 @@ export const zhCN = {
     stale: '已过期',
     lastActive: '最后活跃 {t}',
     loadMore: '加载更多',
+    openDetail: '打开会话详情 {id}',
     errForbidden: '当前账号没有查看在线会话的权限',
   },
   dataFlow: {

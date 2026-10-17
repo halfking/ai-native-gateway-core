@@ -20,8 +20,8 @@
 //   refresh（loadFirst）时额外 clear() 是**防御性**措施：实测当前流程下
 //   非承重（重置后的第 1 页必覆写 cursors[1]），保留是为了分页中途失败等边界。
 
-import { onBeforeUnmount, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { onBeforeUnmount, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useHyperPage, ContinuousListController } from '@/hyper'
 import HyperList from '@/components/common/HyperList.vue'
 import AppIcon from '@/components/common/AppIcon.vue'
@@ -40,11 +40,21 @@ import {
 
 useHyperPage({ title: () => t('turns.title') })
 const router = useRouter()
+const route = useRoute()
 
 const PAGE_SIZE = 20
 
 const search = ref('')
 const expanded = ref<string | null>(null)
+
+/** 在线会话等入口：`/turns?search=<session_id>` 预填搜索（须在 HyperList 首载前）。 */
+function routeSearchQuery(): string {
+  return String(route.query.search ?? route.query.session ?? '').trim()
+}
+{
+  const q = routeSearchQuery()
+  if (q) search.value = q
+}
 const turnsBySession = ref<Record<string, SessionTurnTreeItem[]>>({})
 const turnsLoading = ref<string | null>(null)
 const turnsError = ref<string | null>(null)
@@ -125,6 +135,43 @@ async function toggleTurns(s: TurnsSessionGroup): Promise<void> {
   }
 }
 
+/** 深链落地后自动展开命中会话（精确 id 或单结果）。 */
+function autoExpandForSearch(q: string): void {
+  if (!q || expanded.value) return
+  const items = controller.items
+  const hit =
+    items.find((s) => s.session_id === q) ?? (items.length === 1 ? items[0] : undefined)
+  if (hit) void toggleTurns(hit)
+}
+
+function whenListSettled(then: () => void): void {
+  const unsub = controller.subscribe(() => {
+    // 首载完成态是 idle（还有下一页）或 exhausted（到底），没有 ready。
+    if (controller.state === 'idle' || controller.state === 'exhausted') {
+      then()
+      unsub()
+    }
+  })
+}
+
+watch(
+  () => [route.query.search, route.query.session] as const,
+  () => {
+    const q = routeSearchQuery()
+    if (q === search.value.trim()) return
+    search.value = q
+    cursors.clear()
+    whenListSettled(() => autoExpandForSearch(q))
+    controller.loadFirst('requery')
+  },
+)
+
+// 深链：在 HyperList 首载之前订阅，避免 onMounted 晚于首枪完成而丢展开。
+{
+  const q = search.value.trim()
+  if (q) whenListSettled(() => autoExpandForSearch(q))
+}
+
 function sessionTone(s: TurnsSessionGroup): 'success' | 'warning' | 'danger' | 'muted' {
   if (s.error_count > 0) return 'danger'
   if (s.failover_count > 0) return 'warning'
@@ -163,6 +210,7 @@ function latencyText(turn: SessionTurnTreeItem): string {
       <AppIcon name="search" :size="18" />
       <input
         type="search"
+        :value="search"
         :placeholder="t('turns.searchPlaceholder')"
         :aria-label="t('common.search')"
         @input="onSearchInput"

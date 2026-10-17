@@ -1703,6 +1703,7 @@ export const enUS = {
     stale: 'outdated',
     lastActive: 'Last active {t}',
     loadMore: 'Load more',
+    openDetail: 'Open session detail {id}',
     errForbidden: 'This account cannot view online sessions',
   },
   dataFlow: {
