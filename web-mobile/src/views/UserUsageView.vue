@@ -115,7 +115,8 @@ async function toggleTenant(tenant: TenantInfo): Promise<void> {
   const state = tenantSection(tenant.code)
   state.expanded = !state.expanded
   tenantSections.value = { ...tenantSections.value, [tenant.code]: state }
-  if (!state.expanded || state.loading || (state.users && state.stats)) return
+  // stats 504 时 state.stats 仍为 null，但已有 statsError —— 勿反复重入把用户列表冲掉。
+  if (!state.expanded || state.loading || (state.users && (state.stats || state.statsError))) return
   await loadTenantSection(tenant, state)
 }
 
@@ -126,18 +127,26 @@ async function loadTenantSection(tenant: TenantInfo, state: TenantSection): Prom
   state.usersError = null
   state.statsError = null
   tenantSections.value = { ...tenantSections.value, [tenant.code]: state }
-  const [usersResult, statsResult] = await Promise.allSettled([
-    fetchTenantUsers(tenant.code),
-    fetchTenantStats(tenant.code, { days: days.value }),
-  ])
-  if (usersResult.status === 'fulfilled') state.users = usersResult.value
-  else state.usersError = formatApiError(usersResult.reason)
-  if (statsResult.status === 'fulfilled') state.stats = statsResult.value
-  else state.statsError = statsResult.reason instanceof ApiError && statsResult.reason.status === 504
-    ? t('users.tenantStatsTimeout')
-    : formatApiError(statsResult.reason)
-  if (!state.users && !state.stats) state.error = [state.usersError, state.statsError].filter(Boolean).join(' · ')
+  // 2026-10-18：default 租户 stats 即便 days=1 也会在 ~10s 打 504（llmgo 实测）。
+  // 旧实现 Promise.allSettled 等两边都结束才关 loading ⇒ 展开后整段「正在加载…」
+  // 挡住用户列表与「创建密钥」。用户腿先落盘、先解 loading；stats 随后补齐或出超时提示。
+  const usersPromise = fetchTenantUsers(tenant.code)
+  const statsPromise = fetchTenantStats(tenant.code, { days: days.value })
+  try {
+    state.users = await usersPromise
+  } catch (reason) {
+    state.usersError = formatApiError(reason)
+  }
   state.loading = false
+  tenantSections.value = { ...tenantSections.value, [tenant.code]: state }
+  try {
+    state.stats = await statsPromise
+  } catch (reason) {
+    state.statsError = reason instanceof ApiError && reason.status === 504
+      ? t('users.tenantStatsTimeout')
+      : formatApiError(reason)
+  }
+  if (!state.users && !state.stats) state.error = [state.usersError, state.statsError].filter(Boolean).join(' · ')
   tenantSections.value = { ...tenantSections.value, [tenant.code]: state }
 }
 
