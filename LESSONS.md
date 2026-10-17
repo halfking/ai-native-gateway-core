@@ -4,6 +4,14 @@
 
 ## 待观察经验
 
+## 2026-10-17 — Bash 路径里的版本四元组不是外传目的地（Seen: 1/3）
+- 任务 / 缺陷：ZCode/MiniMax 装 JDK/Maestro 时 Bash 参数含 `jdk-17.0.20.1+1`，整条 `output_policy_blocked`（request `ecb14454…`）。
+- 基线 / 修复 SHA：生产取证在 2693；修复 `c07632314`（r1033），154=`2695-c0763231`（8781）。
+- 根因：`server_ip` 的 `\b` 在 `-`/`+` 处仍成词界，把版本号当成 Apple 公网段 IP；r1020b 曾登记为残留。
+- 防复发检查：邻接字符豁免（前邻 token 粘连或后邻 `+`）；正负对照裸公网 IP/URL 主机位仍拦；变异撤 `isVersionTokenGlue` 前邻分支必须红。
+- 证据：`TestR1033*`；154 E2E `tool_choice=Bash` + JDK 路径流式 `finish_reason=tool_calls` 无阻断；二进制含 `isPathOrVersionEmbeddedAddress`。
+- 状态：已修复待观察
+
 ## 2026-10-17 — Magpie 空回复要对齐 chat 与 Responses 两腿（Seen: 1/3）
 - 任务 / 缺陷：154 `minimax-m3` / `empty_model_response`；Responses 桥已有 Magpie 语义，chat 腿仍把空 `tool_calls` 幻影当成功。
 - 基线 / 修复 SHA：生产 2682 复现；修复 `85f81dba9`，部署 154=`2684-85f81dba`（8781）。
