@@ -37,6 +37,7 @@ export default {
     boardOperational: '运营面板',
     opsOverviewWeb: '运维总览（详细）',
     subscriptionTiers: '订阅层级',
+    turnsFilterOptions: '轮次筛选选项',
     pricing: '成本价格',
     modelPricing: '定价管理',
     freePool: '免费资源',

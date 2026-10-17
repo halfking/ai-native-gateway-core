@@ -36,6 +36,7 @@ export default {
     boardOperational: 'Operational Board',
     opsOverviewWeb: 'Ops Overview (Detail)',
     subscriptionTiers: 'Subscription Tiers',
+    turnsFilterOptions: 'Turns Filter Options',
     pricing: 'Cost Pricing',
     modelPricing: 'Pricing Management',
     freePool: 'Free Resources',
