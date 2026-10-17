@@ -133,16 +133,20 @@ func TestLeakDetection(t *testing.T) {
 	monitor.Start()
 	defer monitor.Stop()
 
-	// 等待采集几次，应该会触发goroutine告警（当前测试进程的goroutine肯定超过5）
-	time.Sleep(2 * time.Second)
-
-	alerts := monitor.GetAlerts()
-	if len(alerts) == 0 {
-		t.Log("No alerts triggered (might be expected depending on system load)")
-	} else {
-		t.Logf("Triggered %d alerts", len(alerts))
-		for _, alert := range alerts {
-			t.Logf("Alert: %s - %s", alert.AlertType, alert.Message)
+	// 等待采集几次。goroutine 判据是电平判定（不走趋势窗口），阈值 5 对任何
+	// Go 测试进程都必然触发，因此这里可以断言而不是只打日志——原先只 t.Log，
+	// 是一条永远不会红的判据（详见 resource_monitor_leakwindow_test.go 的说明）。
+	deadline := time.Now().Add(5 * time.Second)
+	var goroutineAlerts int
+	for time.Now().Before(deadline) && goroutineAlerts == 0 {
+		time.Sleep(200 * time.Millisecond)
+		for _, a := range monitor.GetAlerts() {
+			if a.AlertType == "goroutine_leak_suspected" {
+				goroutineAlerts++
+			}
 		}
+	}
+	if goroutineAlerts == 0 {
+		t.Fatalf("goroutine 阈值设为 5，测试进程 goroutine 必然超过，却 5s 内未触发任何 goroutine_leak_suspected")
 	}
 }

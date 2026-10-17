@@ -375,3 +375,110 @@ sha 的门，它**逐条比对登记值与文件实测值**；改错 sha 它会�
 下一结论前先确认自己验的确实是那个命题。
 （若当时直接照着错误结论加一道 sha 门，就会造出一道与
 `TestRegistryShaIsActuallyTheFile` 重复的判据。）
+
+---
+
+## 九、收尾轮新发现：主网关 `resource_monitor.log` 里 30% 是泄漏误报（本轮已修）
+
+这一节是收尾阶段补扫出来的——前面七节盯着 quality-service 与慢 SQL，
+**漏了主网关自己**（它跑在 `slots/8781/gateway`，日志在
+`/opt/llm-gateway-go/logs/resource_monitor.log`，与本文件前七节的全不是一个面）。
+
+### 实测
+
+| 量 | 实测值 |
+|---|---|
+| 日志总行数 | 22,645 |
+| 其中告警行 | **6,767（占 30%）** |
+| `memory_leak_suspected` | **6,646** |
+| `fd_leak_suspected` | 121 |
+| 最长跑进程（pid 2539639，14.7 小时 / 1,761 采样）RSS | **181→293MB 震荡，全程无趋势** |
+| 日增 | 约 2,800 行/天，其中约 1,800 行是误报 |
+
+**不是泄漏**：`heap_in_use_mb` 在 62~136MB 之间震荡、`heap_released_mb`
+68~124MB、`num_gc` 正常推进——这是 Go 稳态堆的正常锯齿。告警里的
+「Memory growing at N MB/min」全是 12/14/16/…/28 的**偶数整数且均匀分布**，
+这本身就是随机差值的指纹，不是趋势。
+
+### 根因（`pkg/monitor/resource_monitor.go`）
+
+原判定只比较**相邻两个采样点**：
+
+```go
+memDelta := int64(current.MemoryStats.RSSMB) - int64(last.MemoryStats.RSSMB)
+memGrowth := float64(memDelta) / duration
+if memGrowth > memoryGrowthThreshold {   // 默认 10 MB/min
+```
+
+折算一下就明白为什么它必然常亮：
+
+- 采样间隔默认 **30 秒**，阈值 10MB/min 折到 30 秒 = **只需 5MB 差值**；
+- 而 GC 锯齿幅度实测 **±35~70MB**（RSS 高水位 ≈ `HeapSysMB` 243~283MB，
+  低水位 ≈ `heap_in_use` 62~136MB，周期约 2~3 分钟）。
+
+⇒ 5MB 的判定门槛 vs ±35MB 的噪声，**噪声比信号大一个量级**，于是 100% 触发。
+这不只是吵：**同一片噪声也让「缓慢但真实的泄漏」无法与锯齿区分**，
+即这个判据同时「误报极高」且「漏报不可辨」——最坏的组合。
+
+### 修法：相邻两点差值 → 跨窗口趋势
+
+新增 `recentSnapshots` 环形缓冲 + `LeakWindow`（默认 15 分钟，
+`LLM_GATEWAY_LEAK_WINDOW` 可调），判定基线取**窗口内最早**的采样点；
+窗口未铺满时**不判定**（否则等于偷偷退回相邻两点）。
+
+**代价是有意接受并写进注释的**：发现延迟从一个采样周期变成一个窗口；
+阈值语义从「瞬时速率」变为「窗口内持续速率」（默认 15 分钟 × 10MB/min
+= 要持续涨 150MB 才报，属「只报严重泄漏」）。需要更灵敏就调小 `LeakWindow`。
+
+### 踩到并修掉的一个自造回归
+
+改完后我把 `TestLeakDetection`（原本只有 `t.Log`、**永远不会红**的空判据）
+补成真断言——它当场变红，查下去是**代码错了不是判据错了**：
+我把 goroutine 检查放在了 `leakBaseline` 提前 return **之后**，
+等于让一个**电平判定**（count > threshold）被 15 分钟窗口门控住、静默停摆。
+已把 goroutine 分支移回提前 return 之前，并用变异 4（把该分支挪回去）
+钉住这个形态。
+
+⇒ 这是纪律第 11 条的又一次生效：**红的不一定是判据，也可能是刚写的代码。**
+
+### 变异验证（4 个，全部判别正确）
+
+| 变异 | 变红的判据 |
+|---|---|
+| 1 基线退回相邻两点（还原原缺陷） | 3 条「不报」判据 |
+| 2 `leakBaseline` 恒返回 nil | 3 条「要报」判据 |
+| 3 去掉「窗口未铺满」检查 | 2 条（含 SilentUntilWindowIsFull） |
+| 4 goroutine 检查挪到提前 return 之后 | `TestLeakDetection` |
+
+### 量具坑留档
+
+按 pid grep 告警会得到「0 条」，因为 `LeakAlert` 结构体**没有 pid 字段**、
+告警行是独立的 `{"alert":…,"type":"leak_alert"}` JSON 行，与快照行不同源。
+一度差点把那个 0 当成「该进程没有告警」的证据——**它只证明我 grep 的方式不对**。
+
+---
+
+## 十、顺带定位到、但**需要 owner 决策**的一处：`collector-service` 被存储迁移淘汰却没人退役
+
+不在本轮实施范围（退役生产服务属不可逆动作），但根因清楚，留档：
+
+- `collector-service.service` 自 **2026-10-15 06:43:27** 起 `failed`
+  （`status=1/FAILURE`），已挂 2 天，状态一直是 failed 而非被干净地 `masked`
+  （对照：同机 `llmgo-245.service` 就是 `masked` 的干净退役形态）。
+- 死因写在它自己的日志里，且**每分钟一次**、连续刷了至少 5 分钟：
+
+  ```
+  ERROR minute aggregation failed error="分钟级聚合失败:
+        pq: relation \"request_logs\" does not exist at position 33:6 (42P01)"
+  ```
+
+- 即：`request_logs` 表已不存在——**正是 S3 波 2「request_logs 族停写」
+  迁移的后果**。collector-service 仍钉在旧表名上，被淘汰了却没被退役。
+- 这与本轮第三节里 `internal/quality/minute_aggregator.go` 那 77 行改动
+  是**同一族迁移的两面**：quality-service 已经改读新源，collector-service
+  还在旧源上。
+
+⇒ **待 owner 决策**：是把该单元 `systemctl mask`（干净退役，对齐
+`llmgo-245.service` 的处理），还是另有它用。
+留 failed 状态的代价是它会一直出现在 `systemctl list-units --failed`
+和任何按失败单元告警的规则里，是**常驻噪声源**。
