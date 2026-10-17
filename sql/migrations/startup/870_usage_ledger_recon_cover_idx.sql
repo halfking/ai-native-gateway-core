@@ -30,14 +30,12 @@
 --   按行数与 heap 比例外推，9 月分区（1,416,772 行 / 261MB heap）约 10s 量级。
 --
 -- ★ 为什么建在**父表**上（这是与既有 0 字节索引的关键差别）：
---   父表上已有一个 `usage_ledger_ts_tenant_cover_agg_idx`，它是 `ON ONLY`、
---   **0 字节**、且没有分区带它——看起来像「索引没落到分区」。
---   实测为假：分区创建路径（create_next_month_partitions / ensure_usage_ledger_partition
---   都用 `CREATE TABLE ... PARTITION OF usage_ledger`）会**各自**建等价索引并自动改名
---   （如 usage_ledger_2026_09_ts_tenant_id_prompt_tokens_completion__idx）。
---   关键差别在于 **`ON ONLY` 会抑制级联**：本文件用普通 CREATE INDEX，
---   PG 会把它建到**所有现存分区**，而 `PARTITION OF` 建出的**未来分区自动继承**
---   父表索引 ⇒ 不会像 ON ONLY 那样留下「下个月又缺」的缺口。
+--   父表上已有一个 `usage_ledger_ts_tenant_cover_agg_idx`，它同样是 0 字节、
+--   而各分区另有自动改名的等价索引 —— **单看「父表 0 字节」判不出成败**。
+--   见下面「怎么验收」一节：父表的 0 字节与 `ON ONLY` 字样是**分区父表的
+--   正常渲染**，真正的判据是**分区上有没有**。
+--   本文件用普通 CREATE INDEX（**不带 ON ONLY**）：`ON ONLY` 作为**创建选项**
+--   会抑制向分区的级联，而本文件要的就是级联。
 --
 -- 上线方式（大表，参照 867 的同名分治）：
 --   PG **不支持**在分区父表上 CREATE INDEX CONCURRENTLY，因此本文件在
@@ -48,6 +46,32 @@
 --   建议在低峰窗口执行。
 --
 -- 回滚：870_..._down.sql 按名删索引，不动数据。
+--
+-- ---------------------------------------------------------------------------
+-- 怎么验收（★ 2026-10-17 实测踩过，别再按父表大小判成败）
+--
+-- 应用后**父表上** `idx_usage_ledger_recon_cover` 会显示为 **0 bytes**，且
+-- `pg_get_indexdef` 一定带 `ON ONLY` 字样 —— **这是分区父表的正常渲染**，
+-- 不是「索引没建出来」。分区父表的索引本体只是个模板，容量计在分区上。
+--
+-- 验收必须查**分区级**是否存在，且**按定义匹配、不能按索引名匹配**：
+-- PG 会用**列名**给分区索引自动改名（如
+-- `usage_ledger_2026_09_request_id_ts_provider_id_prompt_token_idx`），
+-- 名字里**不含**父索引名的 `cover` —— 按名字 grep 会得出「没建」的假结论
+-- （本轮就这样误判过一次）。
+--
+--   SELECT i.indrelid::regclass::text AS partition,
+--          ic.relname, pg_size_pretty(pg_relation_size(ic.oid)) AS idx_size,
+--          i.indisvalid AND i.indisready AS valid
+--   FROM pg_index i
+--   JOIN pg_class ic ON ic.oid = i.indexrelid
+--   JOIN pg_class tc ON tc.oid = i.indrelid
+--   WHERE pg_get_indexdef(i.indexrelid) LIKE '%INCLUDE (provider_id, prompt_tokens%'
+--   ORDER BY 1;
+--
+-- 期望：4 个分区各一行且 valid=t（应用后实测 2026-09 = 158MB、2026-10 = 45MB，
+-- 两个空月分区各 8192 bytes）。真正的收益判据是执行计划转为
+-- **Index Only Scan** 且 ts 谓词进入 Index Cond。
 
 BEGIN;
 
