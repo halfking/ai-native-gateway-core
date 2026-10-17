@@ -61,27 +61,58 @@ func getProviderSourceText(t *testing.T) string {
 	return body[start : start+end]
 }
 
-// getProviderSQL 返回 getProvider 里**去掉 SQL 行注释后**的语句体。
+// getProviderSQLLiteral 返回 getProvider 里那段**逐字**SQL（含注释）。
 //
-// 为什么必须先去注释：本文件要断言的视图名 request_logs_with_current_month
-// 恰恰被写进了那段解释「为什么不再读它」的注释里。不剥离注释的话，
-// 判据会对注释报错——逼人删掉事故记录，或者把判据改成能被注释糊弄过去的
-// 形态，两种都是把判据钉在错的东西上。判据只该看代码。
-func getProviderSQL(t *testing.T) string {
+// 为什么要逐字取而不是在测试里抄一份：本判据最初的版本把 SQL 抄在测试文件里，
+// 结果 2026-10-18 真的漏了一次 —— providers.go 里有两行注释被误写成 Go 的
+// `//` 而不是 SQL 的 `--`，raw string 里就成了 SQL 正文，线上报
+// `syntax error at or near "同属"`，而当时**全部**判据仍然全绿：
+// 源码不变量那几条只看视图名/关联条件（`//` 行不含它们），
+// 真库那条跑的是测试自己那份抄件、与线上 SQL 早已不是一回事。
+// 抄件判的是抄件，不是被测物。改成逐字取之后，同类错误会让真库判据直接红。
+func getProviderSQLLiteral(t *testing.T) string {
 	t.Helper()
+	body := getProviderSourceText(t)
+	const open = "h.db.QueryRow(ctx, `"
+	i := strings.Index(body, open)
+	if i < 0 {
+		t.Fatal("cannot locate the getProvider SQL literal")
+	}
+	rest := body[i+len(open):]
+	j := strings.Index(rest, "`, id).Scan(")
+	if j < 0 {
+		t.Fatal("cannot locate the end of the getProvider SQL literal")
+	}
+	return rest[:j]
+}
+
+// stripSQLComments 去掉 SQL 行注释后再做「不得出现某视图名」这类断言。
+// 本文件要断言的视图名恰恰被写进了那段解释「为什么不再读它」的注释里，
+// 不剥离的话判据会对注释报错——逼人删事故记录，或把判据改成能被注释糊弄
+// 过去的形态。判据只该看代码。
+func stripGetProviderSQLComments(sql string) string {
 	var kept []string
-	for _, line := range strings.Split(getProviderSourceText(t), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "--") {
+	for _, line := range strings.Split(sql, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "--") {
 			continue
-		}
-		// 注释可能接在语句尾（"... IS NULL -- note"）。
-		if i := strings.Index(line, "--"); i >= 0 {
-			line = line[:i]
 		}
 		kept = append(kept, line)
 	}
 	return strings.Join(kept, "\n")
+}
+
+// TestGetProviderSQLLiteralHasNoGoComments 钉住上面那次的具体事故形态：
+// SQL 字面量里混入 Go 风格 `//` 注释行 —— 在 raw string 中它不是注释，是
+// SQL 正文，会变成 `syntax error at or near ...`。
+func TestGetProviderSQLLiteralHasNoGoComments(t *testing.T) {
+	sql := getProviderSQLLiteral(t)
+	for i, line := range strings.Split(sql, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "//") {
+			t.Errorf("getProvider SQL literal line %d starts with Go comment //: %q — "+
+				"inside a raw string this is SQL text, not a comment, and the query "+
+				"fails with a syntax error at run time", i+1, strings.TrimSpace(line))
+		}
+	}
 }
 
 // TestGetProviderNeverScansCanonicalViewForErrorRate 是本题的主判据。
@@ -90,7 +121,7 @@ func getProviderSQL(t *testing.T) string {
 // 可能在别的子查询里正当出现。这里把范围收窄到 getProvider 整个函数体，
 // 并要求 error_rate_24h 的读面必须是 request_stats_minute。
 func TestGetProviderNeverScansCanonicalViewForErrorRate(t *testing.T) {
-	body := getProviderSQL(t)
+	body := stripGetProviderSQLComments(getProviderSQLLiteral(t))
 
 	if strings.Contains(body, "request_logs_with_current_month") {
 		t.Error("getProvider must not read request_logs_with_current_month: " +
@@ -110,7 +141,7 @@ func TestGetProviderNeverScansCanonicalViewForErrorRate(t *testing.T) {
 // TestGetProviderErrorRatePushesProviderFilterDown 钉住第二个结构性问题：
 // 聚合必须挂在 p.id 上，否则 LEFT JOIN 派生表会把单行过滤挡在聚合之外。
 func TestGetProviderErrorRatePushesProviderFilterDown(t *testing.T) {
-	body := getProviderSQL(t)
+	body := stripGetProviderSQLComments(getProviderSQLLiteral(t))
 
 	// 旧形态：先聚合全部 provider 再 LEFT JOIN 回来。
 	if strings.Contains(body, "er ON er.provider_id = p.id") {
@@ -184,15 +215,10 @@ func TestGetProviderErrorRateRealDBWithinHandlerBudget(t *testing.T) {
 	}
 	want := float64(wantFail) / float64(wantReqs)
 
-	// 与 providers.go:781 起的表达式保持一致（相关子查询 + provider/tenant 过滤）。
-	const q = `
-		SELECT COALESCE((SELECT SUM(s.failure_count)::float8 / NULLIF(SUM(s.requests), 0)
-		                   FROM request_stats_minute s
-		                  WHERE s.provider_id = p.id
-		                    AND s.tenant_id = p.tenant_id
-		                    AND s.bucket >= now() - interval '24 hours'), 0)
-		  FROM providers p
-		 WHERE p.id = $1 AND p.tenant_id = 'default' AND p.deleted_at IS NULL`
+	// 跑 providers.go 里逐字取出的真实 SQL（见 getProviderSQLLiteral 的说明：
+	// 抄件判的是抄件，不是被测物）。它有 22 个 Scan 目标，这里只取 error_rate
+	// 那一列来判断预算与数值是否正确。
+	q := getProviderSQLLiteral(t)
 
 	// 生产失败形态：handler 的 ctx 就是 5s。
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

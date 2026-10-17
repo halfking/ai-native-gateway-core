@@ -812,8 +812,8 @@ func (h *Handler) getProvider(w http.ResponseWriter, r *http.Request, id int) {
 		--
 		-- 换源不是新发明：usageTrendSource（admin/usage_trend_series.go）
 		-- 早就把「带 provider 过滤」的读面分档到 request_stats_minute，
-		// 注释写明理由就是「避免明细分区慢扫」。error_rate_24h 同属
-		// provider 过滤的聚合，按同一条分档走。
+		-- 注释写明理由就是「避免明细分区慢扫」。error_rate_24h 同属
+		-- provider 过滤的聚合，按同一条分档走。
 		--
 		-- 口径变化（已知且接受）：视图臂排除了有 session turn 的行，滚存臂
 		-- 不排；分子分母的总体因此不同。本机同窗实测 provider 14：
