@@ -9,7 +9,7 @@
 // 且所有「节点在第几行」的断言失效。抖动来自 id 的稳定哈希，不用 Math.random()。
 
 import {
-  GATEWAY_MODULES,
+  GATEWAY_CORE_ID,
   TOPO_COLUMNS,
   type GatewayCoreBox,
   type TopoColumn,
@@ -110,31 +110,47 @@ export function fitRow(width: number, reservingFoldSlot: boolean): { visible: nu
   }
   return plainFallback ?? { visible: 1, cardW: Math.max(1, Math.min(NODE_W, inner)), foldable: false }
 }
-/** 每层中心线的高度占比（自上而下）。网关核心那一层由大方块自己占位。 */
+/** 每层中心线的高度占比（自上而下）。网关核心那一层由大方块自己占位。
+ *  model 行的占比必须满足 `ratio*480 + NODE_H/2 ≤ 480`（最小画布高度下
+ *  卡片不沉出画布）—— 0.965 曾在 h=480 把卡底推到 484。 */
 const ROW_RATIO: Record<TopoColumn, number> = {
-  client: 0.09,
-  gateway: 0.5,
-  provider: 0.74,
-  model: 0.93,
+  client: 0.075,
+  gateway: 0.47, // 大方块中心线（rowY.gateway = box 中心；无卡片，仅标签用）
+  provider: 0.85,
+  model: 0.95,
 }
 
 /**
- * 网关核心大方块：横向占 78%。
+ * 网关核心大方块：三带布局（进站链 / 存储转发带 / 出站链）。
  *
- * 高度占比 0.40 是**算出来的**，不是拍脑袋：大方块底边必须让开供应端
- * 节点卡的**上沿**（`rowY.provider - NODE_H/2`），而不能只让开中心线。
- * 取 0.42 时底边落在 440、节点卡上沿 438 —— 压了 2px，肉眼几乎看不出，
- * 但它是真重叠，所以判据按节点卡而不是按中心线来钉。
+ * 高度是**夹出来的**，不是纯比例：按比例取高在超高画布（预览页实测
+ * 1723px）会把大方块拉成 1000px+ 的空框 —— 三条带的内容只有 ~200px，
+ * 其余全是空白，读图的人只会觉得「图坏了」。所以：
+ *  - 上限 GATEWAY_BOX_MAX_H（内容带高的紧包裹）；
+ *  - 下限不设（小画布按比例走，能多小是多小）；
+ *  - 垂直位置在客户端行卡片底边与供应端行卡片顶边之间**居中**。
+ *
+ * 几何约束（判据钉死，见 liveTopologyLayout.test.ts「大方块与行重叠」）：
+ *  - box 顶边必须在客户端行卡片**底边**之下（client rowY + NODE_H/2）；
+ *  - box 底边必须在供应端行卡片**顶边**之上（provider rowY - NODE_H/2）；
+ *  - 按节点卡而不是中心线判 —— 2026-10-17 轮 hRatio=0.42 压了 2px 的教训。
  */
-const GATEWAY_BOX = { xRatio: 0.11, yRatio: 0.29, wRatio: 0.78, hRatio: 0.4 }
+const GATEWAY_BOX = { xRatio: 0.05, wRatio: 0.9, hRatio: 0.62 }
+/** 大方块高度上限：三条内容带的紧包裹（浏览器实测约 200~260px，留余量）。 */
+const GATEWAY_BOX_MAX_H = 320
 /**
- * 3×3 网格。`header` 是**必须预留的标题带**：
- * 大方块顶部有一行「网关核心 · 缓存·脱敏·…」的标题（组件里是正常流的
- * `.gw__head`，不在格子里）。不预留的话第一行模块会从 `pad=10px` 处
- * 开始，正好被标题压住 —— 这是真实组件里同样会发生的重叠，
- * 所以必须在**布局函数**里让开，而不是靠 CSS 碰运气。
+ * 大方块内部：标题带 + 三条流程带。带高占比按内容密度分配：
+ * 进站链最多格（4 格 + 插件 chip）→ 最高；存储带两格 + 队列徽标 → 中；
+ * 出站链三格（旁路）→ 与进站等高。gapPx 是带与带之间的空隙。
  */
-const GATEWAY_GRID = { cols: 3, rows: 3, pad: 10, gap: 8, header: 28 }
+const GATEWAY_LANES: Array<{ lane: 'in' | 'store' | 'out'; ratio: number }> = [
+  { lane: 'in', ratio: 0.36 },
+  { lane: 'store', ratio: 0.28 },
+  { lane: 'out', ratio: 0.36 },
+]
+const GATEWAY_BOX_HEADER = 26
+const GATEWAY_LANE_GAP = 6
+const GATEWAY_BOX_PAD = 8
 
 /** 稳定字符串哈希（FNV-1a 32bit）：只用于派生抖动，不用于安全。 */
 export function stableHash(input: string): number {
@@ -152,25 +168,28 @@ function jitter(id: string, salt: number, min: number, max: number): number {
   return min + unit * (max - min)
 }
 
-/** 计算网关核心大方块的几何（内部 3×3 模块格）。 */
+/** 计算网关核心大方块的几何（内部三条流程带）。 */
 export function computeGatewayBox(width: number, height: number): GatewayCoreBox {
   const x = Math.round(width * GATEWAY_BOX.xRatio)
-  const y = Math.round(height * GATEWAY_BOX.yRatio)
   const w = Math.round(width * GATEWAY_BOX.wRatio)
-  const h = Math.round(height * GATEWAY_BOX.hRatio)
-  const innerW = w - GATEWAY_GRID.pad * 2
-  const innerH = h - GATEWAY_GRID.pad * 2 - GATEWAY_GRID.header
-  const cellW = (innerW - GATEWAY_GRID.gap * (GATEWAY_GRID.cols - 1)) / GATEWAY_GRID.cols
-  const cellH = (innerH - GATEWAY_GRID.gap * (GATEWAY_GRID.rows - 1)) / GATEWAY_GRID.rows
-  const gridTop = y + GATEWAY_GRID.pad + GATEWAY_GRID.header
-  const cells = GATEWAY_MODULES.map((mod) => ({
-    key: mod.key,
-    x: Math.round(x + GATEWAY_GRID.pad + mod.col * (cellW + GATEWAY_GRID.gap)),
-    y: Math.round(gridTop + mod.row * (cellH + GATEWAY_GRID.gap)),
-    w: Math.round(cellW),
-    h: Math.round(cellH),
-  }))
-  return { x, y, w, h, cells }
+  // 高度：比例值，夹在 [可用净空, 内容紧包裹上限] 内；再在净空里垂直居中。
+  const clientBottom = Math.round(height * ROW_RATIO.client + NODE_H / 2)
+  const providerTop = Math.round(height * ROW_RATIO.provider - NODE_H / 2)
+  const clearance = Math.max(0, providerTop - clientBottom - 8)
+  const h = Math.max(120, Math.min(Math.round(height * GATEWAY_BOX.hRatio), clearance, GATEWAY_BOX_MAX_H))
+  const y = Math.round((clientBottom + providerTop) / 2 - h / 2)
+  // 三带自标题带之下依次排布；带间留 GATEWAY_LANE_GAP。
+  const innerTop = y + GATEWAY_BOX_PAD + GATEWAY_BOX_HEADER
+  const innerBottom = y + h - GATEWAY_BOX_PAD
+  const innerH = Math.max(0, innerBottom - innerTop - GATEWAY_LANE_GAP * (GATEWAY_LANES.length - 1))
+  const lanes = [] as GatewayCoreBox['lanes']
+  let cursor = innerTop
+  for (const lane of GATEWAY_LANES) {
+    const laneH = Math.round(innerH * lane.ratio)
+    lanes.push({ lane: lane.lane, x, y: cursor, w, h: laneH })
+    cursor += laneH + GATEWAY_LANE_GAP
+  }
+  return { x, y, w, h, lanes }
 }
 
 export function computeLayout(input: LayoutInput): TopoLayout {
@@ -181,7 +200,10 @@ export function computeLayout(input: LayoutInput): TopoLayout {
 
   const rowY = {} as Record<TopoColumn, number>
   for (const column of TOPO_COLUMNS) {
-    rowY[column] = Math.round(height * ROW_RATIO[column])
+    rowY[column] =
+      column === 'gateway'
+        ? Math.round(gateway.y + gateway.h / 2)
+        : Math.round(height * ROW_RATIO[column])
   }
 
   const laid: TopoLayoutNode[] = []
@@ -283,7 +305,25 @@ export function computeLayout(input: LayoutInput): TopoLayout {
     }
   }
 
-  const byId = new Map(laid.map((n) => [n.id, n]))
+  const byId = new Map<string, TopoLayoutNode>(laid.map((n) => [n.id, n]))
+  // ★ 2026-10-18 修复「客户端对网关核心没有连线」：gateway:core 不进 laid
+  //（卡片由 GatewayCoreBox 大方块渲染），但**必须进 byId** —— 否则所有
+  // `client→gateway:core`、`gateway:core→provider` 边在下面 `if (!a || !b)
+  // continue` 处被静默丢弃，图上只剩 provider→model 一段（上游真实缺陷，
+  // owner 在 2026-10-18 轮报告）。合成节点矩形 = 大方块整体，让边锚到
+  // 方块的顶边/底边而不是中心。
+  byId.set(GATEWAY_CORE_ID, {
+    id: GATEWAY_CORE_ID,
+    column: 'gateway',
+    label: 'gateway',
+    health: 'healthy',
+    live: true,
+    metric: { requests: 0, success: 0, failure: 0, tokens: 0, inFlight: 0 },
+    x: gateway.x,
+    y: gateway.y,
+    w: gateway.w,
+    h: gateway.h,
+  })
   const edgeByKey = new Map<string, TopoLayoutEdge>()
   for (const edge of input.edges) {
     // 被折叠的节点：链路改指折叠节点，保持连通；两端都折叠到同一个就成自环，丢掉。
@@ -299,6 +339,12 @@ export function computeLayout(input: LayoutInput): TopoLayout {
     if (existing) {
       existing.requests += edge.requests
       existing.failure += edge.failure
+      if (!existing.protocolCounts && edge.protocolCounts) existing.protocolCounts = { ...edge.protocolCounts }
+      else if (edge.protocolCounts) {
+        for (const [proto, n] of Object.entries(edge.protocolCounts)) {
+          existing.protocolCounts![proto] = (existing.protocolCounts![proto] ?? 0) + n
+        }
+      }
       existing.lastStatus = edge.lastStatus ?? existing.lastStatus
       if (typeof edge.lastLatencyMs === 'number') existing.lastLatencyMs = edge.lastLatencyMs
       // 记下这条被并进来的原始 id，否则折叠后高亮找不到它
@@ -309,8 +355,17 @@ export function computeLayout(input: LayoutInput): TopoLayout {
     const downward = a.y <= b.y
     const y1 = downward ? a.y + a.h : a.y
     const y2 = downward ? b.y : b.y + b.h
-    const x1 = a.x + a.w / 2
-    const x2 = b.x + b.w / 2
+    // 与网关大方块相连的边：锚点沿方块顶/底边**散开**（按对端 x 收进方块
+    // 水平范围 + 确定性抖动），而不是全部挤到方块中心 —— 中心汇聚会让
+    // 多客户端/多供应端时图退化成一束麻线。
+    const anchorX = (self: TopoLayoutNode, other: TopoLayoutNode, edgeKey: string): number => {
+      if (self.id !== GATEWAY_CORE_ID) return self.x + self.w / 2
+      const inset = 28
+      const clamped = Math.max(self.x + inset, Math.min(self.x + self.w - inset, other.x + other.w / 2))
+      return clamped + jitter(edgeKey, 4, -10, 10)
+    }
+    const x1 = anchorX(a, b, key)
+    const x2 = anchorX(b, a, key)
     const midY = (y1 + y2) / 2
     const bow = jitter(key, 3, -14, 14)
     edgeByKey.set(key, {
@@ -356,6 +411,27 @@ export function isEdgeHighlighted(
 export function edgeWidth(requests: number): number {
   if (requests <= 0) return 0.8
   return Math.min(5, 0.8 + Math.log10(requests + 1) * 1.6)
+}
+
+/**
+ * 三次贝塞尔路径上的点（lateral = 垂直于弦向的横向散开）。
+ * 画布粒子与协议 chip 的定位**必须共用这一份实现** —— 各写一份
+ * 必然在某次调整 path 形状后分叉（chip 漂到线外）。
+ */
+export function bezierPoint(
+  path: Array<{ x: number; y: number }>,
+  t: number,
+  lateral: number,
+): { x: number; y: number } {
+  const [p0, p1, p2, p3] = path
+  const u = 1 - t
+  const x = u * u * u * p0.x + 3 * u * u * t * p1.x + 3 * u * t * t * p2.x + t * t * t * p3.x
+  const y = u * u * u * p0.y + 3 * u * u * t * p1.y + 3 * u * t * t * p2.y + t * t * t * p3.y
+  const nx = p3.y - p0.y
+  const ny = -(p3.x - p0.x)
+  const norm = Math.hypot(nx, ny) || 1
+  const spread = Math.sin(Math.PI * t) * lateral * 7
+  return { x: x + (nx / norm) * spread, y: y + (ny / norm) * spread }
 }
 
 /** 粒子大小（半径 px）：按该请求 token 量分 3 档；无 token 走中档。 */

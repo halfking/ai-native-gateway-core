@@ -1,15 +1,16 @@
 <script setup lang="ts">
-// ProviderResponsePanel.vue —— 右侧「供应商端响应」面板（2026-10-17）
+// ProviderResponsePanel.vue —— 右侧「供应商端响应」面板（2026-10-18 分页版）
 //
-// 维护者要求：右侧显示供应商端响应的请求，**可以点击放大**。
-// 放大不做成 el-dialog/el-drawer（本仓 ui-audit 对弹层有形态契约，且弹窗会遮挡
-// 拓扑），而是发出 `zoom` 事件由父层渲染**内联放大面板**（覆盖式、可关），
-// 这样拓扑图始终在视野里，放大的是「细节」而不是「另一个页面」。
+// 右侧显示供应商端响应的请求，**可以点击放大**（内联覆盖面板，不是弹窗 ——
+// 本仓 ui-audit 对弹层有形态契约，且弹窗会遮挡拓扑）。
+// 2026-10-18 owner 拍板：分页输出，单页 ≤50 条；点行即看详情（⤢ 保留）。
 
+import { computed, ref, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { PanelEntry } from '../../composables/useLiveTopology'
+import { PANEL_PAGE_SIZE } from '../../types/liveTopology'
 
-defineProps<{
+const props = defineProps<{
   responses: PanelEntry[]
   activeRequestId?: string
 }>()
@@ -20,6 +21,29 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+
+const page = ref(1)
+const pageCount = computed(() => Math.max(1, Math.ceil(props.responses.length / PANEL_PAGE_SIZE)))
+const pagedResponses = computed(() =>
+  props.responses.slice((page.value - 1) * PANEL_PAGE_SIZE, page.value * PANEL_PAGE_SIZE),
+)
+watch(pageCount, (pages) => {
+  if (page.value > pages) page.value = pages
+})
+
+const listRef = ref<HTMLElement | null>(null)
+watch(page, async () => {
+  await nextTick()
+  if (listRef.value) listRef.value.scrollTop = 0
+})
+
+function prevPage() {
+  if (page.value > 1) page.value -= 1
+}
+
+function nextPage() {
+  if (page.value < pageCount.value) page.value += 1
+}
 
 function statusClass(status: string): string {
   switch (status) {
@@ -57,10 +81,10 @@ function tokens(value: number | null | undefined): string {
       <span class="pp__title">{{ t('liveTopology.panel.providers') }}</span>
       <span class="pp__hint">{{ t('liveTopology.panel.zoomHint') }}</span>
     </header>
-    <ul class="pp__list">
-      <li v-for="entry in responses" :key="entry.requestId">
+    <ul ref="listRef" class="pp__list" data-testid="provider-response-list">
+      <li v-for="entry in pagedResponses" :key="entry.requestId">
         <div class="pp__row" :class="[statusClass(entry.status), { 'is-active': entry.requestId === activeRequestId, 'is-probe': entry.isProbe }]">
-          <button type="button" class="pp__main" @click="emit('select-request', entry.requestId)">
+          <button type="button" class="pp__main" @click="emit('zoom', entry)">
             <span class="pp__line">
               <span class="pp__time">{{ clock(entry.ts) }}</span>
               <span class="pp__provider">{{ entry.provider }}</span>
@@ -85,6 +109,24 @@ function tokens(value: number | null | undefined): string {
       </li>
     </ul>
     <p v-if="!responses.length" class="pp__empty">{{ t('liveTopology.panel.empty') }}</p>
+
+    <footer v-if="responses.length" class="pp__pager" data-testid="provider-response-pager">
+      <button
+        type="button"
+        class="pp__page-btn"
+        :disabled="page <= 1"
+        data-testid="provider-page-prev"
+        @click="prevPage"
+      >‹</button>
+      <span class="pp__page-info">{{ t('liveTopology.panel.page', { page, pages: pageCount }) }} · {{ t('liveTopology.panel.total', { n: responses.length }) }}</span>
+      <button
+        type="button"
+        class="pp__page-btn"
+        :disabled="page >= pageCount"
+        data-testid="provider-page-next"
+        @click="nextPage"
+      >›</button>
+    </footer>
   </aside>
 </template>
 
@@ -229,5 +271,40 @@ function tokens(value: number | null | undefined): string {
   margin: 8px 4px 0;
   font-size: 11px;
   color: var(--kx-muted);
+}
+
+.pp__pager {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 5px 4px 0;
+  border-top: 1px solid var(--kx-border);
+}
+
+.pp__page-btn {
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--kx-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--kx-text);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pp__page-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.pp__page-info {
+  font-size: 10px;
+  color: var(--kx-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 </style>

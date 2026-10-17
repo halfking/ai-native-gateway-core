@@ -295,6 +295,13 @@ type v2DispatchDeps struct {
 	// 在此之前这里是一个死接线：main.go 在 v2DispatchMux 返回之后才赋值，
 	// 而插件用的是本函数内的局部引擎，reload 返回 200 但词表纹丝不动。
 	SensitiveWordEngine *sensitive.SensitiveWordEngine
+
+	// SecurityRegistry (2026-10-18) 治理插件注册中心的回传口。
+	// secRegistry 在 buildV2DispatchPipeline 内创建并装配到治理 stage，
+	// 这里回传给 main.go，让 /api/admin/topology/plugins 读到的是
+	// **真正拦流量的那个注册中心**（与 SensitiveWordEngine 同款共享接线，
+	// 避免再造一份静态清单漂移）。
+	SecurityRegistry *security.Registry
 }
 
 // buildV2DispatchPipeline assembles the Hook Pipeline used by the v2
@@ -449,6 +456,7 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	enhancedPIPlugin := securityplugins.NewPromptInjectionEnhancedPlugin()
 	secRegistry.MustRegister(enhancedPIPlugin)
 	deps.EnhancedPIPlugin = enhancedPIPlugin
+	deps.SecurityRegistry = secRegistry
 
 	p.AddStage(&pipeline.PipelineStage{
 		Name: "governance_security", Phase: pipeline.PhaseGovernance, Mode: pipeline.ModeSequential,

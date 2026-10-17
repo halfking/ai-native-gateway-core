@@ -74,6 +74,10 @@ vi.mock('../composables/useLiveStream', async () => {
 
 vi.mock('../api/topology', () => ({
   getProvidersToday: vi.fn().mockResolvedValue({ day_utc: '2026-10-17', totals: {}, items: [] }),
+  getTopologyPlugins: vi.fn().mockResolvedValue({
+    builtin: [{ name: 'prompt_injection', direction: 'input' }],
+    external: [{ plugin_id: 'ai-session-manager', plugin_version: '1.0.0', status: 'ready' }],
+  }),
 }))
 
 // 左下统计栏在这个判据里只验「是否收到同一个过滤值」，统计口径由
@@ -130,16 +134,19 @@ const REQUESTS: Frame[] = [
     ts: new Date().toISOString(), request_id: 'r-ds-1', status: 'success',
     provider_code: 'deepseek', credential_id: 7, canonical_name: 'glm-4.5',
     agent_name: 'claude-code', total_tokens: 900, latency_ms: 1200, gw_session_id: 's-1',
+    client_protocol: 'openai',
   },
   {
     ts: new Date().toISOString(), request_id: 'r-ds-2', status: 'failure',
     provider_code: 'deepseek', credential_id: 7, canonical_name: 'glm-4.5',
     agent_name: 'claude-code', total_tokens: 0, error_kind: 'upstream_timeout',
+    client_protocol: 'openai',
   },
   {
     ts: new Date().toISOString(), request_id: 'r-mm-1', status: 'success',
     provider_code: 'moonshot', credential_id: 8, canonical_name: 'kimi-k2',
     agent_name: 'codex', total_tokens: 4200, latency_ms: 800,
+    client_protocol: 'anthropic',
   },
   // ★ 网关阶段就被拒的请求：**从来没有派发到任何供应端节点**（无 provider/凭据）。
   // 它必须出现在左栏（客户端确实发了），但**不能**出现在右栏（供应商没收到）。
@@ -354,5 +361,127 @@ describe('LiveTopologyView filter convergence', () => {
     await flushPromises()
     expect(wrapper.findAll('.decisions__row')).toHaveLength(3)
     expect(wrapper.find('.decisions__stage.is-terminal').exists()).toBe(true)
+  })
+})
+
+describe('LiveTopologyView 数据开关（owner 2026-10-18：默认去除，开关默认不选）', () => {
+  const PROBE_AND_INVALID: Frame[] = [
+    {
+      ts: new Date().toISOString(), request_id: 'real-1', status: 'success',
+      provider_code: 'deepseek', credential_id: 7, canonical_name: 'glm-4.5',
+      agent_name: 'claude-code', total_tokens: 100,
+    },
+    // 探测请求（经健康凭据 7）
+    {
+      ts: new Date().toISOString(), request_id: 'probe-1', status: 'success',
+      provider_code: 'deepseek', credential_id: 7, canonical_name: 'glm-4.5',
+      agent_name: 'claude-code', total_tokens: 10, is_probe: true,
+    },
+    // 经无效节点（cred:9 熔断打开）的真实请求
+    {
+      ts: new Date().toISOString(), request_id: 'via-dead-1', status: 'failure',
+      provider_code: 'nvidia', credential_id: 9, canonical_name: 'gpt-6',
+      agent_name: 'codex', total_tokens: 0, error_kind: 'upstream_timeout',
+    },
+  ]
+
+  beforeEach(() => {
+    testApi.setRequests(PROBE_AND_INVALID.map((r) => ({ ...r })))
+    testApi.setNodes([
+      { credential_id: 7, provider_code: 'deepseek', health_status: 'healthy' },
+      { credential_id: 9, provider_code: 'nvidia', circuit_state: 'open' },
+    ])
+    testApi.clearActions()
+    testApi.setConnection('open')
+    testApi.setInitialData(true)
+    testApi.setRedis(true)
+  })
+
+  it('★ hides probe traffic everywhere by default and explains it in a banner', async () => {
+    const { wrapper } = await mountView()
+    // 默认态：探测请求不上任何面板
+    const left = wrapper.findAll('.cp__item').map((i) => i.text()).join('|')
+    expect(left).not.toContain('probe-1')
+    // 但真实请求在场（隐藏是选择性的，不是全灭）
+    expect(left.length).toBeGreaterThan(0)
+    // 横幅说清隐藏了多少条 —— 否则「图上比预期少」会被读成「丢数据」
+    expect(wrapper.get('[data-testid="hidden-counts-banner"]').text()).toContain('已隐藏 1 条探测请求')
+  })
+
+  it('★ shows probe traffic again when the switch is on (?probe=1)', async () => {
+    const { wrapper } = await mountView('/live?probe=1')
+    const checkbox = wrapper.get('[data-testid="toggle-probe"]').get('input')
+    expect((checkbox.element as HTMLInputElement).checked).toBe(true)
+    // 探测标记回到面板（is-probe 样式在，条目也在）
+    expect(wrapper.findAll('.cp__item.is-probe').length).toBe(1)
+    expect(wrapper.get('[data-testid="hidden-counts-banner"]').text()).not.toContain('探测')
+  })
+
+  it('★ hides invalid-node traffic and the node itself by default', async () => {
+    const { wrapper } = await mountView()
+    // 经熔断节点的请求被隐藏
+    const left = wrapper.findAll('.cp__item').map((i) => i.text()).join('|')
+    expect(left).not.toContain('upstream_timeout')
+    // 熔断节点本身也不上图（node_update 不建节点；节点标签是凭据号+健康态）
+    const labels = wrapper.findAll('.topo-node').map((n) => n.attributes('aria-label') ?? '').join('|')
+    expect(labels).not.toContain('#9 · 故障')
+    expect(labels).toContain('#7 · 健康')
+    // 横幅说明
+    expect(wrapper.get('[data-testid="hidden-counts-banner"]').text()).toContain('无效节点')
+  })
+
+  it('★ restores invalid nodes and their traffic when the switch is on (?invalid=1)', async () => {
+    const { wrapper } = await mountView('/live?invalid=1')
+    expect((wrapper.get('[data-testid="toggle-invalid"]').get('input').element as HTMLInputElement).checked).toBe(true)
+    const labels = wrapper.findAll('.topo-node').map((n) => n.attributes('aria-label') ?? '').join('|')
+    expect(labels).toContain('#9 · 故障')
+    // 只开无效开关：探测仍默认隐藏 → real-1 + via-dead-1 共 2 条
+    expect(wrapper.findAll('.cp__item')).toHaveLength(2)
+  })
+
+  it('★ both toggles default to unchecked on a clean URL', async () => {
+    const { wrapper } = await mountView()
+    expect((wrapper.get('[data-testid="toggle-probe"]').get('input').element as HTMLInputElement).checked).toBe(false)
+    expect((wrapper.get('[data-testid="toggle-invalid"]').get('input').element as HTMLInputElement).checked).toBe(false)
+  })
+})
+
+describe('LiveTopologyView 连线与协议标注（owner 2026-10-18）', () => {
+  beforeEach(() => {
+    testApi.setRequests(REQUESTS.map((r) => ({ ...r })))
+    testApi.setNodes([
+      { credential_id: 7, provider_code: 'deepseek', health_status: 'healthy', in_flight: 1 },
+      { credential_id: 8, provider_code: 'moonshot', health_status: 'warning', in_flight: 0 },
+    ])
+    testApi.clearActions()
+    testApi.setConnection('open')
+    testApi.setInitialData(true)
+    testApi.setRedis(true)
+  })
+
+  it('★ renders protocol chips on client→gateway edges (小字标注协议)', async () => {
+    const { wrapper } = await mountView()
+    // claude-code 两条 openai → chip「openai ×2」；codex 一条 anthropic
+    const openai = wrapper.find('[data-testid="proto-chip-openai"]')
+    expect(openai.exists()).toBe(true)
+    expect(openai.text()).toContain('openai')
+    expect(openai.text()).toContain('2')
+    expect(wrapper.find('[data-testid="proto-chip-anthropic"]').text()).toContain('1')
+  })
+
+  it('★ renders plugin chips inside the gateway box from the topology plugins endpoint', async () => {
+    const { wrapper } = await mountView()
+    const inChips = wrapper.find('[data-testid="gw-plugins-in"]').findAll('.gw__plugin')
+    expect(inChips.map((c) => c.text()).sort()).toEqual(['ai-session-manager', 'prompt_injection'].sort())
+  })
+
+  it('highlights the full client→gateway→provider→model path when a request is selected', async () => {
+    const { wrapper } = await mountView()
+    // r-ds-1（claude-code → cred:7 → glm-4.5）：左栏最新在上第 4 条（r-ds-1 最旧）
+    const items = wrapper.findAll('.cp__item')
+    await items[3].trigger('click')
+    await flushPromises()
+    // 选中的是 deepseek 那条：右栏没有 moonshot 高亮，左栏对应条目 is-active
+    expect(wrapper.findAll('.cp__item.is-active').length).toBe(1)
   })
 })

@@ -21,6 +21,8 @@ export default {
     waitingFirstFrame: '已連線，等待本世代首幀資料…',
     filteredEmpty: '目前篩選條件下視窗內沒有請求',
     droppedByWindow: '另有 {n} 筆請求落在目前時間視窗之外，未計入本圖（可放寬視窗檢視）',
+    hiddenProbe: '已隱藏 {n} 筆探測請求',
+    hiddenInvalid: '已隱藏 {n} 筆經無效節點的請求',
   },
   summary: {
     inFlight: '在途 {n}',
@@ -51,6 +53,8 @@ export default {
     failure: '失敗',
     rateLimited: '限流',
     clear: '清空篩選',
+    showProbe: '顯示探測請求',
+    showInvalid: '顯示無效節點',
   },
   rail: {
     title: '供應商當天統計',
@@ -92,7 +96,6 @@ export default {
 
   gateway: {
     title: '網關核心',
-    subtitle: '快取 · 脫敏 · 路由 · 節點狀態 · 會話儲存 · 會話寫入',
     cache: '快取',
     sanitize: '脫敏',
     route: '路由',
@@ -102,6 +105,14 @@ export default {
     errorRecord: '錯誤記錄',
     probeTask: '探測任務',
     taskDetect: '任務識別',
+  },
+  lane: {
+    in: '進 · 請求鏈',
+    out: '出 · 回應鏈',
+    store: '儲存轉發',
+    toProvider: '派發供應端',
+    fromProvider: '供應端返回',
+    queue: '轉發佇列 {n}',
   },
   node: {
     requests: '{n} 次請求',
@@ -120,6 +131,8 @@ export default {
     zoom: '放大檢視',
     zoomHint: '點 ⤢ 放大',
     empty: '視窗內暫無請求',
+    page: '第 {page}/{pages} 頁',
+    total: '共 {n} 筆',
   },
   zoom: {
     title: '請求詳情',
@@ -127,6 +140,7 @@ export default {
     requestId: '請求 ID',
     time: '時間',
     client: '用戶端',
+    protocol: '用戶端協定',
     provider: '供應商',
     node: '節點',
     model: '模型',

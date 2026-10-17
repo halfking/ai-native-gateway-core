@@ -1,16 +1,36 @@
-// liveTopologyLayout.test.ts — 布局判据（2026-10-17 改版：上→下 + 网关核心整体）
+// liveTopologyLayout.test.ts — 布局判据（2026-10-18 三带改版）
 //
 // 核心不变量：
 //  1. **确定性**（同输入同输出）。布局每次刷新重算，一旦引入随机，
 //     运维没法形成肌肉记忆，且所有「节点在第几行」的断言失效。
 //  2. **纵向**（client.y < provider.y < model.y）—— 2026-10-17 维护者拍板
 //     把流程从左→右改成上→下。
-//  3. **网关核心是大方块**：它不再出现在 nodes 里，而是整块的 gateway 几何，
-//     且大方块必须横在客户端层与供应端层之间（否则边会从大方块上面绕过去）。
+//  3. **网关核心是大方块**（三带：进站链/存储转发/出站链）：它不出现在
+//     nodes 里，但 gateway:core **必须进边的端点表** —— 2026-10-18 修复的
+//     真实缺陷就是它缺席导致 client→gateway / gateway→provider 边全部
+//     被静默丢弃（图上只剩 provider→model 一段，owner 报告「连线没有」）。
 
 import { describe, expect, it } from 'vitest'
-import { computeGatewayBox, computeLayout, edgeWidth, fitRow, isEdgeHighlighted, MIN_LAYOUT_HEIGHT, MIN_LAYOUT_WIDTH, NODE_GAP, NODE_W, NODE_W_MIN, particleRadius, stableHash } from '../lib/liveTopologyLayout'
-import { GATEWAY_MODULES, type TopoNode } from '../types/liveTopology'
+import {
+  bezierPoint,
+  computeGatewayBox,
+  computeLayout,
+  edgeWidth,
+  fitRow,
+  isEdgeHighlighted,
+  MIN_LAYOUT_HEIGHT,
+  MIN_LAYOUT_WIDTH,
+  NODE_GAP,
+  NODE_W,
+  particleRadius,
+  stableHash,
+} from '../lib/liveTopologyLayout'
+import {
+  GATEWAY_IN_MODULES,
+  GATEWAY_OUT_MODULES,
+  GATEWAY_STORE_MODULES,
+  type TopoNode,
+} from '../types/liveTopology'
 
 function node(id: string, column: TopoNode['column'], requests: number): TopoNode {
   return {
@@ -65,14 +85,64 @@ describe('computeLayout', () => {
     expect(layout.nodes.map((n) => n.id)).not.toContain('gateway:core')
     expect(layout.gateway.w).toBeGreaterThan(SIZE.width / 2)
     expect(layout.gateway.h).toBeGreaterThan(SIZE.height / 4)
-    // 九个模块格全部落在大方块内部（越界 = 画到框外了）
-    expect(layout.gateway.cells).toHaveLength(GATEWAY_MODULES.length)
-    for (const cell of layout.gateway.cells) {
-      expect(cell.x).toBeGreaterThanOrEqual(layout.gateway.x)
-      expect(cell.y).toBeGreaterThanOrEqual(layout.gateway.y)
-      expect(cell.x + cell.w).toBeLessThanOrEqual(layout.gateway.x + layout.gateway.w)
-      expect(cell.y + cell.h).toBeLessThanOrEqual(layout.gateway.y + layout.gateway.h)
+    // 三条流程带全部落在大方块内部（越界 = 画到框外了）
+    expect(layout.gateway.lanes.map((l) => l.lane)).toEqual(['in', 'store', 'out'])
+    for (const lane of layout.gateway.lanes) {
+      expect(lane.x).toBeGreaterThanOrEqual(layout.gateway.x)
+      expect(lane.y).toBeGreaterThanOrEqual(layout.gateway.y)
+      expect(lane.x + lane.w).toBeLessThanOrEqual(layout.gateway.x + layout.gateway.w)
+      expect(lane.y + lane.h).toBeLessThanOrEqual(layout.gateway.y + layout.gateway.h)
     }
+  })
+
+  it('★ keeps client→gateway and gateway→provider edges in the layout (2026-10-18 修复的缺陷)', () => {
+    // gateway:core 不是布局节点卡片（由大方块渲染），但边必须有它的端点几何。
+    // 修复前：byId 里没有 gateway:core ⇒ 这两类边在 `if (!a || !b) continue`
+    // 处被静默丢弃 ⇒ 图上客户端与网关之间没有任何连线（owner 报告的缺陷）。
+    const layout = computeLayout({ nodes: NODES, edges: EDGES, ...SIZE })
+    const ids = layout.edges.map((e) => e.id)
+    expect(ids).toContain('client:a->gateway:core')
+    expect(ids).toContain('gateway:core->cred:1')
+    expect(ids).toContain('cred:1->model:x')
+    // 连线方向也必须对：客户端边锚到方块**顶边**，供应端边从**底边**出发。
+    const gw = layout.gateway
+    const clientEdge = layout.edges.find((e) => e.id === 'client:a->gateway:core')!
+    const providerEdge = layout.edges.find((e) => e.id === 'gateway:core->cred:1')!
+    expect(clientEdge.path[0].y).toBeLessThan(gw.y)
+    expect(clientEdge.path[3].y).toBe(gw.y)
+    expect(providerEdge.path[0].y).toBe(gw.y + gw.h)
+    expect(providerEdge.path[3].y).toBeGreaterThan(gw.y + gw.h)
+    // 锚点水平方向散开在方块范围内（不是全挤到中心一个点）
+    for (const edge of [clientEdge, providerEdge]) {
+      const anchor = edge.from === 'gateway:core' ? edge.path[0] : edge.path[3]
+      expect(anchor.x).toBeGreaterThanOrEqual(gw.x)
+      expect(anchor.x).toBeLessThanOrEqual(gw.x + gw.w)
+    }
+  })
+
+  it('anchors client edges into the box at spread positions (not one central bundle)', () => {
+    // 多客户端时锚点必须散开：全部挤到同一 x 会退化成一束麻线，
+    // 分不清哪条线属于哪个客户端。
+    const clients = [
+      node('client:left', 'client', 30),
+      node('client:mid', 'client', 25),
+      node('client:right', 'client', 20),
+      node('cred:1', 'provider', 25),
+      node('model:x', 'model', 20),
+    ]
+    const edges = [
+      { id: 'e1', from: 'client:left', to: 'gateway:core', requests: 30, failure: 0 },
+      { id: 'e2', from: 'client:mid', to: 'gateway:core', requests: 25, failure: 0 },
+      { id: 'e3', from: 'client:right', to: 'gateway:core', requests: 20, failure: 0 },
+    ]
+    const layout = computeLayout({ nodes: clients, edges, ...SIZE })
+    const anchors = layout.edges
+      .filter((e) => e.to === 'gateway:core')
+      .map((e) => e.path[3].x)
+      .sort((a, b) => a - b)
+    expect(anchors.length).toBe(3)
+    // 最左与最右锚点至少相隔 60px（三条线明显分开）
+    expect(anchors[anchors.length - 1] - anchors[0]).toBeGreaterThanOrEqual(60)
   })
 
   it('sits the gateway box between the client layer and the provider layer', () => {
@@ -374,55 +444,81 @@ describe('isEdgeHighlighted', () => {
 })
 
 describe('computeGatewayBox', () => {
-  it('lays the nine modules out in their declared 3x3 grid, in flow order', () => {
+  it('stacks three flow lanes in order: in → store → out', () => {
+    // owner 2026-10-18：模块要按处理流程的位置排布 —— 请求链在上、
+    // 存储转发居中、响应链在下；三带 y 严格递增且带间留隙。
     const box = computeGatewayBox(1200, 700)
-    const byKey = new Map(box.cells.map((c) => [c.key, c]))
-    expect(byKey.get('cache')!).toMatchObject({ x: expect.any(Number), y: expect.any(Number) })
-    // 流程顺序 = 先左后右、自上而下（row 升序，同 row 时 col 升序）
-    const sorted = [...GATEWAY_MODULES].sort((a, b) => a.row - b.row || a.col - b.col).map((m) => m.key)
-    expect(sorted).toEqual([
-      'cache', 'sanitize', 'route',
-      'nodeState', 'sessionFile', 'sessionWrite',
-      'errorRecord', 'probeTask', 'taskDetect',
-    ])
-    // 第一行第一格必须在最左上角
-    const topLeft = box.cells.reduce((a, b) => (a.x + a.y <= b.x + b.y ? a : b))
-    expect(topLeft.key).toBe('cache')
-    // 同一行：x 递增、y 相同；同一列：y 递增、x 相同
-    // （写反了会变成「判据自己描述了一个不可能的网格」）
-    const byKeyIndex = (r: number, c: number) => byKey.get(GATEWAY_MODULES.find((m) => m.row === r && m.col === c)!.key)!
-    for (let row = 0; row < 3; row += 1) {
-      const a = byKeyIndex(row, 0)
-      const b = byKeyIndex(row, 1)
-      expect(b.x).toBeGreaterThan(a.x)
-      expect(b.y).toBe(a.y)
-    }
-    for (let col = 0; col < 3; col += 1) {
-      const a = byKeyIndex(0, col)
-      const b = byKeyIndex(1, col)
-      expect(b.y).toBeGreaterThan(a.y)
-      expect(b.x).toBe(a.x)
-    }
+    expect(box.lanes.map((l) => l.lane)).toEqual(['in', 'store', 'out'])
+    const [inLane, storeLane, outLane] = box.lanes
+    expect(inLane.y).toBeLessThan(storeLane.y)
+    expect(storeLane.y).toBeLessThan(outLane.y)
+    expect(storeLane.y).toBeGreaterThanOrEqual(inLane.y + inLane.h)
+    expect(outLane.y).toBeGreaterThanOrEqual(storeLane.y + storeLane.h)
+    // 进站带最宽（4 格 + 插件 chip），存储带最矮 —— 比例即内容密度
+    expect(inLane.h).toBeGreaterThan(storeLane.h)
+    expect(outLane.h).toBeGreaterThan(storeLane.h)
+  })
+
+  it('★ module→lane membership matches the flow position (请求侧/存储/响应侧)', () => {
+    // 模块落在哪条带 = 它在真实处理流程中的位置。任何模块挪带都会被这里抓住。
+    expect(GATEWAY_IN_MODULES.map((m) => m.key)).toEqual(['cache', 'sanitize', 'route', 'nodeState'])
+    expect(GATEWAY_STORE_MODULES.map((m) => m.key)).toEqual(['sessionWrite', 'sessionFile'])
+    expect(GATEWAY_OUT_MODULES.map((m) => m.key)).toEqual(['taskDetect', 'errorRecord', 'probeTask'])
   })
 
   it('is deterministic', () => {
     expect(JSON.stringify(computeGatewayBox(1200, 700))).toBe(JSON.stringify(computeGatewayBox(1200, 700)))
   })
 
-  it('★ reserves a header band so the title cannot sit on the first row', () => {
-    // 这条判据来自一次真实的肉眼缺陷：大方块顶部有「网关核心 · 缓存·脱敏…」
-    // 标题（组件里是正常流的 .gw__head），而 3×3 网格原本从 pad=10px 就开始，
-    // 于是标题正好压在第一行模块上。布局必须为标题让出空间。
+  it('★ reserves a header band so the title cannot sit on the first lane', () => {
+    // 2026-10-17 轮的真实肉眼缺陷（标题压住第一行模块）在三带版同样要防：
+    // 第一带的 y 必须在标题带（26px）之下。
     const box = computeGatewayBox(1200, 700)
-    const firstRow = box.cells
-      .filter((c) => GATEWAY_MODULES.find((m) => m.key === c.key)!.row === 0)
-      .map((c) => c.y - box.y)
-    // 第一行至少要下移到 24px 之下（标题带 + 内边距），且三列一致
-    expect(Math.min(...firstRow)).toBeGreaterThanOrEqual(24)
-    expect(new Set(firstRow).size).toBe(1)
-    // 预留标题带后，第三行仍然不能溢出大方块底部
-    const bottom = Math.max(...box.cells.map((c) => c.y + c.h - box.y))
-    expect(bottom).toBeLessThanOrEqual(box.h)
+    const firstLane = box.lanes[0]
+    expect(firstLane.y - box.y).toBeGreaterThanOrEqual(24)
+    // 第三带不能溢出大方块底部
+    const lastLane = box.lanes[box.lanes.length - 1]
+    expect(lastLane.y + lastLane.h).toBeLessThanOrEqual(box.y + box.h)
+  })
+
+  it('keeps the box clear of client/provider cards across canvas heights', () => {
+    // 比例量（box 高）vs 固定像素量（卡片高）随画布高度变化 —— 必须扫高度。
+    for (const height of [480, 620, 700, 900, 1200]) {
+      const box = computeGatewayBox(1200, height)
+      const layout = computeLayout({ nodes: NODES, edges: EDGES, width: 1200, height })
+      const clientBottom = Math.max(...layout.nodes.filter((n) => n.column === 'client').map((n) => n.y + n.h))
+      const providerTop = Math.min(...layout.nodes.filter((n) => n.column === 'provider').map((n) => n.y))
+      expect(box.y, `h=${height} 顶边压住客户端卡片`).toBeGreaterThanOrEqual(clientBottom)
+      expect(box.y + box.h, `h=${height} 底边压住供应端卡片`).toBeLessThanOrEqual(providerTop)
+    }
+  })
+
+  it('★ caps the box height on very tall canvases (no giant empty frame)', () => {
+    // 预览页实测画布高 1723px：纯比例会把大方块拉到 1000px+，
+    // 而三条带内容只有 ~200px —— 其余全空白，读图的人只会觉得图坏了。
+    // 高度必须夹在内容紧包裹上限内，且仍在客户端/供应端行之间居中。
+    const box = computeGatewayBox(1200, 1723)
+    expect(box.h).toBeLessThanOrEqual(320)
+    expect(box.y).toBeGreaterThan(1723 * 0.075 + 21)
+    expect(box.y + box.h).toBeLessThan(1723 * 0.85 - 21)
+  })
+})
+
+describe('bezierPoint', () => {
+  it('hits the endpoints at t=0/1 and the midpoint in between', () => {
+    const path = [
+      { x: 0, y: 0 },
+      { x: 10, y: 20 },
+      { x: 30, y: 20 },
+      { x: 40, y: 40 },
+    ]
+    expect(bezierPoint(path, 0, 0)).toEqual({ x: 0, y: 0 })
+    expect(bezierPoint(path, 1, 0)).toEqual({ x: 40, y: 40 })
+    const mid = bezierPoint(path, 0.5, 0)
+    expect(mid.x).toBeGreaterThan(0)
+    expect(mid.x).toBeLessThan(40)
+    // lateral 只产生横向散开，t=0/1 端点处无散开（sin(0)=sin(π)=0）
+    expect(bezierPoint(path, 0, 5)).toEqual({ x: 0, y: 0 })
   })
 })
 

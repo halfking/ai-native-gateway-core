@@ -1,14 +1,19 @@
 <script setup lang="ts">
-// ClientRequestPanel.vue —— 左侧「客户端请求摘要」面板（2026-10-17）
+// ClientRequestPanel.vue —— 左侧「客户端请求摘要」面板（2026-10-18 分页版）
 //
-// 维护者要求：左侧显示**客户端的请求摘要列表**。
-// 两段结构（先看聚合、再看明细），因为只给明细的话客户端一多就成流水账：
+// 两段结构（先看聚合、再看明细）：
 //   · 顶部按客户端聚合的摘要（请求数 / 成功率 / 在途 / 主要模型）
-//   · 下面是这些客户端的逐条请求（最新在前），点条目 → 主图高亮该请求链路
+//   · 下面逐条请求（最新在前）——**分页输出**，单页 ≤50 条（owner 拍板），
+//     点条目 = 选中高亮 + 打开请求详情（RequestZoomPanel）
+//
+// 滚动语义：列表本体可滚动；翻页后回到列表顶部。第 1 页是最新数据，
+// 实时新请求到达时第 1 页自然滚动输出（prepend 最新在前）。
 
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { ClientSummary, PanelEntry } from '../../composables/useLiveTopology'
+import { PANEL_PAGE_SIZE } from '../../types/liveTopology'
 
 const props = defineProps<{
   summaries: ClientSummary[]
@@ -18,11 +23,42 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'select-request', requestId: string): void
+  (e: 'zoom', entry: PanelEntry): void
 }>()
 
 const { t } = useI18n()
 
 const visibleSummaries = computed(() => props.summaries.slice(0, 8))
+
+const page = ref(1)
+const pageCount = computed(() => Math.max(1, Math.ceil(props.requests.length / PANEL_PAGE_SIZE)))
+/** 当前页条目（最新在前 ⇒ 第 1 页 = 最新 50 条）。 */
+const pagedRequests = computed(() =>
+  props.requests.slice((page.value - 1) * PANEL_PAGE_SIZE, page.value * PANEL_PAGE_SIZE),
+)
+/** 数据更新导致页数收缩时，把越界的当前页收回最后一页。 */
+watch(pageCount, (pages) => {
+  if (page.value > pages) page.value = pages
+})
+
+const listRef = ref<HTMLElement | null>(null)
+watch(page, async () => {
+  await nextTick()
+  if (listRef.value) listRef.value.scrollTop = 0
+})
+
+function prevPage() {
+  if (page.value > 1) page.value -= 1
+}
+
+function nextPage() {
+  if (page.value < pageCount.value) page.value += 1
+}
+
+function onItem(entry: PanelEntry) {
+  emit('select-request', entry.requestId)
+  emit('zoom', entry)
+}
 
 /**
  * 表头的客户端数。
@@ -83,13 +119,13 @@ function latency(value: number | null | undefined): string {
       </li>
     </ul>
 
-    <ul class="cp__list">
-      <li v-for="entry in requests" :key="entry.requestId">
+    <ul ref="listRef" class="cp__list" data-testid="client-request-list">
+      <li v-for="entry in pagedRequests" :key="entry.requestId">
         <button
           type="button"
           class="cp__item"
           :class="[statusClass(entry.status), { 'is-active': entry.requestId === activeRequestId, 'is-probe': entry.isProbe }]"
-          @click="emit('select-request', entry.requestId)"
+          @click="onItem(entry)"
         >
           <span class="cp__row">
             <span class="cp__time">{{ clock(entry.ts) }}</span>
@@ -105,6 +141,24 @@ function latency(value: number | null | undefined): string {
       </li>
     </ul>
     <p v-if="!requests.length" class="cp__empty">{{ t('liveTopology.panel.empty') }}</p>
+
+    <footer v-if="requests.length" class="cp__pager" data-testid="client-request-pager">
+      <button
+        type="button"
+        class="cp__page-btn"
+        :disabled="page <= 1"
+        data-testid="client-page-prev"
+        @click="prevPage"
+      >‹</button>
+      <span class="cp__page-info">{{ t('liveTopology.panel.page', { page, pages: pageCount }) }} · {{ t('liveTopology.panel.total', { n: requests.length }) }}</span>
+      <button
+        type="button"
+        class="cp__page-btn"
+        :disabled="page >= pageCount"
+        data-testid="client-page-next"
+        @click="nextPage"
+      >›</button>
+    </footer>
   </aside>
 </template>
 
@@ -273,5 +327,40 @@ function latency(value: number | null | undefined): string {
   margin: 8px 4px 0;
   font-size: 11px;
   color: var(--kx-muted);
+}
+
+.cp__pager {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 5px 4px 0;
+  border-top: 1px solid var(--kx-border);
+}
+
+.cp__page-btn {
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--kx-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--kx-text);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.cp__page-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.cp__page-info {
+  font-size: 10px;
+  color: var(--kx-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 </style>
