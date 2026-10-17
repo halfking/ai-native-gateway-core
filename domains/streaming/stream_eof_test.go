@@ -416,9 +416,16 @@ func TestStreamChatWithPendingCapture_UpstreamDoneNoSynthMetric(t *testing.T) {
 }
 
 func TestStreamChatWithPendingCapture_SplitsDoneJoinedToJSON(t *testing.T) {
+	// r1029 (2026-10-17): the sample delta was reasoning-only, which the
+	// empty-stream gate now correctly treats as no output — so the turn is
+	// failed over before it ever reaches the split/DONE-synthesis path this
+	// test exists to cover. Carrying content instead keeps the test on its
+	// actual subject (splitting `}[DONE].` transport glue) while reasoning
+	// stays alongside as the realistic shape. The reasoning-only failover is
+	// covered by TestR1029ReasoningOnlyStreamChunkIsNotOutput.
 	resp := &http.Response{
 		Body: io.NopCloser(strings.NewReader(
-			"data: {\"id\":\"chunk-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"reasoning_content\":\"planning\"},\"finish_reason\":null}]}[DONE].",
+			"data: {\"id\":\"chunk-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"reasoning_content\":\"planning\",\"content\":\"answer\"},\"finish_reason\":null}]}[DONE].",
 		)),
 		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
 	}
@@ -439,6 +446,7 @@ func TestStreamChatWithPendingCapture_SplitsDoneJoinedToJSON(t *testing.T) {
 	assert.False(t, outcome.Interrupted)
 	assert.NotContains(t, writer.Body.String(), "}[DONE].")
 	assert.Contains(t, writer.Body.String(), `"reasoning_content":"planning"`)
+	assert.Contains(t, writer.Body.String(), `"content":"answer"`)
 	assert.True(t, strings.HasSuffix(writer.Body.String(), "data: [DONE]\n\n"))
 }
 

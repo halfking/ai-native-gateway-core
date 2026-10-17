@@ -908,8 +908,8 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 	finalFinishReason := ""
 
 	// sawSemanticOutput tracks whether any chunk WRITTEN TO THE CLIENT
-	// carried real assistant semantics (content / reasoning / tool_calls /
-	// audio), judged by the shared emptyoutcome table (chunkHasContent).
+	// carried real assistant semantics (content / named tool_calls / audio),
+	// judged by the shared emptyoutcome table (chunkHasContent).
 	// r0924b (2026-09-24): finish_reason alone is NOT semantic output — a
 	// stream of pure usage/keepalive/role frames diluted past the
 	// empty-stream gate cap plus a trailing finish_reason must NOT be
@@ -917,6 +917,13 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 	// emptyoutcome semantic table, with or without finish_reason). It only
 	// feeds the benign-EOF branch below; the eof_without_done structured
 	// error paths are unchanged.
+	//
+	// r1029 (2026-10-17): reasoning_content no longer sets this flag. A
+	// reasoning model that spends the whole token budget on deliberation
+	// (max_tokens exhausted, content never emitted) must NOT be promoted to a
+	// benign success — that is the 154 glm-5.3 empty_model_response path. The
+	// thinking channel is still relayed to the client verbatim; only this
+	// gate's notion of "the assistant actually answered" narrows.
 	sawSemanticOutput := false
 
 	// P0-3 (2026-10-14)：断流原地续问状态。continuationPrefix 累计已发给

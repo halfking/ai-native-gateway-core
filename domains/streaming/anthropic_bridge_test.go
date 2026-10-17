@@ -451,8 +451,16 @@ func TestStreamAnthropicSSEToOpenAI_SignatureDeltaRetainedAndObserved(t *testing
 	resp := &http.Response{Body: io.NopCloser(strings.NewReader(body)), Request: httptest.NewRequest(http.MethodPost, "/v1/messages", nil)}
 	rec := httptest.NewRecorder()
 	capture := audit.NewStreamCapture()
-	out := StreamAnthropicSSEToOpenAI(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-signature", capture, nil)
-	require.False(t, out.Interrupted, "signature_delta must not interrupt the bridge: %+v", out)
+	StreamAnthropicSSEToOpenAI(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-signature", capture, nil)
+	// r1029 (2026-10-17): this assertion used to be require.False(Interrupted)
+	// with the comment "signature_delta must not interrupt the bridge". A
+	// thinking-only turn now correctly classifies as empty (see
+	// TestAnthropicExecutor_EmptyNativeMessagesResponseIsRetryable and the 154
+	// glm-5.3 evidence) — a signature terminates the thinking block, it is not
+	// the assistant answering. What this test actually guards is the two
+	// security properties below, both still asserted: the opaque signature is
+	// never forged onto the OpenAI wire, and its presence stays auditable.
+	// The thinking-only failover verdict itself is covered by the r1029 tests.
 	wire := rec.Body.String()
 	assert.NotContains(t, wire, "sig_opaque_123", "opaque Anthropic signature must not be forged into OpenAI wire")
 	flags := capture.SummaryAsMap()["quality_flags"]

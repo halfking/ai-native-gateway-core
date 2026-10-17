@@ -45,10 +45,21 @@ func IsEmptyOutcome(emittedOutput bool, clientDisconnectPending bool) bool {
 // whether to flush the buffer (real content seen) or fail over (zero
 // content seen before [DONE]).
 //
-// "Real content" = delta.content != "" OR delta.reasoning_content != ""
-// OR a tool_call with a non-empty name or arguments. Usage-only and
-// role-only chunks (Type="usage" / first-chunk assistant role
-// announcement) do NOT count.
+// "Real content" = delta.content != "" OR a tool_call with a non-empty name
+// or arguments. Usage-only and role-only chunks (Type="usage" / first-chunk
+// assistant role announcement) do NOT count.
+//
+// r1029 (2026-10-17): delta.reasoning_content used to count as output and no
+// longer does. Measured on 154, request 623e36495abf1de578592fa90c78417a
+// (glm-5.3, z-ai/glm-5.3-flash, max_tokens=8, stream=true): all 8 SSE frames
+// carried only reasoning_content, content never appeared, and the budget went
+// entirely to reasoning (usage: completion_tokens=8, reasoning_tokens=6) with
+// finish_reason=length and no [DONE]. Counting reasoning as output set
+// sawSemanticOutput, so the gate took the benign-close branch and synthesized
+// a [DONE] — HTTP 200, finish_reason=length, empty content, which is exactly
+// the client's empty_model_response. Reasoning models must not be failed over
+// for thinking out loud: the thinking channel is relayed separately, and a
+// long deliberation is not an assistant answer. Owner decision 2026-10-17.
 //
 // Magpie / ZCode empty_model_response parity (2026-10-17): MiniMax and
 // similar relays emit nameless phantom tool_calls slots (empty id/name/
@@ -75,7 +86,7 @@ func ChatChunkHasOutput(payload string) bool {
 	if chunk.Delta == nil {
 		return false
 	}
-	if chunk.Delta.Content != "" || chunk.Delta.ReasoningContent != "" {
+	if chunk.Delta.Content != "" {
 		return true
 	}
 	for _, tc := range chunk.Delta.ToolCalls {
@@ -182,9 +193,13 @@ func ChatChoicesIsEmpty(raw json.RawMessage) bool {
 		return true
 	}
 	for _, choice := range choices {
-		if choice.Message.ReasoningContent != "" {
-			return false
-		}
+		// r1029 (2026-10-17): message.reasoning_content no longer counts as
+		// output — same rule and same 154 evidence as ChatChunkHasOutput. A
+		// body whose entire completion went into reasoning (max_tokens
+		// exhausted by deliberation, content never emitted) carries no
+		// assistant answer and must fail over instead of reaching the client
+		// as an empty success.
+		//
 		// Magpie parity: nameless phantom tool_calls do not constitute
 		// agent-visible output (same rule as ChatChunkHasOutput). ID alone
 		// without name/arguments is still a phantom slot.
@@ -243,12 +258,11 @@ func ChatContentHasOutput(raw json.RawMessage) bool {
 
 func AnthropicContentIsEmpty(raw json.RawMessage) bool {
 	var blocks []struct {
-		Type      string `json:"type"`
-		Text      string `json:"text"`
-		Thinking  string `json:"thinking"`
-		Signature string `json:"signature"`
-		ID        string `json:"id"`
-		Name      string `json:"name"`
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		Thinking string `json:"thinking"`
+		ID       string `json:"id"`
+		Name     string `json:"name"`
 	}
 	if json.Unmarshal(raw, &blocks) != nil || len(blocks) == 0 {
 		return true
@@ -260,9 +274,15 @@ func AnthropicContentIsEmpty(raw json.RawMessage) bool {
 				return false
 			}
 		case "thinking":
-			if block.Thinking != "" || block.Signature != "" {
-				return false
-			}
+			// r1029 (2026-10-17): a thinking block is deliberation, not the
+			// assistant answer — same rule as the chat legs. A response whose
+			// content array carries only thinking (budget exhausted mid-
+			// deliberation) reaches the client as empty content otherwise.
+			//
+			// redacted_thinking stays OUT below: it is emitted in place of the
+			// model's reasoning by the provider and conventionally accompanies
+			// the answer turn, so it is kept as output to avoid failing over on
+			// a shape the gateway cannot fully model (R16).
 		case "redacted_thinking", "server_tool_use", "web_search_tool_result":
 			return false
 		case "tool_use":
@@ -320,10 +340,9 @@ func AnthropicMessagesBodyIsEmpty(body []byte) bool {
 	}
 
 	var blocks []struct {
-		Type      string `json:"type"`
-		Text      string `json:"text"`
-		Thinking  string `json:"thinking"`
-		Signature string `json:"signature"`
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		Thinking string `json:"thinking"`
 	}
 	if err := json.Unmarshal(envelope.Content, &blocks); err != nil || len(blocks) == 0 {
 		return true
@@ -335,9 +354,8 @@ func AnthropicMessagesBodyIsEmpty(body []byte) bool {
 				return false
 			}
 		case "thinking":
-			if block.Thinking != "" || block.Signature != "" {
-				return false
-			}
+			// r1029 (2026-10-17): same rule as AnthropicContentIsEmpty and
+			// the chat legs — deliberation is not the assistant answer.
 		case "tool_use", "server_tool_use", "web_search_tool_result", "redacted_thinking":
 			return false
 		default:

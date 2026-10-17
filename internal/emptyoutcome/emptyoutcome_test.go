@@ -44,7 +44,16 @@ func TestChatChunkHasOutput(t *testing.T) {
 		{"role-only announcement", `{"choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}`, false},
 		{"empty delta", `{"choices":[{"index":0,"delta":{}}]}`, false},
 		{"text content", `{"choices":[{"index":0,"delta":{"content":"hi"}}]}`, true},
-		{"reasoning content", `{"choices":[{"index":0,"delta":{"reasoning_content":"think"}}]}`, true},
+		// r1029 (2026-10-17): reasoning-only is NOT agent-visible output. This
+		// row previously asserted true; the 154 evidence (request
+		// 623e36495abf1de578592fa90c78417a, max_tokens=8 all consumed by
+		// reasoning, content never emitted, finish_reason=length) shows that
+		// treating it as output hands the client an empty 200. See
+		// TestR1029ReasoningOnlyStreamChunkIsNotOutput for the frame-by-frame
+		// replay and TestR1029ContentAfterReasoningStillCounts for the guard
+		// that reasoning alongside real content still counts.
+		{"reasoning content only", `{"choices":[{"index":0,"delta":{"reasoning_content":"think"}}]}`, false},
+		{"reasoning alongside content", `{"choices":[{"index":0,"delta":{"reasoning_content":"think","content":"hi"}}]}`, true},
 		{"tool call", `{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f","arguments":"{}"}}]}}]}`, true},
 		{"tool args delta only", `{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"x\":1}"}}]}}]}`, true},
 		{"phantom tool slots", `{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"","type":"function","function":{"name":"","arguments":""}},{"index":1,"id":"","type":"function","function":{"name":"","arguments":""}}]}}]}`, false},

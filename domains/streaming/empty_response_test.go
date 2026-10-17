@@ -49,8 +49,17 @@ func TestIsEmptyUpstreamChatResponse(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "response with reasoning_content and finish_reason is not empty",
+			// r1029 (2026-10-17): was "…is not empty". Reasoning-only with a
+			// finish_reason is the 154 glm-5.3 shape (max_tokens consumed by
+			// deliberation, content never emitted) — it must fail over.
+			name: "response with reasoning_content and finish_reason is empty",
 			body: `{"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","reasoning_content":"thinking..."}}]}`,
+			want: true,
+		},
+		{
+			// Reverse guard: reasoning beside real content still passes.
+			name: "response with reasoning_content alongside content is not empty",
+			body: `{"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","reasoning_content":"thinking...","content":"answer"}}]}`,
 			want: false,
 		},
 		{

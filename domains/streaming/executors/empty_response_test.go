@@ -35,8 +35,21 @@ func TestIsNonStreamEmptyResponse(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "reasoning-only content is not empty",
+			// r1029 (2026-10-17): was "reasoning-only content is not empty"
+			// (want=false). The 154 evidence — glm-5.3, max_tokens=8 consumed
+			// entirely by reasoning_content, content never emitted,
+			// finish_reason=length (request
+			// 623e36495abf1de578592fa90c78417a) — shows reasoning-only is
+			// exactly the shape that reached the client as an empty 200.
+			name: "reasoning-only content is empty",
 			body: `{"choices":[{"message":{"reasoning_content":"thinking...","content":""}}]}`,
+			want: true,
+		},
+		{
+			// Reverse guard: reasoning alongside a real answer must NOT be
+			// failed over — otherwise this fix trades one fault for another.
+			name: "reasoning alongside content is not empty",
+			body: `{"choices":[{"message":{"reasoning_content":"thinking...","content":"answer"}}]}`,
 			want: false,
 		},
 		{
@@ -91,8 +104,18 @@ func TestIsEmptyAnthropicMessagesResponse(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "signed thinking block is not empty",
+			// r1029 (2026-10-17): was "signed thinking block is not empty".
+			// A signature terminates the thinking block; it is not the answer.
+			// Same 154 failure mode as the chat legs.
+			name: "signed thinking block is empty",
 			body: `{"type":"message","content":[{"type":"thinking","thinking":"","signature":"sig"}]}`,
+			want: true,
+		},
+		{
+			// Reverse guard: a signed thinking block preceding real text still
+			// counts as a non-empty answer.
+			name: "signed thinking followed by text is not empty",
+			body: `{"type":"message","content":[{"type":"thinking","thinking":"","signature":"sig"},{"type":"text","text":"pong"}]}`,
 			want: false,
 		},
 		{
