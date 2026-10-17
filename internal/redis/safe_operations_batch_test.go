@@ -257,3 +257,15 @@ func TestBatchOnEmptyInput(t *testing.T) {
 			len(got), cp.pipes, cp.execs)
 	}
 }
+
+// ⭐ The batch-size default is a *measured* operating point (§57). Pin it so a
+// well-meaning tweak has to argue with the measurement, not slip in silently.
+//
+// The gate is verified by mutation: changing the constant to 256 makes this
+// red. Anything looser (e.g. "> 0") would let the regression through.
+func TestDefaultHashBatchSizeIsTheMeasuredOperatingPoint(t *testing.T) {
+	if DefaultHashBatchSize != 512 {
+		t.Fatalf("DefaultHashBatchSize=%d; §57 measured 512 on both gateways (medians 315ms/331ms vs 391ms/385ms at 256)",
+			DefaultHashBatchSize)
+	}
+}

@@ -36,7 +36,26 @@ import (
 //
 // It is deliberately a thin wrapper: the per-key semantics come from
 // SafeHGetAllPipeline, and there is exactly one implementation of them.
-const DefaultHashBatchSize = 256
+// DefaultHashBatchSize is a measured operating point, not a guess.
+//
+// Read-only A/B against the production Redis (db14, ~1,800 node keys, three
+// runs per size, from both gateways) gave:
+//
+//	batch    245 best/median    154 best/median
+//	  128      600 /  665 ms      314 /  346 ms
+//	  256      362 /  391 ms      222 /  385 ms
+//	  512      254 /  315 ms      318 /  331 ms
+//	 1024      285 /  395 ms      282 /  323 ms
+//	 2048      279 /  385 ms      372 /  423 ms
+//	 4096      415 /  425 ms      405 /  519 ms
+//
+// ⚠️ The "best" column disagrees between hosts (512 wins on 245, 256 on 154),
+// so a single-host best-case run would have "proven" either value. The
+// **median** agrees: 512 beats 256 on both. The margin is only ~20%, though —
+// batch size is not a sensitive knob here; the whole curve sits ~100x below
+// the per-key path, which took 20.8s (245) / 26.3s (154) for the same 1,800
+// keys against a 30s budget that also has to cover the write.
+const DefaultHashBatchSize = 512
 
 // batchClient is the only capability needed: SafeHGetAllPipeline takes a
 // pipeline, and a fresh one is created per chunk.
