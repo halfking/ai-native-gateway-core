@@ -167,12 +167,16 @@ const hasContent = computed(() => loadedCount.value > 0)
     <template v-else>
       <div class="hyper-list__inner">
         <slot name="header" />
-        <div class="card-list">
+        <!-- role=list：Android WebView 对 overflow 滚动容器内匿名节点常剪枝；
+             显式 list/listitem + 行 tabindex 让 Maestro/TalkBack 能看到卡片。 -->
+        <div class="card-list" role="list">
           <div
             v-for="item in items"
             :key="itemKey(item)"
             :data-hyper-anchor="itemKey(item)"
             class="hyper-list__row"
+            role="listitem"
+            tabindex="0"
           >
             <slot name="item" :item="item" :index="0" />
           </div>
