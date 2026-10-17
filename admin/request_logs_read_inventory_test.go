@@ -346,7 +346,8 @@ var requestLogsReadPattern = regexp.MustCompile(`(?i)(from|join)\s+_?request_log
 func scanRequestLogsReaders(t *testing.T, root string) map[string]int {
 	t.Helper()
 	out := map[string]int{}
-	skipDir := map[string]bool{".git": true, "docs": true, "node_modules": true, "vendor": true}
+	skipDir := map[string]bool{".git": true, "docs": true, "node_modules": true, "vendor": true,
+		".audit": true, ".audit-validation": true, ".audit-workspace": true}
 
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {

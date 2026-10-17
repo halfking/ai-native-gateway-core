@@ -56,6 +56,7 @@ func assertWriteTimePolicyFailure(t *testing.T, status int, body string, entries
 }
 
 func TestChatWriteTimePolicyBlockReturns403AndOneFailureAudit(t *testing.T) {
+	r1013RequireComplianceOn(t)
 	rec, entries := runChatOutputCommit(t, nil, writeTimeBlockingRedactor())
 	assertWriteTimePolicyFailure(t, rec.Code, rec.Body.String(), entries, "13800138000")
 }
@@ -94,6 +95,7 @@ func (*writePolicyGoal) ResolveGoalRetryPolicy(string) GoalRetryPolicy {
 }
 
 func TestWriteTimePolicyBlockIsTerminalOnEveryHTTPFace(t *testing.T) {
+	r1013RequireComplianceOn(t)
 	for _, tc := range []struct {
 		name, path, request, protocol, providerBody string
 		serve                                       func(*ChatHandler) http.Handler

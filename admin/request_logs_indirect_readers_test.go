@@ -198,6 +198,7 @@ func TestIndirectRequestLogsReadersAreStillIndirect(t *testing.T) {
 // 又是一次无声的总体漂移。
 var nonSourceDirs = map[string]bool{
 	".git": true, "docs": true, "node_modules": true, "vendor": true,
+	".audit": true, ".audit-validation": true, ".audit-workspace": true,
 }
 
 func productionGoFiles(t *testing.T, root string) []string {

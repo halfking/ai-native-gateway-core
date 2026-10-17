@@ -681,7 +681,7 @@ onBeforeUnmount(() => {
 .ar__chip {
   padding: 2px 8px;
   border-radius: var(--app-radius-pill);
-  background: var(--app-surface-2);
+  background: var(--app-surface);
   font-size: 11px;
   color: var(--app-text-secondary);
 }

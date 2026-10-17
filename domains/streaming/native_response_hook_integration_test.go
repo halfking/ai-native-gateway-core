@@ -57,6 +57,7 @@ func nativeComplianceDeltaFrame(protocol, text string) []byte {
 }
 
 func TestRealComplianceStreamCapAndFlushFailureRenderOneProtocolTerminal(t *testing.T) {
+	r1013RequireComplianceOn(t)
 	for _, tc := range []struct{ protocol, terminal string }{
 		{"anthropic-messages", "event: error\n"},
 		{"openai-responses", "event: response.failed\n"},
