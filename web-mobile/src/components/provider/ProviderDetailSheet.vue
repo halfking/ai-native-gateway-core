@@ -133,8 +133,9 @@ function statusTone(status?: string | null): 'success' | 'warning' | 'danger' | 
 <template>
   <AppSheet v-model="open" presentation="sheet" :title="providerName(provider)">
     <div class="provider-detail">
+      <!-- 名称已在 AppSheet 顶栏标题；这里只留 code/catalog，避免「OpenRouter / OpenRouter」双标题。 -->
       <div class="provider-detail__head">
-        <div><strong>{{ detail?.vendor_name || detail?.display_name || providerName(provider) }}</strong><small>{{ detail?.code || provider.code }} · {{ detail?.catalog_code || provider.catalog_code }}</small></div>
+        <div><small>{{ detail?.code || provider.code }} · {{ detail?.catalog_code || provider.catalog_code }}</small></div>
         <div class="provider-detail__head-actions">
           <button v-if="canManage" type="button" class="btn" :disabled="updating" @click="toggleManualDisabled">{{ detail?.manual_disabled ? t('providers.releaseManualDisable') : t('providers.manualDisable') }}</button>
           <button v-if="canManage" type="button" class="btn" :disabled="updating" @click="toggleEnabled">{{ detail?.enabled ? t('providers.disable') : t('providers.enable') }}</button>

@@ -4,6 +4,7 @@ import App from './App.vue'
 import router from './router'
 import { wireApp } from './hyper-wiring'
 import { useAuthStore } from './stores/auth'
+import { installSelectKeyboardSuppress } from './utils/suppressSelectKeyboard'
 import './styles/theme.css'
 import './styles/shared.css'
 
@@ -15,6 +16,7 @@ wireApp(router)
 
 app.use(router)
 app.mount('#app')
+installSelectKeyboardSuppress()
 
 // 冷启动水合探测（/api/auth/me）：cookie 有效 → 恢复 userInfo（web/store.ts
 // 同源语义）；路由守卫会等待 authHydrated。
