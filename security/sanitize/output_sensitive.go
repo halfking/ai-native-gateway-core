@@ -238,6 +238,13 @@ func (c *outputSensitiveChecker) unsafeToolValueDetail(ctx context.Context, valu
 				c.observe(ctx, fragment, "exempted")
 				continue
 			}
+			// r1033：路径/版本嵌入的四元组不是外传目的地（jdk-17.0.20.1+1）。
+			// server_ip 的 `\b` 在 `-`/`+` 处仍成词界，会把 JDK/Node 等版本号
+			// 当成公网 IP 整条阻断——ZCode/Maestro 装环境命令因此挂死。
+			if isPathOrVersionEmbeddedAddress(value, fragment) && (!c.managed() || slices.Contains(fragment.Exemptions, "nonroutable_destination")) {
+				c.observe(ctx, fragment, "exempted")
+				continue
+			}
 			if isNonExfiltrationFragment(fragment) && (!c.managed() || slices.Contains(fragment.Exemptions, "nonroutable_destination")) {
 				c.observe(ctx, fragment, "exempted")
 				// 2026-10-08 minimax-m3/glm-5.3 fail-closed incident: the
@@ -375,6 +382,44 @@ func isNonExfiltrationFragment(fragment SensitiveFragment) bool {
 		return true
 	}
 	return isNonExfiltrationEmailFragment(fragment)
+}
+
+// isPathOrVersionEmbeddedAddress 判断地址片段是否嵌在路径名/版本号里，而非
+// 独立的网络目的地。
+//
+// 2026-10-17（r1033，154 ZCode/MiniMax 生产取证）：Bash 参数
+// `.../jdk-17.0.20.1+1/Contents/Home` 被 server_ip 命中 `17.0.20.1`
+// （Apple 公网段 17.0.0.0/8），守卫整条 `output_policy_blocked`。前后字符是
+// `-` 与 `+`——词界成立，但语义是版本构建元数据，不是主机。
+//
+// 判据只看邻接字符，不枚举产品名：
+//   - 前邻是字母/数字/`_`/`-`（token 粘连：jdk-…、v18.…、OpenJDK_…）→ 豁免
+//   - 或后邻是 `+`（semver build：17.0.20.1+1，即便前邻是 `/`）→ 豁免
+//
+// 不把后邻 `-`/字母单独当豁免（避免 `203.0.113.8-exfil` / `8.8.8.8foo` 漏拦）。
+// 独立目的地（空格/`=`/`"`/`/` 之后的裸 IP、URL 主机位）不豁免。
+// `http://203.0.113.8/exfil` 前邻 `/`、后邻 `/` → 不豁免。
+func isPathOrVersionEmbeddedAddress(text string, fragment SensitiveFragment) bool {
+	switch fragment.Type {
+	case TypeServerIP, TypeInternalIP, typeServerIPv6:
+	default:
+		return false
+	}
+	if fragment.Start < 0 || fragment.End > len(text) || fragment.Start >= fragment.End {
+		return false
+	}
+	if fragment.Start > 0 && isVersionTokenGlue(text[fragment.Start-1]) {
+		return true
+	}
+	if fragment.End < len(text) && text[fragment.End] == '+' {
+		return true
+	}
+	return false
+}
+
+func isVersionTokenGlue(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') ||
+		(b >= '0' && b <= '9') || b == '_' || b == '-'
 }
 
 // isNonExfiltrationAddress 回答「这个地址能不能是外传目的地」。
