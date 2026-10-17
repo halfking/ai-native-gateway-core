@@ -148,6 +148,22 @@
 - 证据：同机 `-c "SELECT 1;"` 出 `1`，stdin 形态 `SELECT 2;` 空（rc 均 0）；补 `-i` 后同一 SQL 立即返回 10 行模型目录。
 - 状态：观察中
 
+## 2026-10-16 — 工具候选的授权与缓冲上限要贯穿完整流式链（Seen: 1/3）
+- 任务 / 缺陷：[Magpie第四轮](docs/audit/2026-10-16-magpie-round4-tool-contracts-errors.md)；bool-only纠正会凭空造工具名，失败候选又可能被后置MiniMax清理吞掉，choice上限也挡不住无换行物理行。
+- 基线 / 修复 SHA：基线 `755c4aecf277e1045fbdf79bdcb3e87deda2dffe`；修复 `ffd9cc6a7`，冻结38文件清单摘要 `d7cd107bdc2b8a4e8a101e887504a55ad7934336d5e61f86fa425c7265303cba`。
+- 根因：解析成功不等于客户端授权；局部parser修好后，后置清理、buffer和terminal仍可破坏语义。
+- 防复发检查：由真实request取得不可变精确function名称；未知/不完整候选穿过实际hook仍为原文；同时限制choice、候选文本和物理行，验证EOF/data+error/LF/UTF8，不能凭空创建finish。
+- 证据：真实三入口与供应商known/inferred路径均有判据；reader五个隔离变异命中预期断言；规格、代码、Go审查覆盖最终38文件。
+- 状态：已修复待观察
+
+## 2026-10-16 — 工具历史去重需证明镜像且保留原位置和元数据（Seen: 1/3）
+- 任务 / 缺陷：[Magpie第四轮](docs/audit/2026-10-16-magpie-round4-tool-contracts-errors.md)；ID-only去重会吞不同名称/参数的调用，重建镜像会丢cache_control或改变content顺序。
+- 基线 / 修复 SHA：基线 `755c4aecf277e1045fbdf79bdcb3e87deda2dffe`；修复未提交，冻结清单同上。
+- 根因：消除重复与保持信息等价是两条独立约束；顶层无重复键也不能证明被编辑的nested content无歧义。
+- 防复发检查：局部batch配对；镜像需ID+name+args及一对一次数相等；保留原content块位置和metadata，只抑制对应canonical副本；每个实际field editor拒绝重复目标字段。
+- 证据：三客户端×三上游×流/非流18路和6路实际重试通过，34原黄金未改；metadata/order/name/args反例及typed歧义拒绝有独立测试。
+- 状态：已修复待观察
+
 <!-- 只有出现具体问题时才新增条目。 -->
 
 ```markdown

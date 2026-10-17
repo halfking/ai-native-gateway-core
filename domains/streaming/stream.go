@@ -192,6 +192,9 @@ func runEmptyStreamGateWithVendor(
 	stripFn func([]byte) []byte,
 	toolsRequested bool,
 ) (flushedLines []string, outcome *StreamOutcome) {
+	if stripFn == nil && vendorCode == "" {
+		stripFn = newInferredStreamStripper()
+	}
 	buffered := make([]string, 0, emptyGateMaxChunks)
 	bufferedBytes := 0
 	xmlToolCoercer := newStreamXMLToolCallCoercer()
@@ -679,6 +682,9 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 	pc *pendingCapturer,
 	diagnostics *DiagnosticContext,
 ) (outcome StreamOutcome) {
+	if stripFn == nil && vendorCode == "" {
+		stripFn = newInferredStreamStripper()
+	}
 	// Terminal repair state belongs to this request, including its empty-stream gate.
 	norm = norm.forStream()
 	//nolint:errcheck // best-effort close
@@ -2178,7 +2184,13 @@ func stripChunkFieldsForVendor(line, vendorCode string, stripFn func([]byte) []b
 		return line, 0, ""
 	}
 	payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-	if payload == "" || payload == "[DONE]" {
+	if payload == "" {
+		return line, 0, ""
+	}
+	if payload == "[DONE]" {
+		if stripFn != nil {
+			stripFn([]byte(payload))
+		}
 		return line, 0, ""
 	}
 
@@ -2218,6 +2230,9 @@ func resolveStreamVendor(payload, vendorCode string, stripFn func([]byte) []byte
 	}
 	switch {
 	case fields["base_resp"] != nil || fields["nvext"] != nil || fields["input_sensitive"] != nil:
+		if stripFn != nil {
+			return "minimax", stripFn
+		}
 		return "minimax", StripMinimaxFieldsBody
 	case fields["zhipu_request_id"] != nil || fields["web_search_results"] != nil:
 		return "zhipu", StripZhipuFieldsBody

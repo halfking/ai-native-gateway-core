@@ -509,6 +509,16 @@ func serializeAnthropicMessage(msg Message, targetProvider string, modelName str
 		toolResult := map[string]any{
 			"type": "tool_result",
 		}
+		// A canonical nested result already carries multimodal content and its
+		// error flag. Flattening it to text loses both on repaired histories.
+		if len(msg.Content) == 1 && msg.Content[0].Type == "tool_result" && preservesStructuredToolResult(msg.Content[0]) {
+			result := serializeAnthropicContentBlock(msg.Content[0], targetProvider, modelName)
+			if msg.ToolCallID != "" {
+				result[GetProviderFieldConfig(targetProvider, modelName).ToolResultIDField] = msg.ToolCallID
+			}
+			out["content"] = []map[string]any{result}
+			return out
+		}
 		toolUseID := msg.ToolCallID
 		// Extract content from text blocks. Also handle tool_result blocks nested
 		// inside the message content (e.g. when the IR was produced by parsing an
@@ -591,15 +601,30 @@ func serializeAnthropicMessageContent(msg Message, targetProvider string, modelN
 	// content:"" 的 assistant 消息连同 tool_use 一并序列化为
 	// {"type":"text","text":""}，上游直接报错；手写转换器在该形态下抑制
 	// 空 text。凡 text 块 Text 为空一律跳过。
+	// The original content carries order and block metadata such as cache_control.
+	// Keep a proven mirror there and suppress only its corresponding canonical
+	// call below. Track occurrences so duplicate actual calls remain visible.
+	represented := make([]bool, len(msg.ToolCalls))
 	for _, block := range msg.Content {
+		if block.Type == "tool_use" && block.ToolUse != nil {
+			for i, call := range msg.ToolCalls {
+				if !represented[i] && call.ID == block.ToolUse.ID && call.Function.Name == block.ToolUse.Name && call.Function.Arguments == string(block.ToolUse.Input) {
+					represented[i] = true
+					break
+				}
+			}
+		}
 		if block.Type == "text" && block.Text == "" {
 			continue
 		}
 		result = append(result, serializeAnthropicContentBlock(block, targetProvider, modelName))
 	}
 
-	// Then, add tool_use blocks from ToolCalls
-	for _, tc := range msg.ToolCalls {
+	// Add only canonical calls not already represented by original content.
+	for i, tc := range msg.ToolCalls {
+		if represented[i] {
+			continue
+		}
 		toolUse := map[string]any{
 			"type": "tool_use",
 			"id":   tc.ID,
@@ -1231,4 +1256,21 @@ func anthropicMaxTokens(n int) int {
 		return n
 	}
 	return DefaultAnthropicMaxTokens
+}
+
+// Pure text keeps the existing flattened wire shape. Errors, cache metadata and
+// multimodal results need the structured serializer to retain their semantics.
+func preservesStructuredToolResult(block ContentBlock) bool {
+	if block.ToolResult == nil {
+		return false
+	}
+	if block.ToolResult.IsError || block.CacheControl != nil {
+		return true
+	}
+	for _, content := range block.ToolResult.Content {
+		if content.Type != "text" {
+			return true
+		}
+	}
+	return false
 }

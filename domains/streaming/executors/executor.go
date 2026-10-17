@@ -500,6 +500,9 @@ type StripMinimaxFieldsFunc func(body []byte) []byte
 // Implementations are expected to be no-ops when toolsRequested is false.
 type XMLCoerceNonStreamFunc func(body []byte, toolsRequested bool) []byte
 
+// XMLCoerceNonStreamWithContextFunc repairs text calls using caller offers.
+type XMLCoerceNonStreamWithContextFunc func(context.Context, []byte) []byte
+
 // 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
 // QualityProcessNonStreamFunc is the per-provider tool_call quality
 // post-processor. It returns the (possibly rewritten) body plus the
@@ -605,7 +608,9 @@ type Executor struct {
 	// turn XML-style tool calls into structured tool_calls. Wired from
 	// main.go (relay.coerceXMLToolCallsInChatResponse) so the routing
 	// package does not need to import relay.
-	XMLCoerceNonStream XMLCoerceNonStreamFunc
+	// Deprecated: bool-only hooks cannot authorize executable names.
+	XMLCoerceNonStream            XMLCoerceNonStreamFunc
+	XMLCoerceNonStreamWithContext XMLCoerceNonStreamWithContextFunc
 	// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
 	// QualityProcessNonStream is the per-provider tool_call quality
 	// post-processor for non-stream responses. Wired from main.go

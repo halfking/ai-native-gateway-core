@@ -120,6 +120,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror"
 	"github.com/kaixuan/llm-gateway-go/internal/streamretry" //nolint:depguard // 2026-08-12: v1 chat 入口的 pre-stream 重试包装
+	"github.com/kaixuan/llm-gateway-go/internal/tooloffer"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/licensing"
 	"github.com/kaixuan/llm-gateway-go/maas"
@@ -1709,7 +1710,7 @@ func main() {
 				case "doubao":
 					stripFn = streaming.StripDoubaoFieldsBody
 				case "minimax":
-					stripFn = streaming.StripMinimaxFieldsBody
+					stripFn = streaming.NewMiniMaxStreamFieldStripper()
 				case "zhipu", "glm":
 					stripFn = streaming.StripZhipuFieldsBody
 				case "sensenova":
@@ -1722,6 +1723,7 @@ func main() {
 					Anomaly:   routingExec.AnomalyReporter,
 					Semantic:  routingExec.SemanticAnalyzer,
 				}
+				resp.Body = streaming.NewXMLToolCallCoercingBodyWithNames(resp.Body, tooloffer.FromContext(ctx))
 				outcome := streaming.StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 					ctx, w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, vendorCode, pc, diagnostics,
 				)
@@ -1737,7 +1739,9 @@ func main() {
 			routingExec.ProbeOneFlight = executors.NewRedisProbeOneFlight(fpSlotRedis, "")
 		}
 		routingExec.ParamLedger = paramLedger
-		routingExec.XMLCoerceNonStream = streaming.CoerceXMLToolCallsInChatResponse
+		routingExec.XMLCoerceNonStreamWithContext = func(ctx context.Context, body []byte) []byte {
+			return streaming.CoerceXMLToolCallsInChatResponseWithNames(body, tooloffer.FromContext(ctx))
+		}
 		routingExec.QualityProcessNonStream = streaming.WrapQualityProcessNonStream()
 		routingExec.QualitySetMode = streaming.WrapSetQualityFixModeOnContext()
 		// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
@@ -1933,7 +1937,7 @@ func main() {
 			// passthrough loop), so minimax-m3 wrapper tokens leaked into
 			// client-visible text. Coerce at the body-reader seam so the
 			// bridge converts a real tool_calls delta instead of text.
-			resp.Body = streaming.NewXMLToolCallCoercingBody(resp.Body, toolsRequested)
+			resp.Body = streaming.NewXMLToolCallCoercingBodyWithNames(resp.Body, tooloffer.FromContext(ctx))
 			// 审计 R3 #2 (2026-09-09)：透传 executor 基于请求体的 input_tokens 估算值，
 			// 写入 message_start.usage.input_tokens（此前恒 0）。
 			outcome := streaming.StreamOpenAIToAnthropicSSEWithDiagnostics(ctx, w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics, inputTokensEstimate)
@@ -1993,7 +1997,7 @@ func main() {
 			}
 			// 2026-09-23 (leak fix): see the OpenAIToAnthropicStream wiring
 			// above — coerce XML/minimax tool-call text before conversion.
-			resp.Body = streaming.NewXMLToolCallCoercingBody(resp.Body, toolsRequested)
+			resp.Body = streaming.NewXMLToolCallCoercingBodyWithNames(resp.Body, tooloffer.FromContext(ctx))
 			outcome := streaming.StreamOpenAIToResponsesSSEWithDiagnostics(ctx, w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
 			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome

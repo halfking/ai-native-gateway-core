@@ -46,17 +46,17 @@ if err != nil || !bytes.Equal(fixed, again) { t.Fatal("repair must be idempotent
 
 - [ ] 完整合法历史原buffer no-op；变更时仅目标数组，已有RawMessage数值/未知字段/转义保留；synthetic失败文案明确且Messages带is_error。
 - [ ] IR使用同一配对契约，先稳定缺失ID再reconcile；不能删除真实call/result，不能用后轮答案满足前轮。
-- [ ] root在首发Chat/nativeResponses、reactiveResponses重试、Messages最后出站接线，typed歧义按请求错误外显且不上游/不罚节点。
+- [ ] root在实际HTTP attempt统一接线，覆盖首发Chat/nativeResponses、reactiveResponses重试、Messages最后出站，typed歧义按请求错误外显且不上游/不罚节点。
 - [ ] 三客户端×三上游×流/非流严格fake验证缺失数、顺序、已有真值及混合文本；既有34黄金不更新通过。
 - [ ] 单包/完整IR/streaming/executors、race、vet/build；去synthetic/全局匹配/现有结果后补/丢is_error/全量marshal变异正确红；审查与checkpoint。
 
 ## Task 3：F，错误外显与重试提示
 
 **Files:** 新`domains/streaming/client_error.go`及判据；修改`handler.go`、`messages.go`、`responses.go`、`survival_wiring.go`错误出口，
-以及`domains/streaming/executors/executor_dispatch.go`最小kind保真及对应测试。前两项完成后本路worker独占这些路径。
+以及`domains/streaming/executors/executor_dispatch.go`最小kind保真及对应测试；dispatch journey/attempt仅追加观测字段，不把raw hint填入planner已有RetryAfter。前两项完成后本路worker独占这些路径。
 
 - [ ] 从真实typed upstream和dispatch构造context/auth/client/content-filter/rate/quota/overload/timeout/down/model-not-found，记录各入口现有错误和重试提示矛盾。
-- [ ] 复用errorsx定义语义决策表及设计中客户端投影；保留原kind与同族真实hint；按需为现有dispatch attempt追加仅观测hint字段，不改变处罚/候选政策，不能再被exhausted通用503/model_not_found覆盖。
+- [ ] 复用errorsx定义语义决策表及设计中客户端投影；保留原kind与同族真实hint；rate沿用既有客户端429可重试特例，其余普通族依EffectiveRetryable；按需为现有dispatch attempt追加仅观测hint字段，不改变处罚/候选政策，不能再被exhausted通用503/model_not_found覆盖。
 - [ ] 非流和头未提交时验证HTTP status/code/Retry-After/X-Should-Retry；已提交SSE验证正确协议失败事件、retry字段、单一失败终态，无成功伪装。
 - [ ] survival出口沿用相同语义，等待预算/attempts不退化；归责仍走原矩阵，请求错误不罚节点。
 - [ ] 定向真实handler/dispatch测试、race及三入口独立负控，审查精确SHA，checkpoint合并push。

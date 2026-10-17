@@ -35,10 +35,10 @@ func sseLine(payload string) string {
 func TestCoercingBodyCoercesMiniMaxWrappedToolCallLeak(t *testing.T) {
 	// Exact production leak shape (user report #13): the command text and
 	// description arrive as separate wrapped payloads.
-	upstream := sseLine(`{"choices":[{"delta":{"content":"minimax[>[<tool_call> ]<]minimax[>[]<]minimax[>[ssh ls]<]minimax[>[]<]minimax[>[Check nginx]<]minimax[>[ ]<]minimax[>[</tool_call>"}}]}`) +
+	upstream := offeredFrame(t, `minimax[>[<tool_call>{"name":"search","arguments":{"cmd":"ssh ls"}}]<]minimax[>[</tool_call>`) +
 		sseLine(`{"choices":[{"delta":{},"finish_reason":"stop"}]}`) +
 		"data: [DONE]\n\n"
-	body := NewXMLToolCallCoercingBody(io.NopCloser(strings.NewReader(upstream)), true)
+	body := NewXMLToolCallCoercingBodyWithNames(io.NopCloser(strings.NewReader(upstream)), offeredSearchNames())
 	got := readAllBody(t, body)
 	if strings.Contains(got, "minimax[>[") {
 		t.Fatalf("wrapper leaked through coercing body: %q", got)
@@ -55,11 +55,9 @@ func TestCoercingBodyHandlesMarkerSplitAcrossDeltas(t *testing.T) {
 	// The wrapper opener split at an arbitrary byte offset across two SSE
 	// deltas ("minimax[>" + "[<tool_call>…"). Pre-fix the first fragment
 	// did not match any full trigger substring and passed through visible.
-	upstream := sseLine(`{"choices":[{"delta":{"content":"minimax[>"}}]}`) +
-		sseLine(`{"choices":[{"delta":{"content":"[<tool_call>run it now"}}]}`) +
-		sseLine(`{"choices":[{"delta":{"content":"</tool_call>"}}]}`) +
-		"data: [DONE]\n\n"
-	body := NewXMLToolCallCoercingBody(io.NopCloser(strings.NewReader(upstream)), true)
+	text := `minimax[>[<tool_call>{"name":"search","arguments":{"cmd":"run it now"}}</tool_call>`
+	upstream := offeredFrame(t, text[:8]) + offeredFrame(t, text[8:25]) + offeredFrame(t, text[25:]) + "data: [DONE]\n\n"
+	body := NewXMLToolCallCoercingBodyWithNames(io.NopCloser(strings.NewReader(upstream)), offeredSearchNames())
 	got := readAllBody(t, body)
 	if strings.Contains(got, "minimax[>") || strings.Contains(got, "<tool_call>") {
 		t.Fatalf("split marker leaked through coercing body: %q", got)
@@ -76,7 +74,7 @@ func TestCoercingBodyFlushesFalsePositivePrefixAsContent(t *testing.T) {
 	upstream := sseLine(`{"choices":[{"delta":{"content":"use the <tool"}}]}`) +
 		sseLine(`{"choices":[{"delta":{"content":"bar menu"}}]}`) +
 		"data: [DONE]\n\n"
-	body := NewXMLToolCallCoercingBody(io.NopCloser(strings.NewReader(upstream)), true)
+	body := NewXMLToolCallCoercingBodyWithNames(io.NopCloser(strings.NewReader(upstream)), offeredSearchNames())
 	got := readAllBody(t, body)
 	if !strings.Contains(got, "use the <toolbar menu") {
 		t.Fatalf("false-positive prefix must flush as content: %q", got)
@@ -102,7 +100,7 @@ func TestCoercingBodyPreservesOrdinaryStream(t *testing.T) {
 		sseLine(`{"choices":[{"delta":{"content":"hello world"}}]}`) +
 		sseLine(`{"choices":[{"delta":{},"finish_reason":"stop"}]}`) +
 		"data: [DONE]\n\n"
-	body := NewXMLToolCallCoercingBody(io.NopCloser(strings.NewReader(upstream)), true)
+	body := NewXMLToolCallCoercingBodyWithNames(io.NopCloser(strings.NewReader(upstream)), offeredSearchNames())
 	got := readAllBody(t, body)
 	if got != upstream {
 		t.Fatalf("ordinary stream must round-trip unchanged:\n got: %q\nwant: %q", got, upstream)
@@ -111,7 +109,7 @@ func TestCoercingBodyPreservesOrdinaryStream(t *testing.T) {
 
 func TestCoercingBodyPropagatesClose(t *testing.T) {
 	rc := &trackingReadCloser{Reader: strings.NewReader("data: [DONE]\n\n")}
-	body := NewXMLToolCallCoercingBody(rc, true)
+	body := NewXMLToolCallCoercingBodyWithNames(rc, offeredSearchNames())
 	if err := body.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
@@ -135,11 +133,11 @@ func (c *trackingReadCloser) Close() error {
 // resp.Body (cmd/gateway/main.go wiring). The leaked minimax-m3 wrapper text
 // must surface as a real Anthropic tool_use content block, not text_delta.
 func TestOpenAIToAnthropicBridgeWithCoercingBodyConvertsLeakToToolUse(t *testing.T) {
-	upstream := sseLine(`{"choices":[{"delta":{"content":"minimax[>[<tool_call> ]<]minimax[>[]<]minimax[>[ssh ls]<]minimax[>[]<]minimax[>[Check nginx]<]minimax[>[ ]<]minimax[>[</tool_call>"}}]}`) +
+	upstream := offeredFrame(t, `minimax[>[<tool_call>{"name":"search","arguments":{"cmd":"ssh ls"}}]<]minimax[>[</tool_call>`) +
 		sseLine(`{"choices":[{"delta":{},"finish_reason":"stop"}]}`) +
 		"data: [DONE]\n\n"
 	resp := &http.Response{
-		Body:    NewXMLToolCallCoercingBody(io.NopCloser(strings.NewReader(upstream)), true),
+		Body:    NewXMLToolCallCoercingBodyWithNames(io.NopCloser(strings.NewReader(upstream)), offeredSearchNames()),
 		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
 	}
 	rec := httptest.NewRecorder()

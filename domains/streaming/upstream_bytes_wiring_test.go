@@ -15,6 +15,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/paramrefusal"
+	"github.com/kaixuan/llm-gateway-go/internal/tooloffer"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
@@ -62,10 +63,18 @@ func upstreamBytesHandler(t *testing.T, candidate provider.Candidate, client str
 	norm := NewNormalizer()
 	e := executors.NewExecutor(executors.NewRouter(executors.NewStickyCache(), limiter), credential.NewManager(), limiter, pool.NewPoolManager(nil), nil, norm.NormalizeChunk,
 		func(ctx context.Context, w http.ResponseWriter, r *http.Response, cm, om, cc string, _ executors.NormalizerFunc, c *audit.StreamCapture, tools bool) executors.StreamOutcome {
-			return StreamChatWithCaptureAndToolFallback(ctx, w, r, cm, om, norm, c, tools, nil)
+			r.Body = NewXMLToolCallCoercingBodyWithNames(r.Body, tooloffer.FromContext(ctx))
+			var strip func([]byte) []byte
+			if cc == "minimax" {
+				strip = NewMiniMaxStreamFieldStripper()
+			}
+			return StreamChatWithPendingCaptureAndDiagnosticsWithVendor(ctx, w, r, cm, om, norm, c, tools, strip, cc, nil, nil)
 		}, nil)
 	e.IR = transformation.NewTransportIRConverter(&upstreamBytesIR{})
 	e.ParamRefusal = paramrefusal.NewStore()
+	e.XMLCoerceNonStreamWithContext = func(ctx context.Context, body []byte) []byte {
+		return CoerceXMLToolCallsInChatResponseWithNames(body, tooloffer.FromContext(ctx))
+	}
 	e.AnthropicPassthroughStream = func(ctx context.Context, w http.ResponseWriter, r *http.Response, cm, om, id string, c *audit.StreamCapture, _ any) executors.StreamOutcome {
 		return StreamAnthropicPassthrough(ctx, w, r, cm, om, id, c, nil)
 	}
@@ -73,14 +82,14 @@ func upstreamBytesHandler(t *testing.T, candidate provider.Candidate, client str
 		return StreamAnthropicSSEToOpenAI(ctx, w, r, cm, om, id, c, nil)
 	}
 	e.OpenAIToAnthropicStream = func(ctx context.Context, w http.ResponseWriter, r *http.Response, cm, om, id string, c *audit.StreamCapture, _ any, estimate int, tools bool) executors.StreamOutcome {
-		r.Body = NewXMLToolCallCoercingBody(r.Body, tools)
+		r.Body = NewXMLToolCallCoercingBodyWithNames(r.Body, tooloffer.FromContext(ctx))
 		return StreamOpenAIToAnthropicSSEWithDiagnostics(ctx, w, r, cm, om, id, c, nil, nil, estimate)
 	}
 	e.AnthropicToResponsesStream = func(ctx context.Context, w http.ResponseWriter, r *http.Response, cm, om, id string, c *audit.StreamCapture, _ any) executors.StreamOutcome {
 		return StreamAnthropicSSEToResponses(ctx, w, r, cm, om, id, c, nil)
 	}
 	e.OpenAIToResponsesStream = func(ctx context.Context, w http.ResponseWriter, r *http.Response, cm, om, id string, c *audit.StreamCapture, _ any, tools bool) executors.StreamOutcome {
-		r.Body = NewXMLToolCallCoercingBody(r.Body, tools)
+		r.Body = NewXMLToolCallCoercingBodyWithNames(r.Body, tooloffer.FromContext(ctx))
 		return StreamOpenAIToResponsesSSE(ctx, w, r, cm, om, id, c, nil)
 	}
 	e.NativeResponsesStream = func(ctx context.Context, w http.ResponseWriter, r *http.Response, id string, c *audit.StreamCapture, visible *atomic.Bool) executors.StreamOutcome {

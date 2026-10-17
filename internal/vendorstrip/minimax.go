@@ -1,6 +1,7 @@
 package strip
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -21,7 +22,70 @@ var miniMaxPrivateFields = []string{
 	"usage_extra",
 }
 
-type miniMaxStripper struct{}
+type miniMaxStripper struct{ stream *miniMaxToolStreamState }
+
+const maxMiniMaxToolChoices = 64
+const miniMaxToolTailBytes = len("</minimax:tool_call>") - 1
+
+type miniMaxToolTail struct {
+	open bool
+	tail string
+}
+type miniMaxToolStreamState struct {
+	choices     map[int]miniMaxToolTail
+	preserveAll bool
+}
+
+// NewMiniMaxStreamStripper owns bounded tool-text state for one response.
+// At an excessive number of active tool choices, only that response's content
+// is retained verbatim; reasoning and vendor-private fields still get cleaned.
+func NewMiniMaxStreamStripper() func([]byte) []byte {
+	state := &miniMaxToolStreamState{choices: map[int]miniMaxToolTail{}}
+	stripper := miniMaxStripper{stream: state}
+	return func(body []byte) []byte {
+		if bytes.Equal(bytes.TrimSpace(body), []byte("[DONE]")) {
+			clear(state.choices)
+			state.preserveAll = false
+			return body
+		}
+		return stripper.StripFields(body)
+	}
+}
+
+func (s *miniMaxToolStreamState) preserve(index int, text string) bool {
+	previous := s.choices[index]
+	joined := previous.tail + text
+	candidate := minimaxToolCandidate(joined)
+	preserve := s.preserveAll || previous.open || candidate
+	opened := max(strings.LastIndex(joined, "<tool_call>"), strings.LastIndex(joined, "<minimax:tool_call>"))
+	closed := max(strings.LastIndex(joined, "</tool_call>"), strings.LastIndex(joined, "</minimax:tool_call>"))
+	active := previous.open
+	if closed >= 0 && closed > opened {
+		active = false
+	} else if opened >= 0 {
+		active = true
+	}
+	pendingPrefix := false
+	for _, mark := range []string{"<tool_call>", "<minimax:tool_call>"} {
+		for n := len(mark) - 1; n >= 1; n-- {
+			if strings.HasSuffix(joined, mark[:n]) {
+				pendingPrefix = true
+				break
+			}
+		}
+	}
+	if !active && !pendingPrefix {
+		delete(s.choices, index)
+		return preserve
+	}
+	if _, tracked := s.choices[index]; !tracked && len(s.choices) >= maxMiniMaxToolChoices {
+		s.preserveAll = true
+		return true
+	}
+	tail := joined[max(0, len(joined)-miniMaxToolTailBytes):]
+	s.choices[index] = miniMaxToolTail{open: active, tail: tail}
+	return preserve
+}
 
 func (miniMaxStripper) DetectError(body []byte) (Signal, bool) {
 	code, message, isError := ParseMiniMaxBaseResp(body)
@@ -31,7 +95,7 @@ func (miniMaxStripper) DetectError(body []byte) (Signal, bool) {
 	return Signal{Code: code, Message: message, Kind: ClassifyMiniMaxStatusCode(code)}, true
 }
 
-func (miniMaxStripper) StripFields(body []byte) []byte {
+func (s miniMaxStripper) StripFields(body []byte) []byte {
 	if len(body) == 0 {
 		return body
 	}
@@ -50,6 +114,10 @@ func (miniMaxStripper) StripFields(body []byte) []byte {
 		var choices []map[string]json.RawMessage
 		if json.Unmarshal(choicesRaw, &choices) == nil {
 			for i, choice := range choices {
+				index := i
+				if rawIndex, ok := choice["index"]; ok {
+					_ = json.Unmarshal(rawIndex, &index)
+				}
 				for _, field := range []string{"message", "delta"} {
 					messageRaw, ok := choice[field]
 					if !ok {
@@ -59,9 +127,22 @@ func (miniMaxStripper) StripFields(body []byte) []byte {
 					if json.Unmarshal(messageRaw, &message) != nil {
 						continue
 					}
-					if cleanMinimaxLeakFields(message) {
+					preserve := false
+					if s.stream != nil {
+						var text string
+						if json.Unmarshal(message["content"], &text) == nil {
+							preserve = s.stream.preserve(index, text)
+						}
+					}
+					if cleanMinimaxLeakFields(message, preserve) {
 						choice[field], _ = json.Marshal(message)
 						stripped = true
+					}
+				}
+				if s.stream != nil {
+					var finish string
+					if json.Unmarshal(choice["finish_reason"], &finish) == nil && finish != "" {
+						delete(s.stream.choices, index)
 					}
 				}
 				choices[i] = choice
@@ -173,7 +254,7 @@ func UnwrapMiniMaxTokenWrappers(text string) string {
 	return b.String()
 }
 
-func cleanMinimaxLeakFields(message map[string]json.RawMessage) bool {
+func cleanMinimaxLeakFields(message map[string]json.RawMessage, preserveContent ...bool) bool {
 	changed := false
 	for _, field := range []string{"reasoning_content", "content"} {
 		raw, ok := message[field]
@@ -182,6 +263,11 @@ func cleanMinimaxLeakFields(message map[string]json.RawMessage) bool {
 		}
 		var text string
 		if json.Unmarshal(raw, &text) != nil {
+			continue
+		}
+		// Unrecognized/unfinished tool text must survive response repair. Only
+		// successful offer-aware coercion may consume these content bytes.
+		if field == "content" && (minimaxToolCandidate(text) || len(preserveContent) > 0 && preserveContent[0]) {
 			continue
 		}
 		if strings.Contains(text, "minimax[>[") {
@@ -210,4 +296,20 @@ func cleanMinimaxLeakFields(message map[string]json.RawMessage) bool {
 		changed = true
 	}
 	return changed
+}
+
+// A split tool opener may be the final bytes flushed at EOF or the hold cap.
+// Ordinary vendor wrappers and reasoning keep their established cleanup.
+func minimaxToolCandidate(text string) bool {
+	for _, mark := range []string{"<tool_call>", "<minimax:tool_call>"} {
+		if strings.Contains(text, mark) {
+			return true
+		}
+		for n := len(mark) - 1; n >= 1; n-- {
+			if strings.HasSuffix(text, mark[:n]) {
+				return true
+			}
+		}
+	}
+	return false
 }

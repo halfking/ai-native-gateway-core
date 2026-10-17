@@ -30,6 +30,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/requestflow"
+	"github.com/kaixuan/llm-gateway-go/internal/tooloffer"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	vendorstrip "github.com/kaixuan/llm-gateway-go/internal/vendorstrip"
 	"github.com/kaixuan/llm-gateway-go/pool"
@@ -407,9 +408,7 @@ func (c *ChatExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.
 	if err != nil {
 		return nil, err
 	}
-	if c.XMLCoerceNonStream != nil {
-		body = c.XMLCoerceNonStream(body, false)
-	}
+	// This legacy interface has no request offers; it cannot authorize text calls.
 	if c.Normalize != nil {
 		body = c.Normalize(body, false)
 	}
@@ -1178,6 +1177,20 @@ func (e *Executor) executeOpenAI(
 			default:
 				upstreamURL = upstreamurl.ChatCompletionsURL(cand.BaseURL)
 			}
+			// Run at the actual HTTP attempt boundary, after every mode switch
+			// or context recovery. A first-attempt-only repair misses native
+			// Responses and bodies rebuilt by reactive retries.
+			wireProtocol := "chat"
+			if cand.Protocol == providercatalog.ProtocolAnthropicMessages {
+				wireProtocol = "messages"
+			} else if nativeNonStream || nativeStream {
+				wireProtocol = "responses"
+			}
+			var historyErr error
+			bodyBytes, historyErr = repairOutboundToolHistory(params, cand, bodyBytes, wireProtocol)
+			if historyErr != nil {
+				return nil, historyErr
+			}
 
 			// BUG-2 fix: use upCtx (created at loop scope) directly so the
 			// request carries the correct context from the start. Previously
@@ -1889,7 +1902,7 @@ func (e *Executor) executeOpenAI(
 							transformation.AdaptChatParamsToResponsesWire(
 								transformation.StripStreamOptions(append([]byte(nil), params.ResponsesBodyBytes...))),
 							cand.ProviderID, cand.RawModel, paramRefusalWireKey(cand, true))
-					} else if converted, convOK := chatBodyToResponsesBody(clientSourceBody, cand.RawModel); convOK {
+					} else if converted, convOK := clientBodyToResponsesBody(cand, params, clientSourceBody); convOK {
 						retryBody = converted
 					}
 					if len(retryBody) > 0 {
@@ -2564,8 +2577,8 @@ func (e *Executor) executeOpenAI(
 			if params.ClientModel != "" {
 				respBody = replaceModelInResponseBody(respBody, params.ClientModel)
 			}
-			if e.XMLCoerceNonStream != nil {
-				respBody = e.XMLCoerceNonStream(respBody, params.ToolsRequested)
+			if e.XMLCoerceNonStreamWithContext != nil {
+				respBody = e.XMLCoerceNonStreamWithContext(streamReaderContext(params, resp), respBody)
 			}
 			if e.Normalize != nil {
 				respBody = e.Normalize(respBody, false)
@@ -3392,13 +3405,18 @@ func (c *abortAwareContext) Err() error {
 // response. Durable streams intentionally detach that context from client
 // cancellation, so protocol readers must not fall back to params.R here.
 func streamReaderContext(params *ExecParams, resp *http.Response) context.Context {
+	ctx := context.Background()
 	if resp != nil && resp.Request != nil {
-		return resp.Request.Context()
+		ctx = resp.Request.Context()
+	} else if params != nil && params.R != nil {
+		ctx = params.R.Context()
 	}
-	if params != nil && params.R != nil {
-		return params.R.Context()
+	if params != nil {
+		// BodyBytes remains the original client protocol body across retries;
+		// detached durable readers retain their actual upstream cancellation.
+		ctx = tooloffer.WithNames(ctx, tooloffer.FromRequest(params.BodyBytes))
 	}
-	return context.Background()
+	return ctx
 }
 
 // parseMiniMaxBaseResp extracts MiniMax's HTTP 200-wrapped error signal
@@ -3480,7 +3498,12 @@ func proactiveChatToResponsesUpgrade(cand provider.Candidate, params *ExecParams
 	if len(params.BodyBytes) == 0 {
 		return nil, false
 	}
-	sourceBody := params.BodyBytes
+	return clientBodyToResponsesBody(cand, params, params.BodyBytes)
+}
+
+// Both proactive and reactive upgrades must parse the actual client dialect.
+// Parsing Messages as Chat discards tool_use/result blocks before wire repair.
+func clientBodyToResponsesBody(cand provider.Candidate, params *ExecParams, sourceBody []byte) (body []byte, upgraded bool) {
 	// Messages handlers retain the original Anthropic body. Parse its actual
 	// dialect before the shared Responses conversion so system/tools survive.
 	if params.ClientProtocol == providercatalog.ProtocolAnthropicMessages {
