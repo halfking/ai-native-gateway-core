@@ -39,7 +39,7 @@ import {
  *   批 116 是「`SuperAdminMiddleware` **逐字比 role**，档位本身就是真门」；
  *   本批是**第三类**：服务端**完全没有租户维度** ⇒ 只能**过度限制**。
  *   四处逐字核过，写在 ① 组：
- *   ① `admin/handler.go:1091` 传 `admin(...)` = `h.admin` → `AdminMiddleware`；
+ *   ① 注册处（批 158e 起）`admin/handler.go:1134` 传 `h.superAdmin(...)` → `SuperAdminMiddleware`；此前为 `admin(...)`；
  *   ② `admin/auth.go:85-140` 全文**没有** `claims.Role` 比较；
  *   ③ `admin/ops_overview.go` 全文**没有** `AuthContext` / `IsTenantAdmin` / `Role`；
  *   ④ **取租户键的代码根本不存在** —— `grep tenant` 打不到不是遗漏。
@@ -267,14 +267,15 @@ describe('① 权限档 super_admin（第三类：服务端完全没有租户维
     expect(seat!.requiresRole).toBe('super_admin')
   })
 
-  it('①-3 ★★★★★★ 读 Go 源码：注册处那一行**逐字**是 admin(...)（不是 superAdmin）', () => {
+  it('①-3 ★★★★★★ 读 Go 源码：注册处那一行**逐字**是 h.superAdmin(...)（批 158e 改严；不许退回 admin）', () => {
     const src = goSrc('admin/handler.go')
-    // ★★ 钉住**注册处本身的形态**。这一族要是哪天改成 h.superAdmin，
-    //   ①-1/①-2 仍然全绿（它们只看前端档位）⇒ 缺了这条就没人知道后端变严了。
+    // ★★ 钉住**注册处本身的形态**。批 158e（eb0aee4ec）把 admin(...) 改严为
+    //   h.superAdmin（平台聚合表无 tenant_id，tenant_admin 不该读到全平台数据）；
+    //   前端档位（super_admin）本就一致 ⇒ 这条把**变严**钉成契约，防止回退。
     expect(src).toContain(
-      'mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))',
+      'mux.HandleFunc("/api/admin/ops/overview", h.superAdmin(h.handleOpsOverview))',
     )
-    expect(src).not.toContain('mux.HandleFunc("/api/admin/ops/overview", h.superAdmin(')
+    expect(src).not.toContain('mux.HandleFunc("/api/admin/ops/overview", admin(')
   })
 
   it('①-4 ★★★★★★ 读 Go 源码：AdminMiddleware **不检 role**（这是本族归第三类的根据）', () => {

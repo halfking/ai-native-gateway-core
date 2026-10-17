@@ -35,6 +35,7 @@ func TestSlidingWindowBatch_Validation(t *testing.T) {
 	t.Run("method not allowed", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/api/credentials/sliding-window/batch", nil)
+		req = setTestRequestContext(req, "super_admin", "", "super-admin-user")
 		m.handleSlidingWindowBatch(rec, req)
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Fatalf("got %d want 405", rec.Code)
@@ -44,6 +45,7 @@ func TestSlidingWindowBatch_Validation(t *testing.T) {
 	t.Run("invalid json", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/api/credentials/sliding-window/batch", strings.NewReader("{"))
+		req = setTestRequestContext(req, "super_admin", "", "super-admin-user")
 		m.handleSlidingWindowBatch(rec, req)
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("got %d want 400", rec.Code)
@@ -53,6 +55,7 @@ func TestSlidingWindowBatch_Validation(t *testing.T) {
 	t.Run("items required when null", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/api/credentials/sliding-window/batch", strings.NewReader(`{"minutes":5}`))
+		req = setTestRequestContext(req, "super_admin", "", "super-admin-user")
 		m.handleSlidingWindowBatch(rec, req)
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("got %d want 400 body=%s", rec.Code, rec.Body.String())
@@ -62,6 +65,7 @@ func TestSlidingWindowBatch_Validation(t *testing.T) {
 	t.Run("empty items ok", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/api/credentials/sliding-window/batch", strings.NewReader(`{"items":[]}`))
+		req = setTestRequestContext(req, "super_admin", "", "super-admin-user")
 		m.handleSlidingWindowBatch(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("got %d want 200 body=%s", rec.Code, rec.Body.String())
@@ -83,6 +87,7 @@ func TestSlidingWindowBatch_Validation(t *testing.T) {
 		body, _ := json.Marshal(map[string]any{"items": items})
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/api/credentials/sliding-window/batch", bytes.NewReader(body))
+		req = setTestRequestContext(req, "super_admin", "", "super-admin-user")
 		m.handleSlidingWindowBatch(rec, req)
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("got %d want 400 body=%s", rec.Code, rec.Body.String())
@@ -96,6 +101,7 @@ func TestSlidingWindowBatch_Validation(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/api/credentials/sliding-window/batch",
 			strings.NewReader(`{"minutes":2000,"items":[{"credential_id":1,"model":"m"}]}`))
+		req = setTestRequestContext(req, "super_admin", "", "super-admin-user")
 		m.handleSlidingWindowBatch(rec, req)
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("got %d want 400", rec.Code)
@@ -116,6 +122,7 @@ func TestSlidingWindowBatch_PerItemErrorsWithoutDB(t *testing.T) {
 	]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/credentials/sliding-window/batch", strings.NewReader(body))
+	req = setTestRequestContext(req, "super_admin", "", "super-admin-user")
 	m.handleSlidingWindowBatch(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("got %d want 200 body=%s", rec.Code, rec.Body.String())
@@ -158,6 +165,7 @@ func TestSlidingWindowBatch_MaxItemsBoundary(t *testing.T) {
 	body, _ := json.Marshal(map[string]any{"minutes": 5, "items": items})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/credentials/sliding-window/batch", bytes.NewReader(body))
+	req = setTestRequestContext(req, "super_admin", "", "super-admin-user")
 	m.handleSlidingWindowBatch(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("got %d want 200 body=%s", rec.Code, rec.Body.String())
@@ -198,6 +206,7 @@ func TestSlidingWindowBatch_DefaultOmitsEntries(t *testing.T) {
 	body := `{"minutes":5,"items":[{"credential_id":17,"model":"claude-sonnet-5"}]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/credentials/sliding-window/batch", strings.NewReader(body))
+	req = setTestRequestContext(req, "super_admin", "", "super-admin-user")
 	m.handleSlidingWindowBatch(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("got %d want 200 body=%s", rec.Code, rec.Body.String())
@@ -231,6 +240,7 @@ func TestSlidingWindowBatch_IncludeEntriesTruncates(t *testing.T) {
 	body := `{"minutes":5,"include_entries":true,"entry_limit":24,"items":[{"credential_id":17,"model":"claude-sonnet-5"}]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/credentials/sliding-window/batch", strings.NewReader(body))
+	req = setTestRequestContext(req, "super_admin", "", "super-admin-user")
 	m.handleSlidingWindowBatch(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("got %d want 200 body=%s", rec.Code, rec.Body.String())
@@ -257,6 +267,7 @@ func TestSlidingWindowBatch_IncludeEntriesTruncates(t *testing.T) {
 	bodyCap := `{"minutes":5,"include_entries":true,"entry_limit":99,"items":[{"credential_id":17,"model":"claude-sonnet-5"}]}`
 	rec2 := httptest.NewRecorder()
 	req2 := httptest.NewRequest(http.MethodPost, "/api/credentials/sliding-window/batch", strings.NewReader(bodyCap))
+	req2 = setTestRequestContext(req2, "super_admin", "", "super-admin-user")
 	mCap.handleSlidingWindowBatch(rec2, req2)
 	if rec2.Code != http.StatusOK {
 		t.Fatalf("cap got %d want 200 body=%s", rec2.Code, rec2.Body.String())

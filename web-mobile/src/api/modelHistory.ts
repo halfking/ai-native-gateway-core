@@ -134,7 +134,7 @@ import { req, type RequestOptions } from './client'
  *       **同一个 admin 包里，一处选择不吞、一处吞掉三处。**
  *
  * (9) ★★★★★ **`limit` 越界 400，范围 1–200，默认 50**（`:1448-1451`）。
- *     ⇒ 但 ★★ **`queryInt` 解析失败时静默回落默认值**（`admin/handler.go:1557-1566`）：
+ *     ⇒ 但 ★★ **`queryInt` 解析失败时静默回落默认值**（`admin/handler.go:1600-1609`）：
  *     ```go
  *     v, err := strconv.Atoi(s)
  *     if err != nil { return def }   // ← 不报错

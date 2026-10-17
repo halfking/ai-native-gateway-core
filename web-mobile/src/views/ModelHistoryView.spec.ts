@@ -37,7 +37,7 @@ import {
  *   1. 挂载 `admin/handler.go:1475` `monitorH.RegisterMonitorRoutes(mux, h.admin)`
  *      ⇒ 包 `admin.AdminMiddleware`（`admin/auth.go:85-138`）**只认证、不检 role**
  *      （`admin/users.go:307-309` 的注释把这写成显式设计）；
- *   2. `handleModelHistory`（`admin/credential_monitor.go:1502-1545`）自己也不检 role；
+ *   2. `handleModelHistory`（`admin/credential_monitor.go:1568-1609`）自己也不检 role；
  *   3. ★★★ **变形点**：租户键不是调 `EffectiveTenantIDAll`，而是**手写内联**了同一语义
  *      （`credential_monitor.go:1532-1535`）：
  *      ```go

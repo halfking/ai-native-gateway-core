@@ -83,6 +83,14 @@ func (m *CredentialMonitorHandlers) handleSlidingWindowBatch(w http.ResponseWrit
 		return
 	}
 
+	// 12h-audit 20261017: same role gate as the single-credential endpoint —
+	// per-item entries carry cross-tenant per-call detail (Redis fast path has
+	// no tenant tag), so role=user must not reach the batch fan-out either.
+	if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "administrator role required")
+		return
+	}
+
 	var req struct {
 		Minutes        int  `json:"minutes"`
 		IncludeEntries bool `json:"include_entries"`

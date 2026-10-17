@@ -625,6 +625,17 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 		return
 	}
 
+	// 12h-audit 20261017: role gate. Registered under AdminMiddleware (any
+	// authenticated user), but the summary SQL filter is `($3 = '' OR
+	// c.tenant_id = $3)` and TenantID only gets populated for tenant_admin
+	// (below) — a role=user caller passes "" through and sees every tenant's
+	// credential inventory. Same hole audit #154 closed on model-history;
+	// restrict to super_admin / admin_key / tenant_admin.
+	if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "administrator role required")
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
@@ -711,6 +722,17 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	// 12h-audit 20261017: role gate. The #153 fix scoped tenant_admin via a
+	// tenant_id filter but left role=user on the "" (see-all) path — and the
+	// Redis fast path below (`!isTenantAdmin`) has no tenant tag at all, so
+	// any authenticated user could read every tenant's per-call timeline for
+	// any credential_id. Same standard audit #154 applied to model-history;
+	// restrict to super_admin / admin_key / tenant_admin.
+	if !IsTenantAdmin(r) && !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "administrator role required")
 		return
 	}
 

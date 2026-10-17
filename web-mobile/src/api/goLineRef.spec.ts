@@ -242,7 +242,6 @@ const KNOWN_FALSE_POSITIVE: { key: string; note: string }[] = [
   { key: 'api/connectionRegistry.ts:7 admin/handler.go:1052', note: '注释写 `{id}`，Go 里是 `{request_id}` —— 字面不同，指的同一条注册' },
   { key: 'api/credentialsOps.ts:140 admin/routing_reset.go:52', note: '52 行是 `handleResetCredentialState` 的函数定义；token `reason` 在函数体内（注释自己就写了 `:69-72`）' },
   { key: 'api/dashboard.ts:14 admin/dashboardapi/types.go:187', note: '187 行是 `writeSuccessJSON` 产出结构里的一行（`Success: true`），不是该函数本身' },
-  { key: 'api/dispatchJournal.ts:18 admin/journal_handlers.go:30-35', note: '被引处写的是**常量名** `dispatchJournalAPIPath`，字面量在 :13' },
   { key: 'api/errorsTrend.ts:38 admin/users.go:406', note: '行里是大写 `Role`，token 是小写 `role`（大小写敏感）' },
   { key: 'api/outputCompliance.ts:131 admin/output_compliance_handler.go:712', note: '712 行是 `writeJSON(...{"feedback": items...})`，token 是函数名 `listFeedback`（定义在 :673）' },
   { key: 'api/requestActions.ts:94 middleware/requestid_mw.go:83-89', note: '83 行是 `generateRequestID()` 的定义；token `request_id` 在函数体内' },
@@ -257,12 +256,10 @@ const KNOWN_FALSE_POSITIVE: { key: string; note: string }[] = [
   //   `router/index.ts:773 admin/credential_monitor.go:704-782` 在 2026-10-16 audit #153
   //   给 `handleSlidingWindow` 加上 `tenantID`/`IsTenantAdmin`/tenant 过滤后已被
   //   判为"对得上"，按 ③ 的契约必须从名单里删掉（修复方已落实），所以是 13 条不是 14。
-  { key: 'api/sessionContext.test.ts:34 admin/handler.go:1326', note: '★ token 字面写的是 `/api/system/...`（**带省略号**）⇒ 永远不可能在源码里逐字命中；引用本身本批已订正为真实的 `:1326`' },
   { key: 'router/index.ts:863 cmd/gateway/main_jwt_middleware.go:65-73', note: '★ `:65` 逐字就是 `func newRequireSuperAdminMiddleware()`；token 是 `main.go:7002` 那个**局部变量**的名字 —— 定义处/调用点/绑定点三者分离' },
   { key: 'router/index.ts:956 cmd/gateway/main_admin_wrappers.go:42', note: '★ `:42` 逐字就是 `func newWrapSessionAnalytics(...)`；同上，token 是调用点的变量名' },
   { key: 'views/SubscriptionTiersView.spec.ts:31 cmd/gateway/main_jwt_middleware.go:65-73', note: '与 `router/index.ts:855` 同一条引用（工厂函数定义行）' },
   { key: 'views/SubscriptionTiersView.vue:14 cmd/gateway/main_jwt_middleware.go:65-74', note: '同上；范围 65-74 比 65-73 多一行，仍完整覆盖该函数' },
-  { key: 'views/ModuleDetailView.spec.ts:72 admin/modules.go:838-841', note: '引用的是该端点**响应结构**的 `writeJSON(map...)` 段；token 是请求路径，不是 JSON 键' },
   { key: 'views/WorkTypesView.spec.ts:22 admin/work_types.go:298', note: '引用的是 SQL 的 `AND (...)` 片段；token 是**列名** `by_work_type`，不出现在片段的起始行' },
   { key: 'views/WorkTypesView.vue:66 admin/work_types.go:518', note: '518 行是 struct 定义里的一个字段；token `model_routes` 是**另一个** JSON 键' },
   { key: 'views/ComplianceHitsView.vue:21 admin/output_compliance_handler.go:712', note: '与 `api/outputCompliance.ts` 那条同一引用；712 行是 `writeJSON(...{"feedback": items...})`，token 是函数名' },
@@ -378,8 +375,8 @@ describe('④ 名单规模', () => {
     expect(KNOWN_DRIFT).toHaveLength(0)
   })
 
-  it('④-1b ★★★★ KNOWN_FALSE_POSITIVE 恰好 26 条（逐条定性过，不是债）', () => {
-    expect(KNOWN_FALSE_POSITIVE).toHaveLength(26)
+  it('④-1b ★★★★ KNOWN_FALSE_POSITIVE 恰好 23 条（逐条定性过，不是债；12h-audit 20261017 轮订正 3 条假阳性引用后删登记）', () => {
+    expect(KNOWN_FALSE_POSITIVE).toHaveLength(23)
   })
 
   it('④-2 ★★ 名单里每一条的 Go 文件都得真实存在（否则是笔误不是债）', () => {

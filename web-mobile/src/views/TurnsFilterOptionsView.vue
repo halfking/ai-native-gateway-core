@@ -6,8 +6,8 @@
 // ══ 权限 ══════════════════════════════════════════════════════════════════
 // ★★★★★ `requiresRole: 'admin'` —— 而**不是**「admin 档所以不设」。
 //
-//   注册 `admin/handler.go:1307`：`admin(h.handleTurnsFilterOptions)`
-//   而 `admin` 是 `admin/handler.go:933` 的**局部别名** `admin := h.admin`
+//   注册 `admin/handler.go:1342`：`admin(h.handleTurnsFilterOptions)`
+//   而 `admin` 是 `admin/handler.go:958` 的**局部别名** `admin := h.admin`
 //   ⇒ `h.admin` = `AdminMiddleware`（`admin/auth.go:85` 起）
 //     ⇒ ★★ **全文无任何 `claims.Role` 比对** ⇒ **服务端没有角色下限**
 //   ⇒ 「admin 档」在注册行里的真实含义是「**已认证**」，不是「管理员」。
@@ -27,7 +27,7 @@
 //
 // ══ 本页只读 ══════════════════════════════════════════════════════════════
 // ★ 本模块只导出一个 GET。真正的筛选**由** `turnsSessions` 列表端点执行
-//   （`/api/admin/turns/sessions`，`handler.go:1297`），本页只负责**取候选值**。
+//   （`/api/admin/turns/sessions`，`handler.go:1340`），本页只负责**取候选值**。
 import { computed, ref } from 'vue'
 import { useHyperPage } from '@/hyper'
 import { t } from '@/i18n'

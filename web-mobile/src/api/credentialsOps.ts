@@ -15,7 +15,7 @@ import { req, type RequestOptions } from './client'
 /**
  * `POST /api/credentials/set-manual-disabled`
  *
- * 后端 admin/credential_monitor.go:1838-1858 强制校验：`reason` 为空串直接 400
+ * 后端 admin/credential_monitor.go:1830-1841 强制校验：`reason` 为空串直接 400
  * （"reason required"）。移动端若让用户提交空 reason，请求必定失败且报错信息
  * 对用户无意义 ⇒ 视图层必须在提交前挡住，不要指望后端兜底。
  *
@@ -136,7 +136,7 @@ export function forceRecoverCredential(credentialId: number, options?: RequestOp
 }
 
 /**
- * `POST /api/routing/credentials/{id}/reset-state`（admin/handler.go:973，superAdmin）
+ * `POST /api/routing/credentials/{id}/reset-state`（admin/handler.go:998，superAdmin）
  * 聚焦式状态复位，handler admin/routing_reset.go:52。`reason` 必填（:69-72）。
  *
  * 与 force-recover 的分工：那个是「凭据级 5 步全清」，这个是「带 reason 的记账式
@@ -394,7 +394,7 @@ export function resolveRouting(
   return req<RoutingResolveResponse>('GET', `/api/routing/resolve?${qs}`, undefined, options)
 }
 
-/** `GET /api/routing/score-details?model=X`（admin/handler.go:1238）—— 打分明细。 */
+/** `GET /api/routing/score-details?model=X`（admin/handler.go:1273）—— 打分明细。 */
 export interface ScoreDetailsResponse {
   model: string
   total_score?: number

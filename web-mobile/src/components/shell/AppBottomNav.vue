@@ -25,10 +25,13 @@ const moreLabel = t('nav.more')
  *
  * 根因是「`<a href>` 的默认导航」+「WKWebView tap 识别不完全匹配 W3C actions」
  * 的耦合。修法：路由入口改用 `<RouterLink custom>` 渲染成 `<a>` + 显式
- * `@click` 拦截 + `e.preventDefault()` 双保险，**永远不让 `<a>` 默认导航跑起来**。
- * `click` 不触发还有第三层兜底：`@click` 与 vue-router slot prop 的 `navigate()`
- * 各自独立；navigate 内部 `guardEvent` 任何原因早退，preventDefault 已先执行，
- * 默认导航已经被我们吃下。
+ * `@click` 走 slot prop `navigate(e)`。**不能自己抢先 `e.preventDefault()`**：
+ * vue-router 5.2.0 的 `navigate(e)` 第一件事是 `guardEvent(e)`，而 guardEvent
+ * 对 `defaultPrevented` 的处理是直接 return（vue-router.cjs:2113）——抢先
+ * preventDefault 等于把 push 链饿死，底栏点击全灭（2026-10-17 12h 审计
+ * 订正 454740b35 的「双保险」顺序）。plain tap 时 guardEvent 自己会
+ * preventDefault（:2119）再 `router.push`，原生导航/路由导航由它裁决；
+ * 修饰键点击（metaKey/ctrlKey 新标签页）则交还 `<a>` 默认行为，同样正确。
  *
  * 样式对 `<a>` / `<button>` 都通用（已在原 CSS 中验过：border:none; background:
  * transparent; text-decoration:none 全部无害），UX 上 5 个底栏项视觉行为不变。
@@ -38,10 +41,9 @@ const moreLabel = t('nav.more')
 // 我们只在事件 handler 里消费它，不需要 NavigationFailure 的具体类型。
 type RouterNavigate = (e?: MouseEvent) => Promise<unknown> | void
 function safeNavigate(navigate: RouterNavigate, e: MouseEvent): void {
-  // 双保险：先拦下默认行为，再跑 vue-router。
-  e.preventDefault()
+  // 只拦冒泡，不拦默认：preventDefault 由 guardEvent 在决定 push 时自己做。
   e.stopPropagation()
-  // navigate() 内部已经做了 guardEvent + router.push。
+  // navigate() 内部已经做了 guardEvent + preventDefault + router.push。
   const result = navigate(e)
   if (result && typeof (result as Promise<unknown>).then === 'function') {
     void (result as Promise<unknown>).catch(() => undefined)

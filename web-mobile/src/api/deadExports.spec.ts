@@ -141,17 +141,17 @@ const KNOWN_DEAD_EXPORTS: { key: string; class: 'A' | 'B' | 'C'; note: string }[
   {
     key: 'credentialsOps.ts::fetchScoreDetails',
     class: 'B',
-    note: '★ 打 `GET /api/routing/score-details`（`admin/handler.go:1238`）—— 后端在、客户端实现了、`ScoreDetailsResponse` 也定义了，**但没有任何页面展示打分明细**',
+    note: '★ 打 `GET /api/routing/score-details`（`admin/handler.go:1273`）—— 后端在、客户端实现了、`ScoreDetailsResponse` 也定义了，**但没有任何页面展示打分明细**',
   },
   {
     key: 'models.ts::fetchFeaturedModelSuggestions',
     class: 'B',
-    note: '★ 打 `GET /api/routing/featured-models`（`admin/handler.go:1245`）—— 同族的 fetchFeaturedModels / saveFeaturedModels 都已在 `ModelsView.vue` 接线，**唯独它没有**',
+    note: '★ 打 `GET /api/routing/featured-models`（`admin/handler.go:1280`）—— 同族的 fetchFeaturedModels / saveFeaturedModels 都已在 `ModelsView.vue` 接线，**唯独它没有**',
   },
   {
     key: 'requestLogs.ts::fetchRequestLogDetail',
     class: 'B',
-    note: '★ 打 `GET /api/logs/<id>` —— 注册 `admin/handler.go:1299`，**取 id 的那行**是 `admin/logs.go:846`（逐字是 /api/logs/ 的尾段解析；:1299 那行只有前缀，所以引用必须落在 :846 才可核）。而 UI 实际用的是**另一个端点** `admin/handler.go:1301` 的 /api/admin/request-detail/（走 `requestDetail.fetchRequestDetail`）⇒ 两端点并存，只接了一个',
+    note: '★ 打 `GET /api/logs/<id>` —— 注册 `admin/handler.go:1334`，**取 id 的那行**是 `admin/logs.go:846`（逐字是 /api/logs/ 的尾段解析；:1299 那行只有前缀，所以引用必须落在 :846 才可核）。而 UI 实际用的是**另一个端点** `admin/handler.go:1334` 的 /api/admin/request-detail/（走 `requestDetail.fetchRequestDetail`）⇒ 两端点并存，只接了一个',
   },
   {
     key: 'system.ts::fetchVersion',

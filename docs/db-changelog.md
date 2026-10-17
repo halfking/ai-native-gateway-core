@@ -8999,3 +8999,9 @@ projected = 1 ；read-back title = 'mutation probe' ；DeleteTitle UPDATE 1 ；R
 |-----------|------|---------|--------|
 | 869 | `869_promote_session_turns_trace_events.sql` | `41546cfdfd19e006454a022e8ca751a8a71b6a06a32ce655163ac5657b58fb27` | applied+verified |
 
+
+## 2026-10-17T09:00:00Z — startup 044 台账补登（12h 审计轮）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 044 (startup) | `044_health_source_probe_now.sql` | `2770fb0628594271143dc32a2ee3bbb4f1d3482a0eb0b6493e11a715053dcbb2` | applied+verified（2026-10-16 经部署通道执行，台账 `gateway_db_revision_sequences` 记录 content_sha256 == execution_sha256；补登 c3abfbca1 漏登记行。fresh-install 白名单缺口另行由 01-schema 三副本 + credentials.sql 同步收口，见 12h 审计 20261017 轮） |

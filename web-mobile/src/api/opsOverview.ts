@@ -5,7 +5,7 @@ import { req, type RequestOptions } from './client'
  *
  * GET /api/admin/ops/overview
  *
- * - **注册**：`admin/handler.go:1099` `mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))`
+ * - **注册**：`admin/handler.go:1134` `mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))`
  *   ⇒ **admin 档**（`AdminMiddleware` 只认证不检 role ⇒ tenant_admin 后端**能**读）。
  * ★★ 2026-10-14 第一百一十七批订正：这一行原先写的是 `handler.go:1070`（**漂移 21 行**），
  *   且结论「抽屉席**不设** `requiresRole`」与同文件末尾那句「不按租户隔离」**自相矛盾** ——

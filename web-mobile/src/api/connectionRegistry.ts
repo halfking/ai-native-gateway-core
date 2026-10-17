@@ -3,7 +3,7 @@ import { req, type RequestOptions } from './client'
 /**
  * connectionRegistry.ts — 流式连接注册台两条**只读**端点（2026-10-07，第七十二批）。
  *
- * GET /api/admin/connection-registry           → admin/handler.go:1051
+ * GET /api/admin/connection-registry           → admin/handler.go:1076
  * GET /api/admin/connection-registry/{id}      → admin/handler.go:1052
  *
  * 注册在 `admin(connection_registry.go:47 / :65)` ⇒ **admin 档**，tenant_admin 可用

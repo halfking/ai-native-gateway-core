@@ -237,11 +237,11 @@ describe('① 权限档 admin（两条独立理由，缺一不可）', () => {
     }
   })
 
-  it('①-7 ★★★★★ 行号订正：模块头原写 `:982`/`:983`，实为 `:1009`/`:1010`', () => {
+  it('①-7 ★★★★★ 行号订正：`:982`/`:983` → `:1009`/`:1010`（批153）→ 实为 `:1034`/`:1035`（12h-audit 20261017）', () => {
     const lines = goSrc('admin/handler.go').split('\n')
     const at = lines.findIndex((l) => l.includes('"/api/admin/data-lifecycle/storage"'))
     expect(at, '找不到注册行').toBeGreaterThan(-1)
-    expect(at + 1).toBe(1009)
+    expect(at + 1).toBe(1034)
     expect(lines[at]).toMatch(/admin\(h\.handleDataLifecycleStorage\)/)
     // ★★ 反向护栏：模块头原写的行号那行**不是**本族注册处。
     expect(lines[981]).not.toMatch(/data-lifecycle/i)

@@ -15,7 +15,7 @@ import { req, type RequestOptions } from './client'
  *   journalSnapshotAPI := admin.NewJournalSnapshotAPI(journalSnapshotStore)
  *   journalSnapshotAPI.RegisterRoutes(mux, requestJourneyWrapAdmin)
  *   ```
- *   → `admin/journal_handlers.go:30-35`（`mux.HandleFunc("/api/admin/dispatch/journal/", wrap(api.ServeHTTP))`）
+ *   → `admin/journal_handlers.go:13-18`（`mux.HandleFunc("/api/admin/dispatch/journal/", wrap(api.ServeHTTP))`）
  *   ⇒ ★★★ 只 grep `mux.HandleFunc` 或 `main.go` 的路由清单都会判成「死端点」。
  * - **实现**：`admin/journal_handlers.go`（126 行）+ `domains/dispatch/journal_consumer.go`
  *   + `domains/dispatch/journal.go`（条目结构）+ `domains/dispatch/pipeline.go:1852-1893`（发射）。

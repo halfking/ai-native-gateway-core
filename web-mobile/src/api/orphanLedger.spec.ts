@@ -712,7 +712,7 @@ describe('孤儿棘轮', () => {
 
   it('★★ 已接线的哨兵：reportRollup 不在孤儿里（第一百一十一批）', () => {
     // ★ 对账报表接上了抽屉席与路由 ⇒ 棘轮清单同步删掉那一行。
-    //   该族是 **superAdmin 档**（admin/handler.go:1094，整个 `/api/admin/report-rollup/`
+    //   该族是 **superAdmin 档**（admin/handler.go:1123，整个 `/api/admin/report-rollup/`
     //   前缀带尾斜杠都是 h.superAdmin）⇒ 席**要** requiresRole，
     //   所以 `AppDrawer.spec.ts` 的排序白名单里**必须**出现 report-rollup。
     //   ⇒ 两条判据合起来才覆盖「接上了」+「档位挂对了」。

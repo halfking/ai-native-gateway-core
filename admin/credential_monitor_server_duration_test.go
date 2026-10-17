@@ -59,6 +59,7 @@ func TestHandleMonitorSummary_ServerDurationMeasuresTheQuery(t *testing.T) {
 	monitorSummaryCache.mu.Unlock()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/credentials/monitor-summary?credential_id=0&provider_id=0", nil)
+	req = setTestRequestContext(req, "super_admin", "", "super-admin-user")
 	rec := httptest.NewRecorder()
 	m.handleMonitorSummary(rec, req)
 
