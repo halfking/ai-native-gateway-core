@@ -20127,11 +20127,16 @@ data, err := client.HGetAll(ctx, key).Result()                   // 第 2 次往
 
 #### 八、修复方向重排（**改写了 §53 的结论**）
 
+> 🛑 **2026-10-18 §55 订正：本节把方案①「可救回 100%」的判断作废。**
+> 实测（`cycle_probe_test.go`）表明**单独预切预算会让写入量从 2 行掉到 0 行**，
+> 因为 `Collect` 超时时是 `return nil, err`（`writer.go:218`）——一行都交不出来。
+> ⇒ 方案①降级为**方案 B 的配套件**；**方案 A（`Collect` 批量读）才是唯一的根治手段**。
+
 §53 §六 结论是「`Flush` 改分批提交」。本节把它**降级**，并给出代价对比：
 
 | 方案 | 改哪 | 能救回多少 | 评价 |
 |---|---|---|---|
-| **① `Flush` 独立预算**（Collect/Flush 各计时） | `cmd/gateway/main.go:1358` 一个 ctx 拆两个 | **100%**（预算不再被吃光） | ⭐ 最小、最直接、不改任何口径 |
+| ⛔ **① `Flush` 独立预算**（Collect/Flush 各计时） | `cmd/gateway/main.go:1358` 一个 ctx 拆两个 | ~~**100%**~~ **§55 实测为负收益** | ⛔ 单独用会把 2 行写成 0 行；降级为方案 B 的配套件 |
 | ② `Collect` 批量读取 | `Collect` 改 pipeline / `SafeHMGetAll` | **根治往返次数**（3,800 → 数十次） | ⭐ 治本，但动 `redissafe` 公共路径 |
 | ③ `Flush` 分批提交 | §53 原方案 | 只把「整批丢」降级为「尾部丢」 | ⚠️ 治标：预算仍被吃光，每批仍会中途死 |
 
@@ -20160,3 +20165,114 @@ data, err := client.HGetAll(ctx, key).Result()                   // 第 2 次往
 [[把统计量当因果证据前先问它能不能区分两种情况]] ·
 [[量纲要对：把 credential_id 当成批内序号]] ·
 [[阴性结论要当缺陷一样复核]] · [[机制成立 ≠ 它解释了大头]]。
+
+---
+
+### §10.110.55 ⛔ 「给 Flush 独立预算」单独做**会减少**写入量 —— 实测推翻 §54 §八 的方案排序
+
+§54 §八 把「`Flush` 独立预算」列为可救回 100% 的首选修复，本节把它做成代码后
+**用测量推翻**：单独预切预算，写入的行数**从 2 行掉到 0 行**。
+
+#### 一、判据抓不到最关键的变异，追下去才看见真相
+
+先按 §54 的方案写了 `RunCycle`（两阶段各自计时），判据第一版有 8 条。跑变异时：
+
+| 变异 | 期望 | 实测 |
+|---|---|---|
+| M2 `Flush` 无超时上限 | 红 | ✅ 红 2 条 |
+| M3 空批次仍调 `Flush` | 红 | ✅ 红 |
+| M4 非正数预算不兜底 | 红 | ✅ 红 |
+| **M1 `Flush` 复用 `collectCtx`（= 生产原始形态）** | 红 | ⛔ **全绿 —— 判据无牙** |
+
+⚠️ 第一反应是「判据没覆盖到」，但真正的原因在下一节：**判据照住了，
+因为 M1 与正确实现在这个场景下行为几乎相同。**
+
+#### 二、★ 根因：`Collect` 超时时是 `return nil, err` —— 一行都交不出来
+
+```go
+// domains/ursm/v2/persist/writer.go:216-219
+hash, err := redissafe.SafeHGetAll(ctx, w.rdb, k)
+if err != nil {
+    slog.Warn("ursm.v2: persist failed to read node hash", ...)
+    return nil, fmt.Errorf("ursm.v2.persist: read node hash: %w", err)   // ← 已读到的行全丢
+}
+```
+
+于是「`Collect` 吃满预算」有**两种**后果，而它们的行数完全不同：
+
+| `Collect` 的下场 | 手上有什么 | 旧形态能写 | 预切能写 |
+|---|---|---|---|
+| 恰好赶上（耗时 19.9s/30s） | 1,800 行 | 剩 0.1s ⇒ 写几行 | ✅ 写 1,800 行 |
+| **真的超时**（耗时 >30s） | **0 行** | 剩 0s，但**无行可写** ⇒ 写 0 行 | **写 0 行** |
+
+⭐ 关键推论：**预切让 `Collect` 更早超时**，于是把上表第二行也推了进去
+⇒ 把「还能写 2 行」变成「写 0 行」。
+
+#### 三、实测（1:1000 缩放，`Collect` 需 25s、批 1,800 行、`Flush` 1 行/ms）
+
+`domains/ursm/v2/persist/cycle_probe_test.go::TestProbeCompareShapes`：
+
+| 形态 | `Flush` 拿到预算 | **实际写入行数** |
+|---|---|---|
+| 生产形态（共用 30s ctx） | 3~4 ms | **2~3 行** |
+| 预切（`Collect` 20s + `Flush` 10s） | —— `Flush` 根本没被调用 | **0 行** |
+| `Collect` 不设上限 + `Flush` 10s | 10 ms | **8 行** |
+
+⇒ ⛔ **预切单独启用 = 严格更差。**
+⇒ ⇒ ★ 「分阶段预算」不是独立修复，它是**「`Collect` 失败时交出已读行」之后的配套件**。
+直觉上「A 吃了 B 的预算，给 B 一份」成立的前提是 **B 手里有东西**；
+而超时路径上 B 手里是空的（`return nil, err`），预切只是让 B 更早空手。
+
+#### 四、入库的东西（**默认不改变生产行为**）
+
+`domains/ursm/v2/persist/cycle.go` + `cycle_test.go` + `cycle_probe_test.go`，
+`cmd/gateway/main.go:1355` 的 persist 循环改为调用 `persist.RunCycle`：
+
+| 项 | 现状（`Preset=false`，默认） | 备用（`Preset=true`） |
+|---|---|---|
+| ctx 形态 | **与改动前同构**：两阶段共用一个 30s ctx | 各自从父 ctx 派生 |
+| 总预算 | 仍是 30s | `Collect` + `Flush` |
+| 日志 | **多了 `collect_took` / `flush_budget` / `preset`** | 同 |
+| 开关 | 默认关 | `URSM_V2_PERSIST_CYCLE_PRESET=1` |
+
+⇒ ⭐ **入库即生效的只有观测性**：§40 §四要的「`Flush` 各段耗时」此前任何日志里都没有，
+现在每轮都有 `collect_took` 与 `flush_budget`（故障时它会直接显示 `flush_budget≈0`）。
+预切本身保持关闭，**等方案 B 落地后再开**。
+
+⚠️ 有判据专门钉住这件事：
+`TestSharedModeIsTheDefaultAndReproducesLegacyBehaviour` 断言
+「默认 `Preset=false`」+「共享模式下 `Flush` 拿到的就是 `Collect` 那个 ctx 对象」。
+
+#### 五、判据与变异验证（**5/5 全红**）
+
+| 变异 | 变红的判据 |
+|---|---|
+| M1 预切模式下 `Flush` 复用 `collectCtx`（= 生产原始形态） | `TestPresetGivesFlushAFullBudgetAfterCollectSpendsItsOwn` |
+| M2 预切模式 `Flush` 无上限 | `TestPresetGivesFlushAFullBudget…` + `TestPresetFlushContextAlwaysCarriesACeiling` |
+| M3 空批次仍调 `Flush` | `TestBothModesSkipFlushOnEmptyBatch` |
+| **M4 默认改成 `Preset=true`**（入库即改变生产行为） | `TestSharedModeIsTheDefaultAndReproducesLegacyBehaviour` |
+| M5 env 把 `0` 也当启用预切 | `TestCycleTimeoutsFromEnv/preset_needs_exactly_1` |
+
+⚠️ 变异纪律留档：本轮**第一次跑 M1 时它是编译失败**（`cancelCollect` 变未使用变量）。
+**编译失败不算有效变异** —— 必须重做成能编译、且精确复刻生产形态的版本，
+否则会误以为「这条变异无害」。
+
+⚠️ 判据自身也红了两次，都是**前提写错**（判据纪律第 11 条）：
+1. 第一版 fake 的超时分支返回 `nil`，导致断言「`Flush` 必须被调用」恒假
+   ⇒ 真实场景是「`Collect` 勉强赶上返回 1,800 行」，夹具要按这个形状造；
+2. 在 `RunCycle` **返回之后**查 `ctx.Err()`，读到 `context canceled`
+   ⇒ 那是调用方正常回收计时器的结果
+   ⇒ 「入场时刻」必须在 fake 内部记（`collectErrEntry` / `flushErrEntry`）。
+
+#### 六、修复方案重排（**这是本节真正的产出**）
+
+| 序 | 方案 | 改哪 | 预期写入量 | 性质 |
+|---|---|---|---|---|
+| **A** | `Collect` 批量读（pipeline / `SafeHMGetAll`） | `Collect` 的读路径 | 3,800 次往返 → 数十次 ⇒ `Collect` <1s ⇒ **1,800 行全写** | ⭐ 根治 |
+| **B** | `Collect` 超时时返回已读行 | `writer.go:218` | 25s 时已读 ~1,500 行 ⇒ 至少交出这些 | 语义变更，**需拍板** |
+| **①** | 预算预切 | 已入库（默认关） | **必须与 B 配套**才有正收益 | 配套件 |
+
+⇒ **A 是唯一的根治手段**。B 是把「全有或全无」降级为「至少保住已读的」，
+而 ① 只在 B 之后才有意义。
+
+⚠️ 本节**未做任何生产写操作**；入库代码默认走与生产同构的旧行为。
