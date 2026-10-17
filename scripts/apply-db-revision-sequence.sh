@@ -1633,6 +1633,23 @@ files=(
   # 都把 707 的目录派生体覆盖掉。869 落在 640 之后，才不会被同一次重放顶掉。
   "$ROOT_DIR/sql/migrations/startup/869_promote_session_turns_trace_events.sql"
 
+  # ── 870（2026-10-17 24h 审计轮慢 SQL）：usage_ledger 月度对账覆盖索引 ──
+  #
+  # (request_id, ts DESC) INCLUDE (provider_id, prompt_tokens,
+  # completion_tokens, total_tokens, cost_usd)，**建在父表上**。
+  #
+  # 为什么必须父表 + 不能 ON ONLY：分区是用 `CREATE TABLE ... PARTITION OF
+  # usage_ledger` 建的，普通 CREATE INDEX 会级联到现存分区，且未来分区自动继承。
+  # 父表上那个既有的 usage_ledger_ts_tenant_cover_agg_idx 是 `ON ONLY` ⇒ 0 字节、
+  # 无分区携带；`ON ONLY` 恰好抑制级联，别照抄那个形态。
+  #
+  # 收益是实测的（同库事务内建索引后 ROLLBACK）：10 月分区 313,546 行
+  # 36,480.768ms → 10,082.199ms（−72%），缓冲 355,257 → 66,964（−81%），
+  # 转 Index Only Scan；建索引 406,160 行 / 74MB heap 仅 2.693s。
+  # PG 不支持在分区父表上 CREATE INDEX CONCURRENTLY，故本文件走普通构建 +
+  # lock_timeout=2s（抢不到锁快速失败），建议低峰窗口执行。
+  "$ROOT_DIR/sql/migrations/startup/870_usage_ledger_recon_cover_idx.sql"
+
   # ── 2026-10-16 孤儿迁移 044 补登（health_source 白名单缺 probe_now）──────
   #
   # 044_health_source_probe_now.sql 早就写在 sql/migrations/startup/ 里，注释把

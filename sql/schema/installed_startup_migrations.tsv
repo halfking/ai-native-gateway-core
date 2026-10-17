@@ -280,3 +280,4 @@
 262	867_session_summaries_last_request_at_idx.sql
 263	868_credential_model_stream_mode.sql
 264	869_promote_session_turns_trace_events.sql
+265	870_usage_ledger_recon_cover_idx.sql

@@ -864,6 +864,13 @@ var credentialModelStreamMode868 []byte
 //go:embed embeddata/startup/869_promote_session_turns_trace_events.sql
 var promoteSessionTurnsTraceEvents869 []byte
 
+// 870（2026-10-17 24h 审计轮慢 SQL）：usage_ledger 月度对账覆盖索引。
+// 建在父表上以级联到现存与未来分区；实测 10 月分区 313,546 行
+// 36,480.768ms → 10,082.199ms（−72%）、缓冲 −81%，转 Index Only Scan。
+//
+//go:embed embeddata/startup/870_usage_ledger_recon_cover_idx.sql
+var usageLedgerReconCover870 []byte
+
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
 
@@ -1159,6 +1166,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/867_session_summaries_last_request_at_idx.sql":                          sessionSummariesLastRequestAtIdx867,
 	"startup/868_credential_model_stream_mode.sql":                                   credentialModelStreamMode868,
 	"startup/869_promote_session_turns_trace_events.sql":                             promoteSessionTurnsTraceEvents869,
+	"startup/870_usage_ledger_recon_cover_idx.sql":                                   usageLedgerReconCover870,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/853_credential_probe_queue_automatic.sql":                               credentialProbeQueueAutomatic853,

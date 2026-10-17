@@ -137,8 +137,36 @@ harness 未注入 `LLM_GATEWAY_DATABASE_URL=$GATE_URL`。
 ⇒ 建议索引（可让整条 DISTINCT ON + 聚合走 **Index Only Scan**，零回表）：
 `(request_id, ts DESC) INCLUDE (provider_id, prompt_tokens, completion_tokens, total_tokens, cost_usd)`
 
-**为什么不实施**：对生产库 1,416,772 行 / 799 MB 分区建索引需进迁移通道、
-占磁盘与 I/O、属不可轻易回退的生产 DDL，须 owner 授权后随发布执行。
+**★ 本轮已从「建议」升级为「已写好并过全部门禁的迁移」**（870），
+并且收益是**实测**的，不是估算：
+
+| | 计划 | 行数 | 缓冲 | 执行时间 |
+|---|---|---|---|---|
+| 基线 | `Index Scan using …_request_id_idx` | 313,546 | hit=355,257 read=2,979 | **36,480.768 ms** |
+| 加覆盖索引 | **`Index Only Scan`** | 313,546 | hit=66,964 read=5,610 | **10,082.199 ms** |
+
+⇒ **执行时间 −72%，缓冲访问 −81%**；ts 谓词同时从 Filter 下推为 **Index Cond**。
+建索引本身 406,160 行 / 74MB heap 仅 **2.693 s**，按行数与 heap 比例外推，
+9 月分区（1,416,772 行 / 261MB heap）约 10s 量级。
+（验证方式：生产同库事务内建索引 → EXPLAIN ANALYZE → **ROLLBACK**，
+事后 `pg_class` 中探针索引残留数 = **0**；全程 `lock_timeout=2s`。）
+
+**交叉验证**：10 月 10.1s × 3.5（9 月/10 月体量比）≈ 35s，而线上实测
+均值是 **129.2s** —— 说明线上还有别的开销（缓存冷热、两台并发、视图合并），
+索引解决的是其中的**主导项**（回表），不是全部。**别把 129s 全算在索引头上。**
+
+**迁移要点的三个非显然选择**（都写进了文件注释）：
+
+1. **建在父表上，不能 `ON ONLY`。** 分区是用 `CREATE TABLE … PARTITION OF
+   usage_ledger` 建的，普通 `CREATE INDEX` 会级联到现存分区，**未来分区自动继承**。
+   父表上那个既有的 `usage_ledger_ts_tenant_cover_agg_idx` 正是 `ON ONLY`
+   ⇒ 0 字节、无分区携带；`ON ONLY` 恰好抑制级联，**别照抄那个形态**。
+2. **不能用 `CONCURRENTLY`。** PG 不支持在分区父表上并发建索引，而本通道
+   是 psql 单事务链。改用 `lock_timeout=2s`（抢不到锁**快速失败**，
+   不排在写流量后面）+ `statement_timeout=10min`，并参照 867 的同名分治：
+   索引已存在则只校验定义、不重建。
+3. **建索引前必须 ANALYZE 才拿到好计划。** 实测里加索引后我补了一次
+   `ANALYZE`，否则新索引的可见性图不完整、规划器可能仍选旧路径。
 
 ### 根因二（为什么会跑这么多次）：**无任何跨实例协调** —— 本轮已修
 
@@ -263,3 +291,47 @@ request_logs_bodies_2026_10 | am=columnar | autoanalyze=0 | last_analyze=2026-10
 不是调度失控」——补测发现每个 tick 聚合**两个月**、且 `Start()` 会
 在 ticker 前无条件补跑一次，真实成因是**多副本重复 + 重启补跑**，
 且该 worker **完全没有跨实例协调**。已按 §三 根因二 修复。
+
+---
+
+## 七、把「建议」升级成「可执行迁移」时踩到的门（五点同步）
+
+870 写完后跑 installer 的 `migration_embed_sync_gate_test.go`，直接红了：
+
+> 迁移 870 未登记进 installer embeddata：新迁移必须五点同步，
+> 漏了这一点的历史故障是 849/850/851 与 845-851 通道腿
+
+**这正是 AGENTS.md 记的那条老坑**——同一个提交要同时动五处：
+① `sql/migrations/startup/<n>.sql` ② `apply-db-revision-sequence.sh` 的
+`files=()` ③ `installed_startup_migrations.tsv`
+④ installer `embeddata/startup/` + `main.go` 的 `//go:embed` 变量 + map 项
+⑤ installer `runner.go` 的有序列表。
+
+**这条门是「便宜且有效」的典型**：它不检查 SQL 对不对，只检查**五处是否同步**，
+而漏登记的后果是「部署库上这个迁移压根不存在」且**没有任何报错**。
+漏掉的检查成本 = 一次 `go test ./installer/...`，远小于事故。
+
+⇒ 补齐后 `installer/cmd/llm-gw-installer`、`installer/internal/dbinit`、
+`sql/schema`、`scripts/apply-db-revision-sequence_test.sh`（9 tests OK）全绿。
+
+## 八、又一次「差点把没坏的东西当坏的修」
+
+写完 870 台账行后，我做了变异验证：把 changelog 里的 sha 改成
+`deadbeef…`，跑 `TestMigrationRegistryStaysContinuous` —— **全绿**。
+我据此写下结论「没有任何门校验 sha，台账的 sha 是不可信的」。
+
+**那个结论是错的。** 本文件同目录下的 `TestRegistryShaIsActuallyTheFile`
+（`internal/sqlguard/migration_registry_continuity_test.go:242`）正是校验
+sha 的门，它**逐条比对登记值与文件实测值**；改错 sha 它会红并精确点名：
+
+```
+870_usage_ledger_recon_cover_idx.sql 的登记 sha 与文件实测不符。
+```
+
+我之所以漏判，是因为**只跑了一个 `-run` 过滤**（连续性门）就下了
+「不存在这样的门」的结论，而不是先把该目录下的门列全。
+
+⇒ 这是纪律第 11 条的镜像：**「结论红了/绿了」与「存在与否」是两件事**，
+下一结论前先确认自己验的确实是那个命题。
+（若当时直接照着错误结论加一道 sha 门，就会造出一道与
+`TestRegistryShaIsActuallyTheFile` 重复的判据。）
