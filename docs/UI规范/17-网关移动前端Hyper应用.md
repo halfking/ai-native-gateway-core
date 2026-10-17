@@ -21505,3 +21505,42 @@ P3 包含 5 端点（`admin/handler.go:987-1002`）：
 | 205 | v1DataHorizon | 🟡 全新 API + view + router |
 | 206 | nativeTransport | 🟡 全新 API + view + router（17 跳说"未对应 admin 端点"，需查 license-authority / cmd/ 或纯前端模块）|
 | 207 | platformSettings | 🟡 全新 API + view + router（17 跳说"未对应 admin 端点"）|
+
+## 11.201 第一百六十一批 接 P0 turnsFilterOptions：独立深链详细页进 UI
+
+### 一、调研与真"orphan"性
+
+17 跳 evidence（line 1066）原判 turnsFilterOptions 已有隔离可接前端，**实证后修正**：
+- `listTurnsFilterOptions()` 端点 `/api/admin/turns/sessions/filter-options` 已 export（`api/turns.ts:204`）
+- `TurnsFilterOptions` 类型 9 字段已 export（`api/turns.ts:147`）
+- `TurnsListView` 已用（line 54/128/323）
+- **真 orphan 性 = 缺独立深链详细页**（用户不能直接打开 `/admin/turns/filter-options`，仅能在 TurnsListView 间接看到）
+
+⇒ 与 158c boardOperational 同形态：端点 + API + view 都有，缺独立深链
+
+### 二、改动清单（5 文件 215 行）
+
+| 文件 | 行 | 内容 |
+|---|---|---|
+| `web/src/views/TurnsFilterOptionsView.vue` | +122 | 新建：8 string section + 1 api_keys 表 + 4 状态 |
+| `web/src/router.ts` | +5 | route + lazy import + meta requiresSuper |
+| `web/src/locales/{zh-CN,en-US}/nav.ts` | 各 +1 | turnsFilterOptions 条目 |
+| `web/src/views/TurnsFilterOptionsView.test.ts` | +88 | 3 测试（全渲染 / 全空过滤 / 错误 + 重试）|
+
+合计 215 行。
+
+### 三、类型字段修正
+
+vue-tsc 报 `TurnsAPIKeyOption` 字段为 `id`/`label`（非 `key_id`/`key_name`），View + Test 改后通过。
+
+### 四、验证
+
+- `npx vue-tsc -b` exit 0
+- `npx vitest run` 3/3 passed 707ms
+- 5 文件 0 FFFD / 0 NUL
+
+### 五、收口
+
+- commit `8c7451bb88609c59e0b552306302d92167a48d2c`
+- 父 = `5543f030d`（批 200）
+- 孤儿棘轮 8 → 7
