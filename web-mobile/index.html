@@ -8,7 +8,6 @@
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
     <meta name="theme-color" content="#f4f6f9" />
-    <link rel="icon" type="image/png" href="favicon.png" />
     <!--
       部署序号（UI规范 18 §3）：构建期由 vite.config.ts 的 llmgwDeploySeq 插件
       替换占位符。取值优先 LLMGW_DEPLOY_SEQ / BUILD_SEQ（bump-version 管线
@@ -30,6 +29,9 @@
       /entry-switch.js（vite public 目录）。根绝对路径在两侧必有一侧错。
     -->
     <script src="entry-switch.js"></script>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon-180.png" />
   </head>
   <body>
     <div id="app"></div>
