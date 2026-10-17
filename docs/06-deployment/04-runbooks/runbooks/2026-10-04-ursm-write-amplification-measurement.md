@@ -18072,3 +18072,120 @@ msg=trace: stage events retention cleanup failed (non-fatal)  error=closed pool
 ★ 同族：[[0 命中的第一嫌疑永远是量具坏了]] · [[阴性结论要当缺陷一样复核]] ·
 [[点时读数会随部署过期]] · [[把预测写成不等式而不是时刻表]] ·
 [[量具的第一职责是可信]]。
+
+---
+
+### §10.110.37 ✅ **修关停态谎报：`closed pool` 不是留存故障，也绝不是「降级到行删」**
+
+#### 一、生产证据（245 canary-8781，2026-10-15 18:28:17.853）
+
+```
+18:28:17.853341  WARN ursm.v2: snapshot partition probe failed; falling back to row delete  error=closed pool
+18:28:17.853430  WARN ursm.v2: snapshot retention cleanup failed (non-fatal)  error=closed pool  mode=row-delete
+18:28:17.853460  WARN trace: stage events retention cleanup failed (non-fatal)  error=closed pool
+18:28:17.853705  INFO materialized_view_refresher stopped
+```
+
+⇒ 三条同在 `18:28:17.853`（毫秒内并发），且**紧邻 `materialized_view_refresher stopped`**
+⇒ 全部处在关停序列中，不是运行期故障。
+
+⇒ 两天频次：canary-8781 与 canary-8782 各 **1 次** ⇒ **每个实例生命周期恰好一次**
+⇒ 与「关停时排空 worker」完全吻合，与「每小时复发」不符。
+
+#### 二、根因：`defer` LIFO 关闭共享池 vs 异步关停 goroutine
+
+`cmd/gateway/main.go:566-573`（早期注册的 defer）：
+
+```go
+defer func(){
+    ...
+    if dbConn != nil { dbConn.Close() }   // ← main **返回那一刻**执行
+}()
+```
+
+Go 的 defer 是 **LIFO**。这段在 `main` 很早注册 ⇒ 它是**最后几个**才跑的。
+而关停是**异步 goroutine**：`main` 返回时它可能还在排空后台 worker
+⇒ **池先被关掉，worker 后跑「退出前尽力清一次」** ⇒ 必然 `closed pool`。
+
+⚠️ 我查证时先猜错了两次，如实留档：
+① 猜「`ursmV2Mgr.Close()` 关了池」⇒ 读代码发现它只停订阅者，**不碰池**；
+② 猜「关停序列里有显式 pool.Close」⇒ 全序列里**没有**池关闭点，唯一的 defer 就是上面这个。
+
+#### 三、★ 危害不是噪声，是**谎报**
+
+中间那条 `mode=row-delete` 链是这样的：
+
+```
+探针失败（池已关）→ 返回 false → 按「非分区表」处理 → 走批 DELETE 路径 → 也失败
+```
+
+⇒ 日志于是声称「本轮降级到行删」。**而表根本没走那条路** —— 它只是没机会知道自己是分区表。
+
+⇒ ★★★ **每部署一次就往日志里掺一条这种谎报。**
+一次正常发版留下的痕迹，读起来却像「生产正在跑行删形态」。
+这足以让下一个读者（或对账脚本）得出错误结论 ——
+**我自己在 §10.110.33 就反复靠日志的 `mode` 字段反查路径**，所以这个污染面是实打实的。
+
+#### 四、本轮修法（两处，刻意不动生命周期）
+
+| # | 位置 | 改法 |
+|---|---|---|
+| 1 | `isSnapshotPartitioned` | 池已关时**不再打**「falling back to row delete」。真失败照旧打 |
+| 2 | 两个 `CleanupOnce` | 池已关 ⇒ 降为 **Debug** + 明确关停标记；**任何其它错误仍 Warn** |
+
+★ 为什么**不**改生命周期：那才是根因修法，但会动 `main` 的进程退出顺序，
+影响面覆盖所有后台 worker 与所有实例的发布节奏。**这不是能顺手塞进一次推送的改动**，
+登记为 §六 的 owner 决策。
+
+★ 判定手段：`errors.Is(err, puddle.ErrClosedPool)`。
+**pgxpool v5 不导出该哨兵**，它来自底层 puddle ⇒ 我**实测**了它会原样透出
+（`shutdown_pool_probe_test.go`，不连任何库，opt-in 无关），
+**而不是假设**。若该前提不成立，症状会是「修法静默无效、WARN 一条不少、
+且没有任何报错指向修法没生效」—— 那正是这道量具门要挡的形状。
+
+#### 五、判据与变异验证
+
+新增 `shutdown_pool_probe_test.go`（量具自证 1 条）、
+`shutdown_state_test.go`（4 条）、`internal/trace/stage_events_shutdown_test.go`（3 条）。
+
+| 变异 | 结果 |
+|---|---|
+| M1 URSM 不再识别关停态 | ✅ **2 条 FAIL** |
+| M2 探针对关停态恢复喊降级 | ✅ **1 条 FAIL** |
+| **M3 ★过度放宽：所有错误都当关停** | ✅ **1 条 FAIL** = **URSM 阴性对照** |
+| M4b stage events 关停分支永不命中 | ✅ **1 条 FAIL** |
+| M5 删掉 stage events 的关停标记行 | ✅ **1 条 FAIL** |
+| **M6b ★`isPoolClosed` 退化为「任何非 nil 错误」** | ✅ **3 条 FAIL**（量具自证 + **两条**阴性对照） |
+
+⇒ 六条红因各不相同。M6b 特别说明问题：
+**过度放宽被三个独立判据同时抓住**，因此「把关停当成吞错的万能借口」这条路是封死的。
+
+⚠️ 本轮**我自己的一条判据写错过**，如实记：初版断言「关停时不得出现 DELETE 语句」，
+结果红了 —— 但**红的是我的断言，不是代码**：探针失败后 worker 确实会*尝试*批删
+（SQL 被记录），只是被已关闭的池挡在执行之前，生产行为与日志完全一致。
+已改为断言「`RowsDeleted == 0` 且计数全零」。
+⇒ ★ **量具错了先承认量具错了**，别顺手把代码改成迁就判据。
+
+#### 六、⚠️ 仍待 owner 决定：真正的根因修法（生命周期）
+
+本节只让**日志诚实**；池被提前关闭这件事本身仍在。候选方向（**均未实施**）：
+
+1. 让关停 goroutine 完成后再 `main` 返回（即等排空完成才关池）——
+   最贴近「退出前尽力清一次」的原意，但改的是进程退出顺序。
+2. 把 `dbConn.Close()` 从早期 defer 挪到关停序列**末尾**，排在所有 worker Stop 之后。
+3. 维持现状：关停那一轮清理本来就只是「尽力」，下一实例启动时会补做 ——
+   **前提是留存 worker 的启动清理必须可靠**（`run()` 首件事就是 `CleanupOnce`，已具备）。
+
+⇒ ⚠️ 3 其实是个成立的选项，前提是它不制造新的谎报 ——
+而本节的修复正是那个前提的一半：**关停时说真话**，于是「下一实例会补做」这句话才是可信的。
+
+#### 七、⚠️ 本节与 §10.110.33/§34 的关系
+
+- §33 §三 的 `default` 分支**不受影响**（本节只动 error 分支）。
+- §34 的 advisory lock / 42P01 分类**不受影响**，仍待部署。
+- ⚠️ 若 §33 的 `default` 分支已上线：本节的 Debug 关停标记**落在它之前**
+  （`isPoolClosed(err)` 在 switch 的**第一个** case）⇒ 两者不会互相遮蔽。
+
+★ 同族：[[量具的第一职责是可信]] · [[阴性结论要当缺陷一样复核]] ·
+[[变异没红先查变异有效性]] · [[噪声冒充故障比故障本身更贵]] ·
+[[量具错了先承认量具错了]] · [[阴/阳性读数必须连同负载条件登记]]。

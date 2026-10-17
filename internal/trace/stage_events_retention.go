@@ -19,6 +19,7 @@ package trace
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"strconv"
@@ -28,6 +29,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/puddle/v2"
 )
 
 // StageEventsRetentionConfig 控制清理行为。Retention <= 0 表示禁用
@@ -155,12 +157,23 @@ func (w *StageEventsRetentionWorker) run() {
 }
 
 // CleanupOnce 删除超过保留期的舞台事件，失败只记 warn，不返回中断。
+//
+// ★ 关停态单独一档（2026-10-17，与 URSM 快照留存同一个根因）：
+//
+//	main 的 defer（cmd/gateway/main.go）在 main 返回那一刻关掉共享池，
+//	而关停 goroutine 此时可能还在排空本 worker
+//	⇒ 每次正常关停都会产出一条 "cleanup failed (non-fatal)" 的 WARN。
+//	留存并没有坏（下一实例启动时会补做），所以这是**噪声冒充故障**。
+//	降到 Debug，并保留对其它任何错误的 Warn —— 两者必须可分辨。
 func (w *StageEventsRetentionWorker) CleanupOnce(ctx context.Context) {
 	if w.Disabled() || w.db == nil {
 		return
 	}
 	deleted, err := w.CleanupExpired(ctx)
 	switch {
+	case errors.Is(err, puddle.ErrClosedPool):
+		slog.Debug("trace: stage events retention skipped on shutdown; database pool already closed",
+			"retention", w.cfg.Retention.String())
 	case err != nil:
 		slog.Warn("trace: stage events retention cleanup failed (non-fatal)", "error", err)
 	case deleted > 0:

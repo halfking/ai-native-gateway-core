@@ -38,6 +38,10 @@ type fakeSnapshotRetentionDB struct {
 	partitioned bool
 	probeErr    error
 	probeCalls  int
+	// probeScanErr 让探针**取到行但 Scan 失败** —— 与 probeErr（连行都取不到）
+	// 是两回事。isSnapshotPartitioned 对两者各有一条 warn 分支，
+	// 关停态的豁免也必须同时覆盖两条，少一条就留下一个仍然会喊「降级」的洞。
+	probeScanErr error
 
 	// 分区目录
 	partitions []fakePartition
@@ -130,6 +134,12 @@ func (db *fakeSnapshotRetentionDB) Query(ctx context.Context, sql string, args .
 			return &fakeRetentionRows{err: db.probeErr}, db.probeErr
 		}
 		// partitioned=false 时模拟"表存在但不是分区父表"（生产迁移前形态）。
+		if db.probeScanErr != nil {
+			return &fakeRetentionRows{
+				cols: []fakeRetentionCol{{b: db.partitioned}},
+				err:  db.probeScanErr,
+			}, nil
+		}
 		return &fakeRetentionRows{cols: []fakeRetentionCol{{b: db.partitioned}}}, nil
 	}
 	db.listCalls++

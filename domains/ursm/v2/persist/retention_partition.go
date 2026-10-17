@@ -34,6 +34,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/puddle/v2"
 )
 
 const (
@@ -106,6 +107,31 @@ func isUndefinedTable(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "42P01"
 }
 
+// isPoolClosed 判「连接池已关闭」这一**关停态**。
+//
+// ★ 为什么需要它：main 的 defer（cmd/gateway/main.go）在 main 返回那一刻
+//
+//	关掉共享池，而关停 goroutine 此时可能还在排空后台 worker
+//	⇒ worker 的「退出前尽力清一次」必然撞上 closed pool。
+//	实测每次关停都会命中（生产见 §10.110.37）。
+//
+// ★ 关键在于**不能把它当失败**：关停时探针拿不到结果，于是
+//
+//	「探针失败 → 降级到行删 → 行删也失败」，
+//	在日志里留下一条 **mode=row-delete 的 WARN** ——
+//	那是**假的**：表并没有真的走行删路径。
+//	每一次正常部署都会往日志里掺一条这种谎报，久了足以让读者
+//	（和对账脚本）以为生产实际在跑行删形态。
+//
+// ★ 哨兵来源：pgxpool v5 不导出该错误，它来自底层 puddle。
+//
+//	已实测（见 shutdown_pool_probe_test.go）pgxpool.Close() 之后
+//	Begin/Acquire 的错误可被 errors.Is 认成 puddle.ErrClosedPool，
+//	而不是被包成 *pgconn.PgError —— 所以这里用 errors.Is 而非错误码比对。
+func isPoolClosed(err error) bool {
+	return err != nil && errors.Is(err, puddle.ErrClosedPool)
+}
+
 // RetentionResult 描述一轮清理的结果。
 //
 // 两种模式的"量纲"不同：DELETE 模式能精确数出删了多少行，但拿不到归还字节数
@@ -140,11 +166,20 @@ type snapshotPartition struct {
 // 探测失败一律按「非分区」处理并记 warn：一次目录读失败不该让留存停摆，
 // 退回批 DELETE 至少还能回收空间。表尚未建好（迁移未执行）时同样落到
 // 非分区分支，由既有 DELETE 路径去报错，语义与迁移前完全一致。
+//
+// ★ 例外（2026-10-17）：连接池已关闭时**不记那条 warn**。
+//
+//	关停态下探针必然失败，而「falling back to row delete」在这里是**谎报** ——
+//	表并没有真的走行删路径，只是没机会知道它是分区表。
+//	每次正常部署都会掺一条这种 WARN，久了足以让读者以为生产在跑行删形态。
+//	真失败仍照记（下面的分支不变），两类态因此可分辨。
 func (w *SnapshotRetentionWorker) isSnapshotPartitioned(ctx context.Context) bool {
 	rows, err := w.db.Query(ctx, snapshotPartitionProbeSQL)
 	if err != nil {
-		slog.Warn("ursm.v2: snapshot partition probe failed; falling back to row delete",
-			"error", err)
+		if !isPoolClosed(err) {
+			slog.Warn("ursm.v2: snapshot partition probe failed; falling back to row delete",
+				"error", err)
+		}
 		return false
 	}
 	defer rows.Close()
@@ -154,8 +189,10 @@ func (w *SnapshotRetentionWorker) isSnapshotPartitioned(ctx context.Context) boo
 	}
 	var partitioned bool
 	if err := rows.Scan(&partitioned); err != nil {
-		slog.Warn("ursm.v2: snapshot partition probe scan failed; falling back to row delete",
-			"error", err)
+		if !isPoolClosed(err) {
+			slog.Warn("ursm.v2: snapshot partition probe scan failed; falling back to row delete",
+				"error", err)
+		}
 		return false
 	}
 	return partitioned
