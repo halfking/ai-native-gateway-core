@@ -21381,3 +21381,72 @@ P3 包含 5 端点（`admin/handler.go:987-1002`）：
 | 158e opsOverview | 接前端 P4 | 250 待 | 250 待 | §11.199 | 真"接前端孤儿"（view 0 命中） |
 
 ⇒ 5 批里只有 158a/158b/158c/158e 是真"接前端"，158d 是**后端 hygiene 收口**误入
+
+## 11.199 第一百五十八批 e 接 P4 孤儿 opsOverview：12 路平台聚合视图 + 中间件 mismatch 修正（批 158e, 2026-10-17）
+
+### 一、形态修正
+
+34 跳 patch 草案把 P4 列为"后端 250 行 0 隔离改造 + 前端 250 行"=500 行，实证后**后端 0 行改造**（与 158d 同形态），但**前端新建视图 + 中间件 mismatch 修正**：
+- 端点 `GET /api/admin/ops/overview` 12 路 payload 实证 8 表（gateway_instances / licenses / fault_events / upgrade_logs / download_events / offline_activation_requests / runtime_metrics / instance_heartbeats）**无 tenant_id 字段**
+- ⇒ 加 `($N = '' OR tenant_id = $N)` 反而破坏 SQL 语义（不是「0 隔离」是「无隔离维度」）
+- 与 P3 metrics 同形态：平台聚合表 + admin 档中间件
+
+### 二、与 158d 决策差异
+
+| 维度 | 158d P3 metrics | 158e P4 opsOverview |
+|---|---|---|
+| 注释明示"平台指标" | ✓（line 6-8 注释明说 Prometheus 平台指标） | ✗（无类似注释） |
+| 端点设计意图 | admin 档（注释错） | admin 档（无错注释） |
+| 拍板决策 | **不改中间件**（注释校正） | **改中间件**（admin → superAdmin） |
+| 理由 | 注释明说"platform-wide"，注释错不改中间件 | 无"platform-wide"明示注释，按"严格 0 隔离 = super_admin"对待 |
+
+⇒ 158e 与 158d 决策**不一致**：P4 因为没有类似 P3 的"platform-wide"明示注释，**默认走严格档**（super_admin）。这一不一致写进 handler.go:1114 注释块，未来读代码可见决策链。
+
+### 三、调研要点
+
+- 端点：`GET /api/admin/ops/overview`（admin 中间件 → superAdmin，批 158e）
+- 后端 12 路 query helper：center_stats / region_stats / deployment_nodes / data_plane_tables / license_total / offline_requests / fault_stats / recent_faults / recent_upgrades / download_stats / runtime_metrics_summary
+- 后端 cache 15s TTL（`ops_overview.go:5`）
+- 前端真"orphan"性：api/ops.ts 0 命中 getOpsOverview + views 0 命中 OpsOverviewView + router 0 命中 /admin/ops-overview
+- 抽屉席已存在 `appNav.ts:229` `/maintain/ops/overview` external 路径（maintain SPA）—— 本视图是 web/ 内部独立深链 /admin/ops-overview，与 maintain SPA 平级
+- i18n `nav.ts:92 / en-US:91` `opsOverview` 已就位（maintain SPA 用），本批新增 `opsOverviewWeb` 区分
+
+### 四、改动清单（7 文件 540 行）
+
+| 文件 | 行 | 内容 |
+|---|---|---|
+| `admin/handler.go` | +6 | 1 行 admin → superAdmin + 5 行注释（决策与 158d 差异） |
+| `web/src/api/opsOverview.ts` | +96 | 新建：getOpsOverview + 12 payload 类型 |
+| `web/src/views/OpsOverviewView.vue` | +290 | 新建：9 段 12 路 payload 卡片布局（中心实例/区域/部署节点/数据面表/许可证/故障/升级/下载/运行时） |
+| `web/src/router.ts` | +5 | route + lazy import + meta requiresSuper |
+| `web/src/locales/{zh-CN,en-US}/nav.ts` | 各 +1 | opsOverviewWeb 条目（运维总览/详细） |
+| `web/src/views/OpsOverviewView.test.ts` | +108 | 新建：3 测试（9 段全渲染 / 缺数据隐藏 / 错误 + 刷新） |
+
+合计 540 行（行数高于原 250 行估算因 12 路 payload 字段更细）。
+
+### 五、验证
+
+- `npx vue-tsc -b` exit 0（先删 tsbuildinfo + symlink node_modules）
+- `npx vitest run` 3/3 passed 673ms
+- `go build ./admin/...` exit 0（vendor 库 m1cpu 折叠常量 warning 无关）
+- `go test ./admin/ -count=1` 整组 102.727s 通过
+- 6 新文件 + 3 改文件 0 FFFD / 0 NUL
+
+### 六、收口
+
+- commit `eb0aee4ec1da41e5dbc00ee3c70c1d2ac797db7f`
+- 父 = `e989f0c2e5`（远端并发会话推的 docs commit，先 rebase 后 push）
+- rebase 0 冲突
+- 孤儿棘轮 10 → 9
+
+### 七、5 批收尾总账
+
+| 批 | 类别 | 实际后端 | 实际前端 | commit | 文档 | 状态 |
+|---|---|---|---|---|---|---|
+| 158a sessionAnalyticsFilterOptions | 接前端 P1 | 0 | 399 | `e982d99c9` | §11.195 | **完成** |
+| 158b usageEnhanced | 接前端 P1 | 0 | 515 | `159999276` | §11.196 | **完成** |
+| 158c boardOperational | 接前端 P2 | 0（留属主） | 374 | `e68616629` | §11.197 | **前端完成** |
+| 158d dataLifecycleStorage | 后端 hygiene | 4 行注释 | 0 | `758a20e1a` | §11.198 | **完成（注释校正）** |
+| 158e opsOverview | 接前端 P4 + 中间件 | 1 行中间件 | 539 | `eb0aee4ec` | §11.199（本节） | **完成** |
+
+**5 批全部收口**，累计 5 commit + 5 文档节 + 7 verifier 收口（5 批前 5 verifier + 2 复核）。

@@ -34,6 +34,7 @@ export default {
     usageTrends: 'Usage Trends',
     usageEnhanced: 'Usage Enhanced',
     boardOperational: 'Operational Board',
+    opsOverviewWeb: 'Ops Overview (Detail)',
     pricing: 'Cost Pricing',
     modelPricing: 'Pricing Management',
     freePool: 'Free Resources',

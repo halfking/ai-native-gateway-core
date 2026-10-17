@@ -1125,7 +1125,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/dashboard/board/error-drill", admin(h.handleDashboardBoardErrorDrill))
 	// superAdmin：重写全租户的分钟聚合存量（探测排除的历史回填）。
 	mux.HandleFunc("/api/admin/dashboard/rollup/rebuild", h.superAdmin(h.handleDashboardRollupRebuild))
-	mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))
+	// 批 158e (2026-10-17): ops/overview is a 12-way platform aggregate
+	// over gateway_instances / licenses / fault_events / upgrade_logs /
+	// download_events / offline_activation_requests / runtime_metrics —
+	// tables without tenant_id columns. Downgraded to superAdmin so
+	// tenant_admin cannot reach the endpoint (admin(...) previously
+	// accepted any admin role including tenant_admin).
+	mux.HandleFunc("/api/admin/ops/overview", h.superAdmin(h.handleOpsOverview))
 	mux.HandleFunc("/api/admin/security/ip-blocklist", h.superAdmin(h.handleIPBlocklistCollection))
 	mux.HandleFunc("/api/admin/security/ip-blocklist/reload", h.superAdmin(h.handleIPBlocklistReload))
 	mux.HandleFunc("/api/admin/security/ip-blocklist/", h.superAdmin(h.handleIPBlocklistItem))
