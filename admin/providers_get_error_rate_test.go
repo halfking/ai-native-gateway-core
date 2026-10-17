@@ -171,6 +171,18 @@ func TestGetProviderHandlerCtxBudgetIsFiveSeconds(t *testing.T) {
 	}
 }
 
+// getProvider 的 SELECT 列表形状。error_rate_24h 按位置定位，所以这两��
+// 必须与 providers.go 的 Scan 顺序一起改——真库判据里已断言列数，不一致
+// 会直接失败而不是默默读到别的列。
+const (
+	providerDetailColumnCount = 25
+	// Scan 顺序：id code display_name catalog_code kind category protocol
+	// base_url egress_profile domestic discount_rate enabled manual_disabled
+	// header_profile_code notes vendor_name active healthy warning cooling
+	// unreachable available unavailable error_rate_24h created_at
+	providerErrorRateColumn = 23
+)
+
 // TestGetProviderErrorRateRealDBWithinHandlerBudget 真库层：带着 handler 同款
 // 5s deadline 跑真实 SQL。修复前这条会以 "context deadline exceeded" 失败，
 // 也就是 /api/providers/14 在生产上的那个 500。
@@ -216,17 +228,46 @@ func TestGetProviderErrorRateRealDBWithinHandlerBudget(t *testing.T) {
 	want := float64(wantFail) / float64(wantReqs)
 
 	// 跑 providers.go 里逐字取出的真实 SQL（见 getProviderSQLLiteral 的说明：
-	// 抄件判的是抄件，不是被测物）。它有 22 个 Scan 目标，这里只取 error_rate
-	// 那一列来判断预算与数值是否正确。
+	// 抄件判的是抄件，不是被测物）。
 	q := getProviderSQLLiteral(t)
 
 	// 生产失败形态：handler 的 ctx 就是 5s。
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var got float64
-	if err := pool.QueryRow(ctx, q, id).Scan(&got); err != nil {
-		t.Fatalf("error_rate_24h did not fit the 5s handler budget for provider %d: %v", id, err)
+	// 用 Values() 而不是 Scan(&got)：真 SQL 有 25 个返回列、类型不一
+	// （string / *string / bool / float64 / int / timestamptz），
+	// 逐个 Scan 既啰嗦又会在 SELECT 列表变化时炸成 arity 错误——
+	// 那是判据自己的问题，不是被测行为。
+	rows, err := pool.Query(ctx, q, id)
+	if err != nil {
+		t.Fatalf("getProvider query did not fit the 5s handler budget for provider %d: %v", id, err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		t.Fatalf("getProvider returned no row for provider %d", id)
+	}
+	vals, err := rows.Values()
+	if err != nil {
+		t.Fatalf("read row: %v", err)
+	}
+	if rows.Err() != nil {
+		t.Fatalf("rows.Err: %v", rows.Err())
+	}
+
+	// 列数是**前提**，必须判掉：error_rate_24h 的位置靠下标定位，
+	// SELECT 列表一旦变形，读到的就不是那一列，而断言仍可能「看着通过」。
+	if len(vals) != providerDetailColumnCount {
+		t.Fatalf("getProvider returned %d columns, expected %d — the "+
+			"error_rate_24h index below no longer points at that column; "+
+			"update both together",
+			len(vals), providerDetailColumnCount)
+	}
+
+	got, ok := vals[providerErrorRateColumn].(float64)
+	if !ok {
+		t.Fatalf("column %d is %T, want float64 — SQL type changed under the test",
+			providerErrorRateColumn, vals[providerErrorRateColumn])
 	}
 	if diff := got - want; diff > 1e-9 || diff < -1e-9 {
 		t.Errorf("error_rate_24h = %v, want %v (requests=%d failures=%d) — "+
