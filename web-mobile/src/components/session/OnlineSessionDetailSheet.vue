@@ -38,7 +38,9 @@ async function loadTurns(sessionId: string): Promise<void> {
     const resp = await fetchSessionTurns(sessionId, { limit: 50 })
     turns.value = resp.turns ?? []
   } catch (err) {
-    error.value = (err as Error)?.message ?? t('common.error')
+    // ApiError.detail 才是后端原文；message 有时是笼统 network_error。
+    const ae = err as { detail?: string; message?: string; status?: number }
+    error.value = ae.detail || ae.message || t('common.error')
   } finally {
     loading.value = false
   }
