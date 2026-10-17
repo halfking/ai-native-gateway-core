@@ -585,7 +585,7 @@ func main() {
 	// 泄漏判定的趋势窗口。相邻采样的 RSS 差值 100% 被 GC 锯齿支配（实测 245 上
 	// 产生 6646 条误报），所以内存/FD 走跨窗口趋势而不是瞬时速率；窗口越长越
 	// 抗噪、但发现越迟，故留成 env 供现场调节。
-	leakWindow := positiveDurationEnv("LLM_GATEWAY_LEAK_WINDOW", 15*time.Minute)
+	leakWindow := positiveDurationEnv("LLM_GATEWAY_LEAK_WINDOW", 10*time.Minute)
 
 	resourceMonitorCfg := monitor.ResourceMonitorConfig{
 		LogDir:             persistentLogDir,

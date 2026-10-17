@@ -135,7 +135,7 @@ type ResourceMonitorConfig struct {
 	MemGrowthThreshold float64       // 内存增长阈值(MB/min)，默认10MB/min
 	GoroutineThreshold int           // goroutine数量阈值，默认10000
 	FDGrowthThreshold  float64       // FD增长阈值(个/min)，默认100/min
-	LeakWindow         time.Duration // 泄漏判定的趋势窗口，默认15分钟
+	LeakWindow         time.Duration // 泄漏判定的趋势窗口，默认10分钟
 }
 
 var (
@@ -192,7 +192,7 @@ func NewResourceMonitor(config ResourceMonitorConfig) (*ResourceMonitor, error) 
 		config.FDGrowthThreshold = 100.0 // 100/min
 	}
 	if config.LeakWindow <= 0 {
-		config.LeakWindow = 15 * time.Minute
+		config.LeakWindow = 10 * time.Minute
 	}
 	// 窗口至少要装得下几个采样点，否则趋势判定退化成相邻两点差值，
 	// 正是本次修复要消除的那个缺陷。
@@ -459,12 +459,26 @@ func (rm *ResourceMonitor) leakBaseline(current *ResourceSnapshot) *ResourceSnap
 //
 // 改成跨窗口趋势后，锯齿在窗口内被平均掉，阈值才重新有判别力。
 // 代价（有意接受，并在此写明）：发现延迟从一个采样周期变为一个窗口；
-// 且阈值语义从「瞬时速率」变为「窗口内持续速率」——按默认 15 分钟窗口，
-// 10MB/min 意味着要持续增长 150MB 才告警，属「只报严重泄漏」。
-// 需要更灵敏的现场应调小 LeakWindow，或直接调高/调低相应阈值。
+// 且阈值语义从「瞬时速率」变为「窗口内持续速率」——按默认 10 分钟窗口，
+// 10MB/min 意味着要持续增长 100MB 才告警。
+//
+// 窗口长度不是拍脑袋定的，是把生产真值序列（testdata/rss_prod_20261012.csv，
+// 245 上 pid 2539639 的 14.7 小时真实 RSS，已知无泄漏）逐档扫出来的：
+//
+//	窗口   实测误报   +2MB/min  +4MB/min  +8MB/min  +12MB/min
+//	  30s(旧)   514       537       557       623       751
+//	   5m         52       102       187       402       764
+//	  10m(默认)   0         0        13       214       831
+//	  15m          0         0         0       104       873
+//
+// 读法：10 分钟是**实测中首个误报归零**的窗口，且在同样零误报下比 15 分钟
+// 多抓到 4MB/min 一档（15 分钟那条 0 是漏报），所以取 10 分钟。
+// 30s 那行（旧算法）在干净数据上就报 514 条——它对 2MB/min 的真实泄漏
+// 只报 537 条，两者只差 4%，**这种「敏感」分辨不出有没有泄漏**，是噪声不是检出。
+// 需要抓更慢的泄漏就调小 LeakWindow，代价是误报回升（见上表）。
 func (rm *ResourceMonitor) detectLeaks(current *ResourceSnapshot) {
 	// goroutine 是**电平**判定（count > threshold），不是趋势判定，
-	// 因此必须在趋势窗口的提前 return 之前求值——否则它会被 15 分钟窗口
+	// 因此必须在趋势窗口的提前 return 之前求值——否则它会被 10 分钟窗口
 	// 门控住，等于静默停摆。本轮就是这么引入过一次回归，由 TestLeakDetection 抓住。
 	if current.Goroutines > rm.leakDetector.goroutineThreshold {
 		alert := LeakAlert{
