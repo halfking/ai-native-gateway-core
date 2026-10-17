@@ -17,6 +17,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -77,13 +78,19 @@ func TestQuerySessionTurnsTree_Normal(t *testing.T) {
 	// 游标比较用 (turn_number, request_id) 两段, turn_number 出现在 ">" 与 "="
 	// 两个分支, 故 TurnNumber 在实参中传两次 →
 	// 实参 = [SessionID, TenantID, TurnNumber, TurnNumber, RequestID, Limit+1] = 6 个。
-	mainRows := pgxmock.NewRows([]string{"turn_number", "request_id", "status", "model", "latency_ms", "body_present"}).
-		AddRow(int64(1), "req_main_1", "success", "glm-4", &l80, true).
-		AddRow(int64(2), "req_main_2", "success", "glm-4.5", &latency, false).
-		AddRow(int64(3), "req_main_3", "pending", "glm-4", nil, false)
+	mainRows := pgxmock.NewRows([]string{"turn_number", "request_id", "status", "model", "latency_ms"}).
+		AddRow(int64(1), "req_main_1", "success", "glm-4", &l80).
+		AddRow(int64(2), "req_main_2", "success", "glm-4.5", &latency).
+		AddRow(int64(3), "req_main_3", "pending", "glm-4", nil)
 	mock.ExpectQuery("SELECT t.turn_number").
 		WithArgs("gw_s1", "acme", int64(0), int64(0), "", 3).
 		WillReturnRows(mainRows)
+	// body_present 批量 IN：截断后仅保留前 2 条；req_main_1 有正文
+	bodyRows := pgxmock.NewRows([]string{"request_id"}).
+		AddRow("req_main_1")
+	mock.ExpectQuery("SELECT DISTINCT b.request_id").
+		WithArgs("gw_s1", pgxmock.AnyArg(), "acme").
+		WillReturnRows(bodyRows)
 	// 子请求：一条 510 列 title_gen，一条回退 origin_actor（sensitive_check 暂无写入方）
 	childRows := pgxmock.NewRows([]string{"parent_request_id", "request_id", "request_status", "latency_ms", "request_type", "origin_actor"}).
 		AddRow("req_main_1", "req_title_1", "success", &l80, "title_gen", "auto-title-generator").
@@ -155,7 +162,7 @@ func TestQuerySessionTurnsTree_NotFound(t *testing.T) {
 
 	mock.ExpectQuery("SELECT t.turn_number").
 		WithArgs("gw_none", "acme", int64(0), int64(0), "", 21).
-		WillReturnRows(pgxmock.NewRows([]string{"turn_number", "request_id", "status", "model", "latency_ms", "body_present"}))
+		WillReturnRows(pgxmock.NewRows([]string{"turn_number", "request_id", "status", "model", "latency_ms"}))
 	// 会话存储解耦 v3（2026-09-30）：该查询已迁到 session 族原生源，
 	// session 谓词下推两条腿（t.session_id = $1）。外层不得再加
 	// gw_session_id 过滤——投影名是 CASE 表达式，加了会打掉下推。
@@ -187,7 +194,7 @@ func TestQuerySessionTurnsTree_CrossTenantForbidden(t *testing.T) {
 	// tenant 过滤下主请求为空
 	mock.ExpectQuery("SELECT t.turn_number").
 		WithArgs("gw_other", "acme", int64(0), int64(0), "", 21).
-		WillReturnRows(pgxmock.NewRows([]string{"turn_number", "request_id", "status", "model", "latency_ms", "body_present"}))
+		WillReturnRows(pgxmock.NewRows([]string{"turn_number", "request_id", "status", "model", "latency_ms"}))
 	// 不限租户存在性检查：会话归属 other-tenant
 	// 会话存储解耦 v3（2026-09-30）：该查询已迁到 session 族原生源，
 	// session 谓词下推两条腿（t.session_id = $1）。外层不得再加
@@ -356,4 +363,36 @@ func TestSessionTurnsTreeItem_NoBodyFields(t *testing.T) {
 	}
 	assertNoBodyFields(t, &turn)
 	assertNoBodyFields(t, turn.ChildRequests[0])
+}
+
+// TestQuerySessionTurnsTree_MainSQLHasNoCorrelatedBodyExists 钉死：主查询
+// 窗口投影里不得再写 correlated EXISTS(session_bodies_*)——那是 2026-10-17
+// llmgo 503 storage_unavailable（5s 超时）的根因。body_present 必须走批量 IN。
+func TestQuerySessionTurnsTree_MainSQLHasNoCorrelatedBodyExists(t *testing.T) {
+	src, err := os.ReadFile("session_turns_tree.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	// 主查询块：从 mainSQL := 到第一次 args := ——中间不得出现 EXISTS / session_bodies
+	start := strings.Index(text, "mainSQL :=")
+	if start < 0 {
+		t.Fatal("mainSQL assignment not found")
+	}
+	end := strings.Index(text[start:], "args :=")
+	if end < 0 {
+		t.Fatal("args assignment after mainSQL not found")
+	}
+	mainBlock := text[start : start+end]
+	for _, bad := range []string{"EXISTS", "session_bodies", "body_present"} {
+		if strings.Contains(mainBlock, bad) {
+			t.Fatalf("mainSQL block must not contain %q (use batched IN after truncation)", bad)
+		}
+	}
+	if !strings.Contains(text, "SELECT DISTINCT b.request_id") {
+		t.Fatal("expected batched body presence query (SELECT DISTINCT b.request_id)")
+	}
+	if !strings.Contains(text, "20*time.Second") {
+		t.Fatal("expected 20s read timeout safety net")
+	}
 }

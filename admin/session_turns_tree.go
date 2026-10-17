@@ -50,7 +50,7 @@ type SessionTurnTreeItem struct {
 	ChildRequests []*SessionChildRequest `json:"child_requests"`
 	V2Shadow      *SessionTurnV2Shadow   `json:"v2_shadow,omitempty"`
 	// Subtask 3 / R73 — body_status 两态契约（'available' | 'unavailable'，
-	// admin/body_status.go）。元数据级 EXISTS 探针（session_bodies_unified），
+	// admin/body_status.go）。元数据级批量 IN 探针（session_bodies_unified），
 	// 绝不携带正文字节（文件头硬约束）。恒发以与 unified / session detail v2
 	// 家族口径一致；schema 无法区分「从未采集」与「按保留期清理」，历史轮次
 	// 恒报 'unavailable'（time线横幅按已加载轮次计数，语义见前端注释）。
@@ -161,7 +161,11 @@ func (h *Handler) handleSessionTurnsTree(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	// 2026-10-17：生产实测 correlated EXISTS(session_bodies_unified) 把本查询
+	// 顶穿 5s ⇒ IsStorageUnavailable → 503 storage_unavailable（245 journal
+	// duration_ms=5028）。预算抬到 20s 只是安全网；真正的修在 query 侧把
+	// body_present 拆成主查询之后的批量 IN（见 querySessionTurnsTree）。
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
 	result, err := querySessionTurnsTree(ctx, h.db, sessionTurnsTreeParams{
@@ -215,28 +219,22 @@ func parseTurnsTreeLimit(r *http.Request) int {
 	return 20
 }
 
-// querySessionTurnsTree 执行两段查询：主请求分页页 + 子请求批量关联。
-// 查询顺序与 SQL 均为 pgxmock 可断言形态。
+// querySessionTurnsTree 执行三段查询：主请求分页页 → body_present 批量 IN →
+// 子请求批量关联。查询顺序与 SQL 均为 pgxmock 可断言形态。
 func querySessionTurnsTree(ctx context.Context, db sessionTurnsTreeDB, p sessionTurnsTreeParams) (*sessionTurnsTreeResult, error) {
 	// 1) 主请求页（ROW_NUMBER 派生 turn_number，(turn_number, request_id) 游标）
+	//
+	// ★ 禁止在窗口投影里写 correlated EXISTS(session_bodies_*)：生产上会把
+	//   单会话 21 行查询拖到 >5s（每行探 bodies 视图），被读超时包装成 503。
+	//   body_present 改在截断后的 request_id 集合上做一次 IN 批量查询。
 	mainSQL := `
-		SELECT t.turn_number, t.request_id, t.status, t.model, t.latency_ms, t.body_present
+		SELECT t.turn_number, t.request_id, t.status, t.model, t.latency_ms
 		FROM (
 			SELECT ROW_NUMBER() OVER (ORDER BY ts ASC, request_id ASC) AS turn_number,
 			       request_id,
 			       COALESCE(request_status, '') AS status,
 			       COALESCE(outbound_model, client_model, '') AS model,
-			       latency_ms,
-			       EXISTS (
-			           SELECT 1
-			           FROM public.session_bodies_unified b
-			           WHERE b.tenant_id = rl.tenant_id
-			             AND b.session_id = rl.gw_session_id
-			             AND b.request_id = rl.request_id
-			             AND ((b.request_delta IS NOT NULL AND b.request_delta <> 'null'::jsonb)
-			               OR (b.response_delta IS NOT NULL AND b.response_delta <> 'null'::jsonb)
-			               OR (b.outbound_body IS NOT NULL AND b.outbound_body <> 'null'::jsonb))
-			       ) AS body_present
+			       latency_ms
 			FROM ` + dbpkg.SessionFamilyTurnsForSessionSQL() + ` rl
 			WHERE 1 = 1
 			  AND (rl.parent_request_id IS NULL OR rl.parent_request_id = '')`
@@ -267,12 +265,11 @@ func querySessionTurnsTree(ctx context.Context, db sessionTurnsTreeDB, p session
 	for rows.Next() {
 		var tn int64
 		t := &SessionTurnTreeItem{}
-		var bodyPresent bool
-		if err := rows.Scan(&tn, &t.RequestID, &t.Status, &t.Model, &t.LatencyMs, &bodyPresent); err != nil {
+		if err := rows.Scan(&tn, &t.RequestID, &t.Status, &t.Model, &t.LatencyMs); err != nil {
 			return nil, fmt.Errorf("read session turns failed: %w", err)
 		}
 		t.TurnNumber = int(tn)
-		t.BodyStatus = bodyStatusFromPresent(bodyPresent)
+		t.BodyStatus = BodyStatusUnavailable
 		t.ChildRequests = []*SessionChildRequest{}
 		turns = append(turns, t)
 		lastKey = sessionTurnsTreeCursor{TurnNumber: tn, RequestID: t.RequestID}
@@ -307,7 +304,7 @@ func querySessionTurnsTree(ctx context.Context, db sessionTurnsTreeDB, p session
 		lastKey = sessionTurnsTreeCursor{}
 	}
 
-	// 3) 子请求批量关联（parent_request_id，仅元数据）
+	// 3) body_present 批量探针 + 子请求批量关联
 	if len(turns) > 0 {
 		ids := make([]string, 0, len(turns))
 		index := make(map[string]*SessionTurnTreeItem, len(turns))
@@ -315,6 +312,43 @@ func querySessionTurnsTree(ctx context.Context, db sessionTurnsTreeDB, p session
 			ids = append(ids, t.RequestID)
 			index[t.RequestID] = t
 		}
+
+		// 3a) 截断后 request_id 集合上一次 IN 探 bodies——O(页大小) 而非
+		//     O(会话全量×bodies)。失败 fail-loud（不当成 unavailable 吞掉）。
+		bodySQL := `
+				SELECT DISTINCT b.request_id
+				FROM public.session_bodies_unified b
+				WHERE b.session_id = $1
+				  AND b.request_id = ANY($2)
+				  AND ((b.request_delta IS NOT NULL AND b.request_delta <> 'null'::jsonb)
+				    OR (b.response_delta IS NOT NULL AND b.response_delta <> 'null'::jsonb)
+				    OR (b.outbound_body IS NOT NULL AND b.outbound_body <> 'null'::jsonb))`
+		bodyArgs := []any{p.SessionID, ids}
+		if p.TenantID != "" {
+			bodySQL += "\n\t\t\t\t  AND b.tenant_id = $3"
+			bodyArgs = append(bodyArgs, p.TenantID)
+		}
+		brows, err := db.Query(ctx, bodySQL, bodyArgs...)
+		if err != nil {
+			return nil, err
+		}
+		for brows.Next() {
+			var rid string
+			if err := brows.Scan(&rid); err != nil {
+				brows.Close()
+				return nil, fmt.Errorf("read body presence failed: %w", err)
+			}
+			if t, ok := index[rid]; ok {
+				t.BodyStatus = BodyStatusAvailable
+			}
+		}
+		if err := brows.Err(); err != nil {
+			brows.Close()
+			return nil, err
+		}
+		brows.Close()
+
+		// 3b) 子请求（parent_request_id，仅元数据）
 		childSQL := `
 				WITH ranked_children AS (
 					SELECT parent_request_id, request_id, COALESCE(request_status, '') AS request_status,
