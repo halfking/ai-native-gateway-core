@@ -36,6 +36,7 @@ export default {
     usageEnhanced: '用量增强分析',
     boardOperational: '运营面板',
     opsOverviewWeb: '运维总览（详细）',
+    subscriptionTiers: '订阅层级',
     pricing: '成本价格',
     modelPricing: '定价管理',
     freePool: '免费资源',

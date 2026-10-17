@@ -69,6 +69,8 @@ const UsageEnhancedView = () => import('./views/admin/UsageEnhancedView.vue')
 const BoardOperationalView = () => import('./views/BoardOperationalView.vue')
 // 批 158e：P4 opsOverview 独立详细页（12 路 payload 综合视图；后端中间件降级 admin → superAdmin）
 const OpsOverviewView = () => import('./views/OpsOverviewView.vue')
+// 批 200：P5 跨仓孤儿接前端 subscriptionTiers（license-authority 独立服务，nginx 反代 /api/admin/tiers）
+const SubscriptionTiersView = () => import('./views/SubscriptionTiersView.vue')
 const ReconciliationReportView = () => import('./views/admin/ReconciliationReport.vue')
 // 2026-07-24: V2-P4 admin session detail page (dual-column turns + drawer).
 const SessionDetailView = () => import('./views/admin/SessionDetailPage.vue')
@@ -303,6 +305,7 @@ export const router = createRouter({
     { path: '/admin/usage-enhanced', component: UsageEnhancedView, meta: { requiresSuper: true } }, // 用量增强分析（批 158b：组合 usage.ts 5 端点综合视图；同档 UsageCost 走 super_admin）
     { path: '/admin/board-operational', component: BoardOperationalView, meta: { requiresAuth: true } }, // 运营面板（批 158c：独立详细页；⚠️ 后端 tenant 隔离未落实，admin 档 endpoint）
     { path: '/admin/ops-overview', component: OpsOverviewView, meta: { requiresSuper: true } }, // 运维总览（批 158e：12 路 payload 卡片布局；与 appNav.ts:229 maintain SPA 平级，web/ 内部独立深链）
+    { path: '/admin/subscription-tiers', component: SubscriptionTiersView, meta: { requiresSuper: true } }, // 订阅层级（批 200：P5 跨仓 license-authority 独立服务，nginx 反代 /api/admin/tiers）
     { path: '/admin/reconciliation', component: ReconciliationReportView, meta: { requiresSuper: true } }, // 对账报表（供应商/内部双视角 + Excel 导出，2026-09-25）
     { path: '/admin/sessions/:id', component: SessionDetailView, meta: { requiresSuper: true } }, // 2026-07-24: V2-P4 session detail
     { path: '/admin/turns',        component: TurnsListView, meta: { requiresSuper: true } }, // 2026-08-09: 跨会话轮次列表
