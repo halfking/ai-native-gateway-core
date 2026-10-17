@@ -209,7 +209,7 @@ error_rate_24h 按下标 23 定位，SELECT 列表一变就可能读到别的列
 「看着通过」——与判据纪律第 3 条同源。变异：把常量改 24 → 真库门立即报
 `returned 25 columns, expected 24`。
 
-## 八、第二族慢接口（同源，未在本轮修复）
+## 八、第二族慢接口（~~同源~~ **订正见 §12：不同源**，本轮未修）
 
 串行复测（排除并发压测干扰）后确认的**真实**超时族——耗时卡在 10s/15s/30s
 整数上，那是各自 handler 的 ctx 预算被打满，不是随机抖动：
@@ -384,3 +384,49 @@ NotZero`、`RemainingSampledOncePerDrain`、`RemainingSQLContract`、
 
 `2698-aa16536e`（总 599s，慢在前端构建，非切换；切换 54s）。
 `/api/providers/14` 上线后仍 **200 / 0.12s**，无回归。
+
+## 十二、订正 §八 的「同源」判断（自己的假设被自己的验证推翻）
+
+§八 与 §十 都把这 15 个超时端点写成 backfill gauge 的「同源/共因」。**gauge
+修复上线（`2698-aa16536e`）后的复测否证了这个判断。**
+
+串行复测同一批端点，修复前后对照：
+
+| 端点 | 修复前 | 修复后 | 结论 |
+| --- | --- | --- | --- |
+| `/api/admin/usage/cache-economics` | 500 @ 10.05s | 500 @ **10.07s** | 未变 |
+| `/api/admin/session-analytics` | 500 @ 15.08s | 500 @ **15.07s** | 未变 |
+| `/api/admin/users/usage-summary` | 500 @ 15.07s | 500 @ **15.06s** | 未变 |
+| `/api/admin/turns/sessions/filter-options` | 500 @ 12.08s | 500 @ **12.06s** | 未变 |
+| `/api/admin/dashboard/session-trend` | 500 @ 15.08s | 500 @ **15.15s** | 未变 |
+| `/api/admin/dashboard/session-health` | 500 @ 15.07s | 500 @ **15.06s** | 未变 |
+| `/api/admin/attachments/stats` | 500 @ 10.16s | **200 @ 8.82s** | 改善 |
+| `/api/admin/data-lifecycle/blobs/top` | 500 @ 15.08s | **200 @ 10.75s** | 改善 |
+
+8 个里 6 个**纹丝不动**。⇒ gauge 不是它们的原因；它是一个**独立的**真实缺陷
+（21.7s→666ms、20 次失败→0 次），值得修、也确实修对了，但它不解释这一族。
+
+### 错在哪
+
+我把「两件事都慢、都在同一个库上」当成了「同一个原因」。这是**相关当因果**：
+gauge 每 3 分钟烧满一次预算确实在加剧库的争抢（2 个端点因此受益），但它不是
+这些端点超时的主因——每个端点有自己的那条慢查询，它们各自打满了自己的
+10s/15s/30s ctx。
+
+正确做法本该是：在提出「共因」时就说出它的**可证伪预测**——「若 A 是 B 的
+原因，那么修好 A 之后 B 会变快」。这句话写下来只要几分钟，就能省掉一次
+上线 + 一轮复测，以及一份会被推翻的结论。
+
+### 这不推翻 gauge 的修复
+
+gauge 仍然是真问题、有真实代价（5.5 小时 20 次失败 / 0 次成功，每 3 分钟烧满
+一次共享库预算）。修复保留。**被推翻的只是「它解释了第二族」这一句。**
+
+### 第二族仍未修
+
+`session-analytics`(15s)、`users/usage-summary`(15s)、`cache-economics`(10s)、
+`turns/sessions/filter-options`(12s)、`dashboard/session-{trend,health}`(15s)、
+`data-lifecycle/{stats,storage/tables}`(15–30s)、`auto-route/{index,audit,
+analytics/*}`(10–15s)、`probe/system-health`(55s) 各自独立，需要逐条
+EXPLAIN 取证。`request_logs_with_current_month` 在 `admin/` 下有 734 处引用、
+跨 143 个文件，全量治理是独立工程。
