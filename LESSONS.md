@@ -19,6 +19,27 @@
 - 防复发检查：幻影（空 name/arguments）与具名 tool 正负对照；chat gate EOF（finish 无 [DONE]）必须 `KindEmptyResponse`；Responses 与 chat 两腿同测。
 - 证据：`TestChatChunkHasOutput/phantom`、`TestRunEmptyStreamGatePhantomToolCallsTriggerEarlyEmpty`、`TestR1028ChatPhantomToolCallsFinishWithoutDoneFailsOver`；二进制含 `Magpie emptyReply failover`。
 - 状态：已修复待观察
+## 2026-10-17 — Chrome 打开 llm.itestu.cn「意外终止连接」= QUIC + 代理 CONNECT（Seen: 1/3）
+- 任务 / 缺陷：Chrome 报无法访问/连接被意外终止；Safari/curl 正常。
+- 根因：① Chrome 默认尝试 HTTP/3(QUIC) 打 UDP:443，211 nginx 只听 TCP HTTP/2，失败时表现为连接终止；② 即便回落 HTTPS，系统代理 7894 的 HTTP CONNECT 到 `192.168.31.211:443` 在 TLS 握手 EOF（SOCKS/直连正常）。IP 段旁路对「按主机名进代理」无效。
+- 防复发检查：系统代理 Exceptions 含 `*.itestu.cn`/`llm.itestu.cn`；`defaults write com.google.Chrome QuicAllowed -bool false`；mihomo 规则 `DOMAIN,llm.itestu.cn,DIRECT`；验证用 `--disable-quic` 对照 + curl `--proxy http://127.0.0.1:7894` 应仍可接受失败但直连 200。
+- 证据：`--disable-quic` 后标题变「AI Native 组织核心网关」；CONNECT 路径 LibreSSL SSL_ERROR_SYSCALL；bypass 写入后 scutil ExceptionsList 含 `*.itestu.cn`。
+- 状态：本机已落地待观察（network-switch 重写系统代理时可能冲掉 bypass，需盯）
+
+## 2026-10-17 — 211 未钉 LICENSE_ACTIVATED 时 SPA 卡 /bootstrap（Seen: 1/3）
+
+- 任务 / 缺陷：deploy-211 后 llm.itestu.cn「打不开」；Safari 落在 `/bootstrap?redirect=…`，登录页进不去。
+- 根因：211 独立库 + 容器硬件指纹在 license 表无对应行；`/api/system/bootstrap/status` 返 `activated:false`；`web/src/router.ts` 软门把非 `/login|/bootstrap` 路径重定向到激活向导。154/245 靠库内 license 行，本地曾用 `LLM_GATEWAY_LICENSE_ACTIVATED=1` 绕过。
+- 防复发检查：`deploy-211-docker.sh` 同时写 gateway.env 与容器 `-e LLM_GATEWAY_LICENSE_ACTIVATED=1`；契约门钉两处；部署后断言 `bootstrap/status.activated=true` 且浏览器落到 `/?login=1` 而非 `/bootstrap`。
+- 证据：修前 activated=false + Safari `/bootstrap`；deploy-211 重跑后 env=1、activated=true、登录 6/6、Safari `https://llm.itestu.cn/`、契约 87/0。
+- 状态：已修待观察
+
+## 2026-10-17 — 211 部署基础镜像必须钉 registry-211，readyz 无 mode 字段（Seen: 1/3）
+- 任务 / 缺陷：优化 deploy-211 走 registry-211.itestu.cn 基础镜像并部署验证。
+- 根因：引擎默认曾回落 `golang:1.27.1-alpine`/`docker.io`；211 直连 docker.io 不通。runtime `alpine:3.22` 原先只在 `/opt/kaixuan/base-images` 离线包，registry 仅有 `lang-base/alpine:3.18-i386`。readyz 实为 `status+database.connected+redis.connected`，没有 `mode` 字段——按 mode=full/lite 断言会得到 unknown 假象。
+- 防复发检查：`deploy-211.sh` export + 引擎默认钉 `lang-base/kx-base-golang:1.27-alpine-amd64` 与 `lang-base/alpine:3.22-amd64`；构建前 `d211_ensure_base_images`（pull→离线 retag）；契约门钉默认字符串与 ensure；就绪验 DB/Redis connected 并拒绝 mode=lite 字面。
+- 证据：契约门 83/0；实部署 build FROM registry-211 两基础镜像；应用镜像推送 `app-images/llm-gateway-go:211-17f66c69-dirty`；readyz DB/Redis connected、healthz ready、SPA text/html。数据面静态/admin key 仍 401（库血统 SECRET 对齐属既有项，非本轮镜像路径回归）。
+- 状态：镜像路径已验证；鉴权对齐待观察
 
 ## 2026-10-16 — 探针必须保留真实状态与模型作用域（Seen: 1/3）
 - 任务 / 缺陷：211 grok-4.6 路由诊断与节点状态修正；基线 `587af94bdf29b942c7d7051f4562955d83b12115`。首版 `7fc04b6e18dd3759ca9855e9b4316675ad672b40` 独立审查失败，追加隔离写回与余额门后重新审查，不沿用旧批准。

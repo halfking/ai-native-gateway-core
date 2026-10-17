@@ -22,6 +22,9 @@
 /.kiro/
 /.security-audit/
 
+# 2026-10-17: 审计验证轮的一次性运行产物（逐条核验记录/探针输出），机器本地
+/.audit-validation/
+
 # 2026-09-25: TRAE IDE tool cache (commit-msg drafts, session scratch)
 /.trae/
 
