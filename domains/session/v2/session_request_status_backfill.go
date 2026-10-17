@@ -484,23 +484,49 @@ func (b *sessionRequestStatusBackfill) sampleRemaining(ctx context.Context) {
 // is not hypothetical: any gateway process still running a pre-823 binary writes
 // NULL labels into _hot, and the parent-only gauge cannot see them.
 //
-// R31 (2026-10-10, 252 审计): the exact window-less count is only affordable
-// if the physical plan is. On 252 it wasn't: 793k permanent-NULL rows ×
-// per-row _request_logs partition probes blew past the role's 30s
-// statement_timeout ~3/h forever, the gauge sat at -1 and the release gate
-// was unmeasurable. 849 (covering partial index on (request_id)) plus the
-// sampleRemaining SET LOCAL budget lift make the same SQL completable —
-// the semantics (window-less, both surfaces, -1 on failure) are untouched.
+// R31 (2026-10-10, 252 审计): the window-less count was claimed to be made
+// completable by 849 (covering partial index on request_id) plus the
+// sampleRemaining SET LOCAL budget lift, "with the semantics (window-less,
+// both surfaces, -1 on failure) untouched".
 //
-// The candidate query below deliberately does NOT cover _hot — see its own
-// comment. Backfill scope and gauge scope are different questions; making them
-// the same scope is what created the blind spot.
+// **That claim was falsified by measurement (2026-10-18).** On 252 the same SQL
+// still did not complete: 60s statement_timeout kill in one run, 126s in
+// another, and a bare `SELECT count(*) … GROUP BY tableoid` over the NULL set
+// needed >90s. 154's worker logged `remaining count failed: timeout: context
+// deadline exceeded` every ~3 min — **20 failures, 0 successes** in 5.5h, on
+// both the 8781 and 8782 instances. A gauge that has never once succeeded is
+// not "honest about a stall"; it is -1 forever while burning a full budget
+// every tick on a production PG shared with other applications.
+//
+// Analysing the partition did not help either: session_turns_2026_09 is
+// 798,278 rows / 2.7 GB, and a 13m37s ANALYZE produced a truthful plan that
+// still timed out, because the real volume is **330,544 rows** with
+// request_status IS NULL that must hash-join _request_logs. Those rows are
+// exactly the "823-pre v1 history, structurally unfillable" set the header
+// argument (and the candidate query's own 7-day floor) already identifies.
+//
+// 2026-10-18 (owner-approved): the parent arm takes the **same 7-day
+// partition_date floor** as sessionRequestStatusCandidateSQL. Measured on 252:
+// window-less 60s+ timeout vs windowed **7s, returning 0**.
+//
+// Tradeoff, stated plainly rather than buried: the previous note claimed a
+// window-less gauge "keeps reporting the backlog and the release gate stays
+// honest" if the job stalls longer than 7 days. Windowing does give that up —
+// a job stalled beyond the window can no longer be read off this gauge. It is
+// accepted because (a) that property was already void in practice (the gauge
+// never returned a number to lose), and (b) the candidate query cannot attempt
+// those rows either, so the window tracks what the job actually acts on.
+//
+// The dual-surface coverage is deliberately KEPT: the _hot arm stays
+// window-less, because "rows that would be lost at retirement" is a different
+// question from "rows this job can still fix" and _hot holds only ~6k rows.
 const sessionRequestStatusRemainingSQL = `
 	SELECT (SELECT count(*)
 	          FROM public.session_turns t
 	          JOIN public._request_logs l ON l.request_id = t.request_id
 	         WHERE t.request_status IS NULL
-	           AND l.request_status IS NOT NULL)
+	           AND l.request_status IS NOT NULL
+	           AND t.partition_date >= (now() - interval '7 days')::date)
 	     + (SELECT count(*)
 	          FROM public.session_turns_hot t
 	          JOIN public._request_logs l ON l.request_id = t.request_id
