@@ -73,6 +73,8 @@ const OpsOverviewView = () => import('./views/OpsOverviewView.vue')
 const SubscriptionTiersView = () => import('./views/SubscriptionTiersView.vue')
 // 批 201：加 router/nav 让 turnsFilterOptions 深链可达（API 已有，缺独立详细页）
 const TurnsFilterOptionsView = () => import('./views/TurnsFilterOptionsView.vue')
+// 批 202：加 router/nav 让 storageMigrationState 深链可达（API + StorageConfig 已有，缺独立详细页）
+const StorageMigrationStateView = () => import('./views/StorageMigrationStateView.vue')
 const ReconciliationReportView = () => import('./views/admin/ReconciliationReport.vue')
 // 2026-07-24: V2-P4 admin session detail page (dual-column turns + drawer).
 const SessionDetailView = () => import('./views/admin/SessionDetailPage.vue')
@@ -309,6 +311,7 @@ export const router = createRouter({
     { path: '/admin/ops-overview', component: OpsOverviewView, meta: { requiresSuper: true } }, // 运维总览（批 158e：12 路 payload 卡片布局；与 appNav.ts:229 maintain SPA 平级，web/ 内部独立深链）
     { path: '/admin/subscription-tiers', component: SubscriptionTiersView, meta: { requiresSuper: true } }, // 订阅层级（批 200：P5 跨仓 license-authority 独立服务，nginx 反代 /api/admin/tiers）
     { path: '/admin/turns/filter-options', component: TurnsFilterOptionsView, meta: { requiresSuper: true } }, // 轮次筛选选项（批 201：API 已有 listTurnsFilterOptions，缺独立深链详细页）
+    { path: '/admin/data-lifecycle/migration-state', component: StorageMigrationStateView, meta: { requiresPlatformOps: true } }, // 存储迁移状态（批 202：API + StorageConfig 已有，缺独立深链；与父 /admin/data-lifecycle 端点同档 platformOps）
     { path: '/admin/reconciliation', component: ReconciliationReportView, meta: { requiresSuper: true } }, // 对账报表（供应商/内部双视角 + Excel 导出，2026-09-25）
     { path: '/admin/sessions/:id', component: SessionDetailView, meta: { requiresSuper: true } }, // 2026-07-24: V2-P4 session detail
     { path: '/admin/turns',        component: TurnsListView, meta: { requiresSuper: true } }, // 2026-08-09: 跨会话轮次列表

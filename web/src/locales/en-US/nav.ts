@@ -37,6 +37,7 @@ export default {
     opsOverviewWeb: 'Ops Overview (Detail)',
     subscriptionTiers: 'Subscription Tiers',
     turnsFilterOptions: 'Turns Filter Options',
+    storageMigrationState: 'Storage Migration State',
     pricing: 'Cost Pricing',
     modelPricing: 'Pricing Management',
     freePool: 'Free Resources',
