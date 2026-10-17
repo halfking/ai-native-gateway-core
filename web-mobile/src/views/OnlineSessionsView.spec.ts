@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
+import { createRouter, createMemoryHistory } from 'vue-router'
 import OnlineSessionsView from './OnlineSessionsView.vue'
 import { fetchOnlineSessions } from '@/api/sessions'
 import { setLocale, locale } from '@/i18n'
@@ -38,7 +39,19 @@ let mountedList: Array<{ unmount(): void }> = []
 async function mountView(): Promise<ReturnType<typeof mount>> {
   const pinia = createPinia()
   setActivePinia(pinia)
-  const w = mount(OnlineSessionsView, { attachTo: document.body, global: { plugins: [pinia] } })
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/', component: { template: '<div />' } },
+      { path: '/turns', component: { template: '<div />' } },
+    ],
+  })
+  await router.push('/')
+  await router.isReady()
+  const w = mount(OnlineSessionsView, {
+    attachTo: document.body,
+    global: { plugins: [pinia, router] },
+  })
   mountedList.push(w)
   await flushPromises()
   await flushPromises()
@@ -243,5 +256,34 @@ describe('错误与空态', () => {
     onlineMock.mockResolvedValue(resp({ sessions: [row(), row({ session_id: 'x' })], count: 2 }))
     const w = await mountView()
     expect(w.text()).toContain('共 2 个活跃会话')
+  })
+})
+
+describe('★★ 判据 7：行可点进会话详情', () => {
+  it('行是 button，点后 push /turns?search=<session_id>', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/', component: { template: '<div />' } },
+        { path: '/turns', component: { template: '<div />' } },
+      ],
+    })
+    await router.push('/')
+    await router.isReady()
+    const pushSpy = vi.spyOn(router, 'push')
+    onlineMock.mockResolvedValue(resp({ sessions: [row({ session_id: 'gw-detail-9' })] }))
+    const w = mount(OnlineSessionsView, {
+      attachTo: document.body,
+      global: { plugins: [pinia, router] },
+    })
+    mountedList.push(w)
+    await flushPromises()
+    const btn = w.find('button.on__item-btn')
+    expect(btn.exists()).toBe(true)
+    expect(btn.attributes('data-session-id')).toBe('gw-detail-9')
+    await btn.trigger('click')
+    expect(pushSpy).toHaveBeenCalledWith({ path: '/turns', query: { search: 'gw-detail-9' } })
   })
 })
