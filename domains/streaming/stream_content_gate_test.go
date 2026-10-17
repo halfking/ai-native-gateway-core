@@ -56,19 +56,13 @@ func TestChunkHasContent_Cases(t *testing.T) {
 			want: true,
 		},
 		{
-			// r1028 (2026-10-17) Magpie parity, r1029 re-confirmed: a
-			// tool_calls slot carrying only id/type — no name, no arguments —
-			// is a phantom, not an invocation. This row asserted true and has
-			// been failing on main since r1028 landed (verified by stashing the
-			// r1029 work and re-running on pristine origin/main). Counting it
-			// is what let the phantom-tool_calls empty reply through.
+			// r1028 Magpie parity / r1029: id/type-only slot is a phantom.
 			name: "tool_calls delta with id only (phantom)",
 			body: `{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function"}]}}]}`,
 			want: false,
 		},
 		{
-			// The real invocation shape: a named tool, or an arguments delta
-			// (name usually arrived in an earlier frame).
+			// Named tool, or an arguments delta (name usually earlier).
 			name: "named tool_calls delta",
 			body: `{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"search","arguments":""}}]}}]}`,
 			want: true,

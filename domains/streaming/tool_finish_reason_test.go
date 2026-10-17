@@ -97,17 +97,21 @@ func TestToolFinishReasonChatNoSpaceSSE(t *testing.T) {
 	}
 }
 
-func TestToolFinishReasonNamelessStreamStaysOrdinary(t *testing.T) {
+func TestToolFinishReasonNamelessStreamIsEmptyFailover(t *testing.T) {
+	// r1028b: fully empty phantoms (no name, no arguments) are stripped;
+	// with no other agent-visible output the Magpie empty gate must fail
+	// over. Note: arguments-only frames like {"arguments":"{}"} are kept
+	// as streaming continuations — use the true MiniMax empty slot here.
 	withEarlyEmptyThreshold(t, 0)
-	body := `data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"arguments":"{}"}}]},"finish_reason":null}]}` + "\n\n" +
+	body := `data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"","type":"function","function":{"name":"","arguments":""}}]},"finish_reason":null}]}` + "\n\n" +
 		`data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\ndata: [DONE]\n\n"
 	rec := httptest.NewRecorder()
 	out := StreamChat(context.Background(), rec, &http.Response{Body: io.NopCloser(strings.NewReader(body))}, "test", "test", NewNormalizer())
-	if out.Interrupted {
-		t.Fatalf("stream interrupted: %+v", out)
+	if !out.Interrupted {
+		t.Fatalf("nameless-only stream must fail over as empty, got %+v wire=%s", out, rec.Body.String())
 	}
-	if got := toolFinishReasons(t, rec.Body.String())[0]; got != "stop" {
-		t.Fatalf("nameless call promoted to %q", got)
+	if strings.Contains(rec.Body.String(), "tool_calls") {
+		t.Fatalf("phantom tool_calls leaked to wire: %s", rec.Body.String())
 	}
 }
 

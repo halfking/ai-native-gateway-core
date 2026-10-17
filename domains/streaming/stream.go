@@ -802,6 +802,9 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 	clientDisconnected := false
 	continuationHasToolCall := false
 	writeClientLine := func(line string) bool {
+		// Belt-and-suspenders: strip again in case a line bypassed
+		// stripChunkFieldsForVendor (gate flush / model rewrite paths).
+		line = stripPhantomToolCallsFromSSELine(line)
 		// Observe the final wire shape, including XML-coerced and nonzero-choice calls.
 		continuationHasToolCall = continuationHasToolCall || chatLineStartsToolCall(line)
 		if clientDisconnected {
@@ -2185,14 +2188,19 @@ func stripChunkFieldsForVendor(line, vendorCode string, stripFn func([]byte) []b
 			return line, code, msg
 		}
 	}
-	if stripFn == nil {
-		return line, 0, ""
+	// Always strip nameless MiniMax-style phantom tool_calls before the
+	// client sees the frame (r1028b). Applied even when stripFn is nil so
+	// non-catalog vendors still drop empty slots.
+	outPayload := payload
+	if stripFn != nil {
+		stripped := stripFn([]byte(payload))
+		if len(stripped) == 0 {
+			return line, 0, ""
+		}
+		outPayload = string(stripped)
 	}
-	stripped := stripFn([]byte(payload))
-	if len(stripped) == 0 {
-		return line, 0, ""
-	}
-	return "data: " + string(stripped) + "\n", 0, ""
+	outPayload = stripPhantomToolCallsInPayload(outPayload)
+	return "data: " + outPayload + "\n", 0, ""
 }
 
 // resolveStreamVendor normalizes an explicit catalog code and, for empty

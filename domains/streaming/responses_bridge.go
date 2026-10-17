@@ -718,7 +718,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 				emittedContent = true
 			}
 			for _, tc := range chunk.Delta.ToolCalls {
-				if tc.Arguments != "" || tc.Name != "" {
+				if tc.Name != "" {
 					emittedContent = true
 					break
 				}
@@ -734,10 +734,14 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 				return
 			}
 			for _, tc := range chunk.Delta.ToolCalls {
-				if tc.Name == "" && tc.ID == "" && tc.Arguments == "" {
+				state := scaffold.toolStates[tc.Index]
+				// After toolHold.adjust: phantoms / pre-name fragments must
+				// not open toolStates. Args-only deltas AFTER a named state
+				// exists still append (arg-first hold releases name, then
+				// more argument chunks arrive without repeating Name).
+				if tc.Name == "" && (state == nil || state.Name == "") {
 					continue
 				}
-				state := scaffold.toolStates[tc.Index]
 				if state == nil {
 					state = &responsesToolTerminalState{}
 					scaffold.toolStates[tc.Index] = state
@@ -1191,15 +1195,13 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 				return
 			}
 			for _, tc := range chunk.Delta.ToolCalls {
-				// MiniMax (and similar) emit phantom tool_calls slots with
-				// empty id/name/arguments. Recording them in toolStates would
-				// falsely satisfy a len(toolStates)>0 empty gate and let the
-				// bridge finish as success/incomplete while the client still
-				// sees empty_model_response.
-				if tc.Name == "" && tc.ID == "" && tc.Arguments == "" {
+				state := scaffold.toolStates[tc.Index]
+				// After toolHold.adjust: phantoms / pre-name fragments must
+				// not open toolStates. Args-only deltas AFTER a named state
+				// exists still append (r1028b).
+				if tc.Name == "" && (state == nil || state.Name == "") {
 					continue
 				}
-				state := scaffold.toolStates[tc.Index]
 				if state == nil {
 					state = &responsesToolTerminalState{}
 					scaffold.toolStates[tc.Index] = state
