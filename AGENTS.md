@@ -62,6 +62,28 @@
 - 契约门：`bash tests/deploy_host_first_contract_test.sh`（verify.sh 已接）；自动安装端到端：`DL_AUTOINSTALL_TEST=1 bash tests/deploy_host_autoinstall_test.sh`（真实源码构建，分钟级，opt-in）
 - 迁移通道 host-first 收敛轮补登：532/392/631/407/536/540/510/513/516/542/361b + 新增 680b；738/740/815/816/817/824 兼容动态交集形态。
 
+## `/live` 的免凭据肉眼验收路径（2026-10-18 实测可用）
+
+**要肉眼验收 `/live` 千万别先去要管理员口令** —— 生产路由确实要登录，但仓库自带一条
+免凭据的路：`/dev/live-topology-preview`（只在 `import.meta.env.DEV` 注册，
+`meta:{public:true}`，路由门对 `/dev/` 前缀直接放行）。
+
+```bash
+node /tmp/dev-topology-stub.mjs 5198                        # API 桩（/tmp，不进仓库）
+cd web && GATEWAY_API_TARGET=http://127.0.0.1:5198 \
+  corepack pnpm vite --port 5199 --strictPort               # 只听 IPv6 回环
+# 浏览器开 http://localhost:5199/dev/live-topology-preview
+```
+
+- 桩需覆盖：`/api/admin/topology/providers-today`、`/api/auth/me`（401）、
+  `/api/admin/live-stream`（SSE）。`/api/auth/me` 返 401 会让首屏停在
+  「正在检测登录状态…」**片刻**，导航等它落定后正常渲染 —— 这**不是**故障，
+  别照着去调代码。
+- 探活用 `localhost`（vite 绑 `::1`），`127.0.0.1` 连不上。
+- FilePanel Browser 的 `screenshot` 对这页会抓成黑底空图，但 DOM 查询同时能读到
+  完整结构、控制台零报错 ⇒ **判「元素在不在」用 DOM/文本查询，别信截图**；
+  `query(kind:'editable')` 不收 selector，查可交互元素用 `kind:'semantic'`。
+
 ## 端口：必须现场确认，不要假设
 
 两台机器都是蓝绿部署，监听端口由 `/opt/llm-gateway-go/run/active-upstream.conf`
@@ -544,7 +566,46 @@
     - 顺带补齐上游 `e982d99c9` 漏译的 6 个 locale nav 键
       （`item.sessionAnalyticsFilterOptions`）—— 该缺陷来自上游合并，
       与本轮无关（工作区零 nav 改动，git 溯源确认），但会让 parity 测试红。
-    - **未完成**：真实浏览器验收仍被沙箱挡下（见「剩余任务」第 8 条）。
+    - **浏览器验收：2026-10-18 凌晨已完成**（此前挂着「被沙箱挡下」）。
+      关键认识：**验收不必走生产 `/live`**——那条路要管理员凭据。
+      用仓库自带的 `/dev/live-topology-preview`（`import.meta.env.DEV` 才注册，
+      `meta:{public:true}` 免登录）+ `/tmp/dev-topology-stub.mjs`（API 桩）
+      + `vite --port 5199` 指向桩，即可真实渲染。详见下方「浏览器验收轮」。
+
+## 浏览器验收轮（2026-10-18 凌晨，/live 展示诚实性修复的像素级确认）
+
+**验收环境**（都不需要任何凭据，下次照抄即可）：
+```
+node /tmp/dev-topology-stub.mjs 5198                      # API 桩
+cd web && GATEWAY_API_TARGET=http://127.0.0.1:5198 \
+  corepack pnpm vite --port 5199 --strictPort             # dev server
+# 打开 http://localhost:5199/dev/live-topology-preview
+```
+（桩在 `/tmp`、不进仓库；vite 只听 IPv6 回环，探活要用 `localhost` 不是 `127.0.0.1`。）
+
+**两条与工具有关的坑，下次直接绕开**：
+
+19. **本仓 FilePanel Browser 的 `screenshot` 对这页不可信**：抓到的是黑底空图，
+    而 `query(kind:'dom')` 同时能读到完整的 `.live-topology` 结构、控制台零报错。
+    ⇒ **判定「元素在不在」一律用 DOM/文本查询，不要用截图**；截图只用来在
+    **已成功渲染过的那一张**上做视觉判断。差点据此误判成「页面挂了」。
+20. **`query(kind:'editable')` 不接受 `selector`**（只有 text/dom 接受），
+    查可交互元素要用 `kind:'semantic'` + 精确可见文本。
+
+**像素/结构级确认到的（DOM 实读，非推断）**：
+
+| 项 | 观察到的值 | 意义 |
+|---|---|---|
+| 网关九格 | `缓存 0 / 脱敏 76 / 路由 76 / 节点状态管理 4 / 会话文件 0 / 会话写入 0 / 错误记录 9 / 探测任务 9 / 任务识别 0` | 缓存=0 是 `is-idle` 而**非 `is-error`**，错误记录=9 才转红 —— 本轮 BLOCKER 修复在真实渲染下成立（夹具恰好无 cache token，正踩中修复前会误显红的那条路径） |
+| 放大面板几何 | 关闭按钮 `x=525`，右列右边缘 ≈552 | 面板**被约束在右列内**，未退到视口 —— 定位基准修复生效 |
+| 缺省时延 | 列表渲染 `—`（不是 `0ms`） | 假零禁令在面板层也成立 |
+| 左栏表头 | `4`，与实际 4 行一致 | 「8 / N」计数修复生效 |
+| 连接状态 | `已连接` | 预览页夹具注入器在持续喂数据（时间戳实时推进），页面是活的 |
+
+**仍未由像素确认的**（如实记，不要当已验）：独立审计提的
+**480 断点右侧裁切**（`TopologyCanvas.vue:277` 强制 `width≥640` 而容器 `overflow:hidden`）
+只做了 CSS 数值推导与布局函数计算，**没有在 480px 视口下真的截过图**。
+本次验收视口约 1144px（窄屏单列），未覆盖到 480。需要的话把 Browser 视口调到 480 再验一次。
 
 
 ## 剩余任务（按依赖顺序）
@@ -2413,14 +2474,20 @@ owner 拍板）；session_censors 可逆还原无读取方（配密钥+读取端
    `2663-75bf327a`、211 仍旧版。此时部署任何一台都会连带 866 与该功能。
 6. MV 争用、model alternatives 超时、fp_slot、nvidia probe、252 负载 15–22：owner。
 7. `r43-fresh-install*` / 九月远端三分支：留置。
-8. ★ **`/live` 真实浏览器验收（未做，沙箱阻塞）**：本机 dev server +
-   本地 stub API 起了，`/dev/live-topology-preview` 与仓库既有的
-   `/dev/waterfall-preview` **同样**卡在「正在检测登录状态…」——**不是新页的问题**，
-   是沙箱里 App.vue 的 `/api/auth/me` 探测不落定（无 JS 报错，network 面板无该请求）。
-   要肉眼验收需二选一：① 拿到本机 8782 网关的管理员口令（或
-   `GATEWAY_DEV_AUTH_TOKEN` 自签 JWT）后用 `GATEWAY_API_TARGET=http://localhost:8782`
-   起 dev；② 在真实已登录浏览器里直接开 `/live`。
-   在此之前，「动效够炫 / 60fps / 粒子不卡」**没有任何运行时证据**，只有单测与构建证据。
+8. ~~**`/live` 真实浏览器验收（未做，沙箱阻塞）**~~ —— **2026-10-18 凌晨已解除阻塞并完成**。
+   原记录归因于「沙箱里 App.vue 的 `/api/auth/me` 探测不落定，dev 预览页同样卡在登录检测」，
+   并据此认为必须拿到管理员口令或已登录浏览器才能验收 —— **这个前提是错的**。
+   实际做法：`/dev/live-topology-preview` 带 `meta:{public:true}`，且路由门
+   `shouldRedirectToBootstrap` 对 `import.meta.env.DEV && toPath.startsWith('/dev/')`
+   直接放行（`web/src/router.ts:375`）。真正卡住的是**首屏那次 `/api/auth/me` 401
+   把 guest 外壳的软启动判定拖住**，而 stub 没模拟那个探测的收敛——导航等它落定即可，
+   之后页面完整渲染，无需任何凭据。
+   环境与两条工具坑见上文「浏览器验收轮」。**已确认**（DOM 实读）：
+   缓存格在 0 命中时是 `is-idle` 非故障红、放大面板被约束在右列内、
+   缺省时延渲染 `—`、左栏表头计数与行数一致。
+   **仍未覆盖**：480 断点右侧裁切（`TopologyCanvas.vue:277` 强制 `width≥640`
+   而容器 `overflow:hidden`）——本轮视口约 1144px，未在 480 下真的截过图；
+   「60fps / 粒子不卡」仍无运行时帧率证据（要补得用 DevTools performance 录制）。
 
 ---
 
