@@ -663,6 +663,11 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 			return
 		}
 		if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
+			// Capture before Responses wire-index renumber (r1028b) — same
+			// reason as the OpenAI→Responses leg below.
+			if capture != nil {
+				capture.ObserveChunk(chunk)
+			}
 			// Anthropic content_block index → Responses output_index BEFORE any
 			// index-keyed scaffold state (see renumberToolOutputIndexes).
 			scaffold.renumberToolOutputIndexes(chunk)
@@ -699,7 +704,9 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 			pc.append(sseLine)
 		}
 		if capture != nil {
-			capture.ObserveChunk(chunk)
+			if chunk.Type != ir.ChunkTypeDelta || chunk.Delta == nil {
+				capture.ObserveChunk(chunk)
+			}
 			if written {
 				capture.RecordChunkSent()
 			}
@@ -1143,6 +1150,13 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 			return
 		}
 		if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
+			// Capture chat-shaped tool_calls BEFORE Responses wire-index
+			// renumbering. Renumber maps tools to output_index 1..N (message
+			// occupies 0); observing after renumber pads a nil slot that
+			// session_bodies persisted as an empty MiniMax-looking phantom.
+			if capture != nil {
+				capture.ObserveChunk(chunk)
+			}
 			// OpenAI tool_calls[].index → Responses output_index BEFORE any
 			// index-keyed scaffold state (see renumberToolOutputIndexes).
 			scaffold.renumberToolOutputIndexes(chunk)
@@ -1179,7 +1193,9 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 			pc.append(sseLine)
 		}
 		if capture != nil {
-			capture.ObserveChunk(chunk)
+			if chunk.Type != ir.ChunkTypeDelta || chunk.Delta == nil {
+				capture.ObserveChunk(chunk)
+			}
 			if written {
 				capture.RecordChunkSent()
 			}

@@ -947,8 +947,20 @@ func (sc *StreamCapture) SummaryAsMap() map[string]any {
 	}
 	// 2026-06-23: structured tool_calls from streaming (migration 042).
 	// Emit as JSONB-compatible array for persistence in _request_logs.tool_calls.
+	// r1028b: Responses-bridge renumbering leaves nil pads at index 0
+	// (message slot). Drop them so session_bodies does not look like
+	// MiniMax phantom tool_calls after the wire already stripped them.
 	if len(sc.ToolCalls) > 0 {
-		m["tool_calls"] = sc.ToolCalls
+		compact := make([]map[string]any, 0, len(sc.ToolCalls))
+		for _, tc := range sc.ToolCalls {
+			if tc == nil {
+				continue
+			}
+			compact = append(compact, tc)
+		}
+		if len(compact) > 0 {
+			m["tool_calls"] = compact
+		}
 	}
 	// 2026-08-19: surface every discard event the survival / recovery /
 	// empty-gate paths recorded. The audit upsert pipeline forwards this
