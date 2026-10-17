@@ -92,7 +92,7 @@ ENV_FILE="$D211_STATE_DIR/env/gateway.env"
 # 建出目录，后面操作的也是 Mac 自己的 docker 而不是 211 的。远程部署一律
 # 走 --via（tar 同步仓库 → ssh 到目标机以 root 重跑本脚本）。
 if [[ -z "$VIA" && "$(uname -s)" == "Darwin" ]]; then
-  die "检测到在 macOS 上以本机模式运行。本脚本无参模式必须在 211 本机以 root 执行（状态目录 ${D211_STATE_DIR} 是 Linux 路径）；从部署机远程部署请用：bash $0 --via ${D211_TARGET_IP}（基础镜像可用 D211_GO_BASE_IMAGE/D211_RUNTIME_BASE_IMAGE 指向本地离线包）"
+  die "检测到在 macOS 上以本机模式运行。本脚本无参模式必须在 211 本机以 root 执行（状态目录 ${D211_STATE_DIR} 是 Linux 路径）；从部署机远程部署请用：bash scripts/deploy-211.sh 或 bash $0 --via ${D211_TARGET_IP}（基础镜像默认 registry-211.itestu.cn，可用 D211_GO_BASE_IMAGE/D211_RUNTIME_BASE_IMAGE 覆盖）"
 fi
 
 # =============================================================================
@@ -167,17 +167,20 @@ if [[ -n "$VIA" ]]; then
   # 半截同步硬门：缺入口脚本就别往下跑（否则 bash 报 No such file → RC=127）
   ssh "$VIA" "test -f ~/llm-gateway-go-211/scripts/deploy-211-docker.sh" \
     || die "同步后远端缺少 scripts/deploy-211-docker.sh（半截 tar？）；拒跑部署"
-  # 基础镜像 build-arg 变量一并转发：211 的 /opt/kaixuan/base-images 存有
-  # 离线基础镜像（kx-base/golang:1.27-alpine-amd64 等），daemon 的 mirror 不
-  # 保证每次可达，构建腿应优先吃本地已 load 的镜像。空值 = 远端走脚本默认。
+  # 基础镜像 build-arg 变量一并转发：权威仓 registry-211.itestu.cn（方案 42）；
+  # 拉不到时引擎回落 /opt/kaixuan/base-images 离线包。空值 = 远端走脚本默认。
   # 构建提交号随行：目标树不带 .git，远端只能从这里拿到真实 HEAD，用来改写
   # 种子 version.json（否则 /version 显示的是工作区里别的部署留下的戳）。
   D211_BUILD_SHA="$(git -C "$D211_REPO_ROOT" rev-parse --short=8 HEAD 2>/dev/null || true)"
   if [[ -n "$D211_BUILD_SHA" && -n "$(git -C "$D211_REPO_ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
     D211_BUILD_SHA="${D211_BUILD_SHA}-dirty"
   fi
-  log "在 $VIA 上执行 deploy ..."
-  ssh "$VIA" "cd ~/llm-gateway-go-211 && D211_BUILD_SHA='${D211_BUILD_SHA}' D211_STATE_DIR=$D211_STATE_DIR D211_REDIS_DB_START=$D211_REDIS_DB_START D211_REDIS_DB_END=$D211_REDIS_DB_END LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY='${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}' D211_GO_BASE_IMAGE='${D211_GO_BASE_IMAGE:-}' D211_RUNTIME_BASE_IMAGE='${D211_RUNTIME_BASE_IMAGE:-}' D211_BASE_REGISTRY='${D211_BASE_REGISTRY:-}' PROBE_TIMEOUT_SECS='${PROBE_TIMEOUT_SECS:-}' bash scripts/deploy-211-docker.sh $*"
+  # 入口未设时在 --via 侧钉 registry-211 默认，避免远端空值回落 docker.io。
+  D211_BASE_REGISTRY="${D211_BASE_REGISTRY:-registry-211.itestu.cn}"
+  D211_GO_BASE_IMAGE="${D211_GO_BASE_IMAGE:-${D211_BASE_REGISTRY}/lang-base/kx-base-golang:1.27-alpine-amd64}"
+  D211_RUNTIME_BASE_IMAGE="${D211_RUNTIME_BASE_IMAGE:-${D211_BASE_REGISTRY}/lang-base/alpine:3.22-amd64}"
+  log "在 $VIA 上执行 deploy（builder=${D211_GO_BASE_IMAGE} runtime=${D211_RUNTIME_BASE_IMAGE}）..."
+  ssh "$VIA" "cd ~/llm-gateway-go-211 && D211_BUILD_SHA='${D211_BUILD_SHA}' D211_STATE_DIR=$D211_STATE_DIR D211_REDIS_DB_START=$D211_REDIS_DB_START D211_REDIS_DB_END=$D211_REDIS_DB_END LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY='${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}' D211_GO_BASE_IMAGE='${D211_GO_BASE_IMAGE}' D211_RUNTIME_BASE_IMAGE='${D211_RUNTIME_BASE_IMAGE}' D211_BASE_REGISTRY='${D211_BASE_REGISTRY}' PROBE_TIMEOUT_SECS='${PROBE_TIMEOUT_SECS:-}' bash scripts/deploy-211-docker.sh $*"
   exit $?
 fi
 
@@ -737,30 +740,127 @@ for c in "$PG_CONTAINER" "$REDIS_CONTAINER"; do
 done
 
 # =============================================================================
-# 构建网关镜像（仓库 Dockerfile；基础镜像可切公网源）
+# 构建网关镜像（仓库 Dockerfile；基础镜像默认 registry-211.itestu.cn）
 # =============================================================================
+# 211 直连 docker.io 不通。权威基础镜像仓 = registry-211.itestu.cn（方案 42）：
+#   builder = lang-base/kx-base-golang:1.27-alpine-amd64
+#   runtime = lang-base/alpine:3.22-amd64
+# 拉不到时回落 /opt/kaixuan/base-images 离线包（load + retag 到期望名）。
+D211_BASE_REGISTRY="${D211_BASE_REGISTRY:-registry-211.itestu.cn}"
+D211_GO_BASE_IMAGE="${D211_GO_BASE_IMAGE:-${D211_BASE_REGISTRY}/lang-base/kx-base-golang:1.27-alpine-amd64}"
+D211_RUNTIME_BASE_IMAGE="${D211_RUNTIME_BASE_IMAGE:-${D211_BASE_REGISTRY}/lang-base/alpine:3.22-amd64}"
+D211_GO_BASE_OFFLINE="${D211_GO_BASE_OFFLINE:-kx-base/golang:1.27-alpine-amd64}"
+D211_RUNTIME_BASE_OFFLINE="${D211_RUNTIME_BASE_OFFLINE:-alpine:3.22}"
+D211_BASE_IMAGES_DIR="${D211_BASE_IMAGES_DIR:-/opt/kaixuan/base-images}"
+
+# 确保单个基础镜像在本地：已有 → pull 权威仓 → 离线 tag 复用/装载后 retag。
+d211_ensure_base_image() {
+  local want="$1" offline="$2" tar_glob="$3" img
+  if docker image inspect "$want" >/dev/null 2>&1; then
+    log "基础镜像已在本地: $want"
+    return 0
+  fi
+  log "拉取基础镜像: $want"
+  if docker pull "$want" >/dev/null 2>&1; then
+    log "已从 registry 拉取: $want"
+    return 0
+  fi
+  warn "拉取失败，尝试离线回落 -> ${offline} / ${tar_glob}"
+  if ! docker image inspect "$offline" >/dev/null 2>&1; then
+    if [[ -x "$D211_BASE_IMAGES_DIR/load-base-images.sh" ]]; then
+      bash "$D211_BASE_IMAGES_DIR/load-base-images.sh" load \
+        || die "离线基础镜像装载失败: ${D211_BASE_IMAGES_DIR}"
+    else
+      # 最小回落：按 glob 直接 gunzip|load（load 脚本不在场时）
+      local hit=""
+      # shellcheck disable=SC2086
+      for hit in $D211_BASE_IMAGES_DIR/$tar_glob; do
+        [[ -f "$hit" ]] || continue
+        log "docker load < $hit"
+        gunzip -c "$hit" | docker load >/dev/null
+        break
+      done
+    fi
+  fi
+  if docker image inspect "$offline" >/dev/null 2>&1; then
+    docker tag "$offline" "$want"
+    log "离线镜像已 retag: $offline → $want"
+    return 0
+  fi
+  # load 后 RepoTags 可能与 offline 名不一致——扫本地找最接近的 golang/alpine
+  if img="$(docker images --format '{{.Repository}}:{{.Tag}}' | grep -E "^(${offline}|${want})$" | head -1)"; then
+    docker tag "$img" "$want"
+    log "已对齐基础镜像标签: $img → $want"
+    return 0
+  fi
+  die "基础镜像不可用: want=${want} offline=${offline} (registry-211 与离线库都未命中; 211 不通 docker.io)"
+}
+
+d211_ensure_base_images() {
+  d211_ensure_base_image "$D211_GO_BASE_IMAGE" "$D211_GO_BASE_OFFLINE" \
+    'kx-base-golang-1.27-alpine-amd64.tar.gz'
+  d211_ensure_base_image "$D211_RUNTIME_BASE_IMAGE" "$D211_RUNTIME_BASE_OFFLINE" \
+    'alpine-3.22-amd64.tar.gz'
+}
+
 if [[ ! -f "$D211_REPO_ROOT/Dockerfile" ]]; then
   die "未找到 Dockerfile：$D211_REPO_ROOT/Dockerfile（请用 --via 同步仓库或手动放置）"
 fi
-log "构建网关镜像 $D211_GW_IMAGE ..."
+d211_ensure_base_images
+log "构建网关镜像 ${D211_GW_IMAGE} (builder=${D211_GO_BASE_IMAGE} runtime=${D211_RUNTIME_BASE_IMAGE}) ..."
 build_gateway_image() {
   local net_flag="${1:-}"
   (
     cd "$D211_REPO_ROOT"
     # shellcheck disable=SC2086
     docker build $net_flag \
-      --build-arg "BASE_REGISTRY=${D211_BASE_REGISTRY:-docker.io/library}" \
-      --build-arg "GO_BASE_IMAGE=${D211_GO_BASE_IMAGE:-golang:1.27.1-alpine}" \
-      --build-arg "RUNTIME_BASE_IMAGE=${D211_RUNTIME_BASE_IMAGE:-alpine:3.22}" \
+      --build-arg "BASE_REGISTRY=${D211_BASE_REGISTRY}" \
+      --build-arg "GO_BASE_IMAGE=${D211_GO_BASE_IMAGE}" \
+      --build-arg "RUNTIME_BASE_IMAGE=${D211_RUNTIME_BASE_IMAGE}" \
       -t "$D211_GW_IMAGE" -f Dockerfile .
   )
 }
 if ! build_gateway_image; then
-  # 内网/NAT 下 docker build 默认桥接网络常常拉不动基础镜像与 go module；
-  # 换宿主网络重试一次是这类环境的标准解法。
+  # 内网/NAT 下 docker build 默认桥接网络常常拉不动 go module；
+  # 换宿主网络重试一次是这类环境的标准解法（基础镜像已在本地，host 网主要
+  # 救 GOPROXY）。
   warn "首次构建失败，用 --network=host 重试一次（内网/NAT 常见原因）"
   build_gateway_image "--network=host" || die "网关镜像构建失败（两种网络模式都试过了）"
 fi
+
+# 构建成功后把应用镜像推入 registry-211（经 loopback 写路径），便于审计与
+# 他机拉取。失败只 warn——部署继续用本机刚 build 的 tag。
+d211_publish_app_image() {
+  local sha="${D211_BUILD_SHA:-latest}" local_reg="127.0.0.1:5000"
+  local repo="app-images/llm-gateway-go" tag="211-${sha}"
+  local push_ref="${local_reg}/${repo}:${tag}"
+  local public_ref="${D211_BASE_REGISTRY}/${repo}:${tag}"
+  [[ "${D211_PUBLISH_IMAGE:-1}" == "1" ]] || { log "跳过镜像推送（D211_PUBLISH_IMAGE≠1）"; return 0; }
+  command -v docker >/dev/null 2>&1 || return 0
+  # 仅本机 registry 写路径；公网域名对写有闸门。凭据来自已 login 的 docker config。
+  if ! docker image inspect "$D211_GW_IMAGE" >/dev/null 2>&1; then
+    warn "应用镜像 $D211_GW_IMAGE 不在本地，跳过推送"
+    return 0
+  fi
+  if ! curl -fsS --connect-timeout 2 "http://${local_reg}/v2/" >/dev/null 2>&1 \
+     && ! curl -fsS --connect-timeout 2 -o /dev/null -w '' "http://${local_reg}/v2/" >/dev/null 2>&1; then
+    # registry:2 未认证时 /v2/ 返 401 也算在线
+    local code
+    code="$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 "http://${local_reg}/v2/" || echo 000)"
+    [[ "$code" == "401" || "$code" == "200" ]] || {
+      warn "本机 registry ${local_reg} 不可达 (code=${code}), 跳过推送 ${public_ref}"
+      return 0
+    }
+  fi
+  docker tag "$D211_GW_IMAGE" "$push_ref" || { warn "tag $push_ref 失败"; return 0; }
+  if docker push "$push_ref" >/dev/null 2>&1; then
+    docker tag "$D211_GW_IMAGE" "$public_ref" >/dev/null 2>&1 || true
+    log "应用镜像已推送: ${public_ref}（via ${push_ref}）"
+  else
+    warn "应用镜像推送失败（可能缺 itestu-rw 登录 127.0.0.1:5000）；本机 tag 仍可用于部署"
+  fi
+}
+d211_publish_app_image
 
 # =============================================================================
 # 启动网关容器
@@ -865,6 +965,11 @@ DB_URL="postgres://${PG_USER_ENC}:${PG_PASS_ENC}@${PG_CONTAINER}:5432/${D211_PG_
   printf 'export LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true\n'
   printf 'export URSM_V2_REDIS_DB=%q\n' "$URSM_REDIS_DB"
   printf 'export LLM_GATEWAY_ENV=production\n'
+  # 211 是机队内部部署（非客户 first-boot）：未激活时 SPA router 会把
+  # / 与管理页软重定向到 /bootstrap 激活向导，表现为「llm.itestu.cn 打不开」。
+  # licensing/bootstrap_api.go 认此开关；154/245 靠库内 license 行，211 独立
+  # 库 + 容器硬件指纹无对应 license，必须显式钉激活。
+  printf 'export LLM_GATEWAY_LICENSE_ACTIVATED=1\n'
   printf 'export LLM_GATEWAY_API_KEY=%q\n' "$GW_STATIC_API_KEY"
   printf 'export LLM_GATEWAY_ADMIN_API_KEY=%q\n' "$GW_ADMIN_API_KEY"
   printf 'export CURSOR_HMAC_SECRET=%q\n' "$GW_CURSOR_HMAC"
@@ -882,6 +987,7 @@ GW_ENV=(
   -e "LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true"
   -e "URSM_V2_REDIS_DB=${URSM_REDIS_DB}"
   -e "LLM_GATEWAY_ENV=production"
+  -e "LLM_GATEWAY_LICENSE_ACTIVATED=1"
   -e "LLM_GATEWAY_API_KEY=${GW_STATIC_API_KEY}"
   -e "LLM_GATEWAY_ADMIN_API_KEY=${GW_ADMIN_API_KEY}"
   -e "CURSOR_HMAC_SECRET=${GW_CURSOR_HMAC}"
@@ -1060,11 +1166,15 @@ log "等待网关就绪 ..."
 # 的 set -u 会让未绑定变量进算术直接炸——2026-10-15 实测翻车点）；
 # 2s 步进，轮次=超时/2，下限 1 防呆。
 ready=0
+ready_body=""
 probe_rounds=$(( ${PROBE_TIMEOUT_SECS:-120} / 2 )); (( probe_rounds >= 1 )) || probe_rounds=1
 for i in $(seq 1 "$probe_rounds"); do
-  if curl -fsS "http://127.0.0.1:${D211_GW_PORT}/readyz" >/dev/null 2>&1 \
-     || curl -fsS "http://127.0.0.1:${D211_GW_PORT}/healthz" >/dev/null 2>&1; then
+  if ready_body="$(curl -fsS "http://127.0.0.1:${D211_GW_PORT}/readyz" 2>/dev/null)"; then
     ready=1; break
+  fi
+  if curl -fsS "http://127.0.0.1:${D211_GW_PORT}/healthz" >/dev/null 2>&1; then
+    # healthz 通但 readyz 不通：继续等到 readyz，避免把半就绪当成功
+    :
   fi
   sleep 2
 done
@@ -1074,9 +1184,164 @@ if (( ready == 0 )); then
   die "网关部署失败"
 fi
 
+# 就绪不等于可用：历史上 lite 回落也返 HTTP 200。当前 readyz 契约是
+# status=ready + database.connected + redis.connected（无独立 mode 字段）；
+# 若将来重新出现 mode=lite 字面，同样判失败。
+ready_check="$(printf '%s' "$ready_body" | python3 -c 'import sys,json
+try:
+  d=json.load(sys.stdin)
+except Exception as e:
+  print("parse_error"); raise SystemExit(0)
+mode=(d.get("mode") or d.get("storage_mode") or "")
+if str(mode).lower()=="lite":
+  print("lite"); raise SystemExit(0)
+st=str(d.get("status") or "").lower()
+db=d.get("database") if isinstance(d.get("database"), dict) else {}
+rd=d.get("redis") if isinstance(d.get("redis"), dict) else {}
+ok = (st in ("ready","ok","healthy")
+      and bool(db.get("connected") is True or db.get("ok") is True or db=={})
+      and bool(rd.get("connected") is True or rd.get("ok") is True or rd=={}))
+# 有 database/redis 对象时必须 connected；都没有对象时只信 status（旧形态）
+if "database" in d and db.get("connected") is not True:
+  print("db_down"); raise SystemExit(0)
+if "redis" in d and rd.get("connected") is not True:
+  print("redis_down"); raise SystemExit(0)
+print("ok" if ok or st=="ready" else "not_ready")
+' 2>/dev/null || echo parse_error)"
+case "$ready_check" in
+  ok) log "readyz OK (database+redis connected, status=ready)" ;;
+  lite)
+    docker logs --tail 40 "$D211_GW_CONTAINER" >&2 || true
+    die "部署验证失败：readyz mode=lite（DB/迁移未接上）"
+    ;;
+  db_down|redis_down|not_ready|parse_error|*)
+    warn "readyz 正文: $ready_body"
+    docker logs --tail 40 "$D211_GW_CONTAINER" >&2 || true
+    die "部署验证失败：readyz 未证明 DB/Redis 就绪（check=${ready_check}）"
+    ;;
+esac
+
+# 版本戳与前端：部署成功后必须能读到本次构建痕迹（有 D211_BUILD_SHA 时）
+if ver_body="$(curl -fsS "http://127.0.0.1:${D211_GW_PORT}/version" 2>/dev/null || true)"; then
+  log "version: $(printf '%s' "$ver_body" | python3 -c 'import sys,json
+try:
+  d=json.load(sys.stdin); print(d.get("version") or d)
+except Exception:
+  print(sys.stdin.read()[:120])' 2>/dev/null || printf '%s' "$ver_body" | head -c 120)"
+  if [[ -n "${D211_BUILD_SHA:-}" ]] && ! printf '%s' "$ver_body" | grep -qF "${D211_BUILD_SHA%-dirty}"; then
+    warn "version 未包含构建提交 ${D211_BUILD_SHA}（可能种子失败）；继续但标黄"
+  fi
+fi
+if [[ "${GW_WEB_DIST_OK:-0}" == "1" ]]; then
+  root_ct="$(curl -fsSI "http://127.0.0.1:${D211_GW_PORT}/" 2>/dev/null | tr -d '\r' | awk -F': ' 'tolower($1)=="content-type"{print tolower($2); exit}')"
+  case "$root_ct" in
+    text/html*) log "admin SPA 可达 (Content-Type: ${root_ct})" ;;
+    *) warn "admin SPA 探测异常 Content-Type='${root_ct:-empty}' (期望 text/html)" ;;
+  esac
+fi
+
+# ── nginx llm.itestu.cn TLS 腿：X-Real-IP 必须是 $remote_addr ──────────
+# 旧配置用 map 变量 ns_real_ip(= 入站 X-Real-IP 原样)，浏览器不带该头时为空，
+# 限流/验证码只能落到 docker 桥接 RemoteAddr，多客户端共桶。幂等修补。
+d211_fix_nginx_llm_real_ip() {
+  local conf="${D211_NGINX_LLM_CONF:-/etc/nginx/conf.d/ns-gateway-211.conf}"
+  [[ -f "$conf" ]] || { warn "nginx conf 不在场 ($conf)，跳过 X-Real-IP 修补"; return 0; }
+  if ! grep -q 'server_name llm.itestu.cn' "$conf"; then
+    warn "nginx conf 无 llm.itestu.cn server，跳过 X-Real-IP 修补"
+    return 0
+  fi
+  # 只改「listen …443 ssl」那一段里的 X-Real-IP（mesh :8000 腿保留原 map，
+  # 因为上跳 252 会带真实客户端 IP）。
+  if python3 - "$conf" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+text = p.read_text()
+marker = "listen 192.168.31.211:443 ssl"
+idx = text.find(marker)
+if idx < 0:
+    # 允许 IP 漂移：任意 listen …443 ssl 且随后 server_name llm.itestu.cn
+    import re
+    m = re.search(r'listen\s+[^\n]*443[^\n]*ssl[^\n]*;\s*\n\s*server_name\s+llm\.itestu\.cn;', text)
+    if not m:
+        print('noop-no-block')
+        raise SystemExit(2)
+    idx = m.start()
+# 取从此 listen 起到下一个顶层 "server {" 或文件尾的窗口（含 location 嵌套）
+rest = text[idx:]
+end_rel = rest.find("\nserver {", 1)
+window = rest if end_rel < 0 else rest[:end_rel]
+if "server_name llm.itestu.cn;" not in window and "server_name llm.itestu.cn" not in window:
+    print('noop-wrong-server')
+    raise SystemExit(2)
+if "X-Real-IP $remote_addr;" in window:
+    print('already')
+    raise SystemExit(0)
+if "X-Real-IP $ns_real_ip;" not in window:
+    print('noop-no-ns-real-ip')
+    raise SystemExit(2)
+new_window = window.replace("X-Real-IP $ns_real_ip;", "X-Real-IP $remote_addr;", 1)
+new = text[:idx] + new_window + text[idx + len(window):]
+bak = p.with_suffix(p.suffix + ".bak-d211-realip")
+if not bak.exists():
+    bak.write_text(text)
+p.write_text(new)
+print("patched")
+PY
+  then
+    if nginx -t >/dev/null 2>&1; then
+      nginx -s reload >/dev/null 2>&1 && log "nginx llm.itestu.cn TLS: X-Real-IP -> \$remote_addr (reloaded)" \
+        || warn "nginx reload 失败 (配置已改，需手工 reload)"
+    else
+      warn "nginx -t 失败，已保留 .bak-d211-realip; 未 reload"
+    fi
+  else
+    warn "nginx X-Real-IP 修补未应用 (块形态变了?)"
+  fi
+}
+d211_fix_nginx_llm_real_ip
+
+# ── 登录冒烟：/api/auth/token（不是 /api/admin/login）────────────────
+# 凭据优先环境变量，其次 D211_ADMIN_*，默认 admin / Veritrans&9527（与
+# 211 库 users.admin 对齐）。失败不阻断部署收尾，但标红方便运维看见。
+d211_smoke_admin_login() {
+  local user="${D211_ADMIN_USER:-${LLM_GATEWAY_ADMIN_USER:-admin}}"
+  local pass="${D211_ADMIN_PASSWORD:-${LLM_GATEWAY_ADMIN_PASSWORD:-Veritrans&9527}}"
+  local url="http://127.0.0.1:${D211_GW_PORT}/api/auth/token"
+  local body code
+  body="$(python3 -c 'import json,sys; print(json.dumps({"username":sys.argv[1],"password":sys.argv[2]}))' "$user" "$pass")"
+  code="$(curl -sS -o /tmp/d211-login.json -w '%{http_code}' -X POST "$url" \
+    -H 'Content-Type: application/json' -d "$body" || echo 000)"
+  if [[ "$code" != "200" ]]; then
+    warn "登录冒烟失败 HTTP ${code} body=$(head -c 160 /tmp/d211-login.json 2>/dev/null)"
+    return 1
+  fi
+  if ! python3 -c 'import json,sys; d=json.load(open("/tmp/d211-login.json")); assert d.get("access_token") and d.get("user",{}).get("username")==sys.argv[1]' "$user" 2>/dev/null; then
+    warn "登录冒烟响应缺 access_token/user"
+    return 1
+  fi
+  # 连登 6 次必须仍 200（回归 JWT 成功路径 Reset 限流桶）
+  local i c
+  for i in 1 2 3 4 5 6; do
+    c="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$url" \
+      -H 'Content-Type: application/json' -d "$body" || echo 000)"
+    if [[ "$c" != "200" ]]; then
+      warn "登录限流回归失败：第 ${i} 次 HTTP ${c}（期望成功登录 Reset 后可连登）"
+      return 1
+    fi
+  done
+  log "登录冒烟 OK（user=${user}，连登 6 次无 429）"
+  return 0
+}
+if [[ "${D211_SKIP_LOGIN_SMOKE:-0}" != "1" ]]; then
+  d211_smoke_admin_login || warn "登录冒烟未通过——页面可能仍无法登录，请查 users.admin 密码与限流"
+fi
+
 log "=========================================================="
 log "部署完成 @ $D211_TARGET_IP"
 log "  网关  : http://${D211_TARGET_IP}:${D211_GW_PORT}  (容器 $D211_GW_CONTAINER)"
+log "  镜像  : $D211_GW_IMAGE  builder=$D211_GO_BASE_IMAGE"
+log "  域名  : https://llm.itestu.cn/  (nginx TLS → 本机 :${D211_GW_PORT})"
+log "  登录  : POST /api/auth/token  (不要用 /api/admin/login)"
 log "  PG    : $PG_CONTAINER  ($( ((PG_REUSED)) && echo 复用 || echo 新建 ))  库=$D211_PG_DB"
 log "  Redis : $REDIS_CONTAINER ($( ((REDIS_REUSED)) && echo 复用 || echo 新建 ))  库号=db${REDIS_DB} (从 ${D211_REDIS_DB_START} 倒排)"
 log "  密钥  : $ENV_FILE (chmod 600，勿提交)"

@@ -179,10 +179,16 @@ if [[ -n "$api_prefix" && "$api_prefix" != sk-* ]]; then
 else
   bad "静态 API key 前缀缺失或为 sk-*：'$api_prefix'"
 fi
-for want in 'LLM_GATEWAY_ENV=production' 'LLM_GATEWAY_API_KEY=${GW_STATIC_API_KEY}' \
+for want in 'LLM_GATEWAY_ENV=production' 'LLM_GATEWAY_LICENSE_ACTIVATED=1' \
+            'LLM_GATEWAY_API_KEY=${GW_STATIC_API_KEY}' \
             'LLM_GATEWAY_ADMIN_API_KEY=${GW_ADMIN_API_KEY}' 'CURSOR_HMAC_SECRET=${GW_CURSOR_HMAC}'; do
   if grep -qF -- "-e \"$want\"" "$SCRIPT"; then ok "容器 -e 注入 $want"; else bad "容器缺 -e $want"; fi
 done
+if grep -qF "export LLM_GATEWAY_LICENSE_ACTIVATED=1" "$SCRIPT"; then
+  ok "gateway.env 持久化 LLM_GATEWAY_LICENSE_ACTIVATED=1（防 SPA 卡 /bootstrap）"
+else
+  bad "gateway.env 未写 LLM_GATEWAY_LICENSE_ACTIVATED=1"
+fi
 env_line="$(grep -n "printf 'export LLM_GATEWAY_ENV=production" "$SCRIPT" | cut -d: -f1)"
 gen_line="$(grep -n '^GW_CURSOR_HMAC=' "$SCRIPT" | cut -d: -f1)"
 if [[ -n "$env_line" && -n "$gen_line" && "$gen_line" -lt "$env_line" ]]; then
@@ -347,16 +353,73 @@ if grep -q "name '._\\*' -o -name '.DS_Store'" "$ROOT/Dockerfile"; then
 else
   bad "Dockerfile 未在 COPY . 之前清理 macOS 元数据"
 fi
-# --via 必须把三个基础镜像 build-arg 变量转发到远端：211 的构建腿吃本地
-# /opt/kaixuan/base-images 的离线镜像（kx-base/golang 等）全靠这几个变量；
-# 漏转发时远端静默回落 docker.io 默认值，外网一断构建就死（2026-10-14 轮）。
+# --via 必须把三个基础镜像 build-arg 变量转发到远端：权威仓 registry-211
+# （方案 42）；漏转发时远端若再静默回落 docker.io，外网一断构建就死。
 for _v in D211_GO_BASE_IMAGE D211_RUNTIME_BASE_IMAGE D211_BASE_REGISTRY; do
   if grep -q "${_v}='" "$SCRIPT"; then
-    ok "--via 转发基础镜像变量 ${_v}（离线构建路径）"
+    ok "--via 转发基础镜像变量 ${_v}（registry-211 构建路径）"
   else
-    bad "--via 未转发 ${_v}，远端将回落 docker.io 默认基础镜像"
+    bad "--via 未转发 ${_v}，远端将回落错误默认基础镜像"
   fi
 done
+# 默认基础镜像必须钉 registry-211.itestu.cn，禁止回落 docker.io/golang。
+# 形状钉桩：默认值字符串本身含 registry-211 + lang-base/kx-base-golang +
+# lang-base/alpine:3.22——只断言「变量存在」测不出「默认仍是 docker.io」。
+_nocomment_engine="$(grep -vE '^[[:space:]]*#' "$SCRIPT")"
+if printf '%s' "$_nocomment_engine" | grep -qF 'registry-211.itestu.cn'; then
+  ok "引擎默认基础镜像仓钉 registry-211.itestu.cn"
+else
+  bad "引擎未钉 registry-211.itestu.cn 默认仓（会回落 docker.io，211 拉不动）"
+fi
+if printf '%s' "$_nocomment_engine" | grep -qF 'lang-base/kx-base-golang:1.27-alpine-amd64'; then
+  ok "引擎默认 GO 基础镜像 = lang-base/kx-base-golang:1.27-alpine-amd64"
+else
+  bad "引擎默认 GO 基础镜像不是 registry-211 lang-base/kx-base-golang:1.27-alpine-amd64"
+fi
+if printf '%s' "$_nocomment_engine" | grep -qF 'lang-base/alpine:3.22-amd64'; then
+  ok "引擎默认 RUNTIME 基础镜像 = lang-base/alpine:3.22-amd64"
+else
+  bad "引擎默认 RUNTIME 基础镜像不是 registry-211 lang-base/alpine:3.22-amd64"
+fi
+if printf '%s' "$_nocomment_engine" | grep -qE 'GO_BASE_IMAGE=\$\{D211_GO_BASE_IMAGE:-golang:'; then
+  bad "引擎仍默认 docker.io golang:*（211 直连不通）"
+else
+  ok "引擎不再默认 docker.io golang:*"
+fi
+if printf '%s' "$_nocomment_engine" | grep -qE '^[[:space:]]*d211_ensure_base_image(s)?\(\)|d211_ensure_base_images'; then
+  ok "引擎构建前确保基础镜像（pull registry → 离线回落）"
+else
+  bad "引擎缺少 d211_ensure_base_images：未 pull 就 build 会在无本地缓存时炸"
+fi
+if printf '%s' "$_nocomment_engine" | grep -qE 'database\.connected|db_down' \
+   && printf '%s' "$_nocomment_engine" | grep -qE 'mode=lite|lite'; then
+  ok "引擎就绪验证钉 DB/Redis connected + 拒绝 lite（readyz 200 不够）"
+else
+  bad "引擎就绪验证未断言 database/redis connected（或未拒绝 lite）"
+fi
+if printf '%s' "$_nocomment_engine" | grep -qF 'd211_smoke_admin_login' \
+   && printf '%s' "$_nocomment_engine" | grep -qF '/api/auth/token'; then
+  ok "引擎部署后登录冒烟走 /api/auth/token（非 /api/admin/login）"
+else
+  bad "引擎缺少登录冒烟或仍指向错误的 /api/admin/login"
+fi
+if printf '%s' "$_nocomment_engine" | grep -qF 'X-Real-IP' \
+   && printf '%s' "$_nocomment_engine" | grep -qF '\$remote_addr'; then
+  ok "引擎修补 nginx llm TLS 腿 X-Real-IP=\$remote_addr"
+else
+  bad "引擎未修补 nginx X-Real-IP（限流易共桶）"
+fi
+# 入口 deploy-211.sh 必须 export 同一组 registry-211 默认，经 --via 传到远端。
+if [[ -f "$ROOT/scripts/deploy-211.sh" ]]; then
+  _w="$(grep -vE '^[[:space:]]*#' "$ROOT/scripts/deploy-211.sh")"
+  if printf '%s' "$_w" | grep -qF 'export D211_BASE_REGISTRY=' \
+     && printf '%s' "$_w" | grep -qF 'export D211_GO_BASE_IMAGE=' \
+     && printf '%s' "$_w" | grep -qF 'export D211_RUNTIME_BASE_IMAGE='; then
+    ok "deploy-211.sh 入口 export registry-211 基础镜像默认"
+  else
+    bad "deploy-211.sh 未 export D211_* 基础镜像默认（远端可能吃到空值）"
+  fi
+fi
 # ── Web 前端腿（2026-10-15）：root SPA / /m 移动端 / 版本元数据 ─────────
 # 形态钉桩：tar 同步**不得**带任何形态的 dist 排除——macOS bsdtar 的 exclude
 # 对无通配模式也按「任意尾部路径段」语义匹配（--exclude=dist 与

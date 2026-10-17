@@ -3,10 +3,11 @@
 # scripts/deploy-211.sh — 211 docker 专职机部署（委托 deploy-211-docker.sh）
 #
 # 与 deploy-154.sh / deploy-245.sh 同一族入口标准：本文件只做目标机语境
-# 的包装（flag 解析、--dry-run 合同、探针超时默认），部署逻辑全部在引擎
-# 脚本。211 的引擎是 deploy-211-docker.sh（docker 形态：tar 同步 → 本地
-# 离线基础镜像构建 → 容器重建 → 复用 acc-pg17/nbjl-redis → 迁移重放 →
-# web 前端种子）。凭据/Redis 库号/版本元数据已持久化在 211，无需本机传。
+# 的包装（flag 解析、--dry-run 合同、探针超时默认、registry-211 基础镜像
+# 默认值），部署逻辑全部在引擎脚本。211 的引擎是 deploy-211-docker.sh
+# （docker 形态：tar 同步 → 从 registry-211.itestu.cn 拉基础镜像 → 编译构建
+# 应用镜像 → 容器重建 → 复用 acc-pg17/nbjl-redis → 迁移重放 → web 前端
+# 种子 → 就绪/mode 验证）。凭据/Redis 库号/版本元数据已持久化在 211。
 #
 # 用法:
 #   bash scripts/deploy-211.sh                 # 部署最新代码到 211
@@ -16,6 +17,11 @@
 #
 # 前置: web/dist 与 web-mobile/dist 由部署机预构建（pnpm build），
 # 引擎随 tar 上树并种子进容器；缺失时引擎 warn 且 root 回落版本 JSON。
+#
+# 基础镜像默认（可覆盖）:
+#   D211_BASE_REGISTRY=registry-211.itestu.cn
+#   D211_GO_BASE_IMAGE=$D211_BASE_REGISTRY/lang-base/kx-base-golang:1.27-alpine-amd64
+#   D211_RUNTIME_BASE_IMAGE=$D211_BASE_REGISTRY/lang-base/alpine:3.22-amd64
 #
 # 等价于:
 #   bash scripts/deploy-211-docker.sh --via 192.168.31.211 [args...]
@@ -47,7 +53,7 @@ extract_force_unlock FORCE_UNLOCK ARGS "$@"
 # unbound — guard by count (no-arg `bash scripts/deploy-211.sh` path).
 if (( ${#ARGS[@]} > 0 )); then
   for arg in "${ARGS[@]}"; do
-    [[ "$arg" == --help || "$arg" == -h ]] && { sed -n '2,22p' "$0"; exit 0; }
+    [[ "$arg" == --help || "$arg" == -h ]] && { sed -n '2,28p' "$0"; exit 0; }
   done
   if [[ " ${ARGS[*]} " == *' --dry-run '* ]]; then
     # 211 是单容器 docker 部署，无蓝绿：active_port 固定 8781
@@ -67,6 +73,12 @@ fi
 # 211 的就绪等待是引擎内 curl 轮询（容器首启 ensure 链 + 前端种子挂载，
 # 默认 120s），调用方可覆盖，引擎按 2s 步进取半作为轮次上限。
 export PROBE_TIMEOUT_SECS="${PROBE_TIMEOUT_SECS:-120}"
+
+# 211 直连 docker.io 不通；基础镜像权威仓是 registry-211.itestu.cn（方案 42）。
+# 入口显式钉默认值，经 --via 转发到远端，避免引擎静默回落 docker.io。
+export D211_BASE_REGISTRY="${D211_BASE_REGISTRY:-registry-211.itestu.cn}"
+export D211_GO_BASE_IMAGE="${D211_GO_BASE_IMAGE:-${D211_BASE_REGISTRY}/lang-base/kx-base-golang:1.27-alpine-amd64}"
+export D211_RUNTIME_BASE_IMAGE="${D211_RUNTIME_BASE_IMAGE:-${D211_BASE_REGISTRY}/lang-base/alpine:3.22-amd64}"
 
 D211_TARGET="${D211_TARGET_IP:-192.168.31.211}"
 # bash 3.2 + set -u: the `${ARGS[@]}+${ARGS[@]}` guard keeps the no-arg path
