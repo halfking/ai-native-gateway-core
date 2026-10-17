@@ -163,12 +163,17 @@ async function loadDetail(): Promise<void> {
   detailLoading.value = false
   if (!selectedId.value) return
   detailLoading.value = true
+  // 用户列表与画像拆开：画像解包失败时仍要能拿到 selectedUser，
+  // 否则「创建密钥」按钮可见但 openCreate 因 selectedUser==null 静默 no-op。
   try {
-    const [response, managedUsers] = await Promise.all([
-      fetchUserStats({ userId: selectedId.value, days: days.value }, { signal }),
-      fetchManagedUsers({ signal }),
-    ])
-    if (!signal.aborted && !disposed) { detail.value = response; users.value = managedUsers }
+    const managedUsers = await fetchManagedUsers({ signal })
+    if (!signal.aborted && !disposed) users.value = managedUsers
+  } catch (cause) {
+    if (!signal.aborted && !disposed && !detailError.value) detailError.value = formatApiError(cause)
+  }
+  try {
+    const response = await fetchUserStats({ userId: selectedId.value, days: days.value }, { signal })
+    if (!signal.aborted && !disposed) detail.value = response
   } catch (cause) {
     if (!signal.aborted && !disposed) detailError.value = formatApiError(cause)
   } finally {
@@ -407,7 +412,7 @@ onBeforeUnmount(() => { disposed = true; listAborter?.abort(); detailAborter?.ab
         <DataTableFocus :title="t('users.daily')">
           <div class="user-usage__table-scroll"><table class="table">
             <thead><tr><th>{{ t('users.date') }}</th><th>{{ t('users.requests') }}</th><th>{{ t('users.tokens') }}</th><th>{{ t('users.credits') }}</th><th>{{ t('users.cost') }}</th></tr></thead>
-            <tbody><tr v-for="row in detail.daily" :key="row.date"><td>{{ fmtDate(`${row.date}T00:00:00`) }}</td><td>{{ fmtInt(row.requests) }}</td><td>{{ fmtInt(row.tokens) }}</td><td>{{ fmtInt(row.credits) }}</td><td>{{ fmtUsd(row.cost) }}</td></tr></tbody>
+            <tbody><tr v-for="row in detail.daily" :key="row.date"><td>{{ fmtDate(`${row.date}T00:00:00`) }}</td><td>{{ fmtInt(row.requests) }}</td><td>{{ fmtInt(row.tokens) }}</td><td>{{ fmtInt(row.credits) }}</td><td>{{ fmtUsd(row.cost_usd) }}</td></tr></tbody>
           </table></div>
         </DataTableFocus>
         <section class="user-usage__section"><h2>{{ t('users.topModels') }}</h2><div v-for="row in detail.top_models" :key="row.name" class="user-usage__bucket"><span>{{ row.name }}</span><b>{{ fmtInt(row.requests) }} {{ t('users.requests') }} · {{ fmtUsd(row.cost_usd) }}</b></div></section>
