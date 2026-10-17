@@ -19549,3 +19549,90 @@ bg/mv_consistency.go:230              AND COALESCE(origin_stage,'') NOT IN ('pro
 
 ★ 同族：[[存量与速率是两个口径]] · [[一个机制成立 ≠ 它解释了大头]] ·
 [[比率法天然看不见中间的形状]]。
+
+---
+
+### §10.110.50 落地：事件留存 worker（**默认不启用**，等授权后再开）
+
+§49 决策表里**风险最低、且不依赖任何其他措施**的是措施 2。
+本节把它的代码部分写完 —— **默认不启用**，需调用方显式构造并 Start，
+`retention <= 0` 时 `CleanupOnce` 直接短路（连库都不碰）。
+
+⇒ ⚠️ 写进 `main` **不等于生效**。启用与配套索引都需要单独授权。
+
+#### 一、产物
+
+| 文件 | 内容 |
+|---|---|
+| `domains/routeincident/retention.go` | worker 本体 |
+| `domains/routeincident/retention_test.go` | 3 条单元判据（不依赖真库） |
+| `domains/routeincident/retention_integration_test.go` | 4 条真库判据（`//go:build integration`） |
+
+#### 二、三条设计约束如何落到代码
+
+1. **跨实例互斥** —— 每批事务内取 `pg_try_advisory_xact_lock`
+   （与 URSM 快照留存同款：事务级、随事务自动释放）。
+   ★ 取锁前先 `SET LOCAL lock_timeout='0'`：**try 语义必须立刻返回**，
+   否则拿不到锁时本端会白等一整个 lock_timeout（这是 URSM 里踩过的坑，照抄）。
+   取到后恢复 `'5000ms'` 保护 DELETE 的行锁等待。
+   批次之间**刻意不放锁**，让另一台实例能接手剩余批次，
+   而不是两台从同一位置各删一半（§38 双写事故的教训）。
+2. **分批删除** —— `DELETE … WHERE id IN (SELECT id … WHERE created_at < $1 LIMIT $2)`，
+   批大小默认 20,000（§43 本地基准实测：单批 121~206 ms）。
+3. **★ 前置条件硬门：`hasTimeIndex`** ——
+   若不存在**首列就是 `created_at`** 的索引（btree 或 BRIN 都算），
+   本轮 `SkippedNoIndex = true` 并**明确出声跳过**，不执行删除。
+
+⇒ 第 3 条是 §43 那个教训的直接固化：生产上无该索引时「按 created_at 删」
+会退化成全索引扫描（170 万行冷缓存 **25.7 s** vs `statement_timeout` **30 s**），
+**单批就可能超时**，而超时的 DELETE 会持有行锁并留下死元组。
+宁可跳过出声，也不要制造「删不掉且更膨胀」的结果。
+
+#### 三、判据设计（含一次真实的测试缺陷）
+
+4 条真库判据覆盖**四个互不相同的方向**：
+
+| 用例 | 钉住什么 |
+|---|---|
+| `…SkipsWithoutTimeIndex` | 缺索引 ⇒ 跳过且**行数不变**（前提仍在场：确实验证还有 5 行） |
+| `…DeletesOnlyExpiredInBatches` | 25 超龄 + 7 未超龄 ⇒ 删 25、批次 3、**未超龄的 7 行必须还在** |
+| `…YieldsToPeer` | 同网另一实例持锁 ⇒ 返回 `errHeldByPeer` |
+| `…AlwaysLogsIncludingNoop` | 一轮回收 + 一轮零回收 ⇒ mode 依次 `reclaimed` / `noop` |
+
+★ **`…AlwaysLogsIncludingNoop` 的第二条腿不能省**：
+没有它，一个「无论删没删都打 `reclaimed`」的退化实现也能全绿，
+而 mode 语义已死（与 §42 修 URSM/lite 留存时同款）。
+
+⚠️ **测试自身的缺陷（首跑即暴露）**：首跑 `EventsDeleted = 127，want 25`。
+根因：fixture 用的是 `CREATE TABLE IF NOT EXISTS`，而本地库这张表**本就带着数据**，
+于是 worker（它是**全表 TTL**）把无关行一起删了 ——
+**测试没有隔离自己的数据**，断言也被污染。
+修法：按本包既有约定，在建池后 `TRUNCATE … RESTART IDENTITY CASCADE`。
+⇒ ★ 通用式：**测试一个「按时间删全表」的组件时，
+必须先把表清空到已知状态**，否则断言会同时被「种子数据」和「库中原有数据」污染。
+
+#### 四、变异验证 4/4 全红
+
+| 变异 | 结果 |
+|---|---|
+| M1 `hasTimeIndex` 恒 true | **红**：`SkippedNoIndex = false，want true` |
+| M2 `hasTimeIndex` 恒 false | **红**：`EventsDeleted = 0, want 25`（并连带 2 条红） |
+| M3 对端持锁时不再让出 | **红**：`err = <nil>, want errHeldByPeer` |
+| M4 `mode` 恒为 `reclaimed` | **红**：`零回收那轮 mode = "reclaimed", want "noop"` |
+
+还原后：单元全包 **ok 8.3s**；集成全包（含既有 `TestStore*`）**ok 8.6s**；
+`gofmt` / `go vet` 干净。
+
+#### 五、启用清单（**需授权，本轮未做**）
+
+1. **先建索引**：`CREATE INDEX CONCURRENTLY … (created_at)`（生产必须 CONCURRENTLY，
+   网关持续写该表）。未建索引时 worker 会自动跳过，因此这一步可以与代码上线解耦。
+2. **再定保留期**：证据窗口是产品决策。候选见 §47（静默期 N 的分布）。
+3. **最后接线**：`cmd/gateway` 里显式构造 worker 并 `go worker.Start(ctx)`，
+   配置项缺省为「不启用」。
+
+⚠️ 顺序不能反：**索引必须先于启用**，否则 worker 虽会安全跳过，
+但你会在日志里看到一堆 `skipped_no_index` 而误以为它在干活。
+
+★ 同族：[[守卫只是必要条件不是充分条件]] · [[沉默即失明]] ·
+[[写门禁时要问它覆盖了几种失效形态]] · [[测试要隔离自己的数据]]。
