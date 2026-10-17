@@ -187,6 +187,30 @@
    正是那道门，改错 sha 它会红并点名文件。
    下「不存在某能力」这类结论前，先把该处**全部**相关门列全再逐个验，
    否则会照着错结论造出一道与已有判据重复的门。
+
+### 2026-10-17 `/live` 展示审计轮：判据把错误行为钉死了
+
+17. **判据会把错误行为钉死，而且带着注释显得很有理。** 本轮 BLOCKER 是
+    `gatewayModuleStats` 把**缓存命中数**累加进 `errors` 位，而
+    `GatewayCoreBox` 用 `errors > 0` 决定画红 ⇒ 缓存工作正常显示成故障红。
+    原有判据 `liveTopologyFilter.test.ts:152-153` 不仅全绿，还写着
+    「缓存命中记在 errors 位（错放在 count 上会把『命中』读成『流量』）」——
+    **这条注释在论证一个错误结论**，读起来比代码更像结论。
+    ⇒ 判据红了要查前提，绿了更要问「它在钉什么」。写「为什么不那样写」的
+    注释时，先确认被否掉的那个方案真的是错的。
+18. **计数器可能在结构上恒为 0，而它自己看不出来。** `droppedByWindow`
+    累加在 `buildTopology` 里，但 `applyFilters` 已先按窗口筛过一遍，
+    `buildTopology` 的输入里**根本没有窗口外的请求** ⇒ 那个字段恒为 0，
+    于是「有 UI 消费它」的假象比「没人消费它」更隐蔽。
+    ⇒ 判据里凡是断言「某计数 > 0」的，必须确认它有**独立于自身的路径**
+    能让它非零；这类「算了但恒零」靠读代码看不出来，要靠构造夹具打进去。
+19. **`getComputedStyle` 在本仓 vitest 里恒为空串**（配置未开 `css`，
+    SFC 的 `<style scoped>` 根本不进 jsdom）。用它断言样式 =
+    **恒假绿**，测不到任何东西（判据纪律第 3 条的镜像形态）。
+    样式契约要断言时直接读源码文本（本轮用 `process.cwd()` 相对路径 ——
+    这套配置下 `import.meta.url` 不是 file scheme，会抛
+    `TypeError: The URL must be of scheme file`）。
+
 16. **「在生产上 A/B 验证过」≠「已上线」。** 本轮 quality-service 日志分流
    修复是在 245 上**手工跑新二进制**做 A/B 的（stdout 12 行 / stderr 0 行），
    证据完全成立——但现网进程 58 天没重启，`/proc/PID/exe` 指向的仍是
@@ -506,6 +530,21 @@
     |---|---|---|---|
     | `navCoverage.test.ts` | 红：`/admin/usage-enhanced`、`/admin/board-operational` 两条孤儿路由 | 同红 | 上游新增路由未挂菜单、未登记 `KNOWN_ORPHANS` |
     | `hardcoded_cjk.baseline.test.ts` | 红：`5565 > baseline 5529` | 红：`5566` | 上游 9 提交把硬编码中文从 5511 抬到 5565 |
+
+    **2026-10-17 审计轮更新（数字又推进了，且本轮净贡献归零）**：
+    - 硬编码中文现为 **5757**，棘轮 `INCREASED by 228`。取证方式升级为
+      **`git stash push -u` 后原地复跑**：移除本轮全部改动后仍是
+      `5757 / baseline 5529 / +228`，与带改动时**逐位一致**
+      ⇒ 本轮改动对硬编码中文**净贡献 0**（比上轮的 +1 还收窄了 1：
+      新增 i18n 键后那几个字不再硬编码）。
+    - `color:check` 也转红（`StorageMigrationStateView.vue:166` 两处、
+      `SubscriptionTiersView.vue:97` 一处硬编码色值），同样 stash 后仍红。
+    - `i18n/parity.test.ts` 报缺 `nav.item.*` 六键 × 6 locale
+      （`opsOverviewWeb` / `requestActions` / `storageAndLogConfig` /
+      `storageMigrationState` / `subscriptionTiers` / `turnsFilterOptions`），
+      全是**上游新增菜单项**未翻译，与 `liveTopology` 模块无关。
+    - 上述 4 条在 **`git worktree add /tmp/pristine-live HEAD`** 的 pristine
+      树上复跑同样红 —— 强证据，不是「文件没重叠」那种弱证据。
 
     - 本分支对第二条的净贡献是 **+1**，且**不可消除**：`appNav.ts` 新增导航项的
       `label: '实时拓扑'`。实测该计数器**按构造计数而非按字符**
