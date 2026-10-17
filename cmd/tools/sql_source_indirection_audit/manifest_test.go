@@ -30,7 +30,7 @@ import (
 // `documentedSnapshot`（由 `TestDocumentedSnapshotMatchesMeasurement` 钉住，
 // 2026-10-15 / r1033 读源切换后更新）：
 //
-//	全仓拼接点 93 处（v1 5 文件/11 处、canonical 25/38、unresolved 10/17、v1arm 16/27）
+//	全仓拼接点 94 处（v1 5 文件/11 处、canonical 25/38、unresolved 11/18、v1arm 16/27）
 //	（2026-10-05 832/833 收口轮：+2 全部来自 modalityVerifyAddressableSource
 //	共用常量的两个引用点，见清单 bg/modality_verification.go 条目；v1 桶不动）
 //	（2026-10-07 全量门首跑：+1 拼接点 / +1 v1 臂视图处数，方向=变大=「把看
@@ -520,6 +520,29 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"这里靠读源码定级。已登记在 admin/request_logs_indirect_readers_test.go。",
 		Consequence: "条件性：S4 关上写门后自动切到会话族。" +
 			"⚠ **切换那一刻之前**，结算仍读 v1 底表 ⇒ 退役顺序上它必须排在 S4 之后。",
+	},
+	// 2026-10-17 审计轮补登（df9a213de 漏项）。
+	//
+	// 漏登的性质值得记：df9a213de 把本文件的 `FROM _request_logs_hot` 字面量
+	// 改成 `FROM ` + bg.ActiveSettleTurnsTable()，并在提交信息里写明
+	// 「已按仓库既有的间接读方登记表归族并同步计数」——**它确实登了，
+	// 但只登进了 admin/request_logs_indirect_readers_test.go（:115），
+	// 漏了本清单**。两张登记表各管一件事（前者是「停写后果」六族分档，
+	// 后者是本工具三桶的判定来源），改读法时必须**同时**动两张。
+	"admin/auto_route_outcome_freshness.go": {
+		Verdict:    verdictReadsV1,
+		ResolvesTo: "_request_logs_hot",
+		Via: "124 行 `SELECT MAX(ts) FROM ` 拼的是 bg.ActiveSettleTurnsTable()" +
+			"（bg/auto_route_settle_source.go:90-92），后者 = " +
+			"settleSourceFor(settings.RequestLogsWriteEnabled()).TurnsTable：" +
+			"写门**开着** ⇒ _request_logs_hot（v1），**关掉** ⇒ session_turns_hot（会话族）。" +
+			"⚠ 工具对跨包函数调用 + 方法链返回空 calleeName ⇒ 判 unresolved；" +
+			"这里靠读源码定级。与 bg/auto_route_settle_sql.go **完全同形**：" +
+			"同一个 settleSourceFor、同一张 turns 表、同一个写门。" +
+			"另一张登记表亦已登记：admin/request_logs_indirect_readers_test.go:115。",
+		Consequence: "条件性：S4 关上写门后自动切到会话族，与 settle worker 的 " +
+			"outcome/baseline 腿同源同门。" +
+			"⚠ **切换那一刻之前**，该探针与结算腿都仍读 v1 底表 ⇒ 退役顺序上必须排在 S4 之后。",
 	},
 	"bg/credential_recovery.go": {
 		Verdict: verdictNonV1ByInspection,
@@ -1034,7 +1057,17 @@ var documentedSnapshot = bucketSnapshot{
 	// 因此 v1 -1/文件 -1、v1 臂净 -1、canonical +2/文件 +1，总数不变。
 	// 已逐读 board_time_range.go / usage_credits.go / dashboard_board_queries.go，
 	// 不是扫描范围缩小或解析错误被吞。
-	TotalSites: 93,
+	// 2026-10-17（审计轮补登）：df9a213de 把 admin/auto_route_outcome_freshness.go
+	// 的 `FROM _request_logs_hot` **字面量**改成 `FROM ` + bg.ActiveSettleTurnsTable()
+	// ⇒ 该拼接点从「不进本工具」变成「跨包调用不可静态解析」，落进 unresolved。
+	// 三项 +1（总数 93→94 / unresolved 文件 10→11 / 处数 17→18），
+	// v1、v1 臂、canonical 三桶**均不变**。
+	// 方向 = **变大 = 把看不见变成看得见**（正是门注释允许的「改数字即可」那一类）；
+	// 已逐读该文件 124 行确认不是扫描范围缩小或解析错误被吞。
+	// ⚠ 同批发现 df9a213de 提交信息声称「已按仓库既有的间接读方登记表归族并
+	// 同步计数」是**不实**的：它只登了 admin/request_logs_indirect_readers_test.go，
+	// 漏了本清单。详见本文件 admin/auto_route_outcome_freshness.go 条目的注释。
+	TotalSites: 94,
 	V1Files:    5,
 	V1Sites:    11,
 	// ★ §9.258：第四桶是**退役工作量的主体**，而前两桶都不是。
@@ -1052,8 +1085,8 @@ var documentedSnapshot = bucketSnapshot{
 	V1ArmSites: 27,
 	CanonFiles: 25,
 	CanonSites: 38,
-	UnresFiles: 10,
-	UnresSites: 17,
+	UnresFiles: 11,
+	UnresSites: 18,
 }
 
 func TestDocumentedSnapshotMatchesMeasurement(t *testing.T) {
