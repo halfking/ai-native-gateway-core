@@ -110,3 +110,32 @@ func TestUndefinedTableClassification(t *testing.T) {
 		}
 	}
 }
+
+// TestWorstCaseRunDurationCoversEveryAggregatedMonth 把
+// worstCaseReconcileDuration 与「一轮聚合几个月」绑定在一起：
+// 若将来 CostReconciliationMonthsToAggregate 从 2 个月改成 3 个月
+// （例如加一个季结月），这个上界必须跟着涨，否则 Start() 的那条 Warn
+// 会在真实配置下**不再触发**，风险重新静默。
+func TestWorstCaseRunDurationCoversEveryAggregatedMonth(t *testing.T) {
+	months := len(CostReconciliationMonthsToAggregate(time.Now()))
+	if months == 0 {
+		t.Fatal("一轮 reconcile 至少要聚合 1 个月")
+	}
+	want := time.Duration(months) * reconcileMonthTimeout
+	if worstCaseReconcileDuration != want {
+		t.Fatalf("worstCaseReconcileDuration = %v，但一轮聚合 %d 个月 ⇒ 应为 %v；"+
+			"改 CostReconciliationMonthsToAggregate 时必须同步这里",
+			worstCaseReconcileDuration, months, want)
+	}
+	if worstCaseReconcileDuration < reconcileMonthTimeout {
+		t.Fatal("最坏耗时上界不应小于单月超时")
+	}
+}
+
+// TestDefaultIntervalClearsTheWindowWarning 确认默认配置（86400s）
+// 不会误报：一条每次启动都打的 Warn 等于没有 Warn。
+func TestDefaultIntervalClearsTheWindowWarning(t *testing.T) {
+	if 24*time.Hour <= worstCaseReconcileDuration {
+		t.Fatalf("默认 interval(24h) 应大于最坏耗时 %v，否则 Start() 会误报", worstCaseReconcileDuration)
+	}
+}

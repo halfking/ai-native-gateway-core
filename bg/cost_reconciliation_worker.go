@@ -55,6 +55,20 @@ import (
 //	这正是 840 的 .down.sql 回滚后的目标行为，与 partition_manager 一致。
 const costReconciliationSlotName = "provider_cost_reconciliation"
 
+// 每月的聚合超时（见 reconcile 里的 context.WithTimeout）。
+const reconcileMonthTimeout = 10 * time.Minute
+
+// worstCaseReconcileDuration 是一轮 reconcile 的最坏耗时：
+// 聚合两个月，每月各自一个 reconcileMonthTimeout。
+//
+// 用途只有一个——判断「节流窗口是否短于一趟跑完」。短于它，对端可能在本趟
+// 尚未结束时再认领成功，节流形同虚设。默认 interval 是 86400s，远大于此；
+// 只有把 interval 配到 20 分钟以内才会触发那条 Warn。
+//
+// 这里**不**用它去抬升窗口：interval 是运维显式配置，擅自改写等于擅自降频。
+// 正确做法是把风险**说出来**（Start() 的 Warn），让运维自己决定。
+var worstCaseReconcileDuration = 2 * reconcileMonthTimeout
+
 // CostReconciliationWorker 周期性聚合网关侧用量到对账表。
 type CostReconciliationWorker struct {
 	reconciler *providerprofile.CostReconciler
@@ -94,7 +108,21 @@ func (w *CostReconciliationWorker) Start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	w.cancel = cancel
 	Go("cost_reconciliation_worker.run", func() { w.run(ctx) })
-	slog.Info("provider cost reconciliation worker started", "interval", w.interval)
+	slog.Info("provider cost reconciliation worker started",
+		"interval", w.interval,
+		"shared_throttle", w.db != nil,
+		"throttle_window", w.throttleWindow())
+	if w.db != nil && w.interval <= worstCaseReconcileDuration {
+		// 不静默改写 interval：那是运维显式配的，改掉等于擅自降频。
+		// 但「窗口短于一趟最坏耗时」会让对端在本趟未结束时就能再认领，
+		// 节流形同虚设——这属于**必须被看见**的配置风险，不是错误。
+		slog.Warn("provider cost reconciliation: interval is not longer than the worst-case "+
+			"run duration, so the shared throttle window may expire mid-run and let a peer "+
+			"start concurrently (costly, not corrupting — the upsert is keyed by provider+month)",
+			"interval", w.interval,
+			"worst_case_run", worstCaseReconcileDuration,
+			"months_per_run", len(CostReconciliationMonthsToAggregate(time.Now())))
+	}
 }
 
 // Stop gracefully stops the worker.
@@ -127,7 +155,7 @@ func (w *CostReconciliationWorker) reconcile(ctx context.Context) {
 		return
 	}
 	for _, month := range CostReconciliationMonthsToAggregate(time.Now()) {
-		reconCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		reconCtx, cancel := context.WithTimeout(ctx, reconcileMonthTimeout)
 		if err := w.reconciler.AggregateMonth(reconCtx, month); err != nil {
 			slog.Error("provider cost reconciliation failed",
 				"error", err, "month", month.Format("2006-01"))
