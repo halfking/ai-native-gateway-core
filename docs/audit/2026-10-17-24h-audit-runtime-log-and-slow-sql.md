@@ -68,6 +68,46 @@
 未知 level 默认 error ⇒ `parseLogLevel` 红。
 新增判据 `cmd/quality-service/logging_test.go` 3 条（含 With/WithGroup 分流）。
 
+### ⚠ 上线状态更正（2026-10-17 18:2x 追加）：修复**尚未上线**，且部署链不管这个服务
+
+上面那张 A/B 表是**在 245 上手工运行新二进制**跑出来的，证的是「修复本身正确」，
+**不等于现网已切换**。复核查明现网根本没在跑新二进制：
+
+| 项 | 实测值 |
+|---|---|
+| 现网进程 | PID 3553，`/proc/3553/exe` → `/opt/llm-gateway-go/bin/quality-service` |
+| 该二进制 | **普通文件**（非 symlink），mtime **2026-07-19 12:51**，10,123,210 bytes |
+| 进程启动于 | **2026-08-19 21:01**，已连续运行 **58 天**未重启 |
+| 当前 release | `2700-9ed60bfa`（含本轮修复），但**从未**被这个进程使用 |
+
+根因是**部署链的结构性缺口**：`scripts/` 下**零个**脚本引用 `quality-service`
+（全仓 `.sh` / `.service` 检索无命中），蓝绿发布只管
+`/opt/llm-gateway-go/releases/<seq>-<sha>` 与端口切换，而这个服务是
+**独立 systemd 单元 + 静态二进制路径**，`ExecStart` 不经过 release 链。
+
+⇒ **凡「quality-service 类旁挂服务」的修复，默认都不在发布链上**，
+必须单独手工发布（build → 覆盖 `/opt/llm-gateway-go/bin/quality-service` →
+`systemctl restart quality-service`）。这是本条修复的真实上线成本。
+
+**这不是新发现**，此前已登记但结论不同：
+`docs/audit/2026-09-22-252-sql-log-audit.md:64` 的 D3 记为
+「245 上 quality-service 为 2026-07-19 老二进制，跨两月盲升级风险大，暂不动，登记」，
+`docs/audit/2026-10-15-252-sql-log-audit-round.md:127` 复核为
+「同 7-19 构建，仍在服役且健康（190 模型评分/5min）」。
+本轮把它从「老但健康、暂不动」推进到「**修复已就绪、待发布决策**」。
+
+**盲升级风险本轮已量化（不是保守过头，是坐实的）**：
+自 7-19 起该服务只碰了 8 个文件 / +299 −41 行，但其中
+`internal/quality/minute_aggregator.go` 改了 **77 行**，且这些改动**绑在**
+「S3 波 2 · request_logs 族停写后 35+ 读侧读源迁移」上（提交 `9df3b8cf1` /
+`9986c6299` / `570b6d026`）。⇒ 手工发布等于**顺带把这个读源迁移一起带上生产**，
+不是「只上日志修复」。
+
+**功能面无损害（实测）**：老二进制仍在正常出活——
+`provider_quality_profiles` 596 行、`max(updated_at)` = 观测时刻前 **2 分 34 秒**，
+进程 `Ssl` / 9 线程 / 累计 CPU 1:30:38 / `:8081` LISTEN 正常。
+⇒ **不存在「服务已坏」的故障**，这是一条**发布决策**，不是线上止血。
+
 ---
 
 ## 二、已修 ②：integration gate 漏注入 `LLM_GATEWAY_DATABASE_URL`
