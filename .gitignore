@@ -68,6 +68,11 @@ Dockerfile.local
 .agents/
 .audit/
 .audit-workspace/
+# 2026-10-17：审计轮把提交信息暂存到 .audit<批次号>/（.audit148/ … .audit152/）。
+# 原先只忽略 `.audit/` 与 `.audit-workspace/` 两个**无编号**形态，
+# 于是每个「批」会话各漏一个进仓库（实测 5 个目录 / 6 个文件，
+# 分别由 5 个不同提交带入）。`.audit*` 一并覆盖，避免 批153 起继续漏。
+.audit*/
 .kiro/
 .security-audit/
 .vite/
