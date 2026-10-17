@@ -9,7 +9,7 @@
 //     且大方块必须横在客户端层与供应端层之间（否则边会从大方块上面绕过去）。
 
 import { describe, expect, it } from 'vitest'
-import { computeGatewayBox, computeLayout, edgeWidth, fitRow, MIN_LAYOUT_HEIGHT, MIN_LAYOUT_WIDTH, NODE_GAP, NODE_W, NODE_W_MIN, particleRadius, stableHash } from '../lib/liveTopologyLayout'
+import { computeGatewayBox, computeLayout, edgeWidth, fitRow, isEdgeHighlighted, MIN_LAYOUT_HEIGHT, MIN_LAYOUT_WIDTH, NODE_GAP, NODE_W, NODE_W_MIN, particleRadius, stableHash } from '../lib/liveTopologyLayout'
 import { GATEWAY_MODULES, type TopoNode } from '../types/liveTopology'
 
 function node(id: string, column: TopoNode['column'], requests: number): TopoNode {
@@ -183,6 +183,77 @@ describe('computeLayout', () => {
     expect(tightest).toBeGreaterThanOrEqual(NODE_GAP)
   })
 
+  it('★ the folded label reports request volume and conserves the total', () => {
+    // 同一份数据在不同宽度下折叠掉的节点数不同（1024 折 3 个、480 折 7 个），
+    // 所以**折叠量本来就该随宽度变** —— 那不是缺陷。
+    // 缺陷是「标签写成节点数」：用户会把屏幕窄误读成流量变了。
+    // 真正要守的是：① 标签 = 折叠节点的请求量（自洽）；
+    //             ② 可见 + 折叠 = 总量（流量守恒，折叠不是丢弃）。
+    const many = Array.from({ length: 8 }, (_, i) => ({
+      id: `model:m${i}`, column: 'model' as const, label: `m${i}`, sub: '',
+      health: 'healthy' as const, live: true,
+      metric: { requests: 100 - i, success: 100 - i, failure: 0, tokens: 0, inFlight: 0 },
+    }))
+    const grandTotal = many.reduce((s, n) => s + n.metric.requests, 0)
+    let sawFold = false
+    for (const width of [1440, 1024, 744, 480]) {
+      const layout = computeLayout({ nodes: many, edges: [], width, height: 800 })
+      const layer = layout.nodes.filter((n) => n.column === 'model')
+      const agg = layer.find((n) => n.isAggregate)
+      const shown = layer.filter((n) => !n.isAggregate)
+      if (!agg) {
+        // 没折叠 ⇒ 必须全部可见（1440 宽就该画全）
+        expect(shown.length, `w=${width} 未折叠却有 ${shown.length} 张可见卡`).toBe(many.length)
+        continue
+      }
+      sawFold = true
+      const n = Number(agg.label.replace('+', ''))
+      expect(Number.isFinite(n), `w=${width} 标签 ${agg.label} 不是数字`).toBe(true)
+      // 标签里的量必须等于折叠节点自身的请求量（自洽，不是凭空来的数）
+      expect(n, `w=${width} 标签与实际折叠量不符`).toBe(agg.metric.requests)
+      // 标签绝不能是「节点个数」—— 流量数值远大于节点数（772 vs 7）
+      expect(n, `w=${width} 标签看起来是节点数而非请求量`).toBeGreaterThan(many.length)
+      // 流量守恒：可见 + 折叠 = 总量
+      const layerTotal = layer.reduce((s, x) => s + x.metric.requests, 0)
+      expect(layerTotal, `w=${width} 折叠后流量不守恒`).toBe(grandTotal)
+    }
+    expect(sawFold, '窄宽度下应当至少折叠一次').toBe(true)
+  })
+
+  it('★ keeps the original edge ids so highlighting still works after folding', () => {
+    // 折叠后布局边的 id 变成 `client:x->model:folded:8`，而视图的 edgePathFor
+    // 产出的是原始 `client:x->model:deepseek-chat`。高亮按 id 集合比对 ⇒
+    // 对不上 ⇒「点面板条目高亮该链路」静默失效。sourceIds 就是给这个用的。
+    const many = Array.from({ length: 8 }, (_, i) => ({
+      id: `model:m${i}`, column: 'model' as const, label: `m${i}`, sub: '',
+      health: 'healthy' as const, live: true,
+      metric: { requests: 10, success: 10, failure: 0, tokens: 0, inFlight: 0 },
+    }))
+    const client = {
+      id: 'client:c0', column: 'client' as const, label: 'c0', sub: '',
+      health: 'healthy' as const, live: true,
+      metric: { requests: 10, success: 10, failure: 0, tokens: 0, inFlight: 0 },
+    }
+    const layout = computeLayout({
+      nodes: [...many, client],
+      // 两条边都指向「会被折叠掉」的模型节点
+      edges: [
+        { id: 'orig-1', from: 'client:c0', to: 'model:m7', requests: 4, failure: 0 },
+        { id: 'orig-2', from: 'client:c0', to: 'model:m6', requests: 6, failure: 0 },
+      ],
+      width: 480,
+      height: 800,
+    })
+    const merged = layout.edges.find((e) => e.from === 'client:c0')
+    expect(merged, '折叠后应保留 client 侧链路').toBeTruthy()
+    // 两条原始边被合并，但两个原始 id 都必须留着
+    expect(merged!.sourceIds).toEqual(['orig-1', 'orig-2'])
+    // 请求数是合并后的和
+    expect(merged!.requests).toBe(10)
+    // 视图用原始 id 就能命中这条布局边
+    expect(layout.edges.some((e) => e.sourceIds.includes('orig-1'))).toBe(true)
+  })
+
   it('★ folds the overflow into a visible aggregate instead of dropping it silently', () => {
     // 「放不下就折叠」必须看得见：折叠节点要在图上，且请求数是真实的和。
     const many = Array.from({ length: 8 }, (_, i) => ({
@@ -277,6 +348,28 @@ describe('fitRow', () => {
     // 1440 宽应当画满宽 150 的卡，而不是摊成 12 张 105px 的窄卡
     // —— 张数上去了但可读性全丢，正是「多画了却看不见」。
     expect(fitRow(1440, false).cardW).toBe(NODE_W)
+  })
+})
+
+describe('isEdgeHighlighted', () => {
+  it('★ matches by original id after the node got folded away', () => {
+    // 视图产出的高亮集是**原始** id，布局边在折叠后 id 已变。
+    // 只比布局 id ⇒ 用户点面板条目高亮链路，图上毫无反应。
+    const highlight = new Set(['client:c0->model:deepseek-chat'])
+    expect(isEdgeHighlighted(highlight, 'client:c0->model:folded:8', ['client:c0->model:deepseek-chat'])).toBe(true)
+    // 原始 id 对不上时不误报
+    expect(isEdgeHighlighted(highlight, 'client:c1->model:folded:8', ['client:c1->model:qwen'])).toBe(false)
+  })
+
+  it('still matches the layout id itself (unfolded path unchanged)', () => {
+    const highlight = new Set(['client:a->model:x'])
+    expect(isEdgeHighlighted(highlight, 'client:a->model:x', ['orig-1'])).toBe(true)
+    expect(isEdgeHighlighted(new Set<string>(), 'client:a->model:x', ['orig-1'])).toBe(false)
+  })
+
+  it('tolerates edges without sourceIds', () => {
+    expect(isEdgeHighlighted(new Set(['e1']), 'e1')).toBe(true)
+    expect(isEdgeHighlighted(new Set(['e2']), 'e1')).toBe(false)
   })
 })
 

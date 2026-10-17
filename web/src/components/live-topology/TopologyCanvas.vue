@@ -12,7 +12,7 @@
 
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { computeLayout, edgeWidth, MIN_LAYOUT_HEIGHT, MIN_LAYOUT_WIDTH, particleRadius } from '../../lib/liveTopologyLayout'
+import { computeLayout, edgeWidth, isEdgeHighlighted, MIN_LAYOUT_HEIGHT, MIN_LAYOUT_WIDTH, particleRadius } from '../../lib/liveTopologyLayout'
 import { ParticlePool } from '../../lib/liveTopologyParticles'
 import type { ParticleSpawn } from '../../lib/liveTopologyParticles'
 import type { TopoGraph } from '../../lib/liveTopologyGraph'
@@ -203,8 +203,13 @@ function render(nowMs: number) {
   const highlight = new Set(props.highlightEdges ?? [])
   const phase = prefersReducedMotion.value ? 0 : nowMs / 26
 
+  // 高亮按**原始 edge id** 匹配（见 isEdgeHighlighted 的注释）：窄屏折叠后
+  // 布局边 id 变了，只比 id 的话折叠一发生高亮就静默失效。
+  const isHighlighted = (edgeId: string, sourceIds?: readonly string[]) =>
+    isEdgeHighlighted(highlight, edgeId, sourceIds)
+
   for (const edge of layout.value.edges) {
-    drawEdge(ctx, edge.id, highlight.size > 0 && !highlight.has(edge.id), phase)
+    drawEdge(ctx, edge.id, highlight.size > 0 && !isHighlighted(edge.id, edge.sourceIds), phase)
   }
 
   // reduced-motion 替代表达：每条有流量的链路一个静态密度点
@@ -213,7 +218,7 @@ function render(nowMs: number) {
       if (edge.requests <= 0) continue
       const p = bezierPoint(edge.path, 0.5, 0)
       ctx.save()
-      ctx.globalAlpha = highlight.size > 0 && !highlight.has(edge.id) ? 0.15 : 0.8
+      ctx.globalAlpha = highlight.size > 0 && !isHighlighted(edge.id, edge.sourceIds) ? 0.15 : 0.8
       ctx.fillStyle = statusColor(edge.lastStatus)
       ctx.beginPath()
       ctx.arc(p.x, p.y, Math.min(6, 2 + Math.log10(edge.requests + 1) * 1.6), 0, Math.PI * 2)
@@ -251,9 +256,14 @@ function render(nowMs: number) {
 
 function isRelated(id: string): boolean {
   if (!hoveredId.value) return false
-  return layout.value.edges.some(
-    (e) => e.id.includes(`${hoveredId.value}->`) || e.id.includes(`->${hoveredId.value}`),
-  ) || id === hoveredId.value
+  // 关联判断同时看布局边 id 与其**原始** id：折叠后布局边 id 形如
+  // `x->model:folded:8`，而 hover 到的可能是未折叠的另一侧，只比 id 会漏。
+  return layout.value.edges.some((e) => {
+    const ids = [e.from, e.to, ...(e.sourceIds ?? [])]
+    return ids.some(
+      (v) => v.includes(`${hoveredId.value}->`) || v.includes(`->${hoveredId.value}`),
+    )
+  }) || id === hoveredId.value
 }
 
 function frame(nowMs: number) {

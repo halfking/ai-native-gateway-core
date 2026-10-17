@@ -117,6 +117,15 @@ export interface TopoLayoutNode extends TopoNode {
 
 export interface TopoLayoutEdge extends TopoEdge {
   path: Array<{ x: number; y: number }>
+  /**
+   * 折叠前的**原始** edge id 集合（通常 1 条，折叠合并后可能多条）。
+   *
+   * 为什么需要：窄屏下节点会被折叠，图上的边 id 于是变成
+   * `client:x->model:folded:8` 这种，而视图的 `edgePathFor` 产出的是原始
+   * `client:x->model:deepseek-chat`。高亮按 id 集合比对 ⇒ 对不上 ⇒
+   * 「点面板条目高亮该链路」静默失效。有了它，高亮可按原始 id 命中。
+   */
+  sourceIds: string[]
 }
 
 /** 网关核心大方块的几何（纵向流程下的「中间那一层」）。 */

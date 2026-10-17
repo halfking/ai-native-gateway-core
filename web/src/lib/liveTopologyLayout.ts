@@ -246,10 +246,15 @@ export function computeLayout(input: LayoutInput): TopoLayout {
 
     if (hidden.length) {
       const aggId = `${column}:folded:${ordered.length}`
+      // 标签用**被折叠的请求量**，不是节点个数。
+      // 早先写 `+${hidden.length}`（节点数）⇒ 同一份数据在 1440 显示「无折叠」、
+      // 480 显示「+7」，用户会以为**流量在变**，而实际只是屏幕窄。
+      // 请求量与宽度无关，折叠前后守恒 —— 这才是用户要的那个数。
+      const hiddenRequests = hidden.reduce((s, n) => s + n.metric.requests, 0)
       const agg: TopoLayoutNode = {
         id: aggId,
         column,
-        label: `+${hidden.length}`,
+        label: `+${hiddenRequests}`,
         sub: column,
         health: 'unknown',
         live: false,
@@ -270,6 +275,10 @@ export function computeLayout(input: LayoutInput): TopoLayout {
         agg.metric.tokens += n.metric.tokens
         agg.metric.inFlight += n.metric.inFlight
       }
+      // sub 说明「+N 是请求量、括号里是节点数」，避免让人猜单位。
+      // 不用中文：硬编码中文会推高 i18n 棘轮（5757/5529），而为了这一行
+      // 去开 8 语言词条不值得。用符号表达单位即可，图标层另有 tooltip。
+      agg.sub = `(${hidden.length} items)`
       laid.push(agg)
     }
   }
@@ -292,6 +301,8 @@ export function computeLayout(input: LayoutInput): TopoLayout {
       existing.failure += edge.failure
       existing.lastStatus = edge.lastStatus ?? existing.lastStatus
       if (typeof edge.lastLatencyMs === 'number') existing.lastLatencyMs = edge.lastLatencyMs
+      // 记下这条被并进来的原始 id，否则折叠后高亮找不到它
+      existing.sourceIds.push(edge.id)
       continue
     }
     // 纵向流程：客户端/供应端 → 模型/网关 走下边；反之走上边。
@@ -307,6 +318,8 @@ export function computeLayout(input: LayoutInput): TopoLayout {
       id: key,
       from,
       to,
+      // 折叠后布局边的 id 可能与原始 id 不同，高亮要能按原始 id 命中
+      sourceIds: [edge.id],
       path: [
         { x: x1, y: y1 },
         { x: x1 + bow, y: midY },
@@ -317,6 +330,25 @@ export function computeLayout(input: LayoutInput): TopoLayout {
   }
 
   return { nodes: laid, edges: [...edgeByKey.values()], width, height, rowY, gateway }
+}
+
+/**
+ * 高亮判定：一条布局边是否落在高亮集合里。
+ *
+ * 必须同时看**布局边 id** 与其**原始** id（`sourceIds`）：窄屏折叠后布局边
+ * id 变成 `client:x->model:folded:8`，而视图 `edgePathFor` 产出的是原始
+ * `client:x->model:deepseek-chat`。只比 id 的话，折叠一发生高亮就静默失效
+ * （用户点了面板条目，图上却没有任何反应）。
+ *
+ * 抽成纯函数是因为 Canvas 在 jsdom 里拿不到 context，直接测组件测不到这层。
+ */
+export function isEdgeHighlighted(
+  highlight: ReadonlySet<string>,
+  edgeId: string,
+  sourceIds?: readonly string[],
+): boolean {
+  if (highlight.has(edgeId)) return true
+  return !!sourceIds?.some((s) => highlight.has(s))
 }
 
 /** 边粗细（px）：按窗口内请求数对数映射，上限 5px。
