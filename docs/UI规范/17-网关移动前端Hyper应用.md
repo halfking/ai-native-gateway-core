@@ -21648,3 +21648,63 @@ vue-tsc 报 `TurnsAPIKeyOption` 字段为 `id`/`label`（非 `key_id`/`key_name`
 | 205 | v1DataHorizon | session_turns_hot by request_id（17 跳 line 1063）|
 | 206 | nativeTransport | 17 跳说"未对应 admin 端点"，需先查 license-authority / cmd/ |
 | 207 | platformSettings | 17 跳说"未对应 admin 端点" |
+
+## 11.204 第一百六十四批 接 P0 storageAndLogConfig：3 段只读摘要独立深链
+
+### 一、形态修正
+
+17 跳 evidence（line 1062）原判 storageAndLogConfig = "否（by-design）/ 0 工作量"——子视图 StorageConfig / FilesystemMaintenance / LogManagement 全部在 DataLifecycleView 父视图下作为 tab 切换使用。
+
+**实证后修正**：
+- 3 个子视图（`web/src/views/data-lifecycle/`）已存在
+- 3 个 API helper（`api/tuning.ts: storageConfigGet/Update/TestPath + attachmentFilesystemStats + logConfigGet`）已 export
+- **真 orphan 性 = 缺独立深链**（用户必须先打开 `/admin/data-lifecycle` 切 tab）
+
+按用户拍板"全部 8 孤儿"——建 1 个轻量只读摘要详细页（**不**复用 DataLifecycleView 编辑功能）。
+
+### 二、3 端点并发
+
+| 端点 | 中间件 | 字段数 |
+|---|---|---|
+| `GET /api/admin/storage/config` | superAdmin（handler.go:1172）| 12 字段 |
+| `GET /api/admin/attachments/filesystem/stats` | admin | 10 字段 |
+| `GET /api/admin/log/config` | admin | 15 字段 |
+
+3 端点并发（`Promise.all`）— 与批 158b getUsageEnhancedData 同形态。
+
+### 三、改动清单（6 文件 254 行）
+
+| 文件 | 行 | 内容 |
+|---|---|---|
+| `web/src/api/storageAndLogConfig.ts` | +51 | 新建：getStorageAndLogSnapshot + 4 类型 |
+| `web/src/views/StorageAndLogConfigView.vue` | +200 | 新建：3 段只读摘要 + disk_level 颜色 + 4 状态 |
+| `web/src/router.ts` | +5 | route + lazy import + meta requiresSuper |
+| `web/src/locales/{zh-CN,en-US}/nav.ts` | 各 +1 | storageAndLogConfig 条目 |
+| `web/src/views/StorageAndLogConfigView.test.ts` | +118 | 3 测试（3 段全渲染 / 错误 / warning 颜色） |
+
+合计 254 行。
+
+### 四、类型修正
+
+- `StorageConfig` 实际无 `storage_type` 字段（我多加）—— 删
+- `LogConfig` 实际有 15 字段（少 4 字段：log_file / log_dir / hot_reloadable / config_source）—— 补
+
+### 五、验证
+
+- `npx vue-tsc -b` exit 0
+- `npx vitest run` 3/3 passed 690ms
+- 6 文件 0 FFFD / 0 NUL
+
+### 六、收口
+
+- commit `64519f15e4cf8b57f3c2481e1bfcbb39e2d205fa`
+- 父 = `2549621dd`（批 203 rebase 后）
+- 孤儿棘轮 5 → 4
+
+### 七、剩余 3 孤儿
+
+| 批 | 孤儿 | 备注 |
+|---|---|---|
+| 205 | v1DataHorizon | session_turns_hot by request_id（17 跳 line 1063）|
+| 206 | nativeTransport | 17 跳说"未对应 admin 端点" |
+| 207 | platformSettings | 17 跳说"未对应 admin 端点" |
