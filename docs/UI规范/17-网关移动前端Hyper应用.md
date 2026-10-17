@@ -21866,3 +21866,114 @@ platformSettings 在主仓 + 子仓 + workspace 全部 0 命中。
 - 若 web-mobile 仓后建：可推进 206/207
 - 若 5 批真 orphan 视图有用户反馈：可继续按 5 批接前端模式扩展
 - 8 孤儿棘轮（13 → 8）的剩余 8 跨仓孤儿（已在 handoff note 列出）按同样模式推进
+
+## 11.209 第一百六十八批 §11.195~208 **勘误**：13 批「接前端孤儿」取证漏了 `web-mobile/` ⇒ 8 项「真 orphan」不成立
+
+> **本节是纯勘误，0 行代码改动。** 不回滚 §11.195~208 已推的 12 个 commit ——
+> 经复核，`web/`（维护台）那 9 个页面的权限门与端点**都是真的**（见 §三），
+> 该回滚的是**文档里的因果与计数**，不是代码。
+
+### 一、根因：4 路取证的第 4 路是假阴性
+
+§11.206 / §11.207 的整条论证链立在同一句话上：
+
+| §11.206 原记录 | 实证 |
+|---|---|
+| 「workspace 跨仓 \| `/Users/xutaohuang/workspace/ai-native-tools/` 无 web-mobile 仓」 | **假阴性** —— `web-mobile/` 是**主仓内的子目录**，不在 workspace 同级 |
+
+`web-mobile/` 由 `cmd/gateway/mobile_static.go` 提供线上服务
+（`defaultMobileDistProbe` 依次探测 `./web-mobile/dist` 与 `web-mobile`）。
+**而本文件 §17 的标题就是《网关移动前端 Hyper 应用》** ——
+文档要治理的移动前端，从来就在主仓里。
+
+⇒ 4 路取证覆盖了 `admin/` + `internal/`+`cmd/` + `web/src/` + 「workspace 同级目录」，
+**唯独没覆盖 `web-mobile/`**。这一个漏项，同时制造了 §11.206、§11.207 两条 dead name 误判，
+和下面 §二 的 8 项「真 orphan」误判。
+
+### 二、8 项「真 orphan（视图 0 命中）」**全部不成立** —— 视图早已在 `web-mobile/`
+
+§11.195/196/199/200/201/202/203/204 记录这 8 项「视图 0 命中 ⇒ 真 orphan」。
+实证：**每一项在 `web-mobile/` 都已有 `api` + `view` + `spec` 三件套**，且早于本次 13 批 2~4 天。
+
+| 批 | 孤儿 | `web-mobile/` API 层（2026-10-07）| `web-mobile/` 视图层（2026-10-14/15）|
+|---|---|---|---|
+| 158a | sessionAnalyticsFilterOptions | `5044334f2`（批 97）| `d63d9dcf9`（批 128，**提交标题即「孤儿真缺口归零」**）|
+| 158b | usageEnhanced | `064a110a8`（批 70）| `241908b8d`（批 122）|
+| 158e | opsOverview | `efda6127e`（批 83）| `73cfb335e`（批 117）|
+| 200 | subscriptionTiers | `17372c5ad`（批 87）| `076acfa7a`（批 120）|
+| 201 | turnsFilterOptions | `6d894fa3e`（批 96）| `84f604985`（批 127）|
+| 202 | storageMigrationState | `b833f1034`（批 95）| `bb513d1ed`（批 125）|
+| 203 | requestActions | `d29d0bd54`（批 74）| `2fac15b28`（批 118）|
+| 204 | storageAndLogConfig | `4749f9d7d`（批 93）| `46ce08be7`（批 124）|
+
+**最强的一条反证**：`sessionAnalyticsFilterOptions` 的视图接入 commit `d63d9dcf9`
+提交标题原文就是「**孤儿真缺口归零**」——
+该孤儿早在 **2026-10-15** 就被台账正式归零，
+而批 158a 在 **2026-10-17** 又把它重新判定成「真 orphan 接掉」。
+
+**台账里还有两道反向断言**（`web-mobile/src/api/orphanLedger.spec.ts`）：
+
+- `:743` `expect(currentOrphans()).not.toContain('opsOverview')`
+- `:756` `expect(currentOrphans()).not.toContain('requestActions')`
+
+⇒ 这两项不是「没人判定」，而是**已有专门判据钉死「它们不是孤儿」**，批 158e / 203 与之直接冲突。
+
+### 三、仍然成立的部分（**不回滚**）
+
+逐条复核后，§11.195~208 的**代码**没有发现缺陷：
+
+| 项 | 复核结论 |
+|---|---|
+| `web/` 9 条新路由 | 权限门齐备：`requiresSuper` / `requiresPlatformOps` / `requiresAuth`（`web/src/router.ts:297,313-320`）|
+| 端点真实性（抽样）| `/api/admin/requests/{id}/actions` = `admin/request_actions.go`，注册于 `admin/handler.go:1078`（`admin()` 档）|
+| **158c** boardOperational | **成立**。其父 commit 中 `board-operational` 路由数为 0 ⇒ 确为新增独立深链页；复用既有 `fetchBoardOperational`（`web/src/api/board.ts:183`）；端点在 `admin/handler.go:1124`，路由 `requiresAuth` 与后端 `admin()` 档一致 |
+| **158d** 注释校正 | 成立。`admin/data_lifecycle_metrics.go:12` 仍带「批 158d, 2026-10-17: corrected」|
+| **158e** 中间件 `admin`→`superAdmin` | 成立。`superAdmin` 包装器在 `admin/handler.go:917`，属**真实后端加固**（ops-overview 8 表无 `tenant_id`）|
+| **205** v1DataHorizon | 成立。确实已接 —— 但在 **`web/`**（`web/src/App.vue` + `web/src/composables/useDataHorizon.ts`）|
+
+⇒ 那 8 个 `web/` 页面的**准确定性是「维护台对等页」（maintain SPA parity）**，
+而不是「移动端孤儿收口」：
+`web/dist` 由 `cmd/gateway/maintain_static.go` 提供服务，与 `web-mobile/dist`（`mobile_static.go`）是**两个不同的线上应用**。
+维护台是否也需要这些页面是**产品取舍**，本文档无权代答；
+但把它们记成「孤儿棘轮推进」是记账错误。
+
+### 四、两条 dead name 判定改正
+
+| 项 | §11.206/207 原判 | 实证正解 |
+|---|---|---|
+| nativeTransport | dead name（0 命中）| **非页面型基础设施，已登记**。`web-mobile/src/api/nativeTransport.ts`（490 行）+ `.test.ts`（380）+ `.wiring.spec.ts`（240）；`orphanLedger.spec.ts:154` 是 `KNOWN_INFRASTRUCTURE` 的**唯一一条**，且带**自撤销**判据（零 `/api/` 字面量、Capacitor 壳未安装、生产代码零调用点）⇒ 壳一装上该登记自动作废 |
+| platformSettings | dead name（0 命中）| **早已完整接入**。`api/platformSettings.ts`（705 行）+ `views/PlatformSettingsView.vue`（390 行）+ `router/index.ts` + `config/appNav.ts` + `zh-CN/en-US` i18n |
+
+两者都不是 dead name：一个是**已登记的非页面型基础设施**，一个是**已接线完毕的页面**。
+
+### 五、孤儿棘轮改正
+
+| | §11.208 原记录 | 实证正解 |
+|---|---|---|
+| §11.195~208 移动端真孤儿收口 | **13 → 8** | **0**（8 项早已实现 + 1 项非孤儿 + 2 项非 dead name）|
+| 真实产出 | — | 8 个维护台对等页 + 158c 独立深链页 + 158d 注释校正 + 158e 后端中间件加固 |
+
+⇒ 原「13 → 8」把**维护台新增页面**记成了**移动端孤儿棘轮推进**，虚增 8 推。
+
+### 六、§11.208「五、后续工作」第 3 条的失效指针
+
+原文：「8 孤儿棘轮（13 → 8）的剩余 8 跨仓孤儿（**已在 handoff note 列出**）按同样模式推进」。
+
+实证：交接件 `/tmp/co117-208-final-handoff.md` **并未枚举**这 8 个孤儿，
+只写了「剩余孤儿（5 dead name + 3 跨仓）不在本会话能力范围」。
+且「5 dead name」中的 2 个（nativeTransport / platformSettings）已由本节 §四 推翻为非 dead name。
+⇒ 该指针**同时失效在两头**：清单不存在，分类也已被本节修正。
+
+### 七、本批沉淀的取证纪律（可复用）
+
+1. ⭐⭐⭐⭐ **「某仓不存在」必须先确认它在不在当前仓的子目录里** ——
+   `web-mobile/` 就在主仓内，却因为只 `ls` 了 workspace 同级目录而被判为 0 命中。
+2. ⭐⭐⭐⭐ **负结论必须列出「搜过哪些目录」**（本节 §一）——
+   只写「0 命中」而不写搜索宽度，下一个复核者无法判断这是真阴性还是量具坏了。
+3. ⭐⭐⭐⭐ **命中台账里已有的显式反证（`not.toContain` / `not.toContain` 型判据）时，
+   必须先解释冲突再行动** —— `opsOverview` / `requestActions` 两项台账已钉死「不是孤儿」。
+4. ⭐⭐⭐⭐ **台账提交标题里常写着上一批的结论**（「孤儿真缺口归零」）——
+   重新判定某个孤儿前，`git log --diff-filter=A` 查它视图的引入 commit，是成本最低的反证。
+5. ⭐⭐⭐ **跨应用记账前先确认服务入口** ——
+   `maintain_static.go`（`web/`）与 `mobile_static.go`（`web-mobile/`）是两个应用；
+   本文件 §17 只治理后者。
