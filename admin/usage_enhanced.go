@@ -613,6 +613,19 @@ type CacheEconomicsResponse struct {
 	DegradedReason string `json:"degraded_reason,omitempty"`
 }
 
+// cacheEconomicsCompressedBudget 是压缩计数那条附加查询的**独立**上限。
+//
+// 取 3s 的依据（252 实测，主聚合 6020ms / 总预算 10s）：留 3s 给附加查询，
+// 主聚合仍有 ~7s 的余量。给多了没用——这条查询单跑要 35s，3s 与 30s 的结果
+// 都是「算不出来，退化成一条 Warn」；给少了则可能在它本来能算出来的窗口上
+// （小 tenant / 窄日期范围）白白丢掉一个指标。3s 是让**大多数**请求保住主
+// 聚合、又不去赌附加指标的那个点。
+//
+// 这不是新口径：附加计数失败一直只降级成 Warn（compressed_requests 不参与
+// 任何比率计算），本常量只是让这条降级**确定**发生，而不是由它是否抢在
+// 主聚合前面耗尽 ctx 来随机决定。
+const cacheEconomicsCompressedBudget = 3 * time.Second
+
 func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -690,8 +703,26 @@ func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 
 	// 压缩计数是附加信息，不参与主聚合。主聚合成功后才取；它失败不该让
 	// dollars_spent / cache_hit_ratio 这些已经算对的指标一起作废。
+	//
+	// 2026-10-18：它必须**自带预算**，不能与主聚合共用 ctx。
+	// 252 实测（同一个月窗口，逐条计时）：
+	//
+	//	主聚合 usage_ledger_with_current_month      6020 ms
+	//	compressedQuery request_logs_with_current_month  35344 ms
+	//
+	// 两条**顺序**跑在同一个 10s ctx 里 —— 光主聚合就吃掉 6s，附加那条
+	// 单跑要 35s，整端点 500（`cache-economics query failed`，稳定卡在
+	// 10.0s）。这不是库争抢、不是统计陈旧，是**预算本来就不可能成立**。
+	//
+	// 注释上方那句「30 天窗口实测 28s」早就写明了这条查询有多贵，作者因此把
+	// 主聚合换到了 usage_ledger，却把附加计数留在了同一张视图上——而它失败
+	// 本来就只降级成一条 Warn。给它一个有界子预算，主聚合拿回属于自己的时间，
+	// 附加计数要么在预算内算出、要么安静地退化成那条 Warn：与既有降级语义一致，
+	// 口径不变。
+	cctx, ccancel := context.WithTimeout(ctx, cacheEconomicsCompressedBudget)
+	defer ccancel()
 	if err == nil {
-		if cerr := h.db.QueryRow(ctx, compressedQuery, compressedArgs...).Scan(&compressedRequests); cerr != nil {
+		if cerr := h.db.QueryRow(cctx, compressedQuery, compressedArgs...).Scan(&compressedRequests); cerr != nil {
 			slog.Warn("cache-economics: compressed request count unavailable",
 				"tenant", tid, "err", cerr)
 		}
