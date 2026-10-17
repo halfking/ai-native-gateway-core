@@ -1087,6 +1087,10 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"869_promote_session_turns_trace_events.sql",
 			// 870（2026-10-17）：usage_ledger 月度对账覆盖索引，排在其后不被打断。
 			"870_usage_ledger_recon_cover_idx.sql",
+			// 871：route_incident_events(created_at) 首列索引。必须 CONCURRENTLY ——
+			// 网关持续写该表，普通 CREATE INDEX 的 SHARE 锁会阻塞写入。
+			// 该文件带 dbinit:no-transaction 标记，走非事务通道。
+			"871_route_incident_events_created_at_idx.sql",
 		},
 	}
 }

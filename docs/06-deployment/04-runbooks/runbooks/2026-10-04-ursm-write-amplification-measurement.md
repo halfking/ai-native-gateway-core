@@ -19636,3 +19636,114 @@ bg/mv_consistency.go:230              AND COALESCE(origin_stage,'') NOT IN ('pro
 
 ★ 同族：[[守卫只是必要条件不是充分条件]] · [[沉默即失明]] ·
 [[写门禁时要问它覆盖了几种失效形态]] · [[测试要隔离自己的数据]]。
+
+---
+
+### §10.110.51 落地：迁移 871（`route_incident_events` 的 `created_at` 首列索引）
+
+§50 的启用清单第 1 步。本节把索引迁移按本仓的**五点同步**写完。
+
+#### 一、产物与同步点
+
+| # | 位置 | 内容 |
+|---|---|---|
+| 1 | `sql/migrations/startup/871_route_incident_events_created_at_idx.sql` | canonical 源 |
+| 2 | 同名 `.down.sql` | 回滚 |
+| 3 | `installer/cmd/llm-gw-installer/embeddata/startup/` × 2 | 投递副本（逐字节相同） |
+| 4 | `installer/cmd/llm-gw-installer/main.go` | `//go:embed` + `embeddedSQLFiles` 条目 |
+| 5 | `installer/internal/dbinit/runner.go` | `StartupFiles` 条目 |
+| 6 | `sql/schema/installed_startup_migrations.tsv` | `266\t871_…sql` |
+
+#### 二、⚠️ 一个必须写对的技术点：`CONCURRENTLY` 与事务通道
+
+PG **不允许** `CREATE INDEX CONCURRENTLY` 在事务块内执行，而 installer 的
+`applySQL` 默认给**每个文件**加 `--single-transaction`。
+
+本仓已有既定解法（见 718 文件头）：**在文件里写独立注释行
+`-- dbinit:no-transaction`**，runner 据此走非事务通道：
+
+```go
+// installer/internal/dbinit/runner.go:1192
+if !requiresNoTransaction(content) {
+    args = append(args, "--single-transaction")
+}
+```
+
+⚠️ **连带陷阱**：非事务通道下**没有事务块，`SET LOCAL` 会告警且不生效**
+⇒ 871 用会话级 `SET lock_timeout / statement_timeout` 并在结尾 `RESET`。
+（870 那种 `BEGIN; … SET LOCAL …` 的写法在这里不可用。）
+
+#### 三、为什么必须带 `lock_timeout`（§44 的教训直接落地）
+
+§44 实测：一条 `CREATE TABLE IF NOT EXISTS` 排队等锁，
+把 **14 个网关会话堵了约 1.5 分钟**。
+⇒ 871 的 `lock_timeout = '2s'` 语义是「**抢不到锁就快速失败**」，
+不制造队列。
+
+⚠️ 同时 `statement_timeout = '0'`（放开）：索引构建本身很久，
+而**只有 `lock_timeout` 才是管「别堵住写流量」的那一个**。
+
+#### 四、三条执行验证（**在本地容器真跑**，非变异模拟）
+
+| 验证 | 结果 |
+|---|---|
+| 应用 | `CREATE INDEX` 成功、守卫放行、索引 `valid=t` |
+| **幂等** | 重跑是 no-op，`rc=0`（靠 `IF NOT EXISTS`） |
+| **阴性对照** | 造同名但形状为 `(created_at, incident_id)` 的索引 ⇒ 守卫**如实报错**：`定义不符 —— 本迁移要的是单列 btree(created_at)` |
+| 回滚 | down 干净删除，索引数归 0 |
+
+★ **阴性对照是这节最重要的验证**：守卫不是装饰。
+没有它，一个「同名但形状错」的索引会被默默接受，
+而 §43 里那个「A 走 bitmap、B 走 Index Scan Backward」的收益
+会在 B 那条查询上**完全不出现**（B 恰恰依赖单列有序）。
+
+#### 五、⚠️ 一条门禁的发现：它的前提对标记文件不成立
+
+`TestRegisteredStartupMigrationsCanRunInSingleTransaction` 红了，
+理由是「注册文件含 CONCURRENTLY ⇒ 在 `--single-transaction` 下永远跑不起来」。
+
+**读码验证后，这个前提对携带 `dbinit:no-transaction` 的文件不成立** ——
+`applySQL` 对标记文件不加 `--single-transaction`（runner.go:1192），
+871 因此走非事务通道、能正常应用，与 718 同一先例。
+
+按 718 的既有先例登记进 `knownStartupChainConcurrencyViolations`，
+并在注释里写清**它与「债」的区别**（那几条是真债，871 是已复核豁免），
+避免下一个人把它当成「又欠一笔」。
+
+⚠️ 顺带记下一个计数口径：该门按**子串**统计且只看剥掉注释后的正文，
+所以我写在 `DO` 块失败提示与 `COMMENT ON INDEX` 里的三处「CONCURRENTLY」
+字样也被计入 ⇒ 计数是 **4 而不是 1**。已在注释里说明，免得后人以为是统计错。
+
+#### 六、★ 另一个真实风险：`applySQL` 的 5 分钟 ctx 超时
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+cmd := exec.CommandContext(ctx, "docker", args...)
+```
+
+⇒ 若 CONCURRENTLY 构建被 ctx 掐断，会留下一个 **invalid 索引**，
+而**同一次 psql 调用里的形状校验块也来不及跑**
+（整个进程已被杀）⇒ 本次迁移看起来「跑过了」，但索引是坏的。
+
+⇒ 缓解：871 的 `DO` 块会对 `indisvalid = false` **明确 RAISE EXCEPTION**，
+**下一次启动迁移**才会暴露；届时须先 `DROP INDEX CONCURRENTLY` 重建再重跑。
+⚠️ 本次索引规模（580 MB heap）远小于 5 分钟余量，实测风险低，
+但这是该机制的结构性弱点，值得记在案。
+
+#### 七、门禁回归
+
+- `installer/cmd/llm-gw-installer`：**ok 5.98s**
+- `installer/internal/dbinit`：**ok 0.29s**
+- `sql/migrations/domain` / `sql/migrations/startup` / `sql/schema`：**全 ok**
+
+#### 八、启用清单更新（**仍需授权后才会作用于生产**）
+
+1. ~~建索引~~ → **已就绪**：部署时启动迁移会自动应用 871（走非事务通道）。
+2. 定保留期（证据窗口是产品决策，候选见 §47）。
+3. 在 `cmd/gateway` 接线启用 worker（`retention <= 0` 时它完全不碰库）。
+
+⚠️ 顺序仍然不能反：**索引未建成功时 worker 会安全跳过**，
+日志里全是 `skipped_no_index` —— 那是提示，不是故障。
+
+★ 同族：[[守卫只是必要条件不是充分条件]] · [[写门禁时要问它覆盖了几种失效形态]] ·
+[[阴性对照是唯一证明守卫有牙的方式]]。

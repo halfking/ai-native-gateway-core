@@ -871,6 +871,14 @@ var promoteSessionTurnsTraceEvents869 []byte
 //go:embed embeddata/startup/870_usage_ledger_recon_cover_idx.sql
 var usageLedgerReconCover870 []byte
 
+// 871：route_incident_events 的 created_at 首列索引。
+// 建它的理由不是「查询慢」而是「无法安全地按时间留存」——原四个索引全把
+// created_at 放末位，范围条件只能全索引扫描，实测冷缓存 25.7s vs
+// statement_timeout 30s。必须 CONCURRENTLY，且带 dbinit:no-transaction 标记。
+//
+//go:embed embeddata/startup/871_route_incident_events_created_at_idx.sql
+var routeIncidentEventsCreatedAtIdx871 []byte
+
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
 
@@ -1167,6 +1175,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/868_credential_model_stream_mode.sql":                                   credentialModelStreamMode868,
 	"startup/869_promote_session_turns_trace_events.sql":                             promoteSessionTurnsTraceEvents869,
 	"startup/870_usage_ledger_recon_cover_idx.sql":                                   usageLedgerReconCover870,
+	"startup/871_route_incident_events_created_at_idx.sql":                           routeIncidentEventsCreatedAtIdx871,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
 	"startup/853_credential_probe_queue_automatic.sql":                               credentialProbeQueueAutomatic853,
