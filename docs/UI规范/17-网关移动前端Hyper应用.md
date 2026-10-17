@@ -21592,3 +21592,59 @@ vue-tsc 报 `TurnsAPIKeyOption` 字段为 `id`/`label`（非 `key_id`/`key_name`
 | 205 | v1DataHorizon | 200 行（session_turns_hot by request_id）|
 | 206 | nativeTransport | 250 行（17 跳说"未对应 admin 端点"，需先查）|
 | 207 | platformSettings | 250 行（17 跳说"未对应 admin 端点"）|
+
+## 11.203 第一百六十三批 接 P2 requestActions：Redis LIST by request_id 时间线
+
+### 一、调研与真"orphan"性
+
+17 跳 evidence（line 1064）原判 requestActions 是 by-design 平台 Redis LIST，**实证后**：
+- 端点 `GET /api/admin/requests/{id}/actions` 已注册（`handler.go:1078`，admin 中间件）
+- 实现：`admin/request_actions.go:34` `handleRequestActions` —— 从 `liveactions.RedisKey` LRange + filter `ev.RequestID == requestID` + dedup + sort
+- 17 跳："只查 Redis LIST by request_id" by-design
+- **真 orphan 性 = web 端 0 命中**（API + view + route + nav 全 0）
+
+### 二、4 路取证
+
+| 维度 | 实证 |
+|---|---|
+| 注册处 | admin 中间件（handler.go:1078）|
+| handler | path 参数 id = request_id；rc.LRange + filter + dedup + sort by (ts, seq) |
+| API 模块头 | 0 命中（真 orphan）|
+| 桌面调用 | 0 命中 |
+
+### 三、改动清单（6 文件 252 行）
+
+| 文件 | 行 | 内容 |
+|---|---|---|
+| `web/src/api/requestActions.ts` | +44 | 新建：getRequestActions + RequestAction / RequestActionsResponse 类型 |
+| `web/src/views/RequestActionsView.vue` | +215 | 新建：表单 + 路径参数同步 + 时间线渲染（11 字段 + flatten 展平）|
+| `web/src/router.ts` | +5 | route name=request-actions + lazy import + meta requiresSuper |
+| `web/src/locales/{zh-CN,en-US}/nav.ts` | 各 +1 | requestActions 条目 |
+| `web/src/views/RequestActionsView.test.ts` | +100 | 3 测试（全渲染 / 空态 / 错误）|
+
+合计 252 行。
+
+### 四、修复（test fail）
+
+`watch(route.params.id, ..., { immediate: true })` 检查 `newId !== requestId.value` 阻止了**初始 load**（两个值都是 'req-001'）。删除相等性检查后 3/3 passed。
+
+### 五、验证
+
+- `npx vue-tsc -b` exit 0
+- `npx vitest run` 3/3 passed 1.07s
+- 6 文件 0 FFFD / 0 NUL
+
+### 六、收口
+
+- commit `2f5ee3a33142db353351b59556ad12be18c851ff`
+- 父 = `8ae3551c0`（批 202 文档）
+- 孤儿棘轮 6 → 5
+
+### 七、剩余 4 孤儿
+
+| 批 | 孤儿 | 备注 |
+|---|---|---|
+| 204 | storageAndLogConfig | filesystem config by-design（17 跳 line 1062）|
+| 205 | v1DataHorizon | session_turns_hot by request_id（17 跳 line 1063）|
+| 206 | nativeTransport | 17 跳说"未对应 admin 端点"，需先查 license-authority / cmd/ |
+| 207 | platformSettings | 17 跳说"未对应 admin 端点" |
