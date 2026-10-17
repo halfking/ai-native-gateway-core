@@ -21544,3 +21544,51 @@ vue-tsc 报 `TurnsAPIKeyOption` 字段为 `id`/`label`（非 `key_id`/`key_name`
 - commit `8c7451bb88609c59e0b552306302d92167a48d2c`
 - 父 = `5543f030d`（批 200）
 - 孤儿棘轮 8 → 7
+
+## 11.202 第一百六十二批 接 storageMigrationState：独立深链详细页进 UI
+
+### 一、调研与真"orphan"性
+
+17 跳 evidence（line 1023 / 1041 / 1061）原判 storageMigrationState 是 by-design 平台状态机不查 DB，**实证后**：
+- `getStorageMigrationState()` 端点 `/api/admin/storage/migration-state` 已 export（`api/tuning.ts:838`）
+- `MigrationStateResponse` 类型（running + latest）已 export
+- `StorageConfig.vue` 已用（line 8-13 / 42 / 147-167）
+- 端点 admin 中间件（`handler.go:1175`）
+- **真 orphan 性 = 缺独立深链详细页**（用户不能直接打开 `/admin/data-lifecycle/migration-state`）
+
+### 二、改动清单（5 文件 276 行）
+
+| 文件 | 行 | 内容 |
+|---|---|---|
+| `web/src/views/StorageMigrationStateView.vue` | +260 | 新建：2 段（当前运行 + 历史最新）+ 自动轮询 5s + 进度条 + 4 状态 |
+| `web/src/router.ts` | +5 | route + lazy import + meta requiresPlatformOps（与父端点同档） |
+| `web/src/locales/{zh-CN,en-US}/nav.ts` | 各 +1 | storageMigrationState 条目 |
+| `web/src/views/StorageMigrationStateView.test.ts` | +113 | 4 测试（双段 / 仅 latest / 全空 / 错误 + 重试） |
+
+合计 276 行。
+
+### 三、轮询模式
+
+`onMounted` 注册 `setInterval(load, 5000)` 仅当 `state.running` 存在时拉新数据；`onUnmounted` 清掉 handle（避免测试间泄漏）。
+
+### 四、验证
+
+- `npx vue-tsc -b` exit 0
+- `npx vitest run` 4/4 passed 721ms
+- 5 文件 0 FFFD / 0 NUL
+
+### 五、收口
+
+- commit `ec409022736aa34199b1dbd12c1304c0e9773015`
+- 父 = `a5ab123dc`（批 201）
+- 孤儿棘轮 7 → 6
+
+### 六、剩余 5 孤儿（5 个 🟡 标准接前端）
+
+| 批 | 孤儿 | 工作量预估 |
+|---|---|---|
+| 203 | requestActions | 250 行（Redis LIST by request_id）|
+| 204 | storageAndLogConfig | 250 行（filesystem config）|
+| 205 | v1DataHorizon | 200 行（session_turns_hot by request_id）|
+| 206 | nativeTransport | 250 行（17 跳说"未对应 admin 端点"，需先查）|
+| 207 | platformSettings | 250 行（17 跳说"未对应 admin 端点"）|
