@@ -1352,29 +1352,42 @@ func main() {
 				// 也根本分不出来。成功一次即清零。
 				flushFailStreak := 0
 
+				// 2026-10-18（§10.110.55）：一轮 Collect+Flush 的预算与耗时
+				// 在 persist.RunCycle 里集中编排。
+				// 默认 Preset=false ⇒ 与改动前**同构**（两阶段共用同一个 ctx，
+				// 总预算仍是 30s），只多出 collect_took / flush_budget 两个观测值
+				// —— §40 §四要的正是这两个数，此前任何日志里都没有。
+				// ⚠️ 不要单独打开 Preset：实测它会**减少**写入量（Collect 超时
+				// 时 return nil, err，一行都交不出来），详见 persist/cycle.go 头注释。
+				cycleTimeouts := persist.CycleTimeoutsFromEnv()
+
 				for {
 					select {
 					case <-ticker.C:
-						ctx, timeoutCancel := context.WithTimeout(persistCtx, 30*time.Second)
-						rows, err := persistWriter.Collect(ctx)
-						if err != nil {
-							slog.Warn("ursm.v2: persist collect failed", "error", err)
-							timeoutCancel()
+						outcome := persist.RunCycle(persistCtx, persistWriter, cycleTimeouts)
+						if outcome.CollectErr != nil {
+							slog.Warn("ursm.v2: persist collect failed",
+								"error", outcome.CollectErr,
+								"collect_took", outcome.CollectTook,
+								"preset", outcome.PresetApplied)
 							continue
 						}
-						if err := persistWriter.Flush(ctx, rows); err != nil {
+						if outcome.FlushErr != nil {
 							flushFailStreak++
-							lvl, msg, args := ursmPersistFlushFailure(flushFailStreak, err)
-							slog.Log(ctx, lvl, msg, args...)
+							lvl, msg, args := ursmPersistFlushFailure(flushFailStreak, outcome.FlushErr)
+							args = append(args,
+								"collect_took", outcome.CollectTook,
+								"flush_budget", outcome.FlushBudget,
+								"preset", outcome.PresetApplied)
+							slog.Log(persistCtx, lvl, msg, args...)
 						} else {
 							if flushFailStreak > 0 {
 								slog.Info("ursm.v2: persist flush recovered",
-									"after_streak", flushFailStreak, "rows", len(rows))
+									"after_streak", flushFailStreak, "rows", outcome.Rows)
 							}
 							flushFailStreak = 0
-							slog.Debug("ursm.v2: persist flushed", "rows", len(rows))
+							slog.Debug("ursm.v2: persist flushed", "rows", outcome.Rows)
 						}
-						timeoutCancel()
 
 					case <-persistCtx.Done():
 						slog.Info("ursm.v2: persist writer stopped")
