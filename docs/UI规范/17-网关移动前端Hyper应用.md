@@ -21757,3 +21757,112 @@ vue-tsc 报 `TurnsAPIKeyOption` 字段为 `id`/`label`（非 `key_id`/`key_name`
 | 207 | platformSettings | 17 跳说"未对应 admin 端点"，同上 |
 
 后两个孤儿 17 跳明确说"未对应 admin 端点"——可能后端真不存在。如经四路取证后仍 0 命中，则按 §11.205 同形态写实证修订（0 代码改动 + 文档收口）。
+
+## 11.206 第一百六十六批 nativeTransport：四路取证 0 命中 = **dead name**
+
+### 一、4 路取证（主仓 + workspace 全 0）
+
+| 维度 | 实证 |
+|---|---|
+| admin/ | `grep -rE "nativeTransport" admin/` 0 命中 |
+| internal/ + cmd/ | 0 命中 |
+| web/src/ | 0 命中 |
+| workspace 跨仓 | `/Users/xutaohuang/workspace/ai-native-tools/` 无 web-mobile 仓 |
+
+17 跳 evidence（line 1121）原判"纯前端（web-mobile 仓内）"——实证后**workspace 无 web-mobile 仓**。
+
+### 二、真"orphan"性 = dead name
+
+nativeTransport 在主仓 + 子仓 + workspace 全部 0 命中。
+- 不是 "P5 跨仓"（无 web-mobile 仓可推）
+- 不是 "已接 by-design"（无组件 / composable / API）
+- **是 dead name**（功能从未存在 / 命名漂移 / 已废弃）
+
+### 三、本批改动
+
+**0 行代码改动**。
+
+按用户拍板"全部 8 孤儿"应做工作：
+- 主仓 0 命中 → 0 工作
+- 唯一补的是"dead name 实证"文档
+
+### 四、验证
+
+- 4 路取证 0 命中（grep 结果空）
+- workspace 目录树无 web-mobile 仓（`ls /Users/xutaohuang/workspace/ai-native-tools/` 无 web-mobile）
+
+### 五、收口
+
+- 仅文档 commit（无代码 commit）
+- 父 = `60a743092`（批 205 文档）
+- 孤儿棘轮 5 → 5（不变 —— dead name 不计入"接掉"）
+
+## 11.207 第一百六十七批 platformSettings：四路取证 0 命中 = **dead name**
+
+### 一、4 路取证
+
+| 维度 | 实证 |
+|---|---|
+| admin/ | `grep -rE "platformSettings" admin/` 0 命中 |
+| internal/ + cmd/ | 0 命中 |
+| web/src/ | 0 命中 |
+| workspace 跨仓 | 无 web-mobile 仓（同 §11.206）|
+
+17 跳 evidence（line 1121）原判"纯前端（web-mobile 仓内）"——实证后**workspace 无 web-mobile 仓**。
+
+### 二、真"orphan"性 = dead name
+
+platformSettings 在主仓 + 子仓 + workspace 全部 0 命中。
+- 与 §11.206 nativeTransport 同形态：**dead name**
+
+### 三、本批改动
+
+**0 行代码改动**。
+
+### 四、收口
+
+- 仅文档 commit
+- 父 = `60a743092`
+- 孤儿棘轮 5 → 5（不变）
+
+## 11.208 8 孤儿接前端总账（§11.200~207）
+
+### 一、8 孤儿最终分类
+
+| 批 | 孤儿 | 4 路取证结果 | 实际收口 | 真"orphan"性 |
+|---|---|---|---|---|
+| 200 | subscriptionTiers | API 已有 / 视图 0 | 5 文件 202 行 + 文档 | 真 orphan（视图缺）|
+| 201 | turnsFilterOptions | API 已有 / 视图 0 | 5 文件 215 行 + 文档 | 真 orphan（缺独立深链）|
+| 202 | storageMigrationState | API 已有 / 视图 0 | 5 文件 276 行 + 文档 | 真 orphan（缺独立深链）|
+| 203 | requestActions | API 缺 / 后端 Redis LIST | 6 文件 252 行 + 文档 | 真 orphan（API + view 全 0）|
+| 204 | storageAndLogConfig | 3 API 已有 / 视图 0 | 6 文件 254 行 + 文档 | 真 orphan（缺独立深链）|
+| 205 | v1DataHorizon | API + 横幅 + App 渲染全有 | **0 行代码** + 文档 | **不是 orphan**（全局横幅已接）|
+| 206 | nativeTransport | 4 路 0 命中 | **0 行代码** + 文档 | **dead name**（workspace 无 web-mobile 仓）|
+| 207 | platformSettings | 4 路 0 命中 | **0 行代码** + 文档 | **dead name**（同上）|
+
+### 二、代码 vs 文档
+
+| 类别 | 数量 | 行数 |
+|---|---|---|
+| 实际代码 commit | 5 批（200/201/202/203/204）| 共 ~1200 行新代码 |
+| 0 行代码 commit（仅文档）| 3 批（205/206/207）| 0 行 |
+| 文档 commit | 8 批 | §11.200~207 共 8 节 |
+
+### 三、孤儿棘轮
+
+5 批接前端真"orphan"（200/201/202/203/204）— 5 个 P0/P2 全部接掉。
+3 批 0 行代码（205/206/207）—— 不是 orphan（205 全局横幅已接 / 206/207 dead name）。
+
+实际孤儿棘轮：**13 → 8**（5 个真 orphan 推进 + 3 个 dead name 实证归档 + 5 个其它孤儿已在前批处理）。
+
+### 四、关键决策
+
+1. **17 跳 evidence 标"0 工作量 by-design" 4 个中，2 个证实真 orphan（200/201/202/203/204）** —— 17 跳分类有偏差，需逐项实证。
+2. **dead name 判定**（206/207）—— workspace 无 web-mobile 仓，无法跨仓推进，0 代码改动 + 实证文档收口。
+3. **已接判定**（205）—— DataHorizonBanner 组件 + App.vue 渲染 + test 全有，0 代码改动 + 实证文档收口。
+
+### 五、后续工作
+
+- 若 web-mobile 仓后建：可推进 206/207
+- 若 5 批真 orphan 视图有用户反馈：可继续按 5 批接前端模式扩展
+- 8 孤儿棘轮（13 → 8）的剩余 8 跨仓孤儿（已在 handoff note 列出）按同样模式推进
