@@ -9016,3 +9016,9 @@ projected = 1 ；read-back title = 'mutation probe' ；DeleteTitle UPDATE 1 ；R
 > 台账状态说明：870 已于 2026-10-17 18:14 经用户显式授权对该业务库手工 psql 应用并验证
 > （见上行 applied+verified）；部署通道尚未执行，其余环境生效仍以部署通道的执行记录为准。
 > 应用前建议低峰窗口（9 月分区构建约 10s 量级；本库实测 29.8s）。
+
+## 2026-10-18 — pending deploy
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 872 | `872_usage_ledger_ts_cover_cache_agg_idx.sql` | `2f9cd8aae9176af0e88e02cea4d9115e956c70665c739ee7dd934d4beaf13bda` | pending deploy（cache-economics 500 的覆盖索引修复；应用后需按迁移文末的验收 SQL 确认分区计划转 Index Only Scan） |

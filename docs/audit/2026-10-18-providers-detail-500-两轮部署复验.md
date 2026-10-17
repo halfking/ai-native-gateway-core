@@ -430,3 +430,112 @@ gauge 仍然是真问题、有真实代价（5.5 小时 20 次失败 / 0 次成�
 analytics/*}`(10–15s)、`probe/system-health`(55s) 各自独立，需要逐条
 EXPLAIN 取证。`request_logs_with_current_month` 在 `admin/` 下有 734 处引用、
 跨 143 个文件，全量治理是独立工程。
+
+---
+
+## §13 cache-economics：第一版修复无效，第二轮定位到覆盖索引缺列
+
+### 13.1 先证伪自己上一轮写的注释
+
+第一版（提交 `1928c544`，上线 `2699`）的注释写着：
+
+> 252 实测（同一个月窗口，逐条计时）：主聚合 6020 ms / compressedQuery 35344 ms
+
+**这句话是错的**，而且错在两个地方：
+
+1. **窗口不对**。端点用的是 `resolveUsageTimeRange(r, 30)`，默认窗口是
+   **最近 30 天**，不是「本月」。注释里写的计时来自「今天（6,668 行）」和
+   「本月（438,544 行）」两个窗口 —— 行数差 65 倍，耗时却几乎相同
+   （8294 / 12397 ms），当时被我读成「视图疑似不剪枝」。
+2. **计时器不对**。那次 `EXPLAIN` 在「今天」窗口下 `Execution Time` 只有
+   **61.367 ms**，`Subplans Removed: 3` 说明分区裁剪完全正常。
+   8.3s / 12.4s 来自包着 `podman exec` 的 wall clock，混进了启动开销。
+
+⇒ 第一版修复的问题不在方向（把 35s 的附加查询隔离出共享 ctx 是对的），
+而在**它建立在一个不成立的测量上**。教训见 LESSONS「写进代码注释的实测数字
+要能自证窗口」。
+
+### 13.2 真实窗口下的根因：覆盖索引缺 `cache_read_tokens`
+
+30 天窗口的真实主聚合（逐字取自 `usage_enhanced.go`）：
+
+```
+SELECT COUNT(*), SUM(ul.cache_read_tokens), SUM(ul.prompt_tokens), SUM(ul.cost_usd)
+FROM usage_ledger_with_current_month ul
+WHERE ul.ts >= now() - interval '30 days' AND ul.ts < now();
+```
+
+第一次跑 **12.667 s**（1,478,131 行）。同轮**交错**对照（A/B/A/B）：
+
+| 变体 | 计划 | Buffers | Execution |
+|---|---|---|---|
+| A 四列（含 `cache_read_tokens`） | Parallel **Index Scan** using `usage_ledger_2026_09_ts_idx` | **209,361** | 3239 / 3426 ms |
+| B 三列（去掉该列） | Parallel **Index Only Scan** using `usage_ledger_2026_09_ts_tenant_id_prompt_tokens_completion__idx` | **19,245** | 1502 / 1462 ms |
+
+4/4 计划形态稳定。856 建的覆盖索引是
+
+```
+INCLUDE (prompt_tokens, completion_tokens, cost_usd, latency_ms, success)
+```
+
+**不含 `cache_read_tokens`**。于是任何带 `SUM(cache_read_tokens)` 的窗口聚合
+都会放弃 index-only scan，退回逐行回堆 —— 1,478k 行里 1,039,470 行落在 9 月
+分区，多读约 190k 个 buffer（约 1.5 GB）。
+
+⇒ **856 对这条查询整体失效**：它服务「按时间窗聚合用量」这族查询，
+而这族里带缓存 token 的那部分拿不到任何收益。
+
+### 13.3 先否证的两条「更省事」的路
+
+| 备选 | 结论 | 依据 |
+|---|---|---|
+| 读滚存 `request_stats_minute` | 否 | 无 `cache_read_tokens` 列 |
+| 读滚存 `stats_usage_daily` | **双重否证** | ①口径不对：`dimension_type` 有 person/provider/provider_model/credential/tenant/error 六种存同一批事实，直接求和是多重计数；即便只取 `tenant+business` 也只有 318,225 条 vs 明细 1,478,030 条。②更慢：扫 74,178 行用了 **32.9 s**（明细只要 3.4 s） |
+| 加宽 handler 预算 | 否 | 不消除 1.5 GB 回堆；且属行为变更，需单独评审（856 文末已预留这条） |
+
+### 13.4 修复：迁移 872
+
+建 856 的**超集**（键 `(ts, tenant_id)` 不变，INCLUDE 补上
+`cache_read_tokens` / `cache_write_tokens`），同迁移内按序删掉 856 的两条 ——
+usage_ledger 是全站最热的写表，让两条同前缀、高度冗余的索引并存等于长期写放大。
+
+**事务内试跑 + ROLLBACK（870 同款做法，零残留）**：
+
+```
+CREATE INDEX … ON public.usage_ledger (ts, tenant_id) INCLUDE (…, cache_read_tokens, …)
+Time: 56712.240 ms          ← 负载 44 下，建索引持锁窗口
+CREATE INDEX … ON public.usage_ledger_hot (…)
+Time:   123.637 ms
+
+Parallel Index Only Scan using usage_ledger_2026_09_ts_tenant_id_prompt_tokens_completion_idx1
+Parallel Index Only Scan using usage_ledger_2026_10_ts_tenant_id_prompt_tokens_completion_idx1
+Parallel Index Only Scan using usage_ledger_hot_ts_tenant_cache_agg_idx
+Buffers: shared hit=10325 read=10656          ← 20,981，基线 209,361（−90%）
+Execution Time: 14101.397 ms                 ← 见下：不是本索引的账
+ROLLBACK
+```
+
+⚠️ **14.1 s 不能读成「索引更慢」**：新索引刚建完还是冷的
+（`read=10656` 是从 OS cache/文件读的），且此刻宿主 load average 44/4 核。
+**buffer 计数是确定量，耗时绝对值在这台机器上不是。**
+这也正是 13.2 用交错对照而不是前后两次测的原因。
+
+### 13.5 一个与代码无关、但正在主导时序的现场问题
+
+252 宿主的 CPU 被**别的会话遗留的递归 grep** 吃满：
+
+```
+PID 3353332  47.7% CPU  已跑 06:08:54   grep -rls -m1 AUTH_ENABLED /root
+PID 3365283  44.7% CPU  已跑 06:04:24   grep -rls AUTH_ENABLED /opt /etc/goacos /usr/local/sbin /root
+PID 3535476  42.5% CPU  已跑 04:59:09   grep -rl acc-kid /root /opt /home /etc/systemd
+PID 49210    17.6% CPU  已跑 19:25      grep -rn ADD COLUMN IF NOT EXISTS adjust /data
+load average: 44.02 / 38.71 / 37.47   (4 核)
+```
+
+PG 侧同时只有 1 条 active 查询、0 IO 等待、0 锁等待 ⇒ **负载不在数据库里**。
+在 load 33–44 的机器上，任何端点的耗时数字都只能当上界看；
+`cache-economics` 今天 4 次抽测（500@10.08 / 200@6.98 / 200@6.53 / 200@10.07）
+里，有多少是查询本身、多少是 CPU 饥饿，目前**无法分开**。
+
+本轮没有动这些进程：它们不属于本会话，且可能仍被某个活跃会话持有。
+已向 owner 报告，由 owner 决定是否清理。
