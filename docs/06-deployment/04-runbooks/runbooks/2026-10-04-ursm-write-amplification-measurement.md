@@ -21161,3 +21161,210 @@ store 的每一个 hash 读取  ⊆  payloadDuplicateKeys ∪ payloadResidentKey
 ★ 同族：[[一致性搜索]] · [[反向枚举生产者再查出口]] · [[已有正确做法、这里没有]] ·
 [[自相矛盾的读数同样是量具坏了的信号]] · [[恒真判据]] ·
 [[变异脚本的「锚点没找到」不是变异结果]]。
+
+### §10.110.63 落地 §62 的第 1 项：`payload` 空残渣存 **NULL** 而不是 `{}`
+
+> §62 第八节列的四项变更里第 1 项。本节把它做掉。
+> **本节未部署**；部署需授权。
+
+#### 一、约束前置核查（结论：不需要迁移）
+
+动手前必须确认这一列**可空**，否则「零风险」只是我上一节的一句断言：
+
+| 来源 | `ursm_node_snapshot_min.payload` |
+|---|---|
+| 迁移 453（真正的建表） | `payload jsonb`（可空） |
+| `sql/schema/01-schema.sql` | `payload jsonb` |
+| `installer/.../embeddata/01-schema.sql` | `payload jsonb` |
+| `deploy/sql/schemas/baseline/01-schema.sql` | `payload jsonb` |
+| `sql/objects/tables/ursm_node_snapshot_min.sql` | `payload jsonb` |
+| **生产实测** `information_schema` | `is_nullable = YES`，无 default |
+
+四份 baseline 副本与 `objects` 版该表的建表段 **md5 完全一致**（`95796cd89bd9`）。
+⇒ **无漂移、无需迁移**，这确实只是「不再存一个没有信息量的值」。
+
+#### 二、⚠ 本轮第四次量具事故：我差点凭一个 grep 立论
+
+我一度判定「baseline 写的是 `NOT NULL`、迁移写的是可空、生产是可空 ⇒ 三方漂移」，
+并准备把它写成一条发现。真因：
+
+```bash
+grep -rn "payload jsonb DEFAULT '{}'::jsonb NOT NULL" --include=*.sql sql/
+# → sql/schema/01-schema.sql:5106:  payload jsonb DEFAULT '{}'::jsonb NOT NULL
+```
+
+**第 5106 行是 `analysis_events.payload`，不是 `ursm_node_snapshot_min.payload`。**
+我 grep 时**没有把表名锚进去**，于是整条「漂移」结论建立在一个别的表上。
+
+★ 更值得记的是它的**方向**：我据此准备**上调**风险等级（「不是零风险」），
+也就是说它会让我**否定一个本来正确的结论**。
+⇒ 量具坏掉时，它把结论推向任一方向都可能；
+　唯一可靠的防线是**把「我上一节的结论也被推翻了」当成可能事件**去查，
+　而不是把新读数当成更权威的东西直接采纳。
+
+⇒ ★ 通用式：
+1. ⭐⭐⭐⭐⭐ **按字面量 grep 某个 DDL 片段前，必须先确认它属于目标对象**：
+  　用 `awk '/CREATE TABLE <目标>/,/^\);/'` 截段再 grep，而不是全文件 grep。
+2. ⭐⭐⭐⭐ 全文件 grep 命中的是「**某个**对象有这个片段」，
+  　而结论要的是「**这个**对象有这个片段」。两者不等价，且**不会报错**。
+
+（另三条事故见 §62 第六节：截断 + 制表符、`credential_id` 分组、漏 `FROM`。）
+
+#### 三、改动本身
+
+**Collect**：残渣为空 ⇒ 保持 `row.Payload` 为 nil，不再 marshal 空 map。
+**Row**：新增 `PayloadMarshalFailed bool`，把两种「Payload 为空」区分开。
+**Flush**：经纯函数 `payloadArgFor(r)` 决定绑定什么。
+
+#### 四、两个陷阱（这才是改动的难点）
+
+**① 占位陷阱。** Flush 里原本写着「Payload 为空就写 `_note` 占位」，
+那是为 `json.Marshal` 失败准备的。改成「残渣为空 ⇒ nil」之后，
+**85% 的行会全部命中它**，每行写约 50 B —— 比原来的 8 B 空对象**差 6 倍**。
+⇒ `PayloadMarshalFailed` 就是为此存在的。
+
+★ 顺带确认一件事：`json.Marshal(map[string]string)` **永远不会失败**
+⇒ 那个分支在生产上**不可达**。本节保留它（防御性），并在判据注释里
+写明它不可达、那条判据守的是「别被顺手删掉」而不是生产行为。
+
+**② 空串陷阱。** INSERT 的 payload 参数是 `$22::text::jsonb`。
+若把 nil 转成 `string(nil)` = `""`，PG 收到 `''::jsonb` ——
+**那是语法错误，不是 NULL** ⇒ 一行出错、整条 INSERT 失败、整轮事务回滚、
+**1,802 行全丢**。⇒ 必须绑**未类型化的 nil**。
+
+★ 因此把绑定决策抽成纯函数 `payloadArgFor`：真库门是 opt-in 的，
+被静默跳过时（2026-10-17 审计 §七.6）最需要承重的恰恰是第 ② 条。
+
+#### 五、判据与变异
+
+`writer_payload_null_test.go`（6 条）：
+
+| 判据 | 钉的是 |
+|---|---|
+| `CollectLeavesPayloadNilWhenResidualIsEmpty` | 空残渣 ⇒ nil；**且** typed 列仍被正确填（正向对照） |
+| `CollectKeepsResidualPayloadForResidentKeys` | 前向兼容承诺没被削掉（未来新增键仍进 payload） |
+| `PayloadArgForBindsUntypedNilForEmptyResidual` | ★ 绑 nil 而不是空串 |
+| `PayloadArgForNeverBindsAnEmptyString` | 5 种 Row 形态的矩阵断言，一条顶五条 |
+| `PayloadArgForKeepsRealPayloadVerbatim` | 原样透传且仍是合法 JSON |
+| `FlushBindsThroughPayloadArgFor` | 接线门：抽了函数却忘了改调用点，同 M43 族 |
+
+| 变异 | 内容 | 结果 |
+|---|---|---|
+| P1 | 残渣为空仍写 `{}`（退回原行为） | ✅ |
+| P2 | 空残渣绑空串（`::jsonb` 语法错误） | ✅ |
+| P3 | 删掉 marshal 失败分支 | ✅ |
+| P4 | 绑定传 `[]byte` 而非 `string` | ✅ |
+| P5 | Flush 不再走 `payloadArgFor`（接线断裂） | ✅ |
+
+#### 六、收益与本节效力
+
+- 收益：1531 行 × 8 B ≈ **34 MB/天 ≈ 12.6 GB/年**（§62 实测口径）。
+- 本节**未部署**、**未做任何生产写操作**、**无迁移**（列本就都可空）。
+- 回归：17 个包通过。唯一失败
+  `TestWriteRedactorLoadsRestorationSourceAfterConstruction` 是本会话之前就存在的；
+  `installer/...` 的 setup failed 是「独立 Go 模块」这一既有事实（AGENTS.md 有记）。
+
+★ 同族：[[一致性搜索]] · [[0 命中的第一嫌疑永远是量具坏了]] ·
+[[自相矛盾的读数同样是量具坏了的信号]] · [[只测函数不测接线]] ·
+[[判据的识别词是契约的一部分]]。
+
+### §10.110.64 56 列里有 **10 列从来没有被写过**：三把尺子互相印证，并把它变成一道门
+
+> 触发点：§62 撞到 `lat_p95_ms` 是死列。既然撞得到一个，就不该一个个撞 ——
+> 本节对全表 56 列做一次系统性普查。
+
+#### 一、三把独立的尺子，指向同一组 10 列
+
+| 尺子 | 口径 | 读数 |
+|---|---|---|
+| **A. 生产** | 最新一轮 1816 行，`count(col)` | **10 列 = 0** |
+| **A'. 生产** | 最近 **200 轮**累计非空次数 | **同样 = 0** |
+| **B. Redis** | 抽样 3 个 `ursm:v2:node:*` 的 HKEYS | 这 10 个字段**一个都没有** |
+| **C. 源码** | writer.go 的 INSERT 列清单 | 只写 **46** 列，表有 **56** 列 |
+
+C 的差集（表里有、INSERT 从不写的 10 列）与 A 的零列**完全重合**：
+
+```
+lat_p95_ms  price_in_per_1m  price_out_per_1m  billing_mode  trust_level
+baseurl_latency_ms  conc_used  conc_limit  fp_used  fp_limit
+```
+
+⇒ 它们恰好是 **pricing / concurrency / fingerprint 一族** ——
+正是 818 迁移头注释里说的「以防未来需要恢复其他字段（pricing, concurrency, etc.）」。
+
+#### 二、三重死：无生产者、无消费者、无数据
+
+- **生产者**：上游 Redis node hash 从不写这些字段（抽样确认），
+  persist 的 INSERT 也从不写（差集 C）。
+- **消费者**：store 层除 `lat_p95_ms`（`pipeline.go:135` 读它，只会得到 0）外无人读取。
+- **数据**：200 轮累计 0 次非空。
+
+⇒ `SELECT conc_used FROM ursm_node_snapshot_min` **永远返回 NULL**，
+而查询者无从知道「这个字段上游根本不存在」—— 这是**接口说谎**，不是数据问题。
+
+#### 三、⭐ 顺带查实：baseline 对这张表是 **818 之前的世代**
+
+写门时自检抓到：baseline 的 `CREATE TABLE ursm_node_snapshot_min` **没有** 818
+用 `ALTER TABLE` 加的那 24 列（该块最后一行是 `payload jsonb`，没有 `cool_reason`）。
+
+⇒ 这与 `sql/schema/baseline_drift_test.go` 头注释说的「副本滞后」是同一件事，
+但那道门只统计**对象**（表/列是否存在），**不比对列的具体定义**，
+所以「这张表的 baseline 缺 24 列」这件事此前无人记录。
+
+⚠ 直接后果：任何拿 baseline 当「这张表有哪些列」权威来源的门/脚本都会**系统性漏 24 列**。
+⇒ §六 的门因此把全集取成 **baseline ∪ INSERT**，并要求锚列取两者都有
+（选 `cool_reason` 当锚会把门直接判成"提取器陈旧"，而真问题是基线滞后）。
+
+#### 四、门的形态：`unwrittenByDesign` 登记表
+
+`writer_unwritten_columns_test.go`（3 条）：
+
+| 判据 | 钉的是 |
+|---|---|
+| `EveryTableColumnHasAWriter` | 全集（baseline ∪ INSERT）里每列都被 INSERT 写或被登记 |
+| `UnwrittenByDesignColumnsStillExist` | 登记的列**真的在表里**（防对空气写注释） |
+| `UnwrittenByDesignColumnsAreActuallyUnwritten` | ★ 登记为死的列**确实没被写** |
+
+★ 第三条是门不失明的关键：「有写入者却被登记成死列」会让门变松 ——
+真出现静默空列时它不再响。
+
+| 变异 | 内容 | 结果 |
+|---|---|---|
+| U1 | 表里多出一列，无人写也未登记 | ✅ |
+| U2 | 登记了一列其实被 INSERT 写的列 | ✅ |
+| U3 | 登记了一列表里没有的列 | ✅ |
+| U4 | 把一个真实死列的登记删掉 | ✅ |
+
+#### 五、本轮的提取器事故（第四次与第五次，已在 §63 记过前四次）
+
+1. 用逐行正则抽 INSERT 列清单 → **抽出 0 列**，我却照样打印了
+   「56 列全部缺失」这个列表当发现。**提取返回 0 是最响的失败信号，必须先断言再算。**
+2. 改成「剥注释 → 替换 `)` → 按逗号切」后仍漏掉 `cool_reason` ——
+   捕获组把列清单结尾的 `)` 吞进去了。
+3. 选 `cool_reason` 当 baseline 锚列 → 门报"提取器陈旧"，**而真问题是基线滞后**。
+   ⚠ 这是**第三次**「红的不一定是代码/判据」：门红了，但门是对的、我的前提是错的。
+
+⇒ ⇒ ★ 三条通用式（与 §62/§63 同族）：
+- ⭐⭐⭐⭐⭐ **提取器必须有非零断言 + 锚列自检**，且**锚列要选真正的共有子集**。
+- ⭐⭐⭐⭐ **门的报错要能被读成「我的前提错了」**；若门只会说「你错了」，
+  它就会把人引向改坏正确的门。
+- ⭐⭐⭐ **gofmt 会重排对齐**：变异锚点写多一个制表符就会静默失配，
+  本轮 U2/U3/U4 第一次全失配且脚本仍继续跑 ⇒ **锚点尽量用非对齐敏感的单行**。
+
+#### 六、本节效力与待拍板
+
+- 本节**未做任何生产写操作**、**未改任何表结构**，只新增一道门与一份登记表。
+- 死列的**物理代价很小**（NULL 列在 null bitmap 里只占 1 位；10 列 ≈ 1.25 B/行，
+  按 500 万行/天 ≈ 6 MB/天）。**真正的代价是接口说谎。**
+- ⚠ **删列是否安全**：这 10 个键**都不在 `payloadDuplicateKeys` 里**
+  ⇒ 一旦上游开始写它们，值会落进 **payload**（818 的前向兼容仓）而不是被丢弃。
+  ⇒ 「删列 + 从排除表移除」是**不丢数据**的，但需要迁移 + 四份 baseline 同步 + 授权。
+
+| 序 | 事项 | 语义变更 | 建议 |
+|---|---|---|---|
+| 1 | 删掉这 10 列 | 无（数据仍在 payload） | 低优先，收益小；**主要价值是消除接口说谎** |
+| 2 | 把 baseline 这张表补齐 818 的 24 列 | 无 | 建议做，否则任何以 baseline 为权威的门都会漏 24 列 |
+
+★ 同族：[[一致性搜索]] · [[反向枚举生产者再查出口]] ·
+[[0 命中的第一嫌疑永远是量具坏了]] · [[判据红了先怀疑自己的前提]] ·
+[[全文件 grep 命中 ≠ 目标对象有这个片段]]。
