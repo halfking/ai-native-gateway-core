@@ -25111,3 +25111,42 @@ FROM pg_class WHERE oid IN ('public._request_logs_bodies_hot'::regclass,
 
 ★ 同族：[[量具不可用与真没问题必须可区分]] ·
 [[§247：量了自检没量门]] · [[阴性结论要当缺陷一样复核]]。
+
+### 十一、TRUNCATE 的前置条件逐条查清（**零阻塞项**，待授权项的证据链到此闭合）
+
+第七节给了 TRUNCATE 建议，但**没验过它会不会被挡**。逐条查：
+
+| 检查项 | 结果 | 含义 |
+|---|---|---|
+| 是否有 FK **指向**这两张表 | **0 条** | 不会被 `TRUNCATE` 直接拒绝（无需 `CASCADE`） |
+| 是否分区父表 | 否，两张都是 `relkind='r'` | **不会有「TRUNCATE 连带清空子分区」的意外** |
+| 依赖它们的视图 | **4 个**：`request_logs_bodies_with_current_month`、`request_logs_with_current_month`、`…_without_customer_id`、`…_without_request_class_due_at` | 视图不阻塞 TRUNCATE；表本就是空的，视图读数**不变** |
+| 表上的触发器 | `_request_logs_hot` 上 2 个，**均启用**（`tgenabled='O'`） | 见下 |
+| `count(*)` | 0 / 0 | 无数据可丢 |
+
+两个触发器的完整定义：
+
+```
+trg_sync_session_task_id    AFTER INSERT ON _request_logs_hot FOR EACH ROW
+                              EXECUTE FUNCTION sync_session_task_id()
+trg_update_session_summary  AFTER INSERT ON _request_logs_hot FOR EACH ROW
+                              WHEN (new.gw_session_id IS NOT NULL AND <> '')
+                              EXECUTE FUNCTION update_session_summary()
+```
+
+⇒ ★ **两个都是 `AFTER INSERT`，且 `WHEN` 条件只在 INSERT 上有意义。**
+`TRUNCATE` 不触发行级触发器——**但这里无关紧要**：
+触发器只有「把新行向前传播」的职责，**没有任何「删除后回滚/清理派生状态」的职责**；
+而待执行的 TRUNCATE 作用于一张**已经 0 行**的表 ⇒ **不存在需要被撤销的行级副作用**。
+⇒ 派生状态（如 `session_summaries`）不会因这次 TRUNCATE 产生任何新不一致。
+
+⚠ **但这条结论只对「表已空」成立**：若日后有人重新打开写入、再填入行，
+那时用 `TRUNCATE` 清表就会**跳过这两个 INSERT 传播器**。
+⇒ ⇒ ★ 通用式：⭐⭐⭐⭐⭐ **凡是用 `TRUNCATE` 替代 `DELETE` 的决策，都必须先问一句
+「这张表上有几个 `AFTER INSERT` 触发器在向外传播状态」**——
+它们不是「清理逻辑」，所以 `TRUNCATE` 跳过它们**在表为空时无害、在表非空时会造成派生状态空洞**。
+⇒ 这也是本节把「已空」当作**前提**而不是**顺带说明**的原因。
+
+⇒ ★ 至此 TRUNCATE 的证据链闭合：**不依赖 FK、不依赖分区结构、不依赖触发器语义、
+不依赖「没人读它」，只依赖「它已经 0 行且被永久停写」。**
+★ 同族：[[§90 的教训：治理清单要按宿主寿命切分]] · [[量具不可用与真没问题必须可区分]]。
