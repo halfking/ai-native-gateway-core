@@ -25931,3 +25931,126 @@ NOTIFY=/bin/true /opt/scripts/pg17-index-bloat.sh --report
 ⚠ 不要用「跑一次看有没有新日志」当验收 —— 那是 §88 的教训
 （「没出现这条日志」不能用来判断「没触发」）。
 ⇒ 应**先确认日志文件 mtime 前进**，再判内容。
+
+---
+
+## §104 在 `pg17-index-bloat.sh` 里找到一个**结构性盲区**：它永远看不到叶分区上的索引（4,797 MB）
+
+§102 建议把 cron 从 `--report` 换成 `--fix`。本节在做部署前核验时顺手查了一件事：
+**为什么 `usage_facts_default`（80 MB、7 条索引 99.6–99.9% 删空）从来不出现在候选里？**
+
+### 一、现象：它**根本没被测量**
+
+```
+$ grep usage_facts_default /var/log/pg17-index-bloat.log   # 今日 run
+（完全没出现）        ← 不是「判 ok」，是「没进候选集」
+```
+
+而它的索引明明够大：`usage_facts_default_event_id_revision_occurred_at_key` = **23 MB**、
+`…_request_id_occurred_at_idx` = **18 MB**，都 ≥ `MIN_INDEX_MB=16`。
+
+### 二、根因：`relispartition` 全为 `t`
+
+按**完全相同的判据**在生产库上逐条验：
+
+| index_name | relkind | **relispartition** | indisvalid | size | ≥16 MB |
+|---|---|---|---|---|---|
+| `usage_facts_default_event_id_revision_occurred_at_key` | i | **t** | t | 23 MB | ✅ |
+| `usage_facts_default_request_id_occurred_at_idx` | i | **t** | t | 18 MB | ✅ |
+| 其余 5 条 | i | **t** | t | 6048–8488 kB | ❌（低于尺寸门槛） |
+
+而候选查询里有：
+
+```sql
+WHERE c.relkind = 'i' AND NOT c.relispartition AND i.indisvalid ...
+                                            ^^^^^^^^^^^^^^^^^^^^ 7 条全被这一条排除
+```
+
+⇒ ★ **`usage_facts_default` 是 `usage_facts` 的 `DEFAULT` 分区**（`pg_inherits` 实测）。
+⇒ **叶分区的 `relkind` 与普通表一样是 `'r'`** —— 这正是 §101 把它当成「全库唯一的空表」看的原因，
+**而它其实是一个分区**，这个身份在只看 `relkind` 时完全看不出来。
+
+### 三、★ 这个过滤器**既多余、又有害**
+
+它想排除的是「分区父表上那些没有物理存储的分区索引」。但那些索引根本不在候选集里：
+
+```sql
+SELECT count(*) FROM pg_index i JOIN pg_class t ON t.oid=i.indrelid
+ WHERE t.relkind='p' AND pg_relation_size(i.indexrelid) >= 16*1024*1024;
+
+ partitioned_parent_indexes | ge16MB | max_bytes
+----------------------------+--------+----------
+                          0 |      0 |    NULL
+```
+
+⇒ ★ **分区父表上的索引，一条都没有 `>=16 MB` 的**（分区索引无物理存储，`relkind` 是 `'I'` 而非 `'i'`）
+⇒ 所以 `pg_relation_size >= MIN_INDEX_MB` 这一条**已经把它们排除了**
+⇒ ⇒ **`AND NOT c.relispartition` 是一个什么都没挡住、却挡掉了 4,797 MB 的过滤器。**
+
+### 四、盲区有多大
+
+```sql
+WHERE c.relkind='i' AND c.relispartition AND i.indisvalid
+  AND pg_relation_size(c.oid) >= 16*1024*1024
+```
+
+| | 读数 |
+|---|---|
+| 受影响的叶分区 | **24 张** |
+| 机制看不到的 ≥16 MB 索引 | **74 条** |
+| 这些索引的总体积 | **4,797 MB** |
+
+分布（≥16 MB 的部分）：
+
+| 叶分区 | 索引数 | 索引体积 |
+|---|---|---|
+| `session_turns_2026_09` | 16 | 889 MB |
+| `usage_ledger_2026_09` | 6 | 698 MB |
+| `session_bodies_2026_10` | 5 | 96 MB |
+| **`usage_facts_default`** | **2** | **40 MB**（99.9% 删空） |
+| `ursm_node_snapshot_min_20261013` | 1 | 80 MB |
+| 其余 3 张 | 5 | 136 MB |
+
+⇒ ⚠ **诚实边界：这 4,797 MB 不都是浪费。**
+多数分区索引是健康的（`session_turns_2026_10` 的索引在 §100 里量过，最坏 0.7% 删空）。
+**修过滤器的意义是让机制「能分辨」，不是断言这 4.8 GB 可回收。**
+⇒ ⇒ ★ 但这条边界本身就说明了缺陷的性质：**当前机制不是「量得不准」，是「压根没量」**，
+于是这 4.8 GB 里有多少是膨胀、有多少是正常，**没人知道**。
+
+### 五、⇒ 对 §102 结论的直接修正
+
+| §102 的说法 | 本节修正后 |
+|---|---|
+| 「机制一直在跑，切 `--fix` 就能自动治理」 | ⚠ **切了也治不了分区**——机制结构上量不到叶分区的索引 |
+| 「`usage_facts_default` 待 TRUNCATE」 | ✅ **仍然成立，且更硬**：REINDEX 与 `--fix` 都不可能清理它（只有 2 条够尺寸，而它们不在候选集内） |
+
+⇒ ⇒ ★ **建议的推进顺序因此变了**：
+
+1. **先修过滤器**（删掉 `AND NOT c.relispartition`，并在注释里写明
+   「分区父表的索引是 `relkind='I'` 无存储，已被 `relkind='i'` 排除」），
+   让 4.8 GB 进入视野 —— 但这会让候选集从 46 涨到约 120，**必须先确认运行时间**
+   （脚本注释自记「全量探测实测 >10 分钟（42 候选）」）。
+2. **再切 `--fix`**。否则等于把一个**覆盖面缺了 4.8 GB** 的机制常态化，
+   给出「索引膨胀已被自动治理」的错觉。
+3. `usage_facts_default` **仍然用 TRUNCATE**，不指望 `--fix`。
+
+★ 同族：[[§101 的教训：阴性结论要当缺陷一样复核]] ·
+[[量具不可用与真没问题必须可区分]] · [[§95 的教训：清单的前提要逐条验]]。
+
+### 六、附带记一条：`MAX_FIX_PER_RUN=10` 与今天的候选数
+
+今天 `flagged=9`、按 headroom 降序排：
+
+```
+85 MB  ursm_node_snapshot_min_legacy_pkey   ← 排第 1
+64 MB  idx_stats_event_dedup_event_id_occurred_at
+59 MB  request_stats_error_drill_minute_pkey
+...
+```
+
+⇒ ⚠ **`MAX_FIX_PER_RUN=10` ≥ 9 ⇒ 一次 `--fix` 会把它们全部处理掉**，
+而第 1 名恰好是 `ursm_node_snapshot_min_legacy_pkey`（240 MB / headroom 85 MB）
+——**那张表整体 852 MB 正挂在待 DROP 清单上**（§93/§94）。
+⇒ ⇒ ★ ⇒ **顺序很重要：先 `DROP ursm_node_snapshot_min_legacy`，再开 `--fix`；
+否则会把整轮最贵的一次重建花在一张即将被删的表上。**
+★ 这一条与本节第五节的修过滤器是**两个独立的问题**，但都属于「切 `--fix` 之前必须先处理」。
