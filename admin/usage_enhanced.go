@@ -667,16 +667,44 @@ func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 		%s
 	`, whereClause)
 
-	// compression_strategy 的原生归属是 _request_logs。走 _request_logs 而不是
-	// join 回 ledger：ledger→_request_logs 是 2M×2M 嵌套循环，30 天窗口实测 28s，
-	// 而按 ts 过滤的单表读同窗口实测 1.7s（2026-10-03 实测）。两表 cost 口径经
-	// 核对一致（同窗口均 150.15 美元），因此这里只是换张表，不引入新的计费口径。
-	// 读的是 hot∪母表双腿视图而非裸母表：最近 8h 的行只在 _request_logs_hot
-	//（hot 默认仅保留 8h），裸母表读对当月面板是真实盲区（sqlreadguard 读面
-	// 纪律）；视图两腿都吃 ts 谓词下推，剪枝收益不丢。
+	// compression_strategy 的原生归属是 _request_logs。
+	//
+	// 2026-10-18（873 上线后的残余项）：这条查询原先读 canonical 视图
+	// request_logs_with_current_month，30 天窗口**跑不完**——实测 3s 子预算
+	// 100% 超时，154 journalctl 每次调用都记
+	//   WARN cache-economics: compressed request count unavailable
+	//        err="timeout: context deadline exceeded"
+	// 于是 compressed_requests **恒为 0 是降级产物，不是真实值**，
+	// 且每次调用白烧 3s（873 把主聚合降到 0.5s 后，端点 3.4–4.0s 的时间里
+	// 剩下的全是这条拿不到结果的查询）。
+	//
+	// 视图为什么跑不完：它把 session_turns / session_turn_details 一并联进来
+	// （LATERAL 补列 + NOT EXISTS 反连接），本端点只要一个 COUNT(*)，却要为
+	// 30 天 200 万行做整套补列。
+	//
+	// 实测对照（同一 30 天窗口）：
+	//   request_logs_with_current_month  >300s（跑不完）
+	//   _request_logs（母表单腿）           648 ms → **10,590 行**
+	//   _request_logs_hot                  3 ms  → 0 行
+	// 母表命中 10,590 行 ⇒ 视图报出来的 0 确实是错的。
+	//
+	// ★ 为什么是**单腿母表**而不是 hot∪母表双腿（这是刻意取舍）：
+	//   sqlreadguard 的读面纪律要求读 hot∪母表双腿（最近 8h 的行只在
+	//   _request_logs_hot，裸母表读有 ≤8h 盲区）。但对**计数**指标来说，
+	//   朴素的 UNION ALL 腿是更糟的错误方向：
+	//   promote 会把旧行从 hot 搬到母表，两腿同时存在时同一行会被数两次
+	//   （bg/routing_health_checks.go 的 DEBT(R47) 条目记的就是这件事，
+	//   并注明「正确双腿必须走族视图并核对 promote 去重语义」——那需要
+	//   一个真实 promote 环境，不是本轮能定的）。
+	//   ⇒ 低估 ≤8h（保守、可在注释里说清）优于系统性虚高。
+	//   同款取舍见 internal/summarystore/store.go 与
+	//   domains/session/v2/session_request_status_backfill.go 的白名单条目。
+	//
+	// 口径变化如实记录：本指标此前**从未返回过真值**（恒为降级的 0），
+	// 因此不存在「与旧值不一致」的回归面；现在是第一次给出真实数字。
 	compressedQuery := `
 		SELECT COUNT(*)
-		FROM request_logs_with_current_month rl
+		FROM _request_logs rl
 		WHERE rl.ts >= $1 AND rl.ts < $2
 		  AND rl.compression_strategy IS NOT NULL
 		  AND rl.compression_strategy <> ''

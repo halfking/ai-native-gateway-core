@@ -43,6 +43,16 @@ var sqlReadGuardAllowFiles = map[string]string{
 	// ---- LEGIT：双腿之母表腿（有意读） ----
 	"admin/analytics.go":               "LEGIT: 决策回放双腿之母表腿（R46 F9，hot 腿同查询内联）",
 	"admin/request_trace.go":           "LEGIT: hot∪母表双腿 UNION ALL（既定正面模板）",
+	"admin/usage_enhanced.go": "LEGIT: cache-economics 的压缩请求计数走**母表单腿**（2026-10-18）。" +
+		"①为何单腿而不是双腿 UNION：promote 会把旧行从 _request_logs_hot 搬到母表，" +
+		"两腿同时存在时朴素 UNION ALL 会把同一行数两次——对**计数**指标那是系统性虚高；" +
+		"而双腿的正确形态需要走族视图并核对 promote 去重语义（见本文件 " +
+		"bg/routing_health_checks.go 里 R47 那条债的备注），本轮无从取得真实 promote 环境。" +
+		"②≤8h 盲区的方向论证：最近 8h 的行只在 hot，本指标会**低估**这部分；" +
+		"对一个 30 天窗口的「压缩请求数」而言低估是保守且可解释的，优于虚高。" +
+		"③此前这条读的是 request_logs_with_current_month，30 天窗口 >300s 跑不完，" +
+		"100% 超时降级成 0——即该指标**从未返回过真值**；母表单腿实测 648ms / 10,590 行。" +
+		"同款取舍见 internal/summarystore/store.go 与 domains/session/v2/session_request_status_backfill.go。",
 	"admin/session_tenant.go":          "LEGIT: assertTaskInTenant 跨租户权限门，session 族两腿 + v1 双 EXISTS 母表腿并联（S4 停写后不得只剩 v1）",
 	"admin/session_detail_v2.go":       "LEGIT: resolveSessionID 反向臂 hot∪母表双腿之母表腿（R71，hot 腿同查询内联）",
 	"internal/trace/trace.go":          "LEGIT: hot∪母表双腿",
