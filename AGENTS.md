@@ -2718,3 +2718,60 @@ $ bash scripts/apply-db-revision-sequence_test.sh  # OK (9 tests)
 6. **记忆已写**：`/Users/niuer/.zcode/cli/memories/projects/llm-gateway-go-1614005e1f428788/memory/`
    下追加 `audit-round-2026-10-18.md`，含本轮三族修复 + 两个生产 ERROR 登记 + 分支 force-push
    防范要点。
+
+---
+
+# 追加：2026-10-18 S4 停写 request-detail 页空数据修复轮（154 已上线）
+
+> 用户报告 `/request-detail/<id>?mode=request&tab=overview` 页面核心数据全空而会话有数据。
+> 两阶段修复，均已推送并部署 154（2725-6d2e3224，active_port 见 run/active-port）。
+
+## 根因一：getLog 的 OR 谓词（元数据层）
+
+`/api/logs/:id` 旧查询把两个 id 的匹配写成单条 OR（request_id 与 client_request_id
+各 `= $1` 再 OR）。734 视图的 session 分支**没有 client_request_id 索引**，OR 无法
+拆成 BitmapOr，planner 放弃 `idx_session_turns(_hot)_request`，退化为对全部
+session_turns 月分区顺序扫描——**154 实测 2026_09 79.8 万 + 2026_10 20.3 万行 /
+3.8GB，45s 跑不完**，30s ctx 超时 500。停写（生产 2026-10-13 生效）后新请求只落
+session 家族 ⇒ 每个新请求的详情页核心数据全空（unified 端点正常，所以「会话有
+数据而页面为空」）。
+
+- 修复：`admin/logs.go` getLog 拆成两段顺序查询（腿 1 request_id / 腿 2
+  client_request_id），与 unified_detail.loadRequestLogMeta 2026-08-27 优化同构。
+  154 实测腿 1 含全部 JOIN **7.76ms**。
+- **判据纪律新实例：v1 分支有 client_request_id 索引（BitmapOr）而 session 分支
+  没有——同一条 OR 在两个分支走完全不同的计划**。给视图族加列后，凡「OR 跨
+  新旧两族列」的查询都要 EXPLAIN 两族各自的分支计划，不能只看一边。
+- 迁移 **874**：`session_turns` 分区父表 `(client_request_id) WHERE client_request_id
+  IS NOT NULL` 部分索引（实测仅 10.9% 行带值），级联到现存+未来分区（862/846
+  先例），SET LOCAL statement_timeout/lock_timeout 防 57014 卡点，COMMENT 同
+  to_regclass 守卫。腿 2 实测 40ms。
+- 判据：`admin/logs_get_log_split_or_test.go`（两腿在场/禁 OR 回归/租户门+ts 序）
+  + `migration_874_test.go`；变异 5/5 红。
+
+## 根因二：bodies 读的 session 兜底够不着（正文层）
+
+三处 body 读路径（`fetchRequestBodies` / `fetchRequestOutboundBody` / unified
+`loadOutboundBody`）原顺序「v1 hot → v1 columnar 冷扫/视图 → session 兜底」，
+且 session 兜底挂在冷扫 **ErrNoRows** 分支下。停写后新请求正文只在
+session_bodies，v1 冷扫对它们是**证明缺席**——columnar 无 btree，154 实测单 id
+miss **59s** > 20s ctx，超时错误不是 ErrNoRows ⇒ 兜底永远够不着：
+unified 全量 500@20s；getLog 正文吞空且每次点击白等 20s。
+
+- 修复：三处重排为「v1 hot → **session** → v1 冷扫/视图」。三类行各有归宿：
+  停写后行 ms 命中；镜像期行（2026-09-20~停写）session 即正典读源
+  （`storage.session_bodies_native_read=true`）；镜像前行 session 索引 miss 后
+  照走冷扫，行为不变。
+- **判据纪律新实例（M7 变异）**：源码顺序判据匹配**代码形态**
+  （`dbpkg.SessionFamilyBodiesSourceSQL()`）而不是裸类型名——裸名会被留在原地的
+  **注释**击穿（代码块搬走、注释留下，判据仍绿）。变异验证 M6/M7/M8 三处红。
+- 154 E2E（2725-6d2e3224）：unified 全量 200@324ms（正文 260KB 恢复）、getLog
+  全量 200@360ms、列表 200@387ms、公网 llm.kxpms.cn SPA 路由 200。
+
+## 遗留（登记不修）
+
+- **镜像前（2026-09-20 之前）老请求正文**：cold 单 id 扫描 59s > 20s 预算，
+  /api/logs/:id 30s 返回且正文空——与重排前同行为（2026-08-17 已知冷路径限制），
+  非本轮回归。根治要么给 _request_logs_bodies 族补分区索引，要么等 860 族整体退役。
+- admin 5 个存量红门（providers.go/tenants.go 证据漂移）在 pristine HEAD 同红，
+  与本轮无关，待各自 owner。
