@@ -47,14 +47,14 @@ var (
 //
 // 我的判据假设「每列都由 r.<列名的大驼峰> 喂入」，这个假设在两处不成立：
 //   - `raw_model_name` 的 Go 字段叫 `RawModel`（不带 _name 后缀）
-//   - `payload` 的实参是函数内的局部变量 `payloadStr`，不是 Row 字段
+//   - `payload` 的实参是函数内的局部变量 `payloadArg`，不是 Row 字段
 //
 // 第一版门没设例外表，直接把这两处报成错位。**那不是漂移，是判据假设过强** ——
 // 与其把判据放宽成"不比了"，不如把例外**显式列出来**：这样将来若真的新增
 // 一个非同义映射，必须有人在这里登记一次，登记本身就是一个决定。
 var insertArgAliases = map[string]string{
 	"raw_model_name": "r.RawModel",
-	"payload":        "payloadStr",
+	"payload":        "payloadArg",
 }
 
 func Test818InsertColumnOrderMatchesExecArgOrder(t *testing.T) {

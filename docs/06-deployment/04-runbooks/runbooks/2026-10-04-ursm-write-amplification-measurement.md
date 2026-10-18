@@ -21161,3 +21161,109 @@ store 的每一个 hash 读取  ⊆  payloadDuplicateKeys ∪ payloadResidentKey
 ★ 同族：[[一致性搜索]] · [[反向枚举生产者再查出口]] · [[已有正确做法、这里没有]] ·
 [[自相矛盾的读数同样是量具坏了的信号]] · [[恒真判据]] ·
 [[变异脚本的「锚点没找到」不是变异结果]]。
+
+### §10.110.63 落地 §62 的第 1 项：`payload` 空残渣存 **NULL** 而不是 `{}`
+
+> §62 第八节列的四项变更里第 1 项。本节把它做掉。
+> **本节未部署**；部署需授权。
+
+#### 一、约束前置核查（结论：不需要迁移）
+
+动手前必须确认这一列**可空**，否则「零风险」只是我上一节的一句断言：
+
+| 来源 | `ursm_node_snapshot_min.payload` |
+|---|---|
+| 迁移 453（真正的建表） | `payload jsonb`（可空） |
+| `sql/schema/01-schema.sql` | `payload jsonb` |
+| `installer/.../embeddata/01-schema.sql` | `payload jsonb` |
+| `deploy/sql/schemas/baseline/01-schema.sql` | `payload jsonb` |
+| `sql/objects/tables/ursm_node_snapshot_min.sql` | `payload jsonb` |
+| **生产实测** `information_schema` | `is_nullable = YES`，无 default |
+
+四份 baseline 副本与 `objects` 版该表的建表段 **md5 完全一致**（`95796cd89bd9`）。
+⇒ **无漂移、无需迁移**，这确实只是「不再存一个没有信息量的值」。
+
+#### 二、⚠ 本轮第四次量具事故：我差点凭一个 grep 立论
+
+我一度判定「baseline 写的是 `NOT NULL`、迁移写的是可空、生产是可空 ⇒ 三方漂移」，
+并准备把它写成一条发现。真因：
+
+```bash
+grep -rn "payload jsonb DEFAULT '{}'::jsonb NOT NULL" --include=*.sql sql/
+# → sql/schema/01-schema.sql:5106:  payload jsonb DEFAULT '{}'::jsonb NOT NULL
+```
+
+**第 5106 行是 `analysis_events.payload`，不是 `ursm_node_snapshot_min.payload`。**
+我 grep 时**没有把表名锚进去**，于是整条「漂移」结论建立在一个别的表上。
+
+★ 更值得记的是它的**方向**：我据此准备**上调**风险等级（「不是零风险」），
+也就是说它会让我**否定一个本来正确的结论**。
+⇒ 量具坏掉时，它把结论推向任一方向都可能；
+　唯一可靠的防线是**把「我上一节的结论也被推翻了」当成可能事件**去查，
+　而不是把新读数当成更权威的东西直接采纳。
+
+⇒ ★ 通用式：
+1. ⭐⭐⭐⭐⭐ **按字面量 grep 某个 DDL 片段前，必须先确认它属于目标对象**：
+  　用 `awk '/CREATE TABLE <目标>/,/^\);/'` 截段再 grep，而不是全文件 grep。
+2. ⭐⭐⭐⭐ 全文件 grep 命中的是「**某个**对象有这个片段」，
+  　而结论要的是「**这个**对象有这个片段」。两者不等价，且**不会报错**。
+
+（另三条事故见 §62 第六节：截断 + 制表符、`credential_id` 分组、漏 `FROM`。）
+
+#### 三、改动本身
+
+**Collect**：残渣为空 ⇒ 保持 `row.Payload` 为 nil，不再 marshal 空 map。
+**Row**：新增 `PayloadMarshalFailed bool`，把两种「Payload 为空」区分开。
+**Flush**：经纯函数 `payloadArgFor(r)` 决定绑定什么。
+
+#### 四、两个陷阱（这才是改动的难点）
+
+**① 占位陷阱。** Flush 里原本写着「Payload 为空就写 `_note` 占位」，
+那是为 `json.Marshal` 失败准备的。改成「残渣为空 ⇒ nil」之后，
+**85% 的行会全部命中它**，每行写约 50 B —— 比原来的 8 B 空对象**差 6 倍**。
+⇒ `PayloadMarshalFailed` 就是为此存在的。
+
+★ 顺带确认一件事：`json.Marshal(map[string]string)` **永远不会失败**
+⇒ 那个分支在生产上**不可达**。本节保留它（防御性），并在判据注释里
+写明它不可达、那条判据守的是「别被顺手删掉」而不是生产行为。
+
+**② 空串陷阱。** INSERT 的 payload 参数是 `$22::text::jsonb`。
+若把 nil 转成 `string(nil)` = `""`，PG 收到 `''::jsonb` ——
+**那是语法错误，不是 NULL** ⇒ 一行出错、整条 INSERT 失败、整轮事务回滚、
+**1,802 行全丢**。⇒ 必须绑**未类型化的 nil**。
+
+★ 因此把绑定决策抽成纯函数 `payloadArgFor`：真库门是 opt-in 的，
+被静默跳过时（2026-10-17 审计 §七.6）最需要承重的恰恰是第 ② 条。
+
+#### 五、判据与变异
+
+`writer_payload_null_test.go`（6 条）：
+
+| 判据 | 钉的是 |
+|---|---|
+| `CollectLeavesPayloadNilWhenResidualIsEmpty` | 空残渣 ⇒ nil；**且** typed 列仍被正确填（正向对照） |
+| `CollectKeepsResidualPayloadForResidentKeys` | 前向兼容承诺没被削掉（未来新增键仍进 payload） |
+| `PayloadArgForBindsUntypedNilForEmptyResidual` | ★ 绑 nil 而不是空串 |
+| `PayloadArgForNeverBindsAnEmptyString` | 5 种 Row 形态的矩阵断言，一条顶五条 |
+| `PayloadArgForKeepsRealPayloadVerbatim` | 原样透传且仍是合法 JSON |
+| `FlushBindsThroughPayloadArgFor` | 接线门：抽了函数却忘了改调用点，同 M43 族 |
+
+| 变异 | 内容 | 结果 |
+|---|---|---|
+| P1 | 残渣为空仍写 `{}`（退回原行为） | ✅ |
+| P2 | 空残渣绑空串（`::jsonb` 语法错误） | ✅ |
+| P3 | 删掉 marshal 失败分支 | ✅ |
+| P4 | 绑定传 `[]byte` 而非 `string` | ✅ |
+| P5 | Flush 不再走 `payloadArgFor`（接线断裂） | ✅ |
+
+#### 六、收益与本节效力
+
+- 收益：1531 行 × 8 B ≈ **34 MB/天 ≈ 12.6 GB/年**（§62 实测口径）。
+- 本节**未部署**、**未做任何生产写操作**、**无迁移**（列本就都可空）。
+- 回归：17 个包通过。唯一失败
+  `TestWriteRedactorLoadsRestorationSourceAfterConstruction` 是本会话之前就存在的；
+  `installer/...` 的 setup failed 是「独立 Go 模块」这一既有事实（AGENTS.md 有记）。
+
+★ 同族：[[一致性搜索]] · [[0 命中的第一嫌疑永远是量具坏了]] ·
+[[自相矛盾的读数同样是量具坏了的信号]] · [[只测函数不测接线]] ·
+[[判据的识别词是契约的一部分]]。

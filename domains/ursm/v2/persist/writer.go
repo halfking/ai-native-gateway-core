@@ -102,7 +102,22 @@ type Row struct {
 
 	// Payload 818 起语义收窄：只保留 typed 列覆盖不到的 hash 键，
 	// 保住 hash schema 演进时的前向兼容（见 818 迁移头注释）。
+	//
+	// 2026-10-18（§10.110.63）：残渣为空时**保持 nil**，不再写 `{}`。
+	// 生产实测 85.0% 的行携带空对象，而 `pg_column_size('{}'::jsonb)` = 8 B
+	// —— 空 jsonb 并不免费，1531 行 × 8 B ≈ 34 MB/天 ≈ 12.6 GB/年。
+	// 该列在迁移 453、四份 baseline 副本与生产上**均可空**，
+	// 故这不是约束变更，只是不再存一个没有信息量的值。
 	Payload []byte
+
+	// PayloadMarshalFailed 标记「本该有残渣、但 json.Marshal 失败」。
+	//
+	// ⚠ 它存在的唯一理由是把两种「Payload 为空」区分开：
+	//   ① 残渣本来就空（85% 的行）—— 正常，什么都不该写；
+	//   ② marshal 失败 —— 异常，必须留下 `_note` 占位痕迹。
+	// 没有这个标志，Flush 里那句「Payload 为空就写 _note」会把
+	// ① 也一并打上占位（每行约 50 B），比原来的 8 B 空对象**差 6 倍**。
+	PayloadMarshalFailed bool
 }
 
 // payloadDuplicateKeys 是已在 typed 列中存在、不应再进 payload 的 hash 键。
@@ -378,13 +393,21 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 			}
 			residual[k] = v
 		}
-		if payloadBytes, err := json.Marshal(residual); err == nil {
+		if len(residual) == 0 {
+			// 2026-10-18（§10.110.63）：残渣为空 ⇒ 写 NULL，不写 {}。
+			// 该列可空（迁移 453 / baseline / 生产三处一致），所以这不是约束变更。
+			// `payload->>'x'` 对 NULL 与对 {} 返回同样的 NULL，
+			// 唯一会变的是 `payload ? 'x'`（NULL vs false）与 jsonb_object_keys 的计数。
+			slog.Debug("ursm.v2: persist payload residual empty, storing NULL",
+				"key", c.key)
+		} else if payloadBytes, err := json.Marshal(residual); err == nil {
 			row.Payload = payloadBytes
 		} else {
+			row.PayloadMarshalFailed = true
 			slog.Warn("ursm.v2: persist failed to marshal payload",
 				"key", c.key,
 				"error", err)
-			// 继续处理，只是 Payload 为空
+			// 继续处理，Flush 会写 _note 占位痕迹
 		}
 
 		// 8. 818：24 个 hash 键提升为 typed 列。
@@ -450,6 +473,39 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 	return out, nil
 }
 
+// payloadArgFor 决定 INSERT 给 payload 列绑什么。
+//
+// ★ 返回 any 而不是 string：**空 payload 必须绑未类型化的 nil**。
+// `string(nil)` 得到 ""，而 `”::jsonb` 在 PG 里是**语法错误**（不是 NULL）
+// ⇒ 一行出错就会让整条 INSERT 失败、整轮事务回滚 —— 1,802 行全丢。
+//
+// 三态：
+//
+//	payload 非空          → 原样绑定
+//	marshal 失败（罕见）    → 写 _note 占位，留下痕迹
+//	残渣本来就空（85%）    → nil ⇒ SQL NULL
+//
+// ⚠ 抽成纯函数是为了能**不连数据库**就单测这个决定 ——
+//
+//	真库门是 opt-in 的，被静默跳过时（见 2026-10-17 审计 §七.6）
+//	最需要承重的恰恰是「空值别绑成空串」这条。
+func payloadArgFor(r Row) any {
+	switch {
+	case len(r.Payload) > 0:
+		return string(r.Payload)
+	case r.PayloadMarshalFailed:
+		placeholder, err := json.Marshal(map[string]any{
+			"_note": "payload empty, hash marshal failed in Collect()",
+		})
+		if err != nil {
+			return nil
+		}
+		return string(placeholder)
+	default:
+		return nil
+	}
+}
+
 func (w *Writer) Flush(ctx context.Context, rows []Row) error {
 	if w == nil || w.db == nil || len(rows) == 0 {
 		return nil
@@ -461,20 +517,14 @@ func (w *Writer) Flush(ctx context.Context, rows []Row) error {
 	defer tx.Rollback(ctx)
 
 	for _, r := range rows {
-		// Payload 应该在 Collect() 中已经填充；如果为空则用 placeholder
-		// （正常情况下不应该为空，除非 json.Marshal 失败）
-		if len(r.Payload) == 0 {
-			r.Payload, _ = json.Marshal(map[string]any{
-				"_note": "payload empty, hash marshal failed in Collect()",
-			})
-		}
+		payloadArg := payloadArgFor(r)
 
 		// 2026-07-22: 使用 ::text::jsonb cast 避免 22P02 错误
 		// pgx 的二进制协议传输 []byte 到 JSONB 列时，若含非 UTF-8 字符、
 		// NaN/Inf 或其他非法 JSON 片段会触发 "invalid input syntax for type json"。
 		// 转为 string 并使用 text→jsonb 类型转换可强制 PG 的 JSON 解析器处理。
 		// 匹配 domains/analysis/bus/publisher.go:86 和 telemetry/client.go:572 的模式。
-		payloadStr := string(r.Payload)
+		// ★ NULL 经该 cast 仍是 NULL，不会变成 ''。
 
 		_, err := tx.Exec(ctx, `
 INSERT INTO ursm_node_snapshot_min
@@ -501,7 +551,7 @@ ON CONFLICT (snapshot_ts, tenant_id, credential_id, raw_model_name) DO NOTHING`,
 			r.CanonicalName, r.TenantID, r.Available, r.HealthStatus, r.FailStreak, r.CoolUntil,
 			r.SR1m, r.SR5m, r.SR30m, r.Samples1m, r.Samples5m, r.Samples30m,
 			r.LatP50Ms, r.Score, r.SourcePriority, r.Generation,
-			payloadStr,
+			payloadArg,
 			r.UpdatedAtMS, r.LastProbeAtMS, r.LastProbeLatencyMS, r.LastAttemptMS,
 			r.LastOKMS, r.LastRequestAtMS, r.LastRequestErrorAtMS, r.ManualAtMS,
 			r.CoolUntilMS, r.EventSeq,
