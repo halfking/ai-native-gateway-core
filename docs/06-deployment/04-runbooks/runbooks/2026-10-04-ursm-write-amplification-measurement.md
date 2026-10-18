@@ -22512,3 +22512,85 @@ churn_pct = 100·(ins+del) / (upd+ins+del)      -- ≈100% ⇒ 每一次写入�
 是 ⇒ churn 是设计的一部分；不是 ⇒ 每次写入都在花掉一份永远不会还回来的空间。
 ★ 同族：[[孤儿表不会自己消失]] · [[0 命中的第一嫌疑永远是量具坏了]] ·
 [[分项相加必须等于总计]] · [[失败即保留且没有 TTL 的 dead-letter 会按量级放大]]。
+
+---
+
+## §76（2026-10-18 20:00）229 MB 不是「堆里的空闲」，是**一个 btree 索引里的空页** ⇒ 可以不阻塞写就收回来
+
+§75 记下 `_request_logs_bodies_hot` 有 **0 行、291 MB**，其中 229 MB 在 TOAST 索引上。
+当时的注释是「TOAST 索引是 TOAST 堆的 4 倍，极不正常」。本节把它查到底。
+
+### 一、`pgstatindex` 直接读出结构
+
+```sql
+SELECT * FROM pgstatindex('pg_toast.pg_toast_81522141_index');
+```
+
+| 指标 | 值 |
+|---|---|
+| `index_size` | **240,050,176 B = 229 MB** |
+| `tree_level` | 2 |
+| `internal_pages` | 2 |
+| **`leaf_pages`** | **1** |
+| `deleted_pages` | 29,299 |
+| `avg_leaf_density` | 0.54 |
+
+`block_size = 8192` ⇒ **240,050,176 / 8192 ≈ 29,298 页**。
+
+⇒ 而整棵 btree 的**叶子页只有 1 个、内部页 2 个** = **实际在用 3 页（约 24 KB）**。
+⇒ 其余 **≈29,295 页是索引关系里的空页**，而 `pg_relation_size` 把它们照单全收。
+
+### 二、机制：VACUUM 会回收 TOAST **堆**，不会回收 TOAST **索引**
+
+`DELETE` 掉一行 → 它的 TOAST chunk 变成死元组 → autovacuum 把 chunk 标死、
+在 TOAST **堆**里释放（进 FSM，可被后续插入复用）。
+但 chunk 的那条 **索引项（chunk_id, chunk_seq）** 属于 TOAST 表自己的 btree，
+**autovacuum 从不清理 btree** —— 那些页进入索引的 FSM 后也不会归还给操作系统。
+
+本例 churn 规模（`n_tup_ins=109,447 / n_tup_del=125,346`）下，
+大 body 被切成多个 TOAST chunk ⇒ 索引项被推到百万量级 ⇒ 索引涨到 229 MB；
+数据删光后堆被回收、索引的空页永久留下。
+
+### 三、横向对照：**异常只集中在这一个索引**
+
+| 表 | TOAST 堆 | TOAST 索引 | 总计 |
+|---|---|---|---|
+| `session_bodies_hot` | 299 MB | 30 MB | 351 MB |
+| **`_request_logs_bodies_hot`** | 55 MB | **229 MB** | **291 MB** |
+| `session_turns_hot` | 38 MB | 1,064 kB | 102 MB |
+| `_request_logs_hot` | 3,920 kB | 2,048 kB | 59 MB |
+| `session_turn_details_hot` | 64 kB | 88 kB | 31 MB |
+
+⇒ 另外四张的 TOAST 索引与堆**成比例**（10% 量级，正常）。
+⇒ **229 MB 是一处孤立的索引空页**，不是六张表的通病。
+
+### 四、⚠ 这**部分修正 §75 的处置结论**
+
+§75 写「这 869 MB 只能用 `VACUUM FULL` / `pg_repack`，而两者都独占锁表重写、写入全阻塞」。
+对**索引空页**这一部分，这个结论过重了：
+
+| 手段 | 能收什么 | 是否阻塞写 |
+|---|---|---|
+| `VACUUM FULL` | 堆 + TOAST 堆 + 重建索引 | ❌ 独占锁，全表阻塞 |
+| `pg_repack` | 同上 | ⚠ 在线但要排窗口 |
+| **`REINDEX INDEX CONCURRENTLY pg_toast.pg_toast_81522141_index`** | **仅索引空页 ≈229 MB** | ✅ **不阻塞写** |
+
+⇒ **229 MB 可以用一条不阻塞写入的 REINDEX 拿回来**，不必等一个能停写的窗口。
+⇒ 这改变了优先级：它从「要排维护窗口」变成「找一个低峰期就能做」。
+⚠ **本轮未执行**（生产写需授权）；且执行前应在低峰期先确认该索引确实无活跃写入
+（表本身当前 0 行，风险低）。
+
+### 五、两次自己的量具事故（都当场被抓）
+
+1. 横向对照那条查询我写成 `pg_relation_size(c.reltoastrelid) - pg_relation_size(t.oid)`，
+   而 `c.reltoastrelid` 与 `t.oid` **是同一个关系** ⇒ 恒等于 0 ⇒ **五张表的 TOAST 索引全部读成 0 字节**。
+   若不是已经知道 229 MB 这个数，看到「全是 0」很可能会被读成「TOAST 索引没有问题」。
+2. 正确式子是 `pg_total_relation_size(t.oid) - pg_relation_size(t.oid)`
+   —— **TOAST 表的 total 含它自己的索引**。同 §75 第三节那条纪律，一致。
+
+★ 通用式：⭐⭐⭐⭐ **「一个对象的体积异常大」要先分清是「内容大」还是「壳大」**。
+本例壳占 229 MB / 内容占 24 KB —— 而两者的**修复手段与阻塞代价完全不同**
+（前者要停写，后者一条 REINDEX 就行）。
+⇒ 下结论前先问：**这里面有多少是实际在用的？**
+★ 同族：[[分项相加必须等于总计]] · [[阴性结论要当缺陷一样复核]] ·
+[[0 命中的第一嫌疑永远是量具坏了]] · [[读到一个数不等于读到一个结论]]。
