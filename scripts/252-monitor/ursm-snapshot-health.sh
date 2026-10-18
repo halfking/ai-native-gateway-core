@@ -232,8 +232,15 @@ de() {
   #     而下游 `x=$(de ...)` 是按「单行取值」解析的，
   #     多这一行会直接触发「返回多行，无法解析」的 exit 3。
   #     PGOPTIONS 在连接建立时生效，不产生任何输出。
-  podman exec -e "PGOPTIONS=-c statement_timeout=${STMT_TIMEOUT:-180s}" \
-    "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX -c "$1" 2>&1 || true
+  #   PGOPTIONS 在连接建立时生效，不产生任何输出。
+  #
+  # PSQL_CMD 注入点（2026-10-18，§86）：默认形态与改造前逐字相同，但允许
+  # 本地单测顶替掉 podman。此前本脚本没有任何行为测试，cron_registration
+  # _test.go 只钉住「它被注册了」，不钉它跑出什么 —— 而「量具跑不通却报绿」
+  # 正是这道脚本最贵的失效形态。形态照抄 payload-bloat 脚本的同名注入点。
+  # shellcheck disable=SC2086 # PSQL_CMD 刻意按多词命令传入
+  ${PSQL_CMD:-podman exec -e "PGOPTIONS=-c statement_timeout=${STMT_TIMEOUT:-180s}" \
+    "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX -c} "$1" 2>&1 || true
 }
 
 # 任一行以 ERROR/FATAL 开头 ⇒ psql 整条挂掉。
@@ -316,6 +323,47 @@ if sql_failed "$control" || [ -z "$control" ]; then
 fi
 log "control ok: rows_in_last_10min=$control"
 
+# --- 基线跨度体检（2026-10-18 §86）----------------------------------
+# 背景：BASELINE_DAYS（判据基线窗口）与 URSM_SNAPSHOT_RETENTION_DAYS
+# （数据留存）今天是**两个独立配置，恰好都等于 7 天，零余量**。而下游那个
+# 「基线为空」的 abort 只在 ref_p50<=0 时触发 —— 基线「薄」这一端没有任何检查。
+# 于是留存一旦被调到 < BASELINE_DAYS（一个完全合理的省存储提议），基线会
+# 静默地从 7 天缩到 3 天：ref_p50 仍 > 0、10 个字段仍齐全、仍打「OK」。
+# 而 DEGRADED_RATIO 是按 7 天样本标定的 ⇒ 样本变少时判据更容易判 ok。
+#
+# 量具选择：必须走**分区目录**（pg_inherits + 分区名里的日期）而不是扫表 ——
+# 实测 `SELECT min(snapshot_ts) … GROUP BY tableoid` 在这张 23.7M 行表上
+# 直接打满 30s statement_timeout（§86 实测）；本形态实测毫秒级返回。
+#
+# ★ 只数**真的有数据**的分区：partition_manager 会预建明天的分区，而那个分区
+#   是 0 字节（实测 20261019 = 0 bytes / reltuples = -1）。按分区名计数会
+#   把空分区算成一天 —— 第一版就这么写，注释还声称「预建的空分区不算数」，
+#   而代码并没有排除它，返回 9 天（真实 8 天）。
+#   判据用 pg_relation_size > 0：有数据的分区必有物理页，空分区是 0 字节。
+#   ⚠ 这仍是「有没有页」的代理，不是精确行数；但它只需要目录，且足够区分
+#     「空占位」与「真没数据」——后者恰恰是本检查要抓的形态。
+span=$(de "SELECT coalesce(max((regexp_match(c.relname, '_([0-9]{8})\$'))[1]::date)::text, '0') || '|' ||
+                 coalesce(min((regexp_match(c.relname, '_([0-9]{8})\$'))[1]::date)::text, '0') || '|' ||
+                 count(*) FILTER (WHERE pg_relation_size(c.oid) > 0)
+          FROM pg_class c
+          JOIN pg_inherits h ON h.inhrelid = c.oid
+          WHERE h.inhparent = 'ursm_node_snapshot_min'::regclass
+            AND c.relname ~ '_[0-9]{8}\$';")
+if sql_failed "$span"; then
+  # 体检本身失败**不阻断**：它只是告警探针，不能让它把一台健康的机器判成 exit 3。
+  log "WARN: baseline-span probe failed (non-fatal): ${span//$'\n'/ }"
+else
+  IFS='|' read -r span_hi span_lo span_ndays <<<"$span"
+  log "baseline span: ${span_ndays:-?} day(s) with data (oldest $span_lo, newest $span_hi), BASELINE_DAYS=${BASELINE_DAYS}"
+  if [ "${span_ndays:-0}" -lt "${BASELINE_DAYS}" ] 2>/dev/null; then
+    # ★ 记进 summary 行，让下游能区分「7 天都健康」与「只有 3 天、判定偏松」。
+    BASELINE_THIN="thin:${span_ndays}d/${BASELINE_DAYS}d"
+    echo "WARN: 基线样本不足 —— 表里只有 ${span_ndays} 天数据，判定阈值却按 ${BASELINE_DAYS} 天标定。" >&2
+    echo "      本次 OK 判定是**偏宽松**的，不可当作「${BASELINE_DAYS} 天都健康」。" >&2
+    echo "      常见原因：URSM_SNAPSHOT_RETENTION_DAYS 被调小（当前默认 7 天）。" >&2
+  fi
+fi
+
 rows=$(de "$BUCKETS_SQL,
 -- 行数基线（7 天，只有 count(*)，便宜）
 ref_rows AS (
@@ -391,7 +439,11 @@ if [ "$ref_p50" -le 0 ] 2>/dev/null; then
   echo "      常见原因：BASELINE_DAYS 超过快照保留天数，或表被清空。" >&2
   exit 3
 fi
-log "summary: ${rows//$'\n'/ }"
+# ★ 基线薄不薄**只写在这一行**：10 个判据字段的口径完全没变（它们仍然是
+#   按 BASELINE_DAYS 的目标口径算的），变的只是「这个 OK 值有多可信」。
+#   把它混进 10 字段会让下游 awk 按位置取值的逻辑错位 —— 那比少一个字段更糟。
+#   所以用独立后缀：日志里 grep 'summary:' 一行就能同时拿到判定与可信度。
+log "summary: ${rows//$'\n'/ }${BASELINE_THIN:+ | baseline_thin=$BASELINE_THIN}"
 
 buckets_total=$(printf '%s' "$rows" | awk -F'|' '{print $1+0}')
 void_b=$(printf '%s' "$rows"        | awk -F'|' '{print $2+0}')
