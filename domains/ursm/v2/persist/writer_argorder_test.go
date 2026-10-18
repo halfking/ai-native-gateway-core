@@ -104,8 +104,11 @@ func Test818InsertColumnOrderMatchesExecArgOrder(t *testing.T) {
 	}
 }
 
-// Test818GuardIsNotVacuous 确认上面对账真的在比 46 个位置。
+// Test818GuardIsNotVacuous 确认上面对账真的在比每一个位置。
 // 没有这条，上面那道门有可能因为正则改动而只比对前几个位置却照样绿。
+//
+// 2026-10-18：46 → 47（22 原有 + payload + 24 个 818 新增 + 1 个 875 补齐）。
+// 这里改的不是「让门变绿的数字」，而是**账面本身**：875 真的加了一列。
 func Test818GuardIsNotVacuous(t *testing.T) {
 	src, err := os.ReadFile("writer.go")
 	if err != nil {
@@ -116,12 +119,14 @@ func Test818GuardIsNotVacuous(t *testing.T) {
 		t.Fatal("could not locate the INSERT column list")
 	}
 	cols := splitAndClean(colM[1])
-	if len(cols) != 46 {
-		t.Fatalf("INSERT column count = %d, want 46 (22 原有 + payload + 24 个 818 新增)", len(cols))
+	if len(cols) != 47 {
+		t.Fatalf("INSERT column count = %d, want 47 "+
+			"(22 原有 + payload + 24 个 818 新增 + 1 个 875 补齐 empty_response_rate_5m)",
+			len(cols))
 	}
-	// 四个必须逐字出现的锚列：payload 之后的第一个、以及三个类型差异最大的
-	// （bigint / boolean / text）——确保抽取没有错位到别处。
-	anchors := []string{"payload", "updated_at_ms", "disabled", "last_err"}
+	// 必须逐字出现的锚列：payload 之后的第一个、三个类型差异最大的
+	// （bigint / boolean / text），以及 875 新增的那一列 —— 确保抽取没有错位到别处。
+	anchors := []string{"payload", "updated_at_ms", "disabled", "last_err", "empty_response_rate_5m"}
 	joined := strings.Join(cols, ",")
 	for _, a := range anchors {
 		if !strings.Contains(joined, a) {

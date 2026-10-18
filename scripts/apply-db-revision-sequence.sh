@@ -1674,6 +1674,13 @@ files=(
   # 索引（部分索引，实测仅 10.9% 行带值）。详证见迁移文件头。
   "$ROOT_DIR/sql/migrations/startup/874_session_turns_client_request_id_idx.sql"
 
+  # ── 875（2026-10-18）：empty_response_rate_5m 补齐为 typed 列 ─────────────
+  # 818 把 31 个 hash 键提升为 typed 列时漏了它，而 store/pipeline.go:132 一直
+  # 在读 —— 于是这个被生产代码读取的字段在快照表里只能靠 payload->>'...' 取。
+  # 可空无默认值 ⇒ ADD COLUMN 只改目录；lock_timeout=2s 抢不到锁就快速失败，
+  # 未拿到锁时事务回滚、什么都没发生，稍后重跑即可。详证见迁移文件头。
+  "$ROOT_DIR/sql/migrations/startup/875_ursm_snapshot_empty_response_rate_5m.sql"
+
   # ── 2026-10-16 孤儿迁移 044 补登（health_source 白名单缺 probe_now）──────
   #
   # 044_health_source_probe_now.sql 早就写在 sql/migrations/startup/ 里，注释把

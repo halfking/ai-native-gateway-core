@@ -21368,3 +21368,113 @@ baseurl_latency_ms  conc_used  conc_limit  fp_used  fp_limit
 ★ 同族：[[一致性搜索]] · [[反向枚举生产者再查出口]] ·
 [[0 命中的第一嫌疑永远是量具坏了]] · [[判据红了先怀疑自己的前提]] ·
 [[全文件 grep 命中 ≠ 目标对象有这个片段]]。
+
+### §10.110.65 迁移 875：把 818 漏掉的 `empty_response_rate_5m` 补齐为 typed 列
+
+> 落地 §62 第 2 项。**未部署**；生产零写入。
+
+#### 一、补的是哪个洞
+
+818 提升了 31 个 hash 键，**漏了 `empty_response_rate_5m`**：
+
+| 键 | 818 之后 |
+|---|---|
+| `empty_response_rate_1m` | typed 列 |
+| `empty_response_rate_30m` | typed 列 |
+| `empty_response_rate_5m` | ✗ 只在 payload 里 |
+
+而 `store/pipeline.go:132` 一直在读它 ⇒ 一个**被生产代码读取的字段**，
+在快照表里只能靠 `payload->>'...'` 取：走不了索引、不受类型检查、不在任何列清单里。
+
+§62 已实测该键由**同一批 270 行（15%）**携带，其余 1531 行带空 `{}`。
+
+#### 二、★ 这是「移动」而不是「复制」，回滚顺序因此更严格
+
+值从 jsonb 挪到 real 列的同时，必须把它加进 `payloadDuplicateKeys` ——
+否则就是 §62 那道门要防的「同一个值存两份」。
+
+⚠ 后果：**875 上线之后，新行的 payload 里不再有这一档。**
+所以 `.down.sql` 比 818 的更严格 ——
+**必须先回退二进制，再执行 down**；否则那段时间的 5m 粒度空响应率**不可还原**
+（1m/30m 两个兄弟仍在，可作参照但不等价）。
+818 的 down 之所以宽松，是因为它那 24 个键**只是被"剔除"，没被"移动"**。
+
+#### 三、并发安全：门逼出来的，不是我想出来的
+
+写完迁移后 installer 的 `TestStartupMigrationsAboveCutoffHaveLockGuard` 转红：
+> 迁移 875 含强锁 DDL 但没有 lock_timeout —— 它可能在等锁期间堵住全库
+
+`ALTER TABLE ... ADD COLUMN` 是 ACCESS EXCLUSIVE。采纳它的判断而不是申请豁免
+（豁免表当前为空，且加条目必须写明理由）：
+
+```sql
+SET LOCAL statement_timeout = '60s';
+SET LOCAL lock_timeout = '2s';
+```
+
+为什么是 **2s 而不是更长**：`ADD COLUMN` 可空无默认值 ⇒ PG 只改目录、不重写 heap，
+拿到锁就瞬时完成；而这张表**每分钟有 1,800 行的 persist 写入**在抢锁，
+排队能等到分钟级。⇒ 抢不到就**快速失败**，事务回滚、什么都没发生，稍后重跑即可。
+（这与 873 建索引用 2s、874 用 60s 的差别，取决于各自的临界工作时长，不是随手抄的。）
+
+#### 四、七处同步（照 874 的形态逐处对齐）
+
+| # | 位置 |
+|---|---|
+| 1 | `sql/migrations/startup/875_….sql` |
+| 2 | `sql/migrations/startup/875_….down.sql` |
+| 3 | `installer/cmd/llm-gw-installer/embeddata/startup/` 两份副本（**sha 现场计算一致**） |
+| 4 | `installer/cmd/llm-gw-installer/main.go`：`//go:embed` + map 登记 |
+| 5 | `installer/internal/dbinit/runner.go`：StartupFiles 有序清单 |
+| 6 | `sql/schema/installed_startup_migrations.tsv` 第 270 位 |
+| 7 | `scripts/apply-db-revision-sequence.sh` 部署通道 `files=()` |
+
+外加 `docs/db-changelog.md` 台账一行（sha 用**文件实测值**，不是从别处抄）。
+
+#### 五、判据与变异
+
+`writer_875_test.go`（6 条）：
+
+| 判据 | 钉的是 |
+|---|---|
+| `LandsInTypedColumnAndLeavesPayload` | ★ **差分断言**：同一个 payload 里对照键 `empty_responses_1m` 在、被搬走的键不在 |
+| `MissingEmptyResponseRate5mStaysNil` | 缺失是 nil 不是 0 |
+| `ExplicitZeroIsNotNil` | 显式 "0" 是非 nil 的 0 |
+| `KeyIsInExactlyOneRegistry` | 不得同时声称「有列」与「只在 payload」 |
+| `MigrationAddsTheColumnWithLockTimeout` | 迁移真加列 + **可执行语句**级别的 lock_timeout |
+| `SiblingWindowsAreHandledIdentically` | ★ 三个同族键必须同构 —— 这才是 818 漏 `_5m` 的结构性成因 |
+
+| 变异 | 内容 | 结果 |
+|---|---|---|
+| N1 | 不进排除表（值留在 payload = 存两份） | ✅ |
+| N2 | 不从 hash 读进 typed 列 | ✅ |
+| N3 | INSERT 漏掉这一列 | ✅ |
+| N4 | 同时登记成 payload-resident | ✅ |
+| N5 | 迁移去掉 lock_timeout 语句 | ✅🔴→✅（见下） |
+
+#### 六、⚠ N5 第一次跑出来是**全绿**，判据无牙
+
+第一次的断言是 `strings.Contains(lower(src), "lock_timeout")`，
+而迁移的**头注释里也写着** `lock_timeout = 2s —— 抢不到就快速失败`
+⇒ 断言命中的是**说明文字**，语句被删了也照样绿。
+
+⇒ 与 `writer_argorder_test.go` 里「必须在切分**之前**剥注释」是同一族，
+但这里是我自己新写的断言，忘了这条仓内纪律。
+
+**修法**：先 `stripSQLLineComments` 再判 `set local lock_timeout`，
+并在失败文案里写明「注释里提到 lock_timeout 不算」。
+
+★ 通用式：**源码文本型断言命中注释时，它验证的是「作者写过这句话」，
+  不是「代码做了这件事」。** 任何 `Contains` 类断言都要问：
+  **这段字在注释里也会出现吗？**
+
+#### 七、连带发现：既有失败（非本轮引入）
+
+`internal/sqlguard.TestRegistryShaIsAlreadyTheFile` 在 HEAD 上就是红的：
+台账登记了 `872_usage_ledger_ts_cover_cache_agg_idx.sql`，
+但该文件在磁盘上**不存在**（873 接手同名后遗留的陈旧登记行）。
+本轮未碰 872/873 任何文件（`git status` 可证）。
+读数「登记 217 条 / 实际校验 216 条 / 不匹配 0 条」说明**本轮 875 的 sha 校验通过**。
+
+★ 同族：[[一致性搜索]] · [[同族必须逐个点名]] · [[判据的识别词是契约的一部分]] ·
+[[注释说的机制就写在紧邻的下一行]] · [[判据红了先怀疑自己的前提]]。

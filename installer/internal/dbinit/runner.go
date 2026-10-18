@@ -1098,6 +1098,9 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 874（2026-10-18）：session_turns(client_request_id) 部分索引 ——
 			// S4 停写后 getLog/unified_detail 的 client_request_id 兜底腿承重。
 			"874_session_turns_client_request_id_idx.sql",
+			// 875（2026-10-18）：empty_response_rate_5m 补齐为 typed 列 ——
+			// 818 把它漏在 payload 里，而 store/pipeline.go:132 一直在读它。
+			"875_ursm_snapshot_empty_response_rate_5m.sql",
 		},
 	}
 }

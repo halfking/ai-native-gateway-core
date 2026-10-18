@@ -93,6 +93,9 @@ type Row struct {
 	DisableCount         *int
 	LatEWMAMS            *float64
 	EmptyResponseRate1m  *float64
+	// 875：`_5m` 原先只在 payload 里（两个兄弟已是列）。
+	// 生产实测它由同一批 270 行携带，store/pipeline.go:132 读它。
+	EmptyResponseRate5m  *float64
 	EmptyResponseRate30m *float64
 	LastErr              *string
 	ManualReason         *string
@@ -179,6 +182,7 @@ var payloadDuplicateKeys = [...]string{
 	"disable_count",            // -> Row.DisableCount   (integer)
 	"lat_ewma_ms",              // -> Row.LatEWMAMS      (real)
 	"empty_response_rate_1m",   // -> Row.EmptyResponseRate1m
+	"empty_response_rate_5m",   // -> Row.EmptyResponseRate5m（875：原只在 payload）
 	"empty_response_rate_30m",  // -> Row.EmptyResponseRate30m
 	"last_err",                 // -> Row.LastErr        (text)
 	"manual_reason",            // -> Row.ManualReason   (text)
@@ -211,10 +215,9 @@ var payloadDuplicateKeys = [...]string{
 //	`empty_response_rate_5m` 尤其刺眼：它的两个兄弟 `..._1m` / `..._30m`
 //	**都已经**是 typed 列（见上表），唯独中间这个留在 jsonb 里。
 var payloadResidentKeys = [...]string{
-	"empty_response_rate_5m", // -> store/pipeline.go:132  v.EmptyResponseRate5m（两个兄弟已是列）
-	"empty_responses_1m",     // -> store/pipeline.go:128  v.EmptyResponses1m
-	"empty_responses_5m",     // -> store/pipeline.go:129  v.EmptyResponses5m
-	"empty_responses_30m",    // -> store/pipeline.go:130  v.EmptyResponses30m
+	"empty_responses_1m",  // -> store/pipeline.go:128  v.EmptyResponses1m
+	"empty_responses_5m",  // -> store/pipeline.go:129  v.EmptyResponses5m
+	"empty_responses_30m", // -> store/pipeline.go:130  v.EmptyResponses30m
 	// ★ 这一条是被新门**自己抓出来的**，不是人工翻出来的：
 	//   probe_evidence.go:140 用 `boolField(raw, "last_request_failed")` 读它
 	//   —— 函数式访问器，下标正则看不见它。生产 payload 实测 270 行携带。
@@ -429,6 +432,7 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 		assignInt(&row.DisableCount, hash["disable_count"])
 		assignFloat(&row.LatEWMAMS, hash["lat_ewma_ms"])
 		assignFloat(&row.EmptyResponseRate1m, hash["empty_response_rate_1m"])
+		assignFloat(&row.EmptyResponseRate5m, hash["empty_response_rate_5m"])
 		assignFloat(&row.EmptyResponseRate30m, hash["empty_response_rate_30m"])
 		assignStr(&row.LastErr, hash["last_err"])
 		assignStr(&row.ManualReason, hash["manual_reason"])
@@ -538,14 +542,14 @@ INSERT INTO ursm_node_snapshot_min
    cool_until_ms, event_seq,
    disabled, last_direct_ok, manual_hold,
    success_count, failure_count, disable_count,
-   lat_ewma_ms, empty_response_rate_1m, empty_response_rate_30m,
+   lat_ewma_ms, empty_response_rate_1m, empty_response_rate_5m, empty_response_rate_30m,
    last_err, manual_reason, manual_actor, disabled_reason, cool_reason)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::text::jsonb,
         $23,$24,$25,$26,$27,$28,$29,$30,$31,$32,
         $33,$34,$35,
         $36,$37,$38,
-        $39,$40,$41,
-        $42,$43,$44,$45,$46)
+        $39,$40,$41,$42,
+        $43,$44,$45,$46,$47)
 ON CONFLICT (snapshot_ts, tenant_id, credential_id, raw_model_name) DO NOTHING`,
 			r.SnapshotTS, r.RecoveryEpoch, r.ProviderID, r.CredentialID, r.RawModel,
 			r.CanonicalName, r.TenantID, r.Available, r.HealthStatus, r.FailStreak, r.CoolUntil,
@@ -557,7 +561,7 @@ ON CONFLICT (snapshot_ts, tenant_id, credential_id, raw_model_name) DO NOTHING`,
 			r.CoolUntilMS, r.EventSeq,
 			r.Disabled, r.LastDirectOK, r.ManualHold,
 			r.SuccessCount, r.FailureCount, r.DisableCount,
-			r.LatEWMAMS, r.EmptyResponseRate1m, r.EmptyResponseRate30m,
+			r.LatEWMAMS, r.EmptyResponseRate1m, r.EmptyResponseRate5m, r.EmptyResponseRate30m,
 			r.LastErr, r.ManualReason, r.ManualActor, r.DisabledReason, r.CoolReason,
 		)
 		if err != nil {
