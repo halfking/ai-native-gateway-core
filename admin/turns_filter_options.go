@@ -26,6 +26,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -132,11 +134,28 @@ func (h *Handler) handleTurnsFilterOptions(w http.ResponseWriter, r *http.Reques
 // lastActiveSource 组装基于 session_summaries 的热门值内层子查询：
 //
 //	SELECT <valueSel> AS v, MAX(ss.first_request_at) AS last_at
-//	FROM session_summaries ss<fromSuffix> WHERE <cond><tenantWhere> GROUP BY 1
+//	FROM session_summaries ss<fromSuffix>
+//	WHERE <cond> AND ss.first_request_at >= NOW() - INTERVAL '30 days'<tenantWhere>
+//	GROUP BY 1
+//
+// ★ 2026-10-18：这里原本**没有时间窗**，与本文件头「基于近 30 天实际使用数据」
+// 和 turns 臂的 30 天窗都不一致——端点内部两个臂口径不同，而前端
+// TurnsListView 默认 timePreset='all'，于是 ss 臂给出全历史选项、turns 臂只给
+// 近 30 天，同一个下拉框里两套语义。
+//
+// 经 owner 裁定：**统一为近 30 天**（与头注和 turns 臂一致）。代价如实记录：
+// 超过 30 天没用过的 project/task/owner/client/tag 不再出现在下拉里。
+//
+// 顺带的性能收益（实测，同一 30 天窗口、无并发干扰）：
+//   projects  3.92s → 1.36s（−65%）
+//   tasks     7.03~9.66s → 3.55s（−60%）
+// 原因是 session_summaries 共 776,465 行而近 30 天只有 312,457 行（40%），
+// 无窗时每次分组都要扫全量历史。
 func (h *Handler) lastActiveSource(valueSel, fromSuffix, cond, tenantWhere string) string {
 	return fmt.Sprintf(
-		"SELECT %s AS v, MAX(ss.first_request_at) AS last_at FROM session_summaries ss%s WHERE %s%s GROUP BY 1",
-		valueSel, fromSuffix, cond, tenantWhere)
+		"SELECT %s AS v, MAX(ss.first_request_at) AS last_at FROM session_summaries ss%s"+
+			" WHERE %s AND ss.first_request_at >= NOW() - INTERVAL '%d days'%s GROUP BY 1",
+		valueSel, fromSuffix, cond, turnsFilterOptionsWindowDays, tenantWhere)
 }
 
 // lastActiveQuery 包成外层：SELECT v FROM (<source>) t ORDER BY last_at DESC LIMIT K。
@@ -153,29 +172,66 @@ func (h *Handler) lastActiveTurnQuery(valueExpr, filter, tenantWhere string) str
 		valueExpr, filter, turnsFilterOptionsWindowDays, tenantWhere, turnsFilterOptionsLimit)
 }
 
-// runFilterOptionQueries 顺序执行一组热门值查询并写入对应目标切片。
+// runFilterOptionQueries 并发执行一组热门值查询并写入对应目标切片。
+//
+// ★ 2026-10-18：原本是**顺序 for 循环**，8 条查询共用一个 12s ctx。
+// 逐条实测（无并发干扰）需要 ~40s ⇒ 预算结构上不可能成立，端点稳定 500@12s。
+//
+// 改成 errgroup 并行，墙钟从「各条之和」变成「最慢的一条」。
+// ⚠ 但**别照抄 dashboardapi/session_overview.go 的「墙钟=max(段)」就以为必然成立**：
+//   那 9 段有空闲核；本组查询是 CPU/缓冲密集的，实测并发时每条自身都变慢
+//   （q1 9,971→18,845 ms、q2 7,027→16,349 ms）。实测收益是 **5.3×，不是 9×**。
+//
+// 并行是本修复的一半，另一半是 lastActiveSource 的 30 天窗（单条再降 ~60%）。
+// 两者叠加后 8 条并发，墙钟由最慢单条决定（实测 3.5~6s 量级），落在 12s 内。
+//
+// 错误语义不变：任一条失败即整体失败，仍带序号报 500。
+// 每个 goroutine 写**各自**的 targets[i]，互不重叠，无数据竞争；
+// 但先在局部变量里收完再整体赋值，避免半截结果被 errgroup 的提前取消暴露。
 func (h *Handler) runFilterOptionQueries(ctx context.Context, queries []string, args []any, targets []*[]string) error {
 	if len(queries) != len(targets) {
 		return fmt.Errorf("query/target count mismatch: %d vs %d", len(queries), len(targets))
 	}
+	results := make([][]string, len(queries))
+	g, gctx := errgroup.WithContext(ctx)
 	for i, q := range queries {
-		rows, err := h.db.Query(ctx, q, args...)
-		if err != nil {
-			return fmt.Errorf("query filter options [%d] failed: %w", i, err)
-		}
-		*targets[i] = []string{}
-		for rows.Next() {
-			var v string
-			if err := rows.Scan(&v); err != nil {
-				rows.Close()
-				return fmt.Errorf("scan filter options [%d] failed: %w", i, err)
+		i, q := i, q
+		g.Go(func() error {
+			vals, err := h.queryFilterOptionValues(gctx, q, args)
+			if err != nil {
+				return fmt.Errorf("query filter options [%d] failed: %w", i, err)
 			}
-			*targets[i] = append(*targets[i], v)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return fmt.Errorf("iterate filter options [%d] failed: %w", i, err)
-		}
+			results[i] = vals
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return err
+	}
+	for i := range targets {
+		*targets[i] = results[i]
 	}
 	return nil
+}
+
+// queryFilterOptionValues 跑一条热门值查询并把结果收成字符串切片。
+func (h *Handler) queryFilterOptionValues(ctx context.Context, query string, args []any) ([]string, error) {
+	rows, err := h.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	vals := []string{}
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		vals = append(vals, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return vals, nil
 }
