@@ -150,6 +150,13 @@ func dataLifecycleCanonicalSegmentsSQL(tenantFilter string) string {
 	`
 }
 
+// dataLifecycleTrendBudget 是趋势腿的子预算（端点总预算 30s）。
+//
+// 分段那条实测 12.8s，趋势那条要跑 17s+，两条串起来必然打穿 30s。
+// 取 12s：最坏 12.8 + 12 = 24.8s，留 5s 余量；超时则 growth_trend 返回空数组，
+// 端点仍返 200 —— 看板上的总量/四段/按租户是主载荷，不该被趋势拖成 500。
+const dataLifecycleTrendBudget = 12 * time.Second
+
 // GET /api/admin/data-lifecycle/stats
 // dataLifecycleTrendSQL 提为包级函数，理由与 compressionSessionsMainSQL 相同：
 // 判据必须与被测逻辑同层——这段字符串就是发给 PostgreSQL 的文本，而 pgx
@@ -165,8 +172,16 @@ func dataLifecycleTrendSQL(tenantFilter string) string {
 	if tenantFilter == "" {
 		return `
 		WITH trend AS (
+			-- ★ 2026-10-19：与分段那条同源，改读 dataLifecycleCanonicalSourceSQL()
+			--   而不是 request_logs_with_current_month 视图。视图的 >60s 全量展开
+			--   让整个端点打不进 30s 预算；这里换成等价源后 7 天窗实测 ~7s。
+			--   bodies 那条腿**没动**：它是 S4 停写轮的口径修复（跨族 + 冻结点切分），
+			--   不在本轮性能修复范围内。
+			--   ★ 注释必须用 SQL 的 --：本段在 Go 的 raw string 里，写成 //
+			--     会被原样发到 PostgreSQL，报 syntax error at or near "//"。
+			--     本轮真踩过一次：端点 200 但 trend 腿整条失败，日志里只有一行 WARN。
 			SELECT DATE(ts) AS day, COUNT(*) AS requests
-			FROM request_logs_with_current_month
+			FROM (` + dataLifecycleCanonicalSourceSQL() + `) c
 			WHERE ts > NOW() - INTERVAL '7 days'
 			GROUP BY 1
 		),
@@ -337,11 +352,20 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 	// timeout); the unscoped path pre-aggregates both sides by day first —
 	// a per-row join over a week of _request_logs × bodies blows the admin
 	// time budget (measured 30s timeout on the local 100k-row dataset).
+	// ★ 2026-10-19：趋势腿自带子预算。
+	//   分段那条（单次规范源扫描）实测 12.8s，趋势那条在同一 30s 总预算里
+	//   只能分到 ~17s，而它自己就要跑更久 ⇒ 整端点 500@30s。
+	//   与 filter-options 的两条臂同一套降级语义：**趋势失败只让 growth_trend 空着，
+	//   端点仍返 200**，看板上的总量/分段/按租户照常显示。
+	//   实测最坏 12.8 + 12 = 24.8s，仍在 30s 内。
 	trendQuery := dataLifecycleTrendSQL(tenantFilter)
-	trendRows, err := h.db.Query(ctx, trendQuery)
+	trendCtx, trendCancel := context.WithTimeout(ctx, dataLifecycleTrendBudget)
+	trendRows, err := h.db.Query(trendCtx, trendQuery)
+	trendCancel()
 	if err != nil {
-		slog.Warn("data_lifecycle_stats trend failed", "error", err)
-		// non-fatal
+		slog.Warn("data_lifecycle_stats trend failed; growth_trend 已退化为空",
+			"budget", dataLifecycleTrendBudget, "error", err)
+		stats.GrowthTrend = []dailyGrowth{}
 	} else {
 		defer trendRows.Close()
 		for trendRows.Next() {
