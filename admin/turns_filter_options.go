@@ -12,15 +12,19 @@ import (
 )
 
 const (
+	turnsFilterOptionsBudget     = 12 * time.Second
 	turnsFilterOptionsWindowDays = 30
 	turnsFilterOptionsLimit      = 20
 
 	// turnsFilterOptionsTurnBudget 是 session_turns 臂的子预算。
 	//
-	// 总预算 12s 里，ss 合并 + tags 实测稳定占 ~3.1s，留给 turns 臂的
-	// 约 8s；但那条查询会飘到 26s+，所以给它一个明确的上界，
-	// 超时就退化成空数组而不是把整页拖成 500。
-	turnsFilterOptionsTurnBudget = 8 * time.Second
+	// 总预算 12s 里，ss 合并 + tags 实测稳定占 ~3.2s（生产 8 次抽测：
+	// 端点总耗时 6.4~12.06s，其中 turns 臂在 8s 上下界附近飘）。
+	// ⇒ 子预算取 5s：即使 turns 吃满它的预算，总耗时也有 ~8.2s 的余量。
+	// 最初取 8s 时线上实测到过 12.06s —— 贴着总预算，等于把余量让出去了：
+	// 下游任何一个查询慢 100ms，整个端点就又变回 500。
+	// 超时就退化成空数组，而不是把整页拖成 500。
+	turnsFilterOptionsTurnBudget = 5 * time.Second
 )
 
 // TurnsFilterOptionsResponse 是各筛选维度的热门可选值。
@@ -46,7 +50,7 @@ func (h *Handler) handleTurnsFilterOptions(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), turnsFilterOptionsBudget)
 	defer cancel()
 
 	tenantID := ""

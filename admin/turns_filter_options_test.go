@@ -99,6 +99,19 @@ func TestFilterOptionsArmsAreMerged(t *testing.T) {
 // 原因：工作集（session_turns 9 月分区 2.7GB）远大于 shared_buffers，
 // 并发时彼此把对方的页挤出缓存，「并行」变成「来回换页」。
 // dashboardapi/session_overview.go 那句「墙钟 = max(段)」在这里**不成立**。
+func TestFilterOptionsTurnBudgetLeavesHeadroom(t *testing.T) {
+	// 线上实测：子预算取 8s 时端点总耗时到过 12.06s（贴着 12s 总预算）。
+	// 必须是「总预算 − ss+tags 实测占用 − 余量」。
+	const reservedForRest = 4 * time.Second // ss 合并 ~2.7s + tags ~0.5s，再留 1s 余量
+	// 必须 >= 而不是 >：余量恰好为零本身就是失败——线上实测 8s 子预算时
+	// 端点总耗时到过 12.06s，已经越过了 12s 总预算。
+	if turnsFilterOptionsTurnBudget+reservedForRest >= turnsFilterOptionsBudget {
+		t.Errorf("turns 子预算 %v + 其余部分预留 %v 超过端点总预算 %v：余量不足，"+
+			"负载一高就会整体超时（实测 8s 子预算时端点到过 12.06s）",
+			turnsFilterOptionsTurnBudget, reservedForRest, turnsFilterOptionsBudget)
+	}
+}
+
 func TestFilterOptionsStaysSequential(t *testing.T) {
 	b, err := os.ReadFile("turns_filter_options.go")
 	if err != nil {
