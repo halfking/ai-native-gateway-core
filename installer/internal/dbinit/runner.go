@@ -1101,6 +1101,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 875（2026-10-18）：empty_response_rate_5m 补齐为 typed 列 ——
 			// 818 把它漏在 payload 里，而 store/pipeline.go:132 一直在读它。
 			"875_ursm_snapshot_empty_response_rate_5m.sql",
+			// 876（2026-10-18）：删掉三条声明在**分区父表**上、且被同表宽索引
+			// 逐列覆盖的窄索引（usage_ledger 的 request_id / ts、sessions 的
+			// session_id）。关键在父表上删：ensure_usage_ledger_partition 用的是
+			// CREATE TABLE … PARTITION OF，会克隆父表声明的每个索引 ⇒ 只删分区上
+			// 的实例，下个月建分区时原样长回来（实测每月约 243 MiB ≈ 2.9 GB/年）。
+			// 守卫在迁移文件里**现算覆盖关系**，证不出来就整条回滚。
+			"876_drop_prefix_covered_parent_indexes.sql",
 		},
 	}
 }

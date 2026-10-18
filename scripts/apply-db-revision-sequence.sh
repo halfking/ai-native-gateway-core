@@ -1680,6 +1680,16 @@ files=(
   # 可空无默认值 ⇒ ADD COLUMN 只改目录；lock_timeout=2s 抢不到锁就快速失败，
   # 未拿到锁时事务回滚、什么都没发生，稍后重跑即可。详证见迁移文件头。
   "$ROOT_DIR/sql/migrations/startup/875_ursm_snapshot_empty_response_rate_5m.sql"
+  # ── 2026-10-18（§78）前缀覆盖窄索引：三条声明在**分区父表**上的冗余索引 ──
+  #
+  # usage_ledger 的 (request_id) / (ts) 与 sessions 的 (session_id)，
+  # 每一列都是同表更宽索引的前缀（分别被 870 的 recon_cover + 873 的
+  # ts_tenant_cache_agg_idx + 两个 UNIQUE 覆盖）。
+  # ★ 必须在**父表**上删：ensure_usage_ledger_partition 用
+  #   CREATE TABLE … PARTITION OF，会克隆父表声明的每个索引；
+  #   只删分区实例的话，下个月建分区时原样长回来（实测每月约 243 MiB）。
+  # 守卫在迁移文件内现算覆盖关系，证不出来整条回滚、不删任何索引。
+  "$ROOT_DIR/sql/migrations/startup/876_drop_prefix_covered_parent_indexes.sql"
 
   # ── 2026-10-16 孤儿迁移 044 补登（health_source 白名单缺 probe_now）──────
   #

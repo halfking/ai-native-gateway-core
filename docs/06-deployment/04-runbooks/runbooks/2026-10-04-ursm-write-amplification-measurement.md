@@ -22838,6 +22838,13 @@ exit 0 —— 用例的名字承诺了「阈值被应用」，实测的却只是
 
 ### 六、处置建议（本节不新增授权项）
 
+> ⚠⚠ **本节结论已作废一半，见 §79（2026-10-18 20:0x）。**
+> 最贵的两个（`usage_ledger_2026_09/2026_10_request_id_idx`，219 MB）
+> **删了不会持久** —— `CREATE TABLE … PARTITION OF` 会克隆父表上声明的
+> 每一个索引，而那两条窄索引正是声明在 `usage_ledger` **父表**上的。
+> 正确处置见 §79 的迁移 876（**在父表上删**，级联到所有分区）。
+> 本节其余数字（15 个窄索引 / 345 MiB / 段2 的量具修正）仍然成立。
+
 段2 发现的 15 个窄索引**全部没有被约束背着**，`DROP INDEX CONCURRENTLY`
 即可回收 345.4 MiB。但**这仍然是有取舍的**，与 §77 同一性质：
 
@@ -22851,3 +22858,160 @@ exit 0 —— 用例的名字承诺了「阈值被应用」，实测的却只是
 ⇒ 补能力要同时改三处：判据、**门禁**（钉住新口径）、以及**文档里那句"它能查什么"**。
 ★ 同族：[[界面说谎族必须逐族枚举]] · [[取件器坏了先修取件器]] ·
 [[阴性结论要当缺陷一样复核]] · [[同一个 0 命中可以有两个成因]]。
+
+---
+
+## §79 §78 的结论要作废一半：删分区上的窄索引**无效**，真问题在父表（2026-10-18）
+
+§78 给出「段2 命中 17 对 / 15 个可裸删窄索引 / 345 MiB」，
+并在末尾写「与 §77 合并成同一个待拍板项」。
+**这个结论有一半是错的，必须就地作废**：那 15 个里最贵的两个
+（`usage_ledger_2026_09/2026_10_request_id_idx`，合计 219 MB）
+**删了不会持久**。
+
+### 一、为什么无效：分区父表会克隆索引
+
+`sql/objects/functions/ensure_usage_ledger_partition_timestamp_with_time_zone.sql`：
+
+```sql
+CREATE TABLE %I PARTITION OF usage_ledger
+  FOR VALUES FROM (%L) TO (%L)
+```
+
+`CREATE TABLE … PARTITION OF` 会**克隆父表上声明的每一个索引**。
+而父表 `usage_ledger` 上同时声明着：
+
+| 父表索引 | 定义 | 角色 |
+|---|---|---|
+| `idx_usage_ledger_part_request_id` | (request_id) | **窄** |
+| `idx_usage_ledger_part_ts` | (ts) | **窄** |
+| `idx_usage_ledger_part_tenant` | (tenant_id, ts) | 窄但**无覆盖方 → 保留** |
+| `usage_ledger_partitioned_request_id_ts_key` | (request_id, ts) UNIQUE | 覆盖 `part_request_id` |
+| `idx_usage_ledger_recon_cover` | (request_id, ts DESC) INCLUDE(5) | 覆盖 `part_request_id` |
+| `usage_ledger_ts_tenant_cache_agg_idx` | (ts, tenant_id) INCLUDE(7) | 覆盖 `part_ts` |
+
+`sessions` 父表同理：`idx_sessions_session_id (session_id)`
+被 `sessions_session_id_partition_date_key UNIQUE (session_id, partition_date)` 覆盖。
+
+**生产实测印证**：当月还没到的 `usage_ledger_2026_11`（分区已预建）
+已经带着全部 6 个索引，各 8192 bytes。
+⇒ 删掉 09/10 分区上的窄实例，下个月建分区时**原样长回来**。
+
+### 二、量具事故：分区父表的 `relkind` 是大写 `I`，我一开始归错了原因
+
+查父表时判据返 0 行。我先拆 JOIN，发现「加了 `JOIN pg_am` 就掉到 0 行」，
+**归因成 pg_am 匹配不上**。直接查 `relkind`/`relam` 才发现真因：
+
+```
+usage_ledger | p | idx_usage_ledger_part_request_id | I | 403 | btree
+```
+
+⇒ **分区索引的 `pg_class.relkind` 是 `'I'`（大写），不是 `'i'`**；
+而 `relam` 正常（403 = btree），跟 pg_am 无关。
+
+★ 这暴露了工具的**第二个盲区**：两段判据都写死
+`c.relkind IN ('r','m') AND ic.relkind = 'i'`
+⇒ **永远看不到分区父表的索引集**，也就答不出「删了会不会长回来」这个
+决定处置方式的问题。
+
+### 三、复发量化（这才是重点）
+
+| | 一次性回收（现存分区） | 每月复发 | 年复发 |
+|---|---|---|---|
+| `idx_usage_ledger_part_request_id` | 169 + 50 MB = 219 MB | — | — |
+| `idx_usage_ledger_part_ts` | 49 + 13 MB = 62 MB | — | — |
+| `idx_sessions_session_id` | 9.3 + 15 MB = 24 MB | — | — |
+| **合计** | **≈305 MiB** | **≈243 MiB** | **≈2.9 GB** |
+
+每月 ≈243 MiB 的算法：一个整月分区 `usage_ledger_2026_09`
+（1,416,772 行）就长出 `request_id_idx` 168.6 MiB + `ts_idx` 49.1 MiB
+= **217.7 MiB**，加 sessions 侧约 25 MiB。
+
+⇒ **§78 的 345 MiB 是「一次性读数」，2.9 GB/年 是「真实代价」。**
+后者大一个数量级，问题性质从「清理」变成「止血」。
+
+附带收益不是次要的：`usage_ledger` 是最热写表
+（`pg_stat_statements` 窗口内 INSERT 236,621 次 + UPDATE 150,956 次），
+索引从 6 条降到 4 条 ⇒ 每次写少维护两份 B-tree。
+
+### 四、冗余的来历：870 / 873 修了查询，却没删被它们取代的那条
+
+读迁移 870 的文件头时发现了因果链：
+
+> 月窗（2026-09）计划走 `usage_ledger_2026_09_request_id_idx` 扫 1,416,772 行
+> 并**逐行回表**……基线 `Index Scan` 36,480ms / 缓冲 355,257
+
+870 的修法是**再加一条** `(request_id, ts DESC) INCLUDE(5 列)`，
+实测 129.2s → 8.7s。**但它诊断问题时用的那条窄索引被留了下来。**
+873 同型（补 `cache_read_tokens` 后删掉 856 的两条，那次记得删了）。
+
+⇒ 这解释了为什么冗余是「逐字相同」判据看不见的形态：
+它不是某次迁移写重了，而是**「加新的、忘了退旧的」的累积**，
+而新索引逐列覆盖旧索引 ⇒ 两段判据里的段1 不成立、段2 才是对的答案。
+
+### 五、处置：迁移 876（在**父表**上删，一句顶两句）
+
+`sql/migrations/startup/876_drop_prefix_covered_parent_indexes.sql`
++ `.down.sql`（sha `d122d642…eac859`）。
+PG 对分区父表 `DROP INDEX` 会**级联到所有分区**，
+所以一条语句同时完成「父表不再声明（止血）」与「现存实例被回收」。
+
+**守卫在迁移文件里现算覆盖关系，不写死结论**：
+从 `pg_index` 重新证明存在同表索引，其键列前缀与窄索引
+**逐项等长**（列 / opclass / 排序方向 / 排序规则）、
+窄索引的 INCLUDE 列也被覆盖、且覆盖方 `indisvalid AND indisready`、
+窄索引非唯一且不被 `pg_constraint` 背着。
+证不出来 ⇒ `RAISE EXCEPTION` 整条回滚，一条索引都不删。
+
+★ 守卫已在生产**双向实测**（只读执行该 DO 块，未做任何写）：
+- 正向：3 条全部被证明覆盖，NOTICE 点名三条将被删除的索引；
+- 反向：把无覆盖方的 `idx_usage_ledger_part_tenant` 塞进目标列表
+  ⇒ 立刻 `ERROR: …拒绝删除: public.idx_usage_ledger_part_tenant`
+  ⇒ **守卫可证伪，不是恒真**。
+
+⚠ 写迁移时我自己的 NOTICE 文案一度是错的：把「实际存在的目标」也写成
+从 `present_not_proven` 聚合，于是覆盖一旦成立就报「全部已不存在」，
+而三条索引明明都在、下一秒就要被 DROP。
+⇒ **迁移输出撒谎比不输出更糟**，已修（`present` 与 `present_not_proven` 分开聚合）。
+
+`idx_usage_ledger_part_tenant (tenant_id, ts)` **刻意保留**：父表上没有任何
+以 `tenant_id` 开头的更宽索引。它同时是判据的反向对照组。
+
+### 六、判据与变异（scripts/ursmcheck/migration_876_prefix_covered_drop_test.go，6 条）
+
+变异 **8/8 全红**：
+
+| 变异 | 判红的那条 |
+|---|---|
+| N1 去掉 `RAISE EXCEPTION` 拒绝路径 | `…ProvesCoverageAtRuntime` |
+| N2 把对照组 `part_tenant` 塞进 DROP | `…GuardIsFalsifiable` |
+| N3 删掉三条 DROP 里的一条 | `…DropTargetsAreClosedList` |
+| N4 `lock_timeout` 放宽到 60s | `…LockSemantics` |
+| N5 加 `DROP INDEX CONCURRENTLY`（PG 不支持） | `…LockSemantics` |
+| N6 去掉 `AND NOT ni.indisunique` | `…ProvesCoverageAtRuntime` |
+| N7 摘掉 `runner.go` 接线 | `…SixPointWiring` |
+| N8 台账 sha 错一个字符 | `…SixPointWiring` |
+
+★ 判据里**必须先剥整行注释**再判定：本迁移的文件头大量引用索引名与
+「刻意保留 part_tenant」这句话，不剥注释的话三条断言都会被文件头的
+说明文字满足 ⇒ 门变成「文档里提到过就算数」。
+
+六处接线：canonical / embeddata 副本（sha 现场一致）、`main.go`
+（`//go:embed` + map）、`runner.go` `StartupFiles`、
+`installed_startup_migrations.tsv` 第 271 位、部署通道 `files=()`、
+`docs/db-changelog.md`（sha 为文件实测值）。
+
+### 七、状态与授权
+
+**本迁移尚未应用**，status `pending deploy`。
+它会 DROP 索引并对父表与每个分区各取一次 ACCESS EXCLUSIVE
+（只改元数据、毫秒级，但 PG 不支持父表 `CONCURRENTLY`），
+`lock_timeout=2s` 抢不到锁即快速失败、整体回滚、稍后重跑。
+⇒ **属主显式授权 + 低峰窗口**才可上线。
+
+★ 通用式：⭐⭐⭐⭐⭐ **「可回收 N MB」这个读数，在分区表上要先问一句「下个月会不会长回来」**。
+⇒ 复用工具的读数之前，先确认它**看得见**你正在问的那个对象：
+本例的工具连分区父表都扫不到（`relkind='I'`），于是它对「一次性 345 MiB」
+给出的诚实答案，在父表克隆机制面前是**误导**。
+★ 同族：[[0 命中的第一嫌疑永远是量具坏了]] · [[取件器坏了先修取件器]] ·
+[[阴性结论要当缺陷一样复核]] · [[门的名字不承诺它的口径]]。

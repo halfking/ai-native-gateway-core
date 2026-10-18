@@ -286,3 +286,4 @@
 268	873_usage_ledger_ts_cover_cache_agg_idx.sql
 269	874_session_turns_client_request_id_idx.sql
 270	875_ursm_snapshot_empty_response_rate_5m.sql
+271	876_drop_prefix_covered_parent_indexes.sql
