@@ -23956,3 +23956,209 @@ summary: 3|0|0|0|0|3|318520|158498|321269|100 | baseline_thin=thin:3d/7d
 ⚠ 部署时必须**整文件覆盖**（与 cron 正典文件同一纪律），且覆盖前后
 各跑一次确认 `summary` 行与 `exit code` 未变。
 ★ 同族：[[默认值必须等于生效值否则是定时炸弹]]。
+
+---
+
+## §88 全库存储普查 —— 从「索引层」回到「存储综合最优」，并推翻我自己两条结论（2026-10-18）
+
+§78~§87 连续十节都在索引层面打转。目标写的是**存储与效率综合最优**，
+本节把量具抬到全库，重排优先级。
+
+### 一、库级体量（纯目录，毫秒级）
+
+| 口径 | 值 |
+|---|---|
+| 库总 | **28 GB** |
+| heap | 13 GB |
+| 索引 | **8971 MB（31.1%）** |
+| TOAST（差额） | ≈5 GB |
+
+⇒ §78~§87 优化的是索引（8971 MB，占 31%）。
+**另外 69% 的口径此前从未被本轮量化过** —— 这就是本节存在的理由。
+
+### 二、Top 20（含 TOAST，四列可加总闭合）
+
+| 表 | heap | TOAST | 索引 | total |
+|---|---|---|---|---|
+| **`session_bodies_2026_10`** | 82 MB | **3705 MB** | 101 MB | **3889 MB** |
+| `session_turns_2026_09` | 1109 MB | 718 MB | 906 MB | 2733 MB |
+| `ursm_node_snapshot_min_20261017` | 1155 MB | 352 kB | 398 MB | 1554 MB |
+| `ursm_node_snapshot_min_20261016` | 1059 MB | 328 kB | 384 MB | 1443 MB |
+| `ursm_node_snapshot_min_20261015` | 931 MB | 296 kB | 349 MB | 1280 MB |
+| `route_incident_events` | 597 MB | 200 kB | 473 MB | 1070 MB |
+| `usage_ledger_2026_09` | 261 MB | 112 kB | **698 MB** | 959 MB |
+| `ursm_node_snapshot_min_legacy` | 592 MB | 192 kB | 260 MB | 852 MB |
+
+`ursm_node_snapshot_min` 8 个分区合计 **≈7 GB = 全库 25%**
+⇒ 前十节盯的这张表确实是大头，但**不是最大的那个**。
+
+### 三、★ 假设被自己推翻：TOAST 压缩这条杠杆**已经用完了**
+
+`session_bodies_2026_10` 是全库最大对象，3705 MB 是 TOAST，
+而它的 `reloptions` **完全未设置**（含 `toast_compression`），
+PG 17.10 的 `default_toast_compression` 是 `pglz`（PG14+ 支持 `lz4`）。
+⇒ 看起来是个免费的 20~40% 节省。
+
+**实测把它否掉了**：载荷列是 `request_delta` / `response_delta` / `outbound_body`，
+全是 **jsonb**，而 **jsonb 在类型内部就压过一次 pglz**。实测压缩比：
+
+| 列 | 文本展开 | 实际存储 | 比值 |
+|---|---|---|---|
+| `request_delta` | 35 MB | 17 MB | **2.06×** |
+| `response_delta` | 3440 kB | 1526 kB | **2.25×** |
+| `outbound_body` | 41 MB | 20 MB | 2.06× |
+
+⇒ 再叠一层 TOAST lz4 是**压一段已经压过的流**，几乎不会再省。
+**这 3.7 GB 是真实压过的大载荷**，杠杆不在压缩算法上
+（在留存时长、以及「存了没人读的 delta」——后者见 §87 引用的
+`storage.session_bodies_final_full` 提案，生产实测收益近零、默认关闭）。
+
+### 四、两次量具事故（本轮自己踩的）
+
+1. **TOAST 列写成负数**：我写的是
+   `pg_total_relation_size(t.oid) - …`，`t.oid` 是 **TOAST 表**的 oid，
+   应为 `c.oid` ⇒ 满屏 `-1297 MB`。**负值救了我一命** ——
+   若不逐行看就报出去了。
+   ⇒ 顺带一条：**不拆 TOAST 的话，「索引占比」的分母是残缺的**，
+   会把 TOAST 大户误读成索引大户（第一版 `session_bodies` 显示 123.6% 就是这么来的）。
+2. **`rtrim(s, chars)` 不是去后缀，是按**字符集合**剥**：
+   `rtrim(relname, '_2026_09')` 把集合 `{_,2,0,6,1,9}` 里的尾字符全剥掉，
+   base 名变成 `session_bodies_2026_1`。正解 `regexp_replace(…, '_2026_(09|10|11)$', '')`。
+   ⇒ 这是与「`${VAR}` 紧跟全角字符会吞变量名」同级的 bash/PG 字符串陷阱。
+
+### 五、★ 一个**真阴性**（先自检再下结论）
+
+「9 月分区 5163 MB / 23 张表 = 全库 18.5%」——
+初查「有 9 月分区但**没有** 10 月分区」（= 已停止写入、可能该清）：
+
+```
+0 行
+```
+
+**0 行的第一嫌疑是量具。** 去掉那条过滤条件自检 ⇒ 返回 11 行，
+且 `n_oct` **全部为 1**。
+
+⇒ **0 行是真的**：没有任何表滞留 9 月分区，它们都还在正常写入。
+⇒ **自检那一步救了这条结论** —— 若照直写「有表滞留 9 月数据」，
+就会去 DROP 掉一张还在写的表。
+
+### 六、★ 一条**几乎照直写进报告的错误结论**（本节最重要的一条）
+
+从 §76 的普查里看到「9 月分区还在」，我去查清理机制：
+`stateTableTTLSpecs()` 里没有 `usage_ledger`/`request_wal`/`credit_ledger`，
+SQL 侧 `drop_old_state_partitions` 的 `target_tables` 也没有
+⇒ 我准备写成「**这三张表的月分区没有任何清理路径**」。
+
+**它是错的。** 我只查了本仓（Go + SQL），没查 252 的运维脚本：
+
+```
+/opt/scripts/pg17-drop-old-columnar-partitions.sh
+  RETAIN_MONTHS=2
+  PARENTS=( … request_wal  usage_ledger  … credit_ledger …)
+  cron: 30 2 1 * *          # 每月 1 日 02:30
+```
+
+日志实测 cutoff 推进：`2026_05(7月) → 2026_06(8月) → 2026_07(9月) → 2026_08(10月)`。
+⇒ **留存是按设计工作的**，只是它是**月度**节奏 + `RETAIN_MONTHS=2`：
+`2026_09 < 2026_09` 不成立 ⇒ **9 月分区要等 12-01 才被清**（实际留存 2~3 个月）。
+
+⇒ ⇒ ★ 通用式：⭐⭐⭐⭐⭐ **「本仓没有实现」≠「系统没有实现」。**
+本仓代码到不了 252，而 252 上的 cron 脚本同样在改这张库。
+⇒ **凡是要断言「某机制不存在」，检查范围必须覆盖所有 actor**：
+本仓 Go / 本仓 SQL / 本仓脚本 / **目标主机上的 cron 与 `/opt/scripts`**。
+⇒ 只查前三个就下「不存在」，是本轮本可以犯的错误。
+
+### 七、与仓库既有记录的关系：**它记的对，但已经不完整**
+
+`tests/48h-audit/D17-code-hygiene/hygiene/settings_wiring_test.go` 的
+`knownUnwiredSettings` 已列了这 5 个键（2026-09-29 普查），其中
+`lifecycle.usage_ledger_ttl_days` 的说明写着：
+
+> 「P2：对应 usage_ledger（1001MB/2,038,536 行）；**无任何清理路径**」
+
+**前半句对、后半句按本节实测已不准确** —— 清理路径存在，只是不在本仓。
+
+⇒ 准确的缺陷不是「无界增长」，而是**留存控制分裂**：
+
+| 层 | 声明 | 实际 |
+|---|---|---|
+| 迁移 391 播种进 `settings_kv` | **1 天**（UI 可见、可改、热生效标记） | — |
+| 本仓 `stateTableTTLSpecs()` | **不包含这三张表** ⇒ 设置无人读 | — |
+| 252 `pg17-drop-old-columnar-partitions.sh` | `RETAIN_MONTHS=2`（硬编码） | **2~3 个月** |
+
+⇒ 运维在界面上看到「保留 1 天」、改它能保存成功、**而什么也不会发生**，
+真实留存是 2~3 个月且**没有任何一行代码表达这个数字**。
+⇒ 与 `request_logs_ttl_days` 的那行警告同型（spec 里已自曝过一次
+「这是摘要抽取，不是数据搬移…本键不会让主表变小」）——
+**本仓的 setting 描述有「读起来像承诺、实际不是」的前科。**
+
+⇒ 两条可选修法（**都需授权**）：
+(a) 把这三张表接进 `stateTableTTLSpecs()`，让声明的 TTL 真正生效；
+(b) 反过来：承认 2~3 个月才是实际策略，把误导性的 1 天 setting 改掉并在
+    `DescriptionLong` 里写明真实生效者是 252 脚本。
+⇒ **推荐 (b)**：(a) 会把实际留存从 2~3 个月砍到 1 天，那是**行为变更**，
+不是修 bug；先让描述与现实一致，风险小得多。
+
+### 八、★ 已修（仓库侧，零风险）：一条**从未成功执行**的清理分支
+
+`pg17-drop-old-columnar-partitions.sh` 的 `VACUUM FULL columnar_internal.*`：
+
+```
+[2026-10-01T02:31:11]   WARN: VACUUM FULL chunk failed
+ERROR:  VACUUM cannot run inside a transaction block
+（chunk / stripe / chunk_group 三张全部如此）
+```
+
+日志里 **6 次失败、0 次成功**。而脚本自己的注释写着：
+
+> 「这些元数据表本身也会膨胀（实测 14 GB bloat）。必须在 DROP 之后立即 VACUUM FULL 三张元数据表。」
+
+⇒ **为解决 14 GB bloat 而写的那条补救路径，一次都没跑成。**
+
+根因与 `ursm-snapshot-health.sh` 的 `de()` 注释所记**完全同族**：
+把多条语句塞进 `psql -c` 的单个字符串 ⇒ PostgreSQL 当成**隐式事务块**，
+而 VACUUM 明确禁止在事务块内运行：
+
+```bash
+psql -tAc "SET statement_timeout='60min'; SET lock_timeout='10min'; VACUUM FULL …"   # ← 永远失败
+```
+
+**第二层缺陷（更隐蔽）**：旧代码用 `|| echo WARN` 吞掉错误后，
+循环末尾**无条件**打 `VACUUM FULL done`
+⇒ **日志报绿，运维以为 bloat 被清了，实际一张表都没动。**
+这正是本仓最在意的那族形态（「量具跑不通却在报绿」）。
+
+**修法**（与 `de()` 同款，且**仓库与生产都有这个 bug**，所以这是仓库可修的）：
+
+```bash
+docker exec -e "PGOPTIONS=-c statement_timeout=60min -c lock_timeout=10min" \
+     "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc \
+     "VACUUM FULL columnar_internal.$meta"      # 语句串里只有 VACUUM
+```
+并把收尾日志改成**全成功才打 `done`**，否则打 `PARTIAL: ok=N failed=M`。
+
+判据：`scripts/ursmcheck/columnar_drop_vacuum_test.go`（2 条，源码文本型；
+脚本要 docker 才能跑，单测里无法执行，边界已写进文件头）。
+
+⚠ 变异验证**又一次首轮假绿**，且这次是**门的正则有洞**：
+初版 `;\s*SET\s+\w+\s*=` 只认 SET 在分号**之后**，
+而把语句串改成 `SET x=…; VACUUM`（SET 在**开头**）时门照样通过
+—— 两种顺序都会构成多语句、都会构成隐式事务块，**两种都必须匹配**。
+⇒ 已把锚点放宽为 `(?:^|;)\s*SET\s+\w+\s*=`，并用 **git 历史里的真实旧文本**
+（`SET statement_timeout='60min'; SET lock_timeout='10min'; VACUUM FULL …`）
+重跑变异 ⇒ 🔴 红，还原后 🔴 绿。
+⚠ 而在修好正则之前的**两次**变异尝试都**根本没施加**（替换目标串拼错），
+是 `grep -c` 计数 0 发现的 —— **本会话第三次「变异没生效被读成判据无敏感性」**
+（§86 M3、§87 N1、本节 D1）。
+★ 同族：[[§86 的教训：变异没施加 ≠ 判据无敏感性]] · [[判据钉性质不钉写法]] ·
+[[量具不可用与真没问题必须可区分]]。
+
+### 九、部署面
+
+§88 改动**只在仓库**：一个脚本（`pg17-drop-old-columnar-partitions.sh`）
++ 一个测试文件 + 本节文档。
+⚠ **252 上仍是旧脚本**（且仓库副本与生产副本 **MD5 已不同**，
+`RETAIN_MONTHS=2` 两边一致，漂移在别处 —— 部署前需逐行 diff）。
+⇒ 部署后**必须查日志里出现 `VACUUM FULL <meta> OK`**，
+光看 `VACUUM FULL done` **不算证据**（旧代码在从未成功时也打这一行）。
+★ 同族：[[0 命中的第一嫌疑永远是量具坏了]] · [[门的名字不承诺它的口径]]。

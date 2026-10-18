@@ -117,13 +117,38 @@ echo "[$(date -Iseconds)] done, dropped=$dropped_total" >> $LOG
 # === 列存元数据表 VACUUM FULL ===
 # DROP 列存表会在 columnar_internal.chunk/stripe/chunk_group 留下大量 dead tuple，
 # autovacuum 不归还物理页，必须 VACUUM FULL 才能释放回 OS。
+#
+# ★★ 2026-10-18 修复一个从未生效的分支（§88）。
+#   旧写法把三条语句塞进同一个 `-c` 字符串：
+#       psql -tAc "SET ...; SET ...; VACUUM FULL ..."
+#   PostgreSQL 把多语句简单查询包进**隐式事务块**，而 VACUUM 明确禁止在事务块里跑，
+#   于是**每一次都报 `ERROR: VACUUM cannot run inside a transaction block`**。
+#   生产日志里 6 次失败、0 次成功，而旧代码用 `|| echo WARN` 吞掉错误后
+#   循环末尾照样打 `VACUUM FULL done` ⇒ **日志报绿，实际一张表都没清**。
+#   （本节注释自己写着「实测 14 GB bloat，必须 VACUUM FULL」——那条补救从未跑成。）
+#   修法与 ursm-snapshot-health.sh 的 de() 同款：超时设置走 PGOPTIONS，不进语句串。
+#   顺带把「done」改成**只有全部成功才打 done**，失败则打 failed，
+#   免得再出现「做没做都报完成」。
 if [ "$dropped_total" -gt 0 ]; then
   echo "[$(date -Iseconds)] running VACUUM FULL on columnar_internal metadata tables" >> $LOG
+  vac_ok=0
+  vac_fail=0
   for meta in chunk stripe chunk_group; do
     echo "[$(date -Iseconds)]   VACUUM FULL columnar_internal.$meta" >> $LOG
-    docker exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc \
-      "SET statement_timeout='60min'; SET lock_timeout='10min'; VACUUM FULL columnar_internal.$meta" >> $LOG 2>&1 || \
+    # shellcheck disable=SC2086 # PGOPTIONS 是刻意按多词传入的 -e 参数值
+    if docker exec -e "PGOPTIONS=-c statement_timeout=60min -c lock_timeout=10min" \
+         "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc \
+         "VACUUM FULL columnar_internal.$meta" >> $LOG 2>&1; then
+      echo "[$(date -Iseconds)]   VACUUM FULL $meta OK" >> $LOG
+      vac_ok=$((vac_ok+1))
+    else
       echo "[$(date -Iseconds)]   WARN: VACUUM FULL $meta failed (see above)" >> $LOG
+      vac_fail=$((vac_fail+1))
+    fi
   done
-  echo "[$(date -Iseconds)] VACUUM FULL done" >> $LOG
+  if [ "$vac_fail" -eq 0 ]; then
+    echo "[$(date -Iseconds)] VACUUM FULL done (${vac_ok}/${vac_ok} tables)" >> $LOG
+  else
+    echo "[$(date -Iseconds)] VACUUM FULL **PARTIAL**: ok=${vac_ok} failed=${vac_fail}" >> $LOG
+  fi
 fi
