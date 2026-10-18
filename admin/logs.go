@@ -1135,6 +1135,21 @@ func (h *Handler) fetchRequestOutboundBody(ctx context.Context, requestID string
 			"request_id", requestID, "error", err.Error())
 	}
 
+	// 阶段 2（2026-10-18 顺序重排）：session 家族腿提前到 columnar 冷扫**之前**。
+	// 原「hot → 冷扫 → session 兜底」的顺序在 S4 停写后有一个结构性死角：
+	// 停写后新请求的正文只落 session_bodies，v1 冷扫对它们是**证明缺席**——
+	// columnar 分区无 btree，154 实测单 id miss 59s（2026_10 分区），20s ctx
+	// 必超时，而超时不是 ErrNoRows，原兜底挂在 ErrNoRows 分支下永远够不着
+	// ⇒ unified 全量 500、getLog 正文吞掉后 20s 白等。
+	// 提前后三类行各有归宿：停写后行只在 session（ms 级索引命中）；镜像期行
+	// （2026-09-20~停写）v1 与 session 双副本，session 侧即正典读源
+	//（storage.session_bodies_native_read=true，dual-read-drift 7 天零漂移后
+	// S4 拍板）；镜像前行 session 快速 miss（request_id 索引，ms 级）后仍走
+	// 冷扫，行为不变。
+	if raw, err := fetchSessionOutboundBody(ctx, h.db, requestID); err == nil {
+		return raw, nil
+	}
+
 	coldCtx, coldCancel := context.WithTimeout(ctx, 20*time.Second)
 	defer coldCancel()
 	err = h.db.QueryRow(coldCtx, `
@@ -1148,13 +1163,6 @@ func (h *Handler) fetchRequestOutboundBody(ctx context.Context, requestID string
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
-	}
-	// 阶段 3（S4 停写交接，2026-10-13）：session 家族兜底。停写后新请求
-	// 的正文只落 session_bodies（v1 双腿必然 miss）；旧请求在阶段 1/2 命中，
-	// 本腿不改变任何既有结果 —— 纯增量。request_id 单键、不涉 ts 等值
-	//（SessionFamilyBodiesSourceSQL 的列合同无 ts，见 db/request_logs_view_schema.go）。
-	if raw, err := fetchSessionOutboundBody(ctx, h.db, requestID); err == nil {
-		return raw, nil
 	}
 	return nil, sql.ErrNoRows
 }
@@ -1230,7 +1238,32 @@ func (h *Handler) fetchRequestBodies(ctx context.Context, requestID string) (req
 			"request_id", requestID, "error", scanErr.Error())
 	}
 
-	// 阶段 2: columnar 月分区（可能慢，给 20s ctx）
+	// 阶段 2（2026-10-18 顺序重排）：session 家族腿提前到 columnar 冷扫**之前**，
+	// 理由与 fetchRequestOutboundBody 同一处：停写后新请求正文只落 session_bodies，
+	// v1 冷扫对它们是证明缺席（154 实测单 id miss 59s > 20s ctx），原顺序下
+	// 超时错误让挂在 ErrNoRows 分支的 session 兜底永远够不着。提前后：
+	// 停写后行 ms 级命中；镜像期行 session 即正典读源；镜像前行 session 索引
+	// miss（ms 级）后照走冷扫，行为不变。request_id 单键、不涉 ts 等值
+	//（SessionFamilyBodiesSourceSQL 的列合同无 ts，见 db/request_logs_view_schema.go）。
+	sessCtx, sessCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer sessCancel()
+	var srb, sob []byte
+	if sessErr := h.db.QueryRow(sessCtx, `
+		SELECT request_body::text, response_body::text
+		  FROM `+dbpkg.SessionFamilyBodiesSourceSQL()+`
+		 WHERE request_id = $1
+		 LIMIT 1
+	`, requestID).Scan(&srb, &sob); sessErr == nil {
+		if err := validatePersistedBodySize(srb, sob); err != nil {
+			return nil, nil, err
+		}
+		body, resp := decodeStoredBodyForAdmin(srb), decodeStoredBodyForAdmin(sob)
+		h.bodyFetchCache.Put(requestID, body, resp)
+		return body, resp, nil
+	}
+
+	// 阶段 3: columnar 月分区（可能慢，给 20s ctx）——镜像前（2026-09-20 之前）
+	// 的历史请求正文只在 v1 家族，本腿是它们唯一读路径。
 	// 直接派生自请求 ctx（不是 metadata ctx），确保 metadata 卡顿不会拖累 body。
 	// http.Request.Context() 通常由 nginx proxy_read_timeout（默认 1200s）兜底。
 	coldCtx, coldCancel := context.WithTimeout(ctx, 20*time.Second)
@@ -1243,25 +1276,7 @@ func (h *Handler) fetchRequestBodies(ctx context.Context, requestID string) (req
 	`, requestID)
 	if scanErr := row.Scan(&rb, &ob); scanErr != nil {
 		elapsed := time.Since(start)
-		// 阶段 3（S4 停写交接，2026-10-13）：session 家族兜底 —— 停写后新
-		// 请求正文只在 session_bodies；旧请求在阶段 1/2 已命中，本腿纯增量。
 		if errors.Is(scanErr, sql.ErrNoRows) {
-			sessCtx, sessCancel := context.WithTimeout(ctx, 5*time.Second)
-			defer sessCancel()
-			var srb, sob []byte
-			if sessErr := h.db.QueryRow(sessCtx, `
-				SELECT request_body::text, response_body::text
-				  FROM `+dbpkg.SessionFamilyBodiesSourceSQL()+`
-				 WHERE request_id = $1
-				 LIMIT 1
-			`, requestID).Scan(&srb, &sob); sessErr == nil {
-				if err := validatePersistedBodySize(srb, sob); err != nil {
-					return nil, nil, err
-				}
-				body, resp := decodeStoredBodyForAdmin(srb), decodeStoredBodyForAdmin(sob)
-				h.bodyFetchCache.Put(requestID, body, resp)
-				return body, resp, nil
-			}
 			// 两端都没找到 → 缓存 sql.ErrNoRows sentinel（5min 内重复查询直接命中）
 			h.bodyFetchCache.Put(requestID, nil, nil)
 			slog.InfoContext(ctx, "admin fetchRequestBodies no body anywhere",

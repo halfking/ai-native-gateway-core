@@ -278,22 +278,27 @@ func (r *pgBodyReader) loadOutboundBody(ctx context.Context, requestID string) (
 		 LIMIT 1
 	`, requestID).Scan(&raw)
 
-	// Fallback to partitioned bodies table if not in hot
+	// 阶段 2（2026-10-18 顺序重排）：session 家族腿提前到 v1 视图冷扫**之前**。
+	// 停写后新请求正文只落 session_bodies，v1 视图对它们是证明缺席——
+	// columnar 分区无 btree，154 实测单 id miss 59s，30s ctx 必超时，而超时
+	// 不是 ErrNoRows，挂在 ErrNoRows 分支下的原兜底永远够不着（unified 全量
+	// 500 的直接根因）。提前后：停写后行 ms 级命中；镜像期行 session 即正典
+	// 读源（storage.session_bodies_native_read=true）；镜像前行 session 索引
+	// miss 后照走视图腿，行为不变。
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = r.db.QueryRow(ctx, `
 			SELECT outbound_body::text
-			  FROM request_logs_bodies_with_current_month
+			  FROM `+dbpkg.SessionFamilyBodiesSourceSQL()+`
 			 WHERE request_id = $1
 			 LIMIT 1
 		`, requestID).Scan(&raw)
 	}
 
-	// 阶段 3（S4 停写交接，2026-10-13）：session 家族兜底 —— 停写后新请求
-	// 的正文只落 session_bodies；旧请求在 v1 双腿命中，本腿纯增量。
+	// Fallback to partitioned bodies table if not in hot
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = r.db.QueryRow(ctx, `
 			SELECT outbound_body::text
-			  FROM `+dbpkg.SessionFamilyBodiesSourceSQL()+`
+			  FROM request_logs_bodies_with_current_month
 			 WHERE request_id = $1
 			 LIMIT 1
 		`, requestID).Scan(&raw)
