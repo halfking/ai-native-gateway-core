@@ -93,6 +93,36 @@ type WriterLocker interface {
 	TryLock(ctx context.Context, key int64) (release func(context.Context) error, held bool, err error)
 }
 
+// guardUnlockOutcome 把「pg_advisory_unlock 的结果」翻译成
+// 「这条连接该怎么处置」。
+//
+//	（destroyConn, err)：
+//	  - 无错且 unlocked=true  → 归还连接池，锁确实已释放。
+//	  - 无错且 unlocked=false → 归还连接池，但状态异常（见 errGuardNotHeld）。
+//	    此时服务端明确回答「这条连接上没有该锁」⇒ 归还不会泄漏。
+//	  - 解锁出错             → **硬关连接**，不归还。
+//
+// ★ 为什么出错必须硬关：会话级锁绑在连接上，而 pgxpool 归还连接时
+// 只会判断 closed/busy/in-tx/expired，**从不碰 advisory lock**
+// （见 vendor/github.com/jackc/pgx/v5/pgxpool/conn.go 的 Release）。
+// 归还一条仍持锁的连接 = 把锁连同连接一起借给下一个使用者，于是
+// 该实例此后**永远**抢不到锁 —— 症状是「别的实例一直在写」，
+// 与 §10.110.61 已经防住的「拿已取消的 ctx 去解锁」是同一个终局，
+// 但那条路径没有告警、也没有守卫指向它。关掉连接让服务端结束会话，
+// 锁随之由服务端释放。
+//
+// 抽成纯函数是为了让这张决策表可单测（pgxpool.Conn 没法伪造）。
+func guardUnlockOutcome(unlockErr error, unlocked bool) (destroyConn bool, err error) {
+	switch {
+	case unlockErr != nil:
+		return true, unlockErr
+	case !unlocked:
+		return false, errGuardNotHeld
+	default:
+		return false, nil
+	}
+}
+
 // pgxWriterLocker 是基于 PG 会话级 advisory lock 的实现。
 type pgxWriterLocker struct{ pool *pgxpool.Pool }
 
@@ -128,15 +158,20 @@ func (l pgxWriterLocker) TryLock(ctx context.Context, key int64) (func(context.C
 
 	return func(relCtx context.Context) error {
 		var unlocked bool
-		err := conn.QueryRow(relCtx, "SELECT pg_advisory_unlock($1)", key).Scan(&unlocked)
-		conn.Release() // 无论解锁成不成功，连接都必须归还
-		if err != nil {
-			return err
+		unlockErr := conn.QueryRow(relCtx, "SELECT pg_advisory_unlock($1)", key).Scan(&unlocked)
+
+		destroyConn, rerr := guardUnlockOutcome(unlockErr, unlocked)
+		if destroyConn {
+			// 会话级锁可能仍在这条连接上：硬关而不是归还，
+			// 让服务端结束会话把锁带走（决策依据见 guardUnlockOutcome）。
+			closeCtx, cancel := context.WithTimeout(context.WithoutCancel(relCtx), guardUnlockTimeout)
+			defer cancel()
+			_ = conn.Conn().Close(closeCtx)
+			return rerr
 		}
-		if !unlocked {
-			return errGuardNotHeld
-		}
-		return nil
+
+		conn.Release()
+		return rerr
 	}, true, nil
 }
 

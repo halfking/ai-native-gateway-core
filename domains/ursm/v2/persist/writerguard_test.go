@@ -32,6 +32,9 @@ package persist
 import (
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"testing"
 	"time"
 )
@@ -323,5 +326,148 @@ func TestGuardLockTimeoutIsBoundedAndPositive(t *testing.T) {
 	}
 	if guardUnlockTimeout <= 0 || guardUnlockTimeout > 10*time.Second {
 		t.Fatalf("guardUnlockTimeout = %v, want a bounded positive value <= 10s", guardUnlockTimeout)
+	}
+}
+
+// TestGuardUnlockOutcomeDestroysTheConnectionOnUnlockFailure 钉住 2026-10-18
+// 12h 审计轮发现的那条静默永久停写：
+//
+//	解锁查询本身出错时，会话级锁**可能仍在那条连接上**。pgxpool 归还连接
+//	只判 closed/busy/in-tx/expired，从不碰 advisory lock
+//	（vendor/.../pgxpool/conn.go 的 Release），所以「出错也照样 Release」
+//	等于把锁连同连接一起借给下一个使用者 —— 该实例此后永远抢不到锁，
+//	症状只是「别的实例一直在写」，没有任何告警指向泄漏。
+//	⇒ 这条分支必须硬关连接，让服务端结束会话把锁带走。
+func TestGuardUnlockOutcomeDestroysTheConnectionOnUnlockFailure(t *testing.T) {
+	boom := errors.New("connection reset by peer")
+
+	destroy, err := guardUnlockOutcome(boom, false)
+	if !destroy {
+		t.Fatalf("unlock 出错时 destroyConn = false：连接将被归还池并带着锁一起借出，"+
+			"该实例此后永久静默失去写入资格（unlockErr=%v)", err)
+	}
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want the unlock error to propagate", err)
+	}
+}
+
+// 反向门：解锁「成功但返回 false」时服务端已明确回答这条连接上没有该锁，
+// 此时归还连接是安全的（不硬关，避免把一次可恢复的状态异常放大成断连）。
+func TestGuardUnlockOutcomeReturnsTheConnectionWhenUnlockSaidNotHeld(t *testing.T) {
+	destroy, err := guardUnlockOutcome(nil, false)
+	if destroy {
+		t.Fatalf("unlocked=false 时 destroyConn = true：服务端已回答该连接没有锁，硬关属于过度处置")
+	}
+	if !errors.Is(err, errGuardNotHeld) {
+		t.Fatalf("err = %v, want errGuardNotHeld", err)
+	}
+}
+
+// 正常路径：解锁成功 ⇒ 归还连接、不报错。
+func TestGuardUnlockOutcomeReturnsTheConnectionOnSuccess(t *testing.T) {
+	destroy, err := guardUnlockOutcome(nil, true)
+	if destroy {
+		t.Fatalf("解锁成功时 destroyConn = true：正常路径不该断连")
+	}
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+}
+
+// TestWriterGuardReleaseClosureActuallyUsesTheUnlockDecision 是上面那条
+// 决策表的**接线门**（AGENTS.md §55 的 M43「只测函数不测接线」同族）。
+//
+//	变异验证：把 TryLock 的 release 闭包改回
+//	「无条件 conn.Release()、从不问 guardUnlockOutcome」后，
+//	TestGuardUnlockOutcomeDestroysTheConnectionOnUnlockFailure **仍然是绿的**
+//	—— 纯函数被测得很好，接线却可以完全绕过它。这条门补上那一半：
+//	断言 release 闭包里真的调了 guardUnlockOutcome、真的有 Close 路径，
+//	且 Release 出现在决策**之后**。
+func TestWriterGuardReleaseClosureActuallyUsesTheUnlockDecision(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "writerguard.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse writerguard.go: %v", err)
+	}
+
+	// 找到 pgxWriterLocker.TryLock，并取它 return 出去的那个 FuncLit。
+	var releaseFn *ast.FuncLit
+	ast.Inspect(file, func(n ast.Node) bool {
+		fd, ok := n.(*ast.FuncDecl)
+		if !ok || fd.Name.Name != "TryLock" {
+			return true
+		}
+		if fd.Recv == nil || len(fd.Recv.List) == 0 {
+			return true
+		}
+		star, ok := fd.Recv.List[0].Type.(*ast.StarExpr)
+		var recvName string
+		if ok {
+			// 指针接收者：*pgxWriterLocker
+			if ident, ok := star.X.(*ast.Ident); ok {
+				recvName = ident.Name
+			}
+		} else if ident, ok := fd.Recv.List[0].Type.(*ast.Ident); ok {
+			// 值接收者：pgxWriterLocker
+			recvName = ident.Name
+		}
+		if recvName != "pgxWriterLocker" {
+			return true
+		}
+		for _, stmt := range fd.Body.List {
+			ret, ok := stmt.(*ast.ReturnStmt)
+			if !ok || len(ret.Results) == 0 {
+				continue
+			}
+			if lit, ok := ret.Results[0].(*ast.FuncLit); ok {
+				releaseFn = lit
+			}
+		}
+		return true
+	})
+	if releaseFn == nil {
+		t.Fatal("未在 pgxWriterLocker.TryLock 里找到返回的 release 闭包")
+	}
+
+	// 按源码顺序收集闭包内的函数调用名。
+	var calls []string
+	ast.Inspect(releaseFn.Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch fn := call.Fun.(type) {
+		case *ast.Ident:
+			calls = append(calls, fn.Name)
+		case *ast.SelectorExpr:
+			calls = append(calls, fn.Sel.Name)
+		}
+		return true
+	})
+
+	idxOf := func(name string) int {
+		for i, c := range calls {
+			if c == name {
+				return i
+			}
+		}
+		return -1
+	}
+
+	decision, release, closeIdx := idxOf("guardUnlockOutcome"), idxOf("Release"), idxOf("Close")
+	if decision < 0 {
+		t.Fatalf("release 闭包从未调用 guardUnlockOutcome（实际调用序列 %v）—— "+
+			"决策表成了死代码，锁泄漏修复没有接线", calls)
+	}
+	if closeIdx < 0 {
+		t.Fatalf("release 闭包里没有 Close 路径（实际调用序列 %v）—— "+
+			"解锁失败时无法结束会话，会话级锁会跟着连接一起回池", calls)
+	}
+	if release < 0 {
+		t.Fatalf("release 闭包里既没有 Release 也没有 Close（实际调用序列 %v）", calls)
+	}
+	if decision > release {
+		t.Fatalf("Release() 出现在 guardUnlockOutcome 之前（实际调用序列 %v）—— "+
+			"连接在拿到处置结论之前就归还了，等于恒定归还", calls)
 	}
 }
