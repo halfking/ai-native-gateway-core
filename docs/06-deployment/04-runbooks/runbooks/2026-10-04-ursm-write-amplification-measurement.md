@@ -24431,6 +24431,35 @@ FROM pg_class c WHERE c.oid = 'usage_facts_default_pkey'::regclass;
 
 ## §92 复核待授权项的读数，并抓到一个**比它硬得多**的候选：TOAST 索引 229 MB 对 9,165 个条目（**未执行，待授权**）
 
+> ### ⚠ 订正（2026-10-18，§97 实测）—— 本节的「9,165 个条目」是**统计量**，真值是 **0**
+> 
+> 本节标题与第一节的「TOAST 堆 9,165 行」「每条目 3.20 页」「差 64 倍」
+> **全部建立在 `reltuples` / `n_live_tup` 这两个统计量上，而它们是错的**。
+> §97 用四把尺子量了同一张 TOAST 表，真值一致：
+> 
+> ```
+> SELECT count(*) FROM pg_toast.pg_toast_81522141;                     -- 0
+> SELECT count(chunk_id) FROM pg_toast.pg_toast_81522141;              -- 0
+> SELECT count(*) FROM (SELECT 1 FROM pg_toast.pg_toast_81522141 LIMIT 5) s;  -- 0
+> SELECT chunk_id, chunk_seq FROM pg_toast.pg_toast_81522141 LIMIT 3;  -- 0 行
+> ```
+> 
+=> ★ 所以正确表述不是「每条目 3.20 页、胖了 64 倍」，而是
+> **「0 个条目对 29,303 页」——「每条目几页」这个问题本身不成立。**
+> 结论（这 229 MB 确实该回收）**方向没错**，但推导过程建立在幻影统计上。
+> 
+> 连带三处要改：
+> 
+> | 本节原文 | 订正 |
+> |---|---|
+> | 「`n_dead_tup = 0` ⇒ **排除**死元组未清这个解释」 | 方向对、机制错：chunk 是**跟着父行一起被删掉的**，所以没有死元组可回收；页面只是「已分配但空闲」 |
+> | 「前置条件：该 TOAST 表有**活跃写入**」 | **错**。宿主 `count(*) = 0`，且被迁移 860 + `retiredV1HotTables` 永久停写 |
+> | 处置：`REINDEX INDEX CONCURRENTLY`（≈228.6 MB） | 被 §97 取代：`TRUNCATE` 宿主表一条语句回收 **291 MB**（TOAST 堆 55 + TOAST 索引 229 + 宿主索引 6.4），且更快、无需 CONCURRENTLY 两遍扫描 |
+> 
+> ⚠ 原文保留不改：本节「复核待授权项读数」的方法论仍然成立，
+> 而**这次复核又推翻了自己**（本节第五节预判复核会「发现更严重的形态」——
+> 实际发现的是**更简单**的形态：一段被统计量伪装的幻影）。
+
 §73 记过「`pg_toast_81522141_index` ≈229 MB，可 REINDEX CONCURRENTLY」。
 它是本会话的首选推荐项，而那个数字**是几节之前量的，本节先复核** ——
 **推荐生产写之前必须重新量，数字会随数据变化。**
@@ -24837,3 +24866,248 @@ docker_exec psql … -tAc \
 `L2 VACUUM FULL ok (N table(s))`；**在此之前该分支一次都没成功过**，
 所以「没有出现这条日志」不能用来判断「没触发」。
 ★ 同族：[[§88 的教训：多语句 psql -c 报绿]] · [[量具不可用与真没问题必须可区分]]。
+
+---
+
+## §97 把 §90 的普查口径从「索引层」扩到「TOAST 层」—— 又空又胖的表共 **350 MB**，并抓到一个**误导运维的回收指引**（**未执行，待授权**）
+
+§90 普查的是「从来没被读过的索引」，判据是 `idx_scan=0`。
+本节把口径换成**「表已经空了，却还占着盘」**——
+这条判据不依赖任何访问统计，因而**与 uptime、统计新鲜度都无关**。
+
+### 一、普查：零行表里，谁还背着 >10 MB
+
+```sql
+SELECT c.relname, c.reltuples::bigint AS est_rows,
+       pg_size_pretty(pg_relation_size(c.oid))                                    AS heap,
+       pg_size_pretty(pg_indexes_size(c.oid))                                      AS idx,
+       pg_size_pretty(GREATEST(pg_total_relation_size(c.oid)
+             - pg_relation_size(c.oid) - pg_indexes_size(c.oid), 0))              AS toast,
+       pg_size_pretty(pg_total_relation_size(c.oid))                               AS total
+FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public' AND c.relkind IN ('r','p')
+  AND c.reltuples = 0 AND pg_total_relation_size(c.oid) > 10*1024*1024
+ORDER BY pg_total_relation_size(c.oid) DESC;
+```
+
+全库**只有 3 张**命中：
+
+| 表 | heap | 索引 | **TOAST** | 合计 |
+|---|---|---|---|---|
+| `_request_logs_bodies_hot` | 0 bytes | 6432 kB | **284 MB** | **291 MB** |
+| `usage_facts_default` | 0 bytes | **80 MB** | 16 kB | **80 MB** |
+| `_request_logs_hot` | 12 MB | 41 MB | 6000 kB | **59 MB** |
+
+⇒ `usage_facts_default` 是 §90/§91 那个**纯索引**形态（已提 REINDEX）。
+⇒ ★ **新增 2 张，都是 TOAST 主导的另一种形态**，合计 **350 MB**。
+
+### 二、这两张表为什么确定是「死」的
+
+`reltuples=0` 只是统计，**必须 `count(*)`**（本轮这条纪律在 §93/§94 已经吃过一次亏）：
+
+| 表 | `count(*)` | `relpages` | 仓内语义 |
+|---|---|---|---|
+| `_request_logs_bodies_hot` | **0** | **0** | `retiredV1HotTables` + 迁移 860「pending-delete 标记」 |
+| `_request_logs_hot` | **0** | 0 | 同上 |
+
+⇒ 两张表在 `admin/data_lifecycle_hot_partition.go:24-27` 的 `retiredV1HotTables` 里，
+被 `promoteHotRetiredReason` **在停写状态下拒绝 promote**；
+迁移 860 的注释明写这些 `_` 前缀是「pending-delete marker」。
+⇒ ★ **它们是被判了死刑、还没行刑的表**。350 MB 是这个半截退役状态的持有成本。
+
+### 三、TOAST 里到底有什么：四把尺子 + 两个扩展
+
+宿主 `_request_logs_bodies_hot` 的 TOAST 是 `pg_toast.pg_toast_81522141`。
+
+⚠ **量具坑（第三个量具事故）**：TOAST 表是**按父表 oid 命名**、但**自己另有 oid**。
+本轮第一次校验写成 `reltoastrelid = 81522141` ⇒ 假阴性（真值 `81522144`）。
+正解是认**表名**（`pg_toast_<父表oid>`），不是拿两个 oid 相等。
+
+```sql
+SELECT count(*) FROM pg_toast.pg_toast_81522141;                     -- 0
+SELECT count(chunk_id) FROM pg_toast.pg_toast_81522141;              -- 0
+SELECT count(*) FROM (SELECT 1 FROM pg_toast.pg_toast_81522141 LIMIT 5) s;  -- 0
+SELECT chunk_id, chunk_seq FROM pg_toast.pg_toast_81522141 LIMIT 3;  -- 0 行
+```
+
+⇒ **四个读数一致：TOAST 里 0 个 chunk。**
+而同一个对象上：
+
+| 量具 | 读数 | 判读 |
+|---|---|---|
+| `pg_class.reltuples` | **9,165** | ✗ 幻影 |
+| `pg_stat_all_tables.n_live_tup` | **9,165** | ✗ 幻影 |
+| `pgstattuple_approx` 自由空间 | **99.61%**（57,731,984 / 57,958,400 字节） | ✓ **可信** |
+| `pgstattuple_approx` 死元组 | 0 | ✓ 与 count 一致 |
+| `pgstatindex` 的 `deleted_pages` | **29,299 / 29,302 页**（`leaf_pages=1`） | ✓ **索引 99.99% 是删空的页** |
+| `count(*)` | **0** | ✓ 真值 |
+
+⇒ ★ `_approx` 里的 `approx_tuple_count=9165` 与 count 冲突时，
+**可信的是 `approx_free_percent`**（走可见性图，不依赖采样），
+不可信的是它的 tuple 计数（按 `scanned_percent=2.8%` 采样外推）。
+⇒ ★ 由此**订正 §92**：「9,165 条目 / 每条目 3.20 页 / 胖 64 倍」是幻影统计的算术。
+
+### 四、机制：为什么统计会**永久**冻结在这里
+
+本节最有价值的一条，不是 350 MB，而是**为什么量具会骗人到这种程度**：
+
+```
+宿主 last_vacuum      = 2026-10-18 03:00:02.659664   ← 今天，且就在几小时前
+TOAST last_vacuum     = 2026-10-18 03:00:02.801890
+两者此刻仍然 284 MB / 99.6% 空闲
+```
+
+⇒ ★ **表一旦变空，就再也不会触发 autovacuum**（没有新死元组、没有新行），
+而 TOAST 只在**父表被 vacuum 时**顺带被 vacuum
+⇒ 统计就此**冻结在「你变空那一刻」的快照上**，此后永远不会自我纠正。
+⇒ 这是**结构性**的，不是「忘了 ANALYZE」：
+**`ANALYZE` 也不会修好它**（ANALYZE 只能把估计调向真实值，
+而这里真实值是 0，估计却偏**高**——ANALYZE 正是能把 9,165 拉回 0 的那个操作，
+只是没人会对一张 0 行的表跑它）。
+★ 同族：[[n_live_tup=0 是统计缺失]]（**本节是它的镜像形态：统计偏「高」**）。
+
+⇒ ★ 第二条结构性事实：**DELETE 路径从不把页归还给操作系统**——
+既不还堆页，也不还 TOAST 页，也不还索引页。
+本例中 chunk 是**跟着父行一起被删掉的**，所以 `n_dead_tup=0`、
+**没有任何死元组可供回收**；§92 当时把它读成「排除了死元组解释」，方向对而机制错。
+
+### 五、★ 新的代码缺陷：产品给运维的回收指引，三重错
+
+`admin/data_lifecycle_hot_partition.go` 原来的内联提示：
+
+```
+"已迁移数据，但 TOAST 空间尚未释放。请在【存储总览】页面对
+ _request_logs_hot 执行 VACUUM FULL 以回收磁盘空间。"
+```
+
+| # | 缺陷 | 证据 |
+|---|---|---|
+| **1** | **只覆盖小表**：`_request_logs_hot` 59 MB；真正的 291 MB 大头 `_request_logs_bodies_hot` 一个字都没提 | `retiredV1HotTables` 有两张表，字符串硬编码了一张 |
+| **2** | **在它唯一该出现的状态下不可达**：`promoteHotRetiredReason` 在停写时让 job 首批就 `failed`，`TotalMigrated` 永远到不了 `> 0` | `runHotPromoteJobWithDB` 的退役检查在批循环内、首批之前 |
+| **3** | **归因与手段对不上**：把空间说成「TOAST 尚未释放」，指向的操作是否重建 TOAST **本轮未能确证** | 见第六节 |
+
+⇒ ★ 缺陷 2 才是最狠的：**这条提示只在「写已重新打开」时出现，
+而那恰恰是没人需要它的时候**；真正需要它的「退役态」里，它永远不出现。
+⇒ 缺陷 1+2 合起来的效果：**350 MB 死空间 + 一条永远送不到的清理指引。**
+
+### 六、⚠ 一条**承重断言我没有确证**，因此没有写进结论
+
+本仓 runbook 第 22574 行的表里写着：
+
+```
+| `VACUUM FULL` | 堆 + TOAST 堆 + 重建索引 | ❌ 独占锁，全表阻塞 |
+```
+
+`docs/operations/vacuum-worker-and-error-stats-guide.md:13` 与 `bg/vacuum_worker.go`
+也建立在「VACUUM FULL 回收 TOAST 表空间」之上。
+
+本轮我**专门查了这件事**，结论是：**查不到权威结论**——
+检索到的资料只说「VACUUM FULL 重写表、把空间还给 OS」，**没有一篇讲 TOAST 表**。
+⇒ ★ 因此本节**不下**「VACUUM FULL 不回收 TOAST」这个判断：
+**承重断言不能凭记忆写进运维文档，也不能凭记忆写进代码注释。**
+
+⇒ ★ 但**建议不依赖这个争议**：`TRUNCATE` 无条件正确——
+它明确会连同 TOAST 表与全部索引一起重置，而这两张表 `count(*)=0` 且被永久停写。
+⇒ 「遗留待查」：runbook 22574 行那一格、以及 `bg/vacuum_worker.go` 对
+`request_logs_bodies` 的定期 VACUUM FULL，其**是否真的回收了 TOAST，需要单独实证**。
+
+### 七、处置建议（**未执行，待授权**）
+
+```sql
+-- 一条语句回收 291 MB；表已空（count(*)=0）且被永久停写，无数据损失
+TRUNCATE public._request_logs_bodies_hot;
+TRUNCATE public._request_logs_hot;   -- 再回收 59 MB
+```
+
+| 项 | 值 |
+|---|---|
+| 预计回收 | **≈350 MB**（291 + 59），一次性 |
+| 阻塞写 | 这两张表**本就没有写**（停写 + 退役门双保险） |
+| 语义变化 | 表、列、索引、序列**全部保留**，只是清空 ⇒ 不破坏任何代码路径 |
+| 与 §92 的关系 | **取代** `REINDEX pg_toast_81522141_index`（228.6 MB）：TRUNCATE 多回收 62 MB 且无需 CONCURRENTLY 两遍扫描 |
+| 与 §91 的关系 | `usage_facts_default` 的 REINDEX **仍需保留**（它是纯索引形态，TRUNCATE 会丢掉已建索引） |
+
+**验收口径（同前：别看退出码）**：
+```sql
+SELECT relname, pg_size_pretty(pg_total_relation_size(oid))
+FROM pg_class WHERE oid IN ('public._request_logs_bodies_hot'::regclass,
+                            'public._request_logs_hot'::regclass);
+-- 期望：291 MB → ≈6 MB / 59 MB → ≈0 MB
+```
+
+### 八、代码修复与判据（**在仓库，未部署**）
+
+- 修复：把内联字符串抽成纯函数 `hotReclaimHint(table string) string`，
+  按 `retiredV1HotTables` **遍历**取名（不再硬编码单表），
+  措辞改为指向 `TRUNCATE` 并**自陈前提** `count(*) = 0`。
+- 判据：`admin/data_lifecycle_hot_partition_reclaim_hint_test.go`（3 测试）
+  1. `…CoversEveryRetiredTableAndNamesTruncate` —— 退役族每张表都有提示、提示指名该表、
+     **含 `TRUNCATE`**、**不含 `VACUUM FULL`**、**自陈 `count(*)` 前提**；
+     并要求退役族非空（防空转）。
+  2. `…StaysSilentForNonRetiredTables` —— 有活跃写入的 hot 表**绝不能**收到 TRUNCATE 指令。
+  3. `…IsUnreachableWhileTheFamilyIsRetired` —— **表征测试**：
+     把第五节缺陷 2 钉成可执行断言（退役态下 `Warning` 必须为空、`TotalMigrated` 为 0），
+     并注明「若日后让该族重新可达，须连同提示前提一起重新审视」。
+
+**变异验证（两处都红）**：
+
+| 变异 | 结果 |
+|---|---|
+| 退回原缺陷（硬编码小表 + 改回 `VACUUM FULL`） | 🔴 红：`must name TRUNCATE` |
+| 去掉退役判定（对活跃表也发 TRUNCATE 指令） | 🔴 红：`"usage_ledger_hot" is not retired and must not be told to TRUNCATE` |
+
+还原后 `cmp -s` 逐字节一致、`md5` 前后相同。
+
+### 九、本节的方法论
+
+1. ⭐⭐⭐⭐⭐ **「表空了却还占盘」比「索引没人读」是更强、更干净的普查判据**：
+   前者只问物理事实，**与 uptime / 统计新鲜度 / 谁在读全都无关**。
+   本节三张表一次命中，其中两张是全新形态。
+2. ⭐⭐⭐⭐⭐ **统计会朝两个方向骗人，且两个方向都要用 `count(*)` 兜底**：
+   §93 是「`n_live_tup=0` 而表非空」，本节是「`n_live_tup=9165` 而表全空」。
+   ⇒ 判「表是否真空」永远只有一条路：`count(*)`。
+3. ⭐⭐⭐⭐⭐ **最难的量具事故是「用 oid 相等去验归属」**：
+   TOAST 表按**父表 oid 命名**、自己另有 oid ⇒ `reltoastrelid = 父oid` 恒假。
+   本轮已在自己身上踩了一次才改对。
+4. ⭐⭐⭐⭐ **扩展的统计字段里，`free_percent` 可信、`tuple_count` 不可信**：
+   前者走可见性图，后者按采样外推——**空表上两者会差到 ∞**。
+5. ⭐⭐⭐⭐⭐ **承重断言查不到权威来源时，正确做法是让建议不依赖它**：
+   本节差点把「VACUUM FULL 不回收 TOAST」写进结论与代码注释。
+   ⇒ 改写成「`TRUNCATE` 无条件正确」之后，争议无论怎么裁定都不影响本节结论。
+   ⇒ ★ **这不是含糊，是把不确定性隔离在一个不承重的位置。**
+6. ⭐⭐⭐⭐ **给运维的指引要和「指引能不能被送达」一起验收**：
+   本节缺陷 2 是一个**语法正确、单测也覆盖不到的可达性缺陷**——
+   提示字符串本身没bug，它只是**永远不会被执行到**。
+   ⇒ ⇒ 通用式：**任何「做完 X 之后请去做 Y」的提示，都要问「X 在目标状态下会发生吗」。**
+
+### 十、附带发现：**request_logs 退役的保护网当前是红的**（既有失败，非本轮引入）
+
+跑全量回归时 `admin` 包红了 5 条。用 `git worktree add` 到 pristine HEAD
+（`04107fc52`，**不含本轮任何改动**）复跑，**5 条以完全相同的方式失败**
+⇒ **既有失败，与 §97 无关**（强证据，不是 `go list -deps` 那种弱证据）。
+
+但它们本身是一条完整的信号，值得单列：
+
+| 测试 | 报的内容 |
+|---|---|
+| `TestRequestLogsReadInventoryIsComplete` | `admin/tenant_stats_logs_table.go` 读 `_request_logs` 却**完全不在清单里** ⇒ 门原话：**「S4 会静默漏掉它」** |
+| `TestReaderPopulationGroundTruth` | `admin/providers.go` 落进「既非 v1 底表、也非视图」的**第三族**——门自己写着「**带 default 分支的分类器就是在猜**」，而第三族正是 `request_logs_bodies_with_current_month` |
+| `TestV1ReaderTieringEveryFileProvenToReadV1` | `admin/providers.go` 已登记为 v1 读方，但**当前源码取不到任何 v1 读点** |
+| `TestV1ArmLiteralBlindSpotIsPinnedAndTiered` | 同上，`providers.go` 已不满足盲区定义 |
+| `TestRequestLogsStopWriteClassificationEvidenceIsReal` | `admin/tenants.go` 与 `admin/providers.go` 的 **Evidence 字符串在文件里已不存在** |
+| （附带）`admin/usage_enhanced.go` | 新增读方，不在未判定基线里 |
+
+⇒ ★ 这批门正是 **request_logs 退役的保护网**（迁移 860 的注释点名
+`request_logs_reader_population_test.go` 会**文本重放**迁移来学习改名关系）。
+**保护网红着，说明退役验收证据链本身在腐坏** ——
+而 §97 恰好证明了退役**确实执行过**（两表已空、停写、标了 pending-delete）。
+⇒ **退役动作是真的，保护它的证据链是假的。**
+
+⚠ **这不动摇 §97 的建议**：TRUNCATE 的依据是
+「`count(*)=0` + 永久停写」，**不是「没人读它」**
+⇒ 即使清单有遗漏，**清空一张已经 0 行的表不可能丢数据**。
+⇒ 但它把一个**新问题**摆上台面：这份退役清单需要一次重新扫描与复判，
+**属于待拍板项**（不在本轮授权范围内）。
+
+★ 同族：[[量具不可用与真没问题必须可区分]] ·
+[[§247：量了自检没量门]] · [[阴性结论要当缺陷一样复核]]。

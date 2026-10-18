@@ -53,6 +53,41 @@ func rejectRetiredV1Promote(w http.ResponseWriter, table string) bool {
 	return true
 }
 
+// hotReclaimHint returns the operator hint for reclaiming disk space after a hot
+// promote drained a retired v1 table, or "" when table is not part of that family.
+//
+// 2026-10-18 (§97): the previous hint was inline and said
+// "…对 _request_logs_hot 执行 VACUUM FULL 以回收磁盘空间". Three defects, all
+// confirmed against the production catalog (details in the runbook §97):
+//
+//  1. It named only _request_logs_hot (59 MB) and never _request_logs_bodies_hot
+//     (291 MB) — i.e. it pointed at the table holding 15% of the reclaimable space.
+//  2. It was unreachable in exactly the state it exists for. promoteHotRetiredReason
+//     fails the job before any batch runs while writes are disabled, so
+//     TotalMigrated can never exceed 0 on the retired family. The hint only ever
+//     appears after writes are re-enabled — the one state where nobody needs it.
+//  3. It attributed the space to "TOAST 尚未释放" while naming an operation whose
+//     TOAST behaviour is not what the measurement shows. Measured on 2026-10-18:
+//     _request_logs_bodies_hot is count(*)=0 with heap 0 bytes, its TOAST holds 0
+//     chunks at 99.6% free space, and the TOAST btree has 29,299 of 29,302 pages
+//     marked deleted — after a same-day VACUUM of both the parent and the TOAST.
+//     A plain VACUUM demonstrably returns none of it, and only TRUNCATE rewrites
+//     the TOAST relation itself.
+//
+// We deliberately do NOT assert what VACUUM FULL does to a TOAST table: the audit
+// found no authoritative source settling it, and the recommendation does not
+// depend on the answer — TRUNCATE is unconditionally correct here because the
+// family is write-gated and both tables measure count(*)=0.
+func hotReclaimHint(table string) string {
+	if _, retired := retiredV1HotTables[table]; !retired {
+		return ""
+	}
+	return "已迁移数据，但磁盘空间尚未释放：" + table +
+		" 的剩余占用在 TOAST 与索引页上，普通 VACUUM 只把它们标为可复用、不归还给操作系统。" +
+		"请在【存储总览】页面对该表执行 TRUNCATE（前提：count(*) = 0），" +
+		"只有 TRUNCATE 会连同 TOAST 表一起重写。"
+}
+
 func validPartitionName(name string) bool {
 	return partitionNamePattern.MatchString(name) && !strings.HasSuffix(name, "_hot")
 }
@@ -487,8 +522,10 @@ func (h *Handler) runHotPromoteJobWithDB(ctx context.Context, job *HotPromoteJob
 				"total_migrated", job.TotalMigrated,
 				"batches", job.BatchesExecuted,
 				"duration_seconds", job.DurationSeconds)
-			if job.TableName == "_request_logs_hot" && job.TotalMigrated > 0 {
-				job.Warning = "已迁移数据，但 TOAST 空间尚未释放。请在【存储总览】页面对 _request_logs_hot 执行 VACUUM FULL 以回收磁盘空间。"
+			if job.TotalMigrated > 0 {
+				if hint := hotReclaimHint(job.TableName); hint != "" {
+					job.Warning = hint
+				}
 			}
 			return
 		}
