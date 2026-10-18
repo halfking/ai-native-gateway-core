@@ -123,6 +123,12 @@ type Row struct {
 //
 //	会把 writer.go 里每一处 hash["..."] 读取都与本表比对，漏一个就红。
 //	新增 typed 列时若忘了加进来，那条测试就是提醒。
+//
+// ⚠⚠ 但那道门**只覆盖一个方向**（2026-10-18 §10.110.62 查实）：
+//
+//	它的全集是 **writer.go 自己的 hash["..."] 读取**，
+//	所以「store 层读了、而 writer 压根没读」的键对它**结构性不可见**。
+//	本表补的正是那个方向：TestStoreReadKeysAreTypedOrDeclaredResident。
 var payloadDuplicateKeys = [...]string{
 	// —— 818 之前就已存在的 7 个 ——
 	"available",       // -> Row.Available      (boolean 列)
@@ -169,6 +175,43 @@ var payloadDuplicateKeys = [...]string{
 	"samples_1m",  // -> Row.Samples1m
 	"samples_5m",  // -> Row.Samples5m
 	"samples_30m", // -> Row.Samples30m
+}
+
+// payloadResidentKeys 是「store 层在读、但快照表**没有**对应 typed 列」的 hash 键。
+//
+// 它们因此只能从 payload 里取 —— 而 payload 是**兜底仓**，不是查询面：
+// 一次分析查询要拿到它们必须写 `payload->>'x'`，走不了索引、也不会被
+// 类型检查或列清单校验覆盖到。
+//
+// ★ 本表存在的唯一理由：让「这个键读不到 typed 列」变成一个**显式决定**
+//
+//	而不是沉默。TestStoreReadKeysAreTypedOrDeclaredResident 强制每个
+//	store 读取的键都落进「typed 列」或「本表」二者之一。
+//
+// —— 2026-10-18 生产实测（§10.110.62）——
+//
+//	实测这 8 个键只由 **同一批 270 行（15%）** 携带，其余 1531 行（85%）
+//	携带的是空 `{}`。每轮 payload 合计 65,274 B，占整行 324 B 的 11.7%。
+//
+//	`empty_response_rate_5m` 尤其刺眼：它的两个兄弟 `..._1m` / `..._30m`
+//	**都已经**是 typed 列（见上表），唯独中间这个留在 jsonb 里。
+var payloadResidentKeys = [...]string{
+	"empty_response_rate_5m", // -> store/pipeline.go:132  v.EmptyResponseRate5m（两个兄弟已是列）
+	"empty_responses_1m",     // -> store/pipeline.go:128  v.EmptyResponses1m
+	"empty_responses_5m",     // -> store/pipeline.go:129  v.EmptyResponses5m
+	"empty_responses_30m",    // -> store/pipeline.go:130  v.EmptyResponses30m
+	// ★ 这一条是被新门**自己抓出来的**，不是人工翻出来的：
+	//   probe_evidence.go:140 用 `boolField(raw, "last_request_failed")` 读它
+	//   —— 函数式访问器，下标正则看不见它。生产 payload 实测 270 行携带。
+	"last_request_failed", // -> store/probe_evidence.go:140  boolField(raw, ...)
+	// ⚠ lat_p95_ms 目前是**三重死字段**（§10.110.62 实测）：
+	//   store/pipeline.go:135 读它、api/types.go:114 声明它，
+	//   但全仓**没有任何地方往 Redis 写它**，persist 也不写 ——
+	//   快照表里 lat_p95_ms 列最新一轮 1816 行全 NULL，最近 200 轮累计 0 次非 NULL。
+	//   快照里它是 integer 列（存在），但恒为 NULL；payload 里也从不出现。
+	//   ⇒ 保留在表里是因为「读得到」比「查得到」重要：一旦上游开始写，
+	//   它会立刻出现在 payload 里而不会被静默丢弃。
+	"lat_p95_ms",
 }
 
 func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
