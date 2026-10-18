@@ -53,12 +53,32 @@ func extractCacheEconomicsAggregateSQL(t *testing.T) string {
 	t.Helper()
 	body := cacheEconomicsSourceText(t)
 
-	const open = "query := fmt.Sprintf(`"
-	i := strings.Index(body, open)
-	if i < 0 {
-		t.Fatal("cannot locate the usageCacheEconomics aggregate SQL literal")
+	// ★ 必须先切到 usageCacheEconomics 的**函数体**里再找字面量。
+	//   usage_enhanced.go 里有三处 `query := fmt.Sprintf(`（本轮合并后
+	//   新增了两处），按整文件取第一个会抓到别的 handler 的 SQL ——
+	//   前提断言当场红，判据直接失效。
+	//   这是同一族教训的第四次现身：**取子串必须有两端界定**。
+	const fnOpen = "func (h *Handler) usageCacheEconomics("
+	fnStart := strings.Index(body, fnOpen)
+	if fnStart < 0 {
+		t.Fatal("cannot locate usageCacheEconomics in " + cacheEconomicsSourceFile)
 	}
-	rest := body[i+len(open):]
+	// usageCacheEconomics 可能是文件最后一个函数，此时没有后继 `\nfunc `。
+	// 那就取到文件末尾 —— 上界缺失不等于无界：**内层的「唯一性」断言
+	// 仍然兜得住**，而下面的前提断言会兜住提取到错误 SQL 的情况。
+	fnEnd := strings.Index(body[fnStart+len(fnOpen):], "\nfunc ")
+	fnBody := body[fnStart:]
+	if fnEnd >= 0 {
+		fnBody = body[fnStart : fnStart+len(fnOpen)+fnEnd]
+	}
+
+	const open = "query := fmt.Sprintf(`"
+	if n := strings.Count(fnBody, open); n != 1 {
+		t.Fatalf("usageCacheEconomics 里应有且仅有 1 处 %q，实为 %d 处："+
+			"提取点已漂移，本判据正在测一条无关的查询", open, n)
+	}
+	i := strings.Index(fnBody, open)
+	rest := fnBody[i+len(open):]
 	j := strings.Index(rest, "`, whereClause)")
 	if j < 0 {
 		t.Fatal("cannot locate the end of the usageCacheEconomics aggregate SQL literal")

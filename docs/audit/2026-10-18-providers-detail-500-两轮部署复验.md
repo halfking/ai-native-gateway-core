@@ -539,3 +539,80 @@ PG 侧同时只有 1 条 active 查询、0 IO 等待、0 锁等待 ⇒ **负载�
 
 本轮没有动这些进程：它们不属于本会话，且可能仍被某个活跃会话持有。
 已向 owner 报告，由 owner 决定是否清理。
+
+### 13.6 上线验证（2026-10-18 12:42，owner 显式授权后手工 psql 应用）
+
+前置核对（照 870 的先例）：落地文件 SHA256 与仓库副本**逐字节一致**
+（`a1793c47…`）；`to_regclass('…cache_agg_idx')` 应用前为 NULL、旧索引在位。
+
+执行：`psql_rc=0`，墙钟约 4 分钟（其中建索引约 57s–数分钟，宿主负载当时 28–48）。
+
+验收（**按定义匹配分区级，不按索引名、不按父表大小** —— 870 记录的陷阱）：
+
+```
+旧父表索引  空        新父表索引  usage_ledger_ts_tenant_cache_agg_idx
+旧 hot 索引 空        新 hot 索引  usage_ledger_hot_ts_tenant_cache_agg_idx
+
+分区               idx_size    valid
+usage_ledger       0 bytes     t     ← 分区父表的正常渲染，不是没建出来
+usage_ledger_2026_08  8192 B    t
+usage_ledger_2026_09  81 MB     t
+usage_ledger_2026_10  25 MB     t
+usage_ledger_2026_11  8192 B    t
+usage_ledger_hot      624 kB    t
+旧 856 覆盖索引分区残留：0
+```
+
+端点真身那条聚合（30 天窗口）：
+
+| | 基线 | 应用后 |
+|---|---|---|
+| 9 月分区 | Parallel **Index Scan**（回堆） | Parallel **Index Only Scan** |
+| 10 月分区 | Parallel Seq Scan | Parallel **Index Only Scan** |
+| hot | Parallel Seq Scan | Parallel **Index Only Scan** |
+| Buffers | 209,361 | **19,560**（−91%） |
+| Execution（热缓存） | 8,375 ms | **487 ms（−94%）** |
+
+端点连测 6 次：**6/6 全 200**，3.43 / 3.72 / 3.43 / 3.76 / 3.88 / 4.00 s
+（修复前：500@10.08s、200@6.98s、200@6.53s、200@10.07s，约半数失败）。
+数据与 psql 对得上：`total_requests` 1,484,604、`cache_read_tokens` 2,505,087,892、
+`dollars_spent` 3,938.18。
+
+真库判据完成**红→绿闭环**：应用前红（报「分区上没有携带 cache_read_tokens 的
+覆盖索引，请应用迁移 873」），应用后绿（三臂全 Index Only Scan）。
+
+#### ⚠ 13.7 顺带暴露的真问题：压缩计数每次必超时，端点在拿一个假 0
+
+154 journalctl 里 6/6 次端点调用都伴随：
+
+```
+WARN cache-economics: compressed request count unavailable
+     tenant="" err="timeout: context deadline exceeded"
+```
+
+即 `compressed_requests` **恒为 0 是降级产物，不是真实值**。第一版修复把这条
+查询隔离进 3s 子预算（`cacheEconomicsCompressedBudget`），避免了它拖垮主聚合，
+但代价是**每次调用白烧 3 秒**——这正好是端点现在稳定停在 3.4–4.0s 的原因
+（主聚合已降到 0.5s，剩下的全是这条拿不到结果的查询）。
+
+这条查询本身仍是 `request_logs_with_current_month` 上的 30 天窗口计数。
+本轮按 AGENTS.md 的规矩**如实记录为未完成项**：它与主聚合是两条独立的慢查询，
+不因 873 而受益，需要单独取证（真实值、计划、是否已有可用滚存）。
+在它被治理之前，缓存经济卡片上的「压缩请求数」这一格**不可信**。
+
+#### 13.8 并发合并造成的判据失效（又一次「取子串要有两端界定」）
+
+真库判据应用后首次复跑红了，报的是**前提断言**：
+
+```
+提取到的 cache-economics 聚合 SQL 不含 "SUM(ul.cache_read_tokens)"：提取点已漂移
+```
+
+原因：`usage_enhanced.go` 里 `query := fmt.Sprintf(` 原本只有一处，本轮合并
+（`d7e23bf57` 等）新增到**三处**（488 / 533 / 660 行），而判据按**整文件取第一个**，
+抓到的是别的 handler 的 SQL。
+
+⇒ 这是「取子串必须有两端界定」这条教训的**第四次现身**（前三次：`--` 注释、
+`DO` 块字符串字面量、守卫块无上界切片）。判据没给出假绿，而是被前提断言当场
+拦下——这正是那条前提断言存在的意义。已改为先切到 `usageCacheEconomics`
+函数体、再在该体内断言字面量**有且仅有一处**，然后才取字面量。
