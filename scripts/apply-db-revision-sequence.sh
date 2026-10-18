@@ -1666,6 +1666,14 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/872_credential_model_index_partitions_heap.sql"
   "$ROOT_DIR/sql/migrations/startup/873_usage_ledger_ts_cover_cache_agg_idx.sql"
 
+  # ── 874（2026-10-18 S4 停写回归轮）：session_turns(client_request_id) 部分索引 ──
+  # 停写后新请求只落 session 家族，getLog 旧的 OR 谓词让 planner 放弃
+  # request_id 索引、对全部月分区顺序扫描（154 实测 ~100 万行/3.8GB >30s），
+  # /api/logs/:id 超时 500、request-detail 页核心数据全空。代码侧已把 OR 拆成
+  # 两段顺序查询；本索引补齐 client_request_id 兜底腿在 session 家族上的
+  # 索引（部分索引，实测仅 10.9% 行带值）。详证见迁移文件头。
+  "$ROOT_DIR/sql/migrations/startup/874_session_turns_client_request_id_idx.sql"
+
   # ── 2026-10-16 孤儿迁移 044 补登（health_source 白名单缺 probe_now）──────
   #
   # 044_health_source_probe_now.sql 早就写在 sql/migrations/startup/ 里，注释把
