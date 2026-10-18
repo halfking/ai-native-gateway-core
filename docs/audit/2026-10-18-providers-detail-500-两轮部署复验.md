@@ -616,3 +616,60 @@ WARN cache-economics: compressed request count unavailable
 `DO` 块字符串字面量、守卫块无上界切片）。判据没给出假绿，而是被前提断言当场
 拦下——这正是那条前提断言存在的意义。已改为先切到 `usageCacheEconomics`
 函数体、再在该体内断言字面量**有且仅有一处**，然后才取字面量。
+
+### 13.9 压缩计数：端点在拿一个假 0 当真值报（873 之后修掉）
+
+873 上线让主聚合降到 487ms，端点 6/6 全 200。但 154 journalctl 里
+**每次调用**都还挂着一条：
+
+```
+WARN cache-economics: compressed request count unavailable
+     tenant="" err="timeout: context deadline exceeded"
+```
+
+这意味着 `compressed_requests` 恒为 0 **是降级产物，不是真实值**，
+而且每次调用白烧 3s——873 之后端点稳定在 3.4–4.0s，这段时间**全部**
+是这条拿不到结果的查询（主聚合只占 0.5s）。
+
+| 读法（同一 30 天窗口） | 耗时 | 结果 |
+|---|---|---|
+| `request_logs_with_current_month` | **>300s（跑不完）** | — |
+| `_request_logs`（母表单腿） | **648 ms** | **10,590 行** |
+| `_request_logs_hot` | 3 ms | 0 行 |
+
+母表命中 10,590 ⇒ 视图报出来的 0 确实是错的。
+
+视图为什么跑不完：它把 `session_turns` / `session_turn_details` 一并联进来
+（`LATERAL` 补列 + `NOT EXISTS` 反连接）。本端点只要一个 `COUNT(*)`，
+却要为 30 天 200 万行做整套补列——**要的东西和视图定义的东西差着两个数量级**。
+
+#### 关键取舍：单腿母表，而不是 hot∪母表双腿
+
+`sqlreadguard` 的读面纪律要求读双腿（最近 8h 的行只在 `_request_logs_hot`）。
+但对**计数**指标来说，朴素的 `UNION ALL` 双腿是**更糟**的错误方向：
+
+> promote 会把旧行从 hot 搬到母表。两腿同时存在时，同一行会被数两次。
+
+`bg/routing_health_checks.go` 的 R47 债条目记的就是这件事，并注明
+「正确双腿必须走族视图并核对 promote 去重语义」——那需要一个真实 promote
+环境，不是本轮能定的。
+
+⇒ **低估 ≤8h（保守、可在注释里说清）优于系统性虚高**（不可自证、
+且方向随 promote 时机漂移）。同款取舍在本仓已有先例：
+`internal/summarystore/store.go` 与
+`domains/session/v2/session_request_status_backfill.go`。
+已按格式登记 `sqlreadguard` 白名单（`LEGIT`，写清三条依据）。
+
+口径变化如实记录：本指标此前**从未返回过真值**，因此不存在「与旧值不一致」
+的回归面——现在是第一次给出真实数字。
+
+判据 3 条（`admin/cache_economics_compressed_source_test.go`）：
+必须读母表且四条谓词不得被改；必须保持单腿（出现 `_request_logs_hot` 或
+`UNION` 即红）；真库层用同款 3s 子预算必须跑完且与独立重算一致
+（实测 10,590 / 1.57s）。变异 4/4 精确变红，其中真库层那条是把查询改回
+canonical 视图后**因 3s 预算超时而红**——不是假红。
+
+⚠ 判据里又踩了一次注释陷阱：那条 SQL 的注释通篇在讨论
+`request_logs_with_current_month` / `_request_logs_hot` / promote 去重。
+不先剥 `--` 注释，「不得出现某视图」会因注释提及而误报、
+「必须出现某表」会因注释提及而恒真。
