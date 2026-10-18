@@ -22417,3 +22417,98 @@ domains/streaming/audio_usage_log.go:62
 本例第三条最险：读者把空读成「正常」，**故障形态是静默的**。
 ★ 同族：[[阴性结论要当缺陷一样复核]] · [[发现不一致先查是不是被登记过的设计]] ·
 [[界面说谎族必须逐族枚举]] · [[读到一个数不等于读到一个结论]]。
+
+---
+
+## §75（2026-10-18 19:55）全库扫 churn 表：**六张非分区表合计 ≈869 MB 净空**，其中 291 MB 挂在**一张 0 行的表**上
+
+§74 在四张表上撞见「churn 表」形态。既然是同族，就该**系统性地扫一遍**而不是继续碰运气。
+
+### 一、扫面口径
+
+```sql
+churn_x   = (n_tup_ins + n_tup_del) / greatest(n_live_tup, 1)
+churn_pct = 100·(ins+del) / (upd+ins+del)      -- ≈100% ⇒ 每一次写入都是 insert+delete 配对、零 update
+```
+
+筛选 `pg_total_relation_size > 20MB` 且 `(ins+del) > 10000`，按 churn_x 排序：
+
+| 表 | 总大小 | live | ins | del | churn_x | churn_pct |
+|---|---|---|---|---|---|---|
+| `_request_logs_hot` | 59 MB | **0** | 112,934 | 147,604 | **260,538×** | 65% |
+| `_request_logs_bodies_hot` | 291 MB | **0** | 109,447 | 125,346 | **234,793×** | 91% |
+| `session_mirror_outbox` | 70 MB | 147 | 18,577 | 18,479 | 252× | 62% |
+| `stats_usage_monthly` | 24 MB | 27,445 | 897,405 | 891,567 | 65× | **100%** |
+| `stats_usage_daily` | 78 MB | 107,968 | 920,578 | 3,649,347 | 42× | **99%** |
+| `session_turns_hot` | 102 MB | 8,481 | 136,590 | 136,160 | 32× | 60% |
+| `session_bodies_hot` | 351 MB | 8,481 | 134,466 | 128,228 | 31× | **98%** |
+| `session_turn_details_hot` | 31 MB | 8,481 | 133,622 | 127,971 | 31× | **98%** |
+
+### 二、关键分类：**这八张全部是 `relkind='r'`（非分区）**
+
+这是整件事的转轴：
+
+- **分区表 churn 很便宜** —— 留存到期整块 `DROP PARTITION`，空间 100% 归还。
+- **非分区堆表 churn 是永久泄漏** —— `DELETE` 只产生死元组，VACUUM 记进 FSM、
+  **不截断文件**（这正是迁移 830 头部写的那句「磁盘单调增长」）。
+
+⇒ 库内**分区化只做了一张表**（快照表族），而 churn 最猛的几张仍是非分区堆表。
+
+### 三、TOAST 拆解：一张 **0 行的表**占着 291 MB
+
+| 表 | heap | TOAST heap | **TOAST 索引** | 自身索引 | 合计 |
+|---|---|---|---|---|---|
+| `session_bodies_hot` | 5,160 kB | 299 MB | 30 MB | 17 MB | **351 MB** |
+| `_request_logs_bodies_hot` | **0 bytes** | 55 MB | **229 MB** | 6,432 kB | **291 MB** |
+| `session_turns_hot` | 16 MB | 38 MB | 1,064 kB | 47 MB | **102 MB** |
+| `_request_logs_hot` | 12 MB | 3,920 kB | 2,048 kB | 41 MB | **59 MB** |
+
+★ **「分项相加必须等于总计」**这条纪律在这里直接抓到一个我自己的量具缺陷：
+第一版我只测了 `heap + TOAST heap + own_idx`，`_request_logs_bodies_hot`
+加起来 61 MB 而总计 291 MB —— **差 230 MB**。
+差的不是运气，是 **`pg_total_relation_size` 包含 TOAST 表自己的索引**，我漏测了。
+补上 `toast_idx` 后四张全部对齐（351 / 291 / 102 / 59 ✓）。
+
+⇒ `_request_logs_bodies_hot`：**0 行、0 字节堆，却占 291 MB，其中 229 MB 是一个 TOAST 索引**
+（且 TOAST 索引是 TOAST 堆的 **4 倍** —— 极不正常的比例，说明堆早被回收而索引一直没还）。
+
+### 四、可回收量级（保守口径）
+
+| 表 | 总量 | 保守可回收 | 性质 |
+|---|---|---|---|
+| `_request_logs_bodies_hot` | 291 MB | **≈291 MB** | churn（非分区） |
+| `session_bodies_hot` | 351 MB | ≈346 MB | churn（5 MB 堆有 8,456 行） |
+| `session_turns_hot` | 102 MB | ≈86 MB | churn |
+| `_request_logs_hot` | 59 MB | ≈59 MB | churn |
+| `session_turn_details_hot` | 31 MB | ≈29 MB | churn |
+| `session_mirror_outbox` | 70 MB | ≈58 MB | churn + dead 无 TTL（§73/74） |
+| **合计** | **904 MB** | **≈869 MB** | |
+
+加上 §68 的 `ursm_node_snapshot_min_legacy` **852 MB**（真孤儿，可 DROP）
+⇒ **本轮已识别的可回收空间 ≈1.72 GB**，占 29 GB 库的约 5.9%。
+
+### 五、⚠ 处置分级：**churn ≠ 孤儿，不要一刀切**
+
+§74 的教训在这里直接生效：这三类处置的代价完全不同。
+
+| 形态 | 例子 | 可否 DROP | 手段 |
+|---|---|---|---|
+| **真孤儿**（无生产者、无读者） | `ursm_node_snapshot_min_legacy` | ✅ 可 | `DROP TABLE` |
+| **churn**（仍有活的写入路径） | 本节六张 | ❌ **不可** | `VACUUM FULL` / `pg_repack` |
+| **读者把空读成正常** | `recent_success_rate` 的第一腿 | ❌ 更不可 | 需先修读者 |
+
+⇒ 本节的 ≈869 MB **只能用 VACUUM FULL / pg_repack**，
+而两者都**独占锁表重写、期间写入全阻塞** ⇒ 必须排窗口，且逐张确认写入路径
+（`_request_logs_hot` 至少还有 `audio_usage_log.go` 一条活的 INSERT）。
+
+### 六、真正的结构性修法（与 830 同源）
+
+**分区化。** 这六张表要做的事，快照表族在 830 里已经做过一遍：
+留存从「按行 DELETE」换成「按分区 DROP」，空间 100% 归还、不再单调增长。
+⇒ 代价与收益可直接类比 830：一次性迁移 + 观察期，而不是一次 VACUUM。
+
+★ 通用式：⭐⭐⭐⭐⭐ **「DELETE 不还空间」是 PG 堆表的物理事实，不是配置问题**。
+看到 churn 率高的表，**先问它是不是分区表**：
+是 ⇒ churn 是设计的一部分；不是 ⇒ 每次写入都在花掉一份永远不会还回来的空间。
+★ 同族：[[孤儿表不会自己消失]] · [[0 命中的第一嫌疑永远是量具坏了]] ·
+[[分项相加必须等于总计]] · [[失败即保留且没有 TTL 的 dead-letter 会按量级放大]]。
