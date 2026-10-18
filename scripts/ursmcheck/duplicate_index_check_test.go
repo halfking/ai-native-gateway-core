@@ -251,8 +251,11 @@ func TestDupIndexSQLHasNoPsqlPositionalParams(t *testing.T) {
 	//   而只查第一段的话，第二段写 $1 是全绿的 —— 这与本判据当初
 	//   想防的「默认值从没被执行过」是同一个盲区。
 	segs := dupIndexSQLAll(t)
-	if len(segs) < 2 {
-		t.Fatalf("应至少有 2 段判据（逐字相同 + 前缀覆盖），实得 %d 段 %v —— "+
+	// 三段：逐字相同 / 前缀覆盖 / 父表前缀覆盖（§79 新增第三段）。
+	// 少于 3 段说明形态变了；而下面的检查是**逐段**的，
+	// 所以新段自动被覆盖 —— 漏登记新段这件事本身就是本门要防的。
+	if len(segs) < 3 {
+		t.Fatalf("应有 3 段判据（逐字相同 + 前缀覆盖 + 父表前缀覆盖），实得 %d 段 %v —— "+
 			"脚本形态变了，请同步本判据", len(segs), segs)
 	}
 	for _, name := range segs {
@@ -391,9 +394,13 @@ func TestIdenticalSegmentStillReportedAlongsidePrefix(t *testing.T) {
 	}
 }
 
-// 两段都要算进合计，并且要**分段报数** —— 操作者得知道哪一类命中了几对。
+// 两段各自命中时要分段报数。
+//
+// ★ 桩必须用 segAwareStub3（不是旧的两段版）：脚本已是三段，
+//   两段桩里未匹配的段会落进 `*)` 分支，于是「段1 命中」被重复计入，
+//   断言的合计数自然对不上。这不是判据变严，是**桩没跟上形态**。
 func TestBothSegmentCountsAreReportedSeparately(t *testing.T) {
-	code, out := runDupIndexRaw(t, segAwareStub(seg1Row, seg2Row))
+	code, out := runDupIndexRaw(t, segAwareStub3(seg1Row, seg2Row, "true"))
 	if code != 1 {
 		t.Fatalf("两段各一对应 exit 1，实得 %d：\n%s", code, out)
 	}
@@ -420,6 +427,7 @@ func TestSegmentCallSiteMustCheckReturnCode(t *testing.T) {
 	for _, want := range []string{
 		`out1=$(run_segment "段1/逐字相同" "$SQL") || exit 3`,
 		`out2=$(run_segment "段2/前缀覆盖" "$SQL_PREFIX") || exit 3`,
+		`out3=$(run_segment "段3/父表前缀覆盖" "$SQL_PARENT") || exit 3`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("段调用点缺少 %q —— 不检查 run_segment 的返回码，"+
@@ -565,5 +573,150 @@ func TestPrefixReportWarnsCoveredIsNotSameAsDroppable(t *testing.T) {
 			t.Errorf("段2 的报告应保留「被覆盖不等于该删 / planner 按字节偏好更小索引」的提醒，"+
 				"缺 %q：\n%s", want, out)
 		}
+	}
+}
+
+// ===========================================================================
+// 段3「父表前缀覆盖」（2026-10-18 §79）
+//
+// 段2 报的「分区上有 168 MiB 的窄索引」有个致命附加条件：
+// CREATE TABLE … PARTITION OF 会克隆父表声明的每个索引。
+// 段1/段2 都写死 relkind 'r'/'m' + 索引 'i' ⇒ **看不到父表**，
+// 于是「删了会不会长回来」它答不出来。
+// §79 实测：只删分区实例是无效的，真实代价从一次性 345 MiB 变成
+// 每月 ≈243 MiB ≈ 2.9 GB/年。段3 就是让工具自己答这个问题。
+// ===========================================================================
+
+const seg3Marker = "-- seg: parent-prefix-coverage"
+
+// segAwareStub3 三段感知的桩。段靠 SQL 里的 seg 注释区分。
+func segAwareStub3(seg1, seg2, seg3 string) string {
+	return `
+case "$*" in
+  *"` + seg3Marker + `"*) ` + seg3 + " ;;\n" +
+		`  *"-- seg: prefix-coverage"*) ` + seg2 + " ;;\n" +
+		`  *) ` + seg1 + " ;;\nesac\nexit 0"
+}
+
+const seg3Row = `echo 'usage_ledger|idx_usage_ledger_part_request_id|usage_ledger_partitioned_request_id_ts_key|229564416|255205376|484769792|100|0|0|1'`
+
+// 只有段3 有命中时也必须 exit 1 —— 证明段3 真的被调用，不是死代码。
+func TestParentSegmentIsActuallyWired(t *testing.T) {
+	code, out := runDupIndexRaw(t, segAwareStub3("true", "true", seg3Row))
+	if code != 1 {
+		t.Fatalf("段3 单独命中应 exit 1，实得 %d —— 段3 可能根本没被调用：\n%s", code, out)
+	}
+	for _, want := range []string{"idx_usage_ledger_part_request_id", "父表前缀覆盖"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("输出缺少 %q：\n%s", want, out)
+		}
+	}
+}
+
+// 三段都要算进合计，并且分段报数。
+func TestAllThreeSegmentCountsAreReported(t *testing.T) {
+	code, out := runDupIndexRaw(t, segAwareStub3(seg1Row, seg2Row, seg3Row))
+	if code != 1 {
+		t.Fatalf("三段各一对应 exit 1，实得 %d：\n%s", code, out)
+	}
+	for _, want := range []string{
+		"段1/逐字相同 1 对", "段2/前缀覆盖 1 对", "段3/父表前缀覆盖 1 对", "检出 3 对",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("输出缺少 %q —— 读者无法判断哪一类命中了几对：\n%s", want, out)
+		}
+	}
+}
+
+// 段3 的 psql 失败必须 exit 3。形态是**段1/段2 成功、段3 失败**：
+// 失败若被吞掉，前两段的命中仍会出报告 ⇒ exit 1，看起来完全正常。
+func TestParentSegmentFailureIsNoConclusionNotSilentlyHealthy(t *testing.T) {
+	stub := `
+case "$*" in
+  *"` + seg3Marker + `"*) echo 'FATAL: connection refused' >&2; exit 1 ;;
+  *"-- seg: prefix-coverage"*) ` + seg2Row + " ;;\n" +
+		`  *) ` + seg1Row + " ;;\nesac"
+	code, out := runDupIndexRaw(t, stub)
+	if code != 3 {
+		t.Fatalf("段3 失败应 exit 3（没有结论），实得 %d —— 若为 1 就是"+
+			"「段3 崩了却拿段1/段2 的结果当结论」：\n%s", code, out)
+	}
+	if strings.Contains(out, "summaries_pkey") {
+		t.Errorf("段3 失败时不该输出段1 的命中行 —— 混合结论比没有结论更危险：\n%s", out)
+	}
+}
+
+// ★★ 量具钉子：段3 的 relkind 大小写。
+//
+// 分区索引的 pg_class.relkind 是 **'I'（大写）**，普通索引是 'i'。
+// 写错成 'i' ⇒ 段3 恒 0 行，而 0 行在本脚本是**健康结论**
+// ⇒ 量具坏了反而报健康。§79 实测踩过一次（我先归因成 pg_am 匹配不上）。
+func TestParentSegmentUsesUppercaseRelkind(t *testing.T) {
+	body := dupIndexSQLSegment(t, "SQL_PARENT")
+	if !strings.Contains(body, "c.relkind = 'p' AND ic.relkind = 'I'") {
+		t.Error("段3 必须扫 relkind='p' 的父表 + relkind='I' 的**分区索引**（大写 I）—— " +
+			"写成 'i' 会让段3 恒 0 行，而 0 行在本脚本被判成健康")
+	}
+	// 段1/段2 看的仍是普通表与普通索引，不能被一起改掉。
+	for _, seg := range []string{"SQL", "SQL_PREFIX"} {
+		b := dupIndexSQLSegment(t, seg)
+		if !strings.Contains(b, "c.relkind IN ('r','m') AND ic.relkind = 'i'") {
+			t.Errorf("[%s] 应保持扫普通表 + 普通索引（relkind 'r'/'m' 与 'i'）", seg)
+		}
+	}
+}
+
+// ★★ 量具钉子：段3 必须报**跨分区级联占用**，不是父表索引的 0 字节。
+//
+// 父表上的索引恒为 0 bytes —— 那是分区父表的正常渲染。
+// 若直接用 pg_relation_size(父表索引)，段3 只能报「有个 0 字节的冗余」，
+// 没有任何处置价值；必须按 pg_inherits 聚合各分区实例。
+// 实测锚点：聚合计数与手工求和逐位吻合（219 / 62 / 24 MB）。
+func TestParentSegmentAggregatesCascadedBytes(t *testing.T) {
+	body := dupIndexSQLSegment(t, "SQL_PARENT")
+	if !strings.Contains(body, "FROM pg_inherits ch") {
+		t.Error("段3 必须用 pg_inherits 聚合各分区实例 —— 父表索引本身恒为 0 字节")
+	}
+	if !strings.Contains(body, "ch.inhparent = i.indexrelid") {
+		t.Error("段3 的级联聚合必须按 inhparent = 父索引 oid 关联（索引在 pg_inherits 里也有继承关系）")
+	}
+	if strings.Contains(body, "pg_relation_size(i.indexrelid) AS bytes") {
+		t.Error("段3 不能直接报父表索引的大小 —— 那恒为 0，报出来没有处置价值")
+	}
+	// idx_scan 同样要聚合成跨分区总和：父表上的 idx_scan 恒为空。
+	if !strings.Contains(body, "sum(COALESCE(cs.idx_scan, 0))") {
+		t.Error("段3 的 idx_scan 必须跨分区聚合 —— 父表上的 idx_scan 恒为空")
+	}
+}
+
+// 段3 命中的处置方式与段1/段2 不同：必须在**父表**上删。
+// 报告若不给这句，操作者会去逐分区 DROP，然后下个月看着它长回来。
+func TestParentReportSaysDropOnParent(t *testing.T) {
+	_, out := runDupIndexRaw(t, segAwareStub3("true", "true", seg3Row))
+	for _, want := range []string{"分区父表", "级联占用", "父表"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("段3 命中时报告应说明「字节是跨分区级联占用」「要在父表上删」，缺 %q：\n%s", want, out)
+		}
+	}
+}
+
+// 段3 的阈值必须真的进到它自己的 SQL 里。
+func TestParentSegmentThresholdIsActuallyApplied(t *testing.T) {
+	stub := `
+case "$*" in
+  *"` + seg3Marker + `"*)
+    case "$*" in
+      *">= 999999999999::bigint"*) exit 0 ;;
+    esac
+    ` + seg3Row + `
+    ;;
+  *) exit 0 ;;
+esac`
+	if code, out := runDupIndexRaw(t, stub); code != 1 {
+		t.Fatalf("基线：段3 应检出并 exit 1，实得 %d\n%s", code, out)
+	}
+	code, out := runDupIndexRaw(t, stub, "MIN_PAIR_BYTES=999999999999")
+	if code != 0 {
+		t.Fatalf("阈值调高后段3 应无命中并 exit 0，实得 %d：\n%s", code, out)
 	}
 }

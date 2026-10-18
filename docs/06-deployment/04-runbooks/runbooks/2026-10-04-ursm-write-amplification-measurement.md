@@ -23015,3 +23015,88 @@ PG 对分区父表 `DROP INDEX` 会**级联到所有分区**，
 给出的诚实答案，在父表克隆机制面前是**误导**。
 ★ 同族：[[0 命中的第一嫌疑永远是量具坏了]] · [[取件器坏了先修取件器]] ·
 [[阴性结论要当缺陷一样复核]] · [[门的名字不承诺它的口径]]。
+
+---
+
+## §80 把 §79 记下的盲区修掉：重复索引门加第三段「父表前缀覆盖」（2026-10-18）
+
+§79 靠**人工**去读 `CREATE TABLE … PARTITION OF` 才发现「删分区实例无效」。
+那次的结论是对的，但**工具本身仍然答不出这个问题** ——
+段1/段2 都写死 `c.relkind IN ('r','m') AND ic.relkind = 'i'`，
+**永远看不到分区父表的索引集**。
+
+⇒ 本节把第三段补进去，让工具自己答「删了会不会长回来」。
+
+### 一、第三段报的是什么（不是段2 的重复）
+
+| | 段2 | 段3 |
+|---|---|---|
+| 扫什么 | 普通表 / 普通索引（`'r'/'m'` + `'i'`） | **分区父表 / 分区索引**（`'p'` + **`'I'` 大写**） |
+| 「字节」是什么 | 该索引自身的 `pg_relation_size` | **跨分区级联占用**（`pg_inherits` 聚合） |
+| 回答什么 | 「现在有多大的冗余」 | 「**会不会复发** + 现在值多少」 |
+
+★ 段3 若直接报父表索引的大小就**没有处置价值**：父表索引恒为 0 字节
+（那是分区父表的正常渲染），只能报出「有个 0 字节的冗余」。
+必须按 `pg_inherits` 聚合各分区实例 —— **索引在 `pg_inherits` 里也有
+继承关系**（`inhparent` = 父索引 oid、`inhrelid` = 分区索引 oid）。
+`idx_scan` 同样要聚合：父表上的 `idx_scan` 恒为空。
+
+### 二、出货读数（生产只读，用脚本里落库的那段 SQL）
+
+```
+ usage_ledger | idx_usage_ledger_part_request_id | usage_ledger_partitioned_request_id_ts_key | 229564416 | 255205376 | 100 | 0  | 0 | 1
+ usage_ledger | idx_usage_ledger_part_request_id | idx_usage_ledger_recon_cover               | 229564416 | 221978624 | 100 | 4  | 0 | 0
+ usage_ledger | idx_usage_ledger_part_ts         | usage_ledger_ts_tenant_cache_agg_idx       |  65126400 | 111722496 | 327 | 105| 0 | 0
+ sessions     | idx_sessions_session_id          | sessions_session_id_partition_date_key     |  25542656 |  28753920 |  36 | 1399243 | 0 | 1
+```
+
+**一致性对账**：229,564,416 B = **219 MB**、65,126,400 B = **62 MB**、
+25,542,656 B = **24 MB** —— 与 §79 手工逐分区求和
+（169+50 / 49+13 / 9.3+15）**逐位吻合**。
+两条独立口径（手工点查 vs `pg_inherits` 自动聚合）对上了。
+
+`idx_usage_ledger_part_tenant` 正确地**没有**出现（无覆盖方）⇒ 第三段不是恒真。
+
+### 三、判据与变异（新增 7 条）
+
+变异 **P1–P7 全红**：
+
+| 变异 | 判红的那条 |
+|---|---|
+| P1 分区索引 `relkind` 写成小写 `'i'` | `…ParentSegmentUsesUppercaseRelkind` |
+| P2 字节改回父表索引自身大小 | `…ParentSegmentAggregatesCascadedBytes` |
+| P3 段3 根本不调用 | `…ParentSegmentIsActuallyWired` + `…AllThreeSegmentCountsAreReported` |
+| P4 `idx_scan` 不做级联聚合 | `…ParentSegmentAggregatesCascadedBytes` |
+| P5 调用点漏掉 `\|\| exit 3` | `…SegmentCallSiteMustCheckReturnCode` |
+| P6 去掉「要在父表上删」的报告提醒 | `…ParentReportSaysDropOnParent` |
+| P7 段3 去掉阈值占位符 | `…ParentSegmentThresholdIsActuallyApplied` + `…NoPsqlPositionalParams` |
+
+★ P1 钉的是**大小写**：分区索引是 `'I'` 而普通索引是 `'i'`，
+写错 ⇒ 段3 恒 0 行，而 **0 行在本脚本是健康结论** ⇒ 量具坏了反而报健康。
+判据同时**反向钉住**段1/段2 仍扫 `'r'/'m'` + `'i'`，避免「一把改三段」。
+
+### 四、两条自己踩的坑
+
+1. **新 log 文案撞了既有的「报告型脚本不得含 DROP」那道门**：
+   我在段3 的读法提示里写了字面量 `DROP INDEX`，`TestDupIndexScriptNeverDrops`
+   当场判红。那道门用「可执行行里出现 DROP INDEX 即失败」的保守近似，
+   而我加的是**文档性提示** —— 两种理解都对，门没放行。
+   ⇒ 改文案而不是放宽门：**门是对的，它成功拦住了一次「报告型脚本
+   看起来会执行 DROP」的歧义**。
+
+2. **两段桩在三段脚本下失配**：`segAwareStub` 只分两段，未匹配的段落进 `*)`
+   分支，于是「段1 命中」被重复计入，断言的合计数自然对不上。
+   ⇒ 形态变更时**桩必须同步**；判据红了先问「是不是量具/桩没跟上形态」。
+
+### 五、契约保持不变
+
+- 段1 逐字节未改；10 字段契约与退出码契约（0 健康 / 1 检出 / 3 没有结论）不变。
+- 三段**结构上互斥**（段3 只扫 `relkind='p'`，段1/段2 只扫 `'r'/'m'`）⇒ 不会双报。
+- 三段都过 10 字段校验，段3 崩了不会退化成「0 行 ⇒ 健康」。
+
+★ 通用式：⭐⭐⭐⭐⭐ **一个读数被推翻时，先问「工具为什么答不出这个问题」，
+再决定是人工补一次还是给工具补一段**。§79 我选了人工（读 `PARTITION OF`），
+§80 补上工具 —— 因为「会复发吗」是这道门**每次运行都该回答**的问题，
+靠人读代码回答就意味着下一次仍然靠人。
+★ 同族：[[门的名字不承诺它的口径]] · [[取件器坏了先修取件器]] ·
+[[0 命中的第一嫌疑永远是量具坏了]]。
