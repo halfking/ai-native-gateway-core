@@ -343,7 +343,24 @@ func (h *AutoRouteHandlers) handleIndexSnapshot(w http.ResponseWriter, r *http.R
 	out := make([]map[string]interface{}, 0)
 	for rows.Next() {
 		var credID int64
-		var rawModel, canonicalName, billingMode string
+		var rawModel, canonicalName string
+		// ★ 2026-10-19：`billing_mode` 必须扫进 **string，不能扫进 string。
+		//
+		// 这一列没有 COALESCE 保护，而 credential_model_index 里确实有 NULL：
+		// 实测 427,986 行里 2,153 行 billing_mode IS NULL（其余 per_token
+		// 324,935 / token_plan 50,867 / free 50,031）。
+		//
+		// 后果不是「跳过那一行」这么简单：`rows.Scan` 出错会把 pgx 的 rows
+		// 置为出错状态，循环结束后 `rows.Err()` 同样返回这个错，
+		// 于是 writeAggRowsErr 照样把整个端点写成 500：
+		//
+		//	WARN  admin aggregate row scan failed; row skipped
+		//	      op=autoRoute.indexSnapshot error=cannot scan NULL into *string
+		//	ERROR admin handler internal error caller=aggregate_read_guard.go:34
+		//
+		// 实测 /api/admin/auto-route/index 稳定 500@1.1s（快速失败，不是超时）。
+		// 语义不变：NULL 与 "" 一样表示「没有这个值」，都不写进 entry。
+		var billingMode *string
 		var canonicalIDVal *int
 		var priceIn, priceOut, successRate, pressureRatio *float64
 		var contextWindow, p95, activeSessions, concurrencyLimit *int
@@ -367,8 +384,8 @@ func (h *AutoRouteHandlers) handleIndexSnapshot(w http.ResponseWriter, r *http.R
 		if canonicalName != "" {
 			entry["canonical_name"] = canonicalName
 		}
-		if billingMode != "" {
-			entry["billing_mode"] = billingMode
+		if billingMode != nil && *billingMode != "" {
+			entry["billing_mode"] = *billingMode
 		}
 		if priceIn != nil {
 			entry["unit_price_in_per_1m"] = *priceIn
