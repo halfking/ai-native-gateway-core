@@ -80,6 +80,9 @@ func (h *Handler) handleTurnsFilterOptions(w http.ResponseWriter, r *http.Reques
 	_, err := h.queryFilterOptionGroups(
 		ctx, h.ssMergedSource(tenantWhere), ssGroups, tenantArgs)
 	if err != nil {
+		// ★ 必须记 err：修复前这一分支只有 writeError，journalctl 里查不到任何
+		//   原因，只能看到 HTTP 层的 500，排查时完全瞎的（2026-10-18 实际踩过）。
+		slog.Error("filter-options: ss 维度查询失败", "err", err, "tenant", tenantID)
 		writeError(w, http.StatusInternalServerError, "query filter options failed")
 		return
 	}
@@ -92,6 +95,7 @@ func (h *Handler) handleTurnsFilterOptions(w http.ResponseWriter, r *http.Reques
 		"tag", ", LATERAL UNNEST(ss.user_tags) AS tag", "1=1", tenantWhere))
 	if err := h.runFilterOptionQueries(ctx, []string{ssTags},
 		tenantArgs, []*[]string{&resp.Tags}); err != nil {
+		slog.Error("filter-options: tags 维度查询失败", "err", err, "tenant", tenantID)
 		writeError(w, http.StatusInternalServerError, "query filter options failed")
 		return
 	}
@@ -223,11 +227,17 @@ func (h *Handler) queryFilterOptionGroups(ctx context.Context, query string,
 	nDims := numFilterOptionDims(query)
 	var hits []filterOptionHit
 	for rows.Next() {
+		// ★ 必须是 **string 而不是 *string：GROUPING SETS 的每个 grouping set
+		//   只让对应那一列非空，其余全是 NULL，而 pgx 拒绝把 NULL 扫进
+		//   非空的 *string（`cannot scan NULL into *string`）。
+		//   ⇒ 用 *string 的话**每一行都会失败**，端点立刻 500。
+		//   这个 bug 能溜过去，是因为当时的判据自己手写了一遍扫描
+		//   （用的是 **string），没有调用本函数——判据复刻了「扫描这件事」
+		//   而不是「同一个函数」。真库层必须直接调 queryFilterOptionGroups。
 		cols := make([]*string, nDims)
 		holders := make([]any, nDims)
 		for i := range cols {
-			cols[i] = new(string)
-			holders[i] = cols[i]
+			holders[i] = &cols[i]
 		}
 		var lastAt any
 		dest := append(holders, &lastAt)
@@ -245,6 +255,11 @@ func (h *Handler) queryFilterOptionGroups(ctx context.Context, query string,
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate filter option groups failed: %w", err)
 	}
+
+	// written 记录哪些目标切片已经初始化过，避免同一字段被重复重置。
+	// 键必须是**目标指针**而不是 dim：dim4 与 dim5 指向同一个字段，
+	// 按 dim 去重会让第二个维度把第一个的结果重置掉。
+	written := map[string]struct{}{}
 
 	// 按 (dim, v) 收口：同 v 取最近活跃时间。
 	best := map[string]map[string]time.Time{}
@@ -282,14 +297,25 @@ func (h *Handler) queryFilterOptionGroups(ctx context.Context, query string,
 			out[dim] = append(out[dim], p.v)
 		}
 	}
-	// 直接写进调用方给的切片指针（同一维度可能映射到同一个字段，
-	// 例如 client_id 与 application_code 都进 Clients）。
+	// 写进调用方给的切片指针。
+	//
+	// ★ 多个维度可能映射到**同一个**字段（client_id 与 application_code 都进
+	//   Clients），所以这里必须**合并**而不是逐个覆盖——直接 `*dst = out[dim]`
+	//   会让后一个维度把前一个的结果整个抹掉（实测 clients 只剩 13 个值，
+	//   client_id 那一维的 193 个全丢了，而 map 遍历顺序随机 ⇒ 丢多少还不确定）。
 	for dim, dst := range groups {
 		if dst == nil {
 			continue
 		}
-		*dst = out[dim]
-		if *dst == nil {
+		key := fmt.Sprintf("%p", dst)
+		if _, seen := written[key]; !seen {
+			*dst = nil
+			written[key] = struct{}{}
+		}
+		*dst = append(*dst, out[dim]...)
+	}
+	for _, dst := range groups {
+		if dst != nil && *dst == nil {
 			*dst = []string{}
 		}
 	}

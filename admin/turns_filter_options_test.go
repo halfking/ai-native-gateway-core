@@ -20,7 +20,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -162,7 +161,7 @@ func TestFilterOptionsRealDBWithinHandlerBudget(t *testing.T) {
 		t.Skip("TEST_DATABASE_URL not set")
 	}
 
-	h := &Handler{}
+	respModels, respProviders, respStatus := []string{}, []string{}, []string{}
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -173,76 +172,48 @@ func TestFilterOptionsRealDBWithinHandlerBudget(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 
+	// ★ 必须调用**生产函数** queryFilterOptionGroups，不能在测试里重写一遍扫描。
+	//   上一版判据就是在这里翻车的：它自己用 `var c *string` 扫描（能接 NULL），
+	//   而生产代码用 `new(string)` 扫（接不了 NULL，GROUPING SETS 每行四列都是
+	//   NULL ⇒ **每行都失败**、端点立刻 500）。判据复刻了「扫描这件事」，
+	//   却没有走「同一个函数」，于是端点坏着、判据全绿。
+	h := &Handler{db: pool}
+	projects, tasks, owners, clients := []string{}, []string{}, []string{}, []string{}
+	groups := map[string]*[]string{
+		"1": &projects, "2": &tasks, "3": &owners, "4": &clients, "5": &clients,
+	}
+
 	start := time.Now()
-	byDim := map[string]map[string]time.Time{}
-	rows, err := pool.Query(ctx, h.ssMergedSource(""))
-	if err != nil {
+	if _, err := h.queryFilterOptionGroups(ctx, h.ssMergedSource(""), groups, []any{}); err != nil {
 		t.Fatalf("ss 臂合并查询在 12s 预算内没跑完：%v", err)
-	}
-	for rows.Next() {
-		var c1, c2, c3, c4, c5 *string
-		var lastAt any
-		if err := rows.Scan(&c1, &c2, &c3, &c4, &c5, &lastAt); err != nil {
-			rows.Close()
-			t.Fatalf("scan: %v", err)
-		}
-		ts := parseFilterOptionTime(lastAt)
-		for i, c := range []*string{c1, c2, c3, c4, c5} {
-			if c == nil || *c == "" {
-				continue
-			}
-			dim := strconv.Itoa(i + 1)
-			if byDim[dim] == nil {
-				byDim[dim] = map[string]time.Time{}
-			}
-			if cur, ok := byDim[dim][*c]; !ok || ts.After(cur) {
-				byDim[dim][*c] = ts
-			}
-		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate: %v", err)
 	}
 	ssElapsed := time.Since(start)
 
 	// turns 臂合并查询，自带子预算；超时不判失败（handler 会退化成空数组）。
+	turnGroups := map[string]*[]string{
+		"1": &respModels, "2": &respProviders, "3": &respStatus,
+	}
 	tctx, tcancel := context.WithTimeout(context.Background(), turnsFilterOptionsTurnBudget)
 	defer tcancel()
 	startTurn := time.Now()
 	var turnElapsed time.Duration
 	turnRows := -1
-	rows2, err := pool.Query(tctx, h.turnMergedSource(""))
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			t.Logf("turns 臂在 %v 子预算内没跑完（生产会退化成空数组）：%v",
-				turnsFilterOptionsTurnBudget, err)
-			turnElapsed = time.Since(startTurn)
-			turnRows = -1
-		} else {
-			t.Fatalf("turns 臂合并查询报错：%v", err)
-		}
+	_, terr := h.queryFilterOptionGroups(tctx, h.turnMergedSource(""), turnGroups, []any{})
+	switch {
+	case terr == nil:
+		turnRows = len(respModels) + len(respProviders) + len(respStatus)
+	case errors.Is(terr, context.DeadlineExceeded):
+		t.Logf("turns 臂在 %v 子预算内没跑完（生产会退化成空数组）：%v",
+			turnsFilterOptionsTurnBudget, terr)
+		turnRows = -1
+	default:
+		t.Fatalf("turns 臂合并查询报错：%v", terr)
 	}
-	if err != nil && !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("turns 臂合并查询报错：%v", err)
-	}
-	if err == nil {
-		turnRows = 0
-		for rows2.Next() {
-			var c1, c2, c3 *string
-			var lastAt any
-			if err := rows2.Scan(&c1, &c2, &c3, &lastAt); err != nil {
-				rows2.Close()
-				t.Fatalf("scan turns: %v", err)
-			}
-			turnRows++
-		}
-		rows2.Close()
-		if err := rows2.Err(); err != nil && !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("iterate turns: %v", err)
-		}
-		turnElapsed = time.Since(startTurn)
-	}
+	turnElapsed = time.Since(startTurn)
+	_ = turnRows
+
+	byDim := map[string]int{"1": len(projects), "2": len(tasks),
+		"3": len(owners), "4": len(clients)}
 
 	// 独立重算 task 维度（dim=2），确认 GROUPING SETS 的 dim 映射没错位、
 	// 窗口谓词确实生效。
@@ -256,14 +227,18 @@ func TestFilterOptionsRealDBWithinHandlerBudget(t *testing.T) {
 	`).Scan(&wantTasks); err != nil {
 		t.Fatalf("独立重算失败：%v", err)
 	}
-	gotTasks := int64(len(byDim["2"]))
+	gotTasks := int64(len(tasks))
 	if gotTasks != wantTasks {
-		t.Errorf("dim=2（task）返回 %d 个不同值，独立重算近 30 天共 %d 个：%s",
-			gotTasks, wantTasks,
-			map[bool]string{true: "dim 映射错位或窗口谓词失效", false: "分组结果与直接重算不符"}[gotTasks < wantTasks])
+		t.Errorf("dim=2（task）返回 %d 个不同值，独立重算近 30 天共 %d 个", gotTasks, wantTasks)
 	}
-	t.Logf("ss 臂合并 %v（dim1=%d dim2=%d dim3=%d dim4=%d dim5=%d），turns 臂 %v（%d 行）",
+	// ★ client_id 与 application_code 共用 clients 字段：两个维度必须**合并**而不是
+	//   互相覆盖。曾经写成 `*dst = out[dim]`，后一个维度把前一个整个抹掉
+	//   （clients 只剩 application_code 的 13 个，client_id 的 193 个全丢）。
+	if len(clients) == 0 {
+		t.Error("clients 为空：client_id / application_code 两维可能整体丢数据")
+	}
+	t.Logf("ss 臂合并 %v（dim1=%d dim2=%d dim3=%d clients=%d），turns 臂 %v（%d 行）",
 		ssElapsed.Round(time.Millisecond),
-		len(byDim["1"]), len(byDim["2"]), len(byDim["3"]), len(byDim["4"]), len(byDim["5"]),
+		byDim["1"], byDim["2"], byDim["3"], len(clients),
 		turnElapsed.Round(time.Millisecond), turnRows)
 }
