@@ -673,3 +673,87 @@ canonical 视图后**因 3s 预算超时而红**——不是假红。
 `request_logs_with_current_month` / `_request_logs_hot` / promote 去重。
 不先剥 `--` 注释，「不得出现某视图」会因注释提及而误报、
 「必须出现某表」会因注释提及而恒真。
+
+---
+
+## §14 第二族复测：它不是一族（宿主负载回落后的干净基线）
+
+§12 曾把 8 个慢端点归为一族。宿主负载回落后串行复测，**其中一半自愈**：
+
+| 端点 | 负载 33–44 时 | 负载 19 时 | 判定 |
+|---|---|---|---|
+| `users/usage-summary` | 15s | **200 @1.36s** | 纯 CPU 饥饿 |
+| `dashboard/session-trend` | 15s | **200 @1.36s** | 纯 CPU 饥饿 |
+| `dashboard/session-health` | 15s | **200 @2.22s** | 纯 CPU 饥饿 |
+| `data-lifecycle/storage/tables` | 15–30s | **200 @10.05s** | 纯 CPU 饥饿 |
+| `auto-route/audit` | 10–15s | **200 @7.33s** | 仍慢但可用 |
+| `probe/system-health` | 55s | **200 @19.88s** | 仍慢但可用 |
+| `session-analytics` | 500 @15s | **500 @15.06s** | **真缺陷** |
+| `turns/sessions/filter-options` | 500 @12s | **500 @12.06s** | **真缺陷** |
+| `data-lifecycle/stats` | 500 @15–30s | **500 @30.07s** | **真缺陷** |
+| `auto-route/index` | 500 @10–15s | **500 @1.78s** | 快速失败，**不是超时** |
+
+⇒ 「第二族」这个词本身就该废弃：它把「宿主 CPU 饥饿」和「查询/处理逻辑缺陷」
+混成了一族。前者会自愈，后者不会；拿前者当后者的修复目标会白付部署。
+
+### 14.1 `filter-options` 的结构：8 条串行查询塞进一个 12s 预算
+
+`admin/turns_filter_options.go` 里 `runFilterOptionQueries` 是**顺序 for 循环**，
+5 条走 `session_summaries JOIN session_dim`、3 条走 `session_turns_with_current_month`，
+共享同一个 12s ctx。逐条实测（无并发干扰）：
+
+```
+session_summaries × 3 条（projects/tasks/owners）  5.12s / 6.69s / 4.00s = 15.8s
+session_summaries tasks 单条，连跑三次            8.53s / 9.66s / 7.53s（非冷热问题）
+session_turns model 单条                           3.83s / 6.23s
+```
+
+⇒ 端点需要 ~40s，预算只有 12s。**预算结构上不可能成立**，
+与数据量无关。
+
+### 14.2 反直觉：GROUPING SETS 对两条臂的效果相反
+
+我原本打算把 8 条合并成 2 条 GROUPING SETS。**实测否证了这个方案的一半**：
+
+```
+session_turns 三维合并 GROUPING SETS        2.84s  ← 比单跑一条（3.83s）还快
+session_summaries 三维合并 GROUPING SETS   35.45s ← 比三条分跑的总和（15.8s）还慢一倍多
+```
+
+summaries 那条臂慢，是因为它每条查询各自带
+`IS NOT NULL AND != ''` 谓词、只哈希自己那一列；合并成 GROUPING SETS 后
+必须在 join 之后对所有列组合一次性做多列分组，代价反而更高。
+
+⇒ **「合并成一条」不是普适的优化，必须逐臂实测。**
+turns 臂已验证可合并（3 → 1，省下 ~10s）；summaries 臂**不能**合并。
+
+### 14.3 `session_summaries` 扫描成本随缓存状态摆动 0.4s ↔ 27s
+
+```
+SELECT count(*) FROM session_summaries;   -- 776,418 行
+EXPLAIN 版：  Execution Time 398.312 ms
+   Parallel Index Only Scan using idx_session_summaries_cost
+   Buffers: shared hit=14,298      Heap Fetches: 162,391
+同一语句裸跑（另一轮）： 1.02s / 27.4s
+```
+
+`Heap Fetches: 162,391` 是关键：**可见性映射没设全**，
+所谓 index-only scan 有近六成条目仍要回堆。回堆页是否驻留在 buffer 里，
+决定了它 0.4s 还是 27s。宿主内存一紧张，同一条语句的耗时就摆动两个量级。
+
+⇒ 这解释了为什么这一族的端点在不同时间点测出的数字能差 10 倍。
+**报表格耗时之前必须先报 buffer 驻留状态**，否则数字不可复现。
+
+### 14.4 `auto-route/index` 是另一个问题
+
+它 **1.78s 就 500**，不是超时——预算根本没被用满。属于快速失败（参数/校验/
+上游异常），不在本节的「慢查询」范围内，留作单独条目。
+
+### 14.5 下一步（已定位，未实施）
+
+`filter-options` 的可行修法是**并行化**：`runFilterOptionQueries` 从顺序 for
+改为并发执行，墙钟从「8 条之和 ~40s」降到「最慢单条 ~8–10s」，落在 12s 内。
+这条路的价值在于**不碰任何一条 SQL**，因此零口径风险；
+turns 臂再叠加已验证的 GROUPING SETS 合并（3 → 1）还有余量。
+本轮未实施——并发化要处理错误传播、ctx 取消与连接池上限，
+属于需要独立评审的改动，不适合与 §13 的上线验证混在一起。
