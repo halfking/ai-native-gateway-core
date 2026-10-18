@@ -443,6 +443,11 @@ log "      要先 ALTER TABLE … DROP CONSTRAINT；另一侧才是可裸删的�
 log "      扫描=idx_scan，窗口见 pg_stat_database.stats_reset；两者皆 0 才谈得上「无人用」。"
 log "      ★「被覆盖」不等于「该删」：planner 按字节偏好更小的索引，"
 log "        删掉窄索引会让点查改走更大的宽索引，代价要自己判断。"
+log "      ★★「功能覆盖」≠「成本等价」（§84）：前缀索引在**查询能力**上被覆盖，"
+log "        但它**物理上更窄**，只按前缀做范围扫描时更便宜 ——"
+log "        实测某健康巡检的主判据就是这种情况：窄 4–5× 的 PK 前缀索引让扫描"
+log "        少读约 4/5 的索引字节。**窄侧明显窄于宽侧时，它恰恰不该被删**。"
+log "        判据：把 A字节 与 B字节 比一比，A < B/2 时先别删。"
 i=0
 while IFS= read -r line; do
   [ -z "$line" ] && continue

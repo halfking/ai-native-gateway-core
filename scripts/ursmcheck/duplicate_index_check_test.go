@@ -576,6 +576,26 @@ func TestPrefixReportWarnsCoveredIsNotSameAsDroppable(t *testing.T) {
 	}
 }
 
+// TestPrefixReportWarnsCoverageIsNotCostEquivalence —— §84 的口径必须留在报告里。
+//
+// 「功能覆盖」≠「成本等价」：(snapshot_ts) 是 (snapshot_ts, tenant_id, …)
+// 的严格前缀，段2 会把它报成「可删」；但它**窄 4–5×**，
+// 只按前缀做范围扫描的读方（如健康巡检主判据）恰恰靠它省下 4/5 的索引字节。
+//
+// ⇒ 报告若只说「被覆盖不等于该删（planner 偏好小索引）」，
+// 读者会得出**相反**的结论（既然 planner 偏好小的，那就该留小的、删大的）。
+// 必须明写「窄侧明显更窄时它恰恰不该被删」。
+func TestPrefixReportWarnsCoverageIsNotCostEquivalence(t *testing.T) {
+	_, out := runDupIndexRaw(t, segAwareStub("true", seg2Row))
+	for _, want := range []string{"成本等价", "更窄", "A < B/2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("报告应写明「功能覆盖 ≠ 成本等价」并给出可判定的门槛（A < B/2），"+
+				"缺 %q —— 否则读者会以为「planner 偏好小索引」等于「该删小索引」，"+
+				"与 §84 实测相反：\n%s", want, out)
+		}
+	}
+}
+
 // ===========================================================================
 // 段3「父表前缀覆盖」（2026-10-18 §79）
 //
