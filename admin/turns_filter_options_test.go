@@ -82,9 +82,22 @@ func TestFilterOptionsArmsAreMerged(t *testing.T) {
 	if !strings.Contains(turn, "GROUPING SETS ((1),(2),(3))") {
 		t.Errorf("turns 臂没有合并成 3 个维度的 GROUPING SETS：\n%s", strings.TrimSpace(turn))
 	}
-	for _, col := range []string{"t.model", "t.provider", "t.status_code::text"} {
+	for _, col := range []string{"model", "provider", "status_code::text"} {
 		if !strings.Contains(turn, col) {
 			t.Errorf("turns 臂合并查询缺维度 %q", col)
+		}
+	}
+	// ★ 关键不变量：**不得读 canonical 视图**。视图给每行补 canonical 列、
+	// 反连 session_dim 等，代价与「只要 MAX(ts) 分组」差一个数量级。
+	// 实测同一 30 天窗口（返回行数相同）：视图 44,564ms vs hot∪父表两腿 2,048ms（23×）。
+	if strings.Contains(turn, "session_turns_with_current_month") {
+		t.Error("turns 臂仍在读 session_turns_with_current_month 视图：实测 44,564ms vs 两腿 2,048ms")
+	}
+	// 两腿都要在：最近 8h 的行只在 hot，裸父表读对「近 30 天」是真盲区。
+	for _, leg := range []string{"public.session_turns ", "public.session_turns_hot "} {
+		if !strings.Contains(turn, leg) {
+			t.Errorf("turns 臂缺少 %q 这条腿：最近 8h 的行只在 hot，单腿读是真盲区",
+				strings.TrimSpace(leg))
 		}
 	}
 }

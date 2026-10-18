@@ -419,15 +419,47 @@ func (h *Handler) ssMergedSource(tenantWhere string) string {
 // turnMergedSource 是 turns 臂 3 个维度合并后的单条 GROUPING SETS 查询。
 // 维度列排在 SELECT 最前（理由见 ssMergedSource：GROUPING SETS 里的数字是输出列位置）。
 // 1=model 2=provider 3=status_code。
+//
+// ★ 2026-10-18：**不走 `session_turns_with_current_month` 视图，改读 hot∪父表两腿。**
+//
+// 实测（同一 30 天窗口，无并发干扰，返回行数都是 961）：
+//
+//	session_turns_with_current_month（视图）  44,564 ms
+//	public.session_turns（父表单腿）            1,895 ms   —— 23×
+//	父表 ∪ hot 两腿                            2,048 / 2,814 ms（两次）
+//
+// 视图慢在**它定义的东西**，不是数据量：那个视图给每个请求补 canonical 列、
+// 反连 session_dim 等，代价与「本端点只要 MAX(ts) 分组」的需求差着数量级。
+// 与 cache-economics 读 `_request_logs` 母表是同一类判断。
+//
+// 为什么是**两腿**而不是裸父表：最近 8h 的行只在 `session_turns_hot`
+// （hot 默认仅保留 8h），裸父表读对「近 30 天」是真盲区。两腿 UNION ALL 与
+// 视图同形，且本查询**不是计数**（每个维度取 MAX(ts) 后按值去重），
+// 所以不存在 promote 重复计数的问题——与 cache-economics 那条计数查询的
+// 单腿取舍刻意不同，理由记在这里。
 func (h *Handler) turnMergedSource(tenantWhere string) string {
+	win := fmt.Sprintf("ts > NOW() - INTERVAL '%d days'", turnsFilterOptionsWindowDays)
 	return fmt.Sprintf(
 		"SELECT s.c1, s.c2, s.c3, s.last_at FROM ("+
-			"SELECT %s, MAX(t.ts) AS last_at"+
-			" FROM public.session_turns_with_current_month t"+
-			" WHERE t.ts > NOW() - INTERVAL '%d days'%s"+
-			" GROUP BY GROUPING SETS ((1),(2),(3))) s",
-		strings.Join([]string{"t.model AS c1", "t.provider AS c2", "t.status_code::text AS c3"}, ", "),
-		turnsFilterOptionsWindowDays, tenantWhere)
+			"SELECT %s, MAX(u.ts) AS last_at FROM ("+
+			"SELECT model AS c1, provider AS c2, status_code::text AS c3, ts"+
+			" FROM public.session_turns WHERE %s%s"+
+			" UNION ALL"+
+			" SELECT model, provider, status_code::text, ts"+
+			" FROM public.session_turns_hot WHERE %s%s"+
+			") u GROUP BY GROUPING SETS ((1),(2),(3))) s",
+		strings.Join([]string{"u.c1 AS c1", "u.c2 AS c2", "u.c3 AS c3"}, ", "),
+		win, turnTenantClause(tenantWhere),
+		win, turnTenantClause(tenantWhere))
+}
+
+// turnTenantClause 把租户条件从 `t.tenant_id` 改写成两腿各自的形式。
+// 两腿的别名不同，直接沿用单视图形态的 `t.tenant_id = $1` 会报列不存在。
+func turnTenantClause(tenantWhere string) string {
+	if tenantWhere == "" {
+		return ""
+	}
+	return " AND " + strings.TrimPrefix(strings.Replace(tenantWhere, "t.", "", 1), " ")
 }
 
 // filterOptionHit 是一条「维度 → 值 → 最近活跃」的中间结果。
