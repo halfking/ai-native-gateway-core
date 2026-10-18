@@ -757,3 +757,83 @@ EXPLAIN 版：  Execution Time 398.312 ms
 turns 臂再叠加已验证的 GROUPING SETS 合并（3 → 1）还有余量。
 本轮未实施——并发化要处理错误传播、ctx 取消与连接池上限，
 属于需要独立评审的改动，不适合与 §13 的上线验证混在一起。
+
+### 14.6 `filter-options`：三个「显然的修法」被实测逐一证伪
+
+§14.5 提出「并行化」作为下一步。动手前先量了三件事，结果**三个都不成立**。
+
+#### 证伪一：给 `session_turns` 加覆盖索引（与 873 同型的猜想）
+
+`turns` 那条臂的 EXPLAIN 走 `Index Scan using session_turns_2026_09_heap_tenant_id_ts_idx`，
+`model`/`provider`/`status_code` 都不在索引里 ⇒ 猜「和 cache-economics 同病，
+补一条 `(ts, tenant_id) INCLUDE (model, provider, status_code)` 即可」。
+
+事务内建索引 + ROLLBACK（870 同款做法）：
+
+```
+CREATE INDEX session_turns_ts_tenant_dim_cover_idx … INCLUDE (model, provider, status_code)
+  Time: 5073.336 ms      索引确实级联：9月 48MB / 10月 12MB / hot 448kB
+基线   Execution 2924.825 ms   Buffers 215,013
+加索引 Execution —            Buffers 181,891      ← 只降 15%，计划一字未变
+   仍走 session_turns_2026_09_heap_tenant_id_ts_idx
+```
+
+**计划根本没换**：`session_turns_2026_10` 是 `Seq Scan`（206,013 行，planner 认为顺序扫更划算），
+9 月那条 planner 也没偏好新的覆盖索引。⇒ **`session_turns` 与 cache-economics 不是同一个病**，
+「同型缺陷 ⇒ 同型修法」在这里不成立。若不测就动手，会白付一次生产建索引。
+
+#### 证伪二：给 `session_dim` 补 join 键索引
+
+9 条里有 5 条 join `session_dim sd ON sd.gw_session_id = ss.session_key AND sd.tenant_id = ss.tenant_id`，
+而 `session_dim` 的 7 个索引**没有一个建在 join 键上**：
+
+```
+idx_session_dim_apikey (tenant_id, api_key_id)   idx_session_dim_client (tenant_id, client_id)
+idx_session_dim_end_user (tenant_id, end_user_id) idx_session_dim_owner_user (tenant_id, owner_user)
+idx_session_dim_task (tenant_id, task_id)         idx_session_dim_tenant (tenant_id, last_active_at DESC)
+```
+
+EXPLAIN 显示 `Parallel Hash Join` + `Parallel Seq Scan on session_dim` ⇒ 「缺 join 索引」的猜想看着很顺。
+但**实测把索引建上去反而更慢**：
+
+```
+基线     Parallel Seq Scan on session_dim      Buffers 501,427   Execution 1877.455 ms
+加索引   Parallel Index Only Scan              Buffers 678,171   ← 更高
+```
+
+原因很直白：`session_dim` 全表只 **23,272 个 buffer**，而那条索引本身就要 **200,008 个 buffer**
+——**比表还宽**。对一次全表范围的 hash join，顺序扫是接近最优的，
+拿索引去换只会更贵。
+
+#### 证伪三：「并行化能把墙钟降到 max(段)」
+
+`admin/dashboardapi/session_overview.go:189-192` 有完全同型的先例（"九段互相独立 ⇒ 墙钟 = max(段)"），
+但那是**实测过的**；这里先量再上：
+
+```
+串行（现状的 for 循环）  121,761 ms
+并发（9 条同时）          22,835 ms     ← 5.3×，不是 9×
+```
+
+并发下每条自身都变慢（q1 9,971 → 18,845 ms；q2 7,027 → 16,349 ms），
+因为它们争的是 CPU 与 buffer 而不是 I/O。⇒ **CPU/缓冲密集型查询的并行收益 ≈ 核数**，
+不是「条数」。12s 预算仍然不够。
+
+#### 剩下的账
+
+```
+turns 臂合成 1 条 GROUPING SETS       2,924 ms   ← 已验证可用
+ss 臂 5 条，各自 4~10s（且同一查询在 2s↔27s 间摆动）
+⇒ 12s 预算要装下 5 条 ss 查询，当前杠杆都不够
+```
+
+**本节结论**：`filter-options` 需要的不是索引、不是并行、也不是查询合并，
+而是**降低 ss 臂单条的成本**（`session_summaries` 776,418 行 × `session_dim` 817,970 行的
+全量 hash join 被重复做了 5 次，每次只为取一列）。
+本轮不实施——在没有可靠手段降低单条成本之前，
+先上并行/合并只会把「12s 超时」换成「12s 超时但数据库更热」。
+
+⚠ 附带记录一次**我自己的测量错误**：先测出 `session_turns` 单条 41.9s，
+据此以为它是主因；实际那 41.9s 是我的端点探测与该查询并发打同一个库造成的争抢。
+清空并发后复测是 **3.83s**。同一条查询在本次会话里被测到 2.08 / 3.83 / 6.23 / 78.7 秒四个值。
+⇒ **任何报给别人的性能数字，必须先确认测量期间没有自己的并发**。
