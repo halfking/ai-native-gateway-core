@@ -1095,6 +1095,9 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"872_credential_model_index_partitions_heap.sql",
 			// 873（2026-10-18）：usage_ledger 窗口聚合覆盖索引补齐缓存 token 列。
 			"873_usage_ledger_ts_cover_cache_agg_idx.sql",
+			// 874（2026-10-18）：session_turns(client_request_id) 部分索引 ——
+			// S4 停写后 getLog/unified_detail 的 client_request_id 兜底腿承重。
+			"874_session_turns_client_request_id_idx.sql",
 		},
 	}
 }
