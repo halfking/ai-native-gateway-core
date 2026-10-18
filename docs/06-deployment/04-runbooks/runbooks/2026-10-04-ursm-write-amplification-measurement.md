@@ -22951,8 +22951,13 @@ usage_ledger | p | idx_usage_ledger_part_request_id | I | 403 | btree
 
 ### 五、处置：迁移 876（在**父表**上删，一句顶两句）
 
+> ⚠ **本节写于部署前；它的「读方普查」依据已在 §81 被复核推翻一半**
+> —— `idx_usage_ledger_part_ts` **不是零代价**，删它会让一整族
+> `ts` 范围聚合查询约 +5%（EXPLAIN 实测 `usage_ledger_2026_10_ts_idx` 确实在用）。
+> 另外两条的零代价结论**成立**。迁移文件头已按 §81 改写，sha 更新为 `57c21ffb…b2`。
+
 `sql/migrations/startup/876_drop_prefix_covered_parent_indexes.sql`
-+ `.down.sql`（sha `d122d642…eac859`）。
++ `.down.sql`（sha 部署前为 `d122d642…eac859`，§81 订正后为 `57c21ffb…b2`）。
 PG 对分区父表 `DROP INDEX` 会**级联到所有分区**，
 所以一条语句同时完成「父表不再声明（止血）」与「现存实例被回收」。
 
@@ -23100,3 +23105,93 @@ PG 对分区父表 `DROP INDEX` 会**级联到所有分区**，
 靠人读代码回答就意味着下一次仍然靠人。
 ★ 同族：[[门的名字不承诺它的口径]] · [[取件器坏了先修取件器]] ·
 [[0 命中的第一嫌疑永远是量具坏了]]。
+
+---
+
+## §81 部署前复核：876 的「读方普查」被推翻一半（2026-10-18）
+
+§79 写完 876 之后、**部署之前**，我回去逐条复核了它的读方普查
+（这一步本该在写迁移前做，见第五节）。结果：**三条窄索引的代价并不相等。**
+
+### 一、`idx_usage_ledger_part_ts` 不是零代价 —— 原稿漏了一整族查询
+
+§79 的普查写成
+`query ILIKE '%usage_ledger%' AND query ~* 'request_id'`。
+那个 **`request_id` 谓词把整族「`ts` 范围但不带 `tenant_id`」的聚合查询
+一并漏掉了** —— 8 种语句形态、83/60/54/17/14/7/5/4 次调用。
+
+EXPLAIN 实测（生产只读，该族最重的一条）：
+
+```
+Aggregate (cost=367667.36..367667.37)
+  -> Sort  (cost=325486.70..330173.44)
+    -> Append  (cost=0.00..100133.66)
+      -> Seq Scan on usage_ledger_hot                 cost=732.75
+      -> Seq Scan on usage_ledger_2026_09             cost=68812.30   ← 1,416,772 行本来就顺序扫
+      -> Index Scan using usage_ledger_2026_10_ts_idx cost=21208.25   ★ 它确实在被用
+```
+
+⇒ **`ts_idx` 有承重读方**，§79 那句「没有任何读查询依赖这三条窄索引」是错的。
+
+### 二、删掉之后会怎样（同一 ts 范围，三档成本实测）
+
+在 `usage_ledger_2026_10` 上跑同一范围、只改 SELECT 列，**逼 planner 换索引**
+以读出各索引的扫描成本：
+
+| 索引 | 计划 | cost |
+|---|---|---|
+| `ts_tenant_id_prompt_tokens_completion_idx1`（26 MB） | Index Only Scan | **10,850** |
+| `request_id_ts_provider_id_prompt_token_idx` | Index Only Scan | 14,829 |
+| `ts_idx`（13 MB，**§79 想删的那条**） | Index Scan | **21,208** |
+
+⚠ 关键限制：本族查询要 `api_key_id` / `raw_model_name` / `canonical_id`，
+**它们不在任何 INCLUDE 里** ⇒ 删掉 `ts_idx` 之后**仍然是 Index Scan、
+拿不到 index-only**，只是把 13 MB 的窄索引换成 26 MB 的覆盖索引。
+
+⇒ 代价量级：**由 cost 推算**（367,667 → 约 385K，**约 +5%**），
+**不是墙钟 A/B** —— 要真测得先删，删之前测不了，这点必须写明。
+且该计划里 2026_09 分区（1.4M 行）本来就是 Seq Scan，占大头。
+
+### 三、另外两条：结论成立
+
+- **`idx_usage_ledger_part_request_id`** —— 成立。普查范围内只有一条读查询，
+  即 870 修过的 `DISTINCT ON (request_id)` 月度对账，
+  它现在走 `idx_usage_ledger_recon_cover` 的 Index Only Scan（129.2s → 8.7s）。
+- **`idx_sessions_session_id`** —— 成立，但**我一度拿到一个假读数**。
+
+★ 假读数的来历：`pg_stat_statements` 里有 **52,950 次**的
+`SELECT session_id, tenant_id, state, … FROM goal_sessions`，
+我第一次用 `query ILIKE '%sessions%'` 普查，把它当成了 `sessions` 的承重读方。
+用 `query ~* 'FROM\s+(public\.)?sessions(_20\d\d_\d\d)?\s'` 精确锚定 FROM 后的
+完整表名之后，`sessions` 表上**只有 1 条读查询（15 次 / 均值 159ms）**。
+
+⇒ **普查表名必须锚定完整表名**：`ILIKE '%sessions%'` 会把
+`goal_sessions` / `chat_sessions` / `vibe_coding_sessions` 一并算进来。
+
+### 四、量具事故：同一轮里我踩了两次
+
+| 次数 | 现象 | 真因 |
+|---|---|---|
+| 1 | 普查 `sessions` + `session_id` 返回 **0 行** | 正则 `\bsessions(_20[0-9_]+)?\b` 与实际语句不匹配；换 ILIKE 得到 12 条 —— 但那 12 条是**另一批**假读数 |
+| 2 | 「`sessions` 上有 52,950 次的承重读」 | 打的是 `goal_sessions`，**不是** `sessions` |
+
+⇒ **0 命中让我去查了量具（对的）；但「非 0 命中」我直接采信了（错的）。**
+两个方向都要验：
+**读数必须与权威来源对得上账**，而不是「查得到东西」就当它对。
+
+### 五、因此改了 876（文件头 + sha + 台账三处同步）
+
+- 迁移文件头新增「⚠ 订正」节，写明三条**代价分档**：
+  两条零代价建议直接上，`part_ts` 的 62 MiB 换约 5% 属属主取舍。
+- sha 由 `d122d642…eac859` 改为 **`57c21ffb…b2`**，
+  canonical/embeddata 两副本重新同步，台账那一行同步更正。
+- §79 就地加订正横幅（原文保留）。
+
+★ 通用式：⭐⭐⭐⭐⭐ **「普查没查到 ⇒ 没有依赖」是最危险的一类阴性结论** ——
+它的正确性完全取决于**普查范围**本身，而范围是被人随手写下的。
+⇒ 写完「没有 X 依赖 Y」，必须回头问一句「**我的筛选条件会不会正好把 X 筛掉了**」。
+本例的筛选条件 `query ~* 'request_id'` 与被删索引的列**同名**，
+于是「依赖 request_id 的窄索引」这个查询，恰好把「不用 request_id 但依赖
+同一张表的窄索引」的查询排除在外了。
+★ 同族：[[阴性结论要当缺陷一样复核]] · [[0 命中的第一嫌疑永远是量具坏了]] ·
+[[假阴性也可能长得像结论]]。

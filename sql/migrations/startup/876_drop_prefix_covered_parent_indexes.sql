@@ -52,19 +52,60 @@
 -- -----------------------------------------------------------------------
 -- 为什么删得掉（证据，不是推理）
 --
--- 1. 读方普查：pg_stat_statements 里 query ILIKE '%usage_ledger%'
---    AND query ~* 'request_id' 的语句，**只有一条**读查询——
---    870 修过的月度对账 `SELECT DISTINCT ON (request_id) …`。
---    它现在走的是 idx_usage_ledger_recon_cover 的 Index Only Scan
---    （870 台账实测：129.2s → 8.7s，计划名即该索引）。
---    其余全是 usage_ledger_hot 的 INSERT/UPDATE（写，不靠这三张表的索引）。
---    ⇒ **没有任何读查询依赖这三条窄索引**。
+-- 1. 读方普查 —— ★ **本条已按 §81 实测修正过一次，原文过强，见下面「订正」**。
 --
--- 2. planner 取舍比 §77 温和：三条覆盖方里有两条是 INCLUDE 覆盖索引，
+-- 2. planner 取舍：三条覆盖方里有两条是 INCLUDE 覆盖索引，
 --    比窄索引**多携带载荷**；一条是 UNIQUE。
---    单列点查 `WHERE request_id = ?` 改走 UNIQUE(request_id, ts)
---    是等价前缀探测；`WHERE session_id = ?` 同理。
---    §77 的取舍（planner 按字节偏好更小索引）在这里不构成回退。
+--
+-- -----------------------------------------------------------------------
+-- ⚠ 订正（2026-10-18 §81，部署前发现）：三条的代价**并不相等**
+--
+-- 原稿写「没有任何读查询依赖这三条窄索引」。逐条重查后：
+--
+--   idx_usage_ledger_part_request_id —— 成立。
+--     普查（query ILIKE '%usage_ledger%' AND ~* 'request_id'）只有一条读查询，
+--     即 870 修过的 DISTINCT ON (request_id) 月度对账，
+--     它现在走 idx_usage_ledger_recon_cover 的 Index Only Scan（129.2s → 8.7s）。
+--
+--   idx_sessions_session_id —— 成立。
+--     用 `FROM\s+(public\.)?sessions(_20\d\d_\d\d)?\s` 精确匹配后，
+--     sessions 表上只有 **1 条**读查询（15 次 / 均值 159ms）。
+--     ⚠ 排查时一度被一个假读数误导：pg_stat_statements 里有 52,950 次的
+--     「SELECT session_id, … FROM goal_sessions」，那打的是 **goal_sessions**，
+--     不是 sessions。用 `ILIKE '%sessions%'` 会把它算进来。
+--     ⇒ **普查表名时必须锚定 FROM 后面的完整表名**，否则量具会自己骗你。
+--
+--   idx_usage_ledger_part_ts —— **不成立，它有承重读方。**
+--     原稿的普查范围带了 `AND query ~* 'request_id'`，
+--     于是整族「ts 范围但不带 tenant_id」的聚合查询被一并漏掉：
+--     83 / 60 / 54 / 17 / 14 / 7 / 5 / 4 次调用，共 8 种语句形态。
+--     EXPLAIN 实测（2026-10-18，生产只读）：
+--       Aggregate (cost=367667.36..367667.37)
+--         -> Append
+--              -> Seq Scan on usage_ledger_hot          cost=732.75
+--              -> Seq Scan on usage_ledger_2026_09      cost=68812.30   ← 1,416,772 行本来就顺序扫
+--              -> Index Scan using usage_ledger_2026_10_ts_idx  cost=21208.25   ★ 它确实在用
+--
+--     删掉之后这族查询会改走
+--     usage_ledger_ts_tenant_cache_agg_idx (ts, tenant_id) INCLUDE(7 列)。
+--     同一 ts 范围下三档成本实测（2026_10 分区）：
+--       Index Only Scan using ts_tenant_id_prompt_tokens_completion_idx1   cost= 10,850
+--       Index Only Scan using request_id_ts_provider_id_prompt_token_idx cost= 14,829
+--       Index Scan      using ts_idx                                      cost= 21,208  ← 要删的那条
+--     ⇒ 覆盖索引其实是**三者中最便宜的**；但本族查询要
+--       api_key_id / raw_model_name / canonical_id，它们不在任何 INCLUDE 里，
+--       所以删 ts_idx 之后**仍是 Index Scan、拿不到 index-only**，
+--       只是把 13 MB 的窄索引换成 26 MB 的覆盖索引。
+--
+--     ★ 代价量级（**由 cost 推算，非墙钟 A/B** —— 要真测得先删，删之前测不了）：
+--       该族查询整体 cost 367,667 → 约 385K，**约 +5%**；
+--       且该计划里 2026_09 分区（1.4M 行）本来就是 Seq Scan，占大头。
+--
+-- ⇒ 三条的处置建议因此**分档**：
+--     两条零代价（part_request_id、sessions_session_id）—— 建议直接上；
+--     一条有实测 +5% 代价（part_ts）—— **要不要为 49+13=62 MB 付这 5%，
+--     属于属主的取舍**，本迁移按「一并处理」编写，但文件头必须写明这一点。
+--
 --
 -- ⚠ idx_usage_ledger_part_tenant (tenant_id, ts) **刻意保留**：
 --   它没有覆盖方（父表上没有任何以 tenant_id 开头的更宽索引）。
