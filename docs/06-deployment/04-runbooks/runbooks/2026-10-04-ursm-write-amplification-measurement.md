@@ -25697,3 +25697,150 @@ rows = 24,388（不是 §98 普查里的 29,761 —— 那是 pgstattuple_approx
    ⇒ ⇒ ★ 通用式：**阴性结论尤其怕抽样**，因为抽样的阴性看起来和全量的阴性一模一样。
 ★ 同族：[[阴性结论要当缺陷一样复核]] · [[0 命中的第一嫌疑永远是量具坏了]] ·
 [[§98/§99 的教训：量了子集却写成全库]]。
+
+---
+
+## §102 「定期 REINDEX」的机制**早就存在** —— 它跑了 8 次、报对了每一条，但**告警从来没发出去过**（2026-10-18）
+
+§99 与 §101 两次把「滚动时间窗表的索引删空要不要根治」写成待决策。
+本节去查仓里**是不是已经有这个机制** —— 答案是有，而且**比本会话提出的任何方案都完整**。
+
+### 一、`pg17-index-bloat.sh` 的解剖
+
+`scripts/252-monitor/pg17-index-bloat.sh`（23,581 字节，252 上 10-11 01:21 已部署）：
+
+| 能力 | 说明 |
+|---|---|
+| **双信号判据** | `deleted_pages` **OR** `avg_leaf_density`（两个信号取或） |
+| **自测夹具** | `pg17-index-bloat-selftest.sql` 专门证明**单信号 `deleted_pages` 有盲区**（30 万行删 90%，`deleted_pages=0` 但 REINDEX 仍回收 89%） |
+| **`--report` / `--fix`** | 只读报告 vs `REINDEX INDEX CONCURRENTLY` |
+| **自校准基线** | `/var/lib/pg17-index-bloat/seen-density.tsv` 记录每个索引**重建后**的自然填充率 |
+| **阈值** | `min_index=16MB` `min_dead_pages=2000` `min_leaf_density=60` `ALERT_CANDIDATE_MB=256` |
+| **锁策略** | `lock_timeout=5min`，抢不到锁就跳过留待下次，不排队 |
+| **INVALID 分离** | 失效索引单列，因为它是**正确性**问题不是空间问题 |
+
+⇒ ★ 这套设计**恰好覆盖了 §101 从零提出的每一条要求**。
+⇒ 本节的结论因此不是「该建个机制」，而是「**机制在，只差一个开关**」。
+
+### 二、8 次 run 的历史：机制**被证明可用**，然后被关掉了
+
+```
+2026-10-03T00:57  mode=fix    measured=44 flagged=13 headroom≈728MB   ← 唯一一次 --fix
+2026-10-03T07:41  mode=report measured=42 flagged=1  headroom≈32MB    ← fix 之后：13→1，728→32MB
+2026-10-04T04:40  mode=report flagged=3  headroom≈325MB
+2026-10-05T15:53  mode=report flagged=5  headroom≈491MB
+2026-10-11T04:40  mode=report flagged=8  headroom≈377MB
+2026-10-18T04:40  mode=report measured=46 flagged=9 headroom≈471MB invalid_skipped=0
+```
+
+⇒ ★ **10-03 那次 `--fix` 真的生效了**：flagged 13→1、headroom 728 MB→32 MB。
+**「切到 `--fix` 会不会出事」这个问题，被 10-03 自己回答过了。**
+⇒ 而 cron 注释写的升级门槛正是：**「先确认首次 `--fix` 表现再切换」** ——
+**这个门槛在 10-03 当天就已经满足，此后 15 天没人动它。**
+⇒ 同时 `flagged` 单调增长 **1 → 3 → 5 → 8 → 9**：膨胀在持续重新堆积。
+
+### 三、★ 两套完全独立的量具，逐条吻合
+
+§101 是我在生产库上**独立**跑的普查；脚本是 252 上**独立**跑的巡检。今天两者相隔 18 小时：
+
+| 索引 | §101（我的 `pgstatindex`） | 脚本 04:44 |
+|---|---|---|
+| `request_stats_error_drill_minute_pkey` | 删空 **7,314** 页 / 57 MB | `dead_pages=7313(57MB)` ✅ |
+| `idx_node_probe_runs_cred_model` | 33 MB | `dead_pages=4208(32MB)` ✅ |
+| `idx_node_probe_runs_api_model` | 27 MB | `dead_pages=3469(27MB)` ✅ |
+| `idx_analysis_events_session` | 18 MB | `dead_pages=2261(17MB)` ✅ |
+| **合计** | **477 MB** | **headroom≈471 MB** ✅ |
+
+⇒ ★ 两套量具在**页数上逐条一致**，总量差 1.3%。
+⇒ ⇒ ★ 这同时是**对我自己 §101 的独立验证**：不是我算错，也不是脚本算错。
+
+### 四、★ 抓到的真缺陷：**告警从来没有发出去过**
+
+今天日志结尾：
+
+```
+summary: measured=46 unmeasured=0 flagged=9 headroom≈471MB invalid_skipped=0
+notify failed
+done mode=report
+```
+
+**`notify failed` 出现在全部 6 次有告警的 run 里（10-03 / 10-04 ×2 / 10-05 / 10-11 / 10-18）——成功率 0%。**
+
+根因（实测复现）：
+
+```
+/etc/cron.d/pg17:74   40 4 * * 0 root llmgw-source /opt/scripts/pg17-index-bloat.sh --report
+pg17-index-bloat.sh:392   "$NOTIFY" "252 索引巡检：…" >> "$LOG" 2>&1 || log "notify failed"
+                                          ^^^^^^^^^^^^^^^^^^^^^^ 只传了 1 个参数
+notify.sh:  set -euo pipefail …  BODY="$2"
+```
+
+| 复现 | 结果 |
+|---|---|
+| `notify.sh "标题A" "正文B"`（2 个参数） | **exit 0**，`llmgw-notify.log` 记 `OK info 标题A` |
+| `notify.sh "252 索引巡检：…"`（**1 个参数**） | **exit 1**，**stdout/stderr 全空** |
+
+⇒ `$2` 未绑定 ⇒ `set -u` 在参数展开阶段就退出 ⇒ **什么输出都没有**
+⇒ 而调用方 `2>&1` 吞掉 stderr、`|| log` 吞掉退出码 ⇒ **只剩一句自说自话的 `notify failed`，没有原因。**
+
+⚠ ⇒ 这与 §96 在 `pg17-emergency-cleanup.sh` 抓到的那两处**是同一家族**：
+**错误被 `|| …` 吃掉，只留下自己那一行，根因不进任何日志。**
+
+#### ⚠ 本节记录我自己的两次错误推断（都被交叉核对推翻）
+
+| 我的推断 | 交叉核对给出的答案 |
+|---|---|
+| 「`notify.sh` 整体坏了 ⇒ 所有告警静默」 | `/var/log/llmgw-notify.log` 有 **8,987 次成功**、仅 9 次失败，最近一次**今天 22:40** ⇒ **它没坏** |
+| 「`/etc/llmgw/notify.conf` 是 `rw-------` ⇒ cron 身份读不到」 | cron 的用户字段是 `root`，`llmgw-source` 是 `/usr/local/bin/llmgw-source` 这个 **wrapper**，它 source conf 后 `exec "$@"` ⇒ 权限不是原因 |
+| （顺带）「可用性检查 10-10 后无日志 = 它死了」 | 该脚本**只在 DOWN 分支调 `log`** ⇒ **10-10 之后没日志 = 一直健康**，良性 |
+
+⇒ ⇒ ★ **三处推断全靠「去看那个专用日志/那个脚本本身」否掉，没有一处是靠推理否掉的。**
+
+#### 波及范围
+
+`/opt/scripts` 下 5 个脚本调用 `notify.sh`，**只有 `pg17-index-bloat.sh` 记录了调用失败**：
+
+| 脚本 | 失败可见性 |
+|---|---|
+| `pg17-index-bloat.sh` | ✅ `notify failed` |
+| `pg17-disk-watch.sh` / `pg17-pg-availability-check.sh` / `pg17-proactive-empty-table-cleanup.sh` / `monitor_loadtest.sh` | ✗ **无失败记录**（本轮实测它们**通知成功**，故暂无暴露；但同样写错时会静默） |
+
+### 五、⭐ 本节的净结论：**决策项从「要不要建机制」降级为「要不要翻开关」**
+
+| 原表述（§99 / §101） | 修正后 |
+|---|---|
+| 「是否把定期 REINDEX 纳入既有 `pg17-*` 运维脚本」 | **已经在里面了**，10-03 起每周日 04:40 |
+| 「需要一个巡检在超阈值时触发」 | **巡检一直在跑**，只是从不执行修复 |
+| 「待拍板：首次 `--fix` 表现」 | **10-03 的记录就是首次 `--fix` 表现**，且它成功了（728→32 MB） |
+
+⇒ ⇒ ★ **要修的两处（都很小）**：
+1. **告警**：`pg17-index-bloat.sh:392` 的 `notify.sh` 调用补上第二个参数 ⇒
+   修好之后，**今天这个 471 MB 的候选本该在 10-03 就有人知道**。
+2. **`notify.sh` 的报错**：在 `set -u` 之前加一条「参数不足」的可读提示，
+   否则下一个调用者还会**静默**踩同一个坑。
+
+⇒ ⚠ **收益口径必须照抄脚本自己的注释**：`headroom≈X MB` 是**上界不是估值**。
+脚本实测：`ursm_node_snapshot_min_pkey` 估 132 MB、实收 46 MB（**高估 2.87×**），
+因为 REINDEX 只能合并相邻键范围的页、不能重排行序，
+而「按时间滚动删除的表，其键序与插入序天然错位」。
+⇒ 所以 **471 MB 的真实可回收量应按打折计**，§101 的 477 MB 同理。
+
+### 六、附带发现
+
+- `pg17-index-bloat-selftest.sql` **未部署到 252**（只有 `.sh`）⇒
+  那条「单信号有盲区」的自测在生产侧从未跑过。
+- `seen-density.tsv` 只有 **1 行**（`ursm_node_snapshot_min_pkey  90.20`，10-03 那次 fix 写的）
+  ⇒ **自校准基线至今没有第二行**，`--fix` 从未真正常态化。
+
+### 七、本节方法论
+
+1. ⭐⭐⭐⭐⭐ **「要不要建机制」这个问题，先去查机制是否已经存在。**
+   本会话两节（§99/§101）都在设计新方案，而**答案在仓库里躺了 15 天**。
+   ⇒ 排查「某机制不存在」之前，先把 **cron + `/opt/scripts` + 日志**三处都看过。
+2. ⭐⭐⭐⭐⭐ **独立量具互相验证是免费的信心**：
+   我的普查和 252 的巡检在**页数上逐条一致**（7313 vs 7314），这比任何一方自证都有力。
+3. ⭐⭐⭐⭐ **告警通道的失败必须留下原因**：
+   `notify failed` 这一行**证明了失败、但没说明原因**，于是我必须逐层复现。
+   ⇒ 与 §96 同族：**`|| …` 会把根因吃掉**。
+★ 同族：[[§88 的教训：多语句 psql -c 报绿]] · [[§96 的教训：失败被 || true 吃掉]] ·
+[[量具不可用与真没问题必须可区分]]。

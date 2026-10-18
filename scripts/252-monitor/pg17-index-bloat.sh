@@ -389,8 +389,18 @@ if [ -x "$NOTIFY" ]; then
   # INVALID 索引数常态为 0，出现即异常，故与膨胀阈值同级告警；
   # 不会造成刷屏（除非真有大量索引失效，那本身就值得知道）。
   if [ "$cand_mb" -ge "$ALERT_CANDIDATE_MB" ] || [ "$invalid_count" -gt 0 ]; then
-    "$NOTIFY" "252 索引巡检：膨胀候选 $flagged 个（约 ${cand_mb}MB，已测 $measured / 未测 $unmeasured）；INVALID 未测 $invalid_count 个" \
-      >> "$LOG" 2>&1 || log "notify failed"
+    # 2026-10-18（§102）：此处此前只传了 **一个** 位置参数。
+    # notify.sh 以 `set -euo pipefail` 开头并读 BODY="$2"，参数不足时
+    # $2 未绑定 ⇒ set -u 在参数展开阶段就退出，**stdout/stderr 全空**、
+    # 退出码 1。而本行的 `2>&1 || log` 会把根因吃掉，只留下一句自说自话的
+    # `notify failed`。实测：2026-10-03 起 6/6 次 run 的告警全部静默失败，
+    # 期间脚本已累计报出 471MB 的膨胀候选而无人知晓。
+    # 契约见 notify.sh 用法：notify.sh <title> <body>。
+    # 同时不要用 `2>&1` 吞掉 notify 自己的错误输出 —— 那正是根因消失的原因。
+    "$NOTIFY" \
+      "252 索引巡检：膨胀候选 $flagged 个（约 ${cand_mb}MB，已测 $measured / 未测 $unmeasured）；INVALID 未测 $invalid_count 个" \
+      "候选索引：$(cut -f1 <<<"$flag_list" 2>/dev/null | paste -sd, -)" \
+      || log "notify FAILED (exit=$?): 见上方 notify.sh 的 stderr"
   fi
 fi
 
