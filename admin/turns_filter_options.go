@@ -12,20 +12,79 @@ import (
 )
 
 const (
-	turnsFilterOptionsBudget     = 12 * time.Second
+	// ★ 2026-10-18：总预算 12s → 20s，三条臂各有界。
+	//
+	// 12s 是「只有 turns 臂有子预算」时的取值，当时 ss / tags 是**无界**的——
+	// ss 冷缓存时能独占整个 12s，ctx 一到就 500（线上连出 3 次 500@12.05s）。
+	//
+	// 20s 的依据（EXPLAIN ANALYZE / BUFFERS 实测，非估算）：
+	//
+	//	ss 臂     69,912 buffers  热态 1.5~2.1s  换计划变体首读可达 9s+
+	//	          （Parallel Hash Join：session_dim 全扫 828k 行 / 23,854 buffers
+	//	            + session_summaries 全扫 423k 行、过滤掉 155,775 行）
+	//	tags 臂        ~0.5s（走 LATERAL UNNEST，合不进 GROUPING SETS）
+	//	turns 臂  159,153 buffers  热态 1.5~2.5s  换计划变体首读 6.3s
+	//
+	// 20s = ss 8s + tags 2s + turns 8s + 2s 余量。
+	// **热态总耗时仍是 4~5s**，预算只在慢的时候才起作用，所以抬高它
+	// 不会让正常情况变慢；而 nginx 侧 proxy_read_timeout 是 30s，留得住 10s 余量。
+	turnsFilterOptionsBudget     = 20 * time.Second
 	turnsFilterOptionsWindowDays = 30
 	turnsFilterOptionsLimit      = 20
 
 	// turnsFilterOptionsTurnBudget 是 session_turns 臂的子预算。
+	// 8s：实测最慢的「换计划变体首读」是 6.3s，8s 能把它包住；
+	// 再高就会把 ss 的余量吃掉，而 ss 才是那条真正结构性的查询。
+	turnsFilterOptionsTurnBudget = 8 * time.Second
+
+	// ★ 2026-10-18 新增：turnsFilterOptionsSsBudget 是 session_summaries 臂的子预算。
 	//
-	// 总预算 12s 里，ss 合并 + tags 实测稳定占 ~3.2s（生产 8 次抽测：
-	// 端点总耗时 6.4~12.06s，其中 turns 臂在 8s 上下界附近飘）。
-	// ⇒ 子预算取 5s：即使 turns 吃满它的预算，总耗时也有 ~8.2s 的余量。
-	// 最初取 8s 时线上实测到过 12.06s —— 贴着总预算，等于把余量让出去了：
-	// 下游任何一个查询慢 100ms，整个端点就又变回 500。
-	// 超时就退化成空数组，而不是把整页拖成 500。
-	turnsFilterOptionsTurnBudget = 5 * time.Second
+	// 这一条是被线上打出来的，不是设计出来的。2705-9b586d21 部署后立刻连着
+	// 3 次 500@12.05s，journalctl 的原因写在 handler 里：
+	//
+	//	filter-options: ss 维度查询失败
+	//	  err=query filter option groups failed: timeout: context deadline exceeded
+	//
+	// ⇒ 与 turns 臂同一套降级语义：**超时只让 ss 的 5 个下拉空着，端点仍返 200。**
+	//
+	// 取舍如实记录：冷缓存那一次，projects/tasks/owners/clients 会空。
+	// 这比整页 500 好（500 时前端报错、整页筛选不可用；降级时页面照常渲染，
+	// 只是这四个下拉没选项，刷新一次就好），但它确实是拿可用性换了这四个下拉。
+	//
+	// ★ 已否证的三条路线（不要再重试）：
+	//  1. 给 session_summaries 加覆盖索引让 planner 走 Index Only Scan：
+	//     实测 buffers 69,912 → 168,993（**2.4 倍**），堆取 172,001 次。
+	//     墙钟 3,432ms → 2,490ms 看着变快，但 IO 量翻三倍、冷缓存会更糟。
+	//     墙钟变快是假象，buffers 才是确定量。
+	//  2. 改读 session_dim.last_active_at 的现成索引（371 buffers / 0.7ms，快 200 倍）：
+	//     **口径变了**，且实测不收敛——N=60,000 时仍缺 20 个、多 13 个值。
+	//     两个排序口径（MAX(first_request_at) vs last_active_at）本质不同，
+	//     不是同一个下拉。属口径变更，需 owner 裁定，不在性能修复里做。
+	//  3. 给 session_turns 加 (tenant_id, ts DESC) INCLUDE (model, provider, status_code)：
+	//     buffers 159,153 → 127,888（**仅 −20%**）。原因：九月分区
+	//     （483,570 行）仍被 planner 选去用既有的
+	//     session_turns_2026_09_heap_tenant_id_ts_idx，单独就占 118,030 buffers
+	//     （占总量 84%）。要真拿到收益得让 planner 改选，那已经不是一条
+	//     「加个索引」能定的事，且要与并发会话抢迁移编号。不做。
+	turnsFilterOptionsSsBudget = 8 * time.Second
+
+	// tags 臂走 LATERAL UNNEST，合不进 GROUPING SETS，只能单独一条。
+	// 实测 ~0.5s；给它 2s 上界，保证它也不会无界地吃总预算。
+	turnsFilterOptionsTagsBudget = 2 * time.Second
 )
+
+// resetFilterOptionGroups 把一组维度目标置成空数组（而不是留 nil）。
+//
+// 响应字段是 []string，nil 会序列化成 `null`，前端按数组渲染会拿到 null。
+// 降级路径必须给出 `[]`，这样「这一格没数据」和「这一格是空列表」在
+// JSON 上有区别，也让 trimFilterOptions 之后的长度断言有意义。
+func resetFilterOptionGroups(groups map[string]*[]string) {
+	for _, dst := range groups {
+		if *dst == nil {
+			*dst = []string{}
+		}
+	}
+}
 
 // TurnsFilterOptionsResponse 是各筛选维度的热门可选值。
 type TurnsFilterOptionsResponse struct {
@@ -81,27 +140,38 @@ func (h *Handler) handleTurnsFilterOptions(w http.ResponseWriter, r *http.Reques
 		"1": &resp.Projects, "2": &resp.Tasks, "3": &resp.Owners,
 		"4": &resp.Clients, "5": &resp.Clients,
 	}
+	// ★ ss 臂自带子预算，超时**降级**而不是 500（理由见 turnsFilterOptionsSsBudget）。
+	//   修复前这里直接用总预算 ctx，冷缓存时整页 500@12.05s（线上 3 次连续命中）。
+	//   与 turns 臂保持同一套降级语义：失败只影响自己那几格，不作废已算对的维度。
+	sctx, scancel := context.WithTimeout(ctx, turnsFilterOptionsSsBudget)
 	_, err := h.queryFilterOptionGroups(
-		ctx, h.ssMergedSource(tenantWhere), ssGroups, tenantArgs)
+		sctx, h.ssMergedSource(tenantWhere), ssGroups, tenantArgs)
+	scancel()
 	if err != nil {
-		// ★ 必须记 err：修复前这一分支只有 writeError，journalctl 里查不到任何
-		//   原因，只能看到 HTTP 层的 500，排查时完全瞎的（2026-10-18 实际踩过）。
-		slog.Error("filter-options: ss 维度查询失败", "err", err, "tenant", tenantID)
-		writeError(w, http.StatusInternalServerError, "query filter options failed")
-		return
+		// 必须记 err：修复前这一分支只有 writeError，journalctl 里查不到任何
+		// 原因，只能看到 HTTP 层的 500，排查时完全瞎的（2026-10-18 实际踩过）。
+		slog.Warn("filter-options: ss 维度不可用，已退化为空",
+			"budget", turnsFilterOptionsSsBudget, "tenant", tenantID, "err", err)
+		resetFilterOptionGroups(ssGroups)
 	}
 	for _, dst := range ssGroups {
 		trimFilterOptions(dst)
 	}
 
 	// tags 走 LATERAL UNNEST，GROUPING SETS 合不进去，单独一条。
+	// 也给一条子预算：它是端点里最后一条无界查询。
+	tagctx, tagcancel := context.WithTimeout(ctx, turnsFilterOptionsTagsBudget)
 	ssTags := h.lastActiveQuery(h.lastActiveSource(
 		"tag", ", LATERAL UNNEST(ss.user_tags) AS tag", "1=1", tenantWhere))
-	if err := h.runFilterOptionQueries(ctx, []string{ssTags},
-		tenantArgs, []*[]string{&resp.Tags}); err != nil {
-		slog.Error("filter-options: tags 维度查询失败", "err", err, "tenant", tenantID)
-		writeError(w, http.StatusInternalServerError, "query filter options failed")
-		return
+	terr := h.runFilterOptionQueries(tagctx, []string{ssTags},
+		tenantArgs, []*[]string{&resp.Tags})
+	tagcancel()
+	if terr != nil {
+		slog.Warn("filter-options: tags 维度不可用，已退化为空",
+			"budget", turnsFilterOptionsTagsBudget, "tenant", tenantID, "err", terr)
+		if resp.Tags == nil {
+			resp.Tags = []string{}
+		}
 	}
 
 	// ★ 基于 session_turns 的 3 个维度：合并成一条 GROUPING SETS，并**自带子预算**。
@@ -118,24 +188,18 @@ func (h *Handler) handleTurnsFilterOptions(w http.ResponseWriter, r *http.Reques
 	//
 	// 这与 cache-economics 的压缩计数是同一套降级语义（失败只影响它自己，
 	// 不让已算对的维度一起作废）。响应里三个字段本来就是数组，前端按空数组渲染。
-	turnTenantWhere := ""
-	if tenantID != "" {
-		turnTenantWhere = " AND t.tenant_id = $1"
-	}
 	turnGroups := map[string]*[]string{
 		"1": &resp.Models, "2": &resp.Providers, "3": &resp.StatusCodes,
 	}
 	tctx, tcancel := context.WithTimeout(ctx, turnsFilterOptionsTurnBudget)
 	defer tcancel()
-	if _, err := h.queryFilterOptionGroups(
-		tctx, h.turnMergedSource(turnTenantWhere), turnGroups, tenantArgs); err != nil {
-		for _, dst := range turnGroups {
-			if *dst == nil {
-				*dst = []string{}
-			}
-		}
+	// 传 tenantID 本身，不传成串谓词（理由见 turnMergedSource）。
+	// 租户参数与非租户形态**完全一致**：tenantArgs 早就带上了 $1，两处共用。
+	if _, terr := h.queryFilterOptionGroups(
+		tctx, h.turnMergedSource(tenantID), turnGroups, tenantArgs); terr != nil {
+		resetFilterOptionGroups(turnGroups)
 		slog.Warn("filter-options: turns 维度不可用，已退化为空",
-			"budget", turnsFilterOptionsTurnBudget, "err", err)
+			"budget", turnsFilterOptionsTurnBudget, "tenant", tenantID, "err", terr)
 	}
 	for _, dst := range turnGroups {
 		trimFilterOptions(dst)
@@ -437,8 +501,32 @@ func (h *Handler) ssMergedSource(tenantWhere string) string {
 // 视图同形，且本查询**不是计数**（每个维度取 MAX(ts) 后按值去重），
 // 所以不存在 promote 重复计数的问题——与 cache-economics 那条计数查询的
 // 单腿取舍刻意不同，理由记在这里。
-func (h *Handler) turnMergedSource(tenantWhere string) string {
+// 入参是 **tenantID 本身**，不是 ss 臂那种 ` AND ss.tenant_id = $1` 的成串谓词。
+//
+// ★ 2026-10-18 修复一个 100% 必现的语法错。上一版让本函数接收 ss 臂的
+// tenantWhere（`" AND t.tenant_id = $1"`）再**用字符串手术**去掉表别名：
+//
+//	return " AND " + strings.TrimPrefix(strings.Replace(tenantWhere, "t.", "", 1), " ")
+//
+//	输入 " AND t.tenant_id = $1"
+//	  → Replace      → " AND tenant_id = $1"
+//	  → TrimPrefix " " → "AND tenant_id = $1"
+//	  → 前缀拼 " AND " → " AND AND tenant_id = $1"   ← 42601 syntax error
+//
+// 线上证据（154，2705-9b586d21，23:33~23:34 连续 7 次）：
+//
+//	filter-options: turns 维度不可用，已退化为空
+//	  err=ERROR: syntax error at or near "AND" (SQLSTATE 42601)
+//
+// 而它上一轮是**查得出来的**：见 tenantIDResolution 的说明——生产上 tenantID
+// 永远非空（GetTenantID 兜底返回 "default"），所以空串分支根本走不到。
+func (h *Handler) turnMergedSource(tenantID string) string {
 	win := fmt.Sprintf("ts > NOW() - INTERVAL '%d days'", turnsFilterOptionsWindowDays)
+	// 两腿都在 FROM 里直接写表名、没有别名，所以租户列不能带 `t.` 前缀。
+	tc := ""
+	if tenantID != "" {
+		tc = " AND tenant_id = $1"
+	}
 	return fmt.Sprintf(
 		"SELECT s.c1, s.c2, s.c3, s.last_at FROM ("+
 			"SELECT %s, MAX(u.ts) AS last_at FROM ("+
@@ -449,17 +537,8 @@ func (h *Handler) turnMergedSource(tenantWhere string) string {
 			" FROM public.session_turns_hot WHERE %s%s"+
 			") u GROUP BY GROUPING SETS ((1),(2),(3))) s",
 		strings.Join([]string{"u.c1 AS c1", "u.c2 AS c2", "u.c3 AS c3"}, ", "),
-		win, turnTenantClause(tenantWhere),
-		win, turnTenantClause(tenantWhere))
-}
-
-// turnTenantClause 把租户条件从 `t.tenant_id` 改写成两腿各自的形式。
-// 两腿的别名不同，直接沿用单视图形态的 `t.tenant_id = $1` 会报列不存在。
-func turnTenantClause(tenantWhere string) string {
-	if tenantWhere == "" {
-		return ""
-	}
-	return " AND " + strings.TrimPrefix(strings.Replace(tenantWhere, "t.", "", 1), " ")
+		win, tc,
+		win, tc)
 }
 
 // filterOptionHit 是一条「维度 → 值 → 最近活跃」的中间结果。

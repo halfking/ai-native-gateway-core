@@ -18,8 +18,12 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -113,15 +117,83 @@ func TestFilterOptionsArmsAreMerged(t *testing.T) {
 // 并发时彼此把对方的页挤出缓存，「并行」变成「来回换页」。
 // dashboardapi/session_overview.go 那句「墙钟 = max(段)」在这里**不成立**。
 func TestFilterOptionsTurnBudgetLeavesHeadroom(t *testing.T) {
-	// 线上实测：子预算取 8s 时端点总耗时到过 12.06s（贴着 12s 总预算）。
-	// 必须是「总预算 − ss+tags 实测占用 − 余量」。
-	const reservedForRest = 4 * time.Second // ss 合并 ~2.7s + tags ~0.5s，再留 1s 余量
+	// ★ 2026-10-18：三条臂现在都有界（此前 ss / tags 是无界的，
+	//   ss 冷缓存时独占总预算 → 线上 3 次连续 500@12.05s）。
+	//   余量必须按**全部三条**算，只算 turns 一条会放过「ss 把余量吃掉」这种回归。
+	//
 	// 必须 >= 而不是 >：余量恰好为零本身就是失败——线上实测 8s 子预算时
 	// 端点总耗时到过 12.06s，已经越过了 12s 总预算。
-	if turnsFilterOptionsTurnBudget+reservedForRest >= turnsFilterOptionsBudget {
-		t.Errorf("turns 子预算 %v + 其余部分预留 %v 超过端点总预算 %v：余量不足，"+
-			"负载一高就会整体超时（实测 8s 子预算时端点到过 12.06s）",
-			turnsFilterOptionsTurnBudget, reservedForRest, turnsFilterOptionsBudget)
+	const minHeadroom = 1 * time.Second
+	arms := turnsFilterOptionsSsBudget +
+		turnsFilterOptionsTagsBudget + turnsFilterOptionsTurnBudget
+	if total := arms + minHeadroom; total >= turnsFilterOptionsBudget {
+		t.Errorf("三条臂的子预算之和 %v + 最低余量 %v = %v，未低于端点总预算 %v：余量不足，"+
+			"负载一高就会整体超时（实测 8s 单条子预算时端点到过 12.06s；"+
+			"ss 臂无界时线上连过 3 次 500@12.05s）",
+			arms, minHeadroom, total, turnsFilterOptionsBudget)
+	}
+}
+
+// TestFilterOptionsNeverReturns500 —— 反判据：任何一条臂失败，端点仍必须 200。
+//
+// 修复前 ss 臂直接吃总预算 ctx，冷缓存时 ctx 一到就 writeError(500)，
+// 线上连着 3 次 500@12.05s。这条判据钉住「降级而非报错」这个语义，
+// 且用**真的超时**来触发，不依赖线上恰好冷缓存。
+//
+// 用一个必定超时的 handler（预算 1ns 的 ctx）驱动完整的 handleTurnsFilterOptions，
+// 断言返回 200 且三个 turns 维度是**空数组而不是 null**。
+func TestFilterOptionsNeverReturns500(t *testing.T) {
+	// 1) 降级语义：一条都没算出来时，目标必须是**空数组**而不是 nil。
+	//    nil 会被序列化成 null，前端拿到 null 而不是 []。
+	ss := map[string]*[]string{"1": nil, "2": nil}
+	ss["1"] = new([]string)
+	ss["2"] = new([]string)
+	resetFilterOptionGroups(ss)
+	for dim, dst := range ss {
+		if *dst == nil {
+			t.Errorf("ss 臂 dim=%s 降级后是 nil：响应会序列化成 null 而不是 []", dim)
+		}
+		if len(*dst) != 0 {
+			t.Errorf("ss 臂 dim=%s 降级后非空：%v", dim, *dst)
+		}
+	}
+
+	// 2) 源码层：handler 里**不得**还有 500 分支。
+	b, err := os.ReadFile("turns_filter_options.go")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	src := string(b)
+	i := strings.Index(src, "func (h *Handler) handleTurnsFilterOptions")
+	if i < 0 {
+		t.Fatal("找不到 handleTurnsFilterOptions，判据锚点失效")
+	}
+	end := strings.Index(src[i:], "\n}\n")
+	if end < 0 {
+		t.Fatal("找不到 handleTurnsFilterOptions 的结尾，判据锚点失效")
+	}
+	body := src[i : i+end]
+	if strings.Contains(body, "writeError(w, http.StatusInternalServerError") {
+		t.Error("handleTurnsFilterOptions 里仍有 500 分支：任一维度失败都会让整页报错，"+
+			"而修复前 ss 臂正是这样在冷缓存时连出 3 次 500@12.05s")
+	}
+	// 三条臂都必须**有界**：无界的那条冷缓存时会独占总预算。
+	//
+	// ⚠ 这里必须匹配 `context.WithTimeout(ctx, <常量>)` 这个**机制**，
+	// 不能只查常量名在函数体里出现过。
+	// 变异验证记录：把 ss 臂改成 `context.WithCancel(ctx)`（同样无界）后，
+	// 「常量名是否出现」这种写法**照样全绿**——因为 slog.Warn 里还在引用它。
+	// 这是判据钉错了东西：它量的是「字符串出现过」，不是「查询被有界地包住了」。
+	for _, tc := range []struct{ arm, konst string }{
+		{"ss", "turnsFilterOptionsSsBudget"},
+		{"tags", "turnsFilterOptionsTagsBudget"},
+		{"turns", "turnsFilterOptionsTurnBudget"},
+	} {
+		pat := `context\.WithTimeout\(ctx,\s*` + tc.konst + `\)`
+		if !regexp.MustCompile(pat).MatchString(body) {
+			t.Errorf("%s 臂没有用 `context.WithTimeout(ctx, %s)` 包住查询：这条臂是无界的，"+
+				"冷缓存时它会吃满总预算并让整页 500", tc.arm, tc.konst)
+		}
 	}
 }
 
@@ -224,10 +296,23 @@ func TestFilterOptionsRealDBWithinHandlerBudget(t *testing.T) {
 	startTurn := time.Now()
 	var turnElapsed time.Duration
 	turnRows := -1
-	_, terr := h.queryFilterOptionGroups(tctx, h.turnMergedSource(""), turnGroups, []any{})
+	// ★ 必须传**非空租户**，且必须与生产一致。
+	//   上一版这里传的是 ""，而生产上 tenantID 永远非空（GetTenantID 兜底 "default"），
+	//   于是判据测的是一条**生产不可达的分支**，`AND AND` 语法错照样全绿。
+	//   详见 TestFilterOptionsTenantClauseIsRealSQL 的头注。
+	const tenant = "default"
+	_, terr := h.queryFilterOptionGroups(tctx, h.turnMergedSource(tenant), turnGroups, []any{tenant})
 	switch {
 	case terr == nil:
 		turnRows = len(respModels) + len(respProviders) + len(respStatus)
+		// ★ 必须有正向下限。这一段原来只把行数打进 t.Log 就收工，于是
+		//   「查得飞快但一个值都没返回」与「正常返回」在判据眼里完全一样——
+		//   而线上恰恰是 3 个下拉恒空（语法错被降级吞掉，不报任何错）。
+		//   「没坏」不等于「做了」：不设下限的判据在「干脆没返回」面前永远绿。
+		if turnRows == 0 {
+			t.Error("turns 臂返回 0 个值：models/providers/status_codes 三个下拉会全空。" +
+				"线上曾连续 7 次命中（42601 语法错被降级路径吞掉，端点仍返回 200）")
+		}
 	case errors.Is(terr, context.DeadlineExceeded):
 		t.Logf("turns 臂在 %v 子预算内没跑完（生产会退化成空数组）：%v",
 			turnsFilterOptionsTurnBudget, terr)
@@ -236,7 +321,6 @@ func TestFilterOptionsRealDBWithinHandlerBudget(t *testing.T) {
 		t.Fatalf("turns 臂合并查询报错：%v", terr)
 	}
 	turnElapsed = time.Since(startTurn)
-	_ = turnRows
 
 	byDim := map[string]int{"1": len(projects), "2": len(tasks),
 		"3": len(owners), "4": len(clients)}
@@ -267,4 +351,97 @@ func TestFilterOptionsRealDBWithinHandlerBudget(t *testing.T) {
 		ssElapsed.Round(time.Millisecond),
 		byDim["1"], byDim["2"], byDim["3"], len(clients),
 		turnElapsed.Round(time.Millisecond), turnRows)
+}
+
+// ★ 2026-10-18 新增判据：租户形态的 turns 臂 SQL 必须**真的是合法 SQL**。
+//
+// 背景（这一条是本轮最贵的教训）：
+//
+// 生产上 tenantID **永远非空**。GetTenantID(r) 在取不到 auth 租户时兜底返回
+// "default"（admin/context.go:37），而 admin 用户在 tenantFromQueryOrContext 里
+// 没有 ?tenant= / X-Tenant-ID，最后落回 GetTenantID ⇒ tenantID="default"。
+// ⇒ 上一版 `turnTenantClause` 里的 `tenantWhere == ""` 分支是**死代码**，
+// 而上一版的真库判据恰恰只传了 ""，于是它测的是一条生产上走不到的分支：
+//
+//	turnMergedSource(" AND t.tenant_id = $1")
+//	  → " AND " + TrimPrefix(Replace(s,"t.","",1), " ")
+//	  → " AND " + "AND tenant_id = $1"
+//	  → " AND AND tenant_id = $1"        ← 42601
+//
+// 线上表现不是报错，而是**静默降级**：turns 臂 err → WARN → 三个下拉恒空，
+// 端点照旧 200。真库判据全绿、线上全空，两边都不报错。
+//
+// ⇒ 判据纪律的补充：参数也要同层。判据自己编一个「方便的值」传给被测函数，
+// 等于测了一条生产走不到的分支；正确做法是让判据走生产解析路径。
+func TestFilterOptionsTenantClauseIsRealSQL(t *testing.T) {
+	h := &Handler{}
+	sql := h.turnMergedSource("default")
+
+	// 双 AND：上一版 42601 的直接形态。取子串两端都界定，避免误伤 "AND NOT" 等。
+	if i := strings.Index(sql, "AND AND"); i >= 0 {
+		t.Errorf("租户子句出现连续 AND（PG 会报 42601）：…%s…",
+			sql[max(0, i-40):min(len(sql), i+40)])
+	}
+	// 两腿各一条，且列名不带表别名（两腿 FROM 里都是裸表名，没有 t 可限定）。
+	if n := strings.Count(sql, "AND tenant_id = $1"); n != 2 {
+		t.Errorf("租户子句出现 %d 次，两腿各一条应为 2 次：\n%s", n, strings.TrimSpace(sql))
+	}
+	if strings.Contains(sql, "t.tenant_id") {
+		t.Error("两腿都没有表别名 t，租户列不能带 t. 前缀（会报 column t.tenant_id does not exist）")
+	}
+	// 空租户形态必须仍然可用（虽生产不可达，但不能因此把代码写崩）。
+	if empty := h.turnMergedSource(""); strings.Contains(empty, "tenant_id") {
+		t.Errorf("空租户形态不该出现 tenant_id：\n%s", strings.TrimSpace(empty))
+	}
+}
+
+// TestFilterOptionsHandlerEndToEndWithRealTenant —— 真正端到端地驱动 handler。
+//
+// 上面那条是字符串层的；这条把**租户解析 + 拼 SQL + 执行**整条链走一遍，
+// 而且用的是生产的解析方式：一个不带 auth context 的请求 ⇒ tenantID="default"
+// （与 admin 用户在线上的路径一致）。
+//
+// 同层：调的是 `h.handleTurnsFilterOptions` 本身，不是它的片段。
+func TestFilterOptionsHandlerEndToEndWithRealTenant(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	h := &Handler{db: pool}
+	// 不注入 auth context：走 GetTenantID 的 "default" 兜底，与线上 admin 一致。
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/admin/turns/sessions/filter-options", nil)
+	rec := httptest.NewRecorder()
+	h.handleTurnsFilterOptions(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("端点返回 %d（body=%s）：这条链路上任何一步出错都会在这里露出来，"+
+			"包括租户子句拼错", rec.Code, rec.Body.String())
+	}
+	var got TurnsFilterOptionsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("解析响应失败：%v", err)
+	}
+	// 三个 turns 维度必须**有值**。曾经它们恒空而端点仍返回 200。
+	for name, vals := range map[string][]string{
+		"models": got.Models, "providers": got.Providers, "status_codes": got.StatusCodes,
+	} {
+		if len(vals) == 0 {
+			t.Errorf("%s 为空：该下拉在页面上无选项（端点仍返回 200，所以前端不报错、"+
+				"用户只看到「没有可选项」）", name)
+		}
+	}
+	// ss 臂顺带钉一下：它也是静默失败风险面（无子预算，超时直接 500）。
+	if len(got.Projects) == 0 {
+		t.Error("projects 为空")
+	}
+	t.Logf("projects=%d tasks=%d owners=%d clients=%d models=%d providers=%d status_codes=%d",
+		len(got.Projects), len(got.Tasks), len(got.Owners), len(got.Clients),
+		len(got.Models), len(got.Providers), len(got.StatusCodes))
 }
