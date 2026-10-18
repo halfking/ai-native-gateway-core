@@ -120,6 +120,23 @@ type CycleOutcome struct {
 	FlushTook     time.Duration
 	FlushBudget   time.Duration // 0 when Flush did not run
 	PresetApplied bool
+
+	// ── 写入者守卫字段（§10.110.61，详见 writerguard.go）──
+	//
+	// 三态**互斥且有序**，判读顺序固定为 GuardErr → YieldedToPeer → GuardHeld：
+	//
+	//	GuardErr != nil  取锁出错，本轮照写但没互斥（fail-open）
+	//	YieldedToPeer    别人持锁，本轮**什么都没做**
+	//	GuardHeld        本轮持锁并真的跑了
+	//
+	// ★ 三者必须能区分，不能压成一个 bool：
+	//	「让位」「取锁失败」「正常写入」的运维含义完全不同，
+	//	压成一个字段后，"这 40 分钟一行都没写进去" 和 "这 40 分钟有别人在写"
+	//	在日志上长得一模一样 —— 那正是 §10.110.60 里 streak 被单次成功清零
+	//	制造假阳性的同一种形状。
+	GuardErr      error
+	YieldedToPeer bool
+	GuardHeld     bool
 }
 
 // Err reports the error the caller should log or count as a failure streak.
@@ -131,12 +148,13 @@ func (o CycleOutcome) Err() error {
 }
 
 func (o CycleOutcome) String() string {
-	return fmt.Sprintf("rows=%d collect=%s flush=%s flush_budget=%s preset=%v",
+	return fmt.Sprintf("rows=%d collect=%s flush=%s flush_budget=%s preset=%v guard=%s",
 		o.Rows,
 		o.CollectTook.Round(time.Millisecond),
 		o.FlushTook.Round(time.Millisecond),
 		o.FlushBudget.Round(time.Millisecond),
-		o.PresetApplied)
+		o.PresetApplied,
+		o.GuardState())
 }
 
 // RunCycle drives one Collect-then-Flush cycle and reports what happened.

@@ -1352,6 +1352,10 @@ func main() {
 				// 也根本分不出来。成功一次即清零。
 				flushFailStreak := 0
 
+				// yieldedToPeer 记录本实例当前是否在让位，仅用于让「角色切换」
+				// 各打一条日志（首次让位 / 恢复写入）。让位本身不记 streak。
+				yieldedToPeer := false
+
 				// 2026-10-18（§10.110.55）：一轮 Collect+Flush 的预算与耗时
 				// 在 persist.RunCycle 里集中编排。
 				// 默认 Preset=false ⇒ 与改动前**同构**（两阶段共用同一个 ctx，
@@ -1361,10 +1365,45 @@ func main() {
 				// 时 return nil, err，一行都交不出来），详见 persist/cycle.go 头注释。
 				cycleTimeouts := persist.CycleTimeoutsFromEnv()
 
+				// 2026-10-18（§10.110.61）：跨实例写入者守卫。
+				// 实测这张表有三个并发写入者（245@8781 / 154@8782 /
+				// 245@8782 残留），跑两个进程那台机 persist 成功率只有 15~17%。
+				// 守卫保证同一时刻只有一个写入者；URSM_V2_PERSIST_WRITER_GUARD=0
+				// 可关（关掉即恢复三写入者，仅供回退）。
+				writerGuardOn := os.Getenv("URSM_V2_PERSIST_WRITER_GUARD") != "0"
+				var writerLocker persist.WriterLocker
+				if writerGuardOn {
+					writerLocker = persist.NewPgWriterLocker(dbConn.Pool())
+				}
+
 				for {
 					select {
 					case <-ticker.C:
-						outcome := persist.RunCycle(persistCtx, persistWriter, cycleTimeouts)
+						var outcome persist.CycleOutcome
+						if writerGuardOn {
+							outcome = persist.RunCycleGuarded(persistCtx, persistWriter, writerLocker, cycleTimeouts)
+						} else {
+							outcome = persist.RunCycle(persistCtx, persistWriter, cycleTimeouts)
+						}
+
+						// 让位是**预期行为**，不是失败：既不计入 streak 也不打 Warn。
+						// 但角色切换（开始/停止让位）各打一次 Info —— 否则
+						// 「谁在写」在日志里完全不可见，而那正是 §10.110.60 里
+						// 陈旧槽位抢到锁就静默接管的风险面。
+						if outcome.YieldedToPeer {
+							if !yieldedToPeer {
+								slog.Info("ursm.v2: persist writer yielded to peer",
+									"note", "another instance is the snapshot writer; this instance idles")
+							}
+							yieldedToPeer = true
+							continue
+						}
+						if yieldedToPeer {
+							slog.Info("ursm.v2: persist writer resumed",
+								"note", "peer stopped writing; this instance took the snapshot lock")
+							yieldedToPeer = false
+						}
+
 						if outcome.CollectErr != nil {
 							slog.Warn("ursm.v2: persist collect failed",
 								"error", outcome.CollectErr,
@@ -1378,7 +1417,8 @@ func main() {
 							args = append(args,
 								"collect_took", outcome.CollectTook,
 								"flush_budget", outcome.FlushBudget,
-								"preset", outcome.PresetApplied)
+								"preset", outcome.PresetApplied,
+								"guard", outcome.GuardState())
 							slog.Log(persistCtx, lvl, msg, args...)
 						} else {
 							if flushFailStreak > 0 {

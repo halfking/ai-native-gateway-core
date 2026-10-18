@@ -20892,3 +20892,134 @@ join 条件写成了只有 `snapshot_ts`，**漏掉了节点键**（`tenant_id/c
 ★ 同族：[[0 命中的第一嫌疑永远是量具坏了]] · [[自相矛盾的读数同样是量具坏了的信号]] ·
 [[阴性结论要当缺陷一样复核]] · [[存量 ≠ 速率]] · [[行级身份 ≠ 信息量]] ·
 [[判据红了先怀疑自己的前提]]。
+
+### §10.110.61 跨实例**写入者守卫**：把「三个写入者」从运维残留变成结构性约束
+
+> §60 定位到根因是「网关二进制里没有实例角色概念」，本节把那件事**落到代码**上。
+> 本节**未部署**；部署与「停掉 8782 残留」都需授权。
+
+#### 一、为什么代码层必须管这件事（不能只靠运维）
+
+§60 的证据表明这不是一次性的残留：
+
+| | 证据 |
+|---|---|
+| 二进制没有角色概念 | `ResolvePersistEnabled()` 只看 URSM v2 mode（off/shadow/authoritative/canary） |
+| active-port 二进制不读 | `run/active-port` 只被 nginx（`active-upstream.conf`）与 Prometheus file_sd 消费 |
+| 蓝绿必然留下第二个写者 | 切流后旧槽位只要没被显式 stop，就一直写下去 |
+
+⇒ 「记得停掉旧槽位」是一个**纯靠人记的约定**，而 §60 已经证明这次没做到
+（8782 残留跑了约 7 小时，失败率 85%）。
+
+#### 二、形态：会话级 advisory lock + **显式持有的专用连接**
+
+复用本仓**已有**的正确做法 —— 留存的跨实例互斥
+（`retention_partition.go` 的 `snapshotRetentionLockKey` / `YieldedToPeer`）。
+但**锁的形态必须不同**，而这个不同不是风格选择：
+
+| | 留存 DROP | persist 写入者 |
+|---|---|---|
+| 临界区 | **一个事务** | Collect(Redis) + Flush(**自带独立事务**) |
+| 锁 | `pg_try_advisory_xact_lock`（事务级） | `pg_try_advisory_lock`（**会话级**） |
+
+事务级锁会在 Flush 提交的那一刻释放，**罩不住 Collect 那 20 秒** ——
+而失败恰恰发生在 Redis 被挤慢**之后**。
+
+⚠ 那段注释里「走连接池 ⇒ 会话级锁绑在哪条连接上不可靠」**同样不适用**：
+它反对的是**经连接池隐式持有**（`pool.Query` 拿哪条连接不可知）；
+这里用 `pool.Acquire()` **显式取出一条连接并全程持有**，绑定关系是确定的。
+★ **这两条前提的区别请勿再被合并引用** —— 下一个人拿旧注释来推翻新代码，
+恰好会落回「锁不住」那个坑。
+
+锁键 `632_2026_10_18`，与既有 `632_2026_10_14`（留存）、`632_2026_08_31`（MV 刷新）
+互不碰撞，由 `TestWriterGuardLockKeyIsDistinctFromEveryOtherAdvisoryLock` 钉住。
+
+#### 三、三条刻意的设计选择
+
+1. **守卫罩住的是整轮**（Collect + Flush），不只是 Flush。
+   只锁 Flush 的话，三个进程仍各付 20 秒 Collect 去抢 Redis，
+   而丢的是 Flush、成因在 Collect ⇒ 守卫会变成「省了写、没省拥塞」。
+
+2. **取锁出错 ⇒ fail-open（照写），只记 warn。**
+   这是审计快照：**重复一行** << **漏掉整轮 1,802 行**。
+   反向选择会把一次连接抖动放大成「审计数据永久停摆」。
+   现有留存 worker 用的也是同一方向（锁错误仍降级去批删行，不静默停摆）。
+
+3. **让位是预期行为，不是失败**：不计入 `flushFailStreak`，不打 Warn。
+   打 Warn 会让「只有一个写入者」这个**预期行为**看起来像故障 ——
+   这正是 §60 里 streak 型指标制造假阳性的那种形状。
+   但**角色切换**（首次让位 / 恢复写入）各打一条 Info，
+   否则「谁在写」在日志里完全不可见。
+
+三态必须可区分（`unavailable` / `yielded` / `held` / `off`）：
+压成一个字段后，「这 40 分钟一行都没写」与「这 40 分钟有别人在写」在日志上长得一模一样。
+
+#### 四、⚠ 这道门**不能**替代停掉 8782
+
+守卫只保证写入者的**数量**是 1，**不保证是哪一个**。
+陈旧的 245@8782（release 2718）完全可能每轮都抢到锁，于是
+「一个写入者」成立，但**唯一那个写入者是旧的**。
+
+⇒ 它是**安全网，不是修复**。停掉残留槽位仍然必须做（§60 §六、AGENTS.md 端口纪律）。
+
+#### 五、判据与变异验证
+
+**包内判据**（`writerguard_test.go`，8 条）——形状照抄兄弟文件
+`retention_peer_mutex_test.go`，并保留它那条最要紧的**阴性对照**意识：
+
+| 判据 | 钉的是 |
+|---|---|
+| `YieldsToPeerWithoutTouchingEitherStage` | 让位时 Collect/Flush **一次都不调**（否则守卫退化成立） |
+| `HoldingRunsBothStagesAndReleasesOnce` | ★ **正向对照**：持锁时两阶段确实都跑了 |
+| `FailsOpenWhenTheLockCannotBeTaken` | ★ 守卫出错**仍然写入**，且不谎报 `GuardHeld` |
+| `ReleasesOnEveryExitPath`（4 子例） | 成功 / Collect 报错 / 零行 / Flush 报错 —— 释放各恰好 1 次 |
+| `ReleasesWithALiveContext` | ★ 解锁必须用**活着的** ctx |
+| `LockKeyIsDistinctFromEveryOtherAdvisoryLock` | 三个锁键互撞 |
+| `StateIsThreeWayDistinguishable` | 四态两两不同 + 出错优先 |
+| `WithoutALockerDegradesToRunCycle` | 无 locker 退化为原行为而非拒写 |
+
+★ **只有「让位侧」判据会被「守卫压根没接线」同时满足**（什么都不做 ⇒ 什么都不跑），
+所以 `HoldingRunsBothStagesAndReleasesOnce` 不是凑数，它是让第一条有意义的前提。
+
+★ `ReleasesWithALiveContext` 钉的是一个**静默永久停写**：
+`RunCycle` 内部 `defer cancelCycle()`，它返回时那 30 秒 ctx 已取消（生产里常是超时取消）；
+若解锁复用它，`pg_advisory_unlock` 带着死 ctx 发不出去，连接归还时**仍带着锁**
+⇒ 该实例此后**永远**拿不到锁，症状是「别的实例一直在写」，没有任何告警指向漏释放。
+
+**接线门**（`cmd/gateway/ursm_persist_guard_wiring_test.go`，3 条）——
+包内单测测不到 `main.go` 有没有真的调用（AGENTS.md §55 的 M43「只测函数不测接线」同族）：
+守卫默认 `!= "0"` 开启、让位分支**必须**先于错误判读且以 `continue` 收尾、
+失败日志必须带 `guard` 状态。
+
+**变异验证**（全部红）：
+
+| 变异 | 内容 | 结果 |
+|---|---|---|
+| M1 | 让位时不再早退（守卫形同虚设） | ✅ |
+| M2 | 取锁出错时不写入（fail-closed） | ✅ |
+| M3 | 从不释放写入者锁 | ✅ 4 子例全红 |
+| M4 | 解锁复用已取消的周期 ctx | ✅ |
+| M5 | 锁键与留存锁相撞 | ✅ |
+| M6 | 让位时谎报 `GuardHeld=true` | ✅ |
+| M7 | 去掉让位分支（守卫退化成建议性） | ✅ |
+| W1 | 守卫默认关闭（写成 `== "1"`） | ✅ |
+| W2 | 让位后不 `continue`（污染 streak） | ✅ |
+| W3 | 失败日志硬编码 `guard=held` | ✅ |
+| W4 | 让位打 Warn | ✅ |
+| W5 | 让位日志失去首次门控 | ✅ |
+
+⚠ **W2 第一次跑没生效**：锚点里的缩进少写了一个制表符，
+脚本报 `ANCHOR NOT FOUND` 而**没有**继续跑 ⇒ 若不核对就会把它记成
+「变异没让判据变红」。修正缩进后变红。⇒ **变异脚本必须区分
+「锚点没找到」与「跑了但没红」，前者一律不算结果。**
+
+#### 六、上线与回退
+
+- 开关：`URSM_V2_PERSIST_WRITER_GUARD=0` 关掉（恢复三写入者），**默认开**。
+- 回退路径保留在 `main.go`，不需要改代码。
+- ⚠ **本节未部署**。上线时建议与「停掉 8782 残留」**同批**：
+  只上守卫而留残留进程，唯一写入者可能就是那个旧 release。
+
+★ 同族：[[已有正确做法、这里没有]] · [[一致性搜索]] · [[只测函数不测接线]] ·
+[[变异脚本的「锚点没找到」不是变异结果]] · [[fail-open 与 fail-closed 的方向要按
+「错了谁的代价更大」选]] · [[0 命中的第一嫌疑永远是量具坏了]]。
