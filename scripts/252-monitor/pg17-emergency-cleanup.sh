@@ -143,13 +143,35 @@ if [ "$LEVEL" = "L1" ] || [ "$LEVEL" = "L2" ] || [ "$LEVEL" = "L3" ]; then
 fi
 
 # === L2: VACUUM FULL columnar 元数据 + 业务 bloat 表 ===
+#
+# ★★ 2026-10-18 修复（§96）：下面两处 VACUUM 与 §88 在
+#   pg17-drop-old-columnar-partitions.sh 里发现的是**完全同一个缺陷**，
+#   而这一份**更隐蔽**：
+#     ① 语句串是 "SET …; SET …; VACUUM FULL …" ⇒ PostgreSQL 视作
+#        **隐式事务块** ⇒ VACUUM 每次都报 "cannot run inside a transaction block"；
+#     ② 用的是 `|| true`（比 `|| echo WARN` 吞得更彻底，**连失败都不留痕**）；
+#     ③ `docker_exec()` 内部是 `docker exec … 2>/dev/null`
+#        ⇒ psql 的 ERROR 走 docker 的 stderr ⇒ **直接进黑洞，日志里一个字都没有**。
+#   ⇒ 结论：这条分支**从未成功执行过一次，且失败完全不可见**。
+#   而它恰好在 **LEVEL 升到 L2（磁盘 ≥90% 自动升级，第 86 行）** 时才跑 ——
+#   也就是最需要它的时刻。
+#   修法与 drop 脚本同款：超时走 PGOPTIONS，语句串里只留 VACUUM；
+#   并且**绕开 docker_exec 直接调 docker exec**，让错误能进日志。
 if [ "$LEVEL" = "L2" ] || [ "$LEVEL" = "L3" ]; then
+  vac_ok=0
+  vac_fail=0
   for meta in chunk stripe chunk_group; do
     size=$(docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc "SELECT pg_total_relation_size('columnar_internal.${meta}')/1024/1024" 2>/dev/null || echo 0)
     [ "${size:-0}" -lt 10 ] && { echo "[$(date -Iseconds)] L2 skip columnar_internal.${meta} (small=${size}MB)"; continue; }
     echo "[$(date -Iseconds)] L2 VACUUM FULL columnar_internal.${meta} (${size}MB)" >> "$LOG"
-    docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc \
-      "SET statement_timeout='30min'; SET lock_timeout='5min'; VACUUM FULL columnar_internal.${meta}" >> "$LOG" 2>&1 || true
+    if docker exec -e "PGOPTIONS=-c statement_timeout=30min -c lock_timeout=5min" \
+         "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc \
+         "VACUUM FULL columnar_internal.${meta}" >> "$LOG" 2>&1; then
+      vac_ok=$((vac_ok+1))
+    else
+      echo "[$(date -Iseconds)]   WARN: VACUUM FULL columnar_internal.${meta} FAILED (see above)" >> "$LOG"
+      vac_fail=$((vac_fail+1))
+    fi
   done
 
   # bloat > 50% AND size > 1GB
@@ -165,9 +187,22 @@ if [ "$LEVEL" = "L2" ] || [ "$LEVEL" = "L3" ]; then
   while IFS= read -r tname; do
     [ -z "$tname" ] && continue
     echo "[$(date -Iseconds)] L2 VACUUM FULL ${tname}" >> "$LOG"
-    docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc \
-      "SET statement_timeout='30min'; SET lock_timeout='5min'; VACUUM FULL ${tname}" >> "$LOG" 2>&1 || true
+    if docker exec -e "PGOPTIONS=-c statement_timeout=30min -c lock_timeout=5min" \
+         "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc \
+         "VACUUM FULL ${tname}" >> "$LOG" 2>&1; then
+      vac_ok=$((vac_ok+1))
+    else
+      echo "[$(date -Iseconds)]   WARN: VACUUM FULL ${tname} FAILED (see above)" >> "$LOG"
+      vac_fail=$((vac_fail+1))
+    fi
   done <<< "$BLOATS"
+
+  # ★ 只有全成功才打 ok；有任何一条失败就要让运维看见 —— 旧写法没有这一行。
+  if [ "$vac_fail" -gt 0 ]; then
+    echo "[$(date -Iseconds)] L2 VACUUM FULL **PARTIAL**: ok=${vac_ok} failed=${vac_fail}" >> "$LOG"
+  else
+    echo "[$(date -Iseconds)] L2 VACUUM FULL ok (${vac_ok} table(s))" >> "$LOG"
+  fi
 fi
 
 # === L3: TRUNCATE hot 表 + 清零的小清零表 ===
