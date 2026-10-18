@@ -837,3 +837,128 @@ ss 臂 5 条，各自 4~10s（且同一查询在 2s↔27s 间摆动）
 据此以为它是主因；实际那 41.9s 是我的端点探测与该查询并发打同一个库造成的争抢。
 清空并发后复测是 **3.83s**。同一条查询在本次会话里被测到 2.08 / 3.83 / 6.23 / 78.7 秒四个值。
 ⇒ **任何报给别人的性能数字，必须先确认测量期间没有自己的并发**。
+
+### §14.7 第五轮：上一轮「修好了」的判断是错的——两个缺陷都被判据放过了
+
+第四轮部署 `2705-9b586d21` 之后连抽 10 次。表面看是修复（7/10 返 200，
+1.7~6.3s），**实际上两个独立缺陷都还在**：
+
+```
+1: 500 12.051965s      ← 缺陷 B
+2: 500 12.057726s      ← 缺陷 B
+3: 500 12.050294s      ← 缺陷 B
+4: 200  6.363738s
+5: 200  2.144361s
+...
+```
+
+更关键的是**成功响应本身**：
+
+```json
+{"projects":10,"tasks":1,"owners":12,"clients":20,"tags":0,
+ "models":0,"providers":0,"status_codes":0}
+```
+
+三个 turns 维度**全空**。第四轮的改动（turns 臂改读 hot∪父表两腿）
+确实把那条查询从 44.5s 降到 1.7s——但它**一条结果都没返回**，
+所以端点看起来"变快了"。上一轮据此写下「8/8 全 200」，是错的。
+
+#### 缺陷 A：`turnTenantClause` 拼出 `AND AND`（100% 必现）
+
+```
+turnTenantClause(" AND t.tenant_id = $1")
+  → " AND " + strings.TrimPrefix(strings.Replace(s, "t.", "", 1), " ")
+  → Replace      ⇒ " AND tenant_id = $1"
+  → TrimPrefix " " ⇒ "AND tenant_id = $1"
+  → 拼前缀        ⇒ " AND AND tenant_id = $1"     ← 42601
+```
+
+154 上连续 7 次：
+
+```
+WARN filter-options: turns 维度不可用，已退化为空 budget=5s
+  err=query filter option groups failed: ERROR: syntax error at or near "AND" (SQLSTATE 42601)
+```
+
+**为什么上一轮的真库判据没抓到**：它调的是 `h.turnMergedSource("")`，
+而生产上 tenantID 永远非空——`GetTenantID(r)` 取不到租户时兜底返回
+`"default"`（`admin/context.go:37`），admin 用户走 `tenantFromQueryOrContext`
+时既没有 `?tenant=` 也没有 `X-Tenant-ID`，最后落回 `GetTenantID`。
+⇒ `tenantWhere == ""` 是死代码，判据测的正是它。
+
+**判据纪律的补充**：函数同层 ≠ 参数同层。判据自己编的"方便的值"
+不等于生产会传的值。这条缺陷 100% 必现、判据却全绿，就是这么漏的。
+
+修法不是改拼接，是**删掉字符串手术**：`turnMergedSource` 直接收 `tenantID`，
+两腿各自持有自己的租户子句，`AND AND` 结构上不可能再出现。
+
+#### 缺陷 B：ss 臂无界，冷缓存时独占总预算 → 整页 500
+
+前 3 次 500 的原因写在 handler 自己的日志里：
+
+```
+ERROR filter-options: ss 维度查询失败
+  err=query filter option groups failed: timeout: context deadline exceeded
+  duration_ms=12003
+```
+
+ss 臂当时直接吃**总预算 ctx**。它的成本是结构性的
+（`EXPLAIN (ANALYZE, BUFFERS)`，热态）：
+
+```
+Parallel Hash Join                      Buffers: shared hit=69912
+  Parallel Seq Scan on session_dim        828k 行 / 23,854 buffers
+  Parallel Seq Scan on session_summaries  423k 行扫、过滤掉 155,775 行 / 45,902 buffers
+Execution Time: 4845 ms
+```
+
+546MB 工作集。`shared_buffers` 3584MB 装得下，所以是**「冷进热出」的一次性现象**——
+实测裸 `count(*) FROM session_dim`（828k 行）：**冷读 13.73s / 热读 0.28~0.41s**。
+
+为什么偏偏在部署后立刻出现：进程 `23:31:19` 启动，23:33:23 就开始 500，
+期间 `session_turns_hot` 触发了一次 autovacuum（23:31:12），
+新进程又在跑 dimension queue 快照 / auto index refresh（journalctl 里 55 次
+`snapshot from dimension queues built`）。154 的 load 当时只有 1.00——
+**这不是 CPU 饥饿，是查询真的跑不完 12s**。
+
+修法：ss / tags / turns 三条臂各有界，总预算 12s → 20s（nginx 侧
+`proxy_read_timeout 30s`，读得下）。取舍如实记录：**真冷缓存那一次，
+projects/tasks/owners/clients 会空着**。这比整页 500 好，但不是白捡的。
+
+#### 三条更彻底的路线，全部实测否证
+
+| 路线 | 想法 | 实测 | 结论 |
+|---|---|---|---|
+| ss 覆盖索引 | `first_request_at INCLUDE (session_key, tenant_id, gw_project_id)` | buffers **69,912 → 168,993（2.4×）**，Heap Fetches 172,001；wall clock 3,432 → 2,490ms | **否**。墙钟变快是假象，IO 量翻三倍，冷缓存必然更差——而故障恰恰是冷缓存造成的 |
+| 改读 `session_dim.last_active_at` | 现成索引，**371 buffers / 0.7ms，快 200 倍** | 口径变了，且**不收敛**：N=400/1k/2k/5k/20k/60k 分别缺 19/28/27/26/26/20 个值，多 2/11/11/13/13/13 个 | **否**。属口径变更，需 owner 裁定 |
+| `session_turns` 覆盖索引 | `(tenant_id, ts DESC) INCLUDE (model, provider, status_code)` | buffers 159,153 → 127,888（**仅 −20%**）。九月分区（483,570 行）仍被 planner 选去用既有 `session_turns_2026_09_heap_tenant_id_ts_idx`，单独占 118,030 buffers（84%） | **否**。要拿到收益得让 planner 改选，不是「加个索引」能定的事 |
+
+#### 一条测量错误：`count(*)` 包一层改变了被测查询的工作量
+
+用 `SELECT count(*) FROM (<真实查询>) z` 测「加租户过滤有没有变慢」，
+得到 1.68s / 1.70s，据此判「子预算够」。换成**照原样取 961 行**跑，
+同一条查询是 **6.3s（首读）/ 1.54s（次读）**。
+⇒ `count(*)` 让 PG 有余地裁掉外层投影，量到的不是生产那条查询。
+
+#### 判据（8 条，变异 6/6 变红）
+
+新增/修正三条：
+
+1. `TestFilterOptionsTenantClauseIsRealSQL` —— 两腿各一条 `AND tenant_id = $1`，
+   无双 AND、无表别名。
+2. `TestFilterOptionsHandlerEndToEndWithRealTenant` —— **端到端驱动 handler**，
+   用不带 auth context 的请求走生产的 `"default"` 兜底，断言三个 turns 维度
+   **非空**。变异下逐字复现线上症状。
+3. `TestFilterOptionsNeverReturns500` —— 降级给 `[]` 不给 `null`；
+   handler 内不得有 500 分支；三条臂必须 `context.WithTimeout(ctx, <各自预算>)`。
+
+另外**修了两条判据自身**的缺陷：
+
+- `TestFilterOptionsNeverReturns500` 原本只查"常量名出现在函数体里"，
+  变异把 ss 臂改成 `context.WithCancel(ctx)`（同样无界）后**照样全绿**——
+  因为 `slog.Warn` 里还在引用那个常量。改成匹配机制后立刻变红。
+- `TestFilterOptionsRealDBWithinHandlerBudget` 原只把 turns 行数
+  `t.Logf` 出来，"查得飞快但一个值都没返回"与正常返回在判据眼里一样。
+  补上正向下限后当场抓出三格全空。
+- `TestFilterOptionsTurnBudgetLeavesHeadroom` 原只算 turns 一条臂的余量，
+  会放过"ss 吃掉余量"这种回归；改为按三条臂算。
