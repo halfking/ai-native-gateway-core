@@ -219,11 +219,33 @@ WITH s AS (
   ORDER BY snapshot_ts DESC
   LIMIT $SAMPLE
 )
+-- ★★ 2026-10-18 修正（§63 的连带后果，必须与 §63 一起上线）：
+--   writer 现在把「空残渣」存成 **NULL** 而不是空 jsonb 对象
+--   （domains/ursm/v2/persist/writer.go，约 85% 的行），
+--   而 pg_column_size(NULL) 返回 NULL、avg() 不计 NULL。
+--
+--   ★ 只读实测把「哪几项真的坏了」钉死在这里，**不要照着推断去改别的项**：
+--     · avg —— **确实坏了**。avg() 不计 NULL，85% 的 8 B 空对象行从分母消失，
+--       生产实测 **27.2 B → 182.0 B（6.7 倍）**，会与「818 后基线」形成假警报。
+--     · p95 —— **没有坏**。percentile_cont 是有序集聚合，按文档本就忽略 NULL；
+--       实测两代编码下都返回 182.0。下面的 FILTER 只是为了把「非空行」这个
+--       意图写死在代码里（防后人误加回去），**它不是修复的必要条件**。
+--     · 超阈占比 —— **本轮没有坏**，实测两代 15.06% / 14.92%。但那是巧合：
+--       NULL 行替换掉的空对象行本来也超不了阈（8 B < 64 B），分子分母才同时对消。
+--       仍统一到同一表达式，免得阈值一旦调到 8~64 B 之间就暴露。
+--
+--   ⇒ 真正的修复只有一处：avg 的实参加 coalesce(pg_column_size(payload), 0)。
+--
+--   ⚠ 本段在 $( ) 命令替换内，**绝对不能出现反引号** —— bash 会把它当命令替换去执行，
+--   于是脚本在 shell 层就崩（退出码 1），而 1 在本脚本的契约里是「检出膨胀」
+--   ⇒ 一次纯语法崩溃会伪装成业务告警。
+--   门：scripts/ursmcheck 的 TestMonitorScriptsConvergeOnAContractExitCode。
 SELECT count(*)::text,
        coalesce(extract(epoch FROM (now() - max(snapshot_ts)))::int::text, ''),
-       coalesce(round(avg(pg_column_size(payload)))::text, '0'),
-       coalesce(round(percentile_cont(0.95) WITHIN GROUP (ORDER BY pg_column_size(payload)))::text, '0'),
-       coalesce(round(100.0 * count(*) FILTER (WHERE pg_column_size(payload) > $BLOAT_BYTES)
+       coalesce(round(avg(coalesce(pg_column_size(payload), 0)))::text, '0'),
+       coalesce(round(percentile_cont(0.95) WITHIN GROUP (ORDER BY pg_column_size(payload))
+                      FILTER (WHERE payload IS NOT NULL))::text, '0'),
+       coalesce(round(100.0 * count(*) FILTER (WHERE coalesce(pg_column_size(payload), 0) > $BLOAT_BYTES)
                       / count(*), 2)::text, '0')
 FROM s;
 EOF
@@ -257,8 +279,8 @@ if [ "$SAMPLE" -gt 0 ] && [ "$n" -lt $((SAMPLE / 10)) ]; then
 fi
 
 echo "===== URSM 快照 payload 膨胀巡检（最近 $n 行，最新样本 ${newest_age}s 前）====="
-printf '  payload 平均   : %s B   (818 后基线 ~24 B)\n' "$avg_b"
-printf '  payload p95    : %s B   ← 仅诊断：总体双峰，p95 落在第二峰上\n' "$p95_b"
+printf '  payload 平均   : %s B   (818 后基线：空对象编码 ~36 B / NULL 编码 ~27 B)\n' "$avg_b"
+printf '  payload p95    : %s B   ← 仅诊断：非空行的 p95（percentile_cont 本就忽略 NULL，此处只固定意图）\n' "$p95_b"
 printf '  单行阈值       : %s B\n' "$BLOAT_BYTES"
 printf '  超阈行占比     : %s%%  (12 小时实测稳定在 9.0~11.2%%)\n' "$pct_over"
 printf '  判定阈值       : > %s%%\n' "$BLOAT_PCT"
