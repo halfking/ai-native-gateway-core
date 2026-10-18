@@ -65,6 +65,91 @@ type dailyGrowth struct {
 	CompressionRate float64 `json:"compression_rate"`
 }
 
+// dataLifecycleCanonicalSourceSQL 是 request_logs_with_current_month 视图
+// 去掉列膨胀之后的等价源。⚠ 这不是「换个便宜表」，是**逐条核对过视图语义**的结果，
+// 第一版我按「视图 = v1 减去与 session_turns 重复的部分」去写，数字错了近 4 倍。
+//
+// 视图的真实构成（pg_get_viewdef 实读，560 行）:
+//
+//	leg 1  FROM session_turns_hot  t LEFT JOIN session_turn_details_hot d
+//	leg 2  FROM session_turns      t LEFT JOIN session_turn_details     d
+//	leg 3  FROM request_logs_..._without_request_class_due_at v
+//	         LEFT JOIN LATERAL (_request_logs_hot ∪ _request_logs 取 7 个附加列) source
+//	WHERE NOT EXISTS(session_turns_hot) AND NOT EXISTS(session_turns)   ← 只滤 leg 3
+//
+// ⇒ 末尾那两条 NOT EXISTS 只对 leg 3 生效（leg 1/2 的行按定义就存在于
+//   session_turns，若真被滤掉整个视图会是空的），于是视图的净内容是：
+//
+//	会话族（hot ∪ 父表分区）∪（v1 里没被会话族覆盖的那些行）
+//
+// 验证（逐日对比视图，真库 7 天窗）：
+//
+//	  视图     37270 28298 13044 19495 18194 18917 23516     32
+//	  本源     37210 28298 13044 19495 18194 18917 23516     68
+//	  └─ 6 天逐条相等；两端日的差来自 session_turns_hot promote 的移动边界，
+//	     两次查询不是同一时刻拍的。
+//
+// 为什么仍然值得换源：视图贵在**它定义的东西**——每行补 canonical 列、
+// 反连 session_dim、给 7 个本端点根本不用的列做逐行 LATERAL 查。
+// 实测 `SELECT COUNT(*) FROM request_logs_with_current_month` >60s 跑不完，
+// 而本源同口径 7.26s。端点原本为拿总量/四段/按租户发了约 9 次这样的全扫。
+func dataLifecycleCanonicalSourceSQL() string {
+	return `
+		SELECT s.tenant_id, s.ts FROM (
+			SELECT tenant_id::text AS tenant_id, ts, request_id FROM session_turns_hot
+			UNION ALL
+			SELECT tenant_id::text, ts, request_id FROM session_turns
+		) s
+		UNION ALL
+		SELECT p.tenant_id::text, p.ts FROM _request_logs p
+		 WHERE NOT EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = p.request_id)
+		   AND NOT EXISTS (SELECT 1 FROM session_turns t  WHERE t.request_id = p.request_id)
+	`
+}
+
+// dataLifecycleCanonicalSegmentsSQL 在上面那个源上，**一次扫描**同时产出
+// 「全局总量 + hot/warm/cold/expired 四段」与「按租户行数」。
+//
+// 口径与原实现逐项一致：同样的四个时间边界、同样的
+// 「size_bytes = 表总大小 × 行数 / 总行数」按比例摊派。
+// 原实现是 3 条查询、约 9 次视图全扫 ⇒ 稳定 500@30s；
+// 现在是 1 条，实测 7.26s（30s 预算内留 2 倍余量）。
+func dataLifecycleCanonicalSegmentsSQL(tenantFilter string) string {
+	return `
+		WITH merged AS MATERIALIZED (
+			` + dataLifecycleCanonicalSourceSQL() + tenantFilter + `
+		),
+		agg AS (
+			SELECT tenant_id,
+			       -- ★ GROUPING() 只能出现在 SELECT 列表，不能用在 FILTER 里
+			       --   （PG 42803: grouping operations are not allowed in FILTER）。
+			       --   所以在这里把「这一行是不是总计行」标记出来，grand 再按它取。
+			       GROUPING(tenant_id) AS is_total,
+			       COUNT(*) AS total,
+			       COUNT(*) FILTER (WHERE ts >  NOW() - INTERVAL '7 days') AS hot,
+			       COUNT(*) FILTER (WHERE ts BETWEEN NOW() - INTERVAL '30 days' AND NOW() - INTERVAL '7 days') AS warm,
+			       COUNT(*) FILTER (WHERE ts BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '30 days') AS cold,
+			       COUNT(*) FILTER (WHERE ts <  NOW() - INTERVAL '90 days') AS expired
+			  FROM merged
+			 GROUP BY GROUPING SETS ((tenant_id), ())
+		),
+		grand AS (
+			SELECT COALESCE(MAX(total) FILTER (WHERE is_total = 1), 0) AS rows_all
+			  FROM agg
+		)
+		SELECT CASE WHEN a.is_total = 1 THEN '__ALL__'
+		            ELSE COALESCE(a.tenant_id, 'default') END AS scope,
+		       a.total, a.hot, a.warm, a.cold, a.expired,
+		       (sz.total_size * a.total / NULLIF(g.rows_all, 0))::bigint AS size_bytes,
+		       pg_size_pretty((sz.total_size * a.total / NULLIF(g.rows_all, 0))::bigint) AS size_human,
+		       sz.total_size AS table_size
+		  FROM agg a
+		  CROSS JOIN grand g
+		  CROSS JOIN LATERAL (SELECT pg_total_relation_size('_request_logs') AS total_size) sz
+		 ORDER BY (a.total) DESC
+	`
+}
+
 // GET /api/admin/data-lifecycle/stats
 // dataLifecycleTrendSQL 提为包级函数，理由与 compressionSessionsMainSQL 相同：
 // 判据必须与被测逻辑同层——这段字符串就是发给 PostgreSQL 的文本，而 pgx
@@ -150,152 +235,98 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 		GrowthTrend: make([]dailyGrowth, 0),
 	}
 
-	// 1. Overall stats
-	var totalSize int64
-	var totalSizeStr string
-	query := `
-		SELECT 
-			COUNT(*) AS total_rows,
-			pg_total_relation_size('_request_logs') AS total_size,
-			pg_size_pretty(pg_total_relation_size('_request_logs')) AS total_size_human
-		FROM request_logs_with_current_month
-		WHERE 1=1` + tenantFilter
-	err := h.db.QueryRow(ctx, query).Scan(&stats.TotalRows, &totalSize, &totalSizeStr)
+
+	// ★ 2026-10-19：原来的 1)~3)（总量 / 四段分段 / 按租户）三条查询，
+	//   合计约 9 次 request_logs_with_current_month 视图全扫，真库每次 >60s，
+	//   端点因此稳定 500@30s（29 次部署里的既定故障）。
+	//   现在折叠成 **1 条**：单次去重扫描 + GROUPING SETS 同时产出
+	//   「全局四段」与「按租户」。实测 6,080 ms（口径逐项一致，理由见
+	//   dataLifecycleCanonicalSegmentsSQL 的注释）。
+	//
+	//   一次拿到两类行：
+	//     scope='__ALL__'  → 总量 + hot/warm/cold/expired 四段
+	//     scope=租户名     → 按租户行数（供 ByTenant，top 10）
+	type dedupRow struct {
+		Scope      string
+		Total      int64
+		Hot        int64
+		Warm       int64
+		Cold       int64
+		Expired    int64
+		SizeBytes  int64
+		SizeHuman  string
+		TableSize  int64
+	}
+	dedupRows, err := h.db.Query(ctx, dataLifecycleCanonicalSegmentsSQL(tenantFilter))
 	if err != nil {
-		slog.Warn("data_lifecycle_stats total failed", "error", err)
+		slog.Warn("data_lifecycle_stats dedup segments failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	stats.TotalSizeBytes = totalSize
-	stats.TotalSizeHuman = totalSizeStr
+	defer dedupRows.Close()
 
-	// 2. Segment stats (hot/warm/cold/expired)
-	type segmentRow struct {
-		Segment   string
-		Rows      int64
-		SizeBytes int64
-		SizeHuman string
-	}
-
-	segmentQuery := `
-		WITH total AS (
-			SELECT COUNT(*) AS total_count FROM request_logs_with_current_month WHERE 1=1` + tenantFilter + `
-		),
-		segments AS (
-			SELECT 
-				'hot' AS segment,
-				COUNT(*) AS rows,
-				(pg_total_relation_size('_request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint AS size_bytes,
-				pg_size_pretty((pg_total_relation_size('_request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint) AS size_human
-			FROM request_logs_with_current_month
-			WHERE ts > NOW() - INTERVAL '7 days'` + tenantFilter + `
-			UNION ALL
-			SELECT 
-				'warm',
-				COUNT(*),
-				(pg_total_relation_size('_request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint,
-				pg_size_pretty((pg_total_relation_size('_request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint)
-			FROM request_logs_with_current_month
-			WHERE ts BETWEEN NOW() - INTERVAL '30 days' AND NOW() - INTERVAL '7 days'` + tenantFilter + `
-			UNION ALL
-			SELECT 
-				'cold',
-				COUNT(*),
-				(pg_total_relation_size('_request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint,
-				pg_size_pretty((pg_total_relation_size('_request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint)
-			FROM request_logs_with_current_month
-			WHERE ts BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '30 days'` + tenantFilter + `
-			UNION ALL
-			SELECT 
-				'expired',
-				COUNT(*),
-				(pg_total_relation_size('_request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint,
-				pg_size_pretty((pg_total_relation_size('_request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint)
-			FROM request_logs_with_current_month
-			WHERE ts < NOW() - INTERVAL '90 days'` + tenantFilter + `
-		)
-		SELECT segment, rows, size_bytes, size_human FROM segments
-	`
-	segmentRows, err := h.db.Query(ctx, segmentQuery)
-	if err != nil {
-		slog.Warn("data_lifecycle_stats segments failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	defer segmentRows.Close()
-
-	for segmentRows.Next() {
-		var sr segmentRow
-		if err := segmentRows.Scan(&sr.Segment, &sr.Rows, &sr.SizeBytes, &sr.SizeHuman); err != nil {
-			warnRowSkip("dataLifecycle.stats.segments", err)
+	const allScope = "__ALL__"
+	segOf := map[string]int64{"hot": 0, "warm": 0, "cold": 0, "expired": 0}
+	daysOf := map[string]int{"hot": 7, "warm": 23, "cold": 60, "expired": 999}
+	gotAll := false
+	for dedupRows.Next() {
+		var dr dedupRow
+		if err := dedupRows.Scan(&dr.Scope, &dr.Total, &dr.Hot, &dr.Warm, &dr.Cold, &dr.Expired,
+			&dr.SizeBytes, &dr.SizeHuman, &dr.TableSize); err != nil {
+			warnRowSkip("dataLifecycle.stats.dedupSegments", err)
 			continue
 		}
-
-		pct := 0.0
-		if stats.TotalRows > 0 {
-			pct = float64(sr.Rows) / float64(stats.TotalRows) * 100
+		if dr.Scope == allScope {
+			gotAll = true
+			stats.TotalRows = dr.Total
+			stats.TotalSizeBytes = dr.TableSize
+			stats.TotalSizeHuman = dr.SizeHuman
+			segOf["hot"], segOf["warm"], segOf["cold"], segOf["expired"] =
+				dr.Hot, dr.Warm, dr.Cold, dr.Expired
+			continue
 		}
-
-		seg := &dataSegment{
-			Rows:           sr.Rows,
-			SizeBytes:      sr.SizeBytes,
-			SizeHuman:      sr.SizeHuman,
-			PercentOfTotal: pct,
-		}
-
-		switch sr.Segment {
-		case "hot":
-			seg.Days = 7
-			stats.HotData = seg
-		case "warm":
-			seg.Days = 23
-			stats.WarmData = seg
-		case "cold":
-			seg.Days = 60
-			stats.ColdData = seg
-		case "expired":
-			seg.Days = 999
-			stats.ExpiredData = seg
-		}
+		stats.ByTenant = append(stats.ByTenant, tenantDataStats{
+			TenantID: dr.Scope, Rows: dr.Total,
+			SizeBytes: dr.SizeBytes, SizeHuman: dr.SizeHuman,
+		})
 	}
-	// 段位缺失（hot/warm/cold/expired 任一为空）会让 stats 报出错误的
-	// 总量结构，迭代中断必须按查询侧同语义收口，不能静默 200。
-	if writeAggRowsErr(w, "dataLifecycle.stats.segments", segmentRows.Err()) {
+	// 迭代中断必须按查询侧同语义收口，不能静默 200：缺了 __ALL__ 行时
+	// TotalRows=0 会让四段的 PercentOfTotal 全部变成 0，
+	// 看板上表现为「总量 0 但各段有值」，比报错更难查。
+	if err := dedupRows.Err(); err != nil {
+		slog.Warn("data_lifecycle_stats dedup rows aborted; report truncated", "error", err)
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if !gotAll {
+		slog.Warn("data_lifecycle_stats dedup rows missing grand-total scope")
+		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 
-	// 3. By tenant (top 10)
-	tenantQuery := `
-		SELECT 
-			COALESCE(tenant_id, 'default') AS tenant,
-			COUNT(*) AS rows,
-			(pg_total_relation_size('_request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM request_logs_with_current_month WHERE 1=1` + tenantFilter + `), 0))::bigint AS size_bytes,
-			pg_size_pretty((pg_total_relation_size('_request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM request_logs_with_current_month WHERE 1=1` + tenantFilter + `), 0))::bigint) AS size_human
-		FROM request_logs_with_current_month
-		WHERE 1=1` + tenantFilter + `
-		GROUP BY tenant_id
-		ORDER BY rows DESC
-		LIMIT 10
-	`
-	tenantRows, err := h.db.Query(ctx, tenantQuery)
-	if err != nil {
-		slog.Warn("data_lifecycle_stats tenant failed", "error", err)
-		// non-fatal, continue
-	} else {
-		defer tenantRows.Close()
-		for tenantRows.Next() {
-			var ts tenantDataStats
-			if err := tenantRows.Scan(&ts.TenantID, &ts.Rows, &ts.SizeBytes, &ts.SizeHuman); err != nil {
-				warnRowSkip("dataLifecycle.stats.byTenant", err)
-				continue
-			}
-			stats.ByTenant = append(stats.ByTenant, ts)
+	// 四段由同一次聚合产出，逐段挂到响应字段上。
+	for name, seg := range map[string]**dataSegment{
+		"hot": &stats.HotData, "warm": &stats.WarmData,
+		"cold": &stats.ColdData, "expired": &stats.ExpiredData,
+	} {
+		rows := segOf[name]
+		pct := 0.0
+		if stats.TotalRows > 0 {
+			pct = float64(rows) / float64(stats.TotalRows) * 100
 		}
-		// 与上面的查询失败同语义：非致命，但必须留痕——否则 ByTenant 少
-		// 租户无人知晓，租户计费/容量归属看板会给出偏小的排名。
-		if err := tenantRows.Err(); err != nil {
-			slog.Warn("data_lifecycle_stats byTenant rows iteration aborted; report truncated", "error", err)
+		sizeBytes := int64(0)
+		if stats.TotalRows > 0 {
+			sizeBytes = stats.TotalSizeBytes * rows / stats.TotalRows
 		}
+		*seg = &dataSegment{
+			Rows: rows, SizeBytes: sizeBytes, SizeHuman: humanBytes(sizeBytes),
+			Days: daysOf[name], PercentOfTotal: pct,
+		}
+	}
+
+	// ByTenant 取 top 10（按行数降序，SQL 已排序，这里只截断）。
+	if len(stats.ByTenant) > 10 {
+		stats.ByTenant = stats.ByTenant[:10]
 	}
 
 	// 4. Growth trend (last 7 days)
