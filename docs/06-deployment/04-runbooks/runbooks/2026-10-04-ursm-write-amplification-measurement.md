@@ -24335,3 +24335,94 @@ B 组里藏着一个具体形态。以 `usage_facts_default` 为例：
 往往比继续精读候选本身更有价值 —— 它同时告诉你哪些不该做。**
 ★ 同族：[[读到一个数不等于读到一个结论]] · [[阴性结论要当缺陷一样复核]] ·
 [[§88 的教训：本仓没有实现 ≠ 系统没有实现]]。
+
+---
+
+## §91 把 §90 的结论落成**一条命令**：`REINDEX TABLE CONCURRENTLY usage_facts_default`（**未执行，待授权**）
+
+§90 挖出「空 DEFAULT 分区背 80 MB 死索引页」。本节把「够不够硬」从推断变成读数，
+并给出可直接执行的一行。
+
+### 一、四条独立读数互相印证
+
+| 量具 | 读数 | 说明什么 |
+|---|---|---|
+| `SELECT count(*)` | **0** | 真空（不是「reltuples 说 0」那种模糊证据） |
+| 7 条索引 `reltuples` | 全 **0** | 索引里没有条目 |
+| 7 条索引 `relpages` | **756 – 2899 页** | 却占着 23 MB / 18 MB / 8.5 MB × 4 / 6 MB |
+| `indisvalid` / `indisready` | 全 `t` | **不是**损坏或未完成的索引，只是「大」 |
+
+最刺眼的一条：
+
+```
+usage_facts_default_event_id_revision_occurred_at_key   UNIQUE
+    reltuples = 0        ← 零条目
+    relpages  = 2899     ← 却占 23 MB
+```
+
+一条**零条目**的 btree 正常应占 1–2 页。**2899 页无法用任何「预分配」解释**
+（PostgreSQL 的 btree 不预分配索引页）⇒ 它**曾经**装过大量条目。
+
+### 二、清理历史：这张表**从未被 vacuum 过**
+
+```
+n_live_tup=0   n_dead_tup=0
+last_vacuum=NULL  last_autovacuum=NULL  last_analyze=NULL  last_autoanalyze=NULL
+```
+
+⇒ `n_dead_tup = 0` + heap 恰好 0 字节 + **从未 vacuum**，
+说明这些行**不是被 DELETE 后留着死元组**，而是被**搬走了**（`DELETE` 会留下死元组并撑大 heap）。
+
+⚠ **诚实的边界**：具体是哪条搬迁路径造成的，**本节没有测出来**，
+不排除是迁移 750 铺开按日分区时 DEFAULT 分区兜底写入、随后被搬入日分区。
+⇒ 但**机制未知不影响处置结论**：`count(*)=0` + 80 MB 索引 + 全部 valid
+这三项已足以支撑 REINDEX，且 REINDEX 无论成因如何都安全。
+
+### 三、★ 它是**单例，不是一类**
+
+按「heap < 1 MB 且 索引 > 8 MB」全库扫描：
+
+```
+usage_facts_default    est_rows=0   heap=0 bytes   indexes=80 MB
+（仅此一行）
+```
+
+⇒ 处置是**外科手术式的一条命令**，不是一次扫荡。
+⇒ 这条本身也值得记：**模式成立 ≠ 模式普遍** —— 先量覆盖率再决定投入。
+
+### 四、处置命令（**本轮未执行，等授权**）
+
+```sql
+-- 0 行表上重建 7 条索引，回收 ≈80 MB；CONCURRENTLY 不阻塞写；语义零变化。
+REINDEX TABLE CONCURRENTLY public.usage_facts_default;
+```
+
+| 项 | 值 |
+|---|---|
+| 预计回收 | **≈80 MB**（7 条空 btree ≈ 200 kB） |
+| 阻塞写 | 否（`CONCURRENTLY`） |
+| 语义变化 | **无** |
+| 风险 | 极低；唯一代价是 23 MB 的索引要扫一遍（瞬时） |
+
+⇒ 可与待授权的 `REINDEX INDEX CONCURRENTLY pg_toast_81522141_index`（≈229 MB）
+**合并成一次运维窗口**（§90 第四节），合计 **≈309 MB**。
+
+⚠ **不要用 `DROP TABLE usage_facts_default`**：收益相同，但它是
+`partition_manager` 的安全网（保证日分区未建好时写入不失败），
+删掉会把「静默兜底」变成「硬失败」（§90 第四节）。
+
+### 五、验收口径（**别看汇总，看逐条**）
+
+`REINDEX CONCURRENTLY` **可能失败而不中止整个语句**（跳过被锁住的索引）。
+⇒ 验收必须**逐条读 `pg_stat_progress_create_index` / 重新量 `pg_indexes_size`**：
+
+```sql
+SELECT pg_size_pretty(pg_relation_size(c.oid)), c.relpages, c.reltuples
+FROM pg_class c WHERE c.oid = 'usage_facts_default_pkey'::regclass;
+-- 期望：relpages 从 1059 掉到 1~2
+```
+
+光看「命令返回 0」**不算证据** —— §88 那条 VACUUM 分支就是
+「命令跑了、退出码是 0、实际什么都没发生」的现成案例。
+★ 同族：[[量具不可用与真没问题必须可区分]] · [[§88 的教训：多语句 psql -c 报绿]] ·
+[[PostgreSQL 没有收缩索引这个操作]]。
