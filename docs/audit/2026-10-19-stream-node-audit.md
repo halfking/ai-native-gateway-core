@@ -18,7 +18,9 @@
 - [x] 相关包、构建、vet与最终30文件SHA256独立审查收口；最终完整根verify已PASS；主干整合与推送尚待执行，Task Stop Summary此阶段仍记partial。
 - [x] 提供每项结论、生产是否包含修复、剩余边界；当前补丁未部署，不能把本地修复或构建目录身份等同生产生效。
 
-## 审计结论：尚未全部修正
+## 审计结论：生产现象尚不能宣称全部消失
+
+本轮证实的代码缺陷已修复、合并并推送，完整验证及提交证据见文末收口记录。154保留日志仍含MiniMax中断等信号；本任务没有部署生产，因此不把代码通过等同现网问题全部消失。
 
 ### 生产身份与边界
 
@@ -104,7 +106,7 @@ MiniMax最新committed_output：16:52:42，request `676a8e9d85d05fe78aee9a026796
 - **初轮`bash verify.sh`完整执行失败，当时不能据此合并/推送；续查后的最终完整运行已PASS。** 使用独立缓存的完整运行失败包括admin退役清单/来源证据漂移、errdiscard登记、sql_source_indirection清单、CGO_ENABLED=0下lite SQLite测试，以及并发序列化P99和取消ticker时序测试。已在未修改的精确aa888f9基线独立worktree复跑，确认admin七门、errdiscard一门与sql_source_indirection两门同样失败；没有修改这些门来制造通过。基线worktree已按审计流程归档。两项时序测试精确单独重跑通过（integration1.594s、stress0.925s）；这说明失败受运行负载影响，不能代替完整verify通过，也不声称已在pristine复现这两项。
 - 修改后的13个相关包完整测试通过（含audit11.318s）；长reasoning DONE补片冻结后再次完整跑streaming **152.039s通过**，executors也重新通过（最终46.439s）。终态6/6与工具质量5/5 overlay变异均为行为断言红，编译错误不计杀死。
 - 第一批凭据probe的7文件组合hash（追加长错片之前）：`5d9178fcbc5f698cb54133ebe7226b42e975f5fd3563f5df7a2f9fe03a2207d4`，完整bg29.554s通过；9个变异均为行为断言红。首次bg全包因旧empty成功夹具导致F04清理悬挂，SIGQUIT诊断运行失败，不当作通过；正夹具改真实输出并保证失败时释放handler后才关闭server，后续完整重跑通过。
-- 最终30个Go文件逐项SHA256见[审查清单](evidence/2026-10-19-reviewed-code-manifest.json)，组合hash=`3315252023c859386878cbb53167c1cac7fb411a3991431d51983aac1053103c`。独立复审已核对所有文件并批准，未发现仍待修复P0/P1。没有绕过红门commit，故审查仅绑定baseline+未提交文件SHA256，不是最终提交SHA批准。
+- 最终30个Go文件逐项SHA256见[审查清单](evidence/2026-10-19-reviewed-code-manifest.json)，组合hash=`3315252023c859386878cbb53167c1cac7fb411a3991431d51983aac1053103c`。独立复审已核对所有文件并批准，未发现仍待修复P0/P1。这是首次复审阶段的字节绑定；当时没有绕过红门commit。最终已提交SHA批准和合并验证见文末收口记录。
 - 最终冻结后完整bg **37.022s通过**、healthstateguard **1.163s通过**，随后全仓build/vet均exit0。完整verify曾检出本轮新增forceEnableBindings未登记与调用锚点移动两项真缺口，已补职责登记并通过整个healthstateguard包；没有把本轮造成的红门归为基线。
 - 节点探针14/14、旧版主动/模型/列表入口17/17、本轮完整长错误证据3/3、V2长错误证据2/2行为变异均红；节点聚焦race通过1.890s。完整源码与最终命令结果见[验证聚合](evidence/2026-10-19-final-verification-summary.json)。
 - session.append/pin/archive接口本环境未提供；关键事实已保存agentmemory（`mem_mvf1ob2n_2c6f710b3d98`）及本报告。未伪造Memora归档成功。
@@ -133,6 +135,17 @@ MiniMax最新committed_output：16:52:42，request `676a8e9d85d05fe78aee9a026796
 
 最终冻结树的`bash verify.sh`已exit0并打印`[verify] PASS`：全量Go测试（没有剔除包）、真实PG/Redis一致性审计、隐私、vet、2模块×15构建配置、gateway构建和govulncheck均通过。节点缓存P99门在完整串行套件也通过。原始30功能文件及追加10证据文件SHA与复审清单逐项一致。此结论不等于已合并或已部署；主干收口另记最终Git证据。
 
-代码已按证据门、推理终态、工具续帧、整凭据恢复与共享探针合同分组提交；代码tip=`ad2bf3fd91f916cdef37e51059bbda55b9ea7fec`。完整矩阵与调用方/夹具和共享校验器保持同一逻辑片段，避免提交不完整的协议合同。主干合并及其验证尚待完成。
+代码已按证据门、推理终态、工具续帧、整凭据恢复与共享探针合同分组提交；代码tip=`ad2bf3fd91f916cdef37e51059bbda55b9ea7fec`。完整矩阵与调用方/夹具和共享校验器保持同一逻辑片段，避免提交不完整的协议合同。首次提交时主干合并及其验证尚待完成；后续收口结果见下。
 
-主干整合以`39ff587b2ef141c96b8c608be4b932752f123e9b`为第一父、审计分支`a040e2e469f7349b415f111ec1a5ede9a9be6e07`为第二父。唯一冲突为LESSONS末尾追加，保留主干全部内容并追加本轮原样经验；40个Go文件与复审哈希逐项一致。合并结果仍需独立验证后方可推送；本轮未部署154。
+主干整合以`39ff587b2ef141c96b8c608be4b932752f123e9b`为第一父、审计分支`a040e2e469f7349b415f111ec1a5ede9a9be6e07`为第二父。唯一冲突为LESSONS末尾追加，保留主干全部内容并追加本轮原样经验；40个Go文件与复审哈希逐项一致。首次合并当时仍待独立验证；现已通过并推送，见下。本轮未部署154。
+
+
+## 最终收口：主干完整验证与推送
+
+已审查并推送的代码提交为`c04c0b7606d860137f9a72a35bd1ac3f99510e85`，远端main由`39ff587b2`推进到该提交。独立复审绑定该精确SHA；40个Go文件与30＋10两份清单逐项一致，上游改动及LESSONS冲突处理已单独复核。
+
+在该提交的干净隔离worktree执行`SDKROOT=<Xcode26.2 SDK> VERIFY_CGO_ENABLED=1 GOMAXPROCS=4 GOFLAGS=-p=1 GOCACHE=<任务私有缓存> bash verify.sh`，exit0，最终`[verify] PASS`。主Go阶段330个含测试包全部通过；临时PostgreSQL/Redis一致性审计、隐私、全仓vet、2模块×15种构建配置及gateway构建均通过。govulncheck为0可达/0导入包漏洞，另有1个声明模块漏洞不可达。
+
+最终日志`final-merged-verify.log`为57730字节，SHA256=`f00923cdf6d12c9107ad8115deadd9e03ef94f9a2c030a8b09f616395682270e`；实际验证记录见[验证聚合](evidence/2026-10-19-final-verification-summary.json)的`continuation.integration`。统计只取主Go阶段，后续storage/privacy重复包不计入330；同时更正初轮聚合误取后续重复运行时长的问题，feature主阶段streaming实际为150.572s。
+
+本段及对应JSON为验证后的文档收口，不改变已测试的代码、测试或配置。第13项歧义工具名还原与第18项缺失原始wire的生产因果归属按用户指令跳过；已提交输出后的安全重放边界继续保留。154生产未由本任务部署，不宣称所有上游网络/过载/断流已消失。
