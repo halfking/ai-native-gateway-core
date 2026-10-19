@@ -1712,6 +1712,15 @@ files=(
   # 形状照抄 hot 侧同名索引，不重新设计；建在父表上，未来月分区自动继承。
   "$ROOT_DIR/sql/migrations/startup/878_supplier_errors_partition_indexes.sql"
 
+  # ── 879（2026-10-21）：删掉 session_summaries 的重复裸唯一索引 ─────────
+  # session_summaries_pkey(PRIMARY KEY(session_key)) 与
+  # session_summaries_session_key_uidx(UNIQUE(session_key)) 的 pg_index.indkey
+  # 都是 1 ⇒ 键集逐字重复；生产两份各 ~67MiB，而该表持续写入
+  # ⇒ 每次写多维护一份 B-tree（写放大翻倍），且点查计划器**优先选裸的那条**。
+  # 守卫：只有当**还存在别的**可仲裁唯一索引时才删 —— 表没有主键时
+  # 裸 uidx 是 ON CONFLICT (session_key) 唯一的仲裁器，删了写入直接失败。
+  "$ROOT_DIR/sql/migrations/startup/879_drop_session_summaries_redundant_session_key_uidx.sql"
+
   # ── 2026-10-16 孤儿迁移 044 补登（health_source 白名单缺 probe_now）──────
   #
   # 044_health_source_probe_now.sql 早就写在 sql/migrations/startup/ 里，注释把
