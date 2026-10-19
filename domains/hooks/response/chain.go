@@ -159,6 +159,14 @@ func (c *InterceptorChain) InterceptStreamChunk(ctx context.Context, chunk []byt
 		if result.ShouldBlock {
 			finalResult.ShouldBlock = true
 		}
+		if len(result.Metadata) > 0 {
+			if finalResult.Metadata == nil {
+				finalResult.Metadata = make(map[string]interface{})
+			}
+			for k, v := range result.Metadata {
+				finalResult.Metadata[k] = v
+			}
+		}
 		if result.SuppressChunk {
 			// A later interceptor is withholding this frame. Earlier
 			// replacements or injections have not passed that

@@ -1438,9 +1438,10 @@ func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Conte
 		if len(candidate) > maxPlaceholderTailBytes {
 			if reservedMarkerStarted(candidate) {
 				// Over-length tail: the marker never completed, so no type was ever
-				// parsed out of it. Bare marker — naming a type here would be a
-				// guess about bytes nobody resolved.
-				safe = combined[:start] + redactedMarker
+				// parsed out of it. The mask still names its category — "unknown"
+				// is a statement about *this mask* (no type was resolvable), not a
+				// guess about the bytes (r1038).
+				safe = combined[:start] + unknownRedactedMarker
 			} else {
 				// r1030 release valve: the held prefix never started the marker
 				// word — it is a `{"`-style quote-wrap candidate that kept
@@ -1501,7 +1502,7 @@ func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Conte
 	// than "the text changed") is what keeps the normal split-across-chunks
 	// restore working — that path resolves and must pass through untouched.
 	if previous != "" && tail == "" && reservedMarkerStarted(previous) &&
-		strings.Contains(restored, redactedMarker) {
+		strings.Contains(restored, redactedMarkerPrefix) {
 		// 2026-10-13 (r1022): on a tool-argument lane the delta is a fragment of
 		// a JSON document that the client reassembles and JSON.parse()s. The
 		// whole-field `[REDACTED]` here swallowed the fragment's non-marker
@@ -1514,7 +1515,7 @@ func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Conte
 			object[field] = restored
 			return true, false
 		}
-		object[field] = redactedMarker
+		object[field] = unknownRedactedMarker
 		return true, false
 	}
 	if previous != "" && tail == "" && restored == combined {
@@ -1530,10 +1531,10 @@ func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Conte
 			// the arguments whenever the fragment boundary landed inside a
 			// marker-like token.
 			if jsonArgLane {
-				object[field] = redactedMarker + value
+				object[field] = unknownRedactedMarker + value
 				return true, false
 			}
-			object[field] = redactedMarker
+			object[field] = unknownRedactedMarker
 			return true, false
 		}
 		object[field] = combined

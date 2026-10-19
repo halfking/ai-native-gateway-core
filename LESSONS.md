@@ -3221,3 +3221,109 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
 - 同族：AGENTS.md §28「`git diff main...branch` 三点 diff 反映的是双向漂移」是**同一族的另一个形态**；
   本条补的是「**未推送提交会把两点 diff 的主语换掉**」；
   ★ [[共享仓库多会话：验证 run 会被别人的 push 取消]] · [[先读量具再读产物]] · [[0 命中的第一嫌疑是量具坏了]]。
+
+## 2026-10-20 — 「通用引擎 + 薄外壳」泛化：主机名一个字都不能留在引擎里（Seen: 1/3）
+- 场景：把 211 专属的 Docker 部署脚本改造成可复用于多台 Docker 主机的通用引擎（`deploy-seamless-docker.sh`），主机信息全部由薄外壳（`deploy-211.sh`）用环境变量注入。
+- 根因/教训：泛化不是「把主机名换成变量」就完了——**默认值、备份文件名、注释里的主机名**都会在下一台主机上变成错的：① 引擎默认 `DD_BASE_REGISTRY=registry-211.itestu.cn` ⇒ 新主机会去拉 211 的仓（已改 `registry-${DD_TARGET}.itestu.cn`）；② 备份文件后缀 `.bak-d211-realip`（已改 `.bak-dd-realip`）；③ 引擎里的 `gw211_` 静态 key 前缀必须按 target 拼（否则新主机的 key 与 211 同前缀）。
+- 防复发检查：① 泛化后 `grep -n "<主机名>" 引擎` 只允许剩**历史说明性注释**，任何会影响行为的字面量都要清；② 判据加**反向断言**：「引擎不含写死的主机名」（`registry-211` 这类字面量不得出现）+「引擎默认按 target 拼」；③ 复制引擎 = 两份语义各自演化必然漂 ⇒ 新增主机只允许新增**薄外壳**；④ 薄外壳里 `DD_STATE_DIR` 这类**存密钥/状态**的路径不可改（换路径 = 换 SECRET_KEY = 库内 key 全失效）。
+- 证据：契约门新增「引擎默认基础镜像仓按 target 拼」「引擎不含写死的主机专属仓名」两条；211 薄外壳 `scripts/deploy-211.sh` 只含主机信息 + 家族骨架。
+- 溯源：本轮 211 蓝绿改造；[复盘](docs/audit/2026-10-20-211-bluegreen-docker-engine.md)。
+
+## 2026-10-20 — 门禁钉在哪个相位，决定它能不能失败（Seen: 1/3）
+- 场景：修「已发布规则里的地址族规则在输出面遮蔽 IP」（用户报告
+  `export https_proxy=http://[REDACTED]:7890`）。第一版门禁写在**输入面**
+  （`SanitizeInput`），自认为覆盖了缺陷。
+- 真因：`DetectScope` 的作用域是**相位**级的，而输入与输出走**不同相位**：
+  输入侧 `SanitizeInput` → `ScopeInputDeclarations` ⇒ 相位 `"input"`；
+  输出侧 `outputSensitiveChecker.Check` → `detector.Detect`（= `ScopeRedact`）
+  ⇒ 相位 `"output"`。legacy 地址规则挂的是 `scopes=[output]` ⇒ 它在**输入面
+  压根不适用** ⇒ 门禁**恒绿**（假绿）：修复前修复后都绿，钉不住任何东西。
+  靠**变异验证**才发现（改坏实现后主门禁纹丝不动，只有边界那条转红）。
+- 防复发检查：① 写门禁前先确认「被测代码走哪个相位」，用**同一个相位**驱动它
+  （本轮为此把输出侧单独设门，并把输入面的门改用**同时挂 input 相位**的规则形态）；
+  ② 「没被遮蔽」类断言的前提要用**结构性**断言（规则在快照里 / 作用域含该相位 /
+  enabled / 正则确实匹配这段文本），**不要**用「另一个面看得见」——相位不同，
+  另一个面看不见是**规则形状**决定的，不是检测器坏了；
+  ③ 门禁写完**必须**做变异验证，且以「**主门禁**转红」为通过标准，边界门转红不算。
+- 证据：`security/sanitize/r1038_redaction_scope_marker_test.go`（13 条），
+  变异「地址族排除失效」→ 6 条转红；第一版（只测输入面）变异下 0 条转红。
+- 溯源：本轮 r1038；[复盘](docs/audit/2026-10-20-r1038-脱敏范围与遮蔽标记.md)。
+
+## 2026-10-20 — 数据修复不是代码保证：停用 DB 行 ≠ 行为消失（Seen: 1/3）
+- 场景：851 迁移把 `pii_patterns.ip_address` 那行 `enabled=false`，用户以为
+  「IP 不会被遮了」就完事了。但 legacy 导入把**同一行**造成
+  `type=server_ip / scopes=[output] / action=mask` 的**托管规则**，
+  而**基线快照不可变** ⇒ 851 之前发布过基线的部署拿到的快照里那行仍然是 enabled
+  ⇒ 遮蔽会一直存在，直到有人手工重发一版规则。
+- 真因：停用 DB 行只影响**下一次**基线发布；已发布快照是**历史**。
+  而「这条规则被启用时会发生什么」是**代码**的问题，不该由数据承担。
+- 防复发检查：① 凡是「某类数据被停用/收紧」当作安全修复的，必须同时有**代码级
+  兜底**（本轮：`DetectScope` 的地址族排除改为**全路径**生效，fallback 与托管规则
+  同口径）；② 基线/快照的**形状**要有门禁钉住（本轮抽出 `legacyPIIRule` 并加
+  `TestR1038LegacyPIIRuleMarksAddressFamilyAsLog`：地址族行的 action 必须是 `log`），
+  否则形状被改回 mask 时没有任何判据会报警（已发布快照是运行期数据，测试看不见）；
+  ③ 「只撤遮蔽、不撤检出」要成组实现：地址族在脱敏面放行，但命中**照记**进台账。
+- 证据：`cmd/gateway/r1038_legacy_pii_shape_test.go`、
+  `security/sanitize/r1038_redaction_scope_marker_test.go`；245 上已发布快照
+  v13（2026-10-19）实测 `compliance.pii.11 enabled=false`，本机基线 v1
+  （2026-10-16）实测无 `compliance.pii.*`。
+- 溯源：本轮 r1038。
+
+## 2026-10-20 — 别把输出字段当输入用：那是契约变更（Seen: 1/3）
+- 场景：要让「地址族 PII 命中只检出、不遮蔽」，第一版把 `ComplianceIssue.Redacted`
+  当成 `redactOutput` 的**输入**（`policy.AutoRedact && issue.Redacted`）。
+- 真因：`Redacted` 是**输出**（这条命中有没有被遮蔽），给管理台看的。拿它当输入
+  ⇒ 任何**手工构造 issue** 的调用方（不填这个字段）会突然失去遮蔽能力 ——
+  `domains/outputcompliance/owner_test.go` 的 `TestRedactOutput_MultipleIssuesDescendingOrder`
+  立刻变红（它构造的 issue 不带 `Redacted`）。
+- 防复发检查：① 要给某类 issue 加「不改写正文」的语义，用**独立字段**
+  （本轮新增 `DetectOnly`），不要复用已有字段——已有字段的语义属于它的读者；
+  ② 改 `redactOutput` 的判定条件前，先问「这个字段的**既有读者**是谁」：
+  结构体上的布尔字段通常同时被 UI / 存储 / 测试读；③ 契约测试变红时先分
+  「判据过时」与「真缺陷」：本轮那条红是**真缺陷**（契约被我改了），
+  改法是加字段而不是改判据。
+- 证据：`domains/outputcompliance/checker.go`（新增 `DetectOnly`）、
+  `domains/outputcompliance/owner_test.go:138`（未改判据即绿）。
+- 溯源：本轮 r1038。
+## 2026-10-20 — 改「默认值」会让既有判据**同时从两端假绿**：闸门判据要落在默认不放开的那一档（Seen: 1/3）
+- 场景：给防外传守卫引入「硬阻断清单」，出厂默认只保留请求侧（input）允许硬阻断，egress/output 一律不终止回合。
+- 根因：既有判据写的是「**这条守卫开着的时候**它拦得住 X」。默认值一改，它们从「测拦截能力」退化成「测默认不拦」——**阻断侧与允许侧都会假绿**（判据纪律第 3 条：放行有两种成因，(b) 压根没触发也是放行）。本轮 28 条既有判据差点集体失去意义。
+- 防复发检查：① 引入「默认行为可配」的机制时，给受影响的包各加一个 `TestMain`，把开关打开成「引入前的行为」固定住，既有判据继续测原语义；**默认行为另起一组判据**并显式设置默认值，不要依赖隐式前提；② ★ **闸门本身的判据必须落在「默认不放开」的那一档**——本轮先只写了「input 仍 fail-closed」，而 input 默认就在清单里 ⇒ 「闸门在」与「闸门被摘」两种情况**都拦** ⇒ 变异验证摘掉闸门后**全绿**；补了 output scope（默认不在清单）的正负对照才抓住；③ 闸门判据要成对写：「默认不终止」+「清单开启则终止」+「清单清空则连 input 也降级」。
+- 证据：`security/sanitize/hardblock_testmain_test.go`、`domains/outputcompliance/hardblock_testmain_test.go`、`domains/streaming/hardblock_testmain_test.go` 三个 TestMain；变异 M3（摘掉 detector 的清单闸）第一次**全绿**，补判据后转红。
+- 溯源：211 空响应事故 r1037；[复盘](docs/audit/2026-10-20-r1037-211-空响应与硬阻断清单.md)。
+
+## 2026-10-20 — 「改写既有判据」是实现缺陷的信号：把「默认动作」降级成「可开关的一档」，既有契约一条都不用改（Seen: 1/3）
+- 场景：211 上 zcode 用 minimax-m3 干活，模型要 curl 下载 Android SDK 镜像，整条工具调用被 `builtin.network_destination` 掐掉 → 客户端 `reason=empty_model_response`。
+- 根因：那条规则的 pattern 是**通配** `(?s).+`，命中与否全看「文本里有没有公网主机」——「**提到**公网主机」≠「**把数据送到**公网主机」。这是本守卫第三次因同一种形态误伤收窄（r1033 版本四元组 / r1035 中文地址 / r1037 下载 URL）。
+- 教训（本轮最贵的一条）：第一版实现方向是「用方向判定**替换**形状判定」，代价是必须改写 `r1016`（3 条 must-block 换成外送形态）、`r1035`（触发物换掉）——**改写既有判据是实现缺陷的信号，不是实现方案的代价**。改成「形状规则保留原语义、但降级为清单里可开关的一档」+「新增一条方向规则作为精确档」后，`r1013`/`r1016`/`r1020`/`r1028`/`r1035` **一行未改、全部原样绿**。
+- 防复发检查：① 收紧/放宽一类守卫时，先问「**旧契约想守的那条底线**是否仍然成立」——成立就把「默认动作」降级成「可配置的一档」，不要动判定语义；② 要动判定语义时，先在审计文档里写清「旧契约的哪一条不再成立、为什么」，再改判据；③ 同一族误伤跨三个工作日复现（r1033/r1035/r1037）⇒ 守卫的**判据形态**本身要复审，不是逐条加豁免。
+- 证据：`git diff` 显示 `security/sanitize/r1016_*` 与 `r1035_*` 最终**零改动**；既有契约全绿；新判据 `TestR1037SinkRuleBlocksOnlyRealExfiltration`（方向档只拦真外传）与 `TestR1037ShapeRuleAllowlistRestoresOldBehaviour`（形状档恢复旧行为）正负对照。
+- 溯源：211 空响应事故 r1037；[复盘](docs/audit/2026-10-20-r1037-211-空响应与硬阻断清单.md)。
+
+## 2026-10-20 — 精确档的 fail-closed 默认会把 `echo "https://…"` 也拦掉：覆盖面交给另一档（Seen: 1/3）
+- 场景：给防外传守卫做「方向档」（只拦把本地数据送往公网的命令），第一版沿用 r1019 的口径「认不出来的命令按发送处理（fail-closed）」。
+- 根因：fail-closed 默认在方向档里**过宽**——`echo "https://example.com"`、`cat notes.md`（正文含 URL）、以及**惰性内容工具**（Write 写进文档的命令示例）都被判成外传。这正是 r1033/r1035/r1037 三次形态误伤的共同成因：把「认不出来」当成「有罪」。
+- 防复发检查：① 精确档只认**已声明的网络客户端**（读取型：curl/wget/http/aria2c + git 只读子命令；发送型：nc/socat/ssh/scp/mail/上传类），未声明 ⇒ 不是外传；② **覆盖面由另一档兜底**（形状规则认「提到了公网主机」，管住没列进集合的客户端）——两档分工明确，运维按需要选；③ 精确档只对**本地执行类工具**生效（Bash/shell/exec…），惰性内容工具的参数是「被写下的数据」不是「会被执行的命令」；④ 判定按 token 认客户端 ⇒ 写判据时注意 token 粒度（`示例：curl` 是一个 token，认不出是 curl）。
+- 证据：变异 M8（把 fail-closed 默认改回来）与 M9（摘掉「只对本地执行工具生效」）最初**全绿**——前者是因为用例全是已声明客户端、那条分支走不到；后者是因为非托管路径在惰性工具处提前短路、缺口只在托管路径。补了 `echo https://example.com` 用例与托管路径的 Write 用例才分别抓住。
+- 溯源：211 空响应事故 r1037；[复盘](docs/audit/2026-10-20-r1037-211-空响应与硬阻断清单.md)。
+
+## 2026-10-20 — 同一族守卫的两条分支，一条带原因一条不带 ⇒ 现场查不出是哪条规则（Seen: 1/3）
+- 场景：211 现场日志只有 `output_compliance: blocked stream event label=__tool_json@Bash field_bytes=352`，既没有 reason_codes 也没有 rule_id，运维无法据此判断「该不该把这条规则加进清单」。
+- 根因：同一族守卫有**两条**拦截分支——`lane` 那条带 `reason_codes`，`event` 那条**不带**任何原因。拦截错误在流式拦截器里被降级成 `errors.New("output policy blocked stream event")`，规则名在半路丢了。
+- 防复发检查：① 拦截路径上**规则名必须一路透传到客户端**：检查器产出 `ComplianceIssue.RuleID` → 错误类型带 `RuleID` → 拦截结果带 `Metadata` → 写者渲染终帧时带 `"rule"` 字段；② 同族分支的日志字段要**逐条对齐**（一条有 reason_codes，另一条也必须有）——加字段时按「分支」而不是按「函数」盘点；③ 协议终帧要**能被客户端解析器吃下**：openai-responses 形状的 `response` 对象缺 `id`/`object`/`status` 时整帧会被丢掉，表现与「空响应」一模一样。
+- 证据：`errorsx/policy_block.go`、`ComplianceIssue.RuleID`、`ChunkResult.Metadata`、三种协议形状的终帧都带 `"rule"`；判据 `TestR1037PolicyFailureFrameCarriesRule` / `TestR1037ResponsesFailureFrameCarriesResponseIdentity` / `TestR1037BlockedTerminalCarriesRuleName`（端到端跑生产链，断言终帧含规则名）；变异 M4/M5 转红。
+- 溯源：211 空响应事故 r1037；[复盘](docs/audit/2026-10-20-r1037-211-空响应与硬阻断清单.md)。
+
+## 2026-10-20 — 「配置项替换默认值」会静默关掉已有的收紧；配置类开关应当**累加**（Seen: 1/3）
+- 场景：给防外传守卫加硬阻断清单（出厂默认 = 只有 input 允许硬阻断），运维用环境变量配一条 egress 规则。
+- 真因（**生产部署实测才发现**）：首版语义是「环境变量有值 ⇒ **替换**出厂默认」。211 实测设 `egress:builtin.egress_sink` 后，启动日志 `allows=[egress:builtin.egress_sink]` —— **input 没了** ⇒ 只想定一条 egress 规则的运维，顺手把请求侧的明文凭据 fail-closed 也关了。失败形态是**静默放宽已有收紧**，日志里还看不出异常（它照常打印了一行 loaded）。
+- 防复发检查：① 任何「默认值 + 配置项」型开关，**默认项必须是不可被配置项顶掉的那一层**——配置项只能**加**规则；要关默认项必须另给一个**显式**写法（本轮用 `-`）；② 启动日志要把**合并后的完整清单**打出来（不是只打配置项），并在判据里钉住「配置 egress 规则后 input 仍然在」；③ 单测要覆盖「默认值 + 配置项」的**合并结果**，不是只覆盖「配置项生效」。
+- 证据：`domains/sanitizerules/hardblock.go`（`LoadHardBlockAllowsFromEnv` 累加 + 去重）、判据 `TestR1037LoadFromEnvIsAdditive`；211 五轮部署的启动日志读数。
+- 溯源：211 空响应事故 r1037 的部署验证段；[复盘](docs/audit/2026-10-20-r1037-211-空响应与硬阻断清单.md) §7.3。
+
+## 2026-10-20 — 部署机的环境变量到不了远端执行的引擎：「export 了再部署」可能是空操作（Seen: 1/3）
+- 场景：给容器注入一个运维可配的环境变量（`LLM_GATEWAY_HARD_BLOCK_RULES`）。部署机 `export` 后跑部署脚本，**容器里压根没有这个变量**，行为仍是默认值。
+- 真因：`--via` 形态的部署引擎是在**目标机**上执行的（`ssh "$VIA" "cd … && bash scripts/deploy-seamless-docker.sh …"`）。部署机的环境变量只活在本机进程，**不会**跟着 ssh 命令走——除非显式转发。引擎里已有的转发清单（`_dd_fwd`）没列这个变量。
+- 防复发检查：① 凡是「部署机可配 ⇒ 要进容器」的变量，都必须进引擎的**远端转发清单**，并加一条**契约门**断言「该变量出现在转发清单里」（只看引擎读没读它不够）；② 文档里给出的运维路径要与实际一致：**改远端 env 文件**（引擎跨部署保留）与**部署机 export**（需转发）要分别写清哪条生效；③ 部署后**核验容器里那个变量本身**（`docker exec … printenv`），别只看启动日志。
+- 证据：`scripts/deploy-seamless-docker.sh` 的 `_dd_fwd` 清单 + `tests/deploy_211_contract_test.sh` 新增断言（124 通过 0 失败）；211 实测「export 后容器 env 仍无该变量」⇒ 补转发 ⇒ 实测容器 env 出现该值。
+- 溯源：211 空响应事故 r1037 的部署验证段；[复盘](docs/audit/2026-10-20-r1037-211-空响应与硬阻断清单.md) §7.3。

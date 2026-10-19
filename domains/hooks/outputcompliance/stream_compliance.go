@@ -13,6 +13,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 	"github.com/kaixuan/llm-gateway-go/domains/outputcompliance"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	sseparser "github.com/kaixuan/llm-gateway-go/internal/sse"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
@@ -60,6 +61,31 @@ func (f *checkedStreamFrame) wireBytes() ([]byte, error) {
 		return nil, err
 	}
 	return f.rebuild(data), nil
+}
+
+// policyRuleFromIssues 取第一条带规则 ID 的问题。
+//
+// owner 口径（2026-10-20）：拦截必须说清「因为什么规则」。规则 ID 由检查器
+// 给出（托管路径是快照里的规则 ID，非托管路径是 builtin.<type> 形态）。
+func policyRuleFromIssues(issues []outputcompliance.ComplianceIssue) string {
+	for _, issue := range issues {
+		if issue.RuleID != "" {
+			return issue.RuleID
+		}
+	}
+	return ""
+}
+
+// blockedChunkResult 把策略拦截错误转成**带规则名**的阻断结果。
+//
+// 写者据此渲染协议终帧，客户端因此能区分「策略拦截」与「上游故障」，
+// 而不是只看到一个空响应（211 事故：zcode 只拿到 empty_model_response）。
+func blockedChunkResult(err error) *response.ChunkResult {
+	ruleID := errorsx.PolicyBlockRuleID(err)
+	if ruleID == "" {
+		return &response.ChunkResult{ShouldBlock: true}
+	}
+	return &response.ChunkResult{ShouldBlock: true, Metadata: map[string]interface{}{"policy_rule": ruleID}}
 }
 
 type complianceStreamState struct {
@@ -134,12 +160,12 @@ func (it *OutputComplianceInterceptor) processStreamChunk(ctx context.Context, f
 	checked, err := it.inspectSSEFrame(state.checkCtx, frame, meta, state.redact, &state.toolNames)
 	if err != nil {
 		state.clear()
-		return &response.ChunkResult{ShouldBlock: true}, nil
+		return blockedChunkResult(err), nil
 	}
 	if isStreamTerminalFrame(frame) {
 		prior, err := it.releaseCheckedFrames(state.checkCtx, state, meta)
 		if err != nil {
-			return &response.ChunkResult{ShouldBlock: true}, nil
+			return blockedChunkResult(err), nil
 		}
 		terminal, err := checked.wireBytes()
 		if err != nil {
@@ -229,6 +255,7 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 			for _, issue := range result.Issues {
 				reasons = append(reasons, issue.Subtype)
 			}
+			ruleID := policyRuleFromIssues(result.Issues)
 			slog.Warn("output_compliance: blocked stream lane",
 				"request_id", meta.RequestID,
 				"session_id", meta.SessionID,
@@ -238,8 +265,9 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 				"lane_bytes", len(original),
 				"issues", len(result.Issues),
 				"reason_codes", reasons,
+				"rule_id", ruleID,
 			)
-			return nil, errors.New("output policy blocked stream lane")
+			return nil, &errorsx.PolicyBlockError{RuleID: ruleID, Reason: "output policy blocked stream lane"}
 		}
 		if !state.redact || result.RedactedOutput == "" || result.RedactedOutput == original {
 			continue
@@ -490,14 +518,25 @@ func (it *OutputComplianceInterceptor) inspectSSEFrame(ctx context.Context, fram
 		}
 		if result.Blocked || shouldRedact && result.ToolShapeRedactionRequired {
 			metrics.OutputGateDecisionsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateActionBlock, metrics.OutputGatePathStreamEvent).Inc()
+			// r1037（2026-10-20，211）：这条分支原来**不带任何原因**——lane 那条
+			// 分支有 reason_codes，event 这条没有，于是 211 现场只看到
+			// "blocked stream event"，既说不出哪条规则，也没法据此开/关。
+			reasons := make([]string, 0, len(result.Issues))
+			for _, issue := range result.Issues {
+				reasons = append(reasons, issue.Subtype)
+			}
+			ruleID := policyRuleFromIssues(result.Issues)
 			slog.Warn("output_compliance: blocked stream event",
 				"request_id", meta.RequestID,
 				"session_id", meta.SessionID,
 				"tenant_id", meta.TenantID,
 				"label", label,
 				"field_bytes", len(original),
+				"issues", len(result.Issues),
+				"reason_codes", reasons,
+				"rule_id", ruleID,
 			)
-			return nil, errors.New("output policy blocked stream event")
+			return nil, &errorsx.PolicyBlockError{RuleID: ruleID, Reason: "output policy blocked stream event"}
 		}
 		if incremental {
 			checked.parts = append(checked.parts, &streamTextPart{

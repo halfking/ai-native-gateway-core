@@ -162,9 +162,24 @@ func (d *PatternDetector) DetectScope(ctx context.Context, text string, scope De
 		if !p.appliesScope(scope) {
 			continue
 		}
-		if snapshot == nil && scope != ScopeEgress && scopedType(p.sType) {
-			continue
-		}
+		// 地址族（server_ip / internal_ip / IPv6）在**脱敏面**一律放行——这条
+		// 保证必须对**所有**规则来源同口径（内建 fallback 与托管/已发布规则），
+		// 不能只挂在 `snapshot == nil` 上。
+		//
+		// r1038（2026-10-20）：此前的条件是 `snapshot == nil && scope != ScopeEgress
+		// && scopedType(...)`，于是**托管规则路径没有这层排除**。而 legacy
+		// `pii_patterns` 导入恰好把 `ip` 类行造成 type=server_ip /
+		// scopes=[output] / action=mask 的规则（cmd/gateway/sanitize_rules_control.go）
+		// ——那行一旦被启用，每个 IPv4 都在脱敏面被遮蔽，
+		// 「export https_proxy=http://127.0.0.1:7890」这类可复制执行的命令
+		// 就变成坏命令。851 迁移把 DB 行停用了，但那是**数据**修复，不是代码
+		// 保证：那行被重新启用、或某个部署在 851 之前发布了基线（快照不可变），
+		// 遮蔽就会回来。
+		//
+		// 脱敏面放行 ≠ 放弃防护：地址类风险由 ScopeEgress 的外传守卫承担
+		// （模型生成的 tool 参数里的公网目的地仍硬阻断，见 output_sensitive.go），
+		// 而脱敏面的地址命中仍进审计台账（exempted / log）——只撤遮蔽，不撤检出。
+		addressFamily := scope != ScopeEgress && scopedType(p.sType)
 		re := p.regex
 		if snapshot == nil && scope != ScopeInputDeclarations {
 			switch p.kind {
@@ -190,6 +205,23 @@ func (d *PatternDetector) DetectScope(ctx context.Context, text string, scope De
 		}
 		matches := re.FindAllStringSubmatchIndex(scan, -1)
 		for _, m := range matches {
+			if addressFamily {
+				// 脱敏面：地址族**只记台账**，既不遮蔽也不阻断。
+				//
+				// 放在匹配循环**内**而不是规则循环外：台账要记的是「这条规则
+				// 命中了」，每条规则每轮只记一次会把「本轮没命中」也记成命中
+				// （245 上 compliance.internal_ip 一天上万条就是这么来的）。
+				if snapshot != nil {
+					action := "exempted"
+					if p.action == "log" {
+						// 纯记录型规则（internal_ip 遥测）保持 log 语义，
+						// 管理台的命中视图不变。
+						action = "log"
+					}
+					d.observeRule(ctx, p.id, snapshot.Version, scope, action)
+				}
+				continue
+			}
 			start, end := m[2*p.group], m[2*p.group+1]
 			declaration := p.kind == "credential_declaration" || p.kind == "account_declaration" || p.kind == "credential_assignment" || p.kind == "account_assignment"
 			if declaration {
@@ -228,6 +260,14 @@ func (d *PatternDetector) DetectScope(ctx context.Context, text string, scope De
 				}
 				continue
 			}
+			// r1037（2026-10-20，211）：network_destination 是**形状规则**——
+			// 它的 pattern 是通配 `(?s).+`，本身不带判别力，命中与否全看
+			// 「文本里有没有公网主机」。它保留原语义（r1016/r1028 契约），
+			// 但**是否终止回合**由硬阻断清单决定（见下面的 blocked 分支）：
+			// 默认清单里 egress 不在 ⇒ 这条形状命中只记录不终止。
+			//
+			// 精确判据是另一条规则 `builtin.egress_sink`（方向判定：
+			// 把本地数据送往公网才算外传），见 output_sensitive.go。
 			if p.kind == "network_destination" && !hasPublicHostDestination(value) {
 				continue
 			}
@@ -253,9 +293,17 @@ func (d *PatternDetector) DetectScope(ctx context.Context, text string, scope De
 				continue
 			}
 			if snapshot != nil && scope != ScopeEgress && p.action == "block" {
-				d.observeRule(ctx, p.id, snapshot.Version, scope, "block")
-				blocked = p.id
-				continue
+				// r1037（2026-10-20，211）：「终止回合」这一步由硬阻断清单把关。
+				// 不在清单里 ⇒ 降级为**遮蔽**（片段照常产出，由调用方遮蔽），
+				// 回合继续走完；owner 口径「输出信息当前默认不要拦截」。
+				// 请求侧（input）默认在清单里 ⇒ fail-closed 行为不变。
+				if !sanitizerules.HardBlockAllowed(phaseFor(scope), p.id) {
+					d.observeRule(ctx, p.id, snapshot.Version, scope, "mask")
+				} else {
+					d.observeRule(ctx, p.id, snapshot.Version, scope, "block")
+					blocked = p.id
+					continue
+				}
 			}
 			// Exempt only marker bytes, never the surrounding secret/private key.
 			for _, span := range outsideReservedSpans(start, end, reserved) {
@@ -267,10 +315,9 @@ func (d *PatternDetector) DetectScope(ctx context.Context, text string, scope De
 					continue
 				}
 				seen[key] = true
-				f := SensitiveFragment{Type: typ, Value: text[span[0]:span[1]], Start: span[0], End: span[1], Kind: p.kind}
+				f := SensitiveFragment{Type: typ, Value: text[span[0]:span[1]], Start: span[0], End: span[1], Kind: p.kind, RuleID: p.id}
 				if snapshot != nil {
 					f.Exemptions = p.exemptions
-					f.RuleID = p.id
 					f.Action = p.action
 					f.Version = snapshot.Version
 					if scope != ScopeEgress {
@@ -433,10 +480,13 @@ func outsideReservedSpans(start, end int, reserved [][]int) [][2]int {
 
 func defaultPatternEntries() []patternEntry {
 	return append([]patternEntry{
-		{sType: TypePhone, regex: regexp.MustCompile(`1[3-9]\d{9}`)},
-		{sType: TypeIDCard, regex: regexp.MustCompile(`\d{17}[\dXx]`)},
-		{sType: TypeEmail, regex: regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)},
-		{sType: TypeCreditCard, regex: regexp.MustCompile(`\b(?:4\d{12,15}|5[1-5]\d{14}|3[47]\d{13}|6(?:011|5\d{2})\d{12})\b`)},
+		// r1037：给内建 fallback 也带上规则 ID —— 「因为什么规则被拦」这句话
+		// 需要规则名，而硬阻断清单也要按规则名开/关。ID 命名与生产 YAML
+		// （category.name）保持一致，两条路径共用一套键。
+		{sType: TypePhone, regex: regexp.MustCompile(`1[3-9]\d{9}`), id: "pii.phone"},
+		{sType: TypeIDCard, regex: regexp.MustCompile(`\d{17}[\dXx]`), id: "pii.id_card"},
+		{sType: TypeEmail, regex: regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`), id: "pii.email"},
+		{sType: TypeCreditCard, regex: regexp.MustCompile(`\b(?:4\d{12,15}|5[1-5]\d{14}|3[47]\d{13}|6(?:011|5\d{2})\d{12})\b`), id: "pii.credit_card"},
 		// 2026-10-10: audit 244 F2 fix — the key body now admits infix
 		// hyphens, so the real vendor formats (sk-proj-…, sk-ant-api03-…,
 		// sk-or-v1-…) match instead of stopping at the first hyphen. The
@@ -450,7 +500,7 @@ func defaultPatternEntries() []patternEntry {
 		// they live in credibleSecretCandidate below. Keeping them in Go
 		// rather than in the pattern is also what lets the same rule serve
 		// the YAML-loaded production detector.
-		{sType: TypeSecret, regex: regexp.MustCompile(vendorKeyShapeSource), vendorKeyShape: true},
+		{sType: TypeSecret, regex: regexp.MustCompile(vendorKeyShapeSource), vendorKeyShape: true, id: "secret.api_key"},
 	}, operationalPatternEntries()...)
 }
 

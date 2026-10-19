@@ -386,10 +386,26 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 	if readErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 && desc.ChatProbeEndpoint == upstreamurl.EpResponses && responsesProbeProtocolEvidence(bodyBytes) {
 		res.SupportsResponses = boolEvidence(true)
 	}
-	if parsed.category == probeCategorySkipped {
+	// 「观察」按 **errCode** 判定，不按 category 判定。
+	//
+	// 2026-10-20 12h 审计轮修复：此前是 `category == probeCategorySkipped`，
+	// 于是 endpoint_id_required（确定性 404：模型必须配 endpoint id）也被
+	// 当成「不确定的观察」⇒ ObservationOnly 分支不写 state manager
+	// （active_probe_worker.go）⇒ 旧行为里的 5 分钟摘流被取消、
+	// 该 pair 的重试链被终止、error_kind 被误报成 probe_direct_inconclusive。
+	// 本改动之前，这个执行器里**根本没有** ObservationOnly 概念，
+	// 404 一律按 HTTP 状态分类 ⇒ 这是一处行为回退，这里按旧语义复位。
+	if parsed.category == probeCategorySkipped && parsed.errCode == probeResponseInconclusiveErrCode {
 		res.Status, res.ObservationOnly = ProbeStatusSkipped, true
 		res.ErrCode, res.ErrMsg = parsed.errCode, parsed.errMsg
 		return res
+	}
+	// 其余 skipped（endpoint_id_required 等）是**确定性的**结论，不是观察：
+	// 走下面的正常状态分类（404 ⇒ HTTP4xx）让状态机照常落库，
+	// 但保留可诊断的 errCode（不要被 http.StatusText 覆盖成 "Not Found"）。
+	preservedErrCode := ""
+	if parsed.category == probeCategorySkipped {
+		preservedErrCode = parsed.errCode
 	}
 
 	switch {
@@ -410,6 +426,9 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 	default:
 		res.Status = ProbeStatusHTTP4xx
 		res.ErrCode = http.StatusText(resp.StatusCode)
+	}
+	if preservedErrCode != "" {
+		res.ErrCode = preservedErrCode
 	}
 	res.ErrMsg = truncatePreview(string(bodyBytes), 500)
 	if readErr != nil {

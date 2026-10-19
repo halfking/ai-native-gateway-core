@@ -81,7 +81,7 @@ export default {
       enterLicenseKey: 'Please enter a license key',
       activateSuccess: 'Activation successful!',
       deviceLimitTitle: 'Device limit reached',
-      deviceLimitBody: 'Device limit reached. Deactivate a device in admin before activating again.',
+      deviceLimitBody: 'Device limit reached ({active}/{max}). Deactivate a device in admin before activating again.',
       deviceLimitOk: 'OK',
       activateFailed: 'Activation failed',
       activateFailedWithMsg: 'Activation failed: {msg}',

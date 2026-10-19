@@ -61,7 +61,9 @@ func TestStreamAnthropicThinkingDegenerateMarkerMaskedNotBlocked(t *testing.T) {
 	require.NotNil(t, result)
 	require.False(t, result.ShouldBlock)
 	require.NotContains(t, string(result.ModifiedChunk), "SENSITIVE")
-	require.Contains(t, string(result.ModifiedChunk), redactedMarker)
+	// r1038：遮蔽物带类型——退化跨段仍能读出 "secret"，标记是
+	// "[REDACTED:secret]" 而不是裸形态。
+	require.Contains(t, string(result.ModifiedChunk), RedactionMarker(TypeSecret))
 }
 
 func TestStreamAnthropicThinkingBareMarkerRestored(t *testing.T) {

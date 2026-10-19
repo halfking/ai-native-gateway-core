@@ -758,6 +758,46 @@ else
   bad "--via 无锁或锁在破坏性步骤之后（并发部署会在 rm vs tar 处互炸）"
 fi
 
+# ── 硬阻断清单透传（r1037，2026-10-20）─────────────────────────────────
+# 「哪些规则允许终止回合」由 LLM_GATEWAY_HARD_BLOCK_RULES 决定。运维要能
+# 在不改代码的情况下开关它 ⇒ 部署引擎必须把它透传进容器。
+#
+# 三条契约：
+#   ① 引擎从部署机环境变量 / env 文件里取值；
+#   ② 取到值时用 -e 注入容器；
+#   ③ 取不到时**不注入**（用网关内置默认：只有 input 允许硬阻断）——
+#      注入空串会被网关当成「显式清空清单」，那会把请求侧的 fail-closed
+#      一起关掉（正是 r1037 判据纪律第 3 条说的那种「两个成因都放行」）。
+if grep -qE 'LLM_GATEWAY_HARD_BLOCK_RULES' "$SCRIPT"; then
+  ok "引擎认 LLM_GATEWAY_HARD_BLOCK_RULES（硬阻断清单可配）"
+else
+  bad "引擎不认 LLM_GATEWAY_HARD_BLOCK_RULES：清单无法在部署时配置"
+fi
+if grep -qE '\-e "LLM_GATEWAY_HARD_BLOCK_RULES=' "$SCRIPT"; then
+  ok "引擎用 -e 把硬阻断清单注入容器"
+else
+  bad "引擎未用 -e 注入 LLM_GATEWAY_HARD_BLOCK_RULES"
+fi
+if grep -qE 'if \[\[ -n "\$HARD_BLOCK_RULES" \]\]; then' "$SCRIPT"; then
+  ok "引擎空值时不注入清单（用网关内置默认，而不是显式清空）"
+else
+  bad "引擎无条件注入硬阻断清单：空值会被网关当成显式清空"
+fi
+# env 文件每次部署都被重写 ⇒ 引擎必须保留上一份里运维手工改过的值，
+# 否则「改 env 文件」这种运维动作在下一次部署后静默失效。
+if grep -qE 'ENV_FILE.*LLM_GATEWAY_HARD_BLOCK_RULES|LLM_GATEWAY_HARD_BLOCK_RULES.*ENV_FILE' "$SCRIPT"; then
+  ok "引擎从 env 文件复用上次落下的硬阻断清单（运维手工改的能跨部署保留）"
+else
+  bad "引擎不复用 env 文件里的硬阻断清单：运维手工改的值下次部署即丢"
+fi
+# 部署机 → 远端引擎的转发：--via 形态的引擎在**目标机**上跑，部署机的环境
+# 变量到不了那儿 ⇒ 清单必须显式转发，否则「export 了再部署」是空操作。
+if grep -qE 'DD_SKIP_LOGIN_SMOKE LLM_GATEWAY_HARD_BLOCK_RULES' "$SCRIPT"; then
+  ok "引擎把 LLM_GATEWAY_HARD_BLOCK_RULES 转发到远端（部署机 export 有效）"
+else
+  bad "引擎不转发 LLM_GATEWAY_HARD_BLOCK_RULES：部署机 export 的清单到不了远端"
+fi
+
 echo
 printf '结果: %d 通过, %d 失败\n' "$pass" "$fail"
 (( fail == 0 )) || exit 1

@@ -91,6 +91,30 @@ export function localeValues(locale: string, localesDir: string = LOCALES_DIR): 
   return collectLeafValues(loadLocale(locale, localesDir))
 }
 
+// ─────────────────────────── 全语种值表（带缓存） ───────────────────────────
+//
+// ⚠️ 为什么要这一层：加载 8 个语种的全部 locale 模块（vm 求值）**实测单次 20~40s**。
+//   现有两道门（localeValueQuality 的质量计数、localePlaceholderParity 的占位符平价）
+//   都需要「全部语种的运行时真值」⇒ 若各自加载一次 ⇒ 同一进程里加载 16 次
+//   ⇒ 门自己变成「计时敏感门」（默认 20s 超时必红，机器一忙就假红）。
+//   ⇒ **缓存挂在「值表」这一层**（不是挂在各自的指标上）⇒ 两道门共享同一次加载。
+//
+// ⚠️ 缓存是**按进程内存**的：测完之后若改了 locale 文件再测，拿到的仍是旧值。
+//   用途：① 测试里改了 locale 文件要复测时必须先调 clearMeasureCache()；
+//        ② CLI 每次是新进程，不受影响。
+let cachedValues: Map<string, LocaleValues> | null = null
+
+/** 取全部语种的运行时真值展平表（带进程内缓存）。 */
+export function allLocaleValues(
+  localesDir: string = LOCALES_DIR,
+): Map<string, LocaleValues> {
+  if (cachedValues && localesDir === LOCALES_DIR) return cachedValues
+  const m = new Map<string, LocaleValues>()
+  for (const loc of ALL_LOCALES) m.set(loc, localeValues(loc, localesDir))
+  if (localesDir === LOCALES_DIR) cachedValues = m
+  return m
+}
+
 // ─────────────────────────── 计数（纯函数，可被自证直接驱动） ───────────────────────────
 
 /**
@@ -150,6 +174,7 @@ let cachedAll: { byLocale: Map<string, LocaleQuality>; referencedCount: number }
  */
 export function clearMeasureCache(): void {
   cachedAll = null
+  cachedValues = null
 }
 
 export function measureAll(
@@ -159,10 +184,12 @@ export function measureAll(
   if (cachedAll && localesDir === LOCALES_DIR && srcDir === SRC_DIR) return cachedAll
   const { references } = scanAll(srcDir)
   const referenced = new Set(references.map((r) => r.key))
-  const refValues = localeValues(REFERENCE_LOCALE, localesDir)
+  const valuesByLocale = allLocaleValues(localesDir)
+  const refValues = valuesByLocale.get(REFERENCE_LOCALE) ?? {}
   const byLocale = new Map<string, LocaleQuality>()
   for (const loc of ALL_LOCALES) {
-    byLocale.set(loc, measure(localeValues(loc, localesDir), refValues, referenced, loc))
+    const values = valuesByLocale.get(loc) ?? {}
+    byLocale.set(loc, measure(values, refValues, referenced, loc))
   }
   const result = { byLocale, referencedCount: referenced.size }
   if (localesDir === LOCALES_DIR && srcDir === SRC_DIR) cachedAll = result

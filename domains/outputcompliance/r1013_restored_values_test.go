@@ -80,10 +80,16 @@ func TestRestoredValuesAreNotDestroyedByOutputCompliance(t *testing.T) {
 }
 
 // TestModelAuthoredValueIsStillMasked 是反方向：豁免不能扩大到「本响应里的
-// 所有地址」，否则输出合规就等于关掉了。
+// 所有值」，否则输出合规就等于关掉了。
+//
+// r1038（2026-10-20）：载体从**地址**换成**密钥**。地址族已按用户口径移出
+// 遮蔽面（见 detectPII 的 isAddressPIIType），继续拿地址当载体，这条判据
+// 就会因为「地址根本不再被遮蔽」而变成**恒真**的假门——它要防的是
+// 「豁免被放大」，而豁免放大与地址在不在遮蔽面是两件事。
+// 换载体后判据的**不变式**原样保留：模型自造、且不在豁免集合里的值仍被遮蔽。
 func TestModelAuthoredValueIsStillMasked(t *testing.T) {
 	const restored = "10.24.7.91"
-	const modelAuthored = "203.0.113.8"
+	const modelAuthored = "sk-modelauthoredkey0123456789"
 	text := "connect to " + modelAuthored + " first, gateway at " + restored
 
 	ctx := WithRestoredValues(context.Background(), NewRestoredValues([]string{restored}))
@@ -92,10 +98,32 @@ func TestModelAuthoredValueIsStillMasked(t *testing.T) {
 		t.Fatalf("Check: %v", err)
 	}
 	if strings.Contains(result.RedactedOutput, modelAuthored) {
-		t.Fatalf("模型自造的地址未被遮蔽: %q", result.RedactedOutput)
+		t.Fatalf("模型自造的密钥未被遮蔽: %q", result.RedactedOutput)
 	}
 	if !strings.Contains(result.RedactedOutput, restored) {
 		t.Fatalf("调用方原值被连带销毁: %q", result.RedactedOutput)
+	}
+}
+
+// TestAddressFamilyIsOutOfRedactionScope 固化 r1038 的口径：地址族（IP /
+// 内网地址）**不进遮蔽面**。
+//
+// 判据取「模型自造的地址也不被遮蔽」——它与「调用方原值不被遮蔽」是两件
+// 不同的事：前者是**范围**决定（地址不是机密），后者是**来源**豁免
+// （网关自己还原的值不能被销毁）。r1038 把前者也一并定下来。
+func TestAddressFamilyIsOutOfRedactionScope(t *testing.T) {
+	const modelAuthored = "203.0.113.8"
+	text := "connect to " + modelAuthored + " first, gateway at 10.24.7.91"
+
+	result, err := ipRuleChecker().Check(context.Background(), "tenant-a", text)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if !strings.Contains(result.RedactedOutput, modelAuthored) {
+		t.Fatalf("地址族被遮蔽了: %q", result.RedactedOutput)
+	}
+	if !strings.Contains(result.RedactedOutput, "10.24.7.91") {
+		t.Fatalf("内网地址被遮蔽: %q", result.RedactedOutput)
 	}
 }
 
@@ -118,10 +146,13 @@ func TestExemptionRequiresWholeSpanMatch(t *testing.T) {
 	}
 }
 
-// TestNoRestoredValuesMeansOldBehavior 保证未装配豁免来源时行为不变
-// （lite 模式、纯数据面部署不装配 sanitize 还原器）。
+// TestNoRestoredValuesMeansOldBehavior 保证未装配豁免来源时**非地址类**的
+// 遮蔽行为不变（lite 模式、纯数据面部署不装配 sanitize 还原器）。
+//
+// r1038（2026-10-20）：载体从地址换成密钥——地址族已移出遮蔽面，拿它当载体
+// 这条判据会恒真（不装配豁免集合时地址同样不被遮蔽），就钉不住任何东西了。
 func TestNoRestoredValuesMeansOldBehavior(t *testing.T) {
-	const modelAuthored = "203.0.113.8"
+	const modelAuthored = "sk-modelauthoredkey0123456789"
 	text := "connect to " + modelAuthored
 
 	result, err := ipRuleChecker().Check(context.Background(), "tenant-a", text)
@@ -143,7 +174,6 @@ func TestRedactionNeverUsesStarRuns(t *testing.T) {
 	c := ipRuleChecker()
 
 	for _, text := range []string{
-		"connect to 10.24.7.91:5432",
 		"key is sk-abcd1234abcd1234",
 		"邮箱 test@example.com 手机 13800138000",
 	} {
@@ -160,6 +190,8 @@ func TestRedactionNeverUsesStarRuns(t *testing.T) {
 	}
 
 	// 内网地址走的是内置 detectInternalIP，不经 pii_patterns；两条链路都要钉。
+	// r1038：地址族默认**不进**遮蔽面，但运维显式把 action_on_internal_ip
+	// 设成 redact 时，内置路径仍要遮——且遮蔽物不得含星号。
 	issues := c.detectInternalIP("connect to 10.24.7.91:5432", policy)
 	got := c.redactOutput(context.Background(), "connect to 10.24.7.91:5432", issues, policy)
 	if strings.Contains(got, "*") {
@@ -209,8 +241,10 @@ func TestRedactionMarkerSanitizesKind(t *testing.T) {
 	if got := RedactionMarker("Phone"); got != "[REDACTED:phone]" {
 		t.Errorf("大小写未归一: %q", got)
 	}
-	if got := RedactionMarker(""); got != "[REDACTED]" {
-		t.Errorf("空类型应退回裸标记: %q", got)
+	// r1038（2026-10-20）：类型不可知时退到 "[REDACTED:unknown]"——带类型的
+	// 标记，不留裸形态（用户口径「原则上每个占位符都有特殊的标记」）。
+	if got := RedactionMarker(""); got != "[REDACTED:unknown]" {
+		t.Errorf("空类型应退回 unknown 标记: %q", got)
 	}
 	// 断言整串而不是 ContainsAny：标记本身的首尾就是 [ ]，只有类型段必须净化。
 	if got := RedactionMarker("a\nb]<script>"); got != "[REDACTED:a_b__script_]" {
