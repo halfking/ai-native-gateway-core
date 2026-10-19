@@ -1516,6 +1516,30 @@ DB_URL="postgres://${PG_USER_ENC}:${PG_PASS_ENC}@${PG_CONTAINER}:5432/${DD_PG_DB
 #     `export FOO=bar` 会被当成 key 叫 "export FOO" 的变量，全部设不进去；
 #   · 也不认 %q 的 shell 转义（\?、空格转义等），会把值改写坏。
 # 所以容器一律走 -e argv（引号由 bash 负责，不经任何二次解析）。
+# ── 硬阻断清单（r1037，2026-10-20）─────────────────────────────────────
+# 「哪些规则允许终止回合」由 LLM_GATEWAY_HARD_BLOCK_RULES 决定（scope:rule
+# 列表，如 egress:builtin.egress_sink）。出厂默认只有 input 允许硬阻断，
+# egress/output 一律不终止回合。
+#
+# 取值优先级：部署机环境变量 > env 文件里上次落下的值（运维手工改过的那份，
+# 跨部署保留） > 不设（用网关内置默认）。
+#
+# ⚠ env 文件每次部署都被重写 ⇒ 只在部署机 export 一次的话，下一次部署就没了。
+#   运维要长期改，就改 env 文件里的这一行（引擎会保留它）。
+HARD_BLOCK_RULES="${LLM_GATEWAY_HARD_BLOCK_RULES:-}"
+if [[ -z "$HARD_BLOCK_RULES" && -f "$ENV_FILE" ]]; then
+  HARD_BLOCK_RULES="$(sed -nE 's/^(export )?LLM_GATEWAY_HARD_BLOCK_RULES=(.*)$/\2/p' "$ENV_FILE" | tail -1)"
+  # 去掉 shell 引号形态（bash %q 对空串会写成 ''，对含空格的值会加反斜杠）。
+  HARD_BLOCK_RULES="${HARD_BLOCK_RULES%\'}"; HARD_BLOCK_RULES="${HARD_BLOCK_RULES#\'}"
+  HARD_BLOCK_RULES="${HARD_BLOCK_RULES%\"}"; HARD_BLOCK_RULES="${HARD_BLOCK_RULES#\"}"
+fi
+# 格式体检：只接受 scope:rule 列表的字符集。非法值**不注入**——让网关用
+# 它的内置默认（且网关那边会报 error 并保持默认），而不是把垃圾塞进容器。
+if [[ -n "$HARD_BLOCK_RULES" && ! "$HARD_BLOCK_RULES" =~ ^[A-Za-z0-9:_.*,-]+$ ]]; then
+  log "硬阻断清单值含非法字符，忽略并用网关内置默认: ${HARD_BLOCK_RULES}"
+  HARD_BLOCK_RULES=""
+fi
+
 {
   printf '# llm-gateway-go @ %s（由 deploy-seamless-docker.sh 生成，勿提交）\n' "${DD_HOST:-目标机}"
   printf '# shell 可 source；容器用 -e 注入，不走 docker 的 env 文件参数\n'
@@ -1545,6 +1569,10 @@ DB_URL="postgres://${PG_USER_ENC}:${PG_PASS_ENC}@${PG_CONTAINER}:5432/${DD_PG_DB
   printf 'export LLM_GATEWAY_API_KEY=%q\n' "$GW_STATIC_API_KEY"
   printf 'export LLM_GATEWAY_ADMIN_API_KEY=%q\n' "$GW_ADMIN_API_KEY"
   printf 'export CURSOR_HMAC_SECRET=%q\n' "$GW_CURSOR_HMAC"
+  # 硬阻断清单（空 = 用网关内置默认：只有 input 允许硬阻断）。
+  if [[ -n "$HARD_BLOCK_RULES" ]]; then
+    printf 'export LLM_GATEWAY_HARD_BLOCK_RULES=%q\n' "$HARD_BLOCK_RULES"
+  fi
 } > "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 
@@ -1566,6 +1594,13 @@ GW_ENV=(
 )
 if [[ -n "$CRED_ENC_KEY" ]]; then
   GW_ENV+=( -e "LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=${CRED_ENC_KEY}" )
+fi
+# 硬阻断清单（r1037）：空值不注入 ⇒ 网关用内置默认（只有 input 允许硬阻断）。
+if [[ -n "$HARD_BLOCK_RULES" ]]; then
+  GW_ENV+=( -e "LLM_GATEWAY_HARD_BLOCK_RULES=${HARD_BLOCK_RULES}" )
+  log "硬阻断清单 LLM_GATEWAY_HARD_BLOCK_RULES=${HARD_BLOCK_RULES}"
+else
+  log "硬阻断清单未配置 → 用网关内置默认（只有 input 允许硬阻断，egress/output 不终止回合）"
 fi
 
 # ── 状态目录出容器（2026-10-13，对齐 211 机 DEPLOY-STANDARDS 总纲）──────

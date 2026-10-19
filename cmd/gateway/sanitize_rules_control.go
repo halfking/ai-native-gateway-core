@@ -20,6 +20,29 @@ import (
 var activeRuleDetector atomic.Pointer[sanitize.PatternDetector]
 var sanitizeRulesStop func()
 
+// loadHardBlockPolicy 装载「硬阻断清单」并在启动日志里落下生效值。
+//
+// owner 口径（2026-10-20）：默认**不**硬阻断；真要终止回合的规则由清单显式开
+// （LLM_GATEWAY_HARD_BLOCK_RULES）。清单错了必须在启动日志里看得见——否则线上
+// 「为什么没拦 / 为什么拦了」无从查起，只能翻代码猜。
+func loadHardBlockPolicy() {
+	allows, err := sanitizerules.LoadHardBlockAllowsFromEnv()
+	if err != nil {
+		slog.Error("hard block allowlist invalid; keeping default (no egress/output hard block)",
+			"error", err, "env", sanitizerules.HardBlockAllowEnv)
+		return
+	}
+	items := make([]string, 0, len(allows))
+	for _, a := range allows {
+		items = append(items, a.Scope+":"+a.Rule)
+	}
+	slog.Info("hard block allowlist loaded",
+		"env", sanitizerules.HardBlockAllowEnv,
+		"allows", items,
+		"count", len(items),
+	)
+}
+
 func managedOutputRuleSource() outputcompliance.ManagedRuleCheck {
 	if d := activeRuleDetector.Load(); d != nil && d.RuleManager() != nil {
 		return d.CheckManagedOutput

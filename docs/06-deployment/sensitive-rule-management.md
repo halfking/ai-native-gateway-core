@@ -27,6 +27,36 @@
 
 可确认敏感、判为误报或忽略，记录操作者与说明。“编辑实际命中规则”保留原ID与适用范围，可明确收窄误报规则；全局规则的修改影响全部租户。“新建限定补充规则”建立限定租户和阶段的草稿，保留原规则，并提示重叠规则仍可能生效；复核本身不会放行流量。发布草稿后，复核记录与新版本在同一事务中关联。样例中不要粘贴真实会话凭据。
 
+## 硬阻断清单（哪些规则允许终止回合）
+
+规则的动作（`block`）只说明「命中了怎么办」；**能不能真的终止回合**由**硬阻断清单**决定。清单是网关启动时读的环境变量 `LLM_GATEWAY_HARD_BLOCK_RULES`，逗号分隔的 `scope:rule`：
+
+```bash
+LLM_GATEWAY_HARD_BLOCK_RULES="egress:builtin.egress_sink,output:builtin.pii.email"
+```
+
+| 写法 | 含义 |
+|---|---|
+| `*` | 该 scope 下全部规则 |
+| `builtin.network_destination` | 精确规则 ID |
+| `secret.*` | 同前缀的一族规则 |
+
+scope 只有三个：`input`（请求侧）、`output`（模型输出侧）、`egress`（工具参数的外传目的地侧）。
+
+**出厂默认 = `input: *`**：请求侧照旧 fail-closed；输出侧与外传侧**不终止回合**，命中只记台账（`sanitize_rule_events`，动作记 `log`/`mask`）并继续往下走。设置方法：改容器/服务的环境变量后重启网关即可，不必改代码发版。启动日志会打一行 `hard block allowlist loaded`，清单写错会当场报 error 并**保持原清单**（一个错别字不会悄悄撤掉守门）。未设置环境变量时保持出厂默认；想显式清空用 `-`。
+
+### 外传目的地侧的三档
+
+| 配置 | 效果 |
+|---|---|
+| 不设（默认） | 工具参数里出现公网主机/IP/`password=` 这类形状命中，**一律不终止回合** |
+| `egress:builtin.egress_sink` | 只拦**真的外传**：请求体、上传文件、自定义头、把本地数据拼进请求（`$(...)`/变量插值）、以及发送型客户端（nc/ssh/scp/mail 等）。下载、clone、拉镜像照常 |
+| `egress:builtin.network_destination` | 恢复旧行为：参数里**提到**公网主机就拦（连下载一起拦） |
+
+`egress:pii.server_ip` 单独控制「公网 IP 字面量」那条规则（与 r1013 契约对齐，与方向无关）。生产 YAML 路径上的规则 ID 用 `category.name`（如 `pii.server_ip`、`secret.password.assignment`），内建回退规则的 ID 为 `pii.phone` / `pii.id_card` / `pii.email` / `pii.credit_card` / `secret.api_key`，凭据字段硬阻断统一是 `builtin.secret_field.egress`。
+
+> 2026-10-20 起默认不拦 egress/output：211 生产事故里，模型要 curl 下载 Android SDK 镜像，Bash 参数里的公网主机被整条工具调用拦掉，流被终止，客户端只看到「模型未返回任何内容」（`empty_model_response`）。「提到公网主机」不等于「把数据送到公网主机」。
+
 ## 回滚
 
 在版本历史选择目标、比较配置、填写原因并确认回滚。回滚创建新的递增版本，记录`rollback_of`，不会改写历史。各网关继续通过相同通知和轮询通道收敛到新版本。
