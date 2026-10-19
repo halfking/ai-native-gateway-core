@@ -87,7 +87,7 @@ var requestLogsReadInventory = map[string]int{
 	"admin/credential_monitor.go":         4,
 	"admin/credential_monitor_heatmap.go": 1,
 	"admin/credential_success_rate.go":    2,
-	"admin/data_lifecycle.go":             16,
+	"admin/data_lifecycle.go":             7,
 	"admin/data_lifecycle_attachments.go": 6,
 	// admin/data_lifecycle_blobs.go 于 2026-10-13（S4 波 4）出列：会话臂治理。
 	"admin/data_lifecycle_metrics.go":   1,
@@ -102,7 +102,7 @@ var requestLogsReadInventory = map[string]int{
 	"admin/probe_history.go":            1,
 	"admin/provider_diagnose.go":        2,
 	"admin/provider_models.go":          2,
-	"admin/providers.go":                1,
+	// providers.go no longer reads this family; provider health uses credential state.
 	// admin/quality_correlations.go 于 2026-10-13（S4 波 4）出列：会话族重写。
 	"admin/request_trace.go":   4,
 	"admin/route_incidents.go": 1,
@@ -135,10 +135,12 @@ var requestLogsReadInventory = map[string]int{
 	"admin/telemetry.go":                1,
 	// 2026-10-13 S3 波 3：4→8——logsTable 补两条会话腿后，双子排除的
 	// NOT EXISTS（_request_logs_hot/request_logs 各 ×2）计入引用计数。
-	"admin/tenants.go":        8,
-	"admin/top_problems.go":   2,
-	"admin/unified_detail.go": 6,
-	"admin/usage.go":          3,
+	"admin/tenants.go": 2,
+	// The four-arm source moved out of tenants.go; includes four dedup subqueries.
+	"admin/tenant_stats_logs_table.go": 6,
+	"admin/top_problems.go":            2,
+	"admin/unified_detail.go":          6,
+	"admin/usage.go":                   3,
 	// 2026-10-02: usage trend-series detail 路径读当月视图（与 board fallback 同源）。
 	"admin/usage_trend_series.go": 2,
 	// 2026-10-03: usage_enhanced.go 读 _request_logs 两处，但扫描器只数到 1 处 ——
@@ -161,7 +163,7 @@ var requestLogsReadInventory = map[string]int{
 	"autoroute/recommend_v2.go":         2,
 	"bg/auto_index_refresher.go":        4,
 	"bg/auto_route_affinity_worker.go":  2,
-	"bg/candidate_failure_monitor.go":   2,
+	"bg/candidate_failure_monitor.go":   1,
 	"bg/credential_recovery.go":         2,
 	"bg/credential_selfcheck.go":        3,
 	"bg/daily_probe_audit.go":           1,

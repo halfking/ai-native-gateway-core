@@ -63,6 +63,7 @@ import (
 // （视图体由投影片段拼装；写路径由表名切片遍历），所以逐串判必然误报。
 // 这与门头注释里写明的盲区是同一条：**逐字面量门看不见运行时拼起来的形状**。
 var sessionFamilyBareParentReaders = map[string]string{
+	"admin/turns_filter_options.go": "turnMergedSource composes parent UNION ALL hot across separate string literals, with the same tenant/time predicates; TestFilterOptionsArmsAreMerged requires both legs in the actual returned SQL.",
 	"db/request_logs_view_schema.go": "710 视图体拼装器：session_turns_hot 与 session_turns " +
 		"（以及 details 层两面的）投影片段是**不同的字符串常量**，两面在 9 处配对出现。" +
 		"真库已核实：request_logs_with_current_month = hot∪parent，118 列、三列有值。",

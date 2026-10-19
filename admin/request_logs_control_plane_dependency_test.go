@@ -164,14 +164,12 @@ var requestLogsControlPlaneReaders = map[string]controlPlaneVerdict{
 	//   · 退回保守（model_probe：热度没了 → next_retry_at 不再推后 → 探针变频繁）
 	//   · 静默失效（today_success_probe：候选集空 → 不再提交探测 → 只能等自身恢复）
 	"bg/candidate_failure_monitor.go": {
-		Feeds:    "5 分钟失败信号 → UPDATE credentials（凭据状态写入）",
-		Live:     true,
-		Gated:    false,
-		Evidence: "FROM request_logs_with_current_month",
-		BlastRadius: "bg/candidate_failure_monitor.go:391 `UPDATE credentials` —— 凭据级状态写入，" +
-			"由 :206/:333 两处 710 视图读点（5 分钟窗口）驱动。",
-		Note: "读 710 视图（有 session 臂）⇒ 停写后业务流量仍供数，**不会查空**。" +
-			"但探针流量消失会改变 5 分钟窗口的构成，失败信号口径随之变化。",
+		Feeds: "5-minute real request failure ratio -> credential cooling",
+		Live:  true, Gated: false,
+		Evidence:    "FROM _request_logs_hot r",
+		BlastRadius: "checkAutoCool joins session_turns_hot with deduplicated _request_logs_hot, then updates credentials.",
+		Note: "The session hot arm continues after S4 stop-write; probe_direct failures are excluded. " +
+			"checkStaleness separately reads a v1-only view constant to observe the failure-log writer; it does not authorize cooling.",
 	},
 	"bg/credential_selfcheck.go": {
 		Feeds:    "_request_logs_hot 近期表现 → 自检任务提交（self_check_runs / system_probe_runs / probe sink）",
