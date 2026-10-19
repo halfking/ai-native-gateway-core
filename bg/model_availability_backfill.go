@@ -3,6 +3,7 @@ package bg
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -17,14 +18,13 @@ type dbExec interface {
 }
 
 // AvailabilityCacheBackfill rebuilds Redis availability entries from
-// model_probe_state when the cache has been flushed or lost. It is meant
+// node_probe_state when the cache has been flushed or lost. It is meant
 // to be a safety net for cold start / Redis flush scenarios, NOT a
 // replacement for the regular probe workers.
 //
-// The worker runs periodically, scans model_probe_state rows whose
-// next_retry_at has elapsed in the last `lookback`, and re-writes their
-// availability into Redis. The scan is bounded so a large DB does not
-// stall startup.
+// Every pass advances a bounded keyset scan of all node states, including
+// healthy nodes parked for 30 days. Scheduling a probe and projecting its
+// last known result are independent; next_retry_at must not exclude a node.
 type AvailabilityCacheBackfill struct {
 	db        dbExec
 	cache     *ModelAvailabilityCache
@@ -33,13 +33,22 @@ type AvailabilityCacheBackfill struct {
 	batchSize int
 	lookback  time.Duration
 
-	cancel context.CancelFunc
-	done   chan struct{}
+	cancel           context.CancelFunc
+	done             chan struct{}
+	mu               sync.Mutex // serialize manual and periodic scans and protect the cursor
+	cursorCredential int
+	cursorModel      string
 }
+
+// defaultAvailabilityBackfillBatchSize is the batch size used when none is
+// configured. A non-positive batch size must read as "unset", never as
+// "scan nothing": LIMIT 0 would make the worker a silent no-op that still
+// logs "cycle done".
+const defaultAvailabilityBackfillBatchSize = 200
 
 // AvailabilityCacheBackfillConfig controls backfill cadence and batching.
 type AvailabilityCacheBackfillConfig struct {
-	Interval  time.Duration // default 5min
+	Interval  time.Duration // default 1min
 	BatchSize int           // default 200
 	Lookback  time.Duration // default 1h
 }
@@ -56,10 +65,10 @@ func NewAvailabilityCacheBackfill(
 		return nil
 	}
 	if cfg.Interval <= 0 {
-		cfg.Interval = 5 * time.Minute
+		cfg.Interval = time.Minute
 	}
 	if cfg.BatchSize <= 0 {
-		cfg.BatchSize = 200
+		cfg.BatchSize = defaultAvailabilityBackfillBatchSize
 	}
 	if cfg.Lookback <= 0 {
 		cfg.Lookback = time.Hour
@@ -73,6 +82,20 @@ func NewAvailabilityCacheBackfill(
 		lookback:  cfg.Lookback,
 		done:      make(chan struct{}),
 	}
+}
+
+// effectiveBatchSize is the batch size a scan actually uses.
+//
+// The batch size reaches this worker as a struct field, so it can still be
+// non-positive even though the constructor normalises the config: a worker
+// assembled directly would bind LIMIT 0, scan zero rows and still log
+// "cycle done" — a silent no-op. Routing the value through this accessor
+// keeps the zero case reading as "unset".
+func (w *AvailabilityCacheBackfill) effectiveBatchSize() int {
+	if w == nil || w.batchSize <= 0 {
+		return defaultAvailabilityBackfillBatchSize
+	}
+	return w.batchSize
 }
 
 // Start launches the periodic backfill loop. Call Stop to terminate.
@@ -161,6 +184,8 @@ func (w *AvailabilityCacheBackfill) runOnceWithTrigger(ctx context.Context, trig
 		return 0, nil
 	}
 
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -169,13 +194,12 @@ func (w *AvailabilityCacheBackfill) runOnceWithTrigger(ctx context.Context, trig
 		       COALESCE(consecutive_successes, 0),
 		       COALESCE(consecutive_failures, 0),
 		       COALESCE(total_attempts, 0),
-		       last_attempt_at, next_retry_at, last_status
+		       updated_at, next_retry_at, last_status, paused
 		FROM v_node_probe_state_compat
-		WHERE next_retry_at IS NOT NULL
-		  AND next_retry_at <= NOW() + make_interval(secs => $1)
-		ORDER BY next_retry_at DESC
-		LIMIT $2
-	`, int(w.lookback.Seconds()), w.batchSize)
+		WHERE (credential_id, raw_model_name) > ($1, $2)
+		ORDER BY credential_id, raw_model_name
+		LIMIT $3
+	`, w.cursorCredential, w.cursorModel, w.effectiveBatchSize())
 	if err != nil {
 		slog.Warn("availability backfill: query failed", "error", err)
 		return 0, err
@@ -183,27 +207,28 @@ func (w *AvailabilityCacheBackfill) runOnceWithTrigger(ctx context.Context, trig
 	defer rows.Close()
 
 	type row struct {
-		credID      int
-		model       string
-		state       string
-		succ        int
-		fail        int
-		total       int
-		lastAttempt *time.Time
-		nextRetry   *time.Time
-		lastStatus  *string
+		credID     int
+		model      string
+		state      string
+		succ       int
+		fail       int
+		total      int
+		observedAt *time.Time
+		nextRetry  *time.Time
+		lastStatus *string
+		paused     bool
 	}
 	var entries []row
 	for rows.Next() {
 		var r row
-		var lastAttempt *time.Time
+		var observedAt *time.Time
 		var nextRetry *time.Time
 		var lastStatus *string
 		if err := rows.Scan(&r.credID, &r.model, &r.state, &r.succ, &r.fail, &r.total,
-			&lastAttempt, &nextRetry, &lastStatus); err != nil {
-			continue
+			&observedAt, &nextRetry, &lastStatus, &r.paused); err != nil {
+			return 0, err
 		}
-		r.lastAttempt = lastAttempt
+		r.observedAt = observedAt
 		r.nextRetry = nextRetry
 		r.lastStatus = lastStatus
 		entries = append(entries, r)
@@ -227,15 +252,22 @@ func (w *AvailabilityCacheBackfill) runOnceWithTrigger(ctx context.Context, trig
 				"written", written, "deferred", len(entries)-written)
 			return written, err
 		}
-		existing, _ := w.reader.Read(ctx, e.credID, e.model)
-		if existing != nil && !shouldRefresh(existing.UpdatedAt, w.lookback) {
+		// Advance even over fresh entries, so one busy prefix cannot starve
+		// the rest of the cache. A failed write retries on the next sweep.
+		w.cursorCredential, w.cursorModel = e.credID, e.model
+		existing, err := w.reader.Read(ctx, e.credID, e.model)
+		if err != nil {
+			return written, err
+		}
+		newer := e.observedAt != nil && (existing == nil || existing.UpdatedAt == nil || e.observedAt.After(*existing.UpdatedAt))
+		if existing != nil && !newer && !shouldRefresh(existing.UpdatedAt, w.lookback) {
 			continue
 		}
 		status := ""
 		if e.lastStatus != nil {
 			status = *e.lastStatus
 		}
-		available := !isUnavailable(e.state)
+		available := !e.paused && !isUnavailable(e.state)
 		fields := modelAvailabilityFields(
 			e.credID,
 			e.model,
@@ -247,6 +279,11 @@ func (w *AvailabilityCacheBackfill) runOnceWithTrigger(ctx context.Context, trig
 			e.nextRetry,
 			"backfill",
 		)
+		// Retain the database observation time; a cache refresh is not a new
+		// probe result. Set atomically refuses older observations.
+		if e.observedAt != nil {
+			fields["updated_at"] = e.observedAt.UTC().Format(time.RFC3339Nano)
+		}
 		if err := w.cache.Set(ctx, e.credID, e.model, fields); err != nil {
 			slog.Warn("availability backfill: cache write failed",
 				"credential_id", e.credID,
@@ -255,6 +292,9 @@ func (w *AvailabilityCacheBackfill) runOnceWithTrigger(ctx context.Context, trig
 			continue
 		}
 		written++
+	}
+	if len(entries) < w.batchSize {
+		w.cursorCredential, w.cursorModel = 0, ""
 	}
 	if written > 0 {
 		recordAvailabilityBackfillRows(trigger, written)

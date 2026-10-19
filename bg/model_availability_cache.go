@@ -2,6 +2,7 @@ package bg
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -37,12 +38,19 @@ func (c *ModelAvailabilityCache) Set(ctx context.Context, credentialID int, rawM
 	}
 	key := c.key(credentialID, rawModel)
 	writeStart := time.Now()
-	pipe := c.redis.Pipeline()
-	pipe.HSet(ctx, key, fields)
-	pipe.Expire(ctx, key, c.ttl)
-	_, err := pipe.Exec(ctx)
+	observed, err := time.Parse(time.RFC3339Nano, fmt.Sprint(fields["updated_at"]))
+	if err != nil {
+		return fmt.Errorf("availability cache: invalid observation timestamp: %w", err)
+	}
+	args := []any{observed.UnixMicro(), int64(c.ttl / time.Millisecond)}
+	for field, value := range fields {
+		args = append(args, field, value)
+	}
+	// Probe completion and a DB backfill can race. Compare observation time
+	// atomically, so an older snapshot cannot undo a newer recovery.
+	result, err := availabilitySetScript.Run(ctx, c.redis, []string{key}, args...).Int64()
 	recordAvailabilityWriteDuration(time.Since(writeStart).Seconds())
-	if err == nil {
+	if err == nil && result == 1 {
 		if src, ok := fields["source"].(string); ok {
 			state := ""
 			if s, ok := fields["state"].(string); ok {
@@ -53,6 +61,17 @@ func (c *ModelAvailabilityCache) Set(ctx context.Context, credentialID int, rawM
 	}
 	return err
 }
+
+var availabilitySetScript = redis.NewScript(`
+local old = tonumber(redis.call('HGET', KEYS[1], 'observed_at_us') or '0')
+if old > tonumber(ARGV[1]) then return 0 end
+for i = 3, #ARGV, 2 do
+  redis.call('HSET', KEYS[1], ARGV[i], ARGV[i + 1])
+end
+redis.call('HSET', KEYS[1], 'observed_at_us', ARGV[1])
+redis.call('PEXPIRE', KEYS[1], ARGV[2])
+return 1
+`)
 
 func (c *ModelAvailabilityCache) key(credentialID int, rawModel string) string {
 	return modelAvailabilityKey(credentialID, rawModel)
@@ -108,6 +127,7 @@ func modelAvailabilityFields(
 		"consecutive_failures":  strconv.Itoa(consecutiveFailures),
 		"updated_at":            time.Now().UTC().Format(time.RFC3339Nano),
 		"source":                source,
+		"next_retry_at":         "",
 	}
 	if nextRetryAt != nil {
 		fields["next_retry_at"] = nextRetryAt.UTC().Format(time.RFC3339Nano)
