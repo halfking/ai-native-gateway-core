@@ -1,0 +1,20 @@
+{
+  "metric": "referenced keys only; values = runtime truth (vm-evaluated locale modules); untranslated = value byte-identical to en-US; cjk = /[\\u4e00-\\u9fff\\u3400-\\u4dbf]/",
+  "updated": "2026-10-19",
+  "enUSCjk": 0,
+  "untranslated": {
+    "ar-SA": 1141,
+    "de-DE": 1245,
+    "es-ES": 1175,
+    "fr-FR": 1234,
+    "ja-JP": 835,
+    "zh-CN": 157,
+    "zh-TW": 715
+  },
+  "cjkInNonCjkLocale": {
+    "ar-SA": 466,
+    "de-DE": 465,
+    "es-ES": 465,
+    "fr-FR": 465
+  }
+}

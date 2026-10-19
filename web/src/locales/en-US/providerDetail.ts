@@ -432,11 +432,11 @@ export default {
     refreshSummaryFailed: "Failed {n}",
     refreshSummaryEmpty: "No changes",
     creds: {
-      labelFallback: "凭据 #{id}"
+      labelFallback: "Credential #{id}"
     },
     overview: {
-      chipAvailable: "可用",
-      chipUnavailable: "不可用"
+      chipAvailable: "Available",
+      chipUnavailable: "Unavailable"
     }
   },
   settings: {
@@ -636,7 +636,7 @@ export default {
     loadFailed: "Load failed",
     triggerFailed: "Trigger failed"
   },
-  models_creds_labelFallback: "凭据 #{id}",
-  models_overview_chipAvailable: "可用",
-  models_overview_chipUnavailable: "不可用"
+  models_creds_labelFallback: "Credential #{id}",
+  models_overview_chipAvailable: "Available",
+  models_overview_chipUnavailable: "Unavailable"
 }
