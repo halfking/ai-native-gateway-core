@@ -1239,3 +1239,59 @@ PG 自身日志不留存。两者叠加 ⇒ 任何事后归因都只能看最近
 **不是"忘了记"，是没人把「可归因」当成硬需求。**
 ⇒ ⇒ 根治方向是**留存**而非补字段：① PG 日志留存与轮转
 ② `pg_stat_statements` 定期快照归档，而不是靠重置清空间。
+
+## 2026-10-19 §113 轮：引错一行，和「同语句里已有正确写法」
+
+### ⭐⭐⭐⭐⭐ grep 命中一个字段名时，必须确认它属于哪个结构体
+
+§112 我拿 `client.go:1152-1158` 的 `entry.CredentialID` 当成
+"`_request_logs` 的落库语句"，据此写下"转换处没丢"的结论。
+实际那几行绑定的是 **`entry.ChosenCredentialID`**，
+属于 `DecisionLogEntry`，写入 **`routing_decision_log_hot`**。
+
+⇒ 本仓同时存在 `CredentialID` / `ChosenCredentialID` / `UpstreamCredentialID`，
+以及门禁 `expectedArgIdent` 映射里的同名字符串。
+⇒ ⇒ ★ **名字相同不代表语义相同**。
+⇒ ⇒ 通用式：⭐⭐⭐⭐ **grep 命中一个字段名后，下一步是"它左边那行属于哪个 struct、
+右边那条 SQL 写的是哪张表"，而不是直接开始论证。**
+★ 同族：[[断言要钉性质不钉写法]] —— 这次连"钉的是谁"都没钉。
+
+### ⭐⭐⭐⭐⭐ 「同一条语句里已有正确写法」是最强的缺陷证据
+
+```sql
+credential_id = EXCLUDED.credential_id,                                        -- :1582 无条件
+affinity_hit   = COALESCE(EXCLUDED.affinity_hit, _request_logs_hot.…),          -- :1587 有守卫
+```
+
+⇒ 二者**在同一条 `ON CONFLICT … DO UPDATE SET` 里，相隔 5 行**。
+⇒ ⇒ ★ 这比"我认为应该加 COALESCE"强一个量级：
+**它证明维护者知道这个模式、也在用，只是没覆盖到这一列。**
+⇒ ⇒ 判别动作：**在给一条语句提修改建议前，先在它周围找有没有同款写法的邻居。**
+有 ⇒ 你的建议不是"引入新模式"，是"补齐遗漏"，论证成本天差地别。
+
+### ⭐⭐⭐⭐⭐ 「表是空的」有两种完全相反的含义，处置天差地别
+
+`_request_logs_hot` 实测 `count(*)=0`，我（§97/§104）据此把它列为
+"退役 v1 表、可 TRUNCATE"。
+而 `client.go:1419-1423` 说明：所有写入**统一进 `_hot`**，
+后台 `partition_manager` 定期 `promote_request_logs_hot_to_partition()`
+把 **>7 天**的冷数据搬进月度分区。
+
+⇒ ⇒ ★ **空表可能意味着「没人用了」，也可能意味着「刚被搬走了」。**
+⇒ ⇒ 处置前必须问：**这张表现在还是不是写入路径的一部分？**
+⚠ 本例若按原判据 TRUNCATE，**会打断正在使用的热表**。
+★ 同族：[[§90 的教训：治理清单要按宿主寿命切分]] ——
+**这次连"宿主还活着"都没确认就列进了回收清单。**
+
+### ⭐⭐⭐ 「两段式写入」假设可以用一条聚合直接判掉
+
+怀疑"先写占位行、后写终态行"时：
+```sql
+SELECT count(*) FROM (
+  SELECT request_id FROM request_logs_2026_10
+  WHERE ts >= now() - interval '7 days' GROUP BY request_id HAVING count(*)>1
+) d;
+```
+⇒ 0；且 `total_rows = distinct_requests = 47,899`。
+⇒ **幂等 upsert 把两段压成了一行，两段式假设当场出局。**
+⇒ ⇒ ★ 判别动作：**"写了几次"的问题，先去问"表里还看得出写了几次吗"。**
