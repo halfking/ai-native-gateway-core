@@ -290,3 +290,4 @@
 272	877_session_turns_search_text_trgm.sql
 273	878_supplier_errors_partition_indexes.sql
 274	881_drop_attack_vectors_embedding_index.sql
+275	880_session_write_timeout_budget.sql

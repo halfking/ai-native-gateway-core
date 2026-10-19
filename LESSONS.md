@@ -3044,3 +3044,31 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
 - 真因：`"$out）"` 里 `$out` 紧跟中文全角括号，**bash 3.2 会把多字节首字节并进变量名** ⇒ 变量名变成 `out<0xEF...>` ⇒ unbound variable。本仓已有同类门（`deploy_211_contract_test.sh` 扫 `$var` 紧跟非 ASCII），但那次只覆盖被测脚本，没覆盖**判据脚本自己**。
 - 防复发检查：① 变异验证的读数必须**区分「真实断言红」与「量具自己炸」**——先看输出里有没有断言行、有没有 `行 N:` 这类 shell 报错；只有前者才算「被抓住」；② 判据脚本自身也要过 `$var 紧跟非 ASCII` 扫描；③ 顺带得到一条通用式：**「红」的读数与「不红」的读数一样需要先验量具**——这是「0 命中的第一嫌疑是量具坏了」的镜像形态。
 - 证据：M5/M6 首次判红时输出为 `行 170: out?: 未绑定的变量` / `行 256: anchor?: 未绑定的变量`，修正判据脚本（`${out}` / `${anchor}`）后复跑，两条变异均转为**真实断言红**（M5 三条、M6 一条）。
+
+## 2026-10-20 — 「执行快」不等于「语句快」：慢 SQL 必须把 Planning Time 与 Execution Time 一起读（Seen: 1/3）
+- 场景：request_logs→session_turns 退役复核轮，真实请求全部 200，但 session 族几乎不落库（正文 JSON null、trace 丢、turn_no 与时间序错位）。查遍锁等待（`pg_blocking_pids` 空）、查遍连接数（12/200、9 idle），都不是。
+- 真因：连 `SELECT count(*) FROM session_turns_hot WHERE 1=0` 这种**空查询**，`EXPLAIN ANALYZE` 报 `Execution Time: 0.03ms` 而 `Planning Time: 1195ms`。根因是本机 PG 的 `shared_buffers` 被**手改**成 400kB（PG 默认 128MB）⇒ 规划期要读的 catalog 页根本进不了共享缓冲。改成 2GB 后：规划 1195ms → **50ms**（24×），执行时间**一点没变**。
+- 防复发检查：① 看慢 SQL 时 `Planning Time` 与 `Execution Time` **必须一起读**——只看执行时间会把「慢」整个漏掉；② `EXPLAIN` 之外，还要量**空查询**的规划耗时（它把「与数据量无关的那部分成本」单独暴露出来）；③ 部署/验收前先量一次 `SHOW shared_buffers`，低于 128MB 一律先修再谈性能。
+- 通用式：**慢 SQL 有两个时间维度，"执行计划快"不等于"语句快"**；而规划期的开销几乎全部来自**catalog 访问**⇒ 共享缓冲不足时，SQL 写得再漂亮也没用。
+- 证据/溯源：`docs/audit/2026-10-20-request-logs-session-turns-复核轮.md` §2.3；`scripts/deploy-local-lib.sh` 新增 `dl_pg_check_memory` + `scripts/deploy-local-lib-pgmemory_test.sh`（4 条变异全红）。
+
+## 2026-10-20 — 「注释说改好了」不等于「改生效了」：改某个值的来源前，先把它的解析顺序列出来（Seen: 1/3）
+- 场景：`internal/sessionv2mirror/hook.go` 的注释写着「raise the default budget to 2000ms」，代码里 `defaultShadowWriteTimeoutMs` 也真的从 500 提到了 2000。**但那次修复从未生效。**
+- 真因：`settings.GetPlatformInt(key, fallback)` 的解析顺序是 **DB → env → `spec.Default` → 代码里的 fallback**。`settings/spec_sessions_v2.go` 里这条的 `Default: 500` 一直没改 ⇒ **spec.Default 先命中**，代码里那个 2000 永远走不到。实际预算一直是 500ms，而 500ms 撑不住一次 shadow write 的串行步骤 ⇒ 正文整段不落、整笔写走 outbox 异步重放 ⇒ **turn_no 与请求顺序错位**、trace 丢失。
+- 防复发检查：① 改「某个值的来源」时，**先列出它的解析链**，确认自己改的那一层**真的在链上**；② 同一语义的值只允许**一处**有字面量（判据从**源码**取字面量，不是复制品）；③ 判据要同时钉「一致性」与「方向性」：一致但都偏小，同样是缺陷。
+- 通用式：**生效的是「链上第一个命中的那一层」**，不是「你改的那一层」；注释与代码一致 ≠ 生效。
+- 证据/溯源：同上文档 §2.4；`settings/session_write_timeout_default_test.go`（2 条变异全红：spec 回 500 / 常量改 1500）。
+
+## 2026-10-20 — 「给旁路单独开一个 ctx」不等于「预算分开了」：预算分离 = 计时起点分离（Seen: 1/3）
+- 场景：维度写（`session_dim` upsert，其触发器还要 UPDATE `session_summaries`）与轮次写共用一个 ctx ⇒ 维度写慢就把**主体**的 deadline 吃光 ⇒ 主体写失败、旁路却「成功」了。
+- 真因（第一版修法被自己的判据当场抓住）：光「再开一个 `WithTimeout(bg, timeout)`」**没用**——两个 ctx 的 deadline 是**同一个绝对时刻**（t0+timeout），维度写照样耗光主体的预算。实测轮次写拿到的剩余预算是 **−0.8ms**。⇒ 轮次写的 ctx 必须在维度写**之后**才建，预算才真的从「轮次写开始」起算。
+- 防复发检查：① 「给两段各用各的预算」判据要**行为**化：让前一段把预算烧光，后一段拿到的剩余必须仍接近满额；② 改完之后必须报出**总墙钟上限**的变化（本例 timeout → ≤2×timeout），别让「总时间变长」变成隐式代价。
+- 通用式：**预算分离 = 计时起点分离**，不只是「换个 ctx 对象」。与 LESSONS「同一次判定里的不同判据可以有不同的时间语义」是同一条：**旁路不许吃主体的预算**。
+- 证据/溯源：同上文档 §2.5；`internal/sessionv2mirror/shadow_write_budget_test.go`（变异 M1 改回共用 ctx → 红）。
+
+## 2026-10-20 — 部署验证通过 ≠ 数据可用：任何「落库了」的结论都要有一份**读回**证据（Seen: 1/3）
+- 场景：迁移 RC0、部署 `VERIFY_PASS=1`、探活 200、接口 200、后台零 ERROR——但 session 族**一行都没落库**。`VERIFY_PASS` 探的是进程/端口/版本，**从不探「写进去没有」**。
+- 真因：两个叠加的根因（`shared_buffers=400kB` + spec 默认 500ms 静默撤销修复），两者都让写路径在毫秒级 deadline 内超时，而失败是**静默**的：接口 200、日志只有 WARN。
+- 防复发检查：① 「数据可用」的结论必须由**读回**支撑：正文用 `jsonb_typeof(col)='array'`（**不是** `IS NOT NULL`——JSON null 也满足）、`turn_no` 连续性、`trace_events` 非空；② 「接口 200」**不是**落库证据；③ 部署链上加**环境前置门**（本例：shared_buffers 下限），让「部署成功但数据不可用」这种组合在部署阶段就报出来。
+- 通用式：**验收口径必须覆盖「产出」而不是只覆盖「过程」**；一个只探过程的门，会在最需要它的时候全绿。
+- 证据/溯源：同上文档 §2.1–§2.6。

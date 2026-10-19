@@ -223,19 +223,48 @@ var shadowWriteDispatchAsync = true
 // and neither the dims writer nor the V2 writer reads those fields (req is
 // the deep-parsed snapshot), so the hand-off is race-free.
 func runShadowWrite(w V2Writer, req *v2.ProcessedRequest, entry *telemetry.RequestLogEntry, dims []DimWriter, timeout time.Duration, synthetic bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+	// ★ 2026-10-20：维度写与轮次写**各用各的预算**。
+	//
+	// 原来两者共用一个 ctx（也就是共用一个 deadline）。实测代价（本地
+	// PG 修好 shared_buffers 之后仍然复现）：
+	// session_dim 维度写是 `INSERT ... ON CONFLICT (gw_session_id) DO UPDATE`，
+	// 它的触发器还要去 UPDATE session_summaries；这一步慢或多等几把锁，
+	// 就会把**轮次写**的预算吃光 ⇒ session_turn_details 超时 ⇒
+	//   ① 正文（session_bodies）一行不落；
+	//   ② 整笔失败 ⇒ 走 outbox 异步重放 ⇒ turn_no 与请求顺序错位；
+	//   ③ trace 找不到父行 ⇒ trace_events 丢失。
+	//
+	// ⇒ 这正是 LESSONS「同一次判定里的不同判据可以有不同的时间语义，
+	// 不要因为共用一个函数就让它们共用同一个 gate」的形态：
+	// **维度写是 best-effort 的旁路，轮次写才是这次判定的主体。**
+	// 让旁路吃主体的预算 ⇒ 主体失败、旁路却「成功」了。
+	//
+	// 维度写仍保持「失败只记日志、不影响主体」的原契约，只是它不再能
+	// 把主体的 deadline 耗尽。
+	//
+	// ⚠ 关键：**光「再开一个 ctx」不够**。两个 `WithTimeout(bg, timeout)`
+	// 的 deadline 是同一个绝对时刻（t0+timeout），维度写照样把主体的
+	// deadline 耗光 —— 第一版修法就是这样，实测仍然失败（轮次写拿到的
+	// 剩余预算是 −0.8ms）。⇒ 轮次写的 ctx 必须在**维度写之后**才建：
+	// 它的预算从「轮次写开始」起算，这才真的是「各用各的预算」。
+	//
+	// 代价（如实标注）：一次 shadow write 的**总**墙钟上限从 timeout
+	// 变成 ≤ 2×timeout（维度 timeout + 轮次 timeout）。这是有意的取舍：
+	// 上限变松，换来主体不再被旁路饿死。调用方是后台 goroutine
+	//（shadowWriteSema 限流），worker 侧不受影响。
 
-	// session_dim 维度维护（任务/项目/属主/客户端）：与 V2 写入同一
-	// 超时预算，独立 best-effort —— V2 写失败也不影响维度更新。
+	// session_dim 维度维护（任务/项目/属主/客户端）：**独立**超时预算，
+	// best-effort —— V2 写失败也不影响维度更新，维度写失败也不影响 V2 写。
 	// 合成系统会话不维护 V1 维度表（session_dim 以 gw_session_id 为键，
 	// 无会话头流量本就缺席于此）。
-	if !synthetic {
+	if !synthetic && len(dims) > 0 {
+		dimCtx, dimCancel := context.WithTimeout(context.Background(), timeout)
+		defer dimCancel()
 		for _, dim := range dims {
 			if dim == nil {
 				continue
 			}
-			if err := dim.UpsertSessionDim(ctx, entry); err != nil {
+			if err := dim.UpsertSessionDim(dimCtx, entry); err != nil {
 				slog.Warn("sessionv2mirror: session_dim upsert failed",
 					"request_id", entry.RequestID,
 					"session_id", req.SessionID,
@@ -243,6 +272,10 @@ func runShadowWrite(w V2Writer, req *v2.ProcessedRequest, entry *telemetry.Reque
 			}
 		}
 	}
+
+	// 轮次写的预算从**这里**起算（维度写之后）。
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 
 	err := w.Write(ctx, req)
 	if err == nil && entry.T0Missing {

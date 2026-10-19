@@ -1735,7 +1735,29 @@ files=(
   # 幂等、不带函数体、不依赖任何前序迁移的派生结果，位置无关；放末尾可确保
   # 它看到的是前序全部重放完的最终表形态。
   "$ROOT_DIR/sql/migrations/startup/044_health_source_probe_now.sql"
+
+  # ── 880（2026-10-20）：session 写路径的超时预算对齐到 2000ms ─────────
+  #
+  # 缺陷本体（实测，非推断）：
+  #   · internal/sessionv2mirror/hook.go 的注释写着「raise the default budget to
+  #     2000ms」，常量也确实提到了 2000 —— **但那次修复从未生效**。
+  #   · settings.GetPlatformInt 的解析顺序是 DB → env → spec.Default → 代码
+  #     fallback；spec.Default 命中时代码里的常量走不到，而这条的 spec.Default
+  #     一直是 500 ⇒ 实际预算一直是 500ms。
+  #   · 500ms 撑不住一次 shadow write 的串行步骤（维度写→turn→details→bodies→
+  #     summaries）⇒ 细节层写超时 ⇒ **正文一行不落**、整笔写走 outbox 异步
+  #     重放 ⇒ turn_no 与请求顺序错位、trace 丢失。**全是静默失效。**
+  #
+  # 这条迁移把「已持久化过且偏小」的预算抬到 2000（偏大的值保留，不覆盖运维
+  # 的手工调优）；spec.Default 的同步改动见 settings/spec_sessions_v2.go，
+  # 两处的一致性由 settings/session_write_timeout_default_test.go 钉住。
+  #
+  # ⚠ 本迁移**只管预算**。同一轮查出的另一个叠加根因（本机 PG 的
+  # shared_buffers=400kB ⇒ 每条语句规划 ~1s）属环境，不在迁移范围内 ——
+  # 不改它，症状依旧。详见 docs/audit/2026-10-20-request-logs-session-turns-复核轮.md。
+  "$ROOT_DIR/sql/migrations/startup/880_session_write_timeout_budget.sql"
 )
+
 
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的

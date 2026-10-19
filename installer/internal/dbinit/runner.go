@@ -1132,6 +1132,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 守卫在迁移文件里**现算**：embedding 列有非 NULL 值就拒绝删
 			// （= 将来真有向量检索了，逼人重新评估）。
 			"881_drop_attack_vectors_embedding_index.sql",
+			// 880（2026-10-20）：把 session 写路径的**超时预算**在所有环境上对齐到 2000ms。
+			// 缺陷：`settings.GetPlatformInt` 的解析顺序是 DB → env → spec.Default →
+			// 代码 fallback，`spec.Default`（一直是 500）命中时代码里那个 2000 走不到
+			// ⇒ 实际预算 500ms，撑不住一次 shadow write 的串行步骤 ⇒ 正文不落、
+			// turn_no 错位、trace 丢失（全是静默失效）。本迁移只抬「已持久化过且
+			// 偏小」的值，不覆盖偏大的运维调优值。
+			"880_session_write_timeout_budget.sql",
 		},
 	}
 }

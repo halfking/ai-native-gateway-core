@@ -1,4 +1,4 @@
--- Rollback for migration 879_drop_attack_vectors_embedding_index.sql.
+-- Rollback for migration 881_drop_attack_vectors_embedding_index.sql.
 -- Recreates the ivfflat index on injection_attack_vectors.embedding. No data is touched.
 --
 -- ⚠ 这不是「零成本回滚」，请先读完再决定：
@@ -36,10 +36,10 @@ BEGIN;
 SET LOCAL statement_timeout = '10min';
 SET LOCAL lock_timeout = '2s';
 
-DO $recreate_879_attack_vectors_embedding$
+DO $recreate_881_attack_vectors_embedding$
 BEGIN
   IF to_regclass('public.injection_attack_vectors') IS NULL THEN
-    RAISE NOTICE '879 down: injection_attack_vectors 不存在（表未建）⇒ 无事可做，跳过';
+    RAISE NOTICE '881 down: injection_attack_vectors 不存在（表未建）⇒ 无事可做，跳过';
     RETURN;
   END IF;
 
@@ -47,7 +47,7 @@ BEGIN
     EXECUTE 'CREATE INDEX idx_attack_vectors_embedding
              ON public.injection_attack_vectors
              USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)';
-    RAISE NOTICE '879 down: recreated idx_attack_vectors_embedding (ivfflat, lists=100)';
+    RAISE NOTICE '881 down: recreated idx_attack_vectors_embedding (ivfflat, lists=100)';
   ELSIF NOT EXISTS (
     SELECT 1 FROM pg_index
     WHERE indexrelid = to_regclass('public.idx_attack_vectors_embedding')
@@ -55,11 +55,11 @@ BEGIN
       AND pg_get_indexdef(indexrelid, 1, true) = 'embedding'
   ) THEN
     RAISE EXCEPTION
-      '879 down: idx_attack_vectors_embedding exists but is not an index on embedding of injection_attack_vectors';
+      '881 down: idx_attack_vectors_embedding exists but is not an index on embedding of injection_attack_vectors';
   ELSE
-    RAISE NOTICE '879 down: idx_attack_vectors_embedding already present and matches';
+    RAISE NOTICE '881 down: idx_attack_vectors_embedding already present and matches';
   END IF;
 END
-$recreate_879_attack_vectors_embedding$;
+$recreate_881_attack_vectors_embedding$;
 
 COMMIT;

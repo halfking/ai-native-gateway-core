@@ -903,6 +903,9 @@ var supplierErrorsPartitionIndexes878 []byte
 //go:embed embeddata/startup/881_drop_attack_vectors_embedding_index.sql
 var dropAttackVectorsEmbeddingIndex881 []byte
 
+//go:embed embeddata/startup/880_session_write_timeout_budget.sql
+var sessionWriteTimeoutBudget880 []byte
+
 //go:embed embeddata/startup/859_tighten_pii_phone_intl_regex.sql
 var tightenPiiPhoneIntlRegex859 []byte
 
@@ -1207,6 +1210,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/876_drop_prefix_covered_parent_indexes.sql":                dropPrefixCoveredParentIndexes876,
 	"startup/877_session_turns_search_text_trgm.sql":                     sessionTurnsSearchTextTrgm877,
 	"startup/878_supplier_errors_partition_indexes.sql":                  supplierErrorsPartitionIndexes878,
+	"startup/880_session_write_timeout_budget.sql":                    sessionWriteTimeoutBudget880,
 	"startup/881_drop_attack_vectors_embedding_index.sql":                 dropAttackVectorsEmbeddingIndex881,
 	"startup/859_tighten_pii_phone_intl_regex.sql":                                   tightenPiiPhoneIntlRegex859,
 	"startup/852_models_canonical_column_set_reconcile.sql":                          modelsCanonicalColumnSetReconcile852,
