@@ -1,4 +1,4 @@
--- 879_drop_attack_vectors_embedding_index.sql
+-- 881_drop_attack_vectors_embedding_index.sql
 -- 2026-10-20：删掉 `injection_attack_vectors` 上那条**只写不读**的 ivfflat 索引。
 --
 -- -----------------------------------------------------------------------
@@ -78,7 +78,7 @@ BEGIN;
 SET LOCAL statement_timeout = '5min';
 SET LOCAL lock_timeout = '2s';
 
-DO $guard_879_attack_vectors_embedding$
+DO $guard_881_attack_vectors_embedding$
 DECLARE
   v_table   text := 'public.injection_attack_vectors';
   v_index   text := 'public.idx_attack_vectors_embedding';
@@ -86,12 +86,12 @@ DECLARE
   v_is_ivf  boolean;
 BEGIN
   IF to_regclass(v_table) IS NULL THEN
-    RAISE NOTICE '879: % 不存在（表未建）⇒ 无事可做，跳过', v_table;
+    RAISE NOTICE '881: % 不存在（表未建）⇒ 无事可做，跳过', v_table;
     RETURN;
   END IF;
 
   IF to_regclass(v_index) IS NULL THEN
-    RAISE NOTICE '879: % 不存在（已删或未建）⇒ 无事可做，跳过', v_index;
+    RAISE NOTICE '881: % 不存在（已删或未建）⇒ 无事可做，跳过', v_index;
     RETURN;
   END IF;
 
@@ -108,7 +108,7 @@ BEGIN
 
   IF NOT v_is_ivf THEN
     RAISE EXCEPTION
-      '879: % 存在但形态不是「ivfflat on embedding」⇒ 拒绝删除（可能已被改造成别的索引）',
+      '881: % 存在但形态不是「ivfflat on embedding」⇒ 拒绝删除（可能已被改造成别的索引）',
       v_index;
   END IF;
 
@@ -118,14 +118,14 @@ BEGIN
 
   IF v_nonnull > 0 THEN
     RAISE EXCEPTION
-      '879: % 里已有 % 行 embedding 非 NULL ⇒ 该索引可能已在服务向量检索，拒绝删除。'
+      '881: % 里已有 % 行 embedding 非 NULL ⇒ 该索引可能已在服务向量检索，拒绝删除。'
       '请先确认读方与用途，再决定是删索引还是保留。',
       v_table, v_nonnull;
   END IF;
 
-  RAISE NOTICE '879: 守卫通过 —— % 无非 NULL embedding、形态为 ivfflat ⇒ 将删除', v_index;
+  RAISE NOTICE '881: 守卫通过 —— % 无非 NULL embedding、形态为 ivfflat ⇒ 将删除', v_index;
 END
-$guard_879_attack_vectors_embedding$;
+$guard_881_attack_vectors_embedding$;
 
 DROP INDEX IF EXISTS public.idx_attack_vectors_embedding;
 

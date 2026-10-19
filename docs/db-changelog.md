@@ -9063,4 +9063,4 @@ projected = 1 ；read-back title = 'mutation probe' ；DeleteTitle UPDATE 1 ；R
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 879 | `879_drop_attack_vectors_embedding_index.sql` | `58ef9b40efbdd3671be74924812803f7ebc1ee75e383b88252f3e12f5a09d8e5` | pending deploy（真库 llm-gateway-pg 已验证：守卫反向分支正确拒绝、正常路径删除成功、再跑幂等；**未部署到生产**） |
+| 881 | `881_drop_attack_vectors_embedding_index.sql` | `c71b7a24d32eb02df04c0fd81adaee4b2a98ce543d5fb3207f1d72a990821f1a` | pending deploy（真库 llm-gateway-pg 已验证：守卫反向分支正确拒绝、正常路径删除成功、再跑幂等；**未部署到生产**） |

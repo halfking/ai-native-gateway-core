@@ -21,7 +21,7 @@
 |---|---|---|---|
 | 1 | `?q=` 搜索框承诺正文检索、后端只搜元数据 | 承诺与能力不一致 | **已修**（前端文案 + 两道契约门） |
 | 2 | `injection_attack_vectors` 写侧**每次都失败**（枚举数组列绑了 JSON 字节） | 静默失效，表恒为空 | **已修**（真库验证） |
-| 3 | 同表那条 ivfflat 索引**只写不读**，且建在一列**永远为 NULL** 的列上 | 纯写放大 + 误导性对象 | **已修**（迁移 879，EXPLAIN 前后对比） |
+| 3 | 同表那条 ivfflat 索引**只写不读**，且建在一列**永远为 NULL** 的列上 | 纯写放大 + 误导性对象 | **已修**（迁移 881，EXPLAIN 前后对比） |
 
 外加两条**账目/门禁**问题：`sessions.duration_ms` 的第二个夹具漏修导致两条既有测试变红；
 仓内留了 678MB 审计 scratch，把仓库自己的可达性门顶红了。
@@ -219,9 +219,9 @@ SELECT $1, $2, $3,
 **修好写侧之后表开始有行，它就从"零成本的死物"变成"有成本的死物"**
 ⇒ 必须与写侧修复**同轮**处理，否则修完写侧反而更慢。
 
-### 3.4 实施：迁移 879
+### 3.4 实施：迁移 881
 
-`sql/migrations/startup/879_drop_attack_vectors_embedding_index.sql`
+`sql/migrations/startup/881_drop_attack_vectors_embedding_index.sql`
 
 守卫**在文件里现算**（不写死结论），两条，缺一不可：
 
@@ -234,18 +234,18 @@ SELECT $1, $2, $3,
 
 ```
 -- 守卫的反向分支（塞一行 embedding 非 NULL 的数据）
-ERROR:  879: public.injection_attack_vectors 里已有 1 行 embedding 非 NULL
+ERROR:  881: public.injection_attack_vectors 里已有 1 行 embedding 非 NULL
         ⇒ 该索引可能已在服务向量检索，拒绝删除。请先确认读方与用途，再决定是删索引还是保留。
 
 -- 正常路径
-NOTICE:  879: 守卫通过 —— public.idx_attack_vectors_embedding 无非 NULL embedding、形态为 ivfflat ⇒ 将删除
+NOTICE:  881: 守卫通过 —— public.idx_attack_vectors_embedding 无非 NULL embedding、形态为 ivfflat ⇒ 将删除
 DROP INDEX
 COMMIT
 -- 迁移后同表剩 4 条索引：categories(GIN) / tenant / pkey / unique_attack_hash
--- 再跑一遍：NOTICE: 879: … 不存在（已删或未建）⇒ 无事可做，跳过（幂等）
+-- 再跑一遍：NOTICE: 881: … 不存在（已删或未建）⇒ 无事可做，跳过（幂等）
 ```
 
-契约门：`sql/migrations/startup/migration_879_drop_attack_vectors_embedding_index_test.go`（4 条，全绿）
+契约门：`sql/migrations/startup/migration_881_drop_attack_vectors_embedding_index_test.go`（4 条，全绿）
 —— 钉住"只删那一条"、"守卫含反向分支"、"两份 spec 同一份字节"、"RAISE 只用裸 %"。
 
 > ★ **本轮踩到的一个坑，值得单列**：PL/pgSQL 的 `RAISE` **只认裸 `%`**（`%` 取下一个参数），
@@ -349,7 +349,7 @@ ERROR querySessionDetail failed err="query session: incorrect argument number 28
 |---|---|---|
 | 把 `?q=` 改成真正的**正文**检索 | **未做** | 需要让谓词落到 `request_preview/response_preview`（v1）或 `request_delta/response_delta`（session 族）。前导通配符 + 无 trigram 索引 ⇒ 877 那条 GIN 索引将不再服务这条谓词 ⇒ **写放大结论要整体重做**。这是架构决策，不是本轮能顺手做的。**本轮只把承诺改成真的。** |
 | `llm-gateway-pg` 预加载 `pg_stat_statements` | **未做**（需重启 postmaster） | 该容器是本轮指定的运行实例，重启会影响在跑的作业。仓库的部署脚本本来就带这条，本地容器是手工起的 ⇒ 属环境漂移，不属仓库缺陷。**下一轮可择机重启并补一条"量具自检"。** |
-| `injection_attack_vectors.embedding` 的**写入方** | **未做** | 当前没有任何代码计算攻击向量的 embedding（364 把它设计成 pgvector 不可用时的占位列）。要不要真做向量检索是产品决策；迁移 879 只保证"将来真写了向量时，门会拦住删索引"。 |
+| `injection_attack_vectors.embedding` 的**写入方** | **未做** | 当前没有任何代码计算攻击向量的 embedding（364 把它设计成 pgvector 不可用时的占位列）。要不要真做向量检索是产品决策；迁移 881 只保证"将来真写了向量时，门会拦住删索引"。 |
 | 其它仓的分支 | 见各仓小节 | — |
 
 ---
@@ -364,12 +364,12 @@ bash scripts/audit/q-usage.sh --self-test
 export TEST_PG_URL='postgres://llm_gateway:<pw>@127.0.0.1:54318/llm_gateway?sslmode=disable'
 go test -count=1 ./domains/promptinjection/
 
-# 迁移 879 的守卫（反向分支）
+# 迁移 881 的守卫（反向分支）
 #   在 injection_attack_vectors 里插一行 embedding 非 NULL 的数据，
-#   再应用 879 ⇒ 应当 RAISE EXCEPTION 并整条回滚。
+#   再应用 881 ⇒ 应当 RAISE EXCEPTION 并整条回滚。
 
-# 迁移 879 的正常路径 + 幂等
-psql -v ON_ERROR_STOP=1 -f sql/migrations/startup/879_drop_attack_vectors_embedding_index.sql
+# 迁移 881 的正常路径 + 幂等
+psql -v ON_ERROR_STOP=1 -f sql/migrations/startup/881_drop_attack_vectors_embedding_index.sql
 ```
 
 ---
