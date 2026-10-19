@@ -113,6 +113,9 @@ type interceptingStreamWriter struct {
 	blocked          bool
 	terminalRendered bool
 	finished         bool
+	// blockRule 是把这次流掐断的规则 ID。owner 口径（2026-10-20）：拦截必须
+	// 让客户知道**因为什么规则**被拦，而不是只给一个空响应。
+	blockRule string
 }
 
 func newInterceptingStreamWriter(w http.ResponseWriter, chain ResponseInterceptor, ctx context.Context, meta response.StreamMeta) *interceptingStreamWriter {
@@ -262,6 +265,9 @@ func (w *interceptingStreamWriter) finish() {
 					w.writeErr = err
 				}
 				w.blocked = true
+				if rule := errorsx.PolicyBlockRuleID(err); rule != "" {
+					w.blockRule = rule
+				}
 			}
 			if w.blocked {
 				_ = pending
@@ -288,25 +294,47 @@ func (w *interceptingStreamWriter) finish() {
 	// protocol-shaped failure envelope so the client sees a recognisable
 	// terminal instead of a truncated connection.
 	if w.blocked && !w.terminalRendered {
-		w.writeTrustedTerminal(nativeStreamPolicyFailureFrame(w.meta.ClientProtocol))
+		w.writeTrustedTerminal(nativeStreamPolicyFailureFrame(w.meta.ClientProtocol, w.blockRule))
 	}
 }
 
 // nativeStreamPolicyFailureFrame returns the SSE-shaped terminal that the
 // client uses to recognise "the stream ended because output governance
 // blocked it" rather than "the upstream connection dropped".
-func nativeStreamPolicyFailureFrame(protocol string) []byte {
+//
+// r1037（2026-10-20，211）：帧里必须带**规则名**——owner 口径「就算是被拦截，
+// 应该在中断时反馈给客户因为什么规则被拦截，不要搞空响应」。211 现场 zcode 拿到
+// 的只有 empty_model_response，因为它既没读到规则名，也没读到可解析的失败信封。
+//
+// ruleID 为空时仍然渲染终帧（形状合法、码可机器分类），只是没有规则名可报。
+func nativeStreamPolicyFailureFrame(protocol, ruleID string) []byte {
+	rule := ""
+	if ruleID != "" {
+		rule = `,"rule":"` + ruleID + `"`
+	}
 	switch protocol {
 	case "anthropic-messages":
-		return []byte("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Response blocked by output policy\"}}\n\n")
+		return []byte("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"" + rule + "}}\n\n")
 	case "openai-responses":
-		return []byte("event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"}}}\n\n")
+		// response 里的 id/status 是 Responses 协议形状的一部分：客户端的
+		// 解析器按 response 对象校验，缺字段会让整帧被丢掉——那正是
+		// 「客户端只看到空响应」的成因之一。
+		return []byte("event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_output_policy_blocked\",\"object\":\"response\",\"status\":\"failed\",\"error\":{\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"" + rule + "}}}\n\n")
 	default:
 		// r1028: carry a machine-classifiable code — agent clients (ZCode)
 		// map unknown api_error shapes to "reason=unknown retryable=false";
 		// the code lets them distinguish policy blocks from provider faults.
-		return []byte("data: {\"error\":{\"type\":\"api_error\",\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"}}\n\ndata: [DONE]\n\n")
+		return []byte("data: {\"error\":{\"type\":\"api_error\",\"code\":\"output_policy_blocked\",\"message\":\"Response blocked by output policy\"" + rule + "}}\n\ndata: [DONE]\n\n")
 	}
+}
+
+// policyRuleFromChunkResult 取拦截结果里的规则 ID。
+func policyRuleFromChunkResult(result *response.ChunkResult) string {
+	if result == nil || result.Metadata == nil {
+		return ""
+	}
+	rule, _ := result.Metadata["policy_rule"].(string)
+	return rule
 }
 
 // writeTrustedTerminal bypasses output interception only for a gateway-owned
@@ -346,6 +374,7 @@ func (w *interceptingStreamWriter) writeFrame(frame []byte) {
 		if err == nil && result != nil {
 			if result.ShouldBlock {
 				w.blocked = true
+				w.blockRule = policyRuleFromChunkResult(result)
 				// R25-F: wrap the protocol-terminal sentinel so the handler's
 				// execErr fallback recognizes the policy terminal frame we
 				// already rendered and does not emit a second terminal.

@@ -153,11 +153,16 @@ func (d *PatternDetector) managedPatterns(ctx context.Context, scope DetectionSc
 		meta = ruleField{shared.Tool, shared.Field}
 	}
 	tenant := authenticatedTenant(ctx)
+	phase := phaseFor(scope)
 	patterns := make([]patternEntry, 0, len(snapshot.Rules))
 	for _, r := range snapshot.Rules {
-		if !r.Applies(phaseFor(scope), tenant, meta.tool, meta.field) {
+		if !r.Applies(phase, tenant, meta.tool, meta.field) {
 			continue
 		}
+		// r1037（2026-10-20，211）：action **不改写**。是否「终止回合」由硬阻断
+		// 清单在**决策点**判定（detector 的 fail-closed 分支 / egress 片段闸），
+		// 而不是把规则改成 mask —— 改 action 会连带改变凭据重叠判定
+		// （`overlap && p.action != "block"`）与其它以 action 为条件的分支。
 		patterns = append(patterns, patternEntry{sType: SensitiveType(r.Type), regex: r.Regex, group: r.Group, id: r.ID, kind: r.Kind, action: r.Action, vendorKeyShape: r.Kind == "vendor_key_shape", exemptions: r.Exemptions})
 	}
 	return patterns, snapshot

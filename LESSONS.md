@@ -3168,3 +3168,31 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
 - 证据：`domains/outputcompliance/checker.go`（新增 `DetectOnly`）、
   `domains/outputcompliance/owner_test.go:138`（未改判据即绿）。
 - 溯源：本轮 r1038。
+## 2026-10-20 — 改「默认值」会让既有判据**同时从两端假绿**：闸门判据要落在默认不放开的那一档（Seen: 1/3）
+- 场景：给防外传守卫引入「硬阻断清单」，出厂默认只保留请求侧（input）允许硬阻断，egress/output 一律不终止回合。
+- 根因：既有判据写的是「**这条守卫开着的时候**它拦得住 X」。默认值一改，它们从「测拦截能力」退化成「测默认不拦」——**阻断侧与允许侧都会假绿**（判据纪律第 3 条：放行有两种成因，(b) 压根没触发也是放行）。本轮 28 条既有判据差点集体失去意义。
+- 防复发检查：① 引入「默认行为可配」的机制时，给受影响的包各加一个 `TestMain`，把开关打开成「引入前的行为」固定住，既有判据继续测原语义；**默认行为另起一组判据**并显式设置默认值，不要依赖隐式前提；② ★ **闸门本身的判据必须落在「默认不放开」的那一档**——本轮先只写了「input 仍 fail-closed」，而 input 默认就在清单里 ⇒ 「闸门在」与「闸门被摘」两种情况**都拦** ⇒ 变异验证摘掉闸门后**全绿**；补了 output scope（默认不在清单）的正负对照才抓住；③ 闸门判据要成对写：「默认不终止」+「清单开启则终止」+「清单清空则连 input 也降级」。
+- 证据：`security/sanitize/hardblock_testmain_test.go`、`domains/outputcompliance/hardblock_testmain_test.go`、`domains/streaming/hardblock_testmain_test.go` 三个 TestMain；变异 M3（摘掉 detector 的清单闸）第一次**全绿**，补判据后转红。
+- 溯源：211 空响应事故 r1037；[复盘](docs/audit/2026-10-20-r1037-211-空响应与硬阻断清单.md)。
+
+## 2026-10-20 — 「改写既有判据」是实现缺陷的信号：把「默认动作」降级成「可开关的一档」，既有契约一条都不用改（Seen: 1/3）
+- 场景：211 上 zcode 用 minimax-m3 干活，模型要 curl 下载 Android SDK 镜像，整条工具调用被 `builtin.network_destination` 掐掉 → 客户端 `reason=empty_model_response`。
+- 根因：那条规则的 pattern 是**通配** `(?s).+`，命中与否全看「文本里有没有公网主机」——「**提到**公网主机」≠「**把数据送到**公网主机」。这是本守卫第三次因同一种形态误伤收窄（r1033 版本四元组 / r1035 中文地址 / r1037 下载 URL）。
+- 教训（本轮最贵的一条）：第一版实现方向是「用方向判定**替换**形状判定」，代价是必须改写 `r1016`（3 条 must-block 换成外送形态）、`r1035`（触发物换掉）——**改写既有判据是实现缺陷的信号，不是实现方案的代价**。改成「形状规则保留原语义、但降级为清单里可开关的一档」+「新增一条方向规则作为精确档」后，`r1013`/`r1016`/`r1020`/`r1028`/`r1035` **一行未改、全部原样绿**。
+- 防复发检查：① 收紧/放宽一类守卫时，先问「**旧契约想守的那条底线**是否仍然成立」——成立就把「默认动作」降级成「可配置的一档」，不要动判定语义；② 要动判定语义时，先在审计文档里写清「旧契约的哪一条不再成立、为什么」，再改判据；③ 同一族误伤跨三个工作日复现（r1033/r1035/r1037）⇒ 守卫的**判据形态**本身要复审，不是逐条加豁免。
+- 证据：`git diff` 显示 `security/sanitize/r1016_*` 与 `r1035_*` 最终**零改动**；既有契约全绿；新判据 `TestR1037SinkRuleBlocksOnlyRealExfiltration`（方向档只拦真外传）与 `TestR1037ShapeRuleAllowlistRestoresOldBehaviour`（形状档恢复旧行为）正负对照。
+- 溯源：211 空响应事故 r1037；[复盘](docs/audit/2026-10-20-r1037-211-空响应与硬阻断清单.md)。
+
+## 2026-10-20 — 精确档的 fail-closed 默认会把 `echo "https://…"` 也拦掉：覆盖面交给另一档（Seen: 1/3）
+- 场景：给防外传守卫做「方向档」（只拦把本地数据送往公网的命令），第一版沿用 r1019 的口径「认不出来的命令按发送处理（fail-closed）」。
+- 根因：fail-closed 默认在方向档里**过宽**——`echo "https://example.com"`、`cat notes.md`（正文含 URL）、以及**惰性内容工具**（Write 写进文档的命令示例）都被判成外传。这正是 r1033/r1035/r1037 三次形态误伤的共同成因：把「认不出来」当成「有罪」。
+- 防复发检查：① 精确档只认**已声明的网络客户端**（读取型：curl/wget/http/aria2c + git 只读子命令；发送型：nc/socat/ssh/scp/mail/上传类），未声明 ⇒ 不是外传；② **覆盖面由另一档兜底**（形状规则认「提到了公网主机」，管住没列进集合的客户端）——两档分工明确，运维按需要选；③ 精确档只对**本地执行类工具**生效（Bash/shell/exec…），惰性内容工具的参数是「被写下的数据」不是「会被执行的命令」；④ 判定按 token 认客户端 ⇒ 写判据时注意 token 粒度（`示例：curl` 是一个 token，认不出是 curl）。
+- 证据：变异 M8（把 fail-closed 默认改回来）与 M9（摘掉「只对本地执行工具生效」）最初**全绿**——前者是因为用例全是已声明客户端、那条分支走不到；后者是因为非托管路径在惰性工具处提前短路、缺口只在托管路径。补了 `echo https://example.com` 用例与托管路径的 Write 用例才分别抓住。
+- 溯源：211 空响应事故 r1037；[复盘](docs/audit/2026-10-20-r1037-211-空响应与硬阻断清单.md)。
+
+## 2026-10-20 — 同一族守卫的两条分支，一条带原因一条不带 ⇒ 现场查不出是哪条规则（Seen: 1/3）
+- 场景：211 现场日志只有 `output_compliance: blocked stream event label=__tool_json@Bash field_bytes=352`，既没有 reason_codes 也没有 rule_id，运维无法据此判断「该不该把这条规则加进清单」。
+- 根因：同一族守卫有**两条**拦截分支——`lane` 那条带 `reason_codes`，`event` 那条**不带**任何原因。拦截错误在流式拦截器里被降级成 `errors.New("output policy blocked stream event")`，规则名在半路丢了。
+- 防复发检查：① 拦截路径上**规则名必须一路透传到客户端**：检查器产出 `ComplianceIssue.RuleID` → 错误类型带 `RuleID` → 拦截结果带 `Metadata` → 写者渲染终帧时带 `"rule"` 字段；② 同族分支的日志字段要**逐条对齐**（一条有 reason_codes，另一条也必须有）——加字段时按「分支」而不是按「函数」盘点；③ 协议终帧要**能被客户端解析器吃下**：openai-responses 形状的 `response` 对象缺 `id`/`object`/`status` 时整帧会被丢掉，表现与「空响应」一模一样。
+- 证据：`errorsx/policy_block.go`、`ComplianceIssue.RuleID`、`ChunkResult.Metadata`、三种协议形状的终帧都带 `"rule"`；判据 `TestR1037PolicyFailureFrameCarriesRule` / `TestR1037ResponsesFailureFrameCarriesResponseIdentity` / `TestR1037BlockedTerminalCarriesRuleName`（端到端跑生产链，断言终帧含规则名）；变异 M4/M5 转红。
+- 溯源：211 空响应事故 r1037；[复盘](docs/audit/2026-10-20-r1037-211-空响应与硬阻断清单.md)。

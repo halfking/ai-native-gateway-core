@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kaixuan/llm-gateway-go/domains/sanitizerules"
 	"github.com/kaixuan/llm-gateway-go/internal/credentialtext"
 )
 
@@ -123,14 +124,17 @@ type ComplianceResult struct {
 
 // ComplianceIssue 合规问题
 type ComplianceIssue struct {
-	Type        string  `json:"type"`     // 'pii'/'toxic'/'bias'/'hallucination'
-	Subtype     string  `json:"subtype"`  // 'email'/'phone'/'profanity' 等
-	Severity    int     `json:"severity"` // 1-10
-	Location    string  `json:"location"` // "char:120-145"
-	Content     string  `json:"content"`  // 脱敏后的内容
-	Score       float64 `json:"score"`
-	Redacted    bool    `json:"redacted"`
-	Description string  `json:"description"`
+	Type     string `json:"type"`     // 'pii'/'toxic'/'bias'/'hallucination'
+	Subtype  string `json:"subtype"`  // 'email'/'phone'/'profanity' 等
+	Severity int    `json:"severity"` // 1-10
+	Location string `json:"location"` // "char:120-145"
+	Content  string `json:"content"`  // 脱敏后的内容
+	Score    float64 `json:"score"`
+	Redacted bool   `json:"redacted"`
+	// RuleID 是命中的规则 ID。owner 口径（2026-10-20）：拦截必须让客户知道
+	// 「因为什么规则被拦」，没有规则名的拦截理由对客户端不可用。
+	RuleID     string `json:"rule_id,omitempty"`
+	Description string `json:"description"`
 	// ExceptionMatched 为 true 表示命中身份感知例外规则（不会被脱敏/阻断）。
 	ExceptionMatched bool `json:"exception_matched,omitempty"`
 	// DetectOnly 为 true 表示「只检出、不改写客户端可见文本」。
@@ -224,6 +228,13 @@ func (c *Checker) Check(ctx context.Context, tenantID, output string) (*Complian
 		result.RedactedOutput = c.redactOutput(ctx, output, result.Issues, policy)
 	}
 
+	// r1037（2026-10-20，211）：给每条问题补上规则 ID——「因为什么规则被拦」
+	// 这句话需要规则名，内置路径没有托管快照那样的规则 ID，就用稳定伪 ID。
+	for i := range result.Issues {
+		if result.Issues[i].RuleID == "" {
+			result.Issues[i].RuleID = builtinIssueRuleID(result.Issues[i])
+		}
+	}
 	result.Compliant = len(result.Issues) == 0 || !policy.StrictMode
 	result.Blocked = c.shouldBlock(result.Issues, policy)
 	if managed != nil {
@@ -843,22 +854,43 @@ func (c *Checker) actionForIssue(issue ComplianceIssue, policy *Policy) string {
 }
 
 // shouldBlock 判断是否阻断
+//
+// r1037（2026-10-20，211）：硬阻断必须由**清单**显式开启（见
+// domains/sanitizerules.HardBlockAllow）。输出侧默认不终止回合——owner 口径
+// 「输出信息当前默认不要拦截」；形状匹配降级为遮蔽，回合继续走完。
 func (c *Checker) shouldBlock(issues []ComplianceIssue, policy *Policy) bool {
 	if policy.EnforcementMode != "enforce" {
 		return false
 	}
-
 	for _, issue := range issues {
 		if issue.ExceptionMatched {
 			continue
 		}
 		action := c.actionForIssue(issue, policy)
-		if action == "block" || (policy.StrictMode && issue.Severity >= 9) {
-			return true
+		if action != "block" && !(policy.StrictMode && issue.Severity >= 9) {
+			continue
 		}
+		if !sanitizerules.HardBlockAllowed("output", builtinIssueRuleID(issue)) {
+			continue
+		}
+		return true
 	}
-
 	return false
+}
+
+// builtinIssueRuleID 把内置检测的问题映射成可清单化的规则 ID。
+//
+// 内置路径没有托管快照那样的规则 ID，但「因为什么规则被拦」这句话需要规则名，
+// 清单也需要按名开/关——所以给每类问题一个稳定 ID。
+func builtinIssueRuleID(issue ComplianceIssue) string {
+	switch issue.Type {
+	case "pii":
+		return "builtin.pii." + issue.Subtype
+	case "secret":
+		return "builtin.secret." + issue.Subtype
+	default:
+		return "builtin." + issue.Type
+	}
 }
 
 // getActionTaken 获取执行的动作
