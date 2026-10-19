@@ -28847,3 +28847,155 @@ GROUP BY date_trunc('hour', ts), timeout_mode
 | ★ | 找出这些视图的**实际消费方**，坐实「空结果被读成指标良好」 |
 | ★ | §122 的两条 P0（Go 零值兜底、`system_health_status` 兜底源）仍在 |
 | ★ | §120 的属主决策仍在 |
+
+---
+
+## §124 给 §123 的「归零视图」找消费方 —— 挖出一条**比门控早 4 个月**的独立静默失效（2026-10-19）
+
+§123 验完 12 个视图后留下两条待办：找消费方、取停写前基线。本节做前者，
+**结果推翻了我自己即将写下的归因**。
+
+### 一、消费方定位：三个 `v_*` 是孤儿，两个成本视图**有人在用**
+
+`grep` 命中 203 个文件，但按 §117 纪律「文件里出现过这个名字 ≠ 它驱动着生产动作」，
+逐个分拣后：
+
+| 视图 | 生产消费方 | 结论 |
+|---|---|---|
+| `v_timeout_effectiveness` | **无** | 🚨 **孤儿视图**（建了没人读） |
+| `v_node_switch_analysis` | **无** | 🚨 **孤儿视图** |
+| `v_continuation_effectiveness` | **无** | 🚨 **孤儿视图** |
+| `customer_cost_view` | `admin/auto_route.go:902`（`handleCustomerCost`） | ⚠ **有面板在用** |
+| `model_cost_per_task_view` | `admin/auto_route.go:1014`（`handleModelCost`） | ⚠ **有面板在用** |
+| `v_probe_system_health` | `admin/probe_dashboard.go:605,866`（`loadLegacySystemHealth`） | ⚠ 有 dashboard 在用 |
+| `v_model_health_dashboard` | `admin/probe_dashboard.go:674`（`handleProbeDashboard`） | ⚠ 有 dashboard 在用 |
+
+⚠ ⚠ `bg/routing_health_checks.go` **不在此列** —— 它出现在
+`internal/sqlreadguard/guard_test.go` 的白名单里，但白名单的键是**文件**，
+它引用的是别的视图（`v_node_probe_state_compat` / `v_routable_credential_models` /
+`v_supplier_price_vs_baseline` …）。⇒ **差点把它当成那三个视图的消费方。**
+
+⚠ ⇒ ★★★ **好消息**：§123 最担心的「形态 ④（窗口归零被读成指标良好）」
+在这三个 `v_*` 上**不会发生** —— 它们没有任何消费者。
+⚠ 但它们仍是死代码（12 个视图之一，白占维护成本）。
+
+### 二、🚨 但 `model_cost_per_task_view` 的 0 行，**与门控毫无关系**
+
+它的定义（生产只读）：
+
+```sql
+FROM api_key_model_cost mcp                       -- ★ 主表不是 _request_logs
+WHERE bucket >= (now() - '7 days'::interval)
+```
+
+⇒ §123 把它和三个 `v_*` 并列为「归零」是**我按表面相似归的类，不是同因**。
+查主表本身：
+
+```sql
+SELECT count(*), min(bucket), max(bucket), now() - max(bucket)
+  FROM api_key_model_cost;
+--   352 | 2026-06-14 23:40 | 2026-06-19 03:30 | 122 天 07:56:57
+```
+
+⇒ ⇒ ★★★ **这张聚合表在 2026-06-19 就停更了，比门控停写（10-13）早近 4 个月。**
+⇒ ⇒ ★★★ **量级差 20 倍（122 天 vs 6 天），一眼可辨 —— 如果我去查了。**
+
+### 三、★ 停更机制完整闭合：**触发器随老表一起消失了，且从未重建**
+
+`update_api_key_model_cost()` 是一个 `RETURNS trigger` 的 AFTER INSERT 触发器函数
+（累加式 `INSERT … ON CONFLICT DO UPDATE … requests_total = … + 1`）。
+
+仓内 `deploy/sql/docs/features/2026-06-15-auto-route-mode-cost-table.sql:124-129`：
+
+```sql
+DROP TRIGGER IF EXISTS trg_update_api_key_model_cost ON request_logs;
+CREATE TRIGGER trg_update_api_key_model_cost
+        … ON request_logs … EXECUTE FUNCTION update_api_key_model_cost();
+```
+
+⇒ ★ ★★ 触发器挂在 **`request_logs`**（**老表**）上，迁移日期 **2026-06-15**，
+而该表最后一批数据是 **2026-06-19 03:30** ⇒ 时间吻合。
+
+生产实测：
+
+```sql
+-- 触发器：0 行
+SELECT t.tgname, c.relname FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+  JOIN pg_proc p ON p.oid=t.tgfoid WHERE p.proname='update_api_key_model_cost';
+
+-- 表：老表不存在
+SELECT c.relname, c.relkind, (SELECT count(*) FROM pg_trigger WHERE tgrelid=c.oid)
+  FROM pg_class c WHERE c.relname IN ('request_logs','_request_logs','_request_logs_hot');
+```
+
+| 表 | relkind | 触发器数 |
+|---|---|---|
+| `request_logs`（老表） | **不存在** | — |
+| `_request_logs`（新分区父表） | `p` | **0** |
+| `_request_logs_hot` | `r` | 2（§114 记的 `trg_sync_session_task_id` / `trg_update_session_summary`） |
+
+⇒ ⇒ 🚨🚨 **完整因果链**：
+
+```
+2026-06-15  迁移在 request_logs 上建 trg_update_api_key_model_cost
+2026-06-19 03:30   api_key_model_cost 最后一批数据
+   ↓  request_logs 老表被退役/改名（§116 的 S4 退役轮）
+   ↓  ★ 触发器随老表一起消失，函数 update_api_key_model_cost 仍在（函数≠触发器）
+   ↓  ★ 从未在 _request_logs 上重建 ⇒ 该表 n_triggers = 0
+   ↓  ★ api_key_model_cost 此后无任何写入者
+122 天后  model_cost_per_task_view（7 天窗口）恒 0 行
+122 天后  admin/auto_route.go 的「per-model aggregated cost (last 7 days)」面板持续空白
+```
+
+⇒ ⇒ ★★★ **`admin/auto_route.go:991-992` 的注释仍写着「per-model aggregated cost
+(last 7 days)」，而它已经 4 个月没有数据了。**
+⇒ ⇒ ★★ 这条缺陷**完全独立于门控停写**，早 4 个月，且**没有任何告警**。
+
+### 四、★★ 本节最该记的：**叙事引力**
+
+§122/§123 我已经建立了「门控停写 ⇒ 一连串读端失效」这个解释链。
+面对「`model_cost_per_task_view` 也是 0 行」时，最省事的写法是**并入同一个叙事**。
+
+⚠ 若那样写，就会：
+① 漏掉一条 **122 天**的独立缺陷（用户可见：成本面板空白 4 个月）；
+② 把它的修复挂到「门控要不要重开」这个错误的决策上；
+③ 而它真正的修法是**在 `_request_logs` 上重建触发器**（或明确放弃该链路），
+   与门控毫无关系。
+
+⇒ ⇒ ★★★ **判别动作：一串现象共享一个强解释时，必须对每个现象单独取时间戳。**
+本例「122 天 vs 6 天」的量级差，只要看一眼 `max(bucket)` 就会暴露。
+⇒ ⇒ ★★★ **现象的「形状相似」（都是 0 行）不等于「成因相同」。**
+⇒ ⇒ ★★ 推广：`count=0`、`status=suspect`、`文件里出现过某个名字` ——
+这些是**症状**不是**指纹**；指纹必须是**时间量级**或**机制位置**。
+★ 同族：[[零值兜底编造未知]] · [[整齐归零是断链的指纹]] ——
+那两条讲「怎么定指纹」，本条讲「**别用一个现成的解释覆盖所有现象**」。
+
+### 五、诚实边界
+
+| | |
+|---|---|
+| ❌ | **未验证**「`request_logs` 老表被哪个迁移/操作 DROP 的」—— 只知道它现在不存在，且时间与 `api_key_model_cost` 停更吻合（6-19）。§116 的 S4 退役改名轮是**候选**，未坐实 |
+| ❌ | 未查 `api_key_model_cost` 的最后一批是**哪一天**的写入（只有 `max(bucket)`，没按日分布） |
+| ❌ | `customer_cost_view`（5 行）**未定性** —— 它同时读 `api_key_model_cost`、`api_keys` 与 `_request_logs`（后者有历史数据），5 行可能是「只有 5 个 key 有数据」而非失效 |
+| ❌ | 未查 `admin/auto_route.go` 那两个 API 的**实际响应**（是否有登录/权限门槛），也未确认面板是否真的有人用 |
+| ❌ | `v_probe_system_health` / `v_model_health_dashboard` 的**内容**未验（只数了行数：1 行 / 未测） |
+| ⚠ | 「三个 `v_*` 是孤儿」的判据是「Go 代码零引用」—— 仓外消费者（外部 SQL 客户端、其他服务的报表）**未排除** |
+| ✅ | 已证：7 个视图的 Go 消费方分布；`model_cost_per_task_view` 主表是 `api_key_model_cost`；该表停更于 2026-06-19（122 天）；触发器在生产上不存在；`request_logs` 老表不存在而 `_request_logs` 的 `n_triggers = 0`；迁移文件里触发器的挂载表与日期 |
+
+### 六、动作边界
+
+⚠ 本节全程**只读**：生产 `pg_trigger` / `pg_class` / `pg_get_viewdef` / 一条聚合读数
+（`api_key_model_cost`，12.2 ms）+ 仓内 `grep`（Go 与 SQL）。
+**未改任何对象、未部署、未做任何生产写。**
+⚠ 特别声明：`update_api_key_model_cost` 是 **VOLATILE 触发器函数** ⇒ **未调用**。
+
+### 七、由此产生的待办
+
+| 优先级 | 动作 |
+|---|---|
+| 🚨 | **确认并修复 `api_key_model_cost` 链路**：在 `_request_logs` 上重建触发器，或明确宣布放弃该链路并下线 `model_cost_per_task_view` + 对应 API |
+| 🚨 | 确认 `admin/auto_route.go` 的「per-model 成本（last 7 days）」面板是否已空白 122 天（若属实，属**用户可见功能长期失效**） |
+| ★ | 定性 `customer_cost_view` 的 5 行 |
+| ★ | 清理三个**孤儿视图** `v_timeout_effectiveness` / `v_node_switch_analysis` / `v_continuation_effectiveness`（§123 归零 + 本节无消费方） |
+| ★ | 「表退役时连带丢失的触发器」应进**退役检查清单** —— 这是与 §116/§123 同族的一类 |
+| ★ | §122 的两条 P0 与 §120 的属主决策仍在 |
