@@ -2721,3 +2721,8 @@ L1 判对 2 次、判错 5 次 ⇒ **准确率 1/6**。
 - 根因：为本地固定SQL补校验时，只按函数名匹配会让selector/遮蔽closure借名；删除动态拼片后再判UNION，会把嵌套过滤误读成输出分支。跨tag复用测试helper还可能产生只在integration下的符号断链。
 - 防复发：CallExpr对象绑定与括号正负控；未知SQL片段默认拒证明；必要的具名证明核真实声明并跑全部有限输入的完整返回SQL；同次跑普通与integration编译。
 - 实际证据/溯源：[本轮续查](docs/audit/2026-10-19-stream-node-audit.md)，独立反例先红、修后绿，最终10行为变异红；原stripSQLComments函数原样搬移后integration vet通过。修复 f13c2289d3aa3bf8101228b540fcc22c9af38865（首次复审时未提交）。
+
+## 2026-10-19 — 库存证据要排除注释，列投影不等于人口覆盖（Seen: 1/3 个不同工作日）
+- 根因：源码 substring 让旧 SQL 注释冒充读点；进一步用 AST Comment.End 定位又因 CR 归一化缩短原文字节范围。另一个判断盲区是仅凭 canonical 列直映，就把 waterfall 全人口误判为停写无影响。
+- 防复发：Go 注释范围用 AST 起点加原始字节终点，配 CR/CRLF 正反例；更换查询来源后同时核对镜像排除人口，不能只核列投影。
+- 证据/溯源：[admin 库存复核](docs/audit/2026-10-19-admin-inventory-repair.md)，代码 `0ebe9bf8e`；注释与 CR 反例先红后绿，14 个变异均触发指定断言；waterfall 保留仅 v1 人口的 errors_out 风险，降为 unaffected 的变异被拒绝。
