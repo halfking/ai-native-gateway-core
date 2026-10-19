@@ -27585,7 +27585,13 @@ $ tail /var/log/pg17-emergency-cleanup.log
 ```
 
 - 脚本**确实在跑**，每 15 分钟一次（`DISK_TRIGGER_PCT=90`，`:63`）
-- ⚠ 它不在 root 的 crontab 里（`crontab -l | grep` 无命中），**部署位置待查**
+- 注册源 = **`/etc/cron.d/pg17:62`**（不在 root crontab，在 cron.d）：
+  `*/15 * * * * root llmgw-source /opt/scripts/pg17-emergency-cleanup.sh --auto`
+- ⚠ **`llmgw-source` 不是用户**，是 `/usr/local/bin/llmgw-source` 这个包装命令
+  （source `/etc/llmgw/notify.conf` 后 `exec "$@"`）⇒ `/etc/cron.d` 第 6 段确实是 `root`，
+  **这一行本身是对的**
+- ⚠⚠ **实际派发是 5 次不是 1 次** —— `/etc/cron.d/` 里还有 **4 个 `pg17.bak.*` 文件**，
+  而 **cron 会解析该目录下的所有文件，包括 `.bak`**（见下 §五之二）⇒ 详见第六节
 - 一旦磁盘 ≥ 90%，`--auto` 会把 LEVEL 升到 **L2** 并**真的执行 L1 的 DROP**
 
 ### 三、逐字复现它的判据（生产只读，2026-10-19）
@@ -27716,3 +27722,70 @@ INSERT INTO parent VALUES (1,'2026-09-20');                  -- ⇒ ERROR:
 | ★★ | 把 `analyze_llm_gateway_table_stats()` 的覆盖面从「两张白名单」改成「默认全量 + 明确豁免」 | 根因消除 | **改 SQL 对象 = 生产写**，且会让 analyze pass 变长（§67 已实测其耗时敏感）⇒ 需先量成本 |
 | ★★ | 把这 5 张命中表补一次 `ANALYZE`（让 `n_live_tup` 归位） | 止血（不改任何逻辑） | ANALYZE 是写统计，成本低 |
 | ⚠ | `ursm_node_snapshot_min_legacy` 是否真的该 DROP | 属主拍板（284 万行历史快照） |
+
+### 六之二、⚠ `/etc/cron.d/` 里的 `.bak` 是**活 cron**：每个 pg17 作业被重复派发 3~5 次
+
+**这不是 §116 的原创发现，是追查「cron 注册在哪」时顺带挖出来的第二条。**
+
+#### 1. 现场
+
+```bash
+$ ls /etc/cron.d/
+0hourly  cleanup-known-junk  cleanup-nacos-tmp  cleanup-pg252
+mihomo-subscription-update  nps-conf-watch  pg17
+pg17.bak.20261003-162457  pg17.bak.20261004-011152
+pg17.bak.20261004-234856  pg17.bak.20261006-155307
+pg17-ctrlog-snapshot  raid-check  update-motd
+```
+
+⇒ ⇒ ★★★ **`/etc/cron.d/` 不是放备份的地方 —— 放进去的备份就是一份活 crontab。**
+（这与 `run-parts` 的直觉相反：run-parts 会跳过带点的文件名，**cron 不会**。）
+
+#### 2. 证明：派发倍数 == 各文件条目数之和（252 实测）
+
+| 作业 | 出现在几个 cron.d 文件里 | 实测派发 |
+|---|---|---|
+| `pg17-pg-availability-check.sh` | **2**（`pg17` + `bak.20261006`） | **每分钟 2 条 CMD 记录** |
+| `pg17-emergency-cleanup.sh` | **5**（`pg17` + 4 个 bak） | **每轮 5 条 CMD 记录**（`10:30:01` 一次 5 条） |
+
+⇒ 两个倍数**各自精确等于条目数之和** ⇒ 判定成立。
+
+#### 3. 对脚本的影响
+
+脚本自己有单实例锁（`flock`），但**本作业执行不到 1 秒就退出**（磁盘 < 90% 时在预检查就 `exit 0`），
+⇒ 锁在下一次派发之前已经释放 ⇒ **锁去重不掉重复派发**。
+
+⇒ ⇒ ★★★ **当磁盘 ≥ 90% 时，L1 的 DROP 逻辑会在同一轮里跑 5 次。**
+§116 那条地雷的杀伤面因此再乘一个系数。
+
+#### 4. 与 2026-10-10 那次事故是同一族
+
+`pg17-emergency-cleanup.sh` 头部的注释记着 2026-10-10 的事故：
+`pg17-disk-watch.sh` **堆到 310 份副本**、149 个 `docker exec … psql` 僵死、把 15G 内存吃到 swap 100%。
+⇒ 那次是**脚本副本**，这次是 **cron 条目副本**；
+**同一类错误（「备份留在了会被执行的位置」）在两个层面各犯一次。**
+
+#### 5. 修法（小、但属生产写，需授权）
+
+```bash
+# 把备份移出 cron.d（cron 不再解析），保留可回滚性
+mkdir -p /etc/cron.d.bak
+mv /etc/cron.d/pg17.bak.* /etc/cron.d.bak/
+```
+⇒ 验证：`grep -c "pg17-emergency-cleanup" /etc/cron.d/* | grep -v ":0"` 应只剩 `pg17:1`；
+再等一轮 cron.log，该作业的 CMD 记录应由 5 条降到 1 条。
+
+⚠ **同批还应检查**：`/etc/cron.d/` 里其余带点的文件（如 `pg17-ctrlog-snapshot` 无点，不受影响），
+以及 `/opt/scripts/.bak/`、`/opt/scripts/backups/` —— 后两者 cron 不会解析，**是安全的**，
+不要顺手一起搬。
+
+#### 6. ★ 两条我自己走错的路（都记下来，因为它们是可复现的错法）
+
+| 我的推断 | 为什么错 | 判别动作 |
+|---|---|---|
+| 「`llmgw-source` 不在 `/etc/passwd` ⇒ 这批 cron 作业全是坏的」 | **`/etc/cron.d` 第 6 段才是用户，这里就是 `root`**；`llmgw-source` 是**第 7 段的命令**（一个 source 配置再 exec 的包装脚本）。先 `command -v llmgw-source` 就能否掉 | 看到「用户不存在」先确认**字段位置**，`command -v` 比 `id` 更贴近「它到底是什么」 |
+| 「availability 只有 2 次/分 ⇒ `.bak` 没被解析 ⇒ 假设错了」 | **我只用了观测值，没回头核对「哪个文件里有哪些条目」**。availability 只在 2 个文件里有，emergency 在 5 个文件里 —— 两个倍数各自都对得上 | ⇒ ★ **「观测到的倍数」必须与「配置里的条目数之和」对账**，否则很容易用一个不完整的观测否掉一个正确的假设 |
+
+★ 同族：`[[grep 命中字段名后必须确认它属于哪个 struct 和哪张表]]`
+—— 本次同一个小时内，我在**同一个字段名**（`llmgw-source`）上连错两次：
+先当用户、再当证据。
