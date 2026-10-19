@@ -264,26 +264,46 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 // autoRouteIndexSnapshotSQL —— 取「每个 (credential_id, raw_model) 对的
 // 最新桶那一行」，供 admin 的 auto-route 索引端点使用。
 //
-// 2026-10-19（96h 审计轮，252 生产库只读实测）：本查询原先写成
-// 「CTE latest_bucket（GROUP BY 取 MAX(bucket)）+ JOIN 回原视图」，
-// 那个形态在 PG 上**把同一批行扫了两遍**——
+// 2026-10-19（96h 审计轮）：本查询原先写成「CTE latest_bucket
+// （GROUP BY 取 MAX(bucket)）+ JOIN 回原视图」，本轮改写成「元组 IN 子查询」。
 //
-//	EXPLAIN (ANALYZE, BUFFERS)（252 真库，2026-10-19 23:5x）
-//	  CTE  : Parallel Append → HashAggregate，431,820 行 × 3 loops
-//	  外层 : Parallel Append（JOIN 回同一视图），143,940 行 × 3 loops
-//	  ⇒ Execution Time 1789 ms、Buffers shared hit=29988
+// ⚠⚠⚠ **原提交（a54213451）声称的「1789 ms → 739 ms，-59%，每天省 27 分钟
+// 数据库时间」是错的，已撤回**（订正见 2026-10-20 的 correction 提交与
+// docs/audit/2026-10-19-96h-审计轮-分支裁决与慢SQL.md §3.4）。
+// 错因：**测量顺序造成的冷热缓存混淆**——先跑的那条是冷的，后跑的那条是热的。
+// 我自己手上的 `pg_stat_statements` 其实已经反证了它：**同一条旧写法**当天
+// 第一次 2030.9 ms、随后 3 次均值 726.2 ms ⇒ 那个 1789 ms 只是冷启动读数。
 //
-// 改写成「元组 IN 子查询」后，PG 只需扫一遍（HashAggregate + 半连接）：
+// ⇒ 订正后的**真库实测**（252 生产库、生产形态 ORDER BY score_smart DESC
 //
-//	Execution Time 739 ms（同一台库、同一份数据、**只换写法**）⇒ **-59%**
+//	   LIMIT 100、先预热再**交错重复** ABAB ×6 轮）：
 //
-// 该端点在 25.7 小时窗口内被调 637 次（pg_stat_statements，均值 3.1 s）
-// ⇒ 每次省 ~1.05 s ≈ **每天省约 27 分钟的数据库时间**。
+//		旧写法（CTE + JOIN）  n=6  min 644 / 中位 777 / max 1173 / 均值 829 ms
+//		新写法（元组 IN）      n=6  min 632 / 中位 691 / max 1060 / 均值 755 ms
+//		⇒ 中位差 -86 ms（-11%），最小值差 -12 ms（-1.9%）
+//		⇒ **组内极差（±80 ms）大于组间差** ⇒ 差异在噪声带内 ⇒
+//		  **结论：两种写法性能无实质差异**（不是 -59%，也不是稳定的小幅优势）。
 //
-// ⚠ 为什么不改成 DISTINCT ON（那才是"教科书"写法）：实测**更慢**——
-// DISTINCT ON 让 PG 对 431,820 行做 external merge Sort，溢出 58,944 kB
-// 到磁盘（work_mem 仅 8MB），Execution Time 2980 ms，比原写法还差 67%。
-// ⇒ 改写方向由**真库实测**决定，不由直觉决定。
+// ⇒ 计划面**结构相同**（自己复测的 EXPLAIN (ANALYZE, BUFFERS) 逐节点比对）：
+//
+//	节点类型完全一致（Gather Merge → Sort → Hash Left Join → Hash Join →
+//	Parallel Append → HashAggregate → Append → Seq Scan …），
+//	行数完全一致（聚合侧 432,076、外层 144,025、最终 100 行），
+//	buffers 几乎一致（30,292 vs 30,284）——**只有 Hash Join 换成 Hash Semi Join**。
+//	⇒ 「旧写法把同一批行扫两遍、新写法只扫一遍」这个机理解释**不成立**。
+//
+// ⇒ 所以本次改写的**真实价值只有两条**（都不是性能）：
+//  1. 语义等价已用真库逐行对账钉死（EXCEPT 双向差集 = 0，1079/1079 行）；
+//  2. 换掉了**教科书式的 DISTINCT ON**——那才是真的慢：它让 PG 对 432,076 行
+//     做 external merge Sort、溢出 58,944 kB 到磁盘（work_mem 仅 8MB），
+//     Execution Time 2980 ms（我方实测）/ 3040.8 ms（复核方实测），
+//     **比两种写法都差 3~4 倍**——这一条是**远超噪声带**的真实差异。
+//
+// ⇒ **下一次若有人再想「优化」这条 SQL，先记住两件事**：
+//
+//	(a) 交错重复测，别拿「先跑的那条」当基线（冷热缓存）；
+//	(b) 两种现有写法等价，别再改来改去；要动就先把 `gateway_mv_refresh_*`
+//	    之外的**真实读放大**找出来（这才是这 43 万行真正的问题）。
 //
 // ⚠ 语义等价性（三处都对上，改写才成立）：
 //  1. **逐对**取 MAX(bucket)，不是全局 MAX：桶是稀疏的，全局最大值只落在
@@ -294,7 +314,7 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 //     取最新桶」，当同一 (对, 桶) 上 canonical_id 变过时两者不等价。
 //  3. models_canonical 的 LEFT JOIN 位置不影响结果（按主键唯一查）。
 //
-// 门：admin/auto_route_index_snapshot_sql_test.go（形状 + 语义位置两腿）。
+// 门：admin/auto_route_index_snapshot_sql_test.go（语义两条 + 禁 DISTINCT ON）。
 const autoRouteIndexSnapshotSQL = `
 		SELECT cmi.credential_id, cmi.raw_model, cmi.canonical_id,
 		       COALESCE(mc.canonical_name, ''), cmi.billing_mode,
