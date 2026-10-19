@@ -291,3 +291,4 @@
 273	878_supplier_errors_partition_indexes.sql
 274	879_drop_session_summaries_redundant_session_key_uidx.sql
 275	881_drop_attack_vectors_embedding_index.sql
+276	882_request_logs_cost_negative_partial_idx.sql

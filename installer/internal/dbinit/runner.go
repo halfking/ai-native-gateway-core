@@ -1139,6 +1139,14 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 守卫在迁移文件里**现算**：embedding 列有非 NULL 值就拒绝删
 			// （= 将来真有向量检索了，逼人重新评估）。
 			"881_drop_attack_vectors_embedding_index.sql",
+			// 882（2026-10-20）：给 `_request_logs`（860 改名的 request_logs 分区
+			// 父表）建 WHERE cost_usd < 0 的部分索引，根修
+			// bg/routing_health_checks.go recorded_cost_is_negative 的重扫浪费
+			// （R51 §3.5 方案 (a)。252 生产 24h 实测：158 次慢查 / 2,010s +
+			// 34 次/天被 statement_timeout 击杀；而源已停写、全表负成本行 = 0）。
+			// 建在父表上让未来月分区自动继承；fresh-install 的月分区
+			// （01-schema ensure）不带 USING columnar，全 heap，无 AM 拒绝面。
+			"882_request_logs_cost_negative_partial_idx.sql",
 		},
 	}
 }
