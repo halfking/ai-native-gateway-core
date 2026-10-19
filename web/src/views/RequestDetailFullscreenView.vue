@@ -171,6 +171,12 @@ const snapGeneratedAt = computed(() => {
   const s = sessionSnap.value?.summary_generated_at
   return typeof s === 'string' ? s : undefined
 })
+// sessions.duration_ms —— 877 起每轮刷新的已流逝时长。
+// undefined = 后端没给（不是 0ms）；0 是"瞬时完成"，两者语义不同。
+const snapDurationMs = computed(() => {
+  const n = sessionSnap.value?.duration_ms
+  return typeof n === 'number' ? n : undefined
+})
 </script>
 
 <template>
@@ -214,6 +220,7 @@ const snapGeneratedAt = computed(() => {
         :total-turns="snapTurns"
         :total-cost="snapCost"
         :summary-generated-at="snapGeneratedAt"
+        :duration-ms="snapDurationMs"
         @summary-updated="onSummaryUpdated"
       />
 

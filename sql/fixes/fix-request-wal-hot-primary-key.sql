@@ -49,8 +49,16 @@ BEGIN
     LEFT JOIN pg_constraint c ON c.conrelid = cl.oid AND c.contype IN ('p','u')
   LOOP
     IF r.conname IS NULL THEN
-      RAISE EXCEPTION '%.212：%s 上找不到任何主键/唯一约束；本脚本的「只报告」策略'
-                      '遇到这种情况会中止，请人工确认后再加。', '  ', r.tbl;
+      -- ★ 2026-10-20 审计订正：PL/pgSQL 的 RAISE **只认裸 `%`**（`%` 取下一个参数），
+      --   `%s` 是 SQL 函数 format() 的 specifier，在 RAISE 里**不是** spec ——
+      --   解析器把 `%` 当作"取下一个参数"、紧跟的字符照原样输出。
+      --   ⇒ 原写法 `'%.212：%s 上找不到…', '  ', r.tbl` 实际渲染成
+      --       "  .212：request_wal_hots 上找不到…"
+      --   （编号被吃掉、标了 "R89-EA(212)" 的字样丢了、表名后面还挂了个 s）。
+      --   仓库里其余 RAISE（如下一行的 `'% : % % (%)'`）用的都是裸 `%`，本行是唯一例外。
+      --   ⇒ 改成裸 `%` + 把编号写进字面量，消息才真的是它想说的那句话。
+      RAISE EXCEPTION 'R89-EA(212)：% 上找不到任何主键/唯一约束；本脚本的「只报告」策略'
+                      '遇到这种情况会中止，请人工确认后再加。', r.tbl;
     END IF;
     RAISE NOTICE '% : % % (%)', r.tbl, r.contype, r.conname, r.cols;
   END LOOP;

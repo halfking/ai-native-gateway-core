@@ -290,3 +290,4 @@
 272	877_session_turns_search_text_trgm.sql
 273	878_supplier_errors_partition_indexes.sql
 274	879_drop_session_summaries_redundant_session_key_uidx.sql
+275	881_drop_attack_vectors_embedding_index.sql
