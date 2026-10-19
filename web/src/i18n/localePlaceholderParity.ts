@@ -28,8 +28,13 @@
 //   - 值 = **运行时真值**（vm 求值 locale 模块，见 scanner.ts 的 loadLocale）。
 //     理由同 localeValueQuality.ts：JS 对象字面量语义下重复键后者覆盖前者，
 //     文件文本口径会把早已被覆盖的值算进来。
-//   - 只比**字符串**值：某语种该键的值不是字符串（数组/数字/布尔）时，
-//     **该语种不参与该键的比较**（不是判成违例）—— 类型不同与占位符缺失是两回事。
+//   - 只比**字符串**值。两层机制要分清：
+//       ① **值表里根本没有非字符串**（`localeValues` 的 `collectLeafValues` 只收
+//          `typeof v === 'string'`）⇒ 数组/数字/布尔值对某个键来说，等价于
+//          「**该语种没有这个键**」，而不是「该语种参与了比较但被排除」。
+//       ② `measureParity` 另有一道防御：`hasOwnProperty` 通过但值不是字符串时，
+//          **该语种不参与该键的比较**（类型不同 ≠ 占位符缺失）——
+//          这条分支在真实值表上不会触发，自证 P4 专门钉它。
 //   - 占位符语法 = `{name}`，name ∈ [A-Za-z0-9_]+。
 //     ⚠️ vue-i18n 的字面量转义 `{'@'}`（8 处）**不匹配**该式 ⇒ 正确地不算占位符。
 //     ⚠️ `t(key, { default: ... })` 的 `default` 是 vue-i18n 的**选项**不是占位符
@@ -161,10 +166,16 @@ export function selfCheckParity(): ParitySelfCheckCase[] {
   const probe = (
     id: string,
     desc: string,
-    values: Record<string, LocaleValues>,
+    // ⚠️ 入参类型**故意放宽到 unknown**：P4 要喂一个**非字符串**值去测
+    //   「该语种不参与比较」的防御分支，而 `LocaleValues` 规定值必须是 string
+    //   ⇒ 若把入参写成 `Record<string, LocaleValues>`，P4 本身就编不过
+    //   （vue-tsc 实测报 TS2322）。这里的 cast 是**自证专用**的、有意的放宽，
+    //   不是绕过真实值表的类型约束（真实值表由 `localeValues` 保证只有字符串）。
+    values: Record<string, Record<string, unknown>>,
     expected: number,
   ) => {
-    const map = new Map<string, LocaleValues>(Object.entries(values))
+    const map = new Map<string, LocaleValues>()
+    for (const [loc, v] of Object.entries(values)) map.set(loc, v as LocaleValues)
     const report = measureParity(map)
     cases.push({ id, desc, expected, actual: report.violations.length, ok: report.violations.length === expected })
   }
