@@ -1122,6 +1122,16 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 形状照抄 hot 侧那 5 条已验证索引；建在父表上让未来月分区自动继承
 			// （ensure_supplier_errors_partition 用 CREATE TABLE … PARTITION OF）。
 			"878_supplier_errors_partition_indexes.sql",
+			// 879（2026-10-20）：删掉 injection_attack_vectors 上那条**只写不读**的
+			// ivfflat 索引 —— 全仓 `<=>` 的唯一读方打的是 task_type_centroids
+			// （另一张表，索引是活的），这张表只有 INSERT 与一个不碰 embedding
+			// 的 tenant 列表；而唯一的写入方**根本不写 embedding 列** ⇒ 该列恒为
+			// NULL、索引里一个条目都没有，却要在每次写入时付维护成本。
+			// 实测（EXPLAIN ANALYZE, BUFFERS，200 行 1536 维向量插入）：
+			// 有 ivfflat 3229ms/read=21279，无 ivfflat 1149ms/read=12。
+			// 守卫在迁移文件里**现算**：embedding 列有非 NULL 值就拒绝删
+			// （= 将来真有向量检索了，逼人重新评估）。
+			"879_drop_attack_vectors_embedding_index.sql",
 		},
 	}
 }
