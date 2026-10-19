@@ -15,6 +15,34 @@ import (
 // ── Response types ────────────────────────────────────────────────────
 
 // UserProfileSummary 用户画像摘要
+// userProfileBaseStatsSQL 是用户画像的基础聚合（%s = WHERE 子句）。
+//
+// 2026-10-20 复核轮：这段聚合原先用裸 SUM/MIN/MAX，于是**该 owner 一行都
+// 没有**时返回全 NULL ⇒ Scan 到非空的 Go 标量（int64 / float64 / time.Time）
+// 报 "cannot scan NULL into *int64" ⇒ GET
+// /api/admin/session-analytics/users/{owner} 恒 500（实测）。
+// 「该 owner 没有会话」是**正常状态**，不是错误 ⇒ 聚合值一律 COALESCE 到 0；
+// 时间戳用可空指针接收后落成零值（零值时间 = 从未出现，不是 1970 事实）。
+//
+// 提为包级常量是为了让真库判据能**逐字**跑它
+// （见 user_profile_null_aggregate_test.go），而不是让判据自己抄一份。
+const userProfileBaseStatsSQL = `
+		SELECT
+			COUNT(DISTINCT so.gw_session_id) AS session_count,
+			COALESCE(SUM(so.request_count), 0) AS total_requests,
+			COALESCE(SUM(so.total_cost_usd), 0) AS total_cost_usd,
+			COALESCE(CASE WHEN COUNT(DISTINCT so.gw_session_id) > 0
+				THEN SUM(so.total_cost_usd) / COUNT(DISTINCT so.gw_session_id)
+				ELSE 0 END, 0) AS avg_cost,
+			COALESCE(SUM(so.success_count), 0) AS total_success,
+			COALESCE(SUM(so.error_count), 0) AS total_errors,
+			MIN(so.first_seen_at) AS first_seen_at,
+			MAX(so.last_seen_at) AS last_seen_at,
+			COUNT(DISTINCT so.end_user_id) FILTER (WHERE so.end_user_id IS NOT NULL AND so.end_user_id <> '') AS end_user_count
+		FROM session_owners so
+		WHERE %s
+	`
+
 type UserProfileSummary struct {
 	OwnerUser         string    `json:"owner_user"`
 	SessionCount      int       `json:"session_count"`
@@ -271,26 +299,17 @@ func (h *Handler) handleUserAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 		baseArgs = append(baseArgs, tenantID)
 	}
 
-	err := h.db.QueryRow(ctx, fmt.Sprintf(`
-		SELECT
-			COUNT(DISTINCT so.gw_session_id) AS session_count,
-			SUM(so.request_count) AS total_requests,
-			SUM(so.total_cost_usd) AS total_cost_usd,
-			CASE WHEN COUNT(DISTINCT so.gw_session_id) > 0
-				THEN SUM(so.total_cost_usd) / COUNT(DISTINCT so.gw_session_id)
-				ELSE 0 END AS avg_cost,
-			SUM(so.success_count) AS total_success,
-			SUM(so.error_count) AS total_errors,
-			MIN(so.first_seen_at) AS first_seen_at,
-			MAX(so.last_seen_at) AS last_seen_at,
-			COUNT(DISTINCT so.end_user_id) FILTER (WHERE so.end_user_id IS NOT NULL AND so.end_user_id <> '') AS end_user_count
-		FROM session_owners so
-		WHERE %s
-	`, baseWhere), baseArgs...).Scan(
+	// 2026-10-20 复核轮：这个聚合在**该 owner 一行都没有**时返回全 NULL 的
+	// SUM / MIN / MAX ⇒ Scan 到非空的 Go 标量（int64 / float64 / time.Time）
+	// 报 "cannot scan NULL into *int64" ⇒ 端点 500。
+	// 「该 owner 没有会话」是**正常状态**，不是错误：聚合值一律 COALESCE 到 0，
+	// 时间戳用可空指针接收后落成零值（零值时间 = 从未出现，不是 1970 事实）。
+	var firstSeenAt, lastSeenAt *time.Time
+	err := h.db.QueryRow(ctx, fmt.Sprintf(userProfileBaseStatsSQL, baseWhere), baseArgs...).Scan(
 		&resp.SessionCount, &resp.TotalRequests, &resp.TotalCost,
 		&resp.AvgCostPerSession,
 		&resp.TotalSuccess, &resp.TotalErrors,
-		&resp.FirstSeenAt, &resp.LastSeenAt, &resp.EndUserCount,
+		&firstSeenAt, &lastSeenAt, &resp.EndUserCount,
 	)
 	if err == pgx.ErrNoRows {
 		writeError(w, http.StatusNotFound, "owner not found")
@@ -299,6 +318,12 @@ func (h *Handler) handleUserAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		writeInternalErr(w, "stats query", err)
 		return
+	}
+	if firstSeenAt != nil {
+		resp.FirstSeenAt = *firstSeenAt
+	}
+	if lastSeenAt != nil {
+		resp.LastSeenAt = *lastSeenAt
 	}
 
 	// 额外：models_used（通过 session_dim 关联 session_summaries）

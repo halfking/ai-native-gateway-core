@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/domains/promptinjection"
 	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 	"github.com/lib/pq"
 )
@@ -21,6 +22,77 @@ type PromptInjectionHandler struct {
 	pool   *pgxpool.Pool
 	secret string
 }
+
+// promptInjectionDetectionsSelectCols 是检测列表的**正典形状**投影。
+//
+// 2026-10-20 复核轮：这段投影原先写的是历史迁移 315 的形状
+// （detection_score / matched_rules / matched_rules_count / risk_level varchar），
+// 而**正典表**（sql/schema/01-schema.sql 与
+// sql/objects/tables/prompt_injection_detections.sql）从未采用该形状：
+// 正典 risk_level 是 **integer 分数（1..10，带 CHECK 约束）**，
+// 且没有 detection_score / matched_rules / matched_rules_count 三列。
+// 315 的 `CREATE TABLE IF NOT EXISTS` 在正典库上是**空操作**
+// （表已存在 ⇒ 那几列从未被创建）⇒ 旧投影恒报 42703 ⇒ 端点 500。
+// 现在按正典形状读：
+//
+//	· 分数（detection_score）取 risk_level（integer 1..10）；
+//	· 等级字符串（risk_level）由同一套阈值派生
+//	  （domains/promptinjection.RiskLevelSQLExpr，与写侧
+//	   RiskLevelFromScore 同源 —— 落库的分数与页面显示的等级不能各说各话）；
+//	· matched_rules ← 命中规则的 rule_name；
+//	· matched_rules_count ← categories 的元素个数。
+//
+// 响应字段名与 JSON 契约保持不变（前端不改）。
+//
+// 提成包级常量是为了让真库判据能**逐字**跑它
+// （见 prompt_injection_canonical_shape_test.go），而不是让判据自己抄一份。
+const promptInjectionDetectionsSelectCols = `SELECT id, tenant_id, request_id, COALESCE(session_key, '') AS session_key, detected_at,
+		risk_level AS detection_score,
+		` + promptinjection.RiskLevelSQLExpr + ` AS risk_level,
+		COALESCE(rule_name, '') AS matched_rules,
+		COALESCE(array_length(categories, 1), 0) AS matched_rules_count,
+		action_taken, blocked, COALESCE(evidence_text, '') AS evidence_text,
+		COALESCE(categories::text[], '{}'::text[]), llm_confidence, COALESCE(llm_reason, ''),
+		COALESCE(canary_token_leaked, ''), COALESCE(approval_id, ''),
+		COALESCE(replaced_content, ''), COALESCE(client_ip, ''), COALESCE(user_agent, '')
+		FROM prompt_injection_detections WHERE `
+
+// promptInjectionDetectionsCountFrom 是检测列表的计数查询前缀。
+//
+// 2026-10-20 复核轮：原先这里用 strings.Replace 把 SELECT 换成
+// "SELECT COUNT(*)"。那是**字符串级替换**：只要 SELECT 文本与模板有一个
+// 字符不同（换行、空格、字段顺序），替换就静默不生效 ⇒ count 查询仍返回
+// 整行集 ⇒ Scan(&total) 报 "cannot scan ..."。计数与列表因此共用一段脆弱的
+// 文本耦合。改为**显式 count 查询 + 共享 WHERE**。
+const promptInjectionDetectionsCountFrom = "SELECT COUNT(*) FROM prompt_injection_detections WHERE "
+
+// promptInjectionStatsSQL 是检测统计的**正典形状**聚合。
+//
+// 2026-10-20 复核轮：原先读视图 prompt_injection_stats_enhanced（迁移 364）。
+// 该视图**在任何正典库上都建不出来**：它引用 d.detection_score，而正典表
+// 没有这一列 ⇒ 42P01 ⇒ 端点 500。且视图的严重等级分桶写的是
+// `(risk_level)::text = 'critical'`，而正典 risk_level 是 integer ⇒ 即使
+// 视图建出来，那 4 个分桶也**恒为 0**。
+// ⇒ 改为直接在正典表上聚合，阈值与写侧 RiskLevelFromScore 一致
+// （10/8/6，与 domains/promptinjection.RiskLevelSQLExpr 同源）。
+// 聚合查询恒返回一行（无 GROUP BY）⇒ 「今天没有命中」= 全零，
+// 不再需要靠 ErrNoRows 兜底。
+const promptInjectionStatsSQL = `SELECT COUNT(*) AS total_detections,
+			COUNT(*) FILTER (WHERE blocked) AS blocked_count,
+			COUNT(*) FILTER (WHERE risk_level >= 10) AS critical_count,
+			COUNT(*) FILTER (WHERE risk_level >= 8 AND risk_level < 10) AS high_count,
+			COUNT(*) FILTER (WHERE risk_level >= 6 AND risk_level < 8) AS medium_count,
+			COUNT(*) FILTER (WHERE risk_level < 6) AS low_count,
+			COUNT(*) FILTER (WHERE action_taken = 'approve') AS approval_count,
+			COUNT(*) FILTER (WHERE action_taken = 'replace') AS replaced_count,
+			COUNT(*) FILTER (WHERE action_taken = 'terminate') AS terminated_count,
+			COUNT(*) FILTER (WHERE canary_token_leaked IS NOT NULL) AS canary_leak_count,
+			COALESCE(AVG(risk_level), 0)::double precision AS avg_score,
+			COALESCE(MAX(risk_level), 0) AS max_score,
+			COALESCE(AVG(llm_confidence), 0)::double precision AS avg_llm_confidence,
+			COUNT(DISTINCT session_key) AS affected_sessions
+		FROM prompt_injection_detections
+		WHERE tenant_id = $1 AND detected_at >= CURRENT_DATE`
 
 // NewPromptInjectionHandler 创建 Handler
 func NewPromptInjectionHandler(pool *pgxpool.Pool, secret string) *PromptInjectionHandler {
@@ -490,26 +562,31 @@ func (h *PromptInjectionHandler) toggleRule(w http.ResponseWriter, r *http.Reque
 
 // PromptInjectionDetection 检测日志
 type PromptInjectionDetection struct {
-	ID                int      `json:"id"`
-	TenantID          string   `json:"tenant_id"`
-	RequestID         string   `json:"request_id"`
-	SessionKey        string   `json:"session_key"`
-	DetectedAt        string   `json:"detected_at"`
-	DetectionScore    int      `json:"detection_score"`
-	RiskLevel         string   `json:"risk_level"`
-	MatchedRules      string   `json:"matched_rules"`
-	MatchedRulesCount int      `json:"matched_rules_count"`
-	ActionTaken       string   `json:"action_taken"`
-	Blocked           bool     `json:"blocked"`
-	EvidenceText      string   `json:"evidence_text"`
-	Categories        []string `json:"categories"`
-	LLMConfidence     *float64 `json:"llm_confidence"`
-	LLMReason         string   `json:"llm_reason"`
-	CanaryTokenLeaked string   `json:"canary_token_leaked"`
-	ApprovalID        string   `json:"approval_id"`
-	ReplacedContent   string   `json:"replaced_content"`
-	ClientIP          string   `json:"client_ip"`
-	UserAgent         string   `json:"user_agent"`
+	ID         int    `json:"id"`
+	TenantID   string `json:"tenant_id"`
+	RequestID  string `json:"request_id"`
+	SessionKey string `json:"session_key"`
+	// 2026-10-20 复核轮：原先是 string。timestamptz 扫不进 *string
+	//（pgx 二进制格式报 "cannot scan timestamptz (OID 1184) ... into *string"），
+	// 而旧查询在更早的 42703 就挂了 ⇒ 这个缺陷被掩盖着。
+	// 改成 *time.Time：JSON 仍是**字符串**（RFC3339，前端 fmtTime 可解析），
+	// 且列可空时如实给 null，不编造 1970。
+	DetectedAt        *time.Time `json:"detected_at"`
+	DetectionScore    int        `json:"detection_score"`
+	RiskLevel         string     `json:"risk_level"`
+	MatchedRules      string     `json:"matched_rules"`
+	MatchedRulesCount int        `json:"matched_rules_count"`
+	ActionTaken       string     `json:"action_taken"`
+	Blocked           bool       `json:"blocked"`
+	EvidenceText      string     `json:"evidence_text"`
+	Categories        []string   `json:"categories"`
+	LLMConfidence     *float64   `json:"llm_confidence"`
+	LLMReason         string     `json:"llm_reason"`
+	CanaryTokenLeaked string     `json:"canary_token_leaked"`
+	ApprovalID        string     `json:"approval_id"`
+	ReplacedContent   string     `json:"replaced_content"`
+	ClientIP          string     `json:"client_ip"`
+	UserAgent         string     `json:"user_agent"`
 }
 
 func (h *PromptInjectionHandler) handleDetections(w http.ResponseWriter, r *http.Request) {
@@ -537,49 +614,69 @@ func (h *PromptInjectionHandler) handleDetections(w http.ResponseWriter, r *http
 	sessionKey := q.Get("session_key")
 	category := q.Get("category")
 
-	query := `SELECT id, tenant_id, request_id, session_key, detected_at, detection_score, risk_level,
-		matched_rules, matched_rules_count, action_taken, blocked, evidence_text,
-		COALESCE(categories::text[], '{}'), llm_confidence, COALESCE(llm_reason, ''),
-		COALESCE(canary_token_leaked, ''), COALESCE(approval_id, ''),
-		COALESCE(replaced_content, ''), client_ip, user_agent
-		FROM prompt_injection_detections WHERE tenant_id = $1`
+	// 2026-10-20 复核轮：这段查询原先查的是历史迁移 315 的形状
+	// （detection_score / matched_rules / matched_rules_count / risk_level varchar），
+	// 而**正典表**（sql/schema/01-schema.sql 与
+	// sql/objects/tables/prompt_injection_detections.sql）从未采用该形状：
+	// 正典 risk_level 是 **integer 分数（1..10，带 CHECK 约束）**，
+	// 且没有 detection_score / matched_rules / matched_rules_count 三列。
+	// 315 的 `CREATE TABLE IF NOT EXISTS` 在正典库上是**空操作**
+	// （表已存在 ⇒ 那几列从未被创建）⇒ 旧查询恒报 42703 ⇒ 端点 500。
+	// 现在按**正典形状**读：
+	//   · 分数（detection_score）取 risk_level（integer 1..10）；
+	//   · 等级字符串（risk_level）由同一套阈值派生
+	//     （domains/promptinjection.RiskLevelSQLExpr，与写侧
+	//      RiskLevelFromScore 同源 —— 落库的分数与页面显示的等级不能各说各话）；
+	//   · matched_rules ← 命中规则的 rule_name；
+	//   · matched_rules_count ← categories 的元素个数。
+	// 响应字段名与 JSON 契约保持不变（前端不改）。
+	selectCols := promptInjectionDetectionsSelectCols
+
+	where := "tenant_id = $1"
 	args := []interface{}{tenantID}
 	argCount := 2
 
 	if riskLevel != "" {
-		query += " AND risk_level = $" + strconv.Itoa(argCount)
+		where += " AND " + promptinjection.RiskLevelSQLExpr + " = $" + strconv.Itoa(argCount)
 		args = append(args, riskLevel)
 		argCount++
 	}
 	if blocked != "" {
-		query += " AND blocked = $" + strconv.Itoa(argCount)
+		where += " AND blocked = $" + strconv.Itoa(argCount)
 		args = append(args, blocked == "true")
 		argCount++
 	}
 	if action != "" {
-		query += " AND action_taken = $" + strconv.Itoa(argCount)
+		where += " AND action_taken = $" + strconv.Itoa(argCount)
 		args = append(args, action)
 		argCount++
 	}
 	if sessionKey != "" {
-		query += " AND session_key = $" + strconv.Itoa(argCount)
+		where += " AND session_key = $" + strconv.Itoa(argCount)
 		args = append(args, sessionKey)
 		argCount++
 	}
 	if category != "" {
-		query += " AND $" + strconv.Itoa(argCount) + " = ANY(categories)"
+		where += " AND $" + strconv.Itoa(argCount) + " = ANY(categories)"
 		args = append(args, category)
 		argCount++
 	}
 
 	// 计算总数
-	countQuery := strings.Replace(query, "SELECT id, tenant_id, request_id, session_key, detected_at, detection_score, risk_level,\n\t\tmatched_rules, matched_rules_count, action_taken, blocked, evidence_text,\n\t\tCOALESCE(categories::text[], '{}'), llm_confidence, COALESCE(llm_reason, ''),\n\t\tCOALESCE(canary_token_leaked, ''), COALESCE(approval_id, ''),\n\t\tCOALESCE(replaced_content, ''), client_ip, user_agent", "SELECT COUNT(*)", 1)
+	//
+	// 2026-10-20 复核轮：原先这里用 strings.Replace 把 SELECT 换成
+	// "SELECT COUNT(*)"。那是**字符串级替换**：只要 SELECT 文本与模板有
+	// 一个字符不同（换行、空格、字段顺序），替换就静默不生效 ⇒ count 查询
+	// 仍返回整行集 ⇒ Scan(&total) 报 "cannot scan ..."。计数与列表因此
+	// 共用一段脆弱的文本耦合。改为**显式 count 查询 + 共享 WHERE**。
+	countQuery := promptInjectionDetectionsCountFrom + where
 	var total int
 	if err := h.pool.QueryRow(r.Context(), countQuery, args...).Scan(&total); err != nil {
 		writeInternalErrStr(w, "Failed to count detections", err)
 		return
 	}
 
+	query := selectCols + where
 	query += " ORDER BY detected_at DESC LIMIT $" + strconv.Itoa(argCount) + " OFFSET $" + strconv.Itoa(argCount+1)
 	args = append(args, pageSize, offset)
 
@@ -643,14 +740,10 @@ func (h *PromptInjectionHandler) handleStats(w http.ResponseWriter, r *http.Requ
 	tenantID := GetTenantID(r)
 
 	stats := &DetectionStats{}
-	err := h.pool.QueryRow(r.Context(),
-		`SELECT COALESCE(total_detections,0), COALESCE(blocked_count,0),
-			COALESCE(critical_count,0), COALESCE(high_count,0), COALESCE(medium_count,0), COALESCE(low_count,0),
-			COALESCE(approval_count,0), COALESCE(replaced_count,0), COALESCE(terminated_count,0),
-			COALESCE(canary_leak_count,0), COALESCE(avg_score,0), COALESCE(max_score,0),
-			COALESCE(avg_llm_confidence,0), COALESCE(affected_sessions,0)
-		FROM prompt_injection_stats_enhanced WHERE tenant_id = $1`, tenantID,
-	).Scan(&stats.TotalDetections, &stats.BlockedCount,
+	// 2026-10-20 复核轮：原先读视图 prompt_injection_stats_enhanced
+	//（迁移 364），该视图在任何正典库上都建不出来（见 promptInjectionStatsSQL
+	// 的注释）⇒ 42P01 ⇒ 端点 500。改为直接在正典表上聚合。
+	err := h.pool.QueryRow(r.Context(), promptInjectionStatsSQL, tenantID).Scan(&stats.TotalDetections, &stats.BlockedCount,
 		&stats.CriticalCount, &stats.HighCount, &stats.MediumCount, &stats.LowCount,
 		&stats.ApprovalCount, &stats.ReplacedCount, &stats.TerminatedCount,
 		&stats.CanaryLeakCount, &stats.AvgScore, &stats.MaxScore,

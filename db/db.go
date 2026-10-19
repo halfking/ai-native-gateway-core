@@ -299,6 +299,15 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureSessionSummariesArchivalSchema(migCtx); err != nil {
 		return err
 	}
+	// 2026-10-20 复核轮: migration 467 的 public.sessions.user_tags。
+	// 会话快照端点（/api/admin/sessions/{id}/snapshot）读这一列，而该列
+	// **不在正典基线里**（sql/schema/01-schema.sql 无此列）⇒ 只有走
+	// installer（其 StartupFiles 登记表含 467）的新装库才有；任何由
+	// deploy 路线演进来的库都缺 ⇒ 快照查询恒 42703 ⇒ 端点 500。
+	// 幂等补列，必须先于任何会话读路径生效。
+	if err := db.ensureSessionUserTags(migCtx); err != nil {
+		return err
+	}
 	// 2026-09-24 migration 744: outbox done 清理与 digest 回填的部分索引。
 	// 两个后台 job 在缺索引时分别对 645MB outbox / 全分区 session_turns
 	// 做每 10s-10min 一次的 30s 级全扫（252 实锤击杀循环），必须先于
@@ -1226,6 +1235,52 @@ BEGIN
   END LOOP;
 END $$;
 `
+
+// ensureSessionUserTags mirrors sql/migrations/startup/467_sessions_title_user_tags.sql.
+//
+// 2026-10-20 复核轮：public.sessions.user_tags 是会话元数据的一半（客户端
+// X-Gw-Tags 头），会话快照端点 /api/admin/sessions/{id}/snapshot 直接读它。
+// 该列**不在正典基线里**（sql/schema/01-schema.sql 与
+// sql/objects/tables/sessions.sql 都没有）⇒ 只有走 installer 的新装库才有
+// （installer 的 StartupFiles 登记表含 467）；任何由 deploy 路线演进来的库
+// 都缺这一列 ⇒ 快照查询恒 42703 ⇒ 端点 500（实测本机）。
+// ⇒ 补进 ensure 链：每个环境在每次启动都自愈，不依赖「谁建的库」。
+//
+// 锁语义：`ALTER TABLE … ADD COLUMN IF NOT EXISTS` 即便列早已存在也要先取
+// ACCESS EXCLUSIVE（与并发读的 ACCESS SHARE 冲突，§10.97 同族）⇒ 列已在位
+// 时整段跳过 DDL（columnsAllPresent 在表不存在时返回 true ⇒ 不建表、不报错）。
+func (d *DB) ensureSessionUserTags(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	if d.columnsAllPresent(ctx, "sessions", []string{"user_tags"}) {
+		return nil
+	}
+	var colErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-time.After(2 * time.Second):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		_, colErr = d.pool.Exec(ctx, `
+			SET LOCAL lock_timeout = '2s';
+			ALTER TABLE public.sessions
+			    ADD COLUMN IF NOT EXISTS user_tags text[];
+			COMMENT ON COLUMN public.sessions.user_tags IS
+			    'User-supplied tags (X-Gw-Tags header). M3: distinct from session_tags (auto).';
+		`)
+		if colErr == nil {
+			slog.Info("sessions.user_tags ensured (migration 467)")
+			return nil
+		}
+		slog.Warn("sessions.user_tags ensure failed; retrying",
+			"attempt", attempt, "max", 3, "error", colErr)
+	}
+	return colErr
+}
 
 func (d *DB) ensureSqlAuditPartialIndexes(ctx context.Context) error {
 	if d == nil || d.pool == nil {

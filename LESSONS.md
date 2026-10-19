@@ -3138,3 +3138,38 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
 - 防复发检查：① 泛化后 `grep -n "<主机名>" 引擎` 只允许剩**历史说明性注释**，任何会影响行为的字面量都要清；② 判据加**反向断言**：「引擎不含写死的主机名」（`registry-211` 这类字面量不得出现）+「引擎默认按 target 拼」；③ 复制引擎 = 两份语义各自演化必然漂 ⇒ 新增主机只允许新增**薄外壳**；④ 薄外壳里 `DD_STATE_DIR` 这类**存密钥/状态**的路径不可改（换路径 = 换 SECRET_KEY = 库内 key 全失效）。
 - 证据：契约门新增「引擎默认基础镜像仓按 target 拼」「引擎不含写死的主机专属仓名」两条；211 薄外壳 `scripts/deploy-211.sh` 只含主机信息 + 家族骨架。
 - 溯源：本轮 211 蓝绿改造；[复盘](docs/audit/2026-10-20-211-bluegreen-docker-engine.md)。
+
+## 2026-10-20 — 同一张表有两套形状时，先问「哪一份是正典」：迁移文件里的 `IF NOT EXISTS` 会把列声明变成空操作（Seen: 1/3）
+- 场景：逐页浏览器扫描（104 页）时抓到 `/api/admin/prompt-injection/detections` 恒 500，服务端报 `42703 column "detection_score" does not exist`。这一列在 `sql/migrations/startup/315_prompt_injection_detection.sql` 里明明写着。
+- 根因：**正典形状**（`sql/schema/01-schema.sql` + `sql/objects/tables/prompt_injection_detections.sql`）的 `risk_level` 是 **integer 分数（1..10，带 CHECK）**，且**没有** `detection_score`/`matched_rules`/`matched_rules_count` 三列；而 315 声明的是另一套形状。315 的建表语句是 `CREATE TABLE IF NOT EXISTS` ⇒ **在已有正典表的库上是空操作** ⇒ 315 声明的列**从未被创建** ⇒ 查它们的代码恒 42703。⇒ 迁移文件是「声明」，`sql/schema/`+`sql/objects/` 才是「正典」；**声明可能从未生效**。
+- 防复发检查：① 看到 `42P01/42703` 时，先去**正典**里核这一列/视图在不在，再去核「是哪条迁移声明的」——后者很可能就是没生效的那条；② `CREATE TABLE IF NOT EXISTS` 只在「表不存在时」才是建表，在已有表的库上它**静默什么都不做**——凡是用它声明**列**的迁移，都必须先核正典形状；③ 判据要钉**正典形状**（逐字跑生产 SQL 让 PG 自己解析），不能钉「迁移文件里写了什么」。
+- 证据：`admin/prompt_injection_canonical_shape_test.go`（真库逐字跑生产投影与统计 SQL）；`domains/promptinjection/detector_canonical_shape_test.go`（真库写侧 + 旧形状变异见证）；变异 6/6 全被抓住。
+- 溯源：本轮 request_logs→session_turns 复核轮；[审计](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md §5.6.1)。
+
+## 2026-10-20 — 形状错配同时毒化读侧与**写侧**，而写侧常被降级成 WARN ⇒ 审计记录静默丢失（Seen: 1/3）
+- 场景：同一张 `prompt_injection_detections` 表的形状错配，让读侧 500（可见），也让**写侧**每次 INSERT 都失败 —— 而失败只落一行 `slog.Warn("prompt_injection: failed to log detection")`。
+- 根因：**注入检测照常生效/拦截，只是审计记录一条不留** ⇒ 页面/报表上「这批请求没有注入命中」成了**假结论**。同族先例：攻击向量库写侧（a56338ee2，`learnAttackPattern` 恒失败、表恒 0 行）。
+- 防复发检查：① 凡「写不进去只记 WARN」的写点，优先怀疑「列/类型对不上」，而不是「偶发失败」；② 这类 WARN 升级为 **Error**（审计链断掉是安全事件，不是噪声）；③ 写侧要有**真库落库判据**（事务 + 回滚 + 读回），mock 门只认「有一条 INSERT 发生过」⇒ 对参数类型不敏感，**旧 bug 在 mock 下照样全绿**。
+- 证据：本轮把写侧失败从 `slog.Warn` 升为 `slog.Error` 并带 tenant/request/score；真库门 `TestInsertDetectionSQL_LandsInCanonicalShape` 读回 risk_level/rule_name/category/categories。
+- 溯源：同上 §5.6.1。
+
+## 2026-10-20 — 真库门能抓到 mock 抓不到的东西：把生产 SQL 提成包级常量，让判据**逐字**跑它（Seen: 1/3）
+- 场景：本轮新写的 6 道真库门，在**写的过程中**当场抓到我自己的 4 个错误：`AS c` 把列别名写成了表别名（应为 `AS t(c)`）；`FROM` 跑到了子查询**外面**；`categories` 绑了 JSON 字节（PG 数组字面量 22P02）；判据自己把数组扫进 `*string`。
+- 根因：这 4 条**在 mock 下全绿** —— pgxmock 对参数类型不敏感，只认「有过一次调用」。⇒ 判据抄一份 SQL 会与生产**漂移**，且漂移了没人知道；判据自己绑错类型则把自己的错当生产的错。
+- 防复发检查：① 生产用的 SQL 提成**包级常量**（`insertDetectionSQL` / `promptInjectionDetectionsSelectCols` / `promptInjectionStatsSQL` / `userProfileBaseStatsSQL`），判据**逐字**跑它，不许抄；② 判据的绑定参数必须与生产**同形**（`pq.Array` vs JSON 字节）；③ 判据自己的扫描目标类型要和列类型对得上（数组扫进 `[]string`、timestamptz 扫进 `*time.Time`）——判据红时先分「生产错」还是「判据错」。
+- 证据：4 个错误分别由真库门报 `42601` / `22P02` / `cannot scan _text into *string` 抓出；6 道判据的变异 6/6 全红。
+- 溯源：同上 §5.6.4。
+
+## 2026-10-20 — 「端点坏」与「端点被取消」必须用两条证据分开（Seen: 1/3）
+- 场景：浏览器里 `/request-logs` 恒「共 0 条 / 加载中…」、`/api/admin/turns/sessions` 报 500。一度按「端点有缺陷」查了很久。
+- 根因：服务端 `context canceled` ⇒ Go 的 `http.Server` 在**客户端断开**时取消 request ctx。浏览器同源 HTTP/1.1 只有 **6 条**连接且**整个浏览器共享**；内嵌 Browser 每个标签页常驻一条 SSE ⇒ 标签页一多，新请求被**客户端放弃** ⇒ 服务端记 500。真缺陷是**稳定**的，争抢是**时好时坏**的（实测同一端点同标签页 500/200/500）。
+- 防复发检查：① 判定「服务端有缺陷」要**两条证据一起看**：「同一请求逐字 curl 重放」⇒ 200 ⇒ 服务端没问题；服务端日志 `context canceled` ⇒ 客户端取消的佐证；② **同端点时好时坏**本身就是争抢的指纹；③ 客户端取消在服务端被记成 `500/server_error`（`middleware/logging_mw.go` 只看状态码）⇒ 监控里「客户端跑了」与「服务端坏了」长得一样（**遗留 L7**）。
+- 证据：curl 逐字重放 `GET /api/logs` 恒 200/151–156 条；浏览器 06:26:34 500 / 06:26:36 200 / 06:26:40 500。
+- 溯源：同上 §5.5.2。
+
+## 2026-10-20 — 工具的连接池上限会伪造出「数据恒为空」：页面级验收前先问「这个工具每标签页占几条连接」（Seen: 1/3）
+- 场景：内嵌 Browser 逐页验收时，页面「完整、无报错、但数据恒空」，一度被当成应用缺陷。
+- 根因：内嵌 Browser **每标签页常驻一条 SSE**（`/api/admin/live-stream`），而 Chromium 对同源 HTTP/1.1 只有 **6 条**连接且整个浏览器共享 ⇒ 多标签页时新请求排队/被放弃。这是**工具/环境约束**，不是应用缺陷。
+- 防复发检查：① 页面级验收前先问「这个工具每标签页占几条连接」；不满足时改用**单页顺序访问**的无头脚本（本轮：playwright-core + 本机缓存的 Chrome for Testing 1223，104 页顺序扫，全程最多 1 条 SSE）；② 无头脚本顺带给出**每 API 的状态与耗时**，比 DOM 断言更适合做「>2s 定位」；③ 判据材料留档：`/tmp/llmgw-retire-20261020/pw/sweep.mjs` + `sweep.tsv`（104 行，逐页一行）。
+- 证据：104 页扫描结果：文档级 103/104 可达（唯一例外 `/maintain` 503 = 本机未部署该服务）、**0 个 API ≥2000ms**、**0 个 JS 运行时异常**、5xx API 9 处（全部 curl 可复现）。
+- 溯源：同上 §5.5。

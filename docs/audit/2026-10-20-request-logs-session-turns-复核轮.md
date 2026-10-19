@@ -24,6 +24,8 @@
 | API 读源是否已切？ | **主体已切**（canonical 视图含 session 臂）；3 张中间层视图仍 v1-only（**有意**，有门钉住） |
 | **数据存储是否可用？** | **修复前：不可用。** 请求返回 200，但 session 族几乎不落库（正文 null、trace 丢、turn_no 错位）。**根因是本机 PG 的 `shared_buffers=400kB`**，加上 `sessions_v2.write_timeout_ms` 的 spec 默认（500ms）**静默撤销**了一次「提到 2000ms」的修复。两者已修并加门 |
 | 效率 | 修 PG 内存后，规划耗时 1195ms → 50ms（**24×**），网关请求延迟 2–8× 改善 |
+| **逐页浏览器验证（104 页）** | **103/104 文档级 200**（唯一例外 `/maintain` 503 = 本机未部署该服务）；**0 个 API ≥2000ms**；**0 个 JS 运行时异常**；抓出 **9 处真 5xx**（5 个根因，全部 curl 可复现）—— 已修 4 个 + 1 个是功能未启用（503 预期） |
+| **逐页抓出的最重根因** | `prompt_injection_detections` 的**正典形状**（`sql/schema/` + `sql/objects/tables/`）与**历史迁移 315 的形状**不是一回事，而 315 的 `CREATE TABLE IF NOT EXISTS` 在正典库上是**空操作** ⇒ 315 声明的列**从未被创建** ⇒ 读侧恒 42703、**写侧恒失败（审计记录静默丢失）**、364 的视图建不出来 ⇒ **全环境**缺陷（不是本机没升级） |
 
 ---
 
@@ -418,7 +420,200 @@ COALESCE(pg_total_relation_size((
 
 ---
 
-## 6. 遗留（按严重度）
+## 5.5 ★ 逐页浏览器验证（104 页）：0 个慢 API、0 个 JS 异常，抓出 9 个真 500
+
+> 口径：Maestro 方法论（逐页 + 逐 API + 计时），但**不用 Maestro CLI**
+> （本机无 Java/adb），改用**无头 Chromium 脚本**（playwright-core 1.64.1 +
+> 本机缓存的 Chrome for Testing 1223）。
+> **为什么换载体**：内嵌 Browser 每个标签页常驻一条 SSE（`/api/admin/live-stream`），
+> 而 Chromium 对同源 HTTP/1.1 只有 **6 条**连接（整个浏览器共享）⇒ 多标签页时
+> 新请求被**客户端取消** ⇒ 服务端看到 `context canceled` ⇒ 页面「完整、无报错、
+> 数据恒为空」。这是**工具/环境约束**，不是应用缺陷（同一请求 curl 恒 200）。
+> 无头脚本**单页顺序访问** ⇒ 每时刻最多 1 条 SSE ⇒ 争抢消失。
+>
+> 覆盖范围：85 条直接可访路由（`web/src/router.ts` 里不含 `:`/`*` 的 path，
+> 去掉 `/login`、`/forbidden`、`/`）+ **19 条带参路由的具体实例**
+> （从真库取真实 id 构造，不造假 id）= **104 页**。
+> 取数命令：
+>
+> ```bash
+> cd /tmp/llmgw-retire-20261020/pw
+> node sweep.mjs            # 逐页：document 状态 + 每个 /api/ 响应的状态与耗时
+>                           #       + console/page error + main 容器文本标记
+> # 产物：sweep.tsv（104 行），逐页一行
+> ```
+>
+> 认证：`Authorization: Bearer <admin JWT>` 注入到 context（不落盘、不打印）。
+
+### 5.5.1 结论
+
+| 口径 | 结果 |
+|---|---|
+| 文档级可达 | **103/104** 返回 200；唯一例外 `/maintain` = 503（本机未部署 maintain 服务，**预期**） |
+| 路由改写 | 20 条重定向到规范别名（`/maas/*`→`/tenant/*`、`/customer/*`→`/customer/update-activate`、`/dev/*`→`/`（dev 路由只在 `import.meta.env.DEV` 注册））——**全部有意** |
+| **API 耗时 ≥ 2000ms** | **0 页 0 个**（用户验收线「超过 2 秒要定位慢因」全部达标） |
+| 页面加载耗时 Top1 | 1940ms（`/dev/waterfall-preview`），**全部 < 2000ms** |
+| **JS 运行时异常（pageerror）** | **0 页**（104 页全部为空） |
+| console error | 全部页面都有，**内容只有一种**：`503 (Service Unavailable)` —— 即 `/maintain-api/healthz` 与 `/maintain-api/menu/ops`（本机无该服务，前端已优雅降级） |
+| **5xx API** | **9 处 / 6 页**（剔除 maintain-api 的 503）—— 见 §5.6 |
+
+### 5.5.2 逐页扫描顺带暴露的真问题：`/request-logs` 与 `/admin/turns` 的「共 0 条 / 加载中…」
+
+内嵌 Browser 里 `/request-logs` 恒显示「共 0 条 / 加载中…」，服务端
+`admin listLogs count query failed scope=super_admin error="context canceled"`。
+本轮把它查实了：
+
+1. **不是服务端慢**：`GET /api/logs` 用 curl 逐字重放（同一 query 串）恒 **200 / 151–156 条**。
+2. **是客户端取消**：服务端 `context canceled` ⇒ Go 的 `http.Server` 在**客户端断开**时
+   取消 request ctx。浏览器同源连接池（6 条）被同浏览器其它标签页的 SSE 占满时，
+   排队中的请求会被**放弃**⇒ 服务端记 500。
+3. **同一端点、同标签页，时好时坏**：`/api/admin/turns/sessions?limit=20`
+   在 06:26:34 = **500**（ctx canceled）、06:26:36 = **200 / 39ms**、06:26:40 = **500**。
+   ⇒ 与「端点有缺陷」不相容 ⇒ 争抢相关。
+4. **前端没有「用 0 冒充没有」**：`RequestLogsView.load()` 有 `catch → error.value`，
+   `TurnsListView` 有 `error-banner` + 「加载会话失败，请重试」⇒ **两端视图都做了错误态**，
+   「共 0 条 / 加载中…」是**请求还没结束时的中间态**（`loading=true` 时刷新按钮 disabled）。
+5. **服务端仍有一处真缺陷**：客户端取消被记成 `500 / error.kind=server_error`
+   （`middleware/logging_mw.go` 的 `errorKind(status)` 只看状态码）⇒
+   **「客户端跑了」与「服务端坏了」在监控里长得一样**。本轮**未改**（共享中间件，
+   改动面大），记为遗留 **L7**。
+
+> 判据纪律：**「端点坏」与「端点被取消」必须用同一请求的两种证据分开**
+> ——本轮用的是「curl 逐字重放 200」+「服务端 ctx canceled」两条一起。
+
+---
+
+## 5.6 ★ 逐页扫描抓出的 5 个真 500：形状错配、缺列、空聚合、非法 id
+
+9 处 5xx 里 4 处是同一端点的多次触发 + 2 处 maintain-api（预期）⇒ **5 个真问题**。
+**全部用 curl 逐字复现**（⇒ 不是浏览器假象）：
+
+| 端点 | 复现 | 服务端错误原文 | 根因 |
+|---|---|---|---|
+| `/api/admin/prompt-injection/stats` | 500 | `42P01 relation "prompt_injection_stats_enhanced" does not exist` | 视图建不出来（见下） |
+| `/api/admin/prompt-injection/detections?page=1&page_size=20` | 500 | `42703 column "detection_score" does not exist` | 代码查的是**非正典**的列 |
+| `/api/admin/sessions/{id}/snapshot` | 500 | `42703 column s.user_tags does not exist` | 该列**不在正典基线**里 |
+| `/api/admin/session-analytics/users/{owner}?days=30` | 500 | `can't scan into dest[1] (col: total_requests): cannot scan NULL into *int64` | 空聚合扫进非空标量 |
+| `/api/v1/approvals/1` | 500 | `22P02 invalid input syntax for type uuid: "1"` | 非法 uuid 喂给 uuid 列 |
+| （`/api/free-discovery/*` ×3） | 503 | `free-discovery is not available (database disabled)` | **功能未启用**，非缺陷 |
+
+### 5.6.1 ★ 最重的一个：正典表形状与「历史迁移 315 的形状」不是一回事
+
+`prompt_injection_detections` 的**正典形状**在
+`sql/schema/01-schema.sql:11398` 与 `sql/objects/tables/prompt_injection_detections.sql`：
+
+```
+risk_level integer NOT NULL   -- 带 CHECK (risk_level >= 1 AND risk_level <= 10)
+rule_id / rule_name / category / matched_pattern / input_sample
+categories injection_category[] / canary_token_leaked / approval_id / …
+（**没有** detection_score / matched_rules / matched_rules_count / detection_layers）
+```
+
+而**历史迁移 315**（`sql/migrations/startup/315_prompt_injection_detection.sql:129`）
+声明的是另一套形状（`detection_score INT NOT NULL` + `matched_rules JSONB` +
+`matched_rules_count` + `detection_layers` + `risk_level VARCHAR`）。
+
+**致命的一步**：315 的建表语句是 `CREATE TABLE IF NOT EXISTS` ⇒ 在**已有正典表的库上
+是空操作** ⇒ 315 的那几列**从未被创建**。于是：
+
+1. **读侧**（`admin/prompt_injection_handler.go`）查 315 的列 ⇒ 恒 `42703` ⇒ 端点 500；
+2. **写侧**（`domains/promptinjection/detector.go` 的 `DetectAndLog`）也 INSERT 315 的列
+   ⇒ 恒 `42703` ⇒ **每一次注入检测的审计记录都被静默丢弃**
+   （失败只落一行 `slog.Warn` ⇒ 检测照常生效/拦截，只是没有留痕
+   ⇒ 于是「这批请求没有注入命中」成了假结论）；
+3. **视图** `prompt_injection_stats_enhanced`（迁移 364）引用 `d.detection_score`
+   ⇒ **在任何正典库上都建不出来** ⇒ 统计端点 42P01。
+   就算建得出来，它写的 `((risk_level)::text = 'critical')` 对**整数**列恒不匹配
+   ⇒ 那 4 个严重等级分桶**恒为 0**。
+
+⇒ **⇒ 这不是「某个环境没升级」，是**全环境**的形状/代码错配**（本机与新装库同形）。
+2026-10-12 的 schema 对齐审计（`docs/audit/2026-10-12-schema-parity-252-vs-local/`）
+已把它记为「本地 0 行，可直接 NOT NULL」并给了一份 `02-local-fix-extra.sql`，
+但那份修复 SQL **自身也自相矛盾**（补了 `detection_score`，却仍按字符串比 `risk_level`）。
+
+**本轮的修法（以正典形状为准，不发明语义）**：
+
+- 分数落 `risk_level`（正典语义：它就是 1..10 的分值）；
+- 等级字符串由**同一套阈值**派生：`≥10 critical / ≥8 high / ≥6 medium / else low`
+  —— 阈值**沿用**代码里既有的 `calculateRiskLevel`，不是新口径。
+  写侧（Go）与读侧（SQL）共用**同一个**定义
+  （`domains/promptinjection.RiskLevelFromScore` / `RiskLevelSQLExpr`），
+  否则会出现「按 high 筛出来的行里写着 medium」；
+- `matched_rules` ← 命中的最高危规则的 `rule_name`；
+  `matched_rules_count` ← `categories` 的元素个数；
+  正典表没有的 `rule_id` / `matched_pattern` / `input_sample` **留空而不是编造**；
+- 统计端点**不再依赖那个建不出来的视图**，直接在正典表上聚合。
+
+### 5.6.2 其余三个的修法
+
+| 缺陷 | 修法 | 为什么这么修 |
+|---|---|---|
+| `sessions.user_tags` 缺列 | 加进 `db.go` 的 **ensure 链**（`ensureSessionUserTags`）：列不在位才 `ALTER TABLE … ADD COLUMN IF NOT EXISTS`，并用 `columnsAllPresent` 预探测（列已在位就**不做 DDL**，`ADD COLUMN IF NOT EXISTS` 即便列已存在也要先取 ACCESS EXCLUSIVE，§10.97 同族） | 该列**不在正典基线**里 ⇒ 只有走 installer（`StartupFiles` 含 467）的新装库才有 ⇒ 任何 deploy 路线演进来的库都缺 ⇒ **ensure 链是本仓既有的「环境对齐」通道**（096141ecc 同族） |
+| 画像聚合 NULL 扫描 | `COALESCE(SUM(...), 0)` 覆盖 4 个聚合；`MIN/MAX` 时间戳改用可空指针接收后落零值 | 「该 owner 没有会话」是**正常状态**，不该 500；零值时间 = 从未出现，不是 1970 事实 |
+| `approvals/{id}` 非法 uuid | 在**错误分类**层把 PG 的 `22P02` 归一为 `ErrNotFound`（⇒ 404），**不做入参校验** | 域层不该知道「id 是 uuid」这种存储细节；也正因如此既有单测用非 uuid 假 id 是合法的，入参校验会打断它们 |
+
+### 5.6.3 顺带修掉的两个「被掩盖的缺陷」
+
+- `detected_at`（timestamptz）扫不进 `*string` ⇒ 改 `*time.Time`
+  （JSON 仍是 RFC3339 字符串，前端 `fmtTime` 可解析；列可空时如实给 null）。
+  这个缺陷**一直被掩盖**：旧查询在更早的 `42703` 就挂了。
+- 计数查询原先靠 `strings.Replace` 把 SELECT 换成 `SELECT COUNT(*)`
+  ——**字符串级替换**：SELECT 文本一改（换行/空格/字段顺序）就**静默不生效**
+  ⇒ count 查询返回整行集 ⇒ `Scan(&total)` 报 "cannot scan ..."。改为
+  **显式 count 查询 + 共享 WHERE**（`promptInjectionDetectionsCountFrom`）。
+
+### 5.6.4 新增判据（6 道，全部做过变异验证）
+
+| 判据 | 层 | 变异（改坏） | 结果 |
+|---|---|---|---|
+| `TestInsertDetectionSQL_LandsInCanonicalShape` | 写侧（真库，事务+回滚） | INSERT 换回 315 形状 | **红** ✔ |
+| `TestInsertDetectionSQL_OldShapeStillFails` | 写侧（真库） | —— | 绿（旧形状必须仍失败） |
+| `TestRiskLevelFromScore_MatchesSQLExpr` | Go↔SQL 阈值同源（真库逐档比对） | 阈值漂移 | 可被抓 |
+| `TestPromptInjectionQueries_RunOnCanonicalShape` | 读侧（真库逐字跑生产 SQL） | 投影换回 315 形状 / 统计改读视图 | **红** ✔ / **红** ✔ |
+| `TestPromptInjectionHandler_NoStringReplaceForCount` | 读侧（静态） | 计数回到字符串替换 | 可被抓 |
+| `TestPromptInjectionStats_NoDependencyOnMissingView` | 读侧（静态） | 统计改读视图 | **红** ✔ |
+| `TestUserProfileStatsSQL_NullAggregatesAreCoalesced` | 画像（真库逐字跑生产 SQL） | 去掉 COALESCE | **红** ✔ |
+| `TestEnsureSessionUserTags_RealDB` / `_IsOnTheBootChain` | ensure（真库 + 静态） | ensure 脱链 | **红** ✔ |
+| `TestIsMalformedUUIDInputError` | 错误分类（纯函数，同层） | 恒 false | **红** ✔ |
+
+> **这几道门在写它们的过程中当场抓到了 4 个我自己的错误**：
+> `AS c` 把列别名写成了表别名；`FROM` 跑到了子查询**外面**；
+> `categories` 绑 JSON 字节（PG 数组字面量解析失败 22P02）；
+> 判据自己把 `categories` 扫进 `*string`。
+> ⇒ **真库门（让 PG 自己解析）能抓到 mock 抓不到的东西**——这与攻击向量库
+> 那次（a56338ee2）同源：**pgxmock 对参数类型不敏感，旧 bug 在 mock 下照样全绿**。
+
+### 5.6.5 修后复验（部署 `2.5.8.2753`，`VERIFY_PASS=1`）
+
+**逐页全量重扫（同一脚本、同一 104 页、同一口径）**：
+
+| 口径 | 修前 | 修后 |
+|---|---|---|
+| 真 5xx（剔除 maintain-api 503） | **9 处 / 6 页** | **3 处 / 1 页** —— 剩下 3 处全是 `/free-discovery` 的 **503「功能未启用」**（预期） |
+| 慢 API ≥2000ms | 0 | **0** |
+| 页面加载 ≥2000ms | 0 | **1 页**（`/dashboard` 2004ms；它首屏打 87 个 API，属边界值） |
+| 文档级不可达 | 1（`/maintain` 503） | 1（同上，预期） |
+| JS 运行时异常 | 0 | **0** |
+
+**逐端点 curl 复验（修前 → 修后）**：
+
+| 端点 | 修前 | 修后 |
+|---|---|---|
+| `GET /api/admin/prompt-injection/stats` | 500 | **200**（`total_detections:0` 等全零） |
+| `GET /api/admin/prompt-injection/detections?page=1&page_size=20` | 500 | **200**（`detections:[]`） |
+| `GET /api/admin/sessions/{id}/snapshot` | 500 | **200**（真实数据：`total_turns:1, total_tokens:33`） |
+| `GET /api/admin/session-analytics/users/default?days=30` | 500 | **200**（零值） |
+| `GET /api/admin/session-analytics/users/<不存在的 owner>` | 500 | **200**（零值，时间戳落零值 `0001-01-01T00:00:00Z`） |
+| `GET /api/v1/approvals/1`（非法 id） | 500 | **404** `{"error":"approval not found"}` |
+| `GET /api/v1/approvals/<合法 uuid>` | — | **404**（不存在的审批，正确） |
+
+> 产物来自**未提交的工作区** ⇒ `version.json` 里的 `git_sha` 仍是 HEAD
+> （`8cec460b`），**不能**用它证明新代码在跑 ⇒ 用**行为变化**证明
+> （上表：500 → 200/404，且 snapshot 返回真实轮次数与 token 数）。
+> ⇒ 判别动作：**当部署产物来自未提交源码时，「版本号对得上」不是证据**。
+
+---
+
 
 | # | 项 | 性质 | 建议 |
 |---|---|---|---|
@@ -428,6 +623,26 @@ COALESCE(pg_total_relation_size((
 | L4 | 5 张 `v_*` 视图 + `request_logs_bodies_with_current_month` 仍读 v1 裸母表（`internal/sqlreadguard` 已登记 `DEBT(R47)`） | 已知债 | 逐张判定：历史可读（保留）vs 活指标（必须迁） |
 | L5 | `storage.admin_logs_native_turns_read` 默认关闭 ⇒ 列表页继续付 canonical 视图的 v1 臂 + 反连接成本 | 已决策 | 保持关闭（27.6% 缺口），但**成本要显式记账** |
 | L6 | 本机 PG 的 `shared_buffers` 原值 400 kB 是**手改在容器数据目录**里的，不在仓库内 | 环境 | 已在本机修好并加部署门；**任何新建的本机 PG 都要按门检查**（门只在本仓的 deploy-local 路径生效） |
+| **L7** | **客户端取消被记成 `500 / error.kind=server_error`**（`middleware/logging_mw.go` 的 `errorKind(status)` 只看状态码）⇒ 「客户端跑了」与「服务端坏了」在监控里**长得一样**；且多数 handler 的裸 `writeError(500, …)` **不留任何日志**（只有 `handleTurnsSessions` 等少数几处打了 WARN） | 观测 | 在 `emitRequestLog` 里判 `r.Context().Err() == context.Canceled` ⇒ `error.kind=client_aborted`（不改级别，避免把真 5xx 降级）；并让裸 `writeError(500,…)` 路径也留一行 WARN。**本轮未改**（共享中间件，改动面大且会动全部请求的日志形态） |
+| **L8** | `prompt_injection_stats_enhanced`（迁移 364）**在正典库上建不出来**（引用不存在的 `detection_score`）；本轮已让统计端点**不再依赖**它，但**视图本身仍在** ⇒ 任何直接查它的外部消费者（`web-mobile/src/api/promptInjection.ts` 的注释仍这么写）继续 42P01 | 债 | 出一条新迁移用**正典形状**重建该视图（历史迁移字节不可改）；本轮未做（见 §5.6.1 的口径冲突：视图的等级分桶与正典整数 `risk_level` 不兼容，必须同时定口径） |
+
+### 6.1 既有失败的归因（**不是**本轮引入）
+
+`go test ./admin/`（**带 `TEST_PG_URL`**，否则这些真库门会被跳过）在
+**pristine worktree**（`git worktree add /tmp/llmgw-pristine2 HEAD`，HEAD = `8cec460b3`，
+不含本轮任何改动）上复跑，**逐字相同**地失败：
+
+| 失败 | 消息 | 归因 |
+|---|---|---|
+| `TestFirstTurnSamplesReturnsRealSamplesAfterChannelGap` | `super_admin got 0 samples (total 0), want 3` | **数据依赖**：本地库没有 first-turn 样本数据。**与本轮改动无关**（pristine 复现一致） |
+| `TestFirstTurnSamplesSessionsTitleShapeRealDB` | `public.sessions.title present = true`（✓）+ `super_admin Total = 0, want 3` | 同上（title 断言**过**，失败的是样本数） |
+
+⇒ 这两条**只有**在设了 `TEST_PG_URL` 时才跑；上一轮把它们记成「既有失败」时
+**没设**该变量 ⇒ 实际是被**跳过**了。⇒ 判别动作：**「绿」要问是「过」还是「跳过」**；
+`t.Skip` 的门在没配环境变量时永远绿。
+⇒ 它们与 §5.6 的 5 个 500 同源：**本地 PG 落后于正典 schema/数据**
+（`user_tags` 缺列这条已由 ensure 链补上；样本数据与 `prompt_injection` 的
+315 形状属另一层，见 §5.6.1 与 L8）。
 
 ---
 
@@ -472,6 +687,60 @@ spec.Default → 代码 fallback），再确认自己改的那一层**真的在�
 恰好是**另一个项目**（`acc-pg17`）映射出来的。差点误判成「迁移打到别的库去了」。
 实际无害——DSN 在**容器内部**解析，127.0.0.1:5432 就是 `llm-gateway-pg` 自己。
 ⇒ 判别动作：看到端口先问「这个端口是谁的」，再问「这个连接在哪一侧解析」。
+
+### 7.6 「同一张表有两套形状」时，先问「哪一份是正典」
+
+`prompt_injection_detections` 同时存在两套互不兼容的形状声明：
+`sql/migrations/startup/315_*.sql` 声明一套（`detection_score` + `matched_rules` …），
+`sql/schema/01-schema.sql` 与 `sql/objects/tables/*.sql` 声明另一套（`risk_level integer` …）。
+
+**正典是后者**（基线 schema + 正典对象文件），不是迁移文件。
+致命的一步是 315 用的 `CREATE TABLE IF NOT EXISTS`：**在已有正典表的库上是空操作**
+⇒ 315 声明的那几列**从未被创建** ⇒ 查它们的代码恒 42703。
+⇒ 判别动作：**查列/表时，「正典形状」取自 `sql/schema/01-schema.sql` 与
+`sql/objects/tables/`，不取自迁移文件**；迁移文件可能是**从未生效**的声明
+（`IF NOT EXISTS` 让它静默变成空操作）。
+⇒ 推论：看到 `42703 column ... does not exist` 时，先去正典里核这一列**在不在**，
+再去核「是哪条迁移声明的」——后者很可能就是**没生效**的那条。
+
+### 7.7 形状错配会同时毒化读侧与**写侧**，而写侧常被降级成 WARN
+
+同一张表的形状错配让读侧 500（可见），也让**写侧**每次 INSERT 都失败
+（`domains/promptinjection/detector.go`）。但写侧失败只落一行 `slog.Warn`
+⇒ **检测照常生效/拦截，只是审计记录一条不留**
+⇒ 页面/报表上「这批请求没有注入命中」成了**假结论**。
+⇒ 判别动作：**凡是「写不进去只记 WARN」的写点，优先怀疑「列/类型对不上」而不是「偶发失败」**；
+把这类 WARN 升级为 Error（本轮已改），让「审计链断掉」在告警层可见。
+
+### 7.8 真库门能抓到 mock 抓不到的东西
+
+本轮 6 道新判据里，有 **4 个是我自己的错误**被真库门当场抓住：
+`AS c` 把列别名写成了表别名；`FROM` 跑到了子查询**外面**；
+`categories` 绑 JSON 字节（PG 数组字面量 22P02）；判据自己把数组扫进 `*string`。
+**这四条在 mock 下全绿**（pgxmock 对参数类型不敏感，只认「有一条 INSERT 发生过」）。
+⇒ 判别动作：**凡是 SQL 的形状本身是缺陷（列名、数组线格式、类型转换），
+判据必须让 PG 自己解析**——把生产用的那条 SQL 提成包级常量，让判据**逐字**跑它，
+而不是让判据自己抄一份（抄的那份会与生产漂移，且漂移了没人知道）。
+
+### 7.9 「端点坏」与「端点被取消」要用两条证据分开
+
+同一端点 500 有两种完全不同的成因：**服务端有缺陷** vs **客户端跑了**。
+本轮的 `/api/logs`、`/api/admin/turns/sessions` 都被误判过一次。
+⇒ 判别动作（两条一起看，缺一不可）：
+  1. **同一请求逐字 curl 重放** ⇒ 200 ⇒ 服务端没问题（是客户端取消）；
+  2. **服务端日志里 `context canceled`** ⇒ Go 的 `http.Server` 在客户端断开时
+     取消 request ctx ⇒ 佐证。
+⇒ 补充：**同端点同标签页时好时坏**（本轮 500/200/500）本身就是争抢的指纹 ——
+真缺陷是**稳定**的。
+
+### 7.10 工具的连接池上限会伪造出「数据恒为空」
+
+内嵌 Browser 每标签页常驻一条 SSE，而 Chromium 对同源 HTTP/1.1 只有 **6 条**连接
+（整个浏览器共享）⇒ 标签页一多，新请求被**客户端放弃** ⇒ 服务端 `context canceled`
+⇒ 页面「完整、无报错、数据恒为空」。本轮一开始把它当成应用缺陷查了很久。
+⇒ 判别动作：**做页面级验收前先问「这个工具每标签页占几条连接」**；
+不满足时用**单页顺序访问的无头脚本**（本轮用的 playwright-core + Chrome for Testing），
+它天然没有多标签页争抢。
 
 ---
 
