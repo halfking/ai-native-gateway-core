@@ -10,6 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 type HealthCheckDef struct {
@@ -28,7 +30,68 @@ type HealthCheckDef struct {
 	// 等于把「schema 崩了」说成「一切正常」。所以只对本文件里显式声明
 	// Optional 的那几条生效，其余保持原样（中止）。
 	Optional bool
+
+	// SkipWhen 是**前提守卫**：返回 (true, reason) 时本轮**不发 SQL**，
+	// 直接把这条检查记为「未执行」。
+	//
+	// 它与 Optional 的区别：Optional 应对的是「对象还不存在」（42P01，
+	// 依赖表/视图缺失）；SkipWhen 应对的是「对象在，但**它要问的问题已经
+	// 不再可判定**」——例如源表被停写，写入侧守卫会让源永远不再前进，
+	// 于是「有没有新出现的坏行」这个问题**结构上无法回答**。
+	//
+	// 为什么必须把「未执行」做成可观测的（而不是安静 return 0）：
+	// 「跳过」与「扫了没发现问题」在 findings 计数上**完全不可区分**，
+	// 运维会读到「没有负成本」，而真相是「这个问题已经不可判定」。
+	// reason 必须登记在 s4ScanSkipReasons 闭集里，否则 recordS4ScanSkipState
+	// 会拒写（宁可吵闹不可谎报）。
+	//
+	// 刻意做成**逐检查**的守卫而不是 worker 级的门：健康检查器一个 worker
+	// 跑十几条检查，只有一条读冻结源时，把整个 worker 停掉是错的。
+	SkipWhen func() (bool, string)
 }
+
+// recordedCostComparability 判定「已记账成本里有没有负数」这个问题
+// **当前是否还可判定**。
+//
+// 背景（2026-10-20 续轮实测，252 生产库只读）：
+// `_request_logs` 属 S4 停写门覆盖的宽族（settings.KeyRequestLogsWriteEnabled），
+// 停写后**不再有新行**（生产实测 max(ts) = 2026-10-13 20:18，查询时刻已停写 6 天）。
+// 而写入侧在 2026-10-06 已加 `if total < 0 { return nil }`（成本算不出来就不记），
+// ⇒ 停写期间**不可能再产生新的负成本行**，这条检查想问的
+// 「有没有新出现的负成本」**结构上无法回答**。
+//
+// 为什么还要扫：停写之前写下的负成本行仍然存在，而检查的价值恰恰是
+// 「**写入侧的守卫不修复已记账的历史行**」（见该检查定义里的说明）。
+// ⇒ 但那是**一次性的历史核对**，不是每 15 分钟重跑一遍的监控。
+// 续轮实测：表已从 2.08M 行缩到 339K 行（9 月分区被运维 DELETE 清空），
+// 负成本行**已归零**，该查询现在每次 0.2~0.6 s、**恒返回 0 行**
+// ⇒ 每 15 分钟（两个实例 ⇒ 每 ~7.5 分钟）重扫一次一个**永远不会再变**的源，
+// 是纯浪费；而它恒返回 0 行这件事，在 findings 计数上与「扫了没发现问题」
+// **完全不可区分** —— 运维会读到「没有负成本」，而真相是「这个问题已不可判定」。
+//
+// ⇒ 停写期间**跳过**这条检查，并把「跳过了」做成可观测的
+// （llm_gateway_bg_s4_scan_skipped_last_run{worker="routing_health_checker",
+// reason="s4_stop_write"} = 1），而不是安静地 return 0。
+//
+// 刻意做成**纯函数**：判定必须能脱离数据库、脱离 settings 全局态被单测驱动，
+// 否则「守卫到底生效没有」就只能靠读代码猜（与 usageCreditComparability 同思路）。
+func recordedCostComparability(logsWriteEnabled bool) (comparable bool, reason string) {
+	if !logsWriteEnabled {
+		return false, s4ScanSkipReasonStopWrite
+	}
+	return true, ""
+}
+
+// requestLogsWriteEnabled 是 S4 停写门的读法。
+//
+// 抽出成变量是为了让判据能在**不初始化 settings 全局态**的条件下驱动它
+// （settings.Global 为 nil 时 GetPlatformBool 回落默认值 true ⇒ 守卫在测试里
+// 永远不会触发，于是「守卫到底生效没有」就只能靠读代码猜）。
+// 与 bg/tuning_view_refresher.go 的 refreshViewFn 同一思路：
+// 把策略参数化，判据才能在无外部依赖的条件下驱动它。
+//
+// ⚠ 只在测试里替换；生产代码不要写它。
+var requestLogsWriteEnabled = settings.RequestLogsWriteEnabled
 
 func AllHealthChecks() []HealthCheckDef {
 	return []HealthCheckDef{
@@ -808,7 +871,25 @@ SELECT
 		// bg/data/model_baseline_prices.json 刻意是空的（models: []），
 		// 基准价当前 0 条 ⇒ 算不出金额。能确定的是**有多少行的成本是负的**、
 		// **偏移了多少美元**，那就只报这两个。
-		{CheckID: "recorded_cost_is_negative", Severity: "warning", Optional: true, Query: `
+		{CheckID: "recorded_cost_is_negative", Severity: "warning", Optional: true,
+		// 2026-10-20（R51 续轮）：S4 停写期间**不发 SQL**。
+		// 理由与实测见 recordedCostComparability 的注释：源不再前进 ⇒
+		// 「有没有新出现的负成本」不可判定；且续轮实测该查询已恒返回 0 行
+		// （表被运维清到 339K 行），每 ~7.5 分钟白扫一次。
+		// 「跳过了」通过 s4ScanSkipMetrics 族可观测，不被读成「没有问题」。
+		SkipWhen: func() (bool, string) {
+			// ⚠ 注意取反：recordedCostComparability 回答的是「**还能不能判定**」，
+			// 而 SkipWhen 回答的是「**要不要跳过**」——两个问题的极性相反。
+			// 直连会写成「不可判定 ⇒ 不跳过」，守卫于是**永远不生效**，
+			// 而所有「守卫生效了吗」的判据在「守卫生效」时看起来都是绿的
+			// （判定函数本身仍对）。本轮这条取反是判据抓出来的。
+			comparable, reason := recordedCostComparability(requestLogsWriteEnabled())
+			if comparable {
+				return false, ""
+			}
+			return true, reason
+		},
+		Query: `
 WITH neg AS (
     SELECT r.credential_id,
            r.outbound_model,
@@ -1084,9 +1165,41 @@ func RunChecks(
 // 42P01 分支的办法就是能只跑一条。没有这个拆分，「表不存在会不会中止整轮」
 // 只能靠读代码猜。
 func runChecks(ctx context.Context, db *pgxpool.Pool, checks []HealthCheckDef) (newCritical, newWarning int, err error) {
+	return runChecksWithRecorder(ctx, db, checks, nil)
+}
+
+// healthCheckSkipRecorder 接收「本轮因前提消失而没有执行」的检查。
+//
+// 形态与 bg/ledger_reconciliation.go 的 markSkipped 一致（同一个方法名），
+// 所以 *LedgerReconciler 与 *RoutingHealthChecker 都能直接满足它。
+type healthCheckSkipRecorder interface {
+	markSkipped(reason string)
+}
+
+// runChecksWithRecorder 是带跳过记录器的内核。
+//
+// recorder 为 nil 时行为与旧的 runChecks 完全一致（跳过的检查安静略过，
+// 不发布任何指标）——这是给那些不关心「本轮有没有检查没跑」的调用方
+// （绝大多数单测）保留的窄路径。
+func runChecksWithRecorder(ctx context.Context, db *pgxpool.Pool, checks []HealthCheckDef, recorder healthCheckSkipRecorder) (newCritical, newWarning int, err error) {
 	now := time.Now()
 
 	for _, chk := range checks {
+		// 前提守卫：**先判守卫再发 SQL**。顺序是这件事的全部意义 ——
+		// 守卫的作用就是让这次扫描**根本不出现在数据库的负载里**。
+		if chk.SkipWhen != nil {
+			if skip, reason := chk.SkipWhen(); skip {
+				if recorder != nil {
+					recorder.markSkipped(reason)
+				}
+				slog.Info("routing health check skipped: precondition no longer holds",
+					"check_id", chk.CheckID, "reason", reason,
+					"detail", "该检查要问的问题已不可判定（源不再前进），本轮未发出 SQL；"+
+						"这不等于「没有问题」，只是「这个问题已无法回答」")
+				continue
+			}
+		}
+
 		rows, qErr := db.Query(ctx, chk.Query)
 		if qErr != nil {
 			// 缺表（42P01）且这条检查显式声明 Optional ⇒ 跳过并继续，

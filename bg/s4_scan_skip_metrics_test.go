@@ -121,6 +121,10 @@ func TestS4ScanSkipStateIsPublishedOnEveryReturnPath(t *testing.T) {
 	cases := []struct{ file, fn string }{
 		{"ledger_reconciliation.go", "RunOnce"},
 		{"credential_recovery.go", "scanLookbackRecoveries"},
+		// 2026-10-20（R51 续轮）：健康检查器的第三条。
+		// 它的粒度是**逐检查**的（只有 recorded_cost_is_negative 读冻结源），
+		// 但发布口径与前两个一致：worker 级 gauge 表达「本轮有检查没执行」。
+		{"routing_health_checker.go", "runOnce"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fn, func(t *testing.T) {
