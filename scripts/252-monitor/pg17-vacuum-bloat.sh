@@ -58,6 +58,15 @@ TABLE_TIMEOUT_MIN=30   # 单表 VACUUM FULL 上限（分钟）
 MIN_DEAD_PCT=${MIN_DEAD_PCT:-30}
 # 可注入：让行为门能用假 docker 驱动真实判定分支（同 emergency-cleanup / proactive）。
 DOCKER_BIN=${DOCKER_BIN:-docker}
+# 确认闸（pgstattuple_approx）单表读超时，秒。
+# ★ 2026-10-19 新增：本脚本原先**不给确认闸设任何超时**，直接继承会话/库默认，
+#   而 252 实测 statement_timeout=30s，确认闸在本库最坏一次用到 17s
+#   （session_turns_2026_09，2.7GB）—— 只有 43% 余量。
+# ★ 不可按表大小外推：pgstattuple_approx 按**行**采样，耗时主要由行宽与采样行数决定。
+#   252 实测反例：4,029MB 的 session_bodies_2026_10 只要 1s，
+#   2,734MB 的 session_turns_2026_09 反而 17s。
+#   ⇒ 120s = 实测最坏的约 7 倍余量；LIMIT 20 ⇒ 最坏整轮 40min（周任务可接受）。
+CONFIRM_TIMEOUT_SEC=${CONFIRM_TIMEOUT_SEC:-120}
 
 mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
 echo "[$(date -Iseconds)] start vacuum-bloat weekly cleanup" >> "$LOG"
@@ -160,11 +169,34 @@ else
     # ⇒ 确认闸：真去读表（pgstattuple_approx 真读页），<阈值一律 SKIP；
     #   量不出来（扩展缺失 / 读失败）也 SKIP 并显式留痕 —— 宁可不做，不可错做。
     #   ※ 候选层已排除非堆表，所以走到这里的失败只剩「扩展缺失 / 读失败」两种。
-    real_dead_pct=$("$DOCKER_BIN" exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX \
-      -c "SELECT round(dead_tuple_percent::numeric,1) FROM pgstattuple_approx('$qname');" 2>/dev/null \
-      | tr -d '[:space:]')
+    # ★★ 2026-10-19：本行原来是 `x=$(docker … psql … 2>/dev/null | tr …)`。
+    #   本脚本开头是 `set -euo pipefail` ⇒ **psql 一失败，管道整体失败，
+    #   赋值语句的退出码非 0，`set -e` 直接终止整个脚本。**
+    #   （本机实测：`set -euo pipefail` 下 `x=$(false | tr …)` 之后的那行不执行，退出码 1；
+    #     去掉 pipefill 才会继续。）
+    #   ⇒ 也就是说「量不出来就 SKIP」在真实失败路径上**从未发生过**：
+    #     量不出来的那张表不会被跳过，而是**整轮任务在这里静默终止**，
+    #     后面的候选与收尾行一起没了（cron 把输出丢进 /dev/null）。
+    #   而 §118 已实测列存表会让它必然失败（only heap AM is supported）——
+    #   即「静默永久失效」的真实形态比当时写的更严重：**不是跳过，是整轮死掉**。
+    #   ⇒ 修法两条：① `|| true` 显式吃掉失败，让 SKIP 分支真的可达；
+    #          ② 合并 stderr 以便**分类**失败原因（下面 _why）。
+    _raw=$("$DOCKER_BIN" exec \
+      -e "PGOPTIONS=-c statement_timeout=${CONFIRM_TIMEOUT_SEC}s" \
+      "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX \
+      -c "SELECT round(dead_tuple_percent::numeric,1) FROM pgstattuple_approx('$qname');" \
+      2>&1 || true)
+    real_dead_pct=$(printf '%s' "$_raw" | tr -d '[:space:]' | grep -oE '^[0-9]+(\.[0-9]+)?$' || true)
     if ! [[ "$real_dead_pct" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-      echo "[$(date -Iseconds)]   SKIP ${tname}: 估算 dead_pct=${dead_pct}% 但 pgstattuple_approx 量不出来（扩展缺失或读失败；候选已限堆表），不做不可逆动作" >> "$LOG"
+      # 三类失败的**修法完全不同**，混成一句话就等于把「判据缺陷」报成「环境有问题」。
+      # 判别依据取 PG 原始报错文本，不猜。
+      _why="psql 读失败或返回非数值"
+      case "$_raw" in
+        *"statement timeout"*)      _why="确认闸读超时（>${CONFIRM_TIMEOUT_SEC}s）" ;;
+        *"only heap AM is supported"*) _why="非堆表（候选层漏判）—— 这是判据缺陷，不是环境问题" ;;
+        *"pgstattuple_approx"*)     _why="pgstattuple_approx 不可用（扩展缺失？）" ;;
+      esac
+      echo "[$(date -Iseconds)]   SKIP ${tname}: 估算 dead_pct=${dead_pct}% 但确认闸量不出来 —— ${_why}；不做不可逆动作" >> "$LOG"
       continue
     fi
     if awk -v r="$real_dead_pct" -v t="$MIN_DEAD_PCT" 'BEGIN{exit !(r<t)}'; then
