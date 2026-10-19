@@ -28201,3 +28201,167 @@ session_project_attribution 死元组 0.369%（最低）  可回收 16.2 MB（�
 | ★★ **P1（新增）** | **拍板判据是否从「死元组比例」改成「可回收字节数」** —— 本节已给出支持证据与反对「降阈值」的实测依据 |
 | ★ | 给 `VACUUM FULL` 的收益建立实测口径（跑一次真实收益/代价对比）—— 需生产写授权 |
 | ★ | 列存表的膨胀分布与量具（§118 遗留） |
+
+---
+
+## §120 「12.36% 成功率」是个**问错了问题**的读数 —— 真因是门控停写让标记**连续 6 天归零**（2026-10-19）
+
+§111 记下过一条刺眼的读数并按纪律只记为「读数」：
+
+> `is_final_success` 只有 **12.36%**，读起来就是「业务请求 88% 失败」。
+> 但表内存在 `in_progress` / `rate_limited`，多轮重试与多 attempt 语义未核
+> ⇒ **没有写进结论**。
+
+本节把它结清。结论：**它不是成功率，那个提问方式本身是错的**；
+而顺着它查下去，挖出一个**正在发生、已 6 天**的用户可见缺陷。
+
+### 一、口径：它根本不是「本次请求成功」，是「**该会话的最终成功轮次**」
+
+`session_turns_*` 的这三个列是**普通列、无默认值表达式**（`pg_attrdef` 为空）
+⇒ 值由应用写入，口径必须从代码找。
+
+`domains/hooks/observability/telemetry/client.go:2792-2796` 的注释是权威来源：
+
+> marks the `_request_logs_hot` row for requestID as **THE single final success of its
+> `gw_session_id`**. At most one row per session keeps `is_final_success=TRUE`;
+> superseded success rows are left untouched (history is never rewritten —
+> the admin timeline labels them "superseded" at read time).
+
+且授予条件 `shouldClaimFinalSuccess`（`client.go:2788-2789`）要求三件事同时成立：
+**成功终态 + 非空 `gw_session_id` + 非内部自动调用**。
+数据库侧有 partial unique index `(tenant_id, session_id, partition_date) WHERE is_final_success`
+在强制「每会话至多一个」。
+
+⇒ ⇒ ★★★ **所以 TRUE 的行数 ≈ 「有成功终态的会话数」，分母却是「全部 turn 数」。**
+一个会话有三轮对话就贡献 3 个分母、1 个分子。
+⇒ ⇒ ⇒ **把它读成「请求成功率」在量纲上就是错的。**
+
+### 二、数据验证：真实上限是 90.59%，不是 100%
+
+`session_turns_2026_10`（生产只读，`count(DISTINCT)` 耗时 85.13 s）：
+
+| 量 | 值 |
+|---|---|
+| turns | 227,678 |
+| distinct `session_id` | **206,248（90.59%）** |
+| `is_final_success IS TRUE` | **19,702（8.65%）** |
+| NULL | 207,976（91.35%） |
+
+⇒ ⇒ ★★ **90.59% 才是这个字段的理论上限**（绝大多数会话只有 1 轮 turn，
+所以「每会话一个 final success」几乎可以覆盖全部会话）。
+⇒ ⇒ ★★★ 真正刺眼的比例不是 8.65%，而是 **8.65% 对 90.59% 这个上限** ——
+**九成的会话从未拿到过标记。**
+⇒ 顺带：这是 §105 巡检成本优化的又一个实测输入 —— `count(DISTINCT session_id)`
+在一张 227,678 行的分区上要 **85 秒**。
+
+### 三、★ 按日拆开：不是「一直低」，是 **2026-10-14 起彻底归零**
+
+```sql
+SELECT date_trunc('day', ts)::date, count(*), count(DISTINCT session_id),
+       count(*) FILTER (WHERE is_final_success IS TRUE)
+  FROM session_turns_2026_10 WHERE ts >= '2026-10-08' GROUP BY 1;
+```
+
+| 日期 | turns | sessions | `fs_true` | 率 |
+|---|---|---|---|---|
+| 10-08 | 10,254 | 9,187 | 992 | 9.67% |
+| 10-09 | 15,282 | 13,763 | 2,723 | 17.82% |
+| 10-10 | 16,084 | 13,057 | 2,568 | 15.97% |
+| 10-11 | 13,109 | 12,958 | 3,150 | 24.03% |
+| 10-12 | 13,857 | 13,629 | 3,860 | **27.86%** |
+| **10-13** | 11,691 | 10,636 | **792** | **6.77%** |
+| **10-14** | 13,044 | 10,872 | **0** | **0.00%** |
+| 10-15 ~ 10-19 | 15,583 ~ 25,516 /天 | — | **0** | **0.00%** |
+
+⇒ ⇒ 🚨 **从 2026-10-14 起，`is_final_success` 一个 TRUE 都没有，连续 6 天。**
+⇒ ⇒ ★★ 断点在 **10-13 当天内**（27.86% → 6.77%），不是午夜 ⇒ 说明是**某个时刻的事件**。
+
+### 四、★ 与 §114 的门控停写**时间点吻合到小时级**，机制在仓内可查
+
+§114 已坐实的门控真值（`settings_kv`）：
+
+```
+storage.request_logs_write_enabled = false
+updated_at = 2026-10-13 20:18:27.656301+08
+```
+
+而 claim 的入口是（`client.go:1954` 与 `:2668`）：
+
+```go
+if logsWrite && shouldClaimFinalSuccess(entry) {
+        claimSessionFinalSuccess(ctx, c, tx, entry)
+}
+```
+
+`logsWrite` 正是 `client.go:1414-1418` 那个门控读出来的布尔值。
+⇒ 完整因果链：
+
+```
+storage.request_logs_write_enabled = false        （2026-10-13 20:18:27）
+  → logsWrite = false
+  → claimSessionFinalSuccess 不再执行
+  → entry.FinalSuccessClaimed 恒为 false
+  → markTurnFinalSuccess 没有可镜像的事实（final_success_turn.go:136）
+  → session_turns.is_final_success 从 10-14 起恒为 NULL
+```
+
+⇒ ⇒ ★★★ **而 `session_turns` 本身仍在正常写入**（每天 1.3 万~2.6 万行）
+⇒ ⇒ ⇒ **被门控停掉的只有「claim」这一环，不是整条 session 写入路径。**
+⇒ ⇒ ★★★ 这也解释了为什么它在数据上如此**干净**：不是部分丢失，是**整齐归零**。
+
+### 五、🚨 这是个**正在发生**的用户可见缺陷，而且是已知缺陷的**复发**
+
+`internal/sessionv2mirror/final_success_turn.go:21-30` 记录了 2026-09-30 的那次事故：
+
+> `admin/session_online.go` … reads `COALESCE(rl.is_final_success, FALSE)` and feeds
+> `deriveTurnOutcome`, whose first two arms are `final_success` and `superseded_success`.
+> With the column permanently NULL both arms are dead: every successful turn has been
+> labelled plain `success` since. So the 09-30 migration silently dropped two outcomes
+> from the timeline API.
+
+⇒ ⇒ 🚨 **同一件事在 10-14 又发生了一次**，原因不同（上次是「从未写入」，
+这次是「写入链路被门控切断」），**症状完全相同**（列恒 NULL ⇒ 两个 arm 全死）。
+⇒ ⇒ ★★★ 而从 10-08 到 10-12 标记率是**逐日上升**的（9.67 → 27.86%），
+说明这期间 claim 链路在**持续生效、覆盖率在改善** ——
+⇒ ⇒ ⇒ **它不是一直没修好，是修好了然后被一刀切断。**
+
+### 六、⚠ 但这两件事的**性质完全不同**，必须分开决策
+
+| | 09-30 那次 | 10-14 这次 |
+|---|---|---|
+| 原因 | 该字段从未被写入（设计有了、实现没落地） | 实现是好的，被**有意的**门控停写切断 |
+| 修法 | 补写路径（`final_success_turn.go` 就是那次的补丁） | **补写路径没用** —— 门控关着就不会有 claim |
+| 决策人 | 工程 | **属主**（门控本身是有意关的，为停 request_logs 写入省空间） |
+
+⇒ ⇒ ★★★ ⇒ **不能把它当 bug 直接修**：门控是有意关的，
+「恢复标记」要么开门控（放弃停写的目的），要么给 session 侧开一条
+**不依赖 `_request_logs_hot` 的 claim 路径**（工程量更大，且要重新设计谁做仲裁）。
+⇒ ⇒ ★★ 本节**只把事实与因果链摆出来，不提议改法** ——
+这正是 §114 已经提过的那个待决项的一个**新的、更硬的证据**。
+
+### 七、诚实边界
+
+| | |
+|---|---|
+| ❌ | **这是时间相关性 + 仓内可查机制，不是受控实验**。要坐实因果得「临时开门控看标记是否恢复」，那是**生产写**，未做 |
+| ❌ | 未核实 `settings_kv` 的 `updated_by`（§114 已记：**为空**）⇒ **谁关的门控不可追溯**，无法判断是否有意为之 |
+| ❌ | `session_turns_2026_10` 的 8.65% 与 §111 那个 12.36% **不是同一张表**（§111 那条的表本节未定位）⇒ 不能直接互相印证 |
+| ❌ | 没有查 10-13 20:18 之后的 252 应用日志确认「claim 函数没被调用」—— 那是**运行时证据**，本节只有 DB 侧数据 |
+| ⚠ | 「90.59% 是上限」成立的前提是每个会话都至少有一个成功终态 turn；实际有 10.59% 的会话多于一轮，且并非每个会话都有成功轮次 ⇒ 上限是**上界**，真实应有标记数可能略低于 90.59% |
+| ✅ | 已证：口径定义（代码注释 + partial unique index）；三列是普通列无默认值；真实上限 90.59%；10-14 起连续 6 天归零；断点在 10-13 当天内；门控 `updated_at` 与断点吻合；claim 入口依赖 `logsWrite`；session 族写入未被门控停掉 |
+
+### 八、动作边界
+
+⚠ 本节全程**只读生产**（`pg_attribute`/`pg_attrdef` 元数据查询 + 两条聚合查询，
+耗时 85 s 与 27 s，均为共享锁）+ **读仓库代码**。
+**未开门控、未做任何生产写、未部署、未触发任何作业。**
+
+### 九、由此产生的待办
+
+| 优先级 | 动作 |
+|---|---|
+| 🚨 | **属主决策**：门控停写的目的（省 `_request_logs` 写入）与 final-success 标记的必要性冲突，谁让哪边 |
+| ★ | 若决定保留标记 ⇒ 设计一条**不依赖 `_request_logs_hot` 的 claim 路径**（session 侧自仲裁） |
+| ★ | 定位 §111 那个 12.36% 到底出自哪张表，与本节 `session_turns_2026_10` 的 8.65% 对齐口径 |
+| ★ | 门控关闭者不可追溯（`updated_by` 为空）—— 见 §114，本节再次成为该问题的**证据** |
+| ★ | 找 252 应用日志确认 claim 在 10-13 20:18 后确实不再被调用（补运行时一侧的证据） |
