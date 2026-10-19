@@ -784,6 +784,42 @@ carry_forward_web_remote() {
   return 0
 }
 
+# tar records the bundle's '.' mode; a deployer's umask 077 otherwise makes
+# the release untraversable by nginx even when every health API is healthy.
+# Only public surfaces are normalized; private configs retain their modes.
+normalize_release_web_permissions() {
+  local release_dir="$REMOTE_ROOT/releases/$1"
+  remote_ssh "set -e; chmod 0755 '$release_dir';
+    for surface in web web-mobile; do
+      if [ -d '$release_dir'/\"\$surface\" ]; then
+        find '$release_dir'/\"\$surface\" -type d -exec chmod 0755 {} +
+        find '$release_dir'/\"\$surface\" -type f -exec chmod 0644 {} +
+      fi
+    done"
+}
+
+verify_public_web() {
+  local health_url probe_args base_url html html_type asset asset_type
+  health_url=$(target_field "$TARGET" internal_https_health_url)
+  [[ -n "$health_url" ]] || return 0
+  base_url=${health_url%/*}
+  probe_args=$(target_field "$TARGET" internal_https_probe_args)
+  if [[ "$TARGET" == 154 && "$health_url" == https://127.0.0.1/* ]]; then
+    base_url=https://llm.kxpms.cn
+    probe_args="$probe_args --resolve llm.kxpms.cn:443:127.0.0.1"
+  fi
+  html=$(remote_ssh "curl -kfsS $probe_args --max-time 10 -w '\n%{content_type}' -H 'Accept: text/html' '$base_url/dashboard'") || return 1
+  html_type=${html##*$'\n'}; html=${html%$'\n'*}
+  html_type=$(printf '%s' "${html_type%%;*}" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  [[ "$html_type" == text/html ]] || { err "dashboard media type is not HTML"; return 1; }
+  [[ "$html" == *"<html"* && "$html" == *"</html>"* ]] || { err "dashboard did not return HTML"; return 1; }
+  asset=$(printf '%s\n' "$html" | sed -n 's@.*src="\(/assets/[A-Za-z0-9._/-]*\.js\)".*@\1@p' | sed -n '1p')
+  [[ "$asset" == /assets/*.js ]] || { err "dashboard has no built JavaScript entry"; return 1; }
+  asset_type=$(remote_ssh "curl -kfsS $probe_args --max-time 10 -o /dev/null -w '%{content_type}' '$base_url$asset'") || return 1
+  asset_type=$(printf '%s' "${asset_type%%;*}" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  [[ "$asset_type" == text/javascript || "$asset_type" == application/javascript ]] || { err "dashboard entry is not JavaScript"; return 1; }
+}
+
 # ── 子命令: deploy ─────────────────────────────────────────────
 do_deploy() {
   local version bundle_dir deploy_start
@@ -1039,6 +1075,8 @@ do_deploy() {
       warn "--no-frontend: 线上无可用 current web，保留检出 staged web（可能陈旧）"
     fi
   fi
+
+  normalize_release_web_permissions "$version" || { err "发布目录网页权限校验失败，中止"; exit 1; }
 
   # 6. verify (远端 sha256)
   log "[6/9] verify bundle (sha256)"
@@ -1469,6 +1507,13 @@ do_deploy() {
       exit 1
     fi
     ok "nginx 路由身份仲裁通过"
+  fi
+
+  # API readiness bypasses nginx's static root: also exercise HTML and its
+  # real entry asset before accepting the release or stopping the old unit.
+  if ! verify_public_web; then
+    _bluegreen_abort "公网网页或入口资源不可用" "$old_version" "$active_port" "$candidate_port" "$candidate_service" "$upstream_fragment" "$active_service"
+    exit 1
   fi
 
   # 先确认 DB 已就绪，再同步 admin 密码并验证登录。
