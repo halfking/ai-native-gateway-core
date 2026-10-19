@@ -4,8 +4,10 @@
 # 每 7 天（周日凌晨 03:15）跑。查找表 bloat 超过阈值的大表执行 VACUUM FULL，
 # 释放死元组归还物理页（autovacuum 不会归还已分配页）。
 #
-# 阈值：bloat_pct >= 30% AND size >= 256MB 才处理。
-# VACUUM FULL 期间会 ACCESS EXCLUSIVE 锁表，所以限制单表时长 30 分钟，
+# 阈值（2026-10-19 §143.7 改，见下方 MIN_RECLAIM_MB）：
+#   候选层：堆表且 size > 256MB（**不再**要求死元组比例）
+#   决策层：确认闸实测 approx_free_space >= MIN_RECLAIM_MB(256MB)
+# ⚠ VACUUM FULL 期间会 ACCESS EXCLUSIVE 锁表，所以限制单表时长 30 分钟，
 # 同时错开 pg17-drop-old-columnar-partitions.sh（每月 1 号 02:30）。
 #
 # 创建：2026-07-15（伴随 252 磁盘满事件）
@@ -53,9 +55,63 @@ PG_USER=${PG_USER:-llm_gateway}
 PG_DB=${PG_DB:-llm_gateway}
 LOG=${LOG:-/var/log/pg17-vacuum-bloat.log}
 TABLE_TIMEOUT_MIN=30   # 单表 VACUUM FULL 上限（分钟）
-# 真实死元组比例门槛：pgstattuple 实测低于此值一律 SKIP（§117 确认闸）。
-# 取 30 与 BLOAT_SQL 的估算门槛同值 ⇒ 估算只负责「筛出来」，实测负责「做不做」。
-MIN_DEAD_PCT=${MIN_DEAD_PCT:-30}
+# ★★ 2026-10-19（§143.7）：判据的**决策量**从「死元组比例」改成「可回收字节数」。
+#
+# 为什么必须改（§119 实测，§143 复现）：
+#   `VACUUM FULL` 的**代价**只与表的大小成正比（整表重写 + 全程 ACCESS EXCLUSIVE，
+#   本脚本上限 30 分钟），而**收益**是 `approx_free_space` 那点空闲空间。
+#   旧判据量的却是「有多少行死了」—— §119 的 6 个校准样本证明这两个量**几乎脱钩**：
+#     stats_event_inbox_default   死元组 5.574%（最高）  可回收 2.8 MB（最小之一）
+#     session_project_attribution 死元组 0.369%（最低）  可回收 16.2 MB（最大）
+#   ⇒ 对一张 130MB 的表锁 30 分钟去换 2.8MB，是明确的**负收益**。
+#
+# ★ 旧判据在本库还有一个更糟的性质：**它永远不会触发**。
+#   候选层要求估算 dead_pct >= 30%，而 §119 实测 44 张堆表大表的估算最高只有 8.51%，
+#   且 `n_dead_tup` 在本库高估 1.5×~21.1×（无固定系数）⇒ 候选集恒为空。
+#   脚本每周日 03:15 打印一行「no business tables need VACUUM FULL」，
+#   **读起来像一次健康检查，实际是一个不可能命中的判据**（fail-safe，但不是有意的）。
+#
+# ⇒ 所以候选层也跟着改：去掉死元组比例筛选，把体积门槛从 256MB 降到 100MB
+#   （§143.3 点名的三张「空闲 ≫ 死元组」表都在 100~256MB 这一段），
+#   让「可回收多少」这件事**有机会被测到**。
+#   代价：确认闸要对 ≤20 张表真读页，实测约 5~17s/张 ⇒ 周任务多花 100~340s
+#   （LIMIT 20 是既有上限；且周任务 03:15，252 当日无大流量，04:26 前完成无压力）。
+#
+# ★ 判据是两条 **OR** 的腿，缺一条就有系统性盲区：
+#   ① 绝对收益腿：`approx_free_space >= MIN_RECLAIM_MB`（默认 256MB）
+#      —— 大表要回收够多才值得锁。252 实测 ≥256MB 段**最大 62.9MB**（session_turns_2026_09）
+#         ⇒ 这条腿在本库当前不触发。合理：2.7GB 的表锁 30 分钟换 60MB 是负收益。
+#   ② 比例腿：`free/total >= MIN_FREE_PCT`（默认 30%）**且** `total <= MAX_RECLAIM_MB`
+#      （默认 1024MB）—— 小表即使绝对回收不大，比例高也值得，且体积小 ⇒ 锁时间短。
+#   ⇒ 两条腿分别有判据（TestVacuumBloat…ReclaimBytes / …FreeRatio），缺任一条都能被门抓到。
+#
+# ⚠⚠ **诚实边界：按当前默认值（256MB / 30% / 1024MB），②里的体积上限是不可达的。**
+#   推导：②要求 free ≥ 30%×size，而上限针对 size > 1GB ⇒ free > 300MB
+#   > 256MB ⇒ **①必然先满足** ⇒ 上限永远轮不到。
+#   这是 2026-10-19 变异验证发现的：把上限删掉，夹具照样全绿（第一版夹具验错了对象）。
+#   ⇒ 所以它现在的身份是「**旋钮被调小之后的事故护栏**」，不是当前在起作用的判据：
+#   若有人把 MIN_RECLAIM_MB 调到 >300MB，②才会真正被上限约束。
+#   （对应的门要注入 MIN_RECLAIM_MB=512 才能测到，见 TestVacuumBloatRatioLegRespectsSizeCap。）
+#   别把它当成「当前保护着 2GB+ 的表」—— 它现在什么也没保护。
+#
+# ⚠⚠ **量纲**：§143.3 记的 free% 是 free/heap（65.26% / 55.43% / 42.90%），
+#   而本判据的分母是 `size` = **pg_total_relation_size（含索引与 TOAST）**。
+#   换成同一分母后实测是 45.66% / 47.73% / 27.92%（见下）——
+#   **照抄 §143.3 的数字会把阈值定高一截**，本节已就地更正。
+#   252 只读实测（2026-10-19，逐张 pgstattuple_approx 真读页）：
+#     request_stage_events            total=153,927,680  free=73,465,104  47.73%  dead=0.940%
+#     candidate_failure_logs_2026_09  total=154,894,336  free=70,724,256  45.66%  dead=0.000%
+#     armor_judgments                total=126,910,464  free=35,425,424  27.92%  dead=0.000%
+#   ⇒ 默认 MIN_FREE_PCT=30 命中前两张，合计可回收 **144.2MB**；
+#     armor_judgments（27.92%）差 2 个点，**改成 25 就多收 35.4MB** —— 属主可选。
+#   ★ 注意这两张的 dead_pct 极低（0.94% / 0.00%）而 free 极高 ——
+#     这正是「autovacuum 已把死元组回收成 free space、但 free space 永不还给 OS」的形态。
+#     旧判据（死元组比例）对它们**结构性地视而不见**，新判据正是冲着这个去的。
+MIN_RECLAIM_MB=${MIN_RECLAIM_MB:-256}
+MIN_RECLAIM_BYTES=$((MIN_RECLAIM_MB * 1024 * 1024))
+MIN_FREE_PCT=${MIN_FREE_PCT:-30}
+MAX_RECLAIM_MB=${MAX_RECLAIM_MB:-1024}
+MAX_RECLAIM_BYTES=$((MAX_RECLAIM_MB * 1024 * 1024))
 # 可注入：让行为门能用假 docker 驱动真实判定分支（同 emergency-cleanup / proactive）。
 DOCKER_BIN=${DOCKER_BIN:-docker}
 # 确认闸（pgstattuple_approx）单表读超时，秒。
@@ -142,14 +198,14 @@ WITH ranked AS (
 )
 SELECT tname, size, round(dead_pct::numeric, 1), qname
 FROM ranked
-WHERE dead_pct >= 30 AND size > 256*1024*1024
-ORDER BY dead_pct DESC, size DESC
+WHERE size > 100*1024*1024
+ORDER BY size DESC
 LIMIT 20;
 "
 
 TARGETS=$("$DOCKER_BIN" exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc "$BLOAT_SQL" 2>/dev/null || echo "")
 if [ -z "$TARGETS" ]; then
-  echo "[$(date -Iseconds)] no business tables need VACUUM FULL (no bloat > 30% with size >= 256MB)" >> "$LOG"
+  echo "[$(date -Iseconds)] no business tables need VACUUM FULL (no heap table > 100MB passed the reclaim gate: 绝对腿 ≥${MIN_RECLAIM_MB}MB 或 比例腿 ≥${MIN_FREE_PCT}% 且 ≤${MAX_RECLAIM_MB}MB)" >> "$LOG"
 else
   echo "[$(date -Iseconds)] bloat targets:" >> "$LOG"
   echo "$TARGETS" >> "$LOG"
@@ -181,13 +237,25 @@ else
     #   即「静默永久失效」的真实形态比当时写的更严重：**不是跳过，是整轮死掉**。
     #   ⇒ 修法两条：① `|| true` 显式吃掉失败，让 SKIP 分支真的可达；
     #          ② 合并 stderr 以便**分类**失败原因（下面 _why）。
+    # ★★ 2026-10-19（§143.7）：一次调用同时取**两个**量。
+    #   旧写法只取 dead_tuple_percent，因为它是当时的决策量；新决策量是
+    #   approx_free_space（可回收字节）。两者来自同一次真读页 ⇒ 顺手一起取，
+    #   **不要拆成两次调用**（那会把确认闸的读页成本翻倍，而实测 5~17s/张）。
+    #   dead_tuple_percent 仍然取，但它**不再参与决策** —— 它只进日志，
+    #   用来回答「这堆空闲是 autovacuum 刚收的死元组，还是一直就有的」这个诊断问题。
     _raw=$("$DOCKER_BIN" exec \
       -e "PGOPTIONS=-c statement_timeout=${CONFIRM_TIMEOUT_SEC}s" \
-      "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX \
-      -c "SELECT round(dead_tuple_percent::numeric,1) FROM pgstattuple_approx('$qname');" \
+      "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX -F'|' \
+      -c "SELECT round(dead_tuple_percent::numeric,3)||'|'||approx_free_space FROM pgstattuple_approx('$qname');" \
       2>&1 || true)
-    real_dead_pct=$(printf '%s' "$_raw" | tr -d '[:space:]' | grep -oE '^[0-9]+(\.[0-9]+)?$' || true)
-    if ! [[ "$real_dead_pct" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    _meas=$(printf '%s' "$_raw" | tr -d '[:space:]' | grep -oE '^[0-9]+(\.[0-9]+)?\|[0-9]+$' || true)
+    real_dead_pct=${_meas%%|*}
+    real_free_bytes=${_meas##*|}
+    # ⚠ 空值形态（量不出来）：_meas 为空 ⇒ real_free_bytes 也是空串。
+    #   下面的数值比较必须先挡住这一支，否则 `[ "" -lt N ]` 在不同 bash 下行为不一致
+    #   （bash 3.2 报算术错、4+ 视作 0）⇒ 判据方向不确定。
+    #   「判不出来的表一律 SKIP」（宁可不做，不可错做）由下面这一支保证。
+    if ! [[ "$_meas" =~ ^[0-9]+(\.[0-9]+)?\|[0-9]+$ ]]; then
       # 三类失败的**修法完全不同**，混成一句话就等于把「判据缺陷」报成「环境有问题」。
       # 判别依据取 PG 原始报错文本，不猜。
       _why="psql 读失败或返回非数值"
@@ -199,11 +267,28 @@ else
       echo "[$(date -Iseconds)]   SKIP ${tname}: 估算 dead_pct=${dead_pct}% 但确认闸量不出来 —— ${_why}；不做不可逆动作" >> "$LOG"
       continue
     fi
-    if awk -v r="$real_dead_pct" -v t="$MIN_DEAD_PCT" 'BEGIN{exit !(r<t)}'; then
-      echo "[$(date -Iseconds)]   SKIP ${tname}: 估算 dead_pct=${dead_pct}% 但实测仅 ${real_dead_pct}%（<${MIN_DEAD_PCT}%），统计估计不可信" >> "$LOG"
+    # 决策：两条腿取 **OR**（定义见文件头 MIN_RECLAIM_MB 处）。
+    #   ① 绝对收益腿：free_bytes >= MIN_RECLAIM_BYTES
+    #   ② 比例腿：free/total >= MIN_FREE_PCT  且  total <= MAX_RECLAIM_BYTES
+    # ⚠ 用 awk 做浮点比较：free/size 是 0~100 的小数，bash 的整数比较会把它当 0
+    #   ⇒ 比例腿会**静默失效**（恒不满足），而日志上看起来只是一直 SKIP。
+    # ⚠ 比例腿的分母用 $size（= pg_total_relation_size），**不是堆大小** ——
+    #   见文件头「量纲」注：§143.3 的 65.26% 是 free/heap，两者不可混用。
+    free_mb=$((real_free_bytes / 1024 / 1024))
+    total_mb=$((size / 1024 / 1024))
+    free_pct=$(awk -v f="$real_free_bytes" -v s="$size" 'BEGIN{ if (s>0) printf "%.2f", 100.0*f/s; else printf "0.00" }')
+    _do_abs=0; _do_ratio=0; _which="—"
+    if [ "$real_free_bytes" -ge "$MIN_RECLAIM_BYTES" ]; then _do_abs=1; _which="绝对"; fi
+    if [ "$size" -le "$MAX_RECLAIM_BYTES" ] \
+       && awk -v p="$free_pct" -v t="$MIN_FREE_PCT" 'BEGIN{exit !(p+0 >= t+0)}'; then
+      _do_ratio=1
+      [ "$_do_abs" -eq 1 ] || _which="比例"
+    fi
+    if [ "$_do_abs" -eq 0 ] && [ "$_do_ratio" -eq 0 ]; then
+      echo "[$(date -Iseconds)]   SKIP ${tname}: 实测 free=${free_mb}MB/${total_mb}MB=${free_pct}%（dead=${real_dead_pct}%）—— 未达绝对腿 ${MIN_RECLAIM_MB}MB，也未达比例腿 ${MIN_FREE_PCT}% 且 ≤${MAX_RECLAIM_MB}MB；锁 ${TABLE_TIMEOUT_MIN}min 不划算" >> "$LOG"
       continue
     fi
-    echo "[$(date -Iseconds)]   VACUUM FULL ${tname} (size=${size} bytes, 估算 dead_pct=${dead_pct}%, 实测=${real_dead_pct}%)" >> "$LOG"
+    echo "[$(date -Iseconds)]   VACUUM FULL ${tname} (size=${size} bytes, 实测 dead=${real_dead_pct}%, free=${free_mb}MB/${total_mb}MB=${free_pct}%, 触发腿=${_which})" >> "$LOG"
     # 2026-10-03 同上修复（事务块问题）
     "$DOCKER_BIN" exec -e PGOPTIONS="-c statement_timeout=${TABLE_TIMEOUT_MIN}min -c lock_timeout=5min" \
       "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAX \

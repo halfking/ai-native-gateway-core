@@ -43,7 +43,7 @@ const vacuumBloatScript = "../252-monitor/pg17-vacuum-bloat.sh"
 
 // fakeVacuumDocker 记录每次调用，并按 SQL 内容应答：
 //   - pg_total_relation_size(…)      → 300MB（让目标过 256MB 门槛）
-//   - pgstattuple_approx(…)           → $FAKE_REAL_PCT（量不出来时为空串）
+//   - pgstattuple_approx(…)           → $FAKE_REAL_PCT|$FAKE_FREE_BYTES（量不出来时为空串）
 //   - BLOAT_SQL（dead_tuple_percent 出现在别处 → 用 n_dead_tup 判） → $TARGETS
 func fakeVacuumDocker(t *testing.T, dir string) string {
 	t.Helper()
@@ -66,7 +66,18 @@ case "$all" in
           [ -n "${FAKE_MEASURE_ERR:-}" ] && printf '%s\n' "${FAKE_MEASURE_ERR}" >&2
           exit "${FAKE_MEASURE_EXIT}"
       fi
-      printf '%s' "${FAKE_REAL_PCT:-}"
+      # ★ 2026-10-19（§143.7）：确认闸一次调用取**两个**量，用 | 分隔。
+      #   ⚠⚠ 桩必须**按它实际收到的 SQL 应答**，不能无条件吐 "pct|bytes"：
+      #     2026-10-19 变异 M6 把脚本 SELECT 里的 approx_free_space 删掉，
+      #     **所有门照样全绿** —— 因为桩不看查了什么，无条件返回两个字段。
+      #     而真机上少查一个字段 ⇒ 返回值匹配不上脚本的解析正则
+      #     ⇒ 每一张表都落进「量不出来」⇒ 脚本变成**永不触发的作业**，
+      #     正是 §118/§142 刚花两轮拆掉的「静默永久失效」那一类。
+      #   ⇒ 这里按 $all 里有没有 approx_free_space 决定返回形态，与真机对齐。
+      case "$all" in
+        *approx_free_space*) printf '%s|%s' "${FAKE_REAL_PCT:-}" "${FAKE_FREE_BYTES:-}" ;;
+        *)                   printf '%s'  "${FAKE_REAL_PCT:-}" ;;
+      esac
       ;;
   *"n_dead_tup"*)
       printf '%s' "$TARGETS"
@@ -130,10 +141,15 @@ func runVacuumBloat3(t *testing.T, targets, realPct string, extra ...string) (st
 	return string(traceBody), string(logBody), exitCode
 }
 
-// runVacuumBloat 是既有五条用例的薄封装（只要轨迹与日志）。
-func runVacuumBloat(t *testing.T, targets, realPct string) (string, string) {
+// runVacuumBloat 是既有用例的薄封装（只要轨迹与日志）。
+//
+// ★ 2026-10-19（§143.7）：签名加了 freeBytes。确认闸现在一次取两个量
+//   （dead_tuple_percent | approx_free_space），桩也复刻了这个形态；
+//   **每个调用点都必须显式给出 freeBytes** —— 留空会落进「量不出来」分支，
+//   而那个分支的结论恰好也是 SKIP ⇒ 断言 SKIP 的门会**因为错的原因变绿**。
+func runVacuumBloat(t *testing.T, targets, realPct, freeBytes string) (string, string) {
 	t.Helper()
-	trace, logBody, _ := runVacuumBloat3(t, targets, realPct)
+	trace, logBody, _ := runVacuumBloat3(t, targets, realPct, "FAKE_FREE_BYTES="+freeBytes)
 	return trace, logBody
 }
 
@@ -151,19 +167,61 @@ func requireVacuumCalls(t *testing.T, trace string) {
 	}
 }
 
-// TestVacuumBloatSkipsWhenEstimateLies 是本门的正身：
-// 估算说 52.3% 很脏，**实测只有 3.1%** ⇒ 必须 SKIP，绝不能拿独占锁去 VACUUM FULL。
-func TestVacuumBloatSkipsWhenEstimateLies(t *testing.T) {
+// TestVacuumBloatDecidesOnReclaimableBytesNotDeadRatio 是 §143.7 的正身，
+// 并**取代**原来的 TestVacuumBloatSkipsWhenEstimateLies。
+//
+// ★ 为什么必须取代而不是保留：旧判据下「估算 52.3% / 实测 3.1% ⇒ SKIP」
+//   验的是「别信估算」。新判据**根本不看比例** ⇒ 同一条断言在新代码里
+//   会因为「free 字节数不够」而 SKIP —— **结论对、原因错**，
+//   而「因为错的原因变绿」的门比红的门更危险：它会在比例腿被改坏时继续绿。
+//
+// 本例反过来钉：实测 dead 高达 60%（远超旧门槛 30%）、估算也 52.3%，
+// 但 993MB 的表只可回收 1MB ⇒ **必须 SKIP**。
+// 旧代码在这个输入下会执行 VACUUM FULL（60 > 30）⇒ 本门对它转红。
+func TestVacuumBloatDecidesOnReclaimableBytesNotDeadRatio(t *testing.T) {
 	skipVacuumWindows(t)
 
-	trace, logBody := runVacuumBloat(t, "public.session_summaries|993697792|52.3", "3.1")
+	// size=993697792（≈948MB）≤ MAX_RECLAIM_MB(1024MB) ⇒ 比例腿**可能**满足，
+	// 唯一让它落空的是那 1MB 的 free ⇒ 这条门专门钉「比例腿没被顺手删掉」。
+	trace, logBody := runVacuumBloat(t, "public.session_summaries|993697792|52.3", "60.0", "1048576")
 
 	requireVacuumCalls(t, trace)
 	if strings.Contains(trace, "VACUUM FULL public.session_summaries") {
-		t.Fatalf("★ 估算 52.3%% 但实测 3.1%% 仍执行了 VACUUM FULL —— 白拿 30 分钟 ACCESS EXCLUSIVE\ntrace:\n%s\nlog:\n%s", trace, logBody)
+		t.Fatalf("★ 实测 dead=60%%（远超旧门槛 30%%）但只可回收 1MB 仍执行了 VACUUM FULL —— "+
+			"判据还在按死元组比例决策，这就是 §119 说的「对 948MB 的表锁 30 分钟换 1MB」的负收益\n"+
+			"trace:\n%s\nlog:\n%s", trace, logBody)
 	}
-	if !strings.Contains(logBody, "SKIP") || !strings.Contains(logBody, "3.1") {
-		t.Fatalf("SKIP 时必须在日志里写明实测值，便于事后反查\nlog:\n%s", logBody)
+	if !strings.Contains(logBody, "SKIP") {
+		t.Fatalf("SKIP 时必须留痕\nlog:\n%s", logBody)
+	}
+}
+
+// TestVacuumBloatIgnoresDeadRatioWhenBytesAreWorthIt 是上一条的反面：
+// 实测 dead 只有 0.4%（旧判据下会 SKIP），但 500MB 的表可回收 200MB
+// ⇒ **必须 VACUUM FULL**。旧代码在这个输入下会 SKIP（0.4 < 30）⇒ 本门对它转红。
+//
+// ⚠ 夹具是**刻意**挑的：free=200,000,000B < 256MB(=268,435,456B)
+//   ⇒ 绝对腿**不满足**；ratio=200/500=40.00% ≥ 30% 且 500MB ≤ 1GB
+//   ⇒ **只有比例腿能让它通过**。
+//   ⇒ 比例腿若被删或被改阈值，这条就红。
+//   ⚠ 第一版这里写的是 free=300MB，而 300,000,000 > 268,435,456 ——
+//     绝对腿照样满足，这条门会因为「错的原因」变绿（它压根没验到比例腿）。
+//     这正是「边界值要取在两侧、不要取一个自以为在阈值内侧的数」。
+func TestVacuumBloatIgnoresDeadRatioWhenBytesAreWorthIt(t *testing.T) {
+	skipVacuumWindows(t)
+
+	trace, logBody := runVacuumBloat(t, "public.session_summaries|500000000|52.3", "0.4", "200000000")
+
+	requireVacuumCalls(t, trace)
+	if !strings.Contains(trace, "VACUUM FULL public.session_summaries") {
+		t.Fatalf("实测可回收 200MB/500MB=40%%（绝对腿不满足、只有比例腿）时应当 VACUUM FULL —— "+
+			"比例腿坏了这条就红\ntrace:\n%s\nlog:\n%s", trace, logBody)
+	}
+	if !strings.Contains(logBody, "比例") {
+		t.Fatalf("必须记下是比例腿触发（200MB < 绝对腿 256MB）\nlog:\n%s", logBody)
+	}
+	if strings.Contains(logBody, "触发腿=绝对") {
+		t.Fatalf("这条夹具本意是只走比例腿；若日志说绝对腿触发，说明 256MB 的常量被改小到 ≤200MB\nlog:\n%s", logBody)
 	}
 }
 
@@ -172,7 +230,10 @@ func TestVacuumBloatSkipsWhenEstimateLies(t *testing.T) {
 func TestVacuumBloatSkipsWhenUnmeasurable(t *testing.T) {
 	skipVacuumWindows(t)
 
-	trace, logBody := runVacuumBloat(t, "public.session_summaries|993697792|52.3", "")
+	// ★ freeBytes 留空是有意的：桩会输出 "|"（两个字段都空），
+	//   脚本的解析正则要求 `^[0-9]+(\.[0-9]+)?\|[0-9]+$` ⇒ 匹配不上 ⇒ 落进「量不出来」。
+	//   这正是「psql 回了但没有可用数值」的形态。
+	trace, logBody := runVacuumBloat(t, "public.session_summaries|993697792|52.3", "", "")
 
 	requireVacuumCalls(t, trace)
 	if strings.Contains(trace, "VACUUM FULL public.session_summaries") {
@@ -184,15 +245,154 @@ func TestVacuumBloatSkipsWhenUnmeasurable(t *testing.T) {
 }
 
 // TestVacuumBloatStillRunsWhenConfirmed 钉住「别把脚本改瘫」：
-// 实测确实达标（55%）时**必须**执行 VACUUM FULL。
+// 确认闸量到了、且**确实值得做**时，必须执行 VACUUM FULL。
+//
+// ★ 2026-10-19（§143.7）：夹具从「dead=55%」换成「free=300MB」，因为
+//   决策量换了。**并且刻意只用绝对腿**：size=4GB > MAX_RECLAIM_MB(1024MB)
+//   ⇒ 比例腿被体积上限挡住；free=300MB ≥ 256MB ⇒ 只有绝对腿能让它通过。
+//   ⇒ 这条门因此专门钉「绝对腿」，与比例腿的门各钉一条，删任一条都会被抓到。
 func TestVacuumBloatStillRunsWhenConfirmed(t *testing.T) {
 	skipVacuumWindows(t)
 
-	trace, _ := runVacuumBloat(t, "public.session_summaries|993697792|52.3", "55.0")
+	trace, logBody := runVacuumBloat(t, "public.session_summaries|4000000000|52.3", "12.0", "300000000")
 
 	requireVacuumCalls(t, trace)
 	if !strings.Contains(trace, "VACUUM FULL public.session_summaries") {
-		t.Fatalf("实测 55%% 达标时应当执行 VACUUM FULL，但轨迹里没有 —— 脚本可能被改瘫，判据失去意义\ntrace:\n%s", trace)
+		t.Fatalf("实测可回收 300MB（≥绝对腿 256MB）时应当执行 VACUUM FULL，但轨迹里没有 —— "+
+			"脚本可能被改瘫，判据失去意义\ntrace:\n%s\nlog:\n%s", trace, logBody)
+	}
+	if !strings.Contains(logBody, "绝对") {
+		t.Fatalf("必须记下是绝对腿触发（size 4GB 已超比例腿的体积上限）\nlog:\n%s", logBody)
+	}
+}
+
+// TestVacuumBloatRatioLegRespectsSizeCap 钉住比例腿的**体积上限**。
+//
+// ★★ 这道门是**变异验证逼出来的**：第一版夹具用「2.9GB 表可回收 40%」
+//   去验上限，而把上限删掉（变异 M3）时它**照样全绿**。
+//   算下来原因很硬：比例腿要求 free ≥ MIN_FREE_PCT×size = 30%×size，
+//   而上限针对的是 size > 1GB ⇒ free > 300MB > MIN_RECLAIM_BYTES(256MB)
+//   ⇒ **绝对腿必然先满足** ⇒ 在当前默认值下，这个上限**永远不可能生效**。
+//   ⇒ 第一版夹具验的其实是「free 太小所以比例腿也不满足」，与上限无关。
+//
+// ⇒ 所以本门改成显式注入 MIN_RECLAIM_MB=512（>300MB）**把绝对腿挪开**，
+//   再对同一组数字做 A/B：
+//     900MB / free 270MB(30.00%)  ⇒ 比例腿满足、体积 ≤1GB ⇒ VACUUM FULL
+//     1500MB / free 450MB(30.00%) ⇒ 比例腿满足、体积 >1GB ⇒ 上限挡住 ⇒ SKIP
+//   两条的 free 都 < 512MB ⇒ 绝对腿在两例中都不满足 ⇒ 差异只可能来自上限。
+//   ⚠ 结论同样要写进脚本注释：默认 256/30/1024 下这个上限是**不可达的**，
+//     它是「旋钮被调小之后的事故护栏」，不是当前在起作用的判据。
+func TestVacuumBloatRatioLegRespectsSizeCap(t *testing.T) {
+	skipVacuumWindows(t)
+
+	raiseAbs := "MIN_RECLAIM_MB=512" // 把绝对腿挪到 450MB 之上，让它不参与
+
+	under, logUnder, _ := runVacuumBloat3(t, "public.under_cap|900000000|1.0", "0.5", raiseAbs, "FAKE_FREE_BYTES=270000000")
+	requireVacuumCalls(t, under)
+	if !strings.Contains(under, "VACUUM FULL public.under_cap") {
+		t.Fatalf("900MB / free 270MB=30%% 应当 VACUUM FULL（比例腿满足、体积未超上限）—— "+
+			"体积上限若被误设成 <900MB，这条就红\ntrace:\n%s\nlog:\n%s", under, logUnder)
+	}
+
+	over, logOver, _ := runVacuumBloat3(t, "public.over_cap|1500000000|1.0", "0.5", raiseAbs, "FAKE_FREE_BYTES=450000000")
+	requireVacuumCalls(t, over)
+	if strings.Contains(over, "VACUUM FULL public.over_cap") {
+		t.Fatalf("★ 1.5GB / free 450MB=30%% 仍执行了 VACUUM FULL —— 体积上限失效；"+
+			"整表重写会撞 TABLE_TIMEOUT_MIN=30min，即「拿了 ACCESS EXCLUSIVE 又做不完」，比不做更糟\n"+
+			"trace:\n%s\nlog:\n%s", over, logOver)
+	}
+	if !strings.Contains(logOver, "SKIP") {
+		t.Fatalf("被上限挡下时必须留 SKIP 痕迹\nlog:\n%s", logOver)
+	}
+}
+
+// TestVacuumBloatRatioLegDefaultBoundary 钉住 MIN_FREE_PCT 的**默认值 30**
+// 在边界两侧各取一个样本。
+//
+// ⚠ 为什么取两侧而不是「正好 30」：free/size 是浮点除法，
+//   「正好 30%」要求 free = 0.30*size 取整后仍精确等于 30.00% ——
+//   这类样本会随分母大小漂，做出来的是不存在的形态（§907 同族坑）。
+//   ⇒ 29.90%（差 0.1 点，必须 SKIP）与 30.40%（过 0.4 点，必须做）才是真边界。
+// 体积取 800MB，使两侧的 free（239.2MB / 243.2MB）**都小于**绝对腿 256MB
+// ⇒ 绝对腿在这两例中都不满足，测到的确实是比例腿的默认值。
+func TestVacuumBloatRatioLegDefaultBoundary(t *testing.T) {
+	skipVacuumWindows(t)
+
+	below, logBelow := runVacuumBloat(t, "public.below|800000000|1.0", "0.3", "239200000")
+	requireVacuumCalls(t, below)
+	if strings.Contains(below, "VACUUM FULL public.below") {
+		t.Fatalf("★ 比例 29.90%%（默认门槛 30%% 之下）仍执行了 VACUUM FULL —— 默认值被改小了\ntrace:\n%s\nlog:\n%s", below, logBelow)
+	}
+
+	above, _ := runVacuumBloat(t, "public.above|800000000|1.0", "0.3", "243200000")
+	requireVacuumCalls(t, above)
+	if !strings.Contains(above, "VACUUM FULL public.above") {
+		t.Fatalf("比例 30.40%%（默认门槛 30%% 之上）应当 VACUUM FULL，但没做 —— 默认值被改大了\ntrace:\n%s", above)
+	}
+}
+
+// TestVacuumBloatReclaimThresholdDefaults 钉住三个可注入旋钮的**默认值**。
+//
+// ⚠ 为什么这三条需要单独一道门：MIN_RECLAIM_MB / MIN_FREE_PCT / MAX_RECLAIM_MB
+//   是为了让行为门能驱动边界分支而做成注入点的（同 emergency 分支的 DOCKER_BIN）。
+//   **注入点本身就是放松生产约束的后门** —— 有人把 256 改成 25，
+//   判据全绿而脚本开始对着小表疯狂 VACUUM FULL。
+//   ⇒ 必须有一条门钉住「不传时就是这些值」，且这条门自己也要能被变异打到
+//   （把 256 改成 25，下面第 ① 条即红）。
+func TestVacuumBloatReclaimThresholdDefaults(t *testing.T) {
+	b, err := os.ReadFile(vacuumBloatScript)
+	if err != nil {
+		t.Fatalf("读脚本: %v", err)
+	}
+	s := string(b)
+	for _, needle := range []string{
+		"MIN_RECLAIM_MB=${MIN_RECLAIM_MB:-256}",
+		"MIN_FREE_PCT=${MIN_FREE_PCT:-30}",
+		"MAX_RECLAIM_MB=${MAX_RECLAIM_MB:-1024}",
+	} {
+		if !strings.Contains(s, needle) {
+			t.Fatalf("缺少默认值声明 %q —— 这三个是**可注入**旋钮，"+
+				"默认值被改小会让脚本开始做负收益的 VACUUM FULL，而所有行为门仍然全绿（它们都传了自己的值）", needle)
+		}
+	}
+}
+
+// TestVacuumBloatCandidateSQLHasNoDeadRatioFilter 钉住候选层**不再按死元组比例筛选**。
+//
+// ★ 这是一道**判据空洞的补丁**，不是可有可无的加固：
+//   上面的行为门全部通过「注入 TARGETS」驱动，而 TARGETS 是**桩给的**，
+//   它不经过候选 SQL。⇒ 有人把 `dead_pct >= 30` 加回 BLOAT_SQL 的 WHERE，
+//   脚本会退回「本库恒不命中」的状态（§119 实测：44 张大表估算最高只有 8.51%），
+//   **而所有行为门依然全绿** —— 因为它们压根不看候选 SQL 长什么样。
+//   ⇒ 候选层是唯一一处「只能靠源码断言钉住」的地方，必须单独立一道门。
+func TestVacuumBloatCandidateSQLHasNoDeadRatioFilter(t *testing.T) {
+	b, err := os.ReadFile(vacuumBloatScript)
+	if err != nil {
+		t.Fatalf("读脚本: %v", err)
+	}
+	s := string(b)
+
+	// ⚠ 从**开引号之后**开始找收尾引号：BLOAT_SQL="…" 的第一个 `"` 就是赋值
+	//   语句自己的收尾引号，从它开始截会得到字符串 "BLOAT_SQL=" —— 空壳。
+	//   （第一版就这么写的，失败输出是 `BLOAT_SQL=`，当场暴露。）
+	marker := `BLOAT_SQL="`
+	i := strings.Index(s, marker)
+	if i < 0 {
+		t.Fatal("找不到 BLOAT_SQL —— 门禁空转（脚本结构变了？）")
+	}
+	rest := s[i+len(marker):]
+	j := strings.Index(rest, `"`)
+	if j < 0 {
+		t.Fatal("BLOAT_SQL 串未闭合 —— 门禁空转")
+	}
+	seg := rest[:j]
+
+	if strings.Contains(seg, "dead_pct >=") {
+		t.Fatalf("★ 候选 SQL 又按死元组比例筛选了 —— 判据退回到 §119 证明与可回收字节脱钩的那个量，"+
+			"且在本库恒不命中（估算最高 8.51%% vs 门槛 30%%），脚本会再次变成永不触发的作业\n%s", seg)
+	}
+	if !strings.Contains(seg, "size > 100*1024*1024") {
+		t.Fatalf("候选 SQL 必须保留体积门槛（100MB）—— 否则会对小表反复 VACUUM FULL\n%s", seg)
 	}
 }
 
@@ -203,7 +403,13 @@ func TestVacuumBloatUsesConfirmGate(t *testing.T) {
 		t.Fatalf("读脚本: %v", err)
 	}
 	s := string(b)
-	for _, needle := range []string{"pgstattuple_approx", "MIN_DEAD_PCT", "SKIP"} {
+	// ★ 2026-10-19（§143.7）：MIN_DEAD_PCT 已**退役为决策量**（死元组比例与
+	//   可回收字节几乎脱钩，§119 的 6 个校准样本），这里换成两条腿的变量名。
+	//   ⚠ 这不是「把判据放松」：pgstattuple_approx（真读页的量）与 SKIP（fail-safe
+	//   的方向）两个 needle 原样保留，被替换掉的只是**决策变量名**。
+	//   决策量换掉之后，仍有两道门钉住它（…DecidesOnReclaimableBytesNotDeadRatio
+	//   与 …IgnoresDeadRatioWhenBytesAreWorthIt）。
+	for _, needle := range []string{"pgstattuple_approx", "MIN_RECLAIM_MB", "MIN_FREE_PCT", "SKIP"} {
 		if !strings.Contains(s, needle) {
 			t.Fatalf("确认闸缺少 %q —— 估计量又在直接驱动 VACUUM FULL", needle)
 		}
@@ -230,7 +436,7 @@ func TestVacuumBloatUsesConfirmGate(t *testing.T) {
 func TestVacuumBloatCandidateExcludesColumnarTables(t *testing.T) {
 	skipVacuumWindows(t)
 
-	trace, _ := runVacuumBloat(t, "", "")
+	trace, _ := runVacuumBloat(t, "", "", "")
 
 	requireVacuumCalls(t, trace)
 	for _, needle := range []string{"pg_am", "amname = 'heap'"} {
@@ -243,31 +449,31 @@ func TestVacuumBloatCandidateExcludesColumnarTables(t *testing.T) {
 }
 
 // TestVacuumBloatSkipsAtProductionCalibration 用**生产真值**驱动闸：
-// session_summaries（857MB）实测
+// session_summaries（857MB）§143.7 实测
 //
-//	估算 dead_pct = 62,877/(800,561+62,877) = 7.29%
-//	实测 pgstattuple_approx dead_tuple_percent = 0.346%
-//	⇒ n_dead_tup 在本库高估约 21 倍
+//	dead_tuple_percent = 0.427%（估算报 7.29%，高估约 17 倍）
+//	approx_free_space  = 16,256,444 B = 15.5MB，占 total 1.81%
 //
-// 换句话说：估算说「脏了」，真读页说「几乎不脏」。
-// 本例两者都低于 30% 门槛、结果一致，但**方向与量级都是真的** ——
-// 换一张更大的表或更低的门槛，估算就会把健康表推进 VACUUM FULL。
-//
-// ⇒ 因此钉住这个量级本身：估算远超阈值而实测极低时，必须 SKIP。
+// ⇒ 锁它 30 分钟只换回 1.81%，是 §119 说的**负收益** ⇒ 必须 SKIP。
+// 旧判据下这条也 SKIP，但**原因是 dead 0.427% < 30%** —— 那是巧合：
+//   一张「dead 低但 free 高」的表（§143.7 实测 request_stage_events 正是这个形态）
+//   会被旧判据放过。所以本门现在断言的是**可回收字节**出现在日志里。
 func TestVacuumBloatSkipsAtProductionCalibration(t *testing.T) {
 	skipVacuumWindows(t)
 
-	// 估算用一个远超门槛的值（真实估算是 7.29%，这里取 30.0 恰好压线之上，
-	// 目的是让「估算达标、实测极低」这个组合成为**唯一**的触发条件）
-	trace, logBody := runVacuumBloat(t, "public.session_summaries|898584576|30.0", "0.3")
+	// size=898584576(857MB) ≤ 1GB ⇒ 比例腿可用；估算用一个远超旧门槛的 30.0，
+	// 让「估算达标、实测不值得」成为**唯一**的触发条件。
+	trace, logBody := runVacuumBloat(t, "public.session_summaries|898584576|30.0", "0.427", "16256444")
 
 	requireVacuumCalls(t, trace)
 	if strings.Contains(trace, "VACUUM FULL public.session_summaries") {
-		t.Fatalf("★ 估算过线（30.0%%）但实测仅 0.3%%（生产实测高估约 21 倍）仍执行了 VACUUM FULL —— "+
+		t.Fatalf("★ 估算过线（30.0%%）但实测只可回收 16MB/857MB=1.81%% 仍执行了 VACUUM FULL —— "+
 			"确认闸失效，白拿 30 分钟 ACCESS EXCLUSIVE\ntrace:\n%s\nlog:\n%s", trace, logBody)
 	}
-	if !strings.Contains(logBody, "0.3") {
-		t.Fatalf("SKIP 时必须留下实测值，否则事后无法区分「闸起作用」与「作业没跑」\nlog:\n%s", logBody)
+	// 断言精确百分比（1.81）而不是整数 MB：日志里的 MB 列是整除截断
+	//（16,256,444B → 15MB），截断值会随样本大小漂，百分比不会。
+	if !strings.Contains(logBody, "1.81%") {
+		t.Fatalf("SKIP 时必须留下实测可回收比例，否则无法区分「闸起作用」与「作业没跑」\nlog:\n%s", logBody)
 	}
 }
 
@@ -305,6 +511,7 @@ func TestVacuumBloatConfirmFailureDoesNotAbortRun(t *testing.T) {
 
 	targets := "public.t_a|993697792|52.3\npublic.t_b|993697792|52.3"
 	trace, logBody, exitCode := runVacuumBloat3(t, targets, "55.0",
+		"FAKE_FREE_BYTES=300000000",
 		"FAKE_MEASURE_EXIT=1",
 		"FAKE_MEASURE_FAIL_FOR=public.t_a",
 		"FAKE_MEASURE_ERR=ERROR:  relation \"x\" does not exist")
