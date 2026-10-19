@@ -314,11 +314,13 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 			--   duration_ms 恒为 0——正是本条要修的缺陷换了个写法。
 			-- ⚠ 起点取存量 sessions.created_at（首写固化，冲突臂不改写它），
 			--   所以 GREATEST(0, …) 只用于挡时钟回拨/乱序到达的负值。
-			duration_ms = CASE
-				WHEN public.sessions.created_at IS NOT NULL
-					THEN GREATEST(0, (EXTRACT(EPOCH FROM (EXCLUDED.updated_at - public.sessions.created_at)) * 1000)::BIGINT)
-				ELSE public.sessions.duration_ms
-			END
+			--   created_at 是 NOT NULL DEFAULT NOW()（706:124），故不需要 NULL
+			--   分支：之前那个 CASE WHEN created_at IS NOT NULL … ELSE 保底
+			--   的 ELSE 在生产上**不可达**，只有把该列声明成可空的测试夹具
+			--   才走得到 —— 那是夹具保真度问题，不是生产语义，留着只会让人
+			--   误以为 created_at 可能为 NULL 是真实约束。
+			duration_ms = GREATEST(0,
+				(EXTRACT(EPOCH FROM (EXCLUDED.updated_at - public.sessions.created_at)) * 1000)::BIGINT)
 		WHERE public.sessions.tenant_id = EXCLUDED.tenant_id
 	`,
 		update.SessionID, update.TenantID,

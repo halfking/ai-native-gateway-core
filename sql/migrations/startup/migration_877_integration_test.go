@@ -138,7 +138,7 @@ func TestMigration877SearchTextTrgm(t *testing.T) {
 	cfg.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 	scriptConn, err := pgx.ConnectConfig(ctx, cfg)
 	if err != nil {
-		t.Skipf("TEST_PG_URL unreachable: %v", err)
+		t.Fatalf("TEST_PG_URL IS SET but unreachable (%v) — a misconfigured CI credential silently skips this gate and the package still reports ok; fix the DSN or unset the variable", err)
 	}
 	defer func() { _ = scriptConn.Close(ctx) }()
 

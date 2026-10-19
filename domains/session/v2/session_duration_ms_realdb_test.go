@@ -6,7 +6,7 @@ package v2
 //
 // 706 声明了 `sessions.duration_ms BIGINT`，列注释写「关闭时
 // closed_at - created_at」。但那条注释描述的写入点**全仓零调用方**：
-// `CloseSession`（session_aggregator.go:397）没有任何生产调用方
+// `CloseSession`（session_aggregator.go:427）没有任何生产调用方
 // ——2026-09-14 审计已把这一事实记在 session_writer_v2.go:744 与
 // bodies_writer.go:213（两处都在讲「没有关闭链路」这同一件事）。
 //
@@ -53,7 +53,9 @@ const durationMsFixtureSQL = `
 CREATE TABLE public.sessions (
 	session_id             TEXT    NOT NULL,
 	tenant_id              TEXT    NOT NULL,
-	created_at             TIMESTAMPTZ,
+	-- 706:124 是 NOT NULL DEFAULT NOW()，夹具必须同形：
+	-- 声明成可空会让生产上不可达的 NULL 分支在测试里变得可达。
+	created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at             TIMESTAMPTZ,
 	status                 TEXT,
 	total_turns            INTEGER NOT NULL DEFAULT 0,
@@ -120,10 +122,10 @@ func TestSessionDurationMsIsWrittenOnEveryTurn(t *testing.T) {
 
 	// 第一轮：建行。此时 created_at == updated_at，已流逝应为 0。
 	require.NoError(t, upsertSessionSnapshot(ctx, pool, SessionUpdate{
-		SessionID: "sess-dur",
-		TenantID:  "tenant-1",
+		SessionID:     "sess-dur",
+		TenantID:      "tenant-1",
 		TurnIncrement: 1,
-		UpdatedAt:   base,
+		UpdatedAt:     base,
 	}, part))
 
 	var after1 *int64
@@ -137,10 +139,10 @@ func TestSessionDurationMsIsWrittenOnEveryTurn(t *testing.T) {
 	// 第二轮：+90 秒。冲突臂必须按存量 created_at 算，而不是重置起点。
 	second := base.Add(90 * time.Second)
 	require.NoError(t, upsertSessionSnapshot(ctx, pool, SessionUpdate{
-		SessionID: "sess-dur",
-		TenantID:  "tenant-1",
+		SessionID:     "sess-dur",
+		TenantID:      "tenant-1",
 		TurnIncrement: 1,
-		UpdatedAt:   second,
+		UpdatedAt:     second,
 	}, part))
 
 	var after2 *int64
@@ -156,10 +158,10 @@ func TestSessionDurationMsIsWrittenOnEveryTurn(t *testing.T) {
 	// 第三轮：+30 秒 ⇒ 120 秒。单调性断言：起点必须始终是首写 created_at。
 	third := second.Add(30 * time.Second)
 	require.NoError(t, upsertSessionSnapshot(ctx, pool, SessionUpdate{
-		SessionID: "sess-dur",
-		TenantID:  "tenant-1",
+		SessionID:     "sess-dur",
+		TenantID:      "tenant-1",
 		TurnIncrement: 1,
-		UpdatedAt:   third,
+		UpdatedAt:     third,
 	}, part))
 
 	var after3 *int64

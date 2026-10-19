@@ -254,6 +254,27 @@ DROP INDEX IF EXISTS public.idx_session_turns_hot_upstream_protocol;
 --   判据侧同样如此（见 migration_877_integration_test.go 的 psqlApply）。
 -- ===========================================================================
 
+-- ── 订正 706 的列注释（列注释是 introspect \d sessions 的读者唯一能看到的契约）──
+-- 706_session_family_s1a.sql:461 至今写着「会话耗时；关闭时 closed_at-created_at（706）」，
+-- 但 706 的**唯一**写入方 CloseSession 全仓零调用方，该语义在生产上从未兑现。
+-- 877 起本列改为**每轮刷新的已流逝时长**（EXCLUDED.updated_at - 存量 created_at）。
+-- 不改 706 本体（已 applied+verified 且 SHA 登记台账，改它会重写已应用历史），
+-- 只在这里用 COMMENT ON COLUMN 把对外契约订正到与代码一致。
+DO $comment_877_duration$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'sessions' AND column_name = 'duration_ms'
+  ) THEN
+    COMMENT ON COLUMN public.sessions.duration_ms IS
+      '877 订正：每轮刷新的**已流逝时长** = updated_at - created_at（首写固化的 created_at）。
+       706 原注释「关闭时 closed_at - created_at」承诺的语义从未兑现 —— 其唯一写入方
+       CloseSession 无任何生产调用方，该列此前恒为 NULL。按新语义，进行中的会话
+       已有真实且有用的「已流逝多久」，且随轮次单调逼近真实总时长。';
+  END IF;
+END
+$comment_877_duration$;
+
 -- COMMENT 与创建腿同守卫（守卫掉的对象留无条件 COMMENT 会在语句末尾以
 -- relation does not exist 非零退出，迁移永不记账）。
 DO $comment_877_index$BEGIN
