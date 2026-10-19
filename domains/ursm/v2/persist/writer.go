@@ -1,14 +1,19 @@
 package persist
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
@@ -510,27 +515,18 @@ func payloadArgFor(r Row) any {
 	}
 }
 
-func (w *Writer) Flush(ctx context.Context, rows []Row) error {
-	if w == nil || w.db == nil || len(rows) == 0 {
-		return nil
-	}
-	tx, err := w.db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-
-	for _, r := range rows {
-		payloadArg := payloadArgFor(r)
-
-		// 2026-07-22: 使用 ::text::jsonb cast 避免 22P02 错误
-		// pgx 的二进制协议传输 []byte 到 JSONB 列时，若含非 UTF-8 字符、
-		// NaN/Inf 或其他非法 JSON 片段会触发 "invalid input syntax for type json"。
-		// 转为 string 并使用 text→jsonb 类型转换可强制 PG 的 JSON 解析器处理。
-		// 匹配 domains/analysis/bus/publisher.go:86 和 telemetry/client.go:572 的模式。
-		// ★ NULL 经该 cast 仍是 NULL，不会变成 ''。
-
-		_, err := tx.Exec(ctx, `
+// snapshotInsertSQL 是快照行的 INSERT 语句。
+//
+// ★ 提到包级常量有两个理由（§143.11）：
+//
+//	① **排序列必须从同一份 SQL 派生**（见 snapshotConflictColumns）。
+//	   两份各写各的常量必然漂移，而漂移的后果是**静默的**：
+//	   排序列少一维 ⇒ btree 叶页密度从 ~90% 掉回 ~70% ⇒ 索引凭空多占 ~22%。
+//	② 门（writer_index_order_test.go）直接读这份文本，
+//	   断言「排序键集合 == ON CONFLICT 列集合」—— 改约束的人一定会撞到它。
+//
+// ⚠ 语句本身**逐字未改**，只是从 Flush 的函数体搬到这里。
+const snapshotInsertSQL = `
 INSERT INTO ursm_node_snapshot_min
   (snapshot_ts, recovery_epoch, provider_id, credential_id, raw_model_name, canonical_name, tenant_id,
    available, health_status, fail_streak, cool_until,
@@ -550,7 +546,136 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$
         $36,$37,$38,
         $39,$40,$41,$42,
         $43,$44,$45,$46,$47)
-ON CONFLICT (snapshot_ts, tenant_id, credential_id, raw_model_name) DO NOTHING`,
+ON CONFLICT (snapshot_ts, tenant_id, credential_id, raw_model_name) DO NOTHING`
+
+// snapshotConflictColumnsRE 从 snapshotInsertSQL 里抽 ON CONFLICT 的推断列。
+var snapshotConflictColumnsRE = regexp.MustCompile(`(?is)ON\s+CONFLICT\s*\(([^)]*)\)`)
+
+// snapshotConflictColumns 返回 ON CONFLICT 的推断列（去空白，保持出现顺序）。
+//
+// ★ 它是**排序列的唯一来源**：排序键 = 这份列表 ⇒ 改唯一约束时排序自动跟上，
+//
+//	不存在「约束改了、排序没改」这种漂移（§10.59 家族：ON CONFLICT 列与
+//	唯一约束不一致 ⇒ 写入 100% 失败；那次是 701 次写入失败、62 小时无告警）。
+func snapshotConflictColumns() []string {
+	m := snapshotConflictColumnsRE.FindStringSubmatch(snapshotInsertSQL)
+	if m == nil {
+		return nil
+	}
+	parts := strings.Split(m[1], ",")
+	cols := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if c := strings.TrimSpace(p); c != "" {
+			cols = append(cols, c)
+		}
+	}
+	return cols
+}
+
+// snapshotIndexColumnCmp 是「列名 → 比较函数」的**穷举表**。
+//
+// ★ 为什么必须是穷举，而不是「取不到就跳过」：
+//
+//	漏一个列名 ⇒ 排序少一维 ⇒ 索引密度悄悄退化，**而没有任何报错**。
+//	⇒ 门断言「ON CONFLICT 的列集合 == 本表的键集合」：
+//	  新增一列而忘了加比较器 ⇒ 门红（而不是等到线上索引胖了才发现）。
+//
+// ★ 运行时再退一步：真的取不到比较器时**跳过该列并告警一次**，而不是报错。
+//
+//	报错会让整轮快照写失败 —— 那比「索引胖 22%」严重得多（丢数据 > 索引胖）。
+var snapshotIndexColumnCmp = map[string]func(a, b Row) int{
+	"snapshot_ts":    func(a, b Row) int { return a.SnapshotTS.Compare(b.SnapshotTS) },
+	"tenant_id":      func(a, b Row) int { return strings.Compare(a.TenantID, b.TenantID) },
+	"credential_id":  func(a, b Row) int { return cmp.Compare(a.CredentialID, b.CredentialID) },
+	"raw_model_name": func(a, b Row) int { return strings.Compare(a.RawModel, b.RawModel) },
+}
+
+// snapshotIndexSortWarnOnce 让「缺比较器」只告警一次（每进程），
+// 免得每轮刷屏把真正的告警淹掉。门是硬约束，这里只是运行时的可见性。
+var snapshotIndexSortWarnOnce sync.Once
+
+// sortRowsForIndexKey 按唯一约束的列序排序，返回**新切片**（不改调用方的）。
+//
+// ★ 为什么必须排序（§143.11 的全部依据）：
+//
+//	采集顺序 = Redis SCAN 迭代顺序（Collect 里 `w.rdb.Scan(...).Iterator()`），
+//	而**同一批的所有行共享同一个 snapshot_ts**（Collect 注释：「所有行使用同一个
+//	快照时间戳，保证原子性」）⇒ 整批行落进 btree 的**同一个窄键区间**，
+//	而区间内部是随机的。
+//	实测（252 生产）：每 20~40 秒一批、每批 1,881 行，
+//	pkey 的 `avg_leaf_density` 只有 **70.25%**（叶页空着 30%）。
+//	本地沙箱判定实验：同样数据**随机序**插入 ⇒ 密度 **70.20%**；
+//	**键序**插入 ⇒ 密度 **89.82%**，索引体积少 **21.98%**。
+//	⇒ 而工具基线里实测的「自然填充率」是 **90.20%**（REINDEX = 排序建）
+//	⇒ 也就是说：**这 30% 是可回收的，不是自然填充率**。
+//
+// ★ 为什么不改调用方的切片：Flush 的日志会打 `rows[0]` 作为「第一行样本」，
+//
+//	那是**采集顺序**的样本，排序不该改变它。
+func sortRowsForIndexKey(rows []Row) []Row {
+	cols := snapshotConflictColumns()
+	out := make([]Row, len(rows))
+	copy(out, rows)
+	if len(cols) == 0 {
+		snapshotIndexSortWarnOnce.Do(func() {
+			slog.Warn("ursm.v2.persist: 解析不出 ON CONFLICT 列，索引排序退化（密度会掉回随机序）")
+		})
+		return out
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		for _, c := range cols {
+			cmpFn, ok := snapshotIndexColumnCmp[c]
+			if !ok {
+				snapshotIndexSortWarnOnce.Do(func() {
+					slog.Warn("ursm.v2.persist: ON CONFLICT 列缺比较器，索引排序退化",
+						"column", c)
+				})
+				continue
+			}
+			if v := cmpFn(out[i], out[j]); v != 0 {
+				return v < 0
+			}
+		}
+		return false
+	})
+	return out
+}
+
+// snapshotRowExecutor 是逐行 INSERT 需要的最小接口。
+//
+// ★ 抽它不是为了「好测」，而是让**插入顺序**变成可观测的事实 ——
+//
+//	§143.11 的全部收益都来自「批内行序 = 键序」，而它此前**没有任何观测点**。
+//	与 Writer.readHashes 那条 seam 同一个理由（仓里已有的范式）。
+type snapshotRowExecutor interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// insertSnapshotRows 按**唯一约束的列序**把这些行插进去。
+//
+// ★ 排序放在这里（而不是调用方），是为了让「插入顺序」这个性质
+//
+//	落在同一个函数里 ⇒ 判据直接盯它，变异（去掉排序）也会被门抓到。
+//
+// ⚠ 2026-07-22: 使用 ::text::jsonb cast 避免 22P02 错误
+//
+//	pgx 的二进制协议传输 []byte 到 JSONB 列时，若含非 UTF-8 字符、
+//	NaN/Inf 或其他非法 JSON 片段会触发 "invalid input syntax for type json"。
+//	转为 string 并使用 text→jsonb 类型转换可强制 PG 的 JSON 解析器处理。
+//	匹配 domains/analysis/bus/publisher.go:86 和 telemetry/client.go:572 的模式。
+//	★ NULL 经该 cast 仍是 NULL，不会变成 ''。
+//
+// ★ 参数名刻意叫 `tx`（生产路径传的是 pgx.Tx，测试传的是假执行器）：
+//
+//	仓里既有的门 writer_argorder_test.go 是**源码文本**判据，
+//	它按 `tx.Exec(ctx, …)` 抽取实参清单 ⇒ 参数改名会让那道门失配。
+//	⇒ 保持这个名字，是为了让既有门继续盯着这段实参（它守的是
+//	「实参顺序错位 ⇒ PG 静默把值写进错误的列」）。
+func insertSnapshotRows(ctx context.Context, tx snapshotRowExecutor, rows []Row) error {
+	ordered := sortRowsForIndexKey(rows)
+	for _, r := range ordered {
+		payloadArg := payloadArgFor(r)
+		_, err := tx.Exec(ctx, snapshotInsertSQL,
 			r.SnapshotTS, r.RecoveryEpoch, r.ProviderID, r.CredentialID, r.RawModel,
 			r.CanonicalName, r.TenantID, r.Available, r.HealthStatus, r.FailStreak, r.CoolUntil,
 			r.SR1m, r.SR5m, r.SR30m, r.Samples1m, r.Samples5m, r.Samples30m,
@@ -567,6 +692,22 @@ ON CONFLICT (snapshot_ts, tenant_id, credential_id, raw_model_name) DO NOTHING`,
 		if err != nil {
 			return fmt.Errorf("insert row cid=%d model=%s: %w", r.CredentialID, r.RawModel, err)
 		}
+	}
+	return nil
+}
+
+func (w *Writer) Flush(ctx context.Context, rows []Row) error {
+	if w == nil || w.db == nil || len(rows) == 0 {
+		return nil
+	}
+	tx, err := w.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if err := insertSnapshotRows(ctx, tx, rows); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
