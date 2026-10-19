@@ -3173,6 +3173,13 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
 - 防复发检查：① 页面级验收前先问「这个工具每标签页占几条连接」；不满足时改用**单页顺序访问**的无头脚本（本轮：playwright-core + 本机缓存的 Chrome for Testing 1223，104 页顺序扫，全程最多 1 条 SSE）；② 无头脚本顺带给出**每 API 的状态与耗时**，比 DOM 断言更适合做「>2s 定位」；③ 判据材料留档：`/tmp/llmgw-retire-20261020/pw/sweep.mjs` + `sweep.tsv`（104 行，逐页一行）。
 - 证据：104 页扫描结果：文档级 103/104 可达（唯一例外 `/maintain` 503 = 本机未部署该服务）、**0 个 API ≥2000ms**、**0 个 JS 运行时异常**、5xx API 9 处（全部 curl 可复现）。
 - 溯源：同上 §5.5。
+
+## 2026-10-20 — 判据与被测对象读**同一个函数**时，跨两次读做精确相等 = 竞态（Seen: 1/3）
+- 场景：`go test ./admin/` 偶发红 `TestDataLifecycleTableSizesFieldsAreComplete`（「首行 TotalBytes 与 PG 实时值不一致」）。同提交**再跑就绿**，pristine worktree 也绿 ⇒ 一度怀疑是本轮引入的产品缺陷。
+- 真因：端点 `tableSizesSQL` 的 `TotalBytes` 取 `pg_total_relation_size(c.oid)`，判据的 live 查询用的**也是** `pg_total_relation_size` ⇒ 两者相等的前提是「两次读之间那张表没变」。而首行是**全库最大的表**（本机实测 `public.ursm_node_snapshot_min` 231MB），**网关的后台 worker 正在批量写它**（`n_tup_ins=49283`，实测 5 秒涨 64KB）⇒ 快照采集与 live 查询之间落进一次写入就不相等。第二层：端点的 `WHERE` 不排除非 public schema，首行可能是**用例自己建的临时 schema 里的表**，用例一结束就 `DROP CASCADE` ⇒ live 查询直接 42P01。**端点是对的，变的是判据的前提。**
+- 防复发检查：① 判据要读「活数据」时，**先问两次读之间它会不会变**——会变就不能做精确相等，要按**它自己声明的容差**（本例注释早就写的是「±1%」，实现却写成了精确相等 ⇒ **判据没做到它自己声明的事**）；② 容差要留**页级下限**（小表上 1% 可能小于一个 8KB 页）；③ 关系可能已被删时**改判下一行**，但必须保留「**至少有一行成功对账**」的前提断言，否则会退化成「压根没对账」的假绿；④ 判据的注释不是证据，**断言才是**——注释写 ±1% 而代码写 `!=`，以代码为准去质疑注释与现实。
+- 证据：同提交两次全量跑（先 FAIL 后 PASS）；pristine worktree `8cec460b3` 全量跑 PASS；端点与判据同用 `pg_total_relation_size`（`admin/data_lifecycle_storage.go` 的 `tableSizesSQL`）；`pg_stat_user_tables` 读数 `n_tup_ins=49283, n_tup_del=0`；修后变异（`t.TotalBytes *= 2`）如期转红并点名偏差 231268352 > 容差 2312683。
+- 溯源：[复核轮](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.7。
 ## 2026-10-20 — 门禁钉在哪个相位，决定它能不能失败（Seen: 1/3）
 - 场景：修「已发布规则里的地址族规则在输出面遮蔽 IP」（用户报告
   `export https_proxy=http://[REDACTED]:7890`）。第一版门禁写在**输入面**

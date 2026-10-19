@@ -100,18 +100,56 @@ func TestDataLifecycleTableSizesFieldsAreComplete(t *testing.T) {
 		t.Errorf("TotalBytes = %d, want > 0", resp.TotalBytes)
 	}
 
-	// 与 PG 实时值对账：第一张表必须真的存在，且字节数一致（±1%）
+	// 与 PG 实时值对账：响应里的字节数必须是**真实读数**而不是壳子。
+	//
+	// 为什么不能逐字节精确相等（2026-10-20 复核轮；判据红了先怀疑自己的前提）：
+	//  - 端点口径就是 pg_total_relation_size(c.oid)，而本判据的 live 查询用的是
+	//    **同一个函数** —— 两者相等的前提是「两次读之间那张表没变」。
+	//  - 首行是全库最大的表。本机实测首行为 ursm_node_snapshot_min（231MB），
+	//    网关的 URSM worker 正在批量写它（n_tup_ins 4.9 万，实测 5 秒涨 64KB）：
+	//    快照采集与随后的 live 查询之间只要落进一次写入，两者就不相等。
+	//  - 更糟的是首行可能是**某个用例自己建的临时 schema 里的表**：用例一结束
+	//    就 DROP CASCADE，live 查询直接 42P01。
+	//  ⇒ 精确相等在**活库**上间歇性红（同一份代码偶发 PASS 偶发 FAIL），
+	//    而端点本身是对的（它返回的就是真实读数）。变的是判据的前提，不是产品行为。
+	//
+	// 现在的口径：**按本文件上方注释早已写明的「±1%」比对**（原实现写成了精确
+	// 相等 —— 判据没做到它自己声明的事）；关系已被删时改判下一行；并保留
+	// 「至少有一行成功对账」的前提断言。
+	//
+	// 判据强度：真错了会差几十个百分点（只回 index_bytes、只回 toast、回 0），
+	// 而活库的写入漂移实测在 KB 级 —— ±1% 足以把「读数不对」与「读数在变」分开。
 	first := resp.Tables[0]
-	var liveBytes int64
-	if err := pool.QueryRow(context.Background(),
-		"SELECT pg_total_relation_size($1::regclass)", first.Schema+"."+first.Table).Scan(&liveBytes); err != nil {
-		t.Fatalf("查 PG 实时字节数失败: %v (table=%s.%s)", err, first.Schema, first.Table)
+	reconciled := 0
+	for i := range resp.Tables {
+		row := resp.Tables[i]
+		var liveBytes int64
+		if err := pool.QueryRow(context.Background(),
+			"SELECT pg_total_relation_size($1::regclass)", row.Schema+"."+row.Table).Scan(&liveBytes); err != nil {
+			// 关系可能已被删（临时 schema 的表在用例结束时 DROP CASCADE）→ 换下一行
+			continue
+		}
+		if liveBytes <= 0 {
+			continue
+		}
+		reconciled++
+		diff := row.TotalBytes - liveBytes
+		if diff < 0 {
+			diff = -diff
+		}
+		// 容差 = max(1%, 64KB)：小表上 1% 可能小于一个页（8KB），要给页级漂移留余量
+		allowed := liveBytes / 100
+		if allowed < 64*1024 {
+			allowed = 64 * 1024
+		}
+		if diff > allowed {
+			t.Errorf("第 %d 行 %s.%s 的 TotalBytes = %d，PG 实时 = %d（偏差 %d 字节 > 容差 %d）—— 响应不是真实读数",
+				i, row.Schema, row.Table, row.TotalBytes, liveBytes, diff, allowed)
+		}
+		break
 	}
-	if liveBytes <= 0 {
-		t.Fatalf("前提不在场：PG 报 %s.%s 大小为 0", first.Schema, first.Table)
-	}
-	if first.TotalBytes != liveBytes {
-		t.Errorf("首行 TotalBytes = %d，PG 实时 = %d —— 响应不是真实读数", first.TotalBytes, liveBytes)
+	if reconciled == 0 {
+		t.Fatalf("前提不在场：没有任何一行能与 PG 实时值对账（首行 %s.%s）", first.Schema, first.Table)
 	}
 	if first.TotalHuman != humanBytes(first.TotalBytes) {
 		t.Errorf("TotalHuman = %q，与 TotalBytes=%d 不一致", first.TotalHuman, first.TotalBytes)

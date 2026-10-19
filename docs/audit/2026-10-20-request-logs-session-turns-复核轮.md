@@ -26,6 +26,7 @@
 | 效率 | 修 PG 内存后，规划耗时 1195ms → 50ms（**24×**），网关请求延迟 2–8× 改善 |
 | **逐页浏览器验证（104 页）** | **103/104 文档级 200**（唯一例外 `/maintain` 503 = 本机未部署该服务）；**0 个 API ≥2000ms**；**0 个 JS 运行时异常**；抓出 **9 处真 5xx**（5 个根因，全部 curl 可复现）—— 已修 4 个 + 1 个是功能未启用（503 预期） |
 | **逐页抓出的最重根因** | `prompt_injection_detections` 的**正典形状**（`sql/schema/` + `sql/objects/tables/`）与**历史迁移 315 的形状**不是一回事，而 315 的 `CREATE TABLE IF NOT EXISTS` 在正典库上是**空操作** ⇒ 315 声明的列**从未被创建** ⇒ 读侧恒 42703、**写侧恒失败（审计记录静默丢失）**、364 的视图建不出来 ⇒ **全环境**缺陷（不是本机没升级） |
+| **门禁自身的竞态（本轮新发现）** | `TestDataLifecycleTableSizesFieldsAreComplete` 偶发红：判据与端点读**同一个** `pg_total_relation_size`，却跨两次读做**精确相等**，而首行大表正被网关后台 worker 写入 ⇒ **端点是对的，判据的前提是错的**。已按该文件注释**早已声明的 ±1%** 修正并做变异验证（§5.7） |
 
 ---
 
@@ -614,6 +615,86 @@ categories injection_category[] / canary_token_leaked / approval_id / …
 
 ---
 
+## 5.7 ★ 判据自身的竞态：`data-lifecycle/storage/tables` 的「字节数对账」在活库上间歇性红
+
+### 5.7.1 症状
+
+`go test ./admin/`（带 `TEST_PG_URL`）在**同一份代码**上出现**第三条**失败：
+
+```
+--- FAIL: TestDataLifecycleTableSizesFieldsAreComplete (1.44s)
+```
+
+但同一提交**再跑一次就过**（`-v` 全绿），pristine worktree（`8cec460b3`，
+不含本轮改动）也**过** ⇒ 不是本轮引入，也不是稳定复现的缺陷 ⇒ 先怀疑**判据本身**。
+
+### 5.7.2 根因：判据与被测对象读的是**同一个函数**，却跨两次读做精确相等
+
+- 端点口径：`admin/data_lifecycle_storage.go` 的 `tableSizesSQL` 里
+  `TotalBytes` 取的是 **`pg_total_relation_size(c.oid)`**；
+- 判据口径：`admin/data_lifecycle_storage_tables_perf_test.go` 的 live 查询用的**也是**
+  `pg_total_relation_size($1::regclass)`。
+
+⇒ 两个值相等的前提是「**两次读之间那张表没变**」——而首行是**全库最大的表**，
+本机实测首行为 `public.ursm_node_snapshot_min`（231MB），**网关的 URSM worker
+正在批量写它**（`n_tup_ins=49283`、`n_tup_del=0`，实测 5 秒涨 64KB）。
+快照采集与随后的 live 查询之间只要落进一次写入，两者就不相等。
+
+**取数命令**（本机 PG 54318；DSN 走 `DATABASE_URL`，**不落盘**）：
+
+```bash
+source /tmp/lgw-env.sh
+PSQL="$HOME/kaixuan/pg18/bin/psql"
+"$PSQL" "$DATABASE_URL" -tAc "SELECT c.relname, pg_total_relation_size(c.oid) \
+  FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace \
+  WHERE n.nspname='public' AND c.relkind IN ('r','p') ORDER BY 2 DESC LIMIT 5;"
+"$PSQL" "$DATABASE_URL" -tAc "SELECT n_tup_ins, n_tup_del, n_live_tup \
+  FROM pg_stat_user_tables WHERE relname='ursm_node_snapshot_min';"
+```
+
+**口径**：`pg_total_relation_size` = heap + TOAST + indexes；端点与判据口径**完全一致**，
+所以差异只可能来自「两次读之间表变了」。
+**覆盖范围**：`public` schema 的 `r`/`p` 两类关系；端点 `tableSizesSQL` 的
+`WHERE n.nspname NOT IN ('pg_catalog','information_schema')` **还包含非 public schema**
+（见 §5.7.3）。
+
+### 5.7.3 第二层竞态：首行可能是**用例自己建的临时 schema 里的表**
+
+端点的 `WHERE` 不排除非 public schema，而 admin 包的真库门普遍用
+`dlperf_<test>_<pid>_<nanos>` 这类临时 schema（用例结束 `DROP CASCADE`）。
+⇒ 首行可能是一张**即将被删掉**的表，live 查询直接 42P01。
+
+### 5.7.4 判据与它自己声明的不一致
+
+该文件**上方的注释**写的是「字节数一致（**±1%**）」，**实现**却是
+`if first.TotalBytes != liveBytes` —— 逐字节精确相等。
+⇒ **判据没做到它自己声明的事**（判据纪律：注释不是证据，断言才是）。
+
+### 5.7.5 修法
+
+- 按**它自己声明的 ±1%** 比对（容差取 `max(1%, 64KB)`：小表上 1% 可能小于一个页
+  8KB，要给页级漂移留余量）；
+- 关系已被删（42P01）或 live 值为 0 时**改判下一行**；
+- 保留「**至少有一行成功对账**」的前提断言（否则会退化成「压根没对账」的假绿）。
+
+**端点本身不改**——它返回的就是真实读数，变的是**判据的前提**。
+
+### 5.7.6 变异验证（证明新判据不是假绿）
+
+把生产读数改坏（`queryTableSizes` 里 `t.TotalBytes *= 2`），判据如期变红：
+
+```
+--- FAIL: TestDataLifecycleTableSizesFieldsAreComplete (2.13s)
+    data_lifecycle_storage_tables_perf_test.go:146: 第 0 行 public.ursm_node_snapshot_min
+      的 TotalBytes = 462536704，PG 实时 = 231268352（偏差 231268352 字节 > 容差 2312683）
+      —— 响应不是真实读数
+```
+
+⇒ 容差 2312683 字节（1%）能抓住 100% 量级的读数错误；活库的写入漂移实测在 KB 级
+（64KB/5s），两者差三个数量级 ⇒ 不会把「读数在变」误判成「读数不对」。
+
+---
+
 
 | # | 项 | 性质 | 建议 |
 |---|---|---|---|
@@ -643,6 +724,11 @@ categories injection_category[] / canary_token_leaked / approval_id / …
 ⇒ 它们与 §5.6 的 5 个 500 同源：**本地 PG 落后于正典 schema/数据**
 （`user_tags` 缺列这条已由 ensure 链补上；样本数据与 `prompt_injection` 的
 315 形状属另一层，见 §5.6.1 与 L8）。
+
+**第三条（本轮新出现，已修）**：`TestDataLifecycleTableSizesFieldsAreComplete`
+在一次全量跑里红了、**同提交再跑就绿**、pristine worktree 也绿 ⇒ 判据自身的竞态，
+**不是**本轮引入的产品缺陷。根因与修法见 **§5.7**（判据与端点读同一个
+`pg_total_relation_size`，却跨两次读做精确相等，而首行大表正被网关后台 worker 写入）。
 
 ---
 
