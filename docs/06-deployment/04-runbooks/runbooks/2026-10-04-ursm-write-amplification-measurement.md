@@ -33331,3 +33331,178 @@ md5 与仓内**逐字一致**、台账记 `in-sync`、仓内正典 cron 副本�
 [[「因为错的原因变绿」比红更危险]] · [[恒真门]] · [[阴性结论要当缺陷一样复核]] ·
 [[同一个结论不要在多处复述]] · [[判据红了先怀疑自己的前提]] ·
 [[先数消费者再写新东西]] · [[替身要复刻关键性质，否则读数是假的]]。
+
+---
+
+## §143.13 读方普查器「**从来没跑起来过**」：一条 20 行的 bug + 三道补上的门 + `session_turns` 232MB 的读方证据
+
+> 2026-10-19（本会话）追加。起点是 §143.12 的结论：
+> 「`session_turns` 的真正杠杆是**索引取舍**，而取舍必须先有**读方证据**」
+> ⇒ 证据的唯一来源是仓里的 `index-reader-census.sh`
+> ⇒ **本节发现它从来没跑起来过。**
+
+### §143.13.1 症状：工具一直报「量具不可用」
+
+把仓里的 `scripts/252-monitor/index-reader-census.sh` 放到 252 上跑（只读工具）：
+
+```
+ABORT: psql 失败 rc=1 —— 量具不可用（不是「索引不存在」的结论）。
+ERROR:  syntax error at or near "$"
+LINE 29:   WHERE ic.relname = $IDX), '';
+```
+
+⇒ 根因在第 104 行：
+
+```bash
+SQL=${SQL/__IDX__/'$IDX'}      # ← 替换值写在**单引号**里
+```
+
+⇒ shell **不展开**单引号里的 `$IDX` ⇒ SQL 里留下字面量 `$IDX` ⇒ 真库语法错
+⇒ 工具 exit 3（「本次没有结论」）。
+
+⇒ ⇒ ★★★ **讽刺点**：该脚本的**注释里已经预警过同款事故两次**——
+「这个 bug 在假 psql 桩下**永远不会暴露**（桩对 SQL 照单全收），
+只有把这段真 SQL 打到真库才看得见 ⇒ 与本仓 $1 那条同一个坑，第二次。」
+⇒ ⇒ ★★ 而**它自己的门正是那个假 psql 桩** ⇒ 预警写在注释里，门却抓不到。
+
+### §143.13.2 为什么既有门抓不到（两处结构缺陷）
+
+| 缺陷 | 事实 | 后果 |
+|---|---|---|
+| ① 假 psql 桩把 SQL **吞掉** | `index_reader_census_test.go` 的桩是 `cat >/dev/null <<'__EOFSQL__' …` | 桩**看不见 SQL 文本** ⇒ 「SQL 本身写错」这一类缺陷**结构上不可见** |
+| ② 源码文本门**不剥注释** | `TestCensusBraceQuotesVarsBeforeCJK` 直接扫脚本原文 | 本轮补了一段解释展开 bug 的**注释**（`$IDX` 后面紧跟中文）⇒ 那道门**当场红** ⇒ **红的是注释，不是代码** |
+
+⇒ ⇒ ★★ ② 是**本仓的老教训**（「源码文本断言先剥注释」，§917 同款：JSDoc 里的示例代码
+把登记表变成空气门）⇒ 这道门自己没遵守。
+
+⇒ ⇒ ★★ ⇒ **判据需要两类**：
+① **行为级**（工具实际下发的 SQL 能不能在**真库**上执行）；
+② **文本级**（实际下发的 SQL 里不得残留未展开的占位符）。
+⇒ 假桩这一类门**补不了**这两件事 ⇒ 必须**再加一道门**，不是把既有门改严。
+
+### §143.13.3 修法与新门
+
+**修法**（`scripts/252-monitor/index-reader-census.sh`）：
+
+- 展开改成 **双引号**包单引号：`SQL=${SQL/__IDX__/"'$IDX'"}`
+  ⇒ 展开成 SQL 字符串字面量 `'session_turns'`。
+- 加一道**表名字符类守卫**（表名要进**正则字面量**，必须挡住引号/反斜杠）：
+  `case "$TBL" in *[!A-Za-z0-9_$]*|"") ⇒ exit 3`。
+  （表名来自 `pg_class` 不是用户输入，但正则字面量被一条带引号的表名劈开就是语法错。）
+
+⇒ ⇒ ★★ **顺带记下一条可复用的坑（本轮实测）**：
+**`psql -c` 不做变量插值，只有 stdin 路径才做。**
+实测（本地 PG 17.10）：`psql -v v=hello -c "select :'v'"` ⇒ `syntax error at or near ":"`；
+同一语句走 `echo ... | psql -v v=hello` ⇒ 正确返回 `hello`。
+⇒ ⇒ ★★ 所以「用 psql 变量免疫引号问题」这条路在 `-c` 契约下**走不通**
+（本工具的 `PSQL_CMD` 契约就是 `-c`）⇒ 只能「正确展开 + 守卫 + 真库门」。
+
+**新增/加强的门**（`scripts/ursmcheck/index_reader_census_sql_test.go` + 既有文件）：
+
+| 门 | 钉的是什么 |
+|---|---|
+| `TestCensusSendsExecutableSQL`（新） | 工具**实际下发**的第一条 SQL 必须在**本机 PG 沙箱**（`llm-gateway-pg`，PG 17.10）上**真执行**且 rc=0 ⇒ 语法错当场红。沙箱不可用时**跳过并明说**（不静默绿） |
+| `TestCensusSendsExpandedIndexName`（新） | 实际下发的 SQL 必须含**展开后**的索引名字面量，且不得残留 `$IDX` / `__IDX__` / `$TBL` / `__TBL__` / `$TOPN` / `__TOPN__` |
+| `TestCensusBraceQuotesVarsBeforeCJK`（**加强**） | 改为**只扫可执行部分**（整行注释替换成空行、行号保持不变）⇒ 注释里的 `$IDX远` 不再误报，而**代码里**的仍必红 |
+
+⇒ ⇒ ★★ **新门用「记录 + 转发」的 psql 包装脚本**：
+把工具实际下发的 SQL 记下来，**再真的执行**到沙箱。
+⇒ 第一条 SQL 只读 `pg_catalog`（`pg_index`/`pg_class`/`pg_inherits`/`pg_stat_user_indexes`）
+⇒ **任何 PG 上都能跑** ⇒ **不需要造任何夹具**。
+⇒ ⚠ 转发用的 psql 刻意带了 `ON_ERROR_STOP=1`（工具自己那条也带，但本门另起一次调用，
+要确保「语法错 ⇒ 非零退出码」这件事由本门自己保证，不依赖工具的参数）。
+
+### §143.13.4 变异验证（7 组，全部实测转红）
+
+| 变异 | 转红的门 |
+|---|---|
+| M1 展开改回单引号（**原 bug 形态**） | 真库执行门 + 文本门（2 条） |
+| M2 展开漏引号（`=$IDX`） | 真库执行门 + 文本门（2 条） |
+| M3 占位符改名但忘了展开 | 真库执行门 + 文本门（2 条） |
+| M6 展开值带尾随分号（SQL 被劈开） | **只有真库执行门**（1 条） |
+| M7 占位符名与替换值不一致 | 真库执行门 + 文本门（2 条） |
+| M4 代码里裸 `$IDX` 紧跟全角 | 既有 CJK 门（**剥注释后仍有牙**） |
+| M5 注释里裸 `$IDX` 紧跟全角 | 无（**这正是剥注释后的新行为**） |
+
+⇒ ⇒ ★★ **M6 说明两道新门是互补的、不是重复的**：
+尾随分号那个变异里，**索引名照样被内联了** ⇒ 文本断言**看不出问题**
+⇒ **只有真库执行能抓到** ⇒ 这就是「假桩看不见的那一类」必须用真库补的理由。
+
+### §143.13.5 ★★★ 工具修好后拿到的证据：`session_turns` 的 17 条父表索引
+
+⇒ 普查器在 252 上**第一次真正跑起来**（2026-10-19 23:10）。
+先取**父表索引**的跨分区聚合（`pg_inherits` 级联）：
+
+| 父表索引 | 键列 | 跨分区字节 | **跨分区 idx_scan** | 判定 |
+|---|---|---|---|---|
+| `idx_session_turns_request` | request_id | 106.7MB | **176,416,599** | 承重 |
+| `idx_session_turns_ts` | ts | 23.5MB | 2,105,560 | 承重 |
+| `session_turns_tenant_request_partition_key` | tenant_id, request_id, partition_date (UNIQUE) | 124.6MB | 1,959,949 | 承重 |
+| `idx_session_turns_effective_session` | tenant_id, CASE(session_id) | 39.4MB | 1,754,216 | 承重 |
+| `idx_session_turns_tenant_session_turn` | tenant_id, session_id, turn_no | 108.6MB | 1,732,367 | 承重 |
+| `idx_session_turns_credential_ts` | CASE(credential_id), ts | 57.8MB | 1,039,359 | 承重 |
+| `idx_session_turns_tenant` | tenant_id, ts | 57.5MB | 688,819 | 承重 |
+| `idx_session_turns_req_status_backfill_cov` | request_id | 61.2MB | 6,382 | 承重（回填工具用） |
+| `session_turns_pkey` | id, partition_date (UNIQUE) | 50.7MB | 18,615 | 承重（约束） |
+| `idx_session_turns_tenant_parent_request` | tenant_id, parent_request_id, ts | 87.0MB | **125** | ★ **保留**（见下） |
+| `idx_session_turns_tenant_task_type` | tenant_id, task_type, ts | **82.3MB** | **0** | ★ **候选删除** |
+| `idx_session_turns_search_trgm` | search_text (GIN trigram) | 79.7MB | **0** | ★ **保留**（见下） |
+| `idx_session_turns_tenant_namespace` | tenant_id, namespace, ts | **75.2MB** | **0** | ★ **候选删除** |
+| `idx_session_turns_tenant_project` | tenant_id, project_id, ts | **74.9MB** | **0** | ★ **候选删除** |
+
+⇒ ⇒ ★★★ **三个对照在同一个族里同时出现 ⇒ 方法自洽**：
+
+| 索引 | 运行时扫描 | **代码侧读方** | 结论 | 为什么 |
+|---|---|---|---|---|
+| `tenant_task_type` / `tenant_namespace` / `tenant_project` | **0** | **无** | **候选删除（合计 232.4MB）** | 两条独立证据都指向「没人用」 |
+| `tenant_parent_request` | 仅 125 | **有**：`admin/session_turns_unified.go:160` `WHERE tenant_id=$1 AND parent_request_id = ANY($2)` | **保留** | ★ **扫描数低 ≠ 没人用**：它是 admin 低频功能，25 小时里 125 次完全正常 |
+| `search_trgm` | **0** | 有（`/api/logs?q=` 的 `search_text ILIKE`） | **保留** | ★ **今天（2026-10-19）才由迁移 877 建**，0 扫描是**必然**的，不是「没人用」 |
+
+⇒ ⇒ ★★★ **最后一行是本节最要紧的一条**：
+`search_trgm` 也是 0 扫描，**但它是今天刚建的** ⇒
+**「0 扫描」这个信号必须与「索引年龄」一起读**，否则会把**新功能刚上线**误判成**废弃**。
+⇒ ⇒ ★★ 同一条也提醒：**`idx_scan` 只在 stats 复位后累计**
+（252 的 `stats_reset = 2026-10-18 22:03:37` ⇒ 窗口只有 **1 天 01:08:08**）
+⇒ 「0 扫描」的准确表述是「**这 25 小时里 0 次**」，不是「从来没有过」。
+
+**代码侧读方怎么查的**（不是「凭印象」）：
+
+- 这 3 条索引的源头是**迁移 525**（`sql/migrations/startup/525_session_turns_six_dim.sql`），
+  在**父表**上声明，且带部分谓词：
+  `ON public.session_turns (tenant_id, task_type, ts DESC) WHERE task_type IS NOT NULL`（同理 namespace / project_id）。
+- 全仓检索：`session_turns` + 这三列的 **WHERE 谓词 = 0 处**；
+  `admin/session_turns_v2.go` 只是在 **SELECT 列表**里取 `COALESCE(s.task_type,'')`（投影≠索引可用）；
+  `admin/turns_filter_options.go` 的动态 WHERE（`turnMergedSource`）只按 `tenant_id` + 时间窗过滤，
+  维度是 model/provider/status_code ⇒ **不碰**这三列。
+- 运行时侧：普查器打出的 **52 种语句形态**里，
+  **没有任何一条的 WHERE 按 task_type / namespace / project_id / search_text 过滤 session_turns**
+  （`task_type` 出现的 2 处：一条来自 `auto_route_selections_*` 的 SELECT 列表、一条来自 `_request_logs` 的 GROUP BY，
+  **都不是 session_turns 的谓词**）。
+
+⇒ ⇒ ★★ **删除必须在父表声明级做**（§79/§81 的老教训）：
+只删叶分区实例 ⇒ 下次建分区时 `CREATE TABLE … PARTITION OF` 会**克隆父表声明** ⇒ 白删。
+⇒ ⇒ ★★ **且 `session_turns_hot` 上还有同款部分索引**
+（`installer/cmd/llm-gw-installer/embeddata/startup/session_turns_hot_bootstrap.sql:112/120`）
+⇒ 它们在**热写路径**上 ⇒ 删掉还能**降低写放大**（每个 turn 的 INSERT 少维护 2 个索引）。
+
+### §143.13.6 诚实边界与本轮**没做**的事
+
+- ⚠ **本轮没有写 DROP 迁移、也没有在生产删任何索引。** 理由：
+  ① 「0 扫描」的窗口只有 25 小时、`track=top`、容量 3699/5000 ⇒ 低频读方（手工 psql、外部报表、未来的 admin 功能）**看不到**；
+  ② 这三列当初是**按「筛选维度」设计**的（525 迁移名就叫 `six_dim`）⇒ 可能有**尚未实现**的 admin 功能要用；
+  ③ 删索引是**不可逆**的（父表声明一改，新分区不再有；补回来也要迁移）。
+  ⇒ ⇒ ★ **因此本节交付的是「证据 + 判据」，处置留给属主拍板。**
+  ⇒ 若要执行，形态是**新迁移**（`878` 已被 `878_supplier_errors_partition_indexes.sql` 占用 ⇒ 用 **879+**）：
+  父表 `DROP INDEX` + hot 表 `DROP INDEX` + 同步 embeddata 副本与 `main.go` 的 embed 登记
+  （`installer/internal/dbinit/runner_851_order_test.go` 断言内嵌副本与 SSOT **逐字一致**）。
+- ⚠ **`session_summaries` 的 71MB 逐字重复对**（§143.12.6）**还没做**代码侧读方核查：
+  普查器已修好，可直接跑 `index-reader-census.sh session_summaries_session_key_uidx`。
+- ⚠ **普查器不是定时任务**（按目录约定「不占 `pg17-*` 前缀 ⇒ 不进 cron」），
+  所以它**不在** `deployed-252.tsv`（那份台账只管 cron 调度集合）——
+  ⚠ ⇒ **它现在有「线上跑的是哪一版」这个盲区**（与 §143.12.6 同族）⇒ 下一轮把它纳入台账。
+- ⚠ 本轮对 252 的写入只有一处：**把修好的只读普查器拷到 `/opt/scripts/`**（内容与仓内一致）。
+- ⚠ 数字只来自 252；`idx_scan` 与 `pg_stat_statements` 的窗口都是 **25 小时**。
+
+★ 同族：[[0 命中的第一嫌疑是量具坏了]] · [[替身要复刻关键性质，否则读数是假的]] ·
+[[先读量具再读产物]] · [[阴性结论要当缺陷一样复核]] · [[判据红了先怀疑自己的前提]] ·
+[[假绿也要当缺陷一样复核]] · [[同一个结论不要在多处复述]]。
