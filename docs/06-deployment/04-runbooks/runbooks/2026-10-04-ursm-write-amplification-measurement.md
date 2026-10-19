@@ -26948,6 +26948,20 @@ COALESCE(provider_id, (SELECT cr.provider_id FROM credentials cr
 
 ## §112 回答 §111 的判别动作：**不是转换处丢的，是源头就是 nil**（2026-10-19）
 
+> #### ⚑⚑ 撤回（2026-10-19，§113 实测）—— 本节引错了一行，结论**降级为未坐实**
+>
+> §113 复核发现：本节第一节引用的 `client.go:1152-1158` 绑定的是
+> **`entry.ChosenCredentialID`（`DecisionLogEntry`，写入 `routing_decision_log_hot`）**，
+> **不是 `RequestLogEntry.CredentialID`，也不是 `_request_logs`**。
+> ⇒ 我把一个**名字相同、语义不同**的 grep 命中当成了承重证据。
+>
+> ⚠ 因此本节标题「不是转换处丢的，是源头就是 nil」**失去依据**，降级为**未坐实**。
+> 真正的承重证据在 §113：`credential_id` 确实在 INSERT 列清单（`:1439`）
+> 与 `DO UPDATE SET`（`:1582`）里，但**是无条件覆盖**——
+> 同语句的 `affinity_hint`… 实为 `affinity_hit`（`:1587`）用了 `COALESCE` 守卫。
+> ⇒ 更可能的机制是「**后续补写把已写入的凭据覆盖成 NULL**」，而不是「源头就没填」。
+> **本节原文保留不改。**
+
 §111 留下一个二选一的判别动作：
 「找到业务失败分支的落库语句，确认是**根本没传** `credential_id`，
 还是**传了但在转换处丢了**。」本节回答它。
@@ -27043,4 +27057,104 @@ GROUP BY 1 HAVING count(*) > 1 LIMIT 20;
 
 ⚠ 全程**只读**：仓内 `grep` 与源码阅读。**未改任何代码、未改视图、
 未部署、未做任何生产写。**
+
+---
+
+## §113 找到承重证据：**`credential_id` 在 upsert 里被无条件覆盖**，而同语句的兄弟列加了守卫（2026-10-19）
+
+本节**先订正 §112 的引错**，再给出真正的证据。
+
+### 一、⚠⚠ 订正 §112：我引的那一行**不是请求日志路径**
+
+§112 写「落库语句（`client.go:1152+`）直接绑定 `entry.CredentialID`」。
+**那是错的**：1152–1158 绑定的是 `entry.ChosenCredentialID`，属于
+`DecisionLogEntry`，写入的表是 **`routing_decision_log_hot`**，
+**既不是 `RequestLogEntry`，也不是 `_request_logs`**。
+
+⇒ ⇒ ★ **同一个 grep 命中了两个同名字段（`*CredentialID`），
+我只按名字认了它、没核对它属于哪个结构体。**
+⇒ 教训：⭐⭐⭐⭐ **grep 命中一个字段名时，要确认它属于哪个结构体/哪条语句**——
+本仓有 `CredentialID` / `ChosenCredentialID` / `UpstreamCredentialID` /
+`expectedArgIdent` 映射里的同名字符串，**名字相同不代表语义相同**。
+
+### 二、真正的落库路径（`client.go:1429` 起）
+
+```sql
+INSERT INTO _request_logs_hot (
+    request_id, ts, tenant_id, application_id, api_key_id,
+    end_user_id, client_model, outbound_model,
+    canonical_model,
+    credential_id, provider_id, canonical_id,      -- ← :1439 在列清单里
+    ...
+) VALUES ( ... $103 )
+ON CONFLICT (request_id) DO UPDATE SET             -- :1572
+```
+
+⇒ 列清单里有 `credential_id`（`:1439`），
+`ON CONFLICT (request_id)`（热表 PK，migration 455）。
+
+### 三、★ 承重证据：`credential_id` 是**无条件覆盖**
+
+```go
+// client.go:1582
+credential_id = EXCLUDED.credential_id,
+```
+
+而**同一条语句里紧邻的兄弟列是有守卫的**：
+
+```go
+// client.go:1587
+affinity_hit = COALESCE(EXCLUDED.affinity_hit, _request_logs_hot.affinity_hit),
+```
+
+⇒ ⇒ ★★ **同一条 `DO UPDATE SET` 里，`affinity_hit` 用了
+「新值为空则保留旧值」的守卫，`credential_id` 直接用裸 `EXCLUDED`。**
+⇒ ⇒ **这不是"没想过"，是"想过但没覆盖到这一列"**——
+仓里**已经有正确写法的先例，就在同一行往下 5 行**。
+
+⇒ ⇒ ★ **机制（可从代码直接读出）**：
+**只要这个 request 在此之后再落一次、而那次不带 `credential_id`，
+`credential_id` 就会被 NULL 覆盖掉**——包括已经成功写入过真实凭据的行。
+⇒ 这与 §111 的观测完全自洽：
+业务失败行（往往伴随多轮/补写/降级重试）大量丢凭据，
+业务成功行（一次写完、无后续补写）基本保留。
+
+### 四、顺带解释了一个此前对不上的现象
+
+`_request_logs_hot` 实测 **0 行**，而数据都在 `request_logs_2026_10`。
+本节在 `client.go:1419-1423` 找到了原因：
+
+> 所有 INSERT/UPDATE/DELETE 统一写入 `_hot` 表，
+> 后台 `partition_manager` 会定期调用 `promote_request_logs_hot_to_partition()`
+> 将冷数据（**>7 天**）迁移到月度分区。
+
+⇒ ⇒ **热表空不是"退役了"，是"还没攒够 7 天或 promote 已把它们搬走"。**
+⚠ 这**推翻了 §97/§104 把两张 `_hot` 表当"退役 v1 表"的前提**的一部分，
+需要复核（见第六节）。`_request_logs_hot` 只有 59 MB 而 `_request_logs_bodies_hot` 291 MB，
+两者都不是"历史遗留"，而是**当前架构的在用组件**。
+
+### 五、诚实的边界
+
+| | |
+|---|---|
+| ❌ | **仍然没有找到"第一次写入时 `CredentialID` 就是 nil"的那个调用点**。§112 的二选一只排除了「列没传」这一半（列在清单里、也在 SET 里） |
+| ❌ | **没验证"后续补写覆盖"这条路径在生产真的发生过**。要坐实需比对同一 `request_id` 的写入序列，而 PG 日志已不可用（§109） |
+| ⚠ | 「失败行丢凭据」与「成功行保住」之间还有多轮重试、`in_progress` 占位等混淆因素，**本节没有排除** |
+| ✅ | 已证：`credential_id` 在 INSERT 列清单（`:1439`）与 `DO UPDATE SET`（`:1582`，**无条件**） |
+| ✅ | 已证：同语句 `affinity_hit`（`:1587`）用了 `COALESCE` 守卫，**仓里有正确写法的先例** |
+| ✅ | 已证：`_request_logs_hot` → 月度分区是**在用架构**（`promote_request_logs_hot_to_partition`），不是退役表 |
+
+### 六、由此产生的两个待办
+
+| | |
+|---|---|
+| ⚠ **复核** | §97/§104 把 `_request_logs_hot` / `_request_logs_bodies_hot` 当「退役 v1 表、count(*)=0、可 TRUNCATE」——**热表空是因为 promote 已搬走，不是因为退役**。若按原判据 TRUNCATE，**会打断正在使用的热表**。这是**本轮发现的最有风险的一条**，建议在授权那两项 TRUNCATE 前先复核 |
+| 💡 **候选修法** | 给 `credential_id` / `provider_id` / `canonical_id` 加与 `affinity_hit` 同款的 `COALESCE(EXCLUDED.x, _request_logs_hot.x)` 守卫。**属仓库改动 + 部署，需授权** |
+
+### 七、动作边界
+
+⚠ 全程**只读**：仓内 `grep` 与源码阅读（含 `client.go` 的 INSERT/UPSERT 全文），
+一条只读聚合查询（`request_id` 重复性）。**未改任何代码、未改视图、
+未部署、未做任何生产写。**
+★ 本节**没有**对 `_request_logs_hot` 执行任何写操作或 TRUNCATE。
 
