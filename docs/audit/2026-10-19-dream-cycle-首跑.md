@@ -412,7 +412,12 @@ docker run --rm --network shared-infra --entrypoint /usr/local/bin/kxmemory-migr
   memora:amd64-dream-20261019 up
 
 # 2) 旁挂启动（env 从现容器反推，只覆盖 dream 开关）
-bash /tmp/prepare_dream_sidecar.sh sensenova-6.8-flash-lite
+#    ★ 脚本已固化进 memora 仓（原先只活在 211 的 /tmp，机器清理即失去复现通道）：
+bash scripts/prepare-dream-sidecar.sh --model minimax-m3
+#    不想真起容器时先看差异（凭据自动打码）：
+bash scripts/prepare-dream-sidecar.sh --model minimax-m3 --dry-run
+#    离线自检（不需要 Docker）：
+bash scripts/prepare-dream-sidecar.sh --self-test
 
 # 3) 闸门表
 curl -s http://127.0.0.1:8092/api/dream/config-check | python3 -m json.tool
@@ -436,4 +441,15 @@ docker exec acc-pg17 psql -U kxuser -d memora -At -F'|' -c \
 go test ./internal/dream/ -run TestExtractionCallCarriesExplicitTimeoutAndMaxTokens -v
 go test ./internal/graph/pgstore/ -run TestWriteSQLOnlyReferencesColumnsTheMigrationsCreate -v
 go test -tags=integration -count=1 -run TestWriteEntitiesUnderRLS ./internal/graph/pgstore/ -v   # 需要 Docker
+go test ./internal/dream/ -run Sidecar -v        # 旁挂脚本的契约门（含两处变异验证）
 ```
+
+★ **复现通道此前是断的**（2026-10-20 补）：旁挂启动脚本此前只存在于
+211 的 `/tmp/prepare_dream_sidecar.sh` ⇒ 机器清理即失去复现通道。
+现已固化进 memora 仓 `scripts/prepare-dream-sidecar.sh`（带 `--self-test` 与
+`--dry-run`；`--dry-run` 打印 env 差异时**凭据打码**）。
+已在 211 实测：新脚本与当时运行中的 `memora-dream`（由 /tmp 原版启动）
+**env 键集合完全一致** ⇒ 等价且更严。
+★ 固化时自检抓到一处**继承自 /tmp 原版**的真 bug：base env 里若已存在
+`LLM_MODEL_DEFAULT`，合并结果会有**重复键**（docker 取最后一个，行为碰巧
+正确，但重复 env 是静默埋雷）⇒ 合并时把模型键也按「覆盖」处理。
