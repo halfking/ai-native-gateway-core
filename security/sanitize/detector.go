@@ -162,9 +162,24 @@ func (d *PatternDetector) DetectScope(ctx context.Context, text string, scope De
 		if !p.appliesScope(scope) {
 			continue
 		}
-		if snapshot == nil && scope != ScopeEgress && scopedType(p.sType) {
-			continue
-		}
+		// 地址族（server_ip / internal_ip / IPv6）在**脱敏面**一律放行——这条
+		// 保证必须对**所有**规则来源同口径（内建 fallback 与托管/已发布规则），
+		// 不能只挂在 `snapshot == nil` 上。
+		//
+		// r1038（2026-10-20）：此前的条件是 `snapshot == nil && scope != ScopeEgress
+		// && scopedType(...)`，于是**托管规则路径没有这层排除**。而 legacy
+		// `pii_patterns` 导入恰好把 `ip` 类行造成 type=server_ip /
+		// scopes=[output] / action=mask 的规则（cmd/gateway/sanitize_rules_control.go）
+		// ——那行一旦被启用，每个 IPv4 都在脱敏面被遮蔽，
+		// 「export https_proxy=http://127.0.0.1:7890」这类可复制执行的命令
+		// 就变成坏命令。851 迁移把 DB 行停用了，但那是**数据**修复，不是代码
+		// 保证：那行被重新启用、或某个部署在 851 之前发布了基线（快照不可变），
+		// 遮蔽就会回来。
+		//
+		// 脱敏面放行 ≠ 放弃防护：地址类风险由 ScopeEgress 的外传守卫承担
+		// （模型生成的 tool 参数里的公网目的地仍硬阻断，见 output_sensitive.go），
+		// 而脱敏面的地址命中仍进审计台账（exempted / log）——只撤遮蔽，不撤检出。
+		addressFamily := scope != ScopeEgress && scopedType(p.sType)
 		re := p.regex
 		if snapshot == nil && scope != ScopeInputDeclarations {
 			switch p.kind {
@@ -190,6 +205,23 @@ func (d *PatternDetector) DetectScope(ctx context.Context, text string, scope De
 		}
 		matches := re.FindAllStringSubmatchIndex(scan, -1)
 		for _, m := range matches {
+			if addressFamily {
+				// 脱敏面：地址族**只记台账**，既不遮蔽也不阻断。
+				//
+				// 放在匹配循环**内**而不是规则循环外：台账要记的是「这条规则
+				// 命中了」，每条规则每轮只记一次会把「本轮没命中」也记成命中
+				// （245 上 compliance.internal_ip 一天上万条就是这么来的）。
+				if snapshot != nil {
+					action := "exempted"
+					if p.action == "log" {
+						// 纯记录型规则（internal_ip 遥测）保持 log 语义，
+						// 管理台的命中视图不变。
+						action = "log"
+					}
+					d.observeRule(ctx, p.id, snapshot.Version, scope, action)
+				}
+				continue
+			}
 			start, end := m[2*p.group], m[2*p.group+1]
 			declaration := p.kind == "credential_declaration" || p.kind == "account_declaration" || p.kind == "credential_assignment" || p.kind == "account_assignment"
 			if declaration {

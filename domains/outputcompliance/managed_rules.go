@@ -33,7 +33,15 @@ func (c *Checker) RuleConfig() sanitizerules.Config {
 		if id == 0 {
 			id = index + 1
 		}
-		cfg.Rules = append(cfg.Rules, sanitizerules.Rule{ID: "compliance.pii." + strconv.Itoa(id), Name: p.PatternName, Type: typ, Kind: "pattern", Pattern: p.RegexPattern, Scopes: []string{"output"}, Action: "mask", Enabled: p.Enabled})
+		action := "mask"
+		if isAddressPIIType(typ) {
+			// r1038（2026-10-20）：地址族只记录、不遮蔽——与 legacy 导入
+			// （cmd/gateway/sanitize_rules_control.go）和 security/sanitize 的
+			// DetectionScope 同口径。DB 里的 ip_address 行随时可能被重新启用，
+			// 基线形状本身就不该把它做成遮蔽规则。
+			action = "log"
+		}
+		cfg.Rules = append(cfg.Rules, sanitizerules.Rule{ID: "compliance.pii." + strconv.Itoa(id), Name: p.PatternName, Type: typ, Kind: "pattern", Pattern: p.RegexPattern, Scopes: []string{"output"}, Action: action, Enabled: p.Enabled})
 	}
 	// Other secret shapes already exist in the YAML baseline. Keep internal IP
 	// telemetry as an explicit log rule rather than silently redacting addresses.
