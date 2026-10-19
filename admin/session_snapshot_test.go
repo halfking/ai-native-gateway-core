@@ -153,9 +153,11 @@ func TestSessionSnapshotV2JSONMarshaling(t *testing.T) {
 // TestSessionSnapshotV2FieldCount ensures we don't accidentally remove fields.
 // If this test fails after adding new fields, update the expected count.
 func TestSessionSnapshotV2FieldCount(t *testing.T) {
-	// sessionSnapshotV2 has 23 fields (10 original + 13 added in fc28e27b8),
-	// not counting embedded structs (there are none today).
-	const wantFields = 23
+	// sessionSnapshotV2 has 24 fields (10 original + 13 added in fc28e27b8
+	// + DurationMs added in the 2026-10-19 write-amplification round, which
+	// gave sessions.duration_ms its first consumer), not counting embedded
+	// structs (there are none today).
+	const wantFields = 24
 	if got := reflect.TypeOf(sessionSnapshotV2{}).NumField(); got != wantFields {
 		t.Errorf("sessionSnapshotV2 has %d fields, want %d — update wantFields if the change is intentional", got, wantFields)
 	}

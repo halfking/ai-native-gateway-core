@@ -140,9 +140,28 @@ export async function getSessionTurn(
   return req<TurnDetail>('GET', path, undefined, options)
 }
 
+/** GET /api/admin/sessions/{id}/snapshot 的响应形状（只列用到的字段）。 */
+export interface SessionSnapshotV2 {
+  session_id?: string
+  title?: string
+  summary?: string
+  total_turns?: number
+  total_cost_usd?: number
+  created_at?: string
+  updated_at?: string
+  closed_at?: string
+  status?: string
+  /**
+   * sessions.duration_ms —— 877 起由每轮刷新的已流逝时长。
+   * 缺失（undefined）表示后端没给；0 是"瞬时完成"，与缺失不是一回事。
+   */
+  duration_ms?: number
+  [k: string]: unknown
+}
+
 export async function getSessionSnapshot(sessionId: string, options?: RequestOptions) {
   const path = `/api/admin/sessions/${encodeURIComponent(sessionId)}/snapshot`
-  return req<Record<string, unknown>>('GET', path, undefined, options)
+  return req<SessionSnapshotV2>('GET', path, undefined, options)
 }
 
 // Subtask 3 (handoff §5): 详情 V2 端点是 body_status 三态的唯一来源。
