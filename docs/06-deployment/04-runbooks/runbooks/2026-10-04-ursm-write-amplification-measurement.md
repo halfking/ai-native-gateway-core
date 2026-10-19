@@ -26388,3 +26388,136 @@ cur          :  WHERE snapshot_ts >= win.lo                      AND < win.hi_ex
 ⚠ 顺带记录（**不写入本仓**）：252 的 crontab 里有 SMM 数据库连接的**明文口令**，
 已按「只写证据、不写凭据」纪律排除在本文件之外，仅在此提示属主。
 
+---
+
+## §107 全库「零扫描索引」普查：**1,486 MB 里大部分不可删** —— 一次高假阳性的阴性普查（2026-10-19）
+
+§97~§104 扫的是**空间**（膨胀、删空、TOAST）。本节换一个判据扫**价值**：
+`idx_scan = 0`（从没有人扫描过它）。**这个判据的最大优点是不会漏掉「占了地方但没人用」的索引**，
+最大风险是**假阳性**——把「没被用过」当成「不需要」。本节把风险做实。
+
+### 一、量具有效性：三重保证（先证量具，再看结论）
+
+| 检查 | 读数 | 结论 |
+|---|---|---|
+| **阳性对照** | `max(idx_scan) = 937,352,723`；608 条索引有扫描，合计 6,291 MB 次 | 计数器**在工作**，0 不是"没在记" |
+| **是否刚重置** | `pg_stat_database.stats_reset` **为 NULL** | 从未被 `pg_stat_reset()` 重置过 |
+| **统计窗口硬下界** | `pg_postmaster_start_time() = 2026-10-05 15:49:43`，uptime **13 天 17 小时** | 崩溃重启会清零统计 ⇒ **至少 13.8 天**，且这是**下界** |
+
+⇒ 零扫描是**真读数**，不是"索引刚建好还没来得及用"。
+
+### 二、普查结果与风险分档
+
+```
+全库 28 GB；其中索引 8,988 MB = 全库的 32%
+pg_stat_user_indexes 2,350 条：零扫描 1,742 / 有扫描 608
+```
+
+剔除承载约束的（primary / unique / exclusion / 被 `pg_constraint` 引用）后：
+
+| 档 | 条数 | 表数 | 体积 | 处置风险 |
+|---|---|---|---|---|
+| **A. 宿主表恒空**（`pg_relation_size(relid)=0`） | 742 | 238 | **67 MB** | 低——表里一行都没有，不可能存在消费者 |
+| **B. 索引自身 < 64 kB** | 214 | 103 | 3.7 MB | 低收益，不值得动 |
+| **C. 活表上的大索引**（≥64 kB） | **253** | 98 | **1,421 MB** | **高——必须逐条查消费者** |
+
+⇒ ⇒ ★ **两把量具互相印证**：A 档里 >8 kB 的有 **73 条**，
+而另一把尺子（按 `idx_bytes>8192 OR tbl_bytes>0` 过滤的版本）报的是
+`253 + 214 + 73 = 540` 条 / 1,486 MB——**两把尺子算出来同一个数**，才敢往下用。
+
+### 三、最大的一族（227 MB）：**仓内有活着的消费者**
+
+C 档排第一的是 `session_turns` 的三个"宽"索引，**每个分区各一份**：
+
+| 列签名 | 条数 | 体积 |
+|---|---|---|
+| `tenant_id, task_type, ts` | 7 | 81 MB |
+| `tenant_id, namespace, ts` | 7 | 73 MB |
+| `tenant_id, project_id, ts` | 7 | 73 MB |
+| | **20** | **227 MB** |
+
+⚠ 若只看 `idx_scan=0`，这里就是一个 **227 MB 的 DROP 清单**。
+⇒ 按「先数消费者」回仓查：`admin/turns_list.go:237-251` 的 `buildTurnsListWhere`
+**逐条支持** `?project_id=` / `?namespace=` / `?task_type=` / `?parent_request_id=`。
+
+```go
+for _, filter := range []struct{ queryKey, column string }{
+    {queryKey: "project_id",       column: "project_id"},
+    {queryKey: "namespace",        column: "namespace"},
+    {queryKey: "parent_request_id", column: "parent_request_id"},
+    {queryKey: "task_type",        column: "task_type"},
+} { if v := strings.TrimSpace(q.Get(filter.queryKey)); v != "" { clauses = append(...) } }
+```
+
+⇒ **功能是活的**。零扫描 ≠ 功能不存在。
+
+### 四、★ 决定性实验：`EXPLAIN`（不带 `ANALYZE`，只看 planner 选谁）
+
+用 `turns_list.go:107-130` 的**原样查询形态**（`ts` 区间 + `tenant_id` + `ORDER BY ts DESC`）：
+
+| 变体 | planner 对当前分区（2026_10）的选择 |
+|---|---|
+| `?project_id=p1` | **`Index Scan using session_turns_2026_10_tenant_id_project_id_ts_idx`** |
+| `?namespace=ns1` | **`Index Scan using session_turns_2026_10_tenant_id_namespace_ts_idx`** |
+| `?task_type=code` | **`Index Scan using session_turns_2026_10_tenant_id_task_type_ts_idx`** |
+
+三者都是完整的 `Index Cond: (tenant_id = … AND <筛选用列> = … AND ts >= … AND ts <= …)`。
+
+⇒ ⇒ ★ **这三条索引就是为这个查询设计的，planner 一旦看到筛选就精确选中。**
+⇒ ⇒ ★ **零扫描的正确读法是：「这三个筛选参数 13.8 天来没有人传过」，
+而不是「索引设计错了 / 不需要」。**
+⇒ **删掉它们的真实后果是：某个用户第一次带上 `?project_id=` 的那天，
+375 MB 的表上从精确 Index Cond 变成 Seq Scan。** 这个悬崖 `idx_scan` 看不见。
+
+### 五、⇒ 净结论
+
+| | |
+|---|---|
+| ❌ **不是** | 「有 1,486 MB 索引可以 DROP」 |
+| ✅ **是** | 「`idx_scan=0` 是个**高假阳性**判据：已抽查的最大一族 227 MB **全部不可删**」 |
+| ⭐ **本节的价值** | 在有人执行 DROP 之前把它挡住，并给出**为什么会错**的机制 |
+| ⚠ **诚实边界** | C 档其余约 **1,194 MB** **未逐条查消费者**；本节不能推广到它们 |
+
+### 六、⇒★ 顺带**反向确认**了 §100 的那个决定
+
+§100（§97~§104 里那条）三次自我收窄后，**只保留了 `tenant_id_project_id_ts_idx`**，
+当时的依据是「读代码判断这个查询形态需要它」。
+⇒ §107 把它从**读代码的判断**升级为 **planner 的运行期证据**：
+该索引在筛选出现时被精确选中，四列定义与查询形态完全吻合。
+
+⇒ ⇒ ★ 通用式：⭐⭐⭐⭐ **「保留某索引」的决定若只靠读代码，会一直是「看起来对」；
+补一条 `EXPLAIN` 就变成「planner 真的这么选」。**
+⇒ 同族：[[阴性结论要当缺陷一样复核]] · [[§101 的教训：换一条判据比跑勤原判据更能发现问题]]。
+
+### 七、真正的信号落在产品侧，不在 DBA 侧
+
+⇒ **`/api/admin/turns` 暴露了 4 个筛选参数，13.8 天内一个都没被使用过。**
+⇒ 这是**功能与真实用法不匹配**的信号，属于**产品决策**：
+要么保留（接受 227 MB 存储 + 20 条索引在每次 INSERT 上的写放大），
+要么**同时**摘掉筛选参数与索引——**只删索引不删筛选，是把一个慢路径留在生产上**。
+★ 同族：[[§891 的教训：降级取的值会不会被写入路径当真身写回去]]。
+
+### 八、唯一低风险的可回收项（且与既有待办重叠）
+
+A 档里最集中的是 `usage_facts` 的历史空分区：
+
+```
+usage_facts_default    4 条  43 MB      ← 恒空的 DEFAULT 分区
+usage_facts_20260930   4 条  2.5 MB
+usage_facts_20261004   4 条  2.3 MB     …（10 个空分区，各 1~2.5 MB）
+```
+
+⇒ ⇒ `usage_facts_default` 的 **43 MB 索引**与 §91/§104 已在待授权清单里的
+**`TRUNCATE usage_facts_default`（堆 ≈80 MB）**指向同一张表：
+**一条 `TRUNCATE` 同时回收堆、TOAST 与这 43 MB 索引**，
+比分 742 条 `DROP INDEX` 更省事也更安全。
+⇒ **它仍是待授权项，本节未执行。**
+
+### 九、本节动作边界
+
+⚠ 全程**只读**：`pg_stat_*` / `pg_class` / `pg_index` / `pg_inherits` 目录查询、
+4 条 `EXPLAIN`（**不带 `ANALYZE`，未实际执行任何计划**）、`pg_postmaster_start_time()`。
+**未 DROP、未 TRUNCATE、未 REINDEX、未改 252、未做任何生产写。**
+⚠ 已知未做：C 档其余约 1,194 MB 未逐条查消费者；`idx_scan` 不覆盖
+规划器路径（如唯一性检查）、也不覆盖极低频的手工运维查询——**周级或月级操作与"没用过"无法区分**。
+
