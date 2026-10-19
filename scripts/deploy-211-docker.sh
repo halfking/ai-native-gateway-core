@@ -59,10 +59,110 @@ D211_REDIS_DB_START="${D211_REDIS_DB_START:-15}"
 D211_REDIS_DB_END="${D211_REDIS_DB_END:-0}"
 
 D211_REPO_ROOT="${LLM_GATEWAY_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# 网关数据根（宿主 bind mount 落点）。提前到参数区：前端新鲜度门要判
+# 「上一轮种子是否还在」，那是 211 上的事实。
+D211_GW_DATA_ROOT="${D211_GW_DATA_ROOT:-/opt/kaixuan/data/llm-gateway}"
+# 前端产物来源（211 的前端由部署机预构建，随 tar 上树，引擎不构建前端）。
+D211_WEB_DIST_SRC="${D211_WEB_DIST_SRC:-$D211_REPO_ROOT/web/dist}"
+D211_MOBILE_DIST_SRC="${D211_MOBILE_DIST_SRC:-$D211_REPO_ROOT/web-mobile/dist}"
+# 纯 API 形态逃生舱：前端缺失/陈旧时是否继续部署（默认拒绝）。
+D211_ALLOW_STALE_WEB="${D211_ALLOW_STALE_WEB:-0}"
 
 log()  { printf '[211] %s\n' "$*" >&2; }
 warn() { printf '[211] WARN: %s\n' "$*" >&2; }
 die()  { printf '[211] FATAL: %s\n' "$*" >&2; exit 1; }
+
+# =============================================================================
+# 前端产物新鲜度门（2026-10-20 211 502 事故收口）
+# =============================================================================
+# 211 的前端是「部署机预构建 → 随 tar 上树 → 种子进容器」，引擎**不构建**前端，
+# 所以「产物是否比源码新」只能在这里判。两处调用：
+#   ① --via 侧（部署机）：同步之前就判，失败则连目标机都不碰（最早可判点）；
+#   ② 211 本机：远端树才是「真正要部署的那份」，是权威判据。
+#
+# ★ 为什么这道门必须单独抽出来、且必须在**拆掉旧容器之前**跑：
+#   2026-10-20 实测事故——旧顺序是 `docker rm -f 旧容器` 之后才做新鲜度判定，
+#   判定一失败（die）就变成「旧容器没了 + 新容器还没起」= llm.itestu.cn 502。
+#   守卫是**部署前的输入检查**，它的失败形态必须是「这次部署不发生」，
+#   而不是「服务下线」。⇒ 判定与拆服务必须是两段，且判定在前。
+#
+# 口径：dist/index.html 必须不早于源码树里最新的一个**会进 bundle** 的文件。
+# *.test.ts / *.spec.ts 不进 bundle，mtime 漂移不该拦部署（2026-10-15 实测
+# LiveRequestStreamV2.queueStreamNotice.test.ts 误杀整次 211 部署）。
+d211_web_dist_newer_source() {
+  local _dist="$1" _src="$2"
+  [[ -d "$_src" ]] || return 0
+  find "$_src" -type f \
+    ! -name '*.test.ts' ! -name '*.test.tsx' ! -name '*.test.js' ! -name '*.test.jsx' \
+    ! -name '*.spec.ts' ! -name '*.spec.tsx' ! -name '*.spec.js' ! -name '*.spec.jsx' \
+    -newer "$_dist/index.html" -print -quit 2>/dev/null || true
+}
+
+# d211_check_web_dist <dist 目录> <源码目录> <标签>
+#   0 = 通过
+#   1 = 陈旧（产物比源码旧）—— 逃生舱 D211_ALLOW_STALE_WEB=1 可放行
+#   2 = 缺失（压根没有前端）—— 逃生舱可放行（纯 API 形态）
+#   3 = 缺失但上一轮种子还在 —— **无逃生舱**：沿用等于无声前端回滚
+# 原因文本放在 D211_WEB_CHECK_ERR。
+D211_WEB_CHECK_ERR=""
+d211_check_web_dist() {
+  local _dist="$1" _src="$2" _label="$3" _newer
+  D211_WEB_CHECK_ERR=""
+  if [[ ! -f "$_dist/index.html" ]]; then
+    if [[ -n "${D211_GW_DATA_ROOT:-}" && -f "${D211_GW_DATA_ROOT}/${_label}/dist/index.html" ]]; then
+      D211_WEB_CHECK_ERR="缺少 ${_dist}，但上一轮种子仍在 ${D211_GW_DATA_ROOT}/${_label}/dist —— 直接沿用等于无声前端回滚。请构建前端（corepack pnpm install --frozen-lockfile && pnpm build）后再部署"
+      return 3
+    fi
+    D211_WEB_CHECK_ERR="缺少 $_dist/index.html，拒绝部署空前端（2026-10-11 2538 白页事故口径）。构建前端，或显式 D211_ALLOW_STALE_WEB=1 走纯 API 形态"
+    return 2
+  fi
+  _newer="$(d211_web_dist_newer_source "$_dist" "$_src")"
+  if [[ -n "$_newer" ]]; then
+    D211_WEB_CHECK_ERR="$_dist 陈旧：$_newer 晚于 $_dist/index.html，拒绝部署陈旧前端（否则线上是旧 SPA 而部署显示成功）。重新构建前端，或显式 D211_ALLOW_STALE_WEB=1 走纯 API 形态"
+    return 1
+  fi
+  return 0
+}
+
+# d211_preflight_web_dist <repo 根> [side]
+#   side=repo   —— 部署机侧：判定**即将被同步上去**的那份产物。
+#                   引擎在 211 上是从同步树的 web/dist 种子化的，而
+#                   D211_WEB_DIST_SRC 覆盖项不会转发到远端，所以这里必须
+#                   判仓库默认路径，不能判覆盖路径（否则会出现「本地判的
+#                   是一份、线上发的是另一份」）。
+#   side=target —— 211 本机侧：判**远端真正要用的**那份（尊重
+#                   D211_WEB_DIST_SRC 覆盖）。
+# 任何一项不通过 ⇒ 返回非零（调用方决定 die 还是走纯 API 形态）。
+d211_preflight_web_dist() {
+  local _root="$1" _side="${2:-target}" _rc=0 _code
+  local _web_dist _web_src _mob_dist _mob_src
+  if [[ "$_side" == "repo" ]]; then
+    _web_dist="$_root/web/dist";      _web_src="$_root/web/src"
+    _mob_dist="$_root/web-mobile/dist"; _mob_src="$_root/web-mobile/src"
+  else
+    _web_dist="${D211_WEB_DIST_SRC:-$_root/web/dist}";      _web_src="$_root/web/src"
+    _mob_dist="${D211_MOBILE_DIST_SRC:-$_root/web-mobile/dist}"; _mob_src="$_root/web-mobile/src"
+  fi
+  # ⚠ 必须写成 `|| _code=$?`：set -e 下裸调用返回非零会让整个脚本直接退出，
+  # 根本走不到下面的分诊。
+  _code=0; d211_check_web_dist "$_web_dist" "$_web_src" "web" || _code=$?
+  if (( _code != 0 )); then
+    if [[ "$_code" == "3" || "$D211_ALLOW_STALE_WEB" != "1" ]]; then
+      die "$D211_WEB_CHECK_ERR"
+    fi
+    warn "${D211_WEB_CHECK_ERR}（按纯 API 形态继续）"
+    _rc=1
+  fi
+  _code=0; d211_check_web_dist "$_mob_dist" "$_mob_src" "web-mobile" || _code=$?
+  if (( _code != 0 )); then
+    if [[ "$_code" == "3" || "$D211_ALLOW_STALE_WEB" != "1" ]]; then
+      die "$D211_WEB_CHECK_ERR"
+    fi
+    warn "${D211_WEB_CHECK_ERR}（按纯 API 形态继续）"
+    _rc=1
+  fi
+  return $_rc
+}
 
 # redis-cli 认证参数（由 redis_auth_args 填充；见 Redis 探测段）
 REDIS_AUTH=()
@@ -125,6 +225,11 @@ if [[ -n "$VIA" ]]; then
   else
     warn "deploy-lib lock.sh 不在场，本次无部署锁（并发部署可能互相踩）"
   fi
+  # ★ 前端产物新鲜度门（2026-10-20 211 502 事故收口）：**在同步之前**判。
+  # 事故形态：这道门原先跑在「旧容器已 rm 之后」，一失败就等于「一次部署失败
+  # = 服务下线」（llm.itestu.cn 502，根因见 d211_preflight_web_dist 注释）。
+  # 放在部署机侧 = 最早可判点：不 sync、不 build、不 push，线上毫发无损。
+  d211_preflight_web_dist "$D211_REPO_ROOT" repo || exit 1
   log "同步仓库到 $VIA:$D211_TARGET_IP ..."
   # 先在目标端把工作树整体清空——tar 解包不会删目标已有文件，旧部署残留的
   # macOS `._*` 元数据 / .env* 会一直挂在那让 docker COPY 重新带进镜像。
@@ -183,7 +288,7 @@ if [[ -n "$VIA" ]]; then
   D211_GO_BASE_IMAGE="${D211_GO_BASE_IMAGE:-${D211_BASE_REGISTRY}/lang-base/kx-base-golang:1.27-alpine-amd64}"
   D211_RUNTIME_BASE_IMAGE="${D211_RUNTIME_BASE_IMAGE:-${D211_BASE_REGISTRY}/lang-base/alpine:3.22-amd64}"
   log "在 $VIA 上执行 deploy（builder=${D211_GO_BASE_IMAGE} runtime=${D211_RUNTIME_BASE_IMAGE}）..."
-  ssh "$VIA" "cd ~/llm-gateway-go-211 && D211_BUILD_SHA='${D211_BUILD_SHA}' D211_STATE_DIR=$D211_STATE_DIR D211_REDIS_DB_START=$D211_REDIS_DB_START D211_REDIS_DB_END=$D211_REDIS_DB_END LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY='${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}' D211_GO_BASE_IMAGE='${D211_GO_BASE_IMAGE}' D211_RUNTIME_BASE_IMAGE='${D211_RUNTIME_BASE_IMAGE}' D211_BASE_REGISTRY='${D211_BASE_REGISTRY}' PROBE_TIMEOUT_SECS='${PROBE_TIMEOUT_SECS:-}' bash scripts/deploy-211-docker.sh $*"
+  ssh "$VIA" "cd ~/llm-gateway-go-211 && D211_BUILD_SHA='${D211_BUILD_SHA}' D211_STATE_DIR=$D211_STATE_DIR D211_REDIS_DB_START=$D211_REDIS_DB_START D211_REDIS_DB_END=$D211_REDIS_DB_END LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY='${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}' D211_GO_BASE_IMAGE='${D211_GO_BASE_IMAGE}' D211_RUNTIME_BASE_IMAGE='${D211_RUNTIME_BASE_IMAGE}' D211_BASE_REGISTRY='${D211_BASE_REGISTRY}' D211_ALLOW_STALE_WEB='${D211_ALLOW_STALE_WEB}' PROBE_TIMEOUT_SECS='${PROBE_TIMEOUT_SECS:-}' bash scripts/deploy-211-docker.sh $*"
   exit $?
 fi
 
@@ -199,6 +304,16 @@ need_docker() {
 }
 need_docker
 log "Docker: $(docker --version)"
+
+# ★ 前端产物新鲜度门（211 本机侧，远端树 = 真正要部署的那份，是权威判据）。
+# 位置：一切破坏性动作之前（PG/Redis 新建、镜像构建推送、拆旧容器都在其后）。
+# 2026-10-20 事故根因：这道门原先在 `docker rm -f` **之后** ⇒ 守卫失败＝停机。
+# 守卫的失败形态必须是「这次部署不发生」，不是「服务下线」。
+# --status/--probe-only/--stop 不该被前端新鲜度挡住（那是查环境的动作）。
+if [[ "$MODE" == "deploy" ]]; then
+  # ANCHOR: d211-preflight-guard（部署机侧 --via 分支还有一处同名门，见下）
+  d211_preflight_web_dist "$D211_REPO_ROOT" || exit 1
+fi
 
 # =============================================================================
 # 探测一：PostgreSQL 17 + columnar
@@ -797,6 +912,9 @@ fi
 if [[ "$MODE" == "stop" ]]; then
   log "停止网关容器 ${D211_GW_CONTAINER}（不动 PG/Redis）"
   docker rm -f "$D211_GW_CONTAINER" >/dev/null 2>&1 || true
+  # 退役容器（回滚待命的那只）也一并清掉，否则 --stop 之后它还占着上一版的
+  # 镜像与配置，下次部署的「遗留 prev 扶正」分支会把它当成幸存者拉起来。
+  docker rm -f "${D211_GW_CONTAINER}-prev" >/dev/null 2>&1 || true
   exit 0
 fi
 
@@ -1148,7 +1266,115 @@ if [[ -n "$CRED_ENC_KEY" ]]; then
   GW_ENV+=( -e "LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=${CRED_ENC_KEY}" )
 fi
 
-docker rm -f "$D211_GW_CONTAINER" >/dev/null 2>&1 || true
+# =============================================================================
+# 部署事务：退役旧容器（可回滚）—— 2026-10-20 211 502 事故收口
+# =============================================================================
+# 旧实现：`docker rm -f` 硬删旧容器。**任何**后续失败——前端陈旧守卫、迁移
+# 失败、容器起不来、就绪超时、网页面坏掉——都把「一次部署失败」放大成
+# 「服务下线」：2026-10-20 实测就是「旧容器已删 + 新容器未起」⇒ nginx 无上游
+# ⇒ llm.itestu.cn 502。
+#
+# 改为「改名 + 停机」：容器对象与其镜像都留着，任何后续失败都能原样拉回。
+# 154/245 靠蓝绿（候选实例先起、验证过才切流）天然免疫这一类；211 是单容器
+# docker 形态，没有候选端口，所以必须自己实现「可回滚的退役」。
+D211_PREV_CONTAINER="${D211_GW_CONTAINER}-prev"
+D211_HAVE_PREV=0
+D211_SEED_BACKUP=""
+
+# 种子备份：新部署会覆盖 web/dist、web-mobile/dist、version.json、configs
+# （旧容器挂的就是这批宿主路径）。回滚时必须还原，否则会跑起
+# 「旧二进制 + 新 SPA」这种错配组合。
+d211_backup_seed() {
+  D211_SEED_BACKUP="${D211_GW_DATA_ROOT}/.seed-backup.$$"
+  rm -rf "$D211_SEED_BACKUP"
+  mkdir -p "$D211_SEED_BACKUP" || return 1
+  local _rel
+  for _rel in web/dist web-mobile/dist version.json configs; do
+    if [[ -e "$D211_GW_DATA_ROOT/$_rel" ]]; then
+      mkdir -p "$D211_SEED_BACKUP/$(dirname "$_rel")"
+      cp -a "$D211_GW_DATA_ROOT/$_rel" "$D211_SEED_BACKUP/$_rel" || return 1
+    fi
+  done
+  return 0
+}
+
+d211_restore_seed() {
+  [[ -n "$D211_SEED_BACKUP" && -d "$D211_SEED_BACKUP" ]] || return 0
+  local _rel
+  for _rel in web/dist web-mobile/dist version.json configs; do
+    if [[ -e "$D211_SEED_BACKUP/$_rel" ]]; then
+      rm -rf "$D211_GW_DATA_ROOT/$_rel"
+      mkdir -p "$(dirname "$D211_GW_DATA_ROOT/$_rel")"
+      cp -a "$D211_SEED_BACKUP/$_rel" "$D211_GW_DATA_ROOT/$_rel" || return 1
+    else
+      rm -rf "$D211_GW_DATA_ROOT/$_rel"
+    fi
+  done
+  return 0
+}
+
+# 退役：改名 + 停机，保留容器对象与镜像（回滚的原材料）。
+d211_retire_gateway() {
+  # 上一轮遗留的退役容器：当前容器在场时它是残骸（当前在服务）⇒ 清掉；
+  # 当前容器不在场时它是唯一幸存的上一版 ⇒ 先扶正，别让本次部署把它删掉。
+  #
+  # ⚠ 必须带 `--type container`：`docker inspect <名字>` 不带 --type 时**同名镜像
+  # 也会命中**（本机的镜像就叫 llm-gateway-211，容器同名）⇒ 「容器不在场」
+  # 的判断会被镜像骗过（2026-10-20 真机实测：容器不存在时 inspect 仍返 rc=0，
+  # 随后 rename 报 "No such container"）。不带 --type 的 inspect 只在配合
+  # -f '{{.State.Status}}' 这类**字段模板**时安全（镜像没有该字段 ⇒ 取到空串）。
+  if docker inspect --type container "$D211_PREV_CONTAINER" >/dev/null 2>&1; then
+    if docker inspect --type container "$D211_GW_CONTAINER" >/dev/null 2>&1; then
+      docker rm -f "$D211_PREV_CONTAINER" >/dev/null 2>&1 || true
+    else
+      warn "上一轮遗留 ${D211_PREV_CONTAINER} 存在而当前容器不在场——先扶正为当前容器"
+      docker rename "$D211_PREV_CONTAINER" "$D211_GW_CONTAINER" || true
+    fi
+  fi
+  if ! docker inspect --type container "$D211_GW_CONTAINER" >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! docker rename "$D211_GW_CONTAINER" "$D211_PREV_CONTAINER"; then
+    warn "旧容器改名失败（本次部署不可回滚）"
+    return 0
+  fi
+  docker stop "$D211_PREV_CONTAINER" >/dev/null 2>&1 || true
+  D211_HAVE_PREV=1
+  log "旧容器已退役待命：${D211_PREV_CONTAINER}（失败可原样拉回）"
+  return 0
+}
+
+# 回滚：把上一版容器原样拉回并拉起。
+d211_rollback_gateway() {
+  local _reason="$1"
+  if [[ "$D211_HAVE_PREV" != "1" ]]; then
+    warn "没有可回滚的旧容器：$_reason"
+    return 1
+  fi
+  warn "回滚到上一版容器：$_reason"
+  docker rm -f "$D211_GW_CONTAINER" >/dev/null 2>&1 || true
+  d211_restore_seed || warn "种子还原失败（旧容器将挂到新种子上）"
+  if ! docker rename "$D211_PREV_CONTAINER" "$D211_GW_CONTAINER"; then
+    warn "回滚失败：旧容器改名不回来（它仍在 ${D211_PREV_CONTAINER}）"
+    return 1
+  fi
+  if ! docker start "$D211_GW_CONTAINER" >/dev/null 2>&1; then
+    warn "回滚失败：旧容器拉不起来（同名容器已就位，需手工 docker start）"
+    return 1
+  fi
+  D211_HAVE_PREV=0
+  log "已回滚到上一版容器（服务已恢复）"
+  return 0
+}
+
+# d211_fail <原因> —— 失败即回滚，然后退出。
+d211_fail() {
+  local _reason="$1"
+  if [[ "$D211_HAVE_PREV" == "1" ]]; then
+    d211_rollback_gateway "$_reason" || warn "回滚未成功，需手工恢复（容器名 ${D211_GW_CONTAINER}）"
+  fi
+  die "$_reason"
+}
 # ── 状态目录出容器（2026-10-13，对齐 211 机 DEPLOY-STANDARDS 总纲）──────
 # /app/data（keystore/hotzone/attachments/backups/model-quality）与 /app/logs
 # 原先落在容器层——每次部署 docker rm -f 即静默清空（keystore 丢=api key
@@ -1161,6 +1387,45 @@ docker rm -f "$D211_GW_CONTAINER" >/dev/null 2>&1 || true
 D211_GW_DATA_ROOT="${D211_GW_DATA_ROOT:-/opt/kaixuan/data/llm-gateway}"
 mkdir -p "$D211_GW_DATA_ROOT/data" "$D211_GW_DATA_ROOT/logs"
 chown -R 65532:65532 "$D211_GW_DATA_ROOT" 2>/dev/null || true
+
+# ── 迁移腿（2026-10-14 r1030）：网关容器启动前重放 DB 修订序列 ──────────
+# deploy-seamless（245/154）自带 deploy_apply_pending_migrations；本脚本原先
+# 缺这一腿——从别机 dump 恢复的库（如 acc-pg17 ← mac pg18 dump）停在旧迁移
+# 位（实测 schema_migrations 止于 851），新网关 boot 探测 `_request_logs_hot`
+# （迁移 860 改名后的家族名）失败 → 静默降级 lite（readyz 的 mode 字段是唯
+# 一肉眼判据）。序列幂等（already applied 无操作、健康路径零 DDL），故每次
+# 部署无脑重放是安全默认。
+#
+# ★ 位置（2026-10-20 211 502 事故收口）：本腿**前移到退役旧容器之前**。
+# 迁移是幂等的前向 DDL，154/245 家族同样是「切流前迁移」；放在退役之前 ⇒
+# 迁移失败时旧容器还在服务（旧二进制对着已迁移的库），不会把「迁移失败」
+# 放大成「服务下线」。
+REVISION_SEQ="$(cd "$(dirname "$0")" && pwd)/apply-db-revision-sequence.sh"
+if [[ -f "$REVISION_SEQ" ]]; then
+  log "重放 DB 修订序列（幂等）→ ${PG_CONTAINER}/${D211_PG_DB}"
+  DATABASE_URL="$DB_URL" \
+  LLM_GATEWAY_PG_CONTAINER="$PG_CONTAINER" \
+  LLM_GATEWAY_PG_USER="${LLM_GATEWAY_PG_USER:-$PG_USER}" \
+  LLM_GATEWAY_PG_PASSWORD="$PG_PASS" \
+  LLM_GATEWAY_PG_DATABASE="$D211_PG_DB" \
+    bash "$REVISION_SEQ" || die "DB 修订序列失败——直接启动会降级 lite，先修库再部署"
+else
+  echo "warning: apply-db-revision-sequence.sh 不在场，跳过迁移重放" >&2
+fi
+
+# ── 部署事务正式开始：备份种子 → 退役旧容器 ───────────────────────────
+# 顺序是硬要求：
+#   ① 备份必须在**覆盖种子之前**（configs / web / web-mobile / version.json
+#      都会被本轮部署改写，回滚时要还原，否则跑起「旧二进制 + 新 SPA」）；
+#   ② 退役必须在**覆盖种子之后也行、在新容器起来之前**（它只是停掉旧容器
+#      释放 8781 端口，容器对象与镜像都留着，可原样拉回）。
+# 前置的所有**输入判定**（前端新鲜度、迁移重放）都已在退役之前完成，
+# 所以走到这里时旧容器仍在服务；此后的任何失败都有回滚兜底。
+# ANCHOR: d211-seed-backup
+d211_backup_seed || die "种子备份失败（无法保证回滚），中止部署"
+# ANCHOR: d211-retire-old-container
+d211_retire_gateway
+
 # ── configs 随部署种子（2026-10-14）────────────────────────────────────
 # 镜像不含 configs/（sensitive_patterns.yaml 缺失时网关回落内置脱敏集，
 # 与宿主机部署行为不一致）；docker cp 进容器层则 docker rm -f 即丢。
@@ -1197,37 +1462,42 @@ D211_MOBILE_DIST_SRC="${D211_MOBILE_DIST_SRC:-$D211_REPO_ROOT/web-mobile/dist}"
 D211_ALLOW_STALE_WEB="${D211_ALLOW_STALE_WEB:-0}"
 
 # seed_web_dist <dist 目录> <源码目录> <标签>
-# 种子前判新鲜度：dist/index.html 必须不早于源码树里最新的一个文件。
-# 用 -newer 做「有没有更新过的源码」判定，不依赖固定构建序号。
+# 判定（存在性 + 新鲜度）复用 d211_check_web_dist —— 与部署机侧前置门、
+# 211 本机侧前置门是**同一份规则**，避免三处口径漂移。本函数只回答
+# 「这份产物能不能用」；搬运在下面单独做。
+#   0 陈旧且 D211_ALLOW_STALE_WEB≠1 → 拒绝
+#   1 陈旧且 D211_ALLOW_STALE_WEB=1  → 放行（仍会种子化这份旧产物）
+#   2 缺失且 D211_ALLOW_STALE_WEB=1  → 纯 API 形态（不挂载前端）
+#   3 缺失但上一轮种子还在            → 无逃生舱，直接拒绝
+# ⚠ 本函数在**退役旧容器之后**才被调用，所以它的拒绝路径必须走 d211_fail
+# （回滚旧容器）而不是裸 die —— 裸 die 会把「守卫失败」变成「服务下线」，
+# 这正是 2026-10-20 502 事故的成因。
 seed_web_dist() {
-  local _dist="$1" _src="$2" _label="$3"
-  if [[ ! -f "$_dist/index.html" ]]; then
-    # 上一轮种子仍在 ⇒ 沿用等于**无声前端回滚**：线上跑着旧 UI，运维以为刚发过版。
-    # 这一档没有逃生舱——纯 API 形态的前提是「压根没有前端」，不是「前端是旧的」。
-    if [[ -f "$D211_GW_DATA_ROOT/${_label}/dist/index.html" ]]; then
-      die "缺少 ${_dist}，但上一轮种子仍在 ${D211_GW_DATA_ROOT}/${_label}/dist —— 直接沿用等于无声前端回滚。请构建前端（corepack pnpm install --frozen-lockfile && pnpm build）后再部署"
-    fi
-    if [[ "$D211_ALLOW_STALE_WEB" == "1" ]]; then
-      warn "$_dist 缺失，按纯 API 形态继续（$D211_ALLOW_STALE_WEB=1）：管理页不可用"
+  local _dist="$1" _src="$2" _label="$3" _code
+  _code=0
+  d211_check_web_dist "$_dist" "$_src" "$_label" || _code=$?
+  case "$_code" in
+    0)
+      return 0
+      ;;
+    1)
+      if [[ "$D211_ALLOW_STALE_WEB" != "1" ]]; then
+        d211_fail "$D211_WEB_CHECK_ERR"
+      fi
+      warn "${D211_WEB_CHECK_ERR}（$D211_ALLOW_STALE_WEB=1：放行并照常种子化这份旧产物）"
+      return 0
+      ;;
+    2)
+      if [[ "$D211_ALLOW_STALE_WEB" != "1" ]]; then
+        d211_fail "$D211_WEB_CHECK_ERR"
+      fi
+      warn "${D211_WEB_CHECK_ERR}（$D211_ALLOW_STALE_WEB=1：按纯 API 形态继续，本次不挂载前端）"
       return 1
-    fi
-    die "缺少 $_dist/index.html，拒绝部署空前端（2026-10-11 2538 白页事故口径）。构建前端，或显式 D211_ALLOW_STALE_WEB=1 走纯 API 形态"
-  fi
-  if [[ "$D211_ALLOW_STALE_WEB" != "1" && -d "$_src" ]]; then
-    local _newer
-    # 只盯会影响 Vite 产物的源码：*.test/spec 不进 bundle，mtime 漂移不该拦部署
-    # （2026-10-15：LiveRequestStreamV2.queueStreamNotice.test.ts 误杀整次 211 部署）。
-    _newer="$(find "$_src" -type f \
-      ! -name '*.test.ts' ! -name '*.test.tsx' ! -name '*.test.js' ! -name '*.test.jsx' \
-      ! -name '*.spec.ts' ! -name '*.spec.tsx' ! -name '*.spec.js' ! -name '*.spec.jsx' \
-      -newer "$_dist/index.html" -print -quit 2>/dev/null || true)"
-    if [[ -n "$_newer" ]]; then
-      die "$_dist 陈旧：$_newer 晚于 $_dist/index.html，拒绝部署陈旧前端（否则线上是旧 SPA 而部署显示成功）。重新构建前端，或显式 D211_ALLOW_STALE_WEB=1 走纯 API 形态"
-    fi
-  elif [[ "$D211_ALLOW_STALE_WEB" == "1" ]]; then
-    warn "$_dist 存在但未通过新鲜度校验，按纯 API 形态继续（$D211_ALLOW_STALE_WEB=1）"
-  fi
-  return 0
+      ;;
+    *)
+      d211_fail "$D211_WEB_CHECK_ERR"
+      ;;
+  esac
 }
 
 seed_web_dist "$D211_WEB_DIST_SRC" "$D211_REPO_ROOT/web/src" "web" && GW_WEB_DIST_OK=1 || GW_WEB_DIST_OK=0
@@ -1282,32 +1552,12 @@ fi
 # 直接 "${空数组[@]}" 会报 unbound variable
 GW_ENV+=( ${GW_WEB_ENV[@]+"${GW_WEB_ENV[@]}"} )
 
-# ── 迁移腿（2026-10-14 r1030）：网关容器启动前重放 DB 修订序列 ──────────
-# deploy-seamless（245/154）自带 deploy_apply_pending_migrations；本脚本原先
-# 缺这一腿——从别机 dump 恢复的库（如 acc-pg17 ← mac pg18 dump）停在旧迁移
-# 位（实测 schema_migrations 止于 851），新网关 boot 探测 `_request_logs_hot`
-# （迁移 860 改名后的家族名）失败 → 静默降级 lite（readyz 的 mode 字段是唯
-# 一肉眼判据）。序列幂等（already applied 无操作、健康路径零 DDL），故每次
-# 部署无脑重放是安全默认。
-REVISION_SEQ="$(cd "$(dirname "$0")" && pwd)/apply-db-revision-sequence.sh"
-if [[ -f "$REVISION_SEQ" ]]; then
-  log "重放 DB 修订序列（幂等）→ ${PG_CONTAINER}/${D211_PG_DB}"
-  DATABASE_URL="$DB_URL" \
-  LLM_GATEWAY_PG_CONTAINER="$PG_CONTAINER" \
-  LLM_GATEWAY_PG_USER="${LLM_GATEWAY_PG_USER:-$PG_USER}" \
-  LLM_GATEWAY_PG_PASSWORD="$PG_PASS" \
-  LLM_GATEWAY_PG_DATABASE="$D211_PG_DB" \
-    bash "$REVISION_SEQ" || die "DB 修订序列失败——直接启动会降级 lite，先修库再部署"
-else
-  echo "warning: apply-db-revision-sequence.sh 不在场，跳过迁移重放" >&2
-fi
-
 docker run -d --name "$D211_GW_CONTAINER" --restart unless-stopped \
   --network "$D211_NETWORK" \
   -p "${D211_GW_PORT}:8781" \
   "${GW_MOUNTS[@]}" \
   "${GW_ENV[@]}" \
-  "$D211_GW_IMAGE" >/dev/null || die "网关容器启动失败"
+  "$D211_GW_IMAGE" >/dev/null || d211_fail "网关容器启动失败"
 
 # =============================================================================
 # 就绪验证
@@ -1333,7 +1583,7 @@ done
 if (( ready == 0 )); then
   warn "网关未在预期时间内就绪，最近日志："
   docker logs --tail 40 "$D211_GW_CONTAINER" >&2 || true
-  die "网关部署失败"
+  d211_fail "网关部署失败"
 fi
 
 # 就绪不等于可用：历史上 lite 回落也返 HTTP 200。当前 readyz 契约是
@@ -1364,12 +1614,12 @@ case "$ready_check" in
   ok) log "readyz OK (database+redis connected, status=ready)" ;;
   lite)
     docker logs --tail 40 "$D211_GW_CONTAINER" >&2 || true
-    die "部署验证失败：readyz mode=lite（DB/迁移未接上）"
+    d211_fail "部署验证失败：readyz mode=lite（DB/迁移未接上）"
     ;;
   db_down|redis_down|not_ready|parse_error|*)
     warn "readyz 正文: $ready_body"
     docker logs --tail 40 "$D211_GW_CONTAINER" >&2 || true
-    die "部署验证失败：readyz 未证明 DB/Redis 就绪（check=${ready_check}）"
+    d211_fail "部署验证失败：readyz 未证明 DB/Redis 就绪（check=${ready_check}）"
     ;;
 esac
 
@@ -1452,6 +1702,68 @@ PY
 }
 d211_fix_nginx_llm_real_ip
 
+# =============================================================================
+# 网页面验收（2026-10-20，154/245 同款教训移植到 211）
+# =============================================================================
+# 154 的 500 事故证明：**API 全绿 ≠ 网页可用**——那次 readyz / healthz / 登录
+# 全过，只有 nginx 读静态页失败，/dashboard 返 500。211 原来只探 /readyz 与 /
+# （且 / 只 warn），网页面坏掉照样报「部署完成」。
+# 这里按 154 的口径补齐两层：
+#   ① 直连容器：取真实 HTML → 抽出入口 JS → 校验它以 JavaScript MIME 发出来；
+#   ② 公网入口：llm.itestu.cn 经 nginx 终结后必须 200（不能 502）。
+# ⚠ 211 的 nginx upstream 有 backup（100.106.169.63:8782 = mac mini），
+# 所以公网 200 **可能**是 backup 顶上的；因此 ① 直连是「211 自己的责任」，
+# ② 公网是「入口通不通」，两层都要过。
+d211_verify_web_surface() {
+  local base="http://127.0.0.1:${D211_GW_PORT}"
+  local html html_type asset asset_type
+  html="$(curl -fsSL --max-time 10 -H 'Accept: text/html' -w '\n%{content_type}' "${base}/dashboard")" || {
+    warn "网关直连 /dashboard 取不到 HTML（${base}）"; return 1; }
+  html_type="${html##*$'\n'}"; html="${html%$'\n'*}"
+  html_type="$(printf '%s' "${html_type%%;*}" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  [[ "$html_type" == "text/html" ]] || { warn "dashboard media type is not HTML: '${html_type:-empty}'"; return 1; }
+  [[ "$html" == *"<html"* && "$html" == *"</html>"* ]] || { warn "dashboard did not return HTML"; return 1; }
+  asset="$(printf '%s\n' "$html" | sed -n 's@.*src="\(/assets/[A-Za-z0-9._/-]*\.js\)".*@\1@p' | sed -n '1p')"
+  [[ "$asset" == /assets/*.js ]] || { warn "dashboard has no built JavaScript entry"; return 1; }
+  asset_type="$(curl -fsS --max-time 10 -o /dev/null -w '%{content_type}' "${base}${asset}")" || {
+    warn "dashboard 入口资源取不到: ${asset}"; return 1; }
+  asset_type="$(printf '%s' "${asset_type%%;*}" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  case "$asset_type" in
+    text/javascript|application/javascript)
+      log "网页面 OK（HTML + 入口 JS ${asset} → ${asset_type}）"
+      return 0
+      ;;
+    *)
+      warn "dashboard 入口不是 JavaScript: '${asset_type:-empty}'"
+      return 1
+      ;;
+  esac
+}
+
+# 公网入口：llm.itestu.cn 经 211 本机 nginx 终结。探不通（连不上）时只告警
+# 不阻断（nginx 腿可能绑在别的 IP 上，不是本次部署的责任）；探得通但不是
+# 200（502/5xx）则是真故障 ⇒ 阻断并回滚（用户看到的就是这个 502）。
+d211_verify_public_entry() {
+  local probe_ip="${D211_PUBLIC_PROBE_IP:-$D211_TARGET_IP}" code
+  code="$(curl -k -sSL --max-time 10 --resolve "llm.itestu.cn:443:${probe_ip}" \
+      -H 'Accept: text/html' -o /dev/null -w '%{http_code}' \
+      "https://llm.itestu.cn/dashboard" 2>/dev/null)" || {
+    warn "公网入口不可达（${probe_ip}:443）——跳过公网校验，不阻断部署"
+    return 0
+  }
+  if [[ "$code" != "200" ]]; then
+    warn "公网入口 llm.itestu.cn 返回 ${code}（期望 200）"
+    return 1
+  fi
+  log "公网入口 OK（llm.itestu.cn → ${probe_ip}:443 → ${code}）"
+  return 0
+}
+
+if [[ "${GW_WEB_DIST_OK:-0}" == "1" ]]; then
+  d211_verify_web_surface || d211_fail "网页面验收失败（容器直连 /dashboard 或入口 JS 不可用）"
+fi
+d211_verify_public_entry || d211_fail "公网入口验收失败（llm.itestu.cn 非 200）"
+
 # ── 登录冒烟：/api/auth/token（不是 /api/admin/login）────────────────
 # 凭据优先环境变量，其次 D211_ADMIN_*，默认 admin / Veritrans&9527（与
 # 211 库 users.admin 对齐）。失败不阻断部署收尾，但标红方便运维看见。
@@ -1487,6 +1799,12 @@ d211_smoke_admin_login() {
 if [[ "${D211_SKIP_LOGIN_SMOKE:-0}" != "1" ]]; then
   d211_smoke_admin_login || warn "登录冒烟未通过——页面可能仍无法登录，请查 users.admin 密码与限流"
 fi
+
+# ── 收尾：退役容器与种子备份可以清掉了 ───────────────────────────────
+# 全部验收通过后，新版本正式接管。此刻退役容器只是「上一版的残骸」，
+# 留着会让下一轮部署的「遗留 prev 扶正」分支把它当成幸存者。
+docker rm -f "$D211_PREV_CONTAINER" >/dev/null 2>&1 || true
+[[ -n "$D211_SEED_BACKUP" ]] && rm -rf "$D211_SEED_BACKUP"
 
 log "=========================================================="
 log "部署完成 @ $D211_TARGET_IP"

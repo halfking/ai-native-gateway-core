@@ -129,7 +129,7 @@ async function mountHeatmap() {
 }
 
 /** 读「状态修正」区的 6 个写按钮。 */
-function writeButtons(w: ReturnType<typeof mountHeatmap>) {
+function writeButtons(w: Awaited<ReturnType<typeof mountHeatmap>>) {
   const wanted = ['模型上线', '模型下线', '恢复凭据', '降级凭据', '启用凭据', '停用凭据']
   return wanted.map((label) => {
     const btn = w.findAll('button').find((b) => b.text().trim() === label)
