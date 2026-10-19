@@ -71,6 +71,17 @@ UPSTREAM RESPONSE content: 我这里只看到已脱敏的占位符：手机号 {
 | kimi-k3 | 占位符 | 占位符 | 还原后原文 |
 | deepseek-v4-flash | 占位符 | 占位符 | 还原后原文 |
 
+**终验复核**（推送前最后一遍，四个 session 逐一核对 raw 落盘）：
+
+```
+gw_final_4190b7b8: REQ_plain=[] REQ_ph=True | RESP_plain=[] RESP_ph=False
+gw_final_1015be27: REQ_plain=[] REQ_ph=True | RESP_plain=[] RESP_ph=True
+gw_final_49f74b85: REQ_plain=[] REQ_ph=True | RESP_plain=[] RESP_ph=True
+gw_final_feeeda41: REQ_plain=[] REQ_ph=True | RESP_plain=[] RESP_ph=True
+```
+
+⇒ 四个模型的上游实收**全部**是占位符，无明文出网关。
+
 ### 多轮累积
 
 同一 session 连发三轮，映射表编号递增不撞号：
@@ -242,6 +253,43 @@ v_routable_credential_models: gpt-6-luna → is_routable=false, reason=quota_per
 凭据 3 的 148 个模型**全部** `quota_permanently_exhausted`。凭据 2（nvidia）健康，`minimax-m3` 走它。
 
 **这是配额枯竭，不是脱敏缺陷**，也不因本轮改动而变化。恢复它需要给凭据 3 续配额（或换凭据），属配置/采购动作，不在本轮代码范围。
+
+### 用户点名的模型 → 154 实际可用性对照
+
+| 用户点名的模型 | 154 实测 | 归因 |
+|---|---|---|
+| `minimax-m3` | ✅ 200 | 凭据 2（nvidia 健康） |
+| `glm-5.3` | ❌ 503 `model_not_found`（transient，「All 3 candidates failed」） | 凭据 3 配额枯竭 |
+| `deepseek-v4-pro` | ❌ 503 `no_candidate` | 凭据 3 配额枯竭 |
+| `mimo-v2.5-pro` | ❌ 503 `no_candidate` | 凭据 3 配额枯竭 |
+| `gpt-6-luna` | ❌ 503 `no_candidate` | 凭据 3 配额枯竭 |
+
+⇒ 用户点名的 5 个模型里只有 `minimax-m3` 可用。为覆盖「多个模型」这一要求，
+本轮改用 154 上**实际可路由**的模型做全链路验收：
+**minimax-m3 / glm-5.2 / kimi-k3 / deepseek-v4-flash**（走凭据 1 sensenova 与
+凭据 2 nvidia 两条健康上游）。
+
+这四个模型的上游实收内容**全部**是占位符（终验复核，四个 session 逐一核对），
+脱敏与恢复行为一致。
+
+**顺带一提**：用户提供的 kaixuan 端点 `https://llm.kxpms.cn/v1` 本身就是 154
+的公网入口（DNS → 47.97.111.154，nginx `server_name llm.kxpms.cn` → `llm_local`
+→ 127.0.0.1:8782），所以「用 kaixuan 凭据调网关」与「向 154 发请求」是同一条
+路径，不是两套东西。
+
+### 用户提供的 3 个 key：key1 已失效
+
+| key | 状态 |
+|---|---|
+| `sk-1vH6C2I9…` | ❌ 401 `invalid_key`（已失效/未签发到该网关） |
+| `sk-RZ8dm0zyw…` | ✅ 有效 |
+| `sk-jybFTc1Jl…` | ✅ 有效 |
+
+key2 / key3 均不在 154 的 `api_keys` 表与 keystore 快照里
+（`key_hash` = sha256(key)，三者的 sha256 都查不到），但网关确实认它们——
+说明认证路径上还有本轮未查清的旁路（keystore 与 PG 表的行也对不上：
+keystore 有 id 196/195/198，PG `api_keys` 的 max(id) 只有 9）。
+**这不影响本轮验收**（两条路都能跑通），但它是独立的一条待查项。
 
 ### 内网 IP 不脱敏是既定设计
 
