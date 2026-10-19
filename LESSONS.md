@@ -4,6 +4,14 @@
 
 ## 待观察经验
 
+### 2026-10-20 — 客户端看到明文 ≠ 泄漏：脱敏验收必须看「上游实收」（Seen: 1/3）
+- 任务 / 缺陷：154（`llm.kxpms.cn`）脱敏与恢复多轮验收；同轮查实并修掉 r1036（地址规则把「标签+号+数字」整段吞成单个 `custom` 占位符，类型从 phone 退成 custom）。
+- 根因（验收方法）：只看**客户端响应**会得出完全相反的结论——模型回复里出现明文手机号，看起来像泄漏。真实链路是「输入替换占位符 → 上游收到占位符 → 上游回占位符 → 网关还原 → 客户端拿原文」，客户端看到明文**正是还原链在工作**的证据。判据必须落在上游侧：raw 落盘的 `direction=upstream_request`（上游实收）+ Redis 脱敏映射表 `session:<tenantHash>:<sid>:sanitize`（占位符确实产生）。这是 r1014「允许侧假绿」的镜像形态。
+- 防复发检查：脱敏验收三路证据缺一不可（上游实收 / 上游实回 / 客户端可见）；`input_sensitive` 字段是 MiniMax 上游自带的，**与网关脱敏无关**，拿它当判据会误判「没脱敏」；地址类判据必须用 `NewPatternDetectorFromFile(configs/sensitive_patterns.yaml)`——内置 fallback 无地址规则，用它写判据恒绿（r1010 教训，本轮再次命中）。
+- 证据：`docs/audit/2026-10-20-154-sanitize-restore-multi-round-acceptance.md`；判据 `security/sanitize/r1036_label_suffix_address_test.go`；修复 `security/sanitize/detector.go` 的 `dropLabelWrappedAddressFragments`。
+- 顺带查实（非本轮缺陷，别当脱敏问题查）：gpt-6-luna 在 154 无候选 = 凭据 3 `quota_state=permanently_exhausted` → `v_routable_credential_models.is_routable=false` → 候选 SQL 硬排除 `AND v.is_routable = TRUE`；内网 IP 明文 = `server_ip` 已于 `ce5e35ab3` 移出 `ScopeRedact` 的既定设计；`_request_logs_hot` 0 行 = `storage.request_logs_write_enabled=false` 的 S4 停写门控。
+- 状态：修复已落地本地，**未部署 154**。
+
 ### 2026-10-17 — 顶栏 X 不关 AppSheet / Focus；/me 先开后跳会被导航清掉
 - 根因：`HyperApp.overlayActive` 只认 drawer/account，忽略 `Hyper.topOverlay`；`closeActiveOverlay` 未走 `dismissOverlay`。`/me` 若先开 Sheet 再 `replace('/')`，runtime 导航 silent-close 全 overlay。
 - 防复发：overlay 顶栏 X 必须绑定 `Hyper.topOverlay` + `dismissOverlay`；账户兼容路由先 replace 再派发 `llmgw:open-account`。判据 `HyperApp.overlayClose.spec.ts`。
