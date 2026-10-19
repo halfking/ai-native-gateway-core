@@ -26864,3 +26864,83 @@ COALESCE(provider_id, (SELECT cr.provider_id FROM credentials cr
 ⚠ 全程**只读**：`pg_get_viewdef` × 3、`count(*)` 与分组统计、两条 `EXPLAIN (COSTS OFF)`（未执行）、
 仓内 `grep`。**未改任何视图定义、未改写入路径、未改仓库代码、未部署、未做任何生产写。**
 
+---
+
+## §111 §110 留下的空：**不查代码也能定位到丢凭据的那批行**（2026-10-19）
+
+§110 的诚实边界里挂着一条：「没找到生产写入路径，**未查清谁漏写 `credential_id`**」。
+仓内 grep 一轮没收敛（生产写入不落在 `INSERT INTO _request_logs` 字面量上，也没有 `CopyFrom`）。
+⇒ 于是改问数据本身：**不问谁写的，问这批行长什么样。**
+
+### 一、一条查询就给出了指纹
+
+`request_logs_2026_10`，7 天窗口，按 `credential_id 是否为空 × request_status × origin_stage × success`：
+
+| `credential_id` | `request_status` | `origin_stage` | `success` | 行数 | 占比 |
+|---|---|---|---|---|---|
+| **空** | **failure** | **business** | f | **13,745** | **28.61%** |
+| 空 | completed | (空) | t | 2,182 | 4.54% |
+| 空 | failure | node_probe | f | 315 | 0.66% |
+| 非空 | failure | node_probe | f | 18,045 | 37.55% |
+| 非空 | success | node_probe | t | 8,053 | 16.76% |
+| 非空 | success | **business** | t | 4,577 | 9.53% |
+| **非空** | failure | **business** | f | **555** | 1.16% |
+
+⇒ ★ **丢凭据的行几乎全部是「业务失败」；业务成功（4,577）是有凭据的。**
+⇒ ⇒ **单条聚合查询就把「谁漏写」缩小到了「业务失败这条路径」**，
+**不需要先找到那个函数**。
+
+### 二、剔除 probe 后的精确读数
+
+```
+业务行（剔除 node_probe / self_check / probe_* / manual 等 8 类）= 19,245
+  credential_id IS NULL      = 13,769  (71.55%)
+  success = true             =  4,571  (23.75%)
+  is_final_success = true    =  2,379  (12.36%)
+```
+
+⇒ **`credential_id` 的 71.55% 是纯计数，没有语义歧义**，这一条可以直接用。
+
+### 三、⚠ 同一张表里有一个**很容易被当成结论**的读数，我没有当结论
+
+`is_final_success` 只有 **12.36%**，读起来就是「**业务请求 88% 失败**」。
+
+⇒ **本节不这么写。** 理由：
+① 表里同时存在 `request_status = 'in_progress'`（355 行）与 `'rate_limited'`；
+② 多轮重试、多 attempt 的语义在本轮**没有核过**；
+③ `is_final_success` 的口径（第几次尝试算最终）**未查定义**。
+
+⇒ ⇒ ★ 一个**计数极刺眼、语义未核实**的数字，写进结论就会变成下一个人的"证据"。
+本节把它记为**读数**，不是**结论**，并把口径核实登记为待实证。
+★ 同族：[[阴性结论要当缺陷一样复核]] 的镜像 —— **阳性读数同样需要核实口径**。
+
+### 四、⇒ 这一条的机制推断（**明确标为推断**）
+
+失败时**代码手里一定有凭据**（它刚拿这个凭据去试、失败了才有这条失败记录），
+但这条行**没把凭据写下来**。
+
+⇒ ⇒ 如果成立，这是一个**可诊断性缺陷**，而不是统计瑕疵：
+**最需要知道「是哪个凭据失败」的那批行，恰好是唯一记不下凭据的。**
+⇒ 而它正好是 §110 里那 58% `'unknown'` provider 桶的来源
+（视图层兜底需要 `credential_id` 才能回查，而这批行恰好没有）。
+
+⚠ **本轮未找到落库代码，因此这条是推断，不是已证实的缺陷。**
+判别动作（需要仓库侧继续）：找到业务失败分支的落库语句，
+看它是否**根本没传** `credential_id`，还是**传了但在转换处丢了**。
+
+### 五、诚实边界
+
+| | |
+|---|---|
+| ❌ | **没找到写入路径**——仓库里 `INSERT INTO (_request_logs\|request_logs)` 只命中测试与 `storage/sqlite`；生产无 `CopyFrom` |
+| ❌ | **没核实 `request_status` / `is_final_success` / `origin_stage` 的口径**，所以不发布"业务成功率"结论 |
+| ❌ | **没解释 555 行反例**：业务失败里也有带凭据的 ⇒ 「失败 ⇒ 无凭据」**不是严格规则** |
+| ✅ | 已证：业务行的 `credential_id` 缺失率 **71.55%** |
+| ✅ | 已证：缺失行与「非成功」高度重合；业务成功行基本都带凭据 |
+| ✅ | 已证：`telemetry.RequestMetadata.CredentialID` 是 **`*int64` 指针**，可为 nil（`telemetry/request_metadata.go:168`） |
+
+### 六、动作边界
+
+⚠ 全程**只读**：两条聚合查询（`GROUP BY` / 过滤计数，7 天窗口，`SET statement_timeout='300s'`）
++ 仓内 `grep`。**未改代码、未改视图、未部署、未做任何生产写。**
+
