@@ -30816,3 +30816,109 @@ session_turn_details_2026_09 → max(partition_date) = 2026-09-30
    ⇒ ★★ 通用式：**不可逆动作的判据必须独立于「该做什么」的业务判断** ——
    业务上「这张表没用了」和统计上「这张表是空的」是两码事，
    把前者当成后者的证据就会误删**还需要留的历史**。
+
+---
+
+## §138 §137 落到代码：把实测数字写进脚本注释 + **两轮变异验证** + 一个既有 flaky 用例的取证（2026-10-19）
+
+§137 用 `count(*)` 坐实 L1 判据准确率 1/6。本节把这个结论**落到仓库代码**，
+并回答「仓库版的门到底能不能挡住 §137 那 5 张表」。
+
+### 一、✅ 仓库版的三道闸**已经齐备**（含 `COUNT(*)` 复核）
+
+`scripts/252-monitor/pg17-emergency-cleanup.sh:128-152` 实测已含：
+
+| 闸 | 实现 | 挡住什么 |
+|---|---|---|
+| ① 候选层排除分区 | `AND NOT c.relispartition` + 行为层再查一次 | DROP 已 ATTACH 的分区 = 写路径事故 |
+| ② 行为层分区标记 | `if [ "$is_part" = "1" ]; then … SKIP` | 防止将来有人改了 WHERE 就重新裸 DROP |
+| ③ **`COUNT(*)` 复核** | `actual_count=$(… "SELECT COUNT(*) FROM $tname")`；`!= 0` ⇒ SKIP | **`n_live_tup` 是估计值 ⇒ 挡住 §137 那 5 张误伤** |
+
+⇒ ⇒ ✅ **⇒ 部署仓库版就能挡住 §137 的全部 5,926,343 行误伤** ——
+P0-0 的收益已被代码层面确认，不是「应该能挡住」而是「闸就在那儿」。
+⇒ ⇒ ★ 现有门禁 `TestEmergencyL1RefusesToDropTableWithRows` 的断言文案
+**已经写着 §137 的形态**（`n_live_tup=0` 而 `COUNT(*)=2836620` 的表必须被拒）。
+
+### 二、🚨 两轮变异验证（证明这些闸真在测东西）
+
+| 变异 | 预期 | 实测 |
+|---|---|---|
+| 删掉第三道闸（把 `COUNT(*)` 换成硬编码 `actual_count=0`） | 门应变红 | ✅ **`TestEmergencyL1RefusesToDropTableWithRows` + `TestEmergencyL1CandidateSQLExcludesPartitions` 双双 FAIL** |
+| 删掉候选层分区排除（`AND NOT c.relispartition`） | 门应变红 | ✅ **`TestEmergencyL1CandidateSQLExcludesPartitions` FAIL** |
+
+⇒ ⇒ ★★★ **两个变异各自命中对应的门，而不是「都红了」** ⇒
+⇒ **判据与被测对象是一一对应的**，不是靠某个笼统断言兜住。
+⇒ ⇒ ★ 还原后 `git status` 干净、`bash -n` 通过、`TestEmergency*` 全绿（1.085s）。
+
+### 三、把 §137 的实测数字写进脚本注释
+
+原注释只有「6 张表 / 2,817 MB，其中 5 张并非空表」+ `_legacy` 一个数，
+现已替换为**逐张 `n_live_tup` / `COUNT(*)` / `relpages` 三列对照**，并写明两条推论：
+
+- **判据准确率 1/6**，且唯一判对的那张靠「真被 TRUNCATE 过」（§129）而非判据准
+- ⇒ 故第三道闸必须是 `COUNT(*)`，**不是**调 `n_live_tup` 阈值；
+  若要收紧候选层，正确的第二把尺是 **`relpages=0`**（物理空壳信号）
+
+⇒ ★ 理由：注释里只写「5 张并非空表」时，下一个维护者可能去**调阈值**；
+写上「准确率 1/6 + 唯一判对靠 TRUNCATE」才挡得住那个动作。
+
+### 四、⚠ 顺带取证：一个**既有 flaky 用例**（与本次会话无关）
+
+跑完整回归时偶发 `FAIL`。按纪律取证而非放过：
+
+```
+本工作区 7 次：PASS=5 FAIL=2
+  --- FAIL: TestAvailabilityRejectsReadOnlyAndRecovery/一直在_recovery
+  --- FAIL: TestAvailabilityReportsHealthyOnlyWhenQueryProvesIt
+git log bd964d406..HEAD -- scripts/ursmcheck/pg_availability_check_test.go
+  （空 ⇒ 本次会话从未改过它）
+
+git worktree add /tmp/ursm_pristine HEAD
+  在 pristine HEAD 上跑 6 次：PASS=4 FAIL=2
+  --- FAIL: TestAvailabilityRejectsReadOnlyAndRecovery/只读
+  --- FAIL: TestAvailabilityRejectsReadOnlyAndRecovery/一直在_recovery
+```
+
+⇒ ⇒ ★★★ **⇒ strong 证据：pristine HEAD 上以同一比率（≈1/3）失败
+⇒ 这是既有 flaky 用例，不是本次会话引入的。**
+⇒ ⇒ ★ **两次失败的形态各不相同**（`一直在 recovery` / `只读` / `ReportsHealthyOnlyWhen…`）
+⇒ ★ 这是**时序敏感**（retry/backoff 类断言在慢机器上偶发超时）的典型形态。
+⇒ ★ **归属方法**：`git worktree add` 到 pristine HEAD 复跑，是「强」证据；
+仅用 `git log` 确认「本次会话未改过该文件」是「中」证据（改动可能来自更早的会话）。
+⇒ ★ **本次会话未修它**（修 flaky 需要改它的时序断言，属另一件事），
+但已在下方登记为待办，避免下一个人把偶发 FAIL 当成新引入的回归。
+
+### 五、动作边界
+
+本节为**仓库代码改动**（仅注释）+ 本地测试，**未执行任何生产写**：
+未部署脚本、未 DROP、未改 cron。生产 252 上仍是未修版本（§135 的结论不变）。
+
+### 六、动作清单
+
+| # | 动作 | 状态 |
+|---|---|---|
+| ✅ | §137 的实测数字落到脚本注释 | **已完成**（+11/-3，纯注释） |
+| ✅ | 三道闸的变异验证 | **已完成**（2/2 命中对应门） |
+| 🚨 **P0-0** | 部署仓库版到 252 —— **本节确认：仓库版闸已齐，部署即可挡住 5,926,343 行误伤** | 最高优先，待授权 |
+| ★ | 修 `TestAvailability*` 的 flaky（约 1/3 失败率，pristine HEAD 同样失败） | 待排期，**非本次引入** |
+| ★ | §104 `_legacy` 拍板 | 待属主 |
+
+### 七、本节的可复用教训
+
+1. ★★★★ **给不可逆动作的注释里，必须写「判据准确率」而不只是「判据有问题」。**
+   原注释写「6 张里 5 张并非空表」⇒ 下一个人可能去**调阈值**；
+   写上「准确率 1/6，且唯一判对的那张靠 TRUNCATE」才挡得住那个动作。
+   ⇒ ★★ 通用式：**注释要写「别做什么」，而不只是「哪里不对」** ——
+   「哪里不对」会被当成待优化项，「别做什么」才是护栏。
+2. ★★★★ **变异验证要「各自命中对应的门」，而不是「都红了」。**
+   本轮两个变异分别命中 `RefusesToDropTableWithRows` 与 `CandidateSQLExcludesPartitions`
+   ⇒ 证明判据与被测对象一一对应。
+   ⇒ ★ 对比：**若两个变异命中同一条门，那条门可能在测一个笼统的东西**
+   （或两个变异其实作用在同一处）。★ 同族：[[判据红/绿了更要问它在钉什么]]。
+3. ★★★★ **偶发 FAIL 的归属要用 pristine worktree 取强证据。**
+   `git log <session-range> -- <file>` 只能证明「本次会话没改过」；
+   **worktree 复跑才能证明「它在改动之前就 flaky」**（本例 PASS=4/FAIL=2 与工作区同比率）。
+   ⇒ ★ 且**失败形态各异**（三个不同的子用例）本身就是「时序敏感」的指纹，
+   而非「某个确定缺陷」。
+   ⇒ ★★★ **⇒ 偶发 FAIL 不能放过，但也不能默认是自己引入的** ——
+   先取证归属，再决定是修还是登记。

@@ -117,9 +117,17 @@ if [ "$LEVEL" = "L1" ] || [ "$LEVEL" = "L2" ] || [ "$LEVEL" = "L3" ]; then
   #      （本地 PG 17.10 实测）——父表静默丢掉该范围的行，之后该范围 INSERT
   #      直接报 `no partition of relation found`。这是**写路径事故**，不是省空间。
   #   ② 不做 COUNT(*) 复核：`n_live_tup` 是**估计值**。PG 重启后未被 ANALYZE 的表
-  #      会一直停在 0（§93/§94/§116 三次同族）。**生产实测本判据当前命中
-  #      6 张表 / 2,817 MB，其中 5 张并非空表**，`ursm_node_snapshot_min_legacy`
-  #      有 **2,836,620 真实行**。
+  #      会一直停在 0（§93/§94/§116 三次同族）。**252 逐张 COUNT(*) 实测（§137）
+  #      本判据当前命中 6 张表，其中 5 张是误伤，合计 5,926,343 真实行**：
+  #        ursm_node_snapshot_min_legacy  n_live_tup=0 | COUNT(*)=2,836,620  relpages=69,875
+  #        usage_ledger_2026_09           n_live_tup=0 | COUNT(*)=1,416,772  relpages=33,393
+  #        session_turn_details_2026_09   n_live_tup=0 | COUNT(*)=  786,036  relpages=48,926
+  #        request_wal_2026_09            n_live_tup=0 | COUNT(*)=  446,777  relpages=11,496
+  #        routing_decision_log_2026_09   n_live_tup=0 | COUNT(*)=  440,138  relpages= 2,289
+  #        _request_logs_bodies_hot       n_live_tup=0 | COUNT(*)=        0  relpages=     0  ← 唯一真空
+  #      ⇒ **判据准确率 1/6**，且唯一判对的那张是靠「真的被 TRUNCATE 过」（§129）
+  #      而非「判据准」。⇒ 故第三道闸必须是 COUNT(*)，**不是**调 n_live_tup 阈值。
+  #      （若真要收紧候选层，正确的第二把尺是 `relpages=0`，它是「物理空壳」信号。）
   #   ③ docker_exec 把 psql 的 stderr 吞进黑洞（§96 已在 L2 修过，这里还没修），
   #      DROP 失败在日志里一个字都看不到。
   #   ⇒ 三道闸与同族脚本（pg17-proactive-empty-table-cleanup.sh）以及
