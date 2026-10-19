@@ -9069,4 +9069,4 @@ projected = 1 ；read-back title = 'mutation probe' ；DeleteTitle UPDATE 1 ；R
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 881 | `881_drop_attack_vectors_embedding_index.sql` | `c71b7a24d32eb02df04c0fd81adaee4b2a98ce543d5fb3207f1d72a990821f1a` | pending deploy（真库 llm-gateway-pg 已验证：守卫反向分支正确拒绝、正常路径删除成功、再跑幂等；**未部署到生产**） |
+| 881 | `881_drop_attack_vectors_embedding_index.sql` | `a53b366d79f46f9fff93463c45a4788929e4d3755df75d2cb8f240b28f3dbcb7` | pending deploy（真库 llm-gateway-pg 已验证：守卫反向分支正确拒绝、正常路径删除成功、再跑幂等；**未部署到生产**。2026-10-20 二次复测订正了写放大数字的**读法**：「read 21279→12」是冷/热缓存切分，与缓存无关的稳健指标是 hit+read 总触碰 ≈23.8k→3.2k（-86%），墙钟 1.8~2.8x；文件头已同步订正，**迁移行为未变**） |
