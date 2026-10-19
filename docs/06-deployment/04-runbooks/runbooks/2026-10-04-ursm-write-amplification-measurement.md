@@ -27386,6 +27386,7 @@ TRUNCATE / REINDEX 解决**空间**；
 | | |
 |---|---|
 | ❌ | **没解释 `request_logs_bodies_2026_10` 为何 `n_tup_ins=0` 却有 816,144 行**（统计重置自 PG 启动 2026-10-05 15:49:43 起）。同期 `_request_logs_bodies_hot` 是 ins 109,447 / del 125,346 ⇒ **删掉的比写入的多**。函数 `promote_request_logs_bodies_hot_to_partition` 的 **Phase 1 是"超 TTL 直接丢弃"**（`ts < now()-ttl_days` 且 `ts < now()-p_retention` ⇒ 直接 `DELETE` 后 `RETURN`，**不归档**），Phase 2 才是搬进月分区 ⇒ 两者差额可能就落在这里。**但 PG 日志已不可用（§109），机制未坐实**，登记为**待实证**，**不下结论** |
+| ↩️ | ⇒ **2026-10-19（§116）就地结清：这一条的根因是「量具」，不是「数据」**，上表的 **816,144 这个数字本身就是错的** —— 它取自 `n_live_tup`（ANALYZE 的估计），真实 `count(*)` = **330,463**（差 **2.5 倍**）。实测 bodies 分区与主日志分区**逐日行数几乎完全一致**、**孤儿行 0** ⇒ **归档路径健康，从未丢数据**。下文「Phase 1 丢弃」那条推理随之作废：差额不在丢弃侧，在计数器侧 |
 | ❌ | **没有验证生产的 154/245 上跑 `REINDEX INDEX CONCURRENTLY` 的实际行为**（本地同版本同镜像已验证语义，生产负载/参数未验证） |
 | ❌ | **没有确认 `pg_toast` 命名空间里是否还有 <16MB 但高死页的 TOAST 索引**（脚本的 16MB 门槛会跳过它们）—— 普查只覆盖 ≥16MB |
 | ⚠ | `updated_by` 为空 ⇒ 门是**谁**关的不可追溯 |
@@ -27559,3 +27560,159 @@ if [ "$headroom_mb" -ge "$MIN_RECLAIM_MB" ]; then → CANDIDATE
 | ★★ | `TRUNCATE` 两张 v1 hot 表（约 121 MB，229 MB 已被 REINDEX 拿走） | 待授权，需窗口 |
 | ⚠ | `ursm_node_snapshot_min_legacy` DROP（852 MB，**含 284 万行活数据**） | 属主拍板 |
 | ⚠ | 行为项：门控停写期间 `recent_success_rate()` 等读恒空表 ⇒ 静默零 | 产品/代码决策 |
+
+---
+
+## §116 🚨 **BLOCKER**：`pg17-emergency-cleanup.sh` L1 是一条**已上膛**的 DROP 地雷 —— 而判据用的正是一个被本手册证伪过五次的量具（2026-10-19）
+
+本节是**本手册至今最严重的一条**。它不是「可能有问题」，是**此刻已经装好引信**。
+
+### 一、一句话
+
+**`pg17-emergency-cleanup.sh` 的 L1 分支用 `n_live_tup = 0` 当「这张表是空的」，
+然后直接 `DROP TABLE` —— 没有 `COUNT(*)` 复核、没有排除分区。
+该判据当前在生产命中 6 张表 / 2,817 MB，其中 5 张并非空表。**
+
+### 二、引信还剩 19 个百分点（252 实测，只读）
+
+```
+$ ssh 252 'df -h /'
+/dev/vda3  197G  134G  55G  71% /
+$ tail /var/log/pg17-emergency-cleanup.log
+[2026-10-19T10:15:01+08:00] === emergency-cleanup invoked AUTO=true LEVEL=L1 ===
+[2026-10-19T10:15:01+08:00] current disk used=71%
+[2026-10-19T10:15:01+08:00] auto + disk < 90%, skip
+```
+
+- 脚本**确实在跑**，每 15 分钟一次（`DISK_TRIGGER_PCT=90`，`:63`）
+- ⚠ 它不在 root 的 crontab 里（`crontab -l | grep` 无命中），**部署位置待查**
+- 一旦磁盘 ≥ 90%，`--auto` 会把 LEVEL 升到 **L2** 并**真的执行 L1 的 DROP**
+
+### 三、逐字复现它的判据（生产只读，2026-10-19）
+
+```sql
+-- pg17-emergency-cleanup.sh:107-113（修复前）
+WHERE n_live_tup = 0 AND pg_total_relation_size(relid) >= 100*1024*1024
+  AND schemaname NOT IN ('columnar_internal')
+```
+
+命中结果：
+
+| would_drop | `n_live_tup` | `reltuples` | 真实 `count(*)` | 是分区 | 体积 |
+|---|---|---|---|---|---|
+| `ursm_node_snapshot_min_legacy` | **0** | 2,614,886 | **2,836,620** | 否 | **852 MB** |
+| `usage_ledger_2026_09` | **0** | 1,416,772 | ~141 万 | **是** | 742 MB |
+| `session_turn_details_2026_09` | **0** | 781,611 | ~78 万 | **是** | 603 MB |
+| `request_wal_2026_09` | **0** | 446,777 | ~45 万 | **是** | 193 MB |
+| `routing_decision_log_2026_09` | **0** | 440,138 | ~44 万 | **是** | 137 MB |
+| `_request_logs_bodies_hot` | 0 | 0 | **0（真空）** | 否 | 291 MB |
+
+⇒ ⇒ ★★★ **6 张里 5 张并非空表，合计约 590 万行 / 2,817 MB 在杀伤范围内。**
+（`reltuples` 也已是 141 万 / 78 万 / 45 万 / 44 万，只有 `count(*)` 是权威，
+但这几张表的 `count(*)` 量级与 `reltuples` 同阶，**不影响结论方向**。）
+
+### 四、为什么这些表的 `n_live_tup` 会停在 0（**根因，仓内可查**）
+
+`analyze_llm_gateway_table_stats()`（`sql/objects/functions/analyze_llm_gateway_table_stats_integer.sql`）
+的覆盖面是**两张白名单**：
+
+1. 所有 `*_hot` 表（`:17`）
+2. 名字匹配 `^(credential_model_index|model_probe_runs|request_logs|routing_decision_log|request_wal|usage_ledger|credit_ledger|tool_usage_stats|candidate_failure_logs|handoff_logs|request_logs_bodies)_YYYY_MM$` 的表（`:27`）
+
+⇒ **`ursm_node_snapshot_min_legacy` 既不是 `*_hot`，也不在那 11 个族里**
+⇒ 252 的 PG 在 **2026-10-05 15:49:43** 重启过 ⇒ `pg_stat` 计数归零
+⇒ 之后这两张白名单都没覆盖到它 ⇒ **它的 `n_live_tup` 永远是 0**
+⇒ ⇒ ★★ **于是被当成「死表」。**
+
+⇒ ⇒ ★★★ 这解释了为什么 §93、§94、§116 会三次撞上同一族问题：
+**凡是不在 analyze 白名单里的表，PG 重启后都会被 L1 当成空表。**
+
+### 五、★ PG **不保护**已挂载的分区（本地 PG 17.10 实测，非推理）
+
+直觉是「分区有父表依赖，DROP 会失败」。**实测是错的**：
+
+```
+CREATE TABLE parent (…) PARTITION BY RANGE (ts);
+CREATE TABLE child PARTITION OF parent FOR VALUES FROM ('2026-09-01') TO ('2026-10-01');
+INSERT INTO parent SELECT … FROM generate_series(1,100);   -- 100 行
+DROP TABLE IF EXISTS child;                                  -- ⇒ DROP 成功，无任何报错
+SELECT count(*) FROM parent;                                 -- ⇒ 0（父表静默丢 100 行）
+INSERT INTO parent VALUES (1,'2026-09-20');                  -- ⇒ ERROR:
+                                     no partition of relation "parent" found for row
+```
+
+⇒ ⇒ ★★★★ **不只是数据丢失，还是写路径事故**：
+命中列表里 4 张是分区（合计约 307 万行）⇒ 丢掉之后，
+**父表在该月区间再也接不住行，后续 INSERT 直接报错**。
+⇒ ⇒ **「裸 DROP 掉分区」与「丢掉一份可重建的历史数据」不是一个量级的事故。**
+
+### 六、★ 正确写法就在隔壁，此前只是没抄过来
+
+| 分支 | `COUNT(*)` 复核 | 排除分区 | 处置 |
+|---|---|---|---|
+| 本文件 `_default` 分支（`:132`） | ✅ 注释就写着「验证是否真的为 0 行」 | ✅ 先 DETACH 再 DROP | SKIP 并留痕 |
+| `pg17-proactive-empty-table-cleanup.sh`（`:219`） | ✅ | ✅ `NOT c.relispartition` + 行为层二次闸 | SKIP 并留痕 |
+| **本文件 L1 死表分支** | ❌ | ❌ | **裸 DROP** |
+
+⇒ ⇒ ★★★ **这不是「没想到」，是同族三处里的**唯独一处没抄**。
+⇒ ⇒ ★★ 另外 `docker_exec()` 内部的 `2>/dev/null` 让 psql 的 ERROR 进黑洞
+（§96 已在 L2 修过，**L1 这条分支还没修**）⇒ DROP 失败在日志里一个字都没有。
+
+### 七、修法（仓内已落地）—— 三道闸与同族对齐
+
+1. 候选 SQL 加 `JOIN pg_class` + **`AND NOT c.relispartition`**（第一道闸）
+2. 循环里按候选行带出的 `is_partition` 再判一次（**第二道闸**，行为层；
+   SQL 过滤被改坏时仍能拦住）
+3. **`SELECT COUNT(*) FROM $tname` 复核**，非 0 一律 SKIP 并把真实行数写进日志（第三道闸）
+4. 顺带把 `CONTAINER/PG_USER/PG_DB/LOG` 改成可注入 + `DOCKER_BIN`
+   （此前该脚本**零注入点**，只能做子串断言，量的是「写过这句话」不是「行为变了」）
+
+新增门禁 `scripts/ursmcheck/emergency_cleanup_l1_drop_guard_test.go`（假 docker 驱动真实判定分支）：
+
+| 用例 | 断言 |
+|---|---|
+| `TestEmergencyL1RefusesToDropTableWithRows` | 喂**生产真实形态**（`n_live_tup=0` + `COUNT(*)=2836620`）⇒ 必须 SKIP 且日志带真实行数 |
+| `TestEmergencyL1RefusesToDropPartition` | 分区根本不进候选集 |
+| `TestEmergencyL1RefusesToDropPartitionEvenIfFlagSaysPlain` | `is_partition=1` 谎报场景下行为闸仍拦住 |
+| `TestEmergencyL1StillDropsGenuinelyEmptyTable` | **真空表仍然必须被 DROP** ⇒ 防止把脚本改瘫来骗过门 |
+| `TestEmergencyL1CandidateSQLExcludesPartitions` | SQL 层筛选条件在不在 |
+
+**变异验证 3/3 全红**（拆 COUNT(*) 复核 / 拆 SQL 层 relispartition / 拆行为层 is_partition），
+每次变异后 md5 校验复原（`36e282a50b27253ca0906463e381dcf2`）。
+
+⚠ 门禁自身也踩了一次假绿：假 docker 的「按表名应答」变体**整体覆盖**了基础版本、
+连轨迹记录都没留 ⇒ 轨迹为空 ⇒ `strings.Contains("")` 恒假 ⇒ 用例全绿。
+已修：合并为单一假 docker + 加 `requireCalls()`（脚本一次没调 docker 就判失败）。
+
+### 八、诚实边界
+
+| | |
+|---|---|
+| ❌ | **没有在生产上跑过修复后的脚本**（部署需授权）。门禁用假 docker 验行为，不连真库 |
+| ❌ | **没有确认那 4 张分区表当前的精确 `count(*)`**（本节用 `reltuples` 标注量级，方向可靠、绝对值待测） |
+| ❌ | **没有找到这个 cron 的注册位置**（不在 root crontab，可能在 `/etc/cron.d/` 或其他用户）—— 待查 |
+| ⚠ | **`reltuples` 本身也出了偏差**：`request_logs_bodies_2026_10` 的 `reltuples=816,144` 而真实 `count(*)=330,463`（高估 2.5×）。机制未坐实（PG 日志已不可用），但**两个方向的偏差都存在**（`provider_events` 则是低估 2.9×）⇒ §114 那条「816,144 行」的错数字已就地订正 |
+| ✅ | 已证：L1 判据逐字复现并命中 6 张表；`ursm_node_snapshot_min_legacy` 真实 2,836,620 行；PG 不保护已挂载分区（本地实测）；根因是 analyze 白名单的两张名单形态；252 磁盘 71% 且脚本每 15 分钟在跑；修复 + 5 条门禁 + 3/3 变异全红 |
+
+### 九、⇒ 由本节改写的既有结论
+
+| 既有条目 | 修正后 |
+|---|---|
+| §104「先 `DROP ursm_node_snapshot_min_legacy`（852 MB）再开 `--fix`」 | ⚠️ **理由必须重写**：它不是「清空间」，而是**一张被坏量具点名、随时会被自动 DROP 的表**。处理顺序上它仍然是 `--fix` 的前置（它占 852 MB 且索引健康），但**应当先修 L1 的守卫**（否则同一机制会随时再点名别的表） |
+| §114「bodies 分区有 816,144 行」 | ⇒ **就地订正为 330,463**（`n_live_tup` 是估计） |
+| 「`n_live_tup` 是估计值，承重行数一律 `count(*)`」 | ⇒ 这条纪律在本手册已记录 **5 次**（§93 / §94 / §107 / §110 附近 / §114），**本节证明它还有第 6 个未被发现的下游受害者**：`pg17-emergency-cleanup.sh` L1 至今仍拿它当 DROP 条件 |
+
+### 十、动作边界
+
+⚠ 全程**只读**（生产 + 252）+ **本地容器沙箱**（`llm-gateway-pg` 一次性 schema）。
+**未部署到 252、未触发 L1、未 DROP 任何东西、未改 cron、未对生产做任何写。**
+
+### 十一、由此产生的待办
+
+| 优先级 | 动作 | 收益 | 风险 |
+|---|---|---|---|
+| 🚨 **P0** | **部署修复后的 `pg17-emergency-cleanup.sh` 到 252** | **拆掉一条已上膛的删数据地雷** | 部署即生效，无破坏性动作 |
+| 🚨 **P0** | 查清该脚本的 cron 注册位置并记录进 runbook | 可追溯 | 只读 |
+| ★★ | 把 `analyze_llm_gateway_table_stats()` 的覆盖面从「两张白名单」改成「默认全量 + 明确豁免」 | 根因消除 | **改 SQL 对象 = 生产写**，且会让 analyze pass 变长（§67 已实测其耗时敏感）⇒ 需先量成本 |
+| ★★ | 把这 5 张命中表补一次 `ANALYZE`（让 `n_live_tup` 归位） | 止血（不改任何逻辑） | ANALYZE 是写统计，成本低 |
+| ⚠ | `ursm_node_snapshot_min_legacy` 是否真的该 DROP | 属主拍板（284 万行历史快照） |

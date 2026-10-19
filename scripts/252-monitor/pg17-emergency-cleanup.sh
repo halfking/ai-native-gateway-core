@@ -52,10 +52,14 @@ if [ -z "${LLMGW_NO_SINGLE_INSTANCE_LOCK:-}" ] \
   _llmgw_single_instance_guarded=true
 fi
 
-CONTAINER=pg-252-pg17
-PG_USER=llm_gateway
-PG_DB=llm_gateway
-LOG=/var/log/pg17-emergency-cleanup.log
+CONTAINER=${CONTAINER:-pg-252-pg17}
+# 可注入：让本脚本的行为门能用一个假 `docker` 跑到真实判定分支，
+# 而不是只能对源码做子串断言（那量的是「写过这句话」，不是「行为变了」）。
+# 与 pg17-proactive-empty-table-cleanup.sh 同款。
+DOCKER_BIN=${DOCKER_BIN:-docker}
+PG_USER=${PG_USER:-llm_gateway}
+PG_DB=${PG_DB:-llm_gateway}
+LOG=${LOG:-/var/log/pg17-emergency-cleanup.log}
 
 AUTO=false
 LEVEL=L1
@@ -99,21 +103,52 @@ if [ "$ASSUME_YES" = "false" ] && [ -t 0 ]; then
   [ "$ans" = "yes" ] || { echo "[$(date -Iseconds)] abort by user" >> "$LOG"; exit 1; }
 fi
 
-docker_exec() { docker exec "$CONTAINER" "$@" 2>/dev/null; }
+docker_exec() { "$DOCKER_BIN" exec "$CONTAINER" "$@" 2>/dev/null; }
 
 # === L1: DROP 死表 / 默认分区 ===
 if [ "$LEVEL" = "L1" ] || [ "$LEVEL" = "L2" ] || [ "$LEVEL" = "L3" ]; then
   # 找 n_live_tup=0 AND pg_total >= 100MB 的表
-  DEAD_TABLES=$(docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc "
-    SELECT format('%I.%I', schemaname, relname)
-    FROM pg_stat_user_tables
-    WHERE n_live_tup = 0 AND pg_total_relation_size(relid) >= 100*1024*1024
-      AND schemaname NOT IN ('columnar_internal')
-    ORDER BY pg_total_relation_size(relid) DESC;
+  #
+  # ★★ 2026-10-19 修复（§116）：本分支此前**三道闸全缺**，而它不是死代码 ——
+  #   cron 每 15 分钟以 `--auto` 调一次，磁盘 >= DISK_TRIGGER_PCT(90) 时 L1 会真的执行 DROP。
+  #   252 实测：磁盘 71%，日志每 15 分钟一行 "auto + disk < 90%, skip" ⇒ 引信还剩 19 个点。
+  #
+  #   ① 不排除分区：**直接 `DROP TABLE` 一个已 ATTACH 的分区会成功**
+  #      （本地 PG 17.10 实测）——父表静默丢掉该范围的行，之后该范围 INSERT
+  #      直接报 `no partition of relation found`。这是**写路径事故**，不是省空间。
+  #   ② 不做 COUNT(*) 复核：`n_live_tup` 是**估计值**。PG 重启后未被 ANALYZE 的表
+  #      会一直停在 0（§93/§94/§116 三次同族）。**生产实测本判据当前命中
+  #      6 张表 / 2,817 MB，其中 5 张并非空表**，`ursm_node_snapshot_min_legacy`
+  #      有 **2,836,620 真实行**。
+  #   ③ docker_exec 把 psql 的 stderr 吞进黑洞（§96 已在 L2 修过，这里还没修），
+  #      DROP 失败在日志里一个字都看不到。
+  #   ⇒ 三道闸与同族脚本（pg17-proactive-empty-table-cleanup.sh）以及
+  #      **本文件自己的 _default 分支**（第 132 行起，早就写了「验证是否真的为 0 行」）
+  #      完全对齐 —— 正确写法就在隔壁，此前只是没抄过来。
+  DEAD_TABLES=$(docker_exec psql -U "$PG_USER" -d "$PG_DB" -tA -F'|' -c "
+    SELECT format('%I.%I', s.schemaname, s.relname), c.relispartition::int
+    FROM pg_stat_user_tables s
+    JOIN pg_class c ON c.oid = s.relid
+    WHERE s.n_live_tup = 0 AND pg_total_relation_size(s.relid) >= 100*1024*1024
+      AND s.schemaname NOT IN ('columnar_internal')
+      AND NOT c.relispartition
+    ORDER BY pg_total_relation_size(s.relid) DESC;
   ")
-  while IFS= read -r tname; do
+  while IFS='|' read -r tname is_part; do
     [ -z "$tname" ] && continue
-    echo "[$(date -Iseconds)] L1 DROP ${tname}" >> "$LOG"
+    # 行为层的第二道闸：候选行带出的结构标记也要看。
+    # 只做 SQL 过滤的话，将来有人改了上面那条 WHERE，本脚本就会重新开始裸 DROP 分区。
+    if [ "$is_part" = "1" ]; then
+      echo "[$(date -Iseconds)] L1 SKIP ${tname}: 是分区，分区生命周期不归本脚本（需先 DETACH）" >> "$LOG"
+      continue
+    fi
+    # 第三道闸：n_live_tup 只是估计，DROP 前必须 COUNT(*) 复核。
+    actual_count=$(docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc "SELECT COUNT(*) FROM $tname" 2>/dev/null || echo "-1")
+    if [ "$actual_count" != "0" ]; then
+      echo "[$(date -Iseconds)] L1 SKIP ${tname}: n_live_tup=0 但 COUNT(*)=${actual_count}（统计不可信，拒绝 DROP）" >> "$LOG"
+      continue
+    fi
+    echo "[$(date -Iseconds)] L1 DROP ${tname} (verified 0 rows)" >> "$LOG"
     docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc "DROP TABLE IF EXISTS $tname" >> "$LOG" 2>&1 || true
   done <<< "$DEAD_TABLES"
 
