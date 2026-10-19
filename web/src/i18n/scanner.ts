@@ -101,7 +101,10 @@ function loadModuleFile(locale: string, moduleName: string, localesDir: string):
   return evalAsCjs(code, absPath)
 }
 
-function loadLocale(locale: string, localesDir: string): Record<string, unknown> {
+/** 取某语种的**运行时真值**（模块名 → 模块对象）。
+ *  导出供 localeValueQuality.ts 复用 —— 避免第二套加载逻辑（两套量具互相抵消比
+ *  一个明显错的量具更危险，见 hardcodedCjk.ts 头注释「朴素版与解析器版的差」）。 */
+export function loadLocale(locale: string, localesDir: string): Record<string, unknown> {
   const indexPath = join(localesDir, locale, 'index.ts')
   if (!existsSync(indexPath)) return {}
   const src = readFileSync(indexPath, 'utf8')

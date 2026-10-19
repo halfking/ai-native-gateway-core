@@ -50,7 +50,7 @@ if [[ ! -x "$CANONICAL" ]]; then
     echo "    154          → scripts/deploy-154.sh"
     echo "    252          → scripts/deploy-252-gateway.sh"
     echo "    kaixuan-1    → scripts/deploy-kaixuan1.sh"
-    echo "    docker 211   → scripts/deploy-211-docker.sh"
+    echo "    docker 211   → scripts/deploy-211.sh（薄外壳 → deploy-seamless-docker.sh）"
     echo "    通用/无缝    → scripts/deploy-seamless.sh"
     echo "    本地         → scripts/deploy-local.sh"
     echo ""

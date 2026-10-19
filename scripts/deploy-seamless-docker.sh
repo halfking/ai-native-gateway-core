@@ -1,76 +1,107 @@
 #!/usr/bin/env bash
 # =============================================================================
-# deploy-211-docker.sh — 在 192.168.31.211 的 Docker 中部署 llm-gateway-go
+# deploy-seamless-docker.sh — Docker 形态的蓝绿无缝部署引擎（主机无关）
+# =============================================================================
+# 定位：与 deploy-seamless.sh（宿主机 systemd 形态）**同款蓝绿语义**的 Docker
+#      版本：把本网关以两个槽位（slot a / slot b）跑在同一台机器上，
+#      候选槽先起、验收过才切 nginx upstream，失败则原路退回旧槽。
 #
-# 定位：把本网关（Docker 形态）落到 211 这台机器上，**优先复用**该机 Docker 里
-#      已有的 pg17+columnar 实例与 Redis 实例；没有匹配的就地新建。
+# ★ 为什么是这个形态（2026-10-20 211 502 事故的直接教训）：
+#   旧实现是单容器形态（`docker rm -f` 旧容器 → 才做输入校验 → 才起新容器），
+#   于是**任何**拆后失败都把「一次部署失败」放大成「服务下线」（502）。
+#   单容器形态没有候选实例可并行 ⇒ 失败无处可退。
+#   蓝绿形态天然免疫：旧槽全程在服务，候选失败只要丢掉候选即可。
+#   deploy-seamless.sh（154/245）早就是这个形态，本次把它移植到 Docker 侧，
+#   并把「守卫（输入检查）必须跑在拆服务之前」一并带过来。
 #
-# ── 复用/新建的判定口径 ────────────────────────────────────────────────
-#   PostgreSQL 候选：容器镜像或名字命中 postgres / citus / pg 之一；
-#                   逐个探活，要求同时满足
-#                     (1) server_version_num 在 170000..179999（PG17）
-#                     (2) pg_am 里存在 columnar / pgcolumnar 表访问方法
-#                   两者都满足才算「匹配」，否则继续找下一个候选。
-#   Redis 候选：容器镜像或名字命中 redis 之一，且能 `redis-cli PING` 通。
-#   命中 → 直接复用（不新建、不改它的数据/端口/生命周期）；一个都没命中 → 新建。
+# ── 蓝绿状态机 ────────────────────────────────────────────────────────────
+#   槽位：a ↔ b，各绑一个固定发布端口（DD_SLOT_A_PORT / DD_SLOT_B_PORT）。
+#   活跃槽记在 <data root>/run/active-slot；nginx upstream 的主 server 行
+#   指向活跃槽的端口。
+#   一次部署：
+#     ① 前置门（前端产物新鲜度）—— 任何破坏性动作之前，失败即「本次不部署」
+#     ② 构建/推送新镜像（不动任何在跑的容器）
+#     ③ 种子化**候选槽专属**目录（web/dist、version.json）
+#     ④ 起候选容器（候选端口），旧槽继续服务 ⇒ 零停机
+#     ⑤ 验收候选：readyz(DB+Redis) / version / 网页面(HTML+入口 JS MIME)
+#     ⑥ 切流：改 nginx upstream 主 server 行 → nginx -t → reload
+#        → 复验公网版本身份（防「文件已切、流量未切」的半切换态）
+#     ⑦ 切流成功 ⇒ 停旧槽容器（保留镜像 tag，人工可回滚）
+#     任一步失败 ⇒ abort：删候选槽、切回 upstream、旧槽继续服务
 #
-# ── Redis 的特殊处理：DB 库号（用户口中的 "tableid"）从 15 往前倒排 ──
-#   Redis 实例默认 16 个逻辑库（0..15），库号就是一个共享命名空间：两个服务
-#   用同一个库号 → key 互相覆盖/踩踏。本机 211 上 Redis 可能是别的服务在用，
-#   因此网关**不从 0 开始抢**，而是从 15 开始往下倒着找一个没人用的库号：
-#       15 → 14 → 13 → … → 0
-#   判定「没人用」= 该库 DBSIZE == 0（真的没有 key）。
-#   选定的库号写进 claim 文件持久化，重跑不会漂移（否则每次部署换库 = 缓存全丢）。
-#   Redis Cluster 模式不支持非 0 库（只有 db0），此时强制 db0 并显式告警——
-#   这是硬约束，不能用"倒排"绕过去。
+# ── 主机无关：所有主机信息由**薄外壳**用环境变量注入 ──────────────────────
+#   引擎自身不含任何具体主机名。新增一台 Docker 形态的主机 = 写一个薄外壳
+#   （如 scripts/deploy-211.sh）设置下列变量后 exec 本引擎，无需复制引擎。
+#     DD_TARGET            目标标识（日志/容器/镜像命名用）
+#     DD_HOST              目标机地址（ssh 目标）
+#     DD_STATE_DIR         目标机上的状态目录（锁/密钥/claim）
+#     DD_REMOTE_ROOT       目标机上的仓库同步根
+#     DD_DATA_ROOT         网关数据根（bind mount 落点）
+#     DD_SLOT_A_PORT       槽 a 发布端口
+#     DD_SLOT_B_PORT       槽 b 发布端口
+#     DD_CONTAINER_PREFIX  容器名前缀（实际容器名 = <prefix>-<slot>）
+#     DD_IMAGE             应用镜像名
+#     DD_NETWORK           docker 网络名
+#     DD_NGINX_CONF        nginx 配置文件（切流改这里）
+#     DD_NGINX_UPSTREAM    nginx upstream 块名
+#     DD_DOMAIN            公网域名（切流后验版本身份用）
+#     DD_PG_* / DD_REDIS_* 数据库与缓存的复用口径
+#     DD_BASE_REGISTRY / DD_GO_BASE_IMAGE / DD_RUNTIME_BASE_IMAGE 基础镜像
+#   全部有默认值；外壳显式注入的优先（env > 默认）。
 #
-# 用法（在 211 上执行）：
-#   bash scripts/deploy-211-docker.sh                 # 探测 → 复用/新建 → 部署网关
-#   bash scripts/deploy-211-docker.sh --status        # 只看探测结果，不改动
-#   bash scripts/deploy-211-docker.sh --redis-db 15   # 强制指定 Redis 库号
-#   bash scripts/deploy-211-docker.sh --stop          # 停掉网关容器（不动 PG/Redis）
+# 用法（通常由薄外壳调用）：
+#   bash scripts/deploy-seamless-docker.sh                 # 部署
+#   bash scripts/deploy-seamless-docker.sh --status        # 只看探测结果，不改动
+#   bash scripts/deploy-seamless-docker.sh --stop          # 停掉两个槽的容器
+#   bash scripts/deploy-seamless-docker.sh --via <host>    # 从部署机远程执行
 #
-# 从本机远程执行（rsync 仓库后在 211 上跑）：
-#   bash scripts/deploy-211-docker.sh --via 192.168.31.211
-#
-# 密钥落点（不进仓库）：211 上 $D211_STATE_DIR/env/gateway.env（chmod 600）
+# 密钥落点（不进仓库）：$DD_STATE_DIR/env/gateway.env（chmod 600）
 # =============================================================================
 set -euo pipefail
 
-# ── 参数 ───────────────────────────────────────────────────────────────
-D211_TARGET_IP="${D211_TARGET_IP:-192.168.31.211}"
-D211_NETWORK="${D211_NETWORK:-llm-gateway-net}"
-D211_STATE_DIR="${D211_STATE_DIR:-/opt/llm-gateway-go-211}"
-D211_GW_CONTAINER="${D211_GW_CONTAINER:-llm-gateway-211}"
-D211_GW_IMAGE="${D211_GW_IMAGE:-llm-gateway-211}"
-D211_GW_PORT="${D211_GW_PORT:-8781}"
-D211_PG_DB="${D211_PG_DB:-llm_gateway}"
-D211_PG_USER="${D211_PG_USER:-llm_gateway}"
+# ── 主机信息（由薄外壳注入；此处只给默认值）─────────────────────────────
+DD_TARGET="${DD_TARGET:-docker}"
+DD_HOST="${DD_HOST:-}"
+DD_STATE_DIR="${DD_STATE_DIR:-/opt/llm-gateway-go-docker/$DD_TARGET}"
+DD_REMOTE_ROOT="${DD_REMOTE_ROOT:-$DD_STATE_DIR/src}"
+DD_NETWORK="${DD_NETWORK:-llm-gateway-net}"
+# 蓝绿两槽的固定发布端口：槽位与端口是**绑定**的，活跃槽由状态文件记录。
+DD_SLOT_A_PORT="${DD_SLOT_A_PORT:-8781}"
+DD_SLOT_B_PORT="${DD_SLOT_B_PORT:-8782}"
+DD_CONTAINER_PREFIX="${DD_CONTAINER_PREFIX:-llm-gateway-$DD_TARGET}"
+DD_IMAGE="${DD_IMAGE:-llm-gateway-$DD_TARGET}"
+DD_GW_IMAGE="${DD_GW_IMAGE:-$DD_IMAGE}"
+DD_GW_DATA_ROOT="${DD_GW_DATA_ROOT:-/opt/kaixuan/data/llm-gateway}"
+# 兼容旧变量名（DD_GW_PORT）：单机形态的历史写法。
+DD_GW_PORT="${DD_GW_PORT:-$DD_SLOT_A_PORT}"
+DD_PG_DB="${DD_PG_DB:-llm_gateway}"
+DD_PG_USER="${DD_PG_USER:-llm_gateway}"
 # 「调用方显式钉死」与「默认值」必须分开记：选谁 PG 的第一优先级是显式指定，
 # 若把默认名 kx-pg17-columnar 也当成显式值，自管实例会永远压过任何真候选。
-if [[ -n "${D211_PG_CONTAINER:-}" ]]; then D211_PG_CONTAINER_PINNED=1; else D211_PG_CONTAINER_PINNED=0; fi
-D211_PG_CONTAINER="${D211_PG_CONTAINER:-kx-pg17-columnar}"
-D211_PG_IMAGE="${D211_PG_IMAGE:-kx-pg17-columnar:17}"
-D211_REDIS_CONTAINER="${D211_REDIS_CONTAINER:-llm-gateway-redis}"
-D211_REDIS_IMAGE="${D211_REDIS_IMAGE:-redis:7-alpine}"
-D211_PGCOLUMNAR_VER="${D211_PGCOLUMNAR_VER:-v1.0-alpha4}"
+if [[ -n "${DD_PG_CONTAINER:-}" ]]; then DD_PG_CONTAINER_PINNED=1; else DD_PG_CONTAINER_PINNED=0; fi
+DD_PG_CONTAINER="${DD_PG_CONTAINER:-kx-pg17-columnar}"
+DD_PG_IMAGE="${DD_PG_IMAGE:-kx-pg17-columnar:17}"
+DD_REDIS_CONTAINER="${DD_REDIS_CONTAINER:-llm-gateway-redis}"
+DD_REDIS_IMAGE="${DD_REDIS_IMAGE:-redis:7-alpine}"
+DD_PGCOLUMNAR_VER="${DD_PGCOLUMNAR_VER:-v1.0-alpha4}"
 # 库号倒排：上界默认 15（Redis 默认 16 库的最大编号），下界 0
-D211_REDIS_DB_START="${D211_REDIS_DB_START:-15}"
-D211_REDIS_DB_END="${D211_REDIS_DB_END:-0}"
+DD_REDIS_DB_START="${DD_REDIS_DB_START:-15}"
+DD_REDIS_DB_END="${DD_REDIS_DB_END:-0}"
+# nginx 切流：改 upstream 块里主 server 行的 127.0.0.1:<port>
+DD_NGINX_CONF="${DD_NGINX_CONF:-/etc/nginx/conf.d/ns-gateway-${DD_TARGET}.conf}"
+DD_NGINX_UPSTREAM="${DD_NGINX_UPSTREAM:-ns_llm_gateway_upstream}"
+DD_DOMAIN="${DD_DOMAIN:-}"
 
-D211_REPO_ROOT="${LLM_GATEWAY_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-# 网关数据根（宿主 bind mount 落点）。提前到参数区：前端新鲜度门要判
-# 「上一轮种子是否还在」，那是 211 上的事实。
-D211_GW_DATA_ROOT="${D211_GW_DATA_ROOT:-/opt/kaixuan/data/llm-gateway}"
-# 前端产物来源（211 的前端由部署机预构建，随 tar 上树，引擎不构建前端）。
-D211_WEB_DIST_SRC="${D211_WEB_DIST_SRC:-$D211_REPO_ROOT/web/dist}"
-D211_MOBILE_DIST_SRC="${D211_MOBILE_DIST_SRC:-$D211_REPO_ROOT/web-mobile/dist}"
+DD_REPO_ROOT="${LLM_GATEWAY_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# 前端产物来源（前端由部署机预构建，随 tar 上树，引擎不构建前端）。
+DD_WEB_DIST_SRC="${DD_WEB_DIST_SRC:-$DD_REPO_ROOT/web/dist}"
+DD_MOBILE_DIST_SRC="${DD_MOBILE_DIST_SRC:-$DD_REPO_ROOT/web-mobile/dist}"
 # 纯 API 形态逃生舱：前端缺失/陈旧时是否继续部署（默认拒绝）。
-D211_ALLOW_STALE_WEB="${D211_ALLOW_STALE_WEB:-0}"
+DD_ALLOW_STALE_WEB="${DD_ALLOW_STALE_WEB:-0}"
 
-log()  { printf '[211] %s\n' "$*" >&2; }
-warn() { printf '[211] WARN: %s\n' "$*" >&2; }
-die()  { printf '[211] FATAL: %s\n' "$*" >&2; exit 1; }
+log()  { printf '[%s] %s\n' "$DD_TARGET" "$*" >&2; }
+warn() { printf '[%s] WARN: %s\n' "$DD_TARGET" "$*" >&2; }
+die()  { printf '[%s] FATAL: %s\n' "$DD_TARGET" "$*" >&2; exit 1; }
 
 # =============================================================================
 # 前端产物新鲜度门（2026-10-20 211 502 事故收口）
@@ -89,7 +120,7 @@ die()  { printf '[211] FATAL: %s\n' "$*" >&2; exit 1; }
 # 口径：dist/index.html 必须不早于源码树里最新的一个**会进 bundle** 的文件。
 # *.test.ts / *.spec.ts 不进 bundle，mtime 漂移不该拦部署（2026-10-15 实测
 # LiveRequestStreamV2.queueStreamNotice.test.ts 误杀整次 211 部署）。
-d211_web_dist_newer_source() {
+dd_web_dist_newer_source() {
   local _dist="$1" _src="$2"
   [[ -d "$_src" ]] || return 0
   find "$_src" -type f \
@@ -98,68 +129,84 @@ d211_web_dist_newer_source() {
     -newer "$_dist/index.html" -print -quit 2>/dev/null || true
 }
 
-# d211_check_web_dist <dist 目录> <源码目录> <标签>
+# dd_check_web_dist <dist 目录> <源码目录> <标签>
 #   0 = 通过
-#   1 = 陈旧（产物比源码旧）—— 逃生舱 D211_ALLOW_STALE_WEB=1 可放行
+#   1 = 陈旧（产物比源码旧）—— 逃生舱 DD_ALLOW_STALE_WEB=1 可放行
 #   2 = 缺失（压根没有前端）—— 逃生舱可放行（纯 API 形态）
 #   3 = 缺失但上一轮种子还在 —— **无逃生舱**：沿用等于无声前端回滚
-# 原因文本放在 D211_WEB_CHECK_ERR。
-D211_WEB_CHECK_ERR=""
-d211_check_web_dist() {
+# 原因文本放在 DD_WEB_CHECK_ERR。
+DD_WEB_CHECK_ERR=""
+dd_check_web_dist() {
   local _dist="$1" _src="$2" _label="$3" _newer
-  D211_WEB_CHECK_ERR=""
+  DD_WEB_CHECK_ERR=""
   if [[ ! -f "$_dist/index.html" ]]; then
-    if [[ -n "${D211_GW_DATA_ROOT:-}" && -f "${D211_GW_DATA_ROOT}/${_label}/dist/index.html" ]]; then
-      D211_WEB_CHECK_ERR="缺少 ${_dist}，但上一轮种子仍在 ${D211_GW_DATA_ROOT}/${_label}/dist —— 直接沿用等于无声前端回滚。请构建前端（corepack pnpm install --frozen-lockfile && pnpm build）后再部署"
-      return 3
+    # 「上一轮种子还在」有两种布局，**都要认**：
+    #   ① 旧平铺布局：<root>/<label>/dist/index.html
+    #   ② 蓝绿按槽布局：<root>/<label>/<slot>/dist/index.html（当前形态）
+    # ⚠ 2026-10-20 修：槽位隔离后只认① ⇒ ②下这条探测恒为「不在」⇒
+    #   结论从「缺失但上一轮种子还在（**硬拒绝**，逃生舱也不放行）」掉成
+    #   「缺失且无种子（逃生舱可放行走纯 API）」⇒ 逃生舱会把**没有前端**的
+    #   版本发上线（用户打开是白页/404），而门禁本该拦住。
+    if [[ -n "${DD_GW_DATA_ROOT:-}" ]]; then
+      if [[ -f "${DD_GW_DATA_ROOT}/${_label}/dist/index.html" ]] \
+         || compgen -G "${DD_GW_DATA_ROOT}/${_label}/*/dist/index.html" >/dev/null 2>&1; then
+        DD_WEB_CHECK_ERR="缺少 ${_dist}，但上一轮种子仍在 ${DD_GW_DATA_ROOT}/${_label}/（平铺或按槽）—— 直接沿用等于无声前端回滚。请构建前端（corepack pnpm install --frozen-lockfile && pnpm build）后再部署"
+        return 3
+      fi
     fi
-    D211_WEB_CHECK_ERR="缺少 $_dist/index.html，拒绝部署空前端（2026-10-11 2538 白页事故口径）。构建前端，或显式 D211_ALLOW_STALE_WEB=1 走纯 API 形态"
+    DD_WEB_CHECK_ERR="缺少 $_dist/index.html，拒绝部署空前端（2026-10-11 2538 白页事故口径）。构建前端，或显式 DD_ALLOW_STALE_WEB=1 走纯 API 形态"
     return 2
   fi
-  _newer="$(d211_web_dist_newer_source "$_dist" "$_src")"
+  _newer="$(dd_web_dist_newer_source "$_dist" "$_src")"
   if [[ -n "$_newer" ]]; then
-    D211_WEB_CHECK_ERR="$_dist 陈旧：$_newer 晚于 $_dist/index.html，拒绝部署陈旧前端（否则线上是旧 SPA 而部署显示成功）。重新构建前端，或显式 D211_ALLOW_STALE_WEB=1 走纯 API 形态"
+    DD_WEB_CHECK_ERR="$_dist 陈旧：$_newer 晚于 $_dist/index.html，拒绝部署陈旧前端（否则线上是旧 SPA 而部署显示成功）。重新构建前端，或显式 DD_ALLOW_STALE_WEB=1 走纯 API 形态"
     return 1
   fi
   return 0
 }
 
-# d211_preflight_web_dist <repo 根> [side]
+# dd_preflight_web_dist <repo 根> [side]
 #   side=repo   —— 部署机侧：判定**即将被同步上去**的那份产物。
 #                   引擎在 211 上是从同步树的 web/dist 种子化的，而
-#                   D211_WEB_DIST_SRC 覆盖项不会转发到远端，所以这里必须
+#                   DD_WEB_DIST_SRC 覆盖项不会转发到远端，所以这里必须
 #                   判仓库默认路径，不能判覆盖路径（否则会出现「本地判的
 #                   是一份、线上发的是另一份」）。
 #   side=target —— 211 本机侧：判**远端真正要用的**那份（尊重
-#                   D211_WEB_DIST_SRC 覆盖）。
-# 任何一项不通过 ⇒ 返回非零（调用方决定 die 还是走纯 API 形态）。
-d211_preflight_web_dist() {
+#                   DD_WEB_DIST_SRC 覆盖）。
+# 任何一项不通过 ⇒ **die**（拒绝部署）。
+# ⚠ 2026-10-20 修（逃生舱在本层是**死的**）：本函数原先在「逃生舱放行」时
+#   返回 **1**，而调用方写的是 `dd_preflight_web_dist ... || exit 1`
+#   ⇒ 返回 1 = 「失败」⇒ **带了 DD_ALLOW_STALE_WEB=1 也照样退出**，
+#   逃生舱形同虚设。实测：2026-10-20 真机部署带着逃生舱仍被
+#   「web/dist 陈旧」拦死在远端侧。
+#   ⇒ 语义改为：**放行 ⇒ 返回 0**（告警已经 warn 过了），与 deploy-local.sh
+#     的 `check_web_dist_freshness`（逃生舱 → warn + return 0）同一族口径。
+#     本函数只在**必须拒绝**时 die（code=3「上一轮种子还在」或没开逃生舱）。
+dd_preflight_web_dist() {
   local _root="$1" _side="${2:-target}" _rc=0 _code
   local _web_dist _web_src _mob_dist _mob_src
   if [[ "$_side" == "repo" ]]; then
     _web_dist="$_root/web/dist";      _web_src="$_root/web/src"
     _mob_dist="$_root/web-mobile/dist"; _mob_src="$_root/web-mobile/src"
   else
-    _web_dist="${D211_WEB_DIST_SRC:-$_root/web/dist}";      _web_src="$_root/web/src"
-    _mob_dist="${D211_MOBILE_DIST_SRC:-$_root/web-mobile/dist}"; _mob_src="$_root/web-mobile/src"
+    _web_dist="${DD_WEB_DIST_SRC:-$_root/web/dist}";      _web_src="$_root/web/src"
+    _mob_dist="${DD_MOBILE_DIST_SRC:-$_root/web-mobile/dist}"; _mob_src="$_root/web-mobile/src"
   fi
   # ⚠ 必须写成 `|| _code=$?`：set -e 下裸调用返回非零会让整个脚本直接退出，
   # 根本走不到下面的分诊。
-  _code=0; d211_check_web_dist "$_web_dist" "$_web_src" "web" || _code=$?
+  _code=0; dd_check_web_dist "$_web_dist" "$_web_src" "web" || _code=$?
   if (( _code != 0 )); then
-    if [[ "$_code" == "3" || "$D211_ALLOW_STALE_WEB" != "1" ]]; then
-      die "$D211_WEB_CHECK_ERR"
+    if [[ "$_code" == "3" || "$DD_ALLOW_STALE_WEB" != "1" ]]; then
+      die "$DD_WEB_CHECK_ERR"
     fi
-    warn "${D211_WEB_CHECK_ERR}（按纯 API 形态继续）"
-    _rc=1
+    warn "${DD_WEB_CHECK_ERR}（DD_ALLOW_STALE_WEB=1：放行，继续部署）"
   fi
-  _code=0; d211_check_web_dist "$_mob_dist" "$_mob_src" "web-mobile" || _code=$?
+  _code=0; dd_check_web_dist "$_mob_dist" "$_mob_src" "web-mobile" || _code=$?
   if (( _code != 0 )); then
-    if [[ "$_code" == "3" || "$D211_ALLOW_STALE_WEB" != "1" ]]; then
-      die "$D211_WEB_CHECK_ERR"
+    if [[ "$_code" == "3" || "$DD_ALLOW_STALE_WEB" != "1" ]]; then
+      die "$DD_WEB_CHECK_ERR"
     fi
-    warn "${D211_WEB_CHECK_ERR}（按纯 API 形态继续）"
-    _rc=1
+    warn "${DD_WEB_CHECK_ERR}（DD_ALLOW_STALE_WEB=1：放行，继续部署）"
   fi
   return $_rc
 }
@@ -172,20 +219,25 @@ usage() { sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; }
 MODE=deploy
 VIA=""
 FORCE_REDIS_DB=""
+# 转发给远端引擎的参数（--via 本身不转发：远端是本机模式执行）。
+# ★ 2026-10-20 修：原实现在参数循环里 shift 完再用 `$*` 转发 ⇒ `$*` 恒为空
+#   ⇒ `--redis-db 9` 从未到达远端引擎（外壳文档里还写着能传）。
+#   现在显式收集，别再靠 `$*`。
+DD_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --status)     MODE=status; shift ;;
-    --probe-only) MODE=probe-only; shift ;;
-    --stop)       MODE=stop; shift ;;
-    --redis-db)   FORCE_REDIS_DB="${2:?--redis-db N}"; shift 2 ;;
+    --status)     MODE=status; DD_ARGS+=(--status); shift ;;
+    --probe-only) MODE=probe-only; DD_ARGS+=(--probe-only); shift ;;
+    --stop)       MODE=stop; DD_ARGS+=(--stop); shift ;;
+    --redis-db)   FORCE_REDIS_DB="${2:?--redis-db N}"; DD_ARGS+=(--redis-db "$FORCE_REDIS_DB"); shift 2 ;;
     --via)        VIA="${2:?--via HOST}"; shift 2 ;;
     -h|--help)    usage; exit 0 ;;
     *) die "unknown argument: $1 (see --help)" ;;
   esac
 done
 
-CLAIM_FILE="$D211_STATE_DIR/redis-db.claim"
-ENV_FILE="$D211_STATE_DIR/env/gateway.env"
+CLAIM_FILE="$DD_STATE_DIR/redis-db.claim"
+ENV_FILE="$DD_STATE_DIR/env/gateway.env"
 
 # ── 执行位置守卫（2026-10-15）────────────────────────────────────────
 # 无参模式 = 「在 211 本机以 root 执行」：状态目录 /opt/llm-gateway-go-211、
@@ -195,46 +247,82 @@ ENV_FILE="$D211_STATE_DIR/env/gateway.env"
 # 建出目录，后面操作的也是 Mac 自己的 docker 而不是 211 的。远程部署一律
 # 走 --via（tar 同步仓库 → ssh 到目标机以 root 重跑本脚本）。
 if [[ -z "$VIA" && "$(uname -s)" == "Darwin" ]]; then
-  die "检测到在 macOS 上以本机模式运行。本脚本无参模式必须在 211 本机以 root 执行（状态目录 ${D211_STATE_DIR} 是 Linux 路径）；从部署机远程部署请用：bash scripts/deploy-211.sh 或 bash $0 --via ${D211_TARGET_IP}（基础镜像默认 registry-211.itestu.cn，可用 D211_GO_BASE_IMAGE/D211_RUNTIME_BASE_IMAGE 覆盖）"
+  die "检测到在 macOS 上以本机模式运行。本脚本无参模式必须在目标机（${DD_HOST:-本地}）本机以 root 执行（状态目录 ${DD_STATE_DIR} 是 Linux 路径）；从部署机远程部署请用对应的薄外壳（如 scripts/deploy-211.sh）或 $0 --via ${DD_HOST}（基础镜像可用 DD_GO_BASE_IMAGE/DD_RUNTIME_BASE_IMAGE 覆盖）"
 fi
 
 # =============================================================================
 # --via：把当前仓库同步到目标机并在目标机上执行本脚本
 # =============================================================================
 if [[ -n "$VIA" ]]; then
-  [[ "$MODE" == "deploy" ]] || die "--via 只支持默认 deploy 模式（--status/--stop 请 ssh 后本地跑）"
+  # ── 主机信息随行清单（两种 --via 路径共用）────────────────────────────
+  # 用显式清单而不是「导出全部 DD_*」——内部量（DD_SWITCHED / DD_CANDIDATE_SLOT 等）
+  # 转发过去只会制造歧义。
+  # ⚠⚠ 2026-10-20 修（会让部署直接失败的一类）：**repo 相对派生的量不能转发**。
+  #   DD_WEB_DIST_SRC / DD_MOBILE_DIST_SRC / DD_CONFIGS_SRC 在引擎顶部按
+  #   `$DD_REPO_ROOT/<x>` 算出来，而 DD_REPO_ROOT **两侧不同**（部署机是
+  #   /Users/…/llm-gateway-go，远端是 /root/llm-gateway-go-211）。
+  #   转发过去 = 远端拿着 macOS 路径去种子化 ⇒ 前端产物「缺失」⇒ 撞
+  #   「上一轮种子还在」判定 ⇒ **部署直接 die**；configs 则是静默回落内置
+  #   脱敏集（sensitive_patterns.yaml 没种进去）。⇒ 一律**不转发**，
+  #   让远端按自己的 DD_REPO_ROOT 重算。
+  _dd_fwd=""
+  for _v in DD_TARGET DD_HOST DD_STATE_DIR DD_REMOTE_ROOT DD_NETWORK \
+            DD_SLOT_A_PORT DD_SLOT_B_PORT DD_CONTAINER_PREFIX DD_IMAGE \
+            DD_GW_DATA_ROOT DD_NGINX_CONF DD_NGINX_UPSTREAM DD_DOMAIN \
+            DD_PG_DB DD_PG_USER DD_PG_CONTAINER DD_PG_IMAGE DD_PGCOLUMNAR_VER \
+            DD_REDIS_CONTAINER DD_REDIS_IMAGE DD_REDIS_DB_START DD_REDIS_DB_END \
+            DD_BASE_REGISTRY DD_GO_BASE_IMAGE DD_RUNTIME_BASE_IMAGE \
+            DD_ALLOW_STALE_WEB DD_PUBLIC_PROBE_IP DD_ADMIN_USER DD_ADMIN_PASSWORD \
+            DD_SKIP_LOGIN_SMOKE; do
+    if [[ -n "${!_v+x}" ]]; then _dd_fwd+=" ${_v}='${!_v}'"; fi
+  done
+  _dd_args="${DD_ARGS[@]+"${DD_ARGS[@]}"}"
+
+  # ── 非 deploy 模式（--status / --probe-only / --stop）──────────────────
+  # 这三个模式只依赖 docker 与环境变量，**不需要仓库内容** ⇒ 不同步工作树
+  # （同步会 rm -rf 目标树，对「只想看一眼状态」是过大的副作用）。
+  # 做法：只把引擎单文件送到目标机临时路径跑，跑完即删。
+  if [[ "$MODE" != "deploy" ]]; then
+    _dd_tmp="/tmp/deploy-seamless-docker.$$.sh"
+    log "远程执行 ${MODE}（只送引擎单文件，不同步仓库）..."
+    scp "$DD_REPO_ROOT/scripts/deploy-seamless-docker.sh" "$VIA:$_dd_tmp" \
+      || die "引擎单文件投递到 ${VIA} 失败"
+    ssh "$VIA" "chmod +x '$_dd_tmp' && DD_BUILD_SHA=''${_dd_fwd} bash '$_dd_tmp' ${_dd_args}; rc=\$?; rm -f '$_dd_tmp'; exit \$rc"
+    exit $?
+  fi
+
   # ── 部署锁（deploy-lib lock.sh，与 deploy-seamless 同一族 SSOT）────────
   # --via 全程是部署机侧的连续 ssh 步骤（rm → tar 同步 → 清理 → 远端执行），
   # 锁必须在部署机侧包住全程：两个并发 --via 会在 rm -rf vs tar 解包处互相
   # 炸（2026-10-14/15 三次实测 "Directory not empty"/"Cannot mkdir"）。
   # 锁不在场（如 211 本机模式无 deploy-lib）时 warn 跳过，行为同旧版。
-  _d211_lib_resolve="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deploy-lib-resolve.sh"
-  if [[ -f "$_d211_lib_resolve" ]]; then
+  _dd_lib_resolve="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deploy-lib-resolve.sh"
+  if [[ -f "$_dd_lib_resolve" ]]; then
     # shellcheck source=deploy-lib-resolve.sh
-    source "$_d211_lib_resolve"
+    source "$_dd_lib_resolve"
   fi
   if [[ -n "${AIAN_DEPLOY_LIB:-}" && -f "$AIAN_DEPLOY_LIB/lock.sh" ]]; then
     # shellcheck source=/dev/null
     source "$AIAN_DEPLOY_LIB/lock.sh"
-    LOCK_LOCAL_TARGET=211
+    LOCK_LOCAL_TARGET="$DD_TARGET"
     if ! lock_acquire_local; then
-      die "另一个 211 部署正在本机进行（锁：${LOCK_LOCAL_DIR}）。并发会话请等待其完成；确认无存活部署进程后可 rm -rf 该锁目录重试（勿在对方运行时硬抢）"
+      die "另一个 ${DD_TARGET} 部署正在本机进行（锁：${LOCK_LOCAL_DIR}）。并发会话请等待其完成；确认无存活部署进程后可 rm -rf 该锁目录重试（勿在对方运行时硬抢）"
     fi
     trap 'lock_release_local' EXIT
-    log "已取得 211 部署锁: ${LOCK_LOCAL_DIR}"
+    log "已取得 ${DD_TARGET} 部署锁: ${LOCK_LOCAL_DIR}"
   else
     warn "deploy-lib lock.sh 不在场，本次无部署锁（并发部署可能互相踩）"
   fi
   # ★ 前端产物新鲜度门（2026-10-20 211 502 事故收口）：**在同步之前**判。
   # 事故形态：这道门原先跑在「旧容器已 rm 之后」，一失败就等于「一次部署失败
-  # = 服务下线」（llm.itestu.cn 502，根因见 d211_preflight_web_dist 注释）。
+  # = 服务下线」（llm.itestu.cn 502，根因见 dd_preflight_web_dist 注释）。
   # 放在部署机侧 = 最早可判点：不 sync、不 build、不 push，线上毫发无损。
-  d211_preflight_web_dist "$D211_REPO_ROOT" repo || exit 1
-  log "同步仓库到 $VIA:$D211_TARGET_IP ..."
+  dd_preflight_web_dist "$DD_REPO_ROOT" repo || exit 1
+  log "同步仓库到 $VIA:${DD_HOST} ..."
   # 先在目标端把工作树整体清空——tar 解包不会删目标已有文件，旧部署残留的
   # macOS `._*` 元数据 / .env* 会一直挂在那让 docker COPY 重新带进镜像。
   # 2026-10-13 真机第三轮翻车根因：第一次同步带进去了 `._*`，加 --exclude 重跑也没用。
-  ssh "$VIA" 'rm -rf ~/llm-gateway-go-211 && mkdir -p ~/llm-gateway-go-211'
+  ssh "$VIA" "rm -rf '$DD_REMOTE_ROOT' && mkdir -p '$DD_REMOTE_ROOT'"
   # 用 tar over ssh 排除体积大/无用目录，避免 node_modules、.git 拖慢或撑爆磁盘。
   # .env* 必须排干净：Dockerfile 里是 `COPY . .`，而 .dockerignore 并不排除
   # .env*，所以一旦把 .env.local 同步过去，它的 admin key / secret / 口令就会
@@ -251,7 +339,7 @@ if [[ -n "$VIA" ]]; then
   # macOS bsdtar 默认把 quarantine/provenance xattr 打进 archive，GNU tar 刷屏
   # Ignoring unknown extended header；偶发半截同步 → 远端缺 scripts/（RC=127）。
   # COPYFILE_DISABLE + --no-xattrs/--no-mac-metadata（有则用）关掉资源叉/xattr。
-  _tar_create=(tar -C "$D211_REPO_ROOT")
+  _tar_create=(tar -C "$DD_REPO_ROOT")
   if [[ "$(uname -s)" == "Darwin" ]]; then
     export COPYFILE_DISABLE=1
     _tar_create+=(--no-xattrs)
@@ -264,42 +352,42 @@ if [[ -n "$VIA" ]]; then
     --exclude='._*' --exclude='.DS_Store'
     -cf - .
   )
-  "${_tar_create[@]}" | ssh "$VIA" "tar --no-xattrs -C ~/llm-gateway-go-211 -xf - && \
-        find ~/llm-gateway-go-211 -name '._*' -type f -delete && \
-        find ~/llm-gateway-go-211 -name '.DS_Store' -type f -delete && \
-        echo '[211] 同步后 ._* 残留: '\$(find ~/llm-gateway-go-211 -name '._*' -type f | wc -l)"
+  "${_tar_create[@]}" | ssh "$VIA" "tar --no-xattrs -C '$DD_REMOTE_ROOT' -xf - && \
+        find '$DD_REMOTE_ROOT' -name '._*' -type f -delete && \
+        find '$DD_REMOTE_ROOT' -name '.DS_Store' -type f -delete && \
+        echo '[${DD_TARGET}] 同步后 ._* 残留: '\$(find '$DD_REMOTE_ROOT' -name '._*' -type f | wc -l)"
   # 双保险：目标机上再扫一遍，真有残留就当场删掉，别留给下一次构建
-  ssh "$VIA" "find ~/llm-gateway-go-211 -maxdepth 2 -name '.env*' -type f -delete; \
-             echo '[211] 目标树残留 .env*: '\$(find ~/llm-gateway-go-211 -name '.env*' -type f | wc -l) \
-             ' ._*: '\$(find ~/llm-gateway-go-211 -name '._*' -type f | wc -l)"
+  ssh "$VIA" "find '$DD_REMOTE_ROOT' -maxdepth 2 -name '.env*' -type f -delete; \
+             echo '[${DD_TARGET}] 目标树残留 .env*: '\$(find '$DD_REMOTE_ROOT' -name '.env*' -type f | wc -l) \
+             ' ._*: '\$(find '$DD_REMOTE_ROOT' -name '._*' -type f | wc -l)"
   # 半截同步硬门：缺入口脚本就别往下跑（否则 bash 报 No such file → RC=127）
-  ssh "$VIA" "test -f ~/llm-gateway-go-211/scripts/deploy-211-docker.sh" \
-    || die "同步后远端缺少 scripts/deploy-211-docker.sh（半截 tar？）；拒跑部署"
-  # 基础镜像 build-arg 变量一并转发：权威仓 registry-211.itestu.cn（方案 42）；
+  ssh "$VIA" "test -f '$DD_REMOTE_ROOT/scripts/deploy-seamless-docker.sh'" \
+    || die "同步后远端缺少 scripts/deploy-seamless-docker.sh（半截 tar？）；拒跑部署"
+  # 基础镜像 build-arg 变量一并转发：权威仓 registry-<target>.itestu.cn（方案 42）；
   # 拉不到时引擎回落 /opt/kaixuan/base-images 离线包。空值 = 远端走脚本默认。
   # 构建提交号随行：目标树不带 .git，远端只能从这里拿到真实 HEAD，用来改写
   # 种子 version.json（否则 /version 显示的是工作区里别的部署留下的戳）。
-  D211_BUILD_SHA="$(git -C "$D211_REPO_ROOT" rev-parse --short=8 HEAD 2>/dev/null || true)"
-  if [[ -n "$D211_BUILD_SHA" && -n "$(git -C "$D211_REPO_ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
-    D211_BUILD_SHA="${D211_BUILD_SHA}-dirty"
+  DD_BUILD_SHA="$(git -C "$DD_REPO_ROOT" rev-parse --short=8 HEAD 2>/dev/null || true)"
+  if [[ -n "$DD_BUILD_SHA" && -n "$(git -C "$DD_REPO_ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+    DD_BUILD_SHA="${DD_BUILD_SHA}-dirty"
   fi
-  # 入口未设时在 --via 侧钉 registry-211 默认，避免远端空值回落 docker.io。
-  D211_BASE_REGISTRY="${D211_BASE_REGISTRY:-registry-211.itestu.cn}"
-  D211_GO_BASE_IMAGE="${D211_GO_BASE_IMAGE:-${D211_BASE_REGISTRY}/lang-base/kx-base-golang:1.27-alpine-amd64}"
-  D211_RUNTIME_BASE_IMAGE="${D211_RUNTIME_BASE_IMAGE:-${D211_BASE_REGISTRY}/lang-base/alpine:3.22-amd64}"
-  log "在 $VIA 上执行 deploy（builder=${D211_GO_BASE_IMAGE} runtime=${D211_RUNTIME_BASE_IMAGE}）..."
-  ssh "$VIA" "cd ~/llm-gateway-go-211 && D211_BUILD_SHA='${D211_BUILD_SHA}' D211_STATE_DIR=$D211_STATE_DIR D211_REDIS_DB_START=$D211_REDIS_DB_START D211_REDIS_DB_END=$D211_REDIS_DB_END LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY='${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}' D211_GO_BASE_IMAGE='${D211_GO_BASE_IMAGE}' D211_RUNTIME_BASE_IMAGE='${D211_RUNTIME_BASE_IMAGE}' D211_BASE_REGISTRY='${D211_BASE_REGISTRY}' D211_ALLOW_STALE_WEB='${D211_ALLOW_STALE_WEB}' PROBE_TIMEOUT_SECS='${PROBE_TIMEOUT_SECS:-}' bash scripts/deploy-211-docker.sh $*"
+  # 入口未设时在 --via 侧按 target 拼 registry 默认，避免远端空值回落 docker.io。
+  DD_BASE_REGISTRY="${DD_BASE_REGISTRY:-registry-${DD_TARGET}.itestu.cn}"
+  DD_GO_BASE_IMAGE="${DD_GO_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-base/kx-base-golang:1.27-alpine-amd64}"
+  DD_RUNTIME_BASE_IMAGE="${DD_RUNTIME_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-base/alpine:3.22-amd64}"
+  log "在 $VIA 上执行 deploy（builder=${DD_GO_BASE_IMAGE} runtime=${DD_RUNTIME_BASE_IMAGE}）..."
+  ssh "$VIA" "cd '$DD_REMOTE_ROOT' && DD_BUILD_SHA='${DD_BUILD_SHA}'${_dd_fwd} LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY='${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}' PROBE_TIMEOUT_SECS='${PROBE_TIMEOUT_SECS:-}' bash scripts/deploy-seamless-docker.sh ${_dd_args}"
   exit $?
 fi
 
-mkdir -p "$D211_STATE_DIR/env" "$D211_STATE_DIR/logs"
-chmod 700 "$D211_STATE_DIR" 2>/dev/null || true
+mkdir -p "$DD_STATE_DIR/env" "$DD_STATE_DIR/logs"
+chmod 700 "$DD_STATE_DIR" 2>/dev/null || true
 
 # =============================================================================
 # 前置：Docker 必须可用
 # =============================================================================
 need_docker() {
-  command -v docker >/dev/null 2>&1 || die "docker 未安装（${D211_TARGET_IP}）"
+  command -v docker >/dev/null 2>&1 || die "docker 未安装（${DD_HOST:-本机}）"
   docker info >/dev/null 2>&1 || die "docker 守护进程未运行或当前用户无权限（试 sudo docker info）"
 }
 need_docker
@@ -312,7 +400,7 @@ log "Docker: $(docker --version)"
 # --status/--probe-only/--stop 不该被前端新鲜度挡住（那是查环境的动作）。
 if [[ "$MODE" == "deploy" ]]; then
   # ANCHOR: d211-preflight-guard（部署机侧 --via 分支还有一处同名门，见下）
-  d211_preflight_web_dist "$D211_REPO_ROOT" || exit 1
+  dd_preflight_web_dist "$DD_REPO_ROOT" || exit 1
 fi
 
 # =============================================================================
@@ -362,12 +450,12 @@ pg_has_vector()    { (( "$1" > 0 )); }
 # 两者镜像同为 kx-citus-pg17:amd64。只看能力判据无法区分，必须再问库。
 #
 # 输出 "<has_db> <has_gateway_objects>"，两者都是 0/1：
-#   has_db            —— pg_database 里有 $D211_PG_DB
+#   has_db            —— pg_database 里有 $DD_PG_DB
 #   has_gateway_objects —— 该库 public schema 下有网关自己的表（schema_migrations /
 #                       session_summaries / gateway_db_revision_sequences / api_keys）
 # 连接口沿用 pg_probe_container 的解析口径（POSTGRES_USER → postgres），
 # 因为复用他人容器时超级用户几乎从不叫 postgres（acc-pg17=acc_super、
-# casdoor=casdoor）。注意全程不连 $D211_PG_DB 本身——它可能根本不存在。
+# casdoor=casdoor）。注意全程不连 $DD_PG_DB 本身——它可能根本不存在。
 pg_gateway_db_state() {
   local c="$1" u pw has objs
   u="$(docker exec "$c" printenv POSTGRES_USER 2>/dev/null || true)"
@@ -377,13 +465,13 @@ pg_gateway_db_state() {
   for cu in "$u" postgres; do
     has="$(docker exec -e PGPASSWORD="$pw" "$c" \
       psql -X -U "$cu" -d postgres -tAc \
-      "SELECT count(*) FROM pg_database WHERE datname='${D211_PG_DB}'" \
+      "SELECT count(*) FROM pg_database WHERE datname='${DD_PG_DB}'" \
       2>/dev/null | tr -d '\r' | head -1)" || continue
     has="$(printf '%s' "$has" | tr -cd '0-9')"
     [[ -z "$has" ]] && continue
     if (( has == 0 )); then printf '0 0\n'; return 0; fi
     objs="$(docker exec -e PGPASSWORD="$pw" "$c" \
-      psql -X -U "$cu" -d "$D211_PG_DB" -tAc \
+      psql -X -U "$cu" -d "$DD_PG_DB" -tAc \
       "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'
          AND table_name IN ('schema_migrations','session_summaries',
                             'gateway_db_revision_sequences','api_keys')" \
@@ -480,8 +568,8 @@ find_pg_container() {
       if pg_is_17 "$ver" && pg_has_columnar "$col" && pg_has_vector "$vec"; then
         read -r has_db has_objs < <(pg_gateway_db_state "$name")
         explicit=0; managed=0
-        [[ "$name" == "$D211_PG_CONTAINER" ]] && {
-          [[ "$D211_PG_CONTAINER_PINNED" == "1" ]] && explicit=1 || managed=1
+        [[ "$name" == "$DD_PG_CONTAINER" ]] && {
+          [[ "$DD_PG_CONTAINER_PINNED" == "1" ]] && explicit=1 || managed=1
         }
         [[ -n "$persisted" && "$name" == "$persisted" ]] && persisted_hit=1 || persisted_hit=0
         list+="$name $explicit $persisted_hit ${has_db:-0} ${has_objs:-0} $managed"$'\n'
@@ -496,14 +584,14 @@ find_pg_container() {
   # 按名字排序：把 docker ps 顺序这个隐含随机量从决策里彻底去掉，并列时结果稳定。
   picked="$(pg_pick_from_candidates "$(printf '%s' "$list" | sort)" || true)"
   if [[ -z "$picked" ]]; then
-    warn "有合格 PG 实例但都无法判定归属（都没有网关库 ${D211_PG_DB}），不猜——将新建专用实例"
+    warn "有合格 PG 实例但都无法判定归属（都没有网关库 ${DD_PG_DB}），不猜——将新建专用实例"
     printf '%s\n' "$list" | while read -r n _ _ _ _ _; do log "  落选 ${n}（无网关库，且存在多个候选）"; done
     return 1
   fi
   read -r _n _e _p _pdb _pobj _m < <(printf '%s' "$list" | awk -v p="$picked" '$1==p {print; exit}')
   local db_desc
   if (( ${_pdb:-0} )); then db_desc="存在（网关对象 ${_pobj:-0}）"; else db_desc="缺失（本次将创建）"; fi
-  log "选定 PG 实例: ${picked}（网关库 ${D211_PG_DB} ${db_desc}）"
+  log "选定 PG 实例: ${picked}（网关库 ${DD_PG_DB} ${db_desc}）"
   printf '%s\n' "$picked"
 }
 
@@ -517,44 +605,44 @@ find_pg_container() {
 # 该镜像是 Debian 系（bookworm），所以构建链走 apt-get 而不是 apk。
 create_pg_container() {
   log "未找到匹配的 pg17+columnar 实例，开始新建 ..."
-  local build_dir="$D211_STATE_DIR/build"
+  local build_dir="$DD_STATE_DIR/build"
   mkdir -p "$build_dir"
   cat > "$build_dir/Dockerfile.pgcolumnar" <<EOF
-# 由 deploy-211-docker.sh 生成：PostgreSQL 17 + pgvector + pgcolumnar
+# 由 deploy-seamless-docker.sh 生成：PostgreSQL 17 + pgvector + pgcolumnar
 # 关键：pgcolumnar 仓库的 objstore/ 是 git submodule，codeload 的 tarball 不含它，
 # make 会在 objstore 步骤报 "No rule to make target 'all'"。改用 git clone
 # --recurse-submodules 才是正确拉法。同时补 pkg-config（pgcolumnar 用它解析
 # zlib/lz4/zstd 的 link flag，没有就 _inflateInit2_ undefined）。
-FROM ${D211_PG_BASE_IMAGE:-pgvector/pgvector:pg17}
+FROM ${DD_PG_BASE_IMAGE:-pgvector/pgvector:pg17}
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       build-essential libzstd-dev liblz4-dev zlib1g-dev pkg-config git curl ca-certificates \
- && git clone --recurse-submodules --depth 1 --branch ${D211_PGCOLUMNAR_VER} \
+ && git clone --recurse-submodules --depth 1 --branch ${DD_PGCOLUMNAR_VER} \
       https://github.com/commandprompt/pgcolumnar /tmp/pgc \
  && cd /tmp/pgc && make PG_CONFIG=/usr/local/bin/pg_config LDFLAGS="-Wl,--as-needed" \
  && make PG_CONFIG=/usr/local/bin/pg_config LDFLAGS="-Wl,--as-needed" install \
  && rm -rf /tmp/pgc /var/lib/apt/lists/*
 EOF
-  log "构建 PG 镜像（含 pgcolumnar ${D211_PGCOLUMNAR_VER}），分钟级 ..."
-  docker build -t "$D211_PG_IMAGE" -f "$build_dir/Dockerfile.pgcolumnar" "$build_dir" \
+  log "构建 PG 镜像（含 pgcolumnar ${DD_PGCOLUMNAR_VER}），分钟级 ..."
+  docker build -t "$DD_PG_IMAGE" -f "$build_dir/Dockerfile.pgcolumnar" "$build_dir" \
     || die "PG 镜像构建失败，见上方输出"
 
   local pw; pw="${LLM_GATEWAY_PG_PASSWORD:-}"
   if [[ -z "$pw" ]]; then
     pw="$(head -c 24 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')"
   fi
-  printf 'LLM_GATEWAY_PG_PASSWORD=%s\n' "$pw" > "$D211_STATE_DIR/env/pg.secret"
-  chmod 600 "$D211_STATE_DIR/env/pg.secret"
+  printf 'LLM_GATEWAY_PG_PASSWORD=%s\n' "$pw" > "$DD_STATE_DIR/env/pg.secret"
+  chmod 600 "$DD_STATE_DIR/env/pg.secret"
 
-  docker rm -f "$D211_PG_CONTAINER" >/dev/null 2>&1 || true
+  docker rm -f "$DD_PG_CONTAINER" >/dev/null 2>&1 || true
   # pg_stat_statements 必须预加载，否则后续 CREATE EXTENSION 会报
   # "must be loaded via shared_preload_libraries"。镜像 entrypoint 见到首个参数
   # 以 "-" 开头会自动补 "postgres"，所以这里可以直接传 -c。
-  docker run -d --name "$D211_PG_CONTAINER" --restart unless-stopped \
+  docker run -d --name "$DD_PG_CONTAINER" --restart unless-stopped \
     -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD="$pw" \
     -e POSTGRES_DB=postgres \
-    -v "${D211_PG_CONTAINER}-data:/var/lib/postgresql/data" \
-    "$D211_PG_IMAGE" \
+    -v "${DD_PG_CONTAINER}-data:/var/lib/postgresql/data" \
+    "$DD_PG_IMAGE" \
     -c shared_preload_libraries=pg_stat_statements,pgcolumnar \
     -c pg_stat_statements.track=all \
     >/dev/null || die "PG 容器启动失败"
@@ -562,11 +650,11 @@ EOF
   log "等待 PG 就绪 ..."
   local i
   for i in $(seq 1 60); do
-    pg_probe_container "$D211_PG_CONTAINER" >/dev/null 2>&1 && break
-    (( i == 60 )) && die "PG 60 次探测后仍未就绪：docker logs $D211_PG_CONTAINER"
+    pg_probe_container "$DD_PG_CONTAINER" >/dev/null 2>&1 && break
+    (( i == 60 )) && die "PG 60 次探测后仍未就绪：docker logs $DD_PG_CONTAINER"
     sleep 2
   done
-  log "PG 实例就绪: $D211_PG_CONTAINER"
+  log "PG 实例就绪: $DD_PG_CONTAINER"
 }
 
 # 复用他人容器时的超级用户解析（2026-10-18）。
@@ -596,26 +684,26 @@ ensure_pg_database() {
   # 角色必须先于库创建：CREATE DATABASE ... OWNER 指向不存在的角色会 42704，
   # 而旧顺序（先建库后建角色）正好把这个失败也吞进 warn 里。
   pg_as_super "$c" "$su" -d postgres -c \
-    "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='${D211_PG_USER}') THEN CREATE ROLE \"${D211_PG_USER}\" LOGIN PASSWORD '${LLM_GATEWAY_PG_PASSWORD:-}'; END IF; END \$\$;" \
-    >/dev/null 2>&1 || die "无法在 PG 容器 $c 上以超级用户 $su 建角色 ${D211_PG_USER}（密码来源 LLM_GATEWAY_PG_PASSWORD）——不继续：带着建不出来的库往下走只会换一个更远的报错"
+    "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='${DD_PG_USER}') THEN CREATE ROLE \"${DD_PG_USER}\" LOGIN PASSWORD '${LLM_GATEWAY_PG_PASSWORD:-}'; END IF; END \$\$;" \
+    >/dev/null 2>&1 || die "无法在 PG 容器 $c 上以超级用户 $su 建角色 ${DD_PG_USER}（密码来源 LLM_GATEWAY_PG_PASSWORD）——不继续：带着建不出来的库往下走只会换一个更远的报错"
 
   # 若已被别的服务建过同名库，直接复用（不覆盖数据）
   exists="$(pg_as_super "$c" "$su" -d postgres -tAc \
-    "SELECT 1 FROM pg_database WHERE datname='${D211_PG_DB}'" 2>/dev/null | head -1 || true)"
+    "SELECT 1 FROM pg_database WHERE datname='${DD_PG_DB}'" 2>/dev/null | head -1 || true)"
   if [[ "$exists" == "1" ]]; then
-    log "数据库 $D211_PG_DB 已存在（容器 ${c}，超级用户 ${su}），复用"
+    log "数据库 $DD_PG_DB 已存在（容器 ${c}，超级用户 ${su}），复用"
   else
     pg_as_super "$c" "$su" -d postgres -c \
-      "CREATE DATABASE \"${D211_PG_DB}\" OWNER \"${D211_PG_USER}\";" \
+      "CREATE DATABASE \"${DD_PG_DB}\" OWNER \"${DD_PG_USER}\";" \
       >/dev/null 2>&1 \
-      || die "在 PG 容器 ${c}（超级用户 ${su}）上创建数据库 $D211_PG_DB 失败；请确认容器归属正确后重试（用 D211_PG_CONTAINER 显式指定）"
-    log "已创建数据库 ${D211_PG_DB}（容器 ${c}）"
+      || die "在 PG 容器 ${c}（超级用户 ${su}）上创建数据库 $DD_PG_DB 失败；请确认容器归属正确后重试（用 DD_PG_CONTAINER 显式指定）"
+    log "已创建数据库 ${DD_PG_DB}（容器 ${c}）"
   fi
   # 兼容多种 columnar 发行：citus_columnar（Citus 系，acc-pg17 即此）/
   # columnar / pgcolumnar / vector + 其他 contrib 扩展一并装上。
   # 网关运行时 00-prereqs.sql 会再 idempotent 装一次，这里是兜底（即使 prereqs
   # 没跑到也能让 USING columnar 立即可用）。
-  pg_as_super "$c" "$su" -d "$D211_PG_DB" -v ON_ERROR_STOP=0 -c "
+  pg_as_super "$c" "$su" -d "$DD_PG_DB" -v ON_ERROR_STOP=0 -c "
 DO \$col\$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name='citus_columnar') THEN
@@ -782,19 +870,19 @@ redis_db_has_gateway_keys() {
 
 create_redis_container() {
   log "未找到可用的 Redis 实例，开始新建 ..."
-  docker pull "$D211_REDIS_IMAGE" >/dev/null 2>&1 || warn "拉取 $D211_REDIS_IMAGE 失败，使用本地镜像"
-  docker rm -f "$D211_REDIS_CONTAINER" >/dev/null 2>&1 || true
-  docker run -d --name "$D211_REDIS_CONTAINER" --restart unless-stopped \
-    -v "${D211_REDIS_CONTAINER}-data:/data" \
-    "$D211_REDIS_IMAGE" redis-server --appendonly yes >/dev/null \
+  docker pull "$DD_REDIS_IMAGE" >/dev/null 2>&1 || warn "拉取 $DD_REDIS_IMAGE 失败，使用本地镜像"
+  docker rm -f "$DD_REDIS_CONTAINER" >/dev/null 2>&1 || true
+  docker run -d --name "$DD_REDIS_CONTAINER" --restart unless-stopped \
+    -v "${DD_REDIS_CONTAINER}-data:/data" \
+    "$DD_REDIS_IMAGE" redis-server --appendonly yes >/dev/null \
     || die "Redis 容器启动失败"
   local i
   for i in $(seq 1 30); do
-    redis_ping "$D211_REDIS_CONTAINER" && break
+    redis_ping "$DD_REDIS_CONTAINER" && break
     (( i == 30 )) && die "Redis 30 次探测后仍未就绪"
     sleep 1
   done
-  log "Redis 实例就绪: $D211_REDIS_CONTAINER"
+  log "Redis 实例就绪: $DD_REDIS_CONTAINER"
 }
 
 # ── 核心：Redis 库号（"tableid"）从 15 往下倒排分配 ────────────────────
@@ -821,14 +909,14 @@ allocate_redis_db() {
     fi
   fi
   local idx
-  for (( idx = D211_REDIS_DB_START; idx >= D211_REDIS_DB_END; idx-- )); do
+  for (( idx = DD_REDIS_DB_START; idx >= DD_REDIS_DB_END; idx-- )); do
     if ! redis_db_in_use "$c" "$idx"; then
       printf '%s\n' "$idx" > "$CLAIM_FILE"
-      log "已分配 Redis 库号 db${idx}（从 db$D211_REDIS_DB_START 往下倒排，避开其它服务）"
+      log "已分配 Redis 库号 db${idx}（从 db$DD_REDIS_DB_START 往下倒排，避开其它服务）"
       printf '%s\n' "$idx"; return 0
     fi
   done
-  die "db${D211_REDIS_DB_START}..db${D211_REDIS_DB_END} 全被占用，无法为网关分配独立库号"
+  die "db${DD_REDIS_DB_START}..db${DD_REDIS_DB_END} 全被占用，无法为网关分配独立库号"
 }
 
 # =============================================================================
@@ -849,7 +937,17 @@ if [[ -n "$REDIS_RAW" ]]; then
 fi
 
 show_status() {
-  echo "=== 211 资源探测 ==="
+  echo "=== ${DD_TARGET} 资源探测 ==="
+  # 蓝绿槽位现状：一眼看出「现在谁在服务、候选槽该用哪个」。
+  _st_active="$(dd_active_slot)"
+  if [[ "$_st_active" == "a" ]]; then _st_cand="b"; else _st_cand="a"; fi
+  _st_up="$(dd_upstream_port || true)"
+  echo "槽位 : 活跃=${_st_active}(端口 $(dd_slot_port "$_st_active"))  候选=${_st_cand}(端口 $(dd_slot_port "$_st_cand"))  upstream=${_st_up:-读不到}"
+  for _st in a b; do
+    if docker inspect --type container "$(dd_container_name "$_st")" >/dev/null 2>&1; then
+      echo "容器 : $(dd_container_name "$_st") 存在（端口 $(dd_slot_port "$_st")）"
+    fi
+  done
   if [[ -n "$PG_FOUND" ]]; then
     local p ver col vec
     p="$(pg_probe_container "$PG_FOUND" || echo '? 0 0')"
@@ -859,12 +957,12 @@ show_status() {
     # 「选中的这只里到底有没有网关库」才是复用的理由。
     local _db _objs
     read -r _db _objs < <(pg_gateway_db_state "$PG_FOUND")
-    echo "       网关库 $D211_PG_DB: $( ((_db)) && echo "存在（网关对象 ${_objs}）" || echo '不存在（将在本次部署中创建）' )"
+    echo "       网关库 $DD_PG_DB: $( ((_db)) && echo "存在（网关对象 ${_objs}）" || echo '不存在（将在本次部署中创建）' )"
     local _prev; _prev="$(pg_persisted_host)"
     [[ -n "$_prev" && "$_prev" != "$PG_FOUND" ]] && \
       echo "       ⚠ 上次绑定的是 ${_prev}，与本次选定的不一致"
   else
-    echo "PG   : 无可复用的 pg17+columnar+vector 实例（将新建 ${D211_PG_CONTAINER}）"
+    echo "PG   : 无可复用的 pg17+columnar+vector 实例（将新建 ${DD_PG_CONTAINER}）"
   fi
   if [[ -n "$REDIS_FOUND" ]]; then
     echo "Redis: 复用容器 $REDIS_FOUND"
@@ -873,11 +971,203 @@ show_status() {
     else
       local cur="(未分配)"
       [[ -f "$CLAIM_FILE" ]] && cur="db$(cat "$CLAIM_FILE")"
-      echo "       当前分配库号: $cur  (倒排区间 ${D211_REDIS_DB_START}..${D211_REDIS_DB_END})"
+      echo "       当前分配库号: $cur  (倒排区间 ${DD_REDIS_DB_START}..${DD_REDIS_DB_END})"
     fi
   else
-    echo "Redis: 无可用实例（将新建 ${D211_REDIS_CONTAINER}）"
+    echo "Redis: 无可用实例（将新建 ${DD_REDIS_CONTAINER}）"
   fi
+}
+
+# ⚠ 2026-10-20：本块必须**排在 --status / --probe-only / --stop 的分派之前**。
+#   show_status 会调 dd_active_slot（→ dd_upstream_port / dd_slot_port /
+#   dd_container_name）—— 函数在 bash 里是**运行时**解析，定义在调用点之后
+#   就是 `command not found`。实测：--status 直接报
+#   `dd_active_slot: command not found`（2026-10-20 真机验证抓到）。
+
+# =============================================================================
+# 蓝绿：槽位状态 / nginx 切流 / 失败回退
+# =============================================================================
+# 2026-10-20 211 502 事故的直接教训：单容器形态（`docker rm -f` 旧容器 → 才做
+# 输入校验 → 才起新容器）把**任何**拆后失败都放大成「服务下线」。
+# 蓝绿形态：旧槽全程在服务，候选槽失败只要丢掉候选即可 —— 与 154/245 的
+# deploy-seamless.sh 同语义（候选先起 → 验收 → 切流 → 停旧实例；失败 abort）。
+#
+# 槽位与端口是**绑定**的：槽 a 永远占 DD_SLOT_A_PORT，槽 b 永远占
+# DD_SLOT_B_PORT；「谁是活跃槽」记在 <data root>/run/active-slot。
+# 容器名 = <DD_CONTAINER_PREFIX>-<slot>。
+DD_ACTIVE_SLOT=""       # 本次开始前在服务的槽
+DD_CANDIDATE_SLOT=""    # 本次要发布的槽
+DD_SWITCHED=0           # 是否已切过 nginx upstream（决定 abort 时要不要切回）
+DD_OLD_STOPPED=0        # 旧槽是否已被停（切流成功后才会停）
+
+dd_slot_port() {
+  case "$1" in
+    a) printf '%s' "$DD_SLOT_A_PORT" ;;
+    b) printf '%s' "$DD_SLOT_B_PORT" ;;
+    *) return 1 ;;
+  esac
+}
+
+dd_container_name() { printf '%s-%s' "$DD_CONTAINER_PREFIX" "$1"; }
+
+# 活跃槽的判定：**以 nginx upstream 实际指向的端口为准**（流量在哪，活跃槽就在
+# 哪），upstream 读不到时才回落到状态文件 <data root>/run/active-slot，
+# 再兜底为 a（首次部署）。
+# ⚠ 为什么不以状态文件为准：状态文件是本脚本的账本，upstream 是**事实**。
+# 两者可能因手工改 nginx 而分叉；此时必须以事实为准，否则会把候选槽算成
+# 活跃槽 → 切流方向反了。
+dd_active_slot() {
+  local _f="${DD_GW_DATA_ROOT}/run/active-slot" _s _port
+  _port="$(dd_upstream_port || true)"
+  case "$_port" in
+    "$DD_SLOT_A_PORT") printf 'a'; return 0 ;;
+    "$DD_SLOT_B_PORT") printf 'b'; return 0 ;;
+  esac
+  if [[ -f "$_f" ]]; then
+    _s="$(tr -d '[:space:]' < "$_f" 2>/dev/null || true)"
+    case "$_s" in a|b) printf '%s' "$_s"; return 0 ;; esac
+  fi
+  printf 'a'
+}
+
+dd_write_active_slot() {
+  mkdir -p "${DD_GW_DATA_ROOT}/run"
+  printf '%s\n' "$1" > "${DD_GW_DATA_ROOT}/run/active-slot"
+  printf '%s\n' "$(dd_slot_port "$1")" > "${DD_GW_DATA_ROOT}/run/active-port"
+}
+
+# ---- nginx 切流：改 upstream 块里主 server 行的 127.0.0.1:<port> ----------
+# 为什么切 upstream 而不是改容器端口：蓝绿两个槽各绑一个固定端口，切流的
+# 动作只能是「把流量指向另一个端口」，容器端口本身不变（与 154/245 的
+# active-upstream.conf 片段同一思路，这里是就地改 upstream 块的主 server 行，
+# 少一个 include 迁移面）。
+dd_upstream_port() {
+  local _conf="$DD_NGINX_CONF"
+  [[ -f "$_conf" ]] || return 1
+  python3 - "$_conf" "$DD_NGINX_UPSTREAM" <<'PY' 2>/dev/null
+import re, sys
+conf, upstream = sys.argv[1], sys.argv[2]
+text = open(conf, encoding="utf-8", errors="replace").read()
+m = re.search(r'upstream\s+' + re.escape(upstream) + r'\s*\{(.*?)\n\}', text, re.S)
+if not m:
+    print(""); raise SystemExit(0)
+for line in m.group(1).splitlines():
+    if "backup" in line:
+        continue
+    mm = re.search(r'server\s+127\.0\.0\.1:(\d+)', line)
+    if mm:
+        print(mm.group(1)); raise SystemExit(0)
+print("")
+PY
+}
+
+# dd_switch_upstream <端口> —— 把 upstream 主 server 行改到 <端口> 并 reload。
+# 幂等：已经是该端口时不动文件（仍会 reload，nginx 平滑重载不中断连接）。
+#
+# ★ 2026-10-20 修（判据门 deploy_211_teardown_order_test.sh 场景⑤抓到）：
+#   原实现是「先改文件 → 再 nginx -t → 失败就只 warn 不 reload」。
+#   失败形态是**潜伏的半切换态**：磁盘上的配置已指向候选端口，nginx 跑的
+#   还是旧配置（流量没变，暂不致命）—— 但此后**任何一次** nginx reload
+#   （人工的、systemd 的、crontab 的）都会把这份已改未验证的配置加载进去。
+#   ⇒ 改成：**先备份改前内容 → 改文件 → nginx -t → 失败则把文件还原**。
+#   还原后磁盘与运行态一致，不留半切换态。
+dd_switch_upstream() {
+  local _port="$1" _conf="$DD_NGINX_CONF" _bak
+  [[ -f "$_conf" ]] || { warn "nginx conf 不在场（${_conf}），无法切流"; return 1; }
+  if ! grep -q "upstream ${DD_NGINX_UPSTREAM}" "$_conf"; then
+    warn "nginx conf 无 upstream ${DD_NGINX_UPSTREAM} 块，无法切流"
+    return 1
+  fi
+  _bak="${_conf}.bak-dd-upstream"
+  if python3 - "$_conf" "$DD_NGINX_UPSTREAM" "$_port" "$_bak" <<'PY'
+import re, sys, pathlib
+conf, upstream, newport, bakpath = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+p = pathlib.Path(conf)
+text = p.read_text()
+m = re.search(r'(upstream\s+' + re.escape(upstream) + r'\s*\{)(.*?)(\n\})', text, re.S)
+if not m:
+    print("noop-no-block"); raise SystemExit(2)
+lines = m.group(2).split("\n")
+done = False
+for i, line in enumerate(lines):
+    if "backup" in line:
+        continue
+    mm = re.search(r'(server\s+127\.0\.0\.1:)(\d+)', line)
+    if mm:
+        lines[i] = line[:mm.start(2)] + newport + line[mm.end(2):]
+        done = True
+        break
+if not done:
+    print("noop-no-primary-server"); raise SystemExit(2)
+newtext = text[:m.start(2)] + "\n".join(lines) + text[m.end(2):]
+# ★ 备份**总是**写「改前内容」（覆盖）：nginx -t 失败时要用它把文件还原。
+#   旧实现是「备份只在不存在时写」⇒ 备份里可能是上上次的内容 ⇒ 还原会
+#   把配置回退到错误版本。
+pathlib.Path(bakpath).write_text(text)
+if newtext == text:
+    print("already"); raise SystemExit(0)
+p.write_text(newtext)
+print("patched")
+PY
+  then
+    if nginx -t >/dev/null 2>&1; then
+      if nginx -s reload >/dev/null 2>&1; then
+        log "nginx upstream ${DD_NGINX_UPSTREAM} → 127.0.0.1:${_port}（已 reload）"
+        return 0
+      fi
+      warn "nginx reload 失败（配置已改，需手工 reload）"
+      return 1
+    fi
+    # nginx -t 失败 ⇒ 把配置还原成改前内容：磁盘不得停在「已改未生效」状态
+    if cp -f "$_bak" "$_conf" 2>/dev/null; then
+      warn "nginx -t 失败，已还原 ${_conf}（备份 ${_bak}）；未 reload"
+    else
+      warn "nginx -t 失败且还原失败（${_conf}）—— 需手工确认 upstream 指向"
+    fi
+    return 1
+  else
+    warn "切流补丁未应用（upstream 块形态变了？）"
+    return 1
+  fi
+}
+
+# ---- abort：丢掉候选槽 + 把 upstream 切回旧槽 + 旧槽若已停则拉回 ----------
+# 这是蓝绿的核心安全网：**旧槽一直在服务**，任何一步失败都只是「没发上」，
+# 而不是「服务下线」。
+dd_abort_deploy() {
+  local _reason="$1"
+  warn "回退本次部署（蓝绿 abort）：$_reason"
+  if [[ -n "$DD_CANDIDATE_SLOT" ]]; then
+    docker rm -f "$(dd_container_name "$DD_CANDIDATE_SLOT")" >/dev/null 2>&1 || true
+    log "候选槽 ${DD_CANDIDATE_SLOT} 已丢弃（容器 $(dd_container_name "$DD_CANDIDATE_SLOT")）"
+  fi
+  if [[ "$DD_SWITCHED" == "1" && -n "$DD_ACTIVE_SLOT" ]]; then
+    if dd_switch_upstream "$(dd_slot_port "$DD_ACTIVE_SLOT")"; then
+      log "upstream 已切回旧槽 ${DD_ACTIVE_SLOT}:$(dd_slot_port "$DD_ACTIVE_SLOT")"
+    else
+      warn "upstream 切回失败 —— 需手工改 ${DD_NGINX_CONF} 的 ${DD_NGINX_UPSTREAM} 块"
+    fi
+  fi
+  if [[ "$DD_OLD_STOPPED" == "1" && -n "$DD_ACTIVE_SLOT" ]]; then
+    if docker start "$(dd_container_name "$DD_ACTIVE_SLOT")" >/dev/null 2>&1; then
+      log "旧槽 ${DD_ACTIVE_SLOT} 已重新拉起"
+    else
+      warn "旧槽拉起失败 —— 需手工 docker start $(dd_container_name "$DD_ACTIVE_SLOT")"
+    fi
+  fi
+  if [[ -n "$DD_ACTIVE_SLOT" ]]; then
+    dd_write_active_slot "$DD_ACTIVE_SLOT" || true
+  fi
+  return 0
+}
+
+# dd_fail <原因> —— 失败即 abort（旧槽继续服务），然后退出。
+dd_fail() {
+  local _reason="$1"
+  if [[ -n "$DD_CANDIDATE_SLOT" || "$DD_SWITCHED" == "1" ]]; then
+    dd_abort_deploy "$_reason" || warn "回退未完全成功，需人工确认槽位与 upstream"
+  fi
+  die "$_reason"
 }
 
 if [[ "$MODE" == "status" ]]; then
@@ -910,11 +1200,21 @@ if [[ "$MODE" == "probe-only" ]]; then
 fi
 
 if [[ "$MODE" == "stop" ]]; then
-  log "停止网关容器 ${D211_GW_CONTAINER}（不动 PG/Redis）"
-  docker rm -f "$D211_GW_CONTAINER" >/dev/null 2>&1 || true
-  # 退役容器（回滚待命的那只）也一并清掉，否则 --stop 之后它还占着上一版的
-  # 镜像与配置，下次部署的「遗留 prev 扶正」分支会把它当成幸存者拉起来。
-  docker rm -f "${D211_GW_CONTAINER}-prev" >/dev/null 2>&1 || true
+  # ★ 停而不删（与「停旧槽」同一口径）：容器与镜像都留着 ⇒ 人工 docker start
+  #   即可回到停机前的版本。停掉的容器不占端口（端口由 docker proxy 释放），
+  #   下一轮部署的候选槽起得来。
+  log "停止网关容器（两个槽 + 历史单机容器；不动 PG/Redis，容器保留可 start 回来）"
+  for _slot in a b; do
+    _c="$(dd_container_name "$_slot")"
+    if docker inspect --type container "$_c" >/dev/null 2>&1; then
+      docker stop "$_c" >/dev/null 2>&1 || warn "停止 ${_c} 失败"
+    fi
+  done
+  # 蓝绿之前的单机形态容器（<prefix>，无 -<slot> 后缀）：一并停掉，
+  # 否则它还占着槽 a 的端口，下一次蓝绿部署的候选槽起不来。
+  if docker inspect --type container "$DD_CONTAINER_PREFIX" >/dev/null 2>&1; then
+    docker stop "$DD_CONTAINER_PREFIX" >/dev/null 2>&1 || warn "停止 ${DD_CONTAINER_PREFIX} 失败"
+  fi
   exit 0
 fi
 
@@ -937,10 +1237,10 @@ if [[ -n "$PG_FOUND" ]]; then
   [[ -z "$PG_PASS" ]] && PG_PASS="unused"
 else
   create_pg_container
-  PG_CONTAINER="$D211_PG_CONTAINER"
+  PG_CONTAINER="$DD_PG_CONTAINER"
   PG_REUSED=0
   PG_PASS="${LLM_GATEWAY_PG_PASSWORD:-}"
-  [[ -f "$D211_STATE_DIR/env/pg.secret" ]] && PG_PASS="$(cut -d= -f2- "$D211_STATE_DIR/env/pg.secret")"
+  [[ -f "$DD_STATE_DIR/env/pg.secret" ]] && PG_PASS="$(cut -d= -f2- "$DD_STATE_DIR/env/pg.secret")"
 fi
 
 if [[ -n "$REDIS_FOUND" ]]; then
@@ -949,7 +1249,7 @@ if [[ -n "$REDIS_FOUND" ]]; then
   REDIS_REUSED=1
 else
   create_redis_container
-  REDIS_CONTAINER="$D211_REDIS_CONTAINER"
+  REDIS_CONTAINER="$DD_REDIS_CONTAINER"
   REDIS_REUSED=0
 fi
 
@@ -1002,29 +1302,31 @@ log "URSM 专用 Redis 库号 db${URSM_REDIS_DB}（会话库 db${REDIS_DB}）"
 # =============================================================================
 # 网络：把网关与复用的 PG/Redis 接到同一个网络，按容器名互访
 # =============================================================================
-docker network inspect "$D211_NETWORK" >/dev/null 2>&1 || docker network create "$D211_NETWORK" >/dev/null
+docker network inspect "$DD_NETWORK" >/dev/null 2>&1 || docker network create "$DD_NETWORK" >/dev/null
 for c in "$PG_CONTAINER" "$REDIS_CONTAINER"; do
-  docker inspect -f '{{json .NetworkSettings.Networks}}' "$c" 2>/dev/null | grep -q "\"$D211_NETWORK\"" \
-    || docker network connect "$D211_NETWORK" "$c" >/dev/null 2>&1 \
-    || warn "把 $c 接入网络 $D211_NETWORK 失败（若已接入可忽略）"
+  docker inspect -f '{{json .NetworkSettings.Networks}}' "$c" 2>/dev/null | grep -q "\"$DD_NETWORK\"" \
+    || docker network connect "$DD_NETWORK" "$c" >/dev/null 2>&1 \
+    || warn "把 $c 接入网络 $DD_NETWORK 失败（若已接入可忽略）"
 done
 
 # =============================================================================
-# 构建网关镜像（仓库 Dockerfile；基础镜像默认 registry-211.itestu.cn）
+# 构建网关镜像（仓库 Dockerfile；基础镜像默认 registry-<target>.itestu.cn）
 # =============================================================================
-# 211 直连 docker.io 不通。权威基础镜像仓 = registry-211.itestu.cn（方案 42）：
+# 内网机直连 docker.io 不通。权威基础镜像仓 = registry-<target>.itestu.cn
+# （方案 42；211 ⇒ registry-211.itestu.cn，由薄外壳注入）：
 #   builder = lang-base/kx-base-golang:1.27-alpine-amd64
 #   runtime = lang-base/alpine:3.22-amd64
 # 拉不到时回落 /opt/kaixuan/base-images 离线包（load + retag 到期望名）。
-D211_BASE_REGISTRY="${D211_BASE_REGISTRY:-registry-211.itestu.cn}"
-D211_GO_BASE_IMAGE="${D211_GO_BASE_IMAGE:-${D211_BASE_REGISTRY}/lang-base/kx-base-golang:1.27-alpine-amd64}"
-D211_RUNTIME_BASE_IMAGE="${D211_RUNTIME_BASE_IMAGE:-${D211_BASE_REGISTRY}/lang-base/alpine:3.22-amd64}"
-D211_GO_BASE_OFFLINE="${D211_GO_BASE_OFFLINE:-kx-base/golang:1.27-alpine-amd64}"
-D211_RUNTIME_BASE_OFFLINE="${D211_RUNTIME_BASE_OFFLINE:-alpine:3.22}"
-D211_BASE_IMAGES_DIR="${D211_BASE_IMAGES_DIR:-/opt/kaixuan/base-images}"
+# ★ 默认值必须是**按 target 拼**的，不是写死某个主机名 —— 引擎主机无关。
+DD_BASE_REGISTRY="${DD_BASE_REGISTRY:-registry-${DD_TARGET}.itestu.cn}"
+DD_GO_BASE_IMAGE="${DD_GO_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-base/kx-base-golang:1.27-alpine-amd64}"
+DD_RUNTIME_BASE_IMAGE="${DD_RUNTIME_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-base/alpine:3.22-amd64}"
+DD_GO_BASE_OFFLINE="${DD_GO_BASE_OFFLINE:-kx-base/golang:1.27-alpine-amd64}"
+DD_RUNTIME_BASE_OFFLINE="${DD_RUNTIME_BASE_OFFLINE:-alpine:3.22}"
+DD_BASE_IMAGES_DIR="${DD_BASE_IMAGES_DIR:-/opt/kaixuan/base-images}"
 
 # 确保单个基础镜像在本地：已有 → pull 权威仓 → 离线 tag 复用/装载后 retag。
-d211_ensure_base_image() {
+dd_ensure_base_image() {
   local want="$1" offline="$2" tar_glob="$3" img
   if docker image inspect "$want" >/dev/null 2>&1; then
     log "基础镜像已在本地: $want"
@@ -1037,14 +1339,14 @@ d211_ensure_base_image() {
   fi
   warn "拉取失败，尝试离线回落 -> ${offline} / ${tar_glob}"
   if ! docker image inspect "$offline" >/dev/null 2>&1; then
-    if [[ -x "$D211_BASE_IMAGES_DIR/load-base-images.sh" ]]; then
-      bash "$D211_BASE_IMAGES_DIR/load-base-images.sh" load \
-        || die "离线基础镜像装载失败: ${D211_BASE_IMAGES_DIR}"
+    if [[ -x "$DD_BASE_IMAGES_DIR/load-base-images.sh" ]]; then
+      bash "$DD_BASE_IMAGES_DIR/load-base-images.sh" load \
+        || die "离线基础镜像装载失败: ${DD_BASE_IMAGES_DIR}"
     else
       # 最小回落：按 glob 直接 gunzip|load（load 脚本不在场时）
       local hit=""
       # shellcheck disable=SC2086
-      for hit in $D211_BASE_IMAGES_DIR/$tar_glob; do
+      for hit in $DD_BASE_IMAGES_DIR/$tar_glob; do
         [[ -f "$hit" ]] || continue
         log "docker load < $hit"
         gunzip -c "$hit" | docker load >/dev/null
@@ -1063,31 +1365,31 @@ d211_ensure_base_image() {
     log "已对齐基础镜像标签: $img → $want"
     return 0
   fi
-  die "基础镜像不可用: want=${want} offline=${offline} (registry-211 与离线库都未命中; 211 不通 docker.io)"
+  die "基础镜像不可用: want=${want} offline=${offline} (${DD_BASE_REGISTRY} 与离线库都未命中; ${DD_TARGET} 不通 docker.io)"
 }
 
-d211_ensure_base_images() {
-  d211_ensure_base_image "$D211_GO_BASE_IMAGE" "$D211_GO_BASE_OFFLINE" \
+dd_ensure_base_images() {
+  dd_ensure_base_image "$DD_GO_BASE_IMAGE" "$DD_GO_BASE_OFFLINE" \
     'kx-base-golang-1.27-alpine-amd64.tar.gz'
-  d211_ensure_base_image "$D211_RUNTIME_BASE_IMAGE" "$D211_RUNTIME_BASE_OFFLINE" \
+  dd_ensure_base_image "$DD_RUNTIME_BASE_IMAGE" "$DD_RUNTIME_BASE_OFFLINE" \
     'alpine-3.22-amd64.tar.gz'
 }
 
-if [[ ! -f "$D211_REPO_ROOT/Dockerfile" ]]; then
-  die "未找到 Dockerfile：$D211_REPO_ROOT/Dockerfile（请用 --via 同步仓库或手动放置）"
+if [[ ! -f "$DD_REPO_ROOT/Dockerfile" ]]; then
+  die "未找到 Dockerfile：$DD_REPO_ROOT/Dockerfile（请用 --via 同步仓库或手动放置）"
 fi
-d211_ensure_base_images
-log "构建网关镜像 ${D211_GW_IMAGE} (builder=${D211_GO_BASE_IMAGE} runtime=${D211_RUNTIME_BASE_IMAGE}) ..."
+dd_ensure_base_images
+log "构建网关镜像 ${DD_GW_IMAGE} (builder=${DD_GO_BASE_IMAGE} runtime=${DD_RUNTIME_BASE_IMAGE}) ..."
 build_gateway_image() {
   local net_flag="${1:-}"
   (
-    cd "$D211_REPO_ROOT"
+    cd "$DD_REPO_ROOT"
     # shellcheck disable=SC2086
     docker build $net_flag \
-      --build-arg "BASE_REGISTRY=${D211_BASE_REGISTRY}" \
-      --build-arg "GO_BASE_IMAGE=${D211_GO_BASE_IMAGE}" \
-      --build-arg "RUNTIME_BASE_IMAGE=${D211_RUNTIME_BASE_IMAGE}" \
-      -t "$D211_GW_IMAGE" -f Dockerfile .
+      --build-arg "BASE_REGISTRY=${DD_BASE_REGISTRY}" \
+      --build-arg "GO_BASE_IMAGE=${DD_GO_BASE_IMAGE}" \
+      --build-arg "RUNTIME_BASE_IMAGE=${DD_RUNTIME_BASE_IMAGE}" \
+      -t "$DD_GW_IMAGE" -f Dockerfile .
   )
 }
 if ! build_gateway_image; then
@@ -1098,18 +1400,18 @@ if ! build_gateway_image; then
   build_gateway_image "--network=host" || die "网关镜像构建失败（两种网络模式都试过了）"
 fi
 
-# 构建成功后把应用镜像推入 registry-211（经 loopback 写路径），便于审计与
+# 构建成功后把应用镜像推入 registry-<target>（经 loopback 写路径），便于审计与
 # 他机拉取。失败只 warn——部署继续用本机刚 build 的 tag。
-d211_publish_app_image() {
-  local sha="${D211_BUILD_SHA:-latest}" local_reg="127.0.0.1:5000"
-  local repo="app-images/llm-gateway-go" tag="211-${sha}"
+dd_publish_app_image() {
+  local sha="${DD_BUILD_SHA:-latest}" local_reg="127.0.0.1:5000"
+  local repo="app-images/llm-gateway-go" tag="${DD_TARGET}-${sha}"
   local push_ref="${local_reg}/${repo}:${tag}"
-  local public_ref="${D211_BASE_REGISTRY}/${repo}:${tag}"
-  [[ "${D211_PUBLISH_IMAGE:-1}" == "1" ]] || { log "跳过镜像推送（D211_PUBLISH_IMAGE≠1）"; return 0; }
+  local public_ref="${DD_BASE_REGISTRY}/${repo}:${tag}"
+  [[ "${DD_PUBLISH_IMAGE:-1}" == "1" ]] || { log "跳过镜像推送（DD_PUBLISH_IMAGE≠1）"; return 0; }
   command -v docker >/dev/null 2>&1 || return 0
   # 仅本机 registry 写路径；公网域名对写有闸门。凭据来自已 login 的 docker config。
-  if ! docker image inspect "$D211_GW_IMAGE" >/dev/null 2>&1; then
-    warn "应用镜像 $D211_GW_IMAGE 不在本地，跳过推送"
+  if ! docker image inspect "$DD_GW_IMAGE" >/dev/null 2>&1; then
+    warn "应用镜像 $DD_GW_IMAGE 不在本地，跳过推送"
     return 0
   fi
   if ! curl -fsS --connect-timeout 2 "http://${local_reg}/v2/" >/dev/null 2>&1 \
@@ -1122,15 +1424,15 @@ d211_publish_app_image() {
       return 0
     }
   fi
-  docker tag "$D211_GW_IMAGE" "$push_ref" || { warn "tag $push_ref 失败"; return 0; }
+  docker tag "$DD_GW_IMAGE" "$push_ref" || { warn "tag $push_ref 失败"; return 0; }
   if docker push "$push_ref" >/dev/null 2>&1; then
-    docker tag "$D211_GW_IMAGE" "$public_ref" >/dev/null 2>&1 || true
+    docker tag "$DD_GW_IMAGE" "$public_ref" >/dev/null 2>&1 || true
     log "应用镜像已推送: ${public_ref}（via ${push_ref}）"
   else
     warn "应用镜像推送失败（可能缺 itestu-rw 登录 127.0.0.1:5000）；本机 tag 仍可用于部署"
   fi
 }
-d211_publish_app_image
+dd_publish_app_image
 
 # =============================================================================
 # 启动网关容器
@@ -1142,12 +1444,12 @@ if [[ -z "$SECRET_KEY" ]]; then
   # mac mini 血统（生产 SECRET_KEY）时，用本机旧值/随机值 → 全部 key
   # invalid_key。持久文件 env/gateway.secret 是「这个库对应的秘钥」，
   # 与 DB 血统绑定，不要在换库时沿用旧值。
-  if [[ -f "$D211_STATE_DIR/env/gateway.secret" ]]; then
-    SECRET_KEY="$(cut -d= -f2- "$D211_STATE_DIR/env/gateway.secret")"
+  if [[ -f "$DD_STATE_DIR/env/gateway.secret" ]]; then
+    SECRET_KEY="$(cut -d= -f2- "$DD_STATE_DIR/env/gateway.secret")"
   else
     SECRET_KEY="$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')"
-    printf 'LLM_GATEWAY_SECRET_KEY=%s\n' "$SECRET_KEY" > "$D211_STATE_DIR/env/gateway.secret"
-    chmod 600 "$D211_STATE_DIR/env/gateway.secret"
+    printf 'LLM_GATEWAY_SECRET_KEY=%s\n' "$SECRET_KEY" > "$DD_STATE_DIR/env/gateway.secret"
+    chmod 600 "$DD_STATE_DIR/env/gateway.secret"
   fi
 fi
 
@@ -1159,20 +1461,20 @@ CORS_ORIGINS="${LLM_GATEWAY_CORS_ORIGINS:-*}"
 # unknown format" + 路由全灭 key_decrypt_failed）。与 SECRET_KEY 同款持久化：
 # 环境变量优先，其次 gateway.credkey 文件；不自动生成（错钥只会静默全灭）。
 CRED_ENC_KEY="${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}"
-if [[ -z "$CRED_ENC_KEY" && -f "$D211_STATE_DIR/env/gateway.credkey" ]]; then
-  CRED_ENC_KEY="$(cut -d= -f2- "$D211_STATE_DIR/env/gateway.credkey")"
+if [[ -z "$CRED_ENC_KEY" && -f "$DD_STATE_DIR/env/gateway.credkey" ]]; then
+  CRED_ENC_KEY="$(cut -d= -f2- "$DD_STATE_DIR/env/gateway.credkey")"
 fi
 if [[ -n "$CRED_ENC_KEY" ]]; then
-  printf 'LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=%s\n' "$CRED_ENC_KEY" > "$D211_STATE_DIR/env/gateway.credkey"
-  chmod 600 "$D211_STATE_DIR/env/gateway.credkey"
+  printf 'LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=%s\n' "$CRED_ENC_KEY" > "$DD_STATE_DIR/env/gateway.credkey"
+  chmod 600 "$DD_STATE_DIR/env/gateway.credkey"
 fi
 
 # 生产模式（LLM_GATEWAY_ENV=production）的启动门：config.ValidateAuthSecrets 缺任
 # 一项即 panic。环境变量优先，其次 env/<文件> 持久值，都没有才首次生成——重跑
 # 不轮换。静态 API key 不得用 sk- 前缀（auth_mw 把 sk-* 委托给库校验，静态比对
 # 永远走不到）；admin token 按 rule 20 §3 带 ops_ 前缀。
-d211_auth_secret() {
-  local name="$1" file="$D211_STATE_DIR/env/$2" prefix="$3" val="${!1:-}"
+dd_auth_secret() {
+  local name="$1" file="$DD_STATE_DIR/env/$2" prefix="$3" val="${!1:-}"
   if [[ -z "$val" && -f "$file" ]]; then
     val="$(cut -d= -f2- "$file")"
   fi
@@ -1183,11 +1485,11 @@ d211_auth_secret() {
   chmod 600 "$file"
   printf '%s' "$val"
 }
-GW_STATIC_API_KEY="$(d211_auth_secret LLM_GATEWAY_API_KEY gateway.apikey gw211_)"
-GW_ADMIN_API_KEY="$(d211_auth_secret LLM_GATEWAY_ADMIN_API_KEY gateway.adminkey ops_)"
-GW_CURSOR_HMAC="$(d211_auth_secret CURSOR_HMAC_SECRET gateway.cursorhmac '')"
+GW_STATIC_API_KEY="$(dd_auth_secret LLM_GATEWAY_API_KEY gateway.apikey "gw${DD_TARGET}_")"
+GW_ADMIN_API_KEY="$(dd_auth_secret LLM_GATEWAY_ADMIN_API_KEY gateway.adminkey ops_)"
+GW_CURSOR_HMAC="$(dd_auth_secret CURSOR_HMAC_SECRET gateway.cursorhmac '')"
 [[ -n "$GW_STATIC_API_KEY" && -n "$GW_ADMIN_API_KEY" && ${#GW_CURSOR_HMAC} -ge 32 ]] \
-  || die "鉴权密钥生成/读取失败（production 模式启动门会拒启）：检查 $D211_STATE_DIR/env/ 写权限"
+  || die "鉴权密钥生成/读取失败（production 模式启动门会拒启）：检查 $DD_STATE_DIR/env/ 写权限"
 
 # 组装网关要用的连接串（走 docker 网络内的容器名）
 # 密码必须 URL-encode（`@` / `:` / `/` 会拆断 DSN；`unused` 表示 trust 模式可不带）
@@ -1206,7 +1508,7 @@ if [[ -n "${REDIS_PASSWORD:-}" ]]; then
 else
   REDIS_URL="redis://${REDIS_ADDR}/${REDIS_DB}"
 fi
-DB_URL="postgres://${PG_USER_ENC}:${PG_PASS_ENC}@${PG_CONTAINER}:5432/${D211_PG_DB}?sslmode=disable"
+DB_URL="postgres://${PG_USER_ENC}:${PG_PASS_ENC}@${PG_CONTAINER}:5432/${DD_PG_DB}?sslmode=disable"
 
 # 这个 env 文件是「shell 可 source」的**持久记录**（供运维查、同步脚本读），
 # 不是给 docker --env-file 用的：
@@ -1215,7 +1517,7 @@ DB_URL="postgres://${PG_USER_ENC}:${PG_PASS_ENC}@${PG_CONTAINER}:5432/${D211_PG_
 #   · 也不认 %q 的 shell 转义（\?、空格转义等），会把值改写坏。
 # 所以容器一律走 -e argv（引号由 bash 负责，不经任何二次解析）。
 {
-  printf '# llm-gateway-go @ 192.168.31.211（由 deploy-211-docker.sh 生成，勿提交）\n'
+  printf '# llm-gateway-go @ %s（由 deploy-seamless-docker.sh 生成，勿提交）\n' "${DD_HOST:-目标机}"
   printf '# shell 可 source；容器用 -e 注入，不走 docker 的 env 文件参数\n'
   printf 'export LLM_GATEWAY_STORAGE_MODE=full\n'
   printf 'export LLM_GATEWAY_DATABASE_URL=%q\n' "$DB_URL"
@@ -1266,115 +1568,6 @@ if [[ -n "$CRED_ENC_KEY" ]]; then
   GW_ENV+=( -e "LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=${CRED_ENC_KEY}" )
 fi
 
-# =============================================================================
-# 部署事务：退役旧容器（可回滚）—— 2026-10-20 211 502 事故收口
-# =============================================================================
-# 旧实现：`docker rm -f` 硬删旧容器。**任何**后续失败——前端陈旧守卫、迁移
-# 失败、容器起不来、就绪超时、网页面坏掉——都把「一次部署失败」放大成
-# 「服务下线」：2026-10-20 实测就是「旧容器已删 + 新容器未起」⇒ nginx 无上游
-# ⇒ llm.itestu.cn 502。
-#
-# 改为「改名 + 停机」：容器对象与其镜像都留着，任何后续失败都能原样拉回。
-# 154/245 靠蓝绿（候选实例先起、验证过才切流）天然免疫这一类；211 是单容器
-# docker 形态，没有候选端口，所以必须自己实现「可回滚的退役」。
-D211_PREV_CONTAINER="${D211_GW_CONTAINER}-prev"
-D211_HAVE_PREV=0
-D211_SEED_BACKUP=""
-
-# 种子备份：新部署会覆盖 web/dist、web-mobile/dist、version.json、configs
-# （旧容器挂的就是这批宿主路径）。回滚时必须还原，否则会跑起
-# 「旧二进制 + 新 SPA」这种错配组合。
-d211_backup_seed() {
-  D211_SEED_BACKUP="${D211_GW_DATA_ROOT}/.seed-backup.$$"
-  rm -rf "$D211_SEED_BACKUP"
-  mkdir -p "$D211_SEED_BACKUP" || return 1
-  local _rel
-  for _rel in web/dist web-mobile/dist version.json configs; do
-    if [[ -e "$D211_GW_DATA_ROOT/$_rel" ]]; then
-      mkdir -p "$D211_SEED_BACKUP/$(dirname "$_rel")"
-      cp -a "$D211_GW_DATA_ROOT/$_rel" "$D211_SEED_BACKUP/$_rel" || return 1
-    fi
-  done
-  return 0
-}
-
-d211_restore_seed() {
-  [[ -n "$D211_SEED_BACKUP" && -d "$D211_SEED_BACKUP" ]] || return 0
-  local _rel
-  for _rel in web/dist web-mobile/dist version.json configs; do
-    if [[ -e "$D211_SEED_BACKUP/$_rel" ]]; then
-      rm -rf "$D211_GW_DATA_ROOT/$_rel"
-      mkdir -p "$(dirname "$D211_GW_DATA_ROOT/$_rel")"
-      cp -a "$D211_SEED_BACKUP/$_rel" "$D211_GW_DATA_ROOT/$_rel" || return 1
-    else
-      rm -rf "$D211_GW_DATA_ROOT/$_rel"
-    fi
-  done
-  return 0
-}
-
-# 退役：改名 + 停机，保留容器对象与镜像（回滚的原材料）。
-d211_retire_gateway() {
-  # 上一轮遗留的退役容器：当前容器在场时它是残骸（当前在服务）⇒ 清掉；
-  # 当前容器不在场时它是唯一幸存的上一版 ⇒ 先扶正，别让本次部署把它删掉。
-  #
-  # ⚠ 必须带 `--type container`：`docker inspect <名字>` 不带 --type 时**同名镜像
-  # 也会命中**（本机的镜像就叫 llm-gateway-211，容器同名）⇒ 「容器不在场」
-  # 的判断会被镜像骗过（2026-10-20 真机实测：容器不存在时 inspect 仍返 rc=0，
-  # 随后 rename 报 "No such container"）。不带 --type 的 inspect 只在配合
-  # -f '{{.State.Status}}' 这类**字段模板**时安全（镜像没有该字段 ⇒ 取到空串）。
-  if docker inspect --type container "$D211_PREV_CONTAINER" >/dev/null 2>&1; then
-    if docker inspect --type container "$D211_GW_CONTAINER" >/dev/null 2>&1; then
-      docker rm -f "$D211_PREV_CONTAINER" >/dev/null 2>&1 || true
-    else
-      warn "上一轮遗留 ${D211_PREV_CONTAINER} 存在而当前容器不在场——先扶正为当前容器"
-      docker rename "$D211_PREV_CONTAINER" "$D211_GW_CONTAINER" || true
-    fi
-  fi
-  if ! docker inspect --type container "$D211_GW_CONTAINER" >/dev/null 2>&1; then
-    return 0
-  fi
-  if ! docker rename "$D211_GW_CONTAINER" "$D211_PREV_CONTAINER"; then
-    warn "旧容器改名失败（本次部署不可回滚）"
-    return 0
-  fi
-  docker stop "$D211_PREV_CONTAINER" >/dev/null 2>&1 || true
-  D211_HAVE_PREV=1
-  log "旧容器已退役待命：${D211_PREV_CONTAINER}（失败可原样拉回）"
-  return 0
-}
-
-# 回滚：把上一版容器原样拉回并拉起。
-d211_rollback_gateway() {
-  local _reason="$1"
-  if [[ "$D211_HAVE_PREV" != "1" ]]; then
-    warn "没有可回滚的旧容器：$_reason"
-    return 1
-  fi
-  warn "回滚到上一版容器：$_reason"
-  docker rm -f "$D211_GW_CONTAINER" >/dev/null 2>&1 || true
-  d211_restore_seed || warn "种子还原失败（旧容器将挂到新种子上）"
-  if ! docker rename "$D211_PREV_CONTAINER" "$D211_GW_CONTAINER"; then
-    warn "回滚失败：旧容器改名不回来（它仍在 ${D211_PREV_CONTAINER}）"
-    return 1
-  fi
-  if ! docker start "$D211_GW_CONTAINER" >/dev/null 2>&1; then
-    warn "回滚失败：旧容器拉不起来（同名容器已就位，需手工 docker start）"
-    return 1
-  fi
-  D211_HAVE_PREV=0
-  log "已回滚到上一版容器（服务已恢复）"
-  return 0
-}
-
-# d211_fail <原因> —— 失败即回滚，然后退出。
-d211_fail() {
-  local _reason="$1"
-  if [[ "$D211_HAVE_PREV" == "1" ]]; then
-    d211_rollback_gateway "$_reason" || warn "回滚未成功，需手工恢复（容器名 ${D211_GW_CONTAINER}）"
-  fi
-  die "$_reason"
-}
 # ── 状态目录出容器（2026-10-13，对齐 211 机 DEPLOY-STANDARDS 总纲）──────
 # /app/data（keystore/hotzone/attachments/backups/model-quality）与 /app/logs
 # 原先落在容器层——每次部署 docker rm -f 即静默清空（keystore 丢=api key
@@ -1384,9 +1577,9 @@ d211_fail() {
 # DB（acc-pg17→/opt/kaixuan/data/pg/acc-pg17）与 Redis（→/opt/kaixuan/data/
 # redis）按本脚本「优先复用」口径本就落在宿主 bind，不在本块范围。
 # 属主对齐容器内运行用户（uid 65532=llmgw）。
-D211_GW_DATA_ROOT="${D211_GW_DATA_ROOT:-/opt/kaixuan/data/llm-gateway}"
-mkdir -p "$D211_GW_DATA_ROOT/data" "$D211_GW_DATA_ROOT/logs"
-chown -R 65532:65532 "$D211_GW_DATA_ROOT" 2>/dev/null || true
+DD_GW_DATA_ROOT="${DD_GW_DATA_ROOT:-/opt/kaixuan/data/llm-gateway}"
+mkdir -p "$DD_GW_DATA_ROOT/data" "$DD_GW_DATA_ROOT/logs"
+chown -R 65532:65532 "$DD_GW_DATA_ROOT" 2>/dev/null || true
 
 # ── 迁移腿（2026-10-14 r1030）：网关容器启动前重放 DB 修订序列 ──────────
 # deploy-seamless（245/154）自带 deploy_apply_pending_migrations；本脚本原先
@@ -1402,46 +1595,45 @@ chown -R 65532:65532 "$D211_GW_DATA_ROOT" 2>/dev/null || true
 # 放大成「服务下线」。
 REVISION_SEQ="$(cd "$(dirname "$0")" && pwd)/apply-db-revision-sequence.sh"
 if [[ -f "$REVISION_SEQ" ]]; then
-  log "重放 DB 修订序列（幂等）→ ${PG_CONTAINER}/${D211_PG_DB}"
+  log "重放 DB 修订序列（幂等）→ ${PG_CONTAINER}/${DD_PG_DB}"
   DATABASE_URL="$DB_URL" \
   LLM_GATEWAY_PG_CONTAINER="$PG_CONTAINER" \
   LLM_GATEWAY_PG_USER="${LLM_GATEWAY_PG_USER:-$PG_USER}" \
   LLM_GATEWAY_PG_PASSWORD="$PG_PASS" \
-  LLM_GATEWAY_PG_DATABASE="$D211_PG_DB" \
+  LLM_GATEWAY_PG_DATABASE="$DD_PG_DB" \
     bash "$REVISION_SEQ" || die "DB 修订序列失败——直接启动会降级 lite，先修库再部署"
 else
   echo "warning: apply-db-revision-sequence.sh 不在场，跳过迁移重放" >&2
 fi
 
-# ── 部署事务正式开始：备份种子 → 退役旧容器 ───────────────────────────
-# 顺序是硬要求：
-#   ① 备份必须在**覆盖种子之前**（configs / web / web-mobile / version.json
-#      都会被本轮部署改写，回滚时要还原，否则跑起「旧二进制 + 新 SPA」）；
-#   ② 退役必须在**覆盖种子之后也行、在新容器起来之前**（它只是停掉旧容器
-#      释放 8781 端口，容器对象与镜像都留着，可原样拉回）。
-# 前置的所有**输入判定**（前端新鲜度、迁移重放）都已在退役之前完成，
-# 所以走到这里时旧容器仍在服务；此后的任何失败都有回滚兜底。
-# ANCHOR: d211-seed-backup
-d211_backup_seed || die "种子备份失败（无法保证回滚），中止部署"
-# ANCHOR: d211-retire-old-container
-d211_retire_gateway
+# ── 蓝绿：确定本次的活跃槽与候选槽 ─────────────────────────────────────
+# 活跃槽 = 状态文件记录的槽（缺省 a）；候选槽 = 另一个。
+# ⚠ 顺序是硬要求：**槽位判定与全部输入判定（前端新鲜度、迁移重放）都必须在
+# 任何破坏性动作之前**；旧槽此时仍在服务，旧槽的容器与种子目录本轮全程不动。
+DD_ACTIVE_SLOT="$(dd_active_slot)"
+if [[ "$DD_ACTIVE_SLOT" == "a" ]]; then DD_CANDIDATE_SLOT="b"; else DD_CANDIDATE_SLOT="a"; fi
+DD_CANDIDATE_CONTAINER="$(dd_container_name "$DD_CANDIDATE_SLOT")"
+DD_CANDIDATE_PORT="$(dd_slot_port "$DD_CANDIDATE_SLOT")"
+DD_ACTIVE_CONTAINER="$(dd_container_name "$DD_ACTIVE_SLOT")"
+DD_ACTIVE_PORT_NOW="$(dd_slot_port "$DD_ACTIVE_SLOT")"
+log "蓝绿槽位：活跃=${DD_ACTIVE_SLOT}(端口 ${DD_ACTIVE_PORT_NOW}) → 候选=${DD_CANDIDATE_SLOT}(端口 ${DD_CANDIDATE_PORT})"
 
 # ── configs 随部署种子（2026-10-14）────────────────────────────────────
 # 镜像不含 configs/（sensitive_patterns.yaml 缺失时网关回落内置脱敏集，
 # 与宿主机部署行为不一致）；docker cp 进容器层则 docker rm -f 即丢。
 # 改为宿主 bind（只读），每次部署以仓库文件为准覆盖种子。
-# 用 D211_REPO_ROOT（脚本顶部已解析），禁止再 $(cd "$(dirname "$0")/..")——
+# 用 DD_REPO_ROOT（脚本顶部已解析），禁止再 $(cd "$(dirname "$0")/..")——
 # docker build 段可能已 cd 走 cwd，相对 scripts/.. 会 No such file（2026-10-15 实测）。
-D211_CONFIGS_SRC="${D211_CONFIGS_SRC:-$D211_REPO_ROOT/configs}"
-mkdir -p "$D211_GW_DATA_ROOT/configs"
+DD_CONFIGS_SRC="${DD_CONFIGS_SRC:-$DD_REPO_ROOT/configs}"
+mkdir -p "$DD_GW_DATA_ROOT/configs"
 for _cfg in sensitive_patterns.yaml sensitive_words.json; do
-  if [[ -f "$D211_CONFIGS_SRC/$_cfg" ]]; then
-    cp -f "$D211_CONFIGS_SRC/$_cfg" "$D211_GW_DATA_ROOT/configs/$_cfg"
+  if [[ -f "$DD_CONFIGS_SRC/$_cfg" ]]; then
+    cp -f "$DD_CONFIGS_SRC/$_cfg" "$DD_GW_DATA_ROOT/configs/$_cfg"
   else
-    echo "warning: $D211_CONFIGS_SRC/$_cfg 不存在，容器将回落内置默认集" >&2
+    echo "warning: $DD_CONFIGS_SRC/$_cfg 不存在，容器将回落内置默认集" >&2
   fi
 done
-chown -R 65532:65532 "$D211_GW_DATA_ROOT/configs" 2>/dev/null || true
+chown -R 65532:65532 "$DD_GW_DATA_ROOT/configs" 2>/dev/null || true
 
 # ── Web 前端随部署种子（2026-10-15）：root SPA + /m 移动端 + 版本元数据 ──
 # 网关从 cfg.StaticDir（env LLM_GATEWAY_STATIC_DIR，默认探 cwd 下的
@@ -1456,108 +1648,122 @@ chown -R 65532:65532 "$D211_GW_DATA_ROOT/configs" 2>/dev/null || true
 #   ② dist 陈旧时照样种子化，部署照样绿；
 #   ③ 就绪只探 /readyz 与 /healthz、不探 /，以上两类都不会让部署失败。
 # deploy-local.sh 对同一形态是硬失败（2026-10-11 2538 白页事故收口）。此处对齐
-# 同一口径，同时保留「纯 API 形态」逃生舱：D211_ALLOW_STALE_WEB=1。
-D211_WEB_DIST_SRC="${D211_WEB_DIST_SRC:-$D211_REPO_ROOT/web/dist}"
-D211_MOBILE_DIST_SRC="${D211_MOBILE_DIST_SRC:-$D211_REPO_ROOT/web-mobile/dist}"
-D211_ALLOW_STALE_WEB="${D211_ALLOW_STALE_WEB:-0}"
+# 同一口径，同时保留「纯 API 形态」逃生舱：DD_ALLOW_STALE_WEB=1。
+DD_WEB_DIST_SRC="${DD_WEB_DIST_SRC:-$DD_REPO_ROOT/web/dist}"
+DD_MOBILE_DIST_SRC="${DD_MOBILE_DIST_SRC:-$DD_REPO_ROOT/web-mobile/dist}"
+DD_ALLOW_STALE_WEB="${DD_ALLOW_STALE_WEB:-0}"
 
 # seed_web_dist <dist 目录> <源码目录> <标签>
-# 判定（存在性 + 新鲜度）复用 d211_check_web_dist —— 与部署机侧前置门、
+# 判定（存在性 + 新鲜度）复用 dd_check_web_dist —— 与部署机侧前置门、
 # 211 本机侧前置门是**同一份规则**，避免三处口径漂移。本函数只回答
 # 「这份产物能不能用」；搬运在下面单独做。
-#   0 陈旧且 D211_ALLOW_STALE_WEB≠1 → 拒绝
-#   1 陈旧且 D211_ALLOW_STALE_WEB=1  → 放行（仍会种子化这份旧产物）
-#   2 缺失且 D211_ALLOW_STALE_WEB=1  → 纯 API 形态（不挂载前端）
+#   0 陈旧且 DD_ALLOW_STALE_WEB≠1 → 拒绝
+#   1 陈旧且 DD_ALLOW_STALE_WEB=1  → 放行（仍会种子化这份旧产物）
+#   2 缺失且 DD_ALLOW_STALE_WEB=1  → 纯 API 形态（不挂载前端）
 #   3 缺失但上一轮种子还在            → 无逃生舱，直接拒绝
-# ⚠ 本函数在**退役旧容器之后**才被调用，所以它的拒绝路径必须走 d211_fail
+# ⚠ 本函数在**退役旧容器之后**才被调用，所以它的拒绝路径必须走 dd_fail
 # （回滚旧容器）而不是裸 die —— 裸 die 会把「守卫失败」变成「服务下线」，
 # 这正是 2026-10-20 502 事故的成因。
 seed_web_dist() {
   local _dist="$1" _src="$2" _label="$3" _code
   _code=0
-  d211_check_web_dist "$_dist" "$_src" "$_label" || _code=$?
+  dd_check_web_dist "$_dist" "$_src" "$_label" || _code=$?
   case "$_code" in
     0)
       return 0
       ;;
     1)
-      if [[ "$D211_ALLOW_STALE_WEB" != "1" ]]; then
-        d211_fail "$D211_WEB_CHECK_ERR"
+      if [[ "$DD_ALLOW_STALE_WEB" != "1" ]]; then
+        dd_fail "$DD_WEB_CHECK_ERR"
       fi
-      warn "${D211_WEB_CHECK_ERR}（$D211_ALLOW_STALE_WEB=1：放行并照常种子化这份旧产物）"
+      warn "${DD_WEB_CHECK_ERR}（$DD_ALLOW_STALE_WEB=1：放行并照常种子化这份旧产物）"
       return 0
       ;;
     2)
-      if [[ "$D211_ALLOW_STALE_WEB" != "1" ]]; then
-        d211_fail "$D211_WEB_CHECK_ERR"
+      if [[ "$DD_ALLOW_STALE_WEB" != "1" ]]; then
+        dd_fail "$DD_WEB_CHECK_ERR"
       fi
-      warn "${D211_WEB_CHECK_ERR}（$D211_ALLOW_STALE_WEB=1：按纯 API 形态继续，本次不挂载前端）"
+      warn "${DD_WEB_CHECK_ERR}（$DD_ALLOW_STALE_WEB=1：按纯 API 形态继续，本次不挂载前端）"
       return 1
       ;;
     *)
-      d211_fail "$D211_WEB_CHECK_ERR"
+      dd_fail "$DD_WEB_CHECK_ERR"
       ;;
   esac
 }
 
-seed_web_dist "$D211_WEB_DIST_SRC" "$D211_REPO_ROOT/web/src" "web" && GW_WEB_DIST_OK=1 || GW_WEB_DIST_OK=0
-seed_web_dist "$D211_MOBILE_DIST_SRC" "$D211_REPO_ROOT/web-mobile/src" "web-mobile" && GW_MOBILE_DIST_OK=1 || GW_MOBILE_DIST_OK=0
+seed_web_dist "$DD_WEB_DIST_SRC" "$DD_REPO_ROOT/web/src" "web" && GW_WEB_DIST_OK=1 || GW_WEB_DIST_OK=0
+seed_web_dist "$DD_MOBILE_DIST_SRC" "$DD_REPO_ROOT/web-mobile/src" "web-mobile" && GW_MOBILE_DIST_OK=1 || GW_MOBILE_DIST_OK=0
 
-mkdir -p "$D211_GW_DATA_ROOT/web" "$D211_GW_DATA_ROOT/web-mobile"
+mkdir -p "$DD_GW_DATA_ROOT/web/$DD_CANDIDATE_SLOT" "$DD_GW_DATA_ROOT/web-mobile/$DD_CANDIDATE_SLOT"
 GW_MOUNTS=(
-  -v "${D211_GW_DATA_ROOT}/data:/app/data"
-  -v "${D211_GW_DATA_ROOT}/logs:/app/logs"
-  -v "${D211_GW_DATA_ROOT}/configs:/app/configs:ro"
+  -v "${DD_GW_DATA_ROOT}/data:/app/data"
+  -v "${DD_GW_DATA_ROOT}/logs:/app/logs"
+  -v "${DD_GW_DATA_ROOT}/configs:/app/configs:ro"
 )
 GW_WEB_ENV=()
+# ⚠ 种子目录是**候选槽专属**的（web/<slot>/dist）：旧槽的目录本轮完全不碰。
+# 这正是「回退不需要还原种子」的原因 —— 旧槽的 SPA/版本戳原样还在它自己的
+# 目录里，不会出现「旧二进制 + 新 SPA」的错配组合。
 if [[ "$GW_WEB_DIST_OK" == "1" ]]; then
-  rm -rf "$D211_GW_DATA_ROOT/web/dist"
-  cp -R "$D211_WEB_DIST_SRC" "$D211_GW_DATA_ROOT/web/dist"
-  chown -R 65532:65532 "$D211_GW_DATA_ROOT/web" 2>/dev/null || true
-  GW_MOUNTS+=( -v "${D211_GW_DATA_ROOT}/web/dist:/app/web/dist:ro" )
+  rm -rf "$DD_GW_DATA_ROOT/web/$DD_CANDIDATE_SLOT/dist"
+  cp -R "$DD_WEB_DIST_SRC" "$DD_GW_DATA_ROOT/web/$DD_CANDIDATE_SLOT/dist"
+  chown -R 65532:65532 "$DD_GW_DATA_ROOT/web/$DD_CANDIDATE_SLOT" 2>/dev/null || true
+  GW_MOUNTS+=( -v "${DD_GW_DATA_ROOT}/web/$DD_CANDIDATE_SLOT/dist:/app/web/dist:ro" )
   GW_WEB_ENV+=( -e "LLM_GATEWAY_STATIC_DIR=/app/web/dist" )
-  log "admin SPA 种子: web/dist → ${D211_GW_DATA_ROOT}/web/dist"
+  log "admin SPA 种子: web/dist → ${DD_GW_DATA_ROOT}/web/$DD_CANDIDATE_SLOT/dist（槽 ${DD_CANDIDATE_SLOT}）"
 fi
 if [[ "$GW_MOBILE_DIST_OK" == "1" ]]; then
-  rm -rf "$D211_GW_DATA_ROOT/web-mobile/dist"
-  cp -R "$D211_MOBILE_DIST_SRC" "$D211_GW_DATA_ROOT/web-mobile/dist"
-  chown -R 65532:65532 "$D211_GW_DATA_ROOT/web-mobile" 2>/dev/null || true
-  GW_MOUNTS+=( -v "${D211_GW_DATA_ROOT}/web-mobile/dist:/app/web-mobile/dist:ro" )
+  rm -rf "$DD_GW_DATA_ROOT/web-mobile/$DD_CANDIDATE_SLOT/dist"
+  cp -R "$DD_MOBILE_DIST_SRC" "$DD_GW_DATA_ROOT/web-mobile/$DD_CANDIDATE_SLOT/dist"
+  chown -R 65532:65532 "$DD_GW_DATA_ROOT/web-mobile/$DD_CANDIDATE_SLOT" 2>/dev/null || true
+  GW_MOUNTS+=( -v "${DD_GW_DATA_ROOT}/web-mobile/$DD_CANDIDATE_SLOT/dist:/app/web-mobile/dist:ro" )
   GW_WEB_ENV+=( -e "MOBILE_WEB_DIST=/app/web-mobile/dist" )
-  log "移动端 SPA 种子: web-mobile/dist → ${D211_GW_DATA_ROOT}/web-mobile/dist"
+  log "移动端 SPA 种子: web-mobile/dist → ${DD_GW_DATA_ROOT}/web-mobile/$DD_CANDIDATE_SLOT/dist（槽 ${DD_CANDIDATE_SLOT}）"
 fi
-if [[ -f "$D211_REPO_ROOT/version.json" ]]; then
-  cp -f "$D211_REPO_ROOT/version.json" "$D211_GW_DATA_ROOT/version.json"
+mkdir -p "$DD_GW_DATA_ROOT/version"
+if [[ -f "$DD_REPO_ROOT/version.json" ]]; then
+  cp -f "$DD_REPO_ROOT/version.json" "$DD_GW_DATA_ROOT/version/$DD_CANDIDATE_SLOT.json"
   # 仓库 version.json 的戳来自最近一次 154/245/本地部署（或提交时的旧值），
-  # 不是本次 211 构建；有 D211_BUILD_SHA 时改写成 <tag>-<sha>-<date>-211。
-  if [[ -n "${D211_BUILD_SHA:-}" ]]; then
-    python3 - "$D211_GW_DATA_ROOT/version.json" "$D211_BUILD_SHA" <<'PY' \
+  # 不是本次 211 构建；有 DD_BUILD_SHA 时改写成 <tag>-<sha>-<date>-<target>。
+  # ⚠ 改写的是**本槽的副本**（version/<slot>.json）：槽位隔离后旧槽的版本戳
+  #   不能被本轮改掉（那会让仍在服务/可回滚的旧槽的 /version 说谎）。
+  #   ⚠ 2026-10-20 修：原实现改写的是 $DD_GW_DATA_ROOT/version.json（**没被挂载
+  #   的另一个路径**）且 python 只传了 2 个参数却读 sys.argv[3] ⇒ IndexError
+  #   被 `|| warn` 吞掉 ⇒ 版本戳实际从未被改写。
+  if [[ -n "${DD_BUILD_SHA:-}" ]]; then
+    python3 - "$DD_GW_DATA_ROOT/version/$DD_CANDIDATE_SLOT.json" "$DD_BUILD_SHA" "$DD_TARGET" <<'PY' \
       || warn "version.json 改写失败，沿用仓库原戳"
 import json, sys, time
-path, sha = sys.argv[1], sys.argv[2]
+path, sha, target = sys.argv[1], sys.argv[2], sys.argv[3]
 v = json.load(open(path))
 date = time.strftime("%Y%m%d")
-v.update(git_sha=sha, build_date=date, target="211",
-         version="%s-%s-%s-211" % (v.get("git_tag", "dev"), sha, date))
+v.update(git_sha=sha, build_date=date, target=target,
+         version="%s-%s-%s-%s" % (v.get("git_tag", "dev"), sha, date, target))
 json.dump(v, open(path, "w"), indent=2)
 PY
   fi
-  chown 65532:65532 "$D211_GW_DATA_ROOT/version.json" 2>/dev/null || true
-  GW_MOUNTS+=( -v "${D211_GW_DATA_ROOT}/version.json:/app/version.json:ro" )
-  log "版本元数据种子: version.json（$(python3 -c "import json;print(json.load(open('$D211_GW_DATA_ROOT/version.json')).get('version','?'))" 2>/dev/null || echo '?')）"
+  chown 65532:65532 "$DD_GW_DATA_ROOT/version/$DD_CANDIDATE_SLOT.json" 2>/dev/null || true
+  GW_MOUNTS+=( -v "${DD_GW_DATA_ROOT}/version/$DD_CANDIDATE_SLOT.json:/app/version.json:ro" )
+  log "版本元数据种子: version.json（$(python3 -c "import json;print(json.load(open('$DD_GW_DATA_ROOT/version/$DD_CANDIDATE_SLOT.json')).get('version','?'))" 2>/dev/null || echo '?')）"
 else
-  echo "warning: $D211_REPO_ROOT/version.json 缺失，/version 将显示 dev/unknown" >&2
+  echo "warning: $DD_REPO_ROOT/version.json 缺失，/version 将显示 dev/unknown" >&2
 fi
 # ${arr[@]+…} 惯用法：GW_WEB_ENV 可能为空（dist 全缺），bash 3.2 在 set -u 下
 # 直接 "${空数组[@]}" 会报 unbound variable
 GW_ENV+=( ${GW_WEB_ENV[@]+"${GW_WEB_ENV[@]}"} )
 
-docker run -d --name "$D211_GW_CONTAINER" --restart unless-stopped \
-  --network "$D211_NETWORK" \
-  -p "${D211_GW_PORT}:8781" \
+# ── 起候选槽容器（旧槽继续服务 ⇒ 零停机）────────────────────────────────
+# 候选槽占用的是**另一个端口**（槽位与端口绑定），所以两个容器可以并存；
+# 流量仍由 nginx upstream 指向旧槽，直到切流那一步。
+docker rm -f "$DD_CANDIDATE_CONTAINER" >/dev/null 2>&1 || true
+docker run -d --name "$DD_CANDIDATE_CONTAINER" --restart unless-stopped \
+  --network "$DD_NETWORK" \
+  -p "${DD_CANDIDATE_PORT}:8781" \
   "${GW_MOUNTS[@]}" \
   "${GW_ENV[@]}" \
-  "$D211_GW_IMAGE" >/dev/null || d211_fail "网关容器启动失败"
+  "$DD_GW_IMAGE" >/dev/null || dd_fail "候选槽容器启动失败（槽 ${DD_CANDIDATE_SLOT}，端口 ${DD_CANDIDATE_PORT}）"
+log "候选槽已起：${DD_CANDIDATE_CONTAINER} @ ${DD_CANDIDATE_PORT}（旧槽 ${DD_ACTIVE_SLOT} @ ${DD_ACTIVE_PORT_NOW} 仍在服务）"
 
 # =============================================================================
 # 就绪验证
@@ -1571,10 +1777,10 @@ ready=0
 ready_body=""
 probe_rounds=$(( ${PROBE_TIMEOUT_SECS:-120} / 2 )); (( probe_rounds >= 1 )) || probe_rounds=1
 for i in $(seq 1 "$probe_rounds"); do
-  if ready_body="$(curl -fsS "http://127.0.0.1:${D211_GW_PORT}/readyz" 2>/dev/null)"; then
+  if ready_body="$(curl -fsS "http://127.0.0.1:${DD_CANDIDATE_PORT}/readyz" 2>/dev/null)"; then
     ready=1; break
   fi
-  if curl -fsS "http://127.0.0.1:${D211_GW_PORT}/healthz" >/dev/null 2>&1; then
+  if curl -fsS "http://127.0.0.1:${DD_CANDIDATE_PORT}/healthz" >/dev/null 2>&1; then
     # healthz 通但 readyz 不通：继续等到 readyz，避免把半就绪当成功
     :
   fi
@@ -1582,8 +1788,8 @@ for i in $(seq 1 "$probe_rounds"); do
 done
 if (( ready == 0 )); then
   warn "网关未在预期时间内就绪，最近日志："
-  docker logs --tail 40 "$D211_GW_CONTAINER" >&2 || true
-  d211_fail "网关部署失败"
+  docker logs --tail 40 "$DD_CANDIDATE_CONTAINER" >&2 || true
+  dd_fail "网关部署失败"
 fi
 
 # 就绪不等于可用：历史上 lite 回落也返 HTTP 200。当前 readyz 契约是
@@ -1613,29 +1819,29 @@ print("ok" if ok or st=="ready" else "not_ready")
 case "$ready_check" in
   ok) log "readyz OK (database+redis connected, status=ready)" ;;
   lite)
-    docker logs --tail 40 "$D211_GW_CONTAINER" >&2 || true
-    d211_fail "部署验证失败：readyz mode=lite（DB/迁移未接上）"
+    docker logs --tail 40 "$DD_CANDIDATE_CONTAINER" >&2 || true
+    dd_fail "部署验证失败：readyz mode=lite（DB/迁移未接上）"
     ;;
   db_down|redis_down|not_ready|parse_error|*)
     warn "readyz 正文: $ready_body"
-    docker logs --tail 40 "$D211_GW_CONTAINER" >&2 || true
-    d211_fail "部署验证失败：readyz 未证明 DB/Redis 就绪（check=${ready_check}）"
+    docker logs --tail 40 "$DD_CANDIDATE_CONTAINER" >&2 || true
+    dd_fail "部署验证失败：readyz 未证明 DB/Redis 就绪（check=${ready_check}）"
     ;;
 esac
 
-# 版本戳与前端：部署成功后必须能读到本次构建痕迹（有 D211_BUILD_SHA 时）
-if ver_body="$(curl -fsS "http://127.0.0.1:${D211_GW_PORT}/version" 2>/dev/null || true)"; then
+# 版本戳与前端：部署成功后必须能读到本次构建痕迹（有 DD_BUILD_SHA 时）
+if ver_body="$(curl -fsS "http://127.0.0.1:${DD_CANDIDATE_PORT}/version" 2>/dev/null || true)"; then
   log "version: $(printf '%s' "$ver_body" | python3 -c 'import sys,json
 try:
   d=json.load(sys.stdin); print(d.get("version") or d)
 except Exception:
   print(sys.stdin.read()[:120])' 2>/dev/null || printf '%s' "$ver_body" | head -c 120)"
-  if [[ -n "${D211_BUILD_SHA:-}" ]] && ! printf '%s' "$ver_body" | grep -qF "${D211_BUILD_SHA%-dirty}"; then
-    warn "version 未包含构建提交 ${D211_BUILD_SHA}（可能种子失败）；继续但标黄"
+  if [[ -n "${DD_BUILD_SHA:-}" ]] && ! printf '%s' "$ver_body" | grep -qF "${DD_BUILD_SHA%-dirty}"; then
+    warn "version 未包含构建提交 ${DD_BUILD_SHA}（可能种子失败）；继续但标黄"
   fi
 fi
 if [[ "${GW_WEB_DIST_OK:-0}" == "1" ]]; then
-  root_ct="$(curl -fsSI "http://127.0.0.1:${D211_GW_PORT}/" 2>/dev/null | tr -d '\r' | awk -F': ' 'tolower($1)=="content-type"{print tolower($2); exit}')"
+  root_ct="$(curl -fsSI "http://127.0.0.1:${DD_CANDIDATE_PORT}/" 2>/dev/null | tr -d '\r' | awk -F': ' 'tolower($1)=="content-type"{print tolower($2); exit}')"
   case "$root_ct" in
     text/html*) log "admin SPA 可达 (Content-Type: ${root_ct})" ;;
     *) warn "admin SPA 探测异常 Content-Type='${root_ct:-empty}' (期望 text/html)" ;;
@@ -1645,8 +1851,8 @@ fi
 # ── nginx llm.itestu.cn TLS 腿：X-Real-IP 必须是 $remote_addr ──────────
 # 旧配置用 map 变量 ns_real_ip(= 入站 X-Real-IP 原样)，浏览器不带该头时为空，
 # 限流/验证码只能落到 docker 桥接 RemoteAddr，多客户端共桶。幂等修补。
-d211_fix_nginx_llm_real_ip() {
-  local conf="${D211_NGINX_LLM_CONF:-/etc/nginx/conf.d/ns-gateway-211.conf}"
+dd_fix_nginx_llm_real_ip() {
+  local conf="${DD_NGINX_LLM_CONF:-$DD_NGINX_CONF}"
   [[ -f "$conf" ]] || { warn "nginx conf 不在场 ($conf)，跳过 X-Real-IP 修补"; return 0; }
   if ! grep -q 'server_name llm.itestu.cn' "$conf"; then
     warn "nginx conf 无 llm.itestu.cn server，跳过 X-Real-IP 修补"
@@ -1658,7 +1864,10 @@ d211_fix_nginx_llm_real_ip() {
 import pathlib, sys
 p = pathlib.Path(sys.argv[1])
 text = p.read_text()
-marker = "listen 192.168.31.211:443 ssl"
+# 快速路径：目标机本机 IP 的 443 腿。取不到就用下面的通用正则
+# （任意 listen ...:443 ssl + server_name llm.itestu.cn 的 server 块）。
+host_ip = sys.argv[2] if len(sys.argv) > 2 else ""
+marker = ("listen %s:443 ssl" % host_ip) if host_ip else ""
 idx = text.find(marker)
 if idx < 0:
     # 允许 IP 漂移：任意 listen …443 ssl 且随后 server_name llm.itestu.cn
@@ -1683,7 +1892,7 @@ if "X-Real-IP $ns_real_ip;" not in window:
     raise SystemExit(2)
 new_window = window.replace("X-Real-IP $ns_real_ip;", "X-Real-IP $remote_addr;", 1)
 new = text[:idx] + new_window + text[idx + len(window):]
-bak = p.with_suffix(p.suffix + ".bak-d211-realip")
+bak = p.with_suffix(p.suffix + ".bak-dd-realip")
 if not bak.exists():
     bak.write_text(text)
 p.write_text(new)
@@ -1694,13 +1903,13 @@ PY
       nginx -s reload >/dev/null 2>&1 && log "nginx llm.itestu.cn TLS: X-Real-IP -> \$remote_addr (reloaded)" \
         || warn "nginx reload 失败 (配置已改，需手工 reload)"
     else
-      warn "nginx -t 失败，已保留 .bak-d211-realip; 未 reload"
+      warn "nginx -t 失败，已保留 .bak-dd-realip; 未 reload"
     fi
   else
     warn "nginx X-Real-IP 修补未应用 (块形态变了?)"
   fi
 }
-d211_fix_nginx_llm_real_ip
+dd_fix_nginx_llm_real_ip
 
 # =============================================================================
 # 网页面验收（2026-10-20，154/245 同款教训移植到 211）
@@ -1714,8 +1923,8 @@ d211_fix_nginx_llm_real_ip
 # ⚠ 211 的 nginx upstream 有 backup（100.106.169.63:8782 = mac mini），
 # 所以公网 200 **可能**是 backup 顶上的；因此 ① 直连是「211 自己的责任」，
 # ② 公网是「入口通不通」，两层都要过。
-d211_verify_web_surface() {
-  local base="http://127.0.0.1:${D211_GW_PORT}"
+dd_verify_web_surface() {
+  local base="http://127.0.0.1:${DD_CANDIDATE_PORT}"
   local html html_type asset asset_type
   html="$(curl -fsSL --max-time 10 -H 'Accept: text/html' -w '\n%{content_type}' "${base}/dashboard")" || {
     warn "网关直连 /dashboard 取不到 HTML（${base}）"; return 1; }
@@ -1740,46 +1949,107 @@ d211_verify_web_surface() {
   esac
 }
 
-# 公网入口：llm.itestu.cn 经 211 本机 nginx 终结。探不通（连不上）时只告警
-# 不阻断（nginx 腿可能绑在别的 IP 上，不是本次部署的责任）；探得通但不是
-# 200（502/5xx）则是真故障 ⇒ 阻断并回滚（用户看到的就是这个 502）。
-d211_verify_public_entry() {
-  local probe_ip="${D211_PUBLIC_PROBE_IP:-$D211_TARGET_IP}" code
-  code="$(curl -k -sSL --max-time 10 --resolve "llm.itestu.cn:443:${probe_ip}" \
+# ── 公网入口（**切流之后**才验）──────────────────────────────────────
+# ⚠ 顺序是硬要求：切流前 upstream 还指着旧槽，这时验到的不是本次发布。
+# 探不通（连不上）时只告警不阻断（nginx 腿可能绑在别的 IP 上，不是本次部署
+# 的责任）；探得通但不是 200（502/5xx）则是真故障 ⇒ 阻断并 abort。
+dd_verify_public_entry() {
+  local probe_ip="${DD_PUBLIC_PROBE_IP:-$DD_HOST}" code
+  code="$(curl -k -sSL --max-time 10 --resolve "${DD_DOMAIN}:443:${probe_ip}" \
       -H 'Accept: text/html' -o /dev/null -w '%{http_code}' \
-      "https://llm.itestu.cn/dashboard" 2>/dev/null)" || {
+      "https://${DD_DOMAIN}/dashboard" 2>/dev/null)" || {
     warn "公网入口不可达（${probe_ip}:443）——跳过公网校验，不阻断部署"
     return 0
   }
   if [[ "$code" != "200" ]]; then
-    warn "公网入口 llm.itestu.cn 返回 ${code}（期望 200）"
+    warn "公网入口 ${DD_DOMAIN} 返回 ${code}（期望 200）"
     return 1
   fi
-  log "公网入口 OK（llm.itestu.cn → ${probe_ip}:443 → ${code}）"
+  log "公网入口 OK（${DD_DOMAIN} → ${probe_ip}:443 → ${code}）"
+  return 0
+}
+
+# dd_public_version —— 从**公网**读 /version（切流后的身份复验用）。
+# 探不通返回空串（不 die，调用方决定）。
+# 独立成函数是为了能**单独驱动**（判据门可以替身化它，做「reload 异步」的
+# 竞态回归）。
+dd_public_version() {
+  local _probe_ip="${DD_PUBLIC_PROBE_IP:-$DD_HOST}"
+  [[ -n "$DD_DOMAIN" ]] || { printf ''; return 0; }
+  curl -k -fsSL --max-time 10 --resolve "${DD_DOMAIN}:443:${_probe_ip}" \
+    "https://${DD_DOMAIN}/version" 2>/dev/null || printf ''
+}
+
+# ── 切流 + 公网版本身份复验 ──────────────────────────────────────────
+# 切流：把 nginx upstream 的主 server 行从旧槽端口改到候选槽端口并 reload。
+# 复验：切流后从**公网**读 /version，必须含本次构建 sha —— 这是「半切换态」
+# （文件已切、流量未切）的唯一判据；只看本机端口会误判（nginx 可能还在
+# 服务旧 upstream 的连接）。
+#
+# ★★ 2026-10-20 真机实测（211）：复验必须**轮询等新配置生效**，不能探一次
+#   就下结论。`nginx -s reload` 是**异步**的 —— 它只给 master 发信号，
+#   新 worker 起来之前，**旧 worker 仍会用旧 upstream 应答新连接**。
+#   实测：切流后立刻探一次公网 /version ⇒ 拿到的是**旧槽**的版本戳
+#   （3eb2be91）⇒ 误判「半切换态」⇒ 触发 abort（abort 本身是对的，
+#   但判据太急，把一次成功的部署判成失败）。
+#   ⇒ 改成轮询（默认 10 次 × 1s）：拿到新 sha 才算过；始终拿不到才判失败。
+dd_switch_and_verify() {
+  local _before _after _i _ok=0
+  _before="$(dd_upstream_port || true)"
+  log "切流：nginx upstream ${DD_NGINX_UPSTREAM} 由 127.0.0.1:${_before:-?} 切到 127.0.0.1:${DD_CANDIDATE_PORT}"
+  dd_switch_upstream "$DD_CANDIDATE_PORT" || return 1
+  DD_SWITCHED=1
+  if [[ -n "${DD_BUILD_SHA:-}" ]]; then
+    for _i in $(seq 1 "${DD_SWITCH_VERIFY_TRIES:-10}"); do
+      _after="$(dd_public_version)"
+      # ⚠ 用 bash 原生模式匹配，**不要** `printf | grep -q`：
+      #   `grep -q` 命中即退 ⇒ 上游 printf 收 SIGPIPE(141) ⇒ pipefail 把整条
+      #   管道判成非零 ⇒ 「明明匹配却当没匹配」—— 本轮实测过一次（假阴性）。
+      if [[ -n "$_after" && "$_after" == *"${DD_BUILD_SHA%-dirty}"* ]]; then
+        _ok=1
+        break
+      fi
+      (( _i == 1 )) || sleep 1
+    done
+    if [[ "$_ok" != "1" ]]; then
+      if [[ -z "$_after" ]]; then
+        warn "切流后公网 /version 读不到（域名 ${DD_DOMAIN}，已重试 ${DD_SWITCH_VERIFY_TRIES:-10} 次）"
+      else
+        warn "切流后公网版本身份不符：期望含 ${DD_BUILD_SHA%-dirty}，实得 ${_after:0:160}（已重试 ${DD_SWITCH_VERIFY_TRIES:-10} 次）"
+      fi
+      return 1
+    fi
+    log "公网版本身份 OK（${DD_BUILD_SHA%-dirty}，第 ${_i} 次探到）"
+  fi
   return 0
 }
 
 if [[ "${GW_WEB_DIST_OK:-0}" == "1" ]]; then
-  d211_verify_web_surface || d211_fail "网页面验收失败（容器直连 /dashboard 或入口 JS 不可用）"
+  dd_verify_web_surface || dd_fail "网页面验收失败（候选槽直连 /dashboard 或入口 JS 不可用）"
 fi
-d211_verify_public_entry || d211_fail "公网入口验收失败（llm.itestu.cn 非 200）"
+
+# ── 切流（此刻旧槽仍在服务；切流失败会 abort 切回）────────────────────
+dd_switch_and_verify || dd_fail "切流失败（nginx upstream 未切到候选槽，或公网版本身份不符）"
+
+# ── 公网入口（切流后验：这次验到的确实是本次发布）────────────────────
+dd_verify_public_entry || dd_fail "公网入口验收失败（${DD_DOMAIN} 非 200）"
 
 # ── 登录冒烟：/api/auth/token（不是 /api/admin/login）────────────────
-# 凭据优先环境变量，其次 D211_ADMIN_*，默认 admin / Veritrans&9527（与
-# 211 库 users.admin 对齐）。失败不阻断部署收尾，但标红方便运维看见。
-d211_smoke_admin_login() {
-  local user="${D211_ADMIN_USER:-${LLM_GATEWAY_ADMIN_USER:-admin}}"
-  local pass="${D211_ADMIN_PASSWORD:-${LLM_GATEWAY_ADMIN_PASSWORD:-Veritrans&9527}}"
-  local url="http://127.0.0.1:${D211_GW_PORT}/api/auth/token"
+# 凭据优先环境变量，其次 DD_ADMIN_*，默认 admin / Veritrans&9527（与
+# 目标库 users.admin 对齐）。失败不阻断部署收尾，但标红方便运维看见。
+dd_smoke_admin_login() {
+  local user="${DD_ADMIN_USER:-${LLM_GATEWAY_ADMIN_USER:-admin}}"
+  local pass="${DD_ADMIN_PASSWORD:-${LLM_GATEWAY_ADMIN_PASSWORD:-Veritrans&9527}}"
+  local url="http://127.0.0.1:${DD_CANDIDATE_PORT}/api/auth/token"
   local body code
   body="$(python3 -c 'import json,sys; print(json.dumps({"username":sys.argv[1],"password":sys.argv[2]}))' "$user" "$pass")"
-  code="$(curl -sS -o /tmp/d211-login.json -w '%{http_code}' -X POST "$url" \
+  code="$(curl -sS -o /tmp/dd-login.json -w '%{http_code}' -X POST "$url" \
     -H 'Content-Type: application/json' -d "$body" || echo 000)"
   if [[ "$code" != "200" ]]; then
-    warn "登录冒烟失败 HTTP ${code} body=$(head -c 160 /tmp/d211-login.json 2>/dev/null)"
+    warn "登录冒烟失败 HTTP ${code} body=$(head -c 160 /tmp/dd-login.json 2>/dev/null)"
     return 1
   fi
-  if ! python3 -c 'import json,sys; d=json.load(open("/tmp/d211-login.json")); assert d.get("access_token") and d.get("user",{}).get("username")==sys.argv[1]' "$user" 2>/dev/null; then
+  if ! python3 -c 'import json,sys; d=json.load(open("/tmp/dd-login.json")); assert d.get("access_token") and d.get("user",{}).get("username")==sys.argv[1]' "$user" 2>/dev/null; then
     warn "登录冒烟响应缺 access_token/user"
     return 1
   fi
@@ -1796,23 +2066,56 @@ d211_smoke_admin_login() {
   log "登录冒烟 OK（user=${user}，连登 6 次无 429）"
   return 0
 }
-if [[ "${D211_SKIP_LOGIN_SMOKE:-0}" != "1" ]]; then
-  d211_smoke_admin_login || warn "登录冒烟未通过——页面可能仍无法登录，请查 users.admin 密码与限流"
+if [[ "${DD_SKIP_LOGIN_SMOKE:-0}" != "1" ]]; then
+  dd_smoke_admin_login || warn "登录冒烟未通过——页面可能仍无法登录，请查 users.admin 密码与限流"
 fi
 
-# ── 收尾：退役容器与种子备份可以清掉了 ───────────────────────────────
-# 全部验收通过后，新版本正式接管。此刻退役容器只是「上一版的残骸」，
-# 留着会让下一轮部署的「遗留 prev 扶正」分支把它当成幸存者。
-docker rm -f "$D211_PREV_CONTAINER" >/dev/null 2>&1 || true
-[[ -n "$D211_SEED_BACKUP" ]] && rm -rf "$D211_SEED_BACKUP"
+# ── 切流成功：停旧槽 + 写活跃槽 + 清历史单机容器 ─────────────────────
+# 旧槽容器**停而不删**：容器对象与镜像都留着 ⇒ 人工回滚只要 docker start。
+# 停掉它是为了释放它的端口给下一轮的候选槽（槽位与端口是绑定的）。
+if docker inspect --type container "$DD_ACTIVE_CONTAINER" >/dev/null 2>&1; then
+  if docker stop "$DD_ACTIVE_CONTAINER" >/dev/null 2>&1; then
+    DD_OLD_STOPPED=1
+    log "旧槽已停：${DD_ACTIVE_CONTAINER}（保留容器与镜像，可 docker start 回滚）"
+  else
+    warn "旧槽停止失败（${DD_ACTIVE_CONTAINER}）——它仍占着端口，下一轮候选槽可能起不来"
+  fi
+fi
+# 蓝绿之前的历史单机容器（<prefix>，无 -<slot> 后缀）：它占着槽 a 的端口，
+# 下一轮候选槽=a 时会绑不上 ⇒ 切流成功后必须让位。
+# ★ 停而不删：改名成 <prefix>-legacy 留着（容器 + 镜像都在），人工可
+#   `docker start` 回滚到蓝绿之前的那一版。与「停旧槽」同一口径。
+#   只有改名失败才退化为 rm -f（端口必须释放，端口不释放是硬故障）。
+if docker inspect --type container "$DD_CONTAINER_PREFIX" >/dev/null 2>&1; then
+  _dd_legacy="${DD_CONTAINER_PREFIX}-legacy"
+  if docker inspect --type container "$_dd_legacy" >/dev/null 2>&1; then
+    docker rm -f "$_dd_legacy" >/dev/null 2>&1 || true
+  fi
+  if docker rename "$DD_CONTAINER_PREFIX" "$_dd_legacy" >/dev/null 2>&1; then
+    if docker stop "$_dd_legacy" >/dev/null 2>&1; then
+      log "历史单机容器已退役：${DD_CONTAINER_PREFIX} → ${_dd_legacy}（已停，保留可回滚）"
+    else
+      # ⚠ 改名成功但停失败 ⇒ 容器**已经**不叫原名了 ⇒ 再去 rm 原名是空操作，
+      #   容器会继续占着 8781 ⇒ 下一轮候选槽=a 绑不上端口。
+      docker rm -f "$_dd_legacy" >/dev/null 2>&1 || true
+      warn "历史单机容器改名成功但停止失败（${_dd_legacy}）—— 已强制删除以释放端口"
+    fi
+  else
+    docker rm -f "$DD_CONTAINER_PREFIX" >/dev/null 2>&1 || true
+    warn "历史单机容器 ${DD_CONTAINER_PREFIX} 改名失败 —— 已强制删除以释放端口"
+  fi
+fi
+dd_write_active_slot "$DD_CANDIDATE_SLOT"
 
 log "=========================================================="
-log "部署完成 @ $D211_TARGET_IP"
-log "  网关  : http://${D211_TARGET_IP}:${D211_GW_PORT}  (容器 $D211_GW_CONTAINER)"
-log "  镜像  : $D211_GW_IMAGE  builder=$D211_GO_BASE_IMAGE"
-log "  域名  : https://llm.itestu.cn/  (nginx TLS → 本机 :${D211_GW_PORT})"
-log "  登录  : POST /api/auth/token  (不要用 /api/admin/login)"
-log "  PG    : $PG_CONTAINER  ($( ((PG_REUSED)) && echo 复用 || echo 新建 ))  库=$D211_PG_DB"
-log "  Redis : $REDIS_CONTAINER ($( ((REDIS_REUSED)) && echo 复用 || echo 新建 ))  库号=db${REDIS_DB} (从 ${D211_REDIS_DB_START} 倒排)"
-log "  密钥  : $ENV_FILE (chmod 600，勿提交)"
+log "部署完成 @ ${DD_HOST:-本机}（槽 ${DD_CANDIDATE_SLOT} 接管）"
+log "  活跃槽  : ${DD_CANDIDATE_SLOT} → 容器 $(dd_container_name "$DD_CANDIDATE_SLOT") @ 127.0.0.1:${DD_CANDIDATE_PORT}"
+log "  旧槽    : ${DD_ACTIVE_SLOT} → 容器 $(dd_container_name "$DD_ACTIVE_SLOT")（已停，可 docker start 回滚）"
+log "  网关    : http://${DD_HOST:-127.0.0.1}:${DD_CANDIDATE_PORT}"
+log "  镜像    : $DD_GW_IMAGE  builder=$DD_GO_BASE_IMAGE"
+log "  域名    : https://${DD_DOMAIN}/  (nginx ${DD_NGINX_UPSTREAM} → 127.0.0.1:${DD_CANDIDATE_PORT})"
+log "  登录    : POST /api/auth/token  (不要用 /api/admin/login)"
+log "  PG      : $PG_CONTAINER  ($( ((PG_REUSED)) && echo 复用 || echo 新建 ))  库=$DD_PG_DB"
+log "  Redis   : $REDIS_CONTAINER ($( ((REDIS_REUSED)) && echo 复用 || echo 新建 ))  库号=db${REDIS_DB} (从 ${DD_REDIS_DB_START} 倒排)"
+log "  密钥    : $ENV_FILE (chmod 600，勿提交)"
 log "=========================================================="
