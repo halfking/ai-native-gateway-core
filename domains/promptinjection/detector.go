@@ -4,7 +4,9 @@ package promptinjection
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -944,13 +946,37 @@ func attackVectorSeverity(score int) int {
 	}
 }
 
+// attackVectorHash 产出 attack_hash 列的值。
+//
+// ★ 2026-10-20 12h 审计轮修正：这里原来直接写
+//
+//	hash := fmt.Sprintf("%x", []byte(input))
+//
+// 那是**输入原文的 hex**，长度 = 2 × len(input)，而列是
+//
+//	attack_hash VARCHAR(64) NOT NULL,  -- SHA-256
+//
+// learnAttackPattern 放行 10..10000 字节的输入 ⇒ **任何 ≥33 字节的输入
+// hex 后都超过 64** ⇒ INSERT 必然失败（PG: value too long for character
+// varying(64)）⇒ 失败被 slog.Warn 吞掉 ⇒ 表恒为空。
+// ⇒ 这是一条与「枚举数组列绑了 JSON 字节」**互相独立**的第二条失败路径：
+// 那条修好之后，这条仍然让绝大多数真实攻击载荷写不进去。
+// ⇒ 改成真正的 SHA-256（固定 64 个 hex 字符），与列的声明一致。
+//
+// 抽成独立函数是为了让「hash 宽度与输入长度无关」这条性质**可被门禁直接测到**
+// （判据见 r1039_attack_vector_hash_width_test.go）。
+func attackVectorHash(input string) string {
+	sum := sha256.Sum256([]byte(input))
+	return hex.EncodeToString(sum[:])
+}
+
 // learnAttackPattern 自动学习攻击模式
 func (d *Detector) learnAttackPattern(ctx context.Context, tenantID, input string, result *DetectionResult) {
 	if len(input) < 10 || len(input) > 10000 {
 		return
 	}
 
-	hash := fmt.Sprintf("%x", []byte(input))
+	hash := attackVectorHash(input)
 
 	_, err := d.db.ExecContext(ctx, insertAttackVectorSQL,
 		tenantID, input, hash, pq.Array(result.Categories), attackVectorSeverity(result.Score))

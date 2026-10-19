@@ -2187,7 +2187,14 @@ func (w *NodeProbeWorker) emitSyncAudit(
 	}
 	requestHeadersJSON := probeHeadersJSON(cleaned)
 
-	_, err := auditDB.Exec(ctx, `
+	// The audit row is the evidence of a completed round. It must survive a
+	// caller that already gave up its budget — or cancelled outright — or the
+	// round is lost exactly when the evidence matters. The insert therefore
+	// gets its own budget instead of inheriting the caller's.
+	auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), probePersistenceBudgetTimeout)
+	defer cancel()
+
+	_, err := auditDB.Exec(auditCtx, `
 		INSERT INTO node_probe_runs (
 			credential_id, raw_model_name, trigger_kind, attempt, next_retry_seconds,
 			direct_ok, direct_http_status, direct_err_code, direct_latency_ms, direct_err_detail,
