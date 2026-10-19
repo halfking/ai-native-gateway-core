@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -144,6 +143,9 @@ type ProbeResult struct {
 	// probe does not pass through OriginMiddleware.
 	OriginStage string
 	OriginActor string
+
+	// ObservationOnly preserves authoritative routing state when a 2xx body is inconclusive.
+	ObservationOnly bool
 }
 
 // NewActiveProbeExecutor constructs an executor.
@@ -376,10 +378,19 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 	defer func() { _ = resp.Body.Close() }()
 
 	res.HTTPStatus = resp.StatusCode
-	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	bodyBytes, readErr := readCredentialProbeBody(resp.Body)
 	res.RespPreview = truncatePreview(string(bodyBytes), 500)
 	res.ResponseBody = res.RespPreview
 	res.TotalTokens = responseTokenCount(bodyBytes)
+	parsed := classifyProbeHTTPResponse(resp.StatusCode, bodyBytes, readErr, res.LatencyMs, probeResponseProtocol(desc))
+	if readErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 && desc.ChatProbeEndpoint == upstreamurl.EpResponses && responsesProbeProtocolEvidence(bodyBytes) {
+		res.SupportsResponses = boolEvidence(true)
+	}
+	if parsed.category == probeCategorySkipped {
+		res.Status, res.ObservationOnly = ProbeStatusSkipped, true
+		res.ErrCode, res.ErrMsg = parsed.errCode, parsed.errMsg
+		return res
+	}
 
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
@@ -401,16 +412,20 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 		res.ErrCode = http.StatusText(resp.StatusCode)
 	}
 	res.ErrMsg = truncatePreview(string(bodyBytes), 500)
+	if readErr != nil {
+		res.ErrMsg = parsed.errMsg
+	}
 
 	// 2026-09-28 vapeur 轮：responses 探针命中「不支持 Responses API」裁决
 	// → chat 降级复探（见 probe_responses_fallback.go）。ActiveProbeWorker
 	// 会把本结果回灌 CredentialStateManager.UpdateFromProbe，不降级会把
 	// 经 chat 完全可用的节点压红。
 	if desc.ChatProbeEndpoint == upstreamurl.EpResponses &&
-		providercap.ResponsesUnsupportedError(res.HTTPStatus, res.ErrMsg) {
+		providercap.ResponsesUnsupportedError(res.HTTPStatus, string(bodyBytes)) {
 		res.SupportsResponses = boolEvidence(false)
-		fbStatus, fbBody, fbLatency, fbOK := responsesChatFallbackPing(ctx, e.httpClient, t.APIKey, t.BaseURL, model)
-		if fbOK {
+		fallback := responsesChatFallbackRound(ctx, e.httpClient, t.APIKey, t.BaseURL, model)
+		fbStatus, fbBody, fbLatency := fallback.HTTPStatus, fallback.Body, fallback.LatencyMs
+		if fallback.OK {
 			// 2026-09-29 (审计二十一轮): 对齐 node_probe（errDetail=注记整体
 			// 覆盖）/probe_http（okResult.errMsg=注记覆盖）——降级成功后
 			// ErrMsg 用降级注记整体替换，不残留原 responses 失败文本。
@@ -422,8 +437,28 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 			res.LatencyMs += fbLatency
 			res.RespPreview = truncatePreview(fbBody, 500)
 			res.ResponseBody = res.RespPreview
+		} else if fallback.Inconclusive {
+			res.Status, res.ObservationOnly = ProbeStatusSkipped, true
+			res.ErrCode = "probe_response_inconclusive"
+			res.ErrMsg = responsesUnsupportedDetail(res.HTTPStatus, fbStatus, fbBody, fbLatency, false)
 		} else {
-			res.ErrMsg += "; " + responsesUnsupportedDetail(res.HTTPStatus, fbStatus, fbBody, fbLatency, false)
+			res.ErrMsg = responsesUnsupportedDetail(res.HTTPStatus, fbStatus, fbBody, fbLatency, false)
+			res.HTTPStatus, res.LatencyMs = fbStatus, res.LatencyMs+fbLatency
+			res.RespPreview = truncatePreview(fbBody, 500)
+			res.ResponseBody = res.RespPreview
+			res.ErrCode = http.StatusText(fbStatus)
+			switch {
+			case fbStatus == 0:
+				res.Status, res.ErrCode = ProbeStatusNetwork, "network_error"
+			case fbStatus == 401 || fbStatus == 403:
+				res.Status = ProbeStatusAuth
+			case fbStatus == 429:
+				res.Status = ProbeStatusRate
+			case fbStatus >= 500:
+				res.Status = ProbeStatusHTTP5xx
+			default:
+				res.Status = ProbeStatusHTTP4xx
+			}
 		}
 	}
 	return res
@@ -525,14 +560,15 @@ func (e *ActiveProbeExecutor) RunGateway(ctx context.Context, target *ProbeTarge
 		return &ProbeResult{Status: ProbeStatusNetwork, ErrCode: "network_error", ErrMsg: err.Error(), LatencyMs: latency, StartedAt: start, CompletedAt: time.Now(), Target: derefTarget(target), RequestURL: endpoint, RequestBody: body}
 	}
 	defer resp.Body.Close()
-	respBuf := make([]byte, 512)
-	n, _ := resp.Body.Read(respBuf)
-	respBody := string(respBuf[:n])
-	parsed := classifyHTTPResponse(resp.StatusCode, respBody, latency)
+	respBuf, readErr := readCredentialProbeBody(resp.Body)
+	respBody := string(respBuf)
+	parsed := classifyProbeHTTPResponse(resp.StatusCode, respBuf, readErr, latency, "chat")
 	status := ProbeStatusHTTP4xx
 	switch parsed.status {
 	case "ok":
 		status = ProbeStatusSuccess
+	case "inconclusive":
+		status = ProbeStatusSkipped
 	case "auth":
 		status = ProbeStatusAuth
 	case "http_5xx", "network":
@@ -541,18 +577,19 @@ func (e *ActiveProbeExecutor) RunGateway(ctx context.Context, target *ProbeTarge
 		status = ProbeStatusRate
 	}
 	return &ProbeResult{
-		Status:       status,
-		HTTPStatus:   resp.StatusCode,
-		ErrCode:      parsed.errCode,
-		ErrMsg:       parsed.errMsg,
-		LatencyMs:    latency,
-		RespPreview:  truncatePreview(respBody, 500),
-		ResponseBody: truncatePreview(respBody, 500),
-		StartedAt:    start,
-		CompletedAt:  time.Now(),
-		Target:       derefTarget(target),
-		RequestURL:   endpoint,
-		RequestBody:  body,
+		ObservationOnly: parsed.category == probeCategorySkipped,
+		Status:          status,
+		HTTPStatus:      resp.StatusCode,
+		ErrCode:         parsed.errCode,
+		ErrMsg:          parsed.errMsg,
+		LatencyMs:       latency,
+		RespPreview:     truncatePreview(respBody, 500),
+		ResponseBody:    truncatePreview(respBody, 500),
+		StartedAt:       start,
+		CompletedAt:     time.Now(),
+		Target:          derefTarget(target),
+		RequestURL:      endpoint,
+		RequestBody:     body,
 	}
 }
 
@@ -581,12 +618,14 @@ func (e *ActiveProbeExecutor) runModelsList(ctx context.Context, target *ProbeTa
 		return &ProbeResult{Status: ProbeStatusNetwork, ErrCode: "network_error", ErrMsg: fmt.Sprintf("upstream call failed: %s (cred_id=%d, url=%s, model=%s)", err.Error(), target.CredentialID, endpoint, target.RawModel), StartedAt: start, CompletedAt: time.Now(), LatencyMs: int(time.Since(start).Milliseconds()), Target: *target, RequestURL: endpoint}
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	parsed := classifyHTTPResponse(resp.StatusCode, string(body), int(time.Since(start).Milliseconds()))
+	body, readErr := readCredentialProbeBody(resp.Body)
+	parsed := classifyProbeHTTPResponse(resp.StatusCode, body, readErr, int(time.Since(start).Milliseconds()), "models")
 	status := ProbeStatusHTTP4xx
 	switch parsed.status {
 	case "ok":
 		status = ProbeStatusSuccess
+	case "inconclusive":
+		status = ProbeStatusSkipped
 	case "auth":
 		status = ProbeStatusAuth
 	case "http_5xx", "network":
@@ -595,7 +634,8 @@ func (e *ActiveProbeExecutor) runModelsList(ctx context.Context, target *ProbeTa
 		status = ProbeStatusRate
 	}
 	return &ProbeResult{
-		Status: status, HTTPStatus: resp.StatusCode, ErrCode: parsed.errCode,
+		ObservationOnly: parsed.category == probeCategorySkipped,
+		Status:          status, HTTPStatus: resp.StatusCode, ErrCode: parsed.errCode,
 		ErrMsg: parsed.errMsg, RespPreview: truncatePreview(string(body), 500),
 		ResponseBody: truncatePreview(string(body), 500), RequestURL: endpoint,
 		LatencyMs: parsed.latencyMs, StartedAt: start, CompletedAt: time.Now(), Target: *target,
@@ -656,16 +696,13 @@ func buildProbePingBody(model string, desc providercap.Descriptor) (string, erro
 	return string(b), nil
 }
 
-// truncatePreview keeps at most maxChars characters of a probe response
-// for inclusion in _request_logs.response_preview.
+// truncatePreview sanitizes credential echoes and bounds UTF-8 diagnostics
+// before they reach _request_logs.response_preview.
 func truncatePreview(s string, maxChars int) string {
 	if maxChars <= 0 {
 		return ""
 	}
-	if len(s) <= maxChars {
-		return s
-	}
-	return s[:maxChars]
+	return truncateProbeBody(s, maxChars)
 }
 
 // Log emits a single structured slog line summarising the probe outcome.
@@ -687,6 +724,9 @@ func (r *ProbeResult) Log(credID int, model string, attempt int) {
 // string suitable for _request_logs.error_kind. Kept in this file (rather
 // than emitter.go) so the executor + emitter share the same vocabulary.
 func classifyProbeErrorKind(r *ProbeResult) string {
+	if r.ObservationOnly {
+		return "probe_direct_inconclusive"
+	}
 	switch r.Status {
 	case ProbeStatusSuccess:
 		return ""
@@ -749,6 +789,9 @@ func classifyProbeErrorKind(r *ProbeResult) string {
 // (probe_direct_endpoint_build) as "upstream" — actively misleading
 // operators to blame the provider for a gateway-side keyring problem.
 func classifyProbeFailureStage(r *ProbeResult) string {
+	if r != nil && r.ObservationOnly {
+		return "upstream"
+	}
 	if r == nil || r.Status == ProbeStatusSuccess {
 		return ""
 	}

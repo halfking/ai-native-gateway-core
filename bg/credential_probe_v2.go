@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -569,7 +568,7 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 					"credential_id", s.ID,
 					"health_status", pr.HealthStatus,
 					"availability_state", pr.AvailabilityState,
-					"error", errMsg,
+					"error", truncateBody([]byte(errMsg)),
 					"failed_so_far", failed,
 				)
 			}
@@ -737,6 +736,9 @@ type probeResult struct {
 	// distinguishes per-binding model failures from credential-wide
 	// failures so writeHealth only acts on the targeted (cmb) row.
 	BindingOnly bool
+	// ObservationOnly is an inconclusive generation probe, not evidence that
+	// the credential or any binding should be removed or restored.
+	ObservationOnly bool
 	// EvidenceAt is the probe-START timestamp backing this verdict (#5, R28
 	// 2026-09-14, optimistic concurrency gate). A failure verdict is only
 	// evidence from the past: the probe's network I/O can take tens of
@@ -892,18 +894,22 @@ func (c *CredentialProbeV2) probeCredentialWithCapability(ctx context.Context, s
 					lastErr = fmt.Sprintf("models endpoint network error: %s", err.Error())
 					continue
 				}
-				body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+				body, readErr := readCredentialProbeBody(resp.Body)
 				//nolint:errcheck // best-effort close
 				resp.Body.Close()
 				if resp.StatusCode == 200 {
 					step1OK = true
 					break
 				}
+				detail := errorsx.SanitizeErrorText(body, credentialProbeBodyLimit)
+				if readErr != nil {
+					detail = []byte("response body unavailable: " + readErr.Error())
+				}
 				if !probeutil.IsProbeRetryableStatus(resp.StatusCode) {
-					nonRetryableHit = fmt.Sprintf("status %d: %s", resp.StatusCode, truncateBody(body))
+					nonRetryableHit = fmt.Sprintf("status %d: %s", resp.StatusCode, detail)
 					break
 				}
-				lastErr = fmt.Sprintf("status %d: %s", resp.StatusCode, truncateBody(body))
+				lastErr = fmt.Sprintf("status %d: %s", resp.StatusCode, detail)
 			}
 			if step1OK {
 				lastErr = ""
@@ -937,7 +943,7 @@ func (c *CredentialProbeV2) probeCredentialWithCapability(ctx context.Context, s
 				providercap.WarnBlocked("probe_v2.chat", msgURL, reason)
 				return false, "egress blocked: " + reason
 			}
-			return c.miniAnthropic(ctx, httpClient, s.APIKey, s.DefaultProbeModel, msgURL, 20)
+			return c.miniAnthropic(ctx, httpClient, s.APIKey, s.DefaultProbeModel, msgURL, providercap.ProbePingMaxTokens)
 		}
 		probeURL := providercap.ProbeEndpointURL(s.BaseURL, desc)
 		if blocked, reason := providercap.EgressBlocked(probeURL); blocked {
@@ -945,7 +951,7 @@ func (c *CredentialProbeV2) probeCredentialWithCapability(ctx context.Context, s
 			return false, "egress blocked: " + reason
 		}
 		if desc.ChatProbeEndpoint == upstreamurl.EpResponses {
-			ok, errMsg, respStatus, respBody := c.miniResponses(ctx, httpClient, s.APIKey, s.DefaultProbeModel, probeURL)
+			ok, errMsg, respStatus, _ := c.miniResponses(ctx, httpClient, s.APIKey, s.DefaultProbeModel, probeURL)
 			if ok {
 				// F04 §3.4 reverse recovery: this probe's Responses attempt
 				// succeeded, so any prior "unsupported" verdict for this node
@@ -954,7 +960,9 @@ func (c *CredentialProbeV2) probeCredentialWithCapability(ctx context.Context, s
 				recordCapability(true)
 				return true, ""
 			}
-			if providercap.ResponsesUnsupportedError(respStatus, respBody) {
+			// Classification needs the complete bounded diagnostic; the display
+			// preview may end before the relay's capability verdict.
+			if providercap.ResponsesUnsupportedError(respStatus, errMsg) {
 				// F04: durable negative verdict. The cooldown this failure
 				// causes expires on its own schedule; the capability does not.
 				recordCapability(false)
@@ -964,27 +972,20 @@ func (c *CredentialProbeV2) probeCredentialWithCapability(ctx context.Context, s
 					// 保留原 responses 失败上下文：降级被跳过只作附注，不覆盖归因。
 					return false, errMsg + "; chat fallback skipped (egress blocked: " + reason + ")"
 				}
-				chatOK, chatErr := c.miniChat(ctx, httpClient, s.APIKey, s.DefaultProbeModel, chatURL, responsesFallbackChatMaxTokens)
+				chatOK, chatErr := c.miniChat(ctx, httpClient, s.APIKey, s.DefaultProbeModel, chatURL, providercap.ProbePingMaxTokens)
 				if chatOK {
 					return true, ""
 				}
 				// Keep legs separate: even a trailing native-body keyword can
 				// contaminate quota/key/model classification of the final Chat.
-				// errMsg already contains only the sanitized, bounded preview.
+				// Bound the log independently of the complete classification text.
 				slog.Info("credential probe v2: Responses unsupported before failed Chat fallback",
-					"responses_status", respStatus, "responses_error", errMsg)
+					"responses_status", respStatus, "responses_error", truncateBody([]byte(errMsg)))
 				return false, chatErr
 			}
 			return ok, errMsg
 		}
-		ok, errMsg := c.miniChat(ctx, httpClient, s.APIKey, s.DefaultProbeModel, probeURL, 1)
-		if !ok && strings.Contains(errMsg, "max_tokens") {
-			// Some legacy gateways reject max_tokens < 2; retry with 2.
-			// This is a parameter-compatibility fallback, NOT a transient
-			// retry — runs at most once per attempt, inside the attempt.
-			ok, errMsg = c.miniChat(ctx, httpClient, s.APIKey, s.DefaultProbeModel, probeURL, 2)
-		}
-		return ok, errMsg
+		return c.miniChat(ctx, httpClient, s.APIKey, s.DefaultProbeModel, probeURL, providercap.ProbePingMaxTokens)
 	}
 
 	var (
@@ -1038,6 +1039,9 @@ func shouldRetryChatErrMsg(errMsg string) bool {
 	}
 	// Look for "status NNN:" and run through the classifier.
 	if code, ok := extractStatusCode(errMsg); ok {
+		if code == 429 && errorsx.IsQuotaExhaustion(errorsx.ClassifyErrorWithBody(code, []byte(errMsg))) {
+			return false
+		}
 		return probeutil.IsProbeRetryableStatus(code)
 	}
 	// No status code visible — assume network/transport level error
@@ -1100,19 +1104,16 @@ func (c *CredentialProbeV2) miniChat(ctx context.Context, httpClient *http.Clien
 	}
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	body, readErr := readCredentialProbeBody(resp.Body)
+	if readErr != nil {
+		return false, credentialProbeReadFailure("chat", resp.StatusCode, readErr)
+	}
 	bodyStr := string(body)
 	if resp.StatusCode == 200 {
-		return true, ""
-	}
-	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		return false, fmt.Sprintf("chat status %d: %s", resp.StatusCode, truncateBody(body))
-	}
-	if resp.StatusCode == 429 {
-		return false, "429 rate limited"
-	}
-	if resp.StatusCode == 402 {
-		return false, "402 payment required"
+		if credentialProbeHasOutput("chat", body) {
+			return true, ""
+		}
+		return false, "chat probe response invalid: assistant_output_missing"
 	}
 	if resp.StatusCode == 404 && probeutil.IsEndpointIDRequiredError(bodyStr) {
 		// Volcano Ark and similar providers: this model needs an endpoint ID
@@ -1121,7 +1122,7 @@ func (c *CredentialProbeV2) miniChat(ctx context.Context, httpClient *http.Clien
 		// marking the credential unreachable and blocking all streaming.
 		return false, fmt.Sprintf("%s: %s", probeutil.EndpointIDRequiredErrCode, truncateBody(body))
 	}
-	return false, fmt.Sprintf("chat status %d: %s", resp.StatusCode, truncateBody(body))
+	return false, credentialProbeHTTPFailure("chat", resp.StatusCode, body)
 }
 
 // miniResponses sends a single-shot /v1/responses request with the
@@ -1152,18 +1153,18 @@ func (c *CredentialProbeV2) miniResponses(ctx context.Context, httpClient *http.
 	}
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	respBody, readErr := readCredentialProbeBody(resp.Body)
+	if readErr != nil {
+		return false, credentialProbeReadFailure("responses", resp.StatusCode, readErr), resp.StatusCode, ""
+	}
 	preview := truncateBody(respBody)
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return true, "", resp.StatusCode, preview
+		if credentialProbeHasOutput("responses", respBody) {
+			return true, "", resp.StatusCode, preview
+		}
+		return false, "responses probe response invalid: assistant_output_missing", resp.StatusCode, preview
 	}
-	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		return false, fmt.Sprintf("responses status %d: %s", resp.StatusCode, preview), resp.StatusCode, preview
-	}
-	if resp.StatusCode == 429 {
-		return false, "429 rate limited", resp.StatusCode, preview
-	}
-	return false, fmt.Sprintf("responses status %d: %s", resp.StatusCode, preview), resp.StatusCode, preview
+	return false, credentialProbeHTTPFailure("responses", resp.StatusCode, respBody), resp.StatusCode, preview
 }
 
 func truncateBody(b []byte) string {
@@ -1201,17 +1202,17 @@ func (c *CredentialProbeV2) miniAnthropic(ctx context.Context, httpClient *http.
 	}
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	respBody, readErr := readCredentialProbeBody(resp.Body)
+	if readErr != nil {
+		return false, credentialProbeReadFailure("messages", resp.StatusCode, readErr)
+	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return true, ""
+		if credentialProbeHasOutput("messages", respBody) {
+			return true, ""
+		}
+		return false, "messages probe response invalid: assistant_output_missing"
 	}
-	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		return false, fmt.Sprintf("messages status %d: %s", resp.StatusCode, truncateBody(respBody))
-	}
-	if resp.StatusCode == 429 {
-		return false, "429 rate limited"
-	}
-	return false, fmt.Sprintf("messages status %d: %s", resp.StatusCode, truncateBody(respBody))
+	return false, credentialProbeHTTPFailure("messages", resp.StatusCode, respBody)
 }
 
 // authProbeBackoffBase is the first-rung recovery delay for a probe-level
@@ -1249,12 +1250,33 @@ func classifyProbeFailure(errMsg string) probeResult {
 	pr := probeResult{HealthSource: "probe"}
 	status, legacyAuth := credentialProbeFailureStatus(errMsg)
 	switch {
+	case status >= 500 || credentialProbeInvalidResponse(errMsg):
+		pr.HealthStatus = "warning"
+		pr.HealthError = truncateBody([]byte(errMsg))
+		pr.StateReasonCode = "probe_inconclusive"
+		pr.ObservationOnly = true
 	case (legacyAuth || status == 401 || status == 403) &&
 		!isProbeQuotaFailure(errMsg) && !isPerModelChatFailure(errMsg):
 		pr.HealthStatus = "unreachable"
 		pr.AvailabilityState = "auth_failed"
 		pr.HealthError = errMsg
 		pr.StateReasonCode = "auth_error"
+	case isProbeQuotaFailure(errMsg) || status == 402:
+		pr.HealthStatus = "warning"
+		pr.AvailabilityState = "suspended"
+		pr.HealthError = errMsg
+		kind := errorsx.ClassifyErrorWithBody(status, []byte(errMsg))
+		pr.StateReasonCode = string(kind)
+		switch kind {
+		case errorsx.KindQuotaPeriodic:
+			pr.QuotaState = "periodic_exhausted"
+			recover := errorsx.NextQuotaReset(errMsg, time.Now())
+			pr.AvailabilityRecoverAt = &recover
+		case errorsx.KindQuotaPermanent:
+			pr.QuotaState = "permanently_exhausted"
+		default:
+			pr.QuotaState = "balance_exhausted"
+		}
 	case status == 429:
 		pr.HealthStatus = "warning"
 		pr.AvailabilityState = "rate_limited"
@@ -1262,12 +1284,6 @@ func classifyProbeFailure(errMsg string) probeResult {
 		pr.AvailabilityRecoverAt = &recover
 		pr.HealthError = errMsg
 		pr.StateReasonCode = "rate_limited"
-	case isProbeQuotaFailure(errMsg) || status == 402:
-		pr.HealthStatus = "warning"
-		pr.AvailabilityState = "ready"
-		pr.QuotaState = "periodic_exhausted"
-		pr.HealthError = errMsg
-		pr.StateReasonCode = "balance_low"
 	case strings.Contains(errMsg, probeutil.EndpointIDRequiredErrCode):
 		// 404 InvalidEndpointOrModel — the credential itself is reachable and
 		// authenticated, but the chosen default_probe_model needs an endpoint
@@ -1313,6 +1329,7 @@ func classifyProbeFailure(errMsg string) probeResult {
 		pr.HealthError = errMsg
 		pr.StateReasonCode = "network_error"
 	}
+	pr.HealthError = truncateBody([]byte(pr.HealthError))
 	return pr
 }
 
@@ -1346,7 +1363,7 @@ var probeKeyFailureRe = regexp.MustCompile(`(?i)(invalid[_ -]?(api[_ -]?)?key|(?
 
 func isProbeQuotaFailure(errMsg string) bool {
 	status, legacyAuth := credentialProbeFailureStatus(errMsg)
-	if legacyAuth || (status != 402 && status != 403) || probeKeyFailureRe.MatchString(errMsg) {
+	if legacyAuth || (status != 402 && status != 403 && status != 429) || probeKeyFailureRe.MatchString(errMsg) {
 		return false
 	}
 	kind := errorsx.ClassifyErrorWithBody(status, []byte(errMsg))
@@ -1465,6 +1482,17 @@ func (c *CredentialProbeV2) writeBindingProbeEvidence(ctx context.Context, db bi
 func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr probeResult) {
 	execCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	if pr.ObservationOnly {
+		slog.Info("credential probe v2: inconclusive probe; preserving authoritative state",
+			"credential_id", credID, "model", pr.HealthProbeModel, "detail", pr.HealthError)
+		if c.db != nil {
+			if _, err := writeCredentialProbeObservation(execCtx, c.db, credID); err != nil {
+				slog.Warn("credential probe v2: observation bookkeeping failed", "credential_id", credID, "error", err)
+			}
+		}
+		c.persistProbeCapability(execCtx, credID, pr)
+		return
+	}
 
 	var recoverAt *time.Time
 	if pr.AvailabilityRecoverAt != nil {
@@ -1527,12 +1555,13 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		    availability_state = $6,
 		    availability_recover_at = $7,
 		    quota_state = COALESCE($8, quota_state),
-		    -- 审计修正 (2026-07-06): 探测成功且 quota_state 被重置为 'ok' 时，
-		    -- 同步清除残留的 quota_recover_at，避免状态不一致
-		    -- (quota_state='ok' 但 quota_recover_at 指向未来时间)。
-		    -- 失败分支不传 $8，COALESCE 保持旧值，这里的 CASE 也不会触发。
+		    -- Success and non-periodic quota clear a stale reset timestamp;
+		    -- confirmed periodic quota stores its shared-classifier reset.
+		    -- A probe without quota evidence preserves the existing reset.
 		    quota_recover_at = CASE
 		        WHEN COALESCE($8, quota_state) = 'ok' THEN NULL
+		        WHEN $8 IN ('balance_exhausted', 'permanently_exhausted') THEN NULL
+		        WHEN $8 = 'periodic_exhausted' AND $7::timestamptz IS NOT NULL THEN $7::timestamptz
 		        ELSE quota_recover_at
 		    END,
 		    lifecycle_status = CASE
@@ -2200,7 +2229,7 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 			"credential_id", credID,
 			"availability_state", pr.AvailabilityState,
 			"probe_consecutive_failures", s.ProbeConsecutiveFailures+1,
-			"final_error", errMsg)
+			"final_error", truncateBody([]byte(errMsg)))
 	}
 	pr.HealthProbeModel = s.DefaultProbeModel
 	// #5 (R28): probeStart was taken immediately before probeCredential — it

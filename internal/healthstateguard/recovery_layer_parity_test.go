@@ -69,7 +69,7 @@ type layer struct {
 // ⚠️ 这张表是 219 号逐个入口读出来的，不是凭印象列的。
 var layers = []layer{
 	{Key: "dbCredentials", Label: "DB credentials 行（availability/circuit/quota/health 列）", Symbols: []string{"UPDATE credentials", "UPDATE public.credentials"}},
-	{Key: "dbBindings", Label: "DB credential_model_bindings（binding 可用性）", Symbols: []string{"UPDATE credential_model_bindings"}},
+	{Key: "dbBindings", Label: "DB credential_model_bindings（binding 可用性）", Symbols: []string{"UPDATE credential_model_bindings", "forceEnableBindings("}},
 	{Key: "dbModelProbe", Label: "DB model_probe_state（旧探针系统）", Symbols: []string{"UPDATE model_probe_state"}},
 	{Key: "dbNodeProbe", Label: "DB node_probe_state（新探针系统，v_routable 实际读它）", Symbols: []string{"UPDATE node_probe_state"}},
 	{Key: "routingCache", Label: "路由候选缓存失效", Symbols: []string{"invalidateRoutingCaches", "InvalidateAllCandidateCache"}},
@@ -103,6 +103,25 @@ const notCredentialRecovery = "本入口只重置 credentials 行的状态列，
 // 每条 Done 的取值由同一套解析逻辑实测生成后逐条人工复核。
 // 新增恢复入口必须在此登记，否则 TestEveryRecoveryEntryIsRegistered 转红。
 var registry = []entry{
+	{
+		File: "../../admin/routing_force_bindings.go", Func: "forceEnableBindings",
+		Route: "applyForceEnable 事务内的 CMB 恢复 helper；其余状态层由调用者负责",
+		Done: map[string]bool{
+			"dbCredentials": false, "dbBindings": true, "dbModelProbe": false, "dbNodeProbe": false,
+			"routingCache": false, "keyCache": false, "keyRotator": false,
+			"inProcessNodeState": false, "ursmV2": false,
+		},
+		Gaps: map[string]string{
+			"dbCredentials":      "仅更新 CMB；credentials 由同一事务的 applyForceEnable 更新",
+			"dbModelProbe":       "旧探针状态由同一事务的 applyForceEnable 更新",
+			"dbNodeProbe":        "新探针状态由同一事务的 applyForceEnable 更新",
+			"routingCache":       "提交后由 applyForceEnable 失效候选缓存",
+			"keyCache":           "提交后由 applyForceEnable 失效凭据 key 缓存",
+			"keyRotator":         "提交后由 applyForceEnable 重置 key rotator",
+			"inProcessNodeState": "提交后由 applyForceEnable 调用 resetInMemoryNodeState",
+			"ursmV2":             "提交后由 applyForceEnable 清理 URSM v2",
+		},
+	},
 	{
 		File: "../../admin/routing.go", Func: "applyForceEnable",
 		Route: "emergency-repair 的 force_enable 分支（:5703 执行文件级 const forceEnableCredentialSQL）",

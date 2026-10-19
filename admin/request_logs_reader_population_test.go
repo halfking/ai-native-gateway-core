@@ -345,6 +345,12 @@ var unjudgedBaseline = 46
 // canonical 视图精确等价，252 EXCEPT 对拍双向差集 0），退役时随 v1 一并
 // 改指或退役，与 v1_write_liveness 的 ③ 类同档；完整退役判定待退役轮做。
 var unjudgedBaselineFiles = map[string]bool{
+	// Existing tenant four-arm source moved to its own file; count ratchet unchanged.
+	"admin/tenant_stats_logs_table.go": true,
+	// 2026-10-19: cache-economics now reads the v1 parent directly.
+	// Existing Tier II/stop-write assessment remains; full retirement review is still open.
+	// Keep the count ratchet at 46; record the actual new membership explicitly.
+	"admin/usage_enhanced.go":               true,
 	"admin/analytics.go":                    true,
 	"admin/auto_route_outcome_freshness.go": true,
 	// 2026-10-13 S3 波 2 审计轮补记：并行会话引入的候选失败监控读方
@@ -549,44 +555,6 @@ func liveRelations(t *testing.T, root string) map[string]bool {
 		}
 	}
 	return live
-}
-
-// stripSQLComments removes `-- ...` to end of line and `/* ... */` from a SQL
-// body. It is deliberately conservative about quoted regions: an apostrophe
-// inside a string literal is common in these queries, and mangling one would
-// change a classification silently. A `--` inside a quoted literal is left in
-// place, which can only leave a name un-stripped, never invent a relation.
-func stripSQLComments(raw string) string {
-	var b strings.Builder
-	inBlock := false
-	for _, line := range strings.Split(raw, "\n") {
-		if inBlock {
-			if i := strings.Index(line, "*/"); i >= 0 {
-				line, inBlock = line[i+2:], false
-			} else {
-				continue
-			}
-		}
-		if i := strings.Index(line, "--"); i >= 0 {
-			line = line[:i]
-		}
-		for {
-			i := strings.Index(line, "/*")
-			j := strings.Index(line, "*/")
-			if i < 0 {
-				break
-			}
-			if j > i {
-				line = line[:i] + line[j+2:]
-				continue
-			}
-			line, inBlock = line[:i], true
-			break
-		}
-		b.WriteString(line)
-		b.WriteByte('\n')
-	}
-	return b.String()
 }
 
 func sumProxy(all []populationEntry) int {

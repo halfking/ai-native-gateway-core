@@ -351,6 +351,19 @@ func (w *ActiveProbeWorker) processOne(ctx context.Context, task probeTask) {
 	w.emitter.Emit(ctx, target.CredentialID, target.ProviderID, stateTenantID,
 		task.Model, target.OutboundModel, "direct", stateParentReqID, attempt, result)
 
+	w.applyProbeResult(ctx, task, attempt, result)
+}
+
+// applyProbeResult owns all routing-state feedback and retry decisions.
+func (w *ActiveProbeWorker) applyProbeResult(ctx context.Context, task probeTask, attempt int, result *ProbeResult) {
+	if result.ObservationOnly {
+		w.mu.Lock()
+		delete(w.running, probeKey(task.CredID, task.Model))
+		w.mu.Unlock()
+		slog.Info("active_probe: inconclusive response, routing state retained", "cred_id", task.CredID, "model", task.Model)
+		return
+	}
+
 	// 4. Close the loop with the state manager.
 	if result.Status == ProbeStatusSuccess {
 		w.markSuccess(task.CredID, task.Model)
@@ -367,22 +380,18 @@ func (w *ActiveProbeWorker) processOne(ctx context.Context, task probeTask) {
 		return
 	}
 
-	// Only permanent failures should lock routing for five minutes. Slow or
-	// overloaded providers remain routable while the retry chain continues.
-	if w.cfg.StateManager != nil {
-		state := &credentialstate.State{
+	// Transient failures cannot prove recovery or erase an existing hold.
+	// Keep their retry schedule while only definitive failures write a hold.
+	if w.cfg.StateManager != nil && result.Status != ProbeStatusFailed && IsPermanentProbeFailure(result.Status) {
+		recoverAt := time.Now().Add(5 * time.Minute)
+		w.cfg.StateManager.UpdateFromProbe(ctx, &credentialstate.State{
 			CredentialID: task.CredID,
 			Model:        task.Model,
-			Available:    true,
+			Available:    false,
+			RecoverAt:    &recoverAt,
 			LastError:    classifyProbeErrorKind(result),
 			Source:       "probe_direct",
-		}
-		if IsPermanentProbeFailure(result.Status) {
-			recoverAt := time.Now().Add(5 * time.Minute)
-			state.Available = false
-			state.RecoverAt = &recoverAt
-		}
-		w.cfg.StateManager.UpdateFromProbe(ctx, state)
+		})
 	}
 
 	// 5. Decide whether to retry.

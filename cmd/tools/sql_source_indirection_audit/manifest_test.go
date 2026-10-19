@@ -30,7 +30,7 @@ import (
 // `documentedSnapshot`（由 `TestDocumentedSnapshotMatchesMeasurement` 钉住，
 // 2026-10-15 / r1033 读源切换后更新）：
 //
-//	全仓拼接点 94 处（v1 5 文件/11 处、canonical 25/38、unresolved 11/18、v1arm 16/27）
+//	全仓拼接点 95 处（v1 5 文件/11 处、canonical 25/38、unresolved 12/19、v1arm 16/27）
 //	（2026-10-05 832/833 收口轮：+2 全部来自 modalityVerifyAddressableSource
 //	共用常量的两个引用点，见清单 bg/modality_verification.go 条目；v1 桶不动）
 //	（2026-10-07 全量门首跑：+1 拼接点 / +1 v1 臂视图处数，方向=变大=「把看
@@ -151,6 +151,11 @@ type siteAssessment struct {
 // indirectSiteAssessments 是全仓三桶的**判定清单**。键是仓库相对路径。
 // 判定依据是逐个文件读源码，不是抄工具输出。
 var indirectSiteAssessments = map[string]siteAssessment{
+	"bg/candidate_failure_monitor.go": {
+		Verdict:     verdictReadsV1Arm,
+		Via:         "checkStalenessLastRequestSurface is the immutable request_logs_with_current_month_without_request_class_due_at view name, concatenated into the recent-activity subquery. It is v1-only, without session turns. checkAutoCool separately reads session_turns_hot plus deduplicated _request_logs_hot.",
+		Consequence: "Removing the intermediate v1-only view makes staleness checks warn each tick (42P01), rather than silently authorize credential state changes. Dropping the v1 hot table also breaks auto-cool's explicit fallback arm; both must be retired or repointed before DROP.",
+	},
 
 	// ── 读 v1 宽族基表（5 文件 / 11 处）──────────────────────────────────
 	// 这 5 个里有 **3 个在 admin 侧四张登记表里一处都没有**（§9.227）。
@@ -1067,7 +1072,9 @@ var documentedSnapshot = bucketSnapshot{
 	// ⚠ 同批发现 df9a213de 提交信息声称「已按仓库既有的间接读方登记表归族并
 	// 同步计数」是**不实**的：它只登了 admin/request_logs_indirect_readers_test.go，
 	// 漏了本清单。详见本文件 admin/auto_route_outcome_freshness.go 条目的注释。
-	TotalSites: 94,
+	// 2026-10-19: staleness changed a literal FROM into a named view constant.
+	// One additional unresolved site, not a newly introduced reader.
+	TotalSites: 95,
 	V1Files:    5,
 	V1Sites:    11,
 	// ★ §9.258：第四桶是**退役工作量的主体**，而前两桶都不是。
@@ -1085,8 +1092,8 @@ var documentedSnapshot = bucketSnapshot{
 	V1ArmSites: 27,
 	CanonFiles: 25,
 	CanonSites: 38,
-	UnresFiles: 11,
-	UnresSites: 18,
+	UnresFiles: 12,
+	UnresSites: 19,
 }
 
 func TestDocumentedSnapshotMatchesMeasurement(t *testing.T) {

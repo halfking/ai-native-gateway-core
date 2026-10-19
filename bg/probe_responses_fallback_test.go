@@ -203,7 +203,7 @@ func TestActiveProbeExecutor_ResponsesSuccessPersistsPositiveCapability(t *testi
 		if r.URL.Path != "/v1/responses" {
 			t.Errorf("probe path = %q, want /v1/responses", r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","status":"completed","output":[]}`))
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"pong"}]}]}`))
 	}))
 	t.Cleanup(srv.Close)
 
@@ -253,7 +253,7 @@ func TestMiniResponses_WireShape(t *testing.T) {
 			t.Errorf("miniResponses path = %q, want /responses", r.URL.Path)
 		}
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","status":"completed","output":[]}`))
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"pong"}]}]}`))
 	}))
 	t.Cleanup(srv.Close)
 

@@ -697,7 +697,7 @@ var retirementReattributed = map[string]string{
 		"⇒ 消费面分档为 ③（按设计继续读 v1）：它的判据就是「v1 还在不在写」这件事本身。" +
 		"停写之后它要么退役、要么改观测对象，**不能留着一个永远 dead 的判据**。",
 	"admin/probe_history.go": "repoint-degraded: `credential_id` only. The `id` was `models_canonical.id`",
-	"admin/providers.go":     "repoint-degraded: `provider_id` only. Every `p.id`/`c.id` belongs to the providers/credentials tables",
+	// providers.go retired its request-log read; no relation remains to assess.
 	// admin/routing.go 于 2026-10-13（S3 波 3）除名：popularModelsHotSQL 改读
 	// 会话族原生源后文件内已无 v1 列引用（exposure 扫描 0 列 = 无测量对象）。
 	"admin/swim_lane_init.go":    "**repoint-safe**: no exposure columns at all. The `id`s were models_canonical / model_families / credentials / providers primary keys",

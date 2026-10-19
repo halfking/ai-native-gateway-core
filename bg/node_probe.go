@@ -77,6 +77,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/loopback"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
@@ -194,6 +195,7 @@ type NodeProbeWorker struct {
 	// resolveDirectTargetFn is the deterministic test seam for the upstream
 	// target lookup; production leaves it nil and uses the database resolver.
 	resolveDirectTargetFn func(ctx context.Context, credID int, model string) (plain, outboundModel, baseURL, protocol string, providerID int, err error)
+	loadStateFn           func(context.Context, int, string) (nodeProbeStateRow, error)
 	// tenantResolver looks up the tenant ID for a credential. Production
 	// wires it to credentials.tenant_id via (*pgxpool.Pool).QueryRow; tests
 	// can inject a stub to assert the backfill branch without spinning up
@@ -264,6 +266,10 @@ type NodeProbeWorker struct {
 	// the recovered availability.
 	syncWaitersMu sync.Mutex
 	syncWaiters   map[string][]chan struct{}
+	// Per-waiter pointers survive a subsequent probe of the same pair; the
+	// closed channel publishes the completed round's observation verdict.
+	syncWaiterObservations map[chan struct{}]*bool
+	inFlightObservations   map[string]bool // guarded by mu; removed by finishProbe
 
 	// credSyncSem (Wave 3 B2③) holds one buffered channel per credential
 	// seen by ProbeSync, capping same-credential concurrent direct probes
@@ -1450,6 +1456,7 @@ func pumpDueStatesSQL() string {
 		FROM node_probe_state nps
 		JOIN credentials cred ON cred.id = nps.credential_id
 		WHERE nps.paused = FALSE AND nps.next_retry_at <= now()
+		  AND ` + nodeProbeObservationCadenceSQL("nps") + `
 		  AND ` + nodeProbeErrorEvidenceSQL("nps") + `
 		  AND ` + automaticProbeEligibilityExistsSQL("nps.credential_id") + `
 		  AND EXISTS (
@@ -1590,6 +1597,13 @@ func (w *NodeProbeWorker) finishProbe(key string) {
 	delete(w.inFlight, key)
 	w.syncWaitersMu.Lock()
 	chs := append([]chan struct{}(nil), w.syncWaiters[key]...)
+	for _, ch := range chs {
+		if observed := w.syncWaiterObservations[ch]; observed != nil {
+			*observed = w.inFlightObservations[key]
+		}
+		delete(w.syncWaiterObservations, ch)
+	}
+	delete(w.inFlightObservations, key)
 	delete(w.syncWaiters, key)
 	w.syncWaitersMu.Unlock()
 	w.mu.Unlock()
@@ -1646,11 +1660,12 @@ func (w *NodeProbeWorker) ProbeSync(
 	}
 
 	type syncJob struct {
-		key    string
-		credID int
-		model  string
-		reuse  bool // wait for in-flight instead of running new
-		waitCh chan struct{}
+		key         string
+		credID      int
+		model       string
+		reuse       bool // wait for in-flight instead of running new
+		waitCh      chan struct{}
+		observation *bool
 	}
 
 	jobs := make([]syncJob, 0, len(candidates))
@@ -1678,10 +1693,15 @@ func (w *NodeProbeWorker) ProbeSync(
 			ch := make(chan struct{})
 			w.syncWaitersMu.Lock()
 			w.syncWaiters[key] = append(w.syncWaiters[key], ch)
+			observed := new(bool)
+			if w.syncWaiterObservations == nil {
+				w.syncWaiterObservations = make(map[chan struct{}]*bool)
+			}
+			w.syncWaiterObservations[ch] = observed
 			w.syncWaitersMu.Unlock()
 			w.mu.Unlock()
 			nodeProbeSyncInflightWaiters.Inc()
-			jobs = append(jobs, syncJob{key: key, credID: c.CredentialID, model: c.RawModel, reuse: true, waitCh: ch})
+			jobs = append(jobs, syncJob{key: key, credID: c.CredentialID, model: c.RawModel, reuse: true, waitCh: ch, observation: observed})
 			continue
 		}
 		w.inFlight[key] = struct{}{}
@@ -1730,6 +1750,16 @@ func (w *NodeProbeWorker) ProbeSync(
 			defer w.finishProbe(j.key)
 			res := freshResult{job: j}
 			res.direct = w.probeDirect(ctx, j.credID, j.model)
+			if res.direct.observationOnly {
+				w.markProbeObservation(j.credID, j.model)
+				results <- res
+				bookCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				defer cancel()
+				if err := w.insertNodeProbeRun(bookCtx, j.credID, j.model, "sync_request", 1, 0, res.direct, nodeProbeRoundResult{}, false, start, time.Now(), int(time.Since(start).Milliseconds())); err != nil {
+					slog.Warn("node_probe_worker: inconclusive sync audit failed", "error", err)
+				}
+				return
+			}
 			// 2026-09-29 (R-vapeur2): URSM 视图写 + 候选缓存失效先行。这个
 			// Redis 写是 authoritative 路由唯一的恢复信号（毫秒级、自身已
 			// WithoutCancel 免疫 hold 过期），原顺序把它排在 binding/observed/
@@ -1918,7 +1948,7 @@ sweep:
 			// A background / sibling probe finished. Did it actually
 			// mark this (cred,model) available? Re-check the cache.
 			// IsAvailable does I/O — call it outside winnerMu.
-			if !winnerIsSet() && w.stateProvider != nil {
+			if !*j.observation && !winnerIsSet() && w.stateProvider != nil {
 				if avail, _ := w.stateProvider.IsAvailable(ctx, j.credID, j.model); avail {
 					// We don't have the probe round result here;
 					// synthesize a minimal winner record so the
@@ -1977,6 +2007,45 @@ sweep:
 // gateway round remains an audit signal and is still emitted to diagnostics.
 func probeRecovered(direct nodeProbeRoundResult) bool {
 	return direct.ok
+}
+
+func (w *NodeProbeWorker) markProbeObservation(credID int, model string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	key := fmt.Sprintf("%d|%s", credID, model)
+	if _, busy := w.inFlight[key]; busy {
+		if w.inFlightObservations == nil {
+			w.inFlightObservations = make(map[string]bool)
+		}
+		w.inFlightObservations[key] = true
+	}
+}
+
+// A conclusive round schedules next_retry_at after its attempt. An observation
+// leaves that authority untouched and advances only last_attempt_at, so pace
+// that shape here without borrowing route-visible cooldown or lease fields.
+func nodeProbeObservationCadenceSQL(alias string) string {
+	return "(" + alias + ".last_attempt_at IS NULL OR " + alias + ".last_attempt_at <= " + alias + ".next_retry_at OR " + alias + ".last_attempt_at <= now() - interval '5 minutes')"
+}
+
+const nodeProbeObservationSQL = `UPDATE node_probe_state SET
+	last_attempt_at = now()
+	WHERE credential_id = $1 AND raw_model_name = $2`
+
+func (w *NodeProbeWorker) recordProbeObservation(ctx context.Context, credID int, model string, releaseOwnedLease bool) error {
+	if w.db == nil {
+		return nil
+	}
+	sql := nodeProbeObservationSQL
+	if releaseOwnedLease {
+		// Only runOne owns a pickDueAtomically lease. Queue and synchronous
+		// probes must not clear a different legacy worker's lease.
+		sql = strings.Replace(sql, "last_attempt_at = now()", "last_attempt_at = now(), in_flight_until = NULL", 1)
+	}
+	if _, err := w.db.Exec(ctx, sql, credID, model); err != nil {
+		return fmt.Errorf("record inconclusive probe observation: %w", err)
+	}
+	return nil
 }
 
 // credSemaphore returns the per-credential ProbeSync slot channel
@@ -2059,7 +2128,7 @@ func (w *NodeProbeWorker) ProbeConfirm(ctx context.Context, credID int, model st
 		defer release()
 		return round(cctx, credID, model)
 	}()
-	if first.ok {
+	if first.ok || first.observationOnly {
 		return false
 	}
 	select {
@@ -2080,7 +2149,7 @@ func (w *NodeProbeWorker) ProbeConfirm(ctx context.Context, credID int, model st
 		defer release2()
 		return round(cctx, credID, model)
 	}()
-	return !second.ok
+	return !second.ok && !second.observationOnly
 }
 
 // emitSyncAudit writes a node_probe_runs row for a sync_request probe
@@ -2268,6 +2337,7 @@ func (w *NodeProbeWorker) pickDueAtomically(ctx context.Context) (int, string, b
 			FROM node_probe_state
 			WHERE paused = FALSE
 			  AND next_retry_at <= now()
+			  AND `+nodeProbeObservationCadenceSQL("node_probe_state")+`
 			  AND (in_flight_until IS NULL OR in_flight_until <= now())
 			  AND (last_direct_ok IS DISTINCT FROM TRUE
 			       OR last_gateway_ok IS DISTINCT FROM TRUE)
@@ -2359,6 +2429,15 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 
 	// Round 1: direct upstream
 	direct := w.probeDirect(ctx, credID, model)
+	if direct.observationOnly {
+		w.markProbeObservation(credID, model)
+		if err := w.recordProbeObservation(ctx, credID, model, true); err != nil {
+			return err
+		}
+		w.emitProbe(ctx, credID, direct.providerID, model, direct.outboundModel, "direct", attempt, trigger, direct)
+		now := time.Now()
+		return w.insertNodeProbeRun(ctx, credID, model, triggerKind, attempt, 0, direct, nodeProbeRoundResult{}, false, startedAt, now, int(now.Sub(startedAt).Milliseconds()))
+	}
 	// CRITICAL: update state BEFORE probeGateway so the routing layer
 	// sees the restored credential, not the stale cooling state from
 	// the original 5xx or transient failure.
@@ -2699,6 +2778,9 @@ type nodeProbeStateRow struct {
 }
 
 func (w *NodeProbeWorker) loadState(ctx context.Context, credID int, model string) (nodeProbeStateRow, error) {
+	if w.loadStateFn != nil {
+		return w.loadStateFn(ctx, credID, model)
+	}
 	var s nodeProbeStateRow
 	err := w.db.QueryRow(ctx, `
 		SELECT consecutive_failures, consecutive_successes, paused
@@ -2715,19 +2797,20 @@ func (w *NodeProbeWorker) loadState(ctx context.Context, credID int, model strin
 }
 
 type nodeProbeRoundResult struct {
-	ok            bool
-	providerID    int
-	outboundModel string
-	httpStatus    int
-	errCode       string
-	errDetail     string
-	latencyMs     int
-	timedOut      bool // true if context deadline or client timeout triggered
+	observationOnly bool // an invalid/incomplete 2xx cannot convict or recover a node
+	ok              bool
+	providerID      int
+	outboundModel   string
+	httpStatus      int
+	errCode         string
+	errDetail       string
+	latencyMs       int
+	timedOut        bool // true if context deadline or client timeout triggered
 	// 2026-07-16: 新增详细字段用于完整记录probe过程
 	requestURL     string
 	requestHeaders map[string]string // 已脱敏（不含Authorization/x-api-key）
 	requestBody    string
-	responseBody   string // 前512字节
+	responseBody   string // sanitized preview, at most 512 bytes
 	viaProxy       bool   // probeDirect是否通过代理
 	// rootCause（2026-09-25）是本轮失败的根因归类（node/protocol/gateway，
 	// 见 probe_root_cause.go）。ok=true 时为空。它回答"是协议问题还是节点的
@@ -2787,7 +2870,7 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	// 失败出口统一收口（2026-09-25）：每个失败 return 前不必各自分类，
 	// defer 兜底一次 root-cause 分类 + err_detail 标注。ok 时不标注。
 	defer func() {
-		if !r.ok {
+		if !r.ok && !r.observationOnly {
 			r.rootCause = classifyProbeRootCause(r.errCode, r.httpStatus, r.responseBody)
 			annotateRootCause(&r)
 		}
@@ -2875,25 +2958,14 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	r.httpStatus = resp.StatusCode
 	responsesProbe := probeDescriptorFor(protocol).ChatProbeEndpoint == upstreamurl.EpResponses
 
-	// 读取响应body（前512字节）
-	respBuf := make([]byte, 512)
-	n, _ := resp.Body.Read(respBuf)
-	r.responseBody = string(respBuf[:n])
-
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		r.ok = true
-		if responsesProbe {
+	response, readErr := readCredentialProbeBody(resp.Body)
+	setNodeProbeResponse(&r, nodeProbeWireFormat(protocol), response, readErr)
+	if r.ok || r.observationOnly {
+		if responsesProbe && readErr == nil && responsesProbeProtocolEvidence(response) {
 			r.supportsResponses = boolEvidence(true)
 		}
 		return r
 	}
-	r.errCode = fmt.Sprintf("http_%d", resp.StatusCode)
-	statusText := strings.TrimSpace(string(respBuf[:n]))
-	// Trim trailing newlines/whitespace from status text
-	if idx := strings.IndexAny(statusText, "\n\r"); idx >= 0 {
-		statusText = statusText[:idx]
-	}
-	r.errDetail = fmt.Sprintf("upstream returned HTTP %d %s (cred_id=%d, url=%s, model=%s)", resp.StatusCode, statusText, credID, endpoint, bodyModel)
 
 	// 2026-09-28 vapeur 轮：openai-responses 供应商的多厂商聚合中转对部分
 	// 模型族（claude/qwen/doubao/gemini…）在 /v1/responses 上回
@@ -2906,19 +2978,25 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	// （rootCause 分类在 defer 中只在 !ok 时执行，成功路径不受污染）。
 	// chat 也挂 → 维持原 responses 失败结论，附注 fallback 结果。
 	if responsesProbe &&
-		providercap.ResponsesUnsupportedError(resp.StatusCode, r.responseBody) {
+		providercap.ResponsesUnsupportedError(resp.StatusCode, string(response)) {
 		r.supportsResponses = boolEvidence(false)
-		fbStatus, fbBody, fbLatency, fbOK := responsesChatFallbackPing(ctx, w.probeClient, plain, baseURL, bodyModel)
-		if fbOK {
-			r.ok = true
-			r.chatFallback = true
-			r.httpStatus = fbStatus
+		fallback := responsesChatFallbackRound(ctx, w.probeClient, plain, baseURL, bodyModel)
+		r.chatFallback = true
+		r.ok, r.observationOnly = fallback.OK, fallback.Inconclusive
+		r.httpStatus = fallback.HTTPStatus
+		r.responseBody = truncateBodyPreview(fallback.Body)
+		r.errDetail = responsesUnsupportedDetail(resp.StatusCode, fallback.HTTPStatus, fallback.Body, fallback.LatencyMs, fallback.OK)
+		switch {
+		case fallback.OK:
 			r.errCode = "none"
-			r.errDetail = responsesUnsupportedDetail(resp.StatusCode, fbStatus, fbBody, fbLatency, true)
-			r.responseBody = fbBody
-			return r
+		case fallback.Inconclusive:
+			r.errCode = "probe_response_inconclusive"
+		case fallback.HTTPStatus >= 400:
+			r.errCode = fmt.Sprintf("http_%d", fallback.HTTPStatus)
+		default:
+			r.errCode = "network_error"
 		}
-		r.errDetail += "; " + responsesUnsupportedDetail(resp.StatusCode, fbStatus, fbBody, fbLatency, false)
+
 	}
 	return r
 }
@@ -2940,26 +3018,29 @@ func (w *NodeProbeWorker) emitProbe(ctx context.Context, credID, providerID int,
 	status := nodeProbeResultToStatus(result)
 	// 2026-09-25: root-cause counter — one increment per failed round, the
 	// single counting choke point (logProbeRoundRootCause only logs).
-	recordProbeRootCause(origin, result)
+	if !result.observationOnly {
+		recordProbeRootCause(origin, result)
+	}
 	// 2026-07-17: forward the diagnostic detail already collected by
 	// probeDirect/probeGateway so the emitter can surface the real
 	// request/response context in auto_decision + synthetic traces.
 	// Previously these fields were dropped here, which is why probe rows
 	// showed only headers on the dashboard.
 	w.emitter.Emit(ctx, credID, providerID, trigger.tenantID, model, outboundModel, origin, trigger.parentID, attempt, &ProbeResult{
-		Status:       status,
-		HTTPStatus:   result.httpStatus,
-		ErrCode:      result.errCode,
-		ErrMsg:       result.errDetail,
-		LatencyMs:    result.latencyMs,
-		RootCause:    string(result.rootCause),
-		RespPreview:  result.responseBody,
-		ResponseBody: result.responseBody,
-		RequestURL:   result.requestURL,
-		RequestBody:  result.requestBody,
-		ViaProxy:     result.viaProxy,
-		StartedAt:    time.Now().Add(-time.Duration(result.latencyMs) * time.Millisecond),
-		CompletedAt:  time.Now(),
+		Status:          status,
+		ObservationOnly: result.observationOnly,
+		HTTPStatus:      result.httpStatus,
+		ErrCode:         result.errCode,
+		ErrMsg:          result.errDetail,
+		LatencyMs:       result.latencyMs,
+		RootCause:       string(result.rootCause),
+		RespPreview:     result.responseBody,
+		ResponseBody:    result.responseBody,
+		RequestURL:      result.requestURL,
+		RequestBody:     result.requestBody,
+		ViaProxy:        result.viaProxy,
+		StartedAt:       time.Now().Add(-time.Duration(result.latencyMs) * time.Millisecond),
+		CompletedAt:     time.Now(),
 		// Explicit origin attribution: the node-probe worker bypasses
 		// OriginMiddleware, so without these labels the emitted _request_logs
 		// row would inherit a stale/empty origin and the dashboard's probe
@@ -2979,6 +3060,9 @@ func (w *NodeProbeWorker) emitProbe(ctx context.Context, credID, providerID int,
 func nodeProbeResultToStatus(r nodeProbeRoundResult) ProbeStatus {
 	if r.ok {
 		return ProbeStatusSuccess
+	}
+	if r.observationOnly {
+		return ProbeStatusSkipped
 	}
 	switch r.errCode {
 	case "endpoint_build":
@@ -3519,7 +3603,7 @@ func (w *NodeProbeWorker) probeGateway(ctx context.Context, credID int, model st
 	// 与 probeDirect 相同的失败出口收口（2026-09-25）；2026-09-26 起用 gateway
 	// 轮专用分类——回环 transport 失败是本实例不可达，不是节点故障。
 	defer func() {
-		if !r.ok {
+		if !r.ok && !r.observationOnly {
 			r.rootCause = classifyGatewayRoundRootCause(r.errCode, r.httpStatus, r.responseBody)
 			annotateRootCause(&r)
 		}
@@ -3568,23 +3652,8 @@ func (w *NodeProbeWorker) probeGateway(ctx context.Context, credID int, model st
 	}
 	defer resp.Body.Close()
 	r.httpStatus = resp.StatusCode
-	// Read the body for both success and failure so success-path usage
-	// parsing (emitter.parseProbeUsage) has something to work with,
-	// instead of reporting hardcoded token counts.
-	respBuf := make([]byte, 512)
-	n, _ := resp.Body.Read(respBuf)
-	r.responseBody = string(respBuf[:n])
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		r.ok = true
-		return r
-	}
-	r.errCode = fmt.Sprintf("http_%d", resp.StatusCode)
-	if n > 0 {
-		r.errDetail = r.responseBody
-		if len(r.errDetail) > 256 {
-			r.errDetail = r.errDetail[:256]
-		}
-	}
+	response, readErr := readCredentialProbeBody(resp.Body)
+	setNodeProbeResponse(&r, "chat", response, readErr)
 	return r
 }
 
@@ -3625,4 +3694,42 @@ func decryptEnvelopeKid(envelope string) string {
 		return parts[1]
 	}
 	return ""
+}
+
+// Bound diagnostics independently of the complete response used for validation.
+func truncateBodyPreview(body string) string {
+	return string(errorsx.SanitizeErrorText([]byte(body), 512))
+}
+
+func nodeProbeWireFormat(protocol string) string {
+	switch probeDescriptorFor(protocol).ChatProbeEndpoint {
+	case upstreamurl.EpMessages:
+		return "messages"
+	case upstreamurl.EpResponses:
+		return "responses"
+	default:
+		return "chat"
+	}
+}
+
+func setNodeProbeResponse(r *nodeProbeRoundResult, protocol string, response []byte, readErr error) {
+	r.responseBody = truncateBodyPreview(string(response))
+	if r.httpStatus >= 200 && r.httpStatus < 300 {
+		if readErr == nil && probeResponseHasOutput(protocol, response) {
+			r.ok = true
+			return
+		}
+		r.observationOnly = true
+		r.errCode = "probe_response_inconclusive"
+		r.errDetail = "probe returned no verified assistant output"
+		if readErr != nil {
+			r.errDetail = credentialProbeReadFailure(protocol, r.httpStatus, readErr)
+		}
+		return
+	}
+	r.errCode = fmt.Sprintf("http_%d", r.httpStatus)
+	r.errDetail = fmt.Sprintf("upstream returned HTTP %d: %s", r.httpStatus, r.responseBody)
+	if readErr != nil {
+		r.errDetail = credentialProbeReadFailure(protocol, r.httpStatus, readErr)
+	}
 }

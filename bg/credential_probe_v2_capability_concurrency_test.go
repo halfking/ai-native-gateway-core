@@ -46,7 +46,7 @@ func TestF04_ConcurrentProbeVerdictsStayBoundToInvocation(t *testing.T) {
 			_, _ = w.Write([]byte(`{"data":[]}`))
 		case "/v1/responses", "/responses":
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"id":"resp_ok","object":"response","status":"completed","output":[]}`))
+			_, _ = w.Write([]byte(`{"id":"resp_ok","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"pong"}]}]}`))
 		default:
 			t.Errorf("unexpected positive probe path %q", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -56,6 +56,15 @@ func TestF04_ConcurrentProbeVerdictsStayBoundToInvocation(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel)
+	// Unblock the handler before httptest.Server.Close even if an assertion
+	// aborts before the normal release below; otherwise failure hides in cleanup.
+	t.Cleanup(func() {
+		select {
+		case <-releaseFallback:
+		default:
+			close(releaseFallback)
+		}
+	})
 	probe := &CredentialProbeV2{}
 	negativeSnapshot := v2Snapshot{
 		ID:                1001,

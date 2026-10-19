@@ -2698,3 +2698,26 @@ L1 判对 2 次、判错 5 次 ⇒ **准确率 1/6**。
 - 根因：只测试普通 sed 命令，遗漏用户消息中的 JSON 编码字符串。转义引号使输入检测把遮蔽代码当成凭据，再经模型与还原链产生间歇输出误封。
 - 防复发：直接测试 `isPlaceholderSecretValue` 与真实 YAML 检测器；覆盖普通/JSON、单双引号、真实凭据反例、字节偏移与变异负控。JSON 解码还会把非法 UTF-8 替换成多字节字符，映射前必须拒绝非法 UTF-8，避免范围漂移覆盖相邻真实凭据。
 - 证据：`0cf788c1e`；两包完整测试通过，JSON路径断开和offset+1变异均红；非法UTF-8问题由双轴审查发现并在上线前关闭。线上取证请求 `012464b6eecca6500b33dd2d6ef0228d`；部署与最终复测见 `docs/audit/2026-10-19-output-sensitive-controls-rollout.md`。
+
+## 2026-10-19 — 最终空回复与生成中的进度需要不同判据（Seen: 1/3 个不同工作日）
+- cue：同一个“没有最终可见答案”的谓词被用于判断生成中的流是否无进展时。
+- 组件：回归判据；真实 gate 的多帧序列回放。
+- 任务 / 缺陷：[154 流式与节点审计](docs/audit/2026-10-19-stream-node-audit.md)，用户 empty_model_response / MiniMax、GLM 中断反馈。
+- 基线 / 修复 SHA：`aa888f9b80ad08490df8d3f8a5508bf52f6152f0`；本轮补丁尚未提交，不将原基线写成修复 SHA。
+- 根因：r1029 正确排除 reasoning 作为最终助手答案，但 ChatSemanticDelta 取同一谓词反值，把连续正常 reasoning 计入默认三个空 delta 阈值。原“推理后仍算正文”测试只孤立测正文一帧，没走 gate 序列。
+- verdict：helped；同一真实 gate 夹具在旧谓词下 early_empty_detection，在补丁下等待正文；整回合 reasoning-only 在终态仍判空。
+- 防复发检查：同时覆盖“reasoning×3→答案”“empty×2→reasoning→empty×2”“reasoning-only→finish→EOF/DONE”；跨缓冲与真实commit gate阈值的两侧和中间区间都要测。不能把 thinking 改回最终答案来修中途误杀。
+- 证据：`TestEmptyGateReasoning*` 红→绿；撤谓词修复的 overlay 红2条，“忽略reasoning但不清空计数”的变异被 `TestEmptyGateReasoningResetsEmptyCounter` 抓住。八行 gate 缓冲会计 SSE 空行，测试到 cap 后不能强求 gate 已读到正文，正文由后续主循环读取。
+- confidence：high，代码行为与变异已隔离验证；154 早空计数206个 request 只证明信号存在，不能把每条归因于本缺陷。
+- 复审增量：只测8/60帧漏掉25–50帧的SSE空行计数契约；补48组合及无finish EOF/读取失败后，未提交可恢复失败按实际可见0帧报告。纯推理DONE原伪成功也被真实链判据抓住；最终6个终态行为变异均变红。该局部计数缺口不等于已证明外层survival最终拒绝恢复。
+- 状态：补丁已验证，完整门禁有 pristine 基线失败，尚未合并/上线。
+
+## 2026-10-19 — 不确定探测的保护必须到达实际写入端（Seen: 1/3 个不同工作日）
+- 根因：只在判定器返回ObservationOnly/applied=false仍会假绿；后续写入器可能忽略标记、沿用旧状态重写CMB/cache，或把503写成Available=true。NPS的lease/next_retry同时是路由字段，调度簿记也可能解封旧broken。
+- 防复发：从真实HTTP响应一直测到Sync/Confirm/queue/worker/SQL与缓存边界；既有broken和有效成功都作对照。能力支持与生成健康用独立证据；分类用完整有界正文，preview只用于诊断。
+- 证据/溯源：[本轮审计](docs/audit/2026-10-19-stream-node-audit.md)，baseline aa888f9b，补丁未提交；连接spy的旧行为4次非法SQL尝试变为0，TEMP/ROLLBACK证实broken未解封；native长前缀必须先证明关键词位于preview外。
+
+## 2026-10-19 — 固定SQL来源证明不能靠同名或删掉未知片段（Seen: 1/3 个不同工作日）
+- 根因：为本地固定SQL补校验时，只按函数名匹配会让selector/遮蔽closure借名；删除动态拼片后再判UNION，会把嵌套过滤误读成输出分支。跨tag复用测试helper还可能产生只在integration下的符号断链。
+- 防复发：CallExpr对象绑定与括号正负控；未知SQL片段默认拒证明；必要的具名证明核真实声明并跑全部有限输入的完整返回SQL；同次跑普通与integration编译。
+- 实际证据/溯源：[本轮续查](docs/audit/2026-10-19-stream-node-audit.md)，独立反例先红、修后绿，最终10行为变异红；原stripSQLComments函数原样搬移后integration vet通过。补丁未提交，不伪造修复SHA。

@@ -1,0 +1,973 @@
+{
+  "scope": "154 /opt/llm-gateway-go/logs retained .log and .gz; JSON WARN/ERROR grouped; string matches are log lines, not failed request counts",
+  "snapshot_utc": "2026-10-19T08:54:50.296735+00:00",
+  "release": "2728-02386117",
+  "active_port": 8781,
+  "scanned_files": [
+    {
+      "file": "gateway-172433.log",
+      "bytes": 4341,
+      "lines": 44,
+      "first": null,
+      "last": null,
+      "levels": {
+        "": 44
+      },
+      "matched": {}
+    },
+    {
+      "file": "gateway-canary-8781-2026-10-12T03-15-35.237.log.gz",
+      "bytes": 12984239,
+      "lines": 406484,
+      "first": "2026-10-10T00:54:16.494128427+08:00",
+      "last": "2026-10-12T03:15:35.226684805+08:00",
+      "levels": {
+        "INFO": 268571,
+        "WARN": 135871,
+        "ERROR": 2042
+      },
+      "matched": {
+        "empty_response": 191,
+        "overloaded": 9,
+        "output_policy_blocked": 4,
+        "stream_interrupted": 2
+      }
+    },
+    {
+      "file": "gateway-canary-8781-2026-10-15T06-56-33.779.log.gz",
+      "bytes": 12683441,
+      "lines": 411943,
+      "first": "2026-10-12T03:15:35.237194212+08:00",
+      "last": "2026-10-15T06:56:33.663738389+08:00",
+      "levels": {
+        "WARN": 133319,
+        "INFO": 275348,
+        "ERROR": 3276
+      },
+      "matched": {
+        "empty_response": 307,
+        "stream_interrupted": 238,
+        "output_policy_blocked": 16,
+        "overloaded": 53,
+        "committed_output": 60
+      }
+    },
+    {
+      "file": "gateway-canary-8781-2026-10-16T23-23-55.657.log.gz",
+      "bytes": 12772564,
+      "lines": 390675,
+      "first": "2026-10-15T06:56:33.779282895+08:00",
+      "last": "2026-10-16T23:23:55.648122547+08:00",
+      "levels": {
+        "INFO": 317328,
+        "WARN": 72218,
+        "ERROR": 1129
+      },
+      "matched": {
+        "overloaded": 82,
+        "empty_response": 177,
+        "stream_interrupted": 67,
+        "committed_output": 160,
+        "output_policy_blocked": 65
+      }
+    },
+    {
+      "file": "gateway-canary-8781-2026-10-18T21-30-07.430.log.gz",
+      "bytes": 12163959,
+      "lines": 416336,
+      "first": "2026-10-16T23:23:55.657211753+08:00",
+      "last": "2026-10-18T21:30:06.668556979+08:00",
+      "levels": {
+        "INFO": 255900,
+        "WARN": 157651,
+        "ERROR": 2785
+      },
+      "matched": {
+        "output_policy_blocked": 57,
+        "stream_interrupted": 1241,
+        "committed_output": 120,
+        "empty_response": 2879,
+        "overloaded": 12
+      }
+    },
+    {
+      "file": "gateway-canary-8781.log",
+      "bytes": 77666924,
+      "lines": 275963,
+      "first": "2026-10-18T21:30:07.430364758+08:00",
+      "last": "2026-10-19T16:54:04.689487003+08:00",
+      "levels": {
+        "WARN": 86989,
+        "INFO": 186006,
+        "ERROR": 2968
+      },
+      "matched": {
+        "empty_response": 2811,
+        "stream_interrupted": 1412,
+        "committed_output": 170,
+        "overloaded": 5
+      }
+    },
+    {
+      "file": "gateway-canary-8782-2026-10-13T06-49-05.851.log.gz",
+      "bytes": 12419571,
+      "lines": 395517,
+      "first": "2026-10-11T15:50:40.973363668+08:00",
+      "last": "2026-10-13T06:49:05.847515536+08:00",
+      "levels": {
+        "WARN": 155809,
+        "INFO": 235656,
+        "ERROR": 4052
+      },
+      "matched": {
+        "stream_interrupted": 51,
+        "committed_output": 10,
+        "overloaded": 26,
+        "empty_response": 372,
+        "output_policy_blocked": 2
+      }
+    },
+    {
+      "file": "gateway-canary-8782-2026-10-14T22-48-15.544.log.gz",
+      "bytes": 11556726,
+      "lines": 354543,
+      "first": "2026-10-13T06:49:05.851338297+08:00",
+      "last": "2026-10-14T22:48:15.487828482+08:00",
+      "levels": {
+        "WARN": 109051,
+        "INFO": 240836,
+        "ERROR": 4656
+      },
+      "matched": {
+        "empty_response": 124,
+        "stream_interrupted": 80,
+        "overloaded": 30,
+        "committed_output": 85,
+        "output_policy_blocked": 1
+      }
+    },
+    {
+      "file": "gateway-canary-8782-2026-10-18T00-32-23.449.log.gz",
+      "bytes": 12717178,
+      "lines": 402132,
+      "first": "2026-10-14T22:48:15.544512764+08:00",
+      "last": "2026-10-18T00:32:23.358341827+08:00",
+      "levels": {
+        "INFO": 287604,
+        "WARN": 112971,
+        "ERROR": 1557
+      },
+      "matched": {
+        "empty_response": 1461,
+        "overloaded": 60,
+        "output_policy_blocked": 131,
+        "stream_interrupted": 865,
+        "committed_output": 185
+      }
+    },
+    {
+      "file": "gateway-canary-8782.log",
+      "bytes": 85449504,
+      "lines": 326938,
+      "first": "2026-10-18T00:32:23.449265512+08:00",
+      "last": "2026-10-19T00:50:19.273967259+08:00",
+      "levels": {
+        "INFO": 190991,
+        "WARN": 132322,
+        "ERROR": 3625
+      },
+      "matched": {
+        "empty_response": 2555,
+        "stream_interrupted": 1229,
+        "committed_output": 50,
+        "overloaded": 24
+      }
+    },
+    {
+      "file": "gateway.log",
+      "bytes": 66832599,
+      "lines": 8504,
+      "first": "2026-09-11T05:27:13.998202992+08:00",
+      "last": "2026-09-11T05:42:09.30388611+08:00",
+      "levels": {
+        "WARN": 4826,
+        "INFO": 3588,
+        "ERROR": 90
+      },
+      "matched": {}
+    },
+    {
+      "file": "resource_monitor-2026-10-07T18-25-10.981.log.gz",
+      "bytes": 13112559,
+      "lines": 144929,
+      "first": null,
+      "last": null,
+      "levels": {
+        "": 144929
+      },
+      "matched": {}
+    },
+    {
+      "file": "resource_monitor.log",
+      "bytes": 33110420,
+      "lines": 46945,
+      "first": null,
+      "last": null,
+      "levels": {
+        "": 46945
+      },
+      "matched": {}
+    },
+    {
+      "file": "shutdown.log",
+      "bytes": 3137153,
+      "lines": 11564,
+      "first": "2026-09-05T07:40:44.662617496+08:00",
+      "last": "2026-10-19T00:49:54.432278334+08:00",
+      "levels": {
+        "INFO": 6078,
+        "ERROR": 5486
+      },
+      "matched": {}
+    }
+  ],
+  "all_retained_matching_lines": {
+    "empty_response": 10877,
+    "overloaded": 301,
+    "output_policy_blocked": 276,
+    "stream_interrupted": 5185,
+    "committed_output": 840
+  },
+  "all_json_error_messages": [
+    {
+      "msg": "http_request",
+      "count": 19124
+    },
+    {
+      "msg": "abnormal_exit",
+      "count": 5486
+    },
+    {
+      "msg": "executor failed",
+      "count": 3183
+    },
+    {
+      "msg": "fp_slot_saturation_critical",
+      "count": 1537
+    },
+    {
+      "msg": "ursm.v2: persist flush failed",
+      "count": 455
+    },
+    {
+      "msg": "ursm.v2: persist flush FAILED CONTINUOUSLY (sustained outage, data not being written)",
+      "count": 324
+    },
+    {
+      "msg": "v1_write_liveness: DEAD — v1 write leg has zero rows while session side is writing",
+      "count": 316
+    },
+    {
+      "msg": "provider profile collection failed",
+      "count": 157
+    },
+    {
+      "msg": "admin handler internal error",
+      "count": 135
+    },
+    {
+      "msg": "update session snapshot failed after retries",
+      "count": 86
+    },
+    {
+      "msg": "routing_health_checker: run failed",
+      "count": 76
+    },
+    {
+      "msg": "gateway shutdown error",
+      "count": 75
+    },
+    {
+      "msg": "auto_summary: summary persisted but title task lookup failed",
+      "count": 60
+    },
+    {
+      "msg": "pprof diagnostic server failed",
+      "count": 47
+    },
+    {
+      "msg": "failed to get candidates from provider",
+      "count": 45
+    },
+    {
+      "msg": "session project backfill: batch rows error",
+      "count": 40
+    },
+    {
+      "msg": "failed to refresh session analytics view",
+      "count": 39
+    },
+    {
+      "msg": "token_refresh_daemon: refresh failed",
+      "count": 37
+    },
+    {
+      "msg": "routing resolve query failed",
+      "count": 30
+    },
+    {
+      "msg": "credential_recovery: probeSubmitter not wired, cannot reconcile stale node probe states",
+      "count": 27
+    },
+    {
+      "msg": "credential_recovery: probeSubmitter not wired, cannot recover expired bindings",
+      "count": 27
+    },
+    {
+      "msg": "credential_recovery: probeSubmitter not wired, cannot recover fresh degraded bindings",
+      "count": 27
+    },
+    {
+      "msg": "failed to update instance statuses",
+      "count": 25
+    },
+    {
+      "msg": "getProvider query failed",
+      "count": 24
+    },
+    {
+      "msg": "request detail lookup failed",
+      "count": 21
+    },
+    {
+      "msg": "config: reload failed",
+      "count": 20
+    },
+    {
+      "msg": "session_aggregate_outbox: tick error",
+      "count": 20
+    },
+    {
+      "msg": "dashboardapi handler internal error",
+      "count": 19
+    },
+    {
+      "msg": "health_auto_recover failed",
+      "count": 16
+    },
+    {
+      "msg": "call_history_aggregator failed",
+      "count": 16
+    },
+    {
+      "msg": "failed to refresh routing_analytics_7d",
+      "count": 16
+    },
+    {
+      "msg": "failed to refresh routing_audit_summary_7d",
+      "count": 14
+    },
+    {
+      "msg": "background tool registry refresh failed",
+      "count": 13
+    },
+    {
+      "msg": "partition_manager: promote failed",
+      "count": 13
+    },
+    {
+      "msg": "node_probe_worker: enqueue via queue exhausted retries",
+      "count": 11
+    },
+    {
+      "msg": "node_probe_worker: gateway-side direct probe error (sync) — not updating availability",
+      "count": 10
+    },
+    {
+      "msg": "ursm.v2: dependency unavailable, degrading to ModeOff and continuing on legacy routing",
+      "count": 9
+    },
+    {
+      "msg": "partition_manager: request_context_attrs cleanup failed",
+      "count": 9
+    },
+    {
+      "msg": "persist request_logs_bodies_hot failed",
+      "count": 8
+    },
+    {
+      "msg": "balance_quota_probe failed",
+      "count": 7
+    },
+    {
+      "msg": "budget check failed, failing closed",
+      "count": 6
+    },
+    {
+      "msg": "lockfree_anomaly_reporter: endpoint permanently rejected batch, dropping (retry can never succeed)",
+      "count": 5
+    },
+    {
+      "msg": "cred_fp_slot redis release failed after retries",
+      "count": 4
+    },
+    {
+      "msg": "models: db query failed",
+      "count": 4
+    },
+    {
+      "msg": "probe_service: gateway-side probe error — not updating availability",
+      "count": 3
+    },
+    {
+      "msg": "reset fp slots failed",
+      "count": 3
+    },
+    {
+      "msg": "probe dashboard unified system-health query failed",
+      "count": 3
+    },
+    {
+      "msg": "filter-options: ss 维度查询失败",
+      "count": 3
+    },
+    {
+      "msg": "ursm.v2: recovery refused with empty coverage manifest — Redis likely lost its data; rebuilding from PostgreSQL",
+      "count": 2
+    },
+    {
+      "msg": "proxy: failed to list all nodes for health check",
+      "count": 2
+    },
+    {
+      "msg": "periodic_quota_probe failed",
+      "count": 2
+    },
+    {
+      "msg": "quality: failed to load provider request stats",
+      "count": 2
+    },
+    {
+      "msg": "candidate_failure_monitor: failure log is stale",
+      "count": 2
+    },
+    {
+      "msg": "provider_error_aggregator: begin failed",
+      "count": 2
+    },
+    {
+      "msg": "probe dashboard node-tasks query failed",
+      "count": 2
+    },
+    {
+      "msg": "load vendor recent failures failed",
+      "count": 2
+    },
+    {
+      "msg": "monitor summary rows iteration failed",
+      "count": 2
+    },
+    {
+      "msg": "session analytics refresh cycle cut off by deadline",
+      "count": 1
+    },
+    {
+      "msg": "completeBackgroundTask failed",
+      "count": 1
+    },
+    {
+      "msg": "data-lifecycle: hot cron failed for table after retries",
+      "count": 1
+    },
+    {
+      "msg": "lockfree_anomaly_reporter: disabled after repeated permanent endpoint rejections",
+      "count": 1
+    },
+    {
+      "msg": "partition_manager: request_logs archive rows failed",
+      "count": 1
+    },
+    {
+      "msg": "opslog_trimmer: candidate_failure_logs delete failed (consecutive)",
+      "count": 1
+    },
+    {
+      "msg": "probe dashboard unified queue query failed",
+      "count": 1
+    },
+    {
+      "msg": "probe dashboard queue-tasks query failed",
+      "count": 1
+    },
+    {
+      "msg": "errors trend stats query failed",
+      "count": 1
+    },
+    {
+      "msg": "routing log query failed",
+      "count": 1
+    },
+    {
+      "msg": "admin listLogs page query failed",
+      "count": 1
+    },
+    {
+      "msg": "quality: failed to query summary",
+      "count": 1
+    },
+    {
+      "msg": "session_aggregate_outbox: schedule retry failed",
+      "count": 1
+    }
+  ],
+  "user_request_id_hits": [],
+  "current_release": {
+    "cutoff": "2026-10-19T00:49:00",
+    "counts_lines": {
+      "tool_call": 1275,
+      "early_empty_detection": 1909,
+      "empty_response": 2474,
+      "stream_interrupted": 1247,
+      "committed_output": 140,
+      "overloaded": 5
+    },
+    "distinct_request_ids": {
+      "early_empty_detection": 206,
+      "empty_response": 369,
+      "stream_interrupted": 234,
+      "tool_call": 678,
+      "committed_output": 28,
+      "overloaded": 3
+    },
+    "latest": {
+      "tool_call": {
+        "time": "2026-10-19T16:52:42.340054747+08:00",
+        "level": "INFO",
+        "msg": "openai_to_responses: upstream EOF without [DONE] after finish_reason — benign non-compliant close (§11.6 parity)",
+        "request_id": "676a8e9d85d05fe78aee9a026796d140"
+      },
+      "early_empty_detection": {
+        "time": "2026-10-19T17:00:39.867819835+08:00",
+        "level": "INFO",
+        "msg": "request_flow",
+        "request_id": "cb6512bd6e2a5b13077ba559ef94c0d0",
+        "model": "kimi-k3",
+        "provider_id": 24,
+        "credential_id": 3,
+        "kind": "empty_response",
+        "action": "stream_interrupted",
+        "reason": "early_empty_detection",
+        "committed": false
+      },
+      "empty_response": {
+        "time": "2026-10-19T17:00:39.867819835+08:00",
+        "level": "INFO",
+        "msg": "request_flow",
+        "request_id": "cb6512bd6e2a5b13077ba559ef94c0d0",
+        "model": "kimi-k3",
+        "provider_id": 24,
+        "credential_id": 3,
+        "kind": "empty_response",
+        "action": "stream_interrupted",
+        "reason": "early_empty_detection",
+        "committed": false
+      },
+      "stream_interrupted": {
+        "time": "2026-10-19T17:01:13.174377546+08:00",
+        "level": "ERROR",
+        "msg": "executor failed",
+        "request_id": "cb6512bd6e2a5b13077ba559ef94c0d0",
+        "model": "kimi-k3"
+      },
+      "committed_output": {
+        "time": "2026-10-19T16:52:42.48146808+08:00",
+        "level": "INFO",
+        "msg": "request_survival_finished",
+        "request_id": "676a8e9d85d05fe78aee9a026796d140",
+        "reason": "committed_output",
+        "committed": true,
+        "provider_id": 0,
+        "client_model": "minimax-m3"
+      },
+      "overloaded": {
+        "time": "2026-10-19T16:38:24.855353656+08:00",
+        "level": "ERROR",
+        "msg": "executor failed",
+        "request_id": "110b6140e515f3c909bc2d14fdc66503",
+        "model": "minimax-m3"
+      }
+    },
+    "models": [
+      {
+        "family": "tool_call",
+        "model": "",
+        "lines": 1012
+      },
+      {
+        "family": "early_empty_detection",
+        "model": "deepseek-v4-flash",
+        "lines": 647
+      },
+      {
+        "family": "empty_response",
+        "model": "deepseek-v4-flash",
+        "lines": 732
+      },
+      {
+        "family": "stream_interrupted",
+        "model": "deepseek-v4-flash",
+        "lines": 424
+      },
+      {
+        "family": "early_empty_detection",
+        "model": "kimi-k3",
+        "lines": 515
+      },
+      {
+        "family": "empty_response",
+        "model": "kimi-k3",
+        "lines": 583
+      },
+      {
+        "family": "stream_interrupted",
+        "model": "kimi-k3",
+        "lines": 339
+      },
+      {
+        "family": "early_empty_detection",
+        "model": "glm-5.3",
+        "lines": 372
+      },
+      {
+        "family": "empty_response",
+        "model": "glm-5.3",
+        "lines": 753
+      },
+      {
+        "family": "early_empty_detection",
+        "model": "glm-5.3-flash",
+        "lines": 375
+      },
+      {
+        "family": "stream_interrupted",
+        "model": "glm-5.3-flash",
+        "lines": 288
+      },
+      {
+        "family": "empty_response",
+        "model": "glm-5.3-flash",
+        "lines": 366
+      },
+      {
+        "family": "stream_interrupted",
+        "model": "glm-5.3",
+        "lines": 141
+      },
+      {
+        "family": "empty_response",
+        "model": "",
+        "lines": 40
+      },
+      {
+        "family": "tool_call",
+        "model": "minimax-m3",
+        "lines": 263
+      },
+      {
+        "family": "stream_interrupted",
+        "model": "",
+        "lines": 28
+      },
+      {
+        "family": "committed_output",
+        "model": "",
+        "lines": 112
+      },
+      {
+        "family": "committed_output",
+        "model": "glm-5.3",
+        "lines": 1
+      },
+      {
+        "family": "stream_interrupted",
+        "model": "MiniMax-M3",
+        "lines": 27
+      },
+      {
+        "family": "committed_output",
+        "model": "minimax-m3",
+        "lines": 27
+      },
+      {
+        "family": "overloaded",
+        "model": "",
+        "lines": 4
+      },
+      {
+        "family": "overloaded",
+        "model": "minimax-m3",
+        "lines": 1
+      }
+    ],
+    "error_messages": [
+      {
+        "msg": "http_request",
+        "count": 1931
+      },
+      {
+        "msg": "executor failed",
+        "count": 426
+      },
+      {
+        "msg": "routing_health_checker: run failed",
+        "count": 11
+      },
+      {
+        "msg": "fp_slot_saturation_critical",
+        "count": 10
+      },
+      {
+        "msg": "provider profile collection failed",
+        "count": 9
+      },
+      {
+        "msg": "update session snapshot failed after retries",
+        "count": 5
+      },
+      {
+        "msg": "call_history_aggregator failed",
+        "count": 3
+      },
+      {
+        "msg": "token_refresh_daemon: refresh failed",
+        "count": 1
+      },
+      {
+        "msg": "partition_manager: promote failed",
+        "count": 1
+      }
+    ],
+    "sample_state_errors": {
+      "probe_service: direct round healthy, gateway round degraded — node parked, gateway anomaly not laddered": {
+        "time": "2026-10-19T17:00:12.606472535+08:00",
+        "msg": "probe_service: direct round healthy, gateway round degraded — node parked, gateway anomaly not laddered",
+        "credential_id": 22
+      },
+      "early_empty_threshold_reached": {
+        "time": "2026-10-19T17:00:39.865036587+08:00",
+        "msg": "early_empty_threshold_reached",
+        "client_model": "kimi-k3",
+        "consecutive": 3,
+        "threshold": 3
+      },
+      "credential probe v2: writeHealth failed": {
+        "time": "2026-10-19T16:28:46.857850174+08:00",
+        "msg": "credential probe v2: writeHealth failed",
+        "credential_id": 35,
+        "sqlstate": [],
+        "error_type": "context deadline exceeded"
+      }
+    }
+  },
+  "operational_errors": {
+    "resource_alerts": {
+      "memory_leak_suspected": 45688,
+      "fd_leak_suspected": 164
+    },
+    "resource_alerts_since_2728": {
+      "memory_leak_suspected": 1
+    },
+    "resource_alert_window": [
+      "2026-09-05T07:41:24.159002283+08:00",
+      "2026-10-19T00:59:46.182701101+08:00"
+    ],
+    "latest_resource_alerts": {
+      "memory_leak_suspected": {
+        "timestamp": "2026-10-19T00:59:46.182701101+08:00",
+        "alert_type": "memory_leak_suspected",
+        "message": "Memory growing at 10.20 MB/min over 10.0min window (threshold: 10.00 MB/min)",
+        "current_val": 10.199989807643185,
+        "threshold_val": 10
+      },
+      "fd_leak_suspected": {
+        "timestamp": "2026-10-17T11:47:00.740252595+08:00",
+        "alert_type": "fd_leak_suspected",
+        "message": "File descriptors growing at 212.00/min (threshold: 100.00/min)",
+        "current_val": 212.00074893504575,
+        "threshold_val": 100
+      }
+    },
+    "operational_samples": {
+      "abnormal_exit": {
+        "time": "2026-09-08T02:43:53.433945874+08:00",
+        "level": "ERROR",
+        "msg": "abnormal_exit",
+        "instance": {
+          "instance_id": "iZbp1efbv6824518ejqh8aZ-23210-1788806630",
+          "pid": 23210
+        },
+        "exit_type": "listen_error",
+        "details": "listen tcp :8781: bind: address already in use",
+        "timestamp": "2026-09-08T02:43:53.433941244+08:00"
+      },
+      "request_survival_finished": {
+        "time": "2026-10-19T17:12:42.088383251+08:00",
+        "level": "INFO",
+        "msg": "request_survival_finished",
+        "request_id": "29ab4203666c93e9a6cbffed8efb9427",
+        "succeed": true,
+        "attempts": 1,
+        "decision": "succeed",
+        "reason": "success",
+        "committed": false,
+        "commit_state": "metadata",
+        "kinds": "",
+        "provider_id": 0,
+        "raw_model": "MiniMax-M3",
+        "client_model": "minimax-m3",
+        "attempt_history": ""
+      }
+    }
+  },
+  "later_runtime_snapshot": {
+    "checked_at_cst": "2026-10-19T17:12:32+08:00",
+    "release": "2730-aa888f9b",
+    "active_port": 8782,
+    "pid": 7510,
+    "readyz": "ready",
+    "deployed_by_this_task": false
+  },
+  "followup_2730": {
+    "from_cst": "2026-10-19T17:07:00",
+    "release": "2730-aa888f9b",
+    "line_counts": {
+      "empty_response": 16,
+      "early_empty_detection": 10
+    },
+    "distinct_request_ids": {
+      "empty_response": 5,
+      "early_empty_detection": 2
+    },
+    "samples": {},
+    "finished_outcomes": [
+      {
+        "model": "minimax-m3",
+        "decision": "succeed",
+        "reason": "success",
+        "count": 2
+      },
+      {
+        "model": "deepseek-v4-flash",
+        "decision": "fail_closed",
+        "reason": "client_disconnected",
+        "count": 1
+      },
+      {
+        "model": "minimax-m3",
+        "decision": "fail_closed",
+        "reason": "client_disconnected",
+        "count": 1
+      },
+      {
+        "model": "kimi-k3",
+        "decision": "fail_closed",
+        "reason": "client_disconnected",
+        "count": 1
+      }
+    ]
+  },
+  "exact_minimax_replay": {
+    "case": "user13 unnamed positional MiniMax tool_call sample",
+    "method": "go test -overlay temporary test; no production/source mutation",
+    "results": {
+      "nonstream": "remains text, no structured tool_calls",
+      "stream": "remains text, no structured tool_calls"
+    },
+    "claim": "unresolved; named JSON fixtures are insufficient evidence"
+  },
+  "latest_runtime_snapshot": {
+    "observed_at_utc": "2026-10-19T09:54:39.185846Z",
+    "release": "2741-250ea7f8",
+    "active_port": 8781,
+    "pid": 17787,
+    "exe": "/opt/llm-gateway-go/releases/2741-250ea7f8/llm-gateway-go",
+    "version": "2.5.8-250ea7f8-20261019-2741",
+    "readyz": {
+      "8781": "200 ready PG+Redis",
+      "8782": "connection refused (inactive)"
+    },
+    "our_deployment": false,
+    "our_production_code_changed_since_baseline_on_main": false,
+    "compared_main_sha": "90453502d"
+  },
+  "client_confirmation": {
+    "client": "Magpie / ZCode",
+    "installed_version_now": "3.15.3.8237",
+    "version_at_error_time": "not established",
+    "log_files_scanned": 24,
+    "user_request_id_matches": 0,
+    "real_empty_model_response_turn_failures": 7,
+    "real_empty_model_response_model": "grok-4.6",
+    "quoted_history_error_mentions_excluded": true,
+    "native_wire_for_user_tool_samples": "not available"
+  },
+  "closing_followup": {
+    "observed_at_utc": "2026-10-19T10:48:09.979040Z",
+    "window_since_cst": "2026-10-19T18:00:00",
+    "current": "/opt/llm-gateway-go/releases/2741-250ea7f8",
+    "active_port": "8781",
+    "processes": [
+      {
+        "pid": "17787",
+        "exe": "/opt/llm-gateway-go/releases/2741-250ea7f8/llm-gateway-go"
+      }
+    ],
+    "readyz": {
+      "8781": {
+        "http": 200,
+        "status": "ready"
+      },
+      "8782": "<urlopen error [Errno 111] Connection refused>"
+    },
+    "files_scanned": [
+      "gateway-canary-8781.log",
+      "gateway-canary-8782.log"
+    ],
+    "lines_in_window": 6324,
+    "signal_counts": {
+      "overload": 14,
+      "early_empty_detection": 41,
+      "empty_response": 37,
+      "stream_interrupted": 5,
+      "committed_output": 15
+    },
+    "distinct_request_ids": {
+      "overload": 4,
+      "early_empty_detection": 6,
+      "empty_response": 6,
+      "stream_interrupted": 5,
+      "committed_output": 5
+    },
+    "models": {
+      "overload": {
+        "deepseek-v4-flash": 4,
+        "kimi-k3": 3
+      },
+      "early_empty_detection": {
+        "deepseek-v4-flash": 27,
+        "kimi-k3": 14
+      },
+      "empty_response": {
+        "deepseek-v4-flash": 25,
+        "kimi-k3": 12
+      },
+      "stream_interrupted": {
+        "kimi-k3": 2,
+        "deepseek-v4-flash": 3
+      }
+    },
+    "counting_note": "selected diagnostic fields only; retries and layered logs are not final failed turns",
+    "our_deployment": false
+  },
+  "user_missing_log_policy": "Search logs first, fix evidenced defects; if no original log exists inspect code and skip, without further user questions."
+}
