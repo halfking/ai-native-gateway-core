@@ -732,6 +732,15 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 				pc.markInterrupted("stream_panic")
 			}
 		}
+		if outcome.Interrupted && outcome.Resumable && gate != nil && !attemptHasClientSemanticOutput(gate, 0) {
+			// Retry thresholds count client-visible frames, not frames accepted
+			// into holdback. Keep the original count available for diagnostics.
+			if outcome.ChunkCount > 0 {
+				streamLogFromContext(ctx, nil).Debug("held stream frames excluded from retry threshold",
+					"accepted_chunks", outcome.ChunkCount, "client_visible_chunks", 0, "reason", outcome.Reason)
+			}
+			outcome.ChunkCount = 0
+		}
 		// Best-effort capture finalise. If the stream completed
 		// normally, the capturer holds the full body ready for
 		// replay via GET /v1/sessions/{id}/pending-response.
@@ -1309,15 +1318,7 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 							"chunk_count", chunkCount,
 							"finish_reason", finalFinishReason,
 						)
-						if capture != nil {
-							capture.MarkInterruptedWithReason("openai_empty_response")
-						}
-						outcome.Interrupted = true
-						outcome.Reason = "openai_empty_response"
-						outcome.Kind = errorsx.KindEmptyResponse
-						outcome.Resumable = true
-						outcome.ChunkCount = chunkCount
-						return outcome
+						return chatEmptyResponseTerminal(w, flusher, capture, pc, gate, chunkCount)
 					}
 					if finalFinishReason != "" && chunkCount > 0 && sawSemanticOutput {
 						slog.Info("upstream EOF without [DONE] after finish_reason — benign non-compliant close (§11.6 parity)",
@@ -1743,6 +1744,9 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 		payload := extractPayload(line)
 		if payload != "" {
 			if payload == "[DONE]" {
+				if !sawSemanticOutput {
+					return chatEmptyResponseTerminal(w, flusher, capture, pc, gate, chunkCount)
+				}
 				upstreamDoneReceived = true
 			}
 			if capture != nil {
@@ -2026,6 +2030,34 @@ func chatChunkErrorTerminal(w http.ResponseWriter, flusher http.Flusher, capture
 	outcome.Resumable = false
 	outcome.TerminalRendered = true
 	return outcome, true
+}
+
+// A DONE marker ends transport, but does not turn reasoning into an answer.
+// Keep held attempts silent; once reasoning reached the client, close with one
+// error terminal and forbid transparent replay of those committed bytes.
+func chatEmptyResponseTerminal(w http.ResponseWriter, flusher http.Flusher, capture *audit.StreamCapture, pc *pendingCapturer, gate *AttemptCommitGate, chunkCount int) StreamOutcome {
+	if capture != nil {
+		capture.MarkInterruptedWithReason("openai_empty_response")
+	}
+	committed := attemptHasClientSemanticOutput(gate, chunkCount)
+	outcome := StreamOutcome{
+		Interrupted: true, Reason: "openai_empty_response", Kind: errorsx.KindEmptyResponse,
+		Resumable: !committed, ChunkCount: chunkCount,
+	}
+	if !committed {
+		return outcome
+	}
+	terminal := "data: {\"error\":{\"type\":\"empty_response\",\"message\":\"upstream completed without an assistant answer\",\"code\":\"openai_empty_response\",\"reason\":\"empty_response\",\"retryable\":true},\"code\":\"openai_empty_response\",\"reason\":\"empty_response\",\"retryable\":true}\n\ndata: [DONE]\n\n"
+	if pc != nil {
+		pc.append(terminal)
+	}
+	written := safeWriteSSE(w, terminal)
+	flushed := safeFlush(flusher)
+	if written && flushed {
+		outcome.TerminalRendered = true
+		gate.MarkTerminalRendered()
+	}
+	return outcome
 }
 
 // splitCombinedDoneFrame extracts the first complete JSON value from a malformed
