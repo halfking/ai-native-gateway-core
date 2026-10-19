@@ -685,6 +685,27 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 		}
 	}
 
+	// ⚠️ 2026-10-20：补 nil-db 判空。本 handler 原先是本组**唯一**没有这道门的
+	// （promote/demote/set-concurrency/model-toggle/decisions/manual-disabled/
+	//  sliding-window 等 9 个兄弟 handler 都有）—— m.h.db 为 nil 时
+	// runMonitorSummary 会拿 nil querier 去 Query，直接 nil pointer panic。
+	// 生产上 h.db 恒接线，所以这不是线上事故，是**一致性缺口**：
+	// 同一个 handler 家族对「DB 没接」给出 9 种 503 + 1 种 panic。
+	//
+	// ⚠ 判的是**实际 querier**（summaryQuerier），不是 m.h.db：
+	//   summaryDB 是测试注入点（见 credential_monitor_server_duration_test.go），
+	//   只看 m.h.db 会把「注入了 mock db」的测试误判成「没接 DB」。
+	//
+	// 位置遵循本组既定口径（2026-10-19 写侧角色门轮）：
+	//   ① 在**角色门之后** ⇒ 未授权者得 403 而不是 503
+	//      （503 会泄露「DB 是否已配置」）；
+	//   ② 在**首次真正访问 db 之前**、且在缓存命中之后
+	//      ⇒ 缓存命中时不需要 DB，不该被 nil-db 拦下。
+	if m == nil || m.h == nil || (m.summaryDB == nil && m.h.db == nil) {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+
 	// ⚠️ 2026-10-05 修正：原来写的是 `queryStart.Sub(startedAt)` —— 那是
 	// 「查询开始时刻 − handler 开始时刻」，两个都是**起点**，相减恒为 0 或负数。
 	// 它本来要报的是「这条 SQL 跑了多久」，而那个字段的唯一用途就是让人看见
