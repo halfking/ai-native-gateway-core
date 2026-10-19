@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"github.com/kaixuan/llm-gateway-go/settings"
 	"sync/atomic"
 	"testing"
 
@@ -10,6 +11,10 @@ import (
 )
 
 func TestWriteRedactorLoadsRestorationSourceAfterConstruction(t *testing.T) {
+	previous := settings.Global
+	t.Cleanup(func() { settings.Global = previous })
+	settings.Global = settings.NewRegistry()
+	settings.Global.MustRegisterSpec(&settings.Spec{Key: "output_compliance.enabled", Type: settings.TypeBool, Scope: settings.ScopePlatform, Default: true})
 	old := loadSanitizeRestoredValues()
 	sanitizeRestoredValues.Store(sanitizeSessionValuesFunc(nil))
 	t.Cleanup(func() { sanitizeRestoredValues.Store(old) })

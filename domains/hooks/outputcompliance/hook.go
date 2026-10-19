@@ -16,6 +16,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domain"            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domain/governance" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/pipeline"  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // ComplianceIssue 是 outputcompliance.ComplianceIssue 的精简镜像。
@@ -62,6 +63,9 @@ func (h *Hook) Priority() int { return 50 }
 // Enabled 当 checker 非 nil 且 FinalResponse 非空时启用。
 func (h *Hook) Enabled(_ context.Context, env *domain.PipelineRequest) bool {
 	if h == nil || h.checker == nil || env == nil {
+		return false
+	}
+	if !settings.GetPlatformBool("sanitize.output_check_enabled", true) {
 		return false
 	}
 	return len(env.FinalResponse) > 0
