@@ -81,7 +81,7 @@ export default {
       enterLicenseKey: '請輸入 License Key',
       activateSuccess: '啟用成功！',
       deviceLimitTitle: '裝置已达上限',
-      deviceLimitBody: '裝置数量已达上限，请先在管理後台停用一个裝置后再啟用。',
+      deviceLimitBody: '裝置数量已达上限（{active}/{max}），请先在管理後台停用一个裝置后再啟用。',
       deviceLimitOk: '我知道了',
       activateFailed: '啟用失败',
       activateFailedWithMsg: '啟用失败: {msg}',

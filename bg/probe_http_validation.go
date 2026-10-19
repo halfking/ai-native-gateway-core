@@ -10,6 +10,17 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 )
 
+// probeResponseInconclusiveErrCode 是「拿到了响应但拿不出完整正向证据」的
+// 唯一 errCode。
+//
+// 2026-10-20 12h 审计轮修复：executor 之前用 `category == probeCategorySkipped`
+// 判定「观察」而被本文件之外的地方复用了同一个 category ——
+// endpoint_id_required（确定性 404：模型必须配 endpoint id）也被算成
+// 「不确定的观察」⇒ 观察分支不写 state manager ⇒ 旧行为里的 5 分钟摘流
+// 被取消、该 pair 的重试链被终止、error_kind 被误报成 probe_direct_inconclusive。
+// ⇒ 「观察」必须按 **errCode** 判定，不能按 category 判定。
+const probeResponseInconclusiveErrCode = "probe_response_inconclusive"
+
 func probeResponseProtocol(desc providercap.Descriptor) string {
 	switch desc.ChatProbeEndpoint {
 	case upstreamurl.EpMessages:
@@ -87,7 +98,7 @@ func inconclusiveHTTPProbe(status, latencyMs int, protocol string) httpProbeResu
 	return httpProbeResult{
 		status: "inconclusive", category: probeCategorySkipped,
 		httpStatus: status, latencyMs: latencyMs,
-		errCode: "probe_response_inconclusive",
+		errCode: probeResponseInconclusiveErrCode,
 		errMsg:  fmt.Sprintf("%s probe returned no complete assistant/model evidence; routing state retained", protocol),
 	}
 }

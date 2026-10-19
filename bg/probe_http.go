@@ -107,7 +107,9 @@ func singleGet(ctx context.Context, endpoint, apiKey string, desc providercap.De
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	latencyMs := int(time.Since(start).Milliseconds())
-	body, readErr := readCredentialProbeBody(resp.Body)
+	// 目录型端点用放宽后的上限：/v1/models 返回整个模型目录，
+	// 64KiB 对聚合型供应商不够（见 credentialProbeModelsBodyLimit 处的说明）。
+	body, readErr := readCredentialProbeBodyLimit(resp.Body, credentialProbeModelsBodyLimit)
 	return classifyProbeHTTPResponse(resp.StatusCode, body, readErr, latencyMs, "models")
 }
 
