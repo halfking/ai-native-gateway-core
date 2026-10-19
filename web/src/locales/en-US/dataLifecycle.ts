@@ -265,7 +265,7 @@ export default {
       failed: '{op} failed: {msg}',
     },
     rowResult: {
-      running: 'Running…',
+      running: '{op} Running…',
       success: '{op}: reclaimed {size} ({pct}%, {ms}ms)',
       failed: '{op} failed: {msg}',
     },

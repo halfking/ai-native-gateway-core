@@ -763,6 +763,8 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 			r.recordRun(timeoutCtx, q.t, "auth", nil, "decrypt_error", decErr.Error(), 0, "unchanged", false, "scheduler")
 			r.applyResult(timeoutCtx, q.t, "auth", nil, "decrypt_error", decErr.Error(), 0,
 				"unchanged", false, "scheduler", ns, nf, nst)
+			// provider 错误：状态不改，但**节拍要推进**（否则这一行永远停在过去值）。
+			r.advanceProbeBeat(timeoutCtx, q.t, "auth", nf)
 			continue
 		}
 		q.t.APIKey = apiKey
@@ -804,6 +806,14 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 			stateChange, applied, "scheduler")
 		r.applyResult(timeoutCtx, q.t, status, &httpStatus, errCode, errMsg, latency,
 			stateChange, applied, "scheduler", newSucc, newFail, newState)
+		// ★ 2026-10-20 12h 审计轮修复：provider 侧错误（auth/network/5xx/rate_limit）
+		// 不证明模型坏了也不证明好了 ⇒ 状态不动（applyResult 已不写）；
+		// 但**必须记账**：否则 model_probe_state 这一行（唯一写入口）不被推进，
+		// next_retry_at 停在过去值、last_status/last_attempt_at/total_attempts
+		// 永久显示旧值，而 model_probe_runs 一直在写 ⇒ 审计表与状态表口径分裂。
+		if !applied && category == probeCategoryProviderError {
+			r.advanceProbeBeat(timeoutCtx, q.t, status, newFail)
+		}
 
 		tested++
 		switch stateChange {
@@ -1049,6 +1059,15 @@ func (r *ModelProbeRunner) computeConsensus(
 		// particular, changing broken_confirmed to recovering would make
 		// applyResult restore its availability cache without a successful ping.
 		applied = false
+		// ★ 2026-10-20 12h 审计轮修复：**不改状态**与**不推进调度**是两件事。
+		// 此前 applied=false 让 applyResult 整段 return ⇒ model_probe_state
+		// 这一行（applyResult 的唯一写入口）完全没被推进：
+		//   · next_retry_at 永远停在过去值 ⇒ 每轮周期都被重新选中；
+		//   · last_status / last_attempt_at / total_attempts 对运维永久显示旧值；
+		//   · 而 model_probe_runs 一直在写 "provider_error"
+		//     ⇒ **审计表与状态表口径分裂**。
+		// ⇒ provider 错误只写节拍（不碰 state / availability）——
+		// 由**调用点**按 category 触发 r.advanceProbeBeat（见 cycle/manual 两处）。
 	}
 	return
 }
@@ -1162,6 +1181,9 @@ func (r *ModelProbeRunner) applyResult(
 	newSucc, newFail int, newState string,
 ) {
 	if !applied {
+		// provider 错误**不改状态**，但**要推进节拍** ——
+		// 节拍由调用点按 category 触发 r.advanceProbeBeat（见 cycle/manual 两处），
+		// 避免把「不改状态」与「不记账」混成一件事。
 		return
 	}
 
@@ -1275,6 +1297,53 @@ func (r *ModelProbeRunner) applyResult(
 		r.writeAvailabilityCache(ctx, t, newState, true, status, newSucc, newFail, nextRetryInterval)
 	default:
 		r.writeAvailabilityCache(ctx, t, newState, true, status, newSucc, newFail, nextRetryInterval)
+	}
+}
+
+// advanceProbeBeat 只推进 model_probe_state 的**调度节拍**，不改状态。
+//
+// 2026-10-20 12h 审计轮修复：provider 侧错误（auth / network / 5xx / rate_limit）
+// 既不证明模型坏了，也不证明模型好了 —— 所以**不能**把 broken_confirmed 拉回
+// recovering（那会借 writeAvailabilityCache(available=true) 恢复路由）。
+// 但「不改状态」不等于「不记账」：此前 applyResult 在 applied=false 时整段 return，
+// 于是这一行完全不被推进：
+//
+//	· next_retry_at 永远停在过去值 ⇒ 每轮周期都被重新选中（探针空转）；
+//	· last_status / last_attempt_at / total_attempts 对运维永久显示旧值；
+//	· 而 model_probe_runs 一直在写 "provider_error"
+//	  ⇒ **审计表与状态表口径分裂**。
+//
+// ⇒ 这里只写节拍：total_attempts / last_attempt_at / next_retry_at / last_status。
+// 绝不碰 state、consecutive_successes、consecutive_failures、last_state_change_*，
+// 也**不**碰 availability 缓存与 binding 可用性。
+// modelProbeBeatSQL 是「只推进节拍」的 upsert。
+//
+// 判据（bg/probe_observation_beat_gate_20261020_test.go）逐字钉住这条 SQL：
+// DO UPDATE SET 里**只能**出现节拍四列，state / consecutive_* /
+// last_state_change_* 一律不得出现 —— 那些是「状态」，由 applyResult 负责。
+const modelProbeBeatSQL = `
+		INSERT INTO model_probe_state
+		    (credential_id, raw_model_name, state,
+		     consecutive_successes, consecutive_failures, total_attempts,
+		     last_attempt_at, next_retry_at, last_status)
+		VALUES ($1, $2, 'unknown', 0, 0, 1, NOW(), NOW() + $3::interval, $4)
+		ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
+		    total_attempts  = model_probe_state.total_attempts + 1,
+		    last_attempt_at = NOW(),
+		    next_retry_at   = EXCLUDED.next_retry_at,
+		    last_status     = EXCLUDED.last_status
+	`
+
+func (r *ModelProbeRunner) advanceProbeBeat(ctx context.Context, t probeTarget, status string, newFail int) {
+	cfg := LoadProbeBackoffConfig()
+	nextRetryInterval := cfg.NextDelay(newFail)
+	intervalStr := fmt.Sprintf("%d seconds", int(nextRetryInterval.Seconds()))
+
+	if _, err := r.db.Exec(ctx, modelProbeBeatSQL, t.CredentialID, t.RawModel, intervalStr, status); err != nil {
+		slog.Warn("model probe v2: advanceProbeBeat failed",
+			"credential_id", t.CredentialID,
+			"raw_model", t.RawModel,
+			"error", err)
 	}
 }
 
@@ -1503,6 +1572,8 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 		r.recordRun(ctx, t, "auth", nil, "decrypt_error", decErr.Error(), 0, "unchanged", false, "manual")
 		r.applyResult(ctx, t, "auth", nil, "decrypt_error", decErr.Error(), 0,
 			"unchanged", false, "manual", ns, nf, nst)
+		// provider 错误：状态不改，但节拍要推进。
+		r.advanceProbeBeat(ctx, t, "auth", nf)
 		return decErr
 	}
 	t.APIKey = apiKey
@@ -1513,6 +1584,10 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 	r.recordRun(ctx, t, status, &httpStatus, errCode, errMsg, latency, stateChange, applied, "manual")
 	r.applyResult(ctx, t, status, &httpStatus, errCode, errMsg, latency, stateChange, applied, "manual",
 		newSucc, newFail, newState)
+	// provider 侧错误：状态不改，但节拍要推进（同上）。
+	if !applied && category == probeCategoryProviderError {
+		r.advanceProbeBeat(ctx, t, status, newFail)
+	}
 
 	// 2026-07-25 SPEC §3.1.5: mirror TriggerAllSync behavior — when the
 	// single manual probe succeeds, clear node_probe_state so
