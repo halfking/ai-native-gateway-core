@@ -21,8 +21,28 @@
 
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
+-- ── 幂等：清掉本族所有辅助函数（含历史版本留下的重载）────────────────
+-- ★ 本脚本原本与「交叉校验」脚本**互相污染**：两边都叫 xc_time，
+--   而本脚本这一版是 4 参（id_off 带默认值）、交叉校验是 3 参 ——
+--   带默认值的那个**也能接 3 参调用** ⇒ PG 报
+--   `function xc_time(regclass, integer, integer) is not unique`。
+--   ⇒ 现在本脚本改用独立前缀 xf_，并在开头按签名清空本族 ⇒
+--     两个脚本可在同一个库里各跑各的，且都能重复执行。
+DO $$
+DECLARE r record;
+BEGIN
+  FOR r IN
+    SELECT p.oid::regprocedure AS sig
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = current_schema() AND p.proname LIKE 'xf\_%'
+  LOOP
+    EXECUTE format('DROP FUNCTION IF EXISTS %s CASCADE', r.sig);
+  END LOOP;
+END
+$$;
+
 -- ── 文本与长度生成器（与交叉校验脚本同款：生产保真）──────────────────
-CREATE OR REPLACE FUNCTION xc_text(target_len int)
+CREATE OR REPLACE FUNCTION xf_text(target_len int)
 RETURNS text AS $$
 DECLARE parts text[] := ARRAY[]::text[]; cur int := 0; s text;
 BEGIN
@@ -32,7 +52,7 @@ BEGIN
   RETURN substr(array_to_string(parts, ''), 1, target_len);
 END $$ LANGUAGE plpgsql VOLATILE;
 
-CREATE OR REPLACE FUNCTION xc_len()
+CREATE OR REPLACE FUNCTION xf_len()
 RETURNS int AS $$
 DECLARE
   buckets int[] := ARRAY[
@@ -55,7 +75,7 @@ BEGIN
 END $$ LANGUAGE plpgsql;
 
 -- ── 计时函数：per_tx 控制事务批大小 ───────────────────────────────────
-CREATE OR REPLACE FUNCTION xc_time(target regclass, n int, per_tx int, id_off int DEFAULT 0)
+CREATE OR REPLACE FUNCTION xf_time(target regclass, n int, per_tx int, id_off int DEFAULT 0)
 RETURNS TABLE(stmt_us numeric, wall_us numeric, wal_bytes bigint) AS $$
 DECLARE
   i int; t0 timestamptz; t1 timestamptz; t2 timestamptz;
@@ -63,7 +83,7 @@ DECLARE
 BEGIN
   lsn0 := pg_current_wal_lsn(); t0 := clock_timestamp();
   FOR i IN 1..n LOOP
-    txt := xc_text(xc_len());
+    txt := xf_text(xf_len());
     t1 := clock_timestamp();
     EXECUTE format('INSERT INTO %s (id, tenant_id, search_text, ts) VALUES ($1,$2,$3,$4)', target)
       USING (1000000 + id_off + i), 'tenant_3'::text, txt, now();
@@ -94,7 +114,7 @@ CREATE TABLE f_big_gin     (id BIGINT PRIMARY KEY, tenant_id TEXT, search_text T
 
 -- 预载（大表才预载）
 INSERT INTO f_big_plain
-SELECT g, 'tenant_' || (g % 20), xc_text(xc_len()),
+SELECT g, 'tenant_' || (g % 20), xf_text(xf_len()),
        '2026-09-05'::timestamptz + (g || ' seconds')::interval
 FROM generate_series(1, :PRE) g;
 INSERT INTO f_big_gin SELECT * FROM f_big_plain;
@@ -105,13 +125,13 @@ ANALYZE f_small_plain; ANALYZE f_small_gin; ANALYZE f_big_plain; ANALYZE f_big_g
 
 \echo '=== 因子 F2：预载规模（事务批大小固定为每行一个事务）==='
 \echo '--- 预载 0 行 ---'
-SELECT 'small plain  1row/tx' AS cell, * FROM xc_time('f_small_plain'::regclass, :N, 1, 0);
-SELECT 'small gin    1row/tx' AS cell, * FROM xc_time('f_small_gin'::regclass, :N, 1, 100000);
-SELECT 'small gin  (repeat)'     AS cell, * FROM xc_time('f_small_gin'::regclass, :N, 1, 200000);
+SELECT 'small plain  1row/tx' AS cell, * FROM xf_time('f_small_plain'::regclass, :N, 1, 0);
+SELECT 'small gin    1row/tx' AS cell, * FROM xf_time('f_small_gin'::regclass, :N, 1, 100000);
+SELECT 'small gin  (repeat)'     AS cell, * FROM xf_time('f_small_gin'::regclass, :N, 1, 200000);
 \echo '--- 预载 200000 行 ---'
-SELECT 'big   plain  1row/tx' AS cell, * FROM xc_time('f_big_plain'::regclass, :N, 1, 0);
-SELECT 'big   gin    1row/tx' AS cell, * FROM xc_time('f_big_gin'::regclass, :N, 1, 100000);
-SELECT 'big   gin  (repeat)'     AS cell, * FROM xc_time('f_big_gin'::regclass, :N, 1, 200000);
+SELECT 'big   plain  1row/tx' AS cell, * FROM xf_time('f_big_plain'::regclass, :N, 1, 0);
+SELECT 'big   gin    1row/tx' AS cell, * FROM xf_time('f_big_gin'::regclass, :N, 1, 100000);
+SELECT 'big   gin  (repeat)'     AS cell, * FROM xf_time('f_big_gin'::regclass, :N, 1, 200000);
 
 \echo '=== 索引体积 ==='
 SELECT 'small gin' AS which, pg_relation_size('f_small_gin_idx')::bigint AS idx_bytes,

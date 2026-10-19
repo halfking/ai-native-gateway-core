@@ -16,12 +16,34 @@
 --
 -- 用法（在 PG 17 上）：
 --   psql -d wabench -f 877_write_amplification_cross_check.sql
+--
+-- ★ 可重复执行（本脚本原本**跑第二遍就会炸**，2026-10-20 复现时才发现）：
+--   上一版遗留的 xc_time(regclass,int,int,int)（第 4 参 **带默认值**）**也能接
+--   3 参调用**，与本脚本的 3 参版本对同一次调用**同优** ⇒ PG 报
+--   `function xc_time(regclass, integer, integer) is not unique`。
+--   而「因子分解」脚本恰好定义的就是那个 4 参版本 ⇒ **两个脚本互相污染**。
+--   ⇒ 下面这段先把本族（xc_%）辅助函数**按签名全清掉**再重建，
+--     于是：本脚本在脏库上可重跑，且与因子脚本互不干扰。
 \set ON_ERROR_STOP on
 \timing off
 
 \set N 20000
 
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- ── 幂等：清掉本族所有辅助函数（含历史版本留下的重载）────────────────
+DO $$
+DECLARE r record;
+BEGIN
+  FOR r IN
+    SELECT p.oid::regprocedure AS sig
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = current_schema() AND p.proname LIKE 'xc\_%'
+  LOOP
+    EXECUTE format('DROP FUNCTION IF EXISTS %s CASCADE', r.sig);
+  END LOOP;
+END
+$$;
 
 DROP TABLE IF EXISTS xc_plain;
 DROP TABLE IF EXISTS xc_gin;
