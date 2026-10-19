@@ -8,6 +8,8 @@
 > 三族真问题修复，见「已完成」第 6 条与 `docs/audit/2026-10-11-24h-audit-pass.md`。
 > 上下文：脱敏范围事故（地址被遮蔽成 `[REDACTED]`）的修复、245 部署验证与
 > 随后的批判性审计。
+> **2026-10-19 24h 审计轮**（本会话）：5 个本地未推送 dup 提交合并、bg/ 两族
+> 假阳性 ERROR 收口（推送 `151a0ba13`），见下方「2026-10-19 24h 审计轮」节。
 
 ## 经验反馈闭环（vibe-coding Rule 66）
 
@@ -2775,3 +2777,162 @@ unified 全量 500@20s；getLog 正文吞空且每次点击白等 20s。
   非本轮回归。根治要么给 _request_logs_bodies 族补分区索引，要么等 860 族整体退役。
 - admin 5 个存量红门（providers.go/tenants.go 证据漂移）在 pristine HEAD 同红，
   与本轮无关，待各自 owner。
+
+---
+
+# 追加：2026-10-19 24h 审计轮——5 dup 提交合并 + bg/ 两族假阳性 ERROR 收口
+
+> 会话时间 2026-10-19 早间。本机 host-first 仓库（llm-gateway-go，:8782 部署
+> 状态 S4 停写中）。上一轮 24h 审计（10-18 早间）记录的两条生产持续 ERROR
+> ——candidate_failure_monitor 22h+ staleness、provider_error_aggregator 25h+
+> watermark stall——在 10-18 下午**仅**登记了\"需 owner 单独立项\"，修复代码
+> 在磁盘上、但**未提交、未推送**。本轮把那块已盘好的修复收口并补上缺失
+> 的门禁与 dead code 收口。
+
+## 结论/根因
+
+- **5 个本地未推送提交是 origin/main 5 个同名复制的同义复制**（不同 SHA，
+  同名：92f2b7b03 / dae573f3b / 695e8efe0 / 09f9e5148 / 9b586d21c ≡
+  51476a665 / 47ecdd4ad / 9226afcd8 / f5d73399b / 72202db12）。这是
+  AGENTS.md「多会话共享 checkout」的标准情形（另一会话推过同名同内容
+  提交）。
+- **candidate_failure_monitor 22h+ staleness 假阳性根因**（已在上一轮
+  注释写明、本轮固化）：710 之后 `request_logs_with_current_month` 是 v2
+  形态（session_turns_hot ∪ session_turns ∪ v1 派生三腿）。S4 停写时
+  `_request_logs_hot` 冻结但 session_log 照写 ⇒ 视图 max(ts) 恒新鲜 ⇒
+  staleness 永远\"有最近活动\"，本机实测 22h+ 持续 ERROR。改读
+  `request_logs_with_current_month_without_request_class_due_at`（v1 基础
+  交集，纯 request_logs 腿）后，S4 停写时本视图也 0 行 ⇒ lastRequest=nil
+  ⇒ 不告警。**v1 形态下两视图等效（不含 session_turns），v2 形态下新
+  视图更严格；本修法在两代下都正确**。
+- **provider_error_aggregator 25h+ watermark stall 假阳性根因**：S4 停写 +
+  仅 mock 流量时 `candidate_failure_logs_hot max(aggregation_id)=40`、
+  `last_source_id=40`、updated_at 33h+ 前，aggregator **已追平到源** 但源
+  没新行 ⇒ 真实成因是\"源空\"不是\"写路径坏\"，原实现一律打 ERROR 是
+  假阳性。修法：先比对 pre_watermark 与源 max(aggregation_id)，分
+  stallGenuine（原 ERROR）/stallCaughtUp（WARN）两态。
+
+## 改动文件与关键行为
+
+| 文件 | 行为 |
+|---|---|
+| `bg/candidate_failure_monitor.go` | 抽 `checkStalenessLastRequestSurface` 常量 = `request_logs_with_current_month_without_request_class_due_at`；`checkStaleness` SQL 用此常量做 lastRequest 子查询。 |
+| `bg/candidate_failure_monitor_logic_test.go` | 新增 `TestStalenessLastRequestSurfaceExcludesSessionTurns`：钉常量形态——禁含 `session_turns` 子串、必须 `request_logs` 开头。 |
+| `bg/provider_error_aggregator.go` | ① 抽 `providerErrorAggregatorSourceMaxIDSQL` 常量（源 max 读 SQL，绑定 staging 同表 `candidate_failure_logs_hot`）；② 抽 `providerErrorAggregatorClassifyStall(preWatermark, sourceMax)` 纯函数（返 stallGenuine/stallCaughtUp）；③ `aggregateErrors` 改用 const + switch（原内联字符串/比较替换）。 |
+| `bg/provider_error_aggregator_stall_test.go`（新文件） | ① `TestProviderErrorAggregatorStallGuardSkipsCaughtUpCase`：5 个边界（真停摆 40<50、刚追平 50=50、已超前 60>50、全 0、源空水位超前 1_000_000>0）。② `TestProviderErrorAggregatorStallGuardSourceSQLPinsTable`：钉源表形态（必须 `candidate_failure_logs_hot`、禁 `unified`/父表/裸名、必须 `COALESCE(MAX(aggregation_id), 0)`）。 |
+
+**死代码收口**（aggressive audit：上一轮抽出的常量/函数实际未使用）：
+
+- 上一轮抽出了常量 `providerErrorAggregatorSourceMaxIDSQL` 与函数
+  `providerErrorAggregatorClassifyStall`，但 `aggregateErrors` 里**仍**
+  写的是内联字符串和 `else if preWatermark < sourceMax`。本轮把它们
+  真正接上去——常量 SSOT、纯函数供单测。否则那份抽象是「装饰性抽取」，
+  注释说「便于单测」、没有单测，违背 AGENTS.md 判据纪律 #3。
+- 注释里引用的 `provider_error_aggregator_stall_test.go` 上一轮不存在，
+  注释成为死链接。本轮补齐。
+
+## 测试命令与结果
+
+```bash
+# 编译 / vet / 格式
+PATH="$HOME/sdk/go/bin:$PATH" go build ./...     # rc=0
+PATH="$HOME/sdk/go/bin:$PATH" go vet ./...       # rc=0
+PATH="$HOME/sdk/go/bin:$PATH" gofmt -l bg/{candidate_failure_monitor,provider_error_aggregator,provider_error_aggregator_stall_test}.go bg/candidate_failure_monitor_logic_test.go
+# 0 输出
+
+# 子集测试（macOS 强制 cgo=0）
+CGO_ENABLED=0 go test \
+  ./security/... ./domains/outputcompliance/... ./proxy/... ./settings/... \
+  -count=1
+# ok: armor/guardian/sanitize/sensitive/outputcompliance/proxy/settings（8 包全绿）
+CGO_ENABLED=0 go test \
+  ./bg/... -count=1 -run 'TestStaleness|TestProviderErrorAggregator'
+# ok: bg（13 个含新 3 个 TestProviderErrorAggregatorStallGuard* 与 TestStalenessLastRequestSurfaceExcludesSessionTurns 全绿）
+CGO_ENABLED=0 go test \
+  ./domains/streaming/... -count=1 -timeout 600s
+# ok: 5 子包全绿（streaming 152s / executors 46s / 其它 <2s）
+CGO_ENABLED=0 go test ./admin/... -count=1
+# FAIL：仅 TestV1BodiesReadersAreAssessed（维护者策略的负向闸门，与本提交无关）
+```
+
+**变异验证 3/3 全变红**（有牙）：
+
+- M1：把 `if preWatermark < sourceMax` 改成 `if false && preWatermark < sourceMax`
+  ⇒ `TestProviderErrorAggregatorStallGuardSkipsCaughtUpCase` 红。
+- M2：把源表名 `FROM candidate_failure_logs_hot` 换成
+  `FROM candidate_failure_logs_unified` ⇒
+  `TestProviderErrorAggregatorStallGuardSourceSQLPinsTable` 红。
+- M3：把 `checkStalenessLastRequestSurface` 常量改回
+  `session_turns_with_current_month` ⇒
+  `TestStalenessLastRequestSurfaceExcludesSessionTurns` 红。
+
+## 推送
+
+```
+$ git log --oneline -2
+151a0ba13 fix(bg): S4 停写后 staleness/stall 两条持续 ERROR 的假阳性根除
+4300ec39b docs(runbook): §114 复核 §113 那声警——门控真值 + 229 MB 死 TOAST 索引...
+$ git push origin main
+To codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
+   4300ec39b..151a0ba13  main -> main
+```
+
+## 教训（本轮最贵的一条）
+
+26. **「抽成纯函数便于单测」是装饰性抽取的常见伪装。** 上一轮抽出
+    `providerErrorAggregatorClassifyStall` + `providerErrorAggregatorSourceMaxIDSQL`，
+    注释写「便于单测（见 provider_error_aggregator_stall_test.go）」，
+    但调用点**没有接上去**、测试**没建**——常量字符串和比较还是内联。
+    ⇒ 审计**抽离代码**时一定要验「调用点也改了」+「测试真存在」，
+    否则抽象只剩装饰。本轮 M2 的红就是为它补上的牙。
+    **判据纪律 #3 镜像形态**：「既有判据绿」也可能是「被测逻辑没接上」。
+
+## 遗留风险
+
+- **生产 154/245**：上一轮 24h 审计登记的\"两条生产持续 ERROR\"实际是
+  假阳性，但生产没部署本 SHA（10-19 早间）前仍会继续打 ERROR。修复
+  携带本 SHA 部署后即解。**部署动作**未在本轮执行（见「下一轮提示词」）。
+- **镜像前（2026-09-20 之前）老请求正文**仍是 59s 冷扫，与 2026-10-13
+  那轮遗留同条（admin 5 个存量红门，providers/tenants 证据漂移）
+  在 pristine HEAD 同红，与本轮无关。
+- **S3 余债**：routing.go picker、probe 面、tenants.go logsTable
+  （R36-A1 性能裁决需专门分片）等本轮未触碰；详见 10-13 那轮 S3 列表。
+- **AGENTS.md 体量**：本文件已 2800+ 行；新一轮叠加会继续涨，下次冷启动
+  加载成本上升。后续轮次若做大的重写（如重做浏览器验收章节、合并
+  多次跑题段），建议按章节抽到 `docs/agents-handoff/` 子目录，
+  AGENTS.md 只留\"目录 + 索引\"。本轮**未做**。
+- **TestV1BodiesReadersAreAssessed 仍红**：维护者策略的负向闸门，
+  本轮既未通过也未绕过（保持现状）。
+
+## 下一轮提示词
+
+1. **本机验证修法生效**：本机 2549/2550/2591 系列（见上方 10-12/10-13
+   已部署）已含 S4 停写 + UrsmlHealthyKeyReconciler，但**不含**本次
+   `151a0ba13`。本机再开 lite 模式时（`bash scripts/start-lite.sh`），
+   candidate_failure_logs 与 provider_error_aggregator 立即生效。
+   grep 本机 gateway 日志 10 分钟：
+   `grep "failure log is stale\|watermark stalled past promote retention" /opt/llm-gateway-go/run/*.log | tail`
+   若仍出现且不含本轮的 `source_max_aggregation_id` 字段 ⇒ 二进制
+   没换、需重新部署；若出现的是含 `source_max_aggregation_id` 字段的
+   `WARN`（catch-up 假阳性已识别）⇒ 修法生效、剩 WARN 也属正常
+   （无 promote 期间丢行风险）。
+2. **生产 154/245 部署本 SHA**：本机修法生效 ≠ 生产生效。154/245
+   仍以原 binary 在打 ERROR 假阳性。需要在 `scp-llm-gateway-go-2` /
+   `scp-llm-gateway-go-5` 上做一次部署（**seq 必须自增且不与他人撞**，
+   参考 10-12 凌晨轮：2549→2550 两轮部署）。本轮**未做**部署。
+3. **多会话提交纪律再+1**：本轮 `git push` 时 origin/main 已被
+   并行会话推进（4300ec39b §114 跑题），`git pull --rebase` 后重推
+   成功。复刻 2026-10-18 早间那轮教训；以同 checkout 推应先
+   `git fetch && git log --oneline HEAD..origin/main`。
+4. **持续 ERROR 假阳性自检表**：上轮登记的两条已收口。下次扫生产日志
+   时，按「形态/时间窗/数据源」三段检查——是否同一组问题有\"看起来
+   像但成因不同\"的兄弟假阳性：
+   - candidate_failure_monitor 还有没有别的 monitor 读
+     `request_logs_with_current_month`？
+   - provider_error_aggregator 的 7h 阈值是否与 promote retention 同源？
+   - 同链路 `bg/passive_probe_listener.go` 也读该视图（已 grep），
+     S4 停写下是否同病？
+5. **不要替 owner 拍板**：本轮收到 \"§114 警 + 229MB 死 TOAST 索引\"
+   （4300ec39b）是 §113 教训/§114 runbook；上一轮 24h 审计登记的
+   `navCoverage` / `hardcoded_cjk` 棘轮 / `i18n/parity` 三条
+   仍是 owner 决策项，**未代做**。
