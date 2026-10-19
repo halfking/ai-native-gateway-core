@@ -121,7 +121,14 @@ const NON_NAVIGABLE: Array<[string, number, string]> = [
   ['src/views/CorrelationsView.vue', 391, '按任务类型聚合（resp.by_task_type，title-key=label）：任务类型同为筛选维度，无落地页'],
   ['src/views/CorrelationsView.vue', 437, '模型×任务交叉表（modelTaskRows，title-key=card_key）：交叉统计单元，两侧都无详情页'],
   ['src/views/FreeDiscoveryView.vue', 1083, '发现流列表，本视图只做发现不做详情'],
-  ['src/views/QualityCorrelationsView.vue', 186, '质量相关性聚合，无单条详情'],
+  // ⚠ 行号锚点：2026-10-20 由 186 改为 223。
+  //   原因：QualityCorrelationsView.vue 在 <script setup> 头部插入了 37 行
+  //   （后端把数组字段返成 null 时的边界归一化，见该文件的 normalizeQualityCorrelations
+  //   与 docs/audit/2026-10-20-request-logs-session-turns-复核轮.md §5.8），
+  //   186 之后的所有行整体后移 37 行 ⇒ 锚点必须跟着走。
+  //   本仓同类改键先例：internal/billguard/month_key_test.go（2026-10-13 :126→:145、
+  //   2026-10-17 :91→:243）—— 每次都要在登记处写明原因与行数。
+  ['src/views/QualityCorrelationsView.vue', 223, '质量相关性聚合，无单条详情'],
   ['src/views/UserProfileView.vue', 285, '画像内嵌的 top_tasks（title-key=task_id）：任务名是分组标签，本视图无任务详情页'],
   ['src/views/UserProfileView.vue', 308, '画像内嵌的 top_end_users（title-key=end_user_id）：画像页本身就是终点，无二级详情'],
   ['src/views/tenant/MaaSAccountView.vue', 282, '账号内嵌表，无账号详情页'],

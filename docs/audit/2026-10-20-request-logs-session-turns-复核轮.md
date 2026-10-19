@@ -27,6 +27,7 @@
 | **逐页浏览器验证（104 页）** | **103/104 文档级 200**（唯一例外 `/maintain` 503 = 本机未部署该服务）；**0 个 API ≥2000ms**；**0 个 JS 运行时异常**；抓出 **9 处真 5xx**（5 个根因，全部 curl 可复现）—— 已修 4 个 + 1 个是功能未启用（503 预期） |
 | **逐页抓出的最重根因** | `prompt_injection_detections` 的**正典形状**（`sql/schema/` + `sql/objects/tables/`）与**历史迁移 315 的形状**不是一回事，而 315 的 `CREATE TABLE IF NOT EXISTS` 在正典库上是**空操作** ⇒ 315 声明的列**从未被创建** ⇒ 读侧恒 42703、**写侧恒失败（审计记录静默丢失）**、364 的视图建不出来 ⇒ **全环境**缺陷（不是本机没升级） |
 | **门禁自身的竞态（本轮新发现）** | `TestDataLifecycleTableSizesFieldsAreComplete` 偶发红：判据与端点读**同一个** `pg_total_relation_size`，却跨两次读做**精确相等**，而首行大表正被网关后台 worker 写入 ⇒ **端点是对的，判据的前提是错的**。已按该文件注释**早已声明的 ±1%** 修正并做变异验证（§5.7） |
+| **逐页扫描抓到的唯一一条 JS 异常** | `/quality-correlations` 在**无数据**时抛 `TypeError: Cannot read properties of null (reading 'reduce')`：后端 `breakdown` 是 Go **nil slice** ⇒ 序列化成 `null`，而前端 TS 类型声明成**非空数组** ⇒ 类型成了假的安全网。已改后端契约（恒返 `[]`）+ 前端**边界**归一化，3 道新判据全部做过变异验证（§5.8） |
 
 ---
 
@@ -692,6 +693,117 @@ PSQL="$HOME/kaixuan/pg18/bin/psql"
 
 ⇒ 容差 2312683 字节（1%）能抓住 100% 量级的读数错误；活库的写入漂移实测在 KB 级
 （64KB/5s），两者差三个数量级 ⇒ 不会把「读数在变」误判成「读数不对」。
+
+---
+
+## 5.8 ★ 逐页扫描抓到的**唯一一条** JS 运行时异常：`/quality-correlations` 在「无数据」时崩
+
+### 5.8.1 症状
+
+合并上游 22 个提交并重新部署后，104 页全量重扫里出现了**唯一一条** JS 运行时异常：
+
+```
+[Vue Error] TypeError: Cannot read properties of null (reading 'reduce')
+    at ac.fn (http://127.0.0.1:8782/assets/QualityCorrelationsView-Bq54SLjJ.js:1:2961)
+    at Wi (http://127.0.0.1:8782/assets/vue-vendor-BSI0bAkk.js:9:3566)
+    ...
+```
+
+页面**文档级 200、其它 API 全部正常**，只有这一条异常（不崩页，但那一格数据算不出来）。
+
+### 5.8.2 根因：契约两端不一致 —— 后端返 `null`，前端类型说「非空数组」
+
+| 端 | 事实 |
+|---|---|
+| 后端 | `admin/quality_correlations.go` 的 `var breakdown []QualityCorrelationRow` 是 Go 的 **nil slice** ⇒ JSON 序列化成 **`null`** 而不是 `[]`；而**同一个 handler** 里下方的 `insights := []QualityCorrelationInsight{}` 被**显式**初始化了 ⇒ 同一响应里两个数组字段的空值形态不一致，是疏漏 |
+| 前端 | `web/src/api/tuning.ts` 的 `QualityCorrelationResponse.breakdown` 声明为 `QualityCorrelationRow[]`（**非空**）⇒ **类型是假的**；页面于是直接 `resp.value.breakdown.reduce(...)`，null 时当场抛异常。同一页另有 3 处 `resp.breakdown.length` / `resp.insights.length` 同样会炸 |
+
+触发条件是**合法业务状态**，不是异常输入：本地库 `session_turns` 里
+`is_auto_request IS TRUE` 的行数为 **0** ⇒ 聚合查询 0 行 ⇒ `breakdown` 为 `null`。
+
+**取数命令**（DSN 走 `DATABASE_URL`，**不落盘**）：
+
+```bash
+source /tmp/lgw-env.sh
+PSQL="$HOME/kaixuan/pg18/bin/psql"
+# ① 端点实际返回
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:8782/api/admin/auto-route/quality-correlations?days=7"
+#   ⇒ {"window_days":7,"by":"prompt_length","breakdown":null,"insights":[],"generated_at":...}
+# ② 为什么是 null：查询读的是 session 族，而 auto 轮次为 0
+"$PSQL" "$DATABASE_URL" -tAc "SELECT count(*) FROM public.session_turns WHERE is_auto_request IS TRUE;"
+```
+
+**口径**：端点读 `SessionFamilyTurnsSourceSQL()`（session_turns）LEFT JOIN
+`SessionBodiesSourceSQL()`（session_bodies_hot），过滤 `is_auto_request = TRUE`
+且 `ts >= NOW() - INTERVAL '1 day' * $1`。
+**覆盖范围**：本机 PG 54318 的 `public.session_turns` 全表（876 行）——
+`is_auto_request IS TRUE` 命中 **0** 行。
+
+### 5.8.3 归属：既有缺陷，**不是**本轮引入
+
+- 合并**没有动过** `admin/quality_correlations.go` 与 `web/src/views/QualityCorrelationsView.vue`
+  （`git diff 8cec460b3 c75ec26ee -- <两文件>` 为空）；
+- 上一轮（修完 5 个 500 之后）那次 104 页扫描报「0 个 JS 运行时异常」⇒ 当时
+  `breakdown` 还不是 `null`（本地库那会儿有 auto 轮次）。
+
+### 5.8.4 修法：后端改契约 + 前端在**边界**归一化（两层都做）
+
+1. **后端**：`breakdown := []QualityCorrelationRow{}`（与同函数里的 `insights` 对齐）
+   ⇒ 数组字段恒返 `[]`。
+2. **前端**：`normalizeQualityCorrelations()` 放在**写进 `resp` 之前**（边界），
+   把 `null`/非数组一律兜成 `[]`。
+   - 为什么放在边界而不是模板里：模板继续用 `resp.breakdown`（既有跨层契约门禁
+     `QualityCorrelationsView.responsive.test.ts` 钉的就是这个形态），而防御散落在
+     4 个模板表达式里**就会漏掉第 5 个**；
+   - 为什么前端也要做：前端**不能依赖后端**（同一份视图可能被别的后端实现喂数据）。
+
+### 5.8.5 新增判据（3 道，全部做过变异验证）
+
+| 判据 | 钉的不变量 | 变异 |
+|---|---|---|
+| `admin/quality_correlations_null_array_test.go::TestQualityCorrelations_ArrayFieldsAreNeverNull` | **数组型字段在响应里必须是 JSON 数组，永远不是 null**（真库 + 真 handler + **解进 map** 才能看见 `null` 与 `[]` 的区别） | 改回 nil slice ⇒ 红：`字段 breakdown 序列化成了 null` |
+| `admin/quality_correlations_null_array_test.go::TestQualityCorrelations_BreakdownIsNotDeclaredAsNilSlice` | **写法**：源码里不能出现 `var breakdown []QualityCorrelationRow` | 同上 ⇒ 红：`又把 breakdown 声明成 nil slice 了` |
+| `web/src/views/QualityCorrelationsView.nullbreakdown.test.ts` | **页面的承受力**：后端返 null 时必须渲染空态、不得抛异常（**不**断言「后端返 null」这个形态，否则后端修好后这道门变废门） | 去掉边界归一化 ⇒ 红，且报的正是生产同款 `TypeError: Cannot read properties of null (reading 'reduce')` |
+
+> 真库门与静态门分工：真库门钉**输出**，静态门钉**写法** ——
+> 把 nil slice 换回去在**有数据**的环境里输出不变，只有静态门能抓住。
+
+### 5.8.6 连带修：行号锚点型登记表
+
+`web/src/components/ui/mobileListUx.spec.ts` 的 `NON_NAVIGABLE` 登记表按
+`[文件, 行号, 理由]` 锚定调用点。前端在 `<script setup>` 头部插入 37 行后，
+`QualityCorrelationsView.vue` 的 `ResponsiveDataView` 调用点由 **186 → 223** ⇒
+登记表必须跟着走（否则门报的是「找不到」而不是「不合格」—— 量具坏了，不是产品坏了）。
+
+已按本仓先例改键并在登记处写明原因与行数（先例：
+`internal/billguard/month_key_test.go` 2026-10-13 `:126→:145`、
+2026-10-17 `:91→:243`）。
+
+### 5.8.7 修后复验（部署 `2.5.8.2755`，`VERIFY_PASS=1`）
+
+**端点行为变化**（部署产物来自**未提交**源码 ⇒ 版本号不能当证据，用行为变化证明）：
+
+```
+修前：{"window_days":7,"by":"prompt_length","breakdown":null,"insights":[],...}
+修后：{"window_days":7,"by":"prompt_length","breakdown":[],"insights":[],...}
+```
+
+**104 页全量重扫**（同一脚本、同一 104 页、同一口径）：
+
+| 口径 | 合并后（修前） | 修后 |
+|---|---|---|
+| 文档级不可达 | 1（`/maintain` 503） | 1（同上，预期） |
+| **真 5xx**（剔除 maintain-api 503 / free-discovery 503） | 0 | **0** |
+| **JS 运行时异常** | **1 页**（`/quality-correlations`） | **0 页** |
+| 慢 API ≥2000ms | 0 | **0** |
+| 页面加载 ≥2000ms | 1（`/dashboard`） | 1（`/dashboard` 2042ms，首屏 87 个 API，属边界值） |
+| console error | 104 页（全为 maintain-api 503 的资源加载失败，预期） | 同上 |
+
+**量具本身的修复**：`sweep.mjs` 写 TSV 时只 `replace(/\t/g,' ')`，**没剔换行** ⇒
+JS 堆栈是**多行**的，整表被写坏（解析出来「106 行、route 重复、docStatus 为空」）。
+已补 `flat()` 统一把换行也换成空格 ⇒ 本次读数 104 行、可逐行解析。
+⇒ 判别动作：**量具产出必须先自检「行数 == 预期」再读数**。
 
 ---
 

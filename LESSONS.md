@@ -3180,6 +3180,13 @@ PostgreSQL 解析调用时，**带默认值的那个也能接 3 参调用**，
 - 防复发检查：① 判据要读「活数据」时，**先问两次读之间它会不会变**——会变就不能做精确相等，要按**它自己声明的容差**（本例注释早就写的是「±1%」，实现却写成了精确相等 ⇒ **判据没做到它自己声明的事**）；② 容差要留**页级下限**（小表上 1% 可能小于一个 8KB 页）；③ 关系可能已被删时**改判下一行**，但必须保留「**至少有一行成功对账**」的前提断言，否则会退化成「压根没对账」的假绿；④ 判据的注释不是证据，**断言才是**——注释写 ±1% 而代码写 `!=`，以代码为准去质疑注释与现实。
 - 证据：同提交两次全量跑（先 FAIL 后 PASS）；pristine worktree `8cec460b3` 全量跑 PASS；端点与判据同用 `pg_total_relation_size`（`admin/data_lifecycle_storage.go` 的 `tableSizesSQL`）；`pg_stat_user_tables` 读数 `n_tup_ins=49283, n_tup_del=0`；修后变异（`t.TotalBytes *= 2`）如期转红并点名偏差 231268352 > 容差 2312683。
 - 溯源：[复核轮](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.7。
+
+## 2026-10-20 — 数组字段的 JSON 空值形态：Go nil slice 序列化成 `null`，而 TS 类型往往声明成**非空数组**（Seen: 1/3）
+- 场景：104 页逐页扫描在 `/quality-correlations` 上抓到本轮**唯一一条** JS 运行时异常：`TypeError: Cannot read properties of null (reading 'reduce')`。页面文档级 200、其它 API 全绿，只有这一格算不出来。
+- 真因：契约两端不一致。**后端** `var breakdown []QualityCorrelationRow` 是 Go 的 **nil slice** ⇒ JSON 序列化成 **`null`** 而不是 `[]`；而同一个 handler 里下方的 `insights := []QualityCorrelationInsight{}` 被**显式**初始化了 ⇒ 同一响应里两个数组字段的空值形态不一致，是疏漏。**前端** `QualityCorrelationResponse.breakdown` 却声明成 `QualityCorrelationRow[]`（非空）⇒ **类型成了假的安全网**，页面于是直接 `resp.breakdown.reduce(...)` ⇒ null 时当场抛异常。触发条件是**合法业务状态**（本地库 `session_turns` 里 `is_auto_request IS TRUE` 命中 0 行 ⇒ 聚合 0 行）。
+- 防复发检查：① 后端**任何**要返回的数组字段，出声明处就用 `[]T{}` 初始化，不要留 nil slice；同一响应里若有多个数组字段，**形态必须一致**（一个 `[]` 一个 `null` 就是 bug）；② 前端的 TS 类型若由**后端契约**推导，就得承认 wire 上可能是 `null`（单独一个 `Wire` 类型），否则类型会骗人；③ 归一化放在**边界**（写进响应式状态之前）而不是模板里 —— 防御散落在 4 个模板表达式里**就会漏掉第 5 个**，且会改掉既有跨层契约门禁钉的模板形态；④ 前端**不能依赖后端**：后端修好后前端那道门仍要有效 ⇒ 门要断言「**页面的承受力**」，不要断言「后端返 null」这个具体形态，否则后端修好门就变废门。
+- 证据：端点实返 `{"breakdown":null,"insights":[]}`（同一响应里形态不一致的直接证据）；`pg_stat_user_tables`/session_turns 读数 `is_auto_request IS TRUE` = 0 行；3 道新判据（真库+真 handler+解进 map 才看得见 `null` 与 `[]` 的区别 / 静态门钉写法 / 前端门钉承受力）全部做过变异验证，去掉归一化时前端门报的正是生产同款 `TypeError`。
+- 溯源：[复核轮](docs/audit/2026-10-20-request-logs-session-turns-复核轮.md) §5.8。
 ## 2026-10-20 — 门禁钉在哪个相位，决定它能不能失败（Seen: 1/3）
 - 场景：修「已发布规则里的地址族规则在输出面遮蔽 IP」（用户报告
   `export https_proxy=http://[REDACTED]:7890`）。第一版门禁写在**输入面**

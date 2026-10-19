@@ -119,7 +119,18 @@ func (h *AutoRouteHandlers) handleQualityCorrelations(w http.ResponseWriter, r *
 	}
 	defer rows.Close()
 
-	var breakdown []QualityCorrelationRow
+	// ⚠ 这里**必须**初始化成空切片而不是留 nil：Go 的 nil slice 会被 JSON 序列化成
+	// `null`（不是 `[]`），而本文件下方的 `insights` 恰恰显式初始化了
+	// `[]QualityCorrelationInsight{}` ⇒ 同一个响应里两个数组字段的空值形态不一致。
+	//
+	// 代价（2026-10-20 复核轮实测）：本地库 session_turns 里
+	// `is_auto_request IS TRUE` 的行数为 0 ⇒ 查询 0 行 ⇒ breakdown 序列化成
+	// `null` ⇒ 前端 `QualityCorrelationsView.vue` 的
+	// `resp.value.breakdown.reduce(...)` 直接抛
+	// `TypeError: Cannot read properties of null (reading 'reduce')`，
+	// 同页还有两处 `resp.breakdown.length` 同样炸 ⇒ 页面在**无数据**时抛异常。
+	// 「无数据」是合法业务状态，**不该**以异常的形式呈现。
+	breakdown := []QualityCorrelationRow{}
 	for rows.Next() {
 		var row QualityCorrelationRow
 		if err := rows.Scan(&row.Bucket, &row.Samples, &row.SuccessRate,
