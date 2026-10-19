@@ -261,6 +261,74 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 	writeJSONOk(w, out)
 }
 
+// autoRouteIndexSnapshotSQL —— 取「每个 (credential_id, raw_model) 对的
+// 最新桶那一行」，供 admin 的 auto-route 索引端点使用。
+//
+// 2026-10-19（96h 审计轮，252 生产库只读实测）：本查询原先写成
+// 「CTE latest_bucket（GROUP BY 取 MAX(bucket)）+ JOIN 回原视图」，
+// 那个形态在 PG 上**把同一批行扫了两遍**——
+//
+//	EXPLAIN (ANALYZE, BUFFERS)（252 真库，2026-10-19 23:5x）
+//	  CTE  : Parallel Append → HashAggregate，431,820 行 × 3 loops
+//	  外层 : Parallel Append（JOIN 回同一视图），143,940 行 × 3 loops
+//	  ⇒ Execution Time 1789 ms、Buffers shared hit=29988
+//
+// 改写成「元组 IN 子查询」后，PG 只需扫一遍（HashAggregate + 半连接）：
+//
+//	Execution Time 739 ms（同一台库、同一份数据、**只换写法**）⇒ **-59%**
+//
+// 该端点在 25.7 小时窗口内被调 637 次（pg_stat_statements，均值 3.1 s）
+// ⇒ 每次省 ~1.05 s ≈ **每天省约 27 分钟的数据库时间**。
+//
+// ⚠ 为什么不改成 DISTINCT ON（那才是"教科书"写法）：实测**更慢**——
+// DISTINCT ON 让 PG 对 431,820 行做 external merge Sort，溢出 58,944 kB
+// 到磁盘（work_mem 仅 8MB），Execution Time 2980 ms，比原写法还差 67%。
+// ⇒ 改写方向由**真库实测**决定，不由直觉决定。
+//
+// ⚠ 语义等价性（三处都对上，改写才成立）：
+//  1. **逐对**取 MAX(bucket)，不是全局 MAX：桶是稀疏的，全局最大值只落在
+//     最后一次有指标变化的桶上（典型 1~2 行），会把整个索引藏起来
+//     （见 handleIndexSnapshot 的注释）。
+//  2. canonical_id 过滤留在**外层**：原写法是「先按对取最新桶，再按
+//     canonical_id 过滤」；若把过滤推进 IN 子查询，就变成「在过滤后的行里
+//     取最新桶」，当同一 (对, 桶) 上 canonical_id 变过时两者不等价。
+//  3. models_canonical 的 LEFT JOIN 位置不影响结果（按主键唯一查）。
+//
+// 门：admin/auto_route_index_snapshot_sql_test.go（形状 + 语义位置两腿）。
+const autoRouteIndexSnapshotSQL = `
+		SELECT cmi.credential_id, cmi.raw_model, cmi.canonical_id,
+		       COALESCE(mc.canonical_name, ''), cmi.billing_mode,
+		       cmi.unit_price_in_per_1m, cmi.unit_price_out_per_1m,
+		       cmi.context_window, cmi.success_rate, cmi.p95_latency_ms,
+		       cmi.active_sessions, cmi.concurrency_limit, cmi.pressure_ratio,
+		       cmi.score_smart, cmi.score_speed_first, cmi.score_cost_first,
+		       cmi.updated_at, cmi.bucket
+		FROM credential_model_index_with_current_month cmi
+		LEFT JOIN models_canonical mc ON mc.id = cmi.canonical_id
+		WHERE (cmi.credential_id, cmi.raw_model, cmi.bucket) IN (
+		    SELECT credential_id, raw_model, MAX(bucket)
+		    FROM credential_model_index_with_current_month
+		    GROUP BY credential_id, raw_model
+		)
+`
+
+// autoRouteIndexSnapshotQuery 组装 auto-route 索引端点的 SQL 与参数。
+//
+// 抽成函数而不是留在 handler 里，是为了让门能检查**拼装后**的形态：
+// canonical_id 过滤必须落在 IN 子查询**之外**（见 autoRouteIndexSnapshotSQL
+// 的语义等价性第 2 条），只检查常量文本看不到这个位置关系。
+func autoRouteIndexSnapshotQuery(canonicalID string, top int) (string, []interface{}) {
+	query := autoRouteIndexSnapshotSQL
+	args := []interface{}{}
+	if canonicalID != "" {
+		args = append(args, canonicalID)
+		query += fmt.Sprintf(" AND cmi.canonical_id = $%d", len(args))
+	}
+	args = append(args, top)
+	query += fmt.Sprintf(" ORDER BY cmi.score_smart DESC LIMIT $%d", len(args))
+	return query, args
+}
+
 // handleIndexSnapshot returns the current credential_model_index snapshot
 // (the latest 5-min bucket). Used by the admin UI to visualise the live
 // index state and by curl scripts to debug routing decisions.
@@ -304,34 +372,7 @@ func (h *AutoRouteHandlers) handleIndexSnapshot(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	query := `
-		WITH latest_bucket AS (
-		    SELECT credential_id, raw_model, MAX(bucket) AS bucket
-		    FROM credential_model_index_with_current_month
-		    GROUP BY credential_id, raw_model
-		)
-		SELECT cmi.credential_id, cmi.raw_model, cmi.canonical_id,
-		       COALESCE(mc.canonical_name, ''), cmi.billing_mode,
-		       cmi.unit_price_in_per_1m, cmi.unit_price_out_per_1m,
-		       cmi.context_window, cmi.success_rate, cmi.p95_latency_ms,
-		       cmi.active_sessions, cmi.concurrency_limit, cmi.pressure_ratio,
-		       cmi.score_smart, cmi.score_speed_first, cmi.score_cost_first,
-		       cmi.updated_at, cmi.bucket
-		FROM credential_model_index_with_current_month cmi
-		JOIN latest_bucket lb
-		  ON lb.credential_id = cmi.credential_id
-		 AND lb.raw_model     = cmi.raw_model
-		 AND lb.bucket        = cmi.bucket
-		LEFT JOIN models_canonical mc ON mc.id = cmi.canonical_id
-		WHERE 1=1
-	`
-	args := []interface{}{}
-	if canonicalID != "" {
-		args = append(args, canonicalID)
-		query += fmt.Sprintf(" AND cmi.canonical_id = $%d", len(args))
-	}
-	args = append(args, top)
-	query += fmt.Sprintf(" ORDER BY cmi.score_smart DESC LIMIT $%d", len(args))
+	query, args := autoRouteIndexSnapshotQuery(canonicalID, top)
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
