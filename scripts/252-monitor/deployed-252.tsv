@@ -1,0 +1,48 @@
+# 252 生产巡检脚本的**部署台账**（2026-10-19 建立）
+#
+# 背景：2026-10-19 实测发现，252 的 /etc/cron.d/pg17 登记了 **12 个**巡检脚本，
+# 其中 **6 个**在 252 上跑的不是仓内版本（最旧的落后 8 天）。
+# 后果不是「文件不一样」这么轻，而是**行为不一样**，且**全部无人察觉**：
+#
+#   · pg17-index-bloat.sh            少了 pg_toast 命名空间与叶分区索引
+#                                    ⇒ 229MB 死 TOAST 索引 + 4.5GB 叶分区索引不可见
+#   · pg17-drop-old-columnar-partitions.sh
+#                                    §88 的 VACUUM FULL 修法未上线
+#                                    ⇒ 生产日志 6 次全部失败（隐式事务块）却打 "done"
+#   · pg17-duplicate-index-check.sh   只有段1（逐字重复），缺段2/段3（前缀覆盖 + 父表级联）
+#                                    ⇒ 答不出「删了会不会长回来」
+#   · pg17-proactive-empty-table-cleanup.sh
+#                                    父表名仍是 request_logs（迁移 860 已改名 _request_logs）
+#                                    ⇒ v1 default 分区永远进不了候选集
+#   · ursm-snapshot-payload-bloat.sh  avg 缺 coalesce ⇒ 报 182B（真值 ~27B），6.7 倍虚高
+#
+# 仓里的门只能管住**仓内**（`cron_registration_test.go` 管「脚本有没有接线」），
+# 抓不到「仓里改了、线上没换」—— 那是**发布链**问题，不是一道仓内门能补的。
+# 本台账 + `deployed_script_drift_test.go` 把「线上跑的是哪一版」变成**仓内可查的事实**，
+# 并让「改了脚本不更新台账」在提交时就红。
+#
+# 列（制表符分隔）：
+#   <脚本名> <TAB> <线上 md5（252:/opt/scripts/）> <TAB> <仓内 md5> <TAB> <状态> <TAB> <原因>
+#
+# 状态：
+#   in-sync  线上与仓内逐字一致
+#   drift    两者不同 —— **必须**写清原因与处置口径
+#
+# ⚠ 维护规矩：
+#   ① 改了 scripts/252-monitor/ 下的脚本 ⇒ **必须**同时更新本台账的「仓内 md5」列
+#      （否则 `deployed_script_drift_test.go` 会红，这是有意的）。
+#   ② 部署到 252 后 ⇒ 把「线上 md5」列更新成新值，并把状态改成 in-sync。
+#   ③ 暂时不能上线的 ⇒ 保持 drift 并写清原因（例：破坏性动作待属主拍板）。
+#
+pg-table-bloat-check.sh	689d90239f762803c6eb395e62f5e57a	689d90239f762803c6eb395e62f5e57a	in-sync	-
+pg17-disk-watch.sh	ad4852ca4b1a94fbc13daabe325111a0	ad4852ca4b1a94fbc13daabe325111a0	in-sync	§143.8 去抖 + 跳变/心跳判定（2026-10-19 部署）
+pg17-drop-old-columnar-partitions.sh	c6064c0a9eab2cd5bbc9c6c2845666ac	bec7b6f072f1eaadff21baa0c09f5993	drift	§88 的 VACUUM FULL 修法未上线：线上版 6 次全部因隐式事务块失败却打 "done"（/var/log/pg17-drop-old-columnar-partitions.log，2026-10-01 02:31）。但其补救动作是 VACUUM FULL citus 内部目录（整表重写 + 10min 锁等待），且实测当前 columnar_internal 无死元组可回收 ⇒ 部署属属主拍板项（2026-10-19 登记）
+pg17-duplicate-index-check.sh	f2ea6ce12b58875090e4d98ba9c8b21a	f2ea6ce12b58875090e4d98ba9c8b21a	in-sync	§143.10 部署：补段2/段3（前缀覆盖 + 父表级联，§78/§79）
+pg17-emergency-cleanup.sh	b14923566bcdaf6e440066a7ec89a5f4	b14923566bcdaf6e440066a7ec89a5f4	in-sync	§143.6 死表分支第四道闸（2026-10-19 部署）
+pg17-index-bloat.sh	b6b83604da0e5d20257cecf21edf9f40	b6b83604da0e5d20257cecf21edf9f40	in-sync	§143.10 部署：pg_toast 命名空间 + 叶分区索引（§104/§115 两处盲区）
+pg17-onconflict-constraint-check.sh	eb2ed21f8a469a60a16731ec0695546d	eb2ed21f8a469a60a16731ec0695546d	in-sync	-
+pg17-pg-availability-check.sh	d436ebc19d2dc89a8d86e10b24898edb	d436ebc19d2dc89a8d86e10b24898edb	in-sync	-
+pg17-proactive-empty-table-cleanup.sh	1bb27757f38f216104aa7c59f6ab209d	7e5984c1edbd3d77ebe85847d9a8cf8d	drift	线上版父表名仍是 request_logs，而迁移 860 已把该族改名为 _request_logs ⇒ v1 default 分区永远进不了候选集。⚠ 修好后该脚本会**新启用** DROP _request_logs_default（破坏性动作，v1 待删族）⇒ 属主拍板项（2026-10-19 登记）
+pg17-vacuum-bloat.sh	70b01b75bceb164d9784f4f778347e46	7dad7a3219f81a69ee3820a07d98ebda	drift	§143.7 的「可回收字节」判据版未部署：周日 03:15 对生产表发 ACCESS EXCLUSIVE + 整表重写，且 MIN_FREE_PCT 取 30 还是 25 待属主拍板（2026-10-19 登记）
+ursm-snapshot-health.sh	c6d25bde6bede767b021e87629cad047	c6d25bde6bede767b021e87629cad047	in-sync	§143.10 部署：基线跨度探针（基线天数不足时明说「OK 判定偏宽松」）
+ursm-snapshot-payload-bloat.sh	e2e31102c6ceff36fed4091d91e73485	e2e31102c6ceff36fed4091d91e73485	in-sync	§143.10 部署：avg 的 coalesce（§63 连带，6.7 倍虚高修正）
