@@ -30,7 +30,8 @@
 //	llm_gateway_bg_s4_scan_unregistered_skip_total{...}     counter 未登记 reason
 //
 // 标签纪律（GW-00）：worker / reason 都是编译期字面量闭集，见下方枚举。
-// worker 只有 2 个、reason 只有 1 个，基数恒定。
+// worker 3 个（ledger_reconciliation / credential_recovery /
+// routing_health_checker）、reason 1 个，基数恒定。
 package bg
 
 import (
@@ -46,6 +47,15 @@ import (
 const (
 	s4ScanWorkerLedgerReconciliation = "ledger_reconciliation"
 	s4ScanWorkerCredentialRecovery   = "credential_recovery"
+	// s4ScanWorkerRoutingHealthChecker 是 2026-10-20（R51 续轮）新增的第三个 worker。
+	//
+	// 它与前两个的**粒度不同**，别照抄它们的实现形状：前两个 worker 是
+	// 「整个 worker 扫的东西全部不可判定」，而健康检查器是**一个 worker 跑十几条
+	// 检查**，只有其中一条（recorded_cost_is_negative）读的是已停写的
+	// `_request_logs` ⇒ 停写期间**只有那一条**不再可判定，其余检查照跑。
+	// ⇒ 跳过是**逐检查**的（HealthCheckDef.SkipWhen），worker 级的 gauge
+	// 表达的是「本轮有检查因该原因没有执行」，不是「这个 worker 全都没跑」。
+	s4ScanWorkerRoutingHealthChecker = "routing_health_checker"
 )
 
 // s4ScanSkipReason* 是 reason 维度的闭集。
@@ -60,6 +70,7 @@ var (
 	s4ScanSkipWorkers = []string{
 		s4ScanWorkerLedgerReconciliation,
 		s4ScanWorkerCredentialRecovery,
+		s4ScanWorkerRoutingHealthChecker,
 	}
 	s4ScanSkipReasons = []string{
 		s4ScanSkipReasonStopWrite,

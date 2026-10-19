@@ -5107,9 +5107,25 @@ func (d *DB) ensureSessionTitles(ctx context.Context) error {
 //	tuning_signals_5m   — 5-minute buckets, retained 7 days
 //	tuning_signals_daily — 1-day buckets, retained 90 days
 //
-// Both are regular (not materialised) views. The bg worker
-// (bg/tuning_view_refresher.go) refreshes them every 5 minutes.
-// The refresh cost is bounded (~50ms) and runs out of band.
+// Both are **materialised** views (252 生产 pg_matviews 实测：两者的
+// REFRESH ... CONCURRENTLY 都在 pg_stat_statements 里有记录）——
+// 本注释此前写的是 "regular (not materialised) views"，与事实相反，
+// 2026-10-20 按实测订正。
+//
+// The bg worker (bg/tuning_view_refresher.go) refreshes them every
+// 5 minutes. 刷新成本此前注释写 "~50ms"，252 生产实测（2026-10-20，
+// pg_stat_statements 窗口 25.69h）**差一个量级**：
+//
+//	tuning_signals_5m    685 calls   mean 217.4ms   max 4517.6ms
+//	tuning_signals_daily 685 calls   mean 126.0ms   max 8616.8ms
+//
+// ⇒ 按实测改写。两个视图本身极小（168 kB / 80 kB）且 temp_blks_written = 0
+// ⇒ 不溢写，不需要抬 work_mem。
+//
+// ⚠ 2026-10-20（R51 96h 轮）：该 worker 此前**无跨实例协调**且 ticker 是
+// 进程启动相位 ⇒ 两个实例各刷各的，实测 24.4 次/小时（名义 12）。已补
+// 墙钟对齐 + Redis 令牌桶 + advisory 锁，并纳入 gateway_mv_refresh_total
+// 指标族（此前 tuning 侧在指标闭集里之外，完全没有尺子）。
 func (d *DB) ensureSessionTitleStates(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil

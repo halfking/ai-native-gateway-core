@@ -423,7 +423,15 @@ func resetPromoteZombieLockStreak(table string) {
 // of the routing analytics MV refresh cycle (bg/materialized_view_refresher.go).
 //
 // Label "view" is a closed enum: routing_analytics_7d | routing_audit_summary_7d
-// (the two views created by migration 632). No high-cardinality dimensions.
+// (the two views created by migration 632) | session_client_stats |
+// session_client_task_matrix | session_task_stats (migration 357) |
+// tuning_signals_5m | tuning_signals_daily (P7.5, added 2026-10-20).
+// No high-cardinality dimensions.
+//
+// ⚠ 2026-10-20 补登：tuning 侧此前**不在闭集里** ⇒ tuning 刷新完全
+// 没有指标，协调效果也无尺子（R51 96h 轮）。那一轮把两个 tuning 视图
+// 纳入本族，并给 tuning refresher 补上跨实例协调
+// （见 bg/tuning_view_refresher.go 文件头）。
 var (
 	// mvRefreshTotal counts refresh attempts by view and outcome.
 	// outcome values: success | failed | skipped_no_lock | skipped_follower | skipped_missing_view

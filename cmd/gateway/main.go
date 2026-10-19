@@ -5729,7 +5729,15 @@ func main() {
 
 			// v2.1 (P7.5): TuningViewRefresher keeps the materialised
 			// views (tuning_signals_5m + daily) up to date.
+			//
+			// 2026-10-20（R51 96h 轮）：接上 Redis 令牌桶做**跨实例
+			// leader 选举**。此前本 worker 无任何协调且 ticker 是进程
+			// 启动相位 ⇒ 两个实例各刷各的，实测 24.4 次/小时（名义 12）。
+			// 详见 bg/tuning_view_refresher.go 文件头的实测数据与根因。
+			// 未配置 Redis 时 distlock.NewRedisManager 仍返回 manager，
+			// 但 Enabled() 为 false ⇒ 自动退到 Postgres advisory lock。
 			tuningViewRefresher := bg.NewTuningViewRefresher(dbConn.Pool())
+			tuningViewRefresher.SetDistLock(distlock.NewRedisManager(fpSlotRedis))
 			tuningViewRefresher.Start(context.Background())
 			defer func() {
 				tuningViewRefresher.Stop()
