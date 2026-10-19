@@ -32442,7 +32442,7 @@ last_line=$(grep -F "${fingerprint}" "$cooldown_file" | head -1)   # 按**当前
 ★ 注意最后一行：`session_dim` 的表有 **5292 万次**索引扫描，而这一条是 0 ——
 ⇒ 「表热」与「这条索引热」是两件事，**不能用表的热度替索引背书**。
 
-> ⚠⚠ **2026-10-21 订正（§143.16 实测）——上表的「表的索引扫描数」列是**错的量具**，原文保留。**
+> ⚠⚠ **2026-10-20 订正（§143.16 实测）——上表的「表的索引扫描数」列是**错的量具**，原文保留。**
 > ① **那一列是表级计数**（`pg_stat_all_tables.idx_scan` = 该表**所有**索引扫描数之和），
 >    **分辨不出「哪条索引热」**；而本表 18 条的备注恰恰是按这一列下的。
 > ② 改用**每索引**计数（`pg_stat_all_indexes.idx_scan`）重测后，18 条里**至少 6 条**的每索引计数是 **0**：
@@ -33242,7 +33242,7 @@ md5 与仓内**逐字一致**、台账记 `in-sync`、仓内正典 cron 副本�
 **两个都在被用**（uidx 357 万次 vs pkey 17 万次）⇒ 处置需要**读方证据**
 （`index-reader-census.sh`），且 pkey 是**约束**（删它要先改约束）⇒ 属主拍板项。
 
-> ⚠⚠ **2026-10-21 订正（§143.16 实测）——本节的三处读数与一处推论要修订，原文保留。**
+> ⚠⚠ **2026-10-20 订正（§143.16 实测）——本节的三处读数与一处推论要修订，原文保留。**
 > ① **体积口径**：`session_summaries_pkey` 实测 **67.8 MiB**、`session_summaries_session_key_uidx` **67.2 MiB**
 >    （上面的 71.1MB 是 MB/MiB 与时点差异）⇒ **一对共 135 MiB**。
 > ② ★★★ **真正的冗余不止这一对**：同表还有第三条
@@ -34090,7 +34090,7 @@ stderr 恢复后，`ursm-snapshot-health` 的失败原因第一次**可读**：
 
 ---
 
-## §143.16 索引处置清单：从「按大小排 DROP」升级为「逐条实测读数 + 读方证据 + 分档」（2026-10-21）
+## §143.16 索引处置清单：从「按大小排 DROP」升级为「逐条实测读数 + 读方证据 + 分档」（2026-10-20）
 
 ### §143.16.0 结论先行
 
@@ -34207,7 +34207,7 @@ blocks = 1(meta) + internal_pages + leaf_pages + empty_pages + deleted_pages
 ### §143.16.2 ★★ 逐条收益表（15 条候选，测得值 + 公式推算 + 判词）
 
 ⚠ **口径声明（先读）**：
-- `mib` / `leaf` / `dead` / `density` / `idx_scan` 是**生产实测**（154 跳板，PG 17.10，2026-10-21）。
+- `mib` / `leaf` / `dead` / `density` / `idx_scan` 是**生产实测**（154 跳板，PG 17.10，2026-10-20）。
 - `reclaim_mib` 是**公式推算**，**不是实测**：公式 = `(dead + leaf×(1−min(density,90)/90)) × 8KB`，
   来自 `scripts/252-monitor/pg17-index-bloat.sh`，其标定见 §143.15（预测/实测 ≈ **0.96**，n=**2** 且同表）。
   ⇒ **本表给的是下界**，且**跨表属外推**（边界见 §143.16.6）。
@@ -34306,7 +34306,7 @@ blocks = 1(meta) + internal_pages + leaf_pages + empty_pages + deleted_pages
 - **读方证据**：生产 E14（`WHERE tenant_id = $1 AND session_key = $2`）**没有选它**
   （计划器选了 `idx_session_summaries_cost`），每索引 `idx_scan` 只有 **5** 次。
 - ⚠ **它是「改约束口径」而不是「删冗余索引」** ⇒ 属主拍板；且原迁移 560 **保留原文**（不删不改），
-  只在 §143.16 与新迁移里记录「该约束已被主键蕴含、2026-10-21 起不再作为语义依赖」。
+  只在 §143.16 与新迁移里记录「该约束已被主键蕴含、2026-10-20 起不再作为语义依赖」。
 
 #### T3 —— `DROP` **无读方**索引（读方证据逐条给全）
 
@@ -34319,7 +34319,7 @@ blocks = 1(meta) + internal_pages + leaf_pages + empty_pages + deleted_pages
 
 ⇒ ⇒ ★ **T3 合计 ≈ 201.4 MiB**。
 
-### §143.16.4 ★★★ 读方证据：仓库 grep + 生产 `EXPLAIN`（14 条计划，2026-10-21）
+### §143.16.4 ★★★ 读方证据：仓库 grep + 生产 `EXPLAIN`（14 条计划，2026-10-20）
 
 | 候选 | 仓库读方（文件:行） | 生产 EXPLAIN | 每索引 idx_scan | 判词 |
 |---|---|---|---|---|
@@ -34371,7 +34371,7 @@ blocks = 1(meta) + internal_pages + leaf_pages + empty_pages + deleted_pages
 
 #### §143.16.5.1 §143.9.6 E 类表：「表的索引扫描数」是**错的量具**
 
-> ⚠⚠ **2026-10-21 订正（§143.16 实测）——本表的「表的索引扫描数」列是表级计数，**
+> ⚠⚠ **2026-10-20 订正（§143.16 实测）——本表的「表的索引扫描数」列是表级计数，**
 > **它分辨不出「哪条索引热」，而本表 18 条的备注恰恰是按这条列下的结论。**
 > ① **本列不是每索引的扫描数**：`pg_stat_all_tables.idx_scan` 是**该表所有索引的扫描数之和**。
 > ② 用**每索引**计数（`pg_stat_all_indexes.idx_scan`）重测后，18 条里**至少 6 条**的每索引计数是 **0**：
@@ -34386,7 +34386,7 @@ blocks = 1(meta) + internal_pages + leaf_pages + empty_pages + deleted_pages
 
 #### §143.16.5.2 §143.12.6 的「71MB 逐字重复对」：是**一对**，但真实冗余是**三条 145 MiB**
 
-> ⚠⚠ **2026-10-21 订正（§143.16 实测）——本节的三处读数与一处推论需要修订，原文保留。**
+> ⚠⚠ **2026-10-20 订正（§143.16 实测）——本节的三处读数与一处推论需要修订，原文保留。**
 > ① **体积口径**：`session_summaries_pkey` 实测 **67.8 MiB**、`session_summaries_session_key_uidx` **67.2 MiB**
 > （本节写的 71.1MB 是 MB/MiB 与时点差异）⇒ **一对共 135 MiB**。
 > ② ★★★ **真正的冗余不止这一对**：`session_summaries` 上还有第三条
@@ -34463,3 +34463,369 @@ bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/pmm_explain2.sql 180 > /private/tm
 ★ 同族：[[先读量具再读产物]] · [[对照组不是同一条件下造的]] ·
 [[阴性结论要当缺陷一样复核]] · [[自己上一节的结论也要复核]] ·
 [[不可比的两个东西放在一起比大小]] · [[0 命中的第一嫌疑是量具坏了]]。
+
+---
+
+## §143.17 `session_turns` 族：父表声明的全族读数 + 877 前提被生产证伪（2026-10-20）
+
+### §143.17.0 结论先行
+
+本节把 §143.16 的框架从「普通表上的索引」推到「**分区族**」，产出四条新证据：
+
+1. ★★ **`session_turns` 的 23 条父表声明里，有 8 条**全族（6 个分区实例）**0 扫描**，
+   合计 **≈322 MB**。⇒ 但**这不是「索引没用」**——8 条 `EXPLAIN` 证明
+   **计划器会选它们** ⇒ 真相是「**生产没有对应的查询**」⇒ 这是**能力取舍**，不是纯浪费。
+2. ★★★ **迁移 877 的立项前提在生产被证伪**：它要服务的那条
+   `search_text ILIKE '%…%'` 过滤查询，在 `pg_stat_statements` 的近 27h 窗口里
+   **一条都没有**（含 `search_text` 的 8 条语句**全是写入侧/投影侧**）；
+   分区侧 GIN（**78 MB**）与 hot 侧 GIN（**5.4 MB**）的 `idx_scan` **都是 0**
+   ⇒ ⇒ **83 MB 的 GIN 索引 + 每次写的 trigram 抽取成本，换来 0 次查询。**
+3. ★★ **877 在 `docs/db-changelog.md` 里有两条互相矛盾的记载**（SHA 不同）：
+   一条「pending deploy（尚未应用）」记 `2df3437e…`（= **当前文件**），
+   一条「applied+verified」记 `2771026d…`（= **改写前的旧版**）
+   ⇒ ⇒ **旧版已在生产（那 78 MB 就是它的产物），新版未上**；
+   且 **877 缺了 655 那句「改写前 SHA」说明** ⇒ 台账缺口。
+4. ★★ **252 上没有可用的 PG 查询日志**：`logging_collector=off`（无日志文件），
+   容器 stdout 近 96h **只有 1 行** ⇒ ⇒ **「靠日志判断慢查询」这条线在 252 上目前是断的**。
+
+⚠ **本节对生产的写入 = 0**：全部只读（`pg_inherits` / `pg_stat_*` / `pg_stat_statements` /
+`EXPLAIN` / `pg_class`）+ 252 的 `docker logs` 只读查看。
+
+### §143.17.1 ★ 量具：分区族的「父声明 → 叶实例」必须用 `pg_inherits` 的**索引级**关系
+
+⇒ ⇒ ★★★ **不能按名字配对**。生产上 `session_turns` 的叶分区同时存在**两代命名**：
+
+| 代 | 名字形态 | 来源 | 例（2026_09） |
+|---|---|---|---|
+| 老路径 | `session_turns_2026_09_heap_<列>_idx` | 早期 `session_turns_hot` 形态的索引 | `heap_request_id_idx`（84 MB / **51,217,944** 次扫描） |
+| 父声明 | `session_turns_2026_09_<列>_idx` | 父表 `CREATE INDEX` 级联下来的**自动改名**实例 | `request_id_idx`（58 MB / **0** 次扫描） |
+
+⇒ ⇒ ★★ **按名字猜会把两代混成一条**；按 `pg_index.indkey` 猜也分不出「哪条是父声明的那条」。
+⇒ ⇒ ★ **唯一权威映射是 `pg_inherits` 的索引级父子关系**
+（`pg_inherits.inhparent` = 父表那个索引的 oid，`inhrelid` = 分区上的实例）：
+
+```sql
+SELECT inhparent AS parent_idx, inhrelid AS child_idx
+  FROM pg_inherits
+ WHERE inhparent IN (SELECT indexrelid FROM pg_index
+                      WHERE indrelid = 'public.session_turns'::regclass);
+```
+
+⇒ ⇒ ★ 这也回答了「**删了会不会长回来**」：
+**在父表上 `DROP INDEX` 会级联到所有分区**，且**未来新分区不会再有它**
+（分区索引是父声明的派生物，不是独立的）⇒ ⇒ **动作单元永远是父表声明**，
+不是某个分区上的实例（876 迁移在 `usage_ledger` 上踩的就是这个坑的镜像）。
+
+### §143.17.2 ★★ 23 条父表声明的全族读数（2026-10-20 生产实测）
+
+按 `pg_inherits` 汇总「父声明 → 6 个分区实例」：
+
+| 父表声明 | 键 | 合计大小 | **全族 idx_scan** | 判词 |
+|---|---|---|---|---|
+| `session_turns_tenant_request_partition_key` | UNIQUE (tenant_id, request_id, partition_date) | 119 MB | 2,014,654 | 热 |
+| `session_turns_tenant_session_turn_partition_key` | UNIQUE (tenant_id, session_id, turn_no, partition_date) | 111 MB | **1** | ★ 111 MB 换 1 次 ⇒ T2（约束口径） |
+| `idx_session_turns_tenant_session_turn` | (tenant_id, session_id, turn_no DESC) | 104 MB | 1,832,817 | 热 |
+| `idx_session_turns_request` | (request_id) | 102 MB | **177,621,479** | 最热 |
+| `idx_session_turns_session` | (session_id, turn_no DESC) | 90 MB | 196,159 | 热 |
+| `idx_session_turns_tenant_parent_request` | (tenant_id, parent_request_id, ts DESC) WHERE parent_request_id IS NOT NULL | 83 MB | **131** | ★ 近死 |
+| **`idx_session_turns_tenant_task_type`** | (tenant_id, task_type, ts DESC) WHERE task_type IS NOT NULL | **79 MB** | **0** | ★ **能力取舍** |
+| **`idx_session_turns_search_trgm`** | GIN (search_text gin_trgm_ops) | **78 MB** | **0** | ★ **877 的产物，见 §143.17.4** |
+| **`idx_session_turns_tenant_namespace`** | (tenant_id, namespace, ts DESC) WHERE namespace IS NOT NULL | **72 MB** | **0** | ★ **能力取舍** |
+| **`idx_session_turns_tenant_project`** | (tenant_id, project_id, ts DESC) WHERE project_id IS NOT NULL | **72 MB** | **0** | ★ **能力取舍** |
+| `idx_session_turns_req_status_backfill_cov` | (request_id) WHERE request_status IS NULL | 58 MB | 6,382 | ★ 回填工作索引（回填是否已完结要核） |
+| `idx_session_turns_credential_ts` | (expr credential_id, ts DESC) | 55 MB | 1,039,445 | 热 |
+| `idx_session_turns_tenant` | (tenant_id, ts DESC) | 55 MB | 688,836 | 热 |
+| `session_turns_pkey` | UNIQUE (id, partition_date) | 48 MB | 18,667 | 保留（约束） |
+| `idx_session_turns_effective_session` | (tenant_id, expr session_id) | 38 MB | 1,757,484 | 热 |
+| `idx_session_turns_ts` | (ts) | 23 MB | 2,161,105 | 热 |
+| `idx_session_turns_req_status_backfill` | (id) WHERE request_status IS NULL | 17 MB | 8,905 | ★ 同上 |
+| **`idx_session_turns_t0_arrived`** | (t0_arrived_at DESC) WHERE t0_arrived_at IS NOT NULL | **16 MB** | **0** | ★ **能力取舍** |
+| `idx_session_turns_client_request_id` | (client_request_id) WHERE client_request_id IS NOT NULL | 8040 kB | 6 | ★ 近死 |
+| **`idx_session_turns_abandoned_parent`** | (tenant_id, ts DESC) WHERE is_abandoned IS TRUE | **3096 kB** | **0** | ★ **被同键全量索引覆盖**（见下） |
+| **`uq_session_turns_final_success`** | UNIQUE (tenant_id, session_id, partition_date) WHERE is_final_success | **2064 kB** | **0** | ★ 唯一索引 ⇒ T2 口径 |
+| **`idx_session_turns_attachment_count_gw`** | (attachment_count) WHERE attachment_count > 0 | **128 kB** | **0** | ★ 能力取舍 |
+| `idx_session_turns_digest_null` | (ts, id) WHERE digest IS NULL | 48 kB | 4,837 | 保留 |
+
+⇒ ⇒ ★ **8 条全族 0 扫描，合计 ≈322 MB**（每条 6 个分区实例各一份）。
+
+⇒ ⇒ ★★ **其中一条是纯冗余，不需要任何能力取舍**：
+`idx_session_turns_abandoned_parent` = **(tenant_id, ts DESC) WHERE is_abandoned IS TRUE**
+与 `idx_session_turns_tenant` = **(tenant_id, ts DESC)**（全量）**键列完全相同**
+⇒ ⇒ **全量索引已能服务带 `is_abandoned IS TRUE` 过滤的查询**（过滤条件退化成 Filter）
+⇒ ⇒ E6 的 EXPLAIN 实测正是如此：计划选的是
+`session_turns_2026_10_tenant_id_ts_idx1`（= 全量那条），**部分索引一次都没被选**
+⇒ ⇒ ★ **它同时是「前缀覆盖」与「0 扫描」⇒ 零风险可删**（3 MB，体量小但形态干净）。
+
+⇒ ⇒ ★ **「两代重复」的另一例**（2026_09 分区上）：
+`session_turns_2026_09_request_id_idx`（父声明来的，58 MB / **0** 次）
+与 `session_turns_2026_09_heap_request_id_idx`（老路径来的，84 MB / **51,217,944** 次）
+⇒ ⇒ **同分区、同列 `request_id` 的两条索引，一条热一条死**。
+⚠ **但不能只删死的那条**：父声明 `idx_session_turns_request` 在 **2026_10 上是热的**
+（`session_turns_2026_10_request_id_idx` 50,276,781 次）⇒ ⇒ **父声明必须留**；
+死的那条是**分区实例** ⇒ 删它**不会**让 2026_10 失去索引，但**重跑父表的 `CREATE INDEX`
+会把 2026_09 的实例带回来**（877 迁移自己的实测记录了这条：父表那条一执行，
+现存月分区就各自拿到索引）⇒ ⇒ **这一条要单列，且带「重跑父表 DDL 会复活」的告示**。
+
+### §143.17.3 ★★★ 「0 扫描」在这里**不是**「索引没用」——8 条 EXPLAIN 的证据
+
+对 8 条全族 0 扫描的声明各做一次 `EXPLAIN`（真实谓词形态），**计划器全都选中了它们**：
+
+| 声明 | EXPLAIN 实测选中的索引 | 结论 |
+|---|---|---|
+| `tenant_task_type` | `session_turns_2026_10_tenant_id_task_type_ts_idx` | 计划**会**用 |
+| `tenant_namespace` | `session_turns_2026_10_tenant_id_namespace_ts_idx` | 计划**会**用 |
+| `tenant_project` | `session_turns_2026_10_tenant_id_project_id_ts_idx` | 计划**会**用 |
+| `search_trgm` | `session_turns_2026_10_search_text_idx`（Bitmap Index Scan，谓词落在 **Index Cond**） | 计划**会**用 |
+| `t0_arrived` | `session_turns_2026_10_t0_arrived_at_idx`（Merge Append） | 计划**会**用 |
+| `abandoned_parent` | `session_turns_2026_10_tenant_id_ts_idx1`（**全量那条**） | ★ 部分索引**不会被**选 |
+| `attachment_count_gw` | `session_turns_2026_10_attachment_count_idx` | 计划**会**用 |
+| `uq_final_success` | `session_turns_2026_10_tenant_id_session_id_partition_date_idx` | 计划**会**用 |
+
+⇒ ⇒ ★★★ **判词必须改写**：
+> **「0 扫描」≠「索引无用」；它等于「生产没有跑那种查询」。**
+> 这些索引是**为尚不存在的查询准备的**，删掉它们 = **放弃那项查询能力**，
+> 而不是「回收无用的空间」。
+> ⇒ ⇒ **这不是 T3（无读方可删），而是一个独立档位：T4「能力取舍」——属主决定要不要这项能力。**
+
+⇒ ⇒ ★★ 读方侧的补充（仓库 grep）：
+`task_type` / `namespace` / `project_id` 都是**写入侧维度**
+（`domains/session/v2/turn_writer.go:618-621` 的 upsert 列清单；
+`domains/session/v2/session_aggregator.go:471/487` 的回填）
+⇒ ⇒ **数据在写、查询没来** ⇒ 这是典型的「先建能力后等需求」，
+删除的代价是**将来做这类筛选时先顺序扫描**（分区最大 6.4 GB；`search_text` 生产实测
+**均值 92 / 最大 148 字符** ⇒ **不是** TOAST 宽列，见 §143.17.4 订正横幅）。
+
+### §143.17.4 ★★★ 迁移 877 的立项前提在生产被证伪
+
+877 的立项理由（迁移文件头 + changelog）：
+> `admin/logs.go:540` 的 `rl.search_text ILIKE '%'||$n||'%'` 是**前导通配符**，
+> btree 结构上无法服务 ⇒ 退化成对每个 6.4 GB 月分区顺序扫描 `search_text`
+> ⇒ 故给 `session_turns` + `session_turns_hot` 补 GIN trigram 索引。
+
+⇒ ⇒ ★★★ **实测四条，一起看才成立**：
+
+1. **查询侧（读数）**：`pg_stat_statements`（窗口起点 `2026-10-18 22:03:37`，**约 27 小时**）
+   里含 `search_text` 的语句共 8 条，**全部是写入侧或投影侧**：
+   `INSERT INTO public.session_turns_hot (...)` 34,528 次、
+   `SELECT sb.outbound_body, rl.outbound_msg_count, ...` 8,442 次（投影里带该列，**不是**过滤）、
+   以及几条统计/导出语句
+   ⇒ ⇒ **没有任何一条是 `search_text ILIKE '%…%'` 的过滤查询。**
+2. **索引侧（计数）**：分区族 `idx_session_turns_search_trgm` **全族 0 扫描**（78 MB），
+   hot 侧 `idx_session_turns_hot_search_trgm` **0 扫描**（5.4 MB）
+   ⇒ ⇒ **两条腿都没有读方。**
+3. **计划侧（能力）**：F1 的 `EXPLAIN`（真实形态：`request_logs_with_current_month`
+   + `search_text ILIKE '%needle%'` + `ts > now() - 7 days` + `ORDER BY ts DESC LIMIT 50`）
+   显示 **`session_turns_2026_10` 臂确实走
+   `Bitmap Index Scan on session_turns_2026_10_search_text_idx`（谓词在 Index Cond）**，
+   `hot` 臂走 `idx_session_turns_hot_search_trgm`
+   ⇒ ⇒ **索引不是不能用，是那条查询没人发。**
+4. **命名形态（独立第二信号）**：两个版本的**子分区实例名字不一样**，而现场只有一个形态：
+   旧版（`2771026d`）在父表上发普通 `CREATE INDEX` ⇒ PG 自动改名，子实例叫
+   **`session_turns_2026_10_search_text_idx`**（`<分区>_<列名>_idx`）；
+   新版（`2df3437e`）走三段式 `CONCURRENTLY`、**显式命名**为
+   **`session_turns_2026_10_search_trgm`**（`<分区>_search_trgm`）
+   ⇒ ⇒ **生产现场实测到的是 `..._search_text_idx`** ⇒ ⇒ **新版从未在生产执行过**
+   ⇒ ⇒ 这条与台账读数**互相独立**（一个看登记、一个看对象命名），两条都指向「旧版已上、新版未上」。
+
+⇒ ⇒ ★★★ **⇒ 结论：877 在生产是净负的**
+（① 83 MB 磁盘；② 每次写 `session_turns` 多维护一份 GIN trigram 索引 ——
+877 自己的测量是每行 **+32 µs**，而生产的 `search_text` 是 **TOAST 宽列**，
+实际成本**高于**该值；③ 换回 **0 次**查询）。
+
+⇒ ⇒ ★★★★★ **§143.17.4 订正横幅（2026-10-20 跨会话复核）**
+
+⚠ **上面这段原文整体保留**（纪律：就地加横幅、不静默改写），但其中
+**①「TOAST 宽列」这个前提已被生产实测推翻**、
+**②「选项 A（推荐）：撤回」不再是本仓现行口径** ⇒ ⇒ **按下面的「现行口径」执行**。
+★ 订正的证据来自**另一会话的 877 专项审计**（已随 origin/main 落地）⇒ **复现时直接读那三份文档**，
+不要只看本节；本节与它们**不是两份互相打架的结论**（关系见横幅末段）。
+
+| # | 本节原话 | 另一会话的生产实测 | 谁对 |
+|---|---|---|---|
+| 1 | 生产的 `search_text` 是 **TOAST 宽列** ⇒ 写成本高于 +32µs | **不是 TOAST 宽列**：`session_turns_2026_10` + `hot` 的 `length()` **均值 92 / 最大 148** 字符（远低于 TOAST 阈值 ≈2KB ⇒ 永远内联在 heap 里）；distinct trigram **84.59**/行，而 877 那次的 ~455 字符夹具 ⇒ ≈453 trigram ⇒ **旧夹具把 trigram 抽取量放大了 5.3 倍** | ★ **对方对**（本节前提错） |
+| 2 | 「**撤回 877**」= 推荐 | **不回滚**（成本已付、删索引是净亏损、读侧能力 btree 替代不了：超管**没有租户过滤** ⇒ `(tenant_id, ts DESC)` 帮不上）⇒ 改为 `?q=` **降级为显式启用** + **30 天触发条件** | ★ **对方口径为准** |
+| 3 | 「0 次查询 ⇒ 没人要 ⇒ 撤回」 | 读数 **0 有效**（=「没人发出过带 `q=` 的请求」），但**不是**「没人需要这个能力」：旧 UI 承诺搜**正文**，而 `search_text` 只装 9 个**元数据**字段 ⇒ 当时是**承诺落空** ⇒ 对方已把 UI 改成**如实描述**并加了两道契约门 | ★★ 本节的措辞本来就在「有效」那一侧（本节写的是「一次都没发过」≠「没人要」），但**处置**据此推错了 |
+
+⇒ ⇒ ★ **写放大的真实代价（对方实测：参数按生产对齐 + 两套互相独立的方法交叉校验）**：
+**+38.3 ~ +96.4 µs/行**（隔离静库 20,000 次单行事务 / 共享库交错测）、
+**WAL 3.5 ~ 15 KB/行** ⇒ 按生产 ~35,000 行写/天 ⇒ **WAL 120 ~ 525 MB/天**（基线 ~10 MB/天 ⇒ 12~50×）、
+索引体积 **346 B/行 ⇒ ≈12.1 MB/天 ≈ 363 MB/月**、CPU **1.3 ~ 3.4 CPU-秒/天**（可忽略）。
+⇒ ⇒ ★★ ⇒ **「净负」这个结论的三个支柱只剩两个**：磁盘 83MB ✅、读侧 0 次 ✅、
+**写放大论据要换成上面的实测**（方向不变：确实在付钱，但**不是**因为「TOAST 宽列」）。
+⇒ ⇒ ★ **另一条被否证的备选**：「`left(search_text,N)` 表达式索引 / `WHERE length(...) <= N` 部分索引」
+**不是更便宜的替代品** ⇒ **不成立**：生产最大 148 字符 ⇒ 任何 N ≥ 148 的写法与全列 GIN **逐值等价**
+（`length<=150` 覆盖 **199,944/200,000 = 99.972%** 的行；`left(...,150)` 只改 56 行 = 0.028%），
+要真省写放大就得 N < 148 ⇒ **会改变搜索语义**（第 N 位之后的 needle 被漏掉）⇒ **从决策表里删掉**。
+
+⇒ ⇒ ★★★ **现行口径（2026-10-20 另一会话的决策，优先级高于本节原来的「选项 A」）**：
+- **不回滚 877**（成本已付；且它的读侧能力 btree 替代不了 —— 超管无租户过滤）。
+- **把 `?q=` 从「默认能力」降级为「显式启用」**（feature flag）⇒ 零需求时 GIN 随时可删（写放大归零），
+  开关一开再重建。
+- **触发条件（写死，避免下一个人重新争论）**：
+  **任一 7 天窗口内，生产出现 ≥ 1 次带 `q=` 的 `GET /api/logs` ⇒ 保留 877，不做降级**；
+  **30 天内仍为 0 ⇒ 删掉两条 GIN 索引止损**。
+- ⇒ **本节 A1 因此从「立即撤回」改写为「设 30 天触发条件」**（见 §143.17.6）。
+
+⇒ ⇒ ★★★ **两节的关系（重要）**：
+- **本节独有、且未被推翻的**：父声明全族读数（23 条声明 / 8 条全族 0 扫描 ≈322MB）、
+  **「0 扫描 ≠ 索引没用」⇒ T4「能力取舍」**（★ 对方 2026-10-20 的订正**正是同一个发现**：
+  「读数 0 是真的，但从那个 0 推出的结论是坏的」）、
+  **父声明/叶实例的 `pg_inherits` 量具**、**命名形态证据**（下方）、**台账消歧门**、**252 日志是空的**。
+- **本节被对方超越的**：写放大的定量（对方有生产对齐夹具 + 两套方法交叉校验 + WAL/FPI 分解）、
+  读侧需求的跨主机 nginx 口径（四台机器、**全保留期 ≈53 天**、
+  1,578 → 1,586 次 `GET /api/logs` 里带 `q=` **0 次**）。
+- ⇒ ★★ **本节的第 4 条证据（命名形态）被对方的生产读数独立印证** ✅：
+  对方实测生产现存 GIN 是 `session_turns_2026_10_search_text_idx`（**75 MB**）、
+  `session_turns_2026_09_search_text_idx`（1000 kB）、`idx_session_turns_hot_search_trgm`（**5440 kB**），
+  **全部是旧版父表普通 `CREATE INDEX` 级联后被 PG 自动改名的形态**
+  ⇒ **新版三段式 CONCURRENTLY 的 `..._search_trgm` 一个都不存在** ⇒ **新版从未在生产执行过**。
+- ⇒ ★★ 对方还直接确认了**台账那行是过期的**：
+  `schema_migrations` 有 **`877 @ 2026-10-19 16:59:08.656651+08`** ⇒ **877 已应用**
+  ⇒ 本节下面那句「`2df3437e…` pending，尚未应用」指的是**这个 SHA 的字节**未应用，
+  **不是**「迁移 877 没上过」⇒ **台账 pending 行的「尚未应用」措辞必须改**（本轮已改）。
+
+⇒ ⇒ ★★ **可复现的对方材料（已在 origin/main）**：
+- `docs/audit/2026-10-19-877-写放大定量决策.md`（写放大定量 + 30 天触发条件的原始决策）
+- `docs/audit/2026-10-20-877-读侧语义订正.md`（读侧 0 的**确切语义**）
+- `docs/audit/2026-10-20-q0-demand-vs-broken-promise.md`（**承诺落空**那条 + 三条静默失效）
+- 取数脚本 `scripts/audit/q-usage.sh`（**带离线自检** ⇒ 「0 次」这个读数才有意义）
+
+⇒ ⇒ ★ **处置建议（属主拍板）**：
+⚠ **下面是本节原稿的两条选项，已被上方「现行口径」取代 —— 尤其「选项 A（推荐）」不再是推荐项**
+（撤回的**成本收益前提**被另一会话的实测改写了：写放大是 **+38~96µs/行**、不是「TOAST 宽列」；
+且 877 的读侧能力 btree 替代不了）。**原文保留**供追溯。
+- **选项 A（推荐）**：**撤回 877** —— 在父表上 `DROP INDEX idx_session_turns_search_trgm`
+  （级联 6 个分区实例）+ `DROP INDEX idx_session_turns_hot_search_trgm`
+  ⇒ 回收 ≈83 MB 并去掉每行的 trigram 维护成本；
+  ⚠ 前提是**确认「admin 日志页的 `?q=` 搜索」在生产确实没人用**（读数支持，但**一次都没发过**
+  与「发了但没被记录」要分开——本节的依据是 `pg_stat_statements` 27h 窗口 + 索引全生命周期 0 扫描，
+  两者一致 ⇒ 结论可靠）。
+- **选项 B**：**保留**，但把 877 标注为「为未上线能力预建」，并把它**从「缺陷修复」改成「预留能力」**
+  —— 但这要求写下「何时会被用上」，否则又是一条无主的能力债。
+- ⇒ **注意执行顺序**：877 的**新版文件**（`2df3437e…`）**尚未应用**；
+  若选 A，**先撤回旧版产物**、**再**决定要不要应用新版（否则新版会把它建回来）。
+
+⇒ ⇒ ★★ **台账缺陷（同批修掉）**：
+`docs/db-changelog.md` 里 877 有**两条记载且 SHA 不同**：
+`2df3437e…`（pending，= 当前文件）与 `2771026d…`（applied+verified，= **改写前的旧版**）
+⇒ ⇒ **旧版已上、新版未上**这件事**没有任何一行字写着**
+⇒ ⇒ **缺口**：877 缺了 655 那句「改写前 SHA 为 …，改写后实际盘上内容 SHA = …」
+（655 的原文：「changelog 此前记录的旧 SHA b3e04d12… 为改写前内容；改写后实际盘上内容 SHA = 2cad0917…」）
+⇒ ⇒ **门为什么没抓到**：`internal/sqlguard` 的 `TestRegistryShaIsActuallyTheFile`
+按**脚本口径**取登记（它报「登记 221 条，实际校验 221 条」）
+⇒ ⇒ **它只校验「被取到的那条登记」的 SHA 对不对，不校验「同一个迁移有没有多条互相矛盾的登记」**
+⇒ ⇒ ★ **⇒ 门要加一条：同一迁移**文件**在 changelog 里出现多条**不同 SHA** 的登记时，
+台账必须能分辨出**哪一条是旧字节**
+（这条是本节唯一的**代码侧**可交付项）。
+⇒ ⇒ ★★ **已落地**：`internal/sqlguard/migration_registry_divergence_test.go`
+的 `TestRegistryDivergentShaRowsAreDisambiguated` —— 判词是**机械**的：
+① 某行指名**兄弟行的 SHA 前 8 位**（730/738/740/812/815/816/817/834/856 先例），
+或 ② 某行带**新旧关系标注词**（655 先例「改写前内容」/ 862 先例「当前正典」「修正前指纹」）
+⇒ ★ 判词**按文件名**而不是迁移号收敛（台账里同一文件名的登记行才是同一个对象），
+且**不要求 SHA 相同**（合法的多指纹登记本来就该不同）——只要求**说清哪一条是旧的**。
+⇒ ⇒ ★★ **本门顺带抓出另外两个同族缺口**：全台账 18 个文件有多 SHA 登记，
+其中 **15 个已消歧**（有兄弟 SHA 指名或有标注词），
+**3 个没有** —— 877（本节）、**627**（pending 行是改写前字节 `ca165d49…`，
+applied+磁盘是改写后的 `ed604aa5…`）、**704**（pending 行 `e99d9aa3…`
+**从未进入任何 commit**，applied+磁盘是 `af2231f9…`）⇒ 三条**同批修好**。
+⚠ 627/704 属**良性**（已应用的那条 == 磁盘上的那条 ⇒ 生产与仓库一致），
+但它们与 877 **同形**（同一文件两条指纹、没人说清哪条旧）⇒ 同一个门覆盖。
+
+### §143.17.5 ★★ 252 的 PG 查询日志目前是**空的**（观测缺口）
+
+252 的 PG 实际配置（实测）：
+
+```
+logging_collector        = off
+log_directory            = log
+log_filename             = postgresql-%Y-%m-%d_%H%M%S.log
+log_min_duration_statement = 1s
+log_statement            = none
+```
+
+⇒ ⇒ ★★ `logging_collector=off` ⇒ **不产生日志文件**；语句只走 stderr ⇒ 进容器 stdout
+⇒ ⇒ **`docker logs pg-252-pg17 --since 96h` 只有 1 行**；
+含 `search_text` 的语句 **0** 条、含 `session_turns` 的语句 **0** 条
+⇒ ⇒ ★ **结论：252 上没有可用的 PG 查询日志**。
+
+⇒ ⇒ ★★ 两条后果：
+1. **本节无法用日志回答「那条搜索查询跑过没有」** ⇒ 改用
+   `pg_stat_statements`（27h 窗口）+ 索引**全生命周期**计数交叉 ⇒ 两者一致（§143.17.4）；
+2. ⇒ ★ **动作项（属主）**：要恢复「靠日志判断慢查询」这条线，需要
+   ① `logging_collector=on`（落文件，可轮转、可归档），
+   ② `log_min_duration_statement` 调到有用阈值（**1s 在这套库上几乎抓不到东西**
+   —— 本轮 96h 内 0 条 `session_turns` 语句进日志），
+   ③ 配套日志轮转与保留期（否则磁盘会被日志吃满——**这正是 §78 那条「日志月增 681MB」的同类问题**，
+   本仓在 `request_logs` 族上已经踩过一次）。
+   ⚠ **在日志打开之前，任何「靠 252 日志做的慢查询结论」都没有证据基础。**
+
+### §143.17.6 待拍板（本节新增）
+
+| 优先级 | 动作 | 量 | 语义风险 | 决策要点 |
+|---|---|---|---|---|
+| **A1** | ★★ **877 的 GIN（≈83 MB + 写放大）：改为「设 30 天触发条件」** | **≈83 MB** + **+38~96µs/行**、WAL 120~525MB/天、索引 363MB/月 | 低（**读数证明无读方**） | ⚠ **不再是「立即撤回」** —— 另一会话 2026-10-20 的口径是「**不回滚**（成本已付 + 超管无租户过滤 ⇒ btree 替代不了）+ `?q=` **降级为显式启用** + **30 天触发条件**」；见 §143.17.4 订正横幅 |
+| **A2** | 修 changelog 台账：877 补「改写前 SHA = `2771026d…`」说明 | 0 | 无 | ✅ **本轮已落地**（连同 627/704 两条同族缺口，只改 Status 文本、SHA 列未动） |
+| **A3** | 加门：同一迁移**文件**多条**不同 SHA** 登记时，台账必须**说清哪一条是旧字节** | 0 | 无 | ✅ **本轮已落地**：`internal/sqlguard/migration_registry_divergence_test.go`（判词：指名兄弟 SHA 前 8 位 **或** 带新旧关系标注词） |
+| **B1** | 8 条全族 0 扫描声明（≈322 MB）——**能力取舍** | ≈322 MB | **中**（放弃未来的筛选能力） | 逐条问「这项查询将来要不要」；`abandoned_parent` 因同键全量覆盖可**零风险**先走 |
+| **B2** | `session_turns_tenant_session_turn_partition_key`（111 MB / **1** 次扫描，唯一约束） | 111 MB | **高**（改约束口径） | 唯一索引 ⇒ 属主拍板 |
+| **B3** | `idx_session_turns_tenant_parent_request`（83 MB / 131 次）、`idx_session_turns_client_request_id`（8 MB / 6 次） | ≈91 MB | 低-中 | 近死但非零 ⇒ 要看「是不是刚建/刚切换」 |
+| **B4** | `idx_session_turns_req_status_backfill{,_cov}`（75 MB / 6,382 + 8,905 次） | 75 MB | 中 | ★ **回填是否已完结**？完结即可删 ⇒ 要核回填覆盖率 |
+| **B5** | 2026_09 上那条死实例（58 MB / 0） | 58 MB | 低 | ⚠ **重跑父表 DDL 会复活它** ⇒ 告示要写进迁移文件 |
+| **C1** | **打开 252 的 PG 日志**（`logging_collector=on` + 阈值 + 轮转） | 磁盘 | 低 | ⇒ 恢复「靠日志判断慢查询」这条线 |
+
+### §143.17.7 诚实边界与本轮**没做**的事
+
+- ⚠ **本节对生产的写入 = 0**：只有只读查询（`pg_inherits` / `pg_class` / `pg_index` /
+  `pg_stat_all_indexes` / `pg_stat_all_tables` / `pg_stat_statements` / `EXPLAIN`）
+  与 252 的 `docker logs` 只读查看。**没有** DROP、**没有** REINDEX、**没有**改任何生产 SQL。
+- ⚠ **「全族 0 扫描」的口径**：`idx_scan` 是**全生命周期**计数（`pg_stat_database.stats_reset` = NULL）
+  ⇒ 跨表可比；但 `pg_stat_statements` 是 **27 小时**窗口 ⇒ **两个口径不能混比**
+  ⇒ 本节凡用 27h 窗口的读数，都与全生命周期的索引计数**交叉**后才下结论。
+- ⚠ **「查询没跑过」的证据边界**：依据是
+  ① `pg_stat_statements` 近 27h 无该形态语句 + ② 索引**全生命周期** 0 扫描
+  ⇒ 两者一致 ⇒ 结论可靠；但**不能**排除「极低频（>27h 才一次）的调用」
+  ⇒ **A1 的执行前建议再取一次更长的窗口**（或直接问属主「admin 搜索页是否上线」）。
+- ⚠ **EXPLAIN 只证明「计划会选」，不证明「曾经被用过」** ⇒ 本节所有 EXPLAIN 都只用于
+  **区分「索引没用」与「查询没来」**，不用于证明「索引在用」。
+- ⚠ **本节**不**推翻 §143.16 的 T3 清单**（那 4 条 ≈201.4MiB）：
+  T3 的门槛是「**真没人用**」（仓库无读方 **且** 生产 EXPLAIN 不选它），
+  而本节的 8 条只满足「**全族 0 扫描**」，EXPLAIN **反而会选它们**
+  ⇒ ⇒ 两者是**不同档位**（T3 回收无用空间 / T4 放弃一项查询能力），不可混谈。
+  ⇒ 若日后有人用「§143.17 说 0 扫描不代表没用」去论证 T3 的那几条也能删，
+  **那是把「全族 0 扫描」当成了「真没人用」** —— 前提不同。
+- ⚠ **本节只覆盖 `session_turns` 一族**：`session_bodies` / `session_turn_details` /
+  `usage_ledger` / `request_wal` 的父表声明**未做**同样的全族汇总（后续可复用本节脚本）。
+- ⚠ **分区父表上的 `DROP INDEX` 会级联到所有分区**（876 迁移已验证）⇒
+  ⇒ **动作单元是父表声明**，且**删完不会长回来**（未来新分区不再派生）——
+  与「只删分区实例」是两种不同的处置，**别混**。
+
+### §143.17.8 复核方法（可原样重跑）
+
+```bash
+# 1) 父声明 → 叶实例的权威映射 + 全族读数
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/st_parent.sql 300 > /private/tmp/st_parent.out 2>&1
+# 2) 叶分区索引清单（含两代命名 + 每索引计数）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/st_inventory.sql 300 > /private/tmp/st_inventory.out 2>&1
+# 3) 8 条零扫描声明的 EXPLAIN（证明「计划会选」）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/st_explain.sql 300 > /private/tmp/st_explain.out 2>&1
+# 4) 真实查询形态（admin 搜索：视图 + ILIKE + ts 窗口 + LIMIT）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/st_view.sql 300 > /private/tmp/st_view.out 2>&1
+# 5) 877 证据（stat_statements 窗口 + hot 侧计数）
+bash ~/.mavis-tools/lgwp-prod.sh /private/tmp/st_final.sql 300 > /private/tmp/st_final.out 2>&1
+# 6) 252 的 PG 日志现状
+ssh 252 'docker logs pg-252-pg17 --since 96h 2>&1 | wc -l'
+```
+
+⇒ ⇒ ★ **本轮落地的门**（不连库，可原样重跑）：
+
+```bash
+# A3 台账消歧门：同一文件多条不同 SHA 的登记必须说清哪一条是旧字节
+GOCACHE=/tmp/gocache-p1437 go test ./internal/sqlguard/ \
+  -run 'TestRegistryDivergentShaRowsAreDisambiguated|TestRegistryDivergenceDetectorHasTeeth' -count=1 -v
+# §143.17 文档门：全族读数 / T4 档位 / 877 证伪 / 252 日志空洞 / 待拍板清单
+GOCACHE=/tmp/gocache-p1437 go test ./scripts/ursmcheck/ -run 'TestRunbook14317' -count=1 -v
+```
+
+★ 同族：[[先读量具再读产物]] · [[阴性结论要当缺陷一样复核]] ·
+[[对照组不是同一条件下造的]] · [[自己上一节的结论也要复核]] ·
+[[假绿也要当缺陷一样复核]] · [[0 命中的第一嫌疑是量具坏了]]。

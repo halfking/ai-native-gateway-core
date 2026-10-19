@@ -20,13 +20,36 @@
 --    —— **没有 embedding** ⇒ 该列**永远**是 NULL，
 --    ivfflat 索引里**一个条目都没有**，却要在每次写入时付维护成本。
 --
--- ③ **写放大实测**（一次性 PG 17.10，同机同数据，唯一差别是这条索引）：
+-- ③ **写放大实测**（PG 17.10，同机同数据，唯一差别是这条索引）：
 --      EXPLAIN (ANALYZE, BUFFERS) INSERT 200 行 1536 维向量
+--
+--      第一次实测（2026-10-20）：
 --        有 ivfflat：Execution Time = 3229.421 ms
 --                     Buffers: shared hit=2463 read=21279 dirtied=1434 written=1737
 --        无 ivfflat：Execution Time = 1149.310 ms   （-64.4%）
 --                     Buffers: shared hit=3116 read=12    dirtied=214  written=313
---      ⇒ 读缓冲 21279 → 12（-99.9%），墙钟 -64%。
+--
+--      ⚠️ **订正（2026-10-20 同日复测，结论不变但理由换掉）**：
+--        有 ivfflat：Execution Time = 1190.438 ms
+--                     Buffers: shared hit=23954 read=2 dirtied=409 written=412
+--        无 ivfflat：Execution Time =  656.242 ms   （-44.9%）
+--                     Buffers: shared hit=3343 read=2 dirtied=210 written=213
+--
+--        ⇒ 「read 21279 → 12（-99.9%）」**不是索引带来的差别**，而是**冷/热缓存
+--          的切分**：同一批约 23.8k 个页，两次实测只是分别落在 read 还是 hit 上。
+--          **与缓存状态无关的稳健指标是 hit+read 的总触碰次数**：
+--            有 ivfflat ≈ 23,742 / 23,956     无 ivfflat ≈ 3,128 / 3,345
+--            ⇒ **约 7.2 倍，-86%**
+--          墙钟差 1.8~2.8 倍（绝对值随机器负载变化，**差异方向不随变化**）。
+--
+--        （旁证：pgvector 建这条索引时自己就提醒
+--          NOTICE: ivfflat index created with little data
+--          DETAIL: This will cause low recall.
+--          HINT:  Drop the index until the table has more data.
+--          —— 与本迁移的处置方向一致。）
+--
+--      复现方式：临时 schema 建同形表（id + vector(1536)），两腿各插 200 行
+--      随机向量，INSERT 外面套 EXPLAIN (ANALYZE, BUFFERS)，比 hit+read 总数。
 --
 -- ★ 为什么这条索引此前**完全隐形**：表恒为空。
 --   detector.go 的写入方把 json.Marshal 的 []byte 直接绑进枚举数组列
