@@ -2726,3 +2726,9 @@ L1 判对 2 次、判错 5 次 ⇒ **准确率 1/6**。
 - 根因：源码 substring 让旧 SQL 注释冒充读点；进一步用 AST Comment.End 定位又因 CR 归一化缩短原文字节范围。另一个判断盲区是仅凭 canonical 列直映，就把 waterfall 全人口误判为停写无影响。
 - 防复发：Go 注释范围用 AST 起点加原始字节终点，配 CR/CRLF 正反例；更换查询来源后同时核对镜像排除人口，不能只核列投影。
 - 证据/溯源：[admin 库存复核](docs/audit/2026-10-19-admin-inventory-repair.md)，代码 `0ebe9bf8e`；注释与 CR 反例先红后绿，14 个变异均触发指定断言；waterfall 保留仅 v1 人口的 errors_out 风险，降为 unaffected 的变异被拒绝。
+
+## 2026-10-20 — API 存活不能证明 nginx 可读发布目录（Seen: 1/3）
+- 根因：部署命令外层 umask077 → tar归档 `.`=0700 → root网关正常、nginx无法遍历release；SPA回退循环500。既有门只读健康/版本API，漏静态网页。
+- 处置与防复发：release根0755，仅公开web目录/文件归一化，私有配置0600保持；发布后真实HTTP校验HTML与JS，先于verified/stopold；browser-use实际交互验收。
+- 证据：单变量chmod后500→200、PID/二进制不变（helped）；真实tar权限保留正反夹具、HTTP负例、6变异均捕获。BSD tar非root须-p模拟远端root语义，并先验错误权限前提。
+- 溯源：基线947d96cd3（本条编写时尚未提交）；[事故复盘](docs/audit/2026-10-20-154-dashboard-500.md)。
